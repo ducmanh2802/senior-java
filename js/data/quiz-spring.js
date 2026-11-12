@@ -2398,5 +2398,355 @@ Cách cải thiện: chỉ số composite (status, created_at) hoặc INCLUDE (c
 - **Chỉ hiển thị với Index Only Scan**: Filter xuất hiện trên Index Scan thông thường lẫn Index Only Scan.
 
 > Senior tip: đọc EXPLAIN (ANALYZE, BUFFERS): Shared Hit là đọc từ bộ nhớ đệm, Shared Read là đọc từ disk. Nếu Filter loại bỏ phần lớn hàng sau Index Cond, hãy xem xét chỉ số phù hợp hơn thay vì hy vọng index hiện tại cứu được truy vấn.`
-}
+},
+{
+  id: 'qz-api-026',
+  topic: 'api',
+  q: 'Ứng dụng bán vé cần cho khách hủy một đơn hàng. Việc hủy có thể bị từ chối nếu vé đã phát hành, đồng thời hệ thống cần lưu thời điểm và lý do hủy. Thiết kế endpoint nào phù hợp nhất?',
+  options: [
+    'Dùng {{GET /orders/{id}/cancel}} để hủy và trả về đơn hàng đã đổi trạng thái',
+    'Dùng {{POST /orders/{id}/cancellations}} để gửi yêu cầu hủy, kiểm tra quy tắc nghiệp vụ rồi trả kết quả',
+    'Dùng {{DELETE /orders/{id}}} trong mọi trường hợp, vì hủy đơn luôn đồng nghĩa xóa dữ liệu',
+    'Dùng {{GET /orders/{id}}?cancel=true}} để giữ URL đọc đơn hàng hiện có'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: POST /orders/{id}/cancellations.** Đây là lệnh làm thay đổi trạng thái và tạo thông tin nghiệp vụ mới là yêu cầu hủy; nó không phải thao tác đọc đơn hàng hay xóa dấu vết đơn đã mua.
+
+### Vì sao đúng
+Endpoint con {{cancellations}} mô hình hóa một tài nguyên/yêu cầu hủy. Server có thể kiểm tra đơn thuộc ai, vé đã phát hành chưa, lưu lý do và thời điểm, rồi trả {{201 Created}} nếu đã tạo yêu cầu hủy hoặc mã lỗi nghiệp vụ phù hợp nếu không thể hủy. Tên route thể hiện tài nguyên; không có quy tắc REST bắt mọi thao tác phải là CRUD thuần.
+
+### Vì sao các phương án còn lại sai
+- **GET có tác dụng hủy**: GET được xem là safe, nghĩa là client có thể gọi để đọc mà không gây thay đổi nghiệp vụ. Trình duyệt, proxy hoặc crawler có thể tự gửi lại GET; không dùng nó cho lệnh ghi.
+- **DELETE đơn hàng**: DELETE có thể phù hợp nếu hợp đồng thật sự xóa tài nguyên, nhưng đơn hàng thường cần lưu cho kế toán và kiểm toán. Hủy là đổi trạng thái, không nhất thiết xóa đơn.
+- **Query cancel=true trên GET**: vẫn là GET có side effect; query parameter không biến thao tác đọc thành thao tác ghi.
+
+> Senior tip: thiết kế endpoint theo kết quả nghiệp vụ cần lưu, không cố ép mọi hành động thành động từ trong URL. Kiểm tra quyền sở hữu và trạng thái đơn trong cùng luồng xử lý để tránh hai request hủy đồng thời cùng tạo hai bản ghi.`
+},
+{
+  id: 'qz-api-027',
+  topic: 'api',
+  q: 'API tạo báo cáo mất khoảng 40 giây vì phải đọc nhiều dữ liệu. Client gửi yêu cầu, server đã nhận việc nhưng chưa có kết quả. Phản hồi HTTP nào phù hợp nhất để client không phải giữ kết nối chờ?',
+  options: [
+    '200 OK kèm file báo cáo rỗng để giữ đúng kiểu response',
+    '201 Created chỉ vì server đã nhận một HTTP request',
+    '202 Accepted, kèm cách tra cứu trạng thái xử lý như URI của job',
+    '204 No Content để báo rằng báo cáo đã tạo xong nhưng không cần nội dung'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: 202 Accepted kèm địa chỉ tra cứu job.** Mã này nói server đã chấp nhận xử lý nhưng công việc chưa hoàn tất; nó không hứa rằng công việc chắc chắn thành công.
+
+### Vì sao đúng
+Server có thể trả {{202}} cùng {{Location: /report-jobs/abc}} và trạng thái ban đầu {{PENDING}}. Client gọi GET địa chỉ đó để xem {{PENDING}}, {{SUCCEEDED}} hoặc {{FAILED}}, rồi tải kết quả khi sẵn sàng. Cách này giải phóng kết nối HTTP ban đầu, nhưng vẫn cho client một cơ chế theo dõi.
+
+### Vì sao các phương án còn lại sai
+- **200 với file rỗng**: 200 thường biểu thị request đã được xử lý thành công; file rỗng làm client không phân biệt báo cáo thật với placeholder.
+- **201 chỉ vì nhận request**: 201 nói một tài nguyên mới đã được tạo. Nếu API tạo tài nguyên job ngay, 201 có thể hợp lệ với URI job; nhưng mô tả chỉ khẳng định công việc được nhận, nên 202 là ý nghĩa chính xác hơn.
+- **204 báo đã xong**: 204 biểu thị xử lý thành công không có response body; nó không thể diễn tả trạng thái đang chạy.
+
+> Senior tip: job bất đồng bộ nên có timeout, trạng thái lỗi có thể đọc được và chính sách giữ kết quả. Đừng để client retry POST tạo báo cáo khi timeout mà không có cơ chế chống tạo job trùng.`
+},
+{
+  id: 'qz-api-028',
+  topic: 'api',
+  q: 'Mobile app chỉ muốn đổi số điện thoại của khách hàng. Khi gửi request, các trường khác như tên và địa chỉ không có trong body và phải được giữ nguyên. Thiết kế nào đúng nhất?',
+  options: [
+    'Dùng PUT với body chỉ có số điện thoại; server tự hiểu các trường thiếu là giữ nguyên',
+    'Dùng PATCH để cập nhật riêng số điện thoại, với quy tắc rõ ràng cho trường bị bỏ qua',
+    'Dùng GET rồi ghi số điện thoại vào query string để tránh gửi body',
+    'Dùng POST tạo khách hàng mới có cùng ID rồi hy vọng DB thay bản ghi cũ'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: PATCH với quy tắc cập nhật từng phần được mô tả rõ.** PATCH biểu diễn thay đổi trên một tài nguyên; trường không được gửi có thể được giữ nguyên theo định dạng patch mà API chọn.
+
+### Vì sao đúng
+Client gửi {{PATCH /customers/42}} với phần thay đổi số điện thoại. Server xác thực người dùng, kiểm tra dữ liệu, chỉ cập nhật trường được nêu và trả representation mới hoặc 204. Hợp đồng phải nói rõ cách biểu diễn giá trị null: trong JSON Merge Patch, null thường có nghĩa xóa trường, còn trường bị bỏ qua nghĩa là không đổi.
+
+### Vì sao các phương án còn lại sai
+- **PUT với body một trường**: PUT thường biểu diễn thay thế toàn bộ trạng thái của tài nguyên. Body thiếu tên và địa chỉ có thể khiến chúng bị xóa hoặc đặt mặc định; không nên dựa vào một quy ước ngầm trái với ý nghĩa thay thế.
+- **GET ghi query**: GET là safe và query string thường xuất hiện trong log, lịch sử trình duyệt hoặc cache. Nó không thích hợp cho thay đổi dữ liệu cá nhân.
+- **POST tạo cùng ID**: POST thường tạo hoặc xử lý tài nguyên theo contract riêng; ghi đè ngầm gây xung đột và có thể tạo bản ghi trùng.
+
+> Senior tip: PUT có thể được retry an toàn về ngữ nghĩa khi cùng một representation được gửi lại; PATCH không mặc nhiên idempotent vì mọi thứ phụ thuộc patch document. Thiết kế retry dựa trên contract cụ thể, không chỉ dựa vào tên method.`
+},
+{
+  id: 'qz-api-029',
+  topic: 'api',
+  q: 'Một endpoint danh sách cho phép {{GET /events?size=5000000}}. Sau khi một client gửi giá trị này, heap và thời gian truy vấn tăng vọt. Cách sửa nào xử lý đúng ở phía API?',
+  options: [
+    'Áp giới hạn size tối đa ở server, ví dụ 100, và trả lỗi validation rõ ràng hoặc giới hạn theo contract',
+    'Tin client sẽ tự gửi size nhỏ hơn sau khi nhận cảnh báo trong tài liệu',
+    'Tăng heap cho mọi instance để request lớn luôn thành công',
+    'Cho phép mọi kích thước nhưng chỉ trả 100 phần tử mà không nói cho client biết'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: áp mức tối đa ở server và công bố hành vi đó trong contract.** Client không đáng tin để bảo vệ tài nguyên của server; giới hạn phải được thực thi tại nơi xử lý request.
+
+### Vì sao đúng
+Server đặt mặc định hợp lý và giới hạn trên, chẳng hạn {{size <= 100}}. Giá trị vượt mức có thể bị từ chối bằng lỗi validation, hoặc bị clamp xuống 100 nếu API công bố rõ cách làm. Trong Spring, cấu hình bộ phân giải {{Pageable}} để có maximum page size; chỉ đặt {{@PageableDefault}} là đặt giá trị mặc định, không phải giới hạn tối đa.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ cảnh báo client**: client cũ, lỗi lập trình hoặc người dùng độc hại vẫn gửi giá trị lớn; tài liệu không phải biện pháp bảo vệ tài nguyên.
+- **Chỉ tăng heap**: mỗi request vẫn có thể cấp phát rất nhiều object và tạo áp lực lên GC, database, rồi làm ảnh hưởng mọi request khác.
+- **Trả 100 nhưng không nói**: server che giấu việc đã áp giới hạn nên client có thể tưởng dữ liệu đầy đủ; hành vi mơ hồ khó phân trang và khó debug.
+
+> Senior tip: giới hạn số dòng chưa đủ nếu mỗi dòng chứa payload lớn hoặc query không có index. Theo dõi độ trễ theo kích thước trang và đặt giới hạn dựa trên tải DB thực tế.`
+},
+{
+  id: 'qz-api-030',
+  topic: 'api',
+  q: 'Hai team cùng sửa API: team server đổi schema response còn team Android dùng OpenAPI để sinh client. Lỗi chỉ bị phát hiện sau khi deploy vì mô tả API đã cũ. Quy trình nào giúp chặn vấn đề sớm nhất?',
+  options: [
+    'Chỉ dựa vào Swagger UI; nếu trang mở được thì response thực tế chắc chắn khớp',
+    'Tắt kiểm tra schema để các team triển khai độc lập',
+    'Cập nhật OpenAPI như hợp đồng có version và chạy kiểm tra tương thích trong CI cùng contract test',
+    'Sinh lại client Android sau mỗi lần deploy production, không cần review thay đổi'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: quản lý OpenAPI như hợp đồng có version, kiểm tra thay đổi trong CI và xác minh hành vi bằng contract test.** OpenAPI mô tả đường dẫn, method, schema, status code và bảo mật; nó giúp các team thống nhất trước khi tích hợp.
+
+### Vì sao đúng
+CI có thể so sánh spec mới với spec đã phát hành để phát hiện thay đổi có nguy cơ phá client, chẳng hạn xóa field bắt buộc. Contract test tiếp tục kiểm tra server thật có trả đúng schema và status đã hứa hay không. Client được sinh từ spec mới chỉ đáng tin khi spec và runtime đồng bộ.
+
+### Vì sao các phương án còn lại sai
+- **Swagger UI mở được**: trang có thể render spec hợp lệ nhưng spec vẫn sai hoặc đã cũ; UI không tự đối chiếu mọi response production.
+- **Tắt kiểm tra**: giúp thay đổi lọt qua nhanh hơn chứ không giảm rủi ro; lỗi được chuyển sang người dùng.
+- **Sinh client sau deploy**: client mới có thể phản ánh thay đổi, nhưng client đã phát hành vẫn có thể hỏng; kiểm tra quá muộn để bảo vệ họ.
+
+> Senior tip: gắn spec với artifact build và phát hành cùng phiên bản service. Kiểm tra schema bổ sung rất hữu ích, nhưng vẫn cần test các quy tắc nghiệp vụ mà OpenAPI không thể biểu diễn đầy đủ.`
+},
+{
+  id: 'qz-api-031',
+  topic: 'api',
+  q: 'Hai nhân viên cùng mở hồ sơ phiên bản 7. Người thứ nhất lưu thành phiên bản 8; vài giây sau người thứ hai ghi dữ liệu cũ lên và vô tình xóa thay đổi mới. API nên dùng cơ chế HTTP nào để phát hiện lần ghi cũ?',
+  options: [
+    'Trả 429 Too Many Requests cho lần ghi thứ hai',
+    'Dùng ETag phiên bản hiện tại và yêu cầu client gửi If-Match khi cập nhật; trả 412 nếu giá trị không còn khớp',
+    'Luôn trả 200 rồi ghi đè, vì server không thể biết dữ liệu nào mới hơn',
+    'Dùng Retry-After để client thử lại cùng payload cũ'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: ETag kết hợp If-Match; nếu điều kiện không còn đúng thì trả 412 Precondition Failed.** Đây là optimistic concurrency, tức phát hiện xung đột khi ghi mà không khóa hồ sơ trong suốt thời gian người dùng chỉnh sửa.
+
+### Vì sao đúng
+GET trả {{ETag: "v7"}}. Khi lưu, client gửi {{If-Match: "v7"}}. Server chỉ cập nhật nếu phiên bản hiện tại vẫn là v7; nếu đã thành v8, điều kiện sai nên trả 412 và client tải lại để hợp nhất thay đổi. Phần so sánh và ghi cần nguyên tử ở DB, thường bằng câu lệnh cập nhật có điều kiện trên version.
+
+### Vì sao các phương án còn lại sai
+- **429**: dùng cho vượt giới hạn request, không phải xung đột phiên bản.
+- **Ghi đè và trả 200**: đây chính là hành vi gây mất cập nhật; mã thành công che giấu xung đột.
+- **Retry-After**: chỉ gợi ý thời gian chờ trước khi retry, không làm payload cũ trở nên mới hoặc giải quyết xung đột dữ liệu.
+
+> Senior tip: 412 phù hợp khi một HTTP precondition như If-Match thất bại; 409 thường dùng cho xung đột trạng thái nghiệp vụ không biểu diễn bằng precondition. Đừng tự động retry lần ghi bị xung đột mà chưa hợp nhất dữ liệu.`
+},
+{
+  id: 'qz-api-032',
+  topic: 'api',
+  q: 'Một client gửi {{Accept: application/xml}} tới endpoint chỉ tạo được response JSON. Body request là JSON hợp lệ và Content-Type cũng đúng. Mã trạng thái nào diễn tả đúng việc server không thể cung cấp định dạng client yêu cầu?',
+  options: [
+    '406 Not Acceptable',
+    '415 Unsupported Media Type',
+    '413 Content Too Large',
+    '401 Unauthorized'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: 406 Not Acceptable.** Header Accept nói client muốn nhận định dạng nào; server không có representation phù hợp để trả theo yêu cầu này.
+
+### Vì sao đúng
+Trong tình huống này request body là JSON hợp lệ và {{Content-Type}} mô tả đúng body. Không khớp nằm ở định dạng response được chỉ định bằng {{Accept: application/xml}}. API JSON-only có thể trả 406 và giải thích các media type được hỗ trợ, hoặc bỏ qua Accept chỉ khi contract của API quy định như vậy.
+
+### Vì sao các phương án còn lại sai
+- **415**: liên quan định dạng nội dung client gửi lên, tức Content-Type, không phải định dạng client muốn nhận.
+- **413**: dùng khi nội dung request vượt giới hạn kích thước; đề bài không có payload quá lớn.
+- **401**: chỉ ra client chưa xác thực hợp lệ; không liên quan khả năng thương lượng định dạng.
+
+> Senior tip: viết test riêng cho Accept và Content-Type. Các gateway đôi khi gom lỗi content negotiation thành 400, khiến client sửa nhầm body trong khi vấn đề thật là định dạng response.`
+},
+{
+  id: 'qz-api-033',
+  topic: 'api',
+  q: 'Web app gọi API từ origin khác. Sau khi thêm header Authorization, trình duyệt gửi OPTIONS trước request thật rồi báo lỗi CORS vì header này không được cho phép. Cách xử lý nào đúng?',
+  options: [
+    'Cho phép mọi origin, mọi header và credentials=true để tránh lỗi trên tất cả môi trường',
+    'Tắt kiểm tra xác thực cho API vì request OPTIONS không có token',
+    'Cấu hình CORS cho origin tin cậy, method và header cần thiết; xử lý preflight OPTIONS mà không coi đó là request nghiệp vụ',
+    'Bắt frontend gửi token trong query string thay cho Authorization'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: cấu hình CORS có giới hạn và cho phép preflight OPTIONS.** CORS là cơ chế của trình duyệt kiểm soát trang web origin nào được đọc response; nó không thay thế xác thực hay phân quyền API.
+
+### Vì sao đúng
+Với một số request cross-origin, browser gửi preflight OPTIONS trước, nêu method và header dự định dùng. Server cần trả các Access-Control-Allow-* phù hợp, trong đó cho phép Authorization nếu cần. Trong Spring Boot, cấu hình CORS tại lớp MVC/Security theo origin, method và header cụ thể; OPTIONS không được xử lý như lệnh tạo hay sửa dữ liệu.
+
+### Vì sao các phương án còn lại sai
+- **Mở mọi thứ kèm credentials**: wildcard origin không hợp lệ khi cho phép credentials theo chuẩn browser, và mở rộng như vậy làm tăng bề mặt truy cập.
+- **Tắt xác thực API**: preflight không mang token như request thật trong nhiều tình huống, nhưng điều đó không phải lý do bỏ bảo vệ endpoint nghiệp vụ.
+- **Đưa token vào URL**: URL thường bị ghi vào log, lịch sử và hệ thống phân tích; đổi vị trí token không giải quyết cấu hình CORS đúng cách.
+
+> Senior tip: CORS chủ yếu bảo vệ trình duyệt, không ngăn curl hay server khác gọi API. Luôn giữ authentication và authorization trên request thật, kể cả khi CORS đã cấu hình đúng.`
+},
+{
+  id: 'qz-api-034',
+  topic: 'api',
+  q: 'API {{GET /invoices/123}} nhận thêm {{ownerId}} từ query string. Người dùng đổi ownerId sang tài khoản khác và đọc được hóa đơn của người đó. Cách sửa cốt lõi nào ngăn lỗi này?',
+  options: [
+    'Chỉ dựa vào ownerId do client gửi vì client đã đăng nhập',
+    'Ẩn invoice ID bằng UUID dài hơn để người dùng không đoán được',
+    'Kiểm tra quyền ở giao diện rồi vẫn trả dữ liệu đầy đủ từ API',
+    'Lấy danh tính từ principal đã xác thực và kiểm tra quyền sở hữu hoặc quyền truy cập trên từng hóa đơn ở server'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: quyết định quyền truy cập ở server dựa trên principal đã xác thực và tài nguyên cụ thể.** Đây là kiểm soát truy cập ở cấp đối tượng: không chỉ hỏi người gọi là ai mà còn hỏi họ có quyền với hóa đơn này không.
+
+### Vì sao đúng
+Token sau khi xác thực cung cấp principal đáng tin cậy. Server truy vấn hóa đơn theo cả ID lẫn phạm vi quyền, ví dụ {{findByIdAndOwnerId(invoiceId, principalId)}}, hoặc kiểm tra quan hệ quyền trước khi trả dữ liệu. Quy tắc này phải áp dụng cho từng thao tác đọc, sửa và xóa, không chỉ ở màn hình frontend.
+
+### Vì sao các phương án còn lại sai
+- **Tin ownerId từ query**: người dùng kiểm soát query string nên có thể thay nó; đã đăng nhập không chứng minh họ sở hữu mọi tài khoản.
+- **UUID khó đoán**: giảm khả năng đoán ID nhưng không phải kiểm soát quyền. ID bị lộ qua log, link hoặc email vẫn có thể bị dùng.
+- **Chỉ kiểm tra giao diện**: người dùng có thể gọi API trực tiếp và bỏ qua UI; server vẫn đang tiết lộ dữ liệu.
+
+> Senior tip: thống nhất phản hồi 403 hoặc 404 theo chính sách che giấu sự tồn tại của tài nguyên, nhưng luôn giữ kiểm tra quyền ở backend. Viết test với hai principal và cùng một invoice ID để bắt lỗi truy cập chéo.`
+},
+{
+  id: 'qz-api-035',
+  topic: 'api',
+  multi: true,
+  q: 'API có nhiều client cũ đang chạy. Nếu chỉ xét các thay đổi thông thường ít có nguy cơ phá client hơn, thay đổi nào phù hợp? (Chọn 2)',
+  options: [
+    'Thêm một field response không bắt buộc, không làm đổi ý nghĩa các field hiện có',
+    'Đổi tên field {{customerName}} thành {{name}} và ngừng trả field cũ',
+    'Thêm một endpoint mới mà client cũ không cần gọi',
+    'Đổi kiểu {{amount}} từ số nguyên sang chuỗi có đơn vị tiền tệ'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: thêm field response tùy chọn và thêm endpoint mới độc lập.** Hai thay đổi này thường giữ nguyên hợp đồng mà client cũ đang dùng, miễn là client xử lý JSON theo cách tương thích.
+
+### Vì sao đúng
+- **Field response tùy chọn**: client cũ thường tiếp tục đọc các field quen thuộc và bỏ qua field lạ. Field mới không được biến thành bắt buộc trong request hoặc làm thay đổi ý nghĩa dữ liệu cũ.
+- **Endpoint mới**: client cũ không gọi đường dẫn mới nên hành vi hiện tại không đổi; client mới có thể dùng chức năng bổ sung.
+
+### Vì sao các phương án còn lại sai
+- **Đổi tên và xóa field**: client cũ còn đọc {{customerName}} sẽ nhận thiếu dữ liệu hoặc lỗi nếu field là bắt buộc. Nên thêm field mới, chạy song song một thời gian rồi mới deprecate field cũ.
+- **Đổi kiểu amount**: JSON number và string là hai kiểu khác nhau. Client sinh từ schema hoặc parser nghiêm ngặt có thể không deserialize được; thêm đơn vị vào chuỗi còn trộn dữ liệu với cách trình bày.
+
+> Senior tip: additive không đồng nghĩa luôn an toàn: một số client từ chối field không biết hoặc có switch exhaustive trên enum. Kiểm tra tập client thật và contract test trước thay đổi có ảnh hưởng rộng.`
+},
+{
+  id: 'qz-api-036',
+  topic: 'api',
+  multi: true,
+  q: 'Team muốn OpenAPI thực sự giúp frontend tích hợp endpoint thanh toán mới, thay vì chỉ tạo tài liệu nhìn đẹp. Hai việc nào nên làm? (Chọn 2)',
+  options: [
+    'Khai báo schema request/response, field required, status code lỗi và cơ chế bảo mật đúng với hành vi thật',
+    'Ghi mật khẩu production vào ví dụ để frontend có thể thử gọi API ngay',
+    'Coi việc sinh OpenAPI thành công là bằng chứng runtime đã validate mọi request',
+    'Dùng spec trong CI để sinh tài liệu/client hoặc kiểm tra hợp đồng và đối chiếu với response thực tế'
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: mô tả hợp đồng chính xác và dùng spec trong quy trình tích hợp/kiểm tra.** OpenAPI hữu ích khi các trường, kiểu dữ liệu, status code và yêu cầu xác thực phản ánh đúng những gì service thật làm.
+
+### Vì sao đúng
+- **Khai báo schema và lỗi**: frontend biết field nào bắt buộc, response nào có thể nhận và cách xác thực. Mô tả security scheme giúp công cụ hiển thị đúng cách gửi credential mà không cần lộ bí mật.
+- **Dùng spec trong CI**: có thể sinh tài liệu/client, kiểm tra diff tương thích và chạy contract test giữa client với server. Cần xác minh runtime vì spec chỉ là mô tả nếu không được nối với kiểm thử.
+
+### Vì sao các phương án còn lại sai
+- **Đưa mật khẩu production vào ví dụ**: bí mật có thể bị lộ qua repository, tài liệu, log hoặc client. Ví dụ nên dùng dữ liệu giả và hướng dẫn lấy token an toàn.
+- **Sinh spec thành công đồng nghĩa runtime đúng**: công cụ có thể sinh tài liệu từ mô tả sai; việc compile spec không chứng minh controller trả đúng status hay schema.
+
+> Senior tip: ví dụ request/response nên đủ thực tế để frontend dùng, nhưng không chứa thông tin cá nhân hay credential. Hãy xem spec như API công khai có version, không phải file phụ để sinh Swagger UI.`
+},
+{
+  id: 'qz-api-037',
+  topic: 'api',
+  multi: true,
+  q: 'Công ty chuẩn bị ngừng API v1 nhưng chưa biết còn bao nhiêu client đang dùng. Những bước nào giúp chuyển client sang v2 an toàn hơn? (Chọn 2)',
+  options: [
+    'Tắt v1 ngay khi v2 deploy để buộc mọi client cập nhật cùng lúc',
+    'Vận hành v1 và v2 song song trong giai đoạn chuyển đổi, đồng thời đo traffic theo client/endpoint',
+    'Giữ nguyên v1 mãi mãi nhưng không thông báo lịch hỗ trợ hoặc chi phí vận hành',
+    'Thông báo kế hoạch ngừng hỗ trợ và thời điểm dự kiến bằng tài liệu cùng header deprecation/sunset phù hợp'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: duy trì hai phiên bản trong giai đoạn chuyển đổi, đo mức sử dụng và thông báo kế hoạch ngừng v1 rõ ràng.** Việc chuyển đổi là quá trình phối hợp với chủ sở hữu client, không chỉ là đổi route trên server.
+
+### Vì sao đúng
+- **Chạy song song và đo traffic**: server có thể tiếp tục phục vụ client cũ trong khi dashboard/log cho biết ai còn gọi v1. Dữ liệu thực tế giúp liên hệ đúng team và đánh giá mức sẵn sàng.
+- **Thông báo deprecation/sunset**: tài liệu và header như {{Deprecation}} hoặc {{Sunset}} có thể chỉ ra trạng thái và thời điểm dự kiến. Client cần đủ thời gian nâng cấp và kiểm thử.
+
+### Vì sao các phương án còn lại sai
+- **Tắt ngay**: client cũ có thể lỗi production trước khi chủ sở hữu biết hoặc có thời gian triển khai v2.
+- **Giữ mãi không kế hoạch**: tránh sự cố trước mắt nhưng làm tăng chi phí bảo trì và khiến cam kết hỗ trợ không rõ ràng; nó không phải chiến lược chuyển đổi.
+
+> Senior tip: ngừng phiên bản chỉ khi metrics cho thấy traffic đã về 0 hoặc có ngoại lệ được phê duyệt. Header thông báo không tự di chuyển client; cần liên hệ trực tiếp với đối tác quan trọng và có ngày rollback.`
+},
+{
+  id: 'qz-api-038',
+  topic: 'api',
+  multi: true,
+  q: 'API chạy trên 8 pod sau load balancer, giới hạn mỗi API key là 100 request/phút. Khi bộ đếm đặt trong bộ nhớ từng pod, một client có thể vượt quota. Hai thay đổi nào khắc phục đúng vấn đề thiết kế? (Chọn 2)',
+  options: [
+    'Dùng bộ đếm cục bộ trên mỗi pod nhưng đặt quota 100 cho từng pod',
+    'Dùng kho dùng chung như Redis với thao tác tăng/kiểm tra quota nguyên tử giữa các pod',
+    'Dùng khóa rate limit có phạm vi đúng, chẳng hạn API key và cửa sổ thời gian, thay vì một bộ đếm chung cho mọi client',
+    'Bật sticky session để client luôn về một pod và không cần giới hạn trong kho dùng chung'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: chia sẻ bộ đếm có cập nhật nguyên tử và định danh quota theo client/cửa sổ phù hợp.** Bộ nhớ của một pod không được chia sẻ với các pod khác, nên mỗi instance tự cho phép quota riêng.
+
+### Vì sao đúng
+- **Kho dùng chung và nguyên tử**: Redis hoặc một kho tương đương cho mọi pod cùng nhìn thấy trạng thái. Tăng bộ đếm và quyết định cho phép phải là một thao tác nguyên tử, thường dùng script/primitive phù hợp, để hai request đồng thời không cùng vượt giới hạn.
+- **Key theo API key và cửa sổ**: mỗi client có quota riêng. Cửa sổ có thể là fixed, sliding hoặc token bucket; chọn theo yêu cầu burst và độ chính xác, đồng thời đặt TTL để dọn dữ liệu cũ.
+
+### Vì sao các phương án còn lại sai
+- **Quota cục bộ 100 mỗi pod**: request phân tán qua 8 pod có thể đạt gần 800 mỗi phút, không phải 100.
+- **Sticky session**: load balancer có thể đổi pod khi deploy hoặc lỗi; nếu client đổi đường đi, bộ đếm khác lại cho thêm quota. Nó cũng làm giảm khả năng cân bằng tải.
+
+> Senior tip: xác định trước hành vi khi Redis lỗi: fail-open bảo vệ tính sẵn sàng nhưng có thể vượt quota, fail-closed bảo vệ quota nhưng chặn request hợp lệ. Ghi rõ lựa chọn theo mức độ nhạy cảm của API.`
+},
+{
+  id: 'qz-api-039',
+  topic: 'api',
+  multi: true,
+  q: 'Client gọi {{POST /payments}} với Idempotency-Key khi mạng timeout rồi gửi lại request. Có thể hai request đến đồng thời. Những biện pháp nào cần có để tránh thu tiền hai lần một cách đáng tin cậy? (Chọn 2)',
+  options: [
+    'Chỉ lưu key sau khi charge hoàn tất; nếu hai request chạy cùng lúc thì cả hai vẫn có thể charge trước khi lưu',
+    'Ràng buộc duy nhất key trong phạm vi phù hợp và claim key nguyên tử trước khi thực hiện nghiệp vụ',
+    'Nếu key trùng thì luôn trả 200, kể cả request mới gửi payload khác với request ban đầu',
+    'Gắn key với fingerprint của request; cùng key nhưng nội dung khác bị từ chối, còn request lặp cùng nội dung nhận lại kết quả đã lưu'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: claim key nguyên tử và gắn key với nội dung request để phát hiện dùng lại sai.** Chỉ kiểm tra key bằng thao tác đọc rồi mới ghi là không đủ nếu hai request chạy đồng thời.
+
+### Vì sao đúng
+- **Ràng buộc duy nhất và claim nguyên tử**: unique constraint trong DB hoặc thao tác atomic ở kho key chọn ra đúng một request thắng. Request còn lại chờ kết quả hoặc nhận trạng thái đang xử lý thay vì thực hiện charge lần nữa.
+- **Fingerprint và lưu kết quả**: server so sánh nội dung quan trọng như account, amount, currency. Cùng key/cùng request có thể nhận lại response đã lưu; cùng key nhưng payload khác phải bị từ chối, thường bằng 409.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ ghi key sau charge**: hai request đồng thời đều có thể thấy chưa có key và cùng gọi payment provider trước lúc một request lưu key.
+- **Trả 200 cho payload khác**: client có thể tưởng khoản tiền mới đã được xử lý, trong khi server trả kết quả của request cũ; điều này che giấu lỗi nghiêm trọng.
+
+> Senior tip: thiết kế trạng thái key như IN_PROGRESS, SUCCEEDED và FAILED, có thời hạn lưu phù hợp. Nếu payment provider cũng hỗ trợ idempotency, truyền cùng một định danh xuyên suốt để giảm rủi ro khi service timeout giữa các bước.`
+},
+{
+  id: 'qz-api-040',
+  topic: 'api',
+  q: 'Một client gọi {{GET /products?category=rare}}. Không có sản phẩm nào thuộc danh mục đó, nhưng bộ lọc hợp lệ và endpoint danh sách hoạt động bình thường. Response nào hợp lý nhất?',
+  options: [
+    '404 Not Found vì kết quả truy vấn có zero phần tử',
+    '200 OK với danh sách rỗng và metadata phân trang nhất quán',
+    '204 No Content trong mọi trường hợp danh sách không có phần tử',
+    '500 Internal Server Error vì server không tìm thấy dữ liệu'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: 200 OK với collection rỗng.** Tài nguyên collection đã tồn tại và truy vấn hợp lệ; kết quả không có phần tử không có nghĩa endpoint hoặc collection bị mất.
+
+### Vì sao đúng
+Response có thể là {{200}} với {{items: []}}, {{page: 0}} và metadata nhất quán theo hợp đồng. Client vẫn nhận được cấu trúc mong đợi và có thể hiển thị trạng thái không có sản phẩm. Nếu API không trả metadata, body là mảng rỗng cũng phù hợp.
+
+### Vì sao các phương án còn lại sai
+- **404 vì zero kết quả**: 404 phù hợp hơn khi client yêu cầu một tài nguyên riêng không tồn tại, ví dụ {{GET /products/42}}. Nó không cần biểu thị collection filter rỗng.
+- **204 cho mọi danh sách rỗng**: 204 không có body, nên client không thể nhận mảng rỗng hay metadata. Dùng nó chỉ khi contract chủ động chọn response không body.
+- **500**: 500 là lỗi xử lý ngoài dự kiến phía server; không có kết quả phù hợp là trạng thái hợp lệ của truy vấn.
+
+> Senior tip: thống nhất response cho danh sách rỗng và tài nguyên đơn không tồn tại. Sự nhất quán giúp frontend tránh phải đoán liệu 404 là dữ liệu rỗng hay lỗi route.`
+},
 );

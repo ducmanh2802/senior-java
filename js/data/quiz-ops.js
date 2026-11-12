@@ -2832,6 +2832,350 @@ Xử lý lỗi       -> để message hiện lại (hoặc gửi DLQ sau maxRece
 - Không phải cùng khái niệm.
 
 > Senior tip: RPO thấp → replication/sync backup; RTO thấp → failover tự động, runbook, chaos testing. Đo bằng drill định kỳ.`
-}
+},
+{
+  id: 'qz-security-023', topic: 'security',
+  q: 'API cập nhật hồ sơ nhận JSON rồi bind trực tiếp vào JPA entity. Một người dùng gửi thêm trường {{isAdmin: true}} và sau đó có quyền quản trị. Cách sửa gốc rễ nào phù hợp nhất?',
+  options: [
+    'Ẩn trường isAdmin khỏi giao diện và kiểm tra nó bằng JavaScript trước khi gửi',
+    'Nhận một DTO chỉ chứa các trường người dùng được phép sửa, ánh xạ rõ ràng sang entity và chỉ đổi quyền qua luồng quản trị có kiểm tra riêng',
+    'Đổi tên trường isAdmin thành adminFlag để người dùng khó đoán',
+    'Mã hoá JSON ở client trước khi gửi để server biết request là hợp lệ'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** đây là lỗi **mass assignment**: server tự động gán cả thuộc tính nhạy cảm từ request vào entity. Nhận DTO có allowlist trường được phép sửa và cập nhật quyền bằng luồng riêng ở server.
 
+### Cơ chế và cách sửa
+Entity thường có nhiều trường hơn form hồ sơ: ngoài tên và số điện thoại còn có role, trạng thái tài khoản hoặc tenant. Nếu framework bind JSON thẳng vào entity, client có thể tự thêm trường không hiển thị trên giao diện. Tạo DTO như {{UpdateProfileRequest}} chỉ có {{displayName}} và {{phone}}, kiểm tra hợp lệ, rồi gán từng trường sang entity. Không lấy quyền từ body mà lấy từ danh tính đã xác thực và policy phía server.
+
+### Vì sao các phương án còn lại sai
+- **Ẩn trường và kiểm tra JavaScript**: người gọi có thể gửi HTTP request tự tạo, bỏ qua hoàn toàn giao diện.
+- **Đổi tên trường**: tên khó đoán không phải ranh giới bảo mật; client có thể đọc schema hoặc thử nhiều tên.
+- **Mã hoá ở client**: nếu server vẫn tin giá trị sau khi giải mã thì kẻ tấn công cũng có thể tạo request hợp lệ; mã hoá không thay thế phân quyền.
+
+> Senior tip: rà soát mọi API bind entity trực tiếp, nhất là các trường như role, ownerId, tenantId, status và giá tiền; viết test gửi thêm field nhạy cảm và xác nhận dữ liệu đó không đổi.`
+},
+{
+  id: 'qz-security-024', topic: 'security',
+  q: 'Một endpoint tìm đơn hàng nối giá trị email người dùng nhập thẳng vào câu {{WHERE email = ...}} trong native SQL. Đợt review yêu cầu cách sửa vừa an toàn vừa giữ nguyên chức năng tìm kiếm. Bạn chọn cách nào?',
+  options: [
+    'Dùng bind parameter cho mọi giá trị dữ liệu, chẳng hạn {{WHERE email = :email}}, và truyền email qua API parameter của repository',
+    'Xoá dấu nháy đơn khỏi email bằng regex rồi tiếp tục nối chuỗi',
+    'Chặn các từ khoá {{SELECT}}, {{UNION}} và {{--}} ở đầu vào',
+    'Mã hoá email bằng Base64 trước khi nối vào câu SQL'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** bind parameter để database coi email là **dữ liệu**, không phải một phần cú pháp SQL. Regex blacklist và biến đổi chuỗi không tạo được ranh giới an toàn giữa lệnh và giá trị.
+
+### Cơ chế
+Với prepared statement, ứng dụng gửi câu SQL có placeholder trước, rồi driver truyền giá trị riêng. Ví dụ trong Spring Data JPA có thể dùng {{@Query("select o from Order o where o.email = :email")}} và {{@Param("email")}}; với JDBC dùng {{PreparedStatement}}. Database không diễn giải nội dung email thành toán tử hay câu lệnh.
+
+Nếu cần tìm gần đúng, vẫn bind cả pattern như giá trị: tạo chuỗi pattern ở Java rồi truyền vào placeholder. Với tên cột hoặc hướng sắp xếp, placeholder không thay được định danh SQL; trường hợp đó cần ánh xạ từ lựa chọn logic sang whitelist cố định.
+
+### Vì sao các phương án còn lại sai
+- **Xoá dấu nháy đơn**: SQL injection không chỉ dựa vào dấu nháy; kiểu dữ liệu, encoding và cú pháp database khác nhau khiến bộ lọc dễ sai.
+- **Blacklist từ khoá**: có thể vượt qua bằng comment, chữ hoa/thường hoặc cú pháp tương đương; hơn nữa từ như SELECT có thể xuất hiện hợp lệ trong dữ liệu.
+- **Base64**: chỉ đổi cách biểu diễn; khi database nhận chuỗi vẫn phải decode hoặc so sánh và nội dung không được tách khỏi cú pháp SQL.
+
+> Senior tip: kiểm tra cả native query, query dựng động và câu lệnh trong batch job; test với input chứa dấu nháy chỉ là kiểm tra bổ sung, không thay thế việc bind parameter.`
+},
+{
+  id: 'qz-security-025', topic: 'security',
+  q: 'Sau khi nâng lên Spring Security 6, cấu hình có {{requestMatchers("/admin/**").hasRole("ADMIN")}} nhưng mọi người dùng đã đăng nhập vẫn truy cập được URL quản trị. Cấu hình matcher nên được tổ chức thế nào?',
+  options: [
+    'Đặt {{anyRequest().authenticated()}} trước để Spring kiểm tra mọi request rồi mới xét quyền admin',
+    'Tạo một {{SecurityFilterChain}} cho từng URL, không cần thứ tự hay matcher phạm vi',
+    'Bỏ kiểm tra role và chỉ dựa vào việc URL bắt đầu bằng /admin',
+    'Đặt rule cụ thể cho {{/admin/**}} trước rule tổng quát, dùng {{hasRole("ADMIN")}}, rồi để {{anyRequest()}} làm rule cuối'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** các authorization rule được xét theo thứ tự và rule đầu tiên khớp sẽ quyết định quyền. Đặt matcher cụ thể trước, rule mặc định sau cùng; rule tổng quát ở đầu có thể bắt request trước khi tới kiểm tra ADMIN.
+
+### Ví dụ cấu hình
+~~~java
+http.authorizeHttpRequests(auth -> auth
+    .requestMatchers("/admin/**").hasRole("ADMIN")
+    .requestMatchers("/health").permitAll()
+    .anyRequest().authenticated());
+~~~
+{{hasRole("ADMIN")}} kiểm tra authority theo quy ước {{ROLE_ADMIN}}. Từ Spring Security 6, cấu hình dùng {{authorizeHttpRequests}} và {{requestMatchers}}; phải đọc cấu hình đầy đủ và xem matcher nào thực sự khớp URL, không chỉ nhìn một dòng.
+
+### Vì sao các phương án còn lại sai
+- **Rule tổng quát trước**: {{anyRequest().authenticated()}} bắt mọi URL, nên user đã đăng nhập qua được mà không đi tới rule đòi ADMIN.
+- **Một chain cho mỗi URL không thứ tự**: nhiều {{SecurityFilterChain}} cũng được xét theo thứ tự; tạo nhiều chain tùy tiện làm tăng nguy cơ khoảng trống hoặc chain rộng bắt trước.
+- **Dựa vào tiền tố URL**: URL không tự mang thông tin danh tính hay vai trò; chỉ so chuỗi đường dẫn không xác minh người gọi.
+
+> Senior tip: thêm test tích hợp cho ba trường hợp: anonymous bị từ chối, user thường bị từ chối ở admin, ADMIN được phép; đồng thời kiểm tra fallback rule không vô tình mở endpoint mới.`
+},
+{
+  id: 'qz-security-026', topic: 'security',
+  q: 'Luồng quên mật khẩu gửi một link khôi phục vẫn dùng được sau nhiều ngày và có thể mở lại nhiều lần. Thiết kế token nào giảm rủi ro tốt nhất?',
+  options: [
+    'Tạo token tuần tự từ userId để bộ phận hỗ trợ có thể đọc lại khi khách cần',
+    'Dùng JWT sống 30 ngày và không lưu trạng thái vì token có chữ ký',
+    'Tạo token ngẫu nhiên đủ mạnh, chỉ lưu hash ở server, giới hạn thời gian, dùng một lần rồi vô hiệu hoá; sau đổi mật khẩu thì thu hồi các phiên phù hợp',
+    'Dùng email người dùng làm token và mã hoá bằng Base64'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** token khôi phục mật khẩu là credential tạm thời, nên cần khó đoán, ngắn hạn và chỉ dùng một lần. Lưu hash giúp giảm thiệt hại nếu bảng token bị đọc trái phép.
+
+### Luồng an toàn
+Server sinh số ngẫu nhiên mật mã có entropy cao, gửi token gốc qua email HTTPS và lưu hash token cùng user, hạn dùng và trạng thái đã dùng. Khi nhận yêu cầu, hash token gửi lên, so sánh an toàn, kiểm tra hạn và consume token trong một transaction để hai request đồng thời không dùng lại được. Sau đổi mật khẩu, thu hồi các phiên hoặc refresh token theo chính sách hệ thống. Phản hồi yêu cầu quên mật khẩu nên không tiết lộ email có tồn tại hay không.
+
+### Vì sao các phương án còn lại sai
+- **Token tuần tự từ userId**: dễ đoán và tiết lộ định danh; người khác có thể tự tạo link.
+- **JWT dài hạn không trạng thái**: chữ ký chỉ xác nhận token do server tạo, không tự làm token hết hiệu lực sau lần dùng đầu; thời gian dài tăng hậu quả khi link bị lộ.
+- **Email và Base64**: email công khai hoặc dễ biết, còn Base64 chỉ là encoding, không phải nguồn ngẫu nhiên hay cơ chế bảo mật.
+
+> Senior tip: tránh ghi token khôi phục vào access log, analytics và hệ thống theo dõi lỗi; đặt chính sách referrer phù hợp trên trang đổi mật khẩu để URL không bị gửi sang site bên thứ ba.`
+},
+{
+  id: 'qz-security-027', topic: 'security',
+  q: 'SPA dùng OpenID Connect đăng nhập, nhưng backend nhận {{id_token}} rồi chấp nhận nó như access token cho API đơn hàng. Cách sửa nào đúng nhất?',
+  options: [
+    'Tiếp tục dùng id_token nhưng chỉ kiểm tra trường {{sub}}',
+    'API phải nhận access token dành cho chính API đó và kiểm tra chữ ký, issuer, thời hạn, audience cùng scope/authority cần thiết',
+    'Chấp nhận mọi token do nhà cung cấp OIDC ký vì cùng một issuer đã đăng nhập người dùng',
+    'Giải mã JWT rồi tin trường {{role}} mà không cần xác minh chữ ký'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{id_token}} cho client biết người dùng đã được xác thực; {{access_token}} được cấp để gọi resource server. Backend cần access token có audience phù hợp và phải xác minh token, không chỉ đọc nội dung.
+
+### Khác nhau thế nào
+OIDC xây trên OAuth 2.0. ID token là thông tin xác thực phiên đăng nhập cho relying party/client, thường có audience là client_id. Access token mang quyền truy cập API; audience thường là API hoặc resource server. Nếu API nhận ID token mà không kiểm tra audience, một token được cấp cho ứng dụng khác có thể bị dùng sai mục đích.
+
+Resource server phải xác minh chữ ký bằng key tin cậy, thời hạn và issuer; sau đó kiểm tra audience và scope/authority trước thao tác. Không nên coi mọi claim trong token là đáng tin trước khi hoàn tất xác minh.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ kiểm tra sub**: sub định danh user nhưng không chứng minh token còn hạn, do issuer mong muốn cấp, hay được cấp cho API này.
+- **Tin mọi token cùng issuer**: issuer có thể phát nhiều loại token với audience và mục đích khác nhau; issuer đúng không đồng nghĩa token dành cho resource server này.
+- **Chỉ decode role**: JWT payload thường chỉ được Base64URL-encode; người dùng có thể sửa nếu server không xác minh chữ ký.
+
+> Senior tip: cấu hình Spring Security resource server theo issuer và audience rõ ràng, rồi map scope thành authority; test cả token đúng chữ ký nhưng sai audience, vì đây là lỗi cấu hình thường bị bỏ sót.`
+},
+{
+  id: 'qz-security-028', topic: 'security',
+  q: 'Người dùng tải lên file ảnh đại diện. Một file có đuôi {{.jpg}} thực chất là nội dung thực thi và được lưu trong thư mục web có thể truy cập trực tiếp. Biện pháp nào giảm rủi ro đúng nhất?',
+  options: [
+    'Chỉ cho phép phần mở rộng theo allowlist, kiểm tra nội dung thực tế, tạo tên lưu mới ở server và lưu ngoài web root hoặc bucket private; giới hạn kích thước',
+    'Chỉ kiểm tra Content-Type do trình duyệt gửi vì trình duyệt tự xác định loại file',
+    'Đổi tên file thành UUID nhưng tiếp tục lưu trong thư mục web công khai và cho phép mọi loại nội dung',
+    'Quét virus một lần ở client rồi tin kết quả đó'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** tên file và Content-Type từ client đều không đáng tin. Cần kiểm tra allowlist và nội dung, lưu dưới tên do server tạo ở nơi không thực thi hoặc không public, đồng thời giới hạn tài nguyên.
+
+### Các lớp kiểm soát
+Đuôi file chỉ là nhãn, còn Content-Type là header do client gửi; cả hai có thể giả. Server nên cho phép đúng định dạng cần thiết, kiểm tra chữ ký/parse bằng thư viện phù hợp, cân nhắc decode rồi encode lại ảnh, đặt giới hạn kích thước và lưu tên ngẫu nhiên. Khi tải xuống, dùng Content-Type an toàn và header chống trình duyệt đoán kiểu. File không cần public nên được phân phối qua endpoint kiểm tra quyền hoặc URL tạm có giới hạn.
+
+### Vì sao các phương án còn lại sai
+- **Tin Content-Type**: người gửi tự đặt header, không chứng minh byte trong file là ảnh.
+- **Chỉ đổi tên UUID**: giảm đoán tên nhưng không chặn nội dung nguy hiểm hay việc server thực thi file trong thư mục public.
+- **Quét ở client**: có thể bị bỏ qua hoặc giả mạo; kiểm soát bắt buộc phải được thực hiện ở server.
+
+> Senior tip: thêm quota theo user và dọn file mồ côi; upload an toàn không chỉ chống thực thi mã mà còn chống làm đầy đĩa hoặc khiến thư viện giải mã ảnh tiêu thụ CPU/bộ nhớ bất thường.`
+},
+{
+  id: 'qz-security-029', topic: 'security',
+  q: 'Ứng dụng Spring Boot trên ECS cần gọi AWS S3 và đọc mật khẩu database. Hiện nhóm nhúng access key AWS và mật khẩu DB vào Docker image. Cách quản lý nào phù hợp nhất?',
+  options: [
+    'Mã hoá hai giá trị bằng Base64 trước khi build image',
+    'Đưa secret vào file trong image nhưng đổi tên file để người dùng không tìm ra',
+    'Dùng access key của root account và chỉ cấp cho task production',
+    'Dùng task role với quyền IAM tối thiểu cho S3; lấy mật khẩu DB từ AWS Secrets Manager qua quyền task được giới hạn, không ghi secret vào image hoặc log'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** image có thể được tải, lưu cache hoặc chia sẻ nên không được chứa credential. ECS task role cấp AWS credential tạm theo quyền tối thiểu; Secrets Manager quản lý secret ứng dụng như mật khẩu DB.
+
+### Hai loại thông tin khác nhau
+Task role là danh tính IAM của tiến trình trong task. SDK AWS lấy credential tạm từ môi trường ECS và tự làm mới; policy nên chỉ cho phép đúng bucket/prefix và đúng secret. Mật khẩu DB không phải IAM credential: lưu trong Secrets Manager, chỉ cho task role đọc secret cụ thể, truyền vào ứng dụng an toàn và có kế hoạch xoay vòng.
+
+### Vì sao các phương án còn lại sai
+- **Base64**: chỉ encoding, giải ngược dễ dàng; không bảo vệ secret trong image registry.
+- **Đổi tên file**: image layer vẫn chứa file và có thể bị kiểm tra; tên khó đoán không phải kiểm soát truy cập.
+- **Root access key**: quyền quá rộng, nguy cơ ảnh hưởng toàn tài khoản; task role và IAM role theo workload cho phép thu hẹp phạm vi, thu hồi và audit tốt hơn.
+
+> Senior tip: khi triển khai rotation mật khẩu DB, kiểm tra pool connection và khả năng ứng dụng tải secret mới; đổi secret ở kho nhưng không xử lý connection đang mở có thể gây lỗi đăng nhập sau đợt deploy.`
+},
+{
+  id: 'qz-security-030', topic: 'security',
+  q: 'Cluster Kubernetes mới đưa Spring Boot lên production. Pentest thấy endpoint {{/actuator/env}} và {{/actuator/heapdump}} truy cập được từ Internet, có thể lộ cấu hình và dữ liệu trong bộ nhớ. Cách xử lý nào đúng nhất?',
+  options: [
+    'Đổi tên các endpoint actuator thành đường dẫn khó đoán',
+    'Chỉ bật HTTPS; người ngoài đã mã hoá kết nối nên dữ liệu endpoint an toàn',
+    'Không public các endpoint chẩn đoán nhạy cảm; chỉ expose health cần thiết, giới hạn mạng và xác thực phù hợp, đồng thời rà soát secret trong cấu hình',
+    'Giữ nguyên vì actuator chỉ trả dữ liệu quan sát, không thay đổi trạng thái hệ thống'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** actuator là giao diện quản trị/quan sát có thể tiết lộ cấu hình, heap và dữ liệu nhạy cảm; không nên đưa các endpoint đó ra Internet. Chỉ expose tối thiểu và giới hạn bằng mạng cùng xác thực.
+
+### Vì sao nguy hiểm
+{{/actuator/env}} có thể làm lộ cấu hình hoặc giá trị secret tùy phiên bản và cấu hình hiển thị; heap dump có thể chứa token, password và dữ liệu người dùng trong bộ nhớ. HTTPS chỉ mã hoá kết nối, không ngăn người đã kết nối đọc nội dung. Kubernetes có thể tách management port/service khỏi ingress công khai, còn Spring Boot chỉ expose đúng endpoint cần thiết.
+
+### Vì sao các phương án còn lại sai
+- **Đổi tên URL**: scanner vẫn có thể tìm ra; endpoint còn tồn tại và vẫn thiếu kiểm soát truy cập.
+- **Chỉ bật HTTPS**: bảo vệ dữ liệu trên đường truyền, nhưng mọi client truy cập được vẫn có thể tải heap dump.
+- **Cho rằng chỉ quan sát**: dữ liệu chẩn đoán có thể nhạy cảm; một số endpoint actuator còn có khả năng thay đổi trạng thái nếu được bật.
+
+> Senior tip: xác nhận cấu hình hiệu lực sau khi ghép profile, biến môi trường và chart deploy; một endpoint được tắt ở local vẫn có thể bị mở lại bởi cấu hình production.`
+},
+{
+  id: 'qz-security-031', topic: 'security', multi: true,
+  q: 'Dịch vụ Java đang lưu mật khẩu bằng bcrypt nhưng muốn chuyển dần sang Argon2id mà không buộc toàn bộ người dùng đặt lại mật khẩu. Hai cách xử lý nào đúng? (Chọn 2)',
+  options: [
+    'Dùng {{DelegatingPasswordEncoder}} hoặc cơ chế tương đương để nhận diện định dạng hash cũ/mới, rồi xác minh mật khẩu bằng encoder phù hợp',
+    'Giải mã mọi hash bcrypt để lấy mật khẩu gốc rồi mã hoá lại hàng loạt',
+    'Đổi chuỗi hash trong database thành tiền tố Argon2id mà không tính lại từ mật khẩu',
+    'Sau khi xác minh đăng nhập thành công, kiểm tra {{upgradeEncoding}} và nếu cần thì hash mật khẩu vừa nhập bằng cấu hình mới rồi cập nhật',
+    'Dùng chung một salt cố định cho tất cả người dùng để việc chuyển đổi dễ hơn'
+  ],
+  answer: [0, 3],
+  explain: `**Tóm tắt:** hash mật khẩu một chiều nên không thể giải ngược bcrypt. Có thể giữ khả năng verify hash cũ, rồi khi user đăng nhập thành công thì hash lại mật khẩu họ vừa nhập bằng Argon2id và thay hash lưu trữ.
+
+### Cách chuyển dần
+{{DelegatingPasswordEncoder}} lưu định danh thuật toán cùng hash, thường dưới dạng tiền tố, để chọn encoder đúng khi kiểm tra. Sau khi {{matches(rawPassword, storedHash)}} trả về true, ứng dụng có thể gọi {{upgradeEncoding(storedHash)}}; nếu cấu hình cũ yếu hoặc dùng thuật toán cũ, hash lại raw password với encoder mới và cập nhật an toàn. Người dùng không phải cung cấp mật khẩu lần nữa và không cần giữ mật khẩu dạng rõ.
+
+### Vì sao các phương án còn lại sai
+- **Giải mã bcrypt**: bcrypt là hàm hash một chiều; chỉ có thể thử một mật khẩu ứng viên rồi so sánh.
+- **Đổi tiền tố**: tiền tố chỉ nói hash được tạo theo thuật toán nào; đổi nhãn không tính lại hash và sẽ làm xác minh thất bại hoặc tạo nhận định sai.
+- **Salt cố định**: làm các mật khẩu giống nhau tạo hash giống nhau và giúp tấn công bảng tra; mỗi mật khẩu cần salt ngẫu nhiên riêng, do encoder quản lý.
+
+> Senior tip: kiểm soát cập nhật hash đồng thời bằng optimistic locking hoặc câu lệnh update có điều kiện; nếu không, hai lần đăng nhập cùng lúc có thể ghi đè hash mới bằng kết quả cũ.`
+},
+{
+  id: 'qz-security-032', topic: 'security', multi: true,
+  q: 'API tạo URL ký trước cho khách upload hóa đơn lên S3. Một URL bị chia sẻ nhầm và người lạ tải lên file vào bucket. Hai điều chỉnh nào giới hạn rủi ro tốt nhất? (Chọn 2)',
+  options: [
+    'Bật quyền đọc công khai cho bucket để người dùng không cần đăng nhập khi kiểm tra file',
+    'Sinh URL cho đúng object key và HTTP method cần thiết, thời hạn ngắn; giới hạn principal có quyền ký vào prefix upload được phép',
+    'Dùng URL ký trước có thời hạn vài tháng để giảm số lần client xin URL mới',
+    'Giữ Block Public Access, xác minh quyền sở hữu object ở ứng dụng và kiểm tra file sau khi upload trước khi cho phép tải/ xử lý',
+    'Dùng tên object lấy nguyên từ client làm đường dẫn và quyền truy cập'
+  ],
+  answer: [1, 3],
+  explain: `**Tóm tắt:** URL ký trước là credential có quyền giới hạn trong thời gian nhất định, nên phải giới hạn object, thao tác và thời hạn. Bucket vẫn private; ứng dụng xác minh chủ sở hữu và trạng thái file trước khi sử dụng.
+
+### Cơ chế
+S3 kiểm tra chữ ký URL và cho phép người giữ URL thực hiện đúng thao tác đã ký cho object đó cho tới khi URL hết hạn. Vì thế việc làm lộ URL tương tự làm lộ quyền tạm thời. Dịch vụ cấp URL phải xác thực user, tự sinh key trong prefix phù hợp, chỉ ký PUT nếu cần upload, đặt expiry ngắn và không trao quyền rộng hơn mức cần. Sau upload, backend xác minh object gắn đúng user/đơn hàng rồi mới cho đọc hoặc xử lý.
+
+### Vì sao các phương án còn lại sai
+- **Bucket public**: biến một link upload bị lộ thành nguy cơ đọc dữ liệu rộng hơn và phá bỏ kiểm soát truy cập.
+- **URL nhiều tháng**: kéo dài cửa sổ lạm dụng nếu URL bị gửi nhầm hoặc rò rỉ.
+- **Tin tên object từ client**: client có thể chọn key của object khác hoặc ghi đè dữ liệu nếu quyền ký quá rộng.
+
+> Senior tip: log việc cấp URL theo user, object key và hạn dùng nhưng không log toàn bộ URL ký trước; query string của URL chứa chữ ký và phải được xem như secret.`
+},
+{
+  id: 'qz-security-033', topic: 'security',
+  q: 'Ứng dụng dùng OIDC cho đăng nhập, sau đó nhận access token từ frontend. Một dev lấy claim {{email}} trong token rồi coi đó là bằng chứng người dùng có quyền sửa mọi hồ sơ cùng email domain. Vấn đề chính là gì?',
+  options: [
+    'Email luôn là secret nên tuyệt đối không được xuất hiện trong token',
+    'Token cần được ký bằng HS256 thay cho RS256 để claim email đáng tin',
+    'Claim nhận dạng người dùng không tự cấp quyền tài nguyên; backend phải xác thực token và kiểm tra authorization theo user/tenant/resource cụ thể',
+    'Chỉ cần so sánh domain email ở frontend vì frontend đã hoàn tất đăng nhập'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** xác thực token cho biết token hợp lệ và user nào đang gọi; nó không tự chứng minh user được sửa mọi hồ sơ có cùng email domain. Quyền truy cập dữ liệu cần được kiểm tra ở backend theo tài nguyên và chính sách cụ thể.
+
+### Xác thực khác phân quyền
+OIDC claim như {{sub}} hoặc {{email}} mô tả danh tính; scope/authority có thể biểu diễn một số quyền nhưng API vẫn phải áp dụng policy cho hành động và đối tượng. Ví dụ, người dùng thuộc công ty có domain chung vẫn không được sửa hồ sơ đồng nghiệp nếu nghiệp vụ không cho phép. Lấy tenant và user id từ principal đã xác thực, rồi truy vấn giới hạn đúng quyền; không tin tenantId hay ownerId do client gửi.
+
+### Vì sao các phương án còn lại sai
+- **Email luôn secret**: email thường không phải credential; vấn đề là dùng claim sai làm authorization, chứ không phải sự tồn tại của email.
+- **Đổi thuật toán ký**: RS256/HS256 là lựa chọn kỹ thuật xác minh chữ ký, không biến claim thành quyền truy cập.
+- **So sánh ở frontend**: người dùng có thể sửa JavaScript hoặc gọi API trực tiếp; quyết định quyền phải ở server.
+
+> Senior tip: ưu tiên claim ổn định như {{sub}} làm định danh; email có thể đổi hoặc được tái sử dụng, nên không phải khóa quyền sở hữu lâu dài nếu chưa có chính sách xác minh.`
+},
+{
+  id: 'qz-security-034', topic: 'security', multi: true,
+  q: 'Một ứng dụng Spring Security 6 có API bearer-token và trang quản trị dùng session cookie. Team muốn tách cấu hình thành nhiều {{SecurityFilterChain}}. Hai nguyên tắc nào đúng? (Chọn 2)',
+  options: [
+    'Đặt {{@Order}} để chain API cụ thể được xét trước, giới hạn bằng {{securityMatcher("/api/**")}} và cấu hình xác thực phù hợp cho API',
+    'Cho chain đầu tiên {{anyRequest().permitAll()}} vì chain sau sẽ bổ sung kiểm tra quyền',
+    'Tạo chain fallback với matcher phù hợp cho phần còn lại và yêu cầu xác thực thay vì để request không khớp chain nào',
+    'Các chain được gộp thành một policy nên không cần kiểm tra chain nào khớp trước',
+    'Dùng {{csrf().disable()}} trên mọi chain, kể cả chain dùng session cookie'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** nhiều filter chain được xét theo thứ tự; request đi vào chain đầu tiên có matcher khớp, không phải ghép tất cả policy lại. Đặt chain phạm vi hẹp trước và có fallback bảo vệ các request còn lại.
+
+### Áp dụng cho hai kiểu client
+API bearer-token có thể dùng stateless session policy và resource server JWT. Giao diện quản trị dùng session cookie thì thường cần CSRF protection vì trình duyệt tự gửi cookie. Mỗi chain nên có matcher phạm vi rõ ràng, cấu hình riêng cho cơ chế xác thực và authorization, cùng thứ tự có chủ ý. Chain fallback tránh để endpoint mới không được bảo vệ khi không khớp chain API.
+
+### Vì sao các phương án còn lại sai
+- **permitAll ở chain đầu**: request đã khớp chain này thì không tiếp tục sang chain sau để được bảo vệ.
+- **Policy được gộp**: Spring chọn một chain theo matcher và thứ tự; hiểu nhầm này dễ tạo khoảng trống bảo mật.
+- **Tắt CSRF mọi nơi**: API thuần Authorization header có thể không cần CSRF, nhưng session cookie có thể bị trình duyệt tự gửi và cần cơ chế CSRF phù hợp.
+
+> Senior tip: viết test xác nhận URL thuộc đúng chain và thử cả request anonymous lẫn đã đăng nhập; lỗi matcher sai thường khiến cấu hình nhìn có vẻ đúng nhưng không được áp dụng.`
+},
+{
+  id: 'qz-security-035', topic: 'security',
+  q: 'Authorization server nhận {{redirect_uri}} từ client rồi chuyển trình duyệt tới URI đó sau đăng nhập. Kẻ tấn công tạo URL có redirect tới domain của họ để lấy authorization code. Cách phòng ngừa đúng nhất?',
+  options: [
+    'Cho phép mọi redirect URI dùng HTTPS vì HTTPS đảm bảo domain thuộc ứng dụng',
+    'So khớp redirect URI với URI đã đăng ký cho client một cách chính xác, không dùng wildcard/prefix rộng; dùng PKCE để giảm rủi ro code bị chặn',
+    'Chấp nhận URI nào có chứa tên công ty ở bất kỳ vị trí nào',
+    'Bỏ kiểm tra redirect URI nếu client có client_secret'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** authorization server phải ràng buộc callback với redirect URI đã đăng ký chính xác cho client. HTTPS bảo vệ đường truyền nhưng không chứng minh domain nhận callback thuộc client; PKCE bổ sung bảo vệ code bị chặn.
+
+### Vì sao kiểm tra chính xác
+Trong Authorization Code flow, server gửi code tới callback. Nếu kẻ tấn công có thể chọn callback tùy ý hoặc dùng prefix match rộng, code có thể bị chuyển tới domain của họ. Authorization server cần kiểm tra URI theo quy tắc nghiêm ngặt và gắn danh sách callback với từng client; không chấp nhận wildcard tùy tiện. PKCE ràng buộc code với verifier do client khởi tạo, nhưng không thay thế việc kiểm tra callback.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ yêu cầu HTTPS**: domain độc hại cũng có thể có chứng chỉ HTTPS hợp lệ.
+- **Tìm tên công ty trong chuỗi**: tên có thể nằm trong hostname hoặc path giả, ví dụ domain chứa tên công ty nhưng do kẻ tấn công kiểm soát.
+- **Client secret**: client secret không hợp thức hoá redirect tới địa chỉ bất kỳ; secret cũng không nên được nhúng vào client public như SPA.
+
+> Senior tip: kiểm tra cả biến thể URL như subdomain, port, path và encoding tại authorization server; tránh tự viết phép so khớp chuỗi lỏng lẻo trong ứng dụng.`
+},
+{
+  id: 'qz-security-036', topic: 'security', multi: true,
+  q: 'Một access key AWS được commit lên repository public trong vài phút rồi bị xoá. Hai hành động nào cần làm tiếp theo để xử lý sự cố đúng cách? (Chọn 2)',
+  options: [
+    'Thu hồi key đã lộ ngay, tạo credential thay thế an toàn nếu còn cần, rồi kiểm tra CloudTrail và tài nguyên bị truy cập',
+    'Chỉ xoá commit khỏi nhánh hiện tại; key cũ tự mất hiệu lực khi file không còn trong nhánh',
+    'Tắt cảnh báo để tránh thông báo nhầm trong lúc xử lý',
+    'Chuyển workload sang IAM role/OIDC với quyền tối thiểu và bật secret scanning để phát hiện lần lộ tiếp theo',
+    'Đợi hết hạn tự nhiên của key vì AWS sẽ tự thu hồi mọi access key sau một thời gian ngắn'
+  ],
+  answer: [0, 3],
+  explain: `**Tóm tắt:** xoá file khỏi nhánh không làm credential đã lộ mất hiệu lực. Phải vô hiệu hoá key và điều tra hoạt động; sau đó loại bỏ credential dài hạn nếu có thể và bổ sung phát hiện tự động.
+
+### Ứng phó và ngăn tái diễn
+Vô hiệu hóa access key ngay để chặn sử dụng tiếp, sau đó xem CloudTrail theo thời gian, principal, IP và hành động để tìm dấu hiệu lạm dụng. Nếu cần tiếp tục vận hành, cấp credential mới với quyền tối thiểu sau khi rà soát. Với workload AWS, IAM role/OIDC cung cấp credential tạm thời, không cần giữ access key dài hạn trong repository. Secret scanning là lớp phát hiện sớm, không thay thế thu hồi.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ xoá commit hiện tại**: key vẫn hợp lệ và có thể còn trong lịch sử Git, fork, cache hoặc bản clone.
+- **Tắt cảnh báo**: làm mất tín hiệu điều tra đúng lúc cần phát hiện hành vi đáng ngờ.
+- **Chờ tự hết hạn**: access key IAM không tự hết hạn chỉ vì đã lộ; chủ sở hữu phải chủ động vô hiệu hóa hoặc xoá.
+
+> Senior tip: ghi lại mốc thời gian và hành động ứng phó, đồng thời kiểm tra cả key chưa dùng trong vài ngày gần đây; credential bị lộ có thể được giữ lại để dùng sau.`
+},
+{
+  id: 'qz-security-037', topic: 'security', multi: true,
+  q: 'API tìm kiếm báo cáo cho phép gửi truy vấn đắt tiền và giới hạn trang không rõ ràng. Một client bị xâm nhập gửi nhiều request lớn khiến database quá tải. Hai biện pháp nào trực tiếp giảm rủi ro này? (Chọn 2)',
+  options: [
+    'Chỉ tăng connection pool để database nhận được nhiều truy vấn đồng thời hơn',
+    'Đặt giới hạn server-side cho page size, kích thước request và phạm vi truy vấn; từ chối input vượt giới hạn',
+    'Bật CORS cho đúng domain frontend để ngăn client bị xâm nhập gọi API',
+    'Áp dụng quota/rate limit theo danh tính hoặc client ở gateway và đặt timeout/giới hạn concurrency cho truy vấn tốn tài nguyên',
+    'Ẩn nút tìm kiếm trên giao diện khi số request tăng cao'
+  ],
+  answer: [1, 3],
+  explain: `**Tóm tắt:** đây là rủi ro tiêu thụ tài nguyên không giới hạn. Giới hạn kích thước và độ phức tạp ở server, kết hợp quota và giới hạn thực thi để một client không làm cạn pool hoặc database.
+
+### Các lớp bảo vệ
+Xác thực client không đảm bảo client luôn lành tính; token hợp lệ có thể bị đánh cắp hoặc code có lỗi. API cần giới hạn page size, body size, khoảng ngày và số bộ lọc; truy vấn nên có timeout và concurrency được khống chế. Rate limit theo user/client giúp giảm tốc độ gọi, còn quota/giới hạn truy vấn ngăn một request duy nhất quá đắt. Theo dõi latency, timeout và mức dùng connection pool để điều chỉnh dựa trên số liệu.
+
+### Vì sao các phương án còn lại sai
+- **Tăng pool đơn thuần**: có thể dồn thêm tải xuống database và làm sự cố nặng hơn; cần giới hạn tài nguyên chứ không chỉ tăng đồng thời.
+- **CORS**: trình duyệt dùng CORS để quyết định script khác origin có đọc response không; nó không chặn curl, server khác hoặc client bị xâm nhập.
+- **Ẩn nút frontend**: không ngăn request HTTP trực tiếp; kiểm soát phải ở server.
+
+> Senior tip: đo p95/p99 latency, timeout và pool saturation trước khi đặt quota; giới hạn quá thấp gây lỗi người dùng thật, còn chỉ dựa vào rate limit theo IP dễ bị vượt qua bởi nhiều IP.`
+},
 );

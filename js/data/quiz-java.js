@@ -3864,5 +3864,399 @@ Lịch sử: từ Java 7, chuỗi intern nằm trên **heap** (trước đó ở
 - **Trả về bản sao mới**: ngược lại, nó trả về bản canonical đã có (hoặc chính chuỗi đó nếu là lần đầu).
 
 > Senior tip: muốn giảm chuỗi trùng thì đo trước bằng heap dump (Eclipse MAT có báo cáo chuỗi trùng). Tập giá trị nhỏ thì dùng enum hoặc một map chuẩn hoá có giới hạn; chuỗi sống lâu và trùng nhiều thì bật {{-XX:+UseStringDeduplication}}. Kích thước bảng chỉnh bằng {{-XX:StringTableSize}} nếu thật sự phải intern nhiều.`
-}
+},
+{
+  id: 'qz-primer-011', topic: 'primer',
+  q: 'Một trang quản trị gọi {{GET /reports/generate?month=10}} để tạo báo cáo và gửi email cho quản lý. Browser đôi khi tải trước request này, khiến email gửi hai lần. Thiết kế nào đúng nhất?',
+  options: [
+    'Giữ GET và chỉ thêm header Cache-Control: no-cache để browser không tải trước',
+    'Đổi GET thành PUT vì PUT luôn gửi dữ liệu lên server',
+    'Dùng POST để yêu cầu tạo báo cáo; nếu việc tạo cần chạy lâu, trả về mã job rồi dùng GET riêng để xem trạng thái hoặc tải kết quả',
+    'Giữ GET nhưng đổi tên tham số month để request không bị cache'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: dùng POST cho thao tác tạo báo cáo.**
+
+### Cái gì đang xảy ra?
+{{GET}} được thiết kế để đọc tài nguyên, chẳng hạn xem danh sách báo cáo. Một đặc tính quan trọng là GET phải **safe**: chỉ đọc, không gây thay đổi nghiệp vụ như trừ tiền, gửi email hay tạo đơn. Browser, proxy hoặc crawler có thể tải trước GET để trang mở nhanh; cache cũng có thể gửi lại request. Vì thế không được đặt hành động có tác dụng phụ vào GET.
+
+{{POST}} phù hợp khi client yêu cầu server thực hiện một hành động hoặc tạo một tài nguyên mới. Ví dụ, server có thể trả {{202 Accepted}} cùng mã job nếu xử lý chưa xong; sau đó client gọi GET trên đường dẫn trạng thái job. GET lúc này chỉ đọc tiến độ hoặc kết quả.
+
+### Vì sao các phương án còn lại sai
+- **Cache-Control: no-cache**: chỉ ảnh hưởng cách cache kiểm tra/tái sử dụng response; không biến GET thành thao tác an toàn và không ngăn mọi client tự gửi lại request.
+- **Đổi thành PUT**: PUT thường dùng để tạo hoặc thay thế trạng thái tại một URI đã biết và có ngữ nghĩa idempotent. Nó không phải lựa chọn chung cho hành động tạo job có URI do server cấp.
+- **Đổi tên tham số**: request vẫn là GET có tác dụng phụ. Thay URL chỉ né một cache cụ thể, không sửa hợp đồng HTTP.
+
+> Senior tip: thiết kế endpoint theo tác dụng nghiệp vụ, không theo việc frontend tình cờ gửi một lần. GET chỉ nên đọc; khi POST có thể bị retry, thiết kế thêm cơ chế chống tạo trùng phù hợp với nghiệp vụ.`
+},
+{
+  id: 'qz-primer-012', topic: 'primer', multi: true,
+  q: 'Java service ghi hai lần vào một TCP socket; server đọc dữ liệu qua {{InputStream}}. Hai phát biểu nào mô tả TCP chính xác? (Chọn 2)',
+  options: [
+    'TCP cung cấp luồng byte có thứ tự và truyền lại dữ liệu bị mất trong phạm vi kết nối còn hoạt động',
+    'Mỗi lần client gọi write() thì server luôn nhận đúng một lần read() tương ứng',
+    'TCP tự hiểu cấu trúc JSON và đảm bảo server đã thực hiện giao dịch đúng một lần',
+    'TCP là luồng byte: ranh giới giữa hai lần write() không được giữ nguyên, nên giao thức ứng dụng cần quy định cách tách message',
+    'Nếu socket connect() thành công thì mọi request nghiệp vụ phía server chắc chắn đã được xử lý'
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: TCP đảm bảo luồng byte có thứ tự, nhưng không giữ ranh giới message.**
+
+### TCP giúp gì?
+{{TCP}} (Transmission Control Protocol) là giao thức truyền tải tạo kết nối giữa hai đầu. Nó đánh số các byte, xác nhận dữ liệu đã nhận và truyền lại phần bị mất khi có thể. Ứng dụng thường thấy dữ liệu theo đúng thứ tự đã gửi, nhưng chỉ thấy một **luồng byte liên tục**, không thấy từng lần gọi {{write()}} của bên kia.
+
+Ví dụ client ghi {{HELLO}} rồi {{WORLD}}. Server có thể đọc {{HELLOWORLD}} trong một lần, hoặc {{HE}} rồi {{LLOWO}} rồi {{RLD}}. Cả hai đều hợp lệ. Giao thức ứng dụng cần tự định ranh giới, chẳng hạn dùng dấu xuống dòng, độ dài cố định, hoặc gửi độ dài message trước nội dung. HTTP cũng định nghĩa cách tổ chức request/response ở tầng ứng dụng.
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng: luồng có thứ tự và có truyền lại.** Đây là các đặc tính cốt lõi của TCP trong khi kết nối còn tồn tại; nếu kết nối đứt thì ứng dụng vẫn phải xử lý lỗi.
+- **Sai: một write tương ứng một read.** Socket không bảo toàn ranh giới lần ghi; giả định này thường làm parser lỗi khi message bị chia nhỏ hoặc gộp.
+- **Sai: TCP hiểu JSON và xử lý đúng một lần.** TCP không biết JSON, đơn hàng hay database. Nó chỉ chuyển byte; tính đúng một lần là trách nhiệm của giao thức và logic ứng dụng.
+- **Đúng: ứng dụng phải định khung message.** Nếu không, bên nhận không biết một message kết thúc ở đâu.
+- **Sai: connect thành công không chứng minh request đã xử lý.** Kết nối chỉ cho biết bắt tay TCP hoàn tất; server có thể chưa nhận request, đã nhận nhưng chưa xử lý, hoặc xử lý xong nhưng response bị mất.
+
+> Senior tip: khi đọc socket, luôn xử lý trường hợp read trả ít byte hơn mong đợi; đừng giả định một lần đọc lấy đủ một message.`
+},
+{
+  id: 'qz-primer-013', topic: 'primer',
+  q: 'Một dịch vụ cần công bố địa chỉ để cả máy chỉ hỗ trợ IPv4 và máy hỗ trợ IPv6 đều tìm được. Loại DNS record nào mô tả đúng địa chỉ mỗi loại?',
+  options: [
+    'A cho IPv4 và AAAA cho IPv6',
+    'CNAME cho IPv4 và MX cho IPv6',
+    'AAAA cho IPv4 và A cho IPv6',
+    'TXT cho cả IPv4 lẫn IPv6 vì DNS chỉ lưu văn bản'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: A ánh xạ tên sang địa chỉ IPv4, AAAA ánh xạ tên sang địa chỉ IPv6.**
+
+### DNS làm nhiệm vụ gì?
+{{DNS}} (Domain Name System) giống danh bạ: ứng dụng hỏi địa chỉ gắn với tên như {{api.example.com}} để biết tới đâu cần kết nối. DNS trả về các bản ghi có kiểu khác nhau; kiểu bản ghi cho biết dữ liệu trả về có ý nghĩa gì.
+
+- {{A}} chứa địa chỉ IPv4, ví dụ {{192.0.2.10}}.
+- {{AAAA}} chứa địa chỉ IPv6, ví dụ {{2001:db8::10}}.
+- Resolver (thành phần đi hỏi DNS thay cho ứng dụng) có thể hỏi cả hai loại; hệ điều hành hoặc client chọn địa chỉ phù hợp với mạng và chính sách kết nối.
+
+### Vì sao các phương án còn lại sai
+- **CNAME cho IPv4, MX cho IPv6**: CNAME là bí danh trỏ tới một tên DNS khác, không chứa địa chỉ IP. MX chỉ định máy nhận email cho domain.
+- **Đảo A và AAAA**: chữ A gắn với IPv4; AAAA là dạng mở rộng để chứa địa chỉ IPv6 dài hơn.
+- **TXT cho địa chỉ**: TXT chứa dữ liệu văn bản phục vụ cấu hình/xác minh, không phải record địa chỉ mà client dùng để kết nối.
+
+> Senior tip: khi một số người dùng truy cập được còn số khác không, kiểm tra cả A và AAAA. Một IPv6 record sai có thể khiến client ưu tiên đường IPv6 lỗi dù IPv4 vẫn hoạt động.`
+},
+{
+  id: 'qz-primer-014', topic: 'primer',
+  q: 'Bạn chỉ muốn đưa hai thay đổi trong một file lên commit, còn phần sửa dở khác trong cùng file chưa sẵn sàng. Cách làm nào cho phép chọn từng phần thay đổi?',
+  options: [
+    '{{git commit -a}} để Git tự chọn các dòng đã hoàn tất',
+    '{{git stash}} toàn bộ file rồi commit phần còn lại từ stash',
+    '{{git reset --hard}} để bỏ các dòng chưa muốn commit',
+    'Dùng {{git add -p}} để chọn từng hunk vào staging area, kiểm tra bằng {{git diff --cached}}, rồi commit'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: dùng {{git add -p}} để stage từng phần.**
+
+### Ba vùng cần phân biệt
+Git có thể hình dung qua ba vùng: thư mục làm việc chứa nội dung bạn đang sửa; **staging area** (vùng chuẩn bị) chứa chính xác thay đổi dự định đưa vào commit; commit là ảnh chụp lịch sử đã lưu. {{git add -p}} hiển thị từng nhóm dòng thay đổi, gọi là hunk, để bạn chọn nhóm nào được đưa vào staging.
+
+~~~bash
+git add -p src/OrderService.java
+git diff --cached
+git commit -m "Handle order validation"
+~~~
+
+### Vì sao các phương án còn lại sai
+- **git commit -a**: tự stage thay đổi của file đã được Git theo dõi, thường là toàn bộ thay đổi của file đó; không cho chọn từng hunk.
+- **git stash toàn bộ**: cất thay đổi để làm việc sau, nhưng không tự chia đúng hai phần muốn commit; có thể dùng stash -p nhưng thao tác stage tương ứng trực tiếp hơn.
+- **git reset --hard**: xoá thay đổi chưa commit trong working tree; đây là thao tác phá huỷ nội dung, không phải cách tách commit.
+- **git add -p và diff --cached**: chỉ phần đã chọn vào staging được commit; xem diff staged trước giúp phát hiện lỡ chọn nhầm.
+
+> Senior tip: commit nhỏ, mỗi commit một mục đích giúp review và revert dễ hơn. Trước khi commit, xem cả {{git diff}} (chưa stage) lẫn {{git diff --cached}} (sẽ commit).`
+},
+{
+  id: 'qz-primer-015', topic: 'primer',
+  q: 'Máy Linux báo gần hết dung lượng ổ đĩa. Bạn muốn biết filesystem nào đầy và riêng thư mục {{/var/log}} đang chiếm bao nhiêu. Cặp lệnh nào phù hợp?',
+  options: [
+    '{{du -h}} để xem filesystem đầy, {{df -h /var/log}} để xem kích thước thư mục',
+    '{{df -h}} xem mức dùng của filesystem; {{du -sh /var/log}} cộng dung lượng các file trong thư mục',
+    '{{free -h}} xem filesystem và {{ps aux}} cộng dung lượng file log',
+    '{{ls -l /var/log}} cho tổng dung lượng đĩa còn trống và dung lượng thư mục con'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: {{df}} cho filesystem, {{du}} cho thư mục.**
+
+### Khác nhau ở đối tượng được đo
+{{df}} viết tắt của disk free, báo dung lượng tổng, đã dùng và còn trống của filesystem (hệ thống file được mount vào một đường dẫn). Dùng {{df -h}} để hiển thị đơn vị dễ đọc như GiB.
+
+{{du}} viết tắt của disk usage, đi qua các file/thư mục để cộng dung lượng chúng chiếm. {{du -sh /var/log}} trả một con số gọn cho cả cây thư mục đó. Hai kết quả có thể lệch: file đã bị xoá nhưng tiến trình vẫn mở file sẽ không còn xuất hiện trong {{du}}, nhưng dung lượng vẫn bị giữ trên filesystem nên {{df}} vẫn báo đã dùng.
+
+### Vì sao các phương án còn lại sai
+- **Đảo du và df**: {{du}} không báo tổng chỗ trống của filesystem; {{df}} không tính riêng kích thước mọi file trong thư mục theo cách đó.
+- **free và ps**: {{free}} đo bộ nhớ RAM/swap; {{ps}} liệt kê tiến trình. Chúng không cho biết dung lượng filesystem.
+- **ls -l**: hiển thị metadata từng mục trong thư mục, không đệ quy cộng kích thước toàn cây và không báo dung lượng còn trống của ổ.
+
+> Senior tip: nếu {{df}} báo đầy nhưng {{du}} không tìm thấy file lớn, kiểm tra file đã xoá nhưng còn được process mở, chẳng hạn bằng {{sudo lsof +L1}}.`
+},
+{
+  id: 'qz-primer-016', topic: 'primer', multi: true,
+  q: 'Một hàm xử lý mảng có kích thước {{n}}. Hai nhận định nào về độ phức tạp dưới đây đúng? (Chọn 2)',
+  options: [
+    'Hai vòng lặp lồng nhau, mỗi vòng chạy n lần, thường có thời gian O(n²)',
+    'Ba vòng lặp nối tiếp, mỗi vòng chạy n lần, có thời gian O(n³)',
+    'Một vòng chạy 5n + 20 bước có thời gian O(n) khi n tăng lớn',
+    'Vòng lặp nhân biến đếm với 2 mỗi lần, từ 1 tới n, có thời gian O(n)',
+    'O(n) luôn chạy nhanh hơn O(log n) với mọi kích thước đầu vào'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: vòng lặp lồng nhau là O(n²), còn 5n + 20 là O(n).**
+
+### Big O là gì?
+{{O(...)}} (Big O) mô tả tốc độ tăng của lượng công việc khi kích thước đầu vào {{n}} tăng. Đây không phải thời gian chính xác theo mili giây; nó giúp so sánh xu hướng khi dữ liệu lớn hơn. Ta bỏ hằng số và phần tăng chậm hơn: {{5n + 20}} được xem là {{O(n)}}.
+
+- Hai vòng lặp lồng nhau, mỗi vòng chạy n lần, làm khoảng {{n * n}} lượt → {{O(n²)}}.
+- Ba vòng lặp nối tiếp mỗi vòng n lần làm khoảng {{3n}} lượt → {{O(n)}}, không phải {{O(n³)}}.
+- Vòng lặp tăng gấp đôi 1, 2, 4, 8... cần khoảng {{log2(n)}} lần mới vượt n → {{O(log n)}}.
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng: hai vòng lặp lồng nhau.** Với mỗi phần tử ở vòng ngoài, vòng trong duyệt n phần tử; tổng số cặp tăng theo bình phương.
+- **Sai: ba vòng nối tiếp.** Công việc cộng thành 3n; vì bỏ hằng số 3, độ phức tạp là O(n).
+- **Đúng: 5n + 20 là O(n).** Khi n lớn, phần tuyến tính chi phối; 5 và 20 không đổi bậc tăng trưởng.
+- **Sai: nhân đôi là O(n).** Số lần nhân đôi tăng theo logarit cơ số 2, không phải theo n.
+- **Sai: O(n) luôn nhanh hơn.** Với n rất nhỏ, hằng số và chi phí triển khai có thể khiến thuật toán O(n) chạy nhanh hơn; Big O mô tả xu hướng khi n lớn, không phải thời gian tuyệt đối ở mọi n.
+
+> Senior tip: khi tối ưu API, xác định n thực tế trước. O(n²) có thể ổn với 20 phần tử nhưng thành khoảng một triệu cặp khi n là 1.000.`
+},
+{
+  id: 'qz-primer-017', topic: 'primer',
+  q: 'Một endpoint cần tìm mã khách hàng trong một danh sách đã được sắp xếp gồm 1 triệu phần tử. Cách nào giảm số lần so sánh mà vẫn trả lời đúng?',
+  options: [
+    'Duyệt từ đầu tới cuối; vì danh sách đã sắp xếp nên thời gian luôn O(1)',
+    'Xáo trộn danh sách trước rồi tìm; trung bình chỉ cần một lần so sánh',
+    'Dùng binary search: so sánh ở giữa rồi bỏ nửa không thể chứa kết quả, với độ phức tạp O(log n)',
+    'Dùng binary search trên danh sách chưa sắp xếp; thuật toán tự sắp xếp miễn phí'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: binary search trên dữ liệu đã sắp xếp.**
+
+### Từng bước
+{{Binary search}} (tìm kiếm nhị phân) so sánh giá trị cần tìm với phần tử ở giữa. Nếu mã nhỏ hơn, bỏ nửa phải; nếu lớn hơn, bỏ nửa trái; nếu bằng thì đã tìm thấy. Mỗi bước giảm vùng cần tìm còn một nửa. Với 1 triệu mục, chỉ cần khoảng 20 bước vì {{2^20}} lớn hơn một triệu; độ phức tạp là {{O(log n)}}.
+
+Điều kiện quan trọng là dữ liệu phải có thứ tự theo cùng quy tắc so sánh. Duyệt tuần tự không cần sắp xếp nhưng có thể phải kiểm tra tới một triệu mục, tức {{O(n)}}.
+
+### Vì sao các phương án còn lại sai
+- **Duyệt tuyến tính O(1)**: danh sách sắp xếp không làm mất thời gian duyệt; trường hợp xấu vẫn phải đi qua gần hết danh sách.
+- **Xáo trộn**: làm mất thứ tự hữu ích, và không có cách đảm bảo gặp giá trị cần tìm sau một lần so sánh.
+- **Binary search đúng điều kiện**: mỗi so sánh loại bỏ một nửa ứng viên; đây là lựa chọn phù hợp khi danh sách đã có thứ tự.
+- **Dữ liệu chưa sắp xếp**: binary search có thể bỏ nhầm nửa chứa kết quả. Tự sắp xếp cũng không miễn phí; nó thường tốn O(n log n) và cần cân nhắc nếu chỉ tìm một lần.
+
+> Senior tip: nếu danh sách thay đổi thường xuyên, chi phí giữ thứ tự hoặc tạo index cũng đáng tính; với dữ liệu trong database, index thường phù hợp hơn tự tải toàn bộ danh sách vào Java.`
+},
+{
+  id: 'qz-primer-018', topic: 'primer', multi: true,
+  q: 'Bạn cần thêm nhiều cách tính phí vận chuyển có thể thay đổi độc lập theo khách hàng. Hai cách thiết kế nào thể hiện tốt việc ưu tiên composition thay vì inheritance? (Chọn 2)',
+  options: [
+    'Tạo interface {{ShippingPolicy}} và truyền implementation phù hợp vào dịch vụ đặt hàng',
+    'Tạo một subclass cho mọi tổ hợp giữa loại khách hàng, hãng vận chuyển và chương trình khuyến mãi',
+    'Để {{OrderService}} kết hợp các collaborator nhỏ, chẳng hạn chính sách vận chuyển và bộ tính giảm giá',
+    'Đưa mọi logic vào lớp cha {{OrderService}} rồi buộc lớp con gọi các method protected theo đúng thứ tự',
+    'Dùng composition nghĩa là không được dùng interface hoặc đa hình'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: lắp ghép các đối tượng nhỏ qua interface hoặc collaborator.**
+
+### Hai cách tái sử dụng code
+{{Inheritance}} (kế thừa) tạo quan hệ kiểu "là một": {{ExpressShipping}} là một dạng {{ShippingPolicy}}. {{Composition}} (kết hợp) tạo đối tượng bằng cách chứa hoặc nhận các thành phần khác, giống một chiếc xe kết hợp động cơ và hộp số. Composition thường linh hoạt hơn khi các hành vi thay đổi độc lập.
+
+Ví dụ, {{OrderService}} nhận một {{ShippingPolicy}} và một bộ tính giảm giá. Khi khách hàng đổi chính sách vận chuyển, ta thay collaborator mà không cần tạo subclass cho mọi tổ hợp. Interface vẫn có thể được dùng trong composition để định nghĩa hợp đồng của thành phần.
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng: truyền ShippingPolicy.** Service dùng hợp đồng chung, còn implementation có thể được chọn theo cấu hình hoặc loại đơn.
+- **Sai: subclass cho mọi tổ hợp.** Số subclass tăng theo tích các biến thể; thay một quy tắc có thể đòi sửa nhiều lớp.
+- **Đúng: kết hợp collaborator.** Mỗi thành phần có trách nhiệm rõ ràng và có thể thay thế, kiểm thử riêng.
+- **Sai: lớp cha chứa mọi logic.** Lớp con bị buộc phụ thuộc thứ tự gọi và chi tiết nội bộ; kế thừa ở đây chỉ che giấu coupling.
+- **Sai: composition không dùng interface.** Interface là cách phổ biến để các thành phần tương tác lỏng lẻo; composition và đa hình bổ trợ nhau.
+
+> Senior tip: không cần cấm kế thừa. Dùng inheritance cho quan hệ "is-a" ổn định; ưu tiên composition khi hành vi cần hoán đổi hoặc kết hợp theo nhiều chiều.`
+},
+{
+  id: 'qz-primer-019', topic: 'primer',
+  q: 'Một class {{BankAccount}} có field {{balance}}. Nhiều nơi trong ứng dụng đang sửa trực tiếp số dư và có nơi vô tình đặt số dư âm. Cách sửa nào áp dụng encapsulation tốt nhất?',
+  options: [
+    'Đổi balance thành public final để mọi code có thể đọc nhưng vẫn đổi được khi cần',
+    'Ẩn balance và chỉ cung cấp các thao tác nghiệp vụ như deposit/withdraw có kiểm tra invariant trước khi cập nhật',
+    'Giữ balance public nhưng thêm comment yêu cầu lập trình viên không đặt số âm',
+    'Tạo getter và setter công khai cho mọi field; setter không cần kiểm tra vì caller phải tự chịu trách nhiệm'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: đóng gói trạng thái và chỉ cho phép thay đổi qua thao tác giữ invariant.**
+
+### Encapsulation nghĩa là gì?
+{{Encapsulation}} (đóng gói) là giữ trạng thái nội bộ bên trong đối tượng và kiểm soát cách bên ngoài đọc hoặc thay đổi nó. {{Invariant}} là điều kiện luôn phải đúng, ví dụ tài khoản không được âm nếu sản phẩm không cho phép thấu chi.
+
+Thay vì cho mọi class gán {{balance}}, {{BankAccount}} có thể cung cấp {{deposit(amount)}} và {{withdraw(amount)}}. Mỗi method kiểm tra amount hợp lệ và số dư đủ trước khi cập nhật. Khi đó mọi đường thay đổi đều đi qua cùng quy tắc.
+
+### Vì sao các phương án còn lại sai
+- **public final**: {{final}} chỉ ngăn gán lại tham chiếu/giá trị sau khởi tạo; nó không phù hợp để số dư thay đổi theo giao dịch, và field vẫn bị lộ.
+- **Public kèm comment**: comment không được compiler thực thi; một caller vẫn có thể gán số âm.
+- **Setter không kiểm tra**: setter công khai cho phép bỏ qua invariant, chỉ chuyển lỗi từ một nơi sang mọi caller.
+- **Ẩn field và thao tác nghiệp vụ**: quyền kiểm soát nằm ở nơi hiểu quy tắc tài khoản; object giữ trạng thái hợp lệ sau mỗi thao tác.
+
+> Senior tip: với tiền, dùng kiểu chính xác như {{BigDecimal}} với quy tắc scale/rounding rõ ràng; đồng thời cập nhật số dư và ghi sổ giao dịch trong cùng transaction phù hợp.`
+},
+{
+  id: 'qz-primer-020', topic: 'primer',
+  q: 'Một class {{InvoiceService}} vừa tính thuế, vừa dựng PDF, vừa gửi email. Mỗi lần đổi mẫu PDF đều làm team lo có thể ảnh hưởng phép tính thuế. Hướng refactor nào phù hợp nhất với SRP?',
+  options: [
+    'Tách phần tính thuế và phần dựng PDF thành trách nhiệm riêng; service điều phối chúng qua các collaborator',
+    'Đổi tên class thành {{InvoiceManager}} để tên bao quát hơn, giữ nguyên các method',
+    'Tách riêng mọi method vào một class cho mỗi method, kể cả method chỉ có một dòng dùng một lần',
+    'Bọc class trong singleton để chỉ có một nơi cần sửa'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: tách theo các lý do thay đổi độc lập.**
+
+### SRP là gì?
+{{SRP}} (Single Responsibility Principle) thường được diễn đạt là một module nên có một lý do chính để thay đổi. Nó không có nghĩa class chỉ được có đúng một method; ý chính là các quy tắc thuộc những mối quan tâm khác nhau không bị trộn vào nhau.
+
+Trong tình huống này, quy tắc thuế thay đổi theo chính sách tài chính; mẫu PDF thay đổi theo yêu cầu trình bày. Tách {{TaxCalculator}} và {{InvoicePdfRenderer}} giúp thay đổi một phía ít có nguy cơ phá phía kia. {{InvoiceService}} có thể điều phối việc tính, lưu và xuất hóa đơn.
+
+### Vì sao các phương án còn lại sai
+- **Tách theo lý do thay đổi**: mỗi thành phần có ranh giới phù hợp với biến động riêng; có thể kiểm thử phép tính mà không cần dựng PDF.
+- **Chỉ đổi tên class**: tên không làm giảm phụ thuộc hoặc tách biệt quy tắc.
+- **Một class cho mỗi method**: tách quá nhỏ tạo thêm indirection và khó hiểu mà không tạo ranh giới nghiệp vụ hữu ích.
+- **Singleton**: giới hạn số instance không tách trách nhiệm; class vẫn có các lý do thay đổi khác nhau.
+
+> Senior tip: tìm dấu hiệu SRP qua lịch sử thay đổi và dependency: nếu một file thường xuyên bị sửa bởi hai nhóm vì hai mục tiêu khác nhau, đó là tín hiệu nên xem lại ranh giới.`
+},
+{
+  id: 'qz-primer-021', topic: 'primer',
+  q: 'Một dịch vụ tính phí phụ thuộc trực tiếp vào class {{PostgresPaymentRepository}}. Khi muốn test hoặc chuyển sang kho dữ liệu khác, phải sửa cả logic nghiệp vụ. Cách nào áp dụng Dependency Inversion tốt nhất?',
+  options: [
+    'Đưa câu SQL vào {{PaymentService}} để bỏ qua dependency repository',
+    'Tạo subclass của {{PaymentService}} cho từng database và override mọi method',
+    'Để tầng nghiệp vụ phụ thuộc vào abstraction {{PaymentRepository}}; adapter Postgres implement abstraction đó và được cung cấp cho service',
+    'Dùng {{static}} để mọi class gọi chung một repository toàn cục'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: tầng nghiệp vụ phụ thuộc vào abstraction, adapter cụ thể thực hiện abstraction đó.**
+
+### DIP và dependency injection
+{{DIP}} (Dependency Inversion Principle) khuyến nghị cả logic cấp cao lẫn chi tiết cấp thấp phụ thuộc vào abstraction (hợp đồng), thay vì logic nghiệp vụ phụ thuộc trực tiếp vào chi tiết database. {{PaymentService}} cần khả năng lưu payment; nó không cần biết SQL hay Postgres.
+
+Ta định nghĩa {{PaymentRepository}} với các thao tác nghiệp vụ cần thiết. Adapter {{PostgresPaymentRepository}} thực thi hợp đồng đó bằng JDBC hoặc ORM. Một composition root, chẳng hạn cấu hình ứng dụng Spring, tạo adapter rồi truyền vào service. Việc truyền dependency như vậy gọi là dependency injection; nó là kỹ thuật hỗ trợ thiết kế này, không phải chính nguyên tắc DIP.
+
+### Vì sao các phương án còn lại sai
+- **SQL trong service**: làm logic nghiệp vụ phụ thuộc chi tiết database, khiến test và thay đổi storage khó hơn.
+- **Subclass service cho từng database**: sao chép hoặc override logic cấp cao để thay một chi tiết thấp; cấu trúc phụ thuộc vẫn bị đảo sai chiều.
+- **Abstraction do nghiệp vụ dùng**: service chỉ biết hợp đồng; có thể cung cấp fake trong test hoặc adapter cho database khác mà không đổi quy tắc thanh toán.
+- **Static toàn cục**: tạo trạng thái dùng chung ẩn, khó thay thế trong test và dễ gây ghép chặt.
+
+> Senior tip: đừng tạo interface cho mọi class một cách máy móc. Tạo abstraction tại ranh giới nơi có biến thể thực sự, như database, HTTP client hoặc hệ thống thanh toán ngoài.`
+},
+{
+  id: 'qz-primer-022', topic: 'primer',
+  q: 'Một API Java tự ghép JSON bằng nối chuỗi để trả tên người dùng. Khi tên là {{An "Senior"}}, response không parse được. Cách sửa nào đúng và an toàn nhất?',
+  options: [
+    'Xoá mọi dấu ngoặc kép khỏi tên trước khi ghép để JSON luôn đơn giản',
+    'Đổi response thành chuỗi thường nhưng vẫn đặt Content-Type là application/json',
+    'Tự thay dấu ngoặc kép bằng dấu gạch chéo ở một chỗ trong controller',
+    'Trả DTO qua thư viện JSON như Jackson để serializer tự escape dấu ngoặc kép, dấu gạch chéo ngược và ký tự điều khiển'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: dùng JSON serializer thay vì tự nối chuỗi.**
+
+### Vì sao chuỗi nối bị lỗi?
+JSON là định dạng dữ liệu có quy tắc cú pháp. Chuỗi JSON phải nằm trong dấu ngoặc kép; ký tự ngoặc kép nằm bên trong giá trị phải được escape, nghĩa là biểu diễn bằng chuỗi ký tự đặc biệt để parser hiểu đó là nội dung chứ không phải điểm kết thúc. Dấu gạch chéo ngược và một số ký tự điều khiển cũng cần xử lý.
+
+Nếu ghép trực tiếp giá trị {{An "Senior"}}, server có thể tạo JSON lỗi:
+~~~json
+{"name":"An "Senior""}
+~~~
+Parser tưởng chuỗi kết thúc trước chữ Senior. Jackson trong Spring Boot serialize DTO và tự xử lý các trường hợp này. JSON đã serialize cần được trả như dữ liệu, không escape thủ công lần nữa.
+
+### Vì sao các phương án còn lại sai
+- **Xoá dấu ngoặc kép**: làm sai dữ liệu người dùng; còn các ký tự khác như backslash hoặc newline vẫn có thể phá cú pháp.
+- **Gửi text nhưng khai JSON**: header không biến văn bản bất kỳ thành JSON hợp lệ; client parse sẽ thất bại.
+- **Thay một loại ký tự bằng tay**: chỉ xử lý một trường hợp và dễ tạo lỗi khi có backslash, tab, newline hoặc Unicode.
+- **Serializer**: thực hiện escaping theo quy tắc JSON và giữ nguyên nội dung logic của tên.
+
+> Senior tip: serialize và parse bằng thư viện chuẩn; sau khi tạo response, một test nên parse JSON lại và kiểm tra giá trị sau parse bằng đúng chuỗi đầu vào.`
+},
+{
+  id: 'qz-primer-023', topic: 'primer',
+  q: 'Bạn cấu hình {{api.example.com}} làm bí danh của {{edge.vendor.net}}. Nhà cung cấp có thể đổi địa chỉ IP của edge mà không muốn bạn cập nhật IP thủ công. DNS record nào phù hợp nhất?',
+  options: [
+    'Tạo MX trỏ tới edge.vendor.net vì mọi bí danh đều là máy mail',
+    'Tạo CNAME trỏ api.example.com tới edge.vendor.net; DNS sẽ tiếp tục phân giải tên đích sang record địa chỉ của nó',
+    'Tạo TXT chứa chuỗi edge.vendor.net; resolver tự hiểu đó là địa chỉ cần kết nối',
+    'Tạo A record có giá trị edge.vendor.net vì A record nhận tên miền thay cho IP'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: CNAME tạo bí danh từ một tên DNS sang tên khác.**
+
+### CNAME hoạt động ra sao?
+{{CNAME}} là canonical name record: nó nói rằng một tên là bí danh của tên đích. Resolver hỏi {{api.example.com}}, nhận được {{edge.vendor.net}}, rồi tiếp tục tra cứu tên đích để lấy địa chỉ A hoặc AAAA. Nếu nhà cung cấp đổi IP nhưng vẫn cập nhật DNS của {{edge.vendor.net}}, client không cần cấu hình IP đó trực tiếp.
+
+{{A}} và {{AAAA}} lưu địa chỉ IP cụ thể (IPv4 và IPv6). {{CNAME}} lưu một tên DNS khác, không phải IP. Vì thế nó phù hợp khi muốn trỏ tới endpoint do nhà cung cấp quản lý.
+
+### Vì sao các phương án còn lại sai
+- **MX**: chỉ định máy nhận email cho domain; không phải record bí danh thông thường cho endpoint HTTP.
+- **CNAME**: đúng loại record cho alias; resolver cần tiếp tục tra tên đích để lấy IP.
+- **TXT**: chứa văn bản phục vụ xác minh/cấu hình; resolver không dùng nội dung TXT làm địa chỉ endpoint.
+- **A chứa tên miền**: A yêu cầu giá trị IPv4; nếu nhập tên khác thì record sai định dạng. Muốn bí danh dùng CNAME.
+
+> Senior tip: DNS zone apex (tên gốc như example.com) có quy tắc riêng và thường không cho đặt CNAME chuẩn cùng các record bắt buộc khác; kiểm tra tính năng alias/ANAME của DNS provider khi cần trỏ apex.`
+},
+{
+  id: 'qz-primer-024', topic: 'primer', multi: true,
+  q: 'Bạn có ba commit riêng trên nhánh feature chưa chia sẻ với ai; nhánh main trên remote vừa tiến thêm. Hai phát biểu nào đúng về rebase và merge? (Chọn 2)',
+  options: [
+    'Sau khi fetch, rebase nhánh feature lên origin/main có thể phát lại ba commit trên nền mới để lịch sử tuyến tính hơn',
+    'Rebase chỉ đổi vị trí hiển thị của commit, không tạo commit mới nên commit id luôn giữ nguyên',
+    'Có thể rebase nhánh main đã chia sẻ mà không ảnh hưởng ai vì commit id cũ không đổi',
+    'Merge có thể kết hợp hai nhánh mà giữ nguyên các commit hiện có; nếu lịch sử phân nhánh, merge commit có thể ghi lại điểm kết hợp',
+    'Sau mọi lần rebase phải force-push nhánh main để cập nhật commit'
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: rebase phát lại commit trên nền mới; merge giữ lịch sử và có thể tạo merge commit.**
+
+### Hai cách kết hợp lịch sử
+{{git fetch}} cập nhật thông tin remote-tracking như {{origin/main}} mà không tự thay đổi nhánh hiện tại. {{git rebase origin/main}} trên nhánh feature lấy các commit riêng của feature rồi phát lại chúng trên đỉnh main mới. Vì commit chứa cả nội dung lẫn cha của nó, commit được phát lại thường có commit id mới.
+
+{{git merge origin/main}} kết hợp hai lịch sử; các commit gốc giữ nguyên id. Nếu hai nhánh đã phân kỳ, Git thường tạo merge commit có hai cha để thể hiện điểm hội tụ, trừ khi có fast-forward.
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng: rebase nhánh riêng**: phù hợp với commit chưa chia sẻ và tạo lịch sử dễ đọc; cần giải quyết conflict nếu thay đổi đụng nhau.
+- **Sai: id luôn giữ nguyên**: đổi commit cha làm thay đổi nội dung commit, nên commit id mới được tạo.
+- **Sai: rebase nhánh đã chia sẻ không ảnh hưởng**: người khác có thể đang dựa trên commit cũ; viết lại lịch sử gây lệch nhánh và buộc họ đồng bộ lại.
+- **Đúng: merge giữ commit hiện có**: merge thể hiện rõ lịch sử phân nhánh; merge commit chỉ xuất hiện khi không thể fast-forward theo cấu hình/thao tác.
+- **Sai: force-push main sau mọi rebase**: thường không cần và nguy hiểm trên nhánh chung. Rebase nhánh riêng có thể cần cập nhật nhánh remote của chính nó bằng cách an toàn theo quy trình team, không phải đẩy ghi đè main.
+
+> Senior tip: quy ước thực tế: rebase commit local chưa chia sẻ để làm lịch sử gọn; merge hoặc quy trình đã thống nhất cho nhánh dùng chung. Không force-push nhánh protected.`
+},
+{
+  id: 'qz-primer-025', topic: 'primer', multi: true,
+  q: 'Một reverse proxy chuyển request tới backend. Hai tình huống nào thường tương ứng với HTTP 502 và 504? (Chọn 2)',
+  options: [
+    'Backend trả response hợp lệ trước hạn chờ; proxy ghi nhận 504 vì response đến quá sớm',
+    'Proxy không nhận được response kịp thời từ upstream trước timeout; proxy trả 504 Gateway Timeout',
+    'Client gửi JSON sai cú pháp trực tiếp tới backend; proxy luôn phải đổi thành 502',
+    'Proxy kết nối được upstream nhưng upstream trả response không hợp lệ; proxy có thể trả 502 Bad Gateway',
+    'Mọi lỗi trong code backend đều phải thành 502, bất kể proxy có nhận response hay không'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: timeout khi chờ upstream thường là 504; response upstream lỗi/không hợp lệ thường là 502.**
+
+### Vai trò của gateway
+{{Reverse proxy}} (proxy ngược) nhận request từ client rồi chuyển tiếp tới một server phía sau, gọi là {{upstream}}. Proxy cần báo lỗi gateway khi không thể cung cấp response hợp lệ từ upstream.
+
+{{504 Gateway Timeout}} thường nghĩa là proxy/gateway không nhận được response kịp thời từ upstream. {{502 Bad Gateway}} thường nghĩa là proxy nhận được phản hồi không hợp lệ hoặc không thể dùng được từ upstream. Cách triển khai cụ thể có thể khác đôi chút giữa proxy, nhưng hai mã giúp phân loại timeout với lỗi gateway-response.
+
+### Vì sao từng phương án đúng hoặc sai
+- **Sai: response hợp lệ đến sớm gây 504**: timeout là chờ quá lâu, không phải response đến sớm.
+- **Đúng: hết thời gian chờ upstream**: nếu proxy chờ vượt timeout mà không có response, 504 là biểu hiện thường gặp.
+- **Sai: JSON client lỗi luôn là 502**: lỗi cú pháp request thuộc phía client/backend validation, thường được ứng dụng trả 4xx; không tự động thành lỗi gateway.
+- **Đúng: response upstream không hợp lệ**: proxy không thể chuyển tiếp response hợp lệ nên 502 phù hợp trong trường hợp phổ biến.
+- **Sai: mọi lỗi backend là 502**: nếu backend gửi một HTTP 500 hợp lệ, proxy thường chuyển tiếp 500; 502 không đồng nghĩa mọi lỗi nghiệp vụ hoặc lỗi code.
+
+> Senior tip: khi thấy 502/504, so sánh log proxy với log backend theo cùng request id. Backend không có request thường gợi ý vấn đề kết nối/routing; backend ghi nhận xử lý lâu thường hướng tới timeout hoặc phụ thuộc chậm.`
+},
 );

@@ -2112,5 +2112,442 @@ Câu trả lời này trung thực về một điểm yếu thực sự (ngần 
 - **Phương án 3**: "I am not good at English, so I cannot communicate well." là một điểm yếu cốt lõi đối với vị trí yêu cầu giao tiếp, và không nêu hành động cải thiện. Có thể khiến interviewer lo ngại về khả năng làm việc của bạn.
 
 > Senior tip: khi trả lời về điểm yếu, hãy chọn một điểm yếu thực sự nhưng không phải kỹ năng cốt lõi của vị trí, rồi nêu hành động đang cải thiện và kết quả đã đạt được. Tránh điểm yếu giả và tránh điểm yếu ảnh hưởng trực tiếp đến công việc chính.`
-}
+},
+{
+  id: 'qz-banking-013',
+  topic: 'banking',
+  q: 'Trong hệ thống thanh toán, ledger (sổ cái) là gì và tại sao ledger thường được thiết kế chỉ cho phép thêm bản ghi (append-only), không cho sửa hay xóa?',
+  options: [
+    'Ledger là bảng lưu số dư tài khoản và được thiết kế append-only để tiết kiệm dung lượng lưu trữ',
+    'Ledger là sổ ghi lại mọi bút toán thay đổi số dư; append-only để giữ vết kiểm toán đầy đủ, tránh mất lịch sử và dễ đối soát khi có tranh chấp',
+    'Ledger là bảng log của cơ sở dữ liệu, append-only vì cơ sở dữ liệu không hỗ trợ UPDATE trên bảng tài chính',
+    'Ledger chỉ dùng cho ngân hàng trung ương, append-only để tuân thủ chuẩn ISO 8583'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Thuật ngữ
+- **Ledger (sổ cái)**: bảng hoặc hệ thống ghi lại từng bút toán (một lần ghi nhận thay đổi tiền, ví dụ trừ tiền, cộng tiền, phí). Mỗi bút toán là một dòng riêng, có thời gian, số tiền, tài khoản liên quan, mã giao dịch.
+- **Append-only**: chỉ cho phép thêm bản ghi mới, không cho sửa (UPDATE) hoặc xóa (DELETE) bản ghi cũ.
+- **Vết kiểm toán (audit trail)**: lịch sử đầy đủ ai đã làm gì, khi nào, để kiểm tra sau này.
+
+### Vì sao đúng
+Ledger ghi lại **mọi thay đổi** của số dư dưới dạng các bút toán. Số dư hiện tại có thể tính bằng cách cộng trừ các bút toán từ đầu (hoặc từ một mốc snapshot). Nếu cho phép sửa hoặc xóa bút toán cũ, bạn sẽ mất lịch sử: không biết ai đổi, đổi lúc nào, và không thể tái hiện trạng thái tài khoản tại một thời điểm trong quá khứ. Trong tài chính, điều này rất nguy hiểm vì khi có tranh chấp (khách khiếu nại bị trừ nhầm tiền), cần bằng chứng rõ ràng. Append-only giúp:
+- Giữ **vết kiểm toán** đầy đủ, không ai âm thầm sửa số.
+- **Đối soát** dễ hơn: so sánh từng bút toán với đối tác.
+- Nếu ghi sai, tạo một bút toán đảo ngược (reversal/adjustment) thay vì sửa bản ghi cũ.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: append-only thường làm tốn dung lượng hơn (vì không xóa), không phải để tiết kiệm. Số dư thường được lưu ở bảng riêng hoặc tính từ ledger, không phải ledger chỉ là bảng số dư.
+- **Phương án 2**: ledger là khái niệm nghiệp vụ, không phải log kỹ thuật của cơ sở dữ liệu. Hầu hết cơ sở dữ liệu đều hỗ trợ UPDATE, nhưng nghiệp vụ tài chính chủ động không dùng UPDATE trên ledger.
+- **Phương án 3**: ledger dùng trong mọi hệ thống tài chính (ngân hàng, ví điện tử, sàn giao dịch), không chỉ ngân hàng trung ương. ISO 8583 là chuẩn định dạng thông điệp thẻ, không quy định cách lưu ledger.
+
+> Senior tip: Trong thực tế, ledger append-only kết hợp với snapshot số dư định kỳ (ví dụ cuối ngày) để truy vấn nhanh. Khi cần điều chỉnh, dùng bút toán bù trừ (compensating entry) và ghi rõ lý do, mã tham chiếu đến bút toán gốc.`
+},
+{
+  id: 'qz-banking-014',
+  topic: 'banking',
+  multi: true,
+  q: 'Hệ thống ghi sổ kép (double-entry bookkeeping) trong core banking có những đặc điểm nào sau đây? (Chọn 2)',
+  options: [
+    'Mỗi giao dịch luôn ghi ít nhất hai bút toán: một bên ghi nợ (debit) và một bên ghi có (credit), tổng debit bằng tổng credit',
+    'Chỉ ghi một bút toán vào tài khoản của khách hàng để đơn giản hóa và tăng tốc độ xử lý',
+    'Giúp phát hiện sai lệch nhanh vì tổng số dư toàn hệ thống phải cân bằng (tổng debit trừ tổng credit bằng 0)',
+    'Chỉ áp dụng cho giao dịch quốc tế, giao dịch nội địa dùng ghi sổ đơn (single-entry)'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 0 và 2.**
+
+### Thuật ngữ
+- **Ghi sổ kép (double-entry bookkeeping)**: phương pháp ghi sổ kế toán trong đó mỗi giao dịch được ghi vào ít nhất hai tài khoản: một (hoặc nhiều) bên **ghi nợ (debit)** và một (hoặc nhiều) bên **ghi có (credit)**.
+- **Debit/Credit**: hai chiều ghi nhận trong kế toán. Ví dụ đơn giản: khi khách A chuyển 100 cho khách B, tài khoản A bị debit 100 (giảm), tài khoản B được credit 100 (tăng).
+
+### Vì sao đúng
+- **Phương án 0 đúng**: nguyên tắc cốt lõi của sổ kép là mỗi giao dịch tạo ít nhất 2 bút toán và **tổng debit = tổng credit**. Điều này đảm bảo phương trình kế toán luôn cân bằng. Ví dụ chuyển 100 từ A sang B: debit tài khoản A 100, credit tài khoản B 100.
+- **Phương án 2 đúng**: vì mỗi giao dịch luôn cân bằng, tổng debit của toàn bộ ledger trừ tổng credit phải bằng 0. Nếu lệch, chắc chắn có lỗi (thiếu bút toán, ghi sai số tiền, hoặc ghi trùng). Đây là cơ chế tự kiểm tra mạnh mẽ giúp phát hiện sai lệch sớm.
+
+### Vì sao các phương án khác sai
+- **Phương án 1**: ghi sổ đơn (chỉ ghi một bên) không đảm bảo cân bằng, khó phát hiện lỗi và không đáp ứng yêu cầu kiểm toán của hệ thống tài chính. Core banking bắt buộc dùng sổ kép.
+- **Phương án 3**: sổ kép áp dụng cho **mọi** giao dịch tài chính, bất kể nội địa hay quốc tế. Đây là nguyên tắc kế toán cơ bản, không phụ thuộc loại giao dịch.
+
+> Senior tip: Khi thiết kế schema ledger, nên có bảng bút toán (entries) với các cột như account_id, amount, direction (debit/credit), transaction_id, created_at. Thêm constraint hoặc kiểm tra trong transaction để đảm bảo tổng debit = tổng credit trước khi commit.`
+},
+{
+  id: 'qz-banking-015',
+  topic: 'banking',
+  q: 'Khi tích hợp thanh toán với đối tác (payment gateway, ví điện tử), vì sao cần dùng idempotency key cho API tạo giao dịch?',
+  options: [
+    'Để tăng tốc độ xử lý bằng cách cache kết quả và không gọi xuống core banking',
+    'Để khi client hoặc mạng retry cùng một yêu cầu, hệ thống chỉ xử lý một lần và trả lại kết quả cũ, tránh trừ tiền hoặc ghi nhận trùng',
+    'Để mã hóa dữ liệu giao dịch nhằm bảo mật khi truyền qua mạng',
+    'Để đối tác biết giao dịch thuộc loại nào (chuyển tiền, nạp tiền, rút tiền)'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Thuật ngữ
+- **Idempotency (tính lũy đẳng)**: thực hiện cùng một thao tác nhiều lần cho kết quả giống như thực hiện một lần. Ví dụ gọi "trừ 100" với cùng một mã yêu cầu 3 lần thì tài khoản chỉ bị trừ 100 một lần.
+- **Idempotency key**: một chuỗi định danh duy nhất (thường do client tạo, ví dụ UUID) gắn với mỗi yêu cầu giao dịch. Server dùng key này để nhận biết yêu cầu trùng.
+- **Retry**: thử lại. Khi mạng lỗi hoặc timeout, client không biết yêu cầu đã được xử lý chưa nên thường gửi lại.
+
+### Vì sao đúng
+Trong thanh toán, mạng không đáng tin cậy: client gửi yêu cầu "chuyển 500k", server xử lý thành công nhưng phản hồi bị mất do timeout. Client nghĩ thất bại và gửi lại. Nếu không có cơ chế chống trùng, server sẽ xử lý lần nữa và trừ tiền hai lần. Idempotency key giải quyết vấn đề này:
+1. Client gửi yêu cầu kèm key (ví dụ {{Idempotency-Key: abc-123}}).
+2. Server kiểm tra key: nếu chưa thấy, xử lý giao dịch và lưu kết quả gắn với key (trong cùng transaction DB).
+3. Nếu thấy key đã tồn tại, không xử lý lại mà trả về kết quả đã lưu.
+
+Nhờ đó retry an toàn, không gây trùng tiền.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: cache có thể là kỹ thuật hỗ trợ, nhưng mục tiêu chính của idempotency key là **đúng nghiệp vụ** (không trùng giao dịch), không phải tăng tốc. Với giao dịch tiền, đúng quan trọng hơn nhanh.
+- **Phương án 2**: mã hóa dữ liệu là nhiệm vụ của TLS/HTTPS hoặc mã hóa trường nhạy cảm, không liên quan đến idempotency key.
+- **Phương án 3**: loại giao dịch được xác định bằng trường nghiệp vụ (type/operation), không phải idempotency key.
+
+> Senior tip: Lưu idempotency key với unique constraint trong DB và kiểm tra trong cùng transaction với bút toán. Đặt TTL (ví dụ 24-72 giờ) để dọn key cũ, nhưng phải đủ dài để bao phủ cửa sổ retry của đối tác. Nếu đối tác không gửi key, hãy sinh key phía server từ hash của (đối tác, mã giao dịch đối tác, số tiền) nhưng tốt nhất vẫn yêu cầu đối tác cung cấp.`
+},
+{
+  id: 'qz-banking-016',
+  topic: 'banking',
+  multi: true,
+  q: 'Trong quy trình đối soát (reconciliation) cuối ngày giữa hệ thống của bạn và ngân hàng đối tác, những bước nào là thực hành đúng? (Chọn 2)',
+  options: [
+    'So khớp từng giao dịch dựa trên mã tham chiếu duy nhất và số tiền, sau đó phân loại thành khớp (matched), lệch (mismatched) và chưa khớp (unmatched)',
+    'Chỉ so sánh tổng số tiền cuối ngày; nếu tổng bằng nhau thì coi như tất cả giao dịch đều đúng',
+    'Với các dòng chưa khớp do chênh lệch thời gian (timing), đưa vào hàng chờ và tự động thử khớp lại ở kỳ đối soát tiếp theo',
+    'Tự động xóa các giao dịch chưa khớp sau 1 giờ để tránh làm đầy cơ sở dữ liệu'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 0 và 2.**
+
+### Thuật ngữ
+- **Đối soát (reconciliation)**: quá trình so sánh dữ liệu giao dịch giữa hai bên (ví dụ hệ thống nội bộ và file sao kê của ngân hàng đối tác) để đảm bảo khớp nhau.
+- **Matched / Mismatched / Unmatched**: khớp hoàn toàn; tìm thấy cặp nhưng khác thuộc tính (ví dụ lệch số tiền, lệch trạng thái); chỉ có ở một bên.
+- **Timing difference**: lệch do thời gian, ví dụ bên A đã ghi nhận nhưng bên B sẽ ghi nhận ở kỳ sau.
+
+### Vì sao đúng
+- **Phương án 0 đúng**: đối soát đúng phải đi từng giao dịch, dùng mã tham chiếu (reference id, trace number) và đối chiếu các trường quan trọng (số tiền, loại giao dịch, trạng thái). Sau đó phân loại rõ ràng để xử lý: matched thì đóng, mismatched cần điều tra nguyên nhân, unmatched cần theo dõi.
+- **Phương án 2 đúng**: timing difference là trường hợp phổ biến (giao dịch gần thời điểm cắt file, hoặc xử lý chậm ở một bên). Cách xử lý đúng là đưa vào hàng chờ (unmatched queue) và tự động khớp khi giao dịch xuất hiện ở kỳ sau, đồng thời có ngưỡng cảnh báo (SLA) nếu quá lâu vẫn chưa khớp.
+
+### Vì sao các phương án khác sai
+- **Phương án 1**: chỉ so tổng là rất rủi ro. Hai sai lệch có thể triệt tiêu nhau (một giao dịch thừa 100k, một giao dịch thiếu 100k) khiến tổng vẫn khớp nhưng thực tế sai. Đối soát tài chính bắt buộc phải khớp ở mức từng giao dịch.
+- **Phương án 3**: xóa giao dịch chưa khớp làm mất dấu vết, vi phạm yêu cầu lưu trữ và kiểm toán. Dòng chưa khớp phải được giữ lại, theo dõi và leo thang (escalate) nếu vượt SLA, không được xóa âm thầm.
+
+> Senior tip: Thiết kế bảng đối soát có trạng thái rõ ràng (PENDING, MATCHED, MISMATCHED, RESOLVED) và lưu lý do xử lý. Tạo báo cáo aging cho unmatched (ví dụ > 24h, > 48h) để đội vận hành ưu tiên điều tra. Mọi thao tác điều chỉnh phải tạo bút toán bù trừ, không sửa trực tiếp bản ghi gốc.`
+},
+{
+  id: 'qz-banking-017',
+  topic: 'banking',
+  q: 'ISO 8583 là gì trong bối cảnh thanh toán thẻ, và backend Java thường tương tác với nó như thế nào?',
+  options: [
+    'ISO 8583 là chuẩn mã hóa dữ liệu thẻ, backend dùng nó để mã hóa số thẻ trước khi lưu vào cơ sở dữ liệu',
+    'ISO 8583 là chuẩn định dạng thông điệp trao đổi giao dịch thẻ (ví dụ yêu cầu/đáp ứng ủy quyền) giữa thiết bị/POS, switch và ngân hàng; backend thường dùng thư viện để đóng gói và giải mã các trường (field) theo bitmap',
+    'ISO 8583 là giao thức truyền file sao kê hằng ngày giữa các ngân hàng, thay thế cho SFTP',
+    'ISO 8583 là chuẩn REST API cho thanh toán di động do ngân hàng trung ương ban hành'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Thuật ngữ
+- **ISO 8583**: chuẩn quốc tế định nghĩa cấu trúc thông điệp (message) dùng trong giao dịch thẻ (rút tiền ATM, quẹt thẻ POS, thanh toán online qua một số kênh truyền thống).
+- **Switch (bộ chuyển mạch thẻ)**: hệ thống trung gian nhận thông điệp giao dịch và định tuyến đến ngân hàng phát hành/thu nhận phù hợp.
+- **Bitmap**: chuỗi bit cho biết trường (field) nào có mặt trong thông điệp. Mỗi field mang một thông tin (số thẻ, số tiền, thời gian, mã phản hồi...).
+
+### Vì sao đúng
+ISO 8583 mô tả cách đóng gói thông điệp giao dịch thẻ: có **MTI (Message Type Indicator)** cho biết loại thông điệp (ví dụ yêu cầu ủy quyền, đảo ngược), **bitmap** chỉ ra các field xuất hiện, và các **data elements** chứa dữ liệu thực tế (số tiền, thời gian, mã terminal, mã phản hồi...). Ví dụ khi quẹt thẻ, POS gửi thông điệp ủy quyền qua switch tới ngân hàng phát hành để hỏi "có đủ tiền và hợp lệ không", ngân hàng trả về mã chấp nhận hoặc từ chối.
+
+Backend Java tích hợp với hệ thống thẻ thường dùng thư viện (ví dụ jPOS) để parse/pack thông điệp ISO 8583, kết nối qua TCP socket (thường kết nối bền, có heartbeat), và xử lý timeout, đảo ngược (reversal) khi không nhận được phản hồi.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: mã hóa dữ liệu thẻ liên quan đến chuẩn PCI DSS và các kỹ thuật như tokenization, mã hóa AES/RSA, không phải ISO 8583. ISO 8583 là định dạng thông điệp, không phải thuật toán mã hóa.
+- **Phương án 2**: ISO 8583 là thông điệp giao dịch thời gian thực (hoặc gần thời gian thực), không phải định dạng file sao kê. Sao kê thường dùng file (CSV, XML, hoặc chuẩn khác như ISO 20022 trong một số luồng).
+- **Phương án 3**: ISO 8583 không phải REST API và không dành riêng cho thanh toán di động. Nhiều hệ thống hiện đại dùng REST/JSON, nhưng ISO 8583 vẫn phổ biến trong hạ tầng thẻ truyền thống.
+
+> Senior tip: Khi làm việc với ISO 8583, luôn xử lý trường hợp timeout như "kết quả không xác định": cần gửi thông điệp reversal hoặc tra soát (inquiry) thay vì tự ý retry tạo giao dịch mới, để tránh trừ tiền kép. Log đầy đủ mã tham chiếu (STAN, RRN) để đối soát.`
+},
+{
+  id: 'qz-banking-018',
+  topic: 'banking',
+  q: 'ISO 20022 thường được nhắc đến như chuẩn thay thế/dần bổ sung cho các định dạng cũ trong chuyển tiền liên ngân hàng. Điểm khác biệt chính ở mức khái niệm là gì?',
+  options: [
+    'ISO 20022 chỉ dùng cho tiền mã hóa (crypto), còn chuyển tiền ngân hàng vẫn dùng ISO 8583',
+    'ISO 20022 dùng thông điệp có cấu trúc phong phú (thường XML, có ngữ nghĩa rõ ràng) giúp mang nhiều thông tin hơn; ISO 8583 là định dạng trường/bitmap gọn, truyền thống cho giao dịch thẻ',
+    'ISO 20022 là phiên bản nén của ISO 8583 để truyền nhanh hơn trên mạng chậm',
+    'ISO 20022 chỉ định nghĩa cách mã hóa, không định nghĩa nội dung thông điệp'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Thuật ngữ
+- **ISO 20022**: chuẩn quốc tế về thông điệp dữ liệu tài chính, định nghĩa mô hình dữ liệu và cú pháp (thường là XML, đôi khi ASN.1) cho nhiều loại nghiệp vụ (chuyển tiền, thanh toán, chứng khoán...).
+- **Ngữ nghĩa (semantics)**: ý nghĩa rõ ràng của từng trường dữ liệu (ai là người trả, ai nhận, mã mục đích, thông tin remittance...).
+
+### Vì sao đúng
+Ở mức khái niệm, ISO 20022 cung cấp thông điệp **có cấu trúc và giàu ngữ nghĩa**: tên phần tử rõ ràng, có thể mang nhiều thông tin bổ sung (ví dụ thông tin người gửi/nhận chi tiết, mục đích thanh toán, mã tham chiếu end-to-end). Điều này giúp tự động hóa, đối soát và tuân thủ (chống rửa tiền, truy vết) tốt hơn.
+
+Ngược lại, ISO 8583 là chuẩn truyền thống cho giao dịch thẻ, dùng **bitmap và các field cố định/độ dài quy định**, gọn nhẹ và tối ưu cho xử lý thời gian thực nhưng ít không gian cho dữ liệu ngữ nghĩa phong phú. Hai chuẩn phục vụ các bối cảnh khác nhau và đang cùng tồn tại trong nhiều hệ thống.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: ISO 20022 được dùng rộng rãi trong chuyển tiền và thanh toán ngân hàng (ví dụ SWIFT migration, nhiều hệ thống thanh toán thời gian thực), không dành cho crypto.
+- **Phương án 2**: ISO 20022 không phải bản nén của ISO 8583; chúng là các chuẩn khác nhau về mô hình và mục tiêu. Thông điệp ISO 20022 thường **lớn hơn** vì mang nhiều thông tin.
+- **Phương án 3**: ISO 20022 định nghĩa cả mô hình dữ liệu và nội dung thông điệp, không chỉ mã hóa đường truyền.
+
+> Senior tip: Khi backend tích hợp chuyển tiền liên ngân hàng theo ISO 20022, hãy chú ý mapping dữ liệu (tên người nhận, địa chỉ, mã mục đích) và kiểm tra độ dài/định dạng trường vì khác ngân hàng có thể có profile khác nhau. Lưu trữ bản gốc thông điệp để phục vụ tra soát và tuân thủ.`
+},
+{
+  id: 'qz-banking-019',
+  topic: 'banking',
+  multi: true,
+  q: 'Theo nguyên tắc bảo mật dữ liệu thẻ (ví dụ PCI DSS, Payment Card Industry Data Security Standard - chuẩn bảo mật dữ liệu ngành thẻ), những thực hành nào sau đây là đúng? (Chọn 2)',
+  options: [
+    'Không lưu mã CVV/CVC sau khi giao dịch đã được ủy quyền, kể cả khi đã mã hóa',
+    'Có thể lưu trữ số thẻ đầy đủ (PAN - Primary Account Number) ở dạng văn bản thường nếu cơ sở dữ liệu đã có mật khẩu',
+    'Nếu cần lưu PAN, phải bảo vệ bằng các biện pháp như mã hóa mạnh, tokenization (thay số thẻ bằng mã đại diện) hoặc che bớt khi hiển thị (masking)',
+    'Ghi log đầy đủ số thẻ, CVV và ngày hết hạn để tiện điều tra sự cố'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 0 và 2.**
+
+### Thuật ngữ
+- **PCI DSS (Payment Card Industry Data Security Standard)**: bộ tiêu chuẩn bảo mật dành cho hệ thống lưu trữ, xử lý hoặc truyền dữ liệu thẻ.
+- **PAN (Primary Account Number)**: số thẻ đầy đủ in trên thẻ.
+- **CVV/CVC**: mã xác thực (thường 3 hoặc 4 số) dùng để chứng minh người dùng có thẻ khi thanh toán không tiếp xúc trực tiếp.
+- **Tokenization**: thay PAN thật bằng một mã đại diện (token) không có giá trị nếu bị lộ; hệ thống an toàn riêng sẽ ánh xạ token về PAN khi cần.
+- **Masking**: che bớt khi hiển thị, ví dụ chỉ hiện 4 số cuối.
+
+### Vì sao đúng
+- **Phương án 0 đúng**: dữ liệu xác thực nhạy cảm như CVV/CVC **không được lưu** sau khi ủy quyền, dù có mã hóa hay không. Đây là nguyên tắc nghiêm ngặt để giảm thiểu thiệt hại nếu hệ thống bị xâm nhập.
+- **Phương án 2 đúng**: nếu có nhu cầu nghiệp vụ lưu PAN, phải áp dụng biện pháp bảo vệ mạnh: mã hóa, tokenization, kiểm soát truy cập chặt, và chỉ hiển thị dạng che bớt (ví dụ {{**** **** **** 1234}}). Mục tiêu là giảm phạm vi tiếp xúc dữ liệu thẻ.
+
+### Vì sao các phương án khác sai
+- **Phương án 1**: lưu PAN dạng văn bản thường (plain text) là vi phạm nghiêm trọng, ngay cả khi DB có mật khẩu. Nếu bị rò rỉ dữ liệu (backup, log, truy cập trái phép), số thẻ sẽ lộ hoàn toàn.
+- **Phương án 3**: không bao giờ ghi log CVV và không ghi log PAN đầy đủ. Log là nơi dễ bị sao chép và truy cập rộng rãi; chỉ nên log thông tin tối thiểu cần thiết (ví dụ 4 số cuối, mã tham chiếu giao dịch).
+
+> Senior tip: Thiết kế hệ thống để **giảm phạm vi PCI**: đẩy việc nhập và xử lý thẻ sang trang/SDK của cổng thanh toán (hosted payment page) để backend chỉ nhận token. Kiểm tra log, exception và tracing để chắc chắn không vô tình in dữ liệu thẻ nhạy cảm.`
+},
+{
+  id: 'qz-banking-020',
+  topic: 'banking',
+  q: 'Khi một giao dịch chuyển tiền bị nghi ngờ thành công ở core banking nhưng phía đối tác không nhận được phản hồi (timeout), cách xử lý an toàn nhất là gì?',
+  options: [
+    'Tự động gửi lại yêu cầu chuyển tiền ngay lập tức với một mã giao dịch mới để đảm bảo đối tác nhận được',
+    'Tra soát trạng thái giao dịch bằng mã tham chiếu gốc (inquiry/reversal flow theo quy tắc đối tác) trước khi quyết định gửi lại hay đảo ngược',
+    'Giả định giao dịch đã thất bại và hoàn tiền cho khách ngay lập tức',
+    'Bỏ qua vì timeout thường có nghĩa là giao dịch đã thành công'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Thuật ngữ
+- **Timeout**: hết thời gian chờ phản hồi. Khi timeout xảy ra, bạn không biết giao dịch đã được xử lý, đang xử lý, hay thất bại ở phía bên kia.
+- **Tra soát (inquiry/status check)**: gọi một API/luồng riêng để hỏi trạng thái của giao dịch theo mã tham chiếu gốc.
+- **Reversal (đảo ngược)**: yêu cầu hủy/hoàn tác một giao dịch đã ủy quyền theo đúng quy trình của đối tác.
+
+### Vì sao đúng
+Timeout tạo ra trạng thái "không xác định" (unknown state). Hành động an toàn là **giữ nguyên mã giao dịch gốc** và tra soát trạng thái với đối tác: giao dịch thành công, thất bại, hay đang chờ xử lý. Dựa trên kết quả tra soát, hệ thống mới quyết định cập nhật trạng thái, gửi reversal (nếu cần và được hỗ trợ), hoặc hướng dẫn xử lý thủ công. Điều quan trọng là mọi bước đều dựa trên mã tham chiếu gốc để đối tác nhận diện đúng giao dịch.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: gửi lại với **mã giao dịch mới** có nguy cơ tạo giao dịch thứ hai (trừ tiền hai lần) nếu giao dịch đầu tiên thực ra đã thành công. Retry chỉ an toàn khi dùng cùng idempotency key/mã tham chiếu gốc và đối tác hỗ trợ idempotent.
+- **Phương án 2**: giả định thất bại và hoàn tiền ngay có thể gây sai lệch (tiền đã chuyển thành công nhưng vẫn hoàn), tạo rủi ro mất tiền và khó đối soát.
+- **Phương án 3**: giả định thành công cũng nguy hiểm tương tự; khách có thể không nhận được tiền hoặc hệ thống ghi nhận sai. Không được đoán trạng thái khi timeout.
+
+> Senior tip: Thiết kế luồng thanh toán với trạng thái rõ ràng (PENDING, SUCCESS, FAILED, UNKNOWN). Các giao dịch UNKNOWN phải được job tra soát tự động xử lý và có cảnh báo nếu quá thời gian cho phép. Luôn log đầy đủ mã tham chiếu hai phía để đội vận hành đối chiếu nhanh.`
+},
+{
+  id: 'qz-banking-021',
+  topic: 'banking',
+  multi: true,
+  q: 'Khi thiết kế API thanh toán nội bộ, những lựa chọn nào giúp đảm bảo an toàn khi client gửi trùng yêu cầu (duplicate request)? (Chọn 2)',
+  options: [
+    'Yêu cầu client gửi idempotency key duy nhất cho mỗi ý định giao dịch và lưu key này kèm kết quả trong cùng transaction với nghiệp vụ',
+    'Dựa vào timestamp của client để phân biệt hai yêu cầu; nếu khác mili giây thì coi là hai giao dịch khác nhau',
+    'Đặt unique constraint ở cơ sở dữ liệu trên (idempotency key, đối tác) hoặc trên mã giao dịch nghiệp vụ để chặn ghi trùng ở tầng dữ liệu',
+    'Chỉ kiểm tra trùng ở bộ nhớ (in-memory cache) của một instance vì nhanh hơn cơ sở dữ liệu'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 0 và 2.**
+
+### Thuật ngữ
+- **Ý định giao dịch**: một hành động người dùng muốn thực hiện (ví dụ "chuyển 200k cho B"). Dù gửi nhiều lần do retry, đó vẫn là cùng một ý định.
+- **Unique constraint**: ràng buộc duy nhất trong cơ sở dữ liệu, đảm bảo không có hai dòng trùng giá trị ở cột/nhóm cột được chỉ định.
+- **In-memory cache**: bộ nhớ tạm trong RAM của một tiến trình/instance ứng dụng.
+
+### Vì sao đúng
+- **Phương án 0 đúng**: idempotency key đại diện cho ý định giao dịch. Lưu key và kết quả trong **cùng transaction** với bút toán giúp tránh race condition (hai request song song cùng kiểm tra "chưa có key" rồi cùng xử lý).
+- **Phương án 2 đúng**: unique constraint là "lưới an toàn" ở tầng dữ liệu. Kể cả khi logic ứng dụng có lỗi hoặc chạy song song, DB sẽ từ chối bản ghi trùng. Kết hợp logic kiểm tra + constraint DB cho độ an toàn cao.
+
+### Vì sao các phương án khác sai
+- **Phương án 1**: timestamp của client không đáng tin cậy (đồng hồ lệch, client cố tình gửi khác, hoặc hai retry thực sự là cùng ý định). Dùng timestamp để phân biệt giao dịch dễ tạo trùng hoặc bỏ sót.
+- **Phương án 3**: chỉ dùng in-memory cache trên một instance không an toàn khi có nhiều instance (mỗi instance có cache riêng) hoặc khi instance restart (mất cache). Giao dịch tài chính cần nguồn sự thật bền vững (durable), thường là cơ sở dữ liệu.
+
+> Senior tip: Khi gặp unique constraint violation do request trùng, hãy đọc lại kết quả đã lưu và trả về phản hồi thành công tương ứng thay vì báo lỗi 500. Điều này giúp client retry nhận được kết quả nhất quán.`
+},
+{
+  id: 'qz-banking-022',
+  topic: 'banking',
+  q: 'Trong đối soát, bạn thấy một giao dịch có ở file của ngân hàng đối tác nhưng không có trong core banking. Trạng thái hợp lý ban đầu và hướng xử lý đúng là gì?',
+  options: [
+    'Đánh dấu matched vì đối tác đã thu tiền thành công',
+    'Đánh dấu unmatched (lệch phía core), giữ trong hàng chờ điều tra: kiểm tra log tiếp nhận, độ trễ xử lý, và chỉ tạo bút toán bổ sung khi có bằng chứng nghiệp vụ rõ ràng',
+    'Tự động tạo giao dịch thành công trong core banking để khớp số liệu ngay',
+    'Xóa dòng này khỏi báo cáo vì core banking là nguồn sự thật duy nhất'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Thuật ngữ
+- **Nguồn sự thật (source of truth)**: hệ thống được coi là chuẩn để quyết định trạng thái cuối cùng. Trong nhiều luồng, core banking là nguồn sự thật về sổ cái, nhưng vẫn phải giải trình được mọi khoản tiền thực tế.
+- **Unmatched**: trạng thái chưa tìm thấy cặp tương ứng ở bên còn lại.
+
+### Vì sao đúng
+Khi giao dịch xuất hiện ở đối tác nhưng chưa có trong core, không được kết luận vội. Có thể do: thông điệp callback đến trễ, lỗi xử lý nội bộ, giao dịch bị từ chối nhưng file hiển thị khác trạng thái, hoặc thực sự thiếu ghi nhận. Cách xử lý an toàn:
+1. Đánh dấu **unmatched** và lưu chi tiết (mã tham chiếu, số tiền, thời gian, kênh).
+2. Điều tra: tìm trong log tiếp nhận, hàng đợi, bảng outbox/inbox, và kiểm tra idempotency.
+3. Chỉ khi có bằng chứng giao dịch **hợp lệ và chưa được ghi nhận**, mới thực hiện bút toán bổ sung theo quy trình được kiểm soát (thường cần phê duyệt/giám sát). Mọi bước phải để lại dấu vết.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: chưa có trong core thì không thể coi là matched. Matched yêu cầu tìm được cặp tương ứng và các thuộc tính quan trọng khớp nhau.
+- **Phương án 2**: tự động tạo giao dịch để "cho khớp" là rất nguy hiểm, có thể ghi nhận trùng (nếu thực ra đã ghi nhưng tìm sai khóa) hoặc ghi nhận giao dịch không hợp lệ.
+- **Phương án 3**: xóa khỏi báo cáo làm mất khả năng phát hiện thất thoát hoặc sai sót. Dòng lệch phải được theo dõi đến khi có kết luận rõ ràng.
+
+> Senior tip: Phân loại nguyên nhân unmatched (timing, thiếu dữ liệu, sai số tiền, sai trạng thái) để có hành động phù hợp. Đặt SLA và cảnh báo cho các dòng unmatched quá hạn, vì chúng có thể ảnh hưởng đến báo cáo tài chính và trải nghiệm khách hàng.`
+},
+{
+  id: 'qz-banking-023',
+  topic: 'banking',
+  multi: true,
+  q: 'Một backend Java nhận thông tin thẻ từ người dùng qua API. Những cách xử lý nào giúp giảm rủi ro lộ dữ liệu thẻ? (Chọn 2)',
+  options: [
+    'Chuyển việc thu thập thẻ sang trang/SDK của cổng thanh toán được chứng nhận, backend chỉ nhận token giao dịch thay vì PAN/CVV',
+    'Ghi toàn bộ request/response vào log mức DEBUG để dễ debug khi có lỗi thanh toán',
+    'Che bớt (mask) PAN khi hiển thị và khi lưu log nghiệp vụ, chỉ giữ thông tin tối thiểu cần thiết như 4-6 số cuối và mã tham chiếu',
+    'Lưu CVV trong cơ sở dữ liệu nội bộ nhưng đặt quyền đọc chỉ cho service thanh toán'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 0 và 2.**
+
+### Thuật ngữ
+- **Hosted payment page / payment SDK**: trang hoặc bộ công cụ do cổng thanh toán cung cấp để người dùng nhập thông tin thẻ trực tiếp trên hạ tầng của họ.
+- **Token**: mã đại diện thay cho dữ liệu thẻ thật, dùng để tham chiếu giao dịch mà không lộ PAN.
+- **Scope (phạm vi) tuân thủ**: phần hệ thống phải chịu các yêu cầu bảo mật nghiêm ngặt vì có tiếp xúc dữ liệu thẻ.
+
+### Vì sao đúng
+- **Phương án 0 đúng**: không để PAN/CVV đi qua backend của bạn là cách giảm rủi ro mạnh nhất. Backend chỉ làm việc với token/mã tham chiếu, từ đó giảm phạm vi tiếp xúc dữ liệu nhạy cảm và giảm gánh nặng tuân thủ.
+- **Phương án 2 đúng**: masking và nguyên tắc tối thiểu dữ liệu (data minimization) giúp hạn chế thiệt hại nếu log hoặc màn hình vận hành bị lộ. Chỉ lưu/hiện phần cần thiết cho nghiệp vụ và hỗ trợ khách hàng.
+
+### Vì sao các phương án khác sai
+- **Phương án 1**: log DEBUG toàn bộ request/response rất dễ vô tình ghi PAN/CVV. Đây là lỗi phổ biến gây rò rỉ dữ liệu. Cần lọc (redact) trường nhạy cảm trước khi log.
+- **Phương án 3**: CVV không được lưu sau khi ủy quyền trong bất kỳ trường hợp nào, kể cả lưu nội bộ với quyền hạn chế. Quyền truy cập chặt không thay thế cho nguyên tắc "không lưu".
+
+> Senior tip: Rà soát toàn bộ chuỗi: log ứng dụng, APM/tracing, message queue, error tracker và dữ liệu sao lưu. Nhiều sự cố lộ thẻ đến từ các hệ thống quan sát (observability) hoặc bản dump lỗi, không chỉ từ cơ sở dữ liệu chính.`
+},
+{
+  id: 'qz-banking-024',
+  topic: 'banking',
+  q: 'Một dịch vụ thanh toán cần phát sự kiện "giao dịch thành công" cho nhiều hệ thống khác (thông báo, kế toán, phân tích). Nếu cập nhật DB thành công nhưng gửi sự kiện thất bại, cách thiết kế nào đáng tin cậy hơn?',
+  options: [
+    'Gửi sự kiện trước, nếu gửi thành công mới cập nhật DB',
+    'Cập nhật DB và gửi sự kiện trong hai bước độc lập không có cơ chế bù trừ vì lỗi hiếm khi xảy ra',
+    'Dùng transactional outbox: ghi dữ liệu nghiệp vụ và bản ghi sự kiện trong cùng transaction DB, sau đó một tiến trình relay đọc outbox và publish sự kiện',
+    'Chỉ dựa vào log ứng dụng, hệ thống khác tự đọc log để biết giao dịch thành công'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 2.**
+
+### Thuật ngữ
+- **Transactional outbox pattern**: mẫu thiết kế ghi sự kiện cần gửi vào bảng outbox trong **cùng transaction** với dữ liệu nghiệp vụ, rồi publish ra message broker (ví dụ Kafka) bằng một tiến trình riêng.
+- **Message broker**: hệ thống trung gian truyền thông điệp (ví dụ Kafka, RabbitMQ).
+- **At-least-once delivery**: thông điệp có thể được gửi ít nhất một lần (có thể trùng), nên bên nhận cần xử lý idempotent.
+
+### Vì sao đúng
+Vấn đề cốt lõi là **không có transaction chung** giữa DB và message broker. Nếu làm hai bước riêng, có thể DB commit nhưng publish thất bại (mất sự kiện) hoặc ngược lại. Transactional outbox đảm bảo: nếu giao dịch nghiệp vụ thành công thì bản ghi sự kiện cũng được lưu; relay sẽ đọc và publish sau. Nếu relay publish lặp lại, bên nhận xử lý theo idempotency key để tránh tác dụng phụ trùng.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: gửi sự kiện trước rồi mới cập nhật DB có thể gây tình huống ngược lại: sự kiện đã phát ("thành công") nhưng DB rollback/thất bại, khiến các hệ thống khác tin vào trạng thái sai.
+- **Phương án 1**: bỏ qua cơ chế bù trừ vì "hiếm" là rủi ro lớn trong tài chính. Sự cố mạng, broker tạm ngưng, hoặc deploy giữa chừng đều có thể xảy ra.
+- **Phương án 3**: đọc log ứng dụng để làm tích hợp nghiệp vụ không đáng tin cậy (log có thể thiếu, format thay đổi, không có đảm bảo giao hàng), và không phù hợp làm nguồn sự kiện chính thức.
+
+> Senior tip: Thiết kế consumer idempotent (dựa trên event id/transaction id). Theo dõi độ trễ và số bản ghi outbox chưa gửi để phát hiện relay bị kẹt. Nếu throughput cao, có thể dùng cơ chế đọc thay đổi dữ liệu (CDC - Change Data Capture) nhưng vẫn phải đảm bảo ngữ nghĩa giao hàng và idempotency.`
+},
+{
+  id: 'qz-banking-025',
+  topic: 'banking',
+  q: 'Trong ledger ghi sổ kép, điều kiện nào phải đúng trước khi commit một giao dịch hợp lệ?',
+  options: [
+    'Tổng số bút toán trong giao dịch phải là số chẵn',
+    'Tổng giá trị ghi nợ (debit) phải bằng tổng giá trị ghi có (credit) của cùng giao dịch',
+    'Mỗi bút toán phải có số tiền lớn hơn 0 và nhỏ hơn hạn mức ngày',
+    'Chỉ cần một bút toán ghi có vào tài khoản đích là đủ'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Thuật ngữ
+- **Giao dịch kế toán (accounting transaction)**: một nhóm các bút toán liên quan đến cùng một nghiệp vụ (ví dụ chuyển tiền).
+- **Cân bằng (balanced)**: tổng debit bằng tổng credit trong cùng giao dịch.
+
+### Vì sao đúng
+Nguyên tắc bất biến (invariant) của sổ kép là mọi giao dịch phải **cân bằng**: tổng debit = tổng credit. Ví dụ chuyển 100 từ tài khoản A sang B: debit A 100, credit B 100. Nếu có phí 2 thu về tài khoản phí: debit A 102, credit B 100, credit tài khoản phí 2. Kiểm tra cân bằng trước khi commit giúp ngăn trạng thái sổ cái bị sai lệch ngay từ đầu.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: số bút toán thường là số chẵn trong ví dụ đơn giản, nhưng điều kiện cốt lõi không phải "số chẵn" mà là **tổng giá trị cân bằng**. Một giao dịch có thể có 3 bút toán (1 debit, 2 credit) và vẫn hợp lệ nếu cân bằng.
+- **Phương án 2**: số tiền > 0 và hạn mức là quy tắc nghiệp vụ quan trọng nhưng không phải điều kiện định nghĩa của sổ kép. Một số bút toán điều chỉnh có thể theo quy ước riêng, nhưng cân bằng debit/credit vẫn bắt buộc.
+- **Phương án 3**: chỉ ghi một bên vi phạm sổ kép và làm mất cân bằng, không thể biết tiền lấy từ đâu hoặc ghi nhận không đầy đủ.
+
+> Senior tip: Thực thi bất biến cân bằng trong transaction DB (tính tổng debit/credit của các entry cùng transaction_id trước commit). Ghi log chi tiết khi vi phạm để điều tra. Ngoài cân bằng, còn cần kiểm tra số dư khả dụng theo quy tắc nghiệp vụ (ví dụ không cho âm với tài khoản khách hàng thông thường).`
+},
+{
+  id: 'qz-banking-026',
+  topic: 'banking',
+  q: 'Khi tích hợp với cổng thẻ, hệ thống của bạn gửi yêu cầu ủy quyền nhưng bị timeout. Trước khi gửi lại, điều nào là đúng nhất?',
+  options: [
+    'Gửi lại ngay 5 lần liên tiếp với cùng payload để tăng khả năng thành công',
+    'Gửi lại với cùng mã tham chiếu/idempotency theo đặc tả đối tác và thực hiện tra soát trạng thái nếu vẫn không có kết quả rõ ràng',
+    'Đổi sang mã giao dịch mới mỗi lần retry để tránh bị đối tác từ chối do trùng mã',
+    'Coi như thất bại và không retry vì retry luôn gây trừ tiền hai lần'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Thuật ngữ
+- **Ủy quyền (authorization)**: bước xin chấp thuận giao dịch (kiểm tra thẻ hợp lệ, đủ hạn mức/tín dụng).
+- **Mã tham chiếu (reference id, trace id, STAN/RRN tùy ngữ cảnh)**: mã định danh giao dịch dùng để hai bên đối chiếu và xử lý retry/tra soát.
+- **Đặc tả đối tác**: tài liệu tích hợp quy định cách retry, timeout, reversal, và ý nghĩa mã phản hồi.
+
+### Vì sao đúng
+Timeout không cho biết kết quả. Cách xử lý đúng là tuân theo đặc tả: nếu đối tác hỗ trợ idempotent, retry phải dùng **cùng mã tham chiếu** để đối tác nhận ra đó là cùng yêu cầu. Cần có giới hạn số lần và thời gian chờ (backoff). Nếu vẫn không chắc, thực hiện tra soát trạng thái thay vì tạo giao dịch mới bừa bãi. Mục tiêu là vừa tăng khả năng hoàn tất hợp lệ, vừa tránh tạo giao dịch trùng.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: retry dồn dập không kiểm soát có thể làm quá tải hệ thống, và nếu không giữ cùng mã tham chiếu/idempotency thì có nguy cơ tạo nhiều giao dịch.
+- **Phương án 2**: đổi mã giao dịch mới mỗi lần có thể khiến mỗi lần được coi là giao dịch khác nhau, dẫn đến trừ tiền/giữ tiền nhiều lần nếu các yêu cầu trước thực ra đã được xử lý.
+- **Phương án 3**: retry không "luôn" gây trừ tiền hai lần nếu được thiết kế idempotent đúng. Không retry cũng không đúng vì có thể bỏ lỡ cơ hội hoàn tất giao dịch hợp lệ; quan trọng là retry có kiểm soát và đúng đặc tả.
+
+> Senior tip: Phân biệt rõ lỗi "không gửi được" (chưa tới đối tác) và "timeout sau khi gửi" (có thể đã xử lý). Với trường hợp thứ hai, ưu tiên tra soát/reversal flow theo quy trình đối tác. Ghi nhận mọi lần retry với cùng correlation id để dễ điều tra.`
+},
+{
+  id: 'qz-banking-027',
+  topic: 'banking',
+  q: 'Trong file đối soát từ đối tác, một giao dịch có cùng mã tham chiếu với core banking nhưng số tiền khác nhau. Hệ thống nên xử lý thế nào?',
+  options: [
+    'Tự động cập nhật số tiền trong core banking theo file đối tác để khớp nhanh',
+    'Đánh dấu là mismatched (lệch thuộc tính), không tự động sửa, và đưa vào luồng điều tra để xác định bên nào đúng và nguyên nhân (làm tròn, phí, cấu hình sai)',
+    'Coi như matched vì mã tham chiếu đã trùng',
+    'Xóa cả hai bản ghi và yêu cầu khách thực hiện lại giao dịch'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Thuật ngữ
+- **Mismatched**: tìm thấy cặp giao dịch tương ứng (ví dụ cùng mã tham chiếu) nhưng một hoặc nhiều thuộc tính quan trọng không khớp (số tiền, trạng thái, loại tiền tệ...).
+- **Làm tròn (rounding)**: chênh lệch nhỏ do quy tắc làm tròn khác nhau giữa các hệ thống.
+
+### Vì sao đúng
+Khi mã tham chiếu khớp nhưng số tiền khác, đây là **lệch dữ liệu nghiêm trọng** cần điều tra. Nguyên nhân có thể là: cấu hình phí sai, tỷ giá/làm tròn khác nhau, lỗi mapping, hoặc xử lý một phần. Hệ thống đối soát nên đánh dấu mismatched, giữ nguyên dữ liệu hai bên, ghi nhận chi tiết khác biệt, và tạo nhiệm vụ điều tra. Việc điều chỉnh (nếu cần) phải dựa trên bằng chứng và thực hiện bằng bút toán bù trừ có kiểm soát, không tự ý ghi đè.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: tự động ghi đè core banking theo file đối tác là nguy hiểm vì đối tác cũng có thể sai, hoặc sự khác biệt phản ánh phí/thuế cần được xử lý đúng nghiệp vụ. Core banking cần quy trình kiểm soát chặt.
+- **Phương án 2**: mã tham chiếu trùng chỉ giúp ghép cặp, không đủ để kết luận khớp. Số tiền là thuộc tính bắt buộc phải khớp (hoặc nằm trong quy tắc chênh lệch cho phép được định nghĩa rõ).
+- **Phương án 3**: xóa bản ghi và yêu cầu khách làm lại gây rủi ro trùng giao dịch, mất dấu vết kiểm toán và ảnh hưởng trải nghiệm khách hàng.
+
+> Senior tip: Định nghĩa rõ quy tắc so khớp: trường nào bắt buộc khớp tuyệt đối (mã tham chiếu, tiền tệ), trường nào cho phép sai khác trong ngưỡng (ví dụ chênh lệch làm tròn rất nhỏ nếu được chấp thuận). Mọi ngoại lệ phải được phê duyệt và lưu vết.`
+},
 );

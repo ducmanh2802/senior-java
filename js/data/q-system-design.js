@@ -3186,7 +3186,7 @@ Ví dụ JDK: {{DocumentBuilderFactory}}, {{XMLInputFactory}}.
 
 Dự án thanh toán tích hợp VNPay, MoMo và thẻ quốc tế; mỗi đối tác có client HTTP, cách ký và parse callback khác nhau.
 
-Triệu chứng: sau khi deploy thêm MoMo, giao dịch VNPay cũ bị lỗi "UnsupportedOperationException", thất toán khoảng 5% trong 30 phút.
+Triệu chứng: sau khi deploy thêm MoMo, giao dịch VNPay cũ bị lỗi "UnsupportedOperationException", khoảng 5% giao dịch thanh toán thất bại trong 30 phút.
 
 Điều tra: team dùng Simple Factory, một hàm static switch theo enum. Dev sửa hàm này để thêm case MOMO nhưng vô tình xóa nhánh VNPay khi merge. Không có test riêng cho từng đối tác, nên lỗi chỉ lộ ra trên production sau deploy.
 
@@ -3194,11 +3194,11 @@ Nguyên nhân gốc: Simple Factory vi phạm nguyên lý mở-đóng — thêm 
 
 Cách xử lý: quay về commit trước để khôi phục, rồi refactor sang Abstract Factory: interface {{PaymentKit}} với {{client()}}, {{signer()}}, {{callbackParser()}}; mỗi đối tác một implementation. Inject {{Map<String, PaymentKit>}} vào service, tra cứu theo mã đối tác runtime.
 
-Kết quả: thêm đối tác mới chỉ thêm package mới, không đụng code cũ. Thời gian đưa đối tác mới lên production giảm từ mấy ngày xuống mấy giờ, không còn downgrade giao dịch cũ khi triển khai.
+Kết quả: thêm đối tác mới chỉ thêm package mới, không đụng code cũ. Thời gian đưa đối tác mới lên production giảm từ mấy ngày xuống mấy giờ, không còn làm hỏng giao dịch của đối tác cũ khi triển khai.
 
 ### Trả lời mẫu khi phỏng vấn
 
-"Simple Factory là một hàm tĩnh chọn class theo tham số, nhưng không phải pattern GoF vì thêm đối tác mới lại phải sửa hàm cũ. Factory Method để lớp cha giữ quy trình chung, lớp con quyết định tạo object nào — ví dụ importer ngân hàng chọn parser CSV hay fixed-width. Abstract Factory tạo một họ object nhất quán: client, signer và parser của cùng một đối tác, tránh việc trộn signer của VNPay với parser của MoMo. Trong Spring tôi inject {{Map<String, PaymentKit>}} và tra cứu theo mã đối tác runtime, chỉ viết factory tự tạo khi object phụ thuộc tham số đọc từ DB. Khi nào dùng cái nào: Simple Factory cho tập lựa chọn nhỏ ổn định, Factory Method khi thuật toán chung cố định nhưng tạo object thay đổi, Abstract Factory khi nhiều thành phần phải khớp nhau như một họ. Thực tế, khi thêm đối tác mới tôi tạo package riêng và dùng test kiến trúc để chặn package của đối tác này import package của đối tác khác, giúp triển khai an toàn mà không làm hỏng giao dịch cũ."
+"Simple Factory là một hàm tĩnh chọn class theo tham số, không phải pattern GoF, và nhược điểm là thêm đối tác mới lại phải sửa hàm cũ. Factory Method để lớp cha giữ quy trình chung, lớp con quyết định tạo object nào — ví dụ importer ngân hàng chọn parser CSV hay fixed-width. Abstract Factory tạo một họ object nhất quán: client, signer và parser của cùng một đối tác, tránh việc trộn signer của VNPay với parser của MoMo. Trong Spring tôi inject {{Map<String, PaymentKit>}} và tra cứu theo mã đối tác runtime, chỉ viết factory tự tạo khi object phụ thuộc tham số đọc từ DB. Khi nào dùng cái nào: Simple Factory cho tập lựa chọn nhỏ ổn định, Factory Method khi thuật toán chung cố định nhưng tạo object thay đổi, Abstract Factory khi nhiều thành phần phải khớp nhau như một họ. Thực tế, khi thêm đối tác mới tôi tạo package riêng và dùng test kiến trúc để chặn package của đối tác này import package của đối tác khác, giúp triển khai an toàn mà không làm hỏng giao dịch cũ."
 
 > Senior tip: khi tích hợp đối tác, Abstract Factory (hay "kit" theo đối tác) đáng giá nhất ở chỗ gom mọi thứ của một đối tác vào một package; thêm đối tác mới là thêm một package, không đụng code cũ. Tôi dùng test kiến trúc để đảm bảo package của đối tác này không import package của đối tác khác.`,
   follow: [
@@ -3280,7 +3280,7 @@ Triệu chứng: sau khi thêm field status, đơn hàng mới tạo có status 
 
 Nguyên nhân gốc: @Builder bỏ qua giá trị mặc định của field, cần @Builder.Default mới giữ nguyên. Ngoài ra @Builder không validate field bắt buộc (amount) và đối với JPA entity mất constructor không tham số mà Hibernate cần.
 
-Cách xử lý: thêm @Builder.Default cho danh sách mục, dùng record với compact constructor để validate amount > 0, thêm {{@NoArgsConstructor(access = AccessLevel.PROTECTED)}} + {{@AllArgsConstructor}} cho entity, tránh kết hợp @Builder với @Data (đối tượng vẫn mutable).
+Cách xử lý: thêm @Builder.Default cho status và danh sách mục, dùng record với compact constructor để validate amount > 0, thêm {{@NoArgsConstructor(access = AccessLevel.PROTECTED)}} + {{@AllArgsConstructor}} cho entity, tránh kết hợp @Builder với @Data (đối tượng vẫn mutable).
 
 Kết quả: giảm NPE liên quan status đơn hàng, validation lỗi sớm lúc khởi tạo object, entity không bị set id/version qua builder, số lỗi severity cao liên quan đơn hàng giảm về 0 trong tháng sau.
 
@@ -3360,7 +3360,7 @@ Cách sửa, theo thứ tự ưu tiên:
 
 ### Các bẫy khác cùng gốc
 - Method {{private}} không bao giờ được proxy chặn. Từ Spring 6, với proxy kiểu class, method protected/package-private cũng được hỗ trợ cho {{@Transactional}}, nhưng public vẫn là cách an toàn nhất.
-- Method {{final}} (hoặc class final, ví dụ Kotlin mặc định) thì CGLIB không override được: annotation im lặng không chạy.
+- Method {{final}} thì CGLIB không override được: annotation im lặng không chạy. Class {{final}} (Kotlin mặc định) thì CGLIB không tạo được subclass, Spring báo lỗi ngay khi khởi động (vì vậy dự án Kotlin dùng plugin {{kotlin-spring}} để tự mở class).
 - Gọi method trong constructor hoặc {{@PostConstruct}}: lúc đó proxy chưa bọc hoặc đang gọi trên object thật.
 - {{new MyService()}} thủ công: không phải bean, không có proxy.
 
@@ -3370,9 +3370,9 @@ Cách sửa, theo thứ tự ưu tiên:
 
 ### Ví dụ đời thực
 
-Dịch vụ nhập chỉnh lệnh giao dịch batch, method importAll gọi importOne có @Transactional(propagation = REQUIRES_NEW).
+Dịch vụ nhập lệnh giao dịch theo batch (nhiều file, tổng 10.000 lệnh), method importAll gọi importOne có @Transactional(propagation = REQUIRES_NEW).
 
-Triệu chứng: một file bị lỗi làm rollback toàn bộ batch thay vì chỉ file đó, thời gian xử lý batch 10.000 lệnh tăng từ 5 phút lên 30 phút sau khi deploy.
+Triệu chứng: một file bị lỗi làm rollback toàn bộ batch thay vì chỉ file đó; mỗi lần như vậy phải chạy lại cả batch 10.000 lệnh nên tổng thời gian xử lý tăng từ 5 phút lên 30 phút.
 
 Điều tra: đặt breakpoint, xem class bean được inject có hậu tố $$SpringCGLIB$$, thấy importAll gọi this.importOne() trực tiếp bên trong class, bỏ qua proxy.
 
@@ -3384,7 +3384,7 @@ Kết quả: mỗi file có transaction riêng, lỗi một file không ảnh h�
 
 ### Trả lời mẫu khi phỏng vấn
 
-"Proxy là object cùng interface đứng trước object thật, chặn lời gọi để thêm hành vi như mở transaction, chạy async hoặc đọc cache, rồi chuyển tiếp. Spring tạo proxy khi khởi tạo bean, dùng JDK dynamic proxy nếu bean có interface hoặc CGLIB subclass (mặc định trong Spring Boot). Vì proxy nằm bên ngoài, gọi this.method() trong class bỏ qua proxy, nên @Transactional, @Async, @Cacheable không chạy. @Lazy tại điểm inject inject proxy, bean thật chỉ tạo ở lần gọi đầu; method final hoặc class final (Kotlin mặc định) CGLIB không override được, annotation im lặng không chạy. Cách sửa: tách method sang bean khác, dùng TransactionTemplate, hoặc AspectJ weaving. Khi debug transaction không rollback hay cache không ăn, tôi xem class bean có hậu tố $$SpringCGLIB$$ và kiểm tra lời gọi có đi qua tham chiếu bean đó. Chín trên mười lần lỗi là self-invocation hoặc exception bị catch nuốt mất."
+"Proxy là object cùng interface đứng trước object thật, chặn lời gọi để thêm hành vi như mở transaction, chạy async hoặc đọc cache, rồi chuyển tiếp. Spring tạo proxy khi khởi tạo bean, dùng JDK dynamic proxy nếu bean có interface hoặc CGLIB subclass (mặc định trong Spring Boot). Vì proxy nằm bên ngoài, gọi this.method() trong class bỏ qua proxy, nên @Transactional, @Async, @Cacheable không chạy. @Lazy tại điểm inject inject proxy, bean thật chỉ tạo ở lần gọi đầu; method final thì CGLIB không override được nên annotation im lặng không chạy, còn class final (Kotlin mặc định) thì Spring báo lỗi ngay lúc khởi động vì không tạo được subclass. Cách sửa: tách method sang bean khác, dùng TransactionTemplate, hoặc AspectJ weaving. Khi debug transaction không rollback hay cache không ăn, tôi xem class bean có hậu tố $$SpringCGLIB$$ và kiểm tra lời gọi có đi qua tham chiếu bean đó. Chín trên mười lần lỗi là self-invocation hoặc exception bị catch nuốt mất."
 
 > Senior tip: khi debug "transaction không rollback" hay "cache không ăn", tôi đặt breakpoint xem class của bean được inject: thấy tên có {{$$SpringCGLIB$$}} là có proxy. Rồi kiểm tra lời gọi có đi qua tham chiếu bean đó không. Chín trên mười lần lỗi là self-invocation hoặc exception bị catch nuốt mất.`,
   follow: [
@@ -5465,12 +5465,12 @@ Arch -> Team: ghi ADR, dat moc review
   topic: 'design',
   level: 'senior',
   q: 'Thiết kế notification service đa kênh.',
-  a: `**Tóm tắt:** Notification service đa kênh (gửi thông báo qua nhiều kênh như email, SMS, push, in-app) cần thiết kế theo **at-least-once delivery** (ít nhất một lần: hệ thống đảm bảo gửi, nhưng có thể gửi lặp nếu mất ACK — gói xác nhận), kết hợp **khử trùng** (dedup) bằng khóa nghiệp vụ. Mỗi kênh có hàng đợi, SLA (mức cam kết thời gian), giới hạn tốc độ và nhà cung cấp (provider) riêng. Ưu tiên thông báo quan trọng (OTP — mã xác thực một lần), dùng retry có backoff + jitter (độ trễ ngẫu nhiên) và circuit breaker (cầu dao: ngắt tạm khi provider lỗi liên tục) để bảo vệ hệ thống.
+  a: `**Tóm tắt:** Notification service đa kênh (gửi thông báo qua nhiều kênh như email, SMS, push, in-app) cần thiết kế theo **at-least-once delivery** (ít nhất một lần: hệ thống đảm bảo gửi, nhưng có thể gửi lặp nếu mất ACK — gói xác nhận), kết hợp **khử trùng lặp** (dedup) bằng khóa nghiệp vụ. Mỗi kênh có hàng đợi, SLA (mức cam kết thời gian), giới hạn tốc độ và nhà cung cấp (provider) riêng. Ưu tiên thông báo quan trọng (OTP — mã xác thực một lần), dùng retry có backoff + jitter (độ trễ ngẫu nhiên) và circuit breaker (cầu dao: ngắt tạm khi provider lỗi liên tục) để bảo vệ hệ thống.
 
 ### 1. Vì sao at-least-once chứ không exactly-once?
 Exactly-once (đúng một lần) trên mạng là rất khó/không thực tế vì lỗi mạng, timeout và crash (bài toán tương tự "hai vị tướng"): producer (bên gửi) không biết ACK bị mất hay xử lý chưa xong nên phải retry. Cách thực dụng: **at-least-once + dedup phía nhận/xử lý**. Gửi có thể lặp, nhưng xử lý lặp thì bỏ qua nhờ khóa trùng.
 
-### 2. Khử trùng (dedup)
+### 2. Khử trùng lặp (dedup)
 - **dedup key** = hàm băm của các yếu tố nghiệp vụ, ví dụ {{hash(userId + templateId + businessEventId + channel)}}. Dùng {{businessEventId}} (id sự kiện gốc, như id đơn hàng) để retry của cùng sự kiện không tạo thông báo mới.
 - Lưu key trong Redis bằng thao tác nguyên tử {{SET key NX EX 86400}} (chỉ đặt nếu chưa có, hết hạn sau 24h). Key đã tồn tại → bỏ qua (skip).
 - Cửa sổ dedup (TTL) chọn theo nghiệp vụ: OTP vài phút, thông báo giao dịch vài giờ/1 ngày, marketing dài hơn nhưng vẫn cần chặn trùng chiến dịch.

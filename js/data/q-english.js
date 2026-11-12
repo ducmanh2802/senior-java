@@ -8986,6 +8986,1122 @@ Nếu họ bận hoặc đi thẳng vào việc: "Sure, let us jump right in. To
   ],
   tags: ['english', 'freelance', 'remote', 'client', 'small-talk', 'communication'],
   lang: 'en'
-}
+},
+{
+  id: 'english-162',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "Tell me about a time you led a major technical migration, for example from a monolith to services or a large database upgrade, without stopping feature delivery. How did you plan and execute it?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn dẫn dắt một thay đổi kỹ thuật lớn (technical migration: di chuyển/chuyển đổi hệ thống sang công nghệ hoặc kiến trúc mới) mà vẫn giữ sản phẩm chạy và team vẫn giao tính năng. Hãy trả lời theo cấu trúc tình huống - mục tiêu - kế hoạch từng bước - cách giảm rủi ro - số liệu kết quả - bài học.
 
+### Sample answer
+In my previous company, I led a migration from a monolith (one large application where most features live in a single codebase and deployment unit) to several services for our order and payment modules. The system handled about 120,000 orders per day, and we could not freeze product delivery.
+
+My goal was to reduce release risk while keeping the roadmap moving. I started by mapping dependencies and choosing one low-risk boundary first: the notification flow. We used the strangler fig pattern (a gradual approach where new parts replace old parts step by step, instead of a big rewrite). For six months, a team of eight engineers split work into two streams: 70 percent on migration tasks and 30 percent on committed features. We added contract tests, feature flags (switches to turn new behavior on or off without redeploying), and dual-run monitoring to compare old and new outputs.
+
+We migrated three modules with zero major incidents, cut deployment time from 45 minutes to 12 minutes, and kept sprint commitments at about 90 percent. The key lesson was to make every step reversible and visible with clear metrics.
+
+### Useful phrases
+- **I led a major migration while keeping delivery on track** — tôi dẫn dắt một đợt di chuyển lớn mà vẫn đảm bảo tiến độ giao hàng.
+- **We could not afford a big-bang rewrite** — chúng tôi không thể chấp nhận việc viết lại toàn bộ một lần (rủi ro cao).
+- **We took an incremental approach** — chúng tôi tiếp cận theo từng bước nhỏ.
+- **I split the team into two streams** — tôi chia team thành hai luồng công việc.
+- **We used feature flags to reduce risk** — chúng tôi dùng cờ bật/tắt tính năng để giảm rủi ro.
+- **Every step was measurable and reversible** — mỗi bước đều đo được và có thể quay lui.
+- **We tracked both delivery and stability metrics** — chúng tôi theo dõi cả chỉ số giao hàng và độ ổn định.
+
+### Lỗi người Việt hay mắc
+- **Nói "we migrated everything" nhưng không có kế hoạch:** Interviewer cần nghe bước đi cụ thể (chọn phần nào trước, làm sao rollback). Hãy nói rõ thứ tự và cơ chế an toàn.
+- **Bỏ qua phần delivery:** Chỉ kể kỹ thuật mà quên "without stopping delivery". Nêu rõ cách bạn chia thời gian/người để vẫn ship feature.
+- **Dùng thì hiện tại cho chuyện đã làm:** Khi kể kinh nghiệm, dùng quá khứ: "I led", "we reduced", "we kept" thay vì "I lead", "we reduce".
+- **Thiếu số liệu:** "It was successful" quá mơ hồ. Thêm con số: thời gian deploy, tỉ lệ incident, phần trăm cam kết sprint hoàn thành.
+
+> Senior tip: Khi trả lời câu migration ở level lead, hãy nhấn mạnh khả năng ra quyết định về rủi ro và giao tiếp: bạn làm sao để stakeholder yên tâm, làm sao biết khi nào phải dừng và quay lui, và bạn bảo vệ nhịp giao hàng của team như thế nào.`,
+  follow: [
+    "How did you decide which part of the system to migrate first?",
+    "What would have made you pause or roll back the migration?",
+    "How did you communicate progress and risks to non-technical stakeholders?"
+  ],
+  tags: ['english', 'leadership', 'migration', 'delivery', 'risk'],
+  lang: 'en'
+},
+{
+  id: 'english-163',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "Tell me about a time you handled an underperforming team member. What steps did you take, and what was the outcome?",
+  a: `**Tóm tắt:** Interviewer muốn đánh giá khả năng lãnh đạo con người: bạn phát hiện vấn đề sớm, phản hồi rõ ràng và công bằng, hỗ trợ cải thiện, nhưng vẫn giữ tiêu chuẩn của team. Cấu trúc nên dùng: tình huống cụ thể - tác động - hành động (trao đổi, mục tiêu, hỗ trợ) - kết quả đo được.
+
+### Sample answer
+About a year ago, I managed a backend engineer on a team of seven who was underperforming (not meeting the expected quality or pace for the role). Over two sprints, his tasks were often late, and about 30 percent of his pull requests needed major rework because of missing tests and unclear logic.
+
+I did not wait for the annual review. I scheduled a private one-on-one meeting in the first week I noticed the pattern. I shared specific examples, explained the impact on the team, and asked if anything was blocking him. He told me he was unsure about our domain rules and felt hesitant to ask questions.
+
+We agreed on a four-week improvement plan with clear expectations: smaller tasks, a definition of done (a checklist of what "finished" means, such as code reviewed, tests added, and deployed), and twice-weekly check-ins. I paired him with a senior engineer for two hours per week. By the end of the month, his on-time delivery improved to around 90 percent and rework dropped below 10 percent. He stayed on the team and became more confident. The lesson I learned was to be direct, kind, and specific, and to focus on support plus accountability.
+
+### Useful phrases
+- **I noticed a pattern of underperformance** — tôi nhận thấy một xu hướng làm việc chưa đạt kỳ vọng (không phải một lỗi nhỏ lẻ).
+- **I addressed it early in a private one-on-one** — tôi trao đổi sớm trong buổi nói chuyện riêng.
+- **I gave specific examples and explained the impact** — tôi đưa ví dụ cụ thể và giải thích tác động.
+- **We agreed on clear expectations and a timeline** — chúng tôi thống nhất kỳ vọng rõ ràng và mốc thời gian.
+- **I provided support while keeping accountability** — tôi hỗ trợ nhưng vẫn giữ trách nhiệm rõ.
+- **We tracked progress with measurable goals** — chúng tôi theo dõi tiến triển bằng mục tiêu đo được.
+- **The outcome was a clear improvement** — kết quả là sự cải thiện rõ rệt.
+
+### Lỗi người Việt hay mắc
+- **Nói chung chung, tránh nói thẳng:** "I tried to help him" nhưng không nói bạn đã làm gì cụ thể. Hãy nêu hành động: gặp 1-1, đặt mục tiêu, check-in, pairing.
+- **Đổ lỗi hoặc bêu tên/đánh giá cá nhân:** Tránh nói xấu cá nhân. Tập trung vào hành vi, tác động, và cách hỗ trợ.
+- **Quên nói outcome (kết quả):** Câu chuyện phải có kết thúc đo được: cải thiện bao nhiêu, hay quyết định khác (sau nỗ lực hỗ trợ).
+- **Ngữ pháp thì và chủ ngữ:** "He is always late" khi kể quá khứ nghe không tự nhiên; dùng "his tasks were often late" và nêu bối cảnh thời gian.
+
+> Senior tip: Ở level lead, interviewer muốn thấy bạn cân bằng giữa sự tôn trọng con người và trách nhiệm với team. Hãy thể hiện bạn phản hồi sớm, dựa trên dữ liệu/cụ thể, tạo cơ hội cải thiện, và ghi nhận kết quả - không né tránh cũng không công kích.`,
+  follow: [
+    "What would you do if there was no improvement after the support plan?",
+    "How do you give difficult feedback without damaging trust?",
+    "How do you make sure performance expectations are fair and transparent?"
+  ],
+  tags: ['english', 'leadership', 'people-management', 'feedback', 'coaching'],
+  lang: 'en'
+},
+{
+  id: 'english-164',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "How would you convince management to invest time and budget in reducing technical debt? Give a concrete example.",
+  a: `**Tóm tắt:** **Technical debt** (nợ kỹ thuật: những lựa chọn làm nhanh/bỏ qua chất lượng trong quá khứ khiến việc sửa đổi sau này tốn công hơn, giống vay nợ rồi phải trả lãi) thường khó "bán" cho quản lý nếu chỉ nói bằng ngôn ngữ kỹ thuật. Interviewer muốn nghe bạn diễn đạt bằng tác động kinh doanh: rủi ro, chi phí, tốc độ, và đề xuất kế hoạch đầu tư cụ thể.
+
+### Sample answer
+In my last role, I needed management to invest in reducing technical debt in our checkout service. The codebase had fragile modules and low test coverage, so every release was risky. In three months, we had four production incidents and spent about 35 percent of engineering time on bug fixes instead of new features.
+
+Instead of saying "the code is bad," I presented the problem in business terms. I showed data: average lead time for a small change was 10 days, and on-call pages had doubled. I proposed a focused three-month plan: allocate 20 percent of each sprint, about two engineers part-time, to add tests around payment flows, simplify the most complex module, and improve deployment checks.
+
+I explained the trade-off clearly: short-term feature throughput would drop slightly, but we expected fewer incidents and faster delivery later. Management approved the plan. After three months, incidents in that area dropped from four to one per quarter, and average change lead time fell from 10 days to 6 days. The lesson was to connect technical debt to measurable business outcomes and to ask for a bounded, incremental investment.
+
+### Useful phrases
+- **I framed technical debt in business terms** — tôi diễn đạt nợ kỹ thuật bằng ngôn ngữ tác động kinh doanh.
+- **I showed the cost of doing nothing** — tôi chỉ ra cái giá của việc không xử lý.
+- **I backed my proposal with data** — tôi dùng số liệu để củng cố đề xuất.
+- **I proposed a bounded, incremental plan** — tôi đề xuất kế hoạch giới hạn phạm vi và làm từng bước.
+- **We agreed on clear success metrics** — chúng tôi thống nhất chỉ số đo thành công rõ ràng.
+- **There is a trade-off in the short term** — có sự đánh đổi trong ngắn hạn.
+- **The investment paid off in stability and speed** — khoản đầu tư mang lại ổn định và tốc độ.
+
+### Lỗi người Việt hay mắc
+- **Chỉ than phiền về code xấu:** "The code is messy" không thuyết phục. Hãy nói: tốn bao nhiêu thời gian, bao nhiêu incident, chậm release ra sao.
+- **Xin thời gian quá lớn, không giới hạn:** Đề xuất "stop features for two months" thường bị từ chối. Hãy xin phần trăm thời gian cố định và mục tiêu cụ thể.
+- **Không nêu trade-off:** Quản lý cần biết cái gì chậm lại trong ngắn hạn. Nói rõ đánh đổi tạo niềm tin.
+- **Dùng từ kỹ thuật mà không giải thích:** Nếu buộc phải nói "refactor" (tái cấu trúc: cải thiện cấu trúc code mà không đổi hành vi bên ngoài), hãy giải thích ngắn trong ngoặc bằng lợi ích.
+
+> Senior tip: Khi thuyết phục đầu tư cho technical debt, hãy chọn một khu vực có tác động rõ (ví dụ luồng thanh toán), đặt mục tiêu đo được trước-sau, và báo cáo kết quả. Một chiến thắng nhỏ có số liệu sẽ mở đường cho các khoản đầu tư tiếp theo.`,
+  follow: [
+    "How do you decide which technical debt to fix first?",
+    "What metrics would you use to show that the investment worked?",
+    "How would you respond if management says there is no time for this work now?"
+  ],
+  tags: ['english', 'leadership', 'technical-debt', 'stakeholder', 'communication'],
+  lang: 'en'
+},
+{
+  id: 'english-165',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "Describe a time you had to make an important architecture decision with incomplete information. How did you decide, and how did you document it (for example, reversible vs irreversible decisions, ADR)?",
+  a: `**Tóm tắt:** Ở level lead, bạn thường phải quyết định khi chưa có đủ dữ liệu. Interviewer muốn nghe bạn phân biệt quyết định dễ đảo ngược và khó đảo ngược, giảm rủi ro bằng thí nghiệm nhỏ, và ghi lại lý do bằng **ADR** (Architecture Decision Record: tài liệu ngắn ghi lại một quyết định kiến trúc, bối cảnh, lựa chọn và lý do) để team sau hiểu được.
+
+### Sample answer
+Last year, I had to choose a messaging approach for a new order tracking feature. We needed to publish status events to other services, but we did not yet know the final traffic pattern. The product team expected growth, but we only had estimates: from 20,000 to maybe 150,000 events per day within six months.
+
+I separated the decision into reversible and irreversible parts. Reversible (easy to change later with low cost) choices included the internal message format details and the first consumer implementation. Irreversible (hard or expensive to change later) choices included the public event contract and the decision to couple services directly or through asynchronous messaging (sending messages through a broker so services do not call each other at the same time).
+
+With incomplete information, I chose asynchronous events with a simple schema and a version field, because it reduced coupling and gave us room to grow. To reduce uncertainty, we ran a two-week spike (a short, time-boxed experiment to learn) and load-tested with three times the expected peak. I wrote an ADR that documented the context, options we considered, the decision, trade-offs, and a review date. After launch, traffic reached about 90,000 events per day and the design held without major changes. The lesson was to make cheap decisions quickly, protect hard-to-reverse choices, and write down the reasoning.
+
+### Useful phrases
+- **I had to decide with incomplete information** — tôi phải quyết định khi thông tin chưa đầy đủ.
+- **I identified what was reversible and what was not** — tôi xác định phần nào dễ đảo ngược và phần nào khó.
+- **I optimized for learning and low risk** — tôi ưu tiên học nhanh và giảm rủi ro.
+- **We ran a short spike to validate assumptions** — chúng tôi làm một thử nghiệm ngắn để kiểm chứng giả định.
+- **I documented the decision in an ADR** — tôi ghi lại quyết định trong một bản ghi quyết định kiến trúc (ADR).
+- **We recorded the context, options, and trade-offs** — chúng tôi ghi lại bối cảnh, lựa chọn và đánh đổi.
+- **We set a review point to revisit the decision** — chúng tôi đặt mốc xem lại quyết định.
+
+### Lỗi người Việt hay mắc
+- **Trình bày như thể bạn biết chắc mọi thứ:** Khi thông tin thiếu, nói "I was sure" nghe không thật. Hãy nói bạn giả định điều gì, kiểm chứng ra sao.
+- **Không phân biệt reversible vs irreversible:** Lead giỏi biết quyết định nào cần cẩn trọng hơn. Hãy nêu rõ phần nào khó quay lại (ví dụ public contract, dữ liệu, cam kết với hệ thống khác).
+- **Bỏ qua bước ghi chép:** Quyết định không có tài liệu sẽ gây tranh luận lại sau này. Nhắc đến ADR hoặc ghi chú quyết định ngắn gọn.
+- **Dùng từ viết tắt mà không giải thích:** Nói "ADR" ngay mà không giải thích một câu có thể làm người nghe không theo kịp; hãy giải thích ngắn lần đầu.
+
+> Senior tip: Khi phải quyết định với thông tin chưa đủ, hãy nói rõ giả định, chọn phương án giảm rủi ro cho phần khó đảo ngược, và đặt thời điểm xem lại. Việc ghi ADR thể hiện tư duy trưởng thành: bạn chịu trách nhiệm cho quyết định và giúp team học từ nó.`,
+  follow: [
+    "Can you give an example of a reversible decision versus an irreversible one in that situation?",
+    "What information would have changed your decision?",
+    "What do you include in a good ADR?"
+  ],
+  tags: ['english', 'leadership', 'architecture', 'adr', 'decision-making'],
+  lang: 'en'
+},
+{
+  id: 'english-166',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "Tell me about a time you resolved a conflict between two senior engineers on your team. What did you do, and what was the outcome?",
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn xử lý xung đột giữa các kỹ sư giỏi mà không đứng về phe, giữ được chất lượng kỹ thuật và quan hệ làm việc. Hãy trả lời theo cấu trúc: bối cảnh, nguyên nhân gốc (khác quan điểm kỹ thuật hay va chạm cá nhân), cách bạn tạo không gian trao đổi công bằng, tiêu chí quyết định, và kết quả đo được.
+
+### Sample answer
+Last year, two senior engineers on my team of eight disagreed about how to redesign our payment retry service. One wanted an event-driven approach with Kafka (a message broker: hệ thống trung gian nhận và chuyển tiếp thông điệp giữa các service), and the other preferred a simpler database polling solution. The debate lasted almost two weeks and started to slow the sprint.
+
+I asked each of them to write a short one-page proposal with risks, cost, and rollout plan. Then I ran a 45-minute meeting with clear ground rules: focus on trade-offs, not personal opinions. We compared the options against three criteria: delivery time, operational complexity, and failure recovery. The event-driven design was better for scale, but our current traffic was only about 5,000 retries per day, and we had no on-call experience with Kafka.
+
+We agreed to ship the polling solution in four weeks and define a clear threshold: if retry volume passed 50,000 per day, we would revisit the event-driven design. Both engineers supported the decision, the feature launched on time, and our retry success rate improved from 96.2 percent to 99.1 percent. I learned that a lead resolves conflict by making criteria explicit and protecting mutual respect.
+
+### Useful phrases
+- **There was a disagreement between two senior engineers** — có bất đồng giữa hai kỹ sư cấp cao.
+- **I made sure both sides felt heard** — tôi đảm bảo cả hai bên đều được lắng nghe.
+- **I asked them to focus on trade-offs, not opinions** — tôi yêu cầu họ tập trung vào đánh đổi, không phải ý kiến cá nhân.
+- **We agreed on clear decision criteria** — chúng tôi thống nhất tiêu chí quyết định rõ ràng.
+- **I facilitated the discussion, not took sides** — tôi điều phối cuộc thảo luận, không đứng về phe nào.
+- **We documented the decision and the review point** — chúng tôi ghi lại quyết định và mốc xem lại.
+- **The outcome was measurable** — kết quả đo được bằng số liệu.
+
+### Lỗi người Việt hay mắc
+- **Chỉ nói "I told them to stop arguing":** Nghe áp đặt, thiếu kỹ năng lãnh đạo. Hãy mô tả cách bạn tạo quy tắc trao đổi và tiêu chí khách quan.
+- **Không nêu số liệu và kết quả:** Câu chuyện chung chung sẽ yếu. Nêu quy mô team, thời gian, lưu lượng, hoặc chỉ số cải thiện.
+- **Đổ lỗi cho một người:** Tránh nói ai đúng ai sai theo cảm tính. Hãy nói bạn tập trung vào vấn đề và dữ liệu.
+- **Ngữ pháp thì quá khứ lẫn lộn:** Khi kể chuyện đã xảy ra, dùng quá khứ đơn nhất quán: "I asked", "we agreed", "we launched".
+
+> Senior tip: Khi hai senior xung đột, vai trò của lead là làm rõ tiêu chí và rủi ro, không phải chứng tỏ ai giỏi hơn. Một quyết định có mốc xem lại giúp team tiến lên mà không ai cảm thấy bị phủ nhận hoàn toàn.`,
+  follow: [
+    "What would you do if the two engineers still could not agree after your meeting?",
+    "How do you prevent personal tension from affecting future collaboration?",
+    "When is it appropriate for a lead to make the final call?"
+  ],
+  tags: ['english', 'leadership', 'conflict', 'communication', 'teamwork'],
+  lang: 'en'
+},
+{
+  id: 'english-167',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "How do you estimate a large project and commit to a deadline when there is uncertainty?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn ước lượng dự án lớn một cách thực tế, thừa nhận độ bất định, và cam kết deadline có trách nhiệm. Hãy nêu cách chia nhỏ công việc, dùng dữ liệu/kinh nghiệm, tính rủi ro (buffer), và trao đổi phạm vi khi cần thay vì hứa suông.
+
+### Sample answer
+In my previous role, I led the estimate for migrating a legacy billing module to a new service. The scope was large: about 12 APIs, data migration for 2 million records, and integration with three external systems. Management wanted a fixed date within three months.
+
+I broke the work into smaller deliverables and asked four engineers to estimate each part. We used story points and also converted them into calendar time based on our recent velocity (the amount of work a team usually finishes in a sprint). For uncertain areas, such as the data migration script, we added a one-week spike to validate assumptions. Our first estimate was 14 weeks, not 12.
+
+Instead of committing to an unrealistic date, I proposed two options: deliver the full scope in 14 weeks, or deliver a core version in 11 weeks covering 80 percent of customer use cases and move the rest to phase two. I also included a 15 percent buffer for risks like integration delays. Leadership chose the phased plan. We delivered phase one one day early, and phase two three weeks later with no critical defects. I learned that a credible commitment is based on transparency, not optimism.
+
+### Useful phrases
+- **I broke the project down into smaller pieces** — tôi chia dự án thành các phần nhỏ hơn.
+- **We estimated based on team velocity and past data** — chúng tôi ước lượng dựa trên tốc độ team và dữ liệu trước đó.
+- **There was uncertainty, so we added a buffer** — có độ bất định nên chúng tôi thêm thời gian dự phòng.
+- **I presented options instead of a single risky promise** — tôi đưa ra các lựa chọn thay vì một lời hứa rủi ro.
+- **We aligned on scope, timeline, and trade-offs** — chúng tôi thống nhất phạm vi, thời gian và đánh đổi.
+- **I communicated risks early** — tôi trao đổi rủi ro sớm.
+- **We committed to a realistic deadline** — chúng tôi cam kết một mốc thời gian thực tế.
+
+### Lỗi người Việt hay mắc
+- **Cam kết ngay để làm hài lòng quản lý:** Nói "Yes, we can finish in two months" khi chưa phân tích sẽ mất uy tín. Hãy giải thích giả định và rủi ro.
+- **Ước lượng bằng cảm giác:** Thiếu chia nhỏ công việc và dữ liệu tham chiếu. Nên nói rõ bạn dựa vào velocity, kinh nghiệm, hoặc thử nghiệm ngắn.
+- **Không nhắc đến buffer (dự phòng):** Dự án lớn luôn có bất định. Không có buffer nghĩa là kế hoạch dễ vỡ.
+- **Nói "deadline" như áp lực một chiều:** Lead cần thương lượng phạm vi và ưu tiên, không chỉ nhận áp lực. Dùng cấu trúc: "We can do A by date X, or A+B by date Y."
+
+> Senior tip: Khi ước lượng dự án lớn, hãy cam kết vào một kế hoạch có giả định rõ ràng và mốc kiểm tra, không chỉ vào một con số. Minh bạch về rủi ro sớm thường được đánh giá cao hơn là báo trễ ở phút cuối.`,
+  follow: [
+    "How do you handle it when stakeholders reject your estimate and push for an earlier date?",
+    "What do you do if the project is already slipping halfway through?",
+    "How do you estimate work in an area where the team has little experience?"
+  ],
+  tags: ['english', 'leadership', 'estimation', 'planning', 'deadline'],
+  lang: 'en'
+},
+{
+  id: 'english-168',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "How do you onboard and grow junior developers on your team? Can you give a specific example?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn có kế hoạch phát triển người khác, không chỉ tự làm tốt. Hãy mô tả cách bạn giúp junior hòa nhập (onboarding: quá trình hướng dẫn người mới làm quen với hệ thống, công cụ, quy trình), giao việc phù hợp, phản hồi thường xuyên, và đo được sự tiến bộ.
+
+### Sample answer
+Last year, I onboarded two junior developers into our backend team of seven people. In their first week, I prepared a simple onboarding plan: set up the development environment, explain our service architecture, and walk them through one small end-to-end feature. I also assigned each of them a buddy (a teammate who helps answer daily questions) so they did not feel blocked.
+
+In the first month, I gave them small, well-defined tasks, such as adding a validation rule and writing unit tests. During code reviews, I explained not only what to change but why, for example how input validation prevents bad data from reaching the database. We had a 20-minute one-on-one meeting every week to discuss progress, questions, and confidence.
+
+After three months, both juniors could handle medium-sized tasks independently. One of them delivered an API endpoint for order history that passed review with only minor comments, and our average review cycles for their pull requests dropped from four rounds to about two. I learned that growing juniors requires clear expectations, safe opportunities to practice, and timely feedback.
+
+### Useful phrases
+- **I created a structured onboarding plan** — tôi tạo một kế hoạch hòa nhập có cấu trúc.
+- **I assigned a buddy to support them day to day** — tôi phân công một người hỗ trợ hằng ngày.
+- **I started with small, well-defined tasks** — tôi bắt đầu với các nhiệm vụ nhỏ, rõ ràng.
+- **I explained the reason behind each change** — tôi giải thích lý do đằng sau mỗi thay đổi.
+- **We had regular one-on-one check-ins** — chúng tôi có các buổi trao đổi một kèm một định kỳ.
+- **I tracked their progress over time** — tôi theo dõi sự tiến bộ của họ theo thời gian.
+- **They became more independent** — họ trở nên tự chủ hơn.
+
+### Lỗi người Việt hay mắc
+- **Nói chung chung "I help juniors a lot":** Không có ví dụ cụ thể sẽ không thuyết phục. Hãy nêu thời gian, loại nhiệm vụ, và kết quả.
+- **Chỉ nói về training, quên phản hồi:** Onboarding không chỉ là tài liệu. Code review và one-on-one mới giúp junior tiến bộ.
+- **Giao việc quá khó hoặc quá dễ:** Lead cần chọn mức độ phù hợp để junior học mà không bị quá tải. Hãy mô tả cách bạn tăng dần độ khó.
+- **Dùng từ "teach" liên tục nghe nặng:** Có thể xen kẽ "support", "guide", "coach" (hướng dẫn, đồng hành) để tự nhiên hơn.
+
+> Senior tip: Phát triển junior là đầu tư dài hạn cho team. Khi trả lời, hãy cho thấy bạn tạo môi trường an toàn để hỏi, đưa ra phản hồi cụ thể, và đo được mức tự chủ tăng lên theo thời gian.`,
+  follow: [
+    "How do you balance helping juniors with delivering your own work?",
+    "What do you do if a junior developer is not improving after feedback?",
+    "How do you know when a junior is ready for more complex tasks?"
+  ],
+  tags: ['english', 'leadership', 'mentoring', 'onboarding', 'people'],
+  lang: 'en'
+},
+{
+  id: 'english-169',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "Describe a time you led a production outage as the incident commander and communicated with stakeholders. What did you do?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn giữ bình tĩnh khi hệ thống production (môi trường chạy thật cho người dùng) gặp sự cố, điều phối xử lý, và giao tiếp rõ ràng với các bên liên quan. Hãy nêu vai trò **incident commander** (người điều phối xử lý sự cố: phân công việc, theo dõi tiến độ, quyết định ưu tiên), các bước giảm ảnh hưởng, và cách cập nhật thông tin.
+
+### Sample answer
+Six months ago, I acted as the incident commander during a production outage in our checkout service. At 10:15 a.m., error rates jumped from 0.5 percent to 18 percent, and about 1,200 customers could not complete payments within 20 minutes.
+
+My first priority was to reduce impact and coordinate the team. I opened an incident channel, assigned one engineer to investigate logs, another to check recent deployments, and a third to prepare a rollback (quay lại phiên bản ổn định trước). I also asked everyone to post updates in one place to avoid confusion. At the same time, I communicated with stakeholders every 15 minutes: I explained what users were experiencing, what we knew, what we were doing, and the next update time. I avoided guessing the root cause before we had evidence.
+
+We found that a configuration change had increased database connection timeouts. We rolled back the change at 10:42 a.m., and the error rate returned to normal by 10:50 a.m. After the incident, I led a blameless postmortem (buổi rà soát sau sự cố không đổ lỗi cá nhân) and we added a configuration check in our release process. I learned that clear roles and calm communication are as important as technical debugging.
+
+### Useful phrases
+- **I took the role of incident commander** — tôi đảm nhận vai trò người điều phối sự cố.
+- **My first priority was to reduce user impact** — ưu tiên đầu tiên của tôi là giảm ảnh hưởng đến người dùng.
+- **I assigned clear roles to the team** — tôi phân công vai trò rõ ràng cho team.
+- **I provided regular updates to stakeholders** — tôi cập nhật thường xuyên cho các bên liên quan.
+- **I shared what we knew and what we did not know yet** — tôi chia sẻ điều đã biết và điều chưa biết.
+- **We rolled back to restore service quickly** — chúng tôi quay lại phiên bản cũ để khôi phục dịch vụ nhanh.
+- **We ran a blameless postmortem** — chúng tôi tổ chức buổi rà soát không đổ lỗi cá nhân.
+
+### Lỗi người Việt hay mắc
+- **Nhảy thẳng vào chi tiết kỹ thuật mà quên điều phối:** Incident commander cần nói về phân công, ưu tiên, và giao tiếp, không chỉ debug.
+- **Hứa hẹn thời gian sửa xong khi chưa chắc:** Nói "It will be fixed in 5 minutes" mà không có bằng chứng sẽ làm mất tin tưởng. Hãy hứa thời điểm cập nhật tiếp theo.
+- **Dùng giọng đổ lỗi:** "The developer broke it" gây phòng thủ. Trong incident, tập trung vào khôi phục dịch vụ; nguyên nhân chi tiết để sau postmortem.
+- **Quên cập nhật stakeholders:** Im lặng trong lúc sự cố khiến bên liên quan lo lắng và liên tục hỏi. Cập nhật ngắn, đều đặn (ví dụ mỗi 15 phút) rất quan trọng.
+
+> Senior tip: Khi dẫn dắt sự cố production, hãy tách hai mục tiêu: khôi phục dịch vụ nhanh và học sau sự cố. Giao tiếp rõ ràng, trung thực về mức độ chắc chắn, và có nhịp cập nhật cố định thể hiện sự trưởng thành ở level lead.`,
+  follow: [
+    "How do you decide between rolling back and applying a quick fix during an outage?",
+    "What information do you include in stakeholder updates during an active incident?",
+    "What actions do you take after the outage to prevent the same issue?"
+  ],
+  tags: ['english', 'leadership', 'incident', 'outage', 'communication'],
+  lang: 'en'
+},
+{
+  id: 'english-170',
+  topic: 'english',
+  level: 'lead',
+  q: 'How do you balance delivery speed and quality? Give me a real example where you had to make that trade-off.',
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn không chọn "nhanh" hay "chậm" tuyệt đối mà có **khung quyết định**: rủi ro kỹ thuật, chi phí đổi sau, ảnh hưởng khách hàng. Kể ví dụ có số liệu: scope, deadline, debt gồng, và cách bạn truyền đạt trade-off cho stakeholder.
+
+### Sample answer
+In my last team we were building a new reconciliation service with a hard regulatory deadline in six weeks. The product owner wanted all edge cases covered from day one — duplicate detection, partial refunds, cross-border fees — which would have taken ten weeks. My assessment was that the core happy path (matching 95 percent of transactions) could ship in four weeks if we deferred the complex edge cases behind a feature flag.
+
+I proposed a phased approach: ship the core in week four, enable it for 10 percent of merchants, measure the mismatch rate, and add edge cases in two-week sprints after launch. The trade-off was accepting a known 5 percent manual reconciliation rate for the first month, which the operations team could handle. We documented the technical debt as tickets with owners and due dates, not as vague "TODO" comments.
+
+We launched on time. The mismatch rate was 3 percent, lower than expected, and we cleared the backlog in three sprints. The key was making the trade-off visible: here is what we ship, here is what we defer, here is the cost, and here is the plan to pay it back. Quality is not perfection; it is knowing exactly what you are not doing yet and having a date to fix it.
+
+### Useful phrases
+- **a hard regulatory deadline**: một hạn chót quy định bắt buộc
+- **the happy path**: luồng chính (không lỗi)
+- **deferred behind a feature flag**: hoãn lại sau cờ tính năng
+- **a known mismatch rate**: tỷ lệ không khớp đã biết trước
+- **technical debt as tickets with owners**: nợ kỹ thuật thành ticket có chủ sở hữu
+- **making the trade-off visible**: làm rõ đánh đổi
+- **pay it back**: trả nợ (hoàn thiện phần bị hoãn)
+
+### Lỗi người Việt hay mắc
+- **Dùng "quality" và "speed" như hai cực đối lập**: thực tế là trade-off có tính toán, không phải chọn A hay B. Luôn nói "trade-off" và "calculated decision".
+- **Nói "we delivered fast but quality was bad"**: không bao giờ tự nhận quality kém. Dùng "we accepted a known gap with a payback plan".
+- **Phát âm "reconciliation"**: /ˌrɛkənsɪlɪˈeɪʃn/ (nhấn "LAY"), không phải "rê-con-si-li-ê-san".
+- **Thiếu "feature flag"**: đây là pattern chuẩn để ship nhanh mà an toàn. Không nhắc feature flag là thiếu điểm.
+- **Dùng "technical debt" không có chủ sở hữu/hạn chót**: debt không có owner và due date là nợ xấu. Luôn nêu "tickets with owners and due dates".
+
+> Senior tip: Câu này test tư duy **product engineering**. Đừng nói "chúng tôi luôn làm đúng" — không ai tin. Hãy nói: "Chúng tôi ship core trước, đo lường, rồi trả nợ theo lịch". Con số quan trọng: % traffic bật feature flag, mismatch rate thực tế, số sprint để clear backlog. Phát âm **reconciliation** /ˌrɛkənsɪlɪˈeɪʃn/, **regulatory** /ˈrɛɡjʊlətəri/.`,
+  follow: [
+    'How did you convince the product owner to accept the phased approach?',
+    'What would you have done if the mismatch rate had been 15 percent instead of 3 percent?',
+    'How do you prevent "temporary" technical debt from becoming permanent?'
+  ],
+  tags: ['delivery', 'quality', 'trade-off', 'leadership'],
+  lang: 'en',
+},
+{
+  id: 'english-171',
+  topic: 'english',
+  level: 'lead',
+  q: 'How do you work with product managers on priorities, and how do you say no when a request is not feasible?',
+  a: `**Tóm tắt:** Lead engineer không chỉ "nhận việc" mà **hợp tác định hình scope**. Interviewer muốn thấy: bạn đưa dữ liệu (effort, risk, opportunity cost), đưa ra 2–3 lựa chọn có trade-off rõ ràng, và "no" thực chất là "not now, here is why, here is what we can do".
+
+### Sample answer
+I treat the relationship with product managers as a partnership, not a service desk. We have a weekly sync where I bring a **capacity snapshot**: how much engineering time is available after on-call, bugs, and keeping the lights on. When a new request comes in, I do a quick impact estimate — not a precise plan, just t-shirt sizes with risk flags — and present three options.
+
+For example, the PM wanted a real-time fraud dashboard in the current quarter. My estimate: six weeks with two engineers, but it would delay the checkout refactor that reduces cart abandonment by an estimated 2 percent. My three options were: (1) build the dashboard, accept the delay, and quantify the revenue risk of the delayed refactor; (2) build a lightweight version using existing Metabase reports in two weeks, covering 80 percent of the use cases; (3) defer the dashboard to next quarter and use the time to ship the refactor now. We chose option two, and the PM got visibility this quarter while the refactor stayed on track.
+
+Saying no is really saying "here is what we **can** do within the constraint". I never say "that is impossible" — I say "that takes six weeks and pushes X out. Here is what we can deliver in two weeks. Which outcome do you prefer?" The PM makes the business call; I make the engineering reality transparent.
+
+### Useful phrases
+- **a capacity snapshot**: bức ảnh dung lực hiện tại
+- **t-shirt sizes with risk flags**: ước lượng theo size (S/M/L) kèm cờ rủi ro
+- **opportunity cost**: chi phí cơ hội (việc gì bị bỏ lỡ)
+- **a lightweight version**: phiên bản nhẹ
+- **keeping the lights on**: duy trì vận hành cơ bản
+- **defer to next quarter**: hoãn sang quý sau
+- **make the engineering reality transparent**: làm rõ thực tế kỹ thuật
+
+### Lỗi người Việt hay mắc
+- **Nói "I said no" như một chiến thắng**: "no" không phải mục tiêu. Mục tiêu là **alignment**. Dùng "I presented options" thay vì "I refused".
+- **Dùng "impossible" hoặc "cannot"**: nghe như né trách nhiệm. Luôn dùng "takes X weeks and impacts Y".
+- **Không mang con số đến cuộc nói chuyện**: PM nói ngôn ngữ business (revenue, conversion). Engineer phải nói effort, risk, opportunity cost — cả hai mới align được.
+- **Phát âm "feasible"**: /ˈfiːzəbl/ (nhấn "FE"), không phải "fi-sa-bol".
+- **Quên "opportunity cost"**: đây là khái niệm then chốt để PM hiểu cái gì bị hy sinh.
+
+> Senior tip: PM không hiểu kỹ thuật, nhưng họ hiểu **trade-off có số**. Hãy mang "capacity snapshot" (dung lực thực tế sau on-call/bug) đến meeting định kỳ. "No" hiệu quả nhất là: "Để làm A trong 2 tuần, chúng ta phải hoãn B. B mang lại 2% conversion. Bạn chọn A hay B?". Phát âm **feasible** /ˈfiːzəbl/, **opportunity cost** /ˌɒpəˈtjuːnɪti kɒst/, **alignment** /əˈlaɪnmənt/.`,
+  follow: [
+    'What do you do when the PM insists on the original timeline despite your data?',
+    'How do you handle a PM who keeps adding "small" requests that accumulate?',
+    'How do you build trust with a new PM who does not know the codebase?'
+  ],
+  tags: ['product', 'prioritization', 'saying-no', 'leadership'],
+  lang: 'en',
+},
+{
+  id: 'english-172',
+  topic: 'english',
+  level: 'lead',
+  q: 'Tell me about a time you introduced a new practice — like code review, CI/CD, or testing — to a team that resisted it. How did you handle the resistance?',
+  a: `**Tóm tắt:** Thay đổi quy trình là **quản trị thay đổi**, không phải công nghệ. Interviewer muốn thấy: bạn hiểu nguyên nhân kháng cự (sợ chậm, không thấy giá trị, thói quen), bạn bắt đầu nhỏ (pilot), đo lường, lan tỏa bằng bằng chứng, không bắt ép.
+
+### Sample answer
+When I joined my previous team, there was no code review — engineers pushed directly to main. The argument was "we are senior, we move fast, reviews slow us down". In the first month we had three production incidents caused by simple bugs a second pair of eyes would have caught: a missing null check, a wrong currency code, and a migration that ran twice.
+
+I did not mandate reviews immediately. Instead, I proposed a **two-week pilot** on one high-risk service: the payment orchestration service. We used a lightweight process: every PR needed one approval, the author merged after CI passed, and we capped review time at four hours. I also paired with the most skeptical engineer on the first few reviews to show it was about learning, not gatekeeping.
+
+We measured: defect rate dropped from 3 per release to 0.5, cycle time actually improved because we caught bugs before they reached staging, and the team started asking for reviews on their own PRs. After the pilot, we rolled it out team-wide with the same rules. The key was making the pain visible (the three incidents), starting small, measuring, and letting the team experience the benefit themselves rather than imposing it.
+
+### Useful phrases
+- **pushed directly to main**: đẩy thẳng vào nhánh main
+- **a second pair of eyes**: một cặp mắt thứ hai (code review)
+- **I did not mandate it immediately**: tôi không bắt buộc ngay
+- **a two-week pilot**: thử nghiệm hai tuần
+- **lightweight process**: quy trình nhẹ
+- **capped review time at four hours**: giới hạn thời gian review 4 giờ
+- **gatekeeping**: canh gác / kiểm duyệt (ám chỉ negativo)
+- **rolled it out team-wide**: triển khai toàn đội
+
+### Lỗi người Việt hay mắc
+- **Nói "I forced them to do code review"**: bắt buộc tạo ra sự kháng cự. Dùng "pilot", "proposed", "measured", "rolled out".
+- **Quên đo lường trước/sau**: "we felt it was better" không thuyết phục. Phải có con số: defect rate, cycle time, review turnaround.
+- **Phát âm "pilot"**: /ˈpaɪlət/ (nhấn "PI"), không phải "pi-lốt".
+- **Dùng "mandatory" từ đầu**: "mandatory code review" nghe nặng nề. Dùng "required approval" hoặc "we tried it on one service first".
+- **Không nhắc "gatekeeping"**: đây là nỗi sợ lớn của dev senior. Phải nói rõ "not gatekeeping, it is learning".
+
+> Senior tip: Mọi thay đổi quy trình (code review, CI/CD, testing, lint) đều theo pattern: **pain visible → small pilot → measure → team pulls it → scale**. Đừng bao giờ bắt đầu bằng "từ nay buộc phải...". Dùng dữ liệu sự cố thực tế (3 incidents/tháng) làm catalyst. Phát âm **pilot** /ˈpaɪlət/, **gatekeeping** /ˈɡeɪtkiːpɪŋ/, **mandate** /ˈmændeɪt/.`,
+  follow: [
+    'What would you have done if the pilot showed no improvement in defect rate?',
+    'How do you handle a senior engineer who still refuses to participate after the rollout?',
+    'How do you keep the review process lightweight as the team grows?'
+  ],
+  tags: ['process-change', 'code-review', 'change-management', 'leadership'],
+  lang: 'en',
+},
+{
+  id: 'english-173',
+  topic: 'english',
+  level: 'lead',
+  q: 'How do you interview and evaluate candidates? Walk me through your process and what signals you look for.',
+  a: `**Tóm tắt:** Hiring là **đầu tư rủi ro cao**. Lead interviewer cần quy trình có cấu trúc, rubric rõ ràng, và bằng chứng thay vì ấn tượng. Interviewer muốn thấy: bạn thiết kế câu hỏi theo signal, chấm điểm nhất quán, giảm bias, và quyết định dựa trên dữ liệu.
+
+### Sample answer
+My goal is to predict how the candidate will perform on the job, not how well they interview. I use a **structured rubric** with four signals: problem solving, code quality, system design, and collaboration. Each signal has 3–4 behavioral or technical questions with a 1–5 scale and concrete anchors — for example, "3 on problem solving = solves the happy path with hints; 4 = identifies two edge cases independently; 5 = proposes a better approach than my reference solution."
+
+Before the loop, I align the panel on the rubric so everyone scores the same way. During the interview, I take **verbatim notes** (what the candidate said, not my judgement), then score immediately after. I never discuss candidates with other interviewers before submitting my score — that prevents anchoring bias.
+
+For system design, I give a realistic scope (design a payment reconciliation flow) and look for: clarifying requirements, making explicit trade-offs, admitting uncertainty, and evolving the design when I push back. A senior candidate who says "it depends on the consistency requirement" scores higher than one who jumps to "use Kafka".
+
+After the loop, we have a **calibration meeting** where we compare scores, discuss discrepancies, and make a hire/no-hire decision. If we are split, the default is no-hire — the cost of a false positive is months of team friction; the cost of a false negative is a few more interviews.
+
+### Useful phrases
+- **a structured rubric**: một bảng chấm có cấu trúc
+- **concrete anchors**: mốc điểm cụ thể (ví dụ cho mỗi mức 1-5)
+- **anchoring bias**: thiên kiến neo (bị ảnh hưởng bởi ý kiến người khác)
+- **verbatim notes**: ghi chú nguyên văn (câu nói gốc của ứng viên)
+- **calibration meeting**: hội chắn chỉnh điểm
+- **false positive / false negative**: tuyển nhầm / bỏ lỡ người tốt
+- **evolving the design**: phát triển thiết kế khi bị thách thức
+
+### Lỗi người Việt hay mắc
+- **Nói "I look for culture fit"**: "culture fit" dễ thành bias. Dùng **"values alignment"** hoặc **"collaboration signal"** với rubric rõ ràng.
+- **Chấm điểm dựa trên "feeling"**: "I liked him" không là evidence. Luôn có rubric + verbatim notes.
+- **Thảo luận ứng viên trước khi chấm xong**: gây anchoring bias. Quy tắc: **submit score first, discuss later**.
+- **Phát âm "rubric"**: /ˈruːbrɪk/ (nhấn "RU"), không phải "ru-bric".
+- **Không có "calibration"**: mỗi người chấm theo cảm tính thì điểm không so sánh được. Bắt buộc có meeting chỉnh điểm.
+
+> Senior tip: Hiring decision mặc định là **no-hire khi split** — chi phí false positive (người kém vào team) lớn gấp nhiều false negative (bỏ lỡ người tốt). Luôn có rubric anchors (ví dụ mức 3, 4, 5 cụ thể) để panel chấm đồng bộ. Phát âm **rubric** /ˈruːbrɪk/, **anchoring bias** /ˈæŋkərɪŋ ˈbaɪəs/, **calibration** /ˌkælɪˈbreɪʃn/. Một lead engineer tốt có **rubric in sẵn** cho mỗi vòng phỏng vấn — đó là dấu hiệu professional.`,
+  follow: [
+    'How do you evaluate a candidate who is strong technically but weak on communication?',
+    'What do you do when another interviewer gives a score you strongly disagree with?',
+    'How do you adapt your rubric for mid-level vs senior vs lead candidates?'
+  ],
+  tags: ['hiring', 'interviewing', 'evaluation', 'leadership'],
+  lang: 'en',
+},
+{
+  id: 'english-174',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "Tell me about a time you explained your current project's architecture to an interviewer who was new to your domain. How did you make the explanation clear without listing every technology?",
+  a: `**Tóm tắt:** Interviewer muốn biết bạn có thể làm rõ kiến trúc với người chưa biết domain mà không sa vào danh sách công nghệ hay không. Hãy kể một lần phỏng vấn cụ thể theo thứ tự **người nghe và mục tiêu → một luồng request → các thành phần và trade-off → cách kiểm tra mức độ hiểu → kết quả**.
+
+### Sample answer
+I recently interviewed for a backend role, and the interviewer had no experience in online learning. I had about four minutes, so I asked whether they wanted a high-level view or one request flow. They chose the request flow. Our six-person team supports an online learning platform. I began with the user goal: a student enrolls in a course and receives confirmation. Then I drew three boxes: a Spring Boot application, which receives web requests and runs our Java code; a PostgreSQL database, which stores courses and enrollments; and a background worker, which performs slower tasks after the response. When a student enrolls, the application writes the enrollment and progress in one database transaction, a group of changes saved or rolled back together. It then places an email job in a table. The worker sends the email, so a slow email provider does not delay checkout. The trade-off is that the confirmation email may arrive several seconds later. In six months, daily users doubled from 600 to 1,200, while 95 percent of requests stayed under 240 milliseconds. I left out internal code details and asked which part they wanted to explore. That kept the answer focused and led to a useful discussion about duplicate enrollments.
+
+### Useful phrases
+- a high-level view — bức tranh tổng quan, chưa đi sâu chi tiết
+- one request flow — luồng xử lý của một yêu cầu
+- runs our Java code — chạy mã Java của hệ thống
+- saved or rolled back together — được lưu cùng nhau hoặc cùng bị hoàn tác
+- does not delay checkout — không làm chậm bước thanh toán
+- stayed under 240 milliseconds — vẫn dưới 240 mili giây
+- which part they wanted to explore — phần họ muốn tìm hiểu sâu hơn
+
+### Lỗi người Việt hay mắc
+- **Liệt kê công nghệ thay vì kể cách hệ thống hoạt động:** "We use Java, PostgreSQL, and a queue" không cho thấy dữ liệu đi đâu. Hãy mô tả một luồng người dùng cụ thể.
+- **Dùng từ chuyên môn mà không giải nghĩa:** Đừng chỉ nói "transaction"; giải thích ngắn rằng nhóm thay đổi được lưu cùng nhau hoặc cùng bị hoàn tác.
+- **Dịch sát "hệ thống có 1,200 users mỗi ngày":** Nói tự nhiên hơn là "The system has 1,200 daily users" hoặc "We had 1,200 daily users."
+- **Trả lời dài mà không hỏi hướng quan tâm:** Hãy hỏi "Would you like me to explain the data flow or the deployment?" để chọn phần phù hợp.
+
+> Senior tip: Chỉ vẽ ba đến năm thành phần và lần theo một request; interviewer sẽ hỏi tiếp nếu muốn chi tiết. Đừng nhận công lao cho số liệu toàn hệ thống nếu bạn không thể giải thích cách đo và phần việc của mình.
+`,
+  follow: [
+    "How would you explain the same architecture to a product manager?",
+    "Which part of the enrollment flow would you explain next if the interviewer asked for more detail?",
+    "How would you explain the delay between saving an enrollment and sending its email?"
+  ],
+  tags: ['architecture', 'project', 'modular-monolith', 'communication']
+},
+{
+  id: 'english-175',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "Tell me about a time you improved system performance. What was slow, what did you change, and how did you measure the result?",
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn tối ưu dựa trên bằng chứng, không đoán hoặc chỉ thêm server. Kể theo khung **baseline và ảnh hưởng → cách tìm nút thắt → thay đổi cụ thể → kết quả trước/sau → trade-off và bài học**, với số liệu về thời gian, bộ nhớ hoặc số query.
+
+### Sample answer
+Last year, our seven-person team maintained a monthly invoice export. Its largest file had 600,000 rows; the job took eleven minutes, used 1.5 gigabytes of heap (memory used by Java objects), and failed twice because the process ran out of memory.
+
+I profiled it and found two causes: the code loaded every row before writing, and it sent one extra customer query for each invoice.
+
+I changed the query to join invoice and customer data, then read results in keyset pages of 2,000 rows. Keyset pagination uses the last invoice ID to find the next page instead of skipping earlier rows. A buffered writer grouped file writes into larger blocks. I also used a fixed cutoff time so new invoices would not enter an export already in progress.
+
+After two weeks of work and testing, the same export took 90 seconds and peak heap fell to 400 megabytes. The trade-off was more complex query and pagination code. I added tests for page boundaries, empty results, and records added during the export. I learned to measure memory and query count before changing code. A larger server would have hidden the issue and increased cost.
+
+### Useful phrases
+- ran out of memory — hết bộ nhớ khả dụng cho tiến trình
+- I profiled it — tôi đo và phân tích hoạt động của job để tìm phần chậm
+- one extra customer query for each invoice — thêm một truy vấn khách hàng cho mỗi hóa đơn
+- the last invoice ID — ID hóa đơn cuối cùng
+- a fixed cutoff time — mốc thời gian cố định để giới hạn dữ liệu
+- peak heap fell to 400 megabytes — mức bộ nhớ heap cao nhất giảm xuống 400 megabyte
+- hidden the issue and increased cost — che giấu vấn đề và làm chi phí tăng
+
+### Lỗi người Việt hay mắc
+- **Nói kết quả không có baseline:** "I made the export much faster" là quá chung chung. Nói "The export time dropped from eleven minutes to 90 seconds."
+- **Sai giới từ khi nêu mức giảm:** "reduced 1.5 gigabytes to 400 megabytes" → "reduced heap usage from 1.5 gigabytes to 400 megabytes", hoặc "heap usage fell from ... to ...".
+- **Nhầm query với row:** "The code ran 600,000 rows" là sai. Nói "The code processed 600,000 rows" hoặc "ran 600,000 queries".
+- **Đưa giải pháp trước nguyên nhân:** Đừng bắt đầu bằng "I added pagination". Hãy nói trước việc toàn bộ rows được load vào memory và mỗi invoice gây thêm một query.
+
+> Senior tip: Luôn nói rõ con số đo ở môi trường nào, với file lớn cỡ nào và đo trước/sau trong bao lâu; một con số thiếu bối cảnh dễ bị interviewer bắt bẻ. Nếu chỉ tối ưu một batch job, đừng phóng đại thành cải thiện latency của toàn hệ thống.
+`,
+  follow: [
+    "Why did you choose keyset pagination instead of offset pagination?",
+    "How did you keep the export consistent while new invoices were being created?",
+    "What would you do next if the database query were still the bottleneck?"
+  ],
+  tags: ['performance', 'database', 'pagination', 'star', 'metrics']
+},
+{
+  id: 'english-176',
+  topic: 'english',
+  level: 'mid',
+  lang: 'en',
+  q: "Tell me about a time you explained a technical concept to a non-technical person. How did you make the idea clear and check that they understood it?",
+  a: `**Tóm tắt:** Interviewer đánh giá khả năng chọn đúng mức chi tiết, dùng ví dụ gần với công việc của người nghe và kiểm tra sự hiểu biết mà không làm họ khó chịu. Kể một buổi trao đổi cụ thể theo thứ tự **vấn đề giao tiếp → cách diễn giải và hình minh họa → nhờ người nghe kể lại → kết quả và giới hạn của phép so sánh**.
+
+### Sample answer
+During a project with a six-person support team, agents often sent order tickets to engineers because they thought any database error meant an order was lost. I had twenty minutes to explain database transactions, so I used a checkout example instead of code.
+
+I said, "A transaction is an all-or-nothing group of database changes. In our system, creating an order and reserving stock are two steps on one checklist. If the second step fails, the database cancels the first, so an order cannot exist without reserved stock."
+
+I compared it to a shop exchange: if either item is rejected, the whole exchange stops. Then I drew three boxes: start, both changes, and finish, with an arrow back to start for failure. I asked an agent to explain it back. They noticed I had not said what happened after saving, so I added: after finish, the changes are permanent and visible to other requests.
+
+We updated the support runbook, a step-by-step guide for common issues. Over the next month, incorrectly escalated order tickets fell from eighteen to five per week. The simple model left out advanced failure cases, so I documented those separately for engineers. I learned that asking someone to explain an idea back is more useful than asking, "Do you understand?"
+
+### Useful phrases
+- instead of code — thay vì dùng mã nguồn
+- an all-or-nothing group of database changes — một nhóm thay đổi dữ liệu chỉ cùng thành công hoặc cùng bị hủy
+- reserving stock — giữ lại số lượng hàng cho đơn
+- explain it back — tự giải thích lại ý cho tôi nghe
+- a step-by-step guide — tài liệu hướng dẫn từng bước
+- incorrectly escalated order tickets — các ticket về đơn hàng bị chuyển lên kỹ thuật không đúng
+- the simple model left out advanced failure cases — mô hình đơn giản này chưa thể hiện các tình huống lỗi phức tạp
+
+### Lỗi người Việt hay mắc
+- **Dùng "Do you understand?" để kết thúc:** Câu này dễ khiến người nghe gật đầu dù chưa hiểu. Hãy nói "Could you explain this diagram back to me in your own words?".
+- **Nói "nontechnical" như một nhãn đánh giá:** Không nói "They are not technical, so they cannot understand". Nói "They do not work with databases, so I used a checkout example."
+- **Giải thích transaction là không bao giờ lỗi:** Transaction không loại bỏ lỗi; nó giúp một nhóm thay đổi không dở dang. Nói "If one required change fails, the database rolls back the group."
+- **Lạm dụng ví dụ chuyển tiền ngân hàng:** Việc trừ tiền ở một hệ thống bên ngoài không tự nằm trong database transaction của bạn. Chọn ví dụ các bảng trong cùng database, như order và stock.
+
+> Senior tip: Phép so sánh chỉ nên phục vụ một ý chính; hãy nói rõ nó đơn giản hóa điều gì để không tạo hiểu nhầm mới. Câu hỏi kiểm tra tốt nhất là "How would you use this idea in your next ticket?" vì nó buộc cả hai bên xác nhận sự hiểu biết bằng tình huống thật.
+`,
+  follow: [
+    "Why did you ask the support agent to explain the diagram back to you?",
+    "Which details did you leave out, and why was that safe for this audience?",
+    "How would you change your explanation for a product manager who needs to make a design decision?"
+  ],
+  tags: ['communication', 'explanation', 'transaction', 'stakeholder']
+},
+{
+  id: 'english-177',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "Describe a time you disagreed with a code review comment. How did you respond, and what was the outcome?",
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn bảo vệ chất lượng code mà không biến review thành cuộc tranh thắng thua. Kể theo thứ tự **comment và mối lo kỹ thuật → bằng chứng hoặc test → cách hai bên cùng sửa giải pháp → kết quả và bài học**, nhấn mạnh rằng bạn vẫn tiếp nhận phần hợp lý của comment.
+
+### Sample answer
+In a five-person team, I submitted a change to stop two requests reserving the same inventory item. A reviewer suggested adding Java's synchronized keyword. I disagreed because it coordinates threads only inside one Java process. We ran three application instances, so requests on different instances could still update the shared database at once.
+
+I thanked the reviewer, explained that case, and proposed a test with two parallel calls. It reproduced a race condition: both read the same stock before either saved its update.
+
+We compared two fixes. A database lock makes the second request wait; an atomic conditional update changes stock only if enough remains. We chose the conditional update and a unique database constraint, a rule preventing duplicate reservations. The reviewer also asked for a clear error when no row was updated.
+
+The change took two days, including tests and a database schema update. In our test environment, duplicate reservations fell from fourteen per 1,000 requests to zero. The trade-off was extra database logic and a new error for clients. I learned to challenge an idea with evidence, not a person, and to accept useful parts of a comment even when I disagreed with its first solution.
+
+### Useful phrases
+- adding Java's synchronized keyword — thêm từ khóa synchronized của Java
+- coordinates threads only inside one Java process — chỉ điều phối các thread bên trong một tiến trình Java
+- reproduced a race condition — tái hiện lỗi kết quả phụ thuộc vào thứ tự chạy của các tác vụ đồng thời
+- before either saved its update — trước khi một trong hai request lưu thay đổi
+- an atomic conditional update — một lệnh cập nhật có điều kiện và không thể bị tách nửa chừng
+- no row was updated — không có dòng dữ liệu nào được cập nhật
+- challenge an idea with evidence, not a person — phản biện ý tưởng bằng bằng chứng, không công kích cá nhân
+
+### Lỗi người Việt hay mắc
+- **Phản hồi cụt và phòng thủ:** "No, you are wrong" hoặc "My code is correct" làm dừng trao đổi. Nói "I see your concern. In our three-instance setup, I think a JVM lock would not cover this case."
+- **Dùng "I" quá nhiều khi mô tả kết quả chung:** "I fixed the review and I proved everything" nghe khoe khoang. Dùng "I proposed the test" cho phần của mình và "We chose the final approach" cho quyết định chung.
+- **Nói synchronized chặn được mọi duplicate:** Từ khóa này chỉ khóa trong một JVM, không điều phối nhiều application instance. Hãy nói rõ phạm vi trước khi đề xuất database constraint hoặc atomic update.
+- **Kể xung đột nhưng không có kết quả:** Đừng dừng ở "We discussed and moved on". Nêu giải pháp cuối, thời gian thực hiện, test và số liệu sau sửa.
+
+> Senior tip: Khi comment chưa rõ, hỏi reviewer mô tả input hoặc sequence cụ thể làm code sai; một failing test thường kết thúc tranh luận nhanh hơn nhiều tin nhắn dài. Nếu hai phương án đều đúng và rủi ro thấp, hãy ưu tiên convention của team thay vì kéo dài tranh luận sở thích cá nhân.
+`,
+  follow: [
+    "Why would synchronized not be enough when the application runs on several instances?",
+    "What did the test need to demonstrate before you changed the implementation?",
+    "What would you do if you and the reviewer still disagreed after seeing the test results?"
+  ],
+  tags: ['code-review', 'disagreement', 'concurrency', 'teamwork', 'communication']
+},
+{
+  id: 'english-178',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'Why are you looking to change jobs, and how do you frame it positively without criticising your current employer?',
+  a: `**Tóm tắt:** Interviewer hỏi câu này để kiểm tra thái độ, sự trung thực và xem bạn có quay lùi hay trách móc người cũ. Cấu trúc trả lời: **đánh giá ngắn gọn nơi hiện tại (tích cực) → lý do muốn thay đổi gắn với mục tiêu tăng trưởng → tại sao công ty này phù hợp**. Không nói xấu quản lý, đồng nghiệp, lương, hoặc quy trình. Dùng "I am looking for..." thay vì "My company doesn't...".
+
+### Sample answer
+I have spent three years at my current company, a mid-sized fintech, where I built and maintained the core payment service handling two million transactions daily. The team gave me ownership of the settlement engine, and I learned a lot about distributed systems and PCI compliance. I am grateful for that growth.
+
+Now I want to work on a larger scale where traffic patterns are more unpredictable and the architecture leans toward event-driven microservices. Your platform processes peak loads of fifty thousand requests per second across multiple regions, and the team has publicly shared how you use Kafka for exactly-once semantics in the ledger. That matches the technical challenge I am seeking.
+
+I also value a culture where engineers participate in product discovery, not just ticket execution. From your engineering blog and the way the hiring manager described the squad model, I see that alignment. I am not leaving because of a conflict — I am moving toward a problem space and a way of working that excite me.
+
+### Useful phrases
+- I have spent X years at... — tôi đã làm X năm tại...
+- I am grateful for the growth... — tôi biết ơn sự phát triển...
+- I am looking for a larger scale / more unpredictable traffic / event-driven architecture — tôi đang tìm kiếm quy mô lớn hơn / lưu lượng khó dự đoán hơn / kiến trúc hướng sự kiện
+- That matches the technical challenge I am seeking — điều đó khớp với thách thức kỹ thuật tôi đang tìm
+- I value a culture where engineers participate in product discovery — tôi trân trọng văn hóa kỹ sư tham gia khám phá sản phẩm
+- I am not leaving because of a conflict — tôi không rời đi vì xung đột
+- I am moving toward a problem space that excites me — tôi đang chuyển về phía không gian vấn đề khiến tôi hào hứng
+
+### Lỗi người Việt hay mắc
+- **Nói xấu công ty cũ:** "Management is bad", "Salary is low", "No work-life balance". Hãy chuyển thành "I want more ownership", "I want to work on system design at scale", "I want a culture of continuous learning".
+- **Trả lời chung chung:** "I want a new challenge" không kèm ví dụ cụ thể. Phải nêu rõ: domain, scale, tech stack, team model mà bạn muốn.
+- **Dùng "but" phủ định phần trước:** "I learned a lot, but the pay is low". Hãy dùng "and": "I learned a lot, and now I want to apply that at a larger scale".
+- **Không research công ty mới:** Không nói được tại sao *cụ thể* công ty này phù hợp. Hãy đọc blog kỹ thuật, case study, hoặc nghe podcast của engineer nơi đó.
+
+> Senior tip: Hãy chuẩn bị 3 bullet points "tích cực về nơi cũ" và 3 bullet points "mục tiêu tại nơi mới". Khi hỏi follow-up "What would make you stay?", bạn trả: "If the scope and architecture direction matched what I described, I would consider it — but my decision is based on long-term growth, not a counter-offer."
+
+### Follow-up
+- "What specifically about our architecture or domain interests you most?"
+- "If your current company offered you a lead role on a new microservices initiative, would you stay?"
+- "How do you evaluate whether a company's engineering culture matches what they advertise?"
+`,
+  follow: [
+    "What specifically about our architecture or domain interests you most?",
+    "If your current company offered you a lead role on a new microservices initiative, would you stay?",
+    "How do you evaluate whether a company's engineering culture matches what they advertise?"
+  ],
+  tags: ['job-change', 'interview', 'positive-framing', 'career-growth']
+},
+{
+  id: 'english-179',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'How do you collaborate effectively with a remote international team across time zones and cultures?',
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn chủ động giảm thiểu ma sát remote: giao tiếp bất đồng bộ (async) rõ ràng, tôn trọng múi giờ, văn hóa, và xây dựng niềm tin mà không cần gặp mặt. Trả lời theo cấu trúc: **tools & rituals → async-first habits → cultural awareness → trust building → ví dụ cụ thể có số liệu**.
+
+### Sample answer
+In my last role, I worked in a squad of eight engineers spread across Vietnam, Poland, and the US East Coast — a twelve-hour spread. We agreed on a four-hour overlap window (2 PM to 6 PM UTC) for synchronous meetings: stand-up, refinement, and retrospective. Everything else was async by default.
+
+For async communication, we used GitHub issues with a template: context, acceptance criteria, risks, and a "decision needed by" date. I wrote design docs in Notion with a one-page summary, diagrams, and a comment thread for questions. Reviews happened within 24 hours; if a reviewer was asleep, they left comments and the author addressed them next day. This cut our cycle time from three days to one day for typical features.
+
+Cultural differences showed up in directness. Polish teammates gave blunt feedback ("This will not work"), while Vietnamese teammates were more indirect ("I wonder if there is a risk"). I learned to read both styles and explicitly ask "What is your concern?" to surface issues early. We also rotated meeting times quarterly so no one always took the late call.
+
+Trust came from small things: I shared weekend photos in the #random channel, celebrated a Polish teammate's name day, and asked a US colleague about Thanksgiving plans. When a production incident hit at 3 AM my time, a Polish engineer picked it up without being asked because we had that rapport. Our deployment frequency went from weekly to daily, and rollback rate dropped below 1 percent.
+
+### Useful phrases
+- async-first by default — ưu tiên bất đồng bộ theo mặc định
+- overlap window — cửa sổ thời gian chồng chéo (khi cả hai bên online)
+- decision needed by date — ngày hạn cần quyết định
+- cycle time — thời gian từ bắt đầu code đến merge/deploy
+- direct vs indirect feedback — phản hồi thẳng thắn vs gián tiếp
+- surface issues early — nêu ra vấn đề sớm
+- rotate meeting times — xoay vòng giờ họp
+- build rapport — xây dựng mối quan hệ tin cậy
+- without being asked — không cần nhờ, tự nguyện
+
+### Lỗi người Việt hay mắc
+- **Nói "We use Slack/Zoom" mà không nói quy tắc:** Phải có convention: khi nào call, khi nào async, SLA review PR, format ticket.
+- **Bỏ qua múi giờ:** "We meet at 9 AM my time" — nếu đồng đội 3 AM thì không bền vững. Luôn nêu overlap window và xoay vòng.
+- **Dịch word-by-word:** "I understand you" (hiểu bạn) vs "I see your point" (thấy quan điểm bạn). Phản hồi chuyên nghiệp dùng "I see your point, and I also think...".
+- **Không nhắc cultural nuance:** Interviewer senior sẽ hỏi "Give an example of a cultural misunderstanding". Hãy có sẵn câu chuyện: directness, hierarchy, holiday, communication style.
+- **Quên trust-building:** Remote team thiếu "watercooler moments". Hãy kể micro-hành động: chia sẻ cá nhân nhẹ, công nhận công khai, rotate on-call burden.
+
+> Senior tip: Viết một "Team Working Agreement" 1 trang: overlap hours, response SLA, meeting norms, escalation path, holiday calendar. Review hàng quý. Điều này thể hiện maturity và giảm ma sát hơn bất kỳ tool nào.
+
+### Follow-up
+- "How do you handle a situation where a teammate in another time zone blocks your work and you cannot reach them?"
+- "What do you do when you notice a cultural misunderstanding affecting team dynamics?"
+- "How do you onboard a new remote engineer so they feel connected quickly?"
+`,
+  follow: [
+    "How do you handle a situation where a teammate in another time zone blocks your work and you cannot reach them?",
+    "What do you do when you notice a cultural misunderstanding affecting team dynamics?",
+    "How do you onboard a new remote engineer so they feel connected quickly?"
+  ],
+  tags: ['remote-work', 'international-team', 'async-communication', 'culture', 'timezone']
+},
+{
+  id: 'english-180',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'A customer reports a production bug that affects their payments. Walk me through how you handle it from alert to resolution and communication.',
+  a: `**Tóm tắt:** Interviewer kiểm tra quy trình incident response end-to-end: **triage → communicate → investigate → mitigate → fix → verify → postmortem**. Nêu rõ vai trò bạn (owner/contributor), tool dùng, timeline, và cách báo cho customer/stakeholder. Nhấn mạnh "customer impact first", "rollback over forward fix nếu rủi ro cao", và "blameless postmortem".
+
+### Sample answer
+At 9:15 AM, our PagerDuty alert fired: "Payment success rate dropped below 99.5%". I was the on-call engineer. First step: acknowledge in PagerDuty, open the incident Slack channel ({{#incident-payments}}), and post a one-liner: "Investigating payment success rate drop. Customer impact: ~200 failed transactions in last 10 minutes. ETA update in 15 minutes."
+
+I checked Datadog: error rate spiked on the {{POST /payments}} endpoint, 500 errors from the ledger service. Recent deploy was 40 minutes ago — a refactor of the idempotency key validation. I rolled back that deploy (2 minutes via ArgoCD). Success rate recovered to 99.9% within 5 minutes.
+
+While rollback propagated, I messaged the customer success manager: "We identified a regression in the last deploy affecting a subset of payments. Rolled back. Estimated resolution: 10 minutes. I will update you when confirmed." They relayed to the affected merchant.
+
+Post-rollback, I reproduced locally: the new validation rejected valid idempotency keys with a trailing space — a data migration missed trimming. Root cause: unit test mocked the validator, integration test used clean fixtures, but production data had dirty keys from a legacy import.
+
+Fix: add {{.trim()}} in validator, add integration test with dirty keys, add canary analysis for future deploys. Deployed fix at 11:30 AM after code review. Monitored 30 minutes — zero errors.
+
+Postmortem (blameless) next day: action items — trim at ingestion, add data-quality check in CI, extend canary to 10% traffic for 30 minutes. Shared summary with customer: "Root cause identified, fix deployed, guardrails added. We apologise for the disruption."
+
+### Useful phrases
+- acknowledge the alert — xác nhận cảnh báo
+- customer impact: X failed transactions — ảnh hưởng khách hàng: X giao dịch thất bại
+- ETA update in 15 minutes — cập nhật thời gian dự kiến sau 15 phút
+- roll back the deploy — rollback bản deploy
+- success rate recovered — tỷ lệ thành công đã hồi phục
+- root cause: validation rejected valid keys — nguyên nhân gốc: validator từ chóa key hợp lệ
+- data migration missed trimming — migration dữ liệu bỏ qua việc trim
+- blameless postmortem — buổi retrospective không đổ lỗi cá nhân
+- guardrails added — đã thêm rào chắn bảo vệ
+- we apologise for the disruption — chúng tôi xin lỗi về sự gián đoạn
+
+### Lỗi người Việt hay mắc
+- **Nhảy thẳng vào fix mà không communicate trước:** Khách hàng và stakeholder cần biết "đang xảy ra gì" và "ETA khi nào xong" ngay lập tức.
+- **Không rollback khi có deploy gần đây:** "I spent two hours debugging" — senior biết rollback 2 phút an toàn hơn debug 2 giờ khi production đang cháy.
+- **Đổ lỗi cho người deploy / viết code:** "Junior dev forgot to trim". Blameless nghĩa là hỏi "Why did the process allow this?" không phải "Who did this?".
+- **Quên verify sau fix:** Deploy xong không giám sátmetrics 15-30 phút. Luôn có canary hoặc feature flag.
+- **Postmortem chỉ liệt kê action item không có owner + deadline:** Mỗi item phải có owner, due date, và cách đo lường hiệu quả.
+
+> Senior tip: Chuẩn bị sẵn "incident runbook" 1 trang: link dashboard, runbook rollback, contact customer success, template Slack message, template customer email. Khi on-call, bạn chỉ follow checklist — giảm cognitive load khi stress.
+
+### Follow-up
+- "What would you do if rollback did not restore the success rate?"
+- "How do you decide whether to wake up a teammate at 3 AM for an incident?"
+- "How do you communicate with a customer who is angry and threatening to churn?"
+`,
+  follow: [
+    "What would you do if rollback did not restore the success rate?",
+    "How do you decide whether to wake up a teammate at 3 AM for an incident?",
+    "How do you communicate with a customer who is angry and threatening to churn?"
+  ],
+  tags: ['production-incident', 'customer-communication', 'incident-response', 'rollback', 'postmortem']
+},
+{
+  id: 'english-181',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'When you have more tasks than time, how do you prioritise and communicate trade-offs to stakeholders?',
+  a: `**Tóm tắt:** Interviewer muốn thấy framework rõ ràng (RICE, WSJF, MoSCoW, Eisenhower), không phải "làm theo cảm tính". Cấu trúc: **framework dùng → ví dụ cụ thể có số liệu → cách nói "không" hoặc "sau" với stakeholder → kết quả**. Nhấn mạnh: alignment với business goal, visibility của trade-off, và review định kỳ.
+
+### Sample answer
+In Q3 last year, my squad of five engineers had 40 story points of committed work, plus 15 points of urgent bugs, plus a request from Sales to build a demo for a 500k USD deal — all in a two-week sprint. Capacity was 50 points.
+
+I used WSJF (Weighted Shortest Job First): each item gets Cost of Delay (business value + time criticality + risk reduction) divided by job size. I listed everything in a shared sheet with the Product Manager: the demo scored highest on time criticality (deal closes Friday), the bugs scored high on risk reduction (churn risk), and two features scored low on both. We agreed: do the demo (8 pts), fix 3 P1 bugs (8 pts), defer 2 P2 bugs and 2 features to next sprint. I communicated to stakeholders: "We are prioritising the demo and critical bugs this sprint. The deferred items are captured in the backlog with owner and target sprint. Here is the sheet — please add context if priority changes."
+
+For the demo, I time-boxed 6 points (MVP only: happy path, mock external calls). We delivered Thursday, Sales closed the deal. The deferred bugs were fixed next sprint with no customer escalation. Velocity stabilised at 48 points.
+
+Key phrase I use with stakeholders: "If we do X, we cannot do Y this sprint. Which outcome matters more to the business right now?" This forces a business decision, not an engineering guess.
+
+### Useful phrases
+- more tasks than capacity — việc nhiều hơn năng lực
+- WSJF / RICE / MoSCoW — các framework ưu tiên phổ biến
+- Cost of Delay — chi phí của việc trì hoãn
+- time criticality — tính cấp thiết về thời gian
+- risk reduction — giảm thiểu rủi ro
+- job size / effort estimate — kích thước công việc / ước lượng nỗ lực
+- defer to next sprint — hoãn sang sprint sau
+- time-box the demo — giới hạn thời gian cho demo
+- MVP only — chỉ làm tối thiểu có thể chạy được
+- forces a business decision — buộc quyết định kinh doanh
+
+### Lỗi người Việt hay mắc
+- **Không có framework:** "I prioritise by importance" — quá mơ hồ. Phải nói tên framework và cách tính điểm.
+- **Nói "I will try to do both"**: Overcommit làm burn out và giảm chất lượng. Hãy nói "We can do A or B, not both. You decide."
+- **Không visibility:** Stakeholder không biết trade-off. Luôn có shared doc/board thể hiện: nếu làm A thì B bị hoãn, tác động gì.
+- **Không align với business goal:** Ưu tiên theo "thích làm gì" hoặc "dễ làm gì" thay vì "tác động business lớn nhất".
+- **Quên review định kỳ:** Priority thay đổi hàng ngày. Stand-up hoặc weekly sync phải review backlog top 10.
+
+> Senior tip: Giữ một "Priority Board" công khai (Notion/Jira/Confluence): cột Now / Next / Later, mỗi item có WSJF score, owner, và "why now". Stakeholder tự xem được trade-off. Khi CEO hỏi "Tại sao feature X chưa xong?", bạn chỉ link board — không cần bào chữa.
+
+### Follow-up
+- "How do you handle a stakeholder who insists everything is P0?"
+- "What do you do when new information changes the priority mid-sprint?"
+- "How do you say no to your manager's pet project without damaging the relationship?"
+`,
+  follow: [
+    "How do you handle a stakeholder who insists everything is P0?",
+    "What do you do when new information changes the priority mid-sprint?",
+    "How do you say no to your manager's pet project without damaging the relationship?"
+  ],
+  tags: ['prioritization', 'time-management', 'stakeholder-communication', 'wsjf', 'trade-offs']
+},
+{
+  id: 'english-182',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "How would you describe your testing strategy for a new backend feature?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn có tư duy chất lượng hệ thống (quality mindset): không chỉ viết unit test, mà biết chọn loại test phù hợp từng tầng, cân bằng tốc độ phát triển và độ tin cậy. Hãy trả lời theo cấu trúc: bối cảnh tính năng → các lớp kiểm thử (unit, integration, end-to-end) → cách ưu tiên rủi ro (risk-based) → số liệu và bài học.
+
+### Sample answer
+In my current team, we built a new payment reconciliation feature for an e-commerce platform. We were four backend engineers, and the release window was three weeks. My testing strategy started with clear acceptance criteria so we knew what "done" meant. I wrote unit tests with JUnit 5 (JUnit là framework kiểm thử phổ biến cho Java) to cover business rules, like how fees and refunds were calculated. That gave us fast feedback in under two minutes on every commit. Next, I added integration tests (integration test là kiểm thử xem nhiều thành phần làm việc cùng nhau đúng không, ví dụ code + database) using Testcontainers to run against a real PostgreSQL instance. This caught a date-time bug we would not see with mocks. Before release, we ran a small end-to-end flow in staging and added monitoring alerts for mismatch rates. As a result, we shipped on time and had zero reconciliation incidents in the first month. The trade-off was slower pipelines, so I kept heavy tests in nightly runs and fast tests on every pull request.
+
+### Useful phrases
+- **acceptance criteria** — tiêu chí nghiệm thu, điều kiện để coi tính năng là hoàn thành
+- **fast feedback loop** — vòng phản hồi nhanh, biết lỗi sớm sau mỗi thay đổi
+- **risk-based testing** — kiểm thử dựa trên rủi ro, ưu tiên phần dễ gây lỗi nghiêm trọng
+- **unit test vs. integration test** — kiểm thử đơn vị và kiểm thử tích hợp
+- **test coverage is not the same as test quality** — độ phủ test không đồng nghĩa với chất lượng test
+- **catch regressions early** — phát hiện lỗi hồi quy (lỗi quay lại sau khi sửa/thêm code) sớm
+- **trade-off between speed and confidence** — đánh đổi giữa tốc độ và độ tin cậy
+- **monitoring and alerts in production** — giám sát và cảnh báo trên môi trường thật
+
+### Lỗi người Việt hay mắc
+- **Nói chung chung "I write unit tests":** Quá mơ hồ. Hãy nêu cụ thể test cái gì, dùng công cụ gì, và tại sao chọn tầng đó.
+- **Nhầm "integration test" với "end-to-end test":** Integration test thường kiểm tra vài thành phần phối hợp (ví dụ service + DB). End-to-end test kiểm tra luồng từ đầu đến cuối như người dùng thật. Nên phân biệt rõ.
+- **Dùng sai thì khi kể dự án:** Khi kể kinh nghiệm đã làm, dùng quá khứ: "I wrote", "we caught", "we shipped" (không dùng "I write" cho việc đã xong).
+- **Bỏ qua số liệu:** Chỉ nói "it worked well" nghe yếu. Thêm số: thời gian chạy test, số bug chặn được, tỉ lệ lỗi sau release.
+
+> Senior tip: Khi trả lời, hãy nhấn mạnh bạn không chạy mọi thứ mọi lúc: test nhanh trên mỗi pull request, test nặng hơn theo lịch hoặc trước release. Điều này cho thấy bạn hiểu chi phí thực tế của CI/CD (continuous integration/continuous delivery - quy trình tự động build và kiểm thử khi có thay đổi code).`,
+  follow: [
+    "How do you decide what should be a unit test versus an integration test?",
+    "If the team has very little time before release, what would you cut from your test plan and why?",
+    "Can you give an example of a bug that was only caught by an integration or end-to-end test?"
+  ],
+  tags: ['testing', 'strategy', 'quality', 'ci-cd']
+},
+{
+  id: 'english-183',
+  topic: 'english',
+  level: 'mid',
+  lang: 'en',
+  q: "Is there a technology you would like to learn next, and why?",
+  a: `**Tóm tắt:** Interviewer muốn đánh giá tinh thần học hỏi, khả năng chọn ưu tiên phù hợp công việc và cách bạn biến việc học thành giá trị thực tế. Trả lời theo cấu trúc: công nghệ muốn học → lý do gắn với mục tiêu/đội nhóm → kế hoạch học cụ thể → cách áp dụng vào dự án.
+
+### Sample answer
+I would like to learn Kubernetes (Kubernetes, hay K8s, là nền tảng điều phối container - container là gói đóng gói ứng dụng và môi trường chạy của nó - giúp tự động triển khai, mở rộng và tự phục hồi dịch vụ). In my current role, I deploy Spring Boot services, but another team usually manages the cluster, so I do not fully understand how scaling and health checks work in production. I want to close that gap because it will help me debug deployment issues faster and design services that are easier to operate. My plan is practical: over the next two months, I will spend about four hours per week following the official documentation, running a local cluster with kind, and deploying a small Java service with proper readiness and liveness probes (probe là cơ chế kiểm tra xem ứng dụng đã sẵn sàng nhận traffic hay còn sống hay không). After that, I want to improve one internal service by adding better resource limits and rollout settings. I believe this will make me more effective in cross-team discussions, not just in writing code.
+
+### Useful phrases
+- **close a knowledge gap** — thu hẹp khoảng trống kiến thức
+- **hands-on practice** — thực hành trực tiếp, tự làm thay vì chỉ đọc
+- **apply it to a real project** — áp dụng vào dự án thực tế
+- **production environment** — môi trường chạy thật phục vụ người dùng
+- **scalability and reliability** — khả năng mở rộng và độ tin cậy
+- **learning roadmap** — lộ trình học tập
+- **cross-team collaboration** — phối hợp giữa các nhóm
+- **continuous learning** — học liên tục, cập nhật kiến thức thường xuyên
+
+### Lỗi người Việt hay mắc
+- **Chọn công nghệ quá xa với công việc mà không giải thích:** Nói muốn học thứ "hot" nhưng không nối với vai trò hiện tại nghe thiếu thực tế. Hãy giải thích vì sao nó giúp bạn làm việc tốt hơn.
+- **Không có kế hoạch cụ thể:** "I want to learn it someday" nghe mơ hồ. Nên nói thời gian, cách học (docs, lab, dự án nhỏ).
+- **Phát âm/nhấn âm tên công nghệ chưa quan trọng bằng cách diễn đạt rõ:** Không sao nếu phát âm chưa chuẩn, nhưng hãy nói chậm, rõ ràng từng phần (ví dụ "Kuber-net-es").
+- **Dùng "I am interesting in":** Sai ngữ pháp. Câu đúng là "I am interested in..." hoặc "I am interested in learning...".
+
+> Senior tip: Chọn một công nghệ bổ sung trực tiếp cho điểm yếu hoặc khoảng trống trong công việc hiện tại (operability, observability, security...). Interviewer đánh giá cao người học có mục tiêu và đo được tiến bộ, hơn là người liệt kê nhiều công nghệ đang "thịnh hành".`,
+  follow: [
+    "How do you usually balance learning new technologies with your daily work?",
+    "Can you tell me about the last technology you learned and how you applied it?",
+    "What would success look like after you learn this technology?"
+  ],
+  tags: ['learning', 'career-growth', 'motivation', 'kubernetes']
+},
+{
+  id: 'english-184',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "How do you answer a technical interview question when you do not know the answer?",
+  a: `**Tóm tắt:** Interviewer không chỉ kiểm tra kiến thức, mà còn đánh giá sự trung thực, cách suy luận khi thiếu thông tin và cách bạn xử lý tình huống không chắc chắn. Hãy trả lời theo cấu trúc: thừa nhận rõ điều chưa biết → nêu phần mình biết liên quan → suy luận có cấu trúc (structured guessing) → nói cách bạn sẽ kiểm tra lại.
+
+### Sample answer
+If I do not know the answer, I stay calm and honest instead of guessing confidently. For example, in a mock interview I was asked about a specific Kafka configuration I had never used. Kafka là một hệ thống message broker (phần mềm trung gian truyền thông điệp giữa các dịch vụ) dùng để xử lý luồng dữ liệu. I said, "I have not used that exact setting in production, but I can explain what I think it affects based on my experience." Then I broke the problem into parts: what the producer does, what the broker stores, and how consumers read messages. I shared my assumption clearly, such as "I believe this parameter is related to batching, so changing it may trade latency for throughput (latency là độ trễ, throughput là lượng xử lý trong một khoảng thời gian), but I would need to verify that in the documentation." I also explained how I would confirm it: check the official docs, run a small benchmark, and observe metrics. Interviewers usually appreciate this approach because it shows clear thinking, safe assumptions, and a habit of verifying facts instead of making things up.
+
+### Useful phrases
+- **to be honest, I am not sure** — thành thật mà nói, tôi không chắc
+- **based on my understanding** — dựa trên hiểu biết của tôi
+- **let me think out loud** — để tôi suy nghĩ thành tiếng (để interviewer theo dõi cách bạn suy luận)
+- **break the problem into parts** — chia vấn đề thành từng phần nhỏ
+- **make a reasonable assumption** — đưa ra giả định hợp lý
+- **I would verify this in the documentation** — tôi sẽ kiểm tra lại trong tài liệu chính thức
+- **separate what I know from what I guess** — tách rõ điều tôi biết và điều tôi suy đoán
+- **trade-off** — sự đánh đổi giữa hai lựa chọn
+
+### Lỗi người Việt hay mắc
+- **Im lặng quá lâu hoặc trả lời vòng vo:** Im lặng khiến interviewer không biết bạn đang nghĩ gì. Hãy nói "Let me think out loud for a moment" rồi trình bày từng bước.
+- **Bịa câu trả lời cho có vẻ tự tin:** Nói sai một cách chắc chắn rất tệ. Tốt hơn là thừa nhận giới hạn rồi suy luận có cơ sở.
+- **Không phân biệt "biết" và "đoán":** Hãy gắn nhãn rõ: "I know that..." và "I assume that..." để người nghe đánh giá đúng.
+- **Quên nói cách kiểm tra lại:** Sau khi suy luận, nên nêu bước xác minh (đọc docs, làm thử, hỏi đồng đội) để thể hiện thói quen làm việc cẩn thận.
+
+> Senior tip: Structured guessing (suy luận có cấu trúc) là kỹ năng quan trọng ở level senior: bạn có thể không nhớ chi tiết cấu hình, nhưng nếu bạn đi từ nguyên lý, nêu giả định và nói rõ cách xác minh, bạn vẫn cho thấy tư duy kỹ sư đáng tin cậy.`,
+  follow: [
+    "Can you give an example of a time you were wrong but corrected yourself quickly?",
+    "How do you prepare for topics you are less familiar with before an interview?",
+    "What signals tell you that it is better to admit you do not know rather than keep guessing?"
+  ],
+  tags: ['communication', 'honesty', 'problem-solving', 'interview-skills']
+},
+{
+  id: 'english-185',
+  topic: 'english',
+  level: 'mid',
+  lang: 'en',
+  q: "How would you explain a gap or a weak point in your CV during an interview?",
+  a: `**Tóm tắt:** Interviewer muốn kiểm tra sự trung thực, trách nhiệm và cách bạn biến điểm yếu/khoảng trống thành câu chuyện trưởng thành. Trả lời theo cấu trúc ngắn: nêu thẳng vấn đề → giải thích ngắn gọn, không đổ lỗi → nói bạn đã làm gì để cải thiện → kết nối với giá trị hiện tại.
+
+### Sample answer
+If an interviewer asks about a weak point in my CV, I answer directly and keep the explanation factual. For example, I had a six-month gap last year after my previous contract ended. During that time, my father was ill, so I needed to support my family. I kept the explanation brief because I did not want to overshare personal details. At the same time, I did not stop learning: I spent about eight hours per week reviewing Java core topics, practicing SQL (SQL là ngôn ngữ truy vấn cơ sở dữ liệu quan hệ), and building a small Spring Boot project to refresh my skills. I also did two mock interviews to improve how I explain technical decisions in English. Because of that, when I returned to job searching, I could contribute quickly in coding tasks and discussions. I see that period as a challenge I handled responsibly, and now I am fully available and focused on a long-term role where I can keep growing.
+
+### Useful phrases
+- **be transparent and concise** — minh bạch và ngắn gọn
+- **keep it factual** — trình bày dựa trên sự thật, không kể lể cảm xúc
+- **take responsibility** — nhận trách nhiệm về phần việc của mình
+- **use that time productively** — sử dụng khoảng thời gian đó một cách có ích
+- **refresh my skills** — làm mới, ôn lại kỹ năng
+- **fully available now** — hiện tại sẵn sàng làm việc toàn thời gian
+- **focus on what I learned** — tập trung vào điều tôi đã học được
+- **relevant to the role** — liên quan trực tiếp đến vị trí ứng tuyển
+
+### Lỗi người Việt hay mắc
+- **Phòng thủ hoặc đổ lỗi cho công ty/người khác:** Nói xấu nơi làm việc cũ tạo ấn tượng tiêu cực. Hãy giữ giọng trung lập, tập trung vào sự thật và hành động của bạn.
+- **Kể quá chi tiết chuyện cá nhân:** Interviewer cần hiểu bối cảnh, không cần chi tiết riêng tư. Một đến hai câu là đủ.
+- **Xin lỗi quá nhiều:** Một câu thừa nhận là đủ. Nói "sorry" lặp lại làm bạn trông thiếu tự tin.
+- **Không nói phần cải thiện:** Chỉ nêu khoảng trống mà không nói bạn đã làm gì trong thời gian đó sẽ để lại dấu hỏi. Hãy nêu hoạt động học, dự án, hoặc kỹ năng đã củng cố.
+
+> Senior tip: Hãy chuẩn bị trước một câu trả lời 30-45 giây cho điểm yếu hoặc gap trong CV và luyện nói to. Mục tiêu không phải che giấu, mà là cho thấy bạn kiểm soát được câu chuyện nghề nghiệp của mình: rõ ràng, trưởng thành và hướng về tương lai.`,
+  follow: [
+    "What would you say if the gap was longer, for example one year?",
+    "How do you choose which weakness to mention when asked directly?",
+    "How can you show on your CV that you stayed active during a career gap?"
+  ],
+  tags: ['career-gap', 'weakness', 'self-awareness', 'interview-skills']
+},
+{
+  id: 'english-186',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "What questions do you ask at the end of an interview to understand the team and the role better? Give me three smart questions a senior backend engineer would ask.",
+  a: `**Tóm tắt:** Câu hỏi cuối là cơ hội cuối để ghi điểm — hỏi về thực tế công việc, đội ngũ và cách ra quyết định, không phải lương/benefit (thuộc về HR). Chọn 3 câu thể hiện bạn nghĩ như người sẽ làm việc ở đó: on-call, tech debt, quyền quyết định kỹ thuật.
+
+### Sample answer
+I usually prepare five and ask three, depending on how the conversation went.
+
+The first is about the reality of the work: "What does a typical on-call week look like for this team, and what caused the last incident?" That tells me more about engineering health than any architecture diagram. If the answer is "we get paged every night", I know what I am signing up for.
+
+The second is about decisions: "Who decides when there is a disagreement about architecture, and can you give me an example from the last six months?" I want to know whether engineers have real influence or whether decisions come from above.
+
+The third is about success: "How would you know in six months that you had hired the right person for this role?" That question is useful for me too, because it tells me exactly what they will evaluate me on.
+
+If the interview went well, I might also ask why the previous person left and what the team's biggest technical debt is. Those are direct, but a good interviewer respects directness. I avoid salary, holidays and remote policy in the technical round; those belong to HR.
+
+### Useful phrases
+- **I usually prepare five and ask three** — tôi thường chuẩn bị năm câu và hỏi ba
+- **the reality of the work** — thực tế công việc
+- **engineering health** — sức khoẻ kỹ thuật của đội
+- **what I am signing up for** — điều tôi đang nhận lấy
+- **the team's biggest technical debt** — món nợ kỹ thuật lớn nhất của đội
+- **that belongs to HR** — việc đó thuộc về HR
+- **on-call rotation** — lịch trực on-call
+- **technical influence** — sự ảnh hưởng kỹ thuật
+- **decision-making authority** — thẩm quyền ra quyết định
+
+### Lỗi người Việt hay mắc
+- **Nói "I have no questions"**: interviewer đọc là thiếu quan tâm. Luôn chuẩn bị 3-5 câu.
+- **Hỏi câu trả lời có trên website**: "What does your company do?" — mất điểm lớn. Hỏi về thực tế làm việc.
+- **Hỏi lương/benefit ở vòng kỹ thuật**: những câu đó thuộc về HR. Vòng kỹ thuật hỏi về on-call, tech debt, decision-making.
+- **Phát âm "on-call"**: /ˈɒn kɔːl/ (nhấn "ON"), không phải "on-câl" hay "ôn-cỏ".
+- **Sai "technical debt"**: đọc /ˈtɛknɪkəl dɛt/ (debt đọc như "det"), không phải "debt" như "đép".
+
+> Senior tip: Câu hỏi cuối thể hiện mindset của người sẽ làm việc ở đó. Hỏi on-call → bạn quan tâm reliability. Hỏi decision-making → bạn quan tâm autonomy. Hỏi success metrics → bạn quan tâm impact. Luôn prepare 5 câu, pick 3 tùy context. Nếu interviewer rushed, hỏi 1 câu quan trọng nhất: "What does a typical on-call week look like?" — câu này reveal engineering health nhất.`,
+  follow: ["What would you ask if the interviewer seemed rushed?", "How do you evaluate whether a team has a healthy on-call culture?", "Is it appropriate to ask about the previous person who held the role?"],
+  tags: ["interview-skills", "questions", "culture", "end-of-interview"]
+},
+{
+  id: 'english-187',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "How do you discuss salary and benefits expectations in a professional way during an interview? What should you avoid saying?",
+  a: `**Tóm tắt:** Đừng nêu một con số duy nhất và đừng nói "up to you". Cách an toàn: hỏi khoảng budget của vị trí → đưa range dựa trên thị trường → tách lương khỏi phúc lợi → nói rõ notice period theo hợp đồng. Giữ giọng hợp tác, không đối đầu, và luôn xác nhận bằng văn bản sau đó.
+
+### Sample answer
+I usually answer with a range and a reason, not a single number. Something like: "Based on my research for senior backend roles in Ho Chi Minh City with this level of ownership, I am targeting a range of fifty-five to sixty-five million VND gross per month. I am flexible depending on the whole package, especially the bonus and the learning opportunity, but that is the range where I can say yes quickly."
+
+If they ask first, I politely turn it around once: "Could you share the budgeted range for the role? That would help me tell you honestly whether we are aligned." That is not a trick; it avoids wasting both sides' time.
+
+On benefits, I ask clearly: "Could you tell me more about the annual bonus structure? And how is the health insurance structured for dependents?" I treat the entire package, not just the base salary.
+
+If the offer is below my range, I do not negotiate emotionally. I say what would make it work: a higher base, a signing bonus, or a review after six months. And I always ask for the offer in writing before I resign.
+
+### Useful phrases
+- **I am targeting a range of** — tôi đang nhắm khoảng
+- **depending on the whole package** — tuỳ vào toàn bộ gói đãi ngộ
+- **could you share the budgeted range** — anh/chị có thể chia sẻ khoảng ngân sách không
+- **that would help me tell you honestly** — điều đó giúp tôi trả lời trung thực
+- **the entire package** — toàn bộ gói phúc lợi
+- **signing bonus** — tiền thưởng ký hợp đồng
+- **a review after six months** — đánh giá lại sau sáu tháng
+- **in writing** — bằng văn bản
+
+### Lỗi người Việt hay mắc
+- **Nói "I want salary negotiable"**: nghe như chưa chuẩn bị. Hãy nêu range cụ thể.
+- **Nhầm net/gross**: không phân biệt được lương thu nhập trước thuế (gross) và sau thuế (net) — chênh lệch 10–20%. Hãy hỏi rõ: "Is that gross or net?"
+- **Dùng "notice time"**: sai. Đúng là **notice period** (thời gian báo trước).
+- **Phát âm "salary"**: /ˈsæləri/ (nhấn âm đầu), không phải "sa-la-ry" đều đều.
+- **Nói "I will resign now" trước khi có offer viết tay**: rủi ro lớn. Luôn nói: "I will resign after I receive the written offer."
+- **Đòi tăng lương ngay khi chưa có offer**: phải đợi họ đưa ra con số trước, rồi mới negotiate.
+
+> Senior tip: Chuẩn bị ba con số: gross mong muốn, mức chấp nhận được (walkaway), và tổng giá trị package (bonus, equity, learning budget). Khi đàm phán, gói gọn: "My range is X–Y gross. If the base is at the lower end, I would need a signing bonus or a six-month review to bridge the gap." Điều này thể hiện bạn hiểu market và có chuẩn mực. Phát âm **negotiate** /nɪˈɡoʊʃieɪt/, **compensation** /ˌkɒmpɛnˈseɪʃn/.`,
+  follow: ["What if they offer below your range but promise a review in six months?", "How do you value equity or a bonus against base salary?", "Would you resign before signing the new contract? Why or why not?"],
+  tags: ["salary", "negotiation", "benefits", "interview-skills"]
+},
+{
+  id: 'english-188',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "How do you describe your strengths in an interview with concrete evidence? Give me an example of how a senior backend engineer would answer.",
+  a: `**Tóm tắt:** Chọn 1-2 strength gắn với vai trò senior (giải quyết vấn đề, ownership, tư duy hệ thống) và kèm bằng chứng có số liệu cụ thể. Không dùng strength chung chung như "hard worker" — interviewer nghe mỗi ngày.
+
+### Sample answer
+My main strength is turning a vague reliability problem into something measurable. For example, our payment callback had a one percent failure rate that nobody could explain. I added structured logging with a correlation ID across three services, built a dashboard, and within two weeks we found that a specific acquirer was timing out at exactly five seconds because of a client-side default. We changed the timeout and the failure rate dropped to under 0.1 percent. I like that kind of work: instrument first, then guess.
+
+Another strength is end-to-end ownership. In my current team, I own the payment reconciliation service from design to production. That means I do the code reviews, I handle on-call, and I present the SLA metrics to stakeholders every quarter. I believe a senior engineer should own the entire lifecycle, not just write code and throw it over the wall.
+
+I also mentor two junior developers on my team. One of them passed his first system design review last month, and he told me my coaching helped him think about trade-offs instead of jumping to solutions.
+
+### Useful phrases
+- **my main strength is** — điểm mạnh chính của tôi là
+- **turning a vague problem into something measurable** — biến vấn đề mơ hồ thành thứ đo được
+- **instrument first, then guess** — đo trước, rồi mới đoán
+- **end-to-end ownership** — chịu trách nhiệm trọn vẹn từ đầu đến cuối
+- **throw it over the wall** — viết code xong rồi đẩy cho người khác (không quan tâm tiếp)
+- **passed his first system design review** — vượt qua bài review design đầu tiên
+- **think about trade-offs** — nghĩ về sự đánh đổi
+
+### Lỗi người Việt hay mắc
+- **Dùng strength chung chung**: "I am a hard worker", "I am a team player" — không có bằng chứng, interviewer nghe mỗi ngày.
+- **Không có số liệu**: Nói "I improved performance" mà không nói con số cụ thể (giảm bao nhiêu %, từ bao lâu xuống bao lâu).
+- **Phát âm "strength"**: /strɛŋkθ/ - kết thúc bằng /θ/ (như "th" trong "think"), không phải /t/. Nếu vẫn nói không trôi chảy, hãy dùng "what I do well".
+- **Thiếu "a/an"**: "I became bottleneck" -> "a bottleneck". "I am backend engineer" -> "a backend engineer".
+- **Kể quá dài mà không có kết thúc**: Mỗi strength nên có 3-4 câu với 1 con số cụ thể, rồi chuyển sang strength tiếp theo.
+
+> Senior tip: Chuẩn bị 3 strength với 3 con số cụ thể. Cách tốt nhất là nói về một vấn đề (problem), hành động của bạn (action), và kết quả đo được (result) — giống STAR nhưng ngắn gọn. Strength hay nhất của senior engineer là: (1) tìm nguyên nhân gốc qua data, (2) end-to-end ownership, (3) giúp đỡ team members grow. Tập nói to, ghi âm, và cắt các từ đệm như "actually", "basically", "you know".`,
+  follow: ["Can you give me an example of a strength that helped you resolve a production issue?", "Which strength would your teammates mention first about you?", "How do you balance technical strength with leadership skills?"],
+  tags: ["strengths", "self-awareness", "evidence", "interview-skills"]
+},
+{
+  id: 'english-189',
+  topic: 'english',
+  level: 'mid',
+  lang: 'en',
+  q: "How do you give a short summary of your experience for a phone screen? What should you include and what should you skip?",
+  a: `**Tóm tắt:** Phone screen kéo dài 15-30 phút — interviewer chỉ muốn biết: bạn là ai, kinh nghiệm có phù hợp không, và bạn có thể nói chuyện được không. Công thức 60-90 giây: hiện tại → quá khứ (1 thành tựu) → vì sao ứng tuyển. Không cần kể toàn bộ CV.
+
+### Sample answer
+Thanks for calling. I am a backend engineer with seven years of experience in Java and Spring Boot. For the last three years I have been working on payments at a fintech company in Vietnam. Our platform processes around two million transactions a day, and I own the reconciliation service end to end — that includes design, code reviews, and on-call support.
+
+Before that, I worked on a logistics product where I led the migration from Java 8 to Java 17 and Spring Boot 3. That reduced our deployment time from forty minutes to eight.
+
+What I am looking for now is a role where I can work on distributed systems at a larger scale, and your team is building exactly that. I am comfortable working in English because my current team includes engineers in Singapore and India.
+
+### Useful phrases
+- **thanks for calling** — cảm ơn anh/chị đã gọi điện
+- **for the last three years** — trong ba năm gần đây
+- **I own the service end to end** — tôi chịu trách nhiệm service từ đầu đến cuối
+- **processes around** — xử lý khoảng (dùng "around" thay vì con số chính xác)
+- **I am looking for** — tôi đang tìm kiếm
+- **at a larger scale** — ở quy mô lớn hơn
+- **I am comfortable working in** — tôi thoải mái làm việc bằng
+
+### Lỗi người Việt hay mắc
+- **Kể quá dài**: Phone screen 15-30 phút, đừng kể toàn bộ CV. Chỉ nói 60-90 giây về bản thân.
+- **Sai danh từ không đếm được**: "I have 7 years experiences" → đúng: "I have seven years of experience".
+- **Dịch word-by-word lời chào**: "I am very happy to be interviewed today" nghe cứng → dùng tự nhiên hơn: "Thanks for calling".
+- **Thiếu số liệu**: Không có con số (transactions/day, deployment time) khiến câu trả lời mơ hồ.
+- **Nói quá nhanh vì hồi hộp**: Hãy chậm lại, hít thở, và nhìn vào ghi chú nếu cần.
+- **Quên nói vì sao ứng tuyển**: Interviewer muốn biết bạn có quan tâm đến công ty không, không chỉ kiếm việc.
+
+> Senior tip: Chuẩn bị hai phiên bản: bản 60 giây và bản 2 phút. Phone screen dùng bản ngắn. Luôn có 2-3 con số cụ thể vì số liệu tạo độ tin cậy ngay lập tức. Kết thúc bằng câu "I am interested in learning more about the role" để cho thấy bạn muốn tiếp tục. Tập nói to, ghi âm trước 2 lần để câu trả lời trôi chảy. Nếu mất signal, hãy nói "Sorry, could you hear me?" — đừng tiếp tục nói mà không biết họ có nghe không.`,
+  follow: ["What if the recruiter asks about your salary expectations on the phone screen?", "How do you handle it if you do not understand a question during a phone screen?", "Should you ask questions at the end of a phone screen?"],
+  tags: ["phone-screen", "introduction", "summary", "recruiter"]
+},
 );

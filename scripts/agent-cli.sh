@@ -50,6 +50,8 @@ case "$runner" in
   qoder)  run_agent scripts/qoder-run.sh "$prompt" ;;   # Qoder account (qodercli login); falls back to cheaper models when credits run out
   cline)  run_agent cline -y --cwd "$PWD" "$prompt" ;;   # Cline CLI, provider/model from ~/.cline (cline-pass deepseek-v4-flash, free)
   agy)    run_agent /c/Users/Windows/AppData/Local/Microsoft/WinGet/Links/agy.exe --print-timeout 0 --model "${AGY_MODEL:-claude-opus-4-6-thinking}" -p "$prompt" ;;   # shell commands limited to the allowlist in ~/.gemini/antigravity-cli/settings.json
+  copilot) run_agent copilot -p "$prompt" --model "${COPILOT_MODEL:-auto}" --allow-tool write --allow-tool 'shell(node:*)' --allow-tool 'shell(grep:*)' --allow-tool 'shell(ls:*)' --deny-tool 'shell(git:*)' --deny-tool 'shell(gh:*)' --deny-url '*' ;;   # GitHub Copilot CLI (free plan, AI credits); file edits + node only
+  kiro)   run_agent "$LOCALAPPDATA/Kiro-Cli/kiro-cli.exe" chat --no-interactive --trust-workspace --model "${KIRO_MODEL:-minimax-m2.5}" --trust-tools=fs_read,fs_write,execute_bash "$prompt" ;;   # Kiro Free plan (50 credits/month)
   *) echo "unknown runner $runner"; exit 1 ;;
 esac
 code=$?

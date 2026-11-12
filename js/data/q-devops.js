@@ -7173,6 +7173,16 @@ DevOps -> DevOps: so sánh Node-3 vs Node-1/2, khoanh vùng
 ### Trả lời phỏng vấn (từng bước, ngắn gọn khi nói)
 "Vì chỉ 1/3 node lỗi, em nghi nguyên nhân gắn với node. Em {{get pod -o wide}} để xác định Pod trên node nào, {{describe pod}} đọc Events, Last State và Exit Code, rồi {{logs --previous}} lấy stack trace lần chết trước. Sau đó em so sánh node lỗi với node khỏe: {{describe node}} xem DiskPressure/taint/allocatable, kiểm tra khác biệt về mạng tới DB/Redis, hostPath/permission, clock, image digest. Để xác nhận, em cordon node lỗi và để Pod chạy lại trên node khác: nếu hết lỗi thì khoanh vùng hạ tầng/node; nếu vẫn lỗi thì quay lại phân tích app/config. Em không xóa Pod mù mờ vì scheduler có thể đặt lại đúng node hỏng."
 
+### Ví dụ đời thực
+- **Triệu chứng:** Sau deploy {{payment-api:1.24.0}} lúc 21:10, cụm 3 node worker có 2 Pod {{1/1 Running}} nhưng Pod trên {{worker-3}} vào {{CrashLoopBackOff}} với {{RESTARTS}} tăng từ 0 lên 18 trong 12 phút; tỉ lệ lỗi HTTP 503 tăng khoảng 8% do capacity giảm 1/3.
+- **Điều tra:** {{kubectl get pod -n pay -o wide}} cho thấy chỉ {{payment-api-7d8f6}} trên {{worker-3}} lỗi. {{kubectl describe pod}} thấy {{Last State: Terminated, Exit Code: 1}}. {{kubectl logs payment-api-7d8f6 -n pay --previous --tail=100}} ghi lỗi kết nối {{jdbc:oracle://coredb.internal:1521}} timeout sau 10s khi khởi tạo HikariCP. {{kubectl describe node worker-3}} hiển thị {{Ready=True}} nhưng {{traceroute}} từ node tới dải {{10.20.30.0/24}} của core DB không đi qua.
+- **Nguyên nhân gốc:** {{worker-3}} là node mới được autoscaling thêm 2 ngày trước, subnet {{10.10.5.0/24}} của node thiếu route tới mạng core banking on-prem trong route table; 2 node cũ ở subnet khác có route đầy đủ.
+- **Cách xử lý:** {{kubectl cordon worker-3}} để ngừng lập lịch Pod mới, bổ sung route tới {{10.20.30.0/24}} trong route table và security group rule tương ứng, sau đó {{kubectl uncordon}} và xóa Pod lỗi để scheduler tạo lại trên node đã thông.
+- **Kết quả đo được:** Pod trên {{worker-3}} lên {{Running}} sau ~90 giây, {{RESTARTS}} ngừng tăng, tỉ lệ 503 về 0% và p95 latency ổn định 140ms trong 30 phút tiếp theo.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi deploy lên Kubernetes mà Pod rơi vào CrashLoopBackOff chỉ trên một phần ba node, tôi coi đó là dấu hiệu vấn đề gắn với node chứ không phải chỉ image hay cấu hình chung. Tôi bắt đầu bằng {{kubectl get pod -o wide}} để xác định Pod nằm trên node nào, rồi dùng {{describe pod}} để đọc Events, Last State và Exit Code. Bước quan trọng là {{logs --previous}} để lấy stack trace của lần container chết trước, vì log hiện tại thường rỗng. Sau đó tôi so sánh node lỗi với node khỏe bằng {{describe node}}: kiểm tra DiskPressure, taint, dung lượng, runtime, clock, hostPath và khả năng kết nối tới DB hay dịch vụ phụ thuộc. Để xác nhận giả thuyết, tôi cordon node nghi ngờ và để Pod chạy lại ở node khác; nếu hết lỗi thì khoanh vùng hạ tầng node. Trong một sự cố thực tế, chỉ node mới thêm thiếu route tới core DB khiến app timeout lúc khởi tạo pool và thoát, sau khi bổ sung route và cordon đúng cách hệ thống phục hồi nhanh và không ảnh hưởng thêm."
+
 > Senior tip: Trong ngân hàng, lỗi "chỉ 1 node" hay gặp sau thay đổi hạ tầng im lặng: node mới gia nhập cụm thiếu route tới DB nội bộ, cert CA nội bộ chưa cài, hoặc đồng hồ chưa sync NTP. Hãy giữ baseline node (cùng AMI/image, cùng cấu hình cloud-init) và dùng {{kubectl describe node}} + kiểm tra điều kiện {{Ready/DiskPressure}} trong runbook; cordon node nghi ngờ ngay để chặn ảnh hưởng lan rộng trước khi đào sâu.`,
   follow: ['Làm sao cô lập nhanh: phân biệt lỗi do image/config (mọi node) với lỗi do node (chỉ 1 node)?', 'Nếu {{logs --previous}} trống và Exit Code 137, bạn kết luận gì và kiểm tra tiếp ở đâu?', 'Tại sao dùng tag image bất biến (digest/commit SHA) giúp tránh sự cố "node giữ image cũ"?'],
   tags: ['Kubernetes', 'CrashLoopBackOff', 'troubleshooting', 'node', 'incident'],
@@ -7258,6 +7268,16 @@ note LB..Blue v1.8: Lỗi? rollback = chuyển traffic về Blue
 ### Trả lời phỏng vấn
 "Với blue-green dùng chung DB, em tách migration theo expand/contract: bước expand thêm cấu trúc mới tương thích ngược (ví dụ thêm cột nullable, giữ cột cũ), code bản mới ghi kép/đọc linh hoạt, nên bản cũ vẫn chạy được. Em deploy green, smoke test, rồi chuyển traffic qua load balancer và theo dõi error/latency/nghiệp vụ; blue giữ nóng để rollback bằng cách chuyển traffic về. Chỉ khi ổn định và hết nhu cầu rollback em mới chạy contract để bỏ cấu trúc cũ — vì contract phá tương thích ngược. Điểm mấu chốt: blue-green rollback app chỉ an toàn khi schema chưa bị contract."
 
+### Ví dụ đời thực
+- **Triệu chứng:** Khi deploy {{order-service}} 1.9 lúc 01:00, team đổi tên cột {{phone}} thành {{mobile_phone}} và chuyển traffic sang green; trong 5 phút đầu tỉ lệ lỗi 500 tăng lên 22%, khoảng 3.400 đơn không ghi được số điện thoại liên hệ.
+- **Điều tra:** Log blue (vẫn nhận một phần retry/health) báo {{ORA-00904: "PHONE": invalid identifier}}, còn green ghi {{mobile_phone}} thành công. {{kubectl logs}} và truy vấn {{SELECT column_name FROM user_tab_columns}} xác nhận cột {{phone}} đã bị drop trong migration; dashboard APM cho thấy lỗi tập trung ở API tạo/cập nhật đơn.
+- **Nguyên nhân gốc:** Migration phá hủy (drop/rename) chạy trước cutover trong khi blue và green dùng chung DB, nên schema không còn tương thích ngược với bản 1.8.
+- **Cách xử lý:** Rollback traffic về blue, tạo lại cột {{phone}} (nullable) và backfill từ {{mobile_phone}} để khôi phục dữ liệu; sau đó áp dụng expand/contract: giữ {{phone}}, thêm {{mobile_phone}}, code 1.9 ghi kép/đọc fallback, deploy lại và chỉ contract (drop {{phone}}) sau 5 ngày ổn định.
+- **Kết quả đo được:** Hệ thống phục hồi trong 18 phút, đơn lỗi được bù xử lý, lần deploy lại error rate < 0.2% suốt 30 phút và không phát sinh mất dữ liệu trường liên hệ.
+
+### Trả lời mẫu khi phỏng vấn
+"Với blue-green deploy mà hai môi trường dùng chung một database, tôi luôn coi schema là ràng buộc tương thích ngược. Tôi áp dụng expand/contract: bước expand thêm cấu trúc mới như cột nullable, giữ nguyên cột cũ, và bản mới ghi cả hai hoặc đọc linh hoạt để bản cũ vẫn chạy được. Tôi chạy migration expand trước, deploy green, smoke test, rồi mới chuyển traffic và theo dõi error rate, latency, nghiệp vụ; blue được giữ nóng để rollback nhanh bằng cách chuyển traffic về. Bước contract như drop hay đổi tên cột chỉ thực hiện sau khi hệ thống ổn định và hết nhu cầu rollback. Tôi từng gặp sự cố đổi tên cột trực tiếp làm blue lỗi ngay vì shared DB không còn tương thích; cách xử lý đúng là quay lại chiến lược thêm cột mới, backfill theo lô và contract muộn, giúp deploy an toàn và rollback thực sự khả thi."
+
 > Senior tip: Ở ngân hàng, hãy gắn mỗi bước expand/contract với một thay đổi có mã và cửa sổ phê duyệt riêng, và **cấm contract trong cùng đợt deploy**. Hai thứ hay bị quên nhất: (1) job backfill phải idempotent và giới hạn tốc độ để không làm nghẽn DB dùng chung, (2) tiêu chí "hết cửa sổ rollback" (ví dụ sau 3-5 ngày không sự cố) phải được chốt bằng văn bản trước khi ai đó chạy DROP cột.`,
   follow: ['Nếu buộc phải đổi kiểu cột không tương thích trên bảng hàng trăm triệu dòng, bạn lên kế hoạch từng bước thế nào để không downtime?', 'So sánh blue-green và canary khi DB dùng chung: cái nào giảm rủi ro schema tốt hơn?', 'Làm sao đảm bảo code bản mới ghi "kép" (dual-write) không tạo dữ liệu mâu thuẫn giữa cột cũ và cột mới?'],
   tags: ['blue-green', 'schema-migration', 'expand-contract', 'rollback', 'database']
@@ -7334,6 +7354,16 @@ note Loan (AWS),CoreDB (on-prem): chatty + VPN = latency nhân lên
 
 ### Trả lời phỏng vấn
 "Latency tăng gấp 3 sau migrate, em giả định nguyên nhân ở đường mạng/cấu hình kết nối vì code không đổi. Em dùng tracing hoặc log phân rã để tìm span chậm: hay gặp nhất là app trên AWS vẫn gọi chéo DB/service còn on-prem qua VPN nên mỗi hop thêm hàng chục ms và nhân lên nếu chatty; ngoài ra DNS trỏ nhầm về on-prem, đi vòng qua NAT Gateway, cross-AZ cộng dồn, hoặc connection pool quá nhỏ so với RTT mới gây chờ connection (nhìn HikariCP acquire/pending). Em kiểm tra từng giả thuyết bằng số liệu (dig, traceroute, route table/VPC Endpoint, AZ nguồn-đích, metric pool), đổi một yếu tố rồi đo lại p95/p99."
+
+### Ví dụ đời thực
+- **Triệu chứng:** Sau khi migrate {{loan-service}} lên EKS, p95 latency API {{/loan/apply}} tăng từ 120ms lên 360ms (gấp 3) trong khung giờ cao điểm 19:00-21:00, dù CPU/GC của JVM ổn định và lưu lượng không đổi.
+- **Điều tra:** Distributed tracing (OpenTelemetry) cho thấy mỗi request gọi 4 lần tới {{core-db.onprem.local}} với tổng 260ms; {{dig core-db.onprem.local}} từ Pod trả IP dải {{172.16.0.0/16}} (on-prem) và {{mtr}} cho RTT ~32ms qua Site-to-Site VPN. Metric HikariCP {{hikaricp.connections.acquire}} tăng từ 1ms lên 45ms, pending thường xuyên chạm 8-10 với pool size 5.
+- **Nguyên nhân gốc:** Dependency DB lõi còn ở on-prem nên mỗi truy vấn đi qua VPN có RTT cao (chatty 4 lượt/request), đồng thời connection pool cấu hình theo RTT cũ gây xếp hàng chờ kết nối.
+- **Cách xử lý:** Gom truy vấn (giảm từ 4 xuống 2 call bằng batch/read model tạm), bật keep-alive và tăng pool có kiểm soát từ 5 lên 15 dựa trên metric pending, đồng thời lên kế hoạch di chuyển read replica sang AWS ở wave kế tiếp; không thay đổi instance type vì không phải nút thắt.
+- **Kết quả đo được:** p95 giảm còn 170ms sau tối ưu gọi và pool, pending connection về ~0; khi read replica lên AWS ở wave sau, p95 ổn định 110-125ms tương đương trước migrate.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi latency tăng gấp ba sau migrate lên AWS, tôi không kết luận cloud chậm mà phân rã độ trễ theo từng chặng vì mã nguồn không đổi. Tôi dùng distributed tracing để xem span nào tốn thời gian, sau đó kiểm tra đường mạng và cấu hình kết nối: gọi chéo về on-prem qua VPN, DNS resolve trỏ sai, đi vòng NAT Gateway, cross-AZ, hoặc connection pool không phù hợp với RTT mới. Trong một case thực tế, p95 tăng từ 120ms lên 360ms do dịch vụ trên EKS vẫn gọi DB lõi ở on-prem bốn lần qua VPN và HikariCP acquire time tăng vì pool quá nhỏ. Tôi xác nhận bằng dig, mtr, metric acquire/pending, rồi giảm số lần gọi, bật tái sử dụng kết nối và điều chỉnh pool có đo lại trước-sau. Cách tiếp cận của tôi là đổi từng yếu tố, đo p95/p99 và ưu tiên đưa dependency quan trọng cùng vùng để giảm độ trễ bền vững."
 
 > Senior tip: Hãy đo **baseline latency theo từng dependency** *trước* khi migrate (p95 mỗi chặng) để sau migrate so sánh được ngay. Ở ngân hàng, giai đoạn chuyển tiếp thường "hybrid" (một phần on-prem) — mục tiêu kiến trúc là giảm số lần gọi chéo qua VPN: gom call, thêm cache, hoặc di chuyển dependency cùng wave. Đừng tăng connection pool mù quáng: pool quá lớn gây nghẽn phía DB; dùng metric pending/acquire để tune.`,
   follow: ['Connection pool (HikariCP) nên tính kích thước thế nào khi RTT tới DB tăng sau migrate? (gợi ý: pool size vs latency)', 'Khi nào dùng VPC Endpoint thay vì NAT Gateway, và nó cải thiện latency/bảo mật thế nào?', 'Làm sao giảm tác động giai đoạn hybrid khi một phần dependency bắt buộc còn ở on-prem?'],
@@ -7421,6 +7451,16 @@ Chốt **trước** ngày cutover, đo được, và gắn người có quyền 
 
 ### Trả lời phỏng vấn (lead)
 "Với 40 app em tiếp cận như một chương trình theo wave, không big bang. Em lập danh mục và gắn 7R cho từng app: retire/repurchase để giảm số lượng, đa số Java replatform, chỉ refactor khi có lý do rõ. Song song em làm dependency mapping (tích hợp, DB, DNS, luồng on-prem) để gom cụm phụ thuộc vào cùng wave; Wave 0 dựng landing zone/kết nối/IAM/observability, Wave 1 chọn app ít phụ thuộc rủi ro thấp để luyện quy trình. Mỗi wave có rehearsal, runbook cutover cuối tuần với vai trò/giờ rõ, và hypercare. Go/no-go và rollback là tiêu chí định lượng chốt trước (sau diễn tập, trước cửa sổ, sau smoke test). Phần kỹ thuật di chuyển/cutover DB em dùng DMS full load + CDC, tiêu chí lag về 0 và checksum — chi tiết như aws-030."
+
+### Ví dụ đời thực
+- **Triệu chứng:** Ở chương trình migrate 40 ứng dụng, hai wave đầu tự tổ chức theo từng team: wave 1 cutover trễ 2 giờ, wave 2 phải rollback 1 app vì gọi nhầm endpoint on-prem; lãnh đạo chưa có số liệu tin cậy để quyết định tiếp tục.
+- **Điều tra:** Sau postmortem, dependency map ban đầu thiếu 7 luồng (phát hiện từ VPC Flow Logs/DNS logs), 3 app trong cùng cụm bị tách khác wave, và tiêu chí go/no-go chỉ mô tả chung "hệ thống ổn" không có ngưỡng error rate/latency/checksum.
+- **Nguyên nhân gốc:** Thiếu Wave 0 nền tảng chuẩn, thiếu dependency mapping xác minh bằng dữ liệu thực tế, và runbook/go-no-go không được chốt định lượng từ rehearsal.
+- **Cách xử lý:** Tái lập kế hoạch: hoàn tất Wave 0 (landing zone, DX/VPN, IAM, observability), phân loại 40 app theo 7R (retire 4, retain 3, replatform 28, refactor 5), gom wave theo cụm phụ thuộc; mỗi wave có rehearsal, runbook từng bước, mốc go/no-go (error rate < 1%, p95 trong ngưỡng, checksum khớp) và tiêu chí rollback rõ.
+- **Kết quả đo được:** 6 wave tiếp theo hoàn tất đúng cửa sổ 23:00-04:00, không rollback ngoài kế hoạch, tỉ lệ sự cố P1 sau cutover giảm từ 2/wave xuống 0-1/wave và thời gian hypercare trung bình giảm 30%.
+
+### Trả lời mẫu khi phỏng vấn
+"Với chương trình migrate 40 ứng dụng lên AWS, tôi coi đó là bài toán quản lý phụ thuộc và rủi ro, không phải dời từng app rời rạc. Tôi bắt đầu bằng danh mục ứng dụng và gắn chiến lược 7R để giảm phạm vi: retire hoặc repurchase những gì không cần tự vận hành, phần lớn Java replatform, chỉ refactor khi có lợi ích rõ. Tôi lập dependency mapping dựa trên tài liệu và xác minh bằng flow log, DNS, tracing để gom các ứng dụng liên quan vào cùng wave. Wave 0 dựng landing zone, kết nối, IAM, CI/CD và observability; các wave sau đi từ rủi ro thấp đến cao. Mỗi wave đều có rehearsal, runbook cutover cuối tuần, tiêu chí go/no-go định lượng và kế hoạch rollback được chốt trước. Kinh nghiệm thực tế cho tôi thấy khi thiếu mapping và tiêu chí đo được, cutover dễ trễ và rollback; khi chuẩn hóa theo wave, chương trình ổn định và dự đoán được hơn."
 
 > Senior tip: Hai thứ quyết định chương trình 40 app: (1) **dependency mapping thật** (đừng tin chỉ sơ đồ lý thuyết — xác minh bằng log/flow mạng) và (2) **runbook lấy từ diễn tập** chứ không từ tài liệu. Hãy đo tỉ lệ "gọi chéo on-prem" sau mỗi wave và coi đó là chỉ số sức khỏe kiến trúc hybrid; mục tiêu là giảm dần. Giữ nhật ký quyết định 7R (vì sao app X replatform chứ không refactor) để kiểm toán và để wave sau không tranh luận lại từ đầu.`,
   follow: ['Làm sao phát hiện phụ thuộc ẩn giữa các app mà tài liệu không ghi? (gợi ý: flow log, tracing, DNS/query log)', 'Khi một cụm app có phụ thuộc vòng (A gọi B, B gọi A), bạn xếp wave và cutover thế nào?', 'Những chỉ số nào bạn báo cáo lãnh đạo sau mỗi wave để chứng minh chương trình đang an toàn và đúng tiến độ?'],
@@ -8210,6 +8250,13 @@ resources:
 ### Trả lời phỏng vấn
 "Pending nghĩa là scheduler chưa bind được Pod. Em đọc {{kubectl describe pod}} phần Events: FailedScheduling liệt kê lý do filter thất bại. Scheduler lấy Pod từ hàng đợi, chạy pha Filter — NodeResourcesFit so tổng request với allocatable, rồi TaintToleration, Affinity, VolumeBinding. Có node qua thì Score chấm theo cân bằng tài nguyên, locality, affinity để chọn node tốt nhất. Điểm hay nhầm: scheduler dùng request, không dùng usage thực. Trên production em kiểm tra Allocated resources trên node, chỉnh request theo đo đạc, và dùng Cluster Autoscaler khi thiếu node."
 
+### Ví dụ đời thực
+**Triệu chứng:** Dịp khuyến mãi, HPA scale service {{payment}} từ 6 lên 20 Pod nhưng 8 Pod mới ở trạng thái Pending suốt 12 phút, checkout lỗi 503 dù dashboard {{kubectl top node}} cho thấy CPU thực tế mỗi node mới dùng ~35%.
+**Điều tra:** {{kubectl describe pod payment-xxx}} hiện {{FailedScheduling: 0/10 nodes are available: 3 Insufficient memory, 4 Insufficient cpu, 3 node(s) had untolerated taint}}. {{kubectl describe node}} mục Allocated resources cho thấy tổng request CPU đã cam kết gần 95% allocatable trên hầu hết node, trong khi limit đặt gấp 4 lần request nên usage thực thấp nhưng scheduler không xét usage.
+**Nguyên nhân gốc:** Request CPU bị đội lên 2000m từ template cũ copy bằng limit, cộng thêm 3 node pool mới có taint {{workload=batch:NoSchedule}} nhưng Pod payment thiếu toleration, khiến pha Filter loại hết node.
+**Cách xử lý:** Hạ request CPU xuống 500m theo P95 usage + 20% buffer, thêm toleration đúng cho pool ứng dụng, và bật Cluster Autoscaler cho node group online với max +6 node.
+**Kết quả đo được:** Pod Pending về 0 trong ~90 giây, rollout hoàn tất, tỷ lệ lỗi checkout giảm từ 4,8% xuống 0,1% và tổng request cam kết namespace giảm 38% giúp headroom ổn định.
+
 > Senior tip: Khi "cluster còn chỗ mà vẫn Pending", luôn so {{Allocated resources}} (request cam kết) với {{Allocatable}} bằng {{kubectl describe node}}, đừng nhìn {{kubectl top}}. Request phình do copy limit là nguyên nhân rất phổ biến; đặt alert khi tổng request commit namespace vượt ngưỡng an toàn.`,
     follow: [
       'Preemption (ưu tiên đuổi Pod khác) hoạt động khi nào, và rủi ro gì cho workload đang chạy?',
@@ -8294,6 +8341,13 @@ Node memory pressure
 ### Trả lời phỏng vấn (lead)
 "QoS do Kubernetes gán: Guaranteed khi request=limit cho CPU/memory, BestEffort khi không khai báo, còn lại Burstable. Node memory pressure thì kubelet evict BestEffort trước, rồi Burstable (vượt request), rồi Guaranteed; kernel OOM killer cũng nghiêng theo {{oom_score_adj}} tương ứng QoS. Em phân lớp: luồng critical dùng Guaranteed hoặc request sát thực tế + PriorityClass cao + PDB; batch dùng Burstable/BestEffort với retry; giám sát allocatable và eviction events. Trade-off: Guaranteed giảm rủi ro bị trục xuất nhưng tốn chi phí."
 
+### Ví dụ đời thực
+**Triệu chứng:** Giờ cao điểm, API {{checkout}} (namespace prod) bị restart gián đoạn 2-3 phút, trong khi các job {{image-resize}} batch chết hàng loạt với reason {{Evicted}}; node báo {{MemoryPressure=True}}.
+**Điều tra:** {{kubectl get pod -A -o wide --field-selector=status.phase=Failed}} thấy nhiều Pod batch Evicted. {{kubectl describe pod checkout-xxx}} cho thấy QoS là {{Burstable}} với {{requests.memory=256Mi}} nhưng runtime dùng ~900Mi khi tải tăng. {{kubectl describe node}} Events ghi kubelet bắt đầu eviction do {{memory.available}} dưới ngưỡng.
+**Nguyên nhân gốc:** Service critical cấu hình request memory quá thấp nên bị xếp Burstable và nằm trong nhóm dễ evict khi vượt request, còn batch job không đặt giới hạn concurrency nên cùng đẩy node vào áp lực bộ nhớ.
+**Cách xử lý:** Đặt {{request=limit=1Gi}} cho checkout để thành {{Guaranteed}}, gắn {{PriorityClass}} cao và {{PDB}}; chuyển batch sang {{Burstable}} với request sát thực tế, giới hạn song song và bật retry; thêm alert Evicted events và theo dõi working set so với allocatable.
+**Kết quả đo được:** Trong đợt peak tiếp theo không còn eviction của checkout, tỷ lệ lỗi 5xx do restart giảm từ 1,2% xuống 0%, batch job tự chạy lại và hoàn tất trễ trung bình 4 phút nhưng không ảnh hưởng luồng thanh toán.
+
 > Senior tip: Kiểm tra thực tế QoS class bằng lệnh {{kubectl get pod}} với jsonpath status.qosClass (tránh lồng ngoặc nhọn trong inline code — dùng code block nếu cần) và audit workload critical. Kết hợp QoS với PriorityClass, PDB, quota namespace; thiếu mắt xích nào thì node pressure vẫn có thể rớt sai Pod.`,
     follow: [
       'Sự khác nhau giữa scheduler preemption và kubelet eviction là gì, và bạn debug mỗi loại thế nào?',
@@ -8377,6 +8431,13 @@ JAVA_TOOL_OPTIONS="-XX:ActiveProcessorCount=2 -XX:MaxRAMPercentage=75"
 
 ### Trả lời phỏng vấn
 "CPU trung bình thấp mà p99 cao trên Kubernetes thường do CFS throttling. Có CPU limit thì cgroup cấp quota theo period 100ms; app Java nhiều thread đốt quota trong vài chục ms rồi bị kernel tạm dừng đến hết period, nên request bị trễ hàng chục ms lặp lại. Em kiểm tra {{container_cpu_cfs_throttled_periods_total}} và {{cpu.stat}}. Với service nhạy latency, em thường giữ CPU request nhưng cân nhắc bỏ CPU limit, đồng thời đặt {{-XX:ActiveProcessorCount}} theo request để JVM sizing hợp lý. Trade-off: bỏ limit giảm throttle nhưng phải kiểm soát noisy neighbor bằng giám sát."
+
+### Ví dụ đời thực
+**Triệu chứng:** API {{search}} (Spring Boot, 200 threads Tomcat) có CPU trung bình 35% nhưng p99 tăng từ 180ms lên 1,2s và timeout ngắt quãng khi concurrency vượt 300 RPS, dù không có deploy mới.
+**Điều tra:** Dashboard Prometheus cho thấy {{rate(container_cpu_cfs_throttled_periods_total[5m]) / rate(container_cpu_cfs_periods_total[5m])}} đạt ~45%; đọc {{/sys/fs/cgroup/cpu.stat}} trong Pod thấy {{nr_throttled}} tăng nhanh. Correlate theo thời gian: mỗi nhịp latency spike trùng với chu kỳ bị throttle.
+**Nguyên nhân gốc:** Pod đặt {{limits.cpu: 500m}} (quota 50ms/100ms) nhưng nhiều thread xử lý JSON và gọi downstream song song nên đốt hết quota trong ~20ms, kernel treo container phần còn lại của period gây đuôi latency dù trung bình thấp.
+**Cách xử lý:** Bỏ CPU limit, giữ {{requests.cpu: 500m}} để scheduler đặt chỗ, thêm {{-XX:ActiveProcessorCount=2}} để JVM/GC sizing hợp lý; giảm {{maxThreads}} xuống 120 và bật HPA theo RPS. Theo dõi noisy neighbor bằng metric node CPU và throttled ratio.
+**Kết quả đo được:** Tỷ lệ throttled period về ~0%, p99 giảm còn 220ms ở 350 RPS, không còn timeout ngắt quãng và mức dùng CPU thực tế ổn định ~0.8 core/Pod.
 
 > Senior tip: Đừng kết luận "code chậm" khi p99 tăng mà CPU avg thấp — kiểm tra CFS throttling trước. Dashboard production nên có tỉ lệ throttled periods; quyết định CPU limit phải đi kèm đo latency dưới tải concurrency thật.`,
     follow: [
@@ -8463,6 +8524,13 @@ JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError -XX:Nat
 
 ### Trả lời phỏng vấn
 "OOMKilled là kernel giết process vì cgroup vượt giới hạn bộ nhớ (exit 137), còn OutOfMemoryError là JVM ném khi heap/metaspace cạn — khác nguyên nhân và dấu vết. Với cgroup v2, {{memory.max}} là trần cứng; {{oom_score_adj}} gán theo QoS. Heap thấp mà vẫn OOMKilled thường do non-heap: thread stack, metaspace, code cache, direct buffer. {{MaxRAMPercentage}} chỉ đặt heap, không bao trùm non-heap. Em xem container working set, bật NMT, đếm thread, kiểm tra pool và MaxDirectMemorySize, rồi hạ MaxRAMPercentage (thường 70-75%) và giới hạn thread. Đặt alert khi working set tiến sát limit."
+
+### Ví dụ đời thực
+**Triệu chứng:** Pod {{order-api}} (limit 2Gi) restart với {{Reason: OOMKilled, Exit Code: 137}} 3-4 lần/ngày, nhưng Grafana heap used chỉ ~55% và không có {{OutOfMemoryError}} hay heap dump.
+**Điều tra:** {{kubectl describe pod}} xác nhận Last State OOMKilled. Metric {{container_memory_working_set_bytes}} tiến sát 2Gi trước khi chết. Bật NMT ({{jcmd 1 VM.native_memory summary}}) thấy Thread arena ~420Mi; {{jstack}} và metric cho thấy Tomcat {{maxThreads}} = 400 và Hikari pool = 80, mỗi thread stack mặc định ~1MB.
+**Nguyên nhân gốc:** {{MaxRAMPercentage=80}} cấp ~1.6Gi heap, phần còn lại không đủ cho ~480 thread stack cộng metaspace/code cache; tổng RSS vượt {{memory.max}} nên kernel SIGKILL, không phải leak heap.
+**Cách xử lý:** Hạ {{MaxRAMPercentage}} xuống 70%, giảm {{maxThreads}} còn 200 và Hikari pool còn 30 theo tải thực, đặt {{-Xss512k}} sau load test, giữ {{ExitOnOutOfMemoryError}} và alert khi working set > 85% limit.
+**Kết quả đo được:** OOMKilled giảm về 0 trong 14 ngày, working set ổn định ~1.45Gi ở peak, p99 latency không đổi và không phát sinh timeout kết nối DB.
 
 > Senior tip: Heap thấp mà OOMKilled: (1) xác nhận working set chạm limit, (2) NMT summary, (3) đếm thread và kiểm tra pool. Đừng vội tăng limit gấp đôi — có thể chỉ mua thời gian cho leak native hoặc thread pool phình.`,
     follow: [
@@ -8553,6 +8621,13 @@ Scale thêm Pod3, Pod4: connections cũ vẫn ghim Pod1/Pod2 -> Pod3,Pod4 rảnh
 
 ### Trả lời phỏng vấn
 "kube-proxy lập trình đường đi ClusterIP -> Pod: iptables cài rule DNAT và chọn backend theo statistic; IPVS dùng bảng L4, scale tốt hơn khi nhiều Service. Cả hai gắn với conntrack: một kết nối TCP DNAT tới Pod thì request sau trên cùng kết nối vẫn tới Pod đó. Nên HTTP keep-alive lâu hoặc gRPC (nhiều stream trên một kết nối dài) làm cân bằng tải lệch: Pod mới không nhận traffic từ kết nối cũ. Em xử lý bằng client-side load balancing cho gRPC (headless Service, service mesh, max connection age) và theo dõi metric per-pod. IPVS giúp datapath nhưng không giải quyết bản chất L7."
+
+### Ví dụ đời thực
+**Triệu chứng:** Service {{pricing-grpc}} scale từ 4 lên 12 Pod khi traffic tăng, nhưng 2 Pod cũ giữ CPU ~85% và p99 900ms, 8 Pod mới chỉ ~10% CPU dù kube-proxy đang chạy IPVS.
+**Điều tra:** So RPS per-pod trên Prometheus thấy lệch lớn; {{ss -tnp}} trên client gateway cho thấy chỉ 6 kết nối HTTP/2 gRPC giữ mở lâu tới ClusterIP. {{ipvsadm -Ln}} và {{conntrack -L}} cho thấy các flow gắn cố định về backend cũ tạo từ trước khi scale.
+**Nguyên nhân gốc:** Cân bằng tải xảy ra một lần khi tạo kết nối TCP; gRPC dùng channel dài với nhiều stream nên toàn bộ request trên kết nối cũ tiếp tục đi về Pod cũ, Pod mới không nhận traffic từ các flow đã "ghim" trong conntrack.
+**Cách xử lý:** Chuyển {{pricing-grpc}} sang headless Service và bật client-side load balancing (DNS resolver + round_robin), cấu hình {{max connection age}} 30s để tái tạo channel định kỳ; gateway tăng connection pool để phân tán flow.
+**Kết quả đo được:** Sau 2 phút tái cân bằng, RPS per-pod lệch dưới 15%, p99 giảm còn 240ms và CPU các Pod dao động đều 35-45% ở cùng tải.
 
 > Senior tip: "Scale out mà Pod mới ngồi chơi" — kiểm tra pattern kết nối (keep-alive/gRPC) và phân phối per-pod. Với gRPC nội bộ, cân bằng tải ở tầng client/mesh hiệu quả hơn xoay xở kube-proxy mode.`,
     follow: [
@@ -8652,6 +8727,13 @@ Nguyên tắc: liveness kiểm tra "process còn sống"; readiness kiểm tra "
 ### Trả lời phỏng vấn (lead)
 "Zero-downtime là phối hợp: rolling update kiểm soát tốc độ (thường maxUnavailable 0, surge vừa phải), startup/readiness đảm bảo Pod mới sẵn sàng, preStop + SIGTERM graceful + terminationGracePeriod đủ để Pod cũ rời êm và xử lý hết in-flight. Quy mô lớn em thêm PDB, minReadySeconds, progressDeadline, rollback/canary tự động và tương thích ngược. Em không tin cấu hình bằng cảm giác: load test liên tục trong deploy trên staging với ngưỡng error rate/latency làm gate."
 
+### Ví dụ đời thực
+**Triệu chứng:** Mỗi lần deploy {{checkout}} (30 replica, ~800 RPS) gateway ghi nhận 0,6-1% lỗi 502 trong 2 phút đầu rolling update, dù {{maxUnavailable: 0}}.
+**Điều tra:** Xem event rollout và log ingress cho thấy Pod cũ bị terminate ngay sau khi endpoint cập nhật; {{kubectl get endpointslice}} và log app cho thấy request in-flight vẫn bị ngắt. Kiểm tra manifest: không có {{preStop}}, {{terminationGracePeriodSeconds}} là 30s trong khi xử lý thanh toán P99 ~20s và Spring chưa bật graceful shutdown.
+**Nguyên nhân gốc:** Race condition khi endpoint bị gỡ nhưng proxy chưa kịp cập nhật, cộng với app nhận SIGTERM và đóng kết nối ngay, grace period không đủ để drain nên một phần request đang xử lý bị cắt.
+**Cách xử lý:** Thêm {{preStop}} {{sleep 10}}, bật {{server.shutdown=graceful}} với timeout 30s, tăng {{terminationGracePeriodSeconds}} lên 60, đặt {{minReadySeconds: 15}} và PDB {{minAvailable: 80%}}; chạy load test liên tục trong deploy trên staging làm gate.
+**Kết quả đo được:** 5 lần deploy tiếp theo với lưu lượng tương đương ghi nhận 0 lỗi 502 (error rate < 0,01%), thời gian drain Pod cũ trung bình 18s và rollout hoàn tất trong 6 phút.
+
 > Senior tip: Coi deploy là thí nghiệm có kiểm soát: đo error rate per-version, rollback tự động khi vượt ngưỡng, rehearsal runbook. Nhiều thất bại "zero-downtime" đến từ DB migration hoặc dependency chậm, không chỉ từ YAML — guardrail phải bao cả tầng dữ liệu.`,
     follow: [
       'Làm sao thiết kế deploy khi request có thể chạy tới 2-5 phút (long-running) mà vẫn không bị cắt?',
@@ -8739,6 +8821,20 @@ HPA -> HPA: compute desiredReplicas
 ### Trả lời phỏng vấn
 "HPA tính desired = ceil(currentReplicas * currentMetric / target) cho từng metric, áp tolerance, chọn giá trị đáp ứng metric căng nhất trong min/max. Stabilization window (scale down mặc định 300s) giữ lịch sử đề xuất để tránh flapping. Custom metric đi từ app -> Prometheus -> Adapter -> Custom Metrics API -> HPA, nên có độ trễ chục giây. Em chọn metric gần tải (RPS/lag) hơn CPU cho service I/O-bound, scale up nhanh/scale down chậm, và luôn kiểm tra giới hạn downstream như DB connections khi đặt maxReplicas."
 
+### Ví dụ đời thực
+Triệu chứng: service order-consumer (Spring Boot consumer Kafka) config HPA theo CPU target 70%. Khi traffic đơn hàng tăng gấp 4 lần dịp Black Friday, lag Kafka của consumer group leo từ 0 lên 150.000 message trong 10 phút, nhưng HPA chỉ scale từ 6 lên 8 pod (maxReplicas=8) vì CPU trung bình chỉ 45%. Latency xử lý đơn hàng tăng từ 200ms lên 12 giây, SLA vi phạm.
+
+Điều tra: {{kubectl describe hpa order-consumer}} cho current CPU 45%, desired 8, metric RPS/lag không được cấu hình. Chạy PromQL {{sum(rate(kafka_consumergroup_lag[5m])) by (consumergroup)}} xác nhận lag tăng đều. CPU thấp vì app phần lớn thời gian chờ poll Kafka và I/O DB, không tính toán nặng.
+
+Nguyên nhân gốc: HPA dùng CPU làm metric chính cho workload I/O-bound. CPU không phản ánh tải thực (lag Kafka, RPS, in-flight requests). Hơn nữa maxReplicas=8 thấp hơn số partition Kafka (24), dẫn đến partition bị bỏ qua.
+
+Cách xử lý: thêm custom metric RPS per-pod và lag per-pod qua Prometheus Adapter; đặt target RPS=100, target lag=5000. Cấu hình HPA behavior scaleUp nhanh (stabilizationWindowSeconds=0, policies +100%/30s), scaleDown chậm (300s, -1 pod/60s). Nâng maxReplicas lên 24 (bằng partition), minReplicas=6. Thêm PDB maxUnavailable=1.
+
+Kết quả đo được: đợt sale tiếp theo, traffic tăng tương tự, HPA scale từ 6 lên 20 pod trong 3 phút, lag giữ dưới 2.000, p99 latency 350ms. Chi phí node tăng 30% trong 2 giờ cao điểm nhưng SLA đạt 99.9%.
+
+### Trả lời mẫu khi phỏng vấn
+"HPA dùng công thức desired = ceil(currentReplicas * currentMetric / target) cho từng metric, lấy giá trị cao nhất, kẹp trong min/max. Stabilization window 300s cho scale down giúp tránh flapping. Custom metric đi app -> Prometheus -> Adapter -> Custom Metrics API -> HPA, độ trễ chục giây. Em ưu tiên metric gần tải: RPS/in-flight cho API, lag cho consumer Kafka. Cấu hình scale up nhanh, scale down chậm, maxReplicas không vượt partition Kafka và DB pool. Thực tế từng gặp service consumer Kafka scale chậm vì dùng CPU metric — chuyển sang lag-based HPA giúp lag từ 150k xuống dưới 2k trong 3 phút."
+
 > Senior tip: Luôn {{kubectl describe hpa}} để xem metric HPA thực sự nhìn thấy — nhiều sự cố autoscale do adapter/PromQL trả giá trị khác kỳ vọng. Đừng quên maxReplicas * connection pool có thể tự DDoS database.`,
     follow: [
       'Khi HPA dùng nhiều metric, làm sao debug trường hợp replica bị đẩy lên do một metric phụ?',
@@ -8819,6 +8915,20 @@ Replicas nhỏ (2-3) cẩn thận với {{minAvailable}} tuyệt đối; đảm 
 
 ### Trả lời phỏng vấn (lead)
 "HPA quyết định replica theo metric, CA quyết định node khi Pod Pending thiếu tài nguyên — hai vòng lặp khác tốc độ. PDB bảo vệ số Pod tối thiểu khi gián đoạn tự nguyện (drain), nên có thể chặn eviction nếu quá chặt. Em thiết kế: minReplicas đủ nền, HPA scale up nhanh/scale down chậm, maxReplicas ràng buộc downstream (DB pool), PDB cho phép drain tiến triển (maxUnavailable 1) và luôn đủ replicas để PDB khả thi. Burst khó đoán thì chấp nhận headroom/scheduled scaling; bảo trì thì tăng replica trước, kiểm tra Allowed disruptions. PDB không bảo vệ khỏi node crash hay OOMKilled — đó là việc của HA và thiết kế chịu lỗi."
+
+### Ví dụ đời thực
+Triệu chứng: dịp Tết, traffic dịch vụ thanh toán tăng 5 lần trong 30 phút. HPA scale desired từ 8 lên 32 pod (maxReplicas=32), nhưng 24 pod ở trạng thái Pending (Insufficient cpu/memory). Cluster Autoscaler (AWS ASG) cần 6 phút provision node m6i.xlarge mới, kéo image 2 phút. Trong 8 phút đó, p99 latency leo từ 120ms lên 4.5s, error rate 2.3%, SLO 99.9% vi phạm.
+
+Điều tra: {{kubectl get events --sort-by=.lastTimestamp}} cho hàng chục FailedScheduling "0/8 nodes are available: 8 Insufficient cpu". Log CA ghi scale-up triggered nhưng node group đã hit maxSize=10. PDB payment-pdb có maxUnavailable=1, khi team drain node cũ để patch kernel, drain kẹt 15 phút vì replicas sẵn sàng chỉ còn 7 (1 pod đang khởi động trên node mới, 1 pod evicted chờ PDB).
+
+Nguyên nhân gốc: maxReplicas=32 nhưng node group maxSize=10 (8 CPU * 10 = 80 CPU, request 2 CPU/pod * 32 = 64 CPU — lý thuyết đủ nhưng buffer không tính overhead kubelet, CNI, node-exporter). PDB maxUnavailable=1 quá chặt khi replicas biến đổi mạnh do HPA. Không có scheduled scaling cho đỉnh Tết.
+
+Cách xử lý: nâng node group maxSize lên 20; đặt minReplicas=12 trước Tết (scheduled scaling CronHPA); PDB đổi sang maxUnavailable: 25% để drain linh hoạt hơn; bật warm image pre-pull trên node mới (image pull secrets + daemonset pre-pull). Cấu hình CA skip-nodes-with-local-storage=false, scale-down-unneeded-time=10m.
+
+Kết quả đo được: đợt sale sau đó, traffic tăng tương tự, 32 pod lên trong 4 phút (node đã sẵn sàng nhờ minReplicas), p99 latency 180ms, error rate 0.02%. Drain node patch kernel xong trong 3 phút thay vì 15 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"HPA và CA là hai vòng lặp khác tốc độ: HPA scale replica theo metric (phút), CA scale node khi Pod Pending (phút đến chục phút). PDB bảo vệ số Pod tối thiểu khi drain, có thể chặn eviction nếu quá chặt. Em thiết kế: minReplicas đủ nền + scheduled scaling cho đỉnh biết trước, HPA scale up nhanh/scale down chậm, maxReplicas ràng buộc DB pool, PDB maxUnavailable phần trăm để drain tiến triển. Burst khó đoán thì chấp nhận headroom/overprovisioning. Thực tế từng gặp drain kẹt 15 phút vì PDB minAvailable bằng replicas, và CA hit maxSize node group khi traffic spike — fix bằng scheduled scaling và nâng quota."
 
 > Senior tip: Trước nâng cấp node pool: replicas đủ, {{kubectl describe pdb}} còn Allowed disruptions, CA/quota cloud đủ, dashboard SLO sẵn sàng. Nhiều ca "drain kẹt 2 giờ" chỉ vì PDB minAvailable bằng đúng số replica hiện tại.`,
     follow: [
@@ -8952,6 +9062,52 @@ deploy:
 - Kiểm tra: pipeline duration, cache hit rate (GitLab metrics), artifact storage.
 - Bảo mật: protected variables, runner tag restrict, audit log.
 
+### Cơ chế chi tiết: Cache key design
+Cache key quyết định khi nào cache được tái dùng vs khi nào bị miss. Với Maven/Gradle, khuyến nghị key dựa trên hash của lock file:
+~~~yaml
+cache:
+  key: "\${CI_COMMIT_REF_SLUG}-\${CI_JOB_NAME}-\$([ -f pom.xml ] && sha256sum pom.xml | cut -c1-8 || echo 'no-pom')"
+  paths: [.m2/repository]
+  policy: pull-push
+~~~
+- {{code}}: nhánh (feature/login, main) — cache tách theo nhánh.
+- {{code}}: tách cache giữa job build/test/deploy.
+- Hash {{code}}/{{code}}: đổi dependency thì key đổi, cache miss, tải dependency mới.
+- {{code}} (mặc định): job đầu push, job sau pull; có thể {{code}} cho job đọc, {{code}} cho job ghi.
+
+### Cơ chế chi tiết: Needs DAG
+Mặc định stage chạy tuần tự: build -> test -> deploy. Với {{code}}, job khai báo phụ thuộc rõ ràng, GitLab xây dựng DAG (Directed Acyclic Graph) cho phép chạy song song tối đa:
+~~~yaml
+test:
+  stage: test
+  needs: [build]          # chỉ cần build xong, không chờ stage build khác
+  script: mvn test
+deploy:
+  stage: deploy
+  needs: [build]          # deploy không cần chờ test (nếu test là gate riêng)
+  script: ./deploy.sh
+  rules: [if: \$CI_COMMIT_BRANCH == "main"]
+~~~
+Giảm thời gian pipeline từ 20 phút xuống 12 phút trên project thực tế.
+
+### Ví dụ đời thực
+Triệu chứng: team 12 dev, pipeline GitLab CI trung bình 22 phút (build 8m, test 10m, deploy 4m). Cache hit rate chỉ 35% do key cache dùng {{code}} — mỗi commit trên feature branch tạo cache mới, không chia sẻ được. Artifacts {{code}} 120MB upload/download mất 3 phút. Runner shared bị noisy neighbor khi job test chạy parallel 8 thread, CPU throttle.
+
+Điều tra: GitLab CI/CD Analytics cho cache hit rate 35%, median pipeline duration 22m. Job {{code}} trên feature branch luôn download dependency thay vì dùng cache main. Artifacts không có {{code}}, storage registry 500GB/Tháng.
+
+Nguyên nhân gốc: cache key thiếu hash dependency file, artifacts quá lớn và không hết hạn, dùng runner shared cho workload nặng không giới hạn resource.
+
+Cách xử lý: 
+1. Sửa cache key thêm hash {{code}}, bật {{code}} cho job test, {{code}} cho job build.
+2. Artifacts chỉ giữ {{code}} (có {{code}}), tách {{code}} riêng cho job test.
+3. Tự host specific runner (AWS ASG, docker executor, 4 CPU/16GB) gán tag {{code}}, convert job nặng sang runner này.
+4. Bật {{code}} cho job deploy không phụ thuộc test (chỉ cần build artifact), chạy song song.
+
+Kết quả đo được: pipeline duration giảm từ 22 phút xuống 9 phút (build 4m nhờ cache hit 85%, test 4m song song, deploy 1m). Cache hit rate 85%. Chi phí runner tự host $180/tháng, tiết kiệm 65% so với shared runner minutes.
+
+### Trả lời mẫu khi phỏng vấn
+"GitLab CI chạy pipeline theo stage (tuần tự) và job (song song trong stage). Cache dùng để tái dùng dependency (Maven .m2, npm node_modules), key nên có hash lock file để tránh cache miss vô ích; artifacts truyền file kết quả (jar, test report) giữa stage, phải có expire_in. Runner có executor shell (nhanh, state leak) và docker (sạch, reproducible), Kubernetes executor scale pod theo job. Biến masked che giá trị trong log, protected chỉ inject vào protected branch/tag. Tôi dùng needs để DAG pipeline, tách runner heavy workload, cache key có hash pom.xml. Thực tế giảm pipeline từ 22p xuống 9p nhờ cache hit 85% và needs DAG."
+
 > Senior tip: Dùng needs để DAG pipeline giảm thời gian; artifacts expire để tiết kiệm storage; tách build/test/deploy image để cache layer hiệu quả.`,
     follow: ['Cache key nên thiết kế thế nào cho Maven/Gradle?', 'Làm sao tránh leak secret trong log?', 'Rollback pipeline khi deploy fail?'],
     tags: ['GitLabCI', 'Pipeline', 'Secrets']
@@ -9004,6 +9160,65 @@ pipeline {
 - Kiểm tra: queue time, agent utilization, plugin update cadence.
 - Bảo mật: least privilege credentials, RBAC, audit.
 
+### Cơ chế chi tiết: Agent và Kubernetes Plugin
+Jenkins Kubernetes Plugin (agent kubernetes) tạo pod agent cho mỗi stage/job:
+~~~groovy
+agent {
+  kubernetes {
+    yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  - name: maven
+    image: maven:3.9-eclipse-temurin-17
+    command: ['cat']
+    tty: true
+    resources:
+      requests:
+        memory: "2Gi"
+        cpu: "1"
+      limits:
+        memory: "4Gi"
+        cpu: "2"
+"""
+  }
+}
+~~~
+- Mỗi job chạy trong pod riêng, tự dọn dẹp sau khi xong (scale to zero).
+- {{code}} + {{code}} giữ container sống chờ Jenkins điều khiển.
+- Resources request/limit quan trọng: tránh pod agent bị OOMKilled khi build, tránh node quá tải.
+
+### Cơ chế chi tiết: Shared Library versioning
+Shared library nên version theo Git tag (semver) để tránh breaking change:
+~~~groovy
+@Library('my-shared-lib@v1.4.2') _  // pin version
+// hoặc
+@Library('my-shared-lib@release/1.4') _  // branch
+~~~
+- Tag {{code}} bất biến, an toàn cho production.
+- Branch {{code}} cho hotfix, nhưng có thể di chuyển.
+- Tránh {{code}} (mặc định {{code}}) — rủi ro thay đổi không kiểm soát.
+- Unit test library bằng {{code}} (Groovy Spock) để test logic pipeline mà không cần Jenkins thật.
+
+### Ví dụ đời thực
+Triệu chứng: team 20 dev chia sẻ 1 Jenkins controller (8 CPU/32GB), 50 job chạy song song lúc 9h sáng. Queue time trung bình 12 phút, build timeout 60 phút thường fail do chờ agent. Plugin 120 cái, 15 cái conflict version sau update, log lỗi "NoSuchMethodError" lúc deploy. Shared library trên branch {{code}} bị dev A sửa function {{code}} làm dev B deploy sai namespace.
+
+Điều tra: Jenkins Monitoring (Prometheus) cho {{code}} p95 18 phút. Thread dump controller thấy 200+ thread handle plugin. Shared library commit history: 5 commit/tuần, không tag, không test.
+
+Nguyên nhân gốc: controller đơn lẻ không scale được concurrency; plugin hell; shared library không versioning, không test.
+
+Cách xử lý:
+1. Tách controller: 1 controller cho orchestration (lightweight), 3 controller chuyên build (heavy) qua Kubernetes plugin, mỗi controller quản lý agent pool riêng.
+2. Plugin audit: xoá 40 plugin không dùng, lock version còn lại trong {{code}} (Jenkins Configuration as Code - JCasC).
+3. Shared library: tag {{code}}, setup Pipeline Unit test, require PR review + test pass mới merge, bump version semver.
+4. Migration dần sang GitHub Actions cho repo mới, Jenkins chỉ giữ legacy.
+
+Kết quả đo được: queue time p95 từ 18 phút xuống 2 phút. Build success rate từ 78% lên 96%. Zero plugin conflict 6 tháng. Shared library release cadence 2 tuần/lần, 0 breaking change production.
+
+### Trả lời mẫu khi phỏng vấn
+"Jenkinsfile declarative khai báo pipeline trong Groovy DSL: agent (any, label, docker, kubernetes), stages, post, environment, credentials. Shared library (vars/, src/) tái dùng logic across repos, phải version bằng Git tag semver và unit test bằng Pipeline Unit. So với GitLab CI/GitHub Actions (SaaS, managed runner, config YAML), Jenkins tự host, plugin phong phú nhưng rủi ro plugin hell, controller bottleneck. Tôi chọn Jenkins cho enterprise on-prem complex, greenfield thì ưu tiên GitHub Actions/GitLab CI giảm vận hành. Thực tế từng tối ưu Jenkins: tách controller, JCasC lock plugin, shared library versioning — queue time p95 từ 18p xuống 2p."
+
 > Senior tip: Jenkins phù hợp enterprise legacy/complex on-prem; greenfield ưu tiên GitHub Actions/GitLab CI để giảm vận hành; nếu dùng Jenkins, giữ plugin tối thiểu và version lock.`,
     follow: ['Khi nào chọn self-hosted runner?', 'Cách version shared library?', 'Blue ocean vs classic UI?'],
     tags: ['Jenkins', 'CI', 'Comparison']
@@ -9048,6 +9263,50 @@ mvn -B verify sonar:sonar \\
 - Sai lầm: coverage threshold 0 ban đầu rồi không tăng; gate chỉ warning không block.
 - Kiểm tra: gate pass rate, new code coverage trend, false positive count.
 - Bảo mật: token masked, SonarQube HTTPS, RBAC.
+
+### Cơ chế chi tiết: New Code Period (Leak Period)
+SonarQube phân biệt **Overall code** (toàn bộ codebase) và **New code** (code mới từ leak period). Quality gate nên chỉ áp dụng cho New code:
+- **Previous version**: so với version trước (tag Git).
+- **Number of days**: ví dụ 30 ngày.
+- **Specific date**: mốc cố định.
+- **SCM reference**: so với branch target (main/develop) — phù hợp CI/CD.
+
+Khi PR tạo ra, SonarQube chỉ tính metric trên dòng code thêm/sửa trong PR (diff). Legacy debt (code cũ có smell, coverage thấp) **không** làm fail gate. Điều này cho phép team delivery liên tục mà không bị chặn bởi nợ kỹ thuật cũ.
+
+### Cơ chế chi tiết: Quality Gate conditions
+Quality gate là tập điều kiện (conditions) áp dụng cho New code:
+~~~text
+Condition                  | Operator | Value | Error/Warning
+---------------------------|----------|-------|--------------
+Coverage on New Code       | <        | 80%   | Error
+Blocker issues on New Code | >        | 0     | Error
+Critical issues on New Code| >        | 0     | Error
+Major issues on New Code   | >        | 0     | Warning
+Security Hotspots reviewed | <        | 100%  | Warning
+Duplicated lines on New Code| >      | 3%    | Warning
+~~~
+- {{code}} làm fail gate (chặn merge), {{code}} chỉ báo.
+- Điều kiện có thể dùng {{code}} (A-E) cho Reliability, Security, Maintainability.
+- Tự tạo quality gate profile cho từng loại dự án (library, service, frontend).
+
+### Ví dụ đời thực
+Triệu chứng: repo core-payment 8 năm tuổi, 250k LOC, coverage overall 42%, 1.200 code smell, 45 blocker. Team mới join không dám sửa vì SonarQube fail mọi PR. Lead đặt quality gate "coverage overall ≥ 80%" — pipeline đỏ toàn bộ, team không merge được gì 2 tuần.
+
+Điều tra: SonarQube dashboard cho Overall coverage 42%, New code coverage (30 ngày) 78%. Legacy debt tập trung ở module {{code}} (viết 2016, không test, 15k LOC). Quality gate cũ dùng Overall metric.
+
+Nguyên nhân gốc: Quality gate áp dụng Overall metric thay vì New code. Legacy debt chặn delivery hoàn toàn. Không có leak period config, PR decoration không hiện rõ metric new code.
+
+Cách xử lý:
+1. Tạo quality gate mới "Payment Service Gate" chỉ dùng New code (leak period: Previous version — tag Git).
+2. Điều kiện: New code coverage ≥ 80%, 0 blocker/critical, Major ≤ 5, Duplicated lines ≤ 3%.
+3. Bật PR decoration trên GitLab/GitHub, required status check "SonarQube".
+4. Legacy module {{code}}:exclude khỏi analysis ({{code}}) tạm thời, lập plan rewrite dần.
+5. Tăng ngưỡng coverage new code 5%/quý: Q1 80%, Q2 85%, Q3 90%.
+
+Kết quả đo được: PR pass rate từ 15% lên 92% trong 1 tháng. New code coverage trung bình 83%. Legacy debt không còn chặn delivery. Team tự tin refactor module cũ vì gate chỉ xét code mới.
+
+### Trả lời mẫu khi phỏng vấn
+"SonarQube scanner chạy trong CI, gửi report lên server, quality gate so sánh metric New code (code mới từ leak period) với ngưỡng. Chặn merge qua PR decoration + required status check. Maven: {{code}}, Jacoco cho coverage. Gradle: plugin {{code}}. Key point: dùng New code period (leak period) để legacy debt không chặn delivery, tăng ngưỡng coverage dần theo quý. Thực tế từng gặp repo 8 năm coverage overall 42% fail mọi PR — chuyển sang New code gate 80% giúp PR pass rate từ 15% lên 92%."
 
 > Senior tip: Dùng "new code" period (leak period) để tránh legacy debt chặn delivery; tăng ngưỡng coverage dần theo quý.`,
     follow: ['Làm sao xử lý false positive?', 'Coverage nên đo unit hay integration?', 'SonarLint trong IDE?'],
@@ -9106,6 +9365,70 @@ ENTRYPOINT ["java","-jar","app.jar"]
 - Kiểm tra: image size, scan report, không có secret (trivy secret scan).
 - Base image update strategy: rebuild định kỳ theo base image digest.
 
+### Cơ chế chi tiết: Layered Jar cho Docker cache tối ưu
+Spring Boot 3.3+ hỗ trợ tách layered jar tốt hơn (cũ dùng {{code}}, mới dùng {{code}}). Thay vì COPY cả fat jar, tách thành 4 layer:
+~~~dockerfile
+FROM maven:3.9-eclipse-temurin-17 AS build
+WORKDIR /app
+COPY pom.xml .
+RUN mvn -B dependency:go-offline
+COPY src ./src
+RUN mvn -B package -DskipTests
+# Tách layered jar
+RUN java -Djarmode=tools -jar target/*.jar extract --layers --launcher --destination /out
+
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY --from=build /out/dependencies/ ./
+COPY --from=build /out/spring-boot-loader/ ./
+COPY --from=build /out/snapshot-dependencies/ ./
+COPY --from=build /out/application/ ./
+USER 1000
+ENTRYPOINT ["java","-XX:MaxRAMPercentage=75","org.springframework.boot.loader.launch.JarLauncher"]
+~~~
+- {{code}}: thư viện bên thứ ba (95% dung lượng, ít đổi).
+- {{code}}: launcher classes.
+- {{code}}: SNAPSHOT dependency (nếu có).
+- {{code}}: code của bạn (vài trăm KB, đổi thường).
+Khi chỉ sửa code, chỉ layer {{code}} mới build lại + push, tiết kiệm 90% bandwidth và thời gian.
+
+### Cơ chế chi tiết: Trivy scanning strategy
+Trivy quét 3 loại:
+- **OS packages**: {{code}} (default).
+- **Language packages**: {{code}} — quét dependency trong jar (Maven/Gradle lock file).
+- **Secrets**: {{code}} — tìm API key, password trong layer.
+
+Pipeline khuyến nghị:
+~~~yaml
+trivy_scan:
+  stage: security
+  image: aquasec/trivy:latest
+  script:
+    - trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed $IMAGE_TAG
+    - trivy image --scanners secret --exit-code 1 $IMAGE_TAG
+  allow_failure: false
+~~~
+- {{code}}: bỏ qua CVE chưa có fix (tránh false positive block).
+- Exception list: file {{code}} với CVE ID, lý do, expiry date.
+
+### Ví dụ đời thực
+Triệu chứng: service order-api build image fat jar 180MB, push Harbor mất 4 phút, pull lên node K8s mất 2 phút. Deploy 6 lần/ngày → 36 phút chỉ cho push/pull. Trivy scan báo 47 CVE HIGH/CRITICAL (nhiều CVE trong base image alpine 3.18 cũ), pipeline fail, dev phải thêm exception thủ tục. Image chạy user root, secret DB vô tình commit vào layer {{code}}.
+
+Điều tra: {{code}} cho 1 layer 175MB (fat jar). Base image {{code}} digest 6 tháng tuổi, 32 CVE. {{code}} tìm thấy password trong layer ENV.
+
+Nguyên nhân gốc: Dockerfile copy fat jar thành 1 layer, không tận dụng layered jar. Base image không rebuild định kỳ. Secret hard-code trong Dockerfile/ENV. Trivy exception không có expiry, tích lũy 47 CVE.
+
+Cách xử lý:
+1. Chuyển multi-stage + layered jar extract (như Dockerfile trên). Image giảm 180MB -> 52MB.
+2. Base image pin digest, rebuild hàng tuần qua scheduled pipeline (Dependabot/Renovate auto PR bump base image digest).
+3. Secret: dùng BuildKit {{code}} cho build-time, runtime lấy từ K8s Secret/External Secrets Operator.
+4. Trivy: fail chỉ HIGH/CRITICAL có fix, exception bắt buộc có justification + expiry 30 ngày, review hàng tuần.
+
+Kết quả đo được: image size 52MB, push 45s, pull 20s, deploy 6 lần/ngày chỉ tốn 6.5 phút. Trivy critical 0, high 3 (đã exception có hạn). Zero secret leak 6 tháng. Rollback time < 2 phút nhờ tag SHA.
+
+### Trả lời mẫu khi phỏng vấn
+"Build image Java dùng multi-stage Dockerfile: build stage Maven/Gradle, runtime stage JRE slim/distroless. Layer cache: copy pom trước, dependency:go-offline, BuildKit cache mount. Tối ưu hơn: Spring Boot layered jar extract (dependencies, loader, snapshot, application) — sửa code chỉ rebuild layer application vài trăm KB. Tag = commit SHA + semver, production không dùng latest. Push Harbor/ECR, Trivy scan OS + Java dependency + secret, fail HIGH/CRITICAL có fix. Thực tế: image từ 180MB xuống 52MB, push/pull từ 6 phút xuống 1 phút, zero secret leak, Trivy critical 0."
+
 > Senior tip: Dùng distroless JRE để giảm attack surface; tag theo SHA để truy vết 1:1 với commit; bật image signing + verify ở deploy.`,
     follow: ['Làm sao cache Maven trong Docker build?', 'Image signing Cosign?', 'Base image update strategy?'],
     tags: ['Docker', 'CI', 'Trivy', 'Registry']
@@ -9148,6 +9471,25 @@ helm rollback app 42 -n prod
 - Sai lầm: không có runbook rollback, migration DB không tương thích, không test rollback.
 - Kiểm tra: rollback time (MTTR), SLO, deploy success rate.
 - Feature flag vs deploy rollback: flag tắt feature nhanh hơn rollback image.
+
+### Cơ chế từng bước
+- Commit code → CI build và test (unit, integration, phân tích mã tĩnh) → build Docker image → push registry (gắn tag theo mã commit) → deploy staging → chạy smoke test trên staging.
+- Bán tự động (semi-auto): production cần một người duyệt (manual approval / gate) trước khi rollout image mới. Phù hợp ngân hàng, y tế cần kiểm toán và hội đồng thay đổi.
+- Tự động hoàn toàn (full CD): mỗi commit qua hết gate thì deploy production ngay. Cần feature flag, giám sát và rollback tự động để an toàn.
+- Rollback nhanh: quay lại image tag trước đó bằng kubectl rollout undo hoặc helm rollback, thường hoàn thành trong vài phút.
+- Migration CSDL phải backward-compatible: thêm cột cho phép null trước → deploy code đọc/ghi cả hai cột → backfill dữ liệu → mới thêm NOT NULL và xóa cột cũ. Như vậy code cũ và mới cùng chạy được trong khoảng thời gian chuyển đổi, rollback code không phá schema.
+
+### Ví dụ đời thực
+Order service (Java/Spring Boot) trên Kubernetes production đang chạy image {{order-api:1.4.1}}. Lúc 10:00 deploy {{order-api:1.4.2}}, dashboard Grafana cho thấy p99 latency nhảy từ 200 ms lên 2 giây, error rate 5xx tăng từ 0,1% lên 2%, số đơn đặt hàng giảm 30%.
+
+Điều tra: chạy {{kubectl rollout history deployment/order-api -n prod}} thấy revision mới là 2; {{kubectl logs deployment/order-api -n prod}} báo {{org.postgresql.util.PSQLException: ERROR: null value in column "status" violates not-null constraint}}. Lập trình viên mới thêm cột {{status NOT NULL}} mà không có giá trị mặc định, nên các insert cũ bị lỗi.
+
+Xử lý: ngay lập tức {{kubectl rollout undo deployment/order-api -n prod}} quay về image 1.4.1. Sau 3 phút p99 quay lại 200 ms, error rate dưới 0,1%. Sau incident, migration được viết lại theo expand/contract: thêm cột {{status}} cho phép null, deploy code đọc/ghi cả hai cột, backfill dữ liệu, rồi mới thêm NOT NULL và xóa cột cũ. Lần sau deploy {{order-api:1.4.3}} diễn ra suôn sẻ.
+
+Kết quả: MTTR (thời gian khôi phục dịch vụ) là 3 phút, dưới mục tiêu 5 phút; không dữ liệu bị mất vì không xóa cột ngay lập tức.
+
+### Trả lời mẫu khi phỏng vấn
+“Khi team deploy production, mình thường chia làm hai luồng: dev và staging tự động deploy sau khi CI xanh, còn production cần một người nhấn nút duyệt (manual approval) trước khi rollout — đây là bán tự động, phù hợp dự án yêu cầu kiểm toán như ngân hàng. Nếu muốn tự động hoàn toàn (continuous deployment), mỗi commit qua test thì deploy ngay, nhưng bắt buộc có feature flag, giám sát và rollback tự động. Rollback nhanh nhất là quay lại image tag cũ bằng kubectl rollout undo hoặc helm rollback, trong vòng vài phút; migration CSDL phải backward-compatible (thêm cột nullable trước, xóa sau) để code cũ và mới cùng chạy được. Trước khi nhấn deploy, mình kiểm tra dashboard latency và error rate, và sau deploy quan sát p99 trong 5–10 phút. Mình luôn giữ image tag trước đó và luyện rollback trong staging để đảm bảo MTTR dưới 5 phút, tránh trạng thái “không biết rollback thế nào” khi incident xảy ra thật.”"
 
 > Senior tip: Expand/contract migration để rollback an toàn; luôn giữ previous image tag và test rollback trong staging; đo thời gian rollback < 5 phút.`,
     follow: ['Database migration rollback strategy?', 'Feature flag vs deploy rollback?', 'Canary vs blue-green?'],
@@ -9197,6 +9539,22 @@ npx semantic-release
 - Kiểm tra: release frequency, hotfix count, lead time.
 - Trunk-based + feature flag giảm nhu cầu release branch.
 
+### Cơ chế từng bước
+- SemVer (MAJOR.MINOR.PATCH): MAJOR = breaking change (API không tương thích), MINOR = tính năng mới backward-compatible, PATCH = sửa bug; pre-release như 1.2.3-rc.1 dùng cho bản thử trước khi release chính thức.
+- Release branch: tạo release/1.2.0 từ main khi feature freeze; chỉ cherry-pick bug fix vào nhánh này; sau khi ổn định merge về main, gắn tag v1.2.0.
+- Hotfix: tạo nhánh hotfix/* từ main (production), sửa tối thiểu, merge về main và develop, bump phiên bản PATCH (1.2.1), kích hoạt pipeline release tự động.
+- Nhiều service phối hợp: dùng API có phiên bản (/v1, /v2) để các service không phải triển khai cùng lúc (lock-step); contract testing (Pact) giữa service gọi và service được gọi phát hiện breaking change trước khi deploy; changelog tự động từ conventional commits (semantic-release); chính sách ngừng dùng (deprecation): thông báo trước, chỉ định ngày hết hạn, theo dõi lượng sử dụng rồi mới bỏ endpoint cũ.
+
+### Ví dụ đời thực
+Payment service lên phiên bản 2.0 thay đổi API /payments: trường amount đổi từ số nguyên sang chuỗi, và tên trường currency đổi thành currency_code. Order service gọi cả hai phiên bản trong khoảng chuyển đổi. Hai tuần sau khi deploy, dashboard cho thấy lỗi 400 Bad Request tăng từ dưới 0,1% lên 5%, số đơn thanh toán thất bại tăng gấp 3 lần.
+
+Điều tra: người trên call kiểm tra APM, thấy lỗi bắt đầu từ bản deploy Payment 2.0 lúc 14:00; hợp đồng (contract) giữa order và payment không khớp vì trường amount thay đổi kiểu dữ liệu. Xử lý: ngay lập tức rollback order service về bản gọi API /v1, đồng thời Payment publish API /v2 riêng và giữ /v1 hoạt động thêm 3 tháng để các team gọi khác có thời gian di dời. Sau đó giao team payment viết contract test (Pact) vào CI để mọi breaking change bị chặn trước khi deploy.
+
+Kết quả: incident breaking change giảm từ khoảng 4 lần/tháng xuống 0 trong 6 tháng sau khi áp dụng versioned API + contract test; không còn hotfix do sự cố phiên bản API.
+
+### Trả lời mẫu khi phỏng vấn
+“Quản lý release của mình dựa trên SemVer: MAJOR cho thay đổi phá tương thích, MINOR cho tính năng mới chưa phá, PATCH cho sửa lỗi. Khi có nhiều tính năng sẵn sàng, mình tạo nhánh release từ main, chỉ nhập sửa lỗi vào nhánh đó, sau khi ổn định merge về main và gắn tag. Lỗi production khẩn cấp thì tạo nhánh hotfix từ main, sửa tối thiểu, merge về cả main và develop, bump phiên bản PATCH. Với nhiều service, mình không buộc tất cả triển khai cùng lúc: dùng API có phiên bản (/v1, /v2) và viết contract test (Pact) giữa service gọi và service được gọi để phát hiện breaking change sớm trong CI. Khi cần bỏ một endpoint cũ, mình thông báo trước, chỉ định ngày ngừng dùng và theo dõi lượng sử dụng bằng metric trước khi xóa. Mình cũng ưu tiên trunk-based phát triển kèm feature flag để giảm sự phụ thuộc vào nhánh release, chỉ giữ nhánh release cho sản phẩm yêu cầu kiểm toán nghiêm ngặt.”"
+
 > Senior tip: Trunk-based development + feature flag cho phần lớn team; giữ release branch chỉ cho regulated product; contract test bắt buộc cho multi-service.`,
     follow: ['Làm sao communicate breaking change?', 'Deprecation policy?', 'Release notes automation?'],
     tags: ['Release', 'SemVer', 'Hotfix', 'Leadership']
@@ -9243,6 +9601,21 @@ security:
 - Sai lầm: scan chỉ report không block; alert fatigue; exception vĩnh viễn.
 - Kiểm tra: findings trend, MTTR, % pipeline block.
 - Shift-left: scan sớm trong PR, không chỉ pipeline main.
+
+### Cơ chế từng bước
+- Quét secret: gitleaks/trufflehog quét lịch sử commit và thư mục làm việc tìm API key, token, mật khẩu; pre-commit hook chặn commit chứa secret trước khi push. Nếu đã rò rỉ: thu hồi key, xoay khóa mới (rotate), làm sạch lịch sử git (git filter-repo) và thông báo bảo mật.
+- Quét dependency: OWASP Dependency-Check, Snyk, Trivy fs so sánh thư viện dùng với danh sách lỗ hổng NVD (CVE); pipeline thất bại nếu có CVE critical/high chưa được phê duyệt exceptions; xuất SBOM (CycloneDX/SPDX) kèm artifact để kiểm toán.
+- SAST/DAST: SAST (SonarQube, Semgrep) phân tích mã nguồn tìm SQL injection, XSS, deserialization không an toàn mà không cần chạy app; DAST (OWASP ZAP) quét ứng dụng đang chạy trên staging để tìm lỗ hổng runtime.
+- Policy as code: OPA/Conftest kiểm tra Dockerfile và manifest Kubernetes (không chạy root, image đã ký, có giới hạn tài nguyên) ở cổng CI; admission controller (Kyverno/Gatekeeper) thực thi chính sách khi chạy trên cụm.
+- Quan trọng: quét phải chặn pipeline (allow_failure: false), không chỉ báo cáo; dịch chuyển sang trái (shift-left): quét sớm trong pull request, không chỉ khi merge main.
+
+### Ví dụ đời thực
+Lúc 9:30 sáng, một developer commit vào nhánh feature chứa nhầm AWS access key trong file cấu hình. Pipeline CI chạy gitleaks detect --exit-code 1 và thất bại ngay, chặn code vào main. Đội ngũ bảo mật nhận cảnh báo: thu hồi access key đó, tạo khóa mới, làm sạch lịch sử commit bằng git filter-repo, và thông báo tất cả service có thể đã nhận key. Trong cùng tuần, trivy fs phát hiện thư viện logging có CVE critical trong bản build order-service; đội ngũ nâng thư viện lên bản có bản vá, rebuild image, quét lại xanh mới promote lên production.
+
+Kết quả: số lỗ hổng phát hiện trong pipeline giảm từ khoảng 12 bản/tháng xuống 1 bản/tháng sau hai tháng áp dụng quét trong pull request; không còn sự cố key rò rỉ vào mã nguồn trong 6 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+“Pipeline bảo mật của mình có nhiều lớp và mỗi lớp phải chặn, không chỉ báo cáo. Trước khi commit, pre-commit hook chạy gitleaks để chặn khóa API, token rò rỉ vào mã. Trong CI, mình quét dependency (trivy fs/Snyk) so với danh sách CVE và khiến build thất bại nếu có lỗ hổng critical/high chưa được chấp nhận, đồng thời xuất SBOM để biết chính xác image nào chứa thư viện bị lỗi khi có CVE mới công bố. Mã nguồn được quét bằng SAST (SonarQube/Semgrep) để tìm SQL injection, XSS, deserialization không an toàn; ứng dụng chạy trên staging được quét bằng DAST (OWASP ZAP). Cuối cùng, OPA/Conftest kiểm tra Dockerfile và manifest Kubernetes (không chạy root, có giới hạn tài nguyên) trước khi cho triển khai. Nếu phát hiện secret rò rỉ, mình thu hồi key, xoay khóa, làm sạch lịch sử git và thông báo bảo mật ngay. Mình cũng ưu tiên quét sớm trong pull request (shift-left) thay vì chỉ quét khi merge main, và xem xét lại danh sách exceptions định kỳ.”"
 
 > Senior tip: Secret scanning + dependency scanning là baseline bắt buộc; policy as code turning security into automated gate; review exception list định kỳ.`,
     follow: ['SBOM nên lưu ở đâu?', 'Image signing verification runtime?', 'Compliance audit?'],
@@ -9806,6 +10179,9 @@ services:
 - Publish cổng DB ra {{0.0.0.0}} trên máy dev nối mạng công cộng → lộ DB.
 - Tin vào IP container hard-code → hỏng sau khi {{docker compose up --force-recreate}}.
 
+### Trả lời mẫu khi phỏng vấn
+“Khi chạy app Java và PostgreSQL mỗi thứ trong một container trên cùng máy, mình luôn đặt cả hai vào cùng một Compose project để Docker tự tạo mạng bridge riêng cho project. App kết nối PostgreSQL bằng tên service ({{jdbc:postgresql://db:5432/orders}}), KHÔNG dùng localhost, vì mỗi container có mạng riêng (network namespace); localhost bên trong container app chỉ trỏ về chính container đó, không phải PostgreSQL. Chỉ publish cổng 8080 của app ra host để trình duyệt và IDE truy cập; cổng 5432 của PostgreSQL không publish ra host, giúp giảm bề mặt tấn công. Các container trên cùng mạng gọi nhau trực tiếp bằng tên service qua DNS nội bộ của Docker, không cần publish port. Nếu cần các container trên máy khác gọi nhau, dùng overlay (Docker Swarm) hoặc trong Kubernetes dùng Service và CoreDNS. Lỗi hay gặp là kết nối bằng localhost:5432 từ bên trong container app, publish cổng DB ra 0.0.0.0 trên mạng công cộng, hoặc hard-code IP container — cả ba đều hỏng sau khi tái tạo container vì IP có thể thay đổi.”"
+
 > Senior tip: Coi publish port là "mở cửa ra ngoài" — chỉ mở những gì thực sự cần từ host. Giữa các service nội bộ, để chúng nói chuyện trên mạng Compose riêng bằng tên service; sang Kubernetes tư duy tương tự nhưng tên phân giải qua Service/DNS của cluster.`,
     follow: [
       'Khác nhau giữa EXPOSE trong Dockerfile và ports trong Compose là gì?',
@@ -9882,6 +10258,18 @@ WORKDIR /app
 COPY --chown=10001:10001 target/app.jar /app/app.jar
 ENTRYPOINT ["java","-jar","/app/app.jar"]
 ~~~
+
+### Ví dụ đời thực
+Ứng dụng Java Spring Boot chạy trong container image {{eclipse-temurin:21-jre}} với user {{10001:10001}} (non-root). Lúc triển khai vào staging, team bind mount thư mục {{./logs}} trên host (thuộc về user host UID 1000) vào {{/app/logs}} trong container để đọc log. Sau khi khởi động, ứng dụng in ra {{java.io.FileNotFoundException: /app/logs/app.log (Permission denied)}} và không ghi được log.
+
+Điều tra: trên host, thư mục {{./logs}} được tạo bởi user UID 1000; trong container, tiến trình chạy với UID 10001. nhân Linux kiểm tra quyền theo số UID trên inode, nên UID 10001 không có quyền ghi vào thư mục thuộc UID 1000, mặc dù bên trong container thư mục {{/app/logs}} "thấy" tồn tại.
+
+Xử lý: chuyển sang named volume {{applogs:/app/logs}} do Docker quản lý (Docker khởi tạo quyền dựa trên thư mục trong image) và build image với user cố định {{10001:10001}}, thư mục {{/app/logs}} đã {{chown}} {{10001:10001}} trong Dockerfile. Bind mount {{./config}} chỉ dùng với chế độ chỉ đọc {{:ro}} để inject cấu hình. Sau thay đổi, ứng dụng ghi log bình thường và không còn lỗi quyền.
+
+Kết quả: khởi động container thành công, log được ghi vào {{/app/logs}}, team tuân theo nguyên tắc non-root mà không phải chạy lại bằng root hay dùng {{chmod 777}}.
+
+### Trả lời mẫu khi phỏng vấn
+“Volume là vùng lưu dữ liệu do Docker quản lý (thường dưới {{/var/lib/docker/volumes}}), bền vững và phù hợp cho dữ liệu cơ sở dữ liệu; bind mount gắn thẳng một thư mục trên máy host vào container, phù hợp khi muốn sửa code hoặc cấu hình trên host và thấy ngay trong container. Lỗi Permission denied khi chạy user non-root xảy ra vì tiến trình trong container dùng UID/GID khác với chủ sở hữu file trên host; nhân Linux kiểm tra quyền theo số, không theo tên, nên UID 10001 không ghi được vào thư mục thuộc UID 1000. Cách xử lý an toàn: ưu tiên named volume cho dữ liệu cần ghi (log, dữ liệu app), bind mount chỉ dùng ở chế độ chỉ đọc {{:ro}} cho cấu hình, hoặc căn UID/GID — build image tạo user với UID cố định và chown thư mục cần ghi trong Dockerfile. Không nên chạy lại bằng root hay dùng {{chmod 777}}, vì cả hai phá vỡ mô hình bảo mật. Trên SELinux, bind mount có thể cần cờ {{:z}} hoặc {{:Z}}, dùng cẩn thận.”"
 
 > Senior tip: Quyền file trong container là "điểm mù" kinh điển khi chuyển từ chạy root sang non-root. Hãy chọn một UID cố định cho image, ghi rõ trong README, và dùng named volume cho mọi đường dẫn ghi; bind mount chỉ dành cho dữ liệu read-only hoặc source code ở môi trường dev.`,
     follow: [
@@ -9970,6 +10358,16 @@ spec:
 - **Sự cố thật:** container chạy root bị RCE qua lỗ hổng dependency; kẻ tấn công cài công cụ đào coin vào {{/tmp}}. Với read-only rootfs + {{/tmp}} là tmpfs có {{noexec}} (nâng cao) và drop capabilities, tác động bị thu hẹp.
 - **Kiểm tra:** {{docker inspect}} xem {{ReadonlyRootfs}}, {{CapDrop}}; trên K8s dùng {{kubectl auth can-i --as=system:serviceaccount:...}} và công cụ policy (Kyverno/OPA) để bắt pod vi phạm. Quét cấu hình bằng {{trivy config}} hoặc {{kube-bench}}/policy audit.
 
+### Ví dụ đời thực
+Một container Java chạy order-api với quyền root mặc định trên production. Lúc 22:00, kẻ tấn công khai thác lỗ hổng trong một thư viện logging (RCE) và cài công cụ đào coin vào thư mục {{/tmp}} của container, CPU của nút (node) nhảy lên 90%, độ trễ API tăng từ 100 ms lên 5 giây.
+
+Điều tra: đội ngũ vận hành kiểm tra {{docker ps}}, thấy container order-api chạy như root; {{docker inspect}} cho thấy {{ReadonlyRootfs=false}}, {{CapDrop}} trống; logs ứng dụng có dấu hiệu nhập liệu độc hại vào trường tìm kiếm. Xử lý: ngay lập tức tách container ra khỏi mạng (hoặc dừng container), rebuild image chạy user {{10001:10001}}, bật {{read_only: true}}, mount tmpfs vào {{/tmp}}, {{cap_drop: ALL}}, {{security_opt no-new-privileges:true}}. Triển khai lại qua rolling update.
+
+Kết quả: sau khi hardening, dù tấn công tương tự được thử lại, kẻ tấn công không thể ghi mã độc vào filesystem (read-only) và không thể leo thang quyền (no-new-privileges), CPU quay lại bình thường, độ trễ API quay lại 100 ms. Nhà vận hành cũng đặt Pod Security Admission mức restricted cho namespace prod.
+
+### Trả lời mẫu khi phỏng vấn
+“Gia cố runtime container nghĩa là giảm quyền của tiến trình xuống mức tối thiểu cần thiết (least privilege). Mình luôn chạy ứng dụng Java bằng user non-root (ví dụ 10001:10001) để nếu có lỗ hổng RCE, kẻ tấn công khó thao tác hệ thống. Bật filesystem gốc chỉ đọc (read-only rootfs) để ngăn kẻ tấn công ghi mã độc, kèm tmpfs cho {{/tmp}} vì Java và một số thư viện cần ghi file tạm. Loại bỏ hết khả năng Linux ({{cap_drop: ALL}}), chỉ thêm lại khi thực sự cần (ví dụ {{CAP_NET_BIND_SERVICE}} nếu ứng dụng lắng nghe port dưới 1024), và bật {{no-new-privileges}} để chặn việc lấy thêm quyền qua file setuid. Trên Kubernetes, các điều này ánh xạ vào {{securityContext}} ({{runAsNonRoot}}, {{runAsUser}}, {{readOnlyRootFilesystem}}, {{capabilities.drop}}, {{allowPrivilegeEscalation: false}}, {{seccompProfile}}). Mình cũng khuyến khích đặt Pod Security Admission mức restricted cho namespace production và kiểm tra manifest trong CI trước khi triển khai, chứ không đợi sự cố mới vá.”"
+
 > Senior tip: Gia cố runtime là "phòng thủ theo chiều sâu" — image sạch (ít CVE) nhưng chạy privileged vẫn nguy hiểm. Hãy đặt Pod Security Admission mức {{restricted}} cho namespace prod và biến vi phạm thành lỗi CI (render manifest rồi quét) thay vì vá sau khi đã lên cụm.`,
     follow: [
       'Khác nhau giữa allowPrivilegeEscalation: false và chạy non-root là gì?',
@@ -10050,6 +10448,14 @@ spec:
 - **Sự cố thật:** CVE nghiêm trọng công bố ở một thư viện logging; không có SBOM nên mất hàng ngày rà từng service. Có SBOM + registry inventory, truy vấn "image nào chứa lib X version Y" trả lời trong phút.
 - **Sự cố thật:** dev {{kubectl run}} image {{docker.io/...}} lạ để debug → rủi ro mã độc. Admission chặn image ngoài registry nội bộ.
 - **Quy trình:** quét tạo tín hiệu (PR/CI), nhưng chính sách chặn (admission) mới là điểm kiểm soát cuối. Xử lý CVE: phân loại reachable/không, nâng bản vá, rebuild image (base image patch định kỳ) rồi promote lại.
+
+
+
+### Ví dụ đời thực
+Đội ngũ vận hành dịch vụ order-api trên Kubernetes, image được đẩy lên registry nội bộ my-registry-local với tag 1.4.2. Một ngày có CVE mới công bố ảnh hưởng đến một thư viện logging phổ biến dùng trong nhiều image. Trước khi có SBOM, vận hành phải hỏi từng develop và mở console từng Pod để tìm image chứa thư viện đó, mất vài ngày vẫn không chắc đã kiểm tra hết. Lúc này leader truy vấn kho SBOM đã gắn kèm mỗi build: 'image nào chứa thư viện logging phiên bản X?' Kết quả trong vài phút cho thấy chỉ 2 trong tổng số 12 image đang chạy trên production bị ảnh hưởng. Team chỉ rebuild 2 image đó, chạy Trivy lại (không còn HIGH/CRITICAL), ký bằng Cosign, rồi đẩy lên registry. Kyverno trên cluster cho phép Pod chạy image mới vì chữ ký hợp lệ và image đến từ registry tin cậy. Khắc phục hoàn chỉnh trong khoảng 3 giờ, thay vì 2–3 ngày như trước.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi sẽ đặt nhiều lớp kiểm soát thay vì tin vào một lớp duy nhất. Trong mã, tôi dùng Dependabot hoặc Renovate để cảnh báo thư viện thứ ba bị CVE. Sau khi build image, tôi chạy Trivy quét cả gói hệ thống và thư viện ứng dụng, đồng thời xuất SBOM – bảng kê thành phần – gắn kèm artifact để truy vết nhanh khi có lỗ hổng mới công bố. Tôi ký image bằng Cosign để chứng minh nguồn gốc, rồi dùng Kyverno hoặc OPA Gatekeeper làm admission policy: cluster chỉ nhận image từ registry nội bộ và đã ký, từ chối mọi image lạ hoặc chưa ký. Khi có CVE nghiêm trọng, tôi dùng SBOM để biết ngay dịch vụ nào bị ảnh hưởng, rồi rebuild, quét lại, ký và rolling deploy. Điều quan trọng là tham chiếu image bằng digest chứ không phải tag, vì tag có thể bị trỏ sang image khác sau khi đã quét và ký."
 
 > Senior tip: "Quét" mà không có "chặn" thì chỉ là báo cáo. Hãy khóa pipeline theo digest ({{@sha256:...}}) chứ không phải tag trôi ({{latest}}), vì tag có thể trỏ sang image khác sau khi đã quét/đã ký.`,
     follow: [
@@ -10137,6 +10543,14 @@ docker exec -t db pg_restore -U app -d orders --clean --if-exists /tmp/orders.du
 - **Sự cố thật:** đặt DB trong container không có volume (dùng lớp ghi) → {{docker rm}} mất sạch dữ liệu.
 - **Sự cố thật:** script trong {{/docker-entrypoint-initdb.d}} "không chạy" — vì thư mục data đã có dữ liệu từ lần trước; init script chỉ chạy khi khởi tạo lần đầu (data dir trống).
 - **Kiểm tra:** giám sát dung lượng volume, thời gian backup, cảnh báo khi restore test thất bại; {{pg_isready}} chỉ báo nhận kết nối, không thay thế kiểm tra ứng dụng/query thực.
+
+
+
+### Ví dụ đời thực
+Một cửa hàng online chạy PostgreSQL trong container cho môi trường dev, dữ liệu nằm trên volume pgdata. Một sáng, develop vô tình gỡ container (docker rm) và quên rằng dữ liệu chỉ nằm trong lớp ghi tạm của container, không có volume → toàn bộ dữ liệu đơn hàng test bị mất mà không có bản sao. Sau sự cố, team quy định: dữ liệu phải nằm trên volume, mỗi tối chạy pg_dump tạo file SQL nén, sao lưu ra ngoài host, và một lần mỗi tuần thực hiện restore vào container trống để kiểm tra bản sao vẫn dùng được. Healthcheck dùng pg_isready để orchestrator biết database đã sẵn sàng nhận truy vấn, tránh ứng dụng khởi động trước database. Với phát triển, team chỉ để database và Redis trong Compose, còn chạy ứng dụng Java trên IDE để vòng phản hồi nhanh, hạn chế dùng tài nguyên laptop.
+
+### Trả lời mẫu khi phỏng vấn
+"Chạy database bằng Docker rất hợp cho phát triển và kiểm thử: một lệnh dựng đúng phiên bản, cả team dùng cùng môi trường, dễ reset. Nhưng cho production quan trọng tôi thường khuyên dùng cơ sở dữ liệu được quản lý (managed DB), trừ khi team có năng lực vận hành stateful. Dữ liệu phải nằm trên volume, không để trong lớp ghi tạm của container. Backup nên dùng công cụ gốc của database, ví dụ pg_dump cho PostgreSQL, và quan trọng là phải thử restore định kỳ – bản sao chưa từng restore chưa gọi là bản sao. Healthcheck phải kiểm tra database thực sự nhận truy vấn, không chỉ kiểm tra container đã bật. Cần lưu ý bộ nhớ: shared_buffers của PostgreSQL phải hợp lý với giới hạn RAM của container để tránh bị OOM-kill, và shm_size có thể cần tăng tùy workload."
 
 > Senior tip: "Chạy được" trong Docker không đồng nghĩa "an toàn cho production". Với dữ liệu tiền/bệnh án/đơn hàng, câu hỏi không phải là Docker có chạy DB được không, mà là team có quy trình backup-restore-failover đã diễn tập chưa; nếu chưa, managed database thường rẻ hơn một lần mất dữ liệu.`,
     follow: [
@@ -10238,6 +10652,14 @@ volumes:
 - Dùng **Flyway/Liquibase** cho schema thay vì trông chờ init script — migration chạy được lặp lại và khớp mọi môi trường.
 - Với Java dev: hot reload trong container cần mount source + cấu hình build tool; đơn giản hơn là chạy app trên IDE, chỉ để DB/Redis/Kafka trong Compose (hybrid) — chọn một cách và chuẩn hóa.
 
+
+
+### Ví dụ đời thực
+Một team sáu develop chia sẻ một file compose.yaml chạy ứng dụng Java, PostgreSQL, Redis và Kafka. Ban đầu họ thường gặp tình trạng ứng dụng khởi động xong nhưng lỗi kết nối database, vì depends_on chỉ đợi container PostgreSQL bật, chưa đợi database sẵn sàng nhận truy vấn; khắc phục bằng healthcheck pg_isready và condition: service_healthy. Lần khác, develop sửa file init SQL nhưng database vẫn chạy schema cũ, vì script trong /docker-entrypoint-initdb.d chỉ chạy khi thư mục dữ liệu trống; team quy định dùng Flyway cho migration và lệnh docker compose down -v khi cần reset sạch. Cổng 5432 hoặc 6379 đôi khi bị trùng khi nhiều develop chạy stack trên cùng máy, nên team cho phép override cổng qua biến môi trường (.env). Kafka chỉ bật qua profile khi thực sự cần, để laptop không quá tải. Cuối cùng team ghi README: một lệnh chạy, cách reset, cách xem log, và không commit file .env có secret thật.
+
+### Trả lời mẫu khi phỏng vấn
+"Compose cho phát triển không chỉ là danh sách các service, mà là môi trường có thể tái lập cho cả team. Bẫy phổ biến nhất là depends_on: nó chỉ đợi container khởi động, chưa đợi database sẵn sàng nhận truy vấn, nên tôi luôn kết hợp healthcheck thật và condition: service_healthy. Script khởi tạo database chỉ chạy lần đầu tiên, nên khi đổi schema tôi dùng migration (Flyway/Liquibase) thay vì trông chờ init script, và có lệnh reset chuẩn (docker compose down -v) để mọi người có dữ liệu giống nhau. Để tránh xung đột cổng khi nhiều develop chạy cùng stack, tôi cho phép override cổng qua biến môi trường. Image hạ tầng tôi ghim phiên bản cố định, không dùng :latest, và dùng profile để chỉ bật Kafka khi cần, giảm tải máy develop. Cuối cùng, file compose.yaml và .env.example được commit, còn .env có secret thật không được commit."
+
 > Senior tip: Môi trường dev "gần prod" là mục tiêu tốt, nhưng đừng copy y nguyên bảo mật/prod topology vào laptop. Tối ưu cho vòng phản hồi nhanh và khả năng reset; khác biệt có chủ đích (ví dụ không bật TLS nội bộ ở dev) phải được ghi rõ để không bất ngờ khi lên staging.`,
     follow: [
       'Khi nào nên chạy app Java trên IDE còn hạ tầng trong Compose (hybrid) thay vì container hóa cả app?',
@@ -10288,6 +10710,14 @@ T4: Xác nhận không còn kết nối dùng P1 -> thu hồi P1
 - **Sự cố thật:** rotation đổi DB password một phía → toàn bộ app mất kết nối. Nguyên nhân: không có cửa sổ chấp nhận kép và không có thứ tự phối hợp.
 - **Kiểm tra:** audit log "ai đọc secret nào lúc nào", cảnh báo secret sắp hết hạn/chưa rotate, quét repo/image (secret scanning) trong CI.
 
+
+
+### Ví dụ đời thực
+Một dịch vụ thanh toán lưu mật khẩu database trong biến môi trường của container. Một ngày develop mở trang debug của ứng dụng và vô tình thấy toàn bộ cấu hình – kèm mật khẩu – được in ra màn hình, đồng thời mật khẩu cũng được lưu trong log của hệ thống giám sát. Sau sự cố, team chuyển mật khẩu vào Kubernetes Secret dạng file gắn vào container (in-memory), ứng dụng đọc file này thay vì lấy từ biến môi trường, và giảm quyền truy cập theo least privilege: mỗi service chỉ đọc secret của mình. Để xoay vòng mật khẩu mà không gián đoạn dịch vụ, team áp dụng mẫu hai pha: tạo mật khẩu mới, cấu hình database chấp nhận cả mật khẩu cũ và mới trong một cửa sổ chuyển tiếp, phát mật khẩu mới đến ứng dụng qua Secret Manager, ứng dụng nạp và mở kết nối mới, sau khi xác nhận không còn kết nối nào dùng mật khẩu cũ thì thu hồi nó. Toàn bộ ai đọc secret nào và lúc nào được ghi lại trong audit log.
+
+### Trả lời mẫu khi phỏng vấn
+"Biến môi trường tiện nhưng dễ rò rỉ qua log, trang debug, bản sao lưu bộ nhớ (crash dump) hoặc tệp /proc/<pid>/environ trên Linux, và tiến trình con có thể kế thừa vô tình. Tôi khuyên dùng file gắn vào container (tương đương Kubernetes Secret volume) hoặc hệ thống chuyên dụng như Vault, AWS Secrets Manager: tập trung kiểm soát quyền truy cập, có audit và hỗ trợ xoay vòng. Việc xoay vòng an toàn cần mẫu hai pha: hệ thống chấp nhận cả mật khẩu cũ và mới trong khoảng thời gian chuyển tiếp, phát mật khẩu mới đến ứng dụng, ứng dụng nạp và dùng kết nối mới, sau khi xác nhận không còn kết nối cũ thì thu hồi mật khẩu cũ. Nếu có dynamic secret (thời gian sống ngắn), ứng dụng xin thông tin mới trước khi hết hạn, giảm nhu cầu dùng mật khẩu 'sống mãi'. Khi phỏng vấn tôi nhấn mạnh mục tiêu là giảm thiệt hại nếu secret lộ: quyền hẹp, thời gian ngắn, có audit, và ứng dụng chịu được thay đổi thông tin đăng nhập."
+
 > Senior tip: Mục tiêu trưởng thành không phải "giấu secret khỏi code" (bước 1) mà là **giảm blast radius**: secret ngắn hạn, phạm vi hẹp, có audit, rotation tự động, và app chịu được thay đổi credential. Khi phỏng vấn, hãy nói rõ trade-off: reload phức tạp vs rolling restart đơn giản nhưng cần nhiều replica.`,
     follow: [
       'Làm sao ứng dụng Java nhận secret mới khi dùng connection pool mà không rớt request?',
@@ -10336,6 +10766,14 @@ T4: Xác nhận không còn kết nối dùng P1 -> thu hồi P1
 - **Tự động hóa quyết định lặp lại:** chặn tự động HIGH/CRITICAL có bản vá trên main/prod artifact; cho phép ngoại lệ có hạn (ticket + chủ sở hữu + ngày hết hạn) thay vì "tắt scanner".
 - **Nền tảng cung cấp đường mặc định an toàn:** base image chuẩn, template Dockerfile/Helm đã harden, pipeline dùng chung — team sản phẩm không phải tự phát minh.
 - **Đo lường:** thời gian từ "CVE công bố" đến "biết phạm vi" và đến "prod chạy bản vá"; tỉ lệ image prod ký hợp lệ; số lần admission từ chối (tín hiệu guardrail hoạt động).
+
+
+
+### Ví dụ đời thực
+Một công ty có nhiều đội develop chia sẻ cùng cluster. Một ngày một CVE nghiêm trọng (zero-day) được công bố ảnh hưởng đến thư viện hệ thống phổ biến trong image cơ sở. Nhờ đường ray đã thiết lập – mỗi image có SBOM và kho hàng tồn kho registry – leader truy vấn 'dịch vụ nào, image nào chứa thư viện này?' và nhận câu trả lời trong vài phút: 4 dịch vụ trên production đang chạy image chứa thư viện bị ảnh hưởng. Team phân loại: có bản vá không, dịch vụ có bị khai thác dựa trên ngữ cảnh sử dụng không. Họ chọn rebuild image có bản vá, quét lại bằng Trivy, ký bằng Cosign, rồi rolling deploy ưu tiên dịch vụ rủi ro cao và truy cập từ ngoài. Kết quả khắc phục trong khoảng 4 giờ thay vì mấy ngày, và toàn bộ mọi phát đều biết chính xác phạm vi ảnh hưởng thay phải kiểm tra từng máy.
+
+### Trả lời mẫu khi phỏng vấn
+"Ở quy mô nhiều đội, an toàn container không thể dựa vào kỷ luật cá nhân mà phải là rào chắn tự động: đường ray. Tôi thiết lập một registry nội bộ tin cậy là nguồn duy nhất, pipeline chuẩn build – quét – tạo SBOM – ký – advance, chỉ artifact đạt chuẩn mới được đẩy sang registry production. Trên cluster, admission policy (ví dụ Kyverno) chặn image sai nguồn, chưa ký hoặc vi phạm bảo mật tối thiểu. Khi có CVE nghiêm trọng, tôi dùng SBOM và kho hàng tồn kho để biết ngay dịch vụ nào bị ảnh hưởng, phân loại mức độ khai thác trong ngữ cảnh của mình, rồi rebuild, quét lại, ký và rolling deploy ưu tiên dịch vụ rủi ro cao. Tôi không theo đuổi KPI 'không có CVE' (mục tiêu không thực tế), mà theo đuổi thời gian trung bình khắc phục và khả năng trả lời 'chúng ta có bị ảnh hưởng không?' trong vài phút nhờ SBOM."
 
 > Senior tip: KPI "không có CVE" là ảo; KPI hữu ích là **mean time to remediate** và khả năng trả lời "ta có bị ảnh hưởng không?" trong vài phút nhờ SBOM. Khi nói với lãnh đạo, hãy khung an toàn container như năng lực giao hàng: guardrails tốt giúp team ship nhanh hơn vì bớt tranh luận ad-hoc ở phút cuối.`,
     follow: [
@@ -10451,6 +10889,14 @@ kubectl get certificate,certificaterequest,challenge -A  # trạng thái cert-ma
 - **Sự cố hay gặp:** (1) Ingress trả 503 "Service Temporarily Unavailable" vì Service không có endpoint (selector sai hoặc Pod chưa Ready). Kiểm tra {{kubectl get endpointslices}}. (2) Upload file lớn bị 413: chưa đặt {{proxy-body-size}}. (3) Backend xử lý lâu bị 504: timeout mặc định ingress-nginx là 60s; tăng {{proxy-read-timeout}} nhưng cũng phải xem app có tối ưu được không. (4) Cert không được cấp: {{kubectl describe challenge}} xem lỗi ACME (DNS chưa trỏ đúng, firewall chặn port 80 cho HTTP-01).
 - **IngressClass:** cluster có thể có nhiều controller; luôn đặt {{ingressClassName}} để rule đi đúng controller.
 
+
+
+### Ví dụ đời thực
+Một ứng dụng ngân hàng điện tử chạy trên Kubernetes với domain shop.bank.vn. Người dùng truy cập qua DNS, yêu cầu đến Load Balancer do cloud cấp, rồi vào Pod ingress-nginx. Ingress-nginx giải mã TLS, khớp rule host shop.bank.vn và path /api/orders, proxy tới Service order-svc, rồi Service chọn một Pod đang Ready và gửi qua cổng 8080. cert-manager được cấu hình với ClusterIssuer Let's Encrypt; khi Ingress có annotation cert-manager.io/cluster-issuer, cert-manager tự gửi yêu cầu ACME, hoàn thành thử thách HTTP-01 qua Ingress, và lưu chứng chỉ vào Secret shop-tls, sau đó tự gia hạn trước khi hết hạn. Một ngày upload file lớn bị lỗi 413; team kiểm tra logs ingress-nginx và thấy chưa đặt annotation proxy-body-size, sau đó thêm giới hạn 10MB và sự cố biến mất. Lúc kiểm tra, team dùng kubectl get endpointslices để xem Pod nào đang nhận traffic và kubectl describe ingress để xem sự kiện lỗi 502/504.
+
+### Trả lời mẫu khi phỏng vấn
+"Service tạo một địa chỉ ổn định trước các Pod: ClusterIP chỉ dùng bên trong cluster, NodePort mở cổng trên mọi nút, LoadBalancer nhờ cloud tạo cân bằng tải bên ngoài, ExternalName trỏ sang tên miền ngoài cluster. Ingress là bộ quy tắc L7 (tên miền, đường dẫn, TLS) do controller – ví dụ ingress-nginx – thực thi. Luồng yêu cầu đi từ trình duyệt qua DNS vào Load Balancer, rồi ingress-nginx giải mã TLS, khớp host và đường dẫn, proxy tới Service, cuối cùng Service chọn Pod đang sẵn sàng. Tôi gắn chứng chỉ TLS bằng cert-manager (Let's Encrypt) để tự gia hạn trước hết hạn. Annotation của ingress-nginx dùng để cấu hình thời gian chờ (proxy-read-timeout) và kích thước tập tin upload (proxy-body-size). Trên production tôi chỉ tạo một LoadBalancer cho ingress-nginx và dùng Ingress để chia traffic cho nhiều dịch vụ, tiết kiệm chi phí. Tôi luôn kiểm tra endpointslices và logs của ingress-nginx khi gặp lỗi 502/504, và pin phiên bản ingress-nginx đồng thời theo dõi thông báo bảo mật."
+
 > Senior tip: Chỉ tạo **một** Service kiểu LoadBalancer cho ingress-nginx và dùng Ingress để chia traffic cho nhiều service — tiết kiệm chi phí và IP public. Với ngân hàng, thường dùng private Load Balancer + WAF phía trước, và TLS kết thúc tại Ingress (hoặc passthrough nếu cần end-to-end). Luôn pin version ingress-nginx và theo dõi thông báo bảo mật; dự án ingress-nginx đã thông báo ngừng bảo trì (retirement), nên lên kế hoạch đánh giá Gateway API (HTTPRoute) cho các tính năng routing chuẩn hơn.`,
     follow: [
       'Sự khác nhau giữa pathType Prefix, Exact và ImplementationSpecific trong Ingress là gì? Cho ví dụ dễ nhầm.',
@@ -10550,6 +10996,19 @@ helm get manifest payment -n payment      # YAML đã render đang áp dụng
 kubectl get events -n payment --sort-by=.lastTimestamp  # lỗi khi rollout
 ~~~
 - **Bảo mật:** không nhét Secret thật vào {{values.yaml}} commit lên Git. Dùng {{helm-secrets}} (SOPS), External Secrets Operator, hoặc inject từ CI secret store.
+
+### Ví dụ đời thực
+
+Tình huống: app thanh toán Spring Boot chạy trên Kubernetes, team triển khai từ phiên bản 1.4.7 lên 1.4.8 bằng Helm trong pipeline CI/CD.
+- **Triệu chứng:** Sau khi chạy {{helm upgrade --install payment ./payment-chart -f values-prod.yaml --set image.tag=1.4.8 -n payment}}, giao diện thanh toán trả lỗi 500, khách hàng không thanh toán được.
+- **Điều tra:** Lệnh {{helm history payment -n payment}} cho thấy revision 2 đang trạng thái failed. Lệnh {{helm get manifest payment -n payment}} cho thấy image tag bị nhầm do CI ghi sai, Pod mới CrashLoop không khởi động được.
+- **Nguyên nhân gốc:** CI pipeline thiết sai image.tag, và bản deploy chưa bật --atomic --timeout, nên Helm không tự rollback về bản ổn định trước đó mà để Pod mới ở trạng thái lỗi.
+- **Cách xử lý:** Chạy {{helm rollback payment 1 -n payment}} để quay về revision 1 (phiên bản 1.4.7). Dịch vụ khôi phục sau khoảng 2 phút. Sau đó sửa CI, thêm --atomic --timeout 5m, và triển khai lại v1.4.8 đúng.
+- **Kết quả đo được:** Downtime khoảng 2 phút, không mất dữ liệu giao dịch (Pod cũ vẫn giữ kết nối trong lúc rollback), team quy định kiểm tra {{helm template}} trong CI trước mỗi deploy.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Helm tôi dùng như một công cụ đóng gói và triển khai ứng dụng Spring Boot lên Kubernetes. Thay vì copy nhiều file YAML tay, tôi gom chúng thành một chart, dùng values để thay đổi replica, image tag, số lượng Pod cho từng môi trường dev, staging, production. Lệnh {{helm upgrade --install}} giúp triển khai lại an toàn: nếu bản mới lỗi, tôi dùng {{helm rollback}} để quay về bản cũ nhanh chóng. Tôi tự viết chart khi cần đóng gói tái sử dụng cho nhiều service, còn dùng Kustomize khi chỉ muốn patch YAML thuần theo môi trường mà không cần template engine. Trên production, tôi luôn review YAML bằng {{helm template}} trước khi apply, bật --atomic --timeout để thất bại tự quay về trạng thái tốt, và không bao giờ commit Secret thật vào Git. Tôi cũng version hoá chart riêng biệt với phiên bản ứng dụng để quản lý thay đổi hạ tầng độc lập."
 
 > Senior tip: Luôn chạy {{helm template}} (và {{helm diff}} nếu có) trong CI để review YAML trước khi apply — template Helm có thể sinh ra YAML khác ý bạn chỉ vì một thụt dòng hay {{if}} sai. Đặt {{--atomic --timeout}} trong pipeline deploy để thất bại tự quay về trạng thái tốt, và version hoá chart ({{version}} trong Chart.yaml) tách biệt với {{appVersion}} để quản lý thay đổi hạ tầng độc lập với thay đổi code.`,
     follow: [
@@ -10657,6 +11116,19 @@ kubectl exec deploy/payment -n payment -- env | grep SPRING  # kiểm tra env (c
 ~~~
 - **Sự cố:** (1) Đổi Secret DB password nhưng quên restart → app vẫn dùng mật khẩu cũ trong env, một lúc sau DB đổi pass → lỗi kết nối hàng loạt. (2) Dùng {{subPath}} mount file cấu hình → kubelet không cập nhật file khi ConfigMap đổi, gây hiểu lầm "đã đổi mà app vẫn cũ". (3) Commit file {{secret.yaml}} base64 lên Git public/nội bộ rộng → lộ mật khẩu. Chuyển sang ESO/Sealed Secrets và xoay (rotate) credential ngay.
 
+### Ví dụ đời thực
+
+Tình huống: app thanh toán Spring Boot trên K8s lưu connection string DB trong ConfigMap và password trong Secret, mount cả hai vào Pod.
+- **Triệu chứng:** DBA xoay mật khẩu DB và cập nhật Secret payment-secret, nhưng sau 10 phút app vẫn báo lỗi kết nối DB "password authentication failed" cho một số Pod.
+- **Điều tra:** Chạy {{kubectl rollout status deploy/payment -n payment}} thấy Pod mới chưa restart. Kiểm tra {{kubectl exec deploy/payment -n payment -- env | grep SPRING_DATASOURCE_PASSWORD}} vẫn lấy giá trị cũ, chứng minh env được gán lúc container start và không tự đổi.
+- **Nguyên nhân gốc:** Biến môi trường chỉ đọc lúc container khởi động; đổi Secret không tự cập nhật tiến trình đang chạy.
+- **Cách xử lý:** Chạy {{kubectl rollout restart deploy/payment -n payment}} để Pod mới đọc Secret mới. Lỗi kết nối biến mất ngay sau rolling restart xong.
+- **Kết quả đo được:** Khôi phục dịch vụ trong khoảng 3 phút, không downtime lâu dài; team sau đó thêm checksum annotation vào Deployment để mọi đổi ConfigMap/Secret tự kích hoạt rollout có kiểm soát.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi dùng ConfigMap cho cấu hình không nhạy cảm như URL dịch vụ, feature flag, và Secret cho mật khẩu, token. Cả hai có thể truyền vào Pod qua biến môi trường hoặc mount thành file. Với Spring Boot, mount file application.yml rất tự nhiên, còn env map tốt với SPRING_*. Nhược điểm quan trọng là biến môi trường chỉ đọc lúc container khởi động, nên đổi ConfigMap/Secret không tự cập nhật Pod đang chạy — tôi thường dùng checksum annotation hoặc kubectl rollout restart. Secret trong Kubernetes mặc định chỉ base64, không phải mã hoá bảo mật, nên tôi bật encryption at-rest cho etcd và dùng External Secrets Operator hoặc Sealed Secrets để không lưu bản rõ trong Git. Trên production, tôi không bao giờ commit Secret vào Git và bảo vệ actuator endpoint như /env, /configprops vì có thể lộ giá trị nhạy cảm."
+
 > Senior tip: Quy ước thực tế: ConfigMap/Secret cho cấu hình **không nhạy cảm hoặc tham chiếu**, credential thật nằm ở vault (AWS Secrets Manager, HashiCorp Vault) và đồng bộ bằng External Secrets Operator; bật encryption at-rest cho etcd và audit quyền đọc Secret. Trong Helm, dùng checksum annotation để mọi thay đổi config đều tạo rollout có kiểm soát — và nhớ Spring Boot actuator endpoint {{/env}}, {{/configprops}} phải được bảo vệ (hoặc tắt public) vì có thể lộ giá trị nhạy cảm.`,
     follow: [
       'So sánh External Secrets Operator và Sealed Secrets: luồng dữ liệu, ai giữ khoá, và khi nào chọn cái nào?',
@@ -10750,6 +11222,19 @@ kubectl exec deploy/payment -n payment -- curl -s localhost:8080/actuator/health
 ~~~
 - **Sự cố restart loop điển hình:** (1) Không có startupProbe, liveness {{initialDelaySeconds}}=30s nhưng app start 90s → kubelet restart mãi, RESTARTS tăng, log bị cắt giữa chừng. (2) Liveness gọi {{/actuator/health}} (gộp, gồm DB) thay vì {{/health/liveness}} → DB quá tải/ngắt mạng một lúc → **tất cả** Pod bị restart cùng lúc → thảm hoạ dây chuyền. (3) {{timeoutSeconds}} quá nhỏ (1s) trong khi GC pause hoặc load cao làm endpoint phản hồi chậm → fail giả.
 - **Nguyên tắc vàng:** liveness chỉ trả lời "tiến trình còn sống và không deadlock"; readiness trả lời "có nên gửi traffic cho tôi lúc này". Dependency ngoài (DB, dịch vụ khác) thuộc readiness, **không** thuộc liveness.
+
+### Ví dụ đời thực
+
+Tình huống: app Spring Boot kết nối DB trên K8s khởi động khoảng 60-90 giây (load context, tạo connection pool, warm-up cache).
+- **Triệu chứng:** Sau deploy, livenessProbe fail liên tục, kubelet restart Pod, RESTARTS tăng đi tăng lại, app không bao giờ sẵn sàng nhận traffic.
+- **Điều tra:** {{kubectl describe pod payment-xxx -n payment}} trong Events hiển thị "Liveness probe failed", "Back-off restarting failed pod". Log container chỉ ghi "Started ... in 85 seconds" rồi bị cắt giữa chừng — chứng minh app còn chưa khởi động xong đã bị probe đánh fail.
+- **Nguyên nhân gốc:** Không có startupProbe, livenessProbe có {{initialDelaySeconds}}=30s nhưng app cần 85s để khởi động, nên kubelet đánh fail và restart trước khi app sẵn sàng.
+- **Cách xử lý:** Thêm startupProbe gọi {{/actuator/health/liveness}} với periodSeconds=5, failureThreshold=36 (cho phép tới 180s khởi động), giữ livenessProbe chỉ gọi endpoint nội tại không check DB. Deploy lại, Pod khởi động bình thường và readiness UP.
+- **Kết quả đo được:** Thời gian khởi động ổn định dưới 90s, không còn restart loop, không rơi request khi rollout.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi dùng ba probe cho app Spring Boot trên Kubernetes với vai trò khác nhau. StartupProbe cho app thời gian khởi động, trong lúc này liveness và readiness chưa chạy, tránh restart khi app chậm. ReadinessProbe gắn với health group readiness, chỉ nhận traffic khi DB và connection pool đã OK. LivenessProbe gắn với group liveness, chỉ phát hiện tiến trình treo không tự hồi phục, tuyệt đối không kiểm tra DB hay dịch vụ ngoài — nếu liveness phụ thuộc DB thì một lần DB bảo trì có thể kéo restart toàn bộ cụm. Tôi đo p99 thời gian khởi động trên staging rồi đặt startupProbe dư hai đến ba lần, và luôn dùng readinessProbe để không rơi request khi deploy."
 
 > Senior tip: Đo p99 thời gian khởi động (đến khi readiness UP) trên staging với dữ liệu thật rồi đặt startupProbe dư 2–3 lần; bật thêm metric {{application.ready.time}} và {{application.started.time}}. Với app ngân hàng kết nối nhiều hệ thống, cân nhắc tách readiness indicator: dependency "bắt buộc để phục vụ" (DB chính) ảnh hưởng readiness, dependency "phụ" (cache) thì degrade nhẹ thay vì làm Pod NotReady — nhưng phải thiết kế code chấp nhận chạy thiếu cache. Tuyệt đối không để liveness phụ thuộc DB: một lần DB bảo trì có thể kéo sập toàn bộ cụm ứng dụng.`,
     follow: [
@@ -10847,6 +11332,19 @@ kubectl get events -n payment --sort-by=.lastTimestamp
 ~~~
 - **Sự cố:** (1) Drain treo mãi vì PDB {{minAvailable}} = replicas (hoặc Pod còn lại không đủ node đặt) → kiểm tra {{kubectl get pdb}}, tăng node tạm hoặc nới PDB có kiểm soát. (2) Dùng Recreate cho service đang nhận traffic cao điểm → outage vài phút. (3) RollingUpdate nhưng DB migration phá vỡ tương thích → version cũ lỗi khi version mới đã migrate; phải dùng chiến lược expand-contract. (4) {{maxSurge}} lớn + cluster thiếu tài nguyên → Pod mới Pending, rollout chậm và có thể kẹt.
 
+### Ví dụ đời thực
+
+Tình huống: dịch vụ thanh toán Spring Boot chạy 4 replica trên K8s, team deploy phiên bản mới qua RollingUpdate.
+- **Triệu chứng:** Sau {{kubectl apply -f deploy.yaml}}, một số Pod mới tạo ra nhưng không Ready, gọi API thanh toán trả lỗi, khách hàng không thanh toán được.
+- **Điều tra:** {{kubectl rollout status deploy/payment -n payment}} báo rollout kẹt. {{kubectl get pods -n payment}} cho thấy Pod mới trạng thái CrashLoopBackOff hoặc ImagePullBackOff, Pod cũ vẫn chạy bình thường.
+- **Nguyên nhân gốc:** Image tag mới bị nhầm trong CI, Pod mới không khởi động được, nhưng maxUnavailable=0 nên Deployment không xoá Pod cũ, chỉ dừng tạo Pod mới — dịch vụ phần nào còn chạy nhưng không triển khai được phiên bản mới.
+- **Cách xử lý:** Chạy {{kubectl rollout undo deploy/payment -n payment}} để quay về revision tốt trước đó, dịch vụ khôi phục nhanh. Sau đó sửa image tag trong CI, thêm --atomic --timeout trong Helm, và triển khai lại.
+- **Kết quả đo được:** Khôi phục dịch vụ trong 1-2 phút, không downtime đáng kể, team quy định kiểm tra {{kubectl rollout status}} và smoke test sau mỗi deploy.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi ưu tiên RollingUpdate cho hầu hết dịch vụ Spring Boot trên Kubernetes vì nó không gây downtime và cho hai version chạy song song trong một khoảng thời gian, có điều code và DB phải tương thích ngược. Tôi kiểm soát tốc độ bằng maxSurge (số Pod thêm) và maxUnavailable (số Pod được phép thiếu), đặt maxUnavailable=0 cho dịch vụ quan trọng để không rơi request khi deploy. Nếu cần quay lại, tôi dùng kubectl rollout undo về ReplicaSet revision trước. Với Recreate, tôi chỉ dùng khi ứng dụng không hỗ trợ chạy hai version cùng lúc, ví dụ khóa DB độc quyền hoặc chiếm volume duy nhất, chấp nhận downtime. Tôi luôn kết hợp PodDisruptionBudget (PDB) khi bảo trì node để đảm bảo số Pod tối thiểu còn lại, và dùng readinessProbe thật sức để maxUnavailable có ý nghĩa."
+
 > Senior tip: Với service Java quan trọng, đặt {{maxUnavailable: 0}} + PDB {{maxUnavailable: 1}} (hoặc {{minAvailable: N-1}}) và **bắt buộc** readinessProbe đúng nghĩa — nếu thiếu readinessProbe, Kubernetes coi Pod "sẵn sàng" ngay khi container chạy, maxUnavailable=0 trở nên vô nghĩa. Khi bảo trì node, luôn kiểm tra {{ALLOWED DISRUPTIONS}} trước; kết hợp với Cluster Autoscaler/PDB-aware scheduling để node mới kịp nhận Pod trước khi node cũ bị đuổi hết.`,
     follow: [
       'maxSurge và maxUnavailable tương tác thế nào? Có thể đặt cả hai là 0 không, vì sao?',
@@ -10931,6 +11429,19 @@ kubectl get pods -n team-payment-dev
 ~~~
 - **Sự cố:** (1) Quên đặt LimitRange và dev không khai báo request → scheduler không có thông tin để xếp Pod hợp lý, HPA theo CPU cũng không chạy (utilization tính trên request). (2) ResourceQuota đặt quá thấp so với nhu cầu deploy (rolling update cần maxSurge tạo thêm Pod) → rollout kẹt vì không tạo được Pod mới. Tính quota chừa chỗ cho surge. (3) Dùng namespace {{default}} cho mọi thứ → khó RBAC, khó quota, dễ xoá nhầm. (4) Namespace cô lập logic nhưng **không cô lập mạng** mặc định: Pod ở namespace A vẫn gọi được Pod namespace B trừ khi có NetworkPolicy.
 
+### Ví dụ đời thực
+
+Tình huống: hai team Thanh toán và Thẻ dùng chung một cluster K8s, mỗi team một namespace.
+- **Triệu chứng:** Team Thẻ deploy nhầm một vòng lặp tạo Pod liên tục, sử dụng hết RAM của namespace, khiến Pod của team Thanh toán không thể lên lịch và giao diện thanh toán phản hồi chậm.
+- **Điều tra:** {{kubectl describe quota rq-card-dev -n team-card-dev}} cho thấy Used/Hard đạt 100% memory, Events báo "exceeded quota: rq-card-dev, requested: pods=1, used: pods=40, limited: pods=40". Pod của team Thanh toán trong namespace khác vẫn khỏe, chứng minh vấn đề nằm ở quota của namespace team Thẻ.
+- **Nguyên nhân gốc:** Namespace team Thẻ không có ResourceQuota/LimitRange chặt, và dev không khai báo request/limit, nên một Pod lỗi có thể lĩnh tất cả tài nguyên.
+- **Cách xử lý:** Tắt Deployment Pod vòng lặp của team Thẻ, đặt ResourceQuota (memory, CPU, số Pod) và LimitRange (defaultRequest, default, max cho mỗi container) cho namespace, sau đó theo dõi Used/Hard qua {{kubectl describe quota}}.
+- **Kết quả đo được:** Pod của team Thanh toán quay lại Running ngay sau khi Pod lỗi bị tắt, quota ngăn chặn team nào "ăn hết phần" của team khác, team thiết lập cảnh báo ở 80% Used/Hard để chủ động mở rộng.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Namespace chia cluster thành nhiều không gian logic, mỗi team hoặc môi trường một namespace, giúp quản lý tên, quyền RBAC và chính sách riêng. ResourceQuota giới hạn tổng tài nguyên (tổng CPU, RAM, số Pod) một namespace được dùng, tránh team nào dùng hết phần của nhau. LimitRange đặt mặc định và min/max cho từng container, nhất là khi dev quên khai báo request/limit, giúp scheduler xếp Pod và HPA tính toán chuẩn. Tôi thường kết hợp ba thứ này: namespace để cô lập logic, ResourceQuota để hạn mức, LimitRange để quy định từng container. Lưu ý namespace chỉ cô lập logic, không cô lập mạng mặc định, nên tôi thêm NetworkPolicy nếu cần chặn traffic chéo giữa các team. Với ngân hàng, production thường tách cluster hoặc node pool riêng khỏi non-prod để giảm phạm vi ảnh hưởng khi xảy ra sự cố."
+
 > Senior tip: Namespace + ResourceQuota + LimitRange là "bộ ba tối thiểu" cho cluster đa team; thêm NetworkPolicy để cô lập traffic và RBAC để cô lập quyền. Với ngân hàng, production thường tách cluster (hoặc ít nhất tách node pool) khỏi non-prod để giảm blast radius; quota nên được quản lý như code (GitOps) và đặt cảnh báo khi {{Used}} tiến gần {{Hard}} (ví dụ 80%) để kịp mở rộng trước khi rollout bị chặn giữa đêm.`,
     follow: [
       'ResourceQuota tính trên request hay trên usage thực tế? Điều này ảnh hưởng thế nào tới việc lập kế hoạch dung lượng?',
@@ -11002,6 +11513,19 @@ kubectl logs -l app=payment -n payment --tail=100 --prefix
 - **Ngắn hạn (phút/giờ):** coi secret đã bị xâm phạm → **xoay (rotate)** credential ngay tại nguồn (đổi mật khẩu DB, thu hồi token), cập nhật vault/ESO, buộc rollout để Pod nhận secret mới. Kiểm tra truy cập bất thường.
 - **Dọn dẹp:** xoá secret khỏi Git (lọc lịch sử bằng công cụ chuyên dụng), nhưng xem lịch sử đã lộ là sự thật không đảo ngược → rotate vẫn bắt buộc. Quét repo bằng secret scanning.
 - **Phòng ngừa:** cấm Secret bản rõ trong Git (ESO/Sealed Secrets), pre-commit/CI secret scanning, RBAC hạn chế đọc Secret, bảo vệ actuator endpoint, encryption at-rest.
+
+### Ví dụ đời thực
+
+Tình huống: nền tảng chạy mười service Spring Boot trên Kubernetes, mỗi service một team, team tự triển khai qua Helm chart.
+- **Triệu chứng:** Một team triển khai service mới không khai báo resource limit, Pod đó dùng hết RAM của node, làm node bị OOM và ảnh hưởng đến các service khác chạy cùng node (noisy neighbor).
+- **Điều tra:** {{kubectl top pods -n}} và {{kubectl describe node}} cho thấy Pod của team đó chiếm gần hết bộ nhớ node, các Pod bên trên node bị Evicted do memoryPressure.
+- **Nguyên nhân gốc:** Không có LimitRange hay policy bắt buộc resource limit, mỗi team tự ý khai báo hoặc bỏ trống requests/limits.
+- **Cách xử lý:** Nền tảng áp dụng golden Helm chart với requests/limits bắt buộc, dùng Kyverno/OPA chặn manifest không có resource limit, đặt JVM {{MaxRAMPercentage}} 70-75% để container không vượt limit và bị OOMKilled.
+- **Kết quả đo được:** Pod mới bắt buộc phải khai báo resource, node không còn bị OOM do một service, các service khác không bị ảnh hưởng, nền tảng có dashboard tỉ lệ service tuân thủ probe/PDB/resource.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi thiết kế tiêu chuẩn triển khai như một hệ thống đường ray an toàn thay vì để mỗi team tự phát minh. Nền tảng cung cấp một Ingress controller với cert-manager quản lý TLS tập trung, một golden Helm chart đã có probe, readiness, resource limit và PDB hợp lý, cấu hình qua ConfigMap đồng bộ Secret từ vault qua External Secrets Operator, và rollout RollingUpdate với maxUnavailable=0. Cân bằng giữa tự chủ của team và guardrail của nền tảng tôi làm bằng quy tắc "mặc định an toàn, override có kiểm soát": team override qua values các thứ như replica, timeout, host, nhưng override vượt ngưỡng như tắt liveness hay chạy privileged bị policy chặn hoặc cần ngoại lệ có ticket và thời hạn. Khi sự cố production như cert hết hạn, rollout lỗi hoặc secret lộ, tôi có sẵn runbook: xoay credential ngay, rollback bản deploy tốt, và điều tra gốc để khắc phục triệt để."
 
 > Senior tip: Hãy coi tiêu chuẩn triển khai là **sản phẩm** của nền tảng có version, roadmap và phản hồi từ team — guardrail bị ghét thường vì nó chặn muộn và không giải thích; policy tốt chặn sớm trong CI với thông báo "sai gì, sửa thế nào". Hai chỉ số lead nên theo: (1) tỉ lệ rollout không cần can thiệp tay, (2) thời gian khôi phục (MTTR) khi cert/rollout/secret gặp sự cố. Với ngân hàng, mọi ngoại lệ bảo mật (tắt probe check, nới policy) phải có thời hạn và được audit — ngoại lệ vĩnh viễn là nợ rủi ro.`,
     follow: [
@@ -11081,6 +11605,12 @@ kubectl get events -A --sort-by=.lastTimestamp | head
 - **Sự cố drift:** ai đó {{kubectl set image}} hotfix prod lúc 2 giờ sáng, quên commit → sáng hôm sau Argo sync/self-heal ghi đè về image cũ → tái diễn sự cố. Phòng ngừa: quy trình hotfix bắt buộc mở PR ngay, tạm tắt auto-sync có thời hạn, audit lệnh kubectl.
 - **Sự cố quota:** team Thẻ rollout tăng replica đúng lúc quota đầy → Pod mới Pending, rollout kẹt nửa chừng. Kiểm tra {{kubectl describe quota}}, tạm nới có phê duyệt hoặc thu hồi tài nguyên dev; dài hạn: cảnh báo 80% và quy trình tăng quota tự phục vụ.
 - **Sự cố cô lập mạng:** bật NetworkPolicy deny-all mà quên allow DNS (kube-dns/coredns port 53) → toàn bộ Pod không phân giải được tên Service. Luôn có baseline policy cho phép DNS và kiểm thử trên namespace thử nghiệm trước.
+
+### Ví dụ đời thực
+Lúc 14h30, team Thẻ triển khai phiên bản mới của API thanh toán vào namespace {{team-card-staging}}. Ngay sau đó, các Pod ghi log java.net.ConnectException: Connection timed out khi gọi {{payment-api.team-payment.svc.cluster.local:8080}}. Điều tra: chạy {{kubectl get networkpolicy -A}} thấy một NetworkPolicy {{deny-all}} vừa được Argo CD sync từ PR mới, chỉ cho phép DNS và traffic từ ingress controller, quên mở ingress từ namespace team Thẻ. Metric {{http_server_requests_seconds_count}} của Pod payment-api không tăng → request chẳng tới được Pod. Nguyên nhân gốc: PR NetworkPolicy mới thiếu rule allow từ namespace gọi. Xử lý: tạm sửa NetworkPolicy cho phép ingress từ {{team-card-staging}}, apply thủ công kèm ghi sự cố, sau đó mở PR sửa bản khai trong Git và đợi Argo sync. Kết quả: kết nối phục hồi sau 15 phút, lỗi kết nối giảm từ hàng trăm mỗi phút xuống 0. Dài hạn: bắt buộc PR NetworkPolicy đi kèm thử nghiệm trên namespace staging và chạy Kyverno kiểm tra rule ingress trong CI trước merge.
+
+### Trả lời mẫu khi phỏng vấn
+"Mình thiết kế quản trị đa team trên một cụm Kubernetes dựa trên nguyên tắc cô lập theo lớp. Mỗi team có namespace riêng gắn RBAC để chỉ thao tác trong namespace của mình, kèm ResourceQuota và LimitRange để không team nào chiếm hết tài nguyên, và NetworkPolicy mặc định từ chối hết, chỉ mở luồng cần thiết. Secret không để trong Git mà tập trung ở vault, External Secrets Operator đồng bộ theo đường dẫn của mỗi team. Triển khai chuẩn hoá bằng golden Helm chart và GitOps: Git là nguồn sự thật, Argo CD phát hiện và báo drift. Mô hình vận hành: nền tảng đặt luật chung, team tự phục vụ trong khuôn khổ, ngoại lệ có thời hạn và ghi nhận. Trade-off là một cluster rẻ, vận hành tập trung nhưng blast radius lớn hơn, nên cần quota chặt và diễn tập sự cố. Mình đo bằng chỉ số: thời gian thêm team mới, tỷ lệ thay đổi qua Git, số vi phạm bị chặn ở CI."
 
 > Senior tip: Quản trị đa team thành công hay thất bại ở **đường mặc định**: nếu đường an toàn (golden chart, namespace tự cấp qua Git, secret qua ESO) dễ hơn đường tắt (sửa tay, hardcode secret), team sẽ tự tuân thủ. Đo bằng chỉ số dẫn đường: thời gian onboard team mới, tỉ lệ thay đổi đi qua Git, số vi phạm policy chặn ở CI (không phải ở prod), và tần suất drift. Với ngân hàng, hãy coi RBAC + audit + NetworkPolicy là yêu cầu tuân thủ, không phải tuỳ chọn — và diễn tập "một namespace bị xâm nhập" để kiểm chứng blast radius thực sự đã nhỏ.`,
     follow: [
@@ -11526,7 +12056,7 @@ overlays/staging/      kustomization.yaml (replicas: 2, configMapGenerator)
 overlays/prod/         kustomization.yaml (replicas: 6, patch tăng memory, HPA)
 kubectl apply -k overlays/prod
 ~~~
-Patch có hai kiểu: **strategic merge** (viết một phần YAML, gộp theo khoá) và **JSON 6902 patch** (thao tác op/path/value chính xác). {{configMapGenerator}} thêm hash vào tên ConfigMap → đổi cấu hình tự kích hoạt rolling restart.
+Patch có hai kiểu: **strategic merge** (viết một phần YAML, gộp theo khoá) và **JSON Patch (RFC 6902)** (thao tác op/path/value chính xác). {{configMapGenerator}} thêm hash vào tên ConfigMap → đổi cấu hình tự kích hoạt rolling restart.
 
 ### So sánh
 | Tiêu chí | Helm | Kustomize |
@@ -11616,6 +12146,17 @@ service:
 - Retention: metrics 15d, logs 7-30d, traces 7d; archive cold storage.
 - Alert theo SLO (burn rate), không alert noise; runbook kèm alert.
 - Sampling trace (tail-based) để giữ cost.
+
+### Cơ chế từng bước
+- **Metrics:** Thêm thư viện Micrometer (ví dụ micrometer-registry-prometheus) vào Spring Boot, Actuator hiển thị endpoint {{/actuator/prometheus}} với các số liệu JVM (heap, GC, thread) và HTTP (p95, p99, pool Hikari). Prometheus theo ServiceMonitor định kỳ gọi endpoint (mỗi 15 giây), lưu dạng time-series tên{label} tại thời điểm t. Grafana viết PromQL (ví dụ rate(http_server_requests_seconds_count{status=~"5.."}[5m])) vẽ biểu đồ và Alertmanager cảnh báo khi vượt ngưỡng.
+- **Logs:** App ghi log JSON ra stdout với trường timestamp, level, traceId, spanId, message. Fluent Bit chạy dưới dạng DaemonSet trên mỗi node, thu thập log container và gửi Loki qua giao thức push, gắn label namespace/app. Truy vấn bằng LogQL, ví dụ {app=payment-api, level=error}.
+- **Traces:** OpenTelemetry Java agent tự động tạo span cho các framework (Spring, HTTP client, JDBC). Span gửi qua giao thức OTLP đến OpenTelemetry Collector, collector làm batch và tail sampling (giữ trace có lỗi, loại trace bình thường để giảm chi phí), rồi gửi Tempo/Jaeger. Grafana liên kết trace ↔ log ↔ metric qua traceId.
+
+### Ví dụ đời thực
+Lúc 10h trong đợt khuyến mãi lớn, p99 latency của API thanh toán tăng từ 200ms lên 3 giây. Bảng điều khiển Grafana cho thấy HikariCP connection pool: active connections chạm giới hạn 10, wait queue tăng dồn. Log trong Loki với traceId ghi Connection acquisition timed out. Trace trong Tempo cho thấy span PaymentService.processPayment → OrderClient.createOrder → gọi dịch vụ kho hàng ngoài mất 2,5 giây. Nguyên nhân gốc: dịch vụ kho hàng bị quá tải, các instance mới tự động scale chưa sẵn sàng, pool kết nối của API bị cạn kiệt. Xử lý: tạm tăng max pool của HikariCP, scale dịch vụ kho hàng, thêm circuit breaker (Resilience4j) với fallback về cache. Kết quả: p99 giảm từ 3 giây xuống 400ms, tỷ lệ lỗi giảm từ 12% xuống dưới 0,5%.
+
+### Trả lời mẫu khi phỏng vấn
+"Mình áp dụng observability cho dịch vụ Java trên Kubernetes theo ba cột: metrics, logs và traces. Với metrics, mình dùng Spring Boot Actuator kết hợp Micrometer hiển thị endpoint {{/actuator/prometheus}}, Prometheus thu thập qua ServiceMonitor, Grafana vẽ bảng điều khiển và Alertmanager báo cáo theo SLO. Logs mình để ra định dạng JSON có trường traceId, Fluent Bit thu thập từ từng node gửi Loki, truy vấn bằng LogQL. Traces dùng OpenTelemetry agent kết nối collector qua OTLP, gửi Tempo, rồi Grafana liên kết trace với log và metric bằng traceId. Về lựa chọn công cụ, mình bắt đầu với self-hosted Prometheus, Loki, Tempo để kiểm soát chi phí; team nhỏ có thể dùng managed như Datadog hoặc Grafana Cloud. Lưu ý quan trọng: không gán label user ID trong Prometheus để tránh cardinality explosion, và dùng tail sampling cho trace. Kết quả thực tế là thời gian khôi phục sự cố giảm đáng kể."
 
 > Senior tip: Bắt đầu với metrics + structured logs + traceId trong log; thêm distributed tracing khi có nhu cầu debug cross-service thực sự; đo cost per service.`,
     follow: [
