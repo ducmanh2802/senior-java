@@ -571,4 +571,312 @@
 - **4 đúng:** yêu cầu grounding và cung cấp nhánh an toàn khi thiếu bằng chứng.
 - **5 sai:** tự tin không chứng minh tính đúng, validation vẫn cần thiết.`
 },
+{
+  id: 'qz-ccap-031',
+  topic: 'claude',
+  q: "[Prompt Engineering] A Java backend team wants the same safety and behavior rules to apply to every chat request, while the user question changes each time. Where should the stable rules go in the Claude Messages API?",
+  options: [
+    "Repeat the full rules at the end of every user message",
+    "Put them in the top-level system parameter, separate from the messages array",
+    "Hide them inside the assistant's first message so the model continues from there",
+    "Send them as a tool definition so the model must call a tool first"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: tham số system.** Trong Claude Messages API, tham số system chứa vai trò và quy tắc áp dụng cho toàn bộ cuộc trò chuyện, tách biệt khỏi mảng messages nơi mỗi lượt người dùng và trợ lý nằm. Ứng dụng đặt quy tắc ổn định vào system, còn câu hỏi khách hàng đổi theo từng request thì nằm trong messages. Như vậy model hiểu rõ điều gì là chính sách, điều gì là dữ liệu của lượt hiện tại.
+
+### Vì sao các phương án còn lại sai
+- Lặp quy tắc cuối mỗi tin nhắn người dùng làm prompt dài, tốn chi phí và quy tắc dễ bị lẫn với nội dung khách hàng gửi.
+- Tin nhắn trợ lý đầu tiên là phần câu trả lời, không phải nơi đặt chỉ dẫn đáng tin cậy của ứng dụng.
+- Định nghĩa công cụ dùng để model gọi hàm bên ngoài, không phải nơi chứa quy tắc hành vi chung.
+
+> Mẹo Senior: system prompt là nơi duy nhất để khai báo vai trò và ràng buộc an toàn; dữ liệu người dùng nên đi kèm dấu phân cách rõ ràng để tránh nhầm vai trò.`
+},
+{
+  id: 'qz-ccap-032',
+  topic: 'claude',
+  q: "[Prompt Engineering] A ticket classifier must return the same label for the same ticket every time. Which sampling setting best supports that consistency?",
+  options: [
+    "Set temperature to 1.0 so the model explores all labels",
+    "Use a low temperature close to 0 and evaluate on held-out tickets",
+    "Raise top_p to 1.0 and ignore temperature",
+    "Ask the model to pick randomly when unsure"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: temperature thấp gần 0.** Temperature là tham số kiểm soát độ ngẫu nhiên của từ kế tiếp model chọn. Giá trị gần 0 làm output định đầu hơn: cùng input thường cho cùng output, phù hợp phân loại ticket hay trích xuất cần kết quả ổn định. Sau đó nhóm cần đánh giá trên tập held-out, dữ liệu giữ riêng không dùng để soạn prompt, để xác nhận không giảm chất lượng.
+
+### Vì sao các phương án còn lại sai
+- Temperature 1.0 tăng tính ngẫu nhiên, cùng tin nhắn có thể trả nhãn khác nhau giữa các lần gọi.
+- top_p là cơ chế lấy mẫu khác, giới hạn tập từ có xác suất tích lũy; bỏ temperature không giải quyết bài toán ổn định.
+- Yêu cầu chọn ngẫu nhiên mâu thuẫn mục tiêu trả nhãn giống nhau mỗi lần.
+
+> Mẹo Senior: cho phân loại và trích xuất, hãy dùng temperature thấp (0 đến 0.3) và đo độ chính xác trên tập kiểm tra riêng trước khi triển khai.`
+},
+{
+  id: 'qz-ccap-033',
+  topic: 'claude',
+  q: "[Prompt Engineering] An invoice extractor returns JSON, but responses are often cut off mid-object, making parsing fail. What should the team check first?",
+  options: [
+    "Ask the model to write shorter JSON by removing whitespace",
+    "Increase max_tokens so the full object can finish, and validate the complete JSON before use",
+    "Set temperature to 0 to force shorter output",
+    "Remove required fields from the request"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: max_tokens.** max_tokens là trần số token tối đa model được sinh ra trong một lần trả lời. Nếu đối tượng JSON dài bị cắt giữa chuỗi, kết quả không parse được. Nên tối ưu prompt cho ngắn gọn, đồng thời đặt max_tokens đủ lớn để đối tượng hoàn chỉnh kịp sinh, và ứng dụng phải kiểm tra JSON đầy đủ trước khi dùng nghiệp vụ.
+
+### Vì sao các phương án còn lại sai
+- Bỏ khoảng trắng JSON giúp ít chút nhưng không đảm bảo đối tượng dài kịp hoàn thành; đồng thời làm dữ liệu khó đọc khi cần debug.
+- Temperature thấp giảm ngẫu nhiên nhưng không tăng trần độ dài output.
+- Xoá trường bắt buộc phá hợp đồng dữ liệu và làm mất thông tin cần thiết.
+
+> Mẹo Senior: ứng dụng nên kiểm tra xem response có kết thúc bằng ký tự đóng ngoặc nhọn hay không; nếu bị cắt do chạm max_tokens, cần từ chối hoặc yêu cầu lại thay vì hiển thị như dữ liệu hoàn chỉnh.`
+},
+{
+  id: 'qz-ccap-034',
+  topic: 'claude',
+  q: "[Prompt Engineering] A code reviewer should stop as soon as it emits a closing fence for one code block, without continuing to chat. Which parameter controls this?",
+  options: [
+    "max_tokens",
+    "stop_sequences containing the closing fence marker",
+    "top_p set to 0.5",
+    "system instruction saying stop after one block"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: stop_sequences.** stop_sequences là danh sách chuỗi (tối đa 4 trong Claude) mà khi model sinh ra, việc tạo văn bản dừng lại ngay. Nếu đánh dấu dấu đóng khối mã là stop sequence, model sẽ dừng ngay khi hoàn thành một khối mã, không tiếp tục trò chuyện thêm.
+
+### Vì sao các phương án còn lại sai
+- max_tokens chỉ giới hạn tổng độ dài, không biết điểm dừng logic của một khối mã.
+- top_p kiểm soát nhóm từ ứng viên có xác suất tích lũy, không liên quan đến điểm dừng.
+- Chỉ dẫn trong system không phải cơ chế cứng; model vẫn có thể bỏ qua và tiếp tục viết.
+
+> Mẹo Senior: stop sequence hữu ích khi model sinh cấu trúc có ký hiệu kết thúc rõ r như mảng JSON, khung mã, thẻ XML; lưu ý chuỗi stop bản thân sẽ không xuất hiện trong output cuối.`
+},
+{
+  id: 'qz-ccap-035',
+  topic: 'claude',
+  q: "[Prompt Engineering] A team wants creative subject lines for marketing emails with varied wording. Which setting mainly controls how many likely next words the model considers?",
+  options: [
+    "max_tokens",
+    "top_p (nucleus sampling)",
+    "stop_sequences",
+    "system"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: top_p.** top_p (nucleus sampling) giới hạn model chỉ chọn từ trong tập nhỏ nhất có xác suất tích lũy đạt ngưỡng p, ví dụ 0.9. Nó khác temperature: temperature thang độ chênh lệch xác suất giữa các từ, còn top_p cắt bớt hử đường ít có thể. Đối với tiêu đề Marketing cần sự sáng tạo, điều chỉnh top_p giúp kiểm soát mức đa dạng của từ ứng viên.
+
+### Vì sao các phương án còn lại sai
+- max_tokens chỉ trần độ dài output, không chọn nhóm từ ứng viên.
+- stop_sequences chỉ dừng sinh văn bản, không chọn nhóm từ ứng viên.
+- system là tham số chứa vai trò và chỉ dẫn, không tham số lấy mẫu.
+
+> Mẹo Senior: temperature và top_p thường không nên thay cùng lúc trong một thí nghiệm; hãy thay đổi từng tham số và đo trên cùng tập mẫu để biết yếu tố nào thực sự tác động.`
+},
+{
+  id: 'qz-ccap-036',
+  topic: 'claude',
+  q: "[Prompt Engineering] A service must receive machine-typed fields amount, currency, date from Claude, not free text. Which supported approach is the strongest starting point?",
+  options: [
+    "Ask for JSON in plain words and trust the response",
+    "Define a tool with an input schema and set tool_choice to required, then validate the call",
+    "Use stop_sequences at the first closing brace",
+    "Lower temperature to zero and skip parsing"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: tool use với input schema.** Claude hỗ trợ tool use, gọi công cụ: ứng dụng định nghĩa một công cụ có input schema mô tả tên trường, kiểu dữ liệu (số, chuỗi, ngày) và yêu cầu. Khi đặt tool_choice là required, model phải sinh một cuộc gọi công cụ khớp schema thay vì văn tự do. Ứng dụng nhận được đối số có cấu trúc, nhưng vẫn cần validate giá trị nghiệp vụ trước khi dùng.
+
+### Vì sao các phương án còn lại sai
+- Yêu cầu JSON bằng lời thường không đủ; model có thể thêm dẫn ngôn ngữ, thiếu dấu ngoặc hoặc sai kiểu.
+- stop_sequences tại dấu ngoặc nhọn đóng không đảm bảo JSON đầy đủ hoặc đúng kiểu.
+- Temperature 0 không cam kết cú pháp, và bỏ qua việc parse để validate sẽ để lỗi lọt vào hệ thống.
+
+> Mẹo Senior: tool schema là hợp đồng giữa ứng dụng và model; schema chi tiết hơn (mô tả từng trường, bắt buộc hay không) thì kết quả ổn định hơn.`
+},
+{
+  id: 'qz-ccap-037',
+  topic: 'claude',
+  q: "[Prompt Engineering] A support assistant sends a long policy document plus few-shot examples on every request. Which Claude feature reduces cost and latency for this repeated prefix?",
+  options: [
+    "max_tokens",
+    "Prompt caching on the system message and cacheable message blocks",
+    "temperature set to zero",
+    "Putting everything in one very long user message"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: prompt caching.** Prompt caching là tính năng của Claude cho phép lưu tạm các phần prompt dùng lại nhiều lần, ví dụ system message dài, tài liệu chính sách, few-shot examples, để các request sau tận dụng phần đã tính, giảm chi phí và độ trễ. Đối với tài liệu chính sách gửi kèm mọi lần, bật cache trên các block đó giúp hệ thống mở rộng hiệu quả hơn.
+
+### Vì sao các phương án còn lại sai
+- max_tokens giới hạn output, không giúp đỡ phần input lặp lại.
+- Temperature 0 không ảnh hưởng đến chi phí xử lý input đã gửi.
+- Gộp mọi thứ vào một user message dài không tạo cơ chế tái sử dụng phần prefix và vẫn tính toàn bộ token mỗi lần.
+
+> Mẹo Senior: cache có thời gian tồn tại TTL và được gia hạn mỗi lần dùng; chỉ nên cache phần thực sự ổn định và lớn enough để worthwhile.`
+},
+{
+  id: 'qz-ccap-038',
+  topic: 'claude',
+  q: "[Prompt Engineering] A math word-problem solver fails on multi-step calculations. Which Claude 3.7+ feature allocates more reasoning tokens before the final answer?",
+  options: [
+    "max_tokens",
+    "Extended thinking with a thinking budget",
+    "top_p",
+    "stop_sequences"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: extended thinking.** Extended thinking (suy luận mở rộng) trên Claude 3.7+ cho model dành thêm token để suy deduction từng bước trước khi sinh câu trả lời cuối, phù hợp bài toán nhiều bước, tính toán phức tạp. Ngân sách thinking, thinking budget, là số token tối đa dành cho giai đoạn suy luận này.
+
+### Vì sao các phương án còn lại sai
+- max_tokens trần độ dài output cuối, không phải thời gian suy luận trước đó.
+- top_p kiểm soát nhóm từ ứng viên, không tạo thêm bước suy deduction.
+- stop_sequences chỉ dừng sinh văn bản, không tăng khả năng tính toán.
+
+> Mẹo Senior: extended thinking tăng chi phí và độ trễ; hãy chỉ bật cho các bước thực sự khó và đo quality trước khi mở rộng toàn bộ hệ thống.`
+},
+{
+  id: 'qz-ccap-039',
+  topic: 'claude',
+  q: "[Prompt Engineering] A team wants an AI coding assistant that can explore the repository, run tests, and edit files from the command line. Which Anthropic product fits this?",
+  options: [
+    "The Claude Messages API alone",
+    "Claude Code, the CLI coding agent",
+    "Prompt caching",
+    "The system parameter"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Claude Code.** Claude Code là công cụ dòng lệnh, CLI, của Anthropic làm trợ lý lập trình tự hành: khám phá kho lưu trữ, đọc và sửa file, chạy test, xây dựng và sửa lỗi từ terminal. Nó phù hợp với nhu cầu tương tác với mã nguồn qua dòng lệnh.
+
+### Vì sao các phương án còn lại sai
+- Messages API chỉ sinh trả lời văn bản qua HTTP, không tự chạy test hay sửa file trên máy của bạn.
+- Prompt caching giảm chi phí prompt lặp lại, không phải công cụ lập trình.
+- Tham số system chỉ cung cấp vai trò và chỉ dẫn, không thao tác được kho lưu trữ.
+
+> Mẹo Senior: Claude Code cần quyền truy cập hệ thống file và thường chạy trong sandbox hoặc môi trường điều khiển; hãy xem xét bảo mật trước khi cho nó truy cập mã sản xuất.`
+},
+{
+  id: 'qz-ccap-040',
+  topic: 'claude',
+  q: "[Prompt Engineering] A team pastes an entire 500K-token log file into one Claude request and gets an error. What is the likely cause and the first thing to reduce?",
+  options: [
+    "The model is not creative enough",
+    "The request exceeds Claude's context window; summarize or retrieve only relevant parts first",
+    "The temperature is too low",
+    "The system message is missing"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: context window.** Context window, khung ngữ cảnh, là tổng số token tối đa model có thể xử lý trong một yêu cầu, bao gồm cả input và output. Claude 3 family thường hỗ trợ khoảng 200K tokens. Nếu gửi 500K token log, yêu cầu vượt khung và bị từ chối. Cách xử lý đầu tiên là tóm tắt hoặc chỉ lấy các phần liên quan trước khi gửi.
+
+### Vì sao các phương án còn lại sai
+- Sáng tạo của model không liên quan đến giới hạn kỹ thuật của khung ngữ cảnh.
+- Temperature thấp không làm yêu cầu nhỏ hơn khung cho phép.
+- Thiếu system không gây lỗi vượt khung ngữ cảnh.
+
+> Mẹo Senior: trước khi dán toàn bộ file lớn, hãy lấy đoạn liên quan, ví dụ qua truy xuất tài liệu (retrieval), để giữ khung ngữ cảnh dành cho phần thực sự cần phân tích.`
+},
+{
+  id: 'qz-ccap-041',
+  topic: 'claude',
+  q: "[Prompt Engineering] User-provided text may contain instructions that conflict with the application's task. Which design best keeps user text as data, not commands?",
+  options: [
+    "Tell the model to follow the newest instruction it sees",
+    "Put application rules in the system parameter and mark user text as data in a delimited section, instructing not to follow commands inside it",
+    "Remove the system parameter so user instructions win",
+    "Use a higher temperature so the model ignores conflicting text"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phân tách system và dữ liệu user.** Trong Claude Messages API, thứ tự ưu tiên thường là system, sau đó tools, sau đó user. Khi đặt quy tắc ứng dụng trong system và gán văn bản user vào một vùng dữ liệu có dấu phân cách, ví dụ thẻ XML, kèm chỉ dẫn phân tích không làm theo lệnh bên trong, model sẽ hiểu văn bản đó là bằng chứng chứ không phải điều khiển. Giúp giảm rủi ro prompt injection, tấn công chèn chỉ dẫn vào dữ liệu.
+
+### Vì sao các phương án còn lại sai
+- Làm theo lệnh mới nhất thấy được trong dữ liệu user cho phép nội dung ngoài can thiệp vào nhiệm vụ.
+- Bỏ system làm mất nơi khai báo quy tắc tin cậy.
+- Temperature cao làm output ngẫu nhiên hơn, không ngăn chỉ dẫn độc hại được thực thi.
+
+> Mẹo Senior: dấu phân cách và chỉ dẫn chỉ là lớp phòng vệ; cho hành động nhạy cảm, hoàn tiền hoặc xóa dữ liệu, ứng dụng vẫn phải kiểm tra quyền và xác thực bằng logic phía server.`
+},
+{
+  id: 'qz-ccap-042',
+  topic: 'claude',
+  q: "[Prompt Engineering] A team wants Claude to read from an internal PostgreSQL database and call an internal ticketing API, using a standard protocol instead of custom code per data source. Which two statements about MCP are true? (Choose 2)",
+  options: [
+    "MCP stands for Model Context Protocol, an open standard for connecting assistants to tools and data",
+    "MCP replaces the need for the Claude API key",
+    "An MCP server exposes resources or tools, and an MCP client such as Claude Desktop or Claude Code connects to it",
+    "MCP only works with Claude and not with other models"
+  ],
+  multi: true,
+  answer: [0, 2],
+  explain: `**Đáp án đúng: A và C.** MCP, Model Context Protocol, là chuẩn mở do Anthropic đưa ra để kết nối trợ lý AI với công cụ và nguồn dữ liệu. Một MCP server cung cấp tài nguyên hoặc công cụ, resource hay tool, còn một MCP client, ví dụ Claude Desktop hoặc Claude Code, kết nối đến server để sử dụng. Như vậy nhóm không cần viết mã riêng cho mỗi nguồn dữ liệu.
+
+### Vì sao từng phương án
+- A đúng: MCP là tên gọi và mục đích chính xác của giao thức.
+- B sai: MCP không thay thế khóa API Claude; nó chỉ chuẩn hóa cách kết nối công cụ.
+- C đúng: mô hình client-server của MCP đúng như vậy.
+- D sai: MCP là chuẩn mở, các mô hình và công cụ khác cũng có thể triển khai, không gắn liền chỉ với Claude.
+
+> Mẹo Senior: khi dùng MCP, hãy kiểm tra quyền truy cập của mỗi server vì model có thể gọi công cụ mà server cung cấp.`
+},
+{
+  id: 'qz-ccap-043',
+  topic: 'claude',
+  q: "[Prompt Engineering] A team needs to evaluate 50,000 customer emails offline and does not need real-time answers. Which two statements about the Claude Message Batches API are true? (Choose 2)",
+  options: [
+    "Batches process many requests asynchronously and are suited for offline evaluation",
+    "Every batch request must get an answer within one second",
+    "Batches can offer lower cost per request than real-time calls",
+    "Batches are only for streaming chat responses"
+  ],
+  multi: true,
+  answer: [0, 2],
+  explain: `**Đáp án đúng: A và C.** Message Batches API cho phép gửi nhiều yêu cầu cùng lúc và xử lý bất đồng bộ, asynchronous, phù hợp kiểm tra 50.000 email không cần trả lời tức thì. Batch thường có chi phí thấp hơn mỗi yêu cầu so với gọi real-time, vì xử lý được theo lô.
+
+### Vì sao từng phương án
+- A đúng: xử lý hàng loạt không real-time là trường hợp dùng hàng đầu của batch.
+- B sai: batch không cam kết phản hồi trong một giây; kết quả có thể đến sau vài phút.
+- C đúng: chi phí mỗi yêu cầu trong batch thường thấp hơn gọi tương tác.
+- D sai: batch không dành cho luồng chat streaming cần trả lời ngay.
+
+> Mẹo Senior: sau khi gửi batch, ứng dụng cần theo dõi trạng thái và lấy kết quả khi xong; hãy có kế hoạch xử lý yêu cầu thất bại trong lô.`
+},
+{
+  id: 'qz-ccap-044',
+  topic: 'claude',
+  q: "[Prompt Engineering] A support workflow receives screenshots of error messages along with text descriptions. Which two statements about Claude vision are true? (Choose 2)",
+  options: [
+    "Claude can process images provided in the messages array",
+    "Vision requires converting every image to text before sending it to Claude",
+    "The model can read text in screenshots and reason about the UI shown",
+    "Images are not counted in the context window"
+  ],
+  multi: true,
+  answer: [0, 2],
+  explain: `**Đáp án đúng: A và C.** Claude có thể nhận hình ảnh kèm trong mảng messages và hiểu được văn bản trong ảnh chụp màn hình cũng như giao diện được hiển thị. Hình ảnh được xử lý như một phần nội dung tin nhắn, không cần chuyển thành văn bản trước khi gửi.
+
+### Vì sao từng phương án
+- A đúng: hình ảnh có thể đi kèm tin nhắn trong Messages API.
+- B sai: không cần chuyển ảnh thành văn bản trước; Claude tự đọc ảnh.
+- C đúng: model có thể trích xuất văn bản và suy luận về giao diện từ ảnh.
+- D sai: hình ảnh vẫn dùng khung ngữ cảnh, được tính token, không miễn phí về diện này.
+
+> Mẹo Senior: ảnh ảnh lớn tốn nhiều token; hãy cắt ảnh chỉ lấy phần liên quan hoặc nén trước khi gửi để giảm chi phí.`
+},
+{
+  id: 'qz-ccap-045',
+  topic: 'claude',
+  q: "[Prompt Engineering] A production integration sends many Claude requests per minute. Which two operational practices help avoid failures? (Choose 2)",
+  options: [
+    "Handle rate-limit errors with retries and exponential backoff",
+    "Ignore rate limits because Claude has no limits",
+    "Monitor tokens per minute and requests per minute against the plan limits",
+    "Send all requests at the same instant to finish faster"
+  ],
+  multi: true,
+  answer: [0, 2],
+  explain: `**Đáp án đúng: A và C.** Claude API áp dụng giới hạn tốc độ, rate limit: số yêu cầu mỗi phút, RPM, và số token mỗi phút, TPM, tùy theo gói dịch vụ. Khi vượt giới hạn, API trả lỗi; ứng dụng nên xử lý bằng thử lại, retry, kèm backoff tăng dần, exponential backoff, và theo dõi mức sử dụng so với hạn mức.
+
+### Vì sao từng phương án
+- A đúng: retry có backoff là cách xử lý chuẩn khi nhận lỗi giới hạn tốc độ.
+- B sai: Claude API có giới hạn tốc độ rõ ràng tùy gói.
+- C đúng: theo dõi RPM và TPM giúp chủ động điều chỉnh trước khi chạm giới hạn.
+- D sai: gửi cùng lúc làm tăng nguy cơ vượt hạn mức và bị từ chối hàng loạt.
+
+> Mẹo Senior: trong sản xuất, hãy giới hạn số request đồng thời, concurrency, và có hàng đợi riêng cho các tác vụ không khẩn cấp.`
+},
 );
