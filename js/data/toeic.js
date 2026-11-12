@@ -453,4 +453,124 @@ The minutes will be sent by email on Wednesday.`,
   ],
   tags: ["meeting", "remote work"]
 },
+{
+  id: "toeic-s5-001",
+  part: "s5",
+  prompt: "Some companies allow employees to work from home several days a week. Do you think this is a good policy? Give reasons and examples.",
+  sample: `I believe working from home several days a week is a good policy for many employees. First, it saves commuting time. For example, a worker who spends an hour traveling each way can use that time to rest or prepare for the day. Second, people may focus better when they have a quiet place to work. At my previous company, our team completed reports more quickly on home-working days because there were fewer interruptions. Of course, remote work can make communication harder, so companies should set clear goals and arrange regular online meetings. Employees should also come to the office when a project needs close teamwork. Overall, a flexible schedule can improve both productivity and job satisfaction, as long as managers stay in touch with their teams.`,
+  tips: [
+    "Mở đầu bằng I believe… rồi nêu hai lý do riêng biệt; mỗi lý do nên có một ví dụ cụ thể thay vì chỉ lặp lại ý kiến.",
+    "Dùng First và Second để người nghe theo kịp bố cục; phát âm rõ âm cuối trong saves, goals và teams.",
+    "Đừng khẳng định làm ở nhà luôn tốt hơn; thêm một điều kiện như as long as để câu trả lời cân bằng và thực tế."
+  ],
+  tags: ["remote work", "workplace"]
+},
+{
+  id: "toeic-s5-002",
+  part: "s5",
+  prompt: "Some people think companies should provide regular training for their employees. Do you agree or disagree? Explain your opinion with reasons and examples.",
+  sample: `I agree that companies should provide regular training for their employees. To begin with, training helps people keep up with changes in their jobs. For instance, when our office introduced a new scheduling system, a short workshop helped everyone use it correctly and avoid mistakes. In addition, training can make employees feel more confident and motivated. They can learn a useful skill instead of having to solve every problem by trial and error. The sessions do not have to be expensive or take a whole day; a monthly online lesson or a short discussion with an experienced coworker can be enough. In conclusion, regular training benefits both the employee and the company because people work more effectively and are better prepared for new responsibilities.`,
+  tips: [
+    "Với câu hỏi agree/disagree, nói rõ lập trường ngay câu đầu để giám khảo không phải đoán ý.",
+    "Học cụm To begin with và In addition để chuyển giữa hai lý do; sau mỗi lý do hãy đưa ví dụ có tình huống cụ thể.",
+    "Không cần dùng từ vựng quá khó; dùng đúng động từ như introduce a system, attend a workshop và take responsibility sẽ tự nhiên hơn."
+  ],
+  tags: ["training", "career"]
+},
+{
+  id: "toeic-s5-003",
+  part: "s5",
+  prompt: "Do you think using new technology at work usually makes employees more productive? Support your answer with reasons and examples.",
+  sample: `In my opinion, new technology can make employees more productive when it solves a real problem. For example, my team started using a shared project board to track tasks. Before that, we exchanged many messages just to find out who was responsible for each step. Now everyone can see the owner and deadline in one place, so we spend less time checking progress. Technology can also automate repetitive work, giving employees more time to help customers or solve difficult issues. However, a new tool is not useful simply because it is modern. If it is confusing or does not work with existing systems, people may waste time learning it. Companies should provide basic training and ask employees for feedback. Overall, the right technology improves work, but good planning matters too.`,
+  tips: [
+    "Cụm when it solves a real problem giúp câu trả lời không tuyệt đối hoá công nghệ; hãy nêu một vấn đề trước và kết quả sau.",
+    "Dùng before that/now để mô tả sự thay đổi rõ ràng, nhưng tránh phát âm lẫn productive và productivity.",
+    "Kết bài bằng một điều kiện ngắn như good planning matters too để thể hiện cân nhắc cả mặt lợi và hạn chế."
+  ],
+  tags: ["technology", "productivity"]
+},
+{
+  id: "toeic-s5-004",
+  part: "s5",
+  prompt: "Some people believe businesses should do more to reduce their impact on the environment, even if it increases costs. What is your opinion?",
+  sample: `I believe businesses should take practical steps to reduce their impact on the environment, even if some costs increase at first. One reason is that reducing waste can save money over time. For example, an office that uses less paper and turns off unused equipment can lower its monthly expenses. Another reason is that customers increasingly care about how products are made. A company that explains its environmental efforts honestly may earn their trust and encourage them to return. However, businesses should choose changes that are measurable rather than making promises they cannot keep. They could start by tracking energy use and setting a realistic target for the next year. In short, protecting the environment is a responsibility, and sensible improvements can also support a company's long-term success.`,
+  tips: [
+    "Nêu cả lợi ích môi trường và một lợi ích thực tế cho doanh nghiệp để lập luận thuyết phục, không chỉ nói it is good.",
+    "Dùng at first và over time để diễn tả chi phí ban đầu có thể khác với kết quả dài hạn.",
+    "Phân biệt environment (môi trường) và environmental (thuộc về môi trường); chú ý âm tiết cuối khi nói environmental efforts."
+  ],
+  tags: ["environment", "business"]
+},
+{
+  id: "toeic-s5-005",
+  part: "s5",
+  prompt: "Should schools spend more time teaching practical skills, such as communication and money management? Give reasons and examples.",
+  sample: `I think schools should spend more time teaching practical skills alongside academic subjects. First, communication is important in almost every job. Students who practice explaining their ideas and listening to others may work better in a team later. For example, a class presentation can teach them how to organize information and answer questions politely. Second, basic money management helps young people make responsible choices. They should understand how to plan a budget and compare prices before they start earning their own income. These lessons do not need to replace subjects such as math or science; teachers can include practical examples in existing classes. To sum up, schools prepare students for adult life, and practical skills make that preparation more complete.`,
+  tips: [
+    "Dùng alongside để nói kỹ năng thực tế bổ sung chứ không thay thế môn học; điều này làm quan điểm cân bằng hơn.",
+    "Nêu ví dụ học đường dễ hình dung như class presentation hoặc plan a budget, thay vì ví dụ quá dài.",
+    "Ở câu kết, diễn đạt lại ý chính bằng từ khác; không cần lặp nguyên văn câu mở đầu."
+  ],
+  tags: ["education", "life skills"]
+},
+{
+  id: "toeic-s5-006",
+  part: "s5",
+  prompt: "Do you think managers should ask employees for their opinions before making important decisions? Explain your view.",
+  sample: `I think managers should ask employees for their opinions before making important decisions that affect their daily work. Employees often understand practical problems that may not be visible to senior leaders. For example, when my department changed its customer service process, the staff suggested moving one step to an earlier stage. This small change reduced repeated calls and made the process easier to follow. Asking for feedback can also help employees feel respected and more willing to support a decision. Still, managers cannot follow every suggestion, especially when there is a tight deadline. They should explain the final choice and the reasons behind it. In conclusion, listening to employees leads to better decisions, even though managers remain responsible for making the final call.`,
+  tips: [
+    "Dùng who may not be visible to… để giải thích vì sao nhân viên trực tiếp có thông tin hữu ích, thay vì chỉ nói they know more.",
+    "Cụm Still và even though giúp thừa nhận giới hạn hợp lý mà không làm mất lập trường.",
+    "Kể ví dụ theo thứ tự vấn đề → đề xuất → kết quả; dùng reduced repeated calls để nêu tác động cụ thể."
+  ],
+  tags: ["management", "teamwork"]
+},
+{
+  id: "toeic-s5-007",
+  part: "s5",
+  prompt: "For work meetings, do you prefer meeting in person or meeting online? Give reasons and examples to support your preference.",
+  sample: `I prefer meeting in person when a team needs to discuss a complicated issue. It is easier to notice whether people are confused, and team members can ask quick questions without waiting for someone to unmute. For example, my coworkers and I once planned a new service in a face-to-face workshop. We drew the steps on a whiteboard and agreed on the main tasks in about an hour. However, online meetings are more convenient when people only need to share a short update, especially if they work in different cities. Therefore, I do not think every meeting should be in person. My preference depends on the purpose: I choose a face-to-face discussion for planning, but an online call for a simple check-in.`,
+  tips: [
+    "Khi chọn một trong hai phương án, vẫn có thể thừa nhận phương án kia hữu ích trong trường hợp khác; nêu rõ điều kiện lựa chọn.",
+    "Dùng for example để kể một trải nghiệm, và therefore để nối ví dụ với kết luận.",
+    "Phân biệt meeting in person (gặp trực tiếp) với online meeting; đừng nói meet physically trong ngữ cảnh này."
+  ],
+  tags: ["meetings", "communication"]
+},
+{
+  id: "toeic-s5-008",
+  part: "s5",
+  prompt: "Some employees spend their personal time learning skills for their careers. Do you think this is a good use of their free time?",
+  sample: `I think learning a career-related skill in your free time can be worthwhile, as long as it does not leave you exhausted. Many fields change quickly, so learning a new tool can help employees take on different tasks. For example, a colleague of mine spent a few weekends studying spreadsheet skills and later used them to prepare reports more efficiently. This kind of learning can also build confidence because people see that they are able to improve. On the other hand, free time is important for rest and family, so employees should not feel that they must study every evening. A short, realistic plan is more sustainable than trying to learn everything at once. Overall, professional learning is valuable when people balance it with their well-being.`,
+  tips: [
+    "Dùng as long as để đưa điều kiện cân bằng; câu trả lời không nên biến việc học thêm thành nghĩa vụ phải làm mọi tối.",
+    "Cụm take on different tasks và prepare reports more efficiently phù hợp tiếng Anh công sở và dễ tái sử dụng.",
+    "Nêu ví dụ cá nhân ngắn, có kết quả cụ thể; tránh khẳng định một trải nghiệm chứng minh điều đó đúng với tất cả mọi người."
+  ],
+  tags: ["career", "learning"]
+},
+{
+  id: "toeic-s5-009",
+  part: "s5",
+  prompt: "Would you prefer a flexible work schedule or fixed working hours? Explain your choice with reasons and examples.",
+  sample: `I would prefer a flexible work schedule because it helps people plan their work around important responsibilities. For instance, an employee may start earlier to pick up a child in the afternoon, while still completing the same number of working hours. Flexibility can also help people avoid the busiest commuting times and arrive at work with more energy. However, a flexible schedule only works well when coworkers agree on times to communicate and attend important meetings. At my last job, our team had shared hours from ten to three, so everyone could arrange the rest of the day differently but still work together. In my view, clear expectations and fair results matter more than having every employee follow exactly the same timetable.`,
+  tips: [
+    "Nêu lựa chọn bằng I would prefer… và giải thích bằng ví dụ; dùng may để nói một tình huống có thể xảy ra.",
+    "Dùng while still completing để cho thấy linh hoạt về giờ không đồng nghĩa giảm trách nhiệm.",
+    "Học cụm shared hours (khung giờ cả nhóm cùng sẵn sàng) và commuting times; nói rõ điều kiện để lịch linh hoạt vận hành."
+  ],
+  tags: ["flexible schedule", "workplace"]
+},
+{
+  id: "toeic-s5-010",
+  part: "s5",
+  prompt: "Do you think companies should use automated technology to answer simple customer questions? Why or why not?",
+  sample: `I think companies can use automated technology to answer simple customer questions, but customers should be able to contact a person when they need more help. An automated system can quickly provide basic information, such as store hours or delivery status. This is convenient because customers do not have to wait for an employee to become available. It can also allow staff to spend more time solving unusual or complicated problems. However, an automated response may frustrate someone whose situation does not fit the standard choices. For example, a delayed order might need a personal explanation or a different solution. Companies should make the system easy to use and offer a clear way to speak with an employee. This balance can improve service without making it feel impersonal.`,
+  tips: [
+    "Mở đầu bằng quan điểm có điều kiện: automation hữu ích cho câu hỏi đơn giản, nhưng vẫn cần người xử lý tình huống đặc biệt.",
+    "Dùng such as để đưa ví dụ ngắn; phân biệt basic information với complicated problems.",
+    "Kết bài bằng hệ quả cho khách hàng, không chỉ nói công ty tiết kiệm thời gian; luyện nói rõ automated và impersonal."
+  ],
+  tags: ["technology", "customer service"]
+},
 );
