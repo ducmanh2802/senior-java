@@ -856,4 +856,392 @@
 > Exam tip: global tables tăng khả năng phục vụ local ở nhiều Region, nhưng cần thiết kế idempotency/conflict và không mặc định strong consistency xuyên Region.`,
   services: ['Amazon DynamoDB', 'Amazon CloudFront', 'Amazon RDS'],
 },
+{
+  id: 'sap-197', exam: 'sap-c02', domain: 'sap-d4',
+  q: `A manufacturing company runs a critical ERP application on an on-premises VMware cluster. The application must remain in the data center for the next 18 months due to licensing constraints, but the company wants to start using AWS services for disaster recovery and burst capacity. They do not want to purchase or manage AWS hardware on premises. Which solution best meets these requirements?`,
+  options: [
+    "Use VMware Cloud on AWS to extend the on-premises VMware environment into the AWS Cloud with consistent operations.",
+    "Deploy AWS Outposts racks in the data center and migrate the ERP to the Outposts-hosted VMware cluster.",
+    "Use AWS Application Migration Service (MGN) to replicate the ERP servers to AWS and run them in a pilot light DR configuration.",
+    "Deploy the ERP on Amazon EC2 in a single Availability Zone and use AWS Direct Connect for low-latency access from the data center."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** ERP chạy trên VMware on-prem, phải ở lại 18 tháng do license, muốn dùng AWS cho DR và burst capacity, không muốn mua/quản lý phần cứng AWS tại chỗ. **VMware Cloud on AWS (VMC)** cho phép mở rộng môi trường VMware quen thuộc lên AWS, dùng cùng vCenter, NSX, vSAN; workload có thể vMotion giữa on-prem và SDDC trên AWS. VMC không yêu cầu khách hàng mua rack AWS — phần cứng do AWS quản lý trong Region.
+  **Vì sao đúng:** A cho phép giữ VMware stack, dùng AWS services (S3, RDS, CloudWatch) cho DR/burst, và không lắp đặt phần cứng tại data center.
+  **Vì sao phương án khác sai:**
+  - B Outposts đòi hỏi lắp rack AWS tại cơ sở, trái yêu cầu.
+  - C MGN rehost server sang EC2 (không phải VMware), thay đổi nền tảng chạy; license ERP có thể không cho phép.
+  - D chạy đơn lẻ trong một AZ không đáp ứng HA/DR; Direct Connect không giải quyết license VMware.
+  > Exam tip: cần vận hành VMware quen thuộc trên AWS mà không lắp phần cứng → VMware Cloud on AWS; cần AWS hardware tại nhà máy → Outposts.`,
+  services: ['VMware Cloud on AWS', 'AWS Outposts', 'AWS Application Migration Service', 'AWS Direct Connect'],
+},
+{
+  id: 'sap-198', exam: 'sap-c02', domain: 'sap-d4',
+  q: `A company has a 50 TB on-premises Oracle database that must be migrated to Amazon RDS for Oracle. The source database must remain online during the initial load, and changes during migration must be continuously replicated until a planned cutover window. The team wants to use a managed service that supports Oracle-to-Oracle homogeneous migration with minimal application changes. Which combination of steps is most appropriate? (Choose two.)`,
+  options: [
+    "Use AWS Database Migration Service to perform a full load from the source Oracle database to the RDS for Oracle target.",
+    "Enable ongoing change data capture (CDC) in the DMS task to replicate transactions from the Oracle redo logs to the target.",
+    "Use AWS Schema Conversion Tool to convert the Oracle schema to Amazon Aurora PostgreSQL and then migrate.",
+    "Take a one-time Oracle Data Pump export, upload to S3, and import into RDS for Oracle.",
+    "Use AWS DataSync to copy the Oracle data files directly to the RDS storage volume."
+  ],
+  answer: [0, 1],
+  multi: true,
+  explain: `**Từ khóa:** Oracle-to-Oracle, nguồn online, CDC liên tục đến cutover, dịch vụ quản lý, thay đổi ứng dụng tối thiểu. Đây là migration **homogeneous** (cùng engine). **AWS DMS** hỗ trợ full load + CDC từ Oracle redo logs (LogMiner hoặc Binary Reader) sang RDS for Oracle. CDC giữ target đồng bộ với source cho đến khi team quyết định cutover. Cần kiểm tra các loại dữ liệu/DDL được hỗ trợ, replication lag, và quyền truy cập redo logs.
+  **Vì sao A và B đúng:** Full load đưa dữ liệu hiện có; CDC đồng bộ các giao dịch mới trong lúc ứng dụng vẫn ghi. Trước cutover phải xác minh dữ liệu, kiểm tra lag, và lên kế hoạch chuyển đổi.
+  **Vì sao phương án khác sai:**
+  - C Schema Conversion Tool dùng khi **đổi engine** (Oracle → PostgreSQL); không cần thiết ở đây.
+  - D Export một lần không bắt được transaction sau export; dữ liệu sẽ lệch nếu source tiếp tục ghi.
+  - E DataSync truyền file, không replicate transaction log vào managed database và không truy cập storage RDS trực tiếp.
+  > Exam tip: cùng engine + giữ nguồn online = DMS full load + CDC; khác engine mới cần SCT và kiểm thử tương thích kỹ.`,
+  services: ['AWS Database Migration Service', 'Amazon RDS for Oracle'],
+},
+{
+  id: 'sap-199', exam: 'sap-c02', domain: 'sap-d4',
+  q: `A company is evaluating 150 on-premises applications before selecting migration strategies. They have collected server inventory, utilization, and dependency data using an agentless discovery tool. They want AWS to analyze this data and recommend modernization opportunities, operating system risks, and candidate strategies such as rehost, replatform, or refactor for each application. Which service should they use?`,
+  options: [
+    "AWS Migration Hub Strategy Recommendations",
+    "AWS Migration Evaluator",
+    "AWS Application Migration Service (MGN)",
+    "AWS Control Tower Account Factory"
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** đã có inventory/utilization/dependency data, cần đề xuất chiến lược hiện đại hóa theo từng ứng dụng. **AWS Migration Hub Strategy Recommendations** phân tích dữ liệu discovery để đưa ra khuyến nghị như rehost, replatform, refactor và chỉ ra các rủi ro (OS end-of-life, kiến trúc phức tạp). Đầu vào chất lượng cao rất quan trọng: dữ liệu thiếu hoặc cũ sẽ làm khuyến nghị kém chính xác.
+  **Vì sao đúng:** A là công cụ đánh giá chiến lược sau giai đoạn discovery, giúp sàng lọc danh mục lớn trước khi thiết kế migration wave.
+  **Vì sao phương án khác sai:**
+  - B Migration Evaluator tập trung business case chi phí dựa trên utilization, không tự sinh chiến lược modernize mức ứng dụng.
+  - C MGN chủ yếu rehost server (lift-and-shift), không thay thế công cụ đánh giá chiến lược cho toàn bộ portfolio.
+  - D Control Tower tạo/quản trị multi-account landing zone; Account Factory không khám phá ứng dụng hay lập kế hoạch migration.
+  > Exam tip: business case/chi phí → Migration Evaluator; chiến lược ứng dụng → Migration Hub Strategy Recommendations; rehost server → MGN.`,
+  services: ['AWS Migration Hub Strategy Recommendations', 'AWS Migration Evaluator', 'AWS Application Migration Service'],
+},
+{
+  id: 'sap-200', exam: 'sap-c02', domain: 'sap-d4',
+  q: `A company has containerized a legacy application but must keep it running on on-premises Linux servers for another year due to hardware dependencies. The operations team wants to register these external servers with Amazon ECS and manage container deployments from the same ECS control plane used for AWS workloads, without installing AWS Outposts hardware. Which solution meets these requirements?`,
+  options: [
+    "Use Amazon ECS Anywhere to register the on-premises servers as external instances and run ECS tasks on them.",
+    "Deploy AWS Outposts racks because ECS tasks cannot run on external servers without Outposts.",
+    "Use Amazon ECS on AWS Fargate and configure tasks to run on the factory servers via a VPN connection.",
+    "Use AWS Systems Manager to deploy containers to the on-premises servers and manage them from the AWS console."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** container đã có, server Linux phải ở data center, muốn quản lý task từ ECS control plane, không lắp Outposts. **Amazon ECS Anywhere** mở rộng ECS để đăng ký external instances (bao gồm server on-premises) và điều phối container qua ECS control plane. Server vẫn do công ty chịu trách nhiệm: cài agent, đảm bảo kết nối mạng/permissions, và tiếp tục patch OS.
+  **Vì sao đúng:** A cho phép giữ compute tại chỗ mà vẫn dùng ECS điều phối, là bước chuyển tiếp trước khi di chuyển workload lên AWS.
+  **Vì sao phương án khác sai:**
+  - B Outposts đặt hardware AWS tại cơ sở nhưng không bắt buộc cho ECS Anywhere; đề không cần hardware AWS.
+  - C Fargate chạy container trên hạ tầng AWS do AWS quản lý, không chạy trực tiếp trên server on-prem.
+  - D Systems Manager quản lý OS/instance, không phải orchestration platform cho container như ECS.
+  > Exam tip: ECS Anywhere dùng ECS control plane nhưng external host do khách hàng quản lý (agent, networking, IAM, patching).`,
+  services: ['Amazon ECS Anywhere', 'Amazon ECS', 'AWS Outposts'],
+},
+{
+  id: 'sap-201', exam: 'sap-c02', domain: 'sap-d4',
+  q: `A company must move 200 TB of files from an on-premises NFS file server to an Amazon S3 bucket over an existing 1 Gbps AWS Direct Connect connection. Production traffic shares the link, so migration traffic must be capped at 200 Mbps and run only during weekends. The team needs recurring incremental copies and data integrity verification without writing custom transfer tools. Which solution meets these requirements?`,
+  options: [
+    "Create an AWS DataSync task with an NFS source location and S3 destination, configure a bandwidth limit and weekend schedule, and enable data verification.",
+    "Use S3 Transfer Acceleration to transfer the NFS file system directly into S3 and set a per-task bandwidth limit.",
+    "Use AWS Snowball Edge devices for each weekend incremental copy and manually merge objects after each device returns.",
+    "Use AWS Storage Gateway File Gateway to automatically sync NFS files to S3 on a schedule."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** nguồn NFS, đích S3, copy tăng dần theo lịch cuối tuần, giới hạn băng thông 200 Mbps, cần kiểm tra toàn vẹn. **AWS DataSync** là dịch vụ truyền dữ liệu được quản lý; NFS là vị trí nguồn được hỗ trợ, S3 là đích, task có thể chạy lặp lại theo lịch, cấu hình giới hạn băng thông và verification. Agent DataSync cần đặt nơi truy cập được NFS share và kết nối AWS.
+  **Vì sao đúng:** A giải quyết lịch, băng thông, xác minh mà không tự xây công cụ. Direct Connect cung cấp đường riêng nhưng vẫn cần cap vì dùng chung production traffic.
+  **Vì sao phương án khác sai:**
+  - B Transfer Acceleration tăng tốc upload tới S3 qua edge location; không đọc NFS share như DataSync và không phải công cụ đồng bộ file theo lịch.
+  - C Snowball phù hợp khi mạng không đủ; mang thiết bị qua lại mỗi cuối tuần không thực tế cho incremental sync.
+  - D File Gateway trình bày NFS share cho ứng dụng on-prem; nó không quét/copy file server NFS hiện có thành object S3 theo lịch.
+  > Exam tip: DataSync phù hợp chuyển/đồng bộ file qua mạng; link dùng chung → luôn giới hạn băng thông và lên lịch ngoài giờ cao điểm.`,
+  services: ['AWS DataSync', 'Amazon S3', 'AWS Direct Connect'],
+},
+{
+  id: 'sap-202', exam: 'sap-c02', domain: 'sap-d4',
+  q: `A research lab runs a legacy application that requires block storage over iSCSI and performs frequent reads of its working set. The lab is migrating to AWS in stages, has limited WAN bandwidth, and wants the full data set stored durably in Amazon S3 while keeping frequently accessed blocks cached on premises. Which AWS Storage Gateway configuration is appropriate?`,
+  options: [
+    "Use a Volume Gateway in cached volume mode and attach its iSCSI target to the application servers.",
+    "Use a Volume Gateway in stored volume mode because that keeps the primary data set in Amazon S3 and caches reads locally.",
+    "Use a File Gateway with an NFS share because it presents iSCSI block devices to applications.",
+    "Use an Amazon EBS volume mounted directly by the on-premises servers over the public internet."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** ứng dụng yêu cầu block iSCSI, WAN hạn chế, muốn dữ liệu chính ở AWS và cache block thường dùng tại chỗ. **Volume Gateway** có hai chế độ: **cached volumes** giữ dữ liệu chính ở AWS (dưới dạng object trong S3) và cache dữ liệu đọc gần đây tại gateway; **stored volumes** giữ toàn bộ dữ liệu chính tại chỗ rồi snapshot lên AWS. Vị trí dữ liệu chính là điểm khác biệt cốt lõi.
+  **Vì sao đúng:** A dùng cached mode với giao diện iSCSI, phù hợp chính xác yêu cầu: primary data trên AWS, cache cục bộ cho working set.
+  **Vì sao phương án khác sai:**
+  - B mô tả ngược: stored mode giữ primary data tại chỗ, không phải S3.
+  - C File Gateway phục vụ NFS/SMB file share; không cung cấp block iSCSI.
+  - D EBS là block device gắn vào EC2 trong AWS, không phải volume để server on-prem mount qua internet.
+  > Exam tip: Volume Gateway cached = primary data trên AWS, cache tại chỗ; stored = primary data tại chỗ, snapshot lên AWS.`,
+  services: ['AWS Storage Gateway', 'Amazon S3', 'Amazon EBS'],
+},
+{
+  id: 'sap-203', exam: 'sap-c02', domain: 'sap-d4',
+  q: `A company has a 90 TB on-premises SMB archive that must be copied to Amazon S3. An existing AWS Direct Connect link has 2 Gbps available for migration, and the initial copy must complete within three weeks. After the initial transfer, about 2 TB of new files arrive each week and must be synchronized over the network. The team wants integrity verification and no custom transfer software. Which solution meets the requirements?`,
+  options: [
+    "Use AWS DataSync with an SMB source location and S3 destination, run an initial task and recurring incremental tasks, and enable verification.",
+    "Use S3 Transfer Acceleration to read the SMB share and synchronize new files.",
+    "Use AWS Backup to transfer the SMB share directly into an S3 bucket.",
+    "Use AWS DMS to replicate the SMB file system to Amazon S3."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** SMB nguồn, S3 đích, 2 Gbps riêng, copy ban đầu 90 TB trong 3 tuần rồi sync 2 TB/tuần. **AWS DataSync** hỗ trợ vị trí SMB và S3, chạy task lặp để truyền phần thay đổi, cùng tùy chọn verification. 2 Gbps cho phép hoàn tất 90 TB trong ba tuần (thực tế ~1.2 GB/s hiệu dụng → ~21 tiếng raw, có dư phong cho overhead).
+  **Vì sao đúng:** DataSync hỗ trợ SMB-to-S3 lặp, verification, không cần custom code. Cần theo dõi throughput thực tế và giới hạn băng thông nếu link dùng chung.
+  **Vì sao phương án khác sai:**
+  - B Transfer Acceleration tối ưu upload tới S3, không đọc SMB share và không thay thế incremental sync.
+  - C AWS Backup bảo vệ workload được hỗ trợ; không phải công cụ chuyển/sync SMB share trực tiếp thành object S3.
+  - D DMS di chuyển database, không replicate file system SMB.
+  > Exam tip: DataSync task NFS/SMB-to-S3 hỗ trợ incremental và verification; tính throughput hiệu dụng chứ không phải line rate.`,
+  services: ['AWS DataSync', 'Amazon S3', 'AWS Direct Connect'],
+},
+{
+  id: 'sap-204', exam: 'sap-c02', domain: 'sap-d4',
+  q: `A financial services company must keep a legacy application on premises because it depends on specialized hardware installed in the data center. The application currently uses local block storage, but auditors require recovery copies in AWS and the company wants to restore an individual volume after a local disk failure. The WAN connection is reliable, and the team wants AWS-managed snapshots rather than a custom copy process. Which solution is most appropriate?`,
+  options: [
+    "Use AWS Storage Gateway Volume Gateway in stored volume mode and create Amazon EBS snapshots of the on-premises volumes.",
+    "Use AWS Storage Gateway Volume Gateway in cached mode because all primary data must remain on premises.",
+    "Use AWS DataSync to continuously copy raw block devices to Amazon S3.",
+    "Use Amazon EFS replication to back up the application's local block devices."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** ứng dụng chạy on-prem, cần block storage local, bản chính ở local, cần snapshot recovery trong AWS. **Volume Gateway stored volumes** cung cấp iSCSI volumes với dữ liệu chính lưu on-prem, snapshot lưu trên AWS dưới dạng EBS snapshots. Khi sự cố disk local, volume có thể khôi phục từ snapshot. Cần lập lịch snapshot và kiểm tra quy trình phục hồi.
+  **Vì sao đúng:** A phù hợp workload cần local block I/O và bản sao recovery ngoài cơ sở.
+  **Vì sao phương án khác sai:**
+  - B cached mode lưu primary data ở AWS, ngược ràng buộc.
+  - C DataSync truyền file giữa hệ thống file, không sao lưu raw block device.
+  - D EFS replication sao chép filesystem EFS, không backup block device on-prem.
+  > Exam tip: Volume Gateway stored giữ primary tại chỗ; cached giữ primary ở AWS. Luôn phân biệt nơi lưu dữ liệu chính và nơi lưu snapshot.`,
+  services: ['AWS Storage Gateway', 'Amazon EBS'],
+},
+{
+  id: 'sap-205', exam: 'sap-c02', domain: 'sap-d3',
+  q: `A company operates a critical application across three Availability Zones. The resilience team wants to run controlled experiments that temporarily inject CPU pressure into selected test instances, verify that auto-scaling policies trigger correctly, and stop the experiment automatically if a predefined safety alarm fires. The tests must not affect unrelated production resources. Which solution best meets these requirements?`,
+  options: [
+    "Use AWS Fault Injection Service experiments with narrowly scoped targets, an IAM role, and CloudWatch stop conditions.",
+    "Use AWS Systems Manager Run Command to install a stress tool on all production instances and execute it manually.",
+    "Use AWS Config rules to simulate CPU saturation and automatically remediate non-compliant instances.",
+    "Use Amazon CloudWatch Synthetics to generate synthetic load on the selected instances."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** cố ý gây lỗi có kiểm soát (CPU pressure), chọn đúng instance, quan sát auto-scaling, dừng tự động theo alarm an toàn. **AWS Fault Injection Service (FIS)** chạy thí nghiệm fault injection theo template, cho phép xác định target, action (cpu-stress), IAM permissions và stop condition (CloudWatch alarm). Tư duy quan trọng: bắt đầu ở môi trường test, giới hạn blast radius, có cơ chế dừng trước khi mở rộng production.
+  **Vì sao đúng:** A tạo thử nghiệm lặp lại được, giới hạn tài nguyên, dừng khi alarm báo nguy hiểm.
+  **Vì sao phương án khác sai:**
+  - B Run Command cài công cụ stress thủ công, không có stop condition tự động, blast radius khó kiểm soát, rủi ro ảnh hưởng production.
+  - C Config đánh giá cấu hình/compliance; rule không mô phỏng fault injection hay CPU pressure.
+  - D Synthetics chạy canary kiểm tra trải nghiệm endpoint, không inject lỗi vào instance.
+  > Exam tip: chaos engineering cần giả thuyết, blast radius nhỏ, stop condition, metric quan sát được; FIS cung cấp cơ chế chạy experiment, không thay thế kế hoạch an toàn.`,
+  services: ['AWS Fault Injection Service', 'Amazon CloudWatch', 'AWS Systems Manager'],
+},
+{
+  id: 'sap-206', exam: 'sap-c02', domain: 'sap-d3',
+  q: `A company has 500 TB of objects across 20 S3 buckets and 10 AWS accounts. Storage costs have increased, but teams do not know which accounts, Regions, storage classes, or prefixes contribute most. The company wants organization-wide visibility and trend analysis without copying object data or running a custom inventory pipeline. Which solution should it use first?`,
+  options: [
+    "Enable Amazon S3 Storage Lens with an organization-wide dashboard in the delegated administrator account.",
+    "Enable S3 server access logging on every bucket and query all request logs to calculate stored-byte trends.",
+    "Create an Amazon CloudWatch dashboard with one metric per object in every bucket.",
+    "Use AWS Cost Explorer alone, because it reports storage usage by object prefix and storage class."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** cần nhìn tổng quan dung lượng theo account, Region, storage class, prefix ở nhiều bucket, theo dõi xu hướng không dựng pipeline. **Amazon S3 Storage Lens** tổng hợp chỉ số sử dụng và hoạt động S3, hỗ trợ dashboard multi-account trong organization khi cấu hình quyền phù hợp. Đây là công cụ tìm nơi cần điều tra sâu, không thay thế phân tích request-level hay billing chi tiết.
+  **Vì sao đúng:** A tạo góc nhìn tập trung nhận diện bucket/prefix tăng nhanh, dữ liệu ít truy cập, hoặc cơ hội tối ưu.
+  **Vì sao phương án khác sai:**
+  - B server access logs ghi request, không phải cách gọn để tổng hợp dung lượng; cần lưu và xử lý log lớn.
+  - C metric từng object tạo cardinality/chi phí không hợp lý và không phải cách S3 expose storage metric.
+  - D Cost Explorer phân tích chi phí theo dimension có sẵn, nhưng không cung cấp phân tích prefix/object-level như yêu cầu.
+  > Exam tip: Storage Lens trả lời "dữ liệu nào chiếm chỗ ở đâu?"; Cost Explorer trả lời "chi phí phân bổ thế nào?".`,
+  services: ['Amazon S3 Storage Lens', 'AWS Organizations', 'AWS Cost Explorer'],
+},
+{
+  id: 'sap-207', exam: 'sap-c02', domain: 'sap-d3',
+  q: `A company has 3,000 Amazon S3 buckets and wants to find objects that are larger than 500 MB, stored in S3 Standard, and have not been accessed for more than 365 days. The company wants a repeatable inventory that can be queried with SQL and then used to apply a lifecycle policy only to matching objects. Which approach is most appropriate?`,
+  options: [
+    "Configure S3 Inventory with the required object metadata, query the inventory with Amazon Athena, and use the results to define lifecycle transitions.",
+    "Use S3 server access logs as the authoritative inventory of every object and transition objects directly from the log file.",
+    "Use Amazon S3 Storage Lens to automatically transition each matching object to Glacier Deep Archive.",
+    "Run one ListObjectsV2 API request per bucket and infer last-access time from the object's LastModified value."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** hàng nghìn bucket, lọc theo kích thước/storage class, cần truy vấn SQL lặp lại. **S3 Inventory** tạo danh sách object định kỳ với metadata được chọn; có thể đưa inventory vào Athena để lọc và tạo danh sách đối tượng cần hành động. Lưu ý: "không được truy cập 365 ngày" không đồng nghĩa LastModified; S3 Inventory không ghi thời điểm đọc từng object; muốn biết access pattern cần bật và phân tích S3 Storage Lens activity metrics hoặc access logs.
+  **Vì sao đúng:** A tạo snapshot inventory có thể truy vấn và làm nguồn quyết định lifecycle; policy cần cấu hình rõ, không áp dụng rộng ngoài tập đối tượng mục tiêu.
+  **Vì sao phương án khác sai:**
+  - B access logs ghi request chứ không phải inventory đầy đủ, và log không tự chuyển object.
+  - C Storage Lens cung cấp phân tích, không tự áp lifecycle theo kết quả lọc tùy ý.
+  - D ListObjectsV2 không cung cấp last-access timestamp; LastModified chỉ là lần thay đổi object gần nhất.
+  > Exam tip: phân biệt LastModified với LastAccessed; đừng giả định S3 giữ sẵn thời điểm đọc chính xác cho mọi object.`,
+  services: ['Amazon S3 Inventory', 'Amazon Athena', 'Amazon S3'],
+},
+{
+  id: 'sap-208', exam: 'sap-c02', domain: 'sap-d3',
+  q: `A company uses AWS Backup for production databases and must prove that recovery procedures work before an annual audit. Backups are already retained in a protected vault, but teams discover restore problems only during drills. The company wants scheduled restore tests with validation and reporting while keeping the existing backup plans. Which solution should it implement?`,
+  options: [
+    "Configure AWS Backup restore testing plans for supported resources, define a restore testing selection and schedule, and review test results.",
+    "Enable S3 Storage Lens and treat its storage metrics as proof that backups can be restored.",
+    "Create an AWS Config rule that checks whether each backup vault contains at least one recovery point.",
+    "Copy each recovery point to another account and assume that cross-account copies guarantee a successful restore."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** có recovery point nhưng chưa biết restore thực sự chạy được; cần test định kỳ có báo cáo, không thay backup plan. **AWS Backup restore testing** tự động hóa việc tạo restore test theo lịch và selection cho loại tài nguyên được hỗ trợ. Một recovery point tồn tại chỉ chứng minh backup được tạo, không chứng minh ứng dụng khởi động, dữ liệu nhất quán hay recovery time đạt mục tiêu.
+  **Vì sao đúng:** A thêm kiểm chứng phục hồi định kỳ bên cạnh chính sách backup, giúp tìm lỗi quyền, cấu hình, quy trình sớm.
+  **Vì sao phương án khác sai:**
+  - B Storage Lens phân tích S3, không chạy restore database hay xác nhận tính sử dụng được.
+  - C Config kiểm tra trạng thái cấu hình/hiện diện recovery point, không kiểm thử khôi phục.
+  - D bản copy ở account khác tăng khả năng chống sự cố nhưng không tự chứng minh restore thành công.
+  > Exam tip: backup success và restore success là hai metric khác nhau; audit resilience cần bằng chứng restore test và thời gian thực tế.`,
+  services: ['AWS Backup', 'AWS Config'],
+},
+{
+  id: 'sap-209', exam: 'sap-c02', domain: 'sap-d3',
+  q: `A company deploys infrastructure with AWS CloudFormation in 80 accounts. Teams make occasional emergency changes directly in the console, and those changes cause later stack updates to fail or replace resources unexpectedly. The platform team wants to detect differences between deployed resources and their templates across accounts before the next release. Which solution is the best fit?`,
+  options: [
+    "Use CloudFormation drift detection on the relevant stacks and CloudFormation StackSets to manage the organization-wide deployments.",
+    "Use AWS Config only to rewrite every resource to match its CloudFormation template automatically.",
+    "Enable AWS CloudTrail and use its event history as a live comparison of resource state against templates.",
+    "Use AWS Systems Manager State Manager to compare every AWS resource with the CloudFormation template."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** thay đổi console làm cấu hình thực tế lệch template; cần phát hiện trước release trên nhiều account. **CloudFormation drift detection** so sánh cấu hình tài nguyên được hỗ trợ với cấu hình dự kiến trong stack và báo drift. **StackSets** triển khai/quản lý stacks trên nhiều account/Region, giúp vận hành tập trung. Drift detection phát hiện chứ không tự sửa mọi loại drift; đội cần xem thay đổi và chọn cập nhật template hoặc khôi phục tài nguyên.
+  **Vì sao đúng:** A dùng đúng công cụ so sánh stack với template và quản lý rollout cross-account.
+  **Vì sao phương án khác sai:**
+  - B AWS Config ghi nhận/đánh giá cấu hình theo rule; không tự hiểu toàn bộ template và tự viết lại mọi resource.
+  - C CloudTrail ghi API activity, không liên tục so sánh trạng thái hiện tại với desired state.
+  - D State Manager duy trì cấu hình OS/instance bằng associations, không phải công cụ drift cho mọi AWS resource.
+  > Exam tip: CloudTrail trả lời "ai gọi API nào"; drift detection trả lời "resource hiện tại khác template ở đâu".`,
+  services: ['AWS CloudFormation', 'CloudFormation StackSets', 'AWS Config'],
+},
+{
+  id: 'sap-210', exam: 'sap-c02', domain: 'sap-d3',
+  q: `A company stores 10 PB of backup objects in Amazon S3 across several accounts. The operations team needs visibility into storage growth, object counts, and incomplete multipart uploads, and wants to create a recurring report without listing billions of objects through application code. Which combination is the most operationally efficient? (Choose two.)`,
+  options: [
+    "Use S3 Storage Lens dashboards for organization-wide storage metrics and trends.",
+    "Configure S3 Inventory reports for object-level metadata and query the reports with Amazon Athena.",
+    "Enable CloudTrail data events for every object and treat the event log as a complete storage inventory.",
+    "Create a CloudWatch custom metric for every object and publish it once per hour.",
+    "Use Amazon S3 Select to enumerate all objects in all buckets without an inventory."
+  ],
+  answer: [0, 1],
+  multi: true,
+  explain: `**Từ khóa:** quy mô PB, cần xu hướng tổng thể lẫn tra cứu object-level, tránh tự gọi API liệt kê hàng tỷ object. Cần kết hợp hai cấp độ: **S3 Storage Lens** cho số liệu tổng hợp giữa bucket/account; **S3 Inventory** cho báo cáo danh sách object định kỳ, truy vấn bằng Athena. Inventory không phản ánh tức thời vì tạo theo lịch, phù hợp báo cáo/tối ưu hóa chứ không phải kiểm soát đồng bộ.
+  **Vì sao A và B đúng:** Storage Lens trả lời dung lượng/đối tượng tăng ở đâu; Inventory cho phép lọc metadata cụ thể và lập báo cáo tái chạy.
+  **Vì sao phương án khác sai:**
+  - C CloudTrail data events ghi thao tác API được cấu hình, không phải snapshot đầy đủ mọi object; volume log rất lớn.
+  - D một metric/object gây cardinality/chi phí cực cao, không phải mô hình metric phù hợp.
+  - E S3 Select truy vấn nội dung object hỗ trợ, không dùng enumerate toàn bộ key mọi bucket.
+  > Exam tip: báo cáo storage tổng quan dùng Storage Lens; phân tích metadata từng object dùng Inventory + Athena.`,
+  services: ['Amazon S3 Storage Lens', 'Amazon S3 Inventory', 'Amazon Athena'],
+},
+{
+  id: 'sap-211', exam: 'sap-c02', domain: 'sap-d3',
+  q: `A company has a Java service on Amazon EC2 that serves customer requests. A monthly release occasionally increases latency, but the team has no repeatable way to verify that the public login journey still works from multiple locations. The team wants lightweight synthetic checks that run on a schedule and alert when a browser-based workflow fails. Which solution should it use?`,
+  options: [
+    "Create Amazon CloudWatch Synthetics canaries that execute the login journey on a schedule and publish results to CloudWatch.",
+    "Use AWS CloudTrail management events to replay the customer's browser workflow.",
+    "Use AWS Config to open a TCP connection and verify every page in the login flow.",
+    "Use Amazon S3 Inventory to record each successful login response."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** cần mô phỏng hành trình đăng nhập từ nhiều vị trí, chạy định kỳ, phát hiện lỗi trước khi người dùng báo. **CloudWatch Synthetics canary** chạy script kiểm tra endpoint hoặc browser workflow, lưu kết quả và có thể kết hợp CloudWatch alarms để thông báo. Canary không thay monitoring phía ứng dụng: cần chọn tần suất hợp lý, dữ liệu đăng nhập test riêng, và tránh ghi secret vào log.
+  **Vì sao đúng:** A xác nhận chức năng end-to-end như người dùng thực, bắt được lỗi DNS, TLS, giao diện hoặc backend mà chỉ xem CPU không thấy.
+  **Vì sao phương án khác sai:**
+  - B CloudTrail ghi hoạt động API AWS, không ghi/replay tương tác browser của khách.
+  - C AWS Config đánh giá cấu hình resource, không thực hiện trình duyệt kiểm tra flow.
+  - D S3 Inventory liệt kê object metadata, không theo dõi response đăng nhập.
+  > Exam tip: Synthetics đo "người dùng có hoàn tất journey không?"; metric hệ thống đo CPU, memory, latency ở từng thành phần.`,
+  services: ['Amazon CloudWatch Synthetics', 'Amazon CloudWatch', 'Amazon EC2'],
+},
+{
+  id: 'sap-212', exam: 'sap-c02', domain: 'sap-d3',
+  q: `A company is reducing storage cost for a 5 PB Amazon S3 data lake. Many objects are rarely accessed, but the access pattern is unpredictable and some objects become popular without warning. The company does not want to build a per-object access prediction model or retrieve objects before reading them. Which storage class is the best starting point for automatically optimizing eligible object storage costs?`,
+  options: [
+    "Use S3 Intelligent-Tiering for eligible objects and monitor the applicable monitoring and retrieval charges.",
+    "Move every object to S3 Glacier Deep Archive because the data is described as rarely accessed.",
+    "Use S3 One Zone-IA because it automatically moves objects between storage tiers in multiple Availability Zones.",
+    "Keep all objects in S3 Standard and create a lifecycle rule that deletes objects after 30 days."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** access pattern không dự đoán được, object có thể bất ngờ được đọc nhiều, không muốn tự xây mô hình. **S3 Intelligent-Tiering** tự chuyển object đủ điều kiện giữa các access tier theo hoạt động truy cập; người dùng không phải dự đoán trước. Cần lưu ý có phí monitoring/automation cho object đủ điều kiện và các tầng truy cập tức thì khác với tầng archive cần restore trước.
+  **Vì sao đúng:** A tự tối ưu theo hành vi thực tế, đồng thời giữ khả năng truy cập phù hợp với tầng được sử dụng.
+  **Vì sao phương án khác sai:**
+  - B Deep Archive tối ưu lưu trữ rất rẻ nhưng cần thời gian restore; không phù hợp object bất ngờ cần đọc ngay.
+  - C One Zone-IA lưu trong một AZ và không tự chuyển tier theo truy cập như Intelligent-Tiering; durability/availability trade-off khác.
+  - D xóa sau 30 ngày vi phạm yêu cầu giữ data lake và không tối ưu chi phí bằng cách chọn storage class.
+  > Exam tip: unpredictable access → Intelligent-Tiering; archive có thể chờ restore → Glacier tiers; dữ liệu có thể tái tạo và chấp nhận một AZ → cân nhắc One Zone.`,
+  services: ['Amazon S3 Intelligent-Tiering', 'Amazon S3 Glacier'],
+},
+{
+  id: 'sap-213', exam: 'sap-c02', domain: 'sap-d3',
+  q: `A company has a production S3 bucket with millions of objects. A compliance team wants to identify objects that are encrypted with an outdated KMS key, run a controlled remediation on only the matching objects, and track per-object success and failure. The operation must not require a custom fleet of workers. Which approach is most appropriate?`,
+  options: [
+    "Generate an S3 Inventory report, filter the affected objects, and use S3 Batch Operations to invoke an operation on that manifest.",
+    "Run a single S3 PutBucketEncryption call, which automatically re-encrypts all existing objects.",
+    "Use AWS Config to rewrite the encryption key of each existing S3 object without an object-level operation.",
+    "Enable S3 Lifecycle expiration and recreate all objects through a one-time bucket copy."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** cần tìm tập object cụ thể, chạy tác vụ theo từng object, có báo cáo thành công/thất bại, không tự quản lý worker. S3 Inventory tạo manifest metadata; **S3 Batch Operations** chạy tác vụ trên danh sách object quy mô lớn và lưu kết quả theo object. Đổi default encryption trên bucket chỉ ảnh hưởng object ghi sau đó, không tự mã hóa lại object đã tồn tại; remediation phải tạo bản ghi mới phù hợp.
+  **Vì sao đúng:** A tách discovery (Inventory), selection (lọc manifest) và execution/reporting (Batch Operations), dễ kiểm soát và audit.
+  **Vì sao phương án khác sai:**
+  - B PutBucketEncryption đặt mặc định cho upload mới; không rewrite nội dung/key của object cũ.
+  - C Config phát hiện/đánh giá cấu hình nhưng không thực hiện thao tác re-encrypt object theo cách này.
+  - D Lifecycle expiration xóa dữ liệu theo rule; recreate toàn bộ có thể gây mất dữ liệu/metadata và không chọn chính xác đối tượng.
+  > Exam tip: thay đổi cấu hình bucket không hồi tố; với hàng triệu object cũ, dùng Inventory để chọn và Batch Operations để xử lý có báo cáo.`,
+  services: ['Amazon S3 Inventory', 'Amazon S3 Batch Operations', 'Amazon S3'],
+},
+{
+  id: 'sap-214', exam: 'sap-c02', domain: 'sap-d1',
+  q: `A company has 250 member accounts in AWS Organizations. The security team wants to manage root credentials for member accounts centrally, remove unnecessary long-lived root passwords and access keys, and perform privileged tasks from the management account without sharing root credentials. Which capability should the team use?`,
+  options: [
+    "Use centralized root access in AWS Organizations to manage member-account root credentials and enable the required organization integration.",
+    "Create one IAM user named root in the management account and share its password with account administrators.",
+    "Use AWS IAM Identity Center permission sets because they replace every root-user operation in all accounts.",
+    "Attach an SCP that denies all actions to the root user, which automatically deletes root credentials."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** quản trị tập trung root credentials của member account, giảm password/access key không cần thiết, thực hiện task quyền cao từ management account. **Centralized root access** trong AWS Organizations cho phép loại bỏ long-lived root credentials của member accounts và thực hiện một số tác vụ root được hỗ trợ từ management/delegated account. Cần cấu hình trusted access/role phù hợp và hiểu đây không phải cách chia sẻ một mật khẩu root chung.
+  **Vì sao đúng:** A áp dụng quản trị root ở cấp organization cho member accounts mà không biến root thành tài khoản dùng chung.
+  **Vì sao phương án khác sai:**
+  - B IAM user tên root không phải root user thật và chia sẻ mật khẩu vi phạm quản trị danh tính.
+  - C Identity Center cấp quyền role-based cho người dùng, nhưng không thay mọi tác vụ chỉ root mới làm được.
+  - D SCP có thể giới hạn hành động, nhưng không xóa password/access key root; SCP cũng không phải cơ chế quản lý credential.
+  > Exam tip: root user là danh tính đặc biệt của từng account; tập trung root access không đồng nghĩa dùng chung một root credential.`,
+  services: ['AWS Organizations', 'AWS IAM Identity Center'],
+},
+{
+  id: 'sap-215', exam: 'sap-c02', domain: 'sap-d1',
+  q: `A company has 50 accounts in AWS Organizations and frequently launches bursty workloads for short training jobs. The central capacity team has purchased EC2 Capacity Reservations in a shared account, but workload accounts cannot use the reserved capacity. The company wants to share compatible reservations with selected accounts without sharing the instances themselves. Which combination of steps should it take? (Choose two.)`,
+  options: [
+    "Enable AWS RAM sharing with AWS Organizations so organization accounts can be selected as principals.",
+    "Create an AWS RAM resource share for the EC2 Capacity Reservations and grant selected workload accounts access.",
+    "Share the running EC2 instances through AWS RAM so other accounts can launch into them.",
+    "Create an EC2 Auto Scaling group in the central account and attach it to every workload account.",
+    "Purchase a Savings Plan because it reserves specific EC2 capacity for other accounts."
+  ],
+  answer: [0, 1],
+  multi: true,
+  explain: `**Từ khóa:** central account đã có Capacity Reservations, workload accounts cần dùng capacity tương thích, không chia sẻ instance đang chạy. **AWS RAM** có thể chia sẻ EC2 Capacity Reservations cho account/OU phù hợp; account tiêu thụ vẫn phải chọn instance attributes tương thích và sử dụng capacity được share đúng cách. Reservation đảm bảo khả năng có capacity trong AZ/instance attributes đã đặt, không phải workload đã chạy sẵn.
+  **Vì sao A và B đúng:** bật RAM sharing với Organizations cho phép chọn principal trong tổ chức; resource share mới cấp quyền dùng Capacity Reservation cho workload accounts được chọn.
+  **Vì sao phương án khác sai:**
+  - C RAM không chia sẻ EC2 instance đang chạy theo cách này; yêu cầu chia sẻ reservation.
+  - D Auto Scaling group thuộc account sở hữu, không tự tạo quyền chạy instance trong account khác.
+  - E Savings Plans là cam kết chi tiêu giảm giá compute, không đặt trước capacity cụ thể.
+  > Exam tip: Savings Plans giảm bill; Capacity Reservation bảo đảm capacity ở AZ/instance type cụ thể; có thể cần cả hai cho hai mục tiêu khác nhau.`,
+  services: ['Amazon EC2 Capacity Reservations', 'AWS RAM', 'AWS Organizations'],
+},
+{
+  id: 'sap-216', exam: 'sap-c02', domain: 'sap-d2',
+  q: `A company runs an internal REST API on private EC2 instances. Only clients in selected VPCs should be able to invoke the API; the API must not be reachable from the public internet. The company wants a managed API front end, private connectivity through interface endpoints, and an additional resource policy that limits which VPC endpoints can call it. Which combination of steps should it take? (Choose two.)`,
+  options: [
+    "Create an API Gateway private REST API for the internal API.",
+    "Create an execute-api interface VPC endpoint and use an API resource policy to restrict which endpoint can invoke the API.",
+    "Create a public API Gateway endpoint and rely only on a secret URL that is difficult to guess.",
+    "Create a private Application Load Balancer and enable CloudFront public access to it.",
+    "Create an S3 gateway endpoint because all AWS APIs can be reached through an S3 endpoint."
+  ],
+  answer: [0, 1],
+  multi: true,
+  explain: `**Từ khóa:** REST API không public, chỉ VPC được chọn gọi, cần interface endpoint và policy ở resource. **API Gateway private REST API** được gọi qua interface VPC endpoint của dịch vụ execute-api; resource policy có thể giới hạn nguồn gọi theo VPC endpoint/VPC. Cần cấu hình DNS/routing và quyền execute-api phù hợp; private endpoint không tự đảm bảo mọi client trong VPC đều được phép.
+  **Vì sao A và B đúng:** private REST API tạo mặt API không public; execute-api interface endpoint cung cấp đường vào riêng, resource policy giới hạn VPC endpoint được gọi. Cả hai lớp đều cần thiết theo yêu cầu.
+  **Vì sao phương án khác sai:**
+  - C URL bí mật không phải cơ chế xác thực/phân quyền và endpoint vẫn public.
+  - D CloudFront là điểm truy cập internet phổ biến; private ALB không biến API thành private API Gateway với VPC endpoint policy.
+  - E S3 gateway endpoint chỉ truy cập S3 qua route table; không phải endpoint chung cho API AWS khác.
+  > Exam tip: private REST API của API Gateway dùng interface endpoint; endpoint policy và API resource policy là hai lớp kiểm soát khác nhau.`,
+  services: ['Amazon API Gateway', 'Amazon VPC', 'AWS PrivateLink'],
+},
 );
