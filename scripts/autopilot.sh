@@ -178,7 +178,7 @@ while true; do
   done
   # Vercel Hobby allows ~100 deployments a day and every push deploys: push batched commits at most every $PUSH_EVERY s
   if [ -f logs/push-pending ] && ! fresh logs/last-push "$PUSH_EVERY"; then
-    git push -q && { rm -f logs/push-pending; touch logs/last-push; log "pushed $(git log --oneline -1 | cut -c1-7) (batched)"; }
+    git push -q origin HEAD:content HEAD:main && { rm -f logs/push-pending; touch logs/last-push; log "pushed $(git log --oneline -1 | cut -c1-7) (batched)"; }
   fi
   # health check every ~15 rounds: frees stale claims, cancels stale reviews that block files, logs DOCTOR: warnings
   ROUND=$(( ${ROUND:-0} + 1 )); [ $(( ROUND % 15 )) -eq 1 ] && node scripts/pipeline-doctor.js --fix --quiet 2>&1 | grep -v "Verify-failed" | head -20
