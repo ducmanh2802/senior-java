@@ -38,6 +38,7 @@
       projects: ['projects.js'],
       sdlc: ['sdlc.js'],                                      // #/sdlc end-to-end SDLC simulation (window.SDLC)
       bugs: ['bugs.js'],                                      // #/bugs bug hunt: buggy project code + tests (window.BUGS)
+      stars: ['star-stories.js'],                             // #/career mẫu câu chuyện STAR (window.STAR_STORIES)
       pathbasics: ['path-basics.js'],                         // #/path: kiến thức nền + link tài liệu cho từng chặng
       // AWS Pro track (#/aws): plan + SAP-C02/DOP-C02 exam-style pools (docs/AWS-TRACK.md, scripts/check-aws.js)
       aws: ['aws-plan.js', 'aws-sap-1.js', 'aws-sap-2.js', 'aws-sap-3.js', 'aws-dop-1.js', 'aws-dop-2.js', 'aws-dop-3.js', 'aws-sap-4.js', 'aws-dop-4.js'],
@@ -67,7 +68,7 @@
       news: [],
       sd: ['sd', 'questions', 'glossary'],
       projects: ['projects', 'lessons', 'questions', 'glossary'],
-      career: ['questions', 'companies'],
+      career: ['questions', 'companies', 'stars'],
       sdlc: ['sdlc'],
       bugs: ['bugs', 'questions', 'glossary'],               // related-questions widget
       aws: ['aws'],                                           // window.AWS_PLAN + window.AWS_QUESTIONS
