@@ -554,4 +554,292 @@
 
 > Coi file cấu hình server như mã có khả năng kích hoạt quyền truy cập, cần review tương tự dependency hoặc script.`
 },
+{
+  id: 'qz-ccat-028',
+  topic: 'claude',
+  q: '[Tool Design & MCP] In a Claude API integration, the model returns a request to call get_order_status. The order service must actually be queried before the user receives an answer. What should the application do?',
+  options: [
+    'Assume Claude executed the tool because the response names it',
+    'Run the registered tool in the application, then send its result back linked to the returned tool_use_id so Claude can continue',
+    'Ask the user to repeat the request because tool calls cannot be handled by an application',
+    'Treat the tool input as the final answer and skip the order service'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: ứng dụng thực thi tool rồi gửi kết quả lại cho Claude.** Tool call là một yêu cầu do model tạo ra, không phải lệnh đã tự chạy. Trong Claude Messages API, ứng dụng kiểm tra tool được yêu cầu, gọi order service bằng code của mình, rồi trả một tool_result gắn với tool_use_id tương ứng. Claude có thể dùng kết quả đó để tạo câu trả lời cuối cùng. Ví dụ, model yêu cầu order_id là 8421; backend tra hệ thống đơn hàng và trả trạng thái “đang giao”, thay vì để model đoán từ hội thoại.
+
+### Vì sao các phương án khác sai
+- **Coi như Claude đã chạy:** model không có kết nối trực tiếp tới database/service nếu ứng dụng không thực hiện yêu cầu.
+- **Bắt người dùng hỏi lại:** ứng dụng hoàn toàn có thể điều phối vòng gọi tool; hỏi lại không giải quyết việc thiếu thực thi.
+- **Dùng input làm kết quả:** input chỉ chứa yêu cầu, ví dụ mã đơn; nó không chứng minh trạng thái thật trong hệ thống.
+
+> Luôn kiểm tra tool name, quyền và input ở executor trước side effect; model chỉ đề xuất, ứng dụng chịu trách nhiệm thực thi.`
+},
+{
+  id: 'qz-ccat-029',
+  topic: 'claude',
+  q: '[Tool Design & MCP] A response contains two tool requests: one reads a customer profile and one reads an unrelated shipping estimate. The calls do not depend on each other. How should the executor handle them?',
+  options: [
+    'Run independent calls concurrently when safe, then return a separate result for each original tool_use_id',
+    'Combine both outputs into one tool_result and attach it to either request ID',
+    'Run the second call first because tool requests are always ordered by priority',
+    'Assume the model already ran both services and return a final answer immediately'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: có thể chạy song song khi các thao tác độc lập, nhưng phải trả kết quả riêng theo từng ID.** Một response có thể chứa nhiều tool_use block. “Độc lập” nghĩa là đầu vào và kết quả của lời gọi thứ nhất không cần cho lời gọi thứ hai; khi đó chạy đồng thời có thể giảm độ trễ. Mỗi tool_result vẫn phải chỉ rõ tool_use_id của yêu cầu tương ứng để Claude ghép đúng kết quả. Nếu lời gọi thứ hai cần dữ liệu do lời gọi thứ nhất tạo ra, phải chạy tuần tự.
+
+### Vì sao các phương án khác sai
+- **Gộp hai kết quả dưới một ID:** làm mất liên kết giữa yêu cầu và kết quả, khiến model khó biết dữ liệu nào thuộc tool nào.
+- **Đoán thứ tự ưu tiên:** thứ tự trong response không thể hiện quan hệ phụ thuộc hay ưu tiên nghiệp vụ.
+- **Bỏ qua thực thi:** model chỉ phát yêu cầu; executor mới gọi các dịch vụ thực tế.
+
+> Chỉ chạy song song sau khi xác định không có dependency, xung đột ghi dữ liệu hoặc giới hạn tải của downstream.`
+},
+{
+  id: 'qz-ccat-030',
+  topic: 'claude',
+  q: '[Tool Design & MCP] A search tool can return 40,000 support tickets, but Claude only needs the newest five matching a user’s question. What is the best tool design?',
+  options: [
+    'Return the full dataset and rely on the model to discard irrelevant records',
+    'Raise the model token limit and leave the search query unchanged',
+    'Truncate the JSON response at an arbitrary byte offset',
+    'Support server-side filters, sorting, and bounded pagination, and return only the requested slice with a continuation option when needed'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: lọc và giới hạn kết quả tại hệ thống tìm kiếm.** Context window là lượng nội dung model có thể xử lý trong một lượt; hàng chục nghìn bản ghi vừa vượt giới hạn thực tế, vừa làm tăng chi phí và khiến câu trả lời nhiễu. Tool nên nhận bộ lọc (ví dụ trạng thái “open”), sắp xếp theo thời gian giảm dần và trả tối đa năm kết quả. Nếu người dùng cần thêm, có thể trả cursor hoặc token trang tiếp theo để gọi lượt sau. Cursor là dấu vị trí tiếp tục, không phải toàn bộ dữ liệu.
+
+### Vì sao các phương án khác sai
+- **Trả mọi bản ghi:** tốn context, chậm và có thể đưa dữ liệu không cần thiết vào model.
+- **Tăng giới hạn token:** không sửa truy vấn quá rộng; payload vẫn tốn chi phí và có thể quá giới hạn khác.
+- **Cắt JSON tùy ý:** có thể làm hỏng cú pháp, cắt mất field quan trọng hoặc tạo bản ghi sai.
+
+> Giới hạn số hàng và kích thước từng field ở server; ghi rõ trong description cách lấy trang tiếp theo để model không tự chế cursor.`
+},
+{
+  id: 'qz-ccat-031',
+  topic: 'claude',
+  q: '[Tool Design & MCP] An assistant answers “Your parcel will arrive tomorrow” using a delivery estimate from a conversation yesterday, but the carrier has since changed the date. What should the team change?',
+  options: [
+    'Increase temperature so the assistant is more open to different dates',
+    'Ask the model to remember that delivery estimates can change',
+    'Have the assistant call an authorized, current tracking tool for time-sensitive status and state when the result was checked',
+    'Keep using the old estimate unless the user explicitly says it is wrong'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: lấy dữ liệu mới từ nguồn có thẩm quyền khi câu trả lời phụ thuộc thời gian.** Context là nội dung hội thoại model đang thấy; nó có thể chứa thông tin cũ nhưng không tự cập nhật khi carrier đổi lịch. Tool tracking nên truy vấn hệ thống chính thức, trả thời điểm kiểm tra và trạng thái mới nhất. Ví dụ: “Carrier báo giao ngày 14/11; kiểm tra lúc 09:20.” Cách này phân biệt rõ dữ liệu vừa tra với lời người dùng kể trước đó.
+
+### Vì sao các phương án khác sai
+- **Tăng temperature:** chỉ làm thay đổi tính ngẫu nhiên của văn bản; không truy cập trạng thái mới.
+- **Nhắc model ghi nhớ:** lời nhắc không biến dữ liệu hôm qua thành dữ liệu thời gian thực.
+- **Chờ người dùng phản bác:** người dùng có thể không biết lịch đã đổi; câu trả lời sai vẫn được đưa ra.
+
+> Xác định nguồn dữ liệu chính thức, thời gian cập nhật và hành vi khi hệ thống tracking không sẵn sàng; đừng biến “không tra được” thành một ngày giao hàng đoán mò.`
+},
+{
+  id: 'qz-ccat-032',
+  topic: 'claude',
+  q: '[Tool Design & MCP] An MCP server advertises a tool with a readOnlyHint annotation. A user asks the tool to retrieve an account, but the authenticated user may not own that account. What should the server do?',
+  options: [
+    'Trust readOnlyHint as proof that the request is safe and skip authorization',
+    'Enforce authorization in the server using the authenticated identity and requested account; treat annotations as descriptive hints, not access control',
+    'Allow the model to decide whether the account belongs to the user',
+    'Remove the account identifier from the schema so the server can guess the intended account'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: authorization phải được kiểm tra ở server; annotation không cấp quyền.** Annotation là metadata mô tả tool, chẳng hạn gợi ý thao tác chỉ đọc hoặc có thể phá hủy. Metadata giúp client/model hiểu công cụ, nhưng không phải cơ chế bảo mật. “Chỉ đọc” vẫn có thể làm lộ dữ liệu riêng tư. Server cần lấy danh tính từ phiên đã xác thực rồi xác nhận người đó được đọc đúng account trước khi truy vấn.
+
+### Vì sao các phương án khác sai
+- **Tin readOnlyHint:** đọc trái quyền vẫn là rò rỉ dữ liệu dù không sửa dữ liệu.
+- **Để model quyết định quyền:** model không phải nguồn danh tính đáng tin và không có đầy đủ chính sách của hệ thống.
+- **Đoán account:** có thể truy cập nhầm dữ liệu; thiếu định danh phải được làm rõ, không được tự suy diễn.
+
+> Dùng annotation cho khả năng khám phá và trải nghiệm người dùng; đặt authorization ở nơi có thể chặn lời gọi thật.`
+},
+{
+  id: 'qz-ccat-033',
+  topic: 'claude',
+  q: '[Tool Design & MCP] An MCP client connects successfully to a server, but the client and server may support different protocol versions and capabilities. What should the client do before relying on server features?',
+  options: [
+    'Skip protocol initialization because an open connection guarantees compatibility',
+    'Assume every MCP server supports tools, resources, and prompts',
+    'Send every possible request and interpret any error as an unsupported feature',
+    'Complete MCP initialization, negotiate a compatible protocol version, and use only capabilities that are supported'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: hoàn tất khởi tạo và chỉ dùng khả năng tương thích đã được trao đổi.** MCP là giao thức client-server; mở được kết nối mạng hoặc tiến trình chỉ chứng minh có kênh truyền, chưa chứng minh hai bên hiểu cùng phiên bản hay cùng chức năng. Trong bước khởi tạo, hai bên trao đổi phiên bản giao thức và capabilities (những nhóm chức năng được hỗ trợ). Client nên kiểm tra thông tin đó trước khi gọi tools, đọc resources hay dùng prompts.
+
+### Vì sao các phương án khác sai
+- **Bỏ initialization:** hai bên có thể hiểu khác nhau về giao thức dù kết nối vẫn mở.
+- **Giả định có mọi primitive:** server có thể chỉ triển khai một số khả năng.
+- **Thử mọi lệnh:** tạo lỗi không cần thiết và có thể gây tác động nếu lệnh được hỗ trợ nhưng không nên dùng.
+
+> Xử lý rõ trường hợp phiên bản không tương thích; không “hạ cấp” âm thầm theo cách làm thay đổi ý nghĩa hoặc mức an toàn của thao tác.`
+},
+{
+  id: 'qz-ccat-034',
+  topic: 'claude',
+  q: '[Tool Design & MCP] An MCP server can add or remove tools while a client remains connected. The client cached the old tool list and now keeps calling a removed tool. What is the best response?',
+  options: [
+    'Keep retrying the removed tool until the server restarts',
+    'Treat every tool-list change as a protocol failure and terminate all client processes',
+    'When supported, handle the tools-list-changed notification by refreshing discovery and rebuilding the model-facing tool list',
+    'Invent a replacement tool name based on the old description'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: làm mới danh sách tool khi server thông báo thay đổi.** Client thường khám phá tools từ MCP server rồi chuyển chúng thành công cụ mà model có thể chọn. Nếu danh sách thay đổi, cache cũ có thể khiến model tiếp tục yêu cầu một tool đã bị gỡ. MCP có notification tools/list_changed để báo thay đổi; khi server/client hỗ trợ, client nên truy vấn lại danh sách và cập nhật công cụ đưa cho model.
+
+### Vì sao các phương án khác sai
+- **Retry tool đã gỡ:** lặp lại cùng yêu cầu không làm tool xuất hiện trở lại và gây lỗi liên tục.
+- **Tắt toàn bộ client:** thay đổi danh sách là tình huống có thể xử lý, không mặc nhiên là hỏng giao thức.
+- **Tự đặt tên thay thế:** tên và input schema phải đến từ server; tự suy đoán có thể gọi nhầm chức năng.
+
+> Cập nhật cache theo phiên bản/danh sách mới và xử lý lời gọi đang dở; không thực thi một tool chỉ vì nó còn trong cache.`
+},
+{
+  id: 'qz-ccat-035',
+  topic: 'claude',
+  q: '[Tool Design & MCP] A client reads a frequently changing project document from an MCP server. Repeatedly polling it every second creates unnecessary traffic. The server and client both support resource subscriptions. What should the client do?',
+  options: [
+    'Subscribe to the resource and refresh it when an update notification arrives',
+    'Treat the first resource response as permanently current',
+    'Convert the resource URI into a tool name and call it without discovery',
+    'Ask Claude to infer document changes from its earlier response'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: đăng ký theo dõi resource và đọc lại khi có thông báo cập nhật.** MCP resource là nội dung được server cung cấp để client đưa vào context. Với resource subscriptions được hỗ trợ, client có thể đăng ký nhận thông báo khi nội dung thay đổi thay vì gửi yêu cầu lặp lại mỗi giây. Khi nhận thông báo, client lấy bản mới rồi mới dùng nó làm context. Subscription báo “có cập nhật”; không nhất thiết chứa toàn bộ nội dung mới.
+
+### Vì sao các phương án khác sai
+- **Coi bản đầu là vĩnh viễn:** nội dung có thể thay đổi, nên model sẽ trả lời bằng tài liệu cũ.
+- **Đổi URI thành tên tool:** URI resource dùng để định danh nội dung, không tự biến thành thao tác tool.
+- **Nhờ model đoán:** model không thể biết server đã cập nhật nếu không nhận dữ liệu mới.
+
+> Kiểm tra capability subscription trước khi dùng và vẫn xử lý mất kết nối/reconnect; notification không thay thế việc đọc lại nội dung.`
+},
+{
+  id: 'qz-ccat-036',
+  topic: 'claude',
+  q: '[Tool Design & MCP] A report-generation tool often needs 90 seconds, while the surrounding request has a 15-second timeout. What design is most reliable?',
+  options: [
+    'Increase every API timeout to several minutes and block all application workers',
+    'Return a success response before the report has been generated',
+    'Have the model repeatedly call the same generation tool with no operation identifier',
+    'Create an asynchronous job, return a job identifier, and expose a status/result lookup the application can call later'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: tách yêu cầu khởi tạo khỏi công việc chạy lâu.** Với tác vụ 90 giây nhưng request chỉ sống 15 giây, giữ kết nối đồng bộ có thể hết timeout dù công việc vẫn chạy. Tool có thể xác thực yêu cầu, tạo job ở backend và trả job_id; ứng dụng kiểm tra trạng thái hoặc nhận thông báo rồi lấy kết quả khi sẵn sàng. Job ID là định danh để truy vấn đúng tác vụ, không phải bằng chứng tác vụ đã thành công.
+
+### Vì sao các phương án khác sai
+- **Tăng timeout và giữ worker:** làm cạn worker khi nhiều báo cáo chạy đồng thời, đồng thời vẫn có thể bị giới hạn bởi proxy/client.
+- **Báo thành công sớm:** gây hiểu nhầm vì đầu ra chưa tồn tại.
+- **Lặp gọi không ID:** có thể khởi chạy nhiều job trùng lặp, khó đối chiếu kết quả.
+
+> Đặt trạng thái rõ như queued/running/failed/completed, có timeout và cơ chế chống tạo job trùng khi client retry.`
+},
+{
+  id: 'qz-ccat-037',
+  topic: 'claude',
+  q: '[Tool Design & MCP] A production agent team needs to investigate why tool calls became slow, but tool inputs may contain customer email addresses and account data. What should the telemetry design do?',
+  options: [
+    'Log every raw prompt, tool input, and credential forever so incidents are easier to debug',
+    'Record operational metadata such as tool name, duration, outcome, and a correlation ID, while redacting sensitive values and applying retention limits',
+    'Disable all measurements because any log is necessarily unsafe',
+    'Store tool inputs in a public metrics label so dashboards can filter by customer'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: ghi metadata hữu ích, giảm thiểu dữ liệu nhạy cảm.** Observability là khả năng hiểu hệ thống qua log/metric/trace. Để điều tra độ trễ, thường cần tên tool, thời lượng, kết quả thành công/thất bại và correlation ID (mã nối các bước trong cùng một request). Không nhất thiết phải lưu toàn bộ prompt, email hay credential. Có thể che/mã hóa trường nhạy cảm, giới hạn người đọc và thời hạn lưu.
+
+### Vì sao các phương án khác sai
+- **Lưu mọi thứ vô thời hạn:** tăng rủi ro lộ dữ liệu và tạo kho chứa bí mật khó quản lý.
+- **Tắt toàn bộ đo lường:** làm mất khả năng tìm nguyên nhân sự cố; có thể đo bằng metadata tối thiểu.
+- **Đưa dữ liệu vào metric label công khai:** label thường được nhân bản rộng và có cardinality cao, vừa lộ dữ liệu vừa làm hệ thống metric tốn tài nguyên.
+
+> Thiết kế log theo mục đích điều tra cụ thể; thử nghiệm redaction bằng dữ liệu mẫu trước khi bật trên production.`
+},
+{
+  id: 'qz-ccat-038',
+  topic: 'claude',
+  multi: true,
+  q: '[Tool Design & MCP] Claude returns two tool_use blocks in one response. Which two executor practices preserve correct orchestration? (Choose 2)',
+  options: [
+    'Return a separate tool_result associated with each original tool_use_id',
+    'Use the same tool_use_id for both results so they appear in one group',
+    'Run calls concurrently only when they are independent and safe to execute in parallel',
+    'Assume every tool_use block is already executed by Claude',
+    'Always execute calls in parallel, including calls that depend on each other'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 1 và 3.** tool_use_id là mã liên kết một yêu cầu tool với kết quả của nó. Nếu có hai lời gọi, executor trả hai tool_result riêng, mỗi kết quả gắn đúng ID. Có thể chạy đồng thời khi hai thao tác không phụ thuộc nhau; nếu thao tác B cần đầu ra của A thì phải đợi A xong. Điều này giống xử lý hai truy vấn độc lập song song nhưng vẫn giữ đúng kết quả từng truy vấn.
+
+### Vì sao các phương án còn lại sai
+- **Dùng chung ID:** làm mơ hồ kết quả thuộc lời gọi nào.
+- **Cho rằng model đã chạy:** model chỉ phát yêu cầu; ứng dụng/server mới thực hiện truy cập thật.
+- **Luôn chạy song song:** có thể chạy thao tác theo thứ tự sai hoặc gây tranh chấp dữ liệu.
+
+> Tách hai câu hỏi: “có thể chạy song song không?” và “kết quả nào trả cho request ID nào?”; cả hai đều phải được giải quyết.`
+},
+{
+  id: 'qz-ccat-039',
+  topic: 'claude',
+  multi: true,
+  q: '[Tool Design & MCP] A booking tool requires a date and a guest count, but the user only says, “Book a room for tomorrow.” Which two practices help avoid a guessed, invalid booking? (Choose 2)',
+  options: [
+    'Default the guest count to the largest value allowed so the tool call can proceed',
+    'Declare required fields and types in the tool input schema, then validate them before execution',
+    'Use the current date as the guest count when the model is uncertain',
+    'Have the assistant ask the user for missing information rather than inventing it',
+    'Execute the booking first and ask for details only if it fails'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: phương án 2 và 4.** Input schema khai báo những field cần có và kiểu dữ liệu, giúp phát hiện guest_count bị thiếu trước khi gọi dịch vụ. Nhưng schema không thể tự biết người dùng muốn mấy khách. Khi thông tin nghiệp vụ chưa có, assistant nên hỏi lại, ví dụ “Có bao nhiêu khách?” Sau khi có câu trả lời, backend vẫn kiểm tra giới hạn và tình trạng phòng.
+
+### Vì sao các phương án còn lại sai
+- **Chọn số khách tối đa:** tự tạo quyết định có thể làm giá/phòng sai.
+- **Dùng ngày làm số khách:** sai kiểu ý nghĩa dù có thể biểu diễn bằng số.
+- **Đặt trước rồi hỏi:** tạo side effect trước khi đủ dữ liệu và có thể phải hủy giao dịch.
+
+> Phân biệt “thiếu field” với “giá trị không hợp lệ”; không dùng default im lặng cho dữ liệu ảnh hưởng đến giao dịch.`
+},
+{
+  id: 'qz-ccat-040',
+  topic: 'claude',
+  multi: true,
+  q: '[Tool Design & MCP] A customer lookup tool only needs to tell Claude whether an account is active, and production logs are retained for 30 days. Which two choices reduce unnecessary exposure of personal data? (Choose 2)',
+  options: [
+    'Return only the fields needed for the answer instead of the full customer profile',
+    'Send every database column to Claude so it can decide what is relevant',
+    'Include access tokens in the tool result to simplify later requests',
+    'Redact sensitive values from operational logs and avoid logging credentials',
+    'Copy the full customer profile into a metric label for easier dashboard filtering'
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: phương án 1 và 4.** Data minimization nghĩa là chỉ xử lý lượng dữ liệu cần cho mục đích. Nếu câu hỏi chỉ cần trạng thái active, tool nên trả account_id cần thiết và trạng thái, không trả địa chỉ hay thông tin thanh toán. Log vận hành cũng nên che email/credential và không ghi token. Điều này giảm số nơi chứa dữ liệu nhạy cảm trong suốt 30 ngày lưu log.
+
+### Vì sao các phương án còn lại sai
+- **Gửi toàn bộ profile:** tăng lượng dữ liệu trong context model mà không giúp trả lời câu hỏi này.
+- **Trả access token:** token là bí mật xác thực, không phải dữ liệu cần để giải thích trạng thái tài khoản.
+- **Đưa profile vào metric label:** metric có thể được chia sẻ rộng và lưu lâu; label còn làm tăng số chuỗi thời gian cần quản lý.
+
+> Kiểm kê dữ liệu đầu ra và log theo mục đích; “nội bộ” không đồng nghĩa với “không nhạy cảm”.`
+},
+{
+  id: 'qz-ccat-041',
+  topic: 'claude',
+  multi: true,
+  q: '[Tool Design & MCP] A team must change a widely used tool’s input contract without unexpectedly breaking existing agent workflows. Which two rollout practices are safest? (Choose 2)',
+  options: [
+    'Change the meaning of an existing field without updating its description',
+    'Preserve the current contract during migration, for example by adding a compatible optional field or introducing a new tool version',
+    'Remove a required field and let the model guess its replacement',
+    'Deploy the change based only on one manually successful request',
+    'Run representative regression cases for tool selection, input validation, and expected behavior before rollout'
+  ],
+  answer: [1, 4],
+  explain: `**Đáp án đúng: phương án 2 và 5.** Model dựa vào tên, description và schema để chọn tool, còn ứng dụng phụ thuộc vào hợp đồng input/output của tool. Giữ tương thích trong thời gian chuyển đổi—chẳng hạn thêm field tùy chọn hoặc tạo phiên bản tool mới—giảm nguy cơ client cũ hỏng. Regression test là bộ tình huống chạy lại sau thay đổi; cần kiểm tra model chọn đúng tool, input được validate và backend vẫn cho kết quả đúng.
+
+### Vì sao các phương án khác sai
+- **Đổi nghĩa field âm thầm:** client có thể gửi dữ liệu hợp lệ theo schema cũ nhưng nhận hành vi khác.
+- **Gỡ field bắt buộc và để đoán:** thiếu dữ liệu trở thành hành vi không xác định hoặc side effect sai.
+- **Chỉ thử một request:** không bao phủ các cách diễn đạt khác nhau hay trường hợp biên.
+
+> Thay đổi tool là thay đổi API: ghi rõ migration/deprecation, theo dõi lỗi sau rollout và giữ đường quay lui nếu tỷ lệ lỗi tăng.`
+},
 );
