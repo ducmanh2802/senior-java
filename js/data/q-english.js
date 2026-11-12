@@ -10104,4 +10104,144 @@ What I am looking for now is a role where I can work on distributed systems at a
   follow: ["What if the recruiter asks about your salary expectations on the phone screen?", "How do you handle it if you do not understand a question during a phone screen?", "Should you ask questions at the end of a phone screen?"],
   tags: ["phone-screen", "introduction", "summary", "recruiter"]
 },
+{
+  id: "english-190",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Why did you choose a specific database for a project? Walk me through your decision and the trade-offs.",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn chọn **database** (cơ sở dữ liệu: hệ thống lưu trữ và truy vấn dữ liệu) dựa trên yêu cầu thật, không theo cảm tính. Hãy trả lời theo cấu trúc: bối cảnh và yêu cầu (dữ liệu, truy vấn, quy mô) → các lựa chọn đã cân nhắc → vì sao chọn và **trade-off** (đánh đổi: được lợi này nhưng chấp nhận mất lợi khác) → kết quả đo được và bài học.
+
+### Sample answer
+In my last project at an e-commerce company, I was responsible for the order service that handled about 50,000 orders per day with peaks of 300 orders per second during promotions. We needed strong consistency for payments and inventory, complex joins across orders, customers, and products, and a clear transaction model.
+
+I compared PostgreSQL and MongoDB. MongoDB would give us flexible schemas, but our data was highly relational and we needed ACID transactions across multiple tables. PostgreSQL fit better because it supports reliable transactions, rich indexing, and mature tooling that our team of six engineers already knew well.
+
+I designed the schema with proper foreign keys and added read replicas to handle reporting queries, so the primary node stayed focused on writes. After launch, the average write latency stayed under 20 milliseconds at peak. The trade-off was that schema changes required careful migrations. I learned to validate the access pattern first, because the best database is the one that matches how the data is actually used.
+
+### Useful phrases
+- **I was responsible for** — tôi chịu trách nhiệm cho
+- **we needed strong consistency** — chúng tôi cần tính nhất quán mạnh (dữ liệu luôn đúng ở mọi nơi sau mỗi giao dịch)
+- **complex joins across** — các phép nối phức tạp giữa nhiều bảng dữ liệu
+- **ACID transactions** — giao dịch ACID (đảm bảo toàn vẹn: hoặc thành công hết hoặc thất bại hết)
+- **I compared X and Y** — tôi đã so sánh X và Y
+- **the trade-off was** — điểm đánh đổi là
+- **schema changes required careful migrations** — thay đổi cấu trúc dữ liệu đòi hỏi di chuyển dữ liệu cẩn thận
+- **matches how the data is actually used** — phù hợp với cách dữ liệu thực sự được sử dụng
+
+### Lỗi người Việt hay mắc
+- **Nói chung chung "PostgreSQL is popular":** thiếu lý do gắn với bài toán. Nên nói rõ yêu cầu: consistency, joins, transactions, scale.
+- **Nhầm "trade-off" với "disadvantage":** trade-off là đánh đổi có chủ đích (chấp nhận A để có B), không chỉ liệt kê nhược điểm.
+- **Dùng sai thì khi kể dự án:** mô tả bối cảnh và quyết định nên dùng quá khứ ({{I compared}}, {{we needed}}), kết quả hiện tại có thể dùng hiện tại.
+- **Thiếu số liệu:** nói "high traffic" mơ hồ. Hãy thêm con số như orders per day, latency, team size để tăng độ tin cậy.
+
+> Senior tip: Khi phỏng vấn, luôn nói theo chuỗi "requirements → options → decision → trade-off → result". Người phỏng vấn đánh giá tư duy lựa chọn công nghệ và cách bạn đo lường kết quả, không phải bạn thuộc tên bao nhiêu loại database.`,
+  follow: ["What would make you reconsider your database choice if the traffic doubled?","How did you plan and test schema migrations in that project?","When would a NoSQL database be a better fit than a relational one?"],
+  tags: ["database","trade-offs","postgresql","system-design"]
+},
+{
+  id: "english-191",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Tell me about a time you handled a security issue. What happened, and how did you fix it?",
+  a: `**Tóm tắt:** Interviewer muốn đánh giá cách bạn phản ứng với **security issue** (vấn đề bảo mật: lỗ hổng hoặc sự cố có thể làm lộ hoặc hại dữ liệu). Hãy kể theo trình tự: phát hiện và mức độ ảnh hưởng → hành động ngắn hạn để giảm rủi ro → nguyên nhân gốc và cách sửa lâu dài → kết quả và bài học.
+
+### Sample answer
+Last year, while working on a customer portal for a SaaS product with about 200,000 users, I noticed unusual login attempts in our logs during a routine review. A security log is a record of important events in the system, like sign-ins and errors. We discovered that one API endpoint allowed access without checking the user token properly, which is called a broken authentication issue.
+
+I immediately informed my team lead and we rotated the affected keys, added stricter token validation, and temporarily limited access to that endpoint. These steps reduced the risk within two hours. After that, I worked with another engineer to trace the root cause and found that a recent refactor had removed a middleware check. A middleware is a piece of code that runs before the main request handler.
+
+We restored the check, added automated tests, and ran a security review before release. No customer data was leaked, and we reduced similar auth-related alerts to zero in the next quarter. I learned that small refactors can create serious risks, so security checks must be part of every code review.
+
+### Useful phrases
+- **I noticed unusual activity in our logs** — tôi phát hiện hoạt động bất thường trong nhật ký hệ thống
+- **a broken authentication issue** — lỗi xác thực bị hỏng (hệ thống không kiểm tra đúng danh tính người dùng)
+- **I immediately informed my team lead** — tôi lập tức báo cho trưởng nhóm
+- **we rotated the affected keys** — chúng tôi thay mới các khóa truy cập bị ảnh hưởng
+- **to reduce the risk within two hours** — để giảm rủi ro trong vòng hai giờ
+- **trace the root cause** — truy tìm nguyên nhân gốc rễ
+- **we added automated tests** — chúng tôi thêm kiểm thử tự động
+- **no customer data was leaked** — không có dữ liệu khách hàng bị rò rỉ
+
+### Lỗi người Việt hay mắc
+- **Che giấu hoặc nói mơ hồ:** interviewer cần hành động cụ thể. Hãy nói rõ bạn đã làm gì, trong bao lâu, và kết quả ra sao.
+- **Nhầm "vulnerability" và "incident":** vulnerability là lỗ hổng tiềm ẩn, incident là sự cố đã xảy ra; dùng đúng giúp câu trả lời rõ ràng.
+- **Bỏ qua bước thông báo:** trong bảo mật, việc báo ngay cho người phụ trách (team lead, security team) quan trọng như việc sửa code.
+- **Dùng từ kỹ thuật mà không giải thích ngữ cảnh:** khi nói {{token}}, {{middleware}}, hãy thêm một cụm giải thích ngắn để người nghe dễ theo kịp.
+
+> Senior tip: Khi kể sự cố bảo mật, hãy thể hiện sự bình tĩnh và quy trình: chứa chặn nhanh, sửa gốc, và phòng ngừa lặp lại. Đừng khoe kỹ thuật phức tạp, hãy cho thấy bạn bảo vệ được người dùng và dữ liệu.`,
+  follow: ["How do you decide what to communicate to stakeholders during a security incident?","What practices do you use to prevent similar security issues in future releases?","How would you handle the situation if customer data had already been exposed?"],
+  tags: ["security","incident-response","authentication","best-practices"]
+},
+{
+  id: "english-192",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Describe a time you automated a manual process. What did you automate, and what was the impact?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn nhận ra công việc thủ công lặp lại và dùng **automation** (tự động hóa: để máy tính tự làm thay thao tác lặp đi lặp lại của con người) để tiết kiệm thời gian và giảm lỗi. Trả lời theo cấu trúc: quy trình thủ công và vấn đề → giải pháp tự động hóa → cách triển khai an toàn → kết quả đo được và bài học.
+
+### Sample answer
+At my previous company, our team released a backend service twice a week, and the deployment checklist was done manually by two engineers. It took about 90 minutes each time and often caused mistakes, such as missing a database migration step. A database migration is a small change applied to the database structure during a release.
+
+I proposed automating the process with a CI/CD pipeline. CI/CD means continuous integration and continuous delivery, a setup where code changes are automatically built, tested, and deployed in clear steps. I wrote scripts to run tests, apply migrations, build the Docker image, and deploy to staging before production. I also added a manual approval step for production to keep control.
+
+We rolled it out gradually over three weeks and trained the team. Deployment time dropped from 90 minutes to 20 minutes, and we had zero missed migration incidents in the next six months. The trade-off was the initial time to write and maintain the pipeline. I learned that automating the most frequent and error-prone steps first brings the fastest value.
+
+### Useful phrases
+- **a manual process** — quy trình làm thủ công bằng tay
+- **done manually by two engineers** — được hai kỹ sư thực hiện thủ công
+- **error-prone** — dễ xảy ra lỗi
+- **I proposed automating the process** — tôi đề xuất tự động hóa quy trình
+- **CI/CD pipeline** — chuỗi tự động tích hợp và triển khai liên tục
+- **a manual approval step** — bước phê duyệt thủ công (người bấm xác nhận)
+- **we rolled it out gradually** — chúng tôi triển khai dần dần
+- **dropped from 90 minutes to 20 minutes** — giảm từ 90 phút xuống 20 phút
+
+### Lỗi người Việt hay mắc
+- **Chỉ nói công cụ, không nói vấn đề:** "I used Jenkins" chưa đủ. Phải nói quy trình cũ tốn gì, sai ở đâu, và tự động hóa giải quyết thế nào.
+- **Quên nói về rủi ro khi tự động hóa:** nên nhắc bước kiểm soát (test, staging, approval) để cho thấy bạn triển khai an toàn.
+- **Không có số liệu trước/sau:** thiếu thời gian, tần suất, hoặc số lỗi khiến impact không rõ. Hãy so sánh before/after.
+- **Dùng "automate" sai ngữ pháp:** nói {{automate a process}} (động từ + tân ngữ), không nói {{make automation for a process}} trong văn nói tự nhiên.
+
+> Senior tip: Khi kể về automation, hãy nhấn mạnh bạn chọn bước nào để tự động hóa trước và vì sao. Ứng viên senior được đánh giá cao khi biết cân bằng giữa tốc độ, độ an toàn, và chi phí bảo trì lâu dài.`,
+  follow: ["How did you make sure the automated pipeline was reliable before using it in production?","What would you do if the automation failed during a release?","Which parts of a process should not be fully automated, in your opinion?"],
+  tags: ["automation","ci-cd","deployment","productivity"]
+},
+{
+  id: "english-193",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Explain a system you designed using a simple diagram in words. How would you walk an interviewer through it?",
+  a: `**Tóm tắt:** Interviewer muốn xem bạn có thể giải thích **system design** (thiết kế hệ thống: cách các thành phần phần mềm kết nối và làm việc cùng nhau) một cách rõ ràng hay không. Hãy mô tả bằng lời như một **diagram** (sơ đồ: hình vẽ các hộp và mũi tên thể hiện luồng dữ liệu), đi theo luồng từ người dùng → các thành phần → lưu trữ, kèm lý do chọn và đánh đổi.
+
+### Sample answer
+I designed a notification system for a learning platform with around 100,000 active users. I will describe it as a simple flow in words. First, the client app sends a request to an API gateway, which is the single entry point that routes requests to the right service.
+
+The gateway forwards the request to a Notification Service. This service validates the input, saves the notification record in PostgreSQL, our main relational database, and then publishes an event to a message queue. A message queue is a buffer that holds messages so services can work asynchronously, meaning they do not have to wait for each other.
+
+A Worker service reads from the queue and sends the actual email or push message through external providers. We also store delivery status in Redis, an in-memory cache, so the app can quickly show whether a message was sent. This design handled about 20,000 notifications per hour. The trade-off was extra complexity from the queue, but it protected the system when providers were slow. I learned that drawing the flow step by step helps both the team and the interviewer follow the design.
+
+### Useful phrases
+- **I will describe it as a simple flow in words** — tôi sẽ mô tả nó như một luồng đơn giản bằng lời
+- **the single entry point** — điểm vào duy nhất
+- **routes requests to the right service** — định tuyến yêu cầu đến đúng dịch vụ
+- **publishes an event to a message queue** — gửi một sự kiện vào hàng đợi tin nhắn
+- **work asynchronously** — làm việc bất đồng bộ (không phải chờ nhau xong mới làm tiếp)
+- **an in-memory cache** — bộ nhớ đệm trong RAM (lưu tạm để đọc nhanh)
+- **delivery status** — trạng thái đã gửi hay chưa
+- **drawing the flow step by step** — vẽ/mô tả luồng từng bước
+
+### Lỗi người Việt hay mắc
+- **Nhảy thẳng vào chi tiết kỹ thuật:** người nghe mất bối cảnh. Hãy bắt đầu từ người dùng và đi theo luồng request từng bước.
+- **Không nêu vai trò từng thành phần:** chỉ liệt kê tên (gateway, queue, worker) mà không giải thích nó làm gì trong một câu ngắn.
+- **Bỏ qua trade-off:** thiết kế nào cũng có đánh đổi (phức tạp hơn, chi phí hơn, nhanh hơn). Nói trade-off thể hiện tư duy senior.
+- **Mô tả rối, không có thứ tự:** hãy dùng từ nối như {{First}}, {{Then}}, {{After that}}, {{Finally}} để người nghe hình dung sơ đồ trong đầu.
+
+> Senior tip: Khi "vẽ bằng lời", hãy nói chậm và theo một hướng cố định (trái sang phải hoặc từ trên xuống). Sau mỗi 2-3 bước, dừng lại hỏi "Does this flow make sense so far?" để chắc interviewer theo kịp và để bạn kịp chỉnh nếu họ muốn đào sâu chỗ khác.`,
+  follow: ["How would your design change if the number of notifications increased ten times?","What happens if the message queue or an external provider becomes unavailable?","Which part of this system would you monitor most closely in production?"],
+  tags: ["system-design","architecture","communication","diagram"]
+},
 );
