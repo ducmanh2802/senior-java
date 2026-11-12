@@ -9616,4 +9616,201 @@ The change took two days, including tests and a database schema update. In our t
   ],
   tags: ['code-review', 'disagreement', 'concurrency', 'teamwork', 'communication']
 },
+{
+  id: 'english-178',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'Why are you looking to change jobs, and how do you frame it positively without criticising your current employer?',
+  a: `**Tóm tắt:** Interviewer hỏi câu này để kiểm tra thái độ, sự trung thực và xem bạn có quay lùi hay trách móc người cũ. Cấu trúc trả lời: **đánh giá ngắn gọn nơi hiện tại (tích cực) → lý do muốn thay đổi gắn với mục tiêu tăng trưởng → tại sao công ty này phù hợp**. Không nói xấu quản lý, đồng nghiệp, lương, hoặc quy trình. Dùng "I am looking for..." thay vì "My company doesn't...".
+
+### Sample answer
+I have spent three years at my current company, a mid-sized fintech, where I built and maintained the core payment service handling two million transactions daily. The team gave me ownership of the settlement engine, and I learned a lot about distributed systems and PCI compliance. I am grateful for that growth.
+
+Now I want to work on a larger scale where traffic patterns are more unpredictable and the architecture leans toward event-driven microservices. Your platform processes peak loads of fifty thousand requests per second across multiple regions, and the team has publicly shared how you use Kafka for exactly-once semantics in the ledger. That matches the technical challenge I am seeking.
+
+I also value a culture where engineers participate in product discovery, not just ticket execution. From your engineering blog and the way the hiring manager described the squad model, I see that alignment. I am not leaving because of a conflict — I am moving toward a problem space and a way of working that excite me.
+
+### Useful phrases
+- I have spent X years at... — tôi đã làm X năm tại...
+- I am grateful for the growth... — tôi biết ơn sự phát triển...
+- I am looking for a larger scale / more unpredictable traffic / event-driven architecture — tôi đang tìm kiếm quy mô lớn hơn / lưu lượng khó dự đoán hơn / kiến trúc hướng sự kiện
+- That matches the technical challenge I am seeking — điều đó khớp với thách thức kỹ thuật tôi đang tìm
+- I value a culture where engineers participate in product discovery — tôi trân trọng văn hóa kỹ sư tham gia khám phá sản phẩm
+- I am not leaving because of a conflict — tôi không rời đi vì xung đột
+- I am moving toward a problem space that excites me — tôi đang chuyển về phía không gian vấn đề khiến tôi hào hứng
+
+### Lỗi người Việt hay mắc
+- **Nói xấu công ty cũ:** "Management is bad", "Salary is low", "No work-life balance". Hãy chuyển thành "I want more ownership", "I want to work on system design at scale", "I want a culture of continuous learning".
+- **Trả lời chung chung:** "I want a new challenge" không kèm ví dụ cụ thể. Phải nêu rõ: domain, scale, tech stack, team model mà bạn muốn.
+- **Dùng "but" phủ định phần trước:** "I learned a lot, but the pay is low". Hãy dùng "and": "I learned a lot, and now I want to apply that at a larger scale".
+- **Không research công ty mới:** Không nói được tại sao *cụ thể* công ty này phù hợp. Hãy đọc blog kỹ thuật, case study, hoặc nghe podcast của engineer nơi đó.
+
+> Senior tip: Hãy chuẩn bị 3 bullet points "tích cực về nơi cũ" và 3 bullet points "mục tiêu tại nơi mới". Khi hỏi follow-up "What would make you stay?", bạn trả: "If the scope and architecture direction matched what I described, I would consider it — but my decision is based on long-term growth, not a counter-offer."
+
+### Follow-up
+- "What specifically about our architecture or domain interests you most?"
+- "If your current company offered you a lead role on a new microservices initiative, would you stay?"
+- "How do you evaluate whether a company's engineering culture matches what they advertise?"
+`,
+  follow: [
+    "What specifically about our architecture or domain interests you most?",
+    "If your current company offered you a lead role on a new microservices initiative, would you stay?",
+    "How do you evaluate whether a company's engineering culture matches what they advertise?"
+  ],
+  tags: ['job-change', 'interview', 'positive-framing', 'career-growth']
+},
+{
+  id: 'english-179',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'How do you collaborate effectively with a remote international team across time zones and cultures?',
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn chủ động giảm thiểu ma sát remote: giao tiếp bất đồng bộ (async) rõ ràng, tôn trọng múi giờ, văn hóa, và xây dựng niềm tin mà không cần gặp mặt. Trả lời theo cấu trúc: **tools & rituals → async-first habits → cultural awareness → trust building → ví dụ cụ thể có số liệu**.
+
+### Sample answer
+In my last role, I worked in a squad of eight engineers spread across Vietnam, Poland, and the US East Coast — a twelve-hour spread. We agreed on a four-hour overlap window (2 PM to 6 PM UTC) for synchronous meetings: stand-up, refinement, and retrospective. Everything else was async by default.
+
+For async communication, we used GitHub issues with a template: context, acceptance criteria, risks, and a "decision needed by" date. I wrote design docs in Notion with a one-page summary, diagrams, and a comment thread for questions. Reviews happened within 24 hours; if a reviewer was asleep, they left comments and the author addressed them next day. This cut our cycle time from three days to one day for typical features.
+
+Cultural differences showed up in directness. Polish teammates gave blunt feedback ("This will not work"), while Vietnamese teammates were more indirect ("I wonder if there is a risk"). I learned to read both styles and explicitly ask "What is your concern?" to surface issues early. We also rotated meeting times quarterly so no one always took the late call.
+
+Trust came from small things: I shared weekend photos in the #random channel, celebrated a Polish teammate's name day, and asked a US colleague about Thanksgiving plans. When a production incident hit at 3 AM my time, a Polish engineer picked it up without being asked because we had that rapport. Our deployment frequency went from weekly to daily, and rollback rate dropped below 1 percent.
+
+### Useful phrases
+- async-first by default — ưu tiên bất đồng bộ theo mặc định
+- overlap window — cửa sổ thời gian chồng chéo (khi cả hai bên online)
+- decision needed by date — ngày hạn cần quyết định
+- cycle time — thời gian từ bắt đầu code đến merge/deploy
+- direct vs indirect feedback — phản hồi thẳng thắn vs gián tiếp
+- surface issues early — nêu ra vấn đề sớm
+- rotate meeting times — xoay vòng giờ họp
+- build rapport — xây dựng mối quan hệ tin cậy
+- without being asked — không cần nhờ, tự nguyện
+
+### Lỗi người Việt hay mắc
+- **Nói "We use Slack/Zoom" mà không nói quy tắc:** Phải có convention: khi nào call, khi nào async, SLA review PR, format ticket.
+- **Bỏ qua múi giờ:** "We meet at 9 AM my time" — nếu đồng đội 3 AM thì không bền vững. Luôn nêu overlap window và xoay vòng.
+- **Dịch word-by-word:** "I understand you" (hiểu bạn) vs "I see your point" (thấy quan điểm bạn). Phản hồi chuyên nghiệp dùng "I see your point, and I also think...".
+- **Không nhắc cultural nuance:** Interviewer senior sẽ hỏi "Give an example of a cultural misunderstanding". Hãy có sẵn câu chuyện: directness, hierarchy, holiday, communication style.
+- **Quên trust-building:** Remote team thiếu "watercooler moments". Hãy kể micro-hành động: chia sẻ cá nhân nhẹ, công nhận công khai, rotate on-call burden.
+
+> Senior tip: Viết một "Team Working Agreement" 1 trang: overlap hours, response SLA, meeting norms, escalation path, holiday calendar. Review hàng quý. Điều này thể hiện maturity và giảm ma sát hơn bất kỳ tool nào.
+
+### Follow-up
+- "How do you handle a situation where a teammate in another time zone blocks your work and you cannot reach them?"
+- "What do you do when you notice a cultural misunderstanding affecting team dynamics?"
+- "How do you onboard a new remote engineer so they feel connected quickly?"
+`,
+  follow: [
+    "How do you handle a situation where a teammate in another time zone blocks your work and you cannot reach them?",
+    "What do you do when you notice a cultural misunderstanding affecting team dynamics?",
+    "How do you onboard a new remote engineer so they feel connected quickly?"
+  ],
+  tags: ['remote-work', 'international-team', 'async-communication', 'culture', 'timezone']
+},
+{
+  id: 'english-180',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'A customer reports a production bug that affects their payments. Walk me through how you handle it from alert to resolution and communication.',
+  a: `**Tóm tắt:** Interviewer kiểm tra quy trình incident response end-to-end: **triage → communicate → investigate → mitigate → fix → verify → postmortem**. Nêu rõ vai trò bạn (owner/contributor), tool dùng, timeline, và cách báo cho customer/stakeholder. Nhấn mạnh "customer impact first", "rollback over forward fix nếu rủi ro cao", và "blameless postmortem".
+
+### Sample answer
+At 9:15 AM, our PagerDuty alert fired: "Payment success rate dropped below 99.5%". I was the on-call engineer. First step: acknowledge in PagerDuty, open the incident Slack channel ({{#incident-payments}}), and post a one-liner: "Investigating payment success rate drop. Customer impact: ~200 failed transactions in last 10 minutes. ETA update in 15 minutes."
+
+I checked Datadog: error rate spiked on the {{POST /payments}} endpoint, 500 errors from the ledger service. Recent deploy was 40 minutes ago — a refactor of the idempotency key validation. I rolled back that deploy (2 minutes via ArgoCD). Success rate recovered to 99.9% within 5 minutes.
+
+While rollback propagated, I messaged the customer success manager: "We identified a regression in the last deploy affecting a subset of payments. Rolled back. Estimated resolution: 10 minutes. I will update you when confirmed." They relayed to the affected merchant.
+
+Post-rollback, I reproduced locally: the new validation rejected valid idempotency keys with a trailing space — a data migration missed trimming. Root cause: unit test mocked the validator, integration test used clean fixtures, but production data had dirty keys from a legacy import.
+
+Fix: add {{.trim()}} in validator, add integration test with dirty keys, add canary analysis for future deploys. Deployed fix at 11:30 AM after code review. Monitored 30 minutes — zero errors.
+
+Postmortem (blameless) next day: action items — trim at ingestion, add data-quality check in CI, extend canary to 10% traffic for 30 minutes. Shared summary with customer: "Root cause identified, fix deployed, guardrails added. We apologise for the disruption."
+
+### Useful phrases
+- acknowledge the alert — xác nhận cảnh báo
+- customer impact: X failed transactions — ảnh hưởng khách hàng: X giao dịch thất bại
+- ETA update in 15 minutes — cập nhật thời gian dự kiến sau 15 phút
+- roll back the deploy — rollback bản deploy
+- success rate recovered — tỷ lệ thành công đã hồi phục
+- root cause: validation rejected valid keys — nguyên nhân gốc: validator từ chóa key hợp lệ
+- data migration missed trimming — migration dữ liệu bỏ qua việc trim
+- blameless postmortem — buổi retrospective không đổ lỗi cá nhân
+- guardrails added — đã thêm rào chắn bảo vệ
+- we apologise for the disruption — chúng tôi xin lỗi về sự gián đoạn
+
+### Lỗi người Việt hay mắc
+- **Nhảy thẳng vào fix mà không communicate trước:** Khách hàng và stakeholder cần biết "đang xảy ra gì" và "ETA khi nào xong" ngay lập tức.
+- **Không rollback khi có deploy gần đây:** "I spent two hours debugging" — senior biết rollback 2 phút an toàn hơn debug 2 giờ khi production đang cháy.
+- **Đổ lỗi cho người deploy / viết code:** "Junior dev forgot to trim". Blameless nghĩa là hỏi "Why did the process allow this?" không phải "Who did this?".
+- **Quên verify sau fix:** Deploy xong không giám sátmetrics 15-30 phút. Luôn có canary hoặc feature flag.
+- **Postmortem chỉ liệt kê action item không có owner + deadline:** Mỗi item phải có owner, due date, và cách đo lường hiệu quả.
+
+> Senior tip: Chuẩn bị sẵn "incident runbook" 1 trang: link dashboard, runbook rollback, contact customer success, template Slack message, template customer email. Khi on-call, bạn chỉ follow checklist — giảm cognitive load khi stress.
+
+### Follow-up
+- "What would you do if rollback did not restore the success rate?"
+- "How do you decide whether to wake up a teammate at 3 AM for an incident?"
+- "How do you communicate with a customer who is angry and threatening to churn?"
+`,
+  follow: [
+    "What would you do if rollback did not restore the success rate?",
+    "How do you decide whether to wake up a teammate at 3 AM for an incident?",
+    "How do you communicate with a customer who is angry and threatening to churn?"
+  ],
+  tags: ['production-incident', 'customer-communication', 'incident-response', 'rollback', 'postmortem']
+},
+{
+  id: 'english-181',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'When you have more tasks than time, how do you prioritise and communicate trade-offs to stakeholders?',
+  a: `**Tóm tắt:** Interviewer muốn thấy framework rõ ràng (RICE, WSJF, MoSCoW, Eisenhower), không phải "làm theo cảm tính". Cấu trúc: **framework dùng → ví dụ cụ thể có số liệu → cách nói "không" hoặc "sau" với stakeholder → kết quả**. Nhấn mạnh: alignment với business goal, visibility của trade-off, và review định kỳ.
+
+### Sample answer
+In Q3 last year, my squad of five engineers had 40 story points of committed work, plus 15 points of urgent bugs, plus a request from Sales to build a demo for a 500k USD deal — all in a two-week sprint. Capacity was 50 points.
+
+I used WSJF (Weighted Shortest Job First): each item gets Cost of Delay (business value + time criticality + risk reduction) divided by job size. I listed everything in a shared sheet with the Product Manager: the demo scored highest on time criticality (deal closes Friday), the bugs scored high on risk reduction (churn risk), and two features scored low on both. We agreed: do the demo (8 pts), fix 3 P1 bugs (8 pts), defer 2 P2 bugs and 2 features to next sprint. I communicated to stakeholders: "We are prioritising the demo and critical bugs this sprint. The deferred items are captured in the backlog with owner and target sprint. Here is the sheet — please add context if priority changes."
+
+For the demo, I time-boxed 6 points (MVP only: happy path, mock external calls). We delivered Thursday, Sales closed the deal. The deferred bugs were fixed next sprint with no customer escalation. Velocity stabilised at 48 points.
+
+Key phrase I use with stakeholders: "If we do X, we cannot do Y this sprint. Which outcome matters more to the business right now?" This forces a business decision, not an engineering guess.
+
+### Useful phrases
+- more tasks than capacity — việc nhiều hơn năng lực
+- WSJF / RICE / MoSCoW — các framework ưu tiên phổ biến
+- Cost of Delay — chi phí của việc trì hoãn
+- time criticality — tính cấp thiết về thời gian
+- risk reduction — giảm thiểu rủi ro
+- job size / effort estimate — kích thước công việc / ước lượng nỗ lực
+- defer to next sprint — hoãn sang sprint sau
+- time-box the demo — giới hạn thời gian cho demo
+- MVP only — chỉ làm tối thiểu có thể chạy được
+- forces a business decision — buộc quyết định kinh doanh
+
+### Lỗi người Việt hay mắc
+- **Không có framework:** "I prioritise by importance" — quá mơ hồ. Phải nói tên framework và cách tính điểm.
+- **Nói "I will try to do both"**: Overcommit làm burn out và giảm chất lượng. Hãy nói "We can do A or B, not both. You decide."
+- **Không visibility:** Stakeholder không biết trade-off. Luôn có shared doc/board thể hiện: nếu làm A thì B bị hoãn, tác động gì.
+- **Không align với business goal:** Ưu tiên theo "thích làm gì" hoặc "dễ làm gì" thay vì "tác động business lớn nhất".
+- **Quên review định kỳ:** Priority thay đổi hàng ngày. Stand-up hoặc weekly sync phải review backlog top 10.
+
+> Senior tip: Giữ một "Priority Board" công khai (Notion/Jira/Confluence): cột Now / Next / Later, mỗi item có WSJF score, owner, và "why now". Stakeholder tự xem được trade-off. Khi CEO hỏi "Tại sao feature X chưa xong?", bạn chỉ link board — không cần bào chữa.
+
+### Follow-up
+- "How do you handle a stakeholder who insists everything is P0?"
+- "What do you do when new information changes the priority mid-sprint?"
+- "How do you say no to your manager's pet project without damaging the relationship?"
+`,
+  follow: [
+    "How do you handle a stakeholder who insists everything is P0?",
+    "What do you do when new information changes the priority mid-sprint?",
+    "How do you say no to your manager's pet project without damaging the relationship?"
+  ],
+  tags: ['prioritization', 'time-management', 'stakeholder-communication', 'wsjf', 'trade-offs']
+},
 );
