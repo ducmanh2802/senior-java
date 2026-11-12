@@ -10957,6 +10957,19 @@ kubectl get events -n payment --sort-by=.lastTimestamp  # lỗi khi rollout
 ~~~
 - **Bảo mật:** không nhét Secret thật vào {{values.yaml}} commit lên Git. Dùng {{helm-secrets}} (SOPS), External Secrets Operator, hoặc inject từ CI secret store.
 
+### Ví dụ đời thực
+
+Tình huống: app thanh toán Spring Boot chạy trên Kubernetes, team triển khai từ phiên bản 1.4.7 lên 1.4.8 bằng Helm trong pipeline CI/CD.
+- **Triệu chứng:** Sau khi chạy {{helm upgrade --install payment ./payment-chart -f values-prod.yaml --set image.tag=1.4.8 -n payment}}, giao diện thanh toán trả lỗi 500, khách hàng không thanh toán được.
+- **Điều tra:** Lệnh {{helm history payment -n payment}} cho thấy revision 2 đang trạng thái failed. Lệnh {{helm get manifest payment -n payment}} cho thấy image tag bị nhầm do CI ghi sai, Pod mới CrashLoop không khởi động được.
+- **Nguyên nhân gốc:** CI pipeline thiết sai image.tag, và bản deploy chưa bật --atomic --timeout, nên Helm không tự rollback về bản ổn định trước đó mà để Pod mới ở trạng thái lỗi.
+- **Cách xử lý:** Chạy {{helm rollback payment 1 -n payment}} để quay về revision 1 (phiên bản 1.4.7). Dịch vụ khôi phục sau khoảng 2 phút. Sau đó sửa CI, thêm --atomic --timeout 5m, và triển khai lại v1.4.8 đúng.
+- **Kết quả đo được:** Downtime khoảng 2 phút, không mất dữ liệu giao dịch (Pod cũ vẫn giữ kết nối trong lúc rollback), team quy định kiểm tra {{helm template}} trong CI trước mỗi deploy.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Helm tôi dùng như một công cụ đóng gói và triển khai ứng dụng Spring Boot lên Kubernetes. Thay vì copy nhiều file YAML tay, tôi gom chúng thành một chart, dùng values để thay đổi replica, image tag, số lượng Pod cho từng môi trường dev, staging, production. Lệnh {{helm upgrade --install}} giúp triển khai lại an toàn: nếu bản mới lỗi, tôi dùng {{helm rollback}} để quay về bản cũ nhanh chóng. Tôi tự viết chart khi cần đóng gói tái sử dụng cho nhiều service, còn dùng Kustomize khi chỉ muốn patch YAML thuần theo môi trường mà không cần template engine. Trên production, tôi luôn review YAML bằng {{helm template}} trước khi apply, bật --atomic --timeout để thất bại tự quay về trạng thái tốt, và không bao giờ commit Secret thật vào Git. Tôi cũng version hoá chart riêng biệt với phiên bản ứng dụng để quản lý thay đổi hạ tầng độc lập."
+
 > Senior tip: Luôn chạy {{helm template}} (và {{helm diff}} nếu có) trong CI để review YAML trước khi apply — template Helm có thể sinh ra YAML khác ý bạn chỉ vì một thụt dòng hay {{if}} sai. Đặt {{--atomic --timeout}} trong pipeline deploy để thất bại tự quay về trạng thái tốt, và version hoá chart ({{version}} trong Chart.yaml) tách biệt với {{appVersion}} để quản lý thay đổi hạ tầng độc lập với thay đổi code.`,
     follow: [
       'Helm lưu lịch sử release ở đâu trong cluster và bạn xử lý thế nào khi Secret lịch sử quá lớn?',
@@ -11063,6 +11076,19 @@ kubectl exec deploy/payment -n payment -- env | grep SPRING  # kiểm tra env (c
 ~~~
 - **Sự cố:** (1) Đổi Secret DB password nhưng quên restart → app vẫn dùng mật khẩu cũ trong env, một lúc sau DB đổi pass → lỗi kết nối hàng loạt. (2) Dùng {{subPath}} mount file cấu hình → kubelet không cập nhật file khi ConfigMap đổi, gây hiểu lầm "đã đổi mà app vẫn cũ". (3) Commit file {{secret.yaml}} base64 lên Git public/nội bộ rộng → lộ mật khẩu. Chuyển sang ESO/Sealed Secrets và xoay (rotate) credential ngay.
 
+### Ví dụ đời thực
+
+Tình huống: app thanh toán Spring Boot trên K8s lưu connection string DB trong ConfigMap và password trong Secret, mount cả hai vào Pod.
+- **Triệu chứng:** DBA xoay mật khẩu DB và cập nhật Secret payment-secret, nhưng sau 10 phút app vẫn báo lỗi kết nối DB "password authentication failed" cho một số Pod.
+- **Điều tra:** Chạy {{kubectl rollout status deploy/payment -n payment}} thấy Pod mới chưa restart. Kiểm tra {{kubectl exec deploy/payment -n payment -- env | grep SPRING_DATASOURCE_PASSWORD}} vẫn lấy giá trị cũ, chứng minh env được gán lúc container start và không tự đổi.
+- **Nguyên nhân gốc:** Biến môi trường chỉ đọc lúc container khởi động; đổi Secret không tự cập nhật tiến trình đang chạy.
+- **Cách xử lý:** Chạy {{kubectl rollout restart deploy/payment -n payment}} để Pod mới đọc Secret mới. Lỗi kết nối biến mất ngay sau rolling restart xong.
+- **Kết quả đo được:** Khôi phục dịch vụ trong khoảng 3 phút, không downtime lâu dài; team sau đó thêm checksum annotation vào Deployment để mọi đổi ConfigMap/Secret tự kích hoạt rollout có kiểm soát.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi dùng ConfigMap cho cấu hình không nhạy cảm như URL dịch vụ, feature flag, và Secret cho mật khẩu, token. Cả hai có thể truyền vào Pod qua biến môi trường hoặc mount thành file. Với Spring Boot, mount file application.yml rất tự nhiên, còn env map tốt với SPRING_*. Nhược điểm quan trọng là biến môi trường chỉ đọc lúc container khởi động, nên đổi ConfigMap/Secret không tự cập nhật Pod đang chạy — tôi thường dùng checksum annotation hoặc kubectl rollout restart. Secret trong Kubernetes mặc định chỉ base64, không phải mã hoá bảo mật, nên tôi bật encryption at-rest cho etcd và dùng External Secrets Operator hoặc Sealed Secrets để không lưu bản rõ trong Git. Trên production, tôi không bao giờ commit Secret vào Git và bảo vệ actuator endpoint như /env, /configprops vì có thể lộ giá trị nhạy cảm."
+
 > Senior tip: Quy ước thực tế: ConfigMap/Secret cho cấu hình **không nhạy cảm hoặc tham chiếu**, credential thật nằm ở vault (AWS Secrets Manager, HashiCorp Vault) và đồng bộ bằng External Secrets Operator; bật encryption at-rest cho etcd và audit quyền đọc Secret. Trong Helm, dùng checksum annotation để mọi thay đổi config đều tạo rollout có kiểm soát — và nhớ Spring Boot actuator endpoint {{/env}}, {{/configprops}} phải được bảo vệ (hoặc tắt public) vì có thể lộ giá trị nhạy cảm.`,
     follow: [
       'So sánh External Secrets Operator và Sealed Secrets: luồng dữ liệu, ai giữ khoá, và khi nào chọn cái nào?',
@@ -11156,6 +11182,19 @@ kubectl exec deploy/payment -n payment -- curl -s localhost:8080/actuator/health
 ~~~
 - **Sự cố restart loop điển hình:** (1) Không có startupProbe, liveness {{initialDelaySeconds}}=30s nhưng app start 90s → kubelet restart mãi, RESTARTS tăng, log bị cắt giữa chừng. (2) Liveness gọi {{/actuator/health}} (gộp, gồm DB) thay vì {{/health/liveness}} → DB quá tải/ngắt mạng một lúc → **tất cả** Pod bị restart cùng lúc → thảm hoạ dây chuyền. (3) {{timeoutSeconds}} quá nhỏ (1s) trong khi GC pause hoặc load cao làm endpoint phản hồi chậm → fail giả.
 - **Nguyên tắc vàng:** liveness chỉ trả lời "tiến trình còn sống và không deadlock"; readiness trả lời "có nên gửi traffic cho tôi lúc này". Dependency ngoài (DB, dịch vụ khác) thuộc readiness, **không** thuộc liveness.
+
+### Ví dụ đời thực
+
+Tình huống: app Spring Boot kết nối DB trên K8s khởi động khoảng 60-90 giây (load context, tạo connection pool, warm-up cache).
+- **Triệu chứng:** Sau deploy, livenessProbe fail liên tục, kubelet restart Pod, RESTARTS tăng đi tăng lại, app không bao giờ sẵn sàng nhận traffic.
+- **Điều tra:** {{kubectl describe pod payment-xxx -n payment}} trong Events hiển thị "Liveness probe failed", "Back-off restarting failed pod". Log container chỉ ghi "Started ... in 85 seconds" rồi bị cắt giữa chừng — chứng minh app còn chưa khởi động xong đã bị probe đánh fail.
+- **Nguyên nhân gốc:** Không có startupProbe, livenessProbe có {{initialDelaySeconds}}=30s nhưng app cần 85s để khởi động, nên kubelet đánh fail và restart trước khi app sẵn sàng.
+- **Cách xử lý:** Thêm startupProbe gọi {{/actuator/health/liveness}} với periodSeconds=5, failureThreshold=36 (cho phép tới 180s khởi động), giữ livenessProbe chỉ gọi endpoint nội tại không check DB. Deploy lại, Pod khởi động bình thường và readiness UP.
+- **Kết quả đo được:** Thời gian khởi động ổn định dưới 90s, không còn restart loop, không rơi request khi rollout.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi dùng ba probe cho app Spring Boot trên Kubernetes với vai trò khác nhau. StartupProbe cho app thời gian khởi động, trong lúc này liveness và readiness chưa chạy, tránh restart khi app chậm. ReadinessProbe gắn với health group readiness, chỉ nhận traffic khi DB và connection pool đã OK. LivenessProbe gắn với group liveness, chỉ phát hiện tiến trình treo không tự hồi phục, tuyệt đối không kiểm tra DB hay dịch vụ ngoài — nếu liveness phụ thuộc DB thì một lần DB bảo trì có thể kéo restart toàn bộ cụm. Tôi đo p99 thời gian khởi động trên staging rồi đặt startupProbe dư hai đến ba lần, và luôn dùng readinessProbe để không rơi request khi deploy."
 
 > Senior tip: Đo p99 thời gian khởi động (đến khi readiness UP) trên staging với dữ liệu thật rồi đặt startupProbe dư 2–3 lần; bật thêm metric {{application.ready.time}} và {{application.started.time}}. Với app ngân hàng kết nối nhiều hệ thống, cân nhắc tách readiness indicator: dependency "bắt buộc để phục vụ" (DB chính) ảnh hưởng readiness, dependency "phụ" (cache) thì degrade nhẹ thay vì làm Pod NotReady — nhưng phải thiết kế code chấp nhận chạy thiếu cache. Tuyệt đối không để liveness phụ thuộc DB: một lần DB bảo trì có thể kéo sập toàn bộ cụm ứng dụng.`,
     follow: [
@@ -11253,6 +11292,19 @@ kubectl get events -n payment --sort-by=.lastTimestamp
 ~~~
 - **Sự cố:** (1) Drain treo mãi vì PDB {{minAvailable}} = replicas (hoặc Pod còn lại không đủ node đặt) → kiểm tra {{kubectl get pdb}}, tăng node tạm hoặc nới PDB có kiểm soát. (2) Dùng Recreate cho service đang nhận traffic cao điểm → outage vài phút. (3) RollingUpdate nhưng DB migration phá vỡ tương thích → version cũ lỗi khi version mới đã migrate; phải dùng chiến lược expand-contract. (4) {{maxSurge}} lớn + cluster thiếu tài nguyên → Pod mới Pending, rollout chậm và có thể kẹt.
 
+### Ví dụ đời thực
+
+Tình huống: dịch vụ thanh toán Spring Boot chạy 4 replica trên K8s, team deploy phiên bản mới qua RollingUpdate.
+- **Triệu chứng:** Sau {{kubectl apply -f deploy.yaml}}, một số Pod mới tạo ra nhưng không Ready, gọi API thanh toán trả lỗi, khách hàng không thanh toán được.
+- **Điều tra:** {{kubectl rollout status deploy/payment -n payment}} báo rollout kẹt. {{kubectl get pods -n payment}} cho thấy Pod mới trạng thái CrashLoopBackOff hoặc ImagePullBackOff, Pod cũ vẫn chạy bình thường.
+- **Nguyên nhân gốc:** Image tag mới bị nhầm trong CI, Pod mới không khởi động được, nhưng maxUnavailable=0 nên Deployment không xoá Pod cũ, chỉ dừng tạo Pod mới — dịch vụ phần nào còn chạy nhưng không triển khai được phiên bản mới.
+- **Cách xử lý:** Chạy {{kubectl rollout undo deploy/payment -n payment}} để quay về revision tốt trước đó, dịch vụ khôi phục nhanh. Sau đó sửa image tag trong CI, thêm --atomic --timeout trong Helm, và triển khai lại.
+- **Kết quả đo được:** Khôi phục dịch vụ trong 1-2 phút, không downtime đáng kể, team quy định kiểm tra {{kubectl rollout status}} và smoke test sau mỗi deploy.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi ưu tiên RollingUpdate cho hầu hết dịch vụ Spring Boot trên Kubernetes vì nó không gây downtime và cho hai version chạy song song trong một khoảng thời gian, có điều code và DB phải tương thích ngược. Tôi kiểm soát tốc độ bằng maxSurge (số Pod thêm) và maxUnavailable (số Pod được phép thiếu), đặt maxUnavailable=0 cho dịch vụ quan trọng để không rơi request khi deploy. Nếu cần quay lại, tôi dùng kubectl rollout undo về ReplicaSet revision trước. Với Recreate, tôi chỉ dùng khi ứng dụng không hỗ trợ chạy hai version cùng lúc, ví dụ khóa DB độc quyền hoặc chiếm volume duy nhất, chấp nhận downtime. Tôi luôn kết hợp PodDisruptionBudget (PDB) khi bảo trì node để đảm bảo số Pod tối thiểu còn lại, và dùng readinessProbe thật sức để maxUnavailable có ý nghĩa."
+
 > Senior tip: Với service Java quan trọng, đặt {{maxUnavailable: 0}} + PDB {{maxUnavailable: 1}} (hoặc {{minAvailable: N-1}}) và **bắt buộc** readinessProbe đúng nghĩa — nếu thiếu readinessProbe, Kubernetes coi Pod "sẵn sàng" ngay khi container chạy, maxUnavailable=0 trở nên vô nghĩa. Khi bảo trì node, luôn kiểm tra {{ALLOWED DISRUPTIONS}} trước; kết hợp với Cluster Autoscaler/PDB-aware scheduling để node mới kịp nhận Pod trước khi node cũ bị đuổi hết.`,
     follow: [
       'maxSurge và maxUnavailable tương tác thế nào? Có thể đặt cả hai là 0 không, vì sao?',
@@ -11337,6 +11389,19 @@ kubectl get pods -n team-payment-dev
 ~~~
 - **Sự cố:** (1) Quên đặt LimitRange và dev không khai báo request → scheduler không có thông tin để xếp Pod hợp lý, HPA theo CPU cũng không chạy (utilization tính trên request). (2) ResourceQuota đặt quá thấp so với nhu cầu deploy (rolling update cần maxSurge tạo thêm Pod) → rollout kẹt vì không tạo được Pod mới. Tính quota chừa chỗ cho surge. (3) Dùng namespace {{default}} cho mọi thứ → khó RBAC, khó quota, dễ xoá nhầm. (4) Namespace cô lập logic nhưng **không cô lập mạng** mặc định: Pod ở namespace A vẫn gọi được Pod namespace B trừ khi có NetworkPolicy.
 
+### Ví dụ đời thực
+
+Tình huống: hai team Thanh toán và Thẻ dùng chung một cluster K8s, mỗi team một namespace.
+- **Triệu chứng:** Team Thẻ deploy nhầm một vòng lặp tạo Pod liên tục, sử dụng hết RAM của namespace, khiến Pod của team Thanh toán không thể lên lịch và giao diện thanh toán phản hồi chậm.
+- **Điều tra:** {{kubectl describe quota rq-card-dev -n team-card-dev}} cho thấy Used/Hard đạt 100% memory, Events báo "exceeded quota: rq-card-dev, requested: pods=1, used: pods=40, limited: pods=40". Pod của team Thanh toán trong namespace khác vẫn khỏe, chứng minh vấn đề nằm ở quota của namespace team Thẻ.
+- **Nguyên nhân gốc:** Namespace team Thẻ không có ResourceQuota/LimitRange chặt, và dev không khai báo request/limit, nên một Pod lỗi có thể lĩnh tất cả tài nguyên.
+- **Cách xử lý:** Tắt Deployment Pod vòng lặp của team Thẻ, đặt ResourceQuota (memory, CPU, số Pod) và LimitRange (defaultRequest, default, max cho mỗi container) cho namespace, sau đó theo dõi Used/Hard qua {{kubectl describe quota}}.
+- **Kết quả đo được:** Pod của team Thanh toán quay lại Running ngay sau khi Pod lỗi bị tắt, quota ngăn chặn team nào "ăn hết phần" của team khác, team thiết lập cảnh báo ở 80% Used/Hard để chủ động mở rộng.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Namespace chia cluster thành nhiều không gian logic, mỗi team hoặc môi trường một namespace, giúp quản lý tên, quyền RBAC và chính sách riêng. ResourceQuota giới hạn tổng tài nguyên (tổng CPU, RAM, số Pod) một namespace được dùng, tránh team nào dùng hết phần của nhau. LimitRange đặt mặc định và min/max cho từng container, nhất là khi dev quên khai báo request/limit, giúp scheduler xếp Pod và HPA tính toán chuẩn. Tôi thường kết hợp ba thứ này: namespace để cô lập logic, ResourceQuota để hạn mức, LimitRange để quy định từng container. Lưu ý namespace chỉ cô lập logic, không cô lập mạng mặc định, nên tôi thêm NetworkPolicy nếu cần chặn traffic chéo giữa các team. Với ngân hàng, production thường tách cluster hoặc node pool riêng khỏi non-prod để giảm phạm vi ảnh hưởng khi xảy ra sự cố."
+
 > Senior tip: Namespace + ResourceQuota + LimitRange là "bộ ba tối thiểu" cho cluster đa team; thêm NetworkPolicy để cô lập traffic và RBAC để cô lập quyền. Với ngân hàng, production thường tách cluster (hoặc ít nhất tách node pool) khỏi non-prod để giảm blast radius; quota nên được quản lý như code (GitOps) và đặt cảnh báo khi {{Used}} tiến gần {{Hard}} (ví dụ 80%) để kịp mở rộng trước khi rollout bị chặn giữa đêm.`,
     follow: [
       'ResourceQuota tính trên request hay trên usage thực tế? Điều này ảnh hưởng thế nào tới việc lập kế hoạch dung lượng?',
@@ -11408,6 +11473,19 @@ kubectl logs -l app=payment -n payment --tail=100 --prefix
 - **Ngắn hạn (phút/giờ):** coi secret đã bị xâm phạm → **xoay (rotate)** credential ngay tại nguồn (đổi mật khẩu DB, thu hồi token), cập nhật vault/ESO, buộc rollout để Pod nhận secret mới. Kiểm tra truy cập bất thường.
 - **Dọn dẹp:** xoá secret khỏi Git (lọc lịch sử bằng công cụ chuyên dụng), nhưng xem lịch sử đã lộ là sự thật không đảo ngược → rotate vẫn bắt buộc. Quét repo bằng secret scanning.
 - **Phòng ngừa:** cấm Secret bản rõ trong Git (ESO/Sealed Secrets), pre-commit/CI secret scanning, RBAC hạn chế đọc Secret, bảo vệ actuator endpoint, encryption at-rest.
+
+### Ví dụ đời thực
+
+Tình huống: nền tảng chạy mười service Spring Boot trên Kubernetes, mỗi service một team, team tự triển khai qua Helm chart.
+- **Triệu chứng:** Một team triển khai service mới không khai báo resource limit, Pod đó dùng hết RAM của node, làm node bị OOM và ảnh hưởng đến các service khác chạy cùng node (noisy neighbor).
+- **Điều tra:** {{kubectl top pods -n}} và {{kubectl describe node}} cho thấy Pod của team đó chiếm gần hết bộ nhớ node, các Pod bên trên node bị Evicted do memoryPressure.
+- **Nguyên nhân gốc:** Không có LimitRange hay policy bắt buộc resource limit, mỗi team tự ý khai báo hoặc bỏ trống requests/limits.
+- **Cách xử lý:** Nền tảng áp dụng golden Helm chart với requests/limits bắt buộc, dùng Kyverno/OPA chặn manifest không có resource limit, đặt JVM {{MaxRAMPercentage}} 70-75% để container không vượt limit và bị OOMKilled.
+- **Kết quả đo được:** Pod mới bắt buộc phải khai báo resource, node không còn bị OOM do một service, các service khác không bị ảnh hưởng, nền tảng có dashboard tỉ lệ service tuân thủ probe/PDB/resource.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi thiết kế tiêu chuẩn triển khai như một hệ thống đường ray an toàn thay vì để mỗi team tự phát minh. Nền tảng cung cấp một Ingress controller với cert-manager quản lý TLS tập trung, một golden Helm chart đã có probe, readiness, resource limit và PDB hợp lý, cấu hình qua ConfigMap đồng bộ Secret từ vault qua External Secrets Operator, và rollout RollingUpdate với maxUnavailable=0. Cân bằng giữa tự chủ của team và guardrail của nền tảng tôi làm bằng quy tắc "mặc định an toàn, override có kiểm soát": team override qua values các thứ như replica, timeout, host, nhưng override vượt ngưỡng như tắt liveness hay chạy privileged bị policy chặn hoặc cần ngoại lệ có ticket và thời hạn. Khi sự cố production như cert hết hạn, rollout lỗi hoặc secret lộ, tôi có sẵn runbook: xoay credential ngay, rollback bản deploy tốt, và điều tra gốc để khắc phục triệt để."
 
 > Senior tip: Hãy coi tiêu chuẩn triển khai là **sản phẩm** của nền tảng có version, roadmap và phản hồi từ team — guardrail bị ghét thường vì nó chặn muộn và không giải thích; policy tốt chặn sớm trong CI với thông báo "sai gì, sửa thế nào". Hai chỉ số lead nên theo: (1) tỉ lệ rollout không cần can thiệp tay, (2) thời gian khôi phục (MTTR) khi cert/rollout/secret gặp sự cố. Với ngân hàng, mọi ngoại lệ bảo mật (tắt probe check, nới policy) phải có thời hạn và được audit — ngoại lệ vĩnh viễn là nợ rủi ro.`,
     follow: [
