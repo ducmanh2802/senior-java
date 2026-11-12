@@ -5920,4 +5920,409 @@ Tôi sẽ làm rõ người dùng nói chậm là chờ token đầu tiên hay c
   ],
   tags: ['latency', 'ttft', 'observability', 'optimization']
 },
+{
+  id: 'ai-089',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Bạn chọn ReAct, plan-and-execute hay reflection/self-check cho một agent xử lý yêu cầu nghiệp vụ như thế nào? Giải thích luồng chạy, giới hạn và cách biết mẫu nào thực sự phù hợp.',
+  a: `**Tóm tắt:** ReAct (Reason + Act: suy luận rồi thực hiện một hành động) phù hợp khi agent cần quan sát kết quả tool rồi mới quyết định bước kế tiếp. Plan-and-execute tách lập kế hoạch khỏi thực thi cho quy trình dài, còn reflection/self-check cho agent rà soát kết quả; cả ba đều cần giới hạn bước, quyền tool và kiểm tra bằng logic xác định, vì tự kiểm tra không bảo đảm câu trả lời đúng.
+
+### Ba mẫu giải quyết ba vấn đề khác nhau
+
+Agent là chương trình dùng LLM để chọn bước tiếp theo và có thể gọi tool (công cụ như API tra cứu đơn hàng). Mẫu kiến trúc quyết định cách phối hợp các bước; không có mẫu nào làm model đáng tin tuyệt đối.
+
+| Mẫu | Luồng đơn giản | Dùng khi | Đánh đổi |
+|---|---|---|---|
+| ReAct | quan sát → chọn action → nhận kết quả → lặp | Cần quyết định tiếp theo dựa trên kết quả vừa nhận | Linh hoạt nhưng nhiều vòng gọi model |
+| Plan-and-execute | lập kế hoạch → chạy từng bước → cập nhật kế hoạch | Nhiệm vụ nhiều bước, có thể chia nhỏ | Kế hoạch ban đầu có thể lỗi thời |
+| Reflection/self-check | tạo nháp → kiểm tra theo tiêu chí → sửa hoặc trả | Có tiêu chí kiểm tra rõ, đầu ra cần rà soát | Tăng latency/chi phí; model có thể tự xác nhận lỗi của mình |
+
+ReAct hợp với câu hỏi cần tra cứu tuần tự: tìm mã khách, lấy trạng thái đơn, rồi giải thích dựa trên trạng thái. Plan-and-execute hợp với tác vụ “lập báo cáo tháng”: xác định nguồn và các bước trước, nhưng phải cho phép dừng hoặc lập lại kế hoạch khi nguồn thiếu. Reflection chỉ nên rà soát các tiêu chí có thể nêu cụ thể, như mọi số tiền đều có đơn vị, thay vì hỏi chung chung “có đúng không?”.
+
+### Cách triển khai an toàn
+
+1. Chuyển yêu cầu thành mục tiêu và danh sách tool được phép. Quyền truy cập phải được kiểm tra ở server/tool dựa trên người dùng hiện tại; không dựa vào lời hứa trong prompt.
+2. Với ReAct, mỗi vòng nhận observation (kết quả tool) rồi chọn action hoặc kết thúc. Với plan-and-execute, lưu trạng thái từng bước, kết quả và điều kiện dừng; kết quả mới có thể làm kế hoạch cũ mất hiệu lực.
+3. Với self-check, kiểm tra schema, quy tắc nghiệp vụ và trích dẫn bằng code trước. Chỉ dùng LLM để rà soát những phần không có rule đơn giản.
+4. Đặt max steps, deadline, token/cost budget và giới hạn retry ở phía ứng dụng. Khi hết giới hạn, trả trạng thái incomplete thay vì tiếp tục vô hạn.
+5. Ghi lại bước, tool, trạng thái và phiên bản để có thể giải thích kết quả; không mặc định log prompt chứa dữ liệu nhạy cảm.
+
+~~~java
+for (int step = 0; step < MAX_STEPS; step++) {
+    Decision decision = model.decide(state, allowedTools);
+    if (decision.isFinal()) return validate(decision.answer());
+    ToolResult result = toolExecutor.callAuthorized(user, decision.toolCall());
+    state = state.withObservation(result); // Bước sau dựa trên kết quả thật
+}
+return Result.incomplete("step_limit");
+~~~
+
+Đây là pseudocode Java minh họa, không phải API thư viện. Lời gọi tool cần timeout và kiểm tra quyền; tool ghi dữ liệu còn cần idempotency key (khóa chống xử lý lặp cùng một yêu cầu).
+
+### Chọn mẫu theo rủi ro và dependency
+
+Nếu bước tiếp theo phụ thuộc vào kết quả chưa biết, ReAct tự nhiên hơn. Nếu có nhiều bước tương đối ổn định, plan-and-execute giúp nhìn thấy tiến độ và lưu trạng thái; không nên để plan tự sinh lệnh tùy ý. Self-check hữu ích khi có checklist và đầu ra rẻ để kiểm tra, nhưng không nên dùng cùng model để tự xác nhận một quyết định tài chính có rủi ro. Dùng rule, nguồn độc lập hoặc con người ở điểm đó.
+
+Một workflow thường kết hợp: plan cho trình tự tổng thể, ReAct cục bộ khi cần tra cứu phát sinh, validator xác định trước khi ghi nhận, và reflection cho phần trình bày. Tăng số vòng đồng nghĩa thêm latency, lỗi mạng và chi phí; đo tỷ lệ hoàn tất, tool success, sai nghiệp vụ, số vòng p95 và chi phí mỗi tác vụ trên tập test đại diện.
+
+### Pitfall production
+
+- Cho model lập kế hoạch nhưng không kiểm tra lại quyền ở từng tool.
+- Reflection lặp mãi hoặc sửa một câu trả lời đúng thành sai; giới hạn một lượt sửa và so với tiêu chí.
+- Giữ state chỉ trong bộ nhớ của request; tác vụ dài bị mất tiến độ khi process restart.
+- Retry tool ghi sau timeout mà không biết lần đầu đã commit hay chưa.
+- Đếm “agent trả lời” là thành công dù tool lỗi hoặc validator từ chối.
+- Dùng một prompt chung cho tác vụ có mức rủi ro khác nhau.
+
+### Ví dụ đời thực
+
+Agent hỗ trợ nhân viên xử lý yêu cầu tra cứu và cập nhật hồ sơ có ba loại bước: xác minh khách, đọc chính sách, tạo yêu cầu. Bản ReAct thuần gọi model trung bình 7 vòng, p95 18 giây và đôi lúc chọn lại tool đọc đã chạy. Đội chuyển trình tự bắt buộc sang plan có ba bước lưu trạng thái, chỉ dùng ReAct cho câu hỏi phát sinh, và validator kiểm tra quyền/trạng thái trước bước ghi. Trên 1.200 kịch bản kiểm thử, số vòng trung bình giảm từ 7 xuống 4, p95 còn 11 giây; ca ghi trùng chuyển thành tra cứu theo idempotency key. Đây là số liệu minh họa, cần đo theo workload và model thực tế.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi chọn theo dependency giữa các bước và hậu quả nếu sai, không theo việc mẫu nào đang phổ biến. ReAct phù hợp khi cần quan sát kết quả tool rồi mới quyết định tiếp; plan-and-execute hợp với quy trình nhiều bước có thể theo dõi và khôi phục; reflection chỉ hữu ích nếu có checklist cụ thể. Tôi thường kết hợp chúng với code xác định: kiểm tra quyền ở mỗi tool, validate dữ liệu trước side effect và giới hạn số vòng, thời gian cùng ngân sách. Tool ghi có idempotency để xử lý timeout an toàn. Tôi đo tỷ lệ hoàn tất nghiệp vụ, lỗi tool, số vòng và chi phí trên tập test đại diện. Nếu agent hết bước hoặc thiếu nguồn, tôi trả incomplete chứ không buộc nó đưa ra câu trả lời tự tin. Self-check không thay được rule nghiệp vụ hoặc kiểm duyệt với hành động rủi ro cao.
+
+> Senior tip: Đặt ngân sách theo toàn bộ tác vụ, không chỉ mỗi lần gọi model; giới hạn step là hàng rào cuối cùng khi prompt hoặc model hành xử ngoài dự kiến.`,
+  follow: [
+    'Ở plan-and-execute, bạn cập nhật hoặc huỷ kế hoạch thế nào khi một bước trả dữ liệu mâu thuẫn?',
+    'Bạn phân biệt self-check có ích với việc model chỉ lặp lại chính lỗi của nó bằng cách nào?',
+    'Nếu tool ghi timeout nhưng có thể đã commit, agent nên kiểm tra và tiếp tục ra sao?'
+  ],
+  tags: ['agent', 'react', 'planning', 'reflection']
+},
+{
+  id: 'ai-090',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Agent của bạn có vài trăm tool từ nhiều hệ thống, khiến prompt dài và model hay chọn nhầm. Bạn thiết kế phân nhóm, tìm kiếm tool và kiểm tra quyền thế nào để giảm lỗi mà không đưa toàn bộ catalog vào mỗi lời gọi?',
+  a: `**Tóm tắt:** Không nên gửi hàng trăm mô tả tool vào mọi prompt. Hãy tổ chức catalog theo capability (nhóm khả năng), tìm một tập ứng viên nhỏ bằng metadata và truy vấn người dùng, rồi để model chọn trong tập đó; server vẫn phải xác thực quyền, tham số và rủi ro của từng lời gọi vì chọn tool không phải là kiểm soát truy cập.
+
+### Vì sao nhiều tool làm agent kém ổn định
+
+Tool là một hành động có tên, mô tả và schema đầu vào, ví dụ đọc trạng thái đơn hàng. Catalog vài trăm tool làm tăng token đầu vào, có nhiều mô tả gần giống nhau, và tăng xác suất model chọn sai. Nếu prompt có toàn bộ chức năng nhân sự, thanh toán và vận hành, model cũng có thể nhìn thấy hành động mà người dùng không được phép dùng. Ẩn tool khỏi prompt cải thiện lựa chọn nhưng không thay thế authorization.
+
+### Hai tầng chọn tool
+
+1. Gán metadata có cấu trúc cho mỗi tool: capability, hệ thống, tác động (read/write), nhóm người dùng được phép, mô tả ngắn, schema version và trạng thái khả dụng. Tên cụ thể và mô tả cần phân biệt động từ nghiệp vụ, như {{getRefundStatus}} so với {{issueRefund}}.
+2. Lọc trước bằng quyền và ngữ cảnh: danh sách chỉ bao gồm tool mà principal (danh tính đã xác thực) được sử dụng, tenant phù hợp và các capability cho phép trong phiên.
+3. Tìm ứng viên từ yêu cầu: có thể dùng từ khóa/taxonomy cho nhóm rõ ràng, hoặc semantic search (tìm theo ý nghĩa) trên mô tả tool khi cách diễn đạt đa dạng. Kết hợp các bộ lọc chính xác như hệ thống và quyền.
+4. Gửi một nhóm nhỏ các tool phù hợp cho model và yêu cầu schema đầu vào chặt. Nếu không đủ tin cậy, hỏi lại hoặc chuyển sang menu/workflow xác định.
+5. Trước khi thực thi, server kiểm tra lại quyền, kiểu/giới hạn tham số, trạng thái nghiệp vụ và xác nhận của người dùng nếu cần.
+
+~~~text
+Yêu cầu: "đơn hoàn tiền đang ở đâu?"
+   -> capability: refund.read
+   -> lọc quyền + tenant
+   -> ứng viên: getRefundStatus, getRefundReceipt
+   -> model chọn + schema validate
+   -> tool kiểm tra quyền lần nữa
+~~~
+
+Đây là retrieval của catalog tool, không nhất thiết cần vector database: vài trăm tool có thể dùng metadata và keyword đủ tốt. Chỉ đưa toàn bộ tool vào prompt nếu catalog nhỏ, ổn định và đo được chất lượng tốt hơn.
+
+### Thiết kế catalog và xác nhận lựa chọn
+
+Giữ schema tool nhỏ, có field bắt buộc rõ ràng, enum hữu hạn khi có thể, giới hạn độ dài và ví dụ không chứa dữ liệu thật. Mô tả cần nêu tác dụng, điều kiện dùng và side effect; tránh mô tả quảng cáo. Tách tool đọc và ghi theo tên/quyền; hành động nhạy cảm có thể yêu cầu xác nhận từ người dùng, còn kiểm tra quyền luôn ở backend.
+
+| Cách chọn ứng viên | Điểm mạnh | Hạn chế |
+|---|---|---|
+| Gửi toàn catalog | Đơn giản khi ít tool | Prompt dài, nhiều lựa chọn nhiễu |
+| Metadata/keyword | Rẻ, giải thích được, lọc chính xác | Khó hiểu từ đồng nghĩa |
+| Semantic search | Bắt được yêu cầu diễn đạt khác | Có thể trả nhầm tool gần nghĩa |
+| Router phân cấp | Chọn capability rồi chọn tool | Thêm bước và lỗi ở router |
+
+Đo top-k recall (tool đúng có xuất hiện trong k ứng viên đầu không), tỷ lệ chọn đúng, tỷ lệ tham số hợp lệ, số lần hỏi lại, token, latency, và tỷ lệ bị từ chối đúng quyền. Test các tool tên gần nhau, yêu cầu mơ hồ, role khác nhau, tenant khác nhau, catalog thay đổi và tool ngừng hoạt động. Không chỉ tối ưu accuracy trung bình: nhầm tool ghi tiền cần trọng số rủi ro cao hơn nhầm tool đọc.
+
+### Pitfall production
+
+- Lọc quyền trong mô tả/prompt nhưng endpoint thực thi không kiểm tra lại.
+- Dùng semantic similarity cao làm căn cứ duy nhất cho việc gọi tool ghi.
+- Catalog cập nhật nhưng cache candidate còn schema cũ.
+- Tool có tên chung như {{updateRecord}} và đầu vào quá linh hoạt.
+- Gửi input/output nhạy cảm của tool vào trace không được bảo vệ.
+- Router đệ quy gọi chính nó hoặc liên tục mở rộng candidate list; đặt giới hạn rõ.
+
+### Ví dụ đời thực
+
+Agent nội bộ có 240 tool từ CRM, thanh toán và kho vận. Trước đây prompt chứa hết catalog, trung bình thêm 9.000 token và tỷ lệ chọn đúng trên 600 câu test là 91%. Đội gắn capability, quyền và side-effect metadata, lọc role/tenant trước, rồi chỉ gửi tối đa 8 ứng viên; tỷ lệ top-8 có tool đúng đạt 98%, model chọn đúng 96%, input giảm 68%. Một ca yêu cầu mơ hồ về “huỷ giao dịch” vẫn phải hỏi lại thay vì chọn tool ghi. Đây là số liệu minh họa; cần đo bằng test set có nhãn và phân tầng theo độ rủi ro.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi không giải quyết catalog lớn bằng cách tăng context window trước tiên. Tôi chuẩn hóa metadata của tool, nhóm theo capability, đánh dấu read/write và gắn quyền/tenant. Sau khi xác thực người dùng, ứng dụng lọc các tool được phép rồi dùng taxonomy, keyword hoặc semantic search để lấy một shortlist nhỏ. Model chỉ chọn trong shortlist và trả input theo schema, nhưng backend vẫn validate quyền và tham số ngay trước khi chạy. Tool có side effect cần xác nhận hoặc policy riêng; prompt không phải ranh giới bảo mật. Tôi đo top-k recall, chọn đúng, tham số hợp lệ, token, latency và lỗi theo mức rủi ro. Với yêu cầu mơ hồ, hệ thống hỏi lại hoặc dùng workflow cố định. Cách này giảm nhiễu mà vẫn giữ quyết định cuối cùng trong lớp thực thi có kiểm soát.
+
+> Senior tip: Theo dõi cả “tool đúng có nằm trong candidate set không” lẫn “model có chọn đúng không”; hai tỷ lệ này chỉ ra lỗi nằm ở retrieval hay ở model.`,
+  follow: [
+    'Bạn đánh giá top-k retrieval của catalog tool bằng tập dữ liệu nào?',
+    'Tool nào nên yêu cầu xác nhận rõ ràng từ người dùng trước khi thực thi?',
+    'Nếu tool bị thu hồi quyền giữa lúc agent lập kế hoạch và lúc gọi, bạn xử lý thế nào?'
+  ],
+  tags: ['agent', 'tool-selection', 'tool-search', 'authorization']
+},
+{
+  id: 'ai-091',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Một hệ RAG cần lưu vài triệu embedding, lọc theo tenant và metadata, đồng thời đội vận hành đã có PostgreSQL và OpenSearch. Bạn chọn pgvector, OpenSearch hay vector database riêng dựa trên tiêu chí nào, và kiểm chứng lựa chọn ra sao?',
+  a: `**Tóm tắt:** Không có vector store tốt nhất cho mọi hệ thống. Tôi bắt đầu từ yêu cầu nhất quán dữ liệu, filter theo quyền/tenant, loại truy vấn hybrid, tải đọc/ghi, latency p95, độ sẵn sàng và năng lực vận hành; sau đó benchmark trên dữ liệu thật đã làm sạch. pgvector có lợi khi muốn giữ vector cùng dữ liệu quan hệ, OpenSearch phù hợp khi cần search văn bản kết hợp vector, còn hệ vector chuyên dụng có thể đáng giá khi quy mô/tải đòi hỏi nhưng thêm một nền tảng cần vận hành.
+
+### Vector store làm gì
+
+Embedding là dãy số biểu diễn ý nghĩa tương đối của văn bản; vector store giữ embedding và tìm các vector gần với câu hỏi. RAG (retrieval-augmented generation) lấy tài liệu liên quan rồi đưa phần phù hợp cho LLM. Store không quyết định tài liệu có đúng quyền hay nội dung có còn mới: ứng dụng phải quản lý metadata, ACL (quyền truy cập) và vòng đời tài liệu.
+
+### So sánh theo workload, không theo nhãn sản phẩm
+
+| Lựa chọn | Khi thường hợp | Câu hỏi phải kiểm chứng |
+|---|---|---|
+| PostgreSQL + pgvector | Đã vận hành Postgres; muốn giao dịch, metadata và vector ở gần nhau | Tải vector có ảnh hưởng query nghiệp vụ? Index và filter có đạt p95? |
+| OpenSearch | Đã dùng search văn bản, cần kết hợp keyword/filter với vector | Chi phí cluster, độ trễ indexing, mapping và vận hành segment ra sao? |
+| Vector DB riêng | Cần tách workload vector, khả năng mở rộng hoặc tính năng chuyên biệt | SLA, backup/restore, kiểm soát tenant, consistency và vận hành có phù hợp? |
+
+pgvector cung cấp kiểu vector và index tìm gần nhất trong PostgreSQL; ví dụ các phương thức index phổ biến gồm HNSW và IVFFlat, nhưng hiệu năng, độ chính xác và chi phí build phụ thuộc dữ liệu, cấu hình và phiên bản. OpenSearch cung cấp search engine với khả năng vector và keyword; cần chọn truy vấn và mapping phù hợp. “Vector database riêng” là nhóm sản phẩm, không phải một API đồng nhất; phải đánh giá từng sản phẩm cụ thể.
+
+### Quy trình chọn và benchmark
+
+1. Ghi rõ kích thước vector, số lượng chunk hiện tại và tăng trưởng, tỷ lệ cập nhật/xóa, số tenant, metadata filter và concurrency.
+2. Xác định chất lượng cần đạt: recall@k (tỷ lệ tài liệu liên quan xuất hiện trong k kết quả), độ mới dữ liệu, filter đúng quyền, p95 latency và chi phí.
+3. Chạy cùng corpus, embedding, query set và filter trên phương án khả thi. So sánh exact search hoặc baseline để hiểu recall; đo cả tải hỗn hợp đọc/ghi và thời gian reindex.
+4. Test tenant isolation, xóa/quyền thu hồi, backup/restore, nâng phiên bản, failover và phương án rollback.
+5. Tính tổng chi phí: compute, storage, replica, index build, vận hành on-call và chuyển dữ liệu, không chỉ chi phí mỗi truy vấn.
+
+~~~text
+query -> filter tenant + ACL -> vector/keyword retrieval
+      -> hợp nhất + rerank -> kiểm tra quyền lần cuối -> LLM
+~~~
+
+Filter cần được áp vào truy vấn trước khi dữ liệu rời khỏi lớp lưu trữ; không truy vấn toàn cục rồi mới trông cậy prompt bỏ tài liệu tenant khác. Tùy thiết kế index, filter có thể ảnh hưởng recall/latency; đo bằng truy vấn thực tế.
+
+### Khi chọn không chỉ dựa vào benchmark
+
+Nếu Postgres đã đáp ứng yêu cầu và dữ liệu quan hệ là nguồn chân lý, pgvector giảm số hệ thống phải đồng bộ. Nếu sản phẩm dựa mạnh vào text search, facets và filter phức tạp, OpenSearch có thể thuận tiện hơn. Store chuyên dụng có thể hợp với tải vector lớn hoặc yêu cầu mở rộng riêng, nhưng cần đánh giá thêm tính nhất quán, export dữ liệu, khóa nhà cung cấp và thời gian khôi phục. Không chuyển store chỉ vì một bài benchmark tổng quát trên mạng.
+
+### Pitfall production
+
+- Đo vector search đơn lẻ nhưng bỏ qua filter tenant, rerank, network và prompt.
+- Chỉ xem latency, không đo recall khi dùng approximate nearest neighbor (tìm gần đúng).
+- Cập nhật tài liệu trong DB nhưng quên xóa chunk/vector cũ.
+- Dùng metadata filter sai khiến nội dung lộ giữa tenant.
+- Tăng replica/index mà không tính write amplification, RAM và backup.
+- Không có test restore hoặc export; migration về sau trở thành sự cố.
+
+### Ví dụ đời thực
+
+Một trợ lý tài liệu có 3,2 triệu chunk, 80 tenant, 70% câu hỏi cần lọc quyền và 15% cần exact keyword cho mã hợp đồng. Đội chạy cùng 2.000 query đã ẩn danh trên Postgres+pgvector và OpenSearch; cấu hình Postgres hiện hữu đạt p95 170 ms và recall@10 0,94, OpenSearch hybrid đạt p95 145 ms và recall@10 0,96 nhưng cần cluster riêng. Do SLO là p95 dưới 250 ms, đội giữ pgvector cho phiên bản đầu, bổ sung benchmark khi tải ghi tăng; chỉ xem xét tách khi đạt ngưỡng vận hành đã đặt. Đây là số liệu minh họa, không phải kết quả phổ quát.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi sẽ thu thập workload và ràng buộc trước: số vector, chiều embedding, tốc độ cập nhật, filter tenant/ACL, yêu cầu keyword, recall, p95 và năng lực vận hành. Nếu đã có PostgreSQL và truy vấn quan hệ quan trọng, pgvector giảm đồng bộ; nếu search văn bản và hybrid là trọng tâm, tôi benchmark OpenSearch; vector DB riêng chỉ được chọn khi lợi ích về tải hoặc tính năng bù được chi phí nền tảng và rủi ro lock-in. Tôi benchmark trên cùng dữ liệu, query set và filter, đo cả độ đúng lẫn tail latency, tải ghi và reindex. Tôi cũng kiểm tra isolation, xóa dữ liệu, backup/restore và export. Cuối cùng, lựa chọn theo SLO và tổng chi phí vận hành, không theo số lượng vector đơn lẻ hoặc benchmark quảng cáo.
+
+> Senior tip: Với RAG đa tenant, kiểm thử query có quyền bị thu hồi và tenant không có kết quả; lỗi filter là lỗi bảo mật, không chỉ là lỗi relevance.`,
+  follow: [
+    'Bạn tạo ground truth nào để đo recall@k khi câu trả lời có nhiều tài liệu liên quan?',
+    'Khi dữ liệu vector và metadata nghiệp vụ không cùng transaction, bạn xử lý cập nhật dở dang thế nào?',
+    'Bạn kiểm thử khôi phục và chuyển ngược khỏi vector database mới ra sao?'
+  ],
+  tags: ['rag', 'vector-store', 'pgvector', 'opensearch']
+},
+{
+  id: 'ai-092',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Một agent cần đọc email và hồ sơ khách hàng có số điện thoại, email, số tài khoản trước khi gửi nội dung tới LLM bên ngoài. Bạn thiết kế phát hiện, che PII và khôi phục các trường cần thiết thế nào mà không làm hỏng ý nghĩa tác vụ?',
+  a: `**Tóm tắt:** PII (thông tin nhận dạng cá nhân) cần được giảm thiểu trước khi rời hệ thống kiểm soát dữ liệu. Tôi xác định mục đích từng trường, bỏ trường không cần, redact hoặc thay bằng token ổn định trong phạm vi một tác vụ, rồi chỉ khôi phục ở backend khi thực sự cần; kiểm soát này phải có kiểm thử theo ngôn ngữ/dữ liệu thực và không thay thế phân quyền, mã hóa hay chính sách provider.
+
+### Vì sao chỉ thay vài chuỗi bằng dấu sao chưa đủ
+
+PII là dữ liệu có thể nhận diện hoặc liên kết tới một người, ví dụ email, số điện thoại, số tài khoản hay địa chỉ. Dữ liệu còn có thể nhận diện gián tiếp: tên cộng với chi nhánh và ngày giao dịch có thể đủ để tìm ra khách. Redaction là thay dữ liệu nhạy cảm bằng dấu che; tokenization thay bằng mã giả có thể ánh xạ lại trong một kho riêng.
+
+Trước tiên hỏi LLM cần biết gì để hoàn thành việc. Nếu chỉ phân loại chủ đề email, thường không cần tên hoặc số tài khoản. Nếu cần đối chiếu hai lần nhắc cùng một người, thay tên bằng cùng một token trong phạm vi request giúp giữ quan hệ mà không gửi giá trị thật. Không gửi một định danh ổn định toàn hệ thống nếu không cần, vì nó có thể liên kết hoạt động giữa nhiều tác vụ.
+
+### Luồng xử lý đề xuất
+
+1. Phân loại dữ liệu và đích gửi: loại trường, tenant, mục đích, provider/model, vùng xử lý, retention và cơ sở cho phép.
+2. Dùng allowlist field cần thiết. Loại bỏ trường thừa trước khi gọi bộ phát hiện PII.
+3. Phát hiện bằng parser/rule cho định dạng xác định như email, cộng với detector phù hợp cho tên/địa chỉ; vùng không chắc chắn được gắn cờ hoặc chuyển xử lý an toàn.
+4. Tạo placeholder không chứa dữ liệu gốc, ví dụ {{[EMAIL_1]}}. Bản đồ placeholder-to-value được giữ trong memory/store được bảo vệ, tách khỏi prompt và có thời hạn ngắn.
+5. Gửi nội dung đã biến đổi; validate output và chỉ khôi phục token ở backend, trong trường được cho phép. Không dùng kết quả model làm lệnh truy cập tùy ý.
+6. Ghi audit metadata như loại detector và phiên bản policy; tránh log nội dung gốc hoặc bảng ánh xạ.
+
+~~~java
+Sanitized sanitized = piiFilter.redact(input, policy);
+ModelResult result = model.process(sanitized.text());
+Validated output = validator.check(result);
+return tokenVault.restoreAllowed(output, sanitized.tokenMap(), policy);
+~~~
+
+Tên class ở đây là minh họa nội bộ, không phải API framework. Token vault (kho ánh xạ token) cần ACL, mã hóa, hạn lưu, và chỉ được truy cập bởi thành phần được phép.
+
+### Chọn giữa bỏ, redact và token hóa
+
+| Cách | Khi dùng | Rủi ro/giới hạn |
+|---|---|---|
+| Bỏ field | Trường không cần cho tác vụ | Có thể mất ngữ cảnh nghiệp vụ |
+| Redact thành loại chung | Model chỉ cần biết có dữ liệu, không cần liên kết | Mất khả năng phân biệt nhiều thực thể |
+| Token hóa theo request | Cần giữ quan hệ giữa các lần xuất hiện | Lộ pattern nếu token ổn định hoặc ánh xạ rò rỉ |
+| Gửi dữ liệu nguyên bản | Chỉ khi có căn cứ, kiểm soát provider và phê duyệt phù hợp | Phạm vi lộ/retention lớn hơn |
+
+Regex có thể bắt email nhưng bỏ sót cách viết số điện thoại, tên riêng, ảnh scan hoặc thông tin được diễn đạt tự nhiên. OCR (nhận dạng ký tự từ ảnh) và LLM có thể phát hiện thêm nhưng cũng có false positive/false negative. Vì vậy phải biết detector đã bao phủ loại dữ liệu nào, test trên bộ mẫu được phép dùng, và có cách xử lý confidence thấp. Không khẳng định dữ liệu đã “ẩn danh” nếu vẫn có thể tái nhận diện.
+
+### Pitfall production
+
+- Chỉ redact prompt người dùng mà quên lịch sử hội thoại, file đính kèm, tool result và log.
+- Token hóa bằng hash không salt; giá trị ít khả năng như email có thể bị dò ngược.
+- Dùng một placeholder cho mọi người khiến model nhầm chủ thể trong cùng email.
+- Khôi phục token từ output model tùy ý, tạo nguy cơ lộ chéo.
+- Chỉ dựa regex dù tài liệu có ảnh/OCR, Unicode hoặc cách viết biến thể.
+- Lưu mapping lâu hơn thời hạn xử lý hoặc gửi sang observability vendor.
+- Tin provider “không huấn luyện” mà chưa xem retention, vùng lưu và điều khoản hợp đồng.
+
+### Ví dụ đời thực
+
+Agent phân loại email hỗ trợ nhận 12.000 email/ngày. Ban đầu toàn bộ nội dung và chữ ký gửi tới model; rà soát mẫu được phê duyệt cho thấy 18% email có email/số điện thoại và 3% có số tài khoản. Nhóm bỏ chữ ký, phát hiện trường định danh, dùng placeholder theo request, chỉ gửi loại sản phẩm và nội dung cần phân loại. Trong 1.000 mẫu gán nhãn, precision phát hiện email/số tài khoản đạt 99,2%, recall đạt 97,8%; các mẫu confidence thấp chuyển hàng đợi xử lý hạn chế. Tỷ lệ phân loại đúng giảm 0,3 điểm phần trăm và log không còn chứa trường thô. Đây là ví dụ minh họa, phải kiểm chứng theo ngôn ngữ, tài liệu và chính sách thật.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi bắt đầu từ data flow và mục đích, không bật một bộ che chung cho mọi prompt. Tôi xác định field nào thật sự cần cho tác vụ, bỏ phần còn lại, rồi dùng rule và detector phù hợp để thay PII bằng placeholder. Nếu cần giữ quan hệ giữa nhiều lần nhắc, token chỉ ổn định trong phạm vi request và mapping được giữ tách biệt, mã hóa, thời hạn ngắn. Output phải qua validation trước khi khôi phục các trường được phép; model không tự quyết định giá trị nào được giải mã. Tôi test cả false negative, lịch sử hội thoại, attachment, tool result và log. Đồng thời xem retention, vùng xử lý và điều khoản provider. Redaction giảm dữ liệu gửi đi nhưng không thay authorization, mã hóa, audit hay đánh giá rủi ro tái nhận diện.
+
+> Senior tip: Đo cả precision và recall theo loại PII; false negative gây lộ dữ liệu, còn false positive quá nhiều có thể làm hỏng tác vụ và khiến đội tắt lớp bảo vệ.`,
+  follow: [
+    'Bạn thiết kế mapping token thế nào để chỉ giữ được trong một tác vụ và không thể liên kết giữa tenant?',
+    'Bạn xử lý trường hợp detector không chắc một chuỗi là tên hay mã hợp đồng ra sao?',
+    'Những nơi nào ngoài prompt chính thường vô tình lưu dữ liệu PII của một lượt agent?'
+  ],
+  tags: ['agent', 'pii', 'privacy', 'data-protection']
+},
+{
+  id: 'ai-093',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Bạn cần dùng LLM xử lý vài triệu bản ghi lịch sử theo lô thay vì theo request trực tuyến. Bạn thiết kế ước tính chi phí, giới hạn tốc độ, checkpoint và retry thế nào để xử lý đủ dữ liệu mà không nhân đôi side effect hoặc vượt ngân sách?',
+  a: `**Tóm tắt:** Batch LLM là pipeline nền xử lý dữ liệu theo lô có thể chạy lâu, không phải vòng lặp gọi API không giới hạn. Tôi lập dự toán bằng phân bố token và tỷ lệ retry, tạo job/item ID ổn định, áp rate limit và ngân sách, ghi checkpoint sau từng kết quả đã xác nhận, rồi phân loại lỗi để retry có giới hạn hoặc đưa vào dead-letter queue (hàng lỗi cần xử lý riêng).
+
+### Ước lượng trước khi chạy
+
+Giả sử có 2.000.000 bản ghi; trung bình 700 token đầu vào và 120 token đầu ra mỗi bản ghi. Khối lượng dự kiến là 1,4 tỷ input token và 240 triệu output token, trước overhead và retry. Chi phí được tính theo đơn giá thực tế của model/provider tại thời điểm triển khai; không dùng một con số cố định vì giá và loại batch API khác nhau. Lấy mẫu đại diện để đo phân vị token, bản ghi lỗi, thời gian và output; sau đó chạy pilot nhỏ.
+
+Thêm overhead như system prompt, metadata, output schema, record dài, lỗi parse và retry. Ước tính riêng theo model/route, làm tròn theo đơn giá và đặt trần ngân sách; nếu vượt thì dừng tiếp nhận hoặc chuyển hàng chờ phê duyệt, không âm thầm đổi model làm giảm chất lượng. Batch API của provider nếu có thể rẻ hơn/khác giới hạn so với request realtime, nhưng phải kiểm tra tính năng, retention, SLA và điều kiện cụ thể.
+
+### Thiết kế pipeline có thể tiếp tục sau sự cố
+
+1. Nạp dữ liệu thành manifest bất biến theo job: recordId, sourceVersion, checksum, trạng thái, partition. Không đưa dữ liệu nhạy cảm không cần thiết vào manifest.
+2. Đưa item vào queue theo partition, giới hạn concurrency toàn cục và theo provider/model. Token bucket (bộ giới hạn ngân sách theo thời gian) hoặc bộ điều tiết tương tự giúp tuân thủ request/token quota.
+3. Mỗi request có idempotency key nếu API/provider hỗ trợ; phía ứng dụng vẫn cần lưu khóa duy nhất cho item và output. “Exactly once” qua mạng thường không thể giả định.
+4. Sau khi nhận response, parse, validate schema và rule nghiệp vụ. Ghi kết quả với trạng thái/version trong transaction, rồi đánh dấu item hoàn tất.
+5. Retry lỗi tạm thời như 429/5xx/network timeout với exponential backoff (khoảng chờ tăng dần) và jitter (độ lệch ngẫu nhiên để tránh nhiều worker retry cùng lúc); tôn trọng Retry-After nếu có. Không retry lỗi dữ liệu hoặc lỗi validation vô hạn.
+6. Lỗi cuối cùng vào dead-letter queue có mã nguyên nhân và công cụ replay sau khi sửa. Checkpoint theo item/partition để restart không xử lý lại toàn job.
+
+~~~text
+manifest -> queue giới hạn -> LLM -> parse + validate
+    ^                           |             |
+    |                       retry có hạn   commit output
+    +------ checkpoint / DLQ <---------------+
+~~~
+
+### Chi phí, vận hành và độ tin cậy
+
+Đo processed/failed/retried, token thực tế, cost dự kiến/cost phát sinh, queue lag, throughput, latency, tỷ lệ output bị reject và kết quả theo model version. Dự báo thời gian gần bằng số item chia throughput thực đo, không dùng throughput lý thuyết. Đặt pause/resume, quota theo job/tenant, circuit breaker khi provider lỗi kéo dài và cảnh báo ngân sách. Có thể chạy canary trên một mẫu để xác nhận chất lượng trước khi xử lý phần lớn dữ liệu.
+
+| Kiểu lỗi | Phản ứng |
+|---|---|
+| 429 hoặc lỗi mạng tạm thời | Backoff, jitter, giới hạn attempt |
+| Record quá dài/sai định dạng | Cách ly, sửa nguồn hoặc route khác có phê duyệt |
+| JSON/schema sai | Retry có giới hạn với hướng dẫn sửa; hết hạn chuyển DLQ |
+| Timeout, chưa rõ provider đã xử lý | Tra request/status nếu có; dùng idempotency hoặc đối soát |
+| Lỗi nghiệp vụ | Không retry mù; chuyển rule hoặc người xử lý |
+
+Nếu output ghi vào hệ thống nghiệp vụ, dùng unique key theo job + record + sourceVersion; nếu output chỉ là artifact mới, vẫn cần quy tắc publish atomically để consumer không đọc bản dở.
+
+### Pitfall production
+
+- Ước tính bằng token trung bình, bỏ qua tail dài và retry khiến dự toán thiếu.
+- Tăng concurrency để kịp deadline rồi vượt quota, nhận thêm 429 và kéo dài cả job.
+- Ghi output xong nhưng crash trước checkpoint, dẫn đến ghi trùng khi chạy lại.
+- Retry mọi lỗi kể cả lỗi vĩnh viễn hoặc response không xác định đã commit.
+- Đổi model giữa job mà không version hóa, tạo output không đồng nhất.
+- Không có cơ chế dừng ngân sách; cảnh báo chỉ tới sau khi xử lý xong.
+- Bỏ qua quyền xóa/retention của bản sao dữ liệu trong queue và artifact batch.
+
+### Ví dụ đời thực
+
+Pipeline phân loại 2 triệu ghi chú giao dịch chạy pilot 20.000 bản ghi, đo 640 input token và 95 output token trung bình, p99 input 2.700 token, lỗi retry 2,1%. Đội ngoại suy theo phân vị, thêm 20% ngân sách dự phòng, chạy tối đa 40 worker theo token quota và ghi checkpoint mỗi item. Khi provider trả 429, throughput giảm theo Retry-After; response không hợp lệ tối đa retry hai lần rồi vào DLQ. Job hoàn tất trong 31 giờ; 0,7% cần xem lại và restart sau một worker crash chỉ xử lý lại 14 item chưa commit. Đây là số liệu minh họa, không phải dự báo cho provider hoặc dữ liệu khác.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi sẽ xử lý batch như một workflow bền vững có thể pause và resume. Đầu tiên lấy mẫu để đo token theo phân vị, chất lượng, tốc độ và lỗi; dự báo chi phí gồm retry rồi đặt hard budget và pilot. Mỗi item có job ID, source version và idempotency key, được queue với concurrency/rate limit theo quota. Kết quả phải parse và validate trước khi lưu cùng checkpoint nguyên tử. Lỗi tạm thời retry với backoff, jitter và số lần tối đa; lỗi vĩnh viễn hoặc hết attempt vào DLQ để xem xét. Với timeout không rõ provider đã xử lý hay chưa, tôi đối soát bằng request ID hoặc idempotency thay vì gửi lại mù. Tôi theo dõi token, chi phí, queue lag, tỷ lệ reject và chất lượng, đồng thời giữ model/prompt version nhất quán trong job. Như vậy có thể kiểm soát deadline, chi phí và tính tái lập.
+
+> Senior tip: Đừng chỉ đặt limit theo request/phút; request có độ dài khác nhau, nên cần theo dõi token throughput và giới hạn chi phí thực tế.`,
+  follow: [
+    'Khi provider timeout nhưng không hỗ trợ idempotency, bạn xác định item đã được xử lý hay chưa thế nào?',
+    'Bạn dùng mẫu pilot và phân vị token nào để dự toán cho dữ liệu có độ dài lệch mạnh?',
+    'Khi batch đang chạy mà model version phải ngừng hỗ trợ, bạn tiếp tục hay khởi tạo job mới ra sao?'
+  ],
+  tags: ['llm', 'batch-pipeline', 'cost-control', 'retry']
+},
+{
+  id: 'ai-094',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Agent cần trả lời câu hỏi từ ảnh chụp hoá đơn và PDF hợp đồng nhiều trang. Bạn chọn OCR, trích xuất text, multimodal model hay kết hợp chúng thế nào để giữ liên kết trang/vùng nguồn, kiểm soát chi phí và không tin nội dung tài liệu như chỉ thị cho agent?',
+  a: `**Tóm tắt:** Ảnh và PDF cần một pipeline nạp riêng: kiểm tra file, trích xuất text/layout bằng parser hoặc OCR, rồi dùng model multimodal khi cần hiểu hình ảnh/bố cục mà text không đủ. Chọn theo loại tài liệu và tiêu chí chất lượng; giữ số trang/vị trí nguồn, giới hạn kích thước và coi nội dung trong file là dữ liệu không đáng tin, tuyệt đối không phải lệnh cho agent.
+
+### Chọn đường xử lý theo loại đầu vào
+
+PDF (Portable Document Format) có thể chứa text thật, ảnh scan, bảng hoặc cả hai. Trích xuất text đọc lớp ký tự có sẵn; OCR (optical character recognition) nhận dạng chữ trong ảnh. Model multimodal nhận nhiều loại đầu vào như hình ảnh và văn bản, có thể hiểu bố cục nhưng chi phí, giới hạn đầu vào và độ ổn định phụ thuộc model/provider. Không phải mọi PDF cần gửi nguyên trang ảnh tới model.
+
+| Tình huống | Cách bắt đầu | Lưu ý |
+|---|---|---|
+| PDF có text sạch | Trích xuất text + giữ page number | Cột/bảng có thể bị đảo thứ tự |
+| PDF scan hoặc ảnh | OCR, giữ text và vị trí | Kiểm tra chất lượng scan, xoay, chữ nhỏ |
+| Bảng/biểu mẫu phức tạp | Layout-aware parser/OCR, có thể multimodal | So sánh field-level accuracy và chi phí |
+| Câu hỏi cần nhìn dấu, biểu đồ | Gửi trang/vùng cần thiết tới multimodal | Không gửi toàn bộ tài liệu nếu không cần |
+
+Kiểm tra magic bytes/loại file, kích thước, số trang, độ phân giải và giới hạn giải nén; không chỉ tin phần đuôi file. Quét malware theo yêu cầu hệ thống. PDF mã hóa, hỏng hoặc vượt giới hạn cần trạng thái lỗi rõ ràng, không trả lời dựa trên phần đã đọc mà không nói thiếu trang.
+
+### Giữ nguồn và điều khiển agent
+
+Mỗi đoạn text/chunk nên giữ documentId, content hash/version, page number và bounding box (tọa độ vùng trên trang) nếu parser cung cấp. Trích dẫn trả cho người dùng phải liên kết đúng trang/vùng để người đọc kiểm tra. Chunk cần tôn trọng ranh giới trang/bảng; nếu cắt theo ký tự thuần có thể tách nhãn khỏi giá trị.
+
+Luồng ví dụ:
+~~~text
+upload -> validate/scan -> PDF text? -> parser : OCR/layout
+       -> chunks + page refs -> retrieval -> agent context
+       -> kiểm tra quyền + câu trả lời có trích dẫn
+~~~
+
+Nội dung tài liệu là untrusted input (đầu vào không đáng tin): có thể chứa câu kiểu “bỏ qua mọi chỉ dẫn trước”. Agent phải xem đó là nội dung cần phân tích, không phải policy hoặc yêu cầu gọi tool. Phân tách system instruction và tài liệu, chỉ cấp tool tối thiểu, kiểm tra quyền ở server và không cho phép trích đoạn PDF tự quyết định side effect. Prompt injection trong file vẫn có thể ảnh hưởng model; cấu trúc prompt không phải hàng rào bảo mật duy nhất.
+
+### Kiểm soát chất lượng, chi phí và dữ liệu
+
+Giới hạn trang/byte/token, chỉ OCR trang liên quan khi có thể, cache kết quả theo content hash và xóa cache khi quyền hoặc tài liệu thay đổi. Lưu trạng thái xử lý (queued, extracted, failed) và retry lỗi tạm thời; tránh OCR lại mỗi câu hỏi. Nếu model hỗ trợ đầu vào ảnh, so sánh với OCR + text trên bộ mẫu có ground truth: độ chính xác field, bảng, số tiền/ngày, tỷ lệ không đọc được, latency và chi phí trên một trang.
+
+Đánh giá riêng ngôn ngữ, ảnh nghiêng/mờ, scan độ phân giải thấp, chữ viết tay và bảng nhiều cột. Với số liệu tài chính/pháp lý, dùng validator định dạng và kiểm tra chéo; confidence do model tự khai không phải bằng chứng. Dữ liệu tài liệu có thể chứa PII, nên áp dụng quyền truy cập, mã hóa, retention và chính sách provider tương ứng.
+
+### Pitfall production
+
+- Giả định mọi PDF có text; scan trả về chuỗi rỗng nhưng hệ thống vẫn báo thành công.
+- Chỉ lưu text mà làm mất page number hoặc thứ tự cột, khiến trích dẫn sai.
+- Gửi toàn bộ tài liệu hàng trăm trang vào một request, vượt giới hạn hoặc phí cao.
+- Không kiểm tra file độc hại, PDF lồng/được mã hóa hay giới hạn giải nén.
+- Tin lời chỉ dẫn trong tài liệu và để agent gọi tool theo nội dung đó.
+- Cache extraction theo tên file thay vì content hash/quyền, trả bản cũ hoặc lộ tenant.
+- Chỉ kiểm tra câu trả lời tổng thể, không đo độ đúng từng trường/trích dẫn.
+
+### Ví dụ đời thực
+
+Agent hỗ trợ rà soát 18.000 hợp đồng PDF mỗi tháng; 65% có text, 35% là scan. Pipeline thử trích xuất text trước, OCR có chọn lọc với scan, chỉ gửi 1–3 trang liên quan tới model multimodal khi cần đọc bảng. Bộ mẫu 500 hợp đồng đo độ chính xác ngày hết hạn tăng từ 88% (OCR mặc định toàn bộ) lên 96%; chi phí xử lý mỗi hồ sơ giảm 42% so với gửi mọi trang tới model. Mỗi kết quả giữ document version và page reference; 2,4% hồ sơ chữ mờ chuyển nhân viên kiểm tra. Đây là số liệu minh họa; cần đo trên tài liệu và ngôn ngữ thực.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi sẽ phân loại PDF có text, scan và tài liệu nhiều bảng trước khi chọn model. Với text sạch, parser thường rẻ và dễ giữ trang; scan cần OCR, còn bố cục phức tạp hoặc câu hỏi về hình ảnh có thể cần multimodal. Tôi giữ document version, page number và vùng nguồn xuyên suốt retrieval để câu trả lời có thể kiểm chứng. Tôi giới hạn kích thước/trang, xử lý file hỏng rõ ràng, cache theo content hash và quyền, đồng thời đo độ đúng từng field trên tập có nhãn. Tài liệu được xem là dữ liệu không đáng tin: câu lệnh bên trong không được cấp quyền gọi tool. Mọi hành động vẫn qua authorization và validator ở server. Với số liệu quan trọng hoặc scan kém, tôi chuyển sang review thay vì đưa ra câu trả lời chắc chắn. Cuối cùng, tôi tối ưu theo chất lượng, latency và cost trên trang.
+
+> Senior tip: Lưu trang và vị trí của từng bằng chứng ngay từ bước parse; nếu chỉ giữ đoạn text cuối cùng thì sau này rất khó chứng minh model đã đọc đúng chỗ nào.`,
+  follow: [
+    'Bạn chọn ground truth và ngưỡng chuyển người kiểm tra cho OCR số tiền/ngày thế nào?',
+    'Làm sao phát hiện PDF chỉ có ảnh thay vì lớp text rỗng hoặc lỗi parser?',
+    'Bạn thiết kế ranh giới tool ra sao nếu tài liệu chứa yêu cầu agent thực hiện giao dịch?'
+  ],
+  tags: ['agent', 'pdf', 'ocr', 'multimodal']
+},
 );
