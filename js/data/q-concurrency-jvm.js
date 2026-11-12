@@ -8307,5 +8307,480 @@ Không đổi khi: chưa đọc GC log/JFR; nguyên nhân gốc là allocation c
 > Senior tip: thứ tự hiệu quả: (1) allocation rate có quá cao không, (2) có leak/retention không, (3) heap sizing phù hợp không, (4) mới chọn/đổi collector và tinh chỉnh flag. Đảo thứ tự này thường tốn thời gian và rủi ro.`,
   follow: ['Làm sao phân biệt allocation rate cao với memory leak qua GC log?', 'MaxGCPauseMillis của G1 có phải cam kết cứng không?'],
   tags: ['GC tuning', 'collector', 'heap', 'pause', 'GC log']
+},
+{
+  id: 'concurrency-054',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Trong Spring MVC, request context có {{ThreadLocal}} nhưng một phần xử lý chạy qua {{@Async}} hoặc {{CompletableFuture}}. Bạn thiết kế truyền và dọn context thế nào để không nhầm user/request giữa các tác vụ?',
+  a: `**Tóm tắt:** {{ThreadLocal}} gắn dữ liệu với thread hiện tại, không tự truyền khi đổi thread; thread pool lại tái sử dụng thread giữa nhiều request. Vì vậy cần truyền đúng tập context qua một ranh giới executor có kiểm soát, rồi luôn khôi phục hoặc dọn bằng {{finally}}; không dùng {{InheritableThreadLocal}} như cách vá cho pool.
+
+### Cái gì và vì sao
+Context là dữ liệu phụ gắn với công việc, ví dụ requestId để nối log, tenantId để chọn dữ liệu khách hàng, hoặc SecurityContext để xác định người dùng. Nếu truyền từng tham số qua hàng chục method thì chữ ký hàm cồng kềnh; {{ThreadLocal}} thường được framework dùng để cung cấp context tiện hơn trong một luồng gọi đồng bộ. Nhưng thread không đồng nghĩa với request: trong pool, worker A có thể làm request 1, rồi request 2, rồi request 3. Khi chuyển sang một executor khác, code chạy trên thread khác nên không thấy ThreadLocal nguồn.
+
+### Luồng an toàn
+1. Ở biên request, đọc context cần thiết và tạo một snapshot nhỏ, bất biến. Chỉ đưa vào snapshot các giá trị cần cho task; không chuyển cả request object, session hay credential nếu không cần.
+2. Khi executor bắt đầu task, lưu context hiện tại của worker, cài snapshot của task, rồi gọi task.
+3. Trong {{finally}}, khôi phục context cũ hoặc gọi {{remove()}}. Bước này bắt buộc kể cả khi task ném exception hoặc bị huỷ.
+4. Khi kết hợp nhiều executor/libraries, dùng cơ chế context-propagation đã được tích hợp rõ ràng. Spring {{TaskDecorator}} có thể bọc Runnable của executor để copy và restore MDC hoặc context được chọn; với Reactor, dùng cơ chế context của Reactor thay vì trông chờ ThreadLocal qua các operator.
+
+~~~java
+Runnable wrap(Runnable task, String requestId) {
+    return () -> {
+        String previous = MDC.get("requestId");
+        try {
+            MDC.put("requestId", requestId); // cài context của task này
+            task.run();
+        } finally {
+            if (previous == null) MDC.remove("requestId");
+            else MDC.put("requestId", previous); // trả worker về trạng thái cũ
+        }
+    };
 }
+~~~
+
+### Phân biệt và trade-off
+| Cách | Phù hợp | Rủi ro |
+|---|---|---|
+| Truyền tham số tường minh | logic nghiệp vụ, dữ liệu quan trọng | nhiều tham số nhưng dễ thấy dependency |
+| Wrapper/TaskDecorator | MDC, trace, context cross-cutting | cần áp dụng cho mọi executor |
+| {{InheritableThreadLocal}} | một số thread con được tạo riêng trong scope | giá trị copy lúc tạo thread, không theo từng task của thread pool |
+| ThreadLocal không dọn | không nên dùng | context request cũ, giữ object lâu, nguy cơ lộ dữ liệu |
+
+{{InheritableThreadLocal}} sao chép giá trị khi tạo thread con, không phải khi submit mỗi task. Thread pool tạo worker một lần nên task sau có thể nhận dữ liệu từ lúc worker được sinh, hoặc không có dữ liệu như mong đợi. Với virtual thread, mỗi task thường có thread riêng, nhưng không nên mặc định rằng context nào cũng tự truyền hoặc bỏ qua chi phí nếu tạo hàng trăm nghìn task.
+
+### Lỗi production hay gặp
+- Copy context vào task nhưng không restore: task tiếp theo trên cùng worker nhận MDC hoặc tenant của task trước.
+- Chỉ gọi {{MDC.clear()}} trên thread cha: thread con có MDC riêng, không được dọn hộ.
+- Chuyển toàn bộ {{SecurityContext}} hay request object mutable: object có thể bị sửa đồng thời, hoặc tồn tại lâu hơn vòng đời request.
+- Truyền context sang async nhưng quên cancellation/timeout: task còn chạy sau khi request kết thúc, tiếp tục dùng principal hoặc trace đã hết hạn.
+
+### Ví dụ đời thực
+Một API đa tenant nhận 900 request/giây và ghi audit bằng {{@Async}}. Một executor dùng lại 32 worker; wrapper ban đầu chỉ set tenantId mà không xóa trong mọi nhánh lỗi. Trong một ca trực, khoảng 0,02% audit mang tenant của request trước; log nghiệp vụ và quyền truy cập trở nên khó tin cậy. Điều tra theo traceId cho thấy lỗi tập trung ở nhánh task ném exception trước bước clear. Team thay bằng decorator có snapshot immutable, set/restore trong finally, thêm test chạy tuần tự hai tenant trên cùng worker và test exception. Sau triển khai, 48 giờ kiểm tra không còn audit sai; thời gian xử lý async không tăng đáng kể vì chỉ copy ba chuỗi ngắn thay vì cả request.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi xem ThreadLocal là cơ chế gắn context với một thread đồng bộ, không phải phương tiện tự động truyền context qua async. Khi submit task, tôi lấy một snapshot nhỏ gồm các giá trị thực sự cần như requestId hoặc tenantId, rồi dùng TaskDecorator hoặc wrapper quanh executor để cài context trước khi chạy. Trong finally tôi restore trạng thái cũ hoặc remove để worker tái sử dụng an toàn. Tôi tránh InheritableThreadLocal cho pool vì nó copy khi tạo worker chứ không theo từng task. Với logic nghiệp vụ quan trọng, tôi ưu tiên truyền tham số tường minh; MDC và trace là trường hợp hợp lý cho propagation. Tôi cũng kiểm tra tất cả executor, kể cả CompletableFuture, vì một đường async chưa bọc là đủ làm mất trace hoặc trộn context. Test nên cố ý chạy hai request khác tenant trên cùng worker và bao gồm nhánh exception/cancel."
+
+> Senior tip: test context propagation bằng executor một thread duy nhất; hai task chạy nối tiếp trên cùng worker sẽ làm lộ lỗi thiếu cleanup mà test nhiều thread thường che khuất.`,
+  follow: [
+    'Vì sao {{InheritableThreadLocal}} không truyền giá trị đúng theo từng task của thread pool?',
+    'Bạn phân biệt context nên truyền bằng tham số tường minh với context nên đặt trong MDC thế nào?',
+    'Nếu task async bị timeout nhưng vẫn chạy, bạn xử lý context và quyền truy cập ra sao?'
+  ],
+  tags: ['ThreadLocal', 'MDC', 'TaskDecorator', 'context propagation', 'thread pool']
+},
+{
+  id: 'concurrency-055',
+  topic: 'concurrency',
+  level: 'lead',
+  q: 'Một tác vụ chia để trị trong {{ForkJoinPool}} cần gọi thư viện blocking không hỗ trợ pool. Khi nào {{ManagedBlocker}} có ích, và khi nào phải tách I/O sang executor riêng thay vì cố cứu common pool?',
+  a: `**Tóm tắt:** {{ForkJoinPool.ManagedBlocker}} khai báo rõ với pool rằng worker sắp bị chặn, để pool có cơ hội bù worker và tiếp tục tiến độ task fork/join. Đây không phải cách biến I/O tùy ý thành không-blocking hay bảo đảm vô hạn worker; với JDBC/HTTP trong server, executor I/O riêng có giới hạn hoặc virtual thread thường tạo ranh giới tài nguyên dễ kiểm soát hơn.
+
+### Vì sao có ManagedBlocker
+Fork/join chia một bài toán CPU thành nhiều task nhỏ; worker rảnh có thể lấy việc của worker khác bằng work stealing. Nhưng worker bị block chờ socket hay lock bên ngoài thì không steal được việc. Pool không thể luôn biết một lời gọi Java tùy ý sắp chờ lâu, nên parallelism hữu hiệu giảm. {{ManagedBlocker}} là hợp đồng hai phương thức: {{isReleasable()}} kiểm tra nhanh liệu đã có thể tiếp tục; {{block()}} thực hiện chờ và trả true khi điều kiện hoàn tất. {{ForkJoinPool.managedBlock(blocker)}} cho pool biết điểm chờ này để có thể tạo worker bù trong giới hạn/cơ chế của nó.
+
+~~~java
+final class Gate implements ForkJoinPool.ManagedBlocker {
+    private final CountDownLatch latch;
+    Gate(CountDownLatch latch) { this.latch = latch; }
+    public boolean isReleasable() { return latch.getCount() == 0; }
+    public boolean block() throws InterruptedException {
+        if (!isReleasable()) latch.await(); // chờ có thể bị interrupt
+        return true;
+    }
+}
+// Trong task fork/join:
+ForkJoinPool.managedBlock(new Gate(latch));
+~~~
+
+Pool chỉ có thể bù worker khi nhận diện được điểm block theo hợp đồng; code thực tế vẫn cần timeout, xử lý interrupt và giới hạn số chờ. Việc bù worker không xóa giới hạn của database, socket hay downstream service. Nếu hàng nghìn task đều chờ cùng DB, thêm worker chỉ làm nhiều connection và request cùng tranh chấp hơn.
+
+### Chọn ranh giới thực thi
+| Loại việc | Lựa chọn thường hợp lý | Vì sao |
+|---|---|---|
+| Chia mảng, tính toán thuần CPU | ForkJoinPool, parallelism gần số CPU khả dụng | worker chạy được việc khi task con chờ join |
+| Một đoạn blocking ngắn, đã kiểm soát và không có executor khác | ManagedBlocker | báo đúng điểm chặn cho pool |
+| JDBC/HTTP tùy ý, latency biến động | executor I/O bounded hoặc virtual thread + giới hạn downstream | tách saturation và đặt giới hạn rõ |
+| Công việc chạy trên commonPool dùng chung | tránh thêm blocking | ảnh hưởng CompletableFuture, parallel stream và thư viện khác |
+
+Common pool là tài nguyên toàn JVM. Dùng nó cho một lời gọi DB có thể khiến code khác cũng chậm dù không liên quan. Executor riêng cho phép đo queue, đặt timeout và rejection theo nghiệp vụ. Với Java 21, virtual thread làm mỗi tác vụ blocking dễ viết theo kiểu tuần tự, nhưng không làm DB có thêm sức chứa; vẫn cần connection pool và semaphore/rate limit nếu downstream có giới hạn.
+
+### Pitfall
+- Gọi {{managedBlock}} quanh một thư viện blocking không đảm bảo thư viện có timeout hoặc phản ứng với interrupt.
+- Tạo worker bù quá mức: context switch, áp lực heap/stack và số kết nối có thể tăng.
+- Giữ lock riêng của ứng dụng trong lúc gọi mạng: worker mới cũng có thể bị kẹt chờ cùng lock.
+- Tạo custom ForkJoinPool nhưng quên quản lý vòng đời hoặc chạy task blocking trên đó như một queue vô hạn.
+
+### Ví dụ đời thực
+Một batch tính điểm rủi ro chia 2 triệu hồ sơ bằng ForkJoinPool 8 worker. Mỗi task thỉnh thoảng gọi thư viện cũ để lấy tỷ giá qua HTTP đồng bộ, trung bình chờ 180 ms. Sau đợt deploy, batch tăng từ 40 giây lên hơn 6 phút; thread dump thấy cả 8 worker đang chờ socket, queue task tăng dù CPU chỉ 15%. Đội thử ManagedBlocker cho đúng lời gọi đã biết, giúp một phần tính toán tiến lên, nhưng tải đồng thời vẫn làm downstream vượt giới hạn 40 connection. Giải pháp cuối là lấy các tỷ giá cần dùng theo batch qua executor I/O riêng có concurrency 20 và timeout 300 ms, rồi chạy phần tính toán thuần trong ForkJoinPool. Thời gian batch về 52 giây, connection peak giữ dưới 20 và commonPool không còn bị ảnh hưởng.
+
+### Trả lời mẫu khi phỏng vấn
+"ForkJoinPool được tối ưu cho task CPU chia để trị. Worker bị block ở lời gọi mà pool không biết sẽ làm giảm parallelism, dù các deque khác còn việc. ManagedBlocker hữu ích khi tôi kiểm soát chính xác một điểm chờ và có thể mô tả điều kiện giải phóng; pool có thể bù worker để duy trì tiến độ. Nhưng nó không làm thư viện blocking thành non-blocking, không thay thế timeout, và không bảo vệ downstream khỏi quá tải. Với JDBC hoặc HTTP trong server, tôi thường tách sang executor I/O bounded hoặc dùng virtual thread rồi giới hạn connection/concurrency. Đặc biệt, tôi không đưa blocking tùy tiện vào commonPool vì nó được dùng chung bởi parallel stream và CompletableFuture. Tôi quyết định dựa trên thread dump, queue, active worker, latency downstream và giới hạn tài nguyên chứ không chỉ tăng parallelism."
+
+> Senior tip: ManagedBlocker giải quyết thiếu worker trong fork/join, không giải quyết saturation ở DB. Luôn đối chiếu số worker/connection và latency downstream trước khi thêm concurrency.`,
+  follow: [
+    'Pool bù worker nhưng thời gian batch vẫn không giảm: bạn sẽ kiểm tra metric nào tiếp theo?',
+    'Vì sao một executor I/O bounded an toàn hơn commonPool khi gọi JDBC?',
+    'Virtual thread có loại bỏ nhu cầu giới hạn connection pool không?'
+  ],
+  tags: ['ForkJoinPool', 'ManagedBlocker', 'blocking I/O', 'commonPool']
+},
+{
+  id: 'concurrency-056',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Bạn thiết kế cache snapshot đọc rất nhiều nhưng đôi lúc phải cập nhật, đồng thời request có thể bị hủy khi chờ lock. So sánh {{synchronized}}, {{ReentrantLock}} và {{StampedLock}} theo tính đúng, khả năng hủy và độ phức tạp.',
+  a: `**Tóm tắt:** Chọn khóa theo bất biến cần bảo vệ và khả năng vận hành, không theo tên gọi “nhanh”. {{synchronized}} dễ dùng và tự nhả khi thoát block; {{ReentrantLock}} hữu ích khi cần timeout hoặc interrupt lúc chờ; {{StampedLock}} có optimistic read cho dữ liệu đọc nhiều nhưng không reentrant và đòi hỏi xác thực snapshot cẩn thận.
+
+### Bài toán trước khi chọn khóa
+Giả sử cache lưu hai field liên quan: phiên bản và map dữ liệu. Reader phải thấy cả hai thuộc cùng một snapshot; chỉ bảo vệ từng field riêng sẽ cho trạng thái lệch, ví dụ phiên bản mới nhưng dữ liệu cũ. Một **critical section** là đoạn đọc/ghi phải được coi như một hành động không bị thread khác chen vào. Trước tiên xác định bất biến, thời gian giữ khóa, tỉ lệ đọc/ghi, và có được phép trả lỗi “busy” hay không.
+
+### Cơ chế và lựa chọn
+| Cơ chế | Điểm mạnh | Chi phí/rủi ro | Chọn khi |
+|---|---|---|---|
+| {{synchronized}} | cú pháp rõ, monitor tự nhả khi exception | không có timeout/lockInterruptibly | vùng tới hạn ngắn, không cần điều khiển chờ |
+| {{ReentrantLock}} | {{tryLock(timeout)}}, {{lockInterruptibly}}, nhiều Condition, tùy chọn fairness | bắt buộc unlock trong finally; fair thường giảm throughput | cần hủy request đang chờ hoặc trả busy sau deadline |
+| {{StampedLock}} | optimistic read không giữ read lock trong phần lớn trường hợp | không reentrant; stamp phải dùng đúng; object đọc phải được xác thực | snapshot nhỏ, read-heavy, có fallback lock |
+
+{{synchronized}} và {{ReentrantLock}} đều bảo vệ mutual exclusion. Reentrant nghĩa là thread giữ khóa có thể lấy lại khóa đó trong lời gọi lồng nhau; StampedLock không có tính chất này. Với {{StampedLock.tryOptimisticRead()}}, reader đọc field vào biến local rồi gọi {{validate(stamp)}}; nếu có writer xen giữa, bỏ kết quả và đọc lại dưới read lock. Không được dùng reference/mutable object đã đọc trước khi validate như thể nó chắc chắn nhất quán.
+
+~~~java
+long stamp = lock.tryOptimisticRead();
+long version = cachedVersion;
+Snapshot snapshot = cachedSnapshot;
+if (!lock.validate(stamp)) {
+    stamp = lock.readLock();
+    try { version = cachedVersion; snapshot = cachedSnapshot; }
+    finally { lock.unlockRead(stamp); }
+}
+return snapshot.forVersion(version);
+~~~
+
+Đoạn trên chỉ an toàn nếu snapshot immutable hoặc cách đọc nội dung snapshot cũng có bảo vệ. Nếu map mutable tiếp tục bị sửa ngoài khóa, validate không biến toàn bộ thao tác sau đó thành thread-safe. Thường đơn giản hơn là build object immutable mới rồi thay reference dưới khóa ngắn.
+
+### Hủy request và virtual thread
+Với ReentrantLock, {{lockInterruptibly()}} cho phép thread đang đợi phản ứng với interrupt; {{tryLock(timeout, unit)}} cho API deadline và phản hồi bận có kiểm soát. {{synchronized}} không có API tương ứng để ngắt riêng lúc chờ monitor. Java 21, synchronized giữ monitor trong một số tình huống blocking có thể pin virtual thread vào carrier; Java 24 với JEP 491 thay đổi cơ chế monitor để bỏ phần lớn pinning đó. Đừng chọn ReentrantLock chỉ vì nghe rằng virtual thread không dùng synchronized; xét đúng JDK triển khai và giữ critical section ngắn.
+
+### Lỗi production
+- Gọi remote service trong khi đang giữ lock khiến mọi reader/writer chờ theo network latency.
+- Bỏ unlock khi exception trong ReentrantLock: worker khác chờ vô hạn.
+- Dùng optimistic read trên object mutable rồi quên validate hoặc validate quá sớm.
+- StampedLock bị gọi lồng nhau sau refactor: thread tự chờ khóa mà nó cần giải phóng.
+- Chọn fair lock để “công bằng” mà không đo: throughput có thể giảm và fairness không bảo đảm latency tuyệt đối.
+
+### Ví dụ đời thực
+Một service cấu hình có 99,5% thao tác đọc, tải 1.200 request/giây. Bản đầu dùng synchronized nhưng giữ khóa 30 ms để đọc file cấu hình; p99 API tăng lên 46 ms khi deploy đồng thời. Đội đổi thành build snapshot immutable ở ngoài khóa, rồi cập nhật một reference trong vùng khóa dưới 1 ms; p99 giảm còn 12 ms. Một thử nghiệm StampedLock giảm CPU 8% ở benchmark, nhưng do dữ liệu nhỏ và reader ít tranh chấp, lợi ích production không đáng bù cho code khó kiểm chứng. Với thao tác refresh cần deadline, nhóm dùng ReentrantLock.tryLock(100 ms) và bỏ refresh trùng thay vì cho mọi request xếp hàng. Quyết định là theo profile và tính nhất quán, không lấy microbenchmark làm bằng chứng duy nhất.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi bắt đầu từ bất biến dữ liệu và thời gian giữ khóa. Với vùng tới hạn ngắn, synchronized là mặc định vì dễ đọc và exception cũng tự nhả monitor. Nếu request cần hủy khi đang đợi hoặc phải trả busy sau một deadline, ReentrantLock cho lockInterruptibly hoặc tryLock có timeout, nhưng tôi luôn unlock trong finally. StampedLock chỉ đáng cân nhắc khi snapshot nhỏ, đọc áp đảo và profile cho thấy contention; optimistic read phải copy dữ liệu cần dùng rồi validate, nếu thất bại phải đọc lại dưới read lock. Nó không reentrant nên tôi đóng gói khóa để tránh gọi lồng nhau. Tôi tránh network/DB khi giữ khóa và ưu tiên snapshot immutable. Sau đó benchmark bằng JMH và kiểm tra p99, CPU, throughput dưới tải thực; nếu khác biệt không rõ, chọn cơ chế đơn giản hơn."
+
+> Senior tip: trong câu trả lời, nhấn mạnh “bất biến trước, primitive sau”. Lợi ích vài phần trăm throughput không đáng nếu reader có thể ghép version và payload từ hai snapshot khác nhau.`,
+  follow: [
+    'Vì sao {{StampedLock.validate()}} phải được gọi sau khi copy toàn bộ field cần đọc?',
+    'Khi nào {{tryLock(timeout)}} tốt hơn chờ khóa vô hạn trong API?',
+    'Bạn sẽ kiểm tra lock contention và p99 bằng dữ liệu nào trước khi đổi khóa?'
+  ],
+  tags: ['synchronized', 'ReentrantLock', 'StampedLock', 'optimistic read', 'lock contention']
+},
+{
+  id: 'jvm-048',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Một lỗi chỉ xuất hiện khi load class plugin: {{ClassNotFoundException}} và {{NoClassDefFoundError}} khác nhau thế nào, và bạn khoanh vùng classloader/linkage ra sao?',
+  a: `**Tóm tắt:** {{ClassNotFoundException}} thường là lỗi tường minh khi code yêu cầu nạp class theo tên nhưng classloader không tìm thấy định nghĩa. {{NoClassDefFoundError}} là lỗi linkage khi JVM cần một class lúc chạy nhưng định nghĩa không khả dụng, hoặc class từng thất bại khi khởi tạo; cần phân biệt chính xác message và exception gốc thay vì chỉ thêm JAR một cách mù quáng.
+
+### Từ bytecode đến class đang chạy
+Một class không chỉ được nhận diện bằng tên; danh tính thực tế là cặp **tên nhị phân + defining classloader**. Vì vậy cùng tên {{com.acme.Plugin}} do hai loader định nghĩa là hai kiểu khác nhau, không thể cast qua lại chỉ vì tên giống. Classloader tìm bytecode, JVM kiểm tra và link các tham chiếu; khởi tạo static xảy ra khi class được chủ động dùng lần đầu theo quy tắc JVM.
+
+### Phân biệt hai lỗi
+- {{ClassNotFoundException}} là checked exception thường đến từ API tìm class động như {{Class.forName(name)}} hoặc {{ClassLoader.loadClass(name)}}. Ví dụ tên plugin trong config sai, dependency không có trên đường dẫn của loader đang được dùng, hoặc loader con không nhìn thấy thư viện.
+- {{NoClassDefFoundError}} là Error của linkage. Có thể class đã tồn tại lúc compile nhưng thiếu lúc runtime; cũng có thể một class khởi tạo static thất bại lần đầu và JVM đánh dấu class đó erroneous, lần dùng sau thường nhận NoClassDefFoundError với thông báo class không thể khởi tạo.
+- Một trường hợp liên quan là {{ExceptionInInitializerError}}: lần khởi tạo đầu tiên ném exception không phải Error; xem {{getCause()}} hoặc {{getException()}} để tìm lỗi thật. Lần sau có thể thấy NoClassDefFoundError.
+- {{ClassCastException}} với thông báo “X cannot be cast to X” thường gợi ý hai defining classloader khác nhau, không phải thiếu class.
+
+~~~java
+try {
+    Class<?> type = pluginLoader.loadClass(configuredName);
+    Object plugin = type.getDeclaredConstructor().newInstance();
+} catch (ClassNotFoundException e) {
+    // Tên class/loader/dependency không tìm thấy
+    log.error("Plugin class missing: {}", configuredName, e);
+} catch (LinkageError e) {
+    // Thiếu dependency runtime, version conflict hoặc khởi tạo/linkage lỗi
+    log.error("Plugin linkage failed: {}", configuredName, e);
+}
+~~~
+
+Không nên bắt {{LinkageError}} để tiếp tục phục vụ như thành công: JVM có thể đang ở trạng thái không thể dùng plugin đó. Báo lỗi rõ ràng ở biên nạp plugin và giữ nguyên cause để điều tra.
+
+### Quy trình điều tra
+1. Đọc đầy đủ type và message: lỗi xảy ra khi tìm tên, khi verify/link một dependency, hay trong static initializer?
+2. Lấy classloader thực tế: log {{type.getClassLoader()}} và loader của caller; xem classpath/module path, package/version trong JAR.
+3. Kiểm tra dependency runtime, không chỉ compile: container image có thể thiếu JAR hoặc có version khác do shading/exclusion.
+4. Nếu có hai loader, đối chiếu parent chain và quy tắc delegation; đừng giả định mọi loader dùng cùng classpath.
+5. Sửa thứ tự/phiên bản dependency hoặc loader ownership; restart sạch sau khi sửa static initializer vì class lỗi không tự được “reset” trong cùng loader.
+
+### Lỗi production
+- Dùng {{Class.forName}} sai overload: một overload khởi tạo class, overload khác cho phép tắt initialization; side effect static có thể làm lỗi xuất hiện khác thời điểm.
+- JAR có class nhưng loader đang tìm không phải loader thấy JAR đó.
+- JAR shading tạo bản class trùng tên, dẫn tới lỗi cast hoặc linkage.
+- Chỉ thấy NoClassDefFoundError rồi kết luận class chính bị thiếu, trong khi message chỉ dependency phụ hoặc initializer đã fail.
+
+### Ví dụ đời thực
+Một ứng dụng Spring Boot nạp plugin thanh toán bằng URLClassLoader sau deploy. Ứng dụng chính có interface Plugin API ở loader cha, nhưng plugin bundle đóng gói thêm một bản API khác và thiếu một thư viện JSON ở runtime. Ở 1 trong 20 pod, tạo plugin báo NoClassDefFoundError; log đầu tiên chỉ ghi class implementation, làm đội mất gần một giờ tìm sai JAR. Thêm log classloader và cause cho thấy dependency JSON không nằm trong plugin classpath; ở một môi trường khác, plugin bị ClassCastException dù cùng tên interface do bản API thứ hai được child loader define. Sửa bundle để chỉ chứa implementation, để API dùng parent loader, đóng gói dependency runtime đúng version và thêm startup validation cho mọi plugin. Thời gian rollout giảm từ 35 xuống 8 phút và lỗi class loading biến mất trong 30 ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi phân biệt lỗi theo nơi thất bại. ClassNotFoundException thường do code chủ động tìm class theo tên và loader không tìm thấy nó. NoClassDefFoundError là lỗi linkage lúc JVM cần định nghĩa, có thể do thiếu dependency runtime hoặc class initializer thất bại từ lần trước. Tôi đọc message đầy đủ và cause, vì ExceptionInInitializerError có thể là lỗi đầu tiên, còn lỗi sau đó chỉ là NoClassDefFoundError. Tôi cũng nhớ class identity gồm tên cộng defining classloader; hai bản cùng tên ở hai loader có thể gây lỗi cast X cannot be cast to X. Khi điều tra plugin, tôi log loader thực tế, parent chain, dependency runtime và kiểm tra JAR trong image. Tôi không bắt LinkageError rồi tiếp tục giả vờ thành công; plugin lỗi cần fail rõ ở startup hoặc bị cô lập theo chính sách."
+
+> Senior tip: ghi log cả tên class lẫn defining loader và cause đầu tiên. Thông báo “class not found” đơn lẻ thường chưa đủ phân biệt thiếu JAR với plugin dùng nhầm classloader.`,
+  follow: [
+    'Vì sao hai class cùng tên có thể gây {{ClassCastException}} khi đi qua hai classloader?',
+    'Lỗi nào thường xảy ra lần đầu khi static initializer ném exception, và lần sau có thể thấy gì?',
+    'Bạn sẽ kiểm tra dependency runtime khác compile dependency thế nào trong container?'
+  ],
+  tags: ['ClassLoader', 'ClassNotFoundException', 'NoClassDefFoundError', 'linkage']
+},
+{
+  id: 'jvm-045',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Một benchmark cho thấy allocation gần bằng 0 sau warm-up nhưng production vẫn tạo nhiều object. Bạn giải thích {{escape analysis}} và {{JIT inlining}} thế nào, và kiểm chứng ra sao?',
+  a: `**Tóm tắt:** HotSpot có thể dựa trên profile để inline method rồi phân tích object có thoát khỏi phạm vi quan sát hay không; nếu không, một số object có thể được scalar-replace thành các giá trị riêng lẻ thay vì cấp phát heap. Đây là tối ưu phụ thuộc ngữ cảnh JIT, không phải cam kết rằng mọi object local đều biến mất hay production sẽ có cùng hành vi benchmark.
+
+### Các khái niệm từ đầu
+**JIT (Just-In-Time compiler)** là trình biên dịch trong lúc chương trình chạy, dùng thông tin thực tế như kiểu object thường gặp để tối ưu đường nóng. **Inlining** là chép thân method nhỏ vào nơi gọi, giảm chi phí gọi hàm và giúp JIT nhìn thêm phần code xung quanh. **Escape analysis** là phân tích xem reference của object có “thoát” khỏi phạm vi method/thread hay không. Nếu object không thoát, JIT có thể áp dụng **scalar replacement**: thay object bằng field/value riêng trong register hoặc stack slot, nên allocation và GC work có thể biến mất.
+
+~~~java
+final class Point {
+    int x, y;
+}
+int distanceSquared(int x, int y) {
+    Point p = new Point(); // có thể bị scalar-replace nếu p không escape
+    p.x = x;
+    p.y = y;
+    return p.x * p.x + p.y * p.y;
+}
+~~~
+
+Điều kiện “không escape” phụ thuộc code sau khi tối ưu hóa. Nếu trả {{p}} ra ngoài, gán vào field sống lâu, đưa vào collection được lưu lại, hoặc truyền vào method opaque mà không inline được, JIT có thể không loại allocation. Method quá lớn, call site đa hình nhiều kiểu, code chưa đủ nóng, hoặc deoptimization cũng có thể làm tối ưu khác benchmark.
+
+### Vì sao inlining liên quan
+Nếu method tạo object nằm bên trong method gọi, trước khi inline JIT khó phân tích xuyên ranh giới. Khi inline thành công, object có thể trở nên rõ là local và scalar replacement khả thi. Nhưng inline không tự động loại object; object vẫn phải tồn tại nếu semantics yêu cầu reference identity, synchronization, hoặc nó escape. Không nên dùng các cờ diagnostic như bằng chứng rằng một object chắc chắn không được tạo ở mọi lần chạy.
+
+| Quan sát | Kết luận hợp lý | Chưa đủ để kết luận |
+|---|---|---|
+| JMH allocation/op giảm sau warm-up | JIT tối ưu đường benchmark | mọi production request không allocation |
+| CPU/GC giảm khi scalar replace | có lợi trong workload đó | có thể bỏ object model khỏi code cho dễ đọc |
+| Inlining log báo inline | method được inline ở call site đó | mọi call site đều inline |
+
+### Kiểm chứng đúng cách
+1. Dùng JMH: warm-up, nhiều fork, kết quả có thể quan sát được để JIT không xóa phép tính.
+2. So sánh throughput, latency và allocation rate; chỉ nhìn thời gian một vòng lặp dễ bị dead-code elimination.
+3. Dùng JFR allocation events, async-profiler alloc mode hoặc profiler production an toàn để xem allocation thực tế. Profile có thể lấy mẫu, nên phải hiểu sai số.
+4. So sánh cùng JDK, flags, input shape, heap và classpath. Tải thật có phân bố input và call-site khác benchmark đơn luồng.
+5. Xem compilation/deoptimization log khi nghi profile biến động; không bật log nặng kéo dài trên production nếu chưa đo overhead.
+
+### Pitfall
+- Dựa vào benchmark tự viết có thể bị JIT loại toàn bộ phép tính hoặc chỉ warm-up một kiểu input.
+- Thay cấu trúc code để “ép” scalar replacement thường làm giảm readability, có thể phản tác dụng sau JDK update.
+- Escape analysis không phải một lời hứa API của Java; kết quả phụ thuộc JVM/compiler và profile.
+- Tối ưu allocation vô nghĩa nếu bottleneck thật là DB, lock hoặc network.
+
+### Ví dụ đời thực
+Một benchmark nội bộ xử lý Point immutable báo 0,2 byte/op sau 20 giây warm-up, đội dự tính bỏ cấu trúc object khỏi thư viện. Trong production, JFR cho thấy 160 MB/s allocation tại cùng API. Phân tích tìm ra call site production nhận ba implementation của interface, làm call site đa hình; benchmark chỉ chạy một implementation nên method được inline và object bị scalar replace. Đồng thời một nhánh debug gắn object vào event log khiến object escape. Đội giữ API dễ đọc, thêm benchmark với ba implementation và bật allocation profiling ở canary; tối ưu thật sự chuyển event creation khỏi hot path, giảm allocation 160 xuống 95 MB/s và young GC pause p99 từ 7 xuống 4 ms. Không dựa vào giả định compiler sẽ xóa object ở mọi môi trường.
+
+### Trả lời mẫu khi phỏng vấn
+"Escape analysis là phân tích của JIT về việc reference object có thoát khỏi vùng code hay không. Nếu object không escape, HotSpot có thể scalar-replace object thành các field riêng, giảm heap allocation và GC. Inlining có thể giúp vì compiler nhìn xuyên qua lời gọi method, nhưng inlining không đồng nghĩa object chắc chắn biến mất. Kết quả phụ thuộc call site, profile kiểu, mức độ nóng, JDK và nhánh thực tế; benchmark một kiểu input có thể tối ưu khác production đa hình. Tôi dùng JMH với warm-up và nhiều fork để so sánh, rồi kiểm tra allocation bằng JFR hoặc profiler trên canary. Tôi không viết code khó đọc chỉ để mong một tối ưu không được đặc tả; trước tiên xác định allocation có phải bottleneck và đo lại sau thay đổi."
+
+> Senior tip: benchmark cần phản ánh tính đa hình của production. Một call site monomorphic trong test có thể cho escape analysis/inlining hoàn toàn khác call site nhận nhiều implementation ngoài thực tế.`,
+  follow: [
+    'Inlining có đảm bảo object được scalar-replace không? Vì sao?',
+    'Bạn thiết kế JMH thế nào để tránh dead-code elimination và chỉ đo một kiểu input?',
+    'JFR allocation event có giới hạn gì khi dùng để kết luận một object đang được tạo?'
+  ],
+  tags: ['JIT', 'escape analysis', 'inlining', 'scalar replacement', 'JMH']
+},
+{
+  id: 'jvm-046',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Bạn nhận GC log G1 có Young, Concurrent Start, Mixed và một pause dài. Làm sao đọc chuỗi sự kiện, phân biệt nguyên nhân với triệu chứng, rồi chọn bước điều tra tiếp theo?',
+  a: `**Tóm tắt:** Đọc G1 log theo chuỗi sự kiện và thay đổi heap trước/sau mỗi pause, không chỉ nhìn một dòng “GC lâu”. Young GC dọn vùng trẻ; Concurrent Start mở chu kỳ marking; Mixed GC dọn Young cùng một phần Old; Full GC hoặc evacuation failure báo áp lực nghiêm trọng. Cần ghép tần suất, live-set sau GC, allocation rate và thời gian pause với latency ứng dụng để tìm nguyên nhân.
+
+### Cách đọc theo thứ tự
+G1 chia heap thành các **region** có kích thước bằng nhau; Eden/Survivor/Old là vai trò của region chứ không phải ba dải cố định như collector cũ. Một **pause** là lúc các thread ứng dụng dừng để collector làm một số bước. Log thường ghi thời điểm, loại pause, heap trước → sau và thời gian.
+1. {{Pause Young (Normal)}}: Eden đầy; G1 dừng ứng dụng, copy object còn sống sang Survivor/Old.
+2. {{Pause Young (Concurrent Start)}}: thường vừa là young pause vừa khởi động chu kỳ marking đồng thời để ước lượng vùng Old có thể thu hồi. Phần marking chính chạy cùng ứng dụng.
+3. {{Pause Remark}} và {{Cleanup}} hoàn tất/đánh giá marking; sau đó có thể có nhiều {{Pause Young (Mixed)}} để thu dọn Young và chọn một số Old region.
+4. {{Pause Full}} thường là cảnh báo phải điều tra; nếu đi cùng {{to-space exhausted}} hoặc evacuation failure, G1 không có đủ vùng đích để copy object còn sống theo kế hoạch.
+
+~~~text
+[info][gc] GC(81) Pause Young (Normal) 4096M->2450M(8192M) 42ms
+[info][gc] GC(82) Pause Young (Concurrent Start) 6100M->4300M(8192M) 55ms
+[info][gc] GC(82) Concurrent Mark Cycle
+[info][gc] GC(87) Pause Young (Mixed) 5900M->3900M(8192M) 68ms
+[info][gc] GC(88) To-space exhausted
+[info][gc] GC(88) Pause Full 8100M->5200M(8192M) 3100ms
+~~~
+
+Heap sau GC giảm mạnh trong các dòng đầu, nên không thể chỉ từ ví dụ này kết luận leak; nhưng Old/live set có thể tăng giữa chu kỳ. Full GC 3,1 giây giải phóng khoảng 2,9 GB, gợi ý áp lực cấp phát/khả năng evacuation chứ không tự chứng minh nguyên nhân gốc. Cần xem các dòng chi tiết region, allocation, humongous và log trước/sau nhiều chu kỳ.
+
+### Bảng chẩn đoán
+| Dấu hiệu | Giả thuyết cần kiểm tra |
+|---|---|
+| Young GC dày, pause ngắn, throughput giảm | allocation rate cao hoặc young sizing không khớp |
+| sau GC Old/live set tăng theo thời gian | giữ reference/leak hoặc workload có dữ liệu sống tăng |
+| Mixed lặp nhiều, thu hồi Old ít | object sống nhiều, marking/heap headroom không theo kịp |
+| Humongous allocation | object lớn hơn nửa region; xem buffer/serialization/file |
+| Evacuation failure / to-space exhausted | thiếu headroom để chuyển object sống, áp lực heap hoặc allocation burst |
+| Full GC kéo dài | đọc cause, heap occupancy, concurrent cycle và safepoint; không chỉ tăng Xmx ngay |
+
+GC log JDK 17+ có thể bật bằng {{-Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags}}. Thời gian pause không bằng toàn bộ latency request; cần đối chiếu latency histogram/APM và safepoint log. {{-XX:MaxGCPauseMillis}} là mục tiêu mềm, không phải SLA đảm bảo.
+
+### Quy trình điều tra
+1. Gắn GC id với timestamp và quan sát tần suất/pause p95-p99.
+2. Đo heap occupancy sau GC qua nhiều chu kỳ để thấy live-set trend.
+3. Kiểm tra allocation rate, promoted bytes, humongous regions và kích thước region.
+4. Ghép với JFR allocation, heap dump khi live set tăng, hoặc thread/CPU để phát hiện app bị chặn khác.
+5. Thay đổi một yếu tố một lần, chạy cùng tải; ưu tiên sửa allocation pattern/leak trước khi tăng heap hoặc đổi collector.
+
+### Ví dụ đời thực
+API export báo cáo giới hạn p99 250 ms, nhưng giờ cao điểm p99 thành 1,8 giây. G1 log cho thấy Young pause 35–60 ms mỗi 2 giây và Mixed pause 70–90 ms; mỗi chu kỳ heap sau GC quanh 4,2 GB, không tăng dần. Một lần export làm 6 GB heap lên 7,9 GB, xuất hiện humongous allocation và to-space exhausted rồi Full GC 3,1 giây. JFR ghi nhận mỗi request dựng byte array 40 MB và buffer trung gian để nén CSV. Sửa sang streaming theo chunk 1 MB, giảm concurrency export từ 20 xuống 8 theo giới hạn I/O; humongous regions gần 0, Full GC không tái diễn trong thử tải 2 giờ, p99 còn 180 ms. Chỉ tăng heap không được chọn vì container có giới hạn RAM và sẽ làm GC headroom/native budget tệ hơn.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi đọc log theo chuỗi: Young pause, điểm Concurrent Start, các giai đoạn marking, Mixed pauses, rồi xem có Full GC hay evacuation failure không. Mỗi dòng tôi lấy heap trước/sau, pause duration và Old/live set qua nhiều chu kỳ. Young GC thường là hoạt động bình thường; Full GC dài hoặc to-space exhausted là dấu hiệu cần điều tra, nhưng không tự nói nguyên nhân là leak. Tôi ghép với allocation rate, humongous regions, JFR và latency p99 của ứng dụng. Nếu live set sau GC tăng liên tục, tôi xem heap dump; nếu humongous allocation trùng export, tôi xem buffer lớn và chuyển sang streaming. MaxGCPauseMillis chỉ là mục tiêu mềm, nên tôi không cam kết pause theo con số này hoặc tăng Xmx trước khi tính giới hạn container."
+
+> Senior tip: heap sau GC tăng đều qua nhiều chu kỳ mới là tín hiệu mạnh của live-set growth; heap trước GC cao đơn lẻ thường chỉ phản ánh allocation burst.`,
+  follow: [
+    'Vì sao {{-XX:MaxGCPauseMillis}} không thể được xem là SLA của pause?',
+    'Bạn phân biệt allocation burst với memory leak bằng dữ liệu nào?',
+    'Humongous allocation có thể làm tăng nguy cơ Full GC trong tình huống nào?'
+  ],
+  tags: ['G1', 'GC log', 'Mixed GC', 'evacuation failure', 'humongous allocation']
+},
+{
+  id: 'jvm-047',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'Một pod Java bị kill vì memory dù heap dump không có, hoặc log báo các loại OOM khác nhau qua từng lần chạy. Bạn lập quy trình phân biệt heap, metaspace, direct memory và native thread thế nào?',
+  a: `**Tóm tắt:** Không phải mọi sự cố bộ nhớ Java đều nằm trong heap. Phân biệt thông điệp {{OutOfMemoryError}}, exit code/container event và RSS; sau đó đối chiếu heap dump, metaspace/classloader, direct buffer, số thread và native memory. Pod bị {{OOMKilled}} có thể bị kernel kết thúc trước khi JVM kịp ghi OOM hay heap dump.
+
+### Bản đồ bộ nhớ dễ nhớ
+- **Heap**: nơi object Java thường được cấp phát, giới hạn chủ yếu bởi {{-Xmx}}; OOM thường ghi {{Java heap space}}. Nhiều live object hoặc allocation nhanh hơn GC đều có thể gây áp lực.
+- **Metaspace**: native memory chứa metadata class. {{OutOfMemoryError: Metaspace}} gợi ý class được nạp quá nhiều hoặc classloader cũ bị giữ; heap dump vẫn có thể hữu ích để tìm reference giữ loader.
+- **Direct memory**: buffer ngoài heap, ví dụ {{ByteBuffer.allocateDirect}} hoặc networking library. Lỗi thường ghi {{Direct buffer memory}}; heap dump có thể không cho thấy footprint native tương ứng.
+- **Native thread/stack**: mỗi platform thread cần tài nguyên OS và stack. {{unable to create native thread}} thường liên quan số thread, cgroup pid limit, RAM/stack hoặc giới hạn hệ điều hành; không nhất thiết heap đầy.
+- **RSS/cgroup memory**: RAM resident mà container tính. Tổng RSS bao gồm heap đã commit và các vùng native; {{-Xmx}} không phải giới hạn tổng bộ nhớ process.
+
+~~~text
+Container limit 2 GiB
+  heap committed/used             1.20 GiB
+  metaspace + code cache          0.18 GiB
+  direct buffers                  0.22 GiB
+  thread stacks + JVM/native      0.30 GiB
+  page cache/sidecar/headroom     0.20 GiB
+  -----------------------------------------
+  tổng gần giới hạn: kernel có thể OOMKill process
+~~~
+
+Số trong hình là ví dụ ngân sách, không phải mức mặc định. Container có thể kill ở cgroup limit trong lúc heap còn trống; do đó cần chừa headroom cho native, sidecar và biến động.
+
+### Quy trình triage
+1. **Xác định ai kết thúc process:** log JVM có OOM hay pod event báo OOMKilled/exit 137? Nếu không có Java exception, lấy container metrics và cgroup memory trước khi restart.
+2. **Đọc loại lỗi chính xác:** heap space, Metaspace, Direct buffer memory, unable to create native thread có hướng điều tra khác nhau.
+3. **Heap:** bật {{-XX:+HeapDumpOnOutOfMemoryError}} và kiểm tra dominator/retained size; dump có thể lớn, cần dung lượng disk và bảo vệ dữ liệu nhạy cảm.
+4. **Native:** nếu có thể, bật {{-XX:NativeMemoryTracking=summary}} từ lúc khởi động rồi dùng {{jcmd VM.native_memory summary}}; NMT không bao quát mọi allocation của thư viện native và có overhead.
+5. **Thread/direct/metaspace:** theo dõi thread count, direct buffer pool qua JMX, classloader/class count và cgroup pids/memory.
+6. **Đối chiếu giới hạn:** đặt Xmx dựa trên limit trừ ngân sách non-heap; thay đổi từng giới hạn sau khi tìm được vùng tăng.
+
+### Lỗi suy luận
+- Heap dump không có nghĩa heap không phải vấn đề: process có thể bị kill trước dump, hoặc dump thất bại do hết disk.
+- RSS cao hơn heap không tự chứng minh direct buffer leak; metaspace, stack, code cache, native library cũng góp phần.
+- Tăng Xmx trong container có thể khiến OOMKill đến sớm hơn vì lấy mất headroom native.
+- Hạ Xss có thể giúp tạo thêm thread nhưng tăng nguy cơ StackOverflowError và không sửa việc thread pool không giới hạn.
+- MaxDirectMemorySize có thể biến cạn native thành OOM Java rõ ràng hơn, nhưng không thay cho giải phóng buffer và giới hạn concurrency.
+
+### Ví dụ đời thực
+Một dịch vụ Spring Boot giới hạn container 3 GiB, Xmx 2,5 GiB, bị restart 4 lần trong ngày và không có heap dump. Kubernetes báo OOMKilled, exit 137; heap metric trước đó chỉ khoảng 1,7 GiB. Điều tra cho thấy 420 platform thread với stack reserve lớn, direct buffer tăng 600 MiB khi tải file, cộng metaspace 250 MiB và overhead JVM khiến RSS vượt 3 GiB. Team hạ Xmx xuống 1,8 GiB sau khi kiểm thử live set 1,4 GiB, stream file thay vì giữ buffer toàn bộ, giới hạn executor I/O 64 task và giảm số pool dư thừa. RSS peak giảm từ 3,1 xuống 2,35 GiB, không còn OOMKill trong 7 ngày; throughput vẫn đạt 1.000 request/giây, p99 tăng ít hơn 3 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi phân biệt lỗi trong JVM với OOMKill của container trước. Java heap space cần heap dump và retained-size analysis; Metaspace hướng tới classloader/class count; Direct buffer memory hướng tới direct-buffer pool và networking; unable to create native thread thì xem thread count, pids limit và stack. Nếu pod exit 137 mà không có OOM exception, kernel có thể đã kill trước khi JVM tạo dump, nên tôi xem cgroup memory và metrics trước restart. Tôi lập ngân sách tổng: Xmx, metaspace, direct memory, stacks, code cache và native/sidecar, không đặt Xmx bằng container limit. NMT giúp nhìn nhiều vùng native nhưng có giới hạn và cần bật từ startup. Tôi chỉ chỉnh vùng đã xác định, rồi xác nhận bằng peak RSS và tải đại diện."
+
+> Senior tip: trong Kubernetes, exit 137 cộng event OOMKilled là bằng chứng container vượt limit, không phải bằng chứng heap đầy. Lưu metrics RSS/cgroup theo thời gian vì sau restart nhiều dấu vết biến mất.`,
+  follow: [
+    'Vì sao pod có thể bị OOMKilled khi heap usage thấp hơn {{-Xmx}}?',
+    'Native Memory Tracking không đo được mọi nguồn native nào?',
+    'Bạn phân biệt thread leak với connection pool chờ bằng thread count và dump ra sao?'
+  ],
+  tags: ['OutOfMemoryError', 'heap', 'metaspace', 'direct memory', 'native thread', 'OOMKilled']
+},
+{
+  id: 'concurrency-057',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Một producer ghi dữ liệu thường rồi đặt cờ sẵn sàng; consumer đọc cờ nhưng đôi lúc thấy trạng thái cũ hoặc dữ liệu chưa hoàn chỉnh. Bạn chứng minh quan hệ happens-before và sửa theo Java Memory Model thế nào?',
+  a: `**Tóm tắt:** Theo Java Memory Model, thứ tự trong một thread không tự đảm bảo thread khác nhìn thấy các lần ghi đó. Cần một cạnh happens-before nối producer với consumer, chẳng hạn ghi volatile rồi đọc cùng biến volatile, unlock rồi lock cùng monitor, hoặc hoàn tất tác vụ rồi đợi bằng Future. Nếu không có cạnh đó, việc “trên máy tôi luôn thấy đúng” không phải bảo đảm của Java.
+
+### Ví dụ và thuật ngữ
+Giả sử producer lấp một object cấu hình rồi đặt cờ, consumer đợi cờ để đọc. **Visibility** là consumer nhìn thấy giá trị producer ghi; **ordering** là các ghi dữ liệu được công bố trước khi consumer sử dụng. **Happens-before** là quan hệ trong đặc tả: nếu A happens-before B thì mọi tác động của A được đảm bảo nhìn thấy trong B.
+
+~~~java
+final class Box {
+    int value;                  // field thường
+    volatile boolean ready;     // cờ công bố
+}
+// producer
+box.value = 42;                 // ghi dữ liệu trước
+box.ready = true;               // volatile write
+// consumer
+if (box.ready) {                // volatile read thấy true
+    use(box.value);             // thấy value = 42
+}
+~~~
+
+Khi consumer đọc thấy {{ready == true}}, volatile write đó happens-before volatile read tương ứng. Vì quan hệ này có tính bắc cầu, phép ghi {{value}} đứng trước volatile write cũng được công bố cho consumer. Nhưng volatile chỉ áp dụng đúng biến cờ: nếu producer đổi value sau khi đặt ready, hoặc nhiều writer cập nhật value đồng thời, ví dụ không còn bảo vệ bất biến mong muốn. Và {{count++}} vẫn không nguyên tử chỉ vì count được đánh dấu volatile.
+
+### Các lựa chọn đồng bộ và khi nào dùng
+| Cách | Quan hệ bảo đảm | Khi phù hợp |
+|---|---|---|
+| volatile flag | write rồi read trên cùng biến volatile | cờ trạng thái, công bố snapshot không đổi |
+| synchronized cùng monitor | unlock monitor trước happens-before lock sau trên đúng object monitor | nhiều field cần đọc/ghi như một bất biến |
+| Lock/Future/CountDownLatch | unlock/await hoặc task completion/join tạo đồng bộ | phối hợp tác vụ, chờ kết quả |
+| sleep/yield | không tạo cạnh happens-before | không dùng để đồng bộ |
+
+Một lỗi phổ biến là producer khóa {{this}} còn consumer khóa object khác. Cùng dùng từ synchronized không đủ: monitor phải là **cùng một object** để unlock/lock tạo quan hệ happens-before. Tương tự, đọc field thường mà không có lock/volatile/future vẫn là data race nếu có ít nhất một writer đồng thời.
+
+~~~java
+private final Object lock = new Object();
+private int value;
+void write(int v) { synchronized (lock) { value = v; } }
+int read() { synchronized (lock) { return value; } }
+~~~
+
+Nếu chỉ publish một cấu hình và sau đó không sửa, có thể tạo object immutable rồi gán qua reference volatile. Nếu state gồm nhiều cập nhật liên tục, dùng cùng một lock hoặc atomic snapshot; đừng chia mỗi field một cơ chế rồi vô tình để reader thấy trạng thái hỗn hợp.
+
+### Lỗi production hay gặp
+- Dùng {{Thread.sleep(10)}} trong test: sleep chỉ làm thread tạm dừng, không quy định thứ tự bộ nhớ.
+- Cờ dừng không volatile: vòng lặp worker có thể tiếp tục thấy giá trị cũ sau JIT compile.
+- Khóa khác nhau giữa writer và reader: code nhìn có vẻ synchronized nhưng không có cạnh đồng bộ chung.
+- Đặt volatile ở flag nhưng sửa object được publish sau khi báo ready.
+- Tin test stress ngắn trên x86: hành vi thường gặp của phần cứng không thay thế hợp đồng JMM, nhất là khi chuyển sang ARM.
+
+### Cách chứng minh/test
+Vẽ hai thread và đánh dấu chính xác cạnh đồng bộ: volatile write → volatile read, unlock(M) → lock(M), start → hành động trong thread, hoặc task completion → get/join. Nếu không có đường nối, state không được bảo vệ. Với bài test đồng thời, dùng latch/barrier để xác định thứ tự và kiểm tra invariant; không dùng sleep làm tín hiệu. Với bug hiếm, jcstress là công cụ chuyên dụng để kiểm tra các kết quả được phép của litmus test trên JVM/phần cứng khác nhau.
+
+### Ví dụ đời thực
+Một dịch vụ reload cấu hình chạy hai thread. Thread reload ghi ba field ordinary: endpoint, timeout và cờ enabled; sau đó ghi volatile {{ready}}. Reader chỉ đọc sau khi thấy ready true. Một bản refactor chuyển cập nhật endpoint vào callback chạy sau bước set ready; một số request thấy cờ mới nhưng endpoint cũ/null, làm 0,3% gọi nhầm upstream và tăng lỗi 502 trong đợt deploy. Thread dump không hữu ích vì không có deadlock. Nhóm lập lại thứ tự để hoàn tất toàn bộ cấu hình immutable trước volatile publish, và reader giữ snapshot local. Thêm test kiểm tra invariant endpoint/timeout/enabled cùng nhau sau hàng nghìn lần reload; lỗi biến mất trong kiểm thử ARM và p99 lỗi upstream trở về mức nền 0,02%.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không suy ra visibility chỉ từ việc writer chạy trước reader theo wall clock. Tôi tìm cạnh happens-before trong JMM. Nếu writer ghi state thường rồi volatile write một cờ, và reader đọc thấy volatile đó, các ghi trước publish được nhìn thấy nhờ volatile release/acquire và tính bắc cầu. Với nhiều field cập nhật cùng nhau, tôi thường dùng một lock chung hoặc publish một snapshot immutable qua volatile reference. Cần đúng cùng monitor; hai synchronized trên hai object khác nhau không tạo liên kết. Sleep cũng không tạo happens-before. Khi debug, tôi vẽ thứ tự thao tác cho từng thread và dùng latch hoặc jcstress để kiểm tra các kết quả; test chỉ chạy đúng trên x86 chưa đủ chứng minh an toàn. Tôi cũng kiểm tra writer có tiếp tục sửa object sau khi publish hay không."
+
+> Senior tip: khi review concurrency, hỏi “đâu là cạnh happens-before nối lần ghi này với lần đọc đó?”. Nếu chỉ trả lời “thread thường chạy theo thứ tự này” thì chưa có bảo đảm từ Java Memory Model.`,
+  follow: [
+    'Vì sao hai khối {{synchronized}} trên hai object khác nhau không publish dữ liệu cho nhau?',
+    'Quan hệ volatile write/read công bố những lần ghi nào trước đó?',
+    'Bạn dùng latch và jcstress khác nhau thế nào khi kiểm tra race condition?'
+  ],
+  tags: ['JMM', 'happens-before', 'volatile', 'visibility', 'data race']
+},
 );
