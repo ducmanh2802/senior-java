@@ -145,7 +145,7 @@ while true; do
       # checks it better than a free model reading it; only knowledge content needs an LLM fact-check
       echo "Reviewed-by: verify-only (code/UI task)" >> "$f"
       commit_task "$f" "$id"
-    elif [[ "$f" == *-en-* ]]; then
+    elif owns "$f" | grep -q 'js/i18n/'; then   # translation = owns js/i18n (English practice tasks also contain -en- but need a real review)
       # translation chunk: no LLM review — scripts/check-i18n.js (structure, leftover Vietnamese, copied code)
       # + verify are the gate; a failing chunk goes back to TODO with the errors (at most twice)
       chunk=$(owns "$f" | sed 's#js/i18n/##; s#\.en\.js$##')
