@@ -1810,6 +1810,8 @@ window.DATA_INDEX = {
     {"id":"lesson-sql-005","track":"sql","order":5,"title":"Thuật toán JOIN mà database dùng: nested loop, hash join, merge join và đọc EXPLAIN","level":"senior","minutes":30},
     {"id":"lesson-sql-006","track":"sql","order":6,"title":"MVCC và transaction isolation: snapshot, phantom read và deadlock","level":"senior","minutes":30},
     {"id":"lesson-sql-007","track":"sql","order":7,"title":"Index B-tree và covering index: vì sao index nhanh, khi nào không giúp","level":"senior","minutes":25},
+    {"id":"lesson-sql-008","track":"sql","order":8,"title":"Window function với Java Streams: xếp hạng và running total đúng kết quả","level":"senior","minutes":30},
+    {"id":"lesson-sql-009","track":"sql","order":9,"title":"Keyset pagination trên danh sách đã sắp xếp: cursor, tie-breaker và binary search","level":"senior","minutes":30},
     {"id":"lesson-security-001","track":"security","order":1,"title":"Lưu mật khẩu an toàn: salt ngẫu nhiên, PBKDF2 và so sánh không rò rỉ thời gian","level":"mid","minutes":25},
     {"id":"lesson-security-002","track":"security","order":2,"title":"JWT tự ký và kiểm tra bằng HS256: chữ ký, exp và những cái bẫy của alg","level":"senior","minutes":30},
     {"id":"lesson-security-003","track":"security","order":3,"title":"Rate limiter bằng token bucket: burst, refill và đồng hồ truyền vào","level":"lead","minutes":30},
