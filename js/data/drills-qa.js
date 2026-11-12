@@ -766,4 +766,52 @@
   sample: "My first attempt at building an internal dashboard failed. I spent three months on it, but only two people used it regularly, and the maintenance cost was higher than the value it provided. The main problem was that I built what I thought the team needed instead of asking them first. I also did not set up clear success metrics, so I had no data to prove whether it was useful. I also over-engineered the solution, adding too many features that nobody asked for. If I could do it again, I would spend the first two weeks interviewing users and creating a simple prototype to validate the core value. I would also define one or two measurable goals, like reducing report time from thirty minutes to five minutes, and check them every two weeks. I would launch with the minimum viable feature set and iterate based on actual usage data. The failure taught me that building something useful is more important than building something impressive.",
   phrases: ["I spent three months on it, but only two people used it regularly", "I built what I thought the team needed instead of asking them first", "I also over-engineered the solution", "I would spend the first two weeks interviewing users and creating a simple prototype", "building something useful is more important than building something impressive"]
 },
+{
+  id: "drill-qa-122", kind: "qa", theme: "smalltalk", level: "mid", seconds: 60,
+  q: "Hi, how are you today? Did you find us easily?",
+  sample: "Hi, thanks for asking. I'm doing well, and I found your office without any trouble. I came by metro, and the station exit was right next to the building, so it was an easy trip. It's a nice area, and the building was easy to spot from the street. The traffic was lighter than I expected, so I arrived about fifteen minutes early and had time to settle in the lobby before we started. I'm not rushed at all. How about you? I hope your morning is going smoothly and that we can have a good conversation today. I'm really looking forward to it.",
+  phrases: ["I found your office without any trouble", "the traffic was lighter than I expected", "I'm not rushed at all", "How about you", "I'm really looking forward to it"],
+},
+{
+  id: "drill-qa-123", kind: "qa", theme: "smalltalk", level: "mid", seconds: 60,
+  q: "Can you hear me well? If there is any problem with the audio, just let me know.",
+  sample: "Yes, I can hear you clearly. I'm using a wired headset, so the sound should be stable on my side. If anything drops out or sounds unclear, please just say 'Could you repeat that?' and I'll repeat my point more slowly. I usually keep my microphone muted until it's my turn, because that cuts background noise a lot. If the connection gets bad, I can switch from Wi-Fi to a mobile hotspot in about ten seconds, or we can continue on a phone call. I'd rather pause for a moment than lose an important detail. Is everything clear on your end right now?",
+  phrases: ["please just say", "Could you repeat that?", "cuts background noise a lot", "I'd rather pause for a moment than lose an important detail", "Is everything clear on your end"],
+},
+{
+  id: "drill-qa-124", kind: "qa", theme: "smalltalk", level: "senior", seconds: 60,
+  q: "What do you know about our product?",
+  sample: "I looked at your website and read the documentation for about two hours before this interview. I also signed up for the free trial and built a small test project to see how it feels. What I understand is that you sell a workflow tool for mid-sized logistics teams, and the main promise is that operations staff can set up their own rules without waiting for a developer. That matches my experience, because I built something similar internally at my last company. What I could not confirm from outside is how you handle very large tenants, so that's the part I'm most curious about. I'd like to hear how the backend is structured and where the hard scaling problems are.",
+  phrases: ["I looked at your website", "I signed up for the free trial", "What I understand is that", "that's the part I'm most curious about", "where the hard scaling problems are"],
+},
+{
+  id: "drill-qa-125", kind: "qa", theme: "smalltalk", level: "mid", seconds: 60,
+  q: "What do you do outside of work?",
+  sample: "Outside of work I try to keep three simple habits. First, I read technical books, usually one or two chapters a day. Last year I finished three books on distributed systems, and I take short notes so I remember the ideas. Second, I run about five kilometres three times a week. It sounds unrelated, but it clears my head and helps me think through a design problem on the way home. Third, I spend time with my family on weekends, mostly cooking and walking in the park. I also like fixing small things at home, like repairing an old bicycle. I am not someone who works every evening, because I think rest is part of doing good work.",
+  phrases: ["Outside of work I try to keep three simple habits", "It sounds unrelated, but", "clears my head", "I also like fixing small things at home", "rest is part of doing good work"],
+},
+{
+  id: "drill-qa-126", kind: "qa", theme: "intro", level: "senior", seconds: 90,
+  q: "Why did you choose backend development?",
+  sample: "I chose backend work almost by accident, but I stayed for a good reason. My first job was a mix of frontend and backend, and I noticed I enjoyed the backend more. With the frontend, the work is done when the screen looks right. With the backend, the work is done when the data is correct under load, at night, when one service is slow and another one retries. I like that kind of problem, because the answer is not just 'it works on my machine'. I started reading about transactions, indexes, and messaging, and the more I learned, the more I wanted to understand. Over five years I have gone from writing simple CRUD endpoints to owning reliability for a payment flow that handles about two hundred requests per second. That progression is what keeps me in backend.",
+  phrases: ["almost by accident, but I stayed for a good reason", "the work is done when", "I like that kind of problem", "reading about transactions, indexes, and messaging", "what keeps me in backend"],
+},
+{
+  id: "drill-qa-127", kind: "qa", theme: "project", level: "senior", seconds: 90,
+  q: "What was your favourite project at university or in your first job?",
+  sample: "My favourite project was in my first job, a small internal tool for tracking hardware repairs. It sounds boring, but it was my first chance to own something from start to finish. I built it with Spring Boot and a MySQL database in about six weeks, and about forty technicians used it every day. The interesting part was not the code. It was watching people actually use it and then changing the design. For example, I first made them type the serial number manually, and they hated it. I added a barcode scanner step, and data entry time dropped from about thirty seconds to eight seconds per device. That project taught me that a feature is only finished when users can use it without complaining. I still check how people use a system before I call it done.",
+  phrases: ["It sounds boring, but", "my first chance to own something from start to finish", "The interesting part was not the code", "data entry time dropped from about thirty seconds to eight seconds", "I still check how people use a system before I call it done"],
+},
+{
+  id: "drill-qa-128", kind: "qa", theme: "intro", level: "senior", seconds: 90,
+  q: "Is there anything else you would like us to know about you?",
+  sample: "Yes, there are two things. First, I care a lot about how a service behaves when something goes wrong. In my last role I added health checks, clear alerts, and a runbook for each service I owned. After that change, our mean time to recover dropped from about fifty minutes to fifteen minutes. I think that habit matters more than knowing the newest framework. Second, I am honest about what I do not know. If I have never used Kafka in production, I will say so, and then I will read the documentation, build a small prototype, and come back with real questions instead of guesses. I am also comfortable working with product managers and support teams, because I have done that for years. If there is a specific area you want me to explain more, I am happy to go deeper.",
+  phrases: ["I care a lot about how a service behaves when something goes wrong", "I think that habit matters more than", "I am honest about what I do not know", "come back with real questions instead of guesses", "I am happy to go deeper"],
+},
+{
+  id: "drill-qa-129", kind: "qa", theme: "smalltalk", level: "senior", seconds: 90,
+  q: "What are the next steps for you after this interview?",
+  sample: "Thank you, that's a good question. After this conversation I will write down a few notes while everything is fresh, and I will look more closely at the parts of your system we discussed today. I am not interviewing at many other companies right now, so I can move quickly if you decide to go forward. If it helps, I can send the example I mentioned earlier in a short document. One question for you: what does your process look like from here, and when do you expect to make a decision? I am happy to follow up if needed, but I do not want to be pushy. Thank you again for your time today. I enjoyed the conversation and I am genuinely interested in this role.",
+  phrases: ["while everything is fresh", "I can move quickly if you decide to go forward", "what does your process look like from here", "I do not want to be pushy", "Thank you again for your time today"],
+},
 );
