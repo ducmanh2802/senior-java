@@ -350,4 +350,52 @@
     sample: "With me you work directly with the person who writes the code, so there is no middleman and no extra cost. I communicate quickly, I write clean code with tests, and I take ownership of the backend from design to deployment. I have worked with remote clients before, so I know how to give clear updates and how to ask questions early instead of silently going the wrong way. An agency may assign different people over time, but with me you get the same engineer throughout the project. I am reliable, I meet deadlines, and I care about the quality of what I ship. If that sounds like what you need, I would love to start with a small trial task.",
     phrases: ["With me you work directly with", "there is no middleman and no extra cost", "I take ownership of the backend from design to deployment", "you get the same engineer throughout the project", "I would love to start with a small trial task"],
   },
+{
+  id: "drill-qa-058", kind: "qa", theme: "project", level: "senior", seconds: 120,
+  q: "Walk me through the architecture of your last project, and why you chose each part",
+  sample: "In my last project we rebuilt a reporting service that generates daily sales reports for about fifty thousand stores. I chose a three-layer architecture: an API layer in Spring Boot, a job layer that runs the heavy computation, and PostgreSQL for storage. I picked Spring Boot because our team already knew it and it handles transactions well. For the job layer I used Quartz, because reports run on a schedule and can fail and retry. I chose PostgreSQL because the data is relational and we needed complex joins across stores, products, and transactions. We did not use Kafka, because the volume was low and adding it would have meant more ops work for little benefit. The trade-off was that the job layer and the API share the same database, so a heavy report can slow down queries. We accepted that and added read replicas for the API. That choice kept the system simple and easy for the team to support.",
+  phrases: ["I chose a three-layer architecture", "because our team already knew it", "I chose PostgreSQL because", "We did not use Kafka", "The trade-off was that", "kept the system simple"],
+},
+{
+  id: "drill-qa-059", kind: "qa", theme: "project", level: "senior", seconds: 90,
+  q: "What exactly was your role, and what did you build yourself",
+  sample: "I was the senior backend engineer on a team of four, and I owned the order service from design to deployment. I built the checkout API myself, including the payment flow, the order state machine, and the idempotency key that prevents double charges on retry. I also designed the database schema and chose the indexes for the most common queries. My teammates built the frontend and the notification service, and I reviewed their code and helped with integration. I was on call once every four weeks, and I handled incidents for the order service. The part I am most proud of is a retry-safe payment endpoint that we tested under concurrent requests, and it has had zero double-charge incidents since launch.",
+  phrases: ["I owned the order service from design to deployment", "I built the checkout API myself", "prevents double charges on retry", "I reviewed their code and helped", "zero double-charge incidents since launch"],
+},
+{
+  id: "drill-qa-060", kind: "qa", theme: "design", level: "senior", seconds: 120,
+  q: "Tell me about a technical decision you made and the trade-offs behind it",
+  sample: "One decision I made was to use a read replica for our reporting dashboard instead of running reports on the primary database. The problem was that a heavy report query was locking tables and slowing down checkout. I considered adding an index first, but the query scanned too many rows and an index would not help enough. So I set up a read replica with a fifteen-minute replication lag, and pointed the dashboard at it. The trade-off is stale data: a customer might see an order placed ten minutes ago as missing. We decided that was acceptable for reporting, and we added a note on the page saying data may be slightly delayed. If we needed real-time data, we would have kept it on the primary and accepted slower checkouts. This choice reduced dashboard query time from about thirty seconds to under two seconds.",
+  phrases: ["One decision I made was", "The trade-off is stale data", "We decided that was acceptable", "If we needed real-time data", "reduced dashboard query time"],
+},
+{
+  id: "drill-qa-061", kind: "qa", theme: "behavioral", level: "senior", seconds: 120,
+  q: "Describe a production incident you handled from alert to fix",
+  sample: "We got an alert at two in the morning that the login success rate had dropped below ninety percent. I checked the dashboard and saw a spike in database connection timeouts after a deployment that added a new index. The index creation had locked a busy table, so login queries were waiting. In the first hour I rolled back the deployment, which restored service within about fifteen minutes. Then I reproduced the issue on staging, created the index concurrently instead of locking the table, and redeployed during business hours. After the fix, login timeouts returned to normal and we had no repeat incident. I also added an alert for connection pool usage so we catch this earlier. The lesson was that schema changes in production need a plan for locks, not just correctness.",
+  phrases: ["We got an alert at two in the morning", "I rolled back the deployment", "created the index concurrently instead", "login timeouts returned to normal", "The lesson was that schema changes"],
+},
+{
+  id: "drill-qa-062", kind: "qa", theme: "tech", level: "senior", seconds: 120,
+  q: "How did you improve the performance of a service? What were the numbers",
+  sample: "I improved the product search API, which was taking about four seconds at peak. I turned on slow query logging and found that the search hit the database once per filter, and each query scanned hundreds of thousands of rows. I replaced those queries with a single composite index on category, price, and date, and I cached the most common searches in Redis for five minutes. After the change, p99 latency dropped from four seconds to under three hundred milliseconds, and database CPU for that service fell by about forty percent. The trade-off is that search results can be up to five minutes stale, which we marked on the page. I also added a test that asserts query count, so a future change cannot silently bring the problem back.",
+  phrases: ["taking about four seconds at peak", "I turned on slow query logging", "p99 latency dropped from four seconds to under three hundred milliseconds", "database CPU for that service fell by about forty percent", "The trade-off is that search results"],
+},
+{
+  id: "drill-qa-063", kind: "qa", theme: "tech", level: "senior", seconds: 120,
+  q: "Tell me about a time you had to change legacy code safely",
+  sample: "I had to change a legacy discount calculator that applied promotions at checkout. No one on the team fully understood it, and there were no tests. I did not rewrite it. Instead, I first wrote characterization tests that captured the current behavior for fifty real orders, including edge cases like expired coupons and stacked discounts. Then I made one small change at a time, running the tests after each change to make sure the results did not change. I also ran the new and old code in parallel for two weeks, logging any difference, before I removed the old path. The final change reduced a confusing nested if block into a small rule list, and we had zero discount errors in production after the rollout. The key point is that legacy code needs a safety net before you touch it.",
+  phrases: ["I did not rewrite it", "I first wrote characterization tests", "I made one small change at a time", "I also ran the new and old code in parallel", "The key point is that legacy code needs a safety net"],
+},
+{
+  id: "drill-qa-064", kind: "qa", theme: "project", level: "senior", seconds: 120,
+  q: "How do you make sure a feature is ready for production",
+  sample: "I treat a feature as ready only after it passes four checks. First, it needs automated tests covering the happy path and the common failure paths, and I run them in CI before merge. Second, it needs observability: logs, metrics, and an alert if error rate spikes. Third, it needs a rollback plan, usually a feature flag or a database migration that can be reversed. Fourth, I test it with realistic data and load, not just a few records. For example, before launching a promotion feature, we ran it with ten times normal traffic in staging and watched the response time and error rate. If anything is unclear, I write a one-page design note and review it with the team. The key point is that ready means someone can be paged at night and still know what to do.",
+  phrases: ["I treat a feature as ready only after", "First, it needs automated tests", "it needs observability", "it needs a rollback plan", "The key point is that ready means"],
+},
+{
+  id: "drill-qa-065", kind: "qa", theme: "design", level: "senior", seconds: 120,
+  q: "If you rebuilt that project today, what would you do differently",
+  sample: "If I rebuilt the order service today, I would separate reads and writes earlier. In the original project, the API handled both placing orders and running reports on the same database, which caused lock contention during peak sales. I would use a read replica for reports from day one, or move reporting to a separate table updated by an outbox. I would also add idempotency keys to more endpoints, because we added them only to payment after seeing duplicate orders. And I would invest in synthetic monitoring from the start, instead of waiting for customers to report errors. The trade-off is that these choices take more time upfront, but for a service handling real money I would accept that cost. Simplicity first, then add resilience where it actually matters.",
+  phrases: ["I would separate reads and writes earlier", "I would use a read replica for reports", "I would also add idempotency keys to more endpoints", "The trade-off is that these choices take more time upfront", "Simplicity first, then add resilience where it actually matters"],
+},
 );

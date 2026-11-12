@@ -4483,32 +4483,69 @@ Kể lại trong phỏng vấn theo mạch thực dụng: đọc {{head -3}} đ�
     'Mô tả được chuỗi trạng thái inactive → pending → firing → resolved',
     'Viết được AlertEvaluator nhận chuỗi (thời điểm, giá trị) với đồng hồ giả và trả danh sách sự kiện chuyển trạng thái',
   ],
-  body: `### Cảnh báo kiểu Prometheus là gì
-Prometheus Alertmanager đánh giá **rule** trên chuỗi mẫu metric theo thời gian. Một rule có điều kiện (ví dụ CPU > 80%) và **for** (ví dụ 5 phút): chỉ khi điều kiện đúng liên tục trong suốt thời gian for mới chuyển sang firing. Mục đích: tránh báo động giả do spike ngắn.
+  body: `**Tóm tắt:** Cảnh báo kiểu Prometheus chỉ chuyển sang **firing** khi điều kiện đúng liên tục trong khoảng {{for}}; trạng thái đi theo chuỗi {{inactive → pending → firing → resolved}}. Gộp (grouping) và ức chế (inhibition) giúp tránh spam khi một sự cố gây nhiều alert.
 
-**Tóm tắt:** Prometheus rule chỉ firing khi điều kiện đúng liên tục trong for; trạng thái inactive→pending→firing→resolved; gộp cảnh báo để tránh spam.
+### Cảnh báo kiểu Prometheus là gì
+- **Metric** (chỉ số): con số đo được theo thời gian, ví dụ CPU 85%. Prometheus thu thập metric bằng cách kéo (scrape) dữ liệu từ ứng dụng theo chu kỳ (thường 15s).
+- **PromQL** (ngôn ngữ truy vấn của Prometheus): dùng để viết biểu thức như {{node_cpu_usage > 0.8}}.
+- **Alert rule** (luật cảnh báo): một biểu thức PromQL + thời gian {{for}} + nhãn/mô tả. Prometheus đánh giá rule theo **evaluation interval** (chu kỳ đánh giá, ví dụ mỗi 15s).
+- **Recording rule**: rule tính sẵn và lưu lại metric mới để truy vấn nhanh hơn (không gửi cảnh báo).
+- **Alertmanager**: thành phần nhận alert từ Prometheus, chịu trách nhiệm gộp, ức chế, định tuyến và gửi thông báo (Slack, PagerDuty, email).
 
-### Trạng thái
-- **inactive**: điều kiện sai.
-- **pending**: điều kiện đúng nhưng chưa đủ for.
-- **firing**: điều kiện đúng đủ for, cảnh báo gửi đi.
-- **resolved**: trước đây firing, giờ điều kiện sai.
+Vì sao cần {{for}}? Hệ thống thật luôn có biến động ngắn: GC pause, spike traffic vài giây, network jitter. Nếu cứ vượt ngưỡng là báo ngay, on-call sẽ bị "alert fatigue" (mệt mỏi vì quá nhiều cảnh báo giả) và dễ bỏ lỡ sự cố thật.
 
-### for và grace
-Khi điều kiện đúng liên tục, pending bắt đầu. Nếu đủ for → firing. Nếu điều kiện sai trước khi đủ for → về inactive, không báo. Khi firing rồi điều kiện sai → resolved.
+### Cơ chế từng bước
+1. **Scrape & lưu mẫu**: Prometheus lấy metric theo chu kỳ và lưu chuỗi thời gian (time series).
+2. **Đánh giá rule**: mỗi evaluation interval, Prometheus chạy biểu thức. Nếu kết quả rỗng hoặc sai → điều kiện không thỏa.
+3. **inactive**: điều kiện sai, không có gì xảy ra.
+4. **pending**: điều kiện bắt đầu đúng. Prometheus ghi nhận thời điểm bắt đầu và chờ; nếu ở lần đánh giá tiếp theo điều kiện vẫn đúng và đã trôi qua ≥ {{for}} thì mới chuyển bước.
+5. **firing**: điều kiện đúng liên tục suốt {{for}}. Prometheus gửi alert sang Alertmanager.
+6. **resolved**: trước đó đang firing nhưng điều kiện trở lại sai. Alertmanager có thể gửi thông báo "đã phục hồi" (tùy cấu hình {{send_resolved}}).
 
-### Gộp cảnh báo (grouping)
-Nhiều alert cùng labels được gộp thành một notification để tránh spam. Mỗi group có route riêng.
+~~~java
+// Mô phỏng đánh giá rule: điều kiện phải đúng liên tục trong forSeconds
+enum State { INACTIVE, PENDING, FIRING }
+
+class RuleEval {
+    State state = State.INACTIVE;
+    long pendingSince = -1;
+
+    State onSample(long tSec, boolean breach, long forSec) {
+        if (!breach) {                 // điều kiện sai
+            if (state == State.FIRING) { state = State.INACTIVE; return State.INACTIVE; } // resolved về phía Alertmanager
+            state = State.INACTIVE; pendingSince = -1;
+            return state;
+        }
+        // điều kiện đúng
+        if (state == State.INACTIVE) { state = State.PENDING; pendingSince = tSec; }
+        if (state == State.PENDING && tSec - pendingSince >= forSec) state = State.FIRING;
+        return state;
+    }
+}
+~~~
+
+| Khái niệm | Mục đích | Ví dụ |
+|---|---|---|
+| {{for}} | Tránh nhiễu ngắn, chỉ báo khi sự cố kéo dài | {{for: 5m}} cho CPU cao |
+| **grouping** (gộp) | Gom nhiều alert cùng nhãn thành 1 thông báo | 20 pod cùng lỗi DB → 1 trang |
+| **inhibition** (ức chế) | Tắt alert con khi alert cha đang firing | Cả cụm down thì ức chế alert từng node |
+| **routing** (định tuyến) | Chọn kênh/người nhận theo nhãn | {{severity=critical}} → PagerDuty |
 
 ### Ví dụ đời thực
-Service CPU spike 2 phút do GC, ngưỡng 80% for 5m → pending rồi inactive, không paging. Nếu CPU cao 10 phút → firing, on-call nhận 1 alert gộp.
+Service thanh toán chạy trên 10 pod. Lúc 10:00 GC pause làm CPU pod-3 chạm 92% trong 2 phút rồi giảm: rule {{CPUHigh for 5m}} đi {{inactive → pending (10:00) → inactive (10:02)}}, không paging ai. Lúc 14:00 truy vấn DB bị chậm kéo dài, CPU 9/10 pod > 85% suốt 12 phút: sau 5 phút rule chuyển {{firing}}, Alertmanager gộp 9 alert cùng {{service=payment, alertname=CPUHigh}} thành 1 thông báo gửi kênh on-call; khi DB hồi phục lúc 14:12, alert chuyển resolved và gửi thông báo phục hồi.
 
-### Trả lời mẫu khi phỏng vấn
-"Rule Prometheus chỉ firing khi điều kiện đúng liên tục trong for; trạng thái inactive→pending→firing→resolved; gộp alert cùng labels để tránh spam."
+### Lỗi hay gặp trên production
+- **{{for}} quá ngắn (0s hoặc 30s)**: spike GC/ngắn hạn gây alert storm. Triệu chứng: pager kêu liên tục rồi tự tắt. Sửa: đặt {{for}} 3–5 phút cho tài nguyên (CPU/mem), ngắn hơn (1m) cho lỗi tỉ lệ (error rate).
+- **Thiếu hoặc sai nhãn (label) khi grouping**: mỗi pod/instance tạo một thông báo riêng → spam hàng chục trang cho cùng một sự cố. Sửa: cấu hình {{group_by}} theo {{alertname, service, cluster}} thay vì theo {{instance}}.
+- **Không đặt inhibition**: khi mất kết nối cả cụm, vừa bắn "cluster down" vừa bắn hàng trăm alert con "node/pod unreachable". Sửa: thêm rule inhibition để ức chế alert con khi alert cha firing.
+- **Quên xử lý resolved hoặc flapping**: alert liên tục firing→resolved→firing làm nhiễu. Sửa: tăng {{for}}, dùng {{repeat_interval}} hợp lý và kiểm tra ngưỡng/hysteresis.
 
-> Senior tip: Luôn đặt for đủ dài (3-5m) cho metric CPU/mem để tránh alert storm do spike ngắn.
+### Liên hệ phỏng vấn
+- **Hỏi:** "Vì sao alert rule cần {{for}} và trạng thái pending dùng để làm gì?" → **Trả lời ngắn:** {{for}} yêu cầu điều kiện đúng liên tục để lọc nhiễu ngắn; {{pending}} là giai đoạn chờ đủ {{for}}, giúp phân biệt spike tạm thời với sự cố kéo dài và tránh alert giả.
+- **Hỏi:** "Phân biệt grouping, inhibition, routing trong Alertmanager?" → **Trả lời ngắn:** grouping gom nhiều alert giống nhau thành một thông báo; inhibition ức chế alert con khi alert cha đang firing; routing quyết định gửi thông báo tới kênh/người nhận nào dựa trên nhãn.
+- **Hỏi:** "Khi nào dùng alert rule, khi nào dùng recording rule?" → **Trả lời ngắn:** alert rule dùng để phát hiện và gửi cảnh báo khi vi phạm điều kiện; recording rule tính sẵn biểu thức PromQL phức tạp thành metric mới để dashboard/truy vấn nhanh và nhất quán, không gửi cảnh báo.
 
-Thêm giải thích chi tiết cho người mới: PromQL vector, evaluation interval, alert rule, recording rule, for duration, pending/firing/resolved, inhibition, grouping, routing. Giải thích từng bước cái gì→vì sao→hoạt động thế nào→ví dụ→lỗi hay gặp→trả lời phỏng vấn. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. Giải thích thêm cho người mới. `,
+> Senior tip: Thiết kế ngưỡng dựa trên SLO (mục tiêu mức độ tin cậy dịch vụ) và tỉ lệ lỗi thực tế thay vì con số cảm tính; luôn gắn nhãn {{service}}, {{severity}}, {{runbook}} vào alert để on-call biết tác động và cách xử lý ngay.`,
   exercises: [
     {
       title: 'AlertEvaluator: danh sách sự kiện chuyển trạng thái',
@@ -4575,8 +4612,10 @@ class AlertEvaluator {
     },
   ],
   check: [
-    { q: 'for=5m nghĩa là gì?', options: ['Cảnh báo sau 5 phút', 'Điều kiện phải đúng liên tục 5 phút mới firing', 'Lặp lại mỗi 5 phút', 'Tắt sau 5 phút'], answer: 1, explain: 'for là thời gian điều kiện phải đúng liên tục trước khi firing.' },
-    { q: 'Spike 2 phút với for 5m thì sao?', options: ['Firing', 'Pending rồi inactive, không báo', 'Resolved', 'Lỗi'], answer: 1, explain: 'Chưa đủ for nên không firing, về inactive.' },
+    { q: 'for=5m trong một alert rule Prometheus nghĩa là gì?', options: ['Cảnh báo sẽ được gửi sau đúng 5 phút kể từ khi tạo rule', 'Prometheus lặp lại việc gửi cảnh báo mỗi 5 phút', 'Điều kiện phải đúng liên tục trong 5 phút thì alert mới chuyển sang firing', 'Alert tự động tắt sau 5 phút nếu không ai xác nhận'], answer: 2, explain: 'Đáp án đúng là C: {{for}} là khoảng thời gian điều kiện phải giữ đúng liên tục trước khi chuyển từ pending sang firing. A sai vì mốc tính từ lúc điều kiện thỏa, không phải lúc tạo rule. B sai vì lặp gửi do {{repeat_interval}} của Alertmanager quyết định. D sai vì việc tắt/ack không do {{for}} điều khiển.' },
+    { q: 'CPU vượt ngưỡng 2 phút rồi giảm, trong khi rule đặt {{for: 5m}}. Trạng thái nào xảy ra?', options: ['Firing rồi Resolved', 'Pending rồi quay về Inactive, không gửi cảnh báo', 'Inactive suốt vì chưa đủ dữ liệu scrape', 'Resolved vì hệ thống đã tự hồi phục'], answer: 1, explain: 'Đáp án đúng là B: điều kiện đúng làm rule vào pending nhưng chưa đủ 5 phút đã sai nên quay về inactive, không firing. A sai vì không bao giờ đạt firing. C sai vì vẫn có mẫu vượt ngưỡng trong 2 phút. D sai vì resolved chỉ dùng khi trước đó đã từng firing.' },
+    { q: 'Mục đích chính của grouping trong Alertmanager là gì?', options: ['Tăng tốc độ đánh giá biểu thức PromQL', 'Tự động sửa lỗi gây ra cảnh báo', 'Xóa bớt metric cũ để tiết kiệm bộ nhớ', 'Gộp nhiều alert liên quan thành một thông báo để giảm spam'], answer: 3, explain: 'Đáp án đúng là D: grouping gom các alert cùng nhãn (ví dụ cùng service) thành một thông báo, tránh on-call bị quá tải. A sai vì đánh giá PromQL do Prometheus thực hiện, không phải Alertmanager. B sai vì Alertmanager chỉ thông báo, không tự khắc phục. C sai vì lưu trữ/retention metric thuộc về Prometheus storage.' },
+    { q: 'Khi "cluster down" đang firing, tại sao nên dùng inhibition cho các alert "node unreachable" con?', options: ['Để ức chế alert con, tránh trùng lặp thông báo khi nguyên nhân gốc đã được báo', 'Để các alert con firing nhanh hơn', 'Để tự động khởi động lại các node bị lỗi', 'Để chuyển alert con thành recording rule'], answer: 0, explain: 'Đáp án đúng là A: inhibition ức chế (tắt thông báo) alert con khi alert cha đang firing vì chúng cùng một nguyên nhân gốc, giúp giảm nhiễu. B sai vì inhibition không làm alert firing nhanh hơn mà ngược lại còn chặn thông báo. C sai vì Alertmanager không tự khởi động lại hạ tầng. D sai vì recording rule là khái niệm khác (tính sẵn metric), không liên quan inhibition.' },
   ],
   related: ['devops-001', 'devops-007'],
   tags: ['Prometheus', 'Alerting', 'for', 'pending', 'firing', 'resolved'],
@@ -4593,32 +4632,58 @@ class AlertEvaluator {
     'Mô phỏng round-robin bỏ qua backend down',
     'Hiểu VIP chuyển sang node backup theo priority với Keepalived',
   ],
-  body: `### Health check là gì
-Load balancer (HAProxy, nginx) định kỳ gọi health check đến backend. Sau **fall** lần fail liên tiếp → backend bị đánh dấu DOWN, không nhận traffic. Sau **rise** lần success liên tiếp → UP lại.
+  body: `**Tóm tắt:** Hệ thống cân bằng tải (load balancer, ví dụ HAProxy) dùng **health check** (kiểm tra sức khỏe) để loại backend lỗi: sau **fall** lần thất bại liên tiếp → đánh dấu DOWN, sau **rise** lần thành công liên tiếp → UP lại. Thuật toán **round-robin** (xoay vòng) bỏ qua backend DOWN. **Keepalived** dùng VRRP để chuyển **VIP** (địa chỉ IP ảo) sang nút dự phòng khi nút chính hỏng.
 
-**Tóm tắt:** Backend down sau N lỗi liên tiếp (fall) và up sau M thành công (rise); round-robin bỏ qua down; VIP failover theo priority Keepalived.
+### Health check, load balancer và failover là gì
+- **Load balancer (LB)**: thành phần đứng trước, nhận request từ client rồi phân phối sang nhiều backend (máy chủ ứng dụng) để chia tải và tăng sẵn sàng.
+- **Health check**: LB định kỳ gửi yêu cầu kiểm tra (HTTP {{/health}}, TCP connect, v.v.) tới từng backend để biết còn sống hay không.
+- **Failover (chuyển đổi dự phòng)**: khi một thành phần hỏng, hệ thống tự chuyển sang thành phần dự phòng để dịch vụ tiếp tục chạy.
 
-### fall và rise
-- **fall**: số lần check fail liên tiếp để chuyển DOWN.
-- **rise**: số lần check success liên tiếp để chuyển UP.
+Vì sao cần fall/rise? Mạng có thể chập chờn hoặc một request lỗi thoáng qua; nếu chỉ 1 lần lỗi đã loại backend thì dễ "false positive" (báo nhầm). Ngược lại, nếu đòi quá nhiều lần mới phục hồi thì backend đã khỏe vẫn bị bỏ qua lâu.
 
-Ví dụ fall=3, rise=2: 3 fail liên tiếp → DOWN; 2 success liên tiếp → UP.
+### Cơ chế từng bước
+1. **Kiểm tra định kỳ**: LB gửi health check theo {{interval}} (ví dụ 2 giây). Kết quả mỗi lần là thành công (OK) hoặc thất bại (timeout, HTTP 5xx, không kết nối được).
+2. **Đếm fall**: mỗi lần thất bại liên tiếp tăng bộ đếm lỗi và đặt lại bộ đếm thành công. Khi bộ đếm lỗi đạt **fall** (ví dụ 3) → backend chuyển **DOWN**, LB ngừng gửi traffic tới nó.
+3. **Đếm rise**: backend DOWN vẫn được kiểm tra. Mỗi lần thành công liên tiếp tăng bộ đếm thành công. Khi đạt **rise** (ví dụ 2) → backend chuyển **UP**, LB đưa trở lại vòng phân phối.
+4. **Round-robin bỏ qua DOWN**: LB giữ con trỏ xoay vòng; khi chọn backend tiếp theo, nếu backend đang DOWN thì bỏ qua và thử backend kế tiếp. Nếu tất cả DOWN, LB trả lỗi (ví dụ 503).
+5. **Failover VIP với Keepalived/VRRP**: **VIP** (Virtual IP, IP ảo) là địa chỉ IP mà client kết nối tới. **VRRP** (Virtual Router Redundancy Protocol) là giao thức bầu chọn nút giữ VIP. Nút **master** có **priority** (độ ưu tiên) cao hơn giữ VIP; nút **backup** chờ. Khi master không còn gửi gói quảng bá (do hỏng/mất mạng), backup có priority cao nhất tiếp quản VIP. **Preempt** (giành lại): nếu bật, khi master cũ phục hồi nó có thể lấy lại VIP.
 
-### Round-robin bỏ qua down
-LB phân phối request round-robin nhưng chỉ chọn backend đang UP.
+~~~java
+// Mô phỏng fall/rise: DOWN sau fall lỗi liên tiếp, UP sau rise thành công liên tiếp
+class BackendHealth {
+    boolean up = true; int fail = 0, ok = 0;
+    final int fall = 3, rise = 2;
 
-### Failover VIP (Keepalived)
-Keepalived dùng VRRP: node master có priority cao giữ VIP. Khi master down, backup có priority cao nhất tiếp quản VIP. Failback khi master up lại (tùy preempt).
+    void onCheck(boolean success) {
+        if (success) { ok++; fail = 0; if (!up && ok >= rise) up = true; }
+        else         { fail++; ok = 0; if (up && fail >= fall) up = false; }
+    }
+}
+~~~
+
+| Khái niệm | Ý nghĩa | Giá trị thường dùng |
+|---|---|---|
+| {{fall}} | Số lần fail liên tiếp để coi là DOWN | 2–3 |
+| {{rise}} | Số lần success liên tiếp để coi là UP | 2 |
+| {{interval}} | Chu kỳ health check | 1–5 giây |
+| **round-robin** | Xoay vòng lần lượt qua backend UP | đơn giản, chia đều |
+| **leastconn** | Chọn backend có ít kết nối nhất | hợp khi request thời lượng khác nhau |
 
 ### Ví dụ đời thực
-3 backend, 1 down sau 3 fail liên tiếp → LB chỉ gửi traffic tới 2 backend còn lại; khi backend phục hồi, 2 success → UP lại.
+Hệ thống có 3 backend {{A, B, C}} sau HAProxy, {{fall=3}}, {{rise=2}}, {{interval=2s}}. Lúc 09:10 backend B bị full GC và treo: 3 lần check liên tiếp thất bại (6 giây) → B chuyển DOWN, LB chỉ xoay vòng A, C. Lưu lượng giảm 1/3 khả năng nhưng dịch vụ vẫn sống. Lúc 09:13 B hồi phục: sau 2 lần check thành công (4 giây) → B UP trở lại và nhận traffic. Ở tầng IP, Keepalived chạy trên 2 nút LB: {{LB1 priority 101 (master)}} giữ VIP {{10.0.0.10}}, {{LB2 priority 100 (backup)}}. LB1 mất điện → LB2 không nhận quảng bá VRRP, tiếp quản VIP trong vài giây, client vẫn kết nối tới {{10.0.0.10}} không cần đổi cấu hình.
 
-### Trả lời mẫu khi phỏng vấn
-"Health check với fall/rise: backend down sau N lỗi liên tiếp, up sau M thành công; round-robin bỏ qua down; Keepalived failover VIP theo priority."
+### Lỗi hay gặp trên production
+- **Chỉ dùng TCP check cho ứng dụng HTTP**: cổng mở nhưng ứng dụng treo hoặc trả 500, TCP check vẫn "thành công" nên traffic tiếp tục đổ vào backend hỏng. Triệu chứng: user thấy lỗi 5xx dù LB báo backend UP. Sửa: dùng HTTP health check và kiểm tra mã trạng thái/nội dung (ví dụ {{GET /health}} trả 200).
+- **{{fall}}/{{interval}} quá lớn**: mất nhiều giây/phút mới phát hiện backend chết, trong thời gian đó request vẫn bị gửi vào và thất bại. Sửa: cân bằng {{fall=3, interval=2s}} để phát hiện trong ~6s nhưng vẫn tránh nhiễu.
+- **Không bật hoặc cấu hình sai preempt của VRRP**: sau khi master cũ hồi phục, nếu preempt bật nhưng priority/chênh lệch không đúng có thể gây "flap" VIP qua lại. Sửa: hiểu rõ preempt, đặt priority cách nhau rõ và theo dõi sự kiện chuyển VIP.
+- **Quên health check cho phụ thuộc**: endpoint {{/health}} chỉ trả 200 mà không kiểm tra DB/kết nối quan trọng, backend "UP" nhưng thực tế không phục vụ được. Sửa: phân biệt liveness (tiến trình sống) và readiness (sẵn sàng nhận traffic, phụ thuộc OK).
 
-> Senior tip: Đặt fall=3, rise=2 và health check interval 2s để phát hiện lỗi nhanh mà không false positive.
+### Liên hệ phỏng vấn
+- **Hỏi:** "Phân biệt {{fall}} và {{rise}} trong health check? Vì sao không dùng cùng một ngưỡng?" → **Trả lời ngắn:** {{fall}} là số lần thất bại liên tiếp để đánh dấu DOWN, {{rise}} là số lần thành công liên tiếp để đánh dấu UP; tách hai ngưỡng giúp loại nhanh backend lỗi nhưng chỉ đưa trở lại khi đã ổn định, tránh flap.
+- **Hỏi:** "Keepalived dùng VIP/VRRP để failover như thế nào?" → **Trả lời ngắn:** nhiều nút chia sẻ một VIP; nút master (priority cao nhất) giữ VIP và phát quảng bá VRRP, khi master hỏng backup tiếp quản VIP nên client vẫn kết nối cùng địa chỉ; preempt quyết định master cũ có giành lại VIP khi phục hồi.
+- **Hỏi:** "Khác nhau giữa round-robin và leastconn, khi nào chọn cái nào?" → **Trả lời ngắn:** round-robin xoay vòng đều, phù hợp khi request tương đương nhau; leastconn chọn backend có ít kết nối đang mở nhất, phù hợp khi thời gian xử lý request chênh lệch lớn.
 
-Thêm giải thích chi tiết: VRRP, priority, preempt, VIP, health check types (HTTP/TCP), fall/rise, round-robin, leastconn, backup server, drain. Giải thích từng bước cho người mới. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu. Đủ độ dài yêu cầu.  `,
+> Senior tip: Thiết kế health check theo readiness (chỉ UP khi phụ thuộc sẵn sàng) để LB ngừng gửi traffic đúng lúc; đặt {{fall/rise/interval}} theo SLO và luôn giám sát sự kiện chuyển trạng thái backend/VIP để phát hiện flap sớm.`,
   exercises: [
     {
       title: 'LoadBalancer: fall/rise, round-robin, failover',
@@ -4696,8 +4761,10 @@ Thêm giải thích chi tiết: VRRP, priority, preempt, VIP, health check types
     },
   ],
   check: [
-    { q: 'fall=3 nghĩa là gì?', options: ['3 giây', '3 lần fail liên tiếp → down', '3 backend', '3 request'], answer: 1, explain: 'fall là số lần check fail liên tiếp để chuyển down.' },
-    { q: 'Khi tất cả backend down, next() trả về?', options: ['0', '-1', 'ném lỗi', 'null'], answer: 1, explain: 'Không còn backend up → trả -1.' },
+    { q: '{{fall=3}} trong health check có nghĩa là gì?', options: ['Sau 3 lần kiểm tra thất bại liên tiếp thì đánh dấu backend DOWN', 'Chờ 3 giây rồi mới đánh dấu backend down', 'Backend được thử lại tối đa 3 lần trong cả vòng đời', 'Cần 3 backend cùng lỗi thì mới chuyển traffic'], answer: 0, explain: 'Đáp án đúng là A: fall là số lần health check thất bại liên tiếp cần đạt để chuyển trạng thái sang DOWN. B sai vì thời gian phụ thuộc cả {{interval}}. C sai vì bộ đếm áp dụng cho chuỗi thất bại liên tiếp, không phải tổng số lần. D sai vì fall xét trên từng backend riêng lẻ.' },
+    { q: 'Load balancer dùng round-robin và backend B đang DOWN. Điều gì xảy ra?', options: ['Vẫn gửi request tới B nhưng giảm một nửa', 'Dừng toàn bộ hệ thống cho đến khi B UP lại', 'Bỏ qua B và phân phối request cho các backend đang UP', 'Chuyển B sang chế độ backup nhưng vẫn nhận traffic đọc'], answer: 2, explain: 'Đáp án đúng là C: round-robin chỉ chọn trong tập backend UP nên sẽ bỏ qua B. A sai vì backend DOWN không nhận traffic. B sai vì các backend UP khác vẫn phục vụ. D sai vì DOWN nghĩa là không nhận traffic (trừ khi cấu hình backup riêng, không phải hành vi mặc định mô tả ở đây).' },
+    { q: 'Trong Keepalived/VRRP, VIP (địa chỉ IP ảo) được dùng để làm gì?', options: ['Lưu trữ cấu hình health check của HAProxy', 'Mã hóa lưu lượng giữa client và server', 'Thay thế hoàn toàn DNS trong hệ thống', 'Là địa chỉ IP cố định cho client kết nối, được nút master giữ và chuyển sang backup khi failover'], answer: 3, explain: 'Đáp án đúng là D: VIP là IP ảo mà client luôn kết nối tới; nút master giữ VIP và khi master hỏng, backup tiếp quản VIP để dịch vụ không đổi địa chỉ. A sai vì VIP không phải nơi lưu cấu hình. B sai vì VIP không thực hiện mã hóa (TLS mới làm việc đó). C sai vì VIP và DNS là cơ chế khác nhau, VIP không thay thế DNS.' },
+    { q: 'Vì sao nên tách {{rise}} và {{fall}} thay vì dùng cùng một ngưỡng?', options: ['Để tiết kiệm băng thông health check', 'Để loại nhanh backend lỗi nhưng chỉ đưa trở lại khi ổn định, tránh trạng thái flap', 'Vì VRRP bắt buộc hai tham số này phải khác nhau', 'Để round-robin tính toán nhanh hơn'], answer: 1, explain: 'Đáp án đúng là B: tách ngưỡng giúp phản ứng đủ nhanh khi hỏng (fall) nhưng yêu cầu nhiều lần thành công liên tiếp mới phục hồi (rise), giảm dao động UP/DOWN liên tục. A sai vì băng thông không phải lý do chính. C sai vì đây là cấu hình health check của LB, không phải ràng buộc bắt buộc của VRRP. D sai vì thuật toán phân phối không phụ thuộc vào việc tách fall/rise.' },
   ],
   related: ['devops-002', 'devops-014'],
   tags: ['HAProxy', 'Keepalived', 'Health check', 'Failover', 'Round-robin', 'VRRP'],
@@ -4728,6 +4795,47 @@ Thêm giải thích chi tiết: VRRP, priority, preempt, VIP, health check types
 ### Authorizer.can
 Mô phỏng kubectl auth can-i: kiểm tra subject có rule cho phép verb trên resource trong namespace không. Wildcard * khớp mọi giá trị. Namespace null trong rule nghĩa rule áp dụng mọi namespace (cluster-scoped). Nếu namespace truyền vào null → chỉ kiểm tra rule có namespace null.
 
+### Cơ chế từng bước: từ request đến allow hoặc từ chối
+Gọi Kubernetes API, apiserver xử lý quyền theo chuỗi:
+1. **Xác thực (authentication)**: apiserver xác định request từ ai — user, group, hoặc ServiceAccount của pod. Sai thì 401, chưa tới RBAC.
+2. **Tìm rule khớp**: authorizer duyệt rule của Role/ClusterRole gán cho subject. Rule khớp khi đủ 4 điều kiện: subject, verb (*), resource (*), namespace trùng (rule null áp dụng mọi namespace).
+3. **Mặc định từ chối**: không có rule khớp thì 403 Forbidden. RBAC không có rule "từ chối" (deny) — chỉ có allow. Quên grant quyền là nguyên nhân phổ biến của lỗi 403 lạ trên pod.
+4. **Vì sao mặc định từ chối**: nếu ServiceAccount bị đánh cắp, attacker chỉ làm được những gì rule cho phép — least privilege (quyền thấp nhất cần thiết).
+
+Ví dụ Role/RoleBinding cho ServiceAccount CI:
+
+~~~yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployer
+  namespace: staging
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-deploy
+  namespace: staging
+subjects:
+- kind: ServiceAccount
+  name: ci-sa
+  namespace: staging
+roleRef:
+  kind: Role
+  name: deployer
+~~~
+
+| Đối tượng | Phạm vi | Dùng cho |
+|---|---|---|
+| Role | Một namespace | Quyền workload/dev trong namespace đó |
+| ClusterRole | Toàn cụm | Resource cluster-scoped (nodes, persistentvolumes), hoặc tái sử dụng qua RoleBinding |
+| RoleBinding | Một namespace | Gán role cho subject trong namespace đó |
+| ClusterRoleBinding | Toàn cụm | Gán ClusterRole cho subject toàn cụm (admin, controller) |
+
 **Tóm tắt:** RBAC mặc định từ chối, chỉ cho phép qua rule; Role namespace, ClusterRole toàn cụm; Binding gán cho subject; ClusterRole qua RoleBinding chỉ hiệu lực trong namespace đó; wildcard * khớp mọi thứ.
 
 ### Ví dụ đời thực
@@ -4742,7 +4850,18 @@ Interviewer hỏi "Làm sao giới hạn ServiceAccount chỉ deploy trong 1 nam
 - Không audit RBAC → quyền tích luỹ qua thời gian (privilege creep).
 - ServiceAccount token tự động mount vào pod → attacker có thể dùng nếu pod bị compromise. Dùng automountServiceAccountToken: false khi không cần.
 
-> Senior tip: Luôn dùng Role + RoleBinding thay vì ClusterRole + ClusterRoleBinding cho workload namespace; audit định kỳ bằng kubectl auth can-i --list; tránh wildcard * trong production; đặt automountServiceAccountToken false khi pod không cần gọi API server.`,
+### Lỗi hay gặp trên production (triệu chứng → nguyên nhân → cách sửa)
+- **Pod gọi API nhận 403 mặc dù đã tạo RoleBinding**: subject không khớp — RoleBinding gán user khác hoặc namespace khác pod. Cách sửa: gán cho ServiceAccount đúng namespace ({{system:serviceaccount:<ns>:<sa>}}), xác minh bằng {{kubectl auth can-i --as=system:serviceaccount:<ns>:<sa> <verb> <resource> -n <ns>}}.
+- **Ứng dụng khởi chạy báo 403 khi đọc ConfigMap/Secret hoặc ghi event mặc dù đã có quyền Deployment**: default deny nghĩa mỗi resource/verb cần rule riêng; developer thường liệt kê thiếu. Cách sửa: liệt kê đầy đủ resource ứng dụng dùng {{configmaps, secrets, events, pods/log…}}, kiểm tra bằng {{kubectl auth can-i}} trước khi rollout.
+- **Sửa RoleBinding xong mà pod vẫn bị từ chối (hoặc vẫn được phép) trong vài giây**: apiserver cache authorization vài giây. Cách sửa: đợi hết hạn rồi kiểm tra bằng {{kubectl auth can-i}}.
+
+> Senior tip: Luôn dùng Role + RoleBinding thay vì ClusterRole + ClusterRoleBinding cho workload namespace; audit định kỳ bằng kubectl auth can-i --list; tránh wildcard * trong production; đặt automountServiceAccountToken false khi pod không cần gọi API server.
+
+### Liên hệ phỏng vấn
+- "Phân biệt Role và ClusterRole, khi nào dùng cái nào?" — Role chỉ trong một namespace (workload, dev của namespace đó); ClusterRole toàn cụm (nodes, persistentvolumes, hoặc RoleBinding trong namespace).
+- "RBAC xử lý request thế nào, có quy tắc từ chối (deny) không?" — Mặc định từ chối mọi request; chỉ allow qua rule, không deny; thiếu rule thì 403.
+- "Giới hạn ServiceAccount chỉ được deploy trong một namespace làm sao?" — Tạo Role (không ClusterRole) với verbs create/update/delete/get/list trên deployments của namespace đó, RoleBinding gán ServiceAccount, tránh wildcard *, kiểm tra bằng kubectl auth can-i.
+`,
   exercises: [
     {
       title: 'Authorizer: kiểm tra quyền RBAC thu nhỏ',
@@ -4799,6 +4918,7 @@ Interviewer hỏi "Làm sao giới hạn ServiceAccount chỉ deploy trong 1 nam
   check: [
     { q: 'RBAC mặc định là gì?', options: ['Allow all', 'Deny all', 'Deny chỉ resource nhạy cảm', 'Allow nếu authenticated'], answer: 1, explain: 'RBAC mặc định từ chối mọi request; chỉ những gì rule cho phép mới được thực hiện. Không có deny rule.' },
     { q: 'ClusterRole gán qua RoleBinding có hiệu lực ở đâu?', options: ['Toàn cụm', 'Chỉ namespace của binding', 'Chỉ cluster-scoped resources', 'Mọi namespace trừ system'], answer: 1, explain: 'RoleBinding giới hạn phạm vi vào namespace của binding, kể cả khi role là ClusterRole.' },
+    { q: 'kubectl auth can-i --as=system:serviceaccount:staging:ci-sa create deployments -n staging trả "yes". Điều bắt buộc phải có?', options: ['ClusterRoleBinding gán quyền toàn cụm cho ci-sa', 'RoleBinding trong namespace staging gán Role có verb create trên deployments cho ServiceAccount ci-sa', 'Pod có automountServiceAccountToken: true', 'ServiceAccount ci-sa nằm trong namespace kube-system'], answer: 1, explain: 'Đáp án đúng là B: RoleBinding gán Role cho ServiceAccount trong cùng namespace mới cho phép verb đó. ClusterRoleBinding là toàn cụm (quá rộng, không bắt buộc); automountServiceAccountToken chỉ quyết định token có mount vào pod, không phân quyền; ServiceAccount phải ở namespace staging chứ không phải kube-system.' },
   ],
   related: ['devops-002','devops-004'],
   tags: ['Kubernetes','RBAC','Authorizer','ServiceAccount'],
@@ -4835,6 +4955,50 @@ StorageClass với volumeBindingMode: WaitForFirstConsumer → PV chỉ được
 - **Delete**: xoá PV (và underlying storage) khi PVC bị xoá.
 - **Retain**: giữ PV, admin phải xóa thủ công; dữ liệu còn.
 
+### Cơ chế từng bước: từ PVC đến pod mount dữ liệu
+1. Pod (qua Deployment/StatefulSet) khai báo PersistentVolumeClaim (PVC): dung lượng, access mode (ReadWriteOnce, ReadOnlyMany, ReadWriteMany), storageClassName. PVC ban đầu Pending.
+2. Controller Kubernetes quan sát PVC: tìm PersistentVolume (PV) có dung lượng lớn hơn hoặc bằng yêu cầu, access mode khớp, storageClassName khớp (hoặc StorageClass mặc định của cụm). Nếu có nhiều PV phù hợp, chọn PV nhỏ nhất đủ dùng — tránh lãng phí storage.
+3. Nếu không có PV sẵn và StorageClass có provisioner: controller yêu cầu provisioner tạo PV mới tự động — dynamic provisioning (ví dụ tạo EBS volume trên AWS). PVC vẫn Pending cho đến khi PV được tạo và bound.
+4. PVC và PV được bind: pod mount volume vào đường dẫn trong container (ví dụ /data), ứng dụng đọc/ghi như ổ cứng thường.
+5. Khi PVC bị xoá: reclaim policy quy định làm gì với PV — Delete xoá PV và storage bên dưới, Retain giữ PV để admin xử lý hoặc sao lưu.
+
+Vì sao chọn PV nhỏ nhất đủ dùng? Tránh chiêu bức — dùng PV 2 TiB cho PVC 10Gi lãng phí storage và có thể ảnh hưởng quota của cụm.
+
+Ví dụ manifest StorageClass và PVC (gp3 trên AWS):
+
+~~~yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: db-data
+  namespace: staging
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 10Gi
+~~~
+
+Vì sao WaitForFirstConsumer? Provisioner chỉ tạo PV sau khi pod được lập lịch, nên biết pod chạy ở zone nào — tạo EBS ở zone đó, tránh tạo volume ở zona A mà pod lập lịch ở zona B thì không mount được (EBS gắn liền với một zona).
+
+| Access mode | Nghĩa | Dùng cho |
+|---|---|---|
+| ReadWriteOnce (RWO) | Một node đọt ghi một lúc | Database đơn instance |
+| ReadOnlyMany (ROX) | Nhiều node chỉ đọc | Template, nội dung công khai chỉ đọc |
+| ReadWriteMany (RWX) | Nhiều node đọt ghi | Chia sẻ file giữa nhiều replica; cần storage hỗ trợ, EBS không hỗ trợ |
+
 **Tóm tắt:** PVC bind PV phù hợp (dung lượng ≥, access mode, storageClass); dynamic provisioning tạo PV khi thiếu; WaitForFirstConsumer chờ pod scheduled; reclaim Delete xoá, Retain giữ.
 
 ### Ví dụ đời thực
@@ -4852,7 +5016,18 @@ Khi PVC Pending, kiểm tra theo thứ tự: kubectl describe pvc để xem even
 - Reclaim Delete → xoá PVC là mất data vĩnh viễn; luôn backup trước.
 - RWX trên cloud block storage (EBS) không hỗ trợ → PVC Pending.
 
-> Senior tip: Luôn đặt storageClassName rõ ràng; dùng WaitForFirstConsumer cho multi-zone; backup trước khi xoá PVC với Retain; giám sát Pending PVC; kiểm tra provisioner logs.`,
+### Lỗi hay gặp trên production (triệu chứng → nguyên nhân → cách sửa)
+- **PVC Pending mãi vì yêu cầu dung lượng lớn hơn mọi PV sẵn**: dung lượng trong PVC là giá trị tối thiểu, PV phải lớn hơn hoặc bằng; sau khi bind không thể co kích thước PV. Cách sửa: dùng StorageClass có provisioner để tạo PV đúng dung lượng (dynamic provisioning), hoặc tạo PV đủ lớn trước; chỉ có thể tăng kích thước (cần allowVolumeExpansion và CSI hỗ trợ), không thể giảm.
+- **Pod mount volume báo lỗi hoặc volume không attach được**: volumeMode của PVC không khớp với cách pod sử dụng — Filesystem là mặc định (mount như thư mục), Block dùng cho thiết bị thô (raw block device, ví dụ database tự quản lý hệ thống tệp). Cách sửa: thiết lập volumeMode trong spec của PVC phù hợp với workload.
+- **PVC Pending với sự kiện {{"no storage class available"}}**: sai tên storageClassName hoặc không có StorageClass mặc định. Cách sửa: {{kubectl get storageclass}} xác nhận tên; chỉ đánh dấu một StorageClass làm mặc định qua annotation {{storageclass.kubernetes.io/is-default-class: "true"}}.
+
+> Senior tip: Luôn đặt storageClassName rõ ràng; dùng WaitForFirstConsumer cho multi-zone; backup trước khi xoá PVC với Retain; giám sát Pending PVC; kiểm tra provisioner logs.
+
+### Liên hệ phỏng vấn
+- "PVC Pending mãi, bạn kiểm tra thứ tự gì?" — Xem sự kiện (kubectl describe pvc); xác nhận StorageClass tồn tại và provisioner chạy; WaitForFirstConsumer yêu cầu pod đã được lập lịch; zone PV và pod phải khớp nhau.
+- "Phân biệt Reclaim policy Delete và Retain, khi nào dùng cái nào?" — Delete xoá PV và storage bên dưới khi PVC bị xoá (dữ liệu tạm, dễ tạo lại); Retain giữ PV và dữ liệu để admin sao lưu (dữ liệu quan trọng production).
+- "WaitForFirstConsumer là gì và lợi ích của nó?" — PV chỉ được tạo hoặc provision sau khi pod được lập lịch, nên provisioner chọn storage ở zone/node phù hợp với pod, tránh tạo volume ở zona khác rồi pod không mount được.
+`,
   exercises: [
     {
       title: 'VolumeController: bind/provision/release',
@@ -4919,6 +5094,7 @@ Khi PVC Pending, kiểm tra theo thứ tự: kubectl describe pvc để xem even
   check: [
     { q: 'PVC Pending mãi, nguyên nhân nào sau đây?', options: ['Không có PV và không có provisioner', 'StorageClass không tồn tại', 'WaitForFirstConsumer chờ pod scheduled', 'Tất cả các đáp án trên'], answer: 3, explain: 'Tất cả đều có thể gây Pending: thiếu PV/provisioner, StorageClass không tồn tại, hoặc WaitForFirstConsumer chờ pod được lập lịch.' },
     { q: 'Reclaim policy Delete làm gì khi PVC bị xoá?', options: ['Giữ PV và dữ liệu', 'Xoá PV và underlying storage', 'Chỉ xoá PVC, PV còn', 'Backup tự động'], answer: 1, explain: 'Delete xoá PV và storage bên dưới. Retain giữ PV và dữ liệu để admin xử lý thủ công.' },
+    { q: 'PVC yêu cầu 10Gi RWO storageClass gp3, không có PV sẵn, nhưng StorageClass có provisioner. Điều gì xảy ra?', options: ['Dynamic provisioner tạo PV 10Gi rồi bind với PVC', 'PVC Pending vĩnh viễn vì không có PV sẵn', 'Pod bị CrashLoopBackOff ngay lập tức', 'PVC bị xóa tự động sau 5 phút'], answer: 0, explain: 'Đáp án đúng là A: khi không có PV sẵn nhưng StorageClass có provisioner, controller thực hiện dynamic provisioning — tạo PV mới với dung lượng 10Gi, access mode RWO, storageClass gp3, rồi bind với PVC. PVC chỉ Pending trong thời gian provisioner tạo volume, không phải Pending vĩnh viễn; pod không CrashLoopBackOff vì lý do storage; và PVC không bị xóa tự động sau 5 phút.' },
   ],
   related: ['devops-002','devops-004'],
   tags: ['Kubernetes','PVC','PV','StorageClass','Storage'],
@@ -4956,6 +5132,30 @@ deploy-dev:   image-scan, dep-scan
 3. Đợt 2 = các bước giờ đã hết phụ thuộc. Lặp lại tới khi hết bước.
 Với ví dụ trên: đợt 1 = build, dep-scan; đợt 2 = it-test, unit-test; đợt 3 = image; đợt 4 = image-scan; đợt 5 = deploy-dev. Các bước trong cùng một đợt **chạy song song** được. Thời gian pipeline ≈ tổng thời gian bước **lâu nhất** của mỗi đợt (đường găng — critical path), không phải tổng mọi bước.
 
+### Cơ chế từng bước: thuật toán Kahn theo tầng (level-by-level)
+Để hiểu **VÌ SAO** thuật toán này cho ra đúng thứ tự đợt, hãy đi từng bước như sau:
+1. **Đếm in-degree (số phụ thuộc chưa xong) cho mỗi bước**: Duyệt qua toàn bộ danh sách phụ thuộc, bước nào không phụ thuộc ai (danh sách rỗng) có in-degree = 0. Các bước này sẵn sàng cho **đợt 1**.
+2. **Tạo đợt 1**: Lấy tất cả bước có in-degree = 0. Sắp xếp theo tên để kết quả xác định. Đây là các bước chạy song song đầu tiên.
+3. **Giả lập "xong" đợt 1**: Với mỗi bước trong đợt 1, tìm tất cả các bước phụ thuộc vào nó (reverse adjacency). Giảm in-degree của các bước đó đi 1. Nếu in-degree nào về 0, bước đó không còn phụ thuộc chưa xong → vào **đợt 2**.
+4. **Lặp lại**: Chuyển sang đợt 2, làm giống hệt bước 3. Quá trình dừng khi không còn bước nào in-degree = 0.
+5. **Phát hiện vòng**: Nếu tổng số bước đã xếp vào các đợt **nhỏ hơn** tổng số bước ban đầu, nghĩa là còn bước chưa xếp mà không bước nào in-degree = 0 → có vòng phụ thuộc (cycle).
+
+Tại sao dùng in-degree thay vì DFS? Kahn theo tầng **tự nhiên cho ra các đợt song song** (level order), còn DFS chỉ cho ra một thứ tự tuyến tính (topological sort) — mất thông tin bước nào có thể chạy cùng lúc. Cả hai đều phát hiện được vòng, nhưng Kahn gọn hơn cho pipeline.
+
+~~~java
+// Minh hoạ: tính in-degree và reverse adjacency (đảo ngược cạnh)
+Map<String, Integer> inDegree = new HashMap<>();
+Map<String, List<String>> reverse = new HashMap<>();
+for (Map.Entry<String, List<String>> e : deps.entrySet()) {
+    String step = e.getKey();
+    inDegree.put(step, new HashSet<>(e.getValue()).size());
+    for (String d : new HashSet<>(e.getValue()))
+        reverse.computeIfAbsent(d, k -> new ArrayList<>()).add(step);
+}
+// Bây giờ inDegree giữ số phụ thuộc chưa xong, reverse giữ "ai phụ thuộc vào bước này"
+// Dùng cho bước 3 ở trên: giảm inDegree[dep]-- khi "xong" bước done
+~~~
+
 ### Hai lỗi cấu hình phải phát hiện trước khi chạy
 - **Phụ thuộc vòng**: A cần B, B cần A → không bước nào bắt đầu được; pipeline treo hoặc báo lỗi khó hiểu. Thuật toán trên phát hiện được: nếu tới lúc không còn bước nào hết phụ thuộc mà vẫn còn bước chưa xếp → có vòng.
 - **Phụ thuộc vào bước không tồn tại** (gõ sai tên "unit-tests" thay vì "unit-test"): phải báo lỗi rõ ràng ngay, không bỏ qua im lặng.
@@ -4981,8 +5181,19 @@ for (List<String> wave : waves) {
 
 > Trong platform team, bạn không viết pipeline cho từng service mà viết **pipeline dùng lại được** (reusable workflow, template). Kiểm tra DAG ngay khi đọc cấu hình giúp mọi đội nhận lỗi cấu hình trong vài giây thay vì sau 10 phút chờ runner.
 
+### Lỗi hay gặp trên production
+- **Phụ thuộc vòng do copy-paste**: Dev copy một job từ repo khác, quên sửa {{needs:}} → A cần B, B cần C, C cần A. Pipeline treo hàng giờ trước khi ai nhận ra. Cách sửa: **validate DAG ngay khi commit** (pre-commit hook hoặc CI lint) — bài tập dưới đây làm chính việc này.
+- **Phụ thuộc vào job không tồn tại (typo)**: Gõ {{unit-tests}} thay vì {{unit-test}}. GitHub Actions/GitLab CI xác thực DAG ngay khi lập lịch — job thiếu dependency bị từ chối chạy ngay, không đợi vài phút. Cách sửa: validate tên job **trước khi chạy** (schema check) hoặc dùng reusable workflow có type-check.
+- **Runner giới hạn làm pipeline chậm không hiểu**: DAG báo 5 đợt, đợt 2 có 4 job song song nhưng runner chỉ có 2 slot → thực tế đợt 2 mất gấp đôi thời gian ước lượng. Cách sửa: tính **critical path thực tế** bằng cách mô phỏng runner giới hạn (tham khảo bài "thuật toán HPA"), hoặc đặt {{concurrency}} group để tránh chen chúc.
+- **Cache dependency sai khoá**: Dùng khoá cache như sau nhưng quên {{gradle.lockfile}} hoặc {{package-lock.json}} → dependency thay đổi mà cache không invalidate. Cách sửa: khoá cache = hash của **tất cả file lock** (pom.xml + gradle.lockfile / package-lock.json / go.sum).
+~~~yaml
+cache-key: \${{ runner.os }}-maven-\${{ hashFiles('**/pom.xml') }}
+~~~
+
 ### Liên hệ phỏng vấn
-Câu hỏi "làm sao giảm pipeline từ 40 phút xuống 10 phút?" thực chất hỏi bạn có nhìn pipeline như một DAG không: tìm đường găng, song song hoá bước độc lập, cache đúng khoá, chỉ chạy phần bị ảnh hưởng. Nói được "thời gian pipeline bằng tổng bước dài nhất của mỗi đợt, nên tối ưu bước ngoài đường găng không giúp gì" là tín hiệu Senior rõ ràng.`,
+Câu hỏi 1: "Pipeline 40 phút, bạn giảm xuống 10 phút như thế nào?" — Trả lời: nhìn pipeline như DAG, tìm **đường găng** (critical path), song song hoá bước độc lập, cache đúng khoá nội dung file lock, chỉ chạy module bị ảnh hưởng (affected graph). Nêu được "thời gian pipeline = tổng bước lâu nhất mỗi đợt, tối ưu bước ngoài đường găng không giúp gì" là tín hiệu Senior.
+Câu hỏi 2: "Phát hiện vòng phụ thuộc trong pipeline như thế nào?" — Trả lời: thuật toán Kahn theo tầng đếm in-degree; nếu hết bước sẵn sàng (in-degree = 0) mà còn bước chưa xếp → có vòng. Validate **trước khi chạy** (lint) thay vì chờ pipeline treo.
+Câu hỏi 3: "Monorepo 50 module, PR sửa 1 file. Làm sao chỉ build/test module đó?" — Trả lời: dựng **affected graph** từ thay đổi file (tracing import/dependency ngược), chạy DAG con thay vì toàn bộ; fallback an toàn: file chung (shared lib, config) thì chạy hết.`,
   exercises: [{
     title: 'Lập lịch pipeline thành các đợt chạy song song',
     prompt: `Viết {{PipelinePlanner.plan(Map<String, List<String>> deps)}}: key là tên bước, value là danh sách bước nó phụ thuộc.
@@ -5089,6 +5300,7 @@ Lỗi hay gặp: duyệt đệ quy DFS mà không đánh dấu "đang thăm" nê
     { q: 'Pipeline có 3 đợt; thời gian các bước: đợt 1 {4, 2} phút, đợt 2 {6, 1, 3} phút, đợt 3 {2} phút. Với runner không giới hạn, pipeline mất bao lâu?', options: ['12 phút', '18 phút', '6 phút', '10 phút'], answer: 0, explain: 'Mỗi đợt chạy song song nên chỉ tính bước lâu nhất: 4 + 6 + 2 = 12 phút. 18 phút là tổng mọi bước (chạy tuần tự). 6 phút chỉ là bước lâu nhất một đợt. 10 phút bỏ sót đợt 3 hoặc tính sai.' },
     { q: 'Bạn tối ưu bước "dep-scan" từ 3 phút xuống 1 phút nhưng pipeline vẫn mất đúng thời gian như cũ. Giải thích hợp lý nhất?', options: ['dep-scan không nằm trên đường găng: bước khác cùng đợt vẫn lâu hơn', 'Cache bị hỏng', 'Runner chạy tuần tự nên mọi tối ưu đều vô nghĩa', 'Pipeline có vòng phụ thuộc'], answer: 0, explain: 'Thời gian một đợt bằng bước lâu nhất của đợt đó; rút ngắn bước không phải lâu nhất không đổi tổng. Cache hỏng thường làm chậm hơn chứ không giữ nguyên. Nếu chạy tuần tự thì tối ưu bất kỳ bước nào cũng giảm tổng. Có vòng thì pipeline không chạy được.' },
     { q: 'Khoá cache dependency Maven tốt nhất nên dựa trên gì?', options: ['Hash nội dung pom.xml (và file lock nếu có)', 'Tên nhánh git', 'Ngày chạy pipeline', 'Số build tăng dần'], answer: 0, explain: 'Khoá theo nội dung file khai báo dependency: dependency không đổi thì dùng lại cache, đổi thì tải mới. Theo nhánh làm mọi nhánh mới tải lại từ đầu. Theo ngày hay số build thì gần như không bao giờ trúng cache.' },
+    { q: 'Pipeline có A→B, A→C, B→D, C→D. Số đợt tối thiểu và job mỗi đợt?', options: ['3 đợt: {A}, {B,C}, {D}', '4 đợt: {A}, {B}, {C}, {D}', '2 đợt: {A,B}, {C,D}', '1 đợt: {A,B,C,D}'], answer: 0, explain: 'Đợt 1: A (không phụ thuộc); đợt 2: B, C (phụ thuộc A, chạy song song); đợt 3: D (phụ thuộc B và C). Tổng 3 đợt.' },
   ],
   related: ['devops-010', 'devops-020', 'devops-072'],
   tags: ['CI/CD', 'pipeline', 'DAG', 'topological sort', 'platform engineering'],
@@ -5118,6 +5330,36 @@ Quality gate là **cổng tự động** trong pipeline: đọc kết quả củ
 | Số lỗ hổng HIGH ≤ ngưỡng | Kiểm soát dần | Ngưỡng quá chặt khi mới áp dụng → mọi PR đỏ |
 | Không có secret trong code | Lộ credential | Báo động giả với chuỗi test |
 
+### Cơ chế từng bước: quality gate đánh giá PR như thế nào
+Khi một Pull Request được mở hoặc cập nhật, pipeline chạy và quality gate đánh giá theo trình tự sau:
+1. **Thu thập dữ liệu (report)**: Pipeline chạy test, coverage, security scan. Kết quả gom thành một object {{Report}} gồm: số test fail, coverage code mới (%), danh sách finding (id, severity: CRITICAL/HIGH/MEDIUM/LOW).
+2. **Chuẩn hoá waiver**: Từ danh sách waiver (findingId, expires), lọc ra tập {{waived}} chứa id các finding có waiver **còn hạn** (hôm nay ≤ expires). Bước này O(1) tra cứu nhờ {{HashSet}}.
+3. **Kiểm tra theo thứ tự ưu tiên**:
+   - Test fail → {{TESTS_FAILED}} (nghiêm trọng nhất, chặn ngay).
+   - Coverage code mới < ngưỡng → {{COVERAGE}}.
+   - Duyệt findings theo thứ tự report: CRITICAL không trong {{waived}} → thêm {{CRITICAL:id}}; HIGH không trong {{waived}} → đếm.
+   - Sau duyệt: nếu số HIGH > {{policy.maxHigh()}} → thêm {{HIGH_COUNT}}.
+4. **Trả kết quả**: {{passed = reasons.isEmpty()}}. Danh sách {{reasons}} giữ thứ tự ổn định để diff giữa các lần chạy dễ đọc.
+
+Vì sao truyền {{LocalDate today}} thay vì gọi {{LocalDate.now()}}? Để hàm **xác định (deterministic)** — test được với bất kỳ ngày nào mà không phụ thuộc giờ hệ thống. Đây là pattern **Clock injection** (xem bài "thuật toán HPA").
+
+~~~java
+// Minh hoạ logic cốt lõi: waiver Set + duyệt findings theo thứ tự
+Set<String> waived = new HashSet<>();
+for (Waiver w : waivers) if (!today.isAfter(w.expires())) waived.add(w.findingId());
+List<String> reasons = new ArrayList<>();
+if (report.failedTests() > 0) reasons.add("TESTS_FAILED");
+if (report.newCodeCoverage() < policy.minNewCoverage()) reasons.add("COVERAGE");
+int high = 0;
+for (Finding f : report.findings()) {
+    if (waived.contains(f.id())) continue;
+    if ("CRITICAL".equals(f.severity())) reasons.add("CRITICAL:" + f.id());
+    else if ("HIGH".equals(f.severity())) high++;
+}
+if (high > policy.maxHigh()) reasons.add("HIGH_COUNT");
+return new GateResult(reasons.isEmpty(), List.copyOf(reasons));
+~~~
+
 ### Ngoại lệ có hạn dùng (waiver)
 Khi một lỗ hổng CRITICAL nằm trong thư viện **chưa có bản vá** và đã đánh giá là không bị khai thác trong ngữ cảnh của bạn, đội cần một cách tiếp tục làm việc **mà không tắt cả gate**. Cách đúng là **waiver**: ngoại lệ cho đúng mã lỗ hổng đó, có lý do, người duyệt và **ngày hết hạn**. Hết hạn mà chưa xử lý → gate lại chặn. Waiver không có hạn sẽ tồn tại mãi và gate dần mất ý nghĩa.
 
@@ -5134,8 +5376,16 @@ Developer cần biết **phải sửa gì**: "COVERAGE: 72% < 80% trên code m�
 
 > Ở quy mô platform, chính sách gate nên được **quản lý như code** (file cấu hình trong repo chung, có review) và **áp dụng dần**: chế độ cảnh báo vài tuần (chỉ báo, không chặn) rồi mới bật chặn — nếu không, ngày đầu tiên 80% PR đỏ và các đội sẽ phản đối cả nền tảng.
 
+### Lỗi hay gặp trên production
+- **Waiver hết hạn vô thanh**: Dev tạo waiver cho CVE-2024-1234 hết hạn 30 ngày, quên xử lý. Ngày 31 gate chặn PR quan trọng lúc 2h sáng. Cách sửa: **alert tự động** khi waiver sắp hết hạn (7 ngày trước), và dashboard hiển thị waiver active theo team.
+- **Coverage gamed bằng test rác**: Dev thêm test không có assertion ({{assertTrue(true)}}) để đẩy coverage lên 80%. Cách sửa: bật **mutation testing** (PITest) trong gate, hoặc yêu cầu test có assertion thật; coverage chỉ là chỉ số tham chiếu.
+- **Secret scanner false positive chặn release**: Chuỗi test {{"password123"}} trong unit test bị quét là secret. Cách sửa: allowlist pattern test ({{test}}, {{mock}}, {{fixture}}) trong config scanner, hoặc đặt secret scanner **chỉ quét code production** ({{src-main}}).
+- **CRITICAL trong transitive dependency không thể nâng cấp**: Thư viện A dùng thư viện B có CVE CRITICAL, B chưa có bản vá. Cách sửa: waiver có hạn + **mitigation** (network policy chặn egress, WAF rule) + theo dõi bản vá B hàng ngày.
+
 ### Liên hệ phỏng vấn
-Câu hỏi "bạn thiết kế quality gate cho 30 service thế nào?" kiểm tra bạn có cân bằng giữa an toàn và tốc độ: coverage trên code mới thay vì toàn repo, chặn theo mức nghiêm trọng, waiver có hạn và có người duyệt, bật dần từ chế độ cảnh báo, và trả lý do rõ ràng cho developer.`,
+Câu hỏi 1: "Quality gate cho 30 service, bạn thiết kế ra sao?" — Trả lời: coverage trên code mới (không phải toàn repo), chặn CRITICAL, giới hạn HIGH, waiver có hạn+hết hạn+người duyệt, bật dần từ chế độ cảnh báo, trả lý do rõ ràng theo thứ tự ổn định.
+Câu hỏi 2: "Dev báo waiver hết hạn chặn PR lúc 2h sáng, xử lý thế nào?" — Trả lời: waiver không được tạo mà không có alert hết hạn (7 ngày trước). Khi xảy ra: extend waiver 48h nếu mitigation đủ, hoặc rollback PR và hotfix. Không bao giờ tắt gate.
+Câu hỏi 3: "Coverage 85% nhưng production vẫn lỗi logic, gate có sai không?" — Trả lời: coverage đo **số dòng chạy**, không đo **chất lượng test**. Gate cần bổ sung mutation testing hoặc yêu cầu review test. Coverage chỉ là "necessary but not sufficient".`,
   exercises: [{
     title: 'Đánh giá quality gate với waiver có hạn dùng',
     prompt: `Viết {{QualityGate.evaluate(report, policy, waivers, today)}} trả về {{GateResult(boolean passed, List<String> reasons)}}. Kiểm tra theo **đúng thứ tự** và thêm lý do:
@@ -5242,6 +5492,7 @@ Lỗi hay gặp: dùng {{today.isBefore(expires)}} làm waiver hết hiệu lự
     { q: 'Vì sao nên đặt ngưỡng coverage trên **code mới** thay vì toàn bộ repo cho một codebase cũ?', options: ['Để mọi PR mới phải có test mà không bắt đội sửa hết code cũ trước khi được merge', 'Vì coverage toàn repo không đo được', 'Vì code cũ không chạy test được', 'Để tăng tốc pipeline'], answer: 0, explain: 'Coverage toàn repo của codebase cũ thường thấp, đặt ngưỡng cao sẽ chặn mọi PR dù PR đó có test tốt; đo trên code mới tạo áp lực đúng chỗ. Coverage toàn repo vẫn đo được. Code cũ vẫn chạy test được. Ngưỡng không ảnh hưởng tốc độ pipeline.' },
     { q: 'Một CVE CRITICAL trong thư viện chưa có bản vá chặn mọi PR. Cách xử lý đúng?', options: ['Tạo waiver cho đúng CVE đó, có lý do, người duyệt và ngày hết hạn', 'Tắt quét lỗ hổng cho tới khi có bản vá', 'Hạ mức CRITICAL thành HIGH trong cấu hình', 'Cho phép merge thủ công không cần gate'], answer: 0, explain: 'Waiver có hạn giữ gate hoạt động cho mọi lỗ hổng khác và tự chặn lại khi hết hạn. Tắt quét hay bỏ gate làm mất bảo vệ hoàn toàn. Đổi mức nghiêm trọng là che giấu rủi ro và ảnh hưởng mọi CVE khác.' },
     { q: 'Platform team muốn áp dụng quality gate mới cho 30 service. Cách triển khai ít gây phản đối nhất?', options: ['Chạy chế độ cảnh báo vài tuần, công bố số liệu, rồi mới bật chặn', 'Bật chặn ngay cho tất cả để tạo kỷ luật', 'Để mỗi đội tự chọn có dùng gate hay không', 'Chỉ áp dụng cho service mới, service cũ không bao giờ áp dụng'], answer: 0, explain: 'Chế độ cảnh báo cho các đội thời gian sửa và cho platform dữ liệu để điều chỉnh ngưỡng. Bật chặn ngay thường làm phần lớn PR đỏ trong ngày đầu. Tự chọn dẫn tới không ai dùng. Bỏ hẳn service cũ để lại rủi ro lớn nhất không được kiểm soát.' },
+    { q: 'PR có test fail và coverage 70% (ngưỡng 80%). Quality gate trả lý do theo thứ tự nào?', options: ['COVERAGE trước, TESTS_FAILED sau', 'TESTS_FAILED trước, COVERAGE sau', 'Chỉ TESTS_FAILED', 'Chỉ COVERAGE'], answer: 1, explain: 'Gate kiểm tra theo thứ tự ưu tiên: test fail nghiêm trọng nhất → chặn ngay (TESTS_FAILED), rồi mới đến coverage. Thứ tự ổn định giúp diff dễ đọc.' },
   ],
   related: ['devops-099', 'devops-103', 'devops-031'],
   tags: ['CI/CD', 'quality gate', 'security scanning', 'policy', 'platform engineering'],
@@ -5297,6 +5548,35 @@ String render(String text, Map<String, String> values) {
     return out;
 }
 ~~~
+
+### Cơ chế từng bước
+**Golden path** (con đường chuẩn, được "lát sẵn" như đường nhựa để đi dễ) hoạt động hiệu quả khi template được xử lý theo quy trình chặt, có thể kiểm tra tự động. Đi từng bước và **vì sao**:
+
+1. **Thu thập tham số**: người dùng nhập {{name}}, {{team}}, {{port}} (hoặc chọn từ form). Vì sao: tên service và team là "danh tính" sẽ đi vào DNS (hệ thống phân giải tên miền), Kubernetes object, metric và quyền sở hữu on-call (người trực xử lý sự cố).
+2. **Kiểm tra (validate) trước khi sinh**: từ chối {{name}} sai định dạng, {{port}} ngoài khoảng, {{team}} rỗng. Vì sao: sửa sai ở bước đầu rẻ; nếu sinh ra repo rồi mới phát hiện, lỗi sẽ lan vào CI, deploy và phải dọn dẹp thủ công.
+3. **Chuẩn hoá giá trị**: trim khoảng trắng {{team}}, chuyển port sang số. Vì sao: dữ liệu "bẩn" (thừa space) gây khác biệt khó thấy khi so sánh hoặc tra cứu.
+4. **Render template**: duyệt từng file mẫu, thay placeholder trong **đường dẫn** và **nội dung** bằng {{String.replace}} (thay mọi lần xuất hiện, không dùng regex). Vì sao: thay bằng regex dễ hiểu nhầm ký tự đặc biệt trong giá trị; quên thay trong đường dẫn sẽ tạo thư mục/file tên {{__NAME__}}.
+5. **Quét placeholder còn sót**: sau khi thay, tìm mẫu dạng {{__CHU_HOA__}} còn lại trong bất kỳ đường dẫn/nội dung nào. Vì sao: template tiến hoá (người thêm {{__REGION__}} nhưng quên tham số) — sót placeholder chỉ lộ ra lúc deploy, rất khó hiểu.
+6. **Xuất kết quả xác định (deterministic)**: trả {{TreeMap}} để thứ tự file ổn định. Vì sao: commit và review diff dễ đọc, test so sánh được.
+
+~~~java
+// Bước 4-5 rút gọn: render rồi chặn placeholder sót
+Map<String, String> out = new TreeMap<>();
+for (var e : templates.entrySet()) {
+    String path = fill(e.getKey(), values);
+    String body = fill(e.getValue(), values);
+    if (hasPlaceholder(path) || hasPlaceholder(body)) {
+        throw new IllegalStateException("placeholder chưa được thay trong " + path);
+    }
+    out.put(path, body);
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** service mới deploy lỗi vì tên chứa ký tự không hợp lệ (chữ hoa, gạch dưới). **Nguyên nhân:** không validate {{name}} theo quy tắc DNS/Kubernetes. **Cách sửa:** kiểm tra chặt trước khi sinh (3–30 ký tự, a-z0-9 và "-", bắt đầu bằng chữ, không "--", không kết thúc "-").
+- **Triệu chứng:** file sinh ra còn chuỗi {{__REGION__}}, Helm render hoặc app khởi động thất bại với lỗi khó hiểu. **Nguyên nhân:** template thêm placeholder mới nhưng scaffolder không có tham số tương ứng. **Cách sửa:** bước quét placeholder sót sau render; fail fast (dừng sớm, báo rõ).
+- **Triệu chứng:** hai service trỏ cùng owner/team hoặc team ghi sai, khi sự cố không tìm được người on-call. **Nguyên nhân:** {{team}} không rỗng nhưng không nằm trong danh sách đội hợp lệ. **Cách sửa:** validate team theo danh mục (catalog); bắt buộc owner trong {{catalog-info.yaml}}.
+- **Triệu chứng:** golden path bị bỏ, đội tự làm Dockerfile/pipeline riêng. **Nguyên nhân:** template sinh ra chưa chạy được end-to-end, hoặc cập nhật template không lan xuống service cũ. **Cách sửa:** đo thời gian "tạo → chạy dev", cung cấp lệnh nâng cấp (codemod/script) và hỗ trợ migration.
 
 > Đo golden path như một sản phẩm: **thời gian từ lúc bấm "tạo service" tới khi service chạy trên môi trường dev**, tỉ lệ service mới dùng template, số lần đội phải hỏi platform team. Nếu template khó dùng hơn tự làm, các đội sẽ không dùng nó.
 
@@ -5437,6 +5717,7 @@ Lỗi hay gặp: dùng {{replaceAll}} khiến chuỗi giá trị có ký tự đ
     { q: 'Điều gì phân biệt golden path với một "quy định bắt buộc"?', options: ['Golden path là con đường dễ nhất được nền tảng hỗ trợ; đi đường khác vẫn được nhưng đội tự chịu trách nhiệm', 'Golden path cấm mọi cách làm khác', 'Golden path chỉ là tài liệu hướng dẫn, không có công cụ', 'Golden path chỉ áp dụng cho service mới viết bằng Java'], answer: 0, explain: 'Golden path thu hút bằng sự tiện lợi và hỗ trợ, không cấm. Cấm mọi cách khác là quy định cứng và thường gây phản ứng. Golden path đi kèm công cụ như template và pipeline chứ không chỉ tài liệu. Nó không giới hạn ở một ngôn ngữ.' },
     { q: 'Vì sao phải quét placeholder còn sót sau khi render template?', options: ['Template do nhiều người sửa; một placeholder mới thiếu tham số sẽ lọt vào service và gây lỗi khó hiểu lúc deploy', 'Để tăng tốc render', 'Vì String.replace không thay được mọi lần xuất hiện', 'Để kiểm tra tên service hợp lệ'], answer: 0, explain: 'Quét sau render bắt lỗi template trước khi tạo repo. Nó không giúp tăng tốc. String.replace thay mọi lần xuất hiện. Kiểm tra tên là việc kiểm tra đầu vào, làm trước khi render.' },
     { q: 'Chỉ số nào phản ánh tốt nhất chất lượng golden path từ góc nhìn developer?', options: ['Thời gian từ lúc tạo service tới khi nó chạy trên môi trường dev', 'Số dòng code trong template', 'Số service đang chạy trong cluster', 'Số lần platform team deploy mỗi tuần'], answer: 0, explain: 'Golden path phục vụ developer nên đo trải nghiệm của họ: thời gian tới service chạy được. Số dòng template không nói lên giá trị. Số service đang chạy phụ thuộc nhiều yếu tố khác. Tần suất deploy của platform team không đo trải nghiệm người dùng nền tảng.' },
+    { q: 'Sau khi render template, vì sao cần quét lại để tìm placeholder dạng {{__CHU_HOA__}} còn sót?', options: ['Vì {{String.replace}} không thay được trong đường dẫn file', 'Vì template có thể thêm placeholder mới nhưng thiếu tham số, để fail fast trước khi tạo repo/deploy', 'Vì placeholder làm code chạy chậm', 'Vì Kubernetes tự động thay placeholder còn sót'], answer: 1, explain: 'Quét đầu ra phát hiện placeholder mới chưa được map tham số và dừng sớm với lỗi rõ. {{String.replace}} vẫn thay được trong đường dẫn nếu được gọi. Placeholder sót không ảnh hưởng hiệu năng lúc chạy mà gây lỗi cấu hình. Kubernetes không tự thay chuỗi {{__...__}} tuỳ ý trong manifest.' },
   ],
   related: ['devops-119', 'devops-055', 'devops-023'],
   tags: ['golden path', 'template', 'Backstage', 'internal developer platform', 'platform engineering'],
@@ -5480,6 +5761,39 @@ long median = n % 2 == 1 ? xs.get(n / 2) : (xs.get(n / 2 - 1) + xs.get(n / 2)) /
 - **Không chia cho 0**: khoảng thời gian không có deploy hay không có sự cố phải trả về giá trị hợp lý (0 hoặc rỗng), không ném lỗi.
 - **Lấy dữ liệu tự động** từ hệ thống (Git, pipeline, công cụ incident), không nhập tay.
 - **Không dùng để chấm điểm cá nhân hay so sánh đội**: chỉ số sẽ bị "làm đẹp" (chia nhỏ deploy vô nghĩa, không khai báo sự cố). Dùng để thấy xu hướng và tìm điểm nghẽn.
+
+### Cơ chế từng bước
+Mục tiêu là tính 4 chỉ số **DORA** (DevOps Research and Assessment — bộ nghiên cứu đo hiệu quả giao phần mềm) từ dữ liệu thô một cách **tự động, nhất quán, có thể lặp lại**. Đi từng bước:
+
+1. **Thu thập dữ liệu thô từ hệ thống** (Git, pipeline CI/CD, công cụ incident như PagerDuty/Jira): mỗi lần deploy ghi {{committedAt}} (lúc commit), {{deployedAt}} (lúc lên production), {{causedIncident}} (deploy này có gây sự cố không). Vì sao: dữ liệu tự động tránh "làm đẹp" khi nhập tay.
+2. **Chuẩn hoá định nghĩa**: thống nhất "deploy" (một lần đưa bản lên production thành công), "sự cố" (rollback, hotfix, hoặc incident mức P1–P2), và khoảng thời gian đo. Vì sao: nếu mỗi đội đếm khác nhau, chỉ số không so sánh và không tin cậy được.
+3. **Tính Deployment frequency** = {{số deploy / số ngày}}. Vì sao: phản ánh nhịp giao nhỏ, thường xuyên; nhưng cần gắn với ổn định (bước 5).
+4. **Tính Lead time for changes** = trung vị của {{deployedAt − committedAt}} (tính giây). Với số phần tử chẵn, lấy trung bình hai giá trị giữa. Vì sao dùng **trung vị (median)**: lead time có đuôi dài (đa số vài giờ, thỉnh thoảng một thay đổi chờ 3 tuần); trung bình bị kéo lệch, trung vị phản ánh trải nghiệm điển hình.
+5. **Tính Change failure rate** = {{số deploy có causedIncident / tổng deploy}}. Vì sao: đo ổn định — deploy nhiều mà lỗi liên tục là chưa tốt.
+6. **Tính Time to restore (MTTR, Mean Time To Restore — thời gian khôi phục trung bình)** = trung bình {{resolvedAt − startedAt}}. Vì sao: đo khả năng phục hồi khi có sự cố (sửa nhanh quan trọng không kém ngăn lỗi).
+7. **Xử lý trường hợp biên**: danh sách rỗng trả {{Duration.ZERO}} hoặc 0.0; {{days <= 0}} ném {{IllegalArgumentException}}. Vì sao: không chia cho 0, không ném lỗi ngoài ý muốn khi không có dữ liệu.
+8. **Nhìn xu hướng, không xếp hạng cá nhân**: so sánh trước/sau khi cải tiến nền tảng, tìm điểm nghẽn. Vì sao: nếu dùng chấm điểm cá nhân, chỉ số bị tối ưu giả (chia nhỏ deploy vô nghĩa, giấu sự cố).
+
+~~~java
+// Bước 4: trung vị lead time (giây) — không dùng regex, không phụ thuộc giờ hệ thống
+Duration medianLeadTime(List<Deploy> deploys) {
+    if (deploys.isEmpty()) return Duration.ZERO;
+    List<Long> secs = new ArrayList<>();
+    for (Deploy d : deploys)
+        secs.add(Duration.between(d.committedAt(), d.deployedAt()).getSeconds());
+    Collections.sort(secs);
+    int n = secs.size();
+    long m = (n % 2 == 1) ? secs.get(n / 2)
+                          : (secs.get(n / 2 - 1) + secs.get(n / 2)) / 2; // chẵn: trung bình 2 giữa
+    return Duration.ofSeconds(m);
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** lead time báo cáo "rất cao" (hàng chục giờ) dù đa số thay đổi lên nhanh. **Nguyên nhân:** dùng trung bình, bị một vài thay đổi chờ tuần kéo lệch. **Cách sửa:** dùng trung vị; nếu cần thêm thông tin, báo cả p90.
+- **Triệu chứng:** dashboard ném lỗi NaN hoặc crash khi tuần không có deploy/sự cố. **Nguyên nhân:** chia cho 0, không xử lý danh sách rỗng. **Cách sửa:** trả {{Duration.ZERO}}/0.0 khi rỗng, kiểm tra {{days > 0}}.
+- **Triệu chứng:** change failure rate thấp bất thường nhưng người dùng vẫn than phiền. **Nguyên nhân:** định nghĩa "sự cố" quá hẹp hoặc đội không khai báo (vì bị xếp hạng). **Cách sửa:** thống nhất định nghĩa (rollback/hotfix/P1–P2), lấy dữ liệu tự động, cam kết không dùng để chấm điểm cá nhân.
+- **Triệu chứng:** chỉ số "cải thiện" nhưng trải nghiệm thật không đổi. **Nguyên nhân:** tối ưu con số (chia deploy nhỏ vô nghĩa, tách commit) thay vì cải tiến quy trình. **Cách sửa:** nhìn bộ 4 chỉ số cùng lúc (tốc độ + ổn định) và kết hợp phản hồi developer.
 
 > Câu chuyện mạnh nhất cho CV của platform engineer có dạng: "sau khi đưa golden path và canary tự động vào, lead time trung vị giảm từ 4 ngày xuống 6 giờ, change failure rate từ 18% xuống 6%". Bài tập dưới đây chính là cách bạn tính ra những con số đó.
 
@@ -5586,6 +5900,7 @@ Lỗi hay gặp: dùng trung bình cho lead time; quên trường hợp danh sá
     { q: 'Lead time của 5 thay đổi: 1h, 2h, 3h, 4h, 200h. Vì sao nên báo cáo trung vị thay vì trung bình?', options: ['Trung vị 3h phản ánh trải nghiệm điển hình; trung bình 42h bị một giá trị lớn kéo lệch', 'Trung bình khó tính hơn', 'Trung vị luôn lớn hơn trung bình', 'DORA cấm dùng trung bình'], answer: 0, explain: 'Phân phối có đuôi dài nên trung bình (42h) không đại diện cho đa số thay đổi; trung vị (3h) thì có. Độ khó tính toán không phải lý do. Trung vị không luôn lớn hơn trung bình — ở đây nhỏ hơn nhiều. Không có quy định cấm.' },
     { q: 'Chỉ số DORA nào đo độ ổn định?', options: ['Change failure rate và time to restore', 'Deployment frequency và lead time', 'Chỉ deployment frequency', 'Số dòng code mỗi tuần'], answer: 0, explain: 'Tỉ lệ thay đổi gây lỗi và thời gian khôi phục đo ổn định; tần suất deploy và lead time đo tốc độ. Số dòng code không phải chỉ số DORA và không phản ánh giá trị.' },
     { q: 'Ban lãnh đạo muốn xếp hạng từng developer theo chỉ số DORA. Phản hồi phù hợp nhất?', options: ['Chỉ số dùng cho hệ thống và đội để thấy xu hướng; xếp hạng cá nhân sẽ khiến chỉ số bị làm đẹp và mất giá trị', 'Đồng ý vì chỉ số khách quan', 'Chỉ xếp hạng theo deployment frequency', 'Xếp hạng nhưng không công bố'], answer: 0, explain: 'Khi chỉ số thành mục tiêu đánh giá cá nhân, người ta tối ưu con số (chia nhỏ deploy, không báo sự cố) thay vì kết quả thật. Chỉ dùng một chỉ số tốc độ còn khuyến khích bỏ qua ổn định. Xếp hạng kín vẫn tạo động cơ làm đẹp số liệu.' },
+    { q: 'Tuần này không có deploy nào và không có sự cố. Hàm tính chỉ số DORA nên trả về gì cho lead time/MTTR và change failure rate?', options: ['Ném ngoại lệ vì không có dữ liệu', 'Trả {{Duration.ZERO}} hoặc 0.0 (xử lý danh sách rỗng) thay vì chia cho 0', 'Trả {{null}} và để UI tự xử lý', 'Lấy giá trị tuần trước'], answer: 1, explain: 'Trường hợp rỗng phải được xử lý tường minh: lead time/MTTR rỗng → {{Duration.ZERO}}, failure rate rỗng → 0.0, để tránh NaN hoặc crash. Ném ngoại lệ làm hỏng dashboard. {{null}} đẩy rủi ro chia 0 sang nơi khác. Sao chép tuần trước làm sai dữ liệu.' },
   ],
   related: ['devops-126', 'devops-127', 'devops-075'],
   tags: ['DORA', 'metrics', 'platform as product', 'platform engineering'],

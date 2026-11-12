@@ -682,6 +682,17 @@ journalctl -u payment.service --since '10 min ago' -f
 ### Trả lời miệng 1 phút
 Tôi đi theo thứ tự tài nguyên để không đoán mò. Đầu tiên uptime và top để xem load và CPU, chú ý %wa là chờ disk và %st là bị hypervisor lấy CPU. Nếu một process java ăn CPU, tôi dùng top -H tìm thread nóng, đổi thread id sang dạng nid trong thread dump rồi xem nó đang chạy gì; nếu đó là thread GC thì vấn đề là bộ nhớ. Tiếp theo free -m xem cột available và swap, dmesg để biết OOM killer đã ra tay chưa. Sau đó df -h và df -i cho dung lượng và inode, lsof +L1 cho file đã xoá mà còn giữ. Rồi ss để đếm kết nối, đặc biệt CLOSE_WAIT. Cuối cùng là log ứng dụng và journalctl. Quan trọng nhất: thu bằng chứng như thread dump, class histogram trước khi restart, vì restart xoá sạch dấu vết.
 
+### Ví dụ đời thực
+Triệu chứng: dịch vụ thanh toán Spring Boot 3 đóng gói thành fat jar khoảng 120 MB. Mỗi lần lập trình viên sửa một dòng code và deploy, pipeline build lại và đẩy image lên registry mất 6–8 phút, pod khởi động chậm, ổ đĩa registry đầy nhanh.
+
+Điều tra: chạy {{docker history payment:latest}} thấy một layer duy nhất khoảng 110 MB, vì toàn bộ jar được COPY thành một lớp. Docker tính digest theo layer: layer nào đổi thì mọi layer phía sau cũng phải build lại và push lại.
+
+Nguyên nhân gốc: COPY cả fat jar thành một layer, nên code thay đổi hằng ngày làm đổi layer lớn nhất; registry phải lưu trữ và node phải pull lại toàn bộ 120 MB mỗi deployment.
+
+Cách xử lý: chuyển sang multi-stage build: stage build có JDK, dùng {{-Djarmode=tools}} tách layered jar thành dependencies, spring-boot-loader, snapshot-dependencies, application; stage cuối chỉ có JRE, copy các layer theo thứ tự ít thay đổi nhất trước.
+
+Kết quả đo được: image giảm từ 120 MB xuống khoảng 45 MB. Sửa code chỉ thay đổi layer application vài trăm KB, thời gian push từ 6–8 phút xuống dưới 1 phút, ổ đĩa registry tiết kiệm rõ rệt với 50 service.
+
 > Senior tip: Chuẩn bị sẵn một script thu thập (top, ss, df, 3 thread dump cách nhau 5 giây, jstat) và chạy ngay khi có sự cố; ở ngân hàng việc được SSH vào prod thường phải xin quyền theo phiên, nên mỗi phút trên server phải thu được tối đa bằng chứng. Nếu chạy trên Kubernetes, các lệnh tương đương là kubectl top, kubectl exec, và jcmd bên trong container.`,
     follow: [
       'Số kết nối CLOSE_WAIT tăng dần theo thời gian. Lỗi nằm ở phía client hay server, và trong code Java thường do đâu?',
@@ -769,6 +780,17 @@ git reflog                     # cứu commit "mất" sau reset --hard (trong th
 ### Trả lời miệng 1 phút
 Merge giữ nguyên lịch sử thật và tạo merge commit có hai parent; rebase chép commit của tôi lên đỉnh nhánh đích nên lịch sử thẳng nhưng hash thay đổi; squash gộp cả nhánh thành một commit, hợp với PR nhỏ có nhiều commit nháp. Cherry-pick tôi dùng để mang đúng một bản sửa từ main sang nhánh release đang chạy prod, kèm -x để truy vết. Revert tạo commit mới đảo ngược thay đổi nên an toàn trên nhánh chung; reset dời con trỏ nhánh và viết lại lịch sử, chỉ dùng ở local. Quy tắc cấm là rebase, reset rồi force push lên nhánh người khác đang dùng. Trade-off: lịch sử thẳng dễ đọc và bisect hơn, nhưng phải đổi bằng việc viết lại commit. Team tôi rebase để cập nhật nhánh cá nhân, squash khi đóng PR, revert để gỡ lỗi trên main, và bật branch protection.
 
+### Ví dụ đời thực
+Triệu chứng: team phát triển đang làm việc trên nhánh feature/checkout-gateway kéo dài 3 tuần. Khi cố gắng merge vào develop, gặp conflict ở 47 file, mất 4 tiếng để giải quyết và còn bỏ sót một bản sửa lỗi bảo mật quan trọng, dẫn đến bug trên UAT.
+
+Điều tra: nhánh feature không được rebase theo develop trong 3 tuần, trong khi develop đã nhận 120 commit từ các nhánh khác. Lịch sử commit lộn xộn, nhiều commit nhỏ như "fix typo", "update config" làm cho git bisect khó khăn.
+
+Nguyên nhân gốc: chiến lược nhánh feature dài hạn (long-lived branch) tích hợp muộn gây conflict lớn và rủi ro mất code.
+
+Cách xử lý: chuyển sang quy trình rebase nhánh cá nhân hàng ngày vào develop, squash các commit nháp trước khi mở PR, merge PR bằng squash hoặc merge commit tiêu chuẩn. Hotfix prod sửa trên main rồi cherry-pick sang release branch.
+
+Kết quả đo được: thời gian giải quyết conflict giảm từ 4 tiếng xuống dưới 30 phút mỗi PR, số bug do conflict giảm 80%, lịch sử main sạch và dễ bisect.
+
 > Senior tip: Hầu hết team dùng quy tắc: rebase để cập nhật nhánh cá nhân, squash hoặc merge khi đóng PR theo chuẩn của repo, revert để gỡ trên main, và bật branch protection cấm force push vào main/release. Đặt {{git config --global pull.rebase true}} giúp tránh các merge commit "Merge branch main into main" vô nghĩa.`,
     follow: [
       'Một merge commit đã được revert trên main. Giờ bạn muốn merge lại feature đó sau khi sửa lỗi, làm thế nào?',
@@ -845,6 +867,17 @@ main  --*--*--*--*--*--*--*--*--*--*--   (CI xanh mọi lúc, mỗi commit có t
 
 ### Trả lời miệng 1 phút
 Tôi chọn trunk-based kết hợp nhánh release. Git Flow phân tách rõ develop, release, hotfix và hợp với nhiều version cùng tồn tại, nhưng feature branch sống vài tuần gây conflict lớn, và hotfix phải merge vào hai nơi nên dễ quên. Với trunk-based, dev làm nhánh ngắn dưới hai ngày, PR có review và pipeline xanh, tính năng dở dang được tắt bằng feature flag. Đến ngày code freeze, tôi cắt nhánh release từ main, build một artifact, đưa qua SIT, UAT rồi CAB duyệt đúng digest đó. Lỗi UAT hay hotfix prod đều sửa trên main trước rồi cherry-pick sang release, gắn tag và đi luồng emergency change nhưng vẫn chạy đủ pipeline. Trade-off là cần test tự động tốt, CI nhanh và kỷ luật dọn flag. Để thuyết phục quản lý, tôi đo DORA trước và sau khi chuyển đổi.
+
+### Ví dụ đời thực
+Triệu chứng: team core banking release theo Git Flow mỗi 2 tuần. Nhánh develop tích hợp 15 feature branch, merge cuối sprint gây conflict 60 file, hotfix prod phải merge vào cả main và develop, lần trước quên merge vào develop khiến lỗi bảo mật quay lại ở release sau.
+
+Điều tra: DORA metrics cho thấy lead time 14 ngày, deployment frequency 2/tuần, change failure rate 15%. Feature branch sống trung bình 10 ngày, merge conflict tiêu tốn 30% thời gian sprint.
+
+Nguyên nhân gốc: nhánh feature dài hạn (long-lived branch) tích hợp muộn, hotfix quy trình hai bước dễ quên, không có feature flag nên code dở dang phải tách nhánh.
+
+Cách xử lý: chuyển sang trunk-based, feature branch tối đa 2 ngày, merge bằng squash, tính năng dở dang ẩn bằng feature flag (Unleash). Release cắt nhánh release/2.x từ main khi code freeze, hotfix sửa trên main trước rồi cherry-pick sang release. CI bắt buộc pass trước khi merge.
+
+Kết quả đo được: lead time giảm từ 14 xuống 3 ngày, deployment frequency tăng lên 3/tuần, change failure rate giảm từ 15% xuống 3%, thời gian giải quyết conflict gần như bằng 0.
 
 > Senior tip: Đo bằng các chỉ số DORA (lead time, deployment frequency, change failure rate, MTTR) trước và sau khi đổi chiến lược để thuyết phục quản lý bằng số liệu. Với auditor, điều quan trọng là truy vết được: từ ticket tới commit, PR, pipeline, artifact digest và bản ghi phê duyệt; đặt tên nhánh và commit theo mã ticket (ví dụ CORE-1234) giúp làm việc này tự động.`,
     follow: [
@@ -926,10 +959,21 @@ Flyway/Liquibase chạy như một bước riêng (Job hoặc init) trước khi
 ### Trả lời miệng 1 phút
 Pipeline của tôi chia hai phần. CI chạy trên mỗi commit: build và unit test, integration test với Testcontainers, SonarQube quality gate, SAST và quét dependency, đóng gói image gắn version cộng git sha, sinh SBOM, ký image, quét image rồi đẩy lên Harbor với tag bất biến. CD đưa đúng digest đó qua DEV, SIT, UAT rồi PROD; mỗi chặng có gate như smoke test, regression, performance test, và phê duyệt CAB gắn với change request. Nguyên tắc tôi bắt buộc là build once, promote many, cấu hình môi trường nằm ngoài image, và mọi bước truy vết được. Với CD, tôi thích GitOps vì Git là audit log, rollback bằng revert, và CI không cần giữ credential prod. Trade-off là thêm stage thì pipeline chậm, nên tôi chạy song song và giữ CI dưới 15 phút. Migration DB chạy thành bước riêng và phải tương thích ngược.
 
+### Ví dụ đời thực
+Triệu chứng: team thanh toán release thủ công bằng script deploy riêng cho từng môi trường. Prod chạy bản build khác UAT vì base image cập nhật giữa chừng, gây bug tính phí sai lệch 0.5% trên 10 triệu giao dịch/ngày. Auditor yêu cầu chứng minh bản prod chính là bản UAT duyệt.
+
+Điều tra: pipeline build lại cho từng môi trường với profile khác nhau, tag image dùng "latest", không có SBOM. UAT duyệt image digest A, nhưng prod chạy digest B vì build lại kéo base image mới có thay đổi timezone.
+
+Nguyên nhân gốc: vi phạm nguyên tắc "build once, promote many", thiếu digest immutable và SBOM, cấu hình nướng trong image thay vì ConfigMap/Secret.
+
+Cách xử lý: thiết kế pipeline build một lần, image tag = version + git sha, đẩy lên Harbor, sinh SBOM CycloneDX, ký image cosign. CD dùng Argo CD kéo cùng digest qua DEV, SIT, UAT, PROD. Gate: unit coverage ≥ 80%, Sonar quality gate, Trivy scan chặn CVE Critical, contract test Pact, performance test p99 không tăng > 10%.
+
+Kết quả đo được: auditor duyệt ngay vì digest UAT = digest PROD, SBOM trả lời Log4Shell trong 5 phút thay vì 2 ngày, rollback 1 lệnh revert Git. Pipeline CI < 12 phút, CD tự động không can thiệp tay.
+
 > Senior tip: Ở ngân hàng, auditor sẽ hỏi "chứng minh bản trên prod chính là bản đã được UAT duyệt". Hãy lưu digest, SBOM, kết quả scan và người phê duyệt cùng change request; Kubernetes admission policy (Kyverno/OPA Gatekeeper) chỉ cho chạy image đã ký từ Harbor nội bộ. Khi dependency có CVE mới như Log4Shell, SBOM giúp trả lời trong vài phút "service nào bị ảnh hưởng" thay vì vài ngày.`,
     follow: [
       'Một CVE Critical xuất hiện trong thư viện nhưng chưa có bản vá. Gate chặn pipeline, bạn xử lý thế nào để vẫn release được?',
-      'So sánh deploy bằng Jenkins chạy helm upgrade với Argo CD về bảo mật và audit.',
+      'So sánh deploy bằng Jenkins chạy {{helm upgrade}} với Argo CD về bảo mật và audit.',
       'Rollback tự động dựa trên tín hiệu gì và làm sao tránh rollback nhầm?'
     ],
     tags: ['CI/CD', 'DevSecOps', 'GitOps', 'Pipeline', 'SBOM']
@@ -1018,7 +1062,18 @@ Ngoài ra bật encryption at rest cho etcd và RBAC chặt (dev không có quy�
 - Chart chung quá nhiều if/else cho từng service thì không ai dám sửa; giữ chart nhỏ, có test ({{helm lint}}, {{helm unittest}} plugin).
 
 ### Trả lời miệng 1 phút
-Với 30 service và 4 môi trường, tôi không copy YAML cho từng nơi vì sửa một probe sẽ phải sửa 120 chỗ. Tôi dùng một chart Helm chung do platform team quản lý version, mỗi service một file values nhỏ, mỗi môi trường một file values ghi đè. Helm cho template, release, history và rollback, và là chuẩn để cài phần mềm bên thứ ba. Kustomize thì không template, chỉ vá YAML thuần theo base và overlay, dễ review hơn, hợp khi khác biệt giữa môi trường nhỏ; hai cái có thể kết hợp qua Argo CD. Secret không bao giờ commit dạng base64: tôi dùng External Secrets Operator kéo từ Vault, hoặc Sealed Secrets hay SOPS nếu bắt buộc lưu trong Git, cộng encryption at rest cho etcd và RBAC chặt. Trong pipeline tôi luôn chạy helm template và kubectl diff để review trước khi áp dụng lên prod.
+Với 30 service và 4 môi trường, tôi không copy YAML cho từng nơi vì sửa một probe sẽ phải sửa 120 chỗ. Tôi dùng một chart Helm chung do platform team quản lý version, mỗi service một file values nhỏ, mỗi môi trường một file values ghi đè. Helm cho template, release, history và rollback, và là chuẩn để cài phần mềm bên thứ ba. Kustomize thì không template, chỉ vá YAML thuần theo base và overlay, dễ review hơn, hợp khi khác biệt giữa môi trường nhỏ; hai cái có thể kết hợp qua Argo CD. Secret không bao giờ commit dạng base64: tôi dùng External Secrets Operator kéo từ Vault, hoặc Sealed Secrets hay SOPS nếu bắt buộc lưu trong Git, cộng encryption at rest cho etcd và RBAC chặt. Trong pipeline tôi luôn chạy {{helm template}} và {{kubectl diff}} để review trước khi áp dụng lên prod.
+
+### Ví dụ đời thực
+Triệu chứng: team quản lý 30 service Spring Boot, mỗi môi trường (DEV/SIT/UAT/PROD) copy một bộ YAML riêng. Sửa liveness probe mất 2 tiếng (sửa 120 file), prod bị lệch cấu hình so với UAT (replicas 4 vs 6, limit memory 2Gi vs 4Gi), secret DB commit dạng base64 bị lộ khi repo bị clone.
+
+Điều tra: 30 service × 4 môi trường = 120 bộ YAML, không có cơ chế chia sẻ. Secret DB ở prod để plain base64 trong Git, ai có quyền đọc repo đều thấy mật khẩu. Helm chart của team khác nhau, không có versioning.
+
+Nguyên nhân gốc: thiếu abstraction layer (chart chung), cấu hình lặp lại (DRY vi phạm), secret management yếu.
+
+Cách xử lý: xây một chart Helm chuẩn "springboot-service" do platform team version (v1.2.0, v1.3.0...), mỗi service chỉ có file values-service.yaml (image, resource, probe) và values-prod.yaml (replicas, limit, ingress). Secret dùng External Secrets Operator trỏ Vault, Git chỉ lưu ExternalSecret CRD. Pipeline chạy {{helm template}} + {{kubectl diff}} trước apply prod.
+
+Kết quả đo được: sửa probe từ 2 tiếng xuống 5 phút (sửa 1 chỗ chart, bump version, 30 service tự cập nhật), secret DB không còn trong Git, auditor pass, cấu hình prod = UAT đảm bảo bởi cùng chart version.
 
 > Senior tip: Ở ngân hàng, mô hình hay được auditor chấp nhận: một chart chuẩn do platform team quản lý version, mỗi service một file values nhỏ trong repo GitOps, secret nằm ở Vault với policy theo namespace, Argo CD đồng bộ và mọi thay đổi prod đi qua merge request có phê duyệt. Khi rotate mật khẩu DB, ESO cập nhật Secret nhưng app vẫn giữ connection cũ; cần quy trình restart có kiểm soát hoặc dùng Spring Cloud Vault với credential động.`,
     follow: [
@@ -1097,6 +1152,17 @@ Trong Loki, **không** đưa traceId hay userId thành label: số giá trị kh
 
 ### Trả lời miệng 1 phút
 Tôi cho app ghi log ra stdout dạng JSON một dòng, không ghi file trong container, vì Pod là phù du và stdout là chuẩn chung để kubelet rotate và agent thu gom. Trên mỗi node có agent DaemonSet như Fluent Bit hoặc Grafana Alloy đọc log, gắn metadata namespace, pod, label rồi đẩy về Elasticsearch, OpenSearch hoặc Loki. Để nối một giao dịch qua 6 service, tôi dùng Micrometer Tracing: traceId nằm trong MDC nên mọi dòng log đều có, và được truyền qua header W3C traceparent ở HTTP client và Kafka. Khi điều tra chỉ cần tìm theo trường traceId, hoặc nhảy từ trace trong Tempo sang log. Trade-off: ELK tìm kiếm tự do mạnh nhưng tốn RAM và disk; Loki rẻ hơn nhưng chỉ index label, và tuyệt đối không đưa traceId làm label. Kinh nghiệm của tôi là chuẩn hoá schema ECS qua starter nội bộ và mask PII ngay ở tầng logging.
+
+### Ví dụ đời thực
+Triệu chứng: giao dịch chuyển tiền qua 6 service (gateway, account, ledger, fraud, notification, corebanking) thất bại ngẫu nhiên, support mất 2 tiếng mới tìm được dòng log lỗi "insufficient balance" ở service ledger vì log phân rải, không có traceId chung, mỗi service log format khác nhau (text, JSON, syslog).
+
+Điều tra: Log gateway và account dùng JSON, ledger dùng text nhiều dòng, fraud log ra file container, notification dùng syslog. Không có traceId truyền giữa service, phải grep thủ công 6 file log khác nhau, stack trace text bị cắt thành nhiều dòng.
+
+Nguyên nhân gốc: thiếu chuẩn hóa logging (format, output, traceId propagation), không có centralized logging.
+
+Cách xử lý: thống nhất schema ECS, log ra stdout JSON một dòng, Micrometer Tracing bridge OpenTelemetry sinh traceId, gắn vào MDC, truyền qua header W3C traceparent (HTTP) và header Kafka. DaemonSet Fluent Bit thu log, gắn k8s metadata, đẩy Loki (label: namespace, app, level; không index traceId). Tìm kiếm trên Grafana: {{app=ledger | json | traceId=4bf92f...}} thấy toàn bộ chuỗi.
+
+Kết quả đo được: MTTR từ 2 tiếng xuống 8 phút, auditor pass vì log không chứa PII (accountId masked ***4521), Loki tiết kiệm 70% chi phí so với ELK.
 
 > Senior tip: Thống nhất một schema log chung (ECS) cho toàn bộ service ngay từ đầu, đưa vào starter nội bộ; ghép log, metric và trace bằng cùng traceId sẽ rút thời gian điều tra sự cố từ hàng giờ xuống vài phút. Lưu ý Promtail đã bị Grafana ngừng phát triển, hệ thống mới nên dùng Grafana Alloy hoặc Fluent Bit.`,
     follow: [
@@ -1193,6 +1259,17 @@ Timeout phải xếp tầng: client > LB > Nginx > timeout của app > timeout g
 ### Trả lời miệng 1 phút
 Ba lỗi này đều do giá trị mặc định của Nginx. 413 là vì client_max_body_size mặc định 1 MB, tôi tăng lên khoảng 10 MB cho location upload và chỉnh multipart của Spring cho khớp. 504 sau đúng 60 giây là vì proxy_read_timeout mặc định 60 giây, tức khoảng lặng giữa hai lần đọc chứ không phải tổng thời gian; tôi đặt timeout riêng dài hơn cho endpoint báo cáo, nhưng hướng đúng là chuyển báo cáo nặng sang bất đồng bộ, trả 202 rồi cho tải file sau. POST bị gửi hai lần là do retry: Nginx từ 1.9.13 mặc định không retry request non-idempotent, nhưng nếu ai đó bật non_idempotent hoặc client, load balancer retry sau timeout thì vẫn trùng, nên API tiền bắt buộc có idempotency key. Timeout phải xếp tầng từ client tới DB. Khi có báo cáo 502/504, việc đầu tiên tôi làm là xem upstream_response_time và upstream_addr trong access log.
 
+### Ví dụ đời thực
+Triệu chứng: ngay sau đợt release, nhóm vận hành nhận được hàng chục ticket khách hàng không upload được sao kê Excel 5 MB (lỗi 413), các báo cáo tài chính chậm trả về 504 sau đúng 60 giây, và một giao dịch chuyển tiền bị ghi nhận hai lần trên core banking.
+
+Điều tra: truy xuất access log Nginx thấy {{$upstream_response_time}} của endpoint báo cáo thường 55–70 giây trong khi {{$request_time}} của client chỉ 60 giây, chứng tỏ Nginx cắt trước khi backend xong. Lệnh {{docker exec nginx nginx -T | grep client_max_body_size}} cho thấy giá trị mặc định 1m. Xem log ứng dụng Spring Boot thấy idempotency key trùng lặp xuất hiện ở hai request POST /api/transfer cách nhau 60 giây, trùng với timeout Nginx.
+
+Nguyên nhân gốc: cấu hình Nginx chưa chỉnh proxy_read_timeout cho endpoint báo cáo và client_max_body_size cho upload; proxy_next_upstream mặc định không retry request non-idempotent, nhưng load balancer AWS ALB phía trước có retry mặc định trên lỗi 5xx/timeout, khiến request chuyển tiền đến backend hai lần khi Nginx trả 504.
+
+Cách xử lý: tăng client_max_body_size lên 10m cho location /api/upload/; đặt proxy_read_timeout 300s cho location /api/reports/; thêm idempotency key bắt buộc (header X-Idempotency-Key) cho mọi API POST tiền, kiểm tra Redis SETNX với TTL 24h trước khi xử lý; cấu hình ALB retry policy giới hạn max retries và tắt retry cho 504 nếu không an toàn.
+
+Kết quả đo được: upload 5 MB thành công 100%; báo cáo 3 phút trả về 200 thay vì 504; thử load test 10.000 request POST trùng idempotency key, chỉ 1 request được xử lý, 9.999 trả về kết quả đã lưu.
+
 > Senior tip: Bật log có {{$upstream_response_time}}, {{$request_time}} và {{$upstream_addr}} trong log_format: so hai giá trị thời gian cho biết chậm do backend hay do mạng/client, còn upstream_addr chỉ ra instance nào có vấn đề. Đây là bằng chứng đầu tiên cần lấy khi có báo cáo 502/504.`,
     follow: [
       '502 Bad Gateway và 504 Gateway Timeout khác nhau thế nào? Mỗi loại thường do nguyên nhân gì phía backend?',
@@ -1274,6 +1351,17 @@ Một RFC tốt có: phạm vi, artifact digest và version, kết quả test UA
 ### Trả lời miệng 1 phút
 Tôi tổ chức theo vùng: vùng trung gian có Nexus proxy Maven Central và Harbor proxy cache, là cửa duy nhất ra internet và chỉ outbound theo whitelist; vùng build có GitLab, runner, SonarQube; vùng prod chỉ có Harbor prod read-only với dev, cluster và Argo CD. Thư viện đi qua Nexus kèm chính sách chặn CVE và license, base image do platform team phát hành. Pipeline build một lần, quét, ký image rồi replicate có phê duyệt sang prod. Mỗi release gắn với RFC có digest, kết quả UAT, tiêu chí rollback, và tách quyền người viết code, người duyệt, người deploy. Để vẫn nhanh, tôi tự động hoá bằng chứng gắn vào RFC, dùng GitOps để phê duyệt merge request chính là phê duyệt deploy, và thương lượng chuyển các thay đổi lặp lại thành standard change. Hotfix vẫn đi emergency change, không bao giờ bỏ qua hoàn toàn.
 
+### Ví dụ đời thực
+Triệu chứng: khi Log4Shell (CVE-2021-44228) được công bố, team phải xác định 47 service Spring Boot đang chạy log4j-core 2.x trong môi trường air-gapped production, và vá xong trong 4 giờ để tuân thủ chính sách bảo mật ngân hàng.
+
+Điều tra: chạy query trên Nexus IQ (hoặc SCA tool trong pipeline) lọc artifact có {{log4j-core}} version {{< 2.15.0}}; đối chiếu với SBOM (CycloneDX) của từng image trong Harbor prod để ra danh sách 47 image bị ảnh hưởng. Kiểm tra Harbor replication log thấy 12 image chưa được replicate sang prod vì đang chờ duyệt RFC.
+
+Nguyên nhân gốc: quy trình duyệt RFC thủ công làm chậm việc đẩy bản vá; pipeline không tự động quét CVE nghiêm trọng và promote gấp.
+
+Cách xử lý: tạo emergency change (ECAB duyệt trong 30 phút), build image mới với log4j 2.17.1, quét Trivy/Snyk trong pipeline, ký image cosign, replicate qua Harbor replication policy "critical-cve" tự động bỏ qua duyệt thủ công cho CVE CVSS ≥ 9.0; Argo CD sync wave deploy theo thứ tự ưu tiên: payment → core banking → reporting.
+
+Kết quả đo được: 47 service vá xong trong 3 giờ 45 phút; audit trail trên GitOps repo thể hiện đầy đủ: commit SHA, digest image, kết quả scan, RFC emergency ID, thời gian deploy từng service. Không service nào bị bỏ sót.
+
 > Senior tip: Ở Việt Nam, các yêu cầu về an toàn hệ thống thông tin ngân hàng của NHNN và kiểm toán nội bộ sẽ hỏi: ai thay đổi gì, khi nào, ai duyệt, bằng chứng test ở đâu. Thiết kế pipeline sao cho mỗi câu đều trả lời được bằng một đường link thay vì một thư mục email; đó cũng là luận điểm mạnh nhất để thuyết phục CAB cho phép release thường xuyên hơn.`,
     follow: [
       'Log4Shell xuất hiện: trong môi trường không internet, bạn xác định service bị ảnh hưởng và vá trong bao lâu, bằng cách nào?',
@@ -1350,6 +1438,17 @@ Tăng CPU limit hoặc giảm số thread đồng thời thường hiệu quả 
 
 ### Trả lời miệng 1 phút
 Đầu tiên tôi kiểm tra JVM thấy gì bằng -XshowSettings:system và PrintFlagsFinal để xem MaxHeapSize, ActiveProcessorCount, số GC thread và GC đang dùng. JDK 17/21 đọc cpu.max và memory.max của cgroup, nên Pod 2 CPU, 4 GiB sẽ thấy 2 CPU và chọn G1. Tôi đặt MaxRAMPercentage 75 để heap khoảng 3 GiB, chừa 1 GiB cho metaspace, thread stack, code cache, direct buffer, và không đặt Xmx song song vì Xmx sẽ thắng. Hiện tượng CPU trung bình 40% mà p99 tăng là dấu hiệu CFS throttling: nhiều thread và GC worker tiêu hết quota trong vài chục mili giây đầu chu kỳ rồi bị dừng. Tôi xác minh bằng tỷ lệ throttled periods chia periods; nếu cao thì tăng CPU limit hoặc giảm số thread đồng thời trước, chỉ chỉnh ParallelGCThreads, ConcGCThreads khi đã đo. ActiveProcessorCount tôi chỉ dùng khi không đặt CPU limit trên node nhiều core.
+
+### Ví dụ đời thực
+Triệu chứng: service thanh toán Pod 2 CPU/4Gi, giờ cao điểm p99 latency tăng từ 120 ms lên 850 ms, CPU trung bình dashboard chỉ 38%, GC log thấy young GC pause trung bình 45 ms nhưng có lúc spike 320 ms, không có OOM.
+
+Điều tra: chạy {{kubectl top pod payment-xxx --containers}} thấy CPU usage 0.76/2 cores. Query Prometheus {{rate(container_cpu_cfs_throttled_periods_total[1m]) / rate(container_cpu_cfs_periods_total[1m])}} cho tỷ lệ throttling 18% (ngưỡng lo > 5%). {{jcmd 1 GC.heap_info}} cho heap 2.9 GiB / 3 GiB (MaxRAMPercentage=75), metaspace 280 MiB, code cache 240 MiB, thread stack ~350 MiB (khoảng 350 thread). Thread dump thấy 200 Tomcat thread + 2 G1 worker + 1 G1 concurrent thread + 12 Netty event loop.
+
+Nguyên nhân gốc: CFS quota 2 CPU (200ms/100ms) bị tiêu hết khi 200+ thread cùng chạy, GC song song (ParallelGCThreads mặc định = 2, ConcGCThreads = 1 cho 2 CPU) vẫn tranh quota với application thread, làm request bị treo 75 ms mỗi chu kỳ 100 ms.
+
+Cách xử lý: giảm Tomcat {{max-threads}} từ 200 xuống 80; tăng CPU limit lên 3 core (request=limit=3) sau khi load test xác nhận DB chịu được connection pool tăng; (tuỳ chọn) giảm thêm GC thread nếu vẫn throttling.
+
+Kết quả đo được: throttling giảm từ 18% xuống 3%; p99 latency 850 ms → 140 ms; young GC pause trung bình 35 ms, max 80 ms; throughput tăng 22% vì ít context switch.
 
 > Senior tip: Trước khi tăng limit, hãy load test và xem tỷ lệ throttling; nhiều đội tăng limit gấp đôi mà p99 không cải thiện vì nút cổ chai là DB pool. Với JDK 21, virtual thread giúp giảm thread stack nhưng không miễn nhiễm CFS throttling: carrier thread vẫn bị chặn theo quota.`,
     follow: [
@@ -1437,6 +1536,17 @@ Khởi động xong context không có nghĩa là phục vụ tốt: connection 
 
 ### Trả lời miệng 1 phút
 Ba probe có ba nhiệm vụ: startup che quá trình khởi động chậm, liveness restart khi process treo không tự hồi phục, readiness gỡ Pod khỏi traffic khi tạm thời chưa phục vụ được. Nếu trỏ cả ba vào /actuator/health tổng hợp, DB chậm 30 giây sẽ làm liveness fail ở mọi Pod, tất cả restart cùng lúc, mất cache và dồn tải lên DB, tức là tự tạo sự cố dây chuyền. Tôi dùng health group của Actuator: liveness chỉ gồm livenessState, readiness gồm readinessState cộng db nếu service hoàn toàn không phục vụ được khi DB chết. Kafka không có indicator mặc định, nếu cần thì tự viết có timeout ngắn và cache. Với app khởi động 90 giây, startup probe period 5 giây, failureThreshold 30 cho tối đa 150 giây. Trước khi lên prod, tôi chặn DB trên staging và kiểm tra: liveness xanh, readiness đỏ, không Pod nào restart.
+
+### Ví dụ đời thực
+Triệu chứng: service tài khoản khởi động 95 giây (Flyway migration + JIT warm-up), deployment rolling update gây ra 3 lần restart dây chuyền trong 2 tuần: DB primary failover 30 giây → liveness probe fail tất cả 6 Pod → restart cùng lúc → connection pool cạn → DB overload → failover kéo dài 5 phút.
+
+Điều tra: liveness probe trỏ {{/actuator/health}} tổng hợp (kể cả {{db}} indicator). Khi DB failover, {{DataSourceHealthIndicator}} trả {{DOWN}} trong 30 giây, liveness failureThreshold 3 × period 10s = 30s, tất cả Pod bị restart đồng thời. Readiness cũng fail nhưng không gây restart. Startup probe không có nên liveness chạy ngay từ đầu.
+
+Nguyên nhân gốc: liveness probe kiểm tra dependency (DB) thay vì chỉ trạng thái nội tại; không có startup probe che giai đoạn khởi động chậm; restart dây chuyền làm mất cache Caffeine và dồn 600 connection mới lên DB vừa recover.
+
+Cách xử lý: tách health group: liveness chỉ {{livenessState}}; readiness thêm {{db}} và custom {{paymentWarmup}} indicator (kiểm tra pool active ≥ 10); thêm startup probe {{/actuator/health/liveness}} period 5s failureThreshold 30 (150s). Trên staging chủ động failover DB: liveness xanh, readiness đỏ 30s, 0 Pod restart.
+
+Kết quả đo được: 3 đợt failover DB sau đó, readiness gỡ Pod khỏi traffic 15s, liveness không fail, 0 restart dây chuyền, p99 latency tăng 200ms trong 30s failover rồi về bình thường.
 
 > Senior tip: Trong staging, hãy chủ động chặn DB/Kafka rồi quan sát: liveness phải xanh, readiness phải đỏ, không có Pod nào restart. Đây là bài test bắt buộc trước khi lên production; nếu liveness đỏ, bạn đang tự tạo thảm hoạ.`,
     follow: [
@@ -1526,6 +1636,17 @@ Với Kafka, thời gian còn phụ thuộc rebalance và commit. Chia nhỏ bat
 
 ### Trả lời miệng 1 phút
 Khi Pod bị xoá, có hai nhánh chạy song song: control plane gỡ Pod khỏi EndpointSlice, còn kubelet chạy preStop rồi gửi SIGTERM; hết terminationGracePeriodSeconds mà JVM còn sống thì SIGKILL. server.shutdown=graceful chỉ lo HTTP: ngừng nhận request mới và chờ request đang chạy tới timeout-per-shutdown-phase. Nó không tự chờ executor tự tạo, task @Scheduled, thread non-daemon, và với Kafka phải đảm bảo record đang xử lý xong và offset được commit trước khi đóng. Cấu hình của tôi: preStop khoảng 10 giây cho proxy kịp quên Pod, Spring timeout 20 giây, executor chờ task hoàn tất, Kafka commit sau khi xử lý và consumer idempotent, grace period khoảng 60 giây, lớn hơn tổng các khoảng trên. Trade-off là rollout chậm hơn. Tôi kiểm chứng bằng load test trong lúc rolling update, yêu cầu 0 lỗi 5xx, không trùng hay mất message, và đếm SIGKILL sau release.
+
+### Ví dụ đời thực
+Triệu chứng: mỗi lần rolling update service thanh toán (6 replica, maxSurge 1), monitoring ghi nhận 15–20 message Kafka bị mất (không có offset commit) và 3–5 request HTTP 503, dù đã bật {{server.shutdown=graceful}}. Log chỉ thấy "Commencing graceful shutdown" mà không có "Graceful shutdown complete".
+
+Điều tra: {{terminationGracePeriodSeconds}} mặc định 30s; preStop không có; Spring {{timeout-per-shutdown-phase}} 30s. Khi Pod Terminating, SIGTERM đến ngay lập tức (t=0), Spring bắt đầu chờ request HTTP (t=0), nhưng Kafka listener container (SmartLifecycle phase mặc định) vẫn đang poll record. Record xử lý 15s, commit offset sau xử lý; lúc t=30s SIGKILL giết JVM, offset chưa commit → message bị redeliver sau rebalance.
+
+Nguyên nhân gốc: grace period 30s < preStop (0) + Spring timeout (30s) + Kafka processing (15s) + rebalance buffer. Không có preStop làm Ingress/kube-proxy vẫn route request mới tới Pod đang tắt. Kafka listener không dừng graceful trước khi context đóng.
+
+Cách xử lý: đặt {{terminationGracePeriodSeconds: 60}}; preStop httpGet {{/internal/drain}} (sleep 10s + set readiness OUT_OF_SERVICE); {{spring.lifecycle.timeout-per-shutdown-phase=20s}}; {{spring.task.execution.shutdown.await-termination=true}} + {{await-termination-period=15s}}; Kafka {{AckMode=RECORD}} (commit sau mỗi record), {{spring.kafka.listener.idle-event-interval=5s}} để detect idle; executor custom bean {{@PreDestroy shutdown()}}.
+
+Kết quả đo được: chạy k6 200 RPS liên tục trong 10 lần rolling update: 0 lỗi 5xx, 0 message trùng/mất (đếm offset commit vs produce), log có đầy đủ "Commencing graceful shutdown" → "Graceful shutdown complete", rollout time 65s/replica (trước 45s nhưng có lỗi).
 
 > Senior tip: Đo rollout thật bằng load test và đếm lỗi theo từng giây; đừng tin cảm giác "đã bật graceful". Với service thanh toán, tôi thường đặt grace 60 s, preStop 10 s, Spring timeout 20 s, và theo dõi SIGKILL trong 24 giờ sau release.`,
     follow: [
@@ -1617,6 +1738,17 @@ Chọn metric gần tải thật: RPS/concurrency cho API I/O-bound, queue depth
 ### Trả lời miệng 1 phút
 metrics-server chỉ cung cấp CPU và RAM, nên với service I/O-bound tôi đưa metric gần tải thật vào HPA. Kiến trúc là app phơi /actuator/prometheus, Prometheus scrape, rồi Prometheus Adapter biến PromQL thành custom.metrics.k8s.io hoặc external.metrics.k8s.io; với Kafka, RabbitMQ hay cron tôi dùng KEDA vì có scaler sẵn và bên dưới vẫn tạo HPA. Chọn metric: RPS hoặc số request đồng thời cho API, lag hoặc độ sâu queue cho consumer, CPU cho service tính toán; tránh memory vì heap Java ít trả lại, và tránh latency vì đó là tín hiệu trễ, dễ dao động. Target đặt thấp hơn năng lực một Pod đo bằng load test khoảng 20–30%. Bẫy với Java: vòng phản hồi 2–4 phút vì khởi động và JIT, consumer vượt số partition thì ngồi không, và quên CPU request. Vì vậy tôi giữ minReplicas theo đỉnh lịch và chỉ để HPA xử lý phần bất thường.
 
+### Ví dụ đời thực
+Triệu chứng: service thanh toán (API I/O-bound, phụ thuộc PostgreSQL) cấu hình HPA theo CPU target 70%. Giờ cao điểm 10:00–11:00, RPS từ 200 lên 1.200, p99 latency từ 150 ms tăng vọt lên 2.400 ms, HPA chỉ scale từ 4 lên 6 Pod sau 8 phút, CPU trung bình Pod vẫn chỉ 45%.
+
+Điều tra: PromQL {{rate(container_cpu_usage_seconds_total[1m])}} cho 0.9 cores/Pod (limit 2 cores), {{rate(http_server_requests_seconds_count[1m])}} cho 300 RPS/Pod. HPA sync 15s, Prometheus scrape 30s, adapter 10s, Spring boot 60s, JIT warm-up 90s → tổng 3–4 phút vòng phản hồi. Khi HPA quyết định scale, tải đã đỉnh và bắt đầu giảm. Consumer Kafka topic 12 partition, HPA scale lên 18 Pod → 6 Pod idle, rebalance storm làm lag tăng thêm.
+
+Nguyên nhân gốc: CPU metric không phản ánh tải I/O-bound (chờ DB/network); HPA vòng phản hồi chậm (3–4 phút) do Java cold start + JIT; target CPU 70% quá bảo thủ; không có minReplicas theo lịch.
+
+Cách xử lý: thêm Prometheus Adapter rule {{http_requests_per_second}} (rate http_server_requests_seconds_count[1m]); HPA custom metric {{type: Pods, target: AverageValue: "250"}} (load test: 1 Pod chịu 300 RPS p99 < 200ms); behavior scaleUp stabilization 0s, policy 100%/30s; scaleDown stabilization 600s; {{minReplicas: 8}} (cover baseline 1.600 RPS), KEDA cron scale lên 12 lúc 09:30 trước giờ cao điểm.
+
+Kết quả đo được: giờ cao điểm sau khi điều chỉnh, p99 latency 150 ms (ổn định), HPA không scale reactive (đã đủ minReplicas), CPU trung bình 55%, không rebalance storm Kafka. Chi phí Pod tăng 20% (8 thay vì 4 baseline) nhưng SLO latency 100% tuân thủ.
+
 > Senior tip: HPA không thay thế năng lực dự báo. Với hệ thống ngân hàng, tôi giữ minReplicas theo đỉnh lịch (ngày lương, cuối tháng), dùng KEDA cron nâng trước 30 phút, và chỉ để HPA xử lý phần bất thường. Đo {{container_cpu_cfs_throttled_periods_total}} cùng lúc với HPA để biết scale có thực sự giúp hay chỉ làm DB căng hơn.`,
     follow: [
       'Vì sao scale consumer Kafka vượt số partition không tăng throughput? Bạn xử lý backlog thế nào?',
@@ -1688,6 +1820,17 @@ Cả ba chiến lược đều yêu cầu **expand-contract** khi đổi schema:
 
 ### Trả lời miệng 1 phút
 Tôi không chọn một chiến lược cho mọi thứ. Rolling update là mặc định cho thay đổi nhỏ vì rẻ, chỉ tốn surge vài Pod, nhưng hai version chạy song song và nếu version mới lỗi thì một phần người dùng đã chịu ảnh hưởng. Blue-green cho release lớn hoặc đổi nền tảng: rollback gần tức thì bằng đổi selector, nhưng gần gấp đôi tài nguyên, gấp đôi connection pool tới DB. Canary cho thay đổi rủi ro: blast radius nhỏ, nhưng cần hạ tầng chia traffic, đủ traffic để có ý nghĩa thống kê, và metric so sánh với baseline cùng thời điểm. Ràng buộc trên hết là dữ liệu: cả ba đều cần migration expand-contract. Về quyền rollback, tiêu chí định lượng được chốt trước release, như 5xx trên 1% trong 5 phút; release owner và SRE on-call đều được dừng, và Argo Rollouts có thể tự abort khi analysis fail.
+
+### Ví dụ đời thực
+Triệu chứng: sau deployment phiên bản thanh toán mới bằng rolling update, tỷ lệ 5xx tăng nhẹ trong 10 phút nhưng team chưa biết nên dừng hay tiếp tục, và khi hỏi "ai có quyền rollback" thì developer và SRE nhìn nhau.
+
+Điều tra: mở dashboard Argo Rollouts so sánh canary với baseline trong cùng cửa sổ thời gian, xem metric 5xx trên 1% trong 5 phút và p99 trên 800 ms.
+
+Nguyên nhân gốc: thiếu tiêu chí rollback định lượng trước khi release và chưa phân công quyền dừng rõ ràng cho ai.
+
+Cách xử lý: chốt trước "nếu 5xx trên 1% trong 5 phút thì dừng rollout", release owner và SRE on-call cùng được quyền dừng, Argo Rollouts tự abort khi analysis fail.
+
+Kết quả đo được: rollback được quyết định trong 5 phút thay vì bàn luận hàng giờ, và ảnh hưởng giới hạn ở nhóm canary thay vì toàn bộ traffic.
 
 > Senior tip: Đừng chọn công cụ trước khi có SLO và metric tin cậy. Một canary 5% chỉ đáng tin khi bạn có dashboard so sánh baseline/canary theo cùng cửa sổ thời gian và đủ traffic; nếu không, blue-green với cutover có kiểm soát và rollback một nút bấm còn an toàn hơn. Ở ngân hàng, tôi luôn canary cho nhân viên nội bộ trước, rồi mới mở cho khách hàng theo cohort.`,
     follow: [
@@ -1782,6 +1925,17 @@ Không dùng chung một database staging cho mọi job: test song song sẽ gi�
 ### Trả lời miệng 1 phút
 Pipeline của tôi đi từ rẻ tới đắt: compile và checkstyle, unit test, integration test với Testcontainers, SAST và quét dependency, rồi build image, quét image. Các stage này chặn merge vì chúng rẻ và bắt được phần lớn lỗi. Image chỉ build một lần, tag theo commit SHA, registry bật immutable tag, rồi promote đúng digest đó qua DEV, SIT và PROD; mỗi môi trường chỉ khác cấu hình. Nếu rebuild cho từng môi trường thì không chứng minh được thứ chạy prod là thứ đã test. Migration DB tôi chạy bằng Job hoặc initContainer riêng trước khi rollout, không để mỗi Pod tự migrate, và migration phải tương thích ngược vì lúc rolling hai version chạy cùng nhau. Trade-off là thêm stage thì chậm, nên tôi cache .m2, chia shard test, đặt timeout cho job, và giữ pipeline dưới 15 phút. Test flaky phải sửa trong ngày, không cho retry vô hạn.
 
+### Ví dụ đời thực
+Triệu chứng: team thanh toán deploy thủ công bằng script riêng cho mỗi môi trường. Prod chạy image khác UAT vì base image cập nhật giữa chừng, gây bug tính phí sai lệch 0.5% trên 10 triệu giao dịch/ngày. Auditor yêu cầu chứng minh bản prod chính là bản UAT đã duyệt.
+
+Điều tra: pipeline build lại cho từng môi trường với profile khác nhau, tag image dùng "latest", không có SBOM. UAT duyệt image digest A, nhưng prod chạy digest B vì build lại kéo base image mới có thay đổi múi giờ.
+
+Nguyên nhân gốc: vi phạm nguyên tắc "build once, promote many", thiếu digest bất biến và SBOM, cấu hình nướng trong image thay vì ConfigMap/Secret.
+
+Cách xử lý: thiết kế pipeline build một lần, image tag = version + git sha, đẩy lên Harbor, sinh SBOM CycloneDX, ký image cosign. CD dùng Argo CD kéo cùng digest qua DEV, SIT, UAT, PROD. Gate: unit coverage ≥ 80%, Sonar quality gate, Trivy scan chặn CVE Critical, contract test Pact, performance test p99 không tăng > 10%.
+
+Kết quả đo được: auditor duyệt ngay vì digest UAT = digest PROD, SBOM trả lời Log4Shell trong 5 phút thay vì 2 ngày, rollback 1 lệnh revert Git.
+
 > Senior tip: Mục tiêu thực tế là pipeline dưới 15 phút từ push tới môi trường dev, và mọi gate trên merge request phải tái lập được trên máy dev bằng một lệnh. Đo lead time và tỷ lệ pipeline đỏ; nếu pipeline đỏ vì test flaky, sửa test ngay trong ngày thay vì cho retry vô hạn, vì retry vô hạn dạy cả team bỏ qua tín hiệu.`,
     follow: [
       'Bạn đặt quality gate nào cho dependency scan mà không làm pipeline chậm và hay fail vặt?',
@@ -1864,6 +2018,17 @@ WHERE status_new IS NULL
 ### Trả lời miệng 1 phút
 Rollback DB gần như không thể vì dữ liệu đã ghi, và Flyway Community không có undo, nên tôi thiết kế để không cần rollback DB. Mỗi thay đổi phá vỡ được chia theo expand-contract: expand thêm cột hoặc bảng mới cho phép null; release sau app dual-write cả cũ và mới; job backfill chép dữ liệu cũ theo lô nhỏ; rồi switch sang đọc cột mới; chỉ contract, tức xoá cột cũ, sau một hai release khi không còn version nào đọc nó. Nhờ vậy rollback app chỉ là deploy lại digest cũ, vì version cũ vẫn chạy được trên schema mới. Khi migration sai, tôi forward-fix bằng migration mới; restore hay PITR chỉ dùng khi mất dữ liệu nghiêm trọng vì sẽ mất cửa sổ dữ liệu sau backup. Trade-off là một thay đổi kéo dài nhiều release. Tôi luôn chạy migration trên snapshot cỡ prod, đặt lock_timeout và không bao giờ sửa file migration đã áp dụng.
 
+### Ví dụ đời thực
+Triệu chứng: cần đổi cột status từ varchar sang enum trong bảng thanh toán 50 triệu dòng. Nếu chạy ALTER TABLE đổi kiểu ngay, bảng bị khóa vài phút và cả hai version app (cũ và mới) trong lúc rolling update đều không chạy được.
+
+Điều tra: chạy ALTER TABLE trên bản snapshot cỡ prod, thấy khóa bảng 10 phút, WAL phình to, replication lag tăng.
+
+Nguyên nhân gốc: thay đổi schema phá vỡ không thể hoàn tác dữ liệu đã ghi, và Flyway Community không có undo.
+
+Cách xử lý: expand-contract. V10 thêm cột status_new, index CONCURRENTLY. App mới dual-write cả hai cột. Job backfill chép dữ liệu cũ theo lô 10.000 dòng, nghỉ giữa các lô. Rồi switch sang đọc status_new. Sau 1–2 release, contract xoá cột cũ.
+
+Kết quả đo được: migration không khóa bảng lâu, rollback app chỉ là deploy lại digest cũ vì version cũ vẫn đọc được schema mới.
+
 > Senior tip: Hãy coi mỗi migration là một API công khai giữa các version app. Tôi luôn yêu cầu migration chạy trên snapshot prod trong staging, có số đo thời gian lock và kế hoạch forward-fix trước khi deploy. Một migration "chỉ mất 2 giây" trên bảng 100.000 dòng có thể mất 20 phút trên 100 triệu dòng.`,
     follow: [
       'Bạn dual-write và backfill thế nào để không tăng tải DB trong giờ cao điểm?',
@@ -1936,6 +2101,17 @@ Spring Boot
 
 ### Trả lời miệng 1 phút
 Tôi chia việc rõ ràng: Micrometer là facade cho metric, Actuator phơi /actuator/prometheus để Prometheus scrape; Micrometer Tracing với bridge OpenTelemetry tạo traceId, spanId, đưa vào MDC và truyền qua header traceparent, gửi span bằng OTLP tới OTel Collector; log JSON ra stdout có traceId để nối với trace. Collector làm batch, retry, memory limiter, che dữ liệu nhạy cảm và tail sampling để giữ trace lỗi, chậm mà vẫn chỉ lấy mẫu 5–10% phần còn lại. Bẫy chi phí lớn nhất là cardinality: tag userId hay URI chứa ID thật có thể làm Prometheus OOM, nên tôi chặn bằng MeterFilter. Bẫy khác là bật cả OTel Java agent và Micrometer Tracing gây span trùng, và sampling 100% ở prod. Tôi bắt đầu từ SLO và ba dashboard RED, USE, nghiệp vụ, alert theo burn rate, và chuẩn hoá mọi thứ trong một starter nội bộ cho 20 service.
+
+### Ví dụ đời thực
+Triệu chứng: giao dịch thanh toán qua 5 service bị chậm ngẫu nhiên, p99 từ 150 ms lên 2 giây, nhưng dashboard chỉ nhìn thấy CPU thấp và không biết chậm ở service nào.
+
+Điều tra: tìm traceId trong log của service gateway, nhảy sang trace trong Tempo, thấy span DB ở service ledger chiếm 1,8 giây do thiếu index.
+
+Nguyên nhân gốc: thiếu chuẩn hoá traceId, log không có traceId nên không tương quan được, và cardinality cao do gắn userId vào metric làm Prometheus OOM.
+
+Cách xử lý: thống nhất schema ECS qua starter nội bộ, log JSON ra stdout có traceId, Micrometer Tracing truyền traceparent qua HTTP và Kafka, OTel Collector tail sampling giữ trace lỗi/chậm. Chặn tag userId bằng MeterFilter.
+
+Kết quả đo được: MTTR từ 2 tiếng xuống 10 phút, chi phí Prometheus giảm 30% sau khi cắt tag cardinality cao.
 
 > Senior tip: Bắt đầu từ SLO và ba dashboard, rồi mới chọn tool. Chuẩn hoá bằng một starter nội bộ (metric naming, log format, trace propagation, tag bắt buộc) để 20 service không mỗi nơi một kiểu. Mỗi quý rà lại top metric theo cardinality và top log theo volume; cắt 20% tín hiệu ít dùng thường không làm mất khả năng điều tra mà giảm hoá đơn rõ rệt.`,
     follow: [
@@ -2022,6 +2198,17 @@ Thêm dependency {{spring-boot-docker-compose}} (scope chỉ cho dev, ví dụ M
 ### Trả lời miệng 1 phút
 "Tôi đặt một file compose.yaml trong repo, khai báo PostgreSQL, Redis, Kafka với version cố định, cổng publish cho app chạy trong IDE, named volume để dữ liệu còn sau khi down, và healthcheck cho từng dịch vụ. Service nào phụ thuộc DB thì depends_on với condition service_healthy để đợi DB sẵn sàng thật chứ không chỉ container chạy. Trong cùng compose, container gọi nhau bằng tên service chứ không phải localhost. Từ Spring Boot 3.1, tôi thêm spring-boot-docker-compose để app tự chạy compose và tự cấu hình kết nối. Kết quả: dev mới chỉ cần clone và chạy một lệnh, và reset sạch bằng down -v."
 
+### Ví dụ đời thực
+Triệu chứng: dev mới vào team mất 2 ngày cài PostgreSQL 16, Redis 7, Kafka trên máy mới, mỗi máy một version, chạy xong service vẫn không kết nối được DB.
+
+Điều tra: dev cài tay PostgreSQL phiên bản khác với production, không có healthcheck nên app khởi động trước DB sẵn sàng gây "Connection refused".
+
+Nguyên nhân gốc: thiếu môi trường dev chuẩn hóa, mỗi dev cài khác nhau và không đợi service sẵn sàng.
+
+Cách xử lý: viết compose.yaml trong repo khai báo postgres:16.4, redis:7.4, kafka với version cố định, healthcheck pg_isready, named volume pgdata, và depends_on với condition service_healthy. Thêm spring-boot-docker-compose để app tự chạy compose và cấu hình datasource.
+
+Kết quả đo được: dev mới chỉ cần clone và chạy "docker compose up -d", chạy được trong 15 phút, dữ liệu vẫn còn sau lần down nhờ named volume.
+
 > Senior tip: hãy coi {{compose.yaml}} là **tài liệu sống** của hệ thống — dev mới đọc nó để biết service cần những gì. Đặt mục tiêu "clone tới chạy được trong 15 phút" và đo lại mỗi quý bằng một máy sạch. Với máy dev RAM 16 GB, Kafka + vài DB đã ăn 3–4 GB; dùng profiles để chỉ bật thứ thật sự cần cho task đang làm.`,
     follow: [
       'Khi nào dùng Testcontainers thay vì Docker Compose cho test tích hợp?',
@@ -2094,6 +2281,17 @@ docker exec orders-api getent hosts postgres
 
 ### Trả lời miệng 1 phút
 "Mỗi container có network namespace riêng nên localhost bên trong là chính container, không phải host. Để app gọi DB, tôi cho cả hai vào cùng user-defined network rồi gọi bằng tên container; mạng bridge mặc định không có DNS theo tên. Nếu DB nằm trên host thì dùng host.docker.internal. Để từ host vào app phải publish cổng với -p host:container; EXPOSE chỉ là tài liệu. Còn dữ liệu, mọi thứ ghi vào writable layer sẽ mất khi xoá container, nên tôi dùng named volume cho dữ liệu cần giữ, bind mount khi cần map thư mục cụ thể, và production thì lưu file lên object storage."
+
+### Ví dụ đời thực
+Triệu chứng: app Spring Boot trong container báo không kết nối PostgreSQL ở localhost:5432 dù DB chạy trên máy, mở trình duyệt localhost:8080 không vào được app, và mỗi lần xoá container thì file upload mất.
+
+Điều tra: trong container app, localhost là chính container đó không phải host; quên -p 8080:8080 nên host không vào được port; file upload nằm trong writable layer của container.
+
+Nguyên nhân gốc: mỗi container có network namespace riêng, publish cổng thiếu, và dữ liệu ghi trong lớp ghi container mất khi xoá container.
+
+Cách xử lý: tạo user-defined network "backend", chạy DB và app cùng network, app gọi DB bằng tên service postgres, host publish -p 8080:8080, file upload dùng named volume uploads:/app/uploads (production lưu object storage S3).
+
+Kết quả đo được: app kết nối DB được, host truy cập localhost:8080 bình thường, file upload còn lại sau khi xoá container.
 
 > Senior tip: khi debug mạng container, **vào trong container mà thử** ({{docker exec -it orders-api sh}}, rồi {{getent hosts postgres}}, {{nc -zv postgres 5432}}) thay vì đoán từ host — đa số lỗi là nhầm "đang đứng ở đâu". Và trên server, kiểm tra kỹ cổng publish: Docker tự thêm rule iptables nên cổng publish có thể vượt qua firewall kiểu ufw mà bạn tưởng đã chặn.`,
     follow: [
@@ -2172,6 +2370,17 @@ volumes:
 ### Trả lời miệng 1 phút
 "Tôi build một image duy nhất và đưa cấu hình theo môi trường từ ngoài vào. Cấu hình thường như URL, profile, feature flag đặt trong ConfigMap và nạp bằng envFrom; Spring relaxed binding map SPRING_DATASOURCE_URL thành spring.datasource.url, và biến môi trường đè application.yml trong jar. Secret tôi mount thành file và đọc bằng spring.config.import configtree, vì biến môi trường dễ lộ qua dump. Secret chỉ là base64 nên phải có RBAC và encryption at rest. Khi sửa ConfigMap, biến môi trường không đổi cho tới khi Pod restart, nên tôi luôn đi kèm rollout restart có readiness, hoặc gắn hash ConfigMap vào annotation để mỗi thay đổi cấu hình là một lần rollout có kiểm soát."
 
+### Ví dụ đời thực
+**Triệu chứng:** Sau khi DBA đổi mật khẩu PostgreSQL, team cập nhật Secret {{orders-secret}} và đổi {{SPRING_DATASOURCE_URL}} trong ConfigMap sang endpoint failover. 10 phút sau, khoảng 30% request tạo đơn báo {{FATAL: password authentication failed}}, trong khi 70% vẫn thành công. Lúc rollout thủ công, có lúc 2 Pod lỗi, 3 Pod chạy bình thường.
+
+**Điều tra:** Kiểm tra Pod đang chạy: {{kubectl exec deploy/orders-api -n prod -- printenv SPRING_DATASOURCE_URL}} trên Pod cũ vẫn trả URL cũ; Pod mới (do HPA scale lúc cao điểm) đã nhận URL mới. Mật khẩu: app đọc từ biến môi trường {{SPRING_DATASOURCE_PASSWORD}} (envFrom cũ), không phải từ file mount configtree, nên Secret đã sửa nhưng container cũ vẫn giữ giá trị env lúc khởi động. Log cho thấy connection pool (HikariCP) tiếp tục dùng credential cũ cho kết nối hiện có.
+
+**Nguyên nhân gốc:** (1) Biến môi trường không tự cập nhật khi ConfigMap/Secret đổi. (2) Mật khẩu nhạy cảm đi qua env nên khó kiểm soát và không thể thay nóng. (3) Scale-out tạo Pod mới dùng cấu hình mới trong khi Pod cũ dùng cấu hình cũ, gây trạng thái hỗn hợp.
+
+**Cách xử lý:** (1) Chuyển secret DB sang mount file {{/etc/secrets}} + {{spring.config.import=optional:configtree:/etc/secrets/}} và đọc password từ đó. (2) Sau mỗi lần đổi ConfigMap/Secret, thực hiện {{kubectl rollout restart deployment/orders-api}} và theo dõi readiness. (3) Thêm annotation checksum ConfigMap/Secret vào Pod template (Helm) để mỗi thay đổi tự kích hoạt rollout có lịch sử.
+
+**Kết quả đo được:** Sau rollout 6 phút (rolling, maxUnavailable 1), 100% Pod dùng endpoint và mật khẩu mới, tỷ lệ lỗi xác thực về 0. Các lần đổi cấu hình sau đều có một rollout rõ ràng trong lịch sử Deployment, dễ truy vết "Pod nào chạy giá trị nào".
+
 > Senior tip: hãy coi **thay đổi cấu hình như một lần deploy**: có review, có rollout từng Pod, có rollback. Tự động reload cấu hình nóng nghe hấp dẫn nhưng làm khó trả lời câu hỏi "lúc 14:00 Pod nào đang chạy giá trị nào". Kỹ thuật checksum annotation (Helm hay dùng) cho bạn lịch sử rõ ràng mà không cần thư viện reload nào.`,
     follow: [
       'Khi nào nên lấy secret trực tiếp từ AWS Secrets Manager/Vault thay vì Secret của Kubernetes?',
@@ -2242,6 +2451,17 @@ docker images --digests 123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/orders
 
 ### Trả lời miệng 1 phút
 "latest là tag di động: mỗi lần push nó trỏ sang image mới, nên Pod trên node khác nhau kéo ở thời điểm khác nhau sẽ chạy phiên bản khác nhau, và rollback về template cũ vẫn ghi latest nên chẳng quay về đâu. Tôi tag mỗi build bằng git SHA, thêm semver khi release, bật tag immutability trên registry để không ai ghi đè. Manifest dùng tag SHA hoặc digest, nên mọi Pod cùng nội dung và rollout undo quay về đúng bản cũ. Image được build một lần rồi promote cùng digest qua DEV, UAT, PROD. Cuối cùng có lifecycle policy giữ đủ số bản để rollback và xoá image không tag."
+
+### Ví dụ đời thực
+**Triệu chứng:** Sau hotfix thanh toán lúc 14:30, 2/10 Pod báo lỗi {{NullPointerException}} ở luồng hoàn tiền, 8 Pod còn lại xử lý bình thường. Team chạy {{kubectl rollout undo deployment/payment-api}} nhưng lỗi vẫn còn trên cùng các Pod.
+
+**Điều tra:** Chạy lệnh kiểm tra image trên Pod: {{kubectl get pods -o wide -l app=payment}} và xem {{imageID}} trong {{status.containerStatuses}} cho thấy tất cả Pod cùng ghi {{payment-api:latest}}. So sánh digest: 2 Pod trỏ digest {{sha256:7c1…}} (bản hotfix lỗi), 8 Pod trỏ {{sha256:4ab…}} (bản sáng). Manifest trong Git lịch sử cũng là {{latest}} nên {{rollout undo}} không đổi nội dung image.
+
+**Nguyên nhân gốc:** Tag {{latest}} bị ghi đè khi push hotfix; node chưa có image mới dùng cache cũ ({{IfNotPresent}} thực tế), node mới kéo bản mới → lệch phiên bản. Rollback vô nghĩa vì template không gắn với digest cụ thể.
+
+**Cách xử lý:** (1) Push lại image ổn định với tag bất biến {{git-3f9c2a1}} và cập nhật Deployment sang tag đó, rollout. (2) Bật tag immutability trên ECR cho các tag release/SHA. (3) Pipeline gắn {{org.opencontainers.image.revision}} và ghi tag+digest vào biên bản release; {{/actuator/info}} expose git SHA.
+
+**Kết quả đo được:** Trong 3 phút tất cả Pod chạy cùng digest {{sha256:4ab…}}, lỗi hoàn tiền về 0. Lần sau khi cần rollback, {{rollout undo}} đưa về đúng tag SHA trước đó trong 90 giây, và team trả lời "production đang chạy commit nào" trong dưới 10 giây.
 
 > Senior tip: hỏi nhanh "production đang chạy commit nào?" — nếu team mất hơn 30 giây để trả lời thì chiến lược tag đang có vấn đề. Tôi luôn để pipeline gắn thêm label OCI {{org.opencontainers.image.revision}} chứa git SHA vào image, và expose nó qua {{/actuator/info}}: một lệnh curl là biết ngay, kể cả khi ai đó đã deploy tay.`,
     follow: [
@@ -2332,6 +2552,17 @@ Trust policy của role {{gha-orders-deploy}} có điều kiện {{token.actions
 
 ### Trả lời miệng 1 phút
 "Tôi bỏ access key dài hạn và chuyển sang OIDC: job deploy có quyền id-token write, action configure-aws-credentials đổi token OIDC của GitHub lấy credential tạm của một IAM role, và trust policy ràng buộc audience lẫn claim sub đúng repo và environment production, nên repo khác không assume được và không còn key nào để lộ. Build dùng setup-java với cache maven để không tải lại dependency. Job deploy gắn environment production có required reviewers, cộng concurrency group để hai lần merge không deploy chồng, và cancel-in-progress tắt cho deploy. Cuối cùng permissions mặc định chỉ contents read, và action bên thứ ba ghim theo commit SHA."
+
+### Ví dụ đời thực
+**Triệu chứng:** (1) Job build Maven trung bình 8 phút, phần lớn do tải lại ~500 MB dependency mỗi lần. (2) Hai PR merge sát nhau (10:01 và 10:03) gây hai lần deploy production chồng lên nhau; lần deploy sau hoàn tất trước, lần trước ghi đè cấu hình cũ, khiến production quay về bản lỗi đã sửa. (3) Audit bảo mật phát hiện access key AWS sống 14 tháng trong repo secrets.
+
+**Điều tra:** Log Actions cho thấy {{~/.m2}} trống mỗi run. Lịch sử workflow không có {{concurrency}} nên cả hai run deploy chạy song song. Trên IAM, access key có lần dùng cuối từ IP lạ 3 tuần trước, chưa bị xoay vòng.
+
+**Nguyên nhân gốc:** Không có cache dependency, không có concurrency group, và dùng credential dài hạn dễ rò rỉ/khó thu hồi.
+
+**Cách xử lý:** (1) {{actions/setup-java}} với {{cache: maven}} (key theo hash {{pom.xml}}). (2) Tạo IAM OIDC provider cho GitHub, role deploy với trust policy ràng buộc {{sub}} = {{repo:acme/orders-api:environment:production}}, xoá access key cũ. (3) Job deploy gắn {{environment: production}} + required reviewers, thêm concurrency group {{deploy-production}} với {{cancel-in-progress: false}}. (4) Ghim action bên thứ ba theo SHA, đặt {{permissions: contents: read}} mặc định.
+
+**Kết quả đo được:** Thời gian build giảm từ 8 phút xuống ~2 phút 20 giây (cache hit). Hai lần merge liên tiếp chỉ chạy 1 deploy tại một thời điểm, lần sau xếp hàng. Không còn credential dài hạn; CloudTrail truy vết mỗi deploy về đúng workflow run qua session name.
 
 > Senior tip: sau khi chuyển sang OIDC, hãy **xoá hẳn** access key cũ trong IAM chứ không chỉ xoá khỏi GitHub secrets — key "không dùng nữa" nhưng còn hiệu lực là thứ hay bị khai thác nhất. Tách role theo môi trường (deploy UAT không assume được role production), và bật CloudTrail để mỗi lần deploy đều truy được về đúng lần chạy workflow qua tên session.`,
     follow: [
@@ -2426,6 +2657,17 @@ public static void main(String[] a) {
 ### Trả lời miệng 1 phút
 "CronJob tạo Job, Job tạo Pod, và Kubernetes chỉ hứa xấp xỉ một lần mỗi lịch, nên tôi thiết kế job idempotent theo ngày nghiệp vụ trước. Về cấu hình: timeZone Asia/Ho_Chi_Minh để khỏi lệch UTC; concurrencyPolicy Forbid để job chậm hôm trước không chạy chồng với hôm nay; startingDeadlineSeconds khoảng 30 phút để lỡ giờ vẫn chạy bù và tránh tình trạng ngừng lên lịch sau quá nhiều lịch bị lỡ; backoffLimit nhỏ; activeDeadlineSeconds để job treo không chạy tới sáng. App Spring Boot chạy không web, logic trong ApplicationRunner, cuối cùng System.exit với exit code của Spring để Job biết thành công hay thất bại. Cuối cùng là alarm khi job thất bại và cả khi tới hạn mà không thấy lần chạy thành công."
 
+### Ví dụ đời thực
+**Triệu chứng:** Job tính lãi cuối ngày (kỳ vọng 23:00, chạy ~40 phút) có đêm ghi lãi trùng cho ~12.000 tài khoản; đêm sau không có bản ghi lãi nào; đêm thứ ba Pod vẫn {{Running}} lúc 06:30 sáng, chặn job ngày mới.
+
+**Điều tra:** {{kubectl get jobs}} cho thấy hai Job cùng ngày chạy chồng (concurrencyPolicy mặc định Allow) do lần chạy trước kéo dài 55 phút. Ngày không chạy: control plane bảo trì lúc 23:00, không đặt {{startingDeadlineSeconds}} nên controller bỏ qua lịch sau khi lỡ. Ngày treo: app Spring Boot giữ web server không tắt, transaction chờ khoá DB, không có {{activeDeadlineSeconds}}.
+
+**Nguyên nhân gốc:** Thiếu Forbid, thiếu startingDeadlineSeconds/activeDeadlineSeconds, app không thoát sau khi hoàn tất và job không idempotent theo ngày nghiệp vụ.
+
+**Cách xử lý:** Đặt {{timeZone: Asia/Ho_Chi_Minh}}, {{schedule "0 23 * * *"}}, {{concurrencyPolicy: Forbid}}, {{startingDeadlineSeconds: 1800}}, {{backoffLimit: 2}}, {{activeDeadlineSeconds: 7200}}. App chạy {{web-application-type=none}}, kiểm tra {{runs.isDone(day)}} (idempotent), ghi theo lô, thoát bằng {{System.exit(SpringApplication.exit(ctx))}}. Thêm alert "không có Job thành công sau 00:30".
+
+**Kết quả đo được:** 30 ngày tiếp theo không ghi trùng lãi; đêm control plane bảo trì job vẫn chạy bù trong 10 phút; một lần treo do DB lock bị dừng sau 2 giờ và báo Failed (thay vì chạy tới sáng), sau khi sửa lock job hoàn tất trong 38 phút.
+
 > Senior tip: job tài chính nên chạy **theo lô có checkpoint** (ví dụ 10.000 tài khoản một lô, ghi lại lô cuối đã xong) để khi bị dừng giữa chừng thì chạy lại tiếp tục từ lô đó thay vì làm lại 40 phút. Và hãy theo dõi **thời lượng job theo ngày** — job tăng từ 40 lên 90 phút trong ba tháng là tín hiệu sớm trước khi nó đụng activeDeadlineSeconds vào một đêm cuối tháng.`,
     follow: [
       'Khi nào dùng Spring Batch thay vì tự viết ApplicationRunner cho job dài?',
@@ -2513,6 +2755,17 @@ topologySpreadConstraints:
 ### Trả lời miệng 1 phút
 "Drain node dùng Eviction API, và Eviction API tôn trọng PodDisruptionBudget, nên tôi đặt PDB cho service thanh toán, thường maxUnavailable 1 với 3 replica: drain chỉ đuổi Pod khi còn đủ Pod ready, Pod thứ hai phải chờ Pod thay thế ready. Nhưng PDB không cứu được nếu cả ba Pod chung một node, và không bảo vệ khi node chết đột ngột, nên tôi thêm topologySpreadConstraints theo hostname và theo zone để Pod luôn rải ra. Readiness phải đúng vì PDB đếm Pod ready, và graceful shutdown để Pod bị đuổi không làm rơi request. Tôi tránh PDB minAvailable 1 cho Deployment 1 replica vì nó chặn drain vĩnh viễn."
 
+### Ví dụ đời thực
+**Triệu chứng:** Mỗi lần nâng cấp node pool (drain từng node), service thanh toán 3 replica trả 503 trong 2–4 phút; tỉ lệ lỗi đỉnh 18%. Có lần một node drain xong thì cả 3 Pod biến mất cùng lúc.
+
+**Điều tra:** {{kubectl get pod -o wide -l app=payment}} lúc trước drain cho thấy cả 3 Pod trên {{node-1}} (scheduler đặt dồn do node khác đầy tạm thời). Không có PDB: {{kubectl drain node-1}} evict cả 3 Pod gần như đồng thời. Pod mới mất ~45 giây khởi động Spring Boot, readiness chưa pass nên chưa nhận traffic.
+
+**Nguyên nhân gốc:** Không rải Pod theo node/zone nên mất một node = mất toàn bộ replica; không có PDB nên drain không chờ Pod thay thế sẵn sàng.
+
+**Cách xử lý:** (1) Thêm {{topologySpreadConstraints}} {{maxSkew: 1}} theo {{kubernetes.io/hostname}} (DoNotSchedule) và theo zone (ScheduleAnyway). (2) Tạo PDB {{maxUnavailable: 1}} cho 3 replica. (3) Kiểm tra readiness probe phản ánh khả năng nhận request thật và cấu hình graceful shutdown ({{preStop}} + {{terminationGracePeriodSeconds}}).
+
+**Kết quả đo được:** Sau thay đổi, 3 Pod luôn nằm 3 node khác nhau. Drain một node trong giờ làm việc: chỉ 1 Pod bị evict, 2 Pod còn lại phục vụ 100% traffic, tỉ lệ 5xx = 0, Pod thay thế ready trong ~50 giây rồi drain tiếp node sau. Bài kiểm tra "drain node bất kỳ" được đưa vào quy trình định kỳ.
+
 > Senior tip: hãy đưa **"drain một node bất kỳ giữa giờ làm việc"** vào bài kiểm tra định kỳ — nếu dashboard lỗi không nhúc nhích thì cấu hình đã đúng. Tôi cũng thêm policy (Kyverno/Gatekeeper) cảnh báo mọi Deployment production thiếu PDB hoặc có PDB chặn drain, vì platform team thường chỉ phát hiện vào đúng đêm nâng cấp cluster.`,
     follow: [
       'Cluster autoscaler thu hồi node có tôn trọng PDB không, và điều đó ảnh hưởng chi phí thế nào?',
@@ -2599,6 +2852,17 @@ spec:
 ### Trả lời miệng 1 phút
 "Tôi chia ranh giới theo namespace cho mỗi team và môi trường. RBAC gắn với nhóm SSO: team có quyền edit ở UAT, chỉ view ở production vì deploy production đi qua pipeline. ResourceQuota giới hạn tổng CPU, RAM, số Pod mỗi namespace, LimitRange đặt request mặc định để Pod quên khai báo vẫn bị tính quota. NetworkPolicy default deny ingress rồi mở đúng đường, với điều kiện CNI hỗ trợ và nhớ mở DNS nếu chặn egress. Pod Security Admission mức restricted chặn container root và privileged, Kyverno bắt buộc probe, request, label owner, image nội bộ. Namespace là ranh giới mềm vì chung kernel và control plane, nên workload PCI hay của khách hàng ngoài tôi tách cluster riêng."
 
+### Ví dụ đời thực
+**Triệu chứng:** Cluster dùng chung 8 team: (1) team A chạy job batch tạo 400 Pod không khai báo limit, chiếm hết CPU node, khiến service thanh toán team B timeout p99 tăng từ 120 ms lên 2,8 s. (2) Developer team C {{kubectl get secret -n payments-prod}} đọc được credential DB của team B. (3) Pod debug của team D chạy privileged và mount {{/var/run/docker.sock}}.
+
+**Điều tra:** Không có ResourceQuota/LimitRange nên Pod không limit được scheduler chấp nhận. RBAC cấp {{ClusterRoleBinding}} edit cho nhóm dev chung → đọc secret mọi namespace. Không có NetworkPolicy/Pod Security Admission; CNI (Calico) hỗ trợ nhưng chưa áp policy.
+
+**Nguyên nhân gốc:** Thiếu ranh giới namespace: không quota, RBAC quá rộng, không cô lập mạng, không chuẩn bảo mật Pod.
+
+**Cách xử lý:** (1) Tách namespace theo team+môi trường ({{payments-prod}}, {{payments-uat}}…), gắn label owner/cost-center. (2) RBAC theo nhóm SSO: edit ở UAT, view ở prod. (3) ResourceQuota (CPU/RAM/Pod) + LimitRange đặt request/limit mặc định. (4) NetworkPolicy default-deny ingress, mở đúng luồng (ingress-nginx, service gọi nhau), mở egress DNS 53. (5) Pod Security {{restricted}} + Kyverno bắt buộc probe/request/limit/image nội bộ. (6) Kiểm thử {{curl}} chéo namespace để xác nhận policy có hiệu lực.
+
+**Kết quả đo được:** Job batch team A bị quota chặn ở 60 Pod, không ảnh hưởng team B (p99 ổn định ~130 ms). Thử đọc secret cross-namespace trả {{Forbidden}}. Pod privileged bị admission từ chối. Thời gian onboarding team mới giảm xuống ~1 giờ nhờ template GitOps.
+
 > Senior tip: **thành công của cluster dùng chung đo bằng thời gian onboarding** — nếu một team mới phải chờ platform hai tuần để có namespace thì họ sẽ đòi cluster riêng. Hãy đóng gói toàn bộ bộ ranh giới (namespace, RBAC, quota, NetworkPolicy, PSA label) thành một template trong GitOps: team mở một pull request, review xong là có môi trường chuẩn trong một giờ.`,
     follow: [
       'Khi nào ranh giới namespace không đủ và phải tách cluster hoặc dùng node pool riêng?',
@@ -2683,6 +2947,17 @@ spec:
 - **SBOM từ Maven và SBOM từ image khác nhau**: plugin CycloneDX của Maven chỉ thấy dependency Java, không thấy glibc/openssl. Spring Boot 3.3+ có thể nhúng SBOM của ứng dụng vào jar và phơi qua {{/actuator/sbom}}; vẫn cần thêm SBOM của image cho phần OS.
 - **Trivy tải DB lỗ hổng mỗi lần chạy**: pipeline chậm và hỏng khi mất mạng; cache hoặc mirror DB trong CI.
 
+### Ví dụ đời thực
+**Triệu chứng:** Lúc 9:10 sáng, feed bảo mật công bố một CVE CRITICAL trong thư viện {{org.apache.commons:commons-text}} (giống kiểu Text4Shell) đã có bản vá. CISO hỏi: "Bao nhiêu service đang chạy bản có lỗ hổng và mất bao lâu để chặn image mới bị ảnh hưởng?"
+
+**Điều tra:** Team tra Dependency-Track (nơi lưu SBOM CycloneDX đã đẩy từ CI cho từng image digest) bằng purl {{pkg:maven/org.apache.commons/commons-text@1.9}}. Kết quả: 7 image của 4 service (payment-api, invoice-worker, reporting, gateway) đang chạy trên namespace {{payments-prod}} và {{billing-prod}} dính bản 1.9. Kiểm tra policy Kyverno thấy rule {{require-signed-images}} đang ở chế độ {{Audit}} (chưa Enforce) nên trước đó vẫn có vài deploy thủ công lọt.
+
+**Nguyên nhân gốc:** (1) Chuỗi supply chain chưa khép kín: thiếu kho SBOM tập trung nên trước đây phải grep thủ công từng repo. (2) Policy admission chưa Enforce nên không ngăn được image không đạt chuẩn.
+
+**Cách xử lý:** (1) Mở ticket P1 cho từng owner service, nâng {{commons-text}} lên 1.10.0, CI rebuild sinh SBOM/scan mới và cosign ký lại digest. (2) Thêm rule Trivy fail build với {{--severity CRITICAL,HIGH --ignore-unfixed --exit-code 1}} cho thư viện này trong PR. (3) Sau 2 tuần Audit không còn vi phạm, chuyển Kyverno sang {{Enforce}} cho namespace prod và bật {{mutateDigest}} để pin đúng image đã verify.
+
+**Kết quả đo được:** Trong 25 phút sau thông báo có danh sách 7 image/4 service/2 namespace bị ảnh hưởng (trước đây ước tính mất ~1 ngày dò thủ công). 4 service được vá và rollout xong trong 3 giờ; từ đó mọi image mới thiếu chữ ký hợp lệ hoặc có CRITICAL đã có bản vá bị admission từ chối ngay, không còn deploy tay lọt vào prod.
+
 > Senior tip: thước đo thật là câu hỏi "CVE kiểu Log4Shell công bố lúc 9 giờ sáng — 9 giờ 30 bạn đã có danh sách service, version và namespace đang chạy thư viện đó chưa?". Chỉ SBOM lưu tập trung mới trả lời được. Khi bật policy, tôi chạy chế độ **Audit** 2–4 tuần để thấy ai vi phạm (thường là image bên thứ ba và sidecar), rồi mới chuyển **Enforce** theo từng namespace.`,
     follow: [
       'SLSA provenance khác chữ ký image ở điểm nào, và mức SLSA nào là thực tế cho team bạn?',
@@ -2756,6 +3031,20 @@ Cách nhẹ nhàng hơn: bật Actuator {{threaddump}} và {{heapdump}} trên **
 - **Chuyển sang image JRE rồi mới phát hiện không có jcmd/jstack** đúng lúc cần thread dump giữa sự cố. Chuẩn bị trước: Actuator, ephemeral container, hoặc JFR bật sẵn ghi ra volume.
 - **Không rebuild định kỳ**: base tối giản vẫn có CVE mới mỗi tháng. Pin base image theo digest để build tái lập được, và dùng Renovate/Dependabot tự mở PR nâng digest hằng tuần.
 - **Heap dump ghi vào filesystem của container**: image nhỏ không cứu được một file dump 3 GB làm Pod vượt giới hạn ephemeral-storage.
+
+### Ví dụ đời thực
+**Triệu chứng:** Service {{order-api}} dùng image {{eclipse-temurin:21-jdk}} nặng ~480 MB; mỗi lần quét Trivy báo 62 CVE (12 HIGH/CRITICAL) phần lớn thuộc gói OS. Thời gian pull image khi scale-out mất ~45 giây trên node mới.
+
+**Điều tra:** Chạy {{docker history}} và {{syft}} thấy lớp JDK và nhiều gói apt chiếm phần lớn dung lượng; runtime thực tế chỉ cần chạy jar Spring Boot. Smoke test cho thấy app gọi HTTPS, kết nối PostgreSQL và xuất PDF (dùng font).
+
+**Nguyên nhân gốc:** Dùng JDK image đầy đủ cho production mang theo compiler/công cụ và rất nhiều gói OS không cần thiết, làm tăng bề mặt tấn công và thời gian kéo image.
+
+**Cách xử lý:** (1) Chuyển Dockerfile sang multi-stage: stage build dùng {{eclipse-temurin:21-jdk}} để tạo app jar + runtime jlink (thêm {{jdk.crypto.ec,jdk.management}}), stage chạy dùng {{gcr.io/distroless/java21-debian12:nonroot}} copy {{/opt/jre}} và jar vào. (2) Bật Actuator trên management port riêng ({{/actuator/threaddump}}, {{/actuator/heapdump}}) và quy trình {{kubectl debug}} với ephemeral container JDK để thay {{jcmd}}. (3) Thêm job CI rebuild image theo digest base hằng tuần (Renovate) và smoke test TLS/DB trên image cuối.
+
+**Kết quả đo được:** Kích thước image giảm từ ~480 MB xuống ~145 MB, thời gian pull khi scale-out còn ~12 giây. Số CVE mức OS giảm từ 62 xuống 3 (0 HIGH/CRITICAL); số CVE thuộc dependency jar giữ nguyên và được theo dõi riêng. Khi có sự cố treo thread, team lấy được thread dump qua Actuator trong < 1 phút mà không cần shell trong container.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi sẽ không dùng JDK image cho production vì nó nặng và mang nhiều gói, công cụ không cần thiết nên bề mặt lỗ hổng lớn. Với Spring Boot tôi thường đi theo lộ trình: build bằng JDK đầy đủ trong multi-stage, rồi chạy bằng JRE hoặc distroless Java để cắt bớt lớp OS. Nếu cần tối ưu thêm tôi dùng jlink tạo runtime chỉ gồm module ứng dụng cần, nhưng phải chạy smoke test vì jdeps có thể bỏ sót module nạp động như {{jdk.crypto.ec}}. Tôi tránh Alpine trừ khi đã test kỹ vì musl có thể gây lỗi thư viện native hoặc DNS. Đổi lại, image tối giản không có shell và jcmd, nên tôi chuẩn bị sẵn Actuator thread/heap dump trên port nội bộ và dùng ephemeral debug container khi cần. Trong thực tế, khi chuyển một service sang distroless + jlink chúng tôi giảm image từ gần 500 MB xuống khoảng 140 MB và cắt mạnh CVE mức OS, nhưng vẫn phải rebuild định kỳ và vá dependency jar riêng."
 
 > Senior tip: đổi từ JDK image sang distroless thường cắt số CVE mức OS từ vài chục xuống còn một con số — nhưng đó chỉ là phần dễ. Rủi ro thực tế thường nằm ở jar (Spring, Jackson, driver). Tôi trình bày với security team hai số tách biệt: CVE của base image (giải quyết bằng chọn base và rebuild định kỳ) và CVE của dependency (giải quyết bằng nâng version), để không ai nghĩ "đổi sang distroless là xong".`,
     follow: [
@@ -2850,6 +3139,20 @@ envs/
 - {{force-unlock}} trong khi job kia vẫn chạy: hai tiến trình cùng ghi state.
 - Một state khổng lồ hàng nghìn resource: plan mất 15 phút, chạm rate limit API AWS, ai cũng ngại chạy nên drift tích tụ.
 
+### Ví dụ đời thực
+**Triệu chứng:** 09:12 sáng, sau khi hai engineer cùng apply, {{terraform plan}} trên nhánh main báo {{+ aws_db_instance.main will be created}} cho cụm RDS {{payment-prod-db}} đang phục vụ ~2.000 giao dịch/phút. Đồng thời state trong Git bị conflict và một người chọn bản cũ.
+
+**Điều tra:** Kiểm tra lịch sử: An apply lúc 09:10 tạo RDS (state local serial 41, chưa push), Bình apply lúc 09:12 dựa trên serial 40 lấy từ Git và ghi đè state serial 41 lên remote tạm (file commit). Không có remote backend, không lock, không audit ai apply gì. So sánh {{aws rds describe-db-instances}} thấy DB thật vẫn tồn tại (ID khớp) nhưng state hiện tại không có địa chỉ {{aws_db_instance.main}}.
+
+**Nguyên nhân gốc:** State lưu rời rạc (laptop + Git) và thiếu cơ chế khoá nên lần ghi sau làm mất thông tin lần ghi trước; Terraform dựa vào state nên "quên" tài nguyên thật.
+
+**Cách xử lý:** (1) Dừng mọi apply. (2) Dùng {{terraform import aws_db_instance.main payment-prod-db}} (hoặc khối {{import}}) để đưa RDS về lại state, chạy plan tới khi sạch. (3) Chuyển sang backend S3 bật versioning + mã hoá KMS và khóa state qua bảng DynamoDB, chỉ CI role được ghi. (4) Thiết lập quy trình PR: CI chạy {{fmt/validate/plan}} và đính kèm plan; merge mới apply đúng file plan đã review; bật {{prevent_destroy}} và {{deletion_protection}} cho RDS. (5) Job đêm chạy {{plan -detailed-exitcode}} để phát hiện drift.
+
+**Kết quả đo được:** Không có RDS nào bị tạo lại/xoá; từ khi chuyển sang CI-only apply và lock, trong 6 tháng không còn xung đột state. Thời gian plan giảm từ ~12 phút xuống ~2 phút nhờ tách state theo {{envs/prod/network}} và {{envs/prod/payment}}, và các thay đổi delete/replace trên tài nguyên stateful đều được chặn để review 2 người.
+
+### Trả lời mẫu khi phỏng vấn
+"State của Terraform là bản đồ nối code với tài nguyên thật, nên nếu mất đồng bộ thì plan có thể đòi tạo lại hoặc xoá nhầm hạ tầng quan trọng. Tôi đã từng gặp trường hợp state để trên laptop và commit Git, hai người apply cùng lúc làm mất entry của RDS đang chạy. Cách tôi xử lý là không apply vội, dùng {{terraform import}} để đưa tài nguyên về lại state, sau đó chuyển sang remote backend trên S3 có versioning, mã hoá và lock để chỉ một apply ghi tại một thời điểm. Về quy trình, tôi cho CI chạy plan trên PR và chỉ apply đúng file plan đã review sau khi merge, con người không có quyền ghi trực tiếp prod. Tôi cũng tách state theo môi trường và theo thành phần để giảm blast radius, bật {{prevent_destroy}} cho tài nguyên stateful, và chạy plan định kỳ để phát hiện drift. Nhờ vậy team tránh được xung đột state và giảm rủi ro thay đổi nhầm database."
+
 > Senior tip: tôi đặt luật cứng: **plan có delete hoặc replace trên tài nguyên stateful** (RDS, S3, EBS, DynamoDB) thì cần hai người duyệt và phải ghi rõ lý do trong PR. Luật đơn giản này chặn được kiểu sự cố "đổi một tham số nhỏ khiến database bị tạo lại" — loại sự cố mà backup cũng không cứu kịp RPO.`,
     follow: [
       'Bạn đưa một tài nguyên đã tạo tay trên console vào Terraform quản lý thế nào mà không phải tạo lại?',
@@ -2940,6 +3243,20 @@ spec:
 - **Keep-alive nhưng idle timeout của client dài hơn của đối tác hoặc load balancer**: client dùng lại kết nối mà phía kia đã đóng, nhận "Connection reset". Đặt idle timeout phía client ngắn hơn (LB 60 giây thì client khoảng 50 giây).
 - **Conntrack đầy** trên node Kubernetes ({{nf_conntrack: table full}} trong dmesg) cho triệu chứng giống hết port nhưng là giới hạn khác.
 
+### Ví dụ đời thực
+**Triệu chứng:** Giờ cao điểm 20:00, service {{payment-api}} (Java 21, chạy trên Kubernetes) gọi API đối tác {{https://api.partner.com}} ~900 RPS. Log xuất hiện hàng loạt {{java.io.IOException: Too many open files}} và {{java.net.BindException: Cannot assign requested address}}; tỉ lệ lỗi 5xx tăng từ 0,1% lên 6%.
+
+**Điều tra:** SSH/ephemeral debug vào Pod: {{grep "open files" /proc/1/limits}} cho thấy hard limit 1024; {{ls /proc/1/fd | wc -l}} dao động sát 1024. {{ss -s}} và {{ss -tan state time-wait | wc -l}} cho thấy ~27.000 socket TIME_WAIT trỏ về cùng {{203.0.113.10:443}}, trong khi ESTABLISHED rất ít. {{lsof -p 1}} cho thấy phần lớn fd là IPv4 socket.
+
+**Nguyên nhân gốc:** Mỗi request tạo mới {{HttpClient}} ({{HttpClient.newHttpClient()}}) thay vì dùng bean dùng chung, nên không tái sử dụng kết nối keep-alive: mỗi lần gọi mở TCP+TLS handshake mới rồi đóng, để lại socket TIME_WAIT 60 giây. Với ~900 kết nối mới/giây tới một đích, dải ephemeral port ~28.000 cạn nhanh và số fd/socket vượt giới hạn process.
+
+**Cách xử lý:** (1) Refactor: tạo một {{HttpClient}} (hoặc {{RestClient/WebClient}} có pool) dùng chung, đặt {{connectTimeout}} và idle timeout nhỏ hơn phía đối tác/LB. (2) Tạm thời tăng {{LimitNOFILE}}/ulimit container lên 65536 và mở rộng {{ip_local_port_range}} + bật {{tcp_tw_reuse=1}} (sysctl safe) để ổn định. (3) Thêm metric {{process_files_open_files}} và theo dõi {{ss}}/TIME_WAIT theo đích, alert khi vượt 80%.
+
+**Kết quả đo được:** Sau deploy, số socket TIME_WAIT tới đối tác giảm xuống ~300–500 ổn định, fd mở của process còn ~250. Lỗi EMFILE/EADDRNOTAVAIL biến mất, tỉ lệ 5xx trở về 0,1% và p99 HTTP ổn định ~140 ms. Nửa đêm không còn cần restart Pod thủ công.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thấy 'Too many open files' và 'Cannot assign requested address' cùng lúc, tôi nghĩ ngay tới việc process mở quá nhiều file descriptor hoặc tạo quá nhiều kết nối TCP mới. File descriptor là định danh cho mọi thứ process mở, kể cả socket, còn ephemeral port là dải cổng tạm phía client khi kết nối ra ngoài, socket đóng xong sẽ nằm ở TIME_WAIT khoảng 60 giây. Tôi sẽ chẩn đoán bằng {{/proc/PID/limits}}, {{/proc/PID/fd}}, {{lsof}} để biết fd tăng theo loại gì, và {{ss -s}}, {{ss -tan}} để xem phân bố TIME_WAIT/CLOSE_WAIT theo đích. Thường gốc rễ nằm ở code: tạo mới HTTP client mỗi request hoặc không đóng response nên không reuse kết nối. Tôi từng xử lý một service Java tạo {{HttpClient}} mỗi lần gọi đối tác, gây hàng chục nghìn TIME_WAIT và chạm trần fd; sau khi dùng một client dùng chung có pool, đặt timeout hợp lý, và thêm metric fd, lỗi biến mất và số TIME_WAIT giảm mạnh. Tăng ulimit hay sysctl chỉ là nới biên, không thay được việc sửa cách quản lý kết nối."
+
 > Senior tip: đưa {{process_files_open_files}} và {{process_files_max_files}} (Micrometer xuất sẵn qua Actuator) lên dashboard và cảnh báo khi vượt 80% — rò fd luôn là đường tăng dần đều nhiều giờ trước khi nổ, phát hiện sớm thì chỉ cần một bản sửa thường thay vì hotfix nửa đêm. Với lỗi hết port, tôi luôn hỏi một câu trước tiên: "client HTTP được tạo ở đâu, bao nhiêu lần?".`,
     follow: [
       'Vì sao TIME_WAIT tồn tại, và tắt nó bằng SO_LINGER = 0 gây rủi ro gì?',
@@ -3022,6 +3339,28 @@ Trên Prometheus, theo dõi {{coredns_dns_responses_total}} theo nhãn {{rcode}}
 - **Image Alpine (musl)** xử lý search/ndots và các option khác glibc, nên cùng một cấu hình mà hành vi khác; luôn kiểm chứng trên đúng image.
 - **Đặt ndots 1 cho cả cluster**: tên dạng {{orders.shop}} bị hỏi ra resolver bên ngoài trước — thêm độ trễ và làm lộ tên dịch vụ nội bộ ra ngoài.
 - **Đổ lỗi cho đối tác**: trace chỉ cho thấy "HTTP client chậm 5 giây". Bật log/metric thời gian phân giải hoặc tách span DNS để nhìn thấy nó.
+
+### Ví dụ đời thực
+**Triệu chứng:** Service {{payment-api}} trên Kubernetes gọi {{https://api.partner.com}}. p50 ~110 ms nhưng p99 thỉnh thoảng vọt lên ~5,1 giây (khoảng 0,8% request), gây timeout dây chuyền cho checkout. Log CoreDNS ghi rất nhiều NXDOMAIN dạng {{api.partner.com.payments.svc.cluster.local}}.
+
+**Điều tra:** {{kubectl exec}} vào Pod kiểm tra {{/etc/resolv.conf}} thấy {{search payments.svc.cluster.local svc.cluster.local cluster.local ap-southeast-1.compute.internal}} và {{ndots:5}}. Dùng {{dig +search +showsearch api.partner.com}} (netshoot) thấy mỗi lần phân giải thử lần lượt 4 search domain (A+AAAA) rồi mới hỏi tên gốc → ~10 truy vấn, phần lớn NXDOMAIN. Metric coredns_dns_responses_total với label rcode NXDOMAIN chiếm ~70% lưu lượng DNS; trace cho thấy độ trễ nằm ở bước phân giải tên, không phải TLS hay server đối tác.
+
+**Nguyên nhân gốc:** {{api.partner.com}} có 2 dấu chấm < ndots:5 nên bị ghép search domain trước, sinh nhiều truy vấn vô ích. Trên node dùng iptables/kube-proxy, gói UDP DNS đôi khi bị drop do race conntrack khi A/AAAA gửi song song; resolver glibc chờ timeout mặc định 5 giây rồi retry, tạo "đuôi" p99 đúng 5 giây.
+
+**Cách xử lý:** (1) Đặt dnsConfig.options cho các Deployment gọi nhiều ra ngoài:
+~~~yaml
+dnsConfig:
+  options:
+    - name: ndots
+      value: "2"
+    - name: single-request-reopen
+~~~
+(2) Bật NodeLocal DNSCache để cache tại node và tránh conntrack cho DNS. (3) Tăng replica CoreDNS theo autoscaler và đảm bảo HTTP client/connection pool dùng keep-alive (giảm số lần resolve). (4) Giữ JVM DNS cache TTL hợp lý (30–60 giây), không đặt vĩnh viễn.
+
+**Kết quả đo được:** Tỷ lệ NXDOMAIN trên CoreDNS giảm từ ~70% xuống ~15%, số truy vấn DNS mỗi request ra ngoài giảm từ ~10 xuống 2. p99 của {{payment-api}} khi gọi đối tác giảm từ ~5,1 giây xuống ~180 ms, lỗi timeout checkout do spike DNS biến mất.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong Kubernetes, Pod thường có {{resolv.conf}} với search domain và {{ndots:5}}, nghĩa là tên có ít hơn 5 dấu chấm sẽ bị ghép với các search domain trước khi hỏi tên gốc. Vì vậy một domain ngoài như {{api.partner.com}} có thể sinh nhiều truy vấn NXDOMAIN vào CoreDNS. Khi số gói UDP DNS tăng, có thể xảy ra rớt gói do race conntrack, và resolver glibc mặc định chờ 5 giây rồi mới retry, tạo ra độ trễ p99 rất đặc trưng. Khi gặp vấn đề tương tự, tôi kiểm tra {{resolv.conf}}, dùng {{dig +search}} và xem metric NXDOMAIN/latency của CoreDNS để xác nhận. Cách xử lý là giảm ndots cho workload gọi ra ngoài, bật NodeLocal DNSCache, scale CoreDNS phù hợp, và dùng connection pool keep-alive để giảm tần suất resolve. Ở một case thực tế, sau khi chỉnh ndots và bật cache tại node, NXDOMAIN giảm mạnh và p99 từ khoảng 5 giây xuống còn dưới 200 ms. Tôi cũng nhắc team không cache DNS vĩnh viễn trong JVM vì IP phía đối tác hoặc load balancer có thể đổi."
 
 > Senior tip: với cluster chưa tối ưu, NXDOMAIN thường chiếm phần lớn lưu lượng CoreDNS — hãy nhìn tỷ lệ này trước khi tăng replica. Khi thấy độ trễ **đúng bội số của 5 giây** (5 s, 10 s), nghĩ ngay tới timeout của resolver DNS; khi thấy đúng 1 hoặc 3 giây, nghĩ tới TCP SYN retransmit. Con số "tròn" là manh mối mạnh nhất trong chẩn đoán mạng.`,
     follow: [
@@ -3110,6 +3449,20 @@ containers:
 - **Request thấp, limit cao** ("overcommit cho tiết kiệm"): scheduler xếp quá nhiều Pod lên node vì chỉ nhìn request → node pressure trở thành chuyện hằng đêm.
 - **Pod Evicted nằm lại** ở trạng thái Failed và chỉ được dọn khi vượt ngưỡng {{terminated-pod-gc-threshold}} (mặc định 12500) — danh sách Pod rối, dễ đọc nhầm khi điều tra.
 - **Mọi service đều gán priority cao**: priority mất ý nghĩa, preemption đá nhau lung tung.
+
+### Ví dụ đời thực
+**Triệu chứng:** 02:10 sáng, node worker {{ip-10-0-12-45}} báo memory pressure. Pod {{payment-api}} (request 1Gi, limit 4Gi, dùng thực ~3Gi) bị Evicted dù chưa chạm limit; trong khi Pod {{report-batch}} của team khác (BestEffort, không đặt request/limit, dùng ~0,5Gi) vẫn chạy. Một số request thanh toán bị cắt ngang (hard eviction, không graceful).
+
+**Điều tra:** {{kubectl describe node}} thấy sự kiện {{MemoryPressure}} và {{eviction-hard memory.available<100Mi}}. {{kubectl get events}} ghi "The node was low on resource: memory. Container app was using 3072Mi, which exceeds its request of 1024Mi." So sánh usage/request: payment vượt +2Gi, batch vượt +0,5Gi, pod khác dùng dưới request. {{kubectl describe pod payment-api}} không có OOMKilled, lý do Failed/Evicted → đây là node-pressure eviction của kubelet, không phải container vượt limit.
+
+**Nguyên nhân gốc:** Overcommit bộ nhớ: payment khai báo request thấp hơn usage thực nên đứng đầu danh sách eviction khi node thiếu RAM. Batch BestEffort sống hơn vì mức vượt request nhỏ hơn. Thiếu PriorityClass cho workload quan trọng và thiếu kiểm soát request/limit theo đo đạc.
+
+**Cách xử lý:** (1) Đặt {{memory request = limit = 3Gi}} cho payment-api (QoS Burstable/Guaranteed về memory), cấu hình JVM {{-XX:MaxRAMPercentage=70}} để chừa chỗ cho metaspace/thread/direct buffer; giữ CPU request theo p95 và bỏ CPU limit, đặt {{ActiveProcessorCount}}. (2) Gán {{PriorityClass}} {{business-critical}} cho payment/auth và {{batch-low}} ({{preemptionPolicy: Never}}) cho batch. (3) Bắt buộc LimitRange/ResourceQuota: không cho Pod BestEffort trên namespace prod. (4) Dùng VPA {{updateMode: Off}} và metric {{usage/request}} để điều chỉnh định kỳ.
+
+**Kết quả đo được:** Sau 4 tuần, không còn eviction do memory trên node prod; payment-api giữ đủ replica khi node pressure, trong khi batch bị scale down/evict trước. Tỉ lệ usage/request memory của payment-api ổn định ~85–95% (không vượt request), và sự cố cắt ngang request thanh toán lúc 2 giờ sáng không tái diễn.
+
+### Trả lời mẫu khi phỏng vấn
+"Trên Kubernetes cần phân biệt hai trường hợp: container vượt memory limit thì bị OOMKilled trong cgroup, còn node thiếu RAM thì kubelet evict Pod theo mức dùng vượt request, rồi tới priority và mức vượt. Vì vậy một Pod Burstable khai báo request thấp nhưng dùng nhiều vẫn có thể bị evict trước cả Pod BestEffort dùng ít. Tôi từng gặp service thanh toán request 1Gi nhưng dùng 3Gi bị evicted lúc node pressure, dù chưa chạm limit. Để xử lý, tôi đặt memory request bằng limit cho workload Java quan trọng để nó không vượt request, cấu hình heap theo phần trăm limit và chừa bộ nhớ ngoài heap, đồng thời gán PriorityClass cao cho service quan trọng và hạ priority cho batch. Tôi cũng thêm LimitRange/Quota để tránh Pod không khai báo resources và theo dõi tỷ lệ usage/request bằng VPA recommend mode. Kết quả là giảm rõ rệt eviction bất ngờ và hành vi khi node thiếu tài nguyên trở nên dễ dự đoán hơn."
 
 > Senior tip: mỗi tuần tôi xem tỷ lệ **usage/request memory** theo Pod (dùng VPA ở chế độ {{updateMode: "Off"}} chỉ để lấy gợi ý). Pod nào thường xuyên trên 100% là ứng viên bị evict tiếp theo — sửa request trước khi node thiếu RAM lúc 2 giờ sáng sửa giúp bạn.`,
     follow: [
@@ -3218,6 +3571,20 @@ spec:
 - Sealed Secrets mất private key của controller là mất khả năng giải mã toàn bộ: backup key, có quy trình re-seal khi xoay key.
 - Vault là điểm lỗi tập trung: Vault sập thì Pod mới không khởi động được. Chạy HA và có runbook khẩn cấp.
 
+### Ví dụ đời thực
+Triệu chứng: trong đợt audit PCI DSS, auditor yêu cầu chứng minh: (1) namespace {{payments}} không có đường ra internet trực tiếp, (2) mật khẩu DB không nằm trong Git, (3) mọi kết nối ra cổng thanh toán đều được log. Kiểm tra bằng {{kubectl get networkpolicy -n payments}} chỉ thấy một policy cho ingress từ ingress-nginx, không có default-deny egress; {{kubectl get secret -n payments}} thấy Secret {{payment-db}} dạng base64.
+
+Điều tra: CNI staging là Calico (hỗ trợ NetworkPolicy), prod dùng AWS VPC CNI chưa bật network-policy; ESO chưa cài, dev copy key vào Secret thủ công và commit vào repo GitOps. Mọi luồng egress đều mở, DB password thấy được trong {{kubectl get secret -o yaml}}.
+
+Nguyên nhân gốc: thiếu default-deny egress, CNI prod không enforce policy, secret management chưa tập trung.
+
+Cách xử lý: cài Cilium trên prod thay thế VPC CNI (hỗ trợ NetworkPolicy và FQDN); áp dụng default-deny ingress+egress như mẫu trên, thêm rule egress cho DNS, RDS subnet, egress-proxy; triển khai External Secrets Operator trỏ AWS Secrets Manager, xoá Secret thủ công, xoá key khỏi Git history bằng BFG. Thêm job test trong pipeline: Pod thử {{curl https://api.payment-gateway.vn}} phải bị chặn trừ khi qua egress-proxy.
+
+Kết quả đo được: auditor chấp nhận flow log Cilium Hubble thể hiện 100% traffic egress đi qua proxy, 0 kết nối trực tiếp ra internet; secret rotation tự động qua ESO, 0 key tĩnh trong Git.
+
+### Trả lời mẫu khi phỏng vấn
+"Với PCI DSS, tôi thiết kế default-deny cho cả ingress và egress trong namespace payments, chỉ mở luồng cần thiết: ingress từ ingress-nginx, egress cho DNS, RDS subnet, và một egress proxy duy nhất ra internet vì NetworkPolicy chuẩn không lọc FQDN. Secret không bao giờ vào Git: dùng External Secrets Operator đồng bộ từ AWS Secrets Manager, hoặc Vault Agent CSI cho credential động. Etcd bật encryption at rest KMS, RBAC chặt quyền đọc secret. Quan trọng nhất là bằng chứng: pipeline có test tự động đảm bảo Pod không gọi ra internet trực tiếp, và xuất flow log Cilium Hubble cho auditor đọc. Điều này biến audit từ kiểm tra cấu hình thành đọc báo cáo số liệu."
+
 > Senior tip: với audit PCI, **bằng chứng quan trọng hơn cấu hình**. Tôi sinh ma trận luồng mạng (nguồn, đích, port, lý do) trực tiếp từ policy, chạy test kết nối tự động trong pipeline — một Pod thử gọi các luồng bị cấm và test **phải fail** — mỗi lần đổi policy, rồi xuất flow log (Cilium Hubble hoặc VPC Flow Logs) và log truy cập secret cho auditor. Audit lúc đó chỉ còn là đọc báo cáo.`,
     follow: [
       'Làm sao rotate mật khẩu DB của service đang chạy 20 Pod mà không có downtime?',
@@ -3298,6 +3665,20 @@ Với SLI độ trễ, Spring Boot tạo sẵn bucket ở ngưỡng SLO bằng {
 - **Đếm 4xx là lỗi** thì client gửi sai cũng đốt budget; ngược lại trả 200 kèm body lỗi nghiệp vụ thì lỗi thật không bị đếm.
 - **Xoá sạch alert nguyên nhân**: vẫn giữ cảnh báo "sắp hỏng" như đĩa sắp đầy, chứng chỉ TLS sắp hết hạn — dạng ticket, hoặc page nếu thời gian còn lại quá ngắn.
 
+### Ví dụ đời thực
+Triệu chứng: on-call nhận 40 cảnh báo/tuần (CPU > 80%, heap > 85%, 5xx đơn lẻ), phần lớn tự hết; sự cố thật lại do khách hàng báo: API thanh toán p99 tăng từ 200 ms lên 5 giây trong 20 phút, lỗi 5xx 1.2% nhưng không page ai. Kiểm tra Prometheus thấy alert CPU > 80% kêu 15 lần/tuần do batch cuối ngày và JIT warm-up, alert heap > 85% kêu mỗi lần GC, alert "có 5xx" kêu mỗi khi có 1–2 lỗi trong 1 triệu request.
+
+Điều tra: alert dựa trên metric nền tảng thay vì SLI người dùng; không có SLO/error budget nên không biết ngưỡng nào mới đáng page; burn rate không được tính.
+
+Nguyên nhân gốc: thiếu khung SLO/SLI, alert nhầm nguyên nhân (CPU, heap) là triệu chứng.
+
+Cách xử lý: định nghĩa SLI = request không 5xx + request < 300 ms; SLO 99.9% trong 30 ngày cuộn; error budget 0.1%. Cấu hình multi-window burn rate: page khi burn rate ≥ 14.4 (1h + 5m) hoặc ≥ 6 (6h + 30m); ticket khi burn rate ≥ 1 (3 ngày + 6h). Chuyển alert CPU/heap sang dashboard; thêm synthetic probe đo SLI từ load balancer. Viết error budget policy ký với product: budget cạn → đóng băng feature.
+
+Kết quả đo được: page giảm từ 40/tuần xuống 3–4/tuần, 95% page dẫn tới hành động; MTTD từ 20 phút (khách báo) xuống 3 phút (alert burn rate); postmortem blameless cho ra 12 action item, 10 đã đóng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi xây alert trên SLI/SLO chứ không phải metric nền tảng. SLI là tỷ lệ request thành công và tỷ lệ request nhanh hơn 300 ms, SLO 99.9% trong 30 ngày, error budget 0.1%. Chỉ page khi burn rate cao: ≥ 14.4 lần mức cho phép trong 1 giờ kết hợp 5 phút, hoặc ≥ 6 lần trong 6 giờ kết hợp 30 phút — multi-window giúp vừa bắt nhanh vừa tự tắt sau khi sửa. CPU, heap chuyển sang dashboard. Sau sự cố, postmortem blameless: timeline có giờ cụ thể, tìm yếu tố góp phần của hệ thống chứ không đổ lỗi cá nhân, action item có owner và hạn. Error budget policy ký trước với product biến tranh luận 'ra feature hay sửa lỗi' thành đọc số liệu."
+
 > Senior tip: đo chính hệ thống cảnh báo: **số page mỗi ca trực** và **tỷ lệ page dẫn tới hành động thật**. Mục tiêu của tôi là vài page mỗi tuần và gần như page nào cũng cần làm gì đó; page nào không cần hành động thì sửa hoặc xoá alert ngay trong tuần đó. On-call tin vào alert là điều kiện để họ phản ứng nhanh lúc 3 giờ sáng.`,
     follow: [
       'Bạn đặt SLO thế nào cho một service phụ thuộc vào DB và ba service khác, mỗi cái có độ sẵn sàng riêng?',
@@ -3376,6 +3757,20 @@ ALB có stickiness, nhưng NGINX mở (community) không có directive sticky (c
 - Redis sập: toàn bộ user mất phiên — phải có Redis HA và chấp nhận đây là dependency mới của auth.
 - Bật Spring Session nhưng vẫn đọc request.getAttribute từ session Tomcat cũ ở code legacy.
 
+### Ví dụ đời thực
+Triệu chứng: sau khi scale service thanh toán từ 1 lên 3 Pod, khách hàng bị bật đăng nhập ngẫu nhiên (mỗi 3 request), file báo cáo upload 5 MB biến mất khi tải lại, và job tính lãi hàng ngày chạy đúng 3 lần khiến số dư khách tăng gấp 3. Kiểm tra log: request đăng nhập luân phiên rơi vào 3 Pod, mỗi Pod có session memory riêng; upload ghi vào {{/tmp}} của Pod, tải về rơi Pod khác báo 404; {{@Scheduled}} chạy trong cả 3 replica.
+
+Điều tra: app giữ state trong process: HTTP session trong Tomcat memory, file multipart trên local disk, job cron không có distributed lock. Service chia traffic round-robin giữa 3 Pod, Pod là ephemeral — restart là mất hết state.
+
+Nguyên nhân gốc: app không stateless khi thiết kế cho single instance, thiếu chuẩn hóa cho Kubernetes.
+
+Cách xử lý: thêm Spring Session Data Redis (session vào Redis Sentinel HA); upload stream thẳng lên S3 qua presigned URL, DB chỉ lưu key; job {{@Scheduled}} thêm {{@SchedulerLock}} (ShedLock với Redis) hoặc tách ra CronJob đơn lẻ. Checklist stateless: không session memory, không file local, job có lock, cache có TTL+invalidate.
+
+Kết quả đo được: k6 test 500 user đồng thời, {{kubectl delete pod --force}} một replica giữa phiên — 0 user bị bật đăng nhập, 0 file mất, job chạy đúng 1 lần/ngày. Scale từ 3 lên 10 Pod không thay đổi hành vi.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi scale từ 1 lên 3 Pod, ba lỗi đều do app giữ state trong process: session Tomcat memory làm mất đăng nhập vì request rơi Pod khác, file ghi {{/tmp}} biến mất vì Pod không chia sẻ disk, {{@Scheduled}} chạy đa replica làm job chạy 3 lần. Tôi sửa bằng: Spring Session đưa session vào Redis HA, upload stream thẳng S3 qua presigned URL, job thêm ShedLock hoặc tách CronJob. Nguyên tắc: app phải stateless — mọi thứ cần sống sót qua Pod (session, file, lock, cache) đều nằm ở Redis, S3, DB, queue. Kiểm chứng bằng k6 load test kèm {{kubectl delete pod}} giữa phiên: user không nhận ra gì ngoài chậm một nhịp. Sticky session chỉ là băng keo tạm, không thay thế thiết kế stateless."
+
 > Senior tip: tiêu chí nghiệm thu tôi hay áp: chạy k6 tạo tải có đăng nhập, trong lúc đó {{kubectl delete pod --force}} một replica giữa phiên — người dùng phải không nhận ra gì ngoài chậm hơn một nhịp. Test này bắt được 90% lỗi stateless trước khi lên prod.`,
     follow: [
       'Đã dùng Spring Session với Redis mà Redis chết: người dùng gặp gì và bạn thiết kế graceful thế nào?',
@@ -3442,6 +3837,17 @@ Dùng AWS SSO ({{aws sso login}}) với role dev, hoặc profile tạm hết h�
 - Quên region làm gọi STS/SDK treo hoặc UnknownHostException — luôn đặt {{AWS_REGION}} (hoặc env cluster-defaults).
 - SDK v1 quá cũ: có phiên bản không tự làm mới web identity token → job batch chết sau 1 giờ đúng nửa đêm; nâng SDK v2.
 - Tự cache {{BasicSessionCredentials}} vào static variable — đừng đấu với SDK.
+
+### Ví dụ đời thực
+Triệu chứng: service thanh toán trên EKS dùng access key + secret key trong ConfigMap để ghi S3 và gửi SQS. Audit phát hiện: key nằm trong ConfigMap plain text trong etcd, một key chia sẻ cho 5 service, rotate thủ công mỗi quý mất 2 ngày và thường sót chỗ khiến service lỗi 403. CloudTrail chỉ thấy "key X gọi s3:DeleteObject" không biết service nào.
+
+Điều tra: ConfigMap lưu plain text, ai có quyền get trong namespace đều đọc được; key không có TTL, nhân sự nghỉ vẫn xài được; 5 service dùng chung một key nên audit không truy vết được service cụ thể; SDK v1 không tự làm mới token → job batch chết sau 1 giờ.
+
+Nguyên nhân gốc: dùng static credential thay vì IAM role cho Pod, thiếu least privilege, SDK cũ.
+
+Cách xử lý: triển khai IRSA: tạo OIDC provider cho cluster, IAM role {{payment-s3-sqs}} với trust policy {{system:serviceaccount:payments:payment-sa}}, permission policy giới hạn prefix bucket {{bank/payments/*}} và queue ARN cụ thể; SA {{payment-sa}} annotation role ARN; nâng SDK lên v2. Mỗi service một role riêng. Dev local dùng AWS SSO profile, test dùng LocalStack.
+
+Kết quả đo được: 0 static key trong Git/ConfigMap; CloudTrail log rõ service nào gọi API nào; credential tự rotate 1 giờ, 0 sự cố 403 do hết hạn; audit pass zero-finding. Xoá key cũ IAM sau 1 tuần theo dõi CloudTrail.
 
 ### Trả lời phỏng vấn
 Chuỗi ý: key tĩnh có vấn đề gì → chain credential → IRSA/Pod Identity cơ chế → least privilege theo từng service → dev local bằng SSO. Kết bằng lợi ích audit: mỗi service một danh tính, mọi call truy vết được.
@@ -3511,6 +3917,20 @@ Git không chứa secret; hai lựa chọn phổ biến: **External Secrets Oper
 - Repo cấu hình phình to (30 service × 4 môi trường) → render chậm; tách apps/infra và dùng ApplicationSet.
 - Văn hoá "thôi kubectl cho nhanh" sống sót sau selfHeal — phải kỷ luật: prod access chỉ còn break-glass có log.
 - Argo CD là single point of failure: mất Argo thì cluster vẫn chạy, nhưng bạn mất cách deploy an toàn — cần runbook.
+
+### Ví dụ đời thực
+Triệu chứng: team dùng Jenkins chạy {{kubectl apply}} từ ngoài cluster. Deploy mất 20 phút, rollback phải tìm job cũ hoặc gõ {{kubectl rollout undo}}, không ai nhớ version nào đang chạy. Dev sửa resource tay ({{kubectl edit deployment}}) quên commit, lần sau Jenkins deploy lại ghi đè. Secret DB commit vào repo GitOps, auditor phát hiện. CI giữ kubeconfig admin prod — nếu Jenkins bị hack thì toàn bộ cluster rơi.
+
+Điều tra: push-based CI/CD có credential cluster ở ngoài; không có nguồn sự thật duy nhất (Git); sửa tay không bị phát hiện; secret vào Git; rollback không có audit trail.
+
+Nguyên nhân gốc: thiếu mô hình GitOps, tách quyền không chặt.
+
+Cách xử lý: triển khai Argo CD pull-based; repo cấu hình apps tách biệt, CI chỉ bump image tag commit vào apps repo; bật selfHeal + ignoreDifferences cho HPA replicas; rollback bằng {{git revert}} commit bump image, Argo sync tự động; secret dùng External Secrets Operator pull từ Vault; prod access chỉ break-glass có log. Pipeline CI < 10 phút, deploy bằng merge PR.
+
+Kết quả đo được: deploy từ 20 phút xuống 3 phút (merge PR → Argo sync); rollback 1 lệnh {{git revert}} < 1 phút; auditor pass (Git log = audit trail, 0 secret trong repo); drift = 0 nhờ selfHeal; 30 service quản bằng ApplicationSet, thêm service mới 1 commit.
+
+### Trả lời mẫu khi phỏng vấn
+"GitOps nghĩa là trạng thái mong muốn của cluster nằm trong Git, Argo CD trong cluster kéo thực tế về khớp Git. CI không còn deploy — chỉ bump image tag commit vào apps repo. Deploy hằng ngày = merge PR. Rollback = {{git revert}} commit bump image, Argo sync lại, lịch sử deploy = git log. Sửa tay ({{kubectl edit}}) bị Argo phát hiện là drift và self-heal đè lại (trừ HPA replicas ignoreDifferences). Secret không vào Git, dùng External Secrets Operator. Thay đổi lớn: dev không cần quyền prod, chỉ cần quyền merge PR vào apps repo; auditor thấy Git log thay vì xin log Jenkins. Drill phá staging dựng lại từ Git + registry dưới 30 phút là tiêu chí nghiệm thu."
 
 > Senior tip: trước khi chuyển, chạy drill "tường lửa": phá cluster staging, dựng lại từ trắng, chỉ dùng Git + registry — mục tiêu dưới 30 phút. Drill này đồng thời test GitOps, backup image, Terraform và tài liệu; team nào không làm được là GitOps còn hổng thật.`,
     follow: [
@@ -3596,6 +4016,20 @@ Khi abort: canary scale về 0, rollout dừng ở trạng thái aborted, metric
 - Chạy canary đồng thời với DB migration coalesce → không còn "old code path" để lui.
 - Pause vô hạn bị quên: rollout treo 3 ngày giữa 5%, hai ReplicaSet cùng tồn tại, dev tưởng đã xong.
 
+### Ví dụ đời thực
+Triệu chứng: team triển khai canary cho service thanh toán: 5% traffic 10 phút → 25% → 50% → 100%. Lần đầu canary 5% p99 tăng từ 150 ms lên 800 ms trong 3 phút, analysis abort oan; lần sau tester dùng canary-by-header bắn tải test làm abort; lần thứ ba rollout treo 3 ngày ở 5% vì pause vô hạn bị quên.
+
+Điều tra: pod canary mới JIT chưa warm (p99 cao vài phút đầu) mà analysis đo ngay; tester dùng header bypass weight làm analysis tính sai; pause đầu tiên để vô hạn mà không ai theo dõi. Migration DB không expand-contract khiến canary và stable dùng chung schema mới, stable lỗi.
+
+Nguyên nhân gốc: thiếu warmupDurationSecs, analysis đo p99 thay vì 5xx rate, canary-by-header không trừ vào analysis, pause không có timeout, migration không tương thích ngược.
+
+Cách xử lý: thêm warmupDurationSecs 120s cho canary, analysis chỉ bắt đầu sau pause; analysis dùng 5xx rate + business error rate (ít nhiễu hơn p99); canary-by-header traffic không đếm vào analysis; pause đầu tiên 10 phút, pause sau có duration; migration phải expand-contract, Flyway chạy ở sync-wave 1 trước Deployment. Thêm script promote/abort từng bước khi incident.
+
+Kết quả đo được: 5 deploy canary liên tiếp: 0 abort oan, p99 canary 5% ổn định 180 ms (JIT warm), deploy tự động 5%→25%→50%→100% trong 45 phút, rollback abort < 30 giây. Tìm được 1 bug thật (gateway từ chối tăng 2%) ở bước 25% nhờ analysis.
+
+### Trả lời mẫu khi phỏng vấn
+"Argo Rollouts dùng CRD Rollout thay Deployment, điều phối stable/canary qua steps: setWeight, pause, AnalysisTemplate query Prometheus. Canary 5% traffic 10 phút, 25%, 50%, 100%, tự abort nếu 5xx rate > 1% (failureLimit 2). Traffic chia qua NGINX ingress canary-weight. Ba điều Java phải nhớ: (1) pod canary mới JIT lạnh p99 cao — dùng warmupDurationSecs, đo sau pause; (2) DB state chia sẻ — migration phải expand-contract; (3) sample nhỏ traffic thấp p99 nhiễu — dùng 5xx rate, pause vô hạn đầu để người xem log. Lỗi hay gặp: readiness lạc quan, canary-by-header test traffic không trừ analysis, pause quên. Tôi bắt đầu bằng 5xx rate + business error rate, pause 10 phút người xem, chỉ tin máy sau khi nó bắt đúng 2–3 vụ thật."
+
 > Senior tip: với service thanh toán, bắt đầu phân tích bằng **tỷ lệ lỗi 5xx + tỷ lệ lỗi nghiệp vụ (gateway từ chối)** thay vì p99 — hai metric này ít nhiễu ở sample nhỏ. Giữ bước pause đầu tiên vô hạn để con người nhìn log canary 10 phút; chỉ tin máy sau khi bạn thấy analysis máy đã bắt đúng 2–3 vụ thật.`,
     follow: [
       'Traffic rất thấp (dưới 1 RPS): thiết kế analysis thế nào để canary không fail oan?',
@@ -3657,6 +4091,25 @@ Cạm bẫy transaction-mode với JDBC/Postgres: prepared statements của driv
 
 ### Trả lời phỏng vấn 30 giây
 "Đầu tiên em tính ngân sách connection thật (tổng pod × pool + surge), không scale pool theo cảm tính; pool app để nhỏ theo công thức core; nếu số client lớn thì đặt PgBouncer/RDS Proxy multiplex và kiểm tra prepared statements + session variables; storm lúc deploy xử lý bằng minimumIdle nhỏ, fail-fast + backoff; cuối cùng thêm cảnh báo cả hai phía hikari_pending và pg_stat_activity."
+
+### Ví dụ đời thực
+**Bối cảnh:** Service {{payment-svc}} chạy 10 replica trên EKS, Hikari {{maximumPoolSize=20}} (mặc định team copy), PostgreSQL {{max_connections=200}}. Ngoài ra còn {{order-svc}} 8 replica × 15, plus job Flyway và cron.
+
+**Triệu chứng:** 09:10 bắt đầu rolling update payment-svc (maxSurge 25%). Sau 2 phút, p99 API thanh toán tăng từ 180ms lên 6–12s, {{hikaricp_connections_pending}} tăng vọt, log xuất hiện {{SQLTransientConnectionException: Connection is not available, request timed out after 3000ms}}. Dashboard DB báo {{pg_stat_activity}} đếm được ~198–200 kết nối, nhiều session ở trạng thái {{idle in transaction}}.
+
+**Điều tra:**
+- {{kubectl get pods -l app=payment-svc}} thấy 13 pod (10 cũ+dừng dần + 3 surge) cùng lúc Running/Starting.
+- Truy vấn DB: {{SELECT application_name, state, count(*) FROM pg_stat_activity GROUP BY 1,2;}} cho thấy payment-svc chiếm ~156 kết nối, order-svc ~40, còn lại migration/monitoring; nhiều kết nối {{idle in transaction}} kéo dài 30–90s.
+- Bật {{leak-detection-threshold: 60000}} (đã cấu hình) và log chỉ ra stacktrace dừng ở một method {{@Transactional}} gọi HTTP sang đối tác xác minh thẻ trong 3–5s.
+- Metric rollout cho thấy {{minimumIdle}} đang bằng 20 nên mỗi pod mới mở đủ 20 kết nối ngay khi khởi động → tổng bùng lên (13×20 + 8×15) vượt ngưỡng DB.
+
+**Nguyên nhân gốc:** (1) Không có ngân sách connection tổng (pod × pool + surge vượt {{max_connections}}). (2) Connection storm do {{minimumIdle}} quá lớn khi nhiều pod dậy cùng lúc. (3) Transaction dài vì bọc cả HTTP outbound bên trong {{@Transactional}}, giữ connection DB không cần thiết.
+
+**Cách xử lý:**
+- Ngắn hạn: rollback rollout, tăng tạm {{max_connections}} lên 260 (sau khi đánh giá RAM DB) và đặt {{statement_timeout}} 30s cho role app để cắt query treo; khởi động lại các pod kẹt {{idle in transaction}}.
+- Dài hạn: hạ payment-svc xuống {{maximumPoolSize: 8}}, {{minimumIdle: 2}}, {{connectionTimeout: 3000}}, {{initializationFailTimeout: -1}}; tách HTTP call ra ngoài transaction; triển khai PgBouncer (transaction mode) phía trước DB với pool server ~60 kết nối thật; đặt ngân sách connection theo service + buffer surge và dashboard hai phía (Hikari + {{pg_stat_activity}}).
+
+**Kết quả đo được:** Sau thay đổi, trong 3 lần rolling update tiếp theo {{hikaricp_connections_pending}} luôn = 0, {{pg_stat_activity}} đỉnh ~120/200, p99 ổn định 190–220ms, không còn timeout kết nối. Thời gian rollout giảm vì pod không bị crashloop do readiness fail.
 
 > Senior tip: dashboard đúng phải có **cả hai phía**: {{hikaricp_connections_active/pending}} (Micrometer) đặt cạnh {{pg_stat_activity}} đếm theo application_name. 90% vụ "app treo khi cao điểm" là một transaction dài giữ connection + pool nhỏ — leak-detection-threshold chính là nút bằng chứng thay vì phỏng đoán.`,
     follow: [
@@ -3729,6 +4182,27 @@ Archive phụ thuộc đúng jar đó → regenerate mỗi build, copy vào imag
 - Cắt startup nhưng bỏ mặc warm-up: Ready nhanh mà p99 vẫn teo 1 phút đầu → cần gradual traffic (warmupDurationSecs của Argo Rollouts) hoặc minReplicas đủ.
 - lazy init làm lỗi cấu hình xuất hiện lúc 20h thay vì lúc deploy — fail-fast là tính năng.
 
+### Ví dụ đời thực
+**Bối cảnh:** Service {{checkout-svc}} (Spring Boot 3, 600+ beans, Flyway, Kafka listener, cache warm) chạy trên Kubernetes với HPA min 3, max 20.
+
+**Triệu chứng:** Giờ cao điểm 20:00 traffic tăng gấp 3 trong 5 phút. HPA scale lên 12 pod nhưng p99 từ 250ms nhảy lên 4–6s kéo dài ~2 phút. Khi rollback một bản lỗi, toàn bộ rollout mất hơn 15 phút; có lần node chết buộc tái tạo pod và người dùng gặp lỗi gián đoạn.
+
+**Điều tra:**
+- {{kubectl get events --sort-by=.lastTimestamp}} và {{kubectl describe pod}} cho thấy: pull image trên node mới ~25s (image 280MB), container Started → Ready mất ~95s.
+- Bật {{BufferingApplicationStartup}} và gọi {{GET /actuator/startup}}: Spring context ~70s, trong đó Flyway migration kiểm tra ~18s, entity scan và khởi tạo bean nặng ~35s, Kafka consumer đăng ký + metadata ~12s.
+- Quan sát sau khi Ready: p99 vẫn cao thêm ~40s do JIT chưa warm.
+
+**Nguyên nhân gốc:** Startup quá chậm do làm nhiều việc nặng trong pha boot (migration, scan rộng, warm cache đồng bộ) và image lớn; startupProbe cấu hình sát nên một số pod trên node lạnh từng bị restart oan, kéo dài thêm thời gian phục hồi.
+
+**Cách xử lý:**
+- Ngắn hạn: tăng {{startupProbe}} (period × failureThreshold đủ > 150s cho node lạnh), tạm tăng minReplicas lên 6 để giảm áp lực khi scale.
+- Dài hạn: bật AppCDS trong CI ({{-XX:ArchiveClassesAtExit}} rồi dùng {{-XX:SharedArchiveFile}} trong image), chuyển Flyway sang Job chạy trước deploy, thu hẹp component/entity scan, trì hoãn warm cache và một số listener sang sau readiness; tối ưu image layered jar + base nhỏ. Sau khi ổn định, đo và thêm warmup traffic dần (Argo Rollouts) cho phút đầu.
+
+**Kết quả đo được:** Thời gian pull + start → Ready giảm từ ~120s xuống ~32s p95 (kể cả node mới), rollback/rollout nhanh hơn rõ rệt, HPA phản ứng kịp hơn. p99 phút đầu sau scale giảm đáng kể nhờ warmup dần; minReplicas hạ từ 6 về 3 tiết kiệm tài nguyên mà vẫn giữ SLO.
+
+### Trả lời mẫu khi phỏng vấn
+"Em coi startup chậm là vấn đề vận hành trên Kubernetes, không chỉ là cảm giác chậm. Với Spring Boot, 90 giây thường đến từ pull image, dựng Spring context và warm-up JIT, nên HPA sẽ luôn phản ứng trễ sau khi tải đã tăng, rollout và rollback kéo dài, và khi node chết ta cũng mất đúng khoảng thời gian đó để phục hồi. Cách em tiếp cận là đo theo từng giai đoạn bằng {{BufferingApplicationStartup}} và {{/actuator/startup}} cộng với sự kiện pod để tách pull, JVM, context và warm-up. Sau đó em ưu tiên các cải tiến chi phí thấp hiệu quả cao như AppCDS, thu hẹp scan, tách Flyway ra Job trước deploy và không chặn readiness bằng các tác vụ nặng. Với CRaC hay native image, em chỉ cân nhắc khi bài toán scale-to-zero hoặc startup cực nhanh là mục tiêu cốt lõi, vì chúng có trade-off về toolchain, thư viện và throughput. Cuối cùng em đặt SLO cho thời gian Ready và theo dõi nó trong từng lần rollout."
+
 > Senior tip: đặt SLO cho chính thời gian khởi động, ví dụ "Pod mới Ready dưới 45s p95, kể cả trên node vừa sạch image", và **đo nó trong mỗi lần rollout** chứ không phải lúc chạy bench trên laptop. Sau khi rút xuống ~20s, giảm minReplicas các service HPA-bound theo — tiền tiết kiệm từ startup nhanh thường lớn hơn tiền tiết kiệm từ image nhỏ.`,
     follow: [
       'Phân biệt vai trò startupProbe / livenessProbe / readinessProbe khi app khởi động 2 phút; công thức chọn failureThreshold × period?',
@@ -3783,6 +4257,27 @@ Khi app của bạn **tiêu thụ** API người khác: cấu hình Jackson **kh
 - Siết validation "để chặn dữ liệu bẩn" làm client cũ (vẫn gửi null như trước) chết hàng loạt.
 - gRPC/protobuf: **không tái sử dụng số field** đã xoá — trên wire không còn tên để mà thương lượng.
 
+### Ví dụ đời thực
+**Bối cảnh:** Service {{payment-api}} phục vụ web và mobile (2 phiên bản app đang lưu hành). Team đổi {{amount}} từ number sang string ({{amountDecimal}}) để tránh sai số tiền tệ, xoá {{fee}} cũ, và siết validation (yêu cầu {{currency}}). Deploy bằng rolling update.
+
+**Triệu chứng:** Sau khi một phần pod chạy phiên bản mới, khoảng 8% request thanh toán từ mobile bản cũ lỗi 400/500; đối tác webhook nội bộ cũng bắt đầu parse sai số tiền vì vẫn đọc {{amount}} kiểu number và không thấy {{fee}}.
+
+**Điều tra:**
+- Log ingress và application cho thấy lỗi validation (thiếu {{currency}} ở client cũ) và {{NullPointerException/deserialization error}} ở consumer webhook đọc field đã đổi kiểu/đã bị bỏ.
+- Kiểm tra metric theo header {{X-Client-Version}}: phiên bản app 4.1 vẫn chiếm ~35% traffic; cron reconciliation nội bộ gọi cùng endpoint mỗi 15 phút.
+- Review CI: thay đổi schema nằm trong PR refactor lớn, không có bước contract verify với consumer đã đăng ký.
+
+**Nguyên nhân gốc:** Thực hiện breaking change (đổi kiểu, xoá field, siết validation) mà không theo expand-contract và không có contract testing chặn trước khi deploy; consumer ngoài tầm nhìn (app cũ, webhook, cron) bị ảnh hưởng trong cửa sổ mixed-version.
+
+**Cách xử lý:**
+- Ngắn hạn: rollback phiên bản mới, nới lỏng validation tạm thời để chấp nhận payload cũ; hotfix webhook/cron để tolerant với cả hai dạng field.
+- Dài hạn: pha Expand trả cả {{amount}} (number) và {{amountDecimal}} (string), giữ {{fee}} nhưng đánh dấu deprecate, và chấp nhận input cũ; gắn {{Deprecation/Sunset}} và theo dõi usage theo {{X-Client-Version}}. Thiết lập Pact/Spring Cloud Contract trong CI với gate {{can-i-deploy}} cho provider. Chỉ Contract (xoá field cũ, siết validation) khi usage field cũ dưới ngưỡng và đã qua thời gian thông báo.
+
+**Kết quả đo được:** Sau khi áp dụng expand-contract và bật contract verify, 2 lần thay đổi API tiếp theo được CI chặn sớm (1 breaking enum, 1 field rename) trước merge. Lần rollout migrate thực tế: 0 lỗi tăng bất thường theo phiên bản client, tỷ lệ đọc field cũ giảm từ 35% xuống <1% sau 6 tuần rồi mới xoá an toàn.
+
+### Trả lời mẫu khi phỏng vấn
+"Em xem API đã publish là một hợp đồng, nên thay đổi như đổi kiểu dữ liệu, xoá field hay siết validation là breaking và không thể deploy một lần cho xong khi đang rolling update và còn nhiều phiên bản client. Em sẽ áp dụng chiến lược expand-contract: pha đầu mở rộng để tương thích ngược, ví dụ trả cả field cũ và field mới, giữ validation đủ thoáng, rồi quan sát mức sử dụng theo phiên bản client và header deprecation/sunset. Khi consumer đã migrate gần hết, em mới thu gọn ở một release riêng. Về CI, em dùng contract testing như Pact hoặc Spring Cloud Contract để provider phải pass contract của các consumer đã đăng ký trước khi merge hoặc promote, vì đây là cách chặn breaking change sớm và chính xác. Em cũng nhấn mạnh tolerant reader ở phía tiêu thụ API và theo dõi metric traffic dùng API cũ để có dữ liệu trước khi xoá. Theo kinh nghiệm, kỷ luật contract verify và đo usage quan trọng hơn tranh luận bằng cảm giác."
+
 > Senior tip: biến "còn bao nhiêu % traffic dùng API cũ" thành một panel cố định; xoá endpoint mà không có số liệu này giống như rút cầu khi chưa biết còn người bên kia. Và giữ quy tắc sắt: mọi PR thay đổi schema phải kèm kết quả pact-verify — đỏ là không merge; discussion với product không thay thế được máy kiểm.`,
     follow: [
       'Đối tác EU gọi API của bạn, họ không nâng cấp theo lịch của bạn: thiết kế chính sách hỗ trợ phiên bản thế nào?',
@@ -3835,6 +4330,27 @@ Istio **ambient mode**: node-agent (ztunnel) lo mTLS/L4 cho mọi Pod, proxy L7 
 - Mesh retry tự động trên API ghi → ghi nợ hai lần; hoặc dev thêm Resilience4j retry **chồng** mesh retry → bùng nổ 3×3 request khi đối tác chậm.
 - App bind port vượt mặt mesh (hostNetwork, gọi thẳng IP + port gốc) → tưởng đã mã hoá mà chưa.
 
+### Ví dụ đời thực
+**Bối cảnh:** Nền tảng đề xuất Istio cho 30 microservice (đa ngôn ngữ) để đáp ứng yêu cầu audit "mã hoá mọi traffic nội bộ và có định danh service-to-service". Một số team Java đã dùng Resilience4j cho timeout/retry/fallback.
+
+**Triệu chứng (pilot namespace staging):** Sau khi bật mTLS STRICT ở namespace pilot, CronJob không có sidecar gọi sang service trong namespace bị lỗi {{connection reset / TLS handshake}}. Ở một API tạo thanh toán, retry cấu hình ở VirtualService kết hợp với retry ở Resilience4j gây tăng gấp nhiều lần số request khi downstream chậm; p99 của luồng này tăng thêm ~1–3ms/hop do sidecar.
+
+**Điều tra:**
+- Kiểm tra Envoy access log và sự kiện pod: thấy các workload không inject sidecar (CronJob, job batch) bị từ chối khi STRICT; dashboard mesh cho thấy retry xảy ra ở cả tầng Envoy và tầng client Java.
+- So sánh benchmark trước/sau tại cùng tải: overhead latency mỗi hop tăng nhẹ nhưng chấp nhận được; CPU/memory mỗi pod tăng do Envoy sidecar.
+- Audit policy và identity: mesh cung cấp mTLS và SPIFFE identity tự động, trong khi giải pháp hiện tại (TLS rời rạc + JWT tự quản) khó chứng minh đồng nhất cho mọi cặp service.
+
+**Nguyên nhân gốc:** Bật STRICT quá sớm khi chưa rà soát workload không sidecar; không có quy ước "retry chỉ ở một tầng" và chưa phân rõ phần trách nhiệm mesh (bảo mật, telemetry, traffic shifting) với Resilience4j (fallback/logic nghiệp vụ).
+
+**Cách xử lý:**
+- Ngắn hạn: chuyển namespace về PERMISSIVE, bổ sung sidecar cho workload cần thiết hoặc tách luồng ngoại lệ, tắt retry trùng ở một phía (ưu tiên kiểm soát retry nghiệp vụ trong app, mesh giữ traffic shifting/telemetry).
+- Dài hạn: rollout theo lộ trình (PERMISSIVE → audit → STRICT) từng namespace, chuẩn hoá policy/VirtualService, đo p99 và tài nguyên trước/sau, viết runbook debug 503 từ Envoy, và giữ Resilience4j cho fallback/idempotency-aware logic.
+
+**Kết quả đo được:** Sau pilot chuẩn hoá, 100% traffic giữa service trong phạm vi áp dụng được mã hoá mTLS với identity rõ ràng (đáp ứng audit). Sự cố nhân đôi retry được loại bỏ, p99 tăng trong ngưỡng chấp nhận đã đo (~0.8–2ms/hop tuỳ luồng) và team có dashboard traffic theo cặp src→dst mà không sửa code app.
+
+### Trả lời mẫu khi phỏng vấn
+"Em nhìn service mesh như một tầng hạ tầng cho traffic đông-tây: sidecar proxy như Envoy chặn traffic vào ra để cung cấp mTLS tự động, định danh workload, policy và telemetry mà không cần sửa từng ứng dụng. So với Resilience4j, mesh mạnh ở bài toán nền tảng và đa ngôn ngữ, còn thư viện trong JVM mạnh ở chỗ hiểu ngữ cảnh nghiệp vụ như fallback hay idempotency. Khi cân nhắc áp dụng, em sẽ đánh giá theo yêu cầu compliance, năng lực vận hành và chi phí độ trễ/tài nguyên, chứ không chọn theo công cụ. Nếu triển khai, em đi theo lộ trình an toàn: pilot namespace, bật PERMISSIVE rồi audit trước khi STRICT, đo p99 và chi phí, và quy ước rõ retry chỉ nằm ở một tầng để tránh bùng nổ request. Thực tế em cũng luôn giữ Resilience4j cho các quyết định theo nghiệp vụ, còn mesh dùng cho bảo mật, quan sát và điều phối traffic."
+
 > Senior tip: đừng quyết mesh bằng câu hỏi "tool nào mạnh" mà bằng hai câu của auditor: **(1) ta có cần chứng minh mọi traffic giữa các service được mã hoá và có identity không? (2) ta có đủ người vận hành thêm một control plane không?** Ngân hàng 30 service thường trả lời "có" cho (1) — mesh là đường ngắn; startup 5 người thì "không" cho (2) — thư viện + TLS ở ingress là đúng.`,
     follow: [
       'VirtualService retry 2 lần + Resilience4j retry 2 lần cho cùng một call: hệ quả và cách đặt quy tắc "ai được retry"?',
@@ -3874,6 +4390,27 @@ Istio **ambient mode**: node-agent (ztunnel) lo mTLS/L4 cho mọi Pod, proxy L7 
 
 ### Đo sức khoẻ chương trình
 KPI: số minor đang chậm, **thời gian trung bình vá một CVE của runtime**, tổng effort mỗi upgrade (phải giảm dần qua các chu kỳ), số incident trong 30 ngày sau mỗi upgrade. Upgrade là một product nội bộ — có backlog, có retrospective.
+
+### Ví dụ đời thực
+**Bối cảnh:** Cluster EKS production chạy 30 service Java, đang chậm 3 minor so với bản được hỗ trợ vá CVE mới nhất. Addon gồm ingress-nginx, cert-manager, Argo CD, CSI driver; nhiều manifest quản lý bằng GitOps.
+
+**Triệu chứng:** Kỳ upgrade trước team cố "nhảy" nhiều bậc trong một đợt: ingress webhook lỗi khiến deploy bị chặn, một số PodDisruptionBudget (PDB) dùng {{policy/v1beta1}} không apply được trên phiên bản mới, Argo CD báo nhiều ứng dụng OutOfSync. Thời gian xử lý kéo dài cả ngày, phải freeze deploy và rollback một phần cấu hình addon.
+
+**Điều tra:**
+- Chạy {{kubent/pluto}} trên repo GitOps phát hiện nhiều API deprecated/removed (PDB, HPA, CronJob) và chart addon không tương thích ma trận phiên bản.
+- Kiểm tra nhật ký sự kiện và trạng thái Argo CD: lỗi tập trung ở bước nâng addon và manifest sai apiVersion, không phải do một thay đổi ứng dụng duy nhất.
+- So sánh staging và prod: staging không phản ánh đủ manifest/addon thực tế nên diễn tập trước đó không bắt được lỗi.
+
+**Nguyên nhân gốc:** Thiếu chương trình nâng cấp định kỳ (tích luỹ nợ phiên bản), không quét API deprecated liên tục, nhảy nhiều minor cùng lúc làm trộn nhiều breaking change, và staging không phải bản sao GitOps của prod.
+
+**Cách xử lý:**
+- Ngắn hạn: đóng băng thay đổi không cần thiết, sửa manifest sang apiVersion mới ({{policy/v1}} cho PDB/HPA phù hợp), nâng/downgrade addon theo ma trận tương thích để ổn định cluster; xác nhận PDB/HPA hoạt động trước khi drain node tiếp.
+- Dài hạn: thiết lập release train nâng 1 minor/lần theo lịch quý; chạy {{kubent}} định kỳ trong CI để mở PR sửa trước; nâng theo thứ tự control plane → addon → node group (canary pool); dựng staging từ cùng repo GitOps và chạy e2e + kiểm tra drain/PDB; gửi bulletin thay đổi cho các team app (apiVersion, cgroup/JDK, image tag).
+
+**Kết quả đo được:** Sau 3 chu kỳ nâng cấp đều đặn, độ trễ phiên bản giảm còn 1 minor, thời gian trung bình hoàn thành một đợt upgrade giảm từ nhiều ngày xuống còn trong một cửa sổ bảo trì ngắn có kế hoạch, số incident sau upgrade giảm rõ và thời gian vá CVE runtime rút ngắn do cluster luôn trong phạm vi được hỗ trợ.
+
+### Trả lời mẫu khi phỏng vấn
+"Với vai trò tech lead, em coi nâng cấp Kubernetes là một chương trình vận hành liên tục, không phải dự án cứu hoả vài năm một lần. Khi cluster chậm nhiều phiên bản, rủi ro không chỉ là CVE mà còn là API bị gỡ và ma trận addon lệch, nên nhảy nhiều bậc sẽ làm bùng nổ phạm vi sự cố. Cách em làm là đặt nhịp cố định, mỗi lần chỉ nâng một minor và có cửa sổ Go/No-Go rõ ràng. Em dùng công cụ như kubent chạy định kỳ trên repo GitOps để phát hiện và sửa apiVersion từ sớm, thay vì chờ đến ngày nâng cấp. Thứ tự thực hiện luôn là control plane, rồi addon, rồi node group theo dạng canary, và có staging phản ánh đúng prod để diễn tập drain, PDB, HPA và e2e. Em cũng yêu cầu các team app tự rà soát manifest, JDK/cgroup và image digest. Với em, thước đo thành công là giảm số minor chậm lại, giảm effort mỗi lần nâng cấp và rút ngắn thời gian vá lỗ hổng bảo mật."
 
 > Senior tip: khác biệt giữa team "nâng cấp như địa ngục" và team "nâng cấp như routine" chỉ là hai dòng kỷ luật: (1) kubent chạy **định kỳ** chứ không chạy lúc hoảng, (2) không bao giờ nhảy nhiều hơn một minor kể cả khi "tiện thể". Sau 3 chu kỳ đúng lịch, chi phí một upgrade giảm còn bằng một buổi release bình thường — và bạn đủ tư thế trả lời audit về CVE trên runtime.`,
     follow: [
@@ -3923,6 +4460,27 @@ Log retention 90d→14d (archive nếu bắt buộc), trace sampling 100%→10% 
 - VPA auto + HPA cùng quản lý một tài nguyên → hai vòng điều khiển đánh nhau.
 - Đếm "số Pod" thay vì "số reservation": 40 Pod Burstable request nhỏ thường rẻ hơn 8 Pod limit-khủng.
 - Cắt monitoring "để tiết kiệm": hoá đơn postmortem của một vụ không phát hiện sớm đắt hơn cả năm tiền Grafana.
+
+### Ví dụ đời thực
+**Bối cảnh:** Hệ thống 30 microservice Java trên Kubernetes, chi phí hạ tầng tăng gấp 3 trong 12 tháng. CPU trung bình cluster ~12%, nhưng tổng {{requests}} memory/CPU đặt rất cao; dev/test chạy 24/7. CFO yêu cầu giảm 30% chi phí mà không ảnh hưởng SLA của {{payment-svc}}.
+
+**Triệu chứng:** Hoá đơn tăng đều theo tháng dù lưu lượng giao dịch không tăng tương ứng. OpenCost cho thấy dev+test chiếm ~38% chi phí, top 10 service khai request gấp 2–3 lần usage p95, nhiều node utilisation thấp nhưng không thể scale down vì pod phân tán.
+
+**Điều tra:**
+- Phân tích 4 tuần dữ liệu: {{container_memory_working_set_bytes}} p95 và CPU usage kèm {{container_cpu_cfs_throttled_periods_total}} theo namespace/service.
+- Đối chiếu baseline {{cost / 1.000 giao dịch}} theo tháng và theo môi trường.
+- Rà soát cấu hình: minReplicas cao đồng loạt (nhiều service min 3), thiếu autoscaler consolidation, môi trường dev/test không có lịch tắt, log/trace lưu giữ dài và một phần traffic đi qua NAT gây chi phí ẩn.
+
+**Nguyên nhân gốc:** Tối ưu theo cảm giác "để an toàn" dẫn tới overprovision request, bin packing kém, tài nguyên không sản xuất chạy liên tục, và thiếu cơ chế gắn trách nhiệm chi phí cho từng team.
+
+**Cách xử lý:**
+- Ngắn hạn (không chạm SLA payment): tắt/scale-to-zero dev-test ngoài giờ và gắn TTL cho môi trường tạm; gom node (Karpenter consolidation) tôn trọng PDB; giảm retention log/trace không cần thiết và khắc phục chi phí mạng dễ tránh (endpoint, cùng AZ khi hợp lý).
+- Dài hạn: right-size request theo p95 usage + buffer cho top service (payment giữ cấu hình an toàn hơn, theo dõi throttling/OOM 2 tuần mỗi đợt); dùng VPA ở chế độ recommend; hạ minReplicas ở service stateless startup nhanh; đưa batch phù hợp sang spot đa instance type/AZ với HPA floor và PDB. Áp ResourceQuota/LimitRange và showback {{cost/1.000 transactions}} theo team, review định kỳ hàng tháng.
+
+**Kết quả đo được:** Sau 2 quý, chi phí hạ tầng giảm ~28% trong khi {{cost/1.000 giao dịch}} giảm ~24%; dev/test giảm mạnh nhờ lịch tắt. SLA của {{payment-svc}} được giữ (không tăng lỗi, p99 ổn định) nhờ right-size thận trọng, theo dõi throttling/eviction và không dùng spot cho workload thanh toán cốt lõi.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi chi phí tăng nhưng CPU trung bình thấp, em bắt đầu từ việc đo đúng: Kubernetes tính tiền theo request và cách node được lấp đầy, nên overprovision và sàn minReplicas thường là nguyên nhân lớn. Em dùng số liệu usage vài tuần để right-size theo p95 cộng buffer, ưu tiên memory cẩn trọng và dựa vào throttling/eviction thay vì cảm giác. Song song, em cắt phần tài nguyên ngủ như dev/test ngoài giờ, tăng bin packing bằng autoscaler, và chỉ dùng spot cho workload stateless an toàn. Em cũng không bỏ qua các hoá đơn ẩn như log, trace, storage và network. Quan trọng nhất để bền vững là gắn chi phí về từng team bằng quota và showback, theo dõi cost trên mỗi 1.000 giao dịch thay vì chỉ tổng hoá đơn. Với service thanh toán, em luôn đặt SLA lên trước và thay đổi từng bước có quan sát, nên mục tiêu là giảm chi phí đơn vị mà không đánh đổi độ tin cậy."
 
 > Senior tip: hai đòn ROI cao nhất gần như mọi nơi: **giảm minReplicas + right-size request** (một service trung bình giấu 3–10Gi reservation chết) và **tắt dev/test ban đêm/cuối tuần**. Trình CFO bằng đường cost/1.000 transactions — nó chứng minh bạn giảm chi phí đơn vị, không chỉ hưởng lợi khi mùa này traffic thấp.`,
     follow: [
@@ -4088,6 +4646,16 @@ resource "aws_ecs_service" "app" {
 - **{{terraform_remote_state}} đọc state chưa có output**: consumer plan fail. Đảm bảo thứ tự apply: networking trước, app sau. Dùng {{depends_on}} gián tiếp qua CI pipeline ordering.
 - **Count/for_each thay đổi index**: đổi từ {{count}} sang {{for_each}}, hoặc đổi key, cũng làm địa chỉ thay đổi → cần {{moved}} block cho từng phần tử. Đây là nguồn destroy/create bất ngờ phổ biến nhất.
 
+### Ví dụ đời thực
+- **Triệu chứng**: Sprint refactor, team tách RDS và S3 từ state monolith (180 resource, 1 file state trên S3) sang state {{data/prod}}. PR chỉ đổi code module, không có {{moved}} block. Reviewer thấy {{terraform plan}}: "Plan: 1 to add, 1 to destroy" cho {{aws_db_instance.payment}} và "1 to add, 1 to destroy" cho {{aws_s3_bucket.invoices}} — tưởng là đổi tên bình thường.
+- **Điều tra**: Tech lead chặn merge, chạy {{terraform state list | grep payment}} thấy địa chỉ cũ {{aws_db_instance.payment}}; đối chiếu code mới thấy {{module.data.aws_db_instance.payment}}. Xác nhận state chưa cập nhật địa chỉ nên Terraform hiểu nhầm là xóa tài nguyên cũ và tạo mới.
+- **Nguyên nhân gốc**: Refactor thay đổi địa chỉ resource nhưng không khai báo ánh xạ state ({{moved}} block hoặc {{state mv}}). Với RDS, destroy/create đồng nghĩa mất endpoint, downtime và nguy cơ mất dữ liệu nếu không snapshot đúng lúc.
+- **Xử lý**: Bổ sung {{moved}} block cho từng resource, chạy {{terraform plan}} lại trên cùng workspace remote → kết quả "Plan: 0 to add, 0 to change, 0 to destroy, 2 to move". Apply trong maintenance window ngắn; {{terraform state pull > backup.tfstate}} trước khi apply.
+- **Kết quả**: Không có tài nguyên nào bị tạo lại, thời gian apply 40 giây, không downtime. Team bổ sung rule CI: fail PR nếu plan chứa destroy trên resource có tag {{critical=true}} khi không có thay đổi {{prevent_destroy}} được phê duyệt.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi refactor Terraform, nguyên tắc của em là không để thay đổi địa chỉ resource kéo theo destroy/create ngoài ý muốn. Em phân biệt rõ: code mô tả muốn gì, còn state là bản đồ nối code với tài nguyên thật trên cloud. Nếu chuyển resource vào module hoặc tách state, em dùng {{moved}} block trong cùng PR để Terraform cập nhật ánh xạ địa chỉ khi plan/apply, hoặc {{terraform state mv}} cho trường hợp thủ công và luôn chạy {{terraform plan}} để xác nhận 'No changes'. Khi tách sang state mới, em {{state rm}} ở state cũ rồi {{import}} vào state mới, và dùng {{terraform_remote_state}} để chia sẻ output như VPC ID hay subnet. Trong thực tế, em từng chặn một PR refactor có nguy cơ recreate RDS nhờ review plan; sau khi thêm {{moved}} block, plan chỉ còn thao tác move. Trade-off là phải kỷ luật quy trình và backup state, nhưng đổi lại tránh được outage và mất dữ liệu."
+
 > Senior tip: Đặt quy tắc team — "mọi thay đổi địa chỉ resource phải đi kèm {{moved}} block trong cùng PR, và CI phải fail nếu plan có destroy trên resource có tag {{prevent_destroy}} hoặc là database/storage". Với monolith state trên 100 resource, ưu tiên tách theo vòng đời (networking + data layer tách riêng, app layer tách riêng) trước — đó là nơi blast radius giảm nhiều nhất với effort thấp nhất.`,
     follow: [
       'Bạn đang đổi một resource từ {{count}} sang {{for_each}}. Viết {{moved}} block để ánh xạ {{aws_subnet.private[0]}} sang {{aws_subnet.private["ap-southeast-1a"]}} và giải thích tại sao không làm sẽ gây mất subnet.',
@@ -4247,6 +4815,16 @@ exporters:
 - **{{memory_limiter}} đặt sau {{tail_sampling}}**: buffer tail sampling ăn RAM trước, memory_limiter không kịp can thiệp → Collector OOM. **memory_limiter phải là processor đầu tiên** trong pipeline.
 - **Lọc health check ở SDK nhưng quên ở Collector**: nếu có service khác (không phải Java, không dùng SDK chung) vẫn gửi health span → vẫn tốn tiền. Lọc ở Collector là lưới an toàn chung.
 
+### Ví dụ đời thực
+- **Triệu chứng**: Hệ thống 20 microservice Java, lưu traces trên Tempo + logs trên Loki. Hóa đơn observability tăng từ 4.200 USD lên 12.600 USD/tháng trong 6 tháng, trong khi traffic chỉ tăng ~20%.
+- **Điều tra**: Truy vấn {{rate(spans_received_total[1d])}} và thống kê theo {{http.route}} cho thấy 45% span là {{/actuator/health}} và {{/actuator/prometheus}}; 30% trace còn lại là request 200 OK dưới 100ms. Kiểm tra Collector thấy không có {{filter}} và đang dùng head sampling 100%. Một số team Node.js gửi trace trực tiếp, không qua chuẩn SDK chung.
+- **Nguyên nhân gốc**: Thu thập "mọi thứ" (100% trace, health check, metric cardinality cao từ label động) và thiếu lớp lọc tập trung tại Collector.
+- **Xử lý**: Triển khai 2 tầng Collector (gateway + sampling). Thêm {{filter/traces}} bỏ health/static, {{tail_sampling}} giữ 100% lỗi và trace > 2s, probabilistic 10% cho phần còn lại, {{memory_limiter}} đứng đầu pipeline, và loadbalancing exporter route theo {{traceID}}. Rà soát metric label, bỏ {{userId}}/{{path param}}.
+- **Kết quả**: Span ingest giảm 68%, chi phí trace giảm từ 7.800 xuống 2.500 USD/tháng, vẫn giữ 100% trace HTTP 5xx và trace chậm để điều tra sự cố.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi chi phí observability tăng nhanh, em không cắt mù mà tối ưu theo giá trị của dữ liệu. Em thiết kế OTel Collector pipeline rõ ràng: receivers nhận OTLP, processors xử lý theo thứ tự ({{memory_limiter}} trước, rồi filter, tail sampling, batch), exporters đẩy sang Tempo/Prometheus/Loki. Em lọc span không có giá trị như health check, che dữ liệu nhạy cảm, và giảm cardinality metric. Điểm mấu chốt là tail-based sampling: Collector đợi đủ span của trace rồi quyết định, nên giữ 100% trace lỗi và chậm, còn trace bình thường lấy mẫu 10%. Trade-off là tốn RAM và cần load balancing theo {{traceID}} để các span cùng trace về đúng instance. Ở một hệ thống 20 service Java, cách này giúp em giảm hơn 60% chi phí trace mà vẫn giữ được dữ liệu để debug incident."
+
 > Senior tip: Bắt đầu bằng **head-based 10% + giữ 100% lỗi** ở SDK (đơn giản, không cần infrastructure thêm). Khi chi phí vẫn cao hoặc cần "giữ trace chậm" chính xác, mới chuyển sang tail sampling — nhưng phải đầu tư đúng: 2 tầng Collector (gateway route + sampling stateful), giám sát buffer/drop metrics, và test với traffic thật. Chi phí vận hành tail sampling (RAM, complexity) đôi khi lớn hơn tiền tiết kiệm được nếu hệ thống nhỏ; với 20 service Java traffic trung bình, head-based sampling + filter health check thường đã giảm 60–80% chi phí trace.`,
     follow: [
       'Tại sao {{memory_limiter}} phải đứng đầu danh sách processors? Điều gì xảy ra nếu bạn đặt nó sau {{tail_sampling}} và {{batch}}?',
@@ -4404,6 +4982,16 @@ Xoay mật khẩu DB trong secret manager (hoặc tạo SealedSecret mới) ch�
 - **Argo CD diff luôn hiện "OutOfSync"**: ESO tạo Secret với metadata/annotation mà Git manifest không có → Argo CD thấy khác. Cấu hình {{ignoreDifferences}} trong Argo CD Application cho Secret do ESO quản lý.
 - **App cache connection với credential cũ**: DB password đổi, Secret cập nhật, Pod restart — nhưng connection pool giữ connection cũ (vẫn hoạt động với một số DB cho đến khi connection bị đóng). Hiểu behavior của DB và pool.
 
+### Ví dụ đời thực
+- **Triệu chứng**: Lúc 02:00 rotation mật khẩu RDS tự động. Sau 20 phút, service {{payment-api}} (Spring Boot, HikariCP) bắt đầu lỗi {{FATAL: password authentication failed}}, tỉ lệ lỗi 5xx tăng 12% dù Pod vẫn Running.
+- **Điều tra**: Kiểm tra AWS Secrets Manager thấy password mới đã có từ 02:00; {{kubectl describe externalsecret db-credentials}} cho thấy {{refreshInterval: 1h}} nên K8s Secret mới sync lúc 03:00. Một số Pod restart thủ công nhưng vẫn lỗi vì env {{DB_PASSWORD}} được inject lúc khởi động, còn Pod cũ dùng connection trong pool tạo trước khi revoke.
+- **Nguyên nhân gốc**: Quy trình rotation mới chỉ cập nhật "nguồn" (Secrets Manager) mà không đảm bảo chuỗi đồng bộ xuống cluster và ứng dụng; ứng dụng không có cơ chế nhận credential mới an toàn.
+- **Xử lý**: Giảm {{refreshInterval}} xuống 5 phút, cài {{Reloader}} để rolling restart Deployment khi Secret đổi, cấu hình HikariCP {{maxLifetime}} ngắn hơn TTL credential tạm thời và bật kiểm tra kết nối. Với DB quan trọng dùng chiến lược dual-user/overlap khi rotate để có cửa sổ chuyển tiếp.
+- **Kết quả**: Lần rotation sau, credential mới được áp dụng trong 6 phút, không phát sinh 5xx; audit CloudTrail ghi nhận đầy đủ truy cập secret.
+
+### Trả lời mẫu khi phỏng vấn
+"Với GitOps, em không bao giờ commit plaintext secret. Em chọn giải pháp theo nhu cầu: Sealed Secrets phù hợp team nhỏ vì mã hóa bằng public key và commit ciphertext vào Git; SOPS phù hợp khi muốn mã hóa từng field trong Helm values và dùng KMS; còn External Secrets Operator phù hợp production vì Git chỉ giữ tham chiếu, giá trị thật nằm ở AWS Secrets Manager hoặc Vault, có audit và rotation thuận tiện. Em luôn nhấn mạnh rotation không chỉ là đổi mật khẩu ở nguồn: phải sync xuống Kubernetes Secret, rồi làm app nhận giá trị mới bằng rolling restart có kiểm soát hoặc cơ chế reload, đồng thời cấu hình connection pool như HikariCP để không giữ credential cũ quá lâu. Trade-off của ESO là thêm hạ tầng và phụ thuộc secret manager, nhưng đổi lại vận hành và tuân thủ tốt hơn. Ở thực tế em từng xử lý lỗi sau rotation bằng cách chỉnh refreshInterval, thêm Reloader và overlap credential để không gián đoạn."
+
 > Senior tip: Với team mới bắt đầu GitOps, **Sealed Secrets** là điểm khởi đầu hợp lý (ít thành phần, GitOps thuần). Khi số secret tăng, cần rotation tự động, hoặc audit/compliance yêu cầu truy vết — chuyển sang **ESO + AWS Secrets Manager/Vault**. Đừng trộn 3 cách trong cùng cluster nếu không có quy ước rõ ràng (mỗi namespace một pattern) — sẽ gây nhầm lẫn "secret này quản lý ở đâu?". Dù dùng cách nào, luôn cấu hình **encryption at rest** cho etcd (KMS provider) và RBAC chặt cho phép đọc {{secrets}} resource.`,
     follow: [
       'Bạn dùng ESO với AWS Secrets Manager. DBA vừa rotate mật khẩu RDS. Mô tả toàn bộ chuỗi từ lúc đổi mật khẩu đến khi app Java dùng mật khẩu mới, kể cả trường hợp app dùng HikariCP connection pool.',
@@ -4544,6 +5132,16 @@ rules:
 - **Target RPS quá cao**: 1 Pod Java handle 200 RPS ở warm state nhưng chỉ 50 RPS lúc cold → HPA tính theo 200, scale ra ít Pod → Pod mới cold nhận traffic → latency spike. Đặt target theo throughput **cold/warm trung bình**, không phải peak benchmark.
 - **Custom metric lag**: Prometheus scrape mỗi 15–30s, Adapter query có delay → HPA quyết định dựa trên dữ liệu 30–60s trước. Kết hợp với {{minReplicas}} buffer cho burst.
 - **Readiness probe trả 200 ngay khi Spring context up**: traffic đổ vào Pod chưa JIT warm → p99 spike 5–10x trong 1–2 phút đầu. Dùng custom readiness: chỉ UP sau khi xử lý N request warm-up hoặc sau delay.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Flash sale, traffic {{checkout-api}} (Java 17, Spring Boot) tăng từ 300 lên 1.200 RPS trong 90 giây. HPA cấu hình target CPU 70% nhưng p99 latency tăng từ 180ms lên 2,8s trong 3 phút, tỉ lệ timeout 6%.
+- **Điều tra**: {{kubectl describe hpa}} thấy desiredReplicas tăng chậm; metric CPU trung bình chỉ 55% vì service I/O-bound chờ DB. Pod mới Ready sau 20s nhưng 90s đầu JIT chưa warm nên p99 của Pod mới gấp 4 lần Pod cũ. Scale-down từng xảy ra sau đợt trước với stabilization mặc định ngắn, gây dao động.
+- **Nguyên nhân gốc**: (1) Dùng CPU metric không phản ánh tải thật, (2) readiness probe báo sẵn sàng quá sớm, (3) hành vi scale-up/scale-down chưa phù hợp đặc tính JVM warm-up.
+- **Xử lý**: Chuyển HPA sang custom metric {{http_requests_per_second}} (Prometheus Adapter) kết hợp CPU làm sàn; đặt {{minReplicas: 4}}, {{behavior.scaleUp}} phản ứng nhanh, {{behavior.scaleDown.stabilizationWindowSeconds: 600}}, thêm {{preStop}} và {{terminationGracePeriodSeconds: 120}}. Bật startup probe đủ dài và readiness chỉ UP sau warm-up ngắn.
+- **Kết quả**: Khi ramp tương tự, số Pod đạt mức cần trong ~2 phút, p99 ổn định ở 420ms, không còn flapping khi traffic giảm.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi dùng HPA cho service Java, em không chỉ nhìn CPU vì Java I/O-bound có thể latency cao dù CPU thấp, còn GC có thể làm CPU tăng giả. Em chọn metric gần tải thật như RPS hoặc queue depth, đôi khi kết hợp CPU làm sàn. Em cấu hình HPA với {{minReplicas}} có buffer, scale-up nhanh (stabilization 0, policy tăng mạnh) nhưng scale-down chậm (stabilization 5–10 phút) để tránh giết Pod vừa warm-up. Ở phía ứng dụng, em tối ưu startup (CDS, cấu hình Spring hợp lý), đặt startup/readiness/liveness probe đúng nghĩa và dùng preStop để drain request. Trade-off là tốn thêm tài nguyên ở baseline và cần hệ thống metric ổn định. Trong một đợt flash sale, sau khi chuyển sang RPS metric và chỉnh stabilization, hệ thống scale kịp và p99 không còn spike như trước."
 
 > Senior tip: Với Java trên Kubernetes, HPA là **cần nhưng chưa đủ**. Công thức thực tế: (1) {{minReplicas}} đủ gánh baseline + buffer 30%, (2) HPA scale theo **RPS hoặc custom metric** (không chỉ CPU), (3) scaleUp nhanh + scaleDown chậm (stabilization 10 phút), (4) tối ưu startup (CDS, readiness đúng nghĩa), (5) PDB + graceful shutdown. Đo bằng load test: ramp traffic từ baseline lên 3x trong 2 phút, xem p99 có spike không và HPA mất bao lâu để ổn định — con số đó mới là "thời gian phản ứng thật" của hệ thống, không phải 15s sync period.`,
     follow: [
@@ -4737,6 +5335,16 @@ metrics:
 - **Canary và stable dùng chung DB migration chưa tương thích**: canary chạy code mới cần cột mới, stable chạy code cũ — migration phải **backward-compatible** (expand-contract pattern). Canary analysis sẽ pass nhưng rollback sau đó có thể fail.
 - **{{abortScaleDownDelaySeconds}} quá ngắn**: abort xong, canary Pod bị xóa ngay → mất log/metric để debug. Đặt 30–60s hoặc giữ Pod ở trạng thái {{Paused}} để điều tra.
 
+### Ví dụ đời thực
+- **Triệu chứng**: Deploy {{payment-api}} bằng Argo Rollouts (5% → 25% → 50% → 100%). Ở bước 5% lúc 14:10, rollout tự động abort dù dashboard tổng thể nhìn ổn; 2 tuần sau, một bản phát hành khác promote 100% nhưng sau 40 phút xuất hiện lỗi tính phí sai ở 0,8% giao dịch.
+- **Điều tra**: Với lần abort oan, Prometheus cho thấy canary có 30 RPS trong cửa sổ 5 phút, p99 spike từ 220ms lên 900ms chỉ trong 90s đầu do JVM cold start, {{failureLimit}} đặt 1. Với lần bỏ sót, error rate HTTP 5xx vẫn 0,2% (trong ngưỡng) nhưng business metric {{payment_success_ratio}} giảm 0,7% so với stable — AnalysisTemplate không đo chỉ số này và cửa sổ quan sát quá ngắn.
+- **Nguyên nhân gốc**: False positive do sample nhỏ + warm-up chưa được tính tới; false negative do chọn metric sai (chỉ kỹ thuật, thiếu nghiệp vụ) và ngưỡng/lịch phân tích chưa đủ nhạy.
+- **Xử lý**: Thêm bước warm-up (scale canary trước, delay analysis), dùng baseline comparison canary vs stable cho error rate và p99, tăng {{count}}/{{pause}} ở bước đầu, bổ sung analysis business metric và synthetic check; giữ manual gate trước 100% cho luồng thanh toán.
+- **Kết quả**: Trong 10 release tiếp theo, không còn rollback oan do cold start; một lỗi logic được chặn ở bước 25% nhờ {{payment_success_ratio}} lệch 0,6% so với stable.
+
+### Trả lời mẫu khi phỏng vấn
+"Với Argo Rollouts canary, em coi AnalysisTemplate như bộ test chạy trên traffic thật. Em thường bắt đầu với error rate 5xx và p99 latency, nhưng so sánh canary với stable cùng thời điểm để tránh false positive khi hệ thống chung đang xấu. Em cấu hình bước 5% có pause đủ dài, warm-up Pod trước khi nhận traffic, và dùng {{count}}, {{interval}}, {{failureLimit}} hợp lý để tránh quyết định trên sample quá nhỏ. Ở service quan trọng, em thêm business metric và giữ manual gate trước 100%. Trade-off là rollout chậm hơn, nhưng giảm rủi ro. Em từng gặp cả hai trường hợp: rollback oan do cold start và bỏ sót lỗi logic vì chỉ nhìn HTTP 5xx; sau khi đổi sang baseline comparison và thêm metric nghiệp vụ, chất lượng quyết định cải thiện rõ."
+
 > Senior tip: Canary analysis chỉ tốt bằng metric bạn đo. Bắt đầu với 2 metric: **error rate** (5xx) và **p99 latency** — so sánh baseline (canary vs stable), không dùng ngưỡng cố định. Thêm business metric (conversion, success rate) khi đã ổn định. Luôn có **manual gate** (bước {{pause}} không có duration, chờ {{kubectl argo rollouts promote}}) ở bước trước 100% cho service critical — tự động hóa hoàn toàn là mục tiêu, nhưng đến đó cần nhiều iteration tuning analysis. Ghi lại mọi lần false positive/negative và điều chỉnh {{failureLimit}}, {{count}}, {{interval}} — analysis template là "bộ test production", cần maintain như test code.`,
     follow: [
       'Tại sao baseline comparison (canary vs stable cùng thời điểm) tốt hơn ngưỡng cố định? Cho ví dụ cụ thể khi ngưỡng cố định gây false positive dù canary không có lỗi.',
@@ -4849,6 +5457,16 @@ Không bắt KPI "100% team phải dùng golden path trong Q3" — đó là áp 
 - **Platform team thành bottleneck**: mọi thay đổi pipeline phải qua platform team review/merge → team chờ đợi, platform team quá tải. Cho phép team contribute vào template (inner-source model), platform team review nhưng không phải người duy nhất sửa.
 - **Không maintain template**: template tạo 1 năm trước, dependency cũ, base image có CVE → service mới sinh ra đã nợ kỹ thuật. Lên lịch cập nhật template định kỳ, tự động PR bump dependency.
 - **Ép migration "big bang"**: yêu cầu 20 team chuyển pipeline trong 1 tháng → kháng cự, lỗi, burnout. Migration dần: team mới dùng golden path mặc định, team cũ migrate khi có dịp (refactor, thêm feature). Đặt deadline mềm, hỗ trợ migration.
+
+### Ví dụ đời thực
+- **Triệu chứng**: 20 team Java có 20 pipeline CI/CD khác nhau; onboarding dev mới trung bình 10 ngày mới deploy được lần đầu; 6 tháng ghi nhận 14 incident do lỗi cấu hình pipeline/deploy (thiếu scan, sai manifest, script thủ công).
+- **Điều tra**: Platform team phỏng vấn 6 team và đo "time to first deploy" (median 9,5 ngày), tỉ lệ deploy tự phục vụ (40%), và số ticket ops liên quan môi trường (35/tháng). Nguyên nhân lặp lại: mỗi team tự copy YAML cũ, thiếu template chuẩn, thiếu observability mặc định và tài liệu.
+- **Nguyên nhân gốc**: Không có golden path và không có sản phẩm nền tảng rõ ràng; mỗi team tối ưu cục bộ tạo ra phân mảnh và tải nhận thức cao khi người chuyển team.
+- **Xử lý**: Xây golden path cho Spring Boot REST API: template repo (Dockerfile, Helm/Kustomize, CI chuẩn, OTel, dashboard), Backstage scaffolding, và GitOps bằng Argo CD. Pilot với 3 team trong 6 tuần, co-design pipeline, cho phép extension point. Team cũ migrate dần khi chạm vào service, không ép big bang.
+- **Kết quả**: Với service mới trên golden path, time to first deploy giảm từ 9,5 ngày xuống 4 giờ; ticket ops giảm 55%; incident liên quan pipeline giảm từ 14 xuống 5 trong quý tiếp theo; khảo sát hài lòng nội bộ đạt 8/10.
+
+### Trả lời mẫu khi phỏng vấn
+"Nếu nhiều team tự dựng pipeline dẫn đến phân mảnh, em sẽ tiếp cận bằng Internal Developer Platform và một golden path, không phải bằng mệnh lệnh áp đặt. Golden path là con đường mặc định tốt nhất: từ template service Java, CI/CD chuẩn, bảo mật, observability đến deploy GitOps đều có sẵn, để dev tập trung vào nghiệp vụ. Em bắt đầu từ pain thật bằng cách phỏng vấn và đo các chỉ số như time to first deploy, lead time, và số incident do pipeline. Em co-design với vài team, làm pilot nhỏ, cung cấp extension point và tài liệu để team có thể đi chệch khi cần nhưng vẫn tự chịu trách nhiệm. Trade-off là platform team phải vận hành như một sản phẩm và tránh thành bottleneck, nên em ưu tiên self-service và inner-source. Khi golden path thực sự nhanh và đáng tin cậy, adoption sẽ tự tăng thay vì cần ép."
 
 > Senior tip: IDP thành công khi developer **không nghĩ về platform** — họ chỉ thấy "tạo service mới mất 10 phút, deploy dễ, có dashboard sẵn". Đo lường thành công bằng "time to first deploy" và "developer satisfaction", không phải "số feature của platform". Bắt đầu nhỏ: 1 golden path cho 1 loại service phổ biến nhất (Spring Boot REST API), làm thật tốt, có 3–5 team dùng thành công và nói tốt về nó — rồi mới mở rộng. Platform team 2–3 người phục vụ 20 team là khả thi nếu golden path giảm 80% ticket ops, nhưng chỉ khi scope được kiểm soát chặt.`,
     follow: [
@@ -4989,6 +5607,20 @@ groups:
 - **Bỏ qua on-call wellbeing**: giảm alert xong nhưng vẫn xoay ca 1 tuần/người, không compensation, không hồi phục sau ca nặng → người vẫn nghỉ. Rota và compensation quan trọng không kém kỹ thuật.
 - **Chỉ đo infrastructure SLI**: CPU, memory, pod count — không phản ánh trải nghiệm user. SLI phải đo từ góc nhìn user (request success, latency ở entry point).
 
+### Ví dụ đời thực
+Triệu chứng: team 8 người xoay ca on-call, 2 người nghỉ việc sau 6 tháng vì kiệt sức. Alert channel nhận 220 alert/tuần, trong đó 150 là noise (disk 75%, pod restart tự hồi phục, batch job ngắn). On-call nhận page lúc 3 sáng vì "CPU 85%" nhưng service vẫn phục vụ bình thường, sau 30 phút mới biết là false alarm. Thời gian phản hồi incident thực (SLO violation) trung bình 45 phút vì người trực đang mỏi và không tin vào alert.
+
+Điều tra: chạy script phân loại alert 4 tuần. Kết quả: 70% alert không có runbook, 40% alert trên cause (CPU, memory) chứ không phải symptom (error rate, latency). Rota: 1 người trực 1 tuần, không có secondary, không bù ngày nghỉ sau ca đêm nhiều page.
+
+Nguyên nhân gốc: alert fatigue do noise quá nhiều, rota không công bằng, thiếu SLO-based alerting để lọc signal từ noise, và văn hóa "on-call là gánh nặng" chứ không phải trách nhiệm chia sẻ.
+
+Cách xử lý: (1) Alert audit: xóa 100 alert noise, chuyển 40 alert sang ticket, giữ 60 alert page có runbook. (2) Triển khai SLO cho payment-api, account-api, core-banking: SLO 99.9% success rate, burn rate alert 14.4x (1h+5m). (3) Rota mới: primary + secondary, xoay tuần, bù 1 ngày nghỉ sau ca > 2 page đêm, on-call không nhận feature work. (4) Review hàng tháng: error budget report, on-call health.
+
+Kết quả đo được: alert/tuần giảm từ 220 xuống 65, page/tuần từ 15 xuống 1.2, on-call satisfaction từ 2/10 lên 7/10, 0 người nghỉ vì on-call trong 6 tháng sau.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế on-call bền vững dựa trên 3 trụ cột: rota công bằng, giảm alert fatigue bằng alert audit, và SLO-based alerting. Với 8 team 4–5 người, tôi đặt primary + secondary xoay tuần, bù ngày nghỉ sau ca đêm nhiều page, on-call không nhận feature deadline. Alert audit phân loại 200 alert/tuần: xóa noise, chuyển sang ticket, chỉ giữ page có runbook. Thay vì alert từng metric, tôi dùng error budget burn rate: SLO 99.9% success rate 30 ngày, alert khi burn rate 14.4x (1h+5m window). Kết quả thực tế: page/tuần giảm từ 15 xuống 1.2, team không còn kiệt sức. Chìa khóa là coi on-call là sự kết hợp văn hóa và kỹ thuật, không chỉ config Prometheus."
+
 > Senior tip: On-call bền vững là vấn đề **văn hóa + kỹ thuật**, không chỉ kỹ thuật. Bắt đầu bằng alert audit (xóa noise — hiệu quả ngay tuần đầu, team cảm nhận được). Song song xây SLO cho 2–3 service quan trọng. Chỉ số sức khỏe on-call quan trọng nhất: **số page ban đêm có thể hành động/tuần** — mục tiêu < 2. Nếu > 2 liên tục 2 tuần, đó là incident của chính quy trình on-call, cần ưu tiên xử lý như production incident. Track "on-call toil" (thời gian xử lý việc lặp lại, không tạo giá trị lâu dài) — nếu > 50% thời gian on-call là toil, team cần đầu tư automation, không phải thêm người trực.`,
     follow: [
       'Bạn đặt SLO 99.9% cho payment-api (30 ngày). Tháng này đã dùng 60% error budget trong 10 ngày đầu do 1 incident lớn. 20 ngày còn lại bạn vận hành thế nào — freeze deploy, chấp nhận rủi ro, hay điều chỉnh SLO?',
@@ -5076,6 +5708,25 @@ Stack đọc từ trên xuống: frame trên cùng là nơi thread đang chạy.
 3. **Đổi nhầm chiều hex/thập phân**: {{printf '%x'}} chuyển thập phân → hex; {{printf '%d' 0x306f}} chuyển ngược. Nhiều người tra nhầm nên không tìm thấy {{nid}}.
 4. **Bỏ qua thread GC**: nếu thread nóng là {{GC task thread}} hoặc {{G1 Conc#0}}, nguyên nhân gốc là bộ nhớ (heap gần đầy, allocation rate cao), không phải code nghiệp vụ. Tối ưu code lúc này vô ích; cần xem {{-Xmx}}, {{jstat}}, heap dump.
 
+### Ví dụ đời thực
+Triệu chứng: lúc cao điểm (11h trưa), service payment-api báo CPU 198% trên máy 2 core, p99 latency từ 80 ms nhảy lên 2.5 giây. Monitoring chỉ thấy "CPU cao", không rõ thread nào.
+
+Điều tra: chạy {{top -H -p 12345}} thấy thread 12399 ăn 99% CPU, thread 12401 ăn 98%. Chuyển sang hex: {{printf '%x'}} cho 12399 ra 306f, 12401 ra 3071. Lấy 3 thread dump bằng {{jstack 12345}} cách nhau 5 giây. Grep {{nid=0x306f}} thấy stack trace kẹt ở {{Pattern.match}} dòng {{Validator.java:87}} (regex email):
+~~~text
+^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$
+~~~
+Thread thứ hai cũng kẹt ở regex tương tự cho phone number. Input gây ra: email dài 200 ký tự với nhiều dấu chấm, khiến regex backtracking mũ.
+
+Nguyên nhân gốc: regex không được tối ưu cho input xấu, không giới hạn độ dài input từ client, và không dùng possessive quantifier.
+
+Cách xử lý: (1) Hotfix: thêm {{@Size(max=100)}} vào DTO input, đổi regex sang dạng possessive:
+~~~text
+^[a-zA-Z0-9._%+-]++@[a-zA-Z0-9.-]++\.[a-zA-Z]{2,}$
+~~~
+(2) Thêm WAF rule chặn request body > 10 KB. (3) Thêm unit test cho regex với input tấn công.
+
+Kết quả đo được: sau fix, CPU cao điểm giảm từ 198% xuống 45%, p99 latency 80 ms, 0 thread kẹt regex trong 2 tuần.
+
 ### Trả lời phỏng vấn
 Khi service Java ăn 100% CPU, em dùng {{top -H -p <PID>}} để tìm thread cụ thể đang tiêu thụ CPU (TID). Sau đó chuyển TID sang hex bằng {{printf '%x'}} vì thread dump của HotSpot ghi native id ở dạng {{nid=0x...}}. Em lấy ít nhất 3 thread dump cách nhau 5 giây bằng {{jstack}} hoặc {{jcmd}}, rồi grep {{nid}} để thấy stack trace. Từ stack, em phân biệt: nếu là code nghiệp vụ hoặc regex thì sửa logic; nếu là thread GC thì vấn đề nằm ở bộ nhớ, em chuyển sang phân tích {{jstat -gcutil}} và GC log. Em luôn thu bằng chứng trước khi restart vì restart làm mất trạng thái.
 
@@ -5157,6 +5808,23 @@ lsof -p <PID> | wc -l   # nhiều file mở?
 2. **So sánh load giữa máy khác số core**: load 8 trên 4 core (gấp đôi) tệ hơn load 8 trên 32 core (nhàn). Cách tránh: luôn chia load cho {{nproc}}.
 3. **Nhầm load average của Linux với các hệ Unix khác**: một số hệ Unix (BSD truyền thống) không tính I/O wait vào load. Tài liệu đọc trên mạng có thể gây nhầm; trên Linux, D-state được tính.
 4. **Bỏ qua xu hướng 1/5/15 phút**: một spike 1 phút có thể là deploy hoặc batch job ngắn; load 15 phút cao mới cho thấy vấn đề bền vững.
+
+### Ví dụ đời thực
+Triệu chứng: máy application server 4 core (c5.xlarge) báo load average 12.0, 8.5, 4.2 (xu hướng tăng). Dashboard CPU chỉ thấy %us 8%, %wa 72%. Ứng dụng Java Spring Boot phản hồi chậm, p99 từ 120 ms lên 3 giây, health check thỉnh thoảng timeout.
+
+Điều tra: chạy {{vmstat 1 5}} thấy cột {{b}} (blocked/D-state) trung bình 9, cột {{r}} (runnable) chỉ 2. {{iostat -x 1 3}} cho thấy {{nvme1n1}} (đĩa data) %util 98%, await 45 ms (bình thường < 5 ms). {{pidstat -d 1 5}} chỉ ra PID 12345 (Java payment service) ghi 180 MB/s, đọc 50 MB/s. Kiểm tra log ứng dụng: log level DEBUG bị bật vô tình từ sáng, ghi 200 MB/h so với bình thường 20 MB/h. GC log cũng ghi đồng bộ ra cùng đĩa.
+
+Nguyên nhân gốc: log DEBUG ghi ồ ạt làm bão hòa IOPS đĩa EBS gp3 (cấu hình 3000 IOPS), gây I/O wait cao, load average tăng do process chờ đĩa (D-state), CPU thực tế nhàn.
+
+Cách xử lý: (1) Tắt DEBUG log ngay bằng lệnh sau:
+~~~bash
+curl -X POST localhost:8081/actuator/loggers/ROOT \
+  -H "Content-Type: application/json" \
+  -d '{"configuredLevel":"INFO"}'
+~~~
+(2) Cấu hình logback {{SizeAndTimeBasedRollingPolicy}} max 100 MB/file, tổng 2 GB. (3) Tách GC log ra đĩa riêng (hoặc stdout). (4) Nâng EBS gp3 IOPS lên 10000 hoặc dùng gp3 provisioned.
+
+Kết quả đo được: sau tắt DEBUG, %wa từ 72% xuống 3%, load average từ 12 xuống 1.2, p99 latency 130 ms, IOPS đĩa từ 3000 xuống 800.
 
 ### Trả lời phỏng vấn
 Load average trên Linux là số process trung bình đang chạy hoặc chờ I/O không ngắt được (D-state) trong 1, 5, 15 phút. Điểm quan trọng là Linux tính cả I/O wait vào load, nên load cao không có nghĩa CPU bận. Ví dụ load 12 trên máy 4 core: nếu {{vmstat}} cho thấy cột {{b}} cao và {{%wa}} cao trong {{top}}, vấn đề là I/O (đĩa, storage mạng), em sẽ dùng {{iostat -x}} và {{pidstat -d}} để tìm nguồn; nếu {{%us}} cao và cột {{r}} cao, mới là CPU-bound. Em luôn đọc ba con số theo xu hướng và chia cho số core để đánh giá mức độ.
@@ -5244,6 +5912,19 @@ ls -l /proc/12345/fd/3
 2. **{{kill -9}} process Java ngay lập tức**: giải phóng fd nhưng mất cơ hội thu thread dump/heap dump, và có thể gây hỏng dữ liệu đang ghi. Cách tránh: thu bằng chứng, thử truncate/xoay log trước; restart theo quy trình.
 3. **Bỏ qua inode**: {{df -h}} còn trống nhưng vẫn "No space left" — nhiều người bối rối. Cách tránh: luôn kiểm tra {{df -i}} cùng lúc.
 4. **Chạy {{du}} trên mount khác**: {{du -sh /}} có thể đi vào {{/proc}}, {{/sys}}, mount mạng và cho kết quả sai/chậm. Cách tránh: dùng {{du -shx /}} ({{-x}}: không vượt filesystem boundary).
+
+### Ví dụ đời thực
+Triệu chứng: lúc 2 giờ sáng, monitoring báo disk full trên server payment-prod-01 ({{/}} 100%). On-call SSH vào, chạy {{df -h}} thấy 50G/50G, nhưng {{du -shx /}} chỉ ra 28G. {{df -i}} inode còn 60%. Chạy {{lsof +L1}} phát hiện:
+{{java    12345 app    3w   REG  259,1 21474836480    0 123456 /var/log/app/payment.log (deleted)}}
+Log file 20 GB bị {{rm}} bởi script cleanup thủ công lúc 1h sáng nhưng app Java vẫn giữ fd 3 mở để ghi.
+
+Điều tra: script cleanup chạy {{rm /var/log/app/payment.log}} thay vì logrotate. App dùng Logback {{FileAppender}} không có rolling policy, fd vẫn trỏ tới inode đã unlink. Kernel không giải phóng block vì link count = 0 nhưng fd count > 0.
+
+Nguyên nhân gốc: vận hành xoá file log tay không hiểu cơ chế fd, thiếu logrotate, logging framework không cấu hình rolling.
+
+Cách xử lý: (1) Truncate an toàn: {{cp /proc/12345/fd/3 /tmp/payment.log.rescued && : > /proc/12345/fd/3}} — giải phóng 20 GB ngay, giữ log để debug. (2) Cấu hình Logback {{SizeAndTimeBasedRollingPolicy}} maxFileSize=100MB, maxHistory=14, totalSizeCap=2GB. (3) Thêm alert Prometheus: {{node_filesystem_avail_bytes < 10GB}} và {{lsof +L1 count > 0}}.
+
+Kết quả đo được: disk từ 100% xuống 40% sau truncate, 0 sự cố disk full trong 3 tháng sau, auditor pass vì log rotation chuẩn hoá.
 
 ### Trả lời phỏng vấn
 Khi {{df}} báo đầy nhưng {{du}} cộng lại nhỏ hơn, em nghi file đã bị xoá tên nhưng process vẫn giữ file descriptor mở. {{df}} tính block đã cấp phát ở mức filesystem; {{du}} chỉ tính file còn đường dẫn. Em dùng {{lsof +L1}} để tìm các entry có {{NLINK=0}} và cột {{SIZE/OFF}} lớn — thường là log file Java bị {{rm}} nhưng app chưa reopen. Cách xử lý an toàn là truncate qua {{/proc/<PID>/fd/<FD>}} hoặc trigger log rotation/restart có kiểm soát; em tránh {{kill -9}} khi chưa thu bằng chứng. Em cũng kiểm tra {{df -i}} vì hết inode gây cùng thông báo lỗi. Về lâu dài, em dùng log rotation, giám sát disk/inode, và trong container thì đẩy log ra stdout.
@@ -5351,6 +6032,17 @@ Với JDBC: luôn đóng {{ResultSet}}, {{Statement}}, {{Connection}} (try-with-
 1. **Nhầm CLOSE_WAIT là lỗi mạng/peer**: CLOSE_WAIT nghĩa là peer đã đóng đúng phần của nó; lỗi nằm ở app bạn chưa đóng. Cách tránh: tìm {{ss -tanp state close-wait}} xem PID/fd, rồi soi code path dùng fd đó.
 2. **Cố "xoá" TIME_WAIT bằng sysctl liều lĩnh**: {{tcp_tw_recycle}} đã bị xoá khỏi kernel mới và gây hỏng NAT; chỉnh bừa gây lỗi khó debug. Cách tránh: sửa code để reuse kết nối.
 3. **Chỉ nhìn tổng số kết nối, không nhìn theo đích/trạng thái**: 5000 TIME_WAIT phân tán khác 5000 TIME_WAIT tới một đích (gây hết cổng tạm tới đích đó). Cách tránh: {{ss}} + {{awk/sort/uniq}} theo cột đích.
+
+### Ví dụ đời thực
+Triệu chứng: service payment-gateway gọi API ngân hàng đối tác {{api.bank-partner.vn}}. Monitoring thấy p99 latency tăng từ 200 ms lên 8 giây, error rate 5%. {{ss -tan state time-wait}} cho thấy 18.000 TIME_WAIT tới {{10.20.30.40:443}}, {{ss -tan state close-wait}} cho thấy 450 CLOSE_WAIT cùng PID 12345 (Java app). Lỗi ứng dụng: {{java.net.BindException: Cannot assign requested address}} (EADDRNOTAVAIL) khi burst gọi.
+
+Điều tra: {{ss -tanp state close-wait}} gắn PID 12345, fd 187-630. Code review phát hiện: mỗi request tạo {{HttpClient.newHttpClient()}} mới (không reuse), response body không consume trong khối try-catch khi exception. CLOSE_WAIT do quên {{resp.close()}} khi parse JSON fail; TIME_WAIT do tạo client mới mỗi lần, kết nối đóng sau mỗi request.
+
+Nguyên nhân gốc: code tạo HTTP client per-request, thiếu try-with-resources cho response, không dùng connection pool.
+
+Cách xử lý: (1) Refactor: {{HttpClient}} thành singleton bean, cấu hình connection pool. (2) Sửa toàn bộ code gọi HTTP: với Apache HttpClient dùng try-with-resources cho {{CloseableHttpResponse}} và consume entity; với {{java.net.http.HttpClient}} luôn đọc/consume {{HttpResponse.BodyHandler}} và không tự tạo client mới mỗi request. (3) Thêm metric {{process_files_open_files}} và dashboard socket state. (4) Nới {{net.ipv4.ip_local_port_range=1024 65535}} và bật {{net.ipv4.tcp_tw_reuse=1}} tạm thời.
+
+Kết quả đo được: TIME_WAIT tới đích đó từ 18.000 xuống < 200, CLOSE_WAIT từ 450 xuống 0, EADDRNOTAVAIL biến mất, p99 latency 210 ms, error rate 0.05%.
 
 ### Trả lời phỏng vấn
 Em phân biệt TIME_WAIT và CLOSE_WAIT bằng {{ss -tan}}. TIME_WAIT nằm ở phía chủ động đóng, tồn tại ~60 giây để bảo vệ gói trễ; nhiều TIME_WAIT tới cùng một đích thường do code tạo kết nối mới cho mỗi request thay vì dùng connection pool và keep-alive — rủi ro là hết ephemeral port. CLOSE_WAIT nằm ở phía bị động sau khi nhận FIN, nhưng app chưa {{close()}}; CLOSE_WAIT tăng dần gần như chắc chắn là bug rò rỉ socket, ví dụ HTTP response entity không được consume/đóng trong Java. Em dùng {{ss -tanp state close-wait}} để gắn với PID/fd, rồi kiểm tra code dùng try-with-resources. Sửa gốc ở code; chỉnh sysctl chỉ là biện pháp tạm.
@@ -5462,6 +6154,17 @@ grep partner /etc/hosts
 3. **Đổ lỗi cho "Java chậm" mà không đo tầng OS**: {{dig/getent}} mất 3 giây thì JVM cũng vậy. Cách tránh: chẩn đoán từ dưới lên (network → resolver → OS NSS → JVM).
 4. **Nhầm {{tcp_fin_timeout}}/sysctl khác với DNS**: các tham số TCP không sửa DNS. Cách tránh: khoanh vùng đúng tầng.
 
+### Ví dụ đời thực
+Triệu chứng: service payment-gateway gọi {{api.bank-partner.vn}}. Sau khi đối tác failover DR (đổi IP endpoint từ {{203.0.113.10}} sang {{203.0.113.20}}), app vẫn gọi IP cũ 25 phút, error rate 100% tới IP cũ. Monitoring không thấy DNS query mới từ app.
+
+Điều tra: trong pod, {{dig api.bank-partner.vn}} trả IP mới ngay. {{cat /etc/resolv.conf}} thấy nameserver CoreDNS {{10.96.0.10}}. Kiểm tra JVM: app không set {{networkaddress.cache.ttl}}, dùng mặc định JDK 17 (không có Security Manager) = 30 giây. Nhưng connection pool HikariCP giữ kết nối TCP tới IP cũ, không validate khi lấy từ pool. Kết hợp: DNS cache 30s đã hết, nhưng connection pool reuse socket cũ không resolve lại.
+
+Nguyên nhân gốc: (1) JVM DNS cache TTL mặc định 30s — hợp lý, nhưng (2) connection pool không có cơ chế evict stale connection khi IP thay đổi, (3) thiếu health check validate connection trước khi dùng.
+
+Cách xử lý: (1) Set {{networkaddress.cache.ttl=10}} và {{networkaddress.cache.negative.ttl=5}} trong {{java.security}} cho service quan trọng. (2) Cấu hình HikariCP để tránh giữ kết nối cũ quá lâu: {{maxLifetime=300000}}, {{keepaliveTime=30000}}, và {{connectionTimeout}} hợp lý; đảm bảo pool kiểm tra/tạo kết nối mới định kỳ thay vì reuse mãi. (3) Thêm retry logic với backoff khi connection fail. (4) Runbook failover: hạ DNS TTL authoritative trước 1 giờ, restart rolling app sau khi DNS propagate.
+
+Kết quả đo được: lần failover sau, app chuyển IP mới trong 15 giây (DNS TTL 10s + connection validation), error rate < 0.1%, 0 ticket support.
+
 ### Trả lời phỏng vấn
 JVM cache DNS trong {{InetAddress}}. Mặc định hiện đại (không có Security Manager) thường cache lookup thành công khoảng 30 giây và lookup lỗi 10 giây; có thể cấu hình {{networkaddress.cache.ttl}} và {{networkaddress.cache.negative.ttl}} trong {{java.security}} hoặc set sớm bằng {{Security.setProperty}}. TTL quá dài gây app gọi IP cũ sau failover; TTL 0 gây quá nhiều lookup. Khi DNS chậm, em chẩn đoán từ OS: {{/etc/resolv.conf}}, {{nsswitch.conf}}, đo bằng {{getent}} và {{dig}} để tách resolver chậm khỏi app chậm. Trên Kubernetes em chú ý {{ndots}}/search domain làm tăng số query. Em cũng dùng connection pool để giảm tần suất resolve.
 
@@ -5554,6 +6257,13 @@ grep -n "OutOfMemoryError" /var/log/app/app.log
 2. **Không bật heap dump vì "tốn đĩa"**: khi OOME thật sự xảy ra bạn không có dữ liệu phân tích leak. Cách tránh: bật dump, cấu hình đường dẫn có dung lượng, có cơ chế dọn file cũ.
 3. **Nhầm OOME {{unable to create new native thread}} là heap**: tăng {{-Xmx}} có thể làm tệ hơn vì bớt RAM native cho thread. Cách tránh: đọc kỹ thông điệp OOME; kiểm tra số thread, {{-Xss}}, {{ulimit -u}}.
 4. **Chỉ nhìn log app khi process biến mất**: OOM killer không để lại log app. Cách tránh: luôn kiểm tra kernel log/K8s events.
+
+### Ví dụ đời thực
+- **Triệu chứng:** Service thanh toán Java 17 trên Kubernetes restart liên tục lúc 2h sáng, dashboard báo container restart count tăng 6 lần trong 20 phút. Người trực nhìn log ứng dụng chỉ thấy log khởi động lặp lại, không có {{OutOfMemoryError}} hay stack trace lỗi cuối.
+- **Điều tra:** {{kubectl describe pod payment-api-7f9d8-abc}} cho thấy {{Last State: Terminated, Reason: OOMKilled, Exit Code: 137, Finished At 02:14}}. Trên node worker, {{dmesg -T | grep -i "killed process"}} ghi {{Out of memory: Killed process 41288 (java) anon-rss:1835008kB}}. Đối chiếu cấu hình: container limit 2Gi, JVM chạy {{-Xmx1536m}} nhưng còn metaspace, thread stack (200 thread Tomcat × ~1MB) và direct buffer Netty, tổng RSS thực tế vượt 2Gi khi traffic batch tăng.
+- **Nguyên nhân gốc:** Kernel OOM killer giết process do cgroup memory limit bị vượt (SIGKILL), không phải JVM tự ném OOME; heap 1536m chiếm quá nhiều phần trong limit 2Gi nên không đủ chỗ cho vùng nhớ native.
+- **Cách xử lý:** Đổi sang {{-XX:MaxRAMPercentage=60.0}}, giảm {{-Xss512k}} và giới hạn thread pool, đặt {{resources.limits.memory}} lên 2304Mi sau khi đo RSS thực tế; bổ sung alert {{container_memory_working_set_bytes}} ở ngưỡng 85%.
+- **Kết quả đo được:** Trong 14 ngày sau deploy, không còn {{OOMKilled}}, restart count về 0 ngoài rolling deploy, p99 latency ổn định ~180ms trong khung batch đêm.
 
 ### Trả lời phỏng vấn
 Em phân biệt hai trường hợp. OutOfMemoryError là JVM ném ra khi heap/metaspace/direct memory/... không đủ — log app có stack trace, có thể có heap dump nếu bật {{HeapDumpOnOutOfMemoryError}}. OOM killer là kernel Linux giết process (thường SIGKILL, exit 137) khi hệ thống hoặc cgroup cạn RAM — log app thường im lặng, bằng chứng nằm ở {{dmesg -T}} hoặc {{journalctl -k}} và trên Kubernetes là {{OOMKilled}}. Cách sửa khác nhau: OOME thì phân tích heap dump, chỉnh {{-Xmx}} hoặc sửa leak; OOM killer thì đảm bảo memory limit đủ cho tổng RSS (heap + non-heap + thread + direct buffer), dùng {{MaxRAMPercentage}} thay vì hardcode {{-Xmx}} quá sát limit.
@@ -5672,6 +6382,13 @@ Ngoài ra: {{DirectoryStream}} (NIO) phải close; {{WatchService}} nếu tạo 
 3. **Nhầm "Too many open files" chỉ là file trên đĩa**: phần lớn trường hợp trên service mạng là **socket**. Cách tránh: dùng {{lsof}} phân loại theo TYPE.
 4. **Đóng resource ở nhánh happy-path nhưng quên khi exception**: rò rỉ chỉ xuất hiện khi có lỗi. Cách tránh: luôn dùng try-with-resources cho {{Closeable}}/{{AutoCloseable}}.
 
+### Ví dụ đời thực
+- **Triệu chứng:** Service import hồ sơ chạy liên tục 3 ngày thì bắt đầu ném {{java.io.IOException: Too many open files}} khi gọi đối tác; sau đó API upload lỗi hàng loạt, phải restart pod mới hết tạm thời.
+- **Điều tra:** {{cat /proc/23140/limits}} thấy {{Max open files 4096}}; {{ls /proc/23140/fd | wc -l}} trả về 4091. Chạy {{lsof -nP -p 23140}} rồi thống kê cột TYPE cho thấy 3720 bản ghi {{REG}} trỏ vào {{/data/tmp/import}}. Metric {{process_files_open_files}} tăng đều ~2 fd/phút từ lúc deploy.
+- **Nguyên nhân gốc:** Code dùng {{Files.lines(path).forEach(...)}} trong batch job mà không đặt trong try-with-resources, nên Stream giữ file descriptor mở tới khi GC dọn; khi job chạy chậm/exception, fd tích lũy và chạm {{RLIMIT_NOFILE}}.
+- **Cách xử lý:** Đổi sang dùng try-with-resources với {{Files.lines(path)}} (ví dụ: {{try (var lines = Files.lines(path))}} rồi xử lý trong block) và rà soát các chỗ {{Files.list/walk}}; thêm {{LimitNOFILE=65536}} trong unit systemd như biện pháp an toàn, bật alert khi {{open_fds/max_fds > 0.7}}.
+- **Kết quả đo được:** Sau bản vá, số fd dao động ổn định 180–260 trong 7 ngày, không còn lỗi "Too many open files", job import 50.000 hồ sơ/đêm hoàn tất mà không cần restart thủ công.
+
 ### Trả lời phỏng vấn
 "Too many open files" nghĩa là process chạm {{RLIMIT_NOFILE}}. Em kiểm tra giới hạn thực của process qua {{/proc/<PID>/limits}} (không chỉ {{ulimit}} trong shell) vì systemd/container có thể đặt khác. Em đo số fd bằng {{ls /proc/<PID>/fd | wc -l}} và phân loại bằng {{lsof -p}} để biết là socket hay file thường. Trong Java, nguyên nhân hay gặp là quên đóng resource: {{Files.lines/list/walk}} trả Stream giữ fd, {{InputStream}}/{{Socket}}/{{ZipFile}} không close, hoặc HTTP/DB connection không trả về pool — fix bằng try-with-resources và cấu hình pool đúng. Em tăng {{LimitNOFILE}} (systemd) hoặc ulimit container như biện pháp an toàn, nhưng luôn xử lý leak gốc và thêm giám sát {{open_files}} theo thời gian.
 
@@ -5789,6 +6506,13 @@ tar czf $OUT.tgz $OUT
 2. **Restart reflex (phản xạ restart)**: dập triệu chứng nhưng lặp lại, không có dữ liệu root cause. Cách tránh: checklist "thu bằng chứng tối thiểu" trước restart; tự động hoá thu thập.
 3. **Postmortem biến thành buổi quy lỗi**: mọi người giấu thông tin lần sau. Cách tránh: blameless, tập trung vào guardrail (alert, test, circuit breaker, limit, review).
 4. **Action items mơ hồ, không owner/deadline**: "cải thiện monitoring" không bao giờ xong. Cách tránh: mỗi action có người chịu trách nhiệm, hạn, và tiêu chí hoàn thành.
+
+### Ví dụ đời thực
+- **Triệu chứng:** 20:05 ngày thứ Sáu, alert SEV1 báo tỉ lệ giao dịch thanh toán thành công giảm từ 99,8% xuống 72% trong 8 phút; p99 API {{/pay}} tăng từ 350ms lên 9s. CS nhận khoảng 120 ticket "chờ mã OTP/xác nhận mãi".
+- **Điều tra:** On-call mở runbook, đặt Incident Commander, chụp bằng chứng trước khi can thiệp: 3 thread dump cách 10 giây bằng {{jcmd}}, {{ss -s}}, {{lsof -p}}, {{dmesg -T | tail}} và snapshot dashboard. Thread dump cho thấy 180/200 thread Tomcat đang chờ lấy connection từ pool Hikari ({{maxPoolSize}}=20) do truy vấn bảng {{payment_session}} giữ lock lâu; deploy 19:40 vừa thêm truy vấn thiếu index.
+- **Nguyên nhân gốc:** Thay đổi schema/query trong bản deploy làm câu lệnh quét bảng và giữ lock dài, kéo cạn connection pool; retry từ client làm tải tăng thêm (contributing factor: chưa có circuit breaker phía gọi).
+- **Cách xử lý:** Mitigate bằng rollback image về bản 19:30 (theo tiêu chí SEV1 đã chốt), xác nhận giao dịch treo với nghiệp vụ để tránh double-charge; sau khi ổn, resolve bằng thêm index và load test truy vấn mới.
+- **Kết quả đo được:** Sau rollback lúc 20:18, success rate phục hồi 99,7% và p99 về 320ms trong 6 phút; tổng thời gian ảnh hưởng 21 phút (~2.400 giao dịch lỗi/timeout). Postmortem 48 giờ sau sinh 4 action items có owner (index, alert lock wait, circuit breaker, cập nhật runbook).
 
 ### Trả lời phỏng vấn (góc lead)
 Em xây runbook theo vòng đời Detect, Triage, Mitigate, Communicate, Resolve, Postmortem. Phần quan trọng nhất với Java là checklist thu bằng chứng trước khi restart: 3 thread dump cách nhau, thông tin heap/GC, số fd/socket, và {{dmesg}} để phân biệt OOM killer với OOME — vì restart xoá trạng thái RAM. Em phân mức SEV rõ, có Incident Commander, mẫu cập nhật stakeholder định kỳ, và ma trận escalation để đúng người tham gia trong vài phút. Sau sự cố là blameless postmortem với action items có owner và deadline. Mục tiêu của em là giảm MTTR và lặp lại sự cố, không phải tìm ai sai. Trong bối cảnh thanh toán, em thêm bước kiểm soát ảnh hưởng giao dịch và phối hợp nghiệp vụ/tuân thủ.
@@ -6335,6 +7059,16 @@ Một team ra mắt tính năng chuyển tiền nhanh: **SA** quyết định d�
 ### Câu trả lời phỏng vấn nên nói thế nào
 "Em hiểu ở ngân hàng DevOps thường tách vai: SA thiết kế kiến trúc tổng thể và trade-off, Platform/DevOps xây CI/CD và nền tảng K8s, Infra lo máy chủ/mạng/Linux, SRE lo SLO, giám sát và xử lý sự cố, còn Cloud Security lo IAM, cô lập mạng và tuân thủ. Với nền tảng dev Java 4 năm, em nhắm vai Platform hoặc SRE vì em hiểu cách ứng dụng build/chạy/hỏng (probe, graceful shutdown, connection pool, JVM), và em đang bổ sung Linux, container/K8s, pipeline và observability để đóng được phần hạ tầng quanh ứng dụng."
 
+### Ví dụ đời thực
+- **Triệu chứng:** Một ngân hàng có 12 team chuyển dần hệ thống lên AWS; mỗi sự cố production phải họp cả nhóm lớn nhưng không rõ ai quyết định rollback, ai xem log hạ tầng, ai chịu trách nhiệm IAM, dẫn đến MTTR trung bình 70 phút dù lỗi ứng dụng không phức tạp.
+- **Điều tra:** Sau 2 tháng ghi nhận incident, SRE tổng hợp 15 sự cố: 6 vụ chậm do thiếu SLO/alert rõ, 4 vụ deploy lỗi do pipeline mỗi team tự làm khác nhau, 3 vụ nghẽn mạng/IAM do chưa có ranh giới Platform-Infra-Security, 2 vụ thiết kế tích hợp không chịu tải cao vì SA tham gia muộn. {{postmortem}} cho thấy runbook và owner không được phân vai theo mảng.
+- **Nguyên nhân gốc:** Tổ chức gọi chung là "DevOps" nhưng không định nghĩa trách nhiệm: thiếu Platform chuẩn hóa CI/CD-K8s, thiếu SRE đo độ tin cậy, Security tham gia muộn, SA không có checklist kiến trúc trước go-live.
+- **Cách xử lý:** Tách vai rõ: Platform xây Helm chart/pipeline chuẩn, SRE định nghĩa SLO p99 và on-call/runbook, Infra quản lý mạng/Linux, Cloud Security review IAM và guardrail, SA chủ trì thiết kế tích hợp. Dev Java nền tảng ứng dụng được luân chuyển sang Platform để đóng khoảng trống giữa app và triển khai.
+- **Kết quả đo được:** Sau 1 quý, thời gian triển khai môi trường mới giảm từ 5 ngày xuống 1 ngày, tỉ lệ deploy lỗi giảm ~40%, MTTR trung bình giảm còn 28 phút nhờ runbook và owner rõ ràng.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nói về DevOps trong ngân hàng đang lên cloud, em không xem đó là một vai duy nhất mà là tập hợp vai trò phối hợp. SA thiết kế kiến trúc tổng thể và cân nhắc trade-off giữa chi phí, bảo mật, độ tin cậy và tuân thủ. DevOps hoặc Platform xây đường ống CI/CD, chuẩn hóa cách đóng gói và triển khai lên Kubernetes. Infra hoặc System lo máy chủ, mạng, Linux, còn SRE tập trung vào SLO, quan sát, cảnh báo và xử lý sự cố để giữ hệ thống ổn định. Cloud Security kiểm soát IAM, cô lập mạng, mã hóa và yêu cầu tuân thủ. Với nền tảng dev Java khoảng bốn năm, em thấy hướng tự nhiên nhất là Platform hoặc SRE vì em đã hiểu cách ứng dụng Spring Boot build, chạy, log, dùng connection pool và hỏng như thế nào. Em đang bổ sung Linux, container, Kubernetes và observability để đóng góp tốt ở lớp vận hành quanh ứng dụng."
+
 > Senior tip: Khi phỏng vấn bất kỳ vai "DevOps" nào ở ngân hàng, hãy hỏi ba điều: (1) bạn sẽ **xây nền tảng** hay **vận hành hệ thống có sẵn**, (2) có **on-call** và quy trình incident không, (3) ranh giới với Security/Infra ở đâu. Câu trả lời cho thấy vai thật sự, và giúp bạn không nhận nhầm một việc thuần vận hành khi mục tiêu là Platform/SRE.`,
   follow: ['Sự khác nhau giữa SRE và DevOps truyền thống là gì? (gợi ý: SLO, error budget, toil)', 'Một Platform Engineer cần hiểu gì về ứng dụng Java để hỗ trợ team dev tốt (probe, resource, JVM)?', 'Khi SA thiết kế hệ thống lên AWS cho ngân hàng, những ràng buộc tuân thủ/bảo mật nào thường ảnh hưởng quyết kiến trúc?'],
   tags: ['devops-roles', 'SA', 'SRE', 'platform', 'cloud-security', 'career'],
@@ -6778,6 +7512,16 @@ sudo journalctl -u loan-service -f              # theo dõi real-time
 | ss -tlnp | xem port đang listen và process | Thay netstat, cần quyền root để xem PID |
 | uptime | xem load average | 3 số là trung bình 1/5/15 phút |
 
+### Ví dụ đời thực
+- **Triệu chứng:** Sau khi reboot server bảo trì lúc 02:00, ứng dụng Spring Boot {{loan-service}} không phục vụ request; healthcheck báo kết nối bị từ chối trên port 8080, khách hàng không tra cứu được khoản vay.
+- **Điều tra:** {{systemctl status loan-service}} trả về {{failed (Result: exit-code)}} với {{Active: activating (auto-restart)}} lặp lại. {{journalctl -u loan-service -n 100 --since "02:00"}} thấy {{Error: Unable to access jarfile /opt/loan-service/loan-service.jar}} và {{Permission denied}}. Kiểm tra {{ls -l /opt/loan-service}} cho thấy file jar thuộc {{root:root}} quyền {{640}}, trong khi unit chạy {{User=loansvc}}.
+- **Nguyên nhân gốc:** Khi deploy bản mới, người thao tác copy jar bằng root nhưng quên {{chown loansvc:loansvc}}; systemd restart theo {{Restart=always}} nhưng process thoát ngay vì không đọc được jar.
+- **Cách xử lý:** {{sudo chown loansvc:loansvc /opt/loan-service/loan-service.jar}} và {{sudo chmod 640 /opt/loan-service/loan-service.jar}}, sau đó {{systemctl restart loan-service}}. Bổ sung bước kiểm tra quyền vào script deploy và alert khi service {{failed}} quá 3 lần/phút.
+- **Kết quả đo được:** Service lên lại sau 4 phút từ lúc phát hiện, {{systemctl is-active}} trả {{active}} ổn định; trong 30 ngày tiếp theo không còn sự cố khởi động do quyền file.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi cần chạy một ứng dụng Spring Boot như dịch vụ trên Linux, tôi viết unit file systemd với user riêng, đặt WorkingDirectory, ExecStart trỏ tới java -jar và cấu hình Restart=always kèm RestartSec để tự hồi phục khi process chết. Tôi luôn chạy daemon-reload, enable để tự khởi động sau reboot, rồi kiểm tra bằng systemctl status. Khi dịch vụ không lên, tôi đi theo chuỗi: xem status và exit code, đọc journalctl -u theo mốc thời gian, rồi kiểm tra các nguyên nhân hay gặp như quyền đọc jar, biến môi trường/profile thiếu, port bị chiếm bằng ss -tlnp, hoặc giới hạn bộ nhớ. Ví dụ thực tế, sau một lần reboot app restart liên tục do jar copy bằng root sai quyền; journalctl cho thấy Permission denied, tôi sửa chown/chmod và bổ sung bước kiểm tra quyền vào deploy. Với dịch vụ Java tôi cũng đặt MemoryMax và cấu hình -Xmx phù hợp để tránh OOM kill."
+
 > Senior tip: Trên production, đừng để app chạy dưới root. Nếu app cần bind port dưới 1024 (ví dụ 80/443), hãy dùng {{setcap cap_net_bind_service=+ep}} trên java binary hoặc để reverse proxy (Nginx) lắng nghe port 80/443 rồi chuyển tiếp qua port 8080 (app chạy port cao, an toàn hơn).`,
   follow: ['Khi app Java khởi động rồi lập tức died, bạn kiểm tra thứ tự gì đầu tiên? (gợi ý: journalctl, systemctl status, quyền file, port đã chiếm chưa)', 'Tại sao nên đặt Restart=always nhưng kèm RestartSec, thay vì để systemctl restart liên tục không chờ?', 'Làm sao giới hạn RAM cho Java service trên Linux tránh OOM Kill? (gợi ý: -Xmx, MemoryMax, cgroup)'],
   tags: ['linux', 'systemd', 'java-service', 'journalctl', 'troubleshooting']
@@ -6876,6 +7620,16 @@ Rồi chỉ cần {{ssh app}}.
 | fail2ban | Brute-force SSH, quét port | Thấp |
 | Bastion/ProxyJump | Server đính Internet bị tấn công trực tiếp | Trung bình (dùng thêm server) |
 
+### Ví dụ đời thực
+- **Triệu chứng:** Một server ứng dụng mở port 22 ra Internet xuất hiện cảnh báo bảo mật: {{/var/log/auth.log}} ghi hàng nghìn dòng {{Failed password for invalid user}} từ nhiều IP trong 2 giờ, CPU tăng nhẹ do sshd xử lý kết nối liên tục.
+- **Điều tra:** {{grep "Failed password" /var/log/auth.log | wc -l}} cho ~18.000 lần thử; {{lastb}} và {{journalctl -u sshd}} cho thấy bot thử các username phổ biến (root, admin, ubuntu). Kiểm tra {{sshd -T | grep -E 'permitrootlogin|passwordauthentication'}} thấy {{permitrootlogin yes}} và {{passwordauthentication yes}} trên server cũ chưa harden.
+- **Nguyên nhân gốc:** SSH cho phép đăng nhập root bằng mật khẩu và không có cơ chế chặn brute-force, tạo bề mặt tấn công lớn; mật khẩu yếu hoặc lộ có thể dẫn tới chiếm quyền.
+- **Cách xử lý:** Tạo khóa SSH cho admin, cấu hình {{PermitRootLogin no}}, {{PasswordAuthentication no}}, {{AllowUsers}} chỉ định tài khoản vận hành, cài {{fail2ban}} ({{maxretry 3}}, {{bantime 1h}}) và đưa server vào private subnet, truy cập qua bastion với {{ProxyJump}}. Sau thay đổi, kiểm tra bằng session SSH thứ hai trước khi đóng session cũ.
+- **Kết quả đo được:** Trong 7 ngày theo dõi, số lần đăng nhập thất bại còn ~40/ngày (đa số bị {{fail2ban}} chặn sau vài lần), không còn đăng nhập root trực tiếp, và mọi truy cập quản trị đều đi qua bastion có log tập trung.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi bảo mật SSH trên Linux, tôi ưu tiên giảm bề mặt tấn công theo từng lớp. Trước hết tôi dùng khóa SSH thay mật khẩu vì không thể brute-force như mật khẩu và dễ thu hồi; sau đó tôi tắt đăng nhập root và chỉ cho phép các user cần thiết bằng AllowUsers, buộc thao tác đặc quyền đi qua sudo có kiểm soát. Tôi cài fail2ban để tự chặn IP thử sai nhiều lần và, với hệ thống production, tôi không để server ứng dụng lộ port 22 ra Internet mà truy cập qua bastion/jump host bằng ProxyJump. Khi thay đổi cấu hình sshd tôi luôn giữ một phiên đang mở và dùng sshd -t để tránh tự khóa mình. Trong một trường hợp thực tế, server bị hàng nghìn lần thử mật khẩu do còn bật PasswordAuthentication; sau khi chuyển sang khóa, cấm root và thêm fail2ban, số lần thất bại giảm mạnh và truy cập được kiểm soát qua bastion."
+
 > Senior tip: Trên production, hãy centralized tập hợp public key của team vào một repos và dùng công cụ (ví dụ Ansible, Terraform, hoặc ssh-ca) để đẩy/thu hồi khóa tự động. Cứ thủ công sửa {{authorized_keys}} trên mỗi server sẽ sớm rối và khóa cũ không bao giờ bị xoá. Ghi log mọi phiên SSH ({{/var/log/auth.log}}) và gửi về SIEM để kiểm tra khi có sự cố.`,
   follow: ['Tại sao nên dùng khóa SSH thay vì mật khẩu trên server production?', 'Làm sao kiểm tra xem fail2ban đã chặn IP nào chưa? (gợi ý: fail2ban-client status sshd)', 'Khi không thể ssh vào server, bạn kiểm tra thứ tự gì: sshd đang chạy, port, firewall, hay khóa sai?'],
   tags: ['ssh', 'security', 'fail2ban', 'bastion', 'proxyjump']
@@ -6933,6 +7687,12 @@ Máy trong private subnet không có public IP, muốn gọi API bên ngoài →
 | TCP / TLS | Transport | kết nối đáng tin cậy, mã hóa |
 | HTTP / HTTPS | Application | giao thức ứng dụng web/API |
 | DNS | Application | dịch tên thành IP |
+
+### Ví dụ đời thực
+Giao diện thanh toán của một shop online gọi API ngân hàng đối tác thất bại, tỷ lệ lỗi khoảng 40% kéo dài 10 phút. Log Java ghi lỗi {{certificate expired}} từ HttpClient khi gọi HTTPS. Tôi chạy lệnh {{echo | openssl s_client -connect api.nganhang.com:443 2>/dev/null | openssl x509 -noout -dates}}, kết quả cho thấy {{notBefore}} và {{notAfter}}, trong đó {{notAfter}} đã qua 3 ngày. Điều tra tiếp phát hiện cert mới đã được cấp (ví dụ qua Let's Encrypt) nhưng bước triển khai cert vào Nginx bị bỏ sót, nên Nginx vẫn phục vụ cert cũ hết hạn. Cách xử lý: triển khai cert mới vào đúng đường dẫn Nginx đang dùng, kiểm tra cấu hình, rồi chạy {{nginx -s reload}}. Sau reload, tỷ lệ lỗi giảm về 0% trong vòng 5 phút. Hậu quả: tôi thiết lập alert monitoring trước 30/14/7 ngày khi cert sắp hết hạn và cấu hình tự động gia hạn/triển khai cert (ví dụ {{certbot renew}} kèm hook reload) để tránh lặp lại.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi gọi API bị lỗi, tôi không bắt đầu từ code Java mà phân theo tầng mạng: dùng {{ping}} hoặc {{telnet host port}} kiểm tra TCP port mở, {{curl -v}} xem chi tiết TLS handshake và HTTP response, và {{dig}} xem bản ghi DNS. Ví dụ một lần cert SSL của API đối tác hết hạn, HttpClient ném lỗi certificate expired, tôi chạy openssl xem {{notAfter}}, renew cert qua Let's Encrypt rồi reload Nginx, lỗi mất ngay. Tôi cũng khuyên thiết lập alert cert trước 30/14/7 ngày và dùng HTTP keep-alive để tái dùng kết nối, tránh handshake mỗi request khi latency cao. Ngoài ra, trước khi đổi IP DNS, tôi giảm TTL xuống thấp (ví dụ 60 giây) để bản ghi mới lan truyền nhanh, tránh client cũ vẫn gọi IP cũ do cache theo TTL cũ. Tôi cũng kiểm tra security group có chặn cổng 443 không, và khuyên dùng connection pool (HttpClient) để giảm số lần handshake. Khi latency cao, ví dụ gọi chéo lục địa qua VPN, TLS handshake tốn hai round trip nên rất chậm; keep-alive giúp tái dùng kết nối và tránh vấn đề này."
 
 > Senior tip: Khi debugging "gọi API lỗi", đừng tưởng là do code Java lỗi. Hãy phân lớp: {{ping}} (ICMP, có thể bị chặn), {{telnet host port}} / {{nc -vz host port}} (kiểm tra TCP port mở), {{curl -v}} (xem TLS handshake và HTTP response), {{dig}} (DNS). Lỗi thường nằm ở security group chặn port, cert hết hạn, hoặc DNS trỏ sai, chứ không phải code.`,
   follow: ['TTL là gì và tại sao đổi DNS/IP chưa có hiệu lực ngay lập tức?', 'TLS handshake tốn bao lâu và làm sao giảm chi phí handshake trên đường gọi cao latency?', 'Chứng chỉ SSL hết hạn thì ứng dụng Java client gọi HTTPS bị lỗi gì, bạn khắc phục thế nào?'],
@@ -7023,6 +7783,12 @@ Nginx Plus dùng cookie {{route}}. Lưu ý: sticky session làm scaling/khuất 
 | Health check | Giới hạn (max_fails) | Tích hợp chi tiết | Tích hợp đầy đủ |
 | Sticky session | ip_hash | Cookie/table | Cookie |
 
+### Ví dụ đời thực
+Hệ thống cho vay trực tuyến sau deploy lần đầu gặp lỗi: user đăng nhập thành công nhưng sau vài lần bấm lại bị yêu cầu đăng nhập lại, và việc duyệt đơn bị gián đoạn giữa chừng. Log Nginx ghi request đến đúng 2 instance luân phiên. Điều tra thấy team đang dùng sticky session (cookie route) trên Nginx Plus, mỗi instance lưu session trong bộ nhớ local (HashMap). Khi instance 1 khởi động lại (rolling deploy), session của user trên instance đó bị mất, user bị đẩy về màn hình đăng nhập. Cách xử lý: tắt sticky session, cài Spring Session với Redis ({{spring.session.store-type=redis}}), lưu session vào Redis chung. Sau đó restart cả 2 instance, user duyệt đơn liên tục không bị đăng xuất lại. Kết quả: rolling deploy không làm drop session, và có thể scale thêm instance thứ 3 mà không lo mất session.
+
+### Trả lời mẫu khi phỏng vấn
+"Reverse proxy như Nginx đứng trước app Java, nhận request từ client rồi chuyển tiếp. Nó giúp terminate TLS, phân phối tải qua nhiều instance qua load balancing, kiểm tra health check (ví dụ {{/actuator/health}}) để không gửi traffic tới instance chết, và thiết lập timeout phù hợp. Header X-Forwarded-For/Proto/Host cho app biết IP client thực, giao thức (protocol) và host ban đầu; nếu không bật {{server.forward-headers-strategy=framework}}, Spring sẽ thấy IP của Nginx và scheme http dù client dùng HTTPS, gây sai redirect và cookie Secure không gửi. Tôi khuyên dùng stateless: session lưu Redis, dùng round-robin/least_conn, không nên sticky session vì mất session khi instance bị restart và khó scale. Trong một sự cố thật, team dùng sticky session, instance restart làm mất session, user bị đăng xuất liên tục. Sau khi chuyển sang Redis + round-robin, rolling deploy không ảnh hưởng user. Health check endpoint nên nhẹ, không truy vấn DB nặng, để LB nhanh phát hiện instance chết và ngừng gửi traffic."
+
 > Senior tip: Đừng gắn session vào instance (sticky session) trừ khi bắt buộc. Mỗi instance Java nên stateless: session lưu Redis, file lưu S3/minIO, upload gửi trực tiếp storage. Stateless thìLB chọn thuật toán nào cũng được, scale instance thêm/bớt không ảnh hưởng user, và rolling deploy không làm drop session. X-Forwarded-Proto là nỗi đau đen: nếu sai, Spring Security redirect về http thay vì https và cookie Secure không gửi được.`,
   follow: ['X-Forwarded-Proto dùng để làm gì và sai thì hỏng gì trong Spring Boot?', 'Health check endpoint nên kiểm tra gì để không làm quá tải DB?', 'Tại sao khuyên dùng stateless (session trong Redis) thay vì sticky session?'],
   tags: ['nginx', 'haproxy', 'reverse-proxy', 'load-balancer', 'health-check', 'sticky-session', 'x-forwarded']
@@ -7109,6 +7875,12 @@ Trên AWS, security group inbound 8443 chỉ từ IP đối tác (hoặc prefix 
 | Security group | AWS/VPC cloud | Có | AWS console/CLI |
 | VPN IPsec | Kết nối hai mạng riêng | Có | strongSwan, AWS VPN |
 
+### Ví dụ đời thực
+Hệ thống thanh toán cần gọi API đối ngân hàng qua IPsec VPN, nhưng sau khi triển khai, app Java bị timeout 100% khi gọi API đối tác. Log ứng dụng ghi {{Connection timed out}} tới IP 172.16.0.50. Điều tra thấy security group app (SG-app) cho inbound 8080 từ NLB, nhưng phía đối tác whitelist chỉ chứa IP công cộng cũ của chúng ta, còn IP mới sau khi đổi NAT gateway chưa được thêm vào whitelist của đối tác. Cách xử lý: liên hệ đối tác thêm IP công cộng mới vào whitelist hai bên, kiểm tra tunnel VPN bằng {{ip xfrm state}} hoặc AWS VPN metrics, sau đó thử lại gọi API. Kết quả: lời gọi thành công, latency dưới 200ms. Hậu quả: lập quy trình review whitelist IP đối tác mỗi 3 tháng và ghi lại lý do mỗi IP được phép.
+
+### Trả lời mẫu khi phỏng vấn
+"Firewall lọc gói tin dựa trên cổng, IP và giao thức; trên Linux dùng ufw/iptables, trên AWS dùng security group (stateful, cho phản hồi tự động). Để an toàn, tôi áp dụng least privilege: chặn tất cả, mở từng cổng cần (ví dụ 5432 chỉ từ subnet app, không bao giờ mở 0.0.0.0/0 cho DB). VPN IPsec tạo đường hầm mã hóa tới mạng đối tác, và whitelist IP chỉ cho phép IP đã đăng ký. Ví dụ thật: app Java gọi API đối tác bị timeout vì IP công cộng mới chưa nằm trong whitelist của đối tác; sau khi cập nhật whitelist và kiểm tra tunnel VPN, lỗi mất. Mọi thay đổi tường lửa phải qua change request, có rollback, và review whitelist định kỳ. Tôi cũng kiểm tra firewall đã chặn gì bằng {{sudo ufw status numbered}} hoặc AWS VPC flow logs, và chọn security group làm nguồn thay vì CIDR rộng vì IP instance có thể thay đổi."
+
 > Senior tip: "Mở cổng để chạy thử rồi quên đóng" là nguyên nhân phổ biến của rò r dữ liệu. Hãy áp dụng nguyên tắc least privilege: đóng tất cả, mở từng cổng cần từng cặp (nguồn, đích, cổng). Trong AWS, chọn security group làm nguồn thay vì CIDR rộng, và gắn tag {{Owner}}/{{Ticket}} vào mỗi quy tắc để biết ai yêu cầu, khi nào review lại. Mọi thay đổi firewall phải qua change request và có rollback plan.`,
   follow: ['Tại sao không bao giờ mở cổng DB (5432) ra 0.0.0.0/0 trên Internet công cộng?', 'Security group khác iptables/ufw ở điểm nào, và khi nào dùng cái nào?', 'Whitelist IP đối tác cần review định kỳ như thế nào để không dính IP lỗi thời?'],
   tags: ['firewall', 'ufw', 'iptables', 'security-group', 'vpn', 'ip-whitelist']
@@ -7185,6 +7957,12 @@ Không thêm public key thủ công vào {{~/.ssh/authorized_keys}} trên mỗi 
 | authorized_keys thủ công | Đơn giản, không cài thêm | Khó thu hồi, rủi ro khóa cũ còn hiệu lực |
 | SSH CA | Khóa hết hạn, quản lý tập trung | Cần cài CA, kiến thức thêm |
 | Teleport/StrongDM | Audit session, MFA, không khóa thủ công | Phụ thuộc dịch vụ bên thứ ba, chi phí |
+
+### Ví dụ đời thực
+Nhân viên dev cần sửa lỗi trên app server trong private subnet, nhưng server không có public IP. Nếu không có bastion, dev phải mở cổng 22 ra Internet — nguy hiểm. Thực tế: team đặt bastion ở public subnet, chỉ cho SSH từ IP văn phòng qua security group. Dev chạy {{ssh -J bastion-user@bastion-ip loansvc@app-private-ip}} (ProxyJump) để truy cập app server qua bastion mà không ssh hai lần thủ công. Tất cả session được ghi bằng {{auditd}} và gửi về ELK. Một ngày, attacker thu được private key của một dev; vì bastion bật MFA và chỉ cho IP whitelisted, attacker không thể vào. Kết quả: hệ thống nội bộ vẫn an toàn, và đội bảo mật có log ai ssh vào server nào, khi nào, chạy lệnh gì.
+
+### Trả lời mẫu khi phỏng vấn
+"Bastion (jump host) là điểm vào duy nhất để quản lý các server trong private subnet, không đính Internet trực tiếp. Dùng ProxyJump (-J) để ssh qua bastion một lệnh thay vì ssh bastion rồi ssh lại app. ~/.ssh/config với ProxyJump giúp dev chỉ cần {{ssh app-private}}. Trên bastion tôi cứng rắn: tắt root login, tắt xác thực bằng mật khẩu, chỉ cho group sshusers, giới hạn IP nguồn, tắt X11Forwarding/AgentForwarding. Ghi audit toàn bộ phiên bằng auditd/ttyrec và gửi về SIEM, lưu 6-12 tháng. Quản lý khóa tập trung qua SSH CA (khóa hết hạn tự động) thay vì thêm public key thủ công vào authorized_keys trên mỗi server. SSH CA giúp khi nhân viên nghỉ việc, khóa hết hạn tự động, không cần xoá thủ công trên từng server, tránh rủi ro khóa cũ còn hiệu lực. Bastion không deploy app, không lưu secret, và là 'chìa khóa chính' nên phải bảo vệ chặt chẽ hơn các server thường."
 
 > Senior tip: Bastion là "chìa khóa chính" của toàn bộ hệ thống nội bộ. Nếu attacker chiếm bastion, họ có thể ssh vào mọi app server. Do đó bastion phải cứng rắn hơn app server: MFA, chỉ từ IP whitelisted, ghi toàn bộ phiên, và không lưu secret/code trên bastion. Giống như cửa chính của ngân hàng — chỉ mở cho người được phép, và ghi lại mọi người vào-ra.`,
   follow: ['ProxyJump khác ssh hai lần thủ công (bastion rồi app) ở điểm nào?', 'Làm sao ghi lại tất cả lệnh chạy qua bastion để kiểm tra khi có sự cố?', 'SSH CA giúp gì so với public key thủ công trong authorized_keys?'],
@@ -7265,6 +8043,12 @@ Rồi {{sudo systemctl daemon-reload}} && {{sudo systemctl restart loan-service}
 | App crash, log "Out of memory" | Heap quá nhỏ, memory leak | journalctl, jmap -histo |
 | Không connect được app | Port không listen, firewall | ss -tlnp, ufw status |
 
+### Ví dụ đời thực
+App cho vay trên server production đột nhiên phản hồi chậm, rồi toàn bộ request trả lỗi 503. {{uptime}} cho thấy load average 25 trong khi server chỉ 8 lõi CPU. {{free -h}} cho thấy RAM available thấp, swap đang dùng nhiều. {{ss -tlnp | grep :8080}} cho thấy app Java vẫn listen. {{journalctl -u loan-service --since "1 hour ago"}} ghi lỗi {{OutOfMemoryError}} và GC overhead limit exceeded. Điều tra bằng {{jmap -histo:live $pid}} thấy rất nhiều đối tượng {{char[]}} và {{String}} được giữ lại bởi một cấu trúc lưu log trong bộ nhớ (memory leak, rò rỉ bộ nhớ — đối tượng không còn cần nhưng vẫn bị tham chiếu nên GC không thu hồi). Cách xử lý: tắt dịch vụ không quan trọng để giải phóng RAM, restart loan-service với heap điều chỉnh ({{-Xms1G -Xmx2G}} trên máy 8GB RAM) để khôi phục dịch vụ, sau đó sửa code để bỏ cơ chế tích lũy log trong bộ nhớ (và bật log rotation để tránh đầy đĩa). Sau khi restart, load average giảm về 2, app phản hồi lại trong 2 phút. Hậu quả: thiết lập {{MemoryMax=2G}} và {{CPUQuota=50%}} trong systemd unit file, thêm alert khi RAM available dưới 1GB.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi server production chậm hoặc app Java bị OOM/crash, tôi phân tích theo từng tầng: hệ thống (CPU/RAM/IO/mạng), dịch vụ (systemd status/log), và ứng dụng (Java heap/GC/thread dump). Dùng {{uptime}} xem load average, {{free -h}} xem RAM, {{iostat -x}} xem ổ đĩa, {{ss -tlnp}} xem port, và {{journalctl -u loan-service}} xem log app. Nếu thấy {{OutOfMemoryError}}, tôi lấy {{jstack}} và {{jmap -histo:live}} để tìm memory leak hoặc thread treo. Để ngăn app ăn hết máy, tôi thiết lập {{MemoryMax}}, {{CPUQuota}}, {{LimitNOFILE}} trong systemd unit file. Runbook phải được viết và diễn tập trước khi có sự cố: restart service, rollback nếu cần, rồi ghi incident report và cập nhật runbook. Không restart mù quáng khi đang xử lý giao dịch tài chính: kiểm tra thread dump, chờ xong hoặc drain qua LB trước. Swap bật trên server Java thường xấu (GC trong swap rất chậm), tôi tắt swap hoặc dùng {{MemorySwapMax=0}}. journalctl nên bật {{Storage=persistent}} để xem log sau reboot."
+
 > Senior tip: Runbook phải được viết và **diễn tập trước khi có sự cố**, không viết giữa đêm khi server đang xuống. Mỗi runbook ghi rõ: ai được gọi, lệnh chạy theo thứ tự, tiêu chí rollback, và khi nào escalate lên đội DBA/infra. Systemd resource limit là giànadero phòng khi một app Java bị "loạn" (ví dụ loop tạo file log) — thiết lập trước, đợi sự cố mới cấu hình thì đã muộn.`,
   follow: ['Load average cao nhưng CPU/RAM bình thường có thể do gì, và bạn kiểm tra bằng lệnh gì? (gợi ý: iostat, ss, thread dump)', 'OOM Kill trong Linux là gì, và journalctl có dấu hiệu gì để xác nhận app bị OOM?', 'Tại sao nên đặt MemoryMax và CPUQuota trong systemd unit file cho Java service?'],
   tags: ['linux', 'incident-response', 'systemd', 'oom', 'troubleshooting', 'journalctl', 'runbook']
@@ -7338,6 +8122,12 @@ note WAF/DMZ,App zona,DB/Core zona: mỗi zona kiểm tra độc lập, least pr
 | App zona | Xử lý nghiệp vụ | east-west (gọi DB/app) | Tường lửa nội bộ, SG |
 | DB zona | Lưu dữ liệu nhạy cảm | east-west (chỉ app gọi) | SG, mã hóa kết nối DB |
 | Management | Quản trị | north-south qua VPN | Bastion, IP whitelist, MFA |
+
+### Ví dụ đời thực
+Ngân hàng trực tuyến sau khi mở rộng microservices xảy ra sự cố: một service trong app zona bị lợi dụng lỗ hổng RCE, attacker dùng nó làm điểm nhảy để gọi trực tiếp DB core trong data zona và lấy dữ liệu thẻ thanh toán. Điều tra thấy trước đó app zona và DB zona cùng một VLAN, không có tường lửa giữa các service nội bộ (không micro-segmentation), nên attacker di chuyển ngang (east-west) tự do. Cách xử lý: tách VLAN cho mỗi zona, đặt security group riêng (app zona SG chỉ cho inbound từ DMZ SG, DB zona SG chỉ cho inbound từ app zona SG cổng 5432), áp dụng mTLS giữa các microservices nội bộ. Sau khi triển khai, thử nghiệm từ Internet không thể gọi DB (timeout), và attacker không thể gọi DB từ service bị xâm nhập. Kết quả: dữ liệu thẻ an toàn, đáp ứng yêu cầu PCI-DSS về mã hóa và phân đoạn mạng.
+
+### Trả lời mẫu khi phỏng vấn
+"Defense in depth là bảo mật nhiều tầng, không tin vào một tường lửa duy nhất. Tôi chia mạng thành các zona: DMZ (chứa WAF, Nginx, API gateway, đính Internet), zona app (chứa Spring Boot, không đính Internet), zona DB (chứa core banking, chỉ app gọi), và zona quản trị (qua VPN, MFA). Traffic north-south là client↔server đi qua tường lửa biên, traffic east-west là server↔server trong trung tâm dữ liệu cũng cần tường lửa nội bộ (micro-segmentation). Ví dụ luồng thanh toán: khách hàng gọi HTTPS /pay qua WAF/DMZ → Nginx terminate TLS → API gateway xác thực token → Spring Boot trong app zona → DB core trong data zona (chỉ cổng 5432 từ SG app). Mọi thay đổi tường lửa qua change request, có rollback, và giả định zona nội bộ không tin nhau. Áp dụng least privilege: chỉ mở cổng cần thiết giữa zona (ví dụ app zona chỉ gọi DB zona cổng 5432), không cho app zona gọi trực tiếp Internet (qua NAT gateway hoặc proxy đã whitelist). Giám sát traffic east-west bằng IDS/IPS nội bộ vì attacker đã trong mạng nội bộ có thể di chuyển ngang đến DB/core."
 
 > Senior tip: "Mạng nội bộ là an toàn" là giả định nguy hiểm nhất trong bảo mật ngân hàng. Attacker đã vào mạng nội bộ (qua email lừa, app có lỗi) sẽ tìm cách di chuyển ngang (east-west) đến DB/core. Do đó hãy áp dụng micro-segmentation (tường lửa giữa app-server và DB-server, không cho tất cả app gọi tất cả DB), mã hóa mTLS giữa các dịch vụ nội bộ, và giả định mọi zone không tin zone khác. Network segmentation là lớp cuối cùng bảo vệ core banking khi tất cả lớp khác đã bị bỏ qua.`,
   follow: ['Traffic north-south và east-west khác nhau như thế nào, và tại sao east-west cũng cần tường lửa?', 'DMZ chứa gì, và tại sao DB/core banking không được đặt trong DMZ?', 'Micro-segmentation là gì và áp dụng như thế nào trong AWS security group?'],
@@ -11152,7 +11942,7 @@ Một app đặt lịch dùng MongoDB 3 node với {{w: 1}} do "cấu hình cũ"
 ### Trả lời mẫu khi phỏng vấn
 "MongoDB replica set có một primary nhận ghi, các secondary kéo oplog của primary để sao chép. Nếu primary mất liên lạc với đa số quá khoảng 10 giây, các node bầu primary mới theo giao thức dựa trên Raft, ưu tiên node có priority cao và dữ liệu mới. Điều tôi quan tâm nhất là write concern: với dữ liệu quan trọng tôi dùng w majority, cũng là mặc định từ 5.0, để ghi đã xác nhận không bị rollback khi failover. Với w 1, primary bị cô lập vẫn nhận ghi và sau election những ghi đó bị rollback. Fencing ở đây là primary mất đa số tự step down, và ghi majority vào phía thiểu số không bao giờ được xác nhận. Tôi dùng ba node dữ liệu thay vì arbiter, chuỗi kết nối liệt kê đủ các host, bật retryWrites, và cân nhắc đọc secondary chỉ khi chấp nhận dữ liệu cũ vài giây."
 
-> Senior tip: kiểm tra ngay write concern thực tế ở chuỗi kết nối và ở mặc định của cluster ({{getDefaultRWConcern}}). Các hệ thống tạo trước MongoDB 5.0 thường vẫn chạy w 1 mà không ai biết.`,
+> Senior tip: kiểm tra ngay write concern thực tế ở chuỗi kết nối và ở mặc định của cluster ({{getDefaultWriteConcern}}). Các hệ thống tạo trước MongoDB 5.0 thường vẫn chạy w 1 mà không ai biết.`,
     follow: ['Arbiter là gì, khi nào dùng?', 'Read preference primary/secondary?', 'Sharded cluster HA?'],
     tags: ['MongoDB', 'ReplicaSet', 'HA']
   }
