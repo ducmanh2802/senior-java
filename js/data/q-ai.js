@@ -5562,4 +5562,362 @@ Tôi cần truy vết một run cụ thể chứ không chỉ nhìn metric tổn
   ],
   tags: ['agent', 'debugging', 'tracing', 'observability']
 },
+{
+  id: 'ai-083',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Bạn thiết kế prompt cho tác vụ trích xuất dữ liệu từ email và hợp đồng theo một schema cố định thế nào để giảm bịa dữ liệu, phân biệt thiếu thông tin với giá trị rỗng, và giữ được nguồn gốc của từng trường?',
+  a: `**Tóm tắt:** Hãy xem prompt là một phần của hợp đồng dữ liệu chứ không phải lời nhắc chung chung: mô tả mục tiêu, ý nghĩa từng trường, kiểu dữ liệu, cách biểu diễn thiếu thông tin và quy tắc chỉ lấy dữ kiện có trong nguồn. Kết hợp schema có cấu trúc với kiểm tra Java và giữ đoạn trích làm bằng chứng; prompt giúp giảm lỗi nhưng không thay thế validation.
+
+### Từ yêu cầu nghiệp vụ đến schema
+Trước hết xác định chính xác dữ liệu downstream cần. Ví dụ dịch vụ đọc email yêu cầu hoàn tiền cần số đơn, số tiền, ngày và lý do. Schema là khuôn dạng mà bên nhận mong đợi, giống biểu mẫu có các ô và kiểu dữ liệu cố định. Mỗi field phải có định nghĩa và quy tắc:
+- {{orderId}}: mã đơn dạng chuỗi, không tự suy ra từ tên khách.
+- {{amount}}: số tiền dạng số thập phân, kèm currency riêng; không dùng chuỗi kiểu "khoảng 2 triệu".
+- {{dueDate}}: ngày ISO {{YYYY-MM-DD}}; nếu không có thì {{null}}, không đoán.
+- {{evidence}}: trích ngắn từ email để người xử lý kiểm chứng.
+
+Phân biệt **không có dữ kiện** với giá trị hợp lệ nhưng rỗng. Nếu {{null}} nghĩa là nguồn không đề cập, hãy nói rõ; nếu chuỗi rỗng mang nghĩa nghiệp vụ khác thì định nghĩa riêng. Quy tắc này ngăn việc model biến thiếu dữ liệu thành 0 hoặc tự điền ngày hôm nay.
+
+### Prompt có ranh giới rõ
+Email là dữ liệu không đáng tin cậy; nội dung email có thể chứa câu kiểu "bỏ qua chỉ dẫn trước". Đặt văn bản email trong phần dữ liệu được phân cách, nói rõ chỉ trích xuất nội dung chứ không làm theo chỉ dẫn bên trong. Không gửi toàn bộ hợp đồng nếu chỉ cần một trang; giảm dữ liệu đầu vào cũng giảm chi phí và nhiễu.
+
+~~~text
+Nhiệm vụ: trích xuất các field đã định nghĩa.
+Chỉ dùng thông tin tường minh trong EMAIL; không suy luận.
+Không có thông tin: dùng null. Ngày dùng YYYY-MM-DD.
+Với mỗi field, giữ evidence trích nguyên văn ngắn.
+EMAIL:
+"""
+Khách yêu cầu hoàn tiền đơn A-1048, số tiền 250000 VND.
+"""
+~~~
+
+Yêu cầu model chỉ ra bằng chứng hỗ trợ field quan trọng cho phép ứng dụng kiểm tra được model lấy dữ liệu từ đâu. Với dữ liệu nhạy cảm, chỉ giữ đoạn trích tối thiểu và áp dụng quyền truy cập, thời hạn lưu như dữ liệu gốc.
+
+### Schema không phải bảo đảm đúng nghiệp vụ
+Structured output (đầu ra theo cấu trúc) khiến câu trả lời dễ parse hơn, nhưng JSON hợp lệ vẫn có thể chứa số tiền âm hoặc mã đơn không tồn tại. Kiểm tra theo các lớp:
+1. Cấu trúc và kiểu dữ liệu.
+2. Ràng buộc đơn giản: số tiền không âm, currency thuộc danh sách cho phép.
+3. Ràng buộc nghiệp vụ: orderId có tồn tại và thuộc đúng khách.
+4. Bằng chứng: trích đoạn phải khớp với nội dung nguồn hoặc được nhân viên xác nhận.
+
+| Cách | Ưu điểm | Hạn chế |
+|---|---|---|
+| Regex / parser thường | Nhanh, xác định | Kém với diễn đạt tự do |
+| Prompt + schema | Hiểu nhiều cách diễn đạt | Có thể thiếu hoặc diễn giải sai |
+| Người duyệt | Xử lý ca mơ hồ | Tốn thời gian, không mở rộng tốt |
+
+Dùng model cho văn bản tự do; dùng code cho quy tắc chính xác và dùng người duyệt cho quyết định có hậu quả cao.
+
+### Ví dụ đời thực
+Một nhóm xử lý 12.000 email yêu cầu đổi địa chỉ mỗi ngày. Bản đầu chỉ yêu cầu "trả JSON", nên 8% bản ghi có địa chỉ bị tự chuẩn hoá sai hoặc thiếu mã đơn nhưng vẫn được ghi thẳng vào hệ thống. Nhóm bổ sung định nghĩa field, {{null}} cho thông tin vắng mặt, trích evidence, rồi kiểm tra mã đơn với database. Tỷ lệ phải sửa tay giảm từ 8% xuống 2,1%; số trường hợp không có bằng chứng được chuyển hàng đợi người duyệt thay vì cập nhật tự động. Đây là ví dụ minh hoạ; phải đo trên dữ liệu thật của hệ thống.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi bắt đầu từ schema nghiệp vụ chứ không bắt đầu bằng một prompt thật dài. Mỗi trường cần có tên, kiểu, định nghĩa, cách biểu diễn khi thiếu và ví dụ biên. Ví dụ số tiền nên là giá trị số kèm currency, còn ngày không có trong email thì để null thay vì đoán. Sau đó tôi phân ranh giới dữ liệu nguồn và chỉ dẫn, vì email có thể chứa nội dung giống lệnh nhưng vẫn chỉ là dữ liệu cần đọc. Tôi yêu cầu bằng chứng ngắn cho các trường quan trọng để truy nguyên, nhưng không coi evidence là chứng minh tuyệt đối. Phía Java parse vào kiểu dữ liệu rõ ràng, kiểm tra ràng buộc cơ bản rồi kiểm tra nghiệp vụ như đơn có tồn tại và thuộc khách đó không. Structured output giảm lỗi cú pháp nhưng không đảm bảo đúng sự thật. Với trường hợp mơ hồ hoặc tác động tài chính, tôi trả trạng thái cần duyệt thay vì tự động ghi. Cuối cùng, tôi theo dõi tỷ lệ hợp lệ, tỷ lệ sửa tay và lỗi theo từng trường trên bộ dữ liệu đã được phép sử dụng.
+
+> Senior tip: Theo dõi tỷ lệ lỗi theo từng field, không chỉ tỷ lệ JSON parse thành công; một output parse được nhưng sai {{amount}} nguy hiểm hơn một output lỗi cú pháp bị chặn.`,
+  follow: [
+    'Bạn làm gì khi evidence trích ra không khớp với giá trị model đã điền?',
+    'Trường nào nên được suy ra bằng code thay vì giao cho model, và vì sao?',
+    'Bạn xử lý dữ liệu email có chứa chỉ dẫn prompt injection thế nào?'
+  ],
+  tags: ['prompt-design', 'structured-output', 'extraction', 'validation']
+},
+{
+  id: 'ai-084',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Model đôi khi trả JSON sai cú pháp hoặc đúng cú pháp nhưng sai kiểu và sai ràng buộc nghiệp vụ. Bạn thiết kế parse, validate và retry trong Java thế nào để không tạo vòng lặp tốn tiền hoặc âm thầm làm sai dữ liệu?',
+  a: `**Tóm tắt:** Tách lỗi thành các lớp có thể xử lý: lỗi JSON hoặc kiểu dữ liệu, lỗi validation nghiệp vụ và lỗi gọi provider. Parse bằng cấu hình nghiêm ngặt, chỉ retry lỗi có khả năng sửa bằng cách yêu cầu model sửa theo lỗi cụ thể, giới hạn số lần thử và ngân sách; nếu vẫn sai thì trả trạng thái thất bại rõ ràng hoặc chuyển người duyệt, không tạo dữ liệu giả làm kết quả thành công.
+
+### Tại sao phải tách các bước
+JSON (định dạng trao đổi dữ liệu dạng key/value) có thể sai dấu ngoặc; JSON hợp lệ vẫn có thể có {{amount}} là chuỗi thay vì số; dữ liệu đúng kiểu vẫn có thể vi phạm nghiệp vụ như ngày hoàn tiền nằm trước ngày mua. Đây là ba loại lỗi khác nhau, nên cần ba loại xử lý khác nhau:
+1. Parse: kiểm tra cú pháp và kiểu.
+2. Validate: kiểm tra field bắt buộc, giới hạn và quan hệ giữa field.
+3. Xác minh nghiệp vụ: truy vấn dữ liệu đáng tin cậy, như trạng thái đơn hàng.
+
+Trong Java, map vào record (kiểu dữ liệu bất biến gọn của Java) và dùng Bean Validation hoặc kiểm tra tường minh. Jackson nên được cấu hình để không bỏ qua field lạ hay ép kiểu tùy tiện nếu điều đó có thể che giấu lỗi. Ghi rõ phiên bản schema và prompt để biết quy tắc nào đã tạo output.
+
+~~~java
+record Refund(String orderId, BigDecimal amount, String currency) {}
+
+Refund parseAndCheck(String json, ObjectMapper mapper) throws IOException {
+    Refund value = mapper.readValue(json, Refund.class);
+    if (value.orderId() == null || value.orderId().isBlank())
+        throw new IllegalArgumentException("orderId is required");
+    if (value.amount() == null || value.amount().signum() < 0)
+        throw new IllegalArgumentException("amount must be non-negative");
+    return value;
+}
+~~~
+
+Ví dụ chỉ minh hoạ ranh giới parse và kiểm tra; ứng dụng thật còn cần chuẩn hoá lỗi, kiểm tra currency và xác nhận đơn với nguồn dữ liệu chính thức.
+
+### Retry có điều kiện và giới hạn
+Retry là gọi lại sau lỗi, nhưng lời gọi LLM vừa có độ trễ vừa có chi phí. Một lỗi JSON có thể được sửa bằng cách gửi lại output và lỗi rút gọn; lỗi 401 do credential sai không thể chữa bằng retry; lỗi nghiệp vụ "đơn không tồn tại" cũng không nên yêu cầu model đoán mã khác.
+
+- Tối đa một lần sửa output cho lỗi định dạng thường đã đủ để tránh vòng lặp.
+- Chỉ gửi phần lỗi cần thiết, không gửi stack trace hay dữ liệu nhạy cảm.
+- Giữ nguyên input gốc; không ghi bản sửa nếu chưa qua validation.
+- Đặt deadline tổng cho cả lần đầu và retry; giới hạn token output.
+- Dùng metric riêng cho lỗi parse, schema, nghiệp vụ, timeout và hết quota.
+
+Nếu retry sau lỗi parse, prompt sửa cần nói "chỉ sửa lỗi được nêu, không thêm dữ kiện" và kèm schema. Không retry mù nhiều lần vì các lần sau thường không độc lập: model tiếp tục dựa trên nội dung lỗi trước, làm tăng chi phí mà không tăng độ tin cậy tương ứng.
+
+### Khi nào fallback thay vì retry
+| Tình huống | Hành động phù hợp |
+|---|---|
+| JSON thiếu dấu phẩy | Một lần yêu cầu sửa định dạng |
+| Sai kiểu field | Yêu cầu sửa theo schema, rồi validate lại |
+| Giá trị vi phạm luật nghiệp vụ | Từ chối hoặc đưa người duyệt |
+| Timeout, 429 | Chính sách retry provider có backoff và deadline |
+| Hết số lần thử | Báo trạng thái không xử lý được, giữ input để xử lý lại |
+
+Không bắt mọi exception rồi trả object mặc định như {{amount=0}}; đó là "success giả" khiến dữ liệu sai lọt vào nghiệp vụ. Lưu kết quả lỗi với correlation ID để truy vết, đồng thời giới hạn lưu raw output theo chính sách riêng tư.
+
+### Ví dụ đời thực
+Một dịch vụ phân loại 20.000 yêu cầu mỗi ngày nhận JSON sai cú pháp ở 3,5% request, nhưng chỉ 0,7% không parse được sau một lần sửa; 0,4% khác parse được nhưng sai mã trạng thái hợp lệ. Sau khi tách retry định dạng khỏi kiểm tra nghiệp vụ, số lời gọi trung bình mỗi request tăng từ 1,00 lên 1,028 thay vì retry toàn bộ lỗi, còn tỷ lệ bản ghi sai được ghi vào hệ thống giảm từ 0,3% xuống 0,02%. Số liệu này là ví dụ minh hoạ; cần đo lại theo model, prompt và dữ liệu thực tế.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi không xem mọi lỗi output là cùng một loại. Tôi parse vào một kiểu Java có schema rõ ràng với Jackson cấu hình nghiêm, sau đó chạy validation về field và kiểm tra luật nghiệp vụ bằng dữ liệu chuẩn của ứng dụng. JSON sai cú pháp hoặc sai kiểu có thể được thử sửa một lần bằng cách trả lại lỗi cụ thể và yêu cầu không bịa thêm dữ liệu. Nếu provider timeout hay trả rate limit thì đó là một nhánh retry khác, có backoff, jitter và deadline tổng. Còn mã đơn không tồn tại hoặc số tiền vượt giới hạn thì không nên để model tự sửa; tôi từ chối, yêu cầu nhập lại hoặc đưa sang người xử lý. Tôi giới hạn số lần gọi để chi phí và latency không tăng vô hạn. Nếu vẫn lỗi, endpoint trả trạng thái thất bại có thể quan sát, không trả object mặc định. Tôi lưu phiên bản prompt/schema và metric theo nhóm lỗi để biết thay đổi nào làm tỷ lệ lỗi tăng.
+
+> Senior tip: Tính cả chi phí retry và tỷ lệ lỗi còn lại; một prompt làm JSON hợp lệ hơn nhưng tăng gấp đôi output token có thể không phải cải thiện tốt.`,
+  follow: [
+    'Bạn phân biệt lỗi do model với lỗi do schema thay đổi giữa các phiên bản thế nào?',
+    'Khi nào nên đưa kết quả sang hàng đợi người duyệt thay vì retry?',
+    'Bạn thiết kế metric nào để phát hiện retry đang che giấu prompt kém?'
+  ],
+  tags: ['structured-output', 'jackson', 'validation', 'retry']
+},
+{
+  id: 'ai-085',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Bạn cần phân loại ticket hỗ trợ vào 12 nhãn, có nhãn mới vài lần mỗi tháng và dữ liệu gán nhãn còn ít. Bạn chọn prompt zero-shot, few-shot hay fine-tuning thế nào, và dựa trên bằng chứng nào để đổi lựa chọn?',
+  a: `**Tóm tắt:** Tôi bắt đầu bằng baseline đơn giản: prompt có định nghĩa nhãn, quy tắc phân biệt và schema đầu ra; thêm vài ví dụ đại diện khi lỗi cho thấy model hiểu sai ranh giới nhãn. Fine-tuning (huấn luyện thêm model trên ví dụ riêng) chỉ đáng cân nhắc khi có đủ dữ liệu ổn định, lỗi lặp lại không giải quyết tốt bằng prompt, và lợi ích về chất lượng, latency hoặc chi phí được đo trên tập kiểm tra chưa dùng để phát triển.
+
+### Ba lựa chọn khác nhau
+**Zero-shot** là yêu cầu model làm việc mà không đưa ví dụ cụ thể. Cách này nhanh để khởi động nhưng model có thể hiểu từ nội bộ khác với team. **Few-shot** đưa một số cặp input → nhãn mẫu ngay trong prompt; ví dụ giúp chỉ ra ranh giới giữa {{payment_failed}} và {{refund_request}}. **Fine-tuning** cập nhật tham số model bằng tập dữ liệu huấn luyện; nó có thể học phong cách hoặc mẫu phân loại ổn định, nhưng cần dữ liệu, quy trình huấn luyện và đánh giá.
+
+Trước khi chọn, viết rõ taxonomy (hệ thống phân loại và định nghĩa nhãn). Nếu hai nhãn chồng lấn, thêm ví dụ không chữa được định nghĩa mơ hồ. Nên có nhãn {{other}} hoặc {{needs_review}} khi ticket không đủ thông tin; ép mọi đầu vào vào một trong 12 nhãn sẽ tạo tự tin giả.
+
+### Quy trình quyết định
+1. Tạo tập kiểm tra có đại diện cho ngôn ngữ, nhãn hiếm và ca mơ hồ; giữ riêng khỏi ví dụ prompt và dữ liệu fine-tune.
+2. Chạy zero-shot, đo precision/recall theo từng nhãn. Precision là trong các mẫu gán nhãn đó, bao nhiêu mẫu đúng; recall là trong các mẫu thật thuộc nhãn đó, bao nhiêu mẫu tìm được.
+3. Xem confusion matrix (bảng đếm nhãn thật bị đoán thành nhãn nào). Nếu lỗi tập trung ở vài ranh giới, thử định nghĩa và few-shot.
+4. So sánh trên cùng tập, cùng tiêu chí và cùng giới hạn token; đo cả latency, chi phí và tỷ lệ cần người duyệt.
+5. Chỉ thử fine-tuning nếu lỗi còn lại lặp lại được và có đủ dữ liệu đã được rà soát chất lượng.
+
+~~~text
+Ticket: "Đã trừ tiền hai lần, một giao dịch vẫn pending."
+Nhãn: payment_duplicate
+Lý do: có hai khoản trừ tiền; trạng thái pending không đổi sự kiện chính.
+
+Ticket: "Tôi đã trả đơn rồi, xin hoàn khoản phí vận chuyển."
+Nhãn: refund_request
+Lý do: khách chủ động yêu cầu hoàn tiền.
+~~~
+
+Few-shot nên đa dạng và có cặp gần giống nhau, không chỉ chọn ví dụ dễ. Nếu thêm ví dụ làm prompt dài, token và latency tăng; giảm ví dụ trùng, giữ ví dụ phân biệt có giá trị cao.
+
+### Trade-off và rủi ro
+| Lựa chọn | Cập nhật nhãn | Chi phí vận hành | Hợp khi |
+|---|---|---|---|
+| Zero-shot | Dễ | Ít chuẩn bị | Nhãn rõ, baseline |
+| Few-shot | Sửa prompt nhanh | Prompt dài hơn | Cần thể hiện quy ước bằng ví dụ |
+| Fine-tuning | Cần pipeline dữ liệu/model | Cao hơn, có vòng huấn luyện | Mẫu ổn định, dữ liệu đủ, lợi ích đo được |
+
+Fine-tuning không tự động làm model biết thông tin mới nhất hay tuân thủ mọi quy tắc. Với nhãn thay đổi thường xuyên, có thể cần cập nhật hướng dẫn hoặc taxonomy hơn là huấn luyện lại. Dữ liệu huấn luyện phải được phép sử dụng, loại bỏ trùng lặp giữa train/test và kiểm tra rò rỉ thông tin cá nhân.
+
+### Ví dụ đời thực
+Một nhóm nhận 30.000 ticket mỗi tháng, gồm 12 nhãn. Zero-shot đạt macro-F1 0,78; macro-F1 là trung bình F1 giữa các nhãn để nhãn phổ biến không che nhãn ít gặp. Bổ sung định nghĩa và 2 ví dụ cho 4 cặp nhầm lẫn đưa chỉ số lên 0,86, nhưng tăng input token 18%. Sau 6 tuần, nhóm có 40.000 nhãn đã được con người xác nhận và thử fine-tune trên một phần dữ liệu; macro-F1 tăng lên 0,88, latency p95 giảm 20%, song nhãn mới vẫn được xử lý bằng prompt và chuyển ca mơ hồ cho người. Các con số minh hoạ; lựa chọn phải dựa trên tập test đại diện riêng của hệ thống.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi sẽ chưa fine-tune ngay. Đầu tiên tôi chốt định nghĩa 12 nhãn và ca nào cần từ chối phân loại, rồi tạo tập đánh giá có nhãn hiếm và các ticket dễ nhầm. Tôi chạy zero-shot để lấy baseline và dùng confusion matrix tìm các ranh giới lỗi. Nếu lỗi là do quy ước nghiệp vụ chưa diễn đạt rõ, tôi sửa taxonomy; nếu model cần thấy ví dụ cụ thể, tôi thêm một số few-shot tiêu biểu. Tôi đo macro-F1 theo nhãn, chi phí token, p95 latency và tỷ lệ phải duyệt, không chỉ accuracy chung. Fine-tuning là bước sau khi có dữ liệu gán nhãn đủ sạch, tương đối ổn định và được phép sử dụng. Tôi giữ tập test tách biệt để tránh tự kiểm tra trên ví dụ đã dùng dạy model. Vì nhãn thay đổi hàng tháng, tôi cũng đánh giá chi phí cập nhật mô hình so với chỉnh prompt. Cuối cùng, nhãn có hậu quả cao hoặc độ tin cậy thấp vẫn cần quy trình người xác nhận.
+
+> Senior tip: Với nhãn mất cân bằng, accuracy có thể rất cao chỉ vì model luôn đoán nhãn phổ biến; xem precision/recall từng nhãn và chi phí của từng loại nhầm lẫn.`,
+  follow: [
+    'Bạn chọn số lượng và cách chọn few-shot example thế nào để prompt không phình to?',
+    'Làm sao tránh rò rỉ dữ liệu giữa tập huấn luyện, ví dụ prompt và tập đánh giá?',
+    'Nếu một nhãn mới xuất hiện hàng tuần, bạn thay đổi taxonomy và rollout ra sao?'
+  ],
+  tags: ['few-shot', 'fine-tuning', 'classification', 'evaluation']
+},
+{
+  id: 'ai-086',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Nhiều service Java cùng dùng prompt cho các tác vụ quan trọng, prompt được sửa thường xuyên và một thay đổi có thể làm sai kết quả nghiệp vụ. Bạn versioning và rollout prompt thế nào để tái hiện được quyết định cũ, giới hạn blast radius và rollback nhanh?',
+  a: `**Tóm tắt:** Quản lý prompt như một artifact có phiên bản: lưu nội dung bất biến cùng schema đầu vào/đầu ra, model, tham số, chủ sở hữu và bộ đánh giá. Mỗi request ghi nhận phiên bản thực sự đã dùng; thay đổi đi qua review, test và rollout theo nhóm nhỏ có tiêu chí dừng, có thể quay về phiên bản trước mà không cần phát hành lại toàn bộ ứng dụng.
+
+### Prompt cũng là cấu hình chạy production
+Prompt (chỉ dẫn gửi cho model) ảnh hưởng trực tiếp kết quả, giống một phần logic ứng dụng. Nếu sửa tại chỗ, sau sự cố khó biết khách nào nhận kết quả từ nội dung nào. Versioning là gắn mã phiên bản rõ ràng, chẳng hạn {{refund-extract-v12}}, và giữ nội dung đó không bị ghi đè. Không cần một sản phẩm quản lý prompt đặc biệt: có thể lưu trong Git hoặc registry nội bộ, miễn là quy trình đảm bảo truy xuất và phê duyệt.
+
+Một bản phát hành prompt nên có:
+- ID và hash nội dung để phân biệt chính xác hai phiên bản.
+- Phiên bản schema, model/provider và tham số liên quan.
+- Tập đánh giá, kết quả trước/sau và người phê duyệt.
+- Ngày phát hành, lý do đổi và phiên bản rollback đã biết tốt.
+
+Đừng nhúng prompt tùy tiện khác nhau vào nhiều service. Một thư viện hoặc endpoint cấu hình trung tâm giảm lệch, nhưng cần cache có TTL hoặc cơ chế nạp bản đã pin để service không bất ngờ đổi prompt giữa lúc chạy.
+
+### Từ thay đổi đến rollout
+1. Tạo phiên bản mới bất biến và chạy kiểm tra schema, eval set, kiểm thử an toàn.
+2. Gắn phiên bản vào request cụ thể; có thể pin prompt theo deployment hoặc theo tenant.
+3. Chạy shadow/canary: shadow chỉ so sánh, không dùng output mới để tạo side effect; canary phục vụ một phần traffic có kiểm soát.
+4. Theo dõi chất lượng, tỷ lệ validation fail, latency, token/chi phí, lỗi theo nhóm nghiệp vụ và phản hồi người dùng.
+5. Tự dừng hoặc rollback nếu vượt ngưỡng đã thống nhất; không đợi dashboard tổng hợp theo ngày khi lỗi tác động tiền hoặc quyền.
+
+~~~text
+requestId=R-184
+prompt=refund-extract-v12
+schema=refund-v3
+model=provider-model-2026-10
+result=needs_review
+~~~
+
+Chỉ ghi metadata cần để tái hiện; raw prompt/output có thể chứa PII (thông tin định danh cá nhân), nên không mặc định lưu đầy đủ vào log.
+
+### Cẩn thận tương thích dữ liệu
+Prompt version và schema version không nhất thiết thay đổi cùng lúc. Nếu prompt mới thêm field, consumer cũ có thể lỗi; nếu output mới đổi ý nghĩa field mà schema giữ nguyên, hệ thống vẫn parse nhưng hành vi đã sai. Dùng schema tương thích ngược khi có thể, triển khai consumer hiểu field mới trước, rồi mới bật prompt tạo field đó. Cache cũng phải khóa theo phiên bản prompt/model/schema; nếu cache chỉ theo câu hỏi, response cũ có thể bị dùng cho prompt mới.
+
+| Phương án | Lợi ích | Rủi ro |
+|---|---|---|
+| Pin theo bản phát hành | Dễ tái hiện, ổn định | Cần deploy để đổi |
+| Registry runtime | Rollout nhanh, rollback nhanh | Phải xử lý cache, quyền và lỗi registry |
+| Sửa prompt tại chỗ | Nhanh lúc đầu | Không audit/reproduce đáng tin cậy |
+
+Roll back prompt không hoàn tác side effect đã xảy ra. Nếu model đã tạo hành động nghiệp vụ, cần idempotency, audit và quy trình bù trừ riêng.
+
+### Ví dụ đời thực
+Một dịch vụ trích xuất lệnh thanh toán có 5 service consumer. Prompt mới cải thiện cách đọc ngày nhưng làm tỷ lệ nhầm dấu thập phân tăng từ 0,1% lên 1,4%. Vì mỗi request ghi prompt hash và schema version, nhóm xác định lỗi chỉ xuất hiện ở canary 5% traffic trong 18 phút, tắt flag và trả về bản trước trong 4 phút. Không có bản ghi mới nào được ghi nếu validation tiền tệ thất bại. Đây là tình huống minh hoạ; ngưỡng cần được đặt theo rủi ro và baseline thật.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi quản lý prompt như một artifact runtime, không phải chuỗi văn bản có thể sửa trực tiếp. Mỗi phiên bản bất biến được gắn với hash, schema, model, tham số, eval result và người phê duyệt. Mỗi request ghi metadata đủ để biết chính xác prompt nào đã chạy, nhưng không log raw dữ liệu nhạy cảm mặc định. Thay đổi đi qua kiểm thử regression và đánh giá an toàn, sau đó phát hành bằng flag hoặc pin theo nhóm nhỏ. Shadow hữu ích để so sánh output nhưng phải chặn side effect; canary cần có ngưỡng dừng theo validation, chất lượng, latency và chi phí. Tôi kiểm tra tương thích schema giữa producer và consumer, đồng thời đảm bảo cache key chứa phiên bản. Rollback phải là thao tác nhanh, độc lập với việc deploy, nhưng nó chỉ dừng hành vi mới chứ không đảo ngược giao dịch đã commit. Với nghiệp vụ rủi ro cao, tôi yêu cầu kiểm duyệt hoặc cơ chế bù trừ rõ ràng.
+
+> Senior tip: Log {{promptVersion + schemaVersion + modelVersion}} trên mỗi trace; chỉ lưu hash mà không lưu artifact tương ứng thì sau này vẫn không tái hiện được.`,
+  follow: [
+    'Bạn xử lý thế nào khi prompt mới đòi schema mới nhưng nhiều consumer chưa nâng cấp?',
+    'Chỉ số và ngưỡng nào khiến bạn tự động dừng canary?',
+    'Bạn đảm bảo prompt registry lỗi hoặc mất kết nối không làm request dùng nhầm phiên bản ra sao?'
+  ],
+  tags: ['prompt-versioning', 'rollout', 'canary', 'governance']
+},
+{
+  id: 'ai-087',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Một model tạo báo cáo dài trong vài chục giây. Bạn thiết kế luồng streaming qua service Java tới client thế nào để client thấy nội dung sớm, nhưng vẫn xử lý được lỗi giữa chừng, huỷ request, lưu kết quả đầy đủ và không coi phần chưa hoàn tất là báo cáo hợp lệ?',
+  a: `**Tóm tắt:** Streaming gửi từng mảnh output ngay khi có thay vì đợi toàn bộ báo cáo, giúp giảm thời gian người dùng chờ thấy nội dung đầu tiên. Tuy nhiên, phần đang stream chỉ là bản nháp: cần định nghĩa event hoàn tất/lỗi, huỷ upstream khi client rời đi, giới hạn buffer, lưu trạng thái cuối cùng và chỉ cho downstream dùng kết quả sau khi hoàn tất cùng validation.
+
+### Một luồng có nhiều chặng
+Model thường phát token hoặc chunk theo thời gian. Service Java nhận chunk, có thể ghép thành văn bản, rồi chuyển về client qua Server-Sent Events (SSE: một kết nối HTTP một chiều để server gửi event liên tục). TTFT (time to first token, thời gian tới token đầu tiên) giảm vì client không phải chờ model tạo toàn bài. Nhưng stream không làm model hoàn thành nhanh hơn; nó chỉ cho thấy tiến độ sớm hơn.
+
+Luồng có thể hình dung:
+~~~seq
+title: Stream báo cáo có trạng thái hoàn tất
+actors: Client | Java API | LLM
+Client -> Java API: POST yêu cầu báo cáo
+Java API -> LLM: Gửi prompt và nhận stream
+LLM --> Java API: Các chunk nội dung
+Java API --> Client: Event delta
+LLM --> Java API: Event hoàn tất
+Java API -> Java API: Validate và lưu kết quả
+Java API --> Client: Event completed
+~~~
+
+Event cần có loại rõ như {{delta}}, {{completed}}, {{error}}; client không nên đoán hoàn tất chỉ vì một khoảng thời gian không nhận chunk. Nếu provider đóng kết nối mà không có event kết thúc, đánh dấu output là incomplete.
+
+### Java và backpressure
+Backpressure là cơ chế để bên nhận báo bên gửi giảm tốc khi không theo kịp. Nếu client chậm mà server vẫn tích buffer không giới hạn, một số kết nối dài có thể tiêu thụ nhiều bộ nhớ. Dùng reactive stream có thể điều tiết nhu cầu giữa các bước; dù dùng API nào, cần giới hạn kích thước đầu ra, số kết nối đồng thời và thời gian tối đa.
+
+~~~java
+Flux<ServerSentEvent<String>> stream =
+    chatClient.prompt()
+        .user(prompt)
+        .stream()
+        .content()
+        .map(text -> ServerSentEvent.builder(text).event("delta").build());
+~~~
+
+Đoạn minh hoạ dùng kiểu streaming của Spring AI; API cụ thể cần khớp phiên bản Spring AI/provider trong dự án. Cần nối thêm xử lý completion/error và lưu kết quả; không nên coi đoạn map này là toàn bộ production implementation.
+
+### Huỷ, reconnect và tính toàn vẹn
+- Khi client đóng kết nối, propagate cancellation để ngừng gọi model nếu SDK/provider hỗ trợ; nếu request vẫn chạy, giới hạn thời gian và chi phí.
+- Gửi event ID tăng dần nếu cần reconnect; SSE reconnect không tự đảm bảo không mất hoặc không lặp event, nên client cần xử lý ID.
+- Lưu kết quả cuối cùng một lần sau khi hoàn tất; nếu stream có thể retry, dùng reportId/idempotency key để tránh lưu trùng.
+- Tách văn bản hiển thị tạm thời khỏi kết quả đã xác nhận. Không kích hoạt workflow, ký hợp đồng hay cập nhật dữ liệu khi mới nhận một phần.
+- Không mặc định ghi mọi chunk vào log; nội dung dài có thể chứa dữ liệu nhạy cảm.
+
+SSE phù hợp khi chỉ server cần đẩy dữ liệu xuống. Nếu cần trao đổi hai chiều liên tục, cần đánh giá WebSocket hoặc giao thức khác. Với báo cáo rất dài cần chạy bền vững kể cả khi người dùng rời trang, tạo job nền và để client theo dõi trạng thái có thể phù hợp hơn stream gắn với request.
+
+### Ví dụ đời thực
+Một báo cáo hỗ trợ nhân viên dài trung bình 1.800 token mất 24 giây mới hoàn tất; người dùng trước đó nhìn thấy spinner toàn bộ thời gian. Stream làm p50 TTFT còn 1,7 giây, nhưng 2% request bị ngắt giữa chừng do người dùng đổi trang. Nhóm thêm event {{completed}}, trạng thái {{incomplete}}, giới hạn 60 giây và huỷ upstream khi client disconnect. Kết quả chỉ được lưu sau completion; tỷ lệ báo cáo thiếu bị dùng nhầm giảm từ 0,6% xuống 0. Đây là số liệu minh hoạ, cần đo TTFT và tỷ lệ disconnect trên hệ thống thật.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi phân biệt thời gian thấy nội dung đầu tiên với thời gian hoàn thành toàn bộ. Streaming cải thiện trải nghiệm chờ nhưng chunk giữa chừng chưa phải kết quả có thể dùng cho nghiệp vụ. Tôi sẽ dùng SSE nếu chỉ cần server đẩy nội dung xuống, định nghĩa event delta, completed và error, và kết nối việc đóng từ client với cancellation tới SDK. Tôi kiểm soát output token, số kết nối và buffer để client chậm không làm bộ nhớ tăng không giới hạn. Nếu cần reconnect, event có ID và client phải chống lặp; nếu tác vụ phải chạy tiếp khi người dùng rời trang, tôi chọn job nền thay vì giữ request mở. Phía server lưu bản cuối sau khi nhận trạng thái hoàn tất và qua validation, còn client hiển thị rõ nội dung chưa hoàn tất. Tôi cũng theo dõi TTFT, thời gian hoàn tất, tỷ lệ huỷ và lỗi giữa stream, không chỉ latency tổng.
+
+> Senior tip: Thiết kế UI và API với trạng thái {{streaming}}, {{completed}}, {{incomplete}}, {{failed}}; đóng socket không đồng nghĩa model đã hoàn tất hay đã huỷ.`,
+  follow: [
+    'Bạn xử lý SSE reconnect để không hiện lặp hoặc mất chunk thế nào?',
+    'Khi nào nên chuyển stream gắn với request thành job nền trả về jobId?',
+    'Bạn giới hạn bộ nhớ ra sao nếu client đọc chậm hơn tốc độ model phát chunk?'
+  ],
+  tags: ['streaming', 'sse', 'spring-ai', 'backpressure']
+},
+{
+  id: 'ai-088',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Người dùng phàn nàn tính năng AI “chậm”, nhưng p95 latency tổng hợp đang ổn. Bạn đo và giảm time to first token cho ứng dụng Java thế nào mà không đánh đổi độ đúng, an toàn hoặc làm tăng chi phí vô kiểm soát?',
+  a: `**Tóm tắt:** Đo time to first token (TTFT: thời gian từ lúc nhận request đến khi client thấy token đầu tiên) riêng với thời gian hoàn tất và phân rã theo từng chặng: hàng đợi, dựng prompt, mạng/provider và model. Tối ưu đúng nút thắt bằng cách giảm input không cần thiết, chọn model phù hợp, tránh chờ công việc tuần tự và stream sớm; sau mỗi thay đổi phải đo chất lượng, chi phí và phân vị latency, không chỉ trung bình.
+
+### Vì sao p95 tổng không kể hết câu chuyện
+Latency là thời gian phản hồi. p95 nghĩa là 95% request nhanh hơn hoặc bằng giá trị đó; 5% chậm hơn. Một endpoint trả dữ liệu sau 3 giây có thể được cảm nhận nhanh nếu bắt đầu hiển thị sau 0,8 giây, nhưng rất chậm nếu im lặng 2,8 giây rồi mới trả toàn bộ.
+
+Ghi timestamp tại các mốc có cùng {{requestId}}: nhận request, vào/ra queue, hoàn tất retrieval, gửi request provider, nhận chunk đầu, nhận chunk cuối, hoàn tất parse và ghi dữ liệu. Không cần ghi nội dung prompt để đo thời gian. Phân tích p50/p95/p99 theo model, kích thước input, tenant, route và trạng thái cache; số trung bình che mất nhóm request chậm.
+
+~~~text
+request received       0 ms
+queue wait           120 ms
+retrieval            310 ms
+provider first token 980 ms
+provider complete   4200 ms
+validation + save     85 ms
+~~~
+
+Trong ví dụ này TTFT khoảng 980 ms từ lúc gửi tới provider, còn người dùng thấy token ở khoảng 1.410 ms sau khi tính queue và retrieval. Tổng thời gian tới khi lưu là 4.715 ms. Hai metric trả lời hai câu hỏi khác nhau.
+
+### Tìm nút thắt rồi mới tối ưu
+1. **Queue wait cao:** giới hạn concurrency, tránh executor bị nghẽn, áp dụng admission control (từ chối hoặc xếp hàng có giới hạn khi quá tải).
+2. **Retrieval/dựng prompt cao:** song song hoá các truy vấn độc lập, giới hạn số tài liệu và bỏ context không liên quan.
+3. **TTFT provider cao:** thử streaming, kiểm tra vùng mạng/provider, model phù hợp và input token; provider/model khác nhau có đặc tính khác nhau.
+4. **Tổng thời gian sinh cao:** đặt output token hợp lý, stream để hiển thị tiến độ, hoặc chuyển tác vụ rất dài sang job nền.
+5. **Parse/lưu chậm:** tránh làm việc đồng bộ nặng trên thread xử lý chunk; chỉ validate phần cần thiết và giữ giới hạn.
+
+Prompt caching có thể giảm thời gian/chi phí cho prefix lặp lại nếu provider hỗ trợ và điều kiện cache phù hợp; cache không đảm bảo hit, nên đo tỷ lệ hit và không đưa dữ liệu riêng tư vào cache dùng chung. Chọn model nhỏ hơn có thể nhanh hơn nhưng phải qua cùng bộ đánh giá chất lượng và an toàn.
+
+| Tối ưu | Tác động có thể có | Điều cần đo |
+|---|---|---|
+| Streaming | TTFT cảm nhận thấp hơn | TTFT và lỗi stream |
+| Giảm input | Token/latency thấp hơn | Chất lượng theo eval set |
+| Model nhỏ | Nhanh và rẻ hơn | Sai số, fallback |
+| Cache | Giảm việc lặp | Hit rate, tính đúng và cô lập tenant |
+
+Không tự retry vì TTFT cao khi request cũ vẫn đang chạy; hai request song song có thể tăng tải và chi phí. Timeout, retry và fallback phải có deadline, giới hạn, và metric riêng.
+
+### Ví dụ đời thực
+Dashboard ban đầu báo p95 2,2 giây nhưng người dùng thấy phản hồi im lặng lâu. Trace cho thấy thời gian trung bình chấp nhận được, song 8% request chờ worker 900 ms và p95 TTFT thực tế là 3,1 giây vì retrieval tuần tự ba nguồn. Nhóm giới hạn queue, chạy truy vấn độc lập song song và stream câu trả lời; p95 TTFT giảm còn 1,4 giây, thời gian hoàn tất p95 còn 3,8 giây, macro-F1 trên bộ kiểm tra giữ trong biên giảm 0,5 điểm và chi phí tăng 4%. Đây là số liệu minh hoạ; quyết định chấp nhận cần được thống nhất theo SLO và chất lượng nghiệp vụ.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi sẽ làm rõ người dùng nói chậm là chờ token đầu tiên hay chờ kết quả hoàn tất. Sau đó tôi instrument các mốc từ queue, retrieval, provider tới parse và lưu, gắn cùng request ID nhưng không log nội dung nhạy cảm. Tôi xem p50, p95 và p99 theo model, kích thước input và route, vì latency trung bình có thể che một nhóm request tệ. Nếu retrieval là nút thắt, tôi giảm context hoặc song song hoá phần độc lập; nếu provider TTFT cao, tôi thử streaming, cấu hình model hoặc vùng khác có kiểm soát. Tôi chỉ giảm model hay rút prompt khi eval set cho thấy chất lượng và an toàn không suy giảm đáng kể. Tôi đo cả cost/token, timeout, tỷ lệ retry và hoàn tất. Với tác vụ dài không cần tương tác liên tục, job nền có thể tốt hơn giữ HTTP request mở. Mỗi thay đổi có rollout nhỏ và rollback rõ ràng.
+
+> Senior tip: Đặt SLO riêng cho TTFT và completion; stream có thể cải thiện cảm nhận mà không làm giảm thời gian sinh hoặc chi phí thực tế.`,
+  follow: [
+    'Bạn đặt SLO TTFT thế nào khi provider và độ dài output biến động lớn?',
+    'Làm sao đo hiệu quả prompt caching mà không log nội dung nhạy cảm?',
+    'Khi model nhỏ hơn giảm latency nhưng làm tăng lỗi ở nhãn hiếm, bạn quyết định ra sao?'
+  ],
+  tags: ['latency', 'ttft', 'observability', 'optimization']
+},
 );
