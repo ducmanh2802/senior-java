@@ -753,4 +753,286 @@ The minutes will be sent by email on Wednesday.`,
   tips: ["Clean a table (lau bàn) là công việc thường đối với nhân viên phục vụ sau mỗi lượt khách ăn xong.", "After customers leave (sau khi khách rời đi) — động từ leave chia thì quá khứ đơn trong mệnh đề thời gian sau after."],
   tags: ["daily life"]
 },
+{
+  id: "toeic-w2-001",
+  part: "w2",
+  email: `From: Ms. Laura Chen, Office Manager
+To: All Staff
+Subject: Team Lunch Next Friday
+
+Dear Team,
+
+We are planning a team lunch next Friday to welcome our new marketing assistant. I would like to reserve a table at a nearby restaurant, but I need a few details before I make the booking.
+
+Could you please reply by Wednesday afternoon?
+
+Best regards,
+Laura Chen
+Office Manager`,
+  task: "Respond to the email. In your response, give two pieces of information and ask one question.",
+  sample: `Dear Ms. Chen,
+
+Thank you for organizing the team lunch next Friday. I would be happy to join, and I prefer a restaurant within walking distance of our office so we can return to work easily. I am available from 12:00 p.m. to 1:30 p.m. on that day.
+
+Could you please let me know whether the company will cover the cost of the meal? If so, I would also like to know if there is a price limit for each person.
+
+Thank you for your help. I look forward to the event.
+
+Best regards,
+Minh Tran`,
+  tips: [
+    "Mở đầu bằng lời cảm ơn ngắn và trả lời đúng đủ yêu cầu trong task; nếu đề yêu cầu cho hai thông tin và hỏi một câu, hãy đánh dấu rõ từng ý để không bị trừ điểm.",
+    "Dùng thì hiện tại đơn và can/would để trả lời lịch sự: I am available…, Could you please let me know…; tránh viết quá thân mật với cấp trên hoặc quản lý.",
+    "Kết thư nên có câu chốt như I look forward to… và ký tên đầy đủ; người Việt hay quên lời chào cuối (Best regards/Sincerely) trong email công sở."
+  ],
+  tags: ["workplace", "event"]
+},
+{
+  id: "toeic-w2-002",
+  part: "w2",
+  email: `From: Mr. David Park, Purchasing Department
+To: Sales Representative, Bright Office Supplies
+Subject: Question About Our Recent Order
+
+Dear Sales Representative,
+
+We received order #4582 yesterday, but there seems to be an issue with the delivery. We ordered 20 packs of printer paper and 10 black ink cartridges, but the shipment included only 15 packs of paper.
+
+Please let me know how this can be resolved.
+
+Sincerely,
+David Park
+Purchasing Department`,
+  task: "Respond as the sales representative. In your response, apologize, explain what you will do, and ask one question.",
+  sample: `Dear Mr. Park,
+
+Thank you for informing us about the issue with order #4582. I sincerely apologize for the inconvenience caused by the missing five packs of printer paper.
+
+I have checked our shipping records, and I will arrange to send the remaining five packs to your office tomorrow by express delivery at no extra cost. I will also send you a tracking number as soon as the package leaves our warehouse.
+
+Could you please confirm that the delivery address on file is still correct? Once I receive your confirmation, I will make sure the shipment is processed immediately.
+
+Sincerely,
+Anna Lee
+Sales Representative
+Bright Office Supplies`,
+  tips: [
+    "Với email khiếu nại/thiếu hàng, hãy xin lỗi rõ ràng ngay đầu (I sincerely apologize for…) rồi nêu hành động khắc phục cụ thể và thời gian thực hiện.",
+    "Task yêu cầu hỏi một câu: đặt câu hỏi có mục đích (xác nhận địa chỉ, thời gian nhận hàng) thay vì câu hỏi chung chung để thể hiện bạn đang xử lý vấn đề.",
+    "Tránh đổ lỗi cho khách hàng; dùng giọng điệu chuyên nghiệp, tích cực: I will arrange…, at no extra cost…, as soon as…"
+  ],
+  tags: ["supplier", "order"]
+},
+{
+  id: "toeic-w2-003",
+  part: "w2",
+  email: `From: Ms. Karen Smith, Customer Service Manager
+To: Customer
+Subject: Your Recent Stay at Riverside Hotel
+
+Dear Guest,
+
+Thank you for staying at Riverside Hotel last weekend. We noticed that you checked out earlier than planned, and we hope everything was satisfactory during your visit.
+
+If you have a moment, we would appreciate your feedback about your stay.
+
+Kind regards,
+Karen Smith
+Customer Service Manager`,
+  task: "Respond to the email. In your response, describe one problem you experienced and make one request.",
+  sample: `Dear Ms. Smith,
+
+Thank you for contacting me about my recent stay at Riverside Hotel. I enjoyed the convenient location, but I experienced a problem with the air conditioner in my room. It made a loud noise during the night, which made it difficult for me to sleep, so I decided to check out early.
+
+I would appreciate it if you could review this issue with your maintenance team to prevent it from affecting future guests. I would also like to request a partial refund for the night I could not rest comfortably.
+
+Thank you for your attention to this matter. I look forward to your reply.
+
+Sincerely,
+James Carter`,
+  tips: [
+    "Khi phàn nàn lịch sự, hãy bắt đầu bằng điểm tích cực ngắn rồi mới mô tả vấn đề cụ thể (what happened, how it affected you) để giọng điệu vẫn chuyên nghiệp.",
+    "Đề yêu cầu make one request: nêu yêu cầu rõ ràng, hợp lý (refund, repair, follow-up) và dùng cấu trúc lịch sự như I would appreciate it if… / I would like to request…",
+    "Giữ email 80–150 từ: đủ chi tiết để người đọc hiểu tình huống nhưng tránh kể lể dài; mỗi câu nên mang một ý chính."
+  ],
+  tags: ["customer", "complaint"]
+},
+{
+  id: "toeic-w2-004",
+  part: "w2",
+  email: `From: Mr. Thomas Nguyen, Project Coordinator
+To: Team Members
+Subject: Preparation for Client Meeting
+
+Dear Team Members,
+
+We will meet with the Greenfield Solutions client next Tuesday at 10:00 a.m. to discuss the new website project. I am preparing the agenda and would like your input before finalizing it.
+
+Please reply to this email by Friday.
+
+Best regards,
+Thomas Nguyen
+Project Coordinator`,
+  task: "Respond to the email. In your response, suggest two topics to include in the agenda and ask one question.",
+  sample: `Dear Mr. Nguyen,
+
+Thank you for your message about the client meeting with Greenfield Solutions next Tuesday. I would like to suggest including the project timeline in the agenda so we can confirm key deadlines with the client. I also recommend discussing the website design requirements, including the main features and preferred layout.
+
+Could you please let me know whether we should prepare a short presentation or only bring printed notes to the meeting? Knowing this will help me prepare the right materials in advance.
+
+Thank you, and please let me know if you need any further support.
+
+Best regards,
+Linh Pham`,
+  tips: [
+    "Khi đề yêu cầu suggest two topics, hãy nêu mỗi gợi ý kèm lý do ngắn (so we can confirm…, including…) để email có chiều sâu và thuyết phục hơn.",
+    "Câu hỏi nên liên quan trực tiếp đến việc chuẩn bị (tài liệu, thời lượng, người tham dự) thay vì hỏi thông tin đã có trong email gốc.",
+    "Dùng cụm từ công sở phổ biến: discuss the timeline, confirm key deadlines, prepare materials in advance; chú ý viết hoa tên công ty và ngày đúng như trong email."
+  ],
+  tags: ["colleague", "meeting"]
+},
+{
+  id: "toeic-w2-005",
+  part: "w2",
+  email: `From: Ms. Elena Rodriguez, HR Assistant
+To: Job Applicant
+Subject: Interview for Marketing Coordinator Position
+
+Dear Applicant,
+
+Thank you for applying for the Marketing Coordinator position at Horizon Media. We were impressed with your application and would like to invite you for an interview next week.
+
+Please reply with your availability and any information you may need before the interview.
+
+Sincerely,
+Elena Rodriguez
+HR Assistant`,
+  task: "Respond to the email. In your response, give two pieces of information about your availability and ask one question.",
+  sample: `Dear Ms. Rodriguez,
+
+Thank you for inviting me to interview for the Marketing Coordinator position at Horizon Media. I am very interested in this opportunity.
+
+I am available for an interview next Tuesday morning between 9:00 a.m. and 11:30 a.m. I am also available on Thursday afternoon after 2:00 p.m. If neither of these times is convenient, I can adjust my schedule with advance notice.
+
+Could you please let me know whether the interview will be held in person or online? This information will help me prepare appropriately.
+
+Thank you for considering my application. I look forward to hearing from you soon.
+
+Sincerely,
+Hoa Nguyen`,
+  tips: [
+    "Email trả lời lời mời phỏng vấn cần thể hiện sự hào hứng nhưng trang trọng (I am very interested in this opportunity); tránh dùng từ quá suồng sã.",
+    "Cung cấp hai mốc thời gian cụ thể (ngày + buổi/giờ) để HR dễ sắp xếp; nếu linh hoạt, nói rõ but I can adjust… để tăng cơ hội.",
+    "Câu hỏi phổ biến và phù hợp: hình thức phỏng vấn (in person/online), địa điểm, người phỏng vấn, hoặc tài liệu cần mang theo."
+  ],
+  tags: ["recruitment", "interview"]
+},
+{
+  id: "toeic-w2-006",
+  part: "w2",
+  email: `From: Mr. Brian Lee, Training Coordinator
+To: Employees
+Subject: Customer Service Training Session
+
+Dear Employees,
+
+Our company will hold a customer service training session next month to help staff improve communication with clients. We are currently finalizing the schedule and would like to know who is interested in attending.
+
+Please reply to this email if you would like to participate.
+
+Best regards,
+Brian Lee
+Training Coordinator`,
+  task: "Respond to the email. In your response, express your interest, give one piece of information about your schedule, and ask one question.",
+  sample: `Dear Mr. Lee,
+
+Thank you for informing us about the upcoming customer service training session. I am very interested in participating because I would like to improve my communication skills when working with clients.
+
+I am available to attend the training in the morning during the first two weeks of next month, as my afternoons are usually reserved for team meetings. If needed, I can also try to rearrange my schedule.
+
+Could you please let me know the exact date and time of the session? I would like to confirm my availability as soon as possible.
+
+Thank you for organizing this opportunity.
+
+Best regards,
+Tuan Nguyen`,
+  tips: [
+    "Khi bày tỏ quan tâm, nêu lý do ngắn gọn liên quan đến công việc (improve communication skills, work better with clients) để email có mục đích rõ.",
+    "Cung cấp thông tin lịch trình cụ thể (buổi sáng, tuần nào, hạn chế buổi chiều) giúp người tổ chức sắp xếp; tránh trả lời mơ hồ như 'any time is fine' nếu thực tế có giới hạn.",
+    "Chú ý lỗi hay gặp: interested in + V-ing (interested in participating/attending), không dùng interested to."
+  ],
+  tags: ["training", "colleague"]
+},
+{
+  id: "toeic-w2-007",
+  part: "w2",
+  email: `From: Ms. Olivia Brown, Events Coordinator
+To: Registered Participants
+Subject: Annual Business Networking Event
+
+Dear Participants,
+
+Thank you for registering for our Annual Business Networking Event on May 20. We are finalizing the program and would like to share more details with you soon.
+
+If you have any special requests or questions before the event, please let us know.
+
+Sincerely,
+Olivia Brown
+Events Coordinator`,
+  task: "Respond to the email. In your response, make one request and ask two questions.",
+  sample: `Dear Ms. Brown,
+
+Thank you for your email about the Annual Business Networking Event on May 20. I am looking forward to attending and meeting other professionals.
+
+I would like to request a printed copy of the event program when I arrive, as it will help me plan which sessions to attend. I also have a dietary restriction and would appreciate a vegetarian meal option if refreshments are provided.
+
+Could you please let me know what time the registration desk will open? In addition, will there be a name badge prepared for participants in advance?
+
+Thank you for your assistance.
+
+Sincerely,
+Phuong Le`,
+  tips: [
+    "Đề yêu cầu một request và hai câu hỏi: hãy tách rõ từng phần (một đoạn cho request, một đoạn hoặc hai câu riêng cho questions) để người chấm dễ thấy bạn đáp ứng đủ yêu cầu.",
+    "Yêu cầu đặc biệt (tài liệu in, chế độ ăn, hỗ trợ đi lại) nên được nêu lịch sự và kèm lý do ngắn; dùng would appreciate / would like to request.",
+    "Khi hỏi hai câu, có thể dùng Could you please let me know…? và thêm In addition, …? để câu văn đa dạng nhưng vẫn rõ ràng."
+  ],
+  tags: ["event", "networking"]
+},
+{
+  id: "toeic-w2-008",
+  part: "w2",
+  email: `From: Mr. Alan Wright, Finance Department
+To: Vendor, GreenLine Printing
+Subject: Invoice for March Printing Services
+
+Dear GreenLine Printing Team,
+
+We received your invoice for the March printing services, but we need additional information before we can process the payment. The invoice lists the total amount, but it does not include a breakdown of the charges.
+
+Please reply at your earliest convenience.
+
+Best regards,
+Alan Wright
+Finance Department`,
+  task: "Respond as the vendor. In your response, give two pieces of information and explain one action you will take.",
+  sample: `Dear Mr. Wright,
+
+Thank you for your message regarding the invoice for our March printing services. I apologize for the missing details and would be happy to clarify the charges.
+
+The total amount includes $450 for 3,000 color brochures and $120 for express delivery to your main office. These two items make up the full invoice amount of $570, and no additional fees were added.
+
+I will send you an updated invoice with a clear breakdown of each charge by the end of today. Please review it and let me know if you need any further information to process the payment.
+
+Best regards,
+Sophie Turner
+Accounts Manager
+GreenLine Printing`,
+  tips: [
+    "Khi giải thích hóa đơn, nêu con số và hạng mục cụ thể (amount, quantity, service) để người nhận đối chiếu dễ dàng; tránh chỉ nói 'the charges are correct'.",
+    "Đề yêu cầu explain one action you will take: dùng thì tương lai rõ ràng (I will send…, by the end of today) để thể hiện trách nhiệm và thời hạn xử lý.",
+    "Giữ giọng điệu hợp tác ngay cả khi khách hàng yêu cầu thêm thông tin; cụm hữu ích: I apologize for the missing details, I would be happy to clarify, please review it."
+  ],
+  tags: ["vendor", "invoice"]
+},
 );
