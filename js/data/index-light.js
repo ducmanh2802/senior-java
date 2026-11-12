@@ -1972,6 +1972,8 @@ window.DATA_INDEX = {
     {"id":"lesson-architecture-008","track":"architecture","order":8,"title":"Text editor Undo/Redo: Command pattern, giới hạn lịch sử và gộp thao tác gõ","level":"mid","minutes":30},
     {"id":"lesson-architecture-009","track":"architecture","order":9,"title":"Consistent hashing và virtual node: phân tán key, thêm/bớt node chỉ di chuyển ~1/N","level":"senior","minutes":35},
     {"id":"lesson-architecture-010","track":"architecture","order":10,"title":"Distributed lock, GC pause và fencing token: vì sao khóa có TTL vẫn ghi đè dữ liệu","level":"senior","minutes":35},
+    {"id":"lesson-architecture-011","track":"architecture","order":11,"title":"CQRS và read model: projector cập nhật từ event, xử lý trùng và sai thứ tự","level":"senior","minutes":35},
+    {"id":"lesson-architecture-012","track":"architecture","order":12,"title":"Saga orchestration cho đặt hàng: điều phối bước và bù trừ khi lỗi","level":"senior","minutes":35},
     {"id":"lesson-ai-001","track":"ai","order":1,"title":"AI Engineering Foundations: gọi LLM API, xử lý lỗi và đo chất lượng","level":"senior","minutes":45},
     {"id":"lesson-ai-002","track":"ai","order":2,"title":"Che dữ liệu cá nhân (PII) trước khi gửi LLM","level":"senior","minutes":35},
     {"id":"lesson-ai-003","track":"ai","order":3,"title":"RAG mini từ gốc","level":"senior","minutes":40},

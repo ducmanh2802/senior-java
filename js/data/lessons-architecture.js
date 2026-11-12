@@ -3240,6 +3240,614 @@ Giới hạn mô phỏng: hệ thống thật cần storage hỗ trợ kiểm tr
   ],
   related: ['architecture-001', 'design-032'],
   tags: ['distributed-lock', 'fencing-token', 'redis', 'zookeeper', 'concurrency', 'gc-pause'],
+},
+{
+    id: 'lesson-architecture-011',
+    track: 'architecture',
+    order: 11,
+    title: 'CQRS và read model: projector cập nhật từ event, xử lý trùng và sai thứ tự',
+    level: 'senior',
+    minutes: 35,
+    goals: [
+      'Hiểu CQRS (tách lệnh ghi và truy vấn đọc), event (sự kiện) và read model (mô hình đọc) là gì và vì sao cần chúng',
+      'Giải thích vai trò projector (bộ chiếu) cập nhật read model từ luồng event và các vấn đề thực tế: event trùng, event đến sai thứ tự',
+      'Cài projector bằng Java thuần xử lý idempotent (bỏ qua trùng) và sắp xếp theo version để kết quả read model đúng dù event đến lộn xộn',
+    ],
+    body: `**Tóm tắt:** CQRS (Command Query Responsibility Segregation — tách trách nhiệm lệnh ghi và truy vấn đọc) tách mô hình ghi (write model — mô hình ghi, tối ưu cho nghiệp vụ và kiểm tra luật) khỏi mô hình đọc (read model — mô hình đọc, tối ưu cho truy vấn nhanh). Bên ghi khi xử lý xong phát ra **event** (sự kiện — bản ghi bất biến mô tả "điều gì đã xảy ra", ví dụ "Đơn hàng đã tạo"); một **projector** (bộ chiếu — thành phần lắng nghe event và cập nhật bảng/view phục vụ đọc) nhận event và cập nhật read model. Vì hệ thống phân tán (nhiều máy, nhiều tiến trình) có thể gửi **trùng** (at-least-once delivery — giao ít nhất một lần, nên có thể nhận lại cùng thông điệp) hoặc **sai thứ tự**, projector phải **idempotent** (lũy đẳng — chạy lại cùng event cho cùng kết quả) và áp dụng đúng theo **version** (số thứ tự tăng dần của từng aggregate) để read model không bị sai.
+
+### Thuật ngữ (giải thích lần đầu)
+- **CQRS (Command Query Responsibility Segregation):** tách luồng ghi (Command — lệnh thay đổi trạng thái, ví dụ "Tạo đơn") và luồng đọc (Query — truy vấn, ví dụ "Lấy danh sách đơn"). Hai bên có thể dùng cấu trúc dữ liệu/kho lưu trữ khác nhau.
+- **Read model (mô hình đọc):** bảng hoặc view được thiết kế riêng cho truy vấn (ví dụ bảng đơn hàng đã gộp sẵn tên khách, tổng tiền) để đọc nhanh, không cần join phức tạp. Nó là bản "chiếu" từ các event, giống như bảng điểm tổng hợp được cập nhật từ sổ điểm chi tiết.
+- **Event (sự kiện):** thông điệp bất biến mô tả việc đã xảy ra trong quá khứ, ví dụ {{OrderCreated}}, {{ItemAdded}}. Thường có {{eventId}} (định danh duy nhất), {{aggregateId}} (định danh đối tượng nghiệp vụ, ví dụ mã đơn), {{version}} (thứ tự tăng 1,2,3… trên cùng aggregate).
+- **Projector (bộ chiếu/projection handler):** mã nhận event và cập nhật read model. Giống người ghi chép: nghe thông báo rồi sửa bảng hiển thị cho mọi người xem.
+- **Aggregate (tập hợp gốc):** cụm đối tượng được xem như một đơn vị nhất quán (ví dụ một Đơn hàng và các dòng hàng của nó), có định danh riêng.
+- **Idempotent (lũy đẳng):** thao tác thực hiện nhiều lần cho kết quả giống thực hiện một lần. Quan trọng vì mạng có thể gửi trùng.
+- **At-least-once delivery (giao ít nhất một lần):** cơ chế nhắn tin đảm bảo không mất nhưng có thể giao lặp; consumer (bên nhận) phải chịu được trùng. (Ngược lại exactly-once — đúng một lần — rất khó trong phân tán.)
+- **Eventual consistency (nhất quán cuối):** dữ liệu ở các nơi sẽ trở nên nhất quán sau một khoảng trễ, chứ không nhất quán ngay lập tức như một giao dịch DB đơn.
+
+### Vì sao cần CQRS + read model?
+- **Tách tối ưu:** ghi cần kiểm tra luật nghiệp vụ, đảm bảo tính đúng; đọc cần trả lời nhanh, lọc/sắp xếp linh hoạt. Một mô hình chung thường phải đánh đổi.
+- **Mở rộng đọc:** đọc thường nhiều hơn ghi (ví dụ xem danh sách đơn gấp 100 lần đặt đơn). Read model có thể nhân bản, cache, dùng kho khác (search index) mà không ảnh hưởng ghi.
+- **Lịch sử rõ:** lưu event cho biết "đã xảy ra gì", phục vụ audit (kiểm toán) và dựng lại read model khi cần.
+Ví dụ đời thường: sổ cái ngân hàng (ghi từng giao dịch — write/event) tách khỏi màn hình số dư hiển thị cho khách (read model) được cập nhật từ sổ cái.
+
+### Luồng tổng quát
+~~~seq
+title: CQRS - ghi phat event, projector cap nhat read model
+actors: Client | Write | Store | Bus | Projector | ReadDB
+Client -> Write: Command: Tao don
+Write -> Store: Luu event OrderCreated v1
+Store -> Bus: Phat event
+Bus -> Projector: OrderCreated v1
+Projector -> ReadDB: Cap nhat bang doc
+Client -> ReadDB: Query: lay danh sach don
+ReadDB -> Client: Tra read model
+~~~
+
+### Vấn đề thực tế: trùng và sai thứ tự
+Trong hệ thống có hàng đợi/broker (message broker — phần mềm trung gian truyền thông điệp, ví dụ Kafka, RabbitMQ), consumer (bên nhận) có thể gặp:
+1. **Event trùng (duplicate):** broker gửi lại vì chưa nhận ack (acknowledgement — xác nhận đã xử lý), hoặc producer (bên gửi) retry (thử lại). Nếu projector cộng tiền hai lần thì read model sai.
+2. **Sai thứ tự (out-of-order):** trên nhiều partition (phân vùng)/luồng hoặc do retry, event version 3 có thể đến trước version 2.
+
+~~~text
+Thu tu phat ra:  v1 (Created) -> v2 (ItemAdded) -> v3 (Paid)
+Thu tu nhan:     v1, v3, v2, v2  (v3 den som, v2 bi trung)
+Ket qua dung:    ap dung v1, v2, v3 dung mot lan
+~~~
+
+### Chiến lược projector (idempotent + theo version)
+- **Chống trùng:** nhớ {{eventId}} đã xử lý (bảng/tập đã thấy) HOẶC dựa vào {{version}}: nếu version <= version cuối đã áp dụng cho aggregate thì bỏ qua (đã xử lý). Cách version đơn giản khi version tăng đều 1,2,3.
+- **Chống sai thứ tự:** với mỗi aggregate lưu {{lastAppliedVersion}}. Nếu nhận {{version == lastApplied + 1}} thì áp dụng ngay; nếu {{version > lastApplied + 1}} thì **đệm (buffer — vùng nhớ tạm chờ)** vào hàng chờ; nếu {{version <= lastApplied}} thì bỏ qua (trùng/cũ). Sau khi áp dụng, thử rút tiếp các event kế tiếp trong buffer.
+- **Tính nhất quán cuối:** read model có thể trễ một chút so với write; UI cần chấp nhận hoặc chờ/đọc lại.
+
+### Ví dụ mô phỏng (Java thuần, không broker thật)
+~~~java
+// Event: (eventId, aggregateId, version, type, payload)
+Event e1 = new Event("e1", "order-1", 1, "OrderCreated", "user=A");
+Event e2 = new Event("e2", "order-1", 2, "ItemAdded", "item=Book");
+Event e3 = new Event("e3", "order-1", 3, "Paid", "amount=100");
+// Den sai thu tu + trung: e1, e3, e2, e2
+Projector p = new Projector();
+for (Event e : List.of(e1, e3, e2, e2)) p.project(e);
+// Read model cuoi: order-1 da Created, co item Book, da Paid (ap dung 1,2,3 dung 1 lan)
+~~~
+
+### Ví dụ đời thực
+Một hệ thống thương mại điện tử tách ghi đơn (write DB, kiểm tra tồn kho/giá) và đọc danh sách đơn cho khách (read DB dạng bảng gộp). Lúc cao điểm ~5.000 đơn/phút, broker đôi khi gửi lại event do timeout ack: nếu projector không idempotent, cột tổng tiền bị cộng đôi; nếu event {{Paid}} (v3) đến trước {{ItemAdded}} (v2) vài chục mili-giây, áp dụng ngay sẽ cho trạng thái "đã thanh toán nhưng chưa có sản phẩm". Sau khi thêm kiểm tra version + buffer và bỏ qua version cũ, read model ổn định; độ trễ projector (projection lag — khoảng cách version mới nhất và version đã chiếu) được theo dõi và giữ dưới ~200 ms ở tải bình thường.
+
+### Lỗi hay gặp
+- **Không idempotent:** nhận trùng làm tăng số lượng/tiền hai lần. Luôn kiểm tra eventId/version đã thấy.
+- **Áp dụng ngay khi sai thứ tự:** nhận v3 trước v2 mà gán trạng thái Paid khi chưa có item → read model sai hoặc lỗi.
+- **Không buffer mà bỏ event tương lai:** nếu bỏ v3 (vì chưa tới v2) và không lưu lại, khi v2 đến sẽ thiếu v3 mãi. Nên đệm.
+- **Dùng thời gian (timestamp) để sắp xếp:** đồng hồ các máy lệch (clock skew) nên dễ sai; version theo aggregate đáng tin hơn.
+- **Nhầm CQRS = bắt buộc event sourcing:** CQRS chỉ là tách đọc/ghi; có thể dùng DB thường và vẫn đồng bộ read model, không nhất thiết lưu toàn bộ event làm nguồn sự thật.
+
+### Liên hệ phỏng vấn
+Khi trả lời: nêu rõ CQRS tách read/write để tối ưu từng bên; read model được projector cập nhật từ event; vì at-least-once/out-of-order nên projector phải idempotent (theo eventId hoặc version) và xử lý thứ tự (lastAppliedVersion + buffer). Nhấn mạnh **eventual consistency** (đọc có thể trễ) và đánh đổi: hệ thống phức tạp hơn, cần giám sát độ trễ projector (projection lag). Biết tên thật: Kafka (log phân vùng, giữ thứ tự trong partition theo key), Debezium (CDC — change data capture, bắt thay đổi DB thành event), nhưng nguyên lý projector giống nhau.
+
+> Senior tip: Thiết kế projector như một hàm thuần trên (state, event) → state mới và luôn nghĩ "event này đến lại lần nữa thì sao?". Log/metric độ trễ giữa version mới nhất đã ghi và version projector đã áp dụng; nếu lag tăng là read model đang "tụt hậu" và người dùng sẽ thấy dữ liệu cũ.
+`,
+    exercises: [
+      {
+        title: 'Projector: cập nhật read model, bỏ qua trùng và áp dụng đúng thứ tự version',
+        prompt: `Hiện thực {{Event}}, {{OrderView}} và {{Projector}}.
+- {{Event}} có: {{eventId}}, {{aggregateId}} (mã đơn), {{version}} (1,2,3 tăng dần trên mỗi đơn), {{type}}, {{payload}}.
+- {{OrderView}} (read model một đơn): {{orderId}}, {{user}} (từ OrderCreated), {{items}} (danh sách chuỗi, từ ItemAdded), {{paidAmount}} (số nguyên, từ Paid), {{status}}.
+- {{Projector.project(Event e)}} nhận event (có thể trùng, có thể sai thứ tự) và cập nhật read model nội bộ. Yêu cầu:
+  1. Bỏ qua event trùng/cũ: nếu {{version <= lastAppliedVersion}} của aggregate đó thì không làm gì.
+  2. Nếu {{version == lastAppliedVersion + 1}} thì áp dụng ngay; nếu {{version > lastAppliedVersion + 1}} thì lưu đệm, và sau khi áp dụng phải thử áp dụng tiếp các event kế tiếp trong đệm.
+  3. {{getView(orderId)}} trả về {{OrderView}} hiện tại (hoặc {{null}} nếu chưa có).
+- Áp dụng: {{OrderCreated}} (payload {{user=<ten>}}) tạo view, status {{CREATED}}; {{ItemAdded}} (payload {{item=<ten>}}) thêm vào items; {{Paid}} (payload {{amount=<n>}}) đặt {{paidAmount}} và status {{PAID}}.`,
+        starter: `import java.util.*;
+
+class Event {
+    final String eventId, aggregateId, type, payload;
+    final int version;
+    Event(String eventId, String aggregateId, int version, String type, String payload) {
+        this.eventId = eventId; this.aggregateId = aggregateId; this.version = version; this.type = type; this.payload = payload;
+    }
 }
 
+class OrderView {
+    String orderId;
+    String user = "";
+    List<String> items = new ArrayList<>();
+    int paidAmount = 0;
+    String status = "";
+}
+
+class Projector {
+    // TODO: luu read model, lastAppliedVersion moi aggregate, va buffer event tuong lai
+
+    public void project(Event e) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    public OrderView getView(String orderId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+`,
+        tests: `import java.util.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void expect(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        Event e1 = new Event("e1","o1",1,"OrderCreated","user=A");
+        Event e2 = new Event("e2","o1",2,"ItemAdded","item=Book");
+        Event e3 = new Event("e3","o1",3,"ItemAdded","item=Pen");
+        Event e4 = new Event("e4","o1",4,"Paid","amount=150");
+
+        // 1. Thu tu dung
+        Projector p1 = new Projector();
+        for (Event e : new Event[]{e1,e2,e3,e4}) p1.project(e);
+        OrderView v1 = p1.getView("o1");
+        expect("in-order user", v1 != null && "A".equals(v1.user), "user=" + (v1==null?"null":v1.user));
+        expect("in-order items", v1 != null && v1.items.size()==2 && v1.items.contains("Book") && v1.items.contains("Pen"), "items=" + (v1==null?"null":String.valueOf(v1.items)));
+        expect("in-order paid", v1 != null && v1.paidAmount==150 && "PAID".equals(v1.status), "paid=" + (v1==null?"null":v1.paidAmount+","+v1.status));
+
+        // 2. Sai thu tu + trung
+        Projector p2 = new Projector();
+        for (Event e : new Event[]{e1,e4,e2,e2,e3}) p2.project(e);
+        OrderView v2 = p2.getView("o1");
+        expect("out-of-order items count", v2 != null && v2.items.size()==2, "items=" + (v2==null?"null":String.valueOf(v2.items)));
+        expect("out-of-order final state", v2 != null && "A".equals(v2.user) && v2.items.contains("Book") && v2.items.contains("Pen") && v2.paidAmount==150 && "PAID".equals(v2.status), "state sai");
+
+        // 3. Trung lap nhieu lan khong tang tien/so luong
+        Projector p3 = new Projector();
+        for (Event e : new Event[]{e1,e2,e2,e3,e3,e4,e4}) p3.project(e);
+        OrderView v3 = p3.getView("o1");
+        expect("duplicate safe items", v3 != null && v3.items.size()==2, "items=" + (v3==null?"null":String.valueOf(v3.items)));
+        expect("duplicate safe paid", v3 != null && v3.paidAmount==150, "paid=" + (v3==null?"null":v3.paidAmount));
+
+        // 4. Nhieu aggregate doc lap, den xen ke
+        Event a1 = new Event("a1","oA",1,"OrderCreated","user=X");
+        Event a2 = new Event("a2","oA",2,"Paid","amount=50");
+        Event b1 = new Event("b1","oB",1,"OrderCreated","user=Y");
+        Event b2 = new Event("b2","oB",2,"ItemAdded","item=Hat");
+        Projector p4 = new Projector();
+        for (Event e : new Event[]{b2,b1,a2,a1}) p4.project(e);
+        OrderView va = p4.getView("oA");
+        OrderView vb = p4.getView("oB");
+        expect("multi aggregate A", va != null && "X".equals(va.user) && va.paidAmount==50 && "PAID".equals(va.status), "A sai");
+        expect("multi aggregate B", vb != null && "Y".equals(vb.user) && vb.items.size()==1 && "Hat".equals(vb.items.get(0)) && "CREATED".equals(vb.status), "B sai");
+        expect("unknown aggregate null", p4.getView("nope")==null, "phai tra null");
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}
+`,
+        reference: `import java.util.*;
+
+class Event {
+    final String eventId, aggregateId, type, payload;
+    final int version;
+    Event(String eventId, String aggregateId, int version, String type, String payload) {
+        this.eventId = eventId; this.aggregateId = aggregateId; this.version = version; this.type = type; this.payload = payload;
+    }
+}
+
+class OrderView {
+    String orderId;
+    String user = "";
+    List<String> items = new ArrayList<>();
+    int paidAmount = 0;
+    String status = "";
+}
+
+class Projector {
+    private final Map<String, OrderView> views = new HashMap<>();
+    private final Map<String, Integer> lastApplied = new HashMap<>();
+    private final Map<String, Map<Integer, Event>> buffer = new HashMap<>();
+
+    public void project(Event e) {
+        int last = lastApplied.getOrDefault(e.aggregateId, 0);
+        if (e.version <= last) {
+            return; // trung hoac cu: bo qua (idempotent)
+        }
+        if (e.version == last + 1) {
+            apply(e);
+            Map<Integer, Event> buf = buffer.get(e.aggregateId);
+            if (buf != null) {
+                int next = lastApplied.get(e.aggregateId) + 1;
+                while (buf.containsKey(next)) {
+                    Event ne = buf.remove(next);
+                    apply(ne);
+                    next = lastApplied.get(e.aggregateId) + 1;
+                }
+                if (buf.isEmpty()) buffer.remove(e.aggregateId);
+            }
+        } else {
+            buffer.computeIfAbsent(e.aggregateId, k -> new HashMap<>()).put(e.version, e);
+        }
+    }
+
+    private void apply(Event e) {
+        OrderView v = views.get(e.aggregateId);
+        if ("OrderCreated".equals(e.type)) {
+            v = new OrderView();
+            v.orderId = e.aggregateId;
+            v.user = parse(e.payload, "user");
+            v.status = "CREATED";
+            views.put(e.aggregateId, v);
+        } else if ("ItemAdded".equals(e.type)) {
+            if (v != null) v.items.add(parse(e.payload, "item"));
+        } else if ("Paid".equals(e.type)) {
+            if (v != null) {
+                v.paidAmount = Integer.parseInt(parse(e.payload, "amount"));
+                v.status = "PAID";
+            }
+        }
+        lastApplied.put(e.aggregateId, e.version);
+    }
+
+    private String parse(String payload, String key) {
+        String prefix = key + "=";
+        if (payload != null && payload.startsWith(prefix)) return payload.substring(prefix.length());
+        return payload;
+    }
+
+    public OrderView getView(String orderId) {
+        return views.get(orderId);
+    }
+}
+`,
+        hints: [
+          'Lưu {{lastAppliedVersion}} theo {{aggregateId}} (mặc định 0). Nếu {{e.version <= last}} thì return; nếu {{e.version == last + 1}} thì {{apply(e)}} rồi vòng while rút {{last+1, last+2, ...}} từ buffer; nếu lớn hơn thì {{buffer.get(aggregateId).put(version, e)}}.',
+          '{{apply}} cập nhật/khởi tạo {{OrderView}} theo {{type}} và đặt {{lastApplied}} = version. Tách {{parse}} lấy giá trị sau {{key=}} trong payload.',
+          'Buffer nên là {{Map<String, Map<Integer, Event>>}} (theo aggregate rồi theo version) để kiểm tra tồn tại version kế tiếp nhanh.',
+        ],
+        explain: `Projector giữ ba cấu trúc: {{views}} (read model), {{lastApplied}} (version cuối đã áp dụng mỗi aggregate) và {{buffer}} (event đến sớm chờ đủ khoảng trống). Quy tắc {{version <= last}} làm thao tác idempotent: event trùng hoặc phát lại đều bị bỏ qua, nên thêm item/cộng tiền không bị lặp. Khi {{version == last + 1}} ta áp dụng rồi "xả" buffer theo chuỗi liên tiếp, nhờ đó event đến sai thứ tự (v3 đến trước v2) vẫn cho kết quả đúng khi v2 tới.
+
+Lỗi hay gặp: chỉ kiểm tra trùng bằng {{eventId}} nhưng quên xử lý thứ tự (áp dụng v3 khi chưa có v2) sẽ tạo trạng thái sai; hoặc quên vòng while sau khi apply nên event trong buffer nằm lại mãi. Tách theo {{aggregateId}} là bắt buộc vì version chỉ có nghĩa trong từng aggregate. Trong thực tế, projector còn cần lưu {{lastApplied}} bền vững (DB) để sau khi restart không áp dụng lại, và phát hiện khoảng trống quá lâu (projection lag) để cảnh báo.`,
+      },
+    ],
+    check: [
+      {
+        q: 'Vì sao projector phải idempotent (xử lý được event trùng) trong hệ thống dùng at-least-once delivery?',
+        options: [
+          'Vì event luôn đến đúng một lần',
+          'Vì broker có thể gửi lại cùng event, nếu không idempotent read model sẽ bị cập nhật lặp (sai số liệu)',
+          'Vì idempotent giúp tăng tốc ghi',
+          'Vì idempotent thay thế hoàn toàn database',
+        ],
+        answer: 1,
+        explain: 'At-least-once đảm bảo không mất nhưng có thể giao lặp; projector chạy lại cùng event phải cho cùng kết quả, nên cần bỏ qua trùng (theo eventId/version).',
+      },
+      {
+        q: 'Event version 3 của cùng một aggregate đến trước version 2. Cách xử lý an toàn trong projector là gì?',
+        options: [
+          'Áp dụng version 3 ngay để read model mới nhất',
+          'Bỏ hẳn version 3 và không lưu lại',
+          'Đệm version 3, chờ áp dụng version 2 rồi mới áp dụng version 3 theo thứ tự',
+          'Sắp xếp theo timestamp của máy gửi',
+        ],
+        answer: 2,
+        explain: 'Áp dụng sai thứ tự có thể tạo trạng thái sai; bỏ hẳn có thể mất event. Đệm và áp dụng khi đủ chuỗi lastApplied+1 đảm bảo đúng thứ tự; timestamp dễ lệch đồng hồ.',
+      },
+      {
+        q: 'CQRS tách mô hình ghi và mô hình đọc chủ yếu để đạt điều gì?',
+        options: [
+          'Bắt buộc phải dùng event sourcing',
+          'Tối ưu riêng cho ghi (nghiệp vụ/nhất quán) và cho đọc (truy vấn nhanh), chấp nhận read model có thể cập nhật trễ (eventual consistency)',
+          'Loại bỏ hoàn toàn database',
+          'Đảm bảo đọc luôn thấy dữ liệu ngay lập tức như lúc ghi',
+        ],
+        answer: 1,
+        explain: 'CQRS là tách trách nhiệm đọc/ghi để tối ưu từng bên; read model thường cập nhật bất đồng bộ nên có eventual consistency. Không bắt buộc event sourcing hay bỏ DB, và không đảm bảo đọc thấy ngay.',
+      },
+    ],
+    related: ['architecture-001', 'architecture-005', 'microservices-006'],
+    tags: ['cqrs', 'event-driven', 'read-model', 'projector', 'idempotent', 'eventual-consistency'],
+  },
+  {
+    id: 'lesson-architecture-012',
+    track: 'architecture',
+    order: 12,
+    title: 'Saga orchestration cho đặt hàng: điều phối bước và bù trừ khi lỗi',
+    level: 'senior',
+    minutes: 35,
+    goals: [
+      'Hiểu saga là gì, vì sao giao dịch phân tán (2PC) khó dùng và khi nào cần bù trừ (compensation)',
+      'Phân biệt orchestration (có điều phối viên trung tâm) với choreography (mỗi dịch vụ tự phản ứng event)',
+      'Cài orchestrator bằng Java thuần gọi các bước giả, khi một bước thất bại chạy compensation theo thứ tự ngược của các bước đã thành công',
+    ],
+    body: `**Tóm tắt:** Trong microservices (kiến trúc nhiều dịch vụ nhỏ, mỗi dịch vụ có dữ liệu riêng), một nghiệp vụ như "đặt hàng" chạm nhiều dịch vụ (kho, thanh toán, vận chuyển). Không thể dùng một giao dịch DB (transaction — nhóm thao tác "hoặc thành công hết, hoặc thất bại hết") trải nhiều DB như monolith (ứng dụng một khối). **Saga** là chuỗi bước cục bộ: mỗi bước có một hành động **bù trừ (compensation — hành động hoàn tác có ý nghĩa nghiệp vụ)** để đảo ngược khi bước sau thất bại. **Orchestration** (điều phối — như nhạc trưởng chỉ huy) dùng một **orchestrator** (thành phần trung tâm) ra lệnh từng bước và quyết định chạy bù trừ ngược khi lỗi.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Giao dịch phân tán (distributed transaction):** giao dịch kéo dài qua nhiều hệ thống. Giao thức **2PC** (two-phase commit — cam kết hai pha: chuẩn bị rồi cam kết) cố đảm bảo tất cả cùng commit, nhưng khóa tài nguyên lâu, giảm sẵn sàng, và khó với dịch vụ bên ngoài.
+- **Saga:** chuỗi giao dịch cục bộ T1, T2, ..., Tn. Nếu Ti thất bại, chạy bù trừ Ci-1, ..., C1 để đưa hệ thống về trạng thái chấp nhận được. Bù trừ không phải "rollback thời gian" mà là hành động nghiệp vụ ngược (ví dụ hoàn tiền, trả hàng về kho).
+- **Orchestrator (điều phối viên):** thành phần trung tâm biết toàn bộ quy trình, gọi từng bước theo thứ tự và xử lý lỗi/bù trừ. Giống nhạc trưởng chỉ huy dàn nhạc.
+- **Choreography (biên đạo):** cách phối hợp không có trung tâm, mỗi dịch vụ tự lắng nghe event và phản ứng (giống các vũ công tự biết bước theo nhạc).
+- **Compensation (bù trừ):** hành động đảo ngược tác dụng nghiệp vụ của một bước đã thành công ({{RefundPayment}} bù {{ChargePayment}}).
+- **Idempotent (lũy đẳng):** bước/bù trừ chạy lại nhiều lần vẫn an toàn (cần vì retry khi mạng lỗi).
+
+### Vì sao cần saga?
+Ví dụ đặt hàng: (1) Giữ hàng (Inventory — kho), (2) Trừ tiền (Payment — thanh toán), (3) Tạo vận đơn (Shipping — vận chuyển). Nếu bước 3 lỗi sau khi đã trừ tiền, ta phải hoàn tiền và nhả hàng giữ. Mỗi bước là giao dịch cục bộ trong dịch vụ riêng; saga đảm bảo **nhất quán cuối** (eventual consistency) bằng bù trừ thay vì một transaction khổng lồ.
+
+### Orchestration so với Choreography
+| Tiêu chí | Orchestration | Choreography (biên đạo) |
+|---|---|---|
+| Ai điều khiển | Orchestrator trung tâm ra lệnh | Mỗi dịch vụ tự lắng nghe event và phản ứng |
+| Dễ hiểu luồng | Cao, luồng nằm ở một chỗ | Khó theo dõi khi nhiều bước |
+| Ghép nối | Orchestrator biết các bước | Dịch vụ lỏng ghép qua event |
+| Phù hợp | Quy trình dài, nhiều nhánh, cần quan sát | Ít bước, đơn giản |
+
+~~~seq
+title: Saga orchestration dat hang (co bu tru)
+actors: Orchestrator | Inventory | Payment | Shipping
+Orchestrator -> Inventory: ReserveStock
+Inventory -> Orchestrator: OK
+Orchestrator -> Payment: Charge
+Payment -> Orchestrator: OK
+Orchestrator -> Shipping: CreateShipment
+Shipping -> Orchestrator: FAIL
+Orchestrator -> Payment: Refund (bu tru)
+Payment -> Orchestrator: OK
+Orchestrator -> Inventory: ReleaseStock (bu tru nguoc)
+Inventory -> Orchestrator: OK
+~~~
+
+### Quy tắc bù trừ quan trọng
+- **Chỉ bù các bước đã thành công**, và bù theo **thứ tự ngược** với thứ tự đã thực hiện (bước hoàn tất sau cùng được hoàn tác trước). Ví dụ đã làm 1,2 thành công, bước 3 lỗi → bù 2 rồi bù 1.
+- **Bù trừ phải được thiết kế:** không phải bước nào cũng đảo ngược được tức thì (gửi email khó "thu hồi" — có thể gửi email xin lỗi; trừ tiền thì hoàn tiền). Cần trạng thái trung gian (PENDING — chờ) khi phù hợp.
+- **Lỗi khi đang bù trừ:** bù trừ cũng có thể thất bại tạm thời (mạng). Thực tế cần retry (thử lại), lưu trạng thái saga, và có đường xử lý thủ công; trong bài mô phỏng ta giả định bù trừ thực thi được để tập trung vào thứ tự.
+- **Idempotent:** orchestrator có thể retry bước/bù trừ sau sự cố, nên mỗi thao tác phải an toàn khi chạy lại.
+
+### Ví dụ mô phỏng (Java thuần, bước giả)
+~~~java
+interface Step {
+    String name();
+    boolean execute();     // tra ve true neu thanh cong
+    void compensate();     // bu tru (chi goi khi execute da thanh cong)
+}
+
+class Orchestrator {
+    Result run(List<Step> steps) { /* goi lan luot, neu fail thi bu tru nguoc */ }
+}
+// Ket qua: danh sach buoc da chay, co thanh cong hay khong, danh sach bu tru da thuc hien
+~~~
+Các bước giả (fake/in-memory — chạy trong bộ nhớ, không gọi dịch vụ thật) cho phép kịch bản xác định: bước N trả về false để mô phỏng lỗi, và ghi lại log hành động để kiểm tra thứ tự.
+
+### Ví dụ đời thực
+Một nền tảng đặt đồ ăn: 1) giữ suất nhà hàng (2s), 2) trừ ví người dùng (300ms), 3) tạo chuyến giao hàng. Nếu bước 3 lỗi (hết tài xế) sau khi đã trừ ví, orchestrator phải hoàn ví rồi nhả suất. Ở quy mô ~20.000 đơn/giờ, đôi khi bù trừ bước hoàn ví timeout do mạng: orchestrator lưu trạng thái saga và retry bù trừ theo idempotency key (khóa chống lặp) để không hoàn tiền hai lần. Sau khi áp dụng saga, tỷ lệ đơn kẹt trạng thái "đã trừ tiền nhưng không có vận đơn" giảm từ ~0,4% xuống gần 0, các ca còn lại được hàng đợi retry xử lý trong < 1 phút.
+
+### Lỗi hay gặp
+- **Bù trừ sai thứ tự:** bù 1 rồi mới bù 2 trong khi 2 phụ thuộc 1 có thể để lại trạng thái treo; luôn bù ngược.
+- **Bù cả bước chưa thành công:** bước 3 fail thì chỉ 1,2 đã commit cục bộ cần bù, bước 3 chưa thành công nên không bù.
+- **Quên lưu tiến trình saga:** orchestrator crash giữa chừng sẽ không biết đã làm tới đâu; thực tế cần lưu state (state machine — máy trạng thái) bền vững.
+- **Nghĩ bù trừ = rollback ACID:** dữ liệu đã thấy bởi bên khác (ví dụ khách nhận thông báo trừ tiền tạm thời) — cần thiết kế nghiệp vụ chấp nhận.
+
+### Liên hệ phỏng vấn
+Nêu: saga giải quyết nghiệp vụ xuyên dịch vụ bằng chuỗi bước cục bộ + compensation, chấp nhận eventual consistency thay cho 2PC. Orchestration có điều phối viên trung tâm (dễ quan sát, luồng rõ) — ví dụ công cụ thực tế: **Temporal**, **Camunda/Zeebe**, **AWS Step Functions** (tên thật để tham chiếu khái niệm). Trình bày rõ quy tắc: bù các bước đã thành công, theo thứ tự ngược, bù trừ/idempotent và cần xử lý lỗi khi bù. So sánh nhanh với choreography khi được hỏi.
+
+> Senior tip: Khi thiết kế saga, viết ra bảng cho từng bước: hành động, bù trừ tương ứng, và trường hợp "không bù được" (pivot/irreversible). Một saga tốt thu hẹp cửa sổ rủi ro bằng cách đặt bước khó hoàn tác về cuối (hoặc dùng trạng thái chờ) và luôn có cơ chế theo dõi/truy vết (correlation id) để biết đơn hàng đang kẹt ở bước nào.
+`,
+    exercises: [
+      {
+        title: 'Orchestrator: chạy bước tuần tự và bù trừ ngược khi lỗi',
+        prompt: `Hiện thực {{Step}} (interface), {{FakeStep}} và {{Orchestrator}}.
+- {{Step}} có {{String name()}}, {{boolean execute()}} (true = thành công), {{void compensate()}}.
+- {{FakeStep}} nhận {{name}}, cờ {{succeed}} (execute trả về cờ này), và một {{List<String> log}} dùng chung để ghi nhận: khi execute ghi {{"exec:<name>"}}; khi compensate ghi {{"comp:<name>"}} (ghi kể cả khi succeed là true, miễn là compensate được gọi).
+- {{Orchestrator.run(List<Step> steps)}} thực thi tuần tự từng bước. Nếu một bước trả về {{false}}, dừng ngay, **không** gọi compensate của bước thất bại, và gọi compensate theo **thứ tự ngược** của các bước đã thành công trước đó. Trả về {{Result}} với: {{boolean success}}, {{List<String> executed}} (tên các bước đã execute, theo thứ tự gọi), {{List<String> compensated}} (tên các bước đã compensate, theo thứ tự bù trừ). Nếu tất cả thành công thì {{compensated}} rỗng.`,
+        starter: `import java.util.*;
+
+interface Step {
+    String name();
+    boolean execute();
+    void compensate();
+}
+
+class FakeStep implements Step {
+    private final String name;
+    private final boolean succeed;
+    private final List<String> log;
+
+    FakeStep(String name, boolean succeed, List<String> log) {
+        this.name = name; this.succeed = succeed; this.log = log;
+    }
+
+    public String name() { return name; }
+
+    public boolean execute() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    public void compensate() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class Result {
+    final boolean success;
+    final List<String> executed;
+    final List<String> compensated;
+    Result(boolean success, List<String> executed, List<String> compensated) {
+        this.success = success; this.executed = executed; this.compensated = compensated;
+    }
+}
+
+class Orchestrator {
+    public Result run(List<Step> steps) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+`,
+        tests: `import java.util.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void expect(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        // 1. Tat ca thanh cong
+        List<String> log1 = new ArrayList<>();
+        Orchestrator o = new Orchestrator();
+        Result r1 = o.run(Arrays.asList(
+            new FakeStep("ReserveStock", true, log1),
+            new FakeStep("Charge", true, log1),
+            new FakeStep("Ship", true, log1)
+        ));
+        expect("all success flag", r1.success, "success=" + r1.success);
+        expect("all executed", r1.executed.equals(Arrays.asList("ReserveStock","Charge","Ship")), "executed=" + r1.executed);
+        expect("no compensate", r1.compensated.isEmpty(), "compensated=" + r1.compensated);
+        expect("log exec order", log1.equals(Arrays.asList("exec:ReserveStock","exec:Charge","exec:Ship")), "log=" + log1);
+
+        // 2. Buoc cuoi fail -> bu tru nguoc 2 buoc truoc
+        List<String> log2 = new ArrayList<>();
+        Result r2 = o.run(Arrays.asList(
+            new FakeStep("ReserveStock", true, log2),
+            new FakeStep("Charge", true, log2),
+            new FakeStep("Ship", false, log2)
+        ));
+        expect("fail flag", !r2.success, "success=" + r2.success);
+        expect("executed includes failed", r2.executed.equals(Arrays.asList("ReserveStock","Charge","Ship")), "executed=" + r2.executed);
+        expect("compensated reverse", r2.compensated.equals(Arrays.asList("Charge","ReserveStock")), "compensated=" + r2.compensated);
+        expect("log full", log2.equals(Arrays.asList("exec:ReserveStock","exec:Charge","exec:Ship","comp:Charge","comp:ReserveStock")), "log=" + log2);
+
+        // 3. Buoc dau fail -> khong bu tru gi
+        List<String> log3 = new ArrayList<>();
+        Result r3 = o.run(Arrays.asList(
+            new FakeStep("ReserveStock", false, log3),
+            new FakeStep("Charge", true, log3),
+            new FakeStep("Ship", true, log3)
+        ));
+        expect("first fail flag", !r3.success, "success=" + r3.success);
+        expect("stop at first", r3.executed.equals(Arrays.asList("ReserveStock")), "executed=" + r3.executed);
+        expect("none compensated", r3.compensated.isEmpty(), "compensated=" + r3.compensated);
+        expect("only first exec", log3.equals(Arrays.asList("exec:ReserveStock")), "log=" + log3);
+
+        // 4. Buoc giua fail -> bu tru buoc truoc do
+        List<String> log4 = new ArrayList<>();
+        Result r4 = o.run(Arrays.asList(
+            new FakeStep("A", true, log4),
+            new FakeStep("B", false, log4),
+            new FakeStep("C", true, log4)
+        ));
+        expect("middle fail", !r4.success && r4.executed.equals(Arrays.asList("A","B")) && r4.compensated.equals(Arrays.asList("A")), "exec=" + r4.executed + " comp=" + r4.compensated);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}
+`,
+        reference: `import java.util.*;
+
+interface Step {
+    String name();
+    boolean execute();
+    void compensate();
+}
+
+class FakeStep implements Step {
+    private final String name;
+    private final boolean succeed;
+    private final List<String> log;
+
+    FakeStep(String name, boolean succeed, List<String> log) {
+        this.name = name; this.succeed = succeed; this.log = log;
+    }
+
+    public String name() { return name; }
+
+    public boolean execute() {
+        log.add("exec:" + name);
+        return succeed;
+    }
+
+    public void compensate() {
+        log.add("comp:" + name);
+    }
+}
+
+class Result {
+    final boolean success;
+    final List<String> executed;
+    final List<String> compensated;
+    Result(boolean success, List<String> executed, List<String> compensated) {
+        this.success = success; this.executed = executed; this.compensated = compensated;
+    }
+}
+
+class Orchestrator {
+    public Result run(List<Step> steps) {
+        List<String> executed = new ArrayList<>();
+        List<String> compensated = new ArrayList<>();
+        List<Step> done = new ArrayList<>();
+        for (Step s : steps) {
+            boolean ok = s.execute();
+            executed.add(s.name());
+            if (ok) {
+                done.add(s);
+            } else {
+                // bu tru nguoc cac buoc da thanh cong, khong bu buoc fail
+                for (int i = done.size() - 1; i >= 0; i--) {
+                    Step prev = done.get(i);
+                    prev.compensate();
+                    compensated.add(prev.name());
+                }
+                return new Result(false, executed, compensated);
+            }
+        }
+        return new Result(true, executed, compensated);
+    }
+}
+`,
+        hints: [
+          'Giữ một danh sách {{done}} các bước đã execute thành công. Duyệt steps theo thứ tự: gọi {{execute()}}, thêm tên vào {{executed}}; nếu ok thì thêm vào {{done}}, nếu không thì bù trừ.',
+          'Khi gặp thất bại: duyệt {{done}} từ cuối về đầu, gọi {{compensate()}} và ghi tên vào {{compensated}}, rồi trả {{Result(false, ...)}}. Không gọi compensate của bước vừa thất bại.',
+          '{{FakeStep.execute}} phải ghi {{exec:<name>}} vào log rồi mới trả về cờ {{succeed}}; {{compensate}} ghi {{comp:<name>}}.',
+        ],
+        explain: `Orchestrator giữ {{done}} là "ngăn xếp logic" của các bước đã hoàn tất thành công. Khi bước hiện tại thất bại, chỉ các bước trong {{done}} cần bù trừ (bước thất bại chưa tạo ra tác dụng thành công cần đảo). Duyệt ngược {{done}} đảm bảo thứ tự bù trừ ngược với thứ tự thực thi: nếu đã Reserve rồi Charge thì phải Refund (bù Charge) trước rồi mới Release (bù Reserve).
+
+Lỗi hay gặp: gọi {{compensate()}} cho bước thất bại (sai vì bước đó chưa thành công), bù trừ xuôi thay vì ngược, hoặc vẫn tiếp tục chạy các bước sau khi đã fail. {{FakeStep}} dùng log dùng chung giúp kiểm tra chính xác thứ tự exec/comp. Trong thực tế mỗi bước là gọi mạng tới dịch vụ khác (có timeout, retry) và orchestrator phải lưu trạng thái bền vững để tiếp tục sau crash, nhưng thuật toán "thành công thì xếp vào done, thất bại thì bù ngược done" vẫn là cốt lõi.`,
+      },
+    ],
+    check: [
+      {
+        q: 'Trong saga, khi bước thứ 3 thất bại sau khi bước 1 và 2 đã thành công, cần làm gì?',
+        options: [
+          'Chạy bù trừ cho cả 3 bước theo thứ tự 1,2,3',
+          'Chỉ bù trừ các bước đã thành công (1,2) theo thứ tự ngược (2 rồi 1), không bù bước 3',
+          'Bỏ qua vì database sẽ tự rollback toàn bộ',
+          'Chỉ bù trừ bước 1',
+        ],
+        answer: 1,
+        explain: 'Bước 3 chưa thành công nên không có tác dụng cần đảo; chỉ 1,2 đã hoàn tất cục bộ cần compensation, thực hiện ngược để giữ tính hợp lý phụ thuộc.',
+      },
+      {
+        q: 'Orchestration khác choreography ở điểm chính nào?',
+        options: [
+          'Orchestration không cần compensation',
+          'Orchestration có một điều phối viên trung tâm ra lệnh và quyết định bù trừ; choreography để mỗi dịch vụ tự phản ứng theo event',
+          'Choreography luôn dùng 2PC',
+          'Hai cách hoàn toàn giống nhau',
+        ],
+        answer: 1,
+        explain: 'Orchestration tập trung luồng điều khiển ở orchestrator (dễ theo dõi), còn choreography phân tán logic qua các dịch vụ phản ứng event. Cả hai đều có thể cần compensation, không phụ thuộc 2PC.',
+      },
+      {
+        q: 'Compensation (bù trừ) trong saga nên được hiểu đúng là gì?',
+        options: [
+          'Rollback ACID tự động của toàn bộ các database',
+          'Hành động nghiệp vụ hoàn tác có ý nghĩa (ví dụ hoàn tiền, nhả kho) cho bước đã thành công, và cần idempotent',
+          'Xóa sạch log để như chưa có chuyện gì',
+          'Chỉ là ghi chú, không thực thi',
+        ],
+        answer: 1,
+        explain: 'Saga không có rollback phân tán tự động; bù trừ là nghiệp vụ ngược để đạt trạng thái chấp nhận được. Vì có retry/lỗi, bù trừ phải idempotent.',
+      },
+    ],
+    related: ['architecture-001', 'architecture-006', 'microservices-005', 'microservices-006'],
+    tags: ['saga', 'orchestration', 'compensation', 'distributed-transaction', 'microservices'],
+  },
 );
