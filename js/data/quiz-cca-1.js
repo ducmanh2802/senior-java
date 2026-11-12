@@ -524,5 +524,333 @@
 - **C:** cả hai đều có thể cấp tool cho subagent.
 - **D:** hai cách này chạy trên hạ tầng của bạn (hoặc máy local), không nhất thiết server Anthropic.
 - **E:** mỗi subagent có thể chọn model riêng, không bắt buộc giống orchestrator.`
-}
+},
+{
+  id: 'qz-cca-041',
+  topic: 'claude',
+  q: '[Agentic Architecture] An agent encounters a tool_call_timeout error after 60 seconds. What should the harness do?',
+  options: ['Retry the same tool call immediately', 'Return the error to the model so it can decide next steps', 'Skip the tool and continue with the next tool_use', 'Cancel the entire agent run'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Khi tool gọi timeout, harness nên trả error về cho model (qua tool_result với is_error). Model có thể thử tool khác, giảm yêu cầu, hoặc báo lỗi cho user. Đây là cách model vẫn kiểm soát luồng thay vì harness tự quyết động.
+
+### Vì sao các phương án còn lại sai
+- **A:** retry ngay có thể tiếp tục timeout, tạo vòng lặp vô hạn.
+- **C:** bỏ qua tool lỗi khiến model thiếu dữ liệu cần thiết.
+- **D:** hủy toàn bộ run là quyết định quá mạnh; model có thể xử lý được.`
+},
+{
+  id: 'qz-cca-042',
+  topic: 'claude',
+  q: '[Agentic Architecture] When should you use the Message Batches API instead of real-time agent calls?',
+  options: ['For interactive customer support chats', 'For processing 10,000 independent document classifications asynchronously', 'For a single coding task with tool use', 'When you need the result immediately'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Message Batches API dành cho hàng ngàn request độc lập xử lý bất đồng bộ (tới 24 giờ), phù hợp khi không cần kết quả ngay và các task không phụ thuộc nhau. Classification 10,000 tài liệu là use case lý tưởng.
+
+### Vì sao các phương án còn lại sai
+- **A:** chat tương tác cần kết quả ngay → dùng real-time API.
+- **C:** coding task với tool cần vòng lặp agent → real-time.
+- **D:** cần kết quả ngay thì không dùng Batch.`
+},
+{
+  id: 'qz-cca-043',
+  topic: 'claude',
+  q: '[Agentic Architecture] Which Claude API feature allows the model to "think" before generating a response?',
+  options: ['The thinking block, enabled via thinking: { type: "enabled" }', 'The system prompt only', 'The max_tokens parameter', 'The temperature setting'],
+  answer: 0,
+  explain: `**Đáp án đúng: A.** Claude API hỗ trợ thinking blocks (Extended Thinking) được bật qua tham số thinking: { type: "enabled" }. Model sẽ tạo một block nội suy trước khi trả lời, giúp suy nghĩ từng bước cho các bài toán phức tạp.
+
+### Vì sao các phương án còn lại sai
+- **B:** system prompt định hướng nhưng không tạo thinking block riêng.
+- **C:** max_tokens giới hạn độ dài output, không liên quan đến suy nghĩ trước.
+- **D:** temperature kiểm soát độ ngẫu nhiên, không phải cơ chế think before answer.`
+},
+{
+  id: 'qz-cca-044',
+  topic: 'claude',
+  q: '[Agentic Architecture] A tool returns a very large response (500KB) that exceeds the context window. What is the best approach?',
+  options: ['Truncate the response to fit the window', 'Summarize the response with another model call before passing to the agent', 'Skip passing the response to the agent entirely', 'Increase max_tokens to infinity'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Khi response quá lớn, nên tóm tắt bằng một cuộc gọi riêng (có thể dùng model nhỏ rẻ) rồi mới gửi tóm tắt cho agent. Điều này giữ thông tin quan trọng mà không vượt context.
+
+### Vì sao các phương án còn lại sai
+- **A:** truncate có thể mất thông tin cần thiết.
+- **C:** bỏ qua hoàn toàn khiến agent thiếu dữ liệu.
+- **D:** max_tokens không thể vô hạn và không giải quyết vấn đề context.`
+},
+{
+  id: 'qz-cca-045',
+  topic: 'claude',
+  q: '[Agentic Architecture] What is the primary purpose of the tool_choice parameter in the Claude API?',
+  options: ['To force the model to use a specific tool', 'To let the model decide which tool to use, or force no tool', 'To limit the number of tools available', 'To disable all tool definitions'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** tool_choice cho phép bạn: auto (model tự quyết), any (bắt buộc gọi tool), hoặc none (không gọi tool). Dùng để kiểm soát hành vi model khi cần.
+
+### Vì sao các phương án còn lại sai
+- **A:** không thể force một tool cụ thể; chỉ có thể bắt buộc gọi tool (any) hoặc không gọi (none).
+- **C:** giới hạn tool dùng tool_definition, không phải tool_choice.
+- **D:** tool_choice không disable definitions; để làm điều đó không truyền tool trong request.`
+},
+{
+  id: 'qz-cca-046',
+  topic: 'claude',
+  q: '[Agentic Architecture] In an agent loop, the model returns stop_reason "max_tokens" with an incomplete tool_use block. What should the harness do?',
+  options: ['Execute the incomplete tool_use with the partial input', 'Return the partial output as tool_result with is_error: true, letting the model decide', 'Ignore the incomplete tool_use and continue', 'Restart the entire request with higher max_tokens'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Khi input bị cắt do max_tokens, tool không có đủ dữ liệu đầu vào. Harness nên báo lỗi qua tool_result để model biết và có thể yêu cầu lại hoặc thử cách khác.
+
+### Vì sao các phương án còn lại sai
+- **A:** chạy tool với input thiếu có thể gây lỗi hoặc kết quả sai.
+- **C:** bỏ qua khiến model thiếu phản hồi và có thể tiếp tục sai.
+- **D:** restart với max_tokens cao hơn là một chiến lược hợp lý nhưng không phải câu trả lời "phải làm gì" với incomplete tool_use hiện tại.`
+},
+{
+  id: 'qz-cca-047',
+  topic: 'claude',
+  q: '[Agentic Architecture] Which is a valid reason to persist agent state between sessions?',
+  options: ['To save money on API calls', 'To resume a long-running task after a system restart', 'To make the agent run faster', 'To reduce the number of tools needed'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Agent state (message history, tool results) có thể được lưu để resume tác vụ dài sau khi hệ thống restart hoặc user quay lại. Điều này quan trọng cho các tác vụ multi-hour.
+
+### Vì sao các phương án còn lại sai
+- **A:** persist state không giảm API call; thậm chí có thể tăng vì phải gửi lại history.
+- **C:** persist không làm agent nhanh hơn; thêm data có thể tăng latency.
+- **D:** số tool không liên quan đến state persistence.`
+},
+{
+  id: 'qz-cca-048',
+  topic: 'claude',
+  q: '[Agentic Architecture] What does it mean when the Claude API returns stop_reason "stop_sequence"?',
+  options: ['The model completed the task successfully', 'The model hit a custom stop sequence you defined', 'The response was truncated', 'There was an error in the request'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** stop_sequence là một chuỗi tuỳ chỉnh (do bạn định nghĩa trong request) mà khi model gõ ra, API sẽ dừng lại ngay. Dùng để kiểm soát khi nào model dừng tạo text.
+
+### Vì sao các phương án còn lại sai
+- **A:** hoàn thành task là end_turn, không phải stop_sequence.
+- **C:** truncate là max_tokens.
+- **D:** lỗi request trả về HTTP status khác, không phải stop_reason.`
+},
+{
+  id: 'qz-cca-049',
+  topic: 'claude',
+  q: '[Agentic Architecture] In MCP (Model Context Protocol), what is the relationship between a client and a server?',
+  options: ['MCP client is the agent, MCP server provides tools/resources', 'MCP server is the agent, MCP client provides tools', 'MCP has no server-client relationship', 'MCP only works with local files'],
+  answer: 0,
+  explain: `**Đáp án đúng: A.** MCP định nghĩa client-server: ứng dụng (agent, IDE) là client kết nối đến MCP server cung cấp tool, resource, và prompt. Server định nghĩa capabilities, client sử dụng.
+
+### Vì sao các phương án còn lại sai
+- **B:** ngược lại: client là ứng dụng dùng LLM, server cung cấp khả năng.
+- **C:** MCP có rõ ràng client-server.
+- **D:** MCP hỗ trợ cả local và remote servers.`
+},
+{
+  id: 'qz-cca-050',
+  topic: 'claude',
+  q: '[Agentic Architecture] Which MCP component allows a server to push updates to the client without being asked?',
+  options: ['Tools', 'Resources', 'Prompts', 'Sampling'],
+  answer: 3,
+  explain: `**Đáp án đúng: D.** Sampling (trong MCP) cho phép server gửi yêu cầu sampling (tạo LLM response) về client mà không cần client chủ động yêu cầu. Đây là cơ chế "push" duy nhất trong MCP spec.
+
+### Vì sao các phương án còn lại sai
+- **A:** Tools là remote procedure calls do client gọi.
+- **B:** Resources do client request, không push.
+- **C:** Prompts do client request.`
+},
+{
+  id: 'qz-cca-051',
+  topic: 'claude',
+  q: '[Agentic Architecture] When testing an agent harness, what is the main challenge compared to testing regular code?',
+  options: ['Agents always produce deterministic output', 'The agent can choose different tool combinations, making output non-deterministic', 'Agents cannot use tools in tests', 'Testing is not necessary for agents'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Agent có thể chọn nhiều đường đi khác nhau cho cùng một input, làm output có thể khác nhau. Testing cần cover nhiều paths, dùng mock tool, và định nghĩa rõ expected outcome thay vì exact output.
+
+### Vì sao các phương án còn lại sai
+- **A:** ngược lại hoàn toàn với thực tế.
+- **C:** agent có thể và nên test với mock tools.
+- **D:** testing rất cần thiết để đảm bảo harness hoạt động đúng.`
+},
+{
+  id: 'qz-cca-052',
+  topic: 'claude',
+  q: '[Agentic Architecture] What is "prompt chaining" and when is it useful?',
+  options: ['A single prompt that does everything', 'Multiple separate API calls where each output feeds into the next, for multi-step workflows', 'A way to chain multiple subagents together', 'A method to reduce API costs'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Prompt chaining chia tác vụ thành nhiều bước, mỗi bước là một API call riêng, output của bước trước là input của bước sau. Hữu ích khi cần kiểm soát từng bước, log riêng, hoặc rẽ nhánh.
+
+### Vì sao các phương án còn lại sai
+- **A:** single prompt là một call, không phải chaining.
+- **C:** chaining subagent là một khái niệm khác (nested subagents).
+- **D:** prompt chaining có thể tăng cost vì nhiều call hơn.`
+},
+{
+  id: 'qz-cca-053',
+  topic: 'claude',
+  q: '[Agentic Architecture] Which metric is most important to track for agent cost optimization?',
+  options: ['Number of users', 'Average tokens per task completion', 'Number of subagents', 'Response time only'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Tokens quyết định cost (prompt tokens + completion tokens). Track trung bình tokens/task giúp bạn biết efficiency của agent, phát hiện loops không cần thiết, và tối ưu prompt.
+
+### Vì sao các phương án còn lại sai
+- **A:** users không liên quan trực tiếp đến cost per task.
+- **C:** số subagents chỉ là yếu tố ảnh hưởng, không phải metric chính.
+- **D:** response time quan trọng nhưng cost được tính bằng tokens.`
+},
+{
+  id: 'qz-cca-054',
+  topic: 'claude',
+  q: '[Agentic Architecture] An agent is stuck in a loop calling the same tool with the same input. What is likely the cause?',
+  options: ['The model is too smart', 'The tool is returning the same result, and the model is not making progress', 'The API is down', 'The context window is too large'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Loop thường xảy ra khi tool luôn trả cùng kết quả (ví dụ: search không tìm thấy gì, model retry với cùng query). Model cần diverse input hoặc different strategy để thoát loop.
+
+### Vì sao các phương án còn lại sai
+- **A:** model "quá thông minh" không phải nguyên nhân.
+- **C:** API down sẽ có error, không phải loop.
+- **D:** context window lớn không gây loop.`
+},
+{
+  id: 'qz-cca-055',
+  topic: 'claude',
+  q: '[Agentic Architecture] What is the purpose of temperature in Claude API, and when would you set it low?',
+  options: ['Controls response length; set low for short answers', 'Controls randomness; set low for consistent, deterministic outputs', 'Controls speed; set low for faster responses', 'Controls context window; set low for more memory'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Temperature kiểm soát độ ngẫu nhiên của output (0 = gần như deterministic, 1 = nhiều variation). Set thấp khi bạn cần output nhất quán, ví dụ: classification, extraction, hay agent cần reproducible behavior.
+
+### Vì sao các phương án còn lại sai
+- **A:** length không phải temperature; dùng max_tokens cho length.
+- **C:** temperature không ảnh hưởng đến speed.
+- **D:** context window là tham số riêng.`
+},
+{
+  id: 'qz-cca-056',
+  topic: 'claude',
+  q: '[Agentic Architecture] When building a multi-agent system, what is a key advantage of using MCP servers?',
+  options: ['MCP servers run the agents directly', 'MCP provides a standardized way for agents to discover and use tools across different platforms', 'MCP eliminates the need for API keys', 'MCP automatically optimizes costs'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** MCP chuẩn hoá cách agent tìm và dùng tool/resource từ nhiều server khác nhau. Một agent có thể kết nối nhiều MCP server mà không cần biết chi tiết implementation của từng server.
+
+### Vì sao các phương án còn lại sai
+- **A:** MCP server cung cấp tools, không chạy agent.
+- **C:** MCP không loại bỏ API keys.
+- **D:** MCP không tự tối ưu cost.`
+},
+{
+  id: 'qz-cca-057',
+  topic: 'claude',
+  q: '[Agentic Architecture] An agent needs to process a 5MB text file. What is the best approach?',
+  options: ['Send the entire file in one prompt', 'Split the file into chunks and process sequentially', 'Use a vector database first', 'Refuse to process the file'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** File 5MB quá lớn cho context window. Chia thành các chunk nhỏ hơn (ví dụ 8K tokens), xử lý từng phần, rồi tổng hợp kết quả. Đây là cách thực tế nhất.
+
+### Vì sao các phương án còn lại sai
+- **A:** vượt context limit, request sẽ lỗi.
+- **C:** vector database dùng cho search, không phải cho xử lý file.
+- **D:** từ chối là over-conservative; có cách xử lý được.`
+},
+{
+  id: 'qz-cca-058',
+  topic: 'claude',
+  q: '[Agentic Architecture] What is "tool recursion" in agent systems and why is it risky?',
+  options: ['An agent calling itself as a tool', 'A tool that calls another tool, potentially creating deep call stacks', 'Using the same tool many times in one turn', 'A tool that returns an error'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Tool recursion xảy ra khi tool A gọi tool B, B gọi C... có thể tạo deep stack khó debug và predict. Rủi ro: infinite loop, context bloat, không biết ai responsible cho kết quả.
+
+### Vì sao các phương án còn lại sai
+- **A:** agent không tự gọi mình như tool.
+- **C:** dùng same tool nhiều lần không gọi là recursion.
+- **D:** error không liên quan đến recursion.`
+},
+{
+  id: 'qz-cca-059',
+  topic: 'claude',
+  q: '[Agentic Architecture] In Claude Code, how do you restrict which tools a subagent can use?',
+  options: ['In the system prompt', 'By specifying tools in the subagent .md file', 'You cannot restrict tools in Claude Code', 'By setting environment variables'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Trong Claude Code, subagent file (.claude/agents/xxx.md) có trường tools (mảng tên tool) để liệt kê tool được phép. Đây là cách enforce least privilege.
+
+### Vì sao các phương án còn lại sai
+- **A:** system prompt định hướng, không list tools.
+- **C:** có thể restrict qua file definition.
+- **D:** env vars không dùng để restrict tools.`
+},
+{
+  id: 'qz-cca-060',
+  topic: 'claude',
+  q: '[Agentic Architecture] What happens if you set top_p very low (e.g., 0.1) in the Claude API?',
+  options: ['The model becomes more creative', 'The model only considers the most probable tokens, making output more deterministic', 'The model ignores the temperature setting', 'The response becomes longer'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** top_p (nucleus sampling) kiểm soát token pool: chỉ consider tokens có cumulative probability ≤ top_p. Set thấp = chọn từ nhóm nhỏ nhất → output deterministic hơn, ít creative.
+
+### Vì sao các phương án còn lại sai
+- **A:** ngược lại: low top_p = ít creative.
+- **C:** temperature và top_p là separate parameters, không ignore nhau.
+- **D:** length không bị ảnh hưởng bởi top_p.`
+},
+{
+  id: 'qz-cca-061',
+  topic: 'claude',
+  multi: true,
+  q: '[Agentic Architecture] Which are valid strategies to handle a large tool response? (Choose 2)',
+  options: ['Summarize the response with another LLM call', 'Truncate to fit context window', 'Stream the response to the user in real-time', 'Store in vector database and retrieve relevant parts', 'Refuse to process'],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: A, D.** Summarize và store-then-retrieve là strategies hợp lý. Truncate mất thông tin; streaming không giải quyết vấn đề context; refuse là over-conservative.
+
+### Vì sao các phương án còn lại sai
+- **B:** truncate mất dữ liệu có thể quan trọng.
+- **C:** streaming hiển thị cho user nhưng không thay đổi context limit.
+- **E:** từ chối là không cần thiết khi có cách xử lý.`
+},
+{
+  id: 'qz-cca-062',
+  topic: 'claude',
+  multi: true,
+  q: '[Agentic Architecture] Which MCP components can a client use to interact with a server? (Choose 3)',
+  options: ['Tools (remote procedure calls)', 'Resources (data that can be read)', 'Prompts (pre-built prompt templates)', 'Database (direct SQL queries)', 'Memory (persistent state)'],
+  answer: [0, 1, 2],
+  explain: `**Đáp án đúng: A, B, C.** MCP định nghĩa ba loại capability chính: tools (gọi function), resources (đọc data), và prompts (template). Database và Memory không phải MCP components.
+
+### Vì sao các phương án còn lại sai
+- **D/E:** không phải MCP components.`
+},
+{
+  id: 'qz-cca-063',
+  topic: 'claude',
+  multi: true,
+  q: '[Agentic Architecture] What are signs of an agent loop getting stuck? (Choose 2)',
+  options: ['The same tool is called repeatedly with similar input', 'Token usage keeps growing without progress', 'The response gets faster each turn', 'Error rate increases', 'stop_reason is always "end_turn"'],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: A, B.** Loop stuck thường thấy: same tool/similar input (model retry same strategy), token growth (context grows nhưng không tiến triển). Response speed và error rate không phải indicators chính; end_turn là normal.
+
+### Vì sao các phương án còn lại sai
+- **C:** loop thường chậm dần, không nhanh hơn.
+- **D:** error rate có thể tăng nhưng không phải dấu hiệu đặc trưng.
+- **E:** end_turn means completed, not stuck.`
+},
+{
+  id: 'qz-cca-064',
+  topic: 'claude',
+  multi: true,
+  q: '[Agentic Architecture] When should you consider using a more capable (expensive) model? (Choose 2)',
+  options: ['For the orchestrator that makes routing decisions', 'For simple, repetitive tasks', 'For complex reasoning or multi-step planning', 'For all subagents uniformly', 'When budget is unlimited'],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: A, C.** Model mạnh (Opus/Sonnet) dùng cho: orchestrator quyết định đường đi, và tasks cần complex reasoning. Simple tasks dùng cheap model (Haiku) để tiết kiệm.
+
+### Vì sao các phương án còn lại sai
+- **B:** simple tasks nên dùng cheap model.
+- **D:** uniform model là lãng phí.
+- **E:** budget unlimited không phải lý do kỹ thuật.`
+},
+{
+  id: 'qz-cca-065',
+  topic: 'claude',
+  multi: true,
+  q: '[Agentic Architecture] Which are valid ways to reduce agent costs? (Choose 2)',
+  options: ['Use cheaper models for simple subagents', 'Cache tool results that are expensive to compute', 'Increase max_tokens to get more in each call', 'Reduce context window size', 'Skip error handling to save tokens'],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: A, B.** Cost reduction: cheap model cho simple work, cache kết quả (ví dụ: user profile không thay đổi mỗi request). Tăng max_tokens tốn nhiều hơn; reduce context có thể break functionality; skip error handling nguy hiểm.
+
+### Vì sao các phương án còn lại sai
+- **C:** max_tokens cao hơn = nhiều tokens = cao hơn.
+- **D:** context quá nhỏ có thể làm agent không đủ thông tin.
+- **E:** skip error handling là bad practice, không liên quan đến cost optimization.`
+},
 );
