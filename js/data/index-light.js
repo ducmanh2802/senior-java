@@ -2007,6 +2007,8 @@ window.DATA_INDEX = {
     {"id":"sd-028","title":"News feed kiểu mạng xã hội"},
     {"id":"sd-029","title":"Bot review pull request bằng LLM cho 200 repository"},
     {"id":"sd-030","title":"Tìm kiếm ngữ nghĩa cho 10 triệu tài liệu"},
+    {"id":"sd-031","title":"URL shortener: sinh mã, chống trùng, cache, analytics click, hết hạn link"},
+    {"id":"sd-032","title":"Hệ thống chat 1-1 và nhóm: WebSocket, lưu tin nhắn, đã đọc, presence, đồng bộ nhiều thiết bị"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},
