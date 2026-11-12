@@ -8986,6 +8986,161 @@ Nếu họ bận hoặc đi thẳng vào việc: "Sure, let us jump right in. To
   ],
   tags: ['english', 'freelance', 'remote', 'client', 'small-talk', 'communication'],
   lang: 'en'
-}
+},
+{
+  id: 'english-162',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "Tell me about a time you led a major technical migration, for example from a monolith to services or a large database upgrade, without stopping feature delivery. How did you plan and execute it?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn dẫn dắt một thay đổi kỹ thuật lớn (technical migration: di chuyển/chuyển đổi hệ thống sang công nghệ hoặc kiến trúc mới) mà vẫn giữ sản phẩm chạy và team vẫn giao tính năng. Hãy trả lời theo cấu trúc tình huống - mục tiêu - kế hoạch từng bước - cách giảm rủi ro - số liệu kết quả - bài học.
 
+### Sample answer
+In my previous company, I led a migration from a monolith (one large application where most features live in a single codebase and deployment unit) to several services for our order and payment modules. The system handled about 120,000 orders per day, and we could not freeze product delivery.
+
+My goal was to reduce release risk while keeping the roadmap moving. I started by mapping dependencies and choosing one low-risk boundary first: the notification flow. We used the strangler fig pattern (a gradual approach where new parts replace old parts step by step, instead of a big rewrite). For six months, a team of eight engineers split work into two streams: 70 percent on migration tasks and 30 percent on committed features. We added contract tests, feature flags (switches to turn new behavior on or off without redeploying), and dual-run monitoring to compare old and new outputs.
+
+We migrated three modules with zero major incidents, cut deployment time from 45 minutes to 12 minutes, and kept sprint commitments at about 90 percent. The key lesson was to make every step reversible and visible with clear metrics.
+
+### Useful phrases
+- **I led a major migration while keeping delivery on track** — tôi dẫn dắt một đợt di chuyển lớn mà vẫn đảm bảo tiến độ giao hàng.
+- **We could not afford a big-bang rewrite** — chúng tôi không thể chấp nhận việc viết lại toàn bộ một lần (rủi ro cao).
+- **We took an incremental approach** — chúng tôi tiếp cận theo từng bước nhỏ.
+- **I split the team into two streams** — tôi chia team thành hai luồng công việc.
+- **We used feature flags to reduce risk** — chúng tôi dùng cờ bật/tắt tính năng để giảm rủi ro.
+- **Every step was measurable and reversible** — mỗi bước đều đo được và có thể quay lui.
+- **We tracked both delivery and stability metrics** — chúng tôi theo dõi cả chỉ số giao hàng và độ ổn định.
+
+### Lỗi người Việt hay mắc
+- **Nói "we migrated everything" nhưng không có kế hoạch:** Interviewer cần nghe bước đi cụ thể (chọn phần nào trước, làm sao rollback). Hãy nói rõ thứ tự và cơ chế an toàn.
+- **Bỏ qua phần delivery:** Chỉ kể kỹ thuật mà quên "without stopping delivery". Nêu rõ cách bạn chia thời gian/người để vẫn ship feature.
+- **Dùng thì hiện tại cho chuyện đã làm:** Khi kể kinh nghiệm, dùng quá khứ: "I led", "we reduced", "we kept" thay vì "I lead", "we reduce".
+- **Thiếu số liệu:** "It was successful" quá mơ hồ. Thêm con số: thời gian deploy, tỉ lệ incident, phần trăm cam kết sprint hoàn thành.
+
+> Senior tip: Khi trả lời câu migration ở level lead, hãy nhấn mạnh khả năng ra quyết định về rủi ro và giao tiếp: bạn làm sao để stakeholder yên tâm, làm sao biết khi nào phải dừng và quay lui, và bạn bảo vệ nhịp giao hàng của team như thế nào.`,
+  follow: [
+    "How did you decide which part of the system to migrate first?",
+    "What would have made you pause or roll back the migration?",
+    "How did you communicate progress and risks to non-technical stakeholders?"
+  ],
+  tags: ['english', 'leadership', 'migration', 'delivery', 'risk'],
+  lang: 'en'
+},
+{
+  id: 'english-163',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "Tell me about a time you handled an underperforming team member. What steps did you take, and what was the outcome?",
+  a: `**Tóm tắt:** Interviewer muốn đánh giá khả năng lãnh đạo con người: bạn phát hiện vấn đề sớm, phản hồi rõ ràng và công bằng, hỗ trợ cải thiện, nhưng vẫn giữ tiêu chuẩn của team. Cấu trúc nên dùng: tình huống cụ thể - tác động - hành động (trao đổi, mục tiêu, hỗ trợ) - kết quả đo được.
+
+### Sample answer
+About a year ago, I managed a backend engineer on a team of seven who was underperforming (not meeting the expected quality or pace for the role). Over two sprints, his tasks were often late, and about 30 percent of his pull requests needed major rework because of missing tests and unclear logic.
+
+I did not wait for the annual review. I scheduled a private one-on-one meeting in the first week I noticed the pattern. I shared specific examples, explained the impact on the team, and asked if anything was blocking him. He told me he was unsure about our domain rules and felt hesitant to ask questions.
+
+We agreed on a four-week improvement plan with clear expectations: smaller tasks, a definition of done (a checklist of what "finished" means, such as code reviewed, tests added, and deployed), and twice-weekly check-ins. I paired him with a senior engineer for two hours per week. By the end of the month, his on-time delivery improved to around 90 percent and rework dropped below 10 percent. He stayed on the team and became more confident. The lesson I learned was to be direct, kind, and specific, and to focus on support plus accountability.
+
+### Useful phrases
+- **I noticed a pattern of underperformance** — tôi nhận thấy một xu hướng làm việc chưa đạt kỳ vọng (không phải một lỗi nhỏ lẻ).
+- **I addressed it early in a private one-on-one** — tôi trao đổi sớm trong buổi nói chuyện riêng.
+- **I gave specific examples and explained the impact** — tôi đưa ví dụ cụ thể và giải thích tác động.
+- **We agreed on clear expectations and a timeline** — chúng tôi thống nhất kỳ vọng rõ ràng và mốc thời gian.
+- **I provided support while keeping accountability** — tôi hỗ trợ nhưng vẫn giữ trách nhiệm rõ.
+- **We tracked progress with measurable goals** — chúng tôi theo dõi tiến triển bằng mục tiêu đo được.
+- **The outcome was a clear improvement** — kết quả là sự cải thiện rõ rệt.
+
+### Lỗi người Việt hay mắc
+- **Nói chung chung, tránh nói thẳng:** "I tried to help him" nhưng không nói bạn đã làm gì cụ thể. Hãy nêu hành động: gặp 1-1, đặt mục tiêu, check-in, pairing.
+- **Đổ lỗi hoặc bêu tên/đánh giá cá nhân:** Tránh nói xấu cá nhân. Tập trung vào hành vi, tác động, và cách hỗ trợ.
+- **Quên nói outcome (kết quả):** Câu chuyện phải có kết thúc đo được: cải thiện bao nhiêu, hay quyết định khác (sau nỗ lực hỗ trợ).
+- **Ngữ pháp thì và chủ ngữ:** "He is always late" khi kể quá khứ nghe không tự nhiên; dùng "his tasks were often late" và nêu bối cảnh thời gian.
+
+> Senior tip: Ở level lead, interviewer muốn thấy bạn cân bằng giữa sự tôn trọng con người và trách nhiệm với team. Hãy thể hiện bạn phản hồi sớm, dựa trên dữ liệu/cụ thể, tạo cơ hội cải thiện, và ghi nhận kết quả - không né tránh cũng không công kích.`,
+  follow: [
+    "What would you do if there was no improvement after the support plan?",
+    "How do you give difficult feedback without damaging trust?",
+    "How do you make sure performance expectations are fair and transparent?"
+  ],
+  tags: ['english', 'leadership', 'people-management', 'feedback', 'coaching'],
+  lang: 'en'
+},
+{
+  id: 'english-164',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "How would you convince management to invest time and budget in reducing technical debt? Give a concrete example.",
+  a: `**Tóm tắt:** **Technical debt** (nợ kỹ thuật: những lựa chọn làm nhanh/bỏ qua chất lượng trong quá khứ khiến việc sửa đổi sau này tốn công hơn, giống vay nợ rồi phải trả lãi) thường khó "bán" cho quản lý nếu chỉ nói bằng ngôn ngữ kỹ thuật. Interviewer muốn nghe bạn diễn đạt bằng tác động kinh doanh: rủi ro, chi phí, tốc độ, và đề xuất kế hoạch đầu tư cụ thể.
+
+### Sample answer
+In my last role, I needed management to invest in reducing technical debt in our checkout service. The codebase had fragile modules and low test coverage, so every release was risky. In three months, we had four production incidents and spent about 35 percent of engineering time on bug fixes instead of new features.
+
+Instead of saying "the code is bad," I presented the problem in business terms. I showed data: average lead time for a small change was 10 days, and on-call pages had doubled. I proposed a focused three-month plan: allocate 20 percent of each sprint, about two engineers part-time, to add tests around payment flows, simplify the most complex module, and improve deployment checks.
+
+I explained the trade-off clearly: short-term feature throughput would drop slightly, but we expected fewer incidents and faster delivery later. Management approved the plan. After three months, incidents in that area dropped from four to one per quarter, and average change lead time fell from 10 days to 6 days. The lesson was to connect technical debt to measurable business outcomes and to ask for a bounded, incremental investment.
+
+### Useful phrases
+- **I framed technical debt in business terms** — tôi diễn đạt nợ kỹ thuật bằng ngôn ngữ tác động kinh doanh.
+- **I showed the cost of doing nothing** — tôi chỉ ra cái giá của việc không xử lý.
+- **I backed my proposal with data** — tôi dùng số liệu để củng cố đề xuất.
+- **I proposed a bounded, incremental plan** — tôi đề xuất kế hoạch giới hạn phạm vi và làm từng bước.
+- **We agreed on clear success metrics** — chúng tôi thống nhất chỉ số đo thành công rõ ràng.
+- **There is a trade-off in the short term** — có sự đánh đổi trong ngắn hạn.
+- **The investment paid off in stability and speed** — khoản đầu tư mang lại ổn định và tốc độ.
+
+### Lỗi người Việt hay mắc
+- **Chỉ than phiền về code xấu:** "The code is messy" không thuyết phục. Hãy nói: tốn bao nhiêu thời gian, bao nhiêu incident, chậm release ra sao.
+- **Xin thời gian quá lớn, không giới hạn:** Đề xuất "stop features for two months" thường bị từ chối. Hãy xin phần trăm thời gian cố định và mục tiêu cụ thể.
+- **Không nêu trade-off:** Quản lý cần biết cái gì chậm lại trong ngắn hạn. Nói rõ đánh đổi tạo niềm tin.
+- **Dùng từ kỹ thuật mà không giải thích:** Nếu buộc phải nói "refactor" (tái cấu trúc: cải thiện cấu trúc code mà không đổi hành vi bên ngoài), hãy giải thích ngắn trong ngoặc bằng lợi ích.
+
+> Senior tip: Khi thuyết phục đầu tư cho technical debt, hãy chọn một khu vực có tác động rõ (ví dụ luồng thanh toán), đặt mục tiêu đo được trước-sau, và báo cáo kết quả. Một chiến thắng nhỏ có số liệu sẽ mở đường cho các khoản đầu tư tiếp theo.`,
+  follow: [
+    "How do you decide which technical debt to fix first?",
+    "What metrics would you use to show that the investment worked?",
+    "How would you respond if management says there is no time for this work now?"
+  ],
+  tags: ['english', 'leadership', 'technical-debt', 'stakeholder', 'communication'],
+  lang: 'en'
+},
+{
+  id: 'english-165',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: "Describe a time you had to make an important architecture decision with incomplete information. How did you decide, and how did you document it (for example, reversible vs irreversible decisions, ADR)?",
+  a: `**Tóm tắt:** Ở level lead, bạn thường phải quyết định khi chưa có đủ dữ liệu. Interviewer muốn nghe bạn phân biệt quyết định dễ đảo ngược và khó đảo ngược, giảm rủi ro bằng thí nghiệm nhỏ, và ghi lại lý do bằng **ADR** (Architecture Decision Record: tài liệu ngắn ghi lại một quyết định kiến trúc, bối cảnh, lựa chọn và lý do) để team sau hiểu được.
+
+### Sample answer
+Last year, I had to choose a messaging approach for a new order tracking feature. We needed to publish status events to other services, but we did not yet know the final traffic pattern. The product team expected growth, but we only had estimates: from 20,000 to maybe 150,000 events per day within six months.
+
+I separated the decision into reversible and irreversible parts. Reversible (easy to change later with low cost) choices included the internal message format details and the first consumer implementation. Irreversible (hard or expensive to change later) choices included the public event contract and the decision to couple services directly or through asynchronous messaging (sending messages through a broker so services do not call each other at the same time).
+
+With incomplete information, I chose asynchronous events with a simple schema and a version field, because it reduced coupling and gave us room to grow. To reduce uncertainty, we ran a two-week spike (a short, time-boxed experiment to learn) and load-tested with three times the expected peak. I wrote an ADR that documented the context, options we considered, the decision, trade-offs, and a review date. After launch, traffic reached about 90,000 events per day and the design held without major changes. The lesson was to make cheap decisions quickly, protect hard-to-reverse choices, and write down the reasoning.
+
+### Useful phrases
+- **I had to decide with incomplete information** — tôi phải quyết định khi thông tin chưa đầy đủ.
+- **I identified what was reversible and what was not** — tôi xác định phần nào dễ đảo ngược và phần nào khó.
+- **I optimized for learning and low risk** — tôi ưu tiên học nhanh và giảm rủi ro.
+- **We ran a short spike to validate assumptions** — chúng tôi làm một thử nghiệm ngắn để kiểm chứng giả định.
+- **I documented the decision in an ADR** — tôi ghi lại quyết định trong một bản ghi quyết định kiến trúc (ADR).
+- **We recorded the context, options, and trade-offs** — chúng tôi ghi lại bối cảnh, lựa chọn và đánh đổi.
+- **We set a review point to revisit the decision** — chúng tôi đặt mốc xem lại quyết định.
+
+### Lỗi người Việt hay mắc
+- **Trình bày như thể bạn biết chắc mọi thứ:** Khi thông tin thiếu, nói "I was sure" nghe không thật. Hãy nói bạn giả định điều gì, kiểm chứng ra sao.
+- **Không phân biệt reversible vs irreversible:** Lead giỏi biết quyết định nào cần cẩn trọng hơn. Hãy nêu rõ phần nào khó quay lại (ví dụ public contract, dữ liệu, cam kết với hệ thống khác).
+- **Bỏ qua bước ghi chép:** Quyết định không có tài liệu sẽ gây tranh luận lại sau này. Nhắc đến ADR hoặc ghi chú quyết định ngắn gọn.
+- **Dùng từ viết tắt mà không giải thích:** Nói "ADR" ngay mà không giải thích một câu có thể làm người nghe không theo kịp; hãy giải thích ngắn lần đầu.
+
+> Senior tip: Khi phải quyết định với thông tin chưa đủ, hãy nói rõ giả định, chọn phương án giảm rủi ro cho phần khó đảo ngược, và đặt thời điểm xem lại. Việc ghi ADR thể hiện tư duy trưởng thành: bạn chịu trách nhiệm cho quyết định và giúp team học từ nó.`,
+  follow: [
+    "Can you give an example of a reversible decision versus an irreversible one in that situation?",
+    "What information would have changed your decision?",
+    "What do you include in a good ADR?"
+  ],
+  tags: ['english', 'leadership', 'architecture', 'adr', 'decision-making'],
+  lang: 'en'
+},
 );
