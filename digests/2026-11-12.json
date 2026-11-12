@@ -1,0 +1,91 @@
+{
+  "date": "2026-11-12",
+  "intro": "Hôm nay Java có tin đáng chú ý: Primitive Patterns bị rút khỏi lộ trình JDK 28. Phần còn lại xoay quanh AWS: kiến trúc thông báo quy mô lớn của Zillow, di chuyển cache sang Valkey, cách ly đa tenant và IAM authentication cho Aurora Global Database.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Rút Primitive Types in Patterns khỏi lộ trình, sẽ bị gỡ ở JDK 28",
+      "title": "Withdrawing the Primitive Patterns Preview Feature",
+      "url": "https://inside.java/2026/11/11/withdraw-primitive-patterns-preview/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Nhóm Java thông báo dừng phát triển tính năng Primitive Types in Patterns, instanceof và switch. Draft JEP 8393282, lẽ ra là lần preview thứ sáu, bị rút lại, và tính năng preview này sẽ bị gỡ khỏi JDK 28. Bài ngắn, không nêu lý do chi tiết mà dẫn tới một thread trên danh sách amber-spec-experts.",
+      "why": "Nếu bạn đã thử primitive pattern với {{--enable-preview}} trên các bản JDK gần đây, cần loại khỏi code trước khi nâng lên JDK 28. Đây cũng là nhắc nhở không đưa preview feature vào code production.",
+      "interview_q": "Team muốn dùng một preview feature của Java trong code production. Bạn đánh giá rủi ro và đặt ranh giới như thế nào?",
+      "related": ["core-001"],
+      "tags": ["java", "jep", "preview"]
+    },
+    {
+      "title_vi": "Zillow chạy 100 triệu thông báo mỗi ngày bằng Step Functions Express",
+      "title": "How Zillow runs 100 million daily notifications on AWS Step Functions",
+      "url": "https://aws.amazon.com/blogs/architecture/how-zillow-runs-100-million-daily-notifications-on-aws-step-functions/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Zillow gộp hơn 10 microservice và hơn 20 campaign thông báo vào một Campaign Orchestrator cấu hình được, mỗi thông báo chạy như một Express Workflow ngắn. Router tự viết đọc SQS để batch, kiểm tra idempotency, tạm dừng và replay. Express được chọn vì khởi chạy nhanh, chấp nhận at-least-once nhờ các module idempotent. Đỉnh tải vài nghìn execution mỗi giây.",
+      "why": "Đây là ví dụ thực tế về chọn workflow engine managed thay vì tự xây, và về hệ quả của at-least-once: mọi bước phải idempotent. Câu chuyện hợp với dev Java làm hệ thống thông báo hoặc orchestration.",
+      "interview_q": "Bạn chọn giữa Step Functions Standard và Express, hoặc Temporal, cho pipeline gửi hàng chục triệu thông báo mỗi ngày như thế nào?",
+      "related": ["microservices-001"],
+      "tags": ["aws", "step-functions", "idempotency"]
+    },
+    {
+      "title_vi": "Flickr chuyển cache từ Redis sang ElastiCache for Valkey",
+      "title": "How Flickr modernized caching with Amazon ElastiCache for Valkey",
+      "url": "https://aws.amazon.com/blogs/database/how-flickr-modernized-caching-with-amazon-elasticache-for-valkey/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Flickr gộp hơn 40 cluster độc lập thành các cluster ở cluster mode, bỏ Twemproxy và đổi client Predis sang PhpRedis. Họ đổi engine tại chỗ sang Valkey 8.0.1 và rollout từng workload theo 5%, 20%, 50%, 100%. Bài học: sau khi sao chép bằng RIOT, một số key chưa đồng bộ nên người dùng thấy nội dung cũ; họ chạy backfill và dùng compare mode trước khi cutover.",
+      "why": "Backend Java dùng Redis qua Lettuce hoặc Jedis cũng có thể gặp bài toán đổi engine, bỏ proxy, chuyển sang cluster mode. Kinh nghiệm rollout theo phần trăm và kiểm tra đồng bộ dữ liệu áp dụng được ngay.",
+      "interview_q": "Bạn di chuyển một hệ thống cache đang chạy production sang cluster mode mà không gián đoạn và không để người dùng thấy dữ liệu cũ như thế nào?",
+      "related": ["db-001"],
+      "tags": ["cache", "valkey", "migration"]
+    },
+    {
+      "title_vi": "Chọn mô hình cách ly đa tenant cho ElastiCache",
+      "title": "Multi-tenancy with Amazon ElastiCache: Choosing the right isolation model",
+      "url": "https://aws.amazon.com/blogs/database/multi-tenancy-with-amazon-elasticache-choosing-the-right-isolation-model/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Bài so sánh ba mô hình: cluster riêng cho từng tenant (cách ly mạnh nhất, chi phí và vận hành tăng theo số tenant), ACL/RBAC trên cluster dùng chung (server chặn truy cập chéo nhưng không cách ly tài nguyên, một tenant ồn có thể ảnh hưởng tất cả) và multi-database với ACL theo database trên Valkey 9.1. Bài khuyên tránh dùng hash tag để gắn tenant vì dễ tạo hot slot.",
+      "why": "SaaS backend bằng Java thường dùng chung cache giữa các tenant với key prefix, và một lỗi build key có thể lộ dữ liệu. Bài giúp bạn lập luận trade-off giữa an toàn, noisy neighbor và chi phí.",
+      "interview_q": "Hệ thống SaaS đa tenant dùng chung Redis. Bạn đảm bảo tenant A không đọc được key của tenant B và không bị tenant khác làm chậm như thế nào?",
+      "related": ["architecture-001"],
+      "tags": ["multi-tenant", "cache", "security"]
+    },
+    {
+      "title_vi": "IAM authentication bền vững khi Aurora Global Database failover",
+      "title": "Resilient IAM database authentication with Amazon Aurora Global Database writer endpoint",
+      "url": "https://aws.amazon.com/blogs/database/resilient-iam-database-authentication-with-amazon-aurora-global-database-writer-endpoint/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Khi Global Database failover, token IAM bị ký cho Region cũ và resource ID của cluster ghi đổi, nên đăng nhập hỏng. Giải pháp gồm ba phần: kết nối qua Global writer endpoint, tìm Region của writer bằng describe-global-clusters khi tạo kết nối rồi ký token cho Region đó, và liệt kê ARN mọi cluster trong policy {{rds-db:connect}}. IAM database authentication chưa hỗ trợ condition key nên phải liệt kê tường minh.",
+      "why": "Service Java dùng IAM auth với Aurora và HikariCP phải tạo token mới mỗi khi mở kết nối. Bài chỉ ra chỗ cần xử lý Region và policy để DR không làm hỏng việc xác thực.",
+      "interview_q": "Service của bạn dùng IAM authentication để kết nối Aurora multi-Region. Điều gì có thể hỏng khi failover và bạn kiểm thử kịch bản đó thế nào?",
+      "related": ["aws-001", "security-001"],
+      "tags": ["aws", "aurora", "iam", "dr"]
+    },
+    {
+      "title_vi": "AWS Emulator: chạy thử ứng dụng với API AWS ngay trên máy",
+      "title": "Test your applications against AWS locally with AWS Emulator",
+      "url": "https://aws.amazon.com/blogs/aws/test-your-applications-against-aws-locally-with-aws-emulator/",
+      "source": "AWS News Blog",
+      "category": "cloud",
+      "summary": "AWS Emulator là trình giả lập viết bằng Rust, chạy cục bộ, cung cấp endpoint HTTPS để AWS CLI và SDK gọi đúng API như trên cloud, không tính phí thêm. Chỉ cần đặt {{AWS_ENDPOINT_URL}} và không đổi code. Thao tác chưa hỗ trợ trả HTTP 501. Hạn chế: không đánh giá IAM policy, chỉ một account giả, độ trung thực khác nhau theo service. Với AWS SDK for Java cần cấu hình thêm để tin certificate.",
+      "why": "Dev Java có thể dùng nó trong integration test thay cho môi trường AWS thật hoặc mock thủ công, nhưng không nên tin nó để kiểm thử bảo mật vì IAM không được đánh giá.",
+      "interview_q": "Bạn viết integration test cho service dùng S3 và DynamoDB như thế nào: dùng emulator, Testcontainers hay môi trường AWS thật, và mỗi cách đánh đổi gì?",
+      "related": ["testing-001"],
+      "tags": ["aws", "testing", "local-dev"]
+    },
+    {
+      "title_vi": "Xây CRM đa tenant trên Aurora DSQL: mô hình pooled và các ràng buộc",
+      "title": "Building a multi-tenant CRM with Amazon Aurora DSQL",
+      "url": "https://aws.amazon.com/blogs/database/building-a-multi-tenant-crm-with-amazon-aurora-dsql/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Ứng dụng mẫu dùng mô hình pooled: một schema, cột {{tenant_id}} trên mọi bảng, tenant lấy từ claim của token đã ký và mọi repository đều lọc theo tenant. DSQL không có row-level security nên cách ly nằm ở tầng ứng dụng. Có thể dùng khoá ngoại tổng hợp {{(tenant_id, id)}} để DB chặn insert chéo tenant. Lưu ý riêng của DSQL: mỗi DDL một transaction, index tạo bằng {{CREATE INDEX ASYNC}}.",
+      "why": "Mô hình pooled rất phổ biến trong SaaS Java/Spring. Bài nhắc rằng nếu DB không có RLS thì tenant filter phải được ép ở một chỗ duy nhất và có test, và ràng buộc composite giúp DB giữ nhất quán.",
+      "interview_q": "Bạn thiết kế lớp truy cập dữ liệu cho SaaS đa tenant dùng chung schema như thế nào để một câu query quên điều kiện tenant không làm lộ dữ liệu?",
+      "related": ["db-002", "architecture-001"],
+      "tags": ["multi-tenant", "dsql", "database"]
+    }
+  ]
+}
