@@ -9458,4 +9458,162 @@ After the loop, we have a **calibration meeting** where we compare scores, discu
   tags: ['hiring', 'interviewing', 'evaluation', 'leadership'],
   lang: 'en',
 },
+{
+  id: 'english-174',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "Tell me about a time you explained your current project's architecture to an interviewer who was new to your domain. How did you make the explanation clear without listing every technology?",
+  a: `**Tóm tắt:** Interviewer muốn biết bạn có thể làm rõ kiến trúc với người chưa biết domain mà không sa vào danh sách công nghệ hay không. Hãy kể một lần phỏng vấn cụ thể theo thứ tự **người nghe và mục tiêu → một luồng request → các thành phần và trade-off → cách kiểm tra mức độ hiểu → kết quả**.
+
+### Sample answer
+I recently interviewed for a backend role, and the interviewer had no experience in online learning. I had about four minutes, so I asked whether they wanted a high-level view or one request flow. They chose the request flow. Our six-person team supports an online learning platform. I began with the user goal: a student enrolls in a course and receives confirmation. Then I drew three boxes: a Spring Boot application, which receives web requests and runs our Java code; a PostgreSQL database, which stores courses and enrollments; and a background worker, which performs slower tasks after the response. When a student enrolls, the application writes the enrollment and progress in one database transaction, a group of changes saved or rolled back together. It then places an email job in a table. The worker sends the email, so a slow email provider does not delay checkout. The trade-off is that the confirmation email may arrive several seconds later. In six months, daily users doubled from 600 to 1,200, while 95 percent of requests stayed under 240 milliseconds. I left out internal code details and asked which part they wanted to explore. That kept the answer focused and led to a useful discussion about duplicate enrollments.
+
+### Useful phrases
+- a high-level view — bức tranh tổng quan, chưa đi sâu chi tiết
+- one request flow — luồng xử lý của một yêu cầu
+- runs our Java code — chạy mã Java của hệ thống
+- saved or rolled back together — được lưu cùng nhau hoặc cùng bị hoàn tác
+- does not delay checkout — không làm chậm bước thanh toán
+- stayed under 240 milliseconds — vẫn dưới 240 mili giây
+- which part they wanted to explore — phần họ muốn tìm hiểu sâu hơn
+
+### Lỗi người Việt hay mắc
+- **Liệt kê công nghệ thay vì kể cách hệ thống hoạt động:** "We use Java, PostgreSQL, and a queue" không cho thấy dữ liệu đi đâu. Hãy mô tả một luồng người dùng cụ thể.
+- **Dùng từ chuyên môn mà không giải nghĩa:** Đừng chỉ nói "transaction"; giải thích ngắn rằng nhóm thay đổi được lưu cùng nhau hoặc cùng bị hoàn tác.
+- **Dịch sát "hệ thống có 1,200 users mỗi ngày":** Nói tự nhiên hơn là "The system has 1,200 daily users" hoặc "We had 1,200 daily users."
+- **Trả lời dài mà không hỏi hướng quan tâm:** Hãy hỏi "Would you like me to explain the data flow or the deployment?" để chọn phần phù hợp.
+
+> Senior tip: Chỉ vẽ ba đến năm thành phần và lần theo một request; interviewer sẽ hỏi tiếp nếu muốn chi tiết. Đừng nhận công lao cho số liệu toàn hệ thống nếu bạn không thể giải thích cách đo và phần việc của mình.
+`,
+  follow: [
+    "How would you explain the same architecture to a product manager?",
+    "Which part of the enrollment flow would you explain next if the interviewer asked for more detail?",
+    "How would you explain the delay between saving an enrollment and sending its email?"
+  ],
+  tags: ['architecture', 'project', 'modular-monolith', 'communication']
+},
+{
+  id: 'english-175',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "Tell me about a time you improved system performance. What was slow, what did you change, and how did you measure the result?",
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn tối ưu dựa trên bằng chứng, không đoán hoặc chỉ thêm server. Kể theo khung **baseline và ảnh hưởng → cách tìm nút thắt → thay đổi cụ thể → kết quả trước/sau → trade-off và bài học**, với số liệu về thời gian, bộ nhớ hoặc số query.
+
+### Sample answer
+Last year, our seven-person team maintained a monthly invoice export. Its largest file had 600,000 rows; the job took eleven minutes, used 1.5 gigabytes of heap (memory used by Java objects), and failed twice because the process ran out of memory.
+
+I profiled it and found two causes: the code loaded every row before writing, and it sent one extra customer query for each invoice.
+
+I changed the query to join invoice and customer data, then read results in keyset pages of 2,000 rows. Keyset pagination uses the last invoice ID to find the next page instead of skipping earlier rows. A buffered writer grouped file writes into larger blocks. I also used a fixed cutoff time so new invoices would not enter an export already in progress.
+
+After two weeks of work and testing, the same export took 90 seconds and peak heap fell to 400 megabytes. The trade-off was more complex query and pagination code. I added tests for page boundaries, empty results, and records added during the export. I learned to measure memory and query count before changing code. A larger server would have hidden the issue and increased cost.
+
+### Useful phrases
+- ran out of memory — hết bộ nhớ khả dụng cho tiến trình
+- I profiled it — tôi đo và phân tích hoạt động của job để tìm phần chậm
+- one extra customer query for each invoice — thêm một truy vấn khách hàng cho mỗi hóa đơn
+- the last invoice ID — ID hóa đơn cuối cùng
+- a fixed cutoff time — mốc thời gian cố định để giới hạn dữ liệu
+- peak heap fell to 400 megabytes — mức bộ nhớ heap cao nhất giảm xuống 400 megabyte
+- hidden the issue and increased cost — che giấu vấn đề và làm chi phí tăng
+
+### Lỗi người Việt hay mắc
+- **Nói kết quả không có baseline:** "I made the export much faster" là quá chung chung. Nói "The export time dropped from eleven minutes to 90 seconds."
+- **Sai giới từ khi nêu mức giảm:** "reduced 1.5 gigabytes to 400 megabytes" → "reduced heap usage from 1.5 gigabytes to 400 megabytes", hoặc "heap usage fell from ... to ...".
+- **Nhầm query với row:** "The code ran 600,000 rows" là sai. Nói "The code processed 600,000 rows" hoặc "ran 600,000 queries".
+- **Đưa giải pháp trước nguyên nhân:** Đừng bắt đầu bằng "I added pagination". Hãy nói trước việc toàn bộ rows được load vào memory và mỗi invoice gây thêm một query.
+
+> Senior tip: Luôn nói rõ con số đo ở môi trường nào, với file lớn cỡ nào và đo trước/sau trong bao lâu; một con số thiếu bối cảnh dễ bị interviewer bắt bẻ. Nếu chỉ tối ưu một batch job, đừng phóng đại thành cải thiện latency của toàn hệ thống.
+`,
+  follow: [
+    "Why did you choose keyset pagination instead of offset pagination?",
+    "How did you keep the export consistent while new invoices were being created?",
+    "What would you do next if the database query were still the bottleneck?"
+  ],
+  tags: ['performance', 'database', 'pagination', 'star', 'metrics']
+},
+{
+  id: 'english-176',
+  topic: 'english',
+  level: 'mid',
+  lang: 'en',
+  q: "Tell me about a time you explained a technical concept to a non-technical person. How did you make the idea clear and check that they understood it?",
+  a: `**Tóm tắt:** Interviewer đánh giá khả năng chọn đúng mức chi tiết, dùng ví dụ gần với công việc của người nghe và kiểm tra sự hiểu biết mà không làm họ khó chịu. Kể một buổi trao đổi cụ thể theo thứ tự **vấn đề giao tiếp → cách diễn giải và hình minh họa → nhờ người nghe kể lại → kết quả và giới hạn của phép so sánh**.
+
+### Sample answer
+During a project with a six-person support team, agents often sent order tickets to engineers because they thought any database error meant an order was lost. I had twenty minutes to explain database transactions, so I used a checkout example instead of code.
+
+I said, "A transaction is an all-or-nothing group of database changes. In our system, creating an order and reserving stock are two steps on one checklist. If the second step fails, the database cancels the first, so an order cannot exist without reserved stock."
+
+I compared it to a shop exchange: if either item is rejected, the whole exchange stops. Then I drew three boxes: start, both changes, and finish, with an arrow back to start for failure. I asked an agent to explain it back. They noticed I had not said what happened after saving, so I added: after finish, the changes are permanent and visible to other requests.
+
+We updated the support runbook, a step-by-step guide for common issues. Over the next month, incorrectly escalated order tickets fell from eighteen to five per week. The simple model left out advanced failure cases, so I documented those separately for engineers. I learned that asking someone to explain an idea back is more useful than asking, "Do you understand?"
+
+### Useful phrases
+- instead of code — thay vì dùng mã nguồn
+- an all-or-nothing group of database changes — một nhóm thay đổi dữ liệu chỉ cùng thành công hoặc cùng bị hủy
+- reserving stock — giữ lại số lượng hàng cho đơn
+- explain it back — tự giải thích lại ý cho tôi nghe
+- a step-by-step guide — tài liệu hướng dẫn từng bước
+- incorrectly escalated order tickets — các ticket về đơn hàng bị chuyển lên kỹ thuật không đúng
+- the simple model left out advanced failure cases — mô hình đơn giản này chưa thể hiện các tình huống lỗi phức tạp
+
+### Lỗi người Việt hay mắc
+- **Dùng "Do you understand?" để kết thúc:** Câu này dễ khiến người nghe gật đầu dù chưa hiểu. Hãy nói "Could you explain this diagram back to me in your own words?".
+- **Nói "nontechnical" như một nhãn đánh giá:** Không nói "They are not technical, so they cannot understand". Nói "They do not work with databases, so I used a checkout example."
+- **Giải thích transaction là không bao giờ lỗi:** Transaction không loại bỏ lỗi; nó giúp một nhóm thay đổi không dở dang. Nói "If one required change fails, the database rolls back the group."
+- **Lạm dụng ví dụ chuyển tiền ngân hàng:** Việc trừ tiền ở một hệ thống bên ngoài không tự nằm trong database transaction của bạn. Chọn ví dụ các bảng trong cùng database, như order và stock.
+
+> Senior tip: Phép so sánh chỉ nên phục vụ một ý chính; hãy nói rõ nó đơn giản hóa điều gì để không tạo hiểu nhầm mới. Câu hỏi kiểm tra tốt nhất là "How would you use this idea in your next ticket?" vì nó buộc cả hai bên xác nhận sự hiểu biết bằng tình huống thật.
+`,
+  follow: [
+    "Why did you ask the support agent to explain the diagram back to you?",
+    "Which details did you leave out, and why was that safe for this audience?",
+    "How would you change your explanation for a product manager who needs to make a design decision?"
+  ],
+  tags: ['communication', 'explanation', 'transaction', 'stakeholder']
+},
+{
+  id: 'english-177',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "Describe a time you disagreed with a code review comment. How did you respond, and what was the outcome?",
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn bảo vệ chất lượng code mà không biến review thành cuộc tranh thắng thua. Kể theo thứ tự **comment và mối lo kỹ thuật → bằng chứng hoặc test → cách hai bên cùng sửa giải pháp → kết quả và bài học**, nhấn mạnh rằng bạn vẫn tiếp nhận phần hợp lý của comment.
+
+### Sample answer
+In a five-person team, I submitted a change to stop two requests reserving the same inventory item. A reviewer suggested adding Java's synchronized keyword. I disagreed because it coordinates threads only inside one Java process. We ran three application instances, so requests on different instances could still update the shared database at once.
+
+I thanked the reviewer, explained that case, and proposed a test with two parallel calls. It reproduced a race condition: both read the same stock before either saved its update.
+
+We compared two fixes. A database lock makes the second request wait; an atomic conditional update changes stock only if enough remains. We chose the conditional update and a unique database constraint, a rule preventing duplicate reservations. The reviewer also asked for a clear error when no row was updated.
+
+The change took two days, including tests and a database schema update. In our test environment, duplicate reservations fell from fourteen per 1,000 requests to zero. The trade-off was extra database logic and a new error for clients. I learned to challenge an idea with evidence, not a person, and to accept useful parts of a comment even when I disagreed with its first solution.
+
+### Useful phrases
+- adding Java's synchronized keyword — thêm từ khóa synchronized của Java
+- coordinates threads only inside one Java process — chỉ điều phối các thread bên trong một tiến trình Java
+- reproduced a race condition — tái hiện lỗi kết quả phụ thuộc vào thứ tự chạy của các tác vụ đồng thời
+- before either saved its update — trước khi một trong hai request lưu thay đổi
+- an atomic conditional update — một lệnh cập nhật có điều kiện và không thể bị tách nửa chừng
+- no row was updated — không có dòng dữ liệu nào được cập nhật
+- challenge an idea with evidence, not a person — phản biện ý tưởng bằng bằng chứng, không công kích cá nhân
+
+### Lỗi người Việt hay mắc
+- **Phản hồi cụt và phòng thủ:** "No, you are wrong" hoặc "My code is correct" làm dừng trao đổi. Nói "I see your concern. In our three-instance setup, I think a JVM lock would not cover this case."
+- **Dùng "I" quá nhiều khi mô tả kết quả chung:** "I fixed the review and I proved everything" nghe khoe khoang. Dùng "I proposed the test" cho phần của mình và "We chose the final approach" cho quyết định chung.
+- **Nói synchronized chặn được mọi duplicate:** Từ khóa này chỉ khóa trong một JVM, không điều phối nhiều application instance. Hãy nói rõ phạm vi trước khi đề xuất database constraint hoặc atomic update.
+- **Kể xung đột nhưng không có kết quả:** Đừng dừng ở "We discussed and moved on". Nêu giải pháp cuối, thời gian thực hiện, test và số liệu sau sửa.
+
+> Senior tip: Khi comment chưa rõ, hỏi reviewer mô tả input hoặc sequence cụ thể làm code sai; một failing test thường kết thúc tranh luận nhanh hơn nhiều tin nhắn dài. Nếu hai phương án đều đúng và rủi ro thấp, hãy ưu tiên convention của team thay vì kéo dài tranh luận sở thích cá nhân.
+`,
+  follow: [
+    "Why would synchronized not be enough when the application runs on several instances?",
+    "What did the test need to demonstrate before you changed the implementation?",
+    "What would you do if you and the reviewer still disagreed after seeing the test results?"
+  ],
+  tags: ['code-review', 'disagreement', 'concurrency', 'teamwork', 'communication']
+},
 );
