@@ -6881,5 +6881,526 @@ Kết quả: Giảm code kiểm tra quyền trùng lặp, thêm log truy cập c
 > Senior tip: Proxy = kiểm soát, Decorator = thêm, Adapter = chuyển. Nhớ bẫy gọi tự thân của Spring AOP.` ,
     follow: ['Spring AOP gọi tự thân vì sao không chạy?', 'Decorator trong java.io có nhược điểm gì?', 'Adapter khác Facade thế nào?'],
     tags: ['design-patterns','proxy','decorator','adapter']
-  }
+  },
+{
+  id: "design-037",
+  topic: "design",
+  level: "senior",
+  q: "Khi refactor code Java thật, bạn áp dụng SOLID như thế nào từng bước? Hãy lấy ví dụ một service thanh toán lộn xộn và chỉ ra bạn dùng S, O, L, I, D ra sao để cải thiện.",
+  a: `**Tóm tắt:** SOLID là 5 nguyên tắc thiết kế giúp code dễ đọc, dễ thay đổi và dễ test (thử nghiệm tự động - chạy kiểm tra bằng code). Khi refactor (tái cấu trúc: sửa cấu trúc bên trong nhưng giữ nguyên hành vi bên ngoài), mình không áp dụng máy móc mà tìm điểm đau thật: class quá lớn → tách trách nhiệm (Single Responsibility - S), thêm luồng mới phải sửa if-else → mở rộng bằng abstraction (Open/Closed - O), class con phá hành vi cha (Liskov Substitution - L), interface to ép implement thứ không cần (Interface Segregation - I), phụ thuộc cứng vào class cụ thể (Dependency Inversion - D). Mỗi bước giữ hành vi cũ và có test bảo vệ.
+
+### Thuật ngữ giải thích nhanh
+- **Interface (giao diện):** "hợp đồng" chỉ khai báo method (hàm), class implement (thực thi) phải cung cấp code.
+- **Abstraction (trừu tượng hoá):** làm việc với hợp đồng thay vì chi tiết cụ thể (giống dùng ổ cắm điện mà không cần biết dây bên trong).
+- **Coupling (phụ thuộc chặt):** A biết quá nhiều về B, sửa B dễ làm hỏng A.
+- **Bean:** đối tượng do Spring Container tạo và quản lý.
+
+### Bước 0: Code có mùi (code smell - dấu hiệu thiết kế kém)
+~~~java
+public class PaymentService {
+    public String pay(String type, BigDecimal amount, String userId) {
+        if (amount == null || amount.signum() <= 0) throw new IllegalArgumentException("amount");
+        String txId;
+        // phụ thuộc cứng: new trực tiếp client cụ thể
+        if ("VNPAY".equals(type)) txId = new VnpayClient().create(amount, userId);
+        else if ("MOMO".equals(type)) txId = new MomoClient().create(amount, userId);
+        else throw new IllegalArgumentException("unknown type");
+        // trộn nhiều trách nhiệm: lưu DB + gửi email
+        jdbcTemplate.update("insert into payment(tx, amount) values (?,?)", txId, amount);
+        new EmailSender().send(userId, "Paid " + amount);
+        return txId;
+    }
+}
+~~~
+
+### Bước 1: S - Single Responsibility (một class, một lý do để thay đổi)
+Tách: {{PaymentValidator}} kiểm tra đầu vào, {{PaymentNotifier}} gửi thông báo, service chỉ điều phối. Sửa template email không chạm luồng thanh toán.
+
+### Bước 2: O - Open/Closed + D - Dependency Inversion
+~~~java
+public interface PaymentGateway {
+    boolean supports(String type);
+    String charge(BigDecimal amount, String userId);
+}
+@Component
+public class VnpayGateway implements PaymentGateway {
+    public boolean supports(String type) { return "VNPAY".equals(type); }
+    public String charge(BigDecimal amount, String userId) { return "vnp-ok"; }
+}
+@Service
+public class PaymentService {
+    private final List<PaymentGateway> gateways; // Spring inject tất cả implementation
+    private final PaymentRepository repo;         // interface, không phải JdbcTemplate
+    private final PaymentNotifier notifier;
+    private final PaymentValidator validator;
+    public PaymentService(List<PaymentGateway> gateways, PaymentRepository repo,
+                          PaymentNotifier notifier, PaymentValidator validator) {
+        this.gateways = gateways; this.repo = repo; this.notifier = notifier; this.validator = validator;
+    }
+    public String pay(String type, BigDecimal amount, String userId) {
+        validator.validate(amount);
+        PaymentGateway gw = gateways.stream().filter(g -> g.supports(type)).findFirst()
+            .orElseThrow(() -> new IllegalArgumentException("unknown type"));
+        String txId = gw.charge(amount, userId);
+        repo.save(txId, amount);
+        notifier.notifyPaid(userId, amount);
+        return txId;
+    }
+}
+~~~
+Thêm ZaloPay: tạo class mới, không sửa {{PaymentService}}. Test dễ bằng fake (đối tượng giả).
+
+### Bước 3: L - Liskov Substitution
+Mọi implementation phải thay thế được nhau mà không phá hành vi. Nếu {{charge()}} ném {{UnsupportedOperationException}} bất ngờ thì vi phạm L; tách hợp đồng đúng hoặc đảm bảo cùng pre/post-condition (điều kiện đầu vào/đầu ra).
+
+### Bước 4: I - Interface Segregation
+Interface "béo" ép implement method không dùng. Tách {{Chargeable}}, {{Refundable}}, {{Queryable}}; class chỉ implement thứ nó hỗ trợ.
+
+### So sánh trước/sau
+| Tiêu chí | Trước | Sau |
+|---|---|---|
+| Thêm cổng mới | Sửa if-else trong service | Thêm 1 class mới |
+| Test | Khó, phụ thuộc client thật | Dễ, inject fake |
+| Lý do thay đổi | 1 class gánh nhiều việc | Mỗi class 1 trách nhiệm |
+
+### Pitfall trên production
+- Áp dụng quá sớm (over-engineering - phức tạp hoá không cần thiết) tạo abstraction thừa.
+- Tách vụn quá mức khó theo dõi luồng end-to-end.
+- Refactor legacy không có test: tạo characterization test (ghi lại hành vi hiện tại) trước.
+
+### Ví dụ đời thực
+Triệu chứng: thêm phương thức thanh toán mới mất 2 ngày và hay gây regression (lỗi quay lại) vì phải sửa 5 chỗ if-else trong service 1.200 dòng. Điều tra: service có 9 lý do thay đổi, unit test gọi mạng thật chạy 40 giây và hay flaky (lúc pass lúc fail). Xử lý: tách 4 trách nhiệm (S), gateway thành interface + inject {{List<PaymentGateway>}} (O,D), tách interface nhỏ (I), viết test với fake gateway chạy 0.8 giây. Kết quả: thêm cổng mới còn ~3 giờ (1 class + 1 test), bug thanh toán giảm từ 5 lỗi/2 sprint xuống 1 lỗi/2 sprint (sprint = chu kỳ 2 tuần).
+
+### Trả lời mẫu khi phỏng vấn
+"Khi refactor theo SOLID em đi từ vấn đề thật. Với service thanh toán 1.000 dòng trộn validate, gọi cổng, lưu DB, gửi mail, em tách theo Single Responsibility. Em thay if-else bằng interface PaymentGateway và inject danh sách implementation nên thêm cổng mới chỉ cần class mới - Open/Closed và Dependency Inversion. Em kiểm tra Liskov để mọi gateway thay thế được nhau, và tách interface nhỏ theo Interface Segregation. Mỗi bước em giữ test xanh để không đổi hành vi. Nhờ vậy code dễ test bằng fake và thêm luồng mới nhanh hơn."
+
+> Senior tip: SOLID là công cụ, không phải mục tiêu. Refactor khi thấy "mùi" lặp lại (thêm case phải sửa nhiều chỗ, class phình, test khó) và luôn có test bảo vệ trước khi tách.`,
+  follow: [
+    "Làm sao biết đã tách class theo Single Responsibility vừa đủ, không bị chia vụn (over-splitting)?",
+    "Dependency Inversion khác Dependency Injection ở điểm nào? Spring giúp phần nào?",
+    "Khi refactor legacy không có test, bạn tạo 'lưới an toàn' thế nào trước khi áp SOLID?"
+  ],
+  tags: ["SOLID", "refactoring", "design", "Spring", "clean code"]
+}
+,
+{
+  id: "design-038",
+  topic: "design",
+  level: "mid",
+  q: "Làm sao dùng Strategy pattern cùng Spring để loại bỏ chuỗi if-else chọn thuật toán? Trình bày cách thiết kế interface, inject các implementation và chọn strategy theo tham số runtime.",
+  a: `**Tóm tắt:** Strategy pattern (mẫu chiến lược) đóng gói mỗi thuật toán vào một class riêng có cùng interface, rồi chọn class phù hợp lúc chạy (runtime) thay vì if-else. Trong Spring, mỗi strategy là bean (đối tượng do Spring quản lý), inject cả tập hợp rồi tra cứu theo key. Thêm biến thể mới chỉ cần thêm class, không sửa code chọn.
+
+### Thuật ngữ giải thích nhanh
+- **Pattern (mẫu thiết kế):** cách giải quyết lặp lại cho vấn đề thiết kế quen thuộc.
+- **Runtime:** lúc chương trình đang chạy.
+- **Stateless (không trạng thái):** object không giữ dữ liệu thay đổi giữa các lần gọi, an toàn dùng chung.
+
+### Vấn đề: if-else phình ra
+~~~java
+public BigDecimal fee(String channel, BigDecimal amount) {
+    if ("BANK".equals(channel)) return amount.multiply(new BigDecimal("0.01"));
+    else if ("EWALLET".equals(channel)) return amount.multiply(new BigDecimal("0.015"));
+    else if ("CARD".equals(channel)) return amount.multiply(new BigDecimal("0.029"));
+    else throw new IllegalArgumentException("unknown");
+}
+~~~
+
+### Thiết kế Strategy + Spring
+~~~java
+public interface FeeStrategy {
+    String channel();                         // key để tra cứu
+    BigDecimal calculate(BigDecimal amount);  // thuật toán riêng
+}
+
+@Component
+public class BankFeeStrategy implements FeeStrategy {
+    public String channel() { return "BANK"; }
+    public BigDecimal calculate(BigDecimal amount) { return amount.multiply(new BigDecimal("0.01")); }
+}
+
+@Service
+public class FeeService {
+    private final Map<String, FeeStrategy> byChannel;
+    // Spring inject tất cả bean FeeStrategy vào List, dựng Map theo key
+    public FeeService(List<FeeStrategy> strategies) {
+        this.byChannel = strategies.stream()
+            .collect(Collectors.toUnmodifiableMap(FeeStrategy::channel, s -> s));
+    }
+    public BigDecimal fee(String channel, BigDecimal amount) {
+        FeeStrategy s = byChannel.get(channel);
+        if (s == null) throw new IllegalArgumentException("unknown channel: " + channel);
+        return s.calculate(amount);
+    }
+}
+~~~
+
+### Khi nào dùng / không dùng
+| Dùng Strategy khi | Không cần khi |
+|---|---|
+| Có >= 3 biến thể và sẽ còn tăng | Chỉ 1-2 nhánh ổn định, hiếm đổi |
+| Mỗi biến thể đủ phức tạp để test riêng | Logic chỉ là biểu thức nhỏ |
+| Muốn thêm biến thể không sửa class chọn (Open/Closed) | Over-engineering cho bài toán đơn giản |
+
+### Pitfall trên production
+- **Key trùng:** hai bean trả cùng {{channel()}} → {{Collectors.toMap}} ném exception lúc khởi động. Fail-fast bằng merge function hoặc validate.
+- **Thiếu strategy:** {{get}} trả null → báo lỗi rõ thay vì NullPointerException.
+- **State chia sẻ:** strategy là singleton bean mặc định; field mutable gây race condition (lỗi tranh chấp luồng). Giữ stateless.
+- **Tiêu chí phức tạp:** chọn theo tổ hợp (kênh + quốc gia) có thể nổ class; cân nhắc rule engine.
+
+### Ví dụ đời thực
+Triệu chứng: tính phí giao dịch có 7 nhánh if-else, mỗi lần đổi biểu phí phải sửa code và deploy, 2 lần tính sai phí do quên nhánh. Điều tra: logic 180 dòng trộn trong một method, không unit test riêng từng kênh. Xử lý: tách mỗi kênh thành {{FeeStrategy}}, inject {{List}}, viết 1 test/strategy. Kết quả: thêm kênh mới 30 phút, đổi biểu phí một kênh không ảnh hưởng kênh khác, coverage (độ phủ test) module phí tăng từ 20% lên 85%.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng Strategy để thay chuỗi if-else bằng các class cùng interface. Ví dụ tính phí theo kênh: mỗi kênh là bean implement FeeStrategy với channel() và calculate(). FeeService inject List<FeeStrategy> rồi dựng Map tra cứu theo key runtime. Thêm kênh mới chỉ tạo class mới, tuân Open/Closed và dễ test từng strategy. Em lưu ý strategy phải stateless vì là singleton, xử lý key trùng lúc khởi động và báo lỗi rõ khi không tìm thấy. Nếu chỉ 1-2 nhánh ổn định em giữ if-else để tránh lạm dụng."
+
+> Senior tip: Trong Spring, ưu tiên inject {{Map<String, T>}}/{{List<T>}} thay vì tự viết factory switch-case. Nhưng đừng biến mọi if thành Strategy - chỉ dùng khi biến thể là thuật toán thay thế được nhau.`,
+  follow: [
+    "Khi nào Strategy không đủ và bạn cần rule engine hoặc cấu hình trong DB?",
+    "Làm sao chọn strategy theo nhiều tiêu chí (kênh + quốc gia) mà không tạo nổ tổ hợp class?",
+    "Strategy khác State pattern ở điểm nào về ý định và cách dùng?"
+  ],
+  tags: ["Strategy", "design pattern", "Spring", "if-else", "Open/Closed"]
+}
+,
+{
+  id: "design-039",
+  topic: "design",
+  level: "mid",
+  q: "Factory và Builder pattern dùng khi nào trong dự án Java thật? Khi nào chỉ cần constructor, khi nào cần static factory, khi nào cần Builder, và bẫy khi lạm dụng Lombok @Builder?",
+  a: `**Tóm tắt:** Factory và Builder đều giúp tạo object (đối tượng) đúng cách nhưng giải quyết nỗi đau khác nhau. Constructor thường đủ; **static factory method** hữu ích khi cần tên rõ nghĩa, tái dùng/ẩn kiểu con; **Builder** phù hợp khi object có nhiều tham số (nhất là tuỳ chọn) và muốn code khởi tạo dễ đọc, bất biến (immutable - tạo xong không đổi). Lạm dụng {{@Builder}} khắp nơi (kể cả entity JPA) gây mất bất biến, che tham số bắt buộc và khó bảo trì.
+
+### Thuật ngữ giải thích nhanh
+- **Constructor:** hàm đặc biệt tạo object ({{new User(...)}}).
+- **Immutable:** object không đổi sau khi tạo, an toàn khi chia sẻ giữa nhiều luồng (thread).
+
+### 1. Khi constructor là đủ
+~~~java
+public class Money {
+    private final BigDecimal amount;
+    private final String currency;
+    public Money(BigDecimal amount, String currency) { // 2 tham số bắt buộc, rõ ràng
+        this.amount = Objects.requireNonNull(amount);
+        this.currency = Objects.requireNonNull(currency);
+    }
+}
+~~~
+
+### 2. Static factory method
+~~~java
+public class Money {
+    private final BigDecimal amount; private final String currency;
+    private Money(BigDecimal amount, String currency){ this.amount = amount; this.currency = currency; }
+    public static Money vnd(long amount){ return new Money(BigDecimal.valueOf(amount), "VND"); } // tên rõ nghĩa
+    public static Money of(BigDecimal amount, String currency){ return new Money(amount, currency); }
+}
+~~~
+Dùng khi muốn đặt tên ({{vnd}}), ẩn implementation, hoặc cache/validate. Ví dụ JDK: {{List.of}}, {{Optional.of}}.
+
+### 3. Builder: nhiều tham số, nhiều tuỳ chọn
+~~~java
+public final class TransferCommand {
+    private final String fromAcc; private final String toAcc;
+    private final BigDecimal amount; private final String note; private final String idempotencyKey;
+    private TransferCommand(Builder b) {
+        this.fromAcc = Objects.requireNonNull(b.fromAcc, "fromAcc");
+        this.toAcc = Objects.requireNonNull(b.toAcc, "toAcc");
+        this.amount = Objects.requireNonNull(b.amount, "amount");
+        this.note = b.note; this.idempotencyKey = b.idempotencyKey;
+    }
+    public static Builder builder(){ return new Builder(); }
+    public static class Builder {
+        private String fromAcc,toAcc,note,idempotencyKey; private BigDecimal amount;
+        public Builder fromAcc(String v){ this.fromAcc=v; return this; }
+        public Builder toAcc(String v){ this.toAcc=v; return this; }
+        public Builder amount(BigDecimal v){ this.amount=v; return this; }
+        public Builder note(String v){ this.note=v; return this; }
+        public Builder idempotencyKey(String v){ this.idempotencyKey=v; return this; }
+        public TransferCommand build(){ return new TransferCommand(this); } // validate tập trung
+    }
+}
+~~~
+
+### Bảng chọn nhanh
+| Tình huống | Chọn |
+|---|---|
+| 1-3 tham số, bắt buộc, rõ nghĩa | Constructor |
+| Cần tên tạo có ý nghĩa / ẩn kiểu con | Static factory method |
+| >= 4 tham số hoặc nhiều tuỳ chọn, muốn immutable | Builder |
+| Chọn loại object theo điều kiện runtime | Factory (method/class) |
+
+### Bẫy khi lạm dụng Lombok @Builder
+- **Trên entity JPA:** entity cần constructor không tham số cho Hibernate; {{@Builder}} dễ bỏ sót field bắt buộc, bỏ qua giá trị mặc định. Dùng builder cho DTO/command immutable, không dùng cho entity.
+- **Che tham số bắt buộc:** builder cho phép quên field → lỗi lộ lúc chạy. {{requireNonNull}} trong {{build()}}.
+- **Mất bất biến nếu thêm setter.**
+- **Kế thừa:** {{@Builder}} không chơi tốt nếu không dùng {{@SuperBuilder}} cẩn thận.
+
+### Ví dụ đời thực
+Triệu chứng: module tạo lệnh chuyển tiền có constructor 7 tham số {{String}}, reviewer phát hiện bug nhầm {{fromAcc}} với {{toAcc}} 2 lần trong 3 tháng (compiler không bắt). Điều tra: call site {{new Cmd(a,b,c,d,e,f,g)}} không tự mô tả. Xử lý: chuyển sang builder immutable, validate bắt buộc trong {{build()}}, thêm {{idempotencyKey}} tuỳ chọn. Kết quả: bug nhầm tham số biến mất, code review nhanh hơn; thêm field mới chỉ thêm method builder, không phá vỡ mọi chỗ gọi như constructor dài.
+
+### Trả lời mẫu khi phỏng vấn
+"Em chọn cách tạo object theo độ phức tạp. Constructor đủ cho object nhỏ. Static factory method dùng khi cần tên có ý nghĩa như Money.vnd() hoặc ẩn implementation. Builder dùng khi nhiều tham số, nhất là tuỳ chọn, để call site dễ đọc và giữ object immutable, validate trong build(). Factory pattern dùng khi cần quyết định tạo loại nào theo runtime. Em tránh lạm dụng Lombok @Builder trên entity JPA vì dễ bỏ sót field bắt buộc; builder phù hợp cho DTO hay command bất biến."
+
+> Senior tip: Ưu tiên object bất biến cho dữ liệu truyền qua nhiều tầng/luồng. Nếu {{@Builder}} khiến không biết field nào bắt buộc, hãy dùng constructor/factory tường minh.`,
+  follow: [
+    "Khi nào bạn chọn static factory method thay vì constructor public dù chỉ 1-2 tham số?",
+    "Làm sao đảm bảo object tạo bằng Builder luôn hợp lệ (invariant) nếu có ràng buộc giữa các field?",
+    "Factory Method pattern khác static factory method (idiom) ở điểm nào?"
+  ],
+  tags: ["Factory", "Builder", "design pattern", "immutable", "Lombok"]
+}
+,
+{
+  id: "design-040",
+  topic: "design",
+  level: "senior",
+  q: "Observer pattern và event trong Spring hoạt động thế nào? Giải thích publish/subscribe, @EventListener/@TransactionalEventListener, và khi nào dùng event nội bộ thay vì gọi trực tiếp.",
+  a: `**Tóm tắt:** Observer (mẫu quan sát) là mẫu trong đó publisher (bên phát) thông báo cho nhiều listener/subscriber (bên lắng nghe) khi có sự kiện mà không cần biết chi tiết ai xử lý. Trong Spring, dùng {{ApplicationEventPublisher}} và {{@EventListener}}. Dùng {{@TransactionalEventListener}} để chỉ chạy sau khi transaction (giao dịch DB) commit thành công, tránh gửi thông báo cho dữ liệu chưa lưu.
+
+### Thuật ngữ giải thích nhanh
+- **Event (sự kiện):** sự thật đã xảy ra, ví dụ "đơn hàng đã tạo".
+- **Publish/Subscribe:** phát / đăng ký nhận sự kiện.
+- **Transaction commit:** DB xác nhận ghi thành công; rollback là huỷ.
+
+### Cơ chế cơ bản trong Spring
+~~~java
+// Event (nên bất biến, mang dữ liệu cần thiết)
+public record OrderCreatedEvent(Long orderId, Long userId, BigDecimal total) {}
+
+@Service
+public class OrderService {
+    private final OrderRepository repo;
+    private final ApplicationEventPublisher publisher; // Spring inject
+    public OrderService(OrderRepository repo, ApplicationEventPublisher publisher) {
+        this.repo = repo; this.publisher = publisher;
+    }
+    @Transactional
+    public Long createOrder(CreateOrderCmd cmd) {
+        Order order = repo.save(Order.from(cmd));      // nghiệp vụ chính
+        publisher.publishEvent(new OrderCreatedEvent(order.getId(), order.getUserId(), order.getTotal()));
+        return order.getId();
+    }
+}
+
+@Component
+public class OrderNotificationListener {
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void onCreated(OrderCreatedEvent e) {
+        // chạy SAU khi commit: chắc chắn đơn đã có trong DB
+        emailSender.sendOrderMail(e.userId(), e.orderId());
+    }
+}
+
+@Component
+public class LoyaltyListener {
+    @Async // chạy bất đồng bộ (thread khác), cần @EnableAsync
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void addPoints(OrderCreatedEvent e) { pointService.add(e.userId(), e.total()); }
+}
+~~~
+
+### Các annotation quan trọng
+| Annotation | Ý nghĩa |
+|---|---|
+| {{@EventListener}} | Mặc định chạy đồng bộ, cùng thread, trong transaction đang mở |
+| {{@TransactionalEventListener}} | Gắn pha transaction; {{AFTER_COMMIT}} (mặc định), {{AFTER_ROLLBACK}} |
+| {{@Async}} trên listener | Chạy bất đồng bộ, không kéo dài request |
+| {{@Order(n)}} | Thứ tự giữa listener đồng bộ |
+
+### Khi nào dùng event nội bộ / khi nào gọi trực tiếp
+| Dùng event nội bộ khi | Gọi trực tiếp khi |
+|---|---|
+| Logic phụ (side effect): mail, audit, thống kê | Bước bắt buộc của nghiệp vụ chính (trừ kho phải thành công cùng đơn) |
+| Muốn giảm coupling, dễ thêm listener | Cần kết quả ngay để quyết định bước tiếp |
+| Trong cùng ứng dụng (in-process) | Giao tiếp giữa nhiều service → dùng message broker (Kafka/RabbitMQ) |
+
+### Pitfall trên production
+- **Mất event với {{@Async}} sau commit:** app crash trước khi listener chạy xong. Nghiệp vụ quan trọng cần Transactional Outbox + broker.
+- **Listener không chạy:** publish khi không có transaction thì {{@TransactionalEventListener}} mặc định bị bỏ qua; cần {{fallbackExecution = true}}.
+- **Chậm request:** listener đồng bộ gọi API ngoài cộng dồn latency (độ trễ). Dùng {{@Async}} với thread pool giới hạn.
+- **Exception sau commit:** {{AFTER_COMMIT}} ném lỗi không rollback được; phải catch, log, retry.
+
+### Ví dụ đời thực
+Triệu chứng: API tạo đơn mất 1.8s p95 (95% request nhanh hơn mức này) vì gọi tuần tự email, SMS, cộng điểm, audit. Điều tra: một lần SMS provider chậm kéo chậm cả tạo đơn. Xử lý: publish {{OrderCreatedEvent}}, chuyển tác vụ phụ sang {{@TransactionalEventListener(AFTER_COMMIT)}} + {{@Async}} với thread pool riêng (core 4, max 8, queue 200). Kết quả: p95 tạo đơn giảm còn 320ms; khi SMS lỗi, đơn vẫn tạo thành công và tác vụ SMS retry độc lập.
+
+### Trả lời mẫu khi phỏng vấn
+"Observer trong Spring là event nội bộ: service publish event qua ApplicationEventPublisher, listener @EventListener sẽ nhận. Em dùng @TransactionalEventListener(AFTER_COMMIT) để chỉ chạy khi transaction đã commit, tránh gửi mail cho đơn chưa lưu. Logic phụ như gửi thông báo hay cộng điểm em tách listener và @Async để không kéo chậm request. Nhưng event in-process không đảm bảo bền vững: nếu app crash sau commit mà listener async chưa chạy thì mất. Với tác vụ quan trọng em dùng Transactional Outbox và message broker. Em chỉ dùng event cho side effect độc lập; bước bắt buộc thì gọi trực tiếp."
+
+> Senior tip: Đừng dùng Spring event như message bus phân tán. Nó in-process, không có retry bền, không có back-pressure. Cần đảm bảo giao hàng giữa service thì dùng Kafka/RabbitMQ với Outbox.`,
+  follow: [
+    "Khác nhau giữa @EventListener và @TransactionalEventListener(AFTER_COMMIT) khi transaction rollback?",
+    "Transactional Outbox pattern giải quyết vấn đề gì và triển khai các bước ra sao?",
+    "Khi nào bạn chọn Spring event nội bộ, khi nào chọn Kafka/RabbitMQ?"
+  ],
+  tags: ["Observer", "event", "Spring", "TransactionalEventListener", "design pattern"]
+}
+,
+{
+  id: "design-041",
+  topic: "design",
+  level: "mid",
+  q: "Nguyên tắc \"Composition over inheritance\" nghĩa là gì trong thực tế? Cho ví dụ refactor một cây kế thừa dễ vỡ sang dùng composition và giải thích lợi ích.",
+  a: `**Tóm tắt:** Kế thừa (inheritance - class con {{extends}} class cha) tạo quan hệ "is-a" nhưng gắn chặt con vào chi tiết cha; đổi ở cha có thể làm vỡ con (fragile base class - lớp cha dễ gãy). Composition (kết hợp - giữ object khác như thành phần và uỷ thác) tạo quan hệ "has-a", linh hoạt hơn. Nguyên tắc: ưu tiên composition, chỉ dùng kế thừa khi thực sự "is-a" ổn định.
+
+### Thuật ngữ giải thích nhanh
+- **extends:** từ khoá Java để kế thừa class.
+- **Override (ghi đè):** class con định nghĩa lại method của cha.
+- **Uỷ thác (delegation):** object chuyển yêu cầu cho thành phần xử lý.
+
+### Vấn đề: cây kế thừa dễ vỡ
+~~~java
+class OrderPricing { BigDecimal total(Order o) { return o.subtotal(); } }
+class VipPricing extends OrderPricing {
+    BigDecimal total(Order o) { return super.total(o).multiply(new BigDecimal("0.9")); }
+}
+class VipFreeShipPricing extends VipPricing {
+    BigDecimal total(Order o) { return super.total(o).subtract(o.shippingFee()); }
+}
+// Cần "FlashSale + FreeShip"? -> bùng nổ lớp con (class explosion)
+~~~
+
+### Refactor sang composition
+~~~java
+interface DiscountPolicy { BigDecimal apply(BigDecimal base, Order o); }
+interface ShippingPolicy { BigDecimal shipping(Order o); }
+
+class VipDiscount implements DiscountPolicy {
+    public BigDecimal apply(BigDecimal base, Order o) { return base.multiply(new BigDecimal("0.9")); }
+}
+class FreeShipping implements ShippingPolicy {
+    public BigDecimal shipping(Order o) { return BigDecimal.ZERO; }
+}
+
+class PricingService {
+    private final DiscountPolicy discount;
+    private final ShippingPolicy shipping;
+    PricingService(DiscountPolicy discount, ShippingPolicy shipping) {
+        this.discount = discount; this.shipping = shipping;
+    }
+    BigDecimal total(Order o) {
+        BigDecimal afterDiscount = discount.apply(o.subtotal(), o); // uỷ thác
+        return afterDiscount.add(shipping.shipping(o));
+    }
+}
+// Ghép tuỳ ý: new PricingService(new VipDiscount(), new FreeShipping())
+~~~
+
+### So sánh
+| Tiêu chí | Inheritance | Composition |
+|---|---|---|
+| Quan hệ | is-a, cố định | has-a, ghép linh hoạt |
+| Tổ hợp biến thể | Dễ bùng nổ lớp con | Ghép như lego |
+| Đổi lớp cha | Có thể làm vỡ lớp con | Ít ảnh hưởng nếu qua interface |
+| Khi phù hợp | Phân cấp ổn định, thực sự is-a | Ghép hành vi, nhiều biến thể |
+
+### Pitfall trên production
+- **Kế thừa sai quan hệ:** {{Square extends Rectangle}} phá giả định cha (liên quan Liskov).
+- **Composition quá nhiều lớp nhỏ:** khó theo dõi luồng. Gom thành phần có ý nghĩa.
+- **{{super}} dây chuyền:** cây sâu khó debug; uỷ thác tường minh dễ trace.
+
+### Ví dụ đời thực
+Triệu chứng: module tính phí bảo hiểm có 5 tầng kế thừa; thêm "VIP + gói gia đình + khuyến mãi hè" buộc tạo 3 lớp con và sửa 2 lớp cha, gây sai phí cho 120 hợp đồng trong 1 ngày. Điều tra: logic giảm giá rải ở {{super.total()}} nhiều tầng, không ai nắm hết thứ tự. Xử lý: refactor sang {{PricingService}} ghép {{DiscountPolicy}} + {{RiderPolicy}}, mỗi policy test độc lập. Kết quả: thêm tổ hợp mới bằng cấu hình ghép, không tạo class mới; bug tính phí tương tự không tái diễn trong 2 quý, thời gian viết test case mới giảm từ 3 giờ xuống 40 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Composition over inheritance nghĩa là em ưu tiên ghép object từ các thành phần nhỏ thay vì xây cây kế thừa sâu. Kế thừa tạo phụ thuộc chặt vào lớp cha, dễ fragile base class và bùng nổ lớp con khi có nhiều chiều biến thể. Ví dụ thay vì VipFreeShipPricing extends VipPricing, em tách DiscountPolicy và ShippingPolicy rồi ghép trong PricingService, nên thêm tổ hợp mới chỉ cần ghép policy. Em vẫn dùng kế thừa khi quan hệ is-a thực sự ổn định, như cấu trúc collection. Lợi ích là code dễ thay thế, dễ test từng thành phần và ít ảnh hưởng dây chuyền."
+
+> Senior tip: Dấu hiệu nên chuyển từ kế thừa sang composition: phải override để "tắt" hành vi cha, cây lớp > 2-3 tầng, hoặc thêm biến thể buộc tạo lớp con theo tổ hợp. Ưu tiên interface + uỷ thác.`,
+  follow: [
+    "Khi nào kế thừa vẫn là lựa chọn đúng và bạn sẽ không thay bằng composition?",
+    "Fragile base class problem là gì? Cho ví dụ cụ thể trong Java.",
+    "Làm sao kết hợp composition với Strategy/Decorator để ghép nhiều hành vi linh hoạt?"
+  ],
+  tags: ["composition", "inheritance", "design", "refactoring", "OOP"]
+}
+,
+{
+  id: "design-042",
+  topic: "design",
+  level: "senior",
+  q: "Anti-pattern God class và Anemic Domain Model là gì? Làm sao nhận biết trong codebase thật, vì sao gây hại trên production, và bạn refactor từng bước ra sao?",
+  a: `**Tóm tắt:** **God class** (class thần thánh) ôm đồm quá nhiều trách nhiệm, sửa một chỗ dễ vỡ chỗ khác. **Anemic Domain Model** (mô hình miền thiếu máu) là khi entity/domain (đối tượng nghiệp vụ) chỉ có field + getter/setter, còn luật nghiệp vụ nằm ở service - domain thành "túi dữ liệu". Cả hai gây khó hiểu, khó test và dễ bug nghiệp vụ. Cách chữa: bóc tách trách nhiệm, đưa luật về đúng nơi (domain giàu hành vi vừa đủ), từng bước nhỏ có test.
+
+### Thuật ngữ giải thích nhanh
+- **Anti-pattern:** cách làm phổ biến nhưng thường dẫn đến thiết kế tệ.
+- **Domain (miền nghiệp vụ):** khái niệm và luật của bài toán (đơn hàng, tài khoản).
+- **Invariant (bất biến):** điều kiện luôn phải đúng (ví dụ số dư không âm).
+
+### 1. God class - nhận biết và hậu quả
+Dấu hiệu: hàng nghìn dòng, nhiều dependency, tên chung chung ({{*Manager}}, {{*Util}}), method dài chạm nhiều mảng.
+~~~java
+@Service
+public class OrderManager { // 15 dependency, 40 method, 2500 dòng
+    public Result placeOrder(...) { /* validate + pricing + inventory + payment + notify + audit */ }
+}
+~~~
+Hậu quả: thay đổi nhỏ phải deploy cả luồng; merge conflict; test chậm; bug lan.
+
+### 2. Anemic Domain Model - nhận biết và hậu quả
+~~~java
+@Entity
+public class Account { // chỉ là túi dữ liệu
+    private BigDecimal balance; private String status;
+    // chỉ getter/setter, không có luật
+}
+@Service
+public class AccountService {
+    public void withdraw(Account acc, BigDecimal amount) {
+        if (!"ACTIVE".equals(acc.getStatus())) throw new IllegalStateException("inactive");
+        if (acc.getBalance().compareTo(amount) < 0) throw new IllegalStateException("not enough");
+        acc.setBalance(acc.getBalance().subtract(amount)); // luật rải rác
+    }
+}
+~~~
+Hậu quả: cùng luật lặp ở nhiều service với điều kiện khác nhau → trạng thái sai.
+
+### Refactor từng bước
+**Bước 1:** Viết characterization test (ghi lại hành vi hiện tại) cho luồng quan trọng.
+**Bước 2:** Bóc God class theo trách nhiệm (PricingService, InventoryGateway, PaymentOrchestrator, OrderNotifier).
+**Bước 3:** Làm giàu domain vừa đủ - đưa bất biến vào entity.
+~~~java
+@Entity
+public class Account {
+    private BigDecimal balance; private AccountStatus status;
+    public void withdraw(BigDecimal amount) { // hành vi + luật cùng dữ liệu
+        if (status != AccountStatus.ACTIVE) throw new DomainException("ACCOUNT_INACTIVE");
+        if (balance.compareTo(amount) < 0) throw new DomainException("INSUFFICIENT_BALANCE");
+        this.balance = this.balance.subtract(amount); // tự bảo vệ invariant
+    }
+}
+@Service
+public class AccountService {
+    @Transactional
+    public void withdraw(Long id, BigDecimal amount) {
+        Account acc = repo.findById(id).orElseThrow();
+        acc.withdraw(amount); // service điều phối, domain giữ luật
+    }
+}
+~~~
+**Bước 4:** Không nhồi hạ tầng (HTTP, gửi mail) vào entity. Service điều phối; domain giữ luật thuần.
+
+### So sánh nhanh
+| | God class | Anemic Domain Model |
+|---|---|---|
+| Vấn đề | Quá nhiều trách nhiệm | Thiếu hành vi/luật trong domain |
+| Dấu hiệu | Class khổng lồ, nhiều lý do đổi | Entity chỉ getter/setter, luật lặp |
+| Hướng sửa | Tách theo cohesion (tính gắn kết) | Đưa bất biến/hành vi vào domain |
+
+### Pitfall trên production
+- Big-bang rewrite (viết lại toàn bộ): rủi ro cao. Refactor nhỏ, có test.
+- "Rich domain cực đoan": nhồi gọi DB/HTTP vào entity → khó test.
+- Bỏ sót luật rải rác khi gom vào domain: phải rà hết service.
+
+### Ví dụ đời thực
+Triệu chứng: hệ thống ví điện tử có {{WalletManager}} 3.200 dòng; mỗi lần sửa hạn mức rút phát sinh lỗi trừ tiền ở luồng hoàn tiền. Điều tra: 5 method ở 4 service tự kiểm tra số dư/hạn mức khác nhau (anemic), còn {{WalletManager}} vừa trừ tiền vừa gọi đối tác vừa ghi audit. Số sự cố số dư: 4 vụ/tháng. Xử lý: tách {{WalletManager}} thành 5 thành phần; chuyển luật {{debit/credit/ensureLimit}} vào {{Wallet}} domain; thêm 30 unit test quanh bất biến số dư. Kết quả: sau 3 tháng còn 0 vụ sai số dư do lệch luật, thời gian onboard dev mới giảm vì luật nằm tại một chỗ.
+
+### Trả lời mẫu khi phỏng vấn
+"God class gánh quá nhiều trách nhiệm, còn anemic domain model là entity chỉ có dữ liệu trong khi luật nghiệp vụ rải rác ở service. Em nhận biết bằng class rất lớn nhiều lý do thay đổi, hoặc entity chỉ getter/setter nhưng cùng luật bị lặp. Khi refactor em viết test bảo vệ trước, rồi bóc God class theo cụm trách nhiệm để tăng cohesion. Với anemic model em đưa bất biến vào domain, ví dụ withdraw tự kiểm tra trạng thái và số dư, còn service chỉ điều phối transaction. Em làm từng bước nhỏ, tránh big-bang rewrite."
+
+> Senior tip: Đặt luật nghiệp vụ ở nơi gần dữ liệu nó bảo vệ nhất, và giữ entity không phụ thuộc hạ tầng (DB/HTTP) để dễ test và nhất quán. Không cần rich domain cực đoan.`,
+  follow: [
+    "Làm thế nào phân biệt logic nên nằm trong domain entity với logic nên ở application/service layer?",
+    "Bạn dùng metric hay heuristic nào (số dòng, số dependency, LCOM) để phát hiện God class sớm trong review?",
+    "Khi refactor God class đang chạy production, bạn chia nhỏ thay đổi và giảm rủi ro rollout thế nào?"
+  ],
+  tags: ["anti-pattern", "God class", "anemic domain", "refactoring", "DDD"]
+},
 );
