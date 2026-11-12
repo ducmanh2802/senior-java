@@ -3713,5 +3713,17 @@ window.DATA_INDEX = {
     ["qz-ccafive-021","claude"],
     ["qz-ccafive-022","claude"],
     ["qz-ccafive-023","claude"],
+    ["qz-ccafive-024","claude"],
+    ["qz-ccafive-025","claude"],
+    ["qz-ccafive-026","claude"],
+    ["qz-ccafive-027","claude"],
+    ["qz-ccafive-028","claude"],
+    ["qz-ccafive-029","claude"],
+    ["qz-ccafive-030","claude"],
+    ["qz-ccafive-031","claude"],
+    ["qz-ccafive-032","claude"],
+    ["qz-ccafive-033","claude"],
+    ["qz-ccafive-034","claude"],
+    ["qz-ccafive-035","claude"],
   ]
 };

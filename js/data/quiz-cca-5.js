@@ -184,4 +184,99 @@
 - **Tin tiêu đề nghe hợp lý:** tên tài liệu có thể bị bịa hoặc trỏ đến phiên bản sai.
 
 > Senior tip: lưu cả đoạn nguyên gốc và phiên bản nguồn; exact quote có thể không xác định được nếu tài liệu đã thay đổi sau khi câu trả lời được tạo.` },
+{ id: 'qz-ccafive-024', topic: 'claude', q: '[Context Management] A coding agent is writing a long Java class, but its answer is cut off in the middle of a method. The context limit has not been reached. What is the most likely cause and fix?', options: [ 'Raise the context window limit so the model can remember more of the conversation', 'Increase max_tokens so the model has a larger output budget for this answer', 'Send the whole conversation again with temperature set to zero', 'Ask the model to continue from where it stopped without changing anything' ], answer: 1, explain: `**Đáp án đúng: phương án 2.** Context window (cửa sổ ngữ cảnh) là tổng dung lượng token mà model có thể nhận vào một lượt: hướng dẫn, lịch sử hội thoại, kết quả công cụ và câu hỏi mới. max_tokens là ngân sách riêng cho phần câu trả lời model sinh ra. Khi câu trả lời đạt ngân sách này, API cắt ngang câu trả lời ngay giữa câu hoặc đoạn mã, ngay cả khi context window vẫn còn trống. Token là đơn vị văn bản cơ bản mà model xử lý, tương đương một từ hoặc một mảnh từ. Khắc phục: tăng max_tokens cho lượt đó, hoặc chia tác vụ thành nhiều câu trả lời ngắn hơn. Tăng context window không giúp một câu trả lời đơn lẻ dài hơn.
+
+### Vì sao các phương án khác sai
+- **Làm lớn context window:** context window kiểm soát đầu vào plus lịch sử, không kiểm soát độ dài một câu trả lời duy nhất.
+- **Gửi lại toàn bộ hội thoại với temperature bằng không:** temperature điều chỉnh độ ngẫu nhiên, không nâng ngân sách đầu ra; chỉ làm tốn thêm token đầu vào.
+- **Nhắn model tiếp tục từ chỗ dừng:** chỉ là biện pháp tạm thời, model có thể không quay lại đúng chỗ và sẽ lại đạt ngân sách cũ.
+
+> Senior tip: theo dõi số token đầu ra so với max_tokens; nếu câu trả lời thường bị cắt, hãy tăng ngân sách hoặc yêu cầu model trả lời theo các phần.` },
+{ id: 'qz-ccafive-025', topic: 'claude', q: '[Context Management] A team registers 50 tool definitions in the system prompt for every turn, although each turn only needs 2-3 tools. What is the main effect on context management?', options: [ 'Tool definitions are free and never count toward the context window', 'Each tool schema consumes input tokens, shrinking space for history and documents; register only tools needed for the current task', 'The model will automatically ignore unused tools, so there is no downside', 'More tools always improve answer quality because the model has more capabilities' ], answer: 1, explain: `**Đáp án đúng: phương án 2.** Tool definition (mô tả công cụ) là đoạn văn bản gửi kèm prompt để model biết tên công cụ, tham số và mục đích, ví dụ tìm kiếm kho hàng, hoàn tiền đơn hàng. Mỗi định nghĩa công cụ đều tính vào token đầu vào của context window. Gửi 50 định nghĩa mỗi lượt có thể chiếm hàng nghìn token, làm ít chỗ cho lịch sử và tài liệu cần thiết. Ứng dụng chỉ đăng ký công cụ cần cho tác vụ hiện tại; công cụ khác có thể thêm khi tác vụ đổi.
+
+### Vì sao các phương án khác sai
+- **Định nghĩa công cụ miễn phí:** sai, chúng là văn bản trong prompt và tính token như phần khác.
+- **Model tự bỏ qua công cụ không dùng:** token vẫn đã bị tiêu thụ để đọc các định nghĩa; model cũng có thể chọn sai công cụ.
+- **Nhiều công cụ luôn cải thiện chất lượng:** nhiều công cụ hơn nghĩa là nhiều token hơn, nhiều nhầm lẫn và nguy cơ gọi công cụ sai cao hơn.
+
+> Senior tip: đo token chi cho định nghĩa công cụ; nếu lượng này lớn hơn lịch sử hội thoại, hãy cắt bớt công cụ hoặc nhóm công cụ theo từng tác vụ.` },
+{ id: 'qz-ccafive-026', topic: 'claude', q: '[Context Management] A user had a long debugging session with Claude yesterday. Today they open a new conversation and expect Claude to remember the previous session. What is true?', options: [ 'Claude automatically remembers past conversations across days', 'Each conversation starts with an empty context window unless the application resends relevant history or a summary', 'The model updates its permanent memory after every conversation', 'Context persists across conversations as long as the user stays logged in' ], answer: 1, explain: `**Đáp án đúng: phương án 2.** Context window là bộ nhớ làm việc của một cuộc hội thoại duy nhất, không phải bộ nhớ vĩnh viễn của model. Khi người dùng mở cuộc trò chuyện mới, context bắt đầu từ rỗng; model không tự nhớ cuộc hôm qua trừ khi ứng dụng tự lưu lại và gửi lại lịch sử liên quan (hoặc một tóm tắt đã kiểm chứng) ở đầu cuộc mới.
+
+### Vì sao các phương án khác sai
+- **Nhớ tự động qua các ngày:** model không có cơ chế nhớ cuộc trò chuyện cũ trừ khi ứng dụng xây dựng và gửi lại.
+- **Cập nhật bộ nhớ vĩnh viễn sau mỗi cuộc:** hội thoại không thay đổi trọng số hay kiến thức cố định của model; đó là khác biệt giữa ngữ cảnh làm việc và dữ liệu huấn luyện.
+- **Context kéo dài khi đăng nhập:** phiên đăng nhập của người dùng không giống với việc giữ context window giữa các cuộc trò chuyện riêng lẻ.
+
+> Senior tip: để nối giữa các ngày, ứng dụng nên lưu quyết định quan trọng và thông tin thật, rồi gửi chúng lại hoặc tóm tắt ở đầu cuộc mới.` },
+{ id: 'qz-ccafive-027', topic: 'claude', q: '[Context Management] A search tool returns a 300 KB log file, and the app appends the entire result to the conversation. Later turns run out of context space. What should the app do?', options: [ 'Filter around the relevant correlation ID, cap the result size, and keep a reference to the full log for later follow-up', 'Keep sending the full log every turn so the model never misses anything', 'Remove timestamps from logs to make them shorter', 'Ask the model to summarize the log from memory without seeing it' ], answer: 0, explain: `**Đáp án đúng: phương án 1.** Tool output (kết quả công cụ) được đưa vào context giống như nội dung khác và tính vào token đầu vào. Kết quả log 300 KB có thể chiếm phần lớn context window và che khuất câu hỏi cần trả lời. Ứng dụng nên lọc theo correlation ID (mã dùng để nối các dòng log thuộc cùng một yêu cầu), lấy vài dòng trước/sau lỗi, giới hạn kích thước kết quả, đồng thời lưu đường dẫn đến log gốc để lấy thêm khi cần. Timestamp và ID quan trọng để sắp xếp sự kiện và nối log với yêu cầu, không được xóa.
+
+### Vì sao các phương án khác sai
+- **Gửi toàn bộ log mỗi lượt:** làm nhanh đạt giới hạn context và tốn token mỗi lượt.
+- **Xoá timestamp:** mất thông tin cần thiết để xếp thứ tự sự kiện và nối log với yêu cầu.
+- **Nhờ model tóm tắt từ không nhìn log:** model không thể tóm tắt dữ liệu chưa được đưa vào context.
+
+> Senior tip: lọc đầu ra công cụ ở phía server trước khi gửi model; chỉ gửi thông tin cần cho tác vụ, không gửi toàn bộ log hệ thống.` },
+{ id: 'qz-ccafive-028', topic: 'claude', q: '[Context Management] A system prompt says always be concise while a user message says explain in detail for this task. The model gives a long answer. What is the best practice?', options: [ 'Always follow the system prompt and ignore the user message', 'Resolve the conflict explicitly in one place; prefer the specific and more recent instruction for the current task', 'Let the model guess which instruction to follow', 'Merge both instructions into one long directive without resolving the conflict' ], answer: 1, explain: `**Đáp án đúng: phương án 2.** System prompt (hướng dẫn hệ thống) là đoạn văn bản quy định cách model hành xử trong cuộc hội thoại; user message là yêu cầu của người dùng. Khi hai hướng dẫn mâu thuẫn (ví dụ ngắn gọn thì giảng chi tiết), model có thể tuân theo chỉ thị mới hơn hoặc cụ thể hơn, nhưng kết quả khó dự đoán. Ứng dụng nên chỉ để một nhóm quy tắc rõ ràng, ưu tiên hướng dẫn riêng cho tác vụ hiện tại, thay vì để model tự đoán.
+
+### Vì sao các phương án khác sai
+- **Luôn ưu tiên system prompt:** làm bỏ qua yêu cầu đặc thù của người dùng trong trường hợp này.
+- **Để model tự đoán:** kết quả không ổn định và khó kiểm thử.
+- **Gộp hai hướng dẫn mà không giải quyết mâu thuẫn:** tạo ra văn bản dài, mâu thuẫn và khó tuân theo.
+
+> Senior tip: xếp hướng dẫn theo mức độ ưu tiên hệ thống → dự án → tác vụ hiện tại và ghi rõ mức nào được tuân theo khi có xung đột.` },
+{ id: 'qz-ccafive-029', topic: 'claude', q: '[Context Management] A user attaches 20 screenshots of logs to one Claude conversation. What is true about context usage?', options: [ 'Images do not consume context window tokens', 'Attach every screenshot so the model has all possible information', 'Retype every screenshot as text before sending', 'Images consume context tokens; attach only needed images and downsample large ones' ], answer: 3, explain: `**Đáp án đúng: phương án 4.** Ảnh đính kèm trong hội thoại Claude được xử lý bằng kỹ thuật thị giác máy tính (computer vision) và mỗi ảnh tiêu tốn một lượng token context tương ứng với kích thước và độ phức tạp. 20 chụp màn hình có thể chiếm phần lớn context window, làm ít chỗ cho văn bản và câu hỏi. Khắc phục: chỉ đính kèm ảnh cần thiết, thu nhỏ hoặc cắt ảnh lớn, và đặt câu hỏi sau nội dung đính kèm để câu hỏi còn mới trong bộ nhớ model.
+
+### Vì sao các phương án khác sai
+- **Ảnh không tiêu tốn token:** sai, nội dung hình ảnh được mã hóa thành token như văn bản.
+- **Đính kèm mọi chụp màn hình:** nhanh làm đầy context và thêm nhiễu không cần thiết.
+- **Gõ lại ảnh thành văn bản thủ công:** tốn công và dễ lỗi; nên dùng công cụ hỗ trợ nếu có.
+
+> Senior tip: theo dõi số token ảnh trong mỗi lượt; nếu ảnh chiếm hơn nửa context, hãy cắt bớt ảnh hoặc tách tác vụ.` },
+{ id: 'qz-ccafive-030', topic: 'claude', q: '[Context Management] A request exceeds the context window limit and the API returns an error. What should the application do?', options: [ 'Retry the same request forever until it succeeds', 'Increase temperature so the model writes a shorter answer', 'Compact or summarize older turns, split the task, and resend with only necessary history', 'Ignore the error and send the next message anyway' ], answer: 2, explain: `**Đáp án đúng: phương án 3.** Context window là giới hạn cứng: tổng token đầu vào (hướng dẫn, lịch sử, kết quả công cụ, câu hỏi) không được vượt quá mức cho phép. Nếu vượt, API trả lỗi và không xử lý request. Việc thử lại cùng request sẽ lỗi liên tục vì kích thước không đổi. Cách xử lý: compact (tóm tắt) các lượt cũ, giữ các lượt gần và yêu cầu chưa giải quyết, hoặc chia tác vụ thành các phần nhỏ, sau đó gửi lại với lịch sử cần thiết.
+
+### Vì sao các phương án khác sai
+- **Thử lại mãi mãi:** kích thước request không thay đổi nên lỗi sẽ lặp lại vô tận, tốn tiền và thời gian.
+- **Tăng temperature:** temperature kiểm soát độ ngẫu nhiên, không làm request nhỏ hơn.
+- **Bỏ qua lỗi:** gửi tin nhắn tiếp theo khi ngữ cảnh không đủ không giải quyết được nguyên nhân và có thể gây trả lời sai.
+
+> Senior tip: bắt lỗi vượt giới hạn context ở ứng dụng, rồi tự động compact phần lịch sử cũ nhất trước khi thử lại.` },
+{ id: 'qz-ccafive-031', topic: 'claude', q: '[Context Management] After a long conversation, a user expects Claude to remember new facts forever and use them in unrelated future conversations. What is correct?', options: [ 'Context does not permanently update the model knowledge; use retrieval for new or private documents', 'After one conversation the model has learned the new facts permanently', 'Context window and the model knowledge cutoff are the same thing', 'Context can override the model knowledge cutoff automatically' ], answer: 0, explain: `**Đáp án đúng: phương án 1.** Context window là bộ nhớ làm việc ngắn hạn của một cuộc hội thoại; nó không ghi vào trọng số hay kiến thức cố định của model. Sau khi cuộc hội thoại kết thúc, model không học các thông tin mới đó để dùng trong các cuộc khác, trừ khi ứng dụng lưu và gửi lại. Knowledge cutoff (mốc kiến thức) là thời điểm dữ liệu huấn luyện của model dừng; context không thể tự dời mốc này. Dùng retrieval (tìm kiếm và đưa tài liệu vào prompt) cho tài liệu mới hoặc tài liệu riêng.
+
+### Vì sao các phương án khác sai
+- **Model học vĩnh viễn sau một cuộc:** hội thoại không cập nhật kiến thức cố định của model.
+- **Context window trùng mốc kiến thức:** context là ngữ cảnh của lượt hiện tại; cutoff là mốc dữ liệu huấn luyện.
+- **Context tự ghi đè mốc cutoff:** context chỉ ảnh hưởng lượt hiện tại, không thay đổi dữ liệu huấn luyện của model.
+
+> Senior tip: thông tin quan trọng cần giữ lâu nên lưu vào cơ sở dữ liệu ứng dụng và gửi lại mỗi cuộc mới, không nên nghĩ model sẽ tự nhớ.` },
+{ id: 'qz-ccafive-032', topic: 'claude', q: '[Context Management] A developer puts API keys and database credentials into the system prompt so every turn can authenticate. What is the risk?', options: [ 'Store API keys in the system prompt so every turn can authenticate', 'Keep secrets in backend or environment variables; never put them in the system prompt because instructions may be leaked or inferred', 'Let the model find the API key in the context by itself', 'System prompts are secret and customers can never see them' ], answer: 1, explain: `**Đáp án đúng: phương án 2.** System prompt là văn bản gửi cùng mỗi request và có thể bị người dùng khám phá hoặc suy đoán thông qua các câu hỏi đặc biệt (kỹ thuật gọi là prompt leakage, tràn hướng dẫn). Không nên lưu bí mật (API key, mật khẩu database, token) vào system prompt. Bí mật nên lưu ở backend hoặc biến môi trường, và ứng dụng tự sử dụng chúng khi gọi công cụ; model chỉ nhận kết quả, không nhận bí mật.
+
+### Vì sao các phương án khác sai
+- **Lưu API key vào system prompt:** dễ bị lộ và là vi phạm bảo mật cơ bản.
+- **Để model tự tìm API key trong context:** model không nên được cung cấp bí mật; nếu context bị nhìn, bí mật cũng bị nhìn theo.
+- **System prompt luôn bí mật:** không nên coi system prompt là không ai thấy; hãy viết như thể khách hàng có thể đọc hướng dẫn.
+
+> Senior tip: viết system prompt như thể khách hàng có thể đọc; không bao giờ đặt API key, mật khẩu hay dữ liệu cá nhân vào đó.` },
+{ id: 'qz-ccafive-033', topic: 'claude', multi: true, q: '[Context Management] (Choose 2) A long document is attached to one question, and the answer often misses facts in the middle of the document. Which two context changes are sound first steps?', options: [ 'Place the relevant passage close to the question and separate sections clearly', 'Shuffle the document order on every request so no section is always in the middle', 'Repeat the question after every paragraph to force attention', 'Keep the entire document because a larger context always improves accuracy', 'Repeat the key requirement near the end of the prompt so it stays fresh' ], answer: [0, 4], explain: `**Đúng: phương án 1 và 5.** Hiện tượng mất thông tin ở giữa ngữ cảnh dài (lost-in-the-middle): model hay dùng thông tin ở đầu và cuối tốt hơn thông tin ở giữa. Đặt đoạn bằng chứng gần câu hỏi, phân cách rõ các phần, và lặp lại yêu cầu chính gần cuối prompt giúp model chú ý đúng nội dung cần thiết. Đây là bước đầu cần đo kết quả trên tập câu hỏi cố định trước khi thay đổi lớn hơn.
+
+### Vì sao các phương án khác sai
+- **Xáo trộn thứ tự mỗi lượt:** làm vị trí bằng chứng không ổn định và khó kiểm tra khi chất lượng giảm.
+- **Lặp câu hỏi sau mỗi đoạn:** tăng token nhưng không cải thiện đoạn nào được tìm ra.
+- **Giữ toàn bộ vì context lớn:** dung lượng lớn không đảm bảo model dùng mọi chi tiết chính xác, đồng thời tăng chi phí và nhiễu.
+
+> Senior tip: lưu ID các đoạn đã gửi cùng câu trả lời để phân biệt lỗi tìm kiếm thông tin với lỗi suy luận.` },
+{ id: 'qz-ccafive-034', topic: 'claude', multi: true, q: '[Context Management] (Choose 2) An agent uses MCP servers to fetch resources such as database schemas and API specs. Which two practices protect context?', options: [ 'Attach every MCP resource because all of them might be useful', 'Attach or subscribe only the resources needed for the current task', 'Large resource content does not consume context window tokens', 'Cache stable prefixes when the API supports it, and send changing values after the cache boundary', 'Assume the MCP cache is always available and stop resending required context' ], answer: [1, 3], explain: `**Đúng: phương án 2 và 4.** MCP (Model Context Protocol) là cách kết nối model với nguồn dữ liệu bên ngoài; nội dung resource được lấy về có thể nằm trong context và tính token. Gửi mọi resource làm đầy context nhanh; chỉ đính kèm resource cần cho tác vụ hiện tại. Phần nội dung ổn định có thể được cache theo cơ sở prefix, còn giá trị thay đổi (mã yêu cầu, câu hỏi mới) đặt sau ranh giới cache để không làm hỏng prefix.
+
+### Vì sao các phương án khác sai
+- **Đính kèm mọi MCP resource:** làm đầy context nhanh và thêm thông tin không liên quan.
+- **Nội dung lớn không dùng token:** sai, tài nguyên lớn tiêu tốn nhiều token như văn bản khác.
+- **Giả định cache MCP luôn có sẵn:** cache có thể hết hạn hoặc miss; request vẫn phải chứa đủ nội dung cần thiết để chạy đúng khi không có cache.
+
+> Senior tip: đo token chi cho mỗi loại resource MCP; resource lớn và ít thay đổi là ứng viên tốt cho prefix cache.` },
+{ id: 'qz-ccafive-035', topic: 'claude', multi: true, q: '[Context Management] (Choose 2) Which parts of a request count toward the context window limit?', options: [ 'The system prompt and tool definitions', 'Tool outputs and previously generated answers kept in the history', 'Only the latest message from the user', 'The model training data and knowledge cutoff' ], answer: [0, 1], explain: `**Đúng: phương án 1 và 2.** Context window tính toàn bộ token được đưa vào một request: system prompt (hướng dẫn hệ thống), định nghĩa công cụ, lịch sử hội thoại, kết quả công cụ và câu trả lời đã sinh trước đó nếu còn được gửi lại. Chỉ tin nhắn mới nhất của người dùng không đúng vì các lượt trước vẫn nằm trong lịch sử nếu ứng dụng gửi kèm. Dữ liệu huấn luyện và mốc kiến thức của model là kiến thức cố định, không nằm trong context của yêu cầu hiện tại.
+
+### Vì sao các phương án khác sai
+- **Chỉ tin nhắn mới nhất:** các lượt trước vẫn dùng token nếu ứng dụng gửi lại trong lịch sử.
+- **Dữ liệu huấn luyện và mốc kiến thức:** đây là kiến thức cố định của model, không phải nội dung context của yêu cầu hiện tại.
+
+> Senior tip: ngữ cảnh dài hơn không phải luôn tốt hơn; gửi chỉ phần lịch sử cần thiết và đo tổng token trước khi gửi yêu cầu.` },
 );
