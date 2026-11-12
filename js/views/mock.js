@@ -4,10 +4,10 @@
 
   App.i18n.add({
     vi: {
-      'mock.setup': 'Thiết lập phỏng vấn thử', 'mock.subtitle': 'Chọn preset, chủ đề, độ khó và thời lượng để luyện phỏng vấn như thật.', 'mock.preset': 'Preset', 'mock.topics': 'Chủ đề', 'mock.level': 'Độ khó', 'mock.count': 'Số câu', 'mock.minutes': 'Thời gian mỗi câu', 'mock.preferUnseen': 'Ưu tiên câu tôi chưa thuộc', 'mock.addCoding': 'Thêm vòng coding', 'mock.codingCount': 'Số bài coding', 'mock.codingDiff': 'Độ khó coding', 'mock.available': 'câu khả dụng', 'mock.start': 'Bắt đầu phỏng vấn', 'mock.noMatch': 'Không có câu nào phù hợp với lựa chọn hiện tại. Hãy nới lọc hoặc bổ sung câu hỏi.', 'mock.all': 'Tất cả', 'mock.notes': 'Câu trả lời của bạn', 'mock.showAnswer': 'Xem đáp án mẫu', 'mock.hideAnswer': 'Ẩn đáp án mẫu', 'mock.selfRate': 'Tự chấm điểm', 'mock.skip': 'Bỏ qua', 'mock.end': 'Kết thúc sớm', 'mock.overTime': 'Quá giờ', 'mock.hint': 'Gợi ý', 'mock.solution': 'Xem lời giải', 'mock.editor': 'Code của bạn', 'mock.summary': 'Tổng kết phỏng vấn', 'mock.avg': 'Điểm trung bình', 'mock.totalTime': 'Tổng thời gian', 'mock.seenAnswers': 'Đáp án mẫu đã xem', 'mock.byTopic': 'Điểm theo chủ đề', 'mock.weak': 'Chủ đề cần cải thiện', 'mock.retryWeak': 'Phỏng vấn lại các câu yếu', 'mock.newSession': 'Phiên mới', 'mock.backSetup': 'Quay lại thiết lập', 'mock.codingRound': 'Vòng coding', 'mock.perQuestion': 'mỗi câu', 'mock.rateHelp': 'Nhấn 1–5 để chấm nhanh (khi không gõ trong ô trả lời).', 'mock.scored': 'Điểm', 'mock.topic': 'Chủ đề', 'mock.difficulty': 'Độ khó', 'mock.mic': 'Đọc chính tả', 'mock.micStop': 'Dừng ghi âm', 'mock.voice': 'Trả lời bằng giọng nói', 'mock.voiceHint': 'Mục tiêu: 1–2 phút, 110–160 từ/phút, ít từ đệm', 'mock.gradeAI': 'Chấm bằng AI', 'mock.grading': 'AI đang chấm…', 'mock.followup': 'Trả lời câu hỏi đào sâu', 'mock.followupTitle': 'Câu hỏi đào sâu', 'mock.aiSuggest': 'AI gợi ý {n}/5 — bấm nút để xác nhận', 'mock.aiAvg': 'Điểm AI trung bình', 'mock.aiCol': 'AI', 'mock.score': 'Điểm', 'mock.time': 'Thời gian', 'mock.algoCount': 'Bài coding', 'mock.noWeak': 'Chưa có chủ đề nào dưới 3 điểm. Tốt lắm!', 'mock.confirmEnd': 'Kết thúc phiên phỏng vấn sớm? Kết quả vẫn được lưu.', 'mock.confirmLeave': 'Bạn đang trong phiên phỏng vấn. Thoát ra sẽ mất tiến độ phiên này.', 'mock.followTitle': 'Câu hỏi đào sâu thường gặp', 'mock.recapTitle': 'Chi tiết từng câu', 'mock.codingName': 'Coding', 'mock.question': 'Câu', 'mock.presetScenario': 'Tình huống thực tế',
+      'mock.setup': 'Thiết lập phỏng vấn thử', 'mock.subtitle': 'Chọn preset, chủ đề, độ khó và thời lượng để luyện phỏng vấn như thật.', 'mock.preset': 'Preset', 'mock.topics': 'Chủ đề', 'mock.level': 'Độ khó', 'mock.count': 'Số câu', 'mock.minutes': 'Thời gian mỗi câu', 'mock.preferUnseen': 'Ưu tiên câu tôi chưa thuộc', 'mock.addCoding': 'Thêm vòng coding', 'mock.codingCount': 'Số bài coding', 'mock.codingDiff': 'Độ khó coding', 'mock.available': 'câu khả dụng', 'mock.start': 'Bắt đầu phỏng vấn', 'mock.noMatch': 'Không có câu nào phù hợp với lựa chọn hiện tại. Hãy nới lọc hoặc bổ sung câu hỏi.', 'mock.all': 'Tất cả', 'mock.notes': 'Câu trả lời của bạn', 'mock.showAnswer': 'Xem đáp án mẫu', 'mock.hideAnswer': 'Ẩn đáp án mẫu', 'mock.selfRate': 'Tự chấm điểm', 'mock.skip': 'Bỏ qua', 'mock.end': 'Kết thúc sớm', 'mock.overTime': 'Quá giờ', 'mock.hint': 'Gợi ý', 'mock.solution': 'Xem lời giải', 'mock.editor': 'Code của bạn', 'mock.summary': 'Tổng kết phỏng vấn', 'mock.avg': 'Điểm trung bình', 'mock.totalTime': 'Tổng thời gian', 'mock.seenAnswers': 'Đáp án mẫu đã xem', 'mock.byTopic': 'Điểm theo chủ đề', 'mock.weak': 'Chủ đề cần cải thiện', 'mock.retryWeak': 'Phỏng vấn lại các câu yếu', 'mock.newSession': 'Phiên mới', 'mock.backSetup': 'Quay lại thiết lập', 'mock.codingRound': 'Vòng coding', 'mock.perQuestion': 'mỗi câu', 'mock.rateHelp': 'Nhấn 1–5 để chấm nhanh (khi không gõ trong ô trả lời).', 'mock.scored': 'Điểm', 'mock.topic': 'Chủ đề', 'mock.difficulty': 'Độ khó', 'mock.mic': 'Đọc chính tả', 'mock.micStop': 'Dừng ghi âm', 'mock.voice': 'Trả lời bằng giọng nói', 'mock.voiceHint': 'Mục tiêu: 1–2 phút, 110–160 từ/phút, ít từ đệm', 'mock.gradeAI': 'Chấm bằng AI', 'mock.grading': 'AI đang chấm…', 'mock.followup': 'Trả lời câu hỏi đào sâu', 'mock.followupTitle': 'Câu hỏi đào sâu', 'mock.aiSuggest': 'AI gợi ý {n}/5 — bấm nút để xác nhận', 'mock.aiAvg': 'Điểm AI trung bình', 'mock.aiCol': 'AI', 'mock.score': 'Điểm', 'mock.time': 'Thời gian', 'mock.algoCount': 'Bài coding', 'mock.noWeak': 'Chưa có chủ đề nào dưới 3 điểm. Tốt lắm!', 'mock.confirmEnd': 'Kết thúc phiên phỏng vấn sớm? Kết quả vẫn được lưu.', 'mock.confirmLeave': 'Bạn đang trong phiên phỏng vấn. Thoát ra sẽ mất tiến độ phiên này.', 'mock.followTitle': 'Câu hỏi đào sâu thường gặp', 'mock.recapTitle': 'Chi tiết từng câu', 'mock.codingName': 'Coding', 'mock.question': 'Câu', 'mock.presetScenario': 'Tình huống thực tế', 'mock.stepQ': 'Câu hỏi', 'mock.stepGrade': 'Đang chấm điểm', 'mock.elapsed': 'Đã dùng', 'mock.rateKeys': 'Bấm <kbd>1</kbd>–<kbd>5</kbd> để chấm nhanh (khi không đang gõ).', 'mock.showKeyKbd': '<kbd>S</kbd>', 'mock.verdictGood': 'Kết quả tốt. Bạn nắm vững phần lớn nội dung.', 'mock.verdictOk': 'Kết quả ổn. Có một số chủ đề cần ôn lại.', 'mock.verdictWeak': 'Cần tập trung ôn tập các chủ đề dưới 3 điểm.',
     },
     en: {
-      'mock.setup': 'Mock interview setup', 'mock.subtitle': 'Pick a preset, topics, level and time per question to practise like a real interview.', 'mock.preset': 'Preset', 'mock.topics': 'Topics', 'mock.level': 'Level', 'mock.count': 'Questions', 'mock.minutes': 'Minutes per question', 'mock.preferUnseen': 'Prioritise questions I do not know yet', 'mock.addCoding': 'Add a coding round', 'mock.codingCount': 'Number of coding problems', 'mock.codingDiff': 'Coding difficulty', 'mock.available': 'questions available', 'mock.start': 'Start interview', 'mock.noMatch': 'No question matches the current selection. Relax the filters or add more questions.', 'mock.all': 'All', 'mock.notes': 'Your answer', 'mock.showAnswer': 'Show sample answer', 'mock.hideAnswer': 'Hide sample answer', 'mock.selfRate': 'Self rate', 'mock.skip': 'Skip', 'mock.end': 'End early', 'mock.overTime': 'Over time', 'mock.hint': 'Hint', 'mock.solution': 'Show solution', 'mock.editor': 'Your code', 'mock.summary': 'Interview summary', 'mock.avg': 'Average score', 'mock.totalTime': 'Total time', 'mock.seenAnswers': 'Sample answers viewed', 'mock.byTopic': 'Score by topic', 'mock.weak': 'Topics to improve', 'mock.retryWeak': 'Re-mock weak questions', 'mock.newSession': 'New session', 'mock.backSetup': 'Back to setup', 'mock.codingRound': 'Coding round', 'mock.perQuestion': 'per question', 'mock.rateHelp': 'Press 1-5 to score quickly (when not typing in the answer box).', 'mock.scored': 'Score', 'mock.topic': 'Topic', 'mock.difficulty': 'Difficulty', 'mock.mic': 'Dictate', 'mock.micStop': 'Stop recording', 'mock.voice': 'Answer with voice', 'mock.voiceHint': 'Target: 1-2 minutes, 110-160 words/min, few filler words', 'mock.gradeAI': 'Grade with AI', 'mock.grading': 'AI is grading…', 'mock.followup': 'Answer follow-up', 'mock.followupTitle': 'Follow-up question', 'mock.aiSuggest': 'AI suggests {n}/5 — click the button to confirm', 'mock.aiAvg': 'Average AI score', 'mock.aiCol': 'AI', 'mock.score': 'Score', 'mock.time': 'Time', 'mock.algoCount': 'Coding problems', 'mock.noWeak': 'No topic below 3 points. Nice work!', 'mock.confirmEnd': 'End the interview early? The result will still be saved.', 'mock.confirmLeave': 'You are in the middle of an interview. Leaving loses this session.', 'mock.followTitle': 'Typical follow-up questions', 'mock.recapTitle': 'Question by question', 'mock.codingName': 'Coding', 'mock.question': 'Question', 'mock.presetScenario': 'Real scenarios',
+      'mock.setup': 'Mock interview setup', 'mock.subtitle': 'Pick a preset, topics, level and time per question to practise like a real interview.', 'mock.preset': 'Preset', 'mock.topics': 'Topics', 'mock.level': 'Level', 'mock.count': 'Questions', 'mock.minutes': 'Minutes per question', 'mock.preferUnseen': 'Prioritise questions I do not know yet', 'mock.addCoding': 'Add a coding round', 'mock.codingCount': 'Number of coding problems', 'mock.codingDiff': 'Coding difficulty', 'mock.available': 'questions available', 'mock.start': 'Start interview', 'mock.noMatch': 'No question matches the current selection. Relax the filters or add more questions.', 'mock.all': 'All', 'mock.notes': 'Your answer', 'mock.showAnswer': 'Show sample answer', 'mock.hideAnswer': 'Hide sample answer', 'mock.selfRate': 'Self rate', 'mock.skip': 'Skip', 'mock.end': 'End early', 'mock.overTime': 'Over time', 'mock.hint': 'Hint', 'mock.solution': 'Show solution', 'mock.editor': 'Your code', 'mock.summary': 'Interview summary', 'mock.avg': 'Average score', 'mock.totalTime': 'Total time', 'mock.seenAnswers': 'Sample answers viewed', 'mock.byTopic': 'Score by topic', 'mock.weak': 'Topics to improve', 'mock.retryWeak': 'Re-mock weak questions', 'mock.newSession': 'New session', 'mock.backSetup': 'Back to setup', 'mock.codingRound': 'Coding round', 'mock.perQuestion': 'per question', 'mock.rateHelp': 'Press 1-5 to score quickly (when not typing in the answer box).', 'mock.scored': 'Score', 'mock.topic': 'Topic', 'mock.difficulty': 'Difficulty', 'mock.mic': 'Dictate', 'mock.micStop': 'Stop recording', 'mock.voice': 'Answer with voice', 'mock.voiceHint': 'Target: 1-2 minutes, 110-160 words/min, few filler words', 'mock.gradeAI': 'Grade with AI', 'mock.grading': 'AI is grading…', 'mock.followup': 'Answer follow-up', 'mock.followupTitle': 'Follow-up question', 'mock.aiSuggest': 'AI suggests {n}/5 — click the button to confirm', 'mock.aiAvg': 'Average AI score', 'mock.aiCol': 'AI', 'mock.score': 'Score', 'mock.time': 'Time', 'mock.algoCount': 'Coding problems', 'mock.noWeak': 'No topic below 3 points. Nice work!', 'mock.confirmEnd': 'End the interview early? The result will still be saved.', 'mock.confirmLeave': 'You are in the middle of an interview. Leaving loses this session.', 'mock.followTitle': 'Typical follow-up questions', 'mock.recapTitle': 'Question by question', 'mock.codingName': 'Coding', 'mock.question': 'Question', 'mock.presetScenario': 'Real scenarios', 'mock.stepQ': 'Question', 'mock.stepGrade': 'Grading', 'mock.elapsed': 'Elapsed', 'mock.rateKeys': 'Press <kbd>1</kbd>–<kbd>5</kbd> to score quickly (when not typing).', 'mock.showKeyKbd': '<kbd>S</kbd>', 'mock.verdictGood': 'Good result. You have a good grasp of most topics.', 'mock.verdictOk': 'Solid result. A few topics need review.', 'mock.verdictWeak': 'Focus on topics below 3/5.',
     },
   });
 
@@ -382,9 +382,12 @@
     const el = root.querySelector('#mockTimer');
     if (!el) return;
     const left = (S.deadline - Date.now()) / 1000;
+    const spent = Math.max(0, Math.round((Date.now() - S.qStart) / 1000));
     el.textContent = (left < 0 ? App.t('mock.overTime') + ' ' : '') + fmtClock(left);
     el.classList.toggle('warn', left >= 0 && left < 30);
     el.classList.toggle('bad', left < 0);
+    const sub = root.querySelector('#mockElapsed');
+    if (sub) sub.textContent = App.esc(t('mock.elapsed')) + ' ' + fmtClock(spent);
   }
 
   function showQuestion(root) {
@@ -407,8 +410,12 @@
             '<div><strong>' + App.esc(App.t('mock.question')) + ' ' + pos + ' / ' + n + '</strong>' +
               '<div class="mock-meta"><span class="badge">' + App.esc(tp.name) + '</span>' +
               '<span class="badge">' + App.esc(String(lvl)) + '</span>' +
-              (isAlgo ? '<span class="badge accent">' + App.esc(App.t('mock.codingRound')) + '</span>' : '') + '</div></div>' +
-            '<div class="mock-timer" id="mockTimer" role="timer">--:--</div>' +
+              (isAlgo ? '<span class="badge accent">' + App.esc(App.t('mock.codingRound')) + '</span>' : '') +
+              '<span class="badge mock-step-badge" id="mockStep">' + App.esc(t('mock.stepQ')) + '</span></div></div>' +
+            '<div class="mock-timer-wrap">' +
+              '<div class="mock-timer" id="mockTimer" role="timer">--:--</div>' +
+              '<div class="mock-timer-sub" id="mockElapsed">' + App.esc(t('mock.elapsed')) + ' 0:00</div>' +
+            '</div>' +
           '</div>' +
           '<div class="mock-progress"><i style="width:' + Math.round(pos / n * 100) + '%"></i></div>' +
         '</header>' +
@@ -425,7 +432,7 @@
           '</label>' +
           (isAlgo ? '' : '<p class="mock-voice-hint muted small">🎯 ' + App.esc(App.t('mock.voiceHint')) + '</p>') +
           '<div class="row mock-tools">' +
-            (isAlgo ? '' : '<button type="button" class="btn" id="mockAnswer">' + App.esc(App.t('mock.showAnswer')) + '</button>') +
+            (isAlgo ? '' : '<button type="button" class="btn" id="mockAnswer" aria-label="' + App.esc(App.t('mock.showAnswer')) + '">' + App.esc(App.t('mock.showAnswer')) + ' <span class="mock-keyhint" aria-hidden="true">' + App.t('mock.showKeyKbd') + '</span></button>') +
             '<button type="button" class="btn mic-btn" id="mockMic"' + (speechSupported ? '' : ' hidden') + '>🎤 ' + App.esc(isAlgo ? App.t('mock.mic') : App.t('mock.voice')) + '</button>' +
             (isAlgo ? '' : '<button type="button" class="btn primary" id="mockAi" disabled>🤖 ' + App.esc(App.t('mock.gradeAI')) + '</button>') +
           '</div>' +
@@ -468,7 +475,7 @@
       btns += '<button type="button" class="btn mock-rate" data-rate="' + i + '" aria-label="' + i + ' / 5">' + i + '</button>';
     }
     return '<section class="card mock-rate-box"><div class="row"><strong>' + App.esc(App.t('mock.selfRate')) + '</strong>' +
-      '<span class="spacer"></span><span class="muted small">' + App.esc(App.t('mock.rateHelp')) + '</span></div>' +
+      '<span class="spacer"></span><span class="muted small" id="mockRateHelp">' + App.t('mock.rateKeys') + '</span></div>' +
       '<div class="mock-rate-row">' + btns + '</div>' +
       '<p class="mock-ai-suggest small" id="mockAiSuggest"></p></section>';
   }
@@ -717,6 +724,8 @@
     const box = root.querySelector('#mockAiBox');
     if (!box) return;
     const st = aiStateFor(it.data.id);
+    const step = root.querySelector('#mockStep');
+    if (step) step.textContent = App.esc(st.result ? t('mock.stepGrade') : t('mock.stepQ'));
     if (st.error) { box.innerHTML = App.ui.error(st.error); return; }
     box.innerHTML = st.result ? App.ui.feedback(st.result, answerLang()) : '';
   }
@@ -968,6 +977,9 @@
   function renderSummary(root, sum) {
     const L = t();
     const fbLang = S.cfg.english ? 'en' : 'vi';
+    const avgV = sum.avg;
+    const verdict = avgV >= 4 ? L.verdictGood : avgV >= 3 ? L.verdictOk : L.verdictWeak;
+    const verdictCls = avgV >= 4 ? 'ok' : avgV >= 3 ? 'warn' : 'bad';
     const rows = sum.res.map(r => {
       const d = r.kind === 'algo'
         ? App.algos().find(a => a.id === r.id)
@@ -1013,7 +1025,8 @@
 
     root.innerHTML =
       '<div class="page-head"><div><h1>' + App.esc(App.t('mock.summary')) + '</h1></div>' +
-        '<div class="row"><button type="button" class="btn" id="mockRetryWeak">' + App.esc(App.t('mock.retryWeak')) + '</button>' +
+        '<div class="mock-verdict mock-verdict-' + verdictCls + '"><span class="dot ' + verdictCls + '"></span><strong>' + avgV.toFixed(1) + '/5</strong> ' + App.esc(verdict) + '</div>' +
+        '<div class="row"><button type="button" class="btn ' + (sum.weak.length ? 'primary' : '') + '" id="mockRetryWeak">' + App.esc(App.t('mock.retryWeak')) + '</button>' +
         '<button type="button" class="btn primary" id="mockNew">' + App.esc(App.t('mock.newSession')) + '</button></div></div>' +
 
       '<div class="grid mock-stats">' +
