@@ -2332,6 +2332,595 @@ Ví dụ với {{maxAttempts = 3, baseDelayMs = 200, maxDelayMs = 30000}}: delay
   ],
   related: ['ai-001', 'ai-007', 'ai-013', 'ai-021', 'ai-027'],
   tags: ['ai', 'llm', 'token-budget', 'context-trimming', 'timeout', 'retry', 'backoff', 'circuit-breaker', 'fallback', 'cost'],
+},
+{
+  id: 'lesson-ai-007',
+  track: 'ai',
+  order: 7,
+  title: 'Vòng lặp AI agent: model chọn tool, ứng dụng thực thi và kiểm soát số bước',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Phân biệt được LLM (model ngôn ngữ) với agent loop (vòng lặp điều phối do ứng dụng kiểm soát).',
+    'Mô tả đúng chu trình model → tool call → chạy tool → tool result → model và vì sao model không tự chạy code.',
+    'Cài vòng lặp agent Java thuần với model giả, nhiều tool, kết quả tool và giới hạn maxSteps.',
+    'Nhận ra lỗi lặp vô hạn, tool lỗi, dữ liệu tool quá lớn và cách đặt timeout/ngân sách cho agent thật.'
+  ],
+  body: `**Tóm tắt:** AI agent trong ứng dụng thường không phải một model tự hành động: đó là một vòng lặp do chương trình của ta điều khiển. Model đề nghị gọi một tool (công cụ có tên và đầu vào), ứng dụng kiểm tra rồi thực thi tool, trả kết quả về cho model; vòng lặp dừng khi model trả lời cuối cùng hoặc ứng dụng chạm giới hạn bước/ngân sách. Vì vậy quyền truy cập, giới hạn và log nằm ở ứng dụng, không được giao cho lời văn của model.
+
+### 1. LLM, tool và agent khác nhau thế nào?
+**LLM** (Large Language Model, mô hình ngôn ngữ lớn) nhận văn bản và trả ra văn bản có cấu trúc. **Tool** là một hàm do ứng dụng cung cấp, chẳng hạn tra trạng thái hóa đơn trong database. **Agent loop** là vòng điều phối quyết định sẽ gọi model lại hay kết thúc. **Prompt** là nội dung hướng dẫn, câu hỏi và dữ liệu mà ứng dụng gửi cho model; **provider** là nhà cung cấp đang vận hành model và API, ví dụ Anthropic hoặc OpenAI. Hình dung model như nhân viên tổng đài biết yêu cầu cần tra cứu, còn agent loop là quy trình công ty: chỉ nhân viên có quyền mới được mở hệ thống và mọi lần tra cứu đều có giới hạn.
+
+Khi tích hợp tool calling trong provider, request gửi kèm danh sách mô tả tool; model có thể trả về một hoặc nhiều tool call thay vì câu trả lời cho người dùng. Response đó chỉ là **đề nghị**. Model không có quyền truy cập database hay chạy Java trong process của bạn. Server phải tìm đúng tool, xác thực người dùng, kiểm tra đầu vào, rồi mới gọi hàm Java tương ứng. Tên “function calling” cũng không có nghĩa model thực thi hàm: ứng dụng luôn là bên thực thi.
+
+### 2. Một vòng gọi đi qua những bước nào?
+1. Ứng dụng gửi câu hỏi, lịch sử hội thoại và mô tả tool cho model.
+2. Model trả {{tool_use(name, input)}} hoặc {{text(answer)}}. Đây là hai loại response khác nhau; đừng cố chạy tool bằng cách dò từ khóa trong câu văn tự do.
+3. Nếu là tool call, ứng dụng kiểm tra tên và input, chạy tool được đăng ký, rồi lưu kết quả vào hội thoại dưới dạng tool result gắn với call tương ứng.
+4. Ứng dụng gửi lịch sử đã có kết quả tool cho model lần nữa. Model có thể gọi tool khác hoặc trả text cuối.
+5. Ứng dụng trả lời cho người dùng khi nhận text cuối, hoặc báo đã đạt giới hạn bước.
+
+~~~text
+User -> App: "Hóa đơn INV-42 đã thanh toán chưa?"
+App -> Model: câu hỏi + mô tả tool lookupInvoice
+Model --> App: tool_use(lookupInvoice, "INV-42")
+App -> Tool: tra cứu sau khi kiểm quyền
+Tool --> App: "PAID"
+App -> Model: tool_result("PAID") + lịch sử
+Model --> App: text("Hóa đơn đã được thanh toán.")
+App --> User: câu trả lời
+~~~
+
+**Vì sao phải gọi model lại?** Tool trả dữ liệu thô, không biết người dùng hỏi gì và không tự diễn giải. Model cần thấy kết quả để trả lời hoặc chọn bước tiếp theo. Nếu nhiều tool call cùng được trả về, chỉ chạy song song khi các thao tác độc lập; nếu tool thứ hai phụ thuộc kết quả thứ nhất thì phải thực hiện tuần tự.
+
+### 3. Mô hình hóa bằng Java thuần
+Để test mà không cần API có tiền, ta thay model bằng {{FakeModel}}: mỗi lần gọi, nó lấy response kế tiếp trong kịch bản định trước. Kịch bản này vẫn đi qua đúng logic điều phối thật: model có thể đề nghị tool, tool chạy, kết quả được đưa lại vào lần gọi sau.
+
+~~~java
+interface FakeModel {
+    Response next(List<String> toolResults);
+}
+// Response.tool("lookup", "INV-42") hoặc Response.text("Đã thanh toán")
+AgentResult run(FakeModel model, Map<String, Tool> tools, int maxSteps) {
+    List<String> results = new ArrayList<>();
+    for (int step = 1; step <= maxSteps; step++) {
+        Response r = model.next(List.copyOf(results));
+        if (!r.toolUse) return new AgentResult(r.text, step, true);
+        Tool tool = tools.get(r.name);             // chỉ tool đã đăng ký mới được chạy
+        results.add(tool.call(r.input));            // kết quả được model đọc ở bước tiếp
+    }
+    return new AgentResult("", maxSteps, false);   // cắt vòng lặp vô hạn
+}
+~~~
+
+Code minh họa lược bỏ xử lý tên tool không tồn tại và lỗi tool; lời giải tập trung vào luồng chính, còn ứng dụng thật phải trả tool error rõ ràng để model có cơ hội sửa input. {{maxSteps}} đếm **số lần gọi model**, bao gồm cả lần model trả text cuối. Với trần 5, vòng lặp có thể chạy tối đa 5 lượt model: nếu cả 5 lượt đều là tool call thì agent kết thúc bằng trạng thái chưa hoàn tất; nếu muốn luôn có một bước tổng hợp thì phải để dành bước cuối và không dùng hết trần cho tool. Cần chọn quy ước này nhất quán trong test và log. Giá trị 0 hoặc âm phải bị từ chối, không được âm thầm chạy vòng lặp.
+
+### 4. Giới hạn nào mới đủ an toàn?
+{{maxSteps}} là chốt chống lặp vô hạn nhưng chưa phải ngân sách đầy đủ. Mỗi bước có thể gọi provider tốn tiền, truyền lại lịch sử khiến input token tăng, hoặc tool bị treo. Production cần phối hợp:
+- **Giới hạn bước**: chẳng hạn tối đa 5 lượt model cho một tác vụ tra cứu đơn giản; luồng phức tạp phải có lý do và ngân sách riêng.
+- **Deadline/timeout**: deadline là thời điểm cuối cùng request được phép hoàn tất. Timeout từng HTTP/tool không được vượt deadline tổng của request.
+- **Ngân sách token/chi phí**: token là mảnh văn bản model đọc/viết và thường là đơn vị tính quota, chi phí; ghi số input/output từ provider, giới hạn độ dài output và kích thước tool result, không nhét hàng nghìn dòng database vào prompt.
+- **Giới hạn quyền và tốc độ**: kiểm soát theo user/tool, áp rate limit (giới hạn số request trong một khoảng thời gian), và không cho model tự chọn account của người khác.
+- **Dấu vết**: ghi request id, số bước, tên tool, thời gian, trạng thái và token; che thông tin nhạy cảm trong input/output.
+
+### 5. Lỗi thường gặp và cách xử lý
+| Triệu chứng | Lý do | Cách phòng tránh |
+|---|---|---|
+| Agent gọi tra cứu mãi | Không có maxSteps hoặc tool result không giúp model tiến tới câu trả lời | Dừng theo số bước và deadline; trả trạng thái dừng rõ ràng |
+| Model nói đã chuyển tiền nhưng thực tế chưa có | Tin câu text thay vì kết quả từ hệ thống thật | Chỉ xác nhận sau khi tool ghi dữ liệu thành công và trả mã giao dịch |
+| Lịch sử bị lỗi sau tool call | Lưu tool result sai call id hoặc không gửi lại kết quả | Giữ đúng cặp tool call/tool result theo contract của provider |
+| Request đắt bất thường | Lịch sử và tool result được gửi lại qua nhiều vòng | Giới hạn input/output, rút gọn kết quả, đo token theo từng bước |
+| Tool lỗi làm hỏng cả request | Không biểu diễn lỗi như kết quả có kiểm soát | Ghi lỗi an toàn, không lộ stack trace; quyết định retry/fail theo loại tool |
+
+Tool tra cứu chỉ nên trả các trường cần thiết. Tool gửi email, hoàn tiền hay xoá dữ liệu là **tool ghi** (có side effect, tức thay đổi trạng thái bên ngoài); chúng cần quyền riêng, xác nhận khi phù hợp và chống gửi lặp. Không để model tự quyết định giá trị phân quyền: server lấy danh tính từ phiên đăng nhập đã xác thực.
+
+### 6. Liên hệ với framework thật
+Spring AI và LangChain4j cung cấp abstraction cho chat model, tool/function và vòng điều phối, nhưng abstraction không làm mất trách nhiệm của ứng dụng: quyền, schema, timeout, giới hạn bước và idempotency (chống thực hiện lặp) vẫn phải được thiết kế. Giao thức MCP (Model Context Protocol) chuẩn hóa cách client khám phá/gọi tools từ server MCP; nó không tự đảm bảo tool an toàn, cũng không biến model thành bên thực thi. Dù dùng thư viện nào, hãy hiểu rõ ai gọi tool và ở đâu dữ liệu được kiểm tra.
+
+### Liên hệ phỏng vấn
+Khi được hỏi “agent loop hoạt động thế nào?”, hãy trả lời theo chuỗi: ứng dụng gửi prompt và mô tả tool → model trả tool call có cấu trúc → server xác thực, kiểm tra và chạy tool → kết quả được nối đúng vào lịch sử → model được gọi lại → dừng khi có câu trả lời hoặc hết ngân sách. Nhấn mạnh tool call từ model chỉ là đề nghị, không phải lệnh đáng tin; nêu maxSteps, deadline, giới hạn quyền và cách đo số bước/token. Sau đó đưa ví dụ tra hóa đơn và nói rõ thao tác ghi dữ liệu cần idempotency, khác với tool chỉ đọc.
+> Senior tip: bắt đầu bằng max 3–5 bước cho tác vụ hẹp, rồi đo p95 latency (mốc mà 95% request hoàn tất nhanh hơn hoặc bằng), token/request và tỷ lệ kết thúc bằng maxSteps trên dữ liệu thật. Nếu agent thường xuyên chạm trần, xem lại mô tả tool và chất lượng kết quả trước khi chỉ tăng giới hạn—tăng trần mà không đo có thể nhân cả độ trễ lẫn chi phí.`,
+  exercises: [
+    {
+      title: 'Cài AgentLoop chạy theo kịch bản model giả',
+      prompt: `Hoàn thiện {{AgentLoop.run}} và các lớp nhỏ đi kèm. {{FakeModel.next(toolResults)}} trả lần lượt response do test định trước cung cấp; response là một {{tool_use}} có tên/input hoặc một {{text}} cuối cùng. Vòng lặp phải:
+- Từ chối {{maxSteps <= 0}} bằng {{IllegalArgumentException}}.
+- Mỗi response nhận được tính là một bước model. Gặp text thì trả {{AgentResult(answer, steps, finished=true)}} ngay, không gọi model thêm.
+- Gặp tool_use thì chỉ gọi tool cùng tên trong {{Map<String, Tool>}}; thêm kết quả tool vào danh sách và gửi danh sách này ở lần model kế tiếp.
+- Tối đa {{maxSteps}} lần gọi model. Hết bước mà chưa có text thì trả {{finished=false}}, {{steps=maxSteps}}; không gọi model vượt trần.
+- Nếu tên tool không tồn tại, thêm kết quả {{ERROR: unknown tool}} để model có thể tự sửa ở lượt sau; không gọi tool lạ.
+
+Các kiểu dữ liệu khung và factory {{Response.tool(name, input)}} / {{Response.text(text)}} có trong starter. Không gọi API thật; model giả và tool giả làm bài test xác định.`,
+      starter: `interface Tool {
+    String call(String input);
 }
 
+interface FakeModel {
+    Response next(List<String> toolResults);
+}
+
+final class Response {
+    final boolean toolUse;
+    final String name, input, text;
+    Response(boolean toolUse, String name, String input, String text) {
+        this.toolUse = toolUse; this.name = name; this.input = input; this.text = text;
+    }
+    static Response tool(String name, String input) {
+        return new Response(true, name, input, "");
+    }
+    static Response text(String text) {
+        return new Response(false, "", "", text);
+    }
+}
+
+final class AgentResult {
+    final String answer;
+    final int steps;
+    final boolean finished;
+    AgentResult(String answer, int steps, boolean finished) {
+        this.answer = answer; this.steps = steps; this.finished = finished;
+    }
+}
+
+class AgentLoop {
+    AgentResult run(FakeModel model, Map<String, Tool> tools, int maxSteps) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable test) {
+        total++;
+        try { test.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual))
+            throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static final class Script implements FakeModel {
+        final List<Response> script;
+        final List<List<String>> seen = new ArrayList<>();
+        int calls = 0;
+        Script(Response... responses) { script = Arrays.asList(responses); }
+        public Response next(List<String> results) {
+            seen.add(new ArrayList<>(results));
+            return script.get(calls++);
+        }
+    }
+    public static void main(String[] args) {
+        check("tool result returns to model before final answer", () -> {
+            Script model = new Script(Response.tool("lookup", "INV-42"),
+                                      Response.text("Hóa đơn đã thanh toán"));
+            int[] calls = {0};
+            Map<String, Tool> tools = Map.of("lookup", input -> {
+                calls[0]++;
+                eq("INV-42", input);
+                return "PAID";
+            });
+            AgentResult r = new AgentLoop().run(model, tools, 3);
+            eq("Hóa đơn đã thanh toán", r.answer);
+            eq(2, r.steps); eq(true, r.finished); eq(1, calls[0]);
+            eq(List.of("PAID"), model.seen.get(1));
+        });
+        check("final text stops without another model call", () -> {
+            Script model = new Script(Response.text("Không cần tra cứu"),
+                                      Response.tool("lookup", "INV-9"));
+            AgentResult r = new AgentLoop().run(model, Map.of(), 4);
+            eq(1, model.calls); eq(1, r.steps); eq(true, r.finished);
+            eq("Không cần tra cứu", r.answer);
+        });
+        check("maxSteps stops a repeating tool loop", () -> {
+            Script model = new Script(Response.tool("lookup", "1"),
+                                      Response.tool("lookup", "2"),
+                                      Response.text("không được gọi tới"));
+            int[] calls = {0};
+            AgentResult r = new AgentLoop().run(model,
+                Map.of("lookup", input -> { calls[0]++; return input; }), 2);
+            eq(false, r.finished); eq(2, r.steps); eq(2, model.calls);
+            eq(2, calls[0]);
+        });
+        check("invalid maxSteps is rejected", () -> {
+            boolean threw = false;
+            try { new AgentLoop().run(new Script(Response.text("x")), Map.of(), 0); }
+            catch (IllegalArgumentException expected) { threw = true; }
+            eq(true, threw);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `interface Tool {
+    String call(String input);
+}
+
+interface FakeModel {
+    Response next(List<String> toolResults);
+}
+
+final class Response {
+    final boolean toolUse;
+    final String name, input, text;
+    Response(boolean toolUse, String name, String input, String text) {
+        this.toolUse = toolUse; this.name = name; this.input = input; this.text = text;
+    }
+    static Response tool(String name, String input) {
+        return new Response(true, name, input, "");
+    }
+    static Response text(String text) {
+        return new Response(false, "", "", text);
+    }
+}
+
+final class AgentResult {
+    final String answer;
+    final int steps;
+    final boolean finished;
+    AgentResult(String answer, int steps, boolean finished) {
+        this.answer = answer; this.steps = steps; this.finished = finished;
+    }
+}
+
+class AgentLoop {
+    AgentResult run(FakeModel model, Map<String, Tool> tools, int maxSteps) {
+        if (maxSteps <= 0) throw new IllegalArgumentException("maxSteps must be positive");
+        List<String> results = new ArrayList<>();
+        for (int step = 1; step <= maxSteps; step++) {
+            Response response = Objects.requireNonNull(model.next(List.copyOf(results)));
+            if (!response.toolUse)
+                return new AgentResult(response.text, step, true);
+            Tool tool = tools.get(response.name);
+            String result = tool == null
+                ? "ERROR: unknown tool"
+                : tool.call(response.input);
+            results.add(result);
+        }
+        return new AgentResult("", maxSteps, false);
+    }
+}`,
+      hints: [
+        'Tạo một {{ArrayList<String>}} chứa kết quả tool; mỗi vòng gọi {{model.next}} đúng một lần với snapshot của danh sách.',
+        'Dùng vòng {{for}} từ bước 1 tới {{maxSteps}}. Nhánh {{!response.toolUse}} phải return ngay; hết vòng mới return {{finished=false}}.',
+        'Tra tool bằng {{tools.get(response.name)}}; nếu null, thêm đúng chuỗi lỗi thay vì gọi null hoặc bỏ mất bước phản hồi.'
+      ],
+      explain: `### Luồng lời giải
+Mỗi vòng lặp tiêu thụ đúng một response từ model. Nếu response là text thì {{AgentResult.steps}} gồm cả bước cuối đó, và return ngay bảo đảm không lãng phí request tiếp theo. Nếu response là tool call, ứng dụng tra tên trong map đã đăng ký; tool không tồn tại được chuyển thành một kết quả lỗi bình thường để model có thể trả lời hoặc sửa yêu cầu ở bước kế.
+
+{{List.copyOf(results)}} tạo snapshot không sửa được để FakeModel không thể vô tình thay đổi lịch sử tool result của AgentLoop. Kết quả mới chỉ xuất hiện ở lần gọi model sau. Khi hết vòng, {{steps}} bằng giới hạn và {{finished=false}} phân biệt rõ với câu trả lời cuối. Trong production không nên dùng chuỗi rỗng làm thông báo hiển thị: gọi code thật có thể trả trạng thái dừng riêng để UI giải thích rằng agent đã chạm ngân sách.
+
+### Lỗi hay gặp
+- Tăng bộ đếm chỉ khi gọi tool: model có thể trả text lặp hoặc response bất thường mà không tính bước, khiến giới hạn không chặn được.
+- Dùng {{while(true)}} nhưng chỉ dừng theo câu trả lời: tool lỗi hoặc model lặp lại tool sẽ chạy mãi.
+- Khi có tool result lại quên gọi model: người dùng nhận dữ liệu thô thay vì câu trả lời theo câu hỏi.
+- Gặp tool lạ thì thực thi một fallback tùy ý: đây là lỗi phân quyền. Chỉ tên tool đã đăng ký mới có handler.
+- Bắt mọi exception của tool rồi coi như thành công: lỗi ghi dữ liệu phải được báo rõ, không được tạo câu “đã hoàn tất” giả.
+
+Test dùng kịch bản cố định thay vì gọi provider, nên không tốn tiền và luôn lặp lại cùng kết quả. Test thứ nhất xác nhận dữ liệu tool đi vào lần gọi model tiếp theo; test thứ hai chứng minh dừng ngay khi có text; test thứ ba chứng minh không vượt maxSteps; test cuối xác nhận input giới hạn không hợp lệ bị từ chối.`,
+    }
+  ],
+  check: [
+    {
+      q: 'Model trả về tool call yêu cầu đọc hồ sơ người dùng. Bước nào phải xảy ra trước khi hàm database chạy?',
+      options: [
+        'Tin rằng model đã chọn đúng người dùng vì nó thấy câu hỏi',
+        'Server kiểm tra tool được phép và xác thực quyền trên danh tính lấy từ phiên đăng nhập',
+        'Gọi tool bất kỳ cùng tên gần giống rồi sửa kết quả bằng prompt',
+        'Trả câu trả lời của model luôn vì tool call chỉ là gợi ý',
+      ],
+      answer: 1,
+      explain: `Tool call chỉ là dữ liệu do model đề nghị, không phải bằng chứng người gọi có quyền. Server phải lấy user/principal (danh tính đã xác thực) từ phiên đáng tin, kiểm tra quyền với tài nguyên cụ thể rồi mới gọi handler; không dùng userId mà model tự viết trong input làm căn cứ phân quyền. Trong hệ thống nhiều tenant (nhiều khách hàng/tổ chức dùng chung một ứng dụng), quyền phải kiểm tra cả tenant sở hữu tài nguyên. Các lựa chọn khác hoặc trao quyền cho model, hoặc gọi nhầm tool, hoặc bỏ qua việc thực thi tool nên không trả được dữ liệu thật.`,
+    },
+    {
+      q: 'Tại sao AgentLoop cần maxSteps dù model thường tự trả lời sau khi dùng tool?',
+      options: [
+        'Để model không thể sử dụng bất kỳ tool nào',
+        'Để số bước luôn bằng số tool đã đăng ký',
+        'Để chặn vòng lặp khi model tiếp tục yêu cầu tool, đồng thời giới hạn request và chi phí',
+        'Để thay thế timeout cho một tool bị treo',
+      ],
+      answer: 2,
+      explain: `Model có thể lặp lại cùng yêu cầu, tool có thể trả dữ liệu khiến model tiếp tục gọi tool, hoặc prompt có thể thiếu thông tin kết thúc. maxSteps đặt trần số lần gọi model nên chặn vòng lặp và giới hạn một phần chi phí; nó không thay timeout vì một lần gọi tool hoặc HTTP có thể treo lâu ngay trong một bước. MaxSteps cũng không cấm tool, và không liên quan số tool được đăng ký.`,
+    },
+    {
+      q: 'Tool chuyển tiền trả về lỗi timeout, nên kết luận điều gì?',
+      options: [
+        'Chắc chắn giao dịch chưa được ghi vì client không nhận response',
+        'Chắc chắn giao dịch đã thành công vì request đã gửi',
+        'Kết quả chưa rõ; cần tra trạng thái bằng định danh giao dịch hoặc retry an toàn với idempotency key',
+        'Yêu cầu model đoán trạng thái từ nội dung hội thoại',
+      ],
+      answer: 2,
+      explain: `Timeout chỉ cho biết client không nhận response kịp, không cho biết server đã commit hay chưa: giao dịch có thể đã thành công nhưng response bị mất. Tra trạng thái theo transaction id hoặc gửi lại cùng idempotency key giúp tránh tạo giao dịch thứ hai. Hai kết luận “chắc chắn chưa” và “chắc chắn rồi” đều không có căn cứ; model không thể thay dữ liệu từ hệ thống ghi nhận.`,
+    },
+  ],
+  related: ['ai-001', 'ai-017'],
+  tags: ['ai-agent', 'agent-loop', 'tool-calling', 'max-steps', 'java'],
+},
+{
+  id: 'lesson-ai-008',
+  track: 'ai',
+  order: 8,
+  title: 'Thiết kế tool an toàn: schema, phân quyền và idempotency cho thao tác ghi',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Tách được kiểm tra schema/đầu vào khỏi xác thực danh tính và phân quyền.',
+    'Cài ToolRegistry Java thuần với schema nhỏ, quyền theo role và tool handler đã đăng ký.',
+    'Dùng idempotency key để lặp lại request ghi mà không tạo side effect lần hai.',
+    'Giải thích giới hạn của cache idempotency trong một JVM và cách chuyển sang lưu bền vững ở production.'
+  ],
+  body: `**Tóm tắt:** Tool là một API thật nằm sau lời gọi của model, nên rủi ro của nó giống một endpoint backend: input có thể sai, người gọi có thể không đủ quyền và request có thể bị gửi lặp. Thiết kế an toàn theo lớp: chỉ tìm trong tool đã đăng ký, kiểm tra schema/ý nghĩa input, kiểm tra quyền dựa trên danh tính đã xác thực, rồi mới thực thi; với thao tác ghi, dùng idempotency key để cùng một ý định không gây side effect hai lần. Idempotency key là mã do client tạo cho một ý định nghiệp vụ và gửi lại nguyên vẹn khi retry.
+
+### 1. Vì sao mô tả tool trong prompt không phải biện pháp bảo vệ?
+Mô tả “input phải là mã hóa đơn” giúp model tạo request đúng định dạng hơn, nhưng prompt không phải validator và model không phải ranh giới bảo mật. Input vẫn có thể bị lỗi, bị cố ý thao túng qua prompt injection (nội dung không tin cậy tìm cách khiến model bỏ qua chỉ dẫn), hoặc đến từ client khác. Vì vậy server phải coi mọi trường do model gửi là input bên ngoài.
+
+Ba câu hỏi độc lập cần trả lời:
+1. **Schema hợp lệ không?** Schema là hợp đồng hình dạng dữ liệu: trường nào bắt buộc, kiểu gì, giới hạn/format nào. Ví dụ mã hóa đơn phải khớp tiền tố {{INV-}} và chữ số; một chuỗi trống không phải mã hợp lệ. Regex (biểu thức chính quy) là một pattern viết bằng ký hiệu để kiểm tra hình dạng chuỗi; ví dụ pattern của bài yêu cầu tiền tố PAY- theo sau bởi đúng ba chữ số.
+2. **Ai được làm việc này?** Authentication (xác thực) xác định danh tính “ai đang gọi”; authorization (phân quyền) quyết định danh tính đó được phép làm gì trên tài nguyên nào. Đăng nhập hợp lệ không đồng nghĩa được hoàn tiền mọi tài khoản.
+3. **Request đã xử lý chưa?** Retry (gửi lại sau lỗi mạng) có thể đến sau khi database đã commit nhưng response thất lạc. Với lệnh tạo thanh toán, chạy lại không có chống lặp có thể trừ tiền hai lần.
+
+Schema không thay thế validation nghiệp vụ. Một số tiền có đúng kiểu decimal nhưng vẫn âm hoặc vượt hạn mức; cần kiểm tra invariant (điều kiện nghiệp vụ luôn phải đúng) trong service và database sau khi validate cấu trúc.
+
+### 2. Luồng dispatch an toàn
+{{ToolRegistry}} là allowlist (danh sách cho phép) các tool được server đăng ký trước. Nó không dùng reflection (cơ chế Java đọc/gọi class và method lúc chạy) để gọi method tùy ý, không ghép tên method từ model vào câu lệnh SQL, và không cho model chọn endpoint (địa chỉ/chức năng API) tùy tiện. Với từng request, thứ tự hợp lý là:
+- Tra tool trong registry; tool không tồn tại thì từ chối.
+- Xác thực user từ session/token server đã kiểm; principal là danh tính đáng tin của user, không lấy danh tính từ prompt hay input tool.
+- Kiểm tra role/quyền và quyền trên đúng tài nguyên.
+- Validate schema, giới hạn độ dài và kiểm tra điều kiện nghiệp vụ.
+- Với tool ghi, yêu cầu idempotency key hợp lệ; kiểm tra key đã dùng và input có trùng không.
+- Gọi service nghiệp vụ; chỉ sau khi thành công mới lưu kết quả gắn với key. Trả kết quả tối thiểu cần thiết cho model.
+
+~~~text
+Model tool_use -> Registry lookup -> AuthN/AuthZ -> schema + rule
+                                      | sai: reject, không chạy handler
+                                      v
+                             idempotency lookup
+                                      | mới: execute service -> save result
+                                      | cũ, cùng input: trả result đã lưu
+                                      | cũ, khác input: reject conflict
+~~~
+
+AuthN là viết tắt của authentication; AuthZ là authorization. Dùng tên viết tắt này trong log/diagram được, nhưng trong code và phỏng vấn cần nói rõ để không nhầm “đã đăng nhập” với “được phép”.
+
+### 3. Idempotency là gì, không phải gì?
+Một thao tác idempotent cho cùng một key và cùng payload cho kết quả như một lần thực thi: gửi lại request không tạo side effect mới. Server lưu cặp {{(principal, tool, key)}} cùng dấu vân tay input và kết quả. Retry cùng key/cùng input thì trả kết quả trước; cùng key nhưng input khác thì từ chối, vì nếu âm thầm trả kết quả cũ client có thể hiểu nhầm request mới đã được xử lý.
+
+Không dùng nội dung prompt làm key: prompt có thể đổi cách diễn đạt nhưng vẫn cùng giao dịch, hoặc cùng prompt lại đại diện hai lệnh khác nhau. Key thường do client/service tạo bằng UUID cho một ý định nghiệp vụ, lưu lại khi retry và truyền xuyên qua các tầng. Dùng unique constraint trên database để hai instance cùng nhận key không thể cùng tạo hai giao dịch. Lưu cả trạng thái đang xử lý/thành công/thất bại và thời gian hết hạn theo yêu cầu nghiệp vụ.
+
+**Giới hạn quan trọng:** ví dụ Java trong bài giữ map trong RAM và synchronized chỉ bảo vệ các thread của một JVM. Restart sẽ mất map, còn hai pod (hai bản ứng dụng chạy độc lập) không chia sẻ synchronized. Production phải lưu idempotency record bền vững ở database dùng chung, đặt unique key (ràng buộc cơ sở dữ liệu ngăn hai record trùng khóa) và bảo đảm cập nhật record với giao dịch nghiệp vụ một cách nguyên tử. Nếu gọi dịch vụ bên ngoài, truyền key xuống dịch vụ đó khi hỗ trợ; transactional outbox (ghi sự kiện cùng transaction DB rồi gửi lại an toàn) giúp đồng bộ DB và message broker, nhưng không biến mọi hệ thống thành “exactly once” thần kỳ.
+
+### 4. Ví dụ code: schema một trường và quyền tối thiểu
+Trong bài tập ta dùng regex để mô phỏng schema đơn giản cho một chuỗi mã thanh toán, role {{operator}} để minh họa authorization, và {{Function<String, String>}} làm handler. Regex chỉ kiểm tra hình dạng; service thật vẫn phải xác minh giao dịch tồn tại, thuộc đúng khách hàng và chưa bị hoàn tiền.
+
+~~~java
+ToolSpec refund = new ToolSpec(
+    "refund", "operator", "PAY-[0-9]{3}", true,
+    paymentId -> paymentService.refund(paymentId)
+);
+registry.register(refund);
+registry.invoke(authenticatedUserId, role, "refund", "PAY-123", idempotencyKey);
+~~~
+
+Đây là pseudocode sát Java, không phải API Spring AI cụ thể. Framework có thể parse schema JSON và tự chuyển tool call thành đối tượng, nhưng authorization và quy tắc nghiệp vụ vẫn do server áp đặt. Không đưa API key/database credential vào mô tả tool hay prompt.
+
+### 5. Pitfall production
+| Sai lầm | Hậu quả | Sửa thế nào |
+|---|---|---|
+| Chỉ prompt “đừng gọi refund nếu không có quyền” | Model có thể vẫn đề nghị tool; request giả mạo đi thẳng vào server | Handler kiểm quyền độc lập trên server |
+| Cho input chứa SQL/URL tùy ý | SQL injection hoặc server-side request forgery (server bị dụ gọi địa chỉ nội bộ) | Tool có tham số hẹp, prepared statement, allowlist đích |
+| Check key rồi mới chạy, nhưng không có unique constraint | Hai request đồng thời đều thấy key chưa tồn tại và cùng ghi | Transaction + unique constraint trong shared DB |
+| Đánh dấu key thành công trước khi gọi nghiệp vụ | Crash giữa hai bước làm key “thành công” nhưng thao tác chưa xảy ra | Lưu trạng thái và nghiệp vụ nguyên tử; dùng state machine/outbox khi cần |
+| Trả lại kết quả của key cũ cho input mới | Caller tưởng giao dịch mới đã chạy | Lưu hash payload và reject khi cùng key nhưng payload khác |
+| Tool trả cả hồ sơ database cho model | Lộ PII (thông tin định danh cá nhân) và tốn token | Chỉ trả trường cần thiết, che dữ liệu và kiểm quyền truy cập |
+
+Lỗi bất định cần được thiết kế rõ: nếu handler timeout sau khi dịch vụ thanh toán đã nhận lệnh, không được xóa key rồi gọi lại bằng key mới. Hãy tra trạng thái bằng cùng id/key hoặc chuyển trạng thái sang “unknown/pending” để reconciliation (đối soát trạng thái) xử lý.
+
+### Liên hệ phỏng vấn
+Trả lời theo lớp: tool registry là allowlist; input được validate schema rồi kiểm tra invariant nghiệp vụ; authentication lấy danh tính từ context đáng tin, authorization kiểm quyền trên tài nguyên; tool ghi nhận idempotency key + payload hash trong kho bền vững có unique constraint; kết quả tối thiểu được trả cho model. Nêu tình huống timeout sau khi commit: kết quả mơ hồ, vì thế retry cùng key và tra trạng thái, không tạo key mới. Cuối cùng phân biệt demo in-memory với production nhiều instance và nói về transaction/outbox nếu side effect nằm ở hệ thống khác.
+> Senior tip: đo số request trùng key, key/payload conflict, tỷ lệ trạng thái pending quá lâu và thời gian reconciliation. Không ghi dữ liệu thô chứa PII vào log; log key đã hash hoặc correlation id, tool name, principal nội bộ và kết quả phân loại để điều tra mà không làm lộ dữ liệu.`,
+  exercises: [
+    {
+      title: 'Xây ToolRegistry có schema, role và idempotency key',
+      prompt: `Hoàn thiện {{ToolRegistry}} và {{ToolSpec}}. Schema của bài tập là regex trên một chuỗi input: {{ToolSpec}} có tên tool, role bắt buộc, pattern, cờ {{write}} và handler. {{register}} phải từ chối đăng ký trùng tên. {{invoke(userId, role, toolName, input, key)}} phải:
+- Từ chối tool chưa đăng ký; chỉ gọi handler đã đăng ký.
+- So sánh role với role bắt buộc và từ chối trước khi handler chạy nếu không khớp.
+- Kiểm tra input không null và khớp regex; input sai không được chạy handler.
+- Tool ghi bắt buộc có key không rỗng. Phạm vi key là {{userId + toolName + key}}.
+- Cùng phạm vi key + cùng input: trả kết quả đã lưu, không gọi handler lần nữa.
+- Cùng key nhưng input khác: ném {{IllegalArgumentException}}; không trả nhầm kết quả.
+- Chỉ lưu kết quả idempotency sau khi handler trả thành công. Nếu handler ném lỗi, lần retry có thể chạy lại.
+
+Dùng {{synchronized}} trên {{invoke}} để test một JVM đơn giản; giải thích vì sao production nhiều instance cần shared database + unique constraint. Đây là mô phỏng một trường schema, không phải JSON Schema đầy đủ.`,
+      starter: `class ToolSpec {
+    final String name, requiredRole, inputPattern;
+    final boolean write;
+    final Function<String, String> handler;
+    ToolSpec(String name, String requiredRole, String inputPattern,
+             boolean write, Function<String, String> handler) {
+        this.name = name; this.requiredRole = requiredRole;
+        this.inputPattern = inputPattern; this.write = write; this.handler = handler;
+    }
+}
+
+class ToolRegistry {
+    void register(ToolSpec spec) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    synchronized String invoke(String userId, String role, String toolName,
+                               String input, String key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable test) {
+        total++;
+        try { test.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual))
+            throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void expect(Class<? extends Throwable> type, Runnable action) {
+        try { action.run(); }
+        catch (Throwable t) {
+            if (type.isInstance(t)) return;
+            throw new AssertionError("expected " + type.getSimpleName() + " got " + t);
+        }
+        throw new AssertionError("expected " + type.getSimpleName());
+    }
+    static ToolSpec refund(int[] effects) {
+        return new ToolSpec("refund", "operator", "PAY-[0-9]{3}", true, input -> {
+            effects[0]++;
+            return "accepted:" + input;
+        });
+    }
+    public static void main(String[] args) {
+        check("schema rejects bad input before side effect", () -> {
+            int[] effects = {0}; ToolRegistry r = new ToolRegistry(); r.register(refund(effects));
+            expect(IllegalArgumentException.class,
+                () -> r.invoke("u1", "operator", "refund", "PAY-XX", "k1"));
+            eq(0, effects[0]);
+        });
+        check("unauthorized role cannot invoke tool", () -> {
+            int[] effects = {0}; ToolRegistry r = new ToolRegistry(); r.register(refund(effects));
+            expect(SecurityException.class,
+                () -> r.invoke("u1", "viewer", "refund", "PAY-123", "k1"));
+            eq(0, effects[0]);
+        });
+        check("same key and payload executes only once", () -> {
+            int[] effects = {0}; ToolRegistry r = new ToolRegistry(); r.register(refund(effects));
+            String a = r.invoke("u1", "operator", "refund", "PAY-123", "k1");
+            String b = r.invoke("u1", "operator", "refund", "PAY-123", "k1");
+            eq("accepted:PAY-123", a); eq(a, b); eq(1, effects[0]);
+        });
+        check("same key with different payload is rejected", () -> {
+            int[] effects = {0}; ToolRegistry r = new ToolRegistry(); r.register(refund(effects));
+            r.invoke("u1", "operator", "refund", "PAY-123", "k1");
+            expect(IllegalArgumentException.class,
+                () -> r.invoke("u1", "operator", "refund", "PAY-456", "k1"));
+            eq(1, effects[0]);
+        });
+        check("write requires an idempotency key", () -> {
+            int[] effects = {0}; ToolRegistry r = new ToolRegistry(); r.register(refund(effects));
+            expect(IllegalArgumentException.class,
+                () -> r.invoke("u1", "operator", "refund", "PAY-123", " "));
+            eq(0, effects[0]);
+        });
+        check("unknown tool is rejected", () -> {
+            ToolRegistry r = new ToolRegistry();
+            expect(IllegalArgumentException.class,
+                () -> r.invoke("u1", "operator", "deleteAll", "x", "k1"));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class ToolSpec {
+    final String name, requiredRole, inputPattern;
+    final boolean write;
+    final Function<String, String> handler;
+    ToolSpec(String name, String requiredRole, String inputPattern,
+             boolean write, Function<String, String> handler) {
+        this.name = name; this.requiredRole = requiredRole;
+        this.inputPattern = inputPattern; this.write = write; this.handler = handler;
+    }
+}
+
+class ToolRegistry {
+    private static final class Saved {
+        final String input, result;
+        Saved(String input, String result) { this.input = input; this.result = result; }
+    }
+    private final Map<String, ToolSpec> tools = new HashMap<>();
+    private final Map<String, Saved> saved = new HashMap<>();
+
+    void register(ToolSpec spec) {
+        if (spec == null || spec.name == null || spec.name.isBlank())
+            throw new IllegalArgumentException("invalid tool");
+        if (tools.putIfAbsent(spec.name, spec) != null)
+            throw new IllegalArgumentException("duplicate tool");
+    }
+
+    synchronized String invoke(String userId, String role, String toolName,
+                               String input, String key) {
+        ToolSpec spec = tools.get(toolName);
+        if (spec == null) throw new IllegalArgumentException("unknown tool");
+        if (!Objects.equals(spec.requiredRole, role)) throw new SecurityException("forbidden");
+        if (input == null || !input.matches(spec.inputPattern))
+            throw new IllegalArgumentException("invalid input");
+        String scope = userId + "|" + toolName + "|" + key;
+        if (spec.write) {
+            if (userId == null || userId.isBlank() || key == null || key.isBlank())
+                throw new IllegalArgumentException("missing idempotency identity");
+            Saved old = saved.get(scope);
+            if (old != null) {
+                if (!old.input.equals(input))
+                    throw new IllegalArgumentException("key reused with different input");
+                return old.result;
+            }
+        }
+        String result = spec.handler.apply(input);
+        if (spec.write) saved.put(scope, new Saved(input, result));
+        return result;
+    }
+}`,
+      hints: [
+        'Trước khi gọi handler, tìm {{ToolSpec}} trong map, so role và dùng {{input.matches(spec.inputPattern)}} để kiểm schema bài tập.',
+        'Tạo key phạm vi từ user + tool + key. Nếu map kết quả đã có cùng input thì return; nếu input khác thì throw.',
+        'Gọi {{handler.apply}} trước rồi mới ghi {{Saved(input, result)}}; nếu handler ném exception thì dòng lưu không chạy.'
+      ],
+      explain: `### Lời giải và thứ tự kiểm tra
+Registry dùng map tên → {{ToolSpec}}, nên chỉ tool đăng ký trước mới được gọi. {{putIfAbsent}} phát hiện tên trùng mà không âm thầm thay handler; nếu thay handler, một module có thể vô tình ghi đè tool có quyền mạnh hơn. {{invoke}} tra tool, kiểm role, rồi kiểm input trước side effect. Ở hệ thống thật, role chỉ là ví dụ: cần kiểm quyền trên tài nguyên (ví dụ payment này thuộc tenant nào) bằng principal đã xác thực, không tin userId do model gửi.
+
+Key được scope theo user và tool, tránh hai user vô tình dùng chung một key. Map {{saved}} lưu input cùng kết quả; cùng key/cùng input nhận lại kết quả cũ, còn khác input bị từ chối. Handler chạy trước khi ghi kết quả; nếu nó ném lỗi thì không có record thành công giả. Tuy nhiên, timeout sau khi handler đã tạo side effect vẫn là kết quả mơ hồ—đây là lý do phải làm transaction/idempotency ở hệ thống nghiệp vụ, không chỉ bọc một map ở ngoài.
+
+### Lỗi hay gặp
+- Chỉ validate input bằng prompt: model có thể gửi bất cứ chuỗi nào, nên server phải validate lại.
+- Authorization chạy sau handler: kiểm tra sau side effect không còn ý nghĩa.
+- Lưu key trước khi handler chạy: crash có thể khiến retry bị trả kết quả “đã xong” dù chưa tạo giao dịch.
+- Dùng key trần toàn hệ thống: đụng key giữa người dùng/tool và có thể lộ kết quả của người khác.
+- Cho cùng key dùng payload khác: client nhận kết quả cũ nhưng nghĩ lệnh mới đã được thực thi.
+- Tin {{synchronized}} như giải pháp phân tán: synchronized chỉ khóa object trong một JVM, không khóa database hoặc JVM khác.
+
+Test kiểm tra cả đường từ chối lẫn đường thành công và đếm side effect thay vì chỉ so chuỗi trả về. Test idempotency gọi hai lần cùng key và xác nhận handler chỉ chạy một lần; test payload khác xác nhận lần hai bị reject. Ở production, cần test cạnh tranh qua nhiều instance, crash/restart, timeout sau commit và dọn record hết hạn theo chính sách lưu trữ.`,
+    }
+  ],
+  check: [
+    {
+      q: 'Tool yêu cầu hoàn tiền cho PAY-123, nhưng model gửi PAY-12X. Schema validation nên diễn ra lúc nào?',
+      options: [
+        'Trước handler và trước mọi thay đổi dữ liệu',
+        'Sau khi handler hoàn tiền để biết mã đó có thật không',
+        'Chỉ trong system prompt vì model đã đọc mô tả',
+        'Sau khi trả response cho người dùng',
+      ],
+      answer: 0,
+      explain: `Schema validation kiểm tra hình dạng input và phải xảy ra trước handler, nếu không dữ liệu sai đã gây side effect. Prompt chỉ hướng dẫn model, không phải kiểm soát server. Kiểm tra tồn tại và trạng thái thanh toán còn là validation nghiệp vụ riêng sau schema, nhưng cũng phải trước khi ghi.`,
+    },
+    {
+      q: 'Hai request có cùng idempotency key nhưng payload khác nhau. Hành vi an toàn là gì?',
+      options: [
+        'Chạy cả hai vì key chỉ có tác dụng với retry chính xác',
+        'Trả kết quả cũ và giả vờ payload mới đã được xử lý',
+        'Từ chối conflict để caller không nhầm kết quả của ý định khác',
+        'Xóa record cũ rồi chạy payload mới',
+      ],
+      answer: 2,
+      explain: `Một key đại diện cho một ý định nghiệp vụ. Cùng key/cùng payload thì có thể trả kết quả trước; cùng key/khác payload là lỗi caller hoặc lỗi vận hành và phải bị từ chối, không được chạy side effect mới hay trả nhầm kết quả cũ. Xóa record cũng phá khả năng retry an toàn của request đầu.`,
+    },
+    {
+      q: 'Vì sao synchronized + HashMap trong demo không đủ làm idempotency cho ứng dụng chạy nhiều pod?',
+      options: [
+        'HashMap không hỗ trợ chuỗi làm key',
+        'Mỗi pod có bộ nhớ riêng và synchronized chỉ khóa trong một JVM; restart cũng làm mất record',
+        'Java không cho synchronized method gọi database',
+        'Idempotency chỉ dùng được với tool đọc',
+      ],
+      answer: 1,
+      explain: `Mỗi pod là một process/JVM riêng nên có map riêng và monitor synchronized riêng; hai pod có thể đồng thời nghĩ key chưa tồn tại. Khi restart, map cũng mất. Cần kho bền vững dùng chung, unique constraint/transaction và thường phải phối hợp idempotency ở service đích. HashMap dùng được với String key; synchronized không cấm gọi database; idempotency đặc biệt hữu ích cho thao tác ghi.`,
+    },
+  ],
+  related: ['ai-001', 'ai-017'],
+  tags: ['ai-agent', 'tool-security', 'schema-validation', 'authorization', 'idempotency'],
+},
 );

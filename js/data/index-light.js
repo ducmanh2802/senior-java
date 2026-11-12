@@ -1888,6 +1888,8 @@ window.DATA_INDEX = {
     {"id":"lesson-ai-004","track":"ai","order":4,"title":"Đưa tính năng AI lên production an toàn","level":"lead","minutes":45},
     {"id":"lesson-ai-005","track":"ai","order":5,"title":"RAG từ gốc: chunking có overlap, embedding, cosine similarity, top-k, re-ranking và trích nguồn","level":"senior","minutes":50},
     {"id":"lesson-ai-006","track":"ai","order":6,"title":"Gọi LLM API trong production: ngân sách token, cắt lịch sử, timeout, retry, circuit breaker và fallback","level":"senior","minutes":50},
+    {"id":"lesson-ai-007","track":"ai","order":7,"title":"Vòng lặp AI agent: model chọn tool, ứng dụng thực thi và kiểm soát số bước","level":"senior","minutes":40},
+    {"id":"lesson-ai-008","track":"ai","order":8,"title":"Thiết kế tool an toàn: schema, phân quyền và idempotency cho thao tác ghi","level":"senior","minutes":45},
     {"id":"lesson-claude-001","track":"claude","order":1,"title":"Vòng lặp agent với tool use: tool_use, tool_result, stop_reason và giới hạn số bước","level":"senior","minutes":40},
     {"id":"lesson-claude-002","track":"claude","order":2,"title":"Retry đúng cách cho 429, 529 và 5xx: retry-after, exponential backoff và full jitter","level":"mid","minutes":30},
     {"id":"lesson-claude-003","track":"claude","order":3,"title":"Ngân sách context và prompt caching: cắt lịch sử an toàn, đặt cache_control và đọc usage","level":"senior","minutes":35},
