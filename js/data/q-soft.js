@@ -4357,6 +4357,12 @@ Hãy điền bảng ngay sau mỗi cuộc gọi, còn nhớ chi tiết hơn là 
 - Bịa offer khác để ép giá: môi trường IT Việt Nam nhỏ, thông tin lương lan nhanh.
 - Chỉ tin lời hứa miệng về lương và thưởng: yêu cầu ghi trong offer viết.
 
+### Ví dụ đời thực
+Một ứng viên Backend Java 4 năm kinh nghiệm đang phỏng vấn cùng lúc 4 công ty: một ngân hàng lớn, một startup fintech Series A, một công ty product SaaS, và một outsourcing Nhật. Triệu chứng: sau 2 tuần, anh ấy bị động chờ, không biết ưu tiên nào, một công ty ép nhận offer trong 24 giờ, một công ty không trả lời được range lương. Điều tra: anh ấy không có bảng ghi chép, không hỏi kỹ range lương và hình thức làm việc ở cuộc gọi đầu, dẫn đến mất thời gian với quy trình không phù hợp. Nguyên nhân gốc: thiếu quy trình thu thập thông tin có hệ thống từ recruiter. Cách xử lý: anh ấy lập bảng so sánh (mẫu ở trên), điền ngay sau mỗi cuộc gọi, và từ chối sớm 2 quy trình có red flag (không có range, ép offer). Kết quả đo được: tập trung vào 2 quy trình còn lại, nhận được offer SaaS 32 triệu gross + tháng 13 + ESOP modest, và ngân hàng 28 triệu gross + tháng 13 + bonus 2 tháng + remote 2 ngày/tuần; chọn ngân hàng vì ổn định và phù hợp giai đoạn đời.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi recruiter gọi, tôi không chỉ trả lời câu hỏi mà chủ động hỏi để quyết định có nên đầu tư thời gian cho quy trình đó. Tôi chia câu hỏi thành 4 nhóm: quy trình phỏng vấn (số vòng, nội dung, thời gian phản hồi), lương phúc lợi (range gross, tháng 13, bonus, bảo hiểm, OT), hình thức làm việc (onsite/hybrid/remote, múi giờ, OT), và kỹ thuật (ngôn ngữ phỏng vấn, stack, phần hệ thống mình phụ trách). Tôi ghi lại câu trả lời vào bảng so sánh để nhìn rõ green flag hay red flag: range rõ ràng, lịch cố định, JD chi tiết là green flag; tránh nói số, đổi lịch liên tục, JD quá rộng, ép offer 24h là red flag. Câu hỏi tôi hay hỏi nhất là 'quyết định kỹ thuật nào team vừa tranh luận và kết quả ra sao?' — nó cho thấy văn hóa phản biện của team."
+
 > Senior tip: câu hỏi hay nhất ít người hỏi là "quyết định kỹ thuật nào gần đây team đã tranh luận, và kết quả ra sao?". Nó cho bạn thấy team có văn hóa phản biện hay không, và khiến cuộc trò chuyện đi sâu hơn chuyện xã giao.`,
   follow: [
     'Nếu chỉ được hỏi một câu duy nhất với recruiter, bạn chọn câu nào?',
@@ -4417,6 +4423,12 @@ Offer A về số tiền năm đầu tốt hơn 30 triệu, Offer B có tiềm n
 
 Nguồn tham khảo lương: trên voz 2025–2026 có bài chia sẻ cá nhân (chưa kiểm chứng): Junior Backend VNPay 2025 17 triệu/tháng gross, SSE NAB 2023 80 triệu/tháng gross, Zalo SE 3 năm 2025 27 triệu/tháng gross. Chỉ của từng người, làm tham chiếu chứ không phải mức thị trường chung. Recruiter từng công ty mới có range chính xác.
 
+### Ví dụ đời thực
+Một Senior Java Developer nhận 2 offer cùng lúc: Offer A từ ngân hàng số (lương cứng 35 triệu gross, tháng 13 chắc chắn, bonus 1–2 tháng nếu đậu KPI, bảo hiểm đầy đủ, OT có tiền, hybrid 3 ngày văn phòng), Offer B từ startup AI Series B (lương cứng 32 triệu gross, không tháng 13, bonus không chắc, ESOP 0.1% vesting 4 năm cliff 1 năm giá hành quyền $0.50, bảo hiểm đầy đủ, remote toàn thời gian, OT nhiều không tiền). Triệu chứng: anh ấy bị mờ khi so sánh vì Offer A an toàn, Offer B có tiềm năng ESOP nhưng rủi ro cao. Điều tra: anh ấy lập bảng chi tiết, tính tổng thu nhập năm đầu: Offer A = 35×12+35 = 455 triệu (chưa tính bonus), Offer B = 32×12 = 384 triệu (không tính ESOP). Chênh lệch 71 triệu năm đầu. Cùng lúc đó, anh ấy tìm hiểu startup đã 3 năm chưa có liquidity event, tỷ lệ dilution round sau ước lượng 20%. Cách xử lý: anh ấy đàm phán Offer B nâng lương cứng lên 35 triệu, không được; chọn Offer A, giữ liên lạc startup để theo dõi liquidity event sau 2 năm. Kết quả: năm sau nhận đủ lương + bonus 1.5 tháng + tháng 13, tổng 507,5 triệu; startup sau 18 tháng bị merge, ESOP trả về ~$15k (khoảng 360 triệu) — vẫn kém hơn lũy kế ngân hàng nhưng trải nghiệm remote và công nghệ AI bù đắp một phần.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi có 2 offer, tôi không so sánh lương cứng mà tính tổng thu nhập năm đầu: lương cứng × 12 + tháng 13 + bonus (tính thận trọng, có thể 0) + giá trị OT. ESOP tôi không tính vào năm đầu vì chưa có liquidity. Tôi lập bảng so sánh từng thành phần: lương gross, tháng 13, bonus, ESOP (vesting, cliff, giá mua, dilution), bảo hiểm, OT, học hỏi. Tôi xác định mức walk-away (lương tối thiểu chấp nhận) trước khi phỏng vấn. Với ví dụ ngân hàng 35tr có tháng 13 bonus chắc chắn vs startup 32tr có ESOP 0.1%, năm đầu ngân hàng cao hơn ~70 triệu. Tôi chọn ngân hàng vì ưu tiên ổn định và trả được vay mua nhà, nhưng giữ mối quan hệ với startup để theo dõi liquidity event. Tôi cũng hỏi gia hạn 3–5 ngày nếu cần chờ offer khác."
+
 > Senior tip: xác định mức walk-away trước khi phỏng vấn và ghi lại bằng số. Khi đã có con số trong đầu, bạn thương lượng bình tĩnh hơn và biết lúc nào nên dừng. Người không có mức walk-away thường nhận offer kém hơn mức có thể đạt, chỉ vì sợ nói "không".`,
   follow: [
     'Nếu công ty A có lương cứng cao hơn nhưng công ty B có ESOP hời hếu, bạn chọn cái nào?',
@@ -4471,6 +4483,12 @@ Công ty A thuê công ty B thực hiện dự án, như thuê đơn vị xây d
 3. Bảo hiểm không đầy đủ: BHXH/BHYT/BHTN phải đóng đủ theo quy định Việt Nam.
 4. Yêu cầu làm thử miễn phí: không nên làm bài test lớn hơn 2–3 giờ mà không ghi rõ sẽ được trả sau khi nhận việc.
 5. Khách trả muộn hoặc bỏ dự án giữa chừng: hỏi công ty B có kế hoạch dịch chuyển bạn sang dự án khác không.
+
+### Ví dụ đời thực
+Một dev 3 năm kinh nghiệm nhận offer từ công ty outsourcing Nhật (lương 28 triệu, tháng 13, bảo hiểm đầy đủ, hợp đồng lao động VN, yêu cầu N2 hoặc tiếng Anh tốt) và công ty outsourcing Âu-Mỹ dạng contractor (lương $1,800/tháng ~44 triệu, không bảo hiểm, tự nộp thuế TNCN, làm việc tối Thứ 6–sáng Thứ 7 giờ VN để họp với team Mỹ). Triệu chứng: anh ấy tính lương quy đổi ra outsourcing Âu-Mỹ cao hơn 16 triệu/tháng nhưng lo múi giờ và rủi ro khách bo dự án. Điều tra: anh ấy hỏi network trên LinkedIn, biết công ty Nhật có 2 dev nghỉ vì khách đổi yêu cầu liên tục không bù effort, công ty Âu-Mỹ đã có 1 dự án bị khách chậm trả 2 tháng. Nguyên nhân gốc: chưa hiểu rõ rủi ro thực tế của từng mô hình. Cách xử lý: anh ấy chọn outsourcing Nhật vì ưu tiên ổn định, bảo hiểm, múi giờ hợp lý, và có đường học tiếng Nhật được công ty tài trợ. Kết quả: 18 tháng sau lương tăng lên 35 triệu, đạt N3, được chuyển sang dự án product nội bộ của khách Nhật; đồng nghiệp chọn Âu-Mỹ sau 10 tháng bị bo dự án, mất 1.5 tháng không lương trước khi tìm được dự án mới.
+
+### Trả lời mẫu khi phỏng vấn
+"Outsourcing Nhật và Âu-Mỹ khác nhau căn bản ở ngôn ngữ, múi giờ, hợp đồng và rủi ro. Nhật: hợp đồng lao động VN, bảo hiểm đầy đủ, tiếng Nhật hoặc tiếng Anh tỉ mỉ, múi giờ nhanh 2h, quy trình Hō-Ren-Sō báo cáo liên tục, ổn định hơn nhưng lương thấp hơn product. Âu-Mỹ: thường contractor hoặc EOR, tiếng Anh bắt buộc giao tiếp hàng ngày, múi giờ chậm 5–14h (họp tối Thứ 6/sáng Thứ 7), lương USD/EUR cao hơn nhưng tự lo bảo hiểm, rủi ro khách trả muộn hoặc bo dự án. Tôi so sánh bằng bảng: ngôn ngữ, múi giờ, hợp đồng, bảo hiểm, thanh toán, quy trình. Tôi ưu tiên outsourcing Nhật khi muốn ổn định, học quy trình, có bảo hiểm; chọn Âu-Mỹ khi muốn thu nhập cao, rèn tiếng Anh, chấp nhận rủi ro múi giờ và contractor. Trước khi ký, tôi hỏi dev nội bộ trên LinkedIn về lương thực, thời gian trả lương, và cách công ty xử lý khi khách bo dự án."
 
 > Senior tip: trước khi ký, hãy nhắn hỏi một kỹ sư đang làm tại công ty đó trên LinkedIn về lương thực tế, thời gian phản hồi lương, và cách công ty xử lý khi khách nước ngoài bo dự dự án. Thông tin từ nhân viên nội bộ chính xác hơn lời recruiter rất nhiều.`,
   follow: [
@@ -4532,6 +4550,12 @@ OT là làm thêm giờ. Startup thường làm nhiều giờ vì nhân lực í
 - Chấp nhận lương quá thấp mà không có kế hoạch nâng lương sau 6–12 tháng.
 - Không hỏi rõ OT và buộc làm nhiều giờ không tiền.
 - Tin lời hứa "sẽ thăng tiến nhanh" mà không có mốc thời gian rõ ràng.
+
+### Ví dụ đời thực
+Một Backend Java 2 năm kinh nghiệm tham gia startup edtech Series A (15 người, 3 backend). Offer: 22 triệu gross (thấp hơn thị trường ~5 triệu), ESOP 0.05% vesting 4 năm cliff 1 năm, không tháng 13, OT nhiều không tiền, remote toàn thời gian. Triệu chứng: 3 tháng đầu học rất nhiều (viết API, CI/CD, DB migration, đọc log, pair với founder), nhưng tháng 4 lương bị trễ 2 tuần do chờ vốn, OT trung bình 15h/tuần không bù, không có senior review code. Điều tra: anh ấy so sánh với bạn đồng khóa vào ngân hàng lương 28tr + tháng 13 + bonus, 1 năm sau bạn ngân hàng tổng thu nhập ~360tr, anh chỉ ~264tr (chưa tính ESOP). Cách xử lý: anh ấy đàm phán nâng lương lên 25tr + có review code từ freelancer senior tuần 1 lần, đồng thời set ranh giới OT tối đa 5h/tuần. Kết quả 6 tháng sau: startup raise thêm vốn, lương ổn định, anh có portfolios thực tế (payment gateway, real-time chat, recommendation engine) giúp phỏng vấn senior ở big tech sau này đạt offer 40tr. ESOP hiện vẫn chưa bán được.
+
+### Trả lời mẫu khi phỏng vấn
+"Ở startup, cơ hội học hỏi nhanh vì làm nhiều vai trò, gần founder, thấy cả luồng sản phẩm, nhưng rủi ro lương không ổn, ít mentor, có thể đóng cửa. Tôi đánh giá bằng bảng so sánh: lương, ESOP (vesting, cliff, liquidity event), OT, mentor, lộ trình. ESOP tôi không tính vào tiền hàng tháng vì chưa chắc bán được — nhiều startup 3–5 năm vẫn không có liquidity event. OT phải hỏi rõ có tiền/nghỉ bù/không. Câu hỏi quan trọng khi phỏng vấn: vốn ở giai đoạn nào, nhà đầu tư ai, lương thử việc thế nào, ESOP vesting/cliff, ai review code nếu mình là backend duy nhất. Tôi chọn startup khi muốn học nhanh 2–3 năm đầu, có senior mentor, và có mức walk-away lương rõ ràng. Ví dụ tôi từng vào startup edtech lương 22tr (thấp thị trường 5tr) nhưng học full-stack, CI/CD, payment; 6 tháng sau nhờ portfolio đó phỏng vấn big tech đạt 40tr."
 
 > Senior tip: nếu chọn startup, hãy chọn nơi có ít nhất một senior kỹ thuật để mentor, và thỏa thuận mức lương tối thiểu chấp nhận được (mức walk-away) bằng số trước khi ký. Startup phù hợp khi muốn học nhanh trong hai–ba năm đầu, chứ không phải nếu cần ổn định ngay lập tức.`,
   follow: [
@@ -5098,7 +5122,13 @@ Không bao giờ đưa Testcontainers vào ứng dụng production chạy trên 
 - Bỏ Ryuk để cho nhanh: container rác tích luỹ, runner chết vì hết ổ.
 - Các lớp test ghi vào cùng schema và chạy đồng bộ: fail ngẫu nhiên, mất hàng ngày debug.
 
-> Senior tip: trình bày quyết định này với lead bằng số của chính team: suite repository 300 test chạy 4 phút 20 giây với Postgres container dùng chung so với 1 phút 10 giây với H2; trong 12 tháng qua chúng ta bắt được 4 lỗi SQL chỉ lỗi trên Postgres, mỗi lần sửa production mất khoảng một ngày. Đó là lập luận của kỹ sư có kinh nghiệm.`,
+### Ví dụ đời thực
+Team 5 dev maintain monolith Spring Boot 3.2, 350 test repository dùng H2. CI GitHub Actions mất 6 phút, nhưng 3 tháng liên tiếp có 5 sự cố "test xanh CI, deploy production lỗi SQL": ON CONFLICT DO UPDATE sai cú pháp, jsonb index GIN không chạy trên H2, timestamptz lệch múi giờ, unique constraint case-insensitive khác Postgres, deadlock chỉ xuất hiện dưới load thật. Triệu chứng: dev mất niềm tin vào CI, bắt đầu skip test để merge nhanh. Điều tra: đo thời gian — H2 suite 1 phút, Testcontainers Postgres singleton 4 phút 20 giây. Nguyên nhân gốc: H2 không bắt chước được hành vi Postgres production. Cách xử lý: chuyển sang Testcontainers PostgreSQL 16 singleton chung cho cả module, bật reuse=true trên máy dev, tắt reuse trên CI, dùng @ServiceConnection Boot 3.1+. Kết quả đo được: bộ test repository chạy 4 phút 20 giây (chấp nhận được), 0 lỗi SQL lọt production trong 6 tháng sau; dev tin tưởng CI trở lại, không còn skip test. Chi phí: runner GitHub Actions tiêu tốn thêm ~$15/tháng do container Postgres.
+
+### Trả lời mẫu khi phỏng vấn
+"Testcontainers khởi động container Docker thật (Postgres, Redis, Kafka) từ trong test Java. Ryuk là container nhỏ đi kèm để dọn container chính khi JVM tắt — bắt buộc, không tắt được trừ khi tự dọn thủ công. Reuse (withReuse + testcontainers.reuse.enable=true) giữ container sống giữa các lần mvn test trên máy dev, tránh pull/khởi động lại; chỉ bật local, CI phải tắt để môi trường sạch. Singleton container (static final trong abstract class cha) dùng chung 1 container cho cả suite, khởi động 1 lần ~4 giây thay vì hàng trăm lần. Trên CI chạy song song: phải để Docker cấp port động, runner cần Docker daemon + mount socket, giới hạn bộ nhớ vì mỗi Postgres tốn vài trăm MB. Bộ test repository 350 test: H2 chạy 1 phút, Postgres singleton 4 phút 20 giây, chênh lệch chấp nhận được để bắt được 4 lỗi SQL chỉ lỗi trên Postgres trong 6 tháng."
+
+> Senior tip: trình bày quyết định này với lead bằng số của chính team: suite repository 350 test chạy 4 phút 20 giây với Postgres container dùng chung so với 1 phút với H2; trong 6 tháng qua chúng ta bắt được 4 lỗi SQL chỉ lỗi trên Postgres, mỗi lần sửa production mất khoảng một ngày. Đó là lập luận của kỹ sư có kinh nghiệm.`,
   follow: ['Ryuk bị tắt (ví dụ trên runner self-hosted hạn chế quyền), bạn dọn container rác như thế nào?', 'Làm sao chạy Testcontainers trên CI không có Docker daemon cục bộ (Docker-in-Docker, Testcontainers Cloud)?', 'Cân bằng giữa test nhanh và test chạy trên DB thật trong cùng một module thế nào?'],
   tags: ['Testcontainers', 'Ryuk', 'reuse-container', 'singleton-container', 'CI'],
   refs: [{ type: 'doc', title: 'Testcontainers documentation', url: 'https://testcontainers.org' }]
@@ -5544,6 +5574,9 @@ Team 7 người phát triển hệ thống cho vay số (digital lending — cho
 - Bạn tách **hành vi** khỏi **con người**, dùng dữ liệu, có empathy (đồng cảm — hiểu khó khăn của người khác) nhưng giữ tiêu chuẩn.
 - Bạn thể hiện ownership (tinh thần chịu trách nhiệm) trong vai trò senior: hành động trong tầm ảnh hưởng, leo thang đúng lúc.
 - Kết quả có số liệu; bạn nói cả trường hợp không cải thiện (trung thực).
+
+### Trả lời mẫu khi phỏng vấn
+"Khi một thành viên team làm việc kém hiệu quả, tôi không phê bình công khai cũng không im lặng gánh vác. Tôi thu thập dữ liệu 2–3 sprint: tỉ lệ hoàn thành story point, vòng review PR, loại lỗi lặp lại, tác động lên người khác. Tôi gặp 1-1 riêng theo mô hình SBI: nêu bối cảnh, hành vi cụ thể, tác động — ví dụ '5 task trễ 2–3 ngày làm 2 task của bạn B bị dồn cuối sprint'. Tôi lắng nghe tìm nguyên nhân gốc: trong ví dụ thực tế, bạn ấy ngại hỏi khi bí domain banking, ước lượng lạc quan. Tôi lập kế hoạch 4 tuần có mục tiêu đo được: hoàn thành ≥75% story point, PR tối đa 1 vòng sửa, kẹt >2h phải hỏi, hỗ trợ pair programming 2 buổi/tuần. Theo dõi hàng tuần 15 phút. Sau 4 tuần cải thiện từ 40% lên 78% hoàn thành, vòng review từ 2.7 xuống 1.2. Nếu không tiến triển, tôi leo thang minh bạch kèm dữ liệu cho engineering manager. Mục tiêu là giúp người đó thành công, không phải phạt."
 
 > Senior tip: Ở môi trường outsource/ngân hàng VN, hãy ghi nhận trao đổi quan trọng bằng tin nhắn/email ngắn (tóm tắt mục tiêu + mốc) để minh bạch. Đồng thời hỏi người đó cần hỗ trợ gì — đôi khi "làm kém" là do thiếu quyền truy cập hệ thống, tài liệu nghiệp vụ mơ hồ, hoặc phải họp quá nhiều. Sửa hệ thống cũng là trách nhiệm của senior.`,
   follow: [
