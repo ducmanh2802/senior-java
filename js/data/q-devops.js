@@ -8210,6 +8210,13 @@ resources:
 ### Trả lời phỏng vấn
 "Pending nghĩa là scheduler chưa bind được Pod. Em đọc {{kubectl describe pod}} phần Events: FailedScheduling liệt kê lý do filter thất bại. Scheduler lấy Pod từ hàng đợi, chạy pha Filter — NodeResourcesFit so tổng request với allocatable, rồi TaintToleration, Affinity, VolumeBinding. Có node qua thì Score chấm theo cân bằng tài nguyên, locality, affinity để chọn node tốt nhất. Điểm hay nhầm: scheduler dùng request, không dùng usage thực. Trên production em kiểm tra Allocated resources trên node, chỉnh request theo đo đạc, và dùng Cluster Autoscaler khi thiếu node."
 
+### Ví dụ đời thực
+**Triệu chứng:** Dịp khuyến mãi, HPA scale service {{payment}} từ 6 lên 20 Pod nhưng 8 Pod mới ở trạng thái Pending suốt 12 phút, checkout lỗi 503 dù dashboard {{kubectl top node}} cho thấy CPU thực tế mỗi node mới dùng ~35%.
+**Điều tra:** {{kubectl describe pod payment-xxx}} hiện {{FailedScheduling: 0/10 nodes are available: 3 Insufficient memory, 4 Insufficient cpu, 3 node(s) had untolerated taint}}. {{kubectl describe node}} mục Allocated resources cho thấy tổng request CPU đã cam kết gần 95% allocatable trên hầu hết node, trong khi limit đặt gấp 4 lần request nên usage thực thấp nhưng scheduler không xét usage.
+**Nguyên nhân gốc:** Request CPU bị đội lên 2000m từ template cũ copy bằng limit, cộng thêm 3 node pool mới có taint {{workload=batch:NoSchedule}} nhưng Pod payment thiếu toleration, khiến pha Filter loại hết node.
+**Cách xử lý:** Hạ request CPU xuống 500m theo P95 usage + 20% buffer, thêm toleration đúng cho pool ứng dụng, và bật Cluster Autoscaler cho node group online với max +6 node.
+**Kết quả đo được:** Pod Pending về 0 trong ~90 giây, rollout hoàn tất, tỷ lệ lỗi checkout giảm từ 4,8% xuống 0,1% và tổng request cam kết namespace giảm 38% giúp headroom ổn định.
+
 > Senior tip: Khi "cluster còn chỗ mà vẫn Pending", luôn so {{Allocated resources}} (request cam kết) với {{Allocatable}} bằng {{kubectl describe node}}, đừng nhìn {{kubectl top}}. Request phình do copy limit là nguyên nhân rất phổ biến; đặt alert khi tổng request commit namespace vượt ngưỡng an toàn.`,
     follow: [
       'Preemption (ưu tiên đuổi Pod khác) hoạt động khi nào, và rủi ro gì cho workload đang chạy?',
@@ -8294,6 +8301,13 @@ Node memory pressure
 ### Trả lời phỏng vấn (lead)
 "QoS do Kubernetes gán: Guaranteed khi request=limit cho CPU/memory, BestEffort khi không khai báo, còn lại Burstable. Node memory pressure thì kubelet evict BestEffort trước, rồi Burstable (vượt request), rồi Guaranteed; kernel OOM killer cũng nghiêng theo {{oom_score_adj}} tương ứng QoS. Em phân lớp: luồng critical dùng Guaranteed hoặc request sát thực tế + PriorityClass cao + PDB; batch dùng Burstable/BestEffort với retry; giám sát allocatable và eviction events. Trade-off: Guaranteed giảm rủi ro bị trục xuất nhưng tốn chi phí."
 
+### Ví dụ đời thực
+**Triệu chứng:** Giờ cao điểm, API {{checkout}} (namespace prod) bị restart gián đoạn 2-3 phút, trong khi các job {{image-resize}} batch chết hàng loạt với reason {{Evicted}}; node báo {{MemoryPressure=True}}.
+**Điều tra:** {{kubectl get pod -A -o wide --field-selector=status.phase=Failed}} thấy nhiều Pod batch Evicted. {{kubectl describe pod checkout-xxx}} cho thấy QoS là {{Burstable}} với {{requests.memory=256Mi}} nhưng runtime dùng ~900Mi khi tải tăng. {{kubectl describe node}} Events ghi kubelet bắt đầu eviction do {{memory.available}} dưới ngưỡng.
+**Nguyên nhân gốc:** Service critical cấu hình request memory quá thấp nên bị xếp Burstable và nằm trong nhóm dễ evict khi vượt request, còn batch job không đặt giới hạn concurrency nên cùng đẩy node vào áp lực bộ nhớ.
+**Cách xử lý:** Đặt {{request=limit=1Gi}} cho checkout để thành {{Guaranteed}}, gắn {{PriorityClass}} cao và {{PDB}}; chuyển batch sang {{Burstable}} với request sát thực tế, giới hạn song song và bật retry; thêm alert Evicted events và theo dõi working set so với allocatable.
+**Kết quả đo được:** Trong đợt peak tiếp theo không còn eviction của checkout, tỷ lệ lỗi 5xx do restart giảm từ 1,2% xuống 0%, batch job tự chạy lại và hoàn tất trễ trung bình 4 phút nhưng không ảnh hưởng luồng thanh toán.
+
 > Senior tip: Kiểm tra thực tế QoS class bằng lệnh {{kubectl get pod}} với jsonpath status.qosClass (tránh lồng ngoặc nhọn trong inline code — dùng code block nếu cần) và audit workload critical. Kết hợp QoS với PriorityClass, PDB, quota namespace; thiếu mắt xích nào thì node pressure vẫn có thể rớt sai Pod.`,
     follow: [
       'Sự khác nhau giữa scheduler preemption và kubelet eviction là gì, và bạn debug mỗi loại thế nào?',
@@ -8377,6 +8391,13 @@ JAVA_TOOL_OPTIONS="-XX:ActiveProcessorCount=2 -XX:MaxRAMPercentage=75"
 
 ### Trả lời phỏng vấn
 "CPU trung bình thấp mà p99 cao trên Kubernetes thường do CFS throttling. Có CPU limit thì cgroup cấp quota theo period 100ms; app Java nhiều thread đốt quota trong vài chục ms rồi bị kernel tạm dừng đến hết period, nên request bị trễ hàng chục ms lặp lại. Em kiểm tra {{container_cpu_cfs_throttled_periods_total}} và {{cpu.stat}}. Với service nhạy latency, em thường giữ CPU request nhưng cân nhắc bỏ CPU limit, đồng thời đặt {{-XX:ActiveProcessorCount}} theo request để JVM sizing hợp lý. Trade-off: bỏ limit giảm throttle nhưng phải kiểm soát noisy neighbor bằng giám sát."
+
+### Ví dụ đời thực
+**Triệu chứng:** API {{search}} (Spring Boot, 200 threads Tomcat) có CPU trung bình 35% nhưng p99 tăng từ 180ms lên 1,2s và timeout ngắt quãng khi concurrency vượt 300 RPS, dù không có deploy mới.
+**Điều tra:** Dashboard Prometheus cho thấy {{rate(container_cpu_cfs_throttled_periods_total[5m]) / rate(container_cpu_cfs_periods_total[5m])}} đạt ~45%; đọc {{/sys/fs/cgroup/cpu.stat}} trong Pod thấy {{nr_throttled}} tăng nhanh. Correlate theo thời gian: mỗi nhịp latency spike trùng với chu kỳ bị throttle.
+**Nguyên nhân gốc:** Pod đặt {{limits.cpu: 500m}} (quota 50ms/100ms) nhưng nhiều thread xử lý JSON và gọi downstream song song nên đốt hết quota trong ~20ms, kernel treo container phần còn lại của period gây đuôi latency dù trung bình thấp.
+**Cách xử lý:** Bỏ CPU limit, giữ {{requests.cpu: 500m}} để scheduler đặt chỗ, thêm {{-XX:ActiveProcessorCount=2}} để JVM/GC sizing hợp lý; giảm {{maxThreads}} xuống 120 và bật HPA theo RPS. Theo dõi noisy neighbor bằng metric node CPU và throttled ratio.
+**Kết quả đo được:** Tỷ lệ throttled period về ~0%, p99 giảm còn 220ms ở 350 RPS, không còn timeout ngắt quãng và mức dùng CPU thực tế ổn định ~0.8 core/Pod.
 
 > Senior tip: Đừng kết luận "code chậm" khi p99 tăng mà CPU avg thấp — kiểm tra CFS throttling trước. Dashboard production nên có tỉ lệ throttled periods; quyết định CPU limit phải đi kèm đo latency dưới tải concurrency thật.`,
     follow: [
@@ -8463,6 +8484,13 @@ JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError -XX:Nat
 
 ### Trả lời phỏng vấn
 "OOMKilled là kernel giết process vì cgroup vượt giới hạn bộ nhớ (exit 137), còn OutOfMemoryError là JVM ném khi heap/metaspace cạn — khác nguyên nhân và dấu vết. Với cgroup v2, {{memory.max}} là trần cứng; {{oom_score_adj}} gán theo QoS. Heap thấp mà vẫn OOMKilled thường do non-heap: thread stack, metaspace, code cache, direct buffer. {{MaxRAMPercentage}} chỉ đặt heap, không bao trùm non-heap. Em xem container working set, bật NMT, đếm thread, kiểm tra pool và MaxDirectMemorySize, rồi hạ MaxRAMPercentage (thường 70-75%) và giới hạn thread. Đặt alert khi working set tiến sát limit."
+
+### Ví dụ đời thực
+**Triệu chứng:** Pod {{order-api}} (limit 2Gi) restart với {{Reason: OOMKilled, Exit Code: 137}} 3-4 lần/ngày, nhưng Grafana heap used chỉ ~55% và không có {{OutOfMemoryError}} hay heap dump.
+**Điều tra:** {{kubectl describe pod}} xác nhận Last State OOMKilled. Metric {{container_memory_working_set_bytes}} tiến sát 2Gi trước khi chết. Bật NMT ({{jcmd 1 VM.native_memory summary}}) thấy Thread arena ~420Mi; {{jstack}} và metric cho thấy Tomcat {{maxThreads}} = 400 và Hikari pool = 80, mỗi thread stack mặc định ~1MB.
+**Nguyên nhân gốc:** {{MaxRAMPercentage=80}} cấp ~1.6Gi heap, phần còn lại không đủ cho ~480 thread stack cộng metaspace/code cache; tổng RSS vượt {{memory.max}} nên kernel SIGKILL, không phải leak heap.
+**Cách xử lý:** Hạ {{MaxRAMPercentage}} xuống 70%, giảm {{maxThreads}} còn 200 và Hikari pool còn 30 theo tải thực, đặt {{-Xss512k}} sau load test, giữ {{ExitOnOutOfMemoryError}} và alert khi working set > 85% limit.
+**Kết quả đo được:** OOMKilled giảm về 0 trong 14 ngày, working set ổn định ~1.45Gi ở peak, p99 latency không đổi và không phát sinh timeout kết nối DB.
 
 > Senior tip: Heap thấp mà OOMKilled: (1) xác nhận working set chạm limit, (2) NMT summary, (3) đếm thread và kiểm tra pool. Đừng vội tăng limit gấp đôi — có thể chỉ mua thời gian cho leak native hoặc thread pool phình.`,
     follow: [
@@ -8553,6 +8581,13 @@ Scale thêm Pod3, Pod4: connections cũ vẫn ghim Pod1/Pod2 -> Pod3,Pod4 rảnh
 
 ### Trả lời phỏng vấn
 "kube-proxy lập trình đường đi ClusterIP -> Pod: iptables cài rule DNAT và chọn backend theo statistic; IPVS dùng bảng L4, scale tốt hơn khi nhiều Service. Cả hai gắn với conntrack: một kết nối TCP DNAT tới Pod thì request sau trên cùng kết nối vẫn tới Pod đó. Nên HTTP keep-alive lâu hoặc gRPC (nhiều stream trên một kết nối dài) làm cân bằng tải lệch: Pod mới không nhận traffic từ kết nối cũ. Em xử lý bằng client-side load balancing cho gRPC (headless Service, service mesh, max connection age) và theo dõi metric per-pod. IPVS giúp datapath nhưng không giải quyết bản chất L7."
+
+### Ví dụ đời thực
+**Triệu chứng:** Service {{pricing-grpc}} scale từ 4 lên 12 Pod khi traffic tăng, nhưng 2 Pod cũ giữ CPU ~85% và p99 900ms, 8 Pod mới chỉ ~10% CPU dù kube-proxy đang chạy IPVS.
+**Điều tra:** So RPS per-pod trên Prometheus thấy lệch lớn; {{ss -tnp}} trên client gateway cho thấy chỉ 6 kết nối HTTP/2 gRPC giữ mở lâu tới ClusterIP. {{ipvsadm -Ln}} và {{conntrack -L}} cho thấy các flow gắn cố định về backend cũ tạo từ trước khi scale.
+**Nguyên nhân gốc:** Cân bằng tải xảy ra một lần khi tạo kết nối TCP; gRPC dùng channel dài với nhiều stream nên toàn bộ request trên kết nối cũ tiếp tục đi về Pod cũ, Pod mới không nhận traffic từ các flow đã "ghim" trong conntrack.
+**Cách xử lý:** Chuyển {{pricing-grpc}} sang headless Service và bật client-side load balancing (DNS resolver + round_robin), cấu hình {{max connection age}} 30s để tái tạo channel định kỳ; gateway tăng connection pool để phân tán flow.
+**Kết quả đo được:** Sau 2 phút tái cân bằng, RPS per-pod lệch dưới 15%, p99 giảm còn 240ms và CPU các Pod dao động đều 35-45% ở cùng tải.
 
 > Senior tip: "Scale out mà Pod mới ngồi chơi" — kiểm tra pattern kết nối (keep-alive/gRPC) và phân phối per-pod. Với gRPC nội bộ, cân bằng tải ở tầng client/mesh hiệu quả hơn xoay xở kube-proxy mode.`,
     follow: [
@@ -8651,6 +8686,13 @@ Nguyên tắc: liveness kiểm tra "process còn sống"; readiness kiểm tra "
 
 ### Trả lời phỏng vấn (lead)
 "Zero-downtime là phối hợp: rolling update kiểm soát tốc độ (thường maxUnavailable 0, surge vừa phải), startup/readiness đảm bảo Pod mới sẵn sàng, preStop + SIGTERM graceful + terminationGracePeriod đủ để Pod cũ rời êm và xử lý hết in-flight. Quy mô lớn em thêm PDB, minReadySeconds, progressDeadline, rollback/canary tự động và tương thích ngược. Em không tin cấu hình bằng cảm giác: load test liên tục trong deploy trên staging với ngưỡng error rate/latency làm gate."
+
+### Ví dụ đời thực
+**Triệu chứng:** Mỗi lần deploy {{checkout}} (30 replica, ~800 RPS) gateway ghi nhận 0,6-1% lỗi 502 trong 2 phút đầu rolling update, dù {{maxUnavailable: 0}}.
+**Điều tra:** Xem event rollout và log ingress cho thấy Pod cũ bị terminate ngay sau khi endpoint cập nhật; {{kubectl get endpointslice}} và log app cho thấy request in-flight vẫn bị ngắt. Kiểm tra manifest: không có {{preStop}}, {{terminationGracePeriodSeconds}} là 30s trong khi xử lý thanh toán P99 ~20s và Spring chưa bật graceful shutdown.
+**Nguyên nhân gốc:** Race condition khi endpoint bị gỡ nhưng proxy chưa kịp cập nhật, cộng với app nhận SIGTERM và đóng kết nối ngay, grace period không đủ để drain nên một phần request đang xử lý bị cắt.
+**Cách xử lý:** Thêm {{preStop}} {{sleep 10}}, bật {{server.shutdown=graceful}} với timeout 30s, tăng {{terminationGracePeriodSeconds}} lên 60, đặt {{minReadySeconds: 15}} và PDB {{minAvailable: 80%}}; chạy load test liên tục trong deploy trên staging làm gate.
+**Kết quả đo được:** 5 lần deploy tiếp theo với lưu lượng tương đương ghi nhận 0 lỗi 502 (error rate < 0,01%), thời gian drain Pod cũ trung bình 18s và rollout hoàn tất trong 6 phút.
 
 > Senior tip: Coi deploy là thí nghiệm có kiểm soát: đo error rate per-version, rollback tự động khi vượt ngưỡng, rehearsal runbook. Nhiều thất bại "zero-downtime" đến từ DB migration hoặc dependency chậm, không chỉ từ YAML — guardrail phải bao cả tầng dữ liệu.`,
     follow: [
