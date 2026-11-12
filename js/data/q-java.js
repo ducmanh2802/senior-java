@@ -7696,5 +7696,393 @@ Một hệ thống thanh toán nội bộ (12 service Spring, khoảng 1.800 req
     'Strong encapsulation từ Java 16/17 ảnh hưởng thế nào đến thư viện dùng reflection hoặc truy cập nội bộ JDK?'
   ],
   tags: ['Java 21', 'migration', 'LTS', 'virtual threads', 'lead']
+},
+{
+  id: 'collections-036',
+  topic: 'collections',
+  level: 'mid',
+  q: 'Bạn lấy một phần danh sách bằng {{subList()}} để xử lý riêng. Vì sao chỉnh sửa danh sách gốc có thể làm view này lỗi hoặc thay đổi ngoài dự kiến, và khi nào cần tạo bản sao?',
+  a: `**Tóm tắt:** {{List.subList(from, to)}} trả về một **view** (cửa sổ nhìn lên dữ liệu gốc), không phải danh sách độc lập: thao tác hợp lệ qua view phản ánh vào list cha. Nếu giữ view lâu hoặc sửa cấu trúc list cha từ chỗ khác, hành vi không còn an toàn; hãy tạo bản sao khi cần dữ liệu độc lập.
+
+### Cái gì, vì sao cần, hoạt động thế nào
+Một view cho phép thao tác một đoạn dữ liệu mà không phải sao chép toàn bộ danh sách. Cận đầu {{from}} được tính, cận cuối {{to}} không tính; vì vậy {{subList(2, 5)}} gồm vị trí 2, 3, 4 và có độ dài 3. Đây là hợp đồng của {{List}}, không cam kết tạo vùng nhớ riêng.
+
+Với {{ArrayList}}, view nội bộ giữ tham chiếu tới list gốc cùng khoảng chỉ số. Gọi {{view.set(i, x)}} hoặc thêm/xoá qua view cập nhật cấu trúc gốc tương ứng. Vì vậy, view rất tiện để thay một đoạn, nhưng không nên hiểu nó như snapshot (ảnh chụp độc lập tại một thời điểm). Thêm hoặc xoá trực tiếp ở list cha ngoài đoạn view làm mất đồng bộ chỉ số; nhiều implementation sẽ ném {{ConcurrentModificationException}} ở lần dùng tiếp theo. Đây là phát hiện best-effort, không phải cơ chế đồng bộ luồng.
+
+~~~java
+List<String> all = new ArrayList<>(List.of("A", "B", "C", "D"));
+List<String> part = all.subList(1, 3); // view chứa B, C
+part.set(0, "X");                     // all trở thành A, X, C, D
+List<String> copy = new ArrayList<>(part); // bản sao có thể sửa riêng
+all.add("E");                         // không sửa cấu trúc cha khi còn dùng part
+~~~
+
+### Chọn view hay bản sao
+| Cách | Dữ liệu | Dùng khi |
+|---|---|---|
+| {{subList}} | Dùng chung với list cha | Xử lý đoạn ngắn, đồng bộ vòng đời, không sửa cha độc lập |
+| {{new ArrayList<>(subList)}} | Mảng/list riêng, sửa được | Cần lưu lâu, sửa độc lập hoặc list cha còn tiếp tục thay đổi |
+| {{List.copyOf(subList)}} | Bản sao không sửa được | Cần snapshot chỉ đọc; lưu ý sẽ từ chối phần tử null |
+
+### Lỗi hay gặp trong production
+- Giữ view trong cache hoặc trả view từ API rồi service khác thêm phần tử vào list gốc; lỗi xuất hiện muộn, phụ thuộc thứ tự gọi.
+- Dùng {{subList(0, n).clear()}} để xoá đoạn đầu là hợp lệ, nhưng chỉ nên làm khi list cha đang được sở hữu rõ ràng và không có view khác.
+- Một view nhỏ có thể giữ tham chiếu tới list lớn và toàn bộ mảng nền của nó; nếu cần giữ vài phần tử lâu dài, hãy copy để tránh giữ cả danh sách lớn trong heap.
+- Chia list theo trang bằng view trong khi một luồng khác sửa list không tạo ra snapshot nhất quán; cần khóa, copy snapshot, hoặc dùng nguồn dữ liệu có cơ chế phân trang phù hợp.
+
+### Ví dụ đời thực
+Một batch job đọc 80.000 bản ghi vào {{ArrayList}} rồi lưu {{records.subList(0, 100)}} vào danh sách retry để xử lý sau. Trong lúc retry chờ, bước lọc tiếp theo xoá 400 bản ghi khỏi {{records}}. View retry giữ chỉ số và kỳ vọng cấu trúc cũ; khi xử lý, job gặp {{ConcurrentModificationException}} hoặc nhìn thấy đoạn khác dự kiến. Điều tra heap dump còn thấy view 100 phần tử giữ nguyên mảng nền khoảng 80.000 phần tử. Sửa bằng {{new ArrayList<>(records.subList(0, 100))}} khi tạo retry payload; nếu chỉ đọc, dùng {{List.copyOf}}. Sau sửa, retry chạy độc lập và heap sau khi job chính kết thúc giảm từ 240 MB xuống 35 MB.
+
+### Trả lời mẫu khi phỏng vấn
+“Em xem subList là một view lên list cha, không phải collection mới. Cận cuối không được tính, nên subList(1, 3) lấy hai phần tử ở index 1 và 2. Thay phần tử hoặc thêm, xoá qua view sẽ tác động lên list gốc. Rủi ro là khi code khác sửa cấu trúc list cha trong lúc view còn được dùng: implementation như ArrayList thường phát hiện sai lệch bằng ConcurrentModificationException, nhưng fail-fast không phải đồng bộ thread và không nên dựa vào nó để đảm bảo đúng. Nếu đoạn con chỉ dùng ngay trong một scope, em dùng view để tránh copy. Nếu lưu vào cache, trả qua API, xử lý bất đồng bộ hoặc cần snapshot ổn định, em tạo ArrayList mới; nếu chỉ đọc thì List.copyOf cũng phù hợp, miễn là dữ liệu không có null. Em cũng chú ý view nhỏ có thể giữ list cha lớn trong bộ nhớ. Trong production em sẽ xác định rõ quyền sở hữu và vòng đời dữ liệu, thay vì chỉ bắt exception.”
+
+> Senior tip: khi tạo batch từ list dùng chung, hãy snapshot một lần ở ranh giới giữa các bước; đừng dùng {{subList}} như cơ chế snapshot hoặc thread-safety.`,
+  follow: [
+    'Vì sao {{ConcurrentModificationException}} không phải là cơ chế bảo vệ thread-safe?',
+    'Khi nào {{List.copyOf()}} phù hợp hơn {{new ArrayList<>()}}?'
+  ],
+  tags: ['List', 'subList', 'view', 'copy']
+},
+{
+  id: 'collections-037',
+  topic: 'collections',
+  level: 'mid',
+  q: 'Với {{List<Integer>}}, đoạn {{list.remove(1)}} xoá phần tử nào? Bạn sẽ viết thế nào để xoá giá trị 1 thay vì phần tử ở vị trí 1?',
+  a: `**Tóm tắt:** {{List}} có cả {{remove(int index)}} và {{remove(Object value)}}. Với {{List<Integer>}}, lời gọi {{remove(1)}} chọn overload nhận {{int}} nên xoá ở vị trí index 1, không phải giá trị số 1; hãy truyền rõ wrapper bằng {{Integer.valueOf(1)}} khi muốn xoá theo giá trị.
+
+### Vì sao có hai cách xoá
+{{List}} hỗ trợ danh sách có thứ tự, nên cần một API xoá theo vị trí. Đồng thời, collection tổng quát cũng cần xoá phần tử bằng nhau với một đối tượng cho trước. Java cho phép hai method cùng tên nhưng khác tham số (overloading - nạp chồng); compiler chọn method phù hợp nhất với kiểu đối số.
+
+Literal {{1}} là kiểu nguyên thuỷ {{int}}. Khi nhận lời gọi {{list.remove(1)}}, compiler thấy {{remove(int)}} khớp chính xác hơn {{remove(Object)}} vốn cần boxing (đóng gói int thành {{Integer}}) rồi widening reference (chuyển kiểu tham chiếu). Do đó overload theo index thắng. Hậu quả dễ bị bỏ sót vì cả hai method đều hợp lệ và code biên dịch bình thường.
+
+~~~java
+List<Integer> ids = new ArrayList<>(List.of(1, 7, 1));
+ids.remove(1);                    // xoá phần tử tại index 1: giá trị 7
+ids.remove(Integer.valueOf(1));   // xoá lần xuất hiện đầu tiên có giá trị 1
+ids.removeIf(id -> id == 1);      // xoá tất cả giá trị 1
+~~~
+
+### Chọn đúng overload
+| Mục đích | Cách viết | Kết quả |
+|---|---|---|
+| Xoá vị trí | {{remove(index)}} | Xoá đúng một phần tử tại chỉ số đó |
+| Xoá theo giá trị | {{remove(Integer.valueOf(value))}} | Xoá lần xuất hiện đầu tiên bằng {{equals}} |
+| Xoá mọi giá trị thoả điều kiện | {{removeIf(predicate)}} | Xoá mọi phần tử predicate trả {{true}} |
+
+{{remove(Object)}} dùng {{equals}} để tìm phần tử, không nhất thiết dùng toán tử {{==}}. {{removeIf}} duyệt một lần và thể hiện rõ ý định; không nên gọi {{remove(value)}} lặp đi lặp lại trong vòng lặp nếu danh sách lớn, vì mỗi lần tìm/xoá trong {{ArrayList}} có thể dịch chuyển nhiều phần tử, tổng chi phí có thể thành O(n²).
+
+### Pitfall khi sửa trong vòng lặp
+- Với {{List<Integer>}}, nhầm overload thường làm sai kết quả mà không có exception. Viết rõ {{Integer.valueOf}} giúp người đọc và compiler thấy ý định.
+- {{list.remove(i)}} trong vòng {{for (i++)}} làm các phần tử phía sau dịch trái; tăng i tiếp sẽ bỏ qua phần tử vừa chuyển vào vị trí i.
+- Không sửa list trong enhanced-for bằng {{remove}}; iterator có thể ném {{ConcurrentModificationException}}. Dùng {{Iterator.remove}} hoặc {{removeIf}}.
+- Khi list chứa null, {{remove(Integer.valueOf(x))}} vẫn tìm giá trị x; còn gọi {{remove(null)}} chọn overload object vì null không thể chuyển thành int.
+
+### Ví dụ đời thực
+Một endpoint nhận danh sách mã sản phẩm dạng {{List<Integer>}} và bỏ mã mặc định 1 bằng {{ids.remove(1)}}. Trong dữ liệu 20 mã, index 1 là mã hàng hợp lệ 718; API vô tình xoá mã đó, còn mã mặc định 1 vẫn tồn tại. Dashboard ghi nhận 0,7% yêu cầu thiếu một sản phẩm, khó tái hiện vì phụ thuộc thứ tự đầu vào. Unit test với {{[1, 718, 2]}} chứng minh output sai là {{[1, 2]}}. Sửa thành {{ids.remove(Integer.valueOf(1))}} nếu chỉ bỏ một lần, hoặc {{ids.removeIf(id -> Objects.equals(id, 1))}} nếu phải xoá mọi lần; thêm test dữ liệu lặp. Kết quả lỗi giảm về 0 trong 2 triệu request tiếp theo, không thay đổi hợp đồng endpoint.
+
+### Trả lời mẫu khi phỏng vấn
+“Với List<Integer>, remove(1) gọi remove(int index), vì literal 1 là int và overload theo index chính xác hơn việc boxing thành Integer rồi gọi remove(Object). Vì vậy nó xoá phần tử thứ hai, không xoá giá trị số 1. Nếu muốn xoá một phần tử có giá trị đó, em viết remove(Integer.valueOf(1)); method object tìm theo equals và chỉ xoá lần xuất hiện đầu tiên. Nếu muốn xoá tất cả thì dùng removeIf với predicate, thường rõ ràng hơn và tránh lặp tìm kiếm. Em cũng kiểm tra vòng lặp: xoá phần tử làm các phần tử sau dịch trái nên vòng for tăng chỉ số có thể bỏ qua phần tử kế tiếp. Khi duyệt bằng iterator, em dùng iterator.remove hoặc removeIf thay vì sửa cấu trúc trực tiếp trong enhanced-for. Đây là ví dụ tốt cho thấy code biên dịch không có nghĩa là overload được chọn đúng ý đồ. Với API nhận dữ liệu người dùng, em luôn thêm test cho danh sách có phần tử trùng và phần tử ở nhiều vị trí.”
+
+> Senior tip: các lời gọi overloaded dễ mơ hồ nhất với primitive và wrapper; đặt tên helper theo ý định hoặc viết kiểu đối số tường minh khi một nhầm lẫn có thể làm mất dữ liệu.`,
+  follow: [
+    'Nếu list là {{List<String>}}, {{remove("x")}} chọn overload nào và vì sao?',
+    'Vì sao xoá phần tử bằng {{list.remove(i)}} trong vòng lặp tăng i có thể bỏ sót dữ liệu?'
+  ],
+  tags: ['List', 'overloading', 'boxing', 'remove']
+},
+{
+  id: 'collections-038',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Bạn dùng {{computeIfAbsent()}} để tạo giá trị cho một key chưa có. Khác biệt quan trọng giữa {{Map}} thường và {{ConcurrentHashMap}} là gì, và callback cần tránh điều gì?',
+  a: `**Tóm tắt:** {{computeIfAbsent(key, function)}} chỉ tính giá trị khi key chưa có mapping (ánh xạ), giúp gộp thao tác kiểm tra và khởi tạo. Nhưng {{Map}} thường không hứa atomicity khi nhiều thread cùng cập nhật; {{ConcurrentHashMap}} cung cấp thao tác nguyên tử cho key trong phương thức này. Callback nên ngắn, không sửa lại chính map và hiểu rõ rằng trả {{null}} nghĩa là không lưu mapping.
+
+### Hoạt động từng bước
+Một cách viết tách rời như {{get}}, kiểm tra null, tạo object, rồi {{put}} có nhiều bước. Hai thread có thể cùng thấy thiếu key, cùng tạo hai object rồi cùng ghi; cuối cùng map chỉ giữ một object nhưng một bên có thể đã làm side effect với object bị bỏ. {{computeIfAbsent}} diễn tả một phép tính duy nhất ở mức API: lấy key, nếu chưa có giá trị thì gọi hàm ánh xạ để tính và lưu kết quả.
+
+Đây không có nghĩa mọi implementation của {{Map}} đều tự nhiên thread-safe. Default implementation của interface có thể thực hiện chuỗi thao tác không nguyên tử; {{HashMap}} vốn không an toàn khi nhiều thread ghi đồng thời. {{ConcurrentHashMap}} triển khai bảo đảm phép tính cho mapping của key được thực hiện nguyên tử theo hợp đồng của nó. Không nên suy rộng thành toàn bộ logic nghiệp vụ gồm nhiều key, database và network đều được transaction.
+
+~~~java
+Map<String, List<String>> groups = new HashMap<>();
+// Tạo list đúng lúc cần, thay vì containsKey rồi get rồi put
+groups.computeIfAbsent("paid", key -> new ArrayList<>()).add("order-7");
+Map<String, Integer> counts = new HashMap<>();
+counts.merge("paid", 1, Integer::sum); // thêm mới hoặc cộng vào giá trị cũ
+~~~
+
+### Quy tắc cần nhớ
+- Nếu callback trả {{null}}, mapping không được thêm; lần gọi sau có thể chạy callback lại. Nếu key đang ánh xạ tới null trong loại Map cho phép null, nó cũng được xem như không có mapping để tính lại.
+- Callback ném exception thì exception truyền ra và phép cập nhật không thành công theo hợp đồng method.
+- Callback nên nhanh, không blocking I/O, không gọi lại {{computeIfAbsent}} để cập nhật cùng map/key. Với {{ConcurrentHashMap}}, cập nhật đệ quy có thể bị từ chối và ném {{IllegalStateException}}; cạnh tranh cùng bucket cũng có thể làm việc callback chậm ảnh hưởng cập nhật khác.
+- {{merge(key, value, remappingFunction)}} phù hợp khi có sẵn giá trị mới; nếu mapping cũ vắng hoặc null, nó dùng giá trị mới. Nếu hàm gộp trả null, mapping bị xoá.
+
+| API | Hợp khi | Lưu ý |
+|---|---|---|
+| {{computeIfAbsent}} | Tạo cache/list/set theo nhu cầu | Callback tạo giá trị, không làm side effect |
+| {{merge}} | Cộng dồn giá trị đã có | Dễ dùng cho counter/aggregation |
+| {{get}} + {{put}} | Chỉ khi không có tranh chấp hoặc đã khoá ngoài | Hai lời gọi riêng không nguyên tử |
+
+### Pitfall production
+- Lưu cache kết quả lỗi bằng cách callback trả null: không có gì được cache, nên mọi request sau lại gọi backend. Nếu cần cache trạng thái "không tìm thấy", biểu diễn trạng thái đó bằng một object không null.
+- Gọi DB trong callback rồi kỳ vọng map bảo vệ DB khỏi duplicate request. Map chỉ điều phối trong tiến trình và một số bảo đảm theo key; nhiều replica vẫn gọi DB độc lập. Cần idempotency, unique constraint hoặc distributed coordination tuỳ nghiệp vụ.
+- Dùng {{ConcurrentHashMap}} nhưng đọc-sửa-ghi qua nhiều method như {{if (!containsKey) put}} vẫn có race; dùng phương thức atomic phù hợp.
+- Không giữ mutable value rồi sửa bên ngoài mà bỏ qua mọi đồng bộ cần thiết; map bảo vệ cấu trúc mapping, không tự làm object chứa bên trong thread-safe.
+
+### Ví dụ đời thực
+Một service có 6 instance, mỗi instance phục vụ khoảng 2.000 request/giây và dùng {{ConcurrentHashMap<String, List<Rule>>}} làm cache rule theo tenant. Code cũ tách {{get}}/{{put}}, tạo 3–5 list cho cùng tenant trong burst và một list ghi đè list khác; log cho thấy 0,3% rule mới bị mất trong vài giây đầu sau deploy. Chuyển phần khởi tạo cục bộ sang {{computeIfAbsent}} loại bỏ race trong từng instance, callback chỉ tạo {{ArrayList}} rỗng, còn việc nạp rules được đồng bộ riêng theo tenant. Sau sửa, mất rule về 0 trong 10 triệu request. Vì có 6 replica, team vẫn dùng versioning và invalidation qua event; local map không được nhầm là cache dùng chung.
+
+### Trả lời mẫu khi phỏng vấn
+“computeIfAbsent gom việc kiểm tra key và tạo giá trị vào một API dễ đọc. Với HashMap em chỉ dùng trong một luồng hoặc có đồng bộ bên ngoài, vì interface Map không bảo đảm thao tác nhiều thread là atomic. ConcurrentHashMap có hợp đồng atomic cho mapping của key trong computeIfAbsent, nên phù hợp để khởi tạo value theo key trong cache cục bộ. Callback phải ngắn và không có side effect khó lặp: nếu trả null thì không có mapping, lần sau callback sẽ chạy lại; nếu ném exception thì exception đi ra ngoài. Em tránh gọi mạng hoặc database trong callback vì callback có thể làm chậm các cập nhật khác, và nhiều replica vẫn có thể thực hiện cùng công việc. Nếu cần cộng dồn số liệu em thường dùng merge; nếu cần bảo đảm toàn hệ thống chỉ xử lý một lần thì map trong JVM không đủ, phải dùng cơ chế ở tầng dữ liệu hoặc idempotency key. Cuối cùng, map thread-safe không làm object mutable được lưu bên trong tự nhiên thread-safe.”
+
+> Senior tip: {{computeIfAbsent}} là công cụ đồng bộ cục bộ, không phải distributed lock; metric số lần callback chạy và latency của callback giúp phát hiện khi cache miss đang gây áp lực lên backend.`,
+  follow: [
+    'Nếu callback của {{computeIfAbsent}} trả {{null}}, lần gọi kế tiếp sẽ ra sao?',
+    'Vì sao {{ConcurrentHashMap}} không đảm bảo một callback chỉ chạy một lần trên toàn bộ các replica?'
+  ],
+  tags: ['Map', 'computeIfAbsent', 'merge', 'ConcurrentHashMap']
+},
+{
+  id: 'collections-039',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Bạn bọc {{HashMap}} bằng {{Collections.synchronizedMap()}} rồi duyệt {{entrySet()}}. Vì sao vẫn cần đồng bộ thủ công khi lặp, và khi nào nên chọn cấu trúc khác?',
+  a: `**Tóm tắt:** {{Collections.synchronizedMap(map)}} bọc mỗi thao tác map bằng cùng một monitor (khóa nội tại của object), nhưng việc duyệt qua {{entrySet()}}, {{keySet()}} hay {{values()}} gồm nhiều bước nên không tự được bảo vệ suốt vòng lặp. Cần khóa trên chính map wrapper quanh toàn bộ quá trình duyệt; nếu cần nhiều thao tác đọc/ghi đồng thời, cân nhắc {{ConcurrentHashMap}}.
+
+### Vì sao một method synchronized chưa đủ
+Một lời gọi như {{map.get(k)}} là một thao tác riêng. Iterator đọc phần tử lần lượt, nên vòng lặp gồm nhiều lần gọi {{hasNext}} và {{next}}; nếu thread khác thêm/xoá giữa chừng, iterator nhìn thấy cấu trúc thay đổi. Wrapper đồng bộ method của map, nhưng không thể tự suy ra khoảng thời gian mà caller muốn giữ ổn định khi duyệt.
+
+Các collection view trả về từ wrapper cũng phải được duyệt trong {{synchronized(map)}}. Dùng đúng object wrapper rất quan trọng: khóa trên map gốc hoặc trên {{entrySet}} khác với khóa mà wrapper dùng, nên không chặn được các thao tác khác đi qua wrapper.
+
+~~~java
+Map<String, Integer> map =
+    Collections.synchronizedMap(new HashMap<>());
+// Khóa wrapper trong toàn bộ quá trình duyệt view
+synchronized (map) {
+    for (Map.Entry<String, Integer> e : map.entrySet()) {
+        System.out.println(e.getKey() + "=" + e.getValue());
+    }
 }
+~~~
+
+### Bảo vệ một thao tác hay một invariant
+| Nhu cầu | Cách làm | Trade-off |
+|---|---|---|
+| Mỗi lần get/put riêng lẻ không bị hỏng cấu trúc | synchronized wrapper | Các thread thường bị tuần tự hoá |
+| Duyệt nhất quán | Đồng bộ quanh cả vòng lặp | Thread ghi phải chờ hết vòng lặp |
+| Cập nhật atomically theo key | Phương thức atomic như {{compute}} trên cấu trúc phù hợp | Không bao trùm nhiều key hay DB |
+| Nhiều luồng đọc/ghi thường xuyên | {{ConcurrentHashMap}} | Iterator yếu nhất quán, không phải snapshot cố định |
+
+Nếu cần kiểm tra rồi cập nhật, ví dụ {{if (!map.containsKey(k)) map.put(k, v)}}, hai method riêng vẫn tạo race dù từng method synchronized. Phải giữ cùng một synchronized block hoặc dùng thao tác atomic phù hợp. Mặt khác, giữ monitor lâu trong khi xử lý mỗi entry, gọi HTTP hoặc làm I/O sẽ chặn mọi thao tác khác trên map.
+
+### Pitfall production
+- Đồng bộ trên backing {{HashMap}} thay vì wrapper; code khác gọi wrapper không tranh cùng monitor.
+- Trả {{entrySet}} ra ngoài rồi cho caller duyệt mà không đưa quy tắc khóa; lỗi race bị đẩy sang tầng gọi.
+- Gọi callback chậm khi đang giữ lock khiến p99 latency tăng, request khác xếp hàng; không làm I/O dưới monitor.
+- Đổi sang {{ConcurrentHashMap}} không đồng nghĩa có snapshot. Iterator của nó weakly consistent: có thể phản ánh một số thay đổi sau khi iterator được tạo, nhưng không ném CME chỉ vì cập nhật đồng thời. Nếu cần báo cáo nhất quán chính xác, tạo snapshot dưới lock hoặc từ nguồn dữ liệu có transaction/snapshot phù hợp.
+
+### Ví dụ đời thực
+Một service cấu hình chứa 12.000 route trong synchronized map. Mỗi request tìm route riêng lẻ an toàn, nhưng endpoint admin duyệt toàn bộ để xuất JSON trong khi luồng cập nhật thêm route. Sau vài lần deploy nóng, export lỗi {{ConcurrentModificationException}} khoảng 4 lần mỗi ngày. Đội vận hành bọc vòng duyệt trong {{synchronized(routes)}}; lỗi biến mất nhưng p99 thao tác thêm route tăng từ 4 ms lên 180 ms vì serialize JSON vẫn nằm trong lock. Bước tiếp theo là copy nhanh các cặp key/value trong lock rồi serialize snapshot ngoài lock; p99 ghi giảm còn 7 ms. Với bản đồ cập nhật liên tục, team thay cấu trúc bằng {{ConcurrentHashMap}} và chấp nhận export là weakly consistent theo yêu cầu sản phẩm.
+
+### Trả lời mẫu khi phỏng vấn
+“SynchronizedMap đồng bộ các method của wrapper trên một monitor, nhưng iterator là một chuỗi nhiều thao tác nên không được khóa liên tục tự động. Khi duyệt entrySet, keySet hoặc values, em đồng bộ trên chính wrapper map quanh toàn bộ vòng lặp; khóa trên backing map hoặc collection view không cùng monitor. Nếu chỉ get hoặc put riêng lẻ, wrapper giúp bảo vệ thao tác đó, nhưng check-then-act qua hai method vẫn không atomic. Em sẽ dùng block đồng bộ cho invariant ngắn hoặc API atomic của ConcurrentHashMap khi phù hợp. Cần nhớ iterator ConcurrentHashMap không phải snapshot; nó weakly consistent. Nếu nghiệp vụ cần báo cáo chính xác tại một thời điểm, em tạo snapshot dưới lock hoặc đọc từ nguồn có snapshot semantics. Em cũng không gọi serialization, network hay I/O trong synchronized block vì khóa chung sẽ làm mọi request khác chờ. Thiết kế cuối cùng dựa vào mức nhất quán cần có và tỷ lệ đọc/ghi, không chỉ dựa vào tên collection.”
+
+> Senior tip: khi buộc phải snapshot synchronized map, copy dữ liệu tối thiểu dưới lock rồi xử lý nặng bên ngoài; theo dõi thời gian giữ monitor cùng p95/p99 để thấy lock contention.`,
+  follow: [
+    'Iterator của {{ConcurrentHashMap}} có bảo đảm là snapshot tại thời điểm tạo không?',
+    'Vì sao khóa trên map gốc không bảo vệ các thao tác đi qua synchronized wrapper?'
+  ],
+  tags: ['synchronizedMap', 'thread-safety', 'iterator', 'ConcurrentHashMap']
+},
+{
+  id: 'core-039',
+  topic: 'core',
+  level: 'mid',
+  q: 'Một người dùng nhập emoji nhưng hệ thống giới hạn chuỗi bằng {{String.length()}}. Vì sao emoji có thể bị đếm là hai ký tự, và bạn chọn API nào để kiểm tra giới hạn?',
+  a: `**Tóm tắt:** Trong Java, {{String.length()}} đếm **UTF-16 code unit** (đơn vị mã 16-bit), không luôn bằng số ký tự người dùng nhìn thấy. Ký tự Unicode nằm ngoài mặt phẳng cơ bản, chẳng hạn nhiều emoji, được mã hoá bằng một cặp surrogate nên {{length()}} trả 2; cần chọn cách đếm đúng với quy tắc nghiệp vụ.
+
+### Cái gì và vì sao có ba cách đếm
+Unicode gán mã số cho ký tự; UTF-16 là cách biểu diễn các mã số đó trong chuỗi Java. Một {{char}} trong Java là một code unit 16-bit, không phải lúc nào cũng là một ký tự Unicode hoàn chỉnh. Mã từ U+0000 tới U+FFFF thường chiếm một code unit; mã lớn hơn dùng hai {{char}} gọi là high surrogate và low surrogate. Cặp này cùng biểu diễn một code point (mã điểm Unicode).
+
+Vì vậy {{"A".length()}} là 1 nhưng {{"\uD83D\uDE00".length()}} là 2 dù mắt thấy một emoji. {{codePointCount(0, value.length())}} đếm code point; tuy nhiên một ký tự người dùng cảm nhận được vẫn có thể gồm nhiều code point, ví dụ chữ + dấu kết hợp hoặc emoji ghép với modifier. Đơn vị đó gọi là grapheme cluster (cụm tự vị). Quy tắc giới hạn trong sản phẩm cần nói rõ đo byte, code unit, code point hay grapheme cluster.
+
+~~~java
+String text = "A😀";
+int units = text.length(); // 3: A + hai surrogate của emoji
+int points = text.codePointCount(0, text.length()); // 2
+// Lặp theo code point để không tách surrogate pair
+text.codePoints().forEach(cp -> System.out.println(cp));
+~~~
+
+### Chọn cách đếm theo yêu cầu
+| Nhu cầu | Đo phù hợp | Lưu ý |
+|---|---|---|
+| Bộ nhớ/UTF-16 index trong Java | {{length()}} | Đơn vị code unit |
+| Số code point Unicode | {{codePointCount}} | Một emoji ghép có thể nhiều code point |
+| Giới hạn byte của giao thức/DB | Encode bằng charset được quy định rồi đếm byte | UTF-8 byte length không bằng ký tự |
+| Số ký tự người dùng nhìn thấy | Grapheme segmentation, ví dụ {{BreakIterator}} | Phụ thuộc quy tắc Unicode và locale |
+
+### Lỗi hay gặp
+- Dùng {{substring}} theo index lấy từ {{codePointCount}}; hai API dùng đơn vị khác nhau, có thể cắt giữa surrogate pair. Dùng {{offsetByCodePoints}} khi cần chuyển số code point thành UTF-16 index.
+- Cắt một chuỗi theo {{length}} để giới hạn UI rồi tạo chuỗi Unicode lỗi hoặc emoji bị tách. Kiểm tra đầu/cuối surrogate và dùng boundary phù hợp.
+- Backend giới hạn 50 ký tự nhưng database giới hạn byte; ký tự tiếng Việt có dấu hoặc emoji có thể chiếm nhiều byte UTF-8 hơn ASCII.
+- {{BreakIterator}} có thể làm đúng ranh giới grapheme hơn nhưng không tự quyết định chính sách sản phẩm; emoji mới và quy tắc Unicode cần được cập nhật theo JDK.
+
+### Ví dụ đời thực
+Form hồ sơ giới hạn tên hiển thị tối đa 20 ký tự. Một người dùng nhập 19 chữ cái và một emoji. Backend gọi {{length()}} và báo 21, trong khi UI JavaScript đếm khác nên người dùng không thể lưu; 1,8% lần cập nhật tên thất bại với emoji. Điều tra thêm phát hiện database giới hạn 80 byte UTF-8, không phải 20 code point. Team thống nhất hợp đồng: tối đa 20 grapheme trên giao diện và tối đa 80 byte UTF-8 ở tầng lưu; backend validate cả hai theo policy, UI hiển thị cùng thông báo. Sau khi cập nhật, tỷ lệ lỗi validation giảm từ 1,8% xuống 0,05%; test gồm emoji đơn, emoji có skin-tone, chữ kết hợp dấu và ký tự ASCII.
+
+### Trả lời mẫu khi phỏng vấn
+“String.length trong Java trả số UTF-16 code unit vì char là đơn vị 16-bit. Một mã Unicode ngoài vùng cơ bản cần surrogate pair, tức hai char, nên emoji có thể làm length tăng hai dù người dùng nhìn một ký tự. Nếu yêu cầu là số Unicode code point, em dùng codePointCount; khi lặp hoặc cắt theo code point, em không dùng trực tiếp index như thể hai đơn vị giống nhau. Nhưng code point vẫn chưa chắc bằng ký tự người dùng nhìn thấy, vì dấu kết hợp và emoji có thể gồm nhiều code point; trường hợp giới hạn UI cần định nghĩa grapheme cluster. Còn nếu ràng buộc là dung lượng protocol hoặc database, em đếm byte sau khi encode đúng charset, thường là UTF-8. Em sẽ thống nhất hợp đồng giữa frontend, backend và database, rồi test emoji, dấu kết hợp, ký tự ngoài BMP và chuỗi sát ngưỡng. Tránh chỉ đổi length sang một API khác mà không xác định nghiệp vụ đang muốn giới hạn loại đơn vị nào.”
+
+> Senior tip: mọi giới hạn chuỗi nên ghi rõ đơn vị trong API contract; test bằng emoji và chuỗi kết hợp dấu, đừng chỉ thử ASCII.`,
+  follow: [
+    'Vì sao {{codePointCount()}} vẫn không đếm chính xác số ký tự người dùng cảm nhận?',
+    'Nếu cột database giới hạn theo byte UTF-8, {{String.length()}} có đủ để validate không?'
+  ],
+  tags: ['String', 'Unicode', 'UTF-16', 'emoji']
+},
+{
+  id: 'core-040',
+  topic: 'core',
+  level: 'senior',
+  q: 'Hai plugin cùng có class tên {{com.example.Driver}} nhưng được nạp bởi hai {{ClassLoader}} khác nhau. Vì sao Java vẫn xem chúng là hai kiểu khác nhau, và {{Thread Context ClassLoader}} dùng để làm gì?',
+  a: `**Tóm tắt:** Trong JVM, định danh của một class gồm **tên nhị phân và defining classloader** (classloader đã định nghĩa class đó). Vì vậy cùng tên {{com.example.Driver}} do hai loader định nghĩa là hai kiểu không tương thích. {{Thread Context ClassLoader}} là loader gắn với thread, thường giúp thư viện tìm provider hoặc resource trong ứng dụng/plugin.
+
+### ClassLoader là gì và vì sao cần nó
+ClassLoader nạp bytecode (mã lệnh trong file class) vào JVM khi cần. Mô hình phổ biến là delegation: loader con hỏi loader cha trước, rồi mới tự tìm class, giúp các class nền tảng như {{java.lang.String}} được chia sẻ nhất quán thay vì bị ứng dụng thay thế.
+
+Quy tắc định danh không chỉ là tên. Có thể hình dung {{(com.example.Driver, LoaderA)}} khác {{(com.example.Driver, LoaderB)}} như hai loại hồ sơ cùng tên nhưng thuộc hai hệ thống schema riêng. Ép object của loại thứ nhất sang class do loader thứ hai định nghĩa thường thất bại với {{ClassCastException}}, đôi khi thông báo kỳ lạ là class không thể cast sang chính tên của nó.
+
+~~~java
+ClassLoader a = pluginA.getClass().getClassLoader();
+ClassLoader b = pluginB.getClass().getClassLoader();
+System.out.println(pluginA.getClass().getName()); // có thể giống pluginB
+System.out.println(a == b);                       // false nếu loader khác
+System.out.println(pluginA.getClass() == pluginB.getClass()); // false
+~~~
+
+Một số API tìm provider bằng {{ServiceLoader}} hoặc tìm resource qua thread context loader (TCCL). Đây là loader được đặt trên thread, thường do framework/container thiết lập để thư viện dùng chung có thể nhìn thấy class của ứng dụng con. Không nên nhầm TCCL với loader định nghĩa class của chính thư viện.
+
+### Bảng chẩn đoán
+| Triệu chứng | Nguyên nhân thường gặp | Hướng kiểm tra |
+|---|---|---|
+| ClassCastException dù tên class giống nhau | Class được định nghĩa bởi loader khác | Log tên class và {{getClassLoader()}} hai phía |
+| {{ServiceLoader}} không tìm thấy provider | TCCL hoặc resource service không đúng | Kiểm tra thread, resource và loader dùng để load |
+| {{NoSuchMethodError}} sau nâng cấp plugin | Runtime nạp phiên bản binary không khớp compile-time | Kiểm tra dependency tree và nguồn class |
+
+### Pitfall production
+- Plugin containers, application server và hot reload có thể nạp cùng class nhiều lần; không truyền object implementation qua biên loader nếu API/shared interface không được nạp từ parent chung.
+- Thread pool tái sử dụng thread. Nếu ứng dụng tạm đổi TCCL để load plugin mà không khôi phục trong {{finally}}, thread có thể giữ loader của ứng dụng đã undeploy, làm class và toàn bộ object liên quan không được GC; đây là classloader leak (rò rỉ bộ nhớ do loader còn được tham chiếu).
+- {{ClassCastException}} và {{NoSuchMethodError}} thường là triệu chứng dependency/version hoặc loader boundary, không nên xử lý bằng cast thêm hay xoá cache bừa bãi.
+- TCCL là trạng thái mutable theo thread; thiết lập tạm thời phải luôn được khôi phục, và không nên dùng loader do request cung cấp mà chưa kiểm soát nguồn.
+
+### Ví dụ đời thực
+Một nền tảng triển khai 12 plugin trong cùng JVM. Sau hot redeploy, plugin báo {{ClassCastException: com.example.Event cannot be cast to com.example.Event}}. Log chỉ ghi tên class nên nhóm điều tra mất nửa ngày. Bổ sung log defining loader cho thấy event được tạo bởi loader phiên bản cũ, còn consumer dùng loader mới. Đồng thời worker thread vẫn giữ TCCL cũ sau khi chạy tác vụ plugin. Sửa bằng cách đưa interface Event vào parent/shared loader, chỉ truyền DTO của API ổn định qua biên plugin, và khôi phục TCCL trong {{finally}}. Sau 30 chu kỳ deploy, số classloader còn sống trở về ổn định 13 thay vì tăng tới 47, heap không còn tăng thêm 600 MB.
+
+### Trả lời mẫu khi phỏng vấn
+“ClassLoader không chỉ tìm bytecode; loader định nghĩa class và tham gia vào identity của kiểu. Vì thế cùng binary name nhưng do hai defining loader khác nhau tạo ra hai Class object khác nhau, và object từ plugin A không cast được sang type cùng tên của plugin B. Cơ chế delegation giúp các class nền tảng hoặc API dùng chung được định nghĩa ở loader cha, tránh mỗi plugin có bản riêng. Thread Context ClassLoader là một loader gắn với thread, thường được container thiết lập để thư viện chung như ServiceLoader có thể tìm provider nằm trong ứng dụng; nó khác với loader đã định nghĩa class của thư viện. Khi debug em log cả tên class lẫn classloader. Với hot reload, em đặc biệt kiểm tra thread pool có giữ TCCL cũ không và luôn restore trong finally. Thiết kế plugin nên chia API ổn định ở loader chung, không trao đổi implementation class tùy tiện qua biên loader. NoSuchMethodError hoặc cast lỗi sau deploy cũng khiến em kiểm tra version và nguồn class trước khi tìm lỗi nghiệp vụ.”
+
+> Senior tip: khi log lỗi classloading, ghi {{Class.getName()}} cùng {{Class.getClassLoader()}}; chỉ log tên class thường không đủ để phân biệt hai bản cùng tên.`,
+  follow: [
+    'Vì sao thông báo {{X cannot be cast to X}} có thể xảy ra dù tên class hiển thị giống hệt?',
+    'Khi tạm đổi {{Thread Context ClassLoader}}, phải làm gì để tránh rò rỉ sau khi task kết thúc?'
+  ],
+  tags: ['ClassLoader', 'TCCL', 'ServiceLoader', 'plugin']
+},
+{
+  id: 'core-041',
+  topic: 'core',
+  level: 'mid',
+  q: 'Một phép tính {{int total = price * quantity}} đôi khi ra số âm dù cả hai đầu vào đều dương. Java xử lý integer overflow thế nào, và bạn ngăn lỗi này ra sao?',
+  a: `**Tóm tắt:** {{int}} là số nguyên có dấu 32-bit, chỉ biểu diễn từ -2.147.483.648 đến 2.147.483.647. Phép cộng, trừ, nhân vượt miền này không tự ném exception mà giữ các bit thấp theo biểu diễn hai bù, nên kết quả có thể quay vòng thành số âm; hãy chọn kiểu đủ rộng hoặc dùng API kiểm tra overflow.
+
+### Cơ chế và nguyên nhân cần quan tâm
+Kiểu số nguyên Java có độ rộng cố định. Khi phép toán {{int}} vượt giới hạn, Java không tự mở rộng sang {{long}} và cũng không báo lỗi. Ví dụ {{Integer.MAX_VALUE + 1}} cho {{Integer.MIN_VALUE}}. Đây không phải sai số dấu phẩy động; đó là overflow (tràn miền biểu diễn) xác định nhưng thường trái với ý nghĩa nghiệp vụ.
+
+Gán kết quả vào {{long}} sau khi nhân hai {{int}} không sửa được lỗi: phép nhân đã xảy ra bằng int trước khi gán. Phải chuyển ít nhất một toán hạng sang long trước phép tính. Khi cần phát hiện dữ liệu bất thường, {{Math.addExact}}, {{subtractExact}} và {{multiplyExact}} ném {{ArithmeticException}} nếu kết quả vượt kiểu đích.
+
+~~~java
+int price = 100_000;
+int quantity = 30_000;
+long wrong = price * quantity; // overflow xảy ra trước khi gán
+long correct = (long) price * quantity; // nhân bằng long
+long checked = Math.multiplyExact((long) price, quantity); // phát hiện tràn long
+~~~
+
+### Chọn chiến lược
+| Nhu cầu | Cách làm | Lưu ý |
+|---|---|---|
+| Giá trị có miền đã biết nhỏ | {{int}} | Xác nhận giới hạn đầu vào và tích |
+| Bộ đếm/tổng lớn hơn 32-bit | {{long}} | Vẫn có thể tràn nếu dữ liệu rất lớn |
+| Phải báo lỗi khi vượt giới hạn | {{Math.*Exact}} | Bắt và xử lý ArithmeticException phù hợp |
+| Số nguyên độ lớn tuỳ ý | {{BigInteger}} | Tốn bộ nhớ/CPU hơn primitive |
+
+### Lỗi thường gặp trong production
+- Chỉ kiểm tra từng đầu vào không âm, nhưng không kiểm tra tích hoặc tổng; hai giá trị hợp lệ vẫn có thể tạo kết quả không biểu diễn được.
+- Đổi kiểu sau phép tính như ví dụ trên; cast cần xảy ra trước phép toán.
+- Cộng tổng trong {{stream().mapToInt(...).sum()}} vẫn có thể overflow int; dùng {{mapToLong}} nếu miền tổng cần long, và kiểm tra chính sách overflow.
+- Dùng {{Math.*Exact}} nhưng bắt exception rồi thay bằng 0 hoặc giá trị tối đa mà không báo lỗi sẽ biến bug thành dữ liệu sai âm thầm.
+- Với tiền, {{long}} đơn vị cent có thể phù hợp nếu quy định scale rõ; phép tính tỷ lệ, thuế và làm tròn có thể cần {{BigDecimal}}, nhưng BigDecimal cũng cần precision/rounding policy.
+
+### Ví dụ đời thực
+Hệ thống tính tổng giá trị đơn hàng dùng {{int}} theo đơn vị đồng. Một đơn hàng thử nghiệm có giá 95.000 đồng và số lượng 30.000; mỗi field hợp lệ nhưng phép nhân tràn, tạo tổng âm. Bộ lọc chống gian lận coi tổng âm là khoản hoàn tiền, làm 43 đơn hàng trong batch bị đưa sai luồng; tổng đối soát lệch 68 triệu đồng. Log đầu vào cho thấy DB chứa đúng giá và số lượng, còn lỗi nằm ở phép nhân. Đội sửa kiểu tổng sang long, cast trước phép nhân và dùng {{Math.multiplyExact}} để từ chối giá trị vượt miền thiết kế. Thêm test cho biên {{Integer.MAX_VALUE}}, giá trị sát giới hạn và đầu vào âm. Batch sau sửa không còn khoản âm bất thường trong 2,4 triệu giao dịch, còn overflow được ghi thành lỗi validation rõ ràng.
+
+### Trả lời mẫu khi phỏng vấn
+“Integer trong Java có độ rộng cố định. Khi int vượt giới hạn, phép toán không tự chuyển sang long hay ném exception; bit thấp tạo ra một giá trị quay vòng, nên cộng số dương vẫn có thể thành số âm. Em kiểm tra cả phép toán trung gian: gán vào long sau khi nhân hai int là quá muộn, vì overflow đã xảy ra. Em cast một toán hạng sang long trước khi tính hoặc chọn kiểu miền lớn hơn ngay từ đầu. Nếu overflow phải là lỗi nghiệp vụ, em dùng Math.addExact hoặc multiplyExact để fail rõ ràng thay vì để số sai lan vào billing hay quota. Với số lớn hơn long, cân nhắc BigInteger; với tiền còn cần chính sách scale và rounding chứ không chỉ đổi kiểu. Em thêm test biên, vì test giá trị nhỏ không phát hiện lỗi này. Khi catch ArithmeticException, em chuyển thành lỗi domain có log/metric, tuyệt đối không trả về 0 như fallback thành công.”
+
+> Senior tip: rà soát phép nhân trước phép cộng và tổng hợp trong stream; kiểm tra giới hạn bằng số liệu tối đa thực tế, không chỉ dựa vào kiểu đầu vào.`,
+  follow: [
+    'Vì sao {{long total = intA * intB}} vẫn có thể chứa kết quả đã overflow?',
+    'Khi nào bạn chọn {{Math.multiplyExact}} thay vì chỉ chuyển toàn bộ phép tính sang {{long}}?'
+  ],
+  tags: ['integer', 'overflow', 'long', 'Math']
+},
+{
+  id: 'core-042',
+  topic: 'core',
+  level: 'mid',
+  q: 'Bạn có thể dùng từ khoá {{assert}} để kiểm tra đầu vào một method public không? So sánh {{assert}} với validation bằng exception trong ứng dụng production.',
+  a: `**Tóm tắt:** {{assert}} kiểm tra giả định nội bộ của chương trình khi phát triển, nhưng thường bị tắt nếu JVM không bật {{-ea}}. Không dùng nó để xác thực input, request hay điều kiện nghiệp vụ ở production; dùng validation rõ ràng và ném exception phù hợp để hành vi luôn giống nhau.
+
+### Assertion là gì, vì sao mặc định tắt
+Assertion (khẳng định) là câu kiểm tra điều mà lập trình viên tin rằng luôn đúng tại một điểm trong code, ví dụ sau khi một thuật toán nội bộ hoàn tất thì con trỏ phải nằm trong miền hợp lệ. Cú pháp {{assert condition : message}}; nếu điều kiện sai và assertion đang bật, JVM ném {{AssertionError}}.
+
+JVM tắt assertion mặc định để không làm thay đổi hành vi ứng dụng production và tránh chi phí đánh giá các điều kiện chỉ phục vụ debug. Có thể bật bằng {{-ea}}. Vì cấu hình môi trường có thể khác nhau, cùng một request sai có thể bị từ chối ở test nhưng lọt qua production nếu dùng assert để kiểm tra input. Ngoài ra, {{AssertionError}} là lỗi lập trình nghiêm trọng, không phải exception validation thông thường để API biến thành HTTP 400.
+
+~~~java
+static int percentage(int part, int total) {
+    if (total <= 0) throw new IllegalArgumentException("total must be positive");
+    int result = part * 100 / total;
+    assert result >= 0 && result <= 100 : "internal percentage invariant";
+    return result;
+}
+~~~
+
+### Khi nào dùng gì
+| Mục đích | Cách phù hợp | Hành vi |
+|---|---|---|
+| Input công khai không hợp lệ | Validate rồi ném exception hoặc trả lỗi domain | Luôn kiểm tra |
+| Quy tắc nghiệp vụ bị vi phạm | Domain exception/kết quả lỗi theo contract | Client hiểu được lỗi |
+| Giả định nội bộ trong thuật toán | {{assert}} có thể hữu ích | Chỉ kiểm tra khi bật {{-ea}} |
+| Bảo vệ phân quyền hoặc bảo mật | Kiểm tra bắt buộc, fail closed | Không bao giờ dựa vào assert |
+
+### Pitfall production
+- Dùng {{assert user != null}} trong controller/service; production chạy không bật assertions nên null đi sâu hơn rồi thành {{NullPointerException}} khó hiểu.
+- Gọi method có side effect bên trong điều kiện assert, như {{assert repository.delete(id)}}; khi tắt assertion, side effect cũng không chạy. Điều kiện assert chỉ nên đọc trạng thái.
+- Bắt {{Throwable}} rồi nuốt {{AssertionError}} làm che giấu lỗi invariant; assertion không thay cho error handling.
+- Bật {{-ea}} toàn cục không biến assert thành validation tốt: client vẫn nhận lỗi kiểu lỗi lập trình, và hợp đồng vẫn phụ thuộc cách khởi chạy.
+- Trong thư viện, assert hữu ích để kiểm tra invariant khi phát triển; API vẫn cần validate tham số bên ngoài một cách tường minh.
+
+### Ví dụ đời thực
+Một batch import kiểm tra {{assert row.getAccountId() != null}} trước khi ghi giao dịch. Local test chạy với {{-ea}} nên phát hiện dòng lỗi; container production không bật flag đó, null đi qua và gây lỗi khi ghi DB. Batch dừng sau 62.000/100.000 dòng, phải chạy lại và gây trùng 17 giao dịch vì bước ghi chưa idempotent. Sửa thành kiểm tra tường minh, ghi dòng lỗi vào report với số dòng và mã lỗi, còn assert chỉ giữ cho invariant nội bộ sau khi parse. Thêm test chạy với cấu hình giống production, kiểm tra đầu vào null và retry. Sau đó batch hoàn tất hết 100.000 dòng; không còn cần bật {{-ea}} để bảo đảm validate request.
+
+### Trả lời mẫu khi phỏng vấn
+“Em dùng assert cho invariant nội bộ, tức giả định về trạng thái mà code của em phải bảo đảm, chứ không dùng để kiểm tra dữ liệu người dùng. Assertion thường bị tắt mặc định và chỉ chạy khi JVM bật -ea, nên validation bằng assert có thể hoạt động ở test nhưng biến mất ở production. Nếu input public sai, em kiểm tra tường minh rồi ném IllegalArgumentException hoặc domain exception phù hợp để tầng API chuyển thành phản hồi có contract ổn định. Em cũng không đặt side effect trong điều kiện assert, vì khi assertion bị tắt cả lời gọi đó cũng không chạy. Với bảo mật, phân quyền và dữ liệu quan trọng, kiểm tra phải luôn được thực thi và fail closed. Assert vẫn có giá trị khi phát triển để bắt invariant bị phá sớm, nhưng nó không thay cho test, validation, logging hay xử lý lỗi. Khi review, em đặc biệt tìm assert ở controller, parser và code xử lý batch vì đó thường là chỗ dữ liệu ngoài đi vào.”
+
+> Senior tip: coi mọi điều kiện có thể bị tắt theo JVM flag là không phù hợp cho validation, authorization hoặc bất kỳ rào chắn dữ liệu production nào.`,
+  follow: [
+    'Điều gì xảy ra nếu biểu thức trong {{assert}} có side effect nhưng JVM không bật {{-ea}}?',
+    'Bạn phân biệt {{AssertionError}} với exception validation mà API nên trả cho client thế nào?'
+  ],
+  tags: ['assert', 'validation', 'exception', 'production']
+},
 );
