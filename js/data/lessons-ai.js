@@ -2923,4 +2923,517 @@ Test kiểm tra cả đường từ chối lẫn đường thành công và đ�
   related: ['ai-001', 'ai-017'],
   tags: ['ai-agent', 'tool-security', 'schema-validation', 'authorization', 'idempotency'],
 },
+{
+  id: 'lesson-ai-009',
+  track: 'ai',
+  order: 9,
+  title: 'RAG cơ bản có thể kiểm chứng: chunk overlap, tìm top-k và ghép nguồn',
+  level: 'mid',
+  minutes: 35,
+  goals: [
+    'Giải thích được chunk, overlap, embedding vector và cosine similarity bằng ví dụ nhỏ.',
+    'Viết chunker có overlap, xếp hạng top-k ổn định từ vector có sẵn và ghép context mang source id.',
+    'Phân biệt điểm tương đồng với sự thật, và biết cách kiểm tra citation trước khi tạo link nguồn.'
+  ],
+  body: `**Tóm tắt:** RAG (Retrieval-Augmented Generation, tạo câu trả lời có tăng cường bằng tìm kiếm) tìm đoạn tài liệu phù hợp rồi mới đưa chúng cho LLM (Large Language Model, mô hình ngôn ngữ lớn) trả lời. Pipeline cơ bản là cắt tài liệu thành chunk có overlap, tìm top-k chunk bằng embedding vector và cosine similarity, ghép context kèm mã nguồn, sau đó kiểm tra citation mà model trả về. RAG giúp câu trả lời dựa trên tài liệu mới của công ty, nhưng không tự bảo đảm model nói đúng.
+
+### 1. Vì sao cần cắt tài liệu thành chunk?
+Chunk là một đoạn nhỏ được tách từ tài liệu. Nếu gửi cả cuốn hướng dẫn vào mỗi câu hỏi, request tốn token, chậm và các ý liên quan dễ bị chìm giữa nội dung khác. Token là đơn vị văn bản model xử lý; có thể hình dung như từng mảnh chữ, không phải lúc nào một từ cũng đúng một token.
+
+Tài liệu dài được chia thành những đoạn vừa đủ để mỗi đoạn nói về một ý. Cắt quá ngắn thì mất ngữ cảnh; cắt quá dài thì một vector đại diện cho nhiều chủ đề và khó tìm đúng ý. Chunking theo heading hoặc đoạn văn thường giữ nghĩa tốt hơn cắt đúng từng số ký tự. Bài tập dùng từ để nhìn rõ cơ chế, không phải khuyến nghị cắt tài liệu production theo từ.
+
+**Overlap** là phần cuối của chunk trước được lặp lại ở đầu chunk sau. Ví dụ size 3 từ, overlap 1:
+~~~text
+tài liệu: [phí thường niên của] [của thẻ Platinum là] [là 300 nghìn đồng]
+                       ^ phần "của" nối ý qua ranh giới
+~~~
+Nếu ranh giới rơi giữa tên sản phẩm và giá tiền, overlap giúp ít nhất một chunk chứa đủ hai vế để retrieval có thể tìm thấy. Overlap quá lớn lại làm index chứa nhiều bản sao, tốn bộ nhớ và khiến cùng một thông tin chiếm nhiều vị trí trong top-k.
+
+### 2. Tìm đoạn liên quan bằng vector
+Embedding là phép biến văn bản thành một dãy số gọi là vector. Một embedding model có thể ánh xạ “phí hàng năm” và “phí thường niên” thành hai vector gần nhau dù câu không trùng từ. Bài tập không gọi model embedding: test đưa vector sẵn để ta tập phần tính điểm và xếp hạng.
+
+Cosine similarity đo góc giữa hai vector: điểm gần 1 nghĩa là hai vector cùng hướng; gần 0 nghĩa là ít giống theo không gian đó. Nếu vector đã có độ dài 1, cosine bằng tổng tích từng cặp số. Ví dụ câu hỏi q=[1,0], tài liệu A=[0.6,0.8] có điểm 0.6, B=[0.9,0.1] có điểm 0.9/√0.82 ≈ 0.99, nên B đứng trước. **Top-k** nghĩa là lấy tối đa k kết quả điểm cao nhất, không phải lấy mọi đoạn trong kho.
+
+Trong thực tế, vector thường được lưu cùng nội dung và metadata (thông tin mô tả như id tài liệu, trang, quyền truy cập). PostgreSQL với extension pgvector có thể tìm vector gần nhất; toán tử cosine distance biểu diễn khoảng cách, nên khoảng cách thấp tương ứng với độ tương đồng cao. Trước khi xếp hạng phải áp dụng quyền truy cập của người dùng, nếu không kết quả có thể rò rỉ tài liệu riêng tư.
+
+### 3. Ghép context và citation
+Context là đoạn dữ liệu được đưa cùng câu hỏi vào prompt. Mỗi chunk nên được đánh dấu bằng source id ổn định, ví dụ [policy-12], rồi giữ bảng ánh xạ id đó sang tài liệu/trang thật. Model có thể được yêu cầu trích id sau nhận định, nhưng prompt chỉ là chỉ dẫn: model vẫn có thể bịa [policy-999]. Server phải chỉ tạo link từ id nằm trong tập chunk đã gửi; citation hợp lệ cũng chưa chứng minh câu trả lời được chunk hỗ trợ.
+
+Luồng tối thiểu:
+~~~text
+Câu hỏi -> embedding câu hỏi -> lọc quyền -> cosine/top-k
+       -> [doc-12] nội dung + [doc-18] nội dung -> LLM -> kiểm tra citation id
+~~~
+Nếu retrieval không tìm thấy đoạn đủ liên quan, câu trả lời an toàn là nói không có dữ liệu, thay vì để model đoán. Điểm cosine không phải xác suất đúng: ngưỡng 0.75 ở model này không thể mặc định dùng cho model khác. Hãy đo trên câu hỏi thật và hiệu chỉnh threshold bằng ví dụ đúng/sai đã gán nhãn.
+
+### 4. Ví dụ code của bước cosine
+Đoạn Java sau chỉ minh hoạ hai vector nhỏ đã có sẵn; production cần xử lý kích thước vector lớn, null và dữ liệu không hợp lệ.
+~~~java
+double cosine(double[] a, double[] b) {
+    double dot = 0, aa = 0, bb = 0;
+    for (int i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];      // phần hai vector cùng hướng
+        aa += a[i] * a[i];       // bình phương độ dài a
+        bb += b[i] * b[i];       // bình phương độ dài b
+    }
+    return dot / (Math.sqrt(aa) * Math.sqrt(bb));
+}
+~~~
+Trong code chạy thật phải chặn vector rỗng, khác chiều và vector toàn số 0 trước phép chia. Bài tập định nghĩa các trường hợp lỗi đó thành điểm 0 để chúng không tạo NaN (giá trị số không xác định) làm hỏng thứ tự sắp xếp.
+
+### 5. Lỗi thường gặp và một ví dụ vận hành
+- Cắt tài liệu nhưng không lưu source id: có nội dung mà không thể dẫn người dùng quay về trang gốc.
+- Dùng vector của hai embedding model khác nhau: các tọa độ không còn cùng ý nghĩa; cần tạo lại index nhất quán khi đổi model.
+- Chỉ kiểm citation có tồn tại: model có thể gắn nguồn thật vào nhận định không được nguồn hỗ trợ; cần đo groundedness (mức câu trả lời được bằng chứng hỗ trợ) trên bộ câu hỏi chuẩn.
+- Đưa hướng dẫn độc hại nằm trong tài liệu vào prompt như chỉ thị đáng tin: nội dung retrieval là dữ liệu không tin cậy, không phải lệnh cho agent.
+
+Ví dụ giả lập một chatbot chính sách có 80 nghìn đoạn tài liệu: p95 (mốc 95% request hoàn tất nhanh hơn) là 3.2 giây, câu trả lời thiếu trang nguồn ở 18% ticket. Điều tra cho thấy chunk cắt giữa điều kiện và mức phí, và UI tạo link dựa trực tiếp vào citation model viết. Đội chuyển sang chunk theo mục có overlap 1–2 câu, giữ docId/page, chỉ lấy 4 đoạn sau lọc quyền và loại id citation không nằm trong tập truy xuất. Sau hai tuần, trên 200 câu hỏi có đáp án chuẩn, lỗi thiếu nguồn giảm còn 3%, p95 còn 2.1 giây; các câu không tìm được bằng chứng được chuyển sang nhân viên thay vì đoán.
+
+### 6. Trả lời phỏng vấn thế nào?
+“Em xây RAG theo các bước tách biệt. Khi nạp tài liệu, em làm sạch rồi cắt theo cấu trúc như heading và đoạn, dùng overlap vừa phải để không đứt ý; mỗi chunk giữ document id, trang, version và quyền truy cập. Khi có câu hỏi, em tạo embedding bằng cùng model/version, lọc quyền trước khi truy xuất, chấm cosine và lấy top-k đã hiệu chỉnh bằng eval set. Em ghép các đoạn với source id vào context, yêu cầu model chỉ dựa vào đó và trích nguồn. Nhưng em không tin citation do model tự ghi: server chỉ render link từ id đã gửi, và em đánh giá riêng xem từng nhận định có được nguồn hỗ trợ không. Nếu điểm retrieval thấp hoặc ngữ cảnh không đủ, hệ thống nên từ chối có căn cứ. Em theo dõi recall, groundedness, latency và token cost; đổi chunker hay embedding model thì chạy lại bộ đánh giá trước rollout.”
+
+### Liên hệ phỏng vấn
+Khi giải thích bài tập, đi từ overlap để giữ nghĩa qua ranh giới, cosine để xếp vector có sẵn, top-k để giới hạn context, đến source id để người dùng kiểm chứng. Nêu rõ đây là bản Java thuần mô phỏng; pgvector/Spring AI có thể hỗ trợ truy xuất, nhưng không thay cho authorization, citation validation hay đánh giá chất lượng.`,
+  exercises: [
+    {
+      title: 'Chunk có overlap, xếp top-k và dựng context có nguồn',
+      prompt: `Hoàn thiện {{RagPipeline}} bằng Java thuần, không gọi embedding API hay vector database. {{split(text, size, overlap)}} tách theo whitespace thành các đoạn có tối đa {{size}} từ; hai đoạn cạnh nhau phải lặp {{overlap}} từ. Từ rỗng trả danh sách rỗng; size phải lớn hơn 0 và overlap phải từ 0 đến nhỏ hơn size.
+
+{{cosine(a, b)}} tính cosine similarity; null, khác chiều, vector rỗng hoặc vector có độ dài 0 phải cho điểm 0. {{topK(query, chunks, k)}} xếp điểm cao trước, hòa điểm thì id tăng dần để kết quả ổn định; k âm bị từ chối, k lớn hơn số chunk thì lấy tất cả. Cuối cùng {{context(chunks)}} ghép mỗi đoạn thành một dòng {{[sourceId] text}}. Vector trong test đã được cung cấp sẵn để bài chỉ kiểm tra logic pipeline.`,
+      starter: `final class Chunk {
+    final String id, text;
+    final double[] vector;
+    Chunk(String id, String text, double[] vector) {
+        this.id = id; this.text = text; this.vector = vector;
+    }
+}
+
+class RagPipeline {
+    List<String> split(String text, int size, int overlap) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    double cosine(double[] a, double[] b) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<Chunk> topK(double[] query, List<Chunk> chunks, int k) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String context(List<Chunk> chunks) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable test) {
+        total++;
+        try { test.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual))
+            throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void close(double expected, double actual) {
+        if (Math.abs(expected - actual) > 0.000001)
+            throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static Chunk c(String id, double x, double y) {
+        return new Chunk(id, "text-" + id, new double[] {x, y});
+    }
+    public static void main(String[] args) {
+        RagPipeline p = new RagPipeline();
+        check("chunk overlap preserves boundary word", () -> {
+            eq(List.of("A B C", "C D E"), p.split("A B C D E", 3, 1));
+        });
+        check("topK follows cosine score, not input order", () -> {
+            List<Chunk> result = p.topK(new double[] {1, 0},
+                List.of(c("a", 0.6, 0.8), c("b", 0.9, 0.1)), 1);
+            eq(List.of("b"), List.of(result.get(0).id));
+            close(0.9 / Math.sqrt(0.82), p.cosine(new double[] {1, 0}, result.get(0).vector));
+        });
+        check("ties have stable id order and context keeps citations", () -> {
+            List<Chunk> result = p.topK(new double[] {1, 0},
+                List.of(c("z", 1, 0), c("a", 1, 0)), 2);
+            eq(List.of("a", "z"), List.of(result.get(0).id, result.get(1).id));
+            eq("[a] text-a\\n[z] text-z\\n", p.context(result));
+        });
+        check("zero and incompatible vectors do not produce NaN", () -> {
+            close(0, p.cosine(new double[] {0, 0}, new double[] {1, 0}));
+            close(0, p.cosine(new double[] {1}, new double[] {1, 2}));
+            eq(List.of(), p.split("   ", 3, 0));
+        });
+        check("invalid window arguments are rejected", () -> {
+            boolean badSize = false, badOverlap = false;
+            try { p.split("A B", 0, 0); } catch (IllegalArgumentException e) { badSize = true; }
+            try { p.split("A B", 2, 2); } catch (IllegalArgumentException e) { badOverlap = true; }
+            if (!badSize || !badOverlap) throw new AssertionError("invalid chunk window accepted");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `final class Chunk {
+    final String id, text;
+    final double[] vector;
+    Chunk(String id, String text, double[] vector) {
+        this.id = id; this.text = text; this.vector = vector;
+    }
+}
+
+class RagPipeline {
+    List<String> split(String text, int size, int overlap) {
+        if (size <= 0 || overlap < 0 || overlap >= size)
+            throw new IllegalArgumentException("invalid chunk window");
+        List<String> out = new ArrayList<>();
+        if (text == null || text.isBlank()) return out;
+        String[] words = text.trim().split("\\\\s+");
+        for (int start = 0; start < words.length;) {
+            int end = Math.min(start + size, words.length);
+            out.add(String.join(" ", Arrays.copyOfRange(words, start, end)));
+            if (end == words.length) break;
+            start = end - overlap;
+        }
+        return out;
+    }
+
+    double cosine(double[] a, double[] b) {
+        if (a == null || b == null || a.length == 0 || a.length != b.length) return 0;
+        double dot = 0, aa = 0, bb = 0;
+        for (int i = 0; i < a.length; i++) {
+            dot += a[i] * b[i];
+            aa += a[i] * a[i];
+            bb += b[i] * b[i];
+        }
+        if (aa == 0 || bb == 0) return 0;
+        return dot / (Math.sqrt(aa) * Math.sqrt(bb));
+    }
+
+    List<Chunk> topK(double[] query, List<Chunk> chunks, int k) {
+        if (k < 0) throw new IllegalArgumentException("k must not be negative");
+        List<Chunk> ranked = new ArrayList<>(chunks);
+        ranked.sort((a, b) -> {
+            int byScore = Double.compare(cosine(query, b.vector), cosine(query, a.vector));
+            return byScore != 0 ? byScore : a.id.compareTo(b.id);
+        });
+        return new ArrayList<>(ranked.subList(0, Math.min(k, ranked.size())));
+    }
+
+    String context(List<Chunk> chunks) {
+        StringBuilder out = new StringBuilder();
+        for (Chunk c : chunks) out.append("[").append(c.id).append("] ")
+            .append(c.text).append("\\n");
+        return out.toString();
+    }
+}`,
+      hints: [
+        'Với mỗi cửa sổ, end là min(start + size, số từ). Nếu chưa tới cuối, vị trí tiếp theo là end - overlap.',
+        'Cosine cần tích vô hướng chia cho hai độ dài. Kiểm tra chiều và độ dài trước phép chia để tránh NaN.',
+        'Sort bản sao danh sách theo cosine giảm dần; nếu điểm bằng nhau dùng id tăng dần, rồi cắt tới min(k, size).'
+      ],
+      explain: `### Vì sao lời giải chạy đúng
+{{split}} xác thực cửa sổ trước để không tạo vòng lặp vô hạn khi overlap bằng hoặc lớn hơn size. Mỗi lượt thêm một cửa sổ bắt đầu tại {{start}}; nếu đã chạm cuối thì dừng, nếu chưa thì lùi {{overlap}} từ để phần cuối được dùng lại ở chunk kế. {{String.join}} chỉ phục vụ demo từ; parser production nên hiểu heading, câu, bảng và token budget.
+
+{{cosine}} tính dot product và bình phương độ dài trong một lượt. Vector null, khác chiều, rỗng hoặc toàn số 0 cho điểm 0 vì không có góc hợp lệ để so sánh. Không nên coi 0 là “không liên quan” một cách tuyệt đối; đây là chính sách fallback dễ test, còn pipeline thật có thể loại vector lỗi và ghi metric.
+
+{{topK}} sắp xếp một bản sao nên không đổi thứ tự dữ liệu gốc. Điểm lớn hơn được ưu tiên, rồi id làm tie-breaker để test và production có kết quả xác định. {{context}} ghép chính id đã lưu cùng text; UI/server phải ánh xạ id này sang metadata thật chứ không tin URL do model tự tạo.
+
+### Pitfall
+Test vector có sẵn chỉ chứng minh toán tử xếp hạng. Nó không chứng minh embedding hiểu nghĩa, threshold phù hợp, quyền truy cập đúng hay câu trả lời được nguồn hỗ trợ. Với data lớn, không nên sort mọi chunk trong JVM mỗi request: vector store như pgvector tìm ứng viên; application vẫn lọc quyền và giới hạn kết quả trước khi gọi model.`,
+    }
+  ],
+  check: [
+    {
+      q: 'Tại sao chunking thường thêm overlap?',
+      options: [
+        'Để tạo thêm nội dung mới cho model',
+        'Để một ý nằm vắt qua ranh giới vẫn có thể xuất hiện trọn hơn trong chunk kế tiếp',
+        'Để thay embedding model mà không cần re-index',
+        'Để cosine similarity luôn bằng 1'
+      ],
+      answer: 1,
+      explain: `Overlap lặp lại một phần cuối chunk trước ở chunk sau, giúp giữ ngữ cảnh khi ý nằm gần ranh giới. Nó không tạo dữ liệu mới, không đổi model và không làm vector giống nhau tự động. Overlap quá lớn còn làm index phình và lặp kết quả.`,
+    },
+    {
+      q: 'Cosine similarity cao giữa câu hỏi và một chunk chứng minh điều gì?',
+      options: [
+        'Độ tương đồng theo embedding cao hơn tương đối, nhưng chưa chứng minh câu trả lời là sự thật',
+        'Model chắc chắn đã đọc đúng tài liệu gốc',
+        'Citation trong câu trả lời chắc chắn hợp lệ',
+        'Người dùng có quyền đọc chunk đó'
+      ],
+      answer: 0,
+      explain: `Cosine là tín hiệu xếp hạng vector, không phải xác suất đúng hay quyền truy cập. Hệ thống vẫn cần kiểm quyền, kiểm citation id và đánh giá câu trả lời có được nội dung nguồn hỗ trợ hay không. Model có thể trích id hợp lệ nhưng gắn sai nhận định.`,
+    },
+    {
+      q: 'Server nên xử lý citation [doc-999] do model tự sinh thế nào nếu id đó không nằm trong context đã gửi?',
+      options: [
+        'Tạo đường dẫn theo chuỗi model trả về',
+        'Tìm một tài liệu bất kỳ có id gần giống',
+        'Không tạo link từ id lạ và đánh dấu câu trả lời thiếu căn cứ',
+        'Bỏ kiểm tra vì prompt đã dặn model không bịa'
+      ],
+      answer: 2,
+      explain: `Prompt không phải ranh giới tin cậy; model có thể sinh id không tồn tại. Server chỉ tạo link từ allowlist source id của lần retrieval hiện tại. Nếu id không hợp lệ, không được biến nó thành link; tùy UX có thể loại citation, yêu cầu trả lời lại hoặc chuyển cho người thật.`,
+    },
+  ],
+  related: ['ai-003', 'ai-009', 'ai-014'],
+  tags: ['RAG', 'chunking', 'cosine', 'top-k', 'citations']
+},
+{
+  id: 'lesson-ai-010',
+  track: 'ai',
+  order: 10,
+  title: 'Đánh giá AI agent bằng eval set: pass rate, so sánh prompt và bắt regression',
+  level: 'mid',
+  minutes: 35,
+  goals: [
+    'Tạo eval set cố định gồm input, tiêu chí mong đợi và id case để so sánh các lần chạy.',
+    'Viết runner gọi FakeLlm theo kịch bản, tính pass rate và phát hiện case regression giữa hai prompt.',
+    'Nêu được giới hạn của exact match, LLM-as-judge và lý do cần kết hợp kiểm tra tự động với con người.'
+  ],
+  body: `**Tóm tắt:** Eval (evaluation, đánh giá có cấu trúc) là chạy một tập input cố định qua AI agent và chấm theo tiêu chí đã định, thay vì thử vài câu rồi kết luận bằng cảm giác. Pass rate là số case đạt chia tổng số case; regression là một case từng đạt ở baseline nhưng thất bại ở phiên bản mới. Muốn phép so sánh có ý nghĩa, hai prompt phải chạy trên cùng eval set và lưu kết quả từng case, không chỉ nhìn một con số trung bình.
+
+### 1. Vì sao cần eval set?
+AI agent có thể gọi tool, tìm tài liệu hoặc trả câu trả lời. Sửa một prompt để xử lý lỗi mới đôi khi làm hỏng hành vi cũ: ví dụ agent biết từ chối khi thiếu bằng chứng nhưng sau thay đổi lại đoán phí giao dịch. **Eval set** là tập tình huống có id, input và expected behavior (hành vi mong đợi) được giữ ổn định qua các lần chạy. Nó giống bộ test hồi quy của code: mọi thay đổi được thử lại trên các case cũ.
+
+Không chọn toàn ví dụ dễ. Tập nên có luồng bình thường, câu hỏi biên, thiếu dữ liệu cần từ chối, tool lỗi hoặc timeout, quyền bị từ chối, và prompt injection (nội dung cố dụ model bỏ chỉ dẫn). Với agent, mỗi case có thể cần kiểm cả kết quả lẫn side effect: agent từ chối hoàn tiền sai nhưng vẫn gọi tool hoàn tiền là không đạt.
+
+### 2. Chạy eval và tính pass rate
+Một runner duyệt từng case, gọi model với input, chấm kết quả theo assertion hoặc rubric, lưu case id, version, pass/fail và chi tiết. **Baseline** là phiên bản chuẩn để so sánh; **candidate** là prompt hoặc model đang thử. Pass rate = số case pass / tổng case. Ví dụ baseline đạt 18/20 = 90%, candidate đạt 17/20 = 85%. Nếu chỉ nhìn tỷ lệ, ta chưa biết case nào đã hỏng; cần giữ bảng kết quả theo id.
+
+Bài tập dùng {{FakeLlm}} (model giả) trả câu trả lời đã định trước theo prompt version và input. Điều này giúp kiểm tra runner, mẫu số, so sánh và logic regression không tốn tiền, không phụ thuộc network hay tính ngẫu nhiên của model. Nó không giả lập năng lực của LLM và không thể chứng minh prompt thật tốt; eval thật phải gọi model thật ở môi trường kiểm soát hoặc replay kết quả đã lưu.
+
+~~~text
+case      baseline v1   candidate v2   kết luận
+fee-01       PASS           PASS        giữ nguyên
+refund-02    PASS           FAIL        REGRESSION
+missing-03   FAIL           PASS        cải thiện
+đạt         2/3            2/3         tỷ lệ bằng nhau nhưng case khác
+~~~
+Ví dụ cho thấy pass rate không kể toàn bộ câu chuyện: cả hai bản đều 2/3 nhưng candidate làm hỏng refund-02 và sửa missing-03. Regression chính là case baseline pass và candidate fail; case đã fail trước đó không được gọi là regression mới, dù vẫn cần cải thiện.
+
+### 3. Chọn tiêu chí chấm
+Với output có cấu trúc, kiểm JSON parse được, trường bắt buộc, enum và invariant bằng code. Với agent, kiểm thêm tool nào đã gọi, số lần gọi, input có được phép, trạng thái cuối và side effect. Exact match (so sánh chuỗi giống hệt) phù hợp khi đầu ra là nhãn/format cố định, nhưng không phù hợp với câu trả lời tự nhiên có nhiều cách diễn đạt đúng.
+
+Rubric (bảng tiêu chí chấm) có thể chấm đúng sự thật, đủ ý, an toàn, có dẫn chứng và đúng format. LLM-as-judge là dùng một model để đánh giá output theo rubric; nó giúp mở rộng chấm nội dung nhưng cũng có sai lệch, nên cần chấm thủ công một mẫu, cố định rubric/version và so độ đồng thuận. Không biến judge thành nguồn chân lý duy nhất.
+
+Nên báo cáo từng metric theo mục tiêu. Pass rate dễ hiểu nhưng có thể che lỗi nghiêm trọng nếu 99 case thường gặp pass và 1 case mất tiền fail. Với thao tác rủi ro cao cần gate riêng: không được có vi phạm quyền hoặc side effect không được duyệt. Có thể phân nhóm theo loại case, độ khó, ngôn ngữ và mức rủi ro để biết thay đổi ảnh hưởng ai.
+
+### 4. Gắn eval vào quy trình phát hành
+Lưu prompt theo version bất biến, cùng model, tham số, tool schema và snapshot tài liệu liên quan. Mỗi lần thay prompt chạy lại đúng bộ case; so candidate với baseline và hiển thị regression theo id. Có thể chặn release nếu pass rate giảm quá ngưỡng hoặc có bất kỳ lỗi critical nào. Nếu model/provider thay đổi thì đó cũng là thay đổi cần ghi version, vì output có thể khác dù prompt không đổi.
+
+Eval offline không thay thế production monitoring. Offline dùng tập input đã biết để so sánh có thể lặp lại; monitoring theo dõi traffic thật như tỷ lệ fallback, phản hồi xấu, latency, token cost và lỗi tool. Khi ticket production phát hiện case mới, sau khi che PII (thông tin nhận dạng cá nhân) và được phép lưu, thêm case vào eval set để lần sau không tái phát. Không đưa dữ liệu khách hàng nhạy cảm vào log hay dataset chia sẻ tùy tiện.
+
+### 5. Ví dụ và lỗi thường gặp
+Một agent CSKH có 120 case chuẩn: baseline pass 108/120 = 90%. Sau prompt mới, candidate pass 110/120 = 91.7%, tưởng như tốt hơn. Nhưng khi xem từng case, candidate thất bại 4 câu hỏi từ chối giao dịch thiếu xác thực trong khi sửa 6 lỗi format. Đội quyết định không rollout vì nhóm xác thực là critical; họ thêm gate “0 side effect khi chưa xác thực”, sửa prompt/tool authorization và chạy lại. Kết quả không được tổng hợp thành một con số đẹp để che rủi ro.
+
+- Chạy hai prompt trên hai input set khác nhau: so sánh không công bằng, kể cả cùng số case.
+- Dataset chỉ có ví dụ thành công: không phát hiện khi agent phải từ chối hoặc tool lỗi.
+- Chỉ lưu pass rate: không tìm được regression case cụ thể để sửa.
+- Dùng exact match cho câu tự nhiên: cách nói khác nhưng đúng bị tính fail; dùng rubric hoặc assertion phù hợp.
+- Đổi prompt, model và retrieval cùng lúc: không biết biến nào gây thay đổi; ghi version và thay đổi từng lớp khi điều tra.
+
+### 6. Trả lời phỏng vấn thế nào?
+“Em sẽ tạo eval set có version và case id từ ticket thật đã khử dữ liệu, đồng thời bổ sung case biên, từ chối, lỗi tool và quyền. Mỗi candidate prompt chạy đúng cùng input, model/config và snapshot phụ thuộc; runner lưu output, tool trace và kết quả từng assertion. Em báo cáo pass rate nhưng cũng so baseline theo từng case để tìm regression, và đặt gate riêng cho lỗi critical như gọi tool ghi khi chưa xác thực. JSON hay enum thì kiểm bằng code; câu trả lời mở có thể chấm bằng rubric và LLM-as-judge, nhưng em hiệu chuẩn judge trên mẫu người chấm. Unit test dùng FakeLlm để kiểm luồng runner rẻ và ổn định, không coi đó là bằng chứng chất lượng model. Sau release em tiếp tục theo dõi phản hồi, latency và chi phí; lỗi production mới được bổ sung vào tập đánh giá.”
+
+### Liên hệ phỏng vấn
+Nói rõ eval trả lời câu hỏi “bản thay đổi có tốt hơn trên cùng các tình huống không?”, không bảo đảm mọi traffic thật đúng. Nêu case id, baseline/candidate, pass rate, regression theo từng case, tiêu chí critical, FakeLlm cho test deterministic và production monitoring để hoàn thiện vòng lặp.`,
+  exercises: [
+    {
+      title: 'Chạy cùng eval set trên hai prompt và tìm regression',
+      prompt: `Hoàn thiện {{EvalRunner}}. {{FakeLlm.answer(version, input)}} trả về output theo kịch bản test, không gọi API thật. Với từng case, runner gọi fake model đúng một lần, so output với expected, lưu trạng thái theo case id và đếm pass/total.
+
+{{passRate()}} trả tỷ lệ trong khoảng 0..1. Tập rỗng và id case trùng phải bị từ chối để không chia 0 hoặc ghi đè kết quả. {{regressions(baseline, candidate)}} trả các id baseline pass nhưng candidate fail; hai kết quả phải có cùng tập id, nếu không ném {{IllegalArgumentException}}. Candidate cải thiện case trước đó fail không phải regression. Dùng kết quả từng case, không suy luận regression chỉ từ chênh lệch tổng pass rate.`,
+      starter: `interface FakeLlm {
+    String answer(String version, String input);
+}
+
+final class EvalCase {
+    final String id, input, expected;
+    EvalCase(String id, String input, String expected) {
+        this.id = id; this.input = input; this.expected = expected;
+    }
+}
+
+final class EvalResult {
+    final Map<String, Boolean> passedById;
+    EvalResult(Map<String, Boolean> passedById) { this.passedById = passedById; }
+    int passed() { throw new UnsupportedOperationException("TODO"); }
+    int total() { throw new UnsupportedOperationException("TODO"); }
+    double passRate() { throw new UnsupportedOperationException("TODO"); }
+}
+
+class EvalRunner {
+    EvalResult run(String version, List<EvalCase> cases, FakeLlm llm) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<String> regressions(EvalResult baseline, EvalResult candidate) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable test) {
+        total++;
+        try { test.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual))
+            throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void close(double expected, double actual) {
+        if (Math.abs(expected - actual) > 0.000001)
+            throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static EvalCase c(String id, String expected) { return new EvalCase(id, id, expected); }
+    static FakeLlm scripted(Map<String, Map<String, String>> scripts) {
+        return (version, input) -> scripts.getOrDefault(version, Map.of()).get(input);
+    }
+    static Map<String, String> row(String... values) {
+        Map<String, String> out = new HashMap<>();
+        for (int i = 0; i < values.length; i += 2) out.put(values[i], values[i + 1]);
+        return out;
+    }
+    public static void main(String[] args) {
+        EvalRunner runner = new EvalRunner();
+        List<EvalCase> cases = List.of(c("fee", "A"), c("refund", "B"), c("missing", "C"));
+        Map<String, Map<String, String>> script = Map.of(
+            "v1", row("fee", "A", "refund", "B", "missing", "wrong"),
+            "v2", row("fee", "A", "refund", "wrong", "missing", "C"));
+        check("pass rate uses number of passing cases", () -> {
+            EvalResult r = runner.run("v1", cases, scripted(script));
+            eq(2, r.passed()); eq(3, r.total()); close(2.0 / 3.0, r.passRate());
+        });
+        check("same set detects only pass-to-fail regression", () -> {
+            EvalResult before = runner.run("v1", cases, scripted(script));
+            EvalResult after = runner.run("v2", cases, scripted(script));
+            eq(List.of("refund"), runner.regressions(before, after));
+            eq(2, after.passed()); // fee stays passing; missing improves from fail
+        });
+        check("empty and duplicate case ids are rejected", () -> {
+            boolean empty = false, duplicate = false;
+            try { runner.run("v1", List.of(), scripted(script)); }
+            catch (IllegalArgumentException e) { empty = true; }
+            try { runner.run("v1", List.of(c("same", "x"), c("same", "x")), scripted(script)); }
+            catch (IllegalArgumentException e) { duplicate = true; }
+            if (!empty || !duplicate) throw new AssertionError("invalid eval set accepted");
+        });
+        check("comparison rejects different case sets", () -> {
+            EvalResult a = runner.run("v1", List.of(c("fee", "A")), scripted(script));
+            EvalResult b = runner.run("v2", List.of(c("refund", "B")), scripted(script));
+            boolean threw = false;
+            try { runner.regressions(a, b); } catch (IllegalArgumentException e) { threw = true; }
+            eq(true, threw);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `interface FakeLlm {
+    String answer(String version, String input);
+}
+
+final class EvalCase {
+    final String id, input, expected;
+    EvalCase(String id, String input, String expected) {
+        this.id = id; this.input = input; this.expected = expected;
+    }
+}
+
+final class EvalResult {
+    final Map<String, Boolean> passedById;
+    EvalResult(Map<String, Boolean> passedById) {
+        this.passedById = new LinkedHashMap<>(passedById);
+    }
+    int passed() {
+        int n = 0;
+        for (boolean ok : passedById.values()) if (ok) n++;
+        return n;
+    }
+    int total() { return passedById.size(); }
+    double passRate() { return total() == 0 ? 0.0 : (double) passed() / total(); }
+}
+
+class EvalRunner {
+    EvalResult run(String version, List<EvalCase> cases, FakeLlm llm) {
+        if (cases == null || cases.isEmpty()) throw new IllegalArgumentException("eval set is empty");
+        Map<String, Boolean> outcomes = new LinkedHashMap<>();
+        for (EvalCase c : cases) {
+            if (c == null || c.id == null || c.id.isBlank() || outcomes.containsKey(c.id))
+                throw new IllegalArgumentException("invalid or duplicate case id");
+            String actual = llm.answer(version, c.input);
+            outcomes.put(c.id, Objects.equals(c.expected, actual));
+        }
+        return new EvalResult(outcomes);
+    }
+
+    List<String> regressions(EvalResult baseline, EvalResult candidate) {
+        if (!baseline.passedById.keySet().equals(candidate.passedById.keySet()))
+            throw new IllegalArgumentException("eval case sets differ");
+        List<String> out = new ArrayList<>();
+        for (String id : baseline.passedById.keySet()) {
+            if (Boolean.TRUE.equals(baseline.passedById.get(id))
+                    && Boolean.FALSE.equals(candidate.passedById.get(id))) out.add(id);
+        }
+        return out;
+    }
+}`,
+      hints: [
+        'Khi chạy, tạo {{LinkedHashMap<String, Boolean>}} để vừa chặn id trùng vừa giữ thứ tự case; gọi FakeLlm theo version và input.',
+        'Pass rate là {{(double) passed / total}} để không chia số nguyên. Tập rỗng nên bị từ chối trước khi tính.',
+        'Regression chỉ khi id có trong cả hai kết quả, baseline là true và candidate là false; so sánh keySet để bảo đảm cùng eval set.'
+      ],
+      explain: `### Cách đọc lời giải
+{{run}} duyệt một eval set cố định, gọi FakeLlm một lần cho mỗi case và so output với expected. Map có thứ tự giữ phép nối case id → pass/fail, nên có thể xem chính xác lỗi nào xảy ra thay vì chỉ lưu tổng. Từ map đó {{passed}} đếm số true, {{total}} là mẫu số, còn ép kiểu sang double trước phép chia giúp nhận 2/3 thay vì phép chia số nguyên thành 0.
+
+Runner từ chối tập rỗng vì pass rate khi không có case không mang ý nghĩa; nó cũng từ chối id trùng vì nếu map ghi đè một case thì tử số và mẫu số không còn đại diện dataset. {{regressions}} yêu cầu hai map có đúng cùng key set. Nó chỉ trả case true ở baseline và false ở candidate: case vẫn fail không phải lỗi mới, còn case chuyển từ fail sang pass là cải thiện.
+
+### FakeLlm kiểm tra được gì?
+Stub trong test chỉ trả kịch bản đã định trước theo version và input. Nó xác nhận code đã chạy đúng số case, dùng đúng version, tính tỷ lệ và tìm regression; nó không đánh giá chất lượng một LLM thật. Eval thật cần lưu model/provider version, tham số, prompt hash, tool schema và snapshot retrieval để kết quả có thể giải thích.
+
+### Pitfall khi đưa vào CI
+Exact string match tốt cho nhãn đơn giản như PASS/FAIL nhưng dễ sai với câu trả lời tự nhiên. Hãy kiểm format, facts bắt buộc, tool trace hoặc rubric; dùng LLM-as-judge thì chấm mẫu bằng người để đo độ tin cậy. Không chỉ đặt ngưỡng tổng thể: một lỗi nhỏ ở luồng hoàn tiền có thể quan trọng hơn nhiều câu trả lời văn phong chưa đẹp. Phân loại case theo độ rủi ro và chặn riêng lỗi critical.`,
+    }
+  ],
+  check: [
+    {
+      q: 'Khi so sánh prompt baseline và candidate, điều kiện tối thiểu nào giúp phép đo pass rate công bằng?',
+      options: [
+        'Chạy mỗi prompt trên một bộ câu hỏi do prompt đó tự chọn',
+        'Dùng cùng eval case, cùng expected behavior và cấu hình được ghi nhận',
+        'Chỉ chạy candidate vì baseline đã cũ',
+        'Chọn output đẹp nhất trong nhiều lần chạy'
+      ],
+      answer: 1,
+      explain: `Hai bản phải gặp cùng input và expected criteria; đồng thời cần ghi model/config vì chúng cũng làm output thay đổi. Bộ input khác nhau hoặc chỉ giữ lần chạy đẹp nhất tạo thiên lệch, không cho biết prompt mới có gây regression hay không.`,
+    },
+    {
+      q: 'Case nào được tính là regression mới khi so kết quả theo id?',
+      options: [
+        'Baseline fail, candidate pass',
+        'Cả hai phiên bản đều fail',
+        'Baseline pass, candidate fail',
+        'Cả hai phiên bản đều pass'
+      ],
+      answer: 2,
+      explain: `Regression là hành vi từng đúng bị hỏng sau thay đổi: baseline pass và candidate fail. Baseline fail/candidate pass là cải thiện; cùng fail là lỗi tồn tại cần sửa nhưng không phải regression mới; cùng pass là hành vi được giữ.`,
+    },
+    {
+      q: 'FakeLlm trong unit test chứng minh điều gì?',
+      options: [
+        'Prompt candidate chắc chắn tốt hơn trên model production',
+        'Model thật sẽ luôn trả đúng chuỗi đã định trước',
+        'Logic runner, đếm case và so sánh kết quả hoạt động theo kịch bản deterministic',
+        'Eval set không cần thêm case production mới'
+      ],
+      answer: 2,
+      explain: `FakeLlm cô lập logic ứng dụng và cho đầu ra có thể lặp lại, nên dùng để test runner, version, tỷ lệ và nhánh regression. Nó không mô phỏng chất lượng hay độ ngẫu nhiên của model thật; cần eval trên model/config phù hợp và monitoring production.`,
+    },
+  ],
+  related: ['ai-019', 'ai-024', 'ai-034'],
+  tags: ['agent-evaluation', 'eval-set', 'pass-rate', 'regression', 'FakeLlm']
+},
 );
