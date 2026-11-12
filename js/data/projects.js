@@ -7119,5 +7119,254 @@ dailyCost.record(cost.doubleValue());           // DistributionSummary tự đ�
       ]
     },
     related: ['ai-003', 'ai-009', 'ai-010', 'ai-023', 'ai-014', 'ai-006', 'ai-019', 'ai-008', 'ai-007', 'ai-013', 'ai-002', 'claude-034', 'security-008', 'lesson-ai-001']
-  }
+  },
+{
+    id: 'proj-ai-order-agent',
+    title: 'AI agent tra cứu đơn hàng bằng Claude: tool calling + RAG chính sách',
+    level: 'senior',
+    weeks: 7,
+    skills: ['Java 21', 'Spring Boot 3.x', 'Spring AI 1.x', 'Claude API (Anthropic)', 'Tool calling', 'RAG', 'PostgreSQL', 'pgvector', 'Spring Security', 'Amazon Bedrock embeddings', 'LLM evaluation', 'Micrometer', 'OpenTelemetry', 'AWS'],
+    pitch: `Bạn xây một **agent** (tác tử AI: chương trình để LLM tự quyết định gọi công cụ nào, theo thứ tự nào, để hoàn thành mục tiêu) hỗ trợ khách hàng đã đăng nhập tự tra cứu đơn hàng của chính họ. Người dùng hỏi bằng tiếng Việt hoặc tiếng Anh như "Đơn 123456 của tôi đang ở đâu, chính sách giao trễ nói gì?", agent sẽ (1) gọi **tool** (công cụ: một hàm/API thật mà model được phép gọi, ví dụ lấy trạng thái đơn, tra vận đơn, tra chính sách hoàn tiền) tới service đơn hàng nội bộ, (2) dùng **RAG** (Retrieval-Augmented Generation: tìm đoạn tài liệu liên quan rồi đưa kèm vào prompt để model trả lời dựa trên đó) trên tài liệu chính sách bằng PostgreSQL + pgvector, (3) lưu hội thoại để trả lời có ngữ cảnh, (4) giới hạn chi phí và tốc độ (token, số lần gọi model, ngân sách), (5) có **eval set** (bộ câu hỏi chuẩn có đáp án kỳ vọng để đo chất lượng tự động) và **trace** (vết theo dõi các stage như retrieval, tool và model call, thời lượng, kết quả và token; không lưu suy luận riêng tư của model) để debug và cải tiến. Dựng bằng Spring Boot 3 và Spring AI 1.x gọi Claude qua Anthropic Messages API (API nhắn tin của Anthropic để chạy các model Claude). Dự án cho thấy bạn hiểu LLM không phải "hộp đen trả lời văn bản" mà là một thành phần trong hệ thống có tool, dữ liệu, quyền, chi phí, độ tin cậy và quan sát được.`,
+    requirements: `### Bối cảnh (đọc nếu chưa quen AI agent)
+Một LLM (Large Language Model: mô hình ngôn ngữ lớn, ví dụ Claude, được huấn luyện trên rất nhiều văn bản để sinh/hiểu ngôn ngữ) **không biết** dữ liệu đơn hàng của công ty bạn và **không tự làm** được hành động thật (tra DB, gọi API). Nếu chỉ "hỏi model", nó có thể bịa (hallucination: trả lời nghe hợp lý nhưng sai hoặc không có thật). **Tool calling** (hay function calling: cơ chế model trả về một yêu cầu gọi hàm kèm tham số JSON thay vì trả lời luôn; ứng dụng thực thi hàm thật rồi gửi kết quả lại cho model) cho phép model "nhờ" hệ thống tra cứu thật. **Agent loop** (vòng lặp agent) là: gửi câu hỏi + danh sách tool cho model → nếu model yêu cầu gọi tool thì thực thi và gửi kết quả lại → lặp cho đến khi model trả lời cuối hoặc đạt giới hạn bước.
+
+Ví dụ đời thường: bạn hỏi tổng đài "đơn của tôi đến đâu, tôi được hoàn tiền không?". Nhân viên tổng đài (LLM) tra hệ thống đơn hàng (tool), đọc chính sách hoàn tiền (RAG tài liệu), rồi trả lời bạn và ghi chú cuộc gọi (lưu hội thoại, trace). Nếu tra không thấy đơn, họ nói "không tìm thấy" chứ không bịa.
+
+### User story
+1. **Tra cứu đơn hàng bằng tool:** là khách hàng đã đăng nhập, tôi hỏi "Đơn ORD-100234 của tôi đang ở trạng thái gì?".
+  Chấp nhận: agent gọi tool tra đơn (ví dụ {{getOrderStatus}}) với đúng mã đơn, trả lời dựa trên dữ liệu tool trả về (trạng thái, mốc thời gian, kho/vận chuyển) và không bịa khi tool báo không tìm thấy.
+2. **Tư vấn chính sách bằng RAG:** tôi hỏi "Đơn giao trễ 3 ngày thì khách được hoàn tiền không?".
+  Chấp nhận: agent truy xuất đoạn chính sách hoàn tiền liên quan từ kho tài liệu (pgvector), câu trả lời trích dẫn nguồn/tên tài liệu và điều kiện; nếu không có chính sách phù hợp thì nói không đủ thông tin.
+3. **Câu hỏi kết hợp nhiều bước:** "Đơn ORD-100234 của tôi giao trễ chưa, nếu trễ thì chính sách nói tôi nên làm gì?".
+  Chấp nhận: agent tự quyết định gọi tool tra đơn rồi truy xuất chính sách (có thể nhiều bước), tổng hợp câu trả lời; số bước và tool gọi bị giới hạn (tránh vòng lặp vô hạn).
+4. **Lưu hội thoại:** tôi hỏi tiếp "vậy tôi cần làm bước nào trước?" và agent hiểu "vậy" liên quan câu trả lời trước trong cùng phiên.
+  Chấp nhận: mỗi phiên có {{conversationId}}, lưu tin nhắn user/assistant/tool theo thứ tự; khi gọi model gửi kèm lịch sử (có cắt bớt theo cửa sổ token).
+5. **Giới hạn chi phí và tốc độ:** hệ thống không được tốn tiền vô kiểm soát.
+  Chấp nhận: giới hạn token đầu vào/ra mỗi lượt, tối đa N bước tool/1 câu hỏi, giới hạn số request/người dùng/phút (Redis), ngân sách token/ngày; vượt ngưỡng thì trả lỗi thân thiện (429/quota) và ghi log/metric, không gọi model thêm.
+6. **Quan sát (trace):** khi câu trả lời sai, kỹ sư xem được stage nào chạy, tên tool, mã đơn đã che, outcome, source ids, token và độ trễ từng bước; không cần lưu prompt hoặc response thô.
+  Chấp nhận: mỗi request có {{traceId}}, lưu/emit span OpenTelemetry (hoặc bản ghi trace trong DB) cho bước gọi LLM và gọi tool; không log bí mật (API key) và che/mask dữ liệu nhạy cảm của khách.
+7. **Đánh giá chất lượng (eval set):** đội ngũ chạy bộ eval để biết thay đổi prompt/tool/RAG làm chất lượng tốt lên hay xấu đi.
+  Chấp nhận: có bộ câu hỏi chuẩn (golden set) với kỳ vọng (tool phải gọi, dữ kiện phải có trong câu trả lời, có/không trích nguồn); chạy eval cho báo cáo pass/fail, điểm theo tiêu chí (đúng tool, đúng dữ kiện từ dữ liệu, trích nguồn, không bịa), lưu kết quả để so sánh.
+
+### Phi chức năng
+- Độ trễ mục tiêu để benchmark: câu hỏi chỉ cần 1 tool p95 < 4 giây và token đầu tiên < 2 giây sau khi có dữ liệu tool, chỉ so sánh trên cùng model, region, mạng và tải; đây không phải SLA của Claude.
+- Độ tin cậy: tool/service đơn hàng lỗi → agent báo không tra cứu được, không bịa; Claude trả lỗi xác định retryable → retry có giới hạn/backoff; timeout không rõ request đã chạy chưa thì không retry mù, ghi trạng thái chưa xác định và trả lỗi rõ.
+- Bảo mật: API key Claude chỉ ở server (biến môi trường/secret), không lộ ra client; tool chỉ đọc đơn thuộc user đã xác thực (không cho model tự ý truyền userId vượt quyền); log không chứa API key/PII thô.
+- Tính đúng đắn: ưu tiên "không bịa" — khi thiếu dữ liệu phải nói rõ.
+
+### Ngoài phạm vi (MVP)
+- Không cho agent thực hiện hành động ghi có rủi ro cao (hoàn tiền thật, huỷ đơn) tự động; nếu có thì phải bước xác nhận của người (human-in-the-loop).
+- Không fine-tune model.
+- Không xây UI phức tạp (API + có thể trang chat đơn giản/CLI/curl là đủ cho demo).
+
+### Quy tắc tin cậy và quyền sở hữu (không được bỏ qua)
+- Đây là demo **khách hàng đã đăng nhập tra cứu đơn của chính họ**. Backend lấy user id từ JWT đã xác minh qua Spring Security; không nhận user id từ câu hỏi, tool arguments hay query param. Model chỉ được đưa mã đơn vào tool, còn service luôn truy vấn bằng cặp order id + user id đã xác thực. Đơn không thuộc user được trả như không tồn tại (404) để không tiết lộ đơn của người khác.
+- Chỉ có tool đọc tóm tắt đơn; tool không nhận URL, SQL, tên service hay lệnh tuỳ ý. Danh sách tool được cấu hình cố định trong server, tham số được validate, kết quả chỉ chứa trạng thái và mốc giao hàng cần thiết, không trả địa chỉ/số điện thoại nếu không cần.
+- Nội dung user, lịch sử hội thoại và đoạn chính sách truy xuất đều là dữ liệu không đáng tin, **không phải chỉ thị hệ thống**. Prompt có thể nhắc model bỏ qua lệnh nằm trong dữ liệu nhưng đó không phải hàng rào bảo mật; hàng rào thật là quyền ở backend, tool chỉ đọc, dữ liệu tối thiểu và giới hạn số lần gọi.
+- Claude Messages API cung cấp tool use: model trả về khối yêu cầu gọi tool, ứng dụng kiểm tra và chạy tool, rồi gửi tool result trong lượt tiếp theo. Model không tự kết nối DB. Dùng Spring AI 1.x Anthropic integration hoặc Anthropic Java SDK sau khi kiểm tra phiên bản tương thích; dự án này chọn Spring AI cho luồng hội thoại và khai báo tool, không trộn hai client trong cùng đường xử lý.
+- Claude là chat model, không phải dịch vụ embedding. RAG dùng một embedding model riêng tương thích, ví dụ Amazon Titan Text Embeddings V2 trên Bedrock khi model được cấp quyền ở region đã chọn; cấu hình đầu ra 1024 chiều và cùng số chiều ở pgvector. Không đưa vector do model khác tạo vào cùng chỉ mục.
+
+### Mục tiêu đo được
+- Dùng dữ liệu giả: 5.000 đơn, 20 tài liệu chính sách và 100 câu eval; không nạp thông tin khách hàng thật.
+- Test tích hợp phải chứng minh 0 đơn của user khác lọt vào tool result, 0 tool ghi dữ liệu, và mọi trích dẫn trả ra đều thuộc đoạn chính sách thật đã lấy.
+- Retrieval nhắm recall@5 ≥ 0,80 trên eval set ban đầu; đây là ngưỡng dự án để so sánh cấu hình, không phải bảo đảm chất lượng cho mọi doanh nghiệp. Báo riêng retrieval và chất lượng câu trả lời.
+- Đặt giới hạn mẫu có thể cấu hình: tối đa 10 lượt/người/ngày, 3 vòng model/tool cho một câu hỏi, output tối đa 600 token mỗi lần gọi và rate limit tức thời. Con số này là ngân sách demo, không phải bảng giá. Tính tiền từ usage thực tế và bảng giá hiện hành lưu cấu hình; trước khi gọi phải reserve mức tối đa dự kiến, sau đó đối soát token thực tế.
+- Benchmark API nội bộ với dữ liệu, model, region, mạng và tải cố định; báo p50/p95/p99 và lỗi. Không hứa p95 tuyệt đối cho Claude vì độ trễ bên thứ ba thay đổi theo model, tải và mạng.`,
+    architecture: `~~~text
+Client -- JWT + câu hỏi --> Spring Boot 3 / Spring AI
+                                  |-- user id từ SecurityContext
+                                  |-- agent policy: tối đa 3 tool/model steps
+                                  |-- PostgreSQL: hội thoại + quota
+                                  |-- pgvector: tìm đoạn chính sách (ACL do server dựng)
+                                  |-- Claude API: chọn tool hoặc soạn câu trả lời
+                                  |-- Order service nội bộ: chỉ đọc đơn theo user id
+                                  |-- Micrometer Observation / OpenTelemetry trace
+
+Ingest job -- tài liệu chính sách --> chia đoạn --> embedding model riêng
+                                             --> PostgreSQL + pgvector
+AWS: ECS Fargate + RDS PostgreSQL/pgvector + Secrets Manager
+     + Bedrock (embedding nếu dùng Titan) + OTEL collector/backend
+~~~ 
+Spring Boot là nơi duy nhất điều phối và thực thi quyền. Claude chỉ nhận tool schema và dữ liệu tối thiểu; order service tự ràng buộc truy vấn theo user đã xác thực. Tài liệu chính sách công khai cho khách có metadata version/source; nếu sau này có tài liệu riêng theo tenant thì ACL phải được tạo phía server trước retrieval. PostgreSQL lưu hội thoại, quota và vector để demo đơn giản; tách kho chỉ khi có số liệu chứng minh cần.`,
+    design: `### Luồng request: cái gì xảy ra và vì sao
+1. Spring Security xác minh JWT (JSON Web Token: vé đăng nhập có chữ ký, server kiểm tra chữ ký và issuer trước khi tin claim). Lấy user id từ security context; không lấy danh tính từ lời nhắn.
+2. API kiểm tra chiều dài câu hỏi, conversation có thuộc user không, và quota. Một hàng quota được reserve nguyên tử trong PostgreSQL để hai request song song không cùng vượt hạn mức. Redis, nếu thêm, chỉ làm rate limit ngắn hạn/burst; không thay nguồn sự thật ngân sách.
+3. Với câu hỏi liên quan quy định, hệ thống gọi embedding model để biến câu thành vector, tìm top 5 đoạn gần nhất trong pgvector. **Embedding** là dãy số biểu diễn ý nghĩa văn bản; câu "đơn đến muộn" có thể gần đoạn "thời hạn giao hàng" dù không trùng từ. Metadata source/version/visibility được lọc ở server; model không tự chọn ACL.
+4. Spring AI gửi câu hỏi, phần lịch sử được giới hạn, đoạn chính sách đã lọc và tool schema cho Claude. Nếu model yêu cầu tra đơn, app validate order id rồi gọi service với danh tính lấy từ JWT; tool result được giới hạn trường. Mỗi tool/model round trip tiêu tốn thời gian và có thể tiêu tốn token, nên loop dừng sau 3 bước.
+5. Backend chỉ tạo nguồn trích dẫn từ các đoạn đã truy xuất, không tin URL/tên nguồn do model tự bịa. Nếu không đủ bằng chứng thì trả lời rằng chưa đủ dữ liệu và hướng người dùng tới kênh hỗ trợ, thay vì suy đoán điều kiện hoàn tiền.
+6. Ghi message và usage tối thiểu. Conversation luôn truy vấn theo cả conversation id lẫn owner user id; log/trace giữ id, tên tool, thời lượng, số token, kết quả thành công/thất bại và source ids, không ghi raw prompt, JWT, địa chỉ hoặc số điện thoại.
+
+### Dữ liệu minh hoạ
+~~~sql
+CREATE TABLE conversation (
+  id UUID PRIMARY KEY,
+  owner_user_id VARCHAR(100) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE conversation_message (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  conversation_id UUID NOT NULL REFERENCES conversation(id),
+  role VARCHAR(16) NOT NULL CHECK (role IN ('user','assistant','tool')),
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE daily_ai_budget (
+  owner_user_id VARCHAR(100) NOT NULL,
+  budget_day DATE NOT NULL,
+  reserved_tokens BIGINT NOT NULL DEFAULT 0,
+  used_tokens BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (owner_user_id, budget_day)
+);
+CREATE TABLE policy_chunk (
+  id UUID PRIMARY KEY,
+  policy_id VARCHAR(100) NOT NULL,
+  version INTEGER NOT NULL,
+  source_title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  embedding vector(1024) NOT NULL
+);
+~~~ 
+Đây là schema minh hoạ, không phải schema mặc định bắt buộc của Spring AI. Nếu chọn {{PgVectorStore}}, tạo migration tương thích đúng phiên bản Spring AI đang dùng và tắt khởi tạo schema tự động trên production. Bảng budget minh hoạ phần dữ liệu; cập nhật reserve cần một câu lệnh có điều kiện trong transaction để kiểm tra used + reserved không vượt giới hạn.
+
+### Công cụ order an toàn
+Order service có hợp đồng hẹp như {{getOrderSummary(orderId)}}. Adapter lấy user id từ security context rồi gọi nội bộ bằng service credential; phía order service thực hiện truy vấn tương đương {{SELECT ... WHERE id = :orderId AND owner_user_id = :authenticatedUserId}}. Không đưa user id vào tool schema để model không thể chọn danh tính. Dù tool calling là "model yêu cầu", code server vẫn phải validate mọi tham số như với HTTP client không đáng tin. Tool result là DTO (Data Transfer Object: object chỉ mang dữ liệu cần trao đổi), ví dụ mã đơn, trạng thái, thời điểm dự kiến; không trả entity database hay dữ liệu cá nhân dư thừa.
+
+### RAG, citation và cập nhật chính sách
+Tài liệu được chia thành các đoạn nhỏ (chunking), mỗi đoạn mang policy id, version, tiêu đề và vị trí nguồn. Ingest job tính hash để tài liệu không đổi thì không embed lại; khi đổi thì lập chỉ mục version mới rồi chuyển active, tránh khoảng thời gian không có dữ liệu. Truy vấn vector tìm đoạn gần câu hỏi nhưng "gần về ý" không đồng nghĩa "đúng"; app phải kiểm ngưỡng, kiểm version/visibility, và đưa citation từ metadata vào response. Embedding model và dimension phải đồng nhất giữa ingest và query. HNSW là loại approximate nearest-neighbor index giúp tìm nhanh trong nhiều vector nhưng đánh đổi RAM và độ chính xác, vì vậy chỉ thêm sau khi benchmark; tập 20 tài liệu có thể chạy exact search trước.
+
+### Chi phí, lịch sử và lỗi
+Token là đơn vị văn bản mà model tính phí; một từ có thể thành một hay nhiều token. Ngân sách cần tính cả prompt, lịch sử, đoạn RAG, tool round và output. Cắt lịch sử theo token, giới hạn số đoạn, chiều dài câu hỏi và output; không chỉ đếm số câu hỏi. Dùng quota row khoá/cập nhật nguyên tử để reserve mức tối đa; sau response đối soát usage input/output và giải phóng phần dư. Nếu request provider timeout không rõ đã được xử lý hay chưa, không retry mù vì có thể phát sinh lần gọi và phí thứ hai; ghi trạng thái không xác định, trả lỗi có thể thử lại có kiểm soát và không khẳng định đã hoàn tất. Retry chỉ cho lỗi retryable đã biết, với số lần nhỏ và backoff.
+
+### Trade-off công nghệ
+- Spring AI 1.x hợp với ứng dụng Spring Boot, cung cấp abstraction cho chat, tool và vector store. LangChain4j cũng là lựa chọn Java thật; chọn một framework để tránh hai lớp abstraction và adapter khó debug.
+- Anthropic Java SDK phù hợp khi cần dùng API Anthropic trực tiếp; trong project dùng một client path Spring AI. Cần khóa phiên bản tương thích Boot 3.x và kiểm tra docs đúng version trước khi copy cấu hình.
+- MCP là giao thức chuẩn để nhiều MCP client khám phá/call tools; không cần thêm MCP chỉ để một backend Spring gọi tool nội bộ. Kafka hữu ích cho ingest bất đồng bộ hoặc event pipeline có yêu cầu riêng, không cần đặt vào synchronous chat loop. Redis có thể bảo vệ burst/rate-limit nhưng quota bền vững nằm ở PostgreSQL.
+- Không cho agent tự hoàn tiền/huỷ đơn. Nếu mở rộng write action, cần preview, quyền riêng, xác nhận người dùng, idempotency phía business service và audit độc lập; prompt "hãy cẩn thận" không đủ.`,
+    milestones: [
+      { title: 'MVP: hợp đồng hỏi đáp và dữ liệu giả', tasks: `1. Tạo Spring Boot 3.x với Java 21, Spring Web, Spring Security, validation, PostgreSQL/Flyway, Spring AI 1.x và test JUnit. Chốt bản Spring AI tương thích phiên bản Boot thay vì lấy version ngẫu nhiên.
+2. Viết một endpoint chat nhận câu hỏi và conversation id; ban đầu chỉ trả lời từ một prompt cố định, chưa gọi model nếu chưa có API key.
+3. Tạo 5.000 đơn giả và 20 tài liệu chính sách; ghi rõ trạng thái, thời gian và điều kiện trong fixture để các bước sau có kết quả lặp lại.
+4. Viết hợp đồng JSON cho câu trả lời gồm text và sources; trả 400 cho input sai, 401 khi chưa đăng nhập.
+5. Viết README về cấu hình local, dữ liệu giả và cách không commit secret.
+
+**Câu hỏi phỏng vấn liên quan:** Vì sao không nối trực tiếp Claude từ trình duyệt? Bản MVP của bạn xử lý thế nào khi model chưa được cấu hình?`,
+        done: `App khởi động từ cấu hình local, migration tạo schema, test xác định trả 401/400 đúng; không có key trong Git hoặc response browser. README cho phép người khác dựng bằng hướng dẫn. **Câu hỏi phỏng vấn:** Tôi tách model provider khỏi client ở tầng server để giữ secret, kiểm soát quota và kiểm tra quyền trước khi gọi model.` },
+      { title: 'Tool calling chỉ đọc đơn thuộc user', tasks: `1. Tạo service đơn hàng giả có endpoint đọc tóm tắt đơn; query bắt buộc nhận user id từ SecurityContext và lọc đồng thời order id + owner id.
+2. Đăng ký một tool hẹp {{getOrderSummary}} với Spring AI; Claude có thể yêu cầu tool, nhưng ứng dụng mới là nơi validate input và thực thi.
+3. Trả tool result dạng DTO có status, createdAt và estimatedDelivery; loại bỏ địa chỉ, điện thoại và các field không cần trả lời.
+4. Giới hạn tối đa 3 lượt model/tool; chỉ đọc một đơn mỗi lần; tool không nhận URL, SQL, user id hoặc tên hàm tuỳ ý.
+5. Test cùng mã đơn bằng đúng owner, user khác, mã không tồn tại, tham số sai, model yêu cầu tool lặp và order service timeout.
+
+~~~text
+JWT đã xác minh -> SecurityContext.userId
+Claude đề nghị getOrderSummary(orderId)
+Backend validate orderId
+Order service: SELECT summary WHERE id = orderId AND owner = userId
+Tool result -> Claude -> câu trả lời
+~~~`,
+        done: `Integration test dùng hai user và một đơn: owner nhận đúng summary, user còn lại nhận 404/không có dữ liệu; không test nào cho phép truyền userId từ model. Test xác nhận chỉ tool allowlist chạy, không có mutation và agent dừng ở giới hạn vòng. **Câu hỏi phỏng vấn:** Nếu model tự chọn tham số thì vì sao nó không được tự chọn user id?` },
+      { title: 'RAG chính sách có nguồn kiểm chứng', tasks: `1. Tạo ingest job đọc Markdown/PDF mẫu, lưu policy id, version, source title và vị trí đoạn; chỉ nạp tài liệu được phép dùng với khách hàng.
+2. Dùng một embedding provider riêng cho Claude; ví dụ Bedrock Titan Text Embeddings V2 với output dimension 1024 nếu region/model access hỗ trợ. Cấu hình vector cùng dimension.
+3. Bắt đầu exact search trên pgvector; sau khi có dữ liệu benchmark mới thêm HNSW. Truy vấn chỉ trả top 5 đoạn đã được lọc ở backend.
+4. Trả citations từ metadata của các đoạn kết quả, không lấy URL do LLM sinh. Nếu không tìm thấy đoạn đủ liên quan, model không được suy đoán chính sách.
+5. Tính hash tài liệu để tránh embedding lặp; cập nhật version an toàn, giữ log document id thay vì raw text.
+6. Test câu hỏi đồng nghĩa, câu hỏi ngoài phạm vi, tài liệu hết hiệu lực và tài liệu chứa câu lệnh injection.`,
+        done: `Với fixture ổn định, ingest lần hai không embed lại tài liệu không đổi; eval retrieval có recall@5 và ghi rõ cấu hình/dimension. Mọi citation response ánh xạ được về đoạn/version đã lấy; truy vấn ngoài phạm vi trả "chưa đủ thông tin". **Câu hỏi phỏng vấn:** Vì sao Claude không tạo embedding cho RAG này, và bạn chứng minh citation có thật thế nào?` },
+      { title: 'Lưu hội thoại và cô lập dữ liệu', tasks: `1. Tạo conversation/message table và liên kết mọi conversation với owner user id. Khi đọc/ghi phải kiểm tra đồng thời conversation id + owner, không tin id do client gửi.
+2. Lưu user, assistant và tool message theo thứ tự; chỉ giữ tool result tối thiểu cần cho lượt sau.
+3. Giới hạn lịch sử theo token và số lượt; khi cắt, giữ tóm tắt có nguồn hoặc các lượt gần nhất, không đưa toàn bộ hội thoại vô hạn vào prompt.
+4. Thêm chính sách retention demo (ví dụ xoá hội thoại sau 30 ngày) và thao tác xóa cho user; không ghi câu hỏi/PII thô vào app log.
+5. Test user B không đọc được conversation của user A, conversation id giả, lịch sử vượt giới hạn và việc xóa/expire.`,
+        done: `Test repository/API chứng minh không đọc chéo phiên; có job/query xóa dữ liệu hết retention và history có giới hạn trước khi gửi model. Tool result được lưu hoặc loại bỏ theo quyết định được ghi trong README. **Câu hỏi phỏng vấn:** Cắt context ảnh hưởng độ đúng và chi phí ra sao, và bạn bảo vệ conversation id thế nào?` },
+      { title: 'Eval set, quota và kiểm soát chi phí', tasks: `1. Tạo golden set 100 câu với fixture cố định: order tool cần gọi, expected facts, policy source/version, câu không thể trả lời và prompt injection.
+2. Chạy retrieval eval riêng (recall@5), tool selection/arguments, grounded facts, citation validity và tỷ lệ từ chối đúng. LLM judge chỉ là tín hiệu bổ sung; lấy mẫu người review vì judge cũng có thể sai.
+3. Đếm token usage thật từ response metadata, cập nhật bảng giá ở cấu hình có ngày hiệu lực; không ghi một giá USD cố định vào code.
+4. Trước khi gọi, reserve ngân sách theo giới hạn token tối đa; sau response đối soát input/output thực tế. PostgreSQL là nguồn quota theo ngày; Redis nếu dùng chỉ rate-limit burst. Từ chối trước khi gọi nếu không còn quota.
+5. Cấu hình max input/output, 10 lượt/ngày/user, tối đa 3 model/tool steps và rate limit. Giá trị là profile demo có thể đổi.
+6. Không retry mù khi timeout không rõ Claude đã xử lý request chưa; chỉ retry lỗi biết chắc retryable, giới hạn lần và ghi lý do.`,
+        done: `Lệnh eval chạy lại được và lưu version/model/config cùng kết quả; báo riêng recall@5, groundedness, citation và unauthorized leakage (phải bằng 0). Test hai request cạnh tranh không vượt quota; user hết budget bị từ chối trước provider call; usage sau response khớp với log. **Câu hỏi phỏng vấn:** Vì sao đếm lượt chat chưa đủ để kiểm soát chi phí LLM?` },
+      { title: 'Trace, hardening và deploy production demo', tasks: `1. Thêm Spring Boot Actuator và Micrometer Observation/Tracing; tạo trace/span cho request, retrieval, order tool, model call và persistence. Propagate trace id qua HTTP client nội bộ.
+2. Ghi duration, outcome, số vòng, token usage, tool name và source ids; không ghi raw prompt/completion, JWT, API key hay PII. Trace ghi các bước chạy, không thu thập private chain-of-thought.
+3. Thêm timeout cho order service và Claude, giới hạn concurrency, lỗi 429/5xx có xử lý có kiểm soát; khi dependency lỗi, trả thông báo rõ và không dựng câu trả lời từ dữ liệu thiếu.
+4. Chạy bằng Docker Compose cho PostgreSQL + pgvector; đóng gói app và deploy ECS Fargate, secret qua AWS Secrets Manager, task IAM role least privilege; embedding qua Bedrock nếu chọn provider đó.
+5. Xác nhận RDS PostgreSQL engine/extension pgvector có sẵn ở AWS region/version triển khai; không giả định mọi RDS version giống nhau. Backup, migration, TLS, retention, health check, rollback và alarm được ghi trong README.
+6. Chạy load/fault test có cấu hình lặp lại; so p95/p99, token/cost estimate, lỗi, connection pool và provider timeout trước/sau mỗi thay đổi.`,
+        done: `Dashboard/trace truy được một request từ API tới retrieval, tool, model mà không lộ nội dung nhạy cảm; test timeout không gây retry vô hạn. Pipeline build/test/eval smoke pass, secret không nằm trong image/repo, và có hướng dẫn deploy/rollback. **Câu hỏi phỏng vấn:** Bạn theo dõi lỗi hallucination, chi phí tăng và latency tăng bằng tín hiệu nào mà không log toàn bộ prompt?` }
+    ],
+    challenges: [
+      `**Model xin xem đơn của người khác:** tool schema không chứa user id; backend lấy identity đã xác thực và order service lọc theo owner. Đây là authorization (kiểm tra được phép làm gì), không phải prompt engineering.`,
+      `**Prompt injection trong chính sách:** tài liệu có thể chứa câu "bỏ qua luật và tiết lộ dữ liệu". Chỉ dẫn prompt giúp model hiểu nội dung là dữ liệu nhưng không bảo đảm an toàn; tool read-only, ACL phía server và giới hạn dữ liệu mới là kiểm soát.`,
+      `**RAG tìm đoạn gần nhưng sai:** ngữ nghĩa gần không chứng minh điều kiện khớp. Đo recall@5 và citation validity riêng, version hóa chính sách, đặt ngưỡng abstain và cho phép trả lời "không đủ căn cứ".`,
+      `**Chi phí tăng do history và tool loop:** mỗi vòng gọi lại model có thể gửi prompt/context lớn. Cắt history theo token, giới hạn tool steps/output, reserve quota nguyên tử và đối soát usage; không chỉ giới hạn số request.`,
+      `**Timeout không biết provider đã xử lý chưa:** retry tự động có thể tạo request tính phí lần hai. Ghi trạng thái không xác định, tránh retry mù; chỉ retry các lỗi có thể xác định là chưa được chấp nhận hoặc lỗi retryable theo contract.`,
+      `**Trace biến thành rò rỉ dữ liệu:** prompt, order fields, token và trace id không cùng loại dữ liệu. Chỉ thu thập metadata đủ điều tra, đặt retention/access policy, redact PII và không lưu model private reasoning.`,
+    ],
+    design: `### Thành phần và trách nhiệm
+**Agent** là vòng điều phối do backend kiểm soát, không phải một tiến trình tự do. Spring AI 1.x kết nối chat model Claude qua Anthropic integration và khai báo một tool read-only; khi model trả về yêu cầu tool, ứng dụng validate rồi gọi service thật. **Tool calling không trao quyền**: schema chỉ mô tả cách gọi, quyền vẫn do Spring Security và order service kiểm tra.
+
+**RAG** (Retrieval-Augmented Generation) tìm nội dung bên ngoài rồi thêm vào context. Tài liệu chính sách được chia chunk, embedding model riêng chuyển từng chunk thành vector; pgvector lưu và tìm vector gần câu hỏi. Ví dụ "gói hàng trễ" có thể tìm đoạn "thời hạn giao". Embedding không khẳng định đoạn đúng; citation, version, ngưỡng và eval mới giúp kiểm chứng.
+
+**Dữ liệu lõi:** conversation có owner, message theo thứ tự, daily budget có khoá user/ngày, policy chunk chứa policy id/version/source và vector 1024 chiều. Order database vẫn thuộc order service; agent không query bảng nghiệp vụ trực tiếp. Dữ liệu test hoàn toàn giả.
+
+### Bảo mật theo ranh giới
+JWT được xác minh bởi Spring Security; user id chỉ đọc từ principal đã xác thực. Conversation query lọc owner. Order tool chỉ chấp nhận order id và gọi API nội bộ; phía server truyền identity đã xác minh theo hợp đồng service-to-service. Không cho phép tool tùy ý URL/SQL. Nội dung model và tài liệu coi là input không tin cậy. Không có tool ghi, nên "hoàn tiền" chỉ là giải thích chính sách hoặc hướng dẫn người dùng sang quy trình có người duyệt.
+
+### Quota và độ tin cậy
+Giới hạn số token context/output và số vòng; reserve ngân sách trong DB trước khi gọi để hai request đồng thời không tiêu quá phần còn lại. Sau response dùng input/output usage thực để đối soát theo bảng giá có version. Redis có thể chặn burst nhưng không quyết định quota ngày. Timeout, 429 và 5xx cần phân loại; timeout không rõ kết quả không retry mù. Bulkhead/concurrency limit bảo vệ app khỏi nhiều request chờ provider.
+
+### Evaluation và quan sát
+Golden set giữ câu hỏi, user role, expected tool, expected order facts, policy source và expected abstention. Report retrieval, groundedness, tool correctness, citation validity, refusal and leakage riêng. LLM-as-judge chỉ hỗ trợ review, không thay test quyền hoặc người đánh giá. Trace dùng OpenTelemetry/Micrometer để thấy thời gian, bước, tool, token usage và lỗi; không lưu chain-of-thought hay prompt đầy đủ. p95/p99 phải đi kèm model, region, dataset và tải.
+
+### Lựa chọn và mở rộng
+Spring AI được chọn vì app đã ở Spring; LangChain4j là phương án khác nhưng không dùng đồng thời. MCP có ích khi muốn nhiều MCP client khám phá chung tool server; endpoint nội bộ đơn ứng dụng chưa cần thêm giao thức. Kafka chỉ thêm cho ingest/event pipeline bất đồng bộ có nhu cầu replay/scale; Redis chỉ thêm nếu đo thấy cần rate limit/cache. AWS demo dùng ECS Fargate, RDS PostgreSQL có extension pgvector tương thích, Secrets Manager và task role least privilege; trước khi triển khai phải xác minh engine/extension tại region thực tế.`,
+    readme: `# Order Support AI Agent
+
+## Mục tiêu
+Demo API hội thoại bằng Java 21 + Spring Boot 3.x + Spring AI 1.x. Claude trả lời bằng hai nguồn có kiểm soát: tool chỉ đọc đơn thuộc user đang đăng nhập và RAG trên chính sách giao hàng/hoàn tiền có citation. Mọi fixture là dữ liệu tổng hợp.
+
+## Chạy local
+1. Cấu hình PostgreSQL có extension pgvector bằng Docker Compose; chạy Flyway migration và seed 5.000 đơn giả, 20 chính sách.
+2. Đặt ANTHROPIC_API_KEY trong biến môi trường local hoặc secret store; không đưa key vào application.yml, commit, image hay log.
+3. Cấu hình embedding provider riêng (ví dụ Bedrock Titan Text Embeddings V2 khi đã bật model access) và xác nhận dimension 1024 khớp schema.
+4. Chạy test trước rồi khởi động Spring Boot; dùng curl/Postman với JWT test do profile local sinh.
+
+## Luồng và giới hạn
+Ghi tool schema, authorization dựa trên JWT, giới hạn 3 vòng, quota 10 lượt/ngày/user, max input/output và hành vi không biết câu trả lời. Mô tả rõ bước nào gọi Claude và bước nào gọi order service.
+
+## Kiểm thử và eval
+Chạy unit/integration test với PostgreSQL pgvector; không cần provider thật cho test quyền và retrieval xác định. Eval provider thật chạy riêng theo yêu cầu, có thể phát sinh phí: lưu model/version, embedding version, prompt version, config, retrieval recall@5, tool correctness, citation và kết quả review. Không chạy eval trả phí trên mỗi build mặc định.
+
+## Vận hành và quyết định thiết kế
+Dashboard thể hiện latency theo stage, errors, token usage, số vòng và chi phí ước tính; trace không chứa prompt hoặc dữ liệu khách. Ghi percentile kèm model, region, tải, machine và dataset. Redis/Kafka không phải dependency mặc định; thêm khi có số liệu/nhu cầu cụ thể.
+
+## Đưa vào CV
+Chỉ ghi thành tích sau khi đo thật. Ví dụ cấu trúc: "Xây Java/Spring AI agent hỗ trợ tra cứu đơn hàng bằng Claude tool calling + pgvector RAG; enforcing owner-level authorization, quota token và eval 100 câu; đo recall@5, citation validity và p95 trên cấu hình ...". Điền số liệu từ report của chính bạn, không trình bày ngưỡng mục tiêu như kết quả đạt được.
+
+## Demo phỏng vấn
+Dùng một user hỏi đơn của mình, một user khác thử cùng order id (bị từ chối), một câu hỏi chính sách có citation, một câu ngoài tài liệu (abstain), và mở trace đã redact để chỉ ra số vòng/token. Giải thích trade-off trước khi nói về model.`,
+    interview: {
+      story: `### STAR: trợ lý tra cứu đơn có kiểm soát
+**Lưu ý:** đây là kịch bản kể pet project; thay mọi số liệu bằng kết quả đo từ report của bạn, không nhận số mục tiêu là thành tích thật.
+
+**Situation:** Tôi muốn thử đưa LLM vào một quy trình gần thực tế: người dùng thường phải tra trạng thái đơn ở một hệ thống và đọc chính sách ở một nơi khác. Một chatbot chỉ sinh văn bản dễ trả lời sai, và dữ liệu đơn hàng không thể gửi tự do cho model.
+
+**Task:** Tôi đặt mục tiêu làm API Java có thể trả lời từ dữ liệu thật đã kiểm soát, không đọc đơn của người khác, dẫn nguồn chính sách, giữ lịch sử hội thoại và giới hạn chi phí. Tôi dùng đơn/chính sách giả để không đưa dữ liệu cá nhân vào demo.
+
+**Action:** Tôi dùng Spring Boot 3, Spring AI 1.x và Claude. Model được đăng ký một tool đọc tóm tắt đơn, nhưng identity lấy từ JWT ở backend và order service luôn lọc theo owner. Với câu hỏi chính sách, backend tìm chunk trong pgvector bằng embedding model riêng, rồi chỉ gửi đoạn được phép cho Claude. Tôi lưu conversation có owner, giới hạn history và số vòng, reserve quota trong PostgreSQL, và xây golden set để so retrieval, tool arguments, citation và câu trả lời không đủ căn cứ. Micrometer/OpenTelemetry ghi stage latency và token usage mà không ghi raw prompt.
+
+**Result:** Tôi báo kết quả bằng report có phiên bản model/config: recall@5 ..., citation valid ..., unauthorized order leakage ..., p95 ... trên tải ... . Phần quan trọng nhất không phải con số đẹp mà là test chứng minh quyền do server cưỡng chế, model không thể tự chọn user id, và tôi biết rõ giới hạn của eval. Khi đưa vào CV tôi chỉ điền các số đã chạy, không tuyên bố hệ thống production nếu mới chạy local.`,
+      questions: [
+        'Vì sao bạn chọn tool calling thay vì để Claude tự viết SQL hoặc gọi trực tiếp order service?',
+        'Model yêu cầu xem đơn của user khác thì những tầng nào ngăn rò dữ liệu?',
+        'RAG khác fine-tuning thế nào, và tại sao cần một embedding model riêng bên cạnh Claude?',
+        'Bạn kiểm chứng câu trả lời và citation đúng bằng eval set ra sao? LLM judge có giới hạn gì?',
+        'Làm sao tránh conversation id bị đoán hoặc dùng để đọc lịch sử của người khác?',
+        'Bạn reserve ngân sách token thế nào khi hai request cùng tới, và vì sao Redis không nên là nguồn quota ngày duy nhất?',
+        'Khi Claude timeout nhưng không rõ request đã chạy hay chưa, bạn xử lý retry và chi phí ra sao?',
+        'Bạn chọn Spring AI hay LangChain4j? Khi nào MCP hữu ích, và vì sao project hiện tại chưa cần Kafka?',
+        'Trace nào hữu ích khi debug latency/cost nhưng không ghi raw prompt hoặc private reasoning?',
+      ],
+    },
+  },
 ];
