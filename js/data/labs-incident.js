@@ -3694,4 +3694,224 @@ Tôi sẽ tắt ngay quyền hoàn tiền tự động, tra trạng thái refund
   ],
   tags: ['ai-agent', 'prompt-injection', 'tool-use', 'authorization', 'refund', 'human-approval']
 },
+{
+  id: 'lab-incident-029',
+  category: 'incident',
+  title: 'Chatbot RAG trích dẫn chính sách hoàn tiền đã hết hiệu lực suốt ba ngày',
+  level: 'senior',
+  scenario: `Một cửa hàng trực tuyến dùng chatbot để trả lời câu hỏi về chính sách đổi trả. Tài liệu chính sách được biên tập trong kho nội bộ, sau đó pipeline chia tài liệu thành các đoạn nhỏ, tạo embedding (dãy số biểu diễn ý nghĩa văn bản để tìm đoạn gần nghĩa) và lưu cùng văn bản vào chỉ mục tìm kiếm PostgreSQL/pgvector. Khi khách hỏi, chatbot tìm các đoạn liên quan rồi đưa chúng cho mô hình ngôn ngữ để tạo câu trả lời có trích nguồn; cách làm này gọi là RAG, tức sinh câu trả lời dựa trên nội dung đã truy xuất thay vì chỉ dựa vào kiến thức mô hình có sẵn.
+
+Ngày 10/11/2026 lúc 08:40 +07:00, chính sách đổi trả được cập nhật từ 30 ngày lên 45 ngày, có hiệu lực từ 09:00 cùng ngày. Tuy nhiên, từ 11 đến 13/11, pipeline chạy mỗi đêm nhưng chỉ mục vẫn giữ phiên bản cũ. Khách đã nhận hàng 35 ngày hỏi có được trả hàng không; chatbot trả lời “đã quá hạn 30 ngày” và dẫn tài liệu cũ. Hỗ trợ khách hàng xác nhận 19 trường hợp đủ điều kiện bị từ chối nhầm. Hãy tìm lỗi khiến job báo thành công dù dữ liệu chưa được cập nhật, và đề xuất cách phục hồi lẫn ngăn tái diễn.`,
+  artifacts: [
+    {
+      name: 'nightly-index-job-2026-11-11-to-13.log',
+      lang: 'text',
+      content: `# Giờ địa phương +07:00; một tài liệu chính sách có revision 42
+2026-11-10T08:40:00.000+07:00 source event doc=returns-policy revision=42 effective_at=2026-11-10T09:00:00+07:00
+2026-11-11T01:00:00.012+07:00 run=IDX-1111 source_docs=120 checkpoint_before=2026-11-10T08:39:59+07:00
+2026-11-11T01:00:00.088+07:00 run=IDX-1111 selected_docs=1 doc=returns-policy revision=42 expected_chunks=12
+2026-11-11T01:00:00.412+07:00 run=IDX-1111 batch=1/1 embedding_api status=429 error=rate_limit chunks=12
+2026-11-11T01:00:00.414+07:00 run=IDX-1111 warning=embedding_failed doc=returns-policy failed_chunks=12
+2026-11-11T01:00:00.421+07:00 run=IDX-1111 checkpoint_committed=2026-11-10T08:40:00+07:00
+2026-11-11T01:00:00.427+07:00 run=IDX-1111 status=SUCCESS source_docs=120 selected_docs=1 indexed_chunks=0 warning_count=1
+2026-11-12T01:00:00.103+07:00 run=IDX-1112 checkpoint_before=2026-11-10T08:40:00+07:00 selected_docs=0 indexed_chunks=0 status=SUCCESS
+2026-11-13T01:00:00.097+07:00 run=IDX-1113 checkpoint_before=2026-11-10T08:40:00+07:00 selected_docs=0 indexed_chunks=0 status=SUCCESS
+# Bộ lọc incremental là source.updated_at > checkpoint; checkpoint được commit dù 12 chunk của revision 42 chưa được ghi.`
+    },
+    {
+      name: 'rag-freshness-metrics-2026-11-10-to-13.txt',
+      lang: 'text',
+      content: `# Metric lấy mỗi ngày lúc 09:00 +07:00; index là chỉ mục vector đang phục vụ truy vấn
+date       source_revision  indexed_revision  source_docs  index_docs  index_chunks  embedding_errors
+11-10      42               41                 120          120         2400          0
+11-11      42               41                 120          120         2400          12
+11-12      42               41                 120          120         2400          0
+11-13      42               41                 120          120         2400          0
+
+# Revision 41 của returns-policy có 8 chunk; revision 42 cần 12 chunk.
+# Index có 2,400 chunk ngày 10/11 và vẫn 2,400 trong các ngày sau; nếu thay tài liệu thành công,
+# dự kiến tổng là 2,404 chunk. Chỉ số số chunk không đổi không chứng minh nội dung mới đã được lập chỉ mục.
+# Bảng hỗ trợ 11/13: 61 câu trả lời trích revision 41; rà soát thủ công xác nhận 19 đơn 31–44 ngày bị từ chối sai.`
+    },
+    {
+      name: 'rag-trace-ticket-CS-8841.txt',
+      lang: 'text',
+      content: `# Trace đã lược bỏ thông tin nhận dạng; giờ +07:00
+2026-11-13T08:21:14.001+07:00 request=RAG-8841 question="Tôi nhận hàng cách đây 35 ngày, còn được trả không?"
+2026-11-13T08:21:14.114+07:00 request=RAG-8841 retrieval index=policy-vectors top_k=4 hits=1
+2026-11-13T08:21:14.115+07:00 request=RAG-8841 hit=returns-policy revision=41 chunk=returns-policy-v41-c03 score=0.84
+2026-11-13T08:21:14.118+07:00 request=RAG-8841 context="Returns are accepted within 30 days after delivery."
+2026-11-13T08:21:14.722+07:00 request=RAG-8841 answer="Rất tiếc, bạn đã quá hạn 30 ngày nên không thể trả hàng."
+2026-11-13T08:21:14.723+07:00 request=RAG-8841 citation=returns-policy revision=41
+# Nội dung revision 42 trong kho nguồn: "Returns are accepted within 45 days after delivery."
+# Retrieval trả đúng nội dung đã lưu trong index, nhưng đó không còn là revision có hiệu lực.`
+    }
+  ],
+  questions: [
+    'Dựng lại vì sao job IDX-1111 báo SUCCESS nhưng revision 42 không vào index, và vì sao hai lần chạy sau không tự thử lại?',
+    'Dùng các artifact để phân biệt lỗi do mô hình bịa với lỗi dữ liệu truy xuất. Tác động đã được xác nhận là bao nhiêu?',
+    'Bạn sẽ khôi phục câu trả lời trong hôm nay và thiết kế lại pipeline, freshness metric, alert như thế nào để lỗi tương tự không âm thầm kéo dài?'
+  ],
+  hints: [
+    'Đối chiếu 12 chunk bị lỗi với thời điểm checkpoint_committed. Sau đó xem cách chọn tài liệu ở hai lần chạy kế tiếp.',
+    'Trong trace, mô hình trả đúng nội dung 30 ngày mà retrieval đưa vào; hãy so revision của hit với revision 42 trong kho nguồn.',
+    'Đừng chỉ nhìn job status hoặc tổng số chunk. Cần điều kiện thành công bao gồm mọi batch, theo dõi revision nguồn so với revision đã publish, và cách phát lại tài liệu bị lỗi.'
+  ],
+  answer: `**Tóm tắt:** Lỗi gốc nằm ở pipeline lập chỉ mục, không phải mô hình tự bịa chính sách. Lần chạy đầu nhận HTTP 429 khi tạo embedding cho cả 12 chunk của revision 42 nhưng vẫn commit checkpoint và báo SUCCESS; các lần sau lọc theo checkpoint nên bỏ qua tài liệu chưa được index. Vì vậy RAG tiếp tục truy xuất revision 41 và chatbot lặp lại chính xác quy định 30 ngày đã hết hiệu lực.
+
+### RAG và các thuật ngữ trong sự cố
+**RAG** là cách ứng dụng tìm tài liệu liên quan rồi đưa nội dung đó vào prompt cho mô hình trả lời. Có thể hình dung như nhân viên tra sổ tay trước khi trả lời khách: nếu sổ tay trên bàn là bản cũ, nhân viên có thể trả lời mạch lạc nhưng sai chính sách hiện hành.
+
+**Chunk** là đoạn nhỏ được tách từ tài liệu để tìm kiếm; một chính sách có thể thành nhiều chunk. **Embedding** là biểu diễn số để tìm các đoạn gần nghĩa với câu hỏi. PostgreSQL/pgvector lưu vector và có thể tìm các vector tương tự. Pipeline ở đây đã tìm thấy đúng tài liệu cũ; vấn đề là bản mới không được đưa vào index.
+
+### Dựng lại lỗi từ bằng chứng
+1. Kho nguồn phát revision 42 lúc 08:40 ngày 10/11. Chính sách mới tăng hạn trả hàng từ 30 lên 45 ngày và có hiệu lực lúc 09:00.
+2. Job IDX-1111 chọn đúng tài liệu và cần tạo 12 chunk. API embedding trả 429 (rate limit: dịch vụ từ chối vì vượt giới hạn yêu cầu). Log ghi {{failed_chunks=12}}, tức không chunk mới nào được index.
+3. Dù thất bại, dòng tiếp theo ghi {{checkpoint_committed=2026-11-10T08:40:00+07:00}} rồi {{status=SUCCESS}}. Checkpoint là mốc nguồn đã xử lý; job dùng {{updated_at > checkpoint}} để chỉ lấy tài liệu thay đổi sau mốc đó. Mốc được tiến qua revision 42 trước khi nội dung được ghi thành công.
+4. Ngày 12 và 13, tài liệu không còn mới hơn checkpoint nên {{selected_docs=0}}. Job không có hàng đợi retry/dead-letter (nơi giữ việc lỗi để xử lý lại), nên hai lần SUCCESS sau chỉ có nghĩa “không tìm thấy tài liệu mới”, không có nghĩa index đã bắt kịp nguồn.
+5. Metric cho thấy source revision 42 nhưng indexed revision 41 cả ba ngày. Tổng 2.400 chunk không đổi; thay 8 chunk revision 41 bằng 12 chunk revision 42 đáng lẽ thành 2.404. Trace CS-8841 tìm đúng {{returns-policy-v41-c03}}, đưa câu 30 ngày vào context, rồi trả lời nhất quán với context đó. Do đó đây là dữ liệu stale (cũ), không có bằng chứng mô hình tự dựng ra mốc 30 ngày.
+
+Tác động đã xác nhận: 61 câu trả lời trích revision 41; rà soát hỗ trợ xác nhận 19 đơn giao 31–44 ngày bị từ chối sai. Không nên suy diễn toàn bộ 61 câu đều gây thiệt hại; 19 là số trường hợp đã xác minh.
+
+### Khôi phục ngay
+- Tạm ngăn chatbot trả lời về đổi trả bằng revision cũ: có thể chuyển câu hỏi chính sách sang nhân viên hoặc trả lời “đang cập nhật”, thay vì coi context stale là còn hiệu lực.
+- Phát lại riêng tài liệu {{returns-policy}} revision 42, xác nhận cả 12 chunk đã lưu, rồi kiểm tra truy vấn 35 ngày trả đúng revision 42 và nội dung 45 ngày. Chỉ sau kiểm chứng mới chuyển index mới sang phục vụ.
+- Tìm các câu trả lời đã trích revision 41 từ thời điểm 09:00 ngày 10/11; hỗ trợ chủ động liên hệ khách thuộc nhóm bị từ chối. Không tự sửa đơn hoặc hứa hoàn tiền khi chưa kiểm tra trạng thái thực tế.
+
+### Sửa pipeline bền vững
+**Không commit watermark trước dữ liệu.** Tạo bản index mới theo một revision hoặc generation riêng; tạo và kiểm tra embeddings cho tất cả chunk, xác nhận số lượng bằng 12 và ghi thành công; sau đó mới cập nhật checkpoint và chuyển alias/index đang phục vụ sang generation mới. Đây là publish nguyên tử: người dùng thấy trọn bản cũ hoặc trọn bản mới, không thấy trạng thái nửa chừng. Nếu bất kỳ batch nào lỗi, giữ checkpoint cũ, thử lại có giới hạn với backoff (khoảng chờ tăng dần) và đưa lỗi cuối cùng vào hàng đợi cần xử lý; không biến lỗi thành SUCCESS.
+
+Khi cập nhật một tài liệu, không xóa chunk cũ trước khi bản mới hoàn tất. Nếu publish thất bại, bản cũ vẫn phục vụ được, nhưng ứng dụng cần nhận biết revision của nó đã hết hiệu lực và có thể từ chối trả lời theo chính sách mới. Với hệ thống nhiều worker, cần idempotency theo {{documentId + revision + chunkNumber}} để phát lại không tạo chunk trùng.
+
+### Theo dõi và phòng ngừa
+Theo dõi **độ trễ freshness** (thời gian từ lúc nguồn đổi tới lúc revision mới được phục vụ), số tài liệu lỗi, số chunk kỳ vọng/thành công/thất bại, tuổi checkpoint và revision nguồn/index. Alert khi có revision hiệu lực mới nhưng chưa được publish quá ngưỡng, hoặc job có failed chunk dù process kết thúc. Dashboard chỉ có “job SUCCESS” và tổng chunk là chưa đủ: số lượng có thể bằng nhau trong khi nội dung sai phiên bản.
+
+Thêm kiểm thử pipeline mô phỏng API embedding trả 429: checkpoint phải giữ nguyên, job phải báo thất bại/partial rõ ràng, lần chạy sau phải chọn lại revision 42, và index chỉ publish sau khi đủ 12 chunk. Thêm kiểm thử end-to-end truy vấn câu “35 ngày” phải trích revision có hiệu lực. Log nên gắn run id, document id, revision và chunk id để điều tra được, nhưng tránh ghi dữ liệu cá nhân trong câu hỏi của khách.
+
+> Senior tip: Với RAG chính sách, hãy coi revision nguồn là dữ liệu nghiệp vụ có hiệu lực, không phải chi tiết triển khai. Gắn revision vào từng citation và đặt ngưỡng freshness theo yêu cầu nghiệp vụ; tài liệu chính sách có thể cần fail closed ngay khi index tụt phiên bản, trong khi tài liệu ít quan trọng có thể chấp nhận độ trễ ngắn.`,
+  rubric: [
+    'Xác định chính xác lỗi: HTTP 429 làm thất bại 12 chunk nhưng job vẫn commit checkpoint và báo SUCCESS; filter updated_at > checkpoint khiến các lần sau bỏ qua revision 42.',
+    'Phân biệt RAG stale-data với hallucination bằng trace: hit/citation revision 41 cung cấp câu 30 ngày; nguồn revision 42 quy định 45 ngày.',
+    'Đọc đúng tác động: 61 câu trả lời trích revision cũ, trong đó 19 đơn 31–44 ngày được hỗ trợ xác minh là từ chối sai; metric 2.400 không đổi, dự kiến 2.404.',
+    'Đề xuất khôi phục có kiểm chứng: chặn câu trả lời stale, phát lại tài liệu, xác nhận đủ 12 chunk và truy vấn thực tế trước khi publish; rà soát khách bị ảnh hưởng.',
+    'Đề xuất pipeline an toàn: checkpoint chỉ commit sau khi mọi chunk hoàn tất, staging/atomic publish, retry có giới hạn và hàng đợi lỗi; freshness/revision alert và kiểm thử 429.'
+  ],
+  tags: ['rag', 'llm', 'pgvector', 'stale-data', 'embedding', 'pipeline', 'observability']
+},
+{
+  id: 'lab-incident-030',
+  category: 'incident',
+  title: 'Provider LLM trả 529 nhưng retry tức thời khuếch đại tải và cạn budget',
+  level: 'senior',
+  scenario: `Một dịch vụ hỗ trợ khách hàng viết bằng Spring Boot gọi một provider LLM bên ngoài để tóm tắt hội thoại. HTTP 529 trong tình huống này là phản hồi Overloaded do provider không đủ khả năng xử lý tải tại thời điểm đó; nó không phải câu trả lời của mô hình. Để “tăng độ tin cậy”, đội ứng dụng bật retry tối đa 5 lần nhưng không có khoảng chờ hay jitter (độ trễ ngẫu nhiên nhỏ giúp các client không thử lại đồng loạt).
+
+Ngày 12/11/2026 lúc 19:00 +07:00, lưu lượng tăng từ 20 lên 120 yêu cầu người dùng mỗi giây. Provider bắt đầu trả 529; mỗi yêu cầu bị thử tối đa năm lần gần như ngay lập tức. Ứng dụng còn có bộ đếm budget nội bộ còn 50.000 credit tại thời điểm bắt đầu: mỗi lần gọi provider giữ trước 1 credit, nhưng code không hoàn credit khi nhận 529. Vì vậy các lần thử lại vừa tạo thêm tải đúng lúc provider đang quá tải, vừa làm budget của ứng dụng cạn và chặn cả yêu cầu mới. Hãy lượng hóa mức khuếch đại, xác định retry policy và đề xuất cách giảm tải an toàn.`,
+  artifacts: [
+    {
+      name: 'llm-request-retry-log-2026-11-12.txt',
+      lang: 'text',
+      content: `# Giờ địa phương +07:00; trace RQ-7712 là một yêu cầu logic của người dùng
+2026-11-12T19:00:10.000+07:00 request=RQ-7712 event=accepted attempt=0
+2026-11-12T19:00:10.004+07:00 request=RQ-7712 provider_attempt=1 status=529 error=overloaded elapsed_ms=4 credit_reserved=1
+2026-11-12T19:00:10.005+07:00 request=RQ-7712 retry_scheduled=immediate delay_ms=0
+2026-11-12T19:00:10.009+07:00 request=RQ-7712 provider_attempt=2 status=529 error=overloaded elapsed_ms=4 credit_reserved=1
+2026-11-12T19:00:10.010+07:00 request=RQ-7712 retry_scheduled=immediate delay_ms=0
+2026-11-12T19:00:10.014+07:00 request=RQ-7712 provider_attempt=3 status=529 error=overloaded elapsed_ms=4 credit_reserved=1
+2026-11-12T19:00:10.015+07:00 request=RQ-7712 retry_scheduled=immediate delay_ms=0
+2026-11-12T19:00:10.019+07:00 request=RQ-7712 provider_attempt=4 status=529 error=overloaded elapsed_ms=4 credit_reserved=1
+2026-11-12T19:00:10.020+07:00 request=RQ-7712 retry_scheduled=immediate delay_ms=0
+2026-11-12T19:00:10.024+07:00 request=RQ-7712 provider_attempt=5 status=529 error=overloaded elapsed_ms=4 credit_reserved=1
+2026-11-12T19:00:10.025+07:00 request=RQ-7712 event=failed attempts=5 status=UPSTREAM_UNAVAILABLE
+# max_attempts=5 tính cả lần gọi đầu; không có thời gian chờ giữa các lần thử.
+# Mỗi lần thử được tính vào credit nội bộ; không có log giải phóng credit sau lỗi 529.`
+    },
+    {
+      name: 'llm-provider-traffic-and-budget-2026-11-12.txt',
+      lang: 'text',
+      content: `# Cửa sổ đo 1 giây; attempts/s là các HTTP call đi ra provider, không phải yêu cầu người dùng
+time                 inbound_requests/s  provider_attempts/s  provider_529/s  completed_requests/s  app_429/s
+18:59:59             20                  20                   0               20                    0
+19:00:10-19:00:11    120                 600                  600             0                     0
+19:01:22-19:01:23    120                 600                  600             0                     120
+
+# Budget ứng dụng tại 19:00:00: 50,000 credit còn lại; quy tắc hiện tại giữ 1 credit mỗi provider attempt.
+# 120 request/s x 5 attempts/request = 600 credit/s; 50,000 / 600 = 83.3 giây để cạn.
+# Bộ đếm về 0 khoảng 19:01:23; sau đó middleware từ chối 120 request/s bằng HTTP 429.
+# Đây là credit quota nội bộ, không phải khẳng định rằng provider tính tiền mọi request lỗi 529.
+# Hóa đơn provider cần được đối chiếu riêng theo usage thực tế.`
+    },
+    {
+      name: 'llm-client-retry-and-budget.yaml',
+      lang: 'yaml',
+      content: `# Cấu hình đang chạy tại 19:00 ngày 12/11
+llm:
+  provider: primary
+  request_timeout: 20s
+  retry:
+    max_attempts: 5          # gồm lần đầu
+    retry_on: [529, 503, timeout]
+    initial_delay: 0ms
+    multiplier: 1
+    jitter: false
+    respect_retry_after: false
+  budget:
+    remaining_credits_at_incident_start: 50000
+    reserve_credits_per_provider_attempt: 1
+    release_reservation_on_error: false
+# Không có rate limit outbound hoặc giới hạn concurrency riêng cho provider.
+# Middleware trả HTTP 429 khi credit nội bộ bằng 0.`
+    }
+  ],
+  questions: [
+    'Dựng lại trace RQ-7712 và giải thích vì sao cấu hình max_attempts=5 tạo tối đa bao nhiêu lời gọi provider cho một yêu cầu logic.',
+    'Từ metrics, tính hệ số khuếch đại tải và thời gian cạn budget. Phân biệt credit nội bộ của ứng dụng với chi phí thực sự trên hóa đơn provider.',
+    'Bạn sẽ giảm tải ngay khi provider quá tải và thiết kế lại retry, budget, concurrency, fallback cùng cảnh báo như thế nào?'
+  ],
+  hints: [
+    'Trong log, max_attempts bao gồm cả lần gọi đầu. Đếm provider_attempt, không nhầm số lần retry bổ sung với tổng số lần thử.',
+    'Tại đỉnh có 120 yêu cầu logic/giây và 600 lời gọi provider/giây. Mỗi lời gọi giữ một credit; dùng số dư 50.000 để tính thời gian hết quota.',
+    'Retry đồng loạt có thể tạo vòng phản hồi quá tải. Backoff và jitter giúp giãn nhịp, nhưng vẫn cần giới hạn tổng retry, concurrency và ngân sách.'
+  ],
+  answer: `**Tóm tắt:** Provider trả 529 Overloaded nhưng client thử lại ngay, tối đa năm lần tính cả lần đầu. Ở mức 120 yêu cầu người dùng/giây, metrics ghi 600 lời gọi provider/giây, tức tải outbound gấp 5 lần; năm lần thử của trace RQ-7712 đều nhận 529. Vì ứng dụng giữ một credit cho mỗi attempt và không giải phóng khi lỗi, 50.000 credit còn lại cạn sau khoảng 83 giây. Đây là lỗi khuếch đại tải do retry và quản lý reservation nội bộ, không đủ bằng chứng để kết luận provider tính phí cho mọi 529.
+
+### Đọc log và phân biệt các con số
+**Yêu cầu logic** là hành động của người dùng, ví dụ một lần bấm “tóm tắt”. **Attempt** là một lần HTTP thực tế tới provider. Một lần thử lại là một attempt bổ sung sau lần đầu. Vì {{max_attempts: 5}} tính luôn lần đầu, mỗi request có tối đa 1 lần đầu + 4 lần retry, không phải 5 lần retry.
+
+Trong trace RQ-7712, attempts 1–5 cách nhau vài mili giây; từng lần đều trả 529. Không có đoạn chờ giữa chúng. Khi hệ thống nhận 120 yêu cầu logic mỗi giây, trường hợp tất cả phải dùng đủ năm lần thử tạo ra tối đa {{120 × 5 = 600}} request outbound mỗi giây. Metrics đúng với mức này: 120 inbound, 600 provider attempts, 600 lỗi 529, 0 request hoàn tất. Hệ số khuếch đại là {{600 / 120 = 5}}.
+
+**Backoff** là chờ trước khi retry, thường tăng dần để giảm tốc khi lỗi kéo dài. **Jitter** là thêm một khoảng ngẫu nhiên nhỏ để nhiều client không cùng thức dậy và thử lại một lúc. Không có hai cơ chế này, mỗi đợt 529 lập tức tạo thêm đợt request mới; provider càng quá tải thì ứng dụng càng gửi nhiều request, làm tình trạng xấu thêm.
+
+### Budget đã cạn như thế nào
+Artifact ghi 50.000 credit quota nội bộ còn lại lúc 19:00. Ở tải cực đại, mỗi provider attempt giữ một credit: {{600 credit/giây}}. Phép tính {{50.000 / 600 = 83,3 giây}} khớp lúc bộ đếm về 0 khoảng 19:01:23. Sau đó middleware trả HTTP 429 cho 120 yêu cầu mới mỗi giây.
+
+Credit trong log là bộ đếm nội bộ do ứng dụng định nghĩa; artifact **không** chứng minh mọi call 529 bị provider tính tiền. Nó chứng minh retry đốt quota nội bộ vì reservation không được giải phóng. Chi phí thực tế phải kiểm tra usage/billing của provider và cách họ tính request lỗi; không được suy ra từ credit. Dù lỗi không bị tính phí, 600 HTTP request/giây vẫn tiêu thụ kết nối, thread, giới hạn rate và tài nguyên của provider.
+
+### Ứng phó ngay trong sự cố
+- Tắt hoặc giảm retry tức thời và áp rate limit outbound; ưu tiên request quan trọng, trả thông báo “dịch vụ AI đang bận” cho phần còn lại thay vì dồn thêm tải.
+- Giảm concurrency (số call đồng thời) bằng semaphore/bulkhead (hạn mức cô lập riêng cho provider) để request không chiếm hết tài nguyên của ứng dụng. Đặt hàng đợi có giới hạn; không xếp vô hạn vì hàng đợi dài chỉ biến lỗi nhanh thành độ trễ và tiêu thụ bộ nhớ.
+- Kiểm tra credit quota và logic reserve/release. Chỉ giải phóng reservation khi chắc chắn attempt không tiêu quota theo quy tắc ứng dụng; đối chiếu với usage provider trước khi kết luận hóa đơn.
+- Theo dõi tỷ lệ 529 và kết quả theo request; không tự chuyển toàn bộ lưu lượng sang provider phụ nếu chưa kiểm tra hạn mức, tương thích model, quyền riêng tư và ngân sách của provider đó.
+
+### Retry policy an toàn hơn
+Chỉ retry lỗi tạm thời phù hợp; lỗi đầu vào như 400 thường không tự hết nên retry không có ích. Với 529/503, dùng số lần retry nhỏ và tổng thời gian có deadline; exponential backoff (khoảng chờ tăng theo cấp số nhân) có giới hạn trên, thêm jitter. Nếu phản hồi có hướng dẫn Retry-After hợp lệ thì cân nhắc tôn trọng nó trong giới hạn deadline; không giả định header luôn có mặt. Ví dụ minh họa: tối đa 2 retry bổ sung, khoảng chờ tăng khoảng 0,5 rồi 1 giây và thêm jitter, nhưng giá trị thật phải được thử tải và khớp SLA.
+
+Không chỉ đặt backoff: cần rate limit và giới hạn concurrency outbound để cả cụm không vượt năng lực provider. Khi tỷ lệ lỗi cao, **circuit breaker** (cầu dao phần mềm tạm ngừng gọi dịch vụ lỗi) mở trong một khoảng thời gian, trả lỗi có kiểm soát và thăm dò lại ít request khi provider hồi phục. Đây không phải lời giải cho mọi lỗi; cấu hình ngưỡng và thời gian thử lại cần dựa trên metrics.
+
+### Budget và khả năng quan sát
+Quyết định rõ credit được tính theo yêu cầu người dùng hay theo attempt. Nếu tính theo lượt người dùng, retry nội bộ không nên âm thầm làm cạn quota người dùng; nếu budget là giới hạn chi phí, hãy reserve theo token tối đa/giá ước tính và quyết toán theo usage trả về, có quy tắc rõ khi timeout hoặc 529. Reservation cần idempotent theo request/attempt để không trừ hai lần khi cập nhật lặp. Đặt trần trên từng request, từng người dùng và toàn hệ thống; cảnh báo trước ngưỡng, không đợi bằng 0 mới phát hiện.
+
+Dashboard nên tách inbound requests, outbound attempts, attempts trên mỗi request, tỷ lệ 529/503, thời gian backoff, concurrency, request bị từ chối, reservation đang giữ và credit đã quyết toán. Alert khi attempts/request tăng vượt nền hoặc tỷ lệ 529 tăng liên tục. Log trace id, attempt number, status, delay và credit decision để phân tích; không log prompt chứa dữ liệu nhạy cảm nếu không cần.
+
+Thêm kiểm thử xác định: fake provider luôn trả 529 thì một request không được vượt max attempts, tổng thời gian bị chặn bởi deadline, reservation được quyết toán theo chính sách đã chọn và circuit breaker ngừng call sau ngưỡng. Kiểm thử tải cần mô phỏng nhiều client cùng lỗi để chứng minh jitter, concurrency cap và rate limit ngăn spike 5 lần.
+
+> Senior tip: Retry là cách chuyển tải lại chứ không phải tạo năng lực mới. Khi phụ thuộc bên ngoài báo quá tải, hãy giảm số request đồng thời trước, rồi mới thử lại với ngân sách hữu hạn; theo dõi attempts trên mỗi yêu cầu logic để phát hiện khuếch đại trước khi quota hoặc provider chạm giới hạn.`,
+  rubric: [
+    'Diễn giải max_attempts=5 là tối đa 5 tổng attempt gồm lần đầu; trace RQ-7712 có 5 lỗi 529 cách nhau gần như tức thời.',
+    'Tính đúng 120 inbound/s x 5 = 600 outbound attempts/s, hệ số khuếch đại 5 lần; 50.000 credit / 600 mỗi giây ≈ 83,3 giây.',
+    'Phân biệt credit quota nội bộ bị giữ cho mỗi attempt với chi phí provider thực tế; không khẳng định 529 luôn bị tính phí và đề xuất đối chiếu usage/billing.',
+    'Đề xuất giảm tải trong sự cố: tắt/giảm retry tức thời, rate limit, concurrency cap/bulkhead, queue có giới hạn và phản hồi degrade an toàn.',
+    'Đề xuất retry hữu hạn với exponential backoff, jitter, deadline và xử lý Retry-After khi có; circuit breaker, budget reservation/release rõ ràng, metric và test.'
+  ],
+  tags: ['llm', 'provider-overload', 'http-529', 'retry', 'backoff', 'budget', 'rate-limit', 'observability']
+},
 );
