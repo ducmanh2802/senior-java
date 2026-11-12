@@ -1,4 +1,5 @@
 /* Styles for view "interview". Scope every rule under .view-interview */
+.view-interview .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 /* ---------- setup ---------- */
 .view-interview .iv-setup { display: grid; gap: 16px; }
@@ -27,8 +28,10 @@
   padding: 10px 14px; border-radius: var(--radius); border: 1px solid var(--border);
   background: var(--surface); color: var(--text); font-size: .9rem; cursor: pointer;
   transition: border-color .15s, background .15s, transform .1s;
+  min-height: 40px;
 }
 .view-interview .iv-field .chip:hover { border-color: var(--accent); }
+.view-interview .iv-field .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .view-interview .iv-field .chip.active {
   background: var(--accent-soft); border-color: var(--accent); color: var(--text); font-weight: 600;
 }
@@ -42,9 +45,26 @@
 .view-interview .iv-timer.warn { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
 .view-interview .iv-timer.bad { color: var(--bad); border-color: var(--bad); background: var(--bad-soft); }
 .view-interview .iv-toggles { gap: 6px; flex-wrap: wrap; }
+.view-interview .iv-toggles .btn { min-height: 40px; }
 .view-interview .iv-progress { display: flex; align-items: center; gap: 8px; min-width: 140px; flex: 1; }
 .view-interview .iv-progress .progress { flex: 1; height: 6px; }
 .view-interview .iv-progress-bar { height: 100%; background: var(--accent); border-radius: 999px; transition: width .3s linear; }
+
+/* ---------- state banner ---------- */
+.view-interview .iv-state {
+  display: inline-flex; align-items: center; gap: 10px; align-self: flex-start;
+  padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--surface); font-size: .9rem; margin: 4px 0; position: sticky; top: 128px; z-index: 4;
+}
+.view-interview .iv-state-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+.view-interview .iv-state-idle { color: var(--muted); }
+.view-interview .iv-state-busy { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.view-interview .iv-state-busy .iv-state-dot { background: var(--accent); animation: iv-pulse 1s ease-in-out infinite; }
+.view-interview .iv-state-speak { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+.view-interview .iv-state-speak .iv-state-dot { background: var(--warn); animation: iv-pulse .8s ease-in-out infinite; }
+.view-interview .iv-state-listen { color: var(--bad); border-color: var(--bad); background: var(--bad-soft); }
+.view-interview .iv-state-listen .iv-state-dot { background: var(--bad); box-shadow: 0 0 0 4px color-mix(in srgb, var(--bad) 25%, transparent); }
+@keyframes iv-pulse { 0%, 100% { opacity: .4; transform: scale(.85); } 50% { opacity: 1; transform: scale(1.1); } }
 
 /* ---------- chat ---------- */
 .view-interview .iv-chat { display: flex; flex-direction: column; gap: 12px; padding: 16px 0; min-height: 240px; }
@@ -61,13 +81,13 @@
   padding: 10px 14px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--border);
   position: relative; box-shadow: 0 1px 2px rgba(0,0,0,.04);
 }
-.view-interview .iv-bubble p { margin: 4px 0 0; white-space: pre-wrap; }
+.view-interview .iv-bubble p { margin: 4px 0 0; white-space: pre-wrap; line-height: 1.6; font-size: .98rem; }
 .view-interview .iv-bubble .badge { font-size: .75rem; }
 .view-interview .iv-me .iv-bubble {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
-.view-interview .iv-bubble .iv-read { position: absolute; top: 6px; right: 8px; }
+.view-interview .iv-read { margin-top: 6px; min-height: 32px; padding: 4px 10px; }
 .view-interview .iv-time { font-size: .7rem; color: var(--muted); margin-top: 4px; }
 
 /* typing indicator */
@@ -92,12 +112,17 @@
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px;
   z-index: 4;
 }
-.view-interview .iv-compose .row { align-items: center; gap: 10px; flex-wrap: wrap; }
+.view-interview .iv-compose .textarea { min-height: 72px; }
+.view-interview .iv-compose-row { align-items: center; gap: 10px; flex-wrap: wrap; }
 .view-interview .iv-interim { min-height: 1.2em; font-style: italic; }
 .view-interview .iv-keys { margin-left: auto; }
+.view-interview .iv-send { min-height: 44px; }
+.view-interview .iv-status { flex: 1 1 160px; min-width: 0; }
+.view-interview .iv-status .ai-error { display: block; }
+.view-interview .iv-state-text { font-weight: 600; }
 
 /* mic button + ripple */
-.view-interview .mic-btn.lg { width: 56px; height: 56px; border-radius: 50%; font-size: 1.4rem; position: relative; }
+.view-interview .mic-btn.lg { width: 56px; height: 56px; min-width: 56px; border-radius: 50%; font-size: 1.4rem; position: relative; }
 .view-interview .mic-btn.recording { background: var(--bad); color: #fff; border-color: var(--bad); }
 .view-interview .mic-btn.recording::before,
 .view-interview .mic-btn.recording::after {
@@ -135,24 +160,39 @@
 .view-interview .iv-chart-col span { font-size: .7rem; color: var(--muted); }
 
 .view-interview .iv-q { border-top: 1px solid var(--border); padding: 10px 0; }
-.view-interview .iv-q summary { cursor: pointer; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.view-interview .iv-q summary { cursor: pointer; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; min-height: 40px; padding: 4px 0; }
+.view-interview .iv-q summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-sm); }
 .view-interview .iv-q-bar { height: 6px; background: var(--surface-2); border-radius: 999px; margin: 8px 0; overflow: hidden; }
 .view-interview .iv-q-bar > div { height: 100%; background: var(--accent); border-radius: 999px; transition: width .3s; }
-.view-interview .iv-better { background: var(--surface-2); padding: 10px 12px; border-radius: var(--radius-sm); }
+.view-interview .iv-better { background: var(--surface-2); padding: 10px 12px; border-radius: var(--radius-sm); overflow-x: auto; }
+.view-interview .iv-better span { white-space: pre-wrap; }
 .view-interview .iv-actions { gap: 10px; margin-top: 16px; flex-wrap: wrap; }
 .view-interview .iv-result-card { }
+.view-interview .iv-result-card ul { margin: 8px 0 0; padding-left: 20px; }
+.view-interview .iv-result-card li { margin: 6px 0; line-height: 1.5; }
 
 /* ---------- responsive ---------- */
 @media (max-width: 640px) {
   .view-interview .iv-bar { position: static; }
+  .view-interview .iv-state { position: static; align-self: stretch; border-radius: var(--radius); }
   .view-interview .iv-msg { max-width: 100%; }
   .view-interview .iv-keys { display: none; }
-  .view-interview .iv-compose { bottom: 0; border-radius: 0; border-left: none; border-right: none; border-bottom: none; }
-  .view-interview .iv-compose .row { justify-content: center; }
+  .view-interview .iv-compose { bottom: 0; border-radius: 0; border-left: none; border-right: none; border-bottom: none; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+  .view-interview .iv-compose-row { justify-content: stretch; }
+  .view-interview .iv-send { flex: 1 1 auto; }
+  .view-interview .iv-toggles .btn { min-height: 40px; }
 }
 @media (max-width: 400px) {
   .view-interview .iv-jd-table { min-width: 430px; }
   .view-interview .iv-jd-table-wrap { margin-right: -8px; }
+  .view-interview .iv-bar { gap: 10px; padding: 10px 12px; }
+  .view-interview .iv-bar > div:first-child { min-width: 0; }
+  .view-interview .iv-focus { max-width: 100%; white-space: normal; }
+  .view-interview .iv-progress { min-width: 100%; }
+  .view-interview .iv-toggles { width: 100%; }
+  .view-interview .iv-toggles .btn { flex: 1 1 45%; }
+  .view-interview .iv-compose-row { gap: 8px; }
+  .view-interview .mic-btn.lg { width: 52px; height: 52px; min-width: 52px; }
 }
 
 /* reduced motion */
@@ -164,4 +204,6 @@
   .view-interview .iv-progress-bar,
   .view-interview .iv-chart-bar,
   .view-interview .iv-q-bar > div { transition: none; }
+  .view-interview .iv-state-busy .iv-state-dot,
+  .view-interview .iv-state-speak .iv-state-dot { animation: none; }
 }
