@@ -10410,5 +10410,165 @@ They would also say that I am willing to help. When a junior teammate struggled 
 > Senior tip: Hãy chọn điểm mạnh mà đồng đội thực sự cảm nhận được trong công việc hằng ngày (đúng hẹn, hỗ trợ, giao tiếp rõ). Khi nêu điểm cần cải thiện, hãy kèm hành động bạn đang làm để tiến bộ — điều này cho interviewer thấy bạn có tự nhận thức và tinh thần phát triển.`,
   follow: ["Can you share a specific example of when a teammate gave you constructive feedback?","How do you usually support junior teammates when they are stuck on a task?","What have you done recently to improve the weakness you mentioned?"],
   tags: ["teamwork","feedback","self-awareness","collaboration","strengths"]
-}
+},
+{
+  id: "english-198",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Walk me through an AI feature you shipped. What problem did it solve, and how did you make sure it was useful and safe?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn biến một nhu cầu thật thành **AI feature** (tính năng dùng trí tuệ nhân tạo), chứ không chỉ kể tên mô hình.   **LLM** là mô hình ngôn ngữ lớn tạo văn bản từ đầu vào; nó có thể viết bản nháp theo ngữ cảnh nhưng không tự đảm bảo mọi thông tin đều đúng.     **Human review** (người kiểm tra trước khi gửi) giúp phát hiện lỗi trước khi khách nhận nội dung. Chỉ đưa tài liệu đã được phê duyệt làm căn cứ, thay vì để mô hình tự tạo chính sách. **Pilot** là thử nghiệm giới hạn trước khi triển khai rộng; nêu rõ số người tham gia và tiêu chí thành công. Hãy mô tả vấn đề → luồng hoạt động → cách kiểm soát rủi ro → kết quả đo được và điều bạn học được.
+
+### Sample answer
+I led four engineers building a reply-drafting feature for our support portal. Agents spent six minutes on each reply, so we wanted to save time without sending messages automatically.
+
+When an agent opened a ticket, our Java service sent its text and a few approved help articles to a language model. The draft appeared for the agent to edit, reject, or use. We ran a two-week pilot with eight agents and excluded account details that were not needed.
+
+Before launch, support leads reviewed 200 sample tickets for relevance and factual support. During the pilot, average writing time fell from six minutes to three. We reviewed 320 drafts: agents rejected 18 and requested factual corrections on 42. We used those examples to improve article selection. Agents still checked every draft, so the feature remained an assistant, not an automatic decision-maker.
+
+The trade-off was that human review added a step, but it reduced the risk of sending an incorrect answer to a customer. I learned to define a useful outcome before choosing a model, and to keep a safe fallback when the model cannot answer from the approved information.
+
+### Useful phrases
+- **I led a small team** — tôi dẫn dắt một nhóm nhỏ
+- **we built a reply-drafting feature** — chúng tôi xây dựng tính năng soạn bản nháp trả lời
+- **the agent could edit, reject, or use it** — nhân viên có thể sửa, từ chối hoặc sử dụng
+- **factually supported** — có căn cứ thông tin đáng tin cậy
+- **an assistant rather than an automatic decision-maker** — công cụ hỗ trợ thay vì tự quyết định
+- **the trade-off was** — điểm đánh đổi là
+- **a safe fallback** — phương án dự phòng an toàn
+
+### Lỗi người Việt hay mắc
+- **Nói “we used AI” nhưng không nêu vấn đề:** hãy nói ai gặp khó khăn gì và tính năng cải thiện điều gì.
+- **Khẳng định mô hình luôn đúng:** dùng {{we checked every draft}} để thể hiện có bước con người kiểm tra.
+- **Dùng “accuracy” mà không nói cách đo:** hãy nêu bộ câu hỏi mẫu, người đánh giá và tiêu chí cụ thể.
+- **Nhầm “ship” với chỉ viết xong code:** trong ngữ cảnh này, {{shipped}} nghĩa là đưa tính năng đến người dùng, theo dõi và cải thiện nó.
+
+> Senior tip: Nêu rõ phạm vi thử nghiệm, ai duyệt nội dung và cách xử lý khi mô hình không chắc chắn. Một kết quả có ích và kiểm soát được đáng tin hơn một lời hứa rằng AI luôn đúng.`,
+  follow: [
+    "How did you decide which information was safe and useful to send to the model?",
+    "What did you do when the model produced an incorrect or unsupported draft?",
+    "How would you measure whether the feature remained useful after the pilot?"
+  ],
+  tags: ["english", "ai", "llm", "product", "delivery"]
+},
+{
+  id: "english-199",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Our service currently handles 200 requests per second. How would you design it to handle ten times that traffic, and how would you reduce the risk of the change?",
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn không chỉ nhân đôi máy chủ mà tìm đúng **bottleneck** (nút thắt cổ chai: phần chậm nhất giới hạn cả hệ thống). Hãy xác nhận loại tải và yêu cầu → tìm giới hạn hiện tại bằng số liệu → tăng năng lực theo từng tầng → thử tải và bảo vệ hệ thống khi vượt khả năng.   **Load test** là thử nghiệm tạo lưu lượng mô phỏng; cache giữ tạm kết quả hay dùng, read replica là bản sao cơ sở dữ liệu nhận truy vấn đọc để giảm tải cho bản chính, còn queue là hàng đợi giúp xử lý việc chậm hơn mà không bắt request phải chờ. **Horizontal scaling** (mở rộng ngang) là thêm nhiều bản ứng dụng chạy song song; load balancer phân chia request giữa các bản đó.
+
+### Sample answer
+I would first confirm what the 200 requests per second represent. A search service needs a different plan from one that writes each request to a database. I would also ask about latency and availability targets; ten times the traffic is useless if most requests time out.
+
+I would run a load test with our real request mix and inspect the application, database, and external calls. I would find whether the Java service is limited by CPU, database connections, or a slow dependency. Then I would add stateless application copies behind the load balancer and repeat the test.
+
+If database reads were the bottleneck, I would review indexes and query plans before considering a cache or read replicas. I would set a limit for how old cached data can be. For work that does not need to finish immediately, a queue could let workers process it at a controlled rate.
+
+I would test at 2,000 requests per second, then roll out gradually with dashboards and a rollback plan. The trade-off is extra infrastructure and operational complexity. I would scale only measured bottlenecks and define what the system should do under overload.
+
+### Useful phrases
+- **confirm what the requests per second represent** — xác nhận ý nghĩa của số yêu cầu mỗi giây
+- **match our real request mix** — mô phỏng đúng tỷ lệ các loại yêu cầu thực tế
+- **find the next limit** — tìm giới hạn tiếp theo
+- **scale the application instances horizontally** — tăng số bản ứng dụng chạy song song
+- **define how stale its data may be** — xác định dữ liệu được phép cũ đến mức nào
+- **roll out gradually** — triển khai theo từng bước
+- **a rollback plan** — kế hoạch quay lại phiên bản trước
+
+### Lỗi người Việt hay mắc
+- **Chỉ nói “add more servers”:** phải giải thích cách tìm nút thắt; máy chủ ứng dụng nhiều hơn không sửa được database đang quá tải.
+- **Hứa cache làm mọi thứ nhanh hơn:** cache có chi phí đồng bộ và dữ liệu cũ; nêu rõ dữ liệu nào có thể cũ bao lâu.
+- **Nhầm tải thử với tải thật:** đưa ra lưu lượng và kiểu yêu cầu gần thực tế, không chỉ gửi một loại request đơn giản.
+- **Đưa ra con số dung lượng như cam kết:** nói rõ 2,000 requests/second là mục tiêu cần kiểm chứng bằng thử tải.
+
+> Senior tip: Hãy hỏi về request mix, dữ liệu và mục tiêu latency trước khi chọn giải pháp. Tăng tải theo từng bước, vì mỗi lần bỏ một nút thắt có thể làm lộ nút thắt kế tiếp.`,
+  follow: [
+    "Which measurements would help you find the first bottleneck?",
+    "When might a cache or read replica make the system less reliable?",
+    "What would you do if traffic exceeded the tested capacity?"
+  ],
+  tags: ["english", "system-design", "scalability", "performance", "reliability"]
+},
+{
+  id: "english-200",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Tell me about a technical trade-off you explained to a product manager. How did you connect the engineering choices to customer impact?",
+  a: `**Tóm tắt:** Interviewer đánh giá khả năng giải thích **trade-off** (đánh đổi: chọn một lợi ích và chấp nhận một chi phí) bằng ngôn ngữ gắn với trải nghiệm khách hàng. Hãy nêu mục tiêu sản phẩm → hai lựa chọn và hệ quả → đề xuất có số liệu → cách đo và điều chỉnh sau khi phát hành.     **Sales dashboard** là màn hình tổng hợp số liệu bán hàng; hãy diễn giải độ mới của dữ liệu và ảnh hưởng đến khách hàng thay vì chỉ nêu chi tiết query (câu truy vấn cơ sở dữ liệu). Một **refresh interval** (khoảng thời gian làm mới) dài hơn giảm tải nhưng khiến số liệu cũ hơn; hãy nói rõ vì sao khoảng trễ đó chấp nhận được trong tình huống cụ thể và thống nhất trước ngưỡng sản phẩm có thể chấp nhận.
+
+### Sample answer
+Our product manager wanted a sales dashboard to show changes almost immediately. The first design queried the main database on every refresh. That was simple, but busy periods meant repeated queries that could slow order processing.
+
+I explained that updates every few seconds would use more shared capacity and risk slowing checkout. Refreshing every 30 seconds would make the numbers less current but protect the most important customer journey.
+
+I recommended 30 seconds for the first release. We showed a “last updated” time, measured usage and database load, and reviewed the decision after two weeks. In the first month, the dashboard met its freshness target, and database CPU at peak was about 15 percent lower than in a load test of the original design.
+
+There was no universally right option; it depended on how quickly customers needed the information. The product manager agreed after we compared customer impact, risk, and evidence. I learned to make a recommendation, explain its cost, and state what evidence would make us change course.
+
+### Useful phrases
+- **show changes almost immediately** — hiển thị thay đổi gần như ngay lập tức
+- **the same reports were requested many times** — cùng một báo cáo được yêu cầu nhiều lần
+- **I explained the choice without starting with database details** — tôi giải thích lựa chọn mà không bắt đầu bằng chi tiết cơ sở dữ liệu
+- **protect the most important customer journey** — bảo vệ hành trình quan trọng nhất của khách hàng
+- **for the first release** — cho phiên bản phát hành đầu tiên
+- **compare the choices using customer impact** — so sánh lựa chọn dựa trên ảnh hưởng tới khách hàng
+- **the signal that would make us change course** — dấu hiệu khiến chúng tôi đổi hướng
+
+### Lỗi người Việt hay mắc
+- **Dùng thuật ngữ thay cho lợi ích:** giải thích độ trễ ảnh hưởng thế nào tới người dùng, không chỉ nói về cache hay query.
+- **Chỉ nêu nhược điểm của lựa chọn còn lại:** nói rõ lợi ích và chi phí của cả hai phương án.
+- **Nói như thể quyết định là tuyệt đối:** nêu giả định, cách theo dõi và điều kiện sẽ xem xét lại.
+- **Dùng “more fast”:** nói {{faster}} hoặc {{more quickly}}; ví dụ {{respond faster}}.
+
+> Senior tip: Hãy đưa ra đề xuất rõ ràng nhưng gắn với một điều kiện có thể đo. Điều đó giúp product manager quyết định cùng bạn thay vì phải tự suy ra hậu quả kỹ thuật.`,
+  follow: [
+    "How did you make sure the product manager understood the technical risk?",
+    "What would you do if customers said that a 30-second delay was not acceptable?",
+    "How did you measure the impact on the rest of the system?"
+  ],
+  tags: ["english", "communication", "product", "trade-offs", "system-design"]
+},
+{
+  id: "english-201",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "How would you monitor an LLM-based service in production, and how would you know if its answers were getting worse?",
+  a: `**Tóm tắt:**   **LLM-based service** là dịch vụ dùng mô hình ngôn ngữ lớn để tạo hoặc phân tích nội dung. Interviewer muốn bạn theo dõi cả vận hành lẫn chất lượng: latency (độ trễ), errors (lỗi), token usage (lượng văn bản được chia thành các đơn vị nhỏ để mô hình xử lý, ảnh hưởng chi phí), và việc câu trả lời có hữu ích, đúng nguồn hay không. **Prompt** là chỉ dẫn cùng dữ liệu đầu vào gửi cho mô hình; thay đổi prompt có thể làm chất lượng khác đi.
+
+### Sample answer
+I would monitor reliability and answer quality separately. For reliability, I would track request volume, success and error rates, latency, timeouts, and provider availability. I would also measure token usage and cost by feature; a healthy service can still be unexpectedly expensive.
+
+For quality, I would create representative questions with expected behavior and run them after a prompt, model, or retrieval change. Retrieval means finding approved documents to give the model context. I would collect feedback and ask support staff to review sample answers for unsupported claims or missing information.
+
+I would connect each request to a trace, a record of its steps and timings, using an identifier instead of putting customer text in general logs. I would compare quality and latency by release version and alert on changes from agreed targets. If the provider failed, we could show a fallback message or let users continue without a generated answer.
+
+Quality is harder to measure automatically than latency, so I would combine repeatable tests with human review, not trust one score. I would establish a baseline and tune alerts using real traffic. This helps detect outages and less obvious quality or cost regressions before customers lose trust.
+
+### Useful phrases
+- **whether it is running reliably** — liệu dịch vụ có vận hành ổn định không
+- **a set of representative questions** — một bộ câu hỏi đại diện cho tình huống thực tế
+- **review a sample of answers** — kiểm tra một mẫu câu trả lời
+- **unsupported claims** — thông tin khẳng định nhưng không có căn cứ
+- **compare quality and latency by release version** — so sánh chất lượng và độ trễ theo phiên bản phát hành
+- **establish a baseline** — thiết lập mức chuẩn ban đầu để so sánh
+- **quality or cost regressions** — suy giảm chất lượng hoặc tăng chi phí sau thay đổi
+
+### Lỗi người Việt hay mắc
+- **Chỉ theo dõi uptime:** dịch vụ có thể luôn phản hồi nhưng câu trả lời vẫn sai hoặc kém hữu ích.
+- **Ghi toàn bộ prompt và dữ liệu khách hàng vào log:** dùng mã định danh và dữ liệu tối thiểu; tránh lưu nội dung nhạy cảm không cần thiết.
+- **Tin một điểm số tự động duy nhất:** kết hợp bộ kiểm thử lặp lại, phản hồi người dùng và đánh giá của con người.
+- **Báo động bằng ngưỡng tùy ý:** thiết lập mức chuẩn trước, rồi chọn ngưỡng dựa trên hành vi và mục tiêu thật.
+
+> Senior tip: Tách dashboard vận hành khỏi đánh giá chất lượng nhưng nối chúng bằng phiên bản phát hành và mã trace. Khi có phản hồi xấu, nhóm có thể tìm đúng thay đổi mà không cần ghi nội dung riêng tư vào log.`,
+  follow: [
+    "How would you build a useful evaluation set without exposing customer data?",
+    "What signals could show that model quality changed after a release?",
+    "How would you respond if the model provider became unavailable?"
+  ],
+  tags: ["english", "ai", "llm", "observability", "monitoring"]
+},
 );
