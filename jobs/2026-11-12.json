@@ -1,0 +1,98 @@
+{
+  "date": "2026-11-12",
+  "intro": "Hôm nay thị trường Java ở Việt Nam nghiêng mạnh về hai hướng: ngân hàng/fintech (MB Bank, Home Credit, Money Forward) và các vị trí yêu cầu tích hợp AI/LLM vào backend (EPOS, Home Credit). Nhiều tin đòi hỏi tiếng Anh tốt và dùng thành thạo công cụ AI khi lập trình.",
+  "editor": "claude",
+  "items": [
+    {
+      "title": "Senior Backend Engineer (Java, Spring Boot)",
+      "company": "Smilegate Vietnam",
+      "url": "https://itviec.com/viec-lam-it/senior-backend-engineer-java-spring-boot-smilegate-vietnam-4708",
+      "source": "ITviec",
+      "location": "TP.HCM (onsite)",
+      "level": "senior",
+      "skills": ["Java", "Spring Boot", "Kafka", "Kubernetes", "SQL"],
+      "summary": "Công ty game Hàn Quốc, xây dựng nền tảng phân phối game số toàn cầu. Vị trí cần khoảng 7 năm kinh nghiệm, thiết kế và vận hành service production, làm việc cùng team kỹ thuật Hàn Quốc. Yêu cầu Java backend vững, cơ sở dữ liệu SQL/NoSQL, thiết kế REST/gRPC và microservices; ưu tiên hệ thống tải cao, Redis, Kafka, Docker/K8s.",
+      "prep": "Ôn thiết kế REST/gRPC API, data modeling, microservices, caching với Redis và messaging với Kafka. Chuẩn bị ví dụ về hệ thống traffic cao đã làm và cách bạn dùng công cụ AI trong coding/testing.",
+      "topics": ["spring", "microservices", "api", "design"],
+      "tags": ["game", "product"]
+    },
+    {
+      "title": "Senior Fullstack Developer (Java / Vue)",
+      "company": "LG CNS Việt Nam",
+      "url": "https://itviec.com/viec-lam-it/senior-fullstack-developer-java-vue-lg-cns-viet-nam-2951",
+      "source": "ITviec",
+      "location": "Hà Nội (onsite)",
+      "level": "senior",
+      "skills": ["Java", "Spring Boot", "MyBatis", "PostgreSQL", "Vue.js"],
+      "summary": "Công ty dịch vụ IT, phát triển và vận hành hệ thống nghiệp vụ doanh nghiệp quy mô lớn, nhiều dự án khách hàng nước ngoài. Công việc gồm thiết kế giải pháp, backend Spring Boot, frontend Vue.js, tối ưu PostgreSQL và xử lý sự cố production. Giờ làm 8:00–17:00, không kỳ vọng OT.",
+      "prep": "Ôn Spring Boot, MyBatis vs JPA, tối ưu truy vấn và index PostgreSQL, thiết kế REST API. Chuẩn bị kể một lần xử lý sự cố production và kiến thức nền Docker/AWS.",
+      "topics": ["spring", "sql", "db", "api"],
+      "tags": ["outsource", "enterprise"]
+    },
+    {
+      "title": "[Middle, Senior] BackEnd Engineer (Java, Spring Boot)",
+      "company": "MB Bank",
+      "url": "https://itviec.com/viec-lam-it/middle-senior-backend-engineer-java-spring-boot-mb-bank-5706",
+      "source": "ITviec",
+      "location": "Hà Nội (onsite)",
+      "level": "senior",
+      "skills": ["Java", "Spring Boot", "Redis", "MongoDB", "Oracle"],
+      "summary": "Ngân hàng lớn tuyển backend cho các mảng Payment Platform, chuyển tiền liên ngân hàng (Napas, Citad), Open Banking, Digital Lending, QR và ví điện tử. Cần kinh nghiệm backend thực tế với Java hoặc Go và một CSDL như Oracle, SQL Server, PostgreSQL hay MongoDB; kinh nghiệm ngân hàng là điểm cộng.",
+      "prep": "Ôn nghiệp vụ thanh toán: idempotency, giao dịch phân tán, đối soát, xử lý timeout khi chuyển tiền. Ôn transaction/isolation, Redis cache, thiết kế API an toàn.",
+      "topics": ["banking", "spring", "db", "security"],
+      "tags": ["banking", "payment"]
+    },
+    {
+      "title": "Senior Software Engineer (Java, AI-native)",
+      "company": "Home Credit Vietnam",
+      "url": "https://itviec.com/viec-lam-it/senior-software-engineer-java-ai-native-home-credit-vietnam-3803",
+      "source": "ITviec",
+      "location": "TP.HCM (onsite)",
+      "level": "senior",
+      "skills": ["Java", "Spring", "REST", "CI/CD", "PostgreSQL", "Microservices"],
+      "summary": "Công ty tài chính tiêu dùng tuyển kỹ sư theo hướng AI-native: ứng dụng AI trong toàn bộ vòng đời phát triển, tự viết unit/integration/contract test, sở hữu tính năng từ thiết kế đến vận hành. Yêu cầu Java/Spring vững, REST, CI/CD, CSDL quan hệ, tiếng Anh tốt; giờ làm không OT.",
+      "prep": "Ôn Spring, thiết kế REST, chiến lược test (unit, integration, contract), CI/CD và monitoring. Chuẩn bị nói về cách dùng AI agent trong quy trình làm việc và phỏng vấn bằng tiếng Anh.",
+      "topics": ["spring", "testing", "api", "english"],
+      "tags": ["fintech", "ai"]
+    },
+    {
+      "title": "Principal Java/Kotlin Engineer (Banking/SaaS)",
+      "company": "Money Forward Vietnam",
+      "url": "https://itviec.com/viec-lam-it/principal-java-kotlin-engineer-banking-saas-money-forward-vietnam-co-ltd-5007",
+      "source": "ITviec",
+      "location": "TP.HCM (hybrid)",
+      "level": "lead",
+      "skills": ["Kotlin", "Java", "Spring Boot", "Kafka", "AWS", "MySQL"],
+      "summary": "Team Core Banking xây dựng nền tảng BaaS và digital banking cho thị trường Nhật, dùng nền tảng Mambu. Cần khoảng 5 năm Java/Kotlin với Spring Boot, SQL, Kafka, test automation, microservices, CI/CD và cloud (AWS/Azure/GCP). Yêu cầu tiếng Anh giao tiếp công việc và tư duy bảo mật.",
+      "prep": "Ôn Kotlin cơ bản cho dev Java, Kafka (ordering, exactly-once, idempotent consumer), thiết kế microservices và giao dịch tài chính. Ôn DevSecOps và chuẩn bị phỏng vấn tiếng Anh.",
+      "topics": ["kotlin", "microservices", "banking", "security", "aws"],
+      "tags": ["fintech", "baas"]
+    },
+    {
+      "title": "Senior Java Software Engineer - Strong AI Integration",
+      "company": "EPOS Vietnam",
+      "url": "https://itviec.com/viec-lam-it/senior-java-software-engineer-strong-ai-integration-epos-vietnam-4020",
+      "source": "ITviec",
+      "location": "TP.HCM (onsite)",
+      "level": "senior",
+      "skills": ["Java", "Spring Boot", "Microservices", "LLM", "AWS"],
+      "summary": "Trung tâm kỹ thuật của một nhà cung cấp POS/SaaS cho SME. Vai trò xây Java backend và tích hợp LLM, AI agent (tool calling, workflow nhiều bước) vào hệ thống hiện có. Cần 6+ năm Java backend, Spring, REST, cloud, hiểu system design và distributed systems; tiếng Anh bắt buộc.",
+      "prep": "Ôn system design, distributed systems, độ tin cậy khi gọi dịch vụ AI (timeout, retry, rate limit). Tìm hiểu tool/function calling và cách tích hợp LLM vào service Java.",
+      "topics": ["ai", "design", "microservices", "english"],
+      "tags": ["saas", "ai"]
+    },
+    {
+      "title": "Senior Software Developer (Java/Python)",
+      "company": "VinSmart Future",
+      "url": "https://itviec.com/viec-lam-it/senior-software-developer-java-python-vinsmart-future-2527",
+      "source": "ITviec",
+      "location": "Hà Nội (onsite)",
+      "level": "senior",
+      "skills": ["Java", "Python", "Kafka", "RabbitMQ", "Docker", "CI/CD"],
+      "summary": "Xây backend xử lý sự kiện, điều phối workflow và vòng đời task: định tuyến, escalation, tích hợp webhook, push notification và dịch vụ bên thứ ba, cùng tích hợp kết quả AI/ML. Cần khoảng 4 năm kinh nghiệm, Kafka hoặc RabbitMQ, CSDL quan hệ và NoSQL, hiểu microservices, concurrency, monitoring.",
+      "prep": "Ôn message broker (Kafka vs RabbitMQ), xử lý bất đồng bộ, concurrency, observability và distributed tracing. Chuẩn bị ví dụ tối ưu hiệu năng và xử lý sự cố production.",
+      "topics": ["concurrency", "microservices", "devops", "design"],
+      "tags": ["workflow", "event-driven"]
+    }
+  ]
+}
