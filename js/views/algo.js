@@ -1,4 +1,4 @@
-﻿/* View "algo" — owner: task T15. Contract: see AGENTS.md "Views". */
+﻿/* View "algo" — owner: task T1494. Contract: see AGENTS.md "Views". */
 (function () {
   'use strict';
 
@@ -32,6 +32,7 @@
       'algo.notFoundTitle': 'Không tìm thấy bài',
       'algo.notFoundHint': 'Bài {id} không có trong ngân hàng.',
       'algo.notFoundBack': 'Về danh sách',
+      'algo.listBack': '← Danh sách',
       'algo.hintTitle': 'Gợi ý',
       'algo.hintBtn': 'Gợi ý',
       'algo.hintDone': 'Đã hết gợi ý',
@@ -68,6 +69,8 @@
       'algo.savedLabels': 'saved',
       'algo.complexityLabel': 'Độ phức tạp:',
       'algo.followUpTitle': 'Câu hỏi follow-up',
+      'algo.shortcutsTitle': 'Phím tắt:',
+      'algo.shortcutHint': '<kbd>H</kbd> Gợi ý  <kbd>S</kbd> Lời giải  <kbd>Ctrl+Enter</kbd> Chạy test',
     },
     en: {
       'algo.title': 'Algorithm Practice',
@@ -135,6 +138,8 @@
       'algo.savedLabels': { known: 'Solved', review: 'Review', unknown: 'Can\'t solve' },
       'algo.complexityLabel': 'Complexity:',
       'algo.followUpTitle': 'Follow-up questions',
+      'algo.shortcutsTitle': 'Shortcuts:',
+      'algo.shortcutHint': '<kbd>H</kbd> Hint  <kbd>S</kbd> Solution  <kbd>Ctrl+Enter</kbd> Run tests',
     },
   });
 
@@ -205,7 +210,7 @@
 
   function chipRow(label, items, current, attr) {
     const chips = items.map(it =>
-      '<button type="button" class="chip' + (it.id === current ? ' active' : '') + '" data-' + attr + '="' + App.esc(it.id) + '">' +
+      '<button type="button" class="chip' + (it.id === current ? ' active' : '') + '" data-' + attr + '="' + App.esc(it.id) + '" aria-pressed="' + (it.id === current) + '">' +
       App.esc(it.label) + '</button>').join('');
     return '<div class="algo-chiprow"><span class="algo-chiplabel">' + App.esc(label) + '</span><div class="chips">' + chips + '</div></div>';
   }
@@ -251,8 +256,8 @@
     const rows = list.map(a => {
       const s = App.store.getStatus(a.id);
       const dotCls = s === 'known' ? 'ok' : s === 'review' ? 'warn' : s === 'unknown' ? 'bad' : '';
-      return '<a class="algo-row" href="#/algo/' + App.esc(a.id) + '">' +
-        '<span class="dot ' + dotCls + '"></span>' +
+      return '<a class="algo-row" href="#/algo/' + App.esc(a.id) + '" tabindex="0">' +
+        '<span class="dot ' + dotCls + '" aria-hidden="true"></span>' +
         '<span class="algo-row-main"><b>' + App.esc(a.title) + '</b>' +
         '<span class="algo-row-sub">' + App.esc(a.pattern) + ' · ' + App.esc(a.id) + '</span></span>' +
         '<span class="algo-row-tags">' + diffBadge(a) + statusBadge(a) + dueBadge(a) + '</span>' +
@@ -275,7 +280,7 @@
         chipRow(App.t('algo.statusLabel'), FILTERS, state.status, 'status') +
       '</div>' +
       (list.length
-        ? '<div class="card algo-list">' + rows + '</div>'
+        ? '<div class="card algo-list" role="list">' + rows + '</div>'
         : '<div class="empty"><h2>' + App.t('algo.emptyFilterTitle') + '</h2><p>' + App.t('algo.emptyFilterHint') + '</p></div>');
 
     // ---- events
@@ -367,40 +372,44 @@
         '<section class="card algo-prompt">' +
           '<div class="md">' + App.md(algo.prompt) + '</div>' +
           '<div class="algo-hints">' +
-            '<h3>' + App.t('algo.hintTitle') + ' <span class="algo-hint-count" id="algoHintCount">0/' + hints.length + '</span></h3>' +
-            '<div id="algoHints"></div>' +
-            '<button type="button" class="btn sm" id="algoHintBtn"' + (hints.length ? '' : ' disabled') + '>' +
+            '<h3>' + App.t('algo.hintTitle') + ' <span class="algo-hint-count" id="algoHintCount" aria-live="polite">0/' + hints.length + '</span></h3>' +
+            '<div id="algoHints" aria-live="polite"></div>' +
+            '<button type="button" class="btn" id="algoHintBtn"' + (hints.length ? '' : ' disabled') + ' aria-label="' + App.t('algo.hintBtn') + '">' +
               (hints.length ? App.t('algo.hintNext', {n: 1, total: hints.length}) : App.t('algo.hintDone')) + '</button>' +
             '<p class="small muted">' + App.t('algo.hintShortcut') + '</p>' +
           '</div>' +
         '</section>' +
         '<section class="card algo-work">' +
           '<div class="row algo-work-head">' +
-            '<span class="algo-timer" id="algoTimer" role="timer" aria-live="off">00:00</span>' +
+            '<span class="algo-timer" id="algoTimer" role="timer" aria-live="off" aria-label="Thời gian đã giải">00:00</span>' +
             '<span class="small muted" id="algoTimerGoal">' + App.t('algo.timerGoal', {n: timer.goal}) + '</span>' +
             '<span class="spacer"></span>' +
-            '<button type="button" class="btn sm" id="algoTimerToggle">' + App.t('algo.timerStart') + '</button>' +
-            '<button type="button" class="btn sm" id="algoTimerReset">' + App.t('algo.timerReset') + '</button>' +
+            '<button type="button" class="btn sm" id="algoTimerToggle" aria-label="' + App.t('algo.timerStart') + '">' + App.t('algo.timerStart') + '</button>' +
+            '<button type="button" class="btn sm" id="algoTimerReset" aria-label="' + App.t('algo.timerReset') + '">' + App.t('algo.timerReset') + '</button>' +
           '</div>' +
-          '<div class="chips algo-goals" id="algoGoals">' +
-            GOALS.map(g => '<button type="button" class="chip' + (g === GOALS[1] ? ' active' : '') + '" data-goal="' + g + '">' + g + ' ' + App.t('algo.minuteUnit') + '</button>').join('') +
+          '<div class="chips algo-goals" id="algoGoals" role="group" aria-label="Mục tiêu thời gian">' +
+            GOALS.map(g => '<button type="button" class="chip' + (g === GOALS[1] ? ' active' : '') + '" data-goal="' + g + '" aria-pressed="' + (g === GOALS[1]) + '">' + g + ' ' + App.t('algo.minuteUnit') + '</button>').join('') +
           '</div>' +
           '<textarea id="algoCode" class="textarea algo-editor" spellcheck="false" autocapitalize="off" autocorrect="off" wrap="off"' +
             ' aria-label="' + App.t('algo.editorAria') + '" placeholder="' + App.t('algo.editorPlaceholder') + '">' + App.esc(code) + '</textarea>' +
           '<p class="small muted algo-tip">' + App.t('algo.editorTip') + ' ' + (canRun ? App.t('algo.editorRunTip') : App.t('algo.editorNoTest')) + '</p>' +
-          (canRun ? '<button type="button" class="btn sm primary" id="algoRun">' + App.t('algo.runBtn') + '</button>' : '') +
-          '<button type="button" class="btn sm" id="algoAiReview">' + App.t('algo.reviewBtn') + '</button>' +
-          '<div class="row algo-actions">' +
-            '<button type="button" class="btn sm" id="algoCopy">' + App.t('algo.copyBtn') + '</button>' +
-            '<button type="button" class="btn sm" id="algoResetCode">' + App.t('algo.resetBtn') + '</button>' +
-            '<button type="button" class="btn sm primary" id="algoSolution">' + App.t('algo.solutionBtn') + '</button>' +
+          (canRun ? '<button type="button" class="btn primary" id="algoRun" aria-label="' + App.t('algo.runBtn') + '">' + App.t('algo.runBtn') + '</button>' : '') +
+          '<button type="button" class="btn" id="algoAiReview" aria-label="' + App.t('algo.reviewBtn') + '">' + App.t('algo.reviewBtn') + '</button>' +
+          '<div class="row algo-actions" role="group" aria-label="Thao tác code">' +
+            '<button type="button" class="btn sm" id="algoCopy" aria-label="' + App.t('algo.copyBtn') + '">' + App.t('algo.copyBtn') + '</button>' +
+            '<button type="button" class="btn sm" id="algoResetCode" aria-label="' + App.t('algo.resetBtn') + '">' + App.t('algo.resetBtn') + '</button>' +
+            '<button type="button" class="btn sm primary" id="algoSolution" aria-label="' + App.t('algo.solutionBtn') + '">' + App.t('algo.solutionBtn') + '</button>' +
             '<span class="spacer"></span>' +
-            '<button type="button" class="btn sm ok" data-mark="known">' + App.t('algo.markKnown') + '</button>' +
-            '<button type="button" class="btn sm warn" data-mark="review">' + App.t('algo.markReview') + '</button>' +
-            '<button type="button" class="btn sm bad" data-mark="unknown">' + App.t('algo.markUnknown') + '</button>' +
+            '<button type="button" class="btn sm ok" data-mark="known" aria-label="' + App.t('algo.markKnown') + '">' + App.t('algo.markKnown') + '</button>' +
+            '<button type="button" class="btn sm warn" data-mark="review" aria-label="' + App.t('algo.markReview') + '">' + App.t('algo.markReview') + '</button>' +
+            '<button type="button" class="btn sm bad" data-mark="unknown" aria-label="' + App.t('algo.markUnknown') + '">' + App.t('algo.markUnknown') + '</button>' +
           '</div>' +
-          '<div id="algoRunPanel" class="algo-ai-panel" aria-live="polite"></div><div id="algoReviewPanel" class="algo-ai-panel" aria-live="polite"></div>' +
+          '<div id="algoRunPanel" class="algo-ai-panel" aria-live="polite" aria-label="Kết quả chạy test"></div><div id="algoReviewPanel" class="algo-ai-panel" aria-live="polite" aria-label="Kết quả AI review"></div>' +
           '<div id="algoSolutionBox"></div>' +
+          '<div class="algo-shortcuts" aria-hidden="true">' +
+            '<span class="algo-shortcuts-title">' + App.t('algo.shortcutsTitle') + '</span>' +
+            '<span>' + App.t('algo.shortcutHint') + '</span>' +
+          '</div>' +
         '</section>' +
       '</div>';
 
@@ -415,11 +424,12 @@
     const runPanel = root.querySelector('#algoRunPanel'), reviewPanel = root.querySelector('#algoReviewPanel');
     const runBtn = root.querySelector('#algoRun'), reviewBtn = root.querySelector('#algoAiReview');
     runPanel.innerHTML = cache.runHtml; reviewPanel.innerHTML = cache.reviewHtml;
+
     async function runTests() {
       if (!canRun || runBtn.disabled) return;
       const submitted = editor.value;
       runBtn.disabled = true;
-      runPanel.innerHTML = '<span class="ai-loading">' + App.t('algo.runTesting') + '</span>';
+      runBtn.innerHTML = '<span class="ai-loading">' + App.t('algo.runTesting') + '</span>';
       try {
         const run = await App.ai.run(App.code.assemble(submitted, algo.tests));
         if (editor.value !== submitted) return;
@@ -432,19 +442,26 @@
         }
         cache.runHtml = runPanel.innerHTML;
       } catch (e) { if (editor.value === submitted) runPanel.innerHTML = App.ui.error(e); }
-      finally { runBtn.disabled = false; }
+      finally {
+        runBtn.disabled = false;
+        runBtn.textContent = App.t('algo.runBtn');
+      }
     }
+
     async function reviewCode() {
       if (reviewBtn.disabled) return;
       const submitted = editor.value;
       reviewBtn.disabled = true;
-      reviewPanel.innerHTML = '<span class="ai-loading">' + App.t('algo.reviewTesting') + '</span>';
+      reviewBtn.innerHTML = '<span class="ai-loading">' + App.t('algo.reviewTesting') + '</span>';
       try {
         const run = lastRun ? { passed: lastParsed ? lastParsed.passed : 0, total: lastParsed ? lastParsed.total : 0, output: (lastRun.stdout || '').slice(0, 2000) } : undefined;
         const result = await App.ai.review({ title: algo.title, prompt: algo.prompt, reference: algo.solution, code: submitted, complexity: algo.complexity, run });
         if (editor.value === submitted) { cache.code = submitted; cache.reviewHtml = App.ui.codeFeedback(result); reviewPanel.innerHTML = cache.reviewHtml; }
       } catch (e) { if (editor.value === submitted) reviewPanel.innerHTML = App.ui.error(e); }
-      finally { reviewBtn.disabled = false; }
+      finally {
+        reviewBtn.disabled = false;
+        reviewBtn.textContent = App.t('algo.reviewBtn');
+      }
     }
     if (runBtn) runBtn.addEventListener('click', runTests);
     reviewBtn.addEventListener('click', reviewCode);
@@ -460,6 +477,7 @@
       hintCount.textContent = hintsUsed + '/' + hints.length;
       hintBtn.textContent = hintsUsed < hints.length ? App.t('algo.hintNext', {n: hintsUsed + 1, total: hints.length}) : App.t('algo.hintDone');
       if (hintsUsed >= hints.length) hintBtn.disabled = true;
+      item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
     function updateTimer() {
@@ -475,11 +493,13 @@
       if (timer.running) return;
       timer.running = true;
       timerToggle.textContent = App.t('algo.timerPause');
+      timerToggle.setAttribute('aria-label', App.t('algo.timerPause'));
       timer.tick = setInterval(() => { timer.elapsed += 1000; updateTimer(); }, 1000);
     }
     function pauseTimer() {
       timer.running = false;
       timerToggle.textContent = App.t('algo.timerResume');
+      timerToggle.setAttribute('aria-label', App.t('algo.timerResume'));
       if (timer.tick) { clearInterval(timer.tick); timer.tick = null; }
     }
 
@@ -526,13 +546,17 @@
       pauseTimer();
       timer.elapsed = 0;
       timerToggle.textContent = App.t('algo.timerStart');
+      timerToggle.setAttribute('aria-label', App.t('algo.timerStart'));
       updateTimer();
     });
     root.querySelector('#algoGoals').addEventListener('click', e => {
       const chip = e.target.closest('[data-goal]');
       if (!chip) return;
       timer.goal = parseInt(chip.dataset.goal, 10) || GOALS[1];
-      root.querySelectorAll('#algoGoals .chip').forEach(c => c.classList.toggle('active', c === chip));
+      root.querySelectorAll('#algoGoals .chip').forEach(c => {
+        c.classList.toggle('active', c === chip);
+        c.setAttribute('aria-pressed', c === chip);
+      });
       updateTimer();
     });
     root.querySelector('#algoSolution').addEventListener('click', showSolution);
