@@ -2423,5 +2423,530 @@ Lỗi kinh điển: viết {{x.priority() - y.priority()}} thay cho {{Integer.co
   ],
   related: ['collections-013', 'collections-020', 'collections-030'],
   tags: ['Comparable', 'Comparator', 'TimSort', 'stable sort', 'Collator'],
-}
+},
+{
+  id: 'lesson-collections-008',
+  track: 'collections',
+  order: 8,
+  title: 'Tự cài HashMap nhỏ: hash spreading, bucket, va chạm và resize',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Lần theo được {{put}} và {{get}} từ {{hashCode}} tới bucket, rồi tới {{equals}}',
+    'Tự cài map dùng chaining, capacity lũy thừa của 2 và resize mà không làm mất dữ liệu',
+    'Giải thích được treeify của JDK 17 giúp gì và vì sao không nên tự thay {{HashMap}} bằng bản đồ chơi'
+  ],
+  body: `**Tóm tắt:** {{HashMap}} biến key thành một chỉ số bucket bằng hash, rồi tìm key trong bucket đó bằng {{equals}}. Hash phân tán tốt cho thao tác trung bình gần O(1); va chạm, resize và hợp đồng {{equals}}/{{hashCode}} giải thích phần lớn lỗi thực tế.
+
+### Từ điển thuật ngữ bằng một ví dụ
+Hãy tưởng tượng tủ hồ sơ có nhiều ngăn:
+- **Hash (mã băm):** một số nguyên do {{hashCode()}} trả về, giống mã phân loại hồ sơ. Nó không phải ID duy nhất: hai key khác nhau có thể cùng mã.
+- **Bucket (ngăn):** một vị trí trong mảng nội bộ. Nhiều key có thể phải dùng chung một ngăn.
+- **Collision (va chạm):** hai key rơi vào cùng bucket; map phải so sánh chúng thay vì giả định chúng là một.
+- **Capacity (sức chứa bảng):** số bucket, không phải số phần tử tối đa.
+- **Load factor (hệ số tải):** ngưỡng trung bình cho biết bảng đã đủ đông để mở rộng; mặc định của {{HashMap}} là 0.75.
+
+### Một lệnh put đi qua những bước nào?
+Trong OpenJDK 17, bảng bucket được cấp phát lười: tạo {{new HashMap<>()}} chưa cần lập tức có mảng 16 ô; lần thêm đầu tiên mới tạo bảng. Khi thêm một cặp key/value:
+1. Tính {{key.hashCode()}}. HashMap trộn thêm các bit cao vào bit thấp bằng {{h ^ (h >>> 16)}}. Vì capacity là lũy thừa của 2, phép chọn bucket chỉ nhìn các bit thấp; trộn giúp thông tin ở bit cao cũng ảnh hưởng tới vị trí.
+2. Tính {{index = (capacity - 1) & hash}}. Với capacity 16, mask là 15 (nhị phân 1111), nên chỉ bốn bit thấp xác định bucket.
+3. Nếu bucket trống, tạo node. Nếu đã có node, so hash trước để loại nhanh phần lớn ứng viên, sau đó dùng {{equals}} để xác nhận key. Cùng hash **không đồng nghĩa** cùng key.
+4. Nếu key đã có, thay value; nếu chưa, thêm node và có thể resize khi số phần tử vượt threshold.
+
+~~~java
+Map<String, Integer> counts = new HashMap<>();
+counts.put("tea", 1);          // hash → bucket → node mới
+counts.put("tea", 2);          // cùng key: cập nhật value, không tăng size
+int n = counts.get("tea");     // tính bucket rồi so key; n = 2
+~~~
+
+### Vì sao capacity là lũy thừa của 2?
+Với bảng 16 bucket, {{(16 - 1) & hash}} là một phép AND bit rẻ, tương đương {{hash % 16}} khi xét phần dư không âm. Bit mask chỉ cho kết quả đúng khi capacity là lũy thừa của 2. Nếu capacity 12, {{11 & hash}} không phân bố đều như phép chia dư cho 12. Đây là lựa chọn kỹ thuật của HashMap, không phải yêu cầu của mọi hash table.
+
+Hiệu năng O(1) là **trung bình**, không phải lời hứa cho mọi input. Nếu 100.000 key dồn vào một bucket dạng danh sách, một lần tìm có thể phải so sánh gần 100.000 node. Đó là lý do phải thiết kế {{hashCode}} phân bố tốt và không được xem hash như khóa duy nhất.
+
+### Va chạm, treeify và giới hạn của cây
+Ban đầu bucket là danh sách liên kết: mỗi node giữ hash, key, value và liên kết tới node tiếp theo. Từ Java 8, khi bucket quá dài và bảng đã đủ lớn (ngưỡng treeify là 8 node, bảng tối thiểu 64 bucket), HashMap có thể đổi bucket đó thành cây đỏ-đen. Cây đỏ-đen là cây tìm kiếm tự cân bằng; với các key so sánh được, tìm kiếm trong bucket thường gần O(log n) thay vì O(n).
+
+Nếu bảng còn nhỏ hơn 64 bucket, HashMap ưu tiên resize: nhiều va chạm khi bảng bé có thể chỉ vì thiếu bucket. Key có cùng hash nhưng không có thứ tự tự nhiên cũng không biến thành bảo đảm O(log n) tuyệt đối cho mọi phép tìm; tree bin có xử lý phụ và trường hợp khó hơn. Vì thế treeify giảm rủi ro va chạm nặng, nhưng không thay cho giới hạn request, kiểm tra đầu vào hay key tốt. Khi bucket giảm đủ nhỏ, cây có thể lại thành danh sách.
+
+### Resize: đắt một lần để rẻ nhiều lần
+Threshold mặc định là {{capacity × 0.75}}: bảng 16 bucket có ngưỡng 12; khi thêm phần tử thứ 13, bảng thường tăng lên 32. Tất cả node phải được phân bố lại, nên một lần resize tốn O(n), nhưng các lần tăng gấp đôi làm chi phí thêm phần tử tính trung bình vẫn O(1) amortized (trung bình dài hạn).
+
+Trong JDK 8+, hash đã lưu trong node không cần tính lại từ key. Khi capacity tăng từ {{oldCap}} lên gấp đôi, node hoặc ở nguyên bucket cũ, hoặc chuyển sang {{oldIndex + oldCap}}; bit {{hash & oldCap}} phân biệt hai nhóm. Bản MiniHashMap ở bài tập sẽ tính lại chỉ số từ hash đã lưu để code dễ đọc, nhưng vẫn không gọi lại {{key.hashCode()}}.
+
+| Tình huống | Điều cần nhớ |
+|---|---|
+| Nạp trước 100.000 entry | Chọn capacity ban đầu phù hợp để giảm resize; {{new HashMap<>(100_000)}} là capacity, không phải ngưỡng đủ 100.000 phần tử ở load factor 0.75 |
+| Key là object tự viết | Nếu {{a.equals(b)}} thì bắt buộc {{a.hashCode() == b.hashCode()}} |
+| Field của key đổi sau {{put}} | Entry nằm ở bucket cũ, {{get}} tính hash mới và thường không tìm ra; dùng key bất biến |
+| Nhiều thread cùng ghi | {{HashMap}} không thread-safe; dùng {{ConcurrentHashMap}} khi phù hợp, không dựa vào treeify |
+
+### Ví dụ đời thực
+Một dịch vụ gom số dư theo {{AccountKey}} cho báo cáo cuối ngày. Sau khi thêm mã chi nhánh vào {{equals}} nhưng quên đưa field đó vào {{hashCode}}, hai object bằng nhau có thể vào bucket khác nhau; truy vấn bằng object mới trả về thiếu dữ liệu dù log nhìn thấy cả hai mã. Cách điều tra là kiểm tra cặp key cụ thể: {{equals}}, hash, bucket dự kiến và số entry; không chỉ nhìn tổng {{size}}. Bản sửa đưa cùng tập field vào cả hai method, hoặc dùng record bất biến, rồi thêm test rằng hai instance bằng nhau có thể tìm cùng entry trong HashMap. Đây là ví dụ tình huống điển hình; ngưỡng hash table không phải chỉ số hiệu năng đo được của hệ thống.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi giải thích HashMap theo luồng put/get. HashMap lấy hashCode, trộn bit cao xuống thấp rồi dùng mask với capacity lũy thừa của hai để chọn bucket. Trong bucket, hash giúp loại ứng viên nhanh nhưng equals mới quyết định hai key có bằng nhau hay không. Vì vậy hợp đồng bắt buộc là key bằng nhau phải có cùng hashCode, và các field dùng làm key nên bất biến. Va chạm thường được lưu thành danh sách; từ Java 8, bucket đủ dài trong bảng đủ lớn có thể thành cây đỏ-đen để giảm chi phí tìm kiếm, còn bảng nhỏ thì ưu tiên resize. Resize tăng capacity gấp đôi và phân bố lại node, nên có một lần O(n), nhưng thao tác thêm vẫn O(1) trung bình amortized. Trong production tôi đặt initial capacity nếu biết kích thước, theo dõi phân bố key và không dùng HashMap cho ghi đồng thời; khi cần tôi chọn ConcurrentHashMap hoặc cache chuyên dụng.”
+
+> Senior tip: Nếu size ổn định mà CPU tăng quanh {{get}}/{{put}}, đo phân bố hash và độ dài bucket trước khi tăng heap. Đừng cố chữa hash kém bằng capacity rất lớn: bảng thưa tiêu tốn bộ nhớ, còn key mutable vẫn có thể làm entry “mất”.
+
+### Liên hệ phỏng vấn
+Hãy tự vẽ đường đi {{put}}: {{hashCode → spread → index → bucket → equals → insert/update → threshold}}. Khi được hỏi tại sao O(1), nói rõ đó là trung bình dưới giả định hash phân tán; khi được hỏi treeify, nêu cả điều kiện bucket dài và capacity tối thiểu, không tuyên bố mọi va chạm đều chắc chắn O(log n).`,
+  exercises: [
+    {
+      title: 'Cài MiniHashMap bằng bucket và danh sách va chạm',
+      prompt: `Hãy hoàn thiện {{MiniHashMap<K,V>}} dùng một mảng bucket và chaining (mỗi bucket là danh sách node). Key và value không được null. Map có capacity ban đầu là lũy thừa của 2, ngưỡng tải 0.75, {{put}} trả value cũ (hoặc null), cập nhật key bằng nhau không làm tăng {{size}}, {{get}} trả null nếu chưa có key, và resize phải giữ nguyên mọi cặp đã lưu. Không cần cài treeify; hãy ghi nhớ đây là phần giản lược để học.`,
+      starter: `class MiniHashMap<K, V> {
+    MiniHashMap(int initialCapacity) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    V put(K key, V value) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    V get(K key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int size() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int capacity() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static final class Key {
+        final String text;
+        final int hash;
+        Key(String text, int hash) { this.text = text; this.hash = hash; }
+        @Override public int hashCode() { return hash; }
+        @Override public boolean equals(Object o) {
+            return o instanceof Key k && hash == k.hash && text.equals(k.text);
+        }
+    }
+    public static void main(String[] args) {
+        check("separate keys in the same bucket", () -> {
+            MiniHashMap<Key, String> m = new MiniHashMap<>(4);
+            m.put(new Key("a", 1), "one");
+            m.put(new Key("b", 1), "two");
+            eq("one", m.get(new Key("a", 1)));
+            eq("two", m.get(new Key("b", 1)));
+            eq(null, m.get(new Key("missing", 1)));
+            eq(2, m.size());
+        });
+        check("equal key replaces value without growing", () -> {
+            MiniHashMap<Key, Integer> m = new MiniHashMap<>(4);
+            eq(null, m.put(new Key("same", 7), 10));
+            eq(Integer.valueOf(10), m.put(new Key("same", 7), 20));
+            eq(Integer.valueOf(20), m.get(new Key("same", 7)));
+            eq(1, m.size());
+        });
+        check("resize retains entries and doubles power-of-two capacity", () -> {
+            MiniHashMap<Integer, String> m = new MiniHashMap<>(4);
+            for (int i = 0; i < 4; i++) m.put(i, "v" + i);
+            eq(8, m.capacity());
+            eq(4, m.size());
+            for (int i = 0; i < 4; i++) eq("v" + i, m.get(i));
+        });
+        check("negative hashes and high-bit hashes remain findable", () -> {
+            MiniHashMap<Key, String> m = new MiniHashMap<>(16);
+            m.put(new Key("negative", -17), "n");
+            m.put(new Key("high", 0x10001), "h");
+            eq("n", m.get(new Key("negative", -17)));
+            eq("h", m.get(new Key("high", 0x10001)));
+        });
+        check("rejects null keys and values", () -> {
+            MiniHashMap<String, String> m = new MiniHashMap<>(2);
+            try { m.put(null, "x"); throw new AssertionError("null key accepted"); }
+            catch (NullPointerException expected) { }
+            try { m.put("x", null); throw new AssertionError("null value accepted"); }
+            catch (NullPointerException expected) { }
+            eq(0, m.size());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class MiniHashMap<K, V> {
+    private static final class Node<K, V> {
+        final int hash;
+        final K key;
+        V value;
+        Node<K, V> next;
+        Node(int hash, K key, V value, Node<K, V> next) {
+            this.hash = hash; this.key = key; this.value = value; this.next = next;
+        }
+    }
+
+    private Node<K, V>[] table;
+    private int size;
+    private int threshold;
+
+    @SuppressWarnings("unchecked")
+    MiniHashMap(int initialCapacity) {
+        if (initialCapacity < 1) throw new IllegalArgumentException("initialCapacity");
+        int capacity = 1;
+        while (capacity < initialCapacity) capacity <<= 1;
+        capacity = Math.max(2, capacity);
+        table = (Node<K, V>[]) new Node[capacity];
+        threshold = Math.max(1, capacity * 3 / 4);
+    }
+
+    private static int spread(Object key) {
+        int h = key.hashCode();
+        return h ^ (h >>> 16);
+    }
+
+    V put(K key, V value) {
+        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(value, "value");
+        int hash = spread(key);
+        int index = (table.length - 1) & hash;
+        for (Node<K, V> n = table[index]; n != null; n = n.next) {
+            if (n.hash == hash && n.key.equals(key)) {
+                V old = n.value;
+                n.value = value;
+                return old;
+            }
+        }
+        if (size + 1 > threshold) {
+            resize();
+            index = (table.length - 1) & hash;
+        }
+        table[index] = new Node<>(hash, key, value, table[index]);
+        size++;
+        return null;
+    }
+
+    V get(K key) {
+        Objects.requireNonNull(key, "key");
+        int hash = spread(key);
+        for (Node<K, V> n = table[(table.length - 1) & hash]; n != null; n = n.next)
+            if (n.hash == hash && n.key.equals(key)) return n.value;
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void resize() {
+        Node<K, V>[] old = table;
+        table = (Node<K, V>[]) new Node[old.length * 2];
+        for (Node<K, V> head : old) {
+            while (head != null) {
+                Node<K, V> next = head.next;
+                int index = head.hash & (table.length - 1);
+                head.next = table[index];
+                table[index] = head;
+                head = next;
+            }
+        }
+        threshold = Math.max(1, table.length * 3 / 4);
+    }
+
+    int size() { return size; }
+    int capacity() { return table.length; }
+}`,
+      hints: [
+        'Mỗi node cần lưu hash đã trộn, key, value và node kế tiếp. Chọn bucket bằng {{(table.length - 1) & hash}} rồi duyệt danh sách.',
+        'Trong bucket, chỉ cập nhật khi cả hash trùng và {{n.key.equals(key)}} đúng; cùng hash chưa đủ. Kiểm tra key/value null trước khi sửa map.',
+        'Resize: cấp phát mảng gấp đôi, chuyển từng node theo hash đã lưu, sau đó cập nhật threshold. Nếu thêm key mới làm {{size + 1 > threshold}}, tính lại index sau resize.'
+      ],
+      explain: `### Cách hiện thực
+{{Node}} giữ bốn thứ: hash đã trộn, key, value và liên kết {{next}}. Mảng {{table}} trỏ tới đầu từng danh sách. {{put}} duyệt bucket trước để tìm key bằng nhau; chỉ khi không có mới kiểm tra ngưỡng và thêm node. Như vậy cập nhật value không làm size tăng, cũng không resize vô ích.
+
+### Resize và các góc cạnh
+Capacity được làm tròn lên lũy thừa của 2 để mask chọn bucket đúng. Sau khi mảng tăng gấp đôi, chỉ số được tính lại từ hash đã lưu, không gọi lại {{hashCode}}. Ví dụ hai key va chạm vẫn được giữ như hai node khác nhau; test kiểm tra cả chúng trước và sau khi resize. Hash âm không phải trường hợp đặc biệt: AND với mask vẫn tạo chỉ số không âm.
+
+### Khác với HashMap của JDK
+Bản học tập chỉ dùng danh sách và không hỗ trợ xóa, null, cây, tối ưu bộ nhớ, xử lý cực đại capacity hay thread safety. {{HashMap}} thật có nhiều nhánh tối ưu và tree bin. Không dùng code bài tập này trong production. Đặc biệt, test null ở đây là hợp đồng do đề chọn; {{HashMap}} chuẩn cho phép một key null và nhiều value null.`,
+    }
+  ],
+  check: [
+    {
+      q: 'Trong bucket có hai key khác nhau nhưng cùng {{hashCode}}. HashMap dùng điều gì để quyết định có phải cùng key không?',
+      options: ['Chỉ so sánh {{hashCode}} vì hash là duy nhất', 'So sánh {{equals}} sau khi xét hash', 'So sánh {{toString}}', 'Luôn ghi đè node cũ'],
+      answer: 1,
+      explain: 'B đúng: hash chọn bucket và giúp lọc ứng viên; {{equals}} quyết định key có bằng nhau không. A sai vì collision là hợp lệ, hash không duy nhất. C sai vì {{toString}} không thuộc hợp đồng map. D sai vì key khác nhau cùng bucket phải cùng tồn tại.',
+    },
+    {
+      q: 'Bảng có capacity 16, load factor 0.75, size đang là 12. Điều gì thường xảy ra khi thêm một key mới?',
+      options: ['Resize lên 32 vì size vượt threshold 12', 'Treeify mọi bucket vì capacity đạt 16', 'Từ chối put vì map đã đầy', 'Không resize cho tới phần tử thứ 17'],
+      answer: 0,
+      explain: 'A đúng: threshold là 16 × 0.75 = 12; thêm phần tử mới làm size thành 13 nên bảng tăng gấp đôi. B sai vì treeify phụ thuộc độ dài một bucket và capacity tối thiểu 64. C sai vì threshold không phải giới hạn cứng. D nhầm capacity với số entry.',
+    },
+    {
+      q: 'Vì sao {{HashMap}} dùng capacity là lũy thừa của 2?',
+      options: ['Để mọi hashCode trở thành duy nhất', 'Để không cần gọi {{equals}}', 'Để chọn bucket bằng mask bit thấp một cách rẻ', 'Để ngăn key null'],
+      answer: 2,
+      explain: 'C đúng: {{(capacity - 1) & hash}} chọn bucket nhanh khi capacity là lũy thừa của 2. A sai vì vẫn có collision. B sai vì hash trùng vẫn cần {{equals}}. D sai vì null key không liên quan tới capacity; HashMap còn hỗ trợ null key.',
+    }
+  ],
+  related: ['collections-001', 'collections-014', 'collections-031'],
+  tags: ['HashMap', 'hash spreading', 'bucket', 'resize', 'treeify']
+},
+{
+  id: 'lesson-collections-009',
+  track: 'collections',
+  order: 9,
+  title: 'LinkedHashMap access-order: LRU cache có giới hạn trọng lượng',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được {{LinkedHashMap}} nối entry theo thứ tự chèn hoặc thứ tự truy cập bên cạnh cấu trúc tra cứu',
+    'Cài cache LRU có giới hạn trọng lượng, cập nhật trọng lượng khi thay key và loại nhiều entry theo thứ tự cũ nhất',
+    'Nhận ra {{get}} trong access-order là thao tác làm đổi thứ tự, và chọn giải pháp production khi cần concurrency hoặc TTL'
+  ],
+  body: `**Tóm tắt:** {{LinkedHashMap}} kết hợp tra cứu theo hash với một danh sách liên kết giữ thứ tự entry. Chọn {{accessOrder=true}} thì thao tác truy cập đưa entry về cuối; entry ở đầu là ít được dùng gần đây nhất, phù hợp để xây cache LRU có giới hạn.
+
+### Thuật ngữ và mô hình
+- **Cache (bộ nhớ đệm):** giữ bản sao dữ liệu hay dùng để giảm việc đọc nguồn chậm hơn, ví dụ lưu hồ sơ khách vừa xem thay vì truy vấn database mỗi lần.
+- **Eviction (loại bỏ):** bỏ entry khi cache chạm giới hạn.
+- **LRU (Least Recently Used):** chính sách bỏ entry lâu nhất chưa được dùng. “Cũ” nói về lần truy cập, không nhất thiết thời điểm tạo.
+- **Weight (trọng lượng):** ước lượng dung lượng của một entry. Nếu mỗi giá trị có kích thước rất khác nhau, giới hạn số entry không giới hạn tốt lượng bộ nhớ.
+
+### Hai cấu trúc cùng hoạt động
+{{HashMap}} giải quyết “key này ở đâu?” bằng hash và bucket. {{LinkedHashMap}} thêm hai liên kết trước/sau cho mỗi entry để duyệt được thứ tự. Constructor {{new LinkedHashMap<>(initialCapacity, loadFactor, true)}} bật access-order; truyền {{false}} (hoặc dùng constructor thường) giữ insertion-order, tức thứ tự thêm vào.
+
+Khi đọc key trong access-order, entry được nối lại về cuối như vừa dùng. Hình dung hàng đợi: đầu là người chờ lâu nhất; cuối là người vừa được phục vụ.
+
+~~~text
+Trước get(A):  đầu [B] -> [C] -> [A] cuối
+Sau get(B):    đầu [C] -> [A] -> [B] cuối
+Thêm D, cần bỏ 1: loại C
+~~~
+
+### Vì sao callback removeEldestEntry chưa đủ cho mọi giới hạn?
+Với giới hạn **số entry**, subclass có thể override {{removeEldestEntry}} và trả về {{size() > maxEntries}}; callback được gọi sau {{put}} để bỏ entry đầu nếu vượt ngưỡng. Đây là cách ngắn cho cache đơn giản.
+
+Với **weight budget**, một lần thêm có thể buộc bỏ nhiều entry. Ví dụ budget 6; cache đang có A=2, B=2, C=2; thêm D=4 làm tổng 10. Cần bỏ B và C (cũ nhất) mới còn A+D=6. {{removeEldestEntry}} chỉ quyết định bỏ entry già nhất sau lần put, nên vòng lặp iterator rõ ràng hơn: trừ trọng lượng entry đầu, {{iterator.remove()}}, lặp tới khi tổng không vượt budget.
+
+### Ví dụ code: cache có trọng lượng
+~~~java
+LinkedHashMap<String, Cell<String>> map =
+        new LinkedHashMap<>(16, 0.75f, true);
+Cell<String> hit = map.get("customer:42"); // hit được chuyển thành mới dùng nhất
+// Sau put, lặp từ entrySet().iterator().next() và bỏ eldest
+// cho tới khi totalWeight <= maxWeight.
+~~~
+
+{{Cell}} ở ví dụ chứa value và trọng lượng do ứng dụng ước tính. Trọng lượng không phải số byte JVM chính xác. Một cache có thể ước lượng theo kích thước payload, số trang, hoặc chi phí lưu trữ; phải thống nhất đơn vị và tránh cộng tràn số. Bài tập dùng số nguyên dương và tổng kiểu {{long}}.
+
+### Trình tự đúng khi put/update
+1. Xác nhận key/value hợp lệ, weight dương và không lớn hơn budget. Kiểm tra trước khi thay entry cũ để đầu vào không hợp lệ không làm hỏng cache.
+2. Nếu key đã có, lấy trọng lượng cũ và trừ khỏi tổng. {{get}} cũng làm key thành mới dùng nhất; sau đó {{put}} value mới để entry vẫn nằm cuối.
+3. Cộng weight mới, rồi duyệt từ entry đầu loại từng entry cho đến khi tổng vừa giới hạn.
+4. Khi evict, cập nhật tổng cùng lúc với xóa entry. Nếu quên bước này, cache nghĩ đã còn trống trong khi thực tế giữ quá nhiều dữ liệu.
+
+### Bẫy: get không còn là đọc thuần
+Với access-order, {{get}} thay đổi liên kết và có thể tăng {{modCount}}. Nếu đang dùng iterator rồi gọi {{get}} trên cùng map, iterator có thể ném {{ConcurrentModificationException}} dù không thêm/xóa key theo cách thông thường. {{containsKey}} kiểm tra có key nhưng không cập nhật recency, nên không thay được {{get}} khi muốn tính đó là sử dụng.
+
+{{LinkedHashMap}} không thread-safe. Cả {{get}} cũng sửa thứ tự, nên nhiều thread chỉ đọc vẫn có thể tranh chấp. Bọc mỗi thao tác map mà bỏ quên biến {{totalWeight}} bên ngoài vẫn không bảo vệ invariant tổng trọng lượng. Cần đồng bộ toàn bộ thao tác compound hoặc chọn cache concurrent đã xử lý eviction, chẳng hạn Caffeine.
+
+### Ví dụ đời thực
+Một API giữ response hồ sơ khách hàng trong cache để giảm truy vấn database. Giới hạn 10.000 key chưa chắc an toàn nếu một số response có ảnh đại diện hoặc lịch sử lớn; cache có thể chiếm heap vượt dự kiến. Nhóm có thể gán weight theo kích thước payload, đặt budget, theo dõi hit rate (tỷ lệ request được cache đáp ứng), eviction và heap. Nếu hit rate thấp, đừng chỉ tăng budget: dữ liệu có thể không có locality (các key cũ không được dùng lại), hoặc LRU thuần không hợp workload. Con số và budget cần đo theo hệ thống thật; đây là cách điều tra, không phải ngưỡng khuyến nghị cố định.
+
+### Trả lời mẫu khi phỏng vấn
+“LinkedHashMap giữ hash table để tra cứu và danh sách liên kết đôi để giữ thứ tự. Với access-order, get và put key đã tồn tại đưa entry về cuối, còn đầu danh sách là entry ít được dùng gần đây nhất. Cache giới hạn số entry có thể dùng removeEldestEntry. Nếu giới hạn theo weight, một lần thêm có thể cần loại nhiều entry, nên tôi cập nhật tổng trọng lượng rồi lặp từ eldest bằng iterator cho đến khi dưới budget. Tôi validate weight trước khi thay entry và cập nhật cả totalWeight khi update hoặc eviction. Điểm dễ bỏ sót là access-order get làm thay đổi cấu trúc, nên LinkedHashMap không thread-safe kể cả luồng chỉ đọc. Với production cần concurrency, TTL, thống kê và tải cache, tôi thường chọn Caffeine; tôi đo hit rate và eviction trước khi thay chính sách.”
+
+> Senior tip: Đặt budget dựa trên heap thực đo và thêm headroom cho GC, không quy đổi weight thành byte chính xác nếu chưa tính overhead của object, key và node.
+
+### Liên hệ phỏng vấn
+Nói rõ khác nhau giữa insertion-order và access-order; mô tả danh sách đầu/c cuối trước và sau {{get}}; giải thích vì sao update không được tính thành hai entry; và chỉ ra rằng LRU không có TTL (hết hạn theo thời gian), đồng thời không tự giải quyết cache stampede (nhiều request cùng tải một key bị thiếu).`,
+  exercises: [
+    {
+      title: 'Cài weighted LRU bằng LinkedHashMap',
+      prompt: `Hoàn thiện {{WeightedLruCache<K,V>}}. Cache có tổng weight tối đa, mỗi value có weight nguyên dương. {{get}} trả value hoặc null và làm entry thành vừa được dùng; {{containsKey}} không đổi thứ tự; {{put}} thay entry cũ đúng weight, rồi bỏ một hay nhiều entry ít được dùng nhất đến khi tổng không vượt budget. Key/value null, weight không dương hoặc weight lớn hơn budget phải ném exception và không làm thay đổi cache.`,
+      starter: `class WeightedLruCache<K, V> {
+    WeightedLruCache(int maxWeight) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    V get(K key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean containsKey(K key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void put(K key, V value, int weight) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int size() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long currentWeight() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("get refreshes recency before weighted eviction", () -> {
+            WeightedLruCache<String, String> c = new WeightedLruCache<>(5);
+            c.put("A", "a", 2); c.put("B", "b", 2);
+            eq("a", c.get("A"));
+            c.put("C", "c", 3);
+            eq(false, c.containsKey("B"));
+            eq("a", c.get("A")); eq("c", c.get("C"));
+            eq(2, c.size()); eq(5L, c.currentWeight());
+        });
+        check("one put may evict multiple eldest entries", () -> {
+            WeightedLruCache<String, Integer> c = new WeightedLruCache<>(6);
+            c.put("A", 1, 2); c.put("B", 2, 2); c.put("C", 3, 2);
+            c.get("A");
+            c.put("D", 4, 4);
+            eq(false, c.containsKey("B")); eq(false, c.containsKey("C"));
+            eq(true, c.containsKey("A")); eq(true, c.containsKey("D"));
+            eq(2, c.size()); eq(6L, c.currentWeight());
+        });
+        check("updating key replaces old weight and value", () -> {
+            WeightedLruCache<String, String> c = new WeightedLruCache<>(5);
+            c.put("A", "old", 2); c.put("B", "b", 2);
+            c.put("A", "new", 3);
+            eq("new", c.get("A")); eq(5L, c.currentWeight()); eq(2, c.size());
+            c.put("C", "c", 2);
+            eq(false, c.containsKey("B"));
+            eq(5L, c.currentWeight());
+        });
+        check("invalid overweight put does not modify existing cache", () -> {
+            WeightedLruCache<String, String> c = new WeightedLruCache<>(4);
+            c.put("A", "a", 2);
+            try { c.put("B", "b", 5); throw new AssertionError("overweight accepted"); }
+            catch (IllegalArgumentException expected) { }
+            eq(true, c.containsKey("A")); eq(false, c.containsKey("B"));
+            eq(1, c.size()); eq(2L, c.currentWeight());
+        });
+        check("containsKey does not refresh recency", () -> {
+            WeightedLruCache<String, Integer> c = new WeightedLruCache<>(3);
+            c.put("A", 1, 1); c.put("B", 2, 1); c.put("C", 3, 1);
+            eq(true, c.containsKey("A"));
+            c.put("D", 4, 1);
+            eq(false, c.containsKey("A"));
+            eq(3L, c.currentWeight());
+        });
+        check("rejects invalid budget, key, value, and weight", () -> {
+            try { new WeightedLruCache<String, String>(0); throw new AssertionError("zero budget accepted"); }
+            catch (IllegalArgumentException expected) { }
+            WeightedLruCache<String, String> c = new WeightedLruCache<>(3);
+            try { c.put("A", "a", 0); throw new AssertionError("zero weight accepted"); }
+            catch (IllegalArgumentException expected) { }
+            try { c.put(null, "a", 1); throw new AssertionError("null key accepted"); }
+            catch (NullPointerException expected) { }
+            try { c.put("A", null, 1); throw new AssertionError("null value accepted"); }
+            catch (NullPointerException expected) { }
+            eq(0, c.size()); eq(0L, c.currentWeight());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `record CacheCell<V>(V value, int weight) {}
+
+class WeightedLruCache<K, V> {
+    private final int maxWeight;
+    private final LinkedHashMap<K, CacheCell<V>> entries =
+            new LinkedHashMap<>(16, 0.75f, true);
+    private long totalWeight;
+
+    WeightedLruCache(int maxWeight) {
+        if (maxWeight <= 0) throw new IllegalArgumentException("maxWeight");
+        this.maxWeight = maxWeight;
+    }
+
+    V get(K key) {
+        CacheCell<V> cell = entries.get(Objects.requireNonNull(key, "key"));
+        return cell == null ? null : cell.value();
+    }
+
+    boolean containsKey(K key) {
+        return entries.containsKey(Objects.requireNonNull(key, "key"));
+    }
+
+    void put(K key, V value, int weight) {
+        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(value, "value");
+        if (weight <= 0 || weight > maxWeight) throw new IllegalArgumentException("weight");
+        CacheCell<V> old = entries.get(key); // existing key becomes most-recently-used
+        if (old != null) totalWeight -= old.weight();
+        entries.put(key, new CacheCell<>(value, weight));
+        totalWeight += weight;
+        evictToBudget();
+    }
+
+    private void evictToBudget() {
+        Iterator<Map.Entry<K, CacheCell<V>>> it = entries.entrySet().iterator();
+        while (totalWeight > maxWeight) {
+            Map.Entry<K, CacheCell<V>> eldest = it.next();
+            totalWeight -= eldest.getValue().weight();
+            it.remove();
+        }
+    }
+
+    int size() { return entries.size(); }
+    long currentWeight() { return totalWeight; }
+}`,
+      hints: [
+        'Dùng {{new LinkedHashMap<>(16, 0.75f, true)}}; boolean cuối bật access-order. Gói value cùng weight trong một record để không bị lệch hai map riêng.',
+        'Trước khi thay key, trừ weight cũ; sau khi thêm value mới, cộng weight mới. Dùng {{long}} cho tổng để phép cộng trung gian không tràn int.',
+        'Duyệt từ {{entrySet().iterator().next()}} tới khi vừa budget; giảm tổng rồi gọi {{iterator.remove()}}. {{containsKey}} không làm mới recency; {{get}} thì có.',
+        'Validate tất cả đầu vào trước khi sửa map. Nếu key đã tồn tại mà weight mới lớn hơn budget, đề yêu cầu ném lỗi và giữ entry cũ nguyên vẹn.'
+      ],
+      explain: `### Cơ chế LRU
+Tham số access-order là {{true}}. Do đó {{get}} đưa entry vừa đọc về cuối danh sách và {{entrySet}} duyệt từ ít dùng gần đây nhất tới vừa dùng. Khi tổng weight vượt budget, iterator xóa eldest từng cái; một lần put có thể phải xóa nhiều entry.
+
+### Cập nhật đúng invariant
+Invariant là {{totalWeight}} luôn bằng tổng weight của mọi entry còn trong map và không âm. Khi thay key, phải trừ weight cũ đúng một lần rồi cộng weight mới. Việc kiểm tra null/weight diễn ra trước mọi thay đổi để lỗi đầu vào không để lại cache nửa cập nhật. Tổng dùng {{long}} để tránh tràn khi weight cộng dồn.
+
+### Lỗi dễ mắc
+- Chỉ xóa một entry: không đủ nếu entry mới nặng hơn phần ngân sách còn lại; dùng vòng lặp.
+- Quên trừ weight cũ khi update: tổng ảo tăng dần dù size không đổi.
+- Gọi {{containsKey}} rồi nghĩ key vừa dùng: phương thức này không đổi thứ tự; chỉ {{get}} là truy cập trong hợp đồng bài.
+- Dùng {{LinkedHashMap}} cho nhiều thread mà không khóa cả map lẫn totalWeight: có thể hỏng thứ tự và invariant.
+
+Cache này không có TTL, tải dữ liệu khi miss, chống cache stampede hay đồng bộ. Trong ứng dụng thực tế, chọn Caffeine nếu cần concurrency, eviction theo weight, expiration và thống kê; định nghĩa weigher theo chi phí hợp lý và theo dõi hit rate.`,
+    }
+  ],
+  check: [
+    {
+      q: 'Với {{new LinkedHashMap<>(16, 0.75f, true)}}, điều gì thường xảy ra sau khi gọi {{get(key)}} thành công?',
+      options: ['Entry bị xóa khỏi map', 'Entry chuyển về cuối thứ tự, thành entry mới được dùng gần đây nhất', 'Capacity tăng gấp đôi', 'Map tự hết hạn entry theo thời gian'],
+      answer: 1,
+      explain: 'B đúng: tham số true bật access-order, get thành công cập nhật vị trí entry. A sai vì đọc không xóa. C sai vì resize phụ thuộc capacity/threshold, không phụ thuộc get. D sai vì LinkedHashMap không có TTL.',
+    },
+    {
+      q: 'Cache có budget 6, đang chứa A=2, B=2, C=2 theo thứ tự cũ tới mới. Sau khi thêm D=4, vì sao cần vòng lặp eviction?',
+      options: ['Vì phải xóa cả A, B, C để còn D', 'Vì một entry có thể khiến tổng vượt budget nhiều hơn trọng lượng của eldest, nên có thể phải xóa B và C', 'Vì LinkedHashMap không hỗ trợ iterator.remove', 'Vì weight chỉ có ý nghĩa khi map không có thứ tự'],
+      answer: 1,
+      explain: 'B đúng: tổng mới là 10; bỏ B được 8 vẫn quá 6, bỏ tiếp C còn A+D=6. A sai vì chỉ cần bỏ tới khi đủ budget. C sai vì Iterator hỗ trợ remove phần tử hiện tại. D sai vì access-order chính là thứ xác định entry cần bỏ trước.',
+    },
+    {
+      q: 'Trong access-order map, {{containsKey(key)}} khác {{get(key)}} thế nào?',
+      options: ['Cả hai luôn đưa key về cuối', '{{containsKey}} kiểm tra tồn tại mà không làm mới recency; {{get}} thành công thì có', '{{get}} xóa key còn {{containsKey}} cập nhật value', 'Không có khác biệt trong LinkedHashMap'],
+      answer: 1,
+      explain: 'B đúng: containsKey không phải thao tác truy cập làm đổi thứ tự; get thành công thay liên kết để entry thành mới nhất. A và D sai vì bỏ qua khác biệt access-order. C sai vì get không xóa hay đổi value.',
+    }
+  ],
+  related: ['collections-005', 'collections-028', 'collections-001'],
+  tags: ['LinkedHashMap', 'LRU', 'cache', 'eviction', 'weight']
+},
 );
