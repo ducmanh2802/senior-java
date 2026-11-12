@@ -2920,4 +2920,770 @@ Khi được hỏi về resilience, nêu rằng retry là con dao hai lưỡi: n
   related: ['microservices-007', 'microservices-008', 'banking-004'],
   tags: ['retry storm', 'exponential backoff', 'jitter', 'circuit breaker', 'resilience']
 },
+{
+  id: 'bug-018',
+  title: 'LLM trả JSON bọc trong code fence làm 3% request chuyển tiền lỗi 500',
+  domain: 'AI / LLM integration',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 30,
+  story: `**Bối cảnh dự án:** payment-service (Spring Boot 3.2, 8 pod) có API {{/internal/parse-transfer}} nhận tin nhắn khách ("chuyển 500k cho tài khoản 123") rồi gọi LLM để trích ra JSON lệnh chuyển tiền gồm {{from}}, {{to}}, {{amount}}, {{currency}}. Lớp {{LlmJsonExtractor}} lấy output của model, parse bằng lớp {{Json}} tối giản (trong dự án thật là Jackson {{ObjectMapper}}), map sang {{TransferCommand}} rồi lưu.
+
+**Sự cố:** Trong 7 ngày, 3,1% request (khoảng 1.240/40.000) trả HTTP 500. Log cho thấy model nhiều khi không trả JSON sạch: có lần bọc trong code fence json (dấu ba nháy bao quanh đoạn code), có lần thêm câu dẫn "Đây là kết quả" hoặc câu chốt "nếu cần đổi thì gửi lại y", có lần thiếu {{currency}} hoặc trả {{amount}} dạng chuỗi. Code hiện tại chỉ cắt từ dấu mở ngoặc nhọn đầu tiên tới dấu đóng cuối cùng rồi parse, nên gặp phần văn xuôi giải thích (prose) có dấu ngoặc nhọn là vỡ; thiếu field thì map ra null; sai kiểu thì ném ClassCastException; không hề thử lại.
+
+**Nhiệm vụ của bạn:** Sửa {{LlmJsonExtractor.extract}}: tách JSON an toàn (bỏ qua prose và code fence, xử lý dấu ngoặc lồng nhau), validate schema (đủ field, đúng kiểu, {{amount}} > 0, {{currency}} hợp lệ), retry có giới hạn tối đa 3 lần kèm thông báo lỗi cụ thể cho model; hết lượt thì ném {{ExtractionFailedException}}, không bao giờ trả command rỗng.`,
+  artifacts: [
+    { name: 'extractor.log', lang: 'text', content: `2026-11-08 09:12:03.114 ERROR [http-nio-8080-exec-4] ParseTransferController : 500 reqId=8f2a
+JsonException: có ký tự rác sau JSON tại vị trí 74
+    at com.bank.parse.Json.parseObject(Json.java:41)
+    at com.bank.parse.LlmJsonExtractor.extract(LlmJsonExtractor.java:31)
+2026-11-08 09:12:03.402 ERROR [http-nio-8080-exec-9] ParseTransferController : 500 reqId=8f2b
+java.lang.ClassCastException: class java.lang.String cannot be cast to class java.lang.Number
+    at com.bank.parse.LlmJsonExtractor.extract(LlmJsonExtractor.java:33)
+2026-11-08 09:12:04.887 WARN  [http-nio-8080-exec-12] LlmJsonExtractor : field currency = null (model trả thiếu field)` },
+    { name: 'model-outputs.txt', lang: 'text', content: `[req 8f2a] Đây là kết quả: {"from":"A","to":"B","amount":500000,"currency":"VND"} Nếu cần đổi thì gửi lại {y}.
+[req 8f2b] {"from":"A","to":"B","amount":"nhiều","currency":"VND"}
+[req 8f2c] model bọc JSON trong code fence json (có dòng fence và JSON bên trong)
+[req 8f2d] {"from":"A","to":"B","amount":500000}` },
+  ],
+  starter: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+class JsonException extends RuntimeException {
+    JsonException(String m) { super(m); }
+}
+
+class ValidationException extends RuntimeException {
+    ValidationException(String m) { super(m); }
+}
+
+class ExtractionFailedException extends RuntimeException {
+    ExtractionFailedException(String m) { super(m); }
+}
+
+class TransferCommand {
+    final String fromAccount, toAccount, currency, note;
+    final long amount;
+    TransferCommand(String from, String to, long amount, String currency, String note) {
+        this.fromAccount = from; this.toAccount = to; this.amount = amount; this.currency = currency; this.note = note;
+    }
+    public String toString() {
+        return "TransferCommand{from=" + fromAccount + ", to=" + toAccount + ", amount=" + amount + ", currency=" + currency + "}";
+    }
+}
+
+class FakeLlm {   // mô phỏng model: trả lần lượt các reply trong kịch bản, hết thì lặp lại reply cuối
+    private final List<String> replies;
+    int calls;
+    FakeLlm(String... replies) { this.replies = Arrays.asList(replies); }
+    String complete(String prompt) {
+        int k = Math.min(calls, replies.size() - 1);
+        calls++;
+        return replies.get(k);
+    }
+}
+
+class Json {   // parser JSON tối giản thay cho Jackson, đủ cho object phẳng
+    private final String s; private int i;
+    private Json(String s) { this.s = s; }
+
+    static Map<String, Object> parseObject(String text) {
+        Json p = new Json(text);
+        Map<String, Object> m = p.readObject();
+        p.ws();
+        if (p.i != p.s.length()) throw new JsonException("có ký tự rác sau JSON tại vị trí " + p.i);
+        return m;
+    }
+
+    private Map<String, Object> readObject() {
+        ws(); expect('{');
+        Map<String, Object> m = new LinkedHashMap<>();
+        ws();
+        if (peek() == '}') { i++; return m; }
+        while (true) {
+            ws();
+            if (peek() != '"') throw new JsonException("thiếu tên field trong dấu nháy tại " + i);
+            String key = readString();
+            ws(); expect(':');
+            Object v = readValue();
+            m.put(key, v);
+            ws();
+            char c = peek();
+            if (c == ',') { i++; continue; }
+            if (c == '}') { i++; return m; }
+            throw new JsonException("kỳ vọng , hoặc } tại " + i);
+        }
+    }
+
+    private Object readValue() {
+        ws();
+        char c = peek();
+        if (c == '"') return readString();
+        if (c == 't') { lit("true"); return Boolean.TRUE; }
+        if (c == 'f') { lit("false"); return Boolean.FALSE; }
+        if (c == 'n') { lit("null"); return null; }
+        int start = i;
+        if (c == '-' || c == '+') i++;
+        while (i < s.length() && isDigit(s.charAt(i))) i++;
+        boolean decimal = false;
+        if (i < s.length() && s.charAt(i) == '.') { decimal = true; i++; while (i < s.length() && isDigit(s.charAt(i))) i++; }
+        if (i < s.length() && (s.charAt(i) == 'e' || s.charAt(i) == 'E')) {
+            decimal = true; i++;
+            if (i < s.length() && (s.charAt(i) == '+' || s.charAt(i) == '-')) i++;
+            while (i < s.length() && isDigit(s.charAt(i))) i++;
+        }
+        if (i == start) throw new JsonException("giá trị không hợp lệ tại " + start);
+        String num = s.substring(start, i);
+        if (decimal) return Double.valueOf(num);
+        try { return Long.valueOf(num); } catch (NumberFormatException e) { return new java.math.BigDecimal(num); }
+    }
+
+    private String readString() {
+        expect('"');
+        StringBuilder b = new StringBuilder();
+        while (true) {
+            if (i >= s.length()) throw new JsonException("chuỗi chưa đóng");
+            char c = s.charAt(i++);
+            if (c == '"') return b.toString();
+            if (c == (char) 92) {   // ký tự backslash
+                if (i >= s.length()) throw new JsonException("escape chưa hoàn chỉnh");
+                char e = s.charAt(i++);
+                if (e == 'n') b.append((char) 10);
+                else if (e == 't') b.append((char) 9);
+                else if (e == 'r') b.append((char) 13);
+                else if (e == 'b') b.append((char) 8);
+                else if (e == 'f') b.append((char) 12);
+                else if (e == 'u') {
+                    if (i + 4 > s.length()) throw new JsonException("unicode escape thiếu");
+                    b.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
+                    i += 4;
+                } else b.append(e);
+            } else if (c < (char) 32) {
+                throw new JsonException("ký tự điều khiển trong chuỗi");
+            } else {
+                b.append(c);
+            }
+        }
+    }
+
+    private void lit(String w) { if (!s.startsWith(w, i)) throw new JsonException("kỳ vọng " + w + " tại " + i); i += w.length(); }
+    private void expect(char c) { ws(); if (peek() != c) throw new JsonException("kỳ vọng " + c + " tại " + i); i++; }
+    private char peek() { return i < s.length() ? s.charAt(i) : (char) 0; }
+    private void ws() { while (i < s.length() && Character.isWhitespace(s.charAt(i))) i++; }
+    private static boolean isDigit(char c) { return c >= '0' && c <= '9'; }
+}
+
+// ===== Code cần sửa =====
+class LlmJsonExtractor {
+    private final FakeLlm model;
+    LlmJsonExtractor(FakeLlm model) { this.model = model; }
+
+    TransferCommand extract(String instruction) {
+        String raw = model.complete(instruction);
+        int a = raw.indexOf('{');                 // cắt từ dấu { đầu tiên...
+        int b = raw.lastIndexOf('}');             // ...tới dấu } cuối cùng
+        if (a < 0 || b < a) throw new JsonException("không tìm thấy JSON");
+        String json = raw.substring(a, b + 1);
+        Map<String, Object> m = Json.parseObject(json);
+        String from = (String) m.get("from");
+        String to = (String) m.get("to");
+        long amount = ((Number) m.get("amount")).longValue();   // sai kiểu -> ClassCastException
+        String currency = (String) m.get("currency");
+        String note = (String) m.get("note");
+        return new TransferCommand(from, to, amount, currency, note);   // thiếu field -> null, không validate
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    static String json(String from, String to, long amount, String currency) {
+        char d = (char) 34;
+        return "{" + d + "from" + d + ":" + d + from + d + ","
+             + d + "to" + d + ":" + d + to + d + ","
+             + d + "amount" + d + ":" + amount + ","
+             + d + "currency" + d + ":" + d + currency + d + "}";
+    }
+
+    static String jsonNoCurrency(String from, String to, long amount) {
+        char d = (char) 34;
+        return "{" + d + "from" + d + ":" + d + from + d + ","
+             + d + "to" + d + ":" + d + to + d + ","
+             + d + "amount" + d + ":" + amount + "}";
+    }
+
+    static String jsonAmountString(String from, String to, String amount, String currency) {
+        char d = (char) 34;
+        return "{" + d + "from" + d + ":" + d + from + d + ","
+             + d + "to" + d + ":" + d + to + d + ","
+             + d + "amount" + d + ":" + d + amount + d + ","
+             + d + "currency" + d + ":" + d + currency + d + "}";
+    }
+
+    static String jsonTrailingComma(String from, String to, long amount, String currency) {
+        char d = (char) 34;
+        return "{" + d + "from" + d + ":" + d + from + d + ","
+             + d + "to" + d + ":" + d + to + d + ","
+             + d + "amount" + d + ":" + amount + ","
+             + d + "currency" + d + ":" + d + currency + d + ",}";
+    }
+
+    static void expectOk(String name, LlmJsonExtractor ex, String from, String to, long amount, String currency) {
+        try {
+            TransferCommand c = ex.extract("Trích xuất lệnh chuyển tiền từ tin nhắn của khách.");
+            boolean ok = c != null && from.equals(c.fromAccount) && to.equals(c.toAccount)
+                && c.amount == amount && currency.equals(c.currency);
+            check(name, ok, "kỳ vọng from=" + from + " to=" + to + " amount=" + amount + " currency=" + currency + ", thực tế " + c);
+        } catch (Throwable t) {
+            check(name, false, "ném " + t.getClass().getSimpleName() + ": " + t.getMessage());
+        }
+    }
+
+    public static void main(String[] args) {
+        // 1. JSON bình thường
+        LlmJsonExtractor e1 = new LlmJsonExtractor(new FakeLlm(json("A", "B", 500000, "VND")));
+        expectOk("json_thuong", e1, "A", "B", 500000, "VND");
+
+        // 2. Có prose trước và sau, prose lại chứa dấu ngoặc nhọn
+        String prose = "Kết quả theo mẫu {from,to,amount}: " + json("A", "B", 500000, "VND") + " Nếu sai, gửi lại {y}.";
+        LlmJsonExtractor e2 = new LlmJsonExtractor(new FakeLlm(prose));
+        expectOk("co_chu_truoc_va_sau", e2, "A", "B", 500000, "VND");
+
+        // 3. JSON bọc trong code fence
+        String fence = String.valueOf((char) 96);
+        String fenced = fence + "json" + System.lineSeparator() + json("A", "B", 250000, "VND") + System.lineSeparator() + fence;
+        LlmJsonExtractor e3 = new LlmJsonExtractor(new FakeLlm(fenced));
+        expectOk("json_trong_code_fence", e3, "A", "B", 250000, "VND");
+
+        // 4. Thiếu field: phải retry rồi mới lấy được command đúng
+        FakeLlm m4 = new FakeLlm(jsonNoCurrency("A", "B", 500000), json("A", "B", 500000, "VND"));
+        LlmJsonExtractor e4 = new LlmJsonExtractor(m4);
+        expectOk("thieu_field_roi_retry", e4, "A", "B", 500000, "VND");
+        check("retry_khi_thieu_field", m4.calls == 2, "phải gọi model 2 lần (lần đầu thiếu currency), thực tế " + m4.calls);
+
+        // 5. Sai kiểu amount: phải retry rồi mới lấy được command đúng
+        FakeLlm m5 = new FakeLlm(jsonAmountString("A", "B", "nhiều", "VND"), json("A", "B", 500000, "VND"));
+        LlmJsonExtractor e5 = new LlmJsonExtractor(m5);
+        expectOk("sai_kieu_amount_roi_retry", e5, "A", "B", 500000, "VND");
+        check("retry_khi_sai_kieu", m5.calls == 2, "phải gọi model 2 lần (lần đầu amount là chuỗi), thực tế " + m5.calls);
+
+        // 6. Dấu phẩy thừa trước dấu đóng ngoặc
+        LlmJsonExtractor e6 = new LlmJsonExtractor(new FakeLlm(jsonTrailingComma("A", "B", 500000, "VND")));
+        expectOk("dau_phay_thua_truoc_ngoac", e6, "A", "B", 500000, "VND");
+
+        // 7. Không có JSON: phải báo ExtractionFailedException sau tối đa 3 lần, không ném lỗi lạ
+        FakeLlm m7 = new FakeLlm("Xin lỗi, tôi không hiểu yêu cầu.");
+        LlmJsonExtractor e7 = new LlmJsonExtractor(m7);
+        String err7 = null;
+        try { e7.extract("Trích xuất lệnh chuyển tiền."); } catch (Throwable t) { err7 = t.getClass().getSimpleName(); }
+        check("khong_co_json_bao_loi_co_gioi_han", "ExtractionFailedException".equals(err7) && m7.calls == 3,
+            "phải ném ExtractionFailedException sau đúng 3 lần gọi, thực tế err=" + err7 + " calls=" + m7.calls);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+class JsonException extends RuntimeException {
+    JsonException(String m) { super(m); }
+}
+
+class ValidationException extends RuntimeException {
+    ValidationException(String m) { super(m); }
+}
+
+class ExtractionFailedException extends RuntimeException {
+    ExtractionFailedException(String m) { super(m); }
+}
+
+class TransferCommand {
+    final String fromAccount, toAccount, currency, note;
+    final long amount;
+    TransferCommand(String from, String to, long amount, String currency, String note) {
+        this.fromAccount = from; this.toAccount = to; this.amount = amount; this.currency = currency; this.note = note;
+    }
+    public String toString() {
+        return "TransferCommand{from=" + fromAccount + ", to=" + toAccount + ", amount=" + amount + ", currency=" + currency + "}";
+    }
+}
+
+class FakeLlm {
+    private final List<String> replies;
+    int calls;
+    FakeLlm(String... replies) { this.replies = Arrays.asList(replies); }
+    String complete(String prompt) {
+        int k = Math.min(calls, replies.size() - 1);
+        calls++;
+        return replies.get(k);
+    }
+}
+
+class Json {
+    private final String s; private int i;
+    private Json(String s) { this.s = s; }
+
+    static Map<String, Object> parseObject(String text) {
+        Json p = new Json(text);
+        Map<String, Object> m = p.readObject();
+        p.ws();
+        if (p.i != p.s.length()) throw new JsonException("có ký tự rác sau JSON tại vị trí " + p.i);
+        return m;
+    }
+
+    private Map<String, Object> readObject() {
+        ws(); expect('{');
+        Map<String, Object> m = new LinkedHashMap<>();
+        ws();
+        if (peek() == '}') { i++; return m; }
+        while (true) {
+            ws();
+            if (peek() != '"') throw new JsonException("thiếu tên field trong dấu nháy tại " + i);
+            String key = readString();
+            ws(); expect(':');
+            Object v = readValue();
+            m.put(key, v);
+            ws();
+            char c = peek();
+            if (c == ',') { i++; continue; }
+            if (c == '}') { i++; return m; }
+            throw new JsonException("kỳ vọng , hoặc } tại " + i);
+        }
+    }
+
+    private Object readValue() {
+        ws();
+        char c = peek();
+        if (c == '"') return readString();
+        if (c == 't') { lit("true"); return Boolean.TRUE; }
+        if (c == 'f') { lit("false"); return Boolean.FALSE; }
+        if (c == 'n') { lit("null"); return null; }
+        int start = i;
+        if (c == '-' || c == '+') i++;
+        while (i < s.length() && isDigit(s.charAt(i))) i++;
+        boolean decimal = false;
+        if (i < s.length() && s.charAt(i) == '.') { decimal = true; i++; while (i < s.length() && isDigit(s.charAt(i))) i++; }
+        if (i < s.length() && (s.charAt(i) == 'e' || s.charAt(i) == 'E')) {
+            decimal = true; i++;
+            if (i < s.length() && (s.charAt(i) == '+' || s.charAt(i) == '-')) i++;
+            while (i < s.length() && isDigit(s.charAt(i))) i++;
+        }
+        if (i == start) throw new JsonException("giá trị không hợp lệ tại " + start);
+        String num = s.substring(start, i);
+        if (decimal) return Double.valueOf(num);
+        try { return Long.valueOf(num); } catch (NumberFormatException e) { return new java.math.BigDecimal(num); }
+    }
+
+    private String readString() {
+        expect('"');
+        StringBuilder b = new StringBuilder();
+        while (true) {
+            if (i >= s.length()) throw new JsonException("chuỗi chưa đóng");
+            char c = s.charAt(i++);
+            if (c == '"') return b.toString();
+            if (c == (char) 92) {
+                if (i >= s.length()) throw new JsonException("escape chưa hoàn chỉnh");
+                char e = s.charAt(i++);
+                if (e == 'n') b.append((char) 10);
+                else if (e == 't') b.append((char) 9);
+                else if (e == 'r') b.append((char) 13);
+                else if (e == 'b') b.append((char) 8);
+                else if (e == 'f') b.append((char) 12);
+                else if (e == 'u') {
+                    if (i + 4 > s.length()) throw new JsonException("unicode escape thiếu");
+                    b.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
+                    i += 4;
+                } else b.append(e);
+            } else if (c < (char) 32) {
+                throw new JsonException("ký tự điều khiển trong chuỗi");
+            } else {
+                b.append(c);
+            }
+        }
+    }
+
+    private void lit(String w) { if (!s.startsWith(w, i)) throw new JsonException("kỳ vọng " + w + " tại " + i); i += w.length(); }
+    private void expect(char c) { ws(); if (peek() != c) throw new JsonException("kỳ vọng " + c + " tại " + i); i++; }
+    private char peek() { return i < s.length() ? s.charAt(i) : (char) 0; }
+    private void ws() { while (i < s.length() && Character.isWhitespace(s.charAt(i))) i++; }
+    private static boolean isDigit(char c) { return c >= '0' && c <= '9'; }
+}
+
+// ===== Code cần sửa =====
+class LlmJsonExtractor {
+    static final int MAX_ATTEMPTS = 3;
+    static final Set<String> CURRENCIES = Set.of("VND", "USD", "EUR");
+    private final FakeLlm model;
+    LlmJsonExtractor(FakeLlm model) { this.model = model; }
+
+    TransferCommand extract(String instruction) {
+        String feedback = "";
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            // Lần đầu gửi yêu cầu gốc; các lần sau gửi kèm lý do lỗi cụ thể để model sửa
+            String prompt = attempt == 1 ? instruction
+                : instruction + " Lần trước bạn trả về không hợp lệ (" + feedback + "). Chỉ trả về JSON, không thêm chữ.";
+            String raw = model.complete(prompt);
+            try {
+                Map<String, Object> m = findJsonObject(raw);   // tách JSON an toàn
+                TransferCommand cmd = toCommand(m);              // validate kiểu
+                validate(cmd, m);                                // validate schema/nghiệp vụ
+                return cmd;
+            } catch (JsonException | ValidationException e) {
+                feedback = e.getMessage();   // ngược lại: thử lại với thông báo lỗi
+            }
+        }
+        throw new ExtractionFailedException("model không trả JSON hợp lệ sau " + MAX_ATTEMPTS + " lần: " + feedback);
+    }
+
+    // Duyệt từng dấu { trong output; với mỗi vị trí, lấy object cân bằng rồi thử parse.
+    // Nhờ vậy bỏ qua được prose/code fence có dấu ngoặc nhọn, và JSON lồng nhau.
+    static Map<String, Object> findJsonObject(String raw) {
+        JsonException last = null;
+        for (int start = 0; start < raw.length(); start++) {
+            if (raw.charAt(start) != '{') continue;
+            String candidate = balanced(raw, start);
+            if (candidate == null) continue;
+            try { return Json.parseObject(stripTrailingCommas(candidate)); }
+            catch (JsonException e) { last = e; }
+        }
+        throw new JsonException("không tìm thấy JSON object hợp lệ" + (last != null ? " (" + last.getMessage() + ")" : ""));
+    }
+
+    // Cắt object cân bằng tại start: đếm độ sâu ngoặc, có trạng thái trong/ngoài string và escape
+    static String balanced(String raw, int start) {
+        int depth = 0; boolean inStr = false, esc = false;
+        for (int k = start; k < raw.length(); k++) {
+            char c = raw.charAt(k);
+            if (inStr) {
+                if (esc) esc = false;
+                else if (c == (char) 92) esc = true;
+                else if (c == '"') inStr = false;
+                continue;
+            }
+            if (c == '"') inStr = true;
+            else if (c == '{') depth++;
+            else if (c == '}') { depth--; if (depth == 0) return raw.substring(start, k + 1); }
+        }
+        return null;
+    }
+
+    // Bỏ dấu phẩy thừa ngay trước } (model hay thêm)
+    static String stripTrailingCommas(String json) {
+        StringBuilder b = new StringBuilder(json.length());
+        boolean inStr = false, esc = false;
+        for (int k = 0; k < json.length(); k++) {
+            char c = json.charAt(k);
+            if (inStr) {
+                b.append(c);
+                if (esc) esc = false;
+                else if (c == (char) 92) esc = true;
+                else if (c == '"') inStr = false;
+                continue;
+            }
+            if (c == '"') { inStr = true; b.append(c); continue; }
+            if (c == ',') {
+                int j = k + 1;
+                while (j < json.length() && Character.isWhitespace(json.charAt(j))) j++;
+                if (j < json.length() && json.charAt(j) == '}') continue;
+            }
+            b.append(c);
+        }
+        return b.toString();
+    }
+
+    static TransferCommand toCommand(Map<String, Object> m) {
+        Object amountObj = m.get("amount");
+        if (!(amountObj instanceof Number)) {
+            throw new ValidationException("amount phải là số, nhận " + (amountObj == null ? "null" : amountObj.getClass().getSimpleName()));
+        }
+        return new TransferCommand(str(m, "from"), str(m, "to"), ((Number) amountObj).longValue(), str(m, "currency"), str(m, "note"));
+    }
+
+    static String str(Map<String, Object> m, String k) {
+        Object v = m.get(k);
+        return v == null ? null : String.valueOf(v);
+    }
+
+    static void validate(TransferCommand c, Map<String, Object> m) {
+        if (c.fromAccount == null || c.fromAccount.isEmpty()) throw new ValidationException("thiếu from");
+        if (c.toAccount == null || c.toAccount.isEmpty()) throw new ValidationException("thiếu to");
+        if (!m.containsKey("amount")) throw new ValidationException("thiếu amount");
+        if (c.amount <= 0) throw new ValidationException("amount phải > 0, nhận " + c.amount);
+        if (c.currency == null || !CURRENCIES.contains(c.currency.toUpperCase())) throw new ValidationException("currency không hỗ trợ: " + c.currency);
+    }
+}`,
+  hints: [
+    'Đọc log: có request 500 vì JsonException "có ký tự rác sau JSON", có request 500 vì ClassCastException String sang Number, và có request chỉ log "field currency = null". Ba kiểu lỗi này đến từ ba chỗ khác nhau trong cùng một hàm extract.',
+    'Hàm extract đang cắt JSON bằng indexOf dấu mở ngoặc và lastIndexOf dấu đóng ngoặc. Nếu model thêm prose có dấu ngoặc nhọn sau JSON, lastIndexOf sẽ lấy dấu đóng của prose, không phải của JSON. Còn thiếu field và sai kiểu là do không validate gì cả.',
+    'Cần: (1) quét chuỗi có trạng thái trong/ngoài string, đếm độ sâu ngoặc để lấy đúng object cân bằng; (2) thử lần lượt từng dấu mở ngoặc cho tới khi parse được; (3) parse rồi kiểm tra đủ field, đúng kiểu, amount > 0, currency hợp lệ; (4) lỗi thì gửi lại prompt kèm lý do, tối đa 3 lần, hết thì ném ExtractionFailedException.',
+  ],
+  rootCause: `**Tách JSON bằng vị trí dấu ngoặc, không hiểu cấu trúc chuỗi.** Hàm {{extract}} lấy chuỗi con từ dấu mở ngoặc nhọn đầu tiên ({{indexOf}}) tới dấu đóng ngoặc nhọn cuối cùng ({{lastIndexOf}}). Cách này đúng khi output chỉ có đúng một object JSON và không có chữ nào khác. Nhưng LLM sinh văn xuôi: nó hay thêm câu dẫn ("Đây là kết quả"), bọc code fence, hoặc thêm câu chốt có dấu ngoặc nhọn. Khi đó {{lastIndexOf}} trỏ vào dấu đóng của **prose**, không phải của JSON, và chuỗi con không còn là JSON hợp lệ — {{Json.parseObject}} ném {{JsonException}} (log req 8f2a: "có ký tự rác sau JSON tại vị trí 74").
+
+**Không validate nên lỗi im lặng hoặc nổ muộn.** Map được object rồi, code ép kiểu ngay: {{((Number) m.get("amount")).longValue()}}. Khi model trả amount dạng chuỗi "nhiều", JVM ném {{ClassCastException}} (log req 8f2b). Khi model thiếu {{currency}}, {{m.get("currency")}} trả null và command được tạo với currency = null — không ai kiểm tra, nên downstream có thể xử lý sai (log req 8f2d). Thiếu bước kiểm tra "đủ field, đúng kiểu, amount > 0, currency hợp lệ" là lý do 3,1% request chết.
+
+**Không có vòng retry.** Model sinh xác suất: cùng một prompt, lần này đúng lần sau sai. Một lần gọi duy nhất, hỏng là 500, trong khi chỉ cần gửi lại kèm lý do lỗi là phần lớn lần sau đúng.`,
+  fix: `### Cách sửa trong bài
+1. **Tách JSON an toàn.** Quét từng ký tự, giữ trạng thái "đang trong string" và "ký tự trước là escape", đếm độ sâu ngoặc. Với mỗi dấu mở ngoặc nhọn trong output, lấy object cân bằng tại đó rồi thử parse; vị trí nào parse được thì dùng. Nhờ vậy prose/code fence có dấu ngoặc nhọn không làm hỏng, và JSON lồng nhau vẫn đúng.
+2. **Chuẩn hoá nhẹ.** Bỏ dấu phẩy thừa ngay trước dấu đóng ngoặc nhọn (model hay thêm), rồi mới parse.
+3. **Validate schema.** {{from}}/{{to}} không rỗng; {{amount}} là số và > 0; {{currency}} nằm trong tập cho phép. Sai thì ném {{ValidationException}} kèm lý do cụ thể.
+4. **Retry có giới hạn.** Tối đa 3 lần. Lần sau gửi lại prompt kèm lý do lỗi để model tự sửa. Hết lượt thì ném {{ExtractionFailedException}}, không trả command rỗng.
+
+~~~java
+for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    String raw = model.complete(attempt == 1 ? instruction : instruction + " Lỗi: " + feedback);
+    try {
+        Map<String, Object> m = findJsonObject(raw);   // quét object cân bằng
+        TransferCommand cmd = toCommand(m);            // đúng kiểu
+        validate(cmd, m);                              // đủ field, amount > 0, currency hợp lệ
+        return cmd;
+    } catch (JsonException | ValidationException e) {
+        feedback = e.getMessage();                     // gửi lại lý do cho model
+    }
+}
+throw new ExtractionFailedException("không parse được sau " + MAX_ATTEMPTS + " lần");
+~~~
+
+### Trên production thật
+- **Ưu tiên cơ chế ép schema của nhà cung cấp** thay vì tự parse: structured output (chế độ bắt model trả JSON theo một schema cho trước) của OpenAI, tool use với input_schema của Anthropic, hoặc Spring AI {{BeanOutputConverter}} / LangChain4j AiServices. Khi model bị ràng buộc trả JSON theo schema, tỉ lệ lỗi parse giảm mạnh.
+- **Vẫn validate lại phía mình.** Không tin 100% vào structured output: dùng Jackson {{ObjectMapper}} cấu hình nghiêm ngặt + Bean Validation (bộ kiểm tra bằng annotation như {{@NotBlank}}, {{@Positive}}, {{@Pattern}}) cho currency. Coi output của model là **input không tin cậy**.
+- **Retry có kiểm soát:** chỉ retry lỗi parse/schema, không retry lỗi 400 của API; backoff (chờ lâu dần giữa các lần thử) nhẹ; trần 2–3 lần; ghi metric {{llm_parse_error_total}} và {{llm_retry_total}}.
+- **Observability (khả năng quan sát hệ thống):** log raw output (đã che PII — thông tin cá nhân), model, prompt version, số token, lý do lỗi parse. Khi tỉ lệ lỗi tăng, so sánh theo model/version prompt để biết có phải do đổi model không.
+- **Idempotency key (khoá chống lặp):** nếu parse thành công nhưng downstream timeout, dùng idempotency key để không tạo hai lệnh chuyển tiền.
+
+### Liên hệ phỏng vấn
+Nói theo 4 lớp: tách JSON an toàn (không tin indexOf/lastIndexOf), validate schema + kiểu, retry có giới hạn kèm lý do, hết lượt thì fail rõ ràng. Nhấn mạnh: output của LLM là **untrusted input**, và nên dùng structured output/tool calling của nhà cung cấp thay vì tự viết parser.
+
+> Senior tip: đừng viết parser JSON "tự chế" cho production. Dùng structured output của nhà cung cấp + Jackson, coi mọi output là input bẩn, và đo tỉ lệ {{llm_parse_error_total}} theo model/version prompt. Trong sự cố này, chỉ cần thêm validate + retry 3 lần là 3,1% lỗi 500 giảm còn dưới 0,2%.`,
+  related: ['ai-016', 'ai-056'],
+  tags: ['LLM', 'JSON', 'structured output', 'validation', 'retry', 'Spring AI']
+},
+{
+  id: 'bug-019',
+  title: 'Hội thoại dài làm system prompt bị cắt, agent bỏ qua luật an toàn',
+  domain: 'AI / LLM agent',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** chatbot-support (Spring Boot 3.2, LangChain4j) trả lời khách về sản phẩm ngân hàng. Mỗi lượt, service nạp lại toàn bộ lịch sử hội thoại rồi ghép với system prompt (lời dặn nền tảng mà model luôn đọc trước mọi tin nhắn, ở đây chứa luật an toàn: không cung cấp số dư, số thẻ, mã OTP; chỉ trả lời trong phạm vi ngân hàng) và gửi cho model. Cửa sổ ngữ cảnh (context window — giới hạn token mỗi lần gọi) của model là 8.000 token (token là đơn vị đếm chữ của model, xấp xỉ 4 ký tự tiếng Anh); nền tảng tự cắt bớt từ phía **cũ nhất** khi vượt hạn mức.
+
+**Sự cố:** Tuần qua, 2,3% phiên dài (khoảng 460/20.000) bị agent trả lời sai phạm vi: có phiên khách dán cả hợp đồng 40 trang vào chat, sau đó agent bắt đầu tư vấn đầu tư chứng khoán và đọc lại số thẻ trong lịch sử. Log cho thấy nhiều request bị nền tảng cắt context ({{context_length_exceeded}}), và trong các request đó system prompt — vốn nằm ở đầu — bị cắt mất. Vì luật an toàn nằm trong system prompt, mất nó đồng nghĩa agent không còn rào chắn.
+
+**Nhiệm vụ của bạn:** Sửa {{ChatContext.buildMessages}}: đếm token (ước lượng ~4 ký tự/token), luôn giữ system prompt trong ngân sách, cắt phần **cũ nhất** của lịch sử trước, nếu tin nhắn mới nhất quá lớn thì cắt bớt nội dung cho vừa, và nếu system prompt tự nó đã vượt hạn mức thì ném {{ContextTooLongException}} thay vì âm thầm bỏ luật.`,
+  artifacts: [
+    { name: 'chatbot.log', lang: 'text', content: `2026-11-10 20:14:02.117 INFO  ChatController : turn=41 sessionId=cs-77213 historyMessages=82 promptTokens=8420
+2026-11-10 20:14:02.402 WARN  ContextClient : context_length_exceeded limit=8000 sent=8420 -> platform truncated 5 oldest messages
+2026-11-10 20:14:03.010 WARN  ChatController : model answer contains "số tài khoản 123456789" (client asked about balance)
+2026-11-10 20:31:55.884 WARN  ContextClient : context_length_exceeded limit=8000 sent=9130 -> platform truncated 9 oldest messages
+2026-11-10 20:32:00.221 WARN  SafetyGuard : system prompt missing from request; safety rules not applied` },
+    { name: 'context-stats.txt', lang: 'text', content: `session cs-77213 turn 41: systemPromptTokens=118 historyTokens=8302 total=8420 limit=8000
+  -> platform keeps last 6 messages, drops system + 75 oldest
+  -> safety rules lost, model answers out of scope
+session cs-77190 turn 12: systemPromptTokens=118 historyTokens=2100 total=2218 limit=8000 (ok)` },
+  ],
+  starter: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+class Message {
+    final String role;      // "system" | "user" | "assistant"
+    final String content;
+    Message(String role, String content) { this.role = role; this.content = content; }
+}
+
+class TokenCounter {
+    static final int OVERHEAD = 4;   // token cho role + format của mỗi message
+    static int count(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        return Math.max(1, (int) Math.ceil(text.length() / 4.0));
+    }
+    static int count(Message m) { return count(m.content) + OVERHEAD; }
+}
+
+class ContextTooLongException extends RuntimeException {
+    ContextTooLongException(String m) { super(m); }
+}
+
+// ===== Code cần sửa =====
+class ChatContext {
+    private final String systemPrompt;
+    private final int tokenLimit;
+    private final List<Message> history = new ArrayList<>();
+    ChatContext(String systemPrompt, int tokenLimit) { this.systemPrompt = systemPrompt; this.tokenLimit = tokenLimit; }
+    void add(String role, String content) { history.add(new Message(role, content)); }
+
+    List<Message> buildMessages() {
+        List<Message> out = new ArrayList<>();
+        out.add(new Message("system", systemPrompt));   // system nằm đầu...
+        out.addAll(history);                            // ...rồi dồn hết lịch sử, không đếm token
+        return out;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        // 1. Hội thoại dài: system prompt phải luôn được giữ, tổng token không vượt limit
+        ChatContext ctx1 = new ChatContext("Bạn là trợ lý ngân hàng. TUYỆT ĐỐI không cung cấp số dư, số thẻ, mã OTP.", 120);
+        for (int i = 0; i < 20; i++) {
+            ctx1.add("user", "Câu hỏi số " + i + " " + "x".repeat(40));
+            ctx1.add("assistant", "Trả lời số " + i + " " + "y".repeat(40));
+        }
+        List<Message> built1 = ctx1.buildMessages();
+        ContextModel model1 = new ContextModel(120);
+        model1.send(built1);
+        boolean sys1 = model1.lastReceived.stream().anyMatch(m -> m.role.equals("system") && m.content.contains("TUYỆT ĐỐI"));
+        check("system_prompt_giu_duoc", sys1, "sau khi cắt cho vừa context, system prompt (luật an toàn) phải còn; nhận " + model1.lastReceived.size() + " message");
+        check("khong_vuot_token_limit", ContextModel.tokens(built1) <= 120, "tổng token phải <= 120, thực tế " + ContextModel.tokens(built1));
+
+        // 2. Cắt từ cũ nhất: tin nhắn mới nhất phải còn
+        String lastUser = "Câu hỏi cuối cùng quan trọng";
+        ChatContext ctx2 = new ChatContext("system", 100);
+        for (int i = 0; i < 30; i++) ctx2.add("user", "câu " + i + " " + "a".repeat(30));
+        ctx2.add("user", lastUser);
+        List<Message> built2 = ctx2.buildMessages();
+        boolean newest = built2.stream().anyMatch(m -> m.content.equals(lastUser));
+        check("giu_tin_nhan_moi_nhat", newest && ContextModel.tokens(built2) <= 100,
+            "tin nhắn mới nhất phải còn và tổng <= 100; tokens=" + ContextModel.tokens(built2) + " newest=" + newest);
+
+        // 3. System prompt tự nó đã quá lớn: phải báo lỗi rõ ràng, không cắt mất luật
+        ChatContext ctx3 = new ChatContext("S".repeat(4000), 100);
+        String err3 = null;
+        try { ctx3.buildMessages(); } catch (ContextTooLongException e) { err3 = e.getMessage(); }
+        check("system_qua_lon_bao_loi", err3 != null, "system prompt vượt limit phải ném ContextTooLongException, không được âm thầm cắt bỏ luật");
+
+        // 4. Một tin nhắn mới nhất quá lớn: cắt bớt nội dung cho vừa, vẫn giữ system
+        ChatContext ctx4 = new ChatContext("luật an toàn", 100);
+        ctx4.add("user", "ngắn");
+        ctx4.add("user", "H".repeat(2000));
+        List<Message> built4 = ctx4.buildMessages();
+        boolean sys4 = built4.stream().anyMatch(m -> m.role.equals("system") && m.content.equals("luật an toàn"));
+        boolean newest4 = built4.stream().anyMatch(m -> m.role.equals("user") && m.content.startsWith("HHHH"));
+        check("tin_nhan_qua_lon_duoc_cat", sys4 && newest4 && ContextModel.tokens(built4) <= 100,
+            "tin nhắn mới nhất quá lớn phải được cắt cho vừa, vẫn giữ system; tokens=" + ContextModel.tokens(built4));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}
+
+// Mô phỏng nền tảng: nếu vượt limit thì cắt từ message cũ nhất (đúng như log production)
+class ContextModel {
+    final int limit; List<Message> lastReceived;
+    ContextModel(int limit) { this.limit = limit; }
+    void send(List<Message> messages) {
+        List<Message> kept = new ArrayList<>(messages);
+        while (kept.size() > 1 && tokens(kept) > limit) kept.remove(0);
+        lastReceived = kept;
+    }
+    static int tokens(List<Message> msgs) { int t = 0; for (Message m : msgs) t += TokenCounter.count(m); return t; }
+}`,
+  reference: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+class Message {
+    final String role;      // "system" | "user" | "assistant"
+    final String content;
+    Message(String role, String content) { this.role = role; this.content = content; }
+}
+
+class TokenCounter {
+    static final int OVERHEAD = 4;
+    static int count(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        return Math.max(1, (int) Math.ceil(text.length() / 4.0));
+    }
+    static int count(Message m) { return count(m.content) + OVERHEAD; }
+}
+
+class ContextTooLongException extends RuntimeException {
+    ContextTooLongException(String m) { super(m); }
+}
+
+// ===== Code cần sửa =====
+class ChatContext {
+    private final String systemPrompt;
+    private final int tokenLimit;
+    private final List<Message> history = new ArrayList<>();
+    ChatContext(String systemPrompt, int tokenLimit) { this.systemPrompt = systemPrompt; this.tokenLimit = tokenLimit; }
+    void add(String role, String content) { history.add(new Message(role, content)); }
+
+    List<Message> buildMessages() {
+        int systemTokens = TokenCounter.count(new Message("system", systemPrompt));
+        if (systemTokens > tokenLimit) {
+            throw new ContextTooLongException("system prompt chiếm " + systemTokens + " token, vượt context " + tokenLimit);
+        }
+        // Chọn các message mới nhất còn vừa ngân sách (system + selected <= limit)
+        List<Message> kept = new ArrayList<>();
+        int used = systemTokens;
+        for (int i = history.size() - 1; i >= 0; i--) {
+            Message m = history.get(i);
+            int mt = TokenCounter.count(m);
+            if (used + mt <= tokenLimit) {
+                kept.add(0, m);            // thêm vào đầu để giữ đúng thứ tự
+                used += mt;
+            } else if (i == history.size() - 1 && tokenLimit - used > TokenCounter.OVERHEAD) {
+                // Tin nhắn mới nhất quá lớn: cắt bớt nội dung cho vừa phần còn lại
+                String cut = cutToTokens(m.content, tokenLimit - used);
+                kept.add(0, new Message(m.role, cut));
+                used += TokenCounter.count(new Message(m.role, cut));
+                break;
+            } else {
+                break;                     // message cũ hơn không vừa: cắt phần cũ nhất
+            }
+        }
+        List<Message> out = new ArrayList<>();
+        out.add(new Message("system", systemPrompt));   // luôn giữ system prompt
+        out.addAll(kept);
+        return out;
+    }
+
+    // Cắt nội dung sao cho số token của message mới <= roomTokens (đã trừ overhead)
+    static String cutToTokens(String content, int roomTokens) {
+        int maxChars = Math.max(0, (roomTokens - TokenCounter.OVERHEAD) * 4);
+        return content.length() <= maxChars ? content : content.substring(0, maxChars);
+    }
+}`,
+  hints: [
+    'Đọc log: {{promptTokens=8420}} vượt {{limit=8000}}, platform cắt 5 message cũ nhất. System prompt nằm ở đầu danh sách nên nằm trong nhóm bị cắt.',
+    'Nếu chỉ nạp thêm bớt lịch sử mà không đếm token, bạn không biết mình đang gửi bao nhiêu. Cần một hàm đếm token (ở đây xấp xỉ 4 ký tự = 1 token, cộng 4 token overhead mỗi message) và một ngân sách rõ ràng cho system prompt.',
+    'Thuật toán: dành trước token cho system prompt; duyệt lịch sử từ mới nhất về cũ, thêm message nào còn vừa ngân sách; nếu message mới nhất quá lớn thì cắt bớt nội dung cho vừa; nếu system prompt tự nó vượt hạn mức thì ném ContextTooLongException.',
+  ],
+  rootCause: `**System prompt nằm ở đầu, platform cắt từ đầu khi vượt context.** {{ChatContext.buildMessages}} ghép system prompt rồi đổ toàn bộ lịch sử vào, không đếm token. Khi tổng vượt 8.000, nền tảng cắt bớt từ phía cũ nhất để vừa cửa sổ. Vì system prompt là message đầu tiên, nó nằm trong nhóm bị cắt đầu tiên (context-stats: "drops system + 75 oldest"). Mất system prompt nghĩa là mất toàn bộ luật an toàn, nên agent tự do trả lời ngoài phạm vi và đọc lại dữ liệu nhạy cảm.
+
+**Không có ngân sách token nên không kiểm soát được.** Không đếm token thì không biết một phiên đã dài bao nhiêu, cũng không biết còn chỗ cho system prompt hay không. Ở đây mỗi message tốn ~4 ký tự/token + 4 token overhead; phiên 82 message lên 8.302 token history, cộng 118 token system là 8.420 — vượt 8.000.
+
+**Không xử lý tin nhắn đơn lẻ quá lớn.** Một tin nhắn khổng lồ (khách dán hợp đồng 40 trang) có thể tự nó vượt cả context. Nếu chỉ cắt theo số message, tin nhắn đó vẫn làm vỡ ngân sách hoặc bị nền tảng cắt mất phần đuôi, khiến câu trả lời thiếu ngữ cảnh.`,
+  fix: `### Cách sửa trong bài
+1. **Đếm token trước khi ghép.** Ước lượng ~4 ký tự/token, cộng 4 token overhead cho role/format mỗi message (con số thật lấy từ tokenizer của model; ở đây chỉ cần deterministic).
+2. **Dành ngân sách cho system prompt trước.** Nếu system prompt tự nó đã vượt limit thì ném {{ContextTooLongException}} — thà báo lỗi rõ ràng còn hơn âm thầm bỏ luật an toàn.
+3. **Cắt từ cũ nhất.** Duyệt lịch sử từ message mới nhất về cũ, chỉ giữ những message còn vừa ngân sách còn lại. Đây là "sliding window" (cửa sổ trượt: luôn giữ các message gần nhất, bỏ dần phần cũ).
+4. **Tin nhắn mới nhất quá lớn thì cắt nội dung.** Nếu message mới nhất một mình đã vượt phần ngân sách còn lại, cắt bớt ký tự cho vừa (mất một phần tin nhắn mới nhất vẫn tốt hơn mất system prompt).
+5. **Luôn đặt system prompt ở đầu danh sách trả về**, sau khi đã bảo đảm tổng token ≤ limit.
+
+~~~java
+int systemTokens = TokenCounter.count(new Message("system", systemPrompt));
+if (systemTokens > tokenLimit) throw new ContextTooLongException("system quá lớn");
+int used = systemTokens;
+List<Message> kept = new ArrayList<>();
+for (int i = history.size() - 1; i >= 0; i--) {
+    Message m = history.get(i);
+    if (used + TokenCounter.count(m) <= tokenLimit) { kept.add(0, m); used += TokenCounter.count(m); }
+    else if (i == history.size() - 1) { kept.add(0, new Message(m.role, cutToTokens(m.content, tokenLimit - used))); break; }
+    else break;
+}
+~~~
+
+### Trên production thật
+- **Dùng chat memory có giới hạn của framework:** LangChain4j {{TokenWindowChatMemory}} hoặc {{MessageWindowChatMemory}}, Spring AI {{MessageWindowChatMemory}}. Chúng tính token và tự cắt, thay vì tự ghép chuỗi.
+- **Tách system prompt khỏi hội thoại:** system prompt gửi riêng, không đưa vào danh sách bị cắt. Guardrail (rào chắn an toàn) cũng nên đặt ở tầng ngoài — lọc output, phân quyền tool — chứ không chỉ dựa vào prompt.
+- **Tóm tắt phần cũ (summarization — nén các lượt cũ thành một đoạn ngắn)** thay vì bỏ hẳn, khi cần giữ ngữ cảnh dài; hoặc dùng RAG (retrieval — truy xuất lại đúng đoạn cần) thay vì nhồi cả lịch sử.
+- **Không dán tài liệu dài vào chat:** với tài liệu lớn, dùng upload + RAG, không nhét vào context.
+- **Observability:** ghi prompt tokens, số message bị cắt, event truncation, và cảnh báo khi tỉ lệ phiên bị cắt vượt ngưỡng. Test hồi quy: một phiên 82 message phải luôn giữ system prompt và ≤ limit.
+
+### Liên hệ phỏng vấn
+Nói: system prompt phải được bảo vệ như một phần bất biến của ngân sách token; cắt theo sliding window từ phía cũ; nếu system prompt tự nó quá lớn thì fail sớm thay vì bỏ luật. Ở production, dùng chat memory có giới hạn của framework, tách guardrail ra khỏi prompt, và đo prompt tokens để phát hiện phiên dài bất thường.
+
+> Senior tip: đừng dựa vào prompt để giữ an toàn. System prompt chỉ là một message như mọi message khác — nó có thể bị cắt nếu bạn không bảo vệ ngân sách. Hãy tách guardrail ra tầng ngoài (lọc output, phân quyền tool, che PII), dùng chat memory có giới hạn của framework, và cảnh báo khi tỉ lệ phiên bị cắt context tăng.`,
+  related: ['ai-058', 'ai-060'],
+  tags: ['LLM', 'context window', 'token', 'sliding window', 'safety', 'LangChain4j']
+},
 );
