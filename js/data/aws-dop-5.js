@@ -975,5 +975,509 @@ D: CloudFront geo restriction chặn theo khu vực địa lý, không chặn SQ
 
 > Exam tip: "chặn SQL injection tự động không quản lý quy tắc tùy chỉnh" trỏ về AWS WAF AWS Managed Rules.`,
   services: ['AWS WAF', 'Elastic Load Balancing']
-}
+},
+{
+  id: 'dop-199',
+  exam: 'dop-c02',
+  domain: 'dop-d3',
+  q: `A company backs up its Amazon RDS for PostgreSQL databases and Amazon EBS volumes with AWS Backup. Auditors ask the company to prove that recovery points can actually be restored, not merely that backup jobs completed. The team wants a recurring test that creates temporary restored resources and reports the results without maintaining scripts. Which solution meets these requirements?`,
+  options: [
+    'Create an AWS Backup restore testing plan with a schedule and selections for the protected resources',
+    'Create an AWS Config rule that checks whether each resource has a backup recovery point',
+    'Run an AWS Backup on-demand backup after each application release',
+    'Copy the recovery points to another Region and treat a successful copy as a restore test'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** cần chứng minh **khôi phục được**, kiểm tra định kỳ, tạo tài nguyên phục hồi tạm thời và không tự duy trì script. Backup thành công chỉ chứng minh dữ liệu đã được ghi vào recovery point; nó chưa chứng minh quy trình restore, quyền IAM, cấu hình mạng hay ứng dụng dùng được sau khôi phục.
+
+### Vì sao đáp án A đúng
+**AWS Backup restore testing** cho phép lập kế hoạch kiểm tra khôi phục theo lịch và chọn tài nguyên/recovery point cần thử. Dịch vụ thực hiện restore job thật, ghi trạng thái và kết quả để nhóm vận hành kiểm tra; đây là một bài diễn tập khôi phục có thể lặp lại, thay vì suy luận rằng bản backup chắc chắn dùng được. Cần chọn loại tài nguyên được restore testing hỗ trợ và xác định thời gian lưu tài nguyên phục hồi để kiểm soát chi phí.
+
+### Vì sao các phương án khác sai
+- **B:** AWS Config đánh giá cấu hình và compliance; có recovery point không đồng nghĩa đã thử khôi phục được dữ liệu.
+- **C:** On-demand backup chỉ tạo thêm bản sao, không kiểm tra restore.
+- **D:** Sao chép sang Region khác cải thiện khả năng DR nhưng cũng chỉ kiểm tra thao tác copy, không chứng minh tạo được tài nguyên hoạt động ở đích.
+
+> Exam tip: Phân biệt **backup test** (job tạo recovery point) với **restore test** (dùng recovery point tạo tài nguyên thật). Đề kiểm toán yêu cầu bằng chứng phục hồi thì chọn AWS Backup restore testing.`,
+  services: ['AWS Backup', 'Amazon RDS', 'Amazon EBS']
+},
+{
+  id: 'dop-200',
+  exam: 'dop-c02',
+  domain: 'dop-d3',
+  q: `A company has documented recovery time objectives (RTOs) and recovery point objectives (RPOs) for a customer-facing application. The architecture spans multiple AWS services, but the team has no repeatable way to assess whether the design can meet those objectives or to identify resilience gaps before a disaster. The company wants managed recommendations and periodic assessments. Which solution meets these requirements?`,
+  options: [
+    'Use AWS Resilience Hub to define the application and its resiliency policy, then run assessments',
+    'Use AWS Trusted Advisor to check service quotas and assume the application meets its RTO and RPO',
+    'Use AWS Health Dashboard to review current AWS service events in the application Region',
+    'Use Amazon CloudWatch Synthetics canaries to test one HTTP endpoint and use that result as the full architecture assessment'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** có **RTO** (thời gian tối đa chấp nhận để khôi phục) và **RPO** (mức dữ liệu tối đa có thể mất tính theo thời gian), cần đánh giá toàn ứng dụng trước khi xảy ra thảm họa và nhận khuyến nghị. Một lần kiểm tra URL không thể đánh giá cả database, hàng đợi, vùng dự phòng và phụ thuộc giữa các dịch vụ.
+
+### Vì sao đáp án A đúng
+**AWS Resilience Hub** mô hình hóa ứng dụng từ các tài nguyên AWS, gắn một **resiliency policy** chứa mục tiêu RTO/RPO, rồi đánh giá kiến trúc so với mục tiêu đó. Báo cáo nêu điểm yếu và khuyến nghị cải thiện; nhóm có thể chạy đánh giá lại sau khi đổi kiến trúc và kết hợp kiểm thử bằng AWS Fault Injection Service hoặc runbook phù hợp. Hub cung cấp đánh giá và hướng dẫn, không tự bảo đảm ứng dụng sẽ khôi phục đúng thời gian nếu đội chưa thử quy trình thật.
+
+### Vì sao các phương án khác sai
+- **B:** Trusted Advisor đưa khuyến nghị tối ưu tài khoản, không mô hình hóa toàn ứng dụng để so sánh RTO/RPO.
+- **C:** AWS Health báo sự kiện tình trạng dịch vụ AWS hiện tại, không đánh giá khả năng phục hồi của thiết kế riêng.
+- **D:** Synthetics xác nhận hành trình/endpoint cụ thể đang phản hồi; nó không phát hiện mọi phụ thuộc hoặc đo khả năng phục hồi dữ liệu.
+
+> Exam tip: Câu hỏi yêu cầu đánh giá kiến trúc theo mục tiêu RTO/RPO và gợi ý khắc phục thì nghĩ đến Resilience Hub; vẫn cần diễn tập để xác nhận con số thực tế.`,
+  services: ['AWS Resilience Hub', 'AWS Fault Injection Service', 'Amazon CloudWatch']
+},
+{
+  id: 'dop-201',
+  exam: 'dop-c02',
+  domain: 'dop-d3',
+  q: `A Lambda function consumes batches of independent messages from an Amazon SQS standard queue. One malformed message currently causes the whole batch to be retried, so already processed messages are handled again and the backlog grows. The company wants successful messages acknowledged while only failed messages are retried. Which two actions should it take? (Choose two.)`,
+  options: [
+    'Set the queue visibility timeout to zero so messages immediately return to the queue',
+    'Enable ReportBatchItemFailures in the Lambda event source mapping',
+    'Set the function reserved concurrency to one',
+    'Return the identifiers of failed messages in the handler response using the partial batch response format',
+    'Move the queue to FIFO so Lambda automatically skips malformed messages'
+  ],
+  answer: [1, 3],
+  multi: true,
+  explain: `**Từ khóa:** SQS standard queue, một message lỗi làm cả batch bị thử lại, cần chỉ retry message lỗi. Với chế độ mặc định, Lambda coi lần gọi batch là thành công hoặc thất bại toàn bộ; vì vậy những message đã xử lý thành công có thể xuất hiện lại. SQS/Lambda có giao nhận **at-least-once**, nên ứng dụng vẫn nên xử lý idempotent để chịu được bản sao.
+
+### Vì sao hai đáp án đúng
+**B và D** cùng cần thiết để bật **partial batch response**. Cấu hình event source mapping với {{ReportBatchItemFailures}} cho phép Lambda hiểu kết quả từng message; handler trả về danh sách message identifier thất bại. Lambda xác nhận các message không có trong danh sách và chỉ để các message lỗi hết visibility timeout rồi được xử lý lại. Chỉ đổi cấu hình mà handler không trả đúng danh sách, hoặc chỉ trả danh sách mà mapping chưa bật tính năng, đều không đạt mục tiêu.
+
+### Vì sao các phương án khác sai
+- **A:** Visibility timeout bằng 0 làm message có thể lập tức bị consumer khác nhận, tăng xử lý đồng thời và lặp.
+- **C:** Reserved concurrency giới hạn số lần chạy hàm, không tách trạng thái thành công/thất bại từng phần tử.
+- **E:** FIFO giữ thứ tự, không tự bỏ qua message lỗi; còn có thể chặn các message sau trong cùng nhóm.
+
+> Exam tip: Khi một record lỗi làm cả batch bị retry, nhớ cấu hình **ReportBatchItemFailures + handler trả danh sách ID lỗi**. Đừng nhầm giới hạn concurrency với cơ chế partial failure.`,
+  services: ['AWS Lambda', 'Amazon SQS']
+},
+{
+  id: 'dop-202',
+  exam: 'dop-c02',
+  domain: 'dop-d3',
+  q: `A company operates an Amazon ECS service using the replica scheduling strategy on an EC2 cluster across three Availability Zones. After an Availability Zone outage is resolved, most running tasks remain in the other two zones and the service does not return to a balanced placement. The cluster has spare capacity in all three zones. The team wants ECS to rebalance service tasks automatically with minimal custom automation. What should the team do?`,
+  options: [
+    'Enable Availability Zone rebalancing for the ECS service',
+    'Create a CloudWatch alarm on CPUUtilization and use it to restart every task',
+    'Configure an ECS deployment circuit breaker to move tasks between Availability Zones',
+    'Add a Route 53 latency-based record for each ECS task'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** ECS **replica service**, nhiều AZ, sau khi một AZ phục hồi thì task vẫn lệch ở hai AZ còn lại; đội muốn scheduler tự cân bằng, không viết bộ điều phối. Một Availability Zone (AZ) là một vùng hạ tầng cô lập trong Region; phân bố task qua AZ giúp một sự cố cục bộ không làm mất toàn bộ bản sao.
+
+### Vì sao đáp án A đúng
+ECS **Availability Zone rebalancing** cho phép service scheduler phát hiện task placement mất cân bằng giữa các AZ và điều chỉnh để phân bố task đều hơn, miễn là cluster có sức chứa phù hợp. Trong đề, điều kiện capacity đã được xác nhận nên không cần tự viết Lambda tìm và di chuyển task. Việc rebalancing không thay thế thiết kế nhiều AZ: service vẫn cần desired count đủ lớn, capacity provider/EC2 capacity ở từng AZ và health check hợp lý.
+
+### Vì sao các phương án khác sai
+- **B:** CPU alarm và restart không xử lý vị trí task; còn có thể làm giảm thêm capacity đang khỏe.
+- **C:** Deployment circuit breaker phát hiện deployment thất bại và có thể rollback, không phải cơ chế cân bằng placement AZ.
+- **D:** Route 53 định tuyến DNS, không điều khiển scheduler ECS hay di chuyển task.
+
+> Exam tip: Đề hỏi task placement bị lệch sau khi AZ phục hồi thì phân biệt **Availability Zone rebalancing** với health check, scaling và deployment rollback; mỗi tính năng giải quyết một vấn đề khác nhau.`,
+  services: ['Amazon ECS', 'Amazon EC2']
+},
+{
+  id: 'dop-203',
+  exam: 'dop-c02',
+  domain: 'dop-d3',
+  q: `A company runs an Amazon RDS for PostgreSQL database. Before applying a major engine upgrade, the team wants an isolated environment to validate the application and database changes while production continues to receive writes. After testing, it wants to switch production to the tested environment with minimal downtime and without writing replication scripts. Which solution meets these requirements?`,
+  options: [
+    'Create an RDS Blue/Green Deployment, test the green environment, and perform a switchover',
+    'Restore the latest automated backup to a new DB instance and manually copy all changes made during testing',
+    'Create a read replica and direct all application writes to the replica before testing',
+    'Take a DB snapshot, stop production, upgrade the snapshot, and restore it over the original DB instance'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** cần môi trường kiểm thử tách biệt, production vẫn ghi dữ liệu, sau đó **switchover ít downtime** và không tự viết đồng bộ. Blue/Green gọi hai môi trường là blue (production hiện tại) và green (bản thay thế); thay đổi được chuẩn bị ở green trước khi chuyển vai trò.
+
+### Vì sao đáp án A đúng
+**Amazon RDS Blue/Green Deployments** tạo môi trường green tương ứng và đồng bộ thay đổi từ blue theo cơ chế được hỗ trợ cho engine/cấu hình đó. Đội có thể áp dụng nâng cấp, chạy kiểm tra trên green mà không đưa traffic người dùng sang đó. Khi sẵn sàng, thực hiện **switchover** để RDS chuyển production sang môi trường mới; thời gian gián đoạn được giảm đáng kể so với dump/restore. Cần xác nhận engine version và tính năng cụ thể tương thích, kiểm thử kết nối ứng dụng và có kế hoạch quay lui.
+
+### Vì sao các phương án khác sai
+- **B:** Backup/restore tạo bản sao tại một thời điểm; các ghi mới ở production không tự cập nhật sang bản sao.
+- **C:** Read replica chủ yếu phục vụ đọc; chuyển toàn bộ write để thử nghiệm có thể làm sai dữ liệu production.
+- **D:** Phải dừng dịch vụ và khôi phục thủ công, downtime lớn, trái yêu cầu.
+
+> Exam tip: Blue/Green phù hợp thay đổi DB cần kiểm tra song song rồi chuyển đổi nhanh; không giả định mọi engine/version/extension đều được hỗ trợ giống nhau.`,
+  services: ['Amazon RDS', 'Amazon CloudWatch']
+},
+{
+  id: 'dop-204',
+  exam: 'dop-c02',
+  domain: 'dop-d3',
+  q: `A financial application must be able to launch a specific EC2 instance type in us-east-1a during a disaster. The team has verified that On-Demand capacity is sometimes unavailable in that Availability Zone. It needs capacity reserved for its account before the disaster and is willing to pay for the reservation even when it is unused. Which solution meets these requirements?`,
+  options: [
+    'Purchase a regional Reserved Instance for the required instance family',
+    'Create an On-Demand Capacity Reservation for the required instance attributes in us-east-1a and configure the workload to use it',
+    'Create a Spot Fleet with a capacity-optimized allocation strategy',
+    'Increase the Auto Scaling group maximum capacity and rely on EC2 to find capacity during the event'
+  ],
+  answer: 1,
+  explain: `**Từ khóa:** cần đảm bảo chỗ chạy cho một loại EC2 cụ thể trong **AZ cụ thể**, phải đặt trước và chấp nhận trả phí dù chưa dùng. AZ là phạm vi quan trọng: cam kết capacity ở Region không đồng nghĩa có chỗ đúng AZ khi sự cố xảy ra.
+
+### Vì sao đáp án B đúng
+**On-Demand Capacity Reservation** giữ capacity On-Demand cho instance attributes đã chọn (như loại instance, platform/tenancy) trong một AZ. Khi tạo instance khớp thuộc tính và cấu hình sử dụng reservation, AWS có thể cấp phát từ phần capacity đã giữ thay vì phải tìm capacity mới trong lúc Region đang căng tải. Reservation không tự khởi chạy ứng dụng hay tạo failover; Auto Scaling/runbook vẫn cần được cấu hình để launch instance dùng đúng reservation. Phí được tính cho capacity đã giữ kể cả khi chưa sử dụng, đúng với ràng buộc đề bài.
+
+### Vì sao các phương án khác sai
+- **A:** Regional Reserved Instance chủ yếu áp dụng ưu đãi giá, không đảm bảo capacity ở AZ cụ thể.
+- **C:** Spot có thể bị gián đoạn và không đáp ứng yêu cầu capacity chắc chắn.
+- **D:** Tăng giới hạn desired/max không tạo ra capacity vật lý; launch vẫn có thể thất bại khi AZ thiếu chỗ.
+
+> Exam tip: **Reserved Instance** là cam kết giá; **Capacity Reservation** là cam kết capacity. Nếu đề nhấn mạnh AZ/instance type và khả năng launch trong outage, chọn Capacity Reservation.`,
+  services: ['Amazon EC2', 'Amazon EC2 Auto Scaling']
+},
+{
+  id: 'dop-205',
+  exam: 'dop-c02',
+  domain: 'dop-d3',
+  q: `A company stores critical recovery points in an AWS Backup vault. During a ransomware incident, an administrator with broad permissions deleted recovery points before the recovery team could use them. The company must make future recovery points undeletable by administrators for their required retention period, including by the account root user, with a managed solution. Which solution meets these requirements?`,
+  options: [
+    'Enable S3 Versioning on the AWS Backup vault',
+    'Use AWS Backup Vault Lock in compliance mode and set the required minimum retention period',
+    'Create a CloudWatch alarm for DeleteRecoveryPoint API calls',
+    'Copy each recovery point to another vault in the same account without changing its access policy'
+  ],
+  answer: 1,
+  explain: `**Từ khóa:** recovery point bị xóa trong sự cố, cần chống cả administrator/root trong suốt thời hạn lưu giữ. Chỉ gửi cảnh báo sau khi có thao tác xóa không thể bảo vệ bản sao; cần cơ chế bất biến do dịch vụ backup quản lý.
+
+### Vì sao đáp án B đúng
+**AWS Backup Vault Lock** áp dụng chính sách giữ cho recovery point trong vault. Ở **compliance mode**, sau thời gian chờ có thể thay đổi theo cấu hình, lock không thể bị tắt hoặc sửa để xóa recovery point trước hạn, kể cả bởi root user. Minimum retention period buộc recovery point được giữ tối thiểu khoảng thời gian yêu cầu; nếu dùng maximum retention, cần bảo đảm không mâu thuẫn với chính sách lưu trữ. Nên thử nghiệm trong môi trường không sản xuất và rà soát retention trước khi khóa vì sai cấu hình có thể khiến dữ liệu lưu lâu hơn dự định.
+
+### Vì sao các phương án khác sai
+- **A:** S3 Versioning áp dụng cho bucket S3, không làm khóa AWS Backup vault.
+- **C:** Alarm chỉ phát hiện/thông báo, không ngăn API xóa thành công.
+- **D:** Bản copy trong cùng account vẫn có thể bị principal có quyền xóa; sao chép không tự tạo tính bất biến.
+
+> Exam tip: Với backup cần chống ransomware và cả root, nhớ **AWS Backup Vault Lock compliance mode**; không nhầm với S3 Object Lock, vốn khóa object trong bucket S3.`,
+  services: ['AWS Backup', 'AWS Identity and Access Management']
+},
+{
+  id: 'dop-206',
+  exam: 'dop-c02',
+  domain: 'dop-d4',
+  q: `A Java team operates several microservices and currently checks separate dashboards to understand service latency and dependency failures. It wants a managed service map, service-level indicators, and service-level objectives for request latency and availability, while minimizing manual instrumentation. Which solution best meets these requirements?`,
+  options: [
+    'Use Amazon CloudWatch Application Signals with supported automatic instrumentation for the Java services',
+    'Use Amazon CloudWatch Synthetics canaries as the only telemetry source for every internal dependency',
+    'Use AWS CloudTrail to record application requests and calculate latency from API events',
+    'Use Amazon EC2 status checks to define application service-level objectives'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** nhiều Java microservice, cần **service map**, chỉ số mức dịch vụ và **SLO** (mục tiêu dịch vụ như tỷ lệ request thành công/latency), ít sửa mã. Metrics hạ tầng riêng lẻ không cho biết request đi qua service phụ thuộc nào.
+
+### Vì sao đáp án A đúng
+**CloudWatch Application Signals** tập trung theo dõi hiệu năng dịch vụ: request rate, lỗi, latency và quan hệ giữa các service. Với Java, có thể dùng khả năng tự instrument được hỗ trợ của AWS Distro for OpenTelemetry để thu thập telemetry mà không phải tự thêm tracing vào mọi method; cần triển khai agent/cấu hình và cấp quyền IAM đúng. Sau khi xác định service, đội có thể đặt SLO trên indicator phù hợp và xem service map để tìm dependency gây chậm. SLO là mục tiêu theo cửa sổ thời gian, không phải cam kết rằng AWS tự sửa lỗi.
+
+### Vì sao các phương án khác sai
+- **B:** Synthetics mô phỏng hành trình từ điểm chạy canary; không cung cấp đầy đủ telemetry nội bộ cho mọi dependency.
+- **C:** CloudTrail ghi hoạt động API quản trị AWS, không phải trace request giữa các service Java.
+- **D:** EC2 status check chỉ phản ánh trạng thái máy, không đo latency hay tỷ lệ lỗi ứng dụng.
+
+> Exam tip: Khi đề cần service map, SLI/SLO và telemetry cho microservices, phân biệt CloudWatch Application Signals với Synthetics (kiểm tra từ ngoài vào) và CloudTrail (audit API).`,
+  services: ['Amazon CloudWatch', 'AWS Distro for OpenTelemetry']
+},
+{
+  id: 'dop-207',
+  exam: 'dop-c02',
+  domain: 'dop-d4',
+  q: `A company stores structured JSON application logs in Amazon CloudWatch Logs. Incident queries often filter on the same JSON field, such as orderId, but scan several terabytes each time. The team wants to reduce query scan volume without changing the application or moving logs to another service. Which solution should it use?`,
+  options: [
+    'Create a CloudWatch Logs field index policy for the frequently filtered JSON fields and use indexed fields in Logs Insights queries',
+    'Export every log event to Amazon S3 and query all files with Amazon Athena',
+    'Create one CloudWatch metric filter for every possible orderId',
+    'Change the log group to the Infrequent Access class because it indexes all fields automatically'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** JSON logs, truy vấn lặp lại theo một vài field như orderId, chi phí do phải quét nhiều dữ liệu, không đổi app và không chuyển dịch vụ. **Field index** là chỉ mục trên field được chọn để Logs Insights tìm nhanh các event khớp mà không phải đọc toàn bộ dữ liệu log.
+
+### Vì sao đáp án A đúng
+CloudWatch Logs cho phép tạo **field index policy** cho log group Standard. Khi log có field được index và truy vấn lọc trực tiếp theo field đó, Logs Insights có thể bỏ qua phần lớn event không khớp, giảm dữ liệu quét và thời gian truy vấn. Cần xác nhận field có định dạng ổn định trong JSON và policy áp dụng cho log được ingest sau khi cấu hình; đây không phải cách lập chỉ mục hồi tố cho mọi log cũ. Giải pháp giữ log tại CloudWatch Logs và không yêu cầu pipeline phụ.
+
+### Vì sao các phương án khác sai
+- **B:** S3 + Athena có thể phù hợp kho lưu trữ/phân tích lớn nhưng phải xây dựng thêm luồng export và quản lý catalog.
+- **C:** Metric filter tạo số liệu tổng hợp, không thể tạo metric riêng cho mọi orderId hay tìm lại log chi tiết.
+- **D:** Infrequent Access là lớp lưu trữ với trade-off tính năng/chi phí, không tự index mọi field.
+
+> Exam tip: Với CloudWatch Logs Insights quét nhiều dữ liệu do thường xuyên lọc JSON field, xem xét **field index policy**; index phải khớp với biểu thức filter trong truy vấn.`,
+  services: ['Amazon CloudWatch Logs', 'Amazon CloudWatch']
+},
+{
+  id: 'dop-208',
+  exam: 'dop-c02',
+  domain: 'dop-d4',
+  q: `A team is investigating an intermittent production error. Logs arrive in Amazon CloudWatch Logs, but waiting for a scheduled query or exporting files delays troubleshooting. Engineers need to watch incoming log events live from a selected log group and filter them interactively, without deploying a streaming pipeline. Which solution meets the requirement?`,
+  options: [
+    'Use CloudWatch Logs Live Tail for the relevant log group',
+    'Create an Amazon Kinesis Data Firehose delivery stream and archive all events before viewing them',
+    'Use AWS CloudTrail Event history to search the application log messages',
+    'Create a CloudWatch metric alarm that counts all log events'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** log đã ở CloudWatch Logs, cần xem **sự kiện mới đang đến** và lọc tương tác trong lúc điều tra, không dựng pipeline. Đây là nhu cầu quan sát trực tiếp; một truy vấn batch hay alarm tổng hợp không cho kỹ sư đọc từng dòng log ngay khi xuất hiện.
+
+### Vì sao đáp án A đúng
+**CloudWatch Logs Live Tail** mở luồng xem gần thời gian thực cho log group đã chọn. Kỹ sư có thể theo dõi event mới đến và dùng bộ lọc để thu hẹp nội dung trong phiên điều tra, hữu ích khi tái hiện lỗi. Live Tail là công cụ quan sát trực tiếp chứ không thay thế retention, truy vấn lịch sử bằng Logs Insights, hay cảnh báo production lâu dài; quyền CloudWatch Logs cần được cấp phù hợp.
+
+### Vì sao các phương án khác sai
+- **B:** Firehose phù hợp chuyển/đệm dữ liệu tới đích lưu trữ hoặc phân tích, nhưng cần cấu hình pipeline và không phải cách ít công sức nhất để xem trực tiếp log group.
+- **C:** CloudTrail Event history là lịch sử hoạt động API AWS, không chứa nội dung log ứng dụng.
+- **D:** Alarm đếm số event cho biết một điều kiện tổng hợp, không hiển thị các dòng log để điều tra.
+
+> Exam tip: Cần xem log đang đổ vào để debug thì Live Tail; cần tìm trong dữ liệu đã lưu thì Logs Insights; cần cảnh báo định lượng thì metric/alarm.`,
+  services: ['Amazon CloudWatch Logs']
+},
+{
+  id: 'dop-209',
+  exam: 'dop-c02',
+  domain: 'dop-d4',
+  q: `Users in several countries report slow access to a public application delivered through Amazon CloudFront. Application CPU, target latency, and error metrics are normal, and the team suspects internet routing between users and AWS. It wants managed visibility into availability and latency by user location and network provider, without deploying probes worldwide. Which solution should it use?`,
+  options: [
+    'Use Amazon CloudWatch Internet Monitor and create a monitor for the application resource',
+    'Use Amazon CloudWatch Synthetics canaries in one AWS Region and infer every user network path',
+    'Use Amazon VPC Flow Logs to inspect packets on users devices outside AWS',
+    'Use AWS CloudTrail Insights to detect changes in internet latency'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** người dùng ở nhiều quốc gia bị chậm nhưng metric backend bình thường; nghi ngờ đường truyền Internet giữa client và AWS; cần phân tích theo vị trí/nhà mạng mà không tự dựng probe. Trường hợp này khác với CPU cao hay request xử lý lâu bên trong ứng dụng.
+
+### Vì sao đáp án A đúng
+**CloudWatch Internet Monitor** sử dụng dữ liệu mạng toàn cầu của AWS để theo dõi hiệu năng và khả dụng Internet cho ứng dụng gắn với tài nguyên được hỗ trợ, ví dụ CloudFront distribution hoặc tài nguyên VPC phù hợp. Nó giúp xác định khu vực người dùng và mạng/ASN chịu ảnh hưởng, cùng mức suy giảm kết nối, để phân biệt vấn đề mạng Internet với lỗi backend. Nhóm cần cấu hình monitor cho đúng resource và xem xét dữ liệu/chi phí theo lượng traffic được giám sát.
+
+### Vì sao các phương án khác sai
+- **B:** Canary từ một Region kiểm tra hành trình ở một số điểm chạy; không suy ra đầy đủ chất lượng tuyến mạng của mọi nhóm người dùng.
+- **C:** VPC Flow Logs chỉ ghi luồng mạng trong VPC/ENI, không nhìn thấy toàn bộ đường đi trên thiết bị người dùng.
+- **D:** CloudTrail Insights tìm bất thường về hoạt động API quản trị AWS, không đo độ trễ Internet.
+
+> Exam tip: Khi backend khỏe nhưng người dùng ở các khu vực/nhà mạng cụ thể bị ảnh hưởng, phân biệt **Internet Monitor** (hiệu năng mạng) với RUM (telemetry trong trình duyệt) và Synthetics (hành trình mô phỏng).`,
+  services: ['Amazon CloudWatch', 'Amazon CloudFront', 'Amazon VPC']
+},
+{
+  id: 'dop-210',
+  exam: 'dop-c02',
+  domain: 'dop-d4',
+  q: `A team runs Amazon RDS for PostgreSQL. During traffic spikes, database CPU is high, but host-level metrics do not reveal which SQL statements or sessions are responsible. The team wants a managed database performance view that correlates database load with top SQL, without installing and operating a separate monitoring server. Which solution meets the requirements?`,
+  options: [
+    'Use Amazon CloudWatch Database Insights for the RDS DB instance',
+    'Use Amazon VPC Flow Logs and group records by destination port 5432',
+    'Use AWS CloudTrail to query every SQL statement sent to PostgreSQL',
+    'Use Amazon CloudWatch Synthetics to issue repeated SQL queries from a public canary'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** RDS PostgreSQL, CPU/database load cao theo đợt, cần biết **SQL nào** hoặc session nào gây tải; không muốn tự quản lý monitoring stack. CPU chỉ báo triệu chứng, còn database load và top SQL giúp tìm phần việc cụ thể đang tiêu thụ tài nguyên.
+
+### Vì sao đáp án A đúng
+**Amazon CloudWatch Database Insights** cung cấp góc nhìn hiệu năng database được quản lý cho RDS/Aurora được hỗ trợ. Đội có thể xem tải DB theo thời gian, phân tích nhóm câu lệnh SQL và đối chiếu với chỉ số tài nguyên để xác định câu truy vấn gây áp lực trong cửa sổ sự cố. Đây là hướng điều tra ở tầng database, không yêu cầu tự dựng máy Prometheus/Grafana. Cần bật/cấu hình chế độ giám sát phù hợp cho instance và kiểm tra engine/tính năng được hỗ trợ.
+
+### Vì sao các phương án khác sai
+- **B:** Flow Logs chỉ ghi metadata luồng IP, không giải mã câu SQL hay session bên trong PostgreSQL.
+- **C:** CloudTrail ghi hoạt động API AWS, không audit từng câu SQL của ứng dụng trong RDS.
+- **D:** Canary chủ động gửi request thử nghiệm; nó không xác định mọi query production đang gây tải và có thể làm tăng tải thêm.
+
+> Exam tip: CPU/database load cao cần biết query thủ phạm thì chọn Database Insights; Flow Logs chỉ giúp điều tra đường truyền, còn CloudTrail là nhật ký API của AWS.`,
+  services: ['Amazon CloudWatch', 'Amazon RDS']
+},
+{
+  id: 'dop-211',
+  exam: 'dop-c02',
+  domain: 'dop-d4',
+  q: `A company has hundreds of EC2 instances tagged Application=checkout. New instances are launched every day, and the operations team wants one alarm when the average CPU utilization across this changing fleet exceeds 75 percent for 10 minutes. The team does not want to create and maintain one alarm per instance. Which solution meets the requirement?`,
+  options: [
+    'Create a CloudWatch alarm based on a Metrics Insights query that returns one aggregate time series for the tagged fleet',
+    'Create an EC2 status check alarm for each instance and combine all alarms manually',
+    'Create one metric filter for the text CPUUtilization in the EC2 system log',
+    'Create an AWS Config rule that evaluates CPU utilization every time an instance changes configuration'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** đội EC2 thay đổi liên tục, cần **một alarm tổng hợp** theo tag và không duy trì danh sách instance. CloudWatch alarm thông thường gắn vào một metric/time series; nếu tạo thủ công từng máy, mỗi lần scale phải cập nhật thêm alarm.
+
+### Vì sao đáp án A đúng
+**CloudWatch Metrics Insights** cho phép truy vấn metric theo nhóm tài nguyên và điều kiện như tag. Dùng truy vấn tổng hợp trung bình CPU cho các instance phù hợp để tạo một time series duy nhất; CloudWatch alarm đánh giá series đó trong cửa sổ 10 phút. Vì truy vấn chọn theo điều kiện tài nguyên thay vì danh sách ID cố định, instance mới khớp tag sẽ được tính mà không cần tạo alarm mới. Cần đảm bảo tag được CloudWatch hỗ trợ cho truy vấn và metric CPU được xuất bản trong khoảng thời gian mong muốn.
+
+### Vì sao các phương án khác sai
+- **B:** Status check xác định vấn đề hạ tầng/instance, không tính trung bình CPU của cả fleet; hàng trăm alarm cũng tăng vận hành.
+- **C:** CPUUtilization là metric EC2, không phải dòng log để metric filter đếm.
+- **D:** AWS Config đánh giá cấu hình tài nguyên, không theo dõi metric CPU theo chu kỳ 10 phút.
+
+> Exam tip: Cần alarm trên một nhóm metric thay đổi theo tag thì dùng Metrics Insights query; đảm bảo query trả về **một time series** cho CloudWatch alarm tổng hợp.`,
+  services: ['Amazon CloudWatch', 'Amazon EC2']
+},
+{
+  id: 'dop-212',
+  exam: 'dop-c02',
+  domain: 'dop-d4',
+  q: `A platform team exposes application metrics in Prometheus format from Amazon EKS workloads. It wants to evaluate PromQL alert rules and group or route resulting notifications, but does not want to operate Prometheus servers or Alertmanager instances. Which solution best meets the requirement?`,
+  options: [
+    'Use Amazon Managed Service for Prometheus with rule groups and its managed Alertmanager configuration',
+    'Install a Prometheus server and Alertmanager on each EKS node',
+    'Use AWS CloudTrail Lake to run SQL queries against Prometheus metrics',
+    'Use Amazon CloudWatch Logs metric filters to parse every Prometheus scrape response'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** metric đã ở định dạng Prometheus, muốn dùng **PromQL alert rules**, gom/định tuyến notification, nhưng không vận hành server. PromQL là ngôn ngữ truy vấn của Prometheus; Alertmanager nhận alert, nhóm các alert liên quan và áp dụng tuyến gửi thông báo.
+
+### Vì sao đáp án A đúng
+**Amazon Managed Service for Prometheus (AMP)** là dịch vụ quản lý tương thích Prometheus. Workspace AMP có thể dùng **rule groups** để đánh giá recording/alerting rules theo PromQL, và cấu hình **Alertmanager** để xử lý nhóm alert, silence và routing tới receiver được hỗ trợ. AWS quản lý hạ tầng Prometheus, còn đội vẫn chịu trách nhiệm viết rule đúng, cấu hình nơi nhận cảnh báo và theo dõi quyền truy cập. Đây tránh phải chạy một bộ Prometheus/Alertmanager trên từng node.
+
+### Vì sao các phương án khác sai
+- **B:** Tự cài mỗi node tạo nhiều server cần nâng cấp, lưu trữ, HA và cấu hình đồng bộ.
+- **C:** CloudTrail Lake truy vấn sự kiện hoạt động AWS, không phải kho Prometheus để chạy PromQL.
+- **D:** Metric filter phân tích log text; scrape metric trực tiếp bằng Prometheus pipeline phù hợp hơn và không cần biến mọi sample thành log.
+
+> Exam tip: Prometheus format + PromQL alerting nhưng không muốn quản trị server là dấu hiệu của AMP; Managed Grafana chủ yếu là dashboard, không thay thế rule evaluation/Alertmanager.`,
+  services: ['Amazon Managed Service for Prometheus', 'Amazon EKS']
+},
+{
+  id: 'dop-213',
+  exam: 'dop-c02',
+  domain: 'dop-d5',
+  q: `A company uses an AWS Step Functions Standard workflow to process a large settlement. The workflow completed several steps, then failed because a temporary downstream service was unavailable. The completed steps are safe and expensive to repeat. The team wants to continue from the failed step after the service recovers, without writing a custom checkpoint system. What should it do?`,
+  options: [
+    'Start a new execution with the original input and allow every step to run again',
+    'Redrive the failed Standard workflow execution',
+    'Use an EventBridge archive to replay the workflow state history',
+    'Increase the state machine timeout and assume the completed execution resumes automatically'
+  ],
+  answer: 1,
+  explain: `**Từ khóa:** Step Functions **Standard**, execution đã làm xong vài bước rồi thất bại do lỗi tạm thời, muốn tiếp tục từ điểm lỗi để không chạy lại side effect tốn kém. Redrive là thao tác chạy tiếp một execution lỗi thay vì tạo execution mới từ đầu.
+
+### Vì sao đáp án B đúng
+Với Standard workflow đủ điều kiện, **redrive** cho phép khởi chạy lại execution đã ở trạng thái lỗi/hủy/hết thời gian trong khoảng thời gian dịch vụ cho phép. Step Functions tiếp tục từ trạng thái chưa hoàn tất phù hợp, giữ lại kết quả các state thành công trước đó, nên không phải tự lưu checkpoint hoặc chạy lại toàn bộ settlement. Đội cần kiểm tra execution state, thời hạn redrive và bảo đảm state lỗi có thể chạy lại an toàn; side effect ở bước đang chạy vẫn nên thiết kế idempotent.
+
+### Vì sao các phương án khác sai
+- **A:** Execution mới bắt đầu lại từ đầu, có thể lặp giao dịch đã hoàn tất và tăng chi phí.
+- **C:** EventBridge archive replay phát lại event đầu vào, không khôi phục vị trí thực thi bên trong state machine.
+- **D:** Tăng timeout chỉ ảnh hưởng execution phù hợp đang chạy; execution đã failed không tự tiếp tục.
+
+> Exam tip: Nếu một Standard workflow đã thất bại sau nhiều bước và cần giữ kết quả thành công, tìm **redrive execution**; replay event không tương đương khôi phục checkpoint workflow.`,
+  services: ['AWS Step Functions', 'Amazon EventBridge']
+},
+{
+  id: 'dop-214',
+  exam: 'dop-c02',
+  domain: 'dop-d5',
+  q: `An Amazon SQS standard queue sends repeatedly failing messages to a dead-letter queue (DLQ). After fixing the consumer bug, the operations team wants to move those messages back to the source queue at a controlled rate and monitor the redrive job, without writing a custom message copier. Which solution meets the requirements?`,
+  options: [
+    'Use the Amazon SQS message redrive feature to start a managed move task from the DLQ to the source queue',
+    'Change the source queue visibility timeout to zero so the DLQ messages reappear',
+    'Create an EventBridge archive for the DLQ and replay it to the source queue',
+    'Delete the DLQ and recreate it with the original queue name'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** message đã vào **DLQ** sau nhiều lần xử lý lỗi; bug đã sửa; muốn đưa message trở lại source queue có kiểm soát và theo dõi, không viết copier. DLQ (dead-letter queue) là hàng đợi riêng giữ message không xử lý được để tránh chặn luồng chính và hỗ trợ điều tra.
+
+### Vì sao đáp án A đúng
+Amazon SQS có **message move task** cho phép bắt đầu redrive từ DLQ về source queue hoặc queue đích được chọn, đặt tốc độ di chuyển tối đa để tránh tạo tải đột biến, rồi theo dõi trạng thái task. SQS quản lý việc nhận/gửi lại message; đội không cần tự viết vòng lặp copy-delete. Trước khi chạy, cần xác nhận consumer đã sửa, queue đích đúng và retention/visibility timeout đủ để xử lý lại. Redrive không tự sửa message poison hay đảm bảo xử lý exactly-once; consumer vẫn cần idempotency.
+
+### Vì sao các phương án khác sai
+- **B:** Visibility timeout áp dụng cho message đang ở source queue, không kéo message từ DLQ trở lại.
+- **C:** EventBridge archive lưu event bus events, không phải cơ chế redrive message trong SQS DLQ.
+- **D:** Xóa DLQ có thể làm mất message và không khôi phục được dữ liệu.
+
+> Exam tip: Khi yêu cầu replay message từ SQS DLQ và giới hạn tốc độ, dùng **SQS redrive/message move task**; đừng tự copy nếu dịch vụ đã quản lý quy trình này.`,
+  services: ['Amazon SQS']
+},
+{
+  id: 'dop-215',
+  exam: 'dop-c02',
+  domain: 'dop-d5',
+  q: `A company has an Amazon SQS queue containing application events. A Step Functions workflow should run only for events with a particular eventType, and it needs one field enriched from an internal lookup service before the workflow starts. The team wants filtering, enrichment, and delivery managed without maintaining a polling Lambda. Which solution meets these requirements?`,
+  options: [
+    'Configure an Amazon EventBridge Pipe with the SQS queue as its source, an event filter, a Lambda enrichment, and the Step Functions state machine as its target',
+    'Create an EventBridge archive on the default event bus and replay all SQS messages',
+    'Configure an SQS redrive policy to call the lookup service for every message',
+    'Create an EventBridge Scheduler schedule that polls the queue every second'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** một SQS source, chỉ xử lý event khớp điều kiện, cần enrich một field trước khi gọi workflow và không muốn tự vận hành poller. **Enrichment** là bổ sung dữ liệu từ hệ thống khác trước khi chuyển event tới đích; **polling** là liên tục hỏi queue xem đã có message chưa.
+
+### Vì sao đáp án A đúng
+**Amazon EventBridge Pipes** nối trực tiếp một source như SQS với target như Step Functions. Pipe có thể lọc event trước khi gửi, gọi enrichment (ví dụ Lambda tra dữ liệu nội bộ), rồi chuyển kết quả tới workflow. Dịch vụ quản lý việc đọc source và tích hợp theo cấu hình, tránh tự viết Lambda chỉ để poll, lọc và chuyển message. Cần cấu hình quyền IAM, xử lý lỗi enrichment/target và semantics của SQS; không giả định một message chỉ được nhận đúng một lần.
+
+### Vì sao các phương án khác sai
+- **B:** Archive/replay hoạt động với event bus EventBridge, không tự lấy message từ SQS làm source.
+- **C:** Redrive policy điều khiển chuyển message thất bại sang DLQ; nó không gọi enrichment service.
+- **D:** Scheduler chạy theo thời gian, không phải tích hợp liên tục có filter/enrichment cho SQS.
+
+> Exam tip: Với một source-to-target integration cần filter và enrichment, cân nhắc EventBridge Pipes; với nhiều consumer độc lập hoặc routing theo event bus thì dùng EventBridge rules.`,
+  services: ['Amazon EventBridge', 'Amazon SQS', 'AWS Step Functions', 'AWS Lambda']
+},
+{
+  id: 'dop-216',
+  exam: 'dop-c02',
+  domain: 'dop-d5',
+  q: `A company needs to send selected Amazon EventBridge events to a third-party HTTPS incident platform. The endpoint requires OAuth authorization, has a fixed requests-per-second limit, and the company wants failed deliveries retained for investigation. It does not want to write or operate a forwarding service. Which solution meets the requirements?`,
+  options: [
+    'Create an EventBridge API Destination with a Connection for OAuth, set its invocation rate limit, and configure a dead-letter queue on the target',
+    'Create a Route 53 health check for the HTTPS endpoint and route events with DNS',
+    'Use an Amazon SQS queue as the target and assume the third-party platform can poll the queue',
+    'Create a CloudWatch Logs subscription filter that sends the events to the HTTPS endpoint'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** EventBridge event cần gửi tới HTTPS SaaS, xác thực **OAuth**, endpoint giới hạn tốc độ và cần giữ delivery failure. Không cần thêm ứng dụng trung gian nếu AWS đã có target HTTP được quản lý.
+
+### Vì sao đáp án A đúng
+**EventBridge API Destinations** gọi endpoint HTTP/HTTPS làm target của rule. **Connection** lưu cấu hình xác thực như OAuth client credentials và thông tin cần thiết để EventBridge lấy token; API destination liên kết connection với endpoint và cho đặt invocation rate limit để không vượt quá năng lực SaaS. Gắn dead-letter queue vào target để giữ event khi việc giao thất bại sau cơ chế retry, phục vụ điều tra hoặc gửi lại. Cần cấp quyền đọc secret/connection và đảm bảo endpoint tương thích phương thức, header và payload.
+
+### Vì sao các phương án khác sai
+- **B:** Route 53 health check kiểm tra endpoint, không chuyển payload EventBridge tới API.
+- **C:** SQS chỉ lưu message; hệ thống SaaS không tự poll queue nếu không có consumer/tích hợp.
+- **D:** Subscription filter phát log từ CloudWatch Logs, không phải tích hợp cho event bus và OAuth API.
+
+> Exam tip: EventBridge cần gọi HTTPS endpoint có auth/rate limit thì dùng **Connection + API Destination**; thêm DLQ để không mất event khi endpoint lỗi.`,
+  services: ['Amazon EventBridge', 'Amazon SQS']
+},
+{
+  id: 'dop-217',
+  exam: 'dop-c02',
+  domain: 'dop-d5',
+  q: `A company publishes JSON events to an Amazon SNS topic with several Lambda subscribers. One subscriber repeatedly fails because a downstream service is unavailable, while the other subscribers process the same event successfully. The company wants SNS to retain undeliverable messages for that subscriber so the team can investigate and redrive them later. Which solution meets the requirement?`,
+  options: [
+    'Configure an Amazon SQS dead-letter queue on the failing SNS subscription',
+    'Configure a dead-letter queue on the SNS topic so every subscriber receives the failed message again',
+    'Configure an asynchronous invocation destination on every Lambda function',
+    'Enable an EventBridge archive on the default event bus'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** SNS fan-out có nhiều subscriber; chỉ một Lambda subscriber lỗi, các subscriber khác vẫn xử lý được; cần giữ delivery failure riêng để điều tra. **Fan-out** nghĩa là một message được phân phối độc lập tới nhiều consumer.
+
+### Vì sao đáp án A đúng
+SNS hỗ trợ cấu hình **dead-letter queue ở cấp subscription** cho endpoint được hỗ trợ như Lambda. Khi SNS không thể giao message tới subscriber sau các lần thử lại, message thất bại được đưa vào SQS DLQ gắn với subscriber đó. Nhờ phạm vi riêng từng subscription, sự cố của một consumer không làm gửi lại hoặc ảnh hưởng các consumer khỏe. Đội có thể kiểm tra message/error và chủ động redrive sau khi khắc phục; cần bảo đảm queue policy cho phép SNS gửi vào DLQ.
+
+### Vì sao các phương án khác sai
+- **B:** DLQ không phải cấu hình chung trên topic để phát lại cho tất cả subscriber; yêu cầu cần cách ly lỗi theo subscription.
+- **C:** Lambda destination xử lý kết quả invocation của Lambda, không thay thế cơ chế SNS giữ message khi SNS không giao được tới subscriber.
+- **D:** EventBridge archive chỉ lưu event đi qua event bus, không tự lưu message của SNS topic.
+
+> Exam tip: Phân biệt lỗi **SNS delivery đến subscriber** với lỗi xử lý bên trong Lambda: subscription DLQ bảo vệ delivery, còn Lambda destination/DLQ bảo vệ invocation theo cấu hình Lambda.`,
+  services: ['Amazon SNS', 'Amazon SQS', 'AWS Lambda']
+},
+{
+  id: 'dop-218',
+  exam: 'dop-c02',
+  domain: 'dop-d5',
+  q: `Several teams publish JSON events to a custom Amazon EventBridge bus, but the event contracts are undocumented and Java consumers frequently fail after a producer changes a field. The platform team wants AWS to discover event structures and provide typed Java bindings that consumer teams can use. Which two actions should it take? (Choose two.)`,
+  options: [
+    'Enable AWS CloudTrail data events for the event bus',
+    'Enable EventBridge schema discovery for the custom event bus',
+    'Create a CloudWatch metric filter for every JSON property',
+    'Export the event bus to S3 and write a separate parser for each producer',
+    'Use the EventBridge schema registry to review discovered schemas and generate Java code bindings'
+  ],
+  answer: [1, 4],
+  multi: true,
+  explain: `**Từ khóa:** custom event bus, event JSON chưa có contract, Java consumer lỗi khi producer đổi field; muốn AWS tự phát hiện cấu trúc và cung cấp kiểu dữ liệu dùng lại. **Schema** là mô tả có cấu trúc về field, kiểu dữ liệu và hình dạng event; code binding giúp consumer dùng class Java thay vì tự đọc JSON không kiểm tra kiểu.
+
+### Vì sao hai đáp án đúng
+**B và E** là một quy trình liền nhau. Bật **EventBridge schema discovery** trên event bus để EventBridge quan sát event đi qua và ghi nhận các schema vào **schema registry**. Đội xem lại schema được phát hiện, chọn phiên bản phù hợp và tạo **Java code bindings** từ schema để consumer dùng kiểu dữ liệu cụ thể. Registry giúp khám phá và chia sẻ contract; nó không tự ngăn producer phát event không tương thích, nên nhóm vẫn cần review versioning và kiểm thử thay đổi.
+
+### Vì sao các phương án khác sai
+- **A:** CloudTrail data events ghi API activity, không khám phá schema payload của event bus.
+- **C:** Metric filter đếm/biến log thành metric, không tạo contract kiểu Java.
+- **D:** S3 export cộng parser tự viết tạo pipeline riêng, nhiều bảo trì và không dùng schema registry có sẵn.
+
+> Exam tip: EventBridge schema discovery giúp tìm cấu trúc event; schema registry và code bindings hỗ trợ consumer. Đây là tài liệu/kiểu dữ liệu, không phải cơ chế tự validate mọi event runtime.`,
+  services: ['Amazon EventBridge']
+},
 );
