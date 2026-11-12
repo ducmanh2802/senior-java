@@ -573,4 +573,184 @@ The minutes will be sent by email on Wednesday.`,
   ],
   tags: ["technology", "customer service"]
 },
+{
+  id: "toeic-w1-001",
+  part: "w1",
+  scene: `Trong kho hàng sáng sớm, một nhân viên đeo áo phao phản quang đang mang một chiếc hộp lớn đi theo lối đi giữa các kệ hàng hóa. Một tay cầm hộp, tay kia cuộn lại một cuộn băng keo dán trên kệ.`,
+  words: ["carry", "box"],
+  sample: "A warehouse worker is carrying a heavy box through the storage area.",
+  tips: ["Carry nghĩa là mang hoặc vận chuyển; ở đây chia thành is carrying vì hành động đang diễn ra trong ảnh.", "Through (qua) dùng để chỉ di chuyển trong một khoảng không gian, chẳng hạn lối đi giữa các kệ hàng."],
+  tags: ["workplace"]
+},
+{
+  id: "toeic-w1-002",
+  part: "w1",
+  scene: `Trong văn phòng sáng sủa, một phụ nữ đang ngồi trên ghế văn phòng ngay bên cạnh cửa sổ lớn, cuốn một cuốn sách trong tay. Trên bàn trước cô có máy tính xách tay và một cốc cà phê.`,
+  words: ["next to", "window"],
+  sample: "A woman is sitting next to the window and reading a book at her desk.",
+  tips: ["Next to nghĩa là 'bên cạnh', dùng để chỉ vị trí của người hoặc vật so với một đối tượng khác.", "Is sitting + V-ing mô tả hai hành động kèm nhau đang xảy ra trong khoảnh khắc chụp ảnh."],
+  tags: ["workplace"]
+},
+{
+  id: "toeic-w1-003",
+  part: "w1",
+  scene: `Một nhóm đồng nghiệp đang hội họp quanh bàn làm việc, thảo luận các bộ tài liệu đang sprawl trên bề mặt bàn. Một người đang chỉ vào bảng biểu in trên một tờ giấy lớn.`,
+  words: ["discuss", "documents"],
+  sample: "Several colleagues are discussing documents around a meeting table.",
+  tips: ["Discuss (thảo luận) là động từ trực tiếp, không cần thêm about sau nó: nói discuss documents chứ không phải discuss about documents.", "Is discussing là thì hiện tại tiếp diễn, phù hợp cho ảnh đang diễn ra."],
+  tags: ["workplace"]
+},
+{
+  id: "toeic-w1-004",
+  part: "w1",
+  scene: `Một công viên vào thứ bảy buổi sáng, nhưng trời đang mưa to nên rất ít người dạo bước. Một vài người đang ngồi dưới máng che mưa trên ghế công viên, cầm áo ô trong tay.`,
+  words: ["because", "rain"],
+  sample: "Few people are walking in the park because it is raining.",
+  tips: ["Because (bởi vì) nối phần lí do vào sau kết quả chính của câu; trong ví dụ, mưa là lý do ít người đi dạo.", "It is raining là cách nói về thời tiết mưa, không cần có chủ ngữ cụ thể nào."],
+  tags: ["daily life"]
+},
+{
+  id: "toeic-w1-005",
+  part: "w1",
+  scene: `Bên trong ga tàu, các hành khách đang đứng và ngồi trên sân plataform chờ chuyến tàu. Một chiếc vali lớn đặt cạnh một phụ nữ đang nhìn lên bảng thông tin lịch trình treo trên tường.`,
+  words: ["wait", "train"],
+  sample: "Passengers are waiting for a train on the platform.",
+  tips: ["Wait for (chờ đợi ai hay cái gì) luôn đi kèm giới từ for, không được bỏ for.", "Platform là sân đón trong ga tàu hoặc sân bay, nơi hành khách chờ phương tiện."],
+  tags: ["travel"]
+},
+{
+  id: "toeic-w1-006",
+  part: "w1",
+  scene: `Trong phòng hội nghị, nhân viên đang dịch chuyển các bàn ghế gần nhau hơn để mọi người đều có thể nhìn thấy màn hình chiếu đầu phòng. Một người đang điều chỉnh máy chiếu gắn trên trần nhà.`,
+  words: ["so that", "see"],
+  sample: "They moved the tables closer together so that everyone can see the presentation screen.",
+  tips: ["So that (để) dùng để chỉ mục đích của một hành động, sau đó phải đi một mệnh đề đầy đủ có chủ ngữ và động từ.", "Can see (có thể thấy) thể hiện khả năng nhìn thấy nhờ bàn ghế được sắp xếp lại."],
+  tags: ["workplace"]
+},
+{
+  id: "toeic-w1-007",
+  part: "w1",
+  scene: `Trong một cửa hàng quần áo, ba nhân viên bán hàng mặc đồng phục màu xanh đang hướng dẫn khách hàng chọn sản phẩm. Các kệ hàng được sắp xếp ngăn nắp ở hai bên lối đi rộng.`,
+  words: ["wear", "uniform"],
+  sample: "Store employees wearing blue uniforms are helping customers find items.",
+  tips: ["Wearing blue uniforms là cụm định ngữ dùng V-ing để mô tả người đang mặc gì trong ảnh.", "Help customers find items — động từ help sau đó có thể dùng nguyên thể infinitive không cần to (find thay vì to find)."],
+  tags: ["shopping"]
+},
+{
+  id: "toeic-w1-008",
+  part: "w1",
+  scene: `Trong phòng hội nghị công ty, sáu đồng nghiệp đang nhìn lên một màn hình lớn treo trên tường, trên màn hình đang hiển thị bảng biểu doanh thu. Một người đang chỉ vào màn hình bằng bút chỉ điểm.`,
+  words: ["look at", "screen"],
+  sample: "The team is looking at a large screen mounted on the conference-room wall.",
+  tips: ["Look at (nhìn vào) dùng khi người ta tập trung nhìn vào một đối tượng, khác với watch (xem sự kiện diễn biến theo thời gian).", "Mounted on (được gắn trên) là cụm hình容 quá khứ dùng như tính từ để mô tả màn hình được cố định trên tường."],
+  tags: ["workplace"]
+},
+{
+  id: "toeic-w1-009",
+  part: "w1",
+  scene: `Trong một quán cà phê vào giờ cao điểm, hàng khách đang xếp hàng chờ thanh toán tại quầy. Một nhân viên đang pha đồ uống phía sau quầy, và các ly cà phê được sắp xếp trên kệ bên cạnh.`,
+  words: ["stand", "line"],
+  sample: "Customers are standing in line at the coffee shop counter.",
+  tips: ["Stand in line (xếp hàng) là cụm cố định rất hay xuất hiện trong ngữ cảnh mua sắm và dịch vụ.", "Counter là quầy thanh toán hoặc phục vụ trong nhà hàng, quán cà phê và khách sạn."],
+  tags: ["daily life"]
+},
+{
+  id: "toeic-w1-010",
+  part: "w1",
+  scene: `Một nhân viên bảo vệ đang đứng ngay bên cổng vào tòa văn phòng, đang mở cửa cho các nhân viên đi vào làm việc vào sáng sớm. Một người đang đi vào cầm theo một chiếc túi xách.`,
+  words: ["open", "door"],
+  sample: "A security guard is opening the door for workers entering the office building.",
+  tips: ["Open the door for somebody (mở cửa cho ai) thể hiện sự lịch sự và hỗ trợ người khác vào hoặc ra một không gian.", "Entering là dạng V-ing của enter, dùng sau giới từ for trong ví dụ này."],
+  tags: ["workplace"]
+},
+{
+  id: "toeic-w1-011",
+  part: "w1",
+  scene: `Một tài xế giao hàng đang lái một chiếc xe tải lớn vào cửa vào của kho hàng vào thời điểm sớm sáng. Xe tải đang chở nhiều hàng hóa đóng kiện phía sau cabin.`,
+  words: ["drive", "truck"],
+  sample: "A delivery driver is driving a truck toward the warehouse entrance.",
+  tips: ["Drive (lái xe) ở đây chia thành is driving vì hành động đang diễn ra trong ảnh; không được thay bằng từ đồng nghĩa như park.", "Truck là xe tải; delivery truck là xe giao hàng dùng trong thương mại và logistics."],
+  tags: ["transportation"]
+},
+{
+  id: "toeic-w1-012",
+  part: "w1",
+  scene: `Nhân viên văn phòng đang ăn trưa cùng nhau trên một bàn ngoài trời sau tòa nhà công ty. Trên bàn có các hộp thức ăn và chai nước uống, mọi người vui vẻ chuyện chuyện.`,
+  words: ["eat", "lunch"],
+  sample: "Coworkers are eating lunch together at an outdoor table near the office.",
+  tips: ["Eat lunch (ăn trưa) là cụm động từ thường dùng trong ngữ cảnh làm việc; có thể dùng have lunch thay thế với nghĩa tương tự.", "Coworkers là đồng nghiệp làm cùng một công ty hoặc phòng ban."],
+  tags: ["workplace"]
+},
+{
+  id: "toeic-w1-013",
+  part: "w1",
+  scene: `Một nhân viên kho đang xếp các hộp vừa đóng gói lên kệ trong kho hàng. Ít số kệ khác đã đầy hàng hóa, còn vài kệ còn trống chờ đặt hàng mới.`,
+  words: ["put", "shelf"],
+  sample: "A staff member is putting boxes on a shelf in the storage room.",
+  tips: ["Put something on a shelf (đặt thứ gì đó lên kệ) — từ put cho sẵn chia thành putting sau động từ is trong thì hiện tại tiếp diễn.", "Storage room là phòng kho, nơi lưu giữ hàng hóa và vật dụng văn phòng của một công ty."],
+  tags: ["workplace"]
+},
+{
+  id: "toeic-w1-014",
+  part: "w1",
+  scene: `Trong một xưởng sản xuất, một kỹ sư đang sửa chữa một chiếc máy in lớn. Bộ công cụ đang đeo trên eo anh ta, và một trợ lý đang quan sát từ một khoảng cách.`,
+  words: ["repair", "machine"],
+  sample: "A technician is repairing a large machine inside the factory.",
+  tips: ["Repair (sửa chữa) dùng cho máy móc hoặc thiết bị hỏng hóc; dạng chia là repairing sau động từ is.", "Machine là máy móc, thiết bị; factory là nhà máy hoặc xưởng sản xuất."],
+  tags: ["workplace"]
+},
+{
+  id: "toeic-w1-015",
+  part: "w1",
+  scene: `Công viên vào thứ bảy buổi nắng, nhiều người đang dắt chó đi dạo trên lối đi bên bờ hồ, còn trẻ con đang chơi bóng trên bãi cỏ gần đó.`,
+  words: ["walk", "dog"],
+  sample: "People are walking their dogs in the park on a sunny Saturday morning.",
+  tips: ["Walk your dog (dắt chó đi dạo) là cụm cố định; walking sau People are là thì hiện tại tiếp diễn mô tả ảnh đang diễn ra.", "Park là công viên, nơi mọi người tập thể dục, dắt chó và giải trí ngoài trời."],
+  tags: ["daily life"]
+},
+{
+  id: "toeic-w1-016",
+  part: "w1",
+  scene: `Một người đàn ông đang đứng gần thang máy trong tòa văn phòng, đang đàm thoại qua điện thoại di động. Anh ta mặc vest và cầm một chiếc vali nhỏ trong tay bên cạnh.`,
+  words: ["talk", "phone"],
+  sample: "A man is talking on his phone while standing near the elevator.",
+  tips: ["Talk on the phone (nói điện thoại) luôn dùng giới từ on trước phone, không dùng 'in the phone'.", "Elevator là thang máy, thường thấy trong tòa nhà văn phòng có nhiều tầng."],
+  tags: ["workplace"]
+},
+{
+  id: "toeic-w1-017",
+  part: "w1",
+  scene: `Một người doanh nhân mặc áo vest đang đứng bên đường, đang nhìn đồng hồ trên cổ tay trong khi chờ chiếc xe taxi. Một chiếc ô tô đang chạy đi gần đó trên đường.`,
+  words: ["check", "watch"],
+  sample: "A businessman is checking his watch while waiting for a taxi.",
+  tips: ["Check his watch (nhìn đồng hồ) thường diễn tả việc kiểm tra thời gian vì đang chờ một người hoặc một phương tiện.", "Wait for a taxi (chờ taxi) dùng giới từ for; taxi là phương tiện du lịch và di chuyển ngắn hạn trong thành phố."],
+  tags: ["daily life"]
+},
+{
+  id: "toeic-w1-018",
+  part: "w1",
+  scene: `Trong thư viện, một học sinh đang ngồi trước bàn gỗ, đang viết chép vào cuốn sổ tay. Các kệ sách cao từ sàn đến trần nằm xung quanh và đầy cuốn sách tham khảo.`,
+  words: ["write", "notebook"],
+  sample: "A student is writing in a notebook at a library desk.",
+  tips: ["Write in a notebook (viết vào sổ tay) dùng giới từ in trước notebook, không dùng 'on'.", "Library desk là bàn học trong thư viện; notebook là sổ tay ghi chép nhỏ, khác với cuốn sách in ấn."],
+  tags: ["education"]
+},
+{
+  id: "toeic-w1-019",
+  part: "w1",
+  scene: `Một nhân viên giao hàng đang đi xe đạp trên một đường phố đông đúc trong thành phố. Anh ta đeo mũ bảo hiểm và có một chiếc túi hàng treo trên xe đạp.`,
+  words: ["ride", "bicycle"],
+  sample: "A delivery worker is riding a bicycle down a busy city street.",
+  tips: ["Ride a bicycle (đi xe đạp) dùng động từ ride cho xe đạp, máy xe và xe ngựa; driving chỉ dùng cho ô tô và xe máy có động cơ.", "Busy city street là đường phố trong thành phố đông người và xe cộ, thường có nhiều người đi bộ và phương tiện."],
+  tags: ["transportation"]
+},
+{
+  id: "toeic-w1-020",
+  part: "w1",
+  scene: `Một nhân viên phục vụ nhà hàng đang lau bàn sau khi khách hàng rời đi. Bàn đặt trong phòng ăn có cửa sổ lớn, và vài ghế đang được sắp xếp lại cho khách tiếp theo.`,
+  words: ["clean", "table"],
+  sample: "A waiter is cleaning a table after customers leave the restaurant.",
+  tips: ["Clean a table (lau bàn) là công việc thường đối với nhân viên phục vụ sau mỗi lượt khách ăn xong.", "After customers leave (sau khi khách rời đi) — động từ leave chia thì quá khứ đơn trong mệnh đề thời gian sau after."],
+  tags: ["daily life"]
+},
 );
