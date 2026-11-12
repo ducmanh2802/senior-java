@@ -7403,4 +7403,413 @@ Triệu chứng: hệ thống ví điện tử có {{WalletManager}} 3.200 dòng
   ],
   tags: ["anti-pattern", "God class", "anemic domain", "refactoring", "DDD"]
 },
+{
+  id: 'architecture-039',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Trong một checkout flow, có dữ liệu phải đúng ngay và có dữ liệu chấp nhận trễ vài giây. Bạn chọn consistency cho từng phần thế nào để vừa tránh bán sai vừa không làm mọi thao tác chậm?',
+  a: `**Tóm tắt:** Tôi không gán một consistency model (mức cam kết về dữ liệu các thành phần nhìn thấy) cho cả hệ thống; tôi phân loại theo hậu quả nếu người dùng đọc dữ liệu cũ. Quyết định giữ chỗ và ghi nhận thanh toán phải dựa trên transaction có điều kiện ở nguồn dữ liệu có thẩm quyền, còn trang sản phẩm, tìm kiếm và báo cáo có thể dùng bản sao cập nhật trễ nếu giao diện nói rõ trạng thái.
+
+### Đầu tiên: dữ liệu nào là sự thật?
+Consistency mạnh nghĩa là sau khi một thao tác ghi được xác nhận, lần đọc liên quan không được hành xử như thao tác đó chưa xảy ra; linearizability còn yêu cầu thứ tự quan sát phù hợp thời gian thực trên các client. Eventual consistency chỉ hứa các bản sao sẽ hội tụ nếu ngừng ghi, không hứa chính xác khi nào. Replica là bản sao dữ liệu ở node khác; projection là dữ liệu được tính lại để đọc nhanh, thường xây từ sự kiện.
+
+Không nên đồng nhất consistency mạnh với một lựa chọn database. PostgreSQL transaction với constraint/điều kiện cập nhật bảo vệ invariant bên trong một database; nó không tự biến cập nhật qua PostgreSQL, Redis và Kafka thành một transaction nguyên tử. Cần xác định invariant (điều luôn phải đúng), ranh giới transaction và hành vi khi dependency chậm trước khi chọn công nghệ.
+
+### Phân loại theo luồng checkout
+| Dữ liệu / thao tác | Cam kết cần thiết | Lý do |
+|---|---|---|
+| Giữ chỗ một sản phẩm cuối | Ghi có điều kiện, nguyên tử tại kho chính | Hai request không được cùng thắng |
+| Thanh toán và ledger | Giao dịch bền, có trạng thái rõ | Không được báo đã thu tiền khi chưa có bằng chứng |
+| Trang danh sách, bộ lọc tìm kiếm | Eventual, ví dụ chậm tối đa vài giây | Trễ hiển thị không được quyết định việc trừ kho |
+| Lịch sử vừa đặt của chính người dùng | Read-your-writes | Người đặt cần thấy đơn mình vừa tạo |
+| Thống kê doanh thu | Eventual, có thời điểm dữ liệu | Báo cáo không nằm trên đường quyết định giao dịch |
+
+Điểm quan trọng là đọc cũ ở projection không được dùng để quyết định ghi nhạy cảm. Trang có thể báo “còn 1” theo chỉ mục trễ; khi khách bấm mua, service kho kiểm tra lại bằng câu lệnh nguyên tử:
+~~~sql
+UPDATE inventory
+SET available = available - 1
+WHERE sku = :sku AND available > 0;
+~~~
+Ứng dụng chỉ xác nhận giữ chỗ khi số dòng được cập nhật là 1. Nếu là 0, hết hàng hoặc phải thử lại theo quy tắc nghiệp vụ. Một transaction giữ được invariant trong DB; không nên giữ transaction DB mở trong lúc gọi cổng thanh toán qua mạng.
+
+### Nối các phần mà không giả vờ có transaction toàn cục
+Một transaction cục bộ có thể cập nhật đơn và ghi một bản ghi outbox (hộp thư đi bền vững) cùng lúc. Tiến trình nền phát outbox sang Kafka; consumer cập nhật projection tìm kiếm. Kafka có thể giao lại sự kiện, nên consumer cần xử lý trùng an toàn. Người dùng nhận trạng thái {{PENDING}} cho đến khi workflow thanh toán kết thúc; sau đó đơn chuyển {{CONFIRMED}} hoặc {{FAILED}}. Đây là sự nhất quán cuối cùng có trạng thái được công khai, không phải “mọi nơi tức thì”.
+
+~~~seq
+title: Checkout và projection tìm kiếm
+actors: Client | Order | PostgreSQL | Kafka | Search
+Client -> Order: Tạo đơn
+Order -> PostgreSQL: Giữ kho + ghi đơn/outbox
+PostgreSQL --> Order: Commit hoặc hết hàng
+Order --> Client: PENDING hoặc từ chối
+Kafka -> Search: Phát sự kiện outbox
+Search --> Client: Kết quả tìm kiếm cập nhật sau
+~~~
+
+### Trade-off và cách công bố
+| Cách đọc/ghi | Ưu | Chi phí / giới hạn |
+|---|---|---|
+| Đọc/ghi primary với transaction | Dễ giữ invariant, read-your-writes | Tải primary, độ trễ cao hơn |
+| Đọc replica hoặc projection | Tăng khả năng đọc, tách tải | Có replication lag; cần chấp nhận stale |
+| Ghi đồng bộ nhiều hệ thống | Có thể trả kết quả đồng bộ | Tăng latency, timeout mơ hồ, khó phục hồi |
+| Workflow bất đồng bộ | Tách lỗi và cho phép retry | Phải có trạng thái trung gian, đối soát |
+
+Khi dùng replica, đường đọc cần biết ngữ cảnh. Ví dụ ngay sau khi tạo đơn, trả dữ liệu từ kết quả ghi hoặc đọc primary; trang catalog thông thường đọc projection. Đặt SLO (mục tiêu dịch vụ) cho độ trễ cập nhật, như p99 dưới 3 giây, rồi cảnh báo replication lag và tuổi sự kiện. Không gọi eventual là “dữ liệu sẽ mới trong vài giây” nếu chưa đo và chưa có giới hạn vận hành.
+
+### Pitfall production
+- Bản sao báo còn hàng, API bán hàng tin luôn nên oversell.
+- API trả “thành công” sau khi ghi đơn nhưng trước khi xác nhận thanh toán, làm người dùng hiểu nhầm trạng thái.
+- Retry một lệnh khi client timeout có thể tạo đơn thứ hai; consistency không thay thế idempotency.
+- Consumer chết hoặc xử lý sai offset khiến projection tụt xa; phải đo tuổi sự kiện, có replay và rebuild.
+- Bật synchronous replication toàn cục cho mọi bảng làm latency liên vùng tăng dù phần lớn dữ liệu không cần cam kết đó.
+
+### Ví dụ đời thực
+Một cửa hàng bán 2.000 đơn/phút lúc mở bán. Trang catalog dùng search index trễ tối đa 4 giây; kho chính giữ 120 chiếc tai nghe. Khi nhiều request cùng thấy con số “1”, chỉ một lệnh {{UPDATE ... WHERE available > 0}} cập nhật được dòng cuối, các request còn lại nhận hết hàng. Ban đầu team cập nhật Redis, PostgreSQL và Kafka đồng bộ trong request; p99 lên 1,8 giây và timeout khiến client gửi lại. Sau khi chuyển quyết định giữ kho về transaction PostgreSQL, ghi outbox chung transaction và trả {{PENDING}}, p99 phần tạo đơn còn 240 ms; projection cập nhật p99 trong 2,1 giây. Số đơn vượt tồn kho giảm về 0; dashboard hiển thị rõ tuổi projection thay vì hứa dữ liệu tức thì.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi bắt đầu từ invariant, không bắt đầu từ tên database. Với checkout, invariant là không bán vượt tồn và không ghi nhận thanh toán chưa có căn cứ. Tôi giữ quyết định trừ kho trong một lệnh cập nhật có điều kiện ở database chính; chỉ xác nhận nếu có đúng một dòng được cập nhật. Order và outbox được commit cùng transaction, rồi consumer cập nhật search projection bất đồng bộ. Trang catalog có thể stale vài giây, nhưng không được dùng làm nguồn quyết định bán hàng. Lịch sử đơn của người vừa đặt phải có read-your-writes, có thể trả từ kết quả command hoặc đọc primary. Tôi công khai trạng thái PENDING trong lúc thanh toán xử lý, theo dõi tuổi projection và đặt ngưỡng cảnh báo. Trade-off là hệ thống đọc nhanh hơn và chịu lỗi thành phần tốt hơn, đổi lại cần trạng thái trung gian, retry idempotent và quy trình đối soát. Tôi chỉ dùng consistency mạnh ở nơi hậu quả của đọc cũ lớn; không kéo cả báo cáo và tìm kiếm vào đường transaction.”
+
+  > Senior tip: Hãy ghi rõ “được phép stale tối đa bao lâu” cho từng projection và theo dõi bằng tuổi sự kiện ở p95/p99. Nếu không có ngưỡng đo được, eventual consistency chỉ là lời hứa mơ hồ.`,
+  follow: [
+    'Làm sao xử lý khi một sự kiện outbox bị phát lại nhiều lần nhưng projection không được đếm hoặc ghi trùng?',
+    'Với giao dịch chuyển tiền qua hai service, bạn biểu diễn trạng thái trung gian và quy trình bù trừ thế nào?',
+    'Khi nào đọc từ replica là an toàn, và làm sao đảm bảo người dùng vừa ghi không đọc lại dữ liệu cũ?'
+  ],
+  tags: ['consistency', 'transaction', 'outbox', 'checkout']
+},
+{
+  id: 'architecture-040',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Một bảng đơn hàng tăng lên hàng tỷ dòng và một số khách hàng lớn tạo tải gấp nhiều lần khách khác. Bạn quyết định shard key, kiểu sharding và lộ trình chuyển dữ liệu thế nào để tránh hotspot và vẫn truy vấn được?',
+  a: `**Tóm tắt:** Sharding là chia một tập dữ liệu thành nhiều phần độc lập để tăng dung lượng và tải ghi; shard key là giá trị dùng để quyết định một bản ghi nằm ở shard nào. Tôi chọn key dựa trên phân bố tải, truy vấn phổ biến, khả năng cô lập tenant và khả năng chuyển shard, không chỉ dựa vào việc key có duy nhất hay không. Hash phân tán đều nhưng kém cho truy vấn theo khoảng; range giữ thứ tự nhưng có thể dồn tải vào vùng mới nhất.
+
+### Vì sao phải chọn key trước khi dữ liệu quá lớn
+Một DB đơn có giới hạn về CPU, I/O và dung lượng. Tăng máy dọc (vertical scaling) có giới hạn; sharding thêm các DB node và định tuyến request tới node chứa dữ liệu. Nhưng từ lúc chia shard, một truy vấn, unique constraint hoặc transaction vốn đơn giản có thể phải phối hợp nhiều DB.
+
+Key tốt thường có cardinality cao (nhiều giá trị khác nhau), tải phân bố tương đối đều, xuất hiện trong phần lớn truy vấn và ít thay đổi. {{tenant_id}} giúp mọi dữ liệu của tenant ở cùng nơi, dễ cô lập và truy vấn theo khách hàng; nhưng một tenant khổng lồ có thể thành hot shard. {{created_at}} hợp với quét theo thời gian nhưng ghi mới đều dồn vào shard cuối. {{order_id}} ngẫu nhiên phân tán ghi, nhưng truy vấn toàn bộ đơn của một khách hàng cần secondary index hoặc fan-out.
+
+### Hash hay range?
+| Chiến lược | Tốt | Rủi ro | Ví dụ hợp lý |
+|---|---|---|---|
+| Hash(key) | Phân phối ghi đều | Truy vấn theo khoảng quét nhiều shard | Lịch sử theo user nếu hash theo user |
+| Range(key) | Quét khoảng và sắp thứ tự | Giá trị mới dồn vào range cuối | Lưu trữ theo ngày đã đóng |
+| Tenant mapping | Cô lập tenant, có thể chuyển tenant lớn | Cần metadata định tuyến và di chuyển | SaaS B2B |
+| Composite/hash bucket + thời gian | Cân bằng và giới hạn vùng quét | Routing phức tạp hơn | Event theo account và tháng |
+
+Ở Java, hash code có thể âm, nên không dùng phép {{%}} trực tiếp để tạo chỉ số âm:
+~~~java
+int shardFor(String tenantId, int shardCount) {
+    // floorMod xử lý cả hash âm; số shard phải lớn hơn 0.
+    return Math.floorMod(tenantId.hashCode(), shardCount);
+}
+~~~
+Đây chỉ minh họa định tuyến; {{hashCode()}} của Java không phải giao thức ổn định giữa mọi implementation/version. Sản phẩm thật nên dùng hash được định nghĩa rõ và versioned. Quan trọng hơn, tăng trực tiếp shardCount từ 8 lên 9 remap nhiều tenant. Dùng logical bucket (ví dụ 1.024 bucket ổn định) rồi ánh xạ bucket sang shard vật lý giúp chuyển một nhóm bucket mà không đổi key của toàn bộ hệ thống.
+
+### Quy trình chọn key
+1. Liệt kê truy vấn thật bằng số liệu: phần trăm theo tenant, theo user, truy vấn báo cáo và join.
+2. Ước lượng phân bố: tenant lớn nhất chiếm bao nhiêu % QPS và dung lượng? Đừng chỉ nhìn trung bình.
+3. Chọn nơi đặt các thao tác cần transaction chung. Nếu đơn và dòng đơn thường được đọc cùng nhau, giữ chúng cùng shard hoặc thiết kế rõ cách xử lý giao dịch phân tán.
+4. Kiểm tra unique constraint: ràng buộc unique toàn cụm khó hơn unique trong một shard. Thường thêm shard key vào phạm vi unique hoặc dùng ID toàn cục và service kiểm soát.
+5. Thiết kế resharding trước: copy snapshot, bắt kịp thay đổi bằng CDC/log, đổi routing có kiểm soát, xác minh rồi mới bỏ dữ liệu cũ.
+
+### Hotspot và vận hành
+Shard key không bảo đảm cân bằng QPS. Một tài khoản có vài triệu giao dịch hoặc một SKU flash sale có thể nóng dù các shard có dung lượng bằng nhau. Các cách xử lý gồm bucket phụ theo một key phụ, cache/read replica cho tải đọc, hoặc cô lập tenant/SKU nóng. Tuy nhiên bucket phụ làm truy vấn tổng hợp phải gộp kết quả và có thể làm mất transaction đơn giản.
+
+Theo dõi từng shard: QPS, p99, CPU, dung lượng, replication lag và hàng đợi connection. Một shard ở 90% CPU trong khi trung bình cụm 35% là dấu hiệu phân bố lệch. Đặt ngưỡng di chuyển theo telemetry, không chờ đầy ổ đĩa. Trong lúc di chuyển, giới hạn tốc độ copy để không cạnh tranh I/O với giao dịch online; so sánh count/checksum và có đường rollback routing.
+
+### Pitfall production
+- Chọn {{created_at}} làm range key rồi mọi ghi mới đổ vào một shard nóng.
+- Hash theo {{order_id}} đều nhưng mọi màn hình tra đơn theo {{tenant_id}} phải broadcast truy vấn.
+- Tăng số shard thay đổi phép modulo, tạo đợt cache miss và di chuyển gần như toàn bộ dữ liệu.
+- Một tenant lớn phá vỡ giả định “mọi tenant tương đương”; cần tenant placement hoặc tách riêng.
+- Sequence/unique chỉ có ý nghĩa trong một shard nhưng API lại giả định duy nhất toàn hệ thống.
+
+### Ví dụ đời thực
+Một SaaS có 400 triệu đơn, 2.000 tenant. Ban đầu sharding theo {{tenant_id}} vào 16 DB; trung bình 25 triệu đơn/shard nhưng tenant lớn nhất tạo 28% lưu lượng, làm một shard có p99 900 ms trong khi phần còn lại 180 ms. Điều tra theo tenant cho thấy một khách hàng chiếm 11% tổng số đơn và chạy báo cáo đồng thời với API. Team giữ tenant nhỏ theo mapping, đưa tenant lớn sang nhóm shard riêng và chia bảng sự kiện phụ theo {{tenant_id + month}}; đường ghi đơn vẫn định tuyến về shard của tenant để transaction đơn giản. Dùng logical bucket để chuyển một nhóm tenant trong giờ thấp điểm, copy nền và đối chiếu checksum trước khi đổi routing. Sau rollout, p99 API của shard nóng giảm từ 900 xuống 260 ms; báo cáo tenant lớn chạy trên replica riêng, không còn kéo latency toàn cụm lên.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi sẽ lấy truy vấn và phân bố tải làm đầu vào. Với SaaS, tenant ID thường giúp cô lập dữ liệu và truy vấn nghiệp vụ, nhưng tôi sẽ kiểm tra tenant lớn nhất chứ không chỉ nhìn trung bình. Hash phân phối đều nhưng làm truy vấn theo khoảng khó; range thuận tiện quét nhưng có thể tạo hotspot ở vùng mới. Tôi cũng kiểm tra unique constraint, transaction chung và cách định tuyến trước khi chốt key. Để tránh remap toàn bộ khi thêm DB, tôi dùng logical bucket cùng bảng mapping bucket-to-shard, rồi chuyển từng bucket bằng snapshot cộng log thay đổi và xác minh checksum. Hot tenant có thể được đặt riêng; đổi lại báo cáo liên tenant cần fan-out hoặc kho phân tích. Tôi theo dõi tải từng shard, replication lag và dung lượng, đặt ngưỡng chuyển tải trước khi hết tài nguyên. Sharding không phải nút bấm scale; nó đổi một bài toán DB thành bài toán phân phối và di chuyển dữ liệu.”
+
+  > Senior tip: Đừng báo “trung bình mỗi shard 50%” mà bỏ qua p99 theo shard. Luôn tìm top tenant/key theo QPS và dung lượng trước khi duyệt shard key.`,
+  follow: [
+    'Nếu cần truy vấn báo cáo toàn bộ tenant sau khi sharding theo tenant_id, bạn tránh fan-out lên OLTP thế nào?',
+    'Thiết kế quy trình chuyển một tenant nóng sang shard riêng mà không dừng ghi ra sao?',
+    'Làm thế nào xử lý unique constraint toàn cục khi dữ liệu được chia trên nhiều shard?'
+  ],
+  tags: ['sharding', 'shard-key', 'partitioning', 'hotspot']
+},
+{
+  id: 'architecture-041',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Một API đọc catalog cần nhanh, nhưng dữ liệu thay đổi từ nhiều service và cache đôi khi trả giá cũ. Bạn chọn cache-aside hay write-through, thiết kế invalidation và xử lý race giữa đọc/ghi thế nào?',
+  a: `**Tóm tắt:** Cache-aside là ứng dụng tự đọc cache, cache miss thì tải từ DB; write-through yêu cầu đường ghi cập nhật cache đồng thời với nguồn dữ liệu. Với nhiều service cùng sửa dữ liệu, tôi thường chọn cache-aside kèm sự kiện invalidation bền vững, TTL làm lưới an toàn và version để chặn dữ liệu cũ ghi đè cache mới. Không mô hình nào làm DB và Redis thành một transaction nguyên tử.
+
+### Thuật ngữ và lựa chọn
+Cache là bản sao tạm để giảm latency/tải DB. Invalidation là làm cho bản sao không còn được dùng sau khi nguồn đổi. Write-through có thể nói đến cache tự ghi xuyên tới storage, hoặc ứng dụng ghi storage rồi đồng bộ cache; cần nêu chính xác luồng vì tên gọi giữa thư viện/hệ thống không hoàn toàn đồng nhất. Cache-aside phổ biến khi dữ liệu đọc nhiều, không phải bản ghi nào cũng cần cache và ứng dụng kiểm soát được việc nạp.
+
+| Tiêu chí | Cache-aside | Write-through |
+|---|---|---|
+| Đọc lần đầu | Cache miss phải tải | Cache thường đã được làm mới |
+| Ghi | Cập nhật DB rồi invalidate cache | Đường ghi phải cập nhật cả hai |
+| Dữ liệu ít được đọc | Không tốn cache | Có thể ghi cache lãng phí |
+| Lỗi giữa DB và cache | Cửa sổ stale; cần retry invalidation | Ghi một nơi thành công, nơi kia lỗi vẫn có thể lệch |
+| Phù hợp | Catalog, hồ sơ đọc nhiều | Dữ liệu cần đọc ngay sau khi ghi, cache có semantics rõ |
+
+Write-through không tự cho tính nguyên tử xuyên Redis và PostgreSQL. Nếu DB commit rồi Redis timeout, DB mới nhưng cache cũ; nếu Redis cập nhật trước DB rollback, cache lại chứa giá trị chưa commit. Vì vậy không nên tuyên bố “write-through bảo đảm cache luôn đúng” nếu không có giao thức phục hồi và nguồn chân lý.
+
+### Race khi đọc và ghi
+Trình tự nguy hiểm của cache-aside:
+1. Reader miss cache, đọc giá trị v1 từ DB.
+2. Writer commit v2 và xóa cache.
+3. Reader ghi v1 vào cache sau khi đã bị xóa.
+4. Cache tiếp tục trả v1 cho tới TTL.
+
+Các hướng giảm rủi ro: chỉ nạp từ phiên bản có thể kiểm tra; dùng version tăng đơn điệu và cập nhật cache theo điều kiện “chỉ nhận version mới hơn”; phát invalidation sau commit qua transactional outbox; TTL giới hạn thời gian stale nếu sự kiện mất. Outbox là bản ghi sự kiện ghi cùng transaction DB để tiến trình nền có thể phát lại sau lỗi. Nếu chỉ dùng callback in-memory sau commit, tiến trình chết đúng lúc đó có thể làm mất invalidation.
+
+~~~java
+void updateProduct(Product product) {
+    // Transaction này lưu dữ liệu và outbox trong cùng DB commit.
+    repository.save(product);
+    outbox.save(ProductChanged.of(product.id(), product.version()));
+}
+
+void onProductChanged(ProductChanged event) {
+    // Chỉ xóa cache khi event thuộc version đang được cache.
+    cache.evictIfVersionAtMost(event.id(), event.version());
+}
+~~~
+Phần {{evictIfVersionAtMost}} là thao tác logic cần được thực thi nguyên tử trong cache; không phải API cụ thể của mọi thư viện. Nếu dùng Redis, có thể viết Lua script hoặc lưu version trong value và so sánh khi cập nhật. Consumer cần idempotent vì event có thể phát lại. Nếu không cần phức tạp đó, xóa key sau commit, retry invalidation và TTL có thể đủ với catalog chấp nhận stale ngắn.
+
+### Quy tắc thực dụng cho catalog
+- Cache key có schema/version, ví dụ {{product:v3:<id>}}, để deploy thay đổi cấu trúc không diễn giải nhầm value cũ.
+- Đặt TTL kể cả khi có event; thêm jitter để nhiều key không hết hạn cùng lúc.
+- Không cache kết quả phân quyền hoặc giá cá nhân hóa nếu key không chứa đủ tenant/user/region; sai key có thể rò dữ liệu.
+- Với ghi, commit DB trước rồi invalidate; không giữ transaction DB mở trong lúc gọi Redis.
+- Đo cache hit rate, stale age, invalidation lag và lỗi cache. Có chế độ giảm tải/tắt cache và DB đủ khả năng xử lý tình huống đó.
+
+### Pitfall production
+- Chỉ service A phát invalidation trong khi service B cũng ghi bảng.
+- TTL dài bị xem như giải pháp consistency; nó chỉ giới hạn stale chứ không ngăn stale ngay sau ghi.
+- Cập nhật value cache bằng hai request đồng thời theo thứ tự ngược, khiến value cũ ghi cuối.
+- Cache key thiếu locale/tenant/currency làm trả nội dung hoặc giá của người khác.
+- Redis chập chờn khiến mọi request miss cùng lúc; cache fallback không giới hạn có thể dồn tải vào DB.
+
+### Ví dụ đời thực
+Catalog có 3 triệu sản phẩm, 25.000 lượt đọc/giây và nhiều service cập nhật giá. Giá cũ có thể hiển thị tối đa 5 giây nhưng checkout phải đọc giá có thẩm quyền. Ban đầu service catalog xóa Redis sau commit; một worker chết trước bước xóa làm một số key giữ giá cũ hết TTL 10 phút. Team thêm outbox cùng transaction cập nhật sản phẩm, consumer phát invalidation và retry được; TTL giảm còn 5 phút làm lưới an toàn, có metric tuổi event. Một race reader v1 ghi sau invalidate vẫn từng xuất hiện, nên họ đưa version vào value và chỉ chấp nhận version không thấp hơn version hiện có. Invalidation lag p99 giảm từ 7 phút xuống 1,4 giây; checkout vẫn kiểm tra giá trong DB, còn trang catalog công bố chính sách cập nhật gần thời gian thực.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi sẽ xác định stale tối đa mà nghiệp vụ chấp nhận. Với catalog đọc nhiều, cache-aside thường đơn giản: đọc cache, miss thì đọc DB; khi ghi, commit DB trước rồi invalidate. Nhưng nếu nhiều service có thể ghi, tôi không dựa vào callback của một service. Tôi ghi outbox trong cùng transaction với dữ liệu và phát invalidation có retry. Event có thể đến trùng nên consumer idempotent. Tôi cũng kiểm tra race khi reader lấy v1, writer commit v2 rồi reader vô tình nạp v1 sau khi cache bị xóa; version hoặc một chiến lược chống ghi lùi có thể xử lý nếu stale đó không chấp nhận được. Write-through không làm DB và Redis nguyên tử, nên lỗi một phía vẫn cần phục hồi. TTL, jitter, theo dõi invalidation lag và đường fallback có giới hạn là các phần bắt buộc. Với giá checkout, cache chỉ hỗ trợ hiển thị; quyết định cuối phải kiểm tra nguồn có thẩm quyền.”
+
+  > Senior tip: Hãy đo “invalidation lag” và đặt ngân sách stale theo nghiệp vụ. TTL dài không thay thế được invalidation; nó chỉ đặt trần cho một số đường lỗi.`,
+  follow: [
+    'Làm sao tránh reader ghi lại value cũ vào cache sau khi writer đã invalidate?',
+    'Nếu Redis down, bạn fallback về DB thế nào mà không tạo cache stampede?',
+    'Khi nhiều service cập nhật cùng một sản phẩm, ai sở hữu version và cách xử lý event đến sai thứ tự ra sao?'
+  ],
+  tags: ['cache-aside', 'write-through', 'invalidation', 'outbox']
+},
+{
+  id: 'architecture-042',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Client, API, database, Kafka consumer và cổng thanh toán đều có thể timeout hoặc retry. Bạn thiết kế idempotency end-to-end thế nào để một yêu cầu logic chỉ tạo một hiệu ứng nghiệp vụ?',
+  a: `**Tóm tắt:** Idempotency là tính chất gửi cùng một yêu cầu logic nhiều lần nhưng kết quả nghiệp vụ chỉ được áp dụng một lần. Tôi tạo khóa ổn định ở biên API, lưu khóa cùng hash request và kết quả trong DB có unique constraint; trong cùng transaction ghi outbox. Mỗi consumer có deduplication riêng và lời gọi ra đối tác dùng cùng khóa nếu đối tác hỗ trợ. Không hứa exactly-once xuyên mọi hệ thống; thiết kế at-least-once cộng dedup, trạng thái và đối soát.
+
+### Vì sao timeout tạo ra yêu cầu không rõ kết quả
+Timeout chỉ nói client không nhận phản hồi đúng hạn, không nói server chưa xử lý. Server có thể đã commit đơn nhưng response bị mất. Client retry nếu không có khóa sẽ tạo đơn thứ hai. Message broker cũng thường giao lại message khi consumer đã commit nghiệp vụ nhưng chưa xác nhận offset. Idempotency phải đặt tại từng ranh giới nơi retry có thể lặp hiệu ứng.
+
+**Idempotency key** là định danh của một thao tác logic, ví dụ UUID client tạo cho “thanh toán đơn 123”. **Request hash** là dấu vân tay của các tham số quan trọng. Nếu cùng key nhưng payload khác, trả lỗi thay vì lặng lẽ dùng kết quả cũ. **Deduplication** là phát hiện và bỏ qua lần xử lý trùng. Khóa cần phạm vi, thường {{(customer_id, operation, idempotency_key)}}, để khách hàng khác không va chạm.
+
+### Luồng API và database
+1. Client tạo key cho một lần bấm xác nhận và giữ nguyên key khi retry; thao tác mới phải dùng key mới.
+2. API bắt đầu transaction, chèn bản ghi idempotency với unique constraint theo scope.
+3. Nếu chèn thành công, tạo payment/order và outbox trong cùng transaction, lưu trạng thái cùng response có thể phát lại.
+4. Nếu vi phạm unique, đọc bản ghi đã có. Hash khác thì trả conflict; cùng hash thì trả kết quả đã lưu hoặc trạng thái {{PENDING}}.
+5. Chỉ hết hạn khóa sau cửa sổ retry được công bố; không xóa khi giao dịch vẫn đang xử lý.
+
+~~~java
+PaymentResult create(String customer, String key, Request req) {
+    String hash = stableHash(req); // Hash các field nghiệp vụ đã chuẩn hóa.
+    return transaction.execute(() -> {
+        IdempotencyRecord prior = records.find(customer, key);
+        if (prior != null) {
+            if (!prior.requestHash().equals(hash)) throw new KeyConflict();
+            return prior.savedResult();
+        }
+        records.insertUnique(customer, key, hash, "PENDING");
+        Payment payment = payments.create(req);
+        outbox.insert(PaymentRequested.of(payment.id(), key));
+        return PaymentResult.pending(payment.id());
+    });
+}
+~~~
+Code minh họa phải dựa vào unique constraint DB, không dựa riêng vào {{find}} rồi {{insert}}: hai request đồng thời đều có thể thấy chưa tồn tại. Xử lý vi phạm unique cần đọc lại record đã thắng cuộc. Thời điểm lưu response và trạng thái phải được thống nhất để retry không thấy bản ghi nửa vời.
+
+### Mỗi hop có trách nhiệm riêng
+| Hop | Khóa/dedup | Khi nào được xác nhận |
+|---|---|---|
+| Client → API | Idempotency key theo thao tác | Kết quả đã lưu hoặc trạng thái đang xử lý |
+| API → DB | Unique constraint + transaction | Commit dữ liệu và outbox |
+| Outbox → Kafka | Event ID ổn định, producer retry | Broker nhận; outbox đánh dấu sau đó |
+| Kafka → consumer DB | Inbox/processed-event unique theo event ID | Cùng transaction với cập nhật nghiệp vụ |
+| Service → cổng thanh toán | Provider idempotency key hoặc tra cứu trạng thái | Có xác nhận/đối soát trạng thái |
+
+Inbox (hộp thư đến) là bảng lưu event ID đã xử lý. Consumer insert event ID và cập nhật dữ liệu trong cùng transaction; nếu event lặp, unique constraint khiến nó không chạy hiệu ứng lần nữa. Nếu hiệu ứng là gửi email, không thể rollback email bằng DB transaction; dùng provider có idempotency, hoặc chấp nhận ít nhất một lần và thiết kế nội dung/recipient dedup thích hợp.
+
+### Exactly-once có giới hạn
+Kafka có semantics exactly-once cho một số luồng đọc-ghi Kafka trong phạm vi cấu hình, nhưng không tự bao trùm DB, email hay cổng thanh toán. “Exactly once” ở cấp nghiệp vụ thường được xây bằng at-least-once delivery (có thể giao lại) và xử lý idempotent. Nếu đối tác không hỗ trợ idempotency, timeout sau khi gửi tạo trạng thái {{UNKNOWN}}; không gửi mù lần nữa. Tra cứu giao dịch theo merchant reference hoặc reconciliation (đối soát giữa hai bên) trước khi quyết định retry.
+
+### Pitfall production
+- Client tạo key mới mỗi lần retry nên server không thể nhận ra cùng thao tác.
+- Chỉ kiểm tra key trong cache; cache mất là giao dịch trùng.
+- Cùng key, payload khác nhưng trả response cũ mà không phát hiện lỗi client.
+- Xóa record idempotency sau vài phút trong khi client/đối tác có thể retry lâu hơn.
+- Consumer ghi DB rồi crash trước commit offset; broker giao lại, vì thế dedup phải nằm cùng transaction với hiệu ứng DB.
+- Lời gọi thanh toán timeout bị coi là thất bại dù provider đã thu tiền.
+
+### Ví dụ đời thực
+Ví điện tử nhận 900 yêu cầu chuyển tiền/giây trong đợt trả lương. Một lần deploy làm response p99 vượt timeout 2 giây; mobile retry trung bình 2,4 lần. Trước đây API tạo transfer mới mỗi lần, dẫn tới 37 giao dịch trùng trong 20 phút. Team bổ sung khóa theo user + operation, request hash, unique constraint và lưu kết quả; ghi transfer cùng outbox trong transaction. Consumer dùng inbox theo event ID; lệnh ra ngân hàng dùng merchant reference ổn định, timeout chuyển sang {{UNKNOWN}} rồi tra cứu trước khi gửi lại. Sau rollout, retry vẫn khoảng 2,1 lần/request nhưng duplicate transfer bằng 0 trong 30 ngày; các trường hợp provider trả trạng thái không rõ được đối soát trong 3 phút p95.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi xem idempotency là hợp đồng trên từng ranh giới retry. Client tạo một khóa cho thao tác logic và giữ nguyên qua timeout. API lưu khóa, request hash và kết quả với unique constraint; cùng khóa nhưng body khác phải bị từ chối. Trong một DB transaction, tôi tạo nghiệp vụ và outbox để không có cửa sổ commit dữ liệu mà mất event. Consumer dùng inbox hoặc unique event ID trong cùng transaction với cập nhật DB. Với cổng thanh toán, tôi truyền merchant reference ổn định nếu provider hỗ trợ. Nếu timeout mà không biết đã thu tiền chưa, trạng thái là UNKNOWN và phải query/đối soát, không gửi lại mù. Tôi tránh tuyên bố exactly-once toàn hệ thống; broker có thể giao lặp, DB và email không cùng transaction. Mục tiêu thực tế là at-least-once delivery, hiệu ứng nghiệp vụ dedup được và có quy trình phục hồi cho trạng thái mơ hồ.”
+
+  > Senior tip: Giữ idempotency record lâu hơn cửa sổ retry thực tế của client và đối tác. Với tiền, “không biết đã thành công chưa” là một trạng thái cần mô hình hóa, không phải exception để retry vô hạn.`,
+  follow: [
+    'Nếu cùng idempotency key được gửi đồng thời từ hai API instance, bạn bảo đảm chỉ một bên tạo giao dịch bằng cơ chế nào?',
+    'Đối tác thanh toán không hỗ trợ idempotency và timeout sau khi nhận request; bạn xử lý thế nào?',
+    'Consumer đã cập nhật DB nhưng chưa commit Kafka offset rồi bị restart, dedup nằm ở đâu?'
+  ],
+  tags: ['idempotency', 'outbox', 'inbox', 'payments']
+},
+{
+  id: 'architecture-043',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Một downstream service chậm dần khiến thread, connection và queue của API tăng liên tục. Bạn thiết kế back-pressure và load shedding thế nào để giữ hệ thống sống, tránh retry storm và bảo vệ request quan trọng?',
+  a: `**Tóm tắt:** Back-pressure (áp lực ngược) là báo cho nơi gửi giảm tốc khi nơi nhận gần quá tải; load shedding là chủ động từ chối hoặc bỏ công việc ít quan trọng để bảo vệ phần còn lại. Tôi giới hạn concurrency và queue, áp deadline xuyên suốt, phân loại ưu tiên, từ chối sớm bằng 429/503 và chỉ retry có điều kiện với backoff+jitter. Queue không giới hạn không hấp thụ tải miễn phí; nó biến quá tải tức thời thành latency và hết bộ nhớ.
+
+### Vì sao queue dài không phải giải pháp
+Khi request đến nhanh hơn khả năng xử lý, queue tăng. Theo định luật Little, số việc đang nằm trong hệ thống xấp xỉ throughput nhân với thời gian lưu lại: {{L = λ × W}}. Nếu service xử lý 1.000 request/s mà mỗi request mất 10 giây, cần trung bình 10.000 request đang chờ hoặc chạy. Queue tăng làm request hết deadline, caller retry, tải tăng thêm và hệ thống càng chậm.
+
+Back-pressure khác rate limit ở chỗ nó phản ứng với khả năng tiếp nhận hiện tại, còn rate limit đặt quota theo caller/khoảng thời gian. Load shedding chọn việc không phục vụ: ví dụ bỏ recommendation hoặc analytics nhưng giữ thanh toán/đăng nhập. Cần xác định ưu tiên nghiệp vụ trước sự cố.
+
+### Các lớp bảo vệ
+1. **Giới hạn đầu vào:** concurrency tối đa, queue có giới hạn và request body/connection limit.
+2. **Deadline:** truyền thời gian còn lại xuống service dưới; không để mỗi hop tự chờ 30 giây khi client chỉ còn 2 giây.
+3. **Bulkhead:** chia thread pool/connection pool theo dependency hoặc nhóm nghiệp vụ để một dependency không chiếm hết tài nguyên.
+4. **Từ chối sớm:** queue đầy thì trả 503 hoặc 429 cùng {{Retry-After}} nếu có thể; không nhận rồi để timeout muộn.
+5. **Circuit breaker:** tạm ngừng gọi dependency lỗi để tránh lãng phí kết nối; nó không thay thế giới hạn queue hay capacity.
+6. **Retry có ngân sách:** retry lỗi tạm thời, giới hạn số lần, exponential backoff với jitter; không retry lỗi nghiệp vụ hoặc mọi timeout vô điều kiện.
+
+Ví dụ giới hạn semaphore trong Java:
+~~~java
+Response callPartner(Request request) {
+    if (!partnerPermits.tryAcquire()) {
+        throw new ServiceOverloadedException();
+    }
+    try {
+        return partnerClient.call(request, request.remainingDeadline());
+    } finally {
+        partnerPermits.release();
+    }
+}
+~~~
+{{tryAcquire()}} không đợi vô hạn nên overload bị phát hiện sớm; deadline còn lại phải được truyền tới HTTP client thật. Trong Spring, cấu hình pool/timeout phải nhất quán với số permit; nếu pool chỉ có 20 connection nhưng semaphore cho 200 request thì 180 request vẫn xếp hàng bên trong client.
+
+### Chọn việc giữ lại và bỏ đi
+| Tác vụ | Hành vi khi quá tải |
+|---|---|
+| Xác nhận thanh toán/đơn | Giữ tài nguyên có giới hạn, từ chối rõ để client retry an toàn |
+| Recommendation, nội dung liên quan | Trả kết quả tối giản hoặc bỏ qua |
+| Email xác nhận | Đưa vào hàng đợi bền; giới hạn tốc độ consumer |
+| Báo cáo lớn | Giới hạn đồng thời, trả job bất đồng bộ |
+| Health check nội bộ | Tránh phụ thuộc chuỗi downstream dài gây báo chết giả |
+
+Thông báo từ chối cần phù hợp giao thức: HTTP 429 cho quota theo caller, 503 cho năng lực service tạm thời. Retry-After chỉ hữu ích nếu client tuân thủ. Backoff phải có jitter để hàng nghìn client không cùng retry đúng một thời điểm. Hệ thống cũng cần giữ headroom cho request nội bộ như health check, token refresh hoặc thao tác phục hồi.
+
+### Quan sát và điều chỉnh
+Đo inflight request, độ sâu/tuổi queue, tỷ lệ từ chối, timeout, saturation thread/connection pool, deadline hết hạn, retry rate và latency theo dependency. CPU thấp không có nghĩa hệ thống khỏe nếu mọi thread đang chờ socket. Load shedding có hiệu quả khi p99 và error budget của luồng quan trọng được bảo vệ, không phải khi dashboard chỉ cho thấy số lỗi tổng giảm.
+
+### Pitfall production
+- Queue không giới hạn trong executor hoặc message consumer tạo heap tăng và GC pause.
+- Retry ở gateway, service và client nhân lên: 3 tầng mỗi tầng thử 3 lần có thể tạo tới 27 lần gọi downstream.
+- Timeout chỉ ở ingress nhưng service dưới vẫn tiếp tục xử lý request đã hết hạn.
+- Rate limit toàn cục làm một tenant ồn ào lấy hết quota của tenant khác; cần fairness theo tenant/endpoint.
+- Circuit breaker mở nhưng request đã xếp hàng vẫn tiếp tục, nên tải không giảm.
+
+### Ví dụ đời thực
+API đặt hàng nhận đỉnh 8.000 request/s; service kiểm tra điểm thưởng bình thường chịu 3.000 request/s nhưng latency tăng từ 80 ms lên 2 giây. Thread pool web có 400 thread và queue vô hạn; sau 90 giây, 18.000 request chờ, heap tăng 5 GB và API thanh toán cũng timeout vì dùng chung pool. Team tách bulkhead, giới hạn 250 concurrent call tới điểm thưởng, queue nhỏ 500, deadline 700 ms và cho phép checkout không có recommendation/điểm thưởng tạm thời; giao dịch thay đổi điểm được ghi thành tác vụ bền và xác nhận sau. Retry client chỉ một lần với exponential backoff+jitter. Khi downstream suy giảm, API từ chối sớm 12% request phụ, nhưng p99 thanh toán giữ dưới 450 ms; queue lớn nhất còn 420 thay vì tăng vô hạn.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi sẽ coi tăng queue là dấu hiệu mất cân bằng, không phải năng lực mới. Trước tiên xác định dependency nào bão hòa và luồng nghiệp vụ nào cần được bảo vệ. Tôi đặt giới hạn concurrency và queue rõ ràng, truyền deadline còn lại tới từng hop, dùng bulkhead để dependency chậm không chiếm hết thread hoặc connection. Khi đầy, từ chối sớm bằng 503/429; tác vụ phụ như recommendation có thể bỏ hoặc trả tối giản. Retry chỉ cho lỗi phù hợp, có giới hạn, backoff và jitter để tránh khuếch đại. Circuit breaker giúp ngừng gọi dependency đang lỗi nhưng không thay thế các giới hạn đó. Tôi theo dõi queue age, inflight, retry rate, thread/connection saturation và tỷ lệ shed. Nếu chỉ nhìn CPU, ta có thể bỏ lỡ việc toàn bộ thread đang chờ mạng. Mục tiêu là suy giảm có kiểm soát: một tính năng phụ giảm chất lượng nhưng luồng thanh toán vẫn hoạt động.”
+
+  > Senior tip: Đặt ngân sách retry toàn đường đi, không chỉ mỗi service. Nếu 4 hop đều retry 3 lần, một request ban đầu có thể tạo hàng chục lời gọi khi hệ thống đang yếu nhất.`,
+  follow: [
+    'Bạn phân biệt 429 và 503 thế nào, và làm sao để client không retry đồng loạt?',
+    'Nếu queue Kafka tăng nhanh nhưng consumer vẫn chạy, bạn quyết định scale consumer hay shed traffic dựa trên chỉ số nào?',
+    'Làm sao truyền deadline qua HTTP và message queue mà không để tác vụ hết hạn vẫn chiếm tài nguyên?'
+  ],
+  tags: ['back-pressure', 'load-shedding', 'bulkhead', 'retry']
+},
+{
+  id: 'architecture-044',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Trong buổi system design, bạn có vài phút để ước lượng QPS, dung lượng lưu trữ và bandwidth cho một API. Bạn tính nhanh thế nào, nêu giả định và chuyển con số thành quyết định capacity ra sao?',
+  a: `**Tóm tắt:** Tôi bắt đầu từ hành vi người dùng và tỷ lệ đọc/ghi, đổi tổng ngày thành tải trung bình rồi nhân hệ số peak; tiếp theo tính byte trên một sự kiện và response, cộng overhead/index/replica theo từng mục đích. Cuối cùng tôi kiểm tra CPU, I/O và network bằng benchmark thay vì coi phép tính là dự báo chính xác. Con số tốt trong phỏng vấn là con số có giả định, đơn vị và biên an toàn rõ.
+
+### Định nghĩa đơn vị trước khi nhân
+QPS (queries per second) là số request mỗi giây. Throughput ghi có thể thấp hơn QPS nếu một request tạo nhiều row/event. Bandwidth là byte mỗi giây trên mạng. Giả định peak/average cho biết tải đỉnh cao gấp bao nhiêu lần trung bình. Dùng đơn vị thập phân nhất quán trong nhẩm nhanh: 1 GB xấp xỉ 10^9 byte; khi cấu hình máy, kiểm tra cách công cụ dùng GB hay GiB.
+
+### Ví dụ tính trên bảng trắng
+Giả sử 5 triệu người dùng hoạt động mỗi ngày, mỗi người gọi API trung bình 20 lần/ngày:
+- Request/ngày = 5M × 20 = 100M.
+- QPS trung bình = 100M / 86.400 ≈ 1.160.
+- Nếu peak gấp 5 lần trung bình, peak ≈ 5.800 QPS. Đây là giả định ban đầu; campaign có thể tạo peak lớn hơn.
+- 8% request ghi tạo 8M bản ghi/ngày. Nếu mỗi bản ghi trung bình 1,2 KB payload ứng dụng, payload thô khoảng 9,6 GB/ngày.
+- Nếu row + index trung bình khoảng 2 KB, DB chính cần khoảng 16 GB/ngày; 90 ngày là 1,44 TB trước khi tính bản sao, backup, WAL và headroom. Ba bản copy dữ liệu tương đương khoảng 4,32 TB; backup/WAL cần kế hoạch và retention riêng, không cộng nhầm như dữ liệu row.
+- Nếu mỗi Response trung bình 40 KB, 100M response/ngày là 4 TB/ngày, tức khoảng 46 MB/s trung bình và 230 MB/s ở peak 5 lần, chưa tính protocol overhead, request upload và TLS.
+
+### Chuyển số thành thiết kế
+| Ước lượng | Câu hỏi tiếp theo |
+|---|---|
+| QPS trung bình/đỉnh | Bao nhiêu instance chịu được p99 mục tiêu khi một node mất? |
+| Tỷ lệ ghi và byte/row | DB IOPS, WAL, index và replication có chịu nổi không? |
+| Response byte/s | Load balancer, NIC, CDN và egress cost có đủ không? |
+| Dung lượng theo retention | Bao lâu lưu online, archive hay xóa theo quy định? |
+| Độ tập trung traffic | Một tenant, endpoint hoặc key có thành hotspot không? |
+
+Nếu một instance benchmark chịu được 700 QPS ở p99 mục tiêu và CPU 60%, cần 5.800/700 ≈ 9 instance cho peak lý tưởng. Để chịu mất một instance và deploy, không nên chạy đúng 9; có thể khởi đầu 12–14 instance rồi xác nhận bằng load test có phân bố endpoint thật. Không được lấy benchmark endpoint rỗng làm năng lực hệ thống nếu production còn DB, TLS, logging và dependency.
+
+### Các yếu tố thường bị quên
+- **Cache hit rate:** giảm đọc DB nhưng có thể tạo burst khi cache lạnh hoặc key hết hạn.
+- **Fan-out:** một API gọi 4 service có nghĩa 5.800 QPS ingress có thể thành hơn 20.000 downstream calls/s.
+- **Replication và index:** dung lượng logic không bằng dung lượng vật lý; index, bản sao, WAL, backup và compaction có chi phí khác nhau.
+- **Retention:** 30 ngày và 3 năm là hai thiết kế khác nhau; dữ liệu cũ có thể chuyển object storage/warehouse.
+- **Peak không đồng đều:** giờ cao điểm, tenant lớn và chiến dịch không tuân phân bố trung bình.
+- **Headroom và failure mode:** benchmark khi mất một AZ/node thường quan trọng hơn chạy đủ cụm ở trạng thái bình thường.
+
+### Lỗi trong buổi phỏng vấn và production
+- Lấy request/ngày chia 100.000 thay vì 86.400 giây, hoặc trộn MB với MiB.
+- Dùng trung bình để kích thước hệ thống, bỏ qua burst 10 phút.
+- Tính storage từ JSON payload rồi quên row overhead, index, replica, retention.
+- Tính bandwidth response nhưng quên service-to-service fan-out và egress.
+- Coi số instance theo QPS tuyến tính; contention, GC, connection pool và DB có thể làm throughput không tuyến tính.
+
+### Ví dụ đời thực
+Một ứng dụng đặt lịch có 2 triệu người dùng hoạt động/ngày, trung bình 15 API call/người. Ước lượng ban đầu là 30M/86.400 ≈ 347 QPS, nhưng chiến dịch nhắc lịch tạo peak 8 lần, khoảng 2.800 QPS. 5% request ghi ra 1,5M booking/event mỗi ngày; payload 1 KB tương đương 1,5 GB/ngày, còn row/index 1,8 KB thì khoảng 2,7 GB/ngày trước replica. Response trung bình 25 KB cho khoảng 8,7 MB/s trung bình và 69,5 MB/s peak. Load test với dữ liệu thật cho thấy mỗi instance chỉ chịu 450 QPS tại p99 dưới 300 ms; vì vậy cần ít nhất 7 instance theo peak và triển khai 9 để có headroom khi một instance lỗi/deploy. Sau khi đo fan-out nhắc lịch, team giới hạn tốc độ worker để không đẩy thêm 2.000 request/s vào booking DB. Sai khác giữa ước lượng và benchmark được dùng để điều chỉnh, không che đi bằng cách tăng số node vô hạn.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi sẽ nói rõ giả định trước. Nếu có 5 triệu người dùng hoạt động mỗi ngày và 20 request mỗi người, ta có 100 triệu request/ngày, khoảng 1.160 QPS trung bình. Với peak factor 5, cần thiết kế khoảng 5.800 QPS. Nếu response trung bình 40 KB, bandwidth outbound peak xấp xỉ 230 MB/s. Nếu 8% request ghi, 8 triệu record/ngày; tôi tính riêng payload, row cộng index, retention, replica và backup thay vì nhân một con số chung. Sau đó kiểm tra fan-out: một request gọi nhiều service làm tải downstream lớn hơn ingress. Cuối cùng dùng benchmark ở p99 mục tiêu và failure scenario để xác định instance, headroom và DB capacity. Đây là phép ước lượng để đặt câu hỏi đúng, không phải cam kết chính xác; tôi sẽ cập nhật bằng traffic thực, peak theo thời gian và kích thước dữ liệu đo được.”
+
+  > Senior tip: Luôn ghi đơn vị ở từng dòng và phân biệt average, peak, logical storage, physical storage. Khi con số lệch benchmark, tìm giả định sai trước khi đề xuất mua thêm máy.`,
+  follow: [
+    'Nếu peak chỉ kéo dài 10 phút mỗi ngày, bạn chọn autoscaling hay capacity cố định thế nào cho p99 ổn định?',
+    'Một API ingress 5.000 QPS gọi trung bình 4 dependency; bạn tính và kiểm soát downstream capacity ra sao?',
+    'Bạn đưa replication, backup, WAL và retention vào ước lượng storage thế nào mà không cộng trùng?'
+  ],
+  tags: ['capacity-planning', 'QPS', 'storage', 'bandwidth']
+},
 );
