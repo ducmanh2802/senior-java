@@ -5647,6 +5647,9 @@ Tech Lead -> Team: Chốt scope giai đoạn 1 + tiêu chí done
 - Bạn giữ ranh giới chất lượng (đặc biệt bảo mật) nhưng linh hoạt về scope.
 - Bạn giao tiếp rõ, tôn trọng PM, chốt trách nhiệm minh bạch.
 
+### Trả lời mẫu khi phỏng vấn
+"Khi PM đưa deadline tôi đánh giá không an toàn, tôi không từ chối chung chung mà đàm phán bằng dữ liệu. Đầu tiên tôi làm rõ mục tiêu kinh doanh thật sự và tiêu chí thành công của lần ra mắt. Sau đó tôi phân rã công việc, ước lượng theo năng lực thực tế của team và chỉ ra phần phụ thuộc, ví dụ tích hợp nhà cung cấp eKYC và yêu cầu kiểm thử bảo mật. Tôi trình bày rủi ro cụ thể nếu cắt góc, đặc biệt với tính năng nhạy cảm như sinh trắc học: rủi ro lỗi production, thiếu audit log hoặc không đạt kiểm toán. Thay vì chỉ nêu vấn đề, tôi đề xuất phương án: MVP hai giai đoạn với feature flag, bật cho nhóm nhỏ trước, đủ fallback OTP và audit log tối thiểu, rồi mở rộng sau 1-2 tuần. Tôi chốt phạm vi, rủi ro chấp nhận và người quyết định bằng văn bản để minh bạch. Cách này giúp tôi giữ quan hệ hợp tác với PM, vẫn bảo vệ chất lượng hệ thống và hướng đến mục tiêu kinh doanh thực tế."
+
 > Senior tip: Chuẩn bị "ba con số" trước mọi cuộc đàm phán deadline: (1) ước lượng theo phạm vi, (2) năng lực thực tế team (đã trừ họp/nghỉ/bảo trì), (3) rủi ro lớn nhất nếu cắt góc. Ở công ty outsource VN, thêm câu hỏi: deadline này gắn với hợp đồng/phạt trễ hay chỉ mong muốn nội bộ? Câu trả lời quyết định mức linh hoạt.`,
   follow: [
     'Nếu PM vẫn ép deadline và leadership cũng đồng ý, bạn bảo vệ team và hệ thống như thế nào?',
@@ -5720,6 +5723,9 @@ Tech Lead -> Engineering Manager: Báo cáo kết quả sau mỗi tháng
 - Khả năng ảnh hưởng lên trên (managing up) bằng dữ liệu và kế hoạch khả thi.
 - Biết ưu tiên nợ kỹ thuật theo tác động, chấp nhận đánh đổi.
 
+### Trả lời mẫu khi phỏng vấn
+"Khi hệ thống có nhiều nợ kỹ thuật nhưng cấp trên ưu tiên tính năng mới, tôi không tranh luận bằng cảm tính mà chuyển vấn đề kỹ thuật thành tác động kinh doanh. Tôi thu thập số liệu: số sự cố liên quan module, thời gian xử lý, lead time tăng, tỉ lệ pull request bị chặn do test không ổn định và chi phí onboarding. Sau đó tôi chọn 1-2 khoản nợ có đòn bẩy cao thay vì xin viết lại toàn bộ, ví dụ ổn định test tích hợp thanh toán và tách adapter cổng thanh toán. Tôi đề xuất dành 15-20% năng lực mỗi sprint trong 6-8 tuần với mục tiêu đo được như giảm flaky test dưới 5% và rút ngắn thời gian thêm phương thức thanh toán. Tôi gắn kế hoạch này với roadmap: nếu không xử lý, tính năng doanh thu quý sau có rủi ro trễ. Sau mỗi tháng tôi báo cáo kết quả trước và sau để tạo niềm tin. Cách tiếp cận nhỏ, có số liệu giúp leadership thấy đây là khoản đầu tư giảm rủi ro và tăng tốc độ, không phải làm đẹp code."
+
 > Senior tip: Dùng khung "rủi ro + tốc độ + chi phí". Chọn một câu chuyện gần gũi: "Lần trước sự cố thanh toán mất 6 giờ và ảnh hưởng X đơn — nguyên nhân gốc liên quan phần code khó kiểm thử này; đầu tư 3 tuần sẽ giảm xác suất lặp lại." Một sự cố thật (được phép chia sẻ) thuyết phục hơn 20 slide lý thuyết.`,
   follow: [
     'Bạn ưu tiên khoản tech debt nào trước khi nguồn lực hạn chế?',
@@ -5781,6 +5787,9 @@ Junior mới ra trường 6 tháng vào team Java Spring Boot tại công ty out
 - Bạn có phương pháp (kế hoạch, mục tiêu, phản hồi), không mentoring ngẫu hứng.
 - Bạn đo hiệu quả bằng sự trưởng thành của junior và giảm phụ thuộc.
 - Bạn thể hiện vai trò lead/senior: nhân rộng năng lực team.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi mentoring một bạn junior, tôi tập trung giúp bạn tự giải quyết vấn đề thay vì làm hộ. Tôi bắt đầu bằng việc đánh giá nền tảng hiện tại qua 1-2 tuần quan sát và pair programming: bạn mạnh ở đâu, yếu ở đâu về Java, Spring, SQL, debug hay ước lượng. Sau đó tôi đặt mục tiêu 30-60-90 ngày cụ thể, ví dụ 30 ngày nắm quy trình team và viết unit test cơ bản, 60 ngày hoàn thành story nhỏ độc lập, 90 ngày xử lý bug production đơn giản với hỗ trợ nhẹ. Tôi giao việc tăng dần độ khó, phản hồi cụ thể trong code review và giải thích vì sao, không chỉ nói sửa gì. Tôi cũng quy ước kẹt quá 30 phút thì hỏi để tạo không gian an toàn. Mỗi tuần tôi có buổi 1-1 ngắn để theo dõi tiến độ và điều chỉnh. Tôi đo hiệu quả bằng hành vi: số task hoàn thành độc lập, số vòng sửa pull request, tỉ lệ có test và mức độ phụ thuộc vào tôi giảm dần theo thời gian."
 
 > Senior tip: Hãy hỏi junior giải thích lại giải pháp bằng lời của họ ("teach-back" — dạy lại). Nếu họ giải thích được vì sao, kiến thức đã thuộc về họ. Đồng thời để junior ghi chú lại quyết định kỹ thuật — vừa học vừa tạo tài liệu cho team.`,
   follow: [
@@ -5853,6 +5862,9 @@ Hiring Manager -> Recruiter: Quyết định offer/không/ vòng tiếp
 - Bạn tuyển có hệ thống, công bằng, bảo vệ chất lượng đội.
 - Bạn tìm bằng chứng, biết hạn chế bias, tôn trọng ứng viên.
 - Bạn liên kết tiêu chí tuyển với nhu cầu thực của team.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi tham gia phỏng vấn Java backend, tôi thiết kế buổi phỏng vấn có cấu trúc để đánh giá công bằng và ra quyết định dựa trên bằng chứng. Tôi bắt đầu từ nhu cầu thật của vị trí: những năng lực bắt buộc và mức kỳ vọng. Tôi chia buổi phỏng vấn thành các phần rõ ràng: kinh nghiệm thực tế, bài kỹ thuật gần với công việc như review code hoặc debug scenario, câu hỏi hành vi về xử lý sự cố và phối hợp, rồi thời gian để ứng viên hỏi ngược. Với mỗi tiêu chí tôi dùng rubric mô tả mức điểm và ghi chú tín hiệu quan sát được, ví dụ cách ứng viên đặt câu hỏi làm rõ, giải thích trade-off, hoặc thừa nhận phần chưa biết. Tôi tránh đánh đố xa thực tế và không hỏi thông tin không liên quan công việc để giảm thiên lệch. Sau buổi phỏng vấn tôi tổng hợp kết luận hire hoặc no hire kèm bằng chứng cụ thể gắn với rubric. Mục tiêu của tôi là chọn người phù hợp vai trò, đồng thời mang lại trải nghiệm tôn trọng cho ứng viên."
 
 > Senior tip: Kết thúc buổi phỏng vấn, tự hỏi: "Nếu người khác đọc ghi chú của mình, họ có thấy bằng chứng cụ thể không?" Ghi chú tốt giúp hiring manager ra quyết định và giúp team cải thiện quy trình tuyển. Với ứng viên giỏi nhưng chưa khớp vai trò, ghi rõ "khớp vai trò nào hơn" — đây là cách xây thương hiệu tuyển dụng.`,
   follow: [
@@ -5929,6 +5941,9 @@ Lead -> Team: Công bố quyết định + ADR + kế hoạch review
 - Tôn trọng chuyên môn senior, nhưng giữ mục tiêu chung.
 - Dùng bằng chứng, tài liệu (ADR), và cơ chế review.
 
+### Trả lời mẫu khi phỏng vấn
+"Khi hai senior xung đột gay gắt về thiết kế, tôi tập trung tách con người khỏi vấn đề và đưa cuộc tranh luận về tiêu chí kỹ thuật. Tôi dừng thảo luận lan man, tổ chức phiên có cấu trúc để mỗi bên trình bày theo cùng khung: bối cảnh phù hợp, chi phí vận hành, rủi ro và effort. Tôi làm rõ ràng buộc chung như lưu lượng dự kiến, deadline, SLA và năng lực vận hành của team, ví dụ team có quen message broker hay chưa. Sau đó chúng tôi đánh giá theo tiêu chí đã thống nhất: độ đơn giản, khả năng chịu tải, rủi ro giao hàng, khả năng quan sát và bảo trì. Nếu phù hợp, tôi cân nhắc phương án lai cho giai đoạn đầu để giảm rủi ro. Cuối cùng tôi ra quyết định rõ ràng, giải thích lý do, ghi ADR và đặt thời điểm review bằng số liệu như latency và lỗi. Tôi cũng ghi nhận đóng góp của ý kiến không được chọn. Cách làm này giữ tôn trọng chuyên môn, tránh phe phái và giúp team tiến lên."
+
 > Senior tip: Khi hai senior bất đồng, hãy hỏi: "Điều kiện nào sẽ khiến anh/chị đổi ý?" Câu hỏi này buộc mỗi bên nêu giả định có thể kiểm chứng. Đồng thời xác định "reversible vs irreversible decision" (quyết định dễ đảo ngược hay không): quyết định dễ đảo ngược nên chốt nhanh, quyết định khó đảo ngược cần nhiều bằng chứng hơn.`,
   follow: [
     'Nếu sau quyết định, một senior vẫn không hợp tác hoặc nói xấu giải pháp, bạn xử lý thế nào?',
@@ -5991,6 +6006,9 @@ Bạn merge (gộp) thay đổi cấu hình timeout (thời gian chờ tối đa
 - Ownership và trung thực — phẩm chất quan trọng ở senior/lead.
 - Bình tĩnh xử lý sự cố, ưu tiên người dùng/hệ thống.
 - Khả năng học từ sai lầm và cải thiện hệ thống (không chỉ cá nhân).
+
+### Trả lời mẫu khi phỏng vấn
+"Khi chính tôi gây ra sự cố production, ưu tiên đầu tiên của tôi là giảm tác động cho người dùng. Tôi xác nhận nhanh dấu hiệu qua log và dashboard, chủ động báo trên kênh sự cố rằng thay đổi của tôi có thể liên quan và phối hợp rollback hoặc bật biện pháp giảm thiểu như tắt feature flag để ổn định hệ thống. Trong quá trình xử lý tôi cập nhật timeline, tác động và bước tiếp theo một cách minh bạch, không biện minh. Sau khi dịch vụ ổn định, tôi tham gia postmortem không đổ lỗi: nêu rõ nguyên nhân kỹ thuật, ví dụ timeout và retry chưa an toàn, và nguyên nhân hệ thống như thiếu test kịch bản đối tác chậm hay checklist deploy chưa đủ. Tôi nhận phần trách nhiệm của mình, sau đó đề xuất hành động cụ thể có chủ sở hữu và hạn chót: bổ sung test, cải thiện cơ chế chống trùng, cập nhật giám sát và quy trình phát hành. Khi kể lại, tôi nhấn mạnh bài học và thay đổi đã giúp giảm khả năng lặp lại."
 
 > Senior tip: Khi kể câu chuyện này trong phỏng vấn, hãy cân bằng: 20% mô tả lỗi, 80% cách bạn xử lý và cải tiến. Nêu rõ "tôi đã làm sai X" và "sau đó tôi đã thay đổi Y để xác suất lặp lại giảm" — kèm số liệu nếu có. Đây là câu hỏi để chứng minh độ trưởng thành, không phải để khoe bạn chưa bao giờ sai.`,
   follow: [
