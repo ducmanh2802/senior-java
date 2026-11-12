@@ -1965,6 +1965,8 @@ window.DATA_INDEX = {
     {"id":"sd-022","title":"Lưu trữ và đồng bộ file nhiều thiết bị kiểu Google Drive"},
     {"id":"sd-023","title":"Chatbot hỏi đáp tài liệu nội bộ có phân quyền cho 5.000 nhân viên"},
     {"id":"sd-024","title":"LLM gateway dùng chung cho nhiều team"},
+    {"id":"sd-025","title":"Nền tảng chạy agent tự động xử lý ticket hỗ trợ khách hàng"},
+    {"id":"sd-026","title":"Hệ thống thông báo đa kênh: push, email, SMS với template, ưu tiên, giờ yên lặng, chống trùng"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},

@@ -2778,4 +2778,410 @@ Giả sử 20 team cùng dùng một gateway ở 10 RPS trung bình. Ngày đầ
       ],
       related: ['ai-009', 'ai-019', 'microservices-006']
     },
+{
+  id: 'sd-025',
+  title: 'Nền tảng chạy agent tự động xử lý ticket hỗ trợ khách hàng',
+  kind: 'bigtech',
+  level: 'lead',
+  prompt: `Bạn thiết kế nền tảng (platform) cho phép các đội nghiệp vụ xây dựng và chạy **agent tự động** (dựa trên LLM) xử lý ticket hỗ trợ khách hàng. Agent có thể: đọc ticket, gọi công cụ (tra cứu đơn hàng, hoàn tiền, đổi địa chỉ, tạo case cho đội kỹ thuật), hỏi lại khách nếu thiếu thông tin, chờ duyệt của con người (human-in-the-loop) cho hành động rủi ro cao, chạy trong nhiều bước dài (có thể kéo dài vài ngày do chờ phản hồi), **lưu trạng thái để resume** khi pod chết hoặc deploy mới, **giới hạn chi phí token** theo ticket và theo ngày, và **audit đầy đủ** mọi quyết định. Quy mô: 5.000 ticket/ngày, peak 500 ticket/giây lúc sale, agent trung bình 8–12 bước, 15% cần human approval. Bạn có 60 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 8, guide: `Functional: định nghĩa agent (prompt, tools, approval rules, cost limit), chạy agent theo ticket, human approval queue, xem lịch sử bước và chi phí, huỷ/dừng agent, versioning agent. Non-functional: độ bền trạng thái (pod chết không mất bước), p99 bước chạy < 3 giây (không tính thời gian chờ human/khách), cost limit cứng, audit log không thể xoá, multi-tenant (nhiều team dùng chung platform). Hỏi: LLM provider nào (OpenAI, Anthropic, tự host), có cần streaming response không, tool gọi đồng bộ hay async, rollback khi tool thất bại. Out-of-scope: RAG knowledge base, fine-tuning, guardrails nội dung (có thể nhắc).` },
+    { name: 'Estimation', minutes: 7, guide: `5.000 ticket/ngày x 10 bước = 50.000 bước/ngày ≈ 0,6 bước/giây trung bình, peak 500 ticket/giây x 10 = 5.000 bước/giây. Mỗi bước: LLM call 1–3 giây + tool call 0,1–2 giây. State mỗi ticket ~20 KB (history, variables, step pointer). 5.000 ticket đang chạy x 20 KB = 100 MB state nóng. LLM token: 10 bước x 4.000 token = 40.000 token/ticket => 200M token/ngày, chi phí ~$400–800/ngày tuỳ model. Cần budget enforcement.` },
+    { name: 'API & data model', minutes: 7, guide: `POST /agents (định nghĩa agent), POST /runs {agentId, ticketId, input} -> runId, GET /runs/{id}, POST /runs/{id}/approve {stepId, decision}, POST /runs/{id}/cancel. Bảng agent_def (id, version, prompt, tools[], approval_rules, cost_limit_usd, cost_limit_daily_usd), agent_run (id, agent_def_id, ticket_id, status, current_step, state_json, cost_usd, tokens_used, created_at, updated_at), agent_step (run_id, step_idx, type, input, output, tool_calls[], status, cost_usd, started_at, finished_at), approval_task (id, run_id, step_id, status, reviewer, decided_at), audit_log (append-only, run_id, step_idx, event_type, payload).` },
+    { name: 'High-level design', minutes: 18, guide: `Vẽ: API -> Run Service (tạo run, load state) -> Execution Engine (đơn luồng cho một run, state machine) -> LLM Gateway (rate limit, cost tracking, provider failover) + Tool Registry (HTTP/gRPC, timeout, retry, idempotency) -> State Store (Postgres + Redis cache) -> Approval Service (queue, Slack/email notify) -> Audit Sink (Kafka -> S3/ClickHouse). Giải thích: vì sao execution engine đơn luồng mỗi run, checkpoint sau mỗi bước, cách resume, cost enforcement.` },
+    { name: 'Deep dive', minutes: 20, guide: `Đào sâu: state machine và checkpoint, execution engine đơn luồng (optimistic lock version), LLM gateway (budget, streaming, tool calling format), tool registry (schema, timeout, retry, side-effect classification), human approval (priority, SLA, escalation), cost enforcement (pre-check ước lượng, real-time tracking, hard stop), audit và replay, failure modes (pod chết giữa bước, LLM timeout, tool lỗi một phần, approval hết hạn).` }
+  ],
+  rubric: [
+    'State machine rõ ràng: INIT -> RUNNING(step N) -> WAITING_TOOL -> WAITING_APPROVAL -> WAITING_USER -> COMPLETED/FAILED/CANCELLED',
+    'Execution engine đơn luồng cho một run, checkpoint state sau mỗi bước (DB + Redis), resume bằng optimistic lock (version)',
+    'LLM Gateway: budget enforcement (ước lượng trước, theo dõi real-time, hard stop), provider failover, tool calling chuẩn (OpenAI function calling / Anthropic tool use), rate limit',
+    'Tool Registry: schema JSON, timeout, retry policy, idempotency key, phân loại side-effect (read-only vs write) để quyết định rollback',
+    'Human approval: priority queue, SLA theo mức độ rủi ro, escalation tự động, decision ghi lại với reviewer và lý do',
+    'Cost limit: per-run và per-day, enforce ở gateway (từ chối bước mới khi vượt), alert khi đạt 80%',
+    'Audit log append-only: mọi input, output, tool call, decision, cost; có thể replay run từ đầu',
+    'Versioning agent: chạy version mới chỉ cho ticket mới, ticket đang chạy ở version cũ chạy hết hoặc migrate có chủ đích',
+    'Observability: step latency p99, token usage, approval queue depth, cost trend, failure rate theo tool',
+    'Failure modes và cách xử lý từng loại'
+  ],
+  reference: `**Tóm tắt:** Nền tảng agent tự động là một **workflow engine có trạng thái bền**, trong đó mỗi run là một state machine đơn luồng checkpoint sau mỗi bước. Ba trụ cột: **state bền** (Postgres + version để resume an toàn), **LLM Gateway** (budget enforcement, provider abstraction, tool calling chuẩn), và **audit append-only** (replay được, compliance). Human approval là một state đặc biệt trong state machine, không phải hệ thống riêng tách biệt.
+  
+### 1. Yêu cầu và quy mô
+- 5.000 ticket/ngày, peak 500 ticket/giây lúc sale.
+- Agent trung bình 8–12 bước; 15% cần human approval (hoàn tiền > 500k, xoá tài khoản, thay đổi hợp đồng).
+- Chạy lâu: một ticket có thể kéo dài 2–3 ngày do chờ khách phản hồi hoặc chờ duyệt.
+- Pod deploy mới hoặc chết không được làm mất tiến độ; cost limit cứng theo ticket và theo ngày.
+- Audit log không thể xoá, phải replay được để chứng minh với kiểm toán/legal.
+  
+### 2. Ước lượng (có phép tính)
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Bước/ngày trung bình | 5.000 ticket x 10 bước | 50.000 |
+| Bước/giây peak | 500 ticket/s x 10 bước | 5.000 |
+| State một run | history (10 bước x 1.5 KB) + variables + pointer | ~20 KB |
+| State nóng | 5.000 run đồng thời x 20 KB | 100 MB |
+| Token/ngày | 5.000 x 40.000 token | 200M |
+| Chi phí LLM/ngày | 200M token x $2–4/1M (Claude Sonnet / GPT-4o mini) | $400–800 |
+| Audit log/ngày | 50.000 bước x 5 KB | 250 MB |
+
+Kết luận: state nhỏ, vừa RAM Redis; bottleneck là **LLM latency và cost**, không phải throughput state. Cần single-threaded execution per run để tránh race condition state.
+
+### 3. State Machine
+~~~text
+INIT
+  |
+  v (bắt đầu run)
+RUNNING(step 0) --> ... --> RUNNING(step N)
+  |                              |
+  |  tool call                   |  human approval needed
+  v                              v
+WAITING_TOOL                WAITING_APPROVAL
+  |                              |
+  |  tool done                   |  approve / reject
+  v                              v
+RUNNING(step N+1)           RUNNING(step N+1) / FAILED
+  |
+  |  cần hỏi khách
+  v
+WAITING_USER
+  |
+  |  khách trả lời
+  v
+RUNNING(step N+1)
+  |
+  v (hoàn tất)
+COMPLETED / FAILED / CANCELLED
+~~~
+Mỗi run chỉ có **một luồng thực thi** tại một thời điểm. Chuyển trạng thái là UPDATE có điều kiện trên version (optimistic locking): UPDATE agent_run SET state = ..., version = version + 1 WHERE id = ? AND version = ?. Nếu 0 dòng => run đang được chạy bởi pod khác hoặc đã chuyển state => retry load state mới.
+
+### 4. Execution Engine (đơn luồng mỗi run)
+- Engine là một pool worker kéo task từ queue run:{runId} (Redis list hoặc Kafka partition theo runId).
+- Khi nhận task: SELECT * FROM agent_run WHERE id = ? FOR UPDATE (hoặc SELECT rồi UPDATE có điều kiện version).
+- Thực hiện một bước: gọi LLM Gateway -> parse tool calls -> gọi Tool Registry -> cập nhật state -> checkpoint.
+- **Checkpoint sau mỗi bước**: ghi agent_step, cập nhật agent_run.state_json, current_step, cost_usd, version trong **một transaction**.
+- Nếu pod chết giữa bước: step chưa checkpoint, state vẫn ở bước trước. Khi pod mới resume, load state và tiếp tục từ current_step.
+- **Idempotency tool call**: mọi tool call mang idempotency_key = runId:stepIdx:toolName (attempt chỉ ghi vào payload log, không nằm trong key). Tool Registry deduplicate theo key này.
+
+~~~java
+// Pseudocode execution loop
+while (run.status == RUNNING) {
+    StepDef step = agentDef.steps[run.currentStep];
+    LLMResponse resp = llmGateway.chat(run.stateJson, step.tools);
+    
+    if (resp.hasToolCalls) {
+        run.status = WAITING_TOOL; checkpoint(run);
+        for (ToolCall tc : resp.toolCalls) {
+            ToolResult tr = toolRegistry.call(tc, run.id, run.currentStep);
+            run.stateJson.addToolResult(tc.name, tr);
+        }
+        run.status = RUNNING; checkpoint(run);
+    } else if (resp.needsApproval) {
+        run.status = WAITING_APPROVAL; checkpoint(run);
+        approvalService.createTask(run.id, run.currentStep, resp.approvalContext);
+        return; // yield, wait for approval callback
+    } else if (resp.needsUserInput) {
+        run.status = WAITING_USER; checkpoint(run);
+        notificationService.notifyUser(run.ticketId, resp.question);
+        return; // yield, wait for user reply
+    } else {
+        run.currentStep++;
+        if (run.currentStep >= agentDef.steps.length) { run.status = COMPLETED; }
+        checkpoint(run);
+    }
+}
+~~~
+
+### 5. LLM Gateway (trung tâm chi phí và provider)
+Chức năng:
+- **Budget enforcement**: trước mỗi bước, ước lượng token (system prompt + history + tools schema). Nếu run.cost_usd + estimated > run.cost_limit_usd hoặc daily_used + estimated > daily_limit => chặn, chuyển run sang FAILED_COST_LIMIT.
+- **Real-time tracking**: sau mỗi LLM call, cộng input_tokens + output_tokens vào run.tokens_used và run.cost_usd theo giá model hiện tại.
+- **Provider abstraction**: interface ChatClient với implement OpenAI, Anthropic, Vertex AI. Tự động retry provider khác khi lỗi 5xx/429 (circuit breaker).
+- **Tool calling format**: chuẩn hoá sang OpenAI function calling format; Anthropic tool use tự chuyển đổi.
+- **Streaming (tuỳ chọn)**: nếu agent cần stream về UI, gateway hỗ trợ SSE; state chỉ checkpoint khi stream kết thúc.
+- **Rate limit**: token bucket per provider per project, tránh bị ban.
+
+### 6. Tool Registry
+Mỗi tool đăng ký:
+~~~json
+{
+  "name": "refund_order",
+  "description": "Hoàn tiền đơn hàng, cần approval nếu > 500k",
+  "parameters": { "type": "object", "properties": { "order_id": {"type": "string"}, "amount": {"type": "number"}, "reason": {"type": "string"} }, "required": ["order_id", "amount"] },
+  "timeout_ms": 5000,
+  "retry": { "max_attempts": 3, "backoff_ms": 200 },
+  "idempotent": true,
+  "side_effect": "write",
+  "approval_required_if": "amount > 500000"
+}
+~~~
+- **Side-effect classification**: read-only (tra cứu) có thể retry tự do; write (hoàn tiền, đổi địa chỉ) cần idempotency key và không auto-retry khi lỗi không xác định; external (gửi email, gọi PSP) có thể gây side-effect bên ngoài, cần compensation nếu rollback.
+- **Timeout**: mặc định 5 giây, có thể cấu hình. Timeout thì tool trả ERROR_TIMEOUT, engine quyết định retry hay dừng run.
+- **Schema validation**: input/output validate bằng JSON Schema trước/sau khi gọi.
+
+### 7. Human Approval
+- Khi agent cần approval, engine tạo approval_task với priority (critical/high/normal) dựa trên loại hành động và số tiền.
+- Gửi thông báo Slack/email cho reviewer group có runId, stepIdx, context (tóm tắt ticket, hành động đề xuất, rủi ro, chi phí ước lượng).
+- **SLA**: critical 15 phút, high 1 giờ, normal 4 giờ. Hết SLA => escalation lên manager, hoặc auto-reject tuỳ config.
+- Reviewer bấm Approve/Reject trên Slack/app -> callback POST /runs/{id}/approve -> engine resume từ WAITING_APPROVAL.
+- Mọi decision ghi vào audit_log kèm reviewer_id, decision, reason, decided_at.
+
+### 8. Cost Enforcement (chi tiết)
+| Lớp | Cơ chế |
+|---|---|
+| Pre-check | Ước lượng token bước tới (system prompt ~2k + history ~4k + tools schema ~1k + output dự kiến ~2k) x giá model. Nếu vượt limit => chặn ngay. |
+| Real-time | Sau mỗi LLM call, update cost_usd từ usage trả về. Nếu vượt limit giữa chừng => dừng run, status FAILED_COST_LIMIT. |
+| Daily aggregate | Job hàng giờ tính SUM(cost_usd) WHERE created_at > now() - 24h per agent_def; đạt 80% daily limit => alert Slack; đạt 100% => từ chối run mới của agent_def đó. |
+| Hard limit | Không bao giờ cho vượt; tốt hơn dừng run sớm hơn là nhận hoá đơn bất ngờ. |
+
+### 9. Audit và Replay
+- audit_log append-only: (run_id, step_idx, event_type, payload_json, created_at). event_type: LLM_REQUEST, LLM_RESPONSE, TOOL_CALL, TOOL_RESULT, APPROVAL_REQUESTED, APPROVAL_DECIDED, USER_ASKED, USER_REPLIED, STATE_CHECKPOINT, COST_UPDATE, ERROR.
+- **Replay**: đọc audit_log theo run_id ORDER BY step_idx, created_at, chạy lại logic engine (mock LLM/tool) để verify kết quả. Dùng cho debugging, compliance, và test regression khi cập nhật prompt.
+- **Retention**: 7 năm (tuân thủ), lưu S3 Glacier sau 90 ngày.
+
+### 10. Versioning Agent
+- agent_def có version (semver). Ticket mới luôn dùng version mới nhất ACTIVE.
+- Run đang chạy: **chạy hết version cũ** (đảm bảo hành vi nhất quán cho khách). Hoặc có công cụ migrate: pause run, chuyển agent_def_id sang version mới, resume từ current_step (cần tương thích state schema).
+- Không bao giờ auto-migrate run đang chờ approval/user input.
+
+### 11. Failure Modes
+| Sự cố | Phát hiện | Xử lý |
+|---|---|---|
+| Pod chết giữa bước | Step chưa có record agent_step finished | Resume từ current_step (state đã checkpoint trước đó) |
+| LLM timeout / 5xx | Gateway ném LLMError | Retry 2 lần với provider khác; vẫn lỗi => run FAILED_LLM, alert |
+| Tool lỗi một phần (ví dụ hoàn tiền thành công nhưng gửi email thất bại) | Tool trả PARTIAL_FAILURE | Engine ghi chi tiết, tiếp tục nếu step không critical; compensation job sau |
+| Approval hết hạn SLA | Approval task status = ESCALATED | Auto-reject hoặc chuyển cho manager tuỳ config; run FAILED_APPROVAL_TIMEOUT |
+| Cost limit vượt giữa bước | run.cost_usd > limit sau LLM call | Dừng run ngay, status FAILED_COST_LIMIT, refund token chưa dùng (nếu provider hỗ trợ) |
+| Tool side-effect write thất bại sau khi LLM đã quyết định | Tool trả error | Đánh dấu step FAILED, run FAILED_TOOL; human review quyết định compensation |
+| Prompt injection / agent lặp vô tận | Step count > max_steps (config, mặc định 50) | Hard stop run, status FAILED_LOOP_DETECTED |
+
+### 12. Giám sát
+- Step latency p50/p99 (không tính thời gian chờ human/user).
+- Token usage per run, per agent, per day.
+- Approval queue depth, SLA breach rate.
+- Run success/failed/cancelled rate, failure reason breakdown.
+- Cost trend và forecast.
+- Tool error rate theo tool.
+
+### 13. Ví dụ đời thực
+Một sàn TMĐT triển khai agent xử lý ticket "đổi địa chỉ giao hàng". Trước đây: CSKH mất 10 phút/ticket (tra đơn, xác thực OTP, gọi API partner logistics, cập nhật DB, trả lời khách). Sau khi triển khai agent: 80% ticket tự động trong 45 giây, 20% cần approval (đơn đã đóng gói). Chi phí LLM trung bình $0,08/ticket. Tuần đầu có bug: agent lặp vô tận hỏi "bạn muốn đổi sang địa chỉ nào?" vì prompt thiếu điều kiện dừng. Fix: thêm max_steps = 15 và rule "nếu đã hỏi 2 lần vẫn không rõ => yêu cầu human". Sau fix, zero loop, customer satisfaction tăng từ 3.8 lên 4.5/5.
+
+### 14. Trả lời mẫu khi phỏng vấn (90 giây)
+"Tôi thiết kế platform agent như một **workflow engine stateful**. Mỗi run là một state machine đơn luồng, checkpoint state vào Postgres sau mỗi bước kèm optimistic lock version để resume an toàn khi pod chết. LLM Gateway đứng giữa: enforce budget (pre-check ước lượng + real-time tracking từ usage), abstract provider (OpenAI/Anthropic failover), chuẩn hoá tool calling. Tool Registry đăng ký schema, timeout, retry, idempotency key, và phân loại side-effect để engine biết khi nào có thể retry an toàn. Human approval là một state WAITING_APPROVAL trong state machine, có priority queue, SLA, escalation. Audit log append-only ghi mọi event để replay và compliance. Cost limit cứng per-run và per-day, alert ở 80%. Failure modes: pod chết resume từ checkpoint, LLM timeout failover provider, tool partial failure ghi chi tiết cho compensation, approval timeout auto-escalate. Metric chính: step latency p99, cost/run, approval SLA, failure reason breakdown."
+
+> Senior tip: đừng để agent tự do gọi LLM không kiểm soát chi phí. Một prompt injection hoặc bug logic làm agent lặp 1.000 bước sẽ đốt hàng nghìn đô la trong vài phút. Luôn có **hard limit** ở gateway (token count từ usage response, không ước lượng), và **max_steps** ở engine. Và hãy log **prompt gốc + biến** vào audit, không chỉ tóm tắt — khi có tranh chấp pháp lý, bạn cần chứng minh chính xác agent "nhìn" gì và "nghĩ" gì lúc đó.`,
+  followups: [
+    'Làm sao cho phép agent tự quyết định luồng (dynamic branching) thay vì steps cố định, vẫn giữ được audit và cost limit?',
+    'Nếu một tool cần chạy_async trong 30 phút (ví dụ batch export), engine xử lý thế nào?',
+    'Team A muốn dùng GPT-4o, team B muốn dùng Claude Sonnet, team C muốn dùng model tự host: gateway quản lý multi-tenant ra sao?',
+    'Khi cập nhật prompt version mới, làm sao test regression hàng ngàn ticket mẫu tự động?',
+    'Agent cần truy xuất knowledge base (RAG) 500GB PDF: tích hợp vào tool hay vào prompt context?'
+  ],
+  related: ['ai-001', 'ai-003', 'microservices-040']
+},
+{
+  id: 'sd-026',
+  title: 'Hệ thống thông báo đa kênh: push, email, SMS với template, ưu tiên, giờ yên lặng, chống trùng',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Bạn thiết kế **hệ thống thông báo trung tâm** cho một super-app 20 triệu người dùng: gửi push notification (FCM/APNs), email (SES/SendGrid), SMS (Twilio/VNPT), in-app. Yêu cầu: **template đa ngôn ngữ** có biến, **ưu tiên** (OTP/giao dịch > hệ thống > marketing), **chống gửi trùng** (idempotency 3 lớp), **retry có backoff** phân biệt lỗi tạm thời/vĩnh viễn, **tôn trọng giờ yên lặng** theo múi giờ và tuỳ chọn người dùng, **giới hạn tần suất** theo kênh/người dùng/ngày, **huỷ thông báo** chưa gửi, **đối soát** với provider. Quy mô: 2 triệu thông báo/ngày, peak 20.000/phút (sale), OTP p99 < 3 giây end-to-end. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Functional: gửi đơn lẻ/đồng loạt, template versioned (biến, fallback locale), ưu tiên 3 mức, quiet hours (mặc định 22h-7h local time, user có thể tắt/bật), preference per user per channel per category, huỷ bằng notification_id, lịch sử gửi/trạng thái. Non-functional: OTP < 3s p99, không mất thông báo giao dịch, marketing trễ được, provider rate limit (FCM 10k/s, SES 50k/s, SMS 100/s), khả dụng 99.95%. Hỏi: có cần rich push (hình, action button) không, có webhook callback delivery status không. Out-of-scope: content personalization ML, A/B test template.` },
+    { name: 'Estimation', minutes: 5, guide: `2M/ngày = 23/s trung bình, peak 20k/phút = 333/s. OTP ~5% volume nhưng cần latency thấp. Template: ~500 template x 10 locale. Preference: 20M user x 3 kênh x 5 category = 300M dòng (partition theo user_id). Idempotency key: 2M/ngày x TTL 7 ngày = 14M key Redis. Storage: 2M x 2 KB = 4 GB/ngày notification record; 90 ngày = 360 GB.` },
+    { name: 'API & data model', minutes: 5, guide: `POST /notifications (Idempotency-Key, priority, template_code, payload, channels[], send_at?) -> 202 {notification_id}. GET /notifications/{id}. POST /notifications/{id}/cancel. POST /templates (versioned). Bảng notification (id, user_id, template_code, template_version, payload, channels[], priority, status, idempotency_key, send_at, created_at), notification_channel (notification_id, channel, provider, provider_msg_id, status, attempts, next_retry_at, sent_at), template (code, version, locale, subject, body_text, body_html, variables_schema), user_preference (user_id, channel, category, enabled, quiet_hours_start, quiet_hours_end, timezone), idempotency_key (key, notification_id, created_at, TTL 7 ngày).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: API -> Validation -> Idempotency check -> Priority Router -> 3 Kafka topics (high/normal/low) -> Channel Workers (push/email/sms) -> Provider Adapters -> Delivery Status -> Outbox -> Webhook/Callback -> User Preference Cache (Redis) -> Quiet Hours Check -> Rate Limiter. Giải thích tách topic theo priority, tại sao API chỉ trả 202, cách huỷ thông báo đã vào queue.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: template rendering (biến, fallback locale, XSS escape), idempotency 3 lớp (API key, DB unique, provider idempotency), retry policy (exponential backoff + jitter, phân biệt transient/permanent), quiet hours (tính toán send_at hiệu lực, delay thay vì drop), rate limiter per user/channel/day, huỷ thông báo (mark cancelled, consumer bỏ qua), provider failover (circuit breaker), đối soát hàng ngày.` }
+  ],
+  rubric: [
+    'API chỉ nhận và trả 202, không gọi provider đồng bộ; tách 3 Kafka topic theo priority (OTP riêng topic)',
+    'Template versioned, render an toàn (escape HTML, giới hạn độ dài SMS), fallback locale chain',
+    'Idempotency 3 lớp: Idempotency-Key API, UNIQUE (idempotency_key) trong DB, provider idempotency key (FCM message_id, SES message_id)',
+    'Retry: exponential backoff + jitter (1s, 5s, 30s, 2m, 10m, 30m), chỉ retry lỗi transient (timeout, 429, 5xx); lỗi permanent (email bounce, invalid phone) -> FAILED ngay',
+    'Quiet hours: nếu rơi vào giờ yên lặng thì delay đến giờ mở cửa tiếp theo (không drop), user có thể opt-out quiet hours per category',
+    'Rate limiter: per user per channel per day (configurable), per category, global burst control',
+    'Huỷ thông báo: status = CANCELLED, consumer kiểm tra status trước khi gửi, outbox cũng kiểm tra',
+    'Provider failover: circuit breaker per provider, fallback provider thứ 2, alert khi failover',
+    'Đối soát hàng ngày: download report từ provider (SES bounce/complaint, Twilio delivery, FCM delivery), so khớp với notification_channel, chênh lệch > 0.1% alert',
+    'Observability: queue lag per priority, delivery rate per provider, p99 latency OTP, quiet hours delayed count, cancelled rate, cost per channel'
+  ],
+  reference: `**Tóm tắt:** Hệ thống thông báo là **hàng đợi ưu tiên có trạng thái**, không phải fire-and-forget. Ba nguyên tắc: **tách priority queue** (OTP không bao giờ chờ marketing), **idempotency 3 lớp** (API, DB, provider), và **retry có phân biệt transient/permanent**. Template versioned render ở worker, quiet hours delay thay vì drop, huỷ bằng status CANCELLED kiểm tra ở consumer. Đối soát hàng ngày với file báo cáo provider là lưới an toàn cuối.
+  
+### 1. Yêu cầu và quy mô
+- 20 triệu user, 2 triệu thông báo/ngày, peak 20.000/phút (333/s) lúc sale.
+- 4 kênh: Push (FCM/APNs), Email (SES/SendGrid), SMS (Twilio/VNPT), In-app.
+- OTP/giao dịch: p99 < 3 giây end-to-end, **không bao giờ bị marketing chặn**.
+- Template: 500 template, 10 locale, có biến ({{user_name}}, {{order_id}}), versioned.
+- Quiet hours: mặc định 22:00-07:00 theo timezone user, user có thể tắt/bật per category.
+- Rate limit: ví dụ push max 10/ngày/user, email max 5/ngày/user, SMS max 3/ngày/user.
+- Huỷ: có thể huỷ thông báo PENDING/SCHEDULED bằng notification_id.
+- Đối soát: hàng ngày so sánh với report provider.
+
+### 2. Ước lượng (có phép tính)
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Trung bình | 2.000.000 / 86.400 | ~23/s |
+| Peak sale | 20.000 / 60 | ~333/s |
+| OTP proportion | 5% | ~17/s peak |
+| Template storage | 500 x 10 x 5 KB | ~25 MB |
+| Preference rows | 20M x 3 kênh x 5 category | 300M rows (~30 GB) |
+| Idempotency keys | 2M/ngày x TTL 7 ngày | 14M keys Redis |
+| Notification record | 2M x 2 KB | 4 GB/ngày |
+| Retention 90 ngày | 4 GB x 90 | 360 GB |
+
+Kết luận: **bottleneck là provider rate limit** (SMS 100/s, FCM 10k/s, SES 50k/s), không phải infra. Tách topic priority là bắt buộc.
+
+### 3. Kiến trúc
+~~~text
+Service A (Order) --\
+Service B (Auth)  ---> [Notification API] --Validation, Idempotency--> [DB: notification, notification_channel]
+Service C (Mkt) --/         |                                                         |
+                            v                                                         v
+                    [Priority Router]                                           [Outbox] --> [Webhook Dispatcher] --> Merchant/App
+                       |      |      |
+                 high    normal   low                                            ^
+                 (OTP)   (sys)   (mkt)                                           |
+                       |      |      |                                           |
+                  +------+------+------+                                         |
+                  | Kafka Topics x 3 |                                         |
+                  +------+------+------+                                         |
+                         |     |     |                                          |
+              +----------+     |     +----------+                               |
+              v                v                v                               |
+         [Push Worker]  [Email Worker]   [SMS Worker]                           |
+              |                |                |                               |
+              v                v                v                               |
+         [FCM/APNs]        [SES/SendGrid]  [Twilio/VNPT]                        |
+              |                |                |                               |
+              +----------------+----------------+                               |
+                               |                                               |
+                        [Delivery Status Handler]                               |
+                               |                                               |
+                        Update notification_channel,                           |
+                        nếu thành công -> DONE, nếu lỗi -> retry/DLQ           |
+~~~
+- **API chỉ trả 202**: ghi notification + notification_channel (mỗi kênh một dòng, status PENDING), publish Kafka topic theo priority. Không gọi provider trong request.
+- **3 Kafka topic riêng**: notif.high (OTP, fraud alert, payment), notif.normal (order confirm, shipping), notif.low (promo, newsletter). Worker pool riêng mỗi topic, high priority luôn có worker rảnh.
+- **Consumer group per channel per priority**: push.high, email.high, sms.high, push.normal... Cho phép scale độc lập.
+
+### 4. Template Engine
+- Template lưu trong DB, có version. Khi gửi, worker đọc template_version từ notification (snapshot tại thời điểm tạo) -> render.
+- **Biến**: {{user_name}}, {{order_id}}, {{amount | currency:VND}}. Hỗ trợ filter đơn giản (currency, date, upper).
+- **Fallback locale**: user locale vi-VN -> tìm vi-VN, thiếu thì vi, thiếu thì en-US, thiếu thì en (base).
+- **Render an toàn**:
+  - Email HTML: escape tất cả biến (trừ biến đánh dấu {{{safe_html}}} cho team marketing tin cậy).
+  - SMS: giới hạn 160 ký tự GSM-7 / 70 ký tự Unicode, cắt an toàn ở grapheme cluster, thêm [...] nếu cắt.
+  - Push: title max 50 ký tự, body max 100 ký tự (tuỳ platform).
+- **Variable validation**: variables_schema trong template (JSON Schema), render validate trước khi gửi.
+
+~~~java
+// Render pseudocode
+String render(Template t, Locale userLocale, Map<String, Object> payload) {
+    TemplateVersion tv = t.getVersion(userLocale); // fallback chain
+    String rendered = tv.body;
+    for (var entry : payload.entrySet()) {
+        String safe = escapeHtml(entry.getValue().toString());
+        rendered = rendered.replace("{{" + entry.getKey() + "}}", safe);
+    }
+    // Xử lý filter {{amount | currency:VND}} -> regex replace
+    return rendered;
+}
+~~~
+
+### 5. Idempotency 3 Lớp (Chống gửi trùng)
+At-least-once ở mọi chặng, trùng là thực tế. Ba lớp bảo vệ:
+1. **API Layer**: Client gửi Idempotency-Key (UUID). API kiểm tra idempotency_key table: tồn tại => trả 202 kèm notification_id cũ ngay.
+2. **DB Layer**: notification table có UNIQUE (idempotency_key). Insert race condition: một sẽ thắng, kia bị duplicate key => catch, load record cũ, trả 202.
+3. **Provider Layer**: 
+   - FCM: message_id do server sinh, nhưng client có thể truyền apns-collapse-id / android.collapse_key để FCM deduplicate.
+   - SES: MessageId trả về, không có idempotency key input -> phụ thuộc lớp 1,2.
+   - Twilio: MessageSid trả về; SMS thường không idempotent -> lớp 1,2 là chủ chốt.
+   - In-app: UNIQUE (notification_id, user_id) trong bảng in_app_message.
+
+### 6. Retry Policy (Phân biệt Transient vs Permanent)
+| Loại lỗi | Ví dụ | Xử lý |
+|---|---|---|
+| **Transient** | Timeout, 429 (rate limit), 5xx, network error | Retry với exponential backoff + jitter |
+| **Permanent** | 400 invalid payload, email bounce (hard bounce), invalid phone number, FCM NotRegistered | FAILED ngay, không retry |
+| **Quasi-permanent** | Soft bounce, FCM Unavailable (thiết bị offline) | Retry vài lần rồi FAILED, lưu lý do |
+
+**Backoff schedule**: 1s, 5s, 30s, 2m, 10m, 30m, 1h, 3h (tối đa 8 lần). Jitter ±20%.
+next_retry_at = now() + backoff[attempt] * (0.8 + 0.4 * random()).
+Worker query: WHERE status = 'PENDING' AND next_retry_at <= now() ORDER BY priority DESC, next_retry_at LIMIT 100.
+
+### 7. Quiet Hours (Giờ yên lặng)
+- Mỗi user có timezone (IANA, ví dụ Asia/Ho_Chi_Minh), quiet_hours_start (mặc định 22), quiet_hours_end (mặc định 7), per category (transactional, system, marketing).
+- Khi consumer chuẩn bị gửi: tính local_now = utc_now.atZone(user.timezone). Nếu local_now trong [start, end) VÀ category bật quiet hours -> **delay**.
+- **Delay strategy**: không drop, tính next_open = local_now.withHour(end).withMinute(0).withSecond(0) (ngày hôm sau nếu đã qua giờ end). send_at_effective = next_open.atZone(user.timezone).toInstant().
+- Cập nhật notification_channel.next_retry_at = send_at_effective, status = DELAYED_QUIET_HOURS.
+- User có thể opt-out quiet hours per category (toggle trong preference) -> bỏ qua check.
+
+### 8. Rate Limiter (Giới hạn tần suất)
+- **Per user per channel per day**: Redis key ratelimit:{channel}:{user_id}:{date} (INCR, TTL 86400). Config mặc định: push 10, email 5, SMS 3, in-app unlimited.
+- **Per category per day**: ratelimit:cat:{category}:{user_id}:{date} (marketing max 2/ngày).
+- **Global burst**: token bucket per channel (FCM 10k/s, SMS 100/s) tại worker level.
+- Khi vượt limit: status = RATE_LIMITED, next_retry_at = tomorrow 00:00:01 UTC (hoặc giờ mở cửa quiet hours nếu có). Alert nếu marketing bị rate limit nhiều.
+
+### 9. Huỷ thông báo (Cancel)
+- POST /notifications/{id}/cancel -> UPDATE notification SET status = 'CANCELLED' WHERE id = ? AND status IN ('PENDING','SCHEDULED','DELAYED_QUIET_HOURS','RATE_LIMITED').
+- Nếu đã SENT/DELIVERED/FAILED -> trả 409 Cannot cancel.
+- Consumer trước khi gửi: SELECT status FROM notification WHERE id = ?. Nếu CANCELLED -> bỏ qua, update notification_channel status = 'CANCELLED'.
+- Outbox/webhook cũng kiểm tra notification.status trước khi dispatch.
+
+### 10. Provider Failover
+- Mỗi kênh có 2 provider: Push (FCM primary, APNs fallback cho iOS), Email (SES primary, SendGrid fallback), SMS (Twilio primary, VNPT fallback).
+- **Circuit breaker** per provider: lỗi 5xx/429 > 50% trong 1 phút -> OPEN (30s) -> HALF_OPEN -> CLOSED.
+- Khi primary OPEN: worker chuyển sang fallback provider cho **lần thử mới** (retry hoặc notification mới). **Không failover cho notification đang SENDING** (đang chờ callback) vì có thể gây trùng.
+- Failover phải log và alert Slack (chi phí provider khác nhau, deliverability khác).
+
+### 11. Đối soát hàng ngày (Reconciliation)
+- **Input**: file báo cáo từ provider (SES: bounce/complaint/delivery CSV; Twilio: delivery report; FCM: delivery report qua BigQuery export).
+- **Process**: Job 02:00 UTC đọc file, so khớp provider_msg_id với notification_channel.provider_msg_id.
+- **Kết quả so khớp**:
+  | Trạng thái hệ thống | Trạng thái provider | Hành động |
+  |---|---|---|
+  | SENT | Delivered | OK |
+  | SENT | Bounced (hard) | Mark FAILED_BOUNCE, cập nhật preference (disable email) |
+  | SENT | Bounced (soft) | Retry nếu attempts < max |
+  | SENT | Complaint | Mark COMPLAINT, disable marketing email cho user |
+  | SENT | Không có trong report | UNKNOWN_DELIVERY, retry query sau 4h |
+  | PENDING/RETRYING | Delivered | Cập nhật DELIVERED, tính latency |
+- **Metric đối soát**: mismatch_rate = count(mismatch) / count(total_sent). > 0.1% -> alert.
+
+### 12. In-app Notification (Kênh thứ 4)
+- Không qua provider bên ngoài. Worker ghi vào bảng in_app_message (id, user_id, notification_id, title, body, data_json, read_at, created_at).
+- API GET /in-app/messages?cursor=&limit=20 đọc từ bảng này (index user_id, created_at DESC).
+- Real-time: server push qua WebSocket khi có message mới (nếu user online), hoặc client poll.
+
+### 13. Failure Modes
+| Sự cố | Ảnh hưởng | Xử lý |
+|---|---|---|
+| Kafka consumer group rebalance | Tạm dừng xử lý vài giây | Idempotency + checkpoint offset đảm bảo không mất/bội |
+| Provider chính down 10 phút | Notification kẹt PENDING | Circuit breaker mở -> fallback provider cho retry/new; alert |
+| Quiet hours delay làm OTP trễ | OTP gửi đạt > 3 giây | **OTP category KHÔNG bao giờ áp dụng quiet hours** (hard code trong config) |
+| Template render lỗi (biến thiếu) | Notification FAILED_TEMPLATE | Validation tại API (kiểm tra payload vs schema), render lỗi vẫn log để debug |
+| SMS provider trả 429 liên tục | Queue SMS backing up | Backpressure: worker dừng consume SMS topic, alert, scale worker hoặc xin tăng quota |
+| User preference thay đổi khi notification đang PENDING | Gửi sai ý định của người dùng (gửi theo preference cũ) | Consumer đọc preference **lúc gửi** (Redis cache TTL 30s), không lúc tạo |
+
+### 14. Giám sát
+- **Queue lag per priority**: high < 10, normal < 1.000, low < 10.000 (số message chờ consumer).
+- **Delivery rate per provider**: SES delivered/bounce/complaint %, Twilio delivered/failed %, FCM sent/delivered %.
+- **p99 latency OTP**: từ API receive đến provider accept (target < 3s).
+- **Quiet hours delayed count**: bao nhiêu notification bị delay, trung bình delay bao lâu.
+- **Cancelled rate**: tỷ lệ huỷ / tổng tạo.
+- **Cost per channel per day**: USD, so với budget.
+
+### 15. Ví dụ đời thực
+Ngày Black Friday, marketing đẩy 500.000 email promo trong 1 giờ. Hệ thống cũ dùng một queue duy nhất -> OTP đặt hàng bị chặn 15 phút, khách khiếu nại hàng loạt. Sau redesign: tách 3 Kafka topic, worker email.high dành riêng OTP (luôn 10 worker rảnh), email.low xử lý promo với rate limit 50k/phút (SES quota). Kết quả: OTP p99 1,2 giây không biến đổi, promo gửi xong trong 2 giờ (delay có chủ đích), chi phí SES tăng 20% do retry bounce nhưng bounce rate giảm từ 4% xuống 0,8% nhờ preference sync và quiet hours (không gửi email promo lúc 23h gây complaint).
+
+### 16. Trả lời mẫu khi phỏng vấn (90 giây)
+"Tôi tách ba thứ: priority queue, idempotency ba lớp, và retry có phân biệt lỗi. API nhận request, kiểm tra Idempotency-Key, ghi DB status PENDING, publish vào 1 trong 3 Kafka topic (high/normal/low) -> OTP vào high topic, không bao giờ chờ marketing. Worker per channel per priority consume, trước khi gửi: đọc user preference (Redis cache), check quiet hours (delay không drop), check rate limit, render template versioned với fallback locale và escape an toàn. Gọi provider với circuit breaker và fallback provider. Retry chỉ transient error (timeout, 429, 5xx) với exponential backoff + jitter; permanent error (bounce, invalid phone) -> FAILED ngay. Huỷ bằng UPDATE status CANCELLED, consumer check trước khi gửi. Hàng ngày job đối soát so file report provider với DB, mismatch > 0.1% alert. Metric chính: queue lag per priority, OTP p99 latency, delivery rate per provider."
+
+> Senior tip: **OTP là thứ tôi không bao giờ để vào quiet hours, không rate limit per user per day (chỉ rate limit per IP/device để chống brute force), và luôn có provider fallback**. Một sự cố SMS provider down 10 phút khiến hàng nghìn khách không đăng nhập được là sự cố P0, trong khi marketing gửi trễ 2 giờ không ai phàn nàn. Hãy tách infrastructure OTP (topic, worker, provider account) hẳn ra khỏi notification thường — đó là cách chắc chắn nhất để không bao giờ bị "marketing chặn OTP".`,
+  followups: [
+    'Làm sao hỗ trợ rich push (hình ảnh, action button) mà vẫn giữ template versioned và fallback?',
+    'Nếu muốn A/B test 2 template cho cùng một campaign, thiết kế thêm gì?',
+    'Provider SMS tăng giá gấp 3: bạn chuyển traffic sang push/email thế nào mà không làm rơi conversion?',
+    'Làm sao phát hiện và chặn một campaign marketing gửi spam (template bị inject script, hoặc gửi 100k email cho user chưa opt-in)?',
+    'In-app notification real-time cho 10 triệu user online: WebSocket hay SSE, và scale thế nào?'
+  ],
+  related: ['design-006', 'microservices-020', 'scenario-012']
+},
 ];
