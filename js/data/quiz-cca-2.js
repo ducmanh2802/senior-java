@@ -699,4 +699,357 @@ User-level: cách người đó muốn làm việc. Project-level: cách reposit
 
 > Nếu sở thích có tác động bảo mật hoặc bắt buộc cho team, đừng để nó chỉ nằm trong cấu hình cá nhân.`
 },
+{
+  id: 'qz-ccaf-031',
+  topic: 'claude',
+  q: '[Claude Code Configuration] A team opens a mature repository that has no Claude Code project guidance. They want a useful first draft without treating guessed conventions as policy. What should they do?',
+  options: [
+    'Copy the whole source tree into every developer’s user-level CLAUDE.md',
+    'Run /init to create a project guidance draft, then review and correct it before sharing',
+    'Put every build and security rule in a post-tool hook without examining the repository',
+    'Assume Claude Code automatically knows every private convention from the repository'
+  ],
+  answer: 1,
+  explain: `**Đúng: dùng {{/init}} để tạo bản nháp, rồi con người kiểm tra.** Đây là lệnh Claude Code có thể khảo sát repository và giúp khởi tạo {{CLAUDE.md}}. File này là hướng dẫn bằng ngôn ngữ tự nhiên được đưa vào ngữ cảnh làm việc, không phải kết quả kiểm định tự động. Vì vậy cần xác nhận lệnh build, cấu trúc thư mục và quy ước mà bản nháp ghi ra có thật; sửa phần suy đoán, bỏ nội dung không cần thiết, rồi mới chia sẻ qua Git.
+
+### Vì sao các lựa chọn khác sai
+- **Sao chép source vào file user-level:** làm file hướng dẫn khổng lồ, nhanh lỗi thời và chỉ gắn với một người thay vì repository.
+- **Chuyển mọi quy tắc thành hook:** hook là automation theo sự kiện, không phải nơi phù hợp để ghi toàn bộ kiến trúc và quy ước. Không thể thiết kế đúng hook nếu chưa biết hệ thống.
+- **Cho rằng model tự biết quy ước riêng:** model có thể đọc file, nhưng không nên mặc định nó suy ra đúng lệnh nội bộ hay quyết định của team.
+
+### Cách dùng an toàn
+Hãy xem bản do {{/init}} tạo như ghi chú khởi đầu: xác minh từng sự kiện và chỉ giữ hướng dẫn giúp các tác vụ sau thực hiện tốt hơn. Không đưa token, mật khẩu hoặc dữ liệu riêng vào đó.
+
+> Một CLAUDE.md ngắn, chính xác và được review thường hữu ích hơn tài liệu dài chứa nhiều phỏng đoán.`
+},
+{
+  id: 'qz-ccaf-032',
+  topic: 'claude',
+  multi: true,
+  q: '[Claude Code Configuration] A team wants every contributor to discover the same project MCP server, but the server also needs an access credential. Which two choices are appropriate? (Choose 2)',
+  options: [
+    'Put the shareable project server configuration in the repository-level .mcp.json',
+    'Commit a developer’s personal access token in the shared server configuration',
+    'Provide the credential through an approved runtime environment or secret store instead of committing its value',
+    'Put the server definition in one developer’s home directory and assume Git distributes it',
+    'Write the credential into CLAUDE.md so Claude can reuse it'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: chia sẻ cấu hình server bằng {{.mcp.json}} và cấp bí mật ngoài Git.** MCP (Model Context Protocol) là giao thức để ứng dụng AI kết nối tới server cung cấp tool hoặc dữ liệu. Claude Code hỗ trợ cấu hình MCP theo phạm vi dự án; file {{.mcp.json}} trong repository giúp thành viên thấy cùng khai báo server. Một khai báo kết nối không đồng nghĩa phải lưu credential thật trong file: môi trường chạy hoặc secret store đã được tổ chức phê duyệt nên cung cấp giá trị nhạy cảm.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Commit token cá nhân:** bất kỳ ai đọc repository có thể lấy token; token còn có thể tồn tại trong lịch sử Git sau khi xóa khỏi phiên bản mới.
+- **Cấu hình trong home của một người:** phạm vi user chỉ thuộc môi trường của người đó, không tự đi cùng repository khi đồng nghiệp clone.
+- **Ghi credential vào CLAUDE.md:** file hướng dẫn có thể được chia sẻ và đưa vào ngữ cảnh model. Nó không phải kho bí mật.
+
+### Ví dụ cụ thể
+Repository có thể mô tả server dùng để tra cứu tài liệu nội bộ, còn CI và từng máy dev tự nhận credential từ hệ thống cấp secret. Nhờ vậy tên/cách kết nối nhất quán mà mỗi môi trường vẫn dùng thông tin xác thực phù hợp.
+
+> Hãy review nội dung .mcp.json như cấu hình thực thi: chỉ khai báo server cần thiết và không để token thật lọt vào diff.`
+},
+{
+  id: 'qz-ccaf-033',
+  topic: 'claude',
+  q: '[Claude Code Configuration] One engineer uses the same personal MCP server in several unrelated repositories. The rest of the team should not inherit that server. Which configuration scope best matches this need?',
+  options: [
+    'Project scope, committed into every repository',
+    'A path-scoped rule under .claude/rules/',
+    'User scope, so the configuration belongs to that engineer across their projects',
+    'Enterprise-managed scope, so the server is private to one workstation'
+  ],
+  answer: 2,
+  explain: `**Đúng: chọn user scope cho cấu hình của một người dùng qua nhiều project.** Scope là phạm vi áp dụng của cấu hình. Cấu hình user gắn với môi trường Claude Code của cá nhân, thích hợp khi server phục vụ công việc riêng và cần dùng ở nhiều repository. Ngược lại, cấu hình project nhằm cung cấp thiết lập cho một repository/team; cấu hình local của project dành cho ngoại lệ riêng của checkout đó.
+
+### Vì sao các lựa chọn khác sai
+- **Project scope:** đặt server vào từng repository khiến thành viên khác có thể nhận cấu hình ngoài ý muốn; phải lặp lại và bảo trì nhiều bản.
+- **Path-scoped rule:** rule trong {{.claude/rules/}} là hướng dẫn theo đường dẫn, không phải nơi khai báo MCP server.
+- **Enterprise-managed:** managed config là phạm vi do tổ chức quản trị, không phải cách để một cá nhân lưu cấu hình riêng trên một máy.
+
+### Chọn scope theo người nhận
+Hãy hỏi ai cần cấu hình: một người qua nhiều repo thì user; một nhóm trong repo thì project; một ngoại lệ chỉ cho checkout hiện tại thì local. Dù chọn scope nào, không nên lưu credential thật vào một file chỉ vì file đó không được chia sẻ.
+
+> Chọn sai scope gây hai kiểu lỗi: server không đến được người cần dùng, hoặc vô tình cấp khả năng cho người không cần nó.`
+},
+{
+  id: 'qz-ccaf-034',
+  topic: 'claude',
+  q: '[Claude Code Configuration] A configured MCP server is listed in a project, but its tools are unavailable in the current Claude Code session. What is the most useful first diagnostic?',
+  options: [
+    'Repeat the user prompt until Claude guesses the missing tool name',
+    'Add the tool name to CLAUDE.md and assume that creates the connection',
+    'Delete every project instruction file and reinstall Claude Code',
+    'Use Claude Code’s /mcp interface to inspect the server connection and address its reported setup or authentication issue'
+  ],
+  answer: 3,
+  explain: `**Đúng: kiểm tra trạng thái kết nối MCP trước khi sửa prompt.** Việc khai báo server chỉ mô tả cách Claude Code nên kết nối; nó không chứng minh tiến trình server đã khởi động, xác thực thành công hay cung cấp tool. Lệnh {{/mcp}} trong Claude Code giúp người dùng xem và quản lý các server MCP đã cấu hình. Bắt đầu từ trạng thái kết nối và thông báo lỗi cụ thể, rồi xử lý đúng nguyên nhân như cấu hình sai hoặc cần xác thực.
+
+### Vì sao các lựa chọn khác sai
+- **Lặp prompt:** prompt không khởi động server và cũng không sửa lỗi kết nối. Model không thể gọi một tool chưa được cung cấp trong phiên.
+- **Ghi tên tool vào CLAUDE.md:** hướng dẫn chỉ cung cấp văn bản; nó không đăng ký tool hay tạo kết nối MCP.
+- **Xóa mọi hướng dẫn và cài lại:** thay đổi lớn, không dựa trên bằng chứng; có thể mất cấu hình hợp lệ mà vẫn không xử lý được lỗi server.
+
+### Tách lớp khi điều tra
+Kiểm tra lần lượt: file cấu hình có được nhận diện không, server có khởi động không, kết nối/xác thực có thành công không, rồi mới xem tool cụ thể. Không đưa token vào log hay câu hỏi để tiện debug.
+
+> Khi báo “tool không có”, trước hết xác nhận nó đã kết nối và được cung cấp trong phiên, thay vì chỉ đổi cách diễn đạt yêu cầu.`
+},
+{
+  id: 'qz-ccaf-035',
+  topic: 'claude',
+  q: '[Claude Code Configuration] A developer proposes installing a third-party Claude Code plugin from an unfamiliar source because it promises useful shortcuts. What is the best configuration practice?',
+  options: [
+    'Review the source and requested capabilities, then install only through an approved source and scope',
+    'Install it immediately because a plugin cannot affect tools or project behavior',
+    'Give it unrestricted access to every repository before checking what it contains',
+    'Copy its files into CLAUDE.md, which makes the plugin safe without review'
+  ],
+  answer: 0,
+  explain: `**Đúng: xem nguồn và khả năng plugin trước, rồi mới cài ở phạm vi cần thiết.** Plugin mở rộng Claude Code bằng các thành phần có thể ảnh hưởng cách làm việc; nội dung từ nguồn lạ không tự trở nên đáng tin chỉ vì được đóng gói thành plugin. Review giúp biết ai duy trì, nó thêm những gì và có yêu cầu quyền không cần thiết hay không. Dùng nguồn được tổ chức phê duyệt và giới hạn scope cài đặt để tránh áp dụng rộng hơn nhu cầu.
+
+### Vì sao các lựa chọn khác sai
+- **Cho rằng plugin vô hại:** plugin có thể bổ sung cấu hình hoặc workflow; nội dung không tin cậy có thể tạo hành vi ngoài mong muốn.
+- **Cấp mọi quyền trước khi xem:** đi ngược nguyên tắc quyền tối thiểu và làm tăng hậu quả nếu plugin có hành vi không an toàn.
+- **Chép vào CLAUDE.md:** biến nội dung thành hướng dẫn văn bản không kiểm tra nguồn gốc; việc sao chép không loại bỏ rủi ro và còn làm cấu hình lẫn lộn.
+
+### Quy trình nhóm
+Kiểm tra repository nguồn, nội dung cấu hình và lý do cần từng khả năng; thử trong môi trường không chứa secret trước. Sau đó review thay đổi cấu hình như review code và thống nhất ai được cài ở phạm vi user hay project.
+
+> “Có trong marketplace” không đồng nghĩa “đã được tổ chức phê duyệt”; nguồn và quyền vẫn cần được xác minh.`
+},
+{
+  id: 'qz-ccaf-036',
+  topic: 'claude',
+  q: '[Claude Code Configuration] A repository has a long architecture guide that should remain reusable from project instructions, but copying its full contents into CLAUDE.md creates duplication. Which approach best preserves one source of truth?',
+  options: [
+    'Paste another full copy into every developer’s user-level instructions',
+    'Reference the guide from CLAUDE.md with the supported @path import syntax, then verify the path and content',
+    'Rename the guide to settings.json so Claude Code merges it automatically',
+    'Mention the guide filename in a prompt and assume Claude reads it without access'
+  ],
+  answer: 1,
+  explain: `**Đúng: dùng cú pháp import {{@path}} để tham chiếu tài liệu cần thiết.** Claude Code hỗ trợ đưa nội dung file khác vào hướng dẫn bằng cú pháp tham chiếu đường dẫn trong {{CLAUDE.md}}. Cách này giữ tài liệu kiến trúc ở một nơi để nhóm cập nhật, còn hướng dẫn dự án chỉ rõ nơi cần đọc. Đường dẫn phải trỏ tới file thực sự có thể truy cập; một cái tên được nhắc như văn bản không tự cung cấp nội dung.
+
+### Vì sao các lựa chọn khác sai
+- **Sao chép vào từng user file:** tạo nhiều bản có thể lệch nhau, không phải một nguồn sự thật và không tự chia sẻ với nhóm.
+- **Đổi đuôi thành settings.json:** file settings có schema cấu hình, không phải cơ chế tự gộp tài liệu tùy ý.
+- **Chỉ nhắc tên file:** Claude cần nội dung trong context hoặc quyền đọc file; tên file đơn thuần không đảm bảo nó đã được nạp.
+
+### Cân nhắc context
+Import giúp tránh trùng lặp, nhưng nội dung được đưa vào context khi áp dụng hướng dẫn, không phải một kho tìm kiếm tự động chỉ tải đoạn cần thiết. Vì thế không nên import hàng trăm trang không liên quan cho mọi tác vụ; tách tài liệu theo chủ đề và chỉ tham chiếu phần thực sự dùng chung.
+
+> Một đường dẫn import hỏng khiến hướng dẫn quan trọng không tới được model; hãy kiểm tra nó sau khi di chuyển hoặc đổi tên tài liệu.`
+},
+{
+  id: 'qz-ccaf-037',
+  topic: 'claude',
+  q: '[Claude Code Configuration] Claude Code seems unaware of a project instruction that should apply to the current work. Which first check provides the clearest evidence about the instruction files Claude Code knows about?',
+  options: [
+    'Ask the model to promise that it read every file in the repository',
+    'Add the same instruction to every future user message without checking configuration',
+    'Open /memory to inspect the memory and instruction files available to the current project context',
+    'Put the instruction in a Bash permission pattern'
+  ],
+  answer: 2,
+  explain: `**Đúng: dùng {{/memory}} để kiểm tra các file hướng dẫn/memory được nhận diện.** Trước khi viết lại nội dung, cần biết Claude Code đang nhìn thấy những nguồn hướng dẫn nào trong phiên. Lệnh {{/memory}} mở giao diện quản lý và xem các file memory/instruction liên quan. Nó giúp phân biệt lỗi nội dung với lỗi vị trí hoặc file không được nạp. Sau khi xác định file, kiểm tra đường dẫn và phạm vi của nó.
+
+### Vì sao các lựa chọn khác sai
+- **Yêu cầu model hứa:** câu trả lời không phải bằng chứng file đã được phát hiện hay nội dung được đưa vào context.
+- **Lặp lại ở mọi prompt:** có thể tạm thời che nguyên nhân, tạo thao tác lặp và để lỗi cấu hình gốc tiếp tục tồn tại.
+- **Bash permission:** permission điều khiển việc tool shell được chạy; nó không nạp chỉ dẫn bằng ngôn ngữ tự nhiên.
+
+### Cách xử lý
+Nếu file không xuất hiện, kiểm tra tên, vị trí và project đang mở. Nếu file có mặt nhưng chỉ dẫn vẫn không phù hợp, làm rõ nội dung hoặc loại bỏ mâu thuẫn. Không biến một vấn đề phạm vi thành lý do cấp thêm quyền tool.
+
+> Dùng công cụ kiểm tra context trước khi tăng độ dài prompt: đôi khi Claude chưa hề nhận được file mà bạn nghĩ nó đã đọc.`
+},
+{
+  id: 'qz-ccaf-038',
+  topic: 'claude',
+  multi: true,
+  q: '[Claude Code Configuration] An engineer opens a newly cloned repository from an unfamiliar contributor. It contains project instructions and executable automation. Which two actions best reduce configuration risk before normal use? (Choose 2)',
+  options: [
+    'Trust every repository file because checked-in content is always safe',
+    'Inspect project instructions and configuration for unexpected behavior before accepting the project trust prompt',
+    'Assume a trust prompt is equivalent to a full security audit',
+    'Review hooks and server configuration that may run or grant access, and use an isolated environment if uncertain',
+    'Put personal credentials into the repository so the project can initialize successfully'
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: review cấu hình trước khi tin cậy, đặc biệt là automation và server.** Repository có thể chứa hướng dẫn, hook hoặc khai báo kết nối tới công cụ bên ngoài. Project trust là quyết định cho phép Claude Code làm việc với project theo cơ chế của nó; đây không phải chứng nhận rằng mọi nội dung trong repo đã an toàn. Người mới clone cần xem các file có thể ảnh hưởng hành vi trước khi chấp nhận.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Tin mọi file đã commit:** Git ghi lại thay đổi, không xác minh người đóng góp hay tính an toàn của nội dung. Repo vẫn có thể chứa cấu hình độc hại hoặc lỗi.
+- **Coi trust prompt là audit:** prompt xin quyết định trust không phân tích đầy đủ tác động bảo mật thay cho người dùng.
+- **Đưa credential cá nhân vào repo:** làm lộ bí mật cho mọi người có quyền đọc và có thể để lại trong lịch sử Git.
+
+### Thực hành an toàn
+Đọc hướng dẫn, settings, hooks và MCP config trước; xác minh server và script đến từ nguồn mong đợi. Nếu còn nghi ngờ, dùng môi trường cô lập không chứa token hay quyền truy cập production để khảo sát.
+
+> Trust project là ranh giới cần cân nhắc, không phải nút “quét và bảo đảm an toàn”.`
+},
+{
+  id: 'qz-ccaf-039',
+  topic: 'claude',
+  q: '[Claude Code Configuration] A monorepo needs special test instructions only when work is performed inside services/payments. The instructions should not clutter unrelated catalog work. Which placement best matches this boundary?',
+  options: [
+    'Add the payments commands to every developer’s global user instructions',
+    'Put the payment-only instructions in the repository root and say they are optional',
+    'Create a CLAUDE.md inside services/payments so the guidance is associated with that subtree',
+    'Put the commands in an enterprise policy shared with every repository'
+  ],
+  answer: 2,
+  explain: `**Đúng: đặt hướng dẫn tại thư mục con tương ứng.** Claude Code có thể dùng các file {{CLAUDE.md}} trong cây thư mục để cung cấp chỉ dẫn theo khu vực; file dưới {{services/payments}} phù hợp với quy ước chỉ có ý nghĩa khi làm trong subtree đó. Nhờ vậy hướng dẫn test payments không phải xuất hiện như quy tắc toàn repo trong mọi việc catalog.
+
+### Vì sao các lựa chọn khác sai
+- **User-level toàn cục:** quy tắc đặc thù payments sẽ đi theo một người qua project khác và gây nhiễu khi họ không làm payments.
+- **Đưa hết vào root:** lời nhắc “optional” vẫn buộc mọi task đọc hoặc cân nhắc chi tiết không liên quan; về lâu dài file root thành danh sách dài khó ưu tiên.
+- **Enterprise policy:** đây là quy ước của một phần repository, không phải ràng buộc quản trị cần áp dụng cho mọi repo.
+
+### Phân biệt với path-scoped rule
+Nested {{CLAUDE.md}} có thể tổ chức hướng dẫn theo vị trí trong cây thư mục; {{.claude/rules/}} có thể dùng metadata phạm vi đường dẫn cho các rule cụ thể. Chọn cơ chế mà team đã chuẩn hóa, tránh sao chép cùng nội dung ở cả hai nơi.
+
+> Khi di chuyển package, hãy di chuyển hoặc cập nhật hướng dẫn đi kèm và kiểm tra lại đường dẫn test.`
+},
+{
+  id: 'qz-ccaf-040',
+  topic: 'claude',
+  multi: true,
+  q: '[Claude Code Configuration] A company uses Claude Code in repositories and also calls the Claude Messages API from a Java service. The team expects project CLAUDE.md guidance to affect both automatically. Which two statements are correct? (Choose 2)',
+  options: [
+    'Project CLAUDE.md provides guidance to Claude Code when it works in that project',
+    'The Messages API automatically reads the caller’s local CLAUDE.md file',
+    'The Java service must send the instructions it needs through its API request or application logic',
+    'The API will load .claude/settings.json whenever the request uses the same model',
+    'Putting a project file on disk makes it a system policy for every Anthropic product'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: phân biệt cấu hình Claude Code với request gửi tới API.** {{CLAUDE.md}} là quy ước hướng dẫn dành cho Claude Code khi làm việc với project. Một Java service gọi Messages API là một ứng dụng khác; request chỉ chứa những nội dung và tham số mà ứng dụng gửi. API không tự truy cập ổ đĩa repository của máy developer để đọc file cấu hình Claude Code.
+
+### Vì sao từng lựa chọn còn lại sai
+- **API tự đọc CLAUDE.md:** API nhận request qua mạng và không biết đường dẫn local trên máy gọi, trừ khi ứng dụng chủ động gửi nội dung.
+- **API đọc settings.json theo model:** chọn cùng model không làm ứng dụng API kế thừa cấu hình tool, quyền hay hướng dẫn của Claude Code.
+- **Mọi sản phẩm dùng file làm policy chung:** một file trên đĩa chỉ ảnh hưởng thành phần được thiết kế để đọc file đó; không tự trở thành chính sách toàn nền tảng.
+
+### Ví dụ
+Nếu backend cần nguyên tắc trả lời giống với Claude Code, ứng dụng phải quản lý phiên bản hướng dẫn và gửi nội dung thích hợp trong API request. Cần tránh gửi file nội bộ hoặc secret nếu không cần thiết.
+
+> Xác định rõ thành phần nào đọc cấu hình: Claude Code, SDK, hay ứng dụng API tự xây; đừng giả định chúng chia sẻ môi trường tự động.`
+},
+{
+  id: 'qz-ccaf-041',
+  topic: 'claude',
+  q: '[Claude Code Configuration] Every contributor should receive the same formatter automation after a matching file edit. The team wants this behavior reviewed and versioned with the repository. Where should they keep the hook configuration?',
+  options: [
+    'In each developer’s shell history',
+    'In a project-level .claude/settings.json, with the referenced hook implementation available and reviewed',
+    'Only in CLAUDE.local.md, which is automatically shared by Git',
+    'In a path-scoped prose rule and assume that prose executes a formatter'
+  ],
+  answer: 1,
+  explain: `**Đúng: đặt khai báo hook dùng chung trong project settings.** Hook là automation được Claude Code kích hoạt khi sự kiện cấu hình xảy ra; project-level {{.claude/settings.json}} là nơi team có thể version-control cấu hình chung. Phần cấu hình phải trỏ tới implementation thực sự có mặt và được review trong repository hoặc môi trường đã chuẩn bị. Cần thử matcher để chắc chắn hook chỉ chạy cho file phù hợp.
+
+### Vì sao các lựa chọn khác sai
+- **Shell history cá nhân:** không phải cấu hình được chia sẻ hay review có cấu trúc; các máy sẽ có hành vi khác nhau.
+- **CLAUDE.local.md:** đây là hướng dẫn local không được xem là cấu hình team chia sẻ tự động; hơn nữa văn bản không tự thực thi formatter.
+- **Rule dạng prose:** rule hướng dẫn model đọc, không phải cấu hình hook chạy chương trình khi event xảy ra.
+
+### Khi triển khai
+Review cả lệnh hook lẫn script được gọi, giới hạn quyền của script và test trên môi trường developer/CI. Đừng giả định việc commit settings tự cài được dependency hoặc bảo đảm script tồn tại ở mọi máy.
+
+> Cấu hình được chia sẻ chỉ có ích khi implementation cũng có sẵn, có thể kiểm tra và hoạt động nhất quán.`
+},
+{
+  id: 'qz-ccaf-042',
+  topic: 'claude',
+  q: '[Claude Code Configuration] A developer wants to learn what an unfamiliar Claude Code plugin adds before enabling it. Which built-in interaction is the most relevant starting point?',
+  options: [
+    'Use /plugin to inspect and manage Claude Code plugins, then review the source and requested capabilities',
+    'Use /memory because it automatically audits all third-party executable code',
+    'Use plan mode because it guarantees a plugin cannot run tools',
+    'Add the plugin name to CLAUDE.md, which installs and verifies it'
+  ],
+  answer: 0,
+  explain: `**Đúng: dùng {{/plugin}} để xem/quản lý plugin, đồng thời review nguồn.** Plugin là phần mở rộng được quản lý trong Claude Code; giao diện {{/plugin}} là điểm bắt đầu để xem và quản lý các plugin khả dụng/đã cài. Việc hiển thị trong giao diện không thay cho đánh giá nguồn gốc và nội dung. Trước khi bật, cần hiểu plugin thêm workflow hay cấu hình gì và chọn phạm vi cài đặt phù hợp.
+
+### Vì sao các lựa chọn khác sai
+- **/memory:** lệnh này phục vụ quản lý memory/hướng dẫn, không phải công cụ audit mã plugin.
+- **Plan mode:** giúp lập kế hoạch, không đảm bảo rằng extension không thể thực hiện hành động hay thay thế permission controls.
+- **Ghi tên vào CLAUDE.md:** chỉ tạo văn bản hướng dẫn; không cài đặt, xác thực hay kiểm tra plugin.
+
+### Dùng trong team
+Chỉ cài plugin từ nguồn được tin cậy/duyệt, xem thay đổi cấu hình và quyền liên quan, rồi thử trong môi trường an toàn. Ghi rõ ai cần plugin và ở scope nào để tránh cài rộng ngoài ý muốn.
+
+> Giao diện quản lý cho biết cách bật/tắt; quyết định plugin có đáng tin hay không vẫn cần review nguồn và tác động.`
+},
+{
+  id: 'qz-ccaf-043',
+  topic: 'claude',
+  multi: true,
+  q: '[Claude Code Configuration] A team maintains both general project conventions and a detailed architecture reference that is relevant to most coding tasks. Which two practices keep the guidance maintainable without making it disappear from Claude Code context? (Choose 2)',
+  options: [
+    'Keep concise shared conventions in the project CLAUDE.md',
+    'Put all guidance only in a local file that teammates do not receive',
+    'Reference a reviewed architecture document from CLAUDE.md using the supported import mechanism',
+    'Assume a filename mentioned in a prompt is automatically read',
+    'Put the architecture text into permission rules so it is enforced as access control'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: giữ quy tắc chung ngắn gọn và import tài liệu chuẩn đã review.** Project {{CLAUDE.md}} là nơi phù hợp cho hướng dẫn cần mọi contributor nhận được. Nếu có một tài liệu kiến trúc riêng, cú pháp import file được hỗ trợ giúp tránh chép cùng nội dung vào nhiều nơi và cho phép duy trì nguồn chuẩn. Import chỉ tốt khi tài liệu thực sự cần trong context, đường dẫn đúng và nội dung được kiểm tra.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Chỉ để trong file local:** đồng đội clone repository không nhận được chỉ dẫn cần chia sẻ; đây là phạm vi sai.
+- **Chỉ nhắc tên file:** tên trong prompt không tự đọc file; cần nội dung được nạp hoặc model được yêu cầu và có quyền đọc.
+- **Đưa kiến trúc vào permission:** permission giới hạn hành động/tool; nó không phải cơ chế enforcement cho các quy tắc thiết kế trong tài liệu.
+
+### Trade-off
+Import giúp một nguồn sự thật, nhưng tài liệu nhập vào có thể làm context dài hơn. Chia tài liệu theo chủ đề, đưa nguyên tắc cốt lõi vào file gốc, và không import mọi trang thiết kế nếu task chỉ cần một phần nhỏ.
+
+> Tài liệu chuẩn phải vừa dễ cập nhật với con người, vừa được cung cấp đúng lúc cho Claude Code.`
+},
+{
+  id: 'qz-ccaf-044',
+  topic: 'claude',
+  q: '[Claude Code Configuration] A developer has conflicting instructions in the project guide and a personal preference file. Before changing priorities, they want to confirm which files Claude Code has loaded. What should they do?',
+  options: [
+    'Add a deny permission for every instruction that seems unfamiliar',
+    'Ask Claude to ignore all project files and continue without reviewing the context',
+    'Copy both files into every prompt and hope the later text wins',
+    'Inspect the active memory and instruction files with /memory, then resolve the actual source and scope of the conflict'
+  ],
+  answer: 3,
+  explain: `**Đúng: xem nguồn hướng dẫn đang hoạt động bằng {{/memory}} trước khi điều chỉnh.** Khi hai chỉ dẫn có vẻ mâu thuẫn, cần xác định chúng đến từ file nào và file đó có được nạp trong context không. {{/memory}} cho phép xem/quản lý memory và hướng dẫn liên quan trong Claude Code. Sau đó kiểm tra phạm vi project hay user và sửa ở nguồn có trách nhiệm; không nên thêm quyền hoặc lặp prompt để che mâu thuẫn.
+
+### Vì sao các lựa chọn khác sai
+- **Deny mọi thứ lạ:** permission là quyền tool, không giải quyết ưu tiên giữa hai đoạn hướng dẫn.
+- **Bỏ qua toàn bộ project:** có thể làm mất quy ước build, test hoặc kiến trúc cần thiết; xử lý chọn lọc nguồn mâu thuẫn tốt hơn.
+- **Chép cả hai vào prompt:** thêm bản sao làm khó biết nguồn nào đúng và không bảo đảm thứ tự giải quyết phù hợp.
+
+### Cách phân loại
+Nếu một rule chung của team xung đột với sở thích cá nhân, xác định nội dung nào thực sự cần thiết cho task và sửa scope/wording để tránh nhập nhằng. Nếu chính sách tổ chức liên quan tới bảo mật, không dùng preference cá nhân để thay thế.
+
+> Trước khi chỉnh thứ bậc, hãy xác nhận các file thực tế được nạp; đôi khi nguyên nhân là file nằm sai vị trí chứ không phải ưu tiên sai.`
+},
+{
+  id: 'qz-ccaf-045',
+  topic: 'claude',
+  q: '[Claude Code Configuration] A team moves a package-specific CLAUDE.md but developers report that its guidance no longer appears while working in that package. What should they verify first?',
+  options: [
+    'Whether the package path and working repository still place the file in the relevant directory hierarchy',
+    'Whether every developer has copied the old file into their home directory',
+    'Whether the project has enabled plan mode for every session',
+    'Whether the package instructions were converted into a Bash allow rule'
+  ],
+  answer: 0,
+  explain: `**Đúng: kiểm tra lại vị trí file và cây thư mục của project.** Hướng dẫn lồng trong {{CLAUDE.md}} có phạm vi gắn với vị trí thư mục. Khi package được di chuyển, file có thể không còn nằm trong nhánh mà Claude Code đang làm việc; vì vậy Claude không nhận được hướng dẫn ở vị trí mới như mong đợi. Xác nhận repository/working directory và đặt file tại cây thư mục phù hợp trước khi thay đổi nội dung.
+
+### Vì sao các lựa chọn khác sai
+- **Chép vào home của từng người:** làm mất tính chia sẻ và tạo nhiều bản riêng, trong khi đây là hướng dẫn gắn với package trong repo.
+- **Bật plan mode:** plan mode ảnh hưởng cách Claude tiếp cận công việc, không quyết định file hướng dẫn nào được phát hiện.
+- **Chuyển thành Bash allow rule:** quyền shell không biểu đạt quy ước package và không thay thế chỉ dẫn bằng văn bản.
+
+### Kiểm tra sau khi sửa
+Mở một tác vụ thực sự trong thư mục package, xem các file hướng dẫn đã được nhận diện và xác minh nội dung còn đúng sau khi di chuyển. Nếu nhiều package dùng cùng quy tắc, cân nhắc một cơ chế shared rule thay vì sao chép lệch nhau.
+
+> Sau refactor thư mục, cập nhật cả import path, scoped rules và nested instructions; đường dẫn cũ thường tạo lỗi cấu hình âm thầm.`
+},
 );
