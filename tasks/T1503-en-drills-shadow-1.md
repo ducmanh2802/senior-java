@@ -25,4 +25,13 @@ Mỗi câu: `{ id: "drill-shadow-NNN", kind: "shadow", theme, level, en: "…", 
 - Sửa dòng `Status: TODO` thành `Status: DONE` và ghi Notes: danh sách id đã thêm.
 
 ## Notes
+
+Đã thêm 20 câu shadowing mới (append bằng `node scripts/qtool.js append js/data/drills-shadow.js logs/tmp-T1503.js`, sau đó xoá file tạm):
+
+- 10 câu theme `design`: drill-shadow-221 … drill-shadow-230 (trade-off, ước lượng tải, rủi ro, message queue, partition theo tenant, RTO/consistency, chi phí vận hành, bắt đầu đơn giản rồi mới tách service).
+- 10 câu theme `behavioral`: drill-shadow-231 … drill-shadow-240 (nhận lỗi, báo lead sớm, bất đồng với đồng đội, feedback về hành vi, giúp đồng đội chậm, bất đồng với quản lý rồi vẫn ủng hộ quyết định, bài học từ sự cố, nêu lo ngại sớm, feedback khó, xin lỗi và gửi bản sửa).
+
+Tổng file hiện có 240 câu shadowing, không trùng `en` (đã kiểm tra bằng script: 0 câu trùng, mọi câu 8–25 từ). Mỗi câu có mẫu câu dùng lại được ("The main trade-off here is…", "What I would do first is…", "I would rather … than …").
+
+Nghiệm thu: `node scripts/build-light-index.js` → ghi lại `js/data/index-light.js`; `node scripts/validate.js` → `OK — không có lỗi.` (chỉ còn cảnh báo cũ không liên quan: `path.js: lesson-design-007` không nằm trong PATH). Không commit, không sửa file nào khác.
 Reviewed-by: check-i18n (translation, no LLM review)
