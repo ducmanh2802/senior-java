@@ -5175,4 +5175,391 @@ Agent phân loại khiếu nại có 18.000 request/ngày và model chính đôi
   ],
   tags: ['LLM fallback', 'provider resilience', 'capability contract', 'circuit breaker', 'degradation']
 },
+{
+  id: 'ai-077',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Một agent cần đọc và ghi dữ liệu nội bộ (đơn hàng, khách hàng, phiếu kho) của doanh nghiệp. Bạn thiết kế quyền truy cập theo nguyên tắc least privilege (cấp quyền tối thiểu) và audit (ghi vết hành động) như thế nào để agent làm được việc nhưng không lạm quyền?',
+  a: `**Tóm tắt:** Least privilege (nguyên tắc cấp quyền tối thiểu: chỉ cấp đúng quyền nhỏ nhất cần để hoàn thành nhiệm vụ, không hơn) nghĩa là agent chỉ được đọc/ghi đúng loại dữ liệu, đúng thao tác, trong đúng ngữ cảnh; audit (ghi vết: lưu lại ai/yêu cầu nào đã làm gì, lúc nào, với dữ liệu nào, kết quả ra sao) giúp truy vết và phát hiện sai phạm. Thiết kế đúng phải đặt quyền ở tầng ứng dụng/tool (code kiểm soát), lấy danh tính từ phiên đã xác thực thay vì tin tham số model tự điền, và ghi log bất biến cho mọi hành động.
+
+### Cái gì → vì sao cần
+- **Cái gì:** Agent gọi các tool (công cụ - hàm ứng dụng cung cấp cho model, ví dụ {{getOrder}}, {{updateStock}}). Mỗi tool là một "cửa" vào hệ thống nội bộ.
+- **Vì sao cần:** Model (mô hình ngôn ngữ) có thể hiểu sai, bị prompt injection (kẻ tấn công nhúng chỉ dẫn độc hại vào dữ liệu đầu vào để lái model làm sai) hoặc chọn tool/tham số không phù hợp. Nếu tool chạy với quyền admin toàn hệ thống, một lần sai có thể đọc trộm dữ liệu hoặc ghi sai hàng loạt. Audit là "camera giám sát": khi có sự cố hoặc tranh chấp, phải trả lời được chuyện gì đã xảy ra.
+
+### Hoạt động từng bước
+1. **Xác định danh tính và ngữ cảnh:** Lấy {{userId}}, {{tenantId}} (mã khách thuê/đơn vị trong hệ thống nhiều khách), vai trò từ session/token đã xác thực ở server. Không bao giờ nhận các giá trị này từ tham số do LLM sinh ra.
+2. **Thiết kế tool hẹp (narrow tools):** Mỗi tool làm một việc rõ, ví dụ {{getOrderById(orderId)}} thay vì {{runSql(query)}}. Tách tool đọc và tool ghi. Tool ghi nhạy cảm (trừ kho, đổi trạng thái thanh toán) yêu cầu bước xác nhận hoặc policy riêng.
+3. **Ủy quyền ở tầng code (authorization):** Trước khi thực thi, kiểm tra: user này có quyền trên {{orderId}} không? Hành động có nằm trong allow-list (danh sách cho phép) không? Áp dụng theo từng tenant và theo loại bản ghi.
+4. **Giới hạn dữ liệu trả về:** Chỉ trả các trường cần thiết (data minimization - giảm thiểu dữ liệu), che/mask (ẩn bớt) thông tin nhạy cảm như số điện thoại đầy đủ nếu không cần.
+5. **Ghi audit log có cấu trúc:** Mỗi lần gọi tool ghi một bản ghi: {{traceId}}, {{actor}} (user/service), {{toolName}}, tham số đã chuẩn hoá (đã che PII - thông tin định danh cá nhân), thời gian, kết quả thành công/thất bại, mã lỗi, số bản ghi bị ảnh hưởng. Lưu ở kho chỉ thêm (append-only) hoặc có kiểm soát chống sửa.
+6. **Giám sát và phản ứng:** Cảnh báo khi có mẫu bất thường (đọc hàng loạt, ghi ngoài giờ, tỉ lệ lỗi tăng). Có cơ chế thu hồi quyền/khoá tool khi phát hiện lạm dụng.
+
+~~~java
+// Ví dụ nguyên lý: tool ghi kho chỉ cho phép trong tenant của user, và luôn audit
+public StockUpdateResult updateStock(String actorId, String tenantId,
+                                     String sku, int delta, String traceId) {
+    // 1) Kiểm tra quyền tối thiểu: actor có vai trò kho của đúng tenant không?
+    authz.requirePermission(actorId, tenantId, "inventory:write");
+    // 2) Thực thi nghiệp vụ trong transaction (giao dịch DB: thành công hết hoặc rollback)
+    StockUpdateResult result = tx.execute(() -> inventoryService.adjust(tenantId, sku, delta));
+    // 3) Audit có cấu trúc, không log bí mật/PII thừa
+    audit.append(AuditEvent.builder()
+            .traceId(traceId).actor(actorId).tenant(tenantId)
+            .action("inventory.update").resource("sku=" + sku)
+            .delta(delta).outcome(result.status()).at(clock.now())
+            .build());
+    return result;
+}
+~~~
+
+~~~seq
+title: Luồng tool đọc/ghi có kiểm soát quyền và audit
+actors: User | API | Agent | Policy | ToolDB | AuditLog
+User -> API: Yêu cầu cập nhật kho (token đã xác thực)
+API -> Agent: userId, tenantId, traceId, message
+Agent -> Policy: Xin gọi updateStock(sku, delta)
+Policy -> Policy: Kiểm tra least privilege + allow-list
+Policy -> ToolDB: Thực thi trong tenant (nếu được phép)
+ToolDB --> Policy: Kết quả + số bản ghi ảnh hưởng
+Policy -> AuditLog: Ghi traceId, actor, action, outcome
+Policy --> Agent: tool_result có cấu trúc
+Agent --> API: Trả lời người dùng
+~~~
+
+| Cách làm | Khi nào dùng | Đánh đổi |
+|---|---|---|
+| Tool hẹp, allow-list thao tác | Mặc định cho agent nội bộ | Nhiều tool hơn, nhưng dễ kiểm soát và audit |
+| Quyền theo vai trò (RBAC - Role Based Access Control) | Tổ chức có vai trò ổn định | Dễ quản trị, nhưng vai trò quá rộng sẽ phá least privilege |
+| Quyền theo thuộc tính/bản ghi (ABAC/ownership) | Dữ liệu chia theo tenant/chủ sở hữu | Chính xác hơn, logic kiểm tra phức tạp hơn |
+| Human-in-the-loop (người duyệt) cho ghi nhạy cảm | Hoàn tiền, xoá, đổi trạng thái tiền | Chậm hơn, nhưng giảm rủi ro sai nghiêm trọng |
+| DB account quyền rộng cho agent | Hầu như không nên | Dễ làm, rủi ro leo thang và khoá vết rất cao |
+
+### Pitfall production
+- Tin {{userId}}/{{tenantId}} do model điền: kẻ tấn công có thể ép truy cập dữ liệu tenant khác (lỗi IDOR - Insecure Direct Object Reference).
+- Cho agent tool {{runSql}} hoặc quyền DB admin: một prompt xấu có thể đọc/ghi vượt phạm vi.
+- Audit chỉ log "thành công" mà bỏ qua từ chối và lỗi: mất dấu vết thử xâm nhập.
+- Log chứa PII/bí mật đầy đủ: chính audit trở thành nguồn rò rỉ; phải che/mask và phân quyền đọc log.
+- Kiểm tra quyền ở UI nhưng không kiểm tra ở tool/service: agent gọi thẳng API nội bộ sẽ bypass (đi vòng).
+- Không gắn {{traceId}} thống nhất: không nối được hành động agent với request và thay đổi dữ liệu.
+
+### Ví dụ đời thực
+Một hệ thống hỗ trợ vận hành có agent tra cứu đơn và điều chỉnh tồn kho, phục vụ 120 nhân viên thuộc 3 miền hàng. Trước đây agent dùng một service account (tài khoản dịch vụ) có quyền ghi toàn bộ bảng kho. Sau 2 tuần, audit phát hiện 14 lượt {{updateStock}} ghi nhầm miền do model suy luận sai {{tenantId}} từ ngữ cảnh hội thoại, ảnh hưởng 2.300 SKU (mã sản phẩm), mất ~6 giờ đối soát thủ công. Nhóm xử lý: (1) chuyển sang tool hẹp theo tenant, lấy {{tenantId}} từ token xác thực; (2) kiểm tra quyền bản ghi trong service trước khi ghi; (3) ghi audit append-only với {{traceId}}, actor, trước/sau, kết quả; (4) cảnh báo khi >20 bản ghi bị sửa trong 5 phút bởi cùng phiên. Tháng tiếp theo, 0 sự cố ghi chéo miền, thời gian truy vết một khiếu nại giảm từ ~45 phút xuống ~4 phút nhờ tra theo {{traceId}}.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi agent đọc/ghi dữ liệu nội bộ, em áp dụng least privilege: tool hẹp, tách đọc/ghi, và chỉ cấp quyền tối thiểu theo đúng tenant và vai trò. Danh tính và ngữ cảnh như userId, tenantId em lấy từ phiên xác thực ở server, tuyệt đối không tin tham số model sinh ra, vì đó là nguồn lỗi IDOR và leo thang quyền phổ biến. Mọi kiểm tra uỷ quyền nằm ở tầng service/tool, không chỉ ở UI. Song song, em ghi audit có cấu trúc cho từng lần gọi: traceId, actor, action, tham số đã che PII, kết quả và số bản ghi ảnh hưởng, lưu ở nơi khó sửa để truy vết. Với thao tác ghi nhạy cảm em thêm bước xác nhận hoặc duyệt. Nhờ vậy agent vẫn làm việc được nhưng mỗi hành động đều bị giới hạn và giải trình được."
+
+> Senior tip: Hãy coi LLM như một "người dùng không đáng tin hoàn toàn": quyền và audit đặt ở code hạ tầng (tool/service), không đặt trong prompt. Một câu "chỉ đọc, đừng ghi" trong prompt không thay thế được kiểm soát uỷ quyền thật.`,
+  follow: [
+    'Làm thế nào để thiết kế audit log vừa đủ để truy vết nhưng không trở thành nơi rò rỉ PII hoặc bí mật?',
+    'Khi nào nên dùng RBAC (theo vai trò) và khi nào cần kiểm tra quyền theo từng bản ghi/tenant?',
+    'Bạn xử lý thế nào nếu agent cần tạm thời quyền cao hơn (break-glass) trong tình huống sự cố?'
+  ],
+  tags: ['least privilege', 'audit', 'authorization', 'RBAC', 'IDOR', 'agent tools']
+},
+{
+  id: 'ai-078',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Một agent chạy dài nhiều bước (phân tích hồ sơ, gọi nhiều tool, chờ phê duyệt) có thể mất hàng chục phút hoặc bị gián đoạn giữa chừng. Bạn lưu trạng thái (state) và thiết kế cơ chế resume (tiếp tục chạy lại từ điểm dừng) như thế nào?',
+  a: `**Tóm tắt:** Không giữ một request HTTP và bộ nhớ JVM làm nơi duy nhất lưu tiến độ. Tôi biến lần chạy thành job bền vững có checkpoint, phiên bản workflow và khóa idempotency; khi restart, worker đọc trạng thái đã commit, xác định bước an toàn để tiếp tục và xác minh side effect trước khi retry.
+
+### Cái gì cần lưu và vì sao
+**State (trạng thái)** là dữ liệu có cấu trúc mô tả job đang ở bước nào, kết quả đã có và điều kiện tiếp theo. **Checkpoint (điểm lưu)** là mốc đã commit đủ để một worker khác tiếp tục sau khi process chết. Biến trong heap của Java không bền vững; deploy/restart sẽ làm mất chúng. Một timeout cũng không chứng minh tool bên ngoài chưa thực hiện hành động.
+
+Nên phân biệt:
+- Job: jobId, chủ sở hữu/tenant, trạng thái, thời điểm và workflowVersion.
+- Checkpoint: số bước, output có cấu trúc cần cho bước sau, trạng thái chờ duyệt nếu có.
+- Side effect: receipt/mã xác nhận từ hệ thống đích và idempotency key dùng để kiểm tra thao tác đã xảy ra chưa.
+
+Không bắt buộc lưu toàn bộ transcript vô thời hạn. Lưu dữ liệu tối thiểu để resume và điều tra, có mã hoá, retention và quyền truy cập phù hợp; tránh coi chain-of-thought là state nghiệp vụ.
+
+### Từng bước xử lý
+1. API xác thực người gọi, tạo job với idempotency key, lưu yêu cầu và trả 202 Accepted cùng jobId. 202 nghĩa là đã nhận xử lý, không có nghĩa job hoàn tất.
+2. Worker nhận job và lấy lease (quyền xử lý tạm thời có hạn) hoặc khóa hết hạn được. Dùng version/fencing để worker cũ không ghi sau khi lease đã được cấp cho worker mới.
+3. Với mỗi bước, đọc checkpoint, thực hiện công việc, rồi commit output và bước kế tiếp cùng transaction database.
+4. Trước khi gọi tool ghi, tạo operation key ổn định theo job và bước. Nếu request timeout, tra receipt theo key trước khi retry.
+5. Khi restart, worker tiếp tục từ checkpoint đã commit. Nếu không xác định được side effect đã xảy ra hay chưa, chuyển sang trạng thái reconciliation/review thay vì báo thành công hoặc chạy lại mù.
+
+~~~java
+StepState state = repository.load(jobId);
+if (state.version() != expectedVersion) throw new StaleWorkerException();
+String key = jobId + ":approve:" + state.stepNumber();
+Receipt receipt = paymentTool.findByIdempotencyKey(key);
+if (receipt == null) receipt = paymentTool.execute(command, key);
+repository.saveCheckpoint(jobId, state.version(), receipt.id());
+~~~
+
+Đây là minh hoạ nguyên lý, không gắn với một API framework cụ thể. Không có transaction tự động bao trùm database của mình và dịch vụ ngoài. Transactional outbox có thể ghi ý định phát message cùng transaction nội bộ; message vẫn có thể được gửi lại nên consumer/tool phải idempotent.
+
+### Trade-off và khi nào dùng
+| Cách làm | Phù hợp | Đổi lại |
+|---|---|---|
+| Chạy lại toàn bộ | Tác vụ thuần đọc, rẻ và ít bước | Tốn thời gian/token; nguy hiểm nếu có side effect |
+| Checkpoint từng bước | Job dài, bước đắt hoặc có ghi dữ liệu | Cần version state và xử lý migration |
+| Dừng chờ người duyệt | Thao tác khó đảo ngược hoặc rủi ro cao | Tăng thời gian hoàn thành |
+
+Nếu workflow có thể kéo dài nhiều phút hoặc cần resume sau deploy, tách khỏi vòng đời HTTP request. Lưu workflowVersion để khi prompt/schema đổi, hệ thống có chính sách rõ: hoàn tất theo version cũ, migrate có kiểm soát hoặc dừng để review.
+
+### Pitfall production
+- Đánh dấu bước xong trước khi lưu output: restart sẽ bỏ qua dữ liệu cần cho bước sau.
+- Timeout tool được hiểu nhầm là thất bại, dù hệ thống đích đã commit.
+- Lease không có version/fencing, worker cũ vẫn thức dậy và ghi đè.
+- Retry message bị giao lại tạo side effect trùng vì thiếu idempotency.
+- State chứa hồ sơ nhạy cảm hoặc transcript không giới hạn, làm tăng rủi ro rò rỉ và chi phí lưu.
+
+### Ví dụ đời thực
+Job rà soát 240 hồ sơ mất trung vị 4 phút và tạo ticket ở bước cuối. Trước đây deploy làm worker dừng giữa chừng khiến cả batch chạy lại, tạo ticket lặp. Nhóm thêm checkpoint sau mỗi hồ sơ, operation key theo jobId/hồ sơ và lease 60 giây có version fencing. Trong thử tải 1.000 job với 20 lần restart worker, không có ticket trùng; thời gian tiếp tục sau restart giảm từ trung bình 4 phút xuống 31 giây. Đây là ví dụ số liệu để minh hoạ cách đo, cần xác nhận trên workload thật.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi coi mỗi lần chạy agent là workflow có danh tính và trạng thái bền vững, không phải request dài sống trong heap. API tạo job idempotent rồi trả jobId; worker ghi checkpoint ở ranh giới bước. Với side effect, tôi dùng idempotency key ổn định và lưu receipt để khi timeout có thể hỏi hệ thống đích trước khi retry. Lease hạn chế hai worker cùng làm, còn version hoặc fencing ngăn worker cũ ghi đè. Khi restart, worker đọc workflowVersion và checkpoint, xác minh bước dở dang rồi resume hoặc chuyển review nếu kết quả chưa rõ. Tôi chỉ lưu dữ liệu cần để tiếp tục và điều tra, có retention/quyền truy cập, không lưu toàn bộ chain-of-thought như mặc định.
+
+> Senior tip: Thiết kế resume bắt đầu bằng câu hỏi “side effect đã xảy ra chưa?”, không chỉ “worker đang ở bước nào?”.`,
+  follow: [
+    'Bạn làm gì khi hệ thống đích không hỗ trợ idempotency key hoặc tra cứu receipt?',
+    'Lease và version fencing bảo vệ những tình huống worker nào?',
+    'Bạn version checkpoint ra sao khi deploy thay đổi luồng hoặc schema agent?'
+  ],
+  tags: ['agent', 'workflow', 'checkpoint', 'idempotency']
+},
+{
+  id: 'ai-079',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Một endpoint Spring Boot gọi agent có lúc hoàn thành trong 2 giây, có lúc mất 40 giây vì gọi nhiều tool. Bạn chọn xử lý đồng bộ hay đưa vào queue bất đồng bộ thế nào để API ổn định và người dùng vẫn biết kết quả?',
+  a: `**Tóm tắt:** Chọn sync hay async theo thời gian phản hồi mà sản phẩm cần, không theo việc LLM có hỗ trợ streaming hay không. Tác vụ ngắn, có deadline rõ và có thể fail nhanh thì xử lý đồng bộ; tác vụ dài hoặc dao động lớn nên tạo job bền vững, trả 202 cùng jobId, rồi worker xử lý qua queue với trạng thái và retry có kiểm soát.
+
+### Khái niệm và lý do
+**Đồng bộ (synchronous)** nghĩa là caller giữ kết nối chờ kết quả. Cách này đơn giản khi kết quả cần ngay, nhưng request giữ connection/thread và bị giới hạn bởi timeout của client, load balancer, API gateway và server.
+
+**Bất đồng bộ (asynchronous)** nghĩa là API nhận việc trước, còn xử lý sau. **Queue (hàng đợi)** tách tốc độ nhận việc khỏi tốc độ xử lý; worker lấy job khi có năng lực. Queue không xoá bỏ lỗi: message có thể giao lại, worker có thể chết và job vẫn cần trạng thái để người dùng theo dõi.
+
+### Cách ra quyết định
+1. Đo p50/p95/p99 (phân vị; p95 là 95% request nhanh hơn con số đó), timeout thật, tỷ lệ huỷ và thời gian từng tool.
+2. Hỏi UX có cần kết quả ngay không. Một tác vụ 2–3 giây ổn định có thể sync; phân tích hàng trăm tài liệu thường không cần giữ HTTP mở.
+3. Với sync, đặt deadline tổng nhỏ hơn timeout upstream, timeout riêng cho từng dependency, giới hạn concurrency và trả lỗi đúng nghĩa. Streaming có thể giảm thời gian thấy token đầu nhưng không đảm bảo workflow hoàn tất.
+4. Với async, xác thực/kiểm tra request, lưu job với idempotency key, enqueue an toàn và trả jobId. Client poll trạng thái hoặc nhận callback/SSE; endpoint trạng thái phải kiểm tra chủ sở hữu.
+5. Worker phải chống xử lý lặp, có retry với backoff (khoảng chờ tăng dần) và jitter (độ lệch ngẫu nhiên), trần retry, dead-letter (nơi cô lập message lỗi lặp) và cách báo lỗi cuối.
+
+~~~java
+ResponseEntity<JobView> submit(Request request, Principal user) {
+    Job job = jobs.createOnce(user.id(), request.idempotencyKey(), request);
+    // Chỉ xác nhận đã nhận; worker mới chạy agent
+    queue.publish(job.id());
+    return ResponseEntity.accepted().body(JobView.from(job));
+}
+~~~
+
+Code là minh hoạ nguyên lý. Có thể lưu job thành công nhưng process chết trước khi publish. Transactional outbox ghi job và outbox row trong cùng transaction; publisher riêng gửi row chưa xử lý. Publish vẫn có thể lặp nên consumer cần idempotency. Không nên gọi đây là exactly-once cho toàn bộ workflow.
+
+| Tiêu chí | Sync | Async job |
+|---|---|---|
+| Kết quả | Cùng HTTP response | Job ID, kết quả tới sau |
+| Phù hợp | Ngắn, có deadline, cần phản hồi ngay | Dài, dao động, cần resume |
+| Vận hành | Ít thành phần nhưng giữ tài nguyên | Queue, worker, trạng thái, retry |
+| UX | Đơn giản nếu chờ được | Cần tiến độ, poll/callback, thông báo |
+
+### Pitfall production
+- Tăng HTTP timeout để che p99 cao làm connection/thread bị giữ lâu và nghẽn dây chuyền.
+- Trả 200 OK như thể xong dù mới enqueue; dùng semantics rõ ràng 202 Accepted.
+- Publish queue sau commit nhưng process chết ở giữa khiến job bị kẹt; cần outbox hoặc cơ chế tương đương.
+- Retry 429/5xx đồng loạt gây thundering herd; cần backoff, jitter và giới hạn concurrency.
+- Poll quá thường xuyên hoặc để jobId đoán được làm tăng tải/rò trạng thái.
+
+### Ví dụ đời thực
+Endpoint phân loại email dùng agent có p95 18 giây trong khi timeout gateway là 15 giây; 7% request timeout dù worker đôi khi vẫn xử lý tiếp. Nhóm giữ sync cho gợi ý ngắn với deadline 8 giây, còn batch phân tích dùng job/outbox, worker concurrency giới hạn và client xem trạng thái mỗi 3 giây. Sau tách workload, timeout API batch giảm từ 7% xuống dưới 0,2%, thời gian xử lý thực tế không đổi. Số liệu minh hoạ cần đo lại theo hệ thống thực.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi bắt đầu từ SLO và trải nghiệm người dùng. Nếu tác vụ ngắn, p99 nằm trong deadline và caller cần kết quả ngay, tôi giữ sync nhưng đặt timeout theo dependency, giới hạn concurrency và fail fast. Nếu tác vụ dài hoặc biến động, tôi tạo job bền vững, trả 202 với jobId và cho client poll hoặc nhận thông báo. Outbox tránh lưu job nhưng quên publish; worker phải idempotent vì message có thể giao lại. Trạng thái job có owner để phân quyền, còn retry cần backoff và dead-letter. Tôi không khẳng định queue cho exactly-once toàn hệ thống; side effect vẫn cần operation key và kiểm tra kết quả.
+
+> Senior tip: Tách queue lag, thời gian chờ model và thời gian tool. Async có thể giảm timeout API nhưng không tự giảm thời gian hay chi phí xử lý.`,
+  follow: [
+    'Làm sao tránh job được lưu trong database nhưng message không bao giờ tới queue?',
+    'Bạn phân biệt timeout phía client với timeout worker thế nào trước khi retry?',
+    'Khi queue tăng nhanh hơn khả năng xử lý, bạn dùng backpressure và ưu tiên job ra sao?'
+  ],
+  tags: ['agent', 'async', 'queue', 'spring-boot']
+},
+{
+  id: 'ai-080',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Bạn cần agent phân tích một hồ sơ lớn gồm hợp đồng, lịch sử thanh toán và chính sách nội bộ. Khi nào nên chia việc cho nhiều worker/agent chạy song song, và làm thế nào gộp kết quả mà không khuếch đại sai sót?',
+  a: `**Tóm tắt:** Chỉ fan-out (chia nhánh chạy song song) khi các nhánh độc lập, có đầu vào/đầu ra xác định và có thể kiểm chứng riêng. Orchestrator (bộ điều phối) giao việc hẹp cho worker, giới hạn concurrency và ngân sách; bước tổng hợp giữ nguồn dẫn chứng, phát hiện thiếu/không đồng thuận, không biến nhiều câu trả lời trùng nhau thành bằng chứng chắc chắn hơn.
+
+### Khi nào tách việc
+Một agent đơn tuần tự hợp lý nếu bước sau cần quyết định của bước trước hoặc hồ sơ nhỏ đến mức overhead gọi thêm model lớn hơn lợi ích. Chia song song hợp lý khi có thể phân tích hợp đồng, tính thanh toán và tra chính sách độc lập, rồi ghép theo hồ sơ. Nhiều worker không tự động tăng độ chính xác: chúng có thể hiểu sai cùng nguồn hoặc cùng mắc lỗi.
+
+Đầu tiên định nghĩa **task contract** (hợp đồng tác vụ): mục tiêu, nguồn được phép đọc, dữ liệu tối thiểu, schema kết quả, deadline và điều kiện báo “không đủ bằng chứng”. Worker chỉ nhận phần hồ sơ cần thiết, có taskId và không được tự tạo worker con không giới hạn.
+
+~~~text
+Orchestrator
+  |-- hợp đồng --> Worker hợp đồng ----|
+  |-- giao dịch --> Worker thanh toán -+--> Validator --> Tổng hợp
+  |-- chính sách --> Worker chính sách -|
+~~~
+
+### Gộp kết quả có kiểm soát
+1. Chạy số nhánh giới hạn bằng semaphore/thread pool/queue; đặt deadline cho nhóm lẫn từng nhánh. Java virtual threads có thể giảm chi phí thread chờ I/O, nhưng không giới hạn request tới model hoặc làm provider nhanh hơn.
+2. Worker trả kết quả có schema: kết luận, nguồn/đoạn trích, độ bao phủ và trạng thái thiếu dữ liệu. Kiểm tra schema và xác nhận nguồn thuộc tập được cấp.
+3. Validator nghiệp vụ tính bằng code giá trị xác định như tổng tiền/ngày hiệu lực, không nhờ LLM bỏ phiếu.
+4. Aggregator giữ provenance (nguồn gốc kết luận) tới worker và tài liệu, đánh dấu mâu thuẫn. Nếu nhánh quan trọng lỗi, trả incomplete hoặc chuyển review.
+5. Chống gửi trùng theo taskId và áp ngân sách token/cost cho cả tác vụ.
+
+Không dùng đa số phiếu của model như bằng chứng độc lập: worker dùng cùng model, prompt và dữ liệu có thể mắc cùng lỗi tương quan. Với quyết định rủi ro, cần rule xác định, nguồn độc lập hoặc con người kiểm tra.
+
+| Thiết kế | Khi dùng | Đánh đổi |
+|---|---|---|
+| Một agent tuần tự | Các bước phụ thuộc lẫn nhau | Latency tuần tự, điều phối đơn giản |
+| Fan-out/fan-in | Nhánh độc lập, đầu ra ghép được | Chi phí, lỗi nhánh, đồng bộ |
+| Hybrid + validator | Có nhánh song song và quy tắc cứng | Cần schema và fallback rõ |
+
+Đo p95 end-to-end, latency nhánh chậm nhất, token/cost mỗi task, tỷ lệ thiếu/mâu thuẫn và chất lượng trên tập chuẩn. Latency có thể gần nhánh chậm nhất cộng thời gian gộp; chi phí thường gần tổng các nhánh. Giới hạn concurrency và quota theo tenant để một hồ sơ không sinh hàng trăm lời gọi.
+
+### Pitfall production
+- Chia task chồng lặp khiến cùng tài liệu gửi nhiều lần, tăng token và dữ liệu phát tán.
+- Worker tự gọi tool hoặc tạo worker con không giới hạn.
+- Aggregator bỏ provenance, biến “không tìm thấy” thành “không có vấn đề”.
+- Bỏ qua partial failure rồi vẫn trả câu trả lời có vẻ hoàn chỉnh.
+- Fan-out dữ liệu nhạy cảm sang worker/provider không có cùng quyền.
+- Tăng concurrency làm vượt rate limit; cần bulkhead (cô lập sức chứa) và backpressure.
+
+### Ví dụ đời thực
+Rà soát hồ sơ bảo hiểm gồm ba nhánh: điều khoản hợp đồng, lịch sử thanh toán và chính sách loại trừ. Bản tuần tự p95 52 giây; fan-out ba worker với concurrency tối đa 12, deadline mỗi nhánh 20 giây và validator tính lại khoản tiền giảm p95 còn 24 giây. Trong 800 hồ sơ benchmark, 3% có nhánh timeout; hệ thống đánh dấu incomplete và chuyển nhân viên xem thay vì kết luận đạt. Chi phí tăng 1,7 lần nên chỉ bật fan-out cho hồ sơ phức tạp. Đây là ví dụ số liệu, cần đo trên workload thực.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi bắt đầu bằng dependency graph, không bắt đầu bằng số lượng agent. Nếu các phần có thể kiểm tra độc lập, tôi định nghĩa task contract hẹp và chạy fan-out có giới hạn; nếu bước sau phụ thuộc kết luận trước thì giữ tuần tự. Worker trả schema có trích dẫn nguồn, độ bao phủ và trạng thái thiếu dữ liệu. Aggregator giữ provenance và nêu mâu thuẫn; phép tính/policy quan trọng được kiểm tra bằng code hoặc người có thẩm quyền. Tôi đo latency nhánh chậm, chi phí tổng, partial failure và chất lượng benchmark. Tôi cũng giới hạn dữ liệu theo quyền, concurrency và ngân sách. Nhiều model đồng ý không có nghĩa là bằng chứng độc lập.
+
+> Senior tip: Fan-out thường đổi chi phí lấy latency. So sánh p95 và chi phí trên cùng tập hồ sơ, đồng thời đo tỷ lệ kết quả incomplete.`,
+  follow: [
+    'Bạn định nghĩa provenance thế nào để aggregator không làm mất căn cứ kết luận?',
+    'Khi một nhánh quan trọng timeout nhưng hai nhánh còn lại thành công, API nên trả gì?',
+    'Vì sao ba worker cùng model đồng ý chưa chắc đáng tin hơn một worker?'
+  ],
+  tags: ['agent', 'multi-agent', 'orchestration', 'fan-out']
+},
+{
+  id: 'ai-081',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Bạn muốn kiểm thử agent có vòng lặp gọi tool trước mỗi lần đổi model hoặc prompt. Bạn dùng mock LLM và contract test cho tool thế nào để test nhanh, ổn định mà vẫn phát hiện lỗi tích hợp thật?',
+  a: `**Tóm tắt:** Tôi tách test theo ranh giới. Unit test dùng mock LLM trả kịch bản xác định để kiểm tra vòng điều khiển, giới hạn bước và cách agent xử lý kết quả tool; contract test kiểm tra schema, validation và semantics của từng tool độc lập; một số integration/evaluation test giới hạn mới gọi provider thật. Mock không chứng minh model production luôn hành xử giống kịch bản.
+
+### Vì sao không gọi model trong mọi test
+LLM sinh kết quả xác suất, nên cùng đầu vào có thể cho câu chữ khác nhau. Nếu unit test gọi model internet, test chậm, tốn tiền, dễ flaky (lúc qua lúc trượt) và khó tái hiện. Ngược lại, chỉ mock mọi thứ có thể bỏ lỡ sai cấu hình SDK, serialization, authentication hoặc khác biệt provider.
+
+### Unit test với mock LLM
+Đặt interface hẹp quanh chat/runtime trong ứng dụng; mock trả phản hồi đã định trước. Kịch bản gồm: model yêu cầu tool với tham số hợp lệ, tool trả kết quả, model kết thúc; và ca lỗi như JSON sai, tool từ chối, timeout, model lặp tool hoặc vượt max steps. Assert hành vi quan sát được: tool nào được gọi, tham số, số vòng, trạng thái cuối và lỗi trả caller. Không assert chính xác văn phong nếu đó không phải contract.
+
+~~~java
+when(model.next(any())).thenReturn(
+    ToolCall.of("lookupOrder", Map.of("orderId", "O-42")),
+    FinalAnswer.of("Đơn O-42 đang giao"));
+AgentResult result = agent.run(request);
+assertEquals(1, fakeTools.calls("lookupOrder"));
+assertEquals("completed", result.status());
+~~~
+
+Tên interface trong ví dụ là minh hoạ của ứng dụng, không phải API thư viện cụ thể. Unit test không cần credential hay dịch vụ thật. Với giới hạn vòng lặp, phải test trường hợp model cố gọi tool quá nhiều lần; code server tự chặn thay vì tin prompt.
+
+### Contract test cho tool
+Tool là biên nghiệp vụ nên kiểm tra input parse/validation (field bắt buộc, enum, kích thước, ngày sai); authorization theo principal; side effect và idempotency; schema output ổn định; lỗi có mã an toàn, không trả stack trace hay dữ liệu thừa. Fake repository kiểm tra nghiệp vụ, còn adapter/integration test giới hạn xác nhận serialization và cấu hình service.
+
+Nếu tool được công bố qua MCP (Model Context Protocol), contract còn gồm tên tool, input schema và cấu trúc content trả về. Test protocol ở integration layer, nhưng vẫn kiểm tra quyền trong server tool; schema đúng không chứng minh quyền đúng.
+
+### Các lớp test
+| Lớp | Bắt được | Không chứng minh được |
+|---|---|---|
+| Unit + mock model/tool | Vòng điều khiển, retry, limit, nhánh lỗi | Chất lượng model thật |
+| Contract/integration tool | Schema, auth, serialization, DB/API | Model chọn đúng tool |
+| Evaluation với model thật | Hành vi trên tập ca/provider hiện tại | Mọi input mới đều đúng |
+
+Lưu fixture (dữ liệu mẫu) cho transcript/tool call đã biết; pin model/prompt/schema version khi chạy regression. Tách test deterministic khỏi evaluation. Trên tập đánh giá, đo outcome như tool lựa chọn, tham số, quyền, groundedness (kết luận dựa trên bằng chứng), latency và token; không chỉ so chuỗi tuyệt đối. Test provider thật cần quota, giới hạn ca, dữ liệu sạch và ghi nhận phiên bản.
+
+### Pitfall production
+- Mock chỉ có happy path, không có output lỗi, denial hay tool failure.
+- Test implementation details khiến đổi SDK phải sửa test dù contract không đổi.
+- Retry lỗi validation làm agent lặp tool và tốn chi phí.
+- Gọi model thật trong mọi PR làm build flaky, tốn tiền và có nguy cơ lộ secret.
+- Fixture chứa PII production bị tái sử dụng ngoài môi trường được phép.
+
+### Ví dụ đời thực
+Agent hoàn tiền chỉ có happy-path test. Khi tool đổi trường amount từ decimal string sang JSON number, mock cũ không phát hiện adapter serialization sai. Đội thêm contract test cho schema, authorization, idempotency và 30 kịch bản mock gồm timeout, denial, loop limit; provider thật chạy 40 ca nightly với phiên bản model cố định. Lỗi tích hợp được phát hiện trước deploy và PR suite giữ dưới 90 giây. Đây là ví dụ minh hoạ số liệu, không phải cam kết chung.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi kiểm thử agent như state machine có đầu vào và side effect, không cố kiểm tra mọi câu chữ. Unit test mock model theo kịch bản tool call, kết quả và câu kết thúc để xác nhận số bước, quyền, retry và nhánh lỗi. Mỗi tool có contract test cho schema, validation, authorization, idempotency và output an toàn. Adapter/provider có integration test nhỏ cho serialization; chất lượng model thật được đo trên tập evaluation riêng, có giới hạn quota và dữ liệu làm sạch. Tôi phân biệt rõ: mock chứng minh code phản ứng đúng với kịch bản đã định, không chứng minh model production luôn sinh kịch bản đó.
+
+> Senior tip: Viết test cho điều agent tuyệt đối không được làm—gọi tool vượt quyền, lặp side effect, hoặc chạy vô hạn—trước khi tối ưu câu trả lời.`,
+  follow: [
+    'Bạn chọn assertion nào để test agent mà không phụ thuộc câu chữ do model sinh?',
+    'Contract test cho tool ghi dữ liệu nên có các ca authorization và idempotency nào?',
+    'Test nào nên chạy mỗi pull request và test nào nên chạy định kỳ với provider thật?'
+  ],
+  tags: ['agent', 'testing', 'mock-llm', 'contract-test']
+},
+{
+  id: 'ai-082',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Một khách báo agent trả sai sau khi gọi ba tool, nhưng dashboard chỉ có latency trung bình và tổng token theo ngày. Bạn thu thập gì để điều tra đúng một lần chạy, tái hiện lỗi an toàn và không làm lộ dữ liệu nhạy cảm?',
+  a: `**Tóm tắt:** Để debug một lần chạy, cần runId/traceId xuyên API, model và tool, cùng timeline có timestamp, trạng thái, phiên bản và quan hệ cha-con của từng bước. Tôi lưu đủ metadata để xác định lỗi ở đâu, nhưng không mặc định ghi raw prompt, tài liệu hay chain-of-thought; replay phải cô lập và không lặp side effect thật.
+
+### Vì sao dashboard chưa đủ
+Metric (số đo tổng hợp) như p95 latency hoặc token/ngày cho biết xu hướng, nhưng không giải thích một run cụ thể. **Trace** là chuỗi span (đoạn công việc có thời gian và quan hệ) theo request; **structured event** là bản ghi có field ổn định như runId, step, tool, trạng thái và error code. Hai khái niệm giúp nối agent với dependency và xem thứ tự thực tế.
+
+### Dữ liệu cần ghi cho mỗi run
+1. ID và liên kết: runId, traceId, parent span, request/job ID; không dùng email/CCCD làm ID.
+2. Phiên bản: app build, workflow, prompt/template hash, tool schema, model/provider và sampling config liên quan.
+3. Timeline mỗi bước: start/end, loại bước (model/tool/validation), success/failure/timeout, retry count, status code và latency.
+4. Usage: token input/output nếu provider trả về, ước tính cost, ngân sách và queue wait.
+5. Tool: tên tool, correlation ID, tham số đã redact hoặc allowlist field cần thiết, kết quả rút gọn và mã tài nguyên giả danh.
+6. Kết quả: output có validate không, evidence/citation nào được dùng và response nào được gửi cho người dùng.
+
+~~~text
+run=R-91
+  model#1  420ms  tool_call=lookupPolicy
+  tool#1    35ms  status=ok  source=P-18 rev=7
+  model#2  810ms  tool_call=submitCase
+  tool#2    92ms  status=denied  reason=stale_version
+  final     18ms  status=completed  validation=warning
+~~~
+
+Timeline gợi ý điều tra lỗi state transition: tool bị từ chối do version cũ nhưng agent vẫn báo completed. Log không phải nguồn chân lý duy nhất; đối chiếu receipt hoặc trạng thái trong hệ thống nghiệp vụ để biết side effect thực sự đã commit chưa.
+
+### Debug và replay an toàn
+- Tìm run bằng ID từ support ticket; kiểm tra quyền người vận hành và trường dữ liệu được phép xem.
+- Dựng timeline, tìm span lỗi/chậm, retry và output validation; so sánh phiên bản prompt/tool/model.
+- Replay bằng fixture đã redact trong môi trường cô lập; thay tool ghi bằng fake/dry-run hoặc chỉ chạy lại bước đọc.
+- Model có tính xác suất và provider có thể đổi; gọi lại model không đảm bảo ra kết quả giống hệt. Nếu cần tái hiện, dùng recorded response/tool output đã được phép lưu.
+- Tạo regression test cho nguyên nhân gốc và theo dõi lỗi theo release.
+
+| Dữ liệu | Lợi ích | Cần bảo vệ |
+|---|---|---|
+| Metadata, latency, status | Tìm bước chậm/lỗi, rủi ro thấp hơn | ID giả danh, retention |
+| Prompt/response nguyên bản | Có thể hiểu đủ ngữ cảnh | PII, secret, quyền xem, mã hoá |
+| Hash + fixture đã redact | Đối chiếu version, replay test | Có thể thiếu chi tiết |
+
+Áp dụng data minimization (chỉ giữ dữ liệu cần thiết), mã hoá, phân quyền log và retention theo loại dữ liệu. Redact trước khi export sang observability bên ngoài; tránh ghi Authorization header, API key, prompt hồ sơ hoặc output tool đầy đủ. Nếu compliance yêu cầu lưu nội dung, định nghĩa mục đích, thời hạn và audit truy cập.
+
+### Pitfall production
+- Chỉ log ở cuối nên không biết model gọi tool nào trước lỗi.
+- Không truyền trace context qua queue khiến async run bị đứt dấu vết.
+- Lưu transcript toàn phần biến log thành kho PII thứ hai.
+- Replay thao tác ghi trên production gây giao dịch lặp; dùng sandbox/fake/dry-run.
+- Sampling bỏ đúng trace lỗi; có thể tăng ghi cho error/high-latency nhưng vẫn phải giới hạn dữ liệu.
+- Ghi completed chỉ vì model trả text, dù tool bị deny hoặc validation fail.
+
+### Ví dụ đời thực
+Agent tạo yêu cầu hỗ trợ đôi lúc báo “đã tạo” nhưng database không có record. Metric trung bình bình thường. Trace theo runId cho thấy tool ghi timeout sau 900 ms rồi model cuối vẫn tuyên bố thành công; tra receipt xác nhận một số lần server đã commit trước khi timeout. Đội sửa state machine để phân biệt unknown outcome, tra receipt bằng idempotency key trước retry và chỉ báo completed khi có xác nhận. Trong 2.400 run sau triển khai, phản hồi thành công giả giảm từ 19 xuống 0; trace lỗi giữ 14 ngày và prompt được redact theo chính sách. Đây là số liệu minh hoạ cần đo thực tế.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi cần truy vết một run cụ thể chứ không chỉ nhìn metric tổng. Mỗi request có runId/traceId ổn định qua queue và tool; span ghi thứ tự, latency, trạng thái, retry, phiên bản model/prompt/tool và mã lỗi. Tôi lưu usage và kết quả tool ở mức cần thiết, redact trước khi export, tránh PII và secret. Khi điều tra, tôi dựng timeline rồi đối chiếu receipt ở hệ thống nghiệp vụ. Replay chạy bằng fixture đã làm sạch và tool fake hoặc dry-run; gọi lại model không đảm bảo cùng kết quả và không được lặp side effect. Sau khi tìm nguyên nhân, tôi bổ sung regression test và theo dõi lỗi theo release.
+
+> Senior tip: Run kết thúc bằng câu trả lời trôi chảy chưa chắc thành công. Gắn trạng thái cuối với kết quả nghiệp vụ đã xác nhận, không chỉ với việc model trả text.`,
+  follow: [
+    'Bạn truyền trace context qua queue và worker thế nào để trace không bị đứt?',
+    'Khi nào cần lưu prompt nguyên văn, và cần kiểm soát quyền/retention gì?',
+    'Làm sao replay run có tool ghi mà không tạo lại side effect production?'
+  ],
+  tags: ['agent', 'debugging', 'tracing', 'observability']
+},
 );
