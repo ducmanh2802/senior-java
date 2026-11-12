@@ -8085,4 +8085,419 @@ Một batch import kiểm tra {{assert row.getAccountId() != null}} trước khi
   ],
   tags: ['assert', 'validation', 'exception', 'production']
 },
+{
+  id: 'core-043',
+  topic: 'core',
+  level: 'senior',
+  q: 'Một kiểu giá trị được dùng đồng thời trong {{HashSet}} và {{TreeSet}}. Bạn bảo đảm {{equals()}}, {{hashCode()}} và {{compareTo()}} nhất quán thế nào, và điều gì xảy ra nếu {{compareTo()}} trả 0 nhưng {{equals()}} trả false?',
+  a: `**Tóm tắt:** {{equals}} xác định hai object có cùng ý nghĩa nghiệp vụ, {{hashCode}} giúp cấu trúc băm tìm nhanh và phải bằng nhau khi {{equals}} là true; {{compareTo}} quyết định thứ tự. Nên thiết kế thứ tự tự nhiên sao cho {{compareTo() == 0}} tương đương {{equals()}}, vì {{TreeSet}} và {{TreeMap}} dùng kết quả so sánh để nhận diện phần tử trùng, không dùng {{equals}} như {{HashSet}}.
+
+### Ba hợp đồng liên quan nhưng không giống nhau
+- {{equals}} phải phản xạ, đối xứng, bắc cầu và ổn định khi các trường liên quan không đổi.
+- {{hashCode}} có thể trùng giữa hai object không bằng nhau, nhưng nếu {{a.equals(b)}} là true thì hai hash bắt buộc bằng nhau. {{HashSet}} dùng hash chọn bucket rồi mới dùng equals để phân biệt.
+- {{compareTo}} trả số âm, 0 hoặc dương để nói thứ tự. Hợp đồng {{Comparable}} yêu cầu thứ tự nhất quán và bắc cầu; tài liệu Java khuyến nghị thứ tự này nhất quán với equals. Nếu không nhất quán, cấu trúc có thứ tự vẫn hoạt động theo compareTo nhưng hành vi không còn khớp kỳ vọng chung của Set.
+
+~~~java
+record PriceKey(String sku, int cents) implements Comparable<PriceKey> {
+    @Override public int compareTo(PriceKey other) {
+        int bySku = sku.compareTo(other.sku);
+        return bySku != 0 ? bySku : Integer.compare(cents, other.cents);
+    }
+}
+~~~
+
+Record ở ví dụ sinh equals/hashCode theo cả {{sku}} và {{cents}}; compareTo cũng so sánh đúng hai trường đó. Tránh trừ hai số nguyên để tạo kết quả so sánh vì phép trừ có thể overflow; dùng {{Integer.compare}}.
+
+### Ví dụ lệch contract: BigDecimal
+{{new BigDecimal("2.0").equals(new BigDecimal("2.00"))}} là false vì scale (số chữ số sau dấu thập phân) khác nhau, nhưng {{compareTo}} trả 0 vì giá trị số bằng nhau. Do đó {{HashSet}} có thể giữ cả hai, trong khi {{TreeSet}} chỉ giữ một. Đây không phải lỗi của TreeSet: nó coi hai phần tử là như nhau theo comparator.
+
+| Dùng ở đâu | Cách nhận diện trùng | Hệ quả |
+|---|---|---|
+| {{HashSet}} | {{equals}} và {{hashCode}} | Có thể giữ hai object mà compareTo xem bằng nhau |
+| {{TreeSet}} | {{compareTo}} hoặc comparator trả 0 | Có thể loại object mà equals xem khác |
+| Sắp xếp danh sách | thứ tự so sánh | Không tự loại phần tử trùng |
+
+### Pitfall production
+- So sánh một tập trường trong equals nhưng tập khác trong compareTo; cùng một loại key sẽ có quy tắc trùng khác nhau tùy collection.
+- Bỏ qua trường phân biệt cuối cùng trong comparator; {{TreeMap.put}} có thể ghi đè value của key khác theo equals.
+- Dùng field mutable trong hash hoặc thứ tự sau khi object đã vào Set/Map; thay đổi có thể làm phần tử không còn tìm thấy đúng chỗ.
+- Cho rằng compareTo phải nhất quán với equals theo luật compile-time; Java không thể tự kiểm tra quy tắc nghiệp vụ này.
+
+### Ví dụ đời thực
+Một batch đối soát lưu mã giao dịch vào {{HashSet}} để chống trùng và sắp xếp theo {{TreeSet}} để xuất báo cáo. Mã cũ dùng equals theo (ngân hàng, số tham chiếu, ngày), nhưng comparator chỉ dùng số tham chiếu. Hai ngân hàng cùng phát hành ref {{A-17}} trong cùng ngày: hash set giữ cả hai, còn tree set chỉ giữ một; báo cáo thiếu giao dịch, dù tổng tiền ở bước trước vẫn đúng. Với batch 80.000 giao dịch/ngày, đối chiếu báo cáo phát hiện lệch 12–20 dòng mỗi ngày. Sửa comparator bằng cách so sánh đủ ba trường theo cùng thứ tự, thêm kiểm thử cả {{HashSet}} lẫn {{TreeSet}}. Tình huống và số liệu minh hoạ cách điều tra; khi áp dụng cần xác nhận business key thực tế.
+
+### Trả lời mẫu khi phỏng vấn
+“Em phân biệt ba hợp đồng: equals nói hai object có cùng giá trị nghiệp vụ hay không, hashCode phục vụ hash collection và bắt buộc bằng nhau khi equals true, còn compareTo xác định thứ tự. HashSet dùng hash rồi equals để phát hiện trùng; TreeSet dùng compareTo bằng 0, nên hai collection có thể cho kết quả khác nếu thứ tự không consistent with equals. Em thường chọn cùng một tập field bất biến làm equality và natural ordering, đồng thời viết test cho cặp object bằng nhau, khác nhau ở từng field và cho kết quả compare bằng 0. BigDecimal là ví dụ có chủ ý: 2.0 và 2.00 không equals nhưng compareTo bằng 0, nên TreeSet chỉ giữ một. Nếu domain cần giữ cả hai scale, em không đưa trực tiếp vào TreeSet theo natural ordering; em chuẩn hoá scale hoặc định nghĩa comparator có phân biệt scale. Em cũng tránh comparator dùng phép trừ số nguyên vì overflow, và không đổi field tham gia hash/sort khi object đã nằm trong collection.”
+
+> Senior tip: kiểm thử collection thật bằng những giá trị biên của domain; unit test riêng cho equals chưa phát hiện trường hợp TreeSet gộp key theo comparator.`,
+  follow: [
+    'Vì sao {{BigDecimal("2.0")}} và {{BigDecimal("2.00")}} khiến {{HashSet}} và {{TreeSet}} có thể khác kích thước?',
+    'Bạn sẽ thiết kế comparator cho key ghép nhiều trường thế nào để tránh overflow và key bị gộp?',
+    'Nếu trường tham gia {{hashCode()}} thay đổi sau khi thêm vào {{HashSet}}, hiện tượng gì có thể xảy ra?'
+  ],
+  tags: ['equals', 'hashCode', 'Comparable', 'TreeSet', 'contract']
+},
+{
+  id: 'core-044',
+  topic: 'core',
+  level: 'senior',
+  q: 'Bạn cần tạo immutable class chứa {{byte[]}} và một danh sách đối tượng. Vì sao chỉ khai báo field {{final}} chưa đủ, và defensive copy ở constructor/getter cần làm gì?',
+  a: `**Tóm tắt:** Immutable object là object không thể đổi trạng thái quan sát được sau khi tạo. {{final}} chỉ ngăn gán field sang tham chiếu khác; nó không làm mảng hay phần tử bên trong bất biến. Cần copy dữ liệu mutable khi nhận vào và khi trả ra, đồng thời đảm bảo phần tử lồng nhau cũng không thể bị sửa từ bên ngoài.
+
+### Từ tham chiếu đến state bị sửa
+Java truyền tham chiếu tới object theo giá trị: constructor nhận một giá trị tham chiếu tới mảng. Nếu lưu nguyên tham chiếu, caller và class cùng trỏ tới một mảng. Caller sửa một phần tử thì state class đổi dù không có setter. Nếu getter trả mảng nội bộ, caller cũng sửa trực tiếp được.
+
+~~~java
+final class SignedPayload {
+    private final byte[] bytes;
+    SignedPayload(byte[] input) {
+        this.bytes = input.clone(); // tách mảng khỏi caller
+    }
+    byte[] bytes() {
+        return bytes.clone(); // không để lộ mảng nội bộ
+    }
+}
+~~~
+
+Mảng không có bản sao bất biến chuẩn; clone tạo mảng mới nhưng copy nông các giá trị primitive (ở đây là byte, nên đủ). Với object array, clone chỉ copy các tham chiếu phần tử.
+
+### Defensive copy sâu đến đâu?
+{{List.copyOf(input)}} tạo danh sách không sửa được và chặn việc caller thêm/xoá phần tử trên danh sách trả về. Nhưng đây là shallow copy: nếu phần tử là {{MutableAddress}}, caller vẫn có thể gọi setter trên cùng instance. Để đạt bất biến, dùng phần tử immutable, chuyển phần tử sang immutable value, hoặc tự copy từng phần tử theo quy tắc domain.
+
+| Thành phần | Cách bảo vệ | Giới hạn |
+|---|---|---|
+| {{byte[]}} | {{clone()}} ở constructor và getter | O(n) mỗi lần copy |
+| {{List<String>}} | {{List.copyOf()}} khi nhận vào | String immutable; list mới không sửa được |
+| {{List<MutableItem>}} | copy list và copy từng item | Cần định nghĩa cách copy sâu |
+| {{Date}} cũ | copy khi nhận và khi trả | Ưu tiên thay bằng {{Instant}} |
+
+Ngoài ra, class nên {{final}} hoặc kiểm soát kế thừa để subclass không thêm trạng thái mutable; field {{private final}}; không cung cấp setter; constructor không gọi callback hoặc đưa {{this}} ra ngoài trước khi hoàn tất khởi tạo. Final field giúp quy tắc khởi tạo an toàn của Java hoạt động, nhưng không biến một object mutable được chia sẻ thành thread-safe nếu nó có state khác.
+
+### Pitfall production
+- Copy vào constructor nhưng getter trả field trực tiếp; hoặc ngược lại chỉ copy getter mà lưu input gốc.
+- Dùng {{Collections.unmodifiableList(input)}} rồi nghĩ đã snapshot: đây chỉ là view, thay đổi list gốc vẫn nhìn thấy.
+- Dùng {{List.copyOf}} cho list chứa object mutable rồi bỏ qua khả năng sửa sâu.
+- Copy mảng lớn mỗi lần getter có thể gây allocation/GC đáng kể; chỉ tối ưu sau khi đo, hoặc cung cấp API thao tác an toàn không lộ mảng.
+
+### Ví dụ đời thực
+Một service ký webhook giữ {{byte[] payload}} để gửi lại khi retry. Constructor lưu thẳng mảng nhận từ parser; tầng gọi tái sử dụng buffer và ghi payload của request kế tiếp vào đó. Chữ ký đã tính cho payload cũ nhưng nội dung gửi retry là payload mới, tạo 27 lỗi xác minh trong 100.000 lần retry ở tải cao. Điều tra thấy cùng một mảng được dùng ở hai nơi. Copy một lần lúc tạo object giải quyết việc caller thay buffer; getter chỉ trả bản copy hoặc service gửi qua method không để lộ mảng. Test sửa mảng gốc sau constructor và sửa mảng từ getter, rồi xác nhận payload nội bộ không đổi. Số liệu là tình huống minh hoạ; copy mỗi payload 4 KB tốn thêm khoảng 4 KB khi tạo object, cần đo nếu lưu lượng lớn.
+
+### Trả lời mẫu khi phỏng vấn
+“Final bảo đảm field không được gán lại sau khởi tạo, chứ không làm object mà field trỏ tới trở nên immutable. Với mảng byte, em clone đầu vào trong constructor và clone khi trả ra để caller không giữ alias tới state nội bộ. Với collection, em thường dùng List.copyOf, nhưng hiểu đây là copy nông: nếu element mutable thì vẫn phải copy từng element hoặc dùng kiểu bất biến. Em cũng giữ field private, không có setter, class final nếu phù hợp và không để this thoát khỏi constructor. Immutable object dễ chia sẻ giữa thread và giảm lỗi do aliasing, nhưng copy có chi phí O(n); em chọn ranh giới copy dựa trên ownership và đo allocation nếu payload lớn. Test phải thử cả hai chiều: sửa input sau khi tạo và sửa object nhận từ getter. Unmodifiable view không thay thế snapshot độc lập vì nguồn gốc vẫn có thể thay đổi.”
+
+> Senior tip: với binary payload lớn, cân nhắc API dùng buffer chỉ đọc hoặc chuyển quyền sở hữu có contract rõ ràng; đừng trả mảng nội bộ chỉ để tránh một lần copy khi chưa đo.`,
+  follow: [
+    'Vì sao {{Collections.unmodifiableList(list)}} không đảm bảo snapshot bất biến?',
+    '{{List.copyOf()}} bảo vệ đến mức nào nếu các phần tử trong list có setter?',
+    'Copy một mảng lớn ở mọi lần getter ảnh hưởng hiệu năng ra sao, và bạn đo điều đó thế nào?'
+  ],
+  tags: ['immutability', 'defensive copy', 'array', 'List.copyOf', 'aliasing']
+},
+{
+  id: 'core-045',
+  topic: 'core',
+  level: 'senior',
+  q: 'Một vòng lặp nối hàng chục nghìn mảnh chuỗi để tạo CSV. Bạn chọn {{String}}, {{StringBuilder}} hay {{StringBuffer}} thế nào, và vì sao {{+}} sau Java 9 không tự giải quyết mọi trường hợp?',
+  a: `**Tóm tắt:** {{String}} bất biến nên mỗi lần nối tạo kết quả mới về mặt ngữ nghĩa; compiler/JVM có thể tối ưu một biểu thức nối cố định, nhưng vòng lặp nối lặp lại vẫn có thể tạo nhiều object và copy dữ liệu. Dùng {{StringBuilder}} cục bộ cho nhiều lần append; chỉ chọn {{StringBuffer}} khi thật sự cần đồng bộ trên từng thao tác của cùng một buffer được chia sẻ.
+
+### Khác nhau ở đâu?
+{{String}} là chuỗi immutable: sau khi tạo, nội dung không đổi. Tính bất biến giúp dùng làm key an toàn nhưng phép nối sinh chuỗi mới. {{StringBuilder}} giữ buffer mutable, tăng dung lượng khi cần và tạo một String cuối bằng {{toString()}}. {{StringBuffer}} có API tương tự nhưng các method được đồng bộ hoá trên instance; điều đó không làm chuỗi gồm nhiều thao tác append thành một transaction nguyên tử.
+
+~~~java
+StringBuilder csv = new StringBuilder();
+for (int i = 0; i < rows.size(); i++) {
+    if (i > 0) csv.append(','); // tránh dấu phẩy thừa đầu dòng
+    csv.append(rows.get(i).id());
+}
+String result = csv.toString();
+~~~
+
+Một biểu thức như {{first + "-" + second}} có thể được biên dịch/tối ưu thành nối chuỗi hiệu quả (từ Java 9, {{invokedynamic}} là cơ chế thường dùng của compiler cho concat). Nhưng mỗi vòng lặp là một lần tạo kết quả mới dựa trên chuỗi tích luỹ; tổng lượng copy có thể tăng gần bậc hai theo độ dài. JVM không thể thay mọi trường hợp thành một builder duy nhất nếu ngữ nghĩa hoặc luồng dữ liệu không cho phép.
+
+| Tình huống | Lựa chọn thường hợp lý | Vì sao |
+|---|---|---|
+| Nối vài giá trị trong một biểu thức | {{+}} | Dễ đọc, compiler tối ưu |
+| Nối trong vòng lặp | {{StringBuilder}} | Tái dùng buffer trong một lần tạo |
+| Buffer dùng chung giữa thread | Tránh chia sẻ; nếu bắt buộc cần thiết kế đồng bộ rõ | {{StringBuffer}} chỉ khoá từng method |
+| Chuỗi cố định nhiều dòng | Text block hoặc hằng số | Không phải mục tiêu của builder |
+
+### Pitfall production
+- Đưa builder thành field dùng chung của singleton Spring service; nhiều request cùng append sẽ trộn dữ liệu. Builder không thread-safe.
+- Đổi sang {{StringBuffer}} tưởng rằng toàn bộ chuỗi thao tác được khoá; hai thread vẫn có thể xen kẽ giữa các lần gọi.
+- Gán sẵn capacity quá lớn cho mọi request; tiết kiệm vài lần tăng buffer nhưng giữ nhiều heap hơn. Capacity ban đầu chỉ nên dựa trên kích thước ước lượng hợp lý.
+- Tạo builder thủ công cho mọi biểu thức nhỏ làm code khó đọc mà không có lợi ích đã đo.
+
+### Ví dụ đời thực
+Endpoint export ghép 30.000 dòng CSV bằng {{result += line}}. Khi tải thử 20 request đồng thời, CPU tăng từ 35% lên 82%, thời gian p95 tăng từ 0,7 lên 4,6 giây và allocation tăng khoảng 5 lần so với bản dùng builder cục bộ. Đội dùng {{StringBuilder}} cục bộ cho mỗi request và chỉ tạo String ở cuối; p95 còn 1,1 giây. Số liệu là kịch bản minh hoạ, không phải benchmark phổ quát: charset encoding, kích thước dòng, heap và HTTP streaming đều ảnh hưởng. Nếu file lớn, giải pháp tốt hơn có thể là stream trực tiếp ra output thay vì giữ toàn bộ String trong heap.
+
+### Trả lời mẫu khi phỏng vấn
+“Em dùng String cho giá trị chuỗi bất biến và phép nối nhỏ, rõ ràng. Java 9 trở đi có cơ chế tối ưu concat cho biểu thức, nên em không thay mọi dấu cộng bằng builder theo thói quen. Nhưng trong vòng lặp, mỗi lần tạo chuỗi tích luỹ có thể copy phần đã tạo trước đó nhiều lần; em dùng StringBuilder cục bộ và append từng phần. StringBuffer đồng bộ từng method, hữu ích hiếm khi cùng một buffer thực sự được chia sẻ, nhưng không làm một nhóm append nguyên tử và có thể gây contention. Trong service xử lý request, em không dùng builder làm field chung. Với CSV rất lớn, em còn cân nhắc ghi theo từng dòng ra stream để tránh giữ cả nội dung trong heap. Em xác nhận bằng benchmark như JMH hoặc load test đúng kích thước dữ liệu; không suy luận hiệu năng chỉ từ cú pháp.”
+
+> Senior tip: trước khi tối ưu, đo allocation rate và p95/p99 trên workload đại diện; nếu export rất lớn, streaming thường giảm peak heap tốt hơn chỉ thay {{+}} bằng builder.`,
+  follow: [
+    'Một biểu thức {{a + b + c}} khác vòng lặp {{result += part}} ở điểm nào về tối ưu hoá?',
+    'Vì sao {{StringBuffer}} không khiến nhiều lần {{append()}} trở thành một thao tác nguyên tử?',
+    'Khi nào nên stream CSV thay vì dựng cả nội dung trong {{StringBuilder}}?'
+  ],
+  tags: ['String', 'StringBuilder', 'StringBuffer', 'allocation', 'performance']
+},
+{
+  id: 'collections-040',
+  topic: 'collections',
+  level: 'lead',
+  q: 'Một cache trong một JVM có nhiều luồng đọc/ghi và thao tác kiểm tra rồi cập nhật theo key. Bạn chọn {{ConcurrentHashMap}} hay {{Collections.synchronizedMap()}}, và xác định phạm vi atomicity (tính nguyên tử) thế nào?',
+  a: `**Tóm tắt:** {{synchronizedMap}} đồng bộ từng method trên một monitor chung, nên các thao tác thường bị tuần tự hoá; khi duyệt view vẫn phải khóa wrapper suốt vòng lặp. {{ConcurrentHashMap}} cho phép truy cập đồng thời tốt hơn và có các method atomic theo key như {{putIfAbsent}} hoặc {{compute}}, nhưng không tạo transaction cho nhiều key hay thao tác với database.
+
+### Bắt đầu từ invariant
+Invariant là điều kiện phải luôn đúng, ví dụ “mỗi customer chỉ có một cache entry đang hoạt động”. Trước khi chọn map, hãy xác định invariant nằm ở một thao tác hay nhiều bước. Đoạn {{if (!map.containsKey(k)) map.put(k, v)}} là hai thao tác: hai thread có thể cùng thấy key vắng rồi cùng ghi. Thread-safe từng method không đồng nghĩa check-then-act atomic.
+
+~~~java
+ConcurrentMap<String, Config> cache = new ConcurrentHashMap<>();
+Config config = cache.computeIfAbsent("tenant-7", key -> loadLocalConfig(key));
+// Callback chỉ tính giá trị cục bộ; không nên gọi mạng hoặc ghi DB ở đây.
+~~~
+
+{{ConcurrentHashMap}} không cho key/value null; callback của {{computeIfAbsent}} nên ngắn, vì callback chậm làm cập nhật cùng vùng bị ảnh hưởng chậm lại. Với {{synchronizedMap}}, khóa ngoài cùng wrapper quanh cả check-then-act bảo vệ chuỗi bước; mọi code truy cập phải dùng cùng wrapper/monitor. Gọi HTTP hoặc serialize dữ liệu trong synchronized block giữ khóa lâu.
+
+| Nhu cầu | Lựa chọn | Lưu ý |
+|---|---|---|
+| Tải thấp, cần map đơn giản, iteration snapshot dưới lock | {{synchronizedMap}} | Nhiều thao tác tranh cùng monitor |
+| Nhiều luồng truy cập, cập nhật atomic theo key | {{ConcurrentHashMap}} | Iterator weakly consistent, không phải snapshot |
+| Cập nhật hai key cùng lúc | Lock/thiết kế khác ở cấp nghiệp vụ | Atomic theo một key không đủ |
+| Chống xử lý trùng giữa nhiều replica | DB constraint/idempotency/distributed coordination | Cả hai map chỉ ở một JVM |
+
+### Pitfall production
+- Dùng {{ConcurrentHashMap}} rồi cho rằng cả chuỗi get-modify-put đã atomic; dùng method atomic phù hợp hoặc đồng bộ toàn bộ invariant.
+- Lưu list mutable trong map rồi sửa list từ nhiều thread; map an toàn không khiến value tự an toàn.
+- Dùng iterator ConcurrentHashMap như snapshot chính xác để tính báo cáo; iterator có thể quan sát một phần cập nhật đồng thời.
+- Dùng local map để đảm bảo chỉ một server gọi đối tác; nhiều instance có map độc lập.
+
+### Ví dụ đời thực
+Một dịch vụ có 4 replica giữ trạng thái khởi tạo cấu hình tenant. Trong mỗi JVM, code cũ check rồi put tách rời khiến khoảng 2% request cold-start cùng tenant tạo hai object cấu hình và cùng đăng ký listener. Chuyển sang {{computeIfAbsent}} với callback chỉ tạo object cục bộ loại race trong một JVM; kiểm thử đồng thời 10.000 lần chỉ còn một object được cài cho mỗi key. Tuy nhiên sau deploy, 4 replica vẫn có thể mỗi bên khởi tạo một lần. Vì vậy đăng ký listener toàn hệ thống được chuyển sang thao tác idempotent ở kho cấu hình dùng chung. Đây là tình huống minh hoạ; map chỉ giải quyết phạm vi tiến trình.
+
+### Trả lời mẫu khi phỏng vấn
+“Em chọn theo invariant và mức tranh chấp. SynchronizedMap bọc các method bằng một monitor chung, đơn giản nhưng có thể serialize cả đọc và ghi; muốn duyệt entrySet an toàn thì đồng bộ trên chính wrapper quanh vòng lặp. ConcurrentHashMap phù hợp khi có truy cập đồng thời nhiều hơn và hỗ trợ thao tác atomic theo key như putIfAbsent hoặc compute. Tuy nhiên atomic theo một key không bao trùm nhiều key, database hay network. Em không đặt I/O trong callback compute vì callback nên nhanh, cũng không giả định iterator là snapshot. Map thread-safe không bảo vệ object mutable được lưu bên trong. Cuối cùng, nếu yêu cầu là chỉ thực hiện một lần trên nhiều replica, cấu trúc trong JVM không đủ; em dùng idempotency key, unique constraint hoặc cơ chế phối hợp phù hợp. Em sẽ đo contention và latency trước khi đổi cấu trúc, đồng thời viết test cho chính chuỗi thao tác nghiệp vụ chứ không chỉ test từng get/put.”
+
+> Senior tip: ghi rõ ranh giới “atomic trong JVM / atomic theo key / transaction hệ thống” trong review; ba khái niệm này thường bị đánh đồng khi xử lý race.`,
+  follow: [
+    'Iterator của {{ConcurrentHashMap}} có thể dùng làm snapshot để đối soát chính xác không?',
+    'Vì sao {{computeIfAbsent}} không đảm bảo chỉ một replica tạo giá trị cho một key?',
+    'Bạn bảo vệ một invariant cần cập nhật đồng thời hai key như thế nào?'
+  ],
+  tags: ['ConcurrentHashMap', 'synchronizedMap', 'atomicity', 'thread-safety']
+},
+{
+  id: 'collections-041',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Bạn xây dựng hàng đợi xử lý việc theo độ ưu tiên và một hàng đợi FIFO trong cùng service. Khi nào dùng {{PriorityQueue}}, khi nào dùng {{ArrayDeque}}, và giới hạn thread-safety/capacity là gì?',
+  a: `**Tóm tắt:** {{PriorityQueue}} là heap: lấy phần tử ưu tiên cao nhất/nhỏ nhất hiệu quả nhưng không duy trì thứ tự khi duyệt toàn bộ. {{ArrayDeque}} là hàng đợi hai đầu, phù hợp FIFO hoặc stack với thao tác ở đầu/cuối. Cả hai không thread-safe và không có backpressure; nếu nhiều thread hoặc cần giới hạn sức chứa, chọn cấu trúc concurrent/bounded phù hợp.
+
+### Cách chọn từ thao tác cần làm
+Heap nhị phân của {{PriorityQueue}} giữ phần tử ưu tiên nhất ở đầu. Thêm và lấy đầu thường O(log n), xem đầu O(1); tìm/xoá một phần tử bất kỳ thường O(n). Nó không sắp toàn bộ queue khi duyệt. Nếu comparator xem hai việc bằng nhau, tie-breaker nên được định nghĩa nếu thứ tự ổn định quan trọng.
+
+{{ArrayDeque}} là mảng vòng có thể tăng kích thước, hỗ trợ thêm/xoá ở hai đầu hiệu quả amortized O(1). Queue FIFO dùng {{addLast}}/{{removeFirst}}; stack dùng {{push}}/{{pop}}. Nó không nhận null, không thread-safe và không đặt giới hạn dung lượng.
+
+~~~java
+PriorityQueue<Job> urgent = new PriorityQueue<>(
+    Comparator.comparingInt(Job::priority).reversed()
+);
+Deque<Job> fifo = new ArrayDeque<>();
+urgent.offer(job);       // job ưu tiên trước
+fifo.addLast(job);       // FIFO: thêm ở cuối
+Job next = fifo.removeFirst();
+~~~
+
+### Ma trận quyết định
+| Nhu cầu | Cấu trúc |
+|---|---|
+| Luôn lấy job có priority tốt nhất | {{PriorityQueue}} |
+| FIFO/LIFO trong một thread | {{ArrayDeque}} |
+| Nhiều thread, producer/consumer | {{BlockingQueue}} phù hợp |
+| Ưu tiên và nhiều producer/consumer | {{PriorityBlockingQueue}} |
+| Bắt buộc giới hạn bộ nhớ và chặn/từ chối khi đầy | Queue bounded như {{ArrayBlockingQueue}} |
+
+{{PriorityBlockingQueue}} thread-safe nhưng không bounded; không nên nhầm “concurrent” với “giới hạn hàng đợi”. Khi backlog tăng, cần chính sách backpressure (làm chậm hoặc từ chối producer) để không giữ vô hạn object trong heap. Với {{PriorityQueue}}, nếu field priority của job đổi sau khi thêm, heap không tự sắp lại; remove rồi add lại hoặc dùng thiết kế cập nhật phù hợp.
+
+### Pitfall production
+- Duyệt PriorityQueue rồi kỳ vọng thứ tự ưu tiên; chỉ phần tử đầu được đảm bảo là đầu heap.
+- Thay đổi trường dùng trong comparator khi job đang nằm trong queue; thứ tự heap trở nên sai.
+- Dùng ArrayDeque dùng chung giữa request thread; nó không bảo vệ đồng thời.
+- Dùng PriorityBlockingQueue và nghĩ có capacity; queue có thể tăng đến áp lực bộ nhớ.
+- Không có tie-breaker: hai job cùng priority có thể xử lý theo thứ tự không ổn định.
+
+### Ví dụ đời thực
+Một worker đơn luồng có 15.000 job đang chờ: job khẩn cần ưu tiên theo deadline, còn job audit phải theo thứ tự đến. Dùng {{ArrayDeque}} cho audit FIFO, và {{PriorityQueue}} cho job theo deadline. Thời gian chọn job khẩn giảm từ quét/sắp xếp toàn bộ danh sách mỗi lần (khoảng 120 ms ở workload thử) xuống dưới 2 ms sau khi đo bằng cùng dữ liệu. Khi số job vượt 50.000, heap vẫn tăng bộ nhớ; đội thêm giới hạn nhận việc và ghi backlog bền vững thay vì chỉ dựa vào queue heap. Các con số là ví dụ minh hoạ và cần benchmark theo job/comparator thật.
+
+### Trả lời mẫu khi phỏng vấn
+“Em bắt đầu từ thao tác lấy phần tử. Nếu luôn cần phần tử có priority tốt nhất, PriorityQueue dùng heap và cho peek O(1), offer/poll O(log n), nhưng iteration không trả thứ tự đã sắp. Nếu cần FIFO hoặc stack trong một luồng, ArrayDeque thường phù hợp hơn LinkedList và tránh node allocation. Cả hai đều không thread-safe. Trong mô hình producer-consumer em dùng BlockingQueue; nếu cần ưu tiên thì có PriorityBlockingQueue, nhưng nó không bounded. Khi hệ thống cần giới hạn memory, em phải đặt admission/backpressure riêng hoặc chọn queue bounded như ArrayBlockingQueue với chính sách khi đầy. Em cũng không sửa priority của phần tử khi nó đang trong heap mà không remove/add lại, và thêm tie-breaker nếu nghiệp vụ cần ổn định. Cuối cùng em phân biệt queue in-memory với queue bền vững: process restart có thể làm mất việc nếu chưa lưu ở nơi durable.”
+
+> Senior tip: theo dõi queue depth, thời gian chờ lâu nhất và tỷ lệ reject; kích thước hàng đợi là chỉ báo áp lực quan trọng hơn tốc độ xử lý trung bình.`,
+  follow: [
+    'Vì sao duyệt {{PriorityQueue}} không tương đương lấy các phần tử theo thứ tự?',
+    '{{PriorityBlockingQueue}} có giới hạn sức chứa không, và vì sao điều đó quan trọng?',
+    'Nếu priority của một job thay đổi sau khi enqueue, bạn cần làm gì để heap đúng lại?'
+  ],
+  tags: ['PriorityQueue', 'ArrayDeque', 'BlockingQueue', 'heap', 'queue']
+},
+{
+  id: 'modern-047',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Trong codebase dùng Java 17+, khi nào bạn chọn {{record}}, class thường hay Lombok cho model dữ liệu? Hãy nêu tiêu chí về identity, mutability, ORM và khả năng bảo trì.',
+  a: `**Tóm tắt:** {{record}} hợp với value data có component cố định và equality theo giá trị; class thường phù hợp khi object có identity, vòng đời mutable, kế thừa hoặc cần tương thích với ORM; Lombok giảm boilerplate khi team chấp nhận annotation processing và hiểu rõ code được sinh. Không chọn chỉ vì cú pháp ngắn: hãy xét semantics của equals/hashCode, constructor, framework và ranh giới dữ liệu.
+
+### Khác nhau về ý nghĩa
+Record là dạng khai báo dữ liệu: component trở thành state chính, compiler sinh accessor, constructor, {{equals/hashCode/toString}} theo component. Record final và field component final, nhưng bất biến chỉ nông nếu component là list/mảng mutable; cần defensive copy.
+
+Class thường cho phép kiểm soát constructor, mutability, identity và kế thừa. Đây thường là lựa chọn phù hợp cho JPA entity có lifecycle và proxy của Hibernate, hoặc aggregate có hành vi và state thay đổi theo nghiệp vụ. Lombok là thư viện sinh mã khi compile, không phải kiểu object mới; ví dụ {{@Data}} sinh nhiều method dựa trên field và có thể đưa quan hệ entity vào equals/hashCode/toString ngoài ý muốn.
+
+~~~java
+record MoneyView(String currency, long minorUnits) {}
+
+final class InvoiceState {
+    private final String id; // identity ổn định
+    private long paidMinorUnits; // state thay đổi theo nghiệp vụ
+    InvoiceState(String id) { this.id = id; }
+    void addPayment(long amount) { paidMinorUnits += amount; }
+}
+~~~
+
+### Ma trận chọn
+| Câu hỏi | Record | Class thường | Lombok |
+|---|---|---|---|
+| So sánh theo toàn bộ giá trị? | Mặc định phù hợp | Tự định nghĩa | Annotation có thể sinh |
+| Cần đổi state? | Không phù hợp trực tiếp | Phù hợp | Không quyết định semantics |
+| JPA entity/proxy | Thường không phù hợp | Thường phù hợp | Dùng có chọn lọc |
+| Muốn ít boilerplate | Có sẵn trong JDK | Tự viết | Sinh mã khi compile |
+
+Record dùng được làm DTO/projection; không nên dùng làm entity chỉ vì entity có nhiều field. Với Lombok, xem delombok hoặc bytecode/generated code khi cần debug, và ưu tiên annotation hẹp như getter/constructor thay vì {{@Data}} trên domain entity. Constructor/API của Lombok cũng cần được cân nhắc để không vô tình cho phép state không hợp lệ.
+
+### Pitfall production
+- Record chứa list mutable nhưng không copy, dẫn đến caller thay đổi dữ liệu sau khi truyền vào.
+- {{@Data}} trên entity kéo association lazy vào equals/toString, kích hoạt query, N+1 hoặc vòng lặp đệ quy.
+- Dùng record làm request persistence rồi ngầm kỳ vọng framework có no-arg constructor, setter hoặc proxy.
+- Thêm component vào record làm thay đổi constructor và equality, có thể phá API gọi constructor trực tiếp hoặc key trong map.
+- Gọi field mutable entity là value equality mà không định nghĩa lifecycle identity.
+
+### Ví dụ đời thực
+Một service Spring Boot dùng {{@Data}} cho {{InvoiceEntity}} có 8 field và quan hệ lazy tới customer. Log debug gọi toString trên 1.000 invoice, kéo thêm 1.000 query customer; p95 endpoint tăng từ 180 ms lên 1,4 giây. Team chuyển entity về class với toString chỉ in id, equals/hashCode theo quy tắc identity đã thống nhất; response HTTP được map sang {{InvoiceView}} record với list được copy. Query count giảm từ khoảng 1.001 xuống 2 nhờ fetch plan riêng, còn DTO không bị caller sửa. Đây là tình huống minh hoạ; số query thực tế phụ thuộc mapping và cấu hình ORM.
+
+### Trả lời mẫu khi phỏng vấn
+“Em chọn record khi model là value: dữ liệu có component cố định, equality theo giá trị và không cần lifecycle mutable, chẳng hạn DTO response hoặc projection. Em chọn class thường cho entity hoặc aggregate có identity ổn định, hành vi và state thay đổi, đặc biệt khi ORM cần proxy/lazy loading. Record vẫn chỉ immutable nông nên collection component cần copy. Lombok chỉ sinh mã compile-time; nó giảm boilerplate nhưng không miễn trách nhiệm thiết kế. Em tránh @Data trên JPA entity vì equals/hashCode/toString mặc định trên field có thể đụng association lazy, gây query ngoài ý muốn hoặc recursion. Với Lombok em chọn annotation hẹp và kiểm tra constructor cùng equality được sinh ra. Cuối cùng em đánh giá compatibility: thêm component vào record thay đổi constructor và value equality, còn đổi entity key có thể ảnh hưởng Set/Map. Mục tiêu không phải ít dòng nhất mà là model thể hiện đúng identity và lifecycle.”
+
+> Senior tip: entity, DTO và value object có semantics khác nhau; tách chúng rõ ràng thường giảm nhiều lỗi hơn việc áp một annotation sinh mã cho mọi class.`,
+  follow: [
+    'Vì sao {{@Data}} có thể gây query ngoài ý muốn khi dùng trên entity có quan hệ lazy?',
+    'Thêm một component vào record có thể ảnh hưởng constructor và key của {{HashMap}} thế nào?',
+    'Bạn chọn record hay class cho DTO có một {{List}} mutable đầu vào?'
+  ],
+  tags: ['record', 'Lombok', 'JPA', 'DTO', 'domain model']
+},
+{
+  id: 'modern-048',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Bạn muốn dùng sealed interface và pattern matching switch (Java 21) cho kết quả nội bộ, nhưng các service/clients được nâng cấp lệch phiên bản. Làm sao tận dụng exhaustiveness mà không làm hỏng tương thích?',
+  a: `**Tóm tắt:** {{sealed interface}} giới hạn subtype đã biết và pattern matching {{switch}} trong Java 21 cho phép compiler kiểm tra nhánh exhaustive khi build code cùng phiên bản. Đây là bảo vệ compile-time, không phải cam kết client cũ hiểu được subtype mới trên wire. Dùng sealed ở domain nội bộ; tại ranh giới versioned API/message, xác định chính sách unknown variant, fallback và rollout tương thích.
+
+### Hai ranh giới khác nhau
+Trong một module được build cùng nhau, compiler biết các subtype trong {{permits}}. Thêm subtype rồi compile lại sẽ làm switch expression thiếu nhánh thất bại. Nhưng service A đã compile tuần trước và service B vừa phát message type mới: A không được compiler build lại cùng B. Serialization, schema registry hoặc giao thức API phải quyết định A xử lý kiểu chưa biết thế nào.
+
+~~~java
+sealed interface Outcome permits Accepted, Rejected {}
+record Accepted(String id) implements Outcome {}
+record Rejected(String reason) implements Outcome {}
+
+String label(Outcome outcome) {
+    return switch (outcome) {
+        case Accepted a -> "accepted " + a.id();
+        case Rejected r -> "rejected " + r.reason();
+    };
+}
+~~~
+
+Switch này exhaustive đối với hierarchy được compiler thấy. Nếu selector null, switch ném {{NullPointerException}} trừ khi có {{case null}}; quyết định null là invalid hay một trạng thái cần xử lý phải rõ. {{default}} trên hierarchy kín có thể làm mất tín hiệu compile-time khi subtype mới được thêm.
+
+### Phân chia thiết kế
+| Phạm vi | Mô hình | Cách xử lý thay đổi |
+|---|---|---|
+| Domain nội bộ, cùng repo/build | sealed + switch không default | Build bắt mọi nhánh thiếu |
+| JSON/message giữa service độc lập | schema/API version có unknown fallback | Client cũ không giả vờ biết loại mới |
+| Plugin do bên thứ ba mở rộng | interface mở | Không thể exhaustive theo danh sách compile-time |
+| Java 17 runtime | sealed được hỗ trợ; pattern switch chưa là feature chuẩn | Dùng switch Java 17 phù hợp hoặc giữ source/runtime nhất quán |
+
+Java 21 pattern matching for switch là tính năng chuẩn; sealed types chuẩn từ Java 17. Toàn team cần thống nhất source/target/runtime và compiler, không chỉ máy dev. Khi thêm variant cho giao thức, triển khai consumer có khả năng bỏ qua hoặc lưu trữ unknown type trước, rồi mới phát producer mới; chọn chính sách theo yêu cầu không mất dữ liệu.
+
+### Pitfall production
+- Tưởng compiler của một service đảm bảo consumer độc lập đã deploy hiểu variant mới.
+- Thêm {{default -> ...}} nuốt lỗi trong domain nội bộ, làm mất lợi ích compiler báo nhánh thiếu.
+- Dùng {{default}} bỏ qua unknown message ở integration boundary dù nghiệp vụ yêu cầu không mất giao dịch.
+- Dùng sealed hierarchy cho plugin mà đối tác cần tự thêm subtype; thiết kế đóng ngăn mở rộng.
+- Quên {{null}} và cho rằng exhaustiveness bao gồm null.
+
+### Ví dụ đời thực
+Hệ thống thanh toán có sealed {{PaymentOutcome}} gồm Approved và Declined, được xử lý trong service Java 21. Team muốn thêm RequiresReview. Nếu tất cả module cùng build, switch thiếu nhánh được compiler báo trước release. Nhưng message được gửi tới ba consumer, một consumer chạy bản cũ; triển khai producer trước khiến consumer cũ không deserialize type mới và retry liên tục, backlog tăng từ 2.000 lên 40.000 message trong 10 phút ở môi trường thử. Đội deploy consumer hỗ trợ unknown/persist raw payload trước, sau đó mới bật producer theo feature flag và theo dõi DLQ/backlog. Con số minh hoạ; điểm cốt lõi là exhaustiveness nội bộ không thay schema evolution.
+
+### Trả lời mẫu khi phỏng vấn
+“Sealed và switch pattern rất hữu ích trong domain nội bộ vì compiler thấy toàn bộ permits và bắt mọi nhánh thiếu khi thêm variant. Nhưng đó chỉ là compile-time guarantee trong build hiện tại. Consumer đã deploy độc lập không tự được compile lại, nên ranh giới JSON, Kafka hay API cần schema evolution và chính sách unknown variant. Em sẽ giữ sealed ở lõi domain, chuyển đổi tại adapter boundary, rồi rollout consumer tương thích trước producer. Với logic nội bộ em thường tránh default để compiler tiếp tục báo khi thêm subtype; ở boundary em xử lý loại chưa biết một cách tường minh, chẳng hạn giữ raw payload, reject có kiểm soát hoặc route sang dead-letter tuỳ yêu cầu dữ liệu. Em cũng kiểm tra null riêng, và bảo đảm Java toolchain/runtime thống nhất vì pattern switch chuẩn từ Java 21, còn sealed đã có từ Java 17. Nếu cần plugin bên thứ ba mở rộng, interface thường hợp hơn sealed.”
+
+> Senior tip: dùng exhaustiveness để bảo vệ code cùng build; dùng versioning và rollout compatibility để bảo vệ hệ thống phân tán. Đó là hai cơ chế bổ sung, không thay thế nhau.`,
+  follow: [
+    'Vì sao switch exhaustive trong service không bảo đảm consumer cũ deserialize được subtype mới?',
+    'Bạn triển khai producer/consumer theo thứ tự nào khi thêm một message variant?',
+    'Khi nào một {{default}} hợp lý ở boundary nhưng không nên có trong domain switch?'
+  ],
+  tags: ['sealed', 'pattern matching', 'Java 21', 'compatibility', 'schema evolution']
+},
+{
+  id: 'modern-049',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Một pipeline Stream ghi log trong {{peek()}} rồi dùng {{count()}}, nhưng log không xuất hiện đủ; sau đó team chuyển sang {{parallelStream()}} và kết quả bị sai. Giải thích lazy evaluation, side effect và cách viết lại.',
+  a: `**Tóm tắt:** Stream intermediate operations (thao tác trung gian) như {{map}}, {{filter}}, {{peek}} thường lazy: chúng chỉ chạy khi có terminal operation. Hơn nữa, side effect trong behavioral parameter không phải nơi đáng tin để bảo đảm một việc phải xảy ra; implementation có thể bỏ qua một số stage nếu không ảnh hưởng kết quả. Parallel stream còn chạy nhiều phần tử đồng thời, nên ghi vào mutable state dùng chung có thể race.
+
+### Từ pipeline đến terminal operation
+{{stream().filter(...).map(...)}} chỉ mô tả pipeline; chưa xử lý phần tử cho đến terminal operation như {{collect}}, {{forEach}} hoặc {{count}}. Terminal operation có thể short-circuit (dừng sớm), ví dụ {{findFirst}} chỉ cần tìm phần tử đầu phù hợp. Vì thế không được giả định mọi phần tử hoặc mọi stage đều chạy đủ lần chỉ để log hay cập nhật metric.
+
+~~~java
+List<String> ids = orders.stream()
+    .filter(Order::isPaid)
+    .map(Order::id)
+    .toList(); // terminal operation: tạo kết quả
+~~~
+
+Nếu dùng {{peek(logger::info)}} để audit nghiệp vụ, code phụ thuộc side effect trong pipeline. Kể cả khi có terminal operation, đặc tả Stream cho phép implementation tối ưu và bỏ qua behavioral parameter nếu có thể tính kết quả mà không thực thi nó; chẳng hạn số phần tử của stream có kích thước đã biết có thể khiến một map không cần chạy trước count. Không dùng peek làm nơi ghi dữ liệu bắt buộc.
+
+### Vì sao parallel làm lỗi lộ ra?
+{{parallelStream}} chia công việc cho nhiều thread. Lambda phải stateless (không phụ thuộc trạng thái thay đổi bên ngoài) và không can thiệp (không sửa nguồn stream trong lúc xử lý). Đoạn {{list.add(x)}} vào ArrayList dùng chung có thể mất phần tử hoặc hỏng dữ liệu. Dùng collector chuẩn để framework tạo/gộp accumulator an toàn; tránh shared mutable state.
+
+| Mục đích | Cách nên làm |
+|---|---|
+| Tạo danh sách/nhóm | {{collect}} / {{toList}} / collector phù hợp |
+| Log phục vụ quan sát | Log ở ranh giới xử lý rõ ràng, không dùng làm bảo đảm nghiệp vụ |
+| Cập nhật trạng thái nghiệp vụ | Vòng lặp/transaction rõ ràng hoặc thao tác idempotent |
+| Parallelize CPU work | Đo workload, dùng hàm không side effect và collector phù hợp |
+
+### Pitfall production
+- Dùng {{peek}} để lưu audit, gửi message hoặc cập nhật database; stage có thể chạy ít hơn kỳ vọng hoặc bị lặp khi thiết kế retry.
+- Dùng biến đếm mutable dùng chung rồi tăng từ parallel stream; race làm số đếm sai.
+- Dùng parallel stream cho I/O blocking; common ForkJoinPool có thể bị nghẽn bởi công việc chờ mạng.
+- Sửa collection nguồn trong stream; hành vi có thể lỗi hoặc không xác định theo contract.
+- Dùng {{forEach}} rồi kỳ vọng thứ tự; parallel execution không đảm bảo thứ tự. {{forEachOrdered}} giữ encounter order nhưng có thể giảm song song.
+
+### Ví dụ đời thực
+Pipeline tổng hợp 2 triệu đơn dùng {{peek(audit::record)}} để ghi các đơn đủ điều kiện rồi gọi {{count()}}. Sau tối ưu, pipeline chạy song song và tăng số worker; audit nhận ít bản ghi hơn count, còn bộ đếm {{ArrayList}} dùng chung bị thiếu khoảng 0,6% đơn trong load test. Đội bỏ side effect khỏi pipeline, lọc và collect ID trước, rồi ghi audit theo batch idempotent; nếu cần song song hoá, mỗi task tạo kết quả riêng và collector gộp. So sánh lại cùng dataset: tổng count và số ID audit khớp 2.000.000 đầu vào đã phân loại, throughput không còn dao động theo lịch chạy. Đây là kịch bản minh hoạ, không phải cam kết hiệu năng.
+
+### Trả lời mẫu khi phỏng vấn
+“Stream là mô tả pipeline, không phải collection lưu dữ liệu. Các intermediate operation lazy và chỉ được kích hoạt bởi terminal operation; terminal như findFirst còn có thể dừng sớm. Em không đặt side effect bắt buộc trong peek vì pipeline có thể tối ưu stage không ảnh hưởng kết quả, và peek chủ yếu hữu ích để debug. Với parallelStream, nhiều lambda chạy đồng thời; sửa ArrayList hay counter dùng chung tạo race. Em viết phép biến đổi stateless, dùng collect với collector chuẩn để framework gộp kết quả, hoặc dùng vòng lặp rõ khi nghiệp vụ cần side effect theo thứ tự. Em cũng không mặc định parallel nhanh hơn: common pool có thể tranh tài nguyên và blocking I/O không hợp. Khi cần audit hoặc gửi message, em thiết kế bước riêng có idempotency và retry, rồi đo throughput, allocation và p95 trên workload thực tế.”
+
+> Senior tip: mọi side effect cần bảo đảm hoàn tất nên có ranh giới vận hành riêng, retry/idempotency rõ ràng; Stream nên ưu tiên biến đổi dữ liệu thuần để dễ kiểm thử và song song hoá an toàn.`,
+  follow: [
+    'Vì sao {{peek()}} không phù hợp để ghi audit bắt buộc?',
+    'Một terminal operation như {{findFirst()}} ảnh hưởng thế nào tới số phần tử được xử lý?',
+    'Bạn sẽ thay biến đếm dùng chung trong {{parallelStream()}} bằng cách nào?'
+  ],
+  tags: ['Stream', 'lazy evaluation', 'peek', 'parallelStream', 'side effect']
+},
 );
