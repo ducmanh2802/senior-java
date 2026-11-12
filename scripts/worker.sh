@@ -16,7 +16,8 @@ next_task() {
   for f in $(grep -l '^Status: TODO$' tasks/T*.md); do
     id=$(basename "$f" | cut -d- -f1)
     case "$id" in *R) continue ;; esac                       # review tasks belong to autopilot
-    [ -n "$ONLY" ] && ! echo " $ONLY " | grep -q " $id " && continue
+    [ -n "$ONLY" ] && ! echo " $ONLY $(tr "
+" " " < logs/only-extra 2>/dev/null) " | grep -q " $id " && continue   # logs/only-extra: ids added without restarting workers
     [ -n "${SKIP:-}" ] && echo "$f" | grep -qE "$SKIP" && continue   # e.g. SKIP=-en- keeps content workers off translations
     dep=$(grep -m1 '^After:' "$f" | awk '{print $2}')
     [ -n "$dep" ] && ! grep -q '^Status: DONE' tasks/"$dep"-*.md 2>/dev/null && continue
