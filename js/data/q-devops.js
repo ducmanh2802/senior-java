@@ -11566,6 +11566,12 @@ kubectl get events -A --sort-by=.lastTimestamp | head
 - **Sự cố quota:** team Thẻ rollout tăng replica đúng lúc quota đầy → Pod mới Pending, rollout kẹt nửa chừng. Kiểm tra {{kubectl describe quota}}, tạm nới có phê duyệt hoặc thu hồi tài nguyên dev; dài hạn: cảnh báo 80% và quy trình tăng quota tự phục vụ.
 - **Sự cố cô lập mạng:** bật NetworkPolicy deny-all mà quên allow DNS (kube-dns/coredns port 53) → toàn bộ Pod không phân giải được tên Service. Luôn có baseline policy cho phép DNS và kiểm thử trên namespace thử nghiệm trước.
 
+### Ví dụ đời thực
+Lúc 14h30, team Thẻ triển khai phiên bản mới của API thanh toán vào namespace {{team-card-staging}}. Ngay sau đó, các Pod ghi log java.net.ConnectException: Connection timed out khi gọi {{payment-api.team-payment.svc.cluster.local:8080}}. Điều tra: chạy {{kubectl get networkpolicy -A}} thấy một NetworkPolicy {{deny-all}} vừa được Argo CD sync từ PR mới, chỉ cho phép DNS và traffic từ ingress controller, quên mở ingress từ namespace team Thẻ. Metric {{http_server_requests_seconds_count}} của Pod payment-api không tăng → request chẳng tới được Pod. Nguyên nhân gốc: PR NetworkPolicy mới thiếu rule allow từ namespace gọi. Xử lý: tạm sửa NetworkPolicy cho phép ingress từ {{team-card-staging}}, apply thủ công kèm ghi sự cố, sau đó mở PR sửa bản khai trong Git và đợi Argo sync. Kết quả: kết nối phục hồi sau 15 phút, lỗi kết nối giảm từ hàng trăm mỗi phút xuống 0. Dài hạn: bắt buộc PR NetworkPolicy đi kèm thử nghiệm trên namespace staging và chạy Kyverno kiểm tra rule ingress trong CI trước merge.
+
+### Trả lời mẫu khi phỏng vấn
+"Mình thiết kế quản trị đa team trên một cụm Kubernetes dựa trên nguyên tắc cô lập theo lớp. Mỗi team có namespace riêng gắn RBAC để chỉ thao tác trong namespace của mình, kèm ResourceQuota và LimitRange để không team nào chiếm hết tài nguyên, và NetworkPolicy mặc định từ chối hết, chỉ mở luồng cần thiết. Secret không để trong Git mà tập trung ở vault, External Secrets Operator đồng bộ theo đường dẫn của mỗi team. Triển khai chuẩn hoá bằng golden Helm chart và GitOps: Git là nguồn sự thật, Argo CD phát hiện và báo drift. Mô hình vận hành: nền tảng đặt luật chung, team tự phục vụ trong khuôn khổ, ngoại lệ có thời hạn và ghi nhận. Trade-off là một cluster rẻ, vận hành tập trung nhưng blast radius lớn hơn, nên cần quota chặt và diễn tập sự cố. Mình đo bằng chỉ số: thời gian thêm team mới, tỷ lệ thay đổi qua Git, số vi phạm bị chặn ở CI."
+
 > Senior tip: Quản trị đa team thành công hay thất bại ở **đường mặc định**: nếu đường an toàn (golden chart, namespace tự cấp qua Git, secret qua ESO) dễ hơn đường tắt (sửa tay, hardcode secret), team sẽ tự tuân thủ. Đo bằng chỉ số dẫn đường: thời gian onboard team mới, tỉ lệ thay đổi đi qua Git, số vi phạm policy chặn ở CI (không phải ở prod), và tần suất drift. Với ngân hàng, hãy coi RBAC + audit + NetworkPolicy là yêu cầu tuân thủ, không phải tuỳ chọn — và diễn tập "một namespace bị xâm nhập" để kiểm chứng blast radius thực sự đã nhỏ.`,
     follow: [
       'Bạn thiết kế NetworkPolicy baseline mặc định (deny-all + allow DNS + allow ingress controller) như thế nào để không làm gãy service hiện hữu?',
@@ -12010,7 +12016,7 @@ overlays/staging/      kustomization.yaml (replicas: 2, configMapGenerator)
 overlays/prod/         kustomization.yaml (replicas: 6, patch tăng memory, HPA)
 kubectl apply -k overlays/prod
 ~~~
-Patch có hai kiểu: **strategic merge** (viết một phần YAML, gộp theo khoá) và **JSON 6902 patch** (thao tác op/path/value chính xác). {{configMapGenerator}} thêm hash vào tên ConfigMap → đổi cấu hình tự kích hoạt rolling restart.
+Patch có hai kiểu: **strategic merge** (viết một phần YAML, gộp theo khoá) và **JSON Patch (RFC 6902)** (thao tác op/path/value chính xác). {{configMapGenerator}} thêm hash vào tên ConfigMap → đổi cấu hình tự kích hoạt rolling restart.
 
 ### So sánh
 | Tiêu chí | Helm | Kustomize |
@@ -12100,6 +12106,17 @@ service:
 - Retention: metrics 15d, logs 7-30d, traces 7d; archive cold storage.
 - Alert theo SLO (burn rate), không alert noise; runbook kèm alert.
 - Sampling trace (tail-based) để giữ cost.
+
+### Cơ chế từng bước
+- **Metrics:** Thêm thư viện Micrometer (ví dụ micrometer-registry-prometheus) vào Spring Boot, Actuator hiển thị endpoint {{/actuator/prometheus}} với các số liệu JVM (heap, GC, thread) và HTTP (p95, p99, pool Hikari). Prometheus theo ServiceMonitor định kỳ gọi endpoint (mỗi 15 giây), lưu dạng time-series tên{label} tại thời điểm t. Grafana viết PromQL (ví dụ rate(http_server_requests_seconds_count{status=~"5.."}[5m])) vẽ biểu đồ và Alertmanager cảnh báo khi vượt ngưỡng.
+- **Logs:** App ghi log JSON ra stdout với trường timestamp, level, traceId, spanId, message. Fluent Bit chạy dưới dạng DaemonSet trên mỗi node, thu thập log container và gửi Loki qua giao thức push, gắn label namespace/app. Truy vấn bằng LogQL, ví dụ {app=payment-api, level=error}.
+- **Traces:** OpenTelemetry Java agent tự động tạo span cho các framework (Spring, HTTP client, JDBC). Span gửi qua giao thức OTLP đến OpenTelemetry Collector, collector làm batch và tail sampling (giữ trace có lỗi, loại trace bình thường để giảm chi phí), rồi gửi Tempo/Jaeger. Grafana liên kết trace ↔ log ↔ metric qua traceId.
+
+### Ví dụ đời thực
+Lúc 10h trong đợt khuyến mãi lớn, p99 latency của API thanh toán tăng từ 200ms lên 3 giây. Bảng điều khiển Grafana cho thấy HikariCP connection pool: active connections chạm giới hạn 10, wait queue tăng dồn. Log trong Loki với traceId ghi Connection acquisition timed out. Trace trong Tempo cho thấy span PaymentService.processPayment → OrderClient.createOrder → gọi dịch vụ kho hàng ngoài mất 2,5 giây. Nguyên nhân gốc: dịch vụ kho hàng bị quá tải, các instance mới tự động scale chưa sẵn sàng, pool kết nối của API bị cạn kiệt. Xử lý: tạm tăng max pool của HikariCP, scale dịch vụ kho hàng, thêm circuit breaker (Resilience4j) với fallback về cache. Kết quả: p99 giảm từ 3 giây xuống 400ms, tỷ lệ lỗi giảm từ 12% xuống dưới 0,5%.
+
+### Trả lời mẫu khi phỏng vấn
+"Mình áp dụng observability cho dịch vụ Java trên Kubernetes theo ba cột: metrics, logs và traces. Với metrics, mình dùng Spring Boot Actuator kết hợp Micrometer hiển thị endpoint {{/actuator/prometheus}}, Prometheus thu thập qua ServiceMonitor, Grafana vẽ bảng điều khiển và Alertmanager báo cáo theo SLO. Logs mình để ra định dạng JSON có trường traceId, Fluent Bit thu thập từ từng node gửi Loki, truy vấn bằng LogQL. Traces dùng OpenTelemetry agent kết nối collector qua OTLP, gửi Tempo, rồi Grafana liên kết trace với log và metric bằng traceId. Về lựa chọn công cụ, mình bắt đầu với self-hosted Prometheus, Loki, Tempo để kiểm soát chi phí; team nhỏ có thể dùng managed như Datadog hoặc Grafana Cloud. Lưu ý quan trọng: không gán label user ID trong Prometheus để tránh cardinality explosion, và dùng tail sampling cho trace. Kết quả thực tế là thời gian khôi phục sự cố giảm đáng kể."
 
 > Senior tip: Bắt đầu với metrics + structured logs + traceId trong log; thêm distributed tracing khi có nhu cầu debug cross-service thực sự; đo cost per service.`,
     follow: [
