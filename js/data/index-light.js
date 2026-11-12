@@ -1949,6 +1949,8 @@ window.DATA_INDEX = {
     {"id":"sd-020","title":"Đếm click quảng cáo thời gian thực để tính tiền nhà quảng cáo"},
     {"id":"sd-021","title":"Cổng thanh toán cho merchant tích hợp nhiều ngân hàng và ví"},
     {"id":"sd-022","title":"Lưu trữ và đồng bộ file nhiều thiết bị kiểu Google Drive"},
+    {"id":"sd-023","title":"Chatbot hỏi đáp tài liệu nội bộ có phân quyền cho 5.000 nhân viên"},
+    {"id":"sd-024","title":"LLM gateway dùng chung cho nhiều team"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},

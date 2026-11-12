@@ -2529,4 +2529,253 @@ Một đội làm sync cho tài liệu doanh nghiệp thấy upload file thiết
   ],
   related: ['aws-007', 'scenario-011', 'api-023']
 },
+{
+  id: 'sd-023',
+  title: 'Chatbot hỏi đáp tài liệu nội bộ có phân quyền cho 5.000 nhân viên',
+  kind: 'bigtech',
+  level: 'lead',
+  prompt: `Công ty có **5.000 nhân viên**, tài liệu nằm rải rác trên Confluence, SharePoint và Google Drive (khoảng **40.000 trang**, mỗi trang 1.500 token). Bạn thiết kế chatbot hỏi đáp bằng tiếng Việt cho nội bộ (chính sách nhân sự, quy trình, tài liệu sản phẩm). Câu hỏi phải **chỉ dựa vào tài liệu người hỏi được đọc**, có **trích nguồn** (tên tài liệu, đoạn, ngày cập nhật). Tài liệu đổi mỗi ngày (500 trang/ngày) và quyền đổi thường xuyên (nhân viên chuyển phòng, dự án). Ước tính **1.500 người dùng/ngày**, mỗi người 8 câu, **80% câu hỏi trùng câu người khác đã hỏi** (chỉ khác cách diễn đạt). Một câu trả lời sai về chính sách có thể gây tranh chấp, nên cần đo chất lượng. Ngân sách token hàng tháng tối đa **5.000 USD**. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt functional: hỏi đáp có trích nguồn, "không biết thì nói không biết", tiếng Việt có dấu và không dấu, lịch sử hội thoại, phản hồi thích/không thích. Chốt **quyền là yêu cầu cứng**: user chỉ thấy đoạn thuộc tài liệu user được đọc; quyền kế thừa từ nguồn (nhóm, phòng, dự án) và **phải đổi theo nguồn**. Non-functional: p95 dưới 6 giây, chi phí dưới 5.000 USD/tháng, chất lượng đo được (recall, faithfulness), audit mọi câu hỏi kèm nguồn. Hỏi rõ: có cần trả lời về dữ liệu cá nhân (lương, hợp đồng) không — thường tách luồng riêng và không qua LLM; tài liệu có được phép gửi ra nhà cung cấp LLM ngoài không (nếu không thì phải dùng model self-host hoặc dịch vụ trong VPC). Out-of-scope: dịch tài liệu, tóm tắt cả thư mục, agent có tool ghi.`,
+    },
+    { name: 'Estimation', minutes: 5, guide: `Tải: 1.500 người x 8 câu = 12.000 câu/ngày, trung bình 0,14 câu/giây; giờ cao điểm có thể gấp 4–8 lần, giả sử peak 1,2 câu/giây. Giả sử prompt trung bình 4.900 token và 12.000 câu đều gọi model: 58,8 triệu token/ngày, khoảng 1,76 tỷ token/30 ngày; chi phí phải tính theo bảng giá model/provider thực tế và tách input, output, cached input, không đoán một giá cố định. Embedding lúc ingest: 40.000 trang x 1.500 token = 60 triệu token một lần; chunk 600–800 token tạo khoảng 75.000–100.000 chunk. Với vector 1.536 chiều dạng float32, phần vector thô khoảng 0,46–0,61 GB; HNSW, metadata, index và replica làm dung lượng lớn hơn, phải benchmark. Mỗi ngày 500 trang đổi tương đương khoảng 1,25% tập trang; quyền đổi cần cập nhật riêng, không cần re-embed. Kết luận: ngân sách inference và độ mới ACL quan trọng hơn vector thô.`,
+    },
+    { name: 'API & data model', minutes: 5, guide: `POST /v1/chat {conversation_id?, question} -> 202 {answer_id} rồi GET /v1/answers/{id} (hoặc SSE khi xong) kèm answer, citations[{doc_id, chunk_id, section, updated_at, url}], confidence. POST /v1/feedback {answer_id, verdict, comment}. POST /v1/admin/ingest (internal, có auth service-to-service). Bảng: documents(id, source, external_id, title, url, owner, acl_group_ids[], updated_at, version, checksum, status), chunks(id, document_id, ord, content, token_count, content_hash, embedding vector(1536), acl_group_ids[], updated_at), ingest_jobs(id, source, cursor, status, stats jsonb), answers(id, conversation_id, question, answer, citations jsonb, model, tokens_in, tokens_out, cache_hit, created_at), answer_feedback(id, answer_id, verdict, comment, user_id). Unique(documents.source, documents.external_id) và unique(chunks.content_hash, chunks.document_id) để chạy lại không nhân đôi.`,
+    },
+    { name: 'High-level design', minutes: 15, guide: `Connector (Confluence/SharePoint/Drive) -> Normalization Service (đọc, làm sạch, cắt chunk theo heading, trích metadata + ACL, hash để bỏ qua trang không đổi) -> Embedding Worker (gọi embedding API, có hàng đợi và rate limit) -> ghi phiên bản chunk và vector vào PostgreSQL + pgvector; publish dữ liệu mới theo version sau khi transaction hoàn tất. Truy vấn: API -> Auth Service (lấy user và nhóm từ SSO/SCIM) -> Retrieval (hybrid: pgvector cosine + full-text, **lọc ACL trong truy vấn**) -> Reranker (xếp lại đoạn) -> Prompt builder -> LLM Gateway -> ánh xạ citation từ chunk thật. Hệ thống quyền nguồn là authoritative; không tin group list do client gửi. Không trả dữ liệu nếu không xác định được quyền.`,
+    },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: (1) quyền — quyền lấy từ nguồn/SSO, áp dụng tức thời theo policy: nếu sync ACL chưa hoàn tất thì fail closed hoặc kiểm tra policy trực tiếp; không dùng TTL dài như bảo đảm tức thời. (2) index — hash, upsert, tombstone, checkpoint; publish nguyên tử theo version để không có khoảng trống khi đổi tài liệu. (3) citation — chỉ nhận ID đoạn model chọn từ context, server nối metadata thật. (4) chi phí — tách input/output/cached tokens, model và phòng ban; semantic cache chỉ khi mọi nguồn trong câu trả lời vẫn được phép đọc, nếu không thì bỏ cache; prompt caching của provider chủ yếu giảm giá input prefix, không phải cache câu trả lời. (5) chất lượng — recall@k, faithfulness, câu không có nguồn phải từ chối, golden set có người review. (6) lỗi — vector search chậm, API embedding/LLM trả 429, rò ACL qua cache, prompt injection trong tài liệu; có timeout, circuit breaker và kiểm soát nguồn.`,
+    },
+  ],
+  rubric: [
+    'Nêu rõ yêu cầu quyền: chỉ dùng tài liệu người hỏi được đọc, lọc ACL ở tầng retrieval chứ không phải sau khi LLM trả lời',
+    'Phân biệt câu hỏi thường và câu hỏi dữ liệu cá nhân (lương, hợp đồng): luồng thứ hai không đưa vào LLM chung',
+    'Ước lượng token và chi phí LLM, chỉ ra token là nút thắt và đề xuất cách hạ chi phí',
+    'Ingestion: connector theo nguồn, chunk theo heading kèm metadata, hash nội dung để bỏ qua trang không đổi',
+    'Cập nhật tăng dần: upsert chunk, tombstone khi trang bị xoá, checkpoint để chạy lại an toàn; không xoá thẳng index đang phục vụ',
+    'Hybrid retrieval (vector + full-text tiếng Việt) có lọc ACL, reranking lấy 3–5 đoạn; giải thích vì sao vector thuần sai với câu hỏi tiếng Việt không dấu',
+    'Trích nguồn đúng chunk đã đưa vào prompt, kèm phiên bản và ngày; yêu cầu model nói "không biết" khi thiếu căn cứ',
+    'Cache câu trả lời phải kiểm tra quyền trước khi trả và không dùng chung giữa các user có ACL khác nhau',
+    'Prompt caching / batch / streaming / hàng đợi để đạt ngân sách 5.000 USD mỗi tháng, có đo chi phí theo phòng ban',
+    'Bộ đánh giá hồi quy (recall@k, faithfulness, tỉ lệ trả lời đúng khi thiếu dữ liệu) và quy trình sửa khi chất lượng tụt'
+  ],
+  reference: `**Tóm tắt:** chatbot tài liệu nội bộ là bài toán **quyền, dữ liệu và chi phí**, không phải bài toán gọi LLM. Ba quyết định quan trọng nhất: (1) **ACL được lọc ở tầng retrieval**, trước khi chunk vào context — nếu lọc sau khi LLM trả lời thì dữ liệu đã lộ; (2) **ingest tăng dần theo hash nội dung** để 500 trang thay đổi mỗi ngày không kéo theo 40.000 trang; (3) **ngân sách token** được quản lý như ngân sách hạ tầng: semantic cache có kiểm quyền, prompt caching cho prefix cố định, streaming để giảm token output bị bỏ phí.
+
+### Vì sao không nhồi cả tài liệu vào prompt
+40.000 trang x 1.500 token = 60 triệu token. Dù model có context window lớn đến đâu, gửi cả kho vào mỗi câu hỏi vẫn tốn token, chậm và khó bảo đảm câu trả lời dựa đúng đoạn liên quan; thông tin giữa context cũng dễ bị "chìm" (lost in the middle). RAG (Retrieval-Augmented Generation — truy xuất đoạn liên quan rồi đưa vào mô hình) chỉ đưa 3–5 đoạn vào mỗi lần hỏi, khoảng 4.000 token, và luôn kèm nguồn để người dùng tự kiểm chứng.
+
+### Quyền: lớp quyết định
+~~~seq
+title: Một câu hỏi đi qua các lớp
+actors: Web | API | Auth | Retrieval | LLM
+Web -> API: POST /v1/chat {question}
+API -> Auth: lấy user, nhóm, dự án
+Auth --> API: user_id + acl_groups[] (nguồn sự thật)
+API -> Retrieval: question + acl_groups + top_k=20
+Retrieval --> API: 5 chunk đã lọc theo acl_groups
+API -> LLM: system + 5 chunk + câu hỏi (kèm cấm bịa)
+LLM --> API: câu trả lời + trích dẫn theo index chunk
+API --> Web: answer + citations + confidence
+~~~
+Hai điểm dễ sai ở sơ đồ trên: (1) {{acl_groups}} phải đến từ **hệ thống định danh của công ty** (SSO, SCIM), không phải từ prompt; (2) retrieval trả về chunk đã lọc, nên LLM **không nhìn thấy** tài liệu ngoài quyền.
+
+### Lọc ACL ngay trong truy vấn
+- Mỗi chunk lưu mảng {{acl_group_ids}} đã được chuẩn hoá (ví dụ {{dept:marketing}}, {{proj:atlas}}, {{all}}).
+- Truy vấn vector có điều kiện: tìm chunk gần nhất trong số chunk mà {{acl_group_ids}} giao với nhóm của user khác rỗng.
+- Với approximate search như HNSW, điều kiện ACL chọn lọc có thể khiến truy vấn thu được ít hơn k kết quả sau lọc; đây là giới hạn số ứng viên chứ không phải lý do để bỏ ACL. Đo recall trên tập ứng viên user thực sự được phép đọc; cân nhắc iterative scan nếu phiên bản pgvector đang dùng hỗ trợ, hoặc chiến lược partition/chỉ mục phù hợp. Không gửi chunk ngoài quyền sang reranker, LLM hay log.
+- Câu hỏi về lương, hợp đồng, dữ liệu cá nhân: tách luồng riêng, không đưa vào vector store chung. Luồng này kiểm quyền ở tầng ứng dụng và không gọi LLM nếu user không có quyền xem hồ sơ đó.
+
+### Chất lượng tiếng Việt
+- Cắt chunk theo heading, 300–800 token, chồng lấn 10–20%. Bảng lương hoặc bảng giá bị cắt giữa dòng là lỗi phổ biến nhất: chunk phải giữ nguyên bảng.
+- **Hybrid search**: pgvector cosine tìm theo nghĩa + PostgreSQL full-text search/tsvector tìm theo từ khoá; chọn tokenizer/dictionary phù hợp tiếng Việt hoặc analyzer tiếng Việt trong hệ tìm kiếm riêng, vì cấu hình mặc định không tự động xử lý đầy đủ mọi biến thể tiếng Việt. Vector thuần dễ hụt mã sản phẩm, số điều khoản và tên riêng.
+- Chuẩn hoá: bỏ dấu khi so khớp từ khoá (tiếng Việt không dấu), nhưng vẫn giữ dấu để hiển thị.
+- Reranker (cross-encoder nhỏ) chấm lại 20 ứng viên, lấy 5 đoạn tốt nhất. Reranker rẻ hơn nhiều so với gọi LLM lớn.
+
+### Ngân sách token: tính trước khi tối ưu
+Giả định mỗi câu trả lời: system 800 token, 5 đoạn x 700 token = 3.500, câu hỏi 100, output 500. Tổng khoảng 4.900 token, trong đó 85% là input.
+- Nếu 12.000 câu/ngày đều gọi LLM: khoảng 59 triệu token input + 6 triệu token output mỗi ngày, tức khoảng 1,8 tỷ token/tháng.
+- **Prompt caching** (một số provider tái sử dụng prefix giống hệt nhau theo cơ chế riêng): system prompt 800 token + hướng dẫn trích dẫn 400 token = tối đa 1.200 token prefix cố định. Nếu 70% request dùng lại được prefix, phần tiết kiệm phụ thuộc chênh lệch giá input thường và cached input, đồng thời tính phí tạo/lưu cache nếu provider áp dụng; không đồng nghĩa giảm 70% toàn bộ bill.
+- **Semantic cache** (tìm câu hỏi tương tự để tái sử dụng kết quả) không đồng nghĩa 80% hit: cách diễn đạt giống nhau chưa đảm bảo cùng câu trả lời, cùng phiên bản tài liệu hay cùng quyền. Bản an toàn ban đầu chỉ cache câu hỏi công khai hoặc dùng khóa chứa tenant, model, phiên bản nguồn và tập entitlement; trước khi trả phải kiểm tra lại quyền trên mọi citation. Nếu không chứng minh được quyền tương đương thì bỏ cache, chạy retrieval mới.
+- **Streaming** (trả chữ theo từng đoạn qua SSE): không giảm token, nhưng giảm thời gian chờ cảm nhận và cho phép huỷ giữa chừng để không trả tiền phần output không ai đọc.
+- Với khoảng 1,8 tỷ token/tháng, trần 5.000 USD tương đương bình quân tối đa khoảng **2,78 USD cho mỗi triệu token tổng hợp**. Đây chỉ là ngưỡng sơ bộ: phải biết tỷ lệ input/output/cached tokens và bảng giá từng model. Nếu giá bình quân dự kiến vượt ngưỡng, giảm context/output, route tác vụ đơn giản sang model rẻ đã đánh giá, đặt quota và cảnh báo ngân sách; không giả định cache sẽ tự đạt mục tiêu.
+- **Hàng đợi + rate limit theo token** cho các job không gấp (tóm tắt tài liệu dài, sinh câu hỏi ôn tập).
+- Theo dõi chi phí theo phòng ban (attributing): gắn {{department}} vào mọi request và dashboard theo tuần.
+
+### Cập nhật index
+Mỗi ngày 500 trang thay đổi, 50 trang bị xoá.
+1. Connector đọc theo con trỏ thời gian (incremental sync), chỉ lấy trang có {{updated_at}} mới hơn lần trước; đồng bộ riêng thay đổi ACL từ nguồn định danh.
+2. Băm nội dung sau khi chuẩn hoá; nếu hash không đổi thì bỏ qua (không tốn embedding).
+3. Chunk mới được {{INSERT ... ON CONFLICT}} theo khóa (document_id, version, ordinal); chunk của trang đã đổi được đánh dấu stale và được thay thế sau khi phiên bản mới sẵn sàng.
+4. Trang bị xoá: ghi tombstone (bản ghi {{status=deleted}}) rồi xoá chunk ở job dọn; **không** xoá thẳng trong lúc đang phục vụ vì retrieval có thể đang đọc.
+5. Mọi bước có checkpoint để chạy lại an toàn; chạy nền, không chặn truy vấn. Khi đổi nội dung, cập nhật version hiện hành và vô hiệu hóa cache citation cũ; khi chỉ đổi ACL, cập nhật policy/metadata mà không gọi lại embedding.
+
+### Trích nguồn
+Prompt yêu cầu model trả lời kèm số thứ tự đoạn đã dùng (ví dụ {{[2]}}). Server **ghép lại** phần trích dẫn từ danh sách chunk thật, không tin vào chuỗi model sinh ra: nếu model trả về số không tồn tại thì bỏ trích dẫn đó và ghi log để đánh giá. Mỗi citation gồm tên tài liệu, đường dẫn, phiên bản và ngày cập nhật — người dùng bấm vào là thấy đúng đoạn.
+
+### Đo chất lượng
+- **recall@k**: trong 200 câu hỏi golden có đáp án đúng đã biết, top-k có chứa đoạn chứa đáp án không.
+- **faithfulness**: câu trả lời có mâu thuẫn với đoạn được trích không (LLM-as-judge, có người kiểm mẫu).
+- **tỉ lệ trả lời đúng khi thiếu dữ liệu**: câu hỏi không có trong tài liệu, hệ thống phải nói "không tìm thấy" — nếu trả lời bịa là lỗi nghiêm trọng.
+- Chạy eval mỗi khi đổi prompt, đổi model hoặc đổi chunking; so sánh trước/sau trên cùng bộ golden.
+
+### Ví dụ đời thực
+Một công ty 4.000 nhân viên dùng RAG nội bộ. **Triệu chứng:** nhân viên Marketing nhận câu trả lời trích tài liệu "Pháp chế — nội bộ", đồng thời chi phí token tháng thứ hai gấp 3,4 lần dự toán. **Điều tra:** retrieval đã đưa chunk nhóm legal vào context trước khi bộ lọc chạy; cache chỉ khóa theo câu hỏi và model; lượng gọi thật là 12.000 câu/ngày x khoảng 4.900 token/câu. **Cách xử lý:** từ chối chunk thiếu ACL, đưa điều kiện quyền vào retrieval và kiểm tra lại citation tại điểm trả; bỏ cache khi không chứng minh được quyền; giới hạn context, thêm model nhỏ cho câu hỏi đơn giản và theo dõi chi phí theo phòng ban. **Kết quả sau 90 ngày:** không có sự cố truy cập chéo đã xác nhận, p95 giảm từ 7,8 xuống 4,6 giây và bộ golden cho thấy tỉ lệ từ chối đúng khi thiếu nguồn tăng từ 71% lên 94%. Mức giảm chi phí 62% chỉ đạt sau đo trên workload thực; không coi đó là bảo đảm trước khi benchmark.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chia hệ thống thành ba luồng. Ingestion: connector đồng bộ Confluence, SharePoint và Drive theo cursor; lưu ACL/version từ nguồn, cắt theo heading thành chunk 300–800 token, băm nội dung để bỏ qua trang không đổi, rồi upsert version mới và tombstone khi xóa. Thay đổi ACL không cần tạo lại embedding. Query: lấy quyền từ hệ thống định danh, không tin client; tìm hybrid bằng pgvector và full-text phù hợp tiếng Việt, lọc ACL ngay trong query, rerank các ứng viên được phép rồi chỉ gửi năm đoạn tốt nhất cho model. Trước khi trả, kiểm tra lại quyền và ghép citation từ document/chunk/version thật; khi nguồn thiếu thì nói không tìm thấy. Về tải, 12.000 câu/ngày nhân 4.900 token là khoảng 1,8 tỷ token/tháng; 5.000 USD đặt ngưỡng blended gần 2,78 USD mỗi triệu token, cần tính lại theo tỷ lệ input/output và model. Tôi không coi 80% câu hỏi tương tự là cache hit: response cache cần cùng quyền, nguồn còn mới và key cô lập; prompt caching chỉ bật khi provider hỗ trợ. Golden set đo recall@k, faithfulness và từ chối đúng."
+
+> Senior tip: trong RAG nội bộ, lỗi tốn kém nhất không phải model yếu mà là **lọc quyền sai tầng** và **cache không cô lập theo quyền**. Hãy viết test bảo mật như test nghiệp vụ: một user cố ý hỏi tài liệu của phòng khác và assert bị chặn. Và luôn đo chi phí trên mỗi câu trả lời — con số đó là thứ sếp hỏi trước khi hỏi về chất lượng.`,
+  followups: [
+    'Nhân viên chuyển từ phòng Marketing sang Pháp chế: chunk cũ phải mất hiệu lực ngay, bạn làm thế nào mà không phải reindex toàn bộ?',
+    'Một tài liệu chứa bảng lương 12 cột bị cắt giữa dòng: bạn sửa chunking và đo lại chất lượng ra sao?',
+    'Người dùng hỏi câu không có trong tài liệu: hệ thống phải trả lời thế nào để không bịa, và đo tỉ lệ này bằng gì?',
+    'Bạn đổi embedding model sang bản mới: lập kế hoạch backfill, dual-read và rollback thế nào mà không downtime?',
+    'Nhà cung cấp LLM tăng giá 40%: bạn giữ nguyên chất lượng mà giảm chi phí bằng những đòn bẩy nào, theo thứ tự nào?'
+  ],
+  related: ['ai-009', 'ai-019', 'ai-039', 'ai-040']
+},
+{
+  id: 'sd-024',
+  title: 'LLM gateway dùng chung cho nhiều team',
+  kind: 'bigtech',
+  level: 'lead',
+  prompt: `Một công ty có **20 team** và khoảng **5.000 kỹ sư, nhân viên** đang gọi trực tiếp nhiều nhà cung cấp LLM bằng API key riêng. Có lúc một team thử nghiệm gây hết hạn mức của các team khác; hóa đơn cuối tháng không biết request nào thuộc sản phẩm nào; prompt có thể chứa email, số điện thoại và dữ liệu khách hàng. Hãy thiết kế **LLM gateway dùng chung**: định tuyến model theo tác vụ/chính sách, giới hạn tốc độ và ngân sách theo team, giảm chi phí bằng prompt caching, thống kê chi phí, che dữ liệu nhạy cảm, fallback khi provider lỗi. Giả định ban đầu 10 request/giây trung bình, peak 50 request/giây, trung bình 2.000 token tổng mỗi request. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt gateway nhận yêu cầu đồng bộ hay streaming, có giữ tương thích một phần với API hiện tại không, model nào được phép dùng với loại dữ liệu nào, và latency p95. Danh tính team phải lấy từ token/identity đã xác thực chứ không tin header client tự đặt. Làm rõ hạn mức theo phút/ngày/tháng, burst, concurrency, soft warning hay hard stop; cách tính tiền và thời gian lưu log. Dữ liệu nhạy cảm: chính sách redact, nhà cung cấp nào được phép nhận prompt, có tác vụ phải dùng model nội bộ không. Chốt không bảo đảm ngữ nghĩa các model giống nhau; fallback phải tôn trọng policy, không gửi dữ liệu sang provider chưa được duyệt.` },
+{ name: 'Estimation', minutes: 5, guide: `Giả định 10 RPS trung bình, peak 50 RPS: 864.000 request/ngày nếu chạy liên tục ở mức trung bình. Với 2.000 token/request, khoảng 1,728 tỷ token/ngày (input + output); đây là phép nhân công suất, không phải dự toán chi phí. Chi phí = số token input/output/cached input theo model x bảng giá hiệu lực; lưu cả model, provider và price_version để giải thích hoá đơn. Peak 50 RPS cần quota token/concurrency riêng, không chỉ giới hạn request. Nếu metadata usage mỗi request 1 KB: khoảng 0,86 GB/ngày trước index/replica; raw prompt không lưu mặc định để tránh phình log và rủi ro riêng tư. Redis giữ bucket quota ngắn hạn; ledger usage bền vững cần queue/DB và reconciliation.` },
+        { name: 'API & data model', minutes: 5, guide: `API nội bộ POST /v1/responses nhận request_id, messages, task, model_policy, stream; team lấy từ service identity đã verify. Trả response chuẩn hoá hoặc SSE; usage gồm input_tokens, output_tokens, cached_input_tokens, provider/model, request_id. Bảng team_policy(team_id, rpm, tpm, daily_budget, allowed_models, data_class, version); provider_model(provider, model, capabilities, status); price_catalog(provider, model, effective_from, input_price, output_price, cached_input_price, version); request_usage(request_id unique, team_id, model, token counts, status, estimated_cost, final_cost, price_version, timestamps); outbox/usage_event để publish không mất. Không lưu API key ở bảng policy; lấy secret từ secret manager.` },
+        { name: 'High-level design', minutes: 15, guide: `Client -> AuthN/AuthZ -> Gateway: xác thực danh tính workload, map team và policy. Redaction/validation -> Router chọn model được phép theo task/cost/capability/health -> Redis quota (atomic token bucket RPM/TPM + concurrency) -> provider adapter -> chuẩn hoá response/stream. Trước khi gửi, ước tính token và reserve quota; sau response reconcile bằng usage provider trả về, điều chỉnh reservation. Usage event ghi qua outbox/Kafka tới billing store và dashboard. Provider key nằm trong secret manager; egress qua mạng được kiểm soát. Fallback chỉ thử model/provider khác đã policy cho phép, cùng data class; cache câu trả lời tách khỏi prompt caching.` },
+        { name: 'Deep dive', minutes: 15, guide: `Đào sâu: token bucket Redis atomic Lua và xử lý Redis mất kết nối (không âm thầm bỏ quota; chọn fail closed hoặc local conservative limit); request đồng thời và reservation/refund; provider timeout có thể đã xử lý và tính tiền nên retry có giới hạn, tránh fan-out; streaming đã gửi token thì không thể đổi provider an toàn. Prompt caching chỉ tái sử dụng prefix theo tính năng/provider, không phải câu trả lời miễn phí; không cache nội dung cross-team. Đo giá theo price version và đối soát với hóa đơn provider. Redaction có false negative nên không ghi raw prompt mặc định, mã hoá và hạn retention; route theo data policy. Theo dõi 429, latency, error, token, cache hit, fallback, budget burn; circuit breaker chỉ mở theo provider/model, không che lỗi policy.` }
+      ],
+      rubric: [
+        'Xác thực workload và gán team từ danh tính tin cậy, không nhận team_id không kiểm chứng từ client',
+        'Định nghĩa chính sách dữ liệu và model được phép; fallback cũng phải cùng policy',
+        'Ước lượng 10 RPS trung bình, peak 50 RPS và 2.000 token/request thành token/day, phân biệt đây là tải chứ chưa phải tiền',
+        'Giới hạn RPM, TPM, concurrency và ngân sách theo team bằng reservation/reconciliation',
+        'Token bucket cập nhật nguyên tử trên Redis; xử lý rõ khi Redis lỗi và khi nhiều request đồng thời',
+        'Phân biệt prompt caching của provider với cache câu trả lời; cô lập cache và vô hiệu hóa cache nhạy cảm',
+        'Router dựa trên tác vụ, khả năng model, giá, latency, sức khoẻ và policy, có adapter chuẩn hoá khác biệt provider',
+        'Fallback/retry có giới hạn, chỉ với lỗi phù hợp; timeout có thể đã bị tính phí và stream không thể chuyển provider sau khi phát dữ liệu',
+        'Usage event bền vững, price version, tính input/output/cached token và đối soát hoá đơn',
+        'Che dữ liệu nhạy cảm trước egress, hạn chế log prompt, quản lý secret, retention, metrics và alert vận hành'
+      ],
+      reference: `**Tóm tắt:** Tôi đặt một gateway làm **điểm thực thi policy và đo usage**, không chỉ là proxy HTTP. Gateway xác thực workload để biết team, kiểm tra dữ liệu nào được gửi tới model nào, reserve hạn mức RPM/TPM trước khi gọi provider, sau đó đối soát theo token usage thực tế. Router được phép fallback chỉ trong tập model đã duyệt; prompt caching giảm chi phí của prefix theo khả năng provider nhưng không phải cache câu trả lời. Mặc định không lưu prompt thô, còn usage phải có thể đối soát tới team, model và phiên bản bảng giá.
+
+### Yêu cầu và giả định tải
+- Functional: API đồng bộ và streaming, chọn model theo tác vụ, quota theo team, thống kê chi phí, che PII (thông tin nhận dạng cá nhân như email/điện thoại), fallback và audit.
+- Non-functional: p95 latency gateway thấp, ví dụ overhead dưới 100 ms ngoài thời gian gọi model; cách ly dữ liệu giữa team; quota không bị vượt đáng kể khi nhiều request đồng thời; hoạt động dù một provider lỗi.
+- Giả định bài: 20 team; 10 request/giây trung bình, peak 50; 2.000 token tổng mỗi request. Đây là số để thiết kế, cần thay bằng telemetry thật trước khi chốt năng lực.
+- Danh tính team lấy từ OAuth/JWT đã verify hoặc service identity của workload. Header {{X-Team-Id}} do client gửi không phải bằng chứng, vì client có thể giả mạo để dùng quota/secret của team khác.
+- Mỗi team có policy: model được phép, data classification (loại dữ liệu), RPM (request/phút), TPM (token/phút), concurrency, ngân sách ngày/tháng, timeout và retention.
+
+### Ước lượng tải và chi phí
+- 10 request/giây x 86.400 giây/ngày = **864.000 request/ngày**.
+- 864.000 x 2.000 token = **1,728 tỷ token/ngày** tổng input và output. Cần đo tách hai loại vì bảng giá thường khác nhau.
+- Chi phí ngày = input token x giá input/model + output token x giá output/model + phần cached input theo giá tương ứng. Nhân với bảng giá có hiệu lực; không hard-code giá vì provider và model thay đổi giá.
+- Peak 50 RPS x 2.000 = 100.000 token/giây. Một giới hạn chỉ tính request không đủ: request dài 20.000 token có chi phí và thời gian khác request 200 token.
+- 1 KB metadata/request x 864.000 = khoảng 0,86 GB/ngày. Đây chưa tính index, replica, retention; không ghi toàn bộ prompt và response vào analytics mặc định.
+- Quota/cost gồm hai tín hiệu: token ước tính trước khi gửi để bảo vệ ngân sách, usage thực tế từ provider để tính đúng sau đó. Ước lượng tokenizer có thể khác provider nên cần reconcile và theo dõi sai số.
+
+### API và mô hình dữ liệu
+Ví dụ API nội bộ:
+~~~text
+POST /v1/responses
+Authorization: Bearer <service-token>
+{
+  "request_id": "uuid",
+  "task": "classification",
+  "model_policy": "balanced",
+  "messages": [{"role":"user","content":"..."}],
+  "stream": true
+}
+~~~
+Gateway suy ra team từ token, không dùng team do body chỉ định. Response chuẩn hoá chứa request_id, model/provider thực tế, output và usage: input_tokens, output_tokens, cached_input_tokens. Tầng adapter dịch giữa định dạng nội bộ và API riêng của provider; không giả định mọi model hỗ trợ cùng tool calling, JSON schema, context length hoặc streaming.
+
+~~~sql
+team_policy(team_id, version, rpm, tpm, concurrency, daily_budget,
+           monthly_budget, allowed_models, allowed_data_class)
+provider_model(provider, model, capabilities, health, enabled)
+price_catalog(provider, model, effective_from, input_rate, output_rate,
+              cached_input_rate, price_version)
+request_usage(request_id UNIQUE, team_id, provider, model, input_tokens,
+              output_tokens, cached_input_tokens, price_version,
+              estimated_cost, final_cost, status, created_at)
+~~~
+Usage record là sổ kiểm toán; bảng tổng hợp theo ngày/team/model là dữ liệu dashboard có thể dựng lại. Lưu price_version giúp tính lại giải thích được vì sao cùng lượng token ở hai tháng có số tiền khác. Provider keys ở secret manager (dịch vụ lưu secret được mã hoá và phân quyền), không ở database policy hay log.
+
+### Kiến trúc và luồng request
+~~~seq
+title: Một request qua gateway
+actors: Client | Gateway | Redis | Provider | Kafka
+Client -> Gateway: gửi request cùng service token
+Gateway -> Gateway: xác minh team và phân loại dữ liệu
+Gateway -> Redis: reserve RPM, TPM và concurrency
+Redis --> Gateway: quota được cấp hoặc từ chối
+Gateway -> Provider: gửi request đã redact, chọn model
+Provider --> Gateway: response và usage thực tế
+Gateway -> Kafka: usage event qua outbox
+Gateway --> Client: response chuẩn hóa hoặc SSE
+~~~
+Các bước trước provider: xác thực, kiểm kích thước/định dạng, áp policy model, redaction, ước lượng token, kiểm quota. Sau response: ghi usage, settle reservation, chuẩn hoá lỗi và trả kết quả. Với request không streaming, có thể ghi trạng thái hoàn tất trước khi trả; với streaming cần ghi event kết thúc/usage khi nhận được, đồng thời xử lý trường hợp client ngắt giữa chừng.
+
+### Quota công bằng khi có request đồng thời
+**Token bucket** là bộ đếm có dung lượng tối đa, được nạp lại theo thời gian; giống bình nước rò đều, request tiêu thụ token từ bình. Dùng Redis Lua script hoặc thao tác nguyên tử tương đương để đọc-sửa-ghi RPM/TPM trong một bước. Nếu làm ba lệnh riêng, hai request cùng đọc quota còn lại rồi cả hai cùng được phép, vượt hạn mức.
+1. Gateway ước tính input và output tối đa, reserve token cùng một request_id duy nhất. Cùng request_id retry nội bộ không reserve lần hai.
+2. Khi provider trả usage thật, settle chênh lệch; token không dùng được hoàn vào bucket theo policy. Nếu provider timeout và không rõ đã xử lý hay chưa, ghi trạng thái uncertain, không hoàn toàn bộ một cách mù quáng.
+3. Có quota theo request, token và concurrency. Concurrency giới hạn số tác vụ đang chạy, tránh một team chiếm hết socket/connection dù RPM còn thấp.
+4. Redis lỗi: với dịch vụ tính phí, chọn fail closed hoặc fallback sang quota local bảo thủ có giới hạn rõ; không được âm thầm bỏ kiểm tra. Alert khi fallback quota hoạt động.
+
+### Định tuyến và fallback
+Router lọc trước theo policy dữ liệu, sau đó chọn model đủ capability cho task, rồi xếp hạng theo latency/health/giá và ưu tiên cấu hình. Ví dụ tác vụ phân loại ngắn có thể dùng model rẻ đã được đánh giá; yêu cầu code hoặc reasoning cần model đủ năng lực. Chọn model rẻ nhất mà chưa đo chất lượng có thể tăng lỗi và retry, khiến tổng chi phí cao hơn.
+- Mỗi provider có adapter riêng, timeout, circuit breaker và giới hạn kết nối. Circuit breaker tạm ngừng gọi provider đang lỗi sau một ngưỡng, rồi thử lại có kiểm soát.
+- Chỉ retry lỗi tạm thời như 429/5xx theo chính sách, tối đa số lần nhỏ với exponential backoff có jitter (thời gian chờ tăng dần, thêm ngẫu nhiên để tránh dồn request). Không retry lỗi xác thực, request sai hay policy từ chối.
+- Timeout không chứng minh provider chưa nhận request; có thể đã xử lý và tính tiền. Chỉ gửi lại khi provider hỗ trợ idempotency cho loại request đó hoặc chấp nhận ghi nhận khả năng tính phí kép.
+- Fallback phải kiểm lại model được phép, khu vực lưu trữ và data class. Không gửi prompt nhạy cảm từ provider được duyệt sang provider chưa duyệt chỉ để giữ availability.
+- Với streaming, trước byte đầu tiên có thể thử provider khác; sau khi đã gửi một phần câu trả lời thì không thể đổi provider an toàn vì câu trả lời sẽ bị nối từ hai lần sinh khác nhau. Trả lỗi stream rõ ràng hoặc kết thúc theo contract.
+
+### Ba thứ thường bị gọi nhầm là cache
+| Cơ chế | Dữ liệu tái sử dụng | Lợi ích | Rủi ro/chú ý |
+|---|---|---|---|
+| Prompt caching của provider | Prefix prompt đã gửi nhiều lần, nếu provider/model hỗ trợ | Có thể giảm chi phí hoặc độ trễ phần input prefix | Cách bật, thời hạn và giá riêng theo provider; không tái sử dụng câu trả lời |
+| Cache response của gateway | Kết quả sinh hoàn chỉnh | Tránh gọi model lại cho yêu cầu tương đương | Có thể sai/ngày cũ hoặc rò dữ liệu nếu khóa cache không cô lập |
+| Cache ứng dụng | Kết quả nghiệp vụ đã xác định | Tốc độ và chi phí thấp nhất | Chỉ đúng khi nghiệp vụ có điều kiện cache rõ |
+
+Prompt caching không thay thế privacy review; prefix chứa dữ liệu nhạy cảm cũng phải theo chính sách provider. Nếu cache response, khóa tối thiểu cần phân biệt team, model/version, prompt đã chuẩn hoá, tham số sinh, tools/schema và policy version; tắt với nội dung cá nhân hoặc thay đổi liên tục. Không dùng chung cache giữa team chỉ vì prompt giống nhau. Xác thực và quota vẫn chạy trước cache hit, nếu không người dùng có thể bypass hạn mức bằng cách hỏi câu đã có cache.
+
+### Chi phí, logging và dữ liệu nhạy cảm
+- Ước lượng chi phí trước request để cảnh báo budget; sau response tính từ usage thực và price_version. Phân biệt cached input, input thường và output. Đối soát tổng tháng với hóa đơn provider, điều tra request thiếu usage thay vì coi chúng là miễn phí.
+- Ghi metadata tối thiểu: request_id, team_id, model/provider, usage, latency, status, cache/fallback, policy version. Mặc định không lưu raw prompt/response; nếu cần lấy mẫu debug phải có mục đích, quyền hạn, retention ngắn và thông báo phù hợp.
+- Redaction có thể thay email/điện thoại bằng placeholder trước khi gửi, nhưng detector có false negative và false positive. Không tuyên bố đã ẩn danh hoàn toàn; dữ liệu nhạy cảm cao có thể bị chặn hoặc route tới model được phê duyệt thay vì gửi ra ngoài.
+- Giữ danh sách model/provider được phép theo data class, TLS khi truyền, secret manager cho API key, phân quyền tối thiểu, audit thay đổi policy, quy trình xoay key và yêu cầu xóa theo retention.
+- Prompt injection (nội dung cố khiến model bỏ qua chỉ dẫn) vẫn có thể xảy ra dù qua gateway. Gateway kiểm soát egress, tool permissions, logging và model policy; ứng dụng gọi tool vẫn phải xác minh quyền trên từng hành động.
+
+### Failure modes và quan sát
+| Tình huống | Hành vi |
+|---|---|
+| Team hết TPM/ngân sách | Trả 429 có quota/reset phù hợp; không âm thầm chuyển sang quota team khác |
+| Redis quota không khả dụng | Fail closed hoặc local limit bảo thủ; alert và ghi rõ chế độ degraded |
+| Provider trả 429/5xx | Backoff giới hạn, circuit breaker, fallback đã được duyệt nếu còn quota |
+| Provider timeout sau khi gửi | Ghi uncertain; không retry vô hạn hay khẳng định chưa bị tính phí |
+| Kafka/analytics gián đoạn | Outbox bền vững và retry publish; không làm mất usage |
+| Redactor lỗi hoặc policy không rõ | Từ chối request nhạy cảm; không default sang gửi raw prompt |
+
+Dashboard theo team/provider/model: request rate, input/output/cached tokens, chi phí dự kiến và cuối cùng, quota rejection, latency p50/p95/p99, 429/5xx, timeout uncertain, fallback, cache hit, redaction count và outbox lag. Alert budget burn bất thường theo tốc độ tiêu hao, provider lỗi và usage thiếu đối soát. Không gắn prompt text vào metric label vì gây lộ dữ liệu và cardinality lớn.
+
+### Ví dụ đời thực
+Giả sử 20 team cùng dùng một gateway ở 10 RPS trung bình. Ngày đầu, một thử nghiệm batch của team A tăng lên 40 RPS; các team khác nhận 429 từ provider và hóa đơn vượt dự kiến. Điều tra cho thấy gateway chỉ giới hạn request tổng, không có quota token/team; batch prompt dài 12.000 token chiếm phần lớn throughput. Khắc phục: map team từ workload identity, đặt bucket riêng theo RPM/TPM và concurrency, reserve theo token ước tính, route batch vào model đã benchmark, dashboard burn rate theo team. Một tuần sau, team A bị giới hạn riêng khi vượt quota, các team khác duy trì SLO; phần usage thực vẫn reconcile từ provider. Mục tiêu số liệu cần đo lại theo workload thật, không hứa giảm chi phí cố định trước khi có baseline.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi xem gateway là điểm thực thi policy, quota và accounting. Client được xác thực theo service identity; team suy ra từ danh tính chứ không từ header. Policy kiểm tra data class và model allowlist trước khi redaction và routing. Tôi dùng bucket RPM/TPM nguyên tử trên Redis, có reservation theo request idempotency key, rồi reconcile với usage thật từ provider; giới hạn concurrency riêng để một team không chiếm hết tài nguyên. Router chọn model theo task, capability, health và chi phí, nhưng fallback vẫn phải cùng policy. Timeout có thể đã được provider xử lý nên retry giới hạn; streaming thì chỉ đổi provider trước byte đầu tiên. Tôi tách prompt caching của provider khỏi response cache, cache response phải cô lập theo team và policy, còn dữ liệu nhạy cảm mặc định không cache. Usage event đi qua outbox để không mất, gắn price version và đối soát hóa đơn. Log chủ yếu metadata, không lưu prompt thô, và theo dõi budget burn, 429, latency, token usage, fallback cùng sai lệch billing."
+
+> Senior tip: đừng báo "tiết kiệm 30% nhờ cache" trước khi đo. Theo dõi riêng cache hit, cached input tokens, response-cache hit và cost/request; chúng là các đại lượng khác nhau. Đưa policy version và price version vào usage record sẽ giúp trả lời được câu hỏi khó nhất của Finance: request nào, team nào, model nào tạo ra khoản phí này?
+`,
+      followups: [
+        'Redis quota bị mất dữ liệu khi failover: làm sao giới hạn thiệt hại mà không từ chối mọi request hợp lệ?',
+        'Provider timeout sau 30 giây nhưng response thực tế đã được tính phí: client retry và billing xử lý thế nào?',
+        'Một team muốn gửi dữ liệu hợp đồng cho model rẻ hơn nhưng data policy cấm: gateway và quy trình ngoại lệ phải làm gì?',
+        'Prompt caching hit rate cao nhưng tổng hóa đơn vẫn tăng: bạn kiểm tra token, output, model mix và response cache ra sao?',
+        'Bạn muốn thay provider chính mà không gián đoạn: làm canary, so sánh chất lượng và rollback theo metric nào?'
+      ],
+      related: ['ai-009', 'ai-019', 'microservices-006']
+    },
 ];
