@@ -1581,4 +1581,288 @@ Một sự cố hoàn tiền: hàm {{refund(userId: Long, orderId: Long)}} bị 
   ],
   tags: ['Kotlin', 'value class', 'type safety', 'Jackson', 'JPA']
 },
+{
+  id: 'kotlin-030', topic: 'kotlin', level: 'mid',
+  q: 'Bạn thiết kế API generic Kotlin dùng chung cho Java caller như thế nào để vừa an toàn kiểu vừa dễ dùng? Giải thích variance, use-site projection và đối chiếu với PECS của Java.',
+  a: `**Tóm tắt:** Variance (tính hiệp biến/nghịch biến) mô tả quan hệ giữa hai kiểu generic có quan hệ cha-con. Kotlin cho phép khai báo {{out T}} nếu kiểu chỉ cung cấp T và {{in T}} nếu chỉ nhận T; kiểu vừa đọc vừa ghi thường invariant (không tự thay thế kiểu). Khi gọi API Java, Kotlin có thể cần projection như {{MutableList<out Animal>}}; tư duy tương đương PECS trong Java: Producer Extends, Consumer Super (bên cung cấp dùng extends, bên tiêu thụ dùng super), nhưng cú pháp và nơi khai báo khác nhau.
+
+### Vì sao cần variance
+Giả sử {{Dog}} là subtype của {{Animal}}. Một hàm chỉ đọc danh sách động vật có thể đọc {{List<Dog>}} an toàn: mọi Dog đều là Animal. Nhưng danh sách có thể ghi Animal không thể được coi là danh sách Dog, vì khi đó có thể ghi Cat vào nơi chỉ chứa Dog. Ngược lại, hàm chỉ ghi Dog có thể nhận một nơi chứa Animal nếu nơi đó chấp nhận Dog. Quy tắc bảo vệ chương trình khỏi lỗi kiểu lúc chạy.
+
+~~~kotlin
+open class Animal
+class Dog : Animal()
+
+interface Source<out T> { fun next(): T } // chỉ phát ra T
+interface Sink<in T> { fun accept(value: T) } // chỉ nhận T
+
+fun printAnimals(source: Source<Animal>) { println(source.next()) }
+// Source<Dog> dùng được vì Dog luôn là Animal
+~~~
+
+Kotlin khai báo {{List<out E>}} covariance vì collection read-only chỉ đưa E ra. {{MutableList<E>}} invariant do vừa đọc vừa ghi. Chú ý read-only interface không tự biến object mutable thành bất biến; chỉ có nghĩa API đó không cung cấp thao tác ghi.
+
+### Declaration-site và use-site
+{{out}}/{{in}} đặt ở khai báo interface/class là declaration-site variance: quy tắc áp dụng nhất quán cho mọi nơi dùng kiểu. Use-site projection như {{Array<out Animal>}} chỉ giới hạn một tham số cụ thể; nó hữu ích khi kiểu Java invariant hoặc khi chỉ một hàm cần quyền đọc. Java thường diễn tả tương tự bằng {{List<? extends Animal>}} và {{List<? super Dog>}}; Kotlin khi gọi sẽ tự suy luận nhiều wildcard nhưng đôi lúc cần {{@JvmWildcard}} hoặc {{@JvmSuppressWildcards}} để định hình chữ ký bytecode cho Java.
+
+| Nhu cầu | Kotlin | Ý nghĩa |
+|---|---|---|
+| Chỉ đọc / producer | {{out T}} | T xuất hiện ở vị trí trả về |
+| Chỉ ghi / consumer | {{in T}} | T xuất hiện ở tham số đầu vào |
+| Đọc và ghi | invariant | Giữ kiểu chính xác |
+
+### Lỗi hay gặp và lựa chọn
+- Đừng thêm {{out}} theo cảm tính: compiler sẽ từ chối nếu T được dùng ở vị trí nhận vào.
+- Đừng giả định {{List<T>}} Kotlin có nghĩa danh sách immutable; Java caller vẫn có thể đưa collection mutable vào.
+- Java generic wildcard và Kotlin variance có thể tạo chữ ký Java khó đọc. Kiểm tra API đã biên dịch bằng IDE hoặc {{javap}} và thử biên dịch một caller Java nhỏ.
+- Public API cần giữ ổn định: thay đổi variance có thể đổi chữ ký/khả năng tương thích source, dù JVM erasure khiến chữ ký bytecode nhìn tương tự.
+
+### Ví dụ đời thực
+Một thư viện Kotlin dùng interface {{Repository<T>}} vừa trả entity vừa nhận entity. Team muốn truyền {{Repository<Dog>}} vào hàm báo cáo nhận {{Repository<Animal>}}, nhưng compiler từ chối vì repository invariant. Thay vì ép kiểu, họ tách interface chỉ đọc {{Reader<out T>}} khỏi interface ghi {{Writer<in T>}}. Trong 18 module, 11 caller chỉ cần Reader; số ép kiểu unchecked giảm từ 26 xuống 0, và Java caller dùng wildcard rõ ràng hơn. Không đổi entity hay database: thay đổi nằm ở hợp đồng kiểu và được kiểm tra bằng compile test cho cả Java lẫn Kotlin.
+
+### Trả lời mẫu khi phỏng vấn
+“Variance quyết định khi nào một generic có thể thay thế generic khác. Nếu Dog kế thừa Animal, nguồn chỉ phát Dog có thể dùng như nguồn Animal, nên Kotlin đánh dấu {{out T}}. Sink chỉ nhận Animal cũng có thể nhận Dog, nên dùng {{in T}}. Collection mutable thường invariant vì nếu cho {{MutableList<Dog>}} thành {{MutableList<Animal>}}, code khác có thể thêm Cat vào. Điều này tương ứng với PECS trong Java: producer extends, consumer super. Ở API Kotlin tôi đặt variance tại declaration nếu hợp đồng của cả kiểu luôn chỉ đọc hoặc chỉ ghi; nếu chỉ một tham số cần giới hạn thì dùng projection tại nơi gọi. Với thư viện được Java dùng, tôi còn kiểm tra wildcard sinh ra, vì generic signature có thể khó gọi dù Kotlin compile được. Tôi tránh ép kiểu unchecked và tách interface đọc/ghi khi hai quyền có vòng đời khác nhau.”
+
+> Senior tip: thiết kế collection API theo quyền caller thật sự cần. Chỉ cấp Reader cho code báo cáo giúp compiler ngăn ghi nhầm, thay vì dựa vào quy ước “đừng sửa danh sách”.`,
+  follow: ['Vì sao {{MutableList<Dog>}} không thể gán cho {{MutableList<Animal>}}?', 'Khi nào cần {{@JvmWildcard}} hoặc {{@JvmSuppressWildcards}}?', 'Kotlin read-only collection có đảm bảo object không thể bị sửa từ Java không?'],
+  tags: ['Kotlin', 'generics', 'variance', 'Java interop']
+},
+{
+  id: 'kotlin-031', topic: 'kotlin', level: 'senior',
+  q: 'Khi nào bạn dùng inline function và reified type parameter trong Kotlin/JVM? Giải thích giới hạn type erasure, tác động đến Java API và trade-off về kích thước mã.',
+  a: `**Tóm tắt:** {{inline}} yêu cầu compiler chép thân hàm và lambda vào nơi gọi, có thể bỏ chi phí tạo function object và cho phép {{reified T}} truy cập kiểu cụ thể trong một số phép toán. Trên JVM, generic thông thường bị type erasure (xóa thông tin tham số kiểu ở runtime), nên {{T::class}} trong hàm generic thường không dùng được. {{reified}} chỉ hợp lệ trên type parameter của inline function; đổi lại, mã bị nhân bản ở call site, nên chỉ dùng khi có lợi đo được hoặc cần API kiểu an toàn.
+
+### Type erasure là gì
+JVM lưu kiểu generic chủ yếu cho kiểm tra lúc biên dịch; khi chạy, {{List<String>}} và {{List<Int>}} đều là List. Vì vậy hàm {{fun <T> parse(value: Any): T}} không thể hỏi trực tiếp “T là kiểu nào?” lúc runtime. Kotlin {{reified}} giải quyết một phần bằng cách inline hàm và thay T bằng kiểu cụ thể tại chỗ gọi:
+
+~~~kotlin
+inline fun <reified T> Any?.asOrNull(): T? = this as? T
+
+val id = payload.asOrNull<Long>() // phép kiểm tra kiểu cụ thể tại call site
+~~~
+
+Không thể dùng {{reified}} trong hàm thông thường, vì khi đó không có bước inline để thay kiểu. Reified cũng không khôi phục thông tin generic lồng nhau đã bị xóa: kiểm tra {{value is List<String>}} vẫn không xác minh được kiểu từng phần tử. Có thể kiểm tra {{List<*>}}, rồi validate phần tử riêng.
+
+### Khi nào inline có ích
+- HOF (higher-order function, hàm nhận/trả hàm) rất nhỏ, gọi cực nhiều; inline có thể giảm allocation lambda và lời gọi gián tiếp.
+- Cần {{reified}} cho helper kiểu {{is T}}, {{T::class}} hoặc tạo serializer/adapter dựa trên kiểu.
+- Lambda được gọi trực tiếp trong inline function có thể dùng {{return}} không cục bộ (non-local return), điều hữu ích nhưng dễ gây bất ngờ.
+
+Không inline hàm lớn chỉ vì “nhanh hơn”: thân hàm được chép vào mọi caller, làm bytecode và artifact lớn hơn, tăng thời gian compile, ảnh hưởng instruction cache. {{noinline}} giữ lambda như object bình thường; {{crossinline}} cấm non-local return khi lambda được chuyển sang callback/luồng thực thi khác. Đây là cách kiểm soát từng lambda chứ không phải lựa chọn hiệu năng mặc định.
+
+| Từ khóa | Tác dụng | Khi dùng |
+|---|---|---|
+| {{inline}} | Chép thân hàm vào nơi gọi | Hàm nhỏ, lambda/reified cần thiết |
+| {{noinline}} | Lambda không được inline | Cần lưu hoặc truyền lambda |
+| {{crossinline}} | Cấm return thoát khỏi caller | Lambda gọi trong callback |
+
+### Java interop và binary compatibility
+Java không gọi được reified generic như API thông thường, vì Java không có cú pháp truyền type parameter runtime cho nó. Nếu public library được cả Java dùng, cung cấp overload dựa trên {{Class<T>}} hoặc serializer cụ thể, ví dụ {{decode(bytes, OrderDto::class.java)}}. Với inline public API, thay đổi thân hàm có thể không cập nhật caller đã biên dịch cho tới khi caller compile lại; cần cân nhắc khi phát hành thư viện theo semantic versioning.
+
+### Pitfall production
+- Type check reified với generic lồng nhau tạo cảm giác an toàn giả; kiểm tra runtime chỉ thấy raw type.
+- Inline nhiều helper nhỏ cộng dồn có thể phình JAR và làm compile chậm.
+- Inline body public có giới hạn truy cập: không thể tùy tiện gọi private implementation do mã sẽ xuất hiện ở module bên ngoài.
+- Dùng {{crossinline}}/{{noinline}} sai làm thay đổi khả năng return và capture; viết test compile cho API quan trọng.
+
+### Ví dụ đời thực
+Một SDK Kotlin có helper generic parse response được gọi trong 300 endpoint. Ban đầu mỗi lần dùng tạo lambda và reflection dựa trên tên class; profile cho thấy 4% CPU ở allocation và parse sai vài generic wrapper. Team thêm overload reified chỉ cho helper ngắn, đồng thời giữ API Java nhận {{Class<T>}}. Benchmark trên cùng JVM, 10 triệu lần gọi: allocation giảm 18%, throughput tăng 7%; nhưng một hàm inline chuyển đổi lớn làm JAR tăng 1,4 MB nên bị bỏ. Họ thêm kiểm thử với list lồng nhau để đảm bảo code không nhầm rằng reified kiểm tra được {{List<Order>}} đầy đủ.
+
+### Trả lời mẫu khi phỏng vấn
+“JVM xóa phần lớn thông tin generic khi chạy, vì vậy hàm generic bình thường không biết T thực tế là gì. Reified hoạt động vì Kotlin chỉ cho phép nó trên inline function: compiler chép hàm vào nơi gọi và thay T bằng kiểu cụ thể, cho phép viết kiểm tra kiểu hoặc lấy KClass thuận tiện. Tôi dùng cho helper ngắn như chuyển đổi response và tránh reflection thủ công, nhưng không xem nó là cách phục hồi mọi generic: kiểm tra List<String> vẫn không kiểm tra được từng phần tử do erasure. Inline cũng nhân bản bytecode tại các call site, có thể làm JAR lớn và compile chậm. Với Java caller, tôi cung cấp overload nhận Class<T> hoặc serializer. Trước khi inline vì hiệu năng, tôi đo allocation và throughput bằng benchmark đại diện, rồi cân bằng với kích thước artifact.”
+
+> Senior tip: benchmark cả allocation lẫn kích thước bytecode; một helper inline nhanh hơn vài phần trăm nhưng được chép vào hàng trăm caller có thể làm startup và phân phối artifact tệ hơn.`,
+  follow: ['Tại sao reified không thể kiểm tra {{List<String>}} đầy đủ?', '{{crossinline}} giải quyết vấn đề nào khi lambda được chuyển vào callback?', 'Bạn thiết kế một API decode dùng được cả từ Java và Kotlin thế nào?'],
+  tags: ['Kotlin', 'inline', 'reified', 'JVM', 'type erasure']
+},
+{
+  id: 'kotlin-032', topic: 'kotlin', level: 'mid',
+  q: 'Bạn dùng property delegation trong Kotlin thế nào để quản lý khởi tạo trễ và trạng thái? So sánh {{lazy}} với {{lateinit}}, chú ý gì về thread safety và lỗi khởi tạo?',
+  a: `**Tóm tắt:** Property delegation ủy quyền thao tác đọc/ghi property cho một object khác thông qua quy ước {{getValue}}/{{setValue}}. {{lazy}} trì hoãn tạo giá trị cho tới lần đọc đầu và mặc định đồng bộ an toàn giữa thread; {{lateinit}} chỉ trì hoãn việc gán một biến mutable non-null, không tự tạo giá trị hay đồng bộ. Chọn theo vòng đời thật: lazy cho giá trị có thể tính từ dependency ổn định, lateinit cho framework/test sẽ inject trước khi dùng; cả hai đều cần xử lý thứ tự khởi tạo và khả năng truy cập đồng thời.
+
+### Delegation hoạt động ra sao
+Kotlin biến truy cập property được delegate thành lời gọi tới delegate, đại khái {{delegate.getValue(this, property)}}; property mutable còn có {{setValue}}. Có thể tạo quy tắc dùng lại như cache hoặc observable, nhưng mỗi quy tắc cũng làm đường đi dữ liệu ít trực tiếp hơn. Khi debug, người đọc cần biết ai khởi tạo, lúc nào, và giá trị có được lưu hay không.
+
+~~~kotlin
+class ReportService(private val repository: ReportRepository) {
+    val formatter by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        DateTimeFormatter.ISO_LOCAL_DATE // khởi tạo một lần khi lần đầu đọc
+    }
+}
+
+class Controller {
+    lateinit var service: ReportService // container test/framework phải gán trước khi dùng
+}
+~~~
+
+{{lazy}} mặc định là {{SYNCHRONIZED}}: nhiều thread truy cập lần đầu chỉ một lần khởi tạo an toàn. {{PUBLICATION}} cho phép nhiều thread tính đồng thời nhưng chỉ một kết quả được lưu (initializer có thể chạy hơn một lần). {{NONE}} bỏ đồng bộ và chỉ an toàn nếu object được truy cập một thread. Không chọn NONE chỉ để “tối ưu” khi chưa đo và chưa chứng minh thread confinement.
+
+### Lazy và lateinit khác nhau
+| Đặc tính | {{lazy}} | {{lateinit}} |
+|---|---|---|
+| Khai báo | {{val}} | {{var}} |
+| Ai cung cấp giá trị | Initializer chạy ở lần đọc đầu | Code/framework gán sau |
+| Trước khi khởi tạo | Không đọc được trước lần dùng | Đọc sớm ném {{UninitializedPropertyAccessException}} |
+| Null / primitive | Thường dùng non-null reference; không dành cho primitive | Không nullable, không dùng primitive |
+| Thread safety | Có mode rõ ràng, mặc định synchronized | Không tự đồng bộ |
+
+Một lazy initializer ném exception thì lần truy cập sau sẽ thử chạy initializer lại; side effect một phần có thể lặp. Vì vậy initializer nên ít side effect, hoặc xử lý tính idempotent. {{lateinit}} có {{::property.isInitialized}} trong phạm vi phù hợp để kiểm tra, nhưng kiểm tra rồi dùng vẫn có race nếu thread khác có thể thay đổi property.
+
+### Khi nào dùng và lỗi hay gặp
+- Dùng lazy cho cache cấu hình bất biến hoặc đối tượng tốn chi phí tạo, không dùng để che giấu dependency cần constructor injection.
+- Dùng lateinit hạn chế cho tích hợp framework/test khi constructor injection không khả thi; trong service Spring, constructor injection thường rõ và an toàn hơn.
+- Không tạo lazy phụ thuộc vào object có vòng đời ngắn hơn: property có thể giữ reference stale lâu hơn request/session.
+- Delegate tự viết nên có tên và semantics dễ tìm. Cache không có invalidation dễ trả dữ liệu cũ vô thời hạn.
+
+### Ví dụ đời thực
+Một service Kotlin khởi tạo parser schema 180 ms cho mỗi request vì thuộc tính được tạo trong hàm xử lý. Ở 900 request/giây, CPU tăng 22% và p95 tăng từ 95 lên 210 ms. Team chuyển parser thành {{val parser by lazy}} trên singleton service, initializer không có side effect và object an toàn dùng đồng thời. Warm-up tạo parser một lần; p95 về 102 ms, CPU giảm 16%. Một test song song gọi service trước đó dùng mode NONE và đôi lúc thấy parser khởi tạo hai lần; đổi về mặc định synchronized và thêm kiểm tra gọi initializer đúng một lần đã loại bỏ lỗi. Họ không dùng {{lateinit}} vì parser là dependency do chính ứng dụng tạo, không phải framework inject.
+
+### Trả lời mẫu khi phỏng vấn
+“Delegation tách cách property được lưu hoặc khởi tạo khỏi class sử dụng nó. Lazy là val được tạo ở lần đọc đầu, mặc định đồng bộ để nhiều thread không khởi tạo cùng lúc; Publication cho phép initializer chạy nhiều lần nhưng chỉ publish một kết quả, còn None chỉ hợp lệ khi chắc chắn thread-confined. Lateinit là var non-null được gán sau bởi framework hoặc test; nó không có initializer và đọc quá sớm sẽ ném UninitializedPropertyAccessException. Tôi ưu tiên constructor injection cho dependency ứng dụng vì thứ tự khởi tạo rõ. Lazy hợp với cache bất biến, initializer ít side effect; tôi tránh dùng nó để giấu lỗi cấu hình hoặc giữ dữ liệu request quá lâu. Với delegate tự viết, tôi ghi rõ invalidation và thread-safety, vì property syntax không làm những vấn đề đó biến mất.”
+
+> Senior tip: nếu lazy chứa kết quả cấu hình có thể đổi khi ứng dụng chạy, thêm chính sách refresh/invalidation có kiểm thử; lazy thuần chỉ khởi tạo một lần và không phải cache có hạn sử dụng.`,
+  follow: ['Initializer của {{lazy(PUBLICATION)}} có thể chạy bao nhiêu lần?', 'Vì sao constructor injection thường tốt hơn {{lateinit}} trong Spring?', 'Khi nào {{LazyThreadSafetyMode.NONE}} là hợp lệ?'],
+  tags: ['Kotlin', 'delegation', 'lazy', 'lateinit', 'concurrency']
+},
+{
+  id: 'kotlin-033', topic: 'kotlin', level: 'mid',
+  q: 'Bạn thiết kế hàm Kotlin có nhiều tham số mặc định để Java và Kotlin cùng gọi ra sao? Phân biệt named arguments, overload do @JvmOverloads sinh ra và nguy cơ tương thích API.',
+  a: `**Tóm tắt:** Kotlin hỗ trợ named arguments và default arguments, nhưng Java không gọi được cú pháp tên tham số hay tự bỏ qua tham số. Với Java, cần overload tường minh, builder, hoặc {{@JvmOverloads}} để compiler sinh các overload từ cuối danh sách tham số có mặc định. Compiler thường phát sinh hàm synthetic để áp dụng default; thay đổi biểu thức mặc định có thể đổi hành vi caller Kotlin đã biên dịch nếu caller vẫn gọi hàm đó. Thay đổi chữ ký hoặc overload có thể phá binary compatibility, nên cần kiểm tra ABI thực tế.
+
+### Kotlin và Java gọi khác nhau thế nào
+Default argument là quy tắc compiler Kotlin áp dụng khi biên dịch call site; JVM không tự thực thi “tham số mặc định”. Compiler tạo hàm phụ trợ để Kotlin truyền mask/default marker. Java nhìn thấy method có đủ tham số, nên không thể bỏ tham số như Kotlin.
+
+~~~kotlin
+class ReportClient {
+    @JvmOverloads
+    fun fetch(path: String, timeoutMs: Long = 2_000, trace: Boolean = false) { }
+}
+~~~
+
+Kotlin gọi {{fetch("/daily", trace = true)}} nhờ named arguments, Java không có khả năng này. {{@JvmOverloads}} sinh overload tương đương {{fetch(path, timeoutMs)}} và {{fetch(path)}} bằng cách bỏ dần tham số mặc định từ cuối. Nó không sinh mọi tổ hợp; muốn bỏ timeout nhưng vẫn truyền trace thì Java cần gọi đủ ba tham số hoặc dùng builder/API riêng.
+
+### Lựa chọn API
+| Cách | Ưu điểm | Hạn chế |
+|---|---|---|
+| Default args | Gọn cho Kotlin caller | Java không áp dụng default |
+| {{@JvmOverloads}} | Tạo overload Java thuận tiện | Có thể sinh nhiều method, không hỗ trợ mọi tổ hợp |
+| Builder / options object | Tùy chọn rõ, mở rộng tốt | Thêm kiểu và boilerplate |
+| Overload tự viết | Chữ ký kiểm soát chính xác | Dễ trùng hoặc khó bảo trì |
+
+Nếu thư viện public có nhiều tùy chọn thay đổi theo thời gian, options object hoặc builder thường ổn định hơn việc thêm nhiều tham số. Java có thể dùng builder; Kotlin vẫn có thể dùng named arguments để khởi tạo cấu hình.
+
+### Pitfall về overload và tương thích
+- Thêm overload thủ công trùng với overload do {{@JvmOverloads}} sinh sẽ gây platform declaration clash.
+- Kotlin caller thường gọi hàm synthetic {{\$default}} để thư viện áp dụng giá trị mặc định; đổi biểu thức mặc định có thể đổi hành vi caller cũ mà không cần rebuild. Tuy nhiên, xóa/thay đổi tham số hoặc overload có thể làm caller cũ không liên kết được.
+- Tham số nullable có default null khác với overload vắng tham số; reflection/framework có thể phân biệt chúng.
+- Tên tham số Kotlin có thể được Java compiler dùng trong metadata mới, nhưng không nên coi named argument Java là API ổn định phổ quát.
+- Annotation trên constructor/function nhiều tham số cần kiểm tra chính xác chữ ký mà Java và framework nhìn thấy.
+
+### Ví dụ đời thực
+Một SDK nội bộ Kotlin cung cấp hàm gửi email với 7 tham số tùy chọn. Kotlin caller dùng named arguments dễ đọc, nhưng Java service phải truyền đủ giá trị, nên mỗi team tự điền timeout và retry khác nhau. Sau 3 tháng có 4 cấu hình retry không thống nhất; timeout p99 dao động từ 2 đến 15 giây. Team gom tùy chọn thành {{MailOptions}} có default rõ ràng, cung cấp builder Java và giữ một overload {{send(to, body)}} đơn giản. Số cấu hình rời giảm còn một, compile test cho Java/Kotlin chạy trong CI; khi thêm tùy chọn metrics, không cần sửa mọi caller.
+
+### Trả lời mẫu khi phỏng vấn
+“Default argument và named argument chủ yếu là tiện ích compiler Kotlin; Java không thể gọi bằng tên tham số hay tự bỏ đối số. Nếu Java caller cần dùng, tôi cân nhắc @JvmOverloads để sinh overload bằng cách bỏ các tham số mặc định ở cuối, nhưng nó không sinh mọi tổ hợp. Với API public có nhiều tùy chọn, tôi thường gom chúng vào options object hoặc builder, vì thêm tham số mới ít gây bùng nổ overload và Java caller vẫn đọc rõ. Tôi cũng tránh định nghĩa overload trùng với overload sinh tự động. Trên JVM, Kotlin thường phát sinh hàm synthetic để áp dụng default; caller đã biên dịch vẫn có thể gọi hàm đó nên thay giá trị mặc định có thể đổi hành vi mà không rebuild caller. Nhưng đổi chữ ký có thể phá liên kết, vì vậy tôi kiểm tra ABI và có compile test Java/Kotlin.”
+
+> Senior tip: với thư viện đa ngôn ngữ, kiểm tra API bằng một Java consumer tối giản trong CI; đừng suy luận khả năng tương thích Java chỉ từ cú pháp Kotlin đẹp.`,
+  follow: ['{{@JvmOverloads}} sinh overload theo quy tắc nào?', 'Khi thay đổi giá trị mặc định, caller Kotlin đã biên dịch trước có thể chịu ảnh hưởng thế nào?', 'Khi nào builder tốt hơn một hàm có nhiều tham số mặc định?'],
+  tags: ['Kotlin', 'Java interop', 'default arguments', 'JvmOverloads', 'API design']
+},
+{
+  id: 'kotlin-034', topic: 'kotlin', level: 'senior',
+  q: 'Một DTO Kotlin có annotation Spring/JPA/Bean Validation nhưng framework không nhận annotation. Bạn điều tra use-site target thế nào và chọn @field:, @get:, @param: ra sao?',
+  a: `**Tóm tắt:** Kotlin property có thể tạo nhiều phần tử JVM khác nhau: constructor parameter, backing field, getter và setter. Annotation gắn lên property trong source không phải lúc nào cũng nằm ở phần tử mà Java framework đang đọc. Use-site target như {{@field:}}, {{@get:}} và {{@param:}} chỉ rõ vị trí phát annotation; chọn đúng theo cách framework dùng reflection hoặc validation, rồi xác minh bằng bytecode và integration test.
+
+### Vì sao cùng một property có nhiều đích
+Trong Java, field, method và constructor parameter là các thành phần tách biệt. Kotlin gom chúng dưới cú pháp property để code gọn, nhưng framework Java có thể quét một trong các thành phần đó. Ví dụ JPA có thể dùng field access nếu {{@Id}} đặt trên field, hoặc property access nếu annotation ở getter. Bean Validation có thể kiểm tra field hoặc getter, còn Jackson/Kotlin module thường dựa vào constructor parameter và metadata Kotlin.
+
+~~~kotlin
+data class CreateUserRequest(
+    @field:NotBlank // validator quét backing field cho bean validation thông thường
+    @field:Email
+    val email: String
+)
+~~~
+
+Không sao chép máy móc hai annotation trên: ví dụ cần chọn theo cách validation được cấu hình và annotation hỗ trợ target nào. Với JPA, giữ nhất quán access strategy: nếu {{@Id}} nằm trên field thì các mapping annotation khác thường đặt ở field; trộn field/getter có thể làm Hibernate chọn strategy hoặc mapping ngoài dự kiến.
+
+### Các target thường gặp
+| Target | JVM element | Ví dụ khi có thể cần |
+|---|---|---|
+| {{@field:}} | backing field | JPA field access, validator quét field |
+| {{@get:}} | getter | JPA property access, framework đọc JavaBean getter |
+| {{@param:}} | constructor parameter | constructor binding/deserialization |
+| {{@set:}} | setter | framework gọi setter hoặc annotation setter-specific |
+| {{@property:}} | Kotlin metadata | công cụ hiểu metadata Kotlin; không phải Java field/getter reflection thông thường |
+
+### Quy trình điều tra
+1. Xác định framework và thời điểm: validation không chạy ở request binding, Hibernate bỏ qua mapping, hay Spring không tạo bean?
+2. Xác định framework quét constructor parameter, field, getter hay metadata. Đọc docs của phiên bản đang dùng, vì behavior phụ thuộc thư viện.
+3. Dùng {{javap -v}} hoặc IDE decompiler để xem RuntimeVisibleAnnotations nằm trên phần tử nào.
+4. Viết integration test với giá trị vi phạm constraint hoặc kiểm tra mapping thực tế; unit test Kotlin không chứng minh reflection của framework.
+
+### Lỗi hay gặp
+- Đặt {{@NotBlank}} lên property nhưng framework đọc field/getter khác nên request sai vẫn qua.
+- Đặt {{@Column}} ở getter trong khi {{@Id}} dùng field access, gây mapping không nhất quán.
+- Nhầm Kotlin non-null với validation: {{String}} không đồng nghĩa chuỗi không rỗng; dữ liệu {{\"\"}} vẫn là non-null.
+- Bean Validation cần dependency/provider và được gọi ở đúng ranh giới (ví dụ {{@Valid}}); annotation đứng riêng không tự kiểm tra mọi đối tượng.
+- Annotation có nhiều target mặc định khác nhau giữa các phiên bản Kotlin; dùng target tường minh cho API framework quan trọng.
+
+### Ví dụ đời thực
+API đăng ký người dùng Kotlin có {{@NotBlank val email: String}} nhưng gửi chuỗi rỗng vẫn tạo tài khoản. Team ban đầu nghĩ compiler null safety đã bảo vệ, trong khi {{\"\"}} không null; đồng thời annotation được phát ở target constructor mà cấu hình validator đang đọc field. Tỷ lệ account không có email hợp lệ đạt 0,8% trong một tuần. Họ xác nhận bằng {{javap -v}}, chuyển annotation sang {{@field:NotBlank}} và {{@field:Email}}, thêm {{@Valid}} ở request body, rồi viết test HTTP qua Spring context cho null, chuỗi rỗng và email sai định dạng. Sau deploy, lỗi dữ liệu đầu vào về 0 trong 30 ngày; validation trả 400 trước khi gọi repository.
+
+### Trả lời mẫu khi phỏng vấn
+“Kotlin property là cú pháp gộp, nhưng JVM có thể có constructor parameter, field, getter và setter riêng. Framework Java thường quét một trong các phần tử đó, nên annotation có thể nằm sai chỗ dù source nhìn hợp lý. Tôi bắt đầu bằng việc xác định framework đọc field hay getter; với JPA tôi đặc biệt giữ access strategy nhất quán dựa trên vị trí @Id. Sau đó dùng use-site target như @field: hoặc @get: tường minh, kiểm tra bytecode bằng javap, và viết integration test đi qua đúng Spring/Hibernate. Tôi cũng phân biệt null safety với validation: String không nullable vẫn có thể là chuỗi rỗng, và annotation chỉ chạy khi Bean Validation được gọi đúng cách. Cách này tìm được nguyên nhân thay vì thêm annotation ngẫu nhiên.”
+
+> Senior tip: với DTO đầu vào, dùng test HTTP qua framework để xác nhận constraint thực sự chạy; test constructor Kotlin đơn thuần không kiểm tra annotation discovery hay wiring của validator.`,
+  follow: ['Khi {{@Id}} đặt trên field, Hibernate thường chọn access strategy nào?', 'Kotlin non-null có thay thế {{@NotBlank}} không?', 'Bạn xác minh annotation nằm trên field hay getter bằng công cụ nào?'],
+  tags: ['Kotlin', 'annotations', 'use-site target', 'Spring', 'JPA', 'validation']
+},
+{
+  id: 'kotlin-035', topic: 'kotlin', level: 'mid',
+  q: 'Trong API Kotlin/JVM, bạn dùng {{Unit}} và {{Nothing}} để mô tả kết quả thế nào? So sánh với void và Java Void, và giải thích ảnh hưởng tới control flow, generic và Java caller.',
+  a: `**Tóm tắt:** {{Unit}} là kiểu có đúng một giá trị hữu ích là {{Unit}}, thường dùng cho hàm không trả dữ liệu; trên JVM, hàm Unit thường ánh xạ thành {{void}}. {{Nothing}} là kiểu không có giá trị nào: hàm trả Nothing không thể hoàn tất bình thường, vì nó luôn ném lỗi, lặp vô hạn hoặc kết thúc luồng điều khiển. {{Nothing}} giúp compiler hiểu nhánh không thể đi tiếp và suy luận kiểu, còn {{java.lang.Void}} là class Java thường dùng làm placeholder generic chứ không đồng nghĩa hoàn toàn với Unit.
+
+### Unit: hoàn tất nhưng không có kết quả
+Hàm {{fun save(): Unit}} vẫn hoàn tất bình thường; kết quả duy nhất của nó không mang thông tin nghiệp vụ. Kotlin thường cho phép bỏ ghi rõ Unit ở chữ ký. Điều này khác hàm không bao giờ trả về: hàm save có thể chạy xong rồi caller tiếp tục.
+
+~~~kotlin
+fun audit(message: String): Unit { println(message) }
+fun fail(message: String): Nothing = throw IllegalStateException(message)
+
+fun requireUser(user: User?): User = user ?: fail(\"user missing\")
+~~~
+
+Trong expression {{user ?: fail(...)}} nhánh trái trả User, nhánh phải có kiểu Nothing; vì Nothing là subtype của mọi kiểu, toàn biểu thức vẫn có kiểu User. Compiler biết sau fail không tồn tại giá trị để gán.
+
+### Nothing và Nothing?
+{{Nothing}} không có instance và là bottom type (kiểu đáy trong hệ kiểu): có thể dùng ở vị trí cần bất kỳ kiểu nào vì nó không cung cấp giá trị. {{Nothing?}} chỉ có một giá trị là null; nó thường xuất hiện trong biểu thức suy luận kiểu khi nhánh chỉ có null. Đừng dùng Nothing để che một hàm thực tế có thể trả về bình thường; chữ ký sẽ nói sai hợp đồng.
+
+| Kotlin | Ý nghĩa | Gần tương đương JVM/Java |
+|---|---|---|
+| {{Unit}} | Hoàn tất, không có dữ liệu kết quả | Thường là {{void}} |
+| {{Nothing}} | Không thể trả về bình thường | Không có kiểu Java tương đương trực tiếp |
+| {{Nothing?}} | Giá trị chỉ có thể là null | Không tương đương {{Void}} một cách tổng quát |
+| {{java.lang.Void}} | Class placeholder, không có instance hữu ích | Hay dùng làm generic type |
+
+### Java interop và generic
+Java method {{void send()}} được Kotlin gọi như hàm trả Unit. Nhưng Java generic như {{CompletableFuture<Void>}} thường biểu diễn “không có payload”; Kotlin caller vẫn cần xử lý null/Unit theo chữ ký thư viện cụ thể. Không nên thay tùy tiện {{Unit}} bằng {{Void}} trong API Kotlin: Java sẽ thấy các kiểu và overload khác nhau. Khi thiết kế API dùng chung, chạy compile test từ Java để xem chữ ký và giá trị callback thực tế.
+
+### Lỗi hay gặp
+- Dùng {{Nothing}} cho hàm trả null: phải là {{Nothing?}} hoặc kiểu nullable thực sự.
+- Nghĩ {{Unit}} đồng nghĩa với “không thể thất bại”; hàm Unit vẫn có thể ném exception.
+- Trả {{null}} để giả lập void trong generic Java làm hợp đồng khó hiểu.
+- Dùng hàm Nothing cho nhánh hiếm nhưng có thể hoàn tất, khiến caller và compiler dựa trên giả định sai.
+- Trong coroutine, {{await()}} trả kiểu generic của kết quả; việc Java API dùng {{Void}} không đảm bảo tự động biến thành Unit ở mọi wrapper.
+
+### Ví dụ đời thực
+Một thư viện xử lý cấu hình Kotlin có helper {{missing(): Nothing}} ném lỗi nếu thiếu khóa bắt buộc. Trước đó code trả null rồi mỗi caller tự kiểm tra; trong 12 module có 3 caller bỏ sót check, khiến 47 request/ngày lỗi muộn khi dùng cấu hình. Sau khi đổi helper thành Nothing và dùng {{value ?: missing()}} ở ranh giới, compiler buộc mọi đường đi thành giá trị không-null hoặc dừng bằng lỗi có tên khóa. Số lỗi cấu hình chuyển thành lỗi startup rõ ràng, không còn phát sinh ở request; thời gian điều tra trung bình giảm từ 35 xuống 8 phút. Một Java caller cần xử lý đã được cung cấp thêm exception API rõ ràng thay vì lộ helper Nothing như một kiểu Java kỳ lạ.
+
+### Trả lời mẫu khi phỏng vấn
+“Unit biểu thị hàm hoàn tất nhưng không đưa dữ liệu hữu ích; trên JVM nó thường tương ứng void. Nothing biểu thị hàm không thể trả về bình thường, ví dụ hàm luôn throw. Nhờ Nothing là subtype của mọi kiểu, tôi có thể dùng hàm fail trong nhánh Elvis hoặc nhánh when mà compiler vẫn suy luận kiểu kết quả chính xác. Nothing? khác vì chỉ chứa null. Java Void chủ yếu là class placeholder cho generic như CompletableFuture<Void>, không nên coi nó là bản dịch chính xác của Unit. Khi API cần Java gọi, tôi kiểm tra chữ ký bytecode và thêm facade nếu kiểu Kotlin quá khác lạ. Tôi cũng không dùng Nothing cho hàm có đường chạy bình thường, và nhớ rằng Unit vẫn có thể ném exception.”
+
+> Senior tip: dùng hàm fail trả Nothing ở biên validate để tạo lỗi sớm, có ngữ cảnh; đừng dùng nó thay cho kiểu kết quả nghiệp vụ như Either/Result khi lỗi là trạng thái bình thường cần caller xử lý.`,
+  follow: ['Vì sao nhánh {{Nothing}} vẫn tương thích với biểu thức có kiểu {{User}}?', '{{Nothing?}} chỉ có thể chứa giá trị nào?', 'Java {{CompletableFuture<Void>}} được Kotlin nhìn như thế nào trong thư viện bạn đang dùng?'],
+  tags: ['Kotlin', 'Unit', 'Nothing', 'Java interop', 'type system']
+},
 );
