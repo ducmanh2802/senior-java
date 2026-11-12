@@ -7812,4 +7812,357 @@ Một ứng dụng đặt lịch có 2 triệu người dùng hoạt động/ng�
   ],
   tags: ['capacity-planning', 'QPS', 'storage', 'bandwidth']
 },
+{
+  id: 'architecture-045',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Một tính năng Java cần dùng LLM để tóm tắt ticket hỗ trợ và có thể mất vài giây. Bạn quyết định phần nào xử lý đồng bộ trong HTTP request, phần nào đưa vào hàng đợi; API, trạng thái công việc và retry sẽ ra sao?',
+  a: `**Tóm tắt:** Tôi chọn đồng bộ hay bất đồng bộ theo điều người dùng cần nhận ngay và giới hạn thời gian của từng luồng, không theo việc LLM có “mới” hay không. Tác vụ ngắn, người dùng cần kết quả tức thì có thể gọi đồng bộ với deadline; tác vụ dài, hàng loạt hoặc có thể hoàn tất sau khi người dùng rời trang nên thành job bền vững qua queue (hàng đợi), trả mã theo dõi và trạng thái rõ ràng. Queue hấp thụ tải đỉnh nhưng không làm model nhanh hơn, nên vẫn phải giới hạn số worker và xử lý lỗi.
+
+### Cái gì, vì sao cần phân nhánh
+Đồng bộ nghĩa là HTTP request còn mở trong khi Java service gọi model và chờ câu trả lời. Nó đơn giản cho một thao tác ngắn: giao diện gửi nội dung, nhận kết quả và hiển thị ngay. Nhược điểm là request, thread hoặc connection bị giữ trong thời gian chờ mạng; timeout của browser, gateway và provider có thể khác nhau. Timeout chỉ có nghĩa là bên gọi không nhận được phản hồi đúng hạn, không chứng minh rằng server chưa chạy xong.
+
+Bất đồng bộ nghĩa là API chấp nhận yêu cầu, lưu công việc bền vững, rồi worker xử lý sau. API trả {{202 Accepted}} cùng {{jobId}}; client xem trạng thái qua endpoint hoặc nhận thông báo. Dùng khi xử lý dài, tải tăng đột biến, cần retry có kiểm soát hoặc có thể gom batch. Đổi lại phải thiết kế vòng đời job, tiến độ, hết hạn, hủy và hỗ trợ vận hành.
+
+### Chọn ranh giới và luồng dữ liệu
+Ví dụ trong hệ thống hỗ trợ: “gợi ý một câu trả lời cho nhân viên đang mở ticket” có thể đồng bộ nếu p95 hoàn tất trong ngân sách UX; “tóm tắt 50.000 ticket cũ” nên là job. p95 là thời gian mà 95% request hoàn tất trong mức đó; đây là số đo phân vị, không phải trung bình. Đặt deadline end-to-end nhỏ hơn timeout của gateway, dành một phần ngân sách cho DB và mạng, không để một request treo vô hạn.
+
+Với job, ghi yêu cầu và outbox (bản ghi sự kiện chờ phát) trong cùng transaction DB. Dispatcher gửi outbox vào broker; worker lấy message, kiểm tra trạng thái và ghi kết quả. Nhờ vậy tiến trình chết sau commit nhưng trước khi gửi message vẫn có thể phát lại. Broker thường giao ít nhất một lần, vì vậy worker phải idempotent (xử lý lại cùng yêu cầu không tạo thêm hiệu ứng): dùng {{jobId}} làm khóa duy nhất, lưu trạng thái và kết quả theo job.
+
+~~~seq
+title: Yêu cầu tóm tắt ticket bất đồng bộ
+actors: Browser | Api | PostgreSQL | Queue | Worker
+Browser -> Api: POST ticket summary với idempotency key
+Api -> PostgreSQL: Lưu job PENDING và outbox
+PostgreSQL --> Api: Commit
+Api --> Browser: 202 Accepted và jobId
+Queue -> Worker: Giao job (có thể lặp)
+Worker -> PostgreSQL: Claim job, ghi trạng thái và kết quả
+Browser -> Api: GET jobId để xem tiến độ
+~~~
+
+### Trade-off và quy tắc chọn
+| Tiêu chí | Đồng bộ | Job qua queue |
+|---|---|---|
+| Trải nghiệm | Có câu trả lời ngay | Chờ, theo dõi trạng thái |
+| Phù hợp | Tác vụ ngắn, có fallback | Tác vụ dài, batch, tải dồn |
+| Lỗi | Timeout có kết quả mơ hồ | Retry được, nhưng cần dedup |
+| Hạ tầng | Ít thành phần | Broker, worker, outbox, DLQ |
+| Tải đỉnh | Có thể chiếm hết request capacity | Queue đệm tải; phải giới hạn độ dài |
+
+DLQ (dead-letter queue) là nơi giữ message lỗi nhiều lần để điều tra, thay vì retry vô hạn. Đặt giới hạn retry, backoff tăng dần (chờ lâu hơn sau mỗi lần thử), và giới hạn đồng thời theo quota provider. Khi queue quá sâu, từ chối job mới hoặc báo thời gian chờ; không nhận vô hạn rồi để công việc cũ hết hạn.
+
+### Pitfall production
+- API timeout rồi người dùng bấm lại tạo hai job: nhận idempotency key ổn định và trả lại cùng job.
+- Worker gọi model xong nhưng chết trước khi lưu kết quả: lần giao lại có thể gọi model tốn tiền lần nữa. Lưu trạng thái, khóa job, và chấp nhận rằng không thể đảm bảo “exactly once” cho một HTTP call tới provider nếu provider không hỗ trợ idempotency.
+- Retry mọi lỗi 429/5xx ngay lập tức: cả fleet cùng gọi lại tạo retry storm. Dùng backoff, jitter và giới hạn đồng thời.
+- Trả {{202}} nhưng không có endpoint trạng thái, thời hạn lưu kết quả hoặc thông báo lỗi: người dùng không biết job đã xong hay thất bại.
+- Hàng đợi là bộ đệm chứ không phải năng lực xử lý. Nếu tốc độ đến lâu dài cao hơn tốc độ worker, backlog vẫn tăng vô hạn.
+
+### Ví dụ đời thực
+Một hệ thống ticket nhận 80 yêu cầu gợi ý/giây vào giờ cao điểm; provider trả lời trong 2–8 giây, trong khi gateway đóng request sau 15 giây. Gọi mọi việc đồng bộ làm p99 API tăng 12 giây và thread pool thường xuyên đạt 95% sử dụng. Điều tra cho thấy tóm tắt lịch sử dài chiếm phần lớn thời gian; người dùng không cần đợi trực tiếp. Nhóm giữ gợi ý ngắn đồng bộ với deadline 6 giây, chuyển tóm tắt lịch sử sang job, giới hạn 20 worker và trả trạng thái. Sau rollout, p99 của API nhận job còn 180 ms; 95% job hoàn tất dưới 11 giây, queue lớn nhất 4.000 job rồi giảm sau đỉnh. Các con số là mục tiêu vận hành đo được, không phải cam kết rằng queue luôn xử lý tức thì.
+
+### Trả lời mẫu khi phỏng vấn
+“Em bắt đầu từ yêu cầu trải nghiệm và phân bố latency. Tác vụ nhỏ mà nhân viên đang chờ ngay có thể chạy đồng bộ, nhưng phải có deadline end-to-end, giới hạn concurrency và đường xử lý timeout rõ. Với việc dài hoặc hàng loạt, em tạo job bền vững, trả 202 cùng job ID rồi cho UI polling hoặc nhận sự kiện. Em ghi job và outbox trong cùng transaction để không mất việc giữa lúc commit và publish. Worker xử lý at-least-once nên dùng khóa idempotency, trạng thái có thể quan sát, retry có backoff và DLQ cho lỗi lặp. Em cũng giới hạn độ dài queue và số worker: queue chỉ hấp thụ đỉnh ngắn, không sửa được tình trạng năng lực xử lý thấp hơn tốc độ đến. Khi provider timeout sau khi đã xử lý, em không giả định lần gọi có thể exactly-once; em lưu trạng thái và đối soát theo khả năng provider. Cuối cùng, em đo p95/p99, tuổi job và tỷ lệ thất bại để quyết định luồng nào cần chuyển bất đồng bộ.”
+
+> Senior tip: Theo dõi tuổi của job lâu nhất bên cạnh độ sâu queue. 10.000 job tạo trong một phút có thể ổn; 100 job nằm chờ 30 phút thường báo hiệu worker kẹt hoặc provider suy giảm.`,
+  follow: [
+    'Nếu API timeout sau khi job đã được nhận, thiết kế idempotency key và phản hồi retry ra sao?',
+    'Worker đã gọi provider thành công nhưng chết trước khi lưu kết quả; bạn cân bằng chi phí gọi lại và nguy cơ mất kết quả thế nào?',
+    'Bạn đặt ngưỡng queue, concurrency và deadline dựa trên số liệu nào?'
+  ],
+  tags: ['LLM', 'async', 'queue', 'outbox', 'idempotency', 'Java']
+},
+{
+  id: 'architecture-046',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Một ứng dụng Spring Boot hiện dùng PostgreSQL cho dữ liệu nghiệp vụ và cần thêm tìm kiếm ngữ nghĩa trên tài liệu. Bạn chọn pgvector hay một vector database riêng dựa trên tiêu chí nào, và giữ quyền truy cập cùng vận hành nhất quán ra sao?',
+  a: `**Tóm tắt:** Vector là dãy số biểu diễn ý nghĩa của văn bản; tìm kiếm vector xếp hạng các đoạn gần nhau về ngữ nghĩa thay vì chỉ khớp từ. Tôi bắt đầu bằng truy vấn, quy mô, độ trễ và năng lực vận hành: pgvector thường hợp khi PostgreSQL đã là nguồn dữ liệu, cần join/transaction và quy mô còn phù hợp; dịch vụ vector riêng đáng cân nhắc khi tải tìm kiếm cần scale độc lập, có yêu cầu ANN/replication hoặc cần tách tải rõ ràng. Không chọn chỉ theo số lượng vector: độ đồng thời, metadata filter, cập nhật, backup, ACL và năng lực đội ngũ đều quan trọng.
+
+### Vì sao không phải mọi tìm kiếm đều là vector
+Embedding là phép biến văn bản thành vector số bằng một model; câu “đổi mật khẩu” có thể gần nghĩa với “khôi phục quyền truy cập”. Vector search hữu ích khi câu hỏi diễn đạt khác tài liệu. Nhưng tìm mã chính xác như {{AB-1234}}, cụm từ luật hoặc số tài khoản thường cần keyword/full-text search. Hybrid search kết hợp hai kiểu tìm, rồi xếp hạng lại. Với tài liệu nội bộ, trước hết phải lọc quyền; “gần nghĩa” không có nghĩa là được phép đọc.
+
+pgvector là extension cho PostgreSQL để lưu vector và thực hiện distance search, có thể dùng chỉ mục gần đúng (ANN: approximate nearest neighbor — nhanh hơn nhưng có thể bỏ lỡ một số kết quả). Ưu điểm là dùng chung giao dịch, backup, SQL và metadata; có thể join với bảng quyền. Chi phí là tải embedding/search dùng chung CPU, RAM và I/O với OLTP (xử lý giao dịch trực tuyến), đồng thời cần hiểu cách chọn index và đo recall. Recall là tỷ lệ kết quả liên quan thực sự được tìm thấy.
+
+Vector DB riêng tách storage và scale tìm kiếm khỏi DB nghiệp vụ, thường có lựa chọn index, phân vùng và API chuyên cho vector. Đổi lại có thêm hệ thống phải backup, giám sát, nâng cấp, bảo mật và đồng bộ dữ liệu; không mặc định có transaction chung với PostgreSQL.
+
+### Quy trình quyết định
+1. Lấy mẫu truy vấn thật: top-k cần bao nhiêu, filter theo tenant/ACL/loại tài liệu thế nào, có cần keyword không?
+2. Benchmark trên dữ liệu đại diện: số vector, chiều embedding, QPS đỉnh, cập nhật và concurrency. Đo p95/p99, recall, CPU/RAM và chi phí; không so chỉ số từ demo nhỏ.
+3. Với pgvector, bắt đầu ở cùng PostgreSQL nếu tải phù hợp; dùng connection pool riêng hoặc giới hạn tài nguyên cho truy vấn vector để bảo vệ luồng giao dịch.
+4. Chuyển sang dịch vụ riêng khi có bằng chứng về tranh chấp tài nguyên, yêu cầu scale độc lập hoặc tính năng vận hành cần thiết. Thiết kế bản ghi nguồn + outbox/CDC để đồng bộ, có kiểm tra độ trễ và cách rebuild index.
+
+### Trade-off
+| Tiêu chí | PostgreSQL + pgvector | Vector service riêng |
+|---|---|---|
+| Vận hành ban đầu | Tận dụng DB hiện có | Thêm dịch vụ, quyền và backup |
+| Join/transaction với nghiệp vụ | Tự nhiên trong cùng DB | Cần đồng bộ và chấp nhận trễ |
+| Scale tìm kiếm | Có thể tranh CPU/I/O OLTP | Tách và scale độc lập |
+| ACL/metadata | SQL, join và RLS có thể hỗ trợ | Phụ thuộc filter/API và cấu hình |
+| Khôi phục | Một hệ dữ liệu chính | Phải khôi phục và đối soát hai nơi |
+
+### Bảo vệ dữ liệu và vận hành
+Lưu metadata tối thiểu cùng vector: {{document_id}}, phiên bản, tenant và nguồn. Áp dụng ACL (access control list — danh sách người/nhóm được phép xem) trước khi đưa đoạn vào prompt. Nếu chỉ lấy top-k toàn cục rồi lọc quyền sau đó, kết quả có thể rỗng dù vẫn còn tài liệu được phép ở hạng thấp hơn; truy vấn nên lọc theo phạm vi quyền ngay tại nơi tìm kiếm nếu hệ thống hỗ trợ.
+
+Đặt timeout và giới hạn kết quả; không để một câu hỏi kích hoạt quét toàn kho hoặc truy vấn không giới hạn. Theo dõi latency, số kết quả, recall trên tập đánh giá, tuổi dữ liệu, lỗi đồng bộ và tài nguyên DB. Nếu dùng ANN, so sánh với exact search trên tập mẫu để biết chất lượng thực tế. Chỉ mục, metric distance và chuẩn hóa vector phải tương thích với embedding model; thay model có thể đổi chiều hoặc phân phối vector, không thể trộn tùy tiện trong cùng không gian.
+
+### Pitfall production
+- Thấy PostgreSQL có thể lưu vector nên đặt truy vấn ANN cạnh OLTP không giới hạn; giờ cao điểm làm API đặt hàng chậm.
+- Chọn vector service rồi cho rằng dữ liệu đã tách nghĩa là bảo mật tự động; filter tenant sai vẫn rò nội dung.
+- Đổi embedding model nhưng truy vấn vector mới trên index cũ, hoặc so vector khác chiều.
+- Đo benchmark chỉ với một nghìn vector, không có cập nhật, filter quyền hoặc tải đồng thời thật.
+- Chỉ dùng vector nên bỏ sót exact match; chỉ dùng keyword lại không hiểu câu đồng nghĩa.
+
+### Ví dụ đời thực
+Một ứng dụng Java có 2 triệu đoạn tài liệu và PostgreSQL đang dùng 35% CPU; truy vấn hỏi đáp đạt p95 420 ms, nhưng giờ đồng bộ dữ liệu làm p99 API nghiệp vụ tăng từ 170 lên 650 ms. Nhóm đo trên bản sao dữ liệu với 100 truy vấn/giây, filter tenant và cập nhật liên tục. Tối ưu index, giới hạn truy vấn và tách pool làm p99 giảm còn 390 ms nhưng vẫn có tranh chấp I/O. Sau đó họ chuyển vector retrieval sang service riêng, đồng bộ bằng outbox với độ trễ p99 2 giây; p99 API nghiệp vụ trở lại 190 ms, tìm kiếm p95 còn 280 ms. Hệ thống chấp nhận độ trễ tài liệu tối đa 5 giây và có dashboard theo dõi. Đây không phải kết quả phổ quát: nếu benchmark pgvector đáp ứng SLO và nhu cầu cô lập chưa có, thêm DB riêng chỉ làm tăng chi phí.
+
+### Trả lời mẫu khi phỏng vấn
+“Em không bắt đầu từ câu hỏi database nào đang phổ biến, mà từ workload. Em kiểm tra số vector, QPS, top-k, metadata filter, cập nhật, yêu cầu ACL và benchmark p95/p99 cùng recall. Nếu PostgreSQL hiện hữu còn dư năng lực, truy vấn cần join với quyền và dữ liệu chưa tới mức phải scale riêng, pgvector giảm số thành phần và đơn giản hóa tính nhất quán. Em giới hạn truy vấn để bảo vệ OLTP. Nếu đo được vector search tranh CPU/I/O hoặc cần scale, index và vận hành độc lập, em tách sang vector service. Khi đó PostgreSQL vẫn là nguồn chuẩn; outbox hoặc CDC đồng bộ tài liệu, có version, retry và đối soát. Dù chọn gì, quyền phải được áp dụng trước khi ngữ cảnh vào model, embedding model và index phải tương thích, còn hybrid search cần cho mã hoặc từ khóa chính xác. Quyết định cần có SLO về latency, recall và độ trễ cập nhật.”
+
+> Senior tip: Benchmark phải bao gồm filter quyền và các tenant lệch kích thước. “Tìm nhanh” trên toàn kho nhưng chậm hoặc sai khi thêm ACL không phải benchmark của sản phẩm thật.`,
+  follow: [
+    'Làm sao đo recall của ANN và quyết định đánh đổi giữa tốc độ với chất lượng kết quả?',
+    'Nếu vector store bị tụt dữ liệu hoặc mất toàn bộ index, bạn rebuild và phục vụ truy vấn trong thời gian đó thế nào?',
+    'Vì sao tìm kiếm vector thuần có thể bỏ lỡ mã sản phẩm hoặc điều khoản chính xác?'
+  ],
+  tags: ['pgvector', 'vector database', 'RAG', 'PostgreSQL', 'ACL', 'search']
+},
+{
+  id: 'architecture-047',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Luồng AI của bạn đi qua browser, gateway, Spring Boot, provider và trả token theo thời gian thực. Khi người dùng chờ lâu hoặc bấm dừng, bạn phân bổ latency budget và truyền trạng thái/cancellation qua các tầng thế nào?',
+  a: `**Tóm tắt:** Streaming gửi từng phần câu trả lời khi model sinh ra, giúp giảm thời gian chờ phần đầu nhưng không làm tổng thời gian model hoàn tất ngắn đi. Tôi thiết kế cả đường đi và đường dừng xuyên suốt browser → gateway → Java service → provider: đặt ngân sách latency từng chặng, tắt buffering không phù hợp, giới hạn buffer và truyền cancellation khi client ngắt. Nếu bỏ qua một proxy hoặc chỉ hủy kết nối ở trình duyệt, server/provider có thể tiếp tục làm việc và phát sinh chi phí.
+
+### Phân biệt các mốc thời gian
+Latency là thời gian chờ; trong streaming cần phân biệt TTFT (time to first token — thời gian tới token đầu tiên), khoảng cách giữa các đoạn và thời gian hoàn tất. TTFT kém làm giao diện có vẻ đứng im; token đều nhưng luồng không kết thúc vẫn tạo request sống lâu. p95/p99 đo trải nghiệm phần lớn và nhóm chậm nhất tốt hơn một con số trung bình.
+
+Chia ngân sách theo đường đi. Ví dụ deadline tổng 30 giây: xác thực/đọc context 2 giây, provider tối đa 24 giây, 4 giây dự phòng cho flush và kết thúc. Đây là ví dụ cần chỉnh bằng số liệu thật. Mỗi timeout tầng trong phải ngắn hơn tầng ngoài một cách có chủ đích; nếu gateway đóng sau 20 giây nhưng Java chờ provider 60 giây, Java vẫn giữ tài nguyên sau khi client đã bỏ đi.
+
+### Luồng streaming và đóng kết nối
+Server có thể phát SSE (Server-Sent Events — các event một chiều qua HTTP) với từng đoạn văn bản và event kết thúc/lỗi. Java không nên gom toàn bộ nội dung vào một chuỗi trước khi gửi; cần truyền từng đoạn, flush hợp lý và có giới hạn buffer. Proxy/CDN có thể đệm response hoặc đóng kết nối khi idle, nên phải cấu hình cho đường streaming, kiểm tra heartbeat (tín hiệu nhỏ định kỳ báo kết nối còn sống) và thời gian idle trên toàn tuyến.
+
+Khi browser gửi cancel hoặc ngắt, gateway cần thông báo xuống Java; Java hủy subscription/request tới provider nếu SDK cho phép. Hủy request phía client không đảm bảo provider ngừng tính phí; cần đo cancellation propagation và giới hạn thời gian. Nếu provider không hỗ trợ hủy thực sự, ít nhất dừng giữ thread/buffer, không gửi phần còn lại, và ghi rõ chi phí có thể tiếp diễn.
+
+~~~seq
+title: Streaming và hủy khi người dùng dừng
+actors: Browser | Gateway | Spring | Provider
+Browser -> Gateway: Mở yêu cầu stream
+Gateway -> Spring: Chuyển tiếp không buffer
+Spring -> Provider: Gửi prompt với deadline
+Provider --> Spring: Token theo từng phần
+Spring --> Gateway: SSE event và flush
+Gateway --> Browser: Hiển thị token
+Browser -> Gateway: Cancel khi bấm Dừng
+Gateway -> Spring: Đóng downstream request
+Spring -> Provider: Hủy nếu provider hỗ trợ
+~~~
+
+### Bảo vệ tài nguyên và tính đúng
+Stream dùng lâu vẫn chiếm socket, state và có thể chiếm concurrency slot; cần giới hạn số stream đồng thời theo user/tenant và toàn hệ thống. Dùng buffer hữu hạn, xử lý consumer chậm bằng backpressure (điều tiết nguồn phát theo tốc độ bên nhận) hoặc đóng luồng quá chậm. Không đặt hàng loạt chunk vào queue không giới hạn.
+
+Ghi câu trả lời cuối cùng chỉ khi có kết thúc hợp lệ; nếu ngắt giữa chừng, lưu trạng thái {{PARTIAL/CANCELLED}} cùng phần đã phát khi nghiệp vụ cần audit, không ghi nó thành câu trả lời hoàn chỉnh. Sau khi đã phát một phần, không thể tự chuyển sang provider khác rồi nối tiếp tùy tiện: nội dung có thể lặp hoặc mâu thuẫn. Fallback an toàn thường áp dụng trước khi gửi token đầu tiên; sau đó nên kết thúc có thông báo hoặc cho người dùng thử lại như một request mới.
+
+### Pitfall production
+- Nginx/CDN đệm SSE: server phát token nhưng browser chỉ thấy khi buffer đầy.
+- Heartbeat chỉ ở ứng dụng nhưng gateway idle timeout ngắn hơn: kết nối bị đóng âm thầm.
+- Browser hủy nhưng Java/provider vẫn chạy: trả lời không dùng vẫn tốn token.
+- Buffer không giới hạn khi client chậm: tăng heap và nguy cơ ảnh hưởng toàn service.
+- Chỉ đo thời gian hoàn tất; bỏ qua TTFT, khoảng token, disconnect và tỷ lệ luồng bị cắt.
+
+### Ví dụ đời thực
+Một trợ lý nội bộ có 300 stream đồng thời; model thường mất 8–25 giây để hoàn tất. Người dùng báo spinner 7 giây rồi mới thấy câu đầu, dù server log ghi provider đã phát sớm. Trace cho thấy gateway buffer SSE và idle timeout 10 giây. Sau tắt buffering cho route, thêm heartbeat mỗi 5 giây (nhỏ hơn idle timeout đã cấu hình), deadline provider 22 giây trong tổng 28 giây và xử lý cancel, TTFT p95 giảm từ 7,4 xuống 1,3 giây. 18% người dùng hủy trước khi hoàn tất; chi phí request bị hủy giảm 35% sau khi xác minh cancellation đến provider trong trường hợp hỗ trợ. Nhóm còn giới hạn 120 stream mỗi instance để tải đỉnh không làm cạn connection.
+
+### Trả lời mẫu khi phỏng vấn
+“Em tách thời gian tới token đầu tiên, tốc độ token và thời gian hoàn tất. Sau đó em phân chia deadline cho Java, provider và gateway, bảo đảm các timeout không mâu thuẫn. Luồng SSE phải đi qua proxy không bị buffer, có heartbeat ngắn hơn idle timeout và backpressure hoặc giới hạn buffer khi browser đọc chậm. Khi user bấm dừng, tín hiệu cancel cần truyền từ browser qua gateway về Java rồi provider; em kiểm tra SDK thực sự hỗ trợ hủy đến đâu, vì đóng socket không đồng nghĩa model ngừng tính phí. Em giới hạn concurrency, theo dõi số stream và giữ trạng thái PARTIAL thay vì coi nội dung bị cắt là hoàn tất. Fallback nên xảy ra trước token đầu tiên; đổi provider giữa câu trả lời có thể làm lặp hoặc thay đổi ý. Dashboard cần có TTFT p95/p99, latency giữa các tầng, tỷ lệ disconnect và thời gian cancel propagation, không chỉ có thời gian trung bình.”
+
+> Senior tip: Đặt timeout idle, timeout tổng và heartbeat trên cùng một sơ đồ tuyến đường; một proxy ít được chú ý thường là nơi stream bị đứt trước khi Java biết.`,
+  follow: [
+    'Nếu gateway đóng kết nối nhưng provider không hỗ trợ cancellation, bạn giới hạn tài nguyên và báo chi phí như thế nào?',
+    'Tại sao không nên fallback sang model khác sau khi đã gửi một phần câu trả lời?',
+    'Bạn dùng trace/metric nào để phân biệt provider chậm với proxy đang buffer?'
+  ],
+  tags: ['streaming', 'SSE', 'latency', 'cancellation', 'backpressure', 'Java']
+},
+{
+  id: 'architecture-048',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Bạn thêm trợ lý AI vào SaaS Java đang phục vụ hàng trăm công ty khách. Thiết kế tenant context, quyền truy cập tài liệu, quota và phân bổ tải thế nào để một tenant không đọc hoặc tiêu thụ tài nguyên của tenant khác?',
+  a: `**Tóm tắt:** Tính năng AI phải kế thừa tenant boundary của sản phẩm, không được xem là một endpoint phụ có thể tự tin vào dữ liệu đầu vào. Tôi lấy tenant từ danh tính đã xác thực và quyền phía server; cùng ngữ cảnh đó đi xuyên API, retrieval, cache, queue, quota và log. Cách ly cần nhiều lớp: kiểm tra quyền tài liệu, key/cache có tenant, giới hạn token/chi phí và concurrency, cùng hàng đợi công bằng. Quota (hạn mức sử dụng) bảo vệ ngân sách, còn rate limit giới hạn tốc độ; hai thứ liên quan nhưng không thay thế nhau.
+
+### Bắt đầu từ danh tính đáng tin
+Tenant là tổ chức khách hàng dùng chung ứng dụng; user có thể thuộc một hay nhiều tenant. Không tin {{tenantId}} trong body hoặc header nếu chưa đối chiếu với session/token đã xác thực. Middleware tạo {{TenantContext}} bất biến từ danh tính và quyền đã kiểm tra, truyền tường minh xuống service. Không dùng ThreadLocal tùy tiện qua thread pool hoặc reactive callback nếu context không được truyền và dọn đúng cách.
+
+Mọi tài liệu đưa vào prompt phải được lọc theo ACL (access control list — quyền đọc của user/nhóm) trước khi retrieval trả kết quả. Filter tenant đơn thuần chỉ bảo đảm đúng công ty, chưa chắc user trong công ty được đọc mọi tài liệu. Với shared schema, PostgreSQL RLS (Row-Level Security — chính sách DB lọc dòng) có thể là lớp phòng thủ bổ sung; cần đặt tenant context trong transaction và tránh để trạng thái connection pool rò sang request kế tiếp. Có test chéo tenant và test quyền theo user/nhóm.
+
+### Quota, tải và chi phí
+Token là đơn vị model dùng để tính đầu vào/đầu ra; request ngắn hay dài có thể tốn rất khác nhau. Đặt nhiều hạn mức: số request/giây, số request đồng thời, token/ngày hoặc ngân sách tiền, kích thước context, và giới hạn job chờ. Rate limit có thể dùng token bucket (cho phép burst ngắn trong một mức giới hạn); budget theo tháng/ngày tích lũy chi phí, nên cần đo usage thực từ provider và xử lý độ trễ cập nhật.
+
+Áp dụng quota ở API admission trước khi gọi provider, rồi đối chiếu usage sau phản hồi. Cho phép mức cơ bản theo plan, nhưng giữ trần toàn hệ thống và reserve cho tác vụ ưu tiên. Queue phải công bằng giữa tenant: lấy luân phiên hoặc theo quota có trọng số, thay vì một tenant lớn chiếm toàn bộ worker. Khi vượt mức, trả lỗi có thể hành động (ví dụ thời điểm thử lại hoặc nâng gói), không retry tự động.
+
+### Bề mặt dữ liệu cần cách ly
+| Thành phần | Phạm vi tenant bắt buộc |
+|---|---|
+| Retrieval/vector | Tenant + ACL trước khi tạo prompt |
+| Cache | Tenant, quyền, model/prompt version trong key |
+| Queue/job/result | Tenant gắn trong record, kiểm tra quyền khi đọc |
+| Quota/billing | Theo tenant và feature, có đối soát |
+| Log/trace | Nhãn tenant có kiểm soát, không ghi prompt/PII mặc định |
+
+Không đưa nội dung nhạy cảm vào metric label có cardinality rất cao (quá nhiều giá trị riêng lẻ) hoặc log không kiểm soát. Dùng tenant ID giả danh khi đủ, bảo vệ quyền xem log, đặt thời hạn lưu và cho phép truy vết sự cố. Cache key chỉ có document ID là lỗi phổ biến; cần tính đến tenant và policy/version để không trả kết quả cũ sau khi quyền thay đổi.
+
+### Pitfall production
+- Tenant lấy từ header do client gửi, kẻ gọi sửa sang tenant khác.
+- Retrieval lọc tenant nhưng quên ACL theo user; dữ liệu nội bộ bị lộ trong cùng công ty.
+- Cache key không chứa tenant hoặc scope quyền, trả nội dung chéo khách.
+- Mỗi tenant được quota request nhưng không giới hạn token; một prompt khổng lồ vượt ngân sách.
+- Job queue FIFO: tenant lớn gửi hàng nghìn job làm tenant nhỏ chờ lâu.
+- RLS dùng session state thay vì transaction-local trong pool, request sau kế thừa ngữ cảnh sai.
+
+### Ví dụ đời thực
+Một SaaS có 600 công ty, 15% request AI đến từ tenant lớn nhất. Sau khi bổ sung hỏi đáp tài liệu, bill tăng gấp 2,4 lần và một lần test cho thấy cache trả snippet tài liệu sai tenant. Điều tra phát hiện cache key chỉ gồm document ID và queue FIFO cho phép tenant bulk import chiếm worker. Nhóm lấy tenant từ claim đã xác thực, thêm kiểm tra ACL ở retrieval, version policy vào cache key, và chạy test tự động A/B. Họ áp dụng giới hạn 30 request/phút, 20.000 token/ngày cho gói cơ bản cùng trần concurrency 4; job được dispatch theo vòng giữa tenant. Sau 4 tuần, chi phí tối đa mỗi tenant nằm trong 12% ngân sách, p95 chờ job của tenant nhỏ giảm từ 48 xuống 9 giây và không còn lỗi chéo trong test. Các giới hạn được cấu hình theo hợp đồng, không hard-code chung cho mọi khách.
+
+### Trả lời mẫu khi phỏng vấn
+“Em coi tenant isolation là invariant xuyên suốt, bắt đầu từ claim đã xác thực chứ không tin tenant ID client gửi. Context được truyền rõ từ API tới retrieval, cache, queue và lưu kết quả. Với tài liệu, phải lọc cả tenant lẫn ACL của user trước khi đưa nội dung vào prompt; cache key phải phản ánh tenant và phạm vi quyền. Em tách quota tốc độ, concurrency và ngân sách token vì request dài có chi phí khác request ngắn. Admission control từ chối trước khi tốn tiền, còn usage sau phản hồi được đối soát. Với tải bất đồng bộ, em dùng lập lịch công bằng để tenant lớn không chiếm worker. Cuối cùng, em kiểm tra RLS/context trên connection pool, log không chứa PII mặc định, và có test xuyên tenant cũng như thu hồi quyền. Các mục tiêu được cấu hình theo plan, quan sát bằng chi phí và latency từng tenant nhưng không làm lộ prompt trong dashboard.”
+
+> Senior tip: Thêm test “tenant A hỏi về tài liệu B” và “user bị thu hồi quyền rồi hỏi lại” vào CI; kiểm tra cả cache hit, queue result và retrieval, không chỉ endpoint chính.`,
+  follow: [
+    'Khi quyền của một user bị thu hồi, bạn vô hiệu hóa cache và job đang chạy thế nào?',
+    'Bạn phân bổ quota khi provider chỉ báo usage sau khi hoàn thành request ra sao?',
+    'Tenant lớn vẫn có SLA cao hơn nhưng không được lấn át tenant thường; queue scheduler nên biểu diễn ưu tiên thế nào?'
+  ],
+  tags: ['multi-tenancy', 'tenant isolation', 'quota', 'ACL', 'SaaS', 'RAG']
+},
+{
+  id: 'architecture-049',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Một hệ thống Java có nhiều tính năng AI và hợp đồng nhà cung cấp/model thay đổi liên tục. Bạn tạo ranh giới abstraction nào để thay provider được, nhưng vẫn dùng được capability riêng và không để migration làm thay đổi âm thầm hành vi sản phẩm?',
+  a: `**Tóm tắt:** Tôi không bọc mọi provider bằng một interface tối giản rồi giả định chúng tương đương. Tôi định nghĩa port (giao diện nghiệp vụ mà ứng dụng gọi) theo use case cần thiết, có capability và giới hạn rõ; adapter (lớp chuyển đổi) ánh xạ sang provider cụ thể, đồng thời chuẩn hóa lỗi, timeout và usage. Mỗi feature chọn model theo cấu hình có kiểm soát, nhưng thay provider/model vẫn cần eval, canary và rollback vì chất lượng, tốc độ, giá, tool calling và structured output không giống nhau.
+
+### Vì sao abstraction vừa đủ quan trọng
+Nếu mọi service gọi thẳng SDK, lựa chọn model, cấu trúc request, retry và xử lý lỗi bị sao chép khắp hệ thống. Thay provider khi đó trở thành thay đổi nhiều nơi và khó kiểm thử. Ngược lại, abstraction kiểu {{generate(String prompt)}} làm mất các capability như streaming, JSON theo schema, tool call, giới hạn context và metadata usage; team sẽ lách abstraction hoặc phải viết điều kiện provider ở tầng nghiệp vụ.
+
+Tạo port theo khả năng sản phẩm, ví dụ “tóm tắt ticket” cần văn bản, deadline và usage; “trợ lý có tool” cần stream/tool capability riêng. Adapter chuyển kiểu dữ liệu, xác thực response và ánh xạ lỗi provider thành nhóm nội bộ như rate limited, unavailable, invalid request. Không che mất chi tiết hữu ích: lưu provider/model thực tế, phiên bản prompt và capability đã chọn để điều tra.
+
+~~~java
+interface SummaryModel {
+    SummaryResult summarize(SummaryRequest request);
+}
+
+final class SummaryService {
+    private final SummaryModel model;
+
+    SummaryService(SummaryModel model) {
+        this.model = model;
+    }
+
+    SummaryResult summarize(Ticket ticket) {
+        // Use case giữ chính sách; adapter chịu trách nhiệm SDK/provider.
+        return model.summarize(SummaryRequest.from(ticket));
+    }
+}
+~~~
+Đây là port minh họa, không phải API của Spring AI, LangChain4j hay SDK cụ thể. Chỉ tách interface khi có ranh giới có ý nghĩa; không cần tạo một interface cho từng wrapper SDK.
+
+### Lựa chọn và chuyển đổi có kiểm soát
+Đăng ký capability theo model: context tối đa, hỗ trợ stream, structured output, tool calling, region, dữ liệu được phép gửi, latency/giá dự kiến. Router chọn từ allowlist theo feature, tenant plan và trạng thái sức khỏe. Không cho prompt tự chọn model hoặc provider. Nếu capability bắt buộc không có, trả lỗi rõ hoặc chọn luồng thay thế đã được kiểm thử, không âm thầm bỏ tính năng.
+
+Migration gồm: lưu golden set (tập câu hỏi/kết quả chuẩn), chạy model mới offline, so chất lượng/latency/chi phí; chạy shadow nếu chính sách dữ liệu cho phép; canary một tỷ lệ nhỏ; theo dõi metric và phản hồi; mở rộng dần, giữ cấu hình quay lại. Shadow gọi thêm provider có thể tốn tiền và gửi dữ liệu ra ngoài, nên cần giới hạn và đánh giá privacy trước. Prompt, model, parser và schema đầu ra được version riêng để xác định nguồn thay đổi hành vi.
+
+| Lựa chọn | Lợi ích | Rủi ro |
+|---|---|---|
+| SDK trực tiếp | Truy cập tính năng mới sớm | Gắn chặt API, nhiều mã lặp |
+| Framework adapter | Tích hợp nhanh, tiện ích sẵn | Abstraction có thể không khớp use case |
+| Port nội bộ theo capability | Chủ động routing và policy | Tốn công duy trì adapter, cần contract test |
+| Chỉ dùng feature chung nhỏ nhất | Dễ thay provider | Mất capability và chất lượng khác biệt |
+
+### Dữ liệu và contract
+Không lưu nguyên request SDK làm schema lâu dài duy nhất. Lưu nội dung nghiệp vụ cần thiết, trạng thái, model/provider, version, usage, và metadata có thể đọc lại; bảo vệ prompt/PII theo chính sách lưu trữ. Contract test cho mỗi adapter xác nhận timeout, lỗi, mapping usage và schema. Test tích hợp định kỳ bắt thay đổi thực tế của provider. Với streaming, adapter cần biểu diễn event/error/end nhất quán và vẫn cho ứng dụng biết luồng bị cắt, không biến lỗi thành câu trả lời thành công.
+
+### Pitfall production
+- Interface chỉ có một method chung khiến tool call hoặc streaming bị giấu trong {{if provider}}.
+- “Thay model bằng cấu hình” mà không chạy eval: JSON sai schema hoặc câu trả lời nghiệp vụ khác.
+- Retry/fallback sang provider khác sau khi gửi một phần output: nội dung lặp, mất thứ tự hoặc bị tính phí hai bên.
+- Cấu hình model động không allowlist: user có thể chọn model đắt hoặc không được phép dùng với dữ liệu đó.
+- Chỉ ghi alias “default”; sau sự cố không biết request đã dùng model version nào.
+
+### Ví dụ đời thực
+Một sản phẩm Java có 6 tính năng AI gọi SDK trực tiếp ở 14 class. Provider thông báo model ngừng hoạt động sau 90 ngày; bản chuyển thử làm tỷ lệ JSON parse thành công giảm từ 99,2% xuống 94%, dù response time tốt hơn. Nhóm tạo port theo ba capability, adapter riêng cho hai provider, thêm contract test và ghi provider/model/prompt version. Họ so 1.200 mẫu đã ẩn danh, rồi canary 5% traffic không chứa dữ liệu nhạy cảm. Sau 2 tuần, JSON success đạt 99,0%, p95 latency giảm 18% và cost/request giảm 11%; phần còn lệch được giữ ở model cũ đến khi prompt/schema sửa xong. Không chuyển toàn bộ chỉ vì interface đã trừu tượng hóa được API.
+
+### Trả lời mẫu khi phỏng vấn
+“Em sẽ không tạo một abstraction chung giả định mọi model làm giống nhau. Em tách port theo capability mà use case cần và adapter chuyển đổi request, response, lỗi cùng usage. Router chọn model từ allowlist theo feature, quyền dữ liệu, giá và sức khỏe; nếu thiếu capability bắt buộc thì phải báo rõ. Trước khi thay model, em version prompt/schema, chạy golden set và contract test, sau đó canary theo tỷ lệ nhỏ, đo chất lượng, latency và chi phí rồi mới mở rộng. Với shadow test, em tính cả chi phí và quy định dữ liệu vì có thể gửi prompt hai lần. Em không đổi provider giữa stream đã gửi token. Lưu model thực tế và phiên bản cấu hình giúp tái hiện lỗi; rollback phải là thao tác cấu hình an toàn đã thử. Abstraction giúp đổi dependency dễ hơn, nhưng không xóa được khác biệt về hành vi của model.”
+
+> Senior tip: Đo “tỷ lệ đáp ứng đúng contract” và chất lượng nghiệp vụ bên cạnh latency. Adapter compile được không chứng minh provider mới tương đương provider cũ.`,
+  follow: [
+    'Bạn thiết kế capability registry thế nào để một feature không bị route tới model thiếu tool calling hoặc structured output?',
+    'Khi dùng shadow traffic để so model, bạn bảo vệ PII và tránh nhân đôi chi phí ra sao?',
+    'Một model mới tốt trung bình nhưng kém ở nhóm ngôn ngữ hoặc khách hàng nhỏ; canary/rollback nên dựa trên metric nào?'
+  ],
+  tags: ['provider abstraction', 'model routing', 'Java', 'migration', 'evaluation']
+},
+{
+  id: 'architecture-050',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Knowledge base RAG lấy tài liệu từ wiki, object storage và hệ thống nghiệp vụ vốn thay đổi thường xuyên. Bạn thiết kế pipeline phát hiện cập nhật/xóa, nạp lại idempotent và chuyển phiên bản embedding mà không phục vụ chunk cũ hoặc mất dữ liệu thế nào?',
+  a: `**Tóm tắt:** Pipeline knowledge base biến tài liệu nguồn thành các chunk có metadata và embedding để truy xuất; nguồn chuẩn vẫn là hệ thống tài liệu, không phải vector index. Tôi dùng sự kiện thay đổi bền vững hoặc quét đối soát, xử lý mỗi tài liệu theo ID + revision để retry không nhân bản, lan truyền cả cập nhật lẫn xóa/quyền truy cập, và theo dõi độ trễ index. Khi đổi embedding model, tạo index có version mới, backfill, kiểm tra chất lượng rồi chuyển truy vấn có kiểm soát; không trộn embedding khác không gian trong cùng index.
+
+### Luồng và lý do mỗi bước riêng
+Nguồn có thể là wiki, file trong object storage hoặc bản ghi DB. CDC (Change Data Capture — ghi nhận thay đổi từ log DB) hoặc webhook/event báo có thay đổi; nếu nguồn không phát event đáng tin, chạy reconciliation (đối soát định kỳ) để tìm thiếu/cập nhật/xóa. Event chỉ mang ID, revision và loại thay đổi khi có thể; worker lấy nội dung mới nhất từ nguồn có thẩm quyền.
+
+Worker trích xuất text, chuẩn hóa, chia chunk, gắn metadata/ACL, tạo embedding rồi ghi index. Chunk là đoạn nhỏ được truy xuất riêng; quá dài làm kết quả kém liên quan, quá ngắn mất ngữ cảnh. Mỗi lần xử lý lưu {{sourceId}}, {{revision}}, {{chunkerVersion}}, {{embeddingModel}} và hash nội dung. Idempotency key theo tài liệu + revision + cấu hình giúp giao event lại không tạo bản sao. Với Kafka, consumer có thể nhận lại message; ack chỉ sau khi trạng thái xử lý được ghi bền vững.
+
+~~~seq
+title: Cập nhật tài liệu tới knowledge index
+actors: Source | Outbox | Queue | Worker | VectorIndex
+Source -> Outbox: Lưu revision mới cùng thay đổi
+Outbox -> Queue: Phát documentId và revision
+Queue -> Worker: Giao event (có thể lặp)
+Worker -> Source: Đọc bản mới nhất và ACL
+Worker -> VectorIndex: Ghi chunk theo revision
+VectorIndex --> Worker: Xác nhận index
+Worker -> VectorIndex: Đánh dấu revision mới active
+~~~
+
+Không nên xóa bản cũ trước khi bản mới được index thành công nếu cần duy trì khả năng tìm kiếm; đồng thời không được để cả hai phiên bản cùng trả về. Một cách là ghi staging namespace/index theo revision, xác minh đủ chunk, rồi đổi active revision bằng metadata/alias nguyên tử nếu storage hỗ trợ. Nếu không có chuyển đổi nguyên tử, lưu active revision ở nguồn kiểm soát và lọc truy vấn theo revision; thiết kế rõ cửa sổ nhất quán.
+
+### Cập nhật, xóa và quyền
+Tài liệu bị xóa hoặc ACL bị thu hẹp phải phát event tombstone (đánh dấu rằng bản ghi đã bị xóa) hoặc policy revision để xóa/ẩn chunk cũ. Không chỉ dựa vào re-embedding: một chunk còn sót có thể vẫn được retrieval trả về. Với quyền nhạy cảm, kiểm tra ACL trước khi đưa đoạn vào prompt; nếu pipeline trễ, retrieval phải chặn revision/quyền đã bị thu hồi theo nguồn chuẩn hoặc policy version.
+
+| Tình huống | Cách xử lý |
+|---|---|
+| Event lặp | ID + revision + cấu hình, upsert idempotent |
+| Event sai thứ tự | Chỉ active revision mới hơn |
+| Worker lỗi tài liệu | Retry hữu hạn, DLQ và cảnh báo |
+| Xóa nguồn | Tombstone, xóa mọi chunk/revision cũ |
+| Đổi embedding | Index version mới, backfill và chuyển dần |
+| Event bị mất | Reconciliation từ nguồn chuẩn |
+
+Khi đổi embedding model/chiều vector, lập index mới được version hóa. Backfill theo lô có giới hạn để không gây tải nguồn; so số document/chunk, lỗi, recall và latency trên golden set; chạy dual-read hoặc canary trước khi chuyển mặc định. Giữ index cũ đủ lâu để rollback, rồi xóa theo retention policy sau khi xác nhận. Đây là migration dữ liệu, không chỉ là đổi một biến cấu hình.
+
+### Vận hành và lỗi thường gặp
+- Không đo index lag (độ trễ từ sửa nguồn tới tìm kiếm được), nên người dùng hỏi tài liệu đã cập nhật mà thấy câu trả lời cũ.
+- Xóa chỉ bản ghi cha nhưng quên chunk hoặc phiên bản cũ.
+- Worker ack trước khi ghi index, mất event khi tiến trình chết.
+- Không có giới hạn retry: file hỏng làm queue retry mãi và chặn partition.
+- Đổi chunker/model mà không lưu version khiến không thể giải thích vì sao kết quả retrieval thay đổi.
+- Chỉ dựa vào event, không reconciliation; một event bị mất làm dữ liệu sai vĩnh viễn.
+
+### Ví dụ đời thực
+Một knowledge base có 900.000 tài liệu, khoảng 6 triệu chunk; 4% tài liệu thay đổi mỗi ngày. Người dùng vẫn thấy chính sách đã bị thu hồi tới 25 phút sau khi cập nhật, vì consumer ghi chunk mới nhưng không xóa revision cũ. Nhóm thêm revision monotonic, tombstone cho xóa/quyền, idempotent upsert và job đối soát hàng đêm. Họ tạo index phiên bản mới cho model embedding khác, backfill 6 triệu chunk theo 8 worker, chạy so sánh 5.000 câu hỏi đánh giá, rồi canary 10%. Index lag p99 giảm từ 25 xuống 3 phút; tỷ lệ tài liệu thiếu sau đối soát dưới 0,02%, còn rollback về index cũ thực hiện trong 2 phút. ACL bị thu hồi được chặn ngay tại bước retrieval theo policy version, không đợi batch embedding.
+
+### Trả lời mẫu khi phỏng vấn
+“Em giữ nguồn tài liệu làm source of truth và xem vector index là bản dựng có thể tái tạo. Mỗi thay đổi mang document ID và revision; worker đọc nội dung cùng ACL hiện tại, chunk, embed và upsert theo khóa idempotent. Event có thể trùng hoặc sai thứ tự nên chỉ revision mới hơn được active; job lỗi có retry hữu hạn, DLQ và reconciliation để phát hiện event mất. Cập nhật/xóa phải xử lý cả chunk cũ và quyền truy cập, không chỉ thêm bản mới. Khi đổi embedding, em tạo index version mới, backfill có giới hạn, đo coverage/recall trên tập chuẩn rồi chuyển bằng alias hoặc active-version có kiểm soát; giữ index cũ để rollback. Em đặt SLO cho index lag và kiểm tra quyền ngay trước khi nội dung vào prompt. Như vậy có thể chấp nhận một độ trễ cập nhật được công bố, thay vì tạo ảo tưởng mọi thay đổi xuất hiện tức thì.”
+
+> Senior tip: Đặt SLO riêng cho “thay đổi nội dung được tìm thấy” và “thu hồi quyền không còn được tìm thấy”; trường hợp sau thường cần đường chặn nhanh hơn pipeline embedding thông thường.`,
+  follow: [
+    'Làm sao xử lý event revision 12 tới trước revision 11 khi hai worker đang chạy đồng thời?',
+    'Bạn chứng minh tài liệu đã xóa không còn được trả từ cache hoặc index phụ thế nào?',
+    'Trong lúc backfill model embedding mới, làm sao bảo đảm hai index không bị nhầm hoặc rollback được?'
+  ],
+  tags: ['RAG', 'knowledge base', 'ingestion', 'embedding', 'event pipeline', 'data consistency']
+},
 );
