@@ -9,7 +9,7 @@
 .view-flash .flash-deck-info { margin-top: 4px; }
 
 /* ---------- card ---------- */
-.view-flash .flash-wrap { max-width: 860px; }
+.view-flash .flash-wrap { position: relative; max-width: 860px; }
 .view-flash .flash-card {
   margin-top: 16px; min-height: 260px; display: flex; align-items: stretch;
   animation: flashFade .18s ease-out;
@@ -38,6 +38,20 @@
 .view-flash .flash-counts { display: flex; gap: 6px; flex-wrap: wrap; }
 .view-flash .flash-keys { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 14px; }
 
+/* ---------- swipe hint ---------- */
+.view-flash .flash-swipe-hint {
+  position: absolute; left: 50%; top: 0; transform: translate(-50%, -110%);
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 14px; border-radius: 999px; font-weight: 700; font-size: .95rem;
+  pointer-events: none; opacity: 0; transition: opacity .15s, transform .15s; z-index: 5;
+  white-space: nowrap; box-shadow: var(--shadow);
+}
+.view-flash .flash-swipe-hint.show { opacity: 1; transform: translate(-50%, -110%); }
+.view-flash .flash-swipe-hint.ok { background: var(--ok-soft); border: 1px solid var(--ok); color: var(--ok); }
+.view-flash .flash-swipe-hint.bad { background: var(--bad-soft); border: 1px solid var(--bad); color: var(--bad); }
+.view-flash .flash-swipe-hint.ok .dot { background: var(--ok); }
+.view-flash .flash-swipe-hint.bad .dot { background: var(--bad); }
+
 /* ---------- summary / empty ---------- */
 .view-flash .flash-summary, .view-flash .flash-empty { max-width: 860px; margin-top: 16px; }
 .view-flash .flash-sum-stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin: 16px 0; }
@@ -54,8 +68,11 @@
 /* ---------- responsive ---------- */
 @media (max-width: 640px) {
   .view-flash .flash-field { flex: 1 1 100%; }
+  .view-flash .flash-field .select { min-height: 44px; }
   .view-flash .flash-q { font-size: 1.1rem; }
   .view-flash .flash-card { padding: 16px; }
+  .view-flash .flash-card-foot { flex-direction: column; align-items: stretch; gap: 8px; }
+  .view-flash .flash-card-foot .btn { flex: 1 1 100%; padding: 12px 14px; font-size: 1rem; }
   .view-flash .flash-grade .btn { flex: 1 1 100%; padding: 14px 12px; font-size: 1rem; }
   .view-flash .flash-grade .small { flex: 1 1 100%; }
   .view-flash .flash-keys { gap: 10px; }
