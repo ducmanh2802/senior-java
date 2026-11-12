@@ -9299,4 +9299,163 @@ We found that a configuration change had increased database connection timeouts.
   tags: ['english', 'leadership', 'incident', 'outage', 'communication'],
   lang: 'en'
 },
+{
+  id: 'english-170',
+  topic: 'english',
+  level: 'lead',
+  q: 'How do you balance delivery speed and quality? Give me a real example where you had to make that trade-off.',
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn không chọn "nhanh" hay "chậm" tuyệt đối mà có **khung quyết định**: rủi ro kỹ thuật, chi phí đổi sau, ảnh hưởng khách hàng. Kể ví dụ có số liệu: scope, deadline, debt gồng, và cách bạn truyền đạt trade-off cho stakeholder.
+
+### Sample answer
+In my last team we were building a new reconciliation service with a hard regulatory deadline in six weeks. The product owner wanted all edge cases covered from day one — duplicate detection, partial refunds, cross-border fees — which would have taken ten weeks. My assessment was that the core happy path (matching 95 percent of transactions) could ship in four weeks if we deferred the complex edge cases behind a feature flag.
+
+I proposed a phased approach: ship the core in week four, enable it for 10 percent of merchants, measure the mismatch rate, and add edge cases in two-week sprints after launch. The trade-off was accepting a known 5 percent manual reconciliation rate for the first month, which the operations team could handle. We documented the technical debt as tickets with owners and due dates, not as vague "TODO" comments.
+
+We launched on time. The mismatch rate was 3 percent, lower than expected, and we cleared the backlog in three sprints. The key was making the trade-off visible: here is what we ship, here is what we defer, here is the cost, and here is the plan to pay it back. Quality is not perfection; it is knowing exactly what you are not doing yet and having a date to fix it.
+
+### Useful phrases
+- **a hard regulatory deadline**: một hạn chót quy định bắt buộc
+- **the happy path**: luồng chính (không lỗi)
+- **deferred behind a feature flag**: hoãn lại sau cờ tính năng
+- **a known mismatch rate**: tỷ lệ không khớp đã biết trước
+- **technical debt as tickets with owners**: nợ kỹ thuật thành ticket có chủ sở hữu
+- **making the trade-off visible**: làm rõ đánh đổi
+- **pay it back**: trả nợ (hoàn thiện phần bị hoãn)
+
+### Lỗi người Việt hay mắc
+- **Dùng "quality" và "speed" như hai cực đối lập**: thực tế là trade-off có tính toán, không phải chọn A hay B. Luôn nói "trade-off" và "calculated decision".
+- **Nói "we delivered fast but quality was bad"**: không bao giờ tự nhận quality kém. Dùng "we accepted a known gap with a payback plan".
+- **Phát âm "reconciliation"**: /ˌrɛkənsɪlɪˈeɪʃn/ (nhấn "LAY"), không phải "rê-con-si-li-ê-san".
+- **Thiếu "feature flag"**: đây là pattern chuẩn để ship nhanh mà an toàn. Không nhắc feature flag là thiếu điểm.
+- **Dùng "technical debt" không có chủ sở hữu/hạn chót**: debt không có owner và due date là nợ xấu. Luôn nêu "tickets with owners and due dates".
+
+> Senior tip: Câu này test tư duy **product engineering**. Đừng nói "chúng tôi luôn làm đúng" — không ai tin. Hãy nói: "Chúng tôi ship core trước, đo lường, rồi trả nợ theo lịch". Con số quan trọng: % traffic bật feature flag, mismatch rate thực tế, số sprint để clear backlog. Phát âm **reconciliation** /ˌrɛkənsɪlɪˈeɪʃn/, **regulatory** /ˈrɛɡjʊlətəri/.`,
+  follow: [
+    'How did you convince the product owner to accept the phased approach?',
+    'What would you have done if the mismatch rate had been 15 percent instead of 3 percent?',
+    'How do you prevent "temporary" technical debt from becoming permanent?'
+  ],
+  tags: ['delivery', 'quality', 'trade-off', 'leadership'],
+  lang: 'en',
+},
+{
+  id: 'english-171',
+  topic: 'english',
+  level: 'lead',
+  q: 'How do you work with product managers on priorities, and how do you say no when a request is not feasible?',
+  a: `**Tóm tắt:** Lead engineer không chỉ "nhận việc" mà **hợp tác định hình scope**. Interviewer muốn thấy: bạn đưa dữ liệu (effort, risk, opportunity cost), đưa ra 2–3 lựa chọn có trade-off rõ ràng, và "no" thực chất là "not now, here is why, here is what we can do".
+
+### Sample answer
+I treat the relationship with product managers as a partnership, not a service desk. We have a weekly sync where I bring a **capacity snapshot**: how much engineering time is available after on-call, bugs, and keeping the lights on. When a new request comes in, I do a quick impact estimate — not a precise plan, just t-shirt sizes with risk flags — and present three options.
+
+For example, the PM wanted a real-time fraud dashboard in the current quarter. My estimate: six weeks with two engineers, but it would delay the checkout refactor that reduces cart abandonment by an estimated 2 percent. My three options were: (1) build the dashboard, accept the delay, and quantify the revenue risk of the delayed refactor; (2) build a lightweight version using existing Metabase reports in two weeks, covering 80 percent of the use cases; (3) defer the dashboard to next quarter and use the time to ship the refactor now. We chose option two, and the PM got visibility this quarter while the refactor stayed on track.
+
+Saying no is really saying "here is what we **can** do within the constraint". I never say "that is impossible" — I say "that takes six weeks and pushes X out. Here is what we can deliver in two weeks. Which outcome do you prefer?" The PM makes the business call; I make the engineering reality transparent.
+
+### Useful phrases
+- **a capacity snapshot**: bức ảnh dung lực hiện tại
+- **t-shirt sizes with risk flags**: ước lượng theo size (S/M/L) kèm cờ rủi ro
+- **opportunity cost**: chi phí cơ hội (việc gì bị bỏ lỡ)
+- **a lightweight version**: phiên bản nhẹ
+- **keeping the lights on**: duy trì vận hành cơ bản
+- **defer to next quarter**: hoãn sang quý sau
+- **make the engineering reality transparent**: làm rõ thực tế kỹ thuật
+
+### Lỗi người Việt hay mắc
+- **Nói "I said no" như một chiến thắng**: "no" không phải mục tiêu. Mục tiêu là **alignment**. Dùng "I presented options" thay vì "I refused".
+- **Dùng "impossible" hoặc "cannot"**: nghe như né trách nhiệm. Luôn dùng "takes X weeks and impacts Y".
+- **Không mang con số đến cuộc nói chuyện**: PM nói ngôn ngữ business (revenue, conversion). Engineer phải nói effort, risk, opportunity cost — cả hai mới align được.
+- **Phát âm "feasible"**: /ˈfiːzəbl/ (nhấn "FE"), không phải "fi-sa-bol".
+- **Quên "opportunity cost"**: đây là khái niệm then chốt để PM hiểu cái gì bị hy sinh.
+
+> Senior tip: PM không hiểu kỹ thuật, nhưng họ hiểu **trade-off có số**. Hãy mang "capacity snapshot" (dung lực thực tế sau on-call/bug) đến meeting định kỳ. "No" hiệu quả nhất là: "Để làm A trong 2 tuần, chúng ta phải hoãn B. B mang lại 2% conversion. Bạn chọn A hay B?". Phát âm **feasible** /ˈfiːzəbl/, **opportunity cost** /ˌɒpəˈtjuːnɪti kɒst/, **alignment** /əˈlaɪnmənt/.`,
+  follow: [
+    'What do you do when the PM insists on the original timeline despite your data?',
+    'How do you handle a PM who keeps adding "small" requests that accumulate?',
+    'How do you build trust with a new PM who does not know the codebase?'
+  ],
+  tags: ['product', 'prioritization', 'saying-no', 'leadership'],
+  lang: 'en',
+},
+{
+  id: 'english-172',
+  topic: 'english',
+  level: 'lead',
+  q: 'Tell me about a time you introduced a new practice — like code review, CI/CD, or testing — to a team that resisted it. How did you handle the resistance?',
+  a: `**Tóm tắt:** Thay đổi quy trình là **quản trị thay đổi**, không phải công nghệ. Interviewer muốn thấy: bạn hiểu nguyên nhân kháng cự (sợ chậm, không thấy giá trị, thói quen), bạn bắt đầu nhỏ (pilot), đo lường, lan tỏa bằng bằng chứng, không bắt ép.
+
+### Sample answer
+When I joined my previous team, there was no code review — engineers pushed directly to main. The argument was "we are senior, we move fast, reviews slow us down". In the first month we had three production incidents caused by simple bugs a second pair of eyes would have caught: a missing null check, a wrong currency code, and a migration that ran twice.
+
+I did not mandate reviews immediately. Instead, I proposed a **two-week pilot** on one high-risk service: the payment orchestration service. We used a lightweight process: every PR needed one approval, the author merged after CI passed, and we capped review time at four hours. I also paired with the most skeptical engineer on the first few reviews to show it was about learning, not gatekeeping.
+
+We measured: defect rate dropped from 3 per release to 0.5, cycle time actually improved because we caught bugs before they reached staging, and the team started asking for reviews on their own PRs. After the pilot, we rolled it out team-wide with the same rules. The key was making the pain visible (the three incidents), starting small, measuring, and letting the team experience the benefit themselves rather than imposing it.
+
+### Useful phrases
+- **pushed directly to main**: đẩy thẳng vào nhánh main
+- **a second pair of eyes**: một cặp mắt thứ hai (code review)
+- **I did not mandate it immediately**: tôi không bắt buộc ngay
+- **a two-week pilot**: thử nghiệm hai tuần
+- **lightweight process**: quy trình nhẹ
+- **capped review time at four hours**: giới hạn thời gian review 4 giờ
+- **gatekeeping**: canh gác / kiểm duyệt (ám chỉ negativo)
+- **rolled it out team-wide**: triển khai toàn đội
+
+### Lỗi người Việt hay mắc
+- **Nói "I forced them to do code review"**: bắt buộc tạo ra sự kháng cự. Dùng "pilot", "proposed", "measured", "rolled out".
+- **Quên đo lường trước/sau**: "we felt it was better" không thuyết phục. Phải có con số: defect rate, cycle time, review turnaround.
+- **Phát âm "pilot"**: /ˈpaɪlət/ (nhấn "PI"), không phải "pi-lốt".
+- **Dùng "mandatory" từ đầu**: "mandatory code review" nghe nặng nề. Dùng "required approval" hoặc "we tried it on one service first".
+- **Không nhắc "gatekeeping"**: đây là nỗi sợ lớn của dev senior. Phải nói rõ "not gatekeeping, it is learning".
+
+> Senior tip: Mọi thay đổi quy trình (code review, CI/CD, testing, lint) đều theo pattern: **pain visible → small pilot → measure → team pulls it → scale**. Đừng bao giờ bắt đầu bằng "từ nay buộc phải...". Dùng dữ liệu sự cố thực tế (3 incidents/tháng) làm catalyst. Phát âm **pilot** /ˈpaɪlət/, **gatekeeping** /ˈɡeɪtkiːpɪŋ/, **mandate** /ˈmændeɪt/.`,
+  follow: [
+    'What would you have done if the pilot showed no improvement in defect rate?',
+    'How do you handle a senior engineer who still refuses to participate after the rollout?',
+    'How do you keep the review process lightweight as the team grows?'
+  ],
+  tags: ['process-change', 'code-review', 'change-management', 'leadership'],
+  lang: 'en',
+},
+{
+  id: 'english-173',
+  topic: 'english',
+  level: 'lead',
+  q: 'How do you interview and evaluate candidates? Walk me through your process and what signals you look for.',
+  a: `**Tóm tắt:** Hiring là **đầu tư rủi ro cao**. Lead interviewer cần quy trình có cấu trúc, rubric rõ ràng, và bằng chứng thay vì ấn tượng. Interviewer muốn thấy: bạn thiết kế câu hỏi theo signal, chấm điểm nhất quán, giảm bias, và quyết định dựa trên dữ liệu.
+
+### Sample answer
+My goal is to predict how the candidate will perform on the job, not how well they interview. I use a **structured rubric** with four signals: problem solving, code quality, system design, and collaboration. Each signal has 3–4 behavioral or technical questions with a 1–5 scale and concrete anchors — for example, "3 on problem solving = solves the happy path with hints; 4 = identifies two edge cases independently; 5 = proposes a better approach than my reference solution."
+
+Before the loop, I align the panel on the rubric so everyone scores the same way. During the interview, I take **verbatim notes** (what the candidate said, not my judgement), then score immediately after. I never discuss candidates with other interviewers before submitting my score — that prevents anchoring bias.
+
+For system design, I give a realistic scope (design a payment reconciliation flow) and look for: clarifying requirements, making explicit trade-offs, admitting uncertainty, and evolving the design when I push back. A senior candidate who says "it depends on the consistency requirement" scores higher than one who jumps to "use Kafka".
+
+After the loop, we have a **calibration meeting** where we compare scores, discuss discrepancies, and make a hire/no-hire decision. If we are split, the default is no-hire — the cost of a false positive is months of team friction; the cost of a false negative is a few more interviews.
+
+### Useful phrases
+- **a structured rubric**: một bảng chấm có cấu trúc
+- **concrete anchors**: mốc điểm cụ thể (ví dụ cho mỗi mức 1-5)
+- **anchoring bias**: thiên kiến neo (bị ảnh hưởng bởi ý kiến người khác)
+- **verbatim notes**: ghi chú nguyên văn (câu nói gốc của ứng viên)
+- **calibration meeting**: hội chắn chỉnh điểm
+- **false positive / false negative**: tuyển nhầm / bỏ lỡ người tốt
+- **evolving the design**: phát triển thiết kế khi bị thách thức
+
+### Lỗi người Việt hay mắc
+- **Nói "I look for culture fit"**: "culture fit" dễ thành bias. Dùng **"values alignment"** hoặc **"collaboration signal"** với rubric rõ ràng.
+- **Chấm điểm dựa trên "feeling"**: "I liked him" không là evidence. Luôn có rubric + verbatim notes.
+- **Thảo luận ứng viên trước khi chấm xong**: gây anchoring bias. Quy tắc: **submit score first, discuss later**.
+- **Phát âm "rubric"**: /ˈruːbrɪk/ (nhấn "RU"), không phải "ru-bric".
+- **Không có "calibration"**: mỗi người chấm theo cảm tính thì điểm không so sánh được. Bắt buộc có meeting chỉnh điểm.
+
+> Senior tip: Hiring decision mặc định là **no-hire khi split** — chi phí false positive (người kém vào team) lớn gấp nhiều false negative (bỏ lỡ người tốt). Luôn có rubric anchors (ví dụ mức 3, 4, 5 cụ thể) để panel chấm đồng bộ. Phát âm **rubric** /ˈruːbrɪk/, **anchoring bias** /ˈæŋkərɪŋ ˈbaɪəs/, **calibration** /ˌkælɪˈbreɪʃn/. Một lead engineer tốt có **rubric in sẵn** cho mỗi vòng phỏng vấn — đó là dấu hiệu professional.`,
+  follow: [
+    'How do you evaluate a candidate who is strong technically but weak on communication?',
+    'What do you do when another interviewer gives a score you strongly disagree with?',
+    'How do you adapt your rubric for mid-level vs senior vs lead candidates?'
+  ],
+  tags: ['hiring', 'interviewing', 'evaluation', 'leadership'],
+  lang: 'en',
+},
 );
