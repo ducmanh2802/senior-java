@@ -6823,7 +6823,11 @@ Ví dụ đời thường: thi **được mở sách**. LLM là thí sinh giỏi
 - Recall@5 trên golden set ≥ 0,85; rò rỉ quyền = 0.
 
 ### Ngoài phạm vi
-- Không fine-tune model, không agent gọi tool có tác dụng phụ, không OCR ảnh scan; mỗi tài liệu thuộc đúng một nhóm quyền (nhiều nhóm ghi vào phần mở rộng).`,
+- Không fine-tune model, không agent gọi tool có tác dụng phụ, không OCR ảnh scan; mỗi tài liệu thuộc đúng một nhóm quyền (nhiều nhóm ghi vào phần mở rộng).
+### Tìm kiếm hybrid và Markdown
+Hybrid search kết hợp hai cách tìm: semantic search (so nghĩa qua embedding) tìm câu diễn đạt khác từ khóa trong tài liệu; full-text search (tìm từ/ngữ) của PostgreSQL tìm chính xác mã quy trình, tên biểu mẫu hoặc cụm từ. Ingest PDF bằng {{TikaDocumentReader}}; với Markdown, đọc UTF-8 bằng {{Files.readString(path, StandardCharsets.UTF_8)}} rồi giữ heading làm metadata để câu trả lời có thể trỏ đúng mục. Cả hai luồng đều chuẩn hoá thành chunk, gắn {{doc_id}}, {{acl}}, {{title}}, {{section}} và {{source_uri}} trước khi lưu.
+
+Khi hỏi, chạy truy vấn vector trên pgvector và truy vấn PostgreSQL full-text riêng, với cùng điều kiện ACL ở cả hai; sau đó hợp nhất hai danh sách theo Reciprocal Rank Fusion (RRF): mỗi kết quả nhận điểm tổng là tổng {{1 / (k + rank)}} từ các danh sách, trong đó {{rank}} là vị trí của nó. RRF không cần so sánh trực tiếp điểm cosine với điểm full-text vốn khác thang đo. Chỉ đưa top kết quả sau hợp nhất vào prompt; nguồn hiển thị vẫn lấy từ các bản ghi đã truy xuất. Đo riêng recall@5 cho semantic-only, full-text-only và hybrid trên cùng golden set, vì hybrid có thể làm tăng recall nhưng cũng tăng độ trễ.`,
     architecture: `~~~text
 Trình duyệt --(SSO, JWT)--> rag-api (Spring Boot + Spring AI)
                               | 1. lấy user + nhóm quyền từ SecurityContext
@@ -6839,7 +6843,8 @@ ingest-worker (lịch 5 phút) --+-- đọc thư mục/SharePoint export -> Tika
                               v
 PostgreSQL 16 + pgvector: kb_document, vector_store (HNSW cosine), qa_log
 ~~~
-Vì sao pgvector thay vì vector DB riêng: dữ liệu quyền, nhật ký và vector nằm chung một DB, chung transaction, chung backup; 60.000 chunk là nhỏ với HNSW. Khi lên hàng chục triệu vector hoặc cần lọc phức tạp mới cân nhắc hệ chuyên dụng.`,
+Vì sao pgvector thay vì vector DB riêng: dữ liệu quyền, nhật ký và vector nằm chung một DB, chung transaction, chung backup; 60.000 chunk là nhỏ với HNSW. Khi lên hàng chục triệu vector hoặc cần lọc phức tạp mới cân nhắc hệ chuyên dụng.
+Luồng hybrid: câu hỏi được chạy qua vector search và PostgreSQL full-text search song song; mỗi truy vấn lọc {{acl}} từ quyền do server xác thực. API hợp nhất top-k bằng Reciprocal Rank Fusion (RRF), kiểm tra lại quyền/tình trạng tài liệu rồi mới tạo context và nguồn trích dẫn. Cách này bổ sung exact-match cho mã/tên riêng nhưng không tuyên bố rằng {{QuestionAnswerAdvisor}} tự thực hiện hybrid; phần hợp nhất là logic retrieval của ứng dụng.`,
     design: `### Schema DB
 Bảng vector dùng schema mặc định của {{PgVectorStore}}: {{vector_store(id uuid, content text, metadata json, embedding vector(1536))}} + index HNSW {{vector_cosine_ops}}. Flyway tạo trước (đặt {{initialize-schema}} là false trên production). Bảng tự làm:
 ~~~sql
@@ -7070,7 +7075,16 @@ dailyCost.record(cost.doubleValue());           // DistributionSummary tự đ�
 **Cách 2, model nhỏ hơn cho câu đơn giản + cache:** rẻ hơn nhiều lần; cần eval riêng cho model nhỏ và cache phải tách theo quyền.
 **Chứng minh:** dashboard token/câu trước và sau; eval không giảm quá 2 điểm.`
     ],
-    readme: `# rag-java\n\n## Mục tiêu\nHỏi đáp tài liệu nội bộ có trích nguồn, phân quyền theo phòng ban, đo chất lượng bằng golden set.\n\n## Chạy\n{{docker compose up -d}}, đặt API key qua biến môi trường, chạy rag-api, gọi POST /admin/ingest với thư mục mẫu.\n\n## Kiến trúc\nIngest (Tika, TokenTextSplitter, embedding) và truy vấn (filter quyền, QuestionAnswerAdvisor).\n\n## Bảo mật\nPhân quyền 2 lớp, chống prompt injection, không log prompt trên production.\n\n## Số liệu\nRecall@5, tỉ lệ đúng, rò rỉ quyền, token và chi phí mỗi câu.`,
+    readme: `# rag-java\n\n## Mục tiêu\nHỏi đáp tài liệu nội bộ có trích nguồn, phân quyền theo phòng ban, đo chất lượng bằng golden set.\n\n## Chạy\n{{docker compose up -d}}, đặt API key qua biến môi trường, chạy rag-api, gọi POST /admin/ingest với thư mục mẫu.\n\n## Kiến trúc\nIngest (Tika, TokenTextSplitter, embedding) và truy vấn (filter quyền, QuestionAnswerAdvisor).\n\n## Bảo mật\nPhân quyền 2 lớp, chống prompt injection, không log prompt trên production.\n\n## Số liệu\nRecall@5, tỉ lệ đúng, rò rỉ quyền, token và chi phí mỗi câu.
+### Mốc hoàn thành và câu hỏi phỏng vấn
+- Nạp dữ liệu: PDF bằng Tika, Markdown bằng UTF-8; kiểm tra hash, chunk, metadata ACL. Câu hỏi: chunk size được chọn theo cách nào?
+- Hỏi đáp/trích nguồn: trả lời chỉ từ context, nguồn lấy từ kết quả truy xuất. Câu hỏi: làm sao xử lý câu hỏi không có bằng chứng đủ mạnh?
+- Phân quyền: cùng filter ACL trong hai truy vấn và kiểm tra lại nguồn. Câu hỏi: làm thế nào chứng minh không rò rỉ dữ liệu giữa hai phòng?
+- Đánh giá: so recall@5 semantic-only và hybrid trên cùng golden set. Câu hỏi: vì sao không chỉ đánh giá câu trả lời cuối cùng?
+- Bảo mật/chi phí: giới hạn token và lượt hỏi, ghi usage, không cấp tool có tác dụng phụ. Câu hỏi: bạn sẽ giảm chi phí mà vẫn giữ chất lượng ra sao?
+
+### Cách đưa vào CV
+Viết theo kết quả đo thực tế, không nhận số liệu minh hoạ trong blueprint là thành tích của mình. Ví dụ sau khi tự chạy benchmark: “Xây dựng chatbot RAG nội bộ bằng Spring Boot, Spring AI và PostgreSQL/pgvector; kết hợp vector + full-text retrieval, lọc ACL phía server và trích nguồn; đánh giá trên N câu golden set, đạt recall@5 X và không có rò rỉ trong Y ca kiểm thử; giảm chi phí trung bình từ A xuống B bằng giới hạn context/cache.” Thay N, X, Y, A, B bằng số đo và nêu rõ cách đo.`,
     interview: {
       story: `### STAR
 **Situation:** Bộ phận hỗ trợ nội bộ nhận khoảng 300 câu hỏi/ngày về quy trình, chính sách; tài liệu nằm rải rác 5.000 file, mất trung bình 15 phút để tìm một câu trả lời. Bản thử chatbot đầu tiên (nhét cả tài liệu vào prompt) bịa câu trả lời và từng trả lời một câu về lương cho người không có quyền.
