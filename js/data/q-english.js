@@ -9953,4 +9953,155 @@ If an interviewer asks about a weak point in my CV, I answer directly and keep t
   ],
   tags: ['career-gap', 'weakness', 'self-awareness', 'interview-skills']
 },
+{
+  id: 'english-186',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "What questions do you ask at the end of an interview to understand the team and the role better? Give me three smart questions a senior backend engineer would ask.",
+  a: `**Tóm tắt:** Câu hỏi cuối là cơ hội cuối để ghi điểm — hỏi về thực tế công việc, đội ngũ và cách ra quyết định, không phải lương/benefit (thuộc về HR). Chọn 3 câu thể hiện bạn nghĩ như người sẽ làm việc ở đó: on-call, tech debt, quyền quyết định kỹ thuật.
+
+### Sample answer
+I usually prepare five and ask three, depending on how the conversation went.
+
+The first is about the reality of the work: "What does a typical on-call week look like for this team, and what caused the last incident?" That tells me more about engineering health than any architecture diagram. If the answer is "we get paged every night", I know what I am signing up for.
+
+The second is about decisions: "Who decides when there is a disagreement about architecture, and can you give me an example from the last six months?" I want to know whether engineers have real influence or whether decisions come from above.
+
+The third is about success: "How would you know in six months that you had hired the right person for this role?" That question is useful for me too, because it tells me exactly what they will evaluate me on.
+
+If the interview went well, I might also ask why the previous person left and what the team's biggest technical debt is. Those are direct, but a good interviewer respects directness. I avoid salary, holidays and remote policy in the technical round; those belong to HR.
+
+### Useful phrases
+- **I usually prepare five and ask three** — tôi thường chuẩn bị năm câu và hỏi ba
+- **the reality of the work** — thực tế công việc
+- **engineering health** — sức khoẻ kỹ thuật của đội
+- **what I am signing up for** — điều tôi đang nhận lấy
+- **the team's biggest technical debt** — món nợ kỹ thuật lớn nhất của đội
+- **that belongs to HR** — việc đó thuộc về HR
+- **on-call rotation** — lịch trực on-call
+- **technical influence** — sự ảnh hưởng kỹ thuật
+- **decision-making authority** — thẩm quyền ra quyết định
+
+### Lỗi người Việt hay mắc
+- **Nói "I have no questions"**: interviewer đọc là thiếu quan tâm. Luôn chuẩn bị 3-5 câu.
+- **Hỏi câu trả lời có trên website**: "What does your company do?" — mất điểm lớn. Hỏi về thực tế làm việc.
+- **Hỏi lương/benefit ở vòng kỹ thuật**: những câu đó thuộc về HR. Vòng kỹ thuật hỏi về on-call, tech debt, decision-making.
+- **Phát âm "on-call"**: /ˈɒn kɔːl/ (nhấn "ON"), không phải "on-câl" hay "ôn-cỏ".
+- **Sai "technical debt"**: đọc /ˈtɛknɪkəl dɛt/ (debt đọc như "det"), không phải "debt" như "đép".
+
+> Senior tip: Câu hỏi cuối thể hiện mindset của người sẽ làm việc ở đó. Hỏi on-call → bạn quan tâm reliability. Hỏi decision-making → bạn quan tâm autonomy. Hỏi success metrics → bạn quan tâm impact. Luôn prepare 5 câu, pick 3 tùy context. Nếu interviewer rushed, hỏi 1 câu quan trọng nhất: "What does a typical on-call week look like?" — câu này reveal engineering health nhất.`,
+  follow: ["What would you ask if the interviewer seemed rushed?", "How do you evaluate whether a team has a healthy on-call culture?", "Is it appropriate to ask about the previous person who held the role?"],
+  tags: ["interview-skills", "questions", "culture", "end-of-interview"]
+},
+{
+  id: 'english-187',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "How do you discuss salary and benefits expectations in a professional way during an interview? What should you avoid saying?",
+  a: `**Tóm tắt:** Đừng nêu một con số duy nhất và đừng nói "up to you". Cách an toàn: hỏi khoảng budget của vị trí → đưa range dựa trên thị trường → tách lương khỏi phúc lợi → nói rõ notice period theo hợp đồng. Giữ giọng hợp tác, không đối đầu, và luôn xác nhận bằng văn bản sau đó.
+
+### Sample answer
+I usually answer with a range and a reason, not a single number. Something like: "Based on my research for senior backend roles in Ho Chi Minh City with this level of ownership, I am targeting a range of fifty-five to sixty-five million VND gross per month. I am flexible depending on the whole package, especially the bonus and the learning opportunity, but that is the range where I can say yes quickly."
+
+If they ask first, I politely turn it around once: "Could you share the budgeted range for the role? That would help me tell you honestly whether we are aligned." That is not a trick; it avoids wasting both sides' time.
+
+On benefits, I ask clearly: "Could you tell me more about the annual bonus structure? And how is the health insurance structured for dependents?" I treat the entire package, not just the base salary.
+
+If the offer is below my range, I do not negotiate emotionally. I say what would make it work: a higher base, a signing bonus, or a review after six months. And I always ask for the offer in writing before I resign.
+
+### Useful phrases
+- **I am targeting a range of** — tôi đang nhắm khoảng
+- **depending on the whole package** — tuỳ vào toàn bộ gói đãi ngộ
+- **could you share the budgeted range** — anh/chị có thể chia sẻ khoảng ngân sách không
+- **that would help me tell you honestly** — điều đó giúp tôi trả lời trung thực
+- **the entire package** — toàn bộ gói phúc lợi
+- **signing bonus** — tiền thưởng ký hợp đồng
+- **a review after six months** — đánh giá lại sau sáu tháng
+- **in writing** — bằng văn bản
+
+### Lỗi người Việt hay mắc
+- **Nói "I want salary negotiable"**: nghe như chưa chuẩn bị. Hãy nêu range cụ thể.
+- **Nhầm net/gross**: không phân biệt được lương thu nhập trước thuế (gross) và sau thuế (net) — chênh lệch 10–20%. Hãy hỏi rõ: "Is that gross or net?"
+- **Dùng "notice time"**: sai. Đúng là **notice period** (thời gian báo trước).
+- **Phát âm "salary"**: /ˈsæləri/ (nhấn âm đầu), không phải "sa-la-ry" đều đều.
+- **Nói "I will resign now" trước khi có offer viết tay**: rủi ro lớn. Luôn nói: "I will resign after I receive the written offer."
+- **Đòi tăng lương ngay khi chưa có offer**: phải đợi họ đưa ra con số trước, rồi mới negotiate.
+
+> Senior tip: Chuẩn bị ba con số: gross mong muốn, mức chấp nhận được (walkaway), và tổng giá trị package (bonus, equity, learning budget). Khi đàm phán, gói gọn: "My range is X–Y gross. If the base is at the lower end, I would need a signing bonus or a six-month review to bridge the gap." Điều này thể hiện bạn hiểu market và có chuẩn mực. Phát âm **negotiate** /nɪˈɡoʊʃieɪt/, **compensation** /ˌkɒmpɛnˈseɪʃn/.`,
+  follow: ["What if they offer below your range but promise a review in six months?", "How do you value equity or a bonus against base salary?", "Would you resign before signing the new contract? Why or why not?"],
+  tags: ["salary", "negotiation", "benefits", "interview-skills"]
+},
+{
+  id: 'english-188',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: "How do you describe your strengths in an interview with concrete evidence? Give me an example of how a senior backend engineer would answer.",
+  a: `**Tóm tắt:** Chọn 1-2 strength gắn với vai trò senior (giải quyết vấn đề, ownership, tư duy hệ thống) và kèm bằng chứng có số liệu cụ thể. Không dùng strength chung chung như "hard worker" — interviewer nghe mỗi ngày.
+
+### Sample answer
+My main strength is turning a vague reliability problem into something measurable. For example, our payment callback had a one percent failure rate that nobody could explain. I added structured logging with a correlation ID across three services, built a dashboard, and within two weeks we found that a specific acquirer was timing out at exactly five seconds because of a client-side default. We changed the timeout and the failure rate dropped to under 0.1 percent. I like that kind of work: instrument first, then guess.
+
+Another strength is end-to-end ownership. In my current team, I own the payment reconciliation service from design to production. That means I do the code reviews, I handle on-call, and I present the SLA metrics to stakeholders every quarter. I believe a senior engineer should own the entire lifecycle, not just write code and throw it over the wall.
+
+I also mentor two junior developers on my team. One of them passed his first system design review last month, and he told me my coaching helped him think about trade-offs instead of jumping to solutions.
+
+### Useful phrases
+- **my main strength is** — điểm mạnh chính của tôi là
+- **turning a vague problem into something measurable** — biến vấn đề mơ hồ thành thứ đo được
+- **instrument first, then guess** — đo trước, rồi mới đoán
+- **end-to-end ownership** — chịu trách nhiệm trọn vẹn từ đầu đến cuối
+- **throw it over the wall** — viết code xong rồi đẩy cho người khác (không quan tâm tiếp)
+- **passed his first system design review** — vượt qua bài review design đầu tiên
+- **think about trade-offs** — nghĩ về sự đánh đổi
+
+### Lỗi người Việt hay mắc
+- **Dùng strength chung chung**: "I am a hard worker", "I am a team player" — không có bằng chứng, interviewer nghe mỗi ngày.
+- **Không có số liệu**: Nói "I improved performance" mà không nói con số cụ thể (giảm bao nhiêu %, từ bao lâu xuống bao lâu).
+- **Phát âm "strength"**: /strɛŋkθ/ - kết thúc bằng /θ/ (như "th" trong "think"), không phải /t/. Nếu vẫn nói không trôi chảy, hãy dùng "what I do well".
+- **Thiếu "a/an"**: "I became bottleneck" -> "a bottleneck". "I am backend engineer" -> "a backend engineer".
+- **Kể quá dài mà không có kết thúc**: Mỗi strength nên có 3-4 câu với 1 con số cụ thể, rồi chuyển sang strength tiếp theo.
+
+> Senior tip: Chuẩn bị 3 strength với 3 con số cụ thể. Cách tốt nhất là nói về một vấn đề (problem), hành động của bạn (action), và kết quả đo được (result) — giống STAR nhưng ngắn gọn. Strength hay nhất của senior engineer là: (1) tìm nguyên nhân gốc qua data, (2) end-to-end ownership, (3) giúp đỡ team members grow. Tập nói to, ghi âm, và cắt các từ đệm như "actually", "basically", "you know".`,
+  follow: ["Can you give me an example of a strength that helped you resolve a production issue?", "Which strength would your teammates mention first about you?", "How do you balance technical strength with leadership skills?"],
+  tags: ["strengths", "self-awareness", "evidence", "interview-skills"]
+},
+{
+  id: 'english-189',
+  topic: 'english',
+  level: 'mid',
+  lang: 'en',
+  q: "How do you give a short summary of your experience for a phone screen? What should you include and what should you skip?",
+  a: `**Tóm tắt:** Phone screen kéo dài 15-30 phút — interviewer chỉ muốn biết: bạn là ai, kinh nghiệm có phù hợp không, và bạn có thể nói chuyện được không. Công thức 60-90 giây: hiện tại → quá khứ (1 thành tựu) → vì sao ứng tuyển. Không cần kể toàn bộ CV.
+
+### Sample answer
+Thanks for calling. I am a backend engineer with seven years of experience in Java and Spring Boot. For the last three years I have been working on payments at a fintech company in Vietnam. Our platform processes around two million transactions a day, and I own the reconciliation service end to end — that includes design, code reviews, and on-call support.
+
+Before that, I worked on a logistics product where I led the migration from Java 8 to Java 17 and Spring Boot 3. That reduced our deployment time from forty minutes to eight.
+
+What I am looking for now is a role where I can work on distributed systems at a larger scale, and your team is building exactly that. I am comfortable working in English because my current team includes engineers in Singapore and India.
+
+### Useful phrases
+- **thanks for calling** — cảm ơn anh/chị đã gọi điện
+- **for the last three years** — trong ba năm gần đây
+- **I own the service end to end** — tôi chịu trách nhiệm service từ đầu đến cuối
+- **processes around** — xử lý khoảng (dùng "around" thay vì con số chính xác)
+- **I am looking for** — tôi đang tìm kiếm
+- **at a larger scale** — ở quy mô lớn hơn
+- **I am comfortable working in** — tôi thoải mái làm việc bằng
+
+### Lỗi người Việt hay mắc
+- **Kể quá dài**: Phone screen 15-30 phút, đừng kể toàn bộ CV. Chỉ nói 60-90 giây về bản thân.
+- **Sai danh từ không đếm được**: "I have 7 years experiences" → đúng: "I have seven years of experience".
+- **Dịch word-by-word lời chào**: "I am very happy to be interviewed today" nghe cứng → dùng tự nhiên hơn: "Thanks for calling".
+- **Thiếu số liệu**: Không có con số (transactions/day, deployment time) khiến câu trả lời mơ hồ.
+- **Nói quá nhanh vì hồi hộp**: Hãy chậm lại, hít thở, và nhìn vào ghi chú nếu cần.
+- **Quên nói vì sao ứng tuyển**: Interviewer muốn biết bạn có quan tâm đến công ty không, không chỉ kiếm việc.
+
+> Senior tip: Chuẩn bị hai phiên bản: bản 60 giây và bản 2 phút. Phone screen dùng bản ngắn. Luôn có 2-3 con số cụ thể vì số liệu tạo độ tin cậy ngay lập tức. Kết thúc bằng câu "I am interested in learning more about the role" để cho thấy bạn muốn tiếp tục. Tập nói to, ghi âm trước 2 lần để câu trả lời trôi chảy. Nếu mất signal, hãy nói "Sorry, could you hear me?" — đừng tiếp tục nói mà không biết họ có nghe không.`,
+  follow: ["What if the recruiter asks about your salary expectations on the phone screen?", "How do you handle it if you do not understand a question during a phone screen?", "Should you ask questions at the end of a phone screen?"],
+  tags: ["phone-screen", "introduction", "summary", "recruiter"]
+},
 );
