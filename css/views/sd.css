@@ -1,8 +1,32 @@
-/* T287: styles for the system-design practice view; every selector starts with .view-sd */
+/* T1497: system-design practice view UX; every selector starts with .view-sd */
 .view-sd .sd-filters {
   gap: 10px;
   margin-bottom: 14px;
   align-items: center;
+}
+.view-sd .sd-filters .chips {
+  flex-wrap: wrap;
+}
+.view-sd .sd-count {
+  margin: 0 0 8px;
+}
+.view-sd .sd-empty p {
+  margin: 0 0 10px;
+}
+.view-sd .sd-empty .btn {
+  min-height: 40px;
+}
+/* screen-reader-only live region for phase / timer announcements */
+.view-sd .sd-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 .view-sd .sd-list {
   display: grid;
@@ -16,11 +40,14 @@
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 .view-sd .sd-row-head h2 {
   margin: 0;
   font-size: 1.08rem;
   flex: 1 1 240px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .view-sd .sd-row-head h2 a {
   color: var(--text);
@@ -34,6 +61,8 @@
 .view-sd .sd-row-foot {
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .view-sd .sd-head {
   align-items: flex-start;
@@ -41,6 +70,8 @@
 }
 .view-sd .sd-meta {
   margin-top: 6px;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 .view-sd .sd-clock {
   display: flex;
@@ -63,11 +94,18 @@
 .view-sd .sd-brief {
   margin-bottom: 12px;
 }
+.view-sd .sd-toc {
+  margin-bottom: 12px;
+}
+.view-sd .sd-toc-title {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
 .view-sd .sd-phases {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px;
-  margin-bottom: 12px;
+  margin-top: 8px;
 }
 .view-sd .sd-phase {
   display: flex;
@@ -80,16 +118,25 @@
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
+  min-height: 44px;
 }
 .view-sd .sd-phase:hover {
   border-color: var(--accent);
+}
+.view-sd .sd-phase:focus-visible,
+.view-sd .sd-finish-actions .btn:focus-visible,
+.view-sd .sd-score-btn:focus-visible,
+.view-sd .sd-write-actions .btn:focus-visible,
+.view-sd .sd-clock .btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .view-sd .sd-phase.is-active {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
 .view-sd .sd-phase.is-done {
-  opacity: .72;
+  opacity: .82;
 }
 .view-sd .sd-phase-n {
   font-family: var(--mono);
@@ -112,14 +159,44 @@
   margin: 0 0 6px;
   font-size: 1rem;
 }
+.view-sd .sd-guide-body,
+.view-sd .sd-brief .md,
+.view-sd .sd-compare-col .md,
+.view-sd .sd-draft-block .md {
+  max-width: 100%;
+}
+.view-sd .sd-write {
+  margin-bottom: 12px;
+}
+.view-sd .sd-write-head {
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.view-sd .sd-write-field {
+  margin: 0;
+  flex: 1 1 auto;
+}
+.view-sd .sd-save-badge {
+  white-space: nowrap;
+}
 .view-sd .sd-textarea {
-  min-height: 220px;
+  min-height: 240px;
   font-family: var(--font);
   line-height: 1.55;
 }
 .view-sd .sd-write-actions {
   margin-top: 10px;
   align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.view-sd .sd-write-actions .btn,
+.view-sd .sd-finish-actions .btn,
+.view-sd .sd-score-btn,
+.view-sd .sd-clock .btn {
+  min-height: 40px;
 }
 .view-sd .sd-finish {
   margin-top: 14px;
@@ -127,6 +204,7 @@
 .view-sd .sd-finish-actions {
   margin: 8px 0;
   flex-wrap: wrap;
+  gap: 8px;
 }
 .view-sd .sd-fb {
   margin: 10px 0;
@@ -139,19 +217,85 @@
 .view-sd .sd-self .row {
   margin: 8px 0;
 }
-.view-sd .sd-ref {
-  margin-top: 10px;
+.view-sd .sd-score-row {
+  flex-wrap: wrap;
+  gap: 8px;
 }
-.view-sd .sd-ref summary {
-  cursor: pointer;
+.view-sd .sd-score-btn {
+  min-width: 40px;
+}
+.view-sd .sd-score-btn[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
   font-weight: 600;
 }
-.view-sd .sd-ref .md {
+.view-sd .sd-compare {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+/* keep anchored sections clear of the sticky top bar when scrolled into view */
+.view-sd .sd-write,
+.view-sd .sd-finish,
+.view-sd .sd-compare {
+  scroll-margin-top: 72px;
+}
+.view-sd .sd-compare-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
   margin-top: 8px;
 }
+.view-sd .sd-compare-col {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: 10px;
+  min-width: 0;
+}
+.view-sd .sd-compare-col h4 {
+  margin: 0 0 8px;
+  font-size: .95rem;
+}
+.view-sd .sd-draft-block {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 8px;
+}
+.view-sd .sd-draft-block:first-child {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+}
+.view-sd .sd-draft-block h5 {
+  margin: 0 0 4px;
+  font-size: .9rem;
+}
+.view-sd .sd-followups {
+  margin-top: 12px;
+}
+.view-sd .sd-followups ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+.view-sd .sd-brief .md pre,
+.view-sd .sd-guide .md pre,
+.view-sd .sd-compare-col .md pre,
+.view-sd .sd-draft-block .md pre {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.view-sd .sd-brief .md table,
+.view-sd .sd-guide .md table,
+.view-sd .sd-compare-col .md table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
 @media (max-width: 860px) {
-  .view-sd .sd-phases {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .view-sd .sd-compare-grid {
+    grid-template-columns: 1fr;
   }
 }
 @media (max-width: 520px) {
@@ -162,11 +306,36 @@
     width: 100%;
     justify-content: space-between;
   }
+  .view-sd .sd-time {
+    font-size: 1.3rem;
+  }
+  .view-sd .sd-filters .chips {
+    width: 100%;
+  }
+  .view-sd .sd-row-head h2 {
+    flex-basis: 100%;
+  }
   .view-sd .sd-phases {
     grid-template-columns: 1fr;
+  }
+  .view-sd .sd-brief .md {
+    max-height: 42vh;
+    overflow-y: auto;
+  }
+  .view-sd .sd-textarea {
+    min-height: 180px;
   }
   .view-sd .sd-row-foot {
     flex-wrap: wrap;
     gap: 8px;
+  }
+  .view-sd .sd-write-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .view-sd .sd-write-actions .btn,
+  .view-sd .sd-finish-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
   }
 }
