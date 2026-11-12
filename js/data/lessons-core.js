@@ -1717,6 +1717,364 @@ class Lookups {
     answer: 0,
     explain: 'Đây chính là cơ chế khiến chuỗi map an toàn: Optional không bao giờ chứa null, nên kết quả null của hàm được quy về sự vắng mặt. Nếu hàm của bạn đã trả Optional thì dùng flatMap, vì map sẽ tạo Optional bọc Optional.'
   }], related: ['modern-002', 'core-007', 'core-003'], tags: ['Optional', 'null', 'Objects.requireNonNull', 'API design']
+},
+{
+  id: 'lesson-core-010', track: 'core', order: 10,
+  title: 'Composite key an toàn: equals, hashCode và compareTo nhất quán', level: 'senior', minutes: 30,
+  goals: [
+    'Giải thích được vì sao HashMap và TreeMap có thể xem hai key là trùng theo hai cách khác nhau',
+    'Tự viết key gồm nhiều phần theo đúng hợp đồng equals/hashCode/compareTo',
+    'Kiểm tra class key bằng cả HashMap lẫn TreeMap thay vì chỉ gọi trực tiếp từng method'
+  ],
+  body: `**Tóm tắt:** Một composite key (khóa ghép) là khóa được tạo từ nhiều giá trị, ví dụ mã tenant và mã đơn hàng. Muốn dùng cùng class an toàn trong {{HashMap}} và {{TreeMap}}, {{equals}} và {{hashCode}} phải xét cùng các thành phần, còn thứ tự tự nhiên từ {{compareTo}} phải trả 0 đúng với những cặp mà {{equals}} coi là bằng nhau; nếu không, một collection có thể tìm trượt hoặc âm thầm bỏ dữ liệu.
+
+### Từ dữ liệu nghiệp vụ tới object key
+Hãy tưởng tượng nhiều khách hàng cùng có đơn hàng số {{42}}. Chỉ dùng {{orderId}} làm khóa thì đơn {{42}} của tenant A và đơn {{42}} của tenant B bị trộn. Khóa đúng là cặp {{(tenantId, orderId)}}. Mỗi object đại diện cho một cặp; hai object khác nhau trong bộ nhớ vẫn phải được coi là cùng khóa nếu cả hai thành phần có cùng giá trị.
+
+{{equals}} là phép hỏi “cùng một giá trị nghiệp vụ không?”. {{hashCode}} cho {{HashMap}} một số để chọn bucket (ngăn chứa); nó là bước định vị nhanh, chưa phải câu trả lời cuối. {{compareTo}} định nghĩa thứ tự tự nhiên, như xếp từ điển theo tenant rồi theo mã đơn. {{TreeMap}} giữ khóa trong cây tìm kiếm có thứ tự và xem kết quả so sánh bằng 0 là “khóa này đã có”.
+
+### Vì sao ba method phải thống nhất
+Với {{HashMap}}, đường đi khi {{put}} hoặc {{get}} là: gọi {{hashCode}} → chọn bucket → so {{equals}} với các khóa trong bucket. Do đó nếu {{a.equals(b)}} là true thì hash bắt buộc bằng nhau; nếu không, {{HashMap}} có thể tìm ở bucket khác và không bao giờ gọi {{equals}} để phát hiện khóa tương đương. Chiều ngược lại không bắt buộc: hai khóa khác nhau được phép trùng hash, chỉ làm tăng va chạm và giảm tốc độ.
+
+{{TreeMap}} lại không dùng {{hashCode}} hoặc {{equals}} để quyết định vị trí. Nó gọi {{compareTo}} (hoặc {{Comparator}} được truyền vào). So sánh trả 0 nghĩa là cùng một khóa đối với map; lệnh put tiếp theo thay giá trị cũ, không tạo entry thứ hai. Vì thế điều kiện thực dụng là {{compareTo(a, b) == 0}} khi và chỉ khi {{a.equals(b)}}. Java cho phép thứ tự không nhất quán với equals, nhưng tài liệu {{Comparable}} khuyến nghị nhất quán; với map/set có thứ tự, không nhất quán thường tạo hành vi gây ngạc nhiên.
+
+~~~java
+final class OrderKey implements Comparable<OrderKey> {
+    private final String tenant, order;
+    OrderKey(String tenant, String order) {
+        this.tenant = Objects.requireNonNull(tenant);
+        this.order = Objects.requireNonNull(order);
+    }
+    @Override public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof OrderKey k)) return false;
+        return tenant.equals(k.tenant) && order.equals(k.order);
+    }
+    @Override public int hashCode() { return Objects.hash(tenant, order); }
+    @Override public int compareTo(OrderKey k) {
+        int first = tenant.compareTo(k.tenant);
+        return first != 0 ? first : order.compareTo(k.order);
+    }
 }
+~~~
+
+Ở đây mã tenant được xét trước; nếu giống nhau mới so mã đơn. Không dùng phép trừ để so số nguyên vì phép trừ có thể tràn và đảo thứ tự; dùng {{Integer.compare}} hoặc {{Long.compare}}. Với chuỗi, {{String.compareTo}} trả số âm, 0, hoặc số dương theo thứ tự từ điển; đừng phụ thuộc vào số âm/dương chính xác là bao nhiêu.
+
+### Ranh giới dữ liệu và thứ tự nghiệp vụ
+Mã có phân biệt hoa thường hay không là quy tắc nghiệp vụ, không phải quyết định ngẫu nhiên trong {{equals}}. Nếu hệ thống xem {{Acme}} và {{ACME}} là một tenant, hãy chuẩn hóa ở constructor hoặc tại cửa vào bằng quy tắc locale độc lập, rồi để cả ba method dùng cùng giá trị chuẩn hóa. Không chuẩn hóa chỉ trong {{compareTo}}: khi ấy TreeMap có thể gộp hai key mà HashMap giữ tách rời.
+
+Key cũng phải bất biến trong khi nằm trong collection. {{final}} trên field ngăn gán field lần nữa, còn class {{final}} ngăn subclass thay đổi ý nghĩa bằng/so sánh. Nếu đổi thành phần key sau khi đưa vào HashMap, map vẫn để entry ở bucket cũ trong khi lần tra cứu tính hash mới. Một record có thể tự sinh equals/hashCode theo các component, nhưng không tự sinh {{Comparable}}; và component mutable vẫn cần sao chép phòng vệ.
+
+| Nơi dùng | Method quyết định | Hậu quả khi bất nhất |
+|---|---|---|
+| {{HashMap}} / {{HashSet}} | {{hashCode}}, sau đó {{equals}} | get trượt hoặc set chứa khóa trùng |
+| {{TreeMap}} / {{TreeSet}} | {{compareTo}} hoặc comparator | put thay entry cũ hoặc set bỏ phần tử |
+| {{List.contains}} | {{equals}} | kết quả tìm kiếm không đồng nhất với collection khác |
+
+### Ví dụ đời thực
+Một dịch vụ nhận sự kiện từ nhiều tenant, với mỗi tenant có mã đơn hàng riêng. Trong một đợt replay, 120 nghìn sự kiện được gom tạm theo {{OrderKey}} trước khi ghi database. Phiên bản lỗi chỉ so {{order}} trong {{compareTo}}, còn {{equals}} so cả tenant và order. Hai tenant có cùng 7.531 mã đơn bị TreeMap coi là cùng khóa; giá trị put sau ghi đè giá trị trước. Log đầu vào vẫn có đủ sự kiện nên lỗi trông giống thiếu dữ liệu ở database. Test tái hiện tạo hai tenant cùng order ID và kiểm tra kích thước map: trước sửa kích thước là 1, sau sửa là 2; replay mẫu giữ đủ 120 nghìn sự kiện. Đây là minh họa kiểm thử, khi điều tra thật cần đối chiếu metric, log và số liệu lưu trữ thay vì mặc định kết quả này.
+
+### Các lỗi thường gặp
+- Quên một field ở {{hashCode}} hoặc chỉ dùng một field ở {{equals}}: các collection hash không còn theo cùng định nghĩa khóa.
+- So chuỗi không phân biệt hoa thường trong {{compareTo}} nhưng phân biệt trong {{equals}}: {{TreeMap}} có thể làm mất một entry.
+- Cài đặt {{compareTo}} bằng {{a - b}}: tràn số làm sai thứ tự ở giá trị biên.
+- Dùng field mutable, hoặc field null nhưng gọi trực tiếp {{field.equals}}: key bị đổi nghĩa hoặc ném NPE. Hãy validate đầu vào và chỉ giữ giá trị bất biến.
+- Cho {{TreeMap}} comparator khác nhau ở các luồng code: cùng một cặp key có thể được gộp ở nơi này nhưng tách ở nơi khác. Chọn, đặt tên và kiểm thử đúng thứ tự nghiệp vụ cần dùng.
+
+> Senior tip: test contract theo bộ ba cụ thể: cặp bằng nhau phải có cùng hash và compareTo bằng 0; cặp khác nhau ở từng thành phần phải không bị TreeMap gộp. Với key dùng ở nhiều service, thống nhất quy tắc chuẩn hóa mã ngay tại ranh giới API.
+
+### Liên hệ phỏng vấn
+Khi được hỏi cách thiết kế khóa ghép, hãy nêu định nghĩa giá trị trước: những trường nào làm hai bản ghi trở thành cùng một bản ghi? Sau đó dùng đúng các trường ấy cho equals/hashCode; với thứ tự nhiều trường thì so lần lượt từng trường cho tới khi khác. Giải thích HashMap dùng hash để tới bucket rồi equals để xác nhận, còn TreeMap dùng compareTo và coi 0 là trùng. Tôi sẽ kiểm thử cả lookup bằng object mới có cùng dữ liệu và hành vi thay thế của TreeMap. Tôi cũng hỏi nghiệp vụ về chữ hoa/thường, null, và khả năng một thành phần thay đổi. Nếu dùng record thì record tiết kiệm phần equals/hashCode viết tay nhưng không tự tạo thứ tự và không làm component mutable trở nên an toàn. Cách trả lời này cho thấy tôi quan tâm cả hợp đồng ngôn ngữ lẫn hậu quả dữ liệu trong production.`,
+  exercises: [{
+    title: 'Viết TenantOrderKey dùng nhất quán trong HashMap và TreeMap',
+    prompt: `Hoàn thiện {{TenantOrderKey}}. Tenant và mã đơn là chuỗi phân biệt hoa thường, không được null. Hai key bằng nhau khi cả hai chuỗi bằng nhau. Thứ tự tự nhiên so tenant trước rồi mới so mã đơn. Không dùng phép trừ để so sánh số; bài này dùng chuỗi. Test sẽ đưa các instance độc lập vào {{HashMap}} và {{TreeMap}} để bắt cả hai hợp đồng.`,
+    starter: `final class TenantOrderKey implements Comparable<TenantOrderKey> {
+    private final String tenant;
+    private final String order;
+    TenantOrderKey(String tenant, String order) {
+        this.tenant = tenant;
+        this.order = order;
+    }
+    @Override public boolean equals(Object o) { return false; }
+    @Override public int hashCode() { return 0; }
+    @Override public int compareTo(TenantOrderKey other) { return 0; }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": dieu kien khong dat");
+    }
+    public static void main(String[] args) {
+        TenantOrderKey a = new TenantOrderKey("tenant-a", "order-7");
+        TenantOrderKey same = new TenantOrderKey("tenant-a", "order-7");
+        TenantOrderKey otherOrder = new TenantOrderKey("tenant-a", "order-8");
+        TenantOrderKey otherTenant = new TenantOrderKey("tenant-b", "order-7");
+        check("equals is reflexive symmetric and null safe",
+            a.equals(a) && a.equals(same) && same.equals(a) && !a.equals(null) && !a.equals("order-7"));
+        check("equal keys have equal hashes and natural comparison zero",
+            a.hashCode() == same.hashCode() && a.compareTo(same) == 0);
+        check("each key component affects equality and order",
+            !a.equals(otherOrder) && !a.equals(otherTenant)
+                && a.compareTo(otherOrder) < 0 && a.compareTo(otherTenant) < 0);
+        Map<TenantOrderKey, String> hashMap = new HashMap<>();
+        hashMap.put(a, "created");
+        check("HashMap finds value with a separately created key",
+            "created".equals(hashMap.get(same)));
+        TreeMap<TenantOrderKey, String> treeMap = new TreeMap<>();
+        treeMap.put(a, "old");
+        treeMap.put(same, "updated");
+        treeMap.put(otherTenant, "other tenant");
+        check("TreeMap replaces equal key but keeps other tenant",
+            treeMap.size() == 2 && "updated".equals(treeMap.get(a))
+                && "other tenant".equals(treeMap.get(otherTenant)));
+        check("TreeMap orders tenant then order",
+            treeMap.firstKey().equals(a) && treeMap.lastKey().equals(otherTenant));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `final class TenantOrderKey implements Comparable<TenantOrderKey> {
+    private final String tenant;
+    private final String order;
+    TenantOrderKey(String tenant, String order) {
+        this.tenant = Objects.requireNonNull(tenant, "tenant");
+        this.order = Objects.requireNonNull(order, "order");
+    }
+    @Override public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof TenantOrderKey k)) return false;
+        return tenant.equals(k.tenant) && order.equals(k.order);
+    }
+    @Override public int hashCode() { return Objects.hash(tenant, order); }
+    @Override public int compareTo(TenantOrderKey other) {
+        int byTenant = tenant.compareTo(other.tenant);
+        return byTenant != 0 ? byTenant : order.compareTo(other.order);
+    }
+}`,
+    hints: [
+      'Viết equals theo thứ tự: cùng tham chiếu, đúng kiểu, rồi so cả tenant lẫn order. Với kiểu chuỗi đã được constructor bảo đảm không null, dùng String.equals được.',
+      'hashCode cần dùng đúng hai thành phần đó. compareTo so tenant trước; nếu kết quả bằng 0 mới so order, không trả 0 sớm chỉ vì order trùng.',
+      'HashMap kiểm tra lookup bằng instance mới; TreeMap kiểm tra hai bước put với key bằng nhau phải thay giá trị cũ nhưng key tenant khác vẫn tồn tại.'
+    ],
+    explain: `{{HashMap}} dùng hash trước rồi mới dùng equals, nên phép thử lookup bằng object {{same}} chứng minh cả hai method phối hợp được. {{TreeMap}} không hỏi equals để tìm vị trí: {{compareTo}} trả 0 là nó xem key đã có và thay giá trị. So sánh từng thành phần theo cùng thứ tự đảm bảo hai key bằng nhau có compareTo bằng 0, đồng thời hai tenant khác nhau không bị gộp. Trong class thực tế nên kiểm tra null ở constructor như lời giải để lỗi dữ liệu phát sinh tại ranh giới, thay vì xuất hiện muộn trong equals hoặc compareTo.`
+  }],
+  check: [
+    {
+      q: '{{HashMap}} đã có key a. Nếu {{a.equals(b)}} là true nhưng hashCode khác nhau, điều gì có thể xảy ra khi gọi {{get(b)}}?',
+      options: [
+        '{{HashMap}} luôn quét toàn bộ map và chắc chắn tìm được a',
+        'b có thể đi tới bucket khác nên {{get(b)}} trả null dù a đang có trong map',
+        '{{HashMap}} gọi {{compareTo}} để chuyển b tới bucket đúng',
+        'Java tự sửa hashCode của b để khớp với a'
+      ],
+      answer: 1,
+      explain: 'B đúng: HashMap chọn bucket bằng hash trước khi gọi equals; hash khác có thể dẫn tới bucket khác. A sai vì HashMap không quét toàn bộ map cho lookup thông thường. C sai vì HashMap không dùng compareTo để tra cứu thông thường. D sai vì Java không tự sửa method của object.'
+    },
+    {
+      q: 'Trong {{TreeMap}}, {{compareTo(a, b)}} trả 0 nhưng {{a.equals(b)}} trả false. Hệ quả đáng lo nhất là gì?',
+      options: [
+        'TreeMap xem a và b là cùng khóa; put key thứ hai có thể thay giá trị của key thứ nhất',
+        'TreeMap bỏ qua compareTo và gọi hashCode',
+        'TreeMap tự ném lỗi biên dịch',
+        'Không có hệ quả vì TreeMap chỉ lưu value'
+      ],
+      answer: 0,
+      explain: 'A đúng: TreeMap dựa trên comparator/compareTo; kết quả 0 nghĩa là cùng vị trí khóa và lần put sau thay giá trị. B sai: TreeMap là collection có thứ tự, không tra cứu bằng hashCode. C sai: hợp đồng không nhất quán thường là lỗi logic khi chạy, không phải lỗi biên dịch. D sai vì cách so sánh khóa trực tiếp quyết định map có giữ hai entry hay không.'
+    },
+    {
+      q: 'Hai khóa ghép bằng nhau theo tenant và order. Cách chọn field nào cho ba method là hợp lý nhất?',
+      options: [
+        'equals dùng tenant; hashCode dùng order; compareTo trả 0 cho mọi khóa',
+        'equals và hashCode dùng cả hai field; compareTo lần lượt so tenant rồi order',
+        'equals dùng cả hai field; hashCode chỉ dùng order; compareTo bỏ qua tenant',
+        'Dùng cùng các field trong equals và hashCode; để compareTo trả 0 đúng khi hai key bằng nhau'
+      ],
+      answer: 3,
+      explain: 'D đúng: hashCode phải nhất quán với equals, còn compareTo bằng 0 nên tương ứng với bằng nhau để TreeMap không gộp nhầm. B gần đúng nhưng chưa nêu điều kiện quan trọng compareTo phải so các cặp thành phần sao cho zero tương đương equals; nếu compareTo không phân biệt một khác biệt trong equals thì vẫn lỗi. A và C dùng tập field/thứ tự không nhất quán, khiến map hoặc set có hành vi sai.'
+    }
+  ],
+  related: ['core-001'],
+  tags: ['equals', 'hashCode', 'compareTo', 'HashMap', 'TreeMap', 'composite-key']
+},
+{
+  id: 'lesson-core-011', track: 'core', order: 11,
+  title: 'Immutable snapshot cho request: defensive copy ở cả hai biên', level: 'mid', minutes: 25,
+  goals: [
+    'Giải thích được aliasing và vì sao field final không làm object được trỏ tới trở nên bất biến',
+    'Tạo class immutable bằng private final field, kiểm tra đầu vào và defensive copy',
+    'Phân biệt snapshot bất biến với unmodifiable view và nhận biết giới hạn shallow copy'
+  ],
+  body: `**Tóm tắt:** Object bất biến là object không thể đổi trạng thái quan sát được sau khi tạo. Nếu constructor nhận một list mutable (có thể sửa) rồi giữ nguyên tham chiếu, caller vẫn có thể thay đổi nội dung bên trong; muốn tạo snapshot an toàn, phải tách dữ liệu khi nhận vào và không cho caller sửa trạng thái nội bộ qua accessor.
+
+### Tham chiếu giống như chìa khóa cùng mở một ngăn kéo
+Trong Java, biến kiểu object lưu tham chiếu tới object, không chứa một bản sao của toàn bộ object. Nếu biến {{input}} và field {{tags}} cùng trỏ tới một {{ArrayList}}, gọi {{input.add("urgent")}} làm nội dung mà request nhìn thấy cũng đổi. Việc nhiều đường truy cập cùng trỏ tới một object gọi là aliasing (bí danh/tham chiếu dùng chung).
+
+{{final}} chỉ ngăn gán lại chính biến field sau khi constructor chạy; nó không khóa object. Vì vậy {{private final List<String> tags}} vẫn có thể thay đổi bằng {{tags.add(...)}} nếu class giữ một ArrayList và có đường gọi tới nó.
+
+### Bất biến cần bảo vệ cả hai chiều
+Khi **nhận dữ liệu**, sao chép cấu trúc ngay trong constructor. Nếu không, caller vẫn giữ list gốc và sửa được nội dung. Khi **trả dữ liệu**, không được đưa một list mutable nội bộ ra ngoài; caller có thể sửa nó sau khi gọi getter. Với danh sách các chuỗi, {{List.copyOf}} tạo snapshot không sửa được: sửa list nguồn không làm snapshot thay đổi, và gọi add/remove trên snapshot ném {{UnsupportedOperationException}}.
+
+~~~java
+final class RequestSnapshot {
+    private final String requestId;
+    private final List<String> tags;
+    RequestSnapshot(String requestId, List<String> tags) {
+        this.requestId = Objects.requireNonNull(requestId);
+        this.tags = List.copyOf(Objects.requireNonNull(tags));
+    }
+    String requestId() { return requestId; }
+    List<String> tags() { return tags; }
+}
+~~~
+
+Accessor trả thẳng {{tags}} ở ví dụ này an toàn vì field trỏ tới list bất biến do {{List.copyOf}} tạo. Nếu thay bằng {{ArrayList}} nội bộ thì accessor phải trả một bản sao bất biến hoặc bản sao độc lập; đừng trả list gốc. Chuỗi {{String}} cũng bất biến, nên shallow copy (sao chép nông: chỉ tạo bản sao cấu trúc và giữ nguyên tham chiếu tới từng phần tử) là đủ cho bài này.
+
+### Snapshot khác view chỉ đọc
+{{Collections.unmodifiableList(source)}} tạo một wrapper không cho sửa qua wrapper, nhưng vẫn nhìn vào list {{source}}. Nếu code khác sửa source, nội dung nhìn qua wrapper cũng đổi. Đây là unmodifiable view (khung nhìn không sửa được), không phải snapshot. {{List.copyOf(source)}} tách cấu trúc khỏi list nguồn và không cho sửa cấu trúc của bản copy.
+
+| Cách giữ / trả danh sách | Caller sửa qua kết quả? | Thay đổi nguồn có lộ ra? |
+|---|---|---|
+| Giữ/trả list gốc | Có | Có |
+| {{unmodifiableList(source)}} | Không qua wrapper | Có, đây vẫn là view |
+| {{List.copyOf(source)}} | Không | Không, snapshot cấu trúc |
+
+{{List.copyOf}} không tự biến các phần tử thành immutable. Nếu list chứa {{MutableTag}} có setter, caller giữ tham chiếu tới một tag và gọi setter thì snapshot vẫn thấy tag đã đổi. Với dữ liệu lồng nhau, dùng phần tử immutable, chuyển sang value object, hoặc sao chép từng phần tử trong lúc tạo snapshot. Không được gọi shallow snapshot là deep immutable nếu phần tử còn mutable.
+
+### Validation và lỗi ở đúng thời điểm
+{{Objects.requireNonNull}} giúp từ chối null ngay tại constructor, nơi dữ liệu đi vào object. {{List.copyOf}} cũng từ chối phần tử null. Đây là quyết định rõ ràng hơn so với giữ list có null rồi chờ một method khác ném NPE. Nếu domain cho phép null hoặc cần giữ vị trí null thì phải định nghĩa chính sách khác; không thể dùng List.copyOf trong trường hợp ấy mà không xử lý trước.
+
+Immutability rất hữu ích cho cấu hình, request snapshot, message đã xác thực và value object: nhiều thread có thể đọc cùng trạng thái mà không cần khóa bảo vệ các field đó. Nó không làm các object khác mà class gọi tới trở thread-safe, không bảo vệ mutable item bên trong, và không thay thế transaction khi nhiều thao tác cần cập nhật nguyên tử. ORM entity thường có lifecycle mutable riêng; thường chuyển entity thành DTO/snapshot bất biến ở ranh giới thay vì cố biến entity đang được quản lý thành final class.
+
+### Ví dụ đời thực
+Một API nhận request tạo báo cáo với 12 filter và chuyển nó cho một tác vụ chạy nền. Bản lỗi giữ nguyên list filter do controller sở hữu. Controller tái sử dụng list cho request kế tiếp và xóa filter cũ; tác vụ nền đôi khi chạy sau đó với chỉ 3 filter, khiến báo cáo thiếu dữ liệu dù log nhận đầu vào ghi đủ 12. Cách điều tra là so snapshot request tại lúc enqueue với tham số lúc worker chạy và tái hiện bằng cách sửa list ngay sau khi tạo request. Cách sửa là copy tại constructor, xác thực phần tử, rồi chỉ trả list bất biến. Trong một test tải lặp lại, dữ liệu đầu vào 12 filter vẫn giữ nguyên qua toàn bộ khoảng chờ; con số này mô tả kịch bản minh họa, không phải cam kết đo hiệu năng. Bản copy có chi phí O(n) thời gian và bộ nhớ, nên với danh sách rất lớn phải đo và thiết kế ownership rõ, không bỏ copy một cách âm thầm.
+
+### Lỗi thường gặp
+- Chỉ đánh dấu field {{final}} rồi nghĩ object đã bất biến: final bảo vệ tham chiếu, không bảo vệ phần tử mutable.
+- Copy ở constructor nhưng accessor trả list mutable nội bộ: caller vẫn thay đổi được snapshot theo chiều ngược lại.
+- Dùng unmodifiable view và nghĩ nó tách khỏi nguồn: nguồn thay đổi thì view vẫn đổi.
+- Copy list nhưng phần tử là object mutable: cấu trúc tách rời nhưng trạng thái phần tử vẫn alias.
+- Dùng {{List.copyOf}} mà không biết nó từ chối list null hoặc phần tử null: hãy xác định contract đầu vào và kiểm tra tại biên.
+- Copy mọi thứ nhiều lần trong đường xử lý nóng: mỗi bản sao O(n); ưu tiên một snapshot ở ranh giới rõ ràng rồi truyền object bất biến.
+
+> Senior tip: với request async, ghi nhận thời điểm snapshot được tạo và chỉ truyền snapshot qua hàng đợi; tránh để thread worker đọc một DTO/list mà request thread còn giữ quyền sửa. Nếu phần tử collection mutable, làm test sửa cả list gốc lẫn từng phần tử để chứng minh bạn đã copy đúng độ sâu.
+
+### Liên hệ phỏng vấn
+Tôi sẽ giải thích rằng Java truyền giá trị tham chiếu, nên truyền List vào constructor không tự copy dữ liệu. Trường final chỉ ngăn đổi tham chiếu, không ngăn ArrayList đổi nội dung. Vì vậy tôi tạo snapshot tại ranh giới nhận dữ liệu bằng List.copyOf, validate null ngay lúc tạo, và chỉ trả ra list bất biến. Với phần tử String, copy nông đủ vì String immutable; với phần tử mutable, phải copy từng phần tử hoặc chuyển chúng thành value object bất biến. Tôi cũng phân biệt unmodifiableList là view: caller không sửa qua view nhưng nguồn gốc có thể đổi và view nhìn thấy đổi đó. Trong production, snapshot đặc biệt quan trọng khi đưa request sang executor hoặc queue vì thời điểm xử lý tách khỏi thời điểm nhận. Cuối cùng, tôi cân nhắc chi phí O(n) và đo với payload thực, nhưng không hy sinh tính đúng đắn chỉ để tránh một bản sao chưa được chứng minh là đắt.`,
+  exercises: [{
+    title: 'Tạo RequestSnapshot không để lộ list mutable',
+    prompt: `Hoàn thiện {{RequestSnapshot}} để nó giữ mã request và tag. Mã request không null; list tag và mọi phần tử phải không null. Sau khi tạo, sửa list nguồn không được đổi snapshot, và gọi {{add}} qua accessor phải bị từ chối. Các phần tử là {{String}} immutable nên {{List.copyOf}} là đủ; không cần tự viết deep copy.`,
+    starter: `final class RequestSnapshot {
+    private final String requestId;
+    private final List<String> tags;
+    RequestSnapshot(String requestId, List<String> tags) {
+        this.requestId = requestId;
+        this.tags = tags;
+    }
+    String requestId() { return requestId; }
+    List<String> tags() { return tags; }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable test) {
+        total++;
+        try { test.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual))
+            throw new AssertionError("expected " + expected + " but got " + actual);
+    }
+    public static void main(String[] args) {
+        check("copy is isolated from later source changes", () -> {
+            List<String> source = new ArrayList<>(List.of("urgent", "billing"));
+            RequestSnapshot s = new RequestSnapshot("r-1", source);
+            source.clear();
+            source.add("changed");
+            eq(List.of("urgent", "billing"), s.tags());
+        });
+        check("accessor does not allow mutation", () -> {
+            RequestSnapshot s = new RequestSnapshot("r-2", new ArrayList<>(List.of("api")));
+            try { s.tags().add("admin"); throw new AssertionError("list was modifiable"); }
+            catch (UnsupportedOperationException expected) { }
+            eq(List.of("api"), s.tags());
+        });
+        check("id and empty list are preserved", () -> {
+            RequestSnapshot s = new RequestSnapshot("r-empty", new ArrayList<>());
+            eq("r-empty", s.requestId());
+            eq(List.of(), s.tags());
+        });
+        check("null id is rejected at construction", () -> {
+            try { new RequestSnapshot(null, List.of()); throw new AssertionError("null id accepted"); }
+            catch (NullPointerException expected) { }
+        });
+        check("null list is rejected at construction", () -> {
+            try { new RequestSnapshot("r-3", null); throw new AssertionError("null list accepted"); }
+            catch (NullPointerException expected) { }
+        });
+        check("null element is rejected at construction", () -> {
+            List<String> source = new ArrayList<>();
+            source.add(null);
+            try { new RequestSnapshot("r-4", source); throw new AssertionError("null tag accepted"); }
+            catch (NullPointerException expected) { }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `final class RequestSnapshot {
+    private final String requestId;
+    private final List<String> tags;
+    RequestSnapshot(String requestId, List<String> tags) {
+        this.requestId = Objects.requireNonNull(requestId, "requestId");
+        this.tags = List.copyOf(Objects.requireNonNull(tags, "tags"));
+    }
+    String requestId() { return requestId; }
+    List<String> tags() { return tags; }
+}`,
+    hints: [
+      'String đã immutable, nên chỉ cần giữ requestId sau khi kiểm tra null. List là mutable nên phải tạo snapshot chứ không gán tham chiếu trực tiếp.',
+      'List.copyOf vừa tách list nguồn, vừa trả collection không sửa được; nó cũng từ chối phần tử null.',
+      'Accessor có thể trả field tags trực tiếp nếu constructor chỉ gán List.copyOf vào field và không còn đường nào làm lộ list mutable khác.'
+    ],
+    explain: `Test thứ nhất sửa list nguồn sau khi tạo để phát hiện alias từ caller vào object. Test thứ hai sửa qua accessor để phát hiện alias từ object ra caller. Hai hướng đều phải bị chặn. {{List.copyOf}} tạo snapshot cấu trúc bất biến và ở bài này các phần tử String cũng bất biến nên không cần copy sâu. Constructor kiểm tra null ngay khi tạo giúp lỗi xuất hiện đúng nơi dữ liệu đi vào. Nếu thay String bằng một lớp tag mutable, List.copyOf không đủ: cần copy từng tag hoặc buộc tag immutable.`
+  }],
+  check: [
+    {
+      q: 'Một field khai báo {{private final List<String> tags}} nhưng giữ ArrayList do caller truyền vào. Caller gọi {{add}} trên list đó thì sao?',
+      options: [
+        'Không thể thêm vì final khóa toàn bộ object List',
+        'List gốc đổi và object cũng nhìn thấy nội dung mới vì hai bên giữ cùng tham chiếu',
+        'JVM tự tạo bản sao khi list được gán vào field',
+        'Java báo lỗi biên dịch vì field final chứa collection'
+      ],
+      answer: 1,
+      explain: 'B đúng: final chỉ ngăn gán lại field, không làm object được trỏ tới bất biến; cả caller và class đang trỏ cùng ArrayList. A sai vì final không khóa method add. C sai vì Java không tự copy object khi gán. D sai vì field final có thể tham chiếu tới collection mutable hợp lệ.'
+    },
+    {
+      q: 'Vì sao {{Collections.unmodifiableList(source)}} không nhất thiết là snapshot?',
+      options: [
+        'Vì wrapper chỉ chặn sửa qua wrapper; nếu source đổi thì nội dung nhìn qua wrapper cũng đổi',
+        'Vì wrapper luôn cho phép gọi add',
+        'Vì unmodifiableList tự sửa source thành immutable',
+        'Vì phương thức này chỉ dùng được với mảng'
+      ],
+      answer: 0,
+      explain: 'A đúng: unmodifiableList là view trên list nguồn, không tách dữ liệu. B sai: wrapper ném UnsupportedOperationException khi sửa qua nó. C sai: nguồn vẫn mutable và có thể được sửa qua tham chiếu khác. D sai: phương thức nhận List.'
+    },
+    {
+      q: 'Đã gọi {{List.copyOf}} cho List<MutableTag>. Điều gì vẫn có thể làm nội dung quan sát được thay đổi?',
+      options: [
+        'Không gì cả, copyOf luôn deep-copy mọi object',
+        'Chỉ việc gọi add trên snapshot',
+        'Caller dùng tham chiếu MutableTag cũ để sửa object phần tử đang được snapshot tham chiếu tới',
+        'List.copyOf chỉ sao chép phần tử đầu tiên'
+      ],
+      answer: 2,
+      explain: 'C đúng: List.copyOf sao chép cấu trúc list, không sao chép sâu từng phần tử. Nếu phần tử mutable còn được chia sẻ, thay đổi phần tử vẫn nhìn thấy từ snapshot. A sai vì copyOf không deep-copy. B sai vì cấu trúc snapshot không cho add. D sai vì nó sao chép các phần tử theo thứ tự, không chỉ phần đầu.'
+    }
+  ],
+  related: ['core-002'],
+  tags: ['immutability', 'defensive-copy', 'List.copyOf', 'aliasing']
+},
 );
 

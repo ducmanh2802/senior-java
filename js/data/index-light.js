@@ -1869,6 +1869,8 @@ window.DATA_INDEX = {
     {"id":"lesson-core-007","track":"core","order":7,"title":"Xử lý exception trong service: wrap giữ cause, retry có điều kiện và Result","level":"senior","minutes":30},
     {"id":"lesson-core-008","track":"core","order":8,"title":"Record, sealed interface và pattern matching: mô hình hoá kết quả nghiệp vụ","level":"senior","minutes":30},
     {"id":"lesson-core-009","track":"core","order":9,"title":"Optional và xử lý null đúng cách: kiểu trả về, cửa vào và giá trị mặc định đắt","level":"mid","minutes":25},
+    {"id":"lesson-core-010","track":"core","order":10,"title":"Composite key an toàn: equals, hashCode và compareTo nhất quán","level":"senior","minutes":30},
+    {"id":"lesson-core-011","track":"core","order":11,"title":"Immutable snapshot cho request: defensive copy ở cả hai biên","level":"mid","minutes":25},
     {"id":"lesson-modern-001","track":"modern","order":1,"title":"Stream: lazy evaluation, stateless/stateful và Collectors nhóm theo khách hàng, tháng","level":"senior","minutes":30},
     {"id":"lesson-modern-002","track":"modern","order":2,"title":"Optional trong API: orElse/orElseGet, tránh get()","level":"mid","minutes":25},
     {"id":"lesson-modern-003","track":"modern","order":3,"title":"Record, sealed interface và pattern matching (Java 21)","level":"lead","minutes":30},
