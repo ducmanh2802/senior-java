@@ -5944,4 +5944,597 @@ Một công ty bán lẻ có monolith Java 8 năm tuổi, 450.000 dòng, 1 DB Or
   ],
   tags: ['monolith decomposition', 'bounded context', 'ddd', 'strangler fig', 'microservices']
 },
+{
+  id: 'microservices-070',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Hệ thống có 3 service cùng cần gọi LLM (tóm tắt đơn hàng, gán nhãn khách hàng, sinh mô tả sản phẩm). Bạn nhúng SDK LLM vào từng service hay tách một dịch vụ AI riêng? Nêu tiêu chí quyết định và cái giá phải trả của mỗi lựa chọn.',
+  a: `**Tóm tắt:** Nhúng SDK LLM vào từng service là nhanh và ít hạ tầng khi chỉ có một, hai chỗ dùng. Nhưng khi nhiều team dùng chung, bạn nên tách một **dịch vụ AI (AI gateway)** để gom việc gọi model về một chỗ: giữ API key, chia quota và chi phí, cache, đổi model, che dữ liệu cá nhân (PII) và cách ly lỗi. Quyết định không phải "cái nào tốt hơn" mà là "mức độ dùng chung và yêu cầu vận hành lớn đến đâu".
+
+### Thuật ngữ (giải thích nhanh)
+- **LLM**: large language model, mô hình sinh ngôn ngữ (GPT, Claude, Llama…). Nhận **prompt** (đoạn text) và trả về text.
+- **Token**: đơn vị tính tiền và giới hạn của LLM. 1 token xấp xỉ 4 ký tự tiếng Anh; tiếng Việt khoảng 2–3 ký tự một token.
+- **SDK**: thư viện chính thức của nhà cung cấp, hoặc lớp trừu tượng phía Java như **Spring AI** và **LangChain4j**.
+- **AI gateway**: service trung gian giữa các service nghiệp vụ và nhà cung cấp LLM, giống API gateway nhưng cho AI.
+- **PII**: personally identifiable information, dữ liệu gắn với một người (email, số điện thoại, số thẻ).
+- **p95**: 95% request nhanh hơn ngưỡng này (ví dụ p95 = 4s nghĩa là 5% request chậm hơn 4s).
+
+### Vì sao phải cân nhắc: cơ chế từng bước
+
+1. **Mỗi lần gọi LLM là một HTTP request ra ngoài** (api.anthropic.com, api.openai.com hoặc AWS Bedrock). Thời gian trả lời thường 0,5–4 giây, có thể 10 giây với output dài. Nếu nhúng thẳng vào service nghiệp vụ, service đó "cho mượn" thread và thời gian của nó cho một việc ngoài domain của nó.
+2. **Mỗi service tự giữ API key** thì key nằm rải rác ở nhiều config/secret. Mỗi lần rotate key phải deploy lại nhiều service; khi có sự cố không biết key nào bị lộ.
+3. **Không có chỗ nào biết tổng chi phí theo tenant hay theo model.** Hóa đơn nhà cung cấp tăng mà không quy được về service nào, nên không tách được chi phí nội bộ (chargeback).
+4. **Đổi model phải sửa code ở mọi service.** Ví dụ đổi tác vụ phân loại sang model nhỏ, rẻ hơn: nếu mỗi service tự gọi thì phải sửa và test ở cả ba.
+5. **Khi nhà cung cấp trả 429 (rate limit) hoặc chậm, lỗi lan theo từng service.** Không có circuit breaker (cầu dao) và fallback (phương án dự phòng) dùng chung, nên mỗi team tự phát minh lại.
+
+### Luồng khi tách dịch vụ AI
+
+~~~seq
+title: AI gateway dùng chung
+actors: Order | Support | AI Gateway | LLM API | Redis
+Order -> AI Gateway: POST /ai/summarize
+Support -> AI Gateway: POST /ai/classify
+AI Gateway -> Redis: kiểm tra cache và quota
+AI Gateway -> LLM API: gọi model (timeout, retry)
+LLM API --> AI Gateway: text + số token
+AI Gateway --> Order: kết quả + cost
+~~~
+
+Điểm mấu chốt của sơ đồ: **cả Order và Support đều không biết model nào đang chạy**. Chúng chỉ biết hợp đồng HTTP của AI gateway. Nhờ vậy đổi model, thêm nhà cung cấp dự phòng hay siết quota đều không làm chúng phải deploy lại.
+
+### Khi nào nhúng thẳng là đủ
+
+- Chỉ **một service duy nhất** cần LLM, một use case, làm prototype hoặc nội bộ.
+- Team nhỏ, chưa cần tách chi phí theo tenant.
+- Cần latency thấp nhất tuyệt đối (ví dụ autocomplete trong editor), không muốn thêm một hop mạng.
+- Không có dữ liệu nhạy cảm cần che tập trung.
+
+Khi đó việc tách gateway chỉ thêm 5–20ms mỗi lần gọi, thêm một service phải deploy, giám sát và bảo mật — chi phí không đổi lại gì.
+
+### Bảng so sánh
+
+| Tiêu chí | Nhúng SDK vào service | Tách AI gateway riêng |
+|---|---|---|
+| Số điểm tích hợp | Mỗi service một chỗ | Một chỗ duy nhất |
+| Quản lý API key | Rải rác, khó rotate | Tập trung, rotate một lần |
+| Quota / chi phí theo tenant | Khó, phải tự làm từng nơi | Làm một lần, dùng chung |
+| Đổi model | Sửa và test mọi service | Cấu hình ở gateway |
+| Cache kết quả | Mỗi service một cache, lặp lại | Cache dùng chung, tiết kiệm hơn |
+| Cách ly lỗi | Lỗi LLM làm chết service | Gateway cách ly, fallback tập trung |
+| Độ trễ | Thấp hơn một hop mạng | Thêm 5–20ms mỗi lần |
+| Vận hành | Đơn giản | Thêm service, thêm giám sát |
+| Phù hợp | 1–2 use case, prototype | Từ 3 team, cần kiểm soát chi phí |
+
+### Code: gateway là nơi duy nhất biết gọi LLM
+
+~~~java
+// Trong AI gateway: một chỗ duy nhất biết cách gọi LLM
+@Service
+class AiGateway {
+  private final ChatClient chat;      // Spring AI: builder sinh từ cấu hình
+  private final LlmQuota quota;
+  private final LlmCache cache;
+
+  AiGateway(ChatClient.Builder builder, LlmQuota q, LlmCache c) {
+    this.chat = builder.build();
+    this.quota = q; this.cache = c;
+  }
+
+  String summarize(String tenant, String text) {
+    quota.reserve(tenant, estimateTokens(text));   // chặn trước khi tốn tiền
+    String hit = cache.get(tenant, text);
+    if (hit != null) return hit;                   // cache: không gọi model
+    String out = chat.prompt().user(text).call().content();
+    cache.put(tenant, text, out);
+    quota.settle(tenant, out);                     // đối soát token thật
+    return out;
+  }
+}
+~~~
+
+Service nghiệp vụ chỉ gọi HTTP tới gateway; nó không cần biết Spring AI, không cần API key, không cần biết model.
+
+### Pitfall thực tế trên production
+
+- **Nhúng SDK rồi để model "rò" vào domain.** Entity nghiệp vụ có field {{aiSummary}}; sau này model đổi làm schema đổi theo. Hãy giữ ranh giới: service nghiệp vụ chỉ nhận string.
+- **Nhúng thẳng trong request đồng bộ mà không có timeout** (xem câu 072): một model chậm làm cạn thread pool của cả service.
+- **AI gateway thành điểm chết đơn (single point of failure).** Phải có nhiều instance, health check và circuit breaker riêng; nếu gateway chết thì mọi tính năng AI chết theo.
+- **Gateway chỉ "đi xuyên" mà không làm gì.** Nếu không gom cache/quota/redaction thì tách ra chỉ để thêm một hop mạng.
+- **Chi phí gấp đôi khi chuyển đổi.** Trong lúc chạy song song hai đường (cũ và mới) để so sánh, hóa đơn LLM tăng tạm thời; phải đặt ngân sách cho giai đoạn này.
+
+### Ví dụ đời thực
+
+Một hệ thống thương mại điện từ có 3 team: order (tóm tắt đơn), support (gán nhãn ticket) và catalog (mô tả sản phẩm). Ban đầu mỗi team tự gọi Anthropic với key riêng. Sau 2 tháng, hóa đơn LLM tăng từ 1.900 lên 4.300 USD/tháng, nhưng không ai biết vì sao: không có số liệu theo tenant. Nhóm dựng một AI gateway (Spring Boot + Spring AI) trước 3 service: mỗi team gọi HTTP nội bộ, gateway giữ key, đếm token theo tenant và có cache theo hash prompt. Kết quả sau 1 tháng: 41% số request là cache hit (mô tả sản phẩm ít đổi), chi phí còn 2.600 USD/tháng; thời gian p95 của order giảm 300ms vì bớt gọi trùng; việc đổi model cho tác vụ phân loại chỉ sửa 1 file cấu hình thay vì 3 service. Chi phí thêm: 1 service nhỏ (2 instance) và một dashboard Grafana.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Em không chọn theo cảm tính mà theo mức độ dùng chung. Nếu chỉ một service, một use case thì nhúng SDK là đủ, vì tách gateway chỉ thêm một hop mạng và một service phải vận hành. Nhưng ở đây có ba team cùng gọi LLM, mỗi team giữ key riêng, nên chi phí tăng mà không quy được về ai, và mỗi lần đổi model phải sửa ba nơi. Em tách một AI gateway đứng trước nhà cung cấp: nó giữ key, chia quota theo tenant và service, cache kết quả theo hash prompt, che dữ liệu cá nhân trước khi gửi, và là nơi duy nhất cấu hình timeout, retry, circuit breaker, fallback. Ba service nghiệp vụ chỉ biết hợp đồng HTTP của gateway, không biết model nào. Cái giá là thêm một service phải deploy và giám sát, cộng 5–20ms mỗi lần gọi, nhưng đổi lại kiểm soát được chi phí và đổi model không phải deploy cả hệ thống. Trong lúc chuyển đổi em chạy song song hai đường và đặt ngân sách, vì hóa đơn LLM sẽ tăng tạm thời."
+
+> Senior tip: Dịch vụ AI chỉ đáng tách khi nó thật sự có "chính sách" để tập trung: quota, cache, redaction, đổi model, fallback. Nếu gateway chỉ chuyển tiếp request, bạn vừa thêm một hop mạng vừa thêm một điểm chết mà không được gì.`
+  ,
+  follow: [
+    'AI gateway nên đồng bộ hay bất đồng bộ với các service nghiệp vụ? Khi nào dùng streaming (SSE) thay vì JSON một lần?',
+    'Nếu một service cần tác vụ AI rất đặc thù (fine-tune model riêng), bạn cho nó gọi thẳng nhà cung cấp hay vẫn qua gateway? Ranh giới ở đâu?',
+    'Bạn đo lường và chứng minh hiệu quả của AI gateway bằng những metric nào trước và sau khi tách?'
+  ],
+  tags: ['ai gateway', 'llm', 'spring ai', 'microservices', 'chi phí']
+},
+{
+  id: 'microservices-071',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Tính năng "tóm tắt hợp đồng sau khi upload" cần gọi LLM mất 3–8 giây. Bạn cho gọi đồng bộ ngay trong request HTTP hay đẩy sang queue xử lý sau? Phân tích theo latency, tài nguyên, chi phí và trải nghiệm người dùng.',
+  a: `**Tóm tắt:** Chỉ gọi LLM **đồng bộ** (ngay trong request HTTP) khi người dùng thực sự phải chờ kết quả đó và thời gian chờ nằm trong ngân sách latency (chat, autocomplete, gợi ý tức thì). Với việc có thể chờ (tóm tắt tài liệu, phân loại hàng loạt, gắn nhãn, embedding), hãy trả **202 Accepted kèm job id** và xử lý qua **queue** (Kafka, RabbitMQ, SQS) để không giữ thread HTTP và không để lỗi LLM lan vào request. Thực tế thường là hybrid: nhận request, kiểm tra nhanh, nếu trả ngay được thì trả, không thì enqueue.
+
+### Thuật ngữ (giải thích nhanh)
+
+- **Đồng bộ (sync)**: client gửi request và bị chặn chờ tới khi có response.
+- **Bất đồng bộ (async)**: client nhận ngay một "biên nhận" (job id), kết quả đến sau qua polling, webhook hoặc SSE.
+- **Queue**: hàng đợi message. Bên sản xuất ghi message vào, bên tiêu thụ đọc ra xử lý; hai bên không cần sống cùng lúc.
+- **Thread pool của Tomcat**: tập thread xử lý HTTP request. Spring Boot mặc định {{server.tomcat.threads.max=200}}.
+- **Worker**: service đọc queue và làm việc nặng.
+- **202 Accepted**: HTTP status nghĩa là "đã nhận, đang xử lý".
+- **SSE**: server-sent events, kiểu trả text dần trên một HTTP connection (dùng cho streaming câu trả lời).
+
+### Vì sao: cơ chế từng bước
+
+1. **Một request HTTP giữ một thread từ lúc vào tới lúc xong.** Nếu gọi LLM mất 5 giây, thread bị giữ 5 giây, không làm được việc khác.
+2. **Tomcat mặc định chỉ có 200 thread.** 200 request đồng thời, mỗi cái giữ thread 5 giây, thì thread pool đầy liên tục; request mới phải nằm chờ trong accept queue, latency tăng phi tuyến, rồi timeout dây chuyền. Đây chính là dạng sự cố "một downstream chậm làm kẹt thread pool" (xem câu 026 và 058).
+3. **Đồng bộ còn biến quota nhà cung cấp thành nút cổ chai.** 50 request/giây cùng gọi, mỗi cái 5 giây, nghĩa là luôn có khoảng 250 lượt đang "bay". Khi provider trả 429, tất cả cùng lỗi một lúc.
+4. **Queue đổi hẳn mô hình.** API chỉ ghi một message vào Kafka rồi trả 202. Worker đọc message, gọi LLM với **concurrency có kiểm soát** (ví dụ 10 song song), retry có giới hạn, ghi kết quả vào DB hoặc object storage. API không còn bị thread LLM giữ.
+5. **Cái giá phải trả:** người dùng không có kết quả ngay nên cần UI "đang xử lý" (polling, SSE, hoặc webhook); cần lưu trạng thái job (PENDING, RUNNING, DONE, FAILED); cần cơ chế dọn job chết và **dead-letter queue** (DLQ) cho message luôn lỗi.
+
+### Luồng xử lý bất đồng bộ
+
+~~~seq
+title: Tóm tắt tài liệu qua queue
+actors: Client | API | Kafka | Worker | LLM API | DB
+Client -> API: POST /documents (upload)
+API -> Kafka: gửi job (documentId)
+API --> Client: 202 + jobId
+Worker -> Kafka: consume job
+Worker -> LLM API: tóm tắt (timeout 20s)
+LLM API --> Worker: text + số token
+Worker -> DB: lưu kết quả + trạng thái DONE
+Client -> API: GET /jobs/123 (polling)
+~~~
+
+Sơ đồ cho thấy API chỉ làm hai việc: ghi job và trả 202. Mọi thứ chậm và dễ lỗi nằm sau Kafka, nơi có thể scale worker độc lập.
+
+### Bảng so sánh ba lựa chọn
+
+| Tiêu chí | Đồng bộ | Bất đồng bộ (queue) | Hybrid |
+|---|---|---|---|
+| Người dùng thấy kết quả | Ngay | Sau vài giây đến vài phút | Ngay với việc nhỏ, sau với việc lớn |
+| Thread HTTP bị giữ | Có, lâu | Không | Chỉ với phần nhanh |
+| Chịu được provider chậm/429 | Kém, dễ sập dây chuyền | Tốt, có retry và backpressure | Trung bình, tùy tỷ lệ đi nhánh nào |
+| Chi phí khi retry | Retry trong request làm tăng latency | Retry ở worker, không ảnh hưởng API | Kết hợp |
+| Độ phức tạp | Thấp | Cao (job store, worker, DLQ) | Cao nhất |
+| Phù hợp | Chat, gợi ý, autocomplete | Tóm tắt, phân loại batch, embedding | Sản phẩm thật |
+
+### Code: API trả 202, worker xử lý
+
+~~~java
+@PostMapping("/documents")
+ResponseEntity<JobAccepted> upload(@RequestBody UploadRequest req) {
+  String jobId = jobService.create(req.documentId, "PENDING");
+  kafkaTemplate.send("doc-tasks", jobId, req);        // chỉ ghi message
+  return ResponseEntity.accepted().body(new JobAccepted(jobId));
+}
+~~~
+
+~~~java
+@KafkaListener(topics = "doc-tasks", concurrency = "10")
+void onTask(String jobId) {
+  jobService.markRunning(jobId);
+  String summary = aiClient.summarize(jobService.load(jobId)); // đã có timeout
+  jobService.finish(jobId, summary);                  // lưu + đánh dấu DONE
+}
+~~~
+
+Hai đoạn này chưa có retry và idempotency — đó là phần phải thêm trước khi lên production (xem pitfall).
+
+### Pitfall thực tế trên production
+
+- **Queue không có giới hạn.** Khi LLM chậm, job vào nhanh hơn worker xử lý, queue phình ra; hàng triệu message nằm chờ, người dùng bấm "làm mới" liên tục. Phải có độ sâu tối đa, cảnh báo và chiến lược từ chối (hoặc hạ ưu tiên).
+- **Retry storm làm tốn tiền gấp nhiều lần.** Một model lỗi 503 khiến worker retry 3 lần mỗi job; 10.000 job thành 40.000 lần gọi. Phải giới hạn retry, dùng backoff + jitter và tính chi phí retry vào ngân sách.
+- **Message trùng (duplicate).** Kafka có thể giao lại message; nếu không có idempotency key thì LLM bị gọi hai lần cho cùng document — tốn tiền vô ích. Dùng {{documentId}} làm khóa và lưu trạng thái trước khi gọi.
+- **Job chết giữa chừng.** Worker crash sau khi gọi LLM nhưng trước khi lưu kết quả: tiền đã tiêu, kết quả mất. Cần lưu kết quả ngay khi nhận, hoặc thiết kế để lần sau dùng lại (cache).
+- **Polling quá dày.** Client gọi API xem trạng thái job mỗi 200ms cho 50.000 job sẽ tạo tải lớn hơn cả LLM. Dùng SSE hoặc webhook, hoặc polling giãn cách dần (exponential backoff phía client).
+
+### Ví dụ đời thực
+
+Một nền tảng pháp lý cho upload hợp đồng để tóm tắt. Ban đầu gọi LLM đồng bộ: p95 của API là 8,2 giây, giờ cao điểm 40% request trả 504, thread Tomcat luôn ở mức 200/200, CPU thấp nhưng request vẫn xếp hàng. Nhóm chuyển sang queue: API chỉ ghi Kafka rồi trả 202 (p95 còn 120ms), 12 worker đọc với concurrency 12, mỗi worker timeout 20 giây, retry tối đa 2 lần cho 503/429, kết quả lưu vào Postgres và S3. Kết quả: API hết 504, người dùng nhận tóm tắt sau 30–90 giây (có thanh tiến trình), chi phí LLM không đổi vì số lần gọi không tăng, nhưng số lần gọi lặp giảm 18% nhờ idempotency key. Đánh đổi: phải viết UI theo dõi job và một job dọn message cũ.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Em phân biệt theo việc người dùng có cần kết quả ngay hay không. Với chat, gợi ý hay autocomplete thì phải đồng bộ, vì chờ vài giây là trải nghiệm hỏng. Nhưng tóm tắt hợp đồng 3–8 giây thì đồng bộ rất nguy hiểm: mỗi request giữ một thread Tomcat, mặc định chỉ có 200 thread, nên khi LLM chậm là cả service xếp hàng rồi sập dây chuyền, chưa kể provider 429 thì tất cả cùng lỗi. Em chọn bất đồng bộ: API ghi một message vào Kafka và trả 202 kèm job id, worker đọc với concurrency giới hạn, có timeout, retry giới hạn và DLQ, kết quả lưu DB rồi client theo dõi bằng SSE hoặc polling. Cái giá là phải quản lý trạng thái job và UI tiến trình, nhưng bù lại API luôn nhanh, scale worker độc lập và retry không làm người dùng chờ. Nếu cần, em làm hybrid: việc nhỏ trả ngay, việc lớn mới enqueue."
+
+> Senior tip: Trước khi quyết định sync hay async, hãy đo p95 và p99 thật của lời gọi LLM. Nếu p99 gấp 3 lần p95 thì sync sẽ luôn có một nhóm user chịu cảnh timeout — đó là dấu hiệu rõ nhất nên chuyển sang queue.`
+  ,
+  follow: [
+    'Bạn thiết kế idempotency cho worker thế nào để một message bị giao lại không làm tốn tiền LLM hai lần?',
+    'SSE, webhook và polling: bạn chọn cách nào để báo kết quả cho client, và vì sao?',
+    'Nếu queue phình quá nhanh vì LLM chậm, bạn làm gì để bảo vệ hệ thống: từ chối request, hạ ưu tiên, hay tắt bớt tính năng AI?'
+  ],
+  tags: ['llm', 'queue', 'kafka', 'async', 'thread pool', '202 accepted']
+},
+{
+  id: 'microservices-072',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Dịch vụ AI chậm dần: p95 từ 1,5 giây lên 6 giây. Bạn thiết kế timeout, circuit breaker, retry và fallback thế nào để request nghiệp vụ không chết theo? Ngưỡng do ai quyết định và dựa trên số liệu gì?',
+  a: `**Tóm tắt:** Đặt **ngân sách thời gian (deadline) cho cả request** rồi chia ngược cho từng bước, không đặt timeout rời rạc 5 giây ở mọi hop. Lời gọi LLM phải có **connect timeout ngắn và read/total timeout** theo SLO, **circuit breaker** để ngừng gọi khi downstream rác, **retry có giới hạn và backoff** chỉ cho lỗi tạm thời (429, 5xx — không retry 4xx), và một **chuỗi fallback giảm dần**: model lớn, model nhỏ, cache, luật mặc định. Người dùng cuối phải nhận được câu trả lời có ích, dù kém hơn, thay vì lỗi 500.
+
+### Thuật ngữ (giải thích nhanh)
+
+- **Connect timeout**: thời gian tối đa để mở kết nối TCP tới nhà cung cấp.
+- **Read timeout**: thời gian tối đa chờ dữ liệu trả về.
+- **Deadline / budget**: tổng thời gian còn lại cho cả request, trừ dần theo từng bước.
+- **Circuit breaker (cầu dao)**: khi tỷ lệ lỗi vượt ngưỡng thì "mở", fail nhanh thay vì tiếp tục gọi downstream.
+- **Retry / backoff**: thử lại sau khoảng chờ tăng dần (200ms, 400ms, 800ms).
+- **Jitter**: cộng thêm ngẫu nhiên nhỏ để nhiều instance không retry cùng lúc.
+- **SLO**: mục tiêu mức dịch vụ, ví dụ 99% request dưới 3 giây.
+- **Hedging**: gửi song song hai request và lấy cái về trước; nhanh hơn nhưng tốn gấp đôi.
+- **Fallback**: phương án dự phòng khi chính không thành công.
+
+### Cơ chế từng bước
+
+1. **Tính ngân sách trước.** Client đặt deadline 5 giây. Gateway mất 50ms, AI service mất 30ms, còn lại khoảng 4,9 giây cho LLM. Vì vậy timeout của lời gọi LLM phải nhỏ hơn 4,9 giây.
+2. **Nếu mỗi hop tự đặt timeout bằng nhau (5 giây) thì tổng có thể là 20 giây** — lỗi "timeout cộng dồn". Deadline phải được truyền xuống dưới, qua header (ví dụ {{x-deadline-ms}}) hoặc context, và mỗi hop lấy min(còn lại, timeout cấu hình).
+3. **Khi downstream chậm, circuit breaker đếm tỷ lệ lỗi trong cửa sổ trượt** (ví dụ 50% lỗi trong 20 lần gọi gần nhất) rồi mở. Sau {{waitDurationInOpenState}} (30 giây) nó chuyển half-open, cho vài request thử; nếu vẫn lỗi thì mở tiếp.
+4. **Circuit breaker cũng phải bắt "chậm mà không lỗi".** Resilience4j có {{slowCallDurationThreshold}} và {{slowCallRateThreshold}}: nếu quá 50% request chậm hơn 2 giây thì coi như hỏng, dù HTTP vẫn 200. Đây là điểm hay bị bỏ sót.
+5. **Retry chỉ với lỗi có thể hồi phục:** 429 (kèm header {{Retry-After}}), 500, 502, 503, 504. Không retry 400 (prompt sai, sẽ tốn tiền vô ích) và không retry vô hạn. Số lần tối đa 1–2, có backoff và jitter.
+6. **Fallback giảm dần theo mức:** (a) model nhỏ/nhanh hơn cho cùng tác vụ; (b) cache kết quả tương tự (theo hash prompt hoặc semantic cache); (c) câu trả lời mẫu hoặc luật nghiệp vụ; (d) nếu là async thì nhận job id và trả "sẽ có kết quả sau".
+7. **Retry LLM tốn tiền thật.** Cần **ngân sách chi phí cho mỗi request** và ghi log số lần gọi, để phát hiện retry storm trước khi hóa đơn tăng gấp ba.
+
+### Code: timeout ở tầng HTTP và circuit breaker
+
+~~~java
+// 1) Timeout chắc chắn nằm ở tầng HTTP, không phụ thuộc thread
+HttpClient http = HttpClient.newBuilder()
+    .connectTimeout(Duration.ofMillis(800))     // connect ngắn
+    .build();
+JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory(http);
+rf.setReadTimeout(Duration.ofSeconds(5));       // đọc dữ liệu
+~~~
+
+~~~java
+// 2) Circuit breaker bọc lời gọi LLM
+CircuitBreakerConfig cfg = CircuitBreakerConfig.custom()
+    .slidingWindowSize(20)
+    .failureRateThreshold(50)                       // 50% lỗi thì mở
+    .slowCallDurationThreshold(Duration.ofSeconds(2))
+    .slowCallRateThreshold(60)                      // 60% chậm hơn 2s cũng coi là hỏng
+    .waitDurationInOpenState(Duration.ofSeconds(30))
+    .build();
+CircuitBreaker cb = CircuitBreakerRegistry.of(cfg).circuitBreaker("llm");
+
+Supplier<String> guarded = CircuitBreaker.decorateSupplier(cb, () -> chatClient.call());
+try {
+  return guarded.get();
+} catch (CallNotPermittedException e) {
+  return fallback();                                // breaker đang mở: đi đường dự phòng
+}
+~~~
+
+{{CallNotPermittedException}} là ngoại lệ Resilience4j ném ra khi cầu dao đang mở; bắt riêng nó để phân biệt với lỗi thật của nhà cung cấp.
+
+### Bảng fallback: mức nào cho người dùng thấy gì
+
+| Mức | Điều kiện kích hoạt | Người dùng thấy | Chi phí | Ghi chú |
+|---|---|---|---|---|
+| 0 | Bình thường | Kết quả đầy đủ từ model lớn | 100% | Nền so sánh |
+| 1 | Chậm > 2s hoặc 429 nhẹ | Model nhỏ, câu ngắn hơn | ~30% | Phải test chất lượng trước |
+| 2 | Breaker mở | Cache hoặc kết quả tương tự | 0% | Có thể cũ, cần ghi rõ |
+| 3 | Breaker mở + không cache | Luật mặc định / câu mẫu | 0% | Không được im lặng |
+| 4 | Toàn bộ lỗi | Job id, "xử lý sau" | 0% | Chỉ với async |
+
+### Pitfall thực tế trên production
+
+- **Timeout ở client HTTP nhưng không có timeout ở tầng application.** Ví dụ RestClient có read timeout 5 giây, nhưng code lại gọi {{.block()}} không giới hạn trên một Mono khác. Phải kiểm tra cả hai.
+- **Hedging bị lạm dụng.** Gửi hai request cho mọi lần gọi làm hóa đơn gấp đôi; chỉ nên hedge cho request giá trị cao, và chỉ khi p95 đã lớn hơn ngân sách.
+- **Retry làm hỏng chi phí.** Một provider 503 kéo dài 10 phút, retry 3 lần với 200 RPS tạo gấp 4 lần lưu lượng khi provider đang yếu, khiến nó càng yếu (retry storm). Phải có circuit breaker trước retry.
+- **Fallback im lặng.** Model nhỏ trả kết quả sai nhưng UI vẫn báo "thành công", người dùng mất niềm tin. Phải gắn cờ degraded (giảm chất lượng) và ghi metric.
+- **Ngưỡng đặt bằng cảm tính.** "5 giây là đủ" mà không có SLO và số liệu thật; hoặc đặt timeout 60 giây vì sợ user phàn nàn, làm thread bị giữ quá lâu.
+
+### Ví dụ đời thực
+
+Một hệ thống hỗ trợ khách hàng gọi Claude qua AWS Bedrock. Sau một đợt model bị quá tải, p95 tăng từ 1,5 lên 6,2 giây, tỷ lệ lỗi 504 tăng lên 4%, và vì mỗi request giữ thread 6 giây nên service order bị kẹt thread theo. Nhóm đặt deadline toàn request 5 giây, truyền xuống dưới bằng header; timeout HTTP là connect 800ms và read 4,5 giây; circuit breaker mở khi 50% request chậm hơn 2 giây trong cửa sổ 20 lần; fallback mức 1 sang model nhỏ (nhanh, rẻ) và mức 2 sang cache. Kết quả sau 1 giờ: tỷ lệ lỗi còn 0,3%, p95 còn 1,8 giây, chi phí LLM tăng 12% do dùng model nhỏ, nhưng downtime của tính năng chat là 0. Ngưỡng do nhóm platform đặt dựa trên SLO "99% request dưới 3 giây" và ngân sách chi phí 3.000 USD/tháng; mọi thay đổi ngưỡng phải có số liệu p95/p99 và chi phí đi kèm.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Em bắt đầu từ ngân sách thời gian của cả request, không đặt timeout rời rạc. Client cho 5 giây, trừ các hop nội bộ thì còn khoảng 4,9 giây cho LLM, nên timeout LLM phải nhỏ hơn thế và deadline phải được truyền xuống dưới, nếu không các hop cộng dồn thành 20 giây. Em đặt connect timeout 800ms và read timeout 4,5 giây ở tầng HTTP, vì đó là chỗ chắc chắn cắt được thread. Sau đó là circuit breaker: mở khi 50% request lỗi trong cửa sổ 20 lần, và quan trọng là bắt cả trường hợp chậm mà không lỗi, dùng slowCallDurationThreshold hai giây. Retry chỉ cho 429 và 5xx, tối đa hai lần, có backoff và jitter; không retry 4xx vì tốn tiền vô ích. Cuối cùng là fallback giảm dần: model nhỏ, cache, câu trả lời mẫu, rồi job id nếu async. Ngưỡng do nhóm platform đặt theo SLO và ngân sách chi phí, và mọi thay đổi đều phải có p95, p99 và chi phí đi kèm. Kết quả lần trước là lỗi giảm từ 4% xuống 0,3%, p95 từ 6,2 xuống 1,8 giây, chi phí chỉ tăng 12%."
+
+> Senior tip: Một downstream chậm nguy hiểm hơn một downstream lỗi, vì lỗi được đếm còn chậm thì không. Hãy đặt ngưỡng "chậm" (slowCallRate) trong circuit breaker và theo dõi nó như một SLO riêng — đó là bài học đắt nhất trong các sự cố LLM.`
+  ,
+  follow: [
+    'Bạn phân biệt lỗi 429 (rate limit) với 503 (quá tải) thế nào trong chính sách retry và backoff?',
+    'Khi nào hedging là đáng tiền, và làm sao giới hạn để hóa đơn LLM không tăng gấp đôi?',
+    'Bạn truyền deadline qua các hop thế nào khi có cả message queue ở giữa (Kafka)?'
+  ],
+  tags: ['timeout', 'circuit breaker', 'retry', 'fallback', 'deadline', 'resilience4j', 'llm']
+},
+{
+  id: 'microservices-073',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Ba service dùng chung một tài khoản LLM với hạn mức token theo tháng. Bạn thiết kế cơ chế chia quota thế nào để một service không đốt hết phần của các service khác, và một tenant không làm cả hệ thống vượt ngân sách?',
+  a: `**Tóm tắt:** Chia quota theo **phân cấp** (tổ chức, service, tenant, user), mỗi cấp có hạn mức riêng và một cơ chế **đếm nguyên tử** (thường là Redis chạy script Lua) để không vượt. Dùng **đặt trước rồi chốt sau** (reserve/settle): trước khi gọi LLM, ước lượng token và giữ chỗ; sau khi có số token thật từ nhà cung cấp thì chốt và hoàn phần dư. Kết hợp **chia đều theo tỷ lệ (fair-share)** để service ít dùng không bị bỏ đói, và tôn trọng giới hạn RPM/TPM của nhà cung cấp (429 kèm Retry-After).
+
+### Thuật ngữ (giải thích nhanh)
+
+- **Quota**: hạn mức được phép dùng, tính theo token, theo request hoặc theo tiền.
+- **Rate limit**: giới hạn số request mỗi phút (RPM) và số token mỗi phút (TPM).
+- **Token bucket**: xô token nạp dần theo thời gian; mỗi request múc một ít, hết thì phải chờ.
+- **Fair-share**: chia theo tỷ lệ đã đăng ký, không theo ai đến trước.
+- **Reserve / settle**: giữ chỗ trước, chốt theo số thật sau.
+- **Nguyên tử (atomic)**: thao tác không bị request khác chen vào giữa.
+- **429**: too many requests; thường kèm header Retry-After (số giây nên chờ).
+- **Chargeback**: phân bổ chi phí về từng team hoặc tenant.
+
+### Vì sao: cơ chế từng bước
+
+1. **Một API key duy nhất thì mọi service thấy cùng một hạn mức.** Service A chạy batch 1 triệu token lúc 2 giờ sáng có thể làm service B (chat realtime) ăn 429 giữa ngày, dù B chỉ cần một phần nhỏ.
+2. **Đơn vị đếm là token**, gồm prompt token và completion token. Phải ước lượng **trước** khi gọi để chặn: 1 token xấp xỉ 4 ký tự tiếng Anh, tiếng Việt khoảng 2–3 ký tự một token; hoặc dùng tokenizer chính thức của nhà cung cấp.
+3. **Đếm nguyên tử bằng Redis.** Key theo tổ chức, service và kỳ (ví dụ tháng). Một script Lua nhận (key, số token muốn dùng, hạn mức) và trả về "cho phép hoặc từ chối" trong một lần thực thi, tránh race khi nhiều instance cùng trừ.
+4. **Reserve rồi settle.** Reserve bằng min(ước lượng, còn lại). Gọi LLM. Nhận usage thật (ví dụ ước 900, thật 1.050) thì chốt thêm phần chênh; nếu lỗi trước khi gọi thì hoàn.
+5. **Phân cấp.** Service có hạn mức cứng, tenant có hạn mức riêng; tổng các tenant không vượt hạn mức tổ chức. Cho phép "vay" tạm thời khi một service rảnh, nhưng phải có trần vay và phải hoàn.
+6. **Tôn trọng giới hạn nhà cung cấp.** Mỗi model có RPM/TPM riêng. Hàng đợi ưu tiên: chat realtime ưu tiên, batch đêm chỉ chạy khi quota rảnh.
+7. **Báo cáo** token theo service, tenant và model để đối chiếu hóa đơn (chargeback) và phát hiện bất thường sớm.
+
+~~~seq
+title: Quota hai pha (reserve rồi settle)
+actors: Order | AI Gateway | Redis | LLM API
+Order -> AI Gateway: yêu cầu tóm tắt
+AI Gateway -> Redis: reserve 900 token
+Redis --> AI Gateway: còn 8000, cho phép
+AI Gateway -> LLM API: gọi model
+LLM API --> AI Gateway: text + usage 1050
+AI Gateway -> Redis: settle thêm 150
+~~~
+
+### Code: đếm nguyên tử bằng Redis
+
+~~~java
+// Script Lua chạy trong Redis: trừ token nguyên tử, có hoàn nếu vượt
+String LUA = """
+local used = tonumber(redis.call('GET', KEYS[1]) or '0')
+local want = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+if used + want > limit then return -1 end
+redis.call('INCRBY', KEYS[1], want)
+return limit - used - want
+""";
+~~~
+
+~~~java
+// 1) Reserve trước khi gọi (ước lượng)
+Long left = redis.execute(new DefaultRedisScript(LUA, Long.class),
+    List.of("quota:acme:support:2026-02"), "900", "1000000");
+if (left == null || left < 0) throw new QuotaExceededException();
+
+String out = chat.call();                                    // chỉ gọi sau khi đã reserve
+int real = usageOf(out);                                     // usage thật từ provider
+// 2) Settle: bù phần chênh (âm nếu bớt, dương nếu thêm)
+redis.opsForValue().increment("quota:acme:support:2026-02", real - 900);
+~~~
+
+### Bảng so sánh các mô hình chia quota
+
+| Mô hình | Cách hoạt động | Ưu | Nhược |
+|---|---|---|---|
+| Cố định theo service | Mỗi service một hạn mức cứng, không đổi | Đơn giản, dễ dự đoán | Service rảnh không cho ai vay, lãng phí |
+| Vay động (borrowing) | Service dùng ít nhường cho service cần, có trần | Tận dụng tốt, linh hoạt | Phức tạp, dễ tranh chấp khi cao điểm |
+| Gateway tập trung | Mọi lời gọi qua gateway, gateway quyết định | Kiểm soát một chỗ, có ưu tiên | Gateway là điểm chết, thêm hop |
+| Theo tenant + công bằng | Chia đều theo tenant, dư thì chia lại | Bảo vệ tenant nhỏ | Cần theo dõi usage từng tenant |
+
+### Pitfall thực tế trên production
+
+- **Ước lượng lệch nhiều so với thực tế.** Ước 900 nhưng thật 1.500 vì output dài; nếu không settle thì quota bị rò. Phải luôn chốt theo usage thật.
+- **Hoàn khi lỗi.** Reserve 900, provider trả 500 trước khi sinh token: phải hoàn 900, nếu không quota bị rò dần và hệ thống tự bóp cổ chính nó.
+- **Key không có TTL theo kỳ.** Nếu key chỉ là {{quota:acme:support}} thì tháng sau vẫn cộng dồn; phải đưa kỳ vào key và đặt TTL dài hơn kỳ một chút.
+- **Không đếm retry.** Mỗi lần retry là thêm token; retry 3 lần làm chi phí thực gấp 4 lần dự tính.
+- **Race khi nhiều instance.** Nếu chỉ GET rồi SET (không nguyên tử), hai instance cùng đọc 900 còn lại và cùng cho phép, vượt hạn mức.
+- **Bỏ qua cache.** Cache hit không tốn token, nhưng nếu tính nhầm là có tốn thì quota bị bóp oan.
+
+### Ví dụ đời thực
+
+Một SaaS có 40 tenant dùng chung tính năng tóm tắt email. Ban đầu chỉ có một hạn mức chung theo API key: một tenant lớn chạy import dữ liệu vào cuối tháng đã tiêu 71% hạn mức token, khiến 12 tenant nhỏ ăn 429 trong hai ngày và mở ticket. Nhóm chuyển sang quota hai pha theo tenant với Redis: mỗi tenant có hạn mức riêng theo gói, tổng không vượt hạn mức tổ chức; reserve trước khi gọi, settle theo usage thật, hoàn khi lỗi; ban đêm cho batch vay quota rảnh với trần 20%. Kết quả: không còn 429 diện rộng, sai số dự báo chi phí giảm từ ±35% xuống ±6% vì có số liệu theo tenant, và phát hiện một vòng retry ẩn đang đốt 18% token — sửa xong tiết kiệm 18% chi phí tháng.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Em không để các service dùng chung một hạn mức trần, vì một service chạy batch có thể bóp cổ service realtime. Em chia quota theo phân cấp: tổ chức có hạn mức tổng, mỗi service và mỗi tenant có hạn mức con, tổng con không vượt tổng. Việc đếm phải nguyên tử, nên em dùng Redis với một script Lua nhận key, số token muốn dùng và hạn mức, trả về cho phép hay từ chối trong một lần thực thi; nếu GET rồi SET riêng thì hai instance cùng đọc một số và vượt hạn mức. Em dùng hai pha: reserve theo ước lượng trước khi gọi, rồi settle theo usage thật từ provider và hoàn khi lỗi, vì ước lượng hay lệch. Ngoài ra em theo dõi RPM/TPM của nhà cung cấp để không ăn 429, cho batch ban đêm vay quota rảnh có trần, và log token theo tenant để chargeback. Sau khi làm, sai số dự báo chi phí giảm từ ±35% xuống ±6% và hết 429 diện rộng."
+
+> Senior tip: Quota không có settle theo usage thật sẽ luôn rò, vì ước lượng đầu vào gần như không bao giờ khớp output. Hãy coi reserve chỉ là "giữ chỗ tạm" và settle là "sự thật", đồng thời hoàn chỗ khi request thất bại trước khi tốn token.`
+  ,
+  follow: [
+    'Bạn ước lượng token trước khi gọi thế nào cho đủ chính xác, và khi nào cần dùng tokenizer thật?',
+    'Khi một tenant vượt hạn mức giữa tháng, bạn chặn cứng hay hạ ưu tiên? Ảnh hưởng tới các tenant khác ra sao?',
+    'Làm sao phát hiện một service đang retry quá nhiều và đốt quota ngầm?'
+  ],
+  tags: ['quota', 'rate limit', 'redis', 'lua', 'llm', 'chi phí', 'multi-tenant']
+},
+{
+  id: 'microservices-074',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Một request đi qua service nghiệp vụ rồi AI gateway rồi nhà cung cấp LLM. Bạn log và trace thế nào để khi request chậm hoặc tốn tiền bất thường, bạn trả lời được: của tenant nào, model nào, bao nhiêu token, có phải cache miss không? Cái gì tuyệt đối không được log?',
+  a: `**Tóm tắt:** Gắn **trace và span xuyên biên**: request nghiệp vụ tạo span gốc, AI gateway tạo span con cho lần gọi LLM với các thuộc tính chuẩn (model, token vào/ra, latency, có cache hit), và **log có cấu trúc JSON** chứa trace id, span id, tenant, service, model, chi phí, hash của prompt. Tuyệt đối **không log nguyên prompt và response**, vì chúng thường chứa dữ liệu cá nhân và làm log phình to; thay bằng hash, độ dài, số token và một request id để truy vết có kiểm soát. Với bất đồng bộ qua Kafka, phải **truyền trace context trong message header** để chuỗi trace không bị đứt.
+
+### Thuật ngữ (giải thích nhanh)
+
+- **Trace**: toàn bộ đường đi của một request qua nhiều service.
+- **Span**: một bước trong trace (một service, một lần gọi LLM).
+- **Trace context**: header traceparent theo chuẩn W3C, chứa trace id và span id.
+- **OpenTelemetry (OTel)**: chuẩn và SDK để sinh trace, metric, log.
+- **MDC**: mapped diagnostic context trong logback, chứa traceId và spanId để mỗi dòng log tự gắn.
+- **Structured log**: log JSON, mỗi dòng một object, dễ truy vấn (Loki, ELK, CloudWatch).
+- **RED metrics**: rate, errors, duration.
+- **Redaction / che dữ liệu**: làm mờ hoặc bỏ dữ liệu nhạy cảm trước khi lưu.
+
+### Vì sao: cơ chế từng bước
+
+1. **Request vào có header traceparent; nếu chưa có thì gateway tạo trace id mới** (16 byte hex theo W3C). Đây là "sợi chỉ" nối mọi service.
+2. **Mỗi service dùng OTel SDK; logback pattern thêm traceId và spanId qua MDC.** Nhờ đó mọi dòng log của cùng một request mang cùng trace id, dò được từ UI sang DB.
+3. **AI gateway mở span con (ví dụ "llm.chat") quanh lời gọi.** Thuộc tính span gồm hệ model, model, token vào, token ra, có cache hit, mức fallback. OpenTelemetry có semantic convention riêng cho GenAI với các trường kiểu gen_ai.*; tên trường có thể đổi theo phiên bản nên phải kiểm tra lại tài liệu.
+4. **Chi phí = token nhân đơn giá, ghi vào log và metric.** Dashboard: token theo tenant, model, service; chi phí theo ngày; tỷ lệ cache hit.
+5. **Prompt và response chỉ lưu hash SHA-256, độ dài, số token**, hoặc lưu bản đã che dữ liệu cá nhân với thời hạn ngắn (ví dụ 7 ngày) khi cần debug chất lượng; phải có chính sách và phân quyền rõ ràng.
+6. **Bất đồng bộ:** producer đặt traceparent vào Kafka header, consumer đọc và tiếp tục span. Nếu không, trace đứt tại queue và log của worker thành mồ côi, không biết đến từ request nào.
+7. **Sampling:** giữ 100% request lỗi và một tỷ lệ nhỏ request thành công (tail-based sampling) để giảm chi phí mà vẫn thấy bất thường.
+
+### Code: span cộng log có cấu trúc
+
+~~~java
+Span span = tracer.spanBuilder("llm.chat")
+    .setAttribute("gen_ai.request.model", model)
+    .setAttribute("llm.tenant", tenantId)
+    .startSpan();
+try (Scope s = span.makeCurrent()) {
+  MDC.put("tenant", tenantId);
+  MDC.put("model", model);
+  ChatResponse r = chatClient.prompt().user(prompt).call().chatResponse();
+  var u = r.getMetadata().getUsage();               // usage thật từ provider
+  span.setAttribute("gen_ai.usage.input_tokens", u.getPromptTokens());
+  span.setAttribute("gen_ai.usage.output_tokens", u.getCompletionTokens());
+  span.setAttribute("llm.cache.hit", cacheHit);
+  log.info("llm done prompt_hash={} tokens={}", sha256hex(prompt), u.getTotalTokens());
+  return r;
+} catch (Exception e) {
+  span.recordException(e);                           // lỗi cũng phải nằm trên span
+  throw e;
+} finally {
+  span.end();
+  MDC.clear();
+}
+~~~
+
+### Log gì và không log gì
+
+| Loại dữ liệu | Có log? | Cách làm |
+|---|---|---|
+| trace id, span id | Có | MDC cộng exporter |
+| tenant, service, model | Có | Thuộc tính span cộng field log |
+| số token, chi phí | Có | Từ usage, quy ra tiền |
+| độ dài prompt, hash | Có | Hash cộng length |
+| nội dung prompt/response | Không | Chỉ bản che PII, TTL ngắn |
+| API key, authorization | Không | Không bao giờ |
+| email, số điện thoại, số thẻ | Không | Redaction trước khi log |
+| stack trace | Có, mức error | Kèm trace id |
+
+### Pitfall thực tế trên production
+
+- **Log nguyên prompt làm phình log và vi phạm quyền riêng tư.** Một hệ thống 1 triệu request/ngày, mỗi prompt 4 KB, là 4 GB mỗi ngày chỉ riêng prompt, chưa tính response.
+- **Trace đứt ở Kafka.** Producer quên gắn traceparent vào header thì mọi log của worker không có trace id, không nối được với request gốc.
+- **Đưa userId hay orderId vào thuộc tính span.** Mỗi giá trị mới tạo một time series, metric nổ (high cardinality) và hệ thống giám sát đắt lên hoặc chậm đi.
+- **Sampling bỏ mất lỗi.** Nếu chỉ lấy mẫu 1% request thành công và bỏ hết lỗi thì không bao giờ thấy sự cố; phải giữ 100% lỗi.
+- **Log đồng bộ nặng.** Ghi log JSON có serialize trong đường nóng làm tăng latency; dùng async appender và đo tác động.
+
+### Ví dụ đời thực
+
+Một hệ thống gọi LLM qua AWS Bedrock. Một tenant nhỏ bỗng ăn 429 liên tục; sáu tiếng đầu không ai biết vì log chỉ có "LLM_ERROR" không gắn tenant. Nhóm bổ sung trace: AI gateway tạo span con cho mỗi lần gọi, gắn tenant, model, token, cache hit, và log JSON có trace id; producer Kafka gắn traceparent vào header. Khi sự cố lặp lại, truy vết theo tenant thấy tenant đó chiếm 92% TPM trong 3 phút, và trace chỉ ra một vòng retry trong service support (3 lần, hai model khác nhau). Điều tra từ 2 ngày xuống 40 phút. Sau đó nhóm thay prompt đầy đủ bằng hash SHA-256 và độ dài, giữ bản che dữ liệu cá nhân 7 ngày; dung lượng log giảm 70% mà vẫn tra được sự cố.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Em gắn trace xuyên biên trước, vì nếu không có sợi chỉ chung thì mọi thứ rời rạc. Request vào tạo span gốc, AI gateway mở span con cho lần gọi LLM, gắn các thuộc tính chuẩn kiểu gen_ai: model, token vào, token ra, cache hit, mức fallback. Log là JSON có trace id, span id, tenant, service, model và chi phí quy ra tiền, để dashboard trả lời được token theo tenant và chi phí theo ngày. Với Kafka em truyền traceparent trong header, vì nếu quên thì log của worker mồ côi, không nối về request nào. Về nội dung, em không log nguyên prompt và response: vừa có nguy cơ lộ dữ liệu cá nhân, vừa làm log phình rất nhanh, nên em lưu hash, độ dài, số token, và chỉ giữ bản đã che dữ liệu trong thời hạn ngắn khi cần debug chất lượng. API key thì không bao giờ log. Em cũng giữ 100% request lỗi khi sampling, và đưa userId hay orderId vào thuộc tính span là thứ phải tránh vì metric sẽ nổ."
+
+> Senior tip: Đừng nghĩ "log càng nhiều càng dễ debug". Với LLM, prompt và response là dữ liệu vừa nhạy cảm vừa nặng; hãy mặc định log hash và metadata, chỉ mở nội dung khi có sự cố và có phê duyệt. Một hệ thống log đủ tốt trả lời được "tenant nào, model nào, bao nhiêu token" mà không cần đọc một chữ nội dung nào.`
+  ,
+  follow: [
+    'Bạn làm sao để trace không đứt khi request đi qua Kafka và mất vài phút mới xử lý xong?',
+    'Giữa log, metric và trace, bạn dùng cái nào để phát hiện chi phí LLM tăng bất thường, và vì sao?',
+    'Nếu cần debug chất lượng một câu trả lời cụ thể, bạn truy vết thế nào mà không lưu toàn bộ nội dung?'
+  ],
+  tags: ['observability', 'tracing', 'opentelemetry', 'logging', 'pii', 'llm', 'kafka']
+},
+{
+  id: 'microservices-075',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Service AI trả JSON không xác định: cùng prompt, model có thể trả khác nhau. Bạn kiểm thử contract thế nào để caller không gãy khi model đổi mà test vẫn ổn định? Ai sở hữu bộ eval, và ngưỡng nào chặn release?',
+  a: `**Tóm tắt:** Với LLM không thể "contract bằng so khớp response chính xác". Hãy chia ba lớp: (1) **contract cấu trúc** — JSON Schema bắt buộc (field, kiểu, enum), kiểm tra 100% response; (2) **contract hành vi cho phần tất định** — consumer-driven contract kiểu Pact cho envelope, header, status và cho schema của tool/function mà AI service cung cấp; (3) **đánh giá chất lượng (eval)** — bộ dataset vàng cộng rubric, chấm tự động (LLM-as-judge hoặc luật), chạy trong CI với ngưỡng (ví dụ tỷ lệ đúng schema từ 99,5%, điểm eval từ baseline trừ 0,05). Đổi model thì chạy lại toàn bộ eval, deploy bằng canary và shadow traffic. Phần của lead: ai sở hữu dataset, ngưỡng nào chặn release, quy trình cập nhật khi model nâng cấp.
+
+### Thuật ngữ (giải thích nhanh)
+
+- **Contract**: mô tả tương tác hai bên đồng ý (schema, status, header).
+- **Non-determinism**: cùng input cho output khác nhau, do temperature lớn hơn 0 hoặc do model đổi.
+- **JSON Schema**: tài liệu mô tả cấu trúc JSON (field bắt buộc, kiểu, enum, regex).
+- **Golden dataset**: bộ input mẫu và kỳ vọng đã chốt, dùng so sánh giữa các phiên bản.
+- **Eval**: đánh giá chất lượng output theo tiêu chí (đúng, đủ ý, an toàn).
+- **LLM-as-judge**: dùng một LLM khác chấm theo rubric.
+- **Shadow traffic**: sao chép traffic thật sang bản mới, so sánh, không trả cho user.
+- **Canary**: phát hành cho một tỷ lệ nhỏ user trước.
+- **Pact**: công cụ consumer-driven contract (xem câu 067).
+- **Tool schema (MCP)**: mô tả tool mà model được phép gọi, gồm JSON Schema của input.
+
+### Vì sao: cơ chế từng bước
+
+1. **Caller không cần "câu trả lời hay", mà cần một JSON có hình dạng cố định**: summary là string tối đa 500 ký tự, labels là mảng 1–5 string, confidence trong khoảng 0..1. Đó là contract cấu trúc; validate mọi response bằng JSON Schema, sai thì không trả cho user mà ghi lỗi.
+2. **Vì sao vẫn cần Pact:** phần tất định (routing, auth, mã lỗi, header rate limit) verify được hai chiều; và caller định nghĩa kỳ vọng tối thiểu để model có thêm field cũng không làm gãy.
+3. **Vì sao cần eval:** schema đúng không có nghĩa nội dung đúng. Dataset vàng gồm 200–500 mẫu thật đã ẩn danh, cộng rubric ("tóm tắt có nêu đúng ba ý chính không"). Chạy hằng đêm và trước mỗi lần đổi prompt hoặc model. LLM-as-judge phải có rubric rõ và được hiệu chuẩn bằng nhãn người (đo mức đồng thuận).
+4. **Ổn định test:** đặt temperature bằng 0 và seed cố định cho test cấu trúc; nhưng vẫn phải có test ở temperature lớn hơn 0 chỉ assert schema, không assert nội dung. Không so khớp chuỗi tuyệt đối cho phần nội dung.
+5. **Unit test không gọi mạng:** mock nhà cung cấp bằng WireMock (trả response mẫu của OpenAI hoặc Anthropic), kiểm tra circuit breaker, timeout, fallback và cấu trúc lỗi. Test tích hợp thật chạy hằng đêm và trước release, không chạy mỗi PR để tiết kiệm chi phí.
+6. **Quy trình (phần lead):** nhóm AI hoặc platform sở hữu dataset; thay đổi ngưỡng phải có review; eval fail thì chặn release; canary cộng shadow để so sánh trên traffic thật; theo dõi metric sau deploy (tỷ lệ schema không hợp lệ, tỷ lệ escalation); rollback nếu vượt ngưỡng.
+7. **Model upgrade coi như đổi dependency lớn:** chạy lại toàn bộ eval, so baseline, cập nhật golden chỉ khi khác biệt là có chủ đích và được review từng case, không "bấm update cho xanh".
+
+~~~seq
+title: Ba lớp kiểm thử service AI
+actors: Caller | AI Service | Provider Mock | Eval Runner
+Caller -> AI Service: request
+AI Service -> Provider Mock: gọi model (test)
+Provider Mock --> AI Service: response mẫu
+AI Service --> Caller: JSON cộng envelope
+Eval Runner -> AI Service: chạy golden dataset
+Eval Runner --> Eval Runner: chấm rubric, so baseline
+~~~
+
+### Code: assert cấu trúc và cổng eval
+
+~~~java
+// 1) Contract cấu trúc: assert hình dạng, không assert nội dung
+assertThat(response.get("summary")).isInstanceOf(String.class);
+assertThat(response.get("summary").asText().length()).isLessThanOrEqualTo(500);
+assertThat(response.get("labels")).hasSize().between(1, 5);
+assertThat(response.get("confidence").asDouble()).isBetween(0.0, 1.0);
+
+// 2) Eval chạy hằng đêm: điểm trung bình không được tụt quá ngưỡng
+double score = evalRunner.run(goldenSet);         // rubric 0..1
+assertThat(score).isGreaterThanOrEqualTo(baselineScore - 0.05);
+~~~
+
+### Bảng bốn lớp kiểm thử
+
+| Lớp | Chạy khi nào | Kiểm tra gì | Không kiểm tra |
+|---|---|---|---|
+| Unit cộng mock provider | Mỗi PR | timeout, fallback, schema, mã lỗi | Chất lượng nội dung |
+| Contract (Pact) | Mỗi PR | envelope, status, header, tool schema | Nội dung câu trả lời |
+| Eval dataset vàng | Hằng đêm, trước release | Điểm chất lượng theo rubric | Tính đúng tuyệt đối |
+| Shadow hoặc canary | Khi deploy | So sánh thật, tỷ lệ lỗi | — |
+
+### Pitfall thực tế trên production
+
+- **Assert nội dung làm test flaky.** Cùng prompt, model trả khác nhau, test đỏ lúc xanh lúc đỏ; người ta bắt đầu bấm retry cho tới khi xanh, và test mất giá trị.
+- **Judge không hiệu chuẩn.** LLM-as-judge cho điểm cao cho câu dài và hoa mỹ; phải đo mức đồng thuận với nhãn người trước khi tin điểm số.
+- **Dataset rò rỉ vào dữ liệu huấn luyện.** Nếu bộ vàng là dữ liệu công khai, model đã thấy nó và điểm eval cao giả. Dùng mẫu nội bộ, cập nhật định kỳ.
+- **Overfit golden set.** Tối ưu prompt đến khi đạt điểm cao trên đúng 200 mẫu đó, nhưng gặp mẫu thật thì kém. Phải giữ tập hold-out không bao giờ đưa vào vòng lặp tối ưu.
+- **Bỏ qua variance của temperature.** Model ở temperature 0.7 có thể đổi kết quả giữa hai lần chạy; ngưỡng eval phải tính theo nhiều lần chạy hoặc dùng khoảng tin cậy.
+- **Chi phí eval hằng đêm.** 500 mẫu qua model lớn mỗi đêm là chi phí thật; cân nhắc tần suất và dùng model nhỏ cho phần lớn, model lớn cho mẫu khó.
+
+### Ví dụ đời thực
+
+Một công ty dùng model của nhà cung cấp qua alias (ví dụ "claude-sonnet" trỏ tới một phiên bản cụ thể). Nhà cung cấp cập nhật phiên bản sau alias mà không thông báo. Schema vẫn hợp lệ, API vẫn 200, nhưng chất lượng tóm tắt giảm: eval hằng đêm báo điểm giảm 6% so với baseline. Nhóm chạy shadow trên 5% traffic thật để xác nhận, thấy tỷ lệ user phải chỉnh sửa tóm tắt tăng từ 8% lên 14%. Họ rollback về model id ghim cứng, thêm cổng eval vào pipeline (fail thì chặn deploy), và quy định mọi lần đổi model phải chạy eval đầy đủ cộng canary. Sau 5 tháng không còn sự cố chất lượng do đổi model; thời gian phát hiện giảm từ vài ngày (user báo) xuống một đêm (eval).
+
+### Trả lời mẫu khi phỏng vấn
+
+"Em tách làm ba lớp, vì LLM không cho so khớp response chính xác. Lớp một là contract cấu trúc: JSON Schema bắt buộc các field, kiểu và enum, validate 100% response, sai thì không trả cho user. Lớp hai là contract hành vi cho phần tất định, dùng Pact giữa caller và AI service cho envelope, status, header, và cho tool schema mà model được phép gọi. Lớp ba là eval chất lượng: dataset vàng từ mẫu thật đã ẩn danh, rubric rõ ràng, chấm tự động, chạy hằng đêm và trước release, với ngưỡng kiểu điểm không được tụt quá 0,05 so với baseline và tỷ lệ đúng schema từ 99,5%. Test cấu trúc thì để temperature 0 và seed cố định; test nội dung thì không assert chuỗi. Unit test dùng WireMock để không gọi mạng. Phần em cho là quan trọng nhất ở mức lead là quy trình: ai sở hữu dataset, ai duyệt ngưỡng, eval fail thì chặn release, và mọi lần đổi model phải chạy eval đầy đủ cộng canary. Lần trước nhà cung cấp đổi model sau alias, eval bắt được giảm 6% sau một đêm, trong khi trước đó phải mất vài ngày mới biết qua phản ánh của user."
+
+> Senior tip: Với hệ thống AI, "test xanh" không có nghĩa là "đúng". Hãy tách bạch ba câu hỏi: response có đúng cấu trúc không (contract), nội dung có đạt chất lượng không (eval), và hành vi trên traffic thật có khác không (shadow). Gộp cả ba vào một test duy nhất là con đường ngắn nhất tới test flaky và release mù quáng.`
+  ,
+  follow: [
+    'Bạn thiết kế bộ eval thế nào để không bị overfit và không rò rỉ vào dữ liệu huấn luyện của model?',
+    'Khi điểm eval giảm nhẹ (2–3%) nhưng user không phàn nàn, bạn có chặn release không? Căn cứ nào để quyết định?',
+    'Bạn kiểm thử phần tool/function calling của AI service ra sao, khi đầu vào tool do model sinh ra?'
+  ],
+  tags: ['contract testing', 'eval', 'llm', 'json schema', 'pact', 'canary', 'non-determinism']
+},
 );
