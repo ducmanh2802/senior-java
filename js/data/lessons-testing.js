@@ -2461,4 +2461,1148 @@ Một case diệt được nhiều mutant, và ngược lại nhiều case cùng
   related: ['testing-006', 'testing-029'],
   tags: ['mutation testing', 'PIT', 'mutation score', 'equivalent mutant', 'boundary', 'coverage'],
 },
+{
+  id: 'lesson-testing-008',
+  track: 'testing',
+  order: 8,
+  title: 'Test double trong thuc te: fake database, stub HTTP client, mock event publisher',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Ap dung fake, stub, mock cho cac phu thuoc thuc te: database, REST client, message queue',
+    'Biet khi nao chon fake in-memory thay vi Testcontainers, va nguoc lai',
+    'Viet fake repository ho tro query linh hoat, stub HTTP tra ve kich ban loi, mock publisher verify payload',
+  ],
+  body: `### Tom tat
+Bai hoc 001 da gioi thieu khai niem test double. Bai nay di sau vao {{ba phu thuoc pho bien nhat trong microservice Java}}: database (repository), REST client (gateway), va message queue (event publisher). Moi loai co dac thau rieng khien lua chon test double khac nhau: repository co trang thai phuc tap -> fake; gateway chi can tra du lieu -> stub; publisher co tac dung phu khong quan sat duoc qua state -> mock.
+
+### Repository: fake in-memory vs Testcontainers
+Repository la collaborator {{co trang thai (stateful)}}: doc, ghi, cap nhat, xoa, va cac truy van co quan he (join, filter, phan trang). Mock repository bang Mockito thuong dan den over-specification: test biet qua chi tiet service goi {{findById}} roi {{save}} hay {{saveAll}}, khien refactor thanh batch insert lam test do. {{Fake repository in-memory}} giai quyet van de nay bang cach cai dat interface voi {{HashMap}}/{{ConcurrentHashMap}}, giu dung nghia nghiep vu (upsert, tim kiem, phan trang).
+
+~~~java
+interface OrderRepository {
+    Optional<Order> findById(String id);
+    List<Order> findByCustomer(String customerId, Pageable page);
+    void save(Order order);
+    void delete(String id);
+}
+
+class FakeOrderRepository implements OrderRepository {
+    private final Map<String, Order> orders = new ConcurrentHashMap<>();
+    private final Map<String, List<String>> customerIndex = new ConcurrentHashMap<>();
+
+    @Override public Optional<Order> findById(String id) {
+        return Optional.ofNullable(orders.get(id));
+    }
+
+    @Override public List<Order> findByCustomer(String customerId, Pageable page) {
+        List<String> ids = customerIndex.getOrDefault(customerId, List.of());
+        return ids.stream()
+            .map(orders::get)
+            .filter(Objects::nonNull)
+            .skip(page.getOffset())
+            .limit(page.getPageSize())
+            .toList();
+    }
+
+    @Override public void save(Order order) {
+        orders.put(order.id(), order);
+        List<String> ids = customerIndex.computeIfAbsent(order.customerId(), k -> new CopyOnWriteArrayList<>());
+        if (!ids.contains(order.id())) ids.add(order.id());   // upsert: khong them trung id
+    }
+
+    @Override public void delete(String id) {
+        Order removed = orders.remove(id);
+        if (removed != null) {
+            customerIndex.computeIfAbsent(removed.customerId(), k -> new CopyOnWriteArrayList<>()).remove(id);
+        }
+    }
+}
+~~~
+
+Fake nhu tren cho phep test {{toan bo luong}}: tao don -> tim don -> cap nhat trang thai -> tim theo khach hang co phan trang. Test khong quan tam service goi method nao may lan, chi kiem tra ket qua cuoi (state verification).
+
+{{Khi nao dung Testcontainers?}} Khi logic phu thuoc SQL phuc tap: CTE, window function, lock row ({{SELECT FOR UPDATE}}), migration schema, hay transaction isolation. Fake khong mo phong duoc hanh vi database that o muc nay. Quy tac thuc dung: {{logic repository don gian -> fake; SQL phuc tap/transaction -> Testcontainers}}. Dung dung Testcontainers cho moi test repository — no cham 10–100x so voi fake.
+
+### HTTP Gateway: stub kich ban thanh cong va loi
+Gateway goi dich vu ben ngoai (thanh toan, ky quy, tra cuoc) la collaborator {{stateless}}: moi request doc lap, khong co trang thai cuc bo. Stub la lua chon tu nhien: tra ve response dinh truoc cho tung kich ban.
+
+~~~java
+interface PaymentGateway {
+    PaymentResult charge(PaymentRequest request);
+}
+
+class StubPaymentGateway implements PaymentGateway {
+    private final Map<String, PaymentResult> scenarios = new HashMap<>();
+    private final Map<String, Throwable> errors = new HashMap<>();
+
+    StubPaymentGateway success(String orderId, PaymentResult result) {
+        scenarios.put(orderId, result); return this;
+    }
+    StubPaymentGateway failure(String orderId, Throwable error) {
+        errors.put(orderId, error); return this;
+    }
+
+    @Override public PaymentResult charge(PaymentRequest request) {
+        if (errors.containsKey(request.orderId())) throw new RuntimeException(errors.get(request.orderId()));
+        return scenarios.getOrDefault(request.orderId(), new PaymentResult("DECLINED", "stub-default"));
+    }
+}
+~~~
+
+Test dung stub de mo phong: thanh toan thanh cong, the het han, gateway timeout, gateway tra 500. {{Diem quan trong}}: stub khong verify — no chi cung cap du lieu dau vao cho service. Viec service co goi gateway hay khong, goi bao nhieu lan, duoc kiem tra o integration test hoac contract test (Pact), khong phai unit test.
+
+### Event Publisher: mock de verify payload
+Khi service publish event len Kafka/RabbitMQ, tac dung phu {{khong quan sat duoc qua state}} cua service. Ban khong the doc lai "da publish gi" tu database hay return value. Day la luc {{mock (hoac spy)}} can thiet: verify rang payload dung, topic dung, key dung.
+
+~~~java
+interface EventPublisher {
+    void publish(String topic, String key, Object payload);
+}
+
+class MockEventPublisher implements EventPublisher {
+    private final List<PublishedEvent> events = new ArrayList<>();
+
+    @Override public void publish(String topic, String key, Object payload) {
+        events.add(new PublishedEvent(topic, key, payload));
+    }
+
+    List<PublishedEvent> events() { return new ArrayList<>(events); }   // ban sao mutable: test clear() khong lam hong state that
+
+    record PublishedEvent(String topic, String key, Object payload) {}
+}
+~~~
+
+Test verify: {{events.size() == 1}}, {{events.get(0).topic().equals("order.created")}}, {{events.get(0).payload()}} chua {{orderId}} va {{totalAmount}}. {{Chi verify nhung gi la hop dong nghiep vu}} (topic, key, field bat buoc). Dung verify toan bo object payload — no lam test brittle khi them field moi.
+
+### So sanh ba cach trong mot service
+Xet {{OrderService}} dat hang: goi {{PaymentGateway}} (stub), luu {{OrderRepository}} (fake), publish {{OrderCreatedEvent}} (mock).
+
+~~~java
+class OrderService {
+    private final OrderRepository repo;
+    private final PaymentGateway gateway;
+    private final EventPublisher publisher;
+
+    OrderService(OrderRepository repo, PaymentGateway gateway, EventPublisher publisher) {
+        this.repo = repo; this.gateway = gateway; this.publisher = publisher;
+    }
+
+    Order placeOrder(OrderRequest req) {
+        PaymentResult pay;
+        try {
+            pay = gateway.charge(new PaymentRequest(req.orderId(), req.amount()));   // gateway loi -> PaymentFailedException
+        } catch (RuntimeException e) {
+            throw new PaymentFailedException(e.getCause() != null ? e.getCause().toString() : e.toString());
+        }
+        if (!pay.success()) throw new PaymentFailedException(pay.status());
+        Order order = new Order(req.orderId(), req.customerId(), req.items(), pay.transactionId());
+        repo.save(order);
+        publisher.publish("order.created", order.id(), new OrderCreatedEvent(order.id(), order.total()));
+        return order;
+    }
+}
+~~~
+
+Test unit cho service nay:
+- {{Fake repo}}: seed data, goi {{placeOrder}}, kiem tra {{repo.findById}} tra ve order dung, {{repo.findByCustomer}} co phan trang dung.
+- {{Stub gateway}}: cau hinh {{success(orderId, new PaymentResult("APPROVED", "txn-123"))}}, kiem tra service khong nem exception; cau hinh {{failure(orderId, new TimeoutException())}}, kiem tra service nem {{PaymentFailedException}}.
+- {{Mock publisher}}: sau khi {{placeOrder}} thanh cong, verify {{publisher.events()}} co dung 1 event, topic {{order.created}}, payload chua {{orderId}}.
+
+Day la {{state verification cho repo}} (xem ket qua luu), {{stub cho gateway}} (cung cap input), {{interaction verification cho publisher}} (verify payload). Moi loai test double phuc vu dung muc dich cua no.
+
+### Bai production hay gap
+- {{Fake repository thieu index}}: {{findByCustomer}} duyet toan bo map O(n) -> test pass nhung production cham. Luon mo phong index quan trong trong fake.
+- {{Stub gateway tra du lieu cung cho moi request}}: khong phan biet orderId -> test khong bat duoc bug service truyen sai orderId. Stub phai route theo key nghiep vu (orderId, customerId).
+- {{Mock publisher verify toan bo payload JSON}}: them field {{createdAt}} lam test do. Chi verify field bat buoc, dung JSON path hoac matcher linh hoat.
+- {{Dung Mockito when(...).thenReturn(...) cho repository}}: test biet service goi {{findById}} truoc {{save}}. Refactor sang {{saveAll}} lam test do. Dung fake de tranh over-specification.
+- {{Chia se fake co trang thai giua cac test}}: test A tao order, test B doc order do -> flaky. Moi test tu tao fake moi hoac co {{clear()}}.
+
+> Senior tip: trong codebase that, hay tao abstract base test class cung cap {{FakeOrderRepository}}, {{StubPaymentGateway}}, {{MockEventPublisher}} da cau hinh san cac kich ban pho bien. Dev moi chi can extend va override kich ban can thiet. Dieu nay thong nhat cach test, giam boilerplate, va khi review de dang hon vi pattern test double ro rang.
+
+### Lien he phong van
+Interviewer dua mot service co 3 dependency: {{UserRepository}}, {{EmailClient}}, {{NotificationPublisher}}. Hoi: "Ban test service nay the nao? Tai sao chon fake/stub/mock cho moi cai?".
+Tra loi tot: "UserRepository co trang thai doc-ghi -> fake in-memory de test luong tao-cap nhat-tim kiem ma khong khoa vao so lan goi. EmailClient chi gui email, khong tra du lieu quan trong -> stub tra success/failure theo kich ban. NotificationPublisher publish event, tac dung phu khong nhin thay qua state -> mock verify topic va payload. Cach nay tranh over-mocking: test khong quan tam service goi repository may lan, chi quan tam ket qua cuoi va event publish dung hop dong."`,
+  exercises: [
+    {
+      title: 'Fake repository, stub gateway, mock publisher cho OrderService',
+      prompt: `Cho san interface {{OrderRepository}}, {{PaymentGateway}}, {{EventPublisher}}, class {{Order}}, {{OrderRequest}}, {{PaymentResult}}, {{OrderCreatedEvent}} va {{OrderService}}. Hay hoan thien ba test double:
+
+1. {{FakeOrderRepository}}: luu order trong {{ConcurrentHashMap<String, Order>}} theo {{id}}. Ho tro {{findById}}, {{findByCustomer(customerId, pageable)}}, {{save}} (upsert), {{delete}}. {{findByCustomer}} tra danh sach order cua customer co phan trang (dung {{pageable.getOffset()}} va {{pageable.getPageSize()}}).
+2. {{StubPaymentGateway}}: cho phep cau hinh kich ban thanh cong va that bai theo {{orderId}}. {{charge(request)}} tra {{PaymentResult}} neu cau hinh thanh cong, nem {{RuntimeException}} wrap loi neu cau hinh that bai, mac dinh tra {{DECLINED}}.
+3. {{MockEventPublisher}}: ghi lai moi event publish vao list; {{events()}} tra ban sao list de test verify.
+
+Test se kiem tra: fake repository upsert dung, tim kiem co phan trang; stub gateway route theo orderId; mock publisher ghi dung payload.`,
+      starter: `import java.util.*;
+import java.util.concurrent.*;
+
+interface OrderRepository {
+    Optional<Order> findById(String id);
+    List<Order> findByCustomer(String customerId, Pageable pageable);
+    void save(Order order);
+    void delete(String id);
+}
+
+interface PaymentGateway {
+    PaymentResult charge(PaymentRequest request);
+}
+
+interface EventPublisher {
+    void publish(String topic, String key, Object payload);
+}
+
+record Pageable(int offset, int pageSize) {
+    int getOffset() { return offset; }
+    int getPageSize() { return pageSize; }
+}
+
+record PaymentRequest(String orderId, long amount) {}
+record PaymentResult(String status, String transactionId) {
+    boolean success() { return "APPROVED".equals(status); }
+}
+
+record Order(String id, String customerId, List<String> items, String transactionId) {
+    long total() { return items.size() * 1000L; }
+}
+
+record OrderRequest(String orderId, String customerId, List<String> items, long amount) {}
+
+record OrderCreatedEvent(String orderId, long totalAmount) {}
+
+class FakeOrderRepository implements OrderRepository {
+    private final Map<String, Order> orders = new ConcurrentHashMap<>();
+    private final Map<String, List<String>> customerIndex = new ConcurrentHashMap<>();
+
+    @Override public Optional<Order> findById(String id) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    @Override public List<Order> findByCustomer(String customerId, Pageable pageable) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    @Override public void save(Order order) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    @Override public void delete(String id) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class StubPaymentGateway implements PaymentGateway {
+    private final Map<String, PaymentResult> successCases = new HashMap<>();
+    private final Map<String, Throwable> failureCases = new HashMap<>();
+
+    StubPaymentGateway success(String orderId, PaymentResult result) {
+        successCases.put(orderId, result);
+        return this;
+    }
+
+    StubPaymentGateway failure(String orderId, Throwable error) {
+        failureCases.put(orderId, error);
+        return this;
+    }
+
+    @Override public PaymentResult charge(PaymentRequest request) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class MockEventPublisher implements EventPublisher {
+    private final List<PublishedEvent> events = new ArrayList<>();
+
+    record PublishedEvent(String topic, String key, Object payload) {}
+
+    @Override public void publish(String topic, String key, Object payload) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<PublishedEvent> events() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class OrderService {
+    private final OrderRepository repo;
+    private final PaymentGateway gateway;
+    private final EventPublisher publisher;
+
+    OrderService(OrderRepository repo, PaymentGateway gateway, EventPublisher publisher) {
+        this.repo = repo;
+        this.gateway = gateway;
+        this.publisher = publisher;
+    }
+
+    Order placeOrder(OrderRequest req) {
+        PaymentResult pay = gateway.charge(new PaymentRequest(req.orderId(), req.amount()));
+        if (!pay.success()) throw new PaymentFailedException(pay.status());
+        Order order = new Order(req.orderId(), req.customerId(), req.items(), pay.transactionId());
+        repo.save(order);
+        publisher.publish("order.created", order.id(), new OrderCreatedEvent(order.id(), order.total()));
+        return order;
+    }
+}
+
+class PaymentFailedException extends RuntimeException {
+    PaymentFailedException(String message) { super(message); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void assertTrue(boolean cond, String msg) { if (!cond) throw new AssertionError(msg); }
+
+    public static void main(String[] args) {
+        check("fake repository upsert and find by id", () -> {
+            FakeOrderRepository repo = new FakeOrderRepository();
+            Order o1 = new Order("ORD-1", "CUST-A", List.of("item1"), "txn-1");
+            repo.save(o1);
+            eq(o1, repo.findById("ORD-1").orElseThrow());
+            Order o1Updated = new Order("ORD-1", "CUST-A", List.of("item1", "item2"), "txn-2");
+            repo.save(o1Updated);
+            eq(2, repo.findById("ORD-1").orElseThrow().items().size());
+            eq(Optional.empty(), repo.findById("missing"));
+        });
+
+        check("fake repository findByCustomer with pagination", () -> {
+            FakeOrderRepository repo = new FakeOrderRepository();
+            repo.save(new Order("ORD-1", "CUST-A", List.of("a"), "t1"));
+            repo.save(new Order("ORD-2", "CUST-A", List.of("b"), "t2"));
+            repo.save(new Order("ORD-3", "CUST-A", List.of("c"), "t3"));
+            repo.save(new Order("ORD-4", "CUST-B", List.of("d"), "t4"));
+            List<Order> page1 = repo.findByCustomer("CUST-A", new Pageable(0, 2));
+            eq(2, page1.size());
+            eq("ORD-1", page1.get(0).id());
+            eq("ORD-2", page1.get(1).id());
+            List<Order> page2 = repo.findByCustomer("CUST-A", new Pageable(2, 2));
+            eq(1, page2.size());
+            eq("ORD-3", page2.get(0).id());
+            eq(1, repo.findByCustomer("CUST-B", new Pageable(0, 10)).size());
+            eq(0, repo.findByCustomer("CUST-C", new Pageable(0, 10)).size());
+        });
+
+        check("fake repository delete removes from both maps", () -> {
+            FakeOrderRepository repo = new FakeOrderRepository();
+            repo.save(new Order("ORD-1", "CUST-A", List.of("a"), "t1"));
+            repo.delete("ORD-1");
+            eq(Optional.empty(), repo.findById("ORD-1"));
+            eq(0, repo.findByCustomer("CUST-A", new Pageable(0, 10)).size());
+        });
+
+        check("stub gateway routes by orderId for success and failure", () -> {
+            StubPaymentGateway gateway = new StubPaymentGateway()
+                .success("ORD-1", new PaymentResult("APPROVED", "txn-123"))
+                .failure("ORD-2", new TimeoutException("gateway timeout"));
+            eq(new PaymentResult("APPROVED", "txn-123"), gateway.charge(new PaymentRequest("ORD-1", 1000)));
+            try { gateway.charge(new PaymentRequest("ORD-2", 1000)); throw new AssertionError("phai nem"); }
+            catch (RuntimeException e) { assertTrue(e.getCause() instanceof TimeoutException, "cause phai la TimeoutException"); }
+            eq(new PaymentResult("DECLINED", "stub-default"), gateway.charge(new PaymentRequest("ORD-3", 1000)));
+        });
+
+        check("mock publisher records events and returns copy", () -> {
+            MockEventPublisher publisher = new MockEventPublisher();
+            publisher.publish("order.created", "ORD-1", new OrderCreatedEvent("ORD-1", 5000));
+            publisher.publish("order.updated", "ORD-1", new OrderCreatedEvent("ORD-1", 6000));
+            List<MockEventPublisher.PublishedEvent> events = publisher.events();
+            eq(2, events.size());
+            eq("order.created", events.get(0).topic());
+            eq("ORD-1", events.get(0).key());
+            eq(5000L, ((OrderCreatedEvent) events.get(0).payload()).totalAmount());
+            // verify returned list is a copy
+            events.clear();
+            eq(2, publisher.events().size());
+        });
+
+        check("order service happy path uses all three doubles correctly", () -> {
+            FakeOrderRepository repo = new FakeOrderRepository();
+            StubPaymentGateway gateway = new StubPaymentGateway()
+                .success("ORD-100", new PaymentResult("APPROVED", "txn-999"));
+            MockEventPublisher publisher = new MockEventPublisher();
+            OrderService service = new OrderService(repo, gateway, publisher);
+            OrderRequest req = new OrderRequest("ORD-100", "CUST-X", List.of("item1", "item2"), 2000);
+            Order order = service.placeOrder(req);
+            eq("ORD-100", order.id());
+            eq("txn-999", order.transactionId());
+            eq(order, repo.findById("ORD-100").orElseThrow());
+            List<MockEventPublisher.PublishedEvent> events = publisher.events();
+            eq(1, events.size());
+            eq("order.created", events.get(0).topic());
+            eq("ORD-100", events.get(0).key());
+            eq(2000L, ((OrderCreatedEvent) events.get(0).payload()).totalAmount());
+        });
+
+        check("order service payment failure throws and does not save or publish", () -> {
+            FakeOrderRepository repo = new FakeOrderRepository();
+            StubPaymentGateway gateway = new StubPaymentGateway()
+                .failure("ORD-200", new TimeoutException("timeout"));
+            MockEventPublisher publisher = new MockEventPublisher();
+            OrderService service = new OrderService(repo, gateway, publisher);
+            OrderRequest req = new OrderRequest("ORD-200", "CUST-Y", List.of("item1"), 1000);
+            try { service.placeOrder(req); throw new AssertionError("phai nem PaymentFailedException"); }
+            catch (PaymentFailedException expected) { /* ok */ }
+            eq(Optional.empty(), repo.findById("ORD-200"));
+            eq(0, publisher.events().size());
+        });
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+import java.util.concurrent.*;
+
+interface OrderRepository {
+    Optional<Order> findById(String id);
+    List<Order> findByCustomer(String customerId, Pageable pageable);
+    void save(Order order);
+    void delete(String id);
+}
+
+interface PaymentGateway {
+    PaymentResult charge(PaymentRequest request);
+}
+
+interface EventPublisher {
+    void publish(String topic, String key, Object payload);
+}
+
+record Pageable(int offset, int pageSize) {
+    int getOffset() { return offset; }
+    int getPageSize() { return pageSize; }
+}
+
+record PaymentRequest(String orderId, long amount) {}
+record PaymentResult(String status, String transactionId) {
+    boolean success() { return "APPROVED".equals(status); }
+}
+
+record Order(String id, String customerId, List<String> items, String transactionId) {
+    long total() { return items.size() * 1000L; }
+}
+
+record OrderRequest(String orderId, String customerId, List<String> items, long amount) {}
+
+record OrderCreatedEvent(String orderId, long totalAmount) {}
+
+class FakeOrderRepository implements OrderRepository {
+    private final Map<String, Order> orders = new ConcurrentHashMap<>();
+    private final Map<String, List<String>> customerIndex = new ConcurrentHashMap<>();
+
+    @Override public Optional<Order> findById(String id) {
+        return Optional.ofNullable(orders.get(id));
+    }
+
+    @Override public List<Order> findByCustomer(String customerId, Pageable pageable) {
+        List<String> ids = customerIndex.getOrDefault(customerId, List.of());
+        return ids.stream()
+            .map(orders::get)
+            .filter(Objects::nonNull)
+            .skip(pageable.getOffset())
+            .limit(pageable.getPageSize())
+            .toList();
+    }
+
+    @Override public void save(Order order) {
+        orders.put(order.id(), order);
+        List<String> ids = customerIndex.computeIfAbsent(order.customerId(), k -> new CopyOnWriteArrayList<>());
+        if (!ids.contains(order.id())) ids.add(order.id());   // upsert: khong them trung id
+    }
+
+    @Override public void delete(String id) {
+        Order removed = orders.remove(id);
+        if (removed != null) {
+            customerIndex.computeIfAbsent(removed.customerId(), k -> new CopyOnWriteArrayList<>()).remove(id);
+        }
+    }
+}
+
+class StubPaymentGateway implements PaymentGateway {
+    private final Map<String, PaymentResult> successCases = new HashMap<>();
+    private final Map<String, Throwable> failureCases = new HashMap<>();
+
+    StubPaymentGateway success(String orderId, PaymentResult result) {
+        successCases.put(orderId, result);
+        return this;
+    }
+
+    StubPaymentGateway failure(String orderId, Throwable error) {
+        failureCases.put(orderId, error);
+        return this;
+    }
+
+    @Override public PaymentResult charge(PaymentRequest request) {
+        if (failureCases.containsKey(request.orderId())) {
+            throw new RuntimeException(failureCases.get(request.orderId()));
+        }
+        return successCases.getOrDefault(request.orderId(), new PaymentResult("DECLINED", "stub-default"));
+    }
+}
+
+class MockEventPublisher implements EventPublisher {
+    private final List<PublishedEvent> events = new ArrayList<>();
+
+    record PublishedEvent(String topic, String key, Object payload) {}
+
+    @Override public void publish(String topic, String key, Object payload) {
+        events.add(new PublishedEvent(topic, key, payload));
+    }
+
+    List<PublishedEvent> events() {
+        return new ArrayList<>(events);
+    }
+}
+
+class OrderService {
+    private final OrderRepository repo;
+    private final PaymentGateway gateway;
+    private final EventPublisher publisher;
+
+    OrderService(OrderRepository repo, PaymentGateway gateway, EventPublisher publisher) {
+        this.repo = repo;
+        this.gateway = gateway;
+        this.publisher = publisher;
+    }
+
+    Order placeOrder(OrderRequest req) {
+        PaymentResult pay;
+        try {
+            pay = gateway.charge(new PaymentRequest(req.orderId(), req.amount()));
+        } catch (RuntimeException e) {
+            throw new PaymentFailedException(e.getCause() != null ? e.getCause().toString() : e.toString());
+        }
+        if (!pay.success()) throw new PaymentFailedException(pay.status());
+        Order order = new Order(req.orderId(), req.customerId(), req.items(), pay.transactionId());
+        repo.save(order);
+        publisher.publish("order.created", order.id(), new OrderCreatedEvent(order.id(), order.total()));
+        return order;
+    }
+}
+
+class PaymentFailedException extends RuntimeException {
+    PaymentFailedException(String message) { super(message); }
+}`,
+      hints: [
+        'Fake repository: {{findById}} dung {{Optional.ofNullable(orders.get(id))}}; {{save}} dung {{orders.put(order.id(), order)}} va cap nhat {{customerIndex}} voi {{computeIfAbsent}} + {{CopyOnWriteArrayList}}; {{findByCustomer}} lay danh sach id tu index, map sang order, filter null, skip/limit theo pageable.',
+        'Stub gateway: {{charge}} kiem tra {{failureCases}} truoc (nem {{RuntimeException}} wrap cause), sau do {{successCases.getOrDefault}} voi default {{DECLINED}}.',
+        'Mock publisher: {{publish}} them vao {{ArrayList}}; {{events()}} tra {{new ArrayList<>(events)}} (ban sao mutable) de test clear() khong lam hong state noi bo.',
+        'OrderService: gateway charge truoc, neu that bai nem exception -> khong save, khong publish. Thanh cong thi save repo, publish event.',
+      ],
+      explain: `Bai tap nay minh hoa viec {{ket hop ba loai test double trong mot test service thuc te}}:
+
+- {{FakeOrderRepository}} cho phep test toan bo luong doc-ghi-tim kiem co phan trang ma khong can verify so lan goi method. No mo phong dung nghia upsert va index theo customer — day la diem khac biet so voi stub don gian chi tra gia tri cung.
+- {{StubPaymentGateway}} cung cap du lieu dau vao cho service theo kich ban: thanh cong, timeout, the het han. No khong verify service co goi hay khong — do la viec cua integration test.
+- {{MockEventPublisher}} verify interaction: event co duoc publish dung topic, key, payload khong. Day la interaction verification can thiet vi tac dung phu (publish Kafka) khong quan sat duoc qua state cua service.
+
+{{Loi hay gap}}:
+- Fake repository quen cap nhat index khi {{save}}/{{delete}} -> {{findByCustomer}} tra sai.
+- Stub gateway khong route theo {{orderId}} -> tat ca request nhan cung mot response, khong test duoc logic dieu huong.
+- Mock publisher tra truc tiep list noi bo -> test vo tinh {{clear()}} lam mat du lieu verify. Luon tra ban sao mutable ({{new ArrayList<>(events)}}), dung {{List.copyOf}} vi list do immutable.
+- Test service quen kiem tra truong hop that bai: payment fail thi khong duoc save order va khong duoc publish event.
+
+{{Khi nao dung Testcontainers thay vi fake?}} Khi repository co query phuc tap: {{SELECT FOR UPDATE}}, CTE, window function, transaction isolation, stored procedure. Fake khong mo phong duoc khoa hang, deadlock, hay plan thuc thi. Rule of thumb: logic CRUD don gian -> fake; SQL phuc tap -> Testcontainers.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Khi nao nen dung {{fake repository in-memory}} thay vi Testcontainers?',
+      options: [
+        'Khi query dung CTE, window function hoac {{SELECT FOR UPDATE}}',
+        'Khi logic repository chi la CRUD don gian, tim kiem, phan trang',
+        'Khi can test transaction isolation level',
+        'Khi schema database thay doi thuong xuyen',
+      ],
+      answer: 1,
+      explain: `Fake in-memory phu hop cho logic CRUD, tim kiem, phan trang — du de verify luong nghiep vu nhanh va deterministic. Testcontainers dung khi can SQL phuc tap, lock row, isolation level, migration schema — nhung thu fake khong mo phong duoc. (A) va (C) la ly do dung Testcontainers. (D) khong lien quan den lua chon test double.`,
+    },
+    {
+      q: 'Tai sao {{stub HTTP gateway}} khong nen verify so lan service goi no?',
+      options: [
+        'Vi stub khong ho tro verify',
+        'Vi gateway la stateless, moi request doc lap; verify so lan goi la over-specification, can tro refactor',
+        'Vi Mockito khong cho verify tren stub',
+        'Vi verify lam test chay cham',
+      ],
+      answer: 1,
+      explain: `Gateway chi cung cap du lieu dau vao (stateless). So lan goi la chi tiet cai dat — service co the cache, retry, batch request. Verify so lan goi khoa test vao implementation, lam refactor (vi du them cache) khien test do. Stub chi nen cau hinh tra ve gi cho tung kich ban.`,
+    },
+    {
+      q: 'Mock event publisher nen verify dieu gi?',
+      options: [
+        'Toan bo payload JSON byte-by-byte',
+        'Topic, key, va cac field bat buoc cua payload (orderId, totalAmount)',
+        'So lan goi publish phai dung 1',
+        'Thu tu publish giua cac topic',
+      ],
+      answer: 1,
+      explain: `Chi verify hop dong nghiep vu: topic dung, key dung, field bat buoc co mat. Verify toan bo JSON lam test brittle khi them field moi (createdAt, version...). So lan goi va thu tu thuong la chi tiet cai dat, tru khi hop dong nghiep vu yeu cau "phai publish dung 1 event order.created".`,
+    },
+  ],
+  related: ['testing-001', 'testing-009', 'testing-010'],
+  tags: ['test double', 'fake', 'stub', 'mock', 'repository', 'gateway', 'event publisher', 'Testcontainers'],
+},
+{
+  id: 'lesson-testing-009',
+  track: 'testing',
+  order: 9,
+  title: 'Test logic nghiep vu theo thoi gian: token JWT, khuyen mai gioi han, scheduled cleanup',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Inject {{Clock}} vao cac service quan ly token, promotion, rate limiter, scheduled job',
+    'Test het han token JWT, cua so khuyen mai, sliding window rate limiter bang {{Clock.fixed}}/{{Clock.offset}}',
+    'Mo phong thoi gian troi trong mot test (advance clock) de test scheduled cleanup va retry backoff',
+  ],
+  body: `### Tom tat
+Bai hoc 002 da gioi thieu {{Clock}} injection co ban. Bai nay ap dung vao {{ba bai toan nghiep vu thuc te}} ma dev Senior hay gap: {{token JWT/refresh token}} (het han tuyet doi, sliding expiry), {{khuyen mai/flash sale}} (cua so thoi gian, mui gio, DST), {{rate limiter sliding window}} va {{scheduled cleanup job}} (xoa token het han, don dep session). Muc tieu: test duoc moi moc bien ma khong bao gio {{Thread.sleep}}.
+
+### Token JWT: access token + refresh token voi sliding expiry
+He thong auth thuong co hai loai token:
+- {{Access token}}: song ngan (15–30 phut), dung cho moi request API.
+- {{Refresh token}}: song dai (7–30 ngay), dung de cap access token moi. Co {{sliding expiry}}: moi lan dung refresh token, han duoc gia han them mot khoang (vi du +7 ngay tu luc dung), nhung khong vuot qua max age (30 ngay).
+
+Logic kiem tra het han can {{Clock}} de test duoc sliding behaviour:
+
+~~~java
+class TokenService {
+    private final Clock clock;
+    private final Duration accessTtl = Duration.ofMinutes(15);
+    private final Duration refreshTtl = Duration.ofDays(30);
+    private final Duration slidingWindow = Duration.ofDays(7);
+
+    TokenService(Clock clock) { this.clock = clock; }
+
+    boolean isAccessTokenValid(Instant issuedAt) {
+        return clock.instant().isBefore(issuedAt.plus(accessTtl));
+    }
+
+    boolean isRefreshTokenValid(Instant issuedAt, Instant lastUsedAt) {
+        Instant now = clock.instant();
+        if (now.isAfter(issuedAt.plus(refreshTtl))) return false;           // max age
+        if (now.isAfter(lastUsedAt.plus(slidingWindow))) return false;      // sliding window
+        return true;
+    }
+
+    Instant refreshTokenNewExpiry(Instant issuedAt, Instant lastUsedAt) {
+        Instant proposed = lastUsedAt.plus(slidingWindow);   // gia han tu lan dung gan nhat
+        Instant maxExpiry = issuedAt.plus(refreshTtl);       // nhung khong vuot max age
+        return proposed.isBefore(maxExpiry) ? proposed : maxExpiry;
+    }
+}
+~~~
+
+Test voi {{Clock.fixed}} cho access token, {{Clock.offset}} cho refresh token sliding:
+- Access token: {{Clock.fixed(issuedAt.plusMinutes(14), UTC)}} -> valid; {{Clock.fixed(issuedAt.plusMinutes(16), UTC)}} -> expired.
+- Refresh token sliding: {{issuedAt = day 0}}, {{lastUsedAt = day 5}}, {{clock = day 12}} -> valid (day 5 + 7 = day 12, truoc max day 30). {{clock = day 13}} -> expired (vuot sliding window). {{lastUsedAt = day 25}}, {{clock = day 32}} -> expired (vuot max age day 30).
+
+### Khuyen mai/Flash sale: cua so thoi gian, mui gio, DST
+Flash sale thuong co {{startAt}} va {{endAt}} theo mui gio nghiep vu (vi du Asia/Ho_Chi_Minh). Server co the chay UTC. Logic so sanh phai dung {{ZonedDateTime}} voi {{ZoneId}} co dinh, **khong dung mui gio mac dinh cua JVM**.
+
+~~~java
+class PromotionService {
+    private final Clock clock;
+    private final ZoneId businessZone = ZoneId.of("Asia/Ho_Chi_Minh");
+
+    PromotionService(Clock clock) { this.clock = clock; }
+
+    boolean isActive(Promotion promo) {
+        ZonedDateTime now = ZonedDateTime.ofInstant(clock.instant(), businessZone);
+        return !now.isBefore(promo.startAt()) && now.isBefore(promo.endAt());
+    }
+
+    Duration timeUntilStart(Promotion promo) {
+        ZonedDateTime now = ZonedDateTime.ofInstant(clock.instant(), businessZone);
+        if (now.isAfter(promo.startAt())) return Duration.ZERO;
+        return Duration.between(now, promo.startAt());
+    }
+}
+
+record Promotion(ZonedDateTime startAt, ZonedDateTime endAt) {}
+~~~
+
+Test case quan trong:
+- {{Truoc startAt}}: {{Clock.fixed(startAt.minusHours(1), UTC)}} -> khong active, {{timeUntilStart}} = 1 gio.
+- {{Dung startAt}}: {{Clock.fixed(startAt, UTC)}} -> active.
+- {{Giua cua so}}: active.
+- {{Dung endAt}}: {{Clock.fixed(endAt, UTC)}} -> **khong active** (endAt exclusive).
+- {{Sau endAt}}: khong active.
+- {{DST}}: mui gio Viet Nam ({{Asia/Ho_Chi_Minh}}) khong co DST — UTC+7 co dinh tu 1975 — nen o day khong co gap/overlap. Nhung neu promotion theo mui gio chau Au/My thi phai xu ly ngay chuyen gio: vi du 29/3/2026 02:00 gio {{Europe/Paris}} khong ton tai (dong ho nhay tu 02:00 sang 03:00). Dung {{ZonedDateTime}} voi {{ZoneId}} de JDK tu xu ly gap/overlap.
+
+### Rate Limiter sliding window: test burst va refill
+Rate limiter cho phep N request trong cua so truot T giay. Cai dat pho bien: luu timestamp cac request gan nhat, loai bo timestamp cu hon {{now - window}}.
+
+~~~java
+class SlidingWindowRateLimiter {
+    private final Clock clock;
+    private final int maxRequests;
+    private final Duration window;
+    private final Deque<Instant> requests = new ConcurrentLinkedDeque<>();
+
+    SlidingWindowRateLimiter(Clock clock, int maxRequests, Duration window) {
+        this.clock = clock; this.maxRequests = maxRequests; this.window = window;
+    }
+
+    boolean tryAcquire() {
+        Instant now = clock.instant();
+        Instant cutoff = now.minus(window);
+        requests.removeIf(ts -> ts.isBefore(cutoff));
+        if (requests.size() < maxRequests) {
+            requests.addLast(now);
+            return true;
+        }
+        return false;
+    }
+
+    int currentUsage() {
+        Instant cutoff = clock.instant().minus(window);
+        requests.removeIf(ts -> ts.isBefore(cutoff));
+        return requests.size();
+    }
+}
+~~~
+
+Test: {{Clock.fixed(base, UTC)}} -> {{tryAcquire()}} 5 lan -> {{currentUsage() == 5}}. {{Clock.offset(base, Duration.ofSeconds(30))}} (window = 1 phut) -> {{currentUsage() == 5}}. {{Clock.offset(base, Duration.ofMinutes(2))}} -> {{currentUsage() == 0}} (window troi). Khong can sleep.
+
+### Scheduled cleanup: advance clock trong test
+Job don dep token het han chay moi gio. Test khong the cho 1 gio. Giai phap: {{mutable clock}} cho phep test advance thoi gian.
+
+~~~java
+class MutableClock extends Clock {
+    private final AtomicReference<Instant> instant;
+    private final ZoneId zone;
+    MutableClock(Instant start, ZoneId zone) { this.instant = new AtomicReference<>(start); this.zone = zone; }
+    @Override public ZoneId getZone() { return zone; }
+    @Override public Instant instant() { return instant.get(); }
+    @Override public Clock withZone(ZoneId zone) { return new MutableClock(instant.get(), zone); }
+    void advance(Duration d) { instant.updateAndGet(i -> i.plus(d)); }
+}
+
+class TokenCleanupJob {
+    private final TokenRepository repo;
+    private final Clock clock;
+    TokenCleanupJob(TokenRepository repo, Clock clock) { this.repo = repo; this.clock = clock; }
+
+    int cleanup() {
+        int deleted = repo.deleteExpiredBefore(clock.instant());
+        return deleted;
+    }
+}
+~~~
+
+Test:
+1. Seed repo voi 3 token: 2 het han (issuedAt truoc {{now - 30 ngay}}), 1 con han.
+2. {{MutableClock}} start tai {{day 0}}.
+3. Goi {{cleanup()}} -> deleted = 0 (chua ai het han).
+4. {{clock.advance(Duration.ofDays(31))}}.
+5. Goi {{cleanup()}} -> deleted = 2.
+6. Token con han van ton tai.
+
+Dieu nay cho phep test {{toan bo vong doi scheduled job}} trong vai mili giay.
+
+### Bai production hay gap
+- {{Quen inject Clock vao helper class}}: {{TokenService}} co clock nhung {{JwtUtil.parseExpiry}} dung {{Instant.now()}} -> test pass (helper khong chay trong test), production sai. Luon grep {{\\.now\\(\\)}} trong code domain.
+- {{So sanh ZonedDateTime bang equals sau qua database}}: PostgreSQL {{timestamptz}} luu microsecond, {{ZonedDateTime}} co nanosecond -> {{equals}} false. Test dung {{Clock.fixed}} nanosecond = 0, hoac truncate truoc khi so sanh.
+- {{DST gap/overlap}}: promotion theo mui gio {{Europe/Paris}}, startAt = {{2026-03-29T02:30+01:00}} — gio nay khong ton tai (dong ho nhay tu 02:00 sang 03:00). JDK se adjust thanh {{03:30+02:00}}. Test phai cover case nay: tao promotion voi startAt trong gap, verify {{isActive}} hanh vi nhu mong doi.
+- {{Mutable clock dung chung giua test}}: test A advance clock, test B thay clock da bi advance -> flaky. Moi test tao {{MutableClock}} moi hoac reset trong {{@BeforeEach}}.
+- {{Rate limiter: currentUsage() khong phai ham doc thuan}}: no cung prune timestamp het han nhu {{tryAcquire}}. Ket qua tra ve van dung, nhung khi test can kiem tra rieng viec don dep (hay dung chung cho ca hai duong), nen tach {{cleanupExpired(now)}} private de chi mot cho sua state.
+
+> Senior tip: hay dat {{ArchUnit rule}} hoac checkstyle custom cam {{Instant.now()}}, {{LocalDateTime.now()}}, {{LocalDate.now()}}, {{System.currentTimeMillis()}} trong package domain/service. Chi cho phep trong configuration bean tao {{Clock.systemUTC()}}. Khi review PR, grep {{\\.now\\(\\)}} la thay ngay vi pham. Mot doi truong gioi coi {{Clock}} injection la {{yeu cau bat buoc}} cho moi code lien quan thoi gian, khong phai "nice to have".
+
+### Lien he phong van
+Interviewer hoi: "He thong co flash sale 12h trua ngay 29/3 theo mui gio Paris (ngay tuan chau Au chuyen DST). Server chay UTC. Ban test logic {{isActive}} the nao?"
+Tra loi: "Dung {{ZonedDateTime}} voi {{ZoneId.of('Asia/Ho_Chi_Minh')}} cho startAt/endAt. Inject {{Clock}} vao service. Test: {{Clock.fixed(startAt.minusMinutes(1), UTC)}} -> inactive; {{Clock.fixed(startAt, UTC)}} -> active; {{Clock.fixed(endAt, UTC)}} -> inactive (end exclusive). Cover DST gap: tao promotion startAt = 02:30 (khong ton tai), JDK adjust sang 03:30, test verify {{isActive}} tai 03:29 inactive, 03:31 active. Khong dung {{Thread.sleep}}, khong phu thuoc mui gio JVM."`,
+  exercises: [
+    {
+      title: 'TokenService, PromotionService, SlidingWindowRateLimiter voi Clock',
+      prompt: `Cho san cac interface/class khung. Hay hoan thien ba service:
+
+1. {{TokenService}}: quan ly access token (TTL 15 phut) va refresh token (TTL 30 ngay, sliding window 7 ngay).
+   - {{isAccessTokenValid(issuedAt)}}: true neu {{clock.instant()}} **truoc** {{issuedAt + 15 phut}}.
+   - {{isRefreshTokenValid(issuedAt, lastUsedAt)}}: true neu **ca hai** dieu kien: chua vuot max age ({{issuedAt + 30 ngay}}) VA chua vuot sliding window ({{lastUsedAt + 7 ngay}}).
+   - {{refreshTokenNewExpiry(issuedAt, lastUsedAt)}}: tra {{min(lastUsedAt + 7 ngay, issuedAt + 30 ngay)}}.
+
+2. {{PromotionService}}: kiem tra khuyen mai active trong cua so {{[startAt, endAt)}} theo mui gio {{Asia/Ho_Chi_Minh}}.
+   - {{isActive(promo)}}: true neu {{now}} (theo business zone) **khong truoc** {{startAt}} VA **truoc** {{endAt}}.
+   - {{timeUntilStart(promo)}}: {{Duration}} tu {{now}} den {{startAt}}; neu da qua {{startAt}} tra {{Duration.ZERO}}.
+
+3. {{SlidingWindowRateLimiter}}: cho phep toi da {{maxRequests}} trong cua so {{window}}.
+   - {{tryAcquire()}}: loai bo timestamp cu hon {{now - window}}; neu size < maxRequests thi them {{now}} va tra true, nguoc lai false.
+   - {{currentUsage()}}: loai bo timestamp cu, tra size hien tai.
+
+Test se dung {{Clock.fixed}}, {{Clock.offset}}, va {{MutableClock}} (da cung cap) de kiem tra cac moc bien.`,
+      starter: `import java.time.*;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+interface TokenRepository {
+    int deleteExpiredBefore(Instant cutoff);
+}
+
+class MutableClock extends Clock {
+    private final AtomicReference<Instant> instant;
+    private final ZoneId zone;
+    MutableClock(Instant start, ZoneId zone) { this.instant = new AtomicReference<>(start); this.zone = zone; }
+    @Override public ZoneId getZone() { return zone; }
+    @Override public Instant instant() { return instant.get(); }
+    @Override public Clock withZone(ZoneId zone) { return new MutableClock(instant.get(), zone); }
+    void advance(Duration d) { instant.updateAndGet(i -> i.plus(d)); }
+}
+
+record Promotion(ZonedDateTime startAt, ZonedDateTime endAt) {}
+
+class TokenService {
+    private final Clock clock;
+    private final Duration accessTtl = Duration.ofMinutes(15);
+    private final Duration refreshTtl = Duration.ofDays(30);
+    private final Duration slidingWindow = Duration.ofDays(7);
+
+    TokenService(Clock clock) { this.clock = clock; }
+
+    boolean isAccessTokenValid(Instant issuedAt) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean isRefreshTokenValid(Instant issuedAt, Instant lastUsedAt) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Instant refreshTokenNewExpiry(Instant issuedAt, Instant lastUsedAt) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class PromotionService {
+    private final Clock clock;
+    private final ZoneId businessZone = ZoneId.of("Asia/Ho_Chi_Minh");
+
+    PromotionService(Clock clock) { this.clock = clock; }
+
+    boolean isActive(Promotion promo) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Duration timeUntilStart(Promotion promo) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class SlidingWindowRateLimiter {
+    private final Clock clock;
+    private final int maxRequests;
+    private final Duration window;
+    private final Deque<Instant> requests = new ConcurrentLinkedDeque<>();
+
+    SlidingWindowRateLimiter(Clock clock, int maxRequests, Duration window) {
+        this.clock = clock;
+        this.maxRequests = maxRequests;
+        this.window = window;
+    }
+
+    boolean tryAcquire() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int currentUsage() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class TokenCleanupJob {
+    private final TokenRepository repo;
+    private final Clock clock;
+    TokenCleanupJob(TokenRepository repo, Clock clock) { this.repo = repo; this.clock = clock; }
+
+    int cleanup() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void assertTrue(boolean cond, String msg) { if (!cond) throw new AssertionError(msg); }
+    static void assertFalse(boolean cond, String msg) { if (cond) throw new AssertionError(msg); }
+
+    static final ZoneId VN = ZoneId.of("Asia/Ho_Chi_Minh");
+    static final Instant BASE = Instant.parse("2026-03-01T00:00:00Z");
+    static Clock fixed(String instant) { return Clock.fixed(Instant.parse(instant), ZoneOffset.UTC); }
+    static Clock offset(Clock base, Duration d) { return Clock.offset(base, d); }
+
+    public static void main(String[] args) {
+        check("access token valid before 15min, invalid at and after 15min", () -> {
+            TokenService svc = new TokenService(fixed("2026-03-01T00:14:00Z"));
+            assertTrue(svc.isAccessTokenValid(BASE), "14 phut nen con valid");
+            svc = new TokenService(fixed("2026-03-01T00:15:00Z"));
+            assertFalse(svc.isAccessTokenValid(BASE), "dung 15 phut da het han");
+            svc = new TokenService(fixed("2026-03-01T00:16:00Z"));
+            assertFalse(svc.isAccessTokenValid(BASE), "sau 15 phut het han");
+        });
+
+        check("refresh token valid within max age and sliding window", () -> {
+            Instant issued = BASE;
+            Instant lastUsed = BASE.plus(Duration.ofDays(5));
+            TokenService svc = new TokenService(offset(fixed(BASE.toString()), Duration.ofDays(12)));
+            assertTrue(svc.isRefreshTokenValid(issued, lastUsed), "day 12: lastUsed+7=day12 (valid), issued+30=day30 (valid)");
+            svc = new TokenService(offset(fixed(BASE.toString()), Duration.ofDays(13)));
+            assertFalse(svc.isRefreshTokenValid(issued, lastUsed), "day 13: vuot sliding window (lastUsed+7=day12)");
+            // max age test
+            Instant issuedOld = BASE.minus(Duration.ofDays(31));
+            Instant lastUsedRecent = BASE.plus(Duration.ofDays(1));
+            svc = new TokenService(fixed(BASE.toString()));
+            assertFalse(svc.isRefreshTokenValid(issuedOld, lastUsedRecent), "vuot max age 30 ngay");
+        });
+
+        check("refreshTokenNewExpiry returns min(sliding, maxAge)", () -> {
+            TokenService svc = new TokenService(fixed(BASE.toString()));
+            Instant issued = BASE;
+            Instant lastUsed = BASE.plus(Duration.ofDays(5));
+            Instant expiry = svc.refreshTokenNewExpiry(issued, lastUsed);
+            eq(BASE.plus(Duration.ofDays(12)), expiry); // lastUsed+7 = day12, issued+30 = day30 -> min = day12
+            // case sliding vuot max age
+            Instant lastUsedLate = BASE.plus(Duration.ofDays(25));
+            expiry = svc.refreshTokenNewExpiry(issued, lastUsedLate);
+            eq(BASE.plus(Duration.ofDays(30)), expiry); // lastUsed+7 = day32 > day30 -> capped at max age
+        });
+
+        check("promotion active in [startAt, endAt) with business zone", () -> {
+            ZonedDateTime start = ZonedDateTime.of(2026, 3, 15, 12, 0, 0, 0, VN); // 12h trua VN
+            ZonedDateTime end = ZonedDateTime.of(2026, 3, 15, 14, 0, 0, 0, VN);   // 14h VN
+            Promotion promo = new Promotion(start, end);
+            // 11:59 VN = 04:59 UTC
+            PromotionService svc = new PromotionService(fixed("2026-03-15T04:59:00Z"));
+            assertFalse(svc.isActive(promo), "truoc startAt");
+            eq(Duration.ofMinutes(1), svc.timeUntilStart(promo));
+            // 12:00 VN = 05:00 UTC
+            svc = new PromotionService(fixed("2026-03-15T05:00:00Z"));
+            assertTrue(svc.isActive(promo), "dung startAt -> active");
+            eq(Duration.ZERO, svc.timeUntilStart(promo));
+            // 13:00 VN = 06:00 UTC
+            svc = new PromotionService(fixed("2026-03-15T06:00:00Z"));
+            assertTrue(svc.isActive(promo), "giua cua so");
+            // 14:00 VN = 07:00 UTC -> endAt exclusive
+            svc = new PromotionService(fixed("2026-03-15T07:00:00Z"));
+            assertFalse(svc.isActive(promo), "dung endAt -> inactive");
+            // 14:01 VN
+            svc = new PromotionService(fixed("2026-03-15T07:01:00Z"));
+            assertFalse(svc.isActive(promo), "sau endAt");
+        });
+
+        check("rate limiter with MutableClock refills after window passes", () -> {
+            MutableClock clock = new MutableClock(BASE, ZoneOffset.UTC);
+            SlidingWindowRateLimiter rl = new SlidingWindowRateLimiter(clock, 2, Duration.ofMinutes(1));
+            assertTrue(rl.tryAcquire(), "first acquire");
+            assertTrue(rl.tryAcquire(), "second acquire");
+            assertFalse(rl.tryAcquire(), "third acquire should fail");
+            eq(2, rl.currentUsage());
+            clock.advance(Duration.ofMinutes(2)); // window da troi
+            eq(0, rl.currentUsage());
+            assertTrue(rl.tryAcquire(), "acquire after window passes");
+            eq(1, rl.currentUsage());
+        });
+
+        check("token cleanup job deletes expired tokens when clock advances", () -> {
+            MutableClock clock = new MutableClock(BASE, ZoneOffset.UTC);
+            TokenRepository repo = new TokenRepository() {
+                private final Map<String, Instant> tokens = new HashMap<>();
+                { 
+                    // t1, t2 expire at day 30 (BASE+30 days) → expired at day 31
+                    // t3 expires at day 32 (BASE+32 days) → still valid at day 31
+                    tokens.put("t1", BASE.plus(Duration.ofDays(30))); 
+                    tokens.put("t2", BASE.plus(Duration.ofDays(30))); 
+                    tokens.put("t3", BASE.plus(Duration.ofDays(32))); 
+                }
+                @Override public int deleteExpiredBefore(Instant cutoff) {
+                    int before = tokens.size();
+                    tokens.entrySet().removeIf(e -> e.getValue().isBefore(cutoff));
+                    return before - tokens.size();
+                }
+            };
+            TokenCleanupJob job = new TokenCleanupJob(repo, clock);
+            eq(0, job.cleanup()); // day 0: chua token nao het han
+            clock.advance(Duration.ofDays(31));
+            eq(2, job.cleanup()); // day 31: 2 token het han bi xoa
+            eq(1, repo.deleteExpiredBefore(Instant.MAX)); // token con lai van do
+        });
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.time.*;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+interface TokenRepository {
+    int deleteExpiredBefore(Instant cutoff);
+}
+
+class MutableClock extends Clock {
+    private final AtomicReference<Instant> instant;
+    private final ZoneId zone;
+    MutableClock(Instant start, ZoneId zone) { this.instant = new AtomicReference<>(start); this.zone = zone; }
+    @Override public ZoneId getZone() { return zone; }
+    @Override public Instant instant() { return instant.get(); }
+    @Override public Clock withZone(ZoneId zone) { return new MutableClock(instant.get(), zone); }
+    void advance(Duration d) { instant.updateAndGet(i -> i.plus(d)); }
+}
+
+record Promotion(ZonedDateTime startAt, ZonedDateTime endAt) {}
+
+class TokenService {
+    private final Clock clock;
+    private final Duration accessTtl = Duration.ofMinutes(15);
+    private final Duration refreshTtl = Duration.ofDays(30);
+    private final Duration slidingWindow = Duration.ofDays(7);
+
+    TokenService(Clock clock) { this.clock = clock; }
+
+    boolean isAccessTokenValid(Instant issuedAt) {
+        return clock.instant().isBefore(issuedAt.plus(accessTtl));
+    }
+
+    boolean isRefreshTokenValid(Instant issuedAt, Instant lastUsedAt) {
+        Instant now = clock.instant();
+        if (now.isAfter(issuedAt.plus(refreshTtl))) return false;
+        if (now.isAfter(lastUsedAt.plus(slidingWindow))) return false;
+        return true;
+    }
+
+    Instant refreshTokenNewExpiry(Instant issuedAt, Instant lastUsedAt) {
+        Instant proposed = lastUsedAt.plus(slidingWindow);
+        Instant maxExpiry = issuedAt.plus(refreshTtl);
+        return proposed.isBefore(maxExpiry) ? proposed : maxExpiry;
+    }
+}
+
+class PromotionService {
+    private final Clock clock;
+    private final ZoneId businessZone = ZoneId.of("Asia/Ho_Chi_Minh");
+
+    PromotionService(Clock clock) { this.clock = clock; }
+
+    boolean isActive(Promotion promo) {
+        ZonedDateTime now = ZonedDateTime.ofInstant(clock.instant(), businessZone);
+        return !now.isBefore(promo.startAt()) && now.isBefore(promo.endAt());
+    }
+
+    Duration timeUntilStart(Promotion promo) {
+        ZonedDateTime now = ZonedDateTime.ofInstant(clock.instant(), businessZone);
+        if (now.isAfter(promo.startAt()) || now.isEqual(promo.startAt())) return Duration.ZERO;
+        return Duration.between(now, promo.startAt());
+    }
+}
+
+class SlidingWindowRateLimiter {
+    private final Clock clock;
+    private final int maxRequests;
+    private final Duration window;
+    private final Deque<Instant> requests = new ConcurrentLinkedDeque<>();
+
+    SlidingWindowRateLimiter(Clock clock, int maxRequests, Duration window) {
+        this.clock = clock;
+        this.maxRequests = maxRequests;
+        this.window = window;
+    }
+
+    boolean tryAcquire() {
+        Instant now = clock.instant();
+        Instant cutoff = now.minus(window);
+        requests.removeIf(ts -> ts.isBefore(cutoff));
+        if (requests.size() < maxRequests) {
+            requests.addLast(now);
+            return true;
+        }
+        return false;
+    }
+
+    int currentUsage() {
+        Instant cutoff = clock.instant().minus(window);
+        requests.removeIf(ts -> ts.isBefore(cutoff));
+        return requests.size();
+    }
+}
+
+class TokenCleanupJob {
+    private final TokenRepository repo;
+    private final Clock clock;
+    TokenCleanupJob(TokenRepository repo, Clock clock) { this.repo = repo; this.clock = clock; }
+
+    int cleanup() {
+        return repo.deleteExpiredBefore(clock.instant());
+    }
+}`,
+      hints: [
+        'TokenService: {{isAccessTokenValid}} dung {{clock.instant().isBefore(issuedAt.plus(accessTtl))}}. {{isRefreshTokenValid}} kiem tra ca {{issuedAt.plus(refreshTtl)}} va {{lastUsedAt.plus(slidingWindow)}}. {{refreshTokenNewExpiry}} tinh {{proposed = lastUsedAt.plus(slidingWindow)}}, {{maxExpiry = issuedAt.plus(refreshTtl)}}, tra {{proposed.isBefore(maxExpiry) ? proposed : maxExpiry}}.',
+        'PromotionService: chuyen {{clock.instant()}} sang business zone bang {{ZonedDateTime.ofInstant(instant, businessZone)}}. {{isActive}}: {{!now.isBefore(startAt) && now.isBefore(endAt)}} (endAt exclusive). {{timeUntilStart}}: neu {{now.isAfter(startAt) || now.isEqual(startAt)}} tra {{Duration.ZERO}}, nguoc lai {{Duration.between(now, startAt)}}.',
+        'SlidingWindowRateLimiter: {{tryAcquire}} va {{currentUsage}} deu phai {{removeIf(ts -> ts.isBefore(now.minus(window)))}} truoc khi kiem tra/tra size. Dung {{ConcurrentLinkedDeque}} cho thread-safe.',
+        'TokenCleanupJob: chi can goi {{repo.deleteExpiredBefore(clock.instant())}}. Test dung {{MutableClock}} advance thoi gian.',
+      ],
+      explain: `Bai tap nay ap dung {{Clock injection}} vao ba bai toan thuc te ma dev Senior thuong gap:
+
+**1. Token JWT voi sliding refresh token**: Access token song ngan (stateless), refresh token song dai nhung co sliding window. Logic: refresh token hop le neu **chua vuot max age (30 ngay)** VA **chua vuot sliding window (7 ngay ke tu lan dung cuoi)**. Khi refresh, expiry moi = {{min(lastUsedAt + 7 ngay, issuedAt + 30 ngay)}}. Test cover: access token het han dung 15 phut, refresh token het han do sliding window, het han do max age, expiry moi bi cap o max age.
+
+**2. Flash sale/Promotion voi mui gio nghiep vu**: Server chay UTC, nhung promotion start/end theo mui gio Viet Nam (co DST). Dung {{ZonedDateTime.ofInstant(clock.instant(), businessZone)}} de so sanh. Cua so {{[startAt, endAt)}} — endAt exclusive. Test cover: truoc start, dung start, giua cua so, dung end (inactive), sau end. Quan trong: {{timeUntilStart}} tra {{Duration.ZERO}} khi da qua startAt.
+
+**3. Sliding window rate limiter**: Luu timestamp cac request trong {{Deque}}. Moi lan {{tryAcquire}} hoac {{currentUsage}}, don timestamp cu hon {{now - window}}. Test dung {{MutableClock}} de advance thoi gian va verify refill sau khi window troi — **khong can {{Thread.sleep}}**.
+
+**4. Scheduled cleanup job**: Job xoa token het han chay dinh ky. Test seed data, goi cleanup tai day 0 (0 deleted), advance clock 31 ngay, goi cleanup (2 deleted). Toan bo vong doi job test duoc trong mili giay.
+
+{{Loi hay gap}}:
+- Quen inject {{Clock}} vao helper/util class -> production doc {{Instant.now()}} that.
+- So sanh {{ZonedDateTime}} bang {{equals}} sau luu DB: nanosecond mat do {{timestamptz}} chi luu microsecond. Test dung {{Clock.fixed}} nanosecond = 0, hoac truncate.
+- DST gap: promotion startAt roi vao gio khong ton tai (2h30 ngay chuyen DST). JDK adjust tu dong. Test phai cover case nay.
+- Mutable clock shared giua test -> flaky. Moi test tu tao instance moi.
+- {{currentUsage()}} cung prune state nhu {{tryAcquire()}} (khong phai ham doc thuan); nen tach {{cleanupExpired(now)}} private de chi mot cho sua deque.
+
+{{Senior tip}}: trong codebase that, hay cam {{Instant.now()}}, {{LocalDate.now()}}, {{System.currentTimeMillis()}} trong domain code bang ArchUnit hoac checkstyle. Chi cho phep trong {{@Configuration}} bean tao {{Clock.systemUTC()}}. Khi review PR, {{grep -r "\\.now()"}} la thay ngay vi pham.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Refresh token co sliding window 7 ngay va max age 30 ngay. IssuedAt = day 0, lastUsedAt = day 25. Hom nay day 28. Token con valid khong?',
+      options: ['Valid', 'Invalid vi vuot sliding window', 'Invalid vi vuot max age', 'Invalid vi ca hai'],
+      answer: 0,
+      explain: `Day 28: lastUsedAt + 7 = day 32 (chua toi) -> chua vuot sliding window. issuedAt + 30 = day 30 (chua toi) -> chua vuot max age. Ca hai dieu kien deu thoa -> valid.`,
+    },
+    {
+      q: 'Promotion startAt = 12:00, endAt = 14:00 (mui gio Viet Nam). {{isActive}} tra true cho thoi diem nao?',
+      options: ['11:59', '12:00', '14:00', '14:01'],
+      answer: 1,
+      explain: `Cua so [startAt, endAt): bao gom startAt, khong bao gom endAt. 12:00 -> active. 11:59 -> chua toi. 14:00 va 14:01 -> da qua endAt.`,
+    },
+    {
+      q: 'Rate limiter sliding window max 5 request/phut. Gui 5 request luc 00:00, luc 00:30 gui tiep 1 request. Ket qua?',
+      options: ['Cho phep (van trong window)', 'Tu choi (vuot max)', 'Tuy implementation', 'Nem exception'],
+      answer: 1,
+      explain: `Window 1 phut, 5 request dau luc 00:00 van trong window luc 00:30 (chua troi 1 phut). Size = 5, max = 5 -> request thu 6 bi tu choi. Chi khi clock advance >= 1 phut thi window troi va refill.`,
+    },
+    {
+      q: 'Tai sao test scheduled cleanup job nen dung {{MutableClock}} thay vi {{Thread.sleep}}?',
+      options: [
+        'Vi {{Thread.sleep}} khong chinh xac',
+        'Vi {{MutableClock}} cho phep advance thoi gian ngay lap tuc, test chay trong mili giay thay vi cho gio',
+        'Vi {{Thread.sleep}} bi deprecated',
+        'Vi {{MutableClock}} la class chuan cua JDK',
+      ],
+      answer: 1,
+      explain: `MutableClock cho phep test advance thoi gian (vi du 31 ngay) tac thi va kiem tra hanh vi job cleanup ngay lap tuc. Thread.sleep lam test cham, flaky duoi tai CI, va khong dieu khien duoc moc thoi gian chinh xac. MutableClock khong phai class chuan JDK (tu viet ke thua Clock).`,
+    },
+  ],
+  related: ['testing-002', 'testing-008', 'testing-010'],
+  tags: ['Clock', 'time testing', 'JWT', 'refresh token', 'sliding window', 'rate limiter', 'promotion', 'flash sale', 'scheduled job', 'DST', 'MutableClock'],
+},
 );
