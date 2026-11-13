@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-13",
+  "intro": "Hôm nay bản tin nghiêng về dữ liệu và vận hành: benchmark RDS PostgreSQL trên Graviton5, cách dựng báo cáo kiểu AWR cho PostgreSQL, chống OOM trên Aurora MySQL 8.4 và quy trình chẩn đoán bằng Database Insights. Ngoài ra có podcast của Spring về distributed transaction với Atomikos và kiến trúc tham chiếu cho AI agent doanh nghiệp.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "RDS for PostgreSQL trên Graviton5 (m9g): thông lượng tăng 30% so với Graviton4 trong benchmark của AWS",
+      "title": "Boosting Amazon RDS for PostgreSQL with AWS Graviton5: Benchmarks",
+      "url": "https://aws.amazon.com/blogs/database/boosting-amazon-rds-with-aws-graviton5-benchmarks/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "AWS chạy Sysbench oltp_read_write trên RDS for PostgreSQL 17.10, bốn lớp instance db.m6g đến db.m9g cỡ xlarge, mỗi loại 5 lần và lấy median. Kết quả: m9g đạt 61.495 QPS, hơn m8g khoảng 30% và hơn m6g khoảng 121%; p95 latency giảm từ 89,16 ms (m6g) xuống 40,37 ms. Tính theo giá On-Demand us-east-1, số query trên mỗi đô la tăng khoảng 20% so với m8g. Tác giả lưu ý chỉ test cỡ xlarge, working set nằm trong bộ nhớ và CPU bão hoà.",
+      "why": "Đổi instance class thường là cách rẻ nhất để giảm latency mà không sửa code. Bài cho số liệu và phương pháp để bạn tự benchmark workload Spring/JPA của mình trước khi nâng cấp.",
+      "interview_q": "Bạn được giao giảm chi phí và latency cho database PostgreSQL trên RDS. Bạn benchmark và quyết định đổi instance class như thế nào, và những giới hạn nào của benchmark synthetic cần lưu ý?",
+      "related": ["db-001", "aws-001"],
+      "tags": ["rds", "postgresql", "graviton"]
+    },
+    {
+      "title_vi": "Dựng báo cáo kiểu Oracle AWR cho RDS/Aurora PostgreSQL bằng pg_stat_statements và pg_cron",
+      "title": "Build an Oracle AWR-style report for RDS/Aurora PostgreSQL",
+      "url": "https://aws.amazon.com/blogs/database/build-an-oracle-awr-style-report-for-rds-aurora-postgresql/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Bài giới thiệu schema awr_lite cho PostgreSQL 14 trở lên: pg_cron chụp snapshot các view thống kê mỗi 15 phút, lấy mẫu session đang hoạt động cùng wait event mỗi 10 giây và dọn dữ liệu cũ hơn 8 ngày. Hàm report(begin, end) tính chênh lệch giữa hai snapshot để ra load profile, Top SQL theo elapsed time, segment đọc nhiều, wait event và tham số bị đổi. Cần lưu ý thống kê bị reset khi restart hoặc failover.",
+      "why": "Dev Java thường chỉ thấy câu SQL chậm từ phía ORM. Biết cách đọc Top SQL, wait event và AAS giúp bạn chứng minh nguyên nhân thay vì đoán, nhất là khi team chuyển từ Oracle sang PostgreSQL.",
+      "interview_q": "Một API đột ngột chậm lúc 14h hôm qua và bạn chỉ có dữ liệu thống kê tích luỹ của PostgreSQL. Bạn tái dựng điều gì đã xảy ra bằng cách nào?",
+      "related": ["db-002", "sql-001"],
+      "tags": ["postgresql", "pg_stat_statements", "performance"]
+    },
+    {
+      "title_vi": "Tránh restart do hết bộ nhớ trên Aurora MySQL 8.4: aurora_oom_response và AuroraMemoryHealthState",
+      "title": "Help prevent out-of-memory restarts on Aurora MySQL 8.4",
+      "url": "https://aws.amazon.com/blogs/database/help-prevent-out-of-memory-restarts-on-aurora-mysql-8-4/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Khi bộ nhớ cạn, hệ điều hành kill tiến trình mysql, làm rơi mọi kết nối và rollback giao dịch đang chạy. Nguyên nhân chính gồm buffer pool, bộ nhớ theo từng kết nối và bảng tạm từ GROUP BY, ORDER BY. Aurora có chuỗi hành động phục hồi từ print đến kill_connect qua tham số aurora_oom_response. Trên 8.4, aurora_enable_memory_management bật sẵn, còn khi tắt thì aurora_oom_response mặc định rỗng. Bài khuyên đặt alarm khi AuroraMemoryHealthState lớn hơn 0.",
+      "why": "Ứng dụng Spring với pool lớn và query báo cáo nặng rất dễ đẩy DB vào áp lực bộ nhớ. Hiểu client sẽ nhận lỗi 1041 và cách nâng cấp phiên bản làm đổi mặc định giúp bạn tránh sự cố khi upgrade.",
+      "interview_q": "Aurora MySQL của bạn restart ngẫu nhiên vào giờ cao điểm và log chỉ ghi hết bộ nhớ. Bạn điều tra và giảm rủi ro ở cả phía database lẫn phía ứng dụng Java thế nào?",
+      "related": ["db-003", "aws-002"],
+      "tags": ["aurora", "mysql", "oom"]
+    },
+    {
+      "title_vi": "Chẩn đoán hiệu năng Aurora MySQL bằng CloudWatch Database Insights: từ wait event đến Top SQL",
+      "title": "Diagnose Amazon Aurora MySQL performance using CloudWatch Database Insights",
+      "url": "https://aws.amazon.com/blogs/database/diagnose-amazon-aurora-mysql-performance-using-cloudwatch-database-insights/",
+      "source": "AWS Database Blog",
+      "category": "devops",
+      "summary": "Bài đưa ra quy trình năm bước: xem biểu đồ DB load chia theo wait, so với Max vCPU để biết có bão hoà không, xác định wait chiếm nhiều nhất, mở Top SQL của wait đó rồi áp dụng cách xử lý tương ứng. Có bảng gợi ý theo wait (CPU, redo log flush, io/table handler, synch, connection churn, lock). Hai chế độ Standard và Advanced khác nhau ở thời gian lưu trữ và giám sát toàn fleet. Metric DBLoad, DBLoadCPU, DBLoadNonCPU có thể đặt alarm.",
+      "why": "Đây là khung tư duy dùng lại được: đọc DB load theo wait thay vì chỉ nhìn CPU. Ví dụ trong bài cho thấy nhiều point-select nhỏ cũng đủ làm CPU bão hoà, gợi ý cache hoặc index chứ không phải chỉ scale up.",
+      "interview_q": "Database load vượt số vCPU nhưng không có câu query nào đơn lẻ quá chậm. Bạn phân tích tiếp thế nào và khi nào mới scale instance?",
+      "related": ["db-004", "sql-002"],
+      "tags": ["aurora", "observability", "wait-events"]
+    },
+    {
+      "title_vi": "Podcast Spring: Guy Pardon (Atomikos) về distributed transaction, XA và toàn vẹn dữ liệu",
+      "title": "A Bootiful Podcast: Atomikos founder Guy Pardon on distributed transactions, data integrity, and more",
+      "url": "https://spring.io/blog/2026/11/12/a-bootiful-podcast-guy-pardon",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Tập podcast nói về cách giữ dữ liệu nhất quán khi một nghiệp vụ chạm nhiều database, message broker hay service. Nội dung nhắc đến XA, two-phase commit, khi nào nên dùng distributed transaction và các cách thay thế bằng compensating logic hoặc eventual consistency. Cũng bàn về Atomikos: phần lõi open source, tính năng observability và hỗ trợ trả phí, tích hợp Spring Boot không cần application server, và các ca dùng trong ngân hàng, bảo hiểm.",
+      "why": "Câu hỏi 2PC so với saga xuất hiện thường xuyên ở phỏng vấn Senior, nhất là domain banking. Podcast cho góc nhìn của người làm transaction manager về lúc XA vẫn hợp lý.",
+      "interview_q": "So sánh XA/two-phase commit và saga cho một luồng chuyển tiền chạm hai database. Khi nào bạn vẫn chọn XA?",
+      "related": ["microservices-003", "spring-003"],
+      "tags": ["transaction", "xa", "atomikos"]
+    },
+    {
+      "title_vi": "Kiến trúc tham chiếu AI agent doanh nghiệp trên AWS: vòng lặp có kiểm soát và quan sát được",
+      "title": "Inside an enterprise AI agent: A governed, observable loop architecture",
+      "url": "https://aws.amazon.com/blogs/architecture/inside-an-enterprise-ai-agent-a-governed-observable-loop-architecture/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Bài mô tả kiến trúc năm tầng: API gateway, agent runtime, tầng knowledge và state, platform services (chủ yếu Amazon Bedrock) và khung trust/control chạy xuyên suốt. Runtime là vòng lặp Understand, Plan, Retrieve, Reason, Act and Observe. Mỗi hành động đi qua policy gate, guardrail hoặc quy trình phê duyệt; mỗi bước phát trace về latency, token và trạng thái tool. Nguyên tắc: zero trust, observable by default, fail-safe, hỏi lại người dùng hoặc chuyển cho người khi không chắc.",
+      "why": "Backend Java ngày càng phải tích hợp agent/LLM. Bài cho khung để thiết kế phần quanh model: quyền hạn, audit, quota token và tracing, đúng những thứ backend engineer chịu trách nhiệm.",
+      "interview_q": "Bạn thiết kế dịch vụ backend cho một AI agent được phép gọi API nội bộ. Bạn kiểm soát quyền, audit và chi phí token như thế nào?",
+      "related": ["ai-001", "design-002"],
+      "tags": ["ai-agent", "bedrock", "architecture"]
+    }
+  ]
+}
