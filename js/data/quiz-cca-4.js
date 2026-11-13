@@ -842,4 +842,234 @@
 
 > Thay đổi tool là thay đổi API: ghi rõ migration/deprecation, theo dõi lỗi sau rollout và giữ đường quay lui nếu tỷ lệ lỗi tăng.`
 },
+{
+  id: 'qz-ccat-042',
+  topic: 'claude',
+  q: '[Tool Design & MCP] An MCP server’s tool runs, but the inventory database times out while the tool is executing. The request is well formed and the server is healthy. Which response is most appropriate?',
+  options: [
+    'Return a JSON-RPC protocol error with code -32603 and no result',
+    'Close the transport so the client stops calling the tool',
+    'Return a normal JSON-RPC result with isError set to true and a short, safe explanation in its content',
+    'Return an empty successful result and log the failure only on the server'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: lỗi khi chạy tool được báo bằng isError, không phải lỗi giao thức.** MCP phân biệt hai loại lỗi. Lỗi giao thức (JSON-RPC error) dành cho request sai ở mức giao thức: tool không tồn tại, tham số sai kiểu, hoặc không đọc được thông điệp. Lỗi thực thi tool (tool execution error) xảy ra khi tool đã được gọi nhưng tác vụ bên trong thất bại, ví dụ database timeout, API bên thứ ba trả 500, dữ liệu nghiệp vụ không hợp lệ. Khi đó server trả một result bình thường, đặt isError: true và mô tả ngắn; client chuyển nội dung này cho model để model giải thích hoặc thử cách khác.
+
+Ví dụ: get_inventory tra bảng tồn kho, DB timeout sau 3 giây. Nếu trả JSON-RPC -32603, client có thể coi là sự cố phiên và không đưa lỗi cho model; nếu trả result rỗng, model tưởng không còn hàng.
+
+### Vì sao các phương án khác sai
+- **-32603:** đây là lỗi giao thức, không phản ánh đúng “tool đã chạy nhưng thất bại”.
+- **Đóng transport:** làm mất kết nối và các tool khác, quá mạnh cho một lỗi nghiệp vụ.
+- **Result rỗng:** che lỗi; model báo sai cho người dùng.
+
+> Ghi log lỗi đầy đủ ở server để điều tra, nhưng chỉ trả thông tin an toàn cho model; không gửi stack trace hay credential.`
+},
+{
+  id: 'qz-ccat-043',
+  topic: 'claude',
+  q: '[Tool Design & MCP] An MCP server connects to a ticketing API. A client sends the access token it obtained for that ticketing API, and the server forwards the same token downstream. Why is this design unsafe?',
+  options: [
+    'Reusing the caller’s token avoids storing credentials, so it is safe',
+    'The MCP server must reject tokens that were not issued for it, validate the audience, and call the downstream API with its own credentials',
+    'The token can be forwarded as long as the server removes the audience claim first',
+    'The token should be logged so support can trace which user made the request'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không chuyển tiếp token của client cho dịch vụ khác.** Đây là lỗi “token passthrough” (chuyển token xuyên qua). Token do client nhận cho API downstream không được cấp cho MCP server; nếu server nhận và dùng lại, nó bỏ qua các kiểm soát của downstream: rate limit, kiểm tra phạm vi, audit theo đối tượng (audience). Kẻ tấn công có thể dùng server như proxy để truy cập dữ liệu bằng token bị lộ, và log downstream sẽ ghi sai danh tính. Đây là kiểu tấn công “confused deputy”: một thành phần được tin cậy bị lợi dụng để hành động thay cho kẻ tấn công.
+
+Cách đúng: MCP server xác thực token của chính nó (cơ chế ủy quyền OAuth, audience trỏ đúng MCP server), sau đó dùng credential riêng của server để gọi ticketing API. Nếu cần hành động thay mặt người dùng, dùng ủy quyền per-user có kiểm soát, không phải token của dịch vụ khác.
+
+Ví dụ: token có audience https://api.ticketing.example; server MCP tại mcp.example không được nhận token đó. Khi gọi downstream, server dùng client_id/secret của mình hoặc token do authorization server cấp riêng cho server.
+
+### Vì sao các phương án khác sai
+- **Dùng lại token:** bỏ qua audience và audit, tạo confused deputy.
+- **Xóa audience:** không làm token hợp lệ; đó là giả mạo phạm vi.
+- **Log token:** lộ bí mật, không giải quyết gốc rễ.
+
+> Kiểm tra audience và scope ở resource server; token chỉ có giá trị với đúng dịch vụ được ghi trong token.`
+},
+{
+  id: 'qz-ccat-044',
+  topic: 'claude',
+  q: '[Tool Design & MCP] A browser-based IDE starts a local MCP server over HTTP on the developer’s workstation. The server has no authentication because it listens on localhost. What is the main risk, and what should the server do?',
+  options: [
+    'Bind to 127.0.0.1, validate the Origin header on every request, and require a session token or other local authentication',
+    'Bind to 0.0.0.0 so teammates on the same network can reuse the server',
+    'Accept any Host and Origin because localhost traffic cannot be reached from a browser',
+    'Replace HTTP with stdio so the browser can launch the server as a child process'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: localhost không phải là ranh giới an toàn.** Mọi tiến trình trên máy đều có thể gọi localhost, và trang web độc hại có thể dùng DNS rebinding: tên miền của kẻ tấn công ban đầu phân giải tới IP công khai, sau đó đổi sang 127.0.0.1; trình duyệt gửi request tới server local. Nếu server không kiểm tra Origin/Host, nó không phân biệt được request từ IDE với request từ trang độc hại.
+
+Phòng thủ theo MCP: bind chỉ 127.0.0.1 (không phải 0.0.0.0), kiểm tra Origin (và Host) trên mọi kết nối, yêu cầu token/phiên không đoán được, và không log token. Nếu chỉ cần một client local, stdio thường đơn giản hơn vì không mở cổng mạng.
+
+Ví dụ: request từ https://evil.example có Origin: https://evil.example; server chỉ cho phép Origin của IDE (ví dụ http://localhost:5173) và từ chối phần còn lại.
+
+### Vì sao các phương án khác sai
+- **0.0.0.0:** mở server cho toàn mạng, tăng bề mặt tấn công.
+- **Tin localhost:** bỏ qua DNS rebinding và các tiến trình local khác.
+- **stdio cho browser:** trình duyệt không thể spawn tiến trình stdio; đây không phải lựa chọn khả thi.
+
+> Kiểm thử bằng một trang web giả lập gửi request cross-origin; nếu server vẫn trả dữ liệu, lớp phòng thủ chưa đủ.`
+},
+{
+  id: 'qz-ccat-045',
+  topic: 'claude',
+  multi: true,
+  q: '[Tool Design & MCP] Two connected MCP servers both expose a tool named search. The host must let Claude call either one without mixing them up. Which two practices are appropriate? (Choose 2)',
+  options: [
+    'Keep both names identical and alternate the server order on each request',
+    'Expose server-qualified names, for example mcp__crm__search and mcp__docs__search, so the model sees distinct tools',
+    'Let the model choose the server from the identical description of the two tools',
+    'Rename one tool inside its own server so the two tool names differ',
+    'Merge both input schemas into one tool that calls both servers'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: phương án 2 và 4.** MCP không bảo đảm tên tool là duy nhất trên toàn hệ thống; mỗi server có namespace riêng (không gian tên), nên hai server đều có thể đặt tên search. Client/host thường ghép tên server vào trước tên tool, ví dụ mcp__crm__search và mcp__docs__search, để model và hệ thống phân quyền phân biệt được. Nếu bạn sở hữu một trong hai server, cách khác là đổi tên tool đó (ví dụ search_docs) để tránh trùng.
+
+Ví dụ: Claude Code hiển thị tool đầy đủ dạng mcp__<server>__<tool>; khi có hai server, tiền tố server là phần phân biệt. Nếu chỉ dựa vào mô tả giống nhau, model vẫn có thể chọn sai.
+
+### Vì sao các phương án còn lại sai
+- **Đổi thứ tự:** không tạo khác biệt ổn định; model không biết server nào.
+- **Dựa vào mô tả giống nhau:** không đủ thông tin để chọn.
+- **Gộp schema:** một tool gọi hai backend có thể gây side effect ngoài ý muốn và khó kiểm quyền.
+
+> Sau khi tách tên, kiểm tra lại chất lượng mô tả; tên khác nhau nhưng mô tả mơ hồ vẫn làm model chọn sai.`
+},
+{
+  id: 'qz-ccat-046',
+  topic: 'claude',
+  multi: true,
+  q: '[Tool Design & MCP] A filesystem MCP server helps a coding assistant read project files. The team wants the server to see only the current repository, not the whole disk. Which two practices fit MCP’s roots model? (Choose 2)',
+  options: [
+    'Accept any absolute path the model sends and read the file',
+    'Ask the client for roots through roots/list, then reject paths that resolve outside those roots, including traversal attempts',
+    'Grant the server the whole disk so it can find files anywhere',
+    'Check that the client supports roots, and handle roots/list_changed when the workspace changes',
+    'Skip the roots check to avoid an extra permission prompt'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: phương án 2 và 4.** Roots là danh sách thư mục gốc do client cung cấp cho server, thường qua roots/list. Chúng xác định ranh giới filesystem mà server được phép hoạt động. Server nên kiểm tra client có khai báo khả năng (capability) roots không, gọi roots/list khi cần, và xử lý notifications/roots/list_changed khi người dùng đổi workspace. Quan trọng hơn, server phải chuẩn hóa đường dẫn (canonical path) và từ chối ../ hoặc symlink thoát ra ngoài roots; nếu không, ranh giới chỉ là hình thức.
+
+Ví dụ: roots chỉ có file:///repo/backend. Model gửi ../../etc/passwd; server phân giải thành đường dẫn tuyệt đối, thấy nằm ngoài root, trả lỗi thay vì đọc. Nếu client không hỗ trợ roots, server nên từ chối thao tác hoặc yêu cầu cấu hình rõ ràng, không tự suy ra cả ổ đĩa.
+
+### Vì sao các phương án còn lại sai
+- **Nhận mọi path:** model hoặc prompt injection có thể đọc file nhạy cảm.
+- **Toàn bộ ổ đĩa:** vi phạm least privilege và tăng thiệt hại khi bị tấn công.
+- **Bỏ kiểm tra:** người dùng không được thông báo về phạm vi truy cập.
+
+> Kiểm tra cả đường dẫn tương đối, symlink và case-insensitive filesystem; roots là ranh giới, không phải gợi ý.`
+},
+{
+  id: 'qz-ccat-047',
+  topic: 'claude',
+  q: '[Tool Design & MCP] An MCP server asks the client to run a language-model completion. The server includes customer data in the prompt and wants the result before it can finish its tool call. What should the client do?',
+  options: [
+    'Run the completion automatically because the server declared the sampling capability',
+    'Show the request and the generated response for human review, apply rate limits, and let the user deny or edit before the result goes back',
+    'Return an empty completion to save time and let the server continue',
+    'Give the server the client’s model API key so it can call the model directly'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: sampling phải có người kiểm soát và giới hạn.** Sampling là cơ chế để server MCP yêu cầu client chạy một LLM completion, thay vì server tự giữ API key. Vì prompt có thể chứa dữ liệu khách hàng hoặc chỉ thị độc hại, MCP khuyến nghị client luôn có human-in-the-loop: hiển thị prompt, cho người dùng xem/sửa/từ chối, hiển thị kết quả trước khi gửi lại, và áp dụng rate limit (giới hạn số lần gọi). Nếu client không hỗ trợ sampling, phải trả lỗi JSON-RPC rõ ràng, không trả completion rỗng giả.
+
+Ví dụ: server yêu cầu tóm tắt hồ sơ khách hàng; client hiện hộp thoại “Server X muốn gửi prompt này”, người dùng sửa hoặc từ chối. Nếu từ chối, server nhận error và có thể báo không hoàn tất thay vì tiếp tục với dữ liệu bịa.
+
+### Vì sao các phương án khác sai
+- **Tự chạy:** bỏ qua quyền của người dùng và có thể làm lộ dữ liệu.
+- **Completion rỗng:** server không phân biệt được “không có kết quả” với “người dùng từ chối”.
+- **Đưa API key:** server không cần và không nên giữ bí mật của client.
+
+> Ghi audit ai đã duyệt sampling nào; rate limit theo server và theo người dùng để tránh vòng lặp tốn chi phí.`
+},
+{
+  id: 'qz-ccat-048',
+  topic: 'claude',
+  q: '[Tool Design & MCP] A tool declares an outputSchema that requires amount as a number, but its structuredContent returns amount as a string. The client forwards the result to Claude. What is the best response?',
+  options: [
+    'Pass it through because the model can infer the correct number',
+    'Validate structuredContent against outputSchema, treat the mismatch as an error, and ask the server to fix the output or fall back to text',
+    'Ignore outputSchema because it is only documentation for developers',
+    'Retry the same tool call until the server returns a matching number'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: kiểm tra output theo schema và không để model đoán kiểu dữ liệu.** outputSchema là JSON Schema (định dạng mô tả cấu trúc dữ liệu) cho kết quả có cấu trúc (structuredContent). MCP yêu cầu server phải trả kết quả khớp schema; client nên validate trước khi dùng. Nếu amount là "100" thay vì 100, model có thể hiểu đúng trong một số trường hợp, nhưng các bước tính toán hoặc hệ thống phía sau có thể sai. Cách an toàn là báo lỗi thực thi cho server, yêu cầu sửa, hoặc dùng nội dung text đã được kiểm tra; không âm thầm chuyển kiểu.
+
+Ví dụ: tool get_invoice trả structuredContent { amount: "100", currency: "USD" } trong khi schema yêu cầu number. Client trả isError với thông điệp “amount must be a number”, server sửa serialization; nếu không, model không nhận dữ liệu sai.
+
+### Vì sao các phương án khác sai
+- **Bỏ qua:** lỗi kiểu lan xuống prompt và có thể gây tính toán sai.
+- **Coi schema là tài liệu:** client mất lớp kiểm tra hợp đồng.
+- **Retry vô hạn:** không sửa nguyên nhân; cần lỗi rõ để dev sửa server.
+
+> Validate cả đầu vào lẫn đầu ra; đặt giới hạn retry và ghi correlation ID để truy vết.`
+},
+{
+  id: 'qz-ccat-049',
+  topic: 'claude',
+  q: '[Tool Design & MCP] A user cancels a long-running MCP tool that is generating a 200-page report. The client sends a cancellation notification with the request id. What should the server do?',
+  options: [
+    'Ignore it because the client cannot cancel an in-progress tool call',
+    'Finish the report, return it, and then discard the result',
+    'Stop work at the next safe checkpoint, mark the job cancelled, and avoid partial side effects or full billing',
+    'Restart the same job on another worker so it still completes'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: cancellation là tín hiệu hợp tác, server nên dừng ở checkpoint (điểm kiểm tra) an toàn.** MCP dùng notifications/cancelled kèm request id để báo client không còn chờ kết quả. Server nên kiểm tra cờ hủy giữa các bước, dừng sinh báo cáo, xóa file tạm, đánh dấu job là cancelled và không xuất bản kết quả dang dở. Nếu job đã chạy gần xong, có thể giữ kết quả trong cache ngắn hạn, nhưng không gửi cho client như thành công.
+
+Ví dụ: báo cáo 200 trang mất 90 giây; người dùng hủy ở giây 30. Server dừng ở chương 4, xóa file tạm, ghi trạng thái cancelled; không tính phí toàn bộ job nếu hệ thống tính theo trang. Cancellation có thể đến muộn, nên thiết kế checkpoint để kết quả cũ không vô tình được publish.
+
+### Vì sao các phương án khác sai
+- **Bỏ qua:** tốn CPU/IO và có thể tạo dữ liệu không ai dùng.
+- **Làm xong rồi bỏ:** vẫn tiêu tài nguyên và có thể gây side effect.
+- **Chạy lại:** trái với ý định người dùng và tăng tải.
+
+> Phân biệt “client không chờ nữa” với “server đã dừng”; ghi log cả hai trạng thái để điều tra.`
+},
+{
+  id: 'qz-ccat-050',
+  topic: 'claude',
+  multi: true,
+  q: '[Tool Design & MCP] A security team wants to stop any repository from adding an unapproved MCP server, even if a developer commits a .mcp.json file. Which two practices are most appropriate? (Choose 2)',
+  options: [
+    'Rely on code review of .mcp.json in each repository as the only control',
+    'Use managed policy to allowlist approved servers, for example managed-mcp.json or allowedMcpServers with allowManagedMcpServersOnly',
+    'Commit a shared API key in .mcp.json so only approved servers can authenticate',
+    'Treat the per-server approval dialog as the security boundary and remove all policy checks',
+    'Audit which servers and tools are actually used after rollout, using managed telemetry or logs'
+  ],
+  answer: [1, 4],
+  explain: `**Đáp án đúng: phương án 2 và 5.** .mcp.json là cấu hình trong repo; code review giúp phát hiện nhưng không chặn được người dùng tự bật server hoặc một PR bị merge nhầm. Claude Code hỗ trợ chính sách quản trị: managed-mcp.json giới hạn tập server được phép, hoặc allowedMcpServers kèm allowManagedMcpServersOnly để chỉ dùng allowlist (danh sách cho phép) từ nguồn quản trị. Sau khi triển khai, cần đo thực tế server/tool nào được gọi (OpenTelemetry/log) để phát hiện cấu hình lách hoặc server không còn được dùng.
+
+Ví dụ: security team deploy managed-mcp.json chỉ chứa github và sentry; mọi .mcp.json khác bị bỏ qua hoặc chặn, kể cả khi file đã commit. Audit cho thấy một server cũ vẫn được gọi từ máy chưa cập nhật policy, giúp phát hiện sớm.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ code review:** không phải kiểm soát thực thi; người dùng vẫn có thể thêm server local.
+- **Chia sẻ API key:** lộ bí mật và không xác định được server nào được duyệt.
+- **Chỉ dựa vào dialog:** người dùng có thể bấm approve; không thay thế policy.
+
+> Kết hợp allowlist ở managed settings với credential vault và audit; kiểm tra cả đường bật/tắt server trong /mcp.`
+},
+{
+  id: 'qz-ccat-051',
+  topic: 'claude',
+  q: '[Tool Design & MCP] A workflow first updates a customer record and then writes an audit entry that must see the update. Claude sometimes emits both tool_use blocks in one turn. Which tool_choice configuration makes the model request one tool at a time?',
+  options: [
+    'Use tool_choice {type: "auto", disable_parallel_tool_use: true} so at most one tool is called per response',
+    'Use tool_choice {type: "none"} so no tool is called',
+    'Remove the audit tool from the tool list and ask the model to describe it in text',
+    'Set temperature to 0 and keep the default parallel behavior'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: đặt disable_parallel_tool_use trong tool_choice auto (cấu hình chọn tool).** Mặc định Claude có thể trả nhiều tool_use trong một lượt. Khi các bước có phụ thuộc (update rồi audit), bạn muốn model yêu cầu từng tool một, chờ kết quả, rồi mới yêu cầu tool tiếp theo. Với tool_choice type auto và disable_parallel_tool_use: true, model gọi tối đa một tool trong mỗi response; vẫn có thể trả lời bằng text khi không cần tool.
+
+Ví dụ: update_customer thành công, trả tool_result, sau đó model mới gọi write_audit với dữ liệu đã cập nhật. Nếu để song song, audit có thể chạy trước khi update commit và ghi trạng thái cũ.
+
+### Vì sao các phương án khác sai
+- **none:** cấm mọi tool, trái yêu cầu.
+- **Bỏ tool audit:** mất bước kiểm toán, không giải quyết thứ tự.
+- **temperature 0:** không kiểm soát số tool gọi trong một lượt.
+
+> Nếu executor vẫn muốn tự tuần tự hóa, hãy kiểm tra dependency trong code; cấu hình tool_choice chỉ giảm khả năng model phát song song, không thay thế kiểm soát ở executor.`
+},
 );
