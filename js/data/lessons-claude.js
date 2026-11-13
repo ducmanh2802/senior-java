@@ -947,4 +947,546 @@ Trong thực tế, lịch sử bị bỏ thường được thay bằng một me
   related: ['claude-006', 'claude-007'],
   tags: ['context window', 'prompt caching', 'cache_control', 'usage', 'token'],
 },
+{
+  id: 'lesson-claude-004',
+  track: 'claude',
+  order: 4,
+  title: 'Agent loop có kiểm soát: ghép tool_result, xử lý lỗi và dừng đúng',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Mô phỏng được agent loop bằng Java thuần và phân biệt một model step với nhiều tool call trong cùng response',
+    'Ghép từng {{tool_result}} với đúng {{tool_use_id}}, gom kết quả vào một message và giữ nguyên thứ tự',
+    'Dừng an toàn theo {{stop_reason}} và {{maxSteps}}, kể cả khi tool cuối có thể gây side effect',
+  ],
+  body: `### Một agent không tự chạy tool
+Một **agent** ở đây là chương trình ghép model ngôn ngữ với các hàm backend để hoàn thành việc nhiều bước. Model chỉ chọn hành động và tạo dữ liệu đầu vào; nó không thể tự truy cập database, gọi Java method hay gửi tiền. Backend của bạn mới là nơi thực thi tool. Ví dụ, model có thể đề nghị {{orders_get_status}} với {{order_id = "ORD-42"}}, nhưng code phải kiểm tra rồi mới gọi service đơn hàng.
+
+### Tách rõ một vòng model và một tool call
+**Model step** là một lần gửi toàn bộ hội thoại lên API và nhận một response. Một response có thể chứa nhiều block {{tool_use}}; vì thế một model step có thể yêu cầu nhiều tool. Đếm mỗi tool thành một step sẽ làm lệch ngân sách: 3 tool song song vẫn là một lần gọi model, nhưng có thể là 3 lần gọi dịch vụ thật, nên cần quota riêng cho cả model lẫn tool.
+
+Luồng trạng thái cơ bản:
+
+~~~text
+user → model → assistant(tool_use A, tool_use B)
+                    ↓ backend chạy A và B
+user(tool_result A, tool_result B) → model → assistant(end_turn)
+~~~
+
+API Messages không lưu lịch sử giữa request. Mỗi lần gọi model, ứng dụng gửi lại transcript (toàn bộ các message trước đó). Vì vậy sau response có tool call, phải nối **toàn bộ message assistant nguyên trạng** trước; sau đó tạo đúng một message role {{user}} chứa các kết quả. Mỗi kết quả dùng {{tool_use_id}} khớp với {{id}} của lời gọi. Đây là quan hệ giống mã vận đơn và kiện hàng: nội dung có thể giống nhau, nhưng nhầm mã thì không biết kết quả thuộc yêu cầu nào.
+
+### Gom kết quả và xử lý thất bại
+Khi model gọi hai tool, chạy chúng theo thứ tự block và gửi cả hai kết quả trong cùng message kế tiếp. Mỗi {{tool_use}} phải có đúng một {{tool_result}}, kể cả tool không tồn tại hoặc ném lỗi. Trường {{is_error = true}} báo rằng nội dung là lỗi để model có thể giải thích hoặc chọn hành động khác; nó **không** tự retry và không thay thế log/alert của backend.
+
+Không bắt mọi exception rồi trả kết quả thành công giả. Chỉ bắt lỗi dự kiến ở ranh giới thực thi tool, ghi log có correlation ID và trả mô tả an toàn (không lộ SQL, token hay stack trace). Tool có ghi dữ liệu phải có kiểm tra quyền, giới hạn thời gian và tính idempotent: cùng một yêu cầu nghiệp vụ gửi lại không được tạo giao dịch thứ hai. {{tool_use_id}} chỉ nhận diện một lần gọi của model, không tự là idempotency key nghiệp vụ.
+
+### Dừng theo trạng thái, không đoán theo nội dung
+{{stop_reason}} là tín hiệu giao thức:
+- {{end_turn}}: câu trả lời hoàn tất, trả về người dùng.
+- {{tool_use}}: thực thi các tool hợp lệ rồi gọi model tiếp.
+- {{pause_turn}}: model tạm ngưng; tiếp tục bằng lịch sử có message assistant đó, không tự bịa {{tool_result}}.
+- {{max_tokens}}: output đã chạm giới hạn và có thể bị cắt; không báo thành công như câu trả lời hoàn chỉnh.
+- {{refusal}} hoặc trạng thái kết thúc khác: dừng và xử lý theo chính sách ứng dụng.
+
+Đặt {{maxSteps}} là số lần gọi model tối đa để tránh vòng lặp vô hạn và chi phí tăng theo từng request. Cần để ý thời điểm hết ngân sách: nếu response cuối yêu cầu gọi tool nhưng không còn lượt model để đọc kết quả, chạy tool ghi dữ liệu rồi bỏ kết quả là side effect vô ích. Quyết định trong bài tập là dừng trước khi thực thi tool ở step cuối. Với tác vụ cần hoàn tất, tầng điều phối có thể dành riêng một lượt tổng kết hoặc yêu cầu xác nhận của người dùng.
+
+~~~java
+// Một response có thể có nhiều tool_use nhưng vẫn chỉ tốn một model step.
+for (int step = 1; step <= maxSteps; step++) {
+    Reply r = model.next(new ArrayList<>(history)); // API stateless: gửi snapshot transcript
+    history.add(new Message("assistant", r.blocks())); // giữ nguyên mọi block
+    if ("end_turn".equals(r.stopReason())) return answer(r);
+    if ("tool_use".equals(r.stopReason()) && step < maxSteps) {
+        List<Block> results = executeEveryCall(r.blocks(), tools); // cùng thứ tự, đúng id
+        history.add(new Message("user", results)); // một message cho cả lượt tool
+    }
+}
+return stopped("max_steps"); // không thực thi side effect mà không còn lượt tiếp
+~~~
+
+### Ví dụ đời thực
+Một trợ lý CSKH tra trạng thái đơn và tồn kho ở hai service. Trong test tải, 6% hội thoại bị HTTP 400 sau khi model gọi cả hai tool: backend gửi hai message user liên tiếp, mỗi message chứa một kết quả, trong khi API yêu cầu một message gom cả hai. Log ứng dụng cũng chỉ ghi tên tool nên không lần ra kết quả nào thiếu ID. Nhóm sửa adapter để bảo toàn message assistant, gom hai block kết quả theo thứ tự và ghi {{tool_use_id}} vào log có che dữ liệu nhạy cảm. Họ thêm test kịch bản gọi song song, tool timeout và chạm max step; sau deploy tỷ lệ lỗi giao thức về 0 trong 20.000 lượt kiểm thử, còn thời gian xử lý p95 giữ ở 420 ms. Bài học là kiểm tra giao thức bằng transcript giả lập trước khi gọi API thật, vừa rẻ vừa tái lập được.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi coi agent loop là state machine ở backend, không phải model tự chạy công cụ. Mỗi lượt gửi toàn bộ transcript vì Messages API stateless. Tôi đọc stop_reason trước: end_turn thì trả lời; tool_use thì lưu nguyên message assistant, chạy từng tool sau khi kiểm tra schema và quyền, rồi đưa đủ tool_result vào một message user, đúng thứ tự và khớp tool_use_id. Lỗi dự kiến của tool cũng tạo tool_result có is_error để model xử lý, nhưng backend vẫn log correlation ID và không để lộ thông tin nhạy cảm. Tôi giới hạn số model step, thời gian và số tool call riêng; nếu hết ngân sách trước lượt kế tiếp thì không thực thi side effect mồ côi. Với thao tác ghi, tôi dùng idempotency key theo nghiệp vụ và xác nhận người dùng khi cần. Tôi kiểm thử bằng model giả định sẵn nhiều response, vì như vậy kiểm tra được cả protocol, lỗi và điều kiện dừng mà không tốn token.”
+
+### Liên hệ phỏng vấn
+Hãy phân biệt {{tool_use_id}} (ghép kết quả với một block gọi) với idempotency key (ngăn một hành động nghiệp vụ chạy lặp). Nếu được hỏi vì sao không chạy tool cuối khi chạm {{maxSteps}}, hãy nói rõ rủi ro side effect không có lượt tiếp theo để xác nhận kết quả.`,
+  exercises: [
+    {
+      title: 'AgentLoop: ghép tool_result và dừng trước side effect cuối',
+      prompt: `Các kiểu trong phần "Có sẵn" mô phỏng response của model. Hoàn thiện {{AgentLoop.run(prompt, model, tools, maxSteps)}}:
+
+1. Tạo hội thoại ban đầu gồm một message {{user}} có block text {{prompt}}. Mỗi lần gọi {{model.next}} truyền một bản sao danh sách, tăng {{steps}}, rồi thêm nguyên response thành message {{assistant}}.
+2. Với {{stopReason = "tool_use"}}, lấy mọi block {{tool_use}} theo thứ tự. Mỗi tool tồn tại thì gọi bằng input; nếu thiếu tool hoặc tool ném {{RuntimeException}}, tạo {{tool_result}} có {{isError = true}} và mô tả lỗi. Gom toàn bộ kết quả vào **một** message {{user}} theo thứ tự gốc.
+3. Với {{pause_turn}}, gọi model tiếp mà không thêm message user. Mọi stop reason khác trả {{AgentResult(text, steps, stopReason)}}; {{text}} là nối các block text ở response cuối.
+4. Nếu {{tool_use}} xuất hiện ở lần gọi model cuối cùng, **không chạy tool**, vì không còn lượt để model đọc kết quả. Trả {{stopReason = "max_steps"}} và text cuối. {{maxSteps}} ≤ 0 phải ném {{IllegalArgumentException}}.
+
+Không cần gọi mạng hay dùng SDK; model và tool đều được test giả lập.`,
+      starter: `// ====== Có sẵn (không cần sửa) ======
+record Block(String type, String text, String id, String name, Map<String, Object> input,
+             String toolUseId, String content, boolean isError) {
+    static Block text(String text) { return new Block("text", text, null, null, null, null, null, false); }
+    static Block toolUse(String id, String name, Map<String, Object> input) {
+        return new Block("tool_use", null, id, name, input, null, null, false);
+    }
+    static Block toolResult(String id, String content, boolean isError) {
+        return new Block("tool_result", null, null, null, null, id, content, isError);
+    }
+}
+record Message(String role, List<Block> blocks) {}
+record Reply(String stopReason, List<Block> blocks) {}
+interface Model { Reply next(List<Message> history); }
+record AgentResult(String text, int steps, String stopReason) {}
+
+// ====== Bài của bạn ======
+class AgentLoop {
+    static AgentResult run(String prompt, Model model,
+            Map<String, Function<Map<String, Object>, String>> tools, int maxSteps) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static Block call(String id, String name) {
+        return Block.toolUse(id, name, Map.of("order_id", "ORD-7"));
+    }
+    static Reply reply(String stop, Block... blocks) { return new Reply(stop, List.of(blocks)); }
+    static class ScriptModel implements Model {
+        final List<Reply> script;
+        final List<List<Message>> seen = new ArrayList<>();
+        ScriptModel(Reply... script) { this.script = List.of(script); }
+        public Reply next(List<Message> history) {
+            seen.add(new ArrayList<>(history));
+            return script.get(Math.min(seen.size() - 1, script.size() - 1));
+        }
+    }
+    static Map<String, Function<Map<String, Object>, String>> tool(String name, Function<Map<String, Object>, String> f) {
+        Map<String, Function<Map<String, Object>, String>> m = new HashMap<>();
+        m.put(name, f);
+        return m;
+    }
+    public static void main(String[] args) {
+        check("keeps assistant call and sends matching tool result", () -> {
+            ScriptModel m = new ScriptModel(
+                reply("tool_use", Block.text("Checking"), call("u1", "status")),
+                reply("end_turn", Block.text("Shipped")));
+            AgentResult r = AgentLoop.run("Where is it?", m, tool("status", in -> "SHIPPED"), 3);
+            eq("Shipped", r.text()); eq(2, r.steps()); eq("end_turn", r.stopReason());
+            List<Message> h = m.seen.get(1);
+            eq("assistant", h.get(1).role()); eq("tool_use", h.get(1).blocks().get(1).type());
+            Block result = h.get(2).blocks().get(0);
+            eq("user", h.get(2).role()); eq("tool_result", result.type());
+            eq("u1", result.toolUseId()); eq("SHIPPED", result.content()); eq(false, result.isError());
+        });
+        check("groups parallel calls into one user message in call order", () -> {
+            ScriptModel m = new ScriptModel(
+                reply("tool_use", call("u1", "first"), call("u2", "second")),
+                reply("end_turn", Block.text("done")));
+            Map<String, Function<Map<String, Object>, String>> tools = tool("first", in -> "one");
+            tools.put("second", in -> "two");
+            AgentLoop.run("Check", m, tools, 3);
+            List<Message> h = m.seen.get(1);
+            eq(3, h.size()); eq("user", h.get(2).role());
+            eq(2, h.get(2).blocks().size());
+            eq("u1", h.get(2).blocks().get(0).toolUseId());
+            eq("u2", h.get(2).blocks().get(1).toolUseId());
+        });
+        check("unknown tool and runtime failure become error results", () -> {
+            ScriptModel m = new ScriptModel(
+                reply("tool_use", call("u1", "missing"), call("u2", "broken")),
+                reply("end_turn", Block.text("Handled")));
+            AgentLoop.run("Do work", m, tool("broken", in -> { throw new IllegalStateException("service offline"); }), 3);
+            List<Block> results = m.seen.get(1).get(2).blocks();
+            eq(true, results.get(0).isError()); eq(true, results.get(0).content().contains("Unknown tool"));
+            eq(true, results.get(1).isError()); eq(true, results.get(1).content().contains("service offline"));
+        });
+        check("pause_turn continues, while max_tokens is returned as incomplete", () -> {
+            ScriptModel paused = new ScriptModel(reply("pause_turn", Block.text("continue")),
+                reply("end_turn", Block.text("finished")));
+            AgentResult p = AgentLoop.run("Search", paused, new HashMap<>(), 3);
+            eq(2, p.steps()); eq("finished", p.text()); eq(2, paused.seen.get(1).size());
+            AgentResult cut = AgentLoop.run("Write", new ScriptModel(reply("max_tokens", Block.text("partial"))),
+                new HashMap<>(), 3);
+            eq("max_tokens", cut.stopReason()); eq("partial", cut.text());
+        });
+        check("does not execute a tool when no model step remains", () -> {
+            int[] calls = {0};
+            ScriptModel m = new ScriptModel(reply("tool_use", call("u1", "charge")));
+            AgentResult r = AgentLoop.run("Charge", m, tool("charge", in -> { calls[0]++; return "ok"; }), 1);
+            eq(0, calls[0]); eq(1, r.steps()); eq("max_steps", r.stopReason());
+        });
+        check("max step cap and invalid cap are explicit", () -> {
+            ScriptModel m = new ScriptModel(reply("pause_turn", Block.text("wait")));
+            AgentResult r = AgentLoop.run("Wait", m, new HashMap<>(), 2);
+            eq("max_steps", r.stopReason()); eq(2, r.steps());
+            try { AgentLoop.run("x", m, new HashMap<>(), 0); }
+            catch (IllegalArgumentException expected) { return; }
+            throw new AssertionError("maxSteps <= 0 must be rejected");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `// ====== Có sẵn (không cần sửa) ======
+record Block(String type, String text, String id, String name, Map<String, Object> input,
+             String toolUseId, String content, boolean isError) {
+    static Block text(String text) { return new Block("text", text, null, null, null, null, null, false); }
+    static Block toolUse(String id, String name, Map<String, Object> input) {
+        return new Block("tool_use", null, id, name, input, null, null, false);
+    }
+    static Block toolResult(String id, String content, boolean isError) {
+        return new Block("tool_result", null, null, null, null, id, content, isError);
+    }
+}
+record Message(String role, List<Block> blocks) {}
+record Reply(String stopReason, List<Block> blocks) {}
+interface Model { Reply next(List<Message> history); }
+record AgentResult(String text, int steps, String stopReason) {}
+
+// ====== Lời giải ======
+class AgentLoop {
+    static AgentResult run(String prompt, Model model,
+            Map<String, Function<Map<String, Object>, String>> tools, int maxSteps) {
+        if (maxSteps <= 0) throw new IllegalArgumentException("maxSteps must be positive");
+        List<Message> history = new ArrayList<>();
+        history.add(new Message("user", List.of(Block.text(prompt))));
+        int steps = 0;
+        String lastText = "";
+        while (steps < maxSteps) {
+            Reply reply = model.next(new ArrayList<>(history));
+            steps++;
+            history.add(new Message("assistant", reply.blocks()));
+            lastText = textOf(reply.blocks());
+            if ("tool_use".equals(reply.stopReason())) {
+                List<Block> calls = new ArrayList<>();
+                for (Block b : reply.blocks()) if ("tool_use".equals(b.type())) calls.add(b);
+                if (calls.isEmpty()) return new AgentResult(lastText, steps, "protocol_error");
+                if (steps == maxSteps) return new AgentResult(lastText, steps, "max_steps");
+                List<Block> results = new ArrayList<>();
+                for (Block call : calls) results.add(execute(call, tools));
+                history.add(new Message("user", results)); // một message chứa đủ kết quả
+            } else if (!"pause_turn".equals(reply.stopReason())) {
+                return new AgentResult(lastText, steps, reply.stopReason());
+            }
+        }
+        return new AgentResult(lastText, steps, "max_steps");
+    }
+
+    private static Block execute(Block call, Map<String, Function<Map<String, Object>, String>> tools) {
+        Function<Map<String, Object>, String> tool = tools.get(call.name());
+        if (tool == null) return Block.toolResult(call.id(), "Unknown tool: " + call.name(), true);
+        try {
+            return Block.toolResult(call.id(), tool.apply(call.input()), false);
+        } catch (RuntimeException e) {
+            return Block.toolResult(call.id(), "Tool failed: " + e.getMessage(), true);
+        }
+    }
+
+    private static String textOf(List<Block> blocks) {
+        StringBuilder text = new StringBuilder();
+        for (Block b : blocks) if ("text".equals(b.type())) text.append(b.text());
+        return text.toString();
+    }
+}`,
+      hints: [
+        'Giữ một {{List<Message>}} làm transcript. Mỗi vòng gọi model bằng bản sao, rồi thêm {{reply.blocks()}} vào role {{assistant}} trước khi xét stop reason.',
+        'Tạo một list kết quả, duyệt tool call theo thứ tự, bắt {{RuntimeException}} quanh từng tool riêng; chỉ sau đó thêm đúng một message role {{user}}.',
+        'Kiểm tra {{steps == maxSteps}} trước khi gọi tool: lượt model tiếp theo không còn nên tránh chạy side effect không ai nhận kết quả.',
+      ],
+      explain: `{{steps}} đếm số lần gọi model, không phải số tool. Trong lượt có hai lời gọi, code tạo hai kết quả nhưng chỉ tăng step một lần. Test thứ hai kiểm tra đây là cùng một message user và giữ nguyên thứ tự; nếu gửi hai message, API không còn nhận được gói kết quả theo đúng lượt assistant.
+
+Lời giải lưu response assistant đầy đủ trước khi gửi kết quả. Nếu chỉ lưu phần text, request sau thiếu block {{tool_use}} mà các kết quả đang tham chiếu. {{tool_use_id}} được chép vào {{tool_use_id}} của kết quả để đối chiếu, còn {{isError}} chỉ bật cho tool thiếu hoặc ném {{RuntimeException}}. Trong code thật, lỗi trả model cần được làm sạch, còn log nội bộ giữ request ID và stack trace có kiểm soát.
+
+Điểm quan trọng ở điều kiện max là chưa gọi tool tại step cuối. Nếu đó là {{charge}} hoặc {{send_email}}, chạy rồi bỏ kết quả sẽ gây thay đổi thật mà agent không thể kiểm chứng. Một lỗi hay gặp là gọi tool xong mới phát hiện hết quota. Trong hệ thống thật, ngoài max step còn đặt timeout, giới hạn tổng số tool và ngân sách tiền; test giả lập giúp chứng minh không có tool nào chạy sau khi hết lượt.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Một response có {{stop_reason = "tool_use"}} và ba block {{tool_use}}. Backend nên gửi gì để model tiếp tục?',
+      options: [
+        'Ba request mới, mỗi request có một kết quả',
+        'Một message {{user}} chứa ba {{tool_result}}, mỗi kết quả khớp {{tool_use_id}} và giữ thứ tự lời gọi',
+        'Một message {{assistant}} chứa ba kết quả do backend tạo',
+        'Chỉ cần gửi kết quả của tool chạy nhanh nhất',
+      ],
+      answer: 1,
+      explain: `Tất cả kết quả của lượt tool nằm trong một message role {{user}} kế tiếp; mỗi block dùng ID của lời gọi tương ứng. Tách thành nhiều request hoặc message phá vỡ nhịp hội thoại; backend không được giả làm role assistant; bỏ kết quả thì còn lời gọi chưa được trả lời.`,
+    },
+    {
+      q: '{{maxSteps}} chỉ còn một lượt nhưng model vừa yêu cầu tool {{charge_card}}. Cách nào tránh side effect không có lượt tiếp theo để kiểm tra?',
+      options: [
+        'Chạy tool rồi bỏ kết quả vì giới hạn đã hết',
+        'Gọi tool hai lần để chắc chắn thành công',
+        'Dừng với trạng thái giới hạn và không thực thi tool ở lượt cuối',
+        'Đổi {{stop_reason}} thành {{end_turn}} rồi báo thành công',
+      ],
+      answer: 2,
+      explain: `Nếu chạy tool ở lượt cuối, backend không gọi lại model để nhận kết quả, trong khi charge là thay đổi thật. Dừng minh bạch giúp tầng trên xin thêm ngân sách hoặc yêu cầu người dùng tiếp tục. Chạy hai lần nhân đôi rủi ro; đổi trạng thái thành end_turn là báo thành công sai sự thật.`,
+    },
+    {
+      q: 'Tool ném lỗi timeout. Ý nghĩa đúng của {{tool_result.is_error = true}} là gì?',
+      options: [
+        'Nó báo model rằng tool thất bại; backend vẫn phải log, giới hạn retry và che dữ liệu nhạy cảm',
+        'Nó tự động retry cho đến khi thành công',
+        'Nó làm cho model có quyền chạy tool mà không cần kiểm tra authorization',
+        'Nó xác nhận giao dịch nghiệp vụ đã rollback',
+      ],
+      answer: 0,
+      explain: `{{is_error}} là thông tin giao thức cho model, không phải cơ chế retry, phân quyền hay transaction. Backend phải tự định nghĩa retry có giới hạn và kiểm tra trạng thái giao dịch; timeout không chứng minh rằng server phía sau chưa hoàn tất thao tác.`,
+    },
+  ],
+  related: ['claude-001', 'claude-026'],
+  tags: ['agent loop', 'tool_result', 'stop_reason', 'protocol'],
+},
+{
+  id: 'lesson-claude-005',
+  track: 'claude',
+  order: 5,
+  title: 'Thiết kế tool description và JSON Schema: rõ mục đích, validate ở server',
+  level: 'mid',
+  minutes: 35,
+  goals: [
+    'Viết description giúp model biết tool làm gì, lúc nào dùng, lúc nào không dùng và dữ liệu nào được trả về',
+    'Đọc được JSON Schema đơn giản gồm {{properties}}, {{required}}, {{type}}, {{enum}} và {{additionalProperties}}',
+    'Tự validate input bằng Java, đồng thời tách kiểm tra schema khỏi quyền và quy tắc nghiệp vụ',
+  ],
+  body: `### Tool definition là hợp đồng với model
+Model không đọc code Java phía server. Nó được cung cấp định nghĩa tool gồm tên, mô tả và schema input; dựa vào đó model quyết định có gọi hàm nào và tạo input ra sao. **Schema** là bản mô tả cấu trúc dữ liệu, giống mẫu phiếu: ô nào cần có, ô nào là số hay chuỗi, giá trị nào được phép. Schema không nói thay cho code cách truy cập hệ thống, cũng không chứng minh dữ liệu là đúng sự thật.
+
+Ví dụ tra trạng thái đơn:
+
+~~~json
+{
+  "name": "orders_get_status",
+  "description": "Tra trạng thái của một đơn theo mã ORD. Dùng khi khách hỏi đơn đang giao hay đã tới. Không dùng để tra thanh toán hoặc hoàn tiền. Trả status và ngày giao dự kiến; nếu không tìm thấy thì trả NOT_FOUND.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "order_id": { "type": "string", "description": "Mã đơn ORD-123, không tự tạo mã." },
+      "view": { "type": "string", "enum": ["status", "delivery_date"] }
+    },
+    "required": ["order_id"],
+    "additionalProperties": false
+  }
+}
+~~~
+
+### Viết description như hướng dẫn cho người mới
+Một description tốt nêu bốn điều: **việc gì**, **khi nào dùng**, **ranh giới không dùng**, và **kết quả/lỗi sẽ có gì**. Tool {{orders_get_status}} cụ thể dễ chọn hơn {{get_data}} vì tên và mô tả loại bỏ mơ hồ. Tham số nên có tên dễ hiểu, một câu mô tả format và nguồn lấy giá trị. Nếu {{order_id}} phải được khách cung cấp thì nói rõ không tự đoán.
+
+Hai tool có phạm vi chồng nhau thường khiến model chọn sai. Hãy chia theo năng lực và quyền hạn, không theo từng endpoint nhỏ li ti cũng không tạo một tool tổng quát {{run_sql}}. Khi khác nhau về ý nghĩa, viết rõ "không dùng để..." và chỉ sang tool phù hợp. Nên thử danh sách tool với các câu hỏi thật: nếu đồng nghiệp mới phân vân chọn tool nào, description cần sửa.
+
+### Schema làm được gì và không làm được gì
+{{type}} kiểm tra kiểu; {{required}} yêu cầu có thuộc tính; {{enum}} giới hạn tập giá trị; {{additionalProperties: false}} từ chối field không khai báo. Một số API có chế độ strict để ràng buộc model sinh input theo schema, nhưng khả năng hỗ trợ phụ thuộc endpoint/model và subset JSON Schema được chấp nhận. Hãy kiểm tra tài liệu của phiên bản đang dùng.
+
+Strict không thay thế kiểm tra server. Schema có thể đảm bảo {{order_id}} là string nhưng không chứng minh đơn đó tồn tại, thuộc về người đang đăng nhập hay đang ở trạng thái có thể hủy. Phía Java cần validate cấu trúc, sau đó kiểm tra quyền dựa trên identity đã xác thực (không tin {{customer_id}} do model tự gửi), rồi áp dụng quy tắc nghiệp vụ. Không tự chuyển chuỗi sai thành số vì việc "cố sửa" có thể biến input không hợp lệ thành hành động khác.
+
+~~~java
+// JSON đã parse thành Map; đây chỉ là kiểm tra type/required/enum cơ bản.
+if (!(input.get("order_id") instanceof String)) {
+    return error("order_id must be a string");
+}
+String id = (String) input.get("order_id");
+if (!id.matches("ORD-[0-9]+")) return error("invalid order_id");
+if (!currentUser.canViewOrder(id)) return error("not authorized");
+return orderService.status(id); // gọi service chỉ sau validation và authorization
+~~~
+
+Trong ứng dụng Spring, có thể bind JSON vào DTO rồi dùng Jakarta Bean Validation cho ràng buộc như {{@NotBlank}}/{{@Pattern}}. Dù dùng thư viện nào, luôn phân biệt lỗi parse/schema, lỗi quyền và lỗi nghiệp vụ; không trả stack trace hay câu SQL cho model.
+
+### Pitfall khi đưa vào production
+- Chỉ mô tả "tìm đơn hàng" mà không nói mã đơn khác mã khách; model có thể truyền nhầm định danh.
+- Để field thừa được chấp nhận có thể che giấu lỗi tên field hoặc khiến code mới xử lý ngoài dự kiến; chọn {{additionalProperties}} có chủ đích.
+- {{enum}} không đảm bảo trạng thái hiện tại hợp lệ để chuyển tiếp. Chẳng hạn "CANCELLED" là giá trị hợp lệ nhưng đơn đã giao vẫn không thể hủy.
+- Dữ liệu hợp schema vẫn có thể chứa thông tin người dùng không được phép truy cập; quyền phải suy ra từ session đã xác thực.
+
+### Ví dụ đời thực
+Một trợ lý nội bộ hỗ trợ 18 agent CSKH. Tỉ lệ gọi nhầm tool trạng thái đơn so với tool thanh toán là 11% trên 900 câu hỏi kiểm thử, do cả hai description đều ghi "tra cứu đơn". Nhóm đổi tên thành {{orders_get_status}}/{{payments_get_summary}}, mô tả rõ trường hợp dùng và không dùng, thêm enum cho lựa chọn thời hạn, đồng thời đặt {{additionalProperties: false}}. Backend Java từ chối type sai, kiểm tra chủ sở hữu đơn bằng user đăng nhập rồi mới gọi service. Sau khi chạy lại cùng bộ eval 900 câu, tỉ lệ chọn nhầm giảm còn 1.4%; 0 input sai schema đi tới service. Đây là phép đo chất lượng tool routing, không phải bằng chứng rằng model luôn đúng—bộ eval cần cập nhật khi thêm nghiệp vụ.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi thiết kế tool như API cho một đồng nghiệp mới: tên nói rõ domain và hành động, description nêu khi nào dùng, khi nào không, input lấy từ đâu, output và lỗi nào có thể trả về. JSON Schema mô tả object, field bắt buộc, kiểu, enum và có cho field lạ hay không. Tôi giữ schema đơn giản, bật strict nếu endpoint hỗ trợ nhưng không dựa vào model để bảo vệ backend. Java vẫn parse và validate input, lấy user từ security context thay vì tin customer_id do model truyền, kiểm tra authorization rồi mới gọi service. Sau đó kiểm tra nghiệp vụ, ví dụ trạng thái đơn có cho phép hủy không. Tôi có test eval câu hỏi đúng, câu mơ hồ và câu thiếu dữ liệu để đo tool routing, và log tên tool cùng correlation ID nhưng không log secret. Nếu người mới không phân biệt được hai tool, tôi sửa mô tả hoặc ranh giới thay vì chỉ tăng prompt.”
+
+### Liên hệ phỏng vấn
+Nhấn mạnh ba lớp: schema kiểm tra hình dạng; authorization kiểm tra người gọi được phép làm gì; nghiệp vụ kiểm tra hành động có hợp lệ ở trạng thái hiện tại hay không. Một lớp không thay thế hai lớp còn lại.`,
+  exercises: [
+    {
+      title: 'SimpleSchema: kiểm tra required, type, enum và field lạ',
+      prompt: `Hoàn thiện validator cho một **tập con đơn giản** của JSON Schema: mỗi schema là object có {{properties}}, {{required}}, {{type}}, {{enum}} và {{additionalProperties}}. Không cần viết JSON parser.
+
+Kiểu dữ liệu được phép trong bài: {{string}}, {{integer}} (Java {{Integer}} hoặc {{Long}}) và {{boolean}}. {{enumValues}} rỗng nghĩa là không giới hạn enum. {{validate(input, schema)}} trả về list rỗng nếu hợp lệ; nếu sai trả các thông báo lỗi. Báo field bắt buộc bị thiếu, kiểu sai, giá trị ngoài enum, và field không biết khi {{additionalProperties = false}}. Không ép kiểu và không sửa input. Thứ tự lỗi phải xác định bằng cách xét tên field theo thứ tự alphabet.`,
+      starter: `// ====== Có sẵn (không cần sửa) ======
+record Rule(String type, boolean required, Set<?> enumValues) {}
+record SimpleSchema(Map<String, Rule> properties, boolean additionalProperties) {}
+
+// ====== Bài của bạn ======
+class InputValidator {
+    static List<String> validate(Map<String, Object> input, SimpleSchema schema) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void ok(boolean value, String message) { if (!value) throw new AssertionError(message); }
+    static SimpleSchema schema(boolean extra) {
+        Map<String, Rule> p = new HashMap<>();
+        p.put("order_id", new Rule("string", true, Set.of()));
+        p.put("status", new Rule("string", true, Set.of("PENDING", "SHIPPED", "DELIVERED")));
+        p.put("priority", new Rule("integer", false, Set.of()));
+        p.put("notify", new Rule("boolean", false, Set.of()));
+        return new SimpleSchema(p, extra);
+    }
+    static Map<String, Object> valid() {
+        Map<String, Object> m = new HashMap<>();
+        m.put("order_id", "ORD-17"); m.put("status", "SHIPPED"); m.put("priority", 2);
+        return m;
+    }
+    static boolean has(List<String> errors, String text) {
+        return errors.stream().anyMatch(e -> e.contains(text));
+    }
+    public static void main(String[] args) {
+        check("accepts valid required fields and optional integer", () -> {
+            ok(InputValidator.validate(valid(), schema(false)).isEmpty(), "valid input rejected");
+        });
+        check("reports each missing required property", () -> {
+            List<String> errors = InputValidator.validate(Map.of(), schema(false));
+            ok(has(errors, "order_id") && has(errors, "status"), "missing fields not reported: " + errors);
+        });
+        check("does not coerce a number into a string", () -> {
+            Map<String, Object> input = valid(); input.put("order_id", 17);
+            ok(has(InputValidator.validate(input, schema(false)), "order_id"), "wrong type accepted");
+        });
+        check("rejects enum values outside the allowed set", () -> {
+            Map<String, Object> input = valid(); input.put("status", "RETURNED");
+            ok(has(InputValidator.validate(input, schema(false)), "status"), "unknown enum accepted");
+        });
+        check("rejects extra fields when additionalProperties is false", () -> {
+            Map<String, Object> input = valid(); input.put("customer_id", "C-9");
+            ok(has(InputValidator.validate(input, schema(false)), "customer_id"), "extra field accepted");
+        });
+        check("allows extra fields only when configured", () -> {
+            Map<String, Object> input = valid(); input.put("trace", "t-1");
+            ok(InputValidator.validate(input, schema(true)).isEmpty(), "allowed extra field rejected");
+        });
+        check("rejects non-integer and null values for typed fields", () -> {
+            Map<String, Object> input = valid(); input.put("priority", 2.5); input.put("notify", null);
+            List<String> errors = InputValidator.validate(input, schema(false));
+            ok(has(errors, "priority") && has(errors, "notify"), "typed invalid values accepted: " + errors);
+        });
+        check("error order is deterministic by field name", () -> {
+            Map<String, Object> input = new HashMap<>();
+            input.put("z_extra", 1); input.put("a_extra", 2);
+            List<String> errors = InputValidator.validate(input, schema(false));
+            ok(errors.indexOf(errors.stream().filter(e -> e.contains("a_extra")).findFirst().orElse("")) <
+               errors.indexOf(errors.stream().filter(e -> e.contains("z_extra")).findFirst().orElse("")),
+               "errors are not sorted: " + errors);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `// ====== Có sẵn (không cần sửa) ======
+record Rule(String type, boolean required, Set<?> enumValues) {}
+record SimpleSchema(Map<String, Rule> properties, boolean additionalProperties) {}
+
+// ====== Lời giải ======
+class InputValidator {
+    static List<String> validate(Map<String, Object> input, SimpleSchema schema) {
+        List<String> errors = new ArrayList<>();
+        if (input == null) {
+            errors.add("Input must be an object");
+            return errors;
+        }
+        for (String name : new TreeSet<>(schema.properties().keySet())) {
+            Rule rule = schema.properties().get(name);
+            if (rule.required() && !input.containsKey(name))
+                errors.add("Missing required property: " + name);
+        }
+        for (String name : new TreeSet<>(input.keySet())) {
+            Rule rule = schema.properties().get(name);
+            if (rule == null) {
+                if (!schema.additionalProperties()) errors.add("Unknown property: " + name);
+                continue;
+            }
+            Object value = input.get(name);
+            if (!matches(rule.type(), value)) {
+                errors.add("Invalid type for property: " + name);
+            } else if (!rule.enumValues().isEmpty() && !rule.enumValues().contains(value)) {
+                errors.add("Value is not allowed for property: " + name);
+            }
+        }
+        return errors;
+    }
+
+    private static boolean matches(String type, Object value) {
+        return switch (type) {
+            case "string" -> value instanceof String;
+            case "integer" -> value instanceof Integer || value instanceof Long;
+            case "boolean" -> value instanceof Boolean;
+            default -> throw new IllegalArgumentException("Unsupported schema type: " + type);
+        };
+    }
+}`,
+      hints: [
+        'Tách hai lượt duyệt: lượt đầu kiểm tra {{required}} bằng {{containsKey}}; lượt sau xét từng input để phát hiện field lạ hoặc sai type/enum.',
+        'Dùng {{new TreeSet<>(map.keySet())}} để duyệt alphabetically. Kiểm tra type trước enum để không so sánh một giá trị sai kiểu như thể nó hợp lệ.',
+      ],
+      explain: `Validator nhận một map đã parse, nên nó chỉ xử lý subset schema đã nêu, không phải bộ giải JSON Schema đầy đủ. Lượt đầu đi qua khai báo theo thứ tự alphabet và báo field required thiếu. {{containsKey}} quan trọng hơn {{get(name) == null}}: field có mặt nhưng giá trị null không giống field vắng mặt; trong subset này, null sẽ bị đánh dấu sai type.
+
+Lượt sau đi qua key input đã sắp xếp. Không có rule thì chỉ báo lỗi khi {{additionalProperties}} là false. Có rule thì kiểm tra type trước, rồi mới kiểm tra enum; {{priority = 2.5}} không thể được ép thành integer, còn status "RETURNED" có đúng kiểu string nhưng không nằm trong tập giá trị cho phép. Thông báo lỗi không phụ thuộc thứ tự của {{HashMap}} nên test và log ổn định.
+
+Trong ứng dụng thực tế, JSON parser có thể biểu diễn số bằng {{Long}} hoặc {{BigDecimal}}, vì vậy validator cần định nghĩa rõ thế nào là integer theo parser đang dùng. Schema cũng có thể hỗ trợ array, object lồng nhau, minimum hay pattern; bài tập cố ý không triển khai các phần đó để không giả vờ rằng đây là validator chuẩn đầy đủ.
+
+Không dùng kết quả schema như quyết định truy cập. Sau khi input hợp lệ, server phải lấy user từ authentication context, kiểm tra quyền xem đơn rồi mới gọi service. Một input {{order_id}} đúng regex vẫn có thể là đơn của người khác; {{enum}} đúng cũng không chứng minh trạng thái hiện tại cho phép hủy.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Schema yêu cầu {{order_id}} là string và input đúng kiểu. Điều gì vẫn phải được backend kiểm tra?',
+      options: [
+        'Không cần gì nữa, schema chứng minh người dùng sở hữu đơn',
+        'Chỉ cần kiểm tra tool name không quá dài',
+        'Quyền của user đã xác thực và quy tắc nghiệp vụ như đơn có được hủy ở trạng thái hiện tại không',
+        'Model có trả lời bằng tiếng Việt hay không',
+      ],
+      answer: 2,
+      explain: `Schema chỉ kiểm tra cấu trúc, không biết danh tính người dùng, quyền truy cập, đơn có tồn tại hoặc trạng thái có cho phép hủy. Tool name cũng không giải quyết các điều kiện đó; ngôn ngữ trả lời không liên quan authorization hay business rule.`,
+    },
+    {
+      q: 'Description của {{orders_get_status}} nên nói gì để giảm gọi nhầm tool?',
+      options: [
+        'Chỉ ghi "Get order" để model tự suy ra',
+        'Nêu việc tool làm, trường hợp dùng/không dùng, input cần lấy từ đâu và output/lỗi có thể nhận',
+        'Chép toàn bộ source code của service Java vào description',
+        'Không mô tả input vì schema đã có tên field',
+      ],
+      answer: 1,
+      explain: `Tên và description là hiểu biết chính của model về tool. Ranh giới, nguồn input và kết quả giúp phân biệt tool trạng thái đơn với tool thanh toán. Mô tả chung làm tăng mơ hồ; model không đọc source backend; schema field name một mình không giải thích nghiệp vụ.`,
+    },
+    {
+      q: '{{additionalProperties: false}} kết hợp {{enum}} đảm bảo điều gì?',
+      options: [
+        'Không có field lạ và giá trị enum nằm trong tập khai báo, nhưng không đảm bảo dữ liệu đúng nghiệp vụ',
+        'Model không thể mắc lỗi ở bất kỳ bước nào',
+        'Người gọi chắc chắn có quyền truy cập tài nguyên',
+        'Các trạng thái enum luôn hợp lệ cho mọi chuyển đổi trạng thái',
+      ],
+      answer: 0,
+      explain: `Hai ràng buộc chỉ kiểm tra shape và tập giá trị. Enum "CANCELLED" có thể tồn tại nhưng không hợp lệ để chuyển một đơn đã giao; schema cũng không biết ai đang gọi. Strict generation giảm input sai schema nhưng không thay thế validation server.`,
+    },
+  ],
+  related: ['claude-026', 'claude-001'],
+  tags: ['tool description', 'JSON Schema', 'input validation', 'authorization'],
+},
 );

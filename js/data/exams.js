@@ -10,6 +10,16 @@
  */
 window.EXAMS = [
   {
+    id: 'cca-f',
+    title: 'Claude Certified Architect – Foundations (CCA-F)',
+    icon: '🏛️',
+    desc: 'Mô phỏng đề CCA-F: 60 câu tình huống, 5 domain theo trọng số, 120 phút, đậu từ 720/1000.',
+    topics: { claude: 1 },
+    // Trọng số theo các trang ôn thi CCA-F (bên thứ ba, đối chiếu 2026-11-12); câu được gắn tag "[Domain]" đầu q
+    domains: { 'Agentic Architecture': 27, 'Claude Code Configuration': 20, 'Prompt Engineering': 20, 'Tool Design & MCP': 18, 'Context Management': 15 },
+    count: 60, minutes: 120, passScore: 720,
+  },
+  {
     id: 'claude',
     title: 'Chứng chỉ Claude (CCDV-F)',
     icon: '🤖',

@@ -264,6 +264,10 @@ App.i18n.add({
     return quizHeader() +
       '<section class="card quiz-q">' +
         '<div class="md quiz-q-text"' + (item.q.lang === 'en' ? ' lang="en"' : '') + '>' + App.md(item.q.q) + '</div>' +
+        (answered ? '<div class="quiz-feedback ' + (answered.correct ? 'quiz-feedback-ok' : 'quiz-feedback-bad') + '" role="alert" aria-live="polite">' +
+          '<span class="quiz-feedback-mark">' + (answered.correct ? '✓' : '✗') + '</span>' +
+          '<strong>' + (answered.correct ? 'Chính xác!' : 'Chưa đúng') + '</strong>' +
+          '</div>' : '') +
         (item.multi && !answered ? '<p class="small"><span class="badge warn">Chọn ' + item.answers.length + ' đáp án</span></p>' : '') +
         '<ul class="quiz-opts">' + opts + '</ul>' +
         (item.multi && !answered ? '<button type="button" class="btn" id="quizConfirm"' + (pending.length === item.answers.length ? '' : ' disabled') + '>Xác nhận <kbd>Enter</kbd></button>' : '') +
@@ -457,9 +461,16 @@ App.i18n.add({
   /** Render theo phase hiện tại. */
   function render(root) {
     rootEl = root;
-    if (Q.phase === 'setup') root.innerHTML = setupHtml();
-    else if (Q.phase === 'result') root.innerHTML = resultHtml();
-    else root.innerHTML = questionHtml();
+    try {
+      if (Q.phase === 'setup') root.innerHTML = setupHtml();
+      else if (Q.phase === 'result') root.innerHTML = resultHtml();
+      else root.innerHTML = questionHtml();
+    } catch (e) {
+      root.innerHTML = '<div class="card"><h2>Lỗi khi hiển thị câu hỏi</h2><p class="muted small">' + App.esc(String(e.message || e)) + '</p><button type="button" class="btn primary" id="quizReload">Tải lại trang</button></div>';
+      const rb = document.getElementById('quizReload');
+      if (rb) rb.addEventListener('click', () => location.reload());
+      return;
+    }
     bindEvents(root);
   }
 

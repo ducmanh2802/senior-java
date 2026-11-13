@@ -3561,5 +3561,1225 @@ Kết quả đo được (48 giờ sau deploy): lệch số dư hằng ngày gi�
     'Làm sao xử lý retry serialization failure trong Spring @Transactional?'
   ],
   tags: ['transaction', 'isolation', 'MVCC', 'deadlock', 'pessimistic locking', 'optimistic locking', 'idempotency', 'outbox']
+},
+{
+  id: 'sql-039',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Một bảng event có payload JSONB với các thuộc tính thay đổi theo loại sự kiện. Bạn sẽ chọn JSONB hay tách thành cột quan hệ, và tạo index nào để truy vấn PostgreSQL vừa đúng vừa nhanh?',
+  a: `**Tóm tắt:** Dùng {{JSONB}} cho phần dữ liệu linh hoạt, ít được lọc/join và cần giữ nguyên cấu trúc JSON; dùng cột quan hệ cho thuộc tính quan trọng cần ràng buộc, join, sắp xếp hoặc báo cáo ổn định. Với JSONB, chọn index theo toán tử truy vấn thật: GIN cho tìm kiếm trong JSON, nhưng index lớn và mỗi lần cập nhật payload cũng phải cập nhật index.
+
+### Thuật ngữ từ đầu
+- **JSON** là định dạng biểu diễn object/list; ví dụ một event có key device mang giá trị mobile và key version mang giá trị 3.
+- **JSONB** là kiểu PostgreSQL lưu JSON ở dạng nhị phân đã phân tích, thường phù hợp truy vấn hơn JSON văn bản. Nó không giữ nguyên thứ tự key hay khoảng trắng.
+- **GIN** là kiểu index gom nhiều thành phần của một giá trị vào index; giống mục lục cho các từ trong một tài liệu, hữu ích khi tìm key/value bên trong JSON.
+- **Toán tử containment** {{@>}} hỏi "JSON bên trái có chứa cấu trúc bên phải không?".
+- **Độ chọn lọc** là tỷ lệ dòng còn lại sau bộ lọc. Lọc ra 1% thường có ích cho index hơn lọc ra 90%.
+
+### Chọn ranh giới giữa JSON và cột
+Giả sử bảng {{event(id, tenant_id, event_type, created_at, payload)}}. {{tenant_id}}, {{event_type}} và {{created_at}} có ý nghĩa ổn định: đặt thành cột để có kiểu dữ liệu, NOT NULL, khóa ngoại và index rõ ràng. {{payload}} có thể giữ thông tin riêng theo loại event như phiên bản ứng dụng hoặc thuộc tính thiết bị.
+
+Không nên đưa mọi thứ vào JSON chỉ vì schema linh hoạt: DB khó đảm bảo {{payload.amount}} luôn là số dương, join theo một key trong JSON khó đọc hơn, và sửa cấu trúc có thể làm nhiều query cùng hỏng. Ngược lại, tạo hàng chục cột nullable cho những thuộc tính hiếm dùng cũng làm schema và migration rối. Chọn theo cách dữ liệu được đọc và ràng buộc, không theo khẩu hiệu "NoSQL linh hoạt".
+
+### Tạo index khớp toán tử
+~~~sql
+-- Tìm event theo loại và một trường JSON thường dùng
+CREATE INDEX event_type_idx ON event (event_type);
+CREATE INDEX event_payload_gin
+    ON event USING GIN (payload jsonb_path_ops);
+
+SELECT id, created_at
+FROM event
+WHERE event_type = 'login'
+  AND payload @> '{"device":"mobile"}'::jsonb;
+~~~
+{{jsonb_path_ops}} nhỏ hơn trong nhiều trường hợp và tối ưu cho containment {{@>}}, nhưng không hỗ trợ đầy đủ các phép tìm key như {{?}}. GIN mặc định {{jsonb_ops}} linh hoạt hơn, hỗ trợ nhiều toán tử như kiểm tra key tồn tại, đổi lại index thường lớn hơn. Chọn sau khi liệt kê các query cần chạy, rồi kiểm tra bằng {{EXPLAIN (ANALYZE, BUFFERS)}}.
+
+Nếu truy vấn chỉ đọc một giá trị, expression index có thể gọn hơn:
+~~~sql
+CREATE INDEX event_app_version_idx
+    ON event ((payload ->> 'appVersion'));
+SELECT id FROM event WHERE payload ->> 'appVersion' = '3';
+~~~
+Biểu thức trong truy vấn phải khớp biểu thức index. Nếu cần so sánh số học, cast nhất quán sang kiểu số và xử lý payload sai định dạng; JSON string {{"3"}} không tự động đồng nghĩa với số 3.
+
+### Trade-off và pitfall
+| Cách | Hợp khi | Chi phí / rủi ro |
+|---|---|---|
+| Cột quan hệ + B-tree | lọc bằng nhau, range, join, sort thường xuyên | schema cần migration khi thêm thuộc tính ổn định |
+| JSONB + GIN | cấu trúc biến đổi, tìm nhiều key/value | index có thể lớn, ghi/update tốn hơn |
+| JSONB + expression index | chỉ một vài đường dẫn hay lọc | phải tạo đúng biểu thức và kiểu cast |
+
+JSONB không phải kho miễn phí: một lần UPDATE payload tạo phiên bản dòng mới theo MVCC và có thể làm lại nhiều entry GIN. GIN thường làm INSERT/UPDATE nặng hơn B-tree; PostgreSQL có cơ chế pending list để gom cập nhật, nên cần theo dõi vacuum và kích thước index. Đừng tạo GIN toàn bộ payload nếu chỉ lọc một key; cân nhắc index biểu thức hoặc cột riêng. Dữ liệu nhiều tenant cần index tenant riêng hoặc index kết hợp phù hợp, tránh query tenant vô tình quét phạm vi rộng.
+
+### Ví dụ đời thực
+Một dịch vụ thu thập 18 triệu event/tháng lưu {{tenant_id}}, loại event, thời gian và payload JSONB. Trang hỗ trợ cần tìm lần đăng nhập bằng thiết bị mobile. Ban đầu query chỉ có GIN mặc định trên toàn payload, index lên 24 GB và p95 khoảng 1,4 giây do kết hợp tenant, loại và thời gian chưa tốt. Team chuyển các trường ổn định thành cột, tạo B-tree theo tenant/type/time và GIN {{jsonb_path_ops}} chỉ khi containment thực sự cần. Sau khi xác nhận bằng plan và tải thử, p95 giảm còn 170 ms, dung lượng index giảm 9 GB; ghi event tăng nhẹ khoảng 6%. Đây là số liệu minh họa: phải đo trên dữ liệu và workload của hệ thống mình.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi bắt đầu từ workload và ràng buộc chứ không chọn JSONB chỉ vì schema linh hoạt. Tenant, loại event, thời gian và các trường cần join hoặc kiểm tra tính hợp lệ sẽ là cột quan hệ. JSONB phù hợp với phần mở rộng theo từng loại event, ít được lọc hoặc chưa ổn định. Sau đó tôi nhìn toán tử cụ thể: containment {{@>}} có thể dùng GIN; nếu chỉ lọc một đường dẫn như appVersion thì expression index có thể nhỏ hơn. {{jsonb_path_ops}} phù hợp containment nhưng không thay thế hoàn toàn {{jsonb_ops}} nếu cần tìm key tồn tại. Tôi cũng tính chi phí ghi: GIN làm cập nhật payload đắt và index lớn, nên không index mọi key. Cuối cùng tôi kiểm tra {{EXPLAIN ANALYZE}} cùng buffers, đo p95 và tốc độ ghi, rồi mới quyết định có tách trường JSON thành cột hay không.”
+
+> Senior tip: ghi lại 2–3 query quan trọng và toán tử của chúng trước khi chọn operator class. Nếu một thuộc tính JSON đã trở thành điều kiện lọc/join cốt lõi, đó thường là tín hiệu nên chuyển nó thành cột có kiểu và constraint rõ ràng.`,
+  follow: [
+    'Khác nhau thực tế giữa {{jsonb_ops}} và {{jsonb_path_ops}} là gì, và bạn sẽ chọn dựa trên query nào?',
+    'Khi nào expression index trên {{payload ->> key}} phù hợp hơn GIN toàn bộ payload?',
+    'Bạn sẽ đo tác động của GIN đến tốc độ ghi và dung lượng index như thế nào?'
+  ],
+  tags: ['PostgreSQL', 'JSONB', 'GIN', 'index']
+},
+{
+  id: 'sql-040',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bảng order có rất nhiều đơn đã đóng nhưng API thường chỉ đọc đơn đang mở. Bạn muốn dùng partial index để giảm dung lượng; vì sao query dùng prepared statement có thể không dùng được index đó?',
+  a: `**Tóm tắt:** Partial index chỉ lưu các dòng thỏa điều kiện cố định, ví dụ đơn {{status = 'OPEN'}}, nên nhỏ và rẻ hơn index toàn bảng khi phần lớn đơn đã đóng. PostgreSQL chỉ dùng index đó khi planner chứng minh được điều kiện query luôn bao hàm điều kiện index; plan generic của prepared statement với {{status = $1}} không biết giá trị tham số nên có thể không chứng minh được điều này.
+
+### Thuật ngữ
+- **Index** là cấu trúc phụ giúp tìm dòng mà không đọc toàn bộ bảng; đổi lại tốn đĩa và tăng chi phí ghi.
+- **Partial index** là index chỉ chứa một phần dòng, được xác định bằng WHERE trong lệnh CREATE INDEX.
+- **Prepared statement** là query được chuẩn bị rồi chạy lại với các giá trị khác nhau, thường giúp tái sử dụng plan và bind tham số an toàn.
+- **Generic plan** là plan dùng chung cho nhiều giá trị tham số; **custom plan** được tối ưu cho giá trị lần chạy cụ thể.
+- **Planner** là bộ phận PostgreSQL ước lượng chi phí các cách chạy và chọn plan.
+
+### Vì sao không phải query nào cũng dùng được
+Tạo index:
+~~~sql
+CREATE INDEX order_open_tenant_created_idx
+    ON orders (tenant_id, created_at DESC)
+    WHERE status = 'OPEN';
+~~~
+Index này chỉ có các đơn đang mở. Query với điều kiện cụ thể {{status = 'OPEN'}} chắc chắn chỉ yêu cầu dòng nằm trong index, nên planner có thể dùng nó. Nhưng query:
+~~~sql
+PREPARE orders_by_status(text, bigint) AS
+SELECT id, created_at FROM orders
+WHERE status = $1 AND tenant_id = $2
+ORDER BY created_at DESC LIMIT 50;
+~~~
+khi dùng generic plan, PostgreSQL phải tạo một kế hoạch đúng cho cả {{'OPEN'}}, {{'CLOSED'}} và mọi trạng thái khác. Nếu chọn partial index chỉ chứa OPEN thì kết quả CLOSED sẽ thiếu dữ liệu. Vì vậy planner không thể mặc định dùng index đó. PostgreSQL có thể tạo custom plan cho một số lần chạy đầu, nhưng khi chuyển sang generic plan thì hành vi có thể đổi tùy thống kê và cấu hình.
+
+### Cách xử lý an toàn
+- Nếu endpoint chỉ phục vụ đơn mở, dùng một query riêng với predicate cố định {{status = 'OPEN'}}; các giá trị user nhập như tenant vẫn bind parameter bình thường.
+- Nếu query thực sự phải nhận mọi status, dùng index đầy đủ như {{(status, tenant_id, created_at DESC)}} hoặc chấp nhận scan tùy phân bố dữ liệu.
+- Không ghép chuỗi trạng thái tùy ý từ request để ép planner dùng index. SQL injection là rủi ro lớn hơn lợi ích; chỉ chọn giữa các câu query cố định đã kiểm soát.
+- Kiểm tra plan cả query literal và prepared statement trong môi trường gần production. {{EXPLAIN EXECUTE}} cho thấy plan thực tế của prepared statement; đừng kết luận chỉ từ một query chạy tay.
+
+### Khi nào partial index đáng dùng
+| Điều kiện | Nên cân nhắc |
+|---|---|
+| Bảng lớn, phần cần truy vấn chiếm tỷ lệ nhỏ và có predicate ổn định | Partial index |
+| Predicate thay đổi theo mọi request hoặc cần tìm mọi trạng thái | Index đầy đủ |
+| Predicate có nhiều NULL/giá trị hiếm | Partial index theo điều kiện có chủ đích |
+
+Partial index không làm query nhanh nếu predicate không trùng logic hoặc cột đầu index không khớp điều kiện/sắp xếp. Cập nhật status từ OPEN sang CLOSED cũng phải thêm hoặc gỡ entry khỏi index. Nếu phần lớn dòng OPEN thì tiết kiệm ít. Với Hibernate/Spring, query parameter hóa giúp bảo mật; không được tắt binding tùy tiện chỉ để planner đoán được trạng thái.
+
+### Ví dụ đời thực
+Một hệ thống fulfillment có 40 triệu đơn, chỉ 3% ở trạng thái OPEN. Endpoint của nhân viên kho luôn lấy 50 đơn mới nhất của một tenant. B-tree toàn bảng theo status/tenant/time chiếm 6,2 GB; nhóm thử partial index chỉ cho OPEN và đo query cụ thể thấy index 430 MB, p95 giảm từ 310 ms xuống 42 ms. Nhưng production dùng một prepared query chung cho OPEN và CLOSED, và sau khi plan chuyển sang generic, query OPEN lại đọc nhiều dòng rồi lọc. Điều tra {{EXPLAIN EXECUTE}} xác nhận không dùng partial index. Nhóm tách endpoint OPEN thành query cố định, giữ bind parameter cho tenant, rồi theo dõi tỉ lệ update status và kích thước index. Số liệu chỉ minh họa; lợi ích phụ thuộc tỷ lệ dữ liệu và workload.
+
+### Trả lời mẫu khi phỏng vấn
+“Partial index rất hữu ích khi một tập con nhỏ và có predicate ổn định, chẳng hạn chỉ 3% đơn còn OPEN. Tôi có thể index tenant và thời gian trong phần đó để giảm kích thước cũng như chi phí quét. Điều kiện quan trọng là PostgreSQL phải chứng minh query chỉ cần các dòng nằm trong index. Query literal status OPEN thỏa được; prepared statement tổng quát với status bằng tham số có thể không thỏa vì plan phải đúng cho CLOSED nữa. Tôi không khắc phục bằng nối chuỗi user input. Nếu endpoint chỉ xử lý OPEN, tôi dùng câu SQL riêng với predicate OPEN cố định và bind các giá trị khác. Nếu phải truy vấn mọi trạng thái, tôi cân nhắc index đầy đủ. Tôi kiểm tra plan của prepared statement thực tế, dữ liệu đại diện và chi phí ghi khi trạng thái thay đổi.”
+
+> Senior tip: partial index là tối ưu hóa dựa trên điều kiện logic, không phải chỉ là index nhỏ. Trong PostgreSQL, điều kiện phải được chứng minh ở lúc lập plan; luôn kiểm tra plan query qua đúng driver và kiểu bind đang chạy ở ứng dụng.`,
+  follow: [
+    'Tại sao PostgreSQL không thể dùng partial index OPEN cho query generic {{status = $1}}?',
+    'Làm sao giữ an toàn parameter binding mà vẫn để planner tận dụng predicate cố định?',
+    'Những dấu hiệu nào cho thấy partial index không còn đáng duy trì?'
+  ],
+  tags: ['PostgreSQL', 'partial index', 'prepared statement', 'query planner']
+},
+{
+  id: 'sql-041',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Một bảng con có hàng chục triệu dòng và tham chiếu bảng cha bằng foreign key nhưng chưa có index ở cột tham chiếu. Khi xóa hoặc sửa khóa của bảng cha có thể xảy ra gì, và bạn triển khai cách sửa ít ảnh hưởng production ra sao?',
+  a: `**Tóm tắt:** PostgreSQL tự tạo index cho khóa chính/unique ở bảng cha nhưng không tự tạo index cho cột foreign key ở bảng con. Vì thế DELETE/UPDATE ở bảng cha có thể phải quét bảng con để kiểm tra tham chiếu, gây chậm và tăng thời gian giữ lock. Trên bảng lớn, tạo index bằng {{CREATE INDEX CONCURRENTLY}}, rồi thêm hoặc kiểm tra constraint theo từng bước thay vì chặn bảng bằng một migration dài.
+
+### Thuật ngữ
+- **Foreign key (FK)** là ràng buộc đảm bảo giá trị ở bảng con trỏ tới một dòng tồn tại ở bảng cha.
+- **Index ở phía tham chiếu** là index trên cột FK của bảng con; nó giúp tìm nhanh các dòng con theo id cha.
+- **Lock** là khóa phối hợp truy cập đồng thời; thao tác DDL có thể phải đợi hoặc chặn một số thao tác khác.
+- **CONCURRENTLY** tạo index trong nhiều giai đoạn để cho phép INSERT/UPDATE/DELETE tiếp tục phần lớn thời gian; không có nghĩa là hoàn toàn không tốn tài nguyên.
+- **NOT VALID** tạo FK mới mà chưa quét xác nhận toàn bộ dữ liệu cũ; dữ liệu ghi mới vẫn phải tuân theo constraint.
+
+### Điều gì xảy ra nếu thiếu index
+Giả sử {{invoice_line.invoice_id}} tham chiếu {{invoice.id}}. Khi xóa invoice với {{ON DELETE RESTRICT}}, DB cần tìm xem còn dòng invoice_line nào trỏ tới nó không. Không có index phù hợp thì có thể phải đọc hàng triệu dòng con. Với {{ON DELETE CASCADE}}, DB cũng phải tìm rồi xóa các dòng con; thiếu index khiến phần tìm kiếm này đắt. Vì sao PostgreSQL không tự tạo index FK? Cách truy vấn bảng con rất đa dạng, và không phải FK nào cũng cần index; DB để ứng dụng quyết định trade-off dung lượng và tốc độ ghi.
+
+~~~sql
+-- Tạo riêng ngoài transaction; nhiều migration tool cần bật chế độ autocommit
+CREATE INDEX CONCURRENTLY invoice_line_invoice_id_idx
+    ON invoice_line (invoice_id);
+
+-- Thêm FK mới khi cần triển khai kiểm tra dữ liệu cũ riêng
+ALTER TABLE invoice_line
+    ADD CONSTRAINT invoice_line_invoice_fk
+    FOREIGN KEY (invoice_id) REFERENCES invoice(id) NOT VALID;
+ALTER TABLE invoice_line VALIDATE CONSTRAINT invoice_line_invoice_fk;
+~~~
+Nếu FK đã tồn tại thì chỉ cần index, không thêm constraint trùng. {{VALIDATE CONSTRAINT}} kiểm tra dữ liệu cũ; việc tách bước giúp tránh một lần thêm FK phải quét toàn bảng ngay trong thời điểm nhạy cảm. Cần xác nhận cú pháp và trạng thái migration với phiên bản PostgreSQL, công cụ deploy và constraint hiện hữu trước khi chạy.
+
+### Triển khai và kiểm tra
+1. Dùng catalog/metadata để xác nhận cột FK, constraint và index thực tế; không suy luận chỉ từ entity JPA.
+2. Tạo index CONCURRENTLY trong migration không nằm trong transaction. Lệnh này quét bảng nhiều lượt, tiêu thụ I/O và có thể chờ transaction dài.
+3. Nếu thêm FK mới, dùng NOT VALID khi phù hợp rồi VALIDATE ở bước riêng. Theo dõi lock wait, replication lag, I/O và thời gian chạy.
+4. Chạy {{EXPLAIN}} cho thao tác truy vấn con theo FK và test DELETE/UPDATE ở staging. Xác nhận không tạo index trùng với index có cùng cột đầu.
+
+| Thao tác | Hành vi |
+|---|---|
+| Tạo index thường | thường nhanh hơn, nhưng có thể chặn ghi trong lúc tạo |
+| Tạo CONCURRENTLY | ghi tiếp tục phần lớn thời gian, nhưng lâu hơn/tốn I/O và không chạy trong transaction block |
+| FK NOT VALID rồi VALIDATE | tách tạo constraint khỏi kiểm tra toàn bộ dữ liệu cũ |
+
+Nếu CREATE INDEX CONCURRENTLY thất bại, PostgreSQL có thể để lại index INVALID; cần kiểm tra catalog và dọn đúng index lỗi trước khi retry. Không chạy hàng loạt index concurrently cùng lúc trên cùng storage khi đang có tải. Index cũng làm INSERT/UPDATE/DELETE tốn thêm ghi và chiếm dung lượng.
+
+### Ví dụ đời thực
+Một hệ thống hóa đơn có 32 triệu {{invoice_line}} và FK tới {{invoice}}. Xóa invoice hết hạn đôi lúc mất 19 giây, trong khi API xóa có timeout 5 giây; dashboard cho thấy lock wait ở bảng con. Plan/đo thử trên bản sao cho thấy kiểm tra quan hệ phải đọc phần lớn bảng vì chỉ có index ở bảng cha. Nhóm tạo index {{invoice_id}} bằng CONCURRENTLY ngoài giờ cao điểm; tác vụ tạo kéo dài 11 phút và I/O tăng, nhưng ghi vẫn hoạt động. Sau khi index hoàn tất, kiểm tra lại thao tác cùng dạng mất dưới 80 ms. Họ thêm cảnh báo cho migration và kiểm tra index FK trong schema review. Đây là ví dụ minh họa, không phải bảo đảm về thời gian.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi kiểm tra cả hai phía của foreign key. PostgreSQL đảm bảo khóa cha được index qua primary key hoặc unique constraint, nhưng không tự tạo index ở cột tham chiếu của bảng con. Khi xóa hoặc đổi khóa cha, DB cần tìm các dòng con để thực thi RESTRICT hay CASCADE; không có index thì có thể quét cả bảng lớn, kéo dài transaction và giữ lock lâu. Với bảng production, tôi không tạo index thường một cách bất ngờ. Tôi xem tải và migration tool, tạo index CONCURRENTLY trong chế độ không bao transaction, theo dõi I/O và lock wait, rồi xác nhận plan và thử thao tác xóa. Nếu đang thêm FK mới, có thể tách ADD NOT VALID và VALIDATE để kiểm tra dữ liệu cũ ở bước kiểm soát hơn. Tôi cũng kiểm tra index trùng và nhớ rằng mọi index bổ sung đều tăng chi phí ghi.”
+
+> Senior tip: audit index phía con cho các FK mà ứng dụng thường xóa/cập nhật cha hoặc join theo FK. Không thêm máy móc cho mọi FK: đo truy vấn, tần suất ghi và kích thước bảng, rồi chọn thứ tự cột phù hợp.`,
+  follow: [
+    'Vì sao PostgreSQL không tự tạo index trên cột foreign key ở bảng con?',
+    'Điều gì có thể còn lại sau khi {{CREATE INDEX CONCURRENTLY}} thất bại và bạn xử lý thế nào?',
+    'ADD CONSTRAINT NOT VALID và VALIDATE CONSTRAINT giúp triển khai khác nhau ra sao?'
+  ],
+  tags: ['PostgreSQL', 'foreign key', 'CREATE INDEX CONCURRENTLY', 'migration']
+},
+{
+  id: 'sql-042',
+  topic: 'sql',
+  level: 'mid',
+  q: 'Bạn cần hiển thị ba giao dịch mới nhất cho mỗi tài khoản, nhưng chỉ tài khoản đang hoạt động mới có giao dịch. Khi nào {{LATERAL JOIN}} giúp viết query rõ và nhanh hơn, và cần index gì?',
+  a: `**Tóm tắt:** {{LATERAL}} cho phép một subquery ở FROM tham chiếu các cột của dòng đứng trước nó. Với mỗi tài khoản, có thể tìm tối đa ba giao dịch mới nhất bằng {{ORDER BY created_at DESC LIMIT 3}}; index bắt đầu bằng account_id rồi đến created_at giúp DB dừng sớm thay vì xếp hạng toàn bộ giao dịch.
+
+### Thuật ngữ
+- **Subquery** là câu SELECT lồng trong câu SQL khác.
+- **LATERAL** làm subquery được đánh giá với giá trị của dòng từ bảng đứng trước trong FROM, giống gọi một phép tra cứu riêng cho từng tài khoản.
+- **Nested loop** là cách chạy lặp: lấy một tài khoản, tra giao dịch, rồi chuyển sang tài khoản kế tiếp.
+- **B-tree index** là cấu trúc sắp xếp theo khóa, hỗ trợ tìm theo tiền tố và lấy dữ liệu theo thứ tự.
+
+### Cách hoạt động
+Không có LATERAL, subquery trong FROM thông thường không thể nhìn thấy alias của bảng trước đó. LATERAL mở khả năng đó:
+~~~sql
+SELECT a.id AS account_id, t.id AS transaction_id, t.created_at
+FROM account a
+JOIN LATERAL (
+    SELECT id, created_at
+    FROM transaction t
+    WHERE t.account_id = a.id
+    ORDER BY t.created_at DESC, t.id DESC
+    LIMIT 3
+) t ON true
+WHERE a.active = true;
+~~~
+DB lấy từng account đang hoạt động, dùng id đó để tìm các transaction tương ứng, duyệt theo thứ tự mới nhất và dừng sau ba dòng. {{JOIN LATERAL}} loại tài khoản không có giao dịch; {{LEFT JOIN LATERAL (...) t ON true}} giữ cả tài khoản không có giao dịch và trả các cột transaction là NULL.
+
+Index nên khớp điều kiện bằng và thứ tự:
+~~~sql
+CREATE INDEX transaction_account_created_idx
+    ON transaction (account_id, created_at DESC, id DESC);
+~~~
+{{account_id}} đứng trước vì mỗi lần tra cứu đã biết account; thời gian và id sau đó cho phép lấy giao dịch mới nhất với thứ tự ổn định. {{id}} là tie-break khi hai giao dịch cùng timestamp. Cần xem plan để biết index có được chọn và số lần subplan chạy.
+
+### Trade-off: LATERAL hay window function
+| Cách | Phù hợp | Lưu ý |
+|---|---|---|
+| LATERAL + LIMIT | ít/vừa tài khoản cần lấy, mỗi nhóm chỉ cần top-N | có một lần tra cứu cho mỗi tài khoản |
+| ROW_NUMBER theo account_id | cần xếp hạng/tính thêm nhiều dòng hoặc xử lý phạm vi lớn | thường phải đọc và xếp hạng nhiều giao dịch |
+
+Nếu có 50 tài khoản và mỗi tài khoản có hàng triệu giao dịch, LATERAL cùng index có thể chỉ đọc khoảng 150 dòng cần thiết. Nếu phải lấy gần như toàn bộ tài khoản và top-N lớn, lặp nhiều lần có thể đắt; window function có thể tối ưu hơn tùy dữ liệu. Đừng khẳng định LATERAL luôn nhanh: cardinality, index, bộ lọc và cache quyết định. Kiểm tra {{EXPLAIN (ANALYZE, BUFFERS)}}.
+
+### Lỗi hay gặp
+- Quên {{id DESC}} khi thời gian trùng: kết quả top 3 có thể đổi giữa các lần chạy.
+- Đặt điều kiện bảng con sai chỗ với LEFT JOIN: điều kiện trong WHERE có thể loại dòng NULL và biến kết quả thành inner join.
+- Thiếu index account_id: mỗi tài khoản có thể kích hoạt scan lớn.
+- Lấy account rất nhiều nhưng chỉ cần ít dòng trên toàn bảng: hàng loạt index lookup có thể tệ hơn một scan/sort tổng.
+
+### Ví dụ đời thực
+Trang tài khoản của support hiển thị 3 khoản mới nhất cho 240 tài khoản đang hoạt động. Bảng transaction có 26 triệu dòng. Query đầu dùng ROW_NUMBER trên toàn bảng để xếp hạng rồi lọc hạng nhỏ hơn hoặc bằng 3; p95 khoảng 680 ms và đọc 160 nghìn buffers. Sau khi index theo account_id, thời gian và id, nhóm thử LATERAL cho 240 tài khoản, thấy plan dừng sau vài dòng mỗi account; p95 giảm còn 95 ms và buffers xuống 7.800. Họ giữ window query cho báo cáo toàn bộ tài khoản, vì tập đầu vào ở báo cáo khác. Số liệu mang tính minh họa và phải được xác nhận trên workload thật.
+
+### Trả lời mẫu khi phỏng vấn
+“LATERAL hữu ích khi tôi cần một truy vấn con phụ thuộc vào từng dòng ngoài, chẳng hạn lấy ba giao dịch mới nhất của mỗi tài khoản. Tôi lọc tài khoản trước, rồi subquery LATERAL nhận account id, sắp theo thời gian giảm dần và giới hạn ba dòng. Index bắt đầu bằng account_id, tiếp theo là created_at và khóa id để xử lý timestamp trùng. Nếu cần giữ tài khoản không có giao dịch, tôi dùng LEFT JOIN LATERAL. Tôi không mặc định cách này tốt hơn window function: khi đầu vào ít và top-N nhỏ, index lookup có thể dừng sớm; khi cần xử lý gần như mọi dòng, window function có thể tránh quá nhiều lần tra cứu. Tôi so sánh hai plan bằng actual rows, loops và buffers trên dữ liệu có phân bố gần production.”
+
+> Senior tip: trong plan LATERAL, kiểm tra số {{loops}} của subplan. Nếu outer query trả hàng triệu dòng, một inner lookup rẻ nhưng lặp hàng triệu lần vẫn có thể thành nút thắt.`,
+  follow: [
+    'Khi nào dùng {{LEFT JOIN LATERAL}} thay cho {{JOIN LATERAL}}?',
+    'Vì sao index cho truy vấn này nên bắt đầu bằng {{account_id}}?',
+    'Bạn sẽ dựa vào dấu hiệu nào trong EXPLAIN để so sánh LATERAL với ROW_NUMBER?'
+  ],
+  tags: ['PostgreSQL', 'LATERAL', 'top-N', 'B-tree']
+},
+{
+  id: 'sql-043',
+  topic: 'sql',
+  level: 'mid',
+  q: 'Một API thỉnh thoảng treo vì transaction giữ connection lâu dù không chạy query. PostgreSQL có những timeout nào giúp giới hạn câu SQL, chờ lock và transaction bị bỏ quên, và nên áp dụng chúng ra sao?',
+  a: `**Tóm tắt:** {{statement_timeout}} giới hạn thời gian một câu lệnh chạy; {{lock_timeout}} giới hạn thời gian chờ lock; {{idle_in_transaction_session_timeout}} chấm dứt session bị bỏ idle khi vẫn ở trong transaction. Chúng giải quyết ba tình huống khác nhau. Đặt timeout theo loại request và transaction, ưu tiên {{SET LOCAL}} cho phạm vi một transaction, rồi xử lý lỗi timeout có chủ đích ở ứng dụng.
+
+### Thuật ngữ
+- **Transaction** là nhóm thao tác cùng commit hoặc rollback.
+- **Connection pool** là tập kết nối DB dùng lại; nếu mọi connection bị giữ, request mới phải xếp hàng.
+- **Lock wait** là thời gian câu lệnh đợi transaction khác nhả khóa.
+- **Idle in transaction** là session đã BEGIN nhưng đang không chạy câu lệnh và chưa commit/rollback.
+- **Timeout** là giới hạn chờ/chạy; khi hết hạn PostgreSQL hủy câu lệnh hoặc session tùy loại.
+
+### Ba timeout không thay thế nhau
+| Setting | Giới hạn | Ví dụ dùng |
+|---|---|---|
+| {{statement_timeout}} | tổng thời gian thực thi một câu SQL | chặn query/report chạy vô hạn |
+| {{lock_timeout}} | thời gian chờ lấy lock | fail nhanh thay vì chờ migration/ghi khác |
+| {{idle_in_transaction_session_timeout}} | thời gian idle trong transaction mở | thu hồi connection bị code bỏ quên |
+
+Nếu {{lock_timeout}} dài hơn {{statement_timeout}}, câu lệnh thường bị statement timeout trước; chọn giá trị có chủ đích. Timeout quá thấp cũng tạo lỗi giả dưới tải, khiến retry làm tình hình tệ hơn. Nó không thay thế tối ưu query, index, giới hạn concurrency hay deadline ở HTTP client.
+
+Có thể giới hạn theo một transaction:
+~~~sql
+BEGIN;
+SET LOCAL lock_timeout = '300ms';
+SET LOCAL statement_timeout = '2s';
+SELECT id FROM orders WHERE id = 42 FOR UPDATE;
+-- ứng dụng xử lý kết quả rồi COMMIT hoặc ROLLBACK
+COMMIT;
+~~~
+{{SET LOCAL}} chỉ tồn tại tới khi transaction kết thúc, tránh để cấu hình rò rỉ qua connection pool sang request kế tiếp. Câu {{FOR UPDATE}} lấy row lock để bảo vệ cập nhật; nếu transaction khác đang giữ lock, lock_timeout có thể hủy câu lệnh đang chờ. Trong Spring, đặt cài đặt này bên trong đúng transaction bằng JDBC hoặc cơ chế đã được kiểm chứng với DB driver; không dựa vào connection chưa chắc đã gắn với transaction.
+
+### Xử lý ở Java/Spring
+Khi timeout, câu lệnh bị hủy nhưng transaction thường ở trạng thái lỗi; ứng dụng phải rollback, không tiếp tục dùng transaction như bình thường. Bắt lỗi ở ranh giới phù hợp, log SQL state/định danh request và trả lỗi hoặc retry có giới hạn nếu thao tác idempotent. Không retry vô điều kiện: query chậm do thiếu index sẽ chỉ tăng tải. Với pool, theo dõi số active/idle, thời gian chờ lấy connection và transaction mở lâu.
+
+### Pitfall production
+- Global statement_timeout quá ngắn làm migration, batch hoặc query báo cáo hỏng dù endpoint tương tác vẫn ổn.
+- Idle timeout quá gắt có thể kết thúc transaction của tác vụ hợp lệ đang tạm dừng.
+- Hủy câu SQL không tự hoàn tác side effect ở hệ thống ngoài DB; transaction DB phải rollback và luồng nghiệp vụ cần thiết kế rõ.
+- Timeout ở DB dài hơn timeout HTTP khiến client đã bỏ cuộc nhưng backend vẫn giữ connection chạy.
+
+### Ví dụ đời thực
+Một service có pool 40 connection, p99 tăng từ 120 ms lên 4 giây. Dashboard cho thấy 16 connection idle in transaction lâu hơn 90 giây; một luồng Java mở transaction trước khi gọi API đối tác nên giữ snapshot và connection khi chờ mạng. Nhóm sửa thứ tự để không giữ transaction qua network call, thêm timeout request 2 giây và timeout DB theo endpoint; lock_timeout 300 ms cho thao tác tương tác, còn báo cáo có ngân sách riêng. Sau triển khai, connection active cao điểm giảm từ 38 xuống 21, transaction lâu nhất dưới 3 giây. Đây là tình huống minh họa; timeout phải phù hợp SLO và tải thực tế.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi phân biệt timeout chạy query, timeout chờ khóa và timeout session bị bỏ trong transaction. statement_timeout bảo vệ DB khỏi một câu lệnh chạy quá lâu; lock_timeout làm thao tác ghi fail nhanh khi đang chờ lock; idle_in_transaction_session_timeout xử lý session đã mở transaction nhưng không làm gì. Tôi không đặt một giá trị ngắn toàn cục cho mọi workload. Tôi chọn ngân sách theo endpoint và loại query, có thể dùng SET LOCAL để phạm vi chỉ một transaction, và đặt timeout DB phù hợp với deadline HTTP. Khi timeout, ứng dụng rollback transaction, ghi nhận lỗi và chỉ retry nếu thao tác an toàn, có giới hạn. Đồng thời tôi điều tra nguyên nhân bằng query plan, lock monitoring và số liệu connection pool; timeout chỉ là hàng rào, không phải cách sửa query tệ.”
+
+> Senior tip: đo cả thời gian lấy connection từ pool, thời gian chờ lock và thời gian chạy SQL. Nếu chỉ nhìn latency tổng, bạn dễ sửa nhầm query trong khi nguyên nhân là transaction giữ connection lúc chờ HTTP.`,
+  follow: [
+    'Khác nhau giữa {{lock_timeout}} và {{statement_timeout}} là gì?',
+    'Vì sao {{SET LOCAL}} an toàn hơn việc đổi setting trên connection pool dùng chung?',
+    'Ứng dụng Spring nên làm gì với transaction sau khi PostgreSQL hủy câu lệnh do timeout?'
+  ],
+  tags: ['PostgreSQL', 'timeout', 'transaction', 'connection pool']
+},
+{
+  id: 'sql-044',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Một job cần nạp vài triệu dòng từ file vào PostgreSQL mỗi đêm. Bạn chọn JPA saveAll, JDBC batch hay COPY, và làm thế nào để dữ liệu lỗi không làm hỏng cả lần nạp?',
+  a: `**Tóm tắt:** Với nạp dữ liệu lớn vào PostgreSQL, {{COPY FROM STDIN}} thường đạt thông lượng cao vì gửi nhiều dòng qua một giao thức chuyên dụng; JDBC batch là lựa chọn dễ tích hợp hơn khi cần xử lý từng nhóm và dùng câu INSERT chuẩn. {{saveAll}} của JPA không đảm bảo một lệnh bulk hay một round-trip: cần đo SQL và cấu hình batching. Để cô lập lỗi, nạp vào staging, validate, rồi chuyển dữ liệu trong transaction có kiểm soát.
+
+### Thuật ngữ
+- **Round-trip** là một lượt trao đổi giữa ứng dụng và DB; hàng triệu lượt nhỏ thường chậm hơn gửi theo lô.
+- **Batch** là gom nhiều câu lệnh để gửi/xử lý cùng lượt.
+- **COPY** là giao thức nạp/xuất dữ liệu hàng loạt của PostgreSQL.
+- **Staging table** là bảng trung gian để tiếp nhận, kiểm tra và làm sạch dữ liệu trước khi đưa vào bảng chính.
+- **Atomicity** nghĩa là thao tác được commit toàn bộ hoặc rollback toàn bộ trong một transaction.
+
+### So sánh phương án
+| Phương án | Hợp khi | Trade-off |
+|---|---|---|
+| JPA từng entity | khối lượng nhỏ, cần lifecycle/cascade/validation entity | overhead ORM, nhiều SQL và bộ nhớ persistence context |
+| JDBC batch | muốn kiểm soát SQL, mapping Java và batch size | cần xử lý batch lỗi, commit và retry |
+| PostgreSQL COPY | nạp hàng loạt file/dòng đơn giản, thông lượng cao | API thường phụ thuộc pgjdbc; cần tự quản validation và staging |
+
+{{saveAll}} là API lưu nhiều entity nhưng không có nghĩa chắc chắn chỉ sinh một statement. Hibernate có thể gửi INSERT theo batch nếu bật batching và cấu hình phù hợp; identity generation có thể cản batching. Với hàng triệu dòng, giữ toàn bộ entity trong persistence context làm heap tăng. Đo số statement, batch size, allocation và thời gian commit trước khi chọn.
+
+### Nạp qua staging
+~~~sql
+CREATE TEMP TABLE stage_event (
+    external_id text,
+    occurred_at timestamptz,
+    amount numeric
+) ON COMMIT DROP;
+
+-- Ứng dụng nạp staging bằng COPY FROM STDIN hoặc JDBC batch
+INSERT INTO event (external_id, occurred_at, amount)
+SELECT external_id, occurred_at, amount
+FROM stage_event
+WHERE external_id IS NOT NULL AND amount >= 0
+ON CONFLICT (external_id) DO UPDATE
+SET occurred_at = EXCLUDED.occurred_at,
+    amount = EXCLUDED.amount;
+~~~
+Trong code thật, {{COPY FROM STDIN}} được gọi từ driver PostgreSQL, không phải bằng cách để server DB đọc đường dẫn file tùy ý. Staging cho phép đếm dòng lỗi, kiểm tra schema/giá trị, loại bản trùng và so sánh số lượng trước khi sửa bảng chính. Nếu cần lưu dòng lỗi, thêm cột source row/error hoặc bảng reject riêng thay vì âm thầm bỏ chúng.
+
+### Batch size và transaction
+Batch quá nhỏ tạo nhiều round-trip; quá lớn làm tăng bộ nhớ, thời gian lock, WAL và độ khó retry. Thử các mức như 500, 2.000, 5.000 dòng trong môi trường gần production; chọn theo throughput và latency commit. Với COPY lớn, có thể nạp staging thành từng phần; quyết định transaction toàn file hay từng chunk dựa trên yêu cầu atomicity. Chunk commit nghĩa là job có thể dừng giữa chừng, nên cần checkpoint hoặc idempotent key để chạy lại không nhân đôi.
+
+Sau khi nạp, index và constraint trên bảng chính có thể làm ghi chậm nhưng bảo vệ dữ liệu. Không tắt constraint một cách tùy tiện. Với upsert, khóa duy nhất là nền tảng chống race condition; thiết kế xung đột theo khóa nghiệp vụ và đảm bảo mỗi lô không chứa cùng key nhiều lần nếu query có thể cập nhật cùng dòng nhiều lần.
+
+### Ví dụ đời thực
+Một job nhận 2,4 triệu event/đêm. Phiên bản đầu gọi repository.saveAll với từng entity, giữ cả danh sách trong bộ nhớ và hoàn tất sau 31 phút; heap tăng thêm 1,1 GB. Đo SQL cho thấy cấu hình batching chưa hoạt động. Nhóm chuyển sang COPY vào staging theo lô, kiểm tra 0,07% dòng lỗi vào bảng reject, rồi upsert các dòng hợp lệ bằng khóa external_id. Job chạy 4 phút 20 giây, heap đỉnh thấp hơn 420 MB; retry cùng file không tạo bản ghi trùng. Đây là ví dụ minh họa, hiệu quả thực tế phụ thuộc disk, WAL, index và cấu hình DB.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi trước tiên hỏi yêu cầu về tốc độ, xử lý lỗi và atomicity. Với vài triệu dòng trên PostgreSQL, COPY thường là lựa chọn thông lượng cao; JDBC batch dễ dùng hơn nếu cần mapping hoặc xử lý theo chunk. Tôi không coi JPA saveAll là bulk insert tự động: Hibernate có thể cần cấu hình batch, và persistence context giữ nhiều entity có thể làm heap tăng. Tôi thường nạp vào staging, validate schema và business rule, thống kê dòng hợp lệ/lỗi, rồi merge vào bảng chính theo unique key. Nếu commit theo chunk, job phải idempotent và có checkpoint để chạy lại an toàn; nếu cần all-or-nothing thì phải chấp nhận transaction và WAL lớn hơn. Tôi benchmark batch size, đo thời gian commit, WAL, heap và replication lag, thay vì chỉ so số dòng mỗi giây.”
+
+> Senior tip: theo dõi cả WAL generation và replication lag khi benchmark bulk load. Tốc độ nạp tăng không có ích nếu replica trễ hàng chục phút hoặc bảng chính bị khóa lâu.`,
+  follow: [
+    'Vì sao {{saveAll}} không bảo đảm chỉ gửi một lệnh INSERT tới database?',
+    'Khi nào chọn COPY, JDBC batch hoặc JPA thay vì luôn chọn phương án nhanh nhất?',
+    'Nếu job commit theo chunk rồi bị dừng giữa chừng, làm sao chạy lại không tạo dữ liệu trùng?'
+  ],
+  tags: ['PostgreSQL', 'COPY', 'JDBC batch', 'bulk load', 'staging']
+},
+{
+  id: 'sql-045',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Bảng {{order}} có 800 triệu dòng và 5 truy vấn nóng dưới đây. Bạn thiết kế bộ index thế nào, và vì sao thứ tự cột trong composite index quyết định index có dùng được cho cả ORDER BY hay không?',
+  a: `**Tóm tắt:** Index composite chỉ dùng được cho **tiền tố bên trái** và chỉ trả kết quả đúng thứ tự nếu các cột ORDER BY nằm ở đầu danh sách cột. Quy tắc thực dụng khi cả lọc lẫn sắp xếp đều quan trọng: **equality trước → ORDER BY tiếp → range sau cùng**. Ít index mà đúng còn tốt hơn nhiều index, vì mỗi index là "thuế ghi" trên mọi INSERT/UPDATE/DELETE.
+
+### Index B-tree thực chất là gì
+Hãy hình dung cuốn từ điển: từ được xếp theo alphabet, nên muốn tra "bắt đầu bằng AB" bạn chỉ cần mở đúng trang. Index B-tree của PostgreSQL cũng vậy: mỗi nút lá chứa cặp **(giá trị khóa, ctid)** — ctid là "trang vật lý + vị trí dòng" trỏ ngược về bảng (heap). Ba hệ quả quan trọng:
+
+- Muốn tìm nhanh, điều kiện phải nằm trên **tiền tố bên trái** của danh sách cột trong index (leftmost prefix).
+- Đọc theo index cho kết quả **đã sắp sẵn** theo thứ tự cột của index → DB không phải sort.
+- Mỗi index phải chèn/sửa/xoá entry mỗi khi bảng thay đổi → ghi chậm hơn, tốn thêm đĩa và cache.
+
+### Quy tắc thiết kế khi cả lọc lẫn ORDER BY đều quan trọng
+1. **Cột equality** ({{=}}, {{IN}}) đặt trước: chúng biến điều kiện thành "một điểm trên cây".
+2. **Cột ORDER BY** đặt tiếp: nhờ vậy kết quả trả về đúng thứ tự, không cần Sort.
+3. **Cột range** ({{>}}, {{<}}, {{BETWEEN}}) đặt sau cùng.
+
+Vì sao range phải đứng sau ORDER BY? Index {{idx(a, b, c)}} sắp theo {{a}}, rồi {{b}}, rồi {{c}}. Nếu điều kiện là {{a = 1 AND b > 5 ORDER BY c}}, thì các dòng thỏa {{b > 5}} nằm rải trên **nhiều nhóm b khác nhau**, trong mỗi nhóm c có thứ tự, nhưng **xuyên các nhóm thì c không còn thứ tự toàn cục** → DB vẫn phải sort. Nếu điều kiện là {{a = 1 AND c = 3 ORDER BY b}}, index dùng được: mọi dòng đều có {{c = 3}}, nên thứ tự theo {{b}} vẫn đúng.
+
+Ngoại lệ: khi cột range **rất selective** (lọc còn vài trăm dòng), index {{a, b}} rồi sort có thể nhanh hơn index {{a, c}}; hãy so bằng {{EXPLAIN (ANALYZE, BUFFERS)}} thay vì đoán.
+
+### Năm truy vấn nóng và index tương ứng
+| # | Truy vấn | Index chọn | Vì sao |
+|---|---|---|---|
+| 1 | {{merchant_id = ? AND status = 'OPEN' ORDER BY created_at DESC LIMIT 20}} | {{idx_o_merchant_status_time(merchant_id, status, created_at DESC)}} | hai equality + ORDER BY khớp chiều index → đọc đúng 20 dòng |
+| 2 | {{merchant_id = ? AND created_at BETWEEN ? AND ?}} (không lọc status) | {{idx_o_merchant_time(merchant_id, created_at DESC)}} | equality rồi range; không cần sort nếu ORDER BY cùng cột |
+| 3 | {{status = 'OPEN' ORDER BY created_at DESC LIMIT 50}} (không có merchant) | {{idx_o_open_time(created_at DESC) WHERE status = 'OPEN'}} | partial index: nhỏ, chỉ chứa đơn đang mở |
+| 4 | {{ORDER BY total_amount DESC LIMIT 20}} (bảng xếp hạng) | {{idx_o_total(total_amount DESC)}} | ORDER BY toàn cục, không có equality |
+| 5 | tra cứu theo {{id}} | primary key | đã có sẵn |
+
+~~~sql
+-- 1) danh sách đơn đang mở của một merchant
+SELECT id, created_at, total
+FROM orders
+WHERE merchant_id = $1 AND status = 'OPEN'
+ORDER BY created_at DESC
+LIMIT 20;
+-- index khớp: (merchant_id, status, created_at DESC)
+
+-- 2) tra cứu theo khoảng ngày, không filter status
+SELECT id, created_at, total
+FROM orders
+WHERE merchant_id = $1
+  AND created_at >= $2 AND created_at < $3
+ORDER BY created_at DESC;
+-- index khớp: (merchant_id, created_at DESC)
+~~~
+
+~~~text
+Có index (merchant_id, status, created_at DESC):
+  Limit
+    -> Index Scan using idx_o_merchant_status_time on orders
+         Index Cond: (merchant_id = 8841 AND status = 'OPEN')
+       (actual rows=20, thời gian ~0,4 ms)          <- dừng ngay sau 20 dòng
+
+Không có index:
+  Limit
+    -> Sort (top-N heapsort, Memory: 27kB)
+         -> Seq Scan on orders  (actual rows=812.000.000, ~2,1 s)
+       (phải đọc và sắp xếp toàn bảng)
+~~~
+
+Vì index {{idx_o_merchant_status_time}} bắt đầu bằng {{merchant_id}}, nó **không** giúp gì cho truy vấn #4 (ORDER BY total_amount toàn cục) và chỉ giúp một phần cho #2. Đó là lý do #2 cần index riêng: index (merchant_id, status, created_at) vẫn dùng được cho #2 nhưng phải đọc cả các entry {{status = 'OPEN'}}, {{status = 'CLOSED'}}… rồi lọc — nếu mỗi merchant có 200.000 đơn thì tốn hơn index chuyên biệt 3–5 lần.
+
+### Vì sao không tạo 5 index
+- Mỗi index tốn đĩa: trên 800 triệu dòng, một index 3 cột cỡ 60–90GB; 5 index là 300–450GB.
+- Mỗi INSERT phải cập nhật mọi index (gây WAL, buffer eviction). Đo thực tế: thêm 3 index làm p95 ghi tăng khoảng 0,6–1,2 ms.
+- Index làm loãng cache (shared_buffers) của cả truy vấn khác.
+- Index có tiền tố trùng ({{a}}) và ({{a, b}}) là dư: index hẹp hơn thường đã phục vụ được truy vấn của index rộng hơn.
+
+### Lỗi hay gặp
+- **Bỏ sót cột đầu**: điều kiện {{WHERE status = 'OPEN'}} không dùng được index {{idx(merchant_id, status)}}; đây là bẫy phổ biến nhất.
+- **OR làm mất index**: {{WHERE merchant_id = 1 OR status = 'OPEN'}} thường khiến planner chuyển sang Bitmap Scan hoặc Seq Scan; tách thành {{UNION ALL}} hai nhánh có index riêng thường nhanh hơn.
+- **Thứ tự lẫn lộn trong ORDER BY**: {{ORDER BY created_at DESC, total ASC}} không khớp index một chiều đơn giản; PostgreSQL hiện đại cho phép khai báo hướng cho từng cột, nhưng index phải được tạo đúng cặp hướng đó.
+- **NULLS FIRST/LAST**: mặc định PostgreSQL là {{ASC → NULLS LAST}}, {{DESC → NULLS FIRST}}; index phải cùng hướng NULL với ORDER BY thì mới tránh sort.
+- **Cột select quá nhiều**: nếu index không chứa cột cần trả về, mỗi dòng vẫn phải đọc heap; cân nhắc INCLUDE (xem câu covering index).
+
+### Ví dụ đời thực
+Bảng {{orders}} 812 triệu dòng, 2,4TB, 5.000 merchant. Màn hình "đơn đang mở" của merchant lớn (1,8 triệu đơn) chạy p95 1,9 giây vì planner dùng index {{idx(merchant_id)}} rồi Sort 1,8 triệu dòng (đo bằng {{EXPLAIN (ANALYZE, BUFFERS)}}: {{Sort Method: external merge Disk: 210MB}} — tràn đĩa vì work_mem 4MB). Nhóm thêm {{idx_o_merchant_status_time(merchant_id, status, created_at DESC)}}: p95 còn 7 ms, không còn Sort. Truy vấn báo cáo theo ngày được thêm {{idx_o_merchant_time}}: 4,2 s → 180 ms. Sau 30 ngày, kiểm tra {{pg_stat_user_indexes}} thấy 4 index {{idx_scan = 0}} (do đổi contract API) và xoá chúng, tiết kiệm 168GB. Tổng dung lượng index giảm từ 420GB xuống 96GB; p95 ghi của API tạo đơn tăng 0,3 ms (chấp nhận được).
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi bắt đầu từ các truy vấn thật, không thêm index theo cảm tính. Với mỗi truy vấn tôi hỏi ba thứ: cột nào so sánh bằng, cột nào sắp xếp, cột nào là khoảng. Quy tắc tôi theo là equality trước, cột ORDER BY tiếp, cột range sau cùng, vì sau một range thì thứ tự của cột phía sau không còn toàn cục nên DB vẫn phải sort. Nếu ORDER BY khớp với index, DB đọc thẳng N dòng đầu và dừng, rất nhanh với LIMIT. Với truy vấn không có equality, tôi dùng partial index cho phần dữ liệu nóng, còn truy vấn toàn cục thì dùng index riêng hoặc materialized view. Tôi kiểm chứng bằng EXPLAIN ANALYZE, và định kỳ xoá index không được dùng: mỗi index là thuế trên mọi lần ghi và làm loãng cache."
+
+> Senior tip: index tốt là index **đúng cho một truy vấn cụ thể**, không phải index "cho mọi truy vấn". Trước khi thêm index, hãy hỏi "truy vấn nào sẽ chậm gấp 10 lần nếu thiếu nó?" — nếu không trả lời được, đừng thêm.
+
+### follow
+- Vì sao {{idx(merchant_id, status, created_at)}} không dùng được cho truy vấn chỉ lọc {{status = 'OPEN'}}?
+- Khi nào dùng partial index thay vì composite index, và làm sao planner biết để chọn nó?
+- Bảng đã có index đúng nhưng vẫn Sort: bạn kiểm tra gì trước tiên?
+`,
+  follow: [
+    'Vì sao {{idx(merchant_id, status, created_at)}} không dùng được cho truy vấn chỉ lọc {{status = "OPEN"}}?',
+    'Khi nào nên dùng partial index thay vì composite index, và planner dựa vào đâu để chọn nó?',
+    'Bảng đã có index đúng nhưng EXPLAIN vẫn hiện Sort: bạn kiểm tra gì trước tiên?'
+  ],
+  tags: ['index', 'composite index', 'ORDER BY', 'index design', 'leftmost prefix']
+},
+{
+  id: 'sql-046',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Covering index (INCLUDE) giúp tránh đọc bảng như thế nào? Vì sao một index-only scan vẫn có thể chậm gấp 50 lần dù index chứa đủ cột?',
+  a: `**Tóm tắt:** Index-only scan chỉ xảy ra khi **mọi cột SELECT đều có trong index** (cột khóa hoặc cột INCLUDE) **và** trang heap được visibility map đánh dấu "all visible". Nếu thiếu một trong hai, DB phải **Heap Fetch** từng dòng (đọc ngẫu nhiên trang 8KB), và đó là lý do index "đủ cột" vẫn chậm. {{INCLUDE}} thêm cột vào **lá index** nhưng không tham gia tìm kiếm/sắp xếp; đổi lại index to hơn và ghi chậm hơn.
+
+### Vì sao phải đọc heap nếu không có index-only scan
+Mỗi index entry chứa ctid trỏ tới dòng trong bảng. Khi cần cột không có trong index, DB phải:
+1. Dùng ctid tính ra trang dữ liệu (mỗi trang 8KB).
+2. Đọc trang đó từ cache hoặc đĩa.
+3. Tìm dòng theo offset, đọc cột.
+
+Với 100.000 dòng nằm rải rác trên 100.000 trang, đó là 100.000 lần đọc ngẫu nhiên. Trên SSD NVMe mỗi lần ~50–100 micro giây, cộng lại là vài giây; trên đĩa mạng (EBS) còn tệ hơn. Index-only scan bỏ hẳn bước này nếu index đã có đủ dữ liệu.
+
+### Visibility map: điều kiện bị bỏ quên
+PostgreSQL cần biết một dòng có "nhìn thấy được với mọi transaction" hay không. **Visibility map (VM)** là bitmap 1 bit cho mỗi trang heap: bit = 1 nghĩa là mọi tuple trên trang đều visible với mọi snapshot. VM chỉ được bật bởi **VACUUM** (và một phần bởi ANALYZE với cột? không — chính xác là VACUUM/WAL replay), nên nếu bảng bị UPDATE liên tục mà autovacuum không theo kịp, VM cũ → index-only scan vẫn phải kiểm tra từng dòng trong heap.
+
+~~~text
+EXPLAIN (ANALYZE, BUFFERS) sau khi thêm INCLUDE nhưng chưa VACUUM:
+Limit
+  -> Index Only Scan using idx_msg_conv_time on message
+       Index Cond: (conversation_id = 42 AND created_at >= '2026-02-20')
+       Heap Fetches: 184233                 <- vẫn đọc heap cho 184k dòng
+       Buffers: shared hit=4100 read=26200
+       Execution Time: 812 ms
+
+Sau khi VACUUM (ANALYZE) message:
+Limit
+  -> Index Only Scan using idx_msg_conv_time on message
+       Index Cond: (conversation_id = 42 AND created_at >= '2026-02-20')
+       Heap Fetches: 0                      <- VM đã bật, không cần đọc heap
+       Buffers: shared hit=26100 read=1800
+       Execution Time: 9 ms
+~~~
+
+Đọc con số: {{Heap Fetches}} là số dòng phải quay lại heap dù đang dùng Index Only Scan. Nếu nó gần bằng số dòng trả về, VM chưa có ích — hãy chạy VACUUM hoặc kiểm tra transaction dài đang chặn.
+
+### INCLUDE khác gì thêm cột vào key
+| | Thêm vào key | INCLUDE |
+|---|---|---|
+| Tìm kiếm/lọc theo cột | có | không |
+| Sắp xếp theo cột | có | không |
+| Nằm ở nút lá | có | có |
+| Làm index to hơn | có (và làm chậm so sánh) | có (payload nhân bản) |
+| Ảnh hưởng thứ tự | có | không |
+
+Ví dụ {{CREATE INDEX idx_msg ON message (conversation_id, created_at DESC) INCLUDE (preview, is_read);}}. Truy vấn {{SELECT preview, is_read FROM message WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 50}} giờ có thể trả kết quả hoàn toàn từ index.
+
+### Khi nào KHÔNG nên dùng covering index
+- Truy vấn {{SELECT *}} → không index nào cover được (trừ khi index toàn bộ cột, vô lý).
+- Cột payload quá lớn ({{text}}, {{jsonb}}) → index phình, có thể vượt vài trăm GB.
+- Bảng ghi nhiều, đọc ít → mỗi INSERT phải ghi thêm payload vào index.
+- Cột thay đổi liên tục → VM liên tục bị xoá, index-only scan hiếm khi xảy ra.
+
+### Ví dụ đời thực
+Bảng {{message}} 400 triệu dòng, màn hình danh sách hội thoại: {{SELECT id, preview, is_read, created_at FROM message WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 50}}. Index cũ {{idx(conversation_id, created_at)}} buộc đọc heap cho từng dòng; p95 640 ms. Nhóm thêm {{INCLUDE (preview, is_read)}}: index từ 8GB lên 21GB, nhưng sau VACUUM thì p95 còn 7 ms (Heap Fetches = 0). Nhóm cũng phát hiện autovacuum "chạy nhưng không xong" vì một transaction phân tích để mở 3 giờ: sau khi đặt {{idle_in_transaction_session_timeout = 5min}} và theo dõi {{pg_stat_activity.state}}, VM được cập nhật đều đặn.
+
+### Trả lời mẫu khi phỏng vấn
+"Index-only scan cần hai điều kiện: mọi cột truy vấn phải nằm trong index, và trang heap phải được visibility map đánh dấu all-visible. Thực tế tôi hay gặp trường hợp thứ hai bị bỏ quên: index đã có INCLUDE nhưng bảng bị update liên tục, autovacuum không kịp, nên EXPLAIN vẫn hiện Heap Fetches rất lớn và query vẫn chậm. Tôi kiểm tra bằng EXPLAIN ANALYZE BUFFERS, xem Heap Fetches, rồi VACUUM ANALYZE và kiểm tra transaction dài. INCLUDE tôi dùng cho payload nhỏ như preview, trạng thái; với cột lớn thì tôi không đưa vào index vì index sẽ phình và ghi chậm. Tôi cũng cân nhắc chi phí ghi: mỗi cột INCLUDE là thêm dữ liệu phải ghi mỗi lần insert hoặc update."
+
+> Senior tip: "index-only scan" trong kế hoạch không có nghĩa là "không đọc đĩa". Hãy luôn nhìn {{Heap Fetches}} và {{Buffers}}: nếu Heap Fetches lớn, bạn đang trả tiền cho một index-only scan giả.
+
+### follow
+- Visibility map được cập nhật khi nào, và transaction dài ảnh hưởng thế nào tới nó?
+- Vì sao thêm cột vào {{INCLUDE}} không giúp cho ORDER BY hay WHERE?
+- Khi nào index-only scan tốn hơn index scan bình thường?
+`,
+  follow: [
+    'Visibility map được cập nhật khi nào, và một transaction dài ảnh hưởng thế nào tới nó?',
+    'Vì sao cột trong {{INCLUDE}} không giúp được cho ORDER BY hoặc WHERE?',
+    'Khi nào index-only scan lại tốn hơn index scan bình thường?'
+  ],
+  tags: ['covering index', 'INCLUDE', 'index-only scan', 'visibility map', 'VACUUM']
+},
+{
+  id: 'sql-047',
+  topic: 'sql',
+  level: 'senior',
+  q: 'So sánh READ COMMITTED, REPEATABLE READ và SERIALIZABLE trên PostgreSQL: mỗi mức chặn được anomaly nào (lost update, write skew, serialization anomaly)? Đưa ví dụ hai session và cách retry lỗi 40001.',
+  a: `**Tóm tắt:** PostgreSQL có ba mức thực dụng: **READ COMMITTED** (mặc định — mỗi câu lệnh thấy snapshot mới nhất), **REPEATABLE READ** (snapshot cố định ở câu lệnh đầu tiên của transaction) và **SERIALIZABLE** (RR + phát hiện xung đột read/write bằng SSI, ném lỗi {{40001}}). PostgreSQL **không có dirty read**: {{READ UNCOMMITTED}} bị đối xử như {{READ COMMITTED}}. Không mức nào tự "sửa" lost update do ứng dụng đọc rồi ghi giá trị tuyệt đối — phải dùng update tương đối, {{SELECT FOR UPDATE}} hoặc cột version.
+
+### Snapshot hoạt động thế nào
+- **READ COMMITTED**: mỗi câu lệnh nhận một snapshot mới. Câu lệnh thứ hai trong cùng transaction thấy dữ liệu đã commit sau câu lệnh thứ nhất.
+- **REPEATABLE READ**: snapshot được lấy tại **câu lệnh đầu tiên** (không phải tại {{BEGIN}}). Các câu sau trong transaction dùng lại snapshot đó; muốn thấy dữ liệu mới phải commit rồi mở transaction mới.
+- **SERIALIZABLE**: giống RR về snapshot, nhưng thêm **predicate lock** (SIREAD) để phát hiện các chu trình read-write giữa các transaction. Nếu commit sẽ tạo ra kết quả không thể serialize, PostgreSQL abort một bên với {{ERROR: could not serialize access due to read/write dependencies among transactions}} (SQLSTATE {{40001}}).
+
+### Bảng anomaly
+| Anomaly | READ COMMITTED | REPEATABLE READ | SERIALIZABLE |
+|---|---|---|---|
+| Dirty read | không (PG không bao giờ) | không | không |
+| Non-repeatable read (đọc lại khác) | có thể | không | không |
+| Phantom read (đếm lại khác) | có thể | không (MVCC snapshot) | không |
+| Lost update (đọc–sửa–ghi tuyệt đối) | có thể | **có thể** | bị chặn |
+| Write skew | có thể | có thể | bị chặn |
+| Serialization anomaly | có thể | có thể | bị chặn |
+
+### Lost update: ví dụ hai session
+Bảng {{account(id, balance)}}, ban đầu id=1 có 1.000. Hai request trừ 100 cùng lúc:
+
+~~~text
+Session A (READ COMMITTED)                  Session B (READ COMMITTED)
+BEGIN;
+SELECT balance FROM account WHERE id=1;  -> 1000
+                                            BEGIN;
+                                            SELECT balance ... -> 1000
+UPDATE account SET balance = 900 WHERE id=1;
+COMMIT;
+                                            UPDATE account SET balance = 900 WHERE id=1;
+                                            COMMIT;
+Kết quả: balance = 900  -> mất 100 (lẽ ra 800)
+~~~
+
+Ở REPEATABLE READ, nếu cả hai cùng đọc 1000 rồi update tuyệt đối, **vẫn mất 100**: snapshot không bảo vệ giá trị bạn ghi đè. Cách đúng:
+
+~~~sql
+-- cách 1: update tương đối (DB đọc và ghi trong cùng một câu, atomic)
+UPDATE account SET balance = balance - 100 WHERE id = 1;
+
+-- cách 2: pessimistic lock trước khi đọc–tính–ghi
+BEGIN;
+SELECT balance FROM account WHERE id = 1 FOR UPDATE;  -- khoá dòng
+-- tính toán ở Java...
+UPDATE account SET balance = ? WHERE id = 1;
+COMMIT;
+
+-- cách 3: optimistic lock bằng version
+UPDATE account SET balance = ?, version = version + 1
+WHERE id = 1 AND version = ?;   -- 0 dòng -> có người sửa trước -> retry
+~~~
+
+Lưu ý: ở READ COMMITTED, {{UPDATE ... SET balance = balance - 100}} là atomic vì PostgreSQL đọc lại phiên bản mới nhất của dòng khi update (cơ chế EvalPlanQual). Ở REPEATABLE READ, nếu dòng đã bị transaction khác sửa sau snapshot, câu update sẽ nhận lỗi {{could not serialize access due to concurrent update}} ({{40001}}), không âm thầm ghi đè.
+
+### Write skew: anomaly mà REPEATABLE READ KHÔNG chặn được
+Quy tắc nghiệp vụ: "luôn có ít nhất 1 bác sĩ trực". Hai bác sĩ A và B cùng trực; mỗi người tự check rồi tắt ca của mình:
+
+~~~text
+Session A (REPEATABLE READ)                 Session B (REPEATABLE READ)
+BEGIN;
+SELECT count(*) FROM on_call WHERE on_call; -> 2
+                                            BEGIN;
+                                            SELECT count(*) ... -> 2
+UPDATE on_call SET on_call=false WHERE doctor='A';
+COMMIT;
+                                            UPDATE on_call SET on_call=false WHERE doctor='B';
+                                            COMMIT;
+Kết quả: 0 bác sĩ trực  -> vi phạm ràng buộc, không transaction nào thấy lỗi
+~~~
+
+Đây là **write skew**: hai transaction đọc cùng một tập, rồi ghi vào các tập con khác nhau; không có xung đột trực tiếp nên RR không phát hiện. SERIALIZABLE chặn bằng cách theo dõi phụ thuộc đọc–ghi: một trong hai transaction sẽ bị abort {{40001}} khi commit.
+
+### SERIALIZABLE và retry trong Spring
+~~~java
+@Service
+public class TransferService {
+
+  @Resource private AccountRepository accountRepository;
+
+  // inner bean: mỗi lần gọi qua proxy là một transaction mới
+  @Transactional(isolation = Isolation.SERIALIZABLE, timeout = 5)
+  public TransferResult doTransfer(TransferCommand cmd) {
+    Account from = accountRepository.findByIdForUpdate(cmd.fromId());
+    Account to = accountRepository.findByIdForUpdate(cmd.toId());
+    // ... kiểm tra số dư, ghi ledger, cộng/trừ
+    return new TransferResult(from.getBalance(), to.getBalance());
+  }
 }
+
+@Service
+public class TransferFacade {
+
+  @Resource private TransferService transferService;  // proxy, không phải this
+
+  @Retryable(
+    retryFor = { CannotAcquireLockException.class, DeadlockLoserDataAccessException.class },
+    noRetryFor = { DataIntegrityViolationException.class },
+    maxAttempts = 4,
+    backoff = @Backoff(delay = 50, multiplier = 2, maxDelay = 400))
+  public TransferResult transfer(TransferCommand cmd) {
+    return transferService.doTransfer(cmd);   // gọi qua proxy -> transaction mới mỗi lần retry
+  }
+}
+~~~
+
+Ba lỗi hay gặp với retry:
+1. **Tự gọi method trong cùng bean** ({{this.doTransfer()}}) → không có proxy → @Transactional không có tác dụng, retry chạy trong cùng một transaction đã đánh dấu rollback.
+2. **Bắt exception bên trong transaction** rồi tiếp tục → transaction bị đánh dấu rollback-only, commit sẽ ném {{UnexpectedRollbackException}}.
+3. **Retry không giới hạn** hoặc retry cả lỗi không thể retry ({{DataIntegrityViolationException}}).
+
+### Chọn mức nào cho hệ thống nào
+| Bài toán | Mức đề xuất | Lý do |
+|---|---|---|
+| Báo cáo, thống kê | READ COMMITTED (hoặc read replica) | cần dữ liệu mới nhất, không cần nhất quán toàn cục |
+| Chuyển tiền, trừ số dư | REPEATABLE READ + {{FOR UPDATE}} hoặc SERIALIZABLE | tránh lost update và write skew |
+| Đặt chỗ/tồn kho | SERIALIZABLE hoặc lock tường minh | tránh hai request cùng "giữ chỗ cuối" |
+| Ghi log, event | READ COMMITTED | throughput cao, không có ràng buộc đọc–ghi |
+
+### Ví dụ đời thực
+Hệ thống thanh toán 20.000 giao dịch/giờ trên PostgreSQL 15. Ba tuần đầu chạy READ COMMITTED: 12 ca lệch số dư/tuần do read-modify-write với giá trị tuyệt đối. Nhóm chuyển luồng chuyển tiền sang SERIALIZABLE + {{FOR UPDATE}} theo thứ tự id tăng dần, đồng thời thêm retry 4 lần với backoff 50/100/200 ms. Kết quả sau 2 tuần: 0 ca lệch; tỷ lệ retry do {{40001}} là 0,4% giao dịch (tập trung giờ cao điểm); p95 tăng 2 ms. {{pg_stat_database.deadlocks}} giảm từ 40/ngày xuống dưới 5/ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"PostgreSQL mặc định READ COMMITTED: mỗi câu lệnh thấy snapshot mới nhất, nên hai câu lệnh trong cùng transaction có thể thấy dữ liệu khác nhau. REPEATABLE READ giữ một snapshot từ câu lệnh đầu tiên, nên đọc lại ổn định và không có phantom; SERIALIZABLE thêm SSI để phát hiện write skew và serialization anomaly, đổi lại phải retry lỗi 40001. Với luồng tiền tôi không dựa vào isolation mà kết hợp: update tương đối hoặc SELECT FOR UPDATE để chống lost update, và luôn chuẩn hoá thứ tự lock để tránh deadlock. Tôi bọc retry ở lớp ngoài transaction, giới hạn số lần, backoff, và không retry lỗi toàn vẹn dữ liệu. Tôi theo dõi tỷ lệ 40001 và deadlock để biết isolation có quá chặt hay thứ tự lock còn sai."
+
+> Senior tip: isolation level cao không tự động làm code đúng. SERIALIZABLE chỉ phát hiện xung đột và ném lỗi; nếu không có retry đúng chỗ, bạn chỉ đổi "sai số dư" thành "giao dịch thất bại". Hãy đo tỷ lệ 40001 trước khi tăng mức.
+
+### follow
+- Vì sao REPEATABLE READ không chặn được lost update khi ứng dụng ghi giá trị tuyệt đối?
+- Write skew khác serialization anomaly thế nào, và SERIALIZABLE phát hiện nó bằng cách nào?
+- Retry @Retryable đặt sai chỗ thì chuyện gì xảy ra với transaction?
+`,
+  follow: [
+    'Vì sao REPEATABLE READ vẫn không chặn được lost update khi ứng dụng ghi giá trị tuyệt đối?',
+    'Write skew khác serialization anomaly ở điểm nào, và SERIALIZABLE phát hiện nó bằng cơ chế gì?',
+    'Nếu đặt @Retryable sai chỗ hoặc tự gọi method trong cùng bean thì hậu quả là gì?'
+  ],
+  tags: ['isolation level', 'READ COMMITTED', 'REPEATABLE READ', 'SERIALIZABLE', 'MVCC', '40001']
+},
+{
+  id: 'sql-048',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Deadlock trong database xảy ra thế nào, PostgreSQL phát hiện ra sao, và bạn phòng ngừa nó trong một hệ thống Spring Boot như thế nào (kể cả khi code không hề lock tường minh)?',
+  a: `**Tóm tắt:** Deadlock là vòng chờ: mỗi transaction giữ một khoá mà transaction kia cần. PostgreSQL phát hiện bằng wait-for graph sau {{deadlock_timeout}} (mặc định 1 giây), rồi abort một "victim" với SQLSTATE {{40P01}}. Phòng ngừa hiệu quả nhất: **luôn lấy khoá theo cùng một thứ tự**, giữ transaction ngắn, không gọi mạng trong transaction, dùng {{SKIP LOCKED}} cho queue, và retry có backoff.
+
+### Lock trong PostgreSQL có nhiều mức
+| Mode | Ai dùng | Chặn ai (conflict với) |
+|---|---|---|
+| {{ACCESS SHARE}} | SELECT | {{ACCESS EXCLUSIVE}} |
+| {{ROW SHARE}} | SELECT FOR SHARE/UPDATE | {{EXCLUSIVE}}, {{ACCESS EXCLUSIVE}} |
+| {{ROW EXCLUSIVE}} | INSERT/UPDATE/DELETE | {{SHARE}}, {{SHARE ROW EXCLUSIVE}}, {{EXCLUSIVE}}, {{ACCESS EXCLUSIVE}} |
+| {{SHARE}} | CREATE INDEX (không CONCURRENTLY) | {{ROW EXCLUSIVE}}, {{SHARE ROW EXCLUSIVE}}, {{EXCLUSIVE}}, {{ACCESS EXCLUSIVE}} |
+| {{SHARE ROW EXCLUSIVE}} | tạo foreign key, một số ALTER | {{ROW EXCLUSIVE}}, {{SHARE ROW EXCLUSIVE}}, {{EXCLUSIVE}}, {{ACCESS EXCLUSIVE}} |
+| {{EXCLUSIVE}} | một số ALTER | mọi mode trừ {{ACCESS SHARE}} |
+| {{ACCESS EXCLUSIVE}} | DROP, TRUNCATE, VACUUM FULL, LOCK TABLE | mọi mode |
+
+Hai transaction chỉ deadlock được khi mỗi bên **đang giữ ít nhất một khoá** và cùng chờ một khoá mà bên kia giữ. Transaction chỉ đọc (ACCESS SHARE) gần như không deadlock với nhau; deadlock hay xảy ra khi UPDATE nhiều dòng theo thứ tự khác nhau, hoặc khi INSERT đụng unique index.
+
+### PostgreSQL phát hiện deadlock thế nào
+Khi một backend phải chờ khoá, nó đăng ký vào hàng chờ. PostgreSQL kiểm tra đồ thị "ai chờ ai"; nếu có chu trình và thời gian chờ vượt {{deadlock_timeout}} (mặc định 1s), nó chọn một transaction làm victim và abort. Log trông như sau:
+
+~~~text
+2026-03-11 10:22:31.884 UTC [4211] ERROR:  deadlock detected
+2026-03-11 10:22:31.884 UTC [4211] DETAIL:
+  Process 4211 waits for ShareLock on transaction 891233; blocked by process 4198.
+  Process 4198 waits for ShareLock on transaction 891231; blocked by process 4211.
+  Process 4211: UPDATE account SET balance = balance - 5000000 WHERE id = 1002;
+  Process 4198: UPDATE account SET balance = balance - 3000000 WHERE id = 1001;
+2026-03-11 10:22:31.884 UTC [4211] HINT:  See server log for query details.
+~~~
+
+Đọc log: 4211 giữ khoá trên transaction của 4198, còn 4198 giữ khoá trên transaction của 4211 → vòng. Câu SQL cho thấy hai bên update hai dòng theo thứ tự ngược nhau. Đây là dấu hiệu kinh điển của "lock theo thứ tự khác nhau".
+
+### Truy vết khi hệ thống đang chạy
+~~~sql
+-- ai đang bị chặn, chặn bởi ai
+SELECT a.pid,
+       a.state,
+       a.wait_event_type,
+       a.wait_event,
+       pg_blocking_pids(a.pid) AS blocked_by,
+       left(a.query, 80) AS query
+FROM pg_stat_activity a
+WHERE a.state <> 'idle'
+  AND cardinality(pg_blocking_pids(a.pid)) > 0;
+
+-- chi tiết từng khoá
+SELECT locktype, relation::regclass, mode, granted, pid
+FROM pg_locks
+WHERE NOT granted;
+~~~
+
+Bật thêm {{log_lock_waits = on}} (và giữ {{deadlock_timeout}} ở mức mặc định khi điều tra) để log ghi cả những trường hợp chờ lâu mà không thành deadlock. {{pg_stat_database.deadlocks}} cho biết tần suất; nếu tăng đột biến, hãy tìm câu lệnh trong log.
+
+### Vì sao Spring Boot hay tự gây deadlock
+1. **Transaction bao cả lời gọi HTTP**: {{@Transactional}} bọc toàn bộ method, bên trong gọi API thanh toán 3 giây; khoá bị giữ 3 giây, xác suất đụng tăng vọt.
+2. **Thứ tự lock từ tập hợp không xác định**: {{items.stream()}} hoặc {{HashSet}} cho thứ tự khác nhau giữa các request → hai request cùng cập nhật hai tài khoản theo chiều ngược.
+3. **Unique index**: hai transaction cùng insert cùng khóa (ví dụ mã đơn) — mỗi bên giữ một phần của unique index rồi chờ bên kia.
+4. **JPA flush theo thứ tự entity**: save nhiều thực thể rồi flush, thứ tự câu lệnh có thể khác giữa các lần chạy.
+5. **Lock trên bảng cha do foreign key**: insert vào bảng con cần {{ROW SHARE}} trên dòng cha; hiếm khi deadlock nhưng vẫn có thể nếu transaction khác đang alter bảng cha.
+
+### Phòng ngừa trong code
+~~~java
+public void transfer(List<TransferItem> items) {
+  // 1. chuẩn hoá thứ tự: mọi thread lock các tài khoản theo id tăng dần
+  List<Long> ids = items.stream()
+      .map(TransferItem::accountId)
+      .distinct()
+      .sorted()                       // <-- cắt vòng deadlock
+      .toList();
+
+  // 2. lock trước, tính sau; không gọi mạng trong transaction
+  List<Account> accounts = accountRepository
+      .findByIdIn(ids, LockModeType.PESSIMISTIC_WRITE);
+
+  // 3. nghiệp vụ thuần, không I/O ngoài
+  accounts.forEach(a -> a.apply(items));
+  accountRepository.saveAll(accounts);
+}
+
+// 4. với queue: không chờ, lấy việc chưa bị khóa
+@Query(value = "SELECT * FROM job WHERE status = 'PENDING' ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 10",
+       nativeQuery = true)
+List<Job> claimJobs();
+~~~
+
+Kèm theo:
+- {{SET lock_timeout = '2s'}} trong transaction dễ đụng: thà fail nhanh rồi retry còn hơn giữ kết nối 30 giây.
+- Retry chỉ với {{40P01}} và {{40001}}, đặt ở lớp ngoài transaction (xem câu isolation).
+- Giữ transaction ngắn: tính toán, gọi validation, gọi API ngoài transaction; chỉ mở transaction quanh phần ghi DB.
+- Batch theo lô có thứ tự: sắp xếp theo khóa trước khi update, chia lô 500–1.000 dòng.
+
+### Ví dụ đời thực
+Job định giá chạy mỗi đêm cập nhật 10.000 SKU theo thứ tự nhận từ Kafka; API merchant cũng cho phép sửa giá một SKU bất kỳ. Trong 3 đêm, {{pg_stat_database.deadlocks}} tăng từ 2 lên 120/ngày; log cho thấy job update SKU 8841 rồi 8842, còn API update 8842 rồi 8841. Nhóm sửa: job gom SKU, sắp theo id tăng dần, chia lô 500, đặt {{lock_timeout = '2s'}}; API bọc retry 3 lần với backoff 50/100/200 ms. Sau 1 tuần: 0 deadlock, p95 API sửa giá từ 3,5 s (khi bị block) xuống 120 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Deadlock là vòng chờ giữa các transaction giữ khoá chéo. PostgreSQL phát hiện qua wait-for graph sau deadlock_timeout mặc định 1 giây và abort một victim với 40P01; tôi đọc log để biết hai câu SQL nào update hai dòng theo thứ tự ngược nhau. Phòng ngừa số một là chuẩn hoá thứ tự lock: mọi luồng update nhiều tài khoản hay nhiều SKU đều sắp theo id tăng dần trước khi lock. Tôi cũng giữ transaction ngắn, không gọi HTTP hay tính toán nặng trong transaction, dùng SELECT FOR UPDATE SKIP LOCKED cho queue để worker không chờ nhau, và đặt lock_timeout để fail nhanh. Khi vẫn có deadlock, tôi retry có backoff ở lớp ngoài transaction, chỉ với 40P01 và 40001, tối đa 3 đến 4 lần."
+
+> Senior tip: deadlock gần như luôn là lỗi **thiết kế thứ tự lock**, không phải lỗi hạ tầng. Nếu log cho thấy hai câu update hai dòng theo chiều ngược nhau, đừng tăng deadlock_timeout hay giảm tải — hãy sắp xếp thứ tự lock.
+
+### follow
+- Vì sao deadlock chỉ xảy ra giữa các transaction, và transaction chỉ đọc có gây deadlock không?
+- {{FOR UPDATE SKIP LOCKED}} giúp gì cho worker queue, và nó có làm mất task không?
+- Vì sao retry phải đặt ở lớp ngoài transaction?
+`,
+  follow: [
+    'Vì sao deadlock chỉ xảy ra giữa các transaction, và transaction chỉ đọc có thể gây deadlock không?',
+    '{{FOR UPDATE SKIP LOCKED}} giúp gì cho worker queue, và có nguy cơ bỏ sót task không?',
+    'Vì sao retry phải đặt ở lớp ngoài transaction, và tự gọi method trong cùng bean thì sao?'
+  ],
+  tags: ['deadlock', 'lock', 'FOR UPDATE', 'SKIP LOCKED', '40P01', 'Spring']
+},
+{
+  id: 'sql-049',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Một dashboard chậm 12 giây. EXPLAIN (ANALYZE, BUFFERS) cho ra kế hoạch dưới đây. Bạn đọc nó thế nào, vì sao planner chọn Bitmap Heap Scan + Sort, và bạn sửa bằng cách nào?',
+  a: `**Tóm tắt:** Đọc plan từ **trong ra ngoài**: mỗi nút có {{actual time}}, {{rows}}, {{loops}}, {{Buffers}}; thời gian của nút cha đã bao gồm nút con. Ở đây bitmap index scan trả về 3,68 triệu dòng, rồi Bitmap Heap Scan đọc heap và lọc bỏ 1,79 triệu dòng, cuối cùng Sort top-N — nguyên nhân là **hàm {{::date}} đặt trên cột {{created_at}}** làm index không dùng được cho điều kiện ngày, cộng với thống kê cũ. Sửa: viết lại predicate cho sargable, {{ANALYZE}}, tạo thống kê mở rộng, chỉnh {{random_page_cost}}/{{work_mem}}.
+
+### Kế hoạch thật
+~~~text
+Limit (cost=18342.77..18342.82 rows=20 width=44) (actual time=8412.771..8412.795 rows=20 loops=1)
+  Buffers: shared hit=120 read=1289221
+  ->  Sort (cost=18342.77..18505.51 rows=65096 width=44) (actual time=8412.760..8412.773 rows=20 loops=1)
+        Sort Key: created_at DESC
+        Sort Method: top-N heapsort  Memory: 27kB
+        Buffers: shared hit=120 read=1289221
+        ->  Bitmap Heap Scan on public.orders  (cost=8821.10..18600.10 rows=65096 width=44)
+              (actual time=28.412..8371.556 rows=1894213 loops=1)
+              Recheck Cond: ((merchant_id = 8841) AND (status = 'OPEN'::text))
+              Filter: ((created_at)::date >= '2026-02-01'::date)
+              Rows Removed by Filter: 1789432
+              Heap Blocks: exact=1289221
+              Buffers: shared hit=120 read=1289221
+              ->  Bitmap Index Scan on idx_orders_merchant_status
+                    (cost=0.00..8813.62 rows=65096 width=0)
+                    (actual time=28.101..28.102 rows=3683645 loops=1)
+                    Index Cond: ((merchant_id = 8841) AND (status = 'OPEN'::text))
+                    Buffers: shared read=8
+~~~
+
+### Đọc từng con số
+- {{actual time=28.101..28.102}} của Bitmap Index Scan: thời điểm trả dòng đầu tiên đến dòng cuối, **tính trên một loop**. Vì {{loops=1}}, không phải nhân.
+- {{rows=3683645}} ở Bitmap Index Scan là số entry index tìm được; ở Bitmap Heap Scan, {{rows=1894213}} là số dòng **sau khi lọc**, còn {{Rows Removed by Filter: 1789432}} là số dòng đã đọc heap nhưng bị bỏ. 1894213 + 1789432 = 3683645: khớp.
+- {{actual time=28.412..8371.556}} ở Bitmap Heap Scan: 28 ms để trả dòng đầu, nhưng hơn 8,3 giây để đọc hết 3,68 triệu dòng và lọc. Đây là nút tốn thời gian nhất.
+- {{Sort Method: top-N heapsort}} chỉ sắp 20 dòng cuối, nhưng nó phải nhận toàn bộ 1,89 triệu dòng từ nút con trước → vẫn phải đọc hết.
+- {{Buffers: shared hit=120 read=1289221}}: 1,29 triệu trang đọc từ OS/đĩa × 8KB ≈ **10GB**; đây là bottleneck I/O.
+- {{rows=65096}} là ước lượng của planner; thực tế 1,89 triệu → lệch 29 lần. Ước lượng sai là lý do planner chọn bitmap scan rồi sort thay vì index scan ngược.
+
+### Vì sao planner ước lượng sai và chọn hướng xấu
+1. **Hàm trên cột làm mất index**: {{created_at::date >= '2026-02-01'}} không dùng được index {{idx(merchant_id, status, created_at)}} vì index lưu giá trị timestamp, không phải date. Planner chỉ còn dùng được tiền tố {{merchant_id, status}}.
+2. **Thống kê cũ**: sau khi nạp 40 triệu dòng, autovacuum chưa ANALYZE kịp; {{pg_class.reltuples}} và histogram của {{status}} phản ánh dữ liệu cũ → planner nghĩ merchant 8841 chỉ có ~65.000 đơn mở.
+3. **Tương quan giữa cột**: {{merchant_id}} và {{status}} không độc lập (merchant lớn có nhiều đơn mở hơn); thống kê từng cột không nắm được điều này.
+4. **Chi phí trang ngẫu nhiên**: với {{random_page_cost = 4}} (mặc định) và dữ liệu nằm trên EBS, planner đánh giá cao chi phí đọc ngẫu nhiên của index scan, nên chọn bitmap scan tuần tự.
+
+### Cách sửa, theo thứ tự ưu tiên
+~~~sql
+-- 1. viết lại cho sargable: hằng số cast, không cast cột
+SELECT id, created_at, total
+FROM orders
+WHERE merchant_id = $1
+  AND status = 'OPEN'
+  AND created_at >= '2026-02-01'::timestamp
+ORDER BY created_at DESC
+LIMIT 20;
+
+-- 2. cập nhật thống kê
+ANALYZE orders;
+
+-- 3. thống kê mở rộng cho cặp cột tương quan (PostgreSQL 10+)
+CREATE STATISTICS stx_orders_merchant_status (dependencies, ndistinct)
+  ON merchant_id, status FROM orders;
+ANALYZE orders;
+
+-- 4. điều chỉnh tham số cho SSD (kiểm tra bằng EXPLAIN, không đoán)
+SET random_page_cost = 1.1;
+SET effective_cache_size = '24GB';
+SET work_mem = '64MB';     -- chỉ trong session/job báo cáo, không đặt toàn cục
+~~~
+
+Sau khi sửa predicate và ANALYZE:
+
+~~~text
+Limit (cost=0.42..8.63 rows=20 width=44) (actual time=0.038..0.412 rows=20 loops=1)
+  ->  Index Scan using idx_orders_merchant_status_time on public.orders
+        Index Cond: ((merchant_id = 8841) AND (status = 'OPEN'::text)
+                     AND (created_at >= '2026-02-01 00:00:00'))
+        Buffers: shared hit=8
+Execution Time: 0.412 ms
+~~~
+
+Không còn Sort, không còn đọc 10GB: chỉ đọc 8 trang.
+
+### Những nút hay gặp và cách đọc nhanh
+| Nút | Ý nghĩa | Dấu hiệu cần chú ý |
+|---|---|---|
+| {{Seq Scan}} | đọc toàn bảng | {{Rows Removed by Filter}} lớn, bảng nhỏ thì bình thường |
+| {{Index Scan}} | lần theo từng entry index rồi đọc heap | số dòng lớn + heap đọc ngẫu nhiên → chậm |
+| {{Bitmap Heap Scan}} | gom trang cần đọc rồi đọc tuần tự | {{Heap Blocks}}/{{Buffers}} lớn; {{Lossy}} = phải đọc lại trang |
+| {{Nested Loop}} | lặp ngoài × tìm trong | {{loops}} ở nút trong rất lớn, nhân lên là thảm hoạ |
+| {{Hash Join}} | dựng bảng băm rồi dò | {{Batches}} > 1 nghĩa là tràn work_mem ra đĩa |
+| {{Sort}} | sắp xếp | {{external merge Disk}} → thiếu work_mem |
+| {{Gather}} | tổng hợp worker song song | {{Workers Planned}} vs {{Workers Launched}} |
+
+Ba mẹo đọc:
+- {{EXPLAIN ANALYZE}} **thực thi thật câu lệnh**; với INSERT/UPDATE/DELETE hãy bọc {{BEGIN; … ROLLBACK;}}.
+- Nút có {{actual rows=0}} (hoặc không có dòng actual) là chưa chạy; thời gian của nó không đáng tin.
+- Dùng {{EXPLAIN (ANALYZE, BUFFERS, VERBOSE, SETTINGS)}} khi cần biết tham số đã dùng và từng cột đầu ra; dùng {{FORMAT JSON}} nếu muốn phân tích bằng script.
+
+### Ví dụ đời thực
+Dashboard "đơn đang mở" của merchant trả p95 12 giây. Plan trên (Bitmap Heap Scan đọc 1,29 triệu trang, 8,3 giây) lặp lại mỗi lần load. Điều tra {{pg_stat_statements}} thấy câu query chiếm 38% thời gian DB. Nguyên nhân gốc: một dev viết {{WHERE created_at::date >= :from}} để "cho chắc", làm index mất tác dụng; thêm nữa bảng vừa được nạp lại 40 triệu dòng và chưa ANALYZE. Nhóm đổi sang {{created_at >= :from}} (bên Java truyền {{LocalDate.atStartOfDay()}}), chạy ANALYZE, tạo thống kê mở rộng {{stx_orders_merchant_status}}, đặt {{random_page_cost = 1.1}} cho session báo cáo. Kết quả: p95 12 s → 140 ms; I/O giảm từ 10GB xuống vài trăm KB mỗi lần chạy; CPU DB giảm 31%.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi đọc plan từ trong ra ngoài, bắt đầu từ nút lá. Với mỗi nút tôi xem actual rows, loops, actual time và Buffers; thời gian nút cha đã gồm nút con, nên tôi tìm nút có actual time lớn nhất rồi giải thích nó bằng Rows Removed by Filter hoặc số loops. Ở ví dụ này bitmap index scan trả 3,68 triệu dòng, heap scan lọc còn 1,89 triệu, rồi sort top-N; dấu hiệu là Buffers read 1,29 triệu trang khoảng 10GB. Tôi kiểm tra predicate có sargable không: created_at::date làm index vô dụng, đây là lỗi hay gặp. Tôi viết lại predicate, ANALYZE, tạo thống kê mở rộng cho cặp cột tương quan, chỉnh random_page_cost theo ổ đĩa, và chỉ chỉnh work_mem cho session báo cáo. Sau đó tôi đo lại bằng chính câu EXPLAIN đó."
+
+> Senior tip: đừng đọc {{cost}} như mili giây. Nó là đơn vị do planner tự chọn; chỉ {{actual time}} và {{Buffers}} phản ánh thực tế. Và trước khi đổi query, hãy kiểm tra predicate có đang bọc hàm lên cột không — đó là nguyên nhân số một của "có index mà vẫn Seq Scan".
+
+### follow
+- {{rows}} và {{loops}} khác nhau thế nào, và khi nào phải nhân?
+- Vì sao thống kê cũ lại làm planner chọn bitmap scan thay vì index scan?
+- {{work_mem}} thấp thì plan sẽ khác ra sao, và nên đặt ở đâu?
+`,
+  follow: [
+    '{{rows}} và {{loops}} khác nhau thế nào, và khi nào phải nhân hai giá trị này?',
+    'Vì sao thống kê cũ lại khiến planner chọn bitmap scan thay vì index scan?',
+    '{{work_mem}} thấp thì kế hoạch thay đổi ra sao, và nên đặt ở mức session hay toàn cục?'
+  ],
+  tags: ['EXPLAIN ANALYZE', 'BUFFERS', 'planner', 'statistics', 'sargable', 'work_mem']
+},
+{
+  id: 'sql-050',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Bảng event 2,4 tỷ dòng khiến mọi truy vấn và VACUUM đều chậm. Bạn partition thế nào (range theo tháng), truy vấn có được lợi gì, và những cái bẫy nào khiến partition không những không nhanh mà còn tệ hơn?',
+  a: `**Tóm tắt:** Partition range theo tháng biến một bảng khổng lồ thành nhiều bảng con; planner **loại partition** (partition pruning) dựa trên điều kiện hằng, nên truy vấn 7 ngày chỉ đọc 1–2 partition. Đổi lại: **unique index phải chứa partition key** (không đảm bảo unique toàn cục trên cột khác), index là **local** cho từng partition, và quá nhiều partition làm planner chậm. Quản lý vòng đời bằng {{DETACH}}/{{DROP}} thay vì DELETE.
+
+### Vì sao partition giúp
+Bảng event 2,4 tỷ dòng, 6,8TB, index 700GB. Ba vấn đề:
+- Truy vấn 7 ngày vẫn phải duyệt index khổng lồ (dù chỉ cần 1,5% dữ liệu).
+- Autovacuum phải quét toàn bảng, chạy nhiều giờ, không kịp trước khi bloat tích tụ.
+- DELETE dữ liệu cũ 90 ngày tạo hàng trăm triệu dead tuple, WAL lớn, index phình.
+
+Sau khi partition theo tháng: mỗi partition ~100 triệu dòng, 280GB; truy vấn 7 ngày chỉ đọc 1–2 partition; xoá dữ liệu cũ bằng {{DROP TABLE}} (gần như tức thì, không bloat); autovacuum chạy song song trên các partition.
+
+### Cách tạo và quản lý
+~~~sql
+-- bảng cha: chỉ khai báo kiểu partition và khóa
+CREATE TABLE event (
+  id           bigint,
+  account_id   bigint,
+  kind         text,
+  payload      jsonb,
+  created_at   timestamptz NOT NULL
+) PARTITION BY RANGE (created_at);
+
+-- partition theo tháng (nửa mở: [from, to))
+CREATE TABLE event_2026_01 PARTITION OF event
+  FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
+
+CREATE TABLE event_2026_02 PARTITION OF event
+  FOR VALUES FROM ('2026-02-01') TO ('2026-03-01');
+
+-- index local: tạo trên bảng cha sẽ tự tạo trên mọi partition
+CREATE INDEX idx_event_account_time ON event (account_id, created_at DESC);
+
+-- truy vấn có pruning
+SELECT id, kind, created_at
+FROM event
+WHERE account_id = $1
+  AND created_at >= '2026-02-10'
+  AND created_at <  '2026-02-17'
+ORDER BY created_at DESC
+LIMIT 50;
+~~~
+
+~~~text
+Limit
+  ->  Merge Append   (chỉ liệt kê event_2026_02)
+        ->  Index Scan using event_2026_02_account_id_created_at_idx on event_2026_02
+              Index Cond: (account_id = 8841 AND created_at >= ... AND created_at < ...)
+        ->  Index Scan using event_2026_01_account_id_created_at_idx on event_2026_01
+              (không xuất hiện nếu điều kiện loại hẳn tháng 1)
+~~~
+
+Nếu điều kiện là biến ({{created_at >= $1}}), PostgreSQL vẫn prune được ở **execution time** (từ phiên bản 11, cải thiện ở 12): giá trị tham số chỉ biết khi chạy, nhưng planner vẫn loại partition trước khi thực thi. Kiểm tra bằng {{EXPLAIN}} thật (không phải ANALYZE giả định) hoặc xem log {{plan_cache_mode}}.
+
+### Index và constraint: những quy tắc riêng
+- **Unique/PK phải chứa partition key**: {{PRIMARY KEY (id)}} không hợp lệ nếu bảng partition theo {{created_at}}, vì id có thể trùng giữa các tháng. Phải dùng {{PRIMARY KEY (id, created_at)}} — khi đó không còn đảm bảo id duy nhất toàn cục. Đây là cái bẫy thiết kế lớn nhất.
+- **Index là local**: mỗi partition có index riêng. Truy vấn không có điều kiện trên partition key sẽ phải tìm trên **mọi** partition → chậm hơn bảng đơn.
+- **Tạo index không làm khoá ghi**: {{CREATE INDEX}} trên bảng cha lấy {{SHARE}} trên mọi partition (chặn ghi). Cách an toàn: {{CREATE INDEX ON ONLY event ...}}, rồi {{CREATE INDEX CONCURRENTLY}} trên từng partition, cuối cùng {{ALTER INDEX ... ATTACH PARTITION}}.
+- **Foreign key**: từ PostgreSQL 12, bảng thường có thể tham chiếu **tới** bảng partition; bảng partition có thể tham chiếu bảng thường từ phiên bản 11.
+- **Default partition**: chứa dòng không khớp bound nào. Tiện, nhưng khi {{ATTACH}} partition mới, PostgreSQL phải kiểm tra default partition (có thể quét toàn bộ) — nên tạo CHECK constraint khớp bound trước khi attach.
+- **Quá nhiều partition**: planner phải duyệt danh sách; hàng nghìn partition làm planning mất hàng trăm ms và tốn RAM. Giữ ở mức vài trăm là hợp lý.
+- **Partition-wise join**: {{enable_partitionwise_join}} (mặc định tắt) chỉ có lợi khi hai bảng cùng partition theo khóa join; bật bừa sẽ làm plan phức tạp.
+
+### Chuyển đổi bảng đang chạy (zero-downtime)
+~~~sql
+-- 1. tạo bảng mới dạng partition + các partition cần thiết
+-- 2. nạp dữ liệu theo lô (hoặc dùng pg_partman để tự tạo partition)
+INSERT INTO event_new
+SELECT * FROM event
+WHERE created_at >= '2026-01-01' AND created_at < '2026-02-01';
+
+-- 3. trong một transaction ngắn: đổi tên
+BEGIN;
+SET lock_timeout = '3s';
+ALTER TABLE event RENAME TO event_old;
+ALTER TABLE event_new RENAME TO event;
+COMMIT;
+~~~
+
+Hoặc giữ nguyên tên và {{ATTACH}} từng tháng cũ làm partition (cần CHECK constraint để tránh scan). Cách này ít downtime hơn nhưng câu lệnh attach có thể lâu.
+
+### Bẫy làm partition chậm hơn
+- **Điều kiện không có partition key**: {{WHERE account_id = ?}} không prune, phải quét tất cả partition.
+- **Join không có điều kiện ngày**: phải đọc mọi partition, cộng thêm chi phí Append.
+- **Index không khớp thứ tự**: mỗi partition sắp xếp riêng; {{ORDER BY created_at}} cần {{Merge Append}}, tốn hơn một index toàn cục nếu chỉ đọc 1 partition.
+- **Partition quá nhỏ**: hàng nghìn partition vài nghìn dòng → chi phí planning và mở quan hệ lớn hơn lợi ích.
+- **Autovacuum không theo kịp**: mỗi partition có dead tuple riêng; nếu một tháng có 500 triệu dòng và scale factor 0.2, cần 100 triệu dead tuple mới trigger — quá muộn. Phải giảm {{autovacuum_vacuum_scale_factor}} cho các partition lớn (ví dụ 0.02) hoặc dùng {{pg_partman}} để đặt ngưỡng riêng.
+
+### Ví dụ đời thực
+Bảng {{event}} 2,4 tỷ dòng, 6,8TB, 24 tháng. Truy vấn 7 ngày gần nhất mất 48 giây (index scan toàn bảng), job DELETE dữ liệu 90 ngày chạy 6 giờ và tạo 900GB WAL mỗi đêm. Nhóm chuyển sang range partition theo tháng, giữ 3 tháng nóng trên SSD và các tháng cũ trên volume lớn, thêm BRIN index trên {{created_at}} cho partition cũ (append-only, BRIN rất nhẹ). Kết quả: truy vấn 7 ngày 1,9 giây; job dọn dữ liệu chỉ còn {{DROP TABLE}} mất 200 ms; WAL giảm 99%; dung lượng sau khi nén/dọn còn 4,1TB. Planning time tăng 12 ms (chấp nhận được), và nhóm đặt cảnh báo khi số partition vượt 200.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn partition khi bảng rất lớn và truy vấn hầu như luôn có điều kiện trên khóa partition. Với event tôi partition range theo tháng: mỗi tháng một bảng con, truy vấn 7 ngày chỉ đọc 1–2 partition nhờ pruning, còn dữ liệu cũ thì DROP partition thay vì DELETE, nên không có bloat và WAL nhỏ. Tôi phải nhớ unique key phải chứa partition key, nên không thể đảm bảo id duy nhất toàn cục; index là local cho từng partition; và nếu truy vấn thiếu điều kiện ngày thì phải quét mọi partition, chậm hơn bảng đơn. Tôi cũng theo dõi số partition và planning time: vài trăm là ổn, hàng nghìn thì planner và autovacuum đều khổ. Khi chuyển đổi từ bảng cũ tôi tạo bảng mới, nạp theo lô, rồi đổi tên trong transaction ngắn với lock_timeout."
+
+> Senior tip: partition không làm truy vấn nhanh hơn — nó làm truy vấn **đọc ít dữ liệu hơn**. Nếu mọi truy vấn đều quét toàn bộ partition, bạn chỉ vừa thêm chi phí planning và một unique key bị hạn chế.
+
+### follow
+- Vì sao unique index trên bảng partition phải chứa partition key, và hệ quả nghiệp vụ là gì?
+- {{DETACH PARTITION CONCURRENTLY}} khác gì {{DETACH PARTITION}}, và khi nào dùng?
+- Partition theo hash khác range thế nào, và phù hợp với bài toán nào?
+`,
+  follow: [
+    'Vì sao unique index trên bảng partition phải chứa partition key, và hệ quả nghiệp vụ là gì?',
+    '{{DETACH PARTITION CONCURRENTLY}} khác {{DETACH PARTITION}} ở điểm nào, và khi nào nên dùng?',
+    'Partition theo hash khác range thế nào, và phù hợp với bài toán nào?'
+  ],
+  tags: ['partitioning', 'range partition', 'partition pruning', 'DETACH', 'pg_partman']
+},
+{
+  id: 'sql-051',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bạn dùng INSERT … ON CONFLICT cho upsert. Hãy giải thích nó chạy thế nào ở mức cơ chế, khác nhau giữa DO NOTHING và DO UPDATE, làm sao biết dòng là insert hay update, và những tình huống nào khiến nó lỗi hoặc deadlock.',
+  a: `**Tóm tắt:** PostgreSQL thực hiện **speculative insertion**: chèn dòng, kiểm tra unique index; nếu trùng, chờ transaction đang giữ dòng đó rồi kiểm tra lại, sau đó {{DO NOTHING}} hoặc {{DO UPDATE}}. {{DO UPDATE}} khoá dòng đích (nên hai câu upsert cùng batch theo thứ tự khác nhau có thể deadlock), còn {{DO NOTHING}} không cần cập nhật. Muốn biết insert hay update, xem {{xmax = 0}} trong {{RETURNING}} — mẹo hữu ích nhưng không phải API chính thức.
+
+### Cơ chế từng bước
+1. Câu INSERT bắt đầu chèn tuple mới vào heap và entry vào unique index (speculative token).
+2. Nếu unique index báo trùng, DB kiểm tra tuple đang giữ khóa: còn transaction khác đang chèn? → **chờ** (theo thứ tự hàng chờ).
+3. Khi transaction kia commit: nếu nó đã chèn → chạy nhánh conflict; nếu nó abort → thử chèn lại.
+4. Nếu tuple đã tồn tại và đã commit → khoá dòng đó, chạy {{DO UPDATE}} hoặc bỏ qua với {{DO NOTHING}}.
+
+~~~text
+A: INSERT ... ON CONFLICT (sku) DO UPDATE   -> chèn, giữ entry index
+B: INSERT ... ON CONFLICT (sku) DO UPDATE   -> thấy A giữ -> CHỜ
+A: COMMIT
+B: kiểm tra lại -> thấy đã có -> DO UPDATE -> COMMIT
+~~~
+
+### DO NOTHING khác DO UPDATE ở đâu
+| Khía cạnh | DO NOTHING | DO UPDATE |
+|---|---|---|
+| Kết quả | bỏ qua | ghi đè giá trị |
+| {{RETURNING}} | **không trả dòng** bị bỏ qua | trả dòng sau update |
+| Trigger | BEFORE INSERT vẫn chạy; không có UPDATE trigger | BEFORE INSERT + BEFORE/AFTER UPDATE |
+| Khoá | không khoá dòng đích lâu | khoá dòng đích tới khi commit |
+| WAL/index | không tạo version mới | tạo tuple mới, cập nhật index |
+| Khi nào dùng | webhook trùng, nạp idempotency | đồng bộ dữ liệu, cộng dồn |
+
+~~~sql
+-- webhook: chỉ cần "một lần", trùng thì bỏ
+INSERT INTO webhook_event (event_id, payload)
+VALUES ($1, $2)
+ON CONFLICT (event_id) DO NOTHING;
+
+-- đồng bộ giá: chỉ ghi đè khi giá mới cao hơn
+INSERT INTO price (sku, price, updated_at)
+VALUES ($1, $2, now())
+ON CONFLICT (sku) DO UPDATE
+SET price = EXCLUDED.price,
+    updated_at = EXCLUDED.updated_at
+WHERE price.price < EXCLUDED.price;
+~~~
+
+Với {{WHERE}} trong {{DO UPDATE}}: nếu điều kiện sai, câu lệnh **không báo lỗi và không trả dòng nào** trong {{RETURNING}}. Code Java phải xử lý "0 dòng" như "không có gì thay đổi", đừng nhầm là lỗi.
+
+### Biết insert hay update: xmax
+~~~sql
+INSERT INTO counter (name, n)
+VALUES ('api_calls', 1)
+ON CONFLICT (name) DO UPDATE
+SET n = counter.n + 1
+RETURNING name, n, (xmax = 0) AS inserted;
+~~~
+
+{{xmax}} là cột hệ thống: bằng 0 nghĩa là tuple chưa từng bị update/xoá → vừa được insert. Sau {{DO UPDATE}}, xmax khác 0. Lưu ý: xmax có thể bị "reset" khi VACUUM prune tuple cũ, nên đây là mẹo chẩn đoán, không phải hợp đồng API. Cách chắc chắn hơn: {{INSERT … DO NOTHING RETURNING *}} rồi nếu không có dòng thì SELECT/UPDATE, hoặc dùng cột {{updated_at}}/phiên bản.
+
+### Bốn tình huống hay lỗi
+1. **Nhiều dòng cùng khóa trong một câu**:
+   ~~~sql
+   INSERT INTO price (sku, price) VALUES ('A', 10), ('A', 12)
+   ON CONFLICT (sku) DO UPDATE SET price = EXCLUDED.price;
+   -- ERROR: ON CONFLICT DO UPDATE command cannot affect row a second time
+   ~~~
+   Với {{DO NOTHING}} thì không lỗi (dòng thứ hai bị bỏ). Cách sửa: khử trùng ở staging bằng {{DISTINCT ON (sku)}}, hoặc tách thành hai câu.
+2. **Partial unique index**: unique index có {{WHERE}} thì câu upsert phải lặp lại đúng predicate.
+   ~~~sql
+   CREATE UNIQUE INDEX uk_user_email_active ON app_user (email) WHERE deleted_at IS NULL;
+   INSERT INTO app_user (email) VALUES ($1)
+   ON CONFLICT (email) WHERE deleted_at IS NULL DO UPDATE SET email = EXCLUDED.email;
+   -- thiếu "WHERE deleted_at IS NULL" -> "there is no unique or exclusion constraint matching..."
+   ~~~
+3. **Hai unique index, hai thứ tự khác nhau**: batch 100 dòng, mỗi dòng đụng cả {{uk_email}} và {{uk_external_id}}; hai transaction xử lý batch theo thứ tự ngược nhau → deadlock trên unique index. Sửa: sắp batch theo khóa trước khi upsert.
+4. **Bẫy trigger và sequence**: {{BEFORE INSERT}} trigger chạy **trước** khi phát hiện conflict, nên side-effect (ghi log, tăng sequence) vẫn xảy ra kể cả khi dòng bị bỏ. Identity/sequence cũng bị tiêu hao → số bị nhảy cách. Đừng dùng giá trị từ trigger để suy luận "đã insert hay chưa".
+
+### Hiệu năng
+- Speculative insertion tốn thêm index probe; với batch 500–5.000 dòng, throughput thường vẫn rất cao.
+- {{DO UPDATE}} phải cập nhật mọi index chứa cột bị đổi; nếu update cột không nằm trong index nào và trang còn chỗ, PostgreSQL có thể HOT update (không tạo entry index mới).
+- Upsert trên bảng partition: kiểm tra phiên bản; unique index phải nằm trên bảng partition (gồm partition key).
+- Trong Hibernate: dùng native query qua {{JdbcTemplate}}/{{@Query(nativeQuery = true)}}; {{save()}}/{{saveAll()}} không phải upsert (xem câu upsert cơ bản).
+
+### Ví dụ đời thực
+Hệ thống nhận 50.000 webhook/giây, 3% trùng do provider retry. Bảng {{webhook_event}} 4 tỷ dòng. Ban đầu dùng {{INSERT … ON CONFLICT (event_id) DO NOTHING}} với batch 200: p95 2,8 ms, nhưng {{pg_stat_database.deadlocks}} tăng lên 4/giây vì mỗi batch có thứ tự event_id khác nhau và còn đụng unique index thứ hai {{uk_aggregate}}. Nhóm sắp batch theo {{event_id}} tăng dần và bỏ unique index thứ hai (thay bằng index thường + kiểm tra ở tầng nghiệp vụ): deadlock về 0; p95 2,1 ms; 0 bản ghi trùng sau 30 ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"ON CONFLICT là upsert atomic ở DB: PostgreSQL chèn trước, nếu trùng unique index thì chờ transaction kia rồi hoặc bỏ qua hoặc update. Tôi chọn DO NOTHING cho webhook trùng vì chỉ cần idempotency, và DO UPDATE cho đồng bộ dữ liệu. Muốn biết dòng là insert hay update, tôi xem xmax = 0 trong RETURNING, nhưng đó là mẹo, không phải API chính thức, nên với logic quan trọng tôi dùng RETURNING rồi fallback SELECT. Các lỗi tôi hay gặp: nhiều dòng cùng khóa trong một câu làm DO UPDATE ném lỗi, partial index phải lặp lại predicate, và hai unique index có thể gây deadlock nếu batch không được sắp thứ tự. Tôi luôn khử trùng dữ liệu nguồn theo khóa và sắp thứ tự trước khi upsert batch."
+
+> Senior tip: ON CONFLICT không làm bạn hết race condition — nó chỉ chuyển race xuống đúng một điểm (unique index). Hãy đảm bảo dữ liệu nguồn không có hai dòng cùng khóa trong một câu, và đừng dựa vào trigger để biết dòng đã được insert.
+
+### follow
+- Vì sao {{DO UPDATE}} có thể deadlock còn {{DO NOTHING}} thì hiếm khi?
+- Làm sao biết câu upsert đã insert hay update một cách chắc chắn, không dùng xmax?
+- Trigger {{BEFORE INSERT}} chạy khi conflict thì có nguy hiểm gì?
+`,
+  follow: [
+    'Vì sao {{DO UPDATE}} có thể deadlock còn {{DO NOTHING}} thì hiếm khi?',
+    'Làm sao biết câu upsert đã insert hay update một cách chắc chắn, không dựa vào xmax?',
+    'Trigger {{BEFORE INSERT}} vẫn chạy khi conflict: nguy hiểm ở đâu và phòng ngừa thế nào?'
+  ],
+  tags: ['ON CONFLICT', 'upsert', 'EXCLUDED', 'xmax', 'deadlock', 'PostgreSQL']
+},
+{
+  id: 'sql-052',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Giải thích MVCC của PostgreSQL: một UPDATE tạo ra gì, VACUUM dọn những gì, autovacuum hoạt động ra sao, và vì sao một transaction mở quá lâu có thể làm cả database chậm dần?',
+  a: `**Tóm tắt:** PostgreSQL lưu **nhiều phiên bản** của mỗi dòng: UPDATE tạo tuple mới, tuple cũ vẫn nằm đó tới khi không snapshot nào cần nó. VACUUM tìm tuple chết, xoá khỏi heap và index, cập nhật visibility map/FSM. Autovacuum chạy nền theo ngưỡng dead tuple. Một transaction mở lâu giữ **xmin horizon**, khiến VACUUM không được phép dọn tuple mới hơn → bloat tăng, index phình, máy chậm dần; nặng hơn là nguy cơ **transaction ID wraparound**.
+
+### Tuple header và ba cột quyết định
+Mỗi tuple có header chứa {{xmin}} (transaction đã tạo ra nó), {{xmax}} (transaction đã update/xoá nó, hoặc 0 nếu chưa), và các hint bit (ví dụ {{HEAP_XMIN_COMMITTED}}).
+
+- {{INSERT}}: tuple có {{xmin = txid}}, {{xmax = 0}}.
+- {{UPDATE}}: tạo tuple mới {{xmin = txid}}; tuple cũ bị đặt {{xmax = txid}} (vẫn còn trên đĩa).
+- {{DELETE}}: đặt {{xmax = txid}} trên tuple hiện tại; tuple không bị xoá ngay.
+- Khi transaction commit, commit log ({{pg_xact}}) xác nhận; lần đọc sau dùng hint bit để khỏi tra commit log.
+
+~~~text
+Heap page trước UPDATE (id=1, balance=100):
+  tuple A: xmin=100, xmax=0     -> đang là bản hiện hành
+  tuple B: xmin=0,   xmax=0
+
+Sau UPDATE id=1 (txid=555):
+  tuple A: xmin=100, xmax=555   -> chết (dead), vẫn chiếm chỗ
+  tuple B: xmin=555, xmax=0     -> bản hiện hành
+  index: thêm entry trỏ tới B (trừ khi HOT update)
+~~~
+
+### Snapshot quyết định ai thấy gì
+Mỗi transaction (hoặc mỗi câu lệnh ở READ COMMITTED) có một snapshot gồm danh sách transaction đang chạy và trạng thái commit. Một tuple được nhìn thấy nếu {{xmin}} đã commit trước snapshot và {{xmax}} chưa commit (hoặc commit sau snapshot). Vì vậy một transaction cũ vẫn cần đọc tuple mà transaction mới đã update — đó là lý do VACUUM **không được** xoá tuple còn có thể cần.
+
+### VACUUM làm gì
+1. Quét heap tìm tuple chết ({{xmax}} đã commit và nhỏ hơn oldest snapshot).
+2. Xoá tuple khỏi heap, ghi lại không gian trống vào **FSM** (free space map).
+3. Quét index để bỏ entry trỏ tới tuple chết.
+4. Cập nhật **visibility map** cho trang all-visible (giúp index-only scan).
+5. Cập nhật thống kê và {{relfrozenxid}} (chống wraparound).
+
+VACUUM **không** trả dung lượng về hệ điều hành (trừ vài trang cuối); nó chỉ đánh dấu không gian tái sử dụng. Muốn thu hồi thật: {{VACUUM FULL}} (khoá {{ACCESS EXCLUSIVE}}, viết lại bảng) hoặc {{pg_repack}} (online, cần đĩa gấp đôi).
+
+### Autovacuum theo dõi gì
+- ngưỡng vacuum: {{autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor * reltuples}} (mặc định 50 + 0,2 × số dòng).
+- ngưỡng analyze: {{autovacuum_analyze_threshold + autovacuum_analyze_scale_factor * reltuples}} (mặc định 50 + 0,1 × số dòng).
+- worker bị giới hạn bởi {{autovacuum_max_workers}} (mặc định 3), nhịp kiểm tra {{autovacuum_naptime}} 60 giây.
+- tốc độ bị tiết chế bởi {{autovacuum_vacuum_cost_limit}} (200) và {{autovacuum_vacuum_cost_delay}} (2 ms), để không tranh I/O với OLTP.
+- từ PostgreSQL 13: {{autovacuum_vacuum_insert_threshold}} (mặc định 1000) cho bảng chỉ insert.
+
+Hệ quả: bảng 100 triệu dòng cần 20 triệu dead tuple mới tự động vacuum. Nếu bảng lớn, hãy giảm scale factor (ví dụ 0,02) cho riêng bảng đó.
+
+### Vì sao transaction dài làm chậm cả database
+Autovacuum không thể xoá tuple có {{xmax}} hoặc {{xmin}} "mới hơn" xmin horizon — tức là tuple vẫn có thể cần cho transaction đang mở. Một session chạy {{BEGIN; SELECT …;}} rồi quên commit (idle in transaction) giữ horizon ở đó hàng giờ.
+
+~~~sql
+-- ai đang giữ horizon?
+SELECT pid, state, now() - xact_start AS xact_age,
+       backend_xmin, left(query, 60)
+FROM pg_stat_activity
+WHERE backend_xmin IS NOT NULL
+ORDER BY xact_start
+LIMIT 10;
+
+-- bloat và dead tuple
+SELECT relname, n_live_tup, n_dead_tup,
+       last_vacuum, last_autovacuum
+FROM pg_stat_user_tables
+ORDER BY n_dead_tup DESC
+LIMIT 10;
+~~~
+
+Kết quả: dead tuple tăng, index phình, trang đặc dần, autovacuum chạy liên tục nhưng không "về đích", truy vấn chậm vì phải đọc nhiều trang hơn. Nếu kéo dài hàng tháng, {{age(relfrozenxid)}} tăng; khi vượt {{autovacuum_freeze_max_age}} (200 triệu), PostgreSQL buộc vacuum chống wraparound và có thể ghi log cảnh báo; nếu không kịp trước khi transaction ID hết (2^31), database buộc dừng ghi — thảm hoạ production.
+
+### Phòng ngừa và vận hành
+- {{idle_in_transaction_session_timeout = 5min}} (hoặc thấp hơn) để cắt session treo.
+- {{statement_timeout}} cho query báo cáo; {{lock_timeout}} cho DDL.
+- Giám sát {{n_dead_tup}}, {{last_autovacuum}}, {{pg_stat_progress_vacuum}}.
+- Với bảng lớn, hạ {{autovacuum_vacuum_scale_factor}} và tăng {{autovacuum_vacuum_cost_limit}} (ví dụ 1000) cho bảng đó.
+- Dùng {{VACUUM (ANALYZE, VERBOSE)}} trong cửa sổ bảo trì; index bloat thì {{pg_repack}}.
+- Tránh các pattern giữ transaction mở: vòng lặp gọi API trong {{@Transactional}}, đọc file rồi mới ghi DB, chờ hàng đợi trong transaction.
+
+### Ví dụ đời thực
+Bảng {{order}} 1,2TB, 900 triệu dòng. Dashboard chậm dần sau 6 tuần: p95 truy vấn tăng từ 400 ms lên 8 giây. {{pg_stat_user_tables}} cho thấy {{n_dead_tup = 700 triệu}}, {{last_autovacuum}} cách đó 3 ngày nhưng vẫn đang chạy. {{pg_stat_activity}} có một session {{idle in transaction}} đã 3 giờ (một job BI mở transaction rồi chờ API). Nhóm đặt {{idle_in_transaction_session_timeout = 5min}}, giảm {{autovacuum_vacuum_scale_factor}} của bảng xuống 0,03, tăng {{autovacuum_vacuum_cost_limit}} lên 1000, chạy {{VACUUM (ANALYZE)}} trong 2 giờ bảo trì và {{pg_repack}} cho 3 index phình. Kết quả: bảng từ 1,2TB còn 640GB, dead tuple < 1%, p95 về 300 ms, không còn cảnh báo wraparound.
+
+### Trả lời mẫu khi phỏng vấn
+"PostgreSQL dùng MVCC: mỗi UPDATE tạo tuple mới, tuple cũ vẫn còn tới khi không snapshot nào cần; DELETE chỉ đánh dấu xmax. VACUUM tìm tuple chết, xoá khỏi heap và index, cập nhật visibility map và FSM; nó không trả đĩa về OS, muốn thu hồi thật thì VACUUM FULL hoặc pg_repack. Autovacuum chạy nền theo ngưỡng dead tuple, bị tiết chế bằng cost delay để không tranh I/O. Vấn đề tôi hay gặp là một transaction mở quá lâu giữ xmin horizon, khiến VACUUM không dọn được, dead tuple tăng, index phình và query chậm dần; nặng hơn là wraparound. Tôi giám sát n_dead_tup, last_autovacuum và pg_stat_activity, đặt idle_in_transaction_session_timeout, và hạ scale factor cho bảng lớn."
+
+> Senior tip: bloat không đến từ một câu UPDATE — nó đến từ hàng triệu tuple chết không được dọn. Hãy theo dõi dead tuple và transaction dài như hai chỉ số sức khỏe của DB, cùng với QPS và p95.
+
+### follow
+- Vì sao VACUUM không thể xoá tuple mà một transaction cũ vẫn có thể cần?
+- HOT update khác update thường thế nào, và nó giúp gì cho index?
+- Transaction ID wraparound là gì, dấu hiệu nào cho thấy nó sắp xảy ra?
+`,
+  follow: [
+    'Vì sao VACUUM không thể xoá tuple mà một transaction cũ vẫn có thể cần?',
+    'HOT update khác update thường thế nào, và nó giúp gì cho index?',
+    'Transaction ID wraparound là gì, dấu hiệu nào cho thấy nó sắp xảy ra?'
+  ],
+  tags: ['MVCC', 'VACUUM', 'autovacuum', 'bloat', 'wraparound', 'xmin']
+},
 );

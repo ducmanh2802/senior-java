@@ -10185,4 +10185,465 @@ Một hệ thống thanh toán có p99 API 1,9 giây. Đo: 3 câu chiếm 70% th
     { type: 'article', title: 'Use The Index, Luke', url: 'https://use-the-index-luke.com/' }
   ]
 },
+{
+  id: 'spring-056',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Khi một bean bị tạo quá sớm hoặc một custom BeanPostProcessor làm mất proxy, bạn lần theo các giai đoạn xử lý bean như thế nào? Phân biệt BeanFactoryPostProcessor với BeanPostProcessor và các bẫy khi đăng ký chúng.',
+  a: `**Tóm tắt:** {{BeanFactoryPostProcessor}} chỉnh công thức tạo bean ({{BeanDefinition}}) trước khi hầu hết bean ứng dụng được khởi tạo; {{BeanPostProcessor}} xử lý từng object sau khi tạo và có thể thay object bằng proxy. Nếu BeanPostProcessor được đăng ký muộn hoặc khởi tạo dependency ứng dụng quá sớm, bean đó có thể không đi qua đầy đủ processor và thiếu tính năng như transaction hoặc validation.
+
+### Từ cấu hình đến object được dùng
+{{BeanDefinition}} là “công thức”, gồm loại class, scope và cách inject; nó chưa phải object Java. Spring trước tiên cho các factory post-processor sửa công thức, rồi tạo các bean. Khi từng bean được tạo, container inject dependency và gọi chuỗi {{BeanPostProcessor}} trước/sau bước khởi tạo. Processor sau khởi tạo có thể trả về một proxy thay vì object gốc; các nơi inject bean sẽ nhận object container cuối cùng.
+
+Vì vậy hai loại processor có thời điểm và đối tượng làm việc khác nhau:
+| Loại | Xử lý | Ví dụ |
+|---|---|---|
+| {{BeanFactoryPostProcessor}} | metadata trước khi tạo bean thường | thay placeholder, đăng ký bean definition |
+| {{BeanPostProcessor}} | instance mỗi bean trước/sau init | proxy AOP, xử lý annotation |
+
+### Đăng ký processor có chủ ý
+Ví dụ khai báo processor trong cấu hình nên dùng phương thức static để Spring tạo nó mà không phải khởi tạo sớm chính class cấu hình:
+~~~java
+@Configuration
+class InfraConfig {
+    @Bean
+    static BeanPostProcessor auditMarker() {
+        return new BeanPostProcessor() {
+            @Override
+            public Object postProcessAfterInitialization(Object bean, String name) {
+                if (bean instanceof PaymentService) {
+                    // Không gọi nghiệp vụ ở đây; chỉ quan sát hoặc bọc bean.
+                }
+                return bean;
+            }
+        };
+    }
+}
+~~~
+Nếu processor thật sự bọc bean, phải trả về wrapper/proxy đúng contract và phối hợp với các processor khác; không được tùy tiện trả lại bean thô sau khi một processor trước đã tạo proxy.
+
+### Điều tra theo thứ tự
+1. Bật log khởi tạo hoặc breakpoint tại constructor, init callback và processor; ghi rõ bean nào được tạo trước thời điểm dự kiến.
+2. Tìm log cảnh báo bean “not eligible for getting processed by all BeanPostProcessors”. Thường một bean bị yêu cầu làm dependency của processor quá sớm.
+3. Kiểm tra cấu hình khai báo processor, thứ tự {{PriorityOrdered}}/{{Ordered}} và dependency của nó. Không inject service nghiệp vụ vào processor chỉ để tiện gọi.
+4. Kiểm tra đối tượng cuối được inject là proxy hay target và xác nhận không processor nào vô tình làm rơi proxy.
+
+### Khi nào dùng và trade-off
+Processor hữu ích khi cần áp dụng hành vi chéo cho nhiều bean theo loại hoặc annotation, ví dụ thêm proxy metrics. Đổi lại, nó chạy trên đường khởi tạo toàn ứng dụng, ảnh hưởng cả dependency nội bộ và thứ tự tạo bean khó thấy. Logic riêng một bean nên đặt trong bean đó hoặc cấu hình AOP có phạm vi rõ ràng, không viết processor toàn cục.
+
+### Pitfall production
+- Không gọi method nghiệp vụ hoặc truy cập database từ processor; có thể khởi tạo cả nhánh bean khi context chưa hoàn tất.
+- Không tạo proxy mới mà bỏ qua proxy trước đó; khi đó {{@Transactional}} hoặc security interceptor có thể biến mất.
+- Đừng nhầm việc một bean đã có constructor với việc toàn bộ callback/processor đã được áp dụng.
+
+### Ví dụ đời thực
+Sau deploy, endpoint thanh toán không còn rollback dù service vẫn có {{@Transactional}}. Log startup cho thấy bean processor tự viết được khởi tạo trước, kéo {{PaymentService}} vào quá trình tạo; cảnh báo nói service không được mọi BeanPostProcessor xử lý. Processor tạo proxy metrics chỉ cho các bean đã biết, nhưng service bị tạo sớm nên thiếu transaction proxy. Team bỏ dependency trực tiếp sang service, chuyển việc chọn bean sang metadata/bean name và khai báo processor bằng {{@Bean static}}; sau deploy, transaction proxy xuất hiện, kiểm thử lỗi giữa giao dịch rollback đúng. Trong dashboard, tỷ lệ giao dịch lỗi không còn để lại trạng thái cập nhật dở dang.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi phân biệt theo đối tượng và thời điểm: BeanFactoryPostProcessor chỉnh BeanDefinition trước khi tạo các instance; BeanPostProcessor nhận từng instance trước và sau initialization, và có thể trả về proxy thay thế. Khi transaction hay một annotation đột nhiên không chạy, tôi không chỉ kiểm tra annotation mà lần theo bean cuối cùng được inject và log startup. Tôi tìm cảnh báo bean không đủ điều kiện đi qua toàn bộ processor, rồi kiểm tra processor có kéo service nghiệp vụ vào dependency graph quá sớm hay không. Processor khai báo bằng factory method static giúp tránh khởi tạo sớm configuration class. Tôi cũng kiểm tra thứ tự processor và đảm bảo processor mới không làm rơi proxy mà processor trước tạo. Đây là hạ tầng toàn cục, nên tôi giới hạn phạm vi, không gọi nghiệp vụ trong đó và chỉ dùng khi hành vi thật sự áp dụng cho nhiều bean; nếu chỉ một service thì cấu hình cục bộ dễ hiểu và an toàn hơn.”
+
+> Senior tip: một cảnh báo “not eligible” không phải lúc nào cũng là lỗi, nhưng hãy xác định bean nào bị ảnh hưởng và tính năng nào dựa vào processor đó; đo lại proxy của service quan trọng sau khi sửa.`,
+  follow: [
+    'Vì sao factory method tạo BeanPostProcessor thường nên khai báo static?',
+    'Một BeanPostProcessor trả về object khác bean gốc thì dependency injection và proxy AOP sẽ bị ảnh hưởng ra sao?'
+  ],
+  tags: ['BeanPostProcessor', 'BeanFactoryPostProcessor', 'bean lifecycle', 'proxy']
+},
+{
+  id: 'spring-057',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Trong @Configuration, khi nào proxyBeanMethods=false làm hai lần gọi @Bean tạo ra hai object khác nhau? Bạn thiết kế cấu hình để giữ đúng singleton mà không phụ thuộc vào proxy thế nào?',
+  a: `**Tóm tắt:** {{@Configuration(proxyBeanMethods = true)}} mặc định dùng proxy để một lời gọi trực tiếp giữa các phương thức {{@Bean}} được điều hướng qua container, nhờ đó vẫn lấy bean đã quản lý. Khi đặt {{false}}, Spring không chặn lời gọi Java thông thường giữa các method; gọi trực tiếp method @Bean có thể tạo object mới. Cách ít bất ngờ nhất là truyền dependency qua tham số method.
+
+### “Singleton” nghĩa là gì trong trường hợp này
+Scope singleton của Spring nghĩa là một bean definition có một instance được container quản lý trong một ApplicationContext. Nó không có nghĩa mọi lần gọi một phương thức factory bất kỳ đều tự động trả lại cùng object. Với cấu hình full (proxyBeanMethods=true), Spring tăng cường class cấu hình; lời gọi chéo như {{clock()}} được chuyển thành tra cứu bean. Với cấu hình lite (false), method chạy như Java bình thường: {{new Clock()}} là object mới mỗi lần.
+
+~~~java
+@Configuration(proxyBeanMethods = false)
+class ReportConfig {
+    @Bean Clock clock() { return new Clock(); }
+
+    @Bean ReportService reportService() {
+        return new ReportService(clock()); // lời gọi Java trực tiếp: object clock mới
+    }
+}
+~~~
+Hãy dùng dependency parameter thay vì gọi method:
+~~~java
+@Configuration(proxyBeanMethods = false)
+class ReportConfig {
+    @Bean Clock clock() { return new Clock(); }
+
+    @Bean ReportService reportService(Clock clock) {
+        return new ReportService(clock); // container resolve bean Clock đã quản lý
+    }
+}
+~~~
+Với tham số, container chịu trách nhiệm resolve dependency theo type/qualifier, không phụ thuộc vào interception của class configuration.
+
+### Lý do chọn lite mode
+Không cần proxy để chặn lời gọi method thì cấu hình đơn giản, ít tăng cường bytecode và hợp với các cấu hình chỉ khai báo component scan/import hay các bean độc lập. Full mode hữu ích khi cấu hình hiện có gọi chéo các method @Bean và cần ngữ nghĩa đó. Đây không phải lựa chọn thay đổi scope; nó thay đổi cách các lời gọi Java trong class được xử lý.
+
+### Chọn cách nào
+| Cách | Ưu điểm | Điều kiện/cái giá |
+|---|---|---|
+| Full configuration | lời gọi chéo được container điều hướng | proxy class; method/class phải phù hợp để tăng cường |
+| Lite + tham số bean | rõ dependency, không dựa vào lời gọi chéo | sửa factory method để nhận dependency |
+| Lite + gọi method trực tiếp | code ngắn | dễ tạo object phụ ngoài container, thường nên tránh |
+
+### Pitfall production
+- Hai object datasource/client tưởng là một có thể có pool, cache hoặc cấu hình khác nhau; lỗi chỉ xuất hiện khi một object không được close hoặc không nhận interceptor.
+- Tham số factory method có nhiều ứng viên cùng kiểu thì dùng {{@Qualifier}} hoặc tên bean rõ ràng, không dựa vào thứ tự.
+- Không gọi method @Bean trực tiếp từ code nghiệp vụ; chỉ container nên gọi factory method.
+
+### Ví dụ đời thực
+Một ứng dụng bật {{proxyBeanMethods=false}} để giảm chi phí khởi tạo. Cấu hình có {{dataSource()}} và {{transactionManager()}} gọi trực tiếp dataSource; kết quả transaction manager dùng pool khác pool mà repository dùng. Khi tải tăng, một pool có 20 connection gần như rảnh, pool còn lại cạn và request timeout. Điều tra so sánh bean identity và thấy factory method bị gọi ngoài container. Nhóm đổi sang tham số {{transactionManager(DataSource dataSource)}}, xác nhận cả hai bean trỏ cùng datasource rồi theo dõi active connection. Sau sửa chỉ còn một pool quản lý đúng 20 kết nối; timeout biến mất.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi không đồng nhất singleton scope với việc gọi factory method luôn trả cùng instance. Ở full @Configuration, Spring tăng cường class để lời gọi trực tiếp từ một @Bean sang @Bean khác được tra qua container. Khi tắt proxyBeanMethods, method là Java thông thường; gọi clock() hai lần có thể tạo hai object nếu method gọi new. Vì vậy với cấu hình lite, tôi khai báo dependency ở tham số method factory: Spring resolve bean phù hợp và wiring thể hiện ngay trên chữ ký. Tôi chọn full mode nếu thật sự cần semantics gọi chéo cũ, còn cấu hình mới thường có thể dùng lite mode cùng method parameter, dễ kiểm thử và ít phụ thuộc proxy. Trong production, tôi đặc biệt kiểm tra các bean có tài nguyên như DataSource, executor và client: instance trùng có thể tạo pool riêng hoặc làm mất cấu hình mà lỗi chỉ lộ khi tải cao.”
+
+> Senior tip: khi tối ưu startup bằng lite mode, tìm mọi lời gọi giữa các method @Bean trước; ưu tiên chuyển dependency thành tham số và kiểm tra identity của các bean có tài nguyên dùng chung.`,
+  follow: [
+    'Một method @Bean có tham số dependency được Spring resolve thế nào khi có nhiều bean cùng kiểu?',
+    'proxyBeanMethods=false có thay đổi scope singleton của bean do container quản lý không?'
+  ],
+  tags: ['Configuration', 'proxyBeanMethods', 'singleton', 'dependency injection']
+},
+{
+  id: 'spring-058',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Một method có @Transactional hoặc @Async nhưng chỉ không chạy khi được gọi nội bộ cùng bean; bạn chọn cách sửa nào? So sánh JDK proxy, CGLIB và giới hạn method cần biết.',
+  a: `**Tóm tắt:** Spring AOP dạng proxy chỉ can thiệp khi lời gọi đi qua object proxy do container cung cấp. Lời gọi {{this.otherMethod()}} bên trong target bỏ qua proxy, nên advice như transaction/async không chạy. JDK proxy triển khai interface; CGLIB tạo subclass, nhưng đổi loại proxy không sửa được self-invocation.
+
+### Theo dấu đường đi của lời gọi
+“Advice” là đoạn logic chạy quanh method, ví dụ mở transaction trước và commit/rollback sau. Luồng bên ngoài bình thường là caller → proxy → interceptor/advice → target. Khi target tự gọi method khác bằng {{this}}, đường đi là target → target; không có proxy ở giữa nên annotation trên method kia không được đọc ở lần gọi đó. Đây là khác biệt giữa annotation có mặt trong source và interception thật sự xảy ra.
+
+### Chọn giải pháp theo ý nghĩa nghiệp vụ
+1. **Tách bean theo trách nhiệm:** đặt thao tác cần transaction/async ở bean khác và inject bean đó. Đây thường là lựa chọn rõ ràng nhất vì lời gọi đi qua proxy và ranh giới nghiệp vụ hiện ra.
+2. **Đổi ranh giới transaction:** nếu hai method phải cùng atomic, đặt transaction ở method public bên ngoài; không tạo transaction lồng chỉ để annotation “chạy”.
+3. **Dùng TransactionTemplate:** phù hợp khi cần ranh giới transaction có điều kiện hoặc nằm giữa một workflow; callback được thực thi trong transaction do template quản lý.
+4. **Self-injection/AopContext:** có thể buộc gọi proxy nhưng làm code phụ thuộc hạ tầng, tạo vòng dependency hoặc khó đọc; chỉ dùng khi có lý do rõ ràng.
+
+### JDK và CGLIB: khác nhau nhưng không phải cách chữa self-call
+| Proxy | Bản chất | Giới hạn đáng nhớ |
+|---|---|---|
+| JDK dynamic proxy | object proxy thực thi interface | caller cần gọi qua interface; không proxy class không có interface theo cách này |
+| CGLIB | subclass target để override method | class/method final không thể override; constructor/visibility cũng ảnh hưởng |
+
+Trong cả hai kiểu, lời gọi trực tiếp từ target tới chính target vẫn không đi qua proxy. Với proxy dựa trên subclass, method private/final không thể được override để interception; nên method cần advice thường phải có visibility phù hợp và không final. Cấu hình proxy class-based có thể thay đổi kiểu proxy được chọn, không thay đổi nguyên lý AOP.
+
+~~~java
+@Service
+class OrderFacade {
+    private final OrderWorker worker;
+    OrderFacade(OrderWorker worker) { this.worker = worker; }
+
+    public void place(long id) { worker.reserve(id); } // qua proxy bean khác
+}
+
+@Service
+class OrderWorker {
+    @Transactional
+    public void reserve(long id) { /* cập nhật tồn kho */ }
+}
+~~~
+
+### Pitfall production
+- Test gọi method qua Spring context có thể khác unit test gọi trực tiếp bằng {{new}}; unit test thuần không tạo proxy.
+- {{@Async}} tự gọi cũng chạy đồng bộ; người gọi nghĩ đã đưa việc sang nền nhưng request vẫn đợi.
+- Chuyển method sang bean khác có thể đổi transaction boundary. Xác định rõ thao tác nào cần atomic trước khi tách.
+- Đổi JDK sang CGLIB chỉ để thử vận may thường che triệu chứng, không sửa luồng gọi.
+
+### Ví dụ đời thực
+Endpoint import gọi {{this.processBatch()}}; method processBatch có {{@Async}} nhưng mỗi request vẫn xử lý toàn bộ 8.000 dòng trên servlet thread. P95 tăng từ 400 ms lên 6 giây và thread pool web bắt đầu đầy. Thread dump cho thấy thread request đang chạy parser, không có task ở executor. Nhóm tách xử lý sang {{ImportWorker}} bean và gọi qua proxy; API chỉ xác nhận job được nhận, còn trạng thái job được lưu riêng. Sau sửa, thời gian phản hồi giảm còn 180 ms, số thread web hoạt động ổn định. Họ cũng xác định transaction ghi từng batch thay vì giữ một transaction lớn qua cả file.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi bắt đầu từ call path. Spring proxy áp dụng advice khi caller gọi proxy; nếu target dùng this để gọi method khác thì lời gọi không quay ra proxy, nên @Transactional hoặc @Async không được áp dụng. JDK proxy đại diện interface, CGLIB tạo subclass, nhưng cả hai không sửa self-invocation; CGLIB còn không override được final method hoặc class final. Tôi thường refactor để method có ranh giới nghiệp vụ rõ nằm ở bean khác, hoặc đặt transaction ở method public ngoài cùng nếu toàn bộ thao tác phải atomic. TransactionTemplate phù hợp khi ranh giới cần điều khiển rõ trong code. Tôi tránh self-injection trừ trường hợp có lý do mạnh vì nó làm dependency vòng và che kiến trúc. Sau sửa, tôi kiểm tra bằng integration test qua Spring context và xác nhận thực tế có transaction/executor, không chỉ kiểm tra annotation.”
+
+> Senior tip: kiểm thử behavior, không kiểm thử sự tồn tại của annotation: xác nhận rollback với transaction hoặc xác nhận thread khác với async; kiểm thử trực tiếp target sẽ bỏ qua proxy.`,
+  follow: [
+    'Vì sao self-invocation vẫn không được intercept dù chuyển từ JDK proxy sang CGLIB?',
+    'Khi một use case gồm nhiều bước cập nhật DB, bạn đặt transaction ở bean nào để ranh giới atomic dễ hiểu nhất?'
+  ],
+  tags: ['Spring AOP', 'JDK proxy', 'CGLIB', 'self-invocation', 'transaction']
+},
+{
+  id: 'spring-059',
+  topic: 'spring',
+  level: 'lead',
+  q: 'Bạn có nên dùng REQUIRES_NEW để ghi audit trong một giao dịch nghiệp vụ không? Phân tích cả trường hợp audit phải sống sót sau rollback lẫn nguy cơ audit nói sai sự thật.',
+  a: `**Tóm tắt:** {{REQUIRES_NEW}} tạo transaction độc lập với transaction đang chạy: transaction ngoài có thể rollback trong khi bản ghi audit bên trong đã commit. Điều này hữu ích nếu audit cần ghi nhận cả lần thử thất bại, nhưng nguy hiểm nếu audit tuyên bố nghiệp vụ đã thành công khi thay đổi chính chưa commit; còn phải tính thêm connection và khả năng timeout.
+
+### Xác định audit đang ghi “sự kiện” nào
+Audit là dấu vết ai làm gì, lúc nào, trên đối tượng nào. Trước khi chọn propagation, phân biệt:
+- “Người dùng đã yêu cầu đổi trạng thái” — sự kiện xảy ra dù thao tác thất bại.
+- “Đơn hàng đã chuyển sang PAID” — chỉ đúng nếu transaction cập nhật đơn hàng commit.
+
+Nếu hai câu này bị ghi chung trong một log “payment succeeded”, transaction độc lập có thể làm lịch sử sai. Transaction ngoài thường rollback khi exception hoặc constraint lỗi; transaction REQUIRES_NEW đã commit thì không bị hoàn tác theo.
+
+~~~java
+@Transactional
+public void markPaid(long orderId) {
+    audit.recordAttempt(orderId); // bean khác, REQUIRES_NEW: lưu lần thử
+    orderRepository.markPaid(orderId);
+    // Nếu bước trên lỗi, audit vẫn còn nhưng phải ghi là ATTEMPTED, không phải PAID.
+}
+~~~
+Đừng dùng ví dụ này nếu audit phải khớp chính xác trạng thái đã commit; trong trường hợp đó hãy ghi audit cùng transaction hoặc dùng outbox.
+
+### Chọn theo yêu cầu nhất quán
+| Yêu cầu | Cách phù hợp | Đổi lại |
+|---|---|---|
+| Audit “attempt” tồn tại dù nghiệp vụ fail | transaction độc lập, trạng thái rõ | có thể giữ dấu vết cho thao tác chưa hoàn tất |
+| Audit “đã thành công” phải khớp DB | cùng transaction nghiệp vụ | rollback sẽ rollback cả audit |
+| Phát event sau commit đáng tin cậy | outbox ghi cùng transaction, worker gửi sau | cần worker, retry và deduplication |
+
+Outbox là bảng lưu thông điệp cần phát trong cùng transaction với thay đổi nghiệp vụ. Worker đọc bản ghi đã commit và gửi; nếu gửi lại sau lỗi thì consumer cần idempotent (xử lý lặp không gây tác dụng phụ). Đây tránh “DB commit rồi nhưng gửi message thất bại” mà không cần tuyên bố thành công quá sớm.
+
+### Vì sao pool có thể cạn
+Khi outer transaction đã mượn connection và bị suspend, inner transaction thường cần connection khác. Nếu 20 request cùng giữ 20 connection ngoài rồi cùng đợi connection thứ hai trong pool 20, không request nào nhả connection để tiến lên. Tăng pool không phải sửa gốc: còn phải tính giới hạn DB, số instance và mọi request đồng thời.
+
+### Pitfall production
+- Nếu inner transaction thất bại nhưng exception bị bắt/nuốt, business transaction có thể tiếp tục mà audit thiếu; định nghĩa rõ đây là best-effort hay bắt buộc.
+- Ghi “success” trước commit không chứng minh commit đã thành công.
+- Gọi method REQUIRES_NEW qua self-invocation không qua proxy thì propagation có thể không áp dụng.
+- Retry audit thiếu idempotency có thể tạo nhiều dòng cho một request.
+
+### Ví dụ đời thực
+Checkout ghi “PAYMENT_CAPTURED” trong REQUIRES_NEW rồi cập nhật order. Một constraint lỗi khiến order rollback, nhưng audit đã commit; đối soát thấy 12 bản ghi báo captured trong khi bảng order còn pending. Đồng thời pool 24 connection có 22 connection active và nhiều request timeout khi bước audit xin connection thứ hai. Nhóm đổi audit độc lập thành “CAPTURE_ATTEMPTED”, chỉ ghi kết quả “CAPTURED” cùng transaction thành công; event gửi ra ngoài chuyển sang outbox. Sau deploy, số bản ghi trạng thái mâu thuẫn về 0 và timeout ở endpoint giảm; dashboard phân biệt attempt, success, failure.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi không chọn REQUIRES_NEW chỉ vì audit cần tồn tại. Trước hết tôi hỏi audit cần ghi một lần thử hay xác nhận trạng thái đã commit. Transaction độc lập giữ được dấu vết khi transaction ngoài rollback, nhưng vì vậy nó có thể ghi điều không xảy ra nếu tên sự kiện nói ‘thanh toán thành công’. Với audit attempt, tôi ghi trạng thái attempt/failure tường minh và đảm bảo idempotency. Với audit phải nhất quán cùng dữ liệu, tôi ghi trong transaction đó. Nếu cần phát sự kiện sau commit mà không mất thông điệp, tôi dùng outbox cùng transaction và worker retry. Tôi cũng kiểm tra lời gọi có đi qua proxy, exception handling và connection pool: outer transaction giữ connection trong lúc inner chạy. Việc sizing phải tính concurrent requests, instance count và giới hạn DB; tăng pool mù móc có thể chuyển nghẽn sang database.”
+
+> Senior tip: đặt tên event theo thời điểm có thể chứng minh: “requested/attempted” trước commit, “completed” chỉ sau commit; đo active/pending connection khi thử tải đường đi REQUIRES_NEW.`,
+  follow: [
+    'Bạn phân biệt audit ghi lần thử và audit khẳng định trạng thái đã commit thế nào trong schema?',
+    'Outbox giải quyết khoảng trống giữa commit database và publish message ra sao?'
+  ],
+  tags: ['REQUIRES_NEW', 'audit', 'transaction', 'outbox', 'connection pool']
+},
+{
+  id: 'jpa-049',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Trong một transaction, first-level cache khiến entity được quản lý không giống kết quả query mới nhất từ DB như thế nào? Bạn xử lý flush, clear hoặc refresh ra sao khi trộn JPA với bulk/native SQL?',
+  a: `**Tóm tắt:** First-level cache là persistence context gắn với một EntityManager/Session; nó giữ entity đã nạp theo khóa và bảo đảm cùng một identity trong phạm vi context. {{flush}} đẩy thay đổi đang chờ xuống DB, {{clear}} bỏ trạng thái quản lý trong context, còn {{refresh}} nạp lại một entity từ DB. Bulk JPQL/native SQL thường cập nhật DB mà không đồng bộ các object đang được quản lý, nên có thể tạo trạng thái cũ trong bộ nhớ.
+
+### Một object Java và một hàng DB là hai lớp trạng thái
+Khi gọi {{find(Order.class, id)}}, Hibernate tìm trong persistence context trước. Nếu entity cùng khóa đã được load, nó trả lại cùng object thay vì query lại DB. Điều này tránh query lặp và giúp dirty checking (so sánh trạng thái entity để phát hiện thay đổi) hoạt động nhất quán trong transaction. Nhưng nó cũng có nghĩa “query lại” không tự động đồng nghĩa object trong bộ nhớ được ghi đè từ DB.
+
+{{flush}} đồng bộ các thay đổi đang chờ từ context xuống DB, không commit transaction. Commit thường flush trước. {{clear}} detach toàn bộ entity đang quản lý; {{refresh(entity)}} yêu cầu đọc lại trạng thái entity cụ thể, đồng thời có thể làm mất thay đổi chưa flush của chính entity đó.
+
+### Bulk SQL là điểm cần cẩn trọng
+JPQL {{UPDATE Order o SET o.status = ...}} bulk hoặc native SQL chạy trực tiếp trên DB để cập nhật nhiều hàng hiệu quả; Hibernate không đi từng entity nên không cập nhật object đã load hay chạy dirty checking cho từng hàng.
+~~~java
+entityManager.flush(); // giữ thứ tự: lưu thay đổi JPA trước
+int count = entityManager.createQuery(
+    "update Order o set o.status = :status where o.id = :id")
+    .setParameter("status", status)
+    .setParameter("id", id)
+    .executeUpdate();
+entityManager.clear(); // các entity cũ không còn được dùng như dữ liệu mới
+~~~
+Khi cần giữ một entity cụ thể, có thể flush rồi refresh nó; với nhiều object liên quan, clear và đọc lại thường dễ lý giải hơn.
+
+### Quy tắc chọn thao tác
+| Thao tác | Tác dụng | Lưu ý |
+|---|---|---|
+| {{flush}} | ghi thay đổi context xuống DB | không commit; có thể làm lộ constraint sớm |
+| {{clear}} | detach toàn bộ entity | object Java cũ vẫn còn nhưng không còn được theo dõi |
+| {{refresh}} | đọc lại một entity từ DB | thay trạng thái hiện tại của entity đó |
+| Bulk/native SQL | cập nhật nhanh ở DB | context đang mở có thể lỗi thời |
+
+Với Hibernate, chế độ flush ảnh hưởng thời điểm đồng bộ; AUTO có thể flush trước query cần nhìn thấy thay đổi pending. Không nên gọi flush ở mọi thao tác: mỗi lần có thể tạo SQL và làm tăng round-trip. Nếu dùng native query hay nhiều persistence provider, xác minh hành vi flush cụ thể bằng integration test và SQL log.
+
+### Pitfall production
+- Load entity, bulk update cùng hàng, sau đó sửa entity cũ rồi flush: trạng thái cũ trong memory có thể ghi đè hoặc tạo kết quả khó đoán.
+- Đọc từ JDBC trong cùng transaction sau khi sửa entity nhưng chưa flush có thể thấy dữ liệu cũ ở DB.
+- {{clear}} không xóa object khỏi biến local; dùng tiếp object detached dễ khiến người đọc nghĩ nó vẫn được quản lý.
+- Bulk update bỏ qua callback/entity lifecycle và có thể bỏ qua cơ chế version nếu query không tự cập nhật version.
+
+### Ví dụ đời thực
+Job đóng 40.000 đơn bằng bulk update để chạy nhanh. Trước update, service đã load một entity để ghi chú; bulk đổi trạng thái DB sang CLOSED nhưng object trong persistence context vẫn PROCESSING. Sau đó service sửa ghi chú và flush, dashboard nhận trạng thái khác với kỳ vọng. SQL log xác nhận bulk update chỉ chạy một câu, còn entity đã load không được refresh. Team tách batch update khỏi xử lý entity, flush trước bulk và clear context sau mỗi batch; request đọc lại trạng thái mới khi cần. Job giảm từ 14 phút xuống 2 phút và không còn các trạng thái ghi đè trong đối soát.
+
+### Trả lời mẫu khi phỏng vấn
+“First-level cache thuộc EntityManager, không phải cache toàn hệ thống. Hibernate giữ identity map: cùng một loại entity và khóa trong persistence context thường trả cùng instance, nhờ đó giảm query và dirty checking có nguồn trạng thái rõ. Flush chỉ gửi SQL đang chờ xuống database, chưa commit; clear detach các entity; refresh đọc lại một entity và có thể bỏ thay đổi chưa lưu. Điểm nguy hiểm là bulk JPQL hoặc native SQL thao tác thẳng trên DB, không cập nhật entity đã load. Nếu trộn hai cách, tôi xác định rõ thứ tự: flush thay đổi cần giữ, chạy bulk, rồi clear hoặc refresh trước khi dùng lại entity. Tôi cũng kiểm tra version/callback vì bulk không có semantics giống cập nhật từng entity. Không nên flush liên tục; tôi đo SQL round-trip và viết integration test cho thứ tự đọc/ghi, nhất là khi persistence context sống lâu hoặc xử lý theo batch.”
+
+> Senior tip: sau bulk update, coi các entity cùng vùng dữ liệu trong persistence context là stale cho tới khi đã refresh/clear; log SQL và assertion trên DB giúp phát hiện bug trước production.`,
+  follow: [
+    'Vì sao flush không đồng nghĩa với commit và trong trường hợp nào AUTO flush trước query?',
+    'Bulk JPQL update ảnh hưởng entity đang managed và cột @Version ra sao?'
+  ],
+  tags: ['Hibernate', 'first-level cache', 'persistence context', 'flush', 'bulk update']
+},
+{
+  id: 'jpa-050',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Khi Hibernate ném optimistic lock exception do @Version, bạn trả lỗi cho client hay retry? Làm sao giữ thay đổi người dùng mà không retry mù hoặc nuốt rollback?',
+  a: `**Tóm tắt:** {{@Version}} biến update thành kiểm tra “tôi đang ghi trên phiên bản mình đã đọc hay không”; nếu phiên bản đã đổi, cập nhật không khớp và Hibernate báo conflict thay vì ghi đè âm thầm. Đây thường là xung đột nghiệp vụ cần trả về để client hợp nhất, không phải lỗi hạ tầng để retry cùng dữ liệu cũ. Nếu retry phù hợp, phải đọc lại và chạy lại toàn bộ use case trong transaction mới.
+
+### Cột version bảo vệ điều gì
+Entity có thể dùng số nguyên version; Hibernate tăng version khi ghi. SQL thường tương đương:
+~~~sql
+UPDATE inventory
+SET quantity = ?, version = version + 1
+WHERE id = ? AND version = ?
+~~~
+Nếu request A và B cùng đọc version 7, A cập nhật trước thành 8. Update của B vẫn yêu cầu version 7 nên không hàng nào được cập nhật; Hibernate biết dữ liệu B đã cũ. Chi tiết exception có thể đi qua Hibernate/JPA và được Spring dịch thành {{ObjectOptimisticLockingFailureException}} tùy lớp truy cập.
+
+### Chọn xử lý thay vì retry theo phản xạ
+1. Để transaction hiện tại kết thúc/rollback; transaction đã bị đánh dấu rollback-only không nên tiếp tục ghi.
+2. Nếu hai thay đổi không thể tự hợp nhất (ví dụ cùng sửa số lượng hay trạng thái đơn), trả HTTP 409 Conflict kèm version hiện tại hoặc yêu cầu tải lại.
+3. Nếu thao tác có tính cộng dồn và có thể chạy lại an toàn, bắt lỗi ở lớp ngoài transaction rồi mở transaction mới, đọc entity mới và đánh giá lại điều kiện nghiệp vụ.
+4. Giữ input người dùng để hiển thị/hợp nhất; không gửi lại câu UPDATE cũ như thể dữ liệu chưa đổi.
+
+Retry giới hạn số lần, có backoff khi nhiều writer cùng tranh chấp, và chỉ áp dụng nếu side effect idempotent. Email, charge thanh toán hay publish message không tự an toàn khi chạy lại. Không bắt exception bên trong cùng transaction rồi trả success: transaction có thể đã rollback-only, commit cuối sẽ thất bại hoặc tạo kết quả không như caller nghĩ.
+
+### API và UX
+| Trường hợp | Hành vi phù hợp |
+|---|---|
+| Người dùng sửa biểu mẫu | 409, trả phiên bản mới để so sánh/hợp nhất |
+| Cập nhật bộ đếm có phép cộng nguyên tử | cân nhắc câu lệnh DB phù hợp thay retry entity stale |
+| Thao tác có thể tính lại an toàn | retry toàn use case trong transaction mới, có giới hạn |
+| Thanh toán/gửi thông báo | idempotency key/outbox, không lặp side effect mù |
+
+### Pitfall production
+- Retry trong transaction đã lỗi không làm transaction “sống lại”.
+- Chỉ retry repository.save(entity cũ) sẽ xung đột lại hoặc ghi logic cũ.
+- Xung đột cao thường chỉ ra thiết kế hot row hoặc granularity cập nhật chưa phù hợp; retry vô hạn làm tải DB nặng hơn.
+- Kiểm tra version chỉ ở UI không đủ; nhiều client và job vẫn có thể ghi đồng thời.
+
+### Ví dụ đời thực
+Hai nhân viên cùng chỉnh hạn mức một tài khoản ở version 12. Người đầu lưu thành version 13; request thứ hai nhận conflict. Trước đây backend retry save ba lần trong cùng transaction, gây thêm DB load và cuối cùng người thứ hai vô tình ghi đè giá trị mới. Team chuyển sang trả 409 với giá trị/version mới nhất và giữ bản sửa người dùng ở client để họ chọn hợp nhất. Với một job cộng điểm có thể tính lại, họ retry tối đa hai lần, mỗi lần transaction mới và đọc lại số dư. Tỷ lệ ghi đè âm thầm về 0; conflict được đo riêng và retry không còn che giấu tranh chấp.
+
+### Trả lời mẫu khi phỏng vấn
+“@Version giúp phát hiện lost update: Hibernate update theo id và version cũ, đồng thời tăng version; nếu không có hàng nào khớp, dữ liệu đã bị sửa bởi transaction khác. Tôi phân loại đó là conflict nghiệp vụ trước khi quyết định retry. Với form người dùng thay đổi cùng một giá trị, tôi thường trả 409 và đưa version mới để người dùng hợp nhất thay vì bỏ dữ liệu của họ. Với thao tác có thể tính lại an toàn, tôi bắt conflict ở ngoài transaction, mở transaction mới, đọc lại và chạy lại toàn bộ quyết định nghiệp vụ với giới hạn retry. Tôi không bắt lỗi rồi tiếp tục trong transaction đã rollback-only, cũng không retry side effect như charge hay gửi email nếu thiếu idempotency. Nếu conflict thường xuyên, tôi đo theo entity/use case và xem lại hot row hoặc cách cập nhật nguyên tử thay vì chỉ tăng số lần retry.”
+
+> Senior tip: theo dõi tỷ lệ optimistic conflict theo use case; nếu vượt vài phần trăm ổn định, hãy xem xét thiết kế ghi đồng thời thay vì che vấn đề bằng retry.`,
+  follow: [
+    'Vì sao retry cần bắt đầu ở ngoài transaction đã gặp optimistic lock exception?',
+    'Bạn thiết kế API 409 để client hợp nhất phiên bản mới và nội dung người dùng nhập thế nào?'
+  ],
+  tags: ['@Version', 'optimistic locking', 'retry', 'HTTP 409', 'idempotency']
+},
+{
+  id: 'db-056',
+  topic: 'db',
+  level: 'senior',
+  q: 'HikariCP ghi cảnh báo “connection leak detection triggered” nhưng connection sau đó vẫn được trả về. Bạn xác định leak thật hay chỉ là connection giữ lâu, và xử lý theo thứ tự nào?',
+  a: `**Tóm tắt:** HikariCP leak detection đo thời gian một connection được mượn khỏi pool; vượt ngưỡng thì nó ghi cảnh báo kèm stack trace nơi mượn. Cảnh báo không tự chứng minh connection bị mất vĩnh viễn, cũng không tự thu hồi nó: connection có thể chỉ đang chạy query lâu hoặc giữ transaction lâu. Cần đối chiếu stack trace với thời gian giữ connection, metric pool và đường giải phóng resource.
+
+### Connection được mượn và trả thế nào
+Pool giữ các kết nối DB đã mở để ứng dụng mượn lại. Khi code lấy connection qua DataSource, proxy của Hikari theo dõi thời điểm borrow; đóng connection trả nó về pool thay vì nhất thiết đóng socket DB. Nếu quên close, pool mất dần connection khả dụng. Nếu query chậm, ứng dụng vẫn có thể trả connection sau đó, nhưng thời gian mượn dài vẫn kích hoạt threshold.
+
+{{leakDetectionThreshold}} là ngưỡng cảnh báo tính theo thời gian giữ connection; đặt giá trị dương phù hợp để bật, không phải timeout buộc ngắt query. Stack trace thường chỉ ra vị trí mượn ban đầu; nó không phải lúc nào cũng chỉ ra dòng thiếu close. Try-with-resources bảo đảm close cả khi exception:
+~~~java
+try (Connection c = dataSource.getConnection();
+     PreparedStatement ps = c.prepareStatement(sql)) {
+    ps.setLong(1, accountId);
+    try (ResultSet rs = ps.executeQuery()) {
+        while (rs.next()) { /* đọc kết quả */ }
+    }
+}
+~~~
+Trong Spring, ưu tiên JdbcTemplate hoặc transaction manager để quản lý resource theo transaction thay vì tự quản lý connection không nhất quán.
+
+### Phân biệt leak, query chậm và transaction dài
+1. Ghi thời điểm cảnh báo, stack trace, request/job liên quan.
+2. Xem pool metrics: active, idle, total và threads đang chờ. Hikari/JMX hoặc Micrometer có thể expose các số này.
+3. Nếu active tăng dần, idle về 0 và không giảm sau khi tải dừng, nghi leak thật hoặc transaction bị giữ.
+4. Đối chiếu DB active query/lock và tracing để tìm query chậm, lock wait hoặc transaction mở qua lời gọi mạng.
+5. Tìm mọi nhánh exception/return có thể bỏ qua close; sửa bằng try-with-resources/framework management, rồi kiểm thử lỗi giữa chừng.
+
+### Trade-off khi bật threshold
+| Threshold quá thấp | Threshold hợp lý |
+|---|---|
+| cảnh báo giả trên query hợp lệ | bắt được borrow bất thường |
+| log nhiều làm chìm tín hiệu | log stack trace đủ để điều tra |
+| không sửa được nguyên nhân | vẫn cần pool metrics và trace |
+
+### Pitfall production
+- Hạ threshold xuống rất thấp không làm query nhanh hay connection tự được trả.
+- Tăng {{maximumPoolSize}} có thể làm DB quá tải và chỉ kéo dài thời gian tới lúc cạn pool.
+- Gọi HTTP bên ngoài trong transaction làm connection bị giữ trong lúc chờ mạng.
+- Leak detection có overhead tạo stack trace khi connection vượt ngưỡng; bật có mục tiêu và đọc cảnh báo trong ngữ cảnh.
+
+### Ví dụ đời thực
+Pool của một service đặt 30 connection; lúc cao điểm active đạt 30, idle 0, pending lên 18. Cảnh báo leak threshold 2 giây trỏ tới endpoint báo cáo. Ban đầu nhóm nghĩ thiếu close, nhưng connection đều được trả sau 8–12 giây; tracing cho thấy transaction giữ connection trong khi chờ API tỷ giá và query báo cáo mất 6 giây. Họ tách lời gọi HTTP ra khỏi transaction, tối ưu truy vấn và thêm timeout phù hợp. Active giảm còn đỉnh 17, pending về 0, p95 giảm từ 9 giây xuống 1,4 giây; không cần tăng pool.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi coi leak detection là tín hiệu về thời gian borrow, không phải bằng chứng rằng connection đã mất, và Hikari không tự kill connection chỉ vì ngưỡng đó. Tôi ghép stack trace với active/idle/pending của pool, thời lượng query, lock wait và thời điểm connection được trả. Active tăng liên tục, idle bằng không cả sau khi tải dừng gợi ý leak thật hoặc transaction bị treo; một cảnh báo đơn lẻ nhưng connection được trả sau query dài thiên về slow query/long transaction. Tôi kiểm tra close ở mọi nhánh, ưu tiên try-with-resources hoặc Spring JDBC abstractions, và tránh giữ transaction khi gọi network. Tôi không chữa bằng cách tăng pool trước khi tính tải DB: nhiều connection hơn có thể làm database tranh chấp nặng hơn. Sau sửa tôi đặt threshold dựa trên thời gian hợp lệ, theo dõi pool metrics và tái hiện lỗi bằng test exception.”
+
+> Senior tip: theo dõi Hikari active, idle, pending cùng p95 thời gian transaction; nếu pending tăng nhưng query nhanh, hãy tìm đoạn code giữ connection ngoài JDBC trước khi đụng sizing.`,
+  follow: [
+    'Stack trace của Hikari leak detection cho biết điều gì và không chứng minh điều gì?',
+    'Metric nào giúp phân biệt leak connection với query hoặc transaction kéo dài?'
+  ],
+  tags: ['HikariCP', 'connection leak', 'leakDetectionThreshold', 'pool metrics', 'transaction']
+},
+{
+  id: 'spring-060',
+  topic: 'spring',
+  level: 'lead',
+  q: 'Bạn đóng gói auto-configuration cho một Spring Boot starter nội bộ thế nào để chỉ kích hoạt khi đủ điều kiện, không ghi đè cấu hình ứng dụng và có thể kiểm thử từng condition?',
+  a: `**Tóm tắt:** Auto-configuration là cấu hình thư viện được Spring Boot xem xét tự động dựa trên classpath, property và bean hiện có. Starter tốt đăng ký cấu hình theo cơ chế Boot 3 (file {{META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports}}), giới hạn bằng condition rõ ràng và dùng {{@ConditionalOnMissingBean}} để ứng dụng có thể thay thế mặc định. Condition report và {{ApplicationContextRunner}} giúp kiểm tra lý do cấu hình bật/tắt.
+
+### Auto-config không phải “mọi bean tự xuất hiện”
+Khi ứng dụng khởi động, Boot đọc danh sách auto-configuration từ các dependency, sau đó đánh giá các condition. Ví dụ {{@ConditionalOnClass}} yêu cầu class thư viện có trên classpath; {{@ConditionalOnProperty}} đọc cấu hình đã đặt; {{@ConditionalOnMissingBean}} chỉ tạo mặc định khi ứng dụng chưa khai báo bean phù hợp. Nếu điều kiện không đạt, config bị bỏ qua chứ không nhất thiết app lỗi.
+
+Trong Boot 3, thư viện auto-config đăng ký class trong {{AutoConfiguration.imports}}. Đây khác với việc component scan tình cờ quét package starter. Cấu hình nên khai báo rõ điều kiện và bean factory:
+~~~java
+@AutoConfiguration
+@ConditionalOnClass(PartnerClient.class)
+@ConditionalOnProperty(prefix = "partner", name = "enabled",
+                       havingValue = "true", matchIfMissing = true)
+class PartnerAutoConfiguration {
+    @Bean
+    @ConditionalOnMissingBean
+    PartnerClient partnerClient(PartnerProperties properties) {
+        return new PartnerClient(properties.getBaseUrl());
+    }
+}
+~~~
+Bean của ứng dụng được ưu tiên để override mặc định; cấu hình property nên bind vào {{@ConfigurationProperties}} và validate input cần thiết.
+
+### Phân lớp condition
+- Class optional của dependency: đặt {{@ConditionalOnClass}} trên cấu hình nhỏ riêng để thiếu class không làm lỗi tải cấu hình.
+- Tính năng bật/tắt: property có tên, default và semantics rõ; không dựa vào giá trị ngầm khó phát hiện.
+- Mặc định có thể thay thế: {{@ConditionalOnMissingBean}} trên bean factory, tránh ép ứng dụng dùng implementation của starter.
+- Thứ tự: dùng các annotation/order dành cho auto-configuration khi thực sự phụ thuộc bean/config khác; không dựa vào thứ tự ngẫu nhiên.
+
+### Debug và kiểm thử
+Khởi chạy với {{--debug}} để xem condition evaluation report, gồm positive/negative matches. Với điều tra chi tiết, bật log condition evaluation. Trong test dùng {{ApplicationContextRunner}} để dựng context nhỏ với classpath, property và user bean giả định:
+| Trường hợp test | Điều cần xác nhận |
+|---|---|
+| property bật + dependency có | auto-config tạo mặc định |
+| property tắt | không có bean |
+| user tự khai báo client | starter không ghi đè |
+| optional class vắng | context vẫn khởi động |
+
+Kiểm thử kết quả bean lẫn lý do/điều kiện giúp ngăn lỗi do thay đổi thứ tự import hoặc dependency.
+
+### Pitfall production
+- {{@ConditionalOnMissingBean}} chỉ có ý nghĩa khi config được đánh giá đúng lúc; dependency/ordering rối có thể làm bean override không như dự kiến.
+- Condition thiếu kiểm tra class optional có thể gây {{NoClassDefFoundError}} ngay lúc load class config.
+- Không đăng ký auto-config bằng component scan diện rộng; dễ tạo bean ngoài ý muốn trong ứng dụng.
+- Default bật tính năng có side effect (kết nối mạng, thread riêng) cần tài liệu và opt-out minh bạch.
+
+### Ví dụ đời thực
+Một starter nội bộ tạo client bên thứ ba dù ứng dụng không cấu hình URL; deploy lên test bị lỗi khởi động vì không resolve được host. Nhóm chạy {{--debug}} và thấy config match do class client có trong classpath, nhưng thiếu condition property. Họ thêm {{@ConditionalOnProperty}}, chuyển URL sang properties có validate, giữ {{@ConditionalOnMissingBean}} để ứng dụng cung cấp mock/client riêng, rồi dùng ApplicationContextRunner kiểm tra cả bật, tắt, override và thiếu dependency. Sau thay đổi, app test khởi động không cần host ngoài; môi trường production vẫn nhận đúng client mặc định khi cấu hình bật.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi coi auto-configuration là một tập mặc định có điều kiện, không phải component scan toàn cục. Với Boot 3, tôi đăng ký class qua AutoConfiguration.imports, chia config theo dependency optional, dùng ConditionalOnClass và property để xác định lúc nào tính năng có ý nghĩa, rồi ConditionalOnMissingBean để user bean được ưu tiên. Tôi bind cấu hình bằng ConfigurationProperties và xác thực giá trị bắt buộc thay vì tạo client với URL rỗng. Khi bean không xuất hiện, chạy app với debug để xem condition evaluation report, xác nhận condition nào match hoặc fail. Tôi viết ApplicationContextRunner tests cho property bật/tắt, user override và classpath thiếu; như vậy starter có thể test mà không dựng cả ứng dụng. Với thứ tự, tôi khai báo quan hệ rõ khi cần, tránh phụ thuộc thứ tự scan. Mặc định nào mở network hoặc tạo thread phải có semantics và opt-out minh bạch.”
+
+> Senior tip: với mỗi auto-config bean, hãy có test ba nhánh tối thiểu: mặc định tạo, user override, condition không đạt; điều đó bắt được đa số lỗi tương thích starter.`,
+  follow: [
+    'AutoConfiguration.imports của Spring Boot 3 khác component scan thông thường ở điểm nào?',
+    'Bạn kiểm thử @ConditionalOnMissingBean và property bật/tắt mà không khởi động toàn ứng dụng ra sao?'
+  ],
+  tags: ['Spring Boot', 'auto-configuration', 'Conditional', 'starter', 'ApplicationContextRunner']
+},
 );

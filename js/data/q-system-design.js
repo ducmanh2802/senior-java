@@ -6881,5 +6881,2407 @@ Kết quả: Giảm code kiểm tra quyền trùng lặp, thêm log truy cập c
 > Senior tip: Proxy = kiểm soát, Decorator = thêm, Adapter = chuyển. Nhớ bẫy gọi tự thân của Spring AOP.` ,
     follow: ['Spring AOP gọi tự thân vì sao không chạy?', 'Decorator trong java.io có nhược điểm gì?', 'Adapter khác Facade thế nào?'],
     tags: ['design-patterns','proxy','decorator','adapter']
-  }
+  },
+{
+  id: "design-037",
+  topic: "design",
+  level: "senior",
+  q: "Khi refactor code Java thật, bạn áp dụng SOLID như thế nào từng bước? Hãy lấy ví dụ một service thanh toán lộn xộn và chỉ ra bạn dùng S, O, L, I, D ra sao để cải thiện.",
+  a: `**Tóm tắt:** SOLID là 5 nguyên tắc thiết kế giúp code dễ đọc, dễ thay đổi và dễ test (thử nghiệm tự động - chạy kiểm tra bằng code). Khi refactor (tái cấu trúc: sửa cấu trúc bên trong nhưng giữ nguyên hành vi bên ngoài), mình không áp dụng máy móc mà tìm điểm đau thật: class quá lớn → tách trách nhiệm (Single Responsibility - S), thêm luồng mới phải sửa if-else → mở rộng bằng abstraction (Open/Closed - O), class con phá hành vi cha (Liskov Substitution - L), interface to ép implement thứ không cần (Interface Segregation - I), phụ thuộc cứng vào class cụ thể (Dependency Inversion - D). Mỗi bước giữ hành vi cũ và có test bảo vệ.
+
+### Thuật ngữ giải thích nhanh
+- **Interface (giao diện):** "hợp đồng" chỉ khai báo method (hàm), class implement (thực thi) phải cung cấp code.
+- **Abstraction (trừu tượng hoá):** làm việc với hợp đồng thay vì chi tiết cụ thể (giống dùng ổ cắm điện mà không cần biết dây bên trong).
+- **Coupling (phụ thuộc chặt):** A biết quá nhiều về B, sửa B dễ làm hỏng A.
+- **Bean:** đối tượng do Spring Container tạo và quản lý.
+
+### Bước 0: Code có mùi (code smell - dấu hiệu thiết kế kém)
+~~~java
+public class PaymentService {
+    public String pay(String type, BigDecimal amount, String userId) {
+        if (amount == null || amount.signum() <= 0) throw new IllegalArgumentException("amount");
+        String txId;
+        // phụ thuộc cứng: new trực tiếp client cụ thể
+        if ("VNPAY".equals(type)) txId = new VnpayClient().create(amount, userId);
+        else if ("MOMO".equals(type)) txId = new MomoClient().create(amount, userId);
+        else throw new IllegalArgumentException("unknown type");
+        // trộn nhiều trách nhiệm: lưu DB + gửi email
+        jdbcTemplate.update("insert into payment(tx, amount) values (?,?)", txId, amount);
+        new EmailSender().send(userId, "Paid " + amount);
+        return txId;
+    }
+}
+~~~
+
+### Bước 1: S - Single Responsibility (một class, một lý do để thay đổi)
+Tách: {{PaymentValidator}} kiểm tra đầu vào, {{PaymentNotifier}} gửi thông báo, service chỉ điều phối. Sửa template email không chạm luồng thanh toán.
+
+### Bước 2: O - Open/Closed + D - Dependency Inversion
+~~~java
+public interface PaymentGateway {
+    boolean supports(String type);
+    String charge(BigDecimal amount, String userId);
+}
+@Component
+public class VnpayGateway implements PaymentGateway {
+    public boolean supports(String type) { return "VNPAY".equals(type); }
+    public String charge(BigDecimal amount, String userId) { return "vnp-ok"; }
+}
+@Service
+public class PaymentService {
+    private final List<PaymentGateway> gateways; // Spring inject tất cả implementation
+    private final PaymentRepository repo;         // interface, không phải JdbcTemplate
+    private final PaymentNotifier notifier;
+    private final PaymentValidator validator;
+    public PaymentService(List<PaymentGateway> gateways, PaymentRepository repo,
+                          PaymentNotifier notifier, PaymentValidator validator) {
+        this.gateways = gateways; this.repo = repo; this.notifier = notifier; this.validator = validator;
+    }
+    public String pay(String type, BigDecimal amount, String userId) {
+        validator.validate(amount);
+        PaymentGateway gw = gateways.stream().filter(g -> g.supports(type)).findFirst()
+            .orElseThrow(() -> new IllegalArgumentException("unknown type"));
+        String txId = gw.charge(amount, userId);
+        repo.save(txId, amount);
+        notifier.notifyPaid(userId, amount);
+        return txId;
+    }
+}
+~~~
+Thêm ZaloPay: tạo class mới, không sửa {{PaymentService}}. Test dễ bằng fake (đối tượng giả).
+
+### Bước 3: L - Liskov Substitution
+Mọi implementation phải thay thế được nhau mà không phá hành vi. Nếu {{charge()}} ném {{UnsupportedOperationException}} bất ngờ thì vi phạm L; tách hợp đồng đúng hoặc đảm bảo cùng pre/post-condition (điều kiện đầu vào/đầu ra).
+
+### Bước 4: I - Interface Segregation
+Interface "béo" ép implement method không dùng. Tách {{Chargeable}}, {{Refundable}}, {{Queryable}}; class chỉ implement thứ nó hỗ trợ.
+
+### So sánh trước/sau
+| Tiêu chí | Trước | Sau |
+|---|---|---|
+| Thêm cổng mới | Sửa if-else trong service | Thêm 1 class mới |
+| Test | Khó, phụ thuộc client thật | Dễ, inject fake |
+| Lý do thay đổi | 1 class gánh nhiều việc | Mỗi class 1 trách nhiệm |
+
+### Pitfall trên production
+- Áp dụng quá sớm (over-engineering - phức tạp hoá không cần thiết) tạo abstraction thừa.
+- Tách vụn quá mức khó theo dõi luồng end-to-end.
+- Refactor legacy không có test: tạo characterization test (ghi lại hành vi hiện tại) trước.
+
+### Ví dụ đời thực
+Triệu chứng: thêm phương thức thanh toán mới mất 2 ngày và hay gây regression (lỗi quay lại) vì phải sửa 5 chỗ if-else trong service 1.200 dòng. Điều tra: service có 9 lý do thay đổi, unit test gọi mạng thật chạy 40 giây và hay flaky (lúc pass lúc fail). Xử lý: tách 4 trách nhiệm (S), gateway thành interface + inject {{List<PaymentGateway>}} (O,D), tách interface nhỏ (I), viết test với fake gateway chạy 0.8 giây. Kết quả: thêm cổng mới còn ~3 giờ (1 class + 1 test), bug thanh toán giảm từ 5 lỗi/2 sprint xuống 1 lỗi/2 sprint (sprint = chu kỳ 2 tuần).
+
+### Trả lời mẫu khi phỏng vấn
+"Khi refactor theo SOLID em đi từ vấn đề thật. Với service thanh toán 1.000 dòng trộn validate, gọi cổng, lưu DB, gửi mail, em tách theo Single Responsibility. Em thay if-else bằng interface PaymentGateway và inject danh sách implementation nên thêm cổng mới chỉ cần class mới - Open/Closed và Dependency Inversion. Em kiểm tra Liskov để mọi gateway thay thế được nhau, và tách interface nhỏ theo Interface Segregation. Mỗi bước em giữ test xanh để không đổi hành vi. Nhờ vậy code dễ test bằng fake và thêm luồng mới nhanh hơn."
+
+> Senior tip: SOLID là công cụ, không phải mục tiêu. Refactor khi thấy "mùi" lặp lại (thêm case phải sửa nhiều chỗ, class phình, test khó) và luôn có test bảo vệ trước khi tách.`,
+  follow: [
+    "Làm sao biết đã tách class theo Single Responsibility vừa đủ, không bị chia vụn (over-splitting)?",
+    "Dependency Inversion khác Dependency Injection ở điểm nào? Spring giúp phần nào?",
+    "Khi refactor legacy không có test, bạn tạo 'lưới an toàn' thế nào trước khi áp SOLID?"
+  ],
+  tags: ["SOLID", "refactoring", "design", "Spring", "clean code"]
+}
+,
+{
+  id: "design-038",
+  topic: "design",
+  level: "mid",
+  q: "Làm sao dùng Strategy pattern cùng Spring để loại bỏ chuỗi if-else chọn thuật toán? Trình bày cách thiết kế interface, inject các implementation và chọn strategy theo tham số runtime.",
+  a: `**Tóm tắt:** Strategy pattern (mẫu chiến lược) đóng gói mỗi thuật toán vào một class riêng có cùng interface, rồi chọn class phù hợp lúc chạy (runtime) thay vì if-else. Trong Spring, mỗi strategy là bean (đối tượng do Spring quản lý), inject cả tập hợp rồi tra cứu theo key. Thêm biến thể mới chỉ cần thêm class, không sửa code chọn.
+
+### Thuật ngữ giải thích nhanh
+- **Pattern (mẫu thiết kế):** cách giải quyết lặp lại cho vấn đề thiết kế quen thuộc.
+- **Runtime:** lúc chương trình đang chạy.
+- **Stateless (không trạng thái):** object không giữ dữ liệu thay đổi giữa các lần gọi, an toàn dùng chung.
+
+### Vấn đề: if-else phình ra
+~~~java
+public BigDecimal fee(String channel, BigDecimal amount) {
+    if ("BANK".equals(channel)) return amount.multiply(new BigDecimal("0.01"));
+    else if ("EWALLET".equals(channel)) return amount.multiply(new BigDecimal("0.015"));
+    else if ("CARD".equals(channel)) return amount.multiply(new BigDecimal("0.029"));
+    else throw new IllegalArgumentException("unknown");
+}
+~~~
+
+### Thiết kế Strategy + Spring
+~~~java
+public interface FeeStrategy {
+    String channel();                         // key để tra cứu
+    BigDecimal calculate(BigDecimal amount);  // thuật toán riêng
+}
+
+@Component
+public class BankFeeStrategy implements FeeStrategy {
+    public String channel() { return "BANK"; }
+    public BigDecimal calculate(BigDecimal amount) { return amount.multiply(new BigDecimal("0.01")); }
+}
+
+@Service
+public class FeeService {
+    private final Map<String, FeeStrategy> byChannel;
+    // Spring inject tất cả bean FeeStrategy vào List, dựng Map theo key
+    public FeeService(List<FeeStrategy> strategies) {
+        this.byChannel = strategies.stream()
+            .collect(Collectors.toUnmodifiableMap(FeeStrategy::channel, s -> s));
+    }
+    public BigDecimal fee(String channel, BigDecimal amount) {
+        FeeStrategy s = byChannel.get(channel);
+        if (s == null) throw new IllegalArgumentException("unknown channel: " + channel);
+        return s.calculate(amount);
+    }
+}
+~~~
+
+### Khi nào dùng / không dùng
+| Dùng Strategy khi | Không cần khi |
+|---|---|
+| Có >= 3 biến thể và sẽ còn tăng | Chỉ 1-2 nhánh ổn định, hiếm đổi |
+| Mỗi biến thể đủ phức tạp để test riêng | Logic chỉ là biểu thức nhỏ |
+| Muốn thêm biến thể không sửa class chọn (Open/Closed) | Over-engineering cho bài toán đơn giản |
+
+### Pitfall trên production
+- **Key trùng:** hai bean trả cùng {{channel()}} → {{Collectors.toMap}} ném exception lúc khởi động. Fail-fast bằng merge function hoặc validate.
+- **Thiếu strategy:** {{get}} trả null → báo lỗi rõ thay vì NullPointerException.
+- **State chia sẻ:** strategy là singleton bean mặc định; field mutable gây race condition (lỗi tranh chấp luồng). Giữ stateless.
+- **Tiêu chí phức tạp:** chọn theo tổ hợp (kênh + quốc gia) có thể nổ class; cân nhắc rule engine.
+
+### Ví dụ đời thực
+Triệu chứng: tính phí giao dịch có 7 nhánh if-else, mỗi lần đổi biểu phí phải sửa code và deploy, 2 lần tính sai phí do quên nhánh. Điều tra: logic 180 dòng trộn trong một method, không unit test riêng từng kênh. Xử lý: tách mỗi kênh thành {{FeeStrategy}}, inject {{List}}, viết 1 test/strategy. Kết quả: thêm kênh mới 30 phút, đổi biểu phí một kênh không ảnh hưởng kênh khác, coverage (độ phủ test) module phí tăng từ 20% lên 85%.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng Strategy để thay chuỗi if-else bằng các class cùng interface. Ví dụ tính phí theo kênh: mỗi kênh là bean implement FeeStrategy với channel() và calculate(). FeeService inject List<FeeStrategy> rồi dựng Map tra cứu theo key runtime. Thêm kênh mới chỉ tạo class mới, tuân Open/Closed và dễ test từng strategy. Em lưu ý strategy phải stateless vì là singleton, xử lý key trùng lúc khởi động và báo lỗi rõ khi không tìm thấy. Nếu chỉ 1-2 nhánh ổn định em giữ if-else để tránh lạm dụng."
+
+> Senior tip: Trong Spring, ưu tiên inject {{Map<String, T>}}/{{List<T>}} thay vì tự viết factory switch-case. Nhưng đừng biến mọi if thành Strategy - chỉ dùng khi biến thể là thuật toán thay thế được nhau.`,
+  follow: [
+    "Khi nào Strategy không đủ và bạn cần rule engine hoặc cấu hình trong DB?",
+    "Làm sao chọn strategy theo nhiều tiêu chí (kênh + quốc gia) mà không tạo nổ tổ hợp class?",
+    "Strategy khác State pattern ở điểm nào về ý định và cách dùng?"
+  ],
+  tags: ["Strategy", "design pattern", "Spring", "if-else", "Open/Closed"]
+}
+,
+{
+  id: "design-039",
+  topic: "design",
+  level: "mid",
+  q: "Factory và Builder pattern dùng khi nào trong dự án Java thật? Khi nào chỉ cần constructor, khi nào cần static factory, khi nào cần Builder, và bẫy khi lạm dụng Lombok @Builder?",
+  a: `**Tóm tắt:** Factory và Builder đều giúp tạo object (đối tượng) đúng cách nhưng giải quyết nỗi đau khác nhau. Constructor thường đủ; **static factory method** hữu ích khi cần tên rõ nghĩa, tái dùng/ẩn kiểu con; **Builder** phù hợp khi object có nhiều tham số (nhất là tuỳ chọn) và muốn code khởi tạo dễ đọc, bất biến (immutable - tạo xong không đổi). Lạm dụng {{@Builder}} khắp nơi (kể cả entity JPA) gây mất bất biến, che tham số bắt buộc và khó bảo trì.
+
+### Thuật ngữ giải thích nhanh
+- **Constructor:** hàm đặc biệt tạo object ({{new User(...)}}).
+- **Immutable:** object không đổi sau khi tạo, an toàn khi chia sẻ giữa nhiều luồng (thread).
+
+### 1. Khi constructor là đủ
+~~~java
+public class Money {
+    private final BigDecimal amount;
+    private final String currency;
+    public Money(BigDecimal amount, String currency) { // 2 tham số bắt buộc, rõ ràng
+        this.amount = Objects.requireNonNull(amount);
+        this.currency = Objects.requireNonNull(currency);
+    }
+}
+~~~
+
+### 2. Static factory method
+~~~java
+public class Money {
+    private final BigDecimal amount; private final String currency;
+    private Money(BigDecimal amount, String currency){ this.amount = amount; this.currency = currency; }
+    public static Money vnd(long amount){ return new Money(BigDecimal.valueOf(amount), "VND"); } // tên rõ nghĩa
+    public static Money of(BigDecimal amount, String currency){ return new Money(amount, currency); }
+}
+~~~
+Dùng khi muốn đặt tên ({{vnd}}), ẩn implementation, hoặc cache/validate. Ví dụ JDK: {{List.of}}, {{Optional.of}}.
+
+### 3. Builder: nhiều tham số, nhiều tuỳ chọn
+~~~java
+public final class TransferCommand {
+    private final String fromAcc; private final String toAcc;
+    private final BigDecimal amount; private final String note; private final String idempotencyKey;
+    private TransferCommand(Builder b) {
+        this.fromAcc = Objects.requireNonNull(b.fromAcc, "fromAcc");
+        this.toAcc = Objects.requireNonNull(b.toAcc, "toAcc");
+        this.amount = Objects.requireNonNull(b.amount, "amount");
+        this.note = b.note; this.idempotencyKey = b.idempotencyKey;
+    }
+    public static Builder builder(){ return new Builder(); }
+    public static class Builder {
+        private String fromAcc,toAcc,note,idempotencyKey; private BigDecimal amount;
+        public Builder fromAcc(String v){ this.fromAcc=v; return this; }
+        public Builder toAcc(String v){ this.toAcc=v; return this; }
+        public Builder amount(BigDecimal v){ this.amount=v; return this; }
+        public Builder note(String v){ this.note=v; return this; }
+        public Builder idempotencyKey(String v){ this.idempotencyKey=v; return this; }
+        public TransferCommand build(){ return new TransferCommand(this); } // validate tập trung
+    }
+}
+~~~
+
+### Bảng chọn nhanh
+| Tình huống | Chọn |
+|---|---|
+| 1-3 tham số, bắt buộc, rõ nghĩa | Constructor |
+| Cần tên tạo có ý nghĩa / ẩn kiểu con | Static factory method |
+| >= 4 tham số hoặc nhiều tuỳ chọn, muốn immutable | Builder |
+| Chọn loại object theo điều kiện runtime | Factory (method/class) |
+
+### Bẫy khi lạm dụng Lombok @Builder
+- **Trên entity JPA:** entity cần constructor không tham số cho Hibernate; {{@Builder}} dễ bỏ sót field bắt buộc, bỏ qua giá trị mặc định. Dùng builder cho DTO/command immutable, không dùng cho entity.
+- **Che tham số bắt buộc:** builder cho phép quên field → lỗi lộ lúc chạy. {{requireNonNull}} trong {{build()}}.
+- **Mất bất biến nếu thêm setter.**
+- **Kế thừa:** {{@Builder}} không chơi tốt nếu không dùng {{@SuperBuilder}} cẩn thận.
+
+### Ví dụ đời thực
+Triệu chứng: module tạo lệnh chuyển tiền có constructor 7 tham số {{String}}, reviewer phát hiện bug nhầm {{fromAcc}} với {{toAcc}} 2 lần trong 3 tháng (compiler không bắt). Điều tra: call site {{new Cmd(a,b,c,d,e,f,g)}} không tự mô tả. Xử lý: chuyển sang builder immutable, validate bắt buộc trong {{build()}}, thêm {{idempotencyKey}} tuỳ chọn. Kết quả: bug nhầm tham số biến mất, code review nhanh hơn; thêm field mới chỉ thêm method builder, không phá vỡ mọi chỗ gọi như constructor dài.
+
+### Trả lời mẫu khi phỏng vấn
+"Em chọn cách tạo object theo độ phức tạp. Constructor đủ cho object nhỏ. Static factory method dùng khi cần tên có ý nghĩa như Money.vnd() hoặc ẩn implementation. Builder dùng khi nhiều tham số, nhất là tuỳ chọn, để call site dễ đọc và giữ object immutable, validate trong build(). Factory pattern dùng khi cần quyết định tạo loại nào theo runtime. Em tránh lạm dụng Lombok @Builder trên entity JPA vì dễ bỏ sót field bắt buộc; builder phù hợp cho DTO hay command bất biến."
+
+> Senior tip: Ưu tiên object bất biến cho dữ liệu truyền qua nhiều tầng/luồng. Nếu {{@Builder}} khiến không biết field nào bắt buộc, hãy dùng constructor/factory tường minh.`,
+  follow: [
+    "Khi nào bạn chọn static factory method thay vì constructor public dù chỉ 1-2 tham số?",
+    "Làm sao đảm bảo object tạo bằng Builder luôn hợp lệ (invariant) nếu có ràng buộc giữa các field?",
+    "Factory Method pattern khác static factory method (idiom) ở điểm nào?"
+  ],
+  tags: ["Factory", "Builder", "design pattern", "immutable", "Lombok"]
+}
+,
+{
+  id: "design-040",
+  topic: "design",
+  level: "senior",
+  q: "Observer pattern và event trong Spring hoạt động thế nào? Giải thích publish/subscribe, @EventListener/@TransactionalEventListener, và khi nào dùng event nội bộ thay vì gọi trực tiếp.",
+  a: `**Tóm tắt:** Observer (mẫu quan sát) là mẫu trong đó publisher (bên phát) thông báo cho nhiều listener/subscriber (bên lắng nghe) khi có sự kiện mà không cần biết chi tiết ai xử lý. Trong Spring, dùng {{ApplicationEventPublisher}} và {{@EventListener}}. Dùng {{@TransactionalEventListener}} để chỉ chạy sau khi transaction (giao dịch DB) commit thành công, tránh gửi thông báo cho dữ liệu chưa lưu.
+
+### Thuật ngữ giải thích nhanh
+- **Event (sự kiện):** sự thật đã xảy ra, ví dụ "đơn hàng đã tạo".
+- **Publish/Subscribe:** phát / đăng ký nhận sự kiện.
+- **Transaction commit:** DB xác nhận ghi thành công; rollback là huỷ.
+
+### Cơ chế cơ bản trong Spring
+~~~java
+// Event (nên bất biến, mang dữ liệu cần thiết)
+public record OrderCreatedEvent(Long orderId, Long userId, BigDecimal total) {}
+
+@Service
+public class OrderService {
+    private final OrderRepository repo;
+    private final ApplicationEventPublisher publisher; // Spring inject
+    public OrderService(OrderRepository repo, ApplicationEventPublisher publisher) {
+        this.repo = repo; this.publisher = publisher;
+    }
+    @Transactional
+    public Long createOrder(CreateOrderCmd cmd) {
+        Order order = repo.save(Order.from(cmd));      // nghiệp vụ chính
+        publisher.publishEvent(new OrderCreatedEvent(order.getId(), order.getUserId(), order.getTotal()));
+        return order.getId();
+    }
+}
+
+@Component
+public class OrderNotificationListener {
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void onCreated(OrderCreatedEvent e) {
+        // chạy SAU khi commit: chắc chắn đơn đã có trong DB
+        emailSender.sendOrderMail(e.userId(), e.orderId());
+    }
+}
+
+@Component
+public class LoyaltyListener {
+    @Async // chạy bất đồng bộ (thread khác), cần @EnableAsync
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void addPoints(OrderCreatedEvent e) { pointService.add(e.userId(), e.total()); }
+}
+~~~
+
+### Các annotation quan trọng
+| Annotation | Ý nghĩa |
+|---|---|
+| {{@EventListener}} | Mặc định chạy đồng bộ, cùng thread, trong transaction đang mở |
+| {{@TransactionalEventListener}} | Gắn pha transaction; {{AFTER_COMMIT}} (mặc định), {{AFTER_ROLLBACK}} |
+| {{@Async}} trên listener | Chạy bất đồng bộ, không kéo dài request |
+| {{@Order(n)}} | Thứ tự giữa listener đồng bộ |
+
+### Khi nào dùng event nội bộ / khi nào gọi trực tiếp
+| Dùng event nội bộ khi | Gọi trực tiếp khi |
+|---|---|
+| Logic phụ (side effect): mail, audit, thống kê | Bước bắt buộc của nghiệp vụ chính (trừ kho phải thành công cùng đơn) |
+| Muốn giảm coupling, dễ thêm listener | Cần kết quả ngay để quyết định bước tiếp |
+| Trong cùng ứng dụng (in-process) | Giao tiếp giữa nhiều service → dùng message broker (Kafka/RabbitMQ) |
+
+### Pitfall trên production
+- **Mất event với {{@Async}} sau commit:** app crash trước khi listener chạy xong. Nghiệp vụ quan trọng cần Transactional Outbox + broker.
+- **Listener không chạy:** publish khi không có transaction thì {{@TransactionalEventListener}} mặc định bị bỏ qua; cần {{fallbackExecution = true}}.
+- **Chậm request:** listener đồng bộ gọi API ngoài cộng dồn latency (độ trễ). Dùng {{@Async}} với thread pool giới hạn.
+- **Exception sau commit:** {{AFTER_COMMIT}} ném lỗi không rollback được; phải catch, log, retry.
+
+### Ví dụ đời thực
+Triệu chứng: API tạo đơn mất 1.8s p95 (95% request nhanh hơn mức này) vì gọi tuần tự email, SMS, cộng điểm, audit. Điều tra: một lần SMS provider chậm kéo chậm cả tạo đơn. Xử lý: publish {{OrderCreatedEvent}}, chuyển tác vụ phụ sang {{@TransactionalEventListener(AFTER_COMMIT)}} + {{@Async}} với thread pool riêng (core 4, max 8, queue 200). Kết quả: p95 tạo đơn giảm còn 320ms; khi SMS lỗi, đơn vẫn tạo thành công và tác vụ SMS retry độc lập.
+
+### Trả lời mẫu khi phỏng vấn
+"Observer trong Spring là event nội bộ: service publish event qua ApplicationEventPublisher, listener @EventListener sẽ nhận. Em dùng @TransactionalEventListener(AFTER_COMMIT) để chỉ chạy khi transaction đã commit, tránh gửi mail cho đơn chưa lưu. Logic phụ như gửi thông báo hay cộng điểm em tách listener và @Async để không kéo chậm request. Nhưng event in-process không đảm bảo bền vững: nếu app crash sau commit mà listener async chưa chạy thì mất. Với tác vụ quan trọng em dùng Transactional Outbox và message broker. Em chỉ dùng event cho side effect độc lập; bước bắt buộc thì gọi trực tiếp."
+
+> Senior tip: Đừng dùng Spring event như message bus phân tán. Nó in-process, không có retry bền, không có back-pressure. Cần đảm bảo giao hàng giữa service thì dùng Kafka/RabbitMQ với Outbox.`,
+  follow: [
+    "Khác nhau giữa @EventListener và @TransactionalEventListener(AFTER_COMMIT) khi transaction rollback?",
+    "Transactional Outbox pattern giải quyết vấn đề gì và triển khai các bước ra sao?",
+    "Khi nào bạn chọn Spring event nội bộ, khi nào chọn Kafka/RabbitMQ?"
+  ],
+  tags: ["Observer", "event", "Spring", "TransactionalEventListener", "design pattern"]
+}
+,
+{
+  id: "design-041",
+  topic: "design",
+  level: "mid",
+  q: "Nguyên tắc \"Composition over inheritance\" nghĩa là gì trong thực tế? Cho ví dụ refactor một cây kế thừa dễ vỡ sang dùng composition và giải thích lợi ích.",
+  a: `**Tóm tắt:** Kế thừa (inheritance - class con {{extends}} class cha) tạo quan hệ "is-a" nhưng gắn chặt con vào chi tiết cha; đổi ở cha có thể làm vỡ con (fragile base class - lớp cha dễ gãy). Composition (kết hợp - giữ object khác như thành phần và uỷ thác) tạo quan hệ "has-a", linh hoạt hơn. Nguyên tắc: ưu tiên composition, chỉ dùng kế thừa khi thực sự "is-a" ổn định.
+
+### Thuật ngữ giải thích nhanh
+- **extends:** từ khoá Java để kế thừa class.
+- **Override (ghi đè):** class con định nghĩa lại method của cha.
+- **Uỷ thác (delegation):** object chuyển yêu cầu cho thành phần xử lý.
+
+### Vấn đề: cây kế thừa dễ vỡ
+~~~java
+class OrderPricing { BigDecimal total(Order o) { return o.subtotal(); } }
+class VipPricing extends OrderPricing {
+    BigDecimal total(Order o) { return super.total(o).multiply(new BigDecimal("0.9")); }
+}
+class VipFreeShipPricing extends VipPricing {
+    BigDecimal total(Order o) { return super.total(o).subtract(o.shippingFee()); }
+}
+// Cần "FlashSale + FreeShip"? -> bùng nổ lớp con (class explosion)
+~~~
+
+### Refactor sang composition
+~~~java
+interface DiscountPolicy { BigDecimal apply(BigDecimal base, Order o); }
+interface ShippingPolicy { BigDecimal shipping(Order o); }
+
+class VipDiscount implements DiscountPolicy {
+    public BigDecimal apply(BigDecimal base, Order o) { return base.multiply(new BigDecimal("0.9")); }
+}
+class FreeShipping implements ShippingPolicy {
+    public BigDecimal shipping(Order o) { return BigDecimal.ZERO; }
+}
+
+class PricingService {
+    private final DiscountPolicy discount;
+    private final ShippingPolicy shipping;
+    PricingService(DiscountPolicy discount, ShippingPolicy shipping) {
+        this.discount = discount; this.shipping = shipping;
+    }
+    BigDecimal total(Order o) {
+        BigDecimal afterDiscount = discount.apply(o.subtotal(), o); // uỷ thác
+        return afterDiscount.add(shipping.shipping(o));
+    }
+}
+// Ghép tuỳ ý: new PricingService(new VipDiscount(), new FreeShipping())
+~~~
+
+### So sánh
+| Tiêu chí | Inheritance | Composition |
+|---|---|---|
+| Quan hệ | is-a, cố định | has-a, ghép linh hoạt |
+| Tổ hợp biến thể | Dễ bùng nổ lớp con | Ghép như lego |
+| Đổi lớp cha | Có thể làm vỡ lớp con | Ít ảnh hưởng nếu qua interface |
+| Khi phù hợp | Phân cấp ổn định, thực sự is-a | Ghép hành vi, nhiều biến thể |
+
+### Pitfall trên production
+- **Kế thừa sai quan hệ:** {{Square extends Rectangle}} phá giả định cha (liên quan Liskov).
+- **Composition quá nhiều lớp nhỏ:** khó theo dõi luồng. Gom thành phần có ý nghĩa.
+- **{{super}} dây chuyền:** cây sâu khó debug; uỷ thác tường minh dễ trace.
+
+### Ví dụ đời thực
+Triệu chứng: module tính phí bảo hiểm có 5 tầng kế thừa; thêm "VIP + gói gia đình + khuyến mãi hè" buộc tạo 3 lớp con và sửa 2 lớp cha, gây sai phí cho 120 hợp đồng trong 1 ngày. Điều tra: logic giảm giá rải ở {{super.total()}} nhiều tầng, không ai nắm hết thứ tự. Xử lý: refactor sang {{PricingService}} ghép {{DiscountPolicy}} + {{RiderPolicy}}, mỗi policy test độc lập. Kết quả: thêm tổ hợp mới bằng cấu hình ghép, không tạo class mới; bug tính phí tương tự không tái diễn trong 2 quý, thời gian viết test case mới giảm từ 3 giờ xuống 40 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Composition over inheritance nghĩa là em ưu tiên ghép object từ các thành phần nhỏ thay vì xây cây kế thừa sâu. Kế thừa tạo phụ thuộc chặt vào lớp cha, dễ fragile base class và bùng nổ lớp con khi có nhiều chiều biến thể. Ví dụ thay vì VipFreeShipPricing extends VipPricing, em tách DiscountPolicy và ShippingPolicy rồi ghép trong PricingService, nên thêm tổ hợp mới chỉ cần ghép policy. Em vẫn dùng kế thừa khi quan hệ is-a thực sự ổn định, như cấu trúc collection. Lợi ích là code dễ thay thế, dễ test từng thành phần và ít ảnh hưởng dây chuyền."
+
+> Senior tip: Dấu hiệu nên chuyển từ kế thừa sang composition: phải override để "tắt" hành vi cha, cây lớp > 2-3 tầng, hoặc thêm biến thể buộc tạo lớp con theo tổ hợp. Ưu tiên interface + uỷ thác.`,
+  follow: [
+    "Khi nào kế thừa vẫn là lựa chọn đúng và bạn sẽ không thay bằng composition?",
+    "Fragile base class problem là gì? Cho ví dụ cụ thể trong Java.",
+    "Làm sao kết hợp composition với Strategy/Decorator để ghép nhiều hành vi linh hoạt?"
+  ],
+  tags: ["composition", "inheritance", "design", "refactoring", "OOP"]
+}
+,
+{
+  id: "design-042",
+  topic: "design",
+  level: "senior",
+  q: "Anti-pattern God class và Anemic Domain Model là gì? Làm sao nhận biết trong codebase thật, vì sao gây hại trên production, và bạn refactor từng bước ra sao?",
+  a: `**Tóm tắt:** **God class** (class thần thánh) ôm đồm quá nhiều trách nhiệm, sửa một chỗ dễ vỡ chỗ khác. **Anemic Domain Model** (mô hình miền thiếu máu) là khi entity/domain (đối tượng nghiệp vụ) chỉ có field + getter/setter, còn luật nghiệp vụ nằm ở service - domain thành "túi dữ liệu". Cả hai gây khó hiểu, khó test và dễ bug nghiệp vụ. Cách chữa: bóc tách trách nhiệm, đưa luật về đúng nơi (domain giàu hành vi vừa đủ), từng bước nhỏ có test.
+
+### Thuật ngữ giải thích nhanh
+- **Anti-pattern:** cách làm phổ biến nhưng thường dẫn đến thiết kế tệ.
+- **Domain (miền nghiệp vụ):** khái niệm và luật của bài toán (đơn hàng, tài khoản).
+- **Invariant (bất biến):** điều kiện luôn phải đúng (ví dụ số dư không âm).
+
+### 1. God class - nhận biết và hậu quả
+Dấu hiệu: hàng nghìn dòng, nhiều dependency, tên chung chung ({{*Manager}}, {{*Util}}), method dài chạm nhiều mảng.
+~~~java
+@Service
+public class OrderManager { // 15 dependency, 40 method, 2500 dòng
+    public Result placeOrder(...) { /* validate + pricing + inventory + payment + notify + audit */ }
+}
+~~~
+Hậu quả: thay đổi nhỏ phải deploy cả luồng; merge conflict; test chậm; bug lan.
+
+### 2. Anemic Domain Model - nhận biết và hậu quả
+~~~java
+@Entity
+public class Account { // chỉ là túi dữ liệu
+    private BigDecimal balance; private String status;
+    // chỉ getter/setter, không có luật
+}
+@Service
+public class AccountService {
+    public void withdraw(Account acc, BigDecimal amount) {
+        if (!"ACTIVE".equals(acc.getStatus())) throw new IllegalStateException("inactive");
+        if (acc.getBalance().compareTo(amount) < 0) throw new IllegalStateException("not enough");
+        acc.setBalance(acc.getBalance().subtract(amount)); // luật rải rác
+    }
+}
+~~~
+Hậu quả: cùng luật lặp ở nhiều service với điều kiện khác nhau → trạng thái sai.
+
+### Refactor từng bước
+**Bước 1:** Viết characterization test (ghi lại hành vi hiện tại) cho luồng quan trọng.
+**Bước 2:** Bóc God class theo trách nhiệm (PricingService, InventoryGateway, PaymentOrchestrator, OrderNotifier).
+**Bước 3:** Làm giàu domain vừa đủ - đưa bất biến vào entity.
+~~~java
+@Entity
+public class Account {
+    private BigDecimal balance; private AccountStatus status;
+    public void withdraw(BigDecimal amount) { // hành vi + luật cùng dữ liệu
+        if (status != AccountStatus.ACTIVE) throw new DomainException("ACCOUNT_INACTIVE");
+        if (balance.compareTo(amount) < 0) throw new DomainException("INSUFFICIENT_BALANCE");
+        this.balance = this.balance.subtract(amount); // tự bảo vệ invariant
+    }
+}
+@Service
+public class AccountService {
+    @Transactional
+    public void withdraw(Long id, BigDecimal amount) {
+        Account acc = repo.findById(id).orElseThrow();
+        acc.withdraw(amount); // service điều phối, domain giữ luật
+    }
+}
+~~~
+**Bước 4:** Không nhồi hạ tầng (HTTP, gửi mail) vào entity. Service điều phối; domain giữ luật thuần.
+
+### So sánh nhanh
+| | God class | Anemic Domain Model |
+|---|---|---|
+| Vấn đề | Quá nhiều trách nhiệm | Thiếu hành vi/luật trong domain |
+| Dấu hiệu | Class khổng lồ, nhiều lý do đổi | Entity chỉ getter/setter, luật lặp |
+| Hướng sửa | Tách theo cohesion (tính gắn kết) | Đưa bất biến/hành vi vào domain |
+
+### Pitfall trên production
+- Big-bang rewrite (viết lại toàn bộ): rủi ro cao. Refactor nhỏ, có test.
+- "Rich domain cực đoan": nhồi gọi DB/HTTP vào entity → khó test.
+- Bỏ sót luật rải rác khi gom vào domain: phải rà hết service.
+
+### Ví dụ đời thực
+Triệu chứng: hệ thống ví điện tử có {{WalletManager}} 3.200 dòng; mỗi lần sửa hạn mức rút phát sinh lỗi trừ tiền ở luồng hoàn tiền. Điều tra: 5 method ở 4 service tự kiểm tra số dư/hạn mức khác nhau (anemic), còn {{WalletManager}} vừa trừ tiền vừa gọi đối tác vừa ghi audit. Số sự cố số dư: 4 vụ/tháng. Xử lý: tách {{WalletManager}} thành 5 thành phần; chuyển luật {{debit/credit/ensureLimit}} vào {{Wallet}} domain; thêm 30 unit test quanh bất biến số dư. Kết quả: sau 3 tháng còn 0 vụ sai số dư do lệch luật, thời gian onboard dev mới giảm vì luật nằm tại một chỗ.
+
+### Trả lời mẫu khi phỏng vấn
+"God class gánh quá nhiều trách nhiệm, còn anemic domain model là entity chỉ có dữ liệu trong khi luật nghiệp vụ rải rác ở service. Em nhận biết bằng class rất lớn nhiều lý do thay đổi, hoặc entity chỉ getter/setter nhưng cùng luật bị lặp. Khi refactor em viết test bảo vệ trước, rồi bóc God class theo cụm trách nhiệm để tăng cohesion. Với anemic model em đưa bất biến vào domain, ví dụ withdraw tự kiểm tra trạng thái và số dư, còn service chỉ điều phối transaction. Em làm từng bước nhỏ, tránh big-bang rewrite."
+
+> Senior tip: Đặt luật nghiệp vụ ở nơi gần dữ liệu nó bảo vệ nhất, và giữ entity không phụ thuộc hạ tầng (DB/HTTP) để dễ test và nhất quán. Không cần rich domain cực đoan.`,
+  follow: [
+    "Làm thế nào phân biệt logic nên nằm trong domain entity với logic nên ở application/service layer?",
+    "Bạn dùng metric hay heuristic nào (số dòng, số dependency, LCOM) để phát hiện God class sớm trong review?",
+    "Khi refactor God class đang chạy production, bạn chia nhỏ thay đổi và giảm rủi ro rollout thế nào?"
+  ],
+  tags: ["anti-pattern", "God class", "anemic domain", "refactoring", "DDD"]
+},
+{
+  id: 'architecture-039',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Trong một checkout flow, có dữ liệu phải đúng ngay và có dữ liệu chấp nhận trễ vài giây. Bạn chọn consistency cho từng phần thế nào để vừa tránh bán sai vừa không làm mọi thao tác chậm?',
+  a: `**Tóm tắt:** Tôi không gán một consistency model (mức cam kết về dữ liệu các thành phần nhìn thấy) cho cả hệ thống; tôi phân loại theo hậu quả nếu người dùng đọc dữ liệu cũ. Quyết định giữ chỗ và ghi nhận thanh toán phải dựa trên transaction có điều kiện ở nguồn dữ liệu có thẩm quyền, còn trang sản phẩm, tìm kiếm và báo cáo có thể dùng bản sao cập nhật trễ nếu giao diện nói rõ trạng thái.
+
+### Đầu tiên: dữ liệu nào là sự thật?
+Consistency mạnh nghĩa là sau khi một thao tác ghi được xác nhận, lần đọc liên quan không được hành xử như thao tác đó chưa xảy ra; linearizability còn yêu cầu thứ tự quan sát phù hợp thời gian thực trên các client. Eventual consistency chỉ hứa các bản sao sẽ hội tụ nếu ngừng ghi, không hứa chính xác khi nào. Replica là bản sao dữ liệu ở node khác; projection là dữ liệu được tính lại để đọc nhanh, thường xây từ sự kiện.
+
+Không nên đồng nhất consistency mạnh với một lựa chọn database. PostgreSQL transaction với constraint/điều kiện cập nhật bảo vệ invariant bên trong một database; nó không tự biến cập nhật qua PostgreSQL, Redis và Kafka thành một transaction nguyên tử. Cần xác định invariant (điều luôn phải đúng), ranh giới transaction và hành vi khi dependency chậm trước khi chọn công nghệ.
+
+### Phân loại theo luồng checkout
+| Dữ liệu / thao tác | Cam kết cần thiết | Lý do |
+|---|---|---|
+| Giữ chỗ một sản phẩm cuối | Ghi có điều kiện, nguyên tử tại kho chính | Hai request không được cùng thắng |
+| Thanh toán và ledger | Giao dịch bền, có trạng thái rõ | Không được báo đã thu tiền khi chưa có bằng chứng |
+| Trang danh sách, bộ lọc tìm kiếm | Eventual, ví dụ chậm tối đa vài giây | Trễ hiển thị không được quyết định việc trừ kho |
+| Lịch sử vừa đặt của chính người dùng | Read-your-writes | Người đặt cần thấy đơn mình vừa tạo |
+| Thống kê doanh thu | Eventual, có thời điểm dữ liệu | Báo cáo không nằm trên đường quyết định giao dịch |
+
+Điểm quan trọng là đọc cũ ở projection không được dùng để quyết định ghi nhạy cảm. Trang có thể báo “còn 1” theo chỉ mục trễ; khi khách bấm mua, service kho kiểm tra lại bằng câu lệnh nguyên tử:
+~~~sql
+UPDATE inventory
+SET available = available - 1
+WHERE sku = :sku AND available > 0;
+~~~
+Ứng dụng chỉ xác nhận giữ chỗ khi số dòng được cập nhật là 1. Nếu là 0, hết hàng hoặc phải thử lại theo quy tắc nghiệp vụ. Một transaction giữ được invariant trong DB; không nên giữ transaction DB mở trong lúc gọi cổng thanh toán qua mạng.
+
+### Nối các phần mà không giả vờ có transaction toàn cục
+Một transaction cục bộ có thể cập nhật đơn và ghi một bản ghi outbox (hộp thư đi bền vững) cùng lúc. Tiến trình nền phát outbox sang Kafka; consumer cập nhật projection tìm kiếm. Kafka có thể giao lại sự kiện, nên consumer cần xử lý trùng an toàn. Người dùng nhận trạng thái {{PENDING}} cho đến khi workflow thanh toán kết thúc; sau đó đơn chuyển {{CONFIRMED}} hoặc {{FAILED}}. Đây là sự nhất quán cuối cùng có trạng thái được công khai, không phải “mọi nơi tức thì”.
+
+~~~seq
+title: Checkout và projection tìm kiếm
+actors: Client | Order | PostgreSQL | Kafka | Search
+Client -> Order: Tạo đơn
+Order -> PostgreSQL: Giữ kho + ghi đơn/outbox
+PostgreSQL --> Order: Commit hoặc hết hàng
+Order --> Client: PENDING hoặc từ chối
+Kafka -> Search: Phát sự kiện outbox
+Search --> Client: Kết quả tìm kiếm cập nhật sau
+~~~
+
+### Trade-off và cách công bố
+| Cách đọc/ghi | Ưu | Chi phí / giới hạn |
+|---|---|---|
+| Đọc/ghi primary với transaction | Dễ giữ invariant, read-your-writes | Tải primary, độ trễ cao hơn |
+| Đọc replica hoặc projection | Tăng khả năng đọc, tách tải | Có replication lag; cần chấp nhận stale |
+| Ghi đồng bộ nhiều hệ thống | Có thể trả kết quả đồng bộ | Tăng latency, timeout mơ hồ, khó phục hồi |
+| Workflow bất đồng bộ | Tách lỗi và cho phép retry | Phải có trạng thái trung gian, đối soát |
+
+Khi dùng replica, đường đọc cần biết ngữ cảnh. Ví dụ ngay sau khi tạo đơn, trả dữ liệu từ kết quả ghi hoặc đọc primary; trang catalog thông thường đọc projection. Đặt SLO (mục tiêu dịch vụ) cho độ trễ cập nhật, như p99 dưới 3 giây, rồi cảnh báo replication lag và tuổi sự kiện. Không gọi eventual là “dữ liệu sẽ mới trong vài giây” nếu chưa đo và chưa có giới hạn vận hành.
+
+### Pitfall production
+- Bản sao báo còn hàng, API bán hàng tin luôn nên oversell.
+- API trả “thành công” sau khi ghi đơn nhưng trước khi xác nhận thanh toán, làm người dùng hiểu nhầm trạng thái.
+- Retry một lệnh khi client timeout có thể tạo đơn thứ hai; consistency không thay thế idempotency.
+- Consumer chết hoặc xử lý sai offset khiến projection tụt xa; phải đo tuổi sự kiện, có replay và rebuild.
+- Bật synchronous replication toàn cục cho mọi bảng làm latency liên vùng tăng dù phần lớn dữ liệu không cần cam kết đó.
+
+### Ví dụ đời thực
+Một cửa hàng bán 2.000 đơn/phút lúc mở bán. Trang catalog dùng search index trễ tối đa 4 giây; kho chính giữ 120 chiếc tai nghe. Khi nhiều request cùng thấy con số “1”, chỉ một lệnh {{UPDATE ... WHERE available > 0}} cập nhật được dòng cuối, các request còn lại nhận hết hàng. Ban đầu team cập nhật Redis, PostgreSQL và Kafka đồng bộ trong request; p99 lên 1,8 giây và timeout khiến client gửi lại. Sau khi chuyển quyết định giữ kho về transaction PostgreSQL, ghi outbox chung transaction và trả {{PENDING}}, p99 phần tạo đơn còn 240 ms; projection cập nhật p99 trong 2,1 giây. Số đơn vượt tồn kho giảm về 0; dashboard hiển thị rõ tuổi projection thay vì hứa dữ liệu tức thì.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi bắt đầu từ invariant, không bắt đầu từ tên database. Với checkout, invariant là không bán vượt tồn và không ghi nhận thanh toán chưa có căn cứ. Tôi giữ quyết định trừ kho trong một lệnh cập nhật có điều kiện ở database chính; chỉ xác nhận nếu có đúng một dòng được cập nhật. Order và outbox được commit cùng transaction, rồi consumer cập nhật search projection bất đồng bộ. Trang catalog có thể stale vài giây, nhưng không được dùng làm nguồn quyết định bán hàng. Lịch sử đơn của người vừa đặt phải có read-your-writes, có thể trả từ kết quả command hoặc đọc primary. Tôi công khai trạng thái PENDING trong lúc thanh toán xử lý, theo dõi tuổi projection và đặt ngưỡng cảnh báo. Trade-off là hệ thống đọc nhanh hơn và chịu lỗi thành phần tốt hơn, đổi lại cần trạng thái trung gian, retry idempotent và quy trình đối soát. Tôi chỉ dùng consistency mạnh ở nơi hậu quả của đọc cũ lớn; không kéo cả báo cáo và tìm kiếm vào đường transaction.”
+
+  > Senior tip: Hãy ghi rõ “được phép stale tối đa bao lâu” cho từng projection và theo dõi bằng tuổi sự kiện ở p95/p99. Nếu không có ngưỡng đo được, eventual consistency chỉ là lời hứa mơ hồ.`,
+  follow: [
+    'Làm sao xử lý khi một sự kiện outbox bị phát lại nhiều lần nhưng projection không được đếm hoặc ghi trùng?',
+    'Với giao dịch chuyển tiền qua hai service, bạn biểu diễn trạng thái trung gian và quy trình bù trừ thế nào?',
+    'Khi nào đọc từ replica là an toàn, và làm sao đảm bảo người dùng vừa ghi không đọc lại dữ liệu cũ?'
+  ],
+  tags: ['consistency', 'transaction', 'outbox', 'checkout']
+},
+{
+  id: 'architecture-040',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Một bảng đơn hàng tăng lên hàng tỷ dòng và một số khách hàng lớn tạo tải gấp nhiều lần khách khác. Bạn quyết định shard key, kiểu sharding và lộ trình chuyển dữ liệu thế nào để tránh hotspot và vẫn truy vấn được?',
+  a: `**Tóm tắt:** Sharding là chia một tập dữ liệu thành nhiều phần độc lập để tăng dung lượng và tải ghi; shard key là giá trị dùng để quyết định một bản ghi nằm ở shard nào. Tôi chọn key dựa trên phân bố tải, truy vấn phổ biến, khả năng cô lập tenant và khả năng chuyển shard, không chỉ dựa vào việc key có duy nhất hay không. Hash phân tán đều nhưng kém cho truy vấn theo khoảng; range giữ thứ tự nhưng có thể dồn tải vào vùng mới nhất.
+
+### Vì sao phải chọn key trước khi dữ liệu quá lớn
+Một DB đơn có giới hạn về CPU, I/O và dung lượng. Tăng máy dọc (vertical scaling) có giới hạn; sharding thêm các DB node và định tuyến request tới node chứa dữ liệu. Nhưng từ lúc chia shard, một truy vấn, unique constraint hoặc transaction vốn đơn giản có thể phải phối hợp nhiều DB.
+
+Key tốt thường có cardinality cao (nhiều giá trị khác nhau), tải phân bố tương đối đều, xuất hiện trong phần lớn truy vấn và ít thay đổi. {{tenant_id}} giúp mọi dữ liệu của tenant ở cùng nơi, dễ cô lập và truy vấn theo khách hàng; nhưng một tenant khổng lồ có thể thành hot shard. {{created_at}} hợp với quét theo thời gian nhưng ghi mới đều dồn vào shard cuối. {{order_id}} ngẫu nhiên phân tán ghi, nhưng truy vấn toàn bộ đơn của một khách hàng cần secondary index hoặc fan-out.
+
+### Hash hay range?
+| Chiến lược | Tốt | Rủi ro | Ví dụ hợp lý |
+|---|---|---|---|
+| Hash(key) | Phân phối ghi đều | Truy vấn theo khoảng quét nhiều shard | Lịch sử theo user nếu hash theo user |
+| Range(key) | Quét khoảng và sắp thứ tự | Giá trị mới dồn vào range cuối | Lưu trữ theo ngày đã đóng |
+| Tenant mapping | Cô lập tenant, có thể chuyển tenant lớn | Cần metadata định tuyến và di chuyển | SaaS B2B |
+| Composite/hash bucket + thời gian | Cân bằng và giới hạn vùng quét | Routing phức tạp hơn | Event theo account và tháng |
+
+Ở Java, hash code có thể âm, nên không dùng phép {{%}} trực tiếp để tạo chỉ số âm:
+~~~java
+int shardFor(String tenantId, int shardCount) {
+    // floorMod xử lý cả hash âm; số shard phải lớn hơn 0.
+    return Math.floorMod(tenantId.hashCode(), shardCount);
+}
+~~~
+Đây chỉ minh họa định tuyến; {{hashCode()}} của Java không phải giao thức ổn định giữa mọi implementation/version. Sản phẩm thật nên dùng hash được định nghĩa rõ và versioned. Quan trọng hơn, tăng trực tiếp shardCount từ 8 lên 9 remap nhiều tenant. Dùng logical bucket (ví dụ 1.024 bucket ổn định) rồi ánh xạ bucket sang shard vật lý giúp chuyển một nhóm bucket mà không đổi key của toàn bộ hệ thống.
+
+### Quy trình chọn key
+1. Liệt kê truy vấn thật bằng số liệu: phần trăm theo tenant, theo user, truy vấn báo cáo và join.
+2. Ước lượng phân bố: tenant lớn nhất chiếm bao nhiêu % QPS và dung lượng? Đừng chỉ nhìn trung bình.
+3. Chọn nơi đặt các thao tác cần transaction chung. Nếu đơn và dòng đơn thường được đọc cùng nhau, giữ chúng cùng shard hoặc thiết kế rõ cách xử lý giao dịch phân tán.
+4. Kiểm tra unique constraint: ràng buộc unique toàn cụm khó hơn unique trong một shard. Thường thêm shard key vào phạm vi unique hoặc dùng ID toàn cục và service kiểm soát.
+5. Thiết kế resharding trước: copy snapshot, bắt kịp thay đổi bằng CDC/log, đổi routing có kiểm soát, xác minh rồi mới bỏ dữ liệu cũ.
+
+### Hotspot và vận hành
+Shard key không bảo đảm cân bằng QPS. Một tài khoản có vài triệu giao dịch hoặc một SKU flash sale có thể nóng dù các shard có dung lượng bằng nhau. Các cách xử lý gồm bucket phụ theo một key phụ, cache/read replica cho tải đọc, hoặc cô lập tenant/SKU nóng. Tuy nhiên bucket phụ làm truy vấn tổng hợp phải gộp kết quả và có thể làm mất transaction đơn giản.
+
+Theo dõi từng shard: QPS, p99, CPU, dung lượng, replication lag và hàng đợi connection. Một shard ở 90% CPU trong khi trung bình cụm 35% là dấu hiệu phân bố lệch. Đặt ngưỡng di chuyển theo telemetry, không chờ đầy ổ đĩa. Trong lúc di chuyển, giới hạn tốc độ copy để không cạnh tranh I/O với giao dịch online; so sánh count/checksum và có đường rollback routing.
+
+### Pitfall production
+- Chọn {{created_at}} làm range key rồi mọi ghi mới đổ vào một shard nóng.
+- Hash theo {{order_id}} đều nhưng mọi màn hình tra đơn theo {{tenant_id}} phải broadcast truy vấn.
+- Tăng số shard thay đổi phép modulo, tạo đợt cache miss và di chuyển gần như toàn bộ dữ liệu.
+- Một tenant lớn phá vỡ giả định “mọi tenant tương đương”; cần tenant placement hoặc tách riêng.
+- Sequence/unique chỉ có ý nghĩa trong một shard nhưng API lại giả định duy nhất toàn hệ thống.
+
+### Ví dụ đời thực
+Một SaaS có 400 triệu đơn, 2.000 tenant. Ban đầu sharding theo {{tenant_id}} vào 16 DB; trung bình 25 triệu đơn/shard nhưng tenant lớn nhất tạo 28% lưu lượng, làm một shard có p99 900 ms trong khi phần còn lại 180 ms. Điều tra theo tenant cho thấy một khách hàng chiếm 11% tổng số đơn và chạy báo cáo đồng thời với API. Team giữ tenant nhỏ theo mapping, đưa tenant lớn sang nhóm shard riêng và chia bảng sự kiện phụ theo {{tenant_id + month}}; đường ghi đơn vẫn định tuyến về shard của tenant để transaction đơn giản. Dùng logical bucket để chuyển một nhóm tenant trong giờ thấp điểm, copy nền và đối chiếu checksum trước khi đổi routing. Sau rollout, p99 API của shard nóng giảm từ 900 xuống 260 ms; báo cáo tenant lớn chạy trên replica riêng, không còn kéo latency toàn cụm lên.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi sẽ lấy truy vấn và phân bố tải làm đầu vào. Với SaaS, tenant ID thường giúp cô lập dữ liệu và truy vấn nghiệp vụ, nhưng tôi sẽ kiểm tra tenant lớn nhất chứ không chỉ nhìn trung bình. Hash phân phối đều nhưng làm truy vấn theo khoảng khó; range thuận tiện quét nhưng có thể tạo hotspot ở vùng mới. Tôi cũng kiểm tra unique constraint, transaction chung và cách định tuyến trước khi chốt key. Để tránh remap toàn bộ khi thêm DB, tôi dùng logical bucket cùng bảng mapping bucket-to-shard, rồi chuyển từng bucket bằng snapshot cộng log thay đổi và xác minh checksum. Hot tenant có thể được đặt riêng; đổi lại báo cáo liên tenant cần fan-out hoặc kho phân tích. Tôi theo dõi tải từng shard, replication lag và dung lượng, đặt ngưỡng chuyển tải trước khi hết tài nguyên. Sharding không phải nút bấm scale; nó đổi một bài toán DB thành bài toán phân phối và di chuyển dữ liệu.”
+
+  > Senior tip: Đừng báo “trung bình mỗi shard 50%” mà bỏ qua p99 theo shard. Luôn tìm top tenant/key theo QPS và dung lượng trước khi duyệt shard key.`,
+  follow: [
+    'Nếu cần truy vấn báo cáo toàn bộ tenant sau khi sharding theo tenant_id, bạn tránh fan-out lên OLTP thế nào?',
+    'Thiết kế quy trình chuyển một tenant nóng sang shard riêng mà không dừng ghi ra sao?',
+    'Làm thế nào xử lý unique constraint toàn cục khi dữ liệu được chia trên nhiều shard?'
+  ],
+  tags: ['sharding', 'shard-key', 'partitioning', 'hotspot']
+},
+{
+  id: 'architecture-041',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Một API đọc catalog cần nhanh, nhưng dữ liệu thay đổi từ nhiều service và cache đôi khi trả giá cũ. Bạn chọn cache-aside hay write-through, thiết kế invalidation và xử lý race giữa đọc/ghi thế nào?',
+  a: `**Tóm tắt:** Cache-aside là ứng dụng tự đọc cache, cache miss thì tải từ DB; write-through yêu cầu đường ghi cập nhật cache đồng thời với nguồn dữ liệu. Với nhiều service cùng sửa dữ liệu, tôi thường chọn cache-aside kèm sự kiện invalidation bền vững, TTL làm lưới an toàn và version để chặn dữ liệu cũ ghi đè cache mới. Không mô hình nào làm DB và Redis thành một transaction nguyên tử.
+
+### Thuật ngữ và lựa chọn
+Cache là bản sao tạm để giảm latency/tải DB. Invalidation là làm cho bản sao không còn được dùng sau khi nguồn đổi. Write-through có thể nói đến cache tự ghi xuyên tới storage, hoặc ứng dụng ghi storage rồi đồng bộ cache; cần nêu chính xác luồng vì tên gọi giữa thư viện/hệ thống không hoàn toàn đồng nhất. Cache-aside phổ biến khi dữ liệu đọc nhiều, không phải bản ghi nào cũng cần cache và ứng dụng kiểm soát được việc nạp.
+
+| Tiêu chí | Cache-aside | Write-through |
+|---|---|---|
+| Đọc lần đầu | Cache miss phải tải | Cache thường đã được làm mới |
+| Ghi | Cập nhật DB rồi invalidate cache | Đường ghi phải cập nhật cả hai |
+| Dữ liệu ít được đọc | Không tốn cache | Có thể ghi cache lãng phí |
+| Lỗi giữa DB và cache | Cửa sổ stale; cần retry invalidation | Ghi một nơi thành công, nơi kia lỗi vẫn có thể lệch |
+| Phù hợp | Catalog, hồ sơ đọc nhiều | Dữ liệu cần đọc ngay sau khi ghi, cache có semantics rõ |
+
+Write-through không tự cho tính nguyên tử xuyên Redis và PostgreSQL. Nếu DB commit rồi Redis timeout, DB mới nhưng cache cũ; nếu Redis cập nhật trước DB rollback, cache lại chứa giá trị chưa commit. Vì vậy không nên tuyên bố “write-through bảo đảm cache luôn đúng” nếu không có giao thức phục hồi và nguồn chân lý.
+
+### Race khi đọc và ghi
+Trình tự nguy hiểm của cache-aside:
+1. Reader miss cache, đọc giá trị v1 từ DB.
+2. Writer commit v2 và xóa cache.
+3. Reader ghi v1 vào cache sau khi đã bị xóa.
+4. Cache tiếp tục trả v1 cho tới TTL.
+
+Các hướng giảm rủi ro: chỉ nạp từ phiên bản có thể kiểm tra; dùng version tăng đơn điệu và cập nhật cache theo điều kiện “chỉ nhận version mới hơn”; phát invalidation sau commit qua transactional outbox; TTL giới hạn thời gian stale nếu sự kiện mất. Outbox là bản ghi sự kiện ghi cùng transaction DB để tiến trình nền có thể phát lại sau lỗi. Nếu chỉ dùng callback in-memory sau commit, tiến trình chết đúng lúc đó có thể làm mất invalidation.
+
+~~~java
+void updateProduct(Product product) {
+    // Transaction này lưu dữ liệu và outbox trong cùng DB commit.
+    repository.save(product);
+    outbox.save(ProductChanged.of(product.id(), product.version()));
+}
+
+void onProductChanged(ProductChanged event) {
+    // Chỉ xóa cache khi event thuộc version đang được cache.
+    cache.evictIfVersionAtMost(event.id(), event.version());
+}
+~~~
+Phần {{evictIfVersionAtMost}} là thao tác logic cần được thực thi nguyên tử trong cache; không phải API cụ thể của mọi thư viện. Nếu dùng Redis, có thể viết Lua script hoặc lưu version trong value và so sánh khi cập nhật. Consumer cần idempotent vì event có thể phát lại. Nếu không cần phức tạp đó, xóa key sau commit, retry invalidation và TTL có thể đủ với catalog chấp nhận stale ngắn.
+
+### Quy tắc thực dụng cho catalog
+- Cache key có schema/version, ví dụ {{product:v3:<id>}}, để deploy thay đổi cấu trúc không diễn giải nhầm value cũ.
+- Đặt TTL kể cả khi có event; thêm jitter để nhiều key không hết hạn cùng lúc.
+- Không cache kết quả phân quyền hoặc giá cá nhân hóa nếu key không chứa đủ tenant/user/region; sai key có thể rò dữ liệu.
+- Với ghi, commit DB trước rồi invalidate; không giữ transaction DB mở trong lúc gọi Redis.
+- Đo cache hit rate, stale age, invalidation lag và lỗi cache. Có chế độ giảm tải/tắt cache và DB đủ khả năng xử lý tình huống đó.
+
+### Pitfall production
+- Chỉ service A phát invalidation trong khi service B cũng ghi bảng.
+- TTL dài bị xem như giải pháp consistency; nó chỉ giới hạn stale chứ không ngăn stale ngay sau ghi.
+- Cập nhật value cache bằng hai request đồng thời theo thứ tự ngược, khiến value cũ ghi cuối.
+- Cache key thiếu locale/tenant/currency làm trả nội dung hoặc giá của người khác.
+- Redis chập chờn khiến mọi request miss cùng lúc; cache fallback không giới hạn có thể dồn tải vào DB.
+
+### Ví dụ đời thực
+Catalog có 3 triệu sản phẩm, 25.000 lượt đọc/giây và nhiều service cập nhật giá. Giá cũ có thể hiển thị tối đa 5 giây nhưng checkout phải đọc giá có thẩm quyền. Ban đầu service catalog xóa Redis sau commit; một worker chết trước bước xóa làm một số key giữ giá cũ hết TTL 10 phút. Team thêm outbox cùng transaction cập nhật sản phẩm, consumer phát invalidation và retry được; TTL giảm còn 5 phút làm lưới an toàn, có metric tuổi event. Một race reader v1 ghi sau invalidate vẫn từng xuất hiện, nên họ đưa version vào value và chỉ chấp nhận version không thấp hơn version hiện có. Invalidation lag p99 giảm từ 7 phút xuống 1,4 giây; checkout vẫn kiểm tra giá trong DB, còn trang catalog công bố chính sách cập nhật gần thời gian thực.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi sẽ xác định stale tối đa mà nghiệp vụ chấp nhận. Với catalog đọc nhiều, cache-aside thường đơn giản: đọc cache, miss thì đọc DB; khi ghi, commit DB trước rồi invalidate. Nhưng nếu nhiều service có thể ghi, tôi không dựa vào callback của một service. Tôi ghi outbox trong cùng transaction với dữ liệu và phát invalidation có retry. Event có thể đến trùng nên consumer idempotent. Tôi cũng kiểm tra race khi reader lấy v1, writer commit v2 rồi reader vô tình nạp v1 sau khi cache bị xóa; version hoặc một chiến lược chống ghi lùi có thể xử lý nếu stale đó không chấp nhận được. Write-through không làm DB và Redis nguyên tử, nên lỗi một phía vẫn cần phục hồi. TTL, jitter, theo dõi invalidation lag và đường fallback có giới hạn là các phần bắt buộc. Với giá checkout, cache chỉ hỗ trợ hiển thị; quyết định cuối phải kiểm tra nguồn có thẩm quyền.”
+
+  > Senior tip: Hãy đo “invalidation lag” và đặt ngân sách stale theo nghiệp vụ. TTL dài không thay thế được invalidation; nó chỉ đặt trần cho một số đường lỗi.`,
+  follow: [
+    'Làm sao tránh reader ghi lại value cũ vào cache sau khi writer đã invalidate?',
+    'Nếu Redis down, bạn fallback về DB thế nào mà không tạo cache stampede?',
+    'Khi nhiều service cập nhật cùng một sản phẩm, ai sở hữu version và cách xử lý event đến sai thứ tự ra sao?'
+  ],
+  tags: ['cache-aside', 'write-through', 'invalidation', 'outbox']
+},
+{
+  id: 'architecture-042',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Client, API, database, Kafka consumer và cổng thanh toán đều có thể timeout hoặc retry. Bạn thiết kế idempotency end-to-end thế nào để một yêu cầu logic chỉ tạo một hiệu ứng nghiệp vụ?',
+  a: `**Tóm tắt:** Idempotency là tính chất gửi cùng một yêu cầu logic nhiều lần nhưng kết quả nghiệp vụ chỉ được áp dụng một lần. Tôi tạo khóa ổn định ở biên API, lưu khóa cùng hash request và kết quả trong DB có unique constraint; trong cùng transaction ghi outbox. Mỗi consumer có deduplication riêng và lời gọi ra đối tác dùng cùng khóa nếu đối tác hỗ trợ. Không hứa exactly-once xuyên mọi hệ thống; thiết kế at-least-once cộng dedup, trạng thái và đối soát.
+
+### Vì sao timeout tạo ra yêu cầu không rõ kết quả
+Timeout chỉ nói client không nhận phản hồi đúng hạn, không nói server chưa xử lý. Server có thể đã commit đơn nhưng response bị mất. Client retry nếu không có khóa sẽ tạo đơn thứ hai. Message broker cũng thường giao lại message khi consumer đã commit nghiệp vụ nhưng chưa xác nhận offset. Idempotency phải đặt tại từng ranh giới nơi retry có thể lặp hiệu ứng.
+
+**Idempotency key** là định danh của một thao tác logic, ví dụ UUID client tạo cho “thanh toán đơn 123”. **Request hash** là dấu vân tay của các tham số quan trọng. Nếu cùng key nhưng payload khác, trả lỗi thay vì lặng lẽ dùng kết quả cũ. **Deduplication** là phát hiện và bỏ qua lần xử lý trùng. Khóa cần phạm vi, thường {{(customer_id, operation, idempotency_key)}}, để khách hàng khác không va chạm.
+
+### Luồng API và database
+1. Client tạo key cho một lần bấm xác nhận và giữ nguyên key khi retry; thao tác mới phải dùng key mới.
+2. API bắt đầu transaction, chèn bản ghi idempotency với unique constraint theo scope.
+3. Nếu chèn thành công, tạo payment/order và outbox trong cùng transaction, lưu trạng thái cùng response có thể phát lại.
+4. Nếu vi phạm unique, đọc bản ghi đã có. Hash khác thì trả conflict; cùng hash thì trả kết quả đã lưu hoặc trạng thái {{PENDING}}.
+5. Chỉ hết hạn khóa sau cửa sổ retry được công bố; không xóa khi giao dịch vẫn đang xử lý.
+
+~~~java
+PaymentResult create(String customer, String key, Request req) {
+    String hash = stableHash(req); // Hash các field nghiệp vụ đã chuẩn hóa.
+    return transaction.execute(() -> {
+        IdempotencyRecord prior = records.find(customer, key);
+        if (prior != null) {
+            if (!prior.requestHash().equals(hash)) throw new KeyConflict();
+            return prior.savedResult();
+        }
+        records.insertUnique(customer, key, hash, "PENDING");
+        Payment payment = payments.create(req);
+        outbox.insert(PaymentRequested.of(payment.id(), key));
+        return PaymentResult.pending(payment.id());
+    });
+}
+~~~
+Code minh họa phải dựa vào unique constraint DB, không dựa riêng vào {{find}} rồi {{insert}}: hai request đồng thời đều có thể thấy chưa tồn tại. Xử lý vi phạm unique cần đọc lại record đã thắng cuộc. Thời điểm lưu response và trạng thái phải được thống nhất để retry không thấy bản ghi nửa vời.
+
+### Mỗi hop có trách nhiệm riêng
+| Hop | Khóa/dedup | Khi nào được xác nhận |
+|---|---|---|
+| Client → API | Idempotency key theo thao tác | Kết quả đã lưu hoặc trạng thái đang xử lý |
+| API → DB | Unique constraint + transaction | Commit dữ liệu và outbox |
+| Outbox → Kafka | Event ID ổn định, producer retry | Broker nhận; outbox đánh dấu sau đó |
+| Kafka → consumer DB | Inbox/processed-event unique theo event ID | Cùng transaction với cập nhật nghiệp vụ |
+| Service → cổng thanh toán | Provider idempotency key hoặc tra cứu trạng thái | Có xác nhận/đối soát trạng thái |
+
+Inbox (hộp thư đến) là bảng lưu event ID đã xử lý. Consumer insert event ID và cập nhật dữ liệu trong cùng transaction; nếu event lặp, unique constraint khiến nó không chạy hiệu ứng lần nữa. Nếu hiệu ứng là gửi email, không thể rollback email bằng DB transaction; dùng provider có idempotency, hoặc chấp nhận ít nhất một lần và thiết kế nội dung/recipient dedup thích hợp.
+
+### Exactly-once có giới hạn
+Kafka có semantics exactly-once cho một số luồng đọc-ghi Kafka trong phạm vi cấu hình, nhưng không tự bao trùm DB, email hay cổng thanh toán. “Exactly once” ở cấp nghiệp vụ thường được xây bằng at-least-once delivery (có thể giao lại) và xử lý idempotent. Nếu đối tác không hỗ trợ idempotency, timeout sau khi gửi tạo trạng thái {{UNKNOWN}}; không gửi mù lần nữa. Tra cứu giao dịch theo merchant reference hoặc reconciliation (đối soát giữa hai bên) trước khi quyết định retry.
+
+### Pitfall production
+- Client tạo key mới mỗi lần retry nên server không thể nhận ra cùng thao tác.
+- Chỉ kiểm tra key trong cache; cache mất là giao dịch trùng.
+- Cùng key, payload khác nhưng trả response cũ mà không phát hiện lỗi client.
+- Xóa record idempotency sau vài phút trong khi client/đối tác có thể retry lâu hơn.
+- Consumer ghi DB rồi crash trước commit offset; broker giao lại, vì thế dedup phải nằm cùng transaction với hiệu ứng DB.
+- Lời gọi thanh toán timeout bị coi là thất bại dù provider đã thu tiền.
+
+### Ví dụ đời thực
+Ví điện tử nhận 900 yêu cầu chuyển tiền/giây trong đợt trả lương. Một lần deploy làm response p99 vượt timeout 2 giây; mobile retry trung bình 2,4 lần. Trước đây API tạo transfer mới mỗi lần, dẫn tới 37 giao dịch trùng trong 20 phút. Team bổ sung khóa theo user + operation, request hash, unique constraint và lưu kết quả; ghi transfer cùng outbox trong transaction. Consumer dùng inbox theo event ID; lệnh ra ngân hàng dùng merchant reference ổn định, timeout chuyển sang {{UNKNOWN}} rồi tra cứu trước khi gửi lại. Sau rollout, retry vẫn khoảng 2,1 lần/request nhưng duplicate transfer bằng 0 trong 30 ngày; các trường hợp provider trả trạng thái không rõ được đối soát trong 3 phút p95.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi xem idempotency là hợp đồng trên từng ranh giới retry. Client tạo một khóa cho thao tác logic và giữ nguyên qua timeout. API lưu khóa, request hash và kết quả với unique constraint; cùng khóa nhưng body khác phải bị từ chối. Trong một DB transaction, tôi tạo nghiệp vụ và outbox để không có cửa sổ commit dữ liệu mà mất event. Consumer dùng inbox hoặc unique event ID trong cùng transaction với cập nhật DB. Với cổng thanh toán, tôi truyền merchant reference ổn định nếu provider hỗ trợ. Nếu timeout mà không biết đã thu tiền chưa, trạng thái là UNKNOWN và phải query/đối soát, không gửi lại mù. Tôi tránh tuyên bố exactly-once toàn hệ thống; broker có thể giao lặp, DB và email không cùng transaction. Mục tiêu thực tế là at-least-once delivery, hiệu ứng nghiệp vụ dedup được và có quy trình phục hồi cho trạng thái mơ hồ.”
+
+  > Senior tip: Giữ idempotency record lâu hơn cửa sổ retry thực tế của client và đối tác. Với tiền, “không biết đã thành công chưa” là một trạng thái cần mô hình hóa, không phải exception để retry vô hạn.`,
+  follow: [
+    'Nếu cùng idempotency key được gửi đồng thời từ hai API instance, bạn bảo đảm chỉ một bên tạo giao dịch bằng cơ chế nào?',
+    'Đối tác thanh toán không hỗ trợ idempotency và timeout sau khi nhận request; bạn xử lý thế nào?',
+    'Consumer đã cập nhật DB nhưng chưa commit Kafka offset rồi bị restart, dedup nằm ở đâu?'
+  ],
+  tags: ['idempotency', 'outbox', 'inbox', 'payments']
+},
+{
+  id: 'architecture-043',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Một downstream service chậm dần khiến thread, connection và queue của API tăng liên tục. Bạn thiết kế back-pressure và load shedding thế nào để giữ hệ thống sống, tránh retry storm và bảo vệ request quan trọng?',
+  a: `**Tóm tắt:** Back-pressure (áp lực ngược) là báo cho nơi gửi giảm tốc khi nơi nhận gần quá tải; load shedding là chủ động từ chối hoặc bỏ công việc ít quan trọng để bảo vệ phần còn lại. Tôi giới hạn concurrency và queue, áp deadline xuyên suốt, phân loại ưu tiên, từ chối sớm bằng 429/503 và chỉ retry có điều kiện với backoff+jitter. Queue không giới hạn không hấp thụ tải miễn phí; nó biến quá tải tức thời thành latency và hết bộ nhớ.
+
+### Vì sao queue dài không phải giải pháp
+Khi request đến nhanh hơn khả năng xử lý, queue tăng. Theo định luật Little, số việc đang nằm trong hệ thống xấp xỉ throughput nhân với thời gian lưu lại: {{L = λ × W}}. Nếu service xử lý 1.000 request/s mà mỗi request mất 10 giây, cần trung bình 10.000 request đang chờ hoặc chạy. Queue tăng làm request hết deadline, caller retry, tải tăng thêm và hệ thống càng chậm.
+
+Back-pressure khác rate limit ở chỗ nó phản ứng với khả năng tiếp nhận hiện tại, còn rate limit đặt quota theo caller/khoảng thời gian. Load shedding chọn việc không phục vụ: ví dụ bỏ recommendation hoặc analytics nhưng giữ thanh toán/đăng nhập. Cần xác định ưu tiên nghiệp vụ trước sự cố.
+
+### Các lớp bảo vệ
+1. **Giới hạn đầu vào:** concurrency tối đa, queue có giới hạn và request body/connection limit.
+2. **Deadline:** truyền thời gian còn lại xuống service dưới; không để mỗi hop tự chờ 30 giây khi client chỉ còn 2 giây.
+3. **Bulkhead:** chia thread pool/connection pool theo dependency hoặc nhóm nghiệp vụ để một dependency không chiếm hết tài nguyên.
+4. **Từ chối sớm:** queue đầy thì trả 503 hoặc 429 cùng {{Retry-After}} nếu có thể; không nhận rồi để timeout muộn.
+5. **Circuit breaker:** tạm ngừng gọi dependency lỗi để tránh lãng phí kết nối; nó không thay thế giới hạn queue hay capacity.
+6. **Retry có ngân sách:** retry lỗi tạm thời, giới hạn số lần, exponential backoff với jitter; không retry lỗi nghiệp vụ hoặc mọi timeout vô điều kiện.
+
+Ví dụ giới hạn semaphore trong Java:
+~~~java
+Response callPartner(Request request) {
+    if (!partnerPermits.tryAcquire()) {
+        throw new ServiceOverloadedException();
+    }
+    try {
+        return partnerClient.call(request, request.remainingDeadline());
+    } finally {
+        partnerPermits.release();
+    }
+}
+~~~
+{{tryAcquire()}} không đợi vô hạn nên overload bị phát hiện sớm; deadline còn lại phải được truyền tới HTTP client thật. Trong Spring, cấu hình pool/timeout phải nhất quán với số permit; nếu pool chỉ có 20 connection nhưng semaphore cho 200 request thì 180 request vẫn xếp hàng bên trong client.
+
+### Chọn việc giữ lại và bỏ đi
+| Tác vụ | Hành vi khi quá tải |
+|---|---|
+| Xác nhận thanh toán/đơn | Giữ tài nguyên có giới hạn, từ chối rõ để client retry an toàn |
+| Recommendation, nội dung liên quan | Trả kết quả tối giản hoặc bỏ qua |
+| Email xác nhận | Đưa vào hàng đợi bền; giới hạn tốc độ consumer |
+| Báo cáo lớn | Giới hạn đồng thời, trả job bất đồng bộ |
+| Health check nội bộ | Tránh phụ thuộc chuỗi downstream dài gây báo chết giả |
+
+Thông báo từ chối cần phù hợp giao thức: HTTP 429 cho quota theo caller, 503 cho năng lực service tạm thời. Retry-After chỉ hữu ích nếu client tuân thủ. Backoff phải có jitter để hàng nghìn client không cùng retry đúng một thời điểm. Hệ thống cũng cần giữ headroom cho request nội bộ như health check, token refresh hoặc thao tác phục hồi.
+
+### Quan sát và điều chỉnh
+Đo inflight request, độ sâu/tuổi queue, tỷ lệ từ chối, timeout, saturation thread/connection pool, deadline hết hạn, retry rate và latency theo dependency. CPU thấp không có nghĩa hệ thống khỏe nếu mọi thread đang chờ socket. Load shedding có hiệu quả khi p99 và error budget của luồng quan trọng được bảo vệ, không phải khi dashboard chỉ cho thấy số lỗi tổng giảm.
+
+### Pitfall production
+- Queue không giới hạn trong executor hoặc message consumer tạo heap tăng và GC pause.
+- Retry ở gateway, service và client nhân lên: 3 tầng mỗi tầng thử 3 lần có thể tạo tới 27 lần gọi downstream.
+- Timeout chỉ ở ingress nhưng service dưới vẫn tiếp tục xử lý request đã hết hạn.
+- Rate limit toàn cục làm một tenant ồn ào lấy hết quota của tenant khác; cần fairness theo tenant/endpoint.
+- Circuit breaker mở nhưng request đã xếp hàng vẫn tiếp tục, nên tải không giảm.
+
+### Ví dụ đời thực
+API đặt hàng nhận đỉnh 8.000 request/s; service kiểm tra điểm thưởng bình thường chịu 3.000 request/s nhưng latency tăng từ 80 ms lên 2 giây. Thread pool web có 400 thread và queue vô hạn; sau 90 giây, 18.000 request chờ, heap tăng 5 GB và API thanh toán cũng timeout vì dùng chung pool. Team tách bulkhead, giới hạn 250 concurrent call tới điểm thưởng, queue nhỏ 500, deadline 700 ms và cho phép checkout không có recommendation/điểm thưởng tạm thời; giao dịch thay đổi điểm được ghi thành tác vụ bền và xác nhận sau. Retry client chỉ một lần với exponential backoff+jitter. Khi downstream suy giảm, API từ chối sớm 12% request phụ, nhưng p99 thanh toán giữ dưới 450 ms; queue lớn nhất còn 420 thay vì tăng vô hạn.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi sẽ coi tăng queue là dấu hiệu mất cân bằng, không phải năng lực mới. Trước tiên xác định dependency nào bão hòa và luồng nghiệp vụ nào cần được bảo vệ. Tôi đặt giới hạn concurrency và queue rõ ràng, truyền deadline còn lại tới từng hop, dùng bulkhead để dependency chậm không chiếm hết thread hoặc connection. Khi đầy, từ chối sớm bằng 503/429; tác vụ phụ như recommendation có thể bỏ hoặc trả tối giản. Retry chỉ cho lỗi phù hợp, có giới hạn, backoff và jitter để tránh khuếch đại. Circuit breaker giúp ngừng gọi dependency đang lỗi nhưng không thay thế các giới hạn đó. Tôi theo dõi queue age, inflight, retry rate, thread/connection saturation và tỷ lệ shed. Nếu chỉ nhìn CPU, ta có thể bỏ lỡ việc toàn bộ thread đang chờ mạng. Mục tiêu là suy giảm có kiểm soát: một tính năng phụ giảm chất lượng nhưng luồng thanh toán vẫn hoạt động.”
+
+  > Senior tip: Đặt ngân sách retry toàn đường đi, không chỉ mỗi service. Nếu 4 hop đều retry 3 lần, một request ban đầu có thể tạo hàng chục lời gọi khi hệ thống đang yếu nhất.`,
+  follow: [
+    'Bạn phân biệt 429 và 503 thế nào, và làm sao để client không retry đồng loạt?',
+    'Nếu queue Kafka tăng nhanh nhưng consumer vẫn chạy, bạn quyết định scale consumer hay shed traffic dựa trên chỉ số nào?',
+    'Làm sao truyền deadline qua HTTP và message queue mà không để tác vụ hết hạn vẫn chiếm tài nguyên?'
+  ],
+  tags: ['back-pressure', 'load-shedding', 'bulkhead', 'retry']
+},
+{
+  id: 'architecture-044',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Trong buổi system design, bạn có vài phút để ước lượng QPS, dung lượng lưu trữ và bandwidth cho một API. Bạn tính nhanh thế nào, nêu giả định và chuyển con số thành quyết định capacity ra sao?',
+  a: `**Tóm tắt:** Tôi bắt đầu từ hành vi người dùng và tỷ lệ đọc/ghi, đổi tổng ngày thành tải trung bình rồi nhân hệ số peak; tiếp theo tính byte trên một sự kiện và response, cộng overhead/index/replica theo từng mục đích. Cuối cùng tôi kiểm tra CPU, I/O và network bằng benchmark thay vì coi phép tính là dự báo chính xác. Con số tốt trong phỏng vấn là con số có giả định, đơn vị và biên an toàn rõ.
+
+### Định nghĩa đơn vị trước khi nhân
+QPS (queries per second) là số request mỗi giây. Throughput ghi có thể thấp hơn QPS nếu một request tạo nhiều row/event. Bandwidth là byte mỗi giây trên mạng. Giả định peak/average cho biết tải đỉnh cao gấp bao nhiêu lần trung bình. Dùng đơn vị thập phân nhất quán trong nhẩm nhanh: 1 GB xấp xỉ 10^9 byte; khi cấu hình máy, kiểm tra cách công cụ dùng GB hay GiB.
+
+### Ví dụ tính trên bảng trắng
+Giả sử 5 triệu người dùng hoạt động mỗi ngày, mỗi người gọi API trung bình 20 lần/ngày:
+- Request/ngày = 5M × 20 = 100M.
+- QPS trung bình = 100M / 86.400 ≈ 1.160.
+- Nếu peak gấp 5 lần trung bình, peak ≈ 5.800 QPS. Đây là giả định ban đầu; campaign có thể tạo peak lớn hơn.
+- 8% request ghi tạo 8M bản ghi/ngày. Nếu mỗi bản ghi trung bình 1,2 KB payload ứng dụng, payload thô khoảng 9,6 GB/ngày.
+- Nếu row + index trung bình khoảng 2 KB, DB chính cần khoảng 16 GB/ngày; 90 ngày là 1,44 TB trước khi tính bản sao, backup, WAL và headroom. Ba bản copy dữ liệu tương đương khoảng 4,32 TB; backup/WAL cần kế hoạch và retention riêng, không cộng nhầm như dữ liệu row.
+- Nếu mỗi Response trung bình 40 KB, 100M response/ngày là 4 TB/ngày, tức khoảng 46 MB/s trung bình và 230 MB/s ở peak 5 lần, chưa tính protocol overhead, request upload và TLS.
+
+### Chuyển số thành thiết kế
+| Ước lượng | Câu hỏi tiếp theo |
+|---|---|
+| QPS trung bình/đỉnh | Bao nhiêu instance chịu được p99 mục tiêu khi một node mất? |
+| Tỷ lệ ghi và byte/row | DB IOPS, WAL, index và replication có chịu nổi không? |
+| Response byte/s | Load balancer, NIC, CDN và egress cost có đủ không? |
+| Dung lượng theo retention | Bao lâu lưu online, archive hay xóa theo quy định? |
+| Độ tập trung traffic | Một tenant, endpoint hoặc key có thành hotspot không? |
+
+Nếu một instance benchmark chịu được 700 QPS ở p99 mục tiêu và CPU 60%, cần 5.800/700 ≈ 9 instance cho peak lý tưởng. Để chịu mất một instance và deploy, không nên chạy đúng 9; có thể khởi đầu 12–14 instance rồi xác nhận bằng load test có phân bố endpoint thật. Không được lấy benchmark endpoint rỗng làm năng lực hệ thống nếu production còn DB, TLS, logging và dependency.
+
+### Các yếu tố thường bị quên
+- **Cache hit rate:** giảm đọc DB nhưng có thể tạo burst khi cache lạnh hoặc key hết hạn.
+- **Fan-out:** một API gọi 4 service có nghĩa 5.800 QPS ingress có thể thành hơn 20.000 downstream calls/s.
+- **Replication và index:** dung lượng logic không bằng dung lượng vật lý; index, bản sao, WAL, backup và compaction có chi phí khác nhau.
+- **Retention:** 30 ngày và 3 năm là hai thiết kế khác nhau; dữ liệu cũ có thể chuyển object storage/warehouse.
+- **Peak không đồng đều:** giờ cao điểm, tenant lớn và chiến dịch không tuân phân bố trung bình.
+- **Headroom và failure mode:** benchmark khi mất một AZ/node thường quan trọng hơn chạy đủ cụm ở trạng thái bình thường.
+
+### Lỗi trong buổi phỏng vấn và production
+- Lấy request/ngày chia 100.000 thay vì 86.400 giây, hoặc trộn MB với MiB.
+- Dùng trung bình để kích thước hệ thống, bỏ qua burst 10 phút.
+- Tính storage từ JSON payload rồi quên row overhead, index, replica, retention.
+- Tính bandwidth response nhưng quên service-to-service fan-out và egress.
+- Coi số instance theo QPS tuyến tính; contention, GC, connection pool và DB có thể làm throughput không tuyến tính.
+
+### Ví dụ đời thực
+Một ứng dụng đặt lịch có 2 triệu người dùng hoạt động/ngày, trung bình 15 API call/người. Ước lượng ban đầu là 30M/86.400 ≈ 347 QPS, nhưng chiến dịch nhắc lịch tạo peak 8 lần, khoảng 2.800 QPS. 5% request ghi ra 1,5M booking/event mỗi ngày; payload 1 KB tương đương 1,5 GB/ngày, còn row/index 1,8 KB thì khoảng 2,7 GB/ngày trước replica. Response trung bình 25 KB cho khoảng 8,7 MB/s trung bình và 69,5 MB/s peak. Load test với dữ liệu thật cho thấy mỗi instance chỉ chịu 450 QPS tại p99 dưới 300 ms; vì vậy cần ít nhất 7 instance theo peak và triển khai 9 để có headroom khi một instance lỗi/deploy. Sau khi đo fan-out nhắc lịch, team giới hạn tốc độ worker để không đẩy thêm 2.000 request/s vào booking DB. Sai khác giữa ước lượng và benchmark được dùng để điều chỉnh, không che đi bằng cách tăng số node vô hạn.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi sẽ nói rõ giả định trước. Nếu có 5 triệu người dùng hoạt động mỗi ngày và 20 request mỗi người, ta có 100 triệu request/ngày, khoảng 1.160 QPS trung bình. Với peak factor 5, cần thiết kế khoảng 5.800 QPS. Nếu response trung bình 40 KB, bandwidth outbound peak xấp xỉ 230 MB/s. Nếu 8% request ghi, 8 triệu record/ngày; tôi tính riêng payload, row cộng index, retention, replica và backup thay vì nhân một con số chung. Sau đó kiểm tra fan-out: một request gọi nhiều service làm tải downstream lớn hơn ingress. Cuối cùng dùng benchmark ở p99 mục tiêu và failure scenario để xác định instance, headroom và DB capacity. Đây là phép ước lượng để đặt câu hỏi đúng, không phải cam kết chính xác; tôi sẽ cập nhật bằng traffic thực, peak theo thời gian và kích thước dữ liệu đo được.”
+
+  > Senior tip: Luôn ghi đơn vị ở từng dòng và phân biệt average, peak, logical storage, physical storage. Khi con số lệch benchmark, tìm giả định sai trước khi đề xuất mua thêm máy.`,
+  follow: [
+    'Nếu peak chỉ kéo dài 10 phút mỗi ngày, bạn chọn autoscaling hay capacity cố định thế nào cho p99 ổn định?',
+    'Một API ingress 5.000 QPS gọi trung bình 4 dependency; bạn tính và kiểm soát downstream capacity ra sao?',
+    'Bạn đưa replication, backup, WAL và retention vào ước lượng storage thế nào mà không cộng trùng?'
+  ],
+  tags: ['capacity-planning', 'QPS', 'storage', 'bandwidth']
+},
+{
+  id: 'architecture-045',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Một tính năng Java cần dùng LLM để tóm tắt ticket hỗ trợ và có thể mất vài giây. Bạn quyết định phần nào xử lý đồng bộ trong HTTP request, phần nào đưa vào hàng đợi; API, trạng thái công việc và retry sẽ ra sao?',
+  a: `**Tóm tắt:** Tôi chọn đồng bộ hay bất đồng bộ theo điều người dùng cần nhận ngay và giới hạn thời gian của từng luồng, không theo việc LLM có “mới” hay không. Tác vụ ngắn, người dùng cần kết quả tức thì có thể gọi đồng bộ với deadline; tác vụ dài, hàng loạt hoặc có thể hoàn tất sau khi người dùng rời trang nên thành job bền vững qua queue (hàng đợi), trả mã theo dõi và trạng thái rõ ràng. Queue hấp thụ tải đỉnh nhưng không làm model nhanh hơn, nên vẫn phải giới hạn số worker và xử lý lỗi.
+
+### Cái gì, vì sao cần phân nhánh
+Đồng bộ nghĩa là HTTP request còn mở trong khi Java service gọi model và chờ câu trả lời. Nó đơn giản cho một thao tác ngắn: giao diện gửi nội dung, nhận kết quả và hiển thị ngay. Nhược điểm là request, thread hoặc connection bị giữ trong thời gian chờ mạng; timeout của browser, gateway và provider có thể khác nhau. Timeout chỉ có nghĩa là bên gọi không nhận được phản hồi đúng hạn, không chứng minh rằng server chưa chạy xong.
+
+Bất đồng bộ nghĩa là API chấp nhận yêu cầu, lưu công việc bền vững, rồi worker xử lý sau. API trả {{202 Accepted}} cùng {{jobId}}; client xem trạng thái qua endpoint hoặc nhận thông báo. Dùng khi xử lý dài, tải tăng đột biến, cần retry có kiểm soát hoặc có thể gom batch. Đổi lại phải thiết kế vòng đời job, tiến độ, hết hạn, hủy và hỗ trợ vận hành.
+
+### Chọn ranh giới và luồng dữ liệu
+Ví dụ trong hệ thống hỗ trợ: “gợi ý một câu trả lời cho nhân viên đang mở ticket” có thể đồng bộ nếu p95 hoàn tất trong ngân sách UX; “tóm tắt 50.000 ticket cũ” nên là job. p95 là thời gian mà 95% request hoàn tất trong mức đó; đây là số đo phân vị, không phải trung bình. Đặt deadline end-to-end nhỏ hơn timeout của gateway, dành một phần ngân sách cho DB và mạng, không để một request treo vô hạn.
+
+Với job, ghi yêu cầu và outbox (bản ghi sự kiện chờ phát) trong cùng transaction DB. Dispatcher gửi outbox vào broker; worker lấy message, kiểm tra trạng thái và ghi kết quả. Nhờ vậy tiến trình chết sau commit nhưng trước khi gửi message vẫn có thể phát lại. Broker thường giao ít nhất một lần, vì vậy worker phải idempotent (xử lý lại cùng yêu cầu không tạo thêm hiệu ứng): dùng {{jobId}} làm khóa duy nhất, lưu trạng thái và kết quả theo job.
+
+~~~seq
+title: Yêu cầu tóm tắt ticket bất đồng bộ
+actors: Browser | Api | PostgreSQL | Queue | Worker
+Browser -> Api: POST ticket summary với idempotency key
+Api -> PostgreSQL: Lưu job PENDING và outbox
+PostgreSQL --> Api: Commit
+Api --> Browser: 202 Accepted và jobId
+Queue -> Worker: Giao job (có thể lặp)
+Worker -> PostgreSQL: Claim job, ghi trạng thái và kết quả
+Browser -> Api: GET jobId để xem tiến độ
+~~~
+
+### Trade-off và quy tắc chọn
+| Tiêu chí | Đồng bộ | Job qua queue |
+|---|---|---|
+| Trải nghiệm | Có câu trả lời ngay | Chờ, theo dõi trạng thái |
+| Phù hợp | Tác vụ ngắn, có fallback | Tác vụ dài, batch, tải dồn |
+| Lỗi | Timeout có kết quả mơ hồ | Retry được, nhưng cần dedup |
+| Hạ tầng | Ít thành phần | Broker, worker, outbox, DLQ |
+| Tải đỉnh | Có thể chiếm hết request capacity | Queue đệm tải; phải giới hạn độ dài |
+
+DLQ (dead-letter queue) là nơi giữ message lỗi nhiều lần để điều tra, thay vì retry vô hạn. Đặt giới hạn retry, backoff tăng dần (chờ lâu hơn sau mỗi lần thử), và giới hạn đồng thời theo quota provider. Khi queue quá sâu, từ chối job mới hoặc báo thời gian chờ; không nhận vô hạn rồi để công việc cũ hết hạn.
+
+### Pitfall production
+- API timeout rồi người dùng bấm lại tạo hai job: nhận idempotency key ổn định và trả lại cùng job.
+- Worker gọi model xong nhưng chết trước khi lưu kết quả: lần giao lại có thể gọi model tốn tiền lần nữa. Lưu trạng thái, khóa job, và chấp nhận rằng không thể đảm bảo “exactly once” cho một HTTP call tới provider nếu provider không hỗ trợ idempotency.
+- Retry mọi lỗi 429/5xx ngay lập tức: cả fleet cùng gọi lại tạo retry storm. Dùng backoff, jitter và giới hạn đồng thời.
+- Trả {{202}} nhưng không có endpoint trạng thái, thời hạn lưu kết quả hoặc thông báo lỗi: người dùng không biết job đã xong hay thất bại.
+- Hàng đợi là bộ đệm chứ không phải năng lực xử lý. Nếu tốc độ đến lâu dài cao hơn tốc độ worker, backlog vẫn tăng vô hạn.
+
+### Ví dụ đời thực
+Một hệ thống ticket nhận 80 yêu cầu gợi ý/giây vào giờ cao điểm; provider trả lời trong 2–8 giây, trong khi gateway đóng request sau 15 giây. Gọi mọi việc đồng bộ làm p99 API tăng 12 giây và thread pool thường xuyên đạt 95% sử dụng. Điều tra cho thấy tóm tắt lịch sử dài chiếm phần lớn thời gian; người dùng không cần đợi trực tiếp. Nhóm giữ gợi ý ngắn đồng bộ với deadline 6 giây, chuyển tóm tắt lịch sử sang job, giới hạn 20 worker và trả trạng thái. Sau rollout, p99 của API nhận job còn 180 ms; 95% job hoàn tất dưới 11 giây, queue lớn nhất 4.000 job rồi giảm sau đỉnh. Các con số là mục tiêu vận hành đo được, không phải cam kết rằng queue luôn xử lý tức thì.
+
+### Trả lời mẫu khi phỏng vấn
+“Em bắt đầu từ yêu cầu trải nghiệm và phân bố latency. Tác vụ nhỏ mà nhân viên đang chờ ngay có thể chạy đồng bộ, nhưng phải có deadline end-to-end, giới hạn concurrency và đường xử lý timeout rõ. Với việc dài hoặc hàng loạt, em tạo job bền vững, trả 202 cùng job ID rồi cho UI polling hoặc nhận sự kiện. Em ghi job và outbox trong cùng transaction để không mất việc giữa lúc commit và publish. Worker xử lý at-least-once nên dùng khóa idempotency, trạng thái có thể quan sát, retry có backoff và DLQ cho lỗi lặp. Em cũng giới hạn độ dài queue và số worker: queue chỉ hấp thụ đỉnh ngắn, không sửa được tình trạng năng lực xử lý thấp hơn tốc độ đến. Khi provider timeout sau khi đã xử lý, em không giả định lần gọi có thể exactly-once; em lưu trạng thái và đối soát theo khả năng provider. Cuối cùng, em đo p95/p99, tuổi job và tỷ lệ thất bại để quyết định luồng nào cần chuyển bất đồng bộ.”
+
+> Senior tip: Theo dõi tuổi của job lâu nhất bên cạnh độ sâu queue. 10.000 job tạo trong một phút có thể ổn; 100 job nằm chờ 30 phút thường báo hiệu worker kẹt hoặc provider suy giảm.`,
+  follow: [
+    'Nếu API timeout sau khi job đã được nhận, thiết kế idempotency key và phản hồi retry ra sao?',
+    'Worker đã gọi provider thành công nhưng chết trước khi lưu kết quả; bạn cân bằng chi phí gọi lại và nguy cơ mất kết quả thế nào?',
+    'Bạn đặt ngưỡng queue, concurrency và deadline dựa trên số liệu nào?'
+  ],
+  tags: ['LLM', 'async', 'queue', 'outbox', 'idempotency', 'Java']
+},
+{
+  id: 'architecture-046',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Một ứng dụng Spring Boot hiện dùng PostgreSQL cho dữ liệu nghiệp vụ và cần thêm tìm kiếm ngữ nghĩa trên tài liệu. Bạn chọn pgvector hay một vector database riêng dựa trên tiêu chí nào, và giữ quyền truy cập cùng vận hành nhất quán ra sao?',
+  a: `**Tóm tắt:** Vector là dãy số biểu diễn ý nghĩa của văn bản; tìm kiếm vector xếp hạng các đoạn gần nhau về ngữ nghĩa thay vì chỉ khớp từ. Tôi bắt đầu bằng truy vấn, quy mô, độ trễ và năng lực vận hành: pgvector thường hợp khi PostgreSQL đã là nguồn dữ liệu, cần join/transaction và quy mô còn phù hợp; dịch vụ vector riêng đáng cân nhắc khi tải tìm kiếm cần scale độc lập, có yêu cầu ANN/replication hoặc cần tách tải rõ ràng. Không chọn chỉ theo số lượng vector: độ đồng thời, metadata filter, cập nhật, backup, ACL và năng lực đội ngũ đều quan trọng.
+
+### Vì sao không phải mọi tìm kiếm đều là vector
+Embedding là phép biến văn bản thành vector số bằng một model; câu “đổi mật khẩu” có thể gần nghĩa với “khôi phục quyền truy cập”. Vector search hữu ích khi câu hỏi diễn đạt khác tài liệu. Nhưng tìm mã chính xác như {{AB-1234}}, cụm từ luật hoặc số tài khoản thường cần keyword/full-text search. Hybrid search kết hợp hai kiểu tìm, rồi xếp hạng lại. Với tài liệu nội bộ, trước hết phải lọc quyền; “gần nghĩa” không có nghĩa là được phép đọc.
+
+pgvector là extension cho PostgreSQL để lưu vector và thực hiện distance search, có thể dùng chỉ mục gần đúng (ANN: approximate nearest neighbor — nhanh hơn nhưng có thể bỏ lỡ một số kết quả). Ưu điểm là dùng chung giao dịch, backup, SQL và metadata; có thể join với bảng quyền. Chi phí là tải embedding/search dùng chung CPU, RAM và I/O với OLTP (xử lý giao dịch trực tuyến), đồng thời cần hiểu cách chọn index và đo recall. Recall là tỷ lệ kết quả liên quan thực sự được tìm thấy.
+
+Vector DB riêng tách storage và scale tìm kiếm khỏi DB nghiệp vụ, thường có lựa chọn index, phân vùng và API chuyên cho vector. Đổi lại có thêm hệ thống phải backup, giám sát, nâng cấp, bảo mật và đồng bộ dữ liệu; không mặc định có transaction chung với PostgreSQL.
+
+### Quy trình quyết định
+1. Lấy mẫu truy vấn thật: top-k cần bao nhiêu, filter theo tenant/ACL/loại tài liệu thế nào, có cần keyword không?
+2. Benchmark trên dữ liệu đại diện: số vector, chiều embedding, QPS đỉnh, cập nhật và concurrency. Đo p95/p99, recall, CPU/RAM và chi phí; không so chỉ số từ demo nhỏ.
+3. Với pgvector, bắt đầu ở cùng PostgreSQL nếu tải phù hợp; dùng connection pool riêng hoặc giới hạn tài nguyên cho truy vấn vector để bảo vệ luồng giao dịch.
+4. Chuyển sang dịch vụ riêng khi có bằng chứng về tranh chấp tài nguyên, yêu cầu scale độc lập hoặc tính năng vận hành cần thiết. Thiết kế bản ghi nguồn + outbox/CDC để đồng bộ, có kiểm tra độ trễ và cách rebuild index.
+
+### Trade-off
+| Tiêu chí | PostgreSQL + pgvector | Vector service riêng |
+|---|---|---|
+| Vận hành ban đầu | Tận dụng DB hiện có | Thêm dịch vụ, quyền và backup |
+| Join/transaction với nghiệp vụ | Tự nhiên trong cùng DB | Cần đồng bộ và chấp nhận trễ |
+| Scale tìm kiếm | Có thể tranh CPU/I/O OLTP | Tách và scale độc lập |
+| ACL/metadata | SQL, join và RLS có thể hỗ trợ | Phụ thuộc filter/API và cấu hình |
+| Khôi phục | Một hệ dữ liệu chính | Phải khôi phục và đối soát hai nơi |
+
+### Bảo vệ dữ liệu và vận hành
+Lưu metadata tối thiểu cùng vector: {{document_id}}, phiên bản, tenant và nguồn. Áp dụng ACL (access control list — danh sách người/nhóm được phép xem) trước khi đưa đoạn vào prompt. Nếu chỉ lấy top-k toàn cục rồi lọc quyền sau đó, kết quả có thể rỗng dù vẫn còn tài liệu được phép ở hạng thấp hơn; truy vấn nên lọc theo phạm vi quyền ngay tại nơi tìm kiếm nếu hệ thống hỗ trợ.
+
+Đặt timeout và giới hạn kết quả; không để một câu hỏi kích hoạt quét toàn kho hoặc truy vấn không giới hạn. Theo dõi latency, số kết quả, recall trên tập đánh giá, tuổi dữ liệu, lỗi đồng bộ và tài nguyên DB. Nếu dùng ANN, so sánh với exact search trên tập mẫu để biết chất lượng thực tế. Chỉ mục, metric distance và chuẩn hóa vector phải tương thích với embedding model; thay model có thể đổi chiều hoặc phân phối vector, không thể trộn tùy tiện trong cùng không gian.
+
+### Pitfall production
+- Thấy PostgreSQL có thể lưu vector nên đặt truy vấn ANN cạnh OLTP không giới hạn; giờ cao điểm làm API đặt hàng chậm.
+- Chọn vector service rồi cho rằng dữ liệu đã tách nghĩa là bảo mật tự động; filter tenant sai vẫn rò nội dung.
+- Đổi embedding model nhưng truy vấn vector mới trên index cũ, hoặc so vector khác chiều.
+- Đo benchmark chỉ với một nghìn vector, không có cập nhật, filter quyền hoặc tải đồng thời thật.
+- Chỉ dùng vector nên bỏ sót exact match; chỉ dùng keyword lại không hiểu câu đồng nghĩa.
+
+### Ví dụ đời thực
+Một ứng dụng Java có 2 triệu đoạn tài liệu và PostgreSQL đang dùng 35% CPU; truy vấn hỏi đáp đạt p95 420 ms, nhưng giờ đồng bộ dữ liệu làm p99 API nghiệp vụ tăng từ 170 lên 650 ms. Nhóm đo trên bản sao dữ liệu với 100 truy vấn/giây, filter tenant và cập nhật liên tục. Tối ưu index, giới hạn truy vấn và tách pool làm p99 giảm còn 390 ms nhưng vẫn có tranh chấp I/O. Sau đó họ chuyển vector retrieval sang service riêng, đồng bộ bằng outbox với độ trễ p99 2 giây; p99 API nghiệp vụ trở lại 190 ms, tìm kiếm p95 còn 280 ms. Hệ thống chấp nhận độ trễ tài liệu tối đa 5 giây và có dashboard theo dõi. Đây không phải kết quả phổ quát: nếu benchmark pgvector đáp ứng SLO và nhu cầu cô lập chưa có, thêm DB riêng chỉ làm tăng chi phí.
+
+### Trả lời mẫu khi phỏng vấn
+“Em không bắt đầu từ câu hỏi database nào đang phổ biến, mà từ workload. Em kiểm tra số vector, QPS, top-k, metadata filter, cập nhật, yêu cầu ACL và benchmark p95/p99 cùng recall. Nếu PostgreSQL hiện hữu còn dư năng lực, truy vấn cần join với quyền và dữ liệu chưa tới mức phải scale riêng, pgvector giảm số thành phần và đơn giản hóa tính nhất quán. Em giới hạn truy vấn để bảo vệ OLTP. Nếu đo được vector search tranh CPU/I/O hoặc cần scale, index và vận hành độc lập, em tách sang vector service. Khi đó PostgreSQL vẫn là nguồn chuẩn; outbox hoặc CDC đồng bộ tài liệu, có version, retry và đối soát. Dù chọn gì, quyền phải được áp dụng trước khi ngữ cảnh vào model, embedding model và index phải tương thích, còn hybrid search cần cho mã hoặc từ khóa chính xác. Quyết định cần có SLO về latency, recall và độ trễ cập nhật.”
+
+> Senior tip: Benchmark phải bao gồm filter quyền và các tenant lệch kích thước. “Tìm nhanh” trên toàn kho nhưng chậm hoặc sai khi thêm ACL không phải benchmark của sản phẩm thật.`,
+  follow: [
+    'Làm sao đo recall của ANN và quyết định đánh đổi giữa tốc độ với chất lượng kết quả?',
+    'Nếu vector store bị tụt dữ liệu hoặc mất toàn bộ index, bạn rebuild và phục vụ truy vấn trong thời gian đó thế nào?',
+    'Vì sao tìm kiếm vector thuần có thể bỏ lỡ mã sản phẩm hoặc điều khoản chính xác?'
+  ],
+  tags: ['pgvector', 'vector database', 'RAG', 'PostgreSQL', 'ACL', 'search']
+},
+{
+  id: 'architecture-047',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Luồng AI của bạn đi qua browser, gateway, Spring Boot, provider và trả token theo thời gian thực. Khi người dùng chờ lâu hoặc bấm dừng, bạn phân bổ latency budget và truyền trạng thái/cancellation qua các tầng thế nào?',
+  a: `**Tóm tắt:** Streaming gửi từng phần câu trả lời khi model sinh ra, giúp giảm thời gian chờ phần đầu nhưng không làm tổng thời gian model hoàn tất ngắn đi. Tôi thiết kế cả đường đi và đường dừng xuyên suốt browser → gateway → Java service → provider: đặt ngân sách latency từng chặng, tắt buffering không phù hợp, giới hạn buffer và truyền cancellation khi client ngắt. Nếu bỏ qua một proxy hoặc chỉ hủy kết nối ở trình duyệt, server/provider có thể tiếp tục làm việc và phát sinh chi phí.
+
+### Phân biệt các mốc thời gian
+Latency là thời gian chờ; trong streaming cần phân biệt TTFT (time to first token — thời gian tới token đầu tiên), khoảng cách giữa các đoạn và thời gian hoàn tất. TTFT kém làm giao diện có vẻ đứng im; token đều nhưng luồng không kết thúc vẫn tạo request sống lâu. p95/p99 đo trải nghiệm phần lớn và nhóm chậm nhất tốt hơn một con số trung bình.
+
+Chia ngân sách theo đường đi. Ví dụ deadline tổng 30 giây: xác thực/đọc context 2 giây, provider tối đa 24 giây, 4 giây dự phòng cho flush và kết thúc. Đây là ví dụ cần chỉnh bằng số liệu thật. Mỗi timeout tầng trong phải ngắn hơn tầng ngoài một cách có chủ đích; nếu gateway đóng sau 20 giây nhưng Java chờ provider 60 giây, Java vẫn giữ tài nguyên sau khi client đã bỏ đi.
+
+### Luồng streaming và đóng kết nối
+Server có thể phát SSE (Server-Sent Events — các event một chiều qua HTTP) với từng đoạn văn bản và event kết thúc/lỗi. Java không nên gom toàn bộ nội dung vào một chuỗi trước khi gửi; cần truyền từng đoạn, flush hợp lý và có giới hạn buffer. Proxy/CDN có thể đệm response hoặc đóng kết nối khi idle, nên phải cấu hình cho đường streaming, kiểm tra heartbeat (tín hiệu nhỏ định kỳ báo kết nối còn sống) và thời gian idle trên toàn tuyến.
+
+Khi browser gửi cancel hoặc ngắt, gateway cần thông báo xuống Java; Java hủy subscription/request tới provider nếu SDK cho phép. Hủy request phía client không đảm bảo provider ngừng tính phí; cần đo cancellation propagation và giới hạn thời gian. Nếu provider không hỗ trợ hủy thực sự, ít nhất dừng giữ thread/buffer, không gửi phần còn lại, và ghi rõ chi phí có thể tiếp diễn.
+
+~~~seq
+title: Streaming và hủy khi người dùng dừng
+actors: Browser | Gateway | Spring | Provider
+Browser -> Gateway: Mở yêu cầu stream
+Gateway -> Spring: Chuyển tiếp không buffer
+Spring -> Provider: Gửi prompt với deadline
+Provider --> Spring: Token theo từng phần
+Spring --> Gateway: SSE event và flush
+Gateway --> Browser: Hiển thị token
+Browser -> Gateway: Cancel khi bấm Dừng
+Gateway -> Spring: Đóng downstream request
+Spring -> Provider: Hủy nếu provider hỗ trợ
+~~~
+
+### Bảo vệ tài nguyên và tính đúng
+Stream dùng lâu vẫn chiếm socket, state và có thể chiếm concurrency slot; cần giới hạn số stream đồng thời theo user/tenant và toàn hệ thống. Dùng buffer hữu hạn, xử lý consumer chậm bằng backpressure (điều tiết nguồn phát theo tốc độ bên nhận) hoặc đóng luồng quá chậm. Không đặt hàng loạt chunk vào queue không giới hạn.
+
+Ghi câu trả lời cuối cùng chỉ khi có kết thúc hợp lệ; nếu ngắt giữa chừng, lưu trạng thái {{PARTIAL/CANCELLED}} cùng phần đã phát khi nghiệp vụ cần audit, không ghi nó thành câu trả lời hoàn chỉnh. Sau khi đã phát một phần, không thể tự chuyển sang provider khác rồi nối tiếp tùy tiện: nội dung có thể lặp hoặc mâu thuẫn. Fallback an toàn thường áp dụng trước khi gửi token đầu tiên; sau đó nên kết thúc có thông báo hoặc cho người dùng thử lại như một request mới.
+
+### Pitfall production
+- Nginx/CDN đệm SSE: server phát token nhưng browser chỉ thấy khi buffer đầy.
+- Heartbeat chỉ ở ứng dụng nhưng gateway idle timeout ngắn hơn: kết nối bị đóng âm thầm.
+- Browser hủy nhưng Java/provider vẫn chạy: trả lời không dùng vẫn tốn token.
+- Buffer không giới hạn khi client chậm: tăng heap và nguy cơ ảnh hưởng toàn service.
+- Chỉ đo thời gian hoàn tất; bỏ qua TTFT, khoảng token, disconnect và tỷ lệ luồng bị cắt.
+
+### Ví dụ đời thực
+Một trợ lý nội bộ có 300 stream đồng thời; model thường mất 8–25 giây để hoàn tất. Người dùng báo spinner 7 giây rồi mới thấy câu đầu, dù server log ghi provider đã phát sớm. Trace cho thấy gateway buffer SSE và idle timeout 10 giây. Sau tắt buffering cho route, thêm heartbeat mỗi 5 giây (nhỏ hơn idle timeout đã cấu hình), deadline provider 22 giây trong tổng 28 giây và xử lý cancel, TTFT p95 giảm từ 7,4 xuống 1,3 giây. 18% người dùng hủy trước khi hoàn tất; chi phí request bị hủy giảm 35% sau khi xác minh cancellation đến provider trong trường hợp hỗ trợ. Nhóm còn giới hạn 120 stream mỗi instance để tải đỉnh không làm cạn connection.
+
+### Trả lời mẫu khi phỏng vấn
+“Em tách thời gian tới token đầu tiên, tốc độ token và thời gian hoàn tất. Sau đó em phân chia deadline cho Java, provider và gateway, bảo đảm các timeout không mâu thuẫn. Luồng SSE phải đi qua proxy không bị buffer, có heartbeat ngắn hơn idle timeout và backpressure hoặc giới hạn buffer khi browser đọc chậm. Khi user bấm dừng, tín hiệu cancel cần truyền từ browser qua gateway về Java rồi provider; em kiểm tra SDK thực sự hỗ trợ hủy đến đâu, vì đóng socket không đồng nghĩa model ngừng tính phí. Em giới hạn concurrency, theo dõi số stream và giữ trạng thái PARTIAL thay vì coi nội dung bị cắt là hoàn tất. Fallback nên xảy ra trước token đầu tiên; đổi provider giữa câu trả lời có thể làm lặp hoặc thay đổi ý. Dashboard cần có TTFT p95/p99, latency giữa các tầng, tỷ lệ disconnect và thời gian cancel propagation, không chỉ có thời gian trung bình.”
+
+> Senior tip: Đặt timeout idle, timeout tổng và heartbeat trên cùng một sơ đồ tuyến đường; một proxy ít được chú ý thường là nơi stream bị đứt trước khi Java biết.`,
+  follow: [
+    'Nếu gateway đóng kết nối nhưng provider không hỗ trợ cancellation, bạn giới hạn tài nguyên và báo chi phí như thế nào?',
+    'Tại sao không nên fallback sang model khác sau khi đã gửi một phần câu trả lời?',
+    'Bạn dùng trace/metric nào để phân biệt provider chậm với proxy đang buffer?'
+  ],
+  tags: ['streaming', 'SSE', 'latency', 'cancellation', 'backpressure', 'Java']
+},
+{
+  id: 'architecture-048',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Bạn thêm trợ lý AI vào SaaS Java đang phục vụ hàng trăm công ty khách. Thiết kế tenant context, quyền truy cập tài liệu, quota và phân bổ tải thế nào để một tenant không đọc hoặc tiêu thụ tài nguyên của tenant khác?',
+  a: `**Tóm tắt:** Tính năng AI phải kế thừa tenant boundary của sản phẩm, không được xem là một endpoint phụ có thể tự tin vào dữ liệu đầu vào. Tôi lấy tenant từ danh tính đã xác thực và quyền phía server; cùng ngữ cảnh đó đi xuyên API, retrieval, cache, queue, quota và log. Cách ly cần nhiều lớp: kiểm tra quyền tài liệu, key/cache có tenant, giới hạn token/chi phí và concurrency, cùng hàng đợi công bằng. Quota (hạn mức sử dụng) bảo vệ ngân sách, còn rate limit giới hạn tốc độ; hai thứ liên quan nhưng không thay thế nhau.
+
+### Bắt đầu từ danh tính đáng tin
+Tenant là tổ chức khách hàng dùng chung ứng dụng; user có thể thuộc một hay nhiều tenant. Không tin {{tenantId}} trong body hoặc header nếu chưa đối chiếu với session/token đã xác thực. Middleware tạo {{TenantContext}} bất biến từ danh tính và quyền đã kiểm tra, truyền tường minh xuống service. Không dùng ThreadLocal tùy tiện qua thread pool hoặc reactive callback nếu context không được truyền và dọn đúng cách.
+
+Mọi tài liệu đưa vào prompt phải được lọc theo ACL (access control list — quyền đọc của user/nhóm) trước khi retrieval trả kết quả. Filter tenant đơn thuần chỉ bảo đảm đúng công ty, chưa chắc user trong công ty được đọc mọi tài liệu. Với shared schema, PostgreSQL RLS (Row-Level Security — chính sách DB lọc dòng) có thể là lớp phòng thủ bổ sung; cần đặt tenant context trong transaction và tránh để trạng thái connection pool rò sang request kế tiếp. Có test chéo tenant và test quyền theo user/nhóm.
+
+### Quota, tải và chi phí
+Token là đơn vị model dùng để tính đầu vào/đầu ra; request ngắn hay dài có thể tốn rất khác nhau. Đặt nhiều hạn mức: số request/giây, số request đồng thời, token/ngày hoặc ngân sách tiền, kích thước context, và giới hạn job chờ. Rate limit có thể dùng token bucket (cho phép burst ngắn trong một mức giới hạn); budget theo tháng/ngày tích lũy chi phí, nên cần đo usage thực từ provider và xử lý độ trễ cập nhật.
+
+Áp dụng quota ở API admission trước khi gọi provider, rồi đối chiếu usage sau phản hồi. Cho phép mức cơ bản theo plan, nhưng giữ trần toàn hệ thống và reserve cho tác vụ ưu tiên. Queue phải công bằng giữa tenant: lấy luân phiên hoặc theo quota có trọng số, thay vì một tenant lớn chiếm toàn bộ worker. Khi vượt mức, trả lỗi có thể hành động (ví dụ thời điểm thử lại hoặc nâng gói), không retry tự động.
+
+### Bề mặt dữ liệu cần cách ly
+| Thành phần | Phạm vi tenant bắt buộc |
+|---|---|
+| Retrieval/vector | Tenant + ACL trước khi tạo prompt |
+| Cache | Tenant, quyền, model/prompt version trong key |
+| Queue/job/result | Tenant gắn trong record, kiểm tra quyền khi đọc |
+| Quota/billing | Theo tenant và feature, có đối soát |
+| Log/trace | Nhãn tenant có kiểm soát, không ghi prompt/PII mặc định |
+
+Không đưa nội dung nhạy cảm vào metric label có cardinality rất cao (quá nhiều giá trị riêng lẻ) hoặc log không kiểm soát. Dùng tenant ID giả danh khi đủ, bảo vệ quyền xem log, đặt thời hạn lưu và cho phép truy vết sự cố. Cache key chỉ có document ID là lỗi phổ biến; cần tính đến tenant và policy/version để không trả kết quả cũ sau khi quyền thay đổi.
+
+### Pitfall production
+- Tenant lấy từ header do client gửi, kẻ gọi sửa sang tenant khác.
+- Retrieval lọc tenant nhưng quên ACL theo user; dữ liệu nội bộ bị lộ trong cùng công ty.
+- Cache key không chứa tenant hoặc scope quyền, trả nội dung chéo khách.
+- Mỗi tenant được quota request nhưng không giới hạn token; một prompt khổng lồ vượt ngân sách.
+- Job queue FIFO: tenant lớn gửi hàng nghìn job làm tenant nhỏ chờ lâu.
+- RLS dùng session state thay vì transaction-local trong pool, request sau kế thừa ngữ cảnh sai.
+
+### Ví dụ đời thực
+Một SaaS có 600 công ty, 15% request AI đến từ tenant lớn nhất. Sau khi bổ sung hỏi đáp tài liệu, bill tăng gấp 2,4 lần và một lần test cho thấy cache trả snippet tài liệu sai tenant. Điều tra phát hiện cache key chỉ gồm document ID và queue FIFO cho phép tenant bulk import chiếm worker. Nhóm lấy tenant từ claim đã xác thực, thêm kiểm tra ACL ở retrieval, version policy vào cache key, và chạy test tự động A/B. Họ áp dụng giới hạn 30 request/phút, 20.000 token/ngày cho gói cơ bản cùng trần concurrency 4; job được dispatch theo vòng giữa tenant. Sau 4 tuần, chi phí tối đa mỗi tenant nằm trong 12% ngân sách, p95 chờ job của tenant nhỏ giảm từ 48 xuống 9 giây và không còn lỗi chéo trong test. Các giới hạn được cấu hình theo hợp đồng, không hard-code chung cho mọi khách.
+
+### Trả lời mẫu khi phỏng vấn
+“Em coi tenant isolation là invariant xuyên suốt, bắt đầu từ claim đã xác thực chứ không tin tenant ID client gửi. Context được truyền rõ từ API tới retrieval, cache, queue và lưu kết quả. Với tài liệu, phải lọc cả tenant lẫn ACL của user trước khi đưa nội dung vào prompt; cache key phải phản ánh tenant và phạm vi quyền. Em tách quota tốc độ, concurrency và ngân sách token vì request dài có chi phí khác request ngắn. Admission control từ chối trước khi tốn tiền, còn usage sau phản hồi được đối soát. Với tải bất đồng bộ, em dùng lập lịch công bằng để tenant lớn không chiếm worker. Cuối cùng, em kiểm tra RLS/context trên connection pool, log không chứa PII mặc định, và có test xuyên tenant cũng như thu hồi quyền. Các mục tiêu được cấu hình theo plan, quan sát bằng chi phí và latency từng tenant nhưng không làm lộ prompt trong dashboard.”
+
+> Senior tip: Thêm test “tenant A hỏi về tài liệu B” và “user bị thu hồi quyền rồi hỏi lại” vào CI; kiểm tra cả cache hit, queue result và retrieval, không chỉ endpoint chính.`,
+  follow: [
+    'Khi quyền của một user bị thu hồi, bạn vô hiệu hóa cache và job đang chạy thế nào?',
+    'Bạn phân bổ quota khi provider chỉ báo usage sau khi hoàn thành request ra sao?',
+    'Tenant lớn vẫn có SLA cao hơn nhưng không được lấn át tenant thường; queue scheduler nên biểu diễn ưu tiên thế nào?'
+  ],
+  tags: ['multi-tenancy', 'tenant isolation', 'quota', 'ACL', 'SaaS', 'RAG']
+},
+{
+  id: 'architecture-049',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Một hệ thống Java có nhiều tính năng AI và hợp đồng nhà cung cấp/model thay đổi liên tục. Bạn tạo ranh giới abstraction nào để thay provider được, nhưng vẫn dùng được capability riêng và không để migration làm thay đổi âm thầm hành vi sản phẩm?',
+  a: `**Tóm tắt:** Tôi không bọc mọi provider bằng một interface tối giản rồi giả định chúng tương đương. Tôi định nghĩa port (giao diện nghiệp vụ mà ứng dụng gọi) theo use case cần thiết, có capability và giới hạn rõ; adapter (lớp chuyển đổi) ánh xạ sang provider cụ thể, đồng thời chuẩn hóa lỗi, timeout và usage. Mỗi feature chọn model theo cấu hình có kiểm soát, nhưng thay provider/model vẫn cần eval, canary và rollback vì chất lượng, tốc độ, giá, tool calling và structured output không giống nhau.
+
+### Vì sao abstraction vừa đủ quan trọng
+Nếu mọi service gọi thẳng SDK, lựa chọn model, cấu trúc request, retry và xử lý lỗi bị sao chép khắp hệ thống. Thay provider khi đó trở thành thay đổi nhiều nơi và khó kiểm thử. Ngược lại, abstraction kiểu {{generate(String prompt)}} làm mất các capability như streaming, JSON theo schema, tool call, giới hạn context và metadata usage; team sẽ lách abstraction hoặc phải viết điều kiện provider ở tầng nghiệp vụ.
+
+Tạo port theo khả năng sản phẩm, ví dụ “tóm tắt ticket” cần văn bản, deadline và usage; “trợ lý có tool” cần stream/tool capability riêng. Adapter chuyển kiểu dữ liệu, xác thực response và ánh xạ lỗi provider thành nhóm nội bộ như rate limited, unavailable, invalid request. Không che mất chi tiết hữu ích: lưu provider/model thực tế, phiên bản prompt và capability đã chọn để điều tra.
+
+~~~java
+interface SummaryModel {
+    SummaryResult summarize(SummaryRequest request);
+}
+
+final class SummaryService {
+    private final SummaryModel model;
+
+    SummaryService(SummaryModel model) {
+        this.model = model;
+    }
+
+    SummaryResult summarize(Ticket ticket) {
+        // Use case giữ chính sách; adapter chịu trách nhiệm SDK/provider.
+        return model.summarize(SummaryRequest.from(ticket));
+    }
+}
+~~~
+Đây là port minh họa, không phải API của Spring AI, LangChain4j hay SDK cụ thể. Chỉ tách interface khi có ranh giới có ý nghĩa; không cần tạo một interface cho từng wrapper SDK.
+
+### Lựa chọn và chuyển đổi có kiểm soát
+Đăng ký capability theo model: context tối đa, hỗ trợ stream, structured output, tool calling, region, dữ liệu được phép gửi, latency/giá dự kiến. Router chọn từ allowlist theo feature, tenant plan và trạng thái sức khỏe. Không cho prompt tự chọn model hoặc provider. Nếu capability bắt buộc không có, trả lỗi rõ hoặc chọn luồng thay thế đã được kiểm thử, không âm thầm bỏ tính năng.
+
+Migration gồm: lưu golden set (tập câu hỏi/kết quả chuẩn), chạy model mới offline, so chất lượng/latency/chi phí; chạy shadow nếu chính sách dữ liệu cho phép; canary một tỷ lệ nhỏ; theo dõi metric và phản hồi; mở rộng dần, giữ cấu hình quay lại. Shadow gọi thêm provider có thể tốn tiền và gửi dữ liệu ra ngoài, nên cần giới hạn và đánh giá privacy trước. Prompt, model, parser và schema đầu ra được version riêng để xác định nguồn thay đổi hành vi.
+
+| Lựa chọn | Lợi ích | Rủi ro |
+|---|---|---|
+| SDK trực tiếp | Truy cập tính năng mới sớm | Gắn chặt API, nhiều mã lặp |
+| Framework adapter | Tích hợp nhanh, tiện ích sẵn | Abstraction có thể không khớp use case |
+| Port nội bộ theo capability | Chủ động routing và policy | Tốn công duy trì adapter, cần contract test |
+| Chỉ dùng feature chung nhỏ nhất | Dễ thay provider | Mất capability và chất lượng khác biệt |
+
+### Dữ liệu và contract
+Không lưu nguyên request SDK làm schema lâu dài duy nhất. Lưu nội dung nghiệp vụ cần thiết, trạng thái, model/provider, version, usage, và metadata có thể đọc lại; bảo vệ prompt/PII theo chính sách lưu trữ. Contract test cho mỗi adapter xác nhận timeout, lỗi, mapping usage và schema. Test tích hợp định kỳ bắt thay đổi thực tế của provider. Với streaming, adapter cần biểu diễn event/error/end nhất quán và vẫn cho ứng dụng biết luồng bị cắt, không biến lỗi thành câu trả lời thành công.
+
+### Pitfall production
+- Interface chỉ có một method chung khiến tool call hoặc streaming bị giấu trong {{if provider}}.
+- “Thay model bằng cấu hình” mà không chạy eval: JSON sai schema hoặc câu trả lời nghiệp vụ khác.
+- Retry/fallback sang provider khác sau khi gửi một phần output: nội dung lặp, mất thứ tự hoặc bị tính phí hai bên.
+- Cấu hình model động không allowlist: user có thể chọn model đắt hoặc không được phép dùng với dữ liệu đó.
+- Chỉ ghi alias “default”; sau sự cố không biết request đã dùng model version nào.
+
+### Ví dụ đời thực
+Một sản phẩm Java có 6 tính năng AI gọi SDK trực tiếp ở 14 class. Provider thông báo model ngừng hoạt động sau 90 ngày; bản chuyển thử làm tỷ lệ JSON parse thành công giảm từ 99,2% xuống 94%, dù response time tốt hơn. Nhóm tạo port theo ba capability, adapter riêng cho hai provider, thêm contract test và ghi provider/model/prompt version. Họ so 1.200 mẫu đã ẩn danh, rồi canary 5% traffic không chứa dữ liệu nhạy cảm. Sau 2 tuần, JSON success đạt 99,0%, p95 latency giảm 18% và cost/request giảm 11%; phần còn lệch được giữ ở model cũ đến khi prompt/schema sửa xong. Không chuyển toàn bộ chỉ vì interface đã trừu tượng hóa được API.
+
+### Trả lời mẫu khi phỏng vấn
+“Em sẽ không tạo một abstraction chung giả định mọi model làm giống nhau. Em tách port theo capability mà use case cần và adapter chuyển đổi request, response, lỗi cùng usage. Router chọn model từ allowlist theo feature, quyền dữ liệu, giá và sức khỏe; nếu thiếu capability bắt buộc thì phải báo rõ. Trước khi thay model, em version prompt/schema, chạy golden set và contract test, sau đó canary theo tỷ lệ nhỏ, đo chất lượng, latency và chi phí rồi mới mở rộng. Với shadow test, em tính cả chi phí và quy định dữ liệu vì có thể gửi prompt hai lần. Em không đổi provider giữa stream đã gửi token. Lưu model thực tế và phiên bản cấu hình giúp tái hiện lỗi; rollback phải là thao tác cấu hình an toàn đã thử. Abstraction giúp đổi dependency dễ hơn, nhưng không xóa được khác biệt về hành vi của model.”
+
+> Senior tip: Đo “tỷ lệ đáp ứng đúng contract” và chất lượng nghiệp vụ bên cạnh latency. Adapter compile được không chứng minh provider mới tương đương provider cũ.`,
+  follow: [
+    'Bạn thiết kế capability registry thế nào để một feature không bị route tới model thiếu tool calling hoặc structured output?',
+    'Khi dùng shadow traffic để so model, bạn bảo vệ PII và tránh nhân đôi chi phí ra sao?',
+    'Một model mới tốt trung bình nhưng kém ở nhóm ngôn ngữ hoặc khách hàng nhỏ; canary/rollback nên dựa trên metric nào?'
+  ],
+  tags: ['provider abstraction', 'model routing', 'Java', 'migration', 'evaluation']
+},
+{
+  id: 'architecture-050',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Knowledge base RAG lấy tài liệu từ wiki, object storage và hệ thống nghiệp vụ vốn thay đổi thường xuyên. Bạn thiết kế pipeline phát hiện cập nhật/xóa, nạp lại idempotent và chuyển phiên bản embedding mà không phục vụ chunk cũ hoặc mất dữ liệu thế nào?',
+  a: `**Tóm tắt:** Pipeline knowledge base biến tài liệu nguồn thành các chunk có metadata và embedding để truy xuất; nguồn chuẩn vẫn là hệ thống tài liệu, không phải vector index. Tôi dùng sự kiện thay đổi bền vững hoặc quét đối soát, xử lý mỗi tài liệu theo ID + revision để retry không nhân bản, lan truyền cả cập nhật lẫn xóa/quyền truy cập, và theo dõi độ trễ index. Khi đổi embedding model, tạo index có version mới, backfill, kiểm tra chất lượng rồi chuyển truy vấn có kiểm soát; không trộn embedding khác không gian trong cùng index.
+
+### Luồng và lý do mỗi bước riêng
+Nguồn có thể là wiki, file trong object storage hoặc bản ghi DB. CDC (Change Data Capture — ghi nhận thay đổi từ log DB) hoặc webhook/event báo có thay đổi; nếu nguồn không phát event đáng tin, chạy reconciliation (đối soát định kỳ) để tìm thiếu/cập nhật/xóa. Event chỉ mang ID, revision và loại thay đổi khi có thể; worker lấy nội dung mới nhất từ nguồn có thẩm quyền.
+
+Worker trích xuất text, chuẩn hóa, chia chunk, gắn metadata/ACL, tạo embedding rồi ghi index. Chunk là đoạn nhỏ được truy xuất riêng; quá dài làm kết quả kém liên quan, quá ngắn mất ngữ cảnh. Mỗi lần xử lý lưu {{sourceId}}, {{revision}}, {{chunkerVersion}}, {{embeddingModel}} và hash nội dung. Idempotency key theo tài liệu + revision + cấu hình giúp giao event lại không tạo bản sao. Với Kafka, consumer có thể nhận lại message; ack chỉ sau khi trạng thái xử lý được ghi bền vững.
+
+~~~seq
+title: Cập nhật tài liệu tới knowledge index
+actors: Source | Outbox | Queue | Worker | VectorIndex
+Source -> Outbox: Lưu revision mới cùng thay đổi
+Outbox -> Queue: Phát documentId và revision
+Queue -> Worker: Giao event (có thể lặp)
+Worker -> Source: Đọc bản mới nhất và ACL
+Worker -> VectorIndex: Ghi chunk theo revision
+VectorIndex --> Worker: Xác nhận index
+Worker -> VectorIndex: Đánh dấu revision mới active
+~~~
+
+Không nên xóa bản cũ trước khi bản mới được index thành công nếu cần duy trì khả năng tìm kiếm; đồng thời không được để cả hai phiên bản cùng trả về. Một cách là ghi staging namespace/index theo revision, xác minh đủ chunk, rồi đổi active revision bằng metadata/alias nguyên tử nếu storage hỗ trợ. Nếu không có chuyển đổi nguyên tử, lưu active revision ở nguồn kiểm soát và lọc truy vấn theo revision; thiết kế rõ cửa sổ nhất quán.
+
+### Cập nhật, xóa và quyền
+Tài liệu bị xóa hoặc ACL bị thu hẹp phải phát event tombstone (đánh dấu rằng bản ghi đã bị xóa) hoặc policy revision để xóa/ẩn chunk cũ. Không chỉ dựa vào re-embedding: một chunk còn sót có thể vẫn được retrieval trả về. Với quyền nhạy cảm, kiểm tra ACL trước khi đưa đoạn vào prompt; nếu pipeline trễ, retrieval phải chặn revision/quyền đã bị thu hồi theo nguồn chuẩn hoặc policy version.
+
+| Tình huống | Cách xử lý |
+|---|---|
+| Event lặp | ID + revision + cấu hình, upsert idempotent |
+| Event sai thứ tự | Chỉ active revision mới hơn |
+| Worker lỗi tài liệu | Retry hữu hạn, DLQ và cảnh báo |
+| Xóa nguồn | Tombstone, xóa mọi chunk/revision cũ |
+| Đổi embedding | Index version mới, backfill và chuyển dần |
+| Event bị mất | Reconciliation từ nguồn chuẩn |
+
+Khi đổi embedding model/chiều vector, lập index mới được version hóa. Backfill theo lô có giới hạn để không gây tải nguồn; so số document/chunk, lỗi, recall và latency trên golden set; chạy dual-read hoặc canary trước khi chuyển mặc định. Giữ index cũ đủ lâu để rollback, rồi xóa theo retention policy sau khi xác nhận. Đây là migration dữ liệu, không chỉ là đổi một biến cấu hình.
+
+### Vận hành và lỗi thường gặp
+- Không đo index lag (độ trễ từ sửa nguồn tới tìm kiếm được), nên người dùng hỏi tài liệu đã cập nhật mà thấy câu trả lời cũ.
+- Xóa chỉ bản ghi cha nhưng quên chunk hoặc phiên bản cũ.
+- Worker ack trước khi ghi index, mất event khi tiến trình chết.
+- Không có giới hạn retry: file hỏng làm queue retry mãi và chặn partition.
+- Đổi chunker/model mà không lưu version khiến không thể giải thích vì sao kết quả retrieval thay đổi.
+- Chỉ dựa vào event, không reconciliation; một event bị mất làm dữ liệu sai vĩnh viễn.
+
+### Ví dụ đời thực
+Một knowledge base có 900.000 tài liệu, khoảng 6 triệu chunk; 4% tài liệu thay đổi mỗi ngày. Người dùng vẫn thấy chính sách đã bị thu hồi tới 25 phút sau khi cập nhật, vì consumer ghi chunk mới nhưng không xóa revision cũ. Nhóm thêm revision monotonic, tombstone cho xóa/quyền, idempotent upsert và job đối soát hàng đêm. Họ tạo index phiên bản mới cho model embedding khác, backfill 6 triệu chunk theo 8 worker, chạy so sánh 5.000 câu hỏi đánh giá, rồi canary 10%. Index lag p99 giảm từ 25 xuống 3 phút; tỷ lệ tài liệu thiếu sau đối soát dưới 0,02%, còn rollback về index cũ thực hiện trong 2 phút. ACL bị thu hồi được chặn ngay tại bước retrieval theo policy version, không đợi batch embedding.
+
+### Trả lời mẫu khi phỏng vấn
+“Em giữ nguồn tài liệu làm source of truth và xem vector index là bản dựng có thể tái tạo. Mỗi thay đổi mang document ID và revision; worker đọc nội dung cùng ACL hiện tại, chunk, embed và upsert theo khóa idempotent. Event có thể trùng hoặc sai thứ tự nên chỉ revision mới hơn được active; job lỗi có retry hữu hạn, DLQ và reconciliation để phát hiện event mất. Cập nhật/xóa phải xử lý cả chunk cũ và quyền truy cập, không chỉ thêm bản mới. Khi đổi embedding, em tạo index version mới, backfill có giới hạn, đo coverage/recall trên tập chuẩn rồi chuyển bằng alias hoặc active-version có kiểm soát; giữ index cũ để rollback. Em đặt SLO cho index lag và kiểm tra quyền ngay trước khi nội dung vào prompt. Như vậy có thể chấp nhận một độ trễ cập nhật được công bố, thay vì tạo ảo tưởng mọi thay đổi xuất hiện tức thì.”
+
+> Senior tip: Đặt SLO riêng cho “thay đổi nội dung được tìm thấy” và “thu hồi quyền không còn được tìm thấy”; trường hợp sau thường cần đường chặn nhanh hơn pipeline embedding thông thường.`,
+  follow: [
+    'Làm sao xử lý event revision 12 tới trước revision 11 khi hai worker đang chạy đồng thời?',
+    'Bạn chứng minh tài liệu đã xóa không còn được trả từ cache hoặc index phụ thế nào?',
+    'Trong lúc backfill model embedding mới, làm sao bảo đảm hai index không bị nhầm hoặc rollback được?'
+  ],
+  tags: ['RAG', 'knowledge base', 'ingestion', 'embedding', 'event pipeline', 'data consistency']
+},
+{
+  id: 'architecture-051',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Thiết kế idempotent consumer cho Kafka: làm sao xử lý đúng một lần (exactly-once semantics) khi consumer crash giữa chừng, message bị redeliver, hoặc partition rebalance?',
+  a: `**Tóm tắt:** Kafka chỉ đảm bảo **at-least-once** — message có thể bị đọc lại khi consumer crash sau khi xử lý nhưng trước khi commit offset, hoặc khi rebalance. Để đạt exactly-once, consumer phải làm **idempotent write** (ghi có điều kiện/kiểm tra trùng) và quản lý offset cẩn thận: dùng transactional producer + consumer group isolation, hoặc pattern **transactional outbox** kết hợp DB.
+  
+### Vì sao Kafka không cho exactly-once sẵn
+Kafka consumer đọc message, xử lý business logic, rồi commit offset. Nếu crash **sau khi xử lý xong nhưng trước khi commit**, lần restart sẽ đọc lại message đó ⇒ xử lý hai lần. Nếu commit trước rồi mới xử lý, crash giữa chừng ⇒ **mất message**. Không có điểm "an toàn tuyệt đối" nào giữa xử lý và commit vì chúng không nguyên tử.
+
+### Ba cấp độ xử lý
+| Cấp độ | Cơ chế | Khi nào dùng |
+|---|---|---|
+| **At-least-once (mặc định)** | enable.auto.commit=true hoặc commit thủ công sau xử lý | Chấp nhận trùng, downstream tự khử trùng |
+| **Exactly-once trong Kafka (EOS)** | Transactional producer + isolation.level=read_committed | Cần ghi ra topic khác, không cần DB ngoài |
+| **Exactly-once end-to-end (DB)** | Idempotent consumer + outbox pattern | Ghi DB, gọi API ngoài, hoặc workflow phức tạp |
+
+### Cách 1: Idempotent consumer thuần túy (khuyến nghị cho hầu hết case)
+Mỗi message mang **business key** duy nhất (orderId, paymentId, eventId...). Consumer kiểm tra đã xử lý chưa trước khi làm việc:
+~~~java
+@Transactional
+public void consume(OrderEvent event) {
+    // 1. Kiểm tra idempotency key trong bảng processed_events
+    if (processedEventRepository.existsByEventId(event.getEventId())) {
+        log.info("Duplicate event skipped: {}", event.getEventId());
+        return; // đã xử lý, bỏ qua
+    }
+    // 2. Xử lý business logic
+    orderService.process(event);
+    // 3. Ghi nhận đã xử lý — CÙNG TRANSACTION với business logic
+    processedEventRepository.save(new ProcessedEvent(event.getEventId(), Instant.now()));
+}
+~~~
+**Quan trọng:** Kiểm tra và ghi nhận **phải trong cùng một DB transaction** với logic nghiệp vụ. Nếu tách ra, giữa kiểm tra và ghi có thể lọt request trùng (race condition).
+
+### Cách 2: Kafka Transactions (EOS) — khi ghi ra topic khác
+Dùng khi consumer **chuyển tiếp message sang topic khác** (filter, enrich, route) và muốn toàn bộ pipeline exactly-once:
+~~~java
+@Bean
+public KafkaConsumer<String, OrderEvent> consumer() {
+    KafkaConsumer<String, OrderEvent> c = new KafkaConsumer<>(props);
+    c.subscribe(Collections.singletonList("orders"));
+    return c;
+}
+
+@Bean
+public KafkaProducer<String, EnrichedOrder> producer() {
+    KafkaProducer<String, EnrichedOrder> p = new KafkaProducer<>(producerProps);
+    p.initTransactions(); // quan trọng!
+    return p;
+}
+
+public void processExactlyOnce() {
+    consumer.poll(Duration.ofMillis(100)).forEach(record -> {
+        producer.beginTransaction();
+        try {
+            EnrichedOrder enriched = enrich(record.value());
+            producer.send(new ProducerRecord<>("orders-enriched", enriched.getId(), enriched));
+            producer.sendOffsetsToTransaction(
+                Collections.singletonMap(new TopicPartition(record.topic(), record.partition()),
+                    new OffsetAndMetadata(record.offset() + 1)),
+                consumer.groupMetadata()
+            );
+            producer.commitTransaction();
+        } catch (Exception e) {
+            producer.abortTransaction();
+            throw e;
+        }
+    });
+}
+~~~
+- sendOffsetsToTransaction ghi offset **cùng transaction** với message output ⇒ hoặc cả hai thành công, hoặc cả hai rollback.
+- Consumer đọc với isolation.level=read_committed chỉ thấy message từ transaction đã commit.
+- **Hạn chế:** Chỉ áp dụng khi output là Kafka topic. Ghi DB, gọi HTTP, gửi email thì KHÔNG dùng được.
+
+### Cách 3: Transactional Outbox — ghi DB + phát event nguyên tử
+Khi consumer cần ghi DB **và** phát event ra Kafka (hoặc gọi API ngoài), dùng outbox pattern:
+~~~sql
+CREATE TABLE outbox (
+    id UUID PRIMARY KEY,
+    aggregate_type VARCHAR(50) NOT NULL,
+    aggregate_id VARCHAR(100) NOT NULL,
+    event_type VARCHAR(50) NOT NULL,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at TIMESTAMPTZ
+);
+CREATE INDEX idx_outbox_unpublished ON outbox (created_at) WHERE published_at IS NULL;
+~~~
+Consumer logic:
+~~~java
+@Transactional
+public void consume(OrderEvent event) {
+    if (processedEventRepository.existsByEventId(event.getEventId())) return;
+    
+    // 1. Business logic: cập nhật order, trừ kho, v.v.
+    orderService.process(event);
+    
+    // 2. Ghi outbox CÙNG TRANSACTION
+    outboxRepository.save(new OutboxEvent(
+        event.getEventId(), "Order", event.getOrderId(), 
+        "OrderProcessed", toJson(event)
+    ));
+    
+    // 3. Ghi idempotency key
+    processedEventRepository.save(new ProcessedEvent(event.getEventId(), Instant.now()));
+}
+~~~
+Một **relay process** riêng (Debezium, Kafka Connect, hoặc custom poller) đọc outbox chưa publish và đẩy lên Kafka, sau đó cập nhật published_at. Relay có thể chạy at-least-once vì consumer downstream đã idempotent.
+
+### Xử lý rebalance và crash
+- **Rebalance:** Kafka revoke partition, consumer onPartitionsRevoked nên **commit offset** (hoặc flush buffer) trước khi trả partition. Với EOS, commitTransaction tự lo.
+- **Crash giữa chừng:** Offset chưa commit ⇒ message đọc lại. Idempotent key chặn trùng.
+- **Poison pill (message lỗi mãi):** Không retry vô tận. Ghi vào DLQ (dead letter queue) sau N lần thất bại, alert team xử lý thủ công. KHÔNG commit offset cho message lỗi để không mất, nhưng cũng không block partition mãi.
+
+### Bảng so sánh
+| Yếu tố | Idempotent key + DB | Kafka EOS | Outbox + Relay |
+|---|---|---|---|
+| Ghi DB | ✅ | ❌ | ✅ |
+| Ghi Kafka topic khác | ❌ | ✅ | ✅ (qua relay) |
+| Gọi HTTP/API ngoài | ❌ (cần saga) | ❌ | ❌ (cần saga) |
+| Độ phức tạp | Thấp | Trung bình | Cao |
+| Latency thêm | ~0 | ~1 RTT Kafka | ~1-5s (poll relay) |
+
+### Pitfall thực tế
+1. **Quên unique index trên idempotency key** ⇒ race condition lọt trùng.
+2. **Commit offset trước khi xử lý xong** ⇒ crash làm mất message.
+3. **Dùng enable.auto.commit=true cùng EOS** ⇒ double commit, offset lệch.
+4. **Outbox relay không có ordering guarantee** ⇒ event đến partitions khác nhau, consumer downstream phải hợp nhất theo aggregate ID.
+5. **Processed_events bảng phình to** ⇒ cần TTL hoặc partition theo tháng, archive định kỳ.
+
+### Ví dụ đời thực
+Hệ thống thanh toán xử lý 50k transaction/ngày qua Kafka. Consumer ghi ledger DB + phát event PaymentCompleted cho notification service. Ban đầu dùng auto-commit ⇒ đôi khi network giật consumer commit offset nhưng DB transaction rollback ⇒ notification gửi "thành công" nhưng ledger không có tiền. **Sửa:** chuyển sang idempotent consumer + outbox. Mỗi message có paymentId làm key. Consumer kiểm tra processed_payments(paymentId) trước, xử lý ledger + ghi outbox + ghi processed key trong **một transaction**. Relay Debezium đọc outbox đẩy Kafka. Notification service cũng idempotent theo paymentId. Kết quả: 0 sự cố trùng/mất tiền 6 tháng liên tiếp.
+
+### Trả lời mẫu khi phỏng vấn
+"Với Kafka, exactly-once không có sẵn — broker chỉ cho at-least-once. Tôi thiết kế consumer idempotent bằng cách gắn business key (paymentId, orderId) cho mọi message. Consumer kiểm tra key trong bảng processed_events **trong cùng DB transaction** với logic nghiệp vụ: nếu đã có thì bỏ qua, chưa có thì xử lý và ghi key. Nếu cần phát event ra Kafka cho service khác, tôi dùng outbox pattern: ghi event vào bảng outbox cùng transaction, một relay riêng (Debezium) đọc outbox đẩy Kafka. Downstream cũng idempotent theo business key. Với rebalance, tôi tắt auto-commit, dùng commitSync trong onPartitionsRevoked hoặc Kafka transaction nếu output là topic. Pitfall lớn nhất là quên unique index trên idempotency key — race condition giữa check và insert sẽ lọt duplicate."
+
+> Senior tip: đừng cố gắng exactly-once cho mọi thứ. Hãy phân loại: (1) ghi DB ⇒ idempotent key + unique index; (2) ghi Kafka ⇒ Kafka transaction; (3) gọi API ngoài ⇒ saga + compensation; (4) gửi email/push ⇒ chấp nhận at-least-once, client dedup. Đa số hệ thống chỉ cần (1) và (2).`,
+  follow: [
+    'Nếu message không có business key tự nhiên (ví dụ log clickstream), bạn tạo idempotency key thế nào?',
+    'Kafka transaction có overhead gì so với idempotent consumer thường? Khi nào không nên dùng?',
+    'Outbox relay dùng Debezium hay custom poller? Ưu nhược điểm mỗi cách?'
+  ],
+  tags: ['Kafka', 'idempotent consumer', 'exactly-once', 'outbox', 'transactional outbox']
+,
+  refs: [
+    { type: 'doc', title: 'Kafka Exactly-Once Semantics', url: 'https://docs.confluent.io/platform/current/kafka/exactly-once-semantics.html' },
+    { type: 'article', title: 'Transactional Outbox Pattern', url: 'https://microservices.io/patterns/data/transactional-outbox.html' },
+    { type: 'doc', title: 'Debezium Outbox Event Router', url: 'https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html' }
+  ]
+},
+{
+  id: 'architecture-052',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Khi nào chọn REST, gRPC, hay messaging (Kafka/RabbitMQ) để giao tiếp giữa các microservice? So sánh trade-off cụ thể.',
+  a: `**Tóm tắt:** Không có "chiến thắng tuyệt đối" — chọn theo **mối quan hệ dữ liệu**, **yêu cầu latency**, **coupling**, và **độ tin cậy** cần thiết. REST cho query đơn giản, public API, team khác stack. gRPC cho internal RPC latency-critical, contract-first, streaming. Messaging cho event-driven, decoupling, async, replay, fan-out.
+  
+### Ma trận quyết định nhanh
+| Tiêu chí | REST (HTTP/JSON) | gRPC (HTTP/2 + Protobuf) | Messaging (Kafka/RabbitMQ) |
+|---|---|---|---|
+| **Mối quan hệ** | Request-Response (sync) | Request-Response + Streaming | Event/Command (async) |
+| **Coupling** | Lỏng (chỉ contract HTTP) | Chặt (share .proto) | Rất lỏng (chỉ topic/schema) |
+| **Latency** | 5-50 ms (network + serialize) | 1-10 ms (binary, multiplex) | N/A (async, ms đến giây) |
+| **Throughput** | Thấp hơn (text, headers) | Cao (binary, connection reuse) | Rất cao (batch, partition) |
+| **Schema evolution** | Manual (OpenAPI) | Built-in (Protobuf rules) | Schema Registry (Avro/Protobuf) |
+| **Debug/observability** | Dễ (curl, browser, logs) | Khó hơn (cần tool, grpcurl) | Khó (async, cần correlation ID) |
+| **Retry/timeout** | Client tự quản lý | Client + server deadline | Broker quản lý (retry, DLQ) |
+| **Fan-out** | Phải gọi nhiều lần | Client streaming / server streaming | Tự nhiên (multiple consumer groups) |
+| **Replay/Event sourcing** | Không | Không | Có sẵn (offset reset) |
+| **Firewall/Infra** | Qua mọi nơi (port 80/443) | Cần HTTP/2 support, ALPN | Cần broker, port riêng |
+| **Team autonomy** | Cao (bất kỳ ngôn ngữ) | Trung bình (cần protobuf support) | Cao (bất kỳ consumer) |
+
+### Khi nào chọn REST
+1. **Public API / BFF / Webhook:** Client là browser, mobile, partner bên ngoài — không kiểm soát stack.
+2. **Query/Read model đơn giản:** CRUD, tìm kiếm, pagination — không cần streaming.
+3. **Team polyglot mạnh:** Service A (Java), B (Go), C (Node), D (Python) — REST là chung nhỏ nhất.
+4. **Infrastructure hạn chế:** Chỉ có API Gateway/LB hỗ trợ HTTP/1.1, không có sidecar proxy cho gRPC.
+5. **Tần suất thấp, payload nhỏ:** Health check, config, admin API.
+
+**Ví dụ:** GET /api/v1/users/{id}/profile — frontend React gọi, mobile gọi, partner tích hợp. Latency 100ms chấp nhận được.
+
+### Khi nào chọn gRPC
+1. **Internal service-to-service latency-critical:** Order service gọi Inventory, Payment, Shipping trong cùng một request checkout — tổng latency phải < 200ms.
+2. **Contract-first, schema evolution quan trọng:** Team đồng ý dùng Protobuf, CI kiểm tra breaking change (buf breaking).
+3. **Cần streaming:** Server push realtime (notification, progress), client upload file lớn chunked, bidirectional chat.
+4. **Performance critical:** High-frequency trading, ad bidding, game server — binary serialization + HTTP/2 multiplexing tiết kiệm CPU/network.
+5. **Polyglot nhưng có đầu tư tooling:** Có shared protobuf repo, generate code CI/CD cho mọi language.
+
+**Ví dụ:** rpc GetInventory(InventoryRequest) returns (stream InventoryUpdate) — Inventory service push realtime tồn kho cho Order service khi user chọn biến thể sản phẩm.
+
+~~~protobuf
+// inventory.proto
+syntax = "proto3";
+package com.example.inventory;
+
+service InventoryService {
+  rpc CheckStock(CheckStockRequest) returns (CheckStockResponse);
+  rpc WatchStock(WatchStockRequest) returns (stream StockUpdate); // server streaming
+  rpc BulkReserve(stream ReserveRequest) returns (BulkReserveResponse); // client streaming
+}
+
+message CheckStockRequest { repeated string sku_ids = 1; }
+message CheckStockResponse { map<string, int32> available = 1; }
+message StockUpdate { string sku_id = 1; int32 available = 2; int64 timestamp = 3; }
+~~~
+
+### Khi nào chọn Messaging (Kafka/RabbitMQ)
+1. **Event-driven architecture:** Service A phát sự kiện OrderCreated, Service B/C/D phản ứng độc lập (email, loyalty, analytics, warehouse).
+2. **Decoupling thời gian:** Producer không cần consumer online. Consumer down vài giờ vẫn không mất message.
+3. **Fan-out một-sang-nhiều:** Một event → nhiều consumer group xử lý khác nhau (notification, audit, ML feature store).
+4. **Replay/Backfill:** Deploy service mới, replay lịch sử 30 ngày để build read model.
+5. **Workflow long-running:** Saga pattern — từng bước là event, compensating transaction cũng là event.
+6. **Throughput cực lớn:** Ghi log, metrics, clickstream — hàng triệu events/giây, batch compress.
+
+**Ví dụ:** OrderCreated event → Kafka topic orders. Consumer groups: notification-svc (gửi email), warehouse-svc (xuất kho), analytics-svc (ghi ClickHouse), loyalty-svc (cộng điểm). Mỗi group scale độc lập, retry policy riêng.
+
+### So sánh REST vs gRPC chi tiết
+| Yếu tố | REST | gRPC |
+|---|---|---|
+| **Serialization** | JSON (text, verbose) | Protobuf (binary, 3-10x nhỏ hơn) |
+| **Connection** | HTTP/1.1 (head-of-line blocking) | HTTP/2 (multiplex, single TCP) |
+| **Code gen** | OpenAPI → client (optional) | Protobuf → client/server (bắt buộc) |
+| **Browser support** | Native | Cần gRPC-Web + Envoy proxy |
+| **Load balancing** | L7 LB (round-robin) | Cần client-side LB hoặc Envoy (gRPC LB) |
+| **Tracing** | B3/W3C header tự nhiên | Cần metadata propagation |
+
+### So sánh Kafka vs RabbitMQ
+| Yếu tố | Kafka | RabbitMQ |
+|---|---|---|
+| **Model** | Log (append-only, retention) | Queue (message ack, delete) |
+| **Ordering** | Per partition | Per queue (single consumer) |
+| **Replay** | Offset reset, time-based | Không (message bị ack thì mất) |
+| **Throughput** | Rất cao (millions/s) | Trung bình (100k/s) |
+| **Latency** | 2-5 ms | < 1 ms |
+| **Routing** | Topic + partition key | Exchange + binding (flexible) |
+| **Use case** | Event streaming, audit, replay | Task queue, RPC over AMQP, priority queue |
+
+### Kết hợp thực tế (Hybrid)
+Hầu như hệ thống production đều dùng **cả ba** cùng lúc:
+- **REST:** Public API, BFF, webhook receiver, health check.
+- **gRPC:** Internal sync call cần latency thấp, streaming (inventory check, price calc, risk scoring).
+- **Kafka:** Domain event (OrderCreated, PaymentCompleted), async workflow, audit log, analytics pipeline.
+- **RabbitMQ (tuỳ chọn):** Delayed queue (retry sau 30p), priority queue (OTP ưu tiên), RPC callback pattern.
+
+### Pitfall hay gặp
+1. **Dùng gRPC cho mọi internal call** → tạo distributed monolith, coupling chặt, deployment cùng lúc, debugging cực khó.
+2. **Dùng Kafka cho request-response** → thêm latency, complexity, correlation ID, timeout handling — gRPC/REST đơn giản hơn.
+3. **Chia sẻ protobuf/schema giữa team không có breaking change check** → deploy service A phá service B.
+4. **Quên idempotency cho REST/gRPC** → client retry gây double charge, double booking.
+5. **Không có circuit breaker/timeout cho sync call** → cascade failure (service A chờ B, B chờ C...).
+
+### Ví dụ đời thực
+E-commerce 50 service. **Checkout flow:** API Gateway (REST) → Order Service. Order Service gọi **gRPC**: Inventory (check stock, reserve), Pricing (tính giá, promotion), Risk (fraud check) — song song, timeout 100ms mỗi cái. Sau khi reserve xong, Order Service phát **Kafka event** OrderReserved → Payment Service (async, saga), Warehouse Service (xuất kho), Notification Service (email), Analytics (ghi fact table). Payment Service hoàn tất phát PaymentCompleted → Order Service cập nhật trạng thái, Loyalty Service cộng điểm. **Lý do:** gRPC cho bước sync cần latency thấp và rollback ngay nếu thất bại; Kafka cho bước async, decoupling, retry, replay.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn theo ba tiêu chí: (1) có cần response ngay không? Có → sync (REST/gRPC). Không → async (messaging). (2) Client là ai? Public/mobile → REST. Internal team cùng stack, cần perf → gRPC. (3) Mối quan hệ: 1-1 request-response → gRPC/REST. 1-nhiều, event, workflow dài, replay → Kafka. Ví dụ checkout: Order gọi Inventory/Pricing/Risk qua gRPC vì cần latency < 100ms và rollback transaction nếu thiếu hàng. Sau đó phát OrderReserved lên Kafka cho Payment, Warehouse, Notification xử lý async — chúng không cần block checkout, có thể retry, scale riêng. Pitfall: đừng dùng gRPC cho public API (browser không hỗ trợ tốt), đừng dùng Kafka cho RPC (quá phức tạp), và luôn có circuit breaker cho sync call."
+
+> Senior tip: mặc định chọn **REST cho public, gRPC cho internal sync critical, Kafka cho domain event**. Chỉ dùng RabbitMQ khi cần delayed/priority queue mà Kafka không hỗ trợ tốt. Và quan trọng nhất: **định nghĩa contract (OpenAPI/Protobuf/Avro) và CI check breaking change** — thiếu cái này thì gRPC/Kafka cũng sẽ thành nợ kỹ thuật.`,
+  follow: [
+    'Bạn xử lý timeout và retry cho gRPC thế nào để tránh cascade failure?',
+    'Khi nào dùng gRPC streaming thay vì Kafka cho realtime push?',
+    'Làm sao versioning schema cho REST/gRPC/Kafka trong mono-repo vs multi-repo?'
+  ],
+  tags: ['microservices', 'REST', 'gRPC', 'Kafka', 'RabbitMQ', 'communication patterns']
+,
+  refs: [
+    { type: 'doc', title: 'gRPC Concepts', url: 'https://grpc.io/docs/what-is-grpc/core-concepts/' },
+    { type: 'article', title: 'Choosing an API paradigm (Google Cloud)', url: 'https://cloud.google.com/blog/products/application-development/choosing-an-api-paradigm-rest-grpc-graphql' },
+    { type: 'doc', title: 'Kafka vs RabbitMQ', url: 'https://www.confluent.io/kafka-vs-rabbitmq/' }
+  ]
+},
+{
+  id: 'architecture-053',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Thiết kế multi-region active-active: làm sao xử lý xung đột dữ liệu (conflict resolution), routing traffic, và đảm bảo consistency khi region gặp sự cố?',
+  a: `**Tóm tắt:** Multi-region active-active cho phép ghi ở **bất kỳ region nào**, traffic phân tán, RTO ≈ 0 khi region down. Thách thức lớn nhất là **xử lý xung đột ghi ghi (write-write conflict)** trên cùng một record. Giải pháp: chia dữ liệu theo **ownership region** (primary region per entity), dùng **CRDT/last-writer-wins/application-level merge** cho data ít xung đột, và **saga/compensation** cho transaction cross-region. Routing dùng DNS-based (GeoDNS) hoặc Anycast + health check.
+  
+### Kiến trúc tổng quan
+~~~text
+                    +------------------+
+                    |   Client / DNS   | (GeoDNS / Anycast)
+                    +--------+---------+
+                             |
+              +--------------+--------------+
+              |              |              |
+        +-----v-----+  +-----v-----+  +-----v-----+
+        | Region US |  | Region EU |  | Region AP |
+        | (Primary  |  | (Primary  |  | (Primary  |
+        |  for US   |  |  for EU   |  |  for AP   |
+        |  users)   |  |  users)   |  |  users)   |
+        +-----+-----+  +-----+-----+  +-----+-----+
+              |              |              |
+              +--------------+--------------+
+                             |
+                    Cross-region Replication
+                    (Kafka MirrorMaker / DB sync / CRDT)
+                             |
+              +--------------+--------------+
+              |   Global View / Read Replica  |
+              +-------------------------------+
+~~~
+
+### 1. Chiến lược ownership (Primary Region per Entity) — **Khuyến nghị cho hầu hết**
+Mỗi entity (user, order, account) có **một region chủ sở hữu** — ghi chỉ được tại region đó. Region khác chỉ đọc (read replica) hoặc forward write về primary.
+- **Routing:** Client → GeoDNS → region gần nhất. Nếu user US truy cập EU, request write được **proxy/forward** về US (hoặc trả lỗi "redirect to us-east").
+- **Conflict:** Không có write-write conflict vì chỉ một region ghi.
+- **Latency write:** User xa primary region chịu độ trễ cross-region (80-150ms). Chấp nhận được cho write (ít hơn read).
+- **Failover:** Primary region down → promote secondary region làm primary mới (cần consensus: Raft/etcd/ZooKeeper quản lý ownership).
+
+~~~java
+// Ví dụ: User service xác định primary region
+public class UserRegionResolver {
+    private static final Map<String, String> REGION_OWNERSHIP = Map.of(
+        "us", "us-east-1",
+        "eu", "eu-west-1",
+        "ap", "ap-southeast-1"
+    );
+    
+    public String getPrimaryRegion(String userId) {
+        // Hash userId để phân chia, hoặc lookup từ metadata
+        String regionKey = userId.substring(0, 2).toLowerCase(); // us, eu, ap...
+        return REGION_OWNERSHIP.getOrDefault(regionKey, "us-east-1");
+    }
+    
+    public boolean isLocalWriteAllowed(String userId, String currentRegion) {
+        return getPrimaryRegion(userId).equals(currentRegion);
+    }
+}
+~~~
+
+### 2. Conflict-free Replicated Data Types (CRDT) — cho data ít xung đột, high availability
+Dùng cho counter, set, register — **tự động merge không conflict**.
+- **G-Counter (grow-only counter):** Mỗi region chỉ tăng, merge = max của từng region.
+- **PN-Counter (positive-negative):** Tăng/giảm, merge = sum(P) - sum(N).
+- **LWW-Register (Last-Writer-Wins):** Gán timestamp (logical/physical), merge = giá trị timestamp lớn nhất.
+- **OR-Set (Observed-Remove Set):** Add/remove element, merge = union adds - intersection removes.
+
+~~~java
+// LWW Register cho user profile (name, avatar, preferences)
+public class LwwRegister<T> {
+    private final Map<String, VersionedValue<T>> values = new ConcurrentHashMap<>();
+    
+    public void set(String key, T value, long timestamp, String regionId) {
+        values.compute(key, (k, existing) -> {
+            if (existing == null || timestamp > existing.timestamp || 
+                (timestamp == existing.timestamp && regionId.compareTo(existing.regionId) > 0)) {
+                return new VersionedValue<>(value, timestamp, regionId);
+            }
+            return existing;
+        });
+    }
+    
+    public T get(String key) {
+        return values.getOrDefault(key, new VersionedValue<>(null, 0, "")).value;
+    }
+    
+    public void merge(LwwRegister<T> other) {
+        other.values.forEach((k, v) -> set(k, v.value, v.timestamp, v.regionId));
+    }
+    
+    record VersionedValue<T>(T value, long timestamp, String regionId) {}
+}
+~~~
+
+### 3. Application-level Conflict Resolution — cho business logic phức tạp
+Khi CRDT không đủ (ví dụ: chuyển tiền, đặt vé, inventory), dùng **application logic**:
+- **Last-Writer-Wins (LWW) với business timestamp:** Dùng event_time từ client (không phải server time) + tie-break bằng region ID.
+- **Operational Transform / Merge function:** Viết hàm merge tùy nghiệp vụ. Ví dụ: giỏ hàng merge = union items, quantity = max.
+- **Thiết kế tránh xung đột (Conflict-free by design):** Thiết kế data model tránh conflict: append-only log, event sourcing, hoặc phân chia aggregate nhỏ.
+
+~~~java
+// Merge giỏ hàng: union items, lấy quantity lớn nhất
+public Cart merge(Cart local, Cart remote) {
+    Map<String, CartItem> merged = new HashMap<>();
+    local.getItems().forEach(item -> merged.put(item.getSku(), item));
+    remote.getItems().forEach(item -> 
+        merged.merge(item.getSku(), item, 
+            (existing, incoming) -> new CartItem(item.getSku(), 
+                Math.max(existing.getQuantity(), incoming.getQuantity()))
+        )
+    );
+    return new Cart(merged.values());
+}
+~~~
+
+### 4. Cross-region Transaction — Saga pattern
+Transaction cross-region (ví dụ: user US chuyển tiền cho user EU, primary region khác nhau):
+- Không dùng 2PC (không scale, blocking).
+- Dùng **Saga**: chuỗi local transaction, mỗi bước có compensation.
+- Orchestration-based (central coordinator) hoặc Choreography-based (event-driven).
+
+~~~text
+Transfer $100: User US (primary us-east) -> User EU (primary eu-west)
+
+Saga Orchestrator (có thể chạy ở region nào cũng được):
+1. us-east: Reserve $100 from US user (local TX) → success
+2. Publish TransferReserved event → Kafka (cross-region)
+3. eu-west consumer: Credit $100 to EU user (local TX) → success
+4. Publish TransferCompleted → Kafka
+5. us-east consumer: Confirm reserve → Commit (local TX)
+6. Done
+
+Compensation (nếu bước 3 fail):
+- eu-west: publish TransferFailed
+- us-east: Release reserve (compensation TX)
+~~~
+
+### 5. Routing Traffic & Failover
+| Cách | Cơ chế | Ưu | Nhược |
+|---|---|---|---|
+| **GeoDNS (Route53, Cloudflare)** | Trả IP region gần nhất dựa trên IP client | Đơn giản, không proxy | TTL cache (60-300s), failover chậm |
+| **Anycast + Health Check** | Cùng IP mọi region, router chọn gần nhất + healthy | Failover nhanh (giây), client không đổi IP | Phức tạp, cần BGP, cloud provider support |
+| **API Gateway / Service Mesh** | Sidecar/proxy route dựa trên header, latency, health | Kiểm soát chi tiết, canary, retry | Thêm hop, complexity |
+
+**Khuyến nghị:** GeoDNS cho global routing (client → region), Service Mesh (Istio/Linkerd) cho intra-region và cross-region service-to-service.
+
+### 6. Data Replication Strategy
+| Loại dữ liệu | Cách replicate | Tool |
+|---|---|---|
+| **Reference data (config, catalog)** | Active-active, CRDT/LWW | Kafka MirrorMaker, DB logical replication |
+| **User-generated content (post, comment)** | Primary region write, async replicate | Kafka / DB CDC (Debezium) |
+| **Transactional data (order, payment, ledger)** | Primary region only, read replica elsewhere | DB sync (Postgres logical replication, Aurora Global DB) |
+| **Analytics / ML features** | Async event stream → global warehouse | Kafka → ClickHouse / Snowflake / BigQuery |
+
+### 7. Consistency Model & SLAs
+- **Read-your-writes:** Client ghi region A, đọc ngay region A → strong consistency (local DB).
+- **Cross-region read:** Client EU đọc data user US → eventual consistency (replication lag 100ms-5s).
+- **Stale read handling:** UI hiển thị "data may be slightly outdated" hoặc đọc từ primary region cho critical page.
+
+### Pitfall thực tế
+1. **Clock skew giữa region** ⇒ LWW sai. Dùng **logical timestamp (Hybrid Logical Clock)** hoặc **server-side timestamp** tại primary region.
+2. **Split-brain khi network partition** ⇒ hai region cùng ghi. Cần **consensus (Raft)** quản lý ownership, hoặc **quorum write** (ghi phải ack từ 2/3 region).
+3. **Replication lag gây đọc dữ liệu cũ** ⇒ user thấy comment vừa đăng không hiện. Giải pháp: redirect read về primary region cho session vừa write (sticky read).
+4. **Schema migration cross-region** ⇒ deploy tuần tự, backward compatible, dual-write trong transition.
+5. **Cost cross-region traffic** ⇒ AWS inter-region $0.02/GB. Compress, batch, chỉ replicate cần thiết.
+
+### Ví dụ đời thực
+Hệ thống ngân hàng digital 3 region: US, EU, SG. **Account** primary theo citizenship (US citizen → US, EU citizen → EU...). **Ledger** chỉ ghi tại primary region, replicate async sang global read replica (Aurora Global DB, lag < 1s). **Transfer cross-region** dùng Saga: region nguồn reserve, region đích credit, orchestrator điều phối qua Kafka. **Routing:** Route53 latency-based routing + health check. **Failover test:** Tắt US region → DNS failover EU/SG trong 45s, ownership account US promote tại EU (quorum etcd), client retry tự động. Kết quả: RTO 60s, RPO < 1s (async replicate), 0 data loss test 12 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Multi-region active-active cốt lõi là **xác định ownership**: mỗi entity có một primary region ghi, các region khác read-only hoặc forward write. Với account/user, tôi phân chia theo citizenship/geo. Conflict resolution: reference data dùng CRDT (LWW-Register), transactional data chỉ ghi primary, cross-region transaction dùng Saga qua Kafka. Routing: GeoDNS cho client, service mesh cho inter-service. Failover: etcd/Raft quản lý ownership, promote secondary khi primary down. Pitfall lớn nhất là clock skew làm LWW sai — tôi dùng HLC hoặc server timestamp tại primary. Schema migration phải backward compatible, deploy canary từng region. Cost cross-region traffic cần nén và batch."
+
+> Senior tip: đừng cố active-active cho **mọi thứ**. Hầu hết hệ thống chỉ cần **active-passive cho DB transactional** (RPO=0, RTO=30s) và **active-active cho read/cache/event streaming**. Active-active full cho ledger/payment là over-engineering, rủi ro split-brain cao, chi phí lớn. Hãy active-active ở tầng stateless (API, cache, Kafka), giữ DB primary-per-entity.`,
+  follow: [
+    'Làm sao test split-brain scenario trong staging mà không ảnh hưởng production?',
+    'Khi nào cần strong consistency cross-region (quorum write) và penalty latency thế nào?',
+    'Bạn xử lý schema migration cross-region zero-downtime ra sao?'
+  ],
+  tags: ['multi-region', 'active-active', 'conflict resolution', 'CRDT', 'Saga', 'geo-distributed']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Multi-Region Architecture', url: 'https://docs.aws.amazon.com/whitepapers/latest/building-multi-region-active-active-architecture/multi-region-active-active-architecture.html' },
+    { type: 'article', title: 'Conflict-free Replicated Data Types (CRDT)', url: 'https://martinfowler.com/articles/patterns-of-distributed-systems/crdt.html' },
+    { type: 'doc', title: 'Aurora Global Database', url: 'https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/Aurora.GlobalDatabase.html' }
+  ]
+},
+{
+  id: 'architecture-054',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Chiến lược migration database không downtime ở quy mô lớn (billion rows, TB data): dual-write, CDC, backfill, cutover, rollback. Trình bày quy trình từng bước.',
+  a: `**Tóm tắt:** Migration DB lớn zero-downtime dùng pattern **Dual-write + CDC + Backfill + Verified Cutover**. Không bao giờ ALTER TABLE trực tiếp trên bảng lớn. Quy trình: (1) Chuẩn bị schema mới song song, (2) Dual-write vào cả hai, (3) Backfill dữ liệu lịch sử, (4) CDC sync real-time, (5) Verify dữ liệu khớp, (6) Cutover đọc sang mới, (7) Dừng dual-write, (8) Dọn dẹp. Mỗi bước có rollback plan.
+  
+### Tổng quan quy trình
+~~~text
+Phase 0: Prepare          Phase 1: Dual-write      Phase 2: Backfill        Phase 3: CDC Sync
+┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
+│ New schema      │      │ App writes to   │      │ Batch copy old  │      │ CDC captures    │
+│ (shadow tables) │      │ OLD + NEW       │      │ → NEW (idempotent)│      │ changes OLD→NEW │
+│ Indexes, FK     │      │ (sync/async)    │      │ Chunked,        │      │ Apply to NEW    │
+│ No traffic      │      │ Shadow traffic  │      │ resume-able     │      │ Lag → 0         │
+└─────────────────┘      └────────┬────────┘      └────────┬────────┘      └────────┬────────┘
+                                  │                        │                        │
+                         Verify writes match          Verify row counts         Verify lag < 1s
+                                  │                        │                        │
+                    Phase 4: Verify & Cutover     Phase 5: Cleanup
+                    ┌─────────────────────┐      ┌─────────────────┐
+                    │ Compare samples     │      │ Drop OLD table  │
+                    │ Switch reads to NEW │      │ Remove dual-write│
+                    │ Monitor error rate  │      │ Drop triggers   │
+                    └─────────────────────┘      └─────────────────┘
+~~~
+
+### Phase 0: Prepare — Schema mới (Shadow Tables)
+- Tạo bảng mới với tên tạm: orders_new, order_items_new...
+- **Không** thêm FK/triggers trỏ về bảng cũ.
+- Tạo **indexes** cần thiết cho query mới (có thể khác bảng cũ).
+- Nếu đổi loại cột (VARCHAR → UUID, INT → BIGINT), định nghĩa cột mới với type đích.
+- Chạy ANALYZE / UPDATE STATISTICS sau khi tạo.
+
+### Phase 1: Dual-Write — Ghi song song
+App ghi vào **cả bảng cũ và bảng mới** trong cùng một transaction (hoặc saga nếu DB khác).
+~~~java
+@Transactional
+public Order createOrder(OrderRequest req) {
+    // 1. Ghi bảng cũ (existing logic)
+    Order old = orderRepository.save(toOldEntity(req));
+    
+    // 2. Ghi bảng mới (new schema)
+    OrderNew newOrder = orderNewRepository.save(toNewEntity(req));
+    
+    // 3. Ghi mapping ID nếu PK khác nhau
+    if (!old.getId().equals(newOrder.getId())) {
+        idMappingRepository.save(new IdMapping(old.getId(), newOrder.getId()));
+    }
+    
+    return old; // trả về old để response không đổi
+}
+~~~
+**Quan trọng:**
+- Dual-write **phải idempotent**: retry không tạo duplicate.
+- Nếu bảng mới ghi fail → rollback cả hai (cùng transaction) → app error 500. Nếu không muốn fail app, ghi bảng mới **async** (outbox + relay) nhưng phải accept eventual consistency.
+- **Shadow traffic:** Để test không ảnh hưởng production, copy 1% traffic ghi vào bảng mới, so sánh kết quả.
+
+### Phase 2: Backfill — Copy dữ liệu lịch sử
+Copy dữ liệu từ bảng cũ → bảng mới theo **chunk (batch)** để tránh lock table, replication lag.
+~~~sql
+-- Ví dụ Postgres: copy theo chunk 10k rows, dùng ctid hoặc PK range
+INSERT INTO orders_new (id, user_id, total, status, created_at, ...)
+SELECT id, user_id, total, status, created_at, ...
+FROM orders_old
+WHERE id BETWEEN 100000 AND 109999
+ON CONFLICT (id) DO UPDATE SET
+    user_id = EXCLUDED.user_id,
+    total = EXCLUDED.total,
+    status = EXCLUDED.status,
+    ...;
+~~~
+**Thiết kế backfill job:**
+- **Idempotent:** ON CONFLICT DO UPDATE hoặc MERGE / INSERT ... ON DUPLICATE KEY UPDATE.
+- **Resume-able:** Lưu last_processed_id vào bảng migration_checkpoint. Crash restart từ checkpoint.
+- **Throttle:** pg_sleep(0.01) giữa chunk, hoặc LIMIT + OFFSET với index. Theo dõi replication lag, dừng nếu lag > 10s.
+- **Parallel:** Chia range PK cho nhiều worker (ví dụ 10 worker, mỗi worker 1 range).
+- **Verify sau mỗi chunk:** COUNT(*) và CHECKSUM (Postgres: md5(string_agg(...))) so sánh old vs new.
+
+### Phase 3: CDC Sync — Bắt kịp real-time
+Sau backfill xong, bật **Change Data Capture** sync thay đổi real-time từ cũ → mới.
+- **Tool:** Debezium (Kafka Connect) + Kafka → consumer ghi bảng mới. Hoặc DB native logical replication (Postgres publication/subscription, MySQL replication, SQL Server CDC).
+- **Mapping:** CDC event (INSERT/UPDATE/DELETE) → áp dụng lên bảng mới. Cần handle schema diff (cột mới/đổi tên).
+- **Lag monitoring:** Dashboard cdc_lag_seconds < 5s là mục tiêu trước cutover.
+
+~~~yaml
+# Debezium connector config
+connector.class: io.debezium.connector.postgresql.PostgresConnector
+database.hostname: old-db
+table.include.list: public.orders_old, public.order_items_old
+transforms: unwrap, route
+transforms.route.type: org.apache.kafka.connect.transforms.RegexRouter
+transforms.route.regex: ([^.]+)\.([^.]+)\.([^.]+)
+transforms.route.replacement: $1.$2_new  # route to new table name
+~~~
+
+### Phase 4: Verify & Cutover — Chuyển đổi đọc
+**Verification (chạy song song 1-7 ngày):**
+- **Row count:** COUNT(*) old vs new per table, per partition.
+- **Checksum sampling:** Random 10k rows, so sánh từng cột.
+- **Critical query test:** Chạy query production thực tế trên bảng mới, so sánh kết quả và latency.
+- **Shadow read:** 5% traffic đọc từ bảng mới, log mismatch.
+
+**Cutover strategy:**
+| Chiến lược | Cách làm | Rủi ro | Thời gian |
+|---|---|---|---|
+| **Flip switch (feature flag)** | Bật flag read_from_new=true, deploy rolling | Nhanh, nhưng all-at-once | Phút |
+| **Canary read** | Tăng dần % traffic đọc mới: 1% → 10% → 50% → 100% | An toàn, phát hiện sớm | Giờ đến ngày |
+| **Blue/Green** | Deploy app mới chỉ đọc new, switch LB | Zero-downtime, rollback nhanh | Phút |
+
+**Khuyến nghị:** Canary read + feature flag. Bật flag cho internal user trước, monitor error rate, latency, data mismatch.
+
+### Phase 5: Cleanup
+Sau cutover ổn định (1-2 tuần):
+1. Xoá dual-write code.
+2. Drop triggers/CDC connector.
+3. DROP TABLE orders_old (sau khi backup).
+4. Rename orders_new → orders (hoặc giữ tên mới, update config).
+5. Xoá indexes không dùng trên bảng mới.
+
+### Rollback Plan (MỖI PHASE CÓ)
+| Phase | Rollback |
+|---|---|
+| Dual-write | Tắt dual-write flag, app chỉ ghi cũ. Bảng mới đừng drop, giữ để investigate. |
+| Backfill | Dừng job, bảng mới chỉ có partial data. Dual-write vẫn chạy. |
+| CDC | Tắt connector, dual-write vẫn chạy. Lag tăng nhưng không mất data. |
+| Cutover | Flip flag read_from_new=false ngay lập tức (feature flag). App đọc lại cũ. |
+| Cleanup | **KHÔNG** drop bảng cũ cho đến 2 tuần sau cutover. Backup PITR trước khi drop. |
+
+### Xử lý các trường hợp đặc biệt
+**1. Đổi Primary Key (INT → UUID, hoặc composite key):**
+- Bảng mới có PK mới + cột old_id (unique index).
+- Dual-write: ghi cả hai, mapping old_id ↔ new_id trong bảng riêng.
+- Backfill: sinh UUID mới cho từng row, lưu mapping.
+- CDC: event UPDATE trên PK cũ → UPDATE trên PK mới qua mapping.
+
+**2. Tách bảng (Monolith → Microservice):**
+- Bảng orders tách thành orders_core + orders_shipping + orders_billing.
+- Dual-write: ghi orders_old + 3 bảng mới.
+- Backfill: chia chunk, insert vào 3 bảng mới trong 1 transaction.
+- Cutover: từng service đọc bảng của mình.
+
+**3. Merge bảng (Multiple → One):**
+- Giống tách bảng nhưng ngược lại.
+
+**4. Đổi DB engine (Postgres → CockroachDB / MySQL → TiDB):**
+- Dual-write qua application (ghi 2 DB) hoặc CDC cross-DB (Debezium → Kafka → sink connector).
+- Verify cần so sánh cross-DB (tool: data-diff, skeema).
+- Cutover: DNS switch hoặc proxy (ProxySQL, PgBouncer).
+
+### Pitfall thực tế
+1. **Quên index trên bảng mới** → cutover xong query chậm, rollback khó. **Tạo index trước khi dual-write.**
+2. **Backfill không idempotent** → crash restart tạo duplicate. **Luôn ON CONFLICT DO UPDATE.**
+3. **CDC lag cao lúc peak** → cutover lúc lag > 30s → data loss. **Chỉ cutover khi lag < 1s liên tục 1 giờ.**
+4. **Không test rollback** → sự cố cutover không biết revert. **Test rollback trong staging bắt buộc.**
+5. **Schema drift** (dev thêm cột vào cũ quên thêm vào mới) → mismatch. **CI check schema sync giữa old/new.**
+6. **Transaction log / WAL bloat** do dual-write + backfill + CDC cùng lúc. **Throttle backfill, monitor disk.**
+
+### Ví dụ đời thực
+E-commerce mig orders 2.5 tỷ rows, 1.2 TB từ Postgres 12 → 16 (upgrade major + tách partition theo tháng). **Timeline 6 tuần:**
+- Tuần 1: Tạo orders_new partitioned by created_at month, indexes, FK.
+- Tuần 2: Dual-write async (outbox + Debezium relay) — không block app. Shadow traffic 10%.
+- Tuần 3-4: Backfill 10 worker, chunk 50k rows, throttle 100ms/chunk. Tổng 40h. Verify checksum mỗi partition.
+- Tuần 5: CDC sync (Debezium), lag ổn định < 500ms. Canary read 1% → 100% trong 3 ngày.
+- Tuần 6: Cutover hoàn tất, monitor 1 tuần, drop old table.
+**Rollback test:** Tuần 3 tắt dual-write, verify app chạy bình thường. Tuần 5 flip flag off, verify read old OK.
+**Kết quả:** 0 downtime, 0 data loss, p99 latency giảm 40% nhờ partition pruning.
+
+### Trả lời mẫu khi phỏng vấn
+"Migration zero-downtime lớn tôi dùng Dual-write + CDC + Backfill. Phase 0: tạo bảng mới partitioned, indexes đầy đủ. Phase 1: dual-write sync trong transaction (hoặc async outbox nếu không muốn rủi ro fail app). Phase 2: backfill chunked idempotent, resume-able, throttle theo replication lag. Phase 3: CDC (Debezium) sync real-time, monitor lag. Phase 4: verify row count, checksum, shadow read, canary cutover bằng feature flag. Phase 5: cleanup sau 2 tuần. Mỗi phase có rollback: tắt flag, dừng job, flip read về cũ. Pitfall: quên index, backfill không idempotent, CDC lag cao lúc peak, không test rollback. Ví dụ thực tế: mig 2.5 tỷ rows orders Postgres 12→16 partitioned, 6 tuần, 0 downtime."
+
+> Senior tip: **đừng migrate toàn bộ một lần**. Hãy chia nhỏ: mig từng table, từng partition, từng service. Ưu tiên table đọc nhiều/ghi ít trước để test quy trình. Luôn có **feature flag cho dual-write và cutover** — deploy code mới mà không bật flag, bật flag lúc runtime. Và quan trọng: **backup PITR (Point-in-Time Recovery) trước mỗi phase quan trọng** — nó là cái bảo hiểm cuối cùng.`,
+  follow: [
+    'Làm sao handle migration khi cần đổi PK từ INT sang UUID mà không downtime?',
+    'CDC Debezium vs DB native logical replication: ưu nhược điểm khi mig cross-version?',
+    'Bạn verify dữ liệu khớp 100% trên TB data như thế nào mà không tốn ngày?'
+  ],
+  tags: ['database migration', 'zero-downtime', 'dual-write', 'CDC', 'Debezium', 'backfill']
+,
+  refs: [
+    { type: 'article', title: 'Online Schema Changes (GitHub)', url: 'https://github.blog/engineering/online-schema-migrations-at-github/' },
+    { type: 'doc', title: 'Debezium Documentation', url: 'https://debezium.io/documentation/reference/stable/' },
+    { type: 'article', title: 'Zero-Downtime Database Migrations (Martin Fowler)', url: 'https://martinfowler.com/articles/zero-downtime-database-migrations.html' }
+  ]
+},
+{
+  id: 'architecture-055',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Thiết kế hệ thống đếm (counter) chịu tải cao: like, view, download count cho millions of objects. So sánh các giải pháp và trade-off.',
+  a: `**Tóm tắt:** Hệ thống đếm tải cao (billions increments/day) không thể UPDATE counter SET count = count + 1 trên DB — row lock contention sẽ kill throughput. Giải pháp: **sharded counter trong Redis** (hot), **async flush về DB** (durable), **read từ cache + DB** (consistent). Phân loại counter: **exact** (billing, inventory) vs **approximate** (view, like, metric) — dùng thuật toán phù hợp.
+  
+### Phân loại counter & yêu cầu
+| Loại | Ví dụ | Độ chính xác | Throughput | Latency write |
+|---|---|---|---|---|
+| **Exact** | Inventory, billing, quota | 100% (no lost update) | Thấp-trung bình | < 10 ms |
+| **Approximate** | View count, like, share, download | ±1-2% chấp nhận | Cực cao (M ops/s) | < 1 ms |
+| **Ranking/Top-K** | Leaderboard, trending | Exact top-K, approx count | Cao | < 5 ms |
+
+### 1. Exact Counter — Distributed Lock / DB Atomic / Redis Lua
+**A. DB Atomic Update (đơn giản, throughput thấp ~1k/s):**
+~~~sql
+UPDATE counters SET count = count + 1, version = version + 1
+WHERE id = 'item-123' AND version = 5; -- optimistic lock
+-- affected_rows = 0 ⇒ retry
+~~~
+- Ưu: ACID, đơn giản.
+- Nhược: Row lock contention, throughput giới hạn bởi DB.
+
+**B. Redis Lua Script (atomic, throughput cao ~100k/s):**
+~~~lua
+-- KEYS[1] = counter:item-123, ARGV[1] = increment (1)
+local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+local new = current + tonumber(ARGV[1])
+redis.call('SET', KEYS[1], new)
+return new
+~~~
+- Single-threaded Redis ⇒ atomic tự nhiên.
+- Nhược: Single key hot spot. **Sharding** giải quyết.
+
+**C. Sharded Counter (Redis) — Exact, Scale ngang:**
+- Chia counter thành **N shard** (ví dụ N=100). Increment: chọn shard hash(key) % N hoặc **random**.
+- Read: SUM tất cả shard.
+~~~java
+public class ShardedCounter {
+    private static final int SHARDS = 100;
+    private final RedisTemplate<String, Long> redis;
+    
+    public void increment(String key, long delta) {
+        int shard = Math.abs(key.hashCode()) % SHARDS;
+        String shardKey = "counter:" + key + ":shard:" + shard;
+        redis.opsForValue().increment(shardKey, delta);
+    }
+    
+    public long get(String key) {
+        long sum = 0;
+        for (int i = 0; i < SHARDS; i++) {
+            String shardKey = "counter:" + key + ":shard:" + i;
+            Long val = redis.opsForValue().get(shardKey);
+            sum += (val != null ? val : 0);
+        }
+        return sum;
+    }
+}
+~~~
+- Write: O(1), đọc: O(N). Tăng N để giảm contention write, nhưng đọc chậm hơn.
+- **Hot key:** Nếu một key cực hot (viral video), tăng N cho key đó (per-key shard count).
+
+### 2. Approximate Counter — Probabilistic / Batch / Hierarchical
+**A. Probabilistic Counter (Morris Counter, HyperLogLog cho cardinality):**
+- Dùng cho **unique count** (số user unique view), không phải total count.
+- HyperLogLog: ~12KB memory, đếm 1 tỷ unique items với sai số 1-2%.
+
+**B. Batch/Async Flush (Counter Cache + Periodic Persist):**
+- App increment **local in-memory counter** (ConcurrentHashMap/LongAdder).
+- Flush batch lên Redis/DB mỗi 1-5 giây hoặc mỗi 1000 events.
+- Giảm round-trip 100-1000x.
+~~~java
+public class BatchedCounter {
+    private final Map<String, LongAdder> local = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    
+    public void increment(String key) {
+        local.computeIfAbsent(key, k -> new LongAdder()).increment();
+    }
+    
+    public void startFlush(Duration interval, CounterPersister persister) {
+        scheduler.scheduleAtFixedRate(() -> {
+            Map<String, Long> snapshot = new HashMap<>();
+            local.forEach((k, v) -> snapshot.put(k, v.sumThenReset()));
+            persister.persistBatch(snapshot); // MGET/SET Redis hoặc batch UPDATE DB
+        }, interval.toMillis(), interval.toMillis(), TimeUnit.MILLISECONDS);
+    }
+}
+~~~
+- **Trade-off:** Có thể mất count nếu process crash trước khi flush. Chấp nhận cho view/like.
+- **Durability:** Ghi WAL local (file append-only) trước khi flush để recover.
+
+**C. Hierarchical Counter (Time-bucketed):**
+- Lưu count theo time bucket: counter:item:2024-01-15:14:30 (phút) hoặc counter:item:2024-01-15 (ngày).
+- Increment: INCR counter:item:2024-01-15:14:30.
+- Query tổng: SUM các bucket liên quan.
+- Tự động TTL bucket cũ (giữ 30 ngày chi tiết, 1 năm daily rollup).
+- **Ưu:** Phân tán write theo thời gian, không có hot key vĩnh viễn. Dễ rollup, downsample.
+
+### 3. Kiến trúc hoàn chỉnh: Redis (Hot) + DB (Durable) + Kafka (Async)
+~~~text
+Client (Web/Mobile)
+       |
+       v
++------+------+
+|  API Gateway |
++------+------+
+       |
+       v
++------+------+     Increment (async, fire-and-forget)
+| Counter Svc  |---------------------> Kafka: counter-events
+| (Redis shard) |     {key, delta, ts}
++------+------+
+       |
+       | Read (GET /count?keys=...)
+       v
++------+------+
+|  Redis Cache |  (sharded counter + pre-aggregated hourly/daily)
++------+------+
+
+Kafka Consumer (Counter Persister)
+       |
+       v
++------+------+
+|    DB        |  (exact counter, billing, audit)
+|  (UPSERT)    |
++------+------+
+
+Rollup Job (hourly/daily)
+       |
+       v
++------+------+
+|  Redis/DB    |  (pre-aggregated buckets for fast range query)
++------+------+
+~~~
+
+**Luồng ghi (Write Path):**
+1. Client POST /api/counters/increment → Counter Service.
+2. Counter Service: increment(key, 1) vào **Redis sharded counter** (fire-and-forget, không chờ ack nếu approximate).
+3. **Song song:** Ghi event {key, delta, timestamp} vào Kafka (async, non-blocking).
+4. Trả 202 Accepted ngay.
+
+**Luồng persist (Persist Path):**
+1. Consumer đọc Kafka, batch 1000 events / 1 giây.
+2. UPSERT vào DB: INSERT ... ON CONFLICT DO UPDATE SET count = count + EXCLUDED.delta.
+3. Cập nhật Redis pre-aggregated bucket (hourly/daily) để query range nhanh.
+
+**Luồng đọc (Read Path):**
+- **Real-time approx:** GET /count?key=video-123 → đọc sum shard từ Redis (< 5ms).
+- **Exact/History:** GET /count?key=video-123&exact=true → đọc DB (có thể join pre-aggregated).
+- **Range query:** GET /count?key=video-123&from=2024-01-01&to=2024-01-31 → đọc daily bucket từ Redis/DB.
+
+### 4. So sánh các giải pháp
+| Giải pháp | Exact? | Throughput | Latency | Complexity | Dùng cho |
+|---|---|---|---|---|---|
+| DB UPDATE | ✅ | ~1k/s | 5-20ms | Thấp | Billing, inventory |
+| Redis INCR (single key) | ✅ | ~100k/s | <1ms | Thấp | Counter ít key, throughput vừa |
+| Redis Sharded Counter | ✅ | ~1M/s | Write<1ms, Read O(N) | Trung | Exact counter hot key |
+| Local Batch + Async Flush | ❌ (±batch) | ~10M/s | <0.1ms | Trung | View, like, metric |
+| Hierarchical Time Bucket | ✅ (per bucket) | ~10M/s | <1ms | Cao | Time-series, analytics |
+| HyperLogLog | ❌ (unique) | ~1M/s | <1ms | Cao | Unique viewer count |
+
+### 5. Xử lý Hot Key (Viral Content)
+Một video viral nhận 1M like/phút ⇒ một key nóng.
+- **Per-key dynamic sharding:** Key hot tự động tăng shard count (metadata trong Redis: counter:video-123:shards=1000).
+- **Local L1 cache:** Mỗi instance cache count key hot 100ms, chỉ flush delta.
+- **Probabilistic increment:** Với approximate counter, chỉ increment 1/100 request, nhân 100 khi đọc (giảm ghi Redis 100x).
+- **Queue-based:** Ghi like vào Kafka partition key=videoId, consumer single-threaded consume và batch update Redis/DB.
+
+### 6. Consistency & Reconciliation
+- **Approximate counter:** Định kỳ (ngày/h) chạy job đối soát: SUM(redis_shards) vs DB.count. Lệch > 1% → alert, recalc từ Kafka event log.
+- **Exact counter:** Redis là cache, DB là source of truth. Read repair: nếu Redis miss, đọc DB và set Redis.
+
+### Pitfall thực tế
+1. **Dùng Redis INCR single key cho viral content** → single-threaded Redis bottleneck ở 100k ops/s. **Phải shard.**
+2. **Quên TTL cho bucket cũ** → Redis OOM. **TTL tự động cho time-bucketed key.**
+3. **Batch flush không có WAL** → crash mất hàng nghìn count. **Ghi local file append-only trước khi flush.**
+4. **Read sum shard chậm khi N lớn** → pre-aggregate hourly/daily bucket.
+5. **Clock skew giữa instance** → time bucket sai. **Dùng server timestamp (Redis TIME) hoặc NTP synced.**
+
+### Ví dụ đời thực
+Video platform 100M DAU, 10B views/ngày. **View count:** Hierarchical bucket (minute → hour → day) trong Redis, flush async Kafka → ClickHouse. **Like count:** Sharded counter (100 shard) Redis + async persist PostgreSQL. **Unique viewer:** HyperLogLog per video (12KB/video). **Hot video handling:** Detect key > 10k req/s → auto increase shard to 10000 + local L1 cache 500ms. **Kết quả:** p99 increment < 2ms, p99 read < 5ms, cost Redis 50GB cho 10M active keys. Reconciliation hàng ngày phát hiện lệch 0.3% do crash flush, recalc từ Kafka log fix tự động.
+
+### Trả lời mẫu khi phỏng vấn
+"Counter tải cao chia 2 loại: exact (billing, inventory) và approximate (view, like). Exact: sharded counter Redis (N=100-1000 shard/key) + async persist DB qua Kafka. Approximate: hierarchical time-bucketed counter (minute/hour/day) trong Redis + batch flush. Hot key: dynamic per-key sharding + local L1 cache. Read: real-time approx từ Redis sum shard, exact/history từ DB. Pitfall: single key INCR bottleneck, quên TTL bucket, batch flush mất data khi crash. Giải pháp: WAL local, pre-aggregated bucket, reconciliation job. Thực tế: video platform 10B views/ngày dùng hierarchical bucket + HyperLogLog cho unique view, like dùng sharded counter, p99 < 5ms."
+
+> Senior tip: **đừng over-engineer exact counter cho view/like**. Người dùng không quan tâm 1.000.000 vs 1.000.002 view. Dùng approximate (batch flush, probabilistic) cho metric, dành exact counter cho tiền/billing. Và luôn có **reconciliation job** — nó là cái bật đèn báo khi approximate drift quá nhiều.`,
+  follow: [
+    'Làm sao thiết kế counter hỗ trợ cả increment và decrement (like/unlike) exact?',
+    'Khi nào dùng HyperLogLog thay vì sharded counter cho unique count?',
+    'Bạn handle counter reset (admin xóa like) trong sharded/hierarchical design ra sao?'
+  ],
+  tags: ['counter', 'high-throughput', 'Redis', 'sharding', 'approximate counting', 'HyperLogLog']
+,
+  refs: [
+    { type: 'article', title: 'Counting at Scale (Instagram Engineering)', url: 'https://engineering.instagram.com/counting-at-scale-10-10-2016-4b1187a8e3e' },
+    { type: 'doc', title: 'Redis INCR Command', url: 'https://redis.io/docs/latest/commands/incr/' },
+    { type: 'article', title: 'HyperLogLog: Count distinct values efficiently', url: 'https://redis.io/docs/latest/develop/data-types/probabilistic/hyperloglog/' }
+  ]
+},
+{
+  id: 'architecture-056',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Thiết kế rate limiting nhiều tầng (multi-layer): API Gateway, Service Mesh, Application, Database. Làm sao phối hợp tránh over-limiting hoặc under-protection?',
+  a: `**Tóm tắt:** Rate limiting nhiều tầng (Defense in Depth) bảo vệ từng layer: **Gateway** chặn traffic rõ ràng (bot, DDoS), **Service Mesh** quản lý quota per-service, **Application** enforce business logic (user tier, feature limit), **Database** bảo vệ connection pool. Phối hợp bằng **hierarchical quota allocation** và **shared state (Redis)** để tránh double-count hoặc gap.
+  
+### Cấu trúc 4 tầng
+~~~text
+                    ┌─────────────────────────────────────┐
+                    │         Client Request              │
+                    └──────────────┬──────────────────────┘
+                                   │
+                                   ▼
+                    ┌─────────────────────────────────────┐
+                    │  Layer 1: API Gateway / Edge        │  (Envoy, Kong, AWS ALB, Cloudflare)
+                    │  - IP / Subnet / Geo blocking       │
+                    │  - Global RPS burst protection      │
+                    │  - Auth validation (JWT, API key)   │
+                    │  - Quota: 10k req/min per IP        │
+                    └──────────────┬──────────────────────┘
+                                   │ Pass (add headers: x-ratelimit-*)
+                                   ▼
+                    ┌─────────────────────────────────────┐
+                    │  Layer 2: Service Mesh / Sidecar    │  (Istio/Envoy, Linkerd)
+                    │  - Per-service RPS / concurrent     │
+                    │  - mTLS, retry, timeout policy      │
+                    │  - Quota: 5k req/min per service    │
+                    │  - Circuit breaker integration      │
+                    └──────────────┬──────────────────────┘
+                                   │ Pass
+                                   ▼
+                    ┌─────────────────────────────────────┐
+                    │  Layer 3: Application (Business)    │  (Spring Boot, Go, Node)
+                    │  - User tier quota (Free/Pro/Ent)   │
+                    │  - Feature-specific limits          │
+                    │  - Idempotency key enforcement      │
+                    │  - Quota: 100 req/min per user (Free)│
+                    └──────────────┬──────────────────────┘
+                                   │ Pass
+                                   ▼
+                    ┌─────────────────────────────────────┐
+                    │  Layer 4: Database / Storage        │  (Postgres, Redis, Kafka)
+                    │  - Connection pool limit            │
+                    │  - Max concurrent transactions      │
+                    │  - Query timeout, statement timeout │
+                    │  - Row-level lock timeout           │
+                    └─────────────────────────────────────┘
+~~~
+
+### 1. Layer 1: API Gateway (Edge) — First Line of Defense
+**Mục đích:** Chặn traffic xấu sớm nhất, bảo vệ hạ tầng bên trong.
+- **Scope:** IP, Subnet (/24), Country, ASN, User-Agent pattern.
+- **Algorithm:** Token Bucket (burst-friendly) hoặc Fixed Window (đơn giản).
+- **State:** Redis cluster (shared across gateway instances).
+- **Response:** 429 Too Many Requests + Retry-After, X-RateLimit-* headers.
+- **Quota allocation:** 
+  - Anonymous IP: 100 req/min
+  - Authenticated API key: 10.000 req/min
+  - Partner (signed contract): 100.000 req/min
+
+~~~yaml
+# Kong rate-limiting plugin config
+plugins:
+  - name: rate-limiting
+    config:
+      minute: 10000
+      hour: 100000
+      policy: redis
+      redis_host: redis-gateway
+      redis_port: 6379
+      fault_tolerant: true  # fail-open nếu Redis down
+      hide_client_headers: false
+      identifier: ip  # hoặc consumer, credential
+~~~
+
+### 2. Layer 2: Service Mesh — Infra-Level Quota
+**Mục đích:** Bảo vệ từng service khỏi overload, noisy neighbor, cascade failure.
+- **Scope:** Service identity (mTLS), namespace, destination service.
+- **Algorithm:** Leaky Bucket (smooth output) hoặc Token Bucket.
+- **State:** Sidecar local (in-memory) + periodic sync với Redis central (cho global quota).
+- **Tích hợp:** Circuit breaker (consecutive 5xx → open), Retry budget (chỉ retry 10% traffic).
+
+~~~yaml
+# Istio EnvoyFilter local rate limit
+apiVersion: networking.istio.io/v1beta1
+kind: EnvoyFilter
+metadata:
+  name: ratelimit-order-service
+spec:
+  workloadSelector:
+    labels:
+      app: order-service
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: SIDECAR_INBOUND
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.local_ratelimit
+          typed_config:
+            "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+            type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+            stat_prefix: http_local_rate_limiter
+            token_bucket:
+              max_tokens: 5000
+              tokens_per_fill: 5000
+              fill_interval: 60s
+            filter_enabled:
+              runtime_key: local_rate_limit_enabled
+              default_value:
+                numerator: 100
+                denominator: 100
+~~~
+
+### 3. Layer 3: Application — Business Logic Quota
+**Mục đích:** Enforce business rules: user tier, feature limit, subscription, fair use.
+- **Scope:** User ID, Tenant ID, Feature flag, Subscription plan.
+- **Algorithm:** Token Bucket (per user/feature) với refill rate theo tier.
+- **State:** Redis (shared) — **cùng Redis cluster với Gateway** để tránh double-count.
+- **Idempotency:** Mọi write request yêu cầu Idempotency-Key, deduplicate tại layer này.
+
+~~~java
+@Service
+public class BusinessRateLimiter {
+    private final RedisTemplate<String, String> redis;
+    private final UserTierService tierService;
+    
+    public boolean tryAcquire(String userId, String feature, int cost) {
+        UserTier tier = tierService.getTier(userId); // FREE, PRO, ENTERPRISE
+        RateLimitConfig config = getConfig(tier, feature); // {capacity, refillPerMin}
+        
+        String key = "ratelimit:" + feature + ":" + userId;
+        // Lua script atomic check-and-decrement (giống design-003)
+        Boolean allowed = redis.execute(SCRIPT, List.of(key), 
+            String.valueOf(config.capacity()), 
+            String.valueOf(config.refillPerMin()),
+            String.valueOf(System.currentTimeMillis()),
+            String.valueOf(cost)
+        );
+        return Boolean.TRUE.equals(allowed);
+    }
+    
+    private RateLimitConfig getConfig(UserTier tier, String feature) {
+        return switch (tier) {
+            case FREE -> switch (feature) {
+                case "api" -> new RateLimitConfig(100, 100);      // 100/min
+                case "export" -> new RateLimitConfig(5, 5);       // 5/min
+                default -> new RateLimitConfig(50, 50);
+            };
+            case PRO -> switch (feature) {
+                case "api" -> new RateLimitConfig(1000, 1000);
+                case "export" -> new RateLimitConfig(50, 50);
+                default -> new RateLimitConfig(500, 500);
+            };
+            case ENTERPRISE -> new RateLimitConfig(10000, 10000);
+        };
+    }
+    
+    record RateLimitConfig(int capacity, int refillPerMin) {}
+}
+~~~
+
+### 4. Layer 4: Database — Last Resort Protection
+**Mục đích:** Bảo vệ DB không bị connection exhaustion, lock contention, runaway query.
+- **Connection Pool:** HikariCP maximumPoolSize = 20 (tùy CPU core), minimumIdle = 5.
+- **Statement Timeout:** SET statement_timeout = '30s' (Postgres) / max_execution_time (MySQL).
+- **Lock Timeout:** SET lock_timeout = '5s' — tránh transaction giữ lock quá lâu.
+- **Concurrent Transaction Limit:** Advisory lock hoặc semaphore trong app limit concurrent write txn.
+- **Row-Level Security / Quota:** Không phải rate limit truyền thống nhưng liên quan.
+
+~~~java
+@Configuration
+public class DataSourceConfig {
+    @Bean
+    public HikariDataSource dataSource() {
+        HikariConfig config = new HikariConfig();
+        config.setMaximumPoolSize(20);
+        config.setMinimumIdle(5);
+        config.setConnectionTimeout(5000);
+        config.setIdleTimeout(300000);
+        config.setMaxLifetime(600000);
+        config.addDataSourceProperty("socketTimeout", "30000");
+        // Postgres statement timeout (ms) qua connection init options
+        config.addDataSourceProperty("options", "-c statement_timeout=30000"); // PG via pgjdbc
+        return new HikariDataSource(config);
+    }
+}
+~~~
+
+### 5. Phối hợp các tầng — Hierarchical Quota Allocation
+**Vấn đề:** Nếu mỗi tầng tự quản quota độc lập → **double counting** (request bị trừ quota 4 lần) hoặc **gap** (tầng ngoài cho phép, tầng trong chặn mà không có quota riêng).
+
+**Giải pháp: Shared Quota State + Token Delegation**
+- **Single Source of Truth:** Redis cluster chia sẻ cho Layer 1, 2, 3.
+- **Hierarchical Token Bucket:** Root bucket (Gateway) → Child buckets (Service Mesh) → Leaf buckets (App).
+- **Delegation:** Gateway cấp sub-quota cho service mesh, service mesh cấp cho app.
+
+~~~text
+Global Quota (Redis)
+    │
+    ├── Tenant A: 100k/min
+    │     ├── Service Order: 30k/min
+    │     │     ├── User A1 (FREE): 100/min
+    │     │     ├── User A2 (PRO): 1000/min
+    │     │     └── Internal/Batch: 5k/min
+    │     ├── Service Payment: 20k/min
+    │     └── Service Notification: 10k/min
+    │
+    └── Tenant B: 50k/min
+          └── ...
+~~~
+
+**Implementation: Token Delegation Protocol**
+1. Client request → Gateway: check global quota, **trừ 1 token từ root bucket**.
+2. Gateway thêm header X-Delegated-Quota: order-service=30000, payment-service=20000.
+3. Service Mesh (Order): nhận header, **không check Redis**, dùng local token bucket được cấp từ header.
+4. App (Order): nhận header từ mesh, check **business quota** (user tier) từ Redis — **khác bucket với infra quota**.
+
+**Key Insight:** Infra quota (Layer 1-2) bảo vệ **hạ tầng**, Business quota (Layer 3) bảo vệ **fairness/revenue**. Chúng dùng **bucket riêng** nhưng cùng Redis.
+
+### 6. Tránh Over-limiting / Under-protection
+| Vấn đề | Nguyên nhân | Giải pháp |
+|---|---|---|
+| **Over-limiting** (user bị chặn khi chưa hết quota) | Double counting, clock skew, burst không được tính | Shared Redis + hierarchical bucket, dùng Redis TIME, token bucket cho burst |
+| **Under-protection** (service bị overload mà không chặn) | Gap giữa tầng, fail-open quá rộng, quota không sync | Health check quota sync, alert khi lag > 10%, circuit breaker backup |
+| **Inconsistent error** (429 từ gateway vs 503 từ mesh) | Mỗi tầng trả error khác nhau | Chuẩn hóa: tất cả trả 429 + Retry-After + X-RateLimit-* |
+| **Noisy neighbor** (tenant A dùng hết quota tenant B) | Quota không isolate per tenant | Hierarchical quota per tenant tại root bucket |
+
+### 7. Failover Strategy
+| Tầng | Fail-open hay Fail-closed? | Lý do |
+|---|---|---|
+| Gateway | **Fail-open** (cho request đi qua) | Gateway down = toàn bộ traffic down. Thà chịu rủi ro overload còn hơn downtime. |
+| Service Mesh | **Fail-open với local fallback** | Sidecar có local token bucket (10% quota) để vẫn có bảo vệ tối thiểu. |
+| Application | **Fail-closed** (chặn) | Business logic: thà từ chối request còn hơn cho vượt quota (billing, fairness). |
+| Database | **Fail-closed** (connection pool reject) | DB overload = data corruption risk. Pool exhausted = reject ngay. |
+
+### 8. Observability & Debugging
+**Metrics bắt buộc mỗi tầng:**
+- ratelimit_requests_total{layer, result="allowed|denied", tier, service}
+- ratelimit_bucket_tokens_remaining{layer, key}
+- ratelimit_latency_seconds{layer}
+
+**Correlation ID:** Mọi request mang X-Request-ID xuyên suốt 4 tầng. Log denial kèm correlation ID để trace.
+
+**Dashboard:** Panel "Rate Limit Denial by Layer" — nếu Layer 1 deny 90% → có DDoS/bot. Layer 3 deny cao → user hit tier limit (upsell opportunity).
+
+### Pitfall thực tế
+1. **Không shared Redis** → Gateway cho phép 10k, App chặn ở 100 → user thấy 429 không hiểu tại sao (dù header X-RateLimit-Limit khác nhau). **Dùng shared Redis, header thống nhất.**
+2. **Clock skew giữa instance** → Token bucket refill sai. **Luôn dùng redis.call('TIME') trong Lua script.**
+3. **Quota static không auto-scale** → Flash sale traffic hợp lệ bị chặn. **Dynamic quota: tính theo baseline + headroom, hoặc manual override flag.**
+4. **Retry storm** → Client retry 429 ngay lập tức → thêm tải. **Gateway trả Retry-After, client phải honor. Service mesh có retry budget (10%).**
+5. **Không test chaos** → Fail-open không hoạt động khi Redis down. **Game day test: kill Redis, verify fail-open behavior.**
+
+### Ví dụ đời thực
+SaaS B2B 500 tenant, 10M req/ngày. **Gateway:** Cloudflare (IP reputation, 10k/min/IP) + Kong (API key quota 100k/min). **Service Mesh:** Istio local rate limit 5k/min/service, circuit breaker 5% error rate. **App:** Spring Boot + Redis Lua, tier FREE 100/min, PRO 1k/min, ENT 10k/min. **DB:** HikariCP pool 20, statement_timeout 30s. **Coordination:** Redis cluster shared Gateway+App. Mesh dùng header delegation. **Incident:** Tenant lớn chạy script bug gọi API 50k/min. Gateway cho qua (API key quota 100k). Mesh local limit 5k chặn 90% tại service Order. App FREE tier chặn tiếp. User thấy 429 kèm Retry-After: 60, X-RateLimit-Limit: 100. Support thấy denial ở Layer 3 (business quota) → hướng dẫn upgrade tier. **Kết quả:** 0 downtime cho tenant khác, noisy neighbor bị isolate.
+
+### Trả lời mẫu khi phỏng vấn
+"Multi-layer rate limiting: Layer 1 Gateway (IP, API key, DDoS protection), Layer 2 Service Mesh (per-service RPS, circuit breaker), Layer 3 Application (business quota per user tier, feature), Layer 4 DB (connection pool, query timeout). Phối hợp bằng hierarchical quota: root bucket ở Gateway cấp sub-quota cho Mesh, Mesh cấp cho App qua header. Infra quota (L1-2) và business quota (L3) tách bucket nhưng shared Redis. Fail-open ở Gateway/Mesh, fail-closed ở App/DB. Chuẩn hóa response 429 + Retry-After + X-RateLimit headers. Pitfall: double counting (shared Redis fix), clock skew (Redis TIME), retry storm (Retry-After + retry budget). Ví dụ: SaaS 500 tenant, noisy neighbor script bug → Gateway cho qua, Mesh chặn 90% tại service level, App chặn theo tier, tenant khác không ảnh hưởng."
+
+> Senior tip: **Rate limiting không phải chỉ chặn request — nó là công cụ communication**. Trả header X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset đầy đủ để client tự adjust. Và quan trọng: **alert trên denial rate** — denial spike ở Layer 1 = attack, ở Layer 3 = upsell opportunity, ở Layer 4 = capacity planning trigger. Đừng để rate limiter thành black box.`,
+  follow: [
+    'Làm sao implement hierarchical token bucket delegation trong Redis Lua script?',
+    'Khi nào nên dùng distributed rate limiter (Redis) vs local (in-memory) cho service mesh?',
+    'Bạn xử lý rate limiting cho WebSocket / gRPC streaming khác HTTP như thế nào?'
+  ],
+  tags: ['rate limiting', 'multi-layer', 'API Gateway', 'Service Mesh', 'Istio', 'Redis', 'token bucket']
+,
+  refs: [
+    { type: 'doc', title: 'Envoy Global Rate Limit', url: 'https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/rate_limit_filter' },
+    { type: 'doc', title: 'Istio Rate Limiting', url: 'https://istio.io/latest/docs/tasks/traffic-management/rate-limiting/' },
+    { type: 'article', title: 'Rate Limiting Strategies (NGINX)', url: 'https://www.nginx.com/blog/rate-limiting-nginx/' }
+  ]
+},
 );

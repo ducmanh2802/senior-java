@@ -385,6 +385,7 @@
         '<p class="db-hello">' + hello + ' 👋</p>' +
         '<h1 class="db-quote">' + App.esc(quote) + '</h1>' +
         goalHtml +
+        '<p class="db-hint db-dim small"><kbd>N</kbd> ' + tr('start') + ' · ' + tr('changePlan') + '</p>' +
       '</div>' +
       '<div class="db-hero-art">' + heroArt() + '</div>' +
       '<div class="db-hero-ring">' + ring(readiness) +
@@ -433,7 +434,7 @@
         '<a class="db-task-body" href="' + App.esc(x.v.href) + '"><b>' + App.esc(x.v.title) + '</b>' +
           (x.v.sub ? '<span class="db-dim small"' + (x.v.lang ? ' lang="' + x.v.lang + '"' : '') + '>' + App.esc(x.v.sub) + '</span>' : '') + '</a>' +
         '<span class="badge">' + tr('duration', { n: x.it.minutes || 0 }) + '</span>' +
-        (i === firstOpen ? '<a class="btn primary sm" href="' + App.esc(x.v.href) + '">' + tr('start') + '</a>' : '') +
+        (i === firstOpen ? '<a class="btn primary sm" href="' + App.esc(x.v.href) + '">' + tr('start') + ' <kbd>N</kbd></a>' : '') +
       '</li>';
     }).join('') + '</ol>' : '<p class="db-dim">' + tr('emptyPlan') + '</p>';
     return '<section class="card db-mission">' +
@@ -522,14 +523,42 @@
     '</section>';
   }
 
+  /** Quick-practice tiles — lối vào nhanh các chế độ luyện tập. */
+  function quickHtml() {
+    const due = App.dueItems().filter(x => String(x.id).indexOf('algo-') !== 0).length;
+    const hasAlgo = App.lite('algos').length > 0;
+    const hasSd = App.lite('sd').length > 0;
+    const tiles = [
+      { hot: due > 0, ico: '🔁', title: tr('qDue'), sub: due ? tr('qDueSub', { n: due }) : tr('qDueNone'), href: due ? '#/flash/due' : '#/flash' },
+      { hot: true, ico: '🎤', title: tr('qInterview'), sub: tr('qInterviewSub'), href: '#/interview' },
+      { hot: false, ico: '🧩', title: tr('qSdlc'), sub: hasSd ? tr('qSdlcSub') : tr('qSdlcSub'), href: hasSd ? '#/sdlc' : '#/sdlc' },
+      { hot: false, ico: '🗺️', title: tr('qRoadmap'), sub: tr('qRoadmapSub', { n: weekNumber(), total: allWeeks().length || 1 }), href: '#/roadmap' },
+    ];
+    return '<section class="db-quick" aria-label="' + App.esc(tr('quickTitle')) + '">' +
+      tiles.map(t => '<a class="db-tile' + (t.hot ? ' hot' : '') + '" href="' + App.esc(t.href) + '">' +
+        '<span class="db-tile-ico" aria-hidden="true">' + t.ico + '</span>' +
+        '<span class="db-tile-title">' + App.esc(t.title) + '</span>' +
+        '<span class="db-tile-sub db-dim small">' + App.esc(t.sub) + '</span>' +
+      '</a>').join('') + '</section>';
+  }
+
   App.registerView('dashboard', {
     get title() { return App.t('dash.title'); },
     render(root) {
       const pomo = { left: POMO, id: null, running: false };
-      let editing = false, editingCareer = false;
+      let editing = false, editingCareer = false, loadErr = null;
       const paint = () => {
-        const st = App.stats();
-        root.innerHTML = heroHtml(st, editing) + careerHtml(editingCareer) + metricsHtml(st) + sectionsHtml() + missionHtml(pomo) + bottomHtml();
+        let body;
+        try {
+          const st = App.stats();
+          body = heroHtml(st, editing) + careerHtml(editingCareer) + metricsHtml(st) + sectionsHtml() + quickHtml() + missionHtml(pomo) + bottomHtml();
+          loadErr = null;
+        } catch (e) {
+          loadErr = e;
+          body = '<section class="card db-empty"><span class="db-empty-ico">⚠️</span><b>' + App.esc(App.t('app.error.render')) + '</b>' +
+            '<span class="db-dim small">' + App.esc(e.message || String(e)) + '</span></section>';
+        }
+        root.innerHTML = body;
       };
       const refreshCareer = () => {
         const box = root.querySelector('.db-career');
@@ -554,6 +583,14 @@
         if (hero) hero.outerHTML = heroHtml(App.stats(), editing);
       };
       paint();
+
+      // Phím tắt: N = bắt đầu nhiệm vụ tiếp theo (nếu có)
+      const onKeyHandler = App.onKey(e => {
+        if (e.key === 'n' || e.key === 'N') {
+          const next = root.querySelector('.db-task.is-next .btn');
+          if (next) next.click();
+        }
+      });
 
       const onSubmit = e => {
         const cf = e.target.closest('[data-career-form]');
@@ -614,6 +651,7 @@
         root.removeEventListener('submit', onSubmit);
         root.removeEventListener('change', onChange);
         root.removeEventListener('click', onClick);
+        onKeyHandler();
       };
     },
   });

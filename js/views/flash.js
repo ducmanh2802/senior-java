@@ -14,7 +14,7 @@ App.i18n.add({
     'flash.modeWeak': 'Chỉ câu chưa thuộc',
     'flash.modeBookmarked': 'Đã đánh dấu',
     'flash.modeAll': 'Tất cả (ngẫu nhiên)',
-    'flash.flipBtn': 'Lật thẻ',
+    'flash.flipBtn': 'Lật thẻ <kbd>Space</kbd>',
     'flash.flipHint': 'Nghĩ trước khi lật thẻ',
     'flash.gradeTitle': 'Chấm để tự đánh giá:',
     'flash.gradeUnknown': 'Chưa biết',
@@ -210,7 +210,8 @@ App.i18n.add({
       '<div class="flash-setup-row">' + topicSelect() + modeSelect() +
         '<div class="flash-setup-info"><div class="flash-hint">' + App.esc(MODE_HINT[S.mode]) + '</div>' +
         '<div class="flash-deck-info small muted">' + S.deck.length + ' câu trong bộ · ' +
-        App.esc(topicName(S.topic)) + '</div></div>' +
+        App.esc(topicName(S.topic)) + '</div>' +
+        '<div class="flash-swipe-tip small muted">👉 Vuốt thẻ phải = đã thuộc, trái = chưa biết · bấm thẻ để lật</div></div>' +
       '</div>' +
     '</section>';
   }
@@ -269,7 +270,7 @@ App.i18n.add({
     const c = S.counts;
     return '<div class="flash-progress card">' +
       '<div class="flash-progress-top">' +
-        '<span class="flash-count">' + done + ' / ' + S.deck.length + '</span>' +
+        '<span class="flash-count">' + done + ' / ' + S.deck.length + ' <span class="small muted">(còn lại ' + Math.max(0, S.deck.length - done) + ')</span></span>' +
         '<span class="flash-counts">' +
           '<span class="badge bad">' + App.t('flash.gradeUnknown') + ': ' + c.unknown + '</span>' +
           '<span class="badge warn">' + App.t('flash.gradeReview') + ': ' + c.review + '</span>' +
@@ -363,12 +364,12 @@ App.i18n.add({
 
   /** Vẽ lại phần thẻ + thanh tiến độ (không vẽ lại setup). */
   function renderCard() {
-    const cardWrap = document.getElementById('flashCardWrap');
-    if (!cardWrap) return;
+    const content = document.getElementById('flashCardContent');
+    if (!content) return;
     const q = S.deck[S.idx];
-    if (!S.deck.length) { cardWrap.innerHTML = emptyHtml(); return; }
-    if (!q) { cardWrap.innerHTML = summaryHtml(); bindCardEvents(); return; }
-    cardWrap.innerHTML = progressHtml() + cardHtml(q) + keysHtml();
+    if (!S.deck.length) { content.innerHTML = emptyHtml(); return; }
+    if (!q) { content.innerHTML = summaryHtml(); bindCardEvents(); return; }
+    content.innerHTML = progressHtml() + cardHtml(q) + keysHtml();
     bindCardEvents();
   }
 
@@ -431,6 +432,80 @@ App.i18n.add({
       }
       if (e.target.closest('#flashNewDeck')) rebuild(rootEl);
     });
+    bindSwipe(wrap);
+  }
+
+  /** Vuốt thẻ phải/trái để chấm (đã thuộc / chưa biết), kéo theo ngón tay. */
+  function bindSwipe(wrap) {
+    const hint = document.getElementById('flashSwipeHint');
+    const THRESHOLD = 64;
+    const state = { active: false, locked: false, startX: 0, startY: 0, dx: 0, card: null };
+
+    function cardOf(e) { return e.target.closest('.flash-card'); }
+    function endTouch() {
+      state.active = false; state.locked = false;
+      const card = state.card; state.card = null;
+      if (card) { card.style.transition = ''; card.style.transform = ''; }
+      if (hint) hint.classList.remove('show');
+    }
+
+    wrap.addEventListener('pointerdown', e => {
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
+      if (e.target.closest('button, a, input, select, textarea')) return;
+      const card = cardOf(e);
+      if (!card) return;
+      state.active = true; state.locked = false; state.card = card;
+      state.startX = e.clientX; state.startY = e.clientY; state.dx = 0;
+      card.style.transition = 'none';
+      if (hint) hint.classList.remove('show');
+    }, { passive: true });
+
+    wrap.addEventListener('pointermove', e => {
+      if (!state.active || !state.card) return;
+      const mx = e.clientX - state.startX;
+      const my = e.clientY - state.startY;
+      if (!state.locked) {
+        if (Math.abs(mx) > 12 && Math.abs(mx) > Math.abs(my) * 1.5) {
+          state.locked = true;
+        } else if (Math.abs(my) > 12) {
+          endTouch(); return;
+        }
+      }
+      if (!state.locked) return;
+      e.preventDefault();
+      state.dx = mx;
+      state.card.style.transform = 'translateX(' + mx + 'px) rotate(' + (mx * 0.04) + 'deg)';
+      showHint(mx);
+    }, { passive: false });
+
+    wrap.addEventListener('pointerup', e => {
+      if (!state.active) return;
+      const dx = state.dx;
+      const wasLocked = state.locked;
+      endTouch();
+      if (!wasLocked) {
+        if (!e.target.closest('button, a')) flip();
+        return;
+      }
+      if (dx > THRESHOLD) grade('known');
+      else if (dx < -THRESHOLD) grade('unknown');
+      else snapBack(state.card || null);
+    });
+
+    wrap.addEventListener('pointercancel', endTouch);
+
+    function showHint(dx) {
+      if (!hint) return;
+      const right = dx > 0;
+      hint.className = 'flash-swipe-hint ' + (right ? 'ok' : 'bad');
+      hint.innerHTML = '<span class="dot"></span>' + (right ? App.t('flash.gradeKnown') : App.t('flash.gradeUnknown'));
+      hint.classList.add('show');
+    }
+    function snapBack(card) {
+      if (!card) return;
+      card.style.transition = 'transform .18s ease';
+      card.style.transform = '';
+    }
   }
 
   /** Render toàn bộ view. */
@@ -445,7 +520,10 @@ App.i18n.add({
       '<div class="page-head"><div><h1>Flashcard</h1>' +
       '<p>Lật thẻ, tự chấm điểm — lịch ôn được lên tự động theo lặp lại ngắt quãng.</p></div></div>' +
       setupBar() +
-      '<div id="flashCardWrap" class="flash-wrap">' + body + '</div>' +
+      '<div id="flashCardWrap" class="flash-wrap">' +
+      '<div id="flashCardContent" class="flash-card-content">' + body + '</div>' +
+      '<div id="flashSwipeHint" class="flash-swipe-hint" aria-hidden="true"></div>' +
+      '</div>' +
       '<div id="flashToast" class="flash-toast" role="status" aria-live="polite"></div>';
     bindCardEvents();
     bindSetup(root);

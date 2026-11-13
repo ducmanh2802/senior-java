@@ -1,4 +1,4 @@
-/* Styles for view "algo" — owner: task T15. Scope every rule under .view-algo */
+/* Styles for view "algo" — owner: task T1494. Scope every rule under .view-algo */
 
 .view-algo .algo-progress { margin-bottom: 16px; }
 
@@ -17,6 +17,7 @@
   border-radius: var(--radius-sm); color: var(--text);
 }
 .view-algo .algo-row:hover { background: var(--surface-2); text-decoration: none; }
+.view-algo .algo-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .view-algo .algo-row .dot { flex: none; }
 .view-algo .algo-row-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .view-algo .algo-row-main b { font-weight: 600; }
@@ -45,10 +46,11 @@
 }
 .view-algo .algo-hint > b { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); }
 
-.view-algo .algo-work-head { gap: 10px; margin-bottom: 10px; }
+.view-algo .algo-work-head { gap: 10px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
 .view-algo .algo-timer {
   font-family: var(--mono); font-size: 1.5rem; font-weight: 600;
   font-variant-numeric: tabular-nums; color: var(--text);
+  min-width: 80px; text-align: center;
 }
 .view-algo .algo-timer.algo-over { color: var(--bad); }
 .view-algo .algo-goals { margin-bottom: 12px; }
@@ -57,26 +59,41 @@
   min-height: 320px; height: 340px; resize: vertical;
   font-family: var(--mono); font-size: 13px; line-height: 1.55;
   tab-size: 4; white-space: pre; overflow-wrap: normal; overflow-x: auto;
+  border-radius: var(--radius-sm);
 }
+.view-algo .algo-editor:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .view-algo .algo-tip { margin: 8px 0 0; }
 .view-algo .algo-run-note { margin: 2px 0 0; }
-.view-algo .algo-actions { margin-top: 12px; gap: 8px; }
+.view-algo .algo-actions { margin-top: 12px; gap: 8px; flex-wrap: wrap; }
 
 /* ---------- chạy test + AI review ---------- */
 .view-algo .algo-ai-panel:empty { display: none; }
 .view-algo .algo-ai-panel { margin-top: 12px; display: grid; gap: 10px; }
-.view-algo .algo-ai-panel .run-box { background: var(--surface-2); }
+.view-algo .algo-ai-panel .run-box { background: var(--surface-2); padding: 12px; border-radius: var(--radius-sm); }
 .view-algo .algo-ai-panel .ai-error { margin: 0; }
 .view-algo .algo-pass-hint {
   margin: 8px 0 0; padding: 8px 12px; border-radius: var(--radius-sm);
   background: var(--ok-soft); color: var(--ok); font-size: .88rem;
 }
-.view-algo .algo-actions .btn.is-suggest {
-  box-shadow: 0 0 0 2px var(--accent), 0 0 0 4px var(--accent-soft);
-}
-@media (max-width: 640px) {
-  .view-algo .algo-actions .btn { flex: 1 1 auto; }
-}
+
+/* Test result styling */
+.view-algo .run-result { display: grid; gap: 8px; }
+.view-algo .run-result-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.view-algo .run-result-summary { font-weight: 600; }
+.view-algo .run-result-summary.passed { color: var(--ok); }
+.view-algo .run-result-summary.failed { color: var(--bad); }
+.view-algo .run-result-case { padding: 8px 12px; border-radius: var(--radius-sm); font-size: .9rem; font-family: var(--mono); }
+.view-algo .run-result-case.ok { background: var(--ok-soft); color: var(--ok); }
+.view-algo .run-result-case.fail { background: var(--bad-soft); color: var(--bad); }
+.view-algo .run-result-output { background: var(--surface-2); padding: 10px; border-radius: var(--radius-sm); font-family: var(--mono); font-size: .8rem; overflow-x: auto; max-height: 200px; overflow-y: auto; }
+.view-algo .run-result-error { color: var(--bad); }
+
+/* AI review styling */
+.view-algo .code-feedback { display: grid; gap: 12px; }
+.view-algo .code-feedback-section { padding: 12px; border-radius: var(--radius-sm); background: var(--surface-2); }
+.view-algo .code-feedback-section h4 { margin: 0 0 8px; font-size: .9rem; color: var(--accent); }
+.view-algo .code-feedback-section ul { margin: 0; padding-left: 1.2em; }
+.view-algo .code-feedback-section li { margin: .3em 0; font-size: .9rem; }
 
 .view-algo .algo-solution {
   margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border);
@@ -86,11 +103,67 @@
 .view-algo .algo-follow { margin: 0; padding-left: 1.2em; }
 .view-algo .algo-follow li { margin: .3em 0; }
 
+/* Keyboard shortcut hints */
+.view-algo .algo-shortcuts { display: flex; gap: 16px; margin-top: 8px; flex-wrap: wrap; font-size: .75rem; color: var(--muted); }
+.view-algo .algo-shortcuts kbd {
+  background: var(--surface-2); border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px;
+  font-family: var(--mono); font-size: .7rem;
+}
+
+/* Touch-friendly button sizing on mobile */
 @media (max-width: 640px) {
   .view-algo .algo-chiprow { flex-direction: column; gap: 4px; }
   .view-algo .algo-chiplabel { width: auto; padding-top: 0; }
-  .view-algo .algo-editor { height: 260px; min-height: 220px; }
+  .view-algo .algo-editor { height: 280px; min-height: 240px; }
   .view-algo .algo-timer { font-size: 1.25rem; }
   .view-algo .algo-row { flex-wrap: wrap; }
-  .view-algo .algo-row-tags { justify-content: flex-start; }
+  .view-algo .algo-row-tags { justify-content: flex-start; width: 100%; margin-top: 4px; }
+  
+  /* Larger touch targets for buttons on mobile */
+  .view-algo .btn.sm { padding: 10px 14px; font-size: .9rem; min-height: 44px; }
+  .view-algo .algo-actions .btn { flex: 1 1 calc(50% - 4px); min-height: 44px; }
+  .view-algo .algo-actions .btn:last-child { flex-basis: 100%; }
+  .view-algo .algo-goals .chip { padding: 8px 12px; min-height: 40px; }
+  .view-algo .chip { min-height: 40px; padding: 8px 12px; }
+  
+  /* Make hint button more prominent on mobile */
+  .view-algo #algoHintBtn { width: 100%; padding: 12px; font-size: .95rem; }
+  
+  /* Timer more prominent */
+  .view-algo .algo-work-head { justify-content: center; text-align: center; }
+  .view-algo .algo-timer { font-size: 1.75rem; min-width: 100px; }
+  
+  /* Run button more prominent */
+  .view-algo #algoRun { width: 100%; padding: 12px; font-size: 1rem; margin-bottom: 8px; }
+  .view-algo #algoAiReview { width: 100%; padding: 12px; font-size: .95rem; }
+}
+
+/* Focus visible for all interactive elements */
+@media (prefers-reduced-motion: no-preference) {
+  .view-algo button:focus-visible,
+  .view-algo a:focus-visible,
+  .view-algo input:focus-visible,
+  .view-algo textarea:focus-visible,
+  .view-algo .chip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+/* High contrast mode adjustments */
+@media (prefers-contrast: high) {
+  .view-algo .algo-hint { border-left-width: 4px; }
+  .view-algo .algo-timer.algo-over { text-decoration: underline; }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .view-algo * { transition: none !important; animation: none !important; }
+}
+
+/* Print styles */
+@media print {
+  .view-algo .algo-work-head, .view-algo .algo-actions, .view-algo .algo-hints, .view-algo .algo-goals { display: none; }
+  .view-algo .algo-editor { height: auto; min-height: 0; }
+  .view-algo .algo-layout { display: block; }
 }

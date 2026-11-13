@@ -13,7 +13,10 @@ log() { echo "[$(date +%T)] worker-$runner: $*"; }
 
 next_task() {
   local f id dep
-  for f in $(grep -l '^Status: TODO$' tasks/T*.md); do
+  local all; all=$(grep -l '^Status: TODO$' tasks/T*.md)
+  [ -z "$all" ] && return 1                              # no files: grep -L/-l would read stdin and hang
+  # translation (i18n) tasks go last: user "phần dịch để xuống cuối"
+  for f in $(grep -L 'js/i18n/' $all 2>/dev/null) $(grep -l 'js/i18n/' $all 2>/dev/null); do
     id=$(basename "$f" | cut -d- -f1)
     case "$id" in *R) continue ;; esac                       # review tasks belong to autopilot
     [ -n "$ONLY" ] && ! echo " $ONLY $(tr "

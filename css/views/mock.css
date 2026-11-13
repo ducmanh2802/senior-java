@@ -22,6 +22,14 @@
 }
 .view-mock .mock-timer.warn { color: var(--warn); }
 .view-mock .mock-timer.bad { color: var(--bad); }
+.view-mock .mock-step-badge { background: var(--accent-soft); color: var(--accent); font-size: .75rem; }
+.view-mock .mock-timer-wrap { display: flex; align-items: baseline; gap: 8px; }
+.view-mock .mock-timer { font-size: 2rem; }
+.view-mock .mock-timer-sub { font-size: .85rem; color: var(--muted); }
+.view-mock .mock-keyhint { opacity: .8; margin-left: 6px; }
+.view-mock .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.view-mock .mock-head-top { min-width: 0; }
+.view-mock .mock-meta { min-width: 0; flex-wrap: wrap; }
 .view-mock .mock-progress { height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin-top: 12px; }
 .view-mock .mock-progress i { display: block; height: 100%; background: var(--accent); transition: width .2s; }
 
@@ -106,6 +114,12 @@
 }
 .view-mock .mock-recap-fu .mock-recap-note { background: var(--surface); }
 
+/* ---------- summary verdict ---------- */
+.view-mock .mock-verdict { margin: 10px 0 8px; padding: 12px 14px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); font-size: .95rem; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.view-mock .mock-verdict.ok { border-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
+.view-mock .mock-verdict.warn { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
+.view-mock .mock-verdict.bad { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); }
+
 /* ---------- responsive ---------- */
 @media (max-width: 640px) {
   .view-mock .mock-head { top: 56px; }
@@ -123,7 +137,10 @@
   }
 }
 @media (max-width: 380px) {
+  .view-mock .btn { min-height: 44px; }
   .view-mock .mock-rate-row { grid-template-columns: repeat(5, 1fr); gap: 4px; }
   .view-mock .mock-rate { padding: 14px 0; }
   .view-mock .mock-fu { padding: 12px 10px; }
+  .view-mock .mock-timer-wrap { flex-direction: column; align-items: flex-end; }
+  .view-mock .mock-timer { font-size: 1.4rem; }
 }

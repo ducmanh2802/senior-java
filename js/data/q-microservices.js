@@ -5117,5 +5117,377 @@ Sự cố thực tế: dịch vụ "order-notifier" consume topic "orders", tran
   follow: ["Idempotency key nên lấy từ {{(topic,partition,offset)}} hay từ {{eventId}} nghiệp vụ? Ảnh hưởng khi topic bị compact hoặc consumer reset offset?", "Nếu đích (third-party) không hỗ trợ idempotency key, bạn thiết kế lớp chống trùng ở phía bạn thế nào?", "Khi nào bạn chọn bỏ Kafka transaction và chỉ dùng at-least-once + idempotent consumer? Đánh đổi vận hành/độ trễ?"],
   tags: ["Kafka", "EOS", "transactions", "idempotency", "side effects", "exactly-once", "effectively-once"],
   refs: [{"type": "doc", "title": "Kafka: Transactions and Exactly-Once Semantics", "url": "https://kafka.apache.org/documentation/#semantics"}, {"type": "doc", "title": "Microservices.io: Idempotent Consumer", "url": "https://microservices.io/patterns/communication-style/idempotent-consumer.html"}]
+},
+{
+  id: 'microservices-058',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Một request đi qua API, order, inventory và pricing; mỗi hop đặt timeout 2 giây nhưng p99 toàn luồng vẫn vượt SLO và thread bị giữ chờ. Bạn thiết kế deadline budget xuyên service và bulkhead thế nào để hop sâu không tiêu hết thời gian của caller?',
+  a: `**Tóm tắt:** Timeout từng hop là giới hạn cục bộ; deadline budget là tổng thời gian còn lại cho cả request, được chia sẻ cho mọi bước. Tôi truyền deadline/remaining budget, trừ thời gian đã dùng trước mỗi lời gọi, đặt giới hạn chờ hàng đợi và cô lập tài nguyên bằng bulkhead để một dependency chậm không chiếm hết năng lực của service.
+
+### Deadline khác timeout từng hop thế nào?
+**Timeout** là thời gian tối đa cho một thao tác. Nếu API đặt 2 giây cho order, rồi order lại đặt 2 giây cho inventory, rồi inventory đặt 2 giây cho pricing, chuỗi có thể kéo dài gần 6 giây (chưa tính xử lý và queue). Trong khi client có thể chỉ chờ 1 giây. Khi client đã bỏ đi, các service phía sau vẫn chạy và giữ thread, connection, CPU cho kết quả không còn ai dùng.
+
+**Deadline** là thời điểm cuối cùng kết quả còn hữu ích. Ví dụ SLO của request là 800 ms; dành 100 ms cho gateway và serialize, còn 700 ms cho service. Order dùng 120 ms trước khi gọi inventory thì chỉ được cấp tối đa 580 ms, không được tự khởi động lại đồng hồ 800 ms. Mỗi service cần tính cả thời gian chờ bulkhead, connection pool và xử lý local, không chỉ thời gian chờ socket.
+
+### Cách triển khai theo từng bước
+1. Chọn budget từ SLO và nhu cầu người dùng, không lấy timeout mặc định của thư viện. Đặt deadline ở biên tin cậy, giới hạn giá trị client gửi để không cho request chiếm tài nguyên vô hạn.
+2. Truyền deadline theo giao thức: gRPC có deadline; với HTTP có thể truyền remaining timeout qua metadata/header nội bộ đã được xác thực. Không truyền trực tiếp giá trị {{System.nanoTime()}} sang máy khác: đồng hồ monotonic chỉ so sánh được trong một tiến trình. Trừ sai số đồng hồ nếu dùng thời điểm tuyệt đối.
+3. Mỗi hop lấy budget còn lại, trừ thời gian đã trôi qua tại service đó, rồi dùng giá trị nhỏ hơn giữa budget còn lại và giới hạn riêng của dependency. Nếu budget đã hết thì từ chối sớm, không gọi downstream.
+4. Áp dụng bulkhead: giới hạn số lời gọi đồng thời đến từng dependency, đồng thời giới hạn thời gian chờ lấy slot. Bulkhead giống vách ngăn trên tàu: sự cố một khoang không làm ngập toàn tàu. Bounded queue hoặc semaphore có giới hạn tránh tích lũy việc đã quá hạn.
+
+~~~java
+long deadline = System.nanoTime() + budget.toNanos();
+long remaining = deadline - System.nanoTime();
+if (remaining <= 0) throw new TimeoutException("request budget exhausted");
+// Chờ slot chỉ trong phần nhỏ của ngân sách còn lại.
+if (!inventorySlots.tryAcquire(Math.min(remaining, 20_000_000L),
+        TimeUnit.NANOSECONDS)) throw new RejectedExecutionException();
+try {
+  long callNanos = Math.min(deadline - System.nanoTime(), MAX_INVENTORY_NANOS);
+  return inventoryClient.reserve(item, Duration.ofNanos(callNanos));
+} finally {
+  inventorySlots.release();
 }
+~~~
+Đây là minh họa về phép tính và semaphore, không phải một cấu hình Spring hoàn chỉnh; client thật phải hỗ trợ timeout/cancel và giải phóng tài nguyên khi bị hủy.
+
+### Trade-off và khi nào dùng
+| Cách | Ưu điểm | Rủi ro |
+|---|---|---|
+| Timeout cố định mỗi hop | Dễ bắt đầu, chặn lời gọi vô hạn | Cộng dồn vượt SLO; hop sâu không biết caller còn chờ bao lâu |
+| Deadline truyền xuyên luồng | Ngừng công việc vô ích sớm, giữ tổng latency trong ngân sách | Cần truyền context đúng qua async/thread boundary và xử lý clock/protocol |
+| Bulkhead theo dependency | Một dependency chậm không chiếm toàn bộ pool | Giới hạn quá thấp gây từ chối sớm; quá cao vẫn làm quá tải DB/remote |
+
+Dùng deadline cho request đồng bộ có hạn chờ rõ ràng. Với job nền cần hoàn thành cuối cùng, dùng deadline khác hoặc retry queue có giới hạn; không áp deadline của HTTP ngắn cho công việc cần chạy vài phút.
+
+### Pitfall production
+- Chỉ đặt timeout đọc socket mà quên connect timeout, queue timeout hoặc timeout lấy connection; request vẫn mắc kẹt trước khi gửi.
+- Retry tạo một ngân sách mới thay vì dùng phần còn lại, khiến tổng thời gian vượt deadline.
+- Hủy future không có nghĩa HTTP call/DB query bên dưới đã dừng; kiểm tra cancellation và đóng response/connection.
+- Chia sẻ một pool cho request thường và thao tác chậm khiến bulkhead mất tác dụng. Theo dõi active, queued, rejected, timeout theo dependency.
+
+### Ví dụ đời thực
+Trang checkout có SLO p99 900 ms. Trước sửa, gateway chờ 900 ms, order chờ inventory 700 ms rồi pricing 700 ms; p99 đo được 2,1 giây và 18% request hết hạn ở client nhưng vẫn chạy backend. Nhóm truyền remaining budget, giới hạn queue inventory 30 ms, dành tối đa 250 ms cho inventory và 120 ms cho pricing. Sau deploy, p99 còn 760 ms; khi inventory chậm, checkout trả trạng thái có thể thử lại trong 820 ms thay vì để request chạy ngầm.
+
+### Trả lời mẫu khi phỏng vấn
+“Em bắt đầu từ latency mà người dùng thực sự chấp nhận, rồi biểu diễn nó thành một deadline duy nhất cho toàn request. Timeout cố định riêng lẻ không cộng thành một giới hạn tổng: năm hop mỗi hop chờ một giây có thể khiến caller chờ nhiều giây. Em truyền deadline hoặc remaining budget qua các service, mỗi hop trừ thời gian đã tiêu và chỉ cấp phần còn lại cho downstream. Em cũng tính thời gian nằm trong queue và lấy connection, vì timeout chỉ ở socket là chưa đủ. Với dependency dễ chậm, em dùng bulkhead giới hạn concurrency và queue ngắn; nếu không lấy được slot trong budget thì fail sớm. Các lời gọi bị timeout cần được cancel tốt nhất có thể, và retry không được tạo deadline mới. Cuối cùng em đo p95/p99, timeout, queue và rejection theo dependency để điều chỉnh dựa trên tải thật, thay vì tăng timeout chung cho tất cả.”
+
+> Senior tip: Hãy đo thời gian chờ queue riêng với thời gian gọi remote; nếu queue đã ăn 300 ms trong budget 500 ms, tăng socket timeout chỉ che triệu chứng.`,
+  follow: [
+    'Nếu một HTTP client không hỗ trợ truyền deadline, bạn sẽ truyền remaining budget và xử lý sai lệch đồng hồ thế nào?',
+    'Khi request bị cancel ở gateway, làm sao xác minh công việc downstream thực sự dừng và tài nguyên được giải phóng?',
+    'Bạn chọn giới hạn bulkhead dựa trên throughput, pool size và SLO ra sao?'
+  ],
+  tags: ['deadline', 'timeout', 'bulkhead', 'latency']
+},
+{
+  id: 'microservices-059',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Một provider trả 429 và 503 trong giờ cao điểm; nhiều tầng trong ứng dụng đều retry nên số request tăng gấp nhiều lần. Bạn thiết kế retry budget, backoff có jitter và quy tắc retry để giảm tải thay vì khuếch đại sự cố thế nào?',
+  a: `**Tóm tắt:** Retry chỉ hữu ích cho lỗi tạm thời và thao tác có thể lặp an toàn; nếu nhiều tầng cùng retry, một request ban đầu có thể biến thành hàng chục lần gọi. Tôi chọn một tầng chịu trách nhiệm retry, đặt giới hạn số lần lẫn retry budget theo dependency, dùng exponential backoff có jitter, tôn trọng {{Retry-After}} và deadline của request.
+
+### Retry storm hình thành ra sao?
+Retry là gửi lại sau lỗi. Khi provider quá tải, request đầu tiên đã góp tải nhưng client không nhận kết quả; nếu 3 tầng mỗi tầng thử 3 lần, một yêu cầu có thể tạo đến 27 lần gọi (3 × 3 × 3). Provider càng quá tải thì tỷ lệ lỗi càng cao, từ đó retry càng tăng tải: đây là vòng phản hồi xấu. Nhiều client cùng dùng lịch chờ cố định cũng thức dậy đồng thời, tạo “thundering herd” — đàn request dồn tới cùng một lúc.
+
+### Quy tắc thiết kế
+1. Phân loại lỗi. Lỗi kết nối/reset hoặc 503 có thể tạm thời; lỗi 400/401/403 thường không tự hết khi gửi lại. Với 429, tôn trọng {{Retry-After}} nếu có. Không retry lỗi nghiệp vụ như “hết tồn kho”.
+2. Chỉ retry thao tác idempotent — lặp lại không tạo thêm tác dụng phụ. GET thường phù hợp; POST tạo thanh toán chỉ an toàn khi server hỗ trợ idempotency key và lưu kết quả theo key. Timeout không chứng minh server chưa xử lý.
+3. Chọn đúng một tầng sở hữu retry, ví dụ adapter gọi provider. Kiểm tra cấu hình retry của SDK, HTTP client, gateway và service mesh để tránh chồng lớp. Giới hạn cả số lần và tổng thời gian, luôn nằm trong deadline.
+4. Dùng exponential backoff: khoảng chờ tăng theo lần thử, ví dụ 100 ms, 200 ms, 400 ms, có mức trần. **Jitter** ngẫu nhiên hóa thời điểm, chẳng hạn full jitter lấy ngẫu nhiên từ 0 đến khoảng chờ tối đa. Thời gian chờ chính xác cần tune theo provider và SLA.
+5. Đặt retry budget: chỉ cho phép một lượng nhỏ request retry so với request gốc trong một khoảng đo (ví dụ tối đa 10 retry trên 100 request ban đầu). Khi token/budget cạn, fail fast thay vì tiếp tục gọi. Có thể đặt theo dependency hoặc tenant để một nguồn lỗi không tiêu quota của phần còn lại.
+
+~~~java
+for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+  try {
+    return provider.call(request, remainingDeadline());
+  } catch (TransientException e) {
+    if (!isIdempotent(request) || attempt + 1 == MAX_ATTEMPTS) throw e;
+    if (!retryBudget.tryConsume(providerName)) throw e;
+    long cap = Math.min(MAX_DELAY_MS, BASE_DELAY_MS << attempt);
+    // Full jitter: giảm khả năng mọi client retry cùng thời điểm.
+    sleep(random.nextLong(0, cap + 1));
+  }
+}
+throw new IllegalStateException("unreachable");
+~~~
+Đây là pseudocode chính sách; xử lý {{Retry-After}}, cancellation, tràn số khi tăng lũy thừa và deadline cần được bổ sung trong code production.
+
+### Trade-off
+| Chính sách | Lợi ích | Chi phí |
+|---|---|---|
+| Không retry | Không tăng tải khi lỗi | Mất cơ hội tự phục hồi lỗi mạng thoáng qua |
+| Retry ngắn, có giới hạn | Che được lỗi tạm thời | Tăng latency và một ít tải |
+| Retry dài/vô hạn | Có thể hoàn tất eventual | Giữ tài nguyên, làm provider quá tải lâu hơn |
+| Jitter + budget | Dàn tải và chặn khuếch đại | Phải quan sát ngân sách; retry bị từ chối có thể làm tỷ lệ lỗi trực tiếp tăng trong outage |
+
+Retry hợp cho lỗi transient, thao tác idempotent và còn đủ deadline. Với công việc cần hoàn thành sau khi request trả về, đưa vào queue bền vững có retry policy/DLQ thích hợp hơn giữ thread HTTP.
+
+### Pitfall production
+- Retry mọi exception, kể cả validation, authentication và lỗi dữ liệu vĩnh viễn.
+- Không giới hạn tổng thời gian; 3 lần retry nhưng mỗi lần chờ timeout 10 giây vẫn phá SLO.
+- Tự retry POST sau timeout mà không idempotency key, gây thanh toán/đơn hàng trùng.
+- Jitter chỉ thêm một khoảng cố định nhỏ vẫn có thể đồng bộ; backoff vượt deadline khiến kết quả đến sau khi caller bỏ đi.
+- Không ghi metric attempt gốc và attempt retry riêng nên dashboard tưởng lưu lượng nghiệp vụ tăng tự nhiên.
+
+### Ví dụ đời thực
+Một dịch vụ gửi hóa đơn có 3 lớp retry, mỗi lớp thử 3 lần. Khi provider trả 503 ở mức 20% trên 2.000 request/phút, downstream nhận gần 5.000 lần gọi/phút và lỗi kéo dài 25 phút. Nhóm bỏ retry ở gateway và SDK, giữ tối đa 2 lần ở adapter, full jitter 100–500 ms, tổng deadline 2 giây, retry budget 5% và không retry lỗi nghiệp vụ. Lần sự cố tiếp theo, đỉnh gọi giảm còn 2.100/phút; 503 hạ dưới 1% sau 4 phút.
+
+### Trả lời mẫu khi phỏng vấn
+“Em không bắt đầu bằng việc tăng số lần retry mà phân loại lỗi và xác định ai sở hữu retry. Retry nhiều tầng nhân số lần gọi, nên em kiểm tra cả SDK, client, gateway và mesh, rồi giữ policy ở một adapter. Chỉ lỗi transient mới được thử lại; thao tác ghi phải idempotent hoặc có idempotency key, vì timeout có thể xảy ra sau khi server đã ghi dữ liệu. Em giới hạn attempts và tổng thời gian trong deadline, dùng exponential backoff với jitter, tôn trọng Retry-After và có retry budget theo dependency. Khi budget cạn, request mới fail sớm để bảo vệ provider và hệ thống của mình. Em theo dõi request gốc, retry ratio, mã lỗi và latency riêng; nếu retry đang tăng trong khi success không tăng thì retry đang làm hại chứ không giúp.”
+
+> Senior tip: Đặt cảnh báo theo tỷ lệ retry/request gốc; tỷ lệ thành công cuối cùng có thể trông ổn trong khi hệ thống đang âm thầm tạo tải gấp nhiều lần.`,
+  follow: [
+    'Với lệnh tạo thanh toán timeout sau khi gửi request, bạn xác định kết quả và retry an toàn bằng cách nào?',
+    'Bạn định nghĩa và đo retry budget per-service ra sao khi có nhiều instance?',
+    'Khi provider gửi Retry-After dài hơn deadline của client, bạn xử lý thế nào?'
+  ],
+  tags: ['retry', 'jitter', 'retry-budget', 'idempotency']
+},
+{
+  id: 'microservices-060',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Trang sản phẩm gọi recommendation, review và inventory; recommendation chậm nhưng hai phần còn lại vẫn khỏe. Bạn thiết kế graceful degradation để trang vẫn dùng được mà không hiển thị dữ liệu sai hoặc biến fallback thành một dependency mới thế nào?',
+  a: `**Tóm tắt:** Graceful degradation là chủ động giảm tính năng không thiết yếu khi dependency chậm/hỏng, nhưng giữ đúng các cam kết cốt lõi. Tôi phân loại dữ liệu theo mức độ bắt buộc, đặt timeout ngắn cho phần tùy chọn, dùng cache stale có tuổi dữ liệu rõ ràng hoặc bỏ khối recommendation, và không giả mạo thành công cho thao tác quan trọng như thanh toán/tồn kho.
+
+### Cái gì cần degrade và vì sao?
+Dependency là hệ thống mà request hiện tại cần gọi, ví dụ recommendation service. Không phải phần nào cũng có cùng mức quan trọng:
+- Giá phải chính xác trước khi xác nhận thanh toán.
+- Tồn kho có thể cần kiểm tra trực tiếp trước khi nhận đơn; cache cũ có thể khiến bán quá số lượng.
+- Recommendation thường chỉ giúp khám phá sản phẩm, nên có thể bỏ qua hoặc thay bằng danh sách phổ biến.
+- Review có thể hiển thị dữ liệu cache kèm thời điểm cập nhật.
+
+Trước khi viết fallback, product và engineering thống nhất contract: phần nào biến mất, có thông báo không, dữ liệu có thể cũ bao lâu, và có được phép trả kết quả không đầy đủ không. Trả HTTP 200 nhưng lặng lẽ biến lỗi thanh toán thành “đã thanh toán” là sai nghiệp vụ, không phải degradation.
+
+### Luồng xử lý
+1. Chia request thành phần bắt buộc và tùy chọn; gọi phần tùy chọn bất đồng bộ hoặc với budget nhỏ để không chặn phần chính.
+2. Đặt timeout ngắn phù hợp SLO. Nếu timeout, circuit breaker có thể tạm ngừng gọi khi lỗi liên tục; nó tránh tiếp tục dồn request vào dependency đang hồi phục.
+3. Chọn fallback theo freshness: cache có TTL và timestamp; nếu quá hạn cho phép thì bỏ phần dữ liệu thay vì trình bày như hiện tại. Fallback tĩnh như “sản phẩm phổ biến” phải được xác định trước, không gọi thêm một service đang cùng lỗi.
+4. Trả trạng thái degradation minh bạch trong response/log/metric. Giữ lỗi gốc để điều tra, nhưng không gửi chi tiết nội bộ nhạy cảm cho client.
+5. Khi dependency phục hồi, circuit đóng lại theo policy; kiểm tra tốc độ phục hồi để traffic không dồn đột ngột.
+
+~~~java
+ProductPage page = catalog.load(productId); // dữ liệu bắt buộc
+try {
+  List<Item> picks = recommendations.fetch(productId, Duration.ofMillis(80));
+  return page.withRecommendations(picks, "live");
+} catch (TimeoutException | ServiceUnavailableException e) {
+  CachedItems cached = recommendationCache.get(productId);
+  if (cached != null && cached.age().compareTo(Duration.ofHours(2)) < 0)
+    return page.withRecommendations(cached.items(), "stale");
+  return page.withoutRecommendations(); // không chặn trang chính
+}
+~~~
+Trong code thật, bắt exception cụ thể mà client dùng, hủy lời gọi khi timeout, ghi metric và không cache lỗi như dữ liệu rỗng nếu việc đó làm che outage.
+
+### Trade-off / chọn fallback
+| Phương án | Khi phù hợp | Cẩn trọng |
+|---|---|---|
+| Bỏ tính năng tùy chọn | Recommendation, badge, nội dung phụ | UX cần giải thích nếu người dùng kỳ vọng |
+| Cache stale | Nội dung ít thay đổi, chấp nhận độ cũ | Hiển thị tuổi; không dùng cho số dư/tồn kho cần chính xác |
+| Giá trị mặc định | Tính năng có default an toàn, đã được nghiệp vụ duyệt | Default có thể bị hiểu thành dữ liệu thật |
+| Trả lỗi rõ ràng | Hành động cốt lõi không thể đảm bảo | Không biến lỗi thành success giả |
+
+### Pitfall production
+- Cache không có timestamp/giới hạn stale làm dữ liệu cũ vô thời hạn.
+- Fallback gọi sang một service khác dùng chung DB/pool, vô tình tạo thêm tải trong outage.
+- Trả danh sách rỗng rồi cache lâu khiến dữ liệu tốt bị thay bằng “kết quả lỗi”.
+- Circuit breaker dùng chung cho mọi tenant hoặc mọi operation làm lỗi một nhóm ảnh hưởng tất cả.
+- Không đo fallback rate nên hệ thống trông khỏe dù gần như mọi request đang chạy degraded.
+
+### Ví dụ đời thực
+Trang chi tiết sản phẩm có p99 450 ms, recommendation p99 tăng lên 1,8 giây do một truy vấn chậm. UI chờ recommendation khiến 22% trang vượt SLO 700 ms. Nhóm đặt ngân sách 80 ms cho recommendation, dùng cache tối đa 2 giờ và bỏ khối gợi ý nếu cache cũ hơn; giá và tồn kho vẫn lấy từ nguồn chính xác. Sau deploy, p99 trang còn 520 ms, tỷ lệ trang dùng fallback là 7% trong sự cố và giảm về 0,3% sau khi sửa query. Metric này giúp phát hiện chất lượng suy giảm dù trang vẫn trả 200.
+
+### Trả lời mẫu khi phỏng vấn
+“Em trước hết phân biệt dữ liệu bắt buộc cho tính đúng đắn với tính năng chỉ cải thiện trải nghiệm. Giá và tồn kho trước khi đặt đơn không thể lấy fallback tùy tiện, còn recommendation thường có thể bỏ qua. Em đặt timeout nhỏ cho dependency tùy chọn, dùng cache stale chỉ trong giới hạn tuổi đã được nghiệp vụ chấp thuận, hoặc bỏ hẳn phần đó. Response cần thể hiện degraded state để frontend và observability biết, đồng thời metric fallback rate không bị nhầm là success bình thường. Em tránh fallback gọi thêm service khác và không cache kết quả rỗng do lỗi. Với phần cốt lõi không đảm bảo được, em trả lỗi có thể hành động thay vì giả thành công. Sau cùng em kiểm tra SLO, freshness và hành vi khi dependency phục hồi để tránh traffic dồn trở lại.”
+
+> Senior tip: Hãy định nghĩa “stale tối đa bao lâu” với product cho từng loại dữ liệu; cache TTL kỹ thuật không tự quyết định dữ liệu đó còn an toàn để dùng hay không.`,
+  follow: [
+    'Bạn biểu diễn trong API response việc một trường là stale hoặc bị bỏ qua như thế nào mà vẫn backward compatible?',
+    'Khi dependency phục hồi sau vài phút, làm sao tránh đồng loạt làm nóng lại cache?',
+    'Những metric nào cho biết fallback đang bảo vệ UX hay đã che mất lỗi kéo dài?'
+  ],
+  tags: ['graceful-degradation', 'cache', 'fallback', 'circuit-breaker']
+},
+{
+  id: 'microservices-061',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Một chiến dịch làm lưu lượng tăng gấp bốn; queue của API dài dần, latency tăng và các service phụ thuộc lần lượt timeout. Bạn tìm điểm bắt đầu của cascading failure và thiết kế load shedding, giới hạn queue, ưu tiên request thế nào để giữ luồng quan trọng?',
+  a: `**Tóm tắt:** Cascading failure là quá tải ở một thành phần lan sang thành phần khác qua queue, thread và retry, khiến năng lực toàn chuỗi sụp dù ban đầu chỉ có một bottleneck. Load shedding chủ động từ chối công việc không thể xử lý kịp, giới hạn queue/concurrency và giữ năng lực cho request quan trọng thay vì nhận mọi request rồi để chúng timeout muộn.
+
+### Vì sao queue dài nguy hiểm?
+Queue là hàng đợi công việc đang chờ worker. Khi tốc độ đến lớn hơn tốc độ xử lý, queue tăng mãi; request chiếm bộ nhớ và thường giữ thêm thread hoặc connection. Ví dụ service xử lý 800 request/giây nhưng nhận 1.200 request/giây: mỗi giây backlog tăng 400. Sau 30 giây có 12.000 request chờ, phần lớn đã quá deadline. Worker xử lý chúng vẫn gọi DB/downstream, nên tải vô ích lan tiếp.
+
+Chuỗi thường diễn ra như sau:
+Chuỗi thường là DB chậm, pool connection cạn, request chờ, thread web bị giữ, latency tăng, client retry, request tăng thêm rồi nhiều service cùng cạn tài nguyên.
+Tăng thread hoặc queue vô hạn có thể dời điểm sập và làm recovery khó hơn. Trước khi chọn biện pháp, xác định bottleneck bằng queue depth/age, active thread, connection pool, CPU, latency và tỷ lệ lỗi; nhìn theo trace để biết hop nào chậm đầu tiên.
+
+### Load shedding từng bước
+1. Đặt giới hạn hữu hạn cho mọi hàng đợi và concurrency; một bounded queue có thể từ chối thay vì tăng vô tận. Giới hạn phải được suy ra từ memory, latency budget và tốc độ xử lý.
+2. Khi tải tiến sát năng lực, từ chối sớm ở edge bằng 429 cho quota client hoặc 503 cho quá tải tạm thời; có thể gửi Retry-After phù hợp. Không để request chờ lâu hơn deadline.
+3. Ưu tiên luồng theo giá trị nghiệp vụ: giữ thao tác xác nhận đơn đã bắt đầu; trì hoãn báo cáo, gợi ý và batch. Ưu tiên phải đi xuyên các downstream, không chỉ một queue ở gateway.
+4. Giảm tải sinh thêm: tắt tính năng tùy chọn bằng feature flag, giới hạn fan-out, dừng retry không cần thiết, và áp concurrency limit theo dependency.
+5. Khôi phục có kiểm soát. Khi tải giảm, mở admission dần; theo dõi queue age chứ không chỉ số lượng request thành công.
+
+~~~java
+if (queue.size() >= MAX_QUEUE) {
+  metrics.increment("requests_shed", priority.name());
+  throw new ServiceUnavailableException("capacity exhausted");
+}
+if (priority == Priority.BACKGROUND && remainingBudget() < MIN_USEFUL_TIME) {
+  throw new ServiceUnavailableException("insufficient processing budget");
+}
+return boundedExecutor.submit(() -> process(request));
+~~~
+Đây là minh họa admission control; đọc queue.size rồi submit không nguyên tử ở production. Dùng executor bounded với rejection policy hoặc semaphore/limiter đúng thư viện để tránh race và giữ giới hạn thực.
+
+### Trade-off
+| Cách | Khi có ích | Rủi ro |
+|---|---|---|
+| Queue lớn | Hấp thụ burst ngắn | Latency cao, memory lớn, xử lý request hết hạn |
+| Queue nhỏ + reject sớm | Giữ latency và bảo vệ dependency | Client thấy lỗi sớm, cần retry policy có kiểm soát |
+| Ưu tiên nghiệp vụ | Bảo vệ giao dịch quan trọng | Starvation nếu không có quota công bằng |
+| Autoscaling | Bổ sung năng lực khi tải kéo dài | Không giúp nếu bottleneck là DB hoặc thời gian khởi động dài |
+
+Load shedding phù hợp hệ thống có tải lớn hơn công suất trong một khoảng thời gian. Nếu mọi request bắt buộc xử lý cuối cùng, ghi nhận vào durable queue phù hợp; không tùy tiện bỏ job đã được chấp nhận.
+
+### Pitfall production
+- Shed ở application sau khi đã chiếm thread/connection; điểm từ chối nên càng gần đầu vào càng tốt.
+- Chỉ nhìn CPU; DB pool cạn có thể làm CPU thấp nhưng hệ thống vẫn treo.
+- Dùng 429/503 nhưng client retry ngay, tạo một vòng quá tải mới.
+- Ưu tiên request quan trọng nhưng để chúng dùng chung pool đã bị background job chiếm.
+- Autoscale cùng lúc nhiều pod, gây connection storm vào database.
+
+### Ví dụ đời thực
+Chiến dịch tăng traffic từ 2.000 lên 8.000 request/giây; inventory DB chỉ xử lý ổn định 3.000. Queue HTTP tăng lên 24.000, p99 từ 300 ms lên 8 giây, rồi order và catalog cùng timeout. Nhóm đặt admission tối đa theo năng lực đo được, queue ngắn tối đa 200 ms, giảm ưu tiên báo cáo và recommendation, giới hạn concurrency inventory, trả 503 có Retry-After cho phần vượt ngưỡng. Luồng checkout giữ p99 dưới 900 ms; 31% request không thiết yếu bị từ chối sớm, DB ổn định và backlog không kéo dài sau chiến dịch.
+
+### Trả lời mẫu khi phỏng vấn
+“Em tìm service chậm đầu tiên trong trace và đối chiếu queue age, active threads, connection pool, throughput và retry. Cascading failure thường không bắt đầu ở tất cả các service cùng lúc; queue tăng ở bottleneck rồi giữ tài nguyên ở upstream. Em giới hạn concurrency và queue hữu hạn, từ chối sớm trước khi request hết deadline, đồng thời tắt hoặc giảm tính năng không thiết yếu. Với overload, 503 hoặc 429 cần Retry-After hợp lý, vì retry ngay chỉ khuếch đại sự cố. Em cũng tách pool hoặc quota theo ưu tiên nghiệp vụ để batch không chiếm tài nguyên checkout. Autoscaling chỉ có ích nếu dependency dưới còn năng lực. Sau sự cố, em xem queue age, shed rate và thời gian hồi phục để xác nhận hệ thống không chỉ trả lỗi nhanh mà thật sự phục hồi.”
+
+> Senior tip: Đo “oldest queue age” cùng queue depth; một queue nhỏ nhưng chứa request quá hạn vẫn là dấu hiệu capacity policy sai.`,
+  follow: [
+    'Làm sao bạn chọn queue capacity nếu latency budget còn 200 ms nhưng tốc độ xử lý biến động?',
+    'Ưu tiên checkout hơn báo cáo có thể gây starvation; bạn đặt quota công bằng thế nào?',
+    'Bạn phân biệt lúc nên autoscale với lúc phải shed load hoặc giảm tính năng ra sao?'
+  ],
+  tags: ['load-shedding', 'overload', 'queue', 'cascading-failure']
+},
+{
+  id: 'microservices-062',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Sau một lần DB chậm, Kubernetes đánh liveness của nhiều pod là fail và restart đồng loạt; pod mới lại chưa warm-up nhưng nhận tải ngay. Bạn phân biệt readiness, liveness và startup check, rồi thiết kế probe để tránh health check tự tạo thành sự cố dây chuyền thế nào?',
+  a: `**Tóm tắt:** Readiness trả lời “pod này có nên nhận request mới không?”, liveness trả lời “process có mắc kẹt đến mức cần restart không?”, còn startup probe cho ứng dụng đủ thời gian khởi động. DB chậm thường nên làm pod mất readiness nếu nó không thể phục vụ, không nên tự động làm liveness fail rồi restart mọi pod và tạo thêm tải lên DB.
+
+### Kubernetes dùng kết quả probe ra sao?
+**Probe** là lần kiểm tra định kỳ do kubelet (agent trên mỗi node) gọi vào container. Nếu readiness thất bại, Kubernetes ngừng đưa pod đó vào Service endpoint; container vẫn chạy để có thể hồi phục. Nếu liveness thất bại liên tiếp quá ngưỡng, kubelet restart container. Startup probe trì hoãn việc đánh giá liveness/readiness ban đầu cho đến khi ứng dụng khởi động xong.
+
+Hãy hình dung process là nhân viên trực quầy. Readiness hỏi quầy có thể nhận khách mới không; liveness hỏi nhân viên còn phản hồi không; startup cho nhân viên thời gian mở quầy. Nếu hệ thống gọi DB chậm, nhân viên có thể vẫn hoạt động nhưng tạm không sẵn sàng cho giao dịch phụ thuộc DB. Restart nhân viên không làm DB khỏe hơn, lại khiến nhiều pod đồng thời reconnect và chạy migration/cache warm-up.
+
+### Thiết kế probe an toàn
+1. Dùng health group tách biệt trong Spring Boot Actuator, ví dụ {{/actuator/health/liveness}} và {{/actuator/health/readiness}}. Đây là endpoint; cách đưa indicator vào group phải được cấu hình rõ.
+2. Liveness kiểm tra trạng thái nội bộ có ý nghĩa như process event loop/dispatcher còn trả lời. Tránh gắn mọi dependency từ xa vào liveness.
+3. Readiness kiểm tra điều kiện thực sự cần để nhận loại traffic đó. Nếu DB là bắt buộc cho mọi endpoint, DB không sẵn sàng có thể làm pod unready; nếu một dependency tùy chọn hỏng, không nhất thiết rút toàn bộ pod.
+4. Dùng startup probe cho ứng dụng khởi động chậm; chỉnh period, timeout, failure threshold dựa trên thời gian khởi động quan sát được. Tránh probe quá ngắn hoặc quá dày tạo tải.
+5. Khi shutdown, ngừng readiness trước khi drain request, xử lý SIGTERM và đặt grace period đủ dài. Khi rollout, giới hạn số pod unavailable và tốc độ tạo pod để tránh reconnect storm.
+
+~~~yaml
+startupProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: 8080
+  periodSeconds: 5
+  failureThreshold: 24
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: 8080
+  periodSeconds: 10
+  failureThreshold: 3
+~~~
+Ví dụ này cho tối đa khoảng 120 giây startup (24 × 5 giây), không phải giá trị áp dụng cho mọi ứng dụng. Có thể dùng endpoint startup riêng; đảm bảo health check không chờ một thread pool đang cạn.
+
+### Trade-off / pitfall
+| Thiết lập | Được gì | Có thể sai ở đâu |
+|---|---|---|
+| Dependency trong readiness | Ngừng gửi traffic tới pod không phục vụ được | Nếu mọi pod cùng phụ thuộc DB chậm, toàn bộ endpoint bị rút |
+| Dependency trong liveness | Tự restart pod khi dependency fail | Restart storm, reconnect storm, sự cố lan rộng |
+| Startup probe | Bảo vệ app khởi động chậm | Threshold quá dài che lỗi startup thật |
+| Probe interval ngắn | Phát hiện nhanh | Tạo tải và dao động trạng thái đồng loạt |
+
+Liveness không phải bài kiểm tra “toàn hệ thống khỏe”. Nếu probe chỉ kiểm tra HTTP endpoint nhưng request thread pool đã treo, cần probe nội bộ đủ nhẹ để phát hiện deadlock; ngược lại không để probe phụ thuộc vào cùng queue đang quá tải. Theo dõi số lần restart và readiness transition.
+
+### Ví dụ đời thực
+Một cụm có 20 pod, mỗi pod liveness gọi DB và timeout sau 1 giây. DB tăng latency lên 1,5 giây trong 30 giây; 15 pod bị restart, mỗi pod mở 40 connection lúc lên lại, tạo thêm 600 kết nối cùng lúc. Nhóm bỏ DB khỏi liveness, giữ DB indicator ở readiness cho endpoint cần DB, thêm startup probe 2 phút và rollout tối đa 2 pod một lượt. Trong lần DB chậm kế tiếp, pod không restart hàng loạt; số connection mới giảm còn dưới 80/phút và traffic chỉ chuyển sang pod còn sẵn sàng.
+
+### Trả lời mẫu khi phỏng vấn
+“Em phân biệt ba câu hỏi: startup có đủ thời gian lên chưa, readiness có nên nhận request mới không, và liveness có cần restart process không. Kubernetes rút endpoint khi readiness fail nhưng restart container khi liveness fail, nên gắn DB vào liveness rất nguy hiểm: DB chậm có thể làm mọi pod restart và reconnect cùng lúc. Em dùng startup probe cho thời gian warm-up, liveness nhẹ và nội bộ, readiness chỉ gồm dependency thật sự bắt buộc cho traffic. Em cũng kiểm tra probe không dùng thread pool đang cạn, cấu hình ngưỡng từ dữ liệu startup, và drain request khi SIGTERM. Khi rollout, em giới hạn pod unavailable để không tạo thêm tải lên DB. Em theo dõi restart count, readiness transition và connection rate để biết probe có làm tình hình tệ hơn không.”
+
+> Senior tip: Thử nghiệm probe khi DB bị chậm có kiểm soát ở staging; chỉ đọc YAML thường không phát hiện được việc health endpoint dùng chung pool với request.`,
+  follow: [
+    'Nếu DB là bắt buộc cho checkout nhưng không cần cho health/read endpoint, readiness nên được cấu hình theo service hay theo từng route?',
+    'Làm sao để probe vẫn phản ánh thread deadlock nhưng không bị ảnh hưởng bởi thread pool request đã cạn?',
+    'Khi shutdown pod, thứ tự readiness, connection draining và SIGTERM nên phối hợp thế nào?'
+  ],
+  tags: ['kubernetes', 'readiness', 'liveness', 'startup-probe']
+},
+{
+  id: 'microservices-063',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Một phiên bản mới thay đổi cache và thuật toán định giá; nhóm muốn tự động tăng canary rồi rollback nếu chất lượng giảm. Bạn chọn SLI/SLO, cửa sổ đánh giá, nhóm đối chứng và guardrail thế nào để không rollback vì nhiễu nhưng cũng không bỏ lỡ sự cố?',
+  a: `**Tóm tắt:** Canary đưa một tỷ lệ nhỏ traffic thật vào phiên bản mới để so sánh rủi ro trước khi rollout rộng. Tự động rollback chỉ đáng tin khi đo SLI gắn với trải nghiệm người dùng, so sánh canary với baseline trong cửa sổ đủ dữ liệu, đặt guardrail và ngưỡng rõ ràng, đồng thời giữ đường rollback tương thích với dữ liệu đã ghi.
+
+### Thuật ngữ và tín hiệu cần chọn
+**SLI** (Service Level Indicator) là chỉ số đo, như tỷ lệ checkout thành công hoặc p99 latency. **SLO** (Service Level Objective) là mục tiêu cho SLI trong một khoảng thời gian, ví dụ 99,9% checkout thành công trong 30 ngày. **Error budget** là phần lỗi cho phép trước khi vi phạm SLO; với 99,9% thì ngân sách lỗi là 0,1%.
+
+Không dùng một metric đơn lẻ:
+- **Chỉ số chính:** tỷ lệ request thành công, p95/p99 latency, tỷ lệ giao dịch hoàn tất.
+- **Guardrail nghiệp vụ:** sai lệch giá, cache miss, duplicate order, refund, complaint.
+- **Guardrail hạ tầng:** CPU, memory, saturation, downstream error rate.
+- **Canary health:** so sánh cùng loại traffic/country/device giữa bản mới và baseline, tránh nhầm khác biệt cohort với lỗi version.
+
+### Quy trình rollout và rollback
+1. Trước rollout, kiểm tra telemetry có nhãn version, endpoint và cohort; giới hạn cardinality để metric không phình theo userId/orderId.
+2. Bắt đầu tỷ lệ nhỏ, ví dụ 1%, rồi tăng 5%, 25%, 50%, 100% khi đạt điều kiện. Mỗi bước cần đủ request và thời gian để phát hiện cả latency lẫn lỗi hiếm.
+3. Dùng cửa sổ ngắn để bắt sự cố cấp tính và cửa sổ dài hơn để xác nhận xu hướng. Một lỗi nghiêm trọng như sai giá hoặc mất dữ liệu có thể rollback ngay; latency tăng nhẹ chỉ kích hoạt khi vượt ngưỡng đủ lâu và có mẫu đủ lớn.
+4. So sánh chênh lệch với baseline, không chỉ ngưỡng tuyệt đối. Ví dụ rollback nếu error rate canary cao hơn baseline 0,5 điểm phần trăm và vượt 1% trong 5 phút, sau ít nhất 1.000 request; các con số là ví dụ, phải hiệu chỉnh theo lưu lượng và SLO.
+5. Nếu guardrail vi phạm, dừng tăng traffic, chuyển traffic về version cũ, giữ log/metric để điều tra. Ghi rõ ai được phép override và audit lý do.
+6. Đảm bảo database/schema và event vẫn tương thích ngược; rollback binary không thể undo dữ liệu đã ghi sai. Dùng expand-contract, feature flag hoặc versioned data migration khi cần.
+
+### Bảng trade-off
+| Quyết định | Quá nhạy | Quá lỏng |
+|---|---|---|
+| Cửa sổ ngắn | Rollback do nhiễu/traffic burst | — |
+| Cửa sổ dài | — | Khách hàng chịu lỗi lâu |
+| Ngưỡng tuyệt đối | So sánh sai khi tải khác mùa | Không thấy regression so với baseline |
+| So sánh cohort | Cần telemetry và mẫu tốt | Cohort lệch làm kết luận sai |
+
+Rollback tự động tốt cho tín hiệu có thể đo chắc. Thay đổi ảnh hưởng doanh thu, dữ liệu hoặc an toàn cần guardrail cứng và khả năng dừng khẩn cấp. Canary không thay thế integration test, load test hay kiểm tra tương thích schema.
+
+### Pitfall production
+- Canary chỉ nhận traffic nội bộ không đại diện cho khách hàng thật hoặc phân bố tenant.
+- Tỷ lệ traffic nhỏ nhưng có ít request; không đủ bằng chứng để quyết định.
+- p99 nhảy vì một request trong mẫu nhỏ; cần minimum sample và so sánh nhiều cửa sổ.
+- Chỉ theo dõi CPU/HTTP 5xx nên bỏ lỡ giá tính sai hoặc kết quả nghiệp vụ kém.
+- Alert metric có delay; rollout tăng nhanh hơn thời gian phát hiện.
+- Auto rollback binary nhưng schema đã bị phá tương thích, khiến bản cũ không chạy được.
+
+### Ví dụ đời thực
+Một nền tảng bán vé có SLO 99,95% checkout thành công, p99 dưới 800 ms. Bản mới cache giá làm p99 giảm 12% nhưng ở một tenant, giá khuyến mãi bị làm tròn sai. Nếu chỉ nhìn latency/5xx, canary sẽ được tăng traffic. Nhóm thêm guardrail chênh lệch giá và refund theo version, rollout 1% trong ít nhất 10 phút và 2.000 checkout, sau đó tăng dần. Khi sai lệch vượt 0,1% giao dịch, hệ thống dừng rollout và quay lại bản cũ trong 3 phút; dữ liệu cache được version hóa để bản cũ đọc được. Không có đơn giá sai nào được xác nhận sau khi guardrail kích hoạt.
+
+### Trả lời mẫu khi phỏng vấn
+“Em định nghĩa trước SLI theo hành vi quan trọng với người dùng, không chỉ CPU hay 5xx. Ví dụ checkout success, p99 và guardrail về giá hoặc giao dịch trùng. Canary so sánh version mới với baseline trên traffic tương đương; em đặt minimum sample, cửa sổ ngắn để phát hiện sự cố nghiêm trọng và cửa sổ dài hơn để tránh nhiễu. Các ngưỡng phải dựa trên SLO và mức rủi ro nghiệp vụ. Nếu vượt guardrail, dừng tăng tỷ lệ và tự động route về bản cũ; thay đổi dữ liệu cần tương thích để rollback thực sự khả thi. Em cũng đảm bảo metric có version label nhưng không gắn user ID gây cardinality cao, và độ trễ telemetry ngắn hơn tốc độ rollout. Auto rollback là cơ chế bảo vệ, không thay thế kiểm thử hay quyền dừng khẩn cấp.”
+
+> Senior tip: Đặt tốc độ rollout chậm hơn tổng thời gian thu thập mẫu + trễ telemetry + thời gian phản ứng; nếu không, hệ thống có thể lên 100% trước khi biết canary đã lỗi.`,
+  follow: [
+    'Với traffic thấp, làm sao đánh giá canary khi chưa đạt minimum sample trong cửa sổ mong muốn?',
+    'Bạn thiết kế rollback khi schema đã thêm cột hoặc thay đổi dữ liệu không tương thích thế nào?',
+    'Khi SLI kỹ thuật tốt nhưng khiếu nại nghiệp vụ tăng, guardrail và quy trình quyết định nên thay đổi ra sao?'
+  ],
+  tags: ['canary', 'SLO', 'rollback', 'observability']
+},
 );

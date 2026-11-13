@@ -10104,4 +10104,471 @@ What I am looking for now is a role where I can work on distributed systems at a
   follow: ["What if the recruiter asks about your salary expectations on the phone screen?", "How do you handle it if you do not understand a question during a phone screen?", "Should you ask questions at the end of a phone screen?"],
   tags: ["phone-screen", "introduction", "summary", "recruiter"]
 },
+{
+  id: "english-190",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Why did you choose a specific database for a project? Walk me through your decision and the trade-offs.",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn chọn **database** (cơ sở dữ liệu: hệ thống lưu trữ và truy vấn dữ liệu) dựa trên yêu cầu thật, không theo cảm tính. Hãy trả lời theo cấu trúc: bối cảnh và yêu cầu (dữ liệu, truy vấn, quy mô) → các lựa chọn đã cân nhắc → vì sao chọn và **trade-off** (đánh đổi: được lợi này nhưng chấp nhận mất lợi khác) → kết quả đo được và bài học.
+
+### Sample answer
+In my last project at an e-commerce company, I was responsible for the order service that handled about 50,000 orders per day with peaks of 300 orders per second during promotions. We needed strong consistency for payments and inventory, complex joins across orders, customers, and products, and a clear transaction model.
+
+I compared PostgreSQL and MongoDB. MongoDB would give us flexible schemas, but our data was highly relational and we needed ACID transactions across multiple tables. PostgreSQL fit better because it supports reliable transactions, rich indexing, and mature tooling that our team of six engineers already knew well.
+
+I designed the schema with proper foreign keys and added read replicas to handle reporting queries, so the primary node stayed focused on writes. After launch, the average write latency stayed under 20 milliseconds at peak. The trade-off was that schema changes required careful migrations. I learned to validate the access pattern first, because the best database is the one that matches how the data is actually used.
+
+### Useful phrases
+- **I was responsible for** — tôi chịu trách nhiệm cho
+- **we needed strong consistency** — chúng tôi cần tính nhất quán mạnh (dữ liệu luôn đúng ở mọi nơi sau mỗi giao dịch)
+- **complex joins across** — các phép nối phức tạp giữa nhiều bảng dữ liệu
+- **ACID transactions** — giao dịch ACID (đảm bảo toàn vẹn: hoặc thành công hết hoặc thất bại hết)
+- **I compared X and Y** — tôi đã so sánh X và Y
+- **the trade-off was** — điểm đánh đổi là
+- **schema changes required careful migrations** — thay đổi cấu trúc dữ liệu đòi hỏi di chuyển dữ liệu cẩn thận
+- **matches how the data is actually used** — phù hợp với cách dữ liệu thực sự được sử dụng
+
+### Lỗi người Việt hay mắc
+- **Nói chung chung "PostgreSQL is popular":** thiếu lý do gắn với bài toán. Nên nói rõ yêu cầu: consistency, joins, transactions, scale.
+- **Nhầm "trade-off" với "disadvantage":** trade-off là đánh đổi có chủ đích (chấp nhận A để có B), không chỉ liệt kê nhược điểm.
+- **Dùng sai thì khi kể dự án:** mô tả bối cảnh và quyết định nên dùng quá khứ ({{I compared}}, {{we needed}}), kết quả hiện tại có thể dùng hiện tại.
+- **Thiếu số liệu:** nói "high traffic" mơ hồ. Hãy thêm con số như orders per day, latency, team size để tăng độ tin cậy.
+
+> Senior tip: Khi phỏng vấn, luôn nói theo chuỗi "requirements → options → decision → trade-off → result". Người phỏng vấn đánh giá tư duy lựa chọn công nghệ và cách bạn đo lường kết quả, không phải bạn thuộc tên bao nhiêu loại database.`,
+  follow: ["What would make you reconsider your database choice if the traffic doubled?","How did you plan and test schema migrations in that project?","When would a NoSQL database be a better fit than a relational one?"],
+  tags: ["database","trade-offs","postgresql","system-design"]
+},
+{
+  id: "english-191",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Tell me about a time you handled a security issue. What happened, and how did you fix it?",
+  a: `**Tóm tắt:** Interviewer muốn đánh giá cách bạn phản ứng với **security issue** (vấn đề bảo mật: lỗ hổng hoặc sự cố có thể làm lộ hoặc hại dữ liệu). Hãy kể theo trình tự: phát hiện và mức độ ảnh hưởng → hành động ngắn hạn để giảm rủi ro → nguyên nhân gốc và cách sửa lâu dài → kết quả và bài học.
+
+### Sample answer
+Last year, while working on a customer portal for a SaaS product with about 200,000 users, I noticed unusual login attempts in our logs during a routine review. A security log is a record of important events in the system, like sign-ins and errors. We discovered that one API endpoint allowed access without checking the user token properly, which is called a broken authentication issue.
+
+I immediately informed my team lead and we rotated the affected keys, added stricter token validation, and temporarily limited access to that endpoint. These steps reduced the risk within two hours. After that, I worked with another engineer to trace the root cause and found that a recent refactor had removed a middleware check. A middleware is a piece of code that runs before the main request handler.
+
+We restored the check, added automated tests, and ran a security review before release. No customer data was leaked, and we reduced similar auth-related alerts to zero in the next quarter. I learned that small refactors can create serious risks, so security checks must be part of every code review.
+
+### Useful phrases
+- **I noticed unusual activity in our logs** — tôi phát hiện hoạt động bất thường trong nhật ký hệ thống
+- **a broken authentication issue** — lỗi xác thực bị hỏng (hệ thống không kiểm tra đúng danh tính người dùng)
+- **I immediately informed my team lead** — tôi lập tức báo cho trưởng nhóm
+- **we rotated the affected keys** — chúng tôi thay mới các khóa truy cập bị ảnh hưởng
+- **to reduce the risk within two hours** — để giảm rủi ro trong vòng hai giờ
+- **trace the root cause** — truy tìm nguyên nhân gốc rễ
+- **we added automated tests** — chúng tôi thêm kiểm thử tự động
+- **no customer data was leaked** — không có dữ liệu khách hàng bị rò rỉ
+
+### Lỗi người Việt hay mắc
+- **Che giấu hoặc nói mơ hồ:** interviewer cần hành động cụ thể. Hãy nói rõ bạn đã làm gì, trong bao lâu, và kết quả ra sao.
+- **Nhầm "vulnerability" và "incident":** vulnerability là lỗ hổng tiềm ẩn, incident là sự cố đã xảy ra; dùng đúng giúp câu trả lời rõ ràng.
+- **Bỏ qua bước thông báo:** trong bảo mật, việc báo ngay cho người phụ trách (team lead, security team) quan trọng như việc sửa code.
+- **Dùng từ kỹ thuật mà không giải thích ngữ cảnh:** khi nói {{token}}, {{middleware}}, hãy thêm một cụm giải thích ngắn để người nghe dễ theo kịp.
+
+> Senior tip: Khi kể sự cố bảo mật, hãy thể hiện sự bình tĩnh và quy trình: chứa chặn nhanh, sửa gốc, và phòng ngừa lặp lại. Đừng khoe kỹ thuật phức tạp, hãy cho thấy bạn bảo vệ được người dùng và dữ liệu.`,
+  follow: ["How do you decide what to communicate to stakeholders during a security incident?","What practices do you use to prevent similar security issues in future releases?","How would you handle the situation if customer data had already been exposed?"],
+  tags: ["security","incident-response","authentication","best-practices"]
+},
+{
+  id: "english-192",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Describe a time you automated a manual process. What did you automate, and what was the impact?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn nhận ra công việc thủ công lặp lại và dùng **automation** (tự động hóa: để máy tính tự làm thay thao tác lặp đi lặp lại của con người) để tiết kiệm thời gian và giảm lỗi. Trả lời theo cấu trúc: quy trình thủ công và vấn đề → giải pháp tự động hóa → cách triển khai an toàn → kết quả đo được và bài học.
+
+### Sample answer
+At my previous company, our team released a backend service twice a week, and the deployment checklist was done manually by two engineers. It took about 90 minutes each time and often caused mistakes, such as missing a database migration step. A database migration is a small change applied to the database structure during a release.
+
+I proposed automating the process with a CI/CD pipeline. CI/CD means continuous integration and continuous delivery, a setup where code changes are automatically built, tested, and deployed in clear steps. I wrote scripts to run tests, apply migrations, build the Docker image, and deploy to staging before production. I also added a manual approval step for production to keep control.
+
+We rolled it out gradually over three weeks and trained the team. Deployment time dropped from 90 minutes to 20 minutes, and we had zero missed migration incidents in the next six months. The trade-off was the initial time to write and maintain the pipeline. I learned that automating the most frequent and error-prone steps first brings the fastest value.
+
+### Useful phrases
+- **a manual process** — quy trình làm thủ công bằng tay
+- **done manually by two engineers** — được hai kỹ sư thực hiện thủ công
+- **error-prone** — dễ xảy ra lỗi
+- **I proposed automating the process** — tôi đề xuất tự động hóa quy trình
+- **CI/CD pipeline** — chuỗi tự động tích hợp và triển khai liên tục
+- **a manual approval step** — bước phê duyệt thủ công (người bấm xác nhận)
+- **we rolled it out gradually** — chúng tôi triển khai dần dần
+- **dropped from 90 minutes to 20 minutes** — giảm từ 90 phút xuống 20 phút
+
+### Lỗi người Việt hay mắc
+- **Chỉ nói công cụ, không nói vấn đề:** "I used Jenkins" chưa đủ. Phải nói quy trình cũ tốn gì, sai ở đâu, và tự động hóa giải quyết thế nào.
+- **Quên nói về rủi ro khi tự động hóa:** nên nhắc bước kiểm soát (test, staging, approval) để cho thấy bạn triển khai an toàn.
+- **Không có số liệu trước/sau:** thiếu thời gian, tần suất, hoặc số lỗi khiến impact không rõ. Hãy so sánh before/after.
+- **Dùng "automate" sai ngữ pháp:** nói {{automate a process}} (động từ + tân ngữ), không nói {{make automation for a process}} trong văn nói tự nhiên.
+
+> Senior tip: Khi kể về automation, hãy nhấn mạnh bạn chọn bước nào để tự động hóa trước và vì sao. Ứng viên senior được đánh giá cao khi biết cân bằng giữa tốc độ, độ an toàn, và chi phí bảo trì lâu dài.`,
+  follow: ["How did you make sure the automated pipeline was reliable before using it in production?","What would you do if the automation failed during a release?","Which parts of a process should not be fully automated, in your opinion?"],
+  tags: ["automation","ci-cd","deployment","productivity"]
+},
+{
+  id: "english-193",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Explain a system you designed using a simple diagram in words. How would you walk an interviewer through it?",
+  a: `**Tóm tắt:** Interviewer muốn xem bạn có thể giải thích **system design** (thiết kế hệ thống: cách các thành phần phần mềm kết nối và làm việc cùng nhau) một cách rõ ràng hay không. Hãy mô tả bằng lời như một **diagram** (sơ đồ: hình vẽ các hộp và mũi tên thể hiện luồng dữ liệu), đi theo luồng từ người dùng → các thành phần → lưu trữ, kèm lý do chọn và đánh đổi.
+
+### Sample answer
+I designed a notification system for a learning platform with around 100,000 active users. I will describe it as a simple flow in words. First, the client app sends a request to an API gateway, which is the single entry point that routes requests to the right service.
+
+The gateway forwards the request to a Notification Service. This service validates the input, saves the notification record in PostgreSQL, our main relational database, and then publishes an event to a message queue. A message queue is a buffer that holds messages so services can work asynchronously, meaning they do not have to wait for each other.
+
+A Worker service reads from the queue and sends the actual email or push message through external providers. We also store delivery status in Redis, an in-memory cache, so the app can quickly show whether a message was sent. This design handled about 20,000 notifications per hour. The trade-off was extra complexity from the queue, but it protected the system when providers were slow. I learned that drawing the flow step by step helps both the team and the interviewer follow the design.
+
+### Useful phrases
+- **I will describe it as a simple flow in words** — tôi sẽ mô tả nó như một luồng đơn giản bằng lời
+- **the single entry point** — điểm vào duy nhất
+- **routes requests to the right service** — định tuyến yêu cầu đến đúng dịch vụ
+- **publishes an event to a message queue** — gửi một sự kiện vào hàng đợi tin nhắn
+- **work asynchronously** — làm việc bất đồng bộ (không phải chờ nhau xong mới làm tiếp)
+- **an in-memory cache** — bộ nhớ đệm trong RAM (lưu tạm để đọc nhanh)
+- **delivery status** — trạng thái đã gửi hay chưa
+- **drawing the flow step by step** — vẽ/mô tả luồng từng bước
+
+### Lỗi người Việt hay mắc
+- **Nhảy thẳng vào chi tiết kỹ thuật:** người nghe mất bối cảnh. Hãy bắt đầu từ người dùng và đi theo luồng request từng bước.
+- **Không nêu vai trò từng thành phần:** chỉ liệt kê tên (gateway, queue, worker) mà không giải thích nó làm gì trong một câu ngắn.
+- **Bỏ qua trade-off:** thiết kế nào cũng có đánh đổi (phức tạp hơn, chi phí hơn, nhanh hơn). Nói trade-off thể hiện tư duy senior.
+- **Mô tả rối, không có thứ tự:** hãy dùng từ nối như {{First}}, {{Then}}, {{After that}}, {{Finally}} để người nghe hình dung sơ đồ trong đầu.
+
+> Senior tip: Khi "vẽ bằng lời", hãy nói chậm và theo một hướng cố định (trái sang phải hoặc từ trên xuống). Sau mỗi 2-3 bước, dừng lại hỏi "Does this flow make sense so far?" để chắc interviewer theo kịp và để bạn kịp chỉnh nếu họ muốn đào sâu chỗ khác.`,
+  follow: ["How would your design change if the number of notifications increased ten times?","What happens if the message queue or an external provider becomes unavailable?","Which part of this system would you monitor most closely in production?"],
+  tags: ["system-design","architecture","communication","diagram"]
+},
+{
+  id: "english-194",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Tell me about a time you handled a failed deployment and had to roll back. What happened, and what did you learn?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn xử lý sự cố khi **deployment** (triển khai: đưa phiên bản code mới lên môi trường chạy thật) thất bại như thế nào: nhận biết vấn đề, quyết định **rollback** (quay lui: trả hệ thống về phiên bản ổn định trước đó), phối hợp với team và rút bài học. Hãy kể theo cấu trúc tình huống → hành động → kết quả có số liệu, thể hiện bình tĩnh và trách nhiệm.
+
+### Giải thích thuật ngữ cơ bản
+- **Deployment (triển khai):** giống như bạn thay công thức nấu ăn trong nhà hàng đang phục vụ khách; nếu công thức mới sai, món ăn ra lỗi ngay.
+- **Rollback (quay lui):** quay lại công thức cũ đã ổn định để nhà hàng tiếp tục phục vụ bình thường trong khi bạn sửa công thức mới.
+- **Release (bản phát hành):** gói thay đổi được đưa lên môi trường production (môi trường thật cho người dùng).
+- **Monitoring (giám sát):** theo dõi sức khỏe hệ thống bằng số liệu và log (nhật ký sự kiện) để phát hiện bất thường sớm.
+- **Incident (sự cố):** tình huống khiến hệ thống không hoạt động đúng như mong đợi và ảnh hưởng người dùng.
+
+### Sample answer
+In my previous role as a backend engineer on a team of eight, we deployed a new payment validation feature to production during a Friday afternoon release. Within about ten minutes, our monitoring dashboard showed that the error rate jumped from 0.3 percent to 7 percent, and around 500 customers could not complete checkout.
+
+I immediately informed the team lead and the on-call group in our chat channel. I compared the new logs with the previous version and found a null value issue in a request field. Because the impact was growing quickly, I suggested a rollback instead of trying a risky hotfix. I ran the rollback script, and within five minutes the service returned to the stable version. I stayed online for another thirty minutes to confirm that error rates and payment success returned to normal.
+
+After the incident, I wrote a short postmortem, added a missing validation check, and improved our pre-release tests. The next deployment passed without issues. This experience taught me that a fast, safe rollback is often better than debugging under pressure.
+
+### Useful phrases
+- **our monitoring dashboard showed** — bảng giám sát của chúng tôi hiển thị
+- **the error rate jumped from 0.3 percent to 7 percent** — tỷ lệ lỗi tăng vọt từ 0,3% lên 7%
+- **I immediately informed the team lead** — tôi lập tức thông báo cho trưởng nhóm
+- **I suggested a rollback instead of a risky hotfix** — tôi đề xuất quay lui thay vì sửa nóng đầy rủi ro
+- **the service returned to the stable version** — dịch vụ trở lại phiên bản ổn định
+- **I wrote a short postmortem** — tôi viết một bản tổng kết sau sự cố
+- **improved our pre-release tests** — cải thiện các bài kiểm thử trước khi phát hành
+- **debugging under pressure** — gỡ lỗi dưới áp lực thời gian
+
+### Lỗi người Việt hay mắc
+- **Kể lan man, không có mốc thời gian:** chỉ nói "system failed" mà không nêu bao lâu phát hiện, bao nhiêu người bị ảnh hưởng, mất bao lâu để rollback. Hãy thêm số liệu cụ thể để câu chuyện đáng tin.
+- **Đổ lỗi cho người khác:** nói "QA missed it" hoặc "DevOps did wrong" nghe thiếu trách nhiệm. Nên dùng "we" và tập trung vào hành động của bản thân.
+- **Quên phần bài học:** kể sự cố xong mà không nói đã cải thiện quy trình/test/monitoring thế nào. Interviewer rất coi trọng phần học được sau thất bại.
+- **Dùng sai thì hoặc thiếu chủ ngữ:** nói "rollback immediately" thay vì "I suggested a rollback and we executed it" nghe không tự nhiên. Hãy dùng câu đầy đủ, rõ ai làm gì.
+
+> Senior tip: Khi trả lời câu này, hãy nhấn mạnh tiêu chí ra quyết định: ưu tiên giảm ảnh hưởng người dùng trước (rollback nhanh, an toàn), rồi mới tìm nguyên nhân gốc. Một bản postmortem có hành động cụ thể (thêm test, thêm cảnh báo) cho thấy bạn trưởng thành hơn sau sự cố.`,
+  follow: ["How do you decide between rolling back and applying a quick hotfix during a production incident?","What steps do you take after a rollback to make sure the same issue does not happen again?","How do you communicate with stakeholders while the deployment issue is still ongoing?"],
+  tags: ["deployment","rollback","incident","communication","production"]
+},
+{
+  id: "english-195",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "How do you work with QA and testers to deliver high-quality software? Can you give a specific example?",
+  a: `**Tóm tắt:** Interviewer muốn biết bạn hợp tác với **QA** (Quality Assurance: đội/người kiểm tra chất lượng phần mềm) và tester như thế nào để giảm lỗi trước khi tới người dùng. Cần nêu cách giao tiếp sớm, làm rõ yêu cầu, hỗ trợ tái hiện bug và chia sẻ trách nhiệm chất lượng, kèm ví dụ cụ thể có kết quả đo được.
+
+### Giải thích thuật ngữ cơ bản
+- **QA/Tester:** người kiểm tra phần mềm theo kịch bản và tình huống thực tế để tìm lỗi. Hãy hình dung như người "thử dùng sản phẩm" trước khách hàng để phát hiện chỗ hỏng.
+- **Bug (lỗi phần mềm):** hành vi sai so với mong đợi, ví dụ bấm nút thanh toán nhưng không trừ tiền hoặc trừ hai lần.
+- **Test case (ca kiểm thử):** một bước kiểm tra cụ thể với dữ liệu đầu vào và kết quả mong đợi.
+- **Reproduce (tái hiện lỗi):** làm lại đúng các bước để lỗi xuất hiện lần nữa, giúp lập trình viên tìm nguyên nhân nhanh hơn.
+- **Acceptance criteria (tiêu chí chấp nhận):** điều kiện rõ ràng để xem một tính năng là "xong" và đúng yêu cầu.
+
+### Sample answer
+I see QA and testers as partners, not as a separate gate at the end. In my last project, I worked with two QA engineers on a new order tracking feature for a logistics app used by about 30,000 users. Before development, I joined a short refinement meeting to review the acceptance criteria and clarify edge cases, such as delayed updates and missing tracking numbers.
+
+During development, I shared an early build in the staging environment and asked QA to try risky scenarios first. When they found a bug where the status did not refresh after a network timeout, I sat with the tester to reproduce it, checked the logs, and fixed the retry logic within the same day. I also added unit tests so the issue would not return.
+
+As a result, we reduced critical bugs found in the final week from six in the previous release to one, and we delivered on time. I learned that early communication and fast feedback with QA saves much more time than fixing surprises at the end.
+
+### Useful phrases
+- **I see QA and testers as partners** — tôi xem QA và tester là đồng đội
+- **review the acceptance criteria** — rà soát tiêu chí chấp nhận
+- **clarify edge cases** — làm rõ các trường hợp biên (tình huống hiếm, dễ bỏ sót)
+- **shared an early build in the staging environment** — chia sẻ bản dựng sớm trên môi trường staging (môi trường thử gần giống thật)
+- **reproduce it, checked the logs, and fixed the logic** — tái hiện lỗi, kiểm tra log và sửa logic
+- **added unit tests** — thêm kiểm thử đơn vị (test tự động cho từng phần nhỏ của code)
+- **reduced critical bugs** — giảm số lỗi nghiêm trọng
+- **early communication and fast feedback** — giao tiếp sớm và phản hồi nhanh
+
+### Lỗi người Việt hay mắc
+- **Nói QA chỉ "test cuối cùng":** cách nhìn này dễ tạo xung đột. Hãy nhấn mạnh QA tham gia sớm từ lúc làm rõ yêu cầu và test case.
+- **Mô tả chung chung "we work well together":** thiếu ví dụ cụ thể. Nên kể rõ tính năng, số lượng tester/người dùng, loại bug và kết quả cải thiện.
+- **Tránh nhận trách nhiệm khi có bug:** nói "tester found many bugs" nghe tiêu cực. Tốt hơn là mô tả cách bạn phối hợp tái hiện và sửa nhanh.
+- **Nhầm từ kỹ thuật:** "staging" (môi trường thử) khác "production" (môi trường thật). Dùng đúng từ giúp interviewer thấy bạn quen quy trình phát triển chuyên nghiệp.
+
+> Senior tip: Hãy cho thấy bạn chủ động giúp QA tái hiện lỗi (cung cấp log, bước rõ ràng, dữ liệu mẫu) và biến lỗi thành bài học (thêm test tự động, cập nhật checklist). Tư duy "chất lượng là trách nhiệm chung" là dấu hiệu của kỹ sư senior.`,
+  follow: ["What do you do when you disagree with a QA engineer about whether an issue is really a bug?","How early should developers involve QA in the development process, and why?","Can you describe a time when working closely with QA helped you prevent a production issue?"],
+  tags: ["qa","testing","collaboration","quality","communication"]
+},
+{
+  id: "english-196",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Can you talk about your experience with cloud services, especially AWS? What services have you used and why?",
+  a: `**Tóm tắt:** Interviewer muốn đánh giá kinh nghiệm thực tế của bạn với **cloud services** (dịch vụ đám mây: thuê hạ tầng/máy chủ/dịch vụ qua Internet thay vì tự mua máy) và cụ thể là **AWS** (Amazon Web Services: nền tảng đám mây của Amazon). Hãy nêu bạn dùng dịch vụ nào, để giải quyết vấn đề gì, quy mô ra sao, và bạn hiểu lợi ích/đánh đổi cơ bản.
+
+### Giải thích thuật ngữ cơ bản
+- **Cloud service (dịch vụ đám mây):** giống thuê căn hộ có sẵn điện nước thay vì tự xây nhà; bạn dùng tài nguyên theo nhu cầu và trả tiền theo mức sử dụng.
+- **EC2:** máy chủ ảo trên AWS (như một máy tính chạy trên đám mây) để chạy ứng dụng.
+- **S3:** nơi lưu trữ file/đối tượng (ảnh, tài liệu, bản sao lưu) trên AWS, giống ổ cứng dung lượng lớn trên mạng.
+- **RDS:** dịch vụ cơ sở dữ liệu quan hệ được quản lý (AWS giúp lo cài đặt, sao lưu, vá lỗi cơ bản).
+- **CloudWatch:** dịch vụ giám sát log và số liệu (CPU, bộ nhớ, lỗi) để biết hệ thống đang khỏe hay gặp sự cố.
+- **IAM:** quản lý danh tính và quyền truy cập (ai được làm gì trên tài nguyên AWS).
+
+### Sample answer
+I have about three years of hands-on experience with AWS in my previous company. I mainly worked on a backend system for an e-commerce platform that served around 50,000 monthly users. We deployed our Spring Boot services on EC2 instances and stored product images and invoices in S3 because it was reliable and easy to scale for file storage.
+
+For the database, we used Amazon RDS for PostgreSQL. It reduced our operational work because automated backups and patching were managed by AWS. I also used CloudWatch to monitor application logs, CPU usage, and error alarms, which helped us detect issues faster. For access control, we followed basic IAM practices by giving each service only the permissions it needed.
+
+In one project, moving static files to S3 and adding CloudFront for caching reduced average image load time by about 30 percent. I am still learning more advanced AWS topics, but I am comfortable using these core services to build, deploy, and monitor backend applications.
+
+### Useful phrases
+- **hands-on experience with AWS** — kinh nghiệm thực hành trực tiếp với AWS
+- **deployed our Spring Boot services on EC2 instances** — triển khai dịch vụ Spring Boot trên các máy chủ EC2
+- **reliable and easy to scale for file storage** — đáng tin cậy và dễ mở rộng cho lưu trữ file
+- **automated backups and patching were managed by AWS** — sao lưu tự động và vá lỗi được AWS quản lý
+- **monitor application logs and error alarms** — giám sát log ứng dụng và cảnh báo lỗi
+- **giving each service only the permissions it needed** — cấp cho mỗi dịch vụ chỉ những quyền cần thiết (nguyên tắc tối thiểu)
+- **reduced average image load time by about 30 percent** — giảm thời gian tải ảnh trung bình khoảng 30%
+- **comfortable using these core services** — tự tin sử dụng các dịch vụ cốt lõi này
+
+### Lỗi người Việt hay mắc
+- **Liệt kê tên dịch vụ như "thuộc lòng":** nói EC2, S3, Lambda, EKS nhưng không giải thích đã dùng để làm gì. Interviewer quan tâm mục đích và kết quả thực tế.
+- **Phóng đại kinh nghiệm:** nói "expert in AWS" khi chỉ dùng vài dịch vụ cơ bản. Hãy trung thực về phạm vi đã làm và thể hiện tinh thần học hỏi.
+- **Không nhắc đến chi phí/đánh đổi:** cloud tiện nhưng có chi phí và cần quản lý quyền truy cập. Nêu một trade-off nhỏ (ví dụ cần cấu hình IAM cẩn thận) cho thấy tư duy thực tế.
+- **Dùng câu quá dài, khó hiểu:** khi nói tiếng Anh, hãy dùng câu ngắn: dịch vụ nào → dùng cho việc gì → kết quả ra sao.
+
+> Senior tip: Khi nói về AWS, hãy gắn mỗi dịch vụ với một vấn đề cụ thể bạn giải quyết (lưu file, chạy app, giám sát, phân quyền) và nếu có thì thêm một con số cải thiện. Nếu chưa dùng dịch vụ sâu (như Kubernetes/EKS), hãy nói rõ và nhấn mạnh nền tảng bạn đã nắm vững.`,
+  follow: ["How do you decide which AWS service to use for a new backend component?","What basic security practices do you follow when working with AWS resources?","Can you describe a challenge you faced while using a cloud service and how you solved it?"],
+  tags: ["aws","cloud","ec2","s3","rds","infrastructure"]
+},
+{
+  id: "english-197",
+  topic: "english",
+  level: "mid",
+  lang: "en",
+  q: "What would your teammates say about you if I asked them for feedback?",
+  a: `**Tóm tắt:** Interviewer muốn hiểu bạn nhìn nhận bản thân qua góc nhìn của đồng đội: điểm mạnh khi làm việc nhóm, cách bạn hỗ trợ người khác và bạn có tự nhận thức (self-awareness: biết rõ ưu/nhược điểm của mình) hay không. Hãy trả lời cân bằng: nêu 1-2 điểm mạnh đồng đội hay khen kèm ví dụ, và 1 điểm bạn đang cải thiện.
+
+### Giải thích thuật ngữ cơ bản
+- **Feedback (phản hồi):** ý kiến nhận xét từ người khác về cách bạn làm việc, giống như bạn nhờ bạn bè góp ý sau một buổi thuyết trình.
+- **Reliable (đáng tin cậy):** người khác có thể yên tâm giao việc vì bạn làm đúng hẹn và rõ ràng.
+- **Collaboration (hợp tác):** cùng làm việc, chia sẻ thông tin và hỗ trợ nhau để đạt mục tiêu chung.
+- **Self-awareness (tự nhận thức):** biết mình giỏi ở đâu và đang cần cải thiện ở đâu, không tự tâng bốc quá mức.
+- **Constructive feedback (góp ý mang tính xây dựng):** nhận xét thẳng nhưng nhằm giúp cải thiện, không phải chê bai.
+
+### Sample answer
+I think my teammates would say that I am reliable and easy to work with. In my last team of six engineers, I usually took ownership of backend tasks and kept others updated on my progress. For example, during a three-month project to improve our reporting feature, I delivered my parts on time and shared short daily updates in our team channel, so the frontend developer could plan their work.
+
+They would also say that I am willing to help. When a junior teammate struggled with debugging a database query, I spent about thirty minutes walking through the problem with him instead of just fixing it myself. One area they might mention for improvement is that I sometimes focus too much on details before asking for feedback. Recently, I have tried to share early drafts sooner so I can get input earlier and avoid rework. Overall, I believe they would describe me as supportive, responsible, and open to learning.
+
+### Useful phrases
+- **I am reliable and easy to work with** — tôi đáng tin cậy và dễ làm việc cùng
+- **took ownership of backend tasks** — chủ động chịu trách nhiệm các nhiệm vụ backend
+- **kept others updated on my progress** — cập nhật tiến độ cho mọi người
+- **delivered my parts on time** — hoàn thành phần việc của tôi đúng hạn
+- **willing to help** — sẵn sàng giúp đỡ
+- **walking through the problem with him** — cùng đi qua từng bước của vấn đề với bạn ấy
+- **an area for improvement** — một điểm cần cải thiện
+- **open to learning** — cởi mở để học hỏi
+
+### Lỗi người Việt hay mắc
+- **Chỉ tự khen, không có ví dụ:** nói "I am hardworking" nhưng không chứng minh bằng tình huống cụ thể. Hãy đưa ra hành động và kết quả để người nghe tin.
+- **Nói điểm yếu giả tạo:** kiểu "my weakness is I work too hard" nghe không thật. Nên chọn một điểm yếu thật, nhỏ, và nói rõ bạn đang cải thiện thế nào.
+- **Trả lời quá ngắn:** chỉ 1-2 câu làm mất cơ hội thể hiện kỹ năng làm việc nhóm. Hãy dùng 3 phần: điểm mạnh + ví dụ + điểm đang cải thiện.
+- **Dùng từ chung chung:** "good", "nice" không rõ nghĩa. Thay bằng từ cụ thể như reliable (đúng hẹn), supportive (hay hỗ trợ), clear in communication (giao tiếp rõ ràng).
+
+> Senior tip: Hãy chọn điểm mạnh mà đồng đội thực sự cảm nhận được trong công việc hằng ngày (đúng hẹn, hỗ trợ, giao tiếp rõ). Khi nêu điểm cần cải thiện, hãy kèm hành động bạn đang làm để tiến bộ — điều này cho interviewer thấy bạn có tự nhận thức và tinh thần phát triển.`,
+  follow: ["Can you share a specific example of when a teammate gave you constructive feedback?","How do you usually support junior teammates when they are stuck on a task?","What have you done recently to improve the weakness you mentioned?"],
+  tags: ["teamwork","feedback","self-awareness","collaboration","strengths"]
+},
+{
+  id: "english-198",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Walk me through an AI feature you shipped. What problem did it solve, and how did you make sure it was useful and safe?",
+  a: `**Tóm tắt:** Interviewer muốn nghe bạn biến một nhu cầu thật thành **AI feature** (tính năng dùng trí tuệ nhân tạo), chứ không chỉ kể tên mô hình.   **LLM** là mô hình ngôn ngữ lớn tạo văn bản từ đầu vào; nó có thể viết bản nháp theo ngữ cảnh nhưng không tự đảm bảo mọi thông tin đều đúng.     **Human review** (người kiểm tra trước khi gửi) giúp phát hiện lỗi trước khi khách nhận nội dung. Chỉ đưa tài liệu đã được phê duyệt làm căn cứ, thay vì để mô hình tự tạo chính sách. **Pilot** là thử nghiệm giới hạn trước khi triển khai rộng; nêu rõ số người tham gia và tiêu chí thành công. Hãy mô tả vấn đề → luồng hoạt động → cách kiểm soát rủi ro → kết quả đo được và điều bạn học được.
+
+### Sample answer
+I led four engineers building a reply-drafting feature for our support portal. Agents spent six minutes on each reply, so we wanted to save time without sending messages automatically.
+
+When an agent opened a ticket, our Java service sent its text and a few approved help articles to a language model. The draft appeared for the agent to edit, reject, or use. We ran a two-week pilot with eight agents and excluded account details that were not needed.
+
+Before launch, support leads reviewed 200 sample tickets for relevance and factual support. During the pilot, average writing time fell from six minutes to three. We reviewed 320 drafts: agents rejected 18 and requested factual corrections on 42. We used those examples to improve article selection. Agents still checked every draft, so the feature remained an assistant, not an automatic decision-maker.
+
+The trade-off was that human review added a step, but it reduced the risk of sending an incorrect answer to a customer. I learned to define a useful outcome before choosing a model, and to keep a safe fallback when the model cannot answer from the approved information.
+
+### Useful phrases
+- **I led a small team** — tôi dẫn dắt một nhóm nhỏ
+- **we built a reply-drafting feature** — chúng tôi xây dựng tính năng soạn bản nháp trả lời
+- **the agent could edit, reject, or use it** — nhân viên có thể sửa, từ chối hoặc sử dụng
+- **factually supported** — có căn cứ thông tin đáng tin cậy
+- **an assistant rather than an automatic decision-maker** — công cụ hỗ trợ thay vì tự quyết định
+- **the trade-off was** — điểm đánh đổi là
+- **a safe fallback** — phương án dự phòng an toàn
+
+### Lỗi người Việt hay mắc
+- **Nói “we used AI” nhưng không nêu vấn đề:** hãy nói ai gặp khó khăn gì và tính năng cải thiện điều gì.
+- **Khẳng định mô hình luôn đúng:** dùng {{we checked every draft}} để thể hiện có bước con người kiểm tra.
+- **Dùng “accuracy” mà không nói cách đo:** hãy nêu bộ câu hỏi mẫu, người đánh giá và tiêu chí cụ thể.
+- **Nhầm “ship” với chỉ viết xong code:** trong ngữ cảnh này, {{shipped}} nghĩa là đưa tính năng đến người dùng, theo dõi và cải thiện nó.
+
+> Senior tip: Nêu rõ phạm vi thử nghiệm, ai duyệt nội dung và cách xử lý khi mô hình không chắc chắn. Một kết quả có ích và kiểm soát được đáng tin hơn một lời hứa rằng AI luôn đúng.`,
+  follow: [
+    "How did you decide which information was safe and useful to send to the model?",
+    "What did you do when the model produced an incorrect or unsupported draft?",
+    "How would you measure whether the feature remained useful after the pilot?"
+  ],
+  tags: ["english", "ai", "llm", "product", "delivery"]
+},
+{
+  id: "english-199",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Our service currently handles 200 requests per second. How would you design it to handle ten times that traffic, and how would you reduce the risk of the change?",
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn không chỉ nhân đôi máy chủ mà tìm đúng **bottleneck** (nút thắt cổ chai: phần chậm nhất giới hạn cả hệ thống). Hãy xác nhận loại tải và yêu cầu → tìm giới hạn hiện tại bằng số liệu → tăng năng lực theo từng tầng → thử tải và bảo vệ hệ thống khi vượt khả năng.   **Load test** là thử nghiệm tạo lưu lượng mô phỏng; cache giữ tạm kết quả hay dùng, read replica là bản sao cơ sở dữ liệu nhận truy vấn đọc để giảm tải cho bản chính, còn queue là hàng đợi giúp xử lý việc chậm hơn mà không bắt request phải chờ. **Horizontal scaling** (mở rộng ngang) là thêm nhiều bản ứng dụng chạy song song; load balancer phân chia request giữa các bản đó.
+
+### Sample answer
+I would first confirm what the 200 requests per second represent. A search service needs a different plan from one that writes each request to a database. I would also ask about latency and availability targets; ten times the traffic is useless if most requests time out.
+
+I would run a load test with our real request mix and inspect the application, database, and external calls. I would find whether the Java service is limited by CPU, database connections, or a slow dependency. Then I would add stateless application copies behind the load balancer and repeat the test.
+
+If database reads were the bottleneck, I would review indexes and query plans before considering a cache or read replicas. I would set a limit for how old cached data can be. For work that does not need to finish immediately, a queue could let workers process it at a controlled rate.
+
+I would test at 2,000 requests per second, then roll out gradually with dashboards and a rollback plan. The trade-off is extra infrastructure and operational complexity. I would scale only measured bottlenecks and define what the system should do under overload.
+
+### Useful phrases
+- **confirm what the requests per second represent** — xác nhận ý nghĩa của số yêu cầu mỗi giây
+- **match our real request mix** — mô phỏng đúng tỷ lệ các loại yêu cầu thực tế
+- **find the next limit** — tìm giới hạn tiếp theo
+- **scale the application instances horizontally** — tăng số bản ứng dụng chạy song song
+- **define how stale its data may be** — xác định dữ liệu được phép cũ đến mức nào
+- **roll out gradually** — triển khai theo từng bước
+- **a rollback plan** — kế hoạch quay lại phiên bản trước
+
+### Lỗi người Việt hay mắc
+- **Chỉ nói “add more servers”:** phải giải thích cách tìm nút thắt; máy chủ ứng dụng nhiều hơn không sửa được database đang quá tải.
+- **Hứa cache làm mọi thứ nhanh hơn:** cache có chi phí đồng bộ và dữ liệu cũ; nêu rõ dữ liệu nào có thể cũ bao lâu.
+- **Nhầm tải thử với tải thật:** đưa ra lưu lượng và kiểu yêu cầu gần thực tế, không chỉ gửi một loại request đơn giản.
+- **Đưa ra con số dung lượng như cam kết:** nói rõ 2,000 requests/second là mục tiêu cần kiểm chứng bằng thử tải.
+
+> Senior tip: Hãy hỏi về request mix, dữ liệu và mục tiêu latency trước khi chọn giải pháp. Tăng tải theo từng bước, vì mỗi lần bỏ một nút thắt có thể làm lộ nút thắt kế tiếp.`,
+  follow: [
+    "Which measurements would help you find the first bottleneck?",
+    "When might a cache or read replica make the system less reliable?",
+    "What would you do if traffic exceeded the tested capacity?"
+  ],
+  tags: ["english", "system-design", "scalability", "performance", "reliability"]
+},
+{
+  id: "english-200",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "Tell me about a technical trade-off you explained to a product manager. How did you connect the engineering choices to customer impact?",
+  a: `**Tóm tắt:** Interviewer đánh giá khả năng giải thích **trade-off** (đánh đổi: chọn một lợi ích và chấp nhận một chi phí) bằng ngôn ngữ gắn với trải nghiệm khách hàng. Hãy nêu mục tiêu sản phẩm → hai lựa chọn và hệ quả → đề xuất có số liệu → cách đo và điều chỉnh sau khi phát hành.     **Sales dashboard** là màn hình tổng hợp số liệu bán hàng; hãy diễn giải độ mới của dữ liệu và ảnh hưởng đến khách hàng thay vì chỉ nêu chi tiết query (câu truy vấn cơ sở dữ liệu). Một **refresh interval** (khoảng thời gian làm mới) dài hơn giảm tải nhưng khiến số liệu cũ hơn; hãy nói rõ vì sao khoảng trễ đó chấp nhận được trong tình huống cụ thể và thống nhất trước ngưỡng sản phẩm có thể chấp nhận.
+
+### Sample answer
+Our product manager wanted a sales dashboard to show changes almost immediately. The first design queried the main database on every refresh. That was simple, but busy periods meant repeated queries that could slow order processing.
+
+I explained that updates every few seconds would use more shared capacity and risk slowing checkout. Refreshing every 30 seconds would make the numbers less current but protect the most important customer journey.
+
+I recommended 30 seconds for the first release. We showed a “last updated” time, measured usage and database load, and reviewed the decision after two weeks. In the first month, the dashboard met its freshness target, and database CPU at peak was about 15 percent lower than in a load test of the original design.
+
+There was no universally right option; it depended on how quickly customers needed the information. The product manager agreed after we compared customer impact, risk, and evidence. I learned to make a recommendation, explain its cost, and state what evidence would make us change course.
+
+### Useful phrases
+- **show changes almost immediately** — hiển thị thay đổi gần như ngay lập tức
+- **the same reports were requested many times** — cùng một báo cáo được yêu cầu nhiều lần
+- **I explained the choice without starting with database details** — tôi giải thích lựa chọn mà không bắt đầu bằng chi tiết cơ sở dữ liệu
+- **protect the most important customer journey** — bảo vệ hành trình quan trọng nhất của khách hàng
+- **for the first release** — cho phiên bản phát hành đầu tiên
+- **compare the choices using customer impact** — so sánh lựa chọn dựa trên ảnh hưởng tới khách hàng
+- **the signal that would make us change course** — dấu hiệu khiến chúng tôi đổi hướng
+
+### Lỗi người Việt hay mắc
+- **Dùng thuật ngữ thay cho lợi ích:** giải thích độ trễ ảnh hưởng thế nào tới người dùng, không chỉ nói về cache hay query.
+- **Chỉ nêu nhược điểm của lựa chọn còn lại:** nói rõ lợi ích và chi phí của cả hai phương án.
+- **Nói như thể quyết định là tuyệt đối:** nêu giả định, cách theo dõi và điều kiện sẽ xem xét lại.
+- **Dùng “more fast”:** nói {{faster}} hoặc {{more quickly}}; ví dụ {{respond faster}}.
+
+> Senior tip: Hãy đưa ra đề xuất rõ ràng nhưng gắn với một điều kiện có thể đo. Điều đó giúp product manager quyết định cùng bạn thay vì phải tự suy ra hậu quả kỹ thuật.`,
+  follow: [
+    "How did you make sure the product manager understood the technical risk?",
+    "What would you do if customers said that a 30-second delay was not acceptable?",
+    "How did you measure the impact on the rest of the system?"
+  ],
+  tags: ["english", "communication", "product", "trade-offs", "system-design"]
+},
+{
+  id: "english-201",
+  topic: "english",
+  level: "senior",
+  lang: "en",
+  q: "How would you monitor an LLM-based service in production, and how would you know if its answers were getting worse?",
+  a: `**Tóm tắt:**   **LLM-based service** là dịch vụ dùng mô hình ngôn ngữ lớn để tạo hoặc phân tích nội dung. Interviewer muốn bạn theo dõi cả vận hành lẫn chất lượng: latency (độ trễ), errors (lỗi), token usage (lượng văn bản được chia thành các đơn vị nhỏ để mô hình xử lý, ảnh hưởng chi phí), và việc câu trả lời có hữu ích, đúng nguồn hay không. **Prompt** là chỉ dẫn cùng dữ liệu đầu vào gửi cho mô hình; thay đổi prompt có thể làm chất lượng khác đi.
+
+### Sample answer
+I would monitor reliability and answer quality separately. For reliability, I would track request volume, success and error rates, latency, timeouts, and provider availability. I would also measure token usage and cost by feature; a healthy service can still be unexpectedly expensive.
+
+For quality, I would create representative questions with expected behavior and run them after a prompt, model, or retrieval change. Retrieval means finding approved documents to give the model context. I would collect feedback and ask support staff to review sample answers for unsupported claims or missing information.
+
+I would connect each request to a trace, a record of its steps and timings, using an identifier instead of putting customer text in general logs. I would compare quality and latency by release version and alert on changes from agreed targets. If the provider failed, we could show a fallback message or let users continue without a generated answer.
+
+Quality is harder to measure automatically than latency, so I would combine repeatable tests with human review, not trust one score. I would establish a baseline and tune alerts using real traffic. This helps detect outages and less obvious quality or cost regressions before customers lose trust.
+
+### Useful phrases
+- **whether it is running reliably** — liệu dịch vụ có vận hành ổn định không
+- **a set of representative questions** — một bộ câu hỏi đại diện cho tình huống thực tế
+- **review a sample of answers** — kiểm tra một mẫu câu trả lời
+- **unsupported claims** — thông tin khẳng định nhưng không có căn cứ
+- **compare quality and latency by release version** — so sánh chất lượng và độ trễ theo phiên bản phát hành
+- **establish a baseline** — thiết lập mức chuẩn ban đầu để so sánh
+- **quality or cost regressions** — suy giảm chất lượng hoặc tăng chi phí sau thay đổi
+
+### Lỗi người Việt hay mắc
+- **Chỉ theo dõi uptime:** dịch vụ có thể luôn phản hồi nhưng câu trả lời vẫn sai hoặc kém hữu ích.
+- **Ghi toàn bộ prompt và dữ liệu khách hàng vào log:** dùng mã định danh và dữ liệu tối thiểu; tránh lưu nội dung nhạy cảm không cần thiết.
+- **Tin một điểm số tự động duy nhất:** kết hợp bộ kiểm thử lặp lại, phản hồi người dùng và đánh giá của con người.
+- **Báo động bằng ngưỡng tùy ý:** thiết lập mức chuẩn trước, rồi chọn ngưỡng dựa trên hành vi và mục tiêu thật.
+
+> Senior tip: Tách dashboard vận hành khỏi đánh giá chất lượng nhưng nối chúng bằng phiên bản phát hành và mã trace. Khi có phản hồi xấu, nhóm có thể tìm đúng thay đổi mà không cần ghi nội dung riêng tư vào log.`,
+  follow: [
+    "How would you build a useful evaluation set without exposing customer data?",
+    "What signals could show that model quality changed after a release?",
+    "How would you respond if the model provider became unavailable?"
+  ],
+  tags: ["english", "ai", "llm", "observability", "monitoring"]
+},
 );

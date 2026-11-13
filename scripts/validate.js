@@ -307,6 +307,49 @@ for (const z of sandbox.window.LESSONS || []) {
   (z.goals || []).forEach((g, i) => checkMarkup(f, id, `goals[${i}]`, g));
 }
 
+// ---- STAR story templates (#/career) ----
+{
+  const THEMES = ['Sự cố production', 'Xung đột', 'Dẫn dắt', 'Thất bại', 'Deadline gấp', 'Thuyết phục', 'Mentoring', 'Hiệu năng', 'Thiết kế', 'Chủ động'];
+  const seen = new Set(), words = (s) => String(s || '').trim().split(/\s+/).filter(Boolean).length;
+  for (const s of sandbox.window.STAR_STORIES || []) {
+    const f = 'star-stories.js', id = s.id || '(no id)';
+    if (!/^star-\d{3}$/.test(s.id || '') || seen.has(s.id)) err(f, `id thiếu/trùng/sai dạng (star-NNN): ${id}`);
+    seen.add(s.id);
+    Object.keys(s).forEach(k => { if (!['id', 'theme', 'level', 'title', 'project', 'situation', 'task', 'action', 'result', 'spoken', 'spoken_en', 'adapt', 'follow', 'tags', '__file'].includes(k)) err(f, `${id}: field lạ "${k}"`); });
+    if (!THEMES.includes(s.theme)) err(f, `${id}: theme phải là một trong: ${THEMES.join(', ')}`);
+    if (!LEVELS.has(s.level)) err(f, `${id}: level không hợp lệ`);
+    if (typeof s.title !== 'string' || !s.title.trim()) err(f, `${id}: thiếu title`);
+    ['project', 'situation', 'task', 'action', 'result'].forEach(k => { if (typeof s[k] !== 'string' || s[k].trim().length < 20) err(f, `${id}: thiếu ${k} (≥ 20 ký tự)`); });
+    const w = words(s.spoken), we = words(s.spoken_en);
+    if (w < 150 || w > 300) err(f, `${id}: spoken cần 150–300 từ (đang ${w})`);
+    if (we < 120 || we > 230) err(f, `${id}: spoken_en cần 120–230 từ (đang ${we})`);
+    if (!Array.isArray(s.adapt) || s.adapt.length < 3 || s.adapt.length > 6) err(f, `${id}: adapt cần 3–6 mục`);
+    if (!Array.isArray(s.follow) || s.follow.length < 2 || s.follow.length > 4) err(f, `${id}: follow cần 2–4 câu`);
+  }
+  console.log(`Câu chuyện STAR mẫu: ${(sandbox.window.STAR_STORIES || []).length}`);
+}
+
+// ---- TOEIC Speaking & Writing (#/toeic) ----
+{
+  const PARTS = { s1: ['text', 'stress'], s2: ['scene', 'sample'], s3: ['context', 'questions', 'samples'], s4: ['info', 'questions', 'samples'], s5: ['prompt', 'sample'], w1: ['scene', 'words', 'sample'], w2: ['email', 'task', 'sample'], w3: ['prompt', 'outline', 'sample'] };
+  const seen = new Set(), words = (s) => String(s || '').trim().split(/\s+/).filter(Boolean).length;
+  const RANGE = { s1: ['text', 40, 90], s2: ['sample', 45, 100], s5: ['sample', 100, 180], w2: ['sample', 70, 170], w3: ['sample', 280, 420] };
+  const byPart = {};
+  for (const t of sandbox.window.TOEIC || []) {
+    const f = 'toeic.js', id = t.id || '(no id)', need = PARTS[t.part];
+    if (!need) { err(f, `${id}: part phải là ${Object.keys(PARTS).join('|')}`); continue; }
+    byPart[t.part] = (byPart[t.part] || 0) + 1;
+    if (!new RegExp('^toeic-' + t.part + '-\\d{3}$').test(t.id || '') || seen.has(t.id)) err(f, `id thiếu/trùng/sai dạng (toeic-${t.part}-NNN): ${id}`);
+    seen.add(t.id);
+    Object.keys(t).forEach(k => { if (!['id', 'part', 'tips', 'tags', '__file', ...need].includes(k)) err(f, `${id}: field lạ "${k}"`); });
+    need.forEach(k => { const x = t[k]; if (Array.isArray(x) ? !x.length : typeof x !== 'string' || !x.trim()) err(f, `${id}: thiếu ${k}`); });
+    if (t.questions && (t.questions.length !== 3 || !Array.isArray(t.samples) || t.samples.length !== 3)) err(f, `${id}: cần đúng 3 questions và 3 samples`);
+    if (t.part === 'w1' && (!Array.isArray(t.words) || t.words.length !== 2)) err(f, `${id}: words cần đúng 2 từ`);
+    if (RANGE[t.part]) { const [k, lo, hi] = RANGE[t.part], w = words(t[k]); if (w < lo || w > hi) err(f, `${id}: ${k} cần ${lo}–${hi} từ (đang ${w})`); }
+  }
+  console.log(`TOEIC S&W: ${(sandbox.window.TOEIC || []).length} bài ${JSON.stringify(byPart)}`);
+}
+
 // ---- SDLC simulation (#/sdlc) ----
 const SDLC_STAGES = ['requirement', 'analysis', 'design', 'dev', 'review', 'test', 'deploy', 'bugfix'];
 const sdlc = sandbox.window.SDLC || [];

@@ -115,7 +115,7 @@ public String encrypt(String plain, SecretKey key) throws GeneralSecurityExcepti
 2. **Giai đoạn execute**: Chỉ gửi giá trị tham số (binary protocol). DB **không re-parse** SQL, chỉ plug giá trị vào plan đã có.
 3. Kết quả: input {{' OR '1'='1}} được coi là **dữ liệu literal**, không thể thay đổi cấu trúc câu lệnh.
 
-> Lưu ý: không phải driver nào cũng prepare phía server. MySQL Connector/J mặc định {{useServerPrepStmts=false}} — driver tự escape và thay giá trị vào câu SQL phía client; PostgreSQL JDBC gửi tham số tách riêng qua extended protocol và chỉ dùng named server-side statement sau {{prepareThreshold}} (mặc định 5) lần. Dù cách nào thì giá trị vẫn được xử lý như dữ liệu, nên vẫn an toàn.
+> Lưu ý: không phải driver nào cũng prepare phía server. MySQL Connector/J 8.0+ mặc định dùng server-side prepared statements ({{useServerPrepStmts=true}}); các bản cũ hơn có thể dùng client-side emulation. PostgreSQL JDBC gửi tham số tách riêng qua extended protocol và chỉ dùng named server-side statement sau {{prepareThreshold}} (mặc định 5) lần. Dù cách nào thì giá trị vẫn được xử lý như dữ liệu, nên vẫn an toàn.
 
 ~~~java
 // ✅ AN TOÀN — PreparedStatement
@@ -437,7 +437,7 @@ WebClient webClient(OAuth2AuthorizedClientManager manager) { // manager có prov
 ~~~text
 $2a$12$AbCdEfGhIjKlMnOpQrStUvWxYz...
 ~~~
-- Giới hạn 72 byte input (UTF-8 — tiếng Việt có dấu tốn 2–3 byte/ký tự). Thuật toán gốc bỏ qua phần thừa; Spring Security **từ bản vá CVE-2025-22228 (6.3.8 / 6.4.4 trở lên)** ném {{IllegalArgumentException}} khi input > 72 byte thay vì cắt im lặng — người dùng phải đổi mật khẩu ngắn hơn.
+- Giới hạn 72 byte input (UTF-8 — tiếng Việt có dấu tốn 2–3 byte/ký tự). Thuật toán gốc bỏ qua phần thừa; Spring Security **từ bản 6.3.8 / 6.4.4 trở lên** ném {{IllegalArgumentException}} khi input > 72 byte thay vì cắt im lặng — người dùng phải đổi mật khẩu ngắn hơn.
 - Spring: {{new BCryptPasswordEncoder(12)}}.
 
 ~~~java
@@ -456,7 +456,7 @@ if (encoder.upgradeEncoding(storedHash)) {
 ### Argon2id — winner PHC 2015, khuyên dùng mới
 - **Memory-hard**: tốn RAM lớn → GPU/ASIC khó tối ưu (khác bcrypt chỉ CPU-hard).
 - 3 tham số: {{timeCost}} (iterations), {{memoryCost}} (KB), {{parallelism}} (lanes).
-- Tham số tham khảo: OWASP Password Storage Cheat Sheet tối thiểu {{m=19456}} (19 MiB), {{t=2}}, {{p=1}}; RFC 9106 (tuỳ chọn thứ hai) {{m=65536}} (64 MiB), {{t=3}}, {{p=4}}.
+- Tham số tham khảo: OWASP Password Storage Cheat Sheet tối thiểu {{m=19456}} (19 MiB), {{t=2}}, {{p=1}}; cấu hình mạnh hơn thường dùng {{m=65536}} (64 MiB), {{t=3}}, {{p=4}}.
 - Spring Security (từ 5.3): {{Argon2PasswordEncoder}} (cần Bouncy Castle {{bcprov}} trên classpath). {{Argon2PasswordEncoder.defaultsForSpringSecurity_v5_8()}} dùng salt 16B, hash 32B, p=1, m=16 MiB, t=2.
 - Hash output:
 ~~~text
@@ -3580,5 +3580,478 @@ public Object safeRead(byte[] data) throws Exception {
   ],
   tags: ['deserialization', 'gadget chain', 'ObjectInputFilter', 'JEP 290', 'RCE', 'Jackson'],
 },
+{
+  id: 'security-041',
+  topic: 'security',
+  level: 'senior',
+  q: 'Trong Spring MVC dùng Thymeleaf, bạn ngăn XSS ở template như thế nào? Giải thích {{th:text}} và {{th:utext}}, khi nào API JSON vẫn có thể dẫn tới XSS ở trình duyệt?',
+  a: `**Tóm tắt:** XSS (Cross-Site Scripting) xảy ra khi dữ liệu không đáng tin được trình duyệt hiểu thành mã thay vì văn bản. Trong Thymeleaf, dùng {{th:text}} để escape nội dung HTML; tránh {{th:utext}} trừ khi nội dung HTML đã được làm sạch bằng allowlist. API JSON không tự biến thành XSS, nhưng JavaScript phía client có thể tạo XSS nếu đưa giá trị JSON vào sink nguy hiểm như {{innerHTML}}.
 
+### 1. HTML escaping là gì và vì sao cần?
+Trình duyệt phân tích HTML: dấu ngoặc nhọn có thể mở thẻ, dấu nháy có thể kết thúc thuộc tính. Nếu tên hiển thị do user nhập được nối trực tiếp vào HTML, chuỗi dữ liệu có thể bị hiểu nhầm thành cấu trúc hoặc script. **Escaping** đổi ký tự đặc biệt thành dạng biểu diễn văn bản, ví dụ {{<}} thành {{&lt;}} và {{&}} thành {{&amp;}}. Khi render đúng ngữ cảnh, trình duyệt hiện chuỗi đó thay vì thực thi nó.
+
+Thymeleaf mặc định xử lý {{th:text}} như text và escape HTML:
+~~~html
+<p th:text="\${comment.body}">Nội dung</p>
+~~~
+Trong ví dụ, giá trị vẫn là dữ liệu; không cần tự gọi hàm escape lần nữa. Ngược lại, {{th:utext}} có nghĩa là unescaped text: Thymeleaf chèn markup thô vào HTML. Nếu comment chứa nội dung do người dùng kiểm soát, dùng {{th:utext}} có thể cho phép chèn thẻ và sự kiện JavaScript.
+
+### 2. Escape phải đúng ngữ cảnh
+Escape HTML text không tự động bảo vệ mọi vị trí. Giá trị đặt trong thuộc tính HTML, URL, JavaScript hay CSS cần quy tắc tương ứng; cách an toàn hơn là không ghép input vào script/style và không tạo URL tùy ý. Với thuộc tính, dùng binding Thymeleaf thay vì nối chuỗi HTML. Với JavaScript, dùng cơ chế serialization/inlining của template engine thay vì tự ghép chuỗi trong thẻ script. Nếu cần cho phép rich text, sanitize bằng thư viện đáng tin với allowlist thẻ/thuộc tính rồi vẫn giới hạn nơi render; regex tự viết không phải HTML sanitizer.
+
+~~~java
+// Controller chỉ chuyển dữ liệu; template quyết định cách render an toàn.
+model.addAttribute("comment", commentFromDatabase);
+~~~
+Luồng an toàn: dữ liệu đầu vào → lưu như dữ liệu → render ở đúng context với escaping. Validate dữ liệu vẫn hữu ích cho nghiệp vụ, nhưng không thay thế output encoding.
+
+### 3. Vì sao API JSON vẫn cần chú ý?
+Response có {{Content-Type: application/json}} được phân tích như JSON, không phải HTML. Rủi ro thường xuất hiện ở frontend: code đọc JSON rồi gán trường vào {{element.innerHTML}} hoặc chèn vào một đoạn script. Dùng {{textContent}} cho văn bản, framework binding mặc định an toàn, và chỉ dùng HTML sink với nội dung đã sanitize. Content Security Policy (CSP) có thể giảm tác động của một số lỗi bằng cách hạn chế script được phép chạy, nhưng không thay thế escaping.
+
+| Cách render | Khi dùng | Rủi ro / lưu ý |
+|---|---|---|
+| {{th:text}} | Văn bản thông thường | Lựa chọn mặc định; Thymeleaf escape HTML |
+| {{th:utext}} | HTML đã sanitize và có yêu cầu hiển thị markup | Không dùng với HTML user-provided thô |
+| {{textContent}} ở client | Nội dung cần hiện như chữ | Tránh diễn giải chuỗi thành HTML |
+| {{innerHTML}} | Chỉ khi thật sự cần markup đã kiểm soát | Sanitizer và kiểm thử phải bao phủ mọi đường dữ liệu |
+
+### Pitfall production
+- Nghĩ dữ liệu đã lưu trong database là đáng tin: stored XSS có thể nằm đó nhiều tháng rồi chạy khi nhân viên hỗ trợ mở màn hình quản trị.
+- Escape khi lưu rồi escape lần nữa khi render gây hiển thị sai; hãy lưu dữ liệu gốc và encode theo context tại điểm xuất.
+- Chỉ kiểm tra trang Thymeleaf mà bỏ qua trang SPA dùng cùng API; sink nguy hiểm có thể nằm ở client.
+- Cho phép URL hoặc HTML tùy ý vì đã bật CSP. CSP là lớp giảm thiểu, không phải giấy phép để bỏ encoding.
+
+### Ví dụ đời thực
+Một trang hỗ trợ hiển thị 12.000 ghi chú khách hàng bằng {{th:utext}} để giữ định dạng. Sau một lần nhập dữ liệu từ đối tác, nhóm phát hiện một ghi chú có markup lạ; điều tra cho thấy mọi nhân viên mở hồ sơ đều nhận cùng nội dung vì ghi chú đã lưu trong DB. Nhóm đổi các trường thường sang {{th:text}}, chuyển phần rich text sang sanitizer allowlist, đồng thời tìm mọi {{th:utext}} và HTML sink trong frontend. Bộ kiểm thử bảo mật xác nhận payload được hiện như chữ; CSP chỉ được giữ làm lớp bổ sung. Cách xử lý tập trung vào nơi render nên không phải sửa dữ liệu lịch sử bằng các lần escape chồng nhau.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi coi mọi dữ liệu xuất phát từ request, database hoặc hệ thống đối tác là không tin cậy, vì nguồn lưu trữ không làm cho chuỗi trở nên an toàn. Với Thymeleaf tôi dùng th:text cho nội dung chữ vì engine escape các ký tự HTML theo cách phù hợp. Tôi tránh th:utext; nếu sản phẩm thật sự cần rich text, tôi sanitize bằng allowlist thẻ và thuộc tính, rồi giới hạn số chỗ được render. Escape cần đúng ngữ cảnh: HTML text, attribute, URL và JavaScript không thể thay thế tùy tiện cho nhau, nên tôi tránh ghép input vào script. Với API JSON, response JSON không tự thực thi script, nhưng frontend vẫn có thể tạo XSS nếu đưa trường đó vào innerHTML; textContent hoặc binding an toàn là lựa chọn mặc định. Cuối cùng tôi bổ sung kiểm thử cho các template và sink nguy hiểm, dùng CSP để giảm tác động còn sót lại, chứ không xem CSP là biện pháp chính.”
+
+> Senior tip: Hãy tìm sink nguy hiểm xuyên suốt cả server template lẫn frontend; một API dùng chung có thể được tiêu thụ bởi nhiều giao diện với mức an toàn khác nhau.`,
+  follow: [
+    'Vì sao HTML escaping không đủ khi cùng một giá trị được đặt vào thuộc tính href hoặc bên trong JavaScript?',
+    'Nếu nghiệp vụ cần cho người dùng viết nội dung định dạng, bạn chọn và kiểm thử HTML sanitizer theo tiêu chí nào?',
+    'CSP giúp giảm thiểu hậu quả XSS ra sao, và vì sao vẫn cần encode dữ liệu ở nơi render?'
+  ],
+  tags: ['XSS', 'Thymeleaf', 'output encoding', 'CSP']
+},
+{
+  id: 'security-042',
+  topic: 'security',
+  level: 'senior',
+  q: 'Giải thích CORS trong trình duyệt và một request preflight OPTIONS hoạt động thế nào. Bạn cấu hình Spring Security ra sao để CORS không bị nhầm với xác thực hay CSRF?',
+  a: `**Tóm tắt:** CORS (Cross-Origin Resource Sharing) là quy tắc để trình duyệt quyết định JavaScript ở một origin có được đọc response từ origin khác hay không; origin gồm scheme, host và port. Với request không đơn giản, trình duyệt gửi preflight {{OPTIONS}} để hỏi server trước. CORS không xác thực người dùng, không chặn mọi request gửi tới server và không thay thế CSRF protection.
+
+### 1. Origin và lý do có preflight
+Ví dụ trang {{https://shop.example}} gọi API ở {{https://api.example}}: host khác nên đây là cross-origin. Same-Origin Policy (chính sách cùng origin) mặc định ngăn script đọc response từ origin khác, nhằm giới hạn dữ liệu một trang có thể lấy. CORS cho phép server nêu rõ origin, method và header nào được trình duyệt chấp nhận.
+
+Một số request được gọi là **simple request** (request đơn giản) và không cần preflight; ví dụ request dùng method/header thuộc danh sách cho phép của trình duyệt. Với method như {{PUT}} hoặc header tùy chỉnh như {{Authorization}}, trình duyệt thường gửi:
+~~~text
+OPTIONS /orders
+Origin: https://shop.example
+Access-Control-Request-Method: PUT
+Access-Control-Request-Headers: authorization,content-type
+~~~
+Server trả {{Access-Control-Allow-Origin}}, {{Access-Control-Allow-Methods}} và {{Access-Control-Allow-Headers}} tương ứng. Chỉ khi kiểm tra này thành công, browser mới gửi request thật. JavaScript không tự gửi preflight; browser quản lý quy trình này.
+
+### 2. CORS không phải quyền truy cập
+Server vẫn phải xác thực token/session và kiểm tra quyền trên từng tài nguyên. Client ngoài trình duyệt có thể gọi API mà không áp dụng CORS. Ngay cả khi browser không cho JavaScript đọc response, một simple request có thể đã tới server; vì vậy CORS không phải biện pháp chống CSRF. CSRF cần biện pháp riêng cho xác thực dựa trên cookie, chẳng hạn CSRF token và cookie policy phù hợp.
+
+Nếu gửi cookie hoặc credential, server phải trả origin cụ thể, không thể dùng {{Access-Control-Allow-Origin: *}} đồng thời với {{Access-Control-Allow-Credentials: true}}. Khi phản hồi origin động, cần {{Vary: Origin}} để cache trung gian không dùng nhầm response của origin này cho origin khác.
+
+### 3. Cấu hình trong Spring Security
+Khai báo CORS policy rõ ràng và để Spring Security xử lý CORS trước bước từ chối request chưa xác thực. Một cấu hình minh họa:
+~~~java
+@Bean
+CorsConfigurationSource corsConfigurationSource() {
+    CorsConfiguration c = new CorsConfiguration();
+    c.setAllowedOrigins(List.of("https://shop.example"));
+    c.setAllowedMethods(List.of("GET", "POST", "PUT"));
+    c.setAllowedHeaders(List.of("Authorization", "Content-Type"));
+    c.setAllowCredentials(true);
+    UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+    source.registerCorsConfiguration("/api/**", c);
+    return source;
+}
+
+@Bean
+SecurityFilterChain api(HttpSecurity http) throws Exception {
+    http.cors(Customizer.withDefaults());
+    return http.build();
+}
+~~~
+Các import bị lược để giữ ví dụ ngắn. Origin trong ví dụ là allowlist cụ thể; không phản chiếu tùy tiện giá trị {{Origin}} do client gửi. Nếu frontend dùng bearer token thay vì cookie thì thường không cần bật credentials cookie. Cấu hình thực tế phải khớp đúng cách đăng nhập và các origin của môi trường.
+
+| Tình huống | Cách xử lý |
+|---|---|
+| Browser gọi API khác origin | Allowlist origin, method và header cần thiết |
+| API dùng cookie session | Allow origin cụ thể, credentials có chủ đích, bảo vệ CSRF |
+| API chỉ dùng bearer token | Không bật cookie credentials nếu không cần |
+| Request từ mobile/backend | Xác thực và authorization vẫn bắt buộc; CORS không áp dụng như browser |
+
+### Pitfall production
+- Cho rằng CORS là firewall hoặc authentication: nó chủ yếu điều khiển việc browser cho JavaScript đọc response.
+- Chỉ cho phép {{OPTIONS}} trong authorization nhưng không cấu hình CORS handler; preflight có thể bị chặn bởi security filter trước khi nhận header CORS.
+- Dùng wildcard hoặc phản chiếu mọi origin, nhất là cùng {{allowCredentials}}; điều này có thể mở dữ liệu cookie cho origin không mong muốn.
+- Thêm CORS chỉ ở gateway nhưng backend khác trả header hoặc cache response theo origin không đúng; kiểm thử cả browser, proxy và đường đi thực tế.
+
+### Ví dụ đời thực
+Sau khi chuyển frontend sang {{https://portal.example}}, nhóm thấy 18% request cập nhật đơn hàng thất bại với lỗi CORS. DevTools cho thấy browser gửi OPTIONS với {{Access-Control-Request-Headers: authorization,content-type}}, nhưng Spring Security trả 401 trước khi policy CORS được áp dụng. Nhóm cấu hình CORS ở SecurityFilterChain, chỉ cho phép origin portal và các method/header cần thiết; request thật vẫn đi qua xác thực JWT và kiểm tra quyền như trước. Sau deploy, preflight thành công, tỷ lệ cập nhật lỗi giảm về mức nền; một test trình duyệt còn xác nhận origin lạ không đọc được response. Bài học là sửa thứ tự xử lý, không mở endpoint API công khai để “hết lỗi”.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi bắt đầu bằng cách phân biệt CORS với authentication. CORS là cơ chế của browser để một trang ở origin này có được đọc response từ origin khác hay không; origin gồm scheme, host và port. Khi method hoặc header không thuộc nhóm đơn giản, browser gửi OPTIONS preflight mô tả origin, method và header dự định dùng. Server phải trả allow-origin, allow-methods và allow-headers tương ứng thì browser mới gửi request thật. Nhưng server vẫn phải xác thực và authorize request thật, vì CORS không phải cơ chế bảo vệ API và client ngoài browser không bị ràng buộc bởi nó. Tôi cấu hình allowlist origin cụ thể, bật credentials chỉ khi thật sự dùng cookie, và không kết hợp credentials với wildcard origin. Trong Spring Security, tôi bật tích hợp CORS để preflight được xử lý trước khi authentication từ chối request. Nếu dùng cookie, tôi vẫn thiết kế CSRF protection riêng.”
+
+> Senior tip: Khi debug, kiểm tra OPTIONS và request thật riêng biệt; một preflight pass không chứng minh request thật đã được xác thực hoặc được cấp quyền.`,
+  follow: [
+    'Một simple request bị CORS từ chối có chắc server chưa nhận request không? Hệ quả với CSRF là gì?',
+    'Vì sao không thể dùng {{Access-Control-Allow-Origin: *}} cùng credentials, và cần chú ý gì khi origin được chọn động?',
+    'Nếu API dùng bearer token trong Authorization thay vì cookie session, những phần nào trong policy CORS thay đổi?'
+  ],
+  tags: ['CORS', 'preflight', 'Spring Security', 'browser']
+},
+{
+  id: 'security-043',
+  topic: 'security',
+  level: 'senior',
+  q: 'Session fixation là gì và vì sao đăng nhập thành công phải đổi session ID? Trong ứng dụng Servlet/Spring Security, bạn kiểm tra cấu hình bảo vệ và các tác dụng phụ thế nào?',
+  a: `**Tóm tắt:** Session fixation (chiếm cố định phiên) là tình huống kẻ tấn công biết hoặc ép nạn nhân dùng một session ID trước đăng nhập, rồi dùng chính ID đó sau khi nạn nhân đăng nhập. Cách phòng cốt lõi là cấp session ID mới khi nâng quyền sau authentication; Spring Security mặc định bảo vệ session fixation cho ứng dụng Servlet, nhưng cần xác nhận luồng đăng nhập, cookie và các cơ chế session tùy chỉnh.
+
+### 1. Vì sao session ID là chìa khóa?
+Trong ứng dụng dùng session cookie, trình duyệt gửi một mã ngẫu nhiên như {{JSESSIONID}}. Server tra mã đó để tìm trạng thái đăng nhập. Có thể hình dung cookie như vé gửi xe: người cầm vé được lấy đúng chiếc xe; nếu vé cũ bị người khác biết, họ có thể mạo danh phiên đó.
+
+Trình tự rủi ro:
+1. Nạn nhân có session ID chưa đăng nhập.
+2. Kẻ tấn công khiến nạn nhân tiếp tục dùng một ID mà kẻ tấn công đã biết.
+3. Nạn nhân đăng nhập; nếu server giữ nguyên ID, nó giờ đại diện cho tài khoản đã xác thực.
+4. Kẻ tấn công gửi cùng ID và sử dụng session đã đăng nhập.
+
+**Session fixation khác session hijacking**: fixation lợi dụng việc ID không đổi qua ranh giới đăng nhập; hijacking là lấy cắp một session ID đã có hiệu lực.
+
+### 2. Đổi ID và bảo vệ trong Spring
+Khi xác thực thành công, server phải đổi session ID hoặc tạo session mới, khiến ID trước đăng nhập không còn đại diện cho phiên đã đăng nhập. Servlet 3.1 trở lên hỗ trợ đổi ID mà vẫn giữ session attributes. Spring Security có chiến lược session fixation protection; trên servlet container hiện đại, hành vi mặc định thường dùng đổi session ID. Đừng tắt bảo vệ chỉ để giữ một ID ổn định.
+
+~~~java
+@Bean
+SecurityFilterChain web(HttpSecurity http) throws Exception {
+    http
+        .authorizeHttpRequests(a -> a.anyRequest().authenticated())
+        .formLogin(Customizer.withDefaults())
+        .sessionManagement(s -> s
+            .sessionFixation(f -> f.changeSessionId()));
+    return http.build();
+}
+~~~
+Đây là ví dụ nêu rõ chính sách; cú pháp lambda thuộc Spring Security 6. Nếu chọn tạo session mới thay vì đổi ID, cần hiểu session attribute nào được giữ và liệu ứng dụng có phụ thuộc chúng hay không. Với API stateless dùng bearer token, cơ chế session fixation không áp dụng trực tiếp; vẫn phải quản lý token và cookie riêng.
+
+### 3. Cookie và trạng thái phiên
+Cookie session nên chỉ truyền qua HTTPS ({{Secure}}), không cho JavaScript đọc nếu không cần ({{HttpOnly}}), và chọn {{SameSite}} phù hợp luồng sản phẩm. Các thuộc tính này giảm một số đường đánh cắp/gửi cookie nhưng không thay thế đổi session ID. Khi đổi ID, kiểm tra các thiết bị nhiều tab, giỏ hàng/CSRF token/session attribute và cơ chế remember-me. Nếu dùng session store phân tán, bảo đảm ID cũ bị vô hiệu hóa trên toàn cụm và các node không chấp nhận bản cũ do replication/cache chậm.
+
+| Biện pháp | Vai trò | Không thay thế |
+|---|---|---|
+| Đổi session ID sau login | Chặn ID trước xác thực được nâng thành phiên đăng nhập | Bảo vệ XSS hoặc máy bị chiếm |
+| Secure, HttpOnly, SameSite | Hạn chế cookie bị lộ hoặc gửi trong một số ngữ cảnh | Authorization và session rotation |
+| Session timeout/logout | Giới hạn thời gian tồn tại | Đổi ID lúc thay đổi mức tin cậy |
+
+### Pitfall production
+- Chỉ test đăng nhập bằng UI mà không xác nhận cookie trước/sau: cần bảo đảm ID mới được cấp và ID cũ không còn xác thực.
+- Bộ lọc đăng nhập tùy chỉnh hoặc cấu hình stateless có thể bỏ qua luồng bảo vệ dự kiến; xác minh integration test trên đúng chain.
+- Mất dữ liệu session khi tạo session mới, hoặc giữ session cũ ở một node trong cluster.
+- Nghĩ CSRF token cố định hoặc đổi cookie là đủ; hãy đánh giá session ID và quyền trước/sau login, đổi mật khẩu, nâng quyền.
+
+### Ví dụ đời thực
+Một hệ thống portal ghi nhận vài phiên đăng nhập bất thường nhưng không tìm thấy lỗi mật khẩu. Nhóm kiểm tra thấy một custom login filter gọi authentication manager nhưng không đi qua cấu hình session fixation dự kiến. Họ bổ sung kiểm thử: tạo session trước login, lưu cookie cũ, đăng nhập, xác nhận cookie đổi và request tiếp theo chỉ thành công với cookie mới. Với session store dùng chung trên ba node, test cũng gửi ID cũ tới từng node và xác nhận tất cả trả về trạng thái chưa xác thực. Sau sửa, luồng kiểm tra không còn chấp nhận ID cũ; họ đồng thời rà lại logout và cookie flags thay vì chỉ dựa vào scanner.
+
+### Trả lời mẫu khi phỏng vấn
+“Session fixation khai thác việc ứng dụng giữ nguyên session identifier qua thời điểm người dùng đăng nhập. Nếu attacker biết hoặc ép nạn nhân dùng một ID trước login, rồi server nâng chính session đó lên trạng thái authenticated, attacker có thể dùng lại ID. Tôi phân biệt nó với session hijacking, vốn là lấy cắp một phiên đã xác thực. Biện pháp cốt lõi là đổi session ID hoặc tạo session mới sau khi authentication thành công; Spring Security có session fixation protection và trên Servlet hiện đại thường đổi ID. Tôi vẫn kiểm chứng cấu hình thực tế, nhất là khi có custom filter, stateless chain hoặc session store phân tán. Tôi viết integration test giữ cookie cũ trước login, xác nhận cookie mới sau login, và đảm bảo ID cũ không còn quyền trên mọi node. Cookie Secure, HttpOnly và SameSite là lớp bổ sung, không thay thế việc xoay ID. Cuối cùng tôi kiểm tra session attributes và CSRF token có được xử lý đúng sau rotation.”
+
+> Senior tip: Kiểm thử cookie cũ trên mọi node sau login; trong cụm nhiều instance, lỗi vô hiệu hóa phiên cũ thường bị bỏ sót nếu chỉ test local.`,
+  follow: [
+    'Khác nhau giữa session fixation và session hijacking là gì, và mỗi loại cần kiểm soát nào?',
+    'Khi đổi session ID sau đăng nhập, dữ liệu nào trong session có thể cần giữ hoặc làm mới?',
+    'Vì sao session fixation protection không trực tiếp bảo vệ API stateless dùng bearer token?'
+  ],
+  tags: ['session fixation', 'Spring Security', 'session', 'Servlet']
+},
+{
+  id: 'security-044',
+  topic: 'security',
+  level: 'senior',
+  q: 'Thiết kế OAuth2 Client Credentials cho service A gọi service B: client lấy và dùng access token ra sao, scope/audience và cache token thế nào, và vì sao flow này không đại diện cho người dùng cuối?',
+  a: `**Tóm tắt:** OAuth 2.0 Client Credentials là flow để một workload (ứng dụng/service) xin access token bằng danh tính của chính nó rồi gọi API khác. Không có bước đăng nhập hay consent của user, nên token đại diện cho service/client chứ không phải người dùng. Cần xác thực client an toàn, giới hạn scope và audience, cache token đến gần hạn rồi xin token mới.
+
+### 1. Các bên và trình tự
+**Authorization Server** (máy chủ cấp token) xác thực client; **Resource Server** là API nhận token; **client** là service gọi API. Client có thể chứng minh danh tính bằng client secret, private key hoặc cơ chế workload identity mà hệ thống hỗ trợ. Secret tĩnh trong cấu hình chỉ là một lựa chọn, không phải mặc định an toàn cho mọi môi trường.
+
+~~~seq
+title: Service gọi API bằng client credentials
+actors: Service A | Authorization Server | Service B
+Service A -> Authorization Server: client authentication + client_credentials
+Authorization Server --> Service A: access token có scope và hạn dùng
+Service A -> Service B: request kèm bearer access token
+Service B -> Authorization Server: kiểm tra chữ ký/issuer/audience khi cần
+Service B --> Service A: response theo quyền của client
+~~~
+Token thường là bearer token: ai cầm token có thể dùng nó, nên chỉ gửi qua TLS và không ghi token vào log. Resource server xác minh chữ ký hoặc introspection theo loại token, issuer, expiration, audience và scope/policy. Token có audience sai không được chấp nhận chỉ vì chữ ký hợp lệ.
+
+### 2. Quyền tối thiểu và danh tính
+Scope biểu diễn nhóm quyền được cấp, ví dụ {{inventory.read}}; audience nêu token dành cho API nào. Service B vẫn phải authorize từng hành động theo policy, không nên biến “đã có token” thành quyền truy cập mọi dữ liệu. Dùng client identity riêng theo workload/môi trường, tránh chia một client secret cho nhiều service vì mất khả năng phân biệt và thu hồi.
+
+Client Credentials không có user context. Nếu Service A cần gọi thay mặt user, hãy dùng flow có delegation/token exchange phù hợp với kiến trúc và authorization server; không tự nhét user ID vào token hoặc giả lập user bằng client credential.
+
+### 3. Vòng đời token
+Xin token cho từng request làm tăng latency và tải authorization server. Cache theo client, audience và tập scope; chỉ tái sử dụng token tới trước expiration với một khoảng đệm nhỏ để tránh đua lúc token vừa hết hạn. Khi token hết hạn hoặc bị từ chối, refresh bằng cách xin token mới qua client authentication; client-credentials thường không dùng refresh token theo cách user flow hay dùng. Không cache token rộng giữa các danh tính hoặc cấp scope khác nhau.
+
+| Quyết định | Lựa chọn nên cân nhắc |
+|---|---|
+| Secret client | Ưu tiên cơ chế workload identity/private key nếu môi trường hỗ trợ; nếu dùng secret thì lưu trong secret manager và rotate |
+| Scope | Cấp đúng quyền Service A cần; tách read/write khi hữu ích |
+| Audience | Ràng buộc token với Service B hoặc API đích |
+| Cache | Cache có giới hạn theo identity/scope/audience; không log bearer token |
+
+### 4. Dùng từ Java/Spring
+Spring Security hỗ trợ OAuth2 Client và quản lý authorized client/token; cách nối vào HTTP client phụ thuộc phiên bản Spring Boot/Spring Security. Dù thư viện tự lấy token, thiết kế vẫn phải đặt rõ registration/client, scopes, token endpoint và cách lưu credential. Không tự viết parser JWT nếu có resource-server support đã cấu hình đúng; cũng không coi việc client lấy token là kiểm tra quyền thay cho Service B.
+
+### Pitfall production
+- Dùng một client credential toàn công ty khiến quyền quá rộng và sự cố khó quy nguồn.
+- Cache chỉ theo URL hoặc client ID mà bỏ qua audience/scope, rồi gửi token không đúng dịch vụ.
+- Log header Authorization khi bật HTTP wire logging hoặc error tracing.
+- Xem 401 như lỗi tạm thời và retry vô hạn; xử lý hết hạn có kiểm soát, có giới hạn retry và quan sát lỗi cấp token.
+- Dùng Client Credentials khi API cần quyết định theo người dùng; token không mang danh tính user.
+
+### Ví dụ đời thực
+Service báo cáo gọi API hóa đơn 2.000 lần/phút nhưng trước đó xin token cho từng request. Authorization Server trở thành nút thắt, p95 của request tăng từ 180 ms lên 620 ms. Nhóm dùng authorized-client manager để quản lý token theo client và scope, chỉ xin token mới khi gần hết hạn, đồng thời tách client báo cáo chỉ có quyền đọc hóa đơn khỏi client thanh toán. Họ thêm audience validation ở API hóa đơn và che header bearer khỏi log. Sau thay đổi, số lần xin token giảm còn vài lần mỗi chu kỳ token thay vì theo từng request; quyền của service cũng rõ ràng khi rà soát.
+
+### Trả lời mẫu khi phỏng vấn
+“Với Client Credentials, tôi mô hình hóa service A là OAuth client và service B là resource server. A xác thực với authorization server, xin token bằng grant client_credentials, rồi gửi bearer token qua TLS tới B. B xác minh issuer, chữ ký hoặc introspection theo cấu hình, expiration, audience và scope; sau đó vẫn authorize hành động cụ thể. Vì flow này không có user đăng nhập, token đại diện cho workload, không phải người dùng cuối. Tôi cấp client riêng theo service và môi trường, giới hạn scope, ràng buộc audience, và ưu tiên workload identity hoặc private-key authentication nếu nền tảng hỗ trợ. Token được cache theo client, audience và scope, làm mới trước expiration; không xin lại mỗi request và tuyệt đối không ghi token ra log. Nếu nghiệp vụ cần quyền thay mặt user, tôi dùng cơ chế delegation phù hợp thay vì giả mạo user bằng client credential.”
+
+> Senior tip: Ghi nhận tỷ lệ cache hit và lỗi token endpoint; token cache sai khóa có thể gây lỗi authorization khó tái hiện hơn cả việc không cache.`,
+  follow: [
+    'Nếu Service A cần truy cập dữ liệu đúng theo quyền của người dùng đang thao tác, vì sao Client Credentials không đủ?',
+    'Nếu chữ ký token hợp lệ nhưng audience trỏ tới API khác, Resource Server nên xử lý thế nào?',
+    'Bạn thiết kế cache access token ra sao để tránh gửi nhầm token giữa các scope hoặc môi trường?'
+  ],
+  tags: ['OAuth2', 'Client Credentials', 'service-to-service', 'access token']
+},
+{
+  id: 'security-045',
+  topic: 'security',
+  level: 'lead',
+  q: 'Khi triển khai mTLS giữa nhiều microservice, bạn biến certificate thành danh tính workload và policy authorization thế nào? Phân tích trust boundary, TLS termination và rotation để tránh tạo cảm giác an toàn giả.',
+  a: `**Tóm tắt:** mTLS (mutual TLS) buộc cả client và server xác thực bằng certificate trong kết nối TLS. Certificate chứng minh workload thuộc một trust domain/CA được tin cậy, nhưng không tự quyết định workload được gọi API nào; authorization vẫn cần policy theo danh tính. Cần xác định nơi TLS kết thúc, cách ánh xạ danh tính, vòng đời certificate và cách xoay CA an toàn.
+
+### 1. Certificate nói điều gì?
+Certificate là giấy chứng nhận khóa công khai do CA (Certificate Authority, đơn vị cấp chứng chỉ) ký. Trong mTLS, client kiểm tra server certificate; server cũng yêu cầu và kiểm tra certificate của client. Thành công cho biết hai đầu sở hữu khóa riêng tương ứng và chain dẫn tới CA được cấu hình tin cậy. Điều này không chứng minh ứng dụng client được phép đọc mọi dữ liệu.
+
+Một hệ thống có thể ánh xạ thuộc tính danh tính như SAN (Subject Alternative Name) hoặc SPIFFE ID thành workload identity, ví dụ {{spiffe://prod/payments/checkout}}. Từ identity đó, policy có thể cho checkout gọi payment-authorize nhưng không gọi endpoint quản trị. Không authorize chỉ theo tên hiển thị tự do trong certificate; phải kiểm tra chain, issuer, trạng thái/hạn dùng và quy tắc identity rõ ràng.
+
+### 2. Xác định trust boundary
+~~~seq
+title: Xác thực và cấp quyền cho lời gọi nội bộ
+actors: Client workload | TLS proxy | API workload
+Client workload -> TLS proxy: TLS handshake kèm client certificate
+TLS proxy --> Client workload: xác thực chain và workload identity
+TLS proxy -> API workload: chuyển identity đã xác minh qua kênh tin cậy
+API workload -> API workload: kiểm tra policy cho method và resource
+API workload --> Client workload: response nếu identity được phép
+~~~
+Sơ đồ cần được điều chỉnh theo kiến trúc: nếu TLS kết thúc trực tiếp ở API thì API xác thực peer; nếu kết thúc ở ingress/sidecar, thành phần đó phải chuyển danh tính qua kênh được bảo vệ và backend chỉ tin header từ proxy đã xác thực. Nếu client có thể tự gửi header identity, proxy không xóa/ghi đè header đó thì mTLS bị bỏ qua ở tầng ứng dụng.
+
+### 3. Rotation và CA trust
+Certificate ngắn hạn giảm thời gian lộ khóa nhưng đòi hỏi tự động cấp mới, nạp certificate mới và quan sát lỗi. Khi đổi CA, giai đoạn chuyển tiếp thường cần trust đồng thời CA cũ và mới: phát hành cert mới, cập nhật trust bundle, chuyển workload, xác nhận không còn cert cũ rồi mới gỡ CA cũ. Thứ tự cụ thể phải giữ cho hai đầu tin nhau trong toàn bộ rollout. Reload động hoặc proxy hỗ trợ rotation giúp tránh restart đồng loạt; vẫn cần kiểm thử kết nối đang mở và kết nối mới.
+
+| Câu hỏi thiết kế | Kiểm soát |
+|---|---|
+| Ai cấp cert? | CA/workload identity system có kiểm soát cấp phát và audit |
+| Identity có nghĩa gì? | Quy ước SAN/SPIFFE ID và mapping thống nhất |
+| Ai được gọi API nào? | Authorization policy độc lập với việc TLS thành công |
+| TLS kết thúc ở đâu? | Bảo vệ identity qua proxy tới backend; chặn header giả |
+| CA đổi thế nào? | Trust overlap, rollout theo giai đoạn, kiểm tra metrics và thu hồi |
+
+### Pitfall production
+- Coi “có client certificate” là đủ quyền; certificate từ cùng CA có thể đại diện cho workload rất khác.
+- TLS termination ở gateway nhưng backend nhận header identity từ mạng không tin cậy.
+- Trust toàn bộ CA dùng chung của công ty, khiến mọi workload có thể giả định danh lẫn nhau.
+- Xoay certificate nhưng quên trust bundle, connection pool lâu sống, job batch hoặc hệ thống ngoài mesh.
+- Chỉ cảnh báo ngày hết hạn, không theo dõi lỗi handshake, cert sắp hết hạn và identity không ánh xạ được.
+
+### Ví dụ đời thực
+Một cụm có 80 workload dùng chung CA nội bộ. Nhóm bật mTLS ở ingress và thấy mọi kết nối mã hóa, nhưng kiểm tra policy phát hiện 14 service có thể gọi endpoint quản trị vì rule chỉ xác nhận certificate hợp lệ. Họ tách trust domain cho môi trường production, ánh xạ identity workload cụ thể vào allowlist theo API, đồng thời cấu hình proxy loại bỏ header danh tính do client gửi. Khi đổi CA, họ triển khai trust bundle mới trước, phát cert mới theo từng nhóm rồi mới gỡ CA cũ. Dashboard theo dõi lỗi handshake và số cert cũ giúp rollout kết thúc mà không gây gián đoạn; mTLS trở thành danh tính có policy thay vì chỉ là mã hóa đường truyền.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi xem mTLS là cách xác thực danh tính workload ở tầng kết nối, không phải cơ chế authorization đầy đủ. Hai phía xác minh certificate chain và chứng minh sở hữu private key; sau đó hệ thống ánh xạ SAN hoặc workload identity ổn định vào policy. Policy mới quyết định service nào được gọi API hoặc resource nào. Tôi bắt đầu bằng trust boundary: nếu TLS kết thúc tại sidecar hay gateway, backend chỉ được tin identity truyền qua kênh do proxy kiểm soát, và proxy phải xóa header giả từ client. Tôi cũng tránh tin cả CA quá rộng hoặc authorize theo certificate hợp lệ đơn thuần. Rotation cần overlap CA cũ và mới, cấp cert mới, xác nhận rollout rồi mới thu hồi trust cũ; cần theo dõi lỗi handshake, expiration và identity mapping. Cuối cùng tôi kiểm thử service ngoài mesh, connection pool lâu sống và đường gọi quản trị, vì chúng thường bị bỏ quên.”
+
+> Senior tip: Đừng chỉ theo dõi ngày hết hạn; đo tỷ lệ handshake lỗi và số kết nối theo identity để phát hiện rollout hoặc policy sai trước khi thành outage.`,
+  follow: [
+    'Nếu TLS kết thúc ở ingress, làm sao backend biết header danh tính workload là đáng tin và chống client giả mạo header?',
+    'Vì sao certificate hợp lệ từ CA nội bộ chưa đủ để cho phép gọi mọi endpoint?',
+    'Bạn sẽ triển khai trust overlap khi đổi CA theo thứ tự nào để tránh downtime?'
+  ],
+  tags: ['mTLS', 'workload identity', 'authorization', 'certificate rotation']
+},
+{
+  id: 'security-046',
+  topic: 'security',
+  level: 'senior',
+  q: 'Thiết kế mã hóa at rest cho dữ liệu nhạy cảm trong PostgreSQL trên AWS bằng envelope encryption và KMS: DEK/KEK khác nhau thế nào, luồng ghi/đọc ra sao, và rotation ảnh hưởng dữ liệu cũ thế nào?',
+  a: `**Tóm tắt:** Envelope encryption (mã hóa bao) dùng một data encryption key (DEK) để mã hóa dữ liệu, rồi dùng key mã hóa cấp cao hơn trong KMS để bảo vệ DEK. Database lưu ciphertext cùng encrypted DEK và metadata cần thiết; plaintext DEK chỉ tồn tại ngắn trong bộ nhớ ứng dụng. KMS key rotation không tự động mã hóa lại mọi bản ghi, nên cần phân biệt rotation của key bao với thay DEK/mã hóa lại dữ liệu.
+
+### 1. Vì sao dùng hai lớp khóa?
+Nếu gọi KMS để mã hóa từng byte dữ liệu lớn, ứng dụng tăng latency và gặp giới hạn dịch vụ. Thay vào đó, ứng dụng tạo DEK ngẫu nhiên, mã hóa dữ liệu cục bộ bằng thuật toán đối xứng như AES-GCM, rồi nhờ KMS mã hóa DEK. **KEK** (key-encryption key, ở đây thường là KMS key) không rời khỏi KMS theo dạng plaintext; nó bảo vệ các DEK. Nhiều bản ghi có thể dùng DEK riêng hoặc theo lô tùy yêu cầu cô lập và hiệu năng.
+
+### 2. Luồng ghi và đọc
+~~~text
+Ghi: dữ liệu rõ + DEK ngẫu nhiên
+     -> AES-GCM(data, DEK, nonce, encryption context)
+     -> KMS mã hóa DEK thành encrypted DEK
+     -> DB lưu ciphertext, encrypted DEK, nonce, tag, key/version metadata
+
+Đọc: DB trả ciphertext + encrypted DEK
+     -> KMS giải mã encrypted DEK (nếu IAM/policy cho phép)
+     -> AES-GCM xác thực tag và giải mã
+     -> ứng dụng dùng plaintext rồi loại bỏ DEK khỏi phạm vi sử dụng
+~~~
+Với AWS KMS, API tạo data key có thể trả về cả plaintext data key và bản đã mã hóa; chỉ ghi bản encrypted vào DB. AES-GCM vừa mã hóa vừa phát hiện ciphertext bị sửa nhờ authentication tag. Nonce/IV phải duy nhất theo key; không tái sử dụng nonce cùng một key. Encryption context là cặp key-value bổ sung được KMS gắn với thao tác mã hóa/giải mã để ràng buộc ngữ cảnh; nó không phải secret và phải cung cấp khớp khi giải mã.
+
+### 3. Lưu trữ, phân quyền và rotation
+DB có thể lưu ciphertext dạng binary/base64, encrypted DEK, nonce/tag, định danh KMS key và phiên bản định dạng. Không lưu plaintext DEK. IAM nên chỉ cho workload cần thiết gọi KMS với key cụ thể; encryption context có thể giúp policy giới hạn thêm. Dữ liệu backup, replica và log cũng phải được xem xét: mã hóa cột không giúp nếu ứng dụng ghi plaintext vào log.
+
+| Thao tác | Thay đổi gì? | Tác động |
+|---|---|---|
+| KMS automatic key rotation | Thay key material sau cùng một logical KMS key | KMS tiếp tục xử lý ciphertext cũ; không đồng nghĩa mọi DEK được thay |
+| Re-encrypt/rewrap DEK | Mã hóa lại encrypted DEK theo key mới | Có thể giữ nguyên ciphertext dữ liệu nếu DEK không đổi |
+| Thay DEK và mã hóa lại dữ liệu | Mã hóa lại dữ liệu bằng DEK mới | Tốn I/O/CPU, cần batch, theo dõi và khả năng rollback |
+
+Thiết kế rotation phụ thuộc yêu cầu tuân thủ và mức độ lộ khóa. Nếu chỉ chuyển encrypted DEK sang KMS key mới, KMS có thể decrypt rồi encrypt lại DEK; plaintext DEK cần được bảo vệ trong quá trình này. Có thể thực hiện lazy migration khi bản ghi được đọc hoặc batch có kiểm soát.
+
+### Pitfall production
+- Tin rằng bật mã hóa ổ đĩa/RDS là đủ cho dữ liệu cần mã hóa ở tầng ứng dụng; mỗi biện pháp bảo vệ threat khác nhau.
+- Ghi encrypted DEK nhưng bỏ metadata/version khiến tương lai không biết dùng format nào.
+- Cache plaintext DEK quá lâu, không giới hạn quyền truy cập hoặc không loại bỏ tham chiếu sau xử lý.
+- KMS unavailable/quota exceeded làm đọc dữ liệu thất bại; thiết kế timeout, retry có giới hạn, alarm và kế hoạch phục hồi.
+- Nghĩ rotation của KMS tự viết lại ciphertext trong PostgreSQL; nó không làm vậy.
+
+### Ví dụ đời thực
+Một dịch vụ lưu 4 triệu số định danh đã mã hóa bằng một DEK dùng chung trong cấu hình. Khi credential ứng dụng bị lộ, nhóm không thể thu hồi riêng phạm vi dữ liệu và phải xử lý toàn bộ bảng. Thiết kế mới dùng DEK theo từng nhóm bản ghi, lưu encrypted DEK cùng ciphertext và metadata, còn KMS key chỉ được workload đọc/ghi sử dụng. Batch rewrap cập nhật DEK đã mã hóa theo KMS key mới mà không đọc ra nội dung nghiệp vụ; theo dõi tiến độ theo partition để có thể tiếp tục sau lỗi. Họ kiểm thử khôi phục từ backup và xác nhận encryption context đúng. Kế hoạch cũng bao gồm xóa plaintext khỏi log và giới hạn thời gian giữ DEK trong bộ nhớ.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi dùng envelope encryption để KMS không phải xử lý toàn bộ payload. Ứng dụng tạo DEK ngẫu nhiên, dùng AES-GCM mã hóa dữ liệu và gọi KMS để mã hóa DEK bằng key được quản lý. Database giữ ciphertext, encrypted DEK, nonce, authentication tag và metadata phiên bản; plaintext DEK chỉ nằm ngắn hạn trong bộ nhớ ứng dụng. Khi đọc, workload cần quyền KMS để giải mã DEK, rồi AES-GCM kiểm tra tính toàn vẹn trước khi trả plaintext. Tôi dùng encryption context để ràng buộc tenant hoặc loại dữ liệu, nhưng không coi context là secret. Tôi phân biệt automatic rotation của KMS key với việc thay DEK hoặc mã hóa lại dữ liệu: rotation không tự viết lại cột trong DB. Kế hoạch chuyển khóa có thể rewrap DEK theo batch, theo dõi được và thử khôi phục backup. Cuối cùng tôi đánh giá IAM, log, cache khóa và KMS outage, vì mã hóa đúng thuật toán vẫn thất bại nếu vận hành sai.”
+
+> Senior tip: Trước khi mã hóa dữ liệu cũ, hãy thử phục hồi một bản backup lịch sử; ciphertext không thể khôi phục nếu key hoặc metadata bị mất.`,
+  follow: [
+    'KMS automatic rotation có tự mã hóa lại ciphertext trong PostgreSQL không? Phân biệt rewrap DEK với re-encrypt dữ liệu.',
+    'Nonce và authentication tag của AES-GCM dùng để làm gì, và lỗi nào xảy ra nếu tái sử dụng nonce với cùng key?',
+    'Bạn thiết kế quyền IAM và encryption context thế nào để giảm khả năng một workload giải mã dữ liệu ngoài phạm vi?'
+  ],
+  tags: ['envelope encryption', 'AWS KMS', 'AES-GCM', 'data at rest']
+},
+{
+  id: 'security-047',
+  topic: 'security',
+  level: 'senior',
+  q: 'Bạn thiết kế logging cho backend Java thế nào để hỗ trợ điều tra sự cố nhưng không làm lộ password, access token, PII hoặc dữ liệu thanh toán? Vì sao redaction ở một chỗ thường chưa đủ?',
+  a: `**Tóm tắt:** Log cần đủ ngữ cảnh để trả lời hệ thống đã làm gì, nhưng không nên chứa bí mật hoặc dữ liệu cá nhân không cần thiết. Thiết kế an toàn bắt đầu bằng allowlist trường log, loại bỏ hoặc che dữ liệu nhạy cảm tại nguồn, giới hạn quyền truy cập và thời gian lưu, rồi kiểm thử cả log ứng dụng lẫn proxy/tracing/error reporting. Redaction tập trung hữu ích nhưng không cứu được mọi đường ghi log hoặc dữ liệu đã bị sao chép.
+
+### 1. Chọn dữ liệu trước khi ghi
+Log vận hành giúp tìm lỗi và đo hành vi; audit log có mục tiêu và yêu cầu toàn vẹn riêng. Không ghi toàn bộ request/response theo mặc định. Chọn các trường cần cho điều tra: thời gian, route, kết quả, latency, request/correlation ID, service và loại lỗi. Không ghi password, cookie, header Authorization, API key, session ID, số thẻ, secret hoặc payload chứa thông tin cá nhân nếu không có nhu cầu đã được phê duyệt.
+
+Nếu cần nối nhiều sự kiện của cùng người dùng, dùng mã định danh nội bộ hạn chế hoặc HMAC với key được bảo vệ thay vì ghi email/số điện thoại; HMAC tạo nhãn khó đoán hơn hash thường với giá trị có không gian nhỏ, nhưng vẫn có thể là dữ liệu cần bảo vệ. Tách định danh sự cố khỏi thông tin cá nhân và kiểm soát ai có thể tra ngược.
+
+### 2. Các đường rò rỉ trong Java
+Log framework không tự biết chuỗi nào là bí mật. Một lời gọi logger có placeholder vẫn ghi cả object nếu phương thức {{toString()}} chứa password. Lombok {{@Data}} thường sinh {{toString()}} từ các field; entity/DTO cũng có thể vô tình đưa token ra log. Exception message có thể chứa URL có query token, SQL parameter hoặc request body. HTTP wire logging, reverse proxy, APM agent và crash reporter là các nơi khác cần kiểm tra.
+
+~~~java
+// Ghi allowlist trường, không log nguyên request hoặc Authorization header.
+log.info("payment_request id={} result={} amountMinor={}",
+    requestId, resultCode, amountMinor);
+~~~
+Dùng structured logging để các trường có tên và dễ lọc; nhưng JSON không làm dữ liệu an toàn hơn. Che dữ liệu tại nơi phát sinh, tránh đưa secret vào object có {{toString()}}, và thêm test xác nhận log không chứa chuỗi sentinel nhạy cảm. Redaction ở appender là lớp phòng thủ bổ sung, không phải lý do để ghi mọi thứ.
+
+### 3. Bảo vệ nền tảng log
+Hạn chế quyền đọc theo vai trò, mã hóa truyền/lưu, audit việc truy cập và đặt retention theo nhu cầu pháp lý/vận hành. Không dùng log làm nơi lưu credential “tạm thời”. Với log phục vụ phát hiện gian lận, giữ sự kiện đủ để điều tra nhưng thiết kế trường dữ liệu và thời hạn riêng. Đừng cắt bỏ toàn bộ thông tin lỗi đến mức không thể debug; dùng mã lỗi, correlation ID và thông tin kỹ thuật đã loại bí mật.
+
+| Thực hành | Lợi ích | Cần lưu ý |
+|---|---|---|
+| Allowlist field | Ít nguy cơ ghi thừa | Cập nhật có review khi thêm field |
+| Mask/redact tại nguồn | Ngăn secret đi vào nhiều sink | Cần bao phủ mọi code path |
+| HMAC identifier | Tương quan sự kiện giảm lộ PII | Key riêng, rotation và quyền tra cứu |
+| Phân quyền/retention | Giảm phơi nhiễm khi log bị truy cập | Cấu hình cả hệ thống tập trung và bản lưu |
+
+### Pitfall production
+- Redact chỉ header HTTP nhưng exception, SQL log hoặc {{toString()}} vẫn ghi body/credential.
+- Mask một mẫu số thẻ nhưng bỏ qua format có dấu cách, log nhiều dòng hoặc encoded value.
+- Ghi access token để “debug nhanh”, rồi quên token được forward tới SIEM/APM và backup.
+- Xóa hết log nhạy cảm nhưng không giữ request ID, làm điều tra sự cố bất khả thi.
+- Dùng hash không khóa cho email/phone; attacker có thể thử từ điển giá trị phổ biến.
+
+### Ví dụ đời thực
+Trong một đợt xử lý timeout, nhóm bật debug log cho HTTP client và phát hiện header bearer của 3.400 request đã được chuyển vào hệ thống log tập trung. Không có bằng chứng token bị sử dụng, nhưng quyền đọc log rộng hơn quyền truy cập production. Nhóm thu hồi credential có thể bị ảnh hưởng, giảm quyền truy cập log, loại Authorization và cookie khỏi cấu hình ghi, rồi thay log body bằng request ID và mã trạng thái. Họ thêm test với chuỗi sentinel vào request và xác nhận sentinel không xuất hiện trong app log, exception log hoặc exporter. Dashboard vẫn giữ trace ID và latency để điều tra mà không cần payload nhạy cảm.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi bắt đầu bằng nguyên tắc không ghi dữ liệu nếu không có nhu cầu rõ ràng. Log vận hành nên có correlation ID, service, route, kết quả và thời gian; không ghi password, cookie, bearer token hay payload cá nhân. Tôi đặc biệt kiểm tra object toString, exception message, SQL bind logging, HTTP wire logging và APM vì các lớp đó có thể ghi dữ liệu ngoài logger nghiệp vụ. Tôi ưu tiên allowlist trường và che tại nguồn; redaction ở appender là lớp phụ vì dữ liệu có thể đã đi qua nhiều sink. Nếu cần tương quan người dùng, tôi cân nhắc identifier giả danh hoặc HMAC thay cho email, đồng thời vẫn bảo vệ key và quyền tra cứu. Log được phân quyền, mã hóa, audit truy cập và có retention phù hợp. Tôi thêm test sentinel để chắc secret không xuất hiện trong các loại log phổ biến, nhưng vẫn giữ request ID và mã lỗi để đội vận hành điều tra được.”
+
+> Senior tip: Kiểm thử log như kiểm thử API: gửi giá trị sentinel nhạy cảm và quét mọi sink, gồm ứng dụng, reverse proxy, tracing và error reporter.`,
+  follow: [
+    'Vì sao log parameterized của SLF4J vẫn có thể lộ secret khi truyền object hoặc exception?',
+    'Khi cần liên kết nhiều log theo cùng một user mà không lưu email, bạn có thể dùng identifier nào và những rủi ro nào còn lại?',
+    'Bạn kiểm thử thế nào để bảo đảm secret không lọt qua app log, HTTP wire log và hệ thống APM?'
+  ],
+  tags: ['logging', 'PII', 'redaction', 'observability']
+},
+{
+  id: 'security-048',
+  topic: 'security',
+  level: 'lead',
+  q: 'Bạn xây quy trình dependency vulnerability scanning cho dự án Java/Maven thế nào để phát hiện CVE trong dependency bắc cầu mà không biến CI thành “có cảnh báo là bỏ qua”? Nêu cách ưu tiên, xử lý ngoại lệ và kiểm soát sau deploy.',
+  a: `**Tóm tắt:** Dependency vulnerability scanning (quét lỗ hổng thư viện) đối chiếu dependency trực tiếp và bắc cầu với dữ liệu lỗ hổng đã biết. Quy trình tốt quét sớm trong pull request, quét lại định kỳ khi advisory mới xuất hiện, ưu tiên theo khả năng bị khai thác và mức phơi lộ, rồi có SLA/owner rõ cho nâng cấp hoặc ngoại lệ có hạn. Một CVE trong danh sách không tự động chứng minh ứng dụng khai thác được, nhưng cũng không nên bỏ qua chỉ vì dependency là transitive.
+
+### 1. Dependency bắc cầu và nguồn phát hiện
+Dependency trực tiếp là thư viện khai báo trong dự án; dependency bắc cầu (transitive) là thư viện được kéo vào bởi thư viện khác. Ví dụ ứng dụng khai báo client HTTP, nhưng client lại dùng một parser có CVE. Nhóm có thể không thấy parser trong pom trực tiếp, nên cần xem dependency graph và quét toàn bộ artifact được đóng gói.
+
+SCA (Software Composition Analysis) đối chiếu tên/phiên bản thư viện với advisory/CVE. Quét nên bao gồm manifest/lock hoặc dependency resolution, artifact/container được phát hành, và thư viện hệ điều hành nếu image chứa chúng. SBOM (danh mục thành phần phần mềm) giúp biết build có những thành phần nào và hỗ trợ truy vấn lại khi lỗ hổng mới được công bố; nó không tự sửa hoặc chứng minh an toàn.
+
+### 2. Ưu tiên thay vì chỉ xếp theo điểm
+CVSS là điểm mức độ nghiêm trọng kỹ thuật, không phải toàn bộ rủi ro của hệ thống. Đánh giá thêm exploit đã được biết đang bị khai thác, ứng dụng có dùng thành phần bị ảnh hưởng không, đường code có reachable không, service có public-facing không, quyền của tiến trình và mức nhạy cảm dữ liệu. Reachability (khả năng đường code có thể được gọi) giúp xếp ưu tiên, nhưng không nên dùng kết quả reachability chưa đầy đủ để miễn trừ một lỗ hổng nghiêm trọng.
+
+~~~text
+Pull request: resolve dependency tree -> scan -> chặn theo policy
+Release: scan artifact/image -> lưu kết quả và SBOM
+Hằng ngày: cập nhật advisory -> scan lại inventory đang chạy
+CVE mới: triage -> owner + hạn xử lý -> upgrade/mitigate/exception có expiry
+~~~
+
+### 3. Chính sách CI và ngoại lệ
+Đặt ngưỡng có thể hành động: ví dụ chặn lỗ hổng critical có exploit công khai hoặc vi phạm policy đã thống nhất; mức thấp hơn tạo ticket theo SLA. Khi có bản vá, ưu tiên nâng thư viện trực tiếp hoặc parent đã phát hành bản sửa. Với transitive dependency có thể dùng dependency management/override có kiểm thử, nhưng phải hiểu tương thích và không chỉ ép version để làm scanner im tiếng.
+
+Ngoại lệ cần có lý do, owner, bằng chứng đánh giá, biện pháp giảm thiểu, thời hạn hết hiệu lực và ngày xem lại. Không dùng suppressions vô thời hạn. Nếu chưa có bản vá, cân nhắc tắt chức năng bị ảnh hưởng, chặn đường truy cập hoặc thay thư viện; ghi rõ rủi ro còn lại. Sau deploy, theo dõi inventory của phiên bản đang chạy, vì kết quả PR cũ không phản ánh advisory mới.
+
+| Tín hiệu | Câu hỏi triage |
+|---|---|
+| CVSS/advisory | Mức độ và điều kiện ảnh hưởng là gì? |
+| Exploit/KEV | Có khai thác thực tế hoặc exploit dễ dùng không? |
+| Reachability | Thành phần và code path có được dùng không? |
+| Exposure | Service public, quyền cao hay dữ liệu nhạy cảm? |
+| Fix/mitigation | Có bản vá, nâng cấp tương thích hoặc biện pháp giảm thiểu nào? |
+
+### Pitfall production
+- Chỉ scan dependency trực tiếp, bỏ qua transitive hoặc image runtime.
+- Chạy scan một lần trong CI rồi không quét lại khi advisory mới được công bố.
+- Chặn mọi cảnh báo không phân loại khiến developer học cách bấm ignore; hoặc suppress theo CVE vô thời hạn.
+- Chỉ nhìn CVSS, không nhìn exploitability, exposure và consequence.
+- Override transitive version thiếu integration test, dẫn tới binary incompatibility hoặc lỗi runtime.
+- Nghĩ SBOM là chứng nhận không có lỗ hổng; SBOM chỉ là inventory tại một thời điểm.
+
+### Ví dụ đời thực
+Một advisory mới ảnh hưởng thư viện parser bắc cầu trong ứng dụng báo cáo. Không có dòng khai báo parser trong pom, nhưng scan artifact release tìm ra nó ở dependency tree. Nhóm xác nhận service nhận file từ người dùng, advisory có điều kiện khai thác phù hợp và bản vá đã được phát hành. Họ nâng parent dependency, chạy test tích hợp cho upload và parse, build lại image rồi quét artifact mới trước khi deploy. CI thêm quét theo pull request và lịch quét inventory hàng ngày; ngoại lệ cũ được gắn owner và ngày hết hạn. Nhờ vậy, cảnh báo được gắn với phiên bản deploy thực tế và một người chịu trách nhiệm, thay vì nằm trong dashboard không ai xử lý.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi quét dependency đã resolve chứ không chỉ pom khai báo trực tiếp, vì nhiều CVE nằm trong dependency bắc cầu. Tôi đưa scan vào pull request để phát hiện sớm, scan artifact hoặc image trước release, rồi quét lại inventory đang chạy khi advisory mới xuất hiện. Khi triage, CVSS là đầu vào chứ không phải quyết định duy nhất: tôi xem exploit đang bị khai thác, phiên bản có thực sự bị ảnh hưởng, code path có reachable, service có public hay không, và hậu quả nếu bị khai thác. Có bản vá thì ưu tiên nâng parent hoặc dependency trực tiếp và chạy test tương thích. Chưa có bản vá thì cần mitigation cụ thể và ngoại lệ có owner, lý do, thời hạn, ngày xem lại; không suppress vô thời hạn. Tôi dùng SBOM để truy vấn thành phần trong từng release, nhưng không nhầm SBOM với bằng chứng an toàn. Cuối cùng tôi đo thời gian triage và remediation để biết quy trình có thực sự đóng rủi ro hay chỉ tạo cảnh báo.”
+
+> Senior tip: Theo dõi thời gian từ advisory đến triage và đến bản vá production; số cảnh báo đóng không nói lên rủi ro nếu image đang chạy chưa được cập nhật.`,
+  follow: [
+    'Một CVE có CVSS cao nhưng code path không reachable thì bạn xử lý thế nào, và bằng chứng nào đủ để hạ mức ưu tiên?',
+    'Khi chưa có bản vá cho dependency bắc cầu, bạn có những phương án giảm thiểu nào ngoài suppress cảnh báo?',
+    'Vì sao cần quét lại inventory sau deploy khi pull request đã được scan và có SBOM?'
+  ],
+  tags: ['dependency scanning', 'SCA', 'CVE', 'Maven', 'SBOM']
+},
 );

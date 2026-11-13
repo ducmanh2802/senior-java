@@ -247,7 +247,7 @@
     return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
   }
 
-  App.registerView('speak', {
+App.registerView('speak', {
     get title() { return App.t('speak.title'); },
     render(root) {
       const hasTTS = typeof window !== 'undefined' && 'speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined';
@@ -443,678 +443,683 @@
          if (cur) sel.value = cur;
        }
        
-      // ---------- microphone ----------
-      function takeMic() {
-        const h = mic;
-        mic = null;
-        micKind = null;
-        if (!h) return null;
-        try { return h.stop(); } catch (e) { return null; }
-      }
-
-      function stopMic() {
-        const h = mic;
-        mic = null;
-        micKind = null;
-        if (h) { try { h.stop(); } catch (e) { /* ignore */ } }
-      }
-
-      function clearTimers() {
-        clearInterval(qTimer); qTimer = null;
-        clearTimeout(silenceTimer); silenceTimer = null;
-        clearTimeout(maxTimer); maxTimer = null;
-        clearTimeout(nextTimer); nextTimer = null;
-      }
-
-      function cancelAudio() {
-        clearTimers();
-        stopMic();
-        stopSpeak();
-        shadow.recording = false;
-        if (qa.phase === 'recording') qa.phase = 'idle';
-        if (term.phase === 'recording') term.phase = 'idle';
-      }
-
-      function stopEverything() {
-        cancelAudio();
-        shadow.auto = false;
-      }
-
-      function resetItemState(kind) {
-        if (kind === 'shadow') {
-          shadow.result = null;
-          shadow.showVi = false;
-          shadow.recording = false;
-        } else if (kind === 'qa') {
-          qa.phase = 'idle';
-          qa.showQ = false;
-          qa.metrics = null;
-          const d = current('qa');
-          qa.remaining = d ? (Number(d.seconds) || 60) : 0;
-        } else {
-          term.phase = 'idle';
-          term.metrics = null;
-          term.correct = null;
-        }
-      }
-
-      // ---------- shadowing ----------
-      function startShadow(auto) {
-        if (mic || !supported) return;
-        const d = current('shadow');
-        if (!d) return;
-        clearTimeout(nextTimer); nextTimer = null;
-        stopSpeak();
-        shadow.result = null;
-        shadow.recording = true;
-        renderBody();
-        micKind = 'shadow';
-        try {
-          mic = App.speech.start({
-            lang: 'en',
-            onText(finalText, interim) {
-              const el = root.querySelector('.sp-interim');
-              if (el) el.textContent = interim || finalText;
-              if (auto && shadow.auto) {
-                clearTimeout(silenceTimer);
-                silenceTimer = setTimeout(() => finishShadow(true), 1600);
-              }
-            },
-            onError(msg) {
-              mic = null; micKind = null;
-              shadow.recording = false;
-              shadow.auto = false;
-              renderBody();
-              const el = root.querySelector('.sp-interim');
-              if (el) el.innerHTML = '<span class="ai-error">' + esc(msg) + '</span>';
-            },
-          });
-        } catch (e) {
-          mic = null; micKind = null; shadow.recording = false;
-          renderBody();
-          return;
-        }
-        if (auto) {
-          clearTimeout(maxTimer);
-          maxTimer = setTimeout(() => finishShadow(true), 15000);
-        }
-      }
-
-      function finishShadow(auto) {
-        if (!shadow.recording) return;
-        clearTimeout(silenceTimer); silenceTimer = null;
-        clearTimeout(maxTimer); maxTimer = null;
-        const m = takeMic();
-        shadow.recording = false;
-        const d = current('shadow');
-        if (!d) { renderBody(); return; }
-        const target = tokenize(d.en);
-        const said = tokenize(m && m.text);
-        const hits = lcsHits(target.map(x => x.norm), said.map(x => x.norm));
-        const matched = hits.filter(Boolean).length;
-        shadow.result = {
-          metrics: m,
-          transcript: (m && m.text) || '',
-          hits: hits,
-          matched: matched,
-          total: target.length,
-          score: target.length ? Math.round(matched * 100 / target.length) : 0,
-          error: false,
-        };
-        App.store.log('review');
-        renderBody();
-        renderStats();
-        if (auto && shadow.auto) {
-          if (!shadow.result.transcript.trim()) {
-            shadow.auto = false;
-            shadow.result.error = true;
-            renderBody();
-          } else {
-            nextTimer = setTimeout(() => {
-              nextTimer = null;
-              if (shadow.auto && tab === 'shadow') go(1);
-            }, 2200);
-          }
-        }
-      }
-
-      function startAuto() {
-        if (!shadow.auto || tab !== 'shadow' || mic || !supported) return;
-        const d = current('shadow');
-        if (!d) return;
-        clearTimeout(nextTimer); nextTimer = null;
-        stopSpeak();
-        speak(d.en, () => {
-          if (shadow.auto && tab === 'shadow' && !mic) startShadow(true);
-        });
-      }
-
-      function toggleAuto() {
-        if (!supported) return;
-        if (shadow.auto) {
-          shadow.auto = false;
-          clearTimeout(silenceTimer); silenceTimer = null;
-          clearTimeout(maxTimer); maxTimer = null;
-          clearTimeout(nextTimer); nextTimer = null;
-          if (micKind === 'shadow') { takeMic(); shadow.recording = false; }
-          stopSpeak();
-          renderBody();
-        } else {
-          shadow.auto = true;
-          shadow.result = null;
-          renderBody();
-          startAuto();
-        }
-      }
-
-      function listenShadow() {
-        if (shadow.auto) { startAuto(); return; }
-        if (mic) return;
-        const d = current('shadow');
-        if (!d) return;
-        stopSpeak();
-        speak(d.en);
-      }
-
-      // ---------- quick Q&A ----------
-      function startQA() {
-        const d = current('qa');
-        if (!d) return;
-        stopSpeak();
-        qa.phase = 'recording';
-        qa.metrics = null;
-        qa.remaining = Number(d.seconds) || 60;
-        renderBody();
-        if (supported) {
-          micKind = 'qa';
-          try {
-            mic = App.speech.start({
-              lang: 'en',
-              onText(finalText, interim) {
-                const el = root.querySelector('.sp-interim');
-                if (el) el.textContent = interim || finalText;
-              },
-              onError(msg) {
-                mic = null; micKind = null;
-                const el = root.querySelector('.sp-interim');
-                if (el) el.innerHTML = '<span class="ai-error">' + esc(msg) + '</span>';
-              },
-            });
-          } catch (e) { mic = null; micKind = null; }
-        }
-        clearInterval(qTimer);
-        qTimer = setInterval(tickQA, 1000);
-      }
-
-      function tickQA() {
-        if (qa.phase !== 'recording') { clearInterval(qTimer); qTimer = null; return; }
-        qa.remaining = Math.max(0, qa.remaining - 1);
-        const el = root.querySelector('[data-timer]');
-        if (el) {
-          el.textContent = fmtTime(qa.remaining);
-          el.classList.toggle('warn', qa.remaining <= 10 && qa.remaining > 5);
-          el.classList.toggle('bad', qa.remaining <= 5);
-        }
-        if (qa.remaining <= 0) finishQA();
-      }
-
-      function finishQA() {
-        if (qa.phase !== 'recording') return;
-        clearInterval(qTimer); qTimer = null;
-        qa.metrics = takeMic();
-        qa.phase = 'done';
-        renderBody();
-      }
-
-      function listenQA() {
-        if (mic) return;
-        const d = current('qa');
-        if (!d) return;
-        stopSpeak();
-        speak(d.q);
-      }
-
-      // ---------- terminology ----------
-      function startTerm() {
-        if (mic || !supported) return;
-        const d = current('term');
-        if (!d) return;
-        stopSpeak();
-        term.phase = 'recording';
-        term.metrics = null;
-        term.correct = null;
-        renderBody();
-        micKind = 'term';
-        try {
-          mic = App.speech.start({
-            lang: 'en',
-            onText(finalText, interim) {
-              const el = root.querySelector('.sp-interim');
-              if (el) el.textContent = interim || finalText;
-            },
-            onError(msg) {
-              mic = null; micKind = null;
-              term.phase = 'idle';
-              renderBody();
-              const el = root.querySelector('.sp-interim');
-              if (el) el.innerHTML = '<span class="ai-error">' + esc(msg) + '</span>';
-            },
-          });
-        } catch (e) {
-          mic = null; micKind = null; term.phase = 'idle';
-          renderBody();
-          return;
-        }
-        clearTimeout(maxTimer);
-        maxTimer = setTimeout(() => finishTerm(), 20000);
-      }
-
-      function finishTerm() {
-        clearTimeout(maxTimer); maxTimer = null;
-        if (term.phase !== 'recording') return;
-        const d = current('term');
-        if (!d) return;
-        const m = takeMic();
-        term.metrics = m;
-        term.correct = containsTerm(m && m.text, d.term);
-        term.phase = 'done';
-        renderBody();
-      }
-
-      function speakTerm(example) {
-        if (mic) return;
-        const d = current('term');
-        if (!d) return;
-        stopSpeak();
-        if (example) {
-          if (d.example) speak(d.example);
-        } else if (d.term) {
-          playTermAudio(d.term);
-        }
-      }
-
-      // ---------- shared actions ----------
-      function listenCurrent() {
-        if (tab === 'shadow') listenShadow();
-        else if (tab === 'qa') { if (qa.phase !== 'recording') listenQA(); }
-        else speakTerm(false);
-      }
-
-      function toggleRecord() {
-        if (!supported) return;
-        if (tab === 'shadow') {
-          if (shadow.recording) finishShadow(false);
-          else startShadow(false);
-        } else if (tab === 'qa') {
-          if (qa.phase === 'recording') finishQA();
-          else {
-            if (qa.phase === 'done') { qa.phase = 'idle'; qa.metrics = null; }
-            startQA();
-          }
-        } else {
-          if (term.phase === 'recording') finishTerm();
-          else {
-            if (term.phase === 'done') { term.phase = 'idle'; term.metrics = null; term.correct = null; }
-            startTerm();
-          }
-        }
-      }
-
-      function go(delta) {
-        const arr = listFor(tab);
-        if (!arr.length) return;
-        cancelAudio();
-        idx[tab] = (idx[tab] + delta + arr.length) % arr.length;
-        resetItemState(tab);
-        renderBody();
-        if (tab === 'shadow' && shadow.auto) startAuto();
-      }
-
-      function assess(status) {
-        const d = current(tab);
-        if (!d || ['known', 'review', 'unknown'].indexOf(status) < 0) return;
-        App.store.setStatus(d.id, status);
-        renderStats();
-        renderBody();
-      }
-
-      function switchTab(nextTab) {
-        if (nextTab === tab || TABS.indexOf(nextTab) < 0) return;
-        stopEverything();
-        tab = nextTab;
-        if (theme !== 'all' && themesFor(tab).indexOf(theme) < 0) theme = 'all';
-        resetItemState(tab);
-        renderAll();
-      }
-
-      function applyFilter(name, value) {
-        stopEverything();
-        if (name === 'theme') theme = value; else level = value;
-        idx[tab] = 0;
-        resetItemState(tab);
-        renderBody();
-      }
-
-      function clearFilters() {
-        stopEverything();
-        theme = 'all';
-        level = 'all';
-        idx[tab] = 0;
-        resetItemState(tab);
-        renderAll();
-      }
-
-      // ---------- rendering ----------
-      function optionsHTML(items, cur) {
-        return items.map(it => '<option value="' + esc(it.v) + '"' + (it.v === cur ? ' selected' : '') + '>' + esc(it.label) + '</option>').join('');
-      }
-
-      function statsHTML() {
-        const s = stats();
-        return '<div class="sp-stats">' +
-          '<div class="stat"><span class="num" data-stat="today">' + s.today + '</span><span class="lbl">' + esc(tr('stat.today')) + '</span></div>' +
-          '<div class="stat"><span class="num" data-stat="streak">' + s.streak + '</span><span class="lbl">' + esc(tr('stat.streak')) + '</span></div>' +
-          '<div class="stat"><span class="num" data-stat="known">' + s.known + '/' + s.total + '</span><span class="lbl">' + esc(tr('stat.known')) + '</span></div>' +
-          '</div>';
-      }
-
-      function renderStats() {
-        const s = stats();
-        const set = (key, value) => {
-          const el = root.querySelector('[data-stat="' + key + '"]');
-          if (el) el.textContent = value;
-        };
-        set('today', s.today);
-        set('streak', s.streak);
-        set('known', s.known + '/' + s.total);
-      }
-
-      function filtersHTML() {
-        const themeItems = [{ v: 'all', label: tr('filter.all') }].concat(themesFor(tab).map(x => ({ v: x, label: themeLabel(x) })));
-        const levelItems = [{ v: 'all', label: tr('filter.all') }].concat(['mid', 'senior', 'lead'].map(x => ({ v: x, label: App.LEVELS[x] || x })));
-        return '<div class="sp-filters">' +
-          '<label class="sp-filter"><span>' + esc(tr('filter.theme')) + '</span><select class="select" data-filter="theme">' + optionsHTML(themeItems, theme) + '</select></label>' +
-          '<label class="sp-filter"><span>' + esc(tr('filter.level')) + '</span><select class="select" data-filter="level">' + optionsHTML(levelItems, level) + '</select></label>' +
-          '</div>';
-      }
-
-      function metaHTML(d) {
-        const arr = listFor(tab);
-        return '<div class="sp-meta">' +
-          (d.theme ? '<span class="badge accent">' + esc(themeLabel(d.theme)) + '</span>' : '') +
-          (d.level ? '<span class="badge">' + esc(App.LEVELS[d.level] || d.level) + '</span>' : '') +
-          '<span class="sp-pos">' + esc(tr('progress', { i: idx[tab] + 1, n: arr.length })) + '</span>' +
-          '</div>';
-      }
-
-      function navHTML() {
-        const n = listFor(tab).length;
-        return '<div class="sp-nav">' +
-          '<button type="button" class="btn" data-act="prev"' + (idx[tab] <= 0 ? ' disabled' : '') + '>← ' + esc(tr('prev')) + '</button>' +
-          '<button type="button" class="btn primary" data-act="next"' + (n <= 1 ? ' disabled' : '') + '>' + esc(tr('next')) + ' →</button>' +
-          '</div>';
-      }
-
-      function assessHTML(d, kind) {
-        const saved = App.store.getStatus(d.id);
-        const opts = kind === 'term'
-          ? [['known', tr('term.known'), 'ok'], ['review', tr('term.review'), 'warn']]
-          : [['known', tr('qa.good'), 'ok'], ['review', tr('qa.fair'), 'warn'], ['unknown', tr('qa.poor'), 'bad']];
-        return '<div class="sp-assess"><h4>' + esc(kind === 'term' ? tr('term.assess') : tr('qa.assess')) + '</h4>' +
-          '<div class="row">' + opts.map(o =>
-            '<button type="button" class="btn ' + o[2] + (saved === o[0] ? ' is-selected' : '') + '" data-assess="' + o[0] + '"' +
-            (saved === o[0] ? ' aria-pressed="true"' : '') + '>' + esc(o[1]) + '</button>').join('') +
-          (saved ? '<span class="badge ' + ((App.STATUS[saved] && App.STATUS[saved].cls) || '') + '">' + esc(tr('saved')) + '</span>' : '') +
-          '</div><p class="muted small">' + esc(tr('assessHint')) + '</p></div>';
-      }
-
-      function shadowDoneHTML(r) {
-        const cls = r.score >= 80 ? 'ok' : r.score >= 50 ? 'warn' : 'bad';
-        return '<div class="sp-result">' +
-          '<div class="row"><span class="sp-score ' + cls + '">' + r.score + '%</span><span>' + esc(tr('shadow.match', { hit: r.matched, total: r.total })) + '</span></div>' +
-          (r.metrics ? App.ui.speechStats(r.metrics) : '') +
-          '<div class="sp-transcript"><b>' + esc(tr('transcript')) + '</b><p lang="en">' +
-          (r.transcript ? esc(r.transcript) : '<span class="muted">—</span>') + '</p></div>' +
-          (r.error ? '<p class="muted small">' + esc(tr('shadow.noVoice')) + '</p>' : '') +
-          '</div>';
-      }
-
-      function shadowHTML(d) {
-        const r = shadow.result;
-        return '<section class="card sp-stage">' +
-          metaHTML(d) +
-          '<p class="sp-hint muted small">' + esc(tr('shadow.hint')) + '</p>' +
-          '<div class="sp-en" lang="en">' + (r ? markWords(d.en, r.hits) : esc(d.en)) + '</div>' +
-          '<div class="sp-meaning"><button type="button" class="link-btn" data-act="toggle-vi" aria-expanded="' + shadow.showVi + '">' +
-          esc(shadow.showVi ? tr('hideVi') : tr('showVi')) + '</button>' +
-          (shadow.showVi && d.vi ? '<p class="sp-vi" lang="vi">' + esc(d.vi) + '</p>' : '') + '</div>' +
-          '<div class="sp-controls">' +
-          '<button type="button" class="btn" data-act="listen"' + (hasTTS ? '' : ' disabled') + '>▶ ' + esc(tr('listen')) + '</button>' +
-           (hasTTS ? '<label class="sp-rate"><span>' + esc(tr('speed')) + '</span><select class="select" data-rate aria-label="' + esc(tr('speed')) + '">' +
-           RATES.map(v => '<option value="' + v + '"' + (v === rate ? ' selected' : '') + '>' + v + '×' + '</option>').join('') + '</select></label>' : '') +
-          (supported ? '<button type="button" class="btn mic-btn' + (shadow.recording ? ' recording' : '') + '" data-act="record" aria-label="' +
-            esc(shadow.recording ? tr('stopRecord') : tr('record')) + '">' + (shadow.recording ? '⏹ ' + esc(tr('stopRecord')) : '🎤 ' + esc(tr('record'))) + '</button>' : '') +
-          (supported ? '<button type="button" class="chip' + (shadow.auto ? ' active' : '') + '" data-act="auto" aria-pressed="' + shadow.auto +
-            '" title="' + esc(tr('autoTitle')) + '">🤖 ' + esc(tr('auto')) + '</button>' : '') +
-          '</div>' +
-          (!supported ? '<p class="muted small">' + esc(tr('noSpeech')) + '</p>' : '') +
-          (shadow.recording ? '<p class="sp-rec">' + esc(tr('recording')) + '</p>' : '') +
-          '<div class="sp-interim" aria-live="polite"></div>' +
-          (r ? shadowDoneHTML(r) : '') +
-          assessHTML(d, 'shadow') +
-          navHTML() +
-          '</section>';
-      }
-
-      function phrasesHTML(d, m) {
-        const list = Array.isArray(d.phrases) ? d.phrases : [];
-        if (!list.length) return '';
-        const said = ' ' + wordsOf(m && m.text).join(' ') + ' ';
-        return '<div class="sp-phrases"><h4>' + esc(tr('qa.phrases')) + '</h4><div class="chips">' +
-          list.map(p => {
-            const want = wordsOf(p).join(' ');
-            const used = !!want && said.indexOf(' ' + want + ' ') >= 0;
-            return '<span class="badge' + (used ? ' ok' : '') + '" title="' + esc(used ? tr('qa.used') : tr('qa.notUsed')) + '">' +
-              (used ? '✓' : '○') + ' <span lang="en">' + esc(p) + '</span></span>';
-          }).join('') + '</div></div>';
-      }
-
-      function qaDoneHTML(d) {
-        const m = qa.metrics;
-        return '<div class="sp-result">' +
-          (m ? App.ui.speechStats(m) : '') +
-          '<div class="sp-transcript"><b>' + esc(tr('transcript')) + '</b><p lang="en">' +
-          (m && m.text ? esc(m.text) : '<span class="muted">—</span>') + '</p></div>' +
-          '<div><h4>' + esc(tr('qa.sample')) + '</h4><p class="sp-sample" lang="en">' + esc(d.sample || '') + '</p></div>' +
-          phrasesHTML(d, m) +
-          '</div>';
-      }
-
-      function qaHTML(d) {
-        const done = qa.phase === 'done';
-        const recording = qa.phase === 'recording';
-        const showText = qa.showQ || done;
-        const remaining = qa.remaining || Number(d.seconds) || 60;
-        const timerCls = remaining <= 5 ? ' bad' : remaining <= 10 ? ' warn' : '';
-        return '<section class="card sp-stage">' +
-          metaHTML(d) +
-          '<p class="sp-hint muted small">' + esc(tr('qa.hint')) + '</p>' +
-          '<div class="sp-qa-question" lang="en">' +
-          (showText ? esc(d.q) : '<span class="muted sp-hidden-q">🔊 ' + esc(tr('qa.hidden')) + '</span>') + '</div>' +
-          '<div class="sp-controls">' +
-          (done ? '' : '<button type="button" class="link-btn" data-act="toggle-q" aria-expanded="' + showText + '">' +
-            esc(showText ? tr('hideText') : tr('showText')) + '</button>') +
-          '<button type="button" class="btn" data-act="listen"' + (hasTTS ? '' : ' disabled') + '>▶ ' + esc(tr('listenQuestion')) + '</button>' +
-          '</div>' +
-          '<div class="sp-timer-row"><span class="sp-timer' + timerCls + '" data-timer>' + fmtTime(remaining) + '</span>' +
-          (recording
-            ? '<button type="button" class="btn bad" data-act="finish-qa">⏹ ' + esc(tr('qa.finish')) + '</button>'
-            : '<button type="button" class="btn primary" data-act="start-qa">' + (supported ? '🎤 ' : '') +
-              esc(done ? tr('qa.retry') : tr('qa.start')) + '</button>') +
-          (!supported ? '<span class="muted small">' + esc(tr('noSpeech')) + '</span>' : '') +
-          '</div>' +
-          (recording ? '<p class="sp-rec">' + esc(tr('recording')) + '</p>' : '') +
-          '<div class="sp-interim" aria-live="polite"></div>' +
-          (done ? qaDoneHTML(d) : '') +
-          assessHTML(d, 'qa') +
-          navHTML() +
-          '</section>';
-      }
-
-      function termDoneHTML(d) {
-        const m = term.metrics;
-        return '<div class="sp-result">' +
-          '<div class="row">' +
-          (term.correct
-            ? '<span class="badge ok">✓ ' + esc(tr('term.correct')) + '</span>'
-            : '<span class="badge bad">✗ ' + esc(tr('term.incorrect')) + '</span>') +
-          '<span class="muted small">' + esc(tr('term.expected', { term: d.term || '' })) + '</span></div>' +
-          (m ? App.ui.speechStats(m) : '') +
-          '<div class="sp-transcript"><b>' + esc(tr('transcript')) + '</b><p lang="en">' +
-          (m && m.text ? esc(m.text) : '<span class="muted">—</span>') + '</p></div>' +
-          '</div>';
-      }
-
-      function termHTML(d) {
-        const recording = term.phase === 'recording';
-        const done = term.phase === 'done';
-        return '<section class="card sp-stage">' +
-          metaHTML(d) +
-          '<p class="sp-hint muted small">' + esc(tr('term.hint')) + '</p>' +
-          '<div class="sp-term" lang="en">' + esc(d.term || '') + '</div>' +
-           (termAudio.term === String(d.term || '').trim() && termAudio.loading ? '<p class="muted small">' + esc(tr('loadingAudio')) + '</p>' : '') +
-           (termAudio.term === String(d.term || '').trim() && termAudio.info && termAudio.info.ipa ? '<p class="sp-ipa muted small"><span lang="en">/' + esc(String(termAudio.info.ipa).replace(/^\/+|\/+$/g, '')) + '/</span> <span class="sp-audio-src">' + esc(tr('audioSource')) + '</span></p>' : '') +
-          '<dl class="sp-term-info">' +
-          '<dt>' + esc(tr('term.say')) + '</dt><dd>' + esc(d.say || '') + '</dd>' +
-          '<dt>' + esc(tr('term.wrong')) + '</dt><dd>' + esc(d.wrong || '') + '</dd>' +
-          '<dt>' + esc(tr('term.example')) + '</dt><dd lang="en">' + esc(d.example || '') + '</dd>' +
-          '</dl>' +
-          '<div class="sp-controls">' +
-          '<button type="button" class="btn" data-act="listen-term"' + (hasTTS ? '' : ' disabled') + '>▶ ' + esc(tr('listenTerm')) + '</button>' +
-          '<button type="button" class="btn" data-act="listen-example"' + (hasTTS ? '' : ' disabled') + '>▶ ' + esc(tr('listenExample')) + '</button>' +
-          (supported ? '<button type="button" class="btn mic-btn' + (recording ? ' recording' : '') + '" data-act="record" aria-label="' +
-            esc(recording ? tr('stopRecord') : tr('try')) + '">' + (recording ? '⏹ ' + esc(tr('stopRecord')) : '🎤 ' + esc(tr('try'))) + '</button>' : '') +
-          '</div>' +
-          (!supported ? '<p class="muted small">' + esc(tr('noSpeech')) + '</p>' : '') +
-          (recording ? '<p class="sp-rec">' + esc(tr('recording')) + '</p>' : '') +
-          '<div class="sp-interim" aria-live="polite"></div>' +
-          (done ? termDoneHTML(d) : '') +
-          assessHTML(d, 'term') +
-          navHTML() +
-          '</section>';
-      }
-
-      function emptyHTML() {
-        return '<div class="card empty sp-empty"><p>' + esc(tr('empty')) + '</p><p class="muted small">' + esc(tr('emptyHint')) + '</p>' +
-          (theme !== 'all' || level !== 'all' ? '<div><button type="button" class="btn sm" data-act="clear-filter">' + esc(tr('clearFilter')) + '</button></div>' : '') +
-          '</div>';
-      }
-
-      function renderBody() {
-        const host = root.querySelector('.sp-body');
-        if (!host) return;
-        const d = current(tab);
-        if (!d) { host.innerHTML = emptyHTML(); return; }
-        if (tab === 'shadow') host.innerHTML = shadowHTML(d);
-        else if (tab === 'qa') host.innerHTML = qaHTML(d);
-        else host.innerHTML = termHTML(d);
-      }
-
-      function renderAll() {
-        root.innerHTML =
-          '<div class="page-head">' +
-          '<div><h1>' + esc(tr('title')) + '</h1><p>' + esc(tr('subtitle')) + '</p></div>' +
-          '<div class="sp-keys muted small" aria-label="' + esc(tr('shortcuts')) + '">' +
-          '<span><kbd>Space</kbd> ' + esc(tr('key.listen')) + '</span>' +
-          (supported ? '<span><kbd>R</kbd> ' + esc(tr('key.record')) + '</span>' : '') +
-          '<span><kbd>N</kbd> ' + esc(tr('key.next')) + '</span>' +
-          '</div></div>' +
-          statsHTML() +
-          '<div class="chips sp-tabs" role="tablist" aria-label="' + esc(tr('tabsAria')) + '">' +
-          TABS.map(x => '<button type="button" class="chip' + (tab === x ? ' active' : '') + '" role="tab" aria-selected="' + (tab === x) +
-            '" data-tab="' + x + '">' + esc(tr('tab.' + x)) + '</button>').join('') +
-          '</div>' +
-          filtersHTML() +
-          (hasTTS ? '<div class="sp-voice card" style="display:grid;gap:8px;margin-bottom:16px">' +
-            '<label class="sp-rate"><span>' + esc(tr('voice')) + '</span><select class="select" data-voice aria-label="' + esc(tr('voice')) + '">' +
-            englishVoices().map(function (v) { return '<option value="' + esc(v.name) + '"' + (v.name === (voiceChoice || (englishVoices()[0] && englishVoices()[0].name)) ? ' selected' : '') + '>' + esc(v.name) + ' (' + esc(v.lang) + ')</option>'; }).join('') +
-            '</select></label>' +
-            '<div><button type="button" class="btn sm" data-act="preview-voice">' + esc(tr('previewVoice')) + '</button></div>' +
-            '<p class="muted small">' + esc(tr('voiceHint')) + '</p>' +
-            '</div>' : '') +
-          '<div class="sp-body"></div>';
-        renderBody();
-      }
-
-      // ---------- events ----------
-      function onClick(e) {
-        const tabBtn = e.target.closest('[data-tab]');
-        if (tabBtn) { switchTab(tabBtn.dataset.tab); return; }
-        const assessBtn = e.target.closest('[data-assess]');
-        if (assessBtn) { assess(assessBtn.dataset.assess); return; }
-        const actBtn = e.target.closest('[data-act]');
-        if (!actBtn) return;
-        const act = actBtn.dataset.act;
-        if (act === 'listen') listenCurrent();
-        else if (act === 'record') toggleRecord();
-        else if (act === 'next') go(1);
-        else if (act === 'prev') go(-1);
-        else if (act === 'toggle-vi') { shadow.showVi = !shadow.showVi; renderBody(); }
-        else if (act === 'toggle-q') { qa.showQ = !qa.showQ; renderBody(); }
-        else if (act === 'auto') toggleAuto();
-        else if (act === 'start-qa') startQA();
-        else if (act === 'finish-qa') finishQA();
-        else if (act === 'listen-term') speakTerm(false);
-        else if (act === 'listen-example') speakTerm(true);
-        else if (act === 'clear-filter') clearFilters();
-         else if (act === 'preview-voice') speak('Hello, this is a preview of the selected voice.');
-      }
-
-      function onChange(e) {
-         if (e.target.matches('[data-voice]')) { voiceChoice = e.target.value; try { localStorage.setItem(VOICE_KEY, voiceChoice); } catch (err) { /* storage unavailable */ } return; }
-        if (e.target.matches('[data-filter="theme"]')) { applyFilter('theme', e.target.value); return; }
-        if (e.target.matches('[data-filter="level"]')) { applyFilter('level', e.target.value); return; }
-        if (e.target.matches('[data-rate]')) {
-          const v = Number(e.target.value);
-          rate = RATES.indexOf(v) >= 0 ? v : 1;
-          try { localStorage.setItem(RATE_KEY, String(rate)); } catch (err) { /* storage unavailable */ }
-        }
-      }
-
-      function onKey(e) {
-        if (e.key === 'Escape') {
-          if (mic || qa.phase === 'recording' || term.phase === 'recording' || shadow.recording) {
-            stopEverything();
-            renderBody();
-          }
-          return;
-        }
-        const target = e.target;
-        if (target && target.closest && target.closest('button, a, input, select, textarea, [contenteditable="true"]')) return;
-        if (e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); listenCurrent(); }
-        else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); toggleRecord(); }
-        else if (e.key === 'n' || e.key === 'N') { e.preventDefault(); go(1); }
-      }
-
-      root.addEventListener('click', onClick);
-      root.addEventListener('change', onChange);
-      const removeKeys = App.onKey(onKey);
-      if (hasTTS) { try { window.speechSynthesis.getVoices(); } catch (e) { /* warm up voice list */ } }
-       if (hasTTS) {
-         const vcHandler = function () { refreshVoiceSelect(); };
-         try { window.speechSynthesis.addEventListener('voiceschanged', vcHandler); } catch (e) { /* ignore */ }
-         root.__vcHandler = vcHandler;
+       // ---------- microphone ----------
+       function takeMic() {
+         const h = mic;
+         mic = null;
+         micKind = null;
+         if (!h) return null;
+         try { return h.stop(); } catch (e) { return null; }
        }
 
-      renderAll();
+       function stopMic() {
+         const h = mic;
+         mic = null;
+         micKind = null;
+         if (h) { try { h.stop(); } catch (e) { /* ignore */ } }
+       }
 
-      return () => {
-        stopEverything();
-        root.removeEventListener('click', onClick);
-         if (hasTTS && root.__vcHandler) { try { window.speechSynthesis.removeEventListener('voiceschanged', root.__vcHandler); } catch (e) { /* ignore */ } }
-        root.removeEventListener('change', onChange);
-        removeKeys();
-      };
-    },
-  });
-})();
+       function clearTimers() {
+         clearInterval(qTimer); qTimer = null;
+         clearTimeout(silenceTimer); silenceTimer = null;
+         clearTimeout(maxTimer); maxTimer = null;
+         clearTimeout(nextTimer); nextTimer = null;
+       }
+
+       function cancelAudio() {
+         clearTimers();
+         stopMic();
+         stopSpeak();
+         shadow.recording = false;
+         if (qa.phase === 'recording') qa.phase = 'idle';
+         if (term.phase === 'recording') term.phase = 'idle';
+       }
+
+       function stopEverything() {
+         cancelAudio();
+         shadow.auto = false;
+       }
+
+       function resetItemState(kind) {
+         if (kind === 'shadow') {
+           shadow.result = null;
+           shadow.showVi = false;
+           shadow.recording = false;
+         } else if (kind === 'qa') {
+           qa.phase = 'idle';
+           qa.showQ = false;
+           qa.metrics = null;
+           const d = current('qa');
+           qa.remaining = d ? (Number(d.seconds) || 60) : 0;
+         } else {
+           term.phase = 'idle';
+           term.metrics = null;
+           term.correct = null;
+         }
+       }
+
+       // ---------- shadowing ----------
+       function startShadow(auto) {
+         if (mic || !supported) return;
+         const d = current('shadow');
+         if (!d) return;
+         clearTimeout(nextTimer); nextTimer = null;
+         stopSpeak();
+         shadow.result = null;
+         shadow.recording = true;
+         renderBody();
+         micKind = 'shadow';
+         try {
+           mic = App.speech.start({
+             lang: 'en',
+             onText(finalText, interim) {
+               const el = root.querySelector('.sp-interim');
+               if (el) el.textContent = interim || finalText;
+               if (auto && shadow.auto) {
+                 clearTimeout(silenceTimer);
+                 silenceTimer = setTimeout(() => finishShadow(true), 1600);
+               }
+             },
+             onError(msg) {
+               mic = null; micKind = null;
+               shadow.recording = false;
+               shadow.auto = false;
+               renderBody();
+               const el = root.querySelector('.sp-interim');
+               if (el) el.innerHTML = '<span class="sp-error">' + esc(tr('shadow.noVoice')) + '</span>';
+             },
+           });
+         } catch (e) {
+           mic = null; micKind = null; shadow.recording = false;
+           renderBody();
+           return;
+         }
+         if (auto) {
+           clearTimeout(maxTimer);
+           maxTimer = setTimeout(() => finishShadow(true), 15000);
+         }
+       }
+
+       function finishShadow(auto) {
+         if (!shadow.recording) return;
+         clearTimeout(silenceTimer); silenceTimer = null;
+         clearTimeout(maxTimer); maxTimer = null;
+         const m = takeMic();
+         shadow.recording = false;
+         const d = current('shadow');
+         if (!d) { renderBody(); return; }
+         const target = tokenize(d.en);
+         const said = tokenize(m && m.text);
+         const hits = lcsHits(target.map(x => x.norm), said.map(x => x.norm));
+         const matched = hits.filter(Boolean).length;
+         shadow.result = {
+           metrics: m,
+           transcript: (m && m.text) || '',
+           hits: hits,
+           matched: matched,
+           total: target.length,
+           score: target.length ? Math.round(matched * 100 / target.length) : 0,
+           error: false,
+         };
+         App.store.log('review');
+         renderBody();
+         renderStats();
+         if (auto && shadow.auto) {
+           if (!shadow.result.transcript.trim()) {
+             shadow.auto = false;
+             shadow.result.error = true;
+             renderBody();
+           } else {
+             nextTimer = setTimeout(() => {
+               nextTimer = null;
+               if (shadow.auto && tab === 'shadow') go(1);
+             }, 2200);
+           }
+         }
+       }
+
+       function startAuto() {
+         if (!shadow.auto || tab !== 'shadow' || mic || !supported) return;
+         const d = current('shadow');
+         if (!d) return;
+         clearTimeout(nextTimer); nextTimer = null;
+         stopSpeak();
+         speak(d.en, () => {
+           if (shadow.auto && tab === 'shadow' && !mic) startShadow(true);
+         });
+       }
+
+       function toggleAuto() {
+         if (!supported) return;
+         if (shadow.auto) {
+           shadow.auto = false;
+           clearTimeout(silenceTimer); silenceTimer = null;
+           clearTimeout(maxTimer); maxTimer = null;
+           clearTimeout(nextTimer); nextTimer = null;
+           if (micKind === 'shadow') { takeMic(); shadow.recording = false; }
+           stopSpeak();
+           renderBody();
+         } else {
+           shadow.auto = true;
+           shadow.result = null;
+           renderBody();
+           startAuto();
+         }
+       }
+
+       function listenShadow() {
+         if (shadow.auto) { startAuto(); return; }
+         if (mic) return;
+         const d = current('shadow');
+         if (!d) return;
+         stopSpeak();
+         speak(d.en);
+       }
+
+       // ---------- quick Q&A ----------
+       function startQA() {
+         const d = current('qa');
+         if (!d) return;
+         stopSpeak();
+         qa.phase = 'recording';
+         qa.metrics = null;
+         qa.remaining = Number(d.seconds) || 60;
+         renderBody();
+         if (supported) {
+           micKind = 'qa';
+           try {
+             mic = App.speech.start({
+               lang: 'en',
+               onText(finalText, interim) {
+                 const el = root.querySelector('.sp-interim');
+                 if (el) el.textContent = interim || finalText;
+               },
+               onError(msg) {
+                 mic = null; micKind = null;
+                 const el = root.querySelector('.sp-interim');
+                 if (el) el.innerHTML = '<span class="sp-error">' + esc(msg) + '</span>';
+               },
+             });
+           } catch (e) { mic = null; micKind = null; }
+         }
+         clearInterval(qTimer);
+         qTimer = setInterval(tickQA, 1000);
+       }
+
+       function tickQA() {
+         if (qa.phase !== 'recording') { clearInterval(qTimer); qTimer = null; return; }
+         qa.remaining = Math.max(0, qa.remaining - 1);
+         const el = root.querySelector('[data-timer]');
+         if (el) {
+           el.textContent = fmtTime(qa.remaining);
+           el.classList.toggle('warn', qa.remaining <= 10 && qa.remaining > 5);
+           el.classList.toggle('bad', qa.remaining <= 5);
+         }
+         if (qa.remaining <= 0) finishQA();
+       }
+
+       function finishQA() {
+         if (qa.phase !== 'recording') return;
+         clearInterval(qTimer); qTimer = null;
+         qa.metrics = takeMic();
+         qa.phase = 'done';
+         renderBody();
+       }
+
+       function listenQA() {
+         if (mic) return;
+         const d = current('qa');
+         if (!d) return;
+         stopSpeak();
+         speak(d.q);
+       }
+
+       // ---------- terminology ----------
+       function startTerm() {
+         if (mic || !supported) return;
+         const d = current('term');
+         if (!d) return;
+         stopSpeak();
+         term.phase = 'recording';
+         term.metrics = null;
+         term.correct = null;
+         renderBody();
+         micKind = 'term';
+         try {
+           mic = App.speech.start({
+             lang: 'en',
+             onText(finalText, interim) {
+               const el = root.querySelector('.sp-interim');
+               if (el) el.textContent = interim || finalText;
+             },
+             onError(msg) {
+               mic = null; micKind = null;
+               term.phase = 'idle';
+               renderBody();
+               const el = root.querySelector('.sp-interim');
+               if (el) el.innerHTML = '<span class="sp-error">' + esc(msg) + '</span>';
+             },
+           });
+         } catch (e) {
+           mic = null; micKind = null; term.phase = 'idle';
+           renderBody();
+           return;
+         }
+         clearTimeout(maxTimer);
+         maxTimer = setTimeout(() => finishTerm(), 20000);
+       }
+
+       function finishTerm() {
+         clearTimeout(maxTimer); maxTimer = null;
+         if (term.phase !== 'recording') return;
+         const d = current('term');
+         if (!d) return;
+         const m = takeMic();
+         term.metrics = m;
+         term.correct = containsTerm(m && m.text, d.term);
+         term.phase = 'done';
+         renderBody();
+       }
+
+       function speakTerm(example) {
+         if (mic) return;
+         const d = current('term');
+         if (!d) return;
+         stopSpeak();
+         if (example) {
+           if (d.example) speak(d.example);
+         } else if (d.term) {
+           playTermAudio(d.term);
+         }
+       }
+
+       // ---------- shared actions ----------
+       function listenCurrent() {
+         if (tab === 'shadow') listenShadow();
+         else if (tab === 'qa') { if (qa.phase !== 'recording') listenQA(); }
+         else speakTerm(false);
+       }
+
+       function toggleRecord() {
+         if (!supported) return;
+         if (tab === 'shadow') {
+           if (shadow.recording) finishShadow(false);
+           else startShadow(false);
+         } else if (tab === 'qa') {
+           if (qa.phase === 'recording') finishQA();
+           else {
+             if (qa.phase === 'done') { qa.phase = 'idle'; qa.metrics = null; }
+             startQA();
+           }
+         } else {
+           if (term.phase === 'recording') finishTerm();
+           else {
+             if (term.phase === 'done') { term.phase = 'idle'; term.metrics = null; term.correct = null; }
+             startTerm();
+           }
+         }
+       }
+
+       function go(delta) {
+         const arr = listFor(tab);
+         if (!arr.length) return;
+         cancelAudio();
+         idx[tab] = (idx[tab] + delta + arr.length) % arr.length;
+         resetItemState(tab);
+         renderBody();
+         if (tab === 'shadow' && shadow.auto) startAuto();
+       }
+
+       function assess(status) {
+         const d = current(tab);
+         if (!d || ['known', 'review', 'unknown'].indexOf(status) < 0) return;
+         App.store.setStatus(d.id, status);
+         renderStats();
+         renderBody();
+       }
+
+       function switchTab(nextTab) {
+         if (nextTab === tab || TABS.indexOf(nextTab) < 0) return;
+         stopEverything();
+         tab = nextTab;
+         if (theme !== 'all' && themesFor(tab).indexOf(theme) < 0) theme = 'all';
+         resetItemState(tab);
+         renderAll();
+       }
+
+       function applyFilter(name, value) {
+         stopEverything();
+         if (name === 'theme') theme = value; else level = value;
+         idx[tab] = 0;
+         resetItemState(tab);
+         renderBody();
+       }
+
+       function clearFilters() {
+         stopEverything();
+         theme = 'all';
+         level = 'all';
+         idx[tab] = 0;
+         resetItemState(tab);
+         renderAll();
+       }
+
+       // ---------- rendering ----------
+       function optionsHTML(items, cur) {
+         return items.map(it => '<option value="' + esc(it.v) + '"' + (it.v === cur ? ' selected' : '') + '>' + esc(it.label) + '</option>').join('');
+       }
+
+       function statsHTML() {
+         const s = stats();
+         return '<div class="sp-stats">' +
+           '<div class="stat"><span class="num" data-stat="today">' + s.today + '</span><span class="lbl">' + esc(tr('stat.today')) + '</span></div>' +
+           '<div class="stat"><span class="num" data-stat="streak">' + s.streak + '</span><span class="lbl">' + esc(tr('stat.streak')) + '</span></div>' +
+           '<div class="stat"><span class="num" data-stat="known">' + s.known + '/' + s.total + '</span><span class="lbl">' + esc(tr('stat.known')) + '</span></div>' +
+           '</div>';
+       }
+
+       function renderStats() {
+         const s = stats();
+         const set = (key, value) => {
+           const el = root.querySelector('[data-stat="' + key + '"]');
+           if (el) el.textContent = value;
+         };
+         set('today', s.today);
+         set('streak', s.streak);
+         set('known', s.known + '/' + s.total);
+       }
+
+       function filtersHTML() {
+         const themeItems = [{ v: 'all', label: tr('filter.all') }].concat(themesFor(tab).map(x => ({ v: x, label: themeLabel(x) })));
+         const levelItems = [{ v: 'all', label: tr('filter.all') }].concat(['mid', 'senior', 'lead'].map(x => ({ v: x, label: App.LEVELS[x] || x })));
+         return '<div class="sp-filters">' +
+           '<label class="sp-filter"><span>' + esc(tr('filter.theme')) + '</span><select class="select" data-filter="theme">' + optionsHTML(themeItems, theme) + '</select></label>' +
+           '<label class="sp-filter"><span>' + esc(tr('filter.level')) + '</span><select class="select" data-filter="level">' + optionsHTML(levelItems, level) + '</select></label>' +
+           (theme !== 'all' || level !== 'all' ? '<button type="button" class="btn sm" data-act="clear-filter" style="margin-top:1.5rem">' + esc(tr('clearFilter')) + '</button>' : '') +
+           '</div>';
+       }
+
+       function metaHTML(d) {
+         const arr = listFor(tab);
+         return '<div class="sp-meta">' +
+           (d.theme ? '<span class="badge accent">' + esc(themeLabel(d.theme)) + '</span>' : '') +
+           (d.level ? '<span class="badge">' + esc(App.LEVELS[d.level] || d.level) + '</span>' : '') +
+           '<span class="sp-pos">' + esc(tr('progress', { i: idx[tab] + 1, n: arr.length })) + '</span>' +
+           '</div>';
+       }
+
+       function navHTML() {
+         const n = listFor(tab).length;
+         return '<div class="sp-nav">' +
+           '<button type="button" class="btn" data-act="prev"' + (idx[tab] <= 0 ? ' disabled' : '') + ' aria-label="' + esc(tr('prev')) + '">← ' + esc(tr('prev')) + '</button>' +
+           '<button type="button" class="btn primary" data-act="next"' + (n <= 1 ? ' disabled' : '') + ' aria-label="' + esc(tr('next')) + '">' + esc(tr('next')) + ' →</button>' +
+           '</div>';
+       }
+
+       function assessHTML(d, kind) {
+         const saved = App.store.getStatus(d.id);
+         const opts = kind === 'term'
+           ? [['known', tr('term.known'), 'ok'], ['review', tr('term.review'), 'warn']]
+           : [['known', tr('qa.good'), 'ok'], ['review', tr('qa.fair'), 'warn'], ['unknown', tr('qa.poor'), 'bad']];
+         return '<div class="sp-assess"><h4>' + esc(kind === 'term' ? tr('term.assess') : tr('qa.assess')) + '</h4>' +
+           '<div class="row">' + opts.map(o =>
+             '<button type="button" class="btn ' + o[2] + (saved === o[0] ? ' is-selected' : '') + '" data-assess="' + o[0] + '"' +
+             (saved === o[0] ? ' aria-pressed="true"' : '') + '>' + esc(o[1]) + '</button>').join('') +
+           (saved ? '<span class="badge ' + ((App.STATUS[saved] && App.STATUS[saved].cls) || '') + '">' + esc(tr('saved')) + '</span>' : '') +
+           '</div><p class="muted small">' + esc(tr('assessHint')) + '</p></div>';
+       }
+
+       function shadowDoneHTML(r) {
+         const cls = r.score >= 80 ? 'ok' : r.score >= 50 ? 'warn' : 'bad';
+         return '<div class="sp-result">' +
+           '<div class="row"><span class="sp-score ' + cls + '">' + r.score + '%</span><span>' + esc(tr('shadow.match', { hit: r.matched, total: r.total })) + '</span></div>' +
+           (r.metrics ? App.ui.speechStats(r.metrics) : '') +
+           '<div class="sp-transcript"><b>' + esc(tr('transcript')) + '</b><p lang="en">' +
+           (r.transcript ? esc(r.transcript) : '<span class="muted">—</span>') + '</p></div>' +
+           (r.error ? '<p class="sp-error">' + esc(tr('shadow.noVoice')) + '</p>' : '') +
+           '</div>';
+       }
+
+       function shadowHTML(d) {
+         const r = shadow.result;
+         return '<section class="card sp-stage">' +
+           metaHTML(d) +
+           '<p class="sp-hint muted small">' + esc(tr('shadow.hint')) + '</p>' +
+           '<div class="sp-en" lang="en">' + (r ? markWords(d.en, r.hits) : esc(d.en)) + '</div>' +
+           '<div class="sp-meaning"><button type="button" class="link-btn" data-act="toggle-vi" aria-expanded="' + shadow.showVi + '">' +
+           esc(shadow.showVi ? tr('hideVi') : tr('showVi')) + '</button>' +
+           (shadow.showVi && d.vi ? '<p class="sp-vi" lang="vi">' + esc(d.vi) + '</p>' : '') + '</div>' +
+           '<div class="sp-controls">' +
+           '<button type="button" class="btn" data-act="listen"' + (hasTTS ? '' : ' disabled') + ' aria-label="' + esc(tr('listen')) + '">▶ ' + esc(tr('listen')) + '</button>' +
+            (hasTTS ? '<label class="sp-rate"><span>' + esc(tr('speed')) + '</span><select class="select" data-rate aria-label="' + esc(tr('speed')) + '">' +
+            RATES.map(v => '<option value="' + v + '"' + (v === rate ? ' selected' : '') + '>' + v + '×' + '</option>').join('') + '</select></label>' : '') +
+           (supported ? '<button type="button" class="btn mic-btn' + (shadow.recording ? ' recording' : '') + '" data-act="record" aria-label="' +
+             esc(shadow.recording ? tr('stopRecord') : tr('record')) + '">' + (shadow.recording ? '⏹ ' + esc(tr('stopRecord')) : '🎤 ' + esc(tr('record'))) + '</button>' : '') +
+           (supported ? '<button type="button" class="chip' + (shadow.auto ? ' active' : '') + '" data-act="auto" aria-pressed="' + shadow.auto +
+             '" title="' + esc(tr('autoTitle')) + '">🤖 ' + esc(tr('auto')) + '</button>' : '') +
+           '</div>' +
+           (!supported ? '<p class="muted small">' + esc(tr('noSpeech')) + '</p>' : '') +
+           (shadow.recording ? '<p class="sp-rec">' + esc(tr('recording')) + '</p>' : '') +
+           '<div class="sp-interim" aria-live="polite"></div>' +
+           (r ? shadowDoneHTML(r) : '') +
+           assessHTML(d, 'shadow') +
+           navHTML() +
+           '</section>';
+       }
+
+       function phrasesHTML(d, m) {
+         const list = Array.isArray(d.phrases) ? d.phrases : [];
+         if (!list.length) return '';
+         const said = ' ' + wordsOf(m && m.text).join(' ') + ' ';
+         return '<div class="sp-phrases"><h4>' + esc(tr('qa.phrases')) + '</h4><div class="chips">' +
+           list.map(p => {
+             const want = wordsOf(p).join(' ');
+             const used = !!want && said.indexOf(' ' + want + ' ') >= 0;
+             return '<span class="badge' + (used ? ' ok' : '') + '" title="' + esc(used ? tr('qa.used') : tr('qa.notUsed')) + '">' +
+               (used ? '✓' : '○') + ' <span lang="en">' + esc(p) + '</span></span>';
+           }).join('') + '</div></div>';
+       }
+
+       function qaDoneHTML(d) {
+         const m = qa.metrics;
+         return '<div class="sp-result">' +
+           (m ? App.ui.speechStats(m) : '') +
+           '<div class="sp-transcript"><b>' + esc(tr('transcript')) + '</b><p lang="en">' +
+           (m && m.text ? esc(m.text) : '<span class="muted">—</span>') + '</p></div>' +
+           '<div><h4>' + esc(tr('qa.sample')) + '</h4><p class="sp-sample" lang="en">' + esc(d.sample || '') + '</p></div>' +
+           phrasesHTML(d, m) +
+           '</div>';
+       }
+
+       function qaHTML(d) {
+         const done = qa.phase === 'done';
+         const recording = qa.phase === 'recording';
+         const showText = qa.showQ || done;
+         const remaining = qa.remaining || Number(d.seconds) || 60;
+         const timerCls = remaining <= 5 ? ' bad' : remaining <= 10 ? ' warn' : '';
+         return '<section class="card sp-stage">' +
+           metaHTML(d) +
+           '<p class="sp-hint muted small">' + esc(tr('qa.hint')) + '</p>' +
+           '<div class="sp-qa-question" lang="en">' +
+           (showText ? esc(d.q) : '<span class="muted sp-hidden-q">🔊 ' + esc(tr('qa.hidden')) + '</span>') + '</div>' +
+           '<div class="sp-controls">' +
+           (done ? '' : '<button type="button" class="link-btn" data-act="toggle-q" aria-expanded="' + showText + '">' +
+             esc(showText ? tr('hideText') : tr('showText')) + '</button>') +
+           '<button type="button" class="btn" data-act="listen"' + (hasTTS ? '' : ' disabled') + ' aria-label="' + esc(tr('listenQuestion')) + '">▶ ' + esc(tr('listenQuestion')) + '</button>' +
+           '</div>' +
+           '<div class="sp-timer-row"><span class="sp-timer' + timerCls + '" data-timer>' + fmtTime(remaining) + '</span>' +
+           (recording
+             ? '<button type="button" class="btn bad" data-act="finish-qa" aria-label="' + esc(tr('qa.finish')) + '">⏹ ' + esc(tr('qa.finish')) + '</button>'
+             : '<button type="button" class="btn primary" data-act="start-qa" aria-label="' + esc(done ? tr('qa.retry') : tr('qa.start')) + '">' + (supported ? '🎤 ' : '') +
+               esc(done ? tr('qa.retry') : tr('qa.start')) + '</button>') +
+           (!supported ? '<span class="muted small">' + esc(tr('noSpeech')) + '</span>' : '') +
+           '</div>' +
+           (recording ? '<p class="sp-rec">' + esc(tr('recording')) + '</p>' : '') +
+           '<div class="sp-interim" aria-live="polite"></div>' +
+           (done ? qaDoneHTML(d) : '') +
+           assessHTML(d, 'qa') +
+           navHTML() +
+           '</section>';
+       }
+
+       function termDoneHTML(d) {
+         const m = term.metrics;
+         return '<div class="sp-result">' +
+           '<div class="row">' +
+           (term.correct
+             ? '<span class="badge ok">✓ ' + esc(tr('term.correct')) + '</span>'
+             : '<span class="badge bad">✗ ' + esc(tr('term.incorrect')) + '</span>') +
+           '<span class="muted small">' + esc(tr('term.expected', { term: d.term || '' })) + '</span></div>' +
+           (m ? App.ui.speechStats(m) : '') +
+           '<div class="sp-transcript"><b>' + esc(tr('transcript')) + '</b><p lang="en">' +
+           (m && m.text ? esc(m.text) : '<span class="muted">—</span>') + '</p></div>' +
+           '</div>';
+       }
+
+       function termHTML(d) {
+         const recording = term.phase === 'recording';
+         const done = term.phase === 'done';
+         return '<section class="card sp-stage">' +
+           metaHTML(d) +
+           '<p class="sp-hint muted small">' + esc(tr('term.hint')) + '</p>' +
+           '<div class="sp-term" lang="en">' + esc(d.term || '') + '</div>' +
+            (termAudio.term === String(d.term || '').trim() && termAudio.loading ? '<p class="sp-loading">' + esc(tr('loadingAudio')) + '</p>' : '') +
+            (termAudio.term === String(d.term || '').trim() && termAudio.info && termAudio.info.ipa ? '<p class="sp-ipa muted small"><span lang="en">/' + esc(String(termAudio.info.ipa).replace(/^\/+|\/+$/g, '')) + '/</span> <span class="sp-audio-src">' + esc(tr('audioSource')) + '</span></p>' : '') +
+           '<dl class="sp-term-info">' +
+           '<dt>' + esc(tr('term.say')) + '</dt><dd>' + esc(d.say || '') + '</dd>' +
+           '<dt>' + esc(tr('term.wrong')) + '</dt><dd>' + esc(d.wrong || '') + '</dd>' +
+           '<dt>' + esc(tr('term.example')) + '</dt><dd lang="en">' + esc(d.example || '') + '</dd>' +
+           '</dl>' +
+           '<div class="sp-controls">' +
+           '<button type="button" class="btn" data-act="listen-term"' + (hasTTS ? '' : ' disabled') + ' aria-label="' + esc(tr('listenTerm')) + '">▶ ' + esc(tr('listenTerm')) + '</button>' +
+           '<button type="button" class="btn" data-act="listen-example"' + (hasTTS ? '' : ' disabled') + ' aria-label="' + esc(tr('listenExample')) + '">▶ ' + esc(tr('listenExample')) + '</button>' +
+           (supported ? '<button type="button" class="btn mic-btn' + (recording ? ' recording' : '') + '" data-act="record" aria-label="' +
+             esc(recording ? tr('stopRecord') : tr('try')) + '">' + (recording ? '⏹ ' + esc(tr('stopRecord')) : '🎤 ' + esc(tr('try'))) + '</button>' : '') +
+           '</div>' +
+           (!supported ? '<p class="muted small">' + esc(tr('noSpeech')) + '</p>' : '') +
+           (recording ? '<p class="sp-rec">' + esc(tr('recording')) + '</p>' : '') +
+           '<div class="sp-interim" aria-live="polite"></div>' +
+           (done ? termDoneHTML(d) : '') +
+           assessHTML(d, 'term') +
+           navHTML() +
+           '</section>';
+       }
+
+       function emptyHTML() {
+         return '<div class="card empty sp-empty"><div class="icon">🎙️</div><p>' + esc(tr('empty')) + '</p><p class="muted small">' + esc(tr('emptyHint')) + '</p>' +
+           (theme !== 'all' || level !== 'all' ? '<div><button type="button" class="btn sm" data-act="clear-filter">' + esc(tr('clearFilter')) + '</button></div>' : '') +
+           '</div>';
+       }
+
+       function renderBody() {
+         const host = root.querySelector('.sp-body');
+         if (!host) return;
+         const d = current(tab);
+         if (!d) { host.innerHTML = emptyHTML(); return; }
+         if (tab === 'shadow') host.innerHTML = shadowHTML(d);
+         else if (tab === 'qa') host.innerHTML = qaHTML(d);
+         else host.innerHTML = termHTML(d);
+       }
+
+       function renderAll() {
+         root.innerHTML =
+           '<div class="page-head">' +
+           '<div><h1>' + esc(tr('title')) + '</h1><p>' + esc(tr('subtitle')) + '</p></div>' +
+           '<div class="sp-keys muted small" aria-label="' + esc(tr('shortcuts')) + '">' +
+           '<span><kbd>Space</kbd> ' + esc(tr('key.listen')) + '</span>' +
+           (supported ? '<span><kbd>R</kbd> ' + esc(tr('key.record')) + '</span>' : '') +
+           '<span><kbd>N</kbd> ' + esc(tr('key.next')) + '</span>' +
+           '<span><kbd>P</kbd> ' + esc(tr('prev')) + '</span>' +
+           (supported ? '<span><kbd>A</kbd> Auto on/off</span>' : '') +
+           '</div></div>' +
+           statsHTML() +
+           '<div class="chips sp-tabs" role="tablist" aria-label="' + esc(tr('tabsAria')) + '">' +
+           TABS.map(x => '<button type="button" class="chip' + (tab === x ? ' active' : '') + '" role="tab" aria-selected="' + (tab === x) +
+             '" data-tab="' + x + '">' + esc(tr('tab.' + x)) + '</button>').join('') +
+           '</div>' +
+           filtersHTML() +
+           (hasTTS ? '<div class="sp-voice card">' +
+             '<label class="sp-rate"><span>' + esc(tr('voice')) + '</span><select class="select" data-voice aria-label="' + esc(tr('voice')) + '">' +
+             englishVoices().map(function (v) { return '<option value="' + esc(v.name) + '"' + (v.name === (voiceChoice || (englishVoices()[0] && englishVoices()[0].name)) ? ' selected' : '') + '>' + esc(v.name) + ' (' + esc(v.lang) + ')</option>'; }).join('') +
+             '</select></label>' +
+             '<div><button type="button" class="btn sm" data-act="preview-voice" aria-label="' + esc(tr('previewVoice')) + '">' + esc(tr('previewVoice')) + '</button></div>' +
+             '<p class="muted small">' + esc(tr('voiceHint')) + '</p>' +
+             '</div>' : '') +
+           '<div class="sp-body"></div>';
+         renderBody();
+       }
+
+       // ---------- events ----------
+       function onClick(e) {
+         const tabBtn = e.target.closest('[data-tab]');
+         if (tabBtn) { switchTab(tabBtn.dataset.tab); return; }
+         const assessBtn = e.target.closest('[data-assess]');
+         if (assessBtn) { assess(assessBtn.dataset.assess); return; }
+         const actBtn = e.target.closest('[data-act]');
+         if (!actBtn) return;
+         const act = actBtn.dataset.act;
+         if (act === 'listen') listenCurrent();
+         else if (act === 'record') toggleRecord();
+         else if (act === 'next') go(1);
+         else if (act === 'prev') go(-1);
+         else if (act === 'toggle-vi') { shadow.showVi = !shadow.showVi; renderBody(); }
+         else if (act === 'toggle-q') { qa.showQ = !qa.showQ; renderBody(); }
+         else if (act === 'auto') toggleAuto();
+         else if (act === 'start-qa') startQA();
+         else if (act === 'finish-qa') finishQA();
+         else if (act === 'listen-term') speakTerm(false);
+         else if (act === 'listen-example') speakTerm(true);
+         else if (act === 'clear-filter') clearFilters();
+          else if (act === 'preview-voice') speak('Hello, this is a preview of the selected voice.');
+       }
+
+       function onChange(e) {
+          if (e.target.matches('[data-voice]')) { voiceChoice = e.target.value; try { localStorage.setItem(VOICE_KEY, voiceChoice); } catch (err) { /* storage unavailable */ } return; }
+         if (e.target.matches('[data-filter="theme"]')) { applyFilter('theme', e.target.value); return; }
+         if (e.target.matches('[data-filter="level"]')) { applyFilter('level', e.target.value); return; }
+         if (e.target.matches('[data-rate]')) {
+           const v = Number(e.target.value);
+           rate = RATES.indexOf(v) >= 0 ? v : 1;
+           try { localStorage.setItem(RATE_KEY, String(rate)); } catch (err) { /* storage unavailable */ }
+         }
+       }
+
+       function onKey(e) {
+         if (e.key === 'Escape') {
+           if (mic || qa.phase === 'recording' || term.phase === 'recording' || shadow.recording) {
+             stopEverything();
+             renderBody();
+           }
+           return;
+         }
+         const target = e.target;
+         if (target && target.closest && target.closest('button, a, input, select, textarea, [contenteditable="true"]')) return;
+         if (e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); listenCurrent(); }
+         else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); toggleRecord(); }
+         else if (e.key === 'n' || e.key === 'N') { e.preventDefault(); go(1); }
+         else if (e.key === 'p' || e.key === 'P') { e.preventDefault(); go(-1); }
+         else if (e.key === 'a' || e.key === 'A') { if (supported) { e.preventDefault(); toggleAuto(); } }
+       }
+
+       root.addEventListener('click', onClick);
+       root.addEventListener('change', onChange);
+       const removeKeys = App.onKey(onKey);
+       if (hasTTS) { try { window.speechSynthesis.getVoices(); } catch (e) { /* warm up voice list */ } }
+        if (hasTTS) {
+          const vcHandler = function () { refreshVoiceSelect(); };
+          try { window.speechSynthesis.addEventListener('voiceschanged', vcHandler); } catch (e) { /* ignore */ }
+          root.__vcHandler = vcHandler;
+        }
+
+       renderAll();
+
+       return () => {
+         stopEverything();
+         root.removeEventListener('click', onClick);
+          if (hasTTS && root.__vcHandler) { try { window.speechSynthesis.removeEventListener('voiceschanged', root.__vcHandler); } catch (e) { /* ignore */ } }
+         root.removeEventListener('change', onChange);
+         removeKeys();
+       };
+     },
+   });
+ })();

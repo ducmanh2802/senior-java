@@ -40,6 +40,9 @@
       'labs.searchMatch': '{matches} chỗ khớp trong {lines} dòng',
       'labs.searchNoMatch': 'Không tìm thấy "{term}" trong artifact này.',
       'labs.searchLines': '{n} dòng',
+      'labs.searchNext': 'Kết quả sau',
+      'labs.searchPrev': 'Kết quả trước',
+      'labs.searchNoTerm': 'Nhập từ khóa để tìm',
       'labs.questionsTitle': 'Câu hỏi cần trả lời',
       'labs.answerLabel': 'Câu trả lời của bạn',
       'labs.answerPlaceholder': 'Phân tích nguyên nhân gốc, dẫn chứng từ artifact, cách sửa ngắn hạn và dài hạn…',
@@ -51,7 +54,7 @@
       'labs.gradeBtn': '🤖 Chấm bằng AI',
       'labs.showAnswerBtn': 'Xem đáp án',
       'labs.showAnswerDone': 'Đã xem đáp án',
-      'labs.kbdTip': 'Phím tắt: <kbd>H</kbd> gợi ý · <kbd>S</kbd> xem đáp án.',
+      'labs.kbdTip': 'Phím tắt: <kbd>H</kbd> gợi ý · <kbd>S</kbd> xem đáp án · <kbd>/</kbd> tìm · <kbd>N</kbd> kết quả sau · <kbd>P</kbd> kết quả trước',
       'labs.selfTitle': 'Tự đánh giá',
       'labs.selfMarkKnown': 'Đã giải',
       'labs.selfMarkReview': 'Cần ôn',
@@ -70,6 +73,13 @@
       'labs.catSql': 'SQL',
       'labs.catIncident': 'Sự cố production',
       'labs.artifactLabel': 'Artifact',
+      'labs.wrapLines': 'Xuống dòng',
+      'labs.wrapLinesOn': 'Đang xuống dòng',
+      'labs.loadingArtifact': 'Đang tải artifact…',
+      'labs.copyLineBtn': 'Copy dòng này',
+      'labs.copiedLine': 'Đã copy dòng',
+      'labs.shortcutsTitle': 'Phím tắt',
+      'labs.shortcutsList': '<kbd>/</kbd> ô tìm kiếm · <kbd>N</kbd> kết quả sau · <kbd>P</kbd> kết quả trước · <kbd>H</kbd> gợi ý · <kbd>S</kbd> xem đáp án · <kbd>1-9</kbd> chuyển artifact · <kbd>W</kbd> bật/tắt xuống dòng',
     },
     en: {
       'labs.title': 'Debug Lab',
@@ -108,6 +118,9 @@
       'labs.searchMatch': '{matches} matches in {lines} lines',
       'labs.searchNoMatch': '"{term}" not found in this artifact.',
       'labs.searchLines': '{n} lines',
+      'labs.searchNext': 'Next match',
+      'labs.searchPrev': 'Previous match',
+      'labs.searchNoTerm': 'Enter a search term',
       'labs.questionsTitle': 'Questions to answer',
       'labs.answerLabel': 'Your answer',
       'labs.answerPlaceholder': 'Analyze root cause, evidence from artifact, short-term and long-term fixes…',
@@ -119,7 +132,7 @@
       'labs.gradeBtn': '🤖 Grade with AI',
       'labs.showAnswerBtn': 'Show answer',
       'labs.showAnswerDone': 'Answer shown',
-      'labs.kbdTip': 'Shortcuts: <kbd>H</kbd> hint · <kbd>S</kbd> answer.',
+      'labs.kbdTip': 'Shortcuts: <kbd>H</kbd> hint · <kbd>S</kbd> answer · <kbd>/</kbd> search · <kbd>N</kbd> next · <kbd>P</kbd> prev',
       'labs.selfTitle': 'Self-assess',
       'labs.selfMarkKnown': 'Solved',
       'labs.selfMarkReview': 'Review',
@@ -138,6 +151,13 @@
       'labs.catSql': 'SQL',
       'labs.catIncident': 'Production incident',
       'labs.artifactLabel': 'Artifact',
+      'labs.wrapLines': 'Wrap lines',
+      'labs.wrapLinesOn': 'Wrapping on',
+      'labs.loadingArtifact': 'Loading artifact…',
+      'labs.copyLineBtn': 'Copy line',
+      'labs.copiedLine': 'Copied line',
+      'labs.shortcutsTitle': 'Shortcuts',
+      'labs.shortcutsList': '<kbd>/</kbd> search · <kbd>N</kbd> next · <kbd>P</kbd> prev · <kbd>H</kbd> hint · <kbd>S</kbd> answer · <kbd>1-9</kbd> switch artifact · <kbd>W</kbd> toggle wrap',
     },
   });
 
@@ -347,6 +367,9 @@
 
     let artIdx = 0;
     let term = '';
+    let wrapLines = false;
+    let matchIndices = []; // indices of lines with matches
+    let matchPos = -1; // current position in matchIndices
     let hintsUsed = 0;
     let answerShown = false;
     let mic = null;
@@ -386,9 +409,15 @@
             '<div class="chips lab-tabs" id="labTabs" role="tablist" aria-label="' + App.t('labs.artifactAria') + '">' + tabs + '</div>' +
             '<div class="row lab-art-tools">' +
               '<input class="input lab-search" id="labSearch" type="search" placeholder="' + App.t('labs.searchPlaceholder') + '" aria-label="' + App.t('labs.searchAria') + '">' +
+              '<button type="button" class="btn sm" id="labSearchPrev" aria-label="' + App.t('labs.searchPrev') + '" disabled title="' + App.t('labs.searchPrev') + '">↑</button>' +
+              '<button type="button" class="btn sm" id="labSearchNext" aria-label="' + App.t('labs.searchNext') + '" disabled title="' + App.t('labs.searchNext') + '">↓</button>' +
+              '<button type="button" class="btn sm" id="labWrap" aria-pressed="false" aria-label="' + App.t('labs.wrapLines') + '" title="' + App.t('labs.wrapLines') + '"><span class="wrap-icon">⏎</span></button>' +
               '<button type="button" class="btn sm" id="labCopy">' + App.t('labs.copyBtn') + '</button>' +
             '</div>' +
-            '<div class="lab-viewer" id="labViewer" role="region" aria-label="' + App.t('labs.artifactTitle') + '" tabindex="0"></div>' +
+            '<div class="lab-viewer-wrap" id="labViewerWrap">' +
+              '<div class="lab-viewer" id="labViewer" role="region" aria-label="' + App.t('labs.artifactTitle') + '" tabindex="0"></div>' +
+              '<div class="lab-loading" id="labLoading" hidden>' + App.t('labs.loadingArtifact') + '</div>' +
+            '</div>' +
             '<p class="small muted lab-match" id="labMatch" aria-live="polite"></p>' +
           '</div>' +
         '</section>' +
@@ -435,8 +464,13 @@
       meta: root.querySelector('#labMeta'),
       tabs: root.querySelector('#labTabs'),
       search: root.querySelector('#labSearch'),
+      searchPrev: root.querySelector('#labSearchPrev'),
+      searchNext: root.querySelector('#labSearchNext'),
+      wrap: root.querySelector('#labWrap'),
       copy: root.querySelector('#labCopy'),
       viewer: root.querySelector('#labViewer'),
+      viewerWrap: root.querySelector('#labViewerWrap'),
+      loading: root.querySelector('#labLoading'),
       match: root.querySelector('#labMatch'),
       answer: root.querySelector('#labAnswer'),
       mic: root.querySelector('#labMic'),
@@ -451,30 +485,85 @@
       saved: root.querySelector('#labSaved'),
     };
 
+    function updateMatchNav() {
+      const hasTerm = !!term;
+      const hasMatches = matchIndices.length > 0;
+      if (els.searchPrev) els.searchPrev.disabled = !hasTerm || !hasMatches;
+      if (els.searchNext) els.searchNext.disabled = !hasTerm || !hasMatches;
+      if (!hasTerm && els.match) {
+        const a = artifacts[artIdx];
+        if (a) {
+          const lines = String(a.content || '').replace(/\r\n?/g, '\n').split('\n');
+          els.match.textContent = App.t('labs.searchLines', {n: lines.length});
+        }
+      }
+    }
+
+    function goToMatch(delta) {
+      if (matchIndices.length === 0) return;
+      matchPos = (matchPos + delta + matchIndices.length) % matchIndices.length;
+      const targetLine = matchIndices[matchPos];
+      const lineEl = els.viewer.querySelector('.lab-line:nth-child(' + (targetLine + 1) + ')');
+      if (lineEl) {
+        lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        lineEl.classList.add('lab-match-current');
+        // remove highlight from others
+        els.viewer.querySelectorAll('.lab-line.lab-match-current').forEach(el => {
+          if (el !== lineEl) el.classList.remove('lab-match-current');
+        });
+      }
+    }
+
     function renderArtifact() {
       const a = artifacts[artIdx];
       if (!a) {
         els.viewer.innerHTML = '<div class="lab-line"><span class="lab-code">' + App.t('labs.noArtifact') + '</span></div>';
         els.match.textContent = '';
+        matchIndices = [];
+        matchPos = -1;
+        updateMatchNav();
         return;
+      }
+      // show loading briefly for large artifacts
+      if (a.content && a.content.length > 50000) {
+        els.loading.hidden = false;
+        // force reflow
+        els.loading.offsetHeight;
       }
       const lines = String(a.content || '').replace(/\r\n?/g, '\n').split('\n');
       let matches = 0;
+      matchIndices = [];
       const html = lines.map((line, n) => {
         const r = highlightLine(line, term);
+        if (r.count > 0) matchIndices.push(n);
         matches += r.count;
-        return '<div class="lab-line"><span class="lab-ln" aria-hidden="true">' + (n + 1) + '</span>' +
-          '<span class="lab-code">' + r.html + '</span></div>';
+        const copyBtn = '<button type="button" class="btn sm lab-copy-line" data-line="' + n + '" aria-label="' + App.t('labs.copyLineBtn') + '" title="' + App.t('labs.copyLineBtn') + '">📋</button>';
+        return '<div class="lab-line" data-line="' + n + '"><span class="lab-ln" aria-hidden="true">' + (n + 1) + '</span>' +
+          '<span class="lab-code">' + r.html + '</span>' + copyBtn + '</div>';
       }).join('');
       els.viewer.innerHTML = html;
       els.viewer.scrollTop = 0;
       els.viewer.scrollLeft = 0;
+      if (wrapLines) {
+        els.viewer.classList.add('lab-wrap');
+      } else {
+        els.viewer.classList.remove('lab-wrap');
+      }
+      if (a.content && a.content.length > 50000) {
+        els.loading.hidden = true;
+      }
       if (term) {
         els.match.textContent = matches
           ? App.t('labs.searchMatch', {matches: matches, lines: lines.length})
           : App.t('labs.searchNoMatch', {term: term});
       } else {
-        els.match.textContent = App.t('labs.searchLines', {n: lines.length});
+        const lineCount = lines.length;
+        els.match.textContent = App.t('labs.searchLines', {n: lineCount});
+      }
+      updateMatchNav();
+      // restore match position if valid
+      if (matchIndices.length > 0 && matchPos >= 0 && matchPos < matchIndices.length) {
+        goToMatch(0);
       }
     }
 
@@ -557,11 +646,12 @@
       }
     }
 
-    // ---- artifact tabs + search + copy
+    // ---- artifact tabs + search + copy + wrap
     on(els.tabs, 'click', e => {
       const btn = e.target.closest('[data-art]');
       if (!btn) return;
       artIdx = parseInt(btn.dataset.art, 10) || 0;
+      matchPos = -1;
       els.tabs.querySelectorAll('[data-art]').forEach(x => {
         const active = x === btn;
         x.classList.toggle('active', active);
@@ -572,6 +662,18 @@
 
     on(els.search, 'input', e => {
       term = e.target.value.trim();
+      matchPos = -1;
+      renderArtifact();
+    });
+
+    on(els.searchPrev, 'click', () => goToMatch(-1));
+    on(els.searchNext, 'click', () => goToMatch(1));
+
+    on(els.wrap, 'click', () => {
+      wrapLines = !wrapLines;
+      els.wrap.classList.toggle('active', wrapLines);
+      els.wrap.setAttribute('aria-pressed', wrapLines ? 'true' : 'false');
+      els.wrap.title = wrapLines ? App.t('labs.wrapLinesOn') : App.t('labs.wrapLines');
       renderArtifact();
     });
 
@@ -583,6 +685,23 @@
         els.copy.textContent = App.t('labs.copyDone');
         if (copyTimer) clearTimeout(copyTimer);
         copyTimer = setTimeout(() => { els.copy.textContent = old; }, 1500);
+      });
+    });
+
+    // delegate copy line buttons
+    on(els.viewer, 'click', e => {
+      const btn = e.target.closest('.lab-copy-line');
+      if (!btn) return;
+      const lineIdx = parseInt(btn.dataset.line, 10);
+      const a = artifacts[artIdx];
+      if (!a) return;
+      const lines = String(a.content || '').replace(/\r\n?/g, '\n').split('\n');
+      const lineText = lines[lineIdx] || '';
+      copyText(lineText, () => {
+        const old = btn.textContent;
+        btn.textContent = '✓';
+        btn.title = App.t('labs.copiedLine');
+        setTimeout(() => { btn.textContent = old; btn.title = App.t('labs.copyLineBtn'); }, 1000);
       });
     });
 
@@ -637,11 +756,26 @@
       els.saved.textContent = due ? App.t('labs.selfSavedDue', {date: App.fmtDate(due)}) : App.t('labs.selfSaved');
     });
 
-    // ---- phím tắt: H = gợi ý, S = xem đáp án (bỏ qua khi đang gõ)
+    // ---- phím tắt: H = gợi ý, S = xem đáp án, / = tìm, N/P = next/prev match, 1-9 = artifact, W = wrap
     offs.push(App.onKey(e => {
+      // bỏ qua khi đang gõ trong input/textarea
+      const tag = e.target.tagName;
+      const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable;
+      if (isTyping) return;
       const k = e.key.toLowerCase();
-      if (k === 'h') showHint();
-      else if (k === 's') showAnswer();
+      if (k === 'h') { e.preventDefault(); showHint(); }
+      else if (k === 's') { e.preventDefault(); showAnswer(); }
+      else if (k === '/') { e.preventDefault(); els.search?.focus(); }
+      else if (k === 'n') { e.preventDefault(); goToMatch(1); }
+      else if (k === 'p') { e.preventDefault(); goToMatch(-1); }
+      else if (k === 'w') { e.preventDefault(); els.wrap?.click(); }
+      else if (k >= '1' && k <= '9') {
+        const idx = parseInt(k, 10) - 1;
+        if (idx < artifacts.length) {
+          const btn = els.tabs.querySelector('[data-art="' + idx + '"]');
+          if (btn) btn.click();
+        }
+      }
     }));
 
     renderArtifact();

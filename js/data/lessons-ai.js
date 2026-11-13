@@ -41,7 +41,7 @@ Gọi bằng JDK thuần (Java 11+), không cần SDK:
 HttpClient client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5)).build();
 String body = """
-    {"model": "claude-sonnet-4-5", "max_tokens": 512,
+    {"model": "claude-3-5-sonnet-20241022", "max_tokens": 512,
      "system": "Bạn là interviewer Java senior.",
      "messages": [{"role": "user", "content": "Hỏi tôi 1 câu về HashMap"}]}
     """;
@@ -2332,6 +2332,1650 @@ Ví dụ với {{maxAttempts = 3, baseDelayMs = 200, maxDelayMs = 30000}}: delay
   ],
   related: ['ai-001', 'ai-007', 'ai-013', 'ai-021', 'ai-027'],
   tags: ['ai', 'llm', 'token-budget', 'context-trimming', 'timeout', 'retry', 'backoff', 'circuit-breaker', 'fallback', 'cost'],
+},
+{
+  id: 'lesson-ai-007',
+  track: 'ai',
+  order: 7,
+  title: 'Vòng lặp AI agent: model chọn tool, ứng dụng thực thi và kiểm soát số bước',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Phân biệt được LLM (model ngôn ngữ) với agent loop (vòng lặp điều phối do ứng dụng kiểm soát).',
+    'Mô tả đúng chu trình model → tool call → chạy tool → tool result → model và vì sao model không tự chạy code.',
+    'Cài vòng lặp agent Java thuần với model giả, nhiều tool, kết quả tool và giới hạn maxSteps.',
+    'Nhận ra lỗi lặp vô hạn, tool lỗi, dữ liệu tool quá lớn và cách đặt timeout/ngân sách cho agent thật.'
+  ],
+  body: `**Tóm tắt:** AI agent trong ứng dụng thường không phải một model tự hành động: đó là một vòng lặp do chương trình của ta điều khiển. Model đề nghị gọi một tool (công cụ có tên và đầu vào), ứng dụng kiểm tra rồi thực thi tool, trả kết quả về cho model; vòng lặp dừng khi model trả lời cuối cùng hoặc ứng dụng chạm giới hạn bước/ngân sách. Vì vậy quyền truy cập, giới hạn và log nằm ở ứng dụng, không được giao cho lời văn của model.
+
+### 1. LLM, tool và agent khác nhau thế nào?
+**LLM** (Large Language Model, mô hình ngôn ngữ lớn) nhận văn bản và trả ra văn bản có cấu trúc. **Tool** là một hàm do ứng dụng cung cấp, chẳng hạn tra trạng thái hóa đơn trong database. **Agent loop** là vòng điều phối quyết định sẽ gọi model lại hay kết thúc. **Prompt** là nội dung hướng dẫn, câu hỏi và dữ liệu mà ứng dụng gửi cho model; **provider** là nhà cung cấp đang vận hành model và API, ví dụ Anthropic hoặc OpenAI. Hình dung model như nhân viên tổng đài biết yêu cầu cần tra cứu, còn agent loop là quy trình công ty: chỉ nhân viên có quyền mới được mở hệ thống và mọi lần tra cứu đều có giới hạn.
+
+Khi tích hợp tool calling trong provider, request gửi kèm danh sách mô tả tool; model có thể trả về một hoặc nhiều tool call thay vì câu trả lời cho người dùng. Response đó chỉ là **đề nghị**. Model không có quyền truy cập database hay chạy Java trong process của bạn. Server phải tìm đúng tool, xác thực người dùng, kiểm tra đầu vào, rồi mới gọi hàm Java tương ứng. Tên “function calling” cũng không có nghĩa model thực thi hàm: ứng dụng luôn là bên thực thi.
+
+### 2. Một vòng gọi đi qua những bước nào?
+1. Ứng dụng gửi câu hỏi, lịch sử hội thoại và mô tả tool cho model.
+2. Model trả {{tool_use(name, input)}} hoặc {{text(answer)}}. Đây là hai loại response khác nhau; đừng cố chạy tool bằng cách dò từ khóa trong câu văn tự do.
+3. Nếu là tool call, ứng dụng kiểm tra tên và input, chạy tool được đăng ký, rồi lưu kết quả vào hội thoại dưới dạng tool result gắn với call tương ứng.
+4. Ứng dụng gửi lịch sử đã có kết quả tool cho model lần nữa. Model có thể gọi tool khác hoặc trả text cuối.
+5. Ứng dụng trả lời cho người dùng khi nhận text cuối, hoặc báo đã đạt giới hạn bước.
+
+~~~text
+User -> App: "Hóa đơn INV-42 đã thanh toán chưa?"
+App -> Model: câu hỏi + mô tả tool lookupInvoice
+Model --> App: tool_use(lookupInvoice, "INV-42")
+App -> Tool: tra cứu sau khi kiểm quyền
+Tool --> App: "PAID"
+App -> Model: tool_result("PAID") + lịch sử
+Model --> App: text("Hóa đơn đã được thanh toán.")
+App --> User: câu trả lời
+~~~
+
+**Vì sao phải gọi model lại?** Tool trả dữ liệu thô, không biết người dùng hỏi gì và không tự diễn giải. Model cần thấy kết quả để trả lời hoặc chọn bước tiếp theo. Nếu nhiều tool call cùng được trả về, chỉ chạy song song khi các thao tác độc lập; nếu tool thứ hai phụ thuộc kết quả thứ nhất thì phải thực hiện tuần tự.
+
+### 3. Mô hình hóa bằng Java thuần
+Để test mà không cần API có tiền, ta thay model bằng {{FakeModel}}: mỗi lần gọi, nó lấy response kế tiếp trong kịch bản định trước. Kịch bản này vẫn đi qua đúng logic điều phối thật: model có thể đề nghị tool, tool chạy, kết quả được đưa lại vào lần gọi sau.
+
+~~~java
+interface FakeModel {
+    Response next(List<String> toolResults);
+}
+// Response.tool("lookup", "INV-42") hoặc Response.text("Đã thanh toán")
+AgentResult run(FakeModel model, Map<String, Tool> tools, int maxSteps) {
+    List<String> results = new ArrayList<>();
+    for (int step = 1; step <= maxSteps; step++) {
+        Response r = model.next(List.copyOf(results));
+        if (!r.toolUse) return new AgentResult(r.text, step, true);
+        Tool tool = tools.get(r.name);             // chỉ tool đã đăng ký mới được chạy
+        results.add(tool.call(r.input));            // kết quả được model đọc ở bước tiếp
+    }
+    return new AgentResult("", maxSteps, false);   // cắt vòng lặp vô hạn
+}
+~~~
+
+Code minh họa lược bỏ xử lý tên tool không tồn tại và lỗi tool; lời giải tập trung vào luồng chính, còn ứng dụng thật phải trả tool error rõ ràng để model có cơ hội sửa input. {{maxSteps}} đếm **số lần gọi model**, bao gồm cả lần model trả text cuối. Với trần 5, vòng lặp có thể chạy tối đa 5 lượt model: nếu cả 5 lượt đều là tool call thì agent kết thúc bằng trạng thái chưa hoàn tất; nếu muốn luôn có một bước tổng hợp thì phải để dành bước cuối và không dùng hết trần cho tool. Cần chọn quy ước này nhất quán trong test và log. Giá trị 0 hoặc âm phải bị từ chối, không được âm thầm chạy vòng lặp.
+
+### 4. Giới hạn nào mới đủ an toàn?
+{{maxSteps}} là chốt chống lặp vô hạn nhưng chưa phải ngân sách đầy đủ. Mỗi bước có thể gọi provider tốn tiền, truyền lại lịch sử khiến input token tăng, hoặc tool bị treo. Production cần phối hợp:
+- **Giới hạn bước**: chẳng hạn tối đa 5 lượt model cho một tác vụ tra cứu đơn giản; luồng phức tạp phải có lý do và ngân sách riêng.
+- **Deadline/timeout**: deadline là thời điểm cuối cùng request được phép hoàn tất. Timeout từng HTTP/tool không được vượt deadline tổng của request.
+- **Ngân sách token/chi phí**: token là mảnh văn bản model đọc/viết và thường là đơn vị tính quota, chi phí; ghi số input/output từ provider, giới hạn độ dài output và kích thước tool result, không nhét hàng nghìn dòng database vào prompt.
+- **Giới hạn quyền và tốc độ**: kiểm soát theo user/tool, áp rate limit (giới hạn số request trong một khoảng thời gian), và không cho model tự chọn account của người khác.
+- **Dấu vết**: ghi request id, số bước, tên tool, thời gian, trạng thái và token; che thông tin nhạy cảm trong input/output.
+
+### 5. Lỗi thường gặp và cách xử lý
+| Triệu chứng | Lý do | Cách phòng tránh |
+|---|---|---|
+| Agent gọi tra cứu mãi | Không có maxSteps hoặc tool result không giúp model tiến tới câu trả lời | Dừng theo số bước và deadline; trả trạng thái dừng rõ ràng |
+| Model nói đã chuyển tiền nhưng thực tế chưa có | Tin câu text thay vì kết quả từ hệ thống thật | Chỉ xác nhận sau khi tool ghi dữ liệu thành công và trả mã giao dịch |
+| Lịch sử bị lỗi sau tool call | Lưu tool result sai call id hoặc không gửi lại kết quả | Giữ đúng cặp tool call/tool result theo contract của provider |
+| Request đắt bất thường | Lịch sử và tool result được gửi lại qua nhiều vòng | Giới hạn input/output, rút gọn kết quả, đo token theo từng bước |
+| Tool lỗi làm hỏng cả request | Không biểu diễn lỗi như kết quả có kiểm soát | Ghi lỗi an toàn, không lộ stack trace; quyết định retry/fail theo loại tool |
+
+Tool tra cứu chỉ nên trả các trường cần thiết. Tool gửi email, hoàn tiền hay xoá dữ liệu là **tool ghi** (có side effect, tức thay đổi trạng thái bên ngoài); chúng cần quyền riêng, xác nhận khi phù hợp và chống gửi lặp. Không để model tự quyết định giá trị phân quyền: server lấy danh tính từ phiên đăng nhập đã xác thực.
+
+### 6. Liên hệ với framework thật
+Spring AI và LangChain4j cung cấp abstraction cho chat model, tool/function và vòng điều phối, nhưng abstraction không làm mất trách nhiệm của ứng dụng: quyền, schema, timeout, giới hạn bước và idempotency (chống thực hiện lặp) vẫn phải được thiết kế. Giao thức MCP (Model Context Protocol) chuẩn hóa cách client khám phá/gọi tools từ server MCP; nó không tự đảm bảo tool an toàn, cũng không biến model thành bên thực thi. Dù dùng thư viện nào, hãy hiểu rõ ai gọi tool và ở đâu dữ liệu được kiểm tra.
+
+### Liên hệ phỏng vấn
+Khi được hỏi “agent loop hoạt động thế nào?”, hãy trả lời theo chuỗi: ứng dụng gửi prompt và mô tả tool → model trả tool call có cấu trúc → server xác thực, kiểm tra và chạy tool → kết quả được nối đúng vào lịch sử → model được gọi lại → dừng khi có câu trả lời hoặc hết ngân sách. Nhấn mạnh tool call từ model chỉ là đề nghị, không phải lệnh đáng tin; nêu maxSteps, deadline, giới hạn quyền và cách đo số bước/token. Sau đó đưa ví dụ tra hóa đơn và nói rõ thao tác ghi dữ liệu cần idempotency, khác với tool chỉ đọc.
+> Senior tip: bắt đầu bằng max 3–5 bước cho tác vụ hẹp, rồi đo p95 latency (mốc mà 95% request hoàn tất nhanh hơn hoặc bằng), token/request và tỷ lệ kết thúc bằng maxSteps trên dữ liệu thật. Nếu agent thường xuyên chạm trần, xem lại mô tả tool và chất lượng kết quả trước khi chỉ tăng giới hạn—tăng trần mà không đo có thể nhân cả độ trễ lẫn chi phí.`,
+  exercises: [
+    {
+      title: 'Cài AgentLoop chạy theo kịch bản model giả',
+      prompt: `Hoàn thiện {{AgentLoop.run}} và các lớp nhỏ đi kèm. {{FakeModel.next(toolResults)}} trả lần lượt response do test định trước cung cấp; response là một {{tool_use}} có tên/input hoặc một {{text}} cuối cùng. Vòng lặp phải:
+- Từ chối {{maxSteps <= 0}} bằng {{IllegalArgumentException}}.
+- Mỗi response nhận được tính là một bước model. Gặp text thì trả {{AgentResult(answer, steps, finished=true)}} ngay, không gọi model thêm.
+- Gặp tool_use thì chỉ gọi tool cùng tên trong {{Map<String, Tool>}}; thêm kết quả tool vào danh sách và gửi danh sách này ở lần model kế tiếp.
+- Tối đa {{maxSteps}} lần gọi model. Hết bước mà chưa có text thì trả {{finished=false}}, {{steps=maxSteps}}; không gọi model vượt trần.
+- Nếu tên tool không tồn tại, thêm kết quả {{ERROR: unknown tool}} để model có thể tự sửa ở lượt sau; không gọi tool lạ.
+
+Các kiểu dữ liệu khung và factory {{Response.tool(name, input)}} / {{Response.text(text)}} có trong starter. Không gọi API thật; model giả và tool giả làm bài test xác định.`,
+      starter: `interface Tool {
+    String call(String input);
 }
 
+interface FakeModel {
+    Response next(List<String> toolResults);
+}
+
+final class Response {
+    final boolean toolUse;
+    final String name, input, text;
+    Response(boolean toolUse, String name, String input, String text) {
+        this.toolUse = toolUse; this.name = name; this.input = input; this.text = text;
+    }
+    static Response tool(String name, String input) {
+        return new Response(true, name, input, "");
+    }
+    static Response text(String text) {
+        return new Response(false, "", "", text);
+    }
+}
+
+final class AgentResult {
+    final String answer;
+    final int steps;
+    final boolean finished;
+    AgentResult(String answer, int steps, boolean finished) {
+        this.answer = answer; this.steps = steps; this.finished = finished;
+    }
+}
+
+class AgentLoop {
+    AgentResult run(FakeModel model, Map<String, Tool> tools, int maxSteps) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable test) {
+        total++;
+        try { test.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual))
+            throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static final class Script implements FakeModel {
+        final List<Response> script;
+        final List<List<String>> seen = new ArrayList<>();
+        int calls = 0;
+        Script(Response... responses) { script = Arrays.asList(responses); }
+        public Response next(List<String> results) {
+            seen.add(new ArrayList<>(results));
+            return script.get(calls++);
+        }
+    }
+    public static void main(String[] args) {
+        check("tool result returns to model before final answer", () -> {
+            Script model = new Script(Response.tool("lookup", "INV-42"),
+                                      Response.text("Hóa đơn đã thanh toán"));
+            int[] calls = {0};
+            Map<String, Tool> tools = Map.of("lookup", input -> {
+                calls[0]++;
+                eq("INV-42", input);
+                return "PAID";
+            });
+            AgentResult r = new AgentLoop().run(model, tools, 3);
+            eq("Hóa đơn đã thanh toán", r.answer);
+            eq(2, r.steps); eq(true, r.finished); eq(1, calls[0]);
+            eq(List.of("PAID"), model.seen.get(1));
+        });
+        check("final text stops without another model call", () -> {
+            Script model = new Script(Response.text("Không cần tra cứu"),
+                                      Response.tool("lookup", "INV-9"));
+            AgentResult r = new AgentLoop().run(model, Map.of(), 4);
+            eq(1, model.calls); eq(1, r.steps); eq(true, r.finished);
+            eq("Không cần tra cứu", r.answer);
+        });
+        check("maxSteps stops a repeating tool loop", () -> {
+            Script model = new Script(Response.tool("lookup", "1"),
+                                      Response.tool("lookup", "2"),
+                                      Response.text("không được gọi tới"));
+            int[] calls = {0};
+            AgentResult r = new AgentLoop().run(model,
+                Map.of("lookup", input -> { calls[0]++; return input; }), 2);
+            eq(false, r.finished); eq(2, r.steps); eq(2, model.calls);
+            eq(2, calls[0]);
+        });
+        check("invalid maxSteps is rejected", () -> {
+            boolean threw = false;
+            try { new AgentLoop().run(new Script(Response.text("x")), Map.of(), 0); }
+            catch (IllegalArgumentException expected) { threw = true; }
+            eq(true, threw);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `interface Tool {
+    String call(String input);
+}
+
+interface FakeModel {
+    Response next(List<String> toolResults);
+}
+
+final class Response {
+    final boolean toolUse;
+    final String name, input, text;
+    Response(boolean toolUse, String name, String input, String text) {
+        this.toolUse = toolUse; this.name = name; this.input = input; this.text = text;
+    }
+    static Response tool(String name, String input) {
+        return new Response(true, name, input, "");
+    }
+    static Response text(String text) {
+        return new Response(false, "", "", text);
+    }
+}
+
+final class AgentResult {
+    final String answer;
+    final int steps;
+    final boolean finished;
+    AgentResult(String answer, int steps, boolean finished) {
+        this.answer = answer; this.steps = steps; this.finished = finished;
+    }
+}
+
+class AgentLoop {
+    AgentResult run(FakeModel model, Map<String, Tool> tools, int maxSteps) {
+        if (maxSteps <= 0) throw new IllegalArgumentException("maxSteps must be positive");
+        List<String> results = new ArrayList<>();
+        for (int step = 1; step <= maxSteps; step++) {
+            Response response = Objects.requireNonNull(model.next(List.copyOf(results)));
+            if (!response.toolUse)
+                return new AgentResult(response.text, step, true);
+            Tool tool = tools.get(response.name);
+            String result = tool == null
+                ? "ERROR: unknown tool"
+                : tool.call(response.input);
+            results.add(result);
+        }
+        return new AgentResult("", maxSteps, false);
+    }
+}`,
+      hints: [
+        'Tạo một {{ArrayList<String>}} chứa kết quả tool; mỗi vòng gọi {{model.next}} đúng một lần với snapshot của danh sách.',
+        'Dùng vòng {{for}} từ bước 1 tới {{maxSteps}}. Nhánh {{!response.toolUse}} phải return ngay; hết vòng mới return {{finished=false}}.',
+        'Tra tool bằng {{tools.get(response.name)}}; nếu null, thêm đúng chuỗi lỗi thay vì gọi null hoặc bỏ mất bước phản hồi.'
+      ],
+      explain: `### Luồng lời giải
+Mỗi vòng lặp tiêu thụ đúng một response từ model. Nếu response là text thì {{AgentResult.steps}} gồm cả bước cuối đó, và return ngay bảo đảm không lãng phí request tiếp theo. Nếu response là tool call, ứng dụng tra tên trong map đã đăng ký; tool không tồn tại được chuyển thành một kết quả lỗi bình thường để model có thể trả lời hoặc sửa yêu cầu ở bước kế.
+
+{{List.copyOf(results)}} tạo snapshot không sửa được để FakeModel không thể vô tình thay đổi lịch sử tool result của AgentLoop. Kết quả mới chỉ xuất hiện ở lần gọi model sau. Khi hết vòng, {{steps}} bằng giới hạn và {{finished=false}} phân biệt rõ với câu trả lời cuối. Trong production không nên dùng chuỗi rỗng làm thông báo hiển thị: gọi code thật có thể trả trạng thái dừng riêng để UI giải thích rằng agent đã chạm ngân sách.
+
+### Lỗi hay gặp
+- Tăng bộ đếm chỉ khi gọi tool: model có thể trả text lặp hoặc response bất thường mà không tính bước, khiến giới hạn không chặn được.
+- Dùng {{while(true)}} nhưng chỉ dừng theo câu trả lời: tool lỗi hoặc model lặp lại tool sẽ chạy mãi.
+- Khi có tool result lại quên gọi model: người dùng nhận dữ liệu thô thay vì câu trả lời theo câu hỏi.
+- Gặp tool lạ thì thực thi một fallback tùy ý: đây là lỗi phân quyền. Chỉ tên tool đã đăng ký mới có handler.
+- Bắt mọi exception của tool rồi coi như thành công: lỗi ghi dữ liệu phải được báo rõ, không được tạo câu “đã hoàn tất” giả.
+
+Test dùng kịch bản cố định thay vì gọi provider, nên không tốn tiền và luôn lặp lại cùng kết quả. Test thứ nhất xác nhận dữ liệu tool đi vào lần gọi model tiếp theo; test thứ hai chứng minh dừng ngay khi có text; test thứ ba chứng minh không vượt maxSteps; test cuối xác nhận input giới hạn không hợp lệ bị từ chối.`,
+    }
+  ],
+  check: [
+    {
+      q: 'Model trả về tool call yêu cầu đọc hồ sơ người dùng. Bước nào phải xảy ra trước khi hàm database chạy?',
+      options: [
+        'Tin rằng model đã chọn đúng người dùng vì nó thấy câu hỏi',
+        'Server kiểm tra tool được phép và xác thực quyền trên danh tính lấy từ phiên đăng nhập',
+        'Gọi tool bất kỳ cùng tên gần giống rồi sửa kết quả bằng prompt',
+        'Trả câu trả lời của model luôn vì tool call chỉ là gợi ý',
+      ],
+      answer: 1,
+      explain: `Tool call chỉ là dữ liệu do model đề nghị, không phải bằng chứng người gọi có quyền. Server phải lấy user/principal (danh tính đã xác thực) từ phiên đáng tin, kiểm tra quyền với tài nguyên cụ thể rồi mới gọi handler; không dùng userId mà model tự viết trong input làm căn cứ phân quyền. Trong hệ thống nhiều tenant (nhiều khách hàng/tổ chức dùng chung một ứng dụng), quyền phải kiểm tra cả tenant sở hữu tài nguyên. Các lựa chọn khác hoặc trao quyền cho model, hoặc gọi nhầm tool, hoặc bỏ qua việc thực thi tool nên không trả được dữ liệu thật.`,
+    },
+    {
+      q: 'Tại sao AgentLoop cần maxSteps dù model thường tự trả lời sau khi dùng tool?',
+      options: [
+        'Để model không thể sử dụng bất kỳ tool nào',
+        'Để số bước luôn bằng số tool đã đăng ký',
+        'Để chặn vòng lặp khi model tiếp tục yêu cầu tool, đồng thời giới hạn request và chi phí',
+        'Để thay thế timeout cho một tool bị treo',
+      ],
+      answer: 2,
+      explain: `Model có thể lặp lại cùng yêu cầu, tool có thể trả dữ liệu khiến model tiếp tục gọi tool, hoặc prompt có thể thiếu thông tin kết thúc. maxSteps đặt trần số lần gọi model nên chặn vòng lặp và giới hạn một phần chi phí; nó không thay timeout vì một lần gọi tool hoặc HTTP có thể treo lâu ngay trong một bước. MaxSteps cũng không cấm tool, và không liên quan số tool được đăng ký.`,
+    },
+    {
+      q: 'Tool chuyển tiền trả về lỗi timeout, nên kết luận điều gì?',
+      options: [
+        'Chắc chắn giao dịch chưa được ghi vì client không nhận response',
+        'Chắc chắn giao dịch đã thành công vì request đã gửi',
+        'Kết quả chưa rõ; cần tra trạng thái bằng định danh giao dịch hoặc retry an toàn với idempotency key',
+        'Yêu cầu model đoán trạng thái từ nội dung hội thoại',
+      ],
+      answer: 2,
+      explain: `Timeout chỉ cho biết client không nhận response kịp, không cho biết server đã commit hay chưa: giao dịch có thể đã thành công nhưng response bị mất. Tra trạng thái theo transaction id hoặc gửi lại cùng idempotency key giúp tránh tạo giao dịch thứ hai. Hai kết luận “chắc chắn chưa” và “chắc chắn rồi” đều không có căn cứ; model không thể thay dữ liệu từ hệ thống ghi nhận.`,
+    },
+  ],
+  related: ['ai-001', 'ai-017'],
+  tags: ['ai-agent', 'agent-loop', 'tool-calling', 'max-steps', 'java'],
+},
+{
+  id: 'lesson-ai-008',
+  track: 'ai',
+  order: 8,
+  title: 'Thiết kế tool an toàn: schema, phân quyền và idempotency cho thao tác ghi',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Tách được kiểm tra schema/đầu vào khỏi xác thực danh tính và phân quyền.',
+    'Cài ToolRegistry Java thuần với schema nhỏ, quyền theo role và tool handler đã đăng ký.',
+    'Dùng idempotency key để lặp lại request ghi mà không tạo side effect lần hai.',
+    'Giải thích giới hạn của cache idempotency trong một JVM và cách chuyển sang lưu bền vững ở production.'
+  ],
+  body: `**Tóm tắt:** Tool là một API thật nằm sau lời gọi của model, nên rủi ro của nó giống một endpoint backend: input có thể sai, người gọi có thể không đủ quyền và request có thể bị gửi lặp. Thiết kế an toàn theo lớp: chỉ tìm trong tool đã đăng ký, kiểm tra schema/ý nghĩa input, kiểm tra quyền dựa trên danh tính đã xác thực, rồi mới thực thi; với thao tác ghi, dùng idempotency key để cùng một ý định không gây side effect hai lần. Idempotency key là mã do client tạo cho một ý định nghiệp vụ và gửi lại nguyên vẹn khi retry.
+
+### 1. Vì sao mô tả tool trong prompt không phải biện pháp bảo vệ?
+Mô tả “input phải là mã hóa đơn” giúp model tạo request đúng định dạng hơn, nhưng prompt không phải validator và model không phải ranh giới bảo mật. Input vẫn có thể bị lỗi, bị cố ý thao túng qua prompt injection (nội dung không tin cậy tìm cách khiến model bỏ qua chỉ dẫn), hoặc đến từ client khác. Vì vậy server phải coi mọi trường do model gửi là input bên ngoài.
+
+Ba câu hỏi độc lập cần trả lời:
+1. **Schema hợp lệ không?** Schema là hợp đồng hình dạng dữ liệu: trường nào bắt buộc, kiểu gì, giới hạn/format nào. Ví dụ mã hóa đơn phải khớp tiền tố {{INV-}} và chữ số; một chuỗi trống không phải mã hợp lệ. Regex (biểu thức chính quy) là một pattern viết bằng ký hiệu để kiểm tra hình dạng chuỗi; ví dụ pattern của bài yêu cầu tiền tố PAY- theo sau bởi đúng ba chữ số.
+2. **Ai được làm việc này?** Authentication (xác thực) xác định danh tính “ai đang gọi”; authorization (phân quyền) quyết định danh tính đó được phép làm gì trên tài nguyên nào. Đăng nhập hợp lệ không đồng nghĩa được hoàn tiền mọi tài khoản.
+3. **Request đã xử lý chưa?** Retry (gửi lại sau lỗi mạng) có thể đến sau khi database đã commit nhưng response thất lạc. Với lệnh tạo thanh toán, chạy lại không có chống lặp có thể trừ tiền hai lần.
+
+Schema không thay thế validation nghiệp vụ. Một số tiền có đúng kiểu decimal nhưng vẫn âm hoặc vượt hạn mức; cần kiểm tra invariant (điều kiện nghiệp vụ luôn phải đúng) trong service và database sau khi validate cấu trúc.
+
+### 2. Luồng dispatch an toàn
+{{ToolRegistry}} là allowlist (danh sách cho phép) các tool được server đăng ký trước. Nó không dùng reflection (cơ chế Java đọc/gọi class và method lúc chạy) để gọi method tùy ý, không ghép tên method từ model vào câu lệnh SQL, và không cho model chọn endpoint (địa chỉ/chức năng API) tùy tiện. Với từng request, thứ tự hợp lý là:
+- Tra tool trong registry; tool không tồn tại thì từ chối.
+- Xác thực user từ session/token server đã kiểm; principal là danh tính đáng tin của user, không lấy danh tính từ prompt hay input tool.
+- Kiểm tra role/quyền và quyền trên đúng tài nguyên.
+- Validate schema, giới hạn độ dài và kiểm tra điều kiện nghiệp vụ.
+- Với tool ghi, yêu cầu idempotency key hợp lệ; kiểm tra key đã dùng và input có trùng không.
+- Gọi service nghiệp vụ; chỉ sau khi thành công mới lưu kết quả gắn với key. Trả kết quả tối thiểu cần thiết cho model.
+
+~~~text
+Model tool_use -> Registry lookup -> AuthN/AuthZ -> schema + rule
+                                      | sai: reject, không chạy handler
+                                      v
+                             idempotency lookup
+                                      | mới: execute service -> save result
+                                      | cũ, cùng input: trả result đã lưu
+                                      | cũ, khác input: reject conflict
+~~~
+
+AuthN là viết tắt của authentication; AuthZ là authorization. Dùng tên viết tắt này trong log/diagram được, nhưng trong code và phỏng vấn cần nói rõ để không nhầm “đã đăng nhập” với “được phép”.
+
+### 3. Idempotency là gì, không phải gì?
+Một thao tác idempotent cho cùng một key và cùng payload cho kết quả như một lần thực thi: gửi lại request không tạo side effect mới. Server lưu cặp {{(principal, tool, key)}} cùng dấu vân tay input và kết quả. Retry cùng key/cùng input thì trả kết quả trước; cùng key nhưng input khác thì từ chối, vì nếu âm thầm trả kết quả cũ client có thể hiểu nhầm request mới đã được xử lý.
+
+Không dùng nội dung prompt làm key: prompt có thể đổi cách diễn đạt nhưng vẫn cùng giao dịch, hoặc cùng prompt lại đại diện hai lệnh khác nhau. Key thường do client/service tạo bằng UUID cho một ý định nghiệp vụ, lưu lại khi retry và truyền xuyên qua các tầng. Dùng unique constraint trên database để hai instance cùng nhận key không thể cùng tạo hai giao dịch. Lưu cả trạng thái đang xử lý/thành công/thất bại và thời gian hết hạn theo yêu cầu nghiệp vụ.
+
+**Giới hạn quan trọng:** ví dụ Java trong bài giữ map trong RAM và synchronized chỉ bảo vệ các thread của một JVM. Restart sẽ mất map, còn hai pod (hai bản ứng dụng chạy độc lập) không chia sẻ synchronized. Production phải lưu idempotency record bền vững ở database dùng chung, đặt unique key (ràng buộc cơ sở dữ liệu ngăn hai record trùng khóa) và bảo đảm cập nhật record với giao dịch nghiệp vụ một cách nguyên tử. Nếu gọi dịch vụ bên ngoài, truyền key xuống dịch vụ đó khi hỗ trợ; transactional outbox (ghi sự kiện cùng transaction DB rồi gửi lại an toàn) giúp đồng bộ DB và message broker, nhưng không biến mọi hệ thống thành “exactly once” thần kỳ.
+
+### 4. Ví dụ code: schema một trường và quyền tối thiểu
+Trong bài tập ta dùng regex để mô phỏng schema đơn giản cho một chuỗi mã thanh toán, role {{operator}} để minh họa authorization, và {{Function<String, String>}} làm handler. Regex chỉ kiểm tra hình dạng; service thật vẫn phải xác minh giao dịch tồn tại, thuộc đúng khách hàng và chưa bị hoàn tiền.
+
+~~~java
+ToolSpec refund = new ToolSpec(
+    "refund", "operator", "PAY-[0-9]{3}", true,
+    paymentId -> paymentService.refund(paymentId)
+);
+registry.register(refund);
+registry.invoke(authenticatedUserId, role, "refund", "PAY-123", idempotencyKey);
+~~~
+
+Đây là pseudocode sát Java, không phải API Spring AI cụ thể. Framework có thể parse schema JSON và tự chuyển tool call thành đối tượng, nhưng authorization và quy tắc nghiệp vụ vẫn do server áp đặt. Không đưa API key/database credential vào mô tả tool hay prompt.
+
+### 5. Pitfall production
+| Sai lầm | Hậu quả | Sửa thế nào |
+|---|---|---|
+| Chỉ prompt “đừng gọi refund nếu không có quyền” | Model có thể vẫn đề nghị tool; request giả mạo đi thẳng vào server | Handler kiểm quyền độc lập trên server |
+| Cho input chứa SQL/URL tùy ý | SQL injection hoặc server-side request forgery (server bị dụ gọi địa chỉ nội bộ) | Tool có tham số hẹp, prepared statement, allowlist đích |
+| Check key rồi mới chạy, nhưng không có unique constraint | Hai request đồng thời đều thấy key chưa tồn tại và cùng ghi | Transaction + unique constraint trong shared DB |
+| Đánh dấu key thành công trước khi gọi nghiệp vụ | Crash giữa hai bước làm key “thành công” nhưng thao tác chưa xảy ra | Lưu trạng thái và nghiệp vụ nguyên tử; dùng state machine/outbox khi cần |
+| Trả lại kết quả của key cũ cho input mới | Caller tưởng giao dịch mới đã chạy | Lưu hash payload và reject khi cùng key nhưng payload khác |
+| Tool trả cả hồ sơ database cho model | Lộ PII (thông tin định danh cá nhân) và tốn token | Chỉ trả trường cần thiết, che dữ liệu và kiểm quyền truy cập |
+
+Lỗi bất định cần được thiết kế rõ: nếu handler timeout sau khi dịch vụ thanh toán đã nhận lệnh, không được xóa key rồi gọi lại bằng key mới. Hãy tra trạng thái bằng cùng id/key hoặc chuyển trạng thái sang “unknown/pending” để reconciliation (đối soát trạng thái) xử lý.
+
+### Liên hệ phỏng vấn
+Trả lời theo lớp: tool registry là allowlist; input được validate schema rồi kiểm tra invariant nghiệp vụ; authentication lấy danh tính từ context đáng tin, authorization kiểm quyền trên tài nguyên; tool ghi nhận idempotency key + payload hash trong kho bền vững có unique constraint; kết quả tối thiểu được trả cho model. Nêu tình huống timeout sau khi commit: kết quả mơ hồ, vì thế retry cùng key và tra trạng thái, không tạo key mới. Cuối cùng phân biệt demo in-memory với production nhiều instance và nói về transaction/outbox nếu side effect nằm ở hệ thống khác.
+> Senior tip: đo số request trùng key, key/payload conflict, tỷ lệ trạng thái pending quá lâu và thời gian reconciliation. Không ghi dữ liệu thô chứa PII vào log; log key đã hash hoặc correlation id, tool name, principal nội bộ và kết quả phân loại để điều tra mà không làm lộ dữ liệu.`,
+  exercises: [
+    {
+      title: 'Xây ToolRegistry có schema, role và idempotency key',
+      prompt: `Hoàn thiện {{ToolRegistry}} và {{ToolSpec}}. Schema của bài tập là regex trên một chuỗi input: {{ToolSpec}} có tên tool, role bắt buộc, pattern, cờ {{write}} và handler. {{register}} phải từ chối đăng ký trùng tên. {{invoke(userId, role, toolName, input, key)}} phải:
+- Từ chối tool chưa đăng ký; chỉ gọi handler đã đăng ký.
+- So sánh role với role bắt buộc và từ chối trước khi handler chạy nếu không khớp.
+- Kiểm tra input không null và khớp regex; input sai không được chạy handler.
+- Tool ghi bắt buộc có key không rỗng. Phạm vi key là {{userId + toolName + key}}.
+- Cùng phạm vi key + cùng input: trả kết quả đã lưu, không gọi handler lần nữa.
+- Cùng key nhưng input khác: ném {{IllegalArgumentException}}; không trả nhầm kết quả.
+- Chỉ lưu kết quả idempotency sau khi handler trả thành công. Nếu handler ném lỗi, lần retry có thể chạy lại.
+
+Dùng {{synchronized}} trên {{invoke}} để test một JVM đơn giản; giải thích vì sao production nhiều instance cần shared database + unique constraint. Đây là mô phỏng một trường schema, không phải JSON Schema đầy đủ.`,
+      starter: `class ToolSpec {
+    final String name, requiredRole, inputPattern;
+    final boolean write;
+    final Function<String, String> handler;
+    ToolSpec(String name, String requiredRole, String inputPattern,
+             boolean write, Function<String, String> handler) {
+        this.name = name; this.requiredRole = requiredRole;
+        this.inputPattern = inputPattern; this.write = write; this.handler = handler;
+    }
+}
+
+class ToolRegistry {
+    void register(ToolSpec spec) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    synchronized String invoke(String userId, String role, String toolName,
+                               String input, String key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable test) {
+        total++;
+        try { test.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual))
+            throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void expect(Class<? extends Throwable> type, Runnable action) {
+        try { action.run(); }
+        catch (Throwable t) {
+            if (type.isInstance(t)) return;
+            throw new AssertionError("expected " + type.getSimpleName() + " got " + t);
+        }
+        throw new AssertionError("expected " + type.getSimpleName());
+    }
+    static ToolSpec refund(int[] effects) {
+        return new ToolSpec("refund", "operator", "PAY-[0-9]{3}", true, input -> {
+            effects[0]++;
+            return "accepted:" + input;
+        });
+    }
+    public static void main(String[] args) {
+        check("schema rejects bad input before side effect", () -> {
+            int[] effects = {0}; ToolRegistry r = new ToolRegistry(); r.register(refund(effects));
+            expect(IllegalArgumentException.class,
+                () -> r.invoke("u1", "operator", "refund", "PAY-XX", "k1"));
+            eq(0, effects[0]);
+        });
+        check("unauthorized role cannot invoke tool", () -> {
+            int[] effects = {0}; ToolRegistry r = new ToolRegistry(); r.register(refund(effects));
+            expect(SecurityException.class,
+                () -> r.invoke("u1", "viewer", "refund", "PAY-123", "k1"));
+            eq(0, effects[0]);
+        });
+        check("same key and payload executes only once", () -> {
+            int[] effects = {0}; ToolRegistry r = new ToolRegistry(); r.register(refund(effects));
+            String a = r.invoke("u1", "operator", "refund", "PAY-123", "k1");
+            String b = r.invoke("u1", "operator", "refund", "PAY-123", "k1");
+            eq("accepted:PAY-123", a); eq(a, b); eq(1, effects[0]);
+        });
+        check("same key with different payload is rejected", () -> {
+            int[] effects = {0}; ToolRegistry r = new ToolRegistry(); r.register(refund(effects));
+            r.invoke("u1", "operator", "refund", "PAY-123", "k1");
+            expect(IllegalArgumentException.class,
+                () -> r.invoke("u1", "operator", "refund", "PAY-456", "k1"));
+            eq(1, effects[0]);
+        });
+        check("write requires an idempotency key", () -> {
+            int[] effects = {0}; ToolRegistry r = new ToolRegistry(); r.register(refund(effects));
+            expect(IllegalArgumentException.class,
+                () -> r.invoke("u1", "operator", "refund", "PAY-123", " "));
+            eq(0, effects[0]);
+        });
+        check("unknown tool is rejected", () -> {
+            ToolRegistry r = new ToolRegistry();
+            expect(IllegalArgumentException.class,
+                () -> r.invoke("u1", "operator", "deleteAll", "x", "k1"));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class ToolSpec {
+    final String name, requiredRole, inputPattern;
+    final boolean write;
+    final Function<String, String> handler;
+    ToolSpec(String name, String requiredRole, String inputPattern,
+             boolean write, Function<String, String> handler) {
+        this.name = name; this.requiredRole = requiredRole;
+        this.inputPattern = inputPattern; this.write = write; this.handler = handler;
+    }
+}
+
+class ToolRegistry {
+    private static final class Saved {
+        final String input, result;
+        Saved(String input, String result) { this.input = input; this.result = result; }
+    }
+    private final Map<String, ToolSpec> tools = new HashMap<>();
+    private final Map<String, Saved> saved = new HashMap<>();
+
+    void register(ToolSpec spec) {
+        if (spec == null || spec.name == null || spec.name.isBlank())
+            throw new IllegalArgumentException("invalid tool");
+        if (tools.putIfAbsent(spec.name, spec) != null)
+            throw new IllegalArgumentException("duplicate tool");
+    }
+
+    synchronized String invoke(String userId, String role, String toolName,
+                               String input, String key) {
+        ToolSpec spec = tools.get(toolName);
+        if (spec == null) throw new IllegalArgumentException("unknown tool");
+        if (!Objects.equals(spec.requiredRole, role)) throw new SecurityException("forbidden");
+        if (input == null || !input.matches(spec.inputPattern))
+            throw new IllegalArgumentException("invalid input");
+        String scope = userId + "|" + toolName + "|" + key;
+        if (spec.write) {
+            if (userId == null || userId.isBlank() || key == null || key.isBlank())
+                throw new IllegalArgumentException("missing idempotency identity");
+            Saved old = saved.get(scope);
+            if (old != null) {
+                if (!old.input.equals(input))
+                    throw new IllegalArgumentException("key reused with different input");
+                return old.result;
+            }
+        }
+        String result = spec.handler.apply(input);
+        if (spec.write) saved.put(scope, new Saved(input, result));
+        return result;
+    }
+}`,
+      hints: [
+        'Trước khi gọi handler, tìm {{ToolSpec}} trong map, so role và dùng {{input.matches(spec.inputPattern)}} để kiểm schema bài tập.',
+        'Tạo key phạm vi từ user + tool + key. Nếu map kết quả đã có cùng input thì return; nếu input khác thì throw.',
+        'Gọi {{handler.apply}} trước rồi mới ghi {{Saved(input, result)}}; nếu handler ném exception thì dòng lưu không chạy.'
+      ],
+      explain: `### Lời giải và thứ tự kiểm tra
+Registry dùng map tên → {{ToolSpec}}, nên chỉ tool đăng ký trước mới được gọi. {{putIfAbsent}} phát hiện tên trùng mà không âm thầm thay handler; nếu thay handler, một module có thể vô tình ghi đè tool có quyền mạnh hơn. {{invoke}} tra tool, kiểm role, rồi kiểm input trước side effect. Ở hệ thống thật, role chỉ là ví dụ: cần kiểm quyền trên tài nguyên (ví dụ payment này thuộc tenant nào) bằng principal đã xác thực, không tin userId do model gửi.
+
+Key được scope theo user và tool, tránh hai user vô tình dùng chung một key. Map {{saved}} lưu input cùng kết quả; cùng key/cùng input nhận lại kết quả cũ, còn khác input bị từ chối. Handler chạy trước khi ghi kết quả; nếu nó ném lỗi thì không có record thành công giả. Tuy nhiên, timeout sau khi handler đã tạo side effect vẫn là kết quả mơ hồ—đây là lý do phải làm transaction/idempotency ở hệ thống nghiệp vụ, không chỉ bọc một map ở ngoài.
+
+### Lỗi hay gặp
+- Chỉ validate input bằng prompt: model có thể gửi bất cứ chuỗi nào, nên server phải validate lại.
+- Authorization chạy sau handler: kiểm tra sau side effect không còn ý nghĩa.
+- Lưu key trước khi handler chạy: crash có thể khiến retry bị trả kết quả “đã xong” dù chưa tạo giao dịch.
+- Dùng key trần toàn hệ thống: đụng key giữa người dùng/tool và có thể lộ kết quả của người khác.
+- Cho cùng key dùng payload khác: client nhận kết quả cũ nhưng nghĩ lệnh mới đã được thực thi.
+- Tin {{synchronized}} như giải pháp phân tán: synchronized chỉ khóa object trong một JVM, không khóa database hoặc JVM khác.
+
+Test kiểm tra cả đường từ chối lẫn đường thành công và đếm side effect thay vì chỉ so chuỗi trả về. Test idempotency gọi hai lần cùng key và xác nhận handler chỉ chạy một lần; test payload khác xác nhận lần hai bị reject. Ở production, cần test cạnh tranh qua nhiều instance, crash/restart, timeout sau commit và dọn record hết hạn theo chính sách lưu trữ.`,
+    }
+  ],
+  check: [
+    {
+      q: 'Tool yêu cầu hoàn tiền cho PAY-123, nhưng model gửi PAY-12X. Schema validation nên diễn ra lúc nào?',
+      options: [
+        'Trước handler và trước mọi thay đổi dữ liệu',
+        'Sau khi handler hoàn tiền để biết mã đó có thật không',
+        'Chỉ trong system prompt vì model đã đọc mô tả',
+        'Sau khi trả response cho người dùng',
+      ],
+      answer: 0,
+      explain: `Schema validation kiểm tra hình dạng input và phải xảy ra trước handler, nếu không dữ liệu sai đã gây side effect. Prompt chỉ hướng dẫn model, không phải kiểm soát server. Kiểm tra tồn tại và trạng thái thanh toán còn là validation nghiệp vụ riêng sau schema, nhưng cũng phải trước khi ghi.`,
+    },
+    {
+      q: 'Hai request có cùng idempotency key nhưng payload khác nhau. Hành vi an toàn là gì?',
+      options: [
+        'Chạy cả hai vì key chỉ có tác dụng với retry chính xác',
+        'Trả kết quả cũ và giả vờ payload mới đã được xử lý',
+        'Từ chối conflict để caller không nhầm kết quả của ý định khác',
+        'Xóa record cũ rồi chạy payload mới',
+      ],
+      answer: 2,
+      explain: `Một key đại diện cho một ý định nghiệp vụ. Cùng key/cùng payload thì có thể trả kết quả trước; cùng key/khác payload là lỗi caller hoặc lỗi vận hành và phải bị từ chối, không được chạy side effect mới hay trả nhầm kết quả cũ. Xóa record cũng phá khả năng retry an toàn của request đầu.`,
+    },
+    {
+      q: 'Vì sao synchronized + HashMap trong demo không đủ làm idempotency cho ứng dụng chạy nhiều pod?',
+      options: [
+        'HashMap không hỗ trợ chuỗi làm key',
+        'Mỗi pod có bộ nhớ riêng và synchronized chỉ khóa trong một JVM; restart cũng làm mất record',
+        'Java không cho synchronized method gọi database',
+        'Idempotency chỉ dùng được với tool đọc',
+      ],
+      answer: 1,
+      explain: `Mỗi pod là một process/JVM riêng nên có map riêng và monitor synchronized riêng; hai pod có thể đồng thời nghĩ key chưa tồn tại. Khi restart, map cũng mất. Cần kho bền vững dùng chung, unique constraint/transaction và thường phải phối hợp idempotency ở service đích. HashMap dùng được với String key; synchronized không cấm gọi database; idempotency đặc biệt hữu ích cho thao tác ghi.`,
+    },
+  ],
+  related: ['ai-001', 'ai-017'],
+  tags: ['ai-agent', 'tool-security', 'schema-validation', 'authorization', 'idempotency'],
+},
+{
+  id: 'lesson-ai-009',
+  track: 'ai',
+  order: 9,
+  title: 'RAG cơ bản có thể kiểm chứng: chunk overlap, tìm top-k và ghép nguồn',
+  level: 'mid',
+  minutes: 35,
+  goals: [
+    'Giải thích được chunk, overlap, embedding vector và cosine similarity bằng ví dụ nhỏ.',
+    'Viết chunker có overlap, xếp hạng top-k ổn định từ vector có sẵn và ghép context mang source id.',
+    'Phân biệt điểm tương đồng với sự thật, và biết cách kiểm tra citation trước khi tạo link nguồn.'
+  ],
+  body: `**Tóm tắt:** RAG (Retrieval-Augmented Generation, tạo câu trả lời có tăng cường bằng tìm kiếm) tìm đoạn tài liệu phù hợp rồi mới đưa chúng cho LLM (Large Language Model, mô hình ngôn ngữ lớn) trả lời. Pipeline cơ bản là cắt tài liệu thành chunk có overlap, tìm top-k chunk bằng embedding vector và cosine similarity, ghép context kèm mã nguồn, sau đó kiểm tra citation mà model trả về. RAG giúp câu trả lời dựa trên tài liệu mới của công ty, nhưng không tự bảo đảm model nói đúng.
+
+### 1. Vì sao cần cắt tài liệu thành chunk?
+Chunk là một đoạn nhỏ được tách từ tài liệu. Nếu gửi cả cuốn hướng dẫn vào mỗi câu hỏi, request tốn token, chậm và các ý liên quan dễ bị chìm giữa nội dung khác. Token là đơn vị văn bản model xử lý; có thể hình dung như từng mảnh chữ, không phải lúc nào một từ cũng đúng một token.
+
+Tài liệu dài được chia thành những đoạn vừa đủ để mỗi đoạn nói về một ý. Cắt quá ngắn thì mất ngữ cảnh; cắt quá dài thì một vector đại diện cho nhiều chủ đề và khó tìm đúng ý. Chunking theo heading hoặc đoạn văn thường giữ nghĩa tốt hơn cắt đúng từng số ký tự. Bài tập dùng từ để nhìn rõ cơ chế, không phải khuyến nghị cắt tài liệu production theo từ.
+
+**Overlap** là phần cuối của chunk trước được lặp lại ở đầu chunk sau. Ví dụ size 3 từ, overlap 1:
+~~~text
+tài liệu: [phí thường niên của] [của thẻ Platinum là] [là 300 nghìn đồng]
+                       ^ phần "của" nối ý qua ranh giới
+~~~
+Nếu ranh giới rơi giữa tên sản phẩm và giá tiền, overlap giúp ít nhất một chunk chứa đủ hai vế để retrieval có thể tìm thấy. Overlap quá lớn lại làm index chứa nhiều bản sao, tốn bộ nhớ và khiến cùng một thông tin chiếm nhiều vị trí trong top-k.
+
+### 2. Tìm đoạn liên quan bằng vector
+Embedding là phép biến văn bản thành một dãy số gọi là vector. Một embedding model có thể ánh xạ “phí hàng năm” và “phí thường niên” thành hai vector gần nhau dù câu không trùng từ. Bài tập không gọi model embedding: test đưa vector sẵn để ta tập phần tính điểm và xếp hạng.
+
+Cosine similarity đo góc giữa hai vector: điểm gần 1 nghĩa là hai vector cùng hướng; gần 0 nghĩa là ít giống theo không gian đó. Nếu vector đã có độ dài 1, cosine bằng tổng tích từng cặp số. Ví dụ câu hỏi q=[1,0], tài liệu A=[0.6,0.8] có điểm 0.6, B=[0.9,0.1] có điểm 0.9/√0.82 ≈ 0.99, nên B đứng trước. **Top-k** nghĩa là lấy tối đa k kết quả điểm cao nhất, không phải lấy mọi đoạn trong kho.
+
+Trong thực tế, vector thường được lưu cùng nội dung và metadata (thông tin mô tả như id tài liệu, trang, quyền truy cập). PostgreSQL với extension pgvector có thể tìm vector gần nhất; toán tử cosine distance biểu diễn khoảng cách, nên khoảng cách thấp tương ứng với độ tương đồng cao. Trước khi xếp hạng phải áp dụng quyền truy cập của người dùng, nếu không kết quả có thể rò rỉ tài liệu riêng tư.
+
+### 3. Ghép context và citation
+Context là đoạn dữ liệu được đưa cùng câu hỏi vào prompt. Mỗi chunk nên được đánh dấu bằng source id ổn định, ví dụ [policy-12], rồi giữ bảng ánh xạ id đó sang tài liệu/trang thật. Model có thể được yêu cầu trích id sau nhận định, nhưng prompt chỉ là chỉ dẫn: model vẫn có thể bịa [policy-999]. Server phải chỉ tạo link từ id nằm trong tập chunk đã gửi; citation hợp lệ cũng chưa chứng minh câu trả lời được chunk hỗ trợ.
+
+Luồng tối thiểu:
+~~~text
+Câu hỏi -> embedding câu hỏi -> lọc quyền -> cosine/top-k
+       -> [doc-12] nội dung + [doc-18] nội dung -> LLM -> kiểm tra citation id
+~~~
+Nếu retrieval không tìm thấy đoạn đủ liên quan, câu trả lời an toàn là nói không có dữ liệu, thay vì để model đoán. Điểm cosine không phải xác suất đúng: ngưỡng 0.75 ở model này không thể mặc định dùng cho model khác. Hãy đo trên câu hỏi thật và hiệu chỉnh threshold bằng ví dụ đúng/sai đã gán nhãn.
+
+### 4. Ví dụ code của bước cosine
+Đoạn Java sau chỉ minh hoạ hai vector nhỏ đã có sẵn; production cần xử lý kích thước vector lớn, null và dữ liệu không hợp lệ.
+~~~java
+double cosine(double[] a, double[] b) {
+    double dot = 0, aa = 0, bb = 0;
+    for (int i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];      // phần hai vector cùng hướng
+        aa += a[i] * a[i];       // bình phương độ dài a
+        bb += b[i] * b[i];       // bình phương độ dài b
+    }
+    return dot / (Math.sqrt(aa) * Math.sqrt(bb));
+}
+~~~
+Trong code chạy thật phải chặn vector rỗng, khác chiều và vector toàn số 0 trước phép chia. Bài tập định nghĩa các trường hợp lỗi đó thành điểm 0 để chúng không tạo NaN (giá trị số không xác định) làm hỏng thứ tự sắp xếp.
+
+### 5. Lỗi thường gặp và một ví dụ vận hành
+- Cắt tài liệu nhưng không lưu source id: có nội dung mà không thể dẫn người dùng quay về trang gốc.
+- Dùng vector của hai embedding model khác nhau: các tọa độ không còn cùng ý nghĩa; cần tạo lại index nhất quán khi đổi model.
+- Chỉ kiểm citation có tồn tại: model có thể gắn nguồn thật vào nhận định không được nguồn hỗ trợ; cần đo groundedness (mức câu trả lời được bằng chứng hỗ trợ) trên bộ câu hỏi chuẩn.
+- Đưa hướng dẫn độc hại nằm trong tài liệu vào prompt như chỉ thị đáng tin: nội dung retrieval là dữ liệu không tin cậy, không phải lệnh cho agent.
+
+Ví dụ giả lập một chatbot chính sách có 80 nghìn đoạn tài liệu: p95 (mốc 95% request hoàn tất nhanh hơn) là 3.2 giây, câu trả lời thiếu trang nguồn ở 18% ticket. Điều tra cho thấy chunk cắt giữa điều kiện và mức phí, và UI tạo link dựa trực tiếp vào citation model viết. Đội chuyển sang chunk theo mục có overlap 1–2 câu, giữ docId/page, chỉ lấy 4 đoạn sau lọc quyền và loại id citation không nằm trong tập truy xuất. Sau hai tuần, trên 200 câu hỏi có đáp án chuẩn, lỗi thiếu nguồn giảm còn 3%, p95 còn 2.1 giây; các câu không tìm được bằng chứng được chuyển sang nhân viên thay vì đoán.
+
+### 6. Trả lời phỏng vấn thế nào?
+“Em xây RAG theo các bước tách biệt. Khi nạp tài liệu, em làm sạch rồi cắt theo cấu trúc như heading và đoạn, dùng overlap vừa phải để không đứt ý; mỗi chunk giữ document id, trang, version và quyền truy cập. Khi có câu hỏi, em tạo embedding bằng cùng model/version, lọc quyền trước khi truy xuất, chấm cosine và lấy top-k đã hiệu chỉnh bằng eval set. Em ghép các đoạn với source id vào context, yêu cầu model chỉ dựa vào đó và trích nguồn. Nhưng em không tin citation do model tự ghi: server chỉ render link từ id đã gửi, và em đánh giá riêng xem từng nhận định có được nguồn hỗ trợ không. Nếu điểm retrieval thấp hoặc ngữ cảnh không đủ, hệ thống nên từ chối có căn cứ. Em theo dõi recall, groundedness, latency và token cost; đổi chunker hay embedding model thì chạy lại bộ đánh giá trước rollout.”
+
+### Liên hệ phỏng vấn
+Khi giải thích bài tập, đi từ overlap để giữ nghĩa qua ranh giới, cosine để xếp vector có sẵn, top-k để giới hạn context, đến source id để người dùng kiểm chứng. Nêu rõ đây là bản Java thuần mô phỏng; pgvector/Spring AI có thể hỗ trợ truy xuất, nhưng không thay cho authorization, citation validation hay đánh giá chất lượng.`,
+  exercises: [
+    {
+      title: 'Chunk có overlap, xếp top-k và dựng context có nguồn',
+      prompt: `Hoàn thiện {{RagPipeline}} bằng Java thuần, không gọi embedding API hay vector database. {{split(text, size, overlap)}} tách theo whitespace thành các đoạn có tối đa {{size}} từ; hai đoạn cạnh nhau phải lặp {{overlap}} từ. Từ rỗng trả danh sách rỗng; size phải lớn hơn 0 và overlap phải từ 0 đến nhỏ hơn size.
+
+{{cosine(a, b)}} tính cosine similarity; null, khác chiều, vector rỗng hoặc vector có độ dài 0 phải cho điểm 0. {{topK(query, chunks, k)}} xếp điểm cao trước, hòa điểm thì id tăng dần để kết quả ổn định; k âm bị từ chối, k lớn hơn số chunk thì lấy tất cả. Cuối cùng {{context(chunks)}} ghép mỗi đoạn thành một dòng {{[sourceId] text}}. Vector trong test đã được cung cấp sẵn để bài chỉ kiểm tra logic pipeline.`,
+      starter: `final class Chunk {
+    final String id, text;
+    final double[] vector;
+    Chunk(String id, String text, double[] vector) {
+        this.id = id; this.text = text; this.vector = vector;
+    }
+}
+
+class RagPipeline {
+    List<String> split(String text, int size, int overlap) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    double cosine(double[] a, double[] b) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<Chunk> topK(double[] query, List<Chunk> chunks, int k) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String context(List<Chunk> chunks) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable test) {
+        total++;
+        try { test.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual))
+            throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void close(double expected, double actual) {
+        if (Math.abs(expected - actual) > 0.000001)
+            throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static Chunk c(String id, double x, double y) {
+        return new Chunk(id, "text-" + id, new double[] {x, y});
+    }
+    public static void main(String[] args) {
+        RagPipeline p = new RagPipeline();
+        check("chunk overlap preserves boundary word", () -> {
+            eq(List.of("A B C", "C D E"), p.split("A B C D E", 3, 1));
+        });
+        check("topK follows cosine score, not input order", () -> {
+            List<Chunk> result = p.topK(new double[] {1, 0},
+                List.of(c("a", 0.6, 0.8), c("b", 0.9, 0.1)), 1);
+            eq(List.of("b"), List.of(result.get(0).id));
+            close(0.9 / Math.sqrt(0.82), p.cosine(new double[] {1, 0}, result.get(0).vector));
+        });
+        check("ties have stable id order and context keeps citations", () -> {
+            List<Chunk> result = p.topK(new double[] {1, 0},
+                List.of(c("z", 1, 0), c("a", 1, 0)), 2);
+            eq(List.of("a", "z"), List.of(result.get(0).id, result.get(1).id));
+            eq("[a] text-a\\n[z] text-z\\n", p.context(result));
+        });
+        check("zero and incompatible vectors do not produce NaN", () -> {
+            close(0, p.cosine(new double[] {0, 0}, new double[] {1, 0}));
+            close(0, p.cosine(new double[] {1}, new double[] {1, 2}));
+            eq(List.of(), p.split("   ", 3, 0));
+        });
+        check("invalid window arguments are rejected", () -> {
+            boolean badSize = false, badOverlap = false;
+            try { p.split("A B", 0, 0); } catch (IllegalArgumentException e) { badSize = true; }
+            try { p.split("A B", 2, 2); } catch (IllegalArgumentException e) { badOverlap = true; }
+            if (!badSize || !badOverlap) throw new AssertionError("invalid chunk window accepted");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `final class Chunk {
+    final String id, text;
+    final double[] vector;
+    Chunk(String id, String text, double[] vector) {
+        this.id = id; this.text = text; this.vector = vector;
+    }
+}
+
+class RagPipeline {
+    List<String> split(String text, int size, int overlap) {
+        if (size <= 0 || overlap < 0 || overlap >= size)
+            throw new IllegalArgumentException("invalid chunk window");
+        List<String> out = new ArrayList<>();
+        if (text == null || text.isBlank()) return out;
+        String[] words = text.trim().split("\\\\s+");
+        for (int start = 0; start < words.length;) {
+            int end = Math.min(start + size, words.length);
+            out.add(String.join(" ", Arrays.copyOfRange(words, start, end)));
+            if (end == words.length) break;
+            start = end - overlap;
+        }
+        return out;
+    }
+
+    double cosine(double[] a, double[] b) {
+        if (a == null || b == null || a.length == 0 || a.length != b.length) return 0;
+        double dot = 0, aa = 0, bb = 0;
+        for (int i = 0; i < a.length; i++) {
+            dot += a[i] * b[i];
+            aa += a[i] * a[i];
+            bb += b[i] * b[i];
+        }
+        if (aa == 0 || bb == 0) return 0;
+        return dot / (Math.sqrt(aa) * Math.sqrt(bb));
+    }
+
+    List<Chunk> topK(double[] query, List<Chunk> chunks, int k) {
+        if (k < 0) throw new IllegalArgumentException("k must not be negative");
+        List<Chunk> ranked = new ArrayList<>(chunks);
+        ranked.sort((a, b) -> {
+            int byScore = Double.compare(cosine(query, b.vector), cosine(query, a.vector));
+            return byScore != 0 ? byScore : a.id.compareTo(b.id);
+        });
+        return new ArrayList<>(ranked.subList(0, Math.min(k, ranked.size())));
+    }
+
+    String context(List<Chunk> chunks) {
+        StringBuilder out = new StringBuilder();
+        for (Chunk c : chunks) out.append("[").append(c.id).append("] ")
+            .append(c.text).append("\\n");
+        return out.toString();
+    }
+}`,
+      hints: [
+        'Với mỗi cửa sổ, end là min(start + size, số từ). Nếu chưa tới cuối, vị trí tiếp theo là end - overlap.',
+        'Cosine cần tích vô hướng chia cho hai độ dài. Kiểm tra chiều và độ dài trước phép chia để tránh NaN.',
+        'Sort bản sao danh sách theo cosine giảm dần; nếu điểm bằng nhau dùng id tăng dần, rồi cắt tới min(k, size).'
+      ],
+      explain: `### Vì sao lời giải chạy đúng
+{{split}} xác thực cửa sổ trước để không tạo vòng lặp vô hạn khi overlap bằng hoặc lớn hơn size. Mỗi lượt thêm một cửa sổ bắt đầu tại {{start}}; nếu đã chạm cuối thì dừng, nếu chưa thì lùi {{overlap}} từ để phần cuối được dùng lại ở chunk kế. {{String.join}} chỉ phục vụ demo từ; parser production nên hiểu heading, câu, bảng và token budget.
+
+{{cosine}} tính dot product và bình phương độ dài trong một lượt. Vector null, khác chiều, rỗng hoặc toàn số 0 cho điểm 0 vì không có góc hợp lệ để so sánh. Không nên coi 0 là “không liên quan” một cách tuyệt đối; đây là chính sách fallback dễ test, còn pipeline thật có thể loại vector lỗi và ghi metric.
+
+{{topK}} sắp xếp một bản sao nên không đổi thứ tự dữ liệu gốc. Điểm lớn hơn được ưu tiên, rồi id làm tie-breaker để test và production có kết quả xác định. {{context}} ghép chính id đã lưu cùng text; UI/server phải ánh xạ id này sang metadata thật chứ không tin URL do model tự tạo.
+
+### Pitfall
+Test vector có sẵn chỉ chứng minh toán tử xếp hạng. Nó không chứng minh embedding hiểu nghĩa, threshold phù hợp, quyền truy cập đúng hay câu trả lời được nguồn hỗ trợ. Với data lớn, không nên sort mọi chunk trong JVM mỗi request: vector store như pgvector tìm ứng viên; application vẫn lọc quyền và giới hạn kết quả trước khi gọi model.`,
+    }
+  ],
+  check: [
+    {
+      q: 'Tại sao chunking thường thêm overlap?',
+      options: [
+        'Để tạo thêm nội dung mới cho model',
+        'Để một ý nằm vắt qua ranh giới vẫn có thể xuất hiện trọn hơn trong chunk kế tiếp',
+        'Để thay embedding model mà không cần re-index',
+        'Để cosine similarity luôn bằng 1'
+      ],
+      answer: 1,
+      explain: `Overlap lặp lại một phần cuối chunk trước ở chunk sau, giúp giữ ngữ cảnh khi ý nằm gần ranh giới. Nó không tạo dữ liệu mới, không đổi model và không làm vector giống nhau tự động. Overlap quá lớn còn làm index phình và lặp kết quả.`,
+    },
+    {
+      q: 'Cosine similarity cao giữa câu hỏi và một chunk chứng minh điều gì?',
+      options: [
+        'Độ tương đồng theo embedding cao hơn tương đối, nhưng chưa chứng minh câu trả lời là sự thật',
+        'Model chắc chắn đã đọc đúng tài liệu gốc',
+        'Citation trong câu trả lời chắc chắn hợp lệ',
+        'Người dùng có quyền đọc chunk đó'
+      ],
+      answer: 0,
+      explain: `Cosine là tín hiệu xếp hạng vector, không phải xác suất đúng hay quyền truy cập. Hệ thống vẫn cần kiểm quyền, kiểm citation id và đánh giá câu trả lời có được nội dung nguồn hỗ trợ hay không. Model có thể trích id hợp lệ nhưng gắn sai nhận định.`,
+    },
+    {
+      q: 'Server nên xử lý citation [doc-999] do model tự sinh thế nào nếu id đó không nằm trong context đã gửi?',
+      options: [
+        'Tạo đường dẫn theo chuỗi model trả về',
+        'Tìm một tài liệu bất kỳ có id gần giống',
+        'Không tạo link từ id lạ và đánh dấu câu trả lời thiếu căn cứ',
+        'Bỏ kiểm tra vì prompt đã dặn model không bịa'
+      ],
+      answer: 2,
+      explain: `Prompt không phải ranh giới tin cậy; model có thể sinh id không tồn tại. Server chỉ tạo link từ allowlist source id của lần retrieval hiện tại. Nếu id không hợp lệ, không được biến nó thành link; tùy UX có thể loại citation, yêu cầu trả lời lại hoặc chuyển cho người thật.`,
+    },
+  ],
+  related: ['ai-003', 'ai-009', 'ai-014'],
+  tags: ['RAG', 'chunking', 'cosine', 'top-k', 'citations']
+},
+{
+  id: 'lesson-ai-010',
+  track: 'ai',
+  order: 10,
+  title: 'Đánh giá AI agent bằng eval set: pass rate, so sánh prompt và bắt regression',
+  level: 'mid',
+  minutes: 35,
+  goals: [
+    'Tạo eval set cố định gồm input, tiêu chí mong đợi và id case để so sánh các lần chạy.',
+    'Viết runner gọi FakeLlm theo kịch bản, tính pass rate và phát hiện case regression giữa hai prompt.',
+    'Nêu được giới hạn của exact match, LLM-as-judge và lý do cần kết hợp kiểm tra tự động với con người.'
+  ],
+  body: `**Tóm tắt:** Eval (evaluation, đánh giá có cấu trúc) là chạy một tập input cố định qua AI agent và chấm theo tiêu chí đã định, thay vì thử vài câu rồi kết luận bằng cảm giác. Pass rate là số case đạt chia tổng số case; regression là một case từng đạt ở baseline nhưng thất bại ở phiên bản mới. Muốn phép so sánh có ý nghĩa, hai prompt phải chạy trên cùng eval set và lưu kết quả từng case, không chỉ nhìn một con số trung bình.
+
+### 1. Vì sao cần eval set?
+AI agent có thể gọi tool, tìm tài liệu hoặc trả câu trả lời. Sửa một prompt để xử lý lỗi mới đôi khi làm hỏng hành vi cũ: ví dụ agent biết từ chối khi thiếu bằng chứng nhưng sau thay đổi lại đoán phí giao dịch. **Eval set** là tập tình huống có id, input và expected behavior (hành vi mong đợi) được giữ ổn định qua các lần chạy. Nó giống bộ test hồi quy của code: mọi thay đổi được thử lại trên các case cũ.
+
+Không chọn toàn ví dụ dễ. Tập nên có luồng bình thường, câu hỏi biên, thiếu dữ liệu cần từ chối, tool lỗi hoặc timeout, quyền bị từ chối, và prompt injection (nội dung cố dụ model bỏ chỉ dẫn). Với agent, mỗi case có thể cần kiểm cả kết quả lẫn side effect: agent từ chối hoàn tiền sai nhưng vẫn gọi tool hoàn tiền là không đạt.
+
+### 2. Chạy eval và tính pass rate
+Một runner duyệt từng case, gọi model với input, chấm kết quả theo assertion hoặc rubric, lưu case id, version, pass/fail và chi tiết. **Baseline** là phiên bản chuẩn để so sánh; **candidate** là prompt hoặc model đang thử. Pass rate = số case pass / tổng case. Ví dụ baseline đạt 18/20 = 90%, candidate đạt 17/20 = 85%. Nếu chỉ nhìn tỷ lệ, ta chưa biết case nào đã hỏng; cần giữ bảng kết quả theo id.
+
+Bài tập dùng {{FakeLlm}} (model giả) trả câu trả lời đã định trước theo prompt version và input. Điều này giúp kiểm tra runner, mẫu số, so sánh và logic regression không tốn tiền, không phụ thuộc network hay tính ngẫu nhiên của model. Nó không giả lập năng lực của LLM và không thể chứng minh prompt thật tốt; eval thật phải gọi model thật ở môi trường kiểm soát hoặc replay kết quả đã lưu.
+
+~~~text
+case      baseline v1   candidate v2   kết luận
+fee-01       PASS           PASS        giữ nguyên
+refund-02    PASS           FAIL        REGRESSION
+missing-03   FAIL           PASS        cải thiện
+đạt         2/3            2/3         tỷ lệ bằng nhau nhưng case khác
+~~~
+Ví dụ cho thấy pass rate không kể toàn bộ câu chuyện: cả hai bản đều 2/3 nhưng candidate làm hỏng refund-02 và sửa missing-03. Regression chính là case baseline pass và candidate fail; case đã fail trước đó không được gọi là regression mới, dù vẫn cần cải thiện.
+
+### 3. Chọn tiêu chí chấm
+Với output có cấu trúc, kiểm JSON parse được, trường bắt buộc, enum và invariant bằng code. Với agent, kiểm thêm tool nào đã gọi, số lần gọi, input có được phép, trạng thái cuối và side effect. Exact match (so sánh chuỗi giống hệt) phù hợp khi đầu ra là nhãn/format cố định, nhưng không phù hợp với câu trả lời tự nhiên có nhiều cách diễn đạt đúng.
+
+Rubric (bảng tiêu chí chấm) có thể chấm đúng sự thật, đủ ý, an toàn, có dẫn chứng và đúng format. LLM-as-judge là dùng một model để đánh giá output theo rubric; nó giúp mở rộng chấm nội dung nhưng cũng có sai lệch, nên cần chấm thủ công một mẫu, cố định rubric/version và so độ đồng thuận. Không biến judge thành nguồn chân lý duy nhất.
+
+Nên báo cáo từng metric theo mục tiêu. Pass rate dễ hiểu nhưng có thể che lỗi nghiêm trọng nếu 99 case thường gặp pass và 1 case mất tiền fail. Với thao tác rủi ro cao cần gate riêng: không được có vi phạm quyền hoặc side effect không được duyệt. Có thể phân nhóm theo loại case, độ khó, ngôn ngữ và mức rủi ro để biết thay đổi ảnh hưởng ai.
+
+### 4. Gắn eval vào quy trình phát hành
+Lưu prompt theo version bất biến, cùng model, tham số, tool schema và snapshot tài liệu liên quan. Mỗi lần thay prompt chạy lại đúng bộ case; so candidate với baseline và hiển thị regression theo id. Có thể chặn release nếu pass rate giảm quá ngưỡng hoặc có bất kỳ lỗi critical nào. Nếu model/provider thay đổi thì đó cũng là thay đổi cần ghi version, vì output có thể khác dù prompt không đổi.
+
+Eval offline không thay thế production monitoring. Offline dùng tập input đã biết để so sánh có thể lặp lại; monitoring theo dõi traffic thật như tỷ lệ fallback, phản hồi xấu, latency, token cost và lỗi tool. Khi ticket production phát hiện case mới, sau khi che PII (thông tin nhận dạng cá nhân) và được phép lưu, thêm case vào eval set để lần sau không tái phát. Không đưa dữ liệu khách hàng nhạy cảm vào log hay dataset chia sẻ tùy tiện.
+
+### 5. Ví dụ và lỗi thường gặp
+Một agent CSKH có 120 case chuẩn: baseline pass 108/120 = 90%. Sau prompt mới, candidate pass 110/120 = 91.7%, tưởng như tốt hơn. Nhưng khi xem từng case, candidate thất bại 4 câu hỏi từ chối giao dịch thiếu xác thực trong khi sửa 6 lỗi format. Đội quyết định không rollout vì nhóm xác thực là critical; họ thêm gate “0 side effect khi chưa xác thực”, sửa prompt/tool authorization và chạy lại. Kết quả không được tổng hợp thành một con số đẹp để che rủi ro.
+
+- Chạy hai prompt trên hai input set khác nhau: so sánh không công bằng, kể cả cùng số case.
+- Dataset chỉ có ví dụ thành công: không phát hiện khi agent phải từ chối hoặc tool lỗi.
+- Chỉ lưu pass rate: không tìm được regression case cụ thể để sửa.
+- Dùng exact match cho câu tự nhiên: cách nói khác nhưng đúng bị tính fail; dùng rubric hoặc assertion phù hợp.
+- Đổi prompt, model và retrieval cùng lúc: không biết biến nào gây thay đổi; ghi version và thay đổi từng lớp khi điều tra.
+
+### 6. Trả lời phỏng vấn thế nào?
+“Em sẽ tạo eval set có version và case id từ ticket thật đã khử dữ liệu, đồng thời bổ sung case biên, từ chối, lỗi tool và quyền. Mỗi candidate prompt chạy đúng cùng input, model/config và snapshot phụ thuộc; runner lưu output, tool trace và kết quả từng assertion. Em báo cáo pass rate nhưng cũng so baseline theo từng case để tìm regression, và đặt gate riêng cho lỗi critical như gọi tool ghi khi chưa xác thực. JSON hay enum thì kiểm bằng code; câu trả lời mở có thể chấm bằng rubric và LLM-as-judge, nhưng em hiệu chuẩn judge trên mẫu người chấm. Unit test dùng FakeLlm để kiểm luồng runner rẻ và ổn định, không coi đó là bằng chứng chất lượng model. Sau release em tiếp tục theo dõi phản hồi, latency và chi phí; lỗi production mới được bổ sung vào tập đánh giá.”
+
+### Liên hệ phỏng vấn
+Nói rõ eval trả lời câu hỏi “bản thay đổi có tốt hơn trên cùng các tình huống không?”, không bảo đảm mọi traffic thật đúng. Nêu case id, baseline/candidate, pass rate, regression theo từng case, tiêu chí critical, FakeLlm cho test deterministic và production monitoring để hoàn thiện vòng lặp.`,
+  exercises: [
+    {
+      title: 'Chạy cùng eval set trên hai prompt và tìm regression',
+      prompt: `Hoàn thiện {{EvalRunner}}. {{FakeLlm.answer(version, input)}} trả về output theo kịch bản test, không gọi API thật. Với từng case, runner gọi fake model đúng một lần, so output với expected, lưu trạng thái theo case id và đếm pass/total.
+
+{{passRate()}} trả tỷ lệ trong khoảng 0..1. Tập rỗng và id case trùng phải bị từ chối để không chia 0 hoặc ghi đè kết quả. {{regressions(baseline, candidate)}} trả các id baseline pass nhưng candidate fail; hai kết quả phải có cùng tập id, nếu không ném {{IllegalArgumentException}}. Candidate cải thiện case trước đó fail không phải regression. Dùng kết quả từng case, không suy luận regression chỉ từ chênh lệch tổng pass rate.`,
+      starter: `interface FakeLlm {
+    String answer(String version, String input);
+}
+
+final class EvalCase {
+    final String id, input, expected;
+    EvalCase(String id, String input, String expected) {
+        this.id = id; this.input = input; this.expected = expected;
+    }
+}
+
+final class EvalResult {
+    final Map<String, Boolean> passedById;
+    EvalResult(Map<String, Boolean> passedById) { this.passedById = passedById; }
+    int passed() { throw new UnsupportedOperationException("TODO"); }
+    int total() { throw new UnsupportedOperationException("TODO"); }
+    double passRate() { throw new UnsupportedOperationException("TODO"); }
+}
+
+class EvalRunner {
+    EvalResult run(String version, List<EvalCase> cases, FakeLlm llm) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<String> regressions(EvalResult baseline, EvalResult candidate) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable test) {
+        total++;
+        try { test.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual))
+            throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void close(double expected, double actual) {
+        if (Math.abs(expected - actual) > 0.000001)
+            throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static EvalCase c(String id, String expected) { return new EvalCase(id, id, expected); }
+    static FakeLlm scripted(Map<String, Map<String, String>> scripts) {
+        return (version, input) -> scripts.getOrDefault(version, Map.of()).get(input);
+    }
+    static Map<String, String> row(String... values) {
+        Map<String, String> out = new HashMap<>();
+        for (int i = 0; i < values.length; i += 2) out.put(values[i], values[i + 1]);
+        return out;
+    }
+    public static void main(String[] args) {
+        EvalRunner runner = new EvalRunner();
+        List<EvalCase> cases = List.of(c("fee", "A"), c("refund", "B"), c("missing", "C"));
+        Map<String, Map<String, String>> script = Map.of(
+            "v1", row("fee", "A", "refund", "B", "missing", "wrong"),
+            "v2", row("fee", "A", "refund", "wrong", "missing", "C"));
+        check("pass rate uses number of passing cases", () -> {
+            EvalResult r = runner.run("v1", cases, scripted(script));
+            eq(2, r.passed()); eq(3, r.total()); close(2.0 / 3.0, r.passRate());
+        });
+        check("same set detects only pass-to-fail regression", () -> {
+            EvalResult before = runner.run("v1", cases, scripted(script));
+            EvalResult after = runner.run("v2", cases, scripted(script));
+            eq(List.of("refund"), runner.regressions(before, after));
+            eq(2, after.passed()); // fee stays passing; missing improves from fail
+        });
+        check("empty and duplicate case ids are rejected", () -> {
+            boolean empty = false, duplicate = false;
+            try { runner.run("v1", List.of(), scripted(script)); }
+            catch (IllegalArgumentException e) { empty = true; }
+            try { runner.run("v1", List.of(c("same", "x"), c("same", "x")), scripted(script)); }
+            catch (IllegalArgumentException e) { duplicate = true; }
+            if (!empty || !duplicate) throw new AssertionError("invalid eval set accepted");
+        });
+        check("comparison rejects different case sets", () -> {
+            EvalResult a = runner.run("v1", List.of(c("fee", "A")), scripted(script));
+            EvalResult b = runner.run("v2", List.of(c("refund", "B")), scripted(script));
+            boolean threw = false;
+            try { runner.regressions(a, b); } catch (IllegalArgumentException e) { threw = true; }
+            eq(true, threw);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `interface FakeLlm {
+    String answer(String version, String input);
+}
+
+final class EvalCase {
+    final String id, input, expected;
+    EvalCase(String id, String input, String expected) {
+        this.id = id; this.input = input; this.expected = expected;
+    }
+}
+
+final class EvalResult {
+    final Map<String, Boolean> passedById;
+    EvalResult(Map<String, Boolean> passedById) {
+        this.passedById = new LinkedHashMap<>(passedById);
+    }
+    int passed() {
+        int n = 0;
+        for (boolean ok : passedById.values()) if (ok) n++;
+        return n;
+    }
+    int total() { return passedById.size(); }
+    double passRate() { return total() == 0 ? 0.0 : (double) passed() / total(); }
+}
+
+class EvalRunner {
+    EvalResult run(String version, List<EvalCase> cases, FakeLlm llm) {
+        if (cases == null || cases.isEmpty()) throw new IllegalArgumentException("eval set is empty");
+        Map<String, Boolean> outcomes = new LinkedHashMap<>();
+        for (EvalCase c : cases) {
+            if (c == null || c.id == null || c.id.isBlank() || outcomes.containsKey(c.id))
+                throw new IllegalArgumentException("invalid or duplicate case id");
+            String actual = llm.answer(version, c.input);
+            outcomes.put(c.id, Objects.equals(c.expected, actual));
+        }
+        return new EvalResult(outcomes);
+    }
+
+    List<String> regressions(EvalResult baseline, EvalResult candidate) {
+        if (!baseline.passedById.keySet().equals(candidate.passedById.keySet()))
+            throw new IllegalArgumentException("eval case sets differ");
+        List<String> out = new ArrayList<>();
+        for (String id : baseline.passedById.keySet()) {
+            if (Boolean.TRUE.equals(baseline.passedById.get(id))
+                    && Boolean.FALSE.equals(candidate.passedById.get(id))) out.add(id);
+        }
+        return out;
+    }
+}`,
+      hints: [
+        'Khi chạy, tạo {{LinkedHashMap<String, Boolean>}} để vừa chặn id trùng vừa giữ thứ tự case; gọi FakeLlm theo version và input.',
+        'Pass rate là {{(double) passed / total}} để không chia số nguyên. Tập rỗng nên bị từ chối trước khi tính.',
+        'Regression chỉ khi id có trong cả hai kết quả, baseline là true và candidate là false; so sánh keySet để bảo đảm cùng eval set.'
+      ],
+      explain: `### Cách đọc lời giải
+{{run}} duyệt một eval set cố định, gọi FakeLlm một lần cho mỗi case và so output với expected. Map có thứ tự giữ phép nối case id → pass/fail, nên có thể xem chính xác lỗi nào xảy ra thay vì chỉ lưu tổng. Từ map đó {{passed}} đếm số true, {{total}} là mẫu số, còn ép kiểu sang double trước phép chia giúp nhận 2/3 thay vì phép chia số nguyên thành 0.
+
+Runner từ chối tập rỗng vì pass rate khi không có case không mang ý nghĩa; nó cũng từ chối id trùng vì nếu map ghi đè một case thì tử số và mẫu số không còn đại diện dataset. {{regressions}} yêu cầu hai map có đúng cùng key set. Nó chỉ trả case true ở baseline và false ở candidate: case vẫn fail không phải lỗi mới, còn case chuyển từ fail sang pass là cải thiện.
+
+### FakeLlm kiểm tra được gì?
+Stub trong test chỉ trả kịch bản đã định trước theo version và input. Nó xác nhận code đã chạy đúng số case, dùng đúng version, tính tỷ lệ và tìm regression; nó không đánh giá chất lượng một LLM thật. Eval thật cần lưu model/provider version, tham số, prompt hash, tool schema và snapshot retrieval để kết quả có thể giải thích.
+
+### Pitfall khi đưa vào CI
+Exact string match tốt cho nhãn đơn giản như PASS/FAIL nhưng dễ sai với câu trả lời tự nhiên. Hãy kiểm format, facts bắt buộc, tool trace hoặc rubric; dùng LLM-as-judge thì chấm mẫu bằng người để đo độ tin cậy. Không chỉ đặt ngưỡng tổng thể: một lỗi nhỏ ở luồng hoàn tiền có thể quan trọng hơn nhiều câu trả lời văn phong chưa đẹp. Phân loại case theo độ rủi ro và chặn riêng lỗi critical.`,
+    }
+  ],
+  check: [
+    {
+      q: 'Khi so sánh prompt baseline và candidate, điều kiện tối thiểu nào giúp phép đo pass rate công bằng?',
+      options: [
+        'Chạy mỗi prompt trên một bộ câu hỏi do prompt đó tự chọn',
+        'Dùng cùng eval case, cùng expected behavior và cấu hình được ghi nhận',
+        'Chỉ chạy candidate vì baseline đã cũ',
+        'Chọn output đẹp nhất trong nhiều lần chạy'
+      ],
+      answer: 1,
+      explain: `Hai bản phải gặp cùng input và expected criteria; đồng thời cần ghi model/config vì chúng cũng làm output thay đổi. Bộ input khác nhau hoặc chỉ giữ lần chạy đẹp nhất tạo thiên lệch, không cho biết prompt mới có gây regression hay không.`,
+    },
+    {
+      q: 'Case nào được tính là regression mới khi so kết quả theo id?',
+      options: [
+        'Baseline fail, candidate pass',
+        'Cả hai phiên bản đều fail',
+        'Baseline pass, candidate fail',
+        'Cả hai phiên bản đều pass'
+      ],
+      answer: 2,
+      explain: `Regression là hành vi từng đúng bị hỏng sau thay đổi: baseline pass và candidate fail. Baseline fail/candidate pass là cải thiện; cùng fail là lỗi tồn tại cần sửa nhưng không phải regression mới; cùng pass là hành vi được giữ.`,
+    },
+    {
+      q: 'FakeLlm trong unit test chứng minh điều gì?',
+      options: [
+        'Prompt candidate chắc chắn tốt hơn trên model production',
+        'Model thật sẽ luôn trả đúng chuỗi đã định trước',
+        'Logic runner, đếm case và so sánh kết quả hoạt động theo kịch bản deterministic',
+        'Eval set không cần thêm case production mới'
+      ],
+      answer: 2,
+      explain: `FakeLlm cô lập logic ứng dụng và cho đầu ra có thể lặp lại, nên dùng để test runner, version, tỷ lệ và nhánh regression. Nó không mô phỏng chất lượng hay độ ngẫu nhiên của model thật; cần eval trên model/config phù hợp và monitoring production.`,
+    },
+  ],
+  related: ['ai-019', 'ai-024', 'ai-034'],
+  tags: ['agent-evaluation', 'eval-set', 'pass-rate', 'regression', 'FakeLlm']
+},
+{
+  id: 'lesson-ai-011',
+  track: 'ai',
+  order: 11,
+  title: 'Memory cho AI agent: cửa sổ token, cắt lượt và tóm tắt phần cũ',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Phân biệt chat history (những gì người dùng thấy) với chat memory (những gì thực sự gửi cho model), và giải thích vì sao LLM là stateless.',
+    'Tính được ngân sách token của một request: system prompt + tool + memory + phần dành cho câu trả lời, và vì sao tiếng Việt tốn token hơn tiếng Anh.',
+    'Cài sliding window theo token: cắt trọn lượt hội thoại, giữ system prompt, tách phần cũ để tóm tắt và giữ thông tin quan trọng.',
+    'Giải thích vì sao tóm tắt có thể mất thông tin, khi nào nên dùng tóm tắt lũy tiến và vì sao long-term memory phải tách khỏi chat memory.'
+  ],
+  body: `**Tóm tắt:** Với API chat stateless phổ biến, LLM (mô hình ngôn ngữ lớn) không tự giữ hội thoại giữa request; ứng dụng phải chọn message và gửi lại. Phần gửi cho model gọi là **chat memory**, còn chat history là lịch sử đầy đủ. Vì context window (giới hạn token của một request) có hạn, cần tính ngân sách, giữ các lượt mới, tóm tắt phần cũ và lưu riêng dữ kiện bắt buộc chính xác.
+
+### 1. Vì sao model không nhớ, và memory nằm ở đâu?
+**Token** là mảnh nhỏ của văn bản mà model đọc được — không phải chữ cái, cũng không phải từ. **Tokenizer** là bộ tách văn bản thành token; cách tách phụ thuộc model và ngôn ngữ, nên không có tỷ lệ ký tự/token cố định đáng tin cho mọi câu tiếng Anh hoặc tiếng Việt. Context window chứa system prompt (chỉ dẫn về vai trò và quy tắc), mô tả tool (công cụ model có thể yêu cầu ứng dụng chạy), lịch sử, ngữ cảnh RAG (Retrieval-Augmented Generation: tìm đoạn tài liệu liên quan rồi đưa vào prompt) và chỗ dành cho câu trả lời. Model của API stateless không có bộ nhớ giữa request; mỗi request là một cuộc gọi độc lập, giống như gọi một hàm {{String chat(String prompt)}} không giữ state.
+
+Vậy ba khái niệm phải tách rạch ròi:
+- **Chat history**: hội thoại đầy đủ để hiển thị và audit (ghi nhận để kiểm tra lại); nó không bị giới hạn bởi context window, nhưng vẫn cần quota lưu trữ và thời hạn retention (thời gian được phép giữ dữ liệu).
+- **Chat memory**: tập message thực sự được nhồi vào request. Có giới hạn token, có thể bị cắt, bị tóm tắt, bị đổi thứ tự.
+- **Long-term memory**: dữ liệu ổn định qua nhiều phiên (khách thích được gọi bằng "anh", công ty dùng VND). Nằm ở database, truy hồi theo user id, không nằm chung danh sách message với hội thoại.
+
+Spring AI (framework tích hợp AI cho Java) và LangChain4j (thư viện Java cho ứng dụng LLM) cung cấp abstraction (giao diện che bớt chi tiết triển khai) cho chat memory và kho lưu, nhưng API/chính sách phụ thuộc phiên bản và cấu hình. Có implementation giữ theo số message; một số thư viện hỗ trợ giới hạn theo token. Luôn kiểm tra chính sách eviction (loại dữ liệu cũ), cách giữ system message và nơi lưu trong phiên bản đang dùng. Điểm chung: **ứng dụng quyết định cắt gì, provider (dịch vụ cung cấp model) chỉ nhận danh sách message cuối cùng**.
+
+### 2. Ngân sách token của một request
+Trước khi cắt, phải biết mình có bao nhiêu chỗ. Một request gồm các phần cộng lại:
+
+~~~text
+system prompt        ~ 400 token
+tool definitions     ~ 600 token
+memory (history)     ?
+câu hỏi mới           ~ 50 token
+chỗ trả lời           ~ 300 token  (max output)
+--------------------
+tổng phải <= context window  (ví dụ 200.000)
+~~~
+
+Ví dụ giả định với window 8.000 token: 400 + 600 + 50 + 300 = 1.350 token cố định, còn **6.650 token** cho memory. Nếu tokenizer của model đo một lượt hỏi–đáp tiếng Việt là khoảng 120 token (câu hỏi 40 + câu trả lời 80), ngân sách này chứa khoảng **55 lượt**; khi gần đầy phải cắt hoặc tóm tắt.
+
+Ước lượng ký tự chỉ phù hợp làm kiểm thử gần đúng; production nên dùng tokenizer phù hợp model và đối chiếu usage (thống kê số token) mà provider trả về, ví dụ {{prompt_tokens}}/{{completion_tokens}} hoặc {{input_tokens}}/{{output_tokens}} tùy API. Nếu request vượt giới hạn, provider có thể từ chối; đừng dựa vào giả định rằng nó sẽ tự cắt lịch sử an toàn, đặc biệt không được để mất system prompt.
+
+### 3. Cắt thế nào cho đúng: cắt trọn lượt, không cắt giữa cặp
+Hội thoại là các cặp {{user}} → {{assistant}}, xen kẽ có thể là tool call (yêu cầu chạy một công cụ) và tool result (kết quả công cụ). Nếu cắt theo kiểu "cứ đủ 10 message thì bỏ message cũ nhất", bạn có thể bỏ câu hỏi mà giữ câu trả lời, hoặc bỏ tool call mà giữ tool result. Nhiều provider từ chối tool result mồ côi: một kết quả phải đi kèm lời gọi công cụ đứng trước nó. Hậu quả có thể là lỗi HTTP 400 (request sai định dạng), hoặc model hiểu sai ngữ cảnh.
+
+Vì vậy đơn vị cắt nên là **lượt (turn)**: một tin nhắn user cộng tất cả message do assistant sinh ra sau đó (kể cả tool call/tool result) cho tới tin nhắn user kế tiếp. Nếu điểm cắt rơi vào giữa lượt thì tiến tới user message kế tiếp để phần còn lại không bắt đầu bằng assistant hoặc tool result mồ côi. Framework có thể chọn chính sách theo số message hoặc cách riêng; hãy kiểm tra behavior của phiên bản đang dùng thay vì mặc định nó luôn giữ nguyên lượt. Đánh đổi: cửa sổ thực tế có thể nhỏ hơn giới hạn danh nghĩa.
+
+~~~java
+// Một lượt = 1 user message + mọi message assistant/tool sau nó, tới user message kế tiếp
+static int turnStart(List<Msg> history, int from) {
+    for (int i = from; i < history.size(); i++) {
+        if (history.get(i).role == Role.USER) return i;   // cắt tại đây thì lượt vẫn nguyên vẹn
+    }
+    return history.size();
+}
+~~~
+
+### 4. Hai chế độ cắt
+| | Sliding window (cửa sổ trượt) | Summarization (tóm tắt) |
+|---|---|---|
+| Làm gì | bỏ hẳn các lượt cũ nhất | gọi LLM tóm tắt phần cũ thành một đoạn ngắn, giữ đoạn đó làm ký ức nén |
+| Ưu | rẻ, tất định, không mất chữ nào của phần được giữ | giữ được ý chính của đoạn dài, không mất mạch |
+| Nhược | mất sạch thông tin cũ (số tiền, tên, quyết định) | tốn một lượt gọi LLM, tóm tắt có thể sai hoặc thiếu, tóm tắt của tóm tắt càng méo |
+| Dùng khi | hội thoại ngắn, thông tin cũ không cần | hội thoại dài (hàng chục lượt), cần giữ ngữ cảnh chung |
+
+Cách ghép thực tế: khi phần chưa tóm tắt vượt ngân sách, lấy các lượt cũ nhất (nhưng vẫn để dành vài lượt gần nhất), gọi một lần với prompt kiểu "tóm tắt các lượt sau thành gạch đầu dòng, giữ nguyên số tiền, mã hồ sơ và quyết định", rồi thay các lượt đó bằng một message assistant chứa bản tóm tắt. Lần sau ngưỡng lại vượt thì tóm tắt tiếp — gọi là **progressive summarization**; đưa summary cũ vào đầu vào để không bỏ quên nó và cân nhắc lưu phiên bản cũ để đối chiếu.
+
+Một câu hỏi hay bị bỏ qua: **tóm tắt bằng model nào, giá bao nhiêu?** Tóm tắt 10.000 token input để lấy 300 token output vẫn tốn tiền, nhưng rẻ hơn nhiều so với gửi lại 10.000 token đó mỗi lượt trong 40 lượt. Quyết định đúng là so sánh: chi phí tóm tắt một lần so với chi phí gửi lại phần đó ở các lượt sau.
+
+### 5. Thông tin quan trọng phải nằm ngoài bản tóm tắt
+Tóm tắt làm mất chi tiết. Cách chống: **slot / structured notes**. Bên cạnh danh sách message, giữ một object nhỏ dạng key–value cho những thứ bắt buộc phải chính xác: {{customerId}}, {{amount}}, {{productCode}}, {{decision}}, {{deadline}}. Mỗi khi user nói một dữ kiện quan trọng, cập nhật slot bằng code (hoặc bằng một tool "ghi nhớ" do model gọi, có validate). Khi dựng prompt, slot được chèn lại dạng liệt kê, không phụ thuộc model còn nhớ trong đoạn tóm tắt hay không.
+
+~~~text
+memory = [ system ] + [ tóm tắt ] + [ 6 lượt gần nhất ] + [ user mới ]
+slot   = { customerId: C-1024, amount: 4500000, product: VND_SAVING_12M }
+~~~
+
+### Ví dụ đời thực
+Chatbot ngân hàng hỏi "tôi muốn tất toán khoản vay 4.500.000". Nếu tóm tắt ghi "khách muốn tất toán khoản vay" mà mất số tiền, câu trả lời "vâng, em đã tất toán" là **sai nghiêm trọng**. Slot biến "nhớ" thành dữ liệu có cấu trúc, kiểm tra được bằng code và test được — đúng thứ một senior nên làm thay vì tin vào trí nhớ của model.
+
+### 6. Tóm tắt cũng là nơi rò dữ liệu
+Tóm tắt lưu text: nếu hội thoại chứa số thẻ, số điện thoại, bệnh án, thì bản tóm tắt cũng chứa. PII (Personally Identifiable Information, dữ liệu có thể nhận diện cá nhân) cần được che trước khi tóm tắt, ví dụ thay số thật bằng {{KHACH_HANG}} hoặc {{SO_THE}}. Tóm tắt theo từng user, không trộn nhiều conversation, mã hóa khi lưu và đặt TTL (Time To Live, thời hạn lưu trước khi tự hết hiệu lực); không gửi cho nhà cung cấp model khác nếu chưa có thỏa thuận xử lý dữ liệu.
+
+### 7. Long-term memory khác chat memory
+Dữ liệu ổn định ("khách thích được gọi là Anh") không nên nằm trong danh sách message: nó làm phình context và khó xóa riêng khi khách yêu cầu. Lưu ở bảng riêng theo {{user_id}}, chỉ truy hồi khi cần; nếu tìm theo embedding (vector số biểu diễn ý nghĩa văn bản để tìm nội dung gần nghĩa), chỉ lấy dữ liệu liên quan rồi chèn vào system prompt. Khi xóa, có thể xóa theo user key ở kho riêng thay vì lọc thủ công mọi prompt cũ.
+
+### 8. Lỗi hay gặp trên production
+- Cắt theo số message rồi để lại tool call/tool result mồ côi → provider trả 400.
+- Không giữ system prompt: model mất vai trò, trả lời như một chatbot chung.
+- Tóm tắt lũy tiến không lưu bản cũ: khi khách khiếu nại "tôi đã nói rồi", không có gì để đối chiếu.
+- Dùng chung một conversation id cho mọi user: user A đọc được hội thoại của user B. Đây là IDOR (Insecure Direct Object Reference, truy cập nhầm dữ liệu khi đổi mã định danh mà server không kiểm quyền).
+- Không log token của phần memory: hoá đơn tăng mà không biết do history phình hay do prompt dài.
+- Tóm tắt cả đoạn chứa dữ liệu nhạy cảm: bản tóm tắt trở thành bản sao PII thứ hai, khó xoá và khó kiểm soát.
+
+### Liên hệ phỏng vấn
+Trả lời theo bốn lớp: (1) tách history (đầy đủ, để audit) khỏi memory (có giới hạn, để gửi); (2) tính ngân sách token: context window trừ system prompt, tool và phần trả lời, còn lại là memory; (3) cắt trọn lượt thay vì cắt message, giữ system prompt và dùng slot có cấu trúc cho dữ liệu bắt buộc chính xác; (4) tóm tắt lũy tiến khi hội thoại dài, có che PII và TTL. Kết bằng một câu về đo lường: theo dõi token của phần memory, tỉ lệ request phải tóm tắt, và tỉ lệ câu trả lời thiếu dữ kiện — ba con số cho biết memory đang tốt hay đang phình.`,
+  exercises: [
+    {
+      title: 'Sliding window theo token có tóm tắt phần cũ',
+      prompt: `Hoàn thiện {{Memory}}: cửa sổ hội thoại theo token với system prompt cố định và một bản tóm tắt cho phần đã bị cắt.
+
+{{Memory(int maxTokens, Summarizer summarizer)}}. {{Summarizer.summarize(String transcript)}} trả về bản tóm tắt (trong bài tập là một model giả trả lời theo kịch bản; production sẽ gọi LLM).
+
+{{List<Msg> build(String newUserText)}} phải:
+- Bắt đầu bằng system message, sau đó là {{summary}} hiện có (nếu khác null), rồi các lượt cũ nhất còn giữ được.
+- {{newUserText}} luôn có mặt ở cuối và luôn được tính vào token; nếu một mình nó đã vượt {{maxTokens}} thì ném {{IllegalArgumentException}} (không được âm thầm cắt mất câu hỏi mới).
+- Chỉ cắt trọn lượt: một lượt gồm một user message và mọi message ngay sau nó cho tới user message kế tiếp. Không được để lại assistant message mồ côi ở đầu phần được giữ.
+- Mỗi lượt bị cắt được cộng vào {{transcript}}, rồi đem {{summarizer.summarize}} một lần cho toàn bộ phần bị cắt của lần build đó. Bản tóm tắt mới thay bản cũ (một message assistant có nội dung "Tóm tắt: ...").
+- Không bao giờ cắt system message. Danh sách trả về không được rỗng.
+
+Đơn vị token của bài tập: {{int tokens(String s)}} tính bằng {{Math.max(1, (s.length() + 3) / 4)}} — làm tròn lên mỗi 4 ký tự, tối thiểu 1 token, giống cách các bài khác trong track ước lượng. Cộng token theo độ dài chuỗi, không phải theo số object.`,
+      starter: `import java.util.*;
+
+final class Msg {
+    final String role, text;                 // "system" | "user" | "assistant"
+    Msg(String role, String text) { this.role = role; this.text = text; }
+}
+
+interface Summarizer {
+    String summarize(String transcript);
+}
+
+class Memory {
+    final int maxTokens;
+    final Summarizer summarizer;
+    final List<Msg> history = new ArrayList<>();
+    Msg system;
+    String summary = null;
+
+    Memory(int maxTokens, Summarizer summarizer) {
+        this.maxTokens = maxTokens;
+        this.summarizer = summarizer;
+    }
+
+    static int tokens(String s) {
+        return Math.max(1, (s.length() + 3) / 4);
+    }
+
+    void setSystem(String text) {
+        // TODO: chỉ giữ một system message, luôn đứng đầu
+    }
+
+    void addUser(String text) { /* TODO */ }
+
+    void addAssistant(String text) { /* TODO */ }
+
+    List<Msg> build(String newUserText) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable test) {
+        total++;
+        try { test.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual))
+            throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void truth(boolean ok, String what) {
+        if (!ok) throw new AssertionError(what);
+    }
+    static void expect(Class<? extends Throwable> type, Runnable action) {
+        try { action.run(); }
+        catch (Throwable t) {
+            if (type.isInstance(t)) return;
+            throw new AssertionError("expected " + type.getSimpleName() + " got " + t);
+        }
+        throw new AssertionError("expected " + type.getSimpleName());
+    }
+    static void turn(Memory m, String user) {
+        m.addUser(user);
+        m.addAssistant("Tra cứu thành công, đây là thông tin chi tiết bạn cần xem thêm trong hệ thống.");
+    }
+    static Memory small() {
+        Memory m = new Memory(120, t -> t.contains("FACT:email-only")
+            ? "FACT:email-only" : "[tomtat:" + t.length() + "]");
+        m.setSystem("Ban la tro ly ngan hang");
+        return m;
+    }
+    static List<Msg> fill(Memory m) {
+        for (int i = 0; i < 12; i++) turn(m, "Cau hoi so " + i);
+        return m.build("Cau moi nhat");
+    }
+    public static void main(String[] args) {
+        check("history fits in budget, newest turn kept", () -> {
+            List<Msg> h = fill(small());
+            truth(h.size() <= 12, "quá nhiều message: " + h.size());
+            eq("Cau hoi so 11", h.get(h.size() - 3).text);
+            eq("Cau moi nhat", h.get(h.size() - 1).text);
+        });
+        check("system message always first and never evicted", () -> {
+            List<Msg> h = fill(small());
+            eq("system", h.get(0).role);
+            truth(h.get(0).text.contains("tro ly"), "system bị mất: " + h.get(0).text);
+        });
+        check("kept part has no orphan assistant", () -> {
+            List<Msg> h = fill(small());
+            for (int i = 1; i < h.size(); i++) {
+                if (!h.get(i).role.equals("assistant") || h.get(i).text.startsWith("Tóm tắt")) continue;
+                String prevRole = h.get(i - 1).role;
+                boolean ok = prevRole.equals("user") || h.get(i - 1).text.startsWith("Tóm tắt");
+                truth(ok, "assistant mồ côi ở vị trí " + i + ": " + h);
+            }
+        });
+        check("evicted turns are summarized once", () -> {
+            int[] calls = {0};
+            Memory m = new Memory(120, t -> { calls[0]++; return "[tomtat:" + t.length() + "]"; });
+            m.setSystem("Ban la tro ly ngan hang");
+            fill(m);
+            eq(1, calls[0]);
+            truth(m.summary != null && m.summary.startsWith("[tomtat:"), "phần cũ chưa được tóm tắt");
+        });
+        check("important fact survives when its old turn is summarized", () -> {
+            Memory m = small();
+            turn(m, "FACT:email-only");
+            for (int i = 0; i < 12; i++) turn(m, "Cau hoi so " + i);
+            m.build("Cau moi nhat");
+            m.build("Cau tiep theo");
+            truth(m.summary != null && m.summary.contains("FACT:email-only"), "fact quan trọng bị mất");
+        });
+        check("summary stays first after system", () -> {
+            List<Msg> h = fill(small());
+            truth(h.get(1).text.startsWith("Tóm tắt"), "thiếu summary ở vị trí 1: " + h.get(1).text);
+        });
+        check("budget respected", () -> {
+            List<Msg> h = fill(small());
+            int sum = 0;
+            for (Msg m : h) sum += Memory.tokens(m.text);
+            truth(sum <= 120, "vượt ngân sách: " + sum);
+        });
+        check("new question alone too big is rejected", () -> {
+            Memory m = new Memory(10, t -> "x");
+            m.setSystem("sys");
+            String huge = "mot cau hoi rat rat dai hon ngan sach token cho phep cua he thong nay";
+            expect(IllegalArgumentException.class, () -> m.build(huge));
+        });
+        check("empty memory with only system works", () -> {
+            Memory m = small();
+            List<Msg> h = m.build("Xin chao");
+            eq(2, h.size());
+            eq("Xin chao", h.get(1).text);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+
+final class Msg {
+    final String role, text;                 // "system" | "user" | "assistant"
+    Msg(String role, String text) { this.role = role; this.text = text; }
+}
+
+interface Summarizer {
+    String summarize(String transcript);
+}
+
+class Memory {
+    final int maxTokens;
+    final Summarizer summarizer;
+    final List<Msg> history = new ArrayList<>();
+    Msg system;
+    String summary = null;
+
+    Memory(int maxTokens, Summarizer summarizer) {
+        if (maxTokens <= 0 || summarizer == null) throw new IllegalArgumentException("invalid memory configuration");
+        this.maxTokens = maxTokens;
+        this.summarizer = summarizer;
+    }
+
+    static int tokens(String s) {
+        return Math.max(1, (s.length() + 3) / 4);
+    }
+
+    void setSystem(String text) {
+        this.system = new Msg("system", text);
+    }
+
+    void addUser(String text) { history.add(new Msg("user", text)); }
+
+    void addAssistant(String text) { history.add(new Msg("assistant", text)); }
+
+    // một lượt = user message + mọi message sau nó tới user message kế tiếp
+    private static int turnStart(List<Msg> h, int from) {
+        for (int i = from; i < h.size(); i++) {
+            if ("user".equals(h.get(i).role)) return i;
+        }
+        return h.size();
+    }
+
+    List<Msg> build(String newUserText) {
+        Msg q = new Msg("user", newUserText);
+        int base = (system == null ? 0 : tokens(system.text))
+                 + (summary == null ? 0 : tokens("Tóm tắt: " + summary))
+                 + tokens(newUserText);
+        if (base > maxTokens) throw new IllegalArgumentException("câu hỏi mới vượt ngân sách token");
+
+        // Đi từ lượt MỚI NHẤT về phía cũ: lượt nào còn chỗ thì giữ, phần cũ hơn bị cắt và tóm tắt.
+        // Nhờ vậy "đủ chỗ thì giữ tối đa" luôn đúng, và điểm cắt luôn nằm ở ranh giới một lượt.
+        List<Msg> all = history;
+        int used = base;
+        int cut = all.size();                 // mọi message có chỉ số < cut sẽ bị cắt
+        int i = all.size();
+        while (i > 0) {
+            int turnBegin = i - 1;
+            while (turnBegin > 0 && !"user".equals(all.get(turnBegin).role)) turnBegin--;
+            int turnTokens = 0;
+            for (int j = turnBegin; j < i; j++) turnTokens += tokens(all.get(j).text);
+            if (used + turnTokens > maxTokens) break;
+            used += turnTokens;
+            cut = turnBegin;
+            i = turnBegin;
+        }
+
+        StringBuilder removed = new StringBuilder();
+        if (cut > 0 && summary != null) removed.append("Tóm tắt trước đó: ").append(summary);
+        for (int j = 0; j < cut; j++) {
+            if (removed.length() > 0) removed.append('\\n');
+            removed.append(all.get(j).text);
+        }
+
+        List<Msg> out = new ArrayList<>();
+        if (system != null) out.add(system);
+        String nextSummary = summary;
+        if (cut > 0) {
+            nextSummary = summarizer.summarize(removed.toString());
+        }
+        if (nextSummary != null) out.add(new Msg("assistant", "Tóm tắt: " + nextSummary));
+        for (int j = cut; j < all.size(); j++) out.add(all.get(j));
+        out.add(q);
+        int total = 0;
+        for (Msg message : out) total += tokens(message.text);
+        if (total > maxTokens) throw new IllegalStateException("summary does not fit memory budget");
+        summary = nextSummary;
+        return out;
+    }
+}`,
+      hints: [
+        '        Duyệt các lượt từ mới nhất về cũ, cộng token từng lượt; lượt nào không còn vừa thì cắt từ đầu lượt đó.',
+        'Gom các lượt bị cắt vào một StringBuilder, gọi summarizer một lần rồi thay bằng một message "Tóm tắt: ..." đặt ngay sau system.',
+        'Luôn cộng token của newUserText vào ngân sách trước khi cắt, và ném IllegalArgumentException nếu riêng nó đã vượt maxTokens.'
+      ],
+      explain: `### Lời giải hoạt động thế nào
+{{build}} tính ba phần cố định trước (system, summary, câu hỏi mới). Nếu phần cố định đã vượt ngân sách thì từ chối ngay: không có cách nào cắt cho vừa mà vẫn giữ câu hỏi. Sau đó nó duyệt các lượt từ mới nhất về cũ, cộng token từng lượt; lượt đầu tiên không còn chỗ sẽ là điểm cắt. Vì điểm cắt luôn rơi vào ranh giới user message, phần được giữ không bắt đầu bằng một assistant message mồ côi, cũng không giữ tool result thiếu tool call.
+
+Phần bị cắt được cộng dồn vào {{removed}} rồi đem tóm tắt **một lần** cho cả lần build, không phải mỗi lượt một lần. Đây là chi tiết quan trọng về chi phí: gọi tóm tắt 12 lần cho 12 lượt tốn tiền hơn và làm bản tóm tắt bị "leo thang" méo dần. Bản tóm tắt mới ghi đè bản cũ, nên mỗi lần build chỉ có một message tóm tắt duy nhất.
+
+### Test kiểm tra điều gì
+Test dùng {{Summarizer}} giả để kết quả tất định: nó trả độ dài transcript cũ, hoặc giữ nguyên marker {{FACT:email-only}} khi marker đó xuất hiện. Các assertion kiểm tra history bị cắt, lượt mới nhất còn nguyên, tổng token không vượt ngân sách, không có assistant mồ côi và fact quan trọng còn trong summary. Không nên gắn test với một con số token suy ra từ số ký tự: công thức trong bài chỉ là giả lập, tokenizer thật phụ thuộc model.
+
+### Vì sao đặt bản tóm tắt trước các lượt còn lại
+Bản tóm tắt được chèn như một message assistant ngay sau system, đúng thứ tự thời gian: system, tóm tắt của quá khứ, các lượt gần đây, câu hỏi mới. Model đọc theo thứ tự đó và hiểu "đoạn trên là chuyện cũ đã được nén". Nếu đặt tóm tắt sau câu hỏi mới, model dễ coi nó là dữ liệu vừa mới xảy ra.
+
+### Lỗi hay gặp và giới hạn của bài tập
+Bài tập giữ history trong RAM: restart là mất, và nhiều instance không chia sẻ danh sách này (giống hệt vấn đề của idempotency in-memory). Production lưu memory ra {{ChatMemoryRepository}}: Spring AI có {{JdbcChatMemoryRepository}}, {{RedisChatMemoryRepository}}, {{MongoChatMemoryRepository}}; LangChain4j có interface {{ChatMemoryStore}} để tự cài. Bài tập cũng chưa xử lý PII: thật thì phải che số thẻ, số điện thoại trước khi lưu hoặc tóm tắt, đặt TTL và mã hoá khi lưu. Cuối cùng, tóm tắt không phải "trí nhớ": dữ liệu bắt buộc chính xác phải nằm trong slot có cấu trúc, không dựa vào đoạn văn do model viết lại.`,
+    }
+  ],
+  check: [
+    {
+      q: 'Vì sao không nên cắt history bằng cách "bỏ message cũ nhất cho đủ 10 message"?',
+      options: [
+        'Vì message cũ luôn quan trọng hơn message mới',
+        'Vì có thể cắt mất system prompt hoặc để lại tool call/tool result mồ côi, khiến provider trả lỗi hoặc model hiểu sai',
+        'Vì provider không cho phép quá 10 message',
+        'Vì token của message cũ tính đắt hơn'
+      ],
+      answer: 1,
+      explain: `Số message không tỉ lệ với token, và một lượt gồm nhiều message. Cắt mù theo số có thể bỏ system message, bỏ user message mà giữ assistant message, hoặc bỏ tool call mà giữ tool result — nhiều provider từ chối tool result mồ côi. Đơn vị cắt đúng là lượt (turn), và phải tính theo token.`,
+    },
+    {
+      q: 'Thông tin "khoản vay 4.500.000" xuất hiện trong hội thoại dài. Cách nào an toàn nhất để model không quên khi hội thoại đã bị tóm tắt?',
+      options: [
+        'Đặt câu nhắc ở system prompt "nhớ giữ số tiền"',
+        'Gọi model tóm tắt lại nhiều lần với temperature thấp',
+        'Lưu vào một slot có cấu trúc (key–value) và chèn lại vào prompt mỗi lượt',
+        'Giữ toàn bộ history, không tóm tắt nữa'
+      ],
+      answer: 2,
+      explain: `Tóm tắt là văn bản do model viết lại nên có thể mất hoặc làm sai chi tiết. Slot có cấu trúc là dữ liệu do code quản lý, kiểm tra được và chèn lại mỗi lượt. Nhắc trong system prompt không đảm bảo; tóm tắt lại nhiều lần làm chi tiết méo thêm; giữ toàn bộ history sẽ vượt context window và tăng chi phí.`,
+    },
+    {
+      q: 'Tóm tắt lũy tiến (progressive summarization) khác gì với tóm tắt lại từ đầu mỗi lượt?',
+      options: [
+        'Không khác gì, chỉ là tên gọi',
+        'Mỗi lần chỉ tóm tắt phần vừa bị cắt rồi thay bản tóm tắt cũ, thay vì tóm tắt lại toàn bộ history mỗi lượt',
+        'Là tóm tắt cả history mỗi lượt để luôn mới',
+        'Là không tóm tắt, chỉ cắt bỏ'
+      ],
+      answer: 1,
+      explain: `Tóm tắt lũy tiến chỉ gọi LLM cho phần mới bị cắt và thay bản tóm tắt hiện có, nên chi phí tỉ lệ với lượng hội thoại mới. Tóm tắt lại toàn bộ mỗi lượt tốn token tăng dần theo thời gian và làm bản tóm tắt bị viết lại liên tục, dễ mất chi tiết đã có.`,
+    },
+    {
+      q: 'Vì sao long-term memory (sở thích, thông tin ổn định của khách) không nên nhét chung vào danh sách message?',
+      options: [
+        'Vì provider không cho phép message không phải hội thoại',
+        'Vì làm phình context và gây khó khi phải xoá dữ liệu theo yêu cầu; nên lưu theo user id ở kho riêng và chèn vào system prompt',
+        'Vì model không đọc được message có cấu trúc',
+        'Vì nó sẽ bị tóm tắt mất ngay'
+      ],
+      answer: 1,
+      explain: `Memory dạng message bị cắt và tóm tắt như mọi message khác, lại nằm lẫn với hội thoại nên rất khó xoá chọn lọc. Dữ liệu ổn định nên nằm ở bảng riêng theo user_id, truy hồi khi cần và chèn vào system prompt; khi khách yêu cầu xoá, chỉ cần một câu DELETE.`,
+    },
+  ],
+  related: ['ai-022', 'ai-058', 'ai-060', 'ai-007', 'ai-001'],
+  tags: ['agent-memory', 'chat-memory', 'context-window', 'token-budget', 'summarization', 'sliding-window', 'PII']
+},
+{
+  id: 'lesson-ai-012',
+  track: 'ai',
+  order: 12,
+  title: 'MCP-style tool server bằng Java: registry, schema và lỗi có cấu trúc',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Phân biệt AI host/client, MCP server và tool handler trong một lần gọi công cụ.',
+    'Đăng ký tool với tên, mô tả và input schema để client có thể discovery trước khi gọi.',
+    'Viết dispatcher Java thuần cho request list_tools và call_tool với validate input.',
+    'Trả lỗi có cấu trúc và giải thích vì sao schema không thay thế authorization ở backend.'
+  ],
+  body: `**Tóm tắt:** MCP (Model Context Protocol) chuẩn hóa cách ứng dụng AI khám phá và gọi công cụ từ server. Server công bố tên, mô tả và schema của tool, nhưng vẫn phải validate và authorize từng request; schema giúp mô tả input chứ không phải hàng rào bảo mật.
+
+### 1. Thành phần và luồng gọi
+**Host** là ứng dụng AI đang điều phối, **client** là thành phần trong host nói giao thức MCP, còn **server** cung cấp tools, resources hoặc prompts. **Tool** là hành động có tên mà model có thể đề xuất gọi, ví dụ tra trạng thái đơn hàng. **Handler** là đoạn code nhận input đã kiểm tra và chạy nghiệp vụ. Server mới thực thi handler; model không tự chạy Java hay tự kết nối database.
+
+Luồng khái quát: client khởi tạo kết nối và thương lượng capabilities (các tính năng hai bên hỗ trợ) → yêu cầu danh sách tool → host đưa mô tả/schema phù hợp cho model → model đề xuất tool call → client gửi request tới server → server validate, kiểm quyền rồi chạy handler → kết quả được trả lại để model diễn giải. Discovery (khám phá danh sách) và execution (thực thi) là hai bước riêng.
+
+MCP dùng JSON-RPC 2.0 (quy tắc request/response JSON có method, parameters và id) với method chuẩn gồm {{tools/list}} và {{tools/call}}. Task này dùng tên rút gọn {{list_tools}} và {{call_tool}} làm request envelope (cấu trúc bọc các field) dễ đọc để luyện registry; code bài tập **không** phải MCP server tương thích wire protocol (định dạng thông điệp trên đường truyền). MCP còn có khởi tạo, capability negotiation (thống nhất tính năng), transport (kênh giao tiếp như stdio hoặc HTTP) và format kết quả theo đặc tả; tích hợp thật nên dùng SDK (bộ thư viện hỗ trợ tích hợp) Java tương thích và tuân theo version, thay vì tự nhận một dispatcher đơn giản là MCP hoàn chỉnh.
+
+### 2. Vì sao registry cần schema?
+**Registry** là bảng tra cứu các tool được phép gọi theo tên. **Schema** là hợp đồng mô tả hình dạng dữ liệu đầu vào, kiểu của từng field và field nào bắt buộc. Mỗi entry tối thiểu có:
+- {{name}} ổn định, duy nhất trong server.
+- {{description}} giải thích mục đích và giới hạn để model chọn đúng tool.
+- {{inputSchema}} mô tả kiểu dữ liệu, field bắt buộc và ràng buộc.
+- Handler Java thực thi nghiệp vụ sau khi request hợp lệ và được cấp quyền; quyền này phải được kiểm tra bởi server chứ không được suy ra từ schema.
+
+Ví dụ tool {{lookup_order}} nhận object {{orderId}} kiểu string. Schema làm client/model biết cần truyền gì, nhưng client có thể gửi JSON sai, bị cũ hoặc bị cố tình sửa. Server phải validate lại field, kiểu dữ liệu, kích thước, tenant và trạng thái nghiệp vụ ngay tại ranh giới tin cậy.
+
+~~~text
+request:  {"method":"call_tool","params":{"name":"lookup_order",
+          "arguments":{"orderId":"ORD-42"}}}
+response: {"result":{"orderId":"ORD-42","status":"SHIPPED"}}
+error:    {"error":{"code":"INVALID_PARAMS","message":"orderId is required"}}
+~~~
+
+JSON (JavaScript Object Notation) là văn bản biểu diễn object/list và giá trị có cấu trúc. Trong transport thật, parse là chuyển chuỗi JSON thành object Java, còn serialize là chuyển object thành chuỗi JSON; dùng thư viện hoặc SDK phù hợp. JDK chuẩn không có JSON parser tổng quát; bài tập nhận Map đã parse để tập trung vào dispatch (chọn nhánh xử lý theo method) và validation, không giả vờ rằng {{Map.toString()}} là JSON.
+
+### 3. Registry và dispatcher
+Dispatcher là phần điều phối chọn thao tác theo method: kiểm tra params, tìm tool theo name, validate arguments theo schema, rồi mới gọi handler. Mọi nhánh lỗi nên có machine-readable code (mã mà chương trình có thể so sánh ổn định) và message an toàn. Client có thể dựa vào code để quyết định sửa input hay dừng; không nên parse chuỗi lỗi tự do.
+
+Trong actual JSON-RPC, lỗi giao thức có error object theo contract; kết quả tool MCP có cấu trúc riêng, thường bao gồm content blocks và trạng thái lỗi. Bài tập đơn giản hóa thành {{result}} hoặc {{error}} để thấy ý tưởng, không thay thế response format của MCP SDK.
+
+### 4. Java thuần: registry trước, server adapter sau
+~~~java
+Tool tool = registry.find(name);
+if (tool == null) return error("TOOL_NOT_FOUND", "Unknown tool");
+if (!valid(tool.schema, arguments)) {
+    return error("INVALID_PARAMS", "Arguments do not match schema");
+}
+Object result = tool.handler.call(arguments);
+return Map.of("result", result);
+~~~
+
+Ở hệ thống thực, handler không nên nhận quyền database toàn cục rồi tin input của model. Nó gọi use case hiện hữu, lấy principal (danh tính đã xác thực của người gọi) và tenant (ranh giới dữ liệu của một khách hàng/tổ chức) từ phiên transport, kiểm quyền tại service sở hữu dữ liệu và giới hạn số kết quả. Với tool ghi như khóa thẻ hay tạo lệnh, cần idempotency (cùng request gửi lại không tạo thêm lần thực hiện), xác nhận phù hợp, audit (ghi vết ai làm gì) và timeout (thời gian chờ tối đa); model có thể đề xuất lại cùng một hành động.
+
+### 5. Lỗi production và bảo mật
+- **Tên trùng** khiến tool bị ghi đè hoặc gọi nhầm; registry nên từ chối đăng ký trùng.
+- **Schema quá rộng** như object tùy ý làm model khó chọn và tăng bề mặt tấn công; chỉ khai báo field thực sự cần.
+- **Schema bị xem là authorization (kiểm tra quyền)**: model có thể gửi userId hoặc tenantId khác. Server phải lấy danh tính từ ngữ cảnh đã xác thực và kiểm tra quyền ở mọi lần gọi.
+- **Lỗi nội bộ bị trả nguyên văn** có thể lộ SQL, đường dẫn hoặc PII. Trả code ổn định, message an toàn; log nội bộ dùng correlation id (mã gắn các log của cùng request) và không ghi secret.
+- **Tool gọi chậm hoặc có side effect (thay đổi trạng thái bên ngoài)** cần timeout, rate limit (giới hạn số request trong một khoảng thời gian), giới hạn payload, audit, idempotency và chính sách retry rõ ràng.
+- **Prompt injection** là chỉ thị độc hại giấu trong input/tài liệu nhằm khiến model bỏ qua quy tắc; kết quả tool cũng là dữ liệu không tin cậy, còn authorization phải ở server.
+
+Mô tả tool nên ngắn, chính xác và không hứa nhiều hơn handler thực thi. Giới hạn danh sách tool theo user/session khi phù hợp. Không để tool truy cập URL tùy ý, SQL tùy ý hoặc lệnh shell chỉ vì model yêu cầu. Discovery không có nghĩa là cấp quyền chạy.
+
+### Ví dụ đời thực
+Một trợ lý nội bộ tra cứu đơn hàng công bố tool với input {{orderId}}. Lúc đầu handler dùng trực tiếp {{tenantId}} do model gửi; trong replay kiểm thử (chạy lại một request đã ghi), đổi tenant trả về đơn hàng không thuộc người gọi. Đội sửa bằng cách lấy tenant từ principal đã xác thực, gọi service nghiệp vụ kiểm quyền, validate định dạng id và giới hạn một kết quả mỗi call. Bộ test có 4 nhóm: schema sai, tool không tồn tại, user không có quyền và tenant chéo; request trái quyền bị từ chối trước truy vấn dữ liệu. Log chỉ giữ tool name, mã lỗi, duration và correlation id, không giữ prompt hay dữ liệu khách. Số liệu minh họa; điều quan trọng là schema không được coi như ranh giới bảo mật.
+
+### Trả lời mẫu khi phỏng vấn
+“Em dùng MCP để chuẩn hóa discovery và invocation, nhưng phân biệt rõ MCP server với model: model chỉ đề xuất tool call, server thực thi. Registry công bố tên, mô tả và input schema; dispatcher parse request, kiểm tra method, tìm tool, validate kiểu và field bắt buộc rồi mới chạy handler. Giao thức MCP thật dùng JSON-RPC và các method như tools/list, tools/call; em sẽ dùng SDK tương thích thay vì tự nhận một dispatcher nội bộ là wire-compatible. Về bảo mật, schema không cấp quyền. Em lấy user và tenant từ transport đã xác thực, kiểm tra quyền ở service sở hữu dữ liệu, giới hạn output, timeout và rate limit. Tool ghi cần idempotency, audit và xác nhận theo rủi ro. Lỗi trả code ổn định, không lộ exception hoặc SQL. Em cũng test input sai, tenant chéo, retry và prompt injection trong dữ liệu trả về.”
+
+> Senior tip: coi tool server như public API nhận input không tin cậy; mỗi handler phải enforce quyền độc lập, kể cả khi chỉ một agent nội bộ đang gọi.
+
+### Liên hệ phỏng vấn`,
+  exercises: [
+    {
+      title: 'Dispatch request tool và trả lỗi có cấu trúc',
+      prompt: `Hoàn thiện {{ToolRegistry}}. Registry từ chối tool trùng tên; {{list_tools}} trả danh sách có name, description và schema; {{call_tool}} kiểm tra tên tool, arguments và field bắt buộc theo schema trước khi gọi handler. Trả Map có envelope {{result}} hoặc {{error}} chứa code và message. Bài tập nhận Map đại diện cho JSON đã parse, không cần tự viết JSON parser.`,
+      starter: 'interface ToolHandler { Object call(Map<String, Object> arguments); }\nclass Tool {\n    final String name, description;\n    final Map<String, Object> schema;\n    final List<String> required;\n    final ToolHandler handler;\n    Tool(String name, String description, Map<String, Object> schema,\n         List<String> required, ToolHandler handler) {\n        this.name = name; this.description = description; this.schema = schema;\n        this.required = required; this.handler = handler;\n    }\n}\nclass ToolRegistry {\n    private final Map<String, Tool> tools = new LinkedHashMap<>();\n    void register(Tool tool) { throw new UnsupportedOperationException("TODO"); }\n    Map<String, Object> dispatch(Map<String, Object> request) {\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'public class Main {\n    static int passed = 0, total = 0;\n    static void check(String name, Runnable test) {\n        total++;\n        try { test.run(); passed++; System.out.println("PASS " + name); }\n        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t.getMessage()); }\n    }\n    static Map<String, Object> newRegistry() {\n        Map<String, Object> schema = Map.of("type", "object", "properties",\n            Map.of("orderId", Map.of("type", "string")), "required", List.of("orderId"));\n        ToolRegistry r = new ToolRegistry();\n        r.register(new Tool("lookup_order", "Find one order", schema, List.of("orderId"),\n            args -> Map.of("orderId", args.get("orderId"), "status", "SHIPPED")));\n        return Map.of("registry", r, "schema", schema);\n    }\n    static Map<?, ?> error(Map<String, Object> response) { return (Map<?, ?>) response.get("error"); }\n    public static void main(String[] args) {\n        Map<String, Object> setup = newRegistry();\n        ToolRegistry r = (ToolRegistry) setup.get("registry");\n        check("lists tool metadata", () -> {\n            Map<String, Object> response = r.dispatch(Map.of("method", "list_tools"));\n            List<?> list = (List<?>) response.get("result");\n            if (list.size() != 1 || !((Map<?, ?>) list.get(0)).containsKey("schema")) throw new AssertionError("metadata missing");\n        });\n        check("calls handler with valid arguments", () -> {\n            Map<String, Object> response = r.dispatch(Map.of("method", "call_tool", "params",\n                Map.of("name", "lookup_order", "arguments", Map.of("orderId", "ORD-42"))));\n            Map<?, ?> result = (Map<?, ?>) response.get("result");\n            if (!"SHIPPED".equals(result.get("status"))) throw new AssertionError("wrong result");\n        });\n        check("unknown tool has structured error", () -> {\n            Map<String, Object> response = r.dispatch(Map.of("method", "call_tool", "params",\n                Map.of("name", "missing", "arguments", Map.of("orderId", "ORD-42"))));\n            if (!"TOOL_NOT_FOUND".equals(error(response).get("code"))) throw new AssertionError("wrong error code");\n        });\n        check("missing required input is rejected", () -> {\n            Map<String, Object> response = r.dispatch(Map.of("method", "call_tool", "params",\n                Map.of("name", "lookup_order", "arguments", Map.of())));\n            if (!"INVALID_PARAMS".equals(error(response).get("code"))) throw new AssertionError("wrong error code");\n        });\n        check("wrong input type is rejected", () -> {\n            Map<String, Object> response = r.dispatch(Map.of("method", "call_tool", "params",\n                Map.of("name", "lookup_order", "arguments", Map.of("orderId", 42))));\n            if (!"INVALID_PARAMS".equals(error(response).get("code"))) throw new AssertionError("wrong error code");\n        });\n        check("duplicate tool name is rejected", () -> {\n            boolean rejected = false;\n            try {\n                r.register(new Tool("lookup_order", "duplicate", (Map<String, Object>) setup.get("schema"),\n                    List.of("orderId"), argsMap -> Map.of("status", "WRONG")));\n            } catch (IllegalArgumentException expected) { rejected = true; }\n            if (!rejected) throw new AssertionError("duplicate registered");\n        });\n        System.out.println("RESULT " + passed + "/" + total);\n    }\n}',
+      reference: 'interface ToolHandler { Object call(Map<String, Object> arguments); }\nclass Tool {\n    final String name, description;\n    final Map<String, Object> schema;\n    final List<String> required;\n    final ToolHandler handler;\n    Tool(String name, String description, Map<String, Object> schema,\n         List<String> required, ToolHandler handler) {\n        this.name = name; this.description = description; this.schema = schema;\n        this.required = required; this.handler = handler;\n    }\n}\nclass ToolRegistry {\n    private final Map<String, Tool> tools = new LinkedHashMap<>();\n    void register(Tool tool) {\n        if (tool == null || tool.name == null || tool.name.isBlank() || tool.description == null || tool.schema == null || tool.handler == null) {\n            throw new IllegalArgumentException("invalid tool");\n        }\n        if (tools.putIfAbsent(tool.name, tool) != null) throw new IllegalArgumentException("duplicate tool");\n    }\n    Map<String, Object> dispatch(Map<String, Object> request) {\n        Object methodValue = request == null ? null : request.get("method");\n        if (!(methodValue instanceof String)) return error("INVALID_REQUEST", "method is required");\n        String method = (String) methodValue;\n        if ("list_tools".equals(method)) {\n            List<Map<String, Object>> listed = new ArrayList<>();\n            for (Tool t : tools.values()) listed.add(Map.of(\n                "name", t.name, "description", t.description, "schema", t.schema));\n            return Map.of("result", listed);\n        }\n        if (!"call_tool".equals(method)) return error("METHOD_NOT_FOUND", "Unknown method");\n        Object paramsValue = request.get("params");\n        if (!(paramsValue instanceof Map)) return error("INVALID_PARAMS", "params must be an object");\n        Map<?, ?> params = (Map<?, ?>) paramsValue;\n        Object nameValue = params.get("name");\n        if (!(nameValue instanceof String)) return error("INVALID_PARAMS", "tool name is required");\n        Tool tool = tools.get(nameValue);\n        if (tool == null) return error("TOOL_NOT_FOUND", "Unknown tool");\n        Object argumentsValue = params.get("arguments");\n        if (!(argumentsValue instanceof Map)) return error("INVALID_PARAMS", "arguments must be an object");\n        Map<?, ?> raw = (Map<?, ?>) argumentsValue;\n        Map<String, Object> arguments = new LinkedHashMap<>();\n        for (Map.Entry<?, ?> entry : raw.entrySet()) {\n            if (!(entry.getKey() instanceof String)) return error("INVALID_PARAMS", "argument keys must be strings");\n            arguments.put((String) entry.getKey(), entry.getValue());\n        }\n        for (String required : tool.required) {\n            if (!arguments.containsKey(required)) return error("INVALID_PARAMS", "required field is missing");\n        }\n        Object propertiesValue = tool.schema.get("properties");\n        if (propertiesValue instanceof Map) {\n            Map<?, ?> properties = (Map<?, ?>) propertiesValue;\n            for (Map.Entry<String, Object> arg : arguments.entrySet()) {\n                Object definitionValue = properties.get(arg.getKey());\n                if (definitionValue instanceof Map) {\n                    Object type = ((Map<?, ?>) definitionValue).get("type");\n                    if ("string".equals(type) && !(arg.getValue() instanceof String)) {\n                        return error("INVALID_PARAMS", "argument type does not match schema");\n                    }\n                }\n            }\n        }\n        return Map.of("result", tool.handler.call(arguments));\n    }\n    private Map<String, Object> error(String code, String message) {\n        return Map.of("error", Map.of("code", code, "message", message));\n    }\n}',
+      hints: [
+        'Tách dispatcher thành các nhánh: kiểm tra method, xử lý {{list_tools}}, sau đó mới parse {{params}} cho {{call_tool}}.',
+        'Với arguments, copy key sang {{Map<String, Object>}} sau khi xác nhận key là String; kiểm tra required trước khi chạy handler.',
+        'Schema có {{properties}} chứa type; với property type string, chỉ chấp nhận {{String}}. Mỗi lỗi trả cùng envelope {{error}} nhưng code khác nhau.'
+      ],
+      explain: `Registry dùng {{LinkedHashMap}} để giữ thứ tự tool ổn định cho test và {{putIfAbsent}} để ngăn tên bị ghi đè. {{list_tools}} trả metadata, không chạy handler. {{call_tool}} tìm tool, xác minh arguments là object, required field có mặt và kiểu khai báo phù hợp, rồi mới gọi handler.
+
+Response thành công dùng {{result}}; lỗi dùng object {{error}} có {{code}} và {{message}}. Code ổn định giúp caller xử lý mà không phải phân tích câu tiếng người. Bài tập không parse chuỗi JSON vì JDK chuẩn không cung cấp parser JSON tổng quát; Map là cấu trúc sau bước parse.
+
+Bài tập cố ý kiểm tra type string và required để giữ phạm vi nhỏ. JSON Schema đầy đủ có nhiều keyword hơn; MCP server thực tế nên dùng SDK và validator phù hợp. Quan trọng hơn, schema không xác thực user hoặc tenant: handler thật phải lấy principal từ transport đã xác thực và kiểm quyền tại service nghiệp vụ.`
+    }
+  ],
+  check: [
+    {
+      q: 'Tool registry khai báo {{orderId}} là string bắt buộc. Vì sao server vẫn phải validate request ở thời điểm call?',
+      options: [
+        'Schema chỉ là mô tả; client có thể gửi dữ liệu sai hoặc cũ, nên server phải kiểm tra tại boundary.',
+        'Vì model không thể đọc schema.',
+        'Để schema tự cấp quyền truy cập cho user.',
+        'Để tránh phải xác thực người gọi.'
+      ],
+      answer: 0,
+      explain: 'Schema hướng dẫn client/model nhưng không đảm bảo request thực gửi đúng. Server phải validate lại kiểu và field bắt buộc, sau đó còn kiểm tra quyền. Schema không cấp quyền và không thay thế xác thực.'
+    },
+    {
+      q: 'Dispatcher bài học nhận {{Map<String, Object>}} thay vì chuỗi JSON. Cách hiểu nào đúng?',
+      options: [
+        'Map.toString() là chuẩn JSON nên không cần serialization.',
+        'Map đại diện cho JSON đã parse để tập trung luyện dispatch; transport thật cần parser/serializer hoặc SDK.',
+        'MCP không dùng JSON.',
+        'Mọi Java runtime đều có JSON parser built-in.'
+      ],
+      answer: 1,
+      explain: 'JDK chuẩn không có JSON parser tổng quát, và {{Map.toString()}} không phải JSON serialization. Bài tập bắt đầu sau bước parse để tập trung logic registry; server thật dùng SDK hoặc thư viện JSON phù hợp.'
+    },
+    {
+      q: 'Model gọi tool tra cứu đơn hàng với {{tenantId}} do model gửi. Cách enforce tenant đúng là gì?',
+      options: [
+        'Tin tenantId vì schema yêu cầu trường đó.',
+        'Chỉ kiểm tra tenantId là chuỗi.',
+        'Lấy danh tính/tenant từ principal đã xác thực và kiểm quyền trong service sở hữu dữ liệu.',
+        'Đưa tenantId vào description để model không nhầm.'
+      ],
+      answer: 2,
+      explain: 'Input từ model là không tin cậy, dù có đúng schema. Backend phải lấy identity từ ngữ cảnh transport đã xác thực, ràng buộc dữ liệu với tenant đó và kiểm quyền ở service. Type validation hay mô tả tool không phải authorization.'
+    }
+  ],
+  related: ['ai-043', 'ai-062'],
+  tags: ['MCP', 'tool-server', 'schema', 'registry', 'Java']
+},
 );

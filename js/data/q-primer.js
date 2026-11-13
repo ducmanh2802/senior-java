@@ -2319,5 +2319,438 @@ for (Order a : orders) {
 > Senior tip: khi review code xử lý collection/batch, hãy tự hỏi "n tối đa ở production là bao nhiêu?" Nếu n có thể lên hàng chục nghìn, bất kỳ đoạn O(n^2) nào cũng là ứng viên gây sự cố khi dữ liệu tăng. Ưu tiên sửa bằng cấu trúc dữ liệu đúng ({{Map/Set}}), hoặc đẩy việc lọc/join về database có index — nơi có thuật toán và tối ưu phù hợp cho tập lớn.`,
   follow: ['Vì sao {{ArrayList.contains}} trong một vòng lặp có thể gây O(n^2)? Bạn sửa thế nào?', 'Khi nào tra cứu bằng index B-tree được xem là gần O(log n) và giới hạn thực tế của nó là gì?'],
   tags: ['Big-O', 'complexity', 'algorithm', 'performance', 'backend', 'nhập môn']
+},
+{
+  id: 'primer-026',
+  topic: 'primer',
+  level: 'mid',
+  q: 'Khi đọc một địa chỉ như https://api.example.vn:8443/orders/42?lang=vi#detail, bạn phân tích các phần URI/URL thế nào? Vì sao cần phân biệt path, query và fragment khi xử lý request trong Java?',
+  a: `**Tóm tắt:** **URI** là định danh tài nguyên, còn **URL** là URI có thông tin để tìm/call tài nguyên; trong thực tế web, hai từ thường được dùng gần như thay thế. Đọc địa chỉ theo từng phần giúp tránh lỗi route sai, query bị giải mã nhầm hoặc lộ dữ liệu trong log. **Fragment** chỉ dùng phía client, không được gửi trong HTTP request.
+
+### Tách một địa chỉ thành từng phần
+Ví dụ: {{https://api.example.vn:8443/orders/42?lang=vi#detail}}
+- {{https}} là **scheme**: cách truy cập, ở đây là HTTP được bảo vệ bởi TLS.
+- {{api.example.vn}} là **host**: tên máy chủ; DNS phân giải nó thành IP.
+- {{8443}} là **port**: cổng dịch vụ trên host. Nếu bỏ, HTTPS thường dùng 443.
+- {{/orders/42}} là **path**: đường dẫn tài nguyên, thường được server dùng để chọn route và lấy id {{42}}.
+- {{?lang=vi}} là **query**: tham số của request, ở đây {{lang=vi}}. Nhiều cặp thường nối bằng {{&}}.
+- {{#detail}} là **fragment**: vị trí/trạng thái tài liệu phía browser; dấu {{#}} và phần sau không đi qua mạng trong request HTTP.
+
+**URL** (Uniform Resource Locator) cho biết định danh kèm vị trí/cách truy cập. **URN** (Uniform Resource Name) định danh theo tên ổn định mà không nhất thiết chỉ cách truy cập; ví dụ mã ISBN. URI là khái niệm rộng hơn bao gồm các dạng này. Khi code web, ưu tiên dùng parser URI có sẵn thay vì tách chuỗi bằng {{split("/")}}.
+
+### Browser và server nhìn khác nhau
+~~~text
+Browser có URL: https://api.example.vn/orders/42?lang=vi#detail
+                         | host/path/query đi trong HTTP
+                         | fragment ở lại browser
+Request line: GET /orders/42?lang=vi HTTP/1.1
+Host header: api.example.vn
+~~~
+Server không nhận {{#detail}} nên không thể dùng fragment để truyền thông tin xác thực hay một tham số backend. Dữ liệu bí mật cũng không nên đặt trong query: URL có thể lọt vào access log, lịch sử browser, analytics và header Referer. Dùng HTTPS không làm URL biến mất khỏi các nơi lưu phía client/server.
+
+### Giải mã query đúng cách
+URL có thể chứa **percent-encoding**: byte được viết thành dấu % và hai chữ số hex, ví dụ dấu cách có thể là {{%20}}. Đây không phải Base64 hay mã hóa bí mật. Dùng parser của framework để giải mã đúng một lần; giải mã lặp có thể biến dữ liệu vô hại thành ký tự điều khiển hoặc làm route kiểm tra khác route thực thi.
+~~~java
+URI uri = URI.create("https://api.example.vn/orders/42?lang=vi#detail");
+System.out.println(uri.getHost());  // api.example.vn
+System.out.println(uri.getPath()); // /orders/42
+System.out.println(uri.getRawQuery()); // lang=vi, vẫn giữ biểu diễn thô
+System.out.println(uri.getFragment()); // detail; không nằm trong HTTP request
+~~~
+Trong Spring MVC, hãy để framework bind path/query vào tham số controller thay vì tự nối URL hoặc tự viết bộ giải mã. Encode giá trị của từng query parameter, không encode cả URL sau khi đã ghép vì dấu {{/}}, {{?}} và {{&}} có vai trò phân cách.
+
+### Chọn chỗ đặt dữ liệu và lỗi hay gặp
+| Vị trí | Thường dùng cho | Lưu ý |
+|---|---|---|
+| Path | định danh tài nguyên, như {{/orders/42}} | không nhét secret; route cần chuẩn hóa |
+| Query | tìm kiếm, lọc, phân trang | có thể xuất hiện trong log và cache key |
+| Header/body | metadata hoặc dữ liệu lớn/nhạy cảm | vẫn cần HTTPS và kiểm soát log |
+| Fragment | điều hướng/trạng thái giao diện | browser không gửi tới server |
+
+Sai lầm thường gặp là coi URL là chuỗi tự do: ghép query bằng {{+}}, không mã hóa giá trị có {{&}} hoặc {{#}}, và giả định server nhận fragment. Thêm nữa, cùng một đường dẫn có thể bị proxy chuẩn hóa khác nhau về dấu gạch chéo, chữ hoa/thường hoặc percent-encoding; kiểm tra quyền trên một dạng rồi truy cập bằng dạng khác có thể tạo lỗ hổng route.
+
+### Ví dụ đời thực
+Một API tìm đơn hàng nhận tên khách {{An & Bình}} qua query. Lúc đầu client ghép thẳng {{?name=An & Bình}} nên server chỉ nhận {{name=An}}, tỷ lệ tìm sai đạt 7% trong 20.000 lượt/ngày. Team đổi sang URI builder của Spring để encode đúng từng giá trị, bỏ fragment khỏi API contract và lọc query nhạy cảm khỏi access log. Sau deploy, test với dấu tiếng Việt, {{&}}, {{+}} và emoji cho kết quả nhất quán; lỗi tìm kiếm giảm còn 0 trong hai tuần theo dõi.
+
+### Trả lời mẫu khi phỏng vấn
+“Em phân tích URI theo scheme, host, port, path, query và fragment. Với địa chỉ HTTPS, host được DNS phân giải, port xác định dịch vụ, path chọn tài nguyên, query mang điều kiện lọc; fragment chỉ phục vụ browser nên không nằm trong HTTP request. URI là khái niệm định danh rộng hơn, URL là dạng cho biết cách tìm tài nguyên, dù trong thực tế mọi người hay gọi chung. Trong Java em dùng URI builder hoặc cơ chế binding của Spring thay vì nối chuỗi vì query có thể chứa ký tự phân cách và tiếng Việt cần encode đúng. Em không đặt token hay dữ liệu nhạy cảm trong URL bởi URL có thể xuất hiện ở log, lịch sử browser và Referer. Em cũng kiểm tra việc normalize và decode chỉ một lần để proxy, authorization và controller diễn giải cùng một đường dẫn. Một ví dụ là lỗi tìm kiếm do tên có dấu ampersand bị tách thành hai tham số; encode từng giá trị đã xử lý triệt để.”
+
+> Senior tip: đưa một mẫu URL có ký tự đặc biệt vào test contract và xác minh từ client qua proxy tới controller; đừng chỉ unit-test hàm tự encode. Trong log production, giữ route template và query đã lọc thay vì ghi nguyên URL.`,
+  follow: ['Fragment khác query thế nào và browser có gửi fragment lên server không?', 'Vì sao không nên đặt access token hoặc mật khẩu trong query string?'],
+  tags: ['URI', 'URL', 'query', 'percent-encoding', 'HTTP']
+},
+{
+  id: 'primer-027',
+  topic: 'primer',
+  level: 'mid',
+  q: 'Một tính năng chat cần giao tiếp liên tục, còn API tra cứu đơn hàng chỉ cần trả lời request rồi kết thúc. Bạn giải thích TCP và UDP khác nhau ra sao, và chọn giao thức nào cho từng nhu cầu?',
+  a: `**Tóm tắt:** **TCP** cung cấp một luồng byte có thứ tự và truyền lại dữ liệu bị mất; nó phù hợp khi ứng dụng cần nhận dữ liệu đầy đủ, đúng thứ tự. **UDP** gửi từng datagram độc lập, không tự đảm bảo nhận đủ hay đúng thứ tự; ứng dụng chọn nó khi độ trễ thấp hoặc broadcast/multicast quan trọng và tự chấp nhận/xử lý mất gói. Không có giao thức “luôn nhanh hơn”: kết quả phụ thuộc mạng, tải và yêu cầu nghiệp vụ.
+
+### Vì sao có hai lựa chọn
+Mạng IP chỉ nỗ lực chuyển từng gói, nhưng có thể mất, lặp hoặc đến sai thứ tự. **Transport protocol** là tầng nằm trên IP để ứng dụng giao tiếp giữa các cổng. TCP thêm kết nối, đánh số byte, xác nhận (ACK), truyền lại và điều khiển luồng/tắc nghẽn. Nhờ vậy ứng dụng đọc được một dòng byte đáng tin cậy, nhưng có thêm trạng thái và round-trip.
+
+UDP giữ phần vỏ nhỏ: mỗi lần gửi là một datagram có ranh giới riêng, không thiết lập kết nối như TCP, không tự gửi lại khi mất. “Không kết nối” không có nghĩa là không biết địa chỉ đích; sender vẫn gửi tới IP và port. UDP cũng không tự bảo đảm nhanh hơn: nếu ứng dụng phải tự retry, sắp thứ tự và chống nghẽn thì logic đó có thể phức tạp hơn TCP.
+
+~~~text
+TCP: app A -> [byte 1,2,3,4] -> mạng có thể mất byte 2
+     TCP nhận ra thiếu 2, yêu cầu truyền lại, app nhận đúng thứ tự
+UDP: app A -> [datagram 1] [datagram 2] -> app B
+     datagram 2 có thể mất/đến trước; app tự quyết định xử lý
+~~~
+
+### Ví dụ code và khi nào dùng
+~~~java
+// TCP: Java Socket giữ một luồng liên tục tới host:port.
+try (java.net.Socket socket = new java.net.Socket("api.example.vn", 443)) {
+  socket.setSoTimeout(2000); // timeout đọc; không thay thế timeout kết nối
+  socket.getOutputStream().write(requestBytes);
 }
+// UDP: mỗi DatagramPacket là một thông điệp riêng, không có ACK tự động.
+java.net.DatagramSocket udp = new java.net.DatagramSocket();
+~~~
+HTTP/1.1 và HTTP/2 thông thường chạy trên TCP; HTTP/3 chạy trên QUIC, một transport xây trên UDP nhưng bổ sung reliability, encryption và multiplexing ở tầng cao hơn. Vì vậy không thể suy luận “UDP thì không tin cậy” cho toàn bộ giao thức ứng dụng dùng UDP.
+
+| Tiêu chí | TCP | UDP |
+|---|---|---|
+| Nhận đủ/đúng thứ tự | Có, trong một kết nối | Không tự bảo đảm |
+| Dữ liệu | Luồng byte; app tự định nghĩa khung | Datagram giữ ranh giới thông điệp |
+| Thường dùng | HTTP/1.1, HTTP/2, JDBC, SSH | DNS phổ biến, voice/video realtime, telemetry |
+| Đánh đổi | Có trạng thái, retransmission, head-of-line ở luồng | App phải chấp nhận hoặc tự xử lý mất gói |
+
+### Lỗi hay gặp
+- Cho rằng một lần {{write()}} TCP tương ứng một lần {{read()}}: TCP là stream, phía nhận có thể đọc ít hơn hoặc gộp nhiều lần ghi; protocol phải định nghĩa chiều dài hoặc delimiter.
+- Dùng UDP cho lệnh thanh toán/ghi DB mà không có ACK, sequence, dedup: mất datagram có thể mất nghiệp vụ.
+- Bỏ timeout vì TCP “đáng tin”: độ tin cậy không đảm bảo server phản hồi trong thời gian hữu hạn; luôn đặt connect/read/deadline ở tầng phù hợp.
+- Tự retry UDP vô hạn: làm nghẽn mạng và khuếch đại tải; cần giới hạn, backoff và cơ chế chống trùng nếu có side effect.
+
+### Ví dụ đời thực
+Một hệ thống telemetry gửi 8.000 số đo/giây từ 500 máy. Khi dùng TCP, một kết nối mạng xấu có thể làm các mẫu mới phải chờ retransmit; độ trễ p99 tăng từ 80ms lên 1,4s. Với dữ liệu biểu đồ có thể bỏ vài mẫu, team chuyển datagram UDP nhỏ, gắn sequence number và timestamp để backend phát hiện mất gói, đồng thời gửi snapshot định kỳ qua kênh bền hơn. Mất mẫu đo giảm còn dưới 0,3% bình quân; lệnh điều khiển thiết bị vẫn dùng TCP và xác nhận riêng vì không thể bỏ lệnh.
+
+### Trả lời mẫu khi phỏng vấn
+“Em xem TCP và UDP là hai cách cung cấp dịch vụ khác nhau trên IP. TCP tạo kết nối và đưa cho ứng dụng một luồng byte có thứ tự; nó tự xác nhận và truyền lại khi mất gói, nên hợp với HTTP, JDBC hay thao tác mà thiếu dữ liệu là sai nghiệp vụ. UDP gửi datagram độc lập, ít cơ chế đảm bảo hơn, nên phù hợp khi độ trễ quan trọng và ứng dụng chấp nhận mất mẫu hoặc tự xây sequence, retry, dedup. Em không nói UDP luôn nhanh hơn vì mất gói, retransmission tự cài đặt và tình trạng nghẽn đều ảnh hưởng. Với chat hoặc tra cứu đơn hàng, em thường dùng HTTP/TCP; voice realtime có thể dùng UDP/QUIC để tránh một gói cũ làm chặn dữ liệu mới. Dù dùng TCP em vẫn đặt timeout, vì protocol chỉ đảm bảo truyền tin cậy trong điều kiện mạng, không hứa server sẽ hoàn tất nghiệp vụ đúng hạn.”
+
+> Senior tip: chọn transport theo semantics: nếu dữ liệu cũ không còn giá trị, ưu tiên độ trễ; nếu thiếu một thông điệp làm sai trạng thái, cần xác nhận, sequence và idempotency dù bên dưới là TCP hay UDP.`,
+  follow: ['Vì sao TCP là byte stream mà không bảo toàn ranh giới từng lần write?', 'HTTP/3 dùng UDP nhưng vẫn có độ tin cậy bằng cách nào?'],
+  tags: ['TCP', 'UDP', 'network', 'transport', 'HTTP/3']
+},
+{
+  id: 'primer-028',
+  topic: 'primer',
+  level: 'senior',
+  q: 'Client gửi POST để tạo giao dịch, nhưng server trả redirect sau khi endpoint được chuyển sang host mới. Khác nhau giữa 301/302 và 307/308 là gì, và bạn ngăn client gửi sai method hoặc lặp side effect thế nào?',
+  a: `**Tóm tắt:** HTTP redirect là response 3xx kèm header {{Location}} yêu cầu client gọi địa chỉ khác. {{301}} và {{302}} biểu đạt chuyển hướng lâu dài/tạm thời nhưng client lịch sử có thể đổi POST thành GET; {{307}} và {{308}} yêu cầu giữ nguyên method và body. Với thao tác ghi, redirect không tự bảo vệ khỏi gửi lặp: phải xác định client behavior, giữ idempotency key và không redirect mù khi kết quả giao dịch chưa rõ.
+
+### Luồng redirect
+1. Client gửi request tới URL A.
+2. Server/proxy trả status 3xx và {{Location: https://new.example/path}}.
+3. Client quyết định có theo redirect không; nếu theo, gửi request mới tới URL B.
+Redirect không phải server “chuyển” request bên trong một kết nối. Client có thể áp dụng quy tắc cache, bảo mật hoặc giới hạn số lần redirect riêng; thư viện backend và browser cũng có chính sách khác nhau.
+
+| Mã | Ý nghĩa | Method/body khi theo redirect |
+|---|---|---|
+| 301 | tài nguyên chuyển vĩnh viễn | một số client đổi POST thành GET |
+| 302 | chuyển tạm thời | một số client đổi POST thành GET |
+| 303 | xem kết quả ở URL khác | request tiếp theo thường là GET |
+| 307 | chuyển tạm thời | giữ nguyên method và body |
+| 308 | chuyển vĩnh viễn | giữ nguyên method và body |
+
+Hành vi cụ thể tùy client và thư viện. Đừng dựa vào quan sát một browser duy nhất làm hợp đồng cho Java {{HttpClient}}, SDK đối tác và mobile app. Redirect vĩnh viễn có thể được cache, nên đổi lại host sau này không lập tức sửa được mọi client.
+
+### Ví dụ Java: không theo redirect một cách vô thức
+~~~java
+HttpClient client = HttpClient.newBuilder()
+    .followRedirects(HttpClient.Redirect.NEVER) // cho code kiểm tra 3xx
+    .connectTimeout(Duration.ofSeconds(2))
+    .build();
+HttpResponse<String> response = client.send(request,
+    HttpResponse.BodyHandlers.ofString());
+if (response.statusCode() >= 300 && response.statusCode() < 400) {
+  String location = response.headers().firstValue("location").orElse("");
+  // Validate scheme/host theo allowlist trước khi gọi tiếp.
+}
+~~~
+Nếu cho client theo redirect, chỉ chấp nhận scheme/host tin cậy; không forward {{Authorization}} hay cookie sang host lạ. Với POST ghi tiền, redirect có thể gửi body tới host khác và làm lộ dữ liệu. Ưu tiên cập nhật endpoint trong cấu hình, hoặc dùng redirect 307/308 có kiểm soát khi thật sự cần giữ POST.
+
+### Tình huống side effect và lỗi hay gặp
+Nếu client timeout sau khi gửi POST, nó không biết server đã tạo giao dịch hay chưa. Tự retry hoặc theo redirect có thể gửi lại body; status code không chứng minh request đầu thất bại. API ghi cần idempotency key, lưu kết quả theo key và trả cùng kết quả cho lần lặp. Đồng thời đặt giới hạn redirect và timeout toàn hành trình.
+- Dùng 301/302 cho POST mà không thử mọi client: method có thể biến thành GET, body bị bỏ.
+- Redirect cross-origin nhưng chuyển nguyên Authorization: rò credential sang host khác.
+- Tin redirect là retry an toàn: POST có thể thực hiện side effect trước khi response 3xx bị trả.
+- Dùng 308 cho đường dẫn có body lớn mà server mới không tương thích: lỗi sẽ nhân rộng lâu do cache.
+
+### Ví dụ đời thực
+Một cổng thanh toán chuyển endpoint {{/v1/charge}} sang host mới. Load balancer cấu hình 302 cho POST; một thư viện mobile đổi request tiếp theo thành GET, làm 1,8% giao dịch nhận 405 trong 40 phút. Một số client khác giữ POST và gửi lại, tạo 23 giao dịch trùng vì chưa có idempotency key. Team bỏ redirect ở endpoint ghi, cập nhật URL trong cấu hình client, thêm unique idempotency key theo merchant và giữ redirect 308 chỉ cho GET. Sau rollout staged, tỷ lệ 405 và giao dịch trùng về 0; dashboard đo redirect theo method/host bắt được cấu hình sai trước khi mở rộng.
+
+### Trả lời mẫu khi phỏng vấn
+“Redirect là response 3xx với Location; client nhận response rồi tạo một request mới, chứ server không tự chuyển request. 301 và 302 thường được dùng cho chuyển lâu dài hoặc tạm thời nhưng một số client đổi POST sang GET. 307 và 308 yêu cầu giữ method và body, tuy nhiên em vẫn kiểm chứng hành vi đúng ở từng thư viện. Với request đọc, redirect thường đơn giản hơn; với POST tạo giao dịch, em tránh chuyển hướng mù vì request đầu có thể đã tạo side effect trước khi client timeout. Em dùng endpoint mới trong cấu hình nếu được, giới hạn redirect và chỉ cho phép host tin cậy, không chuyển Authorization qua origin khác. Với trường hợp cần retry, idempotency key ở server mới là lớp bảo vệ chống tạo giao dịch hai lần. Em cũng lưu ý redirect vĩnh viễn có thể bị cache, nên thay đổi host cần rollout và theo dõi theo client version.”
+
+> Senior tip: trong migration, phân loại trước endpoint đọc và ghi; thử redirect bằng đúng Java client, SDK đối tác và mobile đang dùng. Đo 3xx theo method/host, và không dùng response code thay cho idempotency.`,
+  follow: ['Khi client timeout sau POST, làm sao biết nghiệp vụ đã commit hay chưa?', 'Vì sao không nên chuyển tiếp Authorization khi redirect sang host khác?'],
+  tags: ['HTTP', 'redirect', '301', '302', '307', '308', 'idempotency']
+},
+{
+  id: 'primer-029',
+  topic: 'primer',
+  level: 'mid',
+  q: 'Một script shell lấy dữ liệu rồi pipe qua chương trình khác; bước đầu lỗi nhưng pipeline vẫn báo thành công. stdin, stdout, stderr và exit code hoạt động ra sao, và bạn viết lệnh an toàn thế nào?',
+  a: `**Tóm tắt:** Mỗi process Unix thường có ba luồng chuẩn: **stdin** nhận dữ liệu (fd 0), **stdout** xuất kết quả thông thường (fd 1), **stderr** xuất lỗi/chẩn đoán (fd 2). **Exit code** báo kết quả cho process cha: quy ước {{0}} là thành công, khác 0 là lỗi. Pipe {{|}} nối stdout của lệnh trước vào stdin của lệnh sau; mặc định shell có thể chỉ trả exit code của lệnh cuối nên cần {{pipefail}}.
+
+### Mô hình hoạt động
+Hình dung ba ống được gắn sẵn khi process khởi động:
+~~~text
+stdin (0) ---> [process] ---> stdout (1) ---> pipe ---> stdin process kế
+                    |
+                    +-------> stderr (2) ---> terminal/log riêng
+process thoát ---> exit code ---> shell/CI quyết định bước tiếp
+~~~
+Ví dụ {{cat orders.csv | grep PAID}}: kết quả {{cat}} đi qua pipe vào {{grep}}. Thông báo lỗi không nên trộn vào dữ liệu stdout, nếu không bước sau có thể đọc dòng lỗi như một record. Shell redirection {{> file}} đổi stdout; {{2> file}} đổi stderr; {{2>&1}} gộp stderr vào nơi stdout đang trỏ tới.
+
+### Lệnh dễ vỡ và cách khắc phục
+~~~bash
+set -euo pipefail
+if ! grep -q '^status=READY$' app.env; then
+  echo "app.env chưa sẵn sàng" >&2 # chẩn đoán đi stderr
+  exit 2
+fi
+producer | transform | consumer
+~~~
+- {{set -e}} làm script dừng ở một số lệnh lỗi, nhưng có ngoại lệ theo ngữ cảnh như điều kiện {{if}}; không thay thế kiểm tra lỗi có chủ đích.
+- {{set -u}} báo lỗi khi dùng biến chưa khai báo.
+- {{set -o pipefail}} khiến pipeline thất bại nếu một thành phần thất bại, không chỉ lệnh cuối.
+- {{exit 2}} trả mã khác 0 để CI biết script thất bại; mã cụ thể nên được quy ước trong script.
+
+Exit code chỉ là một số, không chứa nguyên nhân đầy đủ; stderr/log mới thường có thông tin. Mã 137 thường biểu thị process bị SIGKILL, nhưng muốn kết luận OOM phải kiểm tra trạng thái container/kernel, không suy đoán chỉ từ số mã.
+
+| Cách | Dùng khi | Pitfall |
+|---|---|---|
+| stdout | dữ liệu có thể pipe/chuyển tiếp | đừng chèn log vào đầu ra máy đọc |
+| stderr | lỗi, tiến độ, diagnostic | ghi log vào stderr không có nghĩa mọi lệnh lỗi |
+| exit code | điều kiện thành/bại cho shell/CI | code 0 không chứng minh kết quả nghiệp vụ đúng |
+| pipe | chuyển dữ liệu không cần file tạm | quên pipefail làm nuốt lỗi upstream |
+
+### Ví dụ đời thực
+Pipeline CI nhập 60.000 dòng CSV bằng {{download | unzip | importer}}. Một lần download trả lỗi HTTP nhưng tạo file rỗng; unzip báo lỗi, importer vẫn kết thúc thành công vì nhận luồng rỗng, nên CI xanh và báo cáo thiếu dữ liệu. Team bật {{set -euo pipefail}}, ghi diagnostic vào stderr, kiểm tra HTTP status và số dòng sau import, rồi chỉ phát artifact khi mọi bước đạt điều kiện. Trước fix, 3/200 lần chạy bị thiếu dữ liệu; sau đó 500 lần thử có lỗi mạng đều báo fail rõ ràng, không có artifact sai được phát hành.
+
+### Trả lời mẫu khi phỏng vấn
+“Một process có stdin để nhận input, stdout cho kết quả và stderr cho thông tin lỗi; shell thường biểu diễn chúng bằng file descriptor 0, 1, 2. Pipe nối stdout của process này vào stdin của process tiếp theo, còn exit code được dùng để báo thành công hay thất bại cho shell hoặc CI. Mã 0 thường là thành công; mã khác 0 chỉ cho biết có lỗi, nên em vẫn đọc stderr để tìm nguyên nhân. Một bẫy là pipeline chỉ lấy mã thoát của lệnh cuối. Nếu download lỗi nhưng bước cuối xử lý file rỗng và trả 0, cả job nhìn như xanh. Em dùng pipefail, kiểm tra HTTP status và dữ liệu đầu ra, tách log khỏi stdout để output có thể parse được. Em cũng không coi set -e là cơ chế xử lý lỗi đầy đủ vì nó có ngoại lệ; các bước quan trọng nên kiểm tra và trả mã lỗi rõ ràng.”
+
+> Senior tip: script triển khai nên ghi timestamp và context ra stderr, giữ stdout cho kết quả máy đọc, bật pipefail và kiểm thử cả trường hợp từng lệnh trung gian thất bại.`,
+  follow: ['Trong pipeline shell, vì sao lệnh cuối có thể trả 0 dù lệnh đầu lỗi?', 'Khi nào nên ghi thông báo vào stderr thay vì stdout?'],
+  tags: ['Linux', 'shell', 'stdout', 'stderr', 'exit-code', 'pipefail']
+},
+{
+  id: 'primer-030',
+  topic: 'primer',
+  level: 'mid',
+  q: 'Bạn cần chia mạng cho ứng dụng, database và môi trường test nhưng không muốn các dải địa chỉ đè lên nhau. IPv4, subnet mask và ký hiệu CIDR như 10.20.0.0/16 giúp gì, và bạn kiểm tra route ra sao?',
+  a: `**Tóm tắt:** Địa chỉ **IP** xác định một interface trên mạng; **subnet** là một dải địa chỉ được nhóm để định tuyến. **CIDR** viết địa chỉ mạng kèm số bit dành cho phần mạng, ví dụ {{10.20.0.0/16}} có 16 bit prefix và 16 bit host, tổng 65.536 địa chỉ IPv4. Chia subnet giúp giới hạn luồng và tổ chức route; không tự tạo bảo mật nếu firewall/route vẫn cho phép đi qua.
+
+### Tính CIDR bằng ví dụ
+IPv4 có 32 bit. {{/24}} nghĩa là 24 bit đầu cố định cho mạng, còn 8 bit cuối cho host: {{10.20.1.0/24}} có 256 giá trị địa chỉ (trong mạng truyền thống thường có 254 địa chỉ host dùng được; cloud có thể giữ lại một số địa chỉ). {{/16}} rộng hơn {{/24}} vì dành ít bit hơn cho phần mạng.
+
+~~~text
+10.20.0.0/16
+|---- 16 bit network ----|-- 16 bit host --|
+
+Chia thành /24:
+10.20.1.0/24   app
+10.20.2.0/24   database
+10.20.3.0/24   test
+~~~
+Địa chỉ nằm trong các dải private phổ biến như {{10.0.0.0/8}}, {{172.16.0.0/12}} và {{192.168.0.0/16}} không được route trực tiếp trên Internet công cộng. Private không có nghĩa “an toàn”: máy trong VPC vẫn cần route table, firewall/security group và quyền ứng dụng đúng.
+
+### Route là quyết định đường đi
+**Route table** ánh xạ đích CIDR sang next hop (bước mạng tiếp theo), chẳng hạn route nội bộ tới local network hoặc route Internet qua gateway. Thiết bị chọn route cụ thể nhất (longest prefix match): route {{10.20.2.0/24}} thường được ưu tiên hơn {{10.20.0.0/16}} khi đích thuộc subnet đó. Vì thế subnet đúng nhưng thiếu route chiều về vẫn gây timeout.
+
+~~~bash
+ip addr show       # xem interface và địa chỉ máy
+ip route           # xem các tuyến mà kernel biết
+ip route get 10.20.2.15 # hỏi kernel sẽ gửi gói tới đâu
+~~~
+Trong AWS VPC, subnet liên kết với route table; security group là firewall stateful gắn với network interface, NACL là stateless gắn với subnet. Những lớp này quyết định traffic được phép, không phải CIDR một mình.
+
+| Khái niệm | Trả lời câu hỏi | Ví dụ |
+|---|---|---|
+| IP | máy/interface nào? | {{10.20.2.15}} |
+| CIDR/subnet | địa chỉ nào thuộc cùng dải? | {{10.20.2.0/24}} |
+| route | gửi gói tới next hop nào? | {{0.0.0.0/0 -> NAT}} |
+| firewall | luồng nào được phép? | app tới DB cổng 5432 |
+
+### Pitfall khi thiết kế và điều tra
+- Hai mạng cần kết nối có CIDR chồng lấn: router không phân biệt được địa chỉ nào ở phía nào; cần quy hoạch lại hoặc NAT có chủ đích.
+- Mở {{0.0.0.0/0}} vào DB vì “private IP”: một route/firewall khác có thể làm dịch vụ lộ ra; giới hạn nguồn theo subnet/security group và port.
+- Chỉ kiểm tra route một chiều: TCP cần đường về, và ACL stateless cần cho phép cả hai chiều, bao gồm ephemeral port phù hợp.
+- Nhầm {{/16}} và {{/24}}: sai prefix có thể cấp dải quá rộng, route bắt nhầm hoặc làm VPC peering thất bại.
+
+### Ví dụ đời thực
+Một công ty kết nối VPC production {{10.20.0.0/16}} với mạng văn phòng cũng {{10.20.0.0/16}}. API Java tới DB không ổn định vì một số gói bị route về dải đích trùng; kết nối VPN thành công nhưng ping/health check chỉ chạy một chiều. Team quy hoạch VPC mới {{10.80.0.0/16}}, chia app {{10.80.1.0/24}} và DB {{10.80.2.0/24}}, khai báo route hai chiều và chỉ cho subnet app tới DB cổng 5432. Sau migration theo từng service, lỗi route giảm từ 4% xuống 0; thêm kiểm tra overlap vào Terraform plan để ngăn tạo dải trùng lần nữa.
+
+### Trả lời mẫu khi phỏng vấn
+“IPv4 có 32 bit; CIDR cho biết bao nhiêu bit đầu là prefix mạng. Vì vậy /16 có phạm vi lớn hơn /24. Subnet nhóm các địa chỉ để quản lý route và chính sách, còn route table quyết định next hop cho gói tin. Firewall mới quyết định cho phép nguồn, đích và port nào, nên dải private không tự đồng nghĩa với an toàn. Khi thiết kế em cấp các VPC và subnet không chồng lấn, tách app/database/test theo nhu cầu route, và chỉ mở cổng DB từ workload cần truy cập. Khi debug em kiểm tra địa chỉ thực, route đi và route về, rồi security group/NACL; có thể dùng ip route get trên Linux. Em đặc biệt chú ý CIDR overlap khi kết nối VPC với mạng đối tác hoặc on-prem vì router không biết hai dải trùng là hai nơi khác nhau.”
+
+Em cũng xác minh prefix và dải địa chỉ bằng công cụ tính CIDR, không ước lượng thủ công khi tạo nhiều subnet.
+> Senior tip: lập kế hoạch CIDR tập trung trước khi tạo nhiều VPC; hãy để khoảng trống cho môi trường mới và kiểm tra overlap tự động trong IaC. Thay CIDR sau khi hệ thống chạy thường đắt hơn rất nhiều.`,
+  follow: ['Vì sao hai VPC có CIDR chồng lấn không thể route trực tiếp với nhau?', 'Một kết nối TCP có route đi nhưng không có route về sẽ biểu hiện ra sao?'],
+  tags: ['IP', 'IPv4', 'CIDR', 'subnet', 'routing', 'VPC']
+},
+{
+  id: 'primer-031',
+  topic: 'primer',
+  level: 'mid',
+  q: 'Một thư viện Java đổi từ 1.4.2 lên 2.0.0 làm ứng dụng downstream không biên dịch. Semantic Versioning (MAJOR.MINOR.PATCH) dự báo điều gì, và vì sao số version vẫn không thay thế kiểm thử tương thích?',
+  a: `**Tóm tắt:** **Semantic Versioning (SemVer)** là quy ước đặt version {{MAJOR.MINOR.PATCH}} để truyền đạt mức thay đổi API công khai: MAJOR có breaking change, MINOR thêm tính năng tương thích ngược, PATCH sửa lỗi tương thích ngược. Nó là lời hứa của nhà phát hành theo chính sách dự án, không phải bằng chứng rằng mọi ứng dụng nâng cấp sẽ an toàn.
+
+### Đọc version từng phần
+- {{1.4.2}}: {{1}} là MAJOR, {{4}} là MINOR, {{2}} là PATCH.
+- Từ {{1.4.2}} lên {{1.4.3}} thường chỉ nhận bản sửa lỗi.
+- {{1.4.2}} lên {{1.5.0}} có thể có API mới mà code cũ tiếp tục chạy.
+- {{1.4.2}} lên {{2.0.0}} báo hiệu có thay đổi không tương thích; ví dụ method bị xóa hoặc hành vi thay đổi.
+
+**API công khai** là phần nhà cung cấp cam kết cho client dùng; implementation nội bộ có thể đổi mà không cần bump MAJOR. **Breaking change** là thay đổi khiến client hiện tại không compile hoặc hành vi không còn đúng. “Tương thích ngược” có nghĩa code đã viết cho version cũ tiếp tục hoạt động khi chạy với version mới theo phạm vi cam kết.
+
+~~~text
+Client của bạn -> thư viện 1.4.2: gọi calculate(amount)
+Thư viện 2.0.0: xóa calculate(amount), chỉ còn calculate(amount, mode)
+Kết quả: compile fail; cần migrate code hoặc giữ adapter tương thích
+~~~
+
+### Dependency Java và dải version
+Trong Maven, version khai báo trong {{pom.xml}} hoặc dependency management xác định artifact được resolve. Không nên dùng version động hoặc range thiếu kiểm soát cho build release, vì cùng source có thể resolve khác nhau ở thời điểm khác. Lock/reproducibility có nghĩa là build lại lấy đúng phiên bản dependency đã được kiểm tra.
+~~~xml
+<dependency>
+  <groupId>com.example</groupId>
+  <artifactId>pricing-client</artifactId>
+  <version>1.4.2</version> <!-- pin phiên bản đã kiểm thử -->
+</dependency>
+~~~
+Kiểm tra release note, changelog, dependency tree và test integration trước khi bump; dùng CI để build lại artifact với dependency mới, không chỉ đổi số trong file. Nếu thư viện dùng SemVer trước {{1.0.0}}, nhiều dự án cho phép thay đổi phá vỡ trong MINOR, nên đọc chính sách cụ thể.
+
+| Phần | Dự kiến | Ví dụ |
+|---|---|---|
+| MAJOR | thay đổi không tương thích | {{1.x -> 2.0.0}} |
+| MINOR | tính năng mới, tương thích ngược | {{2.3.1 -> 2.4.0}} |
+| PATCH | sửa lỗi tương thích ngược | {{2.4.0 -> 2.4.1}} |
+
+### Pitfall production
+- SemVer áp dụng cho API công khai, nhưng nhà phát hành có thể định nghĩa API public khác; kiểm tra chính sách.
+- Một PATCH vẫn có thể làm lộ bug do sửa đúng hành vi mà app của bạn vô tình dựa vào.
+- Runtime dependency bắc cầu có thể đổi dù dependency trực tiếp không đổi; cần xem dependency tree và SBOM.
+- Thêm MINOR feature mới có thể làm thay đổi cấu hình mặc định, tải hoặc thứ tự xử lý dù không phá compile.
+- Rollback version thư viện không luôn đủ nếu migration dữ liệu hoặc format lưu trữ đã đổi.
+
+### Ví dụ đời thực
+Service báo giá có 14 ứng dụng nội bộ dùng {{pricing-client}}. Team nâng từ 1.8.6 lên 2.0.0 theo PR tự động; 3 ứng dụng build lỗi vì method đổi chữ ký, còn một service khác build được nhưng làm tròn theo quy tắc mới khiến 0,4% hóa đơn sai một đơn vị tiền nhỏ. Họ chia migration: trước tiên phát hành adapter giữ method cũ, thêm contract test cho 14 client và fixture giá biên; sau đó cập nhật từng ứng dụng và chỉ xóa adapter ở MAJOR kế tiếp. Rollout canary cho 5% traffic phát hiện lệch trước mở rộng; không còn hóa đơn sai, và lần nâng cấp sau giảm thời gian tích hợp từ 4 ngày xuống 1 ngày.
+
+### Trả lời mẫu khi phỏng vấn
+“SemVer gồm MAJOR, MINOR, PATCH. Theo quy ước, PATCH sửa lỗi không phá API, MINOR thêm chức năng tương thích ngược, còn MAJOR cho phép breaking change. Em dùng nó để ước lượng rủi ro nâng cấp, không dùng nó như bảo đảm. Cần đọc changelog, biết API công khai mà thư viện cam kết, xem dependency tree và build/test trên version mới. Với Maven em pin version hoặc dùng dependency management đã review để build tái lập; tránh range động trong release vì hai lần build có thể lấy hai artifact khác nhau. Em cũng kiểm tra runtime dependency bắc cầu và dữ liệu đã lưu, bởi chương trình có thể compile nhưng hành vi thay đổi. Một lần migration lớn, em giữ adapter tương thích, chạy contract test trên các client và canary một phần traffic trước khi bỏ API cũ.”
+
+Sau đó em nâng cấp theo từng nhóm ứng dụng, có rollback và theo dõi lỗi runtime sau deploy.
+> Senior tip: bump dependency nên có diff dependency tree, release-note checklist và test hành vi nghiệp vụ; MAJOR là tín hiệu cần kiểm tra kỹ, còn PATCH không phải lý do để bỏ qua regression test.`,
+  follow: ['Vì sao một thay đổi ở PATCH version vẫn có thể làm hỏng production?', 'Bạn làm thế nào để Maven build cùng source luôn resolve đúng dependency?'],
+  tags: ['SemVer', 'Maven', 'dependency', 'backward compatibility', 'release']
+},
+{
+  id: 'primer-032',
+  topic: 'primer',
+  level: 'senior',
+  q: 'Bạn đo thời gian một lời gọi API đối tác mất bao lâu trong Java. Vì sao không nên trừ hai lần đọc wall clock để đo duration, và khi nào dùng Instant, System.nanoTime hoặc Clock?',
+  a: `**Tóm tắt:** **Wall clock** là giờ lịch mà người dùng nhìn thấy, có thể bị chỉnh bởi NTP hoặc quản trị viên. **Monotonic clock** chỉ đảm bảo tăng theo thời gian chạy và phù hợp đo khoảng duration. Trong Java, dùng {{Instant}}/{{Clock}} cho timestamp lịch cần ghi hoặc kiểm thử; dùng {{System.nanoTime()}} để đo elapsed time, timeout nội bộ và latency.
+
+### Vì sao đồng hồ có thể “nhảy”
+Máy cần đồng bộ giờ với nguồn chuẩn qua NTP (Network Time Protocol). Khi máy lệch nhiều, đồng hồ lịch có thể được chỉnh tiến/lùi; cũng có thể đổi theo DST/múi giờ khi hiển thị. Nếu lấy {{Instant.now()}} trước request và sau request rồi trừ, đồng hồ lùi có thể cho duration âm, đồng hồ tiến có thể phóng đại latency.
+
+{{System.nanoTime()}} không phải thời gian UTC và không dùng để ghi “request lúc mấy giờ”; nó chỉ dùng để lấy chênh lệch trong cùng JVM. Giá trị gốc có thể âm hoặc tùy máy, nên không so với timestamp ở process khác. Dùng phép trừ elapsed, không quy đổi nó thành ngày giờ.
+
+~~~java
+long started = System.nanoTime(); // monotonic, chỉ dùng đo khoảng thời gian
+try {
+  callPartner();
+} finally {
+  long elapsedNanos = System.nanoTime() - started;
+  long elapsedMillis = elapsedNanos / 1_000_000;
+  metrics.record("partner.call", elapsedMillis);
+}
+~~~
+Với code cần test, inject {{Clock}} thay vì gọi {{Instant.now()}} trực tiếp:
+~~~java
+Instant createdAt = clock.instant(); // production: Clock.systemUTC()
+~~~
+Test dùng {{Clock.fixed(...)}} để xác nhận timestamp hoặc ranh giới ngày. Không inject Clock để đo duration: nó là đồng hồ lịch và có thể nhảy.
+
+| Nhu cầu | Chọn | Vì sao |
+|---|---|---|
+| Ghi thời điểm event/audit | {{Instant}} qua {{Clock}} | thời điểm có ý nghĩa toàn hệ thống |
+| Hiển thị giờ địa phương | đổi Instant qua ZoneId ở tầng trình bày | offset/DST rõ ràng |
+| Đo latency trong process | {{System.nanoTime()}} | không bị chỉnh theo giờ lịch |
+| Test “bây giờ” | {{Clock.fixed}} | test xác định, không chờ thời gian thật |
+
+### Pitfall
+- Trừ {{LocalDateTime.now()}} để đo timeout: mất múi giờ và có thể nhảy khi đồng hồ đổi.
+- Gửi giá trị {{nanoTime}} sang service khác hoặc lưu DB: giá trị không phải timestamp, không có ý nghĩa xuyên máy.
+- Đo một thao tác rất ngắn bằng milliseconds: độ phân giải có thể quá thô; giữ nanos để đo rồi đổi đơn vị khi ghi metric.
+- Tính timeout từ thời điểm bắt đầu bằng wall clock: NTP chỉnh tiến có thể làm hết hạn sớm, chỉnh lùi có thể kéo timeout dài.
+- Ghi duration và thời điểm kết thúc mà không phân biệt hai khái niệm: log cần cả timestamp UTC và elapsed.
+
+### Ví dụ đời thực
+Một job báo cáo lấy {{Instant.now()}} trước và sau khi gọi 4 API đối tác. Sau NTP correction, một node chỉnh đồng hồ lùi 1,7 giây; log ghi duration âm, dashboard latency bỏ các điểm này và alert tưởng mọi thứ bình thường. Team dùng nanoTime cho duration, vẫn ghi timestamp UTC riêng, và thêm metric số lần clock adjustment từ host. Ở lần kế, 12 triệu request được đo nhất quán; p99 840ms không còn bị loại, phát hiện được một đối tác chậm tăng từ 400ms lên 1,2s.
+
+### Trả lời mẫu khi phỏng vấn
+“Em tách thời điểm lịch và khoảng thời gian. Instant là điểm trên timeline UTC, phù hợp ghi createdAt hoặc timestamp log; Clock giúp inject nguồn giờ để test không phụ thuộc thời gian thực. Nhưng wall clock có thể bị NTP chỉnh hoặc thay đổi timezone khi hiển thị, nên em không dùng phép trừ hai Instant để đo latency. Trong cùng JVM em dùng System.nanoTime, lưu giá trị lúc bắt đầu rồi trừ ngay khi xong; giá trị nanoTime không gửi sang máy khác vì không phải timestamp. Em giữ cả hai trong observability: timestamp UTC để ghép sự kiện giữa service, elapsed monotonic để đo duration. Với timeout em tính từ monotonic elapsed/deadline để tránh clock shift. Một sự cố từng gặp là NTP lùi đồng hồ làm metric duration âm và bị bỏ; sau khi chuyển phép đo sang nanoTime, p99 trở lại chính xác và alert phát hiện dependency chậm.”
+
+> Senior tip: log nên có timestamp UTC và duration riêng; trong distributed trace dùng timestamp để sắp sự kiện có lưu ý clock skew, còn latency từng span phải được đo bằng đồng hồ monotonic của process.`,
+  follow: ['Vì sao System.nanoTime không thể dùng làm timestamp để gửi cho service khác?', 'Bạn test logic hết hạn sau 24 giờ mà không phải chờ 24 giờ thế nào?'],
+  tags: ['Java', 'Instant', 'Clock', 'nanoTime', 'latency', 'time']
+},
+{
+  id: 'primer-033',
+  topic: 'primer',
+  level: 'senior',
+  q: 'Hai chuỗi nhìn giống hệt nhau nhưng hệ thống đăng nhập coi là khác; một chuỗi được tạo bằng ký tự tiếng Việt ghép sẵn, chuỗi kia bằng dấu kết hợp. Unicode normalization là gì, và bạn xử lý tìm kiếm/định danh ra sao?',
+  a: `**Tóm tắt:** **Unicode normalization** đưa các chuỗi Unicode tương đương về một biểu diễn chuẩn, vì một chữ nhìn như nhau có thể được mã hóa bằng code point khác nhau. NFC thường gộp ký tự cơ sở và dấu kết hợp thành dạng dựng sẵn nếu có; NFD tách chúng. Chọn quy ước rõ ở biên dữ liệu nếu so sánh/tìm kiếm cần coi chúng giống nhau, nhưng không tự ý chuẩn hóa mật khẩu, chữ ký số hoặc dữ liệu cần giữ nguyên byte.
+
+### Code point, byte và cách viết một chữ
+Unicode gán mỗi ký tự logic một **code point** (mã số). Một chữ có dấu có thể biểu diễn bằng một code point dựng sẵn, hoặc ký tự cái + code point dấu kết hợp. Hai chuỗi này có thể trông giống hệt nhưng có số code point/byte khác, nên so sánh chính xác theo chuỗi có thể trả “khác”.
+
+Ví dụ khái niệm:
+~~~text
+Dạng NFC: U+1EBF (một code point cho chữ ế)
+Dạng NFD: U+0065 (e) + U+0302 (dấu mũ) + U+0301 (dấu sắc)
+Hiển thị: cả hai có thể nhìn như “ế”
+~~~
+Normalization không giống encoding: NFC/NFD chọn cách biểu diễn Unicode; UTF-8 mã hóa code point thành byte. Hai bước khác nhau. Normalization cũng không giải quyết mọi vấn đề “nhìn giống nhau”: chữ Latin và chữ Cyrillic tương tự thị giác nhưng khác ký tự và không nên gộp tùy tiện.
+
+### Java: chuẩn hóa trước khi so sánh theo quy ước
+~~~java
+String input = userInput;
+String normalized = java.text.Normalizer.normalize(
+    input, java.text.Normalizer.Form.NFC);
+boolean same = normalized.equals(
+    java.text.Normalizer.normalize(other, java.text.Normalizer.Form.NFC));
+~~~
+Áp dụng normalization ở ranh giới có hợp đồng rõ, ví dụ trước khi lưu tên hiển thị hoặc tạo khóa tìm kiếm; thống nhất với database, index và các service khác. Với định danh đăng nhập, cần xác định thêm quy tắc hoa/thường, khoảng trắng và ký tự cho phép. Không biến đổi password âm thầm: mật khẩu phải được xử lý theo chính sách xác thực đã công bố, nếu normalize khác nhau giữa các phiên bản có thể khóa tài khoản.
+
+| Trường hợp | Hướng xử lý |
+|---|---|
+| Tên hiển thị/tìm kiếm tiếng Việt | cân nhắc normalize NFC khi nhập và cùng quy tắc ở index |
+| Username/email identifier | quy định chuẩn hóa, case-folding và uniqueness nhất quán |
+| Password, chữ ký/HMAC, hash byte | không tự đổi byte; chỉ làm theo protocol đã định |
+| Chống ký tự giả mạo | normalization không đủ; kiểm tra script/confusable riêng |
+
+### Pitfall production
+- Chuẩn hóa lúc ghi nhưng không chuẩn hóa lúc tìm: tìm kiếm vẫn bỏ sót dữ liệu cũ.
+- Đổi quy tắc sau khi đã tạo unique index: hai bản ghi trước đây khác nhau có thể trở thành trùng; cần audit và kế hoạch migration.
+- Đếm {{String.length()}} như số ký tự nhìn thấy: Java đếm UTF-16 code unit; emoji có thể chiếm hai char, còn dấu kết hợp có thể là code point riêng.
+- Nghĩ NFC chống được mọi ký tự giả mạo: chữ có hình gần nhau từ các alphabet khác vẫn khác nhau.
+- Ghi dữ liệu nguyên bản và chuẩn hóa mà không ghi rõ mục đích: khó biết giá trị nào dùng hiển thị, giá trị nào dùng so sánh.
+
+### Ví dụ đời thực
+Hệ thống khách hàng có 1,2 triệu hồ sơ tạo từ nhiều thiết bị. Tìm kiếm tên tiếng Việt bỏ sót 2,1% kết quả do một client gửi NFC còn client cũ gửi NFD; hai tên nhìn giống nhau nhưng truy vấn equality không khớp. Team thống kê trước các collision, thêm cột search key được chuẩn hóa NFC, backfill theo batch và cập nhật cả luồng ghi/lọc. Unique constraint dùng key chuẩn hóa sau khi xử lý các trường hợp trùng cho người dùng. Tỷ lệ bỏ sót giảm về 0,02% (còn các khác biệt dấu thực sự theo nghiệp vụ), không sửa byte gốc của hồ sơ đã lưu.
+
+### Trả lời mẫu khi phỏng vấn
+“Unicode cho phép một ký tự có dấu được biểu diễn bằng code point dựng sẵn hoặc bằng chữ cơ sở cộng dấu kết hợp. Hai chuỗi hiển thị giống nhau nhưng equals có thể false. Normalization như NFC đưa biểu diễn tương đương về dạng thống nhất; nó khác UTF-8, vốn chỉ là cách biến Unicode thành byte. Em sẽ xác định field nào cần coi hai dạng là bằng nhau, normalize ở biên nhập và dùng cùng quy tắc ở search/unique key. Trước migration em kiểm tra collision vì normalization có thể làm hai record thành cùng key. Em không áp dụng tự động cho password hoặc dữ liệu ký số, vì thay đổi byte làm đổi kết quả hash/HMAC. Ngoài ra normalization không chống ký tự giả mạo giữa các alphabet và không thay thế kiểm tra Unicode. Với Java, Normalizer có sẵn; em viết test chứa cả NFC, NFD, dấu tiếng Việt, emoji và dữ liệu cũ.”
+
+> Senior tip: lưu nguyên văn bản gốc nếu cần hiển thị/audit, còn search key chuẩn hóa là trường dẫn xuất có thể tái tạo. Trước khi thêm unique constraint trên key đó, đo collision và xử lý nghiệp vụ thay vì tự chọn bản ghi thắng.`,
+  follow: ['Unicode normalization khác UTF-8 encoding thế nào?', 'Vì sao không nên tự normalize password hoặc dữ liệu dùng để tính chữ ký?'],
+  tags: ['Unicode', 'NFC', 'NFD', 'Java', 'normalization', 'i18n']
+},
 );

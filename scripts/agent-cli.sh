@@ -43,7 +43,7 @@ run_agent() {
 }
 echo "[$(date +%T)] start $id ($runner) backup=$bak"
 case "$runner" in
-  kilo)   run_agent kilo run --auto -m "${KILO_MODEL:-kilo/kilo-auto/free}" --title "$id" "$prompt" ;;
+  kilo)   run_agent scripts/kilo-run.sh "$id" "$prompt" ;;   # falls back to other free kilo models when one hits its usage limit
   opencode) run_agent opencode run -m "${OPENCODE_MODEL:-opencode/deepseek-v4.1-flash-free}" --title "$id" "$prompt" ;;
   codex)  run_agent codex ${CODEX_ARGS:-} exec -s workspace-write --skip-git-repo-check "$prompt" ;;
   gemini) run_agent env GEMINI_CLI_TRUST_WORKSPACE=true gemini -y -p "$prompt" ;;

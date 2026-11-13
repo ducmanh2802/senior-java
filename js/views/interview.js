@@ -88,6 +88,10 @@
       'interview.sig.yes': 'Đạt',
       'interview.sig.strong_yes': 'Đạt rất tốt',
       'interview.thinking': 'Interviewer đang nghĩ…',
+      'interview.speaking': 'AI đang đọc câu hỏi…',
+      'interview.listening': 'Đang nghe bạn trả lời…',
+      'interview.ready': 'Sẵn sàng nhận câu trả lời',
+      'interview.stateLabel': 'Trạng thái',
       'interview.sendHint': 'gửi',
       'interview.betterAnswer': 'Trả lời tốt hơn:',
       'interview.skillCol': 'Kỹ năng',
@@ -198,6 +202,10 @@
       'interview.sig.yes': 'Yes',
       'interview.sig.strong_yes': 'Strong yes',
       'interview.thinking': 'Interviewer is thinking…',
+      'interview.speaking': 'AI is speaking…',
+      'interview.listening': 'Listening to your answer…',
+      'interview.ready': 'Ready for your answer',
+      'interview.stateLabel': 'State',
       'interview.sendHint': 'send',
       'interview.betterAnswer': 'Better answer:',
       'interview.skillCol': 'Skill',
@@ -300,18 +308,23 @@
   const tts = {
     ok: 'speechSynthesis' in window,
     muted: false,
+    speaking: false,
+    _onChange: null,
+    _notify() { if (this._onChange) try { this._onChange(); } catch (e) { /* ignore */ } },
     speak(text, lang, onEnd) {
-      if (!this.ok || this.muted) { if (onEnd) onEnd(); return; }
+      if (!this.ok || this.muted) { this.speaking = false; this._notify(); if (onEnd) onEnd(); return; }
       speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text);
       u.lang = lang === 'en' ? 'en-US' : 'vi-VN';
       const voice = speechSynthesis.getVoices().find(v => v.lang && v.lang.toLowerCase().startsWith(lang === 'en' ? 'en' : 'vi'));
       if (voice) u.voice = voice;
       u.rate = 1.02;
-      u.onend = u.onerror = () => { if (onEnd) onEnd(); };
+      u.onstart = () => { this.speaking = true; this._notify(); };
+      const done = () => { this.speaking = false; this._notify(); if (onEnd) onEnd(); };
+      u.onend = done; u.onerror = done;
       speechSynthesis.speak(u);
     },
-    stop() { if (this.ok) speechSynthesis.cancel(); },
+    stop() { if (this.ok) speechSynthesis.cancel(); this.speaking = false; this._notify(); },
   };
 
   App.registerView('interview', {
@@ -465,20 +478,22 @@ const resumableAny = resumable || resumableSess;
               <span class="muted small iv-answers">0 / ${MAX_ANSWERS}</span>
             </div>
             <div class="row iv-toggles">
-              <button class="btn sm" data-act="mute" aria-pressed="${tts.muted}">${tts.muted ? App.t('interview.muteBtn') : App.t('interview.unmuteBtn')}</button>
-              <button class="btn sm" data-act="scores" aria-pressed="${showScores}">${showScores ? App.t('interview.hideScore') : App.t('interview.showScore')}</button>
-              ${App.speech.supported ? `<button class="btn sm" data-act="handsfree" aria-pressed="${handsFree}">${handsFree ? App.t('interview.handsFreeOn') : App.t('interview.handsFreeOff')}</button>` : ''}
-              <button class="btn sm bad" data-act="end">${App.t('interview.endBtn')}</button>
+              <button type="button" class="btn sm" data-act="mute" aria-pressed="${tts.muted}">${tts.muted ? App.t('interview.muteBtn') : App.t('interview.unmuteBtn')}</button>
+              <button type="button" class="btn sm" data-act="scores" aria-pressed="${showScores}">${showScores ? App.t('interview.hideScore') : App.t('interview.showScore')}</button>
+              ${App.speech.supported ? `<button type="button" class="btn sm" data-act="handsfree" aria-pressed="${handsFree}">${handsFree ? App.t('interview.handsFreeOn') : App.t('interview.handsFreeOff')}</button>` : ''}
+              <button type="button" class="btn sm bad" data-act="end">${App.t('interview.endBtn')}</button>
             </div>
           </div>
-          <div class="iv-chat" aria-live="polite"></div>
+          <div class="iv-state iv-state-idle" role="status" aria-live="polite" aria-atomic="true"><span class="iv-state-dot" aria-hidden="true"></span><span class="iv-state-text">${esc(App.t('interview.ready'))}</span></div>
+          <div class="iv-chat" role="log" aria-live="polite" aria-relevant="additions" aria-label="Transcript"></div>
           <div class="iv-compose card">
-            <textarea class="textarea" rows="3" placeholder="${App.speech.supported ? App.t('interview.answerPlaceholderVoice') : App.t('interview.answerPlaceholderText')}" aria-label="${App.t('interview.answerAria')}"></textarea>
-            <div class="iv-interim muted small"></div>
-            <div class="row">
-              ${App.speech.supported ? '<button class="btn mic-btn lg" data-act="mic" aria-label="' + App.t('interview.micAria') + '">🎤</button>' : ''}
-              <button class="btn primary" data-act="send">${App.t('interview.sendBtn')}</button>
-              <span class="iv-status"></span>
+            <label class="sr-only" for="iv-answer">${App.t('interview.answerAria')}</label>
+            <textarea id="iv-answer" class="textarea" rows="3" placeholder="${App.speech.supported ? App.t('interview.answerPlaceholderVoice') : App.t('interview.answerPlaceholderText')}" aria-label="${App.t('interview.answerAria')}"></textarea>
+            <div class="iv-interim muted small" aria-live="polite"></div>
+            <div class="row iv-compose-row">
+              ${App.speech.supported ? '<button type="button" class="btn mic-btn lg" data-act="mic" aria-label="' + App.t('interview.micAria') + '" aria-pressed="false">🎤</button>' : ''}
+              <button type="button" class="btn primary lg iv-send" data-act="send">${App.t('interview.sendBtn')}</button>
+              <span class="iv-status" aria-live="polite"></span>
               <span class="muted small iv-keys">${App.t('interview.shortcutHint')}</span>
             </div>
           </div>`;
@@ -486,6 +501,7 @@ const resumableAny = resumable || resumableSess;
         clearInterval(ticker);
         ticker = setInterval(tick, 1000);
         tick();
+        updateState();
       }
 
       function tick() {
@@ -517,10 +533,10 @@ const resumableAny = resumable || resumableSess;
             return `<div class="iv-msg iv-ai"><div class="iv-avatar" aria-hidden="true">AI</div><div class="iv-bubble">
               ${t.intent ? `<span class="badge">${esc(INTENT[t.intent] ? App.t(INTENT[t.intent]) : t.intent)}</span>` : ''}<p>${esc(t.text)}</p>
               ${fmtTime(t.ts) ? `<div class="iv-time">${esc(fmtTime(t.ts))}</div>` : ''}
-              ${tts.ok ? `<button class="link-btn" data-say="${i}" aria-label="${App.t('interview.readAgainAria')}">🔊</button>` : ''}</div></div>`;
+              ${tts.ok ? `<button type="button" class="btn sm iv-read" data-say="${i}" aria-label="${App.t('interview.readAgainAria')}">🔊</button>` : ''}</div></div>`;
           }
           const sc = s.scores[answer++];
-          const flagBtn = showScores && sc && sc.score ? `<button class="btn sm" data-act="flag-answer" data-idx="${i}">${App.t('interview.flagWrong')}</button>` : '';
+          const flagBtn = showScores && sc && sc.score ? `<button type="button" class="btn sm" data-act="flag-answer" data-idx="${i}">${App.t('interview.flagWrong')}</button>` : '';
           return `<div class="iv-msg iv-me"><div class="iv-bubble"><p>${esc(t.text)}</p>
             ${fmtTime(t.ts) ? `<div class="iv-time">${esc(fmtTime(t.ts))}</div>` : ''}
             ${showScores && sc && sc.score ? `<div class="iv-score">${App.ui.scoreBadge(sc.score)} <span class="muted small">${esc(sc.note || '')}</span> ${sc.model ? `<span class="chip">${App.t('interview.modelChip')}: ${esc(sc.model)}</span>` : ''} ${flagBtn}</div>` : ''}</div></div>`;
@@ -532,9 +548,21 @@ const resumableAny = resumable || resumableSess;
         busy = v;
         root.querySelectorAll('[data-act="send"], [data-act="mic"]').forEach(b => { b.disabled = v; });
         drawChat();
+        updateState();
       }
 
       function status(html) { const el = root.querySelector('.iv-status'); if (el) el.innerHTML = html || ''; }
+
+      function updateState() {
+        const el = root.querySelector('.iv-state');
+        if (!el) return;
+        let cls = 'iv-state-idle', text = App.t('interview.ready');
+        if (mic) { cls = 'iv-state-listen'; text = App.t('interview.listening'); }
+        else if (busy) { cls = 'iv-state-busy'; text = App.t('interview.thinking'); }
+        else if (tts.speaking) { cls = 'iv-state-speak'; text = App.t('interview.speaking'); }
+        el.className = 'iv-state ' + cls;
+        const t = el.querySelector('.iv-state-text'); if (t) t.textContent = text;
+      }
 
       async function next() {
         setBusy(true);
@@ -572,30 +600,32 @@ saveSession(s);
         if (mic || busy || !App.speech.supported) return;
         tts.stop();
         const ta = root.querySelector('.iv-compose textarea');
-        const base = ta.value.trim();
+        const base = ta ? ta.value.trim() : '';
         try {
           mic = App.speech.start({
             lang: s.config.lang,
             onText(finalText, interim) {
-              ta.value = (base ? base + ' ' : '') + finalText;
+              if (ta) ta.value = (base ? base + ' ' : '') + finalText;
               const el = root.querySelector('.iv-interim');
-              if (el) el.textContent = interim;
-              if (handsFree) { clearTimeout(silence); silence = setTimeout(() => { if (ta.value.trim()) send(); }, SILENCE_MS); }
+              if (el) el.textContent = interim ? interim : '';
+              if (handsFree) { clearTimeout(silence); silence = setTimeout(() => { if (ta && ta.value.trim()) send(); }, SILENCE_MS); }
             },
             onError(msg) { stopMic(); status('<span class="ai-error">' + esc(msg) + '</span>'); },
           });
         } catch (e) { status('<span class="ai-error">' + esc(e.message) + '</span>'); return; }
         const b = root.querySelector('[data-act="mic"]');
-        if (b) b.classList.add('recording');
+        if (b) { b.classList.add('recording'); b.setAttribute('aria-pressed', 'true'); }
+        updateState();
       }
 
       function stopMic() {
         clearTimeout(silence);
         if (mic) { try { mic.stop(); } catch (e) { /* ignore */ } mic = null; }
         const b = root.querySelector('[data-act="mic"]');
-        if (b) b.classList.remove('recording');
+        if (b) { b.classList.remove('recording'); b.setAttribute('aria-pressed', 'false'); }
         const el = root.querySelector('.iv-interim');
         if (el) el.textContent = '';
+        updateState();
       }
 
       function send() {
@@ -787,7 +817,8 @@ case 'handsfree': handsFree = !handsFree; session(); if (handsFree && !busy) lis
       root.addEventListener('change', onChange);
       root.addEventListener('keydown', onKeydown);
       root.addEventListener('input', onInput);
-      cleanups.push(() => { root.removeEventListener('click', onClick); root.removeEventListener('change', onChange); root.removeEventListener('keydown', onKeydown); root.removeEventListener('input', onInput); });
+      tts._onChange = updateState;
+      cleanups.push(() => { tts._onChange = null; root.removeEventListener('click', onClick); root.removeEventListener('change', onChange); root.removeEventListener('keydown', onKeydown); root.removeEventListener('input', onInput); });
       if (tts.ok) speechSynthesis.getVoices();   // warm up the voice list (loads async in Chrome)
 
       setup();

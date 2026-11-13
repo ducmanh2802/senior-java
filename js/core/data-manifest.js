@@ -23,7 +23,8 @@
       questions: ['q-java.js', 'q-kotlin.js', 'q-concurrency-jvm.js', 'q-spring-data.js', 'q-sql.js', 'q-api.js',
         'q-security.js', 'q-microservices.js', 'q-system-design.js', 'q-scenario.js', 'q-banking.js', 'q-aws.js', 'q-ai.js',
         'q-claude.js', 'q-primer.js', 'q-devops.js', 'q-soft.js', 'q-english.js', 'q-autotest.js', 'q-remote.js'],
-      quiz: ['quiz.js', 'quiz-claude.js', 'quiz-java.js', 'quiz-spring.js', 'quiz-design.js', 'quiz-ops.js', 'quiz-gaps.js', 'quiz-autotest.js'],
+      quiz: ['quiz.js', 'quiz-claude.js', 'quiz-java.js', 'quiz-spring.js', 'quiz-design.js', 'quiz-ops.js', 'quiz-gaps.js', 'quiz-autotest.js',
+        'quiz-cca-1.js', 'quiz-cca-2.js', 'quiz-cca-3.js', 'quiz-cca-4.js', 'quiz-cca-5.js'],
       exams: ['exams.js'],                                    // exam registry (#/exam)
       algos: ['algo.js'],
       companies: ['companies.js'],
@@ -38,9 +39,11 @@
       projects: ['projects.js'],
       sdlc: ['sdlc.js'],                                      // #/sdlc end-to-end SDLC simulation (window.SDLC)
       bugs: ['bugs.js'],                                      // #/bugs bug hunt: buggy project code + tests (window.BUGS)
+      toeic: ['toeic.js'],                                    // #/toeic TOEIC Speaking & Writing practice (window.TOEIC)
+      stars: ['star-stories.js'],                             // #/career mẫu câu chuyện STAR (window.STAR_STORIES)
       pathbasics: ['path-basics.js'],                         // #/path: kiến thức nền + link tài liệu cho từng chặng
       // AWS Pro track (#/aws): plan + SAP-C02/DOP-C02 exam-style pools (docs/AWS-TRACK.md, scripts/check-aws.js)
-      aws: ['aws-plan.js', 'aws-sap-1.js', 'aws-sap-2.js', 'aws-sap-3.js', 'aws-dop-1.js', 'aws-dop-2.js', 'aws-dop-3.js', 'aws-sap-4.js', 'aws-dop-4.js'],
+      aws: ['aws-plan.js', 'aws-sap-1.js', 'aws-sap-2.js', 'aws-sap-3.js', 'aws-dop-1.js', 'aws-dop-2.js', 'aws-dop-3.js', 'aws-sap-4.js', 'aws-dop-4.js', 'aws-sap-5.js', 'aws-dop-5.js'],
     },
     routes: {
       // dashboard: SRS due list + stats, next lesson, today's plan, interview plan — all from the light index via
@@ -67,15 +70,16 @@
       news: [],
       sd: ['sd', 'questions', 'glossary'],
       projects: ['projects', 'lessons', 'questions', 'glossary'],
-      career: ['questions', 'companies'],
+      career: ['questions', 'companies', 'stars'],
       sdlc: ['sdlc'],
+      toeic: ['toeic'],
       bugs: ['bugs', 'questions', 'glossary'],               // related-questions widget
       aws: ['aws'],                                           // window.AWS_PLAN + window.AWS_QUESTIONS
     },
     // Views are lazy too: route 'x' loads css/views/x.css + js/views/x.js on first visit (App.loadView).
     // index.html loads NO view file. Adding a view: add its name here (scripts/check-budget.js checks the files).
     views: ['dashboard', 'roadmap', 'bank', 'flash', 'quiz', 'exam', 'algo', 'mock', 'companies', 'labs', 'account',
-      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'sdlc', 'jobs', 'bugs'],
+      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'sdlc', 'jobs', 'bugs', 'toeic'],
     // views prefetched at idle after the first render (nav targets most used first); the rest load on click
     prefetchViews: ['bank', 'flash', 'learn', 'quiz', 'roadmap', 'path', 'algo', 'mock'],
     // idle prefetch order after the first render (most likely next screens first)
