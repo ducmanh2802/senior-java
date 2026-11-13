@@ -3980,5 +3980,13 @@ window.DATA_INDEX = {
     ["qz-ccafive-033","claude"],
     ["qz-ccafive-034","claude"],
     ["qz-ccafive-035","claude"],
+    ["qz-ccafive-036","claude"],
+    ["qz-ccafive-037","claude"],
+    ["qz-ccafive-038","claude"],
+    ["qz-ccafive-039","claude"],
+    ["qz-ccafive-040","claude"],
+    ["qz-ccafive-041","claude"],
+    ["qz-ccafive-042","claude"],
+    ["qz-ccafive-043","claude"],
   ]
 };
