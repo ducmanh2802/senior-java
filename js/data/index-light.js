@@ -2123,6 +2123,8 @@ window.DATA_INDEX = {
     {"id":"sd-034","title":"Distributed job scheduler (lập lịch cron cho hàng triệu job, đảm bảo chạy đúng một lần, retry, phân vùng theo shard)"},
     {"id":"sd-035","title":"Dịch vụ ghi âm và tóm tắt cuộc họp bằng AI cho 50.000 người dùng"},
     {"id":"sd-036","title":"Nền tảng feature flag dùng chung cho nhiều ứng dụng"},
+    {"id":"sd-037","title":"Dịch vụ chat AI cho 1 triệu người dùng (streaming SSE, lịch sử hội thoại, quota, chọn model theo tải)"},
+    {"id":"sd-038","title":"Ghép chuyến xe công nghệ (vị trí tài xế thời gian thực, geohash/H3, ghép cặp, giá động, trạng thái chuyến)"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},

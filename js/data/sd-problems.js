@@ -4422,4 +4422,343 @@ Tôi sẽ đặt API quản trị và lưu version/audit trong control plane, c�
   ],
   related: ['design-013', 'microservices-006', 'architecture-014']
 },
+{
+  id: 'sd-037',
+  title: 'Dịch vụ chat AI cho 1 triệu người dùng (streaming SSE, lịch sử hội thoại, quota, chọn model theo tải)',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Thiết kế dịch vụ chat AI (kiểu ChatGPT) phục vụ 1 triệu người dùng hoạt động mỗi ngày, 10.000 request/giây giờ cao điểm. Yêu cầu: **streaming token qua SSE** (Server-Sent Events), lưu lịch sử hội thoại dài hạn, **quota theo gói đăng ký** (miễn phí 50 lượt/ngày, Pro 1.000, Enterprise không giới hạn), **chọn model theo tải hiện tại** (nhỏ nhanh cho câu đơn giản, lớn chậm cho reasoning), và **chống lạm dụng** (spam, prompt injection, bypass filter). Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt functional: chat đa lượt (multi-turn), streaming token, lịch sử hội thoại (xem/xoá), quota theo gói, chọn model tự động/đủ quyền override, moderation nội dung. Non-functional: p50 time-to-first-token < 800 ms, p99 < 2 giây; streaming không đứt; lịch sử truy xuất < 300 ms; quota thực thi đúng, không vượt; availability 99,9%. Hỏi: context window tối đa, có function calling, có RAG. Out-of-scope: training model, fine-tuning.` },
+    { name: 'Estimation', minutes: 5, guide: `Token/ngày: 1M DAU x 10 hội thoại x 20 lượt x 500 token/lượt = 100B token/ngày (input+output). Peak: 10k RPS x 500 token trung bình = 5M token/s cần stream. Lưu lịch sử: 1M user x 10 hội thoại x 5.000 token x 4 byte (ước lượng) ~ 200 GB. Quota check: 10k RPS => Redis atomic counter (< 1 ms). Model selection: routing service < 50 ms. Kết luận: bottleneck là GPU inference và quản lý kết nối streaming (SSE).` },
+    { name: 'API & data model', minutes: 5, guide: `POST /chat/completions (stream=true, model=auto|gpt-4o|claude-3.5-sonnet, conversationId?, messages[]) -> SSE stream. GET /conversations, GET /conversations/{id}/messages. Quota: GET /quota. Bảng conversation (id, user_id, title, model_preference, created_at), message (id, conversation_id, role, content, tokens, model_used, seq), quota_usage (user_id, date, plan, used, limit), model_routing_log (request_id, chosen_model, reason, latency_ms).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Client -> API Gateway (auth, rate limit, quota check Redis) -> Router Service (chọn model, cân tải) -> Inference Pool (vLLM/TGI cho open-source, Anthropic/OpenAI SDK cho closed) -> SSE stream về client. Lịch sử: ghi message vào Kafka -> consumer ghi DB (Postgres partition theo user_id + conversation_id). Moderation: async song song stream (content filter) + sync pre-check cho prompt. Quota: Redis INCRBY atomic, TTL 24h. Connection: SSE giữ connection, heartbeat 30s, reconnect resume từ last_event_id.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: SSE connection management (keep-alive, proxy timeout, resume), token streaming từ nhiều provider (format chuẩn hoá), model routing algorithm (load-aware, cost-aware), quota enforcement race condition, conversation context management (sliding window, summary), moderation pipeline (pre + post), abuse detection (rate limit, embedding similarity, pattern matching), cost optimization (caching, model cascade).` }
+  ],
+  rubric: [
+    'SSE streaming: connection lifecycle, heartbeat, resume bằng Last-Event-ID, xử lý proxy/nginx buffer',
+    'Model routing: load-aware (queue depth, GPU util), cost-aware (cheapest capable model), fallback chain',
+    'Quota: Redis atomic counter per user/plan, sliding window ngày, chống race condition khi reset giữa đêm',
+    'Lịch sử hội thoại: partition, context window management (sliding window + summary), truy xuất nhanh',
+    'Moderation: pre-check sync (prompt injection, PII), post-check async (output safety), không chặn stream',
+    'Chống lạm dụng: rate limit theo user/IP, embedding-based deduplication, prompt injection detection',
+    'Multi-provider abstraction: unified token stream format, error normalization, circuit breaker',
+    'Chi phí: caching response (semantic cache), model cascade (nhỏ trước, lớn sau nếu cần), batch inference',
+    'Giám sát: TTFT, tokens/s, error rate theo provider, quota utilization, GPU utilization, cost/1k tokens'
+  ],
+  reference: `**Tóm tắt:** Dịch vụ chat AI quy mô lớn là bài toán **streaming connection management** kết hợp **model routing thông minh** và **quota enforcement chính xác**. Ba trụ cột: (1) SSE connection pool giữ hàng triệu connection dài hạn với resume capability, (2) Router chọn model dựa trên tải GPU thực tế + chi phí + độ phức tạp prompt, (3) Quota thực thi ở Redis atomic trước khi vào hàng đợi inference. Lịch sử hội thoại lưu append-only, quản lý context window bằng sliding window + summary định kỳ.
+
+### Yêu cầu và quy mô
+- 1 triệu DAU, 10.000 RPS peak, trung bình ~1.000 RPS.
+- Streaming SSE: time-to-first-token p50 < 800 ms, p99 < 2 giây.
+- Quota: Free 50/ngày, Pro 1.000/ngày, Enterprise unlimited.
+- Model: tự chọn (nhỏ nhanh cho Q&A đơn giản, lớn reasoning cho code/math), cho phép override.
+- Chống lạm dụng: spam, prompt injection, bypass filter, multi-account.
+
+### Ước lượng
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Token/ngày | 1M x 10 conv x 20 turn x 500 token | 100B token (input+output) |
+| Token/s peak | 10k RPS x 500 token avg | 5M token/s |
+| Storage lịch sử | 1M x 10 x 5.000 token x 4 byte (nén) | ~200 GB |
+| Quota check | 10k RPS | Redis ~0,1 ms/op |
+| SSE connection | 1M DAU x 1.5 conn trung bình | 1,5M connection đồng thời |
+
+Kết luận: GPU inference là bottleneck chính (cần hàng chục GPU A100/H100); SSE connection management cần proxy layer (Envoy/NGINX) cấu hình buffer off; quota Redis atomic; lịch sử Postgres partition.
+
+### 1. SSE Connection Management
+SSE đơn giản hơn WebSocket cho streaming một chiều (server -> client), nhưng có thách thức riêng:
+- **Proxy buffer**: NGINX/Cloudflare buffer response mặc định -> token bị chậm rãi. Cần {{proxy_buffering off;}} và {{X-Accel-Buffering: no}}.
+- **Keep-alive**: Client mất mạng -> connection chết. Heartbeat mỗi 30 giây ({{: heartbeat\n\n}}) giữ connection.
+- **Resume**: Client reconnect gửi header {{Last-Event-ID}} (event ID của token cuối đã nhận). Server tiếp tục stream từ token tiếp theo. Cần lưu {{last_token_seq}} trong Redis keyed by {{conversation_id:user_id}}.
+- **Connection limit**: 1,5M connection -> cần connection pooling ở gateway, limit file descriptor, {{SO_REUSEPORT}}.
+
+~~~text
+Client --SSE--> [API Gateway: auth, quota, rate limit, proxy_buffering off]
+                         |
+                         v
+                  [Router Service]
+              /        |        \
+         Model A      Model B    Model C (vLLM/TGI pods)
+         (small)      (medium)   (large reasoning)
+                         |
+              [Stream Aggregator: chuẩn hoá token format]
+                         |
+                         v
+Client <-- SSE stream (data: {{"token": "...", "seq": 123, "done": false}})
+~~~
+
+### 2. Model Routing (Load-aware + Cost-aware)
+Mỗi request đến Router có {{model=auto}}. Router quyết định dựa trên:
+1. **Độ phức tạp prompt**: classifier nhẹ (fastText/embedding + logistic regression) phân loại: {{simple_qa}}, {{code}}, {{reasoning}}, {{creative}}, {{long_context}}.
+2. **Tải GPU thực tế**: Redis lưu {{gpu_util}}, {{queue_depth}} cho mỗi model pool (cập nhật mỗi 5 giây bởi exporter).
+3. **Chi phí**: ưu tiên model rẻ hơn nếu đủ khả năng.
+4. **Fallback chain**: Nếu model ưu tiên quá tải (queue > ngưỡng) -> chuyển model kế tiếp.
+
+~~~java
+// Quyết định routing đơn giản
+public ModelRoute route(PromptRequest req) {
+    Complexity c = classifier.predict(req.messages()); // simple/code/reasoning
+    List<ModelPool> candidates = MODEL_MAP.get(c);   // đã sắp xếp chi phí tăng
+    for (ModelPool p : candidates) {
+        if (p.queueDepth() < p.threshold() && p.gpuUtil() < 85) return p.route();
+    }
+    // Tất cả quá tải -> fallback lớn nhất, set header X-Model-Degraded
+    return candidates.getLast().routeWithDegraded();
+}
+~~~
+
+### 3. Quota Enforcement
+Quota theo ngày theo múi giờ người dùng (UTC midnight). Race condition khi reset giữa đêm: user Free 50/ngày, đã dùng 49, lúc 23:59:59.900 gửi 2 request song song -> cả hai đều đọc {{used=49}}, cả hai {{INCRBY 1}} -> {{used=51}} vượt quota.
+
+Giải pháp: **Lua script atomic check-and-increment**:
+~~~text
+-- KEYS[1] = quota:{user_id}:{date}, ARGV[1] = limit, ARGV[2] = cost
+local used = tonumber(redis.call('GET', KEYS[1])) or 0
+if used + tonumber(ARGV[2]) > tonumber(ARGV[1]) then return {0, used} end
+local new = redis.call('INCRBY', KEYS[1], ARGV[2])
+redis.call('EXPIRE', KEYS[1], 86400)
+return {1, new}
+~~~
+- {{limit = -1}} cho Enterprise (bỏ qua check).
+- Key TTL 24h + 1h buffer để reset trôi đều.
+
+### 4. Lịch sử hội thoại & Context Window
+- **Storage**: Postgres partition theo {{user_id}} (hash) + {{conversation_id}}. Bảng {{message}} có index {{(conversation_id, seq)}}.
+- **Context management**: Model có context window (ví dụ 128k token). Khi hội thoại dài:
+  1. **Sliding window**: Giữ N lượt gần nhất (ví dụ 20 turn).
+  2. **Summary**: Tóm tắt phần cũ bằng model nhỏ, gán {{role=system}} với tag {{summary}}. Token summary ít hơn nhiều.
+  3. **RAG cho file upload**: Nếu user upload file, chunk -> embedding -> vector DB ({{pgvector}}), retrieve top-k relevant chunk inject vào context.
+
+### 5. Moderation Pipeline
+- **Pre-check (sync, < 100 ms)**: Prompt injection detection (heuristic + embedding similarity với known attacks), PII regex, banned keyword. Chặn ngay nếu vi phạm nghiêm trọng.
+- **Post-check (async)**: Output stream qua content filter (Llama Guard / custom classifier). Nếu vi phạm -> cắt stream, gửi event {{moderation_flagged}}, log để review. Không block pre-check vì làm tăng TTFT.
+
+### 6. Chống lạm dụng
+| Tấn công | Phát hiện | Phòng chống |
+|---|---|---|
+| Spam request | Rate limit user/IP (Redis sliding window 60 req/phút) | 429 + Retry-After |
+| Prompt injection | Embedding similarity với attack dataset + pattern regex | Pre-check chặn, log, giảm quota |
+| Multi-account (bypass quota) | Device fingerprint, IP reputation, behavioral clustering | Yêu cầu verify phone/email cho Free tier |
+| Token stuffing (dùng token free cho account khác) | Quota keyed by user_id (không phải API key), binding device | Device binding, re-CAPTCHA |
+
+### 7. Multi-provider Abstraction
+Khớp format token stream từ OpenAI, Anthropic, vLLM (OpenAI-compatible), TGI:
+~~~text
+Provider A (OpenAI)      Provider B (Anthropic)       Unified Stream
+data: {choices:[{delta:  event: message_delta        data: {{"token":"...", "seq":1,
+  {content:"Hello"}}]      data: {{"delta":{"text":"H"}}}
+}                                                }}
+~~~
+- Adapter pattern: mỗi provider một class implement {{TokenStream}} interface.
+- Circuit breaker: provider lỗi > 5% trong 1 phút -> open, chuyển traffic sang provider khác.
+- Retry: chỉ retry ở Router level cho lỗi transient (timeout, 5xx), không retry lỗi 4xx.
+
+### 8. Tối ưu chi phí
+- **Semantic cache**: Embedding prompt -> vector search cache (Redis/{{pgvector}}). Hit -> trả cached response (non-streaming) hoặc prefill cache cho streaming. Tiết kiệm 10-20% token cho câu hỏi lặp.
+- **Model cascade**: Thử model nhỏ trước (3.5B/7B), nếu confidence thấp (entropy cao) hoặc user explicit yêu cầu -> escalate model lớn.
+- **Batch inference**: Cho các request không cần streaming (background job), gom batch size 32-64 trên GPU.
+
+### 9. Giám sát
+| Metric | Mục tiêu | Alert |
+|---|---|---|
+| TTFT p50/p99 | < 800 ms / < 2 s | p99 > 3 s |
+| Tokens/s per GPU | > 1.000 (A100) | < 500 |
+| Quota utilization | Theo dõi theo plan | Free tier > 80% |
+| Error rate by provider | < 1% | > 5% |
+| SSE connection count | Theo dõi | Drop đột ngột |
+| Cost/1k tokens | Theo dõi xu hướng | Tăng > 20% |
+
+### Ví dụ đời thực
+Một startup deploy chat AI cho 500k user. Ban đầu dùng đơn giản: mọi request đều gửi GPT-4o. Chi phí $15k/tháng, TTFT p99 3,5 giây do rate limit OpenAI. Sau khi triển khai:
+1. Router chọn model: 70% request dùng Llama-3.1-8B (self-host), 25% Llama-3.1-70B, 5% GPT-4o chỉ cho reasoning phức tạp.
+2. Semantic cache bắt 15% request lặp (chào hỏi, FAQ).
+3. Quota enforcement chặn bot farm tạo 50k account free spam.
+Kết quả: chi phí giảm xuống $3,2k/tháng (78%), TTFT p99 1,2 giây, GPU utilization 75%.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chia làm ba mặt: streaming, routing, quota. SSE connection quản lý bằng gateway tắt buffering, heartbeat 30s, resume bằng Last-Event-ID lưu Redis. Router chọn model dựa trên classifier độ phức tạp prompt + GPU load real-time từ Redis (cập nhật 5s), fallback chain có sẵn. Quota dùng Lua script atomic check-and-increment trên Redis, key theo user_id+date UTC, Enterprise limit=-1. Lịch sử lưu Postgres partition user_id, context window dùng sliding window 20 turn + summary định kỳ. Moderation pre-check sync 100ms (prompt injection, PII), post-check async không chặn stream. Chống lạm dụng: rate limit, device fingerprint, embedding dedup. Chi phí tối ưu bằng semantic cache (15% hit) và model cascade. Giám sát TTFT, tokens/s/GPU, quota utilization, cost/1k tokens."
+
+> Senior tip: điều hay bị bỏ qua nhất là **chi phí ẩn của streaming SSE**: mỗi connection giữ một file descriptor và một goroutine/thread ở backend. 1,5M connection đồng thời cần kernel tuning ({{somaxconn}}, {{tcp_max_syn_backlog}}), connection pooling, và **proxy layer offload buffering**. Tôi từng thấy một team dùng Node.js không bật {{proxy_buffering off}} khiến token bị buffer 10 giây mới flush ra client — debug mất 2 ngày. Luôn test streaming end-to-end với curl {{--no-buffer}} trước khi deploy.`,
+  followups: [
+    'Nếu muốn hỗ trợ function calling (tool use), luồng streaming và routing thay đổi thế nào?',
+    'Làm sao phát hiện và chặn "jailbreak" prompt đa ngôn ngữ (tiếng Việt có dấu, không dấu, song ngữ)?',
+    'Enterprise customer muốn dedicated GPU pool và SLA TTFT < 500 ms: kiến trúc multi-tenant như thế nào?',
+    'Khi model provider (OpenAI/Anthropic) đổi API hoặc ngừng hỗ trợ model, bạn migrate không downtime ra sao?'
+  ],
+  related: ['design-042', 'design-043', 'ai-001', 'ai-005']
+},
+{
+  id: 'sd-038',
+  title: 'Ghép chuyến xe công nghệ (vị trí tài xế thời gian thực, geohash/H3, ghép cặp, giá động, trạng thái chuyến)',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Thiết kế hệ thống ghép chuyến xe (ride-hailing) cho 500.000 tài xế online giờ cao điểm, 3 triệu chuyến/ngày, 50 thành phố. Yêu cầu: tài xế gửi vị trí **2 giây/lần**, khách xem xe quanh mình **trễ < 2 giây**, đặt xe thì **ghép tài xế phù hợp trong < 5 giây**, **không giao một tài xế cho hai khách**, **giá động (surge pricing)** theo cung/cầu thời gian thực, theo dõi trạng thái chuyến (đến đón, trên đường, hoàn thành). Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt functional: tài xế online/offline, cập nhật vị trí, khách xem xe gần, đặt xe (chọn loại xe, phương thức thanh toán), ghép cặp, surge pricing, trạng thái chuyến realtime, huỷ chuyến, đánh giá. Non-functional: vị trí trên bản đồ trễ < 2 giây, ghép cặp p99 < 5 giây, không double-assign, surge cập nhật < 10 giây, availability 99,95%. Hỏi: nhiều quốc gia, loại xe, scheduled ride, carpool. Out-of-scope: thanh toán, định tuyến đường đi chi tiết (ETA service riêng).` },
+    { name: 'Estimation', minutes: 5, guide: `500k tài xế / 2 giây = 250.000 cập nhật vị trí/giây. Mỗi cập nhật ~100 byte => 25 MB/s inbound. Vị trí hiện tại: 500k x 150 byte = 75 MB (vừa RAM). Lịch sử vị trí: 250k x 100 byte x 86.400 = ~2,1 TB/ngày -> object storage. Đặt chuyến: 3M/86.400 ~ 35/s trung bình, peak x10 ~ 350/s. Xem xe quanh: ~5.000 QPS peak. Kết luận: luồng ghi vị trí là bottleneck chính, cần shard theo thành phố/vùng.` },
+    { name: 'API & data model', minutes: 5, guide: `Driver: gRPC stream / WebSocket gửi {{lat}}, {{lng}}, {{heading}}, {{speed}}, {{accuracy}}, {{ts}}. Rider: GET /nearby?lat&lng&vehicle_type, POST /rides {{pickup}}, {{dropoff}}, {{vehicle_type}}, {{Idempotency-Key}}. Lưu: driver_state(driver_id, city_id, status, lat, lng, h3_index, ride_id, version, updated_at) trong Redis/In-memory; rides(id, rider_id, driver_id, status, pickup, dropoff, fare, surge_multiplier, created_at) trong Postgres; surge_zone(city_id, h3_index, multiplier, updated_at).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Driver app -> Location Gateway (keep connection) -> Location Service ghi H3 index vào Redis shard theo city + đẩy Kafka cho lịch sử. Rider -> Matching Service: GEOSEARCH H3 rings quanh pickup -> lọc AVAILABLE + heading phù hợp -> xếp hạng ETA -> **CAS trạng thái driver AVAILABLE->OFFERED** -> push lời mời qua Gateway. Surge Service: tính multiplier theo supply/demand ratio mỗi 10 giây per H3 cell, publish Kafka -> Matching Service cache. Trip Service quản lý state machine chuyến.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: H3 vs geohash vs Redis GEO, xử lý ô biên (ring search), heading-aware matching (tài xế quay lưng không ghép), CAS driver state để ngăn double-assign (giao 1 tài xế cho 2 khách), timeout mời 10s -> mời người kế, surge algorithm (PID control / ML), hot spot sân bay (queue FIFO tài xế), driver mất kết nối (stale location TTL), multi-city sharding, failure modes.` }
+  ],
+  rubric: [
+    'Ước lượng 250k cập nhật vị trí/giây và nhận ra luồng ghi này quyết định kiến trúc',
+    'H3 index (lưới lục giác) ưu hơn geohash: khoảng cách tâm đến ô kề đều, tiện surge zone',
+    'Ring search H3 (k=1,2,3) thay vì geohash prefix + 8 neighbors',
+    'Shard theo city_id: mỗi thành phố Redis cluster riêng, isolation fault domain',
+    'Matching: lọc AVAILABLE + heading + vehicle_type, xếp ETA thực tế (OSRM/Valhalla), CAS AVAILABLE->OFFERED',
+    'Surge: supply/demand ratio per H3 cell, PID controller hoặc ML, cập nhật 10s, smoothing',
+    'Hot spot sân bay: queue tài xế FIFO riêng, không dùng matching thông thường',
+    'Driver stale detection: TTL 15s trên location, loại khỏi candidate set',
+    'Trip state machine: REQUESTED -> MATCHING -> DRIVER_EN_ROUTE -> ARRIVED -> IN_PROGRESS -> COMPLETED',
+    'Giám sát: supply/demand ratio, matching success rate, surge multiplier distribution, driver utilization, ETA accuracy'
+  ],
+  reference: `**Tóm tắt:** Ghép chuyến xe là bài toán **geo-realtime** với luồng ghi vị trí cực lớn (250k/s) và yêu cầu **không double-assign** tuyệt đối. Ba khái niệm cốt lõi: (1) **H3 hexagonal grid** cho vị trí, tìm kiếm lân cận và surge zone; (2) **CAS (Compare-And-Swap) trên driver state** để giành tài xế nguyên tử trước khi mời; (3) **Surge pricing per H3 cell** cập nhật realtime dựa trên tỷ lệ supply/demand. Shard theo city để cô lập lỗi và scale độc lập.
+
+### Yêu cầu và quy mô
+- 500.000 tài xế online peak, 50 thành phố.
+- Tài xế gửi vị trí 2 giây/lần -> 250.000 updates/giây.
+- Khách xem xe quanh: trễ < 2 giây, ~5.000 QPS peak.
+- Đặt xe -> ghép cặp p99 < 5 giây.
+- Không double-assign: một tài xế chỉ thuộc một chuyến tại một thời điểm.
+- Surge pricing realtime, cập nhật < 10 giây.
+- Trạng thái chuyến realtime cho rider và driver.
+
+### Ước lượng
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Cập nhật vị trí | 500.000 / 2 giây | 250.000/s |
+| Băng thông inbound | 250.000 x 100 byte | 25 MB/s |
+| Vị trí hiện tại (RAM) | 500.000 x 150 byte | 75 MB |
+| Lịch sử vị trí/ngày | 250.000 x 100 byte x 86.400 | ~2,1 TB -> S3/Parquet |
+| Đặt chuyến peak | 3M x 10 / 86.400 | ~350/s |
+| Xem xe quanh peak | Nhu cầu đọc cao nhưng cache theo ô H3 + TTL ngắn | ~5.000 QPS tới backend |
+
+Nhận xét: Dữ liệu vị trí hiện tại rất nhỏ (75 MB) nhưng **ghi 250k/s** -> không dùng Postgres. Redis Cluster shard theo {{city_id}} (50 shard, mỗi shard ~5k ops/s). H3 index resolution 8 (~460m cạnh) hoặc 9 (~150m) cân bằng độ chính xác và số ô.
+
+### 1. H3 Hexagonal Grid (tại sao không geohash)
+**H3 (Uber)** chia Trái Đất thành lưới lục giác phân cấp (resolution 0-15). Ưu điểm so với geohash:
+- **Khoảng cách đều**: Tâm ô đến 6 ô kề cách nhau như nhau (geohash: ô kề ngang/dọc khác chéo).
+- **Ring search tự nhiên**: {{kRing(origin, k)}} trả tất cả ô trong bán kính k bước -> không cần logic "8 neighbors" phức tạp.
+- **Surge zone**: Mỗi ô H3 là một zone surge tự nhiên, dễ aggregate supply/demand.
+- **Hierarchy**: Resolution 8 chứa resolution 9 -> rollup dễ dàng.
+
+Resolution chọn: **Res 9** (cạnh ~150m, diện tích ~0,04 km²). Thành phố 1.000 km² ~ 25.000 ô. 500k driver phân bố -> trung bình 20 driver/ô.
+
+### 2. Location Pipeline
+~~~text
+Driver App --gRPC stream 2s--> [Location Gateway (100k conn/node)]
+                                     |
+                                     v
+                            [Location Service]
+                            |  H3_INDEX = geoToH3(lat, lng, 9)
+                            |  Redis: HSET driver:{city}:{driver_id} {{lat,lng,h3,heading,speed,ts,status}} TTL 15s
+                            |  GEOADD drivers:{city} {{lng}} {{lat}} {{driver_id}}  (Redis GEO cho fallback)
+                            v
+                     [Kafka: driver-locations] --> S3/Parquet (lịch sử, analytics)
+~~~
+- **Gateway**: Keep connection, authenticate, rate limit, forward to Location Service. Horizontal scale, stateless.
+- **Redis key**: {{driver:{city_id}:{driver_id}}} -> Hash {{lat, lng, h3_index, heading, speed, status, version, updated_at}}. TTL 15s (3x update interval) -> tự mất nếu driver disconnect.
+- **Version**: Tăng mỗi cập nhật, dùng cho CAS khi matching.
+- **Sharding**: Redis Cluster key hash tag {{city_id}} -> tất cả key cùng city nằm cùng slot.
+
+### 3. Matching & Ghép cặp (trái tim: CAS driver state)
+Khi rider đặt xe:
+1. **Candidate search**: {{kRing(pickup_h3, 3)}} -> ~37 ô -> {{ZRANGEBYSCORE}} hoặc {{HGETALL}} các driver trong các ô. Lọc: {{status=AVAILABLE}}, {{vehicle_type}} khớp, {{heading}} phù hợp (góc < 90° so với vector pickup), {{updated_at > now()-15s}}.
+2. **Ranking**: Gọi ETA Service (OSRM/Valhalla) lấy ETA thực tế (đường đi, không chim bay). Xếp: ETA thấp nhất, sau đó rating driver cao.
+3. **Atomic claim (CAS)**: Trước khi mời, **giành tài xế** bằng một thao tác nguyên tử:
+~~~lua
+-- Redis Lua script (atomic)
+-- KEYS[1] = driver:{city}:{driver_id}, ARGV = {ride_id, new_version, offer_ttl_ms}
+local cur = redis.call('HMGET', KEYS[1], 'status', 'version', 'ride_id')
+if cur[1] ~= 'AVAILABLE' then return {0, 'NOT_AVAILABLE'} end
+if tonumber(cur[2]) ~= tonumber(ARGV[2]) then return {0, 'VERSION_MISMATCH'} end
+redis.call('HSET', KEYS[1], 'status', 'OFFERED', 'ride_id', ARGV[1], 'version', ARGV[2], 'offer_expires', ARGV[3])
+redis.call('PEXPIRE', KEYS[1], ARGV[3])
+return {1, 'CLAIMED'}
+~~~
+- Nếu CAS thành công -> push lời mời qua Gateway đến driver (WebSocket/gRPC push).
+- Driver có 10 giây nhận/từ chối. Hết hạn -> CAS {{OFFERED}} -> {{AVAILABLE}} (version tăng), mời driver kế.
+- Driver nhận -> CAS {{OFFERED}} -> {{ON_TRIP}} (version tăng, ride_id khớp).
+
+**Tại sao CAS cần version?** Hai matching worker cùng chọn driver D. Worker A CAS version=5 thành công. Worker B CAS version=5 thất bại (version đã thành 6) -> thử driver kế. Không cần distributed lock.
+
+### 4. Surge Pricing (Real-time per H3 cell)
+Mỗi 10 giây, Surge Service tính multiplier cho mỗi H3 cell có hoạt động:
+~~~text
+supply = số driver AVAILABLE trong cell (đếm từ Redis)
+demand = số rider đang REQUESTED/MATCHING trong cell (từ Trip Service)
+ratio = demand / max(supply, 1)
+multiplier = clamp(1.0 + Kp * (ratio - target_ratio) + Ki * integral + Kd * derivative, 1.0, 3.0)
+~~~
+- **PID controller** đơn giản, ổn định, không cần train ML.
+- {{target_ratio = 1.5}} (mong muốn 1.5 rider cho 1 driver).
+- Smoothing: multiplier thay đổi tối đa ±0,2 mỗi chu kỳ 10s.
+- Publish Kafka {{surge-updates}} -> Matching Service cache local (TTL 15s) -> áp dụng vào fare estimate.
+
+### 5. Hot Spot: Sân bay / Ga / Sự kiện lớn
+Sân bay có 500 driver chờ, 50 rider đặt cùng lúc. Matching thường chọn driver gần pickup nhất -> driver ở đầu hàng không bao giờ được ghép -> bất công.
+Giải pháp: **Queue FIFO riêng cho hot zone**:
+- Định nghĩa hot zone: H3 cell có {{driver_waiting > 50}} và {{avg_wait_time > 10 phút}}.
+- Driver vào hot zone: {{LPUSH airport_queue:{zone} driver_id}} (Redis List).
+- Rider đặt ở hot zone: {{RPOP airport_queue:{zone}}} -> driver đầu hàng. Không qua matching ETA.
+- Driver huỷ/timeout: {{LREM}} hoặc chấp nhận ghost entry (cleanup job).
+
+### 6. Driver Stale Detection & Offline
+- Location TTL 15s trong Redis. Nếu không cập nhật trong 15s -> key hết hạn -> tự biến mất khỏi candidate set.
+- Gateway phát hiện client disconnect -> ngay lập tức {{HSET status=OFFLINE}} (không đợi TTL).
+- Reconnect: Driver gửi vị trí mới -> flow bình thường, version tăng.
+
+### 7. Trip State Machine
+~~~text
+REQUESTED (rider đặt) 
+    -> MATCHING (tìm driver, CAS OFFERED)
+        -> DRIVER_EN_ROUTE (driver nhận, đi đến pickup)
+            -> ARRIVED (đến đón, rider xác nhận lên xe)
+                -> IN_PROGRESS (đang di chuyển đến dropoff)
+                    -> COMPLETED (hoàn thành, thanh toán, rating)
+    -> CANCELLED (rider/driver huỷ ở bất kỳ trạng thái nào trước COMPLETED)
+        -> MATCHING (nếu huỷ ở MATCHING/DRIVER_EN_ROUTE, tìm driver mới)
+~~~
+- Mọi chuyển trạng thái là CAS trên {{trip.status}} + {{version}} (optimistic locking).
+- Event sourcing: mọi thay đổi ghi {{trip_event(trip_id, seq, from_status, to_status, actor, ts)}} append-only cho audit/replay.
+
+### 8. Multi-City Sharding & Scale
+- **50 Redis cluster** (mỗi city 1 cluster 3-6 node). Fault isolation: city A sập không ảnh hưởng city B.
+- **Matching Service** stateless, scale ngang. Mỗi instance handle một tập city (affinity) để cache surge/local driver hot.
+- **Gateway** sticky session cho driver connection (driver luôn về cùng gateway node trong một city).
+
+### 9. Giám sát
+| Metric | Mục tiêu | Alert |
+|---|---|---|
+| Location update latency p99 | < 500 ms | > 1 s |
+| Matching success rate | > 85% | < 70% |
+| Matching latency p99 | < 5 giây | > 10 giây |
+| Surge multiplier p99 | < 2.5x | > 3.0x |
+| Driver utilization (on_trip/total_online) | 40-60% | < 20% hoặc > 80% |
+| ETA accuracy (actual/predicted) | 0.9 - 1.1 | < 0.7 hoặc > 1.5 |
+| Stale driver rate | < 1% | > 5% |
+| Double-assign attempts | 0 | > 0 |
+
+### Ví dụ đời thực
+Một app ride-hailing tại Đà Nẵng (50k driver). Ban đầu dùng geohash + Redis GEO + UPDATE DB cho driver state. Vấn đề: (1) geohash ô biên bỏ sót 15% driver gần pickup, (2) UPDATE DB serializable gây deadlock khi 2 matching worker cùng claim driver, (3) surge tính theo bounding box to -> không phản ánh cung/cầu cục bộ.
+Sau khi chuyển:
+1. H3 res 9 + kRing(3) -> candidate recall 99%.
+2. Redis Lua CAS driver state -> double-assign = 0, matching latency p99 2,1 giây.
+3. Surge per H3 cell PID -> surge chính xác khu vực cao điểm (chợ đêm, sân bay) chứ không cả quận.
+4. Hot zone queue sân bay -> driver chờ trung bình giảm từ 25 phút xuống 8 phút, rider wait time giảm 40%.
+Kết quả: matching success rate 78% -> 92%, driver earning tăng 18%, incident double-assign = 0.
+
+### Trả lời mẫu khi phỏng vấn
+"Luồng ghi vị trí 250k/s là bottleneck, nên tôi tách hẳn: Location Gateway giữ gRPC stream, ghi H3 index vào Redis shard theo city (TTL 15s), lịch sử đẩy Kafka->S3. Matching dùng H3 kRing(3) tìm candidate, lọc AVAILABLE+heading+vehicle_type, gọi ETA service xếp hạng. **Trước khi mời, tôi CAS driver state AVAILABLE->OFFERED bằng Redis Lua script kèm version** -> đảm bảo không double-assign. Surge tính PID controller per H3 cell mỗi 10s, smoothing ±0,2. Sân bay dùng queue FIFO riêng. Trip state machine dùng optimistic locking version. Sharding 50 Redis cluster theo city, Matching stateless scale ngang. Giám sát matching success rate, surge multiplier, ETA accuracy, double-assign=0."
+
+> Senior tip: **heading-aware matching** là chi tiết nhỏ nhưng tác động lớn: tài xế đứng đỗ quay lưng điểm đón (heading lệch > 90°) nếu ghép sẽ phải quay đầu/đi vòng, làm ETA thực tế cao gấp 2-3 lần. Tôi thêm filter {{abs(heading_diff) < 90°}} ở candidate selection -> matching success rate tăng 5-7% và driver acceptance rate tăng vì không bị ghép chuyến "ngược đường". Đây là điều interviewer senior/lead thường hỏi sâu: "bạn chỉ dùng khoảng cách, còn hướng đi đâu?".`,
+  followups: [
+    'Hỗ trợ carpool (ghép 2-3 hành khách chung chuyến): thuật toán matching và state machine thay đổi thế nào?',
+    'Scheduled ride (đặt trước 1 giờ): bạn đảm bảo có tài xế đúng giờ khi supply biến động thế nào?',
+    'Mở rộng sang quốc gia mới (khác múi giờ, luật giao thông, bản đồ): kiến trúc multi-region như thế nào?',
+    'ETA service chết giữa giờ cao điểm: hệ thống suy giảm (fallback) ra sao và matching accuracy ảnh hưởng bao nhiêu?'
+  ],
+  related: ['design-010', 'design-044', 'design-045', 'realtime-001']
+},
 ];
