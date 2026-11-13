@@ -9284,4 +9284,789 @@ SaaS B2B 500 tenant, 10M req/ngày. **Gateway:** Cloudflare (IP reputation, 10k/
     { type: 'article', title: 'Rate Limiting Strategies (NGINX)', url: 'https://www.nginx.com/blog/rate-limiting-nginx/' }
   ]
 },
+{
+  id: 'architecture-057',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Consistent hashing (băm nhất quán) giải quyết vấn đề gì khi mở rộng cache/database cluster? Trình bày cơ chế hash ring, virtual node, cách thêm/bớt node và quá trình rebalancing dữ liệu.',
+  a: `**Tóm tắt:** Consistent hashing (băm nhất quán — kỹ thuật gán key vào node trên một vòng hash sao cho khi thêm/bớt node chỉ một phần nhỏ key phải di chuyển) giúp scale-out (mở rộng bằng cách thêm máy) mà không phải remap (tính lại ánh xạ) gần như toàn bộ dữ liệu như modulo hashing. Virtual node (vnode — nhiều điểm đại diện ảo cho mỗi node thật trên vòng) giúp phân bố tải đều và giảm dữ liệu dịch chuyển khi rebalancing (cân bằng lại dữ liệu giữa các node).
+
+### Consistent hashing là gì và vì sao cần?
+- **Vấn đề của modulo hashing:** Cách đơn giản là {{node = hash(key) % N}} (N là số node). Khi thêm 1 node (N→N+1), hầu hết key đổi chỗ (gần 100% phải migrate — di chuyển dữ liệu). Với cache hàng triệu key, điều này gây "cache stampede" (bão miss cache, toàn bộ request dồn xuống DB).
+- **Ý tưởng consistent hashing:** Đặt cả node và key lên cùng một **vòng hash** (hash ring — không gian hash từ 0 đến 2^32-1 nối đầu-cuối thành vòng). Mỗi key được gán cho node đầu tiên gặp được khi đi **theo chiều kim đồng hồ** trên vòng.
+
+### Cơ chế hoạt động từng bước
+1. **Tạo hash ring:** Chọn hàm hash (ví dụ MD5/MurmurHash) cho ra giá trị trong [0, M). Hình dung vòng tròn.
+2. **Đặt node lên vòng:** {{hash(nodeA)}} → vị trí A, {{hash(nodeB)}} → vị trí B, v.v.
+3. **Đặt key lên vòng:** {{hash("user:123")}} → vị trí K. Đi theo chiều kim đồng hồ từ K, gặp node nào đầu tiên thì key thuộc node đó.
+4. **Thêm node mới (D):** Chỉ các key nằm trên cung giữa node trước D và D phải chuyển sang D. Trung bình chỉ {{K/N}} key bị ảnh hưởng.
+5. **Bớt node (B hỏng):** Các key từng thuộc B chuyển sang node kế tiếp trên vòng. Phần còn lại không đổi.
+
+~~~text
+Hash ring (minh hoa ASCII, M=0..99)
+            0
+        N1(10)
+    90          20
+  K1              K2 -> thuoc N2
+    80          30
+        N3(70)  N2(35)
+            50
+Them N4 tai 25: chi key tren cung 10..25 (tu N1 den N4) chuyen sang N4.
+~~~
+
+### Vì sao cần Virtual Node?
+- **Vấn đề ring thô:** Ít node → phân bố không đều. Khi 1 node rời, node kế nhận toàn bộ tải → hotspot (điểm nóng quá tải).
+- **Giải pháp vnode:** Mỗi node thật có V vị trí ảo trên vòng (ví dụ N1#1,…,N1#150). Key map vào vnode, vnode map về node thật.
+- **Lợi ích:** Tải cân bằng hơn. Khi thêm 1 node thật có 150 vnode, nó lấy một ít key từ **nhiều** node khác thay vì dồn từ 1 node.
+
+### Rebalancing dữ liệu — thực tế
+- **Cache (Redis/Memcached cluster):** Khi key remap, cache miss xảy ra → đọc từ DB và điền lại (lazy). Cần warm-up hoặc rate-limit để tránh stampede.
+- **Database/partitioned storage:** Dữ liệu phải **copy** thật sự (background streaming), có throttling.
+- **Quy trình an toàn:** Thêm node "joining" → stream dữ liệu → chuyển traffic dần → "active". Bỏ node thì decommission ngược lại.
+
+~~~java
+// Minh hoa consistent hashing don gian voi TreeMap
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.*;
+
+class ConsistentHash<T> {
+    // ring: diem hash (vnode) -> node that
+    private final SortedMap<Integer, T> ring = new TreeMap<>();
+    private final int replicas; // so virtual node moi node that
+
+    ConsistentHash(int replicas, Collection<T> nodes) {
+        this.replicas = replicas;
+        for (T n : nodes) add(n);
+    }
+
+    void add(T node) {
+        for (int i = 0; i < replicas; i++) {
+            ring.put(hash(node.toString() + "#" + i), node); // moi vnode mot vi tri
+        }
+    }
+
+    void remove(T node) {
+        for (int i = 0; i < replicas; i++) ring.remove(hash(node.toString() + "#" + i));
+    }
+
+    T get(String key) {
+        if (ring.isEmpty()) return null;
+        int h = hash(key);
+        SortedMap<Integer, T> tail = ring.tailMap(h); // tim vnode dau tien >= h
+        int nodeHash = tail.isEmpty() ? ring.firstKey() : tail.firstKey();
+        return ring.get(nodeHash); // tra ve node that
+    }
+
+    private int hash(String s) {
+        try { // MD5 cho phan bo deu (demo); production dung MurmurHash
+            byte[] d = MessageDigest.getInstance("MD5").digest(s.getBytes(StandardCharsets.UTF_8));
+            return ((d[0] & 0xFF) << 24) | ((d[1] & 0xFF) << 16) | ((d[2] & 0xFF) << 8) | (d[3] & 0xFF);
+        } catch (Exception e) { throw new RuntimeException(e); }
+    }
+}
+~~~
+
+### Bảng trade-off / khi nào dùng
+| Tiêu chí | Modulo hash {{hash%N}} | Consistent hashing + vnode |
+|---|---|---|
+| Khi thêm/bớt node | Remap ~100% key (rất tốn kém) | Remap ~{{K/N}} key |
+| Phân bố tải | Đều nếu hash tốt | Cần vnode (100-200/node) để đều |
+| Độ phức tạp | Rất đơn giản | Phức tạp hơn (ring, vnode, move) |
+| Khi nào dùng | N cố định, ít thay đổi | Cluster co giãn, cache phân tán |
+
+- **Dùng khi:** cache cluster (Redis/Memcached), distributed storage, load balancer cần sticky theo key.
+- **Không cần khi:** số node cố định nhỏ, hoặc hệ quản lý partition sẵn (Redis Cluster hash slot, Kafka partition).
+
+### Pitfall thực tế trên production
+1. **Quá ít vnode:** Phân bố lệch, một node nhận gấp đôi tải → latency spike. Cần benchmark (100-256 vnode/node).
+2. **Hàm hash kém:** Key dồn một vùng → hotspot. Dùng MurmurHash/xxHash thay vì {{String.hashCode()}}.
+3. **Rebalance gây thundering herd:** Thêm node → nhiều key miss cùng lúc → DB quá tải. Rate-limit migration, warm cache.
+4. **Bỏ qua replication:** Chỉ quyết định node chính; node chết trước khi replicate xong thì mất dữ liệu. Cần replication factor (RF ≥ 2).
+5. **Weighted node:** Node cấu hình khác nhau nhưng vnode bằng nhau → node yếu quá tải. Gán số vnode tỷ lệ sức chứa.
+
+### Ví dụ đời thực
+Hệ thống cache session cho 5 triệu user online, 4 node Redis (mỗi node 32 GB). Ban đầu dùng {{hash(userId)%4}}. Khi thêm node thứ 5: ~80% key bị remap → cache hit rớt từ 98% xuống ~20% trong 10 phút, DB (PostgreSQL) QPS tăng từ 2.000 lên 18.000, p99 latency từ 40 ms lên 1,8 s. Sau khi chuyển sang consistent hashing với 150 vnode/node, lần thêm node tiếp theo chỉ ~20% key di chuyển, cache hit giảm nhẹ còn 85% và hồi phục trong ~3 phút nhờ warm-up nền, DB QPS đỉnh 4.500.
+
+### Trả lời mẫu khi phỏng vấn
+"Consistent hashing đặt cả node và key lên một hash ring và gán key cho node kế tiếp theo chiều kim đồng hồ. Điểm mấu chốt là khi thêm hoặc bớt một node, chỉ khoảng 1/N số key phải di chuyển thay vì gần như toàn bộ như modulo. Để tránh phân bố lệch và hotspot khi node join/leave, mình dùng virtual node — mỗi node thật có hàng trăm vị trí ảo trên vòng nên tải chia đều và việc di chuyển rải ra nhiều node. Khi rebalancing, với cache mình chấp nhận miss rồi điền lại có rate-limit, còn với storage thì phải stream dữ liệu nền và decommission an toàn. Ví dụ thực tế, cluster 4 node thêm node thứ 5: modulo làm mất 80% cache hit, còn consistent hashing chỉ ảnh hưởng khoảng 20% key và hệ thống hồi phục nhanh."
+
+> Senior tip: Consistent hashing chỉ giải quyết bài toán *đặt key ở đâu*; trong production bạn luôn phải kết hợp replication, health-check, và chiến lược migrate có throttle. Với Redis, cân nhắc Redis Cluster (16384 hash slot) trước khi tự implement client-side hashing.
+`,
+  follow: [
+    'Redis Cluster dùng hash slot (16384 slot) thay vì hash ring liên tục — ưu/nhược điểm so với consistent hashing với vnode là gì?',
+    'Khi một node mới join, làm sao bạn warm cache hoặc giới hạn tốc độ migration để tránh làm quá tải DB phía sau?',
+    'Nếu các node có dung lượng RAM/CPU khác nhau, bạn điều chỉnh số vnode hoặc cơ chế gán tải như thế nào?'
+  ],
+  tags: ['consistent hashing', 'virtual node', 'rebalancing', 'distributed cache', 'scalability']
+},
+{
+  id: 'architecture-058',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Leader election (bầu chọn leader — chọn một node làm "trưởng" điều phối) hoạt động thế nào trong hệ phân tán? Split brain (não phân đôi — cụm bị chia làm hai phần, mỗi phần tự bầu leader riêng) là gì, vì sao nguy hiểm và làm sao phòng tránh?',
+  a: `**Tóm tắt:** Leader election (bầu chọn leader — cơ chế để tại mỗi thời điểm chỉ một node giữ vai trò điều phối ghi/ra quyết định) thường dựa trên đa số phiếu (quorum — hơn N/2 node). Split brain (não phân đôi — network partition chia cụm thành hai nhóm, mỗi nhóm tự bầu leader riêng) cực kỳ nguy hiểm vì gây ghi xung đột; phòng tránh bằng quorum bắt buộc và fencing (rào chắn, ngăn leader cũ tác động tài nguyên).
+
+### Vì sao cần Leader election?
+- Một số tác vụ cần **một điểm quyết định duy nhất**: ghi log theo thứ tự (replicated log), cấp distributed lock (khoá phân tán), điều phối failover. Nếu nhiều node cùng ghi tự do → xung đột dữ liệu.
+- **Leader:** nhận ghi, nhân bản (replicate) sang follower. **Follower:** nhận bản sao, bầu leader mới khi leader chết.
+
+### Cơ chế bầu chọn (mô hình Raft — thuật toán đồng thuận dễ hiểu)
+1. **Trạng thái:** Follower, Candidate (ứng viên), Leader.
+2. **Heartbeat (nhịp tim):** Leader gửi tín hiệu định kỳ. Follower có timeout ngẫu nhiên (150–300 ms).
+3. **Mất leader:** Follower không nhận heartbeat → thành Candidate, tăng "term" (nhiệm kỳ — số tăng dần), tự bỏ phiếu và xin phiếu node khác.
+4. **Bỏ phiếu:** Mỗi node chỉ bỏ 1 phiếu/term cho candidate có log không cũ hơn mình. Nhận **đa số (> N/2)** phiếu → thành Leader.
+5. **Ổn định:** Leader gửi heartbeat giữ quyền; gặp leader term cao hơn thì tự hạ xuống Follower.
+
+~~~seq
+title: Bau leader khi leader cu chet (Raft don gian)
+actors: A | B | C
+A -> B: heartbeat (term 5)
+A -> C: heartbeat (term 5)
+note A..C: A (leader) chet, B timeout truoc
+B -> B: thanh Candidate, term 6, tu vote
+B -> C: RequestVote(term 6)
+C --> B: VoteGranted (da so 2/3)
+B -> B: thanh Leader term 6
+B -> C: heartbeat (term 6)
+~~~
+
+### Split brain là gì và vì sao nguy hiểm?
+- **Split brain:** Network partition (mạng bị chia cắt) chia cụm 5 node thành {A,B} và {C,D,E}. Nhóm {C,D,E} có đa số → bầu leader mới C. Nếu nhóm {A,B} bị lập trình sai vẫn cho A làm leader → **hai leader cùng ghi**.
+- **Hậu quả:** Hai bên ghi khác nhau cho cùng dữ liệu (cùng trừ tiền một tài khoản, cấp cùng lock). Khi nối lại mạng, dữ liệu xung đột, khó hòa giải, có thể mất tiền/mất đơn.
+
+### Cách phòng tránh split brain
+1. **Quorum/majority bắt buộc:** Chỉ nhóm có **> N/2** node được bầu leader và chấp nhận ghi. Nhóm thiểu số từ chối phục vụ ghi. 5 node cần ≥3.
+2. **Fencing (rào chắn):** Ngăn leader cũ tiếp tục tác động tài nguyên.
+   - **Fencing token:** Mỗi lần cấp quyền tăng một số đơn điệu; storage chỉ chấp nhận token lớn hơn đã thấy → write từ leader cũ bị từ chối.
+   - **STONITH:** ép tắt/cắt nguồn node nghi ngờ khi dùng shared resource.
+3. **Lease (hợp đồng thuê có hạn):** Leader giữ quyền trong khoảng thời gian, phải gia hạn; cần cẩn thận clock skew.
+4. **Số lẻ node:** 3 hoặc 5 node giúp luôn có đa số rõ khi partition (2-1, 3-2).
+
+~~~java
+// Y tuong fencing token khi ghi vao tai nguyen chia se
+class FencedStorage {
+    private long lastToken = 0;
+
+    // storage chi chap nhan token tang dan
+    synchronized void write(long fencingToken, String data) {
+        if (fencingToken <= lastToken) {
+            // leader cu (token thap) bi chan
+            throw new IllegalStateException("Stale leader, token=" + fencingToken);
+        }
+        lastToken = fencingToken;
+        persist(data); // ghi an toan
+    }
+
+    private void persist(String data) { /* ghi xuong disk/DB */ }
+}
+~~~
+
+### Bảng trade-off
+| Cách tiếp cận | Ưu điểm | Nhược điểm | Khi dùng |
+|---|---|---|---|
+| Majority quorum | Đơn giản, đúng nếu đa số sống | Mất sẵn sàng nếu mất đa số | etcd, ZooKeeper, Raft |
+| Fencing token | Chặn leader cũ chắc chắn | Cần storage hỗ trợ kiểm tra token | Lock phân tán, shared resource |
+| Lease | Ít phối hợp liên tục | Phụ thuộc giả định thời gian | Leader heartbeat, lock có TTL |
+
+### Pitfall thực tế trên production
+1. **Cụm chẵn số node (2, 4):** Partition 2-2 → không bên nào có đa số → cụm ngừng ghi. Nên dùng 3 hoặc 5.
+2. **Timeout quá ngắn:** Mạng chậm/GC pause bị hiểu nhầm leader chết → bầu lại liên tục (election storm), hệ thống rung lắc.
+3. **Không fencing tài nguyên ngoài:** Leader cũ vẫn có thể ghi vào DB/SAN nếu chưa bị chặn. Phải fence end-to-end.
+4. **Đọc từ follower tưởng là mới nhất:** Follower có thể chưa replicate; đọc phải qua leader hoặc read-quorum.
+5. **Tự chế bằng DB row/Redis key:** Dễ bỏ sót fencing, clock, partition. Ưu tiên etcd, ZooKeeper, Consul.
+
+### Ví dụ đời thực
+Cụm xử lý job 3 node (A,B,C), election dựa trên Redis key TTL 10s. Một lần cả 3 node bị GC pause 12s (JVM) nên không gia hạn được key Redis: key hết hạn, B và C cùng giành quyền và cùng chạy job đối soát cuối ngày trong ~40s → tạo 2 file báo cáo trùng và gửi email trùng cho 12.000 khách hàng. Khắc phục: chuyển sang etcd (Raft, quorum 2/3), dùng fencing token tăng dần gắn vào mỗi lần chạy job và job runner từ chối nếu token không phải mới nhất; timeout election đặt 1–3s ngẫu nhiên. Sau 3 tháng không tái diễn.
+
+### Trả lời mẫu khi phỏng vấn
+"Leader election đảm bảo chỉ một node điều phối việc cần ghi có thứ tự, thường dùng Raft: node timeout mất heartbeat sẽ thành candidate, xin phiếu và cần đa số để lên leader. Split brain xảy ra khi network partition khiến hai phía cùng tin mình có quyền, dẫn tới ghi xung đột rất nguy hiểm. Phòng ngừa chuẩn là buộc quorum đa số — nhóm thiểu số phải ngừng ghi — và dùng fencing như fencing token để storage từ chối leader cũ. Ví dụ thực tế, hệ thống từng bầu hai leader do timeout ngắn và chạy trùng job; sau đó chuyển sang consensus có quorum và gắn fencing token nên loại bỏ được trường hợp hai bên cùng tác động."
+
+> Senior tip: Đừng chỉ hỏi "ai là leader?" mà hãy hỏi "làm sao leader cũ bị ngăn chắc chắn?". Fencing token là mảnh ghép nhiều hệ thống tự viết hay quên, và đó là lúc split brain gây thiệt hại thật.
+`,
+  follow: [
+    'Vì sao Redis SET NX PX (distributed lock đơn giản) không an toàn tuyệt đối khi có failover hoặc clock skew, và fencing token giải quyết phần nào?',
+    'Khi cụm chỉ còn 2 node và mất kết nối với nhau, bạn ưu tiên availability hay consistency? Giải thích theo CAP.',
+    'Lease-based leader election phụ thuộc thời gian như thế nào, và bạn giảm rủi ro do GC pause/clock drift ra sao?'
+  ],
+  tags: ['leader election', 'split brain', 'quorum', 'Raft', 'fencing', 'distributed systems']
+},
+{
+  id: 'architecture-059',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Quorum đọc/ghi (R + W > N) trong hệ thống replicated là gì? Giải thích công thức R, W, N, cách chọn cấu hình để cân bằng consistency, availability, latency và các trường hợp read-repair/conflict.',
+  a: `**Tóm tắt:** Quorum đọc/ghi là quy tắc cấu hình hệ replicated (dữ liệu sao chép sang N bản) trong đó N là số bản sao, W là số bản phải xác nhận khi ghi, R là số bản phải đọc khi truy vấn; nếu **R + W > N** thì tập bản ghi và tập bản đọc luôn giao nhau, nên ít nhất một bản đọc chứa dữ liệu mới nhất — giúp đạt strong-ish consistency (nhất quán mạnh hơn eventual) trong nhiều hệ như Cassandra/Dynamo-style.
+
+### Thuật ngữ cơ bản
+- **Replication (nhân bản):** lưu cùng một dữ liệu trên nhiều node để chịu lỗi.
+- **N (replication factor):** tổng số bản sao của mỗi bản ghi (ví dụ N=3).
+- **W (write quorum):** số bản sao phải ghi thành công (ack) thì coi ghi thành công.
+- **R (read quorum):** số bản sao phải trả lời khi đọc; client lấy phiên bản "mới nhất" trong R bản (thường theo timestamp/version).
+
+### Công thức R + W > N hoạt động thế nào?
+- Vì R + W > N, hai tập (W node vừa ghi) và (R node vừa đọc) **không thể rời nhau** → luôn có ≥1 node nằm trong cả hai, node đó giữ giá trị mới nhất.
+- Ví dụ N=3, W=2, R=2: ghi cần 2/3 ack; đọc hỏi 2/3, chắc chắn chạm ít nhất 1 node vừa được ghi.
+
+~~~text
+N=3 (A,B,C), W=2, R=2
+Ghi X=5: ack tu A,B (C cham)  -> thanh cong
+Doc X: hoi B,C -> thay B co X=5 (moi), C cu -> tra X=5
+Tap ghi {A,B} giao tap doc {B,C} = {B} (khong rong)
+~~~
+
+### Các cấu hình phổ biến
+| Cấu hình (N=3) | Tính chất | Đánh đổi |
+|---|---|---|
+| W=1, R=1 | Nhanh, sẵn sàng cao | R+W=2 ≤ 3 → có thể đọc stale (cũ) |
+| W=2, R=2 (quorum) | Cân bằng đọc/ghi, mạnh hơn | Chịu mất 1 node; latency trung bình |
+| W=3, R=1 | Đọc rất nhanh, ghi chắc | Ghi chậm, 1 node chết là không ghi được |
+| W=1, R=3 | Ghi nhanh, đọc chắc | Đọc chậm, 1 node chết là không đọc đủ |
+
+- **Latency:** W lớn → ghi chờ nhiều node (chịu ảnh hưởng node chậm nhất trong W). R lớn → đọc chờ nhiều node.
+- **Availability:** W càng lớn càng dễ mất khả năng ghi khi node down; R càng lớn càng dễ mất khả năng đọc.
+
+### Read-repair và anti-entropy
+- **Read-repair (sửa khi đọc):** Khi đọc R bản thấy phiên bản lệch nhau, coordinator trả bản mới nhất cho client và **gửi cập nhật nền** cho bản cũ. Giúp hệ dần hội tụ.
+- **Anti-entropy (repair nền):** Tiến trình nền so sánh và đồng bộ replica (ví dụ Merkle tree trong Cassandra) để sửa sai lệch mà read ít chạm tới.
+
+~~~java
+// Minh hoa coordinator chon phien ban moi nhat theo version (don gian hoa)
+record Versioned<V>(V value, long version) {}
+
+class QuorumRead<V> {
+    Versioned<V> read(List<Versioned<V>> replies, int R) {
+        // can du R phan hoi; chon version lon nhat lam "moi nhat"
+        if (replies.size() < R) throw new IllegalStateException("Not enough replicas");
+        Versioned<V> best = replies.get(0);
+        for (Versioned<V> r : replies) {
+            if (r.version() > best.version()) best = r; // chon moi nhat
+        }
+        // thuc te: neu thay ban cu hon -> kich hoat read-repair nen
+        return best;
+    }
+}
+~~~
+
+### Bảng trade-off / khi nào dùng
+| Mục tiêu | Gợi ý | Lý do |
+|---|---|---|
+| Ghi nhiều, đọc ít, chấp nhận stale nhẹ | W=1, R=N (hoặc R cao) | Ghi nhanh, đọc đảm bảo mới |
+| Đọc nhiều, dữ liệu quan trọng | W=N hoặc W cao, R=1 | Đọc nhanh, ghi an toàn |
+| Cân bằng chung | W=quorum, R=quorum | R+W>N, chịu lỗi 1 node (N=3) |
+| Eventual consistency tối đa tốc độ | W=1, R=1 | Nhanh nhất, chấp nhận đọc cũ |
+
+- **Dùng khi:** key-value/distributed DB (Cassandra, DynamoDB, Riak) cho phép tunable consistency (chỉnh R,W theo request).
+
+### Pitfall thực tế trên production
+1. **Nhầm R+W>N là linearizable:** Quorum giảm đọc stale nhưng chưa chắc linearizable (nhất quán tuyến tính hoá) nếu không có thêm điều kiện (xung đột concurrent write, clock skew giữa version). Conflict vẫn cần giải quyết (LWW, vector clock tuỳ hệ).
+2. **Last-Write-Wins (LWW) mất dữ liệu:** Nếu dùng timestamp đồng hồ máy để chọn "mới nhất", clock skew có thể chọn nhầm bản cũ và ghi đè mất cập nhật. Cần cẩn thận với nguồn version.
+3. **Node chậm kéo latency:** W=3 nghĩa là chờ cả node chậm nhất; một node GC/IO chậm làm tăng p99. Thường dùng quorum và timeout hợp lý.
+4. **Sloppy quorum & hinted handoff:** Một số hệ ghi tạm sang node khác khi node đích down (sloppy) → trong thời gian đó R+W>N không đảm bảo trên tập node "đúng". Cần hiểu hành vi hệ đang dùng.
+5. **Không tính lúc failover/topology change:** Khi đang thêm/bớt node, số bản thực tế tham gia có thể khác kỳ vọng; cần theo dõi trạng thái replica.
+
+### Ví dụ đời thực
+Hệ thống giỏ hàng dùng Cassandra, N=3, ban đầu W=1,R=1 để tối ưu tốc độ: người dùng thêm sản phẩm trên mobile, refresh trên web thấy giỏ rỗng ~2% request (đọc trúng replica chưa kịp nhận cập nhật, độ trễ nhân bản 80–150 ms). Sau khi đổi thành W=QUORUM(2), R=QUORUM(2) cho thao tác giỏ hàng: tỉ lệ đọc stale giảm về gần 0 trong đo đạc nội bộ, nhưng p99 latency ghi tăng từ 12 ms lên 28 ms và hệ chỉ chịu mất 1 node (mất 2 node không đủ quorum ghi/đọc). Với bảng analytics ít quan trọng, vẫn giữ W=1,R=1 để nhanh.
+
+### Trả lời mẫu khi phỏng vấn
+"Quorum đọc/ghi dùng ba tham số N, W, R: N là số bản sao, W là số ack cần cho một ghi, R là số bản đọc khi truy vấn. Nếu R + W > N thì tập ghi và tập đọc luôn giao nhau nên sẽ đọc được ít nhất một bản mới nhất, cho consistency mạnh hơn eventual. Ví dụ N=3, W=2, R=2 cân bằng và chịu mất 1 node. Đánh đổi là latency và availability: W hay R càng lớn thì càng chờ nhiều node và dễ mất khả năng ghi/đọc khi node down. Trong thực tế mình còn cần read-repair để replica hội tụ và cẩn thận xung đột concurrent write vì quorum không tự biến thành linearizable; ví dụ giỏ hàng mình từng nâng từ W=1,R=1 lên quorum để hết đọc stale dù p99 tăng."
+
+> Senior tip: Đừng chọn R,W theo cảm tính — hãy gắn với SLA: chấp nhận đọc cũ bao nhiêu, chịu mất mấy node, và latency p99 cho phép là bao nhiêu. Và luôn hỏi hệ bạn dùng version/clock nào để giải quyết conflict, vì R+W>N không tự xử lý ghi đồng thời.
+`,
+  follow: [
+    'Vì sao R + W > N chưa đảm bảo linearizability khi có concurrent write, và hệ thống cần thêm cơ chế gì?',
+    'Sloppy quorum và hinted handoff ảnh hưởng thế nào đến giả định "tập đọc giao tập ghi"?',
+    'Bạn sẽ chọn R,W khác nhau như thế nào cho giỏ hàng, số dư ví tiền và lượt xem (view count)?'
+  ],
+  tags: ['quorum', 'replication', 'consistency', 'R+W>N', 'Cassandra', 'distributed systems']
+},
+{
+  id: 'architecture-060',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Giải thích CAP theorem và PACELC qua ví dụ thực tế. Khi network partition xảy ra bạn chọn C hay A, và khi hệ thống bình thường bạn đánh đổi latency hay consistency như thế nào?',
+  a: `**Tóm tắt:** CAP (Consistency, Availability, Partition tolerance) nói rằng khi có **network partition** (mạng chia cắt) bạn phải chọn giữa Consistency (mọi đọc thấy ghi mới nhất hoặc lỗi) và Availability (mọi request nhận phản hồi, có thể cũ). PACELC mở rộng: nếu có Partition chọn A hay C, còn **Else** (bình thường) chọn Latency hay Consistency — phản ánh đúng đánh đổi hằng ngày hơn.
+
+### CAP là gì? (giải thích từng chữ)
+- **Consistency (C):** Mọi lần đọc trả về dữ liệu của lần ghi thành công gần nhất (hoặc lỗi). Giống như "tất cả cùng thấy một giá trị".
+- **Availability (A):** Mỗi request gửi tới node còn sống đều nhận được phản hồi (không lỗi do hết thời gian chờ vì đợi node khác), nhưng dữ liệu có thể chưa mới nhất.
+- **Partition tolerance (P):** Hệ vẫn hoạt động khi mạng giữa các node bị chia cắt (mất gói, không kết nối được). Trong hệ phân tán thực tế, partition **luôn có thể xảy ra**, nên P là điều phải chấp nhận.
+
+> Khi partition xảy ra, bạn không "chọn 2 trong 3" thoải mái: thực tế là chọn **C hay A trong lúc P**.
+
+### Ví dụ CAP qua tình huống thực
+- **CP (chọn Consistency khi partition):** Cụm 3 node DB, partition tách 1 node. Nhóm thiểu số từ chối ghi/đọc để tránh dữ liệu lệch → một số request bị lỗi/timeout (mất A) nhưng dữ liệu đúng (giữ C). Ví dụ: hệ thống số dư tài khoản, ZooKeeper/etcd.
+- **AP (chọn Availability khi partition):** Mỗi bên vẫn nhận ghi/đọc để phục vụ người dùng → hai bên có thể thấy dữ liệu khác nhau (mất C tạm thời), sẽ đồng bộ sau (eventual consistency). Ví dụ: giỏ hàng, feed mạng xã hội, DNS.
+
+~~~text
+3 node: N1,N2,N3. Partition tach N3.
+CP: N3 (thieu so) tu choi ghi/tra loi loi -> dung nhung khong san sang.
+AP: N3 van nhan ghi cuc bo -> san sang nhung co the lech N1,N2; hoi tu sau.
+~~~
+
+### PACELC là gì và vì sao cần?
+- CAP chỉ nói về lúc partition (hiếm so với vận hành thường ngày). **PACELC** (Daniel Abadi): nếu có **P**artition → chọn **A** hay **C**; **E**lse (bình thường) → chọn **L**atency hay **C**onsistency.
+- **Vì sao quan trọng:** Nhiều hệ AP (Dynamo-style) khi bình thường vẫn phải chọn: trả nhanh từ replica gần (thấp latency, có thể hơi cũ) hay chờ đồng bộ nhiều replica (nhất quán hơn nhưng chậm).
+
+### Ví dụ PACELC thực tế
+| Hệ thống (minh hoạ) | Partition: A/C | Else: L/C | Ý nghĩa thực tế |
+|---|---|---|---|
+| Hệ số dư/ví (CP thiên C) | P → C (từ chối khi thiếu quorum) | E → C (chờ xác nhận) | Đúng tiền quan trọng hơn nhanh |
+| Giỏ hàng Dynamo-style | P → A (vẫn nhận ghi) | E → L (trả nhanh, eventual) | Trải nghiệm nhanh, chấp nhận lệch nhẹ |
+| Cassandra (tunable) | P → A nếu cấu hình thấp | E → tuỳ R,W (L hoặc C) | Có thể chỉnh theo use case |
+| etcd/ZooKeeper | P → C | E → C | Metadata/config cần đúng tuyệt đối |
+
+### Hệ thống bình thường: Latency vs Consistency
+- **Chọn L (latency):** đọc từ replica gần nhất, W=1 → phản hồi nhanh, nhưng có thể đọc giá trị cũ trong vài chục ms.
+- **Chọn C (consistency):** chờ quorum/leader xác nhận (R+W>N, hoặc đọc từ leader) → chậm hơn nhưng dữ liệu mới nhất.
+- Một sản phẩm lớn thường **trộn**: thanh toán CP, hiển thị lượt thích AP/EL.
+
+~~~seq
+title: Lua chon khi partition (CP vs AP, minh hoa)
+actors: Client | N1 | N2
+Client -> N1: ghi so du (partition giua N1 va N2)
+note N1..N2: CP: N1 can xac nhan N2 -> tu choi ghi
+N1 --> Client: loi/timeout (giu C, mat A)
+note N1..N2: AP: N1 nhan ghi cuc bo -> tra OK
+N1 --> Client: OK (giu A, mat C tam thoi)
+~~~
+
+### Pitfall thực tế trên production
+1. **Hiểu sai "CA":** Trong mạng phân tán, P không thể loại bỏ; "CA database" thường chỉ đúng trong single-node/không partition — đừng dùng nhãn này để biện minh khi mở rộng.
+2. **Gắn nhãn cả hệ thống:** Một ứng dụng có nhiều loại dữ liệu: số dư cần CP, comment/feed có thể AP. Phân loại theo **từng thao tác/dữ liệu**.
+3. **Eventual consistency không có nghĩa "bừa":** AP vẫn cần cơ chế hội tụ (version, conflict resolution, idempotency) nếu không sẽ mất cập nhật.
+4. **Bỏ qua thời gian hội tụ:** "Cuối cùng sẽ đúng" nhưng bao lâu? Vài ms hay vài phút ảnh hưởng UX và logic nghiệp vụ.
+5. **Quên Else trong PACELC:** Đa số thời gian không partition, nhưng chọn L hay C quyết định trải nghiệm hằng ngày.
+
+### Ví dụ đời thực
+Ứng dụng thương mại điện tử: (1) **Thanh toán/đặt hàng** dùng PostgreSQL primary với synchronous commit cho bước trừ kho/tạo đơn (CP/EC) — khi mất kết nối replica/quorum, hệ thống từ chối giao dịch trong ~20 giây thay vì tạo đơn sai, chấp nhận 0,05% request lỗi lúc sự cố mạng. (2) **Giỏ hàng** lưu ở DynamoDB-style (PA/EL) — khi partition vẫn cho thêm vào giỏ, merge theo version khi hồi phục; người dùng thấy giỏ cập nhật trong 30–100 ms. (3) **Bộ đếm lượt xem** chấp nhận eventual, độ trễ hiển thị cập nhật 1–5 giây. Kết quả: tiền và tồn kho đúng, trong khi trải nghiệm duyệt/giỏ vẫn nhanh.
+
+### Trả lời mẫu khi phỏng vấn
+"CAP nói rằng khi có network partition — điều không tránh được trong hệ phân tán — ta phải chọn Consistency hoặc Availability: CP từ chối một phần request để giữ dữ liệu đúng, AP vẫn phản hồi nhưng chấp nhận dữ liệu tạm lệch rồi hội tụ. PACELC mở rộng thêm trường hợp bình thường: ta còn đánh đổi Latency và Consistency, ví dụ đọc replica gần cho nhanh hay chờ quorum cho chắc. Trong thực tế mình không gắn một nhãn cho cả hệ: thanh toán và số dư chọn CP/EC, giỏ hàng hay feed chọn AP/EL. Ví dụ hệ thương mại điện tử mình từng ưu tiên consistency cho trừ kho dù tăng latency vài chục mili-giây, còn giỏ hàng chọn latency để trải nghiệm mượt."
+
+> Senior tip: Khi trả lời phỏng vấn, luôn đưa CAP về **từng loại dữ liệu/thao tác** và nêu rõ bạn chấp nhận mất gì trong bao lâu. Câu trả lời "hệ tôi CP" thường kém thuyết phục hơn "luồng tiền CP, luồng hiển thị AP với hội tụ dưới 1 giây".
+`,
+  follow: [
+    'Một hệ thống có thể vừa CP cho luồng này vừa AP cho luồng khác trong cùng ứng dụng không? Cho ví dụ kiến trúc cụ thể.',
+    'Eventual consistency đòi hỏi chiến lược giải quyết xung đột nào (LWW, vector clock, CRDT) và khi nào mỗi loại phù hợp?',
+    'Khi chọn EC (consistency khi bình thường), latency tăng do đâu và bạn tối ưu thế nào mà không bỏ consistency?'
+  ],
+  tags: ['CAP', 'PACELC', 'consistency', 'availability', 'partition tolerance', 'distributed systems']
+},
+{
+  id: 'architecture-061',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'CDC (Change Data Capture — bắt thay đổi dữ liệu) với Debezium và Outbox pattern giải quyết vấn đề gì? Giải thích cách chúng giúp đồng bộ dữ liệu/ra event tin cậy, so sánh và nêu khi nào dùng từng cách.',
+  a: `**Tóm tắt:** CDC (Change Data Capture — kỹ thuật đọc thay đổi từ log giao dịch của DB thay vì polling bảng) với Debezium giúp phát hiện mọi INSERT/UPDATE/DELETE thành event; Outbox pattern (ghi event vào bảng outbox trong cùng transaction với dữ liệu nghiệp vụ) đảm bảo "ghi DB và gửi event" không bị lệch. Thường kết hợp: ứng dụng ghi outbox, Debezium CDC đọc outbox → publish Kafka tin cậy.
+
+### Vấn đề cần giải quyết: dual-write (ghi kép)
+- Khi xử lý đơn hàng, bạn cần (1) cập nhật bảng {{orders}} trong DB và (2) gửi event "OrderCreated" lên Kafka cho service khác. Đây là **hai hệ khác nhau**, không có transaction chung.
+- **Thất bại điển hình:**
+  - Ghi DB xong, gửi Kafka lỗi → DB có đơn nhưng không ai biết (mất event).
+  - Gửi Kafka xong, DB rollback → consumer xử lý đơn "ma" không tồn tại.
+- **Polling (hỏi định kỳ):** {{SELECT * WHERE updated_at > last}} bỏ sót DELETE, phụ thuộc cột thời gian, tải DB, trễ.
+
+### CDC (Change Data Capture) với Debezium là gì?
+- **CDC:** đọc thay đổi trực tiếp từ **transaction log** của DB (PostgreSQL WAL — Write-Ahead Log, MySQL binlog) — log mà DB tự ghi để đảm bảo durability.
+- **Debezium (connector chạy trên Kafka Connect):** bám vào log, chuyển mỗi thay đổi dòng thành event (before/after), publish lên Kafka topic. Không cần sửa code ứng dụng, bắt được cả DELETE.
+- **Ưu điểm:** đầy đủ thay đổi, độ trễ thấp (gần real-time), không tăng tải query nghiệp vụ.
+- **Nhược điểm:** cần quyền truy cập log và vận hành connector; event phản ánh **bảng** (schema DB), có thể "rò" chi tiết nội bộ nếu publish thẳng.
+
+### Outbox pattern là gì?
+- **Ý tưởng:** trong **cùng một DB transaction**, ghi (1) dữ liệu nghiệp vụ và (2) một bản ghi event vào bảng {{outbox}}. Vì cùng DB, transaction đảm bảo cả hai cùng thành công hoặc cùng rollback.
+- Một tiến trình riêng đọc bảng outbox và publish ra message broker (Kafka), rồi đánh dấu đã gửi (hoặc xoá).
+
+~~~java
+// Minh hoa Outbox: cung transaction cho nghiep vu va event
+@Service
+class OrderService {
+    private final JdbcTemplate jdbc;
+
+    OrderService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    @Transactional // mot transaction DB duy nhat
+    public void createOrder(Order order) {
+        // 1) ghi nghiep vu
+        jdbc.update("INSERT INTO orders(id,status,total) VALUES (?,?,?)",
+                order.id(), "CREATED", order.total());
+        // 2) ghi event vao outbox (cung commit/rollback)
+        String payload = "{\"orderId\":\"" + order.id() + "\",\"total\":" + order.total() + "}";
+        jdbc.update("INSERT INTO outbox(id,aggregate,type,payload,created_at) VALUES (?,?,?,?,now())",
+                UUID.randomUUID().toString(), order.id(), "OrderCreated", payload);
+    }
+}
+~~~
+
+~~~text
+Bang outbox (vi du)
+| id (uuid) | aggregate | type         | payload                | sent_at |
+| o-101     | ord-77    | OrderCreated | {"orderId":"ord-77"...}| null    |
+Publisher doc dong sent_at IS NULL -> gui Kafka -> cap nhat sent_at.
+~~~
+
+### Kết hợp CDC + Outbox (cách hay dùng)
+- Ứng dụng chỉ ghi DB + outbox (đơn giản, tin cậy). **Debezium CDC** theo dõi bảng outbox và đẩy event lên Kafka → không cần viết poller riêng, không lo bỏ sót, độ trễ thấp.
+- (Debezium có Outbox Event Router để biến dòng outbox thành event đúng topic/key.)
+
+~~~seq
+title: Outbox + CDC (Debezium) publish event tin cay
+actors: App | DB | Debezium | Kafka
+App -> DB: BEGIN tx: insert orders + insert outbox
+DB --> App: COMMIT (ca hai cung thanh cong)
+Debezium -> DB: doc WAL/binlog (thay doi bang outbox)
+Debezium -> Kafka: publish event OrderCreated
+Kafka --> Debezium: ack
+~~~
+
+### So sánh CDC thuần (bảng nghiệp vụ) vs Outbox
+| Tiêu chí | CDC trực tiếp trên bảng nghiệp vụ | Outbox (+ CDC/poller) |
+|---|---|---|
+| Event là gì | Phản ánh thay đổi dòng/column | Event nghiệp vụ có chủ đích (schema riêng) |
+| Tính rõ ràng | Phụ thuộc schema DB, dễ lộ nội bộ | Rõ contract, tách khỏi schema nội bộ |
+| Dễ triển khai | Không đổi code app | Phải thêm ghi outbox trong tx |
+| Khi dùng | Đồng bộ dữ liệu/replica, phân tích | Tích hợp service, domain event tin cậy |
+
+### Pitfall thực tế trên production
+1. **Consumer không idempotent:** CDC/outbox đảm bảo *ít nhất một lần* (at-least-once, có thể gửi trùng khi retry). Consumer phải idempotent (xử lý trùng không gây tác dụng phụ kép) — ví dụ lưu eventId đã xử lý.
+2. **Thứ tự event:** Thứ tự theo partition/key; nếu chọn key sai, event cùng aggregate có thể lệch thứ tự. Dùng aggregate id làm key.
+3. **Bảng outbox phình to:** Không dọn {{sent_at}} cũ → bảng/ index lớn, chậm. Cần job xoá/lưu trữ định kỳ.
+4. **Schema evolution:** Đổi cấu trúc payload/bảng mà consumer chưa tương thích → lỗi xử lý dây chuyền. Quản lý version schema (Avro/JSON schema).
+5. **CDC lag:** Connector chậm hoặc WAL bị giữ lâu → trễ event, tốn dung lượng log DB. Cần giám sát lag và retention.
+6. **Quyền và bảo mật:** CDC đọc toàn bộ thay đổi; cần lọc/bảo vệ dữ liệu nhạy cảm trước khi publish.
+
+### Ví dụ đời thực
+Hệ thống đặt hàng microservice: trước đây service Order ghi DB rồi gọi Kafka — 1 tháng ghi nhận 0,3% đơn (khoảng 120 đơn/tháng trên 40.000 đơn) bị mất event do Kafka timeout sau commit, khiến service Kho không trừ tồn và phải đối soát thủ công. Sau khi áp dụng Outbox + Debezium: mỗi đơn tạo 1 dòng outbox trong cùng transaction; Debezium đọc WAL và publish trong ~200–800 ms. Consumer lưu {{event_id}} để idempotent. Trong 2 tháng, không còn đơn mất event; khi Kafka gián đoạn 5 phút, Debezium bù đẩy (catch-up) toàn bộ khi Kafka phục hồi, trễ đỉnh 6 phút nhưng không mất.
+
+### Trả lời mẫu khi phỏng vấn
+"CDC là kỹ thuật bắt thay đổi từ transaction log của DB, Debezium đọc WAL/binlog và biến thành event nên không bỏ sót và không phải polling. Outbox pattern giải quyết dual-write: mình ghi dữ liệu nghiệp vụ và một bản ghi event vào bảng outbox trong cùng transaction, nên không bao giờ lệch giữa DB và ý định gửi event. Cách mình hay dùng là kết hợp: app ghi outbox, Debezium CDC publish outbox ra Kafka — vừa tin cậy vừa ít code poller. Điểm cần nhớ là pipeline này at-least-once nên consumer phải idempotent và chọn key để giữ thứ tự theo aggregate. Ví dụ hệ đơn hàng trước đây mất 0,3% event do ghi DB rồi gửi Kafka, sau khi dùng outbox + Debezium thì hết mất event dù broker có gián đoạn."
+
+> Senior tip: Hãy phân biệt rõ "CDC bảng nghiệp vụ" (tốt cho đồng bộ dữ liệu) với "domain event qua outbox" (tốt cho tích hợp nghiệp vụ). Đừng publish thẳng CDC schema nội bộ cho service khác nếu bạn chưa muốn biến schema DB thành API công khai.
+`,
+  follow: [
+    'Vì sao pipeline CDC/outbox là at-least-once chứ không phải exactly-once, và bạn thiết kế consumer idempotent thế nào (eventId, dedupe table)?',
+    'Làm sao đảm bảo thứ tự event theo từng đơn hàng khi publish qua Kafka và khi consumer scale nhiều instance?',
+    'Khi nào bạn chọn polling outbox table thay vì Debezium CDC, và đánh đổi vận hành là gì?'
+  ],
+  tags: ['CDC', 'Debezium', 'Outbox pattern', 'Kafka', 'dual-write', 'event-driven']
+},
+{
+  id: "architecture-062",
+  topic: "architecture",
+  level: "lead",
+  q: "Exactly-once (xử lý đúng một lần) trong hệ phân tán thực chất nghĩa là gì? Vì sao \"exactly-once\" tuyệt đối khó đạt, Kafka transactional/idempotent producer cung cấp gì, và cách thiết kế end-to-end idempotency ra sao?",
+  a: `**Tóm tắt:** Exactly-once (xử lý đúng một lần — mỗi sự kiện tạo ra tác dụng phụ đúng một lần) theo nghĩa tuyệt đối trong hệ phân tán là rất khó vì mạng, tiến trình, và broker đều có thể lỗi/retry; thực tế ta đạt **effectively-once** (hiệu quả như một lần) bằng cách kết hợp **at-least-once delivery** (gửi ít nhất một lần, có thể trùng) với **idempotent processing** (xử lý lặp lại cho cùng kết quả). Kafka cung cấp idempotent producer và transaction trong phạm vi Kafka, nhưng end-to-end (kể cả ghi DB/service ngoài) vẫn cần thiết kế idempotency của ứng dụng.
+
+### Các ngữ nghĩa delivery (giao hàng)
+- **At-most-once (nhiều nhất một lần):** gửi không retry → có thể mất, không trùng. Phù hợp metric không quan trọng.
+- **At-least-once (ít nhất một lần):** retry khi nghi ngờ lỗi → không mất nhưng **có thể trùng** (duplicate). Phổ biến nhất.
+- **Exactly-once:** mỗi message được xử lý đúng 1 lần — là mục tiêu, nhưng trong hệ phân tán tổng quát không có "đúng một lần" miễn phí vì bên nhận không phân biệt được "chưa nhận" và "đã nhận nhưng ack bị mất".
+
+### Vì sao exactly-once tuyệt đối khó?
+1. **Mất/duplicate do retry:** Producer gửi, broker ghi nhưng ack mất → producer retry → trùng. Consumer xử lý xong nhưng commit offset lỗi → xử lý lại.
+2. **Crash giữa chừng:** Xử lý gồm nhiều bước (ghi DB, gọi API, gửi event) — crash sau bước 1 trước bước 2 → lặp lại gây làm bước 1 hai lần nếu không cẩn thận.
+3. **Hai hệ khác nhau:** Không có transaction phân tán xuyên Kafka + DB + HTTP dễ dùng và tin cậy; 2PC phức tạp, chậm.
+4. **Kết luận:** Thay vì hứa "không bao giờ trùng", ta thiết kế để **trùng không gây hại**.
+
+### Kafka hỗ trợ gì?
+- **Idempotent producer ({{enable.idempotence=true}}):** Broker gán producer ID + sequence number cho mỗi partition; broker loại bỏ bản ghi trùng do retry của producer → tránh duplicate **trong Kafka log** do producer retry.
+- **Transactional producer/consumer (EOS trong Kafka):** {{transactional.id}} cho phép gom ghi nhiều partition/topic và commit offset tiêu thụ trong **một transaction Kafka** (atomic). Dùng cho "consume-transform-produce" trong Kafka Streams.
+- **Giới hạn:** Transaction Kafka **không** bao trùm DB bên ngoài, REST call, email, hay payment gateway. "Exactly-once" của Kafka là trong đường ống Kafka-to-Kafka.
+
+~~~java
+// Vi du cau hinh idempotent + transactional producer (Kafka client, Java)
+import org.apache.kafka.clients.producer.*;
+import java.util.Properties;
+
+class KafkaProducerConfig {
+    Producer<String, String> build() {
+        Properties p = new Properties();
+        p.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "kafka:9092");
+        p.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
+        p.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
+        p.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true"); // chong duplicate do retry producer
+        p.put(ProducerConfig.ACKS_CONFIG, "all"); // cho tat ca in-sync replica xac nhan
+        p.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, "order-producer-1"); // bat transaction trong Kafka
+        KafkaProducer<String, String> producer = new KafkaProducer<>(p);
+        producer.initTransactions(); // khoi tao transactional id
+        return producer;
+    }
+}
+~~~
+
+### Thiết kế end-to-end idempotency (effectively-once)
+1. **Idempotency key (khoá định danh duy nhất cho thao tác):** Client/producer sinh {{eventId}} duy nhất. Consumer/DB ghi nhận đã xử lý {{eventId}}; nếu gặp lại → bỏ qua.
+2. **Dedup table / unique constraint:** Lưu {{event_id}} đã xử lý (hoặc unique key nghiệp vụ). Insert trùng bị từ chối bởi DB.
+3. **Upsert theo trạng thái:** Thiết kế phép toán tự idempotent (set trạng thái đích thay vì cộng lặp lại).
+4. **Outbox + idempotent consumer:** Outbox đảm bảo không mất event (at-least-once), consumer dedup đảm bảo trùng không hại.
+5. **Idempotent API:** Endpoint nhận {{Idempotency-Key}} header, lưu kết quả lần đầu, lần sau trả lại kết quả cũ.
+
+~~~java
+// Consumer idempotent bang bang dedup (event_id unique)
+@Service
+class PaymentHandler {
+    private final JdbcTemplate jdbc;
+
+    PaymentHandler(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    @Transactional
+    public void handle(String eventId, String orderId, long amount) {
+        // 1) thu ghi nhan event_id (unique) - neu trung thi bo qua
+        int inserted = jdbc.update(
+            "INSERT INTO processed_event(event_id) VALUES (?) ON CONFLICT DO NOTHING", eventId);
+        if (inserted == 0) return; // da xu ly truoc do -> idempotent
+
+        // 2) tac dung phu nghiep vu chi chay khi la lan dau
+        jdbc.update("UPDATE accounts SET balance = balance - ? WHERE order_id = ?", amount, orderId);
+    }
+}
+~~~
+
+### Bảng trade-off
+| Cách | Đảm bảo | Chi phí | Phạm vi |
+|---|---|---|---|
+| At-most-once | Có thể mất | Thấp | Metric/log không quan trọng |
+| At-least-once + idempotent consumer | Không mất, trùng vô hại | Trung bình (dedup, thiết kế) | End-to-end thực tế |
+| Kafka transaction (EOS) | Exactly-once trong Kafka | Cao hơn, phức tạp | Consume-transform-produce trong Kafka |
+| 2PC/XA | Atomic xuyên hệ | Rất cao, dễ nghẽn | Hiếm, legacy |
+
+### Pitfall thực tế trên production
+1. **Tin "enable.idempotence" là đủ:** Nó chỉ chặn duplicate do producer retry trong Kafka, không chặn consumer xử lý lại hay tác dụng phụ ra DB.
+2. **Idempotency key không đủ duy nhất:** Dùng timestamp hoặc random kém → va chạm. Cần ID ổn định theo nghiệp vụ (orderId + step).
+3. **Dedup table không dọn:** Lưu event_id mãi mãi → bảng lớn. Cần TTL/retention.
+4. **Bước ngoài transaction:** Gọi payment gateway bên trong transaction DB — commit DB nhưng gọi gateway retry gây trừ tiền hai lần. Phải gửi idempotency key cho bên thứ ba.
+5. **Thứ tự với dedup:** Bỏ qua duplicate nhưng xử lý event đến sai thứ tự vẫn sai nghiệp vụ; cần key partition và logic trạng thái.
+
+### Ví dụ đời thực
+Hệ thống xử lý thanh toán tiêu thụ event từ Kafka (at-least-once). Trước đây consumer trừ tiền ngay khi nhận: mỗi lần deploy/rebalance gây reprocess ~0,1% event (khoảng 300 giao dịch/ngày trên 300k), một số khách bị trừ trùng 50.000–200.000 VND, phải hoàn thủ công. Sau khi áp dụng: (1) bật idempotent producer, (2) consumer ghi {{event_id}} vào bảng {{processed_event}} với unique constraint trong cùng transaction với cập nhật số dư, (3) gửi request sang cổng thanh toán kèm idempotency key. Trong 6 tháng, reprocess vẫn xảy ra khi rebalance nhưng không còn giao dịch trừ trùng; đối soát tự động khớp 100%.
+
+### Trả lời mẫu khi phỏng vấn
+"Exactly-once tuyệt đối rất khó trong hệ phân tán vì retry, crash, và mất ack luôn có thể tạo duplicate; nên thực tế mình hướng tới effectively-once: dùng at-least-once delivery kết hợp idempotent processing. Kafka hỗ trợ idempotent producer để chống duplicate do retry và transaction để atomic trong phạm vi Kafka, nhưng end-to-end vẫn phải tự thiết kế. Mình thường dùng idempotency key hoặc bảng dedup event_id với unique constraint trong cùng transaction với nghiệp vụ, và gửi idempotency key cho bên thứ ba như cổng thanh toán. Ví dụ hệ thanh toán từng trừ trùng khi reprocess, sau khi thêm dedup theo event_id và idempotency key thì reprocess không còn gây tác dụng phụ."
+
+> Senior tip: Khi ai đó nói "Kafka hỗ trợ exactly-once", hãy hỏi ngay "exactly-once trong phạm vi nào?". Nếu có DB hoặc dịch vụ ngoài, câu trả lời đúng luôn là at-least-once + idempotency end-to-end.
+`,
+  follow: [
+    "Kafka transactional producer đảm bảo điều gì và không đảm bảo điều gì khi consumer ghi xuống PostgreSQL?",
+    "Bạn thiết kế idempotency key như thế nào để ổn định qua retry nhưng không va chạm giữa các thao tác khác nhau?",
+    "Khi cổng thanh toán bên ngoài không hỗ trợ idempotency key, bạn giảm rủi ro trừ tiền hai lần ra sao?",
+  ],
+  tags: [
+    "exactly-once",
+    "idempotency",
+    "Kafka",
+    "at-least-once",
+    "distributed systems",
+    "deduplication",
+  ],
+},
+{
+  id: "architecture-063",
+  topic: "architecture",
+  level: "senior",
+  q: "Clock skew (độ lệch đồng hồ giữa các máy) ảnh hưởng thế nào đến thứ tự sự kiện trong hệ phân tán? Giải thích vì sao không tin timestamp vật lý tuyệt đối, và cách dùng logical clock (Lamport), vector clock, hoặc TrueTime/Hybrid clock.",
+  a: `**Tóm tắt:** Clock skew (độ lệch đồng hồ — các máy có giờ khác nhau do NTP chưa đồng bộ, drift phần cứng) khiến timestamp vật lý (wall-clock time) không đáng tin để sắp xếp sự kiện giữa các node. Thay vào đó dùng **logical clock** (đồng hồ logic — đếm thứ tự quan hệ nhân-quả thay vì giờ thực), như Lamport timestamp hoặc vector clock; một số hệ dùng hybrid clock (kết hợp vật lý + logic) để vừa gần thời gian thực vừa giữ thứ tự.
+
+### Vấn đề: đồng hồ vật lý không hoàn hảo
+- Mỗi máy có đồng hồ riêng. Dù dùng **NTP (Network Time Protocol — giao thức đồng bộ giờ qua mạng)**, vẫn có sai lệch (skew) thường vài mili-giây, có lúc hàng chục–trăm ms nếu mạng xấu hoặc clock jump.
+- **Hệ quả:**
+  - Event A xảy ra trước B (A gây ra B) nhưng {{timestamp(A) > timestamp(B)}} trên hai máy khác nhau → sắp xếp sai.
+  - Conflict resolution kiểu "Last Write Wins" theo wall-clock có thể chọn nhầm bản cũ.
+  - Log gộp từ nhiều node khó tái hiện thứ tự thật.
+
+~~~text
+Node 1 (dong ho nhanh +80ms):  ghi X luc 10:00:00.120
+Node 2 (dong ho dung):         ghi X luc 10:00:00.100 (nhung xay ra SAU thuc te)
+So sanh timestamp -> chon nham ban Node 1 la "moi hon" neu chi nhin gio.
+~~~
+
+### Quan hệ happens-before
+- **Happens-before (xảy ra trước, ký hiệu →):** nếu A xảy ra trước B trên cùng tiến trình, hoặc A là gửi message và B là nhận message đó, hoặc bắc cầu, thì A → B. Nếu không có quan hệ, hai event **concurrent** (đồng thời theo quan hệ nhân-quả).
+
+### Lamport logical clock
+- Mỗi tiến trình giữ một bộ đếm số nguyên {{C}}.
+- Quy tắc: (1) Trước mỗi event nội bộ, {{C = C + 1}}. (2) Gửi message kèm {{C}}. (3) Khi nhận message có {{Cm}}, đặt {{C = max(C, Cm) + 1}}.
+- **Tính chất:** Nếu A → B thì {{L(A) < L(B)}}. Nhưng ngược lại không đúng: {{L(A) < L(B)}} không suy ra A → B (có thể concurrent).
+- **Dùng để:** tạo thứ tự toàn phần tương thích nhân-quả cho log, cấp phát ID tăng dần logic.
+
+~~~text
+P1:  (1) --msg(C=1)--> P2
+P2:            nhan: C=max(0,1)+1=2  (2)
+P3:  (1) (2)   (khong nhan msg) => C co the bang 2 nhung concurrent voi P2
+~~~
+
+### Vector clock
+- Mỗi node giữ một **vector** {{[c1, c2, ..., cn]}} (một bộ đếm cho mỗi node).
+- Quy tắc: (1) Node i trước event tăng {{ci}}. (2) Gửi kèm toàn bộ vector. (3) Nhận: merge từng phần {{max}} rồi tăng {{ci}}.
+- **Tính chất:** So sánh được quan hệ nhân-quả: {{V(A) < V(B)}} ⇔ A → B. Nếu không so sánh được theo thứ tự thành phần → **concurrent** (xung đột thật sự).
+- **Dùng để:** phát hiện conflict (Dynamo-style), phiên bản dữ liệu cần biết có ghi đồng thời hay không.
+
+~~~java
+// Minh hoa vector clock don gian (3 node)
+import java.util.Arrays;
+
+class VectorClock {
+    private final int[] v; // v[i] = bo dem cua node i
+    private final int me;  // chi so node hien tai
+
+    VectorClock(int n, int me) { this.v = new int[n]; this.me = me; }
+
+    void localEvent() { v[me]++; } // event noi bo: tang bo dem cua minh
+
+    void onSend() { v[me]++; } // gui: tang roi gui kem ban sao vector
+
+    void onReceive(int[] msg) { // nhan: merge max tung phan tu roi tang
+        for (int i = 0; i < v.length; i++) v[i] = Math.max(v[i], msg[i]);
+        v[me]++;
+    }
+
+    int[] snapshot() { return Arrays.copyOf(v, v.length); }
+}
+~~~
+
+### Hybrid / TrueTime (thực tế hệ lớn)
+- **HLC (Hybrid Logical Clock):** kết hợp wall-clock và logical counter để giữ gần thời gian thực nhưng vẫn đảm bảo {{A→B => ts(A)<ts(B)}}; dùng trong CockroachDB, MongoDB (một số cơ chế).
+- **Google TrueTime:** API trả về khoảng thời gian {{[earliest, latest]}} với sai số ràng buộc nhờ GPS/atomic clock; Spanner chờ uncertainty để sắp xếp commit.
+- **Điểm chung:** không tin một con số wall-clock đơn lẻ, luôn có cơ chế bù sai số hoặc logic.
+
+### Bảng trade-off
+| Cơ chế | Phát hiện concurrent? | Kích thước metadata | Khi dùng |
+|---|---|---|---|
+| Wall-clock | Không đáng tin | Nhỏ (1 số) | Hiển thị, log gần đúng; không dùng sắp xếp nhân-quả |
+| Lamport clock | Không (chỉ thứ tự phù hợp) | Nhỏ (1 số) | Thứ tự toàn phần logic, tie-breaker |
+| Vector clock | Có | Lớn (tỷ lệ số node/replica) | Phát hiện conflict, Dynamo-style |
+| HLC/TrueTime | Có (tuỳ thiết kế) | Vừa | DB phân tán cần timestamp gần thực + thứ tự |
+
+### Pitfall thực tế trên production
+1. **Dùng {{System.currentTimeMillis()}} để quyết định thắng/thua:** LWW theo wall-clock mất cập nhật khi clock skew hoặc clock lùi. Tránh cho dữ liệu quan trọng.
+2. **Clock nhảy lùi (NTP step):** Thời gian giảm đột ngột làm timestamp đảo ngược. Dùng {{System.nanoTime()}} cho đo khoảng thời gian (monotonic) nhưng không phải thời gian thực toàn cục.
+3. **Vector clock phình to:** Nhiều actor/replica → vector lớn. Thực tế giới hạn, prune, hoặc dùng dotted version vector.
+4. **Giả định NTP đủ tốt:** "Sai lệch chỉ vài ms" vẫn đủ phá vỡ thứ tự ở hệ throughput cao.
+5. **Trộn lẫn mục đích:** Dùng logical clock cho ordering nhân-quả, wall-clock cho hiển thị — đừng dùng nhầm.
+
+### Ví dụ đời thực
+Hệ thống cộng tác chỉnh sửa hồ sơ khách hàng trên 2 region (SG, US), mỗi region ghi vào replica gần. Trước đây dùng LWW theo {{updated_at}} từ server: do clock skew ~120 ms và một lần NTP step lùi 300 ms, bản cập nhật số điện thoại từ US (thực tế mới hơn 50 ms) bị bản SG ghi đè mất, ảnh hưởng ~40 hồ sơ/tuần. Sau khi chuyển sang version dựa trên HLC kết hợp phát hiện concurrent conflict: nếu concurrent thì lưu cả hai và yêu cầu merge theo quy tắc trường, các trường không concurrent tự chọn bản có quan hệ happens-before. Sai lệch mất cập nhật giảm về 0 trong 3 tháng theo dõi.
+
+### Trả lời mẫu khi phỏng vấn
+"Clock skew là độ lệch đồng hồ giữa các máy, dù có NTP vẫn tồn tại nên timestamp vật lý không an toàn để xác định thứ tự nhân-quả giữa node — có thể thấy event xảy ra sau lại có giờ nhỏ hơn. Mình dùng logical clock: Lamport timestamp cho thứ tự tương thích happens-before (nhưng không phân biệt concurrent), vector clock khi cần phát hiện xung đột concurrent thật sự như trong hệ kiểu Dynamo. Một số DB dùng hybrid clock để vừa gần thời gian thực vừa giữ thứ tự. Ví dụ thực tế, hệ multi-region từng mất cập nhật vì LWW theo wall-clock do skew 120 ms, sau đó chuyển sang HLC/version để phát hiện concurrent và merge đúng."
+
+> Senior tip: Hãy hỏi "thứ tự này để làm gì?" — hiển thị cho người dùng có thể dùng wall-clock, nhưng quyết định đúng/sai dữ liệu (conflict, giao dịch, audit nhân-quả) phải dựa trên logical/hybrid clock hoặc cơ chế đồng thuận, không bao giờ tin tuyệt đối vào giờ máy.
+`,
+  follow: [
+    "Lamport clock cho biết A→B thì L(A)<L(B), nhưng chiều ngược lại thì sao? Vector clock giải quyết điểm này như thế nào?",
+    "Khi nào bạn chọn LWW và chấp nhận rủi ro, và khi nào bắt buộc phải phát hiện concurrent conflict?",
+    "HLC (Hybrid Logical Clock) kết hợp wall-clock và logical như thế nào để vừa monotonic vừa gần thời gian thực?",
+  ],
+  tags: [
+    "clock skew",
+    "Lamport clock",
+    "vector clock",
+    "happens-before",
+    "distributed systems",
+    "HLC",
+  ],
+},
+{
+  id: "architecture-064",
+  topic: "architecture",
+  level: "senior",
+  q: "Hot partition (phân vùng nóng — một shard/partition nhận tải quá lớn so với phần còn lại) là gì, vì sao xảy ra và các cách xử lý trong hệ thống dùng Kafka, database sharding, hay key-value store?",
+  a: `**Tóm tắt:** Hot partition (phân vùng nóng — một partition/shard phải gánh lượng đọc/ghi vượt xa các partition khác) xảy ra khi khóa phân vùng (partition key) bị lệch phân bố (skew), ví dụ một khách hàng/hashtag cực nổi tiếng. Dù thêm node, partition nóng vẫn là nút thắt; xử lý bằng cách chọn key tốt hơn, tách/salt key nóng, cache, hoặc thiết kế lại luồng ghi/đọc cho key đó.
+
+### Hot partition là gì và vì sao nguy hiểm?
+- **Partition/shard:** chia dữ liệu thành nhiều phần để scale ngang (mỗi phần nằm trên node/partition khác). Lý tưởng: tải chia đều.
+- **Hot partition:** một phần nhận phần lớn traffic (ví dụ 1 partition chịu 70% request) → node đó CPU/IO/disk đầy, latency tăng, trong khi node khác rảnh. Scale-out (thêm partition/node) **không giúp** nếu key nóng vẫn dồn vào một chỗ.
+- **Triệu chứng:** p99 latency tăng, backlog/lag tăng ở một partition, một broker/shard CPU 90% còn cái khác 10%.
+
+### Nguyên nhân thường gặp
+1. **Key phân bố lệch tự nhiên:** một user (celebrity), một tenant lớn, một sản phẩm hot sale — vài key chiếm phần lớn truy cập (quy luật power-law).
+2. **Chọn partition key sai:** dùng {{country}} mà 80% user ở một nước; dùng {{date}} và mọi ghi hôm nay dồn vào partition "hôm nay".
+3. **Sequential key:** auto-increment/time-based key đưa mọi ghi mới vào cùng "đuôi" một shard.
+4. **Đọc/ghi tập trung:** counter toàn cục (một dòng lượt xem), một cấu hình được mọi request đọc.
+
+~~~text
+10 partitions, key = userId (celebrity C chiem 60% traffic)
+P0..P8: ~4-5% moi partition  (binh thuong)
+P3 (chua C): 60%  -> CPU 95%, lag tang, P0..P8 CPU 10%
+Them partition khong giup vi hash(C) van vao 1 partition.
+~~~
+
+### Cách xử lý theo ngữ cảnh
+
+#### 1) Kafka — hot partition
+- **Nguyên nhân:** {{producer.send(topic, key, value)}} dùng hash(key) chọn partition; key nóng → một partition nóng.
+- **Giải pháp:**
+  - **Key tốt hơn:** cân nhắc key khác (nhưng mất ordering theo key cũ).
+  - **Salting/sharding key:** thêm hậu tố ngẫu nhiên {{key#0..N}} để rải event của key nóng sang nhiều partition; consumer phải gộp lại (mất ordering toàn cục của key đó).
+  - **Tách topic/luồng:** xử lý riêng entity nóng với nhiều partition và logic gộp.
+  - **Giới hạn:** scale consumer trong group tối đa bằng số partition; partition nóng vẫn giới hạn bởi 1 consumer.
+
+#### 2) Database sharding / key-value
+- **Chọn shard key phân bố đều:** tránh key thấp cardinality. Có thể dùng composite key.
+- **Salting key nóng:** lưu {{hotKey_1..hotKey_10}} thay vì {{hotKey}}, khi đọc thì scatter-gather (đọc/ghép 10 bản).
+- **Tách shard chuyên biệt:** đưa tenant lớn sang shard riêng (dedicated shard).
+- **Cache trước shard:** cache (Redis, local) hấp thụ đọc nóng để shard DB không chịu hết.
+
+~~~java
+// Vi du salting key nong khi ghi counter (chia thanh N bucket)
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.*;
+
+class HotCounter {
+    private static final int BUCKETS = 10; // rai thanh 10 bucket
+    private final Map<String, Long> store = new HashMap<>(); // gia lap KV store
+
+    void increment(String hotKey) {
+        int b = ThreadLocalRandom.current().nextInt(BUCKETS); // chon bucket ngau nhien
+        String salted = hotKey + "#" + b; // key_0..key_9
+        store.merge(salted, 1L, Long::sum); // ghi rai deu, tranh 1 diem nong
+    }
+
+    long read(String hotKey) {
+        long sum = 0;
+        for (int b = 0; b < BUCKETS; b++) { // doc gom tat ca bucket
+            sum += store.getOrDefault(hotKey + "#" + b, 0L);
+        }
+        return sum; // tong = gia tri thuc
+    }
+}
+~~~
+
+### Bảng trade-off
+| Kỹ thuật | Ưu điểm | Nhược điểm | Phù hợp |
+|---|---|---|---|
+| Chọn key phân bố đều | Tự nhiên, không phức tạp thêm | Không phải lúc nào cũng có key tốt; mất locality | Thiết kế ban đầu |
+| Salting/sharding key | Rải tải tốt cho key nóng | Đọc phải scatter-gather, mất ordering theo key | Counter, ghi nóng |
+| Cache (read-through) | Giảm tải đọc rất mạnh | Cache invalidation, nhất quán; ghi nóng vẫn nóng | Đọc cực nóng |
+| Isolate tenant/entity nóng | Kiểm soát tốt | Tốn tài nguyên, vận hành phức tạp | Tenant lớn (noisy neighbor) |
+| Rate limit / queue | Bảo vệ hệ thống | Tăng latency, từ chối bớt | Bảo vệ tạm thời |
+
+### Pitfall thực tế trên production
+1. **Thêm node/partition mà không đổi key:** Hash(key) vẫn map vào một partition → hot partition còn nguyên.
+2. **Salting phá ordering:** Kafka ordering chỉ đảm bảo trong một partition; rải {{key#0..9}} làm mất thứ tự sự kiện của cùng entity.
+3. **Scatter-gather đọc chậm:** Đọc 10 bucket thay 1 → tăng latency đọc. Chấp nhận được cho counter, cẩn thận với truy vấn phức tạp.
+4. **Chỉ nhìn trung bình:** Tải trung bình 30% nhưng một partition 95% — giám sát phải theo **từng partition/shard**.
+5. **Hotspot thay đổi theo thời gian:** Sản phẩm hot hôm nay khác ngày mai; cần cơ chế phát hiện động (metrics/alert).
+
+### Ví dụ đời thực
+Ứng dụng thương mại điện tử dùng Kafka cho sự kiện cập nhật lượt xem sản phẩm, partition key là {{productId}}. Trong flash sale, một sản phẩm hot (ID P-8891) chiếm 55% tổng event (~120.000 msg/s) trong khi 31 partition còn lại chia nhau phần còn lại; partition chứa P-8891 lag tăng từ 0 lên 2,5 triệu message sau 8 phút, dashboard lượt xem trễ 12 phút. Khắc phục: (1) tách luồng counter lượt xem vào topic riêng, key đổi thành {{productId#bucket}} với 16 bucket cho sản phẩm vượt ngưỡng 5.000 msg/s (phát hiện bằng metric), consumer gộp bucket định kỳ; (2) thêm cache Redis cho đọc lượt xem. Kết quả: lag đỉnh của chiến dịch sau giảm còn < 20.000 message (~5 giây).
+
+### Trả lời mẫu khi phỏng vấn
+"Hot partition là khi một partition/shard nhận tải vượt xa phần còn lại do key phân bố lệch, ví dụ một sản phẩm hay user rất nổi. Vấn đề là thêm node không giải quyết nếu hash của key nóng vẫn dồn vào một chỗ. Cách xử lý tùy ngữ cảnh: chọn partition key phân bố đều, hoặc salting key nóng để rải ghi sang nhiều bucket rồi scatter-gather khi đọc, dùng cache để hấp thụ đọc nóng, hoặc isolate tenant/entity lớn. Mỗi cách có đánh đổi — salting phá ordering và làm đọc tốn hơn. Ví dụ thực tế mình từng gặp một sản phẩm chiếm 55% traffic Kafka làm lag một partition tới 2,5 triệu message; sau khi tách key thành nhiều bucket và cache lượt xem thì lag giảm còn vài giây."
+
+> Senior tip: Luôn giám sát theo từng partition/shard (lag, QPS, CPU) chứ không nhìn trung bình cụm. Và khi thiết kế partition key, hãy tự hỏi "nếu một key tăng gấp 100 lần vào ngày mai, hệ có chịu được không?" — đó là bài test hot partition.
+`,
+  follow: [
+    "Khi dùng salting cho key nóng trong Kafka, bạn đảm bảo tính đúng của xử lý tổng hợp (aggregation) và ordering ra sao?",
+    "Làm sao phát hiện hot partition sớm (metric/alert) và tự động chuyển sang chiến lược tách key khi vượt ngưỡng?",
+    "Với database sharding, khi một tenant lớn gây hot shard, bạn chọn isolate shard riêng hay re-shard toàn hệ thống — tiêu chí quyết định là gì?",
+  ],
+  tags: [
+    "hot partition",
+    "sharding",
+    "Kafka",
+    "partition key",
+    "scalability",
+    "skew",
+  ],
+},
 );
