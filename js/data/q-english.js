@@ -10571,4 +10571,164 @@ Quality is harder to measure automatically than latency, so I would combine repe
   ],
   tags: ["english", "ai", "llm", "observability", "monitoring"]
 },
+{
+  id: 'english-202',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: 'How do you set technical direction for a team? Walk me through your process.',
+  a: `**Tóm tắt:** Interviewer muốn thấy quy trình có cấu trúc: **hiểu ngữ cảnh → thu thập dữ liệu → viết chiến lược ngắn → thảo luận → cam kết cộng đồng → đo lường**. Trả lời bằng một ví dụ cụ thể có quy mô team, khung thời gian, và kết quả đo được. **Technical direction** là hướng đi kỹ thuật (tech stack, patterns, standards, architectural principles) mà team tuân theo để giảm ma sát và tăng tốc độ delivery.
+
+### Sample answer
+When I became tech lead for a team of eight engineers building a payment platform, the codebase had three different error-handling patterns, no shared logging standard, and every service chose its own retry policy. That inconsistency caused production incidents and slowed onboarding.
+
+My first month was listening: I read postmortems, paired with every engineer, and cataloged the pain points. I found that 40 percent of our incidents came from untracked errors and inconsistent retries. I then wrote a one-page Technical Direction doc covering error handling, observability, API contracts, and deployment patterns. It was not a rulebook — it was a starting point for discussion.
+
+I presented it in a team workshop, invited objections, and we agreed on a six-week rollout with a checklist in every PR. We measured adoption by tracking PRs that passed the checklist without comments. After six weeks, 90 percent of new code followed the patterns, and incident count from those categories dropped by 60 percent. The key was making it a team decision, not my decree, and measuring progress visibly.
+
+### Useful phrases
+- **set technical direction** — định hướng kỹ thuật cho team
+- **catalog the pain points** — liệt kê các điểm đau
+- **a starting point for discussion** — điểm khởi đầu để thảo luận
+- **not my decree** — không phải mệnh lệnh của tôi
+- **rollout with a checklist** — triển khai kèm danh sách kiểm tra
+- **measure adoption** — đo lường mức độ áp dụng
+- **team decision** — quyết định của nhóm
+- **reduce friction** — giảm ma sát (giảm sự cưỡng lại, khó khăn trong quy trình)
+
+### Lỗi người Việt hay mắc
+- **Dùng "direction" số nhiều:** "technical directions" → đúng là **technical direction** (danh từ không đếm được khi chỉ hướng đi chung).
+- **Nói "I decide everything":** lead không ra lệnh một mình; hãy nhấn mạnh **collaborative process** (quy trình cộng tác) và **buy-in** (sự đồng thuận).
+- **Thiếu ví dụ đo lường:** không nói "we tracked adoption" mà không nêu metric (checklist pass rate, incident reduction).
+- **Phát âm "catalog":** /ˈkætəlɒɡ/ (nhấn âm đầu), không phải "ca-ta-log" đều nhau.
+
+> Senior tip: Hướng đi kỹ thuật không phải tài liệu 50 trang. Một trang A4, tập trung vào 3–4 quyết định quan trọng nhất, có checklist trong PR, và review định kỳ 6 tuần. Nếu team không tự enforce, direction chỉ là giấy tờ. Luôn gắn metric: adoption rate, incident reduction, onboarding time.`,
+  follow: [
+    'How do you handle disagreement when the team does not agree with your direction?',
+    'How often do you revisit and update the technical direction?',
+    'What do you do when a new hire pushes back on an established pattern?',
+  ],
+  tags: ['leadership', 'technical-direction', 'team-process'],
+},
+{
+  id: 'english-203',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: 'Tell me about a time you introduced AI tools into your team workflow. What was the outcome?',
+  a: `**Tóm tắt:** Interviewer muốn thấy **thử nghiệm có kiểm soát → đo lường → quyết định có dữ liệu → lan rộng**. Nêu công cụ cụ thể, use case, baseline, kết quả (thời gian tiết kiệm, defect rate, developer satisfaction), và ranh giới dữ liệu (data boundary). **Data boundary** là ranh giới dữ liệu: loại dữ liệu nào được phép gửi cho AI (code public, boilerplate) và loại nào tuyệt đối không (production data, PII, secrets, proprietary logic).
+
+### Sample answer
+Last year I wanted to see if AI coding assistants could reduce the time my team spent on boilerplate: DTO mapping, test scaffolding, and Dockerfile updates. We ran a four-week pilot with six volunteers using GitHub Copilot. Baseline: average time to write a new REST endpoint with tests was 110 minutes.
+
+During the pilot we tracked three metrics: time saved per task, pull request defect rate, and a weekly developer sentiment survey. Results: endpoint scaffolding dropped to 75 minutes (32 percent faster), PR defect rate stayed flat at 2.1 defects per PR, and sentiment improved from 3.2 to 4.1 out of 5. The biggest gain was not speed — it was reducing context switching; engineers stayed in flow instead of searching Stack Overflow for boilerplate patterns.
+
+We rolled it out to the whole team with two guardrails: never paste production data or secrets, and every AI-generated line must be reviewed by a human before merge. We also added a CI check that flags files with "TODO: verify AI-generated" comments. Three months later, the team estimates 20–25 percent less time on repetitive tasks, and zero security incidents from AI usage.
+
+### Useful phrases
+- **run a pilot** — chạy thử nghiệm (pilot) nhỏ
+- **baseline measurement** — đo lường mức chuẩn ban đầu
+- **boilerplate code** — code mẫu lặp lại (khung sẵn)
+- **context switching** — chuyển ngữ cảnh (chuyển giữa nhiều tác vụ)
+- **stay in flow** — duy trì trạng thái tập trung sâu
+- **guardrails** — ranh giới an toàn / quy tắc bảo vệ
+- **data boundary** — ranh giới dữ liệu
+- **flag for review** — đánh dấu để xem xét
+
+### Lỗi người Việt hay mắc
+- **Nói "AI writes code for me":** nghe như không chịu trách nhiệm. Dùng **AI assists with** hoặc **AI generates drafts that I review**.
+- **Quên nêu data boundary:** công ty enterprise rất coi trọng compliance. Luôn nói **we never paste production data, PII, or secrets**.
+- **Dùng "pilot" sai ngữ pháp:** "we piloted the tool" (động từ) hoặc "we ran a pilot" (danh từ). Không nói "we pilot the tool" cho quá khứ.
+- **Phát âm "boilerplate":** /ˈbɔɪlərpleɪt/ (nhấn "BOY"), không phải "boi-ler-plate".
+
+> Senior tip: Pilot phải có **baseline**, **metric rõ**, **thời hạn**, và **guardrails**. Kết quả "cảm giác nhanh hơn" không đủ — hãy đo thời gian, defect rate, và developer satisfaction. Lan rộng chỉ khi pilot đạt ngưỡng đồng ý trước (ví dụ: >20% time saving, defect rate không tăng). Luôn nhắc compliance: data boundary là điều kiện bắt buộc.`,
+  follow: [
+    'How did you measure whether code quality stayed the same or improved?',
+    'What would you do if the pilot showed no time savings?',
+    'How do you handle engineers who refuse to use the tool?',
+  ],
+  tags: ['leadership', 'ai-tools', 'workflow', 'pilot'],
+},
+{
+  id: 'english-204',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: 'How do you handle a production incident as the lead? Walk me through your process from alert to postmortem.',
+  a: `**Tóm tắt:** Interviewer muốn thấy **quy trình có tiêu chuẩn** (incident command), **phân vai rõ** (incident commander, communicator, debugger), **quyết định rollback vs debug**, **bảo vệ khách hàng**, và **postmortem blameless**. Nêu ví dụ có số liệu: MTTR, khách hàng bị ảnh hưởng, root cause, hành động phòng ngừa. **MTTR** (Mean Time To Recovery) là thời gian trung bình để khôi phục dịch vụ sau sự cố. **Blameless postmortem** là buổi phục vụ sự cố không đổ lỗi cá nhân, tập trung vào hệ thống và quy trình.
+
+### Sample answer
+As the incident lead for a payment platform processing two million transactions daily, I follow a three-phase process.
+
+Phase 1 — Triage (0–5 minutes): I join the bridge, declare myself Incident Commander, and assign a Communicator (posts updates every 5 minutes) and a Debugger (investigates). I check the dashboard: error rate, latency p99, affected endpoints. If revenue-impacting errors exceed 1 percent, I authorize rollback immediately — no debate. Last Black Friday, a config push caused 3 percent 500s; we rolled back in 3 minutes, limiting impact to 12,000 failed transactions.
+
+Phase 2 — Resolution (5–30 minutes): The Debugger shares findings. If root cause is clear and fixable in 10 minutes, we hotfix. If not, we mitigate (circuit breaker, feature flag off) and buy time. I keep the bridge focused: one speaker at a time, no side conversations. All decisions and timestamps go into the incident doc in real time.
+
+Phase 3 — Postmortem (within 48 hours): Blameless, structured: timeline, impact (customer-facing metrics), root cause (5 Whys), contributing factors, and **action items with owners and due dates**. We track action items in the sprint backlog. The config incident produced three items: canary rollout for config, automated config validation, and a runbook for payment 500s. MTTR for similar incidents dropped from 18 minutes to 4 minutes.
+
+### Useful phrases
+- **declare myself Incident Commander** — tuyên bố mình là chỉ huy sự cố
+- **assign a Communicator** — phân công người liên lạc
+- **authorize rollback immediately** — phê duyệt rollback ngay lập tức
+- **limit impact to** — giới hạn tác động trong
+- **mitigate rather than fix** — giảm thiểu thay vì sửa gốc
+- **keep the bridge focused** — giữ cho hội thoại tập trung
+- **blameless postmortem** — buổi phục vụ sự cố không đổ lỗi
+- **action items with owners and due dates** — các hành động có người phụ trách và hạn chót
+
+### Lỗi người Việt hay mắc
+- **Dùng "I fix" thay vì "I coordinate":** lead không tự debug mọi thứ; hãy nói **I coordinate**, **I assign**, **I make the call**.
+- **Thiếu Communicator:** luôn nhắc vai trò **Communicator** — stakeholder và quản lý cần cập nhật đều đặn.
+- **Nói "rollback is failure":** rollback là **quyết định bảo vệ khách hàng**, không phải thất bại. Senior engineer biết khi nào dừng debug và rollback.
+- **Phát âm "triage":** /triˈɑːʒ/ (nhấn âm hai, "zh" như "vision"), không phải "tri-ây".
+- **Quên "action items with owners":** postmortem không có action item có owner = lãng phí thời gian.
+
+> Senior tip: Quy trình incident command phải luyện tập **trước** khi sự cố xảy ra (game day). Có runbook cho top 5 scenario. MTTR giảm nhờ **quy trình có sẵn**, không phải tài năng cá nhân. Luôn có Communicator — stakeholder bị đen mắt thì lead bị đánh giá kém dù kỹ thuật giải quyết tốt.`,
+  follow: [
+    'How do you decide between rollback and hotfix when time is critical?',
+    'What if the root cause is in a downstream dependency you cannot fix?',
+    'How do you keep the team calm during a severe incident?',
+  ],
+  tags: ['leadership', 'incident-response', 'production', 'postmortem'],
+},
+{
+  id: 'english-205',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: 'How do you grow senior engineers? Give me a specific example of someone you developed.',
+  a: `**Tóm tắt:** Interviewer muốn thấy **chẩn đoán gap → kế hoạch cá nhân có milestone → trao ownership có kiểm soát → feedback loop → kết quả đo được**. Không phải "tôi khuyến khích họ học". Nêu người cụ thể (ẩn danh), vị trí ban đầu, gap, kế hoạch 6–12 tháng, milestone, và kết quả (promotion, scope mở rộng, impact). **Ownership có kiểm soát** (controlled ownership) là giao phó một mảng thật nhưng có safety net: code review bắt buộc, design doc trước khi làm, check-in định kỳ.
+
+### Sample answer
+I grew a mid-level engineer, Minh, into a senior who now leads our reconciliation domain. When he joined, he was strong on Java but had never owned a production service end-to-end. His gap was not syntax — it was **operational thinking**: capacity planning, failure modes, and cross-team coordination.
+
+We built a twelve-month plan with three milestones. Milestone 1 (months 1–3): he shadowed me on-call, then took secondary on-call with me as primary. We debriefed every incident. Milestone 2 (months 4–8): I gave him controlled ownership of the refund service — he wrote the design doc, I reviewed, he implemented, and we did a joint production release. Milestone 3 (months 9–12): he led the reconciliation redesign, coordinating with finance and fraud teams, and presented the architecture to the engineering manager.
+
+The turning point was month 6 when he caught a race condition in the refund idempotency logic during his own code review — something I had missed. That showed he had internalized the failure-mode mindset. By month 12, his on-call escalation rate dropped from 6 per month to 1, and he was promoted to Senior. He now mentors two mid-level engineers using the same framework.
+
+### Useful phrases
+- **diagnose the gap** — chẩn đoán khoảng trống (kỹ năng/thói quen còn thiếu)
+- **operational thinking** — tư duy vận hành (capacity, failure modes, reliability)
+- **controlled ownership** — quyền sở hữu có kiểm soát (có safety net)
+- **safety net** — lưới an toàn (code review, design doc, check-in)
+- **failure-mode mindset** — tư duy tìm kiếm chế độ thất bại
+- **internalized** — đã inner hóa / làm thói quen tự nhiên
+- **escalation rate** — tỷ lệ leo thang (số lần phải nhờ senior can thiệp)
+- **scope expansion** — mở rộng phạm vi trách nhiệm
+
+### Lỗi người Việt hay mắc
+- **Nói "I teach them":** senior engineer không được "dạy" (teach) như sinh viên; hãy dùng **coach**, **mentor**, **guide**, **pair with**, **give controlled ownership**.
+- **Thiếu milestone cụ thể:** "I helped him grow" quá chung chung. Phải có **mốc thời gian**, **kết quả mỗi mốc**, và **cách đo**.
+- **Quên feedback loop:** không có **regular debrief / check-in** thì mentee không biết mình tiến bộ thế nào.
+- **Phát âm "milestone":** /ˈmaɪlstoʊn/ (nhấn "MILE"), không phải "mi-les-tone".
+- **Dùng "promote" như kết quả duy nhất:** growth có thể là **scope expansion**, **leadership opportunities**, **technical depth** — không nhất thiết promotion ngay.
+
+> Senior tip: Mentee senior cần **ownership thật** (production service, cross-team project), không phải ticket nhỏ. Kèm safety net: design doc review, joint release, weekly 1:1 debrief. Đo lường bằng **escalation rate**, **incident ownership**, **design doc quality**, **peer feedback**. Nếu mentee không cải thiện sau 2 milestone, hãy thẳng thắn nói về gap còn lại và điều chỉnh kế hoạch — đó là trách nhiệm của lead.`,
+  follow: [
+    'How do you handle a senior engineer who is technically strong but struggles with influence?',
+    'What do you do when a mentee is not progressing despite the plan?',
+    'How do you balance growing people with delivering features?',
+  ],
+  tags: ['leadership', 'mentoring', 'growing-engineers', 'career-development'],
+},
 );
