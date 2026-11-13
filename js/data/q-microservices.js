@@ -6537,4 +6537,641 @@ Một công ty dùng model của nhà cung cấp qua alias (ví dụ "claude-son
   ],
   tags: ['contract testing', 'eval', 'llm', 'json schema', 'pact', 'canary', 'non-determinism']
 },
+{
+  id: 'microservices-076',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Sau một lần rebalance, cùng một message bị xử lý hai lần, còn vài message thì biến mất. Giải thích quan hệ giữa thời điểm commit offset và ack mode của Spring Kafka (BATCH, RECORD, MANUAL, MANUAL_IMMEDIATE), auto-commit, và commit khi partition bị thu hồi. Bạn chọn cấu hình nào cho consumer ghi database?',
+  a: `**Tóm tắt:** Kafka không "làm mất" message; cái quyết định là **thời điểm commit offset so với thời điểm side effect hoàn tất**. Xử lý xong nhưng chưa commit thì đọc lại, tức là lặp. Commit trước khi xử lý xong thì mất. Spring Kafka mặc định tắt auto-commit và commit theo **ack mode** (mặc định BATCH: commit offset cao nhất của batch sau khi listener trả về). Với consumer ghi DB, tôi dùng @Transactional cộng BATCH (hoặc MANUAL), không bao giờ ack bên trong transaction, và vẫn thêm dedup theo event id, vì at-least-once là bản chất của messaging.
+
+### Hiểu nhanh
+Bạn là thủ kho, offset giống như dòng ghi trong sổ "tôi đã xử lý tới phiếu số 100". Nếu bạn ghi sổ **trước** khi nhập hàng rồi ngất, phiếu 100 mất. Nếu bạn nhập hàng xong nhưng chưa ghi sổ rồi ngất, người sau nhập lại phiếu 100, tức là lặp. Không có cách nào vừa ghi sổ vừa nhập hàng "cùng một lúc", vì đó là hai quyển sổ khác nhau; nên phải chọn: ghi sổ sau (at-least-once, có thể lặp) rồi dán nhãn chống lặp.
+
+### Thuật ngữ
+- **Offset**: vị trí đọc trong partition. "Đã xử lý tới offset 100" nghĩa là record 99 là record cuối đã xong.
+- **Committed offset**: offset đã lưu vào topic nội bộ {{__consumer_offsets}}; consumer mới đọc tiếp từ đó.
+- **Position**: vị trí kế tiếp mà consumer sẽ đọc, chưa được commit.
+- **Ack**: cách Spring Kafka gọi việc xác nhận "tôi đã xử lý record này"; Kafka client gọi là commit.
+- **Rebalance**: chia lại partition cho các consumer trong group; partition bị thu hồi sẽ được đọc lại từ committed offset.
+- **Side effect**: thay đổi ra bên ngoài bộ nhớ: ghi DB, gửi email, gọi API.
+
+### Mất và lặp xảy ra ở đâu (từng bước)
+1. Consumer poll 500 record (offset 0 tới 499), position = 500.
+2. Xử lý record 0 tới k, ghi DB từng record.
+3. Container commit offset, ví dụ lên 500, ghi vào {{__consumer_offsets}}.
+4. Nếu bước 3 xảy ra **trước** khi DB commit: crash giữa hai bước, DB không có nhưng offset đã tiến, kết quả là **mất**.
+5. Nếu DB commit rồi nhưng chưa commit offset: crash, consumer đọc lại, kết quả là **lặp**.
+
+~~~text
+crash sau khi ghi DB, trước khi commit offset   -> lặp   (chữa được bằng dedup)
+crash sau khi commit offset, trước khi ghi DB   -> mất   (không chữa được)
+~~~
+
+Vì sao không có "cùng lúc": DB và {{__consumer_offsets}} là hai hệ thống khác nhau, một transaction DB không bao trùm broker. Kafka có transaction nhưng chỉ đúng cho luồng Kafka sang Kafka (câu 031 và 057); khi đích là DB thì phải chọn at-least-once cộng dedup.
+
+### Ack mode (từng bước)
+| Ack mode | Khi nào commit | Crash thì mất? | Crash thì lặp? | Ghi chú |
+|---|---|---|---|---|
+| BATCH (mặc định) | Sau khi listener trả về, commit offset cao nhất của batch đã xử lý xong | Không, nếu xử lý đồng bộ | Có, cửa sổ bằng cả batch | Throughput tốt |
+| RECORD | Sau mỗi record | Không | Có, một record | Nhiều commit, chậm hơn |
+| MANUAL | Sau khi listener trả về, chỉ với record đã gọi ack | Không, nếu ack sau side effect | Có | Hợp với @Transactional |
+| MANUAL_IMMEDIATE | Ngay khi gọi ack | **Có**, nếu ack trước khi commit DB | Có | Chỉ đúng khi ack là bước cuối cùng |
+| COUNT / COUNT_TIME / TIME | Cứ N record hoặc N giây | **Có**, tới N record | Có | Tăng throughput, giảm an toàn |
+
+- Với @Transactional cộng MANUAL_IMMEDIATE, nếu {{ack.acknowledge()}} là câu lệnh cuối **bên trong** method có transaction thì ack chạy trước khi transaction commit; crash giữa hai bước là mất. Đây là lỗi kinh điển.
+- MANUAL (không immediate) hoãn commit tới sau khi listener trả về, tức sau khi proxy transaction commit, nên đúng thứ tự mong muốn.
+- Batch listener: ném {{BatchListenerFailedException}} kèm index thì container chỉ xử lý lại từ record lỗi và commit các record trước; ném exception thường thì **cả batch** bị xử lý lại.
+
+### Auto-commit
+- {{enable.auto.commit=true}} (mặc định của consumer dùng trực tiếp): client tự commit theo {{auto.commit.interval.ms}} (mặc định 5.000 ms) dựa trên **position**, không quan tâm xử lý xong hay chưa.
+- Xử lý đồng bộ nhanh hơn 5 giây thì thường vẫn an toàn; nhưng nếu bạn đẩy record sang {{ExecutorService}} rồi return thì container commit ngay, tức là **mất**.
+- Spring Boot đặt {{spring.kafka.consumer.enable-auto-commit=false}} mặc định và để container commit theo ack mode. Nếu bạn dùng {{KafkaConsumer}} trực tiếp (không container) thì phải tự commit, và đừng bật auto-commit.
+
+### Commit khi rebalance
+1. Partition bị thu hồi, ví dụ khi deploy hoặc khi thêm/bớt pod.
+2. Phần đã xử lý nhưng chưa commit sẽ được owner mới đọc lại, tức là lặp.
+3. Commit phần đã xử lý trong {{onPartitionsRevoked}} bằng commit **đồng bộ**, hoặc để container commit trước khi thu hồi với {{syncCommits=true}} (mặc định).
+4. {{CommitFailedException}}: commit bị từ chối vì group đã sang generation mới sau rebalance. Đây không phải lỗi mạng; đừng retry vô hạn, hãy ghi log và để dedup xử lý phần lặp.
+
+~~~java
+@Bean
+ConcurrentKafkaListenerContainerFactory<String, String> ledgerFactory(
+        ConsumerFactory<String, String> cf, KafkaTemplate<String, String> kafka) {
+    var f = new ConcurrentKafkaListenerContainerFactory<String, String>();
+    f.setConsumerFactory(cf);
+    f.getContainerProperties().setAckMode(AckMode.BATCH);   // commit sau khi listener return = sau khi tx commit
+    f.getContainerProperties().setSyncCommits(true);        // commit đồng bộ khi partition bị thu hồi
+    f.setCommonErrorHandler(new DefaultErrorHandler(        // retry 2 lần rồi đẩy DLT
+            new DeadLetterPublishingRecoverer(kafka), new FixedBackOff(1_000L, 2)));
+    return f;
+}
+
+@KafkaListener(topics = "payment.captured", groupId = "ledger")
+@Transactional                              // side effect commit trước, offset commit sau
+public void on(String payload) {
+    ledgerRepo.insert(parse(payload));      // ghi DB trong transaction, không ack thủ công
+}
+~~~
+
+### Bảng trade-off
+| Cách commit | Mất | Lặp | Throughput | Khi nào dùng |
+|---|---|---|---|---|
+| Commit trước khi xử lý | Có | Không | Cao | Gần như không bao giờ, trừ dữ liệu có thể tính lại được |
+| Xử lý xong rồi commit | Không | Có | Trung bình | Mặc định cho consumer ghi DB |
+| Xử lý xong rồi commit, cộng dedup | Không | Không (exactly-once effect) | Trung bình | Đường tiền, sổ cái, tồn kho |
+| Kafka transaction | Không | Không | Thấp | Chỉ khi cả input và output đều là topic Kafka |
+
+### Lỗi hay gặp
+1. {{MANUAL_IMMEDIATE}} cộng {{ack()}} trong transaction. Triệu chứng: đối soát thiếu bản ghi. Cách tránh: BATCH hoặc MANUAL, ack sau khi listener trả về.
+2. BATCH cộng đẩy record sang executor. Triệu chứng: mất cả batch khi pod chết. Cách tránh: xử lý đồng bộ trong listener, hoặc chờ future xong rồi mới return.
+3. Batch listener ném exception thường. Triệu chứng: cả batch bị xử lý lại, side effect lặp. Cách tránh: {{BatchListenerFailedException}} kèm index.
+4. Không commit khi bị thu hồi partition, hoặc tắt {{syncCommits}} để "tăng throughput". Triệu chứng: lặp sau mỗi lần deploy. Cách tránh: bật lại và đo.
+5. Tăng {{max.poll.records}} mà không đo. Triệu chứng: cửa sổ mất/lặp bằng đúng batch size. Cách tránh: tăng dần và xem metric.
+
+### Ví dụ đời thực
+Hệ thống ví điện tử có consumer {{ledger-writer}} ghi sổ cái từ topic {{payment.captured}}: 12 partition, 4 pod, batch 500, ack mode MANUAL_IMMEDIATE, listener có @Transactional và gọi {{ack.acknowledge()}} ở cuối method; {{syncCommits}} bị tắt trong một lần tinh chỉnh "cho nhanh".
+Triệu chứng: đối soát cuối ngày phát hiện 0,35% dòng bị ghi hai lần (khoảng 42.000 dòng) và 0,02% giao dịch không có dòng nào (khoảng 2.400), tập trung ở hai pod hay bị deploy nhất.
+Điều tra: (1) log có hai lần xử lý cùng {{event_id}} cách nhau 3 tới 8 giây, khớp với nhịp retry và rebalance; (2) metric {{commit_failed_total}} tăng theo mỗi lần deploy; (3) đọc cấu hình thấy ack nằm trong transaction và {{syncCommits=false}}; (4) không có bảng dedup nên DB không tự bảo vệ.
+Xử lý: (1) chuyển sang BATCH, giữ @Transactional và bỏ {{ack()}} thủ công; (2) bật {{syncCommits=true}}, giảm batch xuống 100; (3) thêm bảng inbox với khóa chính là {{event_id}}, insert cùng transaction với nghiệp vụ; (4) alert theo {{commit_failed_total}} và {{duplicate_blocked_total}}.
+Kết quả sau hai tuần: số dòng trùng trong DB về 0; số event bị dedup chặn 0,02%, đúng như kỳ vọng của at-least-once; số giao dịch thiếu về 0; đối soát khớp 100%; deploy không còn làm lag tăng vọt. Bài học: ack mode và thứ tự commit là ranh giới giữa "mất tiền" và "trùng tiền".
+
+### Trả lời mẫu khi phỏng vấn
+"Theo em, mất và lặp là do thời điểm commit offset so với lúc side effect xong. Commit trước khi ghi DB là mất, ghi DB xong chưa commit là lặp. Spring Kafka mặc định tắt auto-commit và commit theo ack mode, mặc định là BATCH: container commit offset cao nhất của batch sau khi listener trả về. Vì vậy khi consumer ghi DB, em để @Transactional và dùng BATCH hoặc MANUAL, tuyệt đối không gọi ack bên trong transaction với MANUAL_IMMEDIATE, vì ack chạy trước commit. Em bật syncCommits để commit đồng bộ khi partition bị thu hồi, và giảm max.poll.records để cửa sổ lặp nhỏ lại. Cuối cùng em vẫn thêm dedup theo event id trong cùng transaction, vì at-least-once luôn có thể lặp khi crash hoặc rebalance. Em đo duplicate_blocked_total và commit_failed_total để biết hệ thống đang chặn bao nhiêu và commit có lỗi không. Nếu chỉ được chọn một thứ để nhớ, em chọn thứ tự: side effect, commit DB, rồi mới commit offset."
+
+> Senior tip: ack và commit không phải chi tiết nhỏ, nó là ranh giới giữa mất tiền và trùng tiền. Hãy viết ra thứ tự: side effect, commit DB, commit offset; rồi test bằng cách kill consumer đúng giữa hai bước cuối.`,
+  follow: [
+    'Nếu consumer vừa ghi DB vừa gửi email, bạn đặt ranh giới commit ở đâu để email không bị gửi hai lần?',
+    'Batch listener và {{BatchListenerFailedException}} khác nhau thế nào khi một record giữa batch bị lỗi?',
+    'Tắt {{syncCommits}} để tăng throughput thì rủi ro cụ thể là gì, và bạn đo nó bằng metric nào?'
+  ],
+  tags: ['Kafka', 'Spring Kafka', 'ack mode', 'offset', 'exactly-once'],
+  refs: [
+    { type: 'doc', title: 'Kafka documentation: consumer configs', url: 'https://kafka.apache.org/documentation/#consumerconfigs' },
+    { type: 'doc', title: 'Spring Kafka reference: receiving messages', url: 'https://docs.spring.io/spring-kafka/reference/kafka/receiving-messages.html' }
+  ]
+},
+{
+  id: 'microservices-077',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Sau một deploy lỗi, 1,2 triệu message nằm trong DLT của ba topic. Bạn thiết kế quy trình replay thế nào để không gây sự cố lần hai: phân loại, quarantine, throttle, idempotency, thứ tự, và đo kết quả?',
+  a: `**Tóm tắt:** Replay là đưa message lỗi quay lại luồng xử lý thật, nên phải coi như **một đợt traffic mới**: phân loại trước (lỗi code đã sửa, lỗi dữ liệu, lỗi nghiệp vụ), xác nhận consumer đã idempotent, replay theo lô nhỏ có throttle và theo dõi, giữ đúng key để không phá thứ tự, và đo bằng ba con số: số message vào lại, số thành công, số vào DLT lần hai. Tuyệt đối không replay khi bug chưa sửa (tạo vòng lặp DLT sang replay rồi quay lại DLT) và không replay nhóm có side effect không chống được lặp (email, thanh toán) trước khi đối soát.
+
+### Hiểu nhanh
+Kho có 1,2 triệu kiện hàng lỗi. Nếu mở cửa cho tất cả cùng lúc, đội đóng gói (consumer) và bộ phận giao hàng (downstream) sẽ quá tải lần hai. Cách làm đúng: chọn 100 kiện đại diện, chạy thử trên một line, đo tỷ lệ lỗi, rồi tăng dần; kiện nào chắc chắn sẽ lỗi lại thì để riêng (quarantine), không đưa vào line.
+
+### Vì sao replay nguy hiểm (từng bước)
+1. Message trong DLT vẫn là message thật: replay là xử lý lại thật, nên ghi DB lần hai, gửi email lần hai, gọi API lần hai.
+2. Nếu bug chưa sửa: DLT, replay, lỗi, quay lại DLT. Mỗi vòng tốn CPU, network và làm DLT phình thêm.
+3. Nếu replay hết trong một phút: downstream nhận 1,2 triệu request đột ngột, tức là tự tạo một retry storm lần hai.
+4. Nếu replay sai thứ tự: state machine lùi, ví dụ PAID bị ghi đè bằng PENDING, số dư sai.
+5. Nếu replay thiếu một phần: dữ liệu lệch âm thầm, chỉ phát hiện khi đối soát.
+
+### Quy trình sáu bước
+1. **Đóng băng và phân loại** (chưa replay): đếm theo {{kafka_dlt-exception-fqcn}}, theo topic và partition, theo khoảng thời gian. Chia ba nhóm:
+   - Nhóm A: lỗi code đã sửa, ví dụ {{JsonMappingException}} do thiếu field.
+   - Nhóm B: lỗi dữ liệu thật, payload thiếu field bắt buộc hoặc id không tồn tại; phải sửa dữ liệu hoặc bỏ.
+   - Nhóm C: lỗi nghiệp vụ hợp lệ, ví dụ không đủ số dư; không nên có trong DLT, phải kiểm tra vì sao bị retry.
+2. **Xác nhận consumer idempotent**: có inbox hoặc dedup theo event id chưa, có kiểm tra state hiện tại chưa. Nếu chưa thì replay sẽ tạo side effect thật; thêm dedup trước, không replay.
+3. **Chọn cách replay**:
+   - Copy từ DLT sang topic gốc, giữ nguyên key để đúng partition và đúng thứ tự theo key, thêm header {{x-replay-from}} và {{x-replay-batch}}.
+   - Không reset offset của consumer group về DLT, trừ khi bạn thực sự muốn consumer đọc DLT như một topic bình thường; cách đó dễ trộn dữ liệu và mất audit.
+4. **Throttle theo lô**: 500 tới 1.000 message mỗi phút, dừng khi consumer lag tăng, error rate vượt 1%, hoặc p95 của downstream vượt ngưỡng. Theo dõi cả DLT của chính luồng replay.
+5. **Giữ thứ tự theo key**: mỗi key chỉ một worker xử lý; không cho hai worker replay song song cùng key. Nếu buộc phải song song thì chia theo partition và đảm bảo mỗi key nằm ở một worker.
+6. **Đo và chốt**: đối chiếu số message vào lại, số thành công, số vào DLT lần hai, số bị dedup chặn; đối chiếu nghiệp vụ (số dư, số đơn); viết runbook và postmortem.
+
+~~~text
+DLT 1.200.000
+  ├─ nhóm A, lỗi code đã sửa: 780.000 -> replay 500 msg/s
+  ├─ nhóm B, payload sai:      320.000 -> quarantine, sửa dữ liệu từng lô
+  └─ nhóm C, lỗi nghiệp vụ:    100.000 -> không replay, xử lý bằng tay hoặc CSKH
+kết quả: vào lại 780.000 | lỗi lần 2: 1.100 (0,14%) | dedup chặn: 0
+~~~
+
+### Tool replay (code)
+~~~java
+var cProps = new Properties();
+cProps.put("bootstrap.servers", "kafka:9092");
+cProps.put("group.id", "dlt-replay-" + UUID.randomUUID());  // group riêng: không đụng group thật
+cProps.put("enable.auto.commit", "false");
+cProps.put("key.deserializer", StringDeserializer.class);
+cProps.put("value.deserializer", StringDeserializer.class);  // đọc thô: payload lỗi không deserialize được
+
+var pProps = new Properties();
+pProps.put("bootstrap.servers", "kafka:9092");
+pProps.put("key.serializer", StringSerializer.class);
+pProps.put("value.serializer", StringSerializer.class);
+
+try (var consumer = new KafkaConsumer<String, String>(cProps);
+     var producer = new KafkaProducer<>(pProps)) {
+    var parts = consumer.partitionsFor("payment.captured.DLT");
+    parts.forEach(p -> consumer.assign(List.of(new TopicPartition(p.topic(), p.partition()))));
+    consumer.seekToBeginning(consumer.assignment());
+    int sent = 0;
+    while (true) {
+        var batch = consumer.poll(Duration.ofMillis(500));
+        if (batch.isEmpty()) break;
+        for (var r : batch) {
+            var out = new ProducerRecord<>("payment.captured", r.key(), r.value());
+            out.headers().add("x-replay-from",
+                ("dlt:" + r.partition() + "@" + r.offset()).getBytes(StandardCharsets.UTF_8));
+            producer.send(out);                     // cùng key thì cùng partition, giữ thứ tự theo key
+            if (++sent % 500 == 0) { producer.flush(); Thread.sleep(1_000); }   // khoảng 500 msg/s
+        }
+        consumer.commitSync();                      // chỉ commit khi đã gửi, replay lỗi không mất
+    }
+    producer.flush();
+}
+~~~
+
+- Dùng {{StringDeserializer}} cho cả key và value vì payload trong DLT có thể là byte hỏng; nếu dùng JsonDeserializer thì lỗi xảy ra ngay ở {{poll()}} và bạn không đọc được gì.
+- Group id ngẫu nhiên cộng {{assign}} thủ công: tool không tham gia group của consumer thật nên không gây rebalance.
+- {{commitSync}} sau khi gửi: nếu tool chết giữa đường, lần sau chạy lại từ đầu; vì replay idempotent nên an toàn.
+
+### Bảng chọn cách replay
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Copy sang topic gốc | Giữ key và partition, tách audit, đo được | Cần tool, phải throttle |
+| Reset offset group về DLT | Không cần code mới | Trộn DLT vào luồng chính, khó audit, dễ lặp |
+| Sửa payload rồi đẩy lại | Xử lý được nhóm B | Tốn công chuẩn hoá dữ liệu |
+| Quarantine, bỏ | An toàn | Mất dữ liệu nếu bỏ nhầm |
+
+### Lỗi hay gặp
+1. Replay khi bug chưa sửa. Triệu chứng: DLT lại tăng sau vài phút. Cách tránh: xác nhận bản sửa đã lên production trước khi replay.
+2. Replay toàn bộ cùng lúc. Triệu chứng: downstream quá tải, timeout hàng loạt. Cách tránh: throttle theo lô và dừng khi vượt ngưỡng.
+3. Không dedup trước khi replay. Triệu chứng: side effect hai lần. Cách tránh: thêm inbox trước.
+4. Replay nhóm C. Triệu chứng: email "không đủ số dư" gửi lại hàng loạt. Cách tránh: nhóm nghiệp vụ không replay.
+5. Không gắn header. Triệu chứng: không biết message nào là replay, không đo được. Cách tránh: header cộng metric theo header.
+6. Quên rằng DLT có thể chứa message đã xử lý một phần. Triệu chứng: replay gây side effect lần hai. Cách tránh: đối soát với hệ thống đích trước khi replay nhóm có side effect ngoài Kafka.
+
+### Ví dụ đời thực
+Payment service có DLT 1,2 triệu message sau hai giờ, do deploy thiếu field {{currency}} gây {{JsonMappingException}}. Phân loại: nhóm A 780.000, nhóm B 320.000 (payload cũ thiếu {{currency}}), nhóm C 100.000 ({{BusinessException}}: không đủ số dư).
+Replay nhóm A ở mức 500 message mỗi giây, theo dõi consumer lag, error rate và p95 của downstream: 780.000 chia 500 khoảng 26 phút; lỗi lần hai 1.100 (0,14%, do 1.100 message thật sự thiếu {{currency}}); p95 của email service 180 ms; không có retry storm.
+Nhóm B: thêm job chuẩn hoá dữ liệu, suy ra {{currency}} từ merchant rồi replay 320.000 trong 11 phút.
+Nhóm C: không replay; đối soát với cổng thanh toán theo {{merchant_reference}}, phát hiện 8% đã được xử lý (side effect đã xảy ra trước khi lỗi), nếu replay mù sẽ trừ tiền hai lần.
+Kết quả: sau ba ngày DLT về 0, đối soát khớp 100%, không có sự cố thứ hai; runbook replay một trang được đưa vào wiki và dùng lại cho hai sự cố sau.
+
+### Trả lời mẫu khi phỏng vấn
+"Em coi replay là một đợt traffic thật, không phải một câu lệnh. Trước tiên em phân loại DLT theo exception và theo topic: nhóm lỗi code đã sửa, nhóm payload sai, nhóm lỗi nghiệp vụ. Nhóm nghiệp vụ em không replay, vì đó là lỗi hợp lệ. Em xác nhận consumer đã idempotent bằng inbox hoặc dedup theo event id; nếu chưa có thì thêm trước rồi mới replay. Em replay bằng tool riêng: group id ngẫu nhiên, assign thủ công, đọc thô bằng StringDeserializer, giữ nguyên key để đúng partition và thứ tự, gắn header để đo. Em throttle khoảng 500 message mỗi giây và dừng khi lag tăng hoặc error rate vượt một phần trăm. Cuối cùng em đo ba con số: số vào lại, số thành công, số vào DLT lần hai, cộng với đối soát nghiệp vụ. Với nhóm có side effect ngoài Kafka như thanh toán, em đối soát với nhà cung cấp trước khi replay, vì message có thể đã xử lý một phần."
+
+> Senior tip: DLT là kho bằng chứng, không phải hàng đợi để quên. Trước khi replay, hãy trả lời ba câu: bug đã sửa chưa, consumer đã idempotent chưa, và message này xử lý lại có gây side effect thật không.`,
+  follow: [
+    'Làm sao bạn biết một message trong DLT đã được xử lý một phần, tức side effect đã xảy ra, trước khi lỗi?',
+    'Replay nhóm 320.000 payload thiếu field: bạn sửa dữ liệu thế nào mà không phá nghiệp vụ?',
+    'Bạn theo dõi sức khoẻ của DLT ra sao để không bao giờ có 1,2 triệu message nằm im?'
+  ],
+  tags: ['Kafka', 'DLT', 'replay', 'retry', 'incident'],
+  refs: [
+    { type: 'doc', title: 'Spring Kafka reference: receiving messages', url: 'https://docs.spring.io/spring-kafka/reference/kafka/receiving-messages.html' },
+    { type: 'doc', title: 'Kafka documentation', url: 'https://kafka.apache.org/documentation/' }
+  ]
+},
+{
+  id: 'microservices-078',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Order service cần trạng thái và hạn mức của khách hàng để chốt đơn, nhưng customer service hay timeout. Bạn dùng event-carried state transfer để mỗi service giữ bản sao dữ liệu tham chiếu thế nào? Giải thích snapshot cộng delta, version để chống event cũ, rebuild, và xử lý khi dữ liệu bị xoá theo yêu cầu GDPR.',
+  a: `**Tóm tắt:** Event-carried state transfer nghĩa là thay vì gọi API hỏi dữ liệu mỗi lần, mỗi service **nghe event và giữ một bản sao cục bộ chỉ đọc** của đúng những field nó cần. Bản sao gồm snapshot ban đầu cộng các event thay đổi (delta), mỗi bản ghi có version để bỏ qua event cũ và event trùng. Đổi lại: dữ liệu có thể cũ vài trăm mili giây, tốn lưu trữ, phải có cách rebuild, và phải xử lý việc xoá dữ liệu theo GDPR.
+
+### Hiểu nhanh
+Một nhà hàng có ba bếp. Thay vì mỗi lần nấu lại gọi điện hỏi kho "còn hành không", người kho dán một bảng hàng ở mỗi bếp và chạy sang cập nhật khi có thay đổi. Bếp nấu nhanh, không phụ thuộc điện thoại; nhưng bảng có thể chậm một phút, và nếu bảng ghi sai thì cả bếp nấu sai.
+
+### Vì sao cần (gọi API không đủ)
+1. Order gọi customer hai lần mỗi request để lấy {{status}} và {{tier}}; customer deploy hai lần một tuần nên order p99 tăng từ 120 ms lên 900 ms (xem câu 058).
+2. Tám nghìn request mỗi giây vào customer DB chỉ để đọc năm field.
+3. Dữ liệu tham chiếu đọc nhiều ghi ít, nên nhân bản rẻ hơn gọi liên tục.
+
+### Cơ chế (từng bước)
+1. **Chọn đúng field**: chỉ nhân bản field dùng ở đường ghi, ví dụ {{status}}, {{tier}}, {{tax_code}}; không nhân bản cả aggregate.
+2. **Snapshot**: khi service mới lên, hoặc theo ngày, đọc một lần qua API rồi ghi vào bảng local kèm {{version}}.
+3. **Delta**: nghe {{CustomerUpdated}} có customerId, version và danh sách field thay đổi, rồi upsert có điều kiện version.
+4. **Đọc local**: order đọc trong cùng DB, không gọi mạng.
+5. **Kiểm tra độ mới**: nếu {{updated_at}} quá hai giây, hoặc version cũ hơn ngưỡng, thì đánh dấu stale và fallback gọi API cho giao dịch nhạy cảm.
+6. **Rebuild**: replay từ snapshot cộng event, hoặc đọc lại API; job này phải chạy được khi schema bảng local thay đổi.
+
+### Version và thứ tự (từng bước)
+- Kafka chỉ đảm bảo thứ tự trong một partition. Nếu {{CustomerUpdated}} dùng customerId làm key thì thứ tự theo khách hàng được đảm bảo; nếu event đến từ nhiều topic hoặc nhiều producer thì không.
+- Upsert có điều kiện {{WHERE version < :new}} bỏ qua event cũ và event trùng, nên at-least-once không gây hại.
+- Không dùng {{updated_at}} do producer tự ghi, vì đồng hồ các máy lệch nhau; hãy dùng version do **owner dữ liệu** (customer service) tăng đơn điệu.
+
+~~~java
+// customer_copy(customer_id PK, status, tier, tax_code, version BIGINT, updated_at)
+@Transactional
+public void on(CustomerUpdated e) {
+    jdbc.update("""
+        INSERT INTO customer_copy (customer_id, status, tier, tax_code, version, updated_at)
+        VALUES (?, ?, ?, ?, ?, now())
+        ON CONFLICT (customer_id) DO UPDATE SET
+            status = excluded.status, tier = excluded.tier, tax_code = excluded.tax_code,
+            version = excluded.version, updated_at = now()
+        WHERE customer_copy.version < excluded.version""",   // event cũ hoặc trùng: không ghi
+        e.customerId(), e.status(), e.tier(), e.taxCode(), e.version());
+}
+~~~
+
+### Snapshot cộng delta (vì sao cần cả hai)
+| Chỉ có | Hậu quả |
+|---|---|
+| Snapshot | Thiếu thay đổi sau snapshot, dữ liệu đứng yên |
+| Delta | Service mới phải replay hàng chục triệu event, khởi động rất chậm |
+| Snapshot cộng delta | Khởi động nhanh, dữ liệu theo kịp; snapshot định kỳ giảm thời gian replay |
+
+- Snapshot mỗi ngày cộng delta từ lúc snapshot; lưu {{snapshot_version}} để biết replay từ đâu.
+- Khi đổi schema bảng local: đọc snapshot mới rồi replay delta từ {{snapshot_version}}, không cần dừng service.
+
+### Xoá dữ liệu theo GDPR (phần hay bị bỏ)
+- Quyền được xoá: customer service xoá dữ liệu, nhưng bản sao ở order service vẫn còn, như vậy là vi phạm.
+- Cần event {{CustomerDeleted}} để xoá hoặc ẩn danh bản sao; nếu luật yêu cầu xoá thật thì dùng DELETE, không chỉ đặt {{deleted = true}}.
+- Event có thể mất, nên cần job đối soát hằng tuần: lấy danh sách customer còn sống, xoá bản sao mồ côi.
+- Snapshot và backup vẫn chứa dữ liệu, nên dùng **crypto-shredding**: mã hoá dữ liệu theo {{customer_id}} và xoá key khi cần, không phải sửa backup.
+- Tối thiểu hoá dữ liệu: không đưa PII vào event nếu không cần; chỉ {{customerId}} cộng field nghiệp vụ.
+
+### Bảng trade-off
+| Cách | Độ mới | Phụ thuộc uptime | Chi phí | Khi nào |
+|---|---|---|---|---|
+| Gọi API trực tiếp | Tức thì | Cao | Latency và tải | Giao dịch nhạy cảm, dữ liệu ít đọc |
+| Cache cộng TTL | Một tới sáu mươi giây | Trung bình | Thấp | Đọc nhiều, chấp nhận dữ liệu cũ |
+| ECST | 0,1 tới 2 giây | Thấp, chỉ phụ thuộc lúc rebuild | Lưu trữ cộng projection | Luồng ghi cần dữ liệu tham chiếu, throughput cao |
+| Read model tập trung | 0,1 tới 2 giây | Thấp | Một hệ thống lớn | Dashboard, tìm kiếm |
+
+### Lỗi hay gặp
+1. Nhân bản cả aggregate. Triệu chứng: bảng phình, mỗi lần thêm field phải migrate. Cách tránh: chỉ nhân bản field dùng ở đường ghi.
+2. Không có version. Triệu chứng: event cũ ghi đè event mới, dữ liệu lùi. Cách tránh: upsert có điều kiện version.
+3. Không có snapshot. Triệu chứng: service mới replay hàng tuần, không kịp deploy. Cách tránh: snapshot cộng delta.
+4. Không xử lý xoá. Triệu chứng: vi phạm GDPR, dữ liệu chết tồn tại nhiều năm. Cách tránh: event xoá cộng job đối soát.
+5. Dùng bản sao cho quyết định tiền mà không kiểm tra độ mới. Triệu chứng: chênh lệch hạn mức. Cách tránh: kiểm tra {{updated_at}} và fallback API.
+6. Coi bản sao là nguồn sự thật. Triệu chứng: không ai biết sửa dữ liệu ở đâu. Cách tránh: ghi rõ owner trong runbook.
+
+### Ví dụ đời thực
+Order cần {{status}} (ACTIVE hoặc SUSPENDED) và {{tier}} để tính giá. Trước ECST: hai lần gọi customer mỗi request; khi customer deploy, order p99 từ 120 ms lên 900 ms, 3% đơn timeout.
+Sau ECST: bảng {{customer_copy}}, snapshot 2,4 triệu khách, mỗi bản ghi 120 byte nên khoảng 300 MB; delta 12.000 event mỗi ngày; p99 của order còn 95 ms; QPS vào customer giảm từ 8.000 xuống 400; projection lag p95 là 380 ms.
+Rủi ro: khách bị suspend, bản sao cập nhật sau khoảng 0,4 giây, nên order có thể chốt đơn trong 0,4 giây đó. Với đơn trên 10 triệu, order kiểm tra {{updated_at}} cũ hơn hai giây thì gọi API fallback.
+GDPR: 1.800 yêu cầu mỗi năm; thêm event {{CustomerDeleted}} cộng job đối soát hằng tuần; snapshot mã hoá theo {{customer_id}} để xoá key. Kết quả: 0 yêu cầu trễ hạn, 0 bản sao mồ côi sau ba tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Em bắt đầu bằng câu hỏi: order có thực sự cần dữ liệu customer đồng bộ không? Nếu chỉ cần đọc, em dùng cache TTL; nếu cần ở đường ghi và throughput cao, em dùng event-carried state transfer: customer phát event có version, order giữ bảng bản sao chỉ gồm field cần thiết, upsert có điều kiện version để bỏ event cũ và trùng. Service mới khởi động bằng snapshot rồi replay delta từ snapshot version, nên không phải đọc hàng chục triệu event. Em theo dõi projection lag và đánh dấu stale để fallback API cho giao dịch nhạy cảm. Phần em cho là quan trọng nhất là xoá dữ liệu: có event CustomerDeleted, job đối soát xoá bản sao mồ côi, và snapshot mã hoá theo customer để xoá được mà không phải sửa backup. Cuối cùng em ghi rõ trong runbook rằng customer là nguồn sự thật, bản sao chỉ để đọc."
+
+> Senior tip: ECST biến phụ thuộc runtime thành phụ thuộc dữ liệu: rẻ và nhanh, nhưng phải trả bằng độ trễ, lưu trữ và một quy trình rebuild cùng xoá. Đừng nhân bản chỉ vì "cho nhanh"; hãy để số liệu về QPS, p99 và tần suất deploy của service kia quyết định.`,
+  follow: [
+    'Nếu bản sao bị stale 30 giây trong giờ cao điểm, bạn xử lý thế nào cho đơn hàng giá trị lớn?',
+    'Snapshot chứa PII: bạn làm gì để vừa rebuild nhanh vừa xoá được dữ liệu theo GDPR?',
+    'Khi schema của bản sao thay đổi, bạn migrate và rebuild ra sao mà không downtime?'
+  ],
+  tags: ['event-carried state transfer', 'data consistency', 'GDPR', 'Kafka', 'projection']
+},
+{
+  id: 'microservices-079',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'API của bạn có consumer là app mobile: 30% người dùng còn bản hai năm trước và không thể deploy lại app. Bạn versioning và deprecation thế nào để không phá client cũ, và dựa vào số liệu gì để quyết định gỡ một version?',
+  a: `**Tóm tắt:** Với client không kiểm soát được, mỗi version là một **hợp đồng phải giữ tới khi không còn ai dùng**: không đổi ý nghĩa hay kiểu của field cũ, chỉ thêm field optional hoặc endpoint mới, và version mới đi đường riêng (path hoặc header). Muốn gỡ version cũ thì phải đo được còn bao nhiêu người dùng thật sự dùng nó (DAU theo version, không phải số request), thông báo trước sáu tới mười hai tháng bằng header Deprecation và Sunset, rồi mới trả 410 Gone.
+
+### Hiểu nhanh
+Giống như ổ cắm điện: bạn có thể lắp thêm ổ ba chân (version mới) nhưng không được tự ý đổi chân cắm của ổ hai chân, vì hàng triệu thiết bị cũ đang cắm. Muốn gỡ ổ hai chân, bạn phải biết chính xác còn bao nhiêu nhà đang dùng, tức là đo chứ không đoán.
+
+### Vì sao mobile khác service nội bộ
+1. Không thể deploy lại client: version cũ sống một tới ba năm, do review của app store và do người dùng không cập nhật.
+2. Không có chính sách N-1 như service nội bộ.
+3. Lỗi ở client cũ đồng nghĩa với review một sao và mất user, không sửa được bằng hotfix nhanh.
+4. Telemetry phụ thuộc client: bản cũ có thể không gửi header version.
+
+### Chiến lược versioning
+| Cách | Ưu | Nhược |
+|---|---|---|
+| URI /v1, /v2 | Dễ route, dễ đo, dễ cache | Nhân đôi code, link rải rác |
+| Header version | URL sạch | Khó test bằng trình duyệt |
+| Content negotiation | Đúng tinh thần REST | Tooling kém |
+| Chỉ additive, không version | Rẻ nhất, không phá ai | Không đổi được ý nghĩa field |
+| Version theo capability, server quyết theo app version | Bật tắt hành vi theo client mà không cần URL mới | Logic phân tán, phải test nhiều tổ hợp |
+
+- Mặc định: **không version, chỉ additive**. Chỉ tạo version mới khi buộc phải phá.
+- Khi buộc: version mới ở path riêng, ví dụ {{/v2/orders}}, giữ {{/v1}} nguyên vẹn.
+
+### Nguyên tắc chỉ thêm (từng bước)
+1. Thêm field optional; không đổi kiểu, đơn vị hay ý nghĩa field cũ. Đổi giá từ số nguyên sang chuỗi là phá; đổi {{total}} từ gồm thuế sang chưa thuế là phá ngầm.
+2. Thêm endpoint mới thay vì đổi endpoint cũ.
+3. Enum: thêm giá trị mới là phá với client cũ đã release mà không có {{default}}. Nếu bắt buộc, thêm field mới (ví dụ {{statusV2}}) và giữ {{status}} cũ.
+4. Field bắt buộc mới: không được, vì client cũ không gửi. Dùng field optional cộng giá trị mặc định phía server.
+5. Chuyển đổi dữ liệu: giữ cả hai trong ít nhất một release, theo thứ tự expand, migrate, contract (câu 014).
+
+### Đo usage (vì sao phải đo)
+- Gateway log theo path, {{X-App-Version}}, {{User-Agent}} và status, rồi tạo metric {{api_requests_total}} theo version và endpoint.
+- Client cũ không gửi header thì parse {{User-Agent}} (ví dụ MyApp/4.2.1), hoặc suy ra từ app store build nếu có.
+- Đo theo **DAU theo version**, tức số người dùng khác nhau, không chỉ số request: một user tạo ra hàng nghìn request.
+- Ngưỡng gỡ gợi ý: version dưới 0,5% DAU trong bốn tuần liên tiếp và không có user hoạt động trong 30 ngày; con số cụ thể do business quyết.
+
+### Quy trình sunset (từng bước)
+1. Gửi header {{Deprecation}} và {{Sunset}} (RFC 8594, dạng HTTP-date) trên response của version cũ.
+2. Thông báo qua email, in-app, changelog và trang developer; công bố ngày gỡ cụ thể.
+3. Theo dõi DAU theo version hằng tuần; gia hạn nếu còn nhóm lớn.
+4. Sau ngày sunset: trả {{410 Gone}} kèm link hướng dẫn nâng cấp; không trả 404, để client biết nguyên nhân là version.
+5. Giữ log để đối soát và hỗ trợ khách hàng.
+
+~~~java
+@Component
+public class VersionTelemetry implements HandlerInterceptor {
+    private final MeterRegistry registry;
+    @Override
+    public boolean preHandle(HttpServletRequest req, HttpServletResponse res, Object h) {
+        String v = req.getHeader("X-App-Version");
+        if (v == null) v = parseUserAgent(req.getHeader("User-Agent"));   // client cũ không gửi header
+        Counter.builder("api.requests").tag("version", v)
+               .tag("endpoint", req.getRequestURI()).register(registry).increment();
+        if (isSunsetting(v)) {                       // ví dụ app dưới 5.0
+            res.setHeader("Deprecation", "true");
+            res.setHeader("Sunset", "Wed, 01 Jul 2026 00:00:00 GMT");
+        }
+        return true;
+    }
+}
+~~~
+
+Interceptor này phải được đăng ký qua WebMvcConfigurer; nó chỉ đọc header và ghi metric, không thay đổi response nghiệp vụ.
+
+### Lỗi hay gặp
+1. Đổi ý nghĩa field, tức breaking ngầm. Triệu chứng: client cũ vẫn chạy nhưng hiển thị sai. Cách tránh: thêm field mới, không đổi field cũ.
+2. Thêm giá trị enum mới. Triệu chứng: client cũ crash hoặc lỗi deserialize. Cách tránh: field mới cộng enum riêng.
+3. Gỡ theo cảm tính vì một user ồn ào. Triệu chứng: mất user và review xấu. Cách tránh: theo DAU và số liệu.
+4. Đo theo request thay vì DAU. Triệu chứng: tưởng còn nhiều user nhưng thực tế chỉ vài user gọi nhiều.
+5. Không có telemetry cho client cũ. Triệu chứng: không biết còn ai dùng. Cách tránh: parse User-Agent và log ở gateway.
+6. Giữ version cũ mãi mãi. Triệu chứng: mỗi version là một code path phải test, vá bảo mật và làm chậm mọi thay đổi. Cách tránh: đặt ngày gỡ và theo dõi.
+
+### Ví dụ đời thực
+Một fintech có 2,1 triệu user và 5 version đang sống. Đổi {{GET /accounts/:id/balance}}: thêm {{availableBalanceV2}} là object có amount và currency, giữ {{availableBalance}} là số. Nhưng một thay đổi bị bỏ sót: {{status}} thêm giá trị {{FROZEN_PENDING}}; client 3.x chiếm 18% DAU và không có case này, nên crash khi mở màn hình tài khoản. Crash report tăng bốn lần trong hai giờ. Hotfix app phải qua review ba ngày, nên team fix ở server: filter theo {{X-App-Version}}, client dưới 4.2 không nhận giá trị mới (nhận {{FROZEN}}), client từ 4.2 nhận {{statusV2}}.
+Sau đó team dựng dashboard DAU theo version, sunset client dưới 3.0 (0,3% DAU) sau sáu tháng thông báo. Kết quả: crash do API giảm 92%, số version phải maintain từ 5 xuống 2, thời gian phát hành feature nhanh hơn vì không phải test năm tổ hợp.
+
+### Trả lời mẫu khi phỏng vấn
+"Với client mobile em không giả định deploy lại được, nên mỗi version là một hợp đồng. Em mặc định chỉ thêm: field optional, endpoint mới, không đổi kiểu và ý nghĩa field cũ; enum mới là breaking với client cũ nên em thêm field mới thay vì mở rộng enum. Khi buộc phải phá, em tạo version ở path riêng và giữ bản cũ. Việc em làm trước tiên là telemetry: gateway log theo path, X-App-Version và User-Agent, rồi dashboard DAU theo version, vì số request không nói lên còn bao nhiêu người dùng thật. Em gửi Deprecation và Sunset, thông báo qua email và in-app trước sáu tháng, theo dõi DAU hằng tuần, rồi mới trả 410 Gone kèm hướng dẫn nâng cấp. Kinh nghiệm của em là một thay đổi enum tưởng nhỏ có thể làm crash 18% user, và khi đó chỉ server mới cứu được vì app store mất vài ngày."
+
+> Senior tip: với client không kiểm soát được, breaking change là lỗi quy trình chứ không phải lỗi kỹ thuật. Không có telemetry theo version cộng DAU và một ngày gỡ cụ thể, bạn sẽ giữ version cũ mãi mãi; mà mỗi version là một khoản lãi kép phải trả mỗi sprint.`,
+  follow: [
+    'Nếu business yêu cầu đổi ý nghĩa một field đang có, ví dụ total từ gồm thuế thành chưa thuế, bạn làm gì?',
+    'Bạn đo DAU theo version thế nào khi client cũ không gửi header version?',
+    'Khi nào bạn từ chối tạo version mới và chọn cách khác?'
+  ],
+  tags: ['API versioning', 'mobile', 'deprecation', 'sunset', 'telemetry'],
+  refs: [
+    { type: 'doc', title: 'RFC 8594: The Sunset HTTP Header Field', url: 'https://www.rfc-editor.org/rfc/rfc8594' }
+  ]
+},
+{
+  id: 'microservices-080',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Đặt timeout thế nào cho đúng? Vì sao "lấy p99 rồi nhân đôi" hay "mặc định 5 giây cho mọi hop" đều sai, và budget phải chia ra sao giữa HTTP client, HikariCP, JDBC và Kafka? Bạn dựa vào số liệu nào?',
+  a: `**Tóm tắt:** Timeout là **quyết định về cái giá của việc chờ**, không phải một hằng số. Tôi đặt theo phân phối latency thật của từng hop (p99 và p99.9), trừ thời gian đã tiêu, rồi chia budget xuống từng tầng: connect, lấy connection từ pool, chờ lock, chạy câu lệnh, đọc response. Quy tắc: timeout của tầng trên phải nhỏ hơn tổng thời gian xấu nhất của tầng dưới, và timeout chỉ có tác dụng khi có giới hạn concurrency (bulkhead); không thì timeout chỉ biến "chậm" thành "lỗi hàng loạt".
+
+### Hiểu nhanh
+Bạn nói với shipper "năm phút không tới thì tôi huỷ". Nhưng shipper còn phải xếp hàng ở bãi (lấy connection), chờ đồng nghiệp (lock), rồi mới chạy (query). Nếu bạn chỉ tính từ lúc shipper bắt đầu chạy, bạn sẽ đợi năm phút cộng thời gian xếp hàng. Ngược lại, nếu bạn đặt ba mươi phút, bạn giữ bàn và giữ shipper vô ích.
+
+### Vì sao "p99 nhân đôi" sai
+1. p99 là 200 ms nhưng p99.9 là 2 giây: đặt 400 ms thì 0,1% request timeout; ở 10.000 request mỗi giây là 10 request lỗi mỗi giây, đủ để user phàn nàn.
+2. Khi hệ thống quá tải, phân phối thay đổi: p99 tăng gấp mười lần, nên timeout cố định không theo được.
+3. Timeout phải tính theo **budget còn lại của caller**, không theo latency tuyệt đối của downstream.
+
+### Chọn timeout theo số liệu (từng bước)
+1. Đo latency theo hop, theo endpoint, theo percentile (p50, p95, p99, p99.9), theo giờ và theo phiên bản.
+2. Xác định SLO từ phía user, ví dụ checkout p99 dưới 800 ms.
+3. Chia budget: gateway 100 ms, order 200 ms, payment 300 ms, DB 150 ms; tổng phải nhỏ hơn SLO.
+4. Mỗi tầng: timeout bằng min của budget còn lại, p99.9 của dependency nhân hệ số an toàn, và một trần cứng.
+5. Sau mỗi lần deploy: đo tỷ lệ timeout, retry và error, rồi tăng hoặc giảm theo dữ liệu.
+
+### Bốn tầng hay bị bỏ sót
+| Tầng | Tham số | Mặc định thường gặp | Hậu quả nếu bỏ |
+|---|---|---|---|
+| Connect | connectTimeout của HTTP client | Nhiều client không đặt | Kẹt ở bước bắt tay TCP |
+| Lấy connection | Hikari {{connectionTimeout}} | 30.000 ms | Hàng trăm thread chờ 30 giây |
+| Chờ lock | PostgreSQL {{lock_timeout}} | 0, tức vô hạn | Một transaction giữ lock làm cả hệ thống đứng |
+| Chạy câu lệnh | {{statement_timeout}}, {{query.timeout}} | 0, tức vô hạn | Query chạy mười phút, giữ connection |
+| Đọc response | responseTimeout của client | Nhiều client không đặt | Chờ vô hạn |
+
+- Hikari {{connectionTimeout}} mặc định 30 giây: nếu timeout HTTP là 2 giây mà pool cạn thì request đã bị caller huỷ từ lâu, nhưng thread vẫn chờ 30 giây, làm thread pool cạn trước.
+- PostgreSQL {{statement_timeout}} mặc định là 0, tức không giới hạn; nên đặt ở cấp role hoặc session để có một trần an toàn.
+
+### Vì sao timeout không chữa quá tải (Little's law)
+- Little's law: {{L = lambda × W}}, tức số request đồng thời bằng tần suất nhân thời gian mỗi request.
+- Với 800 request mỗi giây và W bằng 400 ms thì L bằng 320. Pool 50 nghĩa là 270 request xếp hàng; thời gian chờ trung bình là 270 chia 800, khoảng 337 ms.
+- Nếu timeout là 200 ms thì **toàn bộ** request xếp hàng timeout, nhưng chúng vẫn giữ connection khi chạy, nên pool vẫn cạn. Timeout biến "chậm" thành "lỗi", không tăng năng lực.
+- Muốn tăng năng lực: tăng pool có kiểm soát theo số core của DB, giảm W bằng index và cache, hoặc giảm tải bằng load shedding và trả 429.
+
+~~~text
+800 req/s, W = 400 ms   ->  L = 800 x 0,4 = 320 request đồng thời
+pool = 50               ->  270 request xếp hàng
+thời gian chờ           ->  270 / 800 = 337 ms
+timeout 200 ms          ->  request xếp hàng timeout hàng loạt, pool vẫn cạn
+~~~
+
+### Cấu hình theo budget
+~~~yaml
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 50
+      connection-timeout: 250        # ms: chờ lấy connection, mặc định 30 giây
+      validation-timeout: 1000
+  jpa:
+    properties:
+      jakarta.persistence.query.timeout: 400   # ms: thời gian chạy truy vấn
+# PostgreSQL: đặt trần ở tầng DB, không phụ thuộc ORM
+# ALTER ROLE app SET statement_timeout = '800ms';
+# ALTER ROLE app SET lock_timeout = '300ms';
+~~~
+
+### Bảng trade-off
+| Cách đặt timeout | Ưu | Nhược |
+|---|---|---|
+| Cố định theo cảm tính | Dễ, nhanh | Không theo tải, thường quá dài hoặc quá ngắn |
+| p99 nhân đôi | Có cơ sở thống kê | Bỏ đuôi p99.9, không theo budget |
+| Theo SLO cộng budget còn lại | Đúng bài toán, fail fast | Cần đo và duy trì theo phiên bản |
+| Không timeout | Không bao giờ lỗi timeout | Cạn thread và connection, sập dây chuyền |
+
+### Lỗi hay gặp
+1. Chỉ đặt read timeout, quên connect và queue. Triệu chứng: request kẹt trước khi gửi. Cách tránh: đặt đủ bốn tầng.
+2. {{connectionTimeout}} 30 giây lớn hơn HTTP timeout 2 giây. Triệu chứng: thread chờ vô ích. Cách tránh: đặt theo budget.
+3. {{statement_timeout}} bằng 0. Triệu chứng: query xấu giữ connection. Cách tránh: đặt trần ở DB.
+4. Timeout tầng trên dài hơn tầng dưới. Triệu chứng: tầng dưới timeout trước, tầng trên không biết. Cách tránh: giảm dần theo chiều sâu (câu 025).
+5. Không có metric timeout theo tầng. Triệu chứng: không biết đặt đúng hay sai. Cách tránh: đo theo từng tham số.
+6. Tăng timeout mỗi lần sự cố thay vì sửa nguyên nhân. Triệu chứng: sự cố lặp lại. Cách tránh: tìm thiếu index, pool nhỏ, hoặc lock dài.
+
+### Ví dụ đời thực
+Checkout chạy 800 request mỗi giây, SLO p99 là 800 ms. Hikari pool 50, {{connectionTimeout}} mặc định 30 giây, không đặt {{statement_timeout}}, WebClient không đặt response timeout.
+Một query khuyến mãi thiếu index làm thời gian từ 20 ms lên 1,8 giây. Connection bị giữ 1,8 giây, nên L bằng 800 nhân 1,8, tức 1.440; 1.390 request xếp hàng, thời gian chờ khoảng 1,7 giây, vượt SLO. Nhưng vì {{connectionTimeout}} là 30 giây, 200 thread Tomcat vẫn chờ connection thay vì fail nhanh, nên pool cạn trong khoảng 15 giây; healthcheck fail, pod restart, cold cache, rồi sập dây chuyền.
+Điều tra: {{hikaricp.connections.pending}} bằng 1.390; {{hikaricp.connections.acquire}} p99 bằng 8,2 giây; {{pg_stat_activity}} có 50 connection chạy cùng một query; log không có thông báo {{statement_timeout}}.
+Xử lý: thêm index (1,8 giây về 15 ms); {{connectionTimeout}} 250 ms; {{statement_timeout}} 800 ms; WebClient response timeout 600 ms; bulkhead 60 cho khuyến mãi; trả 429 khi pending vượt 80% pool.
+Kết quả: p99 checkout còn 620 ms; tỷ lệ timeout 0,15%; không còn pod restart. Khi khuyến mãi chậm lại trong một deploy sau, hệ thống trả 429 trong 300 ms thay vì sập.
+
+### Trả lời mẫu khi phỏng vấn
+"Em không đặt timeout theo cảm tính. Em đo latency từng hop theo p99 và p99.9, rồi chia budget từ SLO của user: ví dụ checkout 800 ms thì gateway 100, order 200, payment 300, DB 150. Mỗi tầng em lấy min của budget còn lại, p99.9 của dependency nhân hệ số an toàn và một trần cứng. Em đặt timeout ở cả bốn tầng hay bị bỏ sót: connect, lấy connection từ Hikari, lock và câu lệnh; mặc định connectionTimeout 30 giây là quá dài so với timeout HTTP 2 giây, nên thread vẫn chờ khi caller đã bỏ. Quan trọng nhất, em hiểu timeout không chữa quá tải: theo Little's law, 800 request mỗi giây với thời gian giữ connection 400 ms cần 320 connection đồng thời, pool 50 sẽ xếp hàng 270 request và chờ khoảng 337 ms. Vì vậy em ghép timeout với bulkhead và load shedding, và đo tỷ lệ timeout theo tầng sau mỗi lần đổi."
+
+> Senior tip: timeout là một quyết định kinh doanh: bạn đang đổi bao nhiêu phần trăm lỗi để lấy bao nhiêu latency. Hãy đo theo tầng, đặt nhỏ hơn budget còn lại, và luôn ghép với bulkhead; nếu không, bạn chỉ đổi "chậm" thành "lỗi hàng loạt".`,
+  follow: [
+    'Bạn chọn maximum-pool-size của Hikari dựa vào số liệu nào, và vì sao pool lớn hơn không luôn nhanh hơn?',
+    'Làm sao đo được thời gian chờ lấy connection tách khỏi thời gian chạy câu lệnh?',
+    'Khi downstream chậm, bạn thà timeout hay thà trả dữ liệu cũ? Căn cứ nào để quyết?'
+  ],
+  tags: ['timeout', 'HikariCP', 'little-law', 'SLO', 'bulkhead'],
+  refs: [
+    { type: 'doc', title: 'HikariCP: configuration knobs', url: 'https://github.com/brettwooldridge/HikariCP' },
+    { type: 'doc', title: 'PostgreSQL: client connection defaults', url: 'https://www.postgresql.org/docs/current/runtime-config-client.html' }
+  ]
+},
+{
+  id: 'microservices-081',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Bạn nói hệ thống có exactly-once effect. Làm sao chứng minh điều đó trước khi lên production và sau khi lên? Thiết kế test bơm trùng, test crash giữa transaction, test replay, và những metric nào cho thấy nó đúng?',
+  a: `**Tóm tắt:** Exactly-once là tuyên bố về **hành vi hiếm gặp** (crash đúng lúc, retry, rebalance, replay), nên không thể chứng minh bằng vài request may mắn. Phải có bốn lớp: test bơm trùng có chủ đích, test crash đúng điểm giữa side effect và commit, test replay DLT, và reconciliation trên production. Sau khi lên, hai metric quan trọng nhất là **duplicate rate** (số event bị dedup chặn) và **reconciliation diff** (số bản ghi lệch); không có hai số này thì bạn chỉ đang may.
+
+### Hiểu nhanh
+Bạn nói "tôi không bao giờ quên khoá cửa". Đứng ở cửa một tuần không chứng minh được gì. Thuyết phục hơn là nhờ người thử mở cửa một trăm lần vào đúng lúc bạn đang cầm chìa khoá, và rút điện thoại của bạn đúng lúc bạn đang bấm nút khoá.
+
+### Vì sao test thường bỏ sót
+1. Duplicate thật xảy ra khi pod bị kill giữa transaction, khi rebalance, khi retry, khi replay và khi timeout mạng.
+2. Happy path không có crash, không có duplicate, nên luôn xanh.
+3. Race chỉ lộ ở đúng interleaving; chạy một nghìn lần có thể vẫn không gặp.
+4. Môi trường test khác production: một consumer, một pod, không rebalance.
+
+### Bốn lớp kiểm chứng
+| Lớp | Làm gì | Bắt được | Không bắt được |
+|---|---|---|---|
+| Happy path | Gửi một message, assert một bản ghi | Logic cơ bản | Crash, race |
+| Bơm trùng | Gửi cùng event id mười lần | Dedup | Mất do commit trước |
+| Crash test | Kill giữa side effect và commit | Mất hoặc lặp khi crash | Lỗi mạng giữa các service |
+| Replay test | Đưa message đã xử lý vào DLT rồi replay | Side effect lần hai | Payload thiếu field |
+| Reconciliation | So sánh nguồn và đích theo cửa sổ thời gian | Lệch thật trên production | Nguyên nhân gốc |
+
+### Bơm trùng (code)
+~~~java
+@Test
+void duplicateEventsProduceOneLedgerEntry() throws Exception {
+    var evt = """
+        {"eventId":"e-1","orderId":"o-1","amount":100}""";
+    template.send("payment.captured", "o-1", evt);        // lần 1
+    template.send("payment.captured", "o-1", evt);        // lần 2: cùng event id
+    template.send("payment.captured", "o-1", evt);        // lần 3
+    await().atMost(10, TimeUnit.SECONDS)
+           .untilAsserted(() -> assertThat(ledgerRepo.countByOrderId("o-1")).isEqualTo(1));
+    assertThat(mailOutbox.count()).isZero();              // không gửi email lần hai
+}
+~~~
+
+### Crash test (code)
+~~~java
+// Consumer thật; crash = ném lỗi sau khi ghi DB, trước khi container commit offset
+AtomicBoolean crash = new AtomicBoolean(true);
+
+@KafkaListener(topics = "payment.captured", groupId = "ledger-it")
+@Transactional
+public void on(String payload) {
+    ledgerRepo.insert(parse(payload));                    // side effect đã xảy ra
+    if (crash.get()) throw new IllegalStateException("boom: chưa commit offset");
+}
+// test: crash=true, gửi 1 message, assert DB có 1 dòng và offset CHƯA commit
+//       crash=false, restart container, assert DB vẫn đúng 1 dòng (dedup chặn)
+~~~
+
+- Điểm mấu chốt là assert **sau khi restart**, không phải ngay sau exception. Lỗi ngay sau exception chỉ chứng minh transaction rollback, không chứng minh hành vi khi đọc lại.
+- Có thể mô phỏng kill thật bằng Testcontainers: chạy consumer trong container, kill container đúng lúc, rồi khởi động lại. Đắt hơn nhưng gần production hơn.
+
+### Replay test (code)
+~~~java
+@Test
+void replayingProcessedEventHasNoSecondEffect() throws Exception {
+    var evt = """
+        {"eventId":"e-1","orderId":"o-1","amount":100}""";
+    template.send("payment.captured", "o-1", evt);
+    await().untilAsserted(() -> assertThat(ledgerRepo.countByOrderId("o-1")).isEqualTo(1));
+    template.send("payment.captured.DLT", "o-1", evt);    // replay: đưa lại message cũ
+    await().pollDelay(3, TimeUnit.SECONDS).atMost(8, TimeUnit.SECONDS)
+          .untilAsserted(() -> assertThat(ledgerRepo.countByOrderId("o-1")).isEqualTo(1));
+    assertThat(mailOutbox.count()).isZero();
+}
+~~~
+
+### Metric trên production
+| Metric | Ý nghĩa | Ngưỡng gợi ý |
+|---|---|---|
+| {{duplicate_blocked_total}} | Số event bị dedup chặn | Trên 0 là bình thường; tăng gấp mười là bất thường |
+| {{consumer_lag}} theo partition | Đang tụt lại bao nhiêu | Theo SLO, ví dụ dưới 5.000 |
+| {{dlt_messages_total}} theo exception | Lỗi không xử lý được | Bằng 0 |
+| {{outbox_relay_lag}} | Trễ từ outbox tới publish | p99 dưới 2 giây |
+| {{reconciliation_diff}} | Số bản ghi lệch so với nguồn | Bằng 0 |
+| {{commit_failed_total}} | Commit offset bị từ chối | Bằng 0 |
+
+- {{duplicate_blocked_total}} lớn hơn 0 là **tốt**: nó chứng minh dedup đang hoạt động. Nếu bằng 0 tuyệt đối trong hệ thống có retry thì hãy kiểm tra xem dedup có chạy không.
+
+### Reconciliation (vì sao cần)
+- Test chỉ chứng minh trong môi trường test; production có dữ liệu thật, deploy thật và client thật.
+- Job hằng đêm: đếm {{count(*)}}, {{sum(amount)}} và hash theo cửa sổ một giờ ở nguồn (outbox) và đích (ledger), so sánh; lệch thì alert và giữ chi tiết để điều tra.
+- Dùng bảng tổng hợp theo giờ thay vì so từng dòng: hai mươi triệu dòng mỗi ngày thì so trực tiếp quá đắt.
+
+### Lỗi hay gặp
+1. Chỉ assert "không exception". Triệu chứng: test xanh nhưng vẫn mất dữ liệu. Cách tránh: assert số bản ghi và side effect.
+2. Dedup chỉ ở một consumer, consumer khác không có. Triệu chứng: một luồng vẫn lặp. Cách tránh: kiểm tra mọi consumer ghi DB.
+3. Inbox bị dọn quá sớm, ví dụ TTL một ngày, trong khi replay sau ba ngày. Triệu chứng: lặp quay lại. Cách tránh: TTL lớn hơn thời gian replay và retention.
+4. Event id sinh ở consumer, mỗi lần đọc là một id mới. Triệu chứng: dedup vô dụng. Cách tránh: id do producer sinh và giữ nguyên trong payload.
+5. Không đo duplicate rate. Triệu chứng: không biết đang chặn bao nhiêu. Cách tránh: metric cộng dashboard.
+6. Test dùng H2 trong khi production dùng PostgreSQL. Triệu chứng: hành vi {{ON CONFLICT}} và isolation khác nhau. Cách tránh: Testcontainers với đúng phiên bản DB.
+
+### Ví dụ đời thực
+Ledger chạy 20 triệu giao dịch mỗi ngày. Happy path xanh 100% trong sáu tháng, nhưng production có 0,35% dòng trùng.
+Điều tra: thêm {{duplicate_blocked_total}} (đo được 0,35%) và log event id lặp; viết crash test thì lộ bug thứ hai: {{MANUAL_IMMEDIATE}} ack trước commit làm mất 0,02%, tức khoảng 2.400 giao dịch.
+Sau khi sửa (BATCH cộng @Transactional cộng dedup) và thêm ba lớp test: số dòng trùng trong DB về 0; số event bị dedup chặn 0,02%; số giao dịch thiếu về 0; {{reconciliation_diff}} bằng 0 trong 60 ngày.
+Chi phí: hai ngày viết test, tiết kiệm khoảng 40 giờ xử lý sự cố mỗi năm; bug thứ hai chỉ crash test bắt được, sáu tháng happy path không thấy.
+
+### Trả lời mẫu khi phỏng vấn
+"Em không chứng minh exactly-once bằng cách chạy vài request. Em viết bốn lớp test: bơm cùng event id nhiều lần để kiểm tra dedup; crash test ném lỗi sau khi ghi DB nhưng trước khi commit offset, rồi restart và assert sau restart; replay test đưa message cũ vào DLT; và reconciliation so sánh nguồn với đích theo cửa sổ giờ. Trên production em theo dõi duplicate_blocked_total, commit_failed_total, consumer lag và reconciliation_diff. Điểm em muốn nhấn mạnh là duplicate_blocked_total lớn hơn 0 là dấu hiệu tốt, vì nó chứng minh dedup đang chặn; còn reconciliation_diff phải bằng 0. Em cũng kiểm tra event id do producer sinh chứ không phải consumer, và TTL của inbox dài hơn thời gian replay, vì nếu không thì dedup chỉ là hình thức. Lần trước crash test bắt được bug ack trước commit làm mất 0,02% giao dịch, điều mà sáu tháng test happy path không thấy."
+
+> Senior tip: exactly-once là một tuyên bố, không phải một dòng cấu hình. Hãy viết test cố tình làm nó sai: bơm trùng, kill giữa transaction, replay; rồi đo duplicate rate và reconciliation diff trên production. Thiếu hai metric đó, bạn không biết mình đúng hay chỉ đang may.`,
+  follow: [
+    'Bạn thiết kế crash test thế nào cho consumer chạy trong Kubernetes, tức là kill pod thật?',
+    'Reconciliation giữa outbox và ledger: so từng dòng hay tổng hợp theo giờ? Trade-off?',
+    'Nếu {{duplicate_blocked_total}} tăng gấp mười lần, bạn nghi ngờ điều gì và kiểm tra ở đâu?'
+  ],
+  tags: ['exactly-once', 'testing', 'reconciliation', 'Kafka', 'idempotency'],
+  refs: [
+    { type: 'doc', title: 'Spring Kafka reference: testing applications', url: 'https://docs.spring.io/spring-kafka/reference/testing.html' },
+    { type: 'doc', title: 'Testcontainers: Kafka module', url: 'https://java.testcontainers.org/modules/kafka/' }
+  ]
+},
 );
