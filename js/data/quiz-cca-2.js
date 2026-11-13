@@ -1052,4 +1052,204 @@ Mở một tác vụ thực sự trong thư mục package, xem các file hướn
 
 > Sau refactor thư mục, cập nhật cả import path, scoped rules và nested instructions; đường dẫn cũ thường tạo lỗi cấu hình âm thầm.`
 },
+{
+  id: 'qz-ccaf-046',
+  topic: 'claude',
+  q: '[Claude Code Configuration] A team uses Claude Code on a repository that contains production deployment scripts. Developers still need normal commands such as tests and builds. Which permission setup is the safest starting point?',
+  options: [
+    'Allow all shell commands silently because developers review Claude output afterward',
+    'Run read-only commands automatically, but ask before commands that change systems or delete data, and deny the most destructive ones',
+    'Put "ask before production commands" in CLAUDE.md and leave all shell permissions unrestricted',
+    'Disable all shell automation and run every command manually'
+  ],
+  answer: 1,
+  explain: `**Đúng: cặn kèm quyền cho lệnh phá hủy, chỉ cho phép lệnh cần thiết.** Permission rule trong {{settings.json}} quyết định công cụ nào được chạy tự động, hỏi hay từ chối. Cho phép lệnh chỉ đọc chạy tự động nhưng hỏi trước khi chạy lệnh thay đổi hệ thống hoặc xóa dữ liệu, đồng thời từ chối những lệnh phá hủy nhất, là nguyên tắc quyền tối thiểu: chỉ cấp đủ để làm việc và hạn chế thiệt hại nếu prompt sai hoặc tệp bị thay đổi.
+
+### Vì sao các lựa chọn khác sai
+- **Cho phép mọi lệnh shell im lặng:** một lỗi trong prompt hoặc tệp bị thay đổi có thể dẫn đến lệnh nguy hiểm chạy ngoài ý định; xem xét sau khi chạy không ngăn thiệt hại đã xảy ra.
+- **Chỉ ghi nhắc vào CLAUDE.md:** văn bản hướng dẫn không ép engine quyền; Claude vẫn có thể quên và chạy lệnh phá hủy.
+- **Tắt hoàn toàn tự động hóa shell:** làm mất khả năng hợp lý như chạy test và build, và không phân biệt lệnh an toàn với lệnh nguy hiểm.
+
+> Thuật ngữ: "permission allow/deny/ask" là danh sách cho phép, từ chối hoặc hỏi trước khi chạy công cụ theo cấu hình. Kiểm thử quy tắc deny trên môi trường thử trước khi áp dụng trong production.`
+},
+{
+  id: 'qz-ccaf-047',
+  topic: 'claude',
+  q: '[Claude Code Configuration] In a long Claude Code session, the model starts forgetting instructions given at the beginning. What should the team do?',
+  options: [
+    'Keep repeating the same instructions in every message so the model cannot forget',
+    'Assume context is unlimited and continue without changes',
+    'Save important decisions and conventions into project CLAUDE.md, or start a new session with a concise summary, instead of relying on memory',
+    'Put all past conversation into permission rules so it is always remembered'
+  ],
+  answer: 2,
+  explain: `**Đúng: ghi quyết định quan trọng vào CLAUDE.md hoặc mở phiên mới với bản tóm tắt.** Ngữ cảnh của một phiên không phải vô hạn; khi quá dài, mô hình có thể quên hướng dẫn ban đầu. Lưu quy ước và quyết định kiến trúc vào {{CLAUDE.md}} (được nạp mỗi phiên) hoặc bắt đầu phiên mới với bản tóm tắt ngắn giúp tính nhất quán mà không dựa vào trí nhớ mô hình.
+
+### Vì sao các lựa chọn khác sai
+- **Lặp lại mọi tin nhắn:** làm context dài hơn mà không giải quyết gốc rễ, và vẫn có thể bỏ sót hướng dẫn quan trọng.
+- **Giả định ngữ cảnh không giới hạn:** ngữ cảnh có kích thước giới hạn; khi vượt quá, đoạn đầu sẽ bị lược bỏ.
+- **Đưa cuộc trò chuyện vào permission rules:** permission kiểm soát hành động công cụ, không lưu lịch hội thoại.
+
+> Thuật ngữ: ngữ cảnh (context) là phần nội dung mô hình đọc khi trả lời; nó bị giới hạn kích thước, nên hãy trích yếu vào tệp hướng dẫn thay vì nhớ tất cả trong cuộc trò chuyện.`
+},
+{
+  id: 'qz-ccaf-048',
+  topic: 'claude',
+  q: '[Claude Code Configuration] A post-edit hook that runs a formatter sometimes fails due to an environment issue. The team wants edits to keep flowing. Which handling is safer?',
+  options: [
+    'Treat a hook error as success so edits are never blocked',
+    'Remove the hook entirely and rely on the model to remember formatting',
+    'Run the hook after every tool call so it eventually catches everything',
+    'Let the hook fail closed: surface the error, require the team to fix or explicitly bypass the hook, and do not silently skip the check'
+  ],
+  answer: 3,
+  explain: `**Đúng: khi hook lỗi thì giữ trạng thái hạn chế, không thụt lỡ.** Hook là tự động hóa gắn với sự kiện công cụ. Nếu bỏ qua lỗi hook một cách im lặng, kiểm định như định dạng hay quét bảo mật sẽ không bao giờ chạy thực sự và các vấn đề sẽ lọt qua. Gặp lỗi, hãy hiện thông báo, sửa môi trường hoặc chọn bỏ qua có ý thức thay vì giả thành công.
+
+### Vì sao các lựa chọn khác sai
+- **Xem lỗi hook thành thành công:** che giấu việc kiểm định không chạy; lỗi sẽ được phát hiện muộn hơn.
+- **Gỡ hook hoàn toàn:** mất tự động hóa cần thiết và còn phụ thuộc trí nhớ của mô hình.
+- **Chạy hook sau mọi công cụ:** hook chạy quá thường xuyên làm chậm hệ thống, không phải cách sửa lỗi môi trường.
+
+> Thuật ngữ: "fail closed" là khi xảy ra lỗi hoặc không rõ ràng, giữ trạng thái hạn chế/an toàn thay vì tự mở. Ghi log đủ để sửa hook, nhưng tránh in bí mật vào log hook.`
+},
+{
+  id: 'qz-ccaf-049',
+  topic: 'claude',
+  q: '[Claude Code Configuration] Two developers use separate Claude Code sessions to edit the same source file at the same time. What is the main risk and the best way to handle it?',
+  options: [
+    'Both sessions may overwrite each other; serialize work, review diffs, and communicate before editing shared files',
+    'Claude Code automatically merges edits from both sessions, so no coordination is needed',
+    'Ask the second Claude session to ignore the first session changes automatically',
+    'Put the file into CLAUDE.local.md so only one developer can edit it'
+  ],
+  answer: 0,
+  explain: `**Đúng: hai phiên có thể ghi đè lẫn nhau.** Mỗi phiên Claude Code có ngữ cảnh riêng và không khóa tệp cho phiên khác. Nếu hai người chỉnh sửa cùng tệp, bản lưu sau có thể làm mất chỉnh sửa trước. Cách an toàn là tuần tự hóa công việc, xem xét diff trước khi đồng bộ và giao tiếp trước khi sửa tệp chung.
+
+### Vì sao các lựa chọn khác sai
+- **Gộp tự động:** Claude Code không tự động hợp nhất chỉnh sửa từ nhiều phiên; người dùng phải tự xử lý xung đột.
+- **Bỏ qua phiên trước:** không có cơ chế tự động biết phiên khác đã đổi gì, nên có thể ghi đè không hay biết.
+- **CLAUDE.local.md:** đây là tệp hướng dẫn local, không phải cơ chế khóa tệp hay phân quyền chỉnh sửa.
+
+> Xem xét diff sau mỗi lần Claude Code sửa tệp được chia sẻ, và ưu tiên làm việc tuần tự trên cùng một tệp quan trọng.`
+},
+{
+  id: 'qz-ccaf-050',
+  topic: 'claude',
+  q: '[Claude Code Configuration] A team wants Claude Code to spend more analysis effort on complex architecture changes but less on simple formatting tasks. Which guideline fits best?',
+  options: [
+    'Use maximum analysis effort for every task, simple or complex, so nothing is missed',
+    'Disable analysis entirely and let Claude reply immediately for all tasks',
+    'Match analysis effort to task complexity: deeper analysis for architecture and security decisions, lighter effort for routine formatting',
+    'Ask the model to promise it analyzed deeply before every answer'
+  ],
+  answer: 2,
+  explain: `**Đúng: căn chỉnh công sức phân tích với độ phức tạp của tác vụ.** Quyết định kiến trúc và bảo mật có chi phí sai lầm cao, nên dành thời gian phân tích nhiều hơn (xem xét phụ thuộc, kịch bản lỗi, phương án thay thế); công việc định dạng thường ngày không cần phân tích sâu. Cách này cân bằng chất lượng với thời gian và chi phí chạy mô hình.
+
+### Vì sao các lựa chọn khác sai
+- **Tối đa phân tích mọi tác vụ:** tốn tài nguyên và làm chậm những việc đơn giản mà không mang lại lợi ích thực.
+- **Tắt hoàn toàn phân tích:** bỏ qua việc xem xét rủi ro đối với quyết định quan trọng.
+- **Hứa hẹn phân tích sâu:** lời cam kết của mô hình không phải bằng chứng việc nó đã xem xét kỹ đúng chủ đề nào.
+
+> Đánh giá mức độ phức tạp trước khi chọn cách dùng Claude Code: thiết kế hệ thống cần phân tích sâu, sửa lỗi chữ thì không cần.`
+},
+{
+  id: 'qz-ccaf-051',
+  topic: 'claude',
+  q: '[Claude Code Configuration] A developer wants Claude Code to use an API key by pasting it into CLAUDE.md so the model can read it. Which practice is safer?',
+  options: [
+    'Paste the API key into CLAUDE.md because instruction files are only read by Claude Code',
+    'Put the key in settings.json because settings files are secret by default',
+    'Send the key in every user message so Claude does not need to store it',
+    'Store the key outside instruction files, for example in environment variables or a secret manager, and let the runtime supply it'
+  ],
+  answer: 3,
+  explain: `**Đúng: không để bí mật trong tệp hướng dẫn.** {{CLAUDE.md}} là tệp văn bản có thể được commit, chia sẻ và đưa vào ngữ cảnh mô hình — không phải kho bí mật. API key nên nằm trong biến môi trường hoặc secret manager, và môi trường chạy sẽ cung cấp khóa khi cần, không qua tệp hướng dẫn.
+
+### Vì sao các lựa chọn khác sai
+- **Ghi key vào CLAUDE.md:** bất kỳ ai đọc repository có thể thấy khóa; khóa còn có thể tồn tại trong lịch sử Git sau khi xóa khỏi phiên bản mới.
+- **settings.json không phải nơi chứa secret:** file settings cấu hình công cụ và quyền, không tự được mã hóa hay coi là kho bí mật.
+- **Gửi key trong mọi tin nhắn:** khóa sẽ bị lưu trong lịch hội thoại và có thể rò rỉ qua các phiên khác.
+
+> Mọi khóa API, token hoặc mật khẩu nên được cung cấp bằng môi trường chạy hoặc secret store; đừng để chúng trong CLAUDE.md, settings hay prompt.`
+},
+{
+  id: 'qz-ccaf-052',
+  topic: 'claude',
+  multi: true,
+  q: '[Claude Code Configuration] A CI job uses Claude Code to create a branch and push changes. Which two controls reduce risk the most? (Choose 2)',
+  options: [
+    'Run the CI job with the default branch broad credentials so nothing is blocked',
+    'Use an isolated runner with no unnecessary secrets',
+    'Grant only the narrow permissions the CI job actually needs, using a short-lived token',
+    'Trust repository instructions because they are part of the checked-out project'
+  ],
+  answer: [1, 2],
+  explain: `**Đúng: cô lập môi trường và cấp quyền tối thiểu.** Pull request không tin cậy có thể sửa script, hook hoặc cấu hình trong repository. Runner cô lập không chứa secret không cần thiết và token thời gian ngắn với quyền chỉ đủ nhu cầu làm hạn chế thiệt hại nếu nội dung độc hại được xử lý. JSON trả về chỉ là định dạng, không chứng minh code an toàn.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Credential rộng của nhánh mặc định:** mã do PR kiểm soát có thể tìm cách lấy credential; vi phạm nguyên tắc quyền tối thiểu.
+- **Tin toàn bộ hướng dẫn trong repo:** contributor bên ngoài có thể thay đổi nội dung repository; không đưa dữ liệu không tin cậy lên mức chính sách đáng tin cậy.
+
+> Thiết kế đầu ra có thể parse bởi máy nhưng vẫn validate nội dung trước khi gộp; kết hợp với runner ephemeral và không cho phép thao tác ghi hay triển khai từ PR.`
+},
+{
+  id: 'qz-ccaf-053',
+  topic: 'claude',
+  multi: true,
+  q: '[Claude Code Configuration] After an incident where Claude Code edited several files, the team wants to audit what actually happened. Which two actions help? (Choose 2)',
+  options: [
+    'Review the session transcript and tool-call log to see which files were read or edited',
+    'Trust Claude summary that no important files were changed',
+    'Redact secrets before sharing logs or transcripts with others outside the team',
+    'Assume the transcript contains every system event outside Claude Code'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: kiểm tra nhật ký công cụ và giấu bí mật trước khi chia sẻ.** Cuộc hội thoại và nhật ký lệnh công cụ trong Claude Code ghi lại các tệp được đọc, chỉnh sửa và lệnh shell đã chạy; đây là bằng chứng thực tế để điều tra sự cố, thay vì chỉ dựa vào lời tóm tắt của mô hình. Nhật ký có thể chứa khóa API hoặc dữ liệu nhạy cảm, nên giấu hoặc loại bỏ chúng trước khi gửi cho bên ngoài nhóm.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Tin tóm tắt của Claude:** mô hình có thể bỏ sót hoặc mô tả lại không chính xác; nhật ký công cụ là nguồn bằng chứng trực tiếp hơn.
+- **Giả định transcript chứa mọi sự kiện hệ thống:** transcript chỉ ghi tương tác trong Claude Code, không phải tất cả sự kiện của máy chủ hay cơ sở dữ liệu bên ngoài.
+
+> Sau sự cố, diff của repository kết hợp với nhật ký công cụ giúp xác định chính xác thay đổi nào đến từ Claude Code.`
+},
+{
+  id: 'qz-ccaf-054',
+  topic: 'claude',
+  multi: true,
+  q: '[Claude Code Configuration] A CI job runs Claude Code non-interactively and needs an API credential. Which two choices are safer? (Choose 2)',
+  options: [
+    'Provide the credential through a protected CI secret or environment variable, never hard-coded in the script',
+    'Hard-code the API key in the prompt so Claude can authenticate itself automatically',
+    'Store the key in CLAUDE.md so all CI runs can read it',
+    'Rotate the credential and restrict its scope to what CI actually needs'
+  ],
+  answer: [0, 3],
+  explain: `**Đúng: cung cấp credential qua secret/CI env và xoay vòng, giới hạn phạm vi.** API key cho Claude Code không nên được viết cứng vào script hay để trong {{CLAUDE.md}}; biến môi trường hoặc secret store được bảo vệ của hệ thống CI là nơi phù hợp, và credential chỉ nên có quyền cần đúng cho công việc CI.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Viết cứng key vào prompt:** key sẽ được lưu trong log và lịch hội thoại, dễ bị lộ.
+- **Lưu key vào {{CLAUDE.md}}:** tệp hướng dẫn không phải kho bí mật và có thể được commit hoặc đưa vào ngữ cảnh mô hình.
+
+> Credential của CI nên có thời gian tồn tại ngắn và chỉ được cấp quyền cần tối thiểu cho công việc triển khai.`
+},
+{
+  id: 'qz-ccaf-055',
+  topic: 'claude',
+  multi: true,
+  q: '[Claude Code Configuration] A team wants to add an MCP server that provides several tools, but not all tools are needed. Which two choices fit best? (Choose 2)',
+  options: [
+    'Review which tools the MCP server exposes and enable only the tools the workflow needs',
+    'Commit the server access token inside .mcp.json so every teammate can connect',
+    'Provide credentials through an approved runtime environment or secret store, not through Git',
+    'Define the server in one developer home directory and assume Git distributes it'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: xem xét công cụ MCP và để credential ngoài Git.** MCP cho phép Claude Code kết nối đến server cung cấp công cụ hoặc dữ liệu. File {{.mcp.json}} trong repository chia sẻ khai báo kết nối, nhưng không nên chứa giá trị credential thật; credential nên do môi trường chạy hoặc secret store đã phê duyệt cung cấp. Review công cụ server hiển thị để chỉ kích hoạt công cụ thực sự cần thiết.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Commit token vào .mcp.json:** bất kỳ ai đọc repository có thể lấy token; giá trị còn có thể còn tồn tại trong lịch sử Git.
+- **Cấu hình trong thư mục nhà của một người:** chỉ người đó nhận cấu hình; đồng nghiệp clone repository không tự động có nó.
+
+> Hãy review {{.mcp.json}} như cấu hình thực thi: chỉ khai báo server cần thiết và không để token thật lọt vào diff.`
+},
 );
