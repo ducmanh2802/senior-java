@@ -2001,6 +2001,8 @@ window.DATA_INDEX = {
     {"id":"lesson-spring-011","track":"spring","order":11,"title":"Vòng phụ thuộc bean: early reference, ba cấp cache và cách thiết kế lại","level":"senior","minutes":45},
     {"id":"lesson-spring-012","track":"spring","order":12,"title":"Spring Security: filter chain xác thực và phân quyền","level":"senior","minutes":45},
     {"id":"lesson-spring-013","track":"spring","order":13,"title":"Cache với @Cacheable: TTL, invalidation và phòng cache stampede","level":"senior","minutes":45},
+    {"id":"lesson-spring-014","track":"spring","order":14,"title":"AOP proxy: chuỗi advisor, thứ tự advice và vì sao Boot dùng CGLIB","level":"senior","minutes":50},
+    {"id":"lesson-spring-015","track":"spring","order":15,"title":"BeanPostProcessor: hook can thiệp vào mọi bean và vì sao nó tạo ra proxy","level":"senior","minutes":45},
     {"id":"lesson-jpa-001","track":"jpa","order":1,"title":"Persistence context và dirty checking","level":"mid","minutes":25},
     {"id":"lesson-jpa-002","track":"jpa","order":2,"title":"N+1 query và tải association theo batch","level":"senior","minutes":25},
     {"id":"lesson-jpa-003","track":"jpa","order":3,"title":"Optimistic locking với @Version","level":"senior","minutes":25},

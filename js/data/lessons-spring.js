@@ -2911,5 +2911,922 @@ class SimpleCache<K, V> {
       { q: 'Cache stampede là gì và phòng bằng cách nào?', options: ['Nhiều request cùng miss một key hot → cùng truy vấn cơ sở dữ liệu có thể làm sập; phòng bằng khoá theo từng key (chỉ một request tính toán, các request khác chờ) hoặc jitter TTL', 'Cache bị xóa nhầm do {{@CacheEvict}}', 'Cache chỉ lưu được một giá trị', 'Cache stampede không thể phòng được'], answer: 0, explain: `Cache stampede xảy ra khi một key phổ biến hết hạn đúng lúc nhiều người cùng đọc: tất cả miss, cùng truy vấn cơ sở dữ liệu, tải vọt. Phòng bằng per-key lock (chỉ một request tính toán, các request khác cùng key chờ đợi kết quả đầu tiên) hoặc jitter TTL (giới hạn sử dụng khác nhau theo từng bản). {{@CacheEvict}} chỉ xóa cache, không phải nguyên nhân hay cách phòng stampede.` }
     ],
     related: ['spring-020'], tags: ['Spring Cache', '@Cacheable', 'TTL', 'cache stampede', 'invalidation']
-  }
+  },
+{
+  id: 'lesson-spring-014', track: 'spring', order: 14,
+  title: 'AOP proxy: chuỗi advisor, thứ tự advice và vì sao Boot dùng CGLIB', level: 'senior', minutes: 50,
+  goals: [
+    'Phân biệt target, proxy, advisor, pointcut, advice và interceptor',
+    'Mô tả container chọn JDK proxy hay CGLIB ở bước nào của vòng đời bean',
+    'Giải thích thứ tự advisor ({{@Order}}, {{Ordered}}) và hệ quả với transaction',
+    'Tự dựng chuỗi advice bằng {{java.lang.reflect.Proxy}} và chứng minh self-invocation bị bỏ qua',
+  ],
+  body: `**Tóm tắt:** Spring AOP không sửa code của bạn. Nó tạo một **proxy** — object đứng giữa caller và bean thật (**target**) — rồi chạy một **chuỗi advisor** quanh lời gọi. Một advisor gồm **pointcut** (chọn method nào) và **advice** (làm gì: mở transaction, đo thời gian, kiểm tra hạn mức). Proxy chỉ có một cửa vào, nên {{this.method()}} trong cùng bean đi thẳng target và bỏ qua advisor: đó là self-invocation. Bài này đi vào phần ít được giải thích: container chọn JDK proxy hay CGLIB, dựng chuỗi advisor theo thứ tự nào, và vì sao một dòng {{@Order}} có thể quyết định transaction mở trước hay sau khi kiểm tra hạn mức.
+
+### Từ nhu cầu tới ba khái niệm dễ lẫn
+Hãy tưởng tượng một cổng soát vé ở nhà ga. **Target** là hành khách (code nghiệp vụ của bạn). **Proxy** là nhân viên soát vé đứng ở cổng. **Advice** là việc nhân viên làm thêm: kiểm tra vé, đếm lượt, ghi thời gian. **Pointcut** là quy tắc "soát ai": chỉ soát vé tàu, không soát vé xe buýt. **Advisor** là cặp (quy tắc, việc làm thêm) đó. Còn **interceptor** là cách Spring cài advice dưới dạng một object có method {{invoke(MethodInvocation)}}: nó nhận lời gọi, có thể làm việc trước, gọi {{proceed()}} để đi tiếp, rồi làm việc sau.
+
+Vì sao cần tách ba thứ này? Nếu bạn viết {{if (phảiLog) log(...)}} trong mọi method, nghiệp vụ bị trộn với hạ tầng và quên một chỗ là thiếu nhất quán. AOP cho phép khai báo một lần "mọi method trong package service đều được đo thời gian", rồi container tự áp dụng. Điểm mạnh cũng là điểm yếu: nó chỉ áp dụng khi lời gọi đi qua proxy.
+
+Ba thuật ngữ hay bị dùng lẫn:
+- **Advice**: đoạn hành vi thêm (before, after returning, around, after throwing). Trong Spring, {{@Transactional}} tạo ra một advice dạng around; {{@Cacheable}} cũng vậy.
+- **Pointcut**: biểu thức chọn method. Ví dụ {{execution(* com.acme.order..*.*(..))}} nghĩa là "mọi method public trong package com.acme.order và các package con".
+- **Advisor**: pointcut + advice. Spring có sẵn {{TransactionAttributeSourceAdvisor}} (pointcut tìm method có {{@Transactional}}, advice là {{TransactionInterceptor}}).
+
+### Container tạo proxy ở bước nào
+Spring không tạo proxy lúc bạn viết code, cũng không sửa bytecode. Lúc khởi động, một **BeanPostProcessor** tên là {{AbstractAutoProxyCreator}} (lớp cha của {{AnnotationAwareAspectJAutoProxyCreator}}) được chạy cho **từng bean**, ở hook {{postProcessAfterInitialization}} — tức sau khi bean đã được tạo, inject dependency xong và đã chạy callback khởi tạo.
+
+Cơ chế bên trong, theo thứ tự:
+
+1. {{postProcessAfterInitialization}} gọi {{wrapIfNecessary(bean, beanName, cacheKey)}}.
+2. {{getAdvicesAndAdvisorsForBean}} hỏi tất cả advisor đã đăng ký: pointcut của bạn có khớp class/method này không? Nếu không advisor nào khớp, trả về bean **nguyên bản**, không tạo proxy.
+3. Nếu có advisor khớp, {{createProxy}} tạo một {{ProxyFactory}}, gắn target và danh sách advisor, rồi gọi {{DefaultAopProxyFactory.createAopProxy}}.
+4. {{DefaultAopProxyFactory}} chọn **JDK dynamic proxy** hay **CGLIB** dựa trên cấu hình và bản chất của target (bảng dưới).
+5. Proxy được trả về thay cho bean gốc. Từ đây, mọi nơi inject bean này đều nhận proxy; {{target}} thật nằm bên trong, chỉ proxy giữ tham chiếu.
+
+Vì proxy được tạo ở bước cuối, có một hệ quả rất thực tế: trong {{@PostConstruct}}, bean **chưa** được bọc proxy, và nếu {{@PostConstruct}} gọi method của chính nó thì đó là self-call — {{@Transactional}} trên method đó không có tác dụng. Muốn chạy logic cần transaction lúc khởi động, hãy dùng {{ApplicationReadyEvent}} hoặc gọi qua một bean khác.
+
+Spring cũng cố tình **không** proxy một số bean hạ tầng: các {{BeanPostProcessor}}, các bean đã là proxy, các class {{@Aspect}} (chính chúng là nơi khai báo advice). Nếu không loại trừ, container sẽ tự proxy chính cái máy tạo proxy và rơi vào vòng lặp.
+
+### JDK proxy và CGLIB: khác nhau ở đâu
+Có hai cách tạo lớp vỏ, và chúng khác nhau ở **cách lớp vỏ nhìn giống bean**:
+
+| Tiêu chí | JDK dynamic proxy | CGLIB (subclass) |
+|---|---|---|
+| Bản chất | Sinh một class **cài các interface** bạn liệt kê | Sinh một **lớp con** của class target lúc runtime |
+| Điều kiện | Target phải có interface, caller phải biết interface đó | Target không được {{final}}; method cần chèn không được {{private}}/{{final}}/{{static}} |
+| Đối tượng được inject | Proxy chỉ là instance của interface | Proxy là instance của lớp con, nên inject theo class cụ thể vẫn được |
+| Tạo instance | Gọi constructor của bạn | Dùng Objenesis để tạo instance **không gọi constructor** (Spring 4+), tránh side effect lúc khởi tạo proxy |
+| Khi target không có interface | Không dùng được | Spring tự chuyển sang CGLIB |
+| Cast về class cụ thể | Ném {{ClassCastException}} | Được |
+
+Spring Framework mặc định {{proxyTargetClass = false}} (ưu tiên JDK proxy nếu target có interface). Spring Boot đặt {{spring.aop.proxy-target-class=true}} mặc định từ Boot 2.0, nên **mọi** bean cần AOP đều dùng CGLIB, kể cả bean có interface. Đó là lý do bạn có thể {{@Autowired PaymentService}} (class cụ thể) mà không lỗi kiểu. Nếu muốn quay lại hành vi cũ, đặt {{spring.aop.proxy-target-class=false}}; muốn tắt hẳn auto-proxy, đặt {{spring.aop.auto=false}} (lúc đó {{@Transactional}} không còn tác dụng qua proxy nữa).
+
+Cần phân biệt với {{@Configuration(proxyBeanMethods = true)}}: đó là CGLIB cho **class cấu hình** để {{@Bean}} gọi nhau vẫn trả về singleton, không phải cơ chế AOP cho mọi bean. Hai thứ dùng cùng công nghệ nhưng khác mục đích.
+
+### Thứ tự advisor: số nhỏ chạy ngoài
+Một bean có thể có nhiều advisor: transaction, cache, rate limit, metrics, security. Thứ tự không phải trang trí — nó quyết định **transaction mở trước hay sau** khi kiểm tra hạn mức, và **exception nào được advice nào thấy**.
+
+Quy tắc của Spring: advisor được sắp theo {{Ordered}} / {{@Order}}; giá trị **nhỏ hơn có độ ưu tiên cao hơn và nằm ngoài**. Chuỗi chạy từ ngoài vào trong:
+
+~~~text
+caller
+  → metrics (order 10)
+    → rate limit (order 50)
+      → transaction (order LOWEST_PRECEDENCE)
+        → target.save()
+      ← commit / rollback
+    ← rate limit trả về
+  ← metrics dừng đồng hồ
+~~~
+
+Mỗi interceptor chỉ đi tiếp khi gọi {{proceed()}}. Nếu rate limit ném exception và **không** gọi {{proceed()}}, transaction bên trong chưa từng mở — đó là điều bạn muốn: request bị chặn thì đừng giữ connection. Nếu thứ tự ngược lại (transaction ngoài, rate limit trong), mỗi request bị chặn vẫn mở transaction, chiếm một connection Hikari trong lúc kiểm tra, và phải rollback.
+
+Transaction advisor mặc định có order {{Ordered.LOWEST_PRECEDENCE}} (lớn nhất). Một aspect tự viết không khai {{@Order}} cũng có order mặc định thấp nhất, nên nó **thường** nằm trong transaction hoặc cùng mức — đừng dựa vào thứ tự ngẫu nhiên đó. Muốn aspect chạy ngoài transaction, hãy khai {{@Order(50)}} lên class aspect (giá trị nhỏ hơn LOWEST_PRECEDENCE). Cũng có thể đổi order của hạ tầng transaction bằng {{@EnableTransactionManagement(order = 50)}}, nhưng đừng làm nếu chưa hiểu hệ quả: mọi method {{@Transactional}} sẽ nằm trong aspect đó.
+
+Hai advisor **cùng order** thì thứ tự không được đảm bảo; đừng dựa vào thứ tự khai báo. Nếu nghiệp vụ cần một trật tự tuyệt đối, hãy gán order tường minh.
+
+### Self-invocation: proxy chỉ có một cửa vào
+Nhắc lại đúng chỗ: proxy là object được inject, target là object thật bên trong. Khi caller gọi {{proxy.outer()}}, proxy chạy advisor rồi gọi {{target.outer()}}. Bên trong {{outer()}}, {{this}} là **target**, nên {{this.inner()}} đi thẳng target → advisor của {{inner()}} không chạy. Không có cách nào để target "tự nhảy" về proxy: nó không biết mình đang được bọc.
+
+Ba cách sửa, theo thứ tự nên dùng:
+1. **Tách method sang bean khác**: lời gọi đi ra ngoài bean, qua proxy của bean kia. Đây cũng là cách buộc bạn nghĩ lại ranh giới trách nhiệm.
+2. **Đặt boundary ở method ngoài cùng**: nếu inner chỉ là helper, đừng đánh dấu nó; transaction của outer đã đủ.
+3. **{{TransactionTemplate}}** mở transaction bằng code ngay tại chỗ, không phụ thuộc proxy.
+
+Các mẹo {{AopContext.currentProxy()}} (cần {{exposeProxy = true}}) hoặc tự inject chính mình bằng {{@Lazy}} chạy được nhưng làm luồng khó đọc và dễ vỡ trong unit test gọi {{new}}. Chỉ dùng khi không còn lựa chọn.
+
+### Bốn lỗi hay gặp trên production
+- **{{final class}} + {{@Transactional}}**: CGLIB không tạo được lớp con → app **không boot**, log kiểu {{BeanCreationException: Cannot subclass final class ...}}. Sửa: bỏ {{final}} (giữ class mở cho proxy) hoặc chuyển sang interface + JDK proxy nếu thật sự cần. Nhớ: {{final}} ở đây là {{final}} class, không phải {{final}} field.
+- **Method {{private}}/{{static}} có {{@Transactional}}**: proxy không chặn được → annotation im lặng vô hiệu. Triệu chứng: code chạy, không có transaction, không log lỗi. Sửa: đưa method lên {{public}} non-final, hoặc đặt boundary ở method public được gọi từ ngoài.
+- **Cast proxy sang class cụ thể khi dùng JDK proxy**: {{((PaymentServiceImpl) paymentService)}} ném {{ClassCastException}} vì proxy chỉ cài interface. Boot mặc định CGLIB nên ít gặp; nếu bạn tắt {{proxy-target-class}}, lỗi này xuất hiện ở những chỗ inject theo class.
+- **Double proxy**: vừa tự tạo proxy bằng {{ProxyFactory}} trong code, vừa để auto-proxy bọc thêm → hai lớp {{TransactionInterceptor}}. Triệu chứng: transaction lồng nhau ngoài ý muốn, metrics đếm hai lần, log begin/commit lặp. Sửa: chọn một cơ chế; nếu cần thêm hành vi, viết một advisor và để Spring quản lý.
+
+### Ví dụ đời thực
+Một hệ thống thanh toán có {{PaymentService}} với {{@Transactional}} và một aspect {{RateLimitAspect}} giới hạn 50 request/phút cho mỗi merchant. Ban đầu aspect không khai {{@Order}}, nên nó nằm trong transaction (transaction advisor có order thấp nhất). Khi merchant vượt hạn mức, aspect ném {{TooManyRequestsException}}; lúc này transaction đã mở, phải rollback, và mỗi request bị chặn vẫn giữ một connection Hikari trong 20–80 ms.
+
+Cao điểm 1.200 request/phút, pool 20 connection có lúc cạn: request hợp lệ phải chờ {{connectionTimeout = 30s}}, p99 tăng từ 180 ms lên 4,2 giây, và 37 request/phút timeout connection. Đội đặt {{@Order(50)}} cho aspect để nó chạy **ngoài** transaction và kiểm tra hạn mức trước khi vào service. Đo lại: p99 còn 90 ms, số lần timeout connection về 0, số transaction rollback do rate limit giảm từ 600/phút xuống 0. Bài học: thứ tự advisor không phải chi tiết cú pháp, nó thay đổi tài nguyên bị chiếm khi request bị từ chối.
+
+### Liên hệ phỏng vấn
+1. **Spring AOP hoạt động thế nào, proxy được tạo ở đâu?** — Một {{BeanPostProcessor}} ({{AbstractAutoProxyCreator}}) bọc bean ở {{postProcessAfterInitialization}}, sau khi bean đã inject xong và chạy init. Nó chỉ tạo proxy khi có advisor khớp pointcut; proxy thay thế bean trong context.
+2. **JDK proxy và CGLIB khác nhau thế nào, Boot mặc định dùng cái nào?** — JDK proxy sinh class cài interface, caller phải biết interface, cast về class cụ thể lỗi. CGLIB sinh lớp con của target, cần class/method không {{final}}, không chặn được {{private}}. Boot 3 mặc định {{spring.aop.proxy-target-class=true}} → CGLIB; Framework mặc định là JDK nếu target có interface.
+3. **Vì sao {{@Transactional}} không chạy khi gọi nội bộ, và làm sao sửa?** — {{this.method()}} gọi thẳng target, không qua proxy, nên advisor không chạy. Sửa bằng cách tách bean, đặt boundary ở method ngoài, hoặc {{TransactionTemplate}}. {{AopContext.currentProxy()}}/self-injection là con dao hai lưỡi.
+4. **Làm sao để aspect đo thời gian không bao gồm thời gian transaction?** — Đặt order của aspect **nhỏ hơn** order của transaction advisor để nó nằm ngoài; hoặc đo ở tầng controller. Nếu aspect nằm trong, đồng hồ sẽ tính cả thời gian mở connection, flush và commit.
+
+> Senior tip: Khi thấy một bean có nhiều annotation hạ tầng ({{@Transactional}}, {{@Cacheable}}, {{@Retryable}}, aspect tự viết), hãy hỏi "thứ tự nào đúng" trước khi hỏi "annotation nào thiếu". Một aspect đặt sai chỗ có thể biến một request bị từ chối thành một connection bị giữ, và đó là loại sự cố không hiện ra trong log nghiệp vụ.`,
+  exercises: [{
+    title: 'MiniAop: chuỗi advisor, thứ tự, pointcut và self-invocation',
+    prompt: `Hoàn thiện {{MiniAop.wrap(target, iface, advisors)}} bằng {{java.lang.reflect.Proxy}} để mô phỏng phần lõi của Spring AOP: một chuỗi advisor chạy quanh method thật.
+
+Hợp đồng:
+- {{Advice.invoke(MethodCall)}} nhận một lời gọi và trả về kết quả (hoặc ném exception).
+- {{MethodCall}} có {{methodName()}}, {{args()}} và {{proceed()}}. {{proceed()}} chạy advice kế tiếp trong chuỗi; nếu là advice cuối, nó gọi method thật trên target.
+- {{Advisor(pattern, order, advice)}}: {{pattern}} là tên method chính xác ({{"save"}}) hoặc tiền tố có dấu {{*}} ({{"save*"}} khớp {{save}} và {{saveAll}}). {{matches(name)}} đã được viết sẵn.
+- {{MiniAop.wrap}} trả về proxy cài {{iface}}, ủy quyền cho {{target}}. Handler phải:
+  1. Lọc các advisor có {{matches(methodName)}}.
+  2. Sắp theo {{order}} tăng dần: order **nhỏ hơn nằm ngoài**, chạy trước.
+  3. Dựng chuỗi: mỗi advice gọi {{proceed()}} để đi tiếp; advice cuối gọi {{method.invoke(target, args)}}.
+  4. {{Method.invoke}} bọc exception của target trong {{InvocationTargetException}}; handler phải ném lại {{getCause()}} để caller nhận đúng exception gốc.
+  5. Không advisor nào khớp thì gọi thẳng target, không ghi log.
+
+Fixture có sẵn: {{TxLog}} (đếm begin/commit/rollback/join và ghi {{events}}), {{TxAdvice}} (mô phỏng {{TransactionInterceptor}}), {{MetricsAdvice}}, {{BlockAdvice}} (không gọi {{proceed()}}), {{UpperAdvice}} (đổi kết quả), {{Worker}}/{{WorkerImpl}} ({{outer()}} gọi {{this.inner()}} — self-invocation; {{delegated()}} gọi sang {{Helper}} đã được bọc proxy), {{Helper}}/{{HelperImpl}}.
+
+Các test sẽ kiểm tra: proxy đúng interface, transaction mở/commit, thứ tự advisor, pointcut không khớp, self-invocation, gọi bean khác thì join, RuntimeException rollback và tới caller nguyên vẹn, advice chặn không cho target chạy, advice đổi kết quả, và JDK proxy không cast được sang class cụ thể (lý do cần CGLIB).`,
+    starter: `import java.lang.reflect.*;
+import java.util.*;
+
+interface Advice {
+    Object invoke(MethodCall call) throws Throwable;
+}
+
+interface MethodCall {
+    String methodName();
+    Object[] args();
+    Object proceed() throws Throwable;
+}
+
+final class Advisor {
+    final String pattern;
+    final int order;
+    final Advice advice;
+    Advisor(String pattern, int order, Advice advice) {
+        this.pattern = pattern;
+        this.order = order;
+        this.advice = advice;
+    }
+    boolean matches(String name) {
+        if (pattern.endsWith("*")) return name.startsWith(pattern.substring(0, pattern.length() - 1));
+        return pattern.equals(name);
+    }
+}
+
+class TxLog {
+    int begins, commits, rollbacks, joins;
+    boolean active;
+    final List<String> events = new ArrayList<>();
+}
+
+class TxAdvice implements Advice {
+    private final TxLog log;
+    TxAdvice(TxLog log) { this.log = log; }
+    public Object invoke(MethodCall call) throws Throwable {
+        if (log.active) {
+            log.joins++;
+            log.events.add("join:" + call.methodName());
+            return call.proceed();
+        }
+        log.begins++;
+        log.active = true;
+        log.events.add("begin:" + call.methodName());
+        try {
+            Object out = call.proceed();
+            log.commits++;
+            log.events.add("commit:" + call.methodName());
+            return out;
+        } catch (RuntimeException | Error e) {
+            log.rollbacks++;
+            log.events.add("rollback:" + call.methodName());
+            throw e;
+        } finally {
+            log.active = false;
+        }
+    }
+}
+
+class MetricsAdvice implements Advice {
+    private final TxLog log;
+    MetricsAdvice(TxLog log) { this.log = log; }
+    public Object invoke(MethodCall call) throws Throwable {
+        log.events.add("metrics:start");
+        try { return call.proceed(); }
+        finally { log.events.add("metrics:end"); }
+    }
+}
+
+class BlockAdvice implements Advice {
+    private final TxLog log;
+    BlockAdvice(TxLog log) { this.log = log; }
+    public Object invoke(MethodCall call) {
+        log.events.add("blocked");
+        return "blocked";
+    }
+}
+
+class UpperAdvice implements Advice {
+    public Object invoke(MethodCall call) throws Throwable {
+        Object out = call.proceed();
+        return out instanceof String ? ((String) out).toUpperCase() : out;
+    }
+}
+
+interface Worker {
+    String outer();
+    String inner();
+    String delegated();
+    String save();
+    String plain();
+    String boom();
+}
+
+class WorkerImpl implements Worker {
+    private final Helper helper;
+    WorkerImpl(Helper helper) { this.helper = helper; }
+    public String outer() { return "outer|" + inner(); }
+    public String inner() { return "inner"; }
+    public String delegated() { return "delegated|" + helper.save(); }
+    public String save() { return "saved"; }
+    public String plain() { return "plain"; }
+    public String boom() { throw new IllegalStateException("db down"); }
+}
+
+interface Helper { String save(); }
+class HelperImpl implements Helper { public String save() { return "helper-saved"; } }
+
+class MiniAop {
+    static Object wrap(Object target, Class<?> iface, List<Advisor> advisors) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `import java.lang.reflect.*;
+import java.util.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    interface Body { void run() throws Throwable; }
+    static void check(String name, Body body) { total++; try { body.run(); passed++; System.out.println("PASS " + name); } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); } }
+    static void eq(Object a, Object b) { if (!Objects.equals(a, b)) throw new AssertionError("expected [" + b + "] but was [" + a + "]"); }
+    static Worker worker(TxLog log, Helper helper) {
+        return (Worker) MiniAop.wrap(new WorkerImpl(helper), Worker.class, List.of(new Advisor("*", 100, new TxAdvice(log))));
+    }
+    public static void main(String[] args) {
+        check("proxy cai dung interface", () -> {
+            Worker w = (Worker) MiniAop.wrap(new WorkerImpl(null), Worker.class, List.of());
+            if (!Proxy.isProxyClass(w.getClass())) throw new AssertionError("phai la JDK proxy");
+        });
+        check("transaction mo va commit", () -> {
+            TxLog log = new TxLog();
+            Worker w = worker(log, null);
+            eq(w.save(), "saved");
+            eq(log.events, List.of("begin:save", "commit:save"));
+            eq(log.begins, 1); eq(log.commits, 1); eq(log.rollbacks, 0);
+        });
+        check("advisor order nho chay ngoai", () -> {
+            TxLog log = new TxLog();
+            List<Advisor> advisors = List.of(
+                new Advisor("save*", 100, new TxAdvice(log)),
+                new Advisor("save*", 10, new MetricsAdvice(log))
+            );
+            Worker w = (Worker) MiniAop.wrap(new WorkerImpl(null), Worker.class, advisors);
+            eq(w.save(), "saved");
+            eq(log.events, List.of("metrics:start", "begin:save", "commit:save", "metrics:end"));
+        });
+        check("pointcut khong khop thi goi thang", () -> {
+            TxLog log = new TxLog();
+            Worker w = (Worker) MiniAop.wrap(new WorkerImpl(null), Worker.class, List.of(new Advisor("other*", 10, new TxAdvice(log))));
+            eq(w.plain(), "plain");
+            eq(log.events, List.of()); eq(log.begins, 0);
+        });
+        check("self-invocation bo qua proxy", () -> {
+            TxLog log = new TxLog();
+            Worker w = worker(log, null);
+            eq(w.outer(), "outer|inner");
+            eq(log.events, List.of("begin:outer", "commit:outer"));
+            eq(log.begins, 1); eq(log.joins, 0);
+        });
+        check("goi bean khac thi join transaction ngoai", () -> {
+            TxLog log = new TxLog();
+            Helper h = (Helper) MiniAop.wrap(new HelperImpl(), Helper.class, List.of(new Advisor("*", 100, new TxAdvice(log))));
+            Worker w = worker(log, h);
+            eq(w.delegated(), "delegated|helper-saved");
+            eq(log.events, List.of("begin:delegated", "join:save", "commit:delegated"));
+            eq(log.begins, 1); eq(log.joins, 1);
+        });
+        check("RuntimeException rollback va toi caller nguyen ven", () -> {
+            TxLog log = new TxLog();
+            Worker w = worker(log, null);
+            try { w.boom(); throw new AssertionError("phai nem exception"); }
+            catch (IllegalStateException e) { eq(e.getMessage(), "db down"); }
+            eq(log.events, List.of("begin:boom", "rollback:boom"));
+            eq(log.commits, 0); eq(log.rollbacks, 1); eq(log.active, false);
+        });
+        check("advice khong goi proceed thi chan target", () -> {
+            TxLog log = new TxLog();
+            Worker w = (Worker) MiniAop.wrap(new WorkerImpl(null), Worker.class, List.of(
+                new Advisor("save*", 1, new BlockAdvice(log)),
+                new Advisor("save*", 100, new TxAdvice(log))
+            ));
+            eq(w.save(), "blocked");
+            eq(log.events, List.of("blocked")); eq(log.begins, 0);
+        });
+        check("advice doi duoc ket qua", () -> {
+            Worker w = (Worker) MiniAop.wrap(new WorkerImpl(null), Worker.class, List.of(new Advisor("save*", 10, new UpperAdvice())));
+            eq(w.save(), "SAVED");
+        });
+        check("JDK proxy khong cast duoc sang class cu the", () -> {
+            Worker w = (Worker) MiniAop.wrap(new WorkerImpl(null), Worker.class, List.of());
+            try { Object bad = (WorkerImpl) w; throw new AssertionError("phai nem ClassCastException, nhan " + bad); }
+            catch (ClassCastException expected) { }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `import java.lang.reflect.*;
+import java.util.*;
+
+interface Advice {
+    Object invoke(MethodCall call) throws Throwable;
+}
+
+interface MethodCall {
+    String methodName();
+    Object[] args();
+    Object proceed() throws Throwable;
+}
+
+final class Advisor {
+    final String pattern;
+    final int order;
+    final Advice advice;
+    Advisor(String pattern, int order, Advice advice) {
+        this.pattern = pattern;
+        this.order = order;
+        this.advice = advice;
+    }
+    boolean matches(String name) {
+        if (pattern.endsWith("*")) return name.startsWith(pattern.substring(0, pattern.length() - 1));
+        return pattern.equals(name);
+    }
+}
+
+class TxLog {
+    int begins, commits, rollbacks, joins;
+    boolean active;
+    final List<String> events = new ArrayList<>();
+}
+
+class TxAdvice implements Advice {
+    private final TxLog log;
+    TxAdvice(TxLog log) { this.log = log; }
+    public Object invoke(MethodCall call) throws Throwable {
+        if (log.active) {
+            log.joins++;
+            log.events.add("join:" + call.methodName());
+            return call.proceed();
+        }
+        log.begins++;
+        log.active = true;
+        log.events.add("begin:" + call.methodName());
+        try {
+            Object out = call.proceed();
+            log.commits++;
+            log.events.add("commit:" + call.methodName());
+            return out;
+        } catch (RuntimeException | Error e) {
+            log.rollbacks++;
+            log.events.add("rollback:" + call.methodName());
+            throw e;
+        } finally {
+            log.active = false;
+        }
+    }
+}
+
+class MetricsAdvice implements Advice {
+    private final TxLog log;
+    MetricsAdvice(TxLog log) { this.log = log; }
+    public Object invoke(MethodCall call) throws Throwable {
+        log.events.add("metrics:start");
+        try { return call.proceed(); }
+        finally { log.events.add("metrics:end"); }
+    }
+}
+
+class BlockAdvice implements Advice {
+    private final TxLog log;
+    BlockAdvice(TxLog log) { this.log = log; }
+    public Object invoke(MethodCall call) {
+        log.events.add("blocked");
+        return "blocked";
+    }
+}
+
+class UpperAdvice implements Advice {
+    public Object invoke(MethodCall call) throws Throwable {
+        Object out = call.proceed();
+        return out instanceof String ? ((String) out).toUpperCase() : out;
+    }
+}
+
+interface Worker {
+    String outer();
+    String inner();
+    String delegated();
+    String save();
+    String plain();
+    String boom();
+}
+
+class WorkerImpl implements Worker {
+    private final Helper helper;
+    WorkerImpl(Helper helper) { this.helper = helper; }
+    public String outer() { return "outer|" + inner(); }
+    public String inner() { return "inner"; }
+    public String delegated() { return "delegated|" + helper.save(); }
+    public String save() { return "saved"; }
+    public String plain() { return "plain"; }
+    public String boom() { throw new IllegalStateException("db down"); }
+}
+
+interface Helper { String save(); }
+class HelperImpl implements Helper { public String save() { return "helper-saved"; } }
+
+class MiniAop {
+    static Object wrap(Object target, Class<?> iface, List<Advisor> advisors) {
+        List<Advisor> sorted = new ArrayList<>(advisors);
+        sorted.sort(Comparator.comparingInt(a -> a.order));
+        return Proxy.newProxyInstance(iface.getClassLoader(), new Class<?>[] { iface }, (proxy, method, args) -> {
+            List<Advisor> chain = new ArrayList<>();
+            for (Advisor a : sorted) if (a.matches(method.getName())) chain.add(a);
+            return invokeChain(target, method, args, chain, 0);
+        });
+    }
+    private static Object invokeChain(Object target, Method method, Object[] args, List<Advisor> chain, int index) throws Throwable {
+        if (index == chain.size()) {
+            try { return method.invoke(target, args); }
+            catch (InvocationTargetException e) { throw e.getCause(); }
+        }
+        int next = index + 1;
+        MethodCall call = new MethodCall() {
+            public String methodName() { return method.getName(); }
+            public Object[] args() { return args; }
+            public Object proceed() throws Throwable { return invokeChain(target, method, args, chain, next); }
+        };
+        return chain.get(index).advice.invoke(call);
+    }
+}`,
+    hints: [
+      'Proxy.newProxyInstance(loader, interfaces, handler): loader lấy từ iface.getClassLoader(), interfaces chỉ gồm iface. Trong handler, method là method của interface; muốn gọi code thật phải invoke trên target.',
+      'Sắp advisor theo order tăng dần rồi dựng chain bằng chỉ số: advice thứ i nhận một MethodCall mà proceed() gọi advice thứ i+1. Khi chỉ số bằng kích thước chain thì invoke target.',
+      'Bắt InvocationTargetException và ném getCause(): nếu không, caller nhận UndeclaredThrowableException thay vì IllegalStateException. Dùng finally để hạ cờ active giống Spring gỡ ThreadLocal.',
+    ],
+    explain: `Bài tập dựng lại ba quyết định cốt lõi của Spring AOP: chọn method theo pointcut, sắp advisor theo order, và chạy chuỗi bằng proceed().
+
+**Thứ tự là hành vi, không phải cú pháp.** Test "order nhỏ chạy ngoài" cho thấy metrics (order 10) bọc ngoài transaction (order 100): đồng hồ đo cả thời gian mở transaction và commit. Nếu bạn muốn đo thời gian thuần nghiệp vụ, hãy đặt metrics **trong** transaction (order lớn hơn). Cùng một đoạn code, hai order khác nhau, hai ý nghĩa khác nhau.
+
+**Self-invocation không phải bug của bạn.** Test "self-invocation" cho kết quả "outer|inner" (nghiệp vụ vẫn chạy) nhưng events chỉ có begin/commit của outer. {{this.inner()}} đi thẳng target; handler không được hỏi. Trong Spring thật, inner khi đó chạy nhờ transaction của outer, và mọi annotation của inner ({{REQUIRES_NEW}}, {{readOnly}}, {{@Cacheable}}) bị bỏ qua im lặng.
+
+**Gọi bean khác thì advice chạy.** Test "join" cho begin:delegated, join:save, commit:delegated: một transaction, một commit. Đây chính là lý do "tách bean" là cách sửa self-invocation hiệu quả nhất — nó không đổi propagation, nó chỉ đưa lời gọi đi qua proxy.
+
+**Advice có thể chặn hoặc đổi kết quả.** BlockAdvice không gọi proceed nên target không chạy; UpperAdvice gọi proceed rồi đổi kết quả. Đây là sức mạnh của around advice, cũng là nơi dễ viết sai: nếu advice không gọi proceed trong một nhánh, mọi logic phía sau bị bỏ qua.
+
+**JDK proxy không thay thế được class.** Test cast cho thấy proxy chỉ là interface. Trong Spring Boot 3, CGLIB là mặc định nên bạn thường không gặp; nhưng nếu tắt proxy-target-class, những chỗ inject theo class cụ thể sẽ nổ ClassCastException. Đây là lý do "inject theo interface" vẫn là thói quen tốt, kể cả khi dùng CGLIB.`,
+  }],
+  check: [
+    { q: 'Trong Spring AOP, thứ tự advisor được xác định thế nào và ý nghĩa của order nhỏ?', options: ['Thứ tự khai báo trong file cấu hình; order nhỏ chạy sau', 'Theo {{Ordered}}/{{@Order}}; giá trị nhỏ hơn có độ ưu tiên cao hơn và nằm ngoài chuỗi', 'Theo thứ tự alphabet của tên method', 'Theo thứ tự bean được tạo; order không có tác dụng'], answer: 1, explain: `Spring sắp advisor bằng {{Ordered}}/{{@Order}} (và {{PriorityOrdered}} cho một số hạ tầng). Giá trị **nhỏ hơn** có độ ưu tiên cao hơn, tức nằm **ngoài** và chạy trước. Transaction advisor mặc định có order {{LOWEST_PRECEDENCE}}, nên aspect không khai order thường nằm trong hoặc cùng mức. Thứ tự khai báo không được đảm bảo; tên method và thứ tự tạo bean cũng không quyết định.` },
+    { q: 'Bean {{final class PaymentService}} có method {{@Transactional}}. Spring Boot 3 khởi động thì điều gì xảy ra?', options: ['Vẫn chạy bình thường vì Spring dùng JDK proxy', 'App không boot: CGLIB không tạo được lớp con của class final, ném lỗi kiểu Cannot subclass final class', 'Transaction vẫn mở nhưng bị bỏ qua cảnh báo', 'Chỉ mất AOP cho method đó, app vẫn boot'], answer: 1, explain: `Boot mặc định {{spring.aop.proxy-target-class=true}}, nên Spring tạo CGLIB proxy bằng cách sinh lớp con. Class {{final}} không cho phép subclass → lỗi lúc tạo proxy, app không boot. Cách sửa: bỏ {{final}} hoặc chuyển sang JDK proxy bằng interface. JDK proxy không cần subclass nên không gặp lỗi này, nhưng nó không phải mặc định của Boot.` },
+    { q: 'Một aspect khai {{@Order(50)}}, còn transaction advisor mặc định dùng {{Ordered.LOWEST_PRECEDENCE}}. Aspect nằm ở đâu?', options: ['Trong transaction, vì 50 lớn hơn LOWEST_PRECEDENCE', 'Ngoài transaction, vì 50 nhỏ hơn LOWEST_PRECEDENCE nên aspect chạy trước', 'Cùng mức, thứ tự hoàn toàn ngẫu nhiên', 'Aspect không bao giờ chạy khi có transaction'], answer: 1, explain: `Order nhỏ hơn có độ ưu tiên cao hơn và nằm ngoài. {{@Order(50)}} nhỏ hơn {{Integer.MAX_VALUE}} (LOWEST_PRECEDENCE), nên aspect chạy trước transaction: nếu nó ném exception và không gọi proceed, transaction chưa mở. Nếu aspect không khai order, nó cũng có order mặc định thấp nhất, nên đừng dựa vào thứ tự; hãy gán order tường minh.` },
+    { q: 'Vì sao proxy JDK không cast được sang class cụ thể, và Spring Boot xử lý thế nào?', options: ['Vì proxy JDK chỉ cài interface, không phải lớp con của class; Boot mặc định dùng CGLIB nên inject theo class vẫn được', 'Vì JDK proxy không hỗ trợ method có tham số', 'Vì class cụ thể phải khai báo non-static', 'Vì Boot luôn tắt AOP mặc định'], answer: 0, explain: `JDK dynamic proxy sinh một class **cài interface**, không phải lớp con của class target, nên {{((PaymentServiceImpl) proxy)}} ném {{ClassCastException}}. CGLIB sinh lớp con nên proxy là instance của class target. Spring Boot đặt {{spring.aop.proxy-target-class=true}} mặc định, nên inject theo class cụ thể vẫn chạy; Spring Framework thuần mặc định JDK nếu target có interface.` }
+  ],
+  related: ['spring-006', 'spring-028'], tags: ['AOP', 'proxy', 'CGLIB', 'advisor', '@Order', 'self-invocation']
+},
+{
+  id: 'lesson-spring-015', track: 'spring', order: 15,
+  title: 'BeanPostProcessor: hook can thiệp vào mọi bean và vì sao nó tạo ra proxy', level: 'senior', minutes: 45,
+  goals: [
+    'Phân biệt BeanFactoryPostProcessor và BeanPostProcessor theo thời điểm và phạm vi',
+    'Nêu đúng thứ tự {{postProcessBeforeInitialization}}, {{@PostConstruct}}, {{afterPropertiesSet}}, init-method, {{postProcessAfterInitialization}}',
+    'Giải thích vì sao BeanPostProcessor phải được tạo sớm và vì sao không nên inject bean vào nó',
+    'Tự viết container DI mini có chuỗi post-processor, thay thế bean và quản lý destroy',
+  ],
+  body: `**Tóm tắt:** {{BeanPostProcessor}} (BPP) là callback mà container gọi cho **mỗi bean vừa được tạo**, trước và sau khi bean chạy callback khởi tạo. Nó là cách Spring cài đặt những thứ "xuyên suốt": {{@Autowired}}, {{@PostConstruct}}, {{@ConfigurationProperties}}, và cả AOP proxy. BPP thấy **instance** của bean; {{BeanFactoryPostProcessor}} (BFPP) thấy **định nghĩa** bean trước khi instance tồn tại. Hiểu đúng hai hook của BPP và thứ tự của chúng là chìa khoá để đọc được vòng đời bean, debug một proxy xuất hiện "không ai tạo", và tránh làm chậm khởi động.
+
+### Vì sao container cần một hook như vậy
+Container biết cách tạo object, nhưng không biết object đó cần được "trang trí" gì. Ví dụ đời thường: một nhà máy sản xuất linh kiện. Container là dây chuyền tạo ra linh kiện thô. BPP là **trạm kiểm định** đặt trên dây chuyền: mỗi linh kiện đi qua đều được kiểm tra, dán nhãn, bọc hộp. Trạm kiểm định không sửa bản thiết kế (đó là việc của BFPP), nó tác động lên **sản phẩm thật** trước khi sản phẩm được đưa vào kho (context).
+
+Nếu không có hook, Spring phải viết sẵn mọi thứ trong lõi: biết trước bean nào cần {{@Autowired}}, bean nào cần proxy, bean nào cần đăng ký listener. BPP biến những thứ đó thành **mixin**: ai cần thì đăng ký một processor, không cần thì không trả giá.
+
+### Hai hook, hai thời điểm
+Giao diện BPP có hai method:
+
+~~~java
+public interface BeanPostProcessor {
+    Object postProcessBeforeInitialization(Object bean, String beanName) throws BeansException;
+    Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException;
+}
+~~~
+
+- **Before**: chạy ngay sau khi bean được tạo và inject dependency, **trước** các callback khởi tạo ({{@PostConstruct}}, {{afterPropertiesSet}}, init-method). Đây là nơi {{CommonAnnotationBeanPostProcessor}} gọi {{@PostConstruct}}, {{ApplicationContextAwareProcessor}} gọi các {{*Aware}}, và {{ConfigurationPropertiesBindingPostProcessor}} bind cấu hình.
+- **After**: chạy **sau** init. Đây là nơi {{AbstractAutoProxyCreator}} bọc AOP proxy ({{@Transactional}}, {{@Cacheable}}, {{@Async}}), nơi {{ScheduledAnnotationBeanPostProcessor}} đăng ký method {{@Scheduled}}, nơi {{ApplicationListenerDetector}} phát hiện listener.
+
+Cả hai method nhận bean và trả về bean. Nếu trả về một object khác, container **dùng object đó** cho các bước sau: đó là cách AOP proxy thay thế target. Nếu trả về chính bean, không có gì thay đổi. Hợp đồng của Spring là trả về bean (gốc hoặc bản bọc). Trong bài tập dưới đây, trả về null được hiểu là giữ nguyên bean cho đơn giản; ở code thật, đừng dựa vào quy ước đó — hãy luôn trả về bean.
+
+Thứ tự đầy đủ của một singleton:
+
+~~~text
+tạo instance (constructor)
+  → inject dependency (AutowiredAnnotationBeanPostProcessor, ở giai đoạn populate)
+  → postProcessBeforeInitialization của mọi BPP (theo thứ tự)
+  → @PostConstruct
+  → afterPropertiesSet (InitializingBean)
+  → init-method
+  → postProcessAfterInitialization của mọi BPP (theo thứ tự)
+  → bean sẵn sàng
+~~~
+
+Hệ quả quan trọng: trong {{@PostConstruct}}, bean **chưa** được bọc proxy (proxy tạo ở bước sau). Vì vậy gọi {{this.method()}} có {{@Transactional}} từ {{@PostConstruct}} là self-call và không có transaction. Đây là cùng một cái bẫy đã gặp ở AOP, nhưng nhìn từ góc độ vòng đời.
+
+### Thứ tự giữa các BPP
+Container không chạy BPP theo thứ tự bạn viết {{@Bean}}. Nó sắp xếp: các BPP cài {{PriorityOrdered}} trước, rồi {{Ordered}}, rồi các BPP còn lại; trong mỗi nhóm dùng {{@Order}}/{{Ordered}}. BPP có order nhỏ chạy trước. Vì cả hai hook (before và after) dùng cùng danh sách đã sắp, một BPP có order 10 sẽ chạy before thứ 10 và after thứ 10 — không có chuyện "before theo thứ tự này, after theo thứ tự ngược".
+
+Điều này có nghĩa: nếu bạn đặt BPP của mình trước {{CommonAnnotationBeanPostProcessor}}, nó thấy bean **trước khi** {{@PostConstruct}} chạy; nếu đặt sau, nó thấy bean sau khi {{@PostConstruct}} đã chạy. Thứ tự không chỉ là "cho đẹp": nó quyết định dữ liệu nào đã sẵn sàng.
+
+### Vì sao BPP phải được tạo sớm, và cái giá của việc inject bean vào BPP
+BPP là hạ tầng: container phải có chúng **trước** khi tạo các bean nghiệp vụ, vì chúng tham gia vào việc tạo bean. Vì vậy container instantiate BPP rất sớm, trước cả khi hoàn tất đăng ký các BPP khác. Nếu một BPP khai báo {{@Autowired MyService}}, container buộc phải tạo {{MyService}} ngay lúc đó — khi chưa phải tất cả BPP đã sẵn sàng. Các BPP đăng ký sau sẽ không áp dụng cho {{MyService}}. Spring cảnh báo "not eligible for getting processed by all BeanPostProcessors" và bean đó có thể thiếu proxy, thiếu {{@PostConstruct}}, hoặc không được đo metrics.
+
+Vì lý do tương tự, khi khai báo một BPP bằng {{@Bean}} trong class cấu hình, method đó nên là **static**: nếu không, container phải khởi tạo cả class cấu hình để gọi method, kéo theo class cấu hình bị tạo sớm và không được các BPP khác xử lý đầy đủ.
+
+### BeanFactoryPostProcessor khác gì BeanPostProcessor
+| Tiêu chí | BeanFactoryPostProcessor | BeanPostProcessor |
+|---|---|---|
+| Thời điểm | Sau khi đọc xong định nghĩa bean, **trước** khi tạo instance | Sau khi tạo instance, trước/sau init |
+| Đối tượng | {{ConfigurableListableBeanFactory}}: sửa {{BeanDefinition}}, thêm bean definition | Instance bean cụ thể |
+| Ví dụ | {{ConfigurationClassPostProcessor}} (xử lý {{@Configuration}}), {{PropertySourcesPlaceholderConfigurer}} (thay placeholder cấu hình) | {{AutowiredAnnotationBeanPostProcessor}}, {{CommonAnnotationBeanPostProcessor}}, {{AbstractAutoProxyCreator}} |
+| Thấy bean nghiệp vụ | Chưa, chỉ thấy "công thức" | Có, thấy object thật |
+| Có được inject bean | Không nên: sẽ tạo bean quá sớm | Có, nhưng phải cẩn thận như trên |
+
+Ghi nhớ một câu: **BFPP sửa bản thiết kế, BPP sửa sản phẩm.** Nếu bạn cần thay đổi class được dùng cho một bean, hoặc thêm một bean definition mới, đó là BFPP. Nếu bạn cần bọc bean bằng proxy, đo thời gian, kiểm tra trạng thái sau init, đó là BPP.
+
+### Bốn lỗi hay gặp
+- **{{@Bean}} trả về BPP không static**: class cấu hình bị tạo sớm, log "not eligible for getting processed by all BeanPostProcessors"; BPP của bạn không áp dụng cho chính class đó và có thể cho các bean khác. Sửa: thêm {{static}} vào method {{@Bean}}.
+- **BPP trả về wrapper khác kiểu**: bean bị thay bằng một object không cài interface/lớp của bean gốc → chỗ inject theo kiểu gốc ném {{ClassCastException}} hoặc không tìm thấy bean. Nếu bọc, wrapper phải giữ đúng kiểu (hoặc ít nhất các interface mà caller cần).
+- **BPP làm việc nặng (gọi HTTP, đọc file, kết nối DB) cho mỗi bean**: chi phí nhân với số bean. 400 bean × 50 ms = 20 giây startup; nếu dịch vụ ngoài chậm 2 giây, app không boot. Sửa: đọc cấu hình một lần vào một map, BPP chỉ tra map; hoặc chuyển việc nặng sang {{ApplicationReadyEvent}}.
+- **Double wrapping**: hai BPP cùng bọc bean bằng proxy (một của bạn, một của AOP) → hai lớp advice, metrics đếm hai lần, transaction lồng nhau. Sửa: chỉ dùng một cơ chế; nếu cần thêm hành vi, viết một advisor thay vì tự bọc.
+
+### Ví dụ đời thực
+Một team muốn tối ưu thời gian khởi động (startup từ 38 giây). Họ thêm một BPP để đo thời gian tạo từng bean và ghi vào log. BPP này, để biết bean thuộc tenant nào, gọi một API cấu hình từ xa cho **mỗi** bean. Ứng dụng có 480 bean: 480 × 25 ms = 12 giây, startup tăng lên 50 giây; tệ hơn, khi API chậm 2 giây, một số pod không kịp readiness probe và bị restart.
+
+Đội sửa bằng cách đọc cấu hình một lần lúc context refresh, lưu vào {{ConcurrentHashMap}}, rồi BPP chỉ tra map. Startup về 39 giây, không còn phụ thuộc API ngoài. Bài học: BPP chạy cho **mọi** bean, nên mọi chi phí trong BPP bị nhân với số bean; và BPP là hạ tầng, không phải nơi gọi dịch vụ mạng.
+
+Một lỗi khác cùng chủ đề: một BPP bọc mọi {{@Service}} bằng JDK proxy theo interface. Những service có interface thì bị bọc, nhưng chỗ khác inject theo class cụ thể nhận proxy chỉ cài interface → {{ClassCastException}} lúc khởi động. Cách sửa đúng là dùng AOP của Spring (CGLIB mặc định của Boot) thay vì tự viết BPP bọc proxy.
+
+### Liên hệ phỏng vấn
+1. **BeanPostProcessor chạy ở đâu trong vòng đời bean, và nó khác BeanFactoryPostProcessor thế nào?** — BPP chạy sau khi bean được tạo và inject, ở hai hook trước/sau init; nó thấy instance. BFPP chạy trước khi tạo instance, sửa BeanDefinition. BFPP sửa bản thiết kế, BPP sửa sản phẩm.
+2. **Vì sao AOP proxy được tạo ở postProcessAfterInitialization mà không phải trước đó?** — Vì proxy phải bọc một bean đã hoàn chỉnh (đã inject dependency, đã chạy init). Nếu bọc sớm, proxy sẽ trỏ tới một target thiếu dependency. Đây cũng là lý do {{@Transactional}} trong {{@PostConstruct}} không chạy: lúc đó proxy chưa tồn tại.
+3. **Vì sao không nên inject bean nghiệp vụ vào một BeanPostProcessor?** — BPP được tạo rất sớm; inject bean sẽ buộc bean đó tạo sớm, trước khi các BPP khác sẵn sàng, nên bean mất một phần xử lý (proxy, {{@PostConstruct}}, metrics). Spring cảnh báo "not eligible for getting processed by all BeanPostProcessors".
+4. **Làm sao biết một bean đã bị BPP bọc?** — In {{bean.getClass().getName()}}: nếu là CGLIB sẽ thấy hậu tố kiểu {{$$SpringCGLIB$$0}}; nếu là JDK proxy sẽ thấy {{com.sun.proxy.$Proxy...}} và {{AopUtils.isAopProxy(bean)}} là true. Nhưng đừng dùng cách này để quyết định logic nghiệp vụ.
+
+> Senior tip: BPP là con dao hai lưỡi: nó cho bạn quyền thay đổi **mọi** bean, nên một dòng code sai trong BPP ảnh hưởng toàn bộ ứng dụng. Hãy giữ BPP mỏng, không I/O, không inject bean nghiệp vụ, và luôn trả về bean (gốc hoặc bản bọc). Khi nghi ngờ một proxy "không biết từ đâu ra", đọc danh sách BPP và thứ tự của chúng trước khi đọc code nghiệp vụ.`,
+  exercises: [{
+    title: 'MiniContainer: DI mini có chuỗi BeanPostProcessor, thay thế bean và destroy',
+    prompt: `Hoàn thiện {{MiniContainer}} — một container DI tối giản mô phỏng vòng đời singleton/prototype và hai hook của {{BeanPostProcessor}}.
+
+API:
+- {{register(name, factory)}}: đăng ký singleton. {{factory}} nhận container để resolve dependency (ví dụ {{c -> new Service(c.getBean("repo"))}}).
+- {{registerPrototype(name, factory)}}: đăng ký prototype. Mỗi lần {{getBean}} tạo object mới, chạy BPP và init mỗi lần, không lưu singleton, không destroy.
+- {{addProcessor(p)}}: thêm BPP. Container sắp xếp theo {{order()}} tăng dần (nhỏ chạy trước); cả before và after dùng cùng thứ tự.
+- {{init(name, runnable)}} / {{destroy(name, runnable)}}: callback khởi tạo và hủy.
+- {{getBean(name)}}: nếu singleton đã tạo thì trả lại; nếu đang tạo mà bị gọi lại → ném {{IllegalStateException}} có chữ "circular dependency"; tạo bằng factory; chạy mọi BPP {{postProcessBeforeInitialization}}; chạy init; chạy mọi BPP {{postProcessAfterInitialization}}; lưu singleton.
+- BPP trả về object khác thì **thay thế** bean cho các bước sau (đây là cách AOP proxy hoạt động). Trả về null được hiểu là giữ nguyên bean.
+- {{close()}}: gọi {{destroy}} cho singleton theo thứ tự **ngược** với thứ tự tạo; gọi lần hai không làm gì; sau {{close}}, {{getBean}} ném {{IllegalStateException}}.
+
+Ghi sự kiện vào {{container.events}} theo đúng định dạng để test so sánh:
+- {{create:<name>}} sau khi factory trả về,
+- {{before:<label>:<name>}} và {{after:<label>:<name>}} từ BPP,
+- {{init:<name>}} sau callback init (container tự ghi, callback không cần ghi),
+- {{ready:<name>}} sau khi lưu singleton (prototype không có ready),
+- {{destroy:<name>}} khi close.
+
+Fixture có sẵn: {{Service}}/{{ServiceImpl}}/{{Wrapper}}, {{RecordingProcessor}} (ghi before/after), {{ClassRecordingProcessor}} (ghi class của bean để chứng minh thứ tự thay thế), {{BeforeReplaceProcessor}} (before trả về Wrapper), {{AfterReplaceProcessor}} (after trả về Wrapper).
+
+Test sẽ kiểm tra: thứ tự before/after theo order, before thay thế bean và các bước sau thấy bản thay thế, after thay thế bean, dependency được tạo xong trước bean phụ thuộc, prototype tạo mới mỗi lần và không destroy, circular dependency bị phát hiện, init lỗi không cache bean, và close idempotent.`,
+    starter: `import java.util.*;
+import java.util.function.*;
+
+interface BeanPostProcessor {
+    int order();
+    Object postProcessBeforeInitialization(Object bean, String beanName);
+    Object postProcessAfterInitialization(Object bean, String beanName);
+}
+
+final class BeanDefinition {
+    final String name;
+    final Function<MiniContainer, Object> factory;
+    final boolean singleton;
+    Runnable init;
+    Runnable destroy;
+    BeanDefinition(String name, Function<MiniContainer, Object> factory, boolean singleton) {
+        this.name = name;
+        this.factory = factory;
+        this.singleton = singleton;
+    }
+}
+
+class MiniContainer implements AutoCloseable {
+    final List<String> events = new ArrayList<>();
+    private final Map<String, BeanDefinition> defs = new LinkedHashMap<>();
+    private final Map<String, Object> singletons = new LinkedHashMap<>();
+    private final Set<String> creating = new HashSet<>();
+    private final List<BeanPostProcessor> processors = new ArrayList<>();
+    private boolean closed;
+
+    MiniContainer register(String name, Function<MiniContainer, Object> factory) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    MiniContainer registerPrototype(String name, Function<MiniContainer, Object> factory) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    MiniContainer addProcessor(BeanPostProcessor processor) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    MiniContainer init(String name, Runnable init) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    MiniContainer destroy(String name, Runnable destroy) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Object getBean(String name) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    @Override public void close() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `import java.util.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    interface Body { void run() throws Throwable; }
+    static void check(String name, Body body) { total++; try { body.run(); passed++; System.out.println("PASS " + name); } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); } }
+    static void eq(Object a, Object b) { if (!Objects.equals(a, b)) throw new AssertionError("expected [" + b + "] but was [" + a + "]"); }
+    static int count(List<String> list, String item) { int n = 0; for (String s : list) if (s.equals(item)) n++; return n; }
+
+    interface Service { String hello(); }
+    static class ServiceImpl implements Service {
+        public String hello() { return "hello"; }
+    }
+    static class Wrapper implements Service {
+        final Service delegate;
+        Wrapper(Service delegate) { this.delegate = delegate; }
+        public String hello() { return "wrapped:" + delegate.hello(); }
+    }
+    static class RecordingProcessor implements BeanPostProcessor {
+        final String label; final int order; final MiniContainer c;
+        RecordingProcessor(String label, int order, MiniContainer c) { this.label = label; this.order = order; this.c = c; }
+        public int order() { return order; }
+        public Object postProcessBeforeInitialization(Object bean, String beanName) { c.events.add("before:" + label + ":" + beanName); return bean; }
+        public Object postProcessAfterInitialization(Object bean, String beanName) { c.events.add("after:" + label + ":" + beanName); return bean; }
+    }
+    static class ClassRecordingProcessor implements BeanPostProcessor {
+        final MiniContainer c; final int order; final String label;
+        ClassRecordingProcessor(MiniContainer c, int order, String label) { this.c = c; this.order = order; this.label = label; }
+        public int order() { return order; }
+        public Object postProcessBeforeInitialization(Object bean, String beanName) { c.events.add("before:" + label + ":" + bean.getClass().getSimpleName()); return bean; }
+        public Object postProcessAfterInitialization(Object bean, String beanName) { c.events.add("after:" + label + ":" + bean.getClass().getSimpleName()); return bean; }
+    }
+    static class BeforeReplaceProcessor implements BeanPostProcessor {
+        public int order() { return 1; }
+        public Object postProcessBeforeInitialization(Object bean, String beanName) { return bean instanceof Service ? new Wrapper((Service) bean) : bean; }
+        public Object postProcessAfterInitialization(Object bean, String beanName) { return bean; }
+    }
+    static class AfterReplaceProcessor implements BeanPostProcessor {
+        public int order() { return 1; }
+        public Object postProcessBeforeInitialization(Object bean, String beanName) { return bean; }
+        public Object postProcessAfterInitialization(Object bean, String beanName) { return bean instanceof Service ? new Wrapper((Service) bean) : bean; }
+    }
+
+    public static void main(String[] args) {
+        check("thu tu before/after theo order", () -> {
+            MiniContainer c = new MiniContainer();
+            c.register("svc", x -> new ServiceImpl());
+            c.init("svc", () -> { });
+            c.addProcessor(new RecordingProcessor("p10", 10, c));
+            c.addProcessor(new RecordingProcessor("p20", 20, c));
+            Object bean = c.getBean("svc");
+            eq(bean.getClass(), ServiceImpl.class);
+            eq(c.events, List.of("create:svc", "before:p10:svc", "before:p20:svc", "init:svc", "after:p10:svc", "after:p20:svc", "ready:svc"));
+        });
+        check("before thay the bean va cac buoc sau thay ban thay the", () -> {
+            MiniContainer c = new MiniContainer();
+            c.register("svc", x -> new ServiceImpl());
+            c.addProcessor(new BeforeReplaceProcessor());
+            c.addProcessor(new ClassRecordingProcessor(c, 0, "first"));
+            c.addProcessor(new ClassRecordingProcessor(c, 5, "second"));
+            Object bean = c.getBean("svc");
+            eq(bean.getClass(), Wrapper.class);
+            eq(((Service) bean).hello(), "wrapped:hello");
+            eq(c.events, List.of("create:svc", "before:first:ServiceImpl", "before:second:Wrapper", "after:first:Wrapper", "after:second:Wrapper", "ready:svc"));
+        });
+        check("after thay the bean", () -> {
+            MiniContainer c = new MiniContainer();
+            c.register("svc", x -> new ServiceImpl());
+            c.addProcessor(new AfterReplaceProcessor());
+            c.addProcessor(new ClassRecordingProcessor(c, 5, "second"));
+            Object bean = c.getBean("svc");
+            eq(bean.getClass(), Wrapper.class);
+            eq(c.events, List.of("create:svc", "before:second:ServiceImpl", "after:second:Wrapper", "ready:svc"));
+        });
+        check("dependency tao xong truoc bean phu thuoc", () -> {
+            MiniContainer c = new MiniContainer();
+            c.register("dep", x -> "DEP");
+            c.register("svc", x -> { x.getBean("dep"); return "SVC"; });
+            c.addProcessor(new RecordingProcessor("p", 10, c));
+            c.getBean("svc");
+            int depReady = c.events.indexOf("ready:dep");
+            int svcCreate = c.events.indexOf("create:svc");
+            if (depReady < 0 || svcCreate < 0 || depReady > svcCreate) throw new AssertionError(c.events);
+        });
+        check("prototype moi lan mot instance, khong destroy", () -> {
+            MiniContainer c = new MiniContainer();
+            c.registerPrototype("p", x -> new ServiceImpl());
+            c.addProcessor(new RecordingProcessor("p", 10, c));
+            Object a = c.getBean("p");
+            Object b = c.getBean("p");
+            if (a == b) throw new AssertionError("prototype phai tao moi lan");
+            eq(c.events, List.of("create:p", "before:p:p", "after:p:p", "create:p", "before:p:p", "after:p:p"));
+            c.register("s", x -> "S");
+            c.destroy("s", () -> { });
+            c.getBean("s");
+            c.close();
+            if (count(c.events, "destroy:s") != 1) throw new AssertionError(c.events);
+            if (count(c.events, "destroy:p") != 0) throw new AssertionError(c.events);
+        });
+        check("circular dependency bi phat hien", () -> {
+            MiniContainer c = new MiniContainer();
+            c.register("a", x -> { x.getBean("b"); return "A"; });
+            c.register("b", x -> { x.getBean("a"); return "B"; });
+            try { c.getBean("a"); throw new AssertionError("phai nem IllegalStateException"); }
+            catch (IllegalStateException e) { if (!e.getMessage().contains("circular")) throw new AssertionError(e.getMessage()); }
+        });
+        check("init loi khong cache bean", () -> {
+            int[] calls = {0};
+            MiniContainer c = new MiniContainer();
+            c.register("bad", x -> { calls[0]++; return "BAD"; });
+            c.init("bad", () -> { throw new IllegalStateException("init failed"); });
+            try { c.getBean("bad"); throw new AssertionError("phai nem"); }
+            catch (IllegalStateException e) { eq(e.getMessage(), "init failed"); }
+            try { c.getBean("bad"); throw new AssertionError("phai nem lan hai"); }
+            catch (IllegalStateException e) { eq(e.getMessage(), "init failed"); }
+            eq(calls[0], 2);
+            if (c.events.contains("ready:bad")) throw new AssertionError(c.events);
+        });
+        check("close idempotent va getBean sau close nem loi", () -> {
+            MiniContainer c = new MiniContainer();
+            c.register("s", x -> "S");
+            c.destroy("s", () -> { });
+            c.getBean("s");
+            c.close();
+            c.close();
+            eq(count(c.events, "destroy:s"), 1);
+            try { c.getBean("s"); throw new AssertionError("phai nem IllegalStateException"); }
+            catch (IllegalStateException expected) { }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `import java.util.*;
+import java.util.function.*;
+
+interface BeanPostProcessor {
+    int order();
+    Object postProcessBeforeInitialization(Object bean, String beanName);
+    Object postProcessAfterInitialization(Object bean, String beanName);
+}
+
+final class BeanDefinition {
+    final String name;
+    final Function<MiniContainer, Object> factory;
+    final boolean singleton;
+    Runnable init;
+    Runnable destroy;
+    BeanDefinition(String name, Function<MiniContainer, Object> factory, boolean singleton) {
+        this.name = name;
+        this.factory = factory;
+        this.singleton = singleton;
+    }
+}
+
+class MiniContainer implements AutoCloseable {
+    final List<String> events = new ArrayList<>();
+    private final Map<String, BeanDefinition> defs = new LinkedHashMap<>();
+    private final Map<String, Object> singletons = new LinkedHashMap<>();
+    private final Set<String> creating = new HashSet<>();
+    private final List<BeanPostProcessor> processors = new ArrayList<>();
+    private boolean closed;
+
+    MiniContainer register(String name, Function<MiniContainer, Object> factory) {
+        defs.put(name, new BeanDefinition(name, factory, true));
+        return this;
+    }
+
+    MiniContainer registerPrototype(String name, Function<MiniContainer, Object> factory) {
+        defs.put(name, new BeanDefinition(name, factory, false));
+        return this;
+    }
+
+    MiniContainer addProcessor(BeanPostProcessor processor) {
+        processors.add(processor);
+        processors.sort(Comparator.comparingInt(BeanPostProcessor::order));
+        return this;
+    }
+
+    MiniContainer init(String name, Runnable init) {
+        def(name).init = init;
+        return this;
+    }
+
+    MiniContainer destroy(String name, Runnable destroy) {
+        def(name).destroy = destroy;
+        return this;
+    }
+
+    private BeanDefinition def(String name) {
+        BeanDefinition d = defs.get(name);
+        if (d == null) throw new IllegalArgumentException("no bean definition " + name);
+        return d;
+    }
+
+    Object getBean(String name) {
+        if (closed) throw new IllegalStateException("container closed");
+        BeanDefinition d = defs.get(name);
+        if (d == null) throw new IllegalArgumentException("no bean definition " + name);
+        if (d.singleton) {
+            Object cached = singletons.get(name);
+            if (cached != null) return cached;
+        }
+        if (!creating.add(name)) throw new IllegalStateException("circular dependency detected at " + name);
+        try {
+            Object bean = d.factory.apply(this);
+            events.add("create:" + name);
+            bean = applyBefore(name, bean);
+            if (bean == null) throw new IllegalStateException("post-processor returned null for " + name);
+            if (d.init != null) { d.init.run(); events.add("init:" + name); }
+            bean = applyAfter(name, bean);
+            if (d.singleton) { singletons.put(name, bean); events.add("ready:" + name); }
+            return bean;
+        } finally {
+            creating.remove(name);
+        }
+    }
+
+    private Object applyBefore(String name, Object bean) {
+        Object result = bean;
+        for (BeanPostProcessor p : processors) {
+            Object current = p.postProcessBeforeInitialization(result, name);
+            if (current != null) result = current;
+        }
+        return result;
+    }
+
+    private Object applyAfter(String name, Object bean) {
+        Object result = bean;
+        for (BeanPostProcessor p : processors) {
+            Object current = p.postProcessAfterInitialization(result, name);
+            if (current != null) result = current;
+        }
+        return result;
+    }
+
+    @Override public void close() {
+        if (closed) return;
+        closed = true;
+        List<String> names = new ArrayList<>(singletons.keySet());
+        Collections.reverse(names);
+        for (String name : names) {
+            BeanDefinition d = defs.get(name);
+            if (d != null && d.destroy != null) { d.destroy.run(); events.add("destroy:" + name); }
+        }
+        singletons.clear();
+    }
+}`,
+    hints: [
+      'Giữ danh sách bean definition trong {{LinkedHashMap}} để nhớ thứ tự tạo; {{singletons}} là map cache cho singleton. Prototype không được đưa vào cache.',
+      'Trước khi gọi factory, thêm tên vào {{creating}}; nếu tên đã có trong {{creating}} thì đó là vòng phụ thuộc. Nhớ {{creating.remove(name)}} trong {{finally}} để lần sau còn thử lại.',
+      'Duyệt {{processors}} hai lần: once cho before, once cho after. Gán kết quả trả về cho biến bean sau mỗi processor; nếu trả null thì giữ nguyên bean hiện tại.',
+    ],
+    explain: `Bài tập dựng lại vòng đời bean ở mức tối giản, đủ để thấy ba điều quan trọng.
+
+**Thứ tự before → init → after là bất biến.** Test đầu tiên so sánh nguyên danh sách sự kiện: mọi BPP before chạy trước init, mọi BPP after chạy sau init. Đây là lý do {{@PostConstruct}} (một BPP before) luôn thấy bean trước khi proxy AOP được tạo (một BPP after), và vì thế {{@Transactional}} gọi từ {{@PostConstruct}} không có tác dụng.
+
+**BPP có thể thay thế bean.** Test "before thay thế" cho thấy processor order 0 thấy {{ServiceImpl}}, processor order 5 thấy {{Wrapper}}: container dùng object trả về của processor trước cho processor sau. Test "after thay thế" cho thấy bean cuối cùng là {{Wrapper}}. Trong Spring, đây chính là cách {{AbstractAutoProxyCreator}} thay target bằng proxy. Nếu wrapper không giữ đúng kiểu, các chỗ inject theo kiểu gốc sẽ lỗi.
+
+**Prototype và singleton khác nhau ở vòng đời.** Prototype không vào cache, nên mỗi {{getBean}} tạo mới và chạy BPP/init mỗi lần; {{close}} chỉ destroy singleton. Điều này khớp với Spring: container không giữ prototype sau khi giao đi, nên không thể gọi destroy cho nó.
+
+**Lỗi phải thất bại sớm và rõ ràng.** Circular dependency bị phát hiện bằng tập {{creating}} trước khi đệ quy vô hạn; init lỗi không được cache, lần gọi sau thử lại. Trong Spring, constructor injection làm vòng phụ thuộc lộ ra ngay lúc khởi động; field injection có thể che nó cho tới khi chạy.
+
+**Mở rộng để gần Spring hơn:** thêm {{InstantiationAwareBeanPostProcessor}} để inject field (giống {{@Autowired}}), thêm BFPP để sửa {{BeanDefinition}} trước khi tạo instance, và thêm scope {{prototype}} có destroy do consumer tự gọi. Khi đó bạn sẽ thấy vì sao Spring cần nhiều loại callback chứ không chỉ một.`,
+  }],
+  check: [
+    { q: 'BeanPostProcessor khác BeanFactoryPostProcessor ở điểm nào?', options: ['BPP sửa BeanDefinition trước khi tạo instance; BFPP thấy instance sau init', 'BFPP sửa BeanDefinition trước khi tạo instance; BPP thấy instance và chạy trước/sau init', 'Cả hai đều chỉ chạy sau khi context đã sẵn sàng', 'BPP chỉ chạy cho singleton, BFPP chỉ chạy cho prototype'], answer: 1, explain: `BFPP (BeanFactoryPostProcessor) chạy sau khi đọc định nghĩa, trước khi tạo instance; nó sửa {{BeanDefinition}} hoặc thêm định nghĩa mới. BPP (BeanPostProcessor) chạy sau khi instance được tạo, ở hai hook trước/sau init, và có thể thay thế bean bằng object khác. BPP không giới hạn ở singleton; BFPP cũng không giới hạn ở prototype.` },
+    { q: 'Thứ tự đúng của các bước khởi tạo singleton là gì?', options: ['constructor → postProcessAfterInitialization → @PostConstruct → postProcessBeforeInitialization → init-method', 'constructor → inject → postProcessBeforeInitialization → @PostConstruct → afterPropertiesSet → init-method → postProcessAfterInitialization', 'constructor → @PostConstruct → inject → proxy → init-method', 'inject → postProcessAfterInitialization → @PostConstruct → constructor'], answer: 1, explain: `Thứ tự chuẩn: tạo instance bằng constructor, inject dependency (populate), chạy BPP before, rồi {{@PostConstruct}}, {{afterPropertiesSet}}, init-method, cuối cùng là BPP after (nơi tạo AOP proxy). Vì proxy nằm ở bước cuối, {{@PostConstruct}} không có proxy và self-call trong đó không có transaction.` },
+    { q: 'Vì sao không nên inject một bean nghiệp vụ vào BeanPostProcessor?', options: ['Vì BPP không được phép có dependency', 'Vì BPP được tạo rất sớm; bean nghiệp vụ sẽ bị tạo sớm, trước khi các BPP khác sẵn sàng, nên mất một phần xử lý', 'Vì bean nghiệp vụ luôn là prototype', 'Vì BPP chỉ chạy cho bean không có dependency'], answer: 1, explain: `Container phải tạo BPP trước khi tạo bean nghiệp vụ. Nếu BPP inject một bean, bean đó bị kéo lên tạo sớm; các BPP đăng ký sau không áp dụng cho nó, nên nó có thể thiếu proxy, thiếu {{@PostConstruct}} hoặc không được đo metrics. Spring cảnh báo "not eligible for getting processed by all BeanPostProcessors". BPP vẫn có thể có dependency hạ tầng, nhưng không nên phụ thuộc bean nghiệp vụ.` },
+    { q: 'Một BPP trả về một object không cài interface của bean gốc. Hậu quả là gì?', options: ['Không ảnh hưởng, Spring tự cast', 'Chỗ inject theo interface/kiểu gốc có thể ném ClassCastException hoặc không tìm thấy bean', 'Bean tự động chuyển thành prototype', 'Container bỏ qua BPP đó'], answer: 1, explain: `Container dùng đúng object mà BPP trả về cho các bước sau. Nếu object đó không cài interface hoặc không phải lớp của bean gốc, việc inject theo kiểu gốc sẽ lỗi lúc khởi động hoặc lúc gọi. Khi bọc bean, wrapper phải giữ đúng kiểu (hoặc ít nhất các interface mà caller cần).` }
+  ],
+  related: ['spring-002', 'spring-039'], tags: ['BeanPostProcessor', 'bean lifecycle', 'BeanFactoryPostProcessor', 'AOP proxy', 'DI']
+},
 );
