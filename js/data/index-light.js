@@ -2058,6 +2058,8 @@ window.DATA_INDEX = {
     {"id":"lesson-ai-010","track":"ai","order":10,"title":"Đánh giá AI agent bằng eval set: pass rate, so sánh prompt và bắt regression","level":"mid","minutes":35},
     {"id":"lesson-ai-011","track":"ai","order":11,"title":"Memory cho AI agent: cửa sổ token, cắt lượt và tóm tắt phần cũ","level":"senior","minutes":45},
     {"id":"lesson-ai-012","track":"ai","order":12,"title":"MCP-style tool server bằng Java: registry, schema và lỗi có cấu trúc","level":"senior","minutes":45},
+    {"id":"lesson-ai-013","track":"ai","order":13,"title":"Gọi LLM API tin cậy: retry, timeout, circuit breaker và fallback","level":"senior","minutes":45},
+    {"id":"lesson-ai-014","track":"ai","order":14,"title":"Đánh giá RAG: đo recall@k, precision và so sánh cách chunking","level":"senior","minutes":45},
     {"id":"lesson-claude-001","track":"claude","order":1,"title":"Vòng lặp agent với tool use: tool_use, tool_result, stop_reason và giới hạn số bước","level":"senior","minutes":40},
     {"id":"lesson-claude-002","track":"claude","order":2,"title":"Retry đúng cách cho 429, 529 và 5xx: retry-after, exponential backoff và full jitter","level":"mid","minutes":30},
     {"id":"lesson-claude-003","track":"claude","order":3,"title":"Ngân sách context và prompt caching: cắt lịch sử an toàn, đặt cache_control và đọc usage","level":"senior","minutes":35},
