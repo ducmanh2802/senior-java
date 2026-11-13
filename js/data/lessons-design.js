@@ -928,6 +928,272 @@ Ví dụ để đối chiếu: {{hashShard("user-0", 4)}} bằng 2, và {{movedK
       { q: 'Vì sao {{Math.floorMod(hash, N)}} gây vấn đề khi tăng N từ 4 lên 6?', options: ['Vì hàm hash không xác định giữa các lần chạy', 'Vì đổi N làm phần lớn key đổi shard, kéo theo chiến dịch di chuyển dữ liệu khổng lồ', 'Vì không áp dụng được cho key dạng UUID', 'Vì luôn để lại shard trống'], answer: 1, explain: `Kết quả của {{h % 4}} và {{h % 6}} chỉ trùng nhau trên một phần nhỏ các lớp đồng dư, phép đo trong bài là 66,8% key phải chuyển. Hash của String là xác định theo đặc tả {{hashCode}}, nên phương án đầu sai; modulo vẫn dùng được cho UUID (chỉ là chuỗi), chỉ là không giữ được locality; và phân phối thường khá đều chứ không tự để trống shard.` },
       { q: 'Query {{WHERE status = ? ORDER BY created_at LIMIT 20 OFFSET 1000}} không chứa shard key trên 32 shard. Ứng xử lý thế nào?', options: ['Database tự động chuyển query sang shard thích hợp', 'Gửi query tới shard có số hiệu bằng status, rồi lấy kết quả', 'Phải scatter-gather cả 32 shard, mỗi shard trả 1020 dòng rồi gộp và sort lại; về lâu dài nên loại query này ra một view riêng (Elasticsearch hoặc service tổng hợp) và phân trang bằng cursor thay vì OFFSET', 'Chỉ cần thêm index trên status là hết fan-out'], answer: 2, explain: `Shard không biết thứ tự toàn cục nên mỗi shard phải trả đủ số dòng bằng LIMIT cộng OFFSET, chi phí tăng theo OFFSET. Database không tự route khi không có shard key, và index chỉ tăng tốc trong phạm vi một shard, không giảm số shard phải hỏi. Route theo giá trị status thì không có cơ sở: status không quyết định dữ liệu nằm ở shard nào.` },
       { q: 'Trong quy trình resharding, vì sao phải bật song ghi và backfill TRƯỚC khi chuyển đọc sang shard mới?', options: ['Để giảm dung lượng đĩa của shard cũ', 'Để shard mới kịp có đủ dữ liệu cũ lẫn các ghi phát sinh trong lúc chuyển, và chỉ chuyển đọc khi đối chiếu cho thấy hai bên đã khớp, còn có thể quay đầu', 'Vì shard cũ không còn đủ chỗ chứa dữ liệu mới', 'Vì song ghi biến transaction hai shard thành one-phase commit'], answer: 1, explain: `Nếu chuyển đọc ngay, mọi ghi xảy ra trong lúc backfill chưa được chép sang shard mới và dữ liệu biến mất khỏi tầm nhìn của người dùng; song ghi cộng backfill cộng đối chiếu là cách đóng cửa sổ đó và giữ khả năng rollback. Song ghi làm tăng chứ không giảm dung lượng, và nó không hợp nhất hai transaction thành một: tính nhất quán vẫn phải kiểm bằng đối chiếu.` },
-    ], ['sharding', 'hot-partition', 'resharding', 'scatter-gather'])
+    ], ['sharding', 'hot-partition', 'resharding', 'scatter-gather']),
+    lesson('006', 6, 'Consistent hashing: đo phân bố key và dịch chuyển khi thêm bớt node', 'senior', [
+      'Cài vòng hash có virtual node, tra cứu owner theo successor và xử lý vòng quay',
+      'Đo phân bố key theo node và đếm số key phải chuyển khi thêm hoặc bỏ node'
+    ], `**Tóm tắt:** Consistent hashing (băm nhất quán) đặt cả node lẫn key lên cùng một vòng băm (hash ring - một trục số vòng tròn, thường 0 đến 2^32-1); mỗi key được gán cho node kế tiếp theo chiều kim đồng hồ. Nhờ vậy khi thêm hoặc bỏ node, chỉ một phần key phải chuyển chỗ, thay vì gần như toàn bộ như cách chia {{hash(key) % N}}.
+
+### "Hash", "ring", "node" là gì?
+- **Hash** (hàm băm): hàm nhận đầu vào (chuỗi, số) và trả về một số nguyên cố định. Cùng đầu vào luôn cho cùng đầu ra; đầu ra khác nhau phân tán đều. Ví dụ đời thường: như đánh số thứ tự ngẫu nhiên nhưng ổn định cho từng tên học sinh.
+- **Node** (nút): một máy chủ/lõi lưu trữ hoặc cache cụ thể, ví dụ server A, B, C.
+- **Ring** (vòng): tưởng tượng các giá trị hash nằm trên một vòng tròn đóng; đi quá giá trị lớn nhất sẽ quay về 0.
+- **Virtual node** (nút ảo, viết tắt vnode): thay vì đặt mỗi node vật lý 1 điểm trên vòng, ta đặt mỗi node nhiều điểm ({{nodeA#0}}, {{nodeA#1}}…). Điều này giúp phân bố đều hơn vì chỉ 1 điểm dễ tạo đoạn vòng quá dài/quá ngắn.
+
+### Vấn đề của chia modulo {{hash(key) % N}}
+Với N node, gán {{owner = hash(key) % N}} rất đơn giản. Nhưng khi thêm 1 node (N thành N+1), mẫu số đổi nên gần như mọi key tính ra kết quả khác. Ví dụ 10 triệu key cache: thêm 1 server có thể làm ~80% key bị "miss" (không tìm thấy ở chỗ cũ) cùng lúc, gây tải đột biến xuống database phía sau (cache stampede - bão cache miss). Consistent hashing giảm mạnh hiện tượng này: chỉ key nằm trong đoạn vòng bị node mới "cắt" mới chuyển.
+
+### Cơ chế từng bước: tra cứu owner
+1. **Hash key**: {{h = hash(key)}} cho ra một vị trí trên vòng.
+2. **Tìm successor** (người kế tiếp): tìm vnode có vị trí hash nhỏ nhất mà >= {{h}} theo chiều kim đồng hồ.
+3. **Wrap-around** (quay vòng): nếu {{h}} lớn hơn vị trí của mọi vnode, owner là vnode có vị trí nhỏ nhất (quay về đầu vòng). Không có bước này, một phần key sẽ không có owner.
+4. **Từ vnode ra node vật lý**: vnode {{nodeB#7}} thuộc về node vật lý {{nodeB}}.
+
+~~~text
+Vòng hash (0..99, minh hoạ):
+  10: A#0      35: B#0      60: A#1      85: C#0
+key "cart-1" -> hash 22 -> successor là 35 (B#0) => owner B
+key "cart-9" -> hash 90 -> không có >=90 -> wrap về 10 (A#0) => owner A
+~~~
+
+### Thêm và bớt node: vì sao movement cục bộ?
+- **Thêm node C#0 tại 85**: các key có hash trong khoảng từ sau vnode trước 85 đến 85 sẽ chuyển sang C#0. Chỉ đoạn đó đổi owner; các đoạn khác giữ nguyên.
+- **Bỏ node B** (gỡ mọi vnode của B): key từng thuộc B chuyển sang successor kế tiếp của từng vnode B. Các key của A, C không bị ảnh hưởng.
+- Lý tưởng với vnode đủ nhiều, thêm 1 node vào N node làm chuyển xấp xỉ {{1/(N+1)}} tổng số key, và các key chuyển đều đi về node mới.
+
+### Virtual node và phân bố
+Với ít vnode, vị trí ngẫu nhiên có thể gom lại thành đoạn dài khiến một node nhận quá nhiều key (mất cân bằng). Tăng số vnode (ví dụ 100-200 vnode/node vật lý) làm mỗi node sở hữu nhiều đoạn nhỏ rải khắp vòng, phân bố gần đều hơn. Đánh đổi: ring lớn hơn, tốn bộ nhớ và thời gian tra cứu ({{O(log(V*N))}} với cây tìm kiếm). Node mạnh hơn có thể gán nhiều vnode hơn để nhận nhiều tải hơn (weighted vnode).
+
+~~~java
+// Ý tưởng tra cứu bằng TreeMap (cây đỏ-đen, tra successor O(log M))
+TreeMap<Integer, String> ring = new TreeMap<>(); // hashPosition -> physicalNode
+ring.put(hash("A#0"), "A");
+Integer pos = ring.ceilingKey(hash(key)); // key nhỏ nhất >= hash(key)
+if (pos == null) pos = ring.firstKey();   // wrap-around
+String owner = ring.get(pos);
+~~~
+
+### Lỗi hay gặp
+- **Quên wrap-around**: key có hash lớn hơn mọi vnode trả về null/rỗng thay vì quay đầu vòng.
+- **Dùng hash không ổn định**: {{System.identityHashCode}} hoặc hash phụ thuộc địa chỉ bộ nhớ làm cùng key cho kết quả khác nhau giữa lần chạy/process. Phải dùng hàm hash ổn định theo nội dung.
+- **Đếm movement sai**: so sánh trên tập key khác nhau trước/sau. Phải giữ nguyên cùng tập key và cùng hàm hash.
+- **Nghĩ vnode giải quyết hot key**: một key cực "nóng" vẫn chỉ nằm trên 1 node; vnode chỉ cân bằng số lượng key, không cân bằng tải theo tần suất truy cập.
+
+### Liên hệ phỏng vấn
+Nêu rõ: (1) modulo gây remap gần toàn bộ khi đổi N, (2) ring + successor cho remap cục bộ, (3) vnode cải thiện phân bố và cho phép gán trọng số, (4) nhắc giới hạn: hot key, đồng bộ membership giữa các instance, và consistent hashing không tự nhân bản dữ liệu. Đo được movement/distribution trên tập key cụ thể là cách trả lời có số liệu.
+`, {
+      title: 'Vòng hash có virtual node và đo phân bố khi thêm/bớt node',
+      prompt: `Cài {{ConsistentRing}} mô phỏng consistent hashing đơn giản, dùng hash ổn định {{Math.floorMod(s.hashCode(), 100000)}}.
+- {{addNode(name, vnodeCount)}}: thêm node vật lý với {{vnodeCount}} vnode. Mỗi vnode có vị trí {{hash(name + "#" + i)}} với i từ 0. Nếu hai vị trí trùng, dò tuyến tính {{(h+1) % 100000}} tới khi trống. Ném {{IllegalArgumentException}} nếu tên null/rỗng, đã tồn tại, hoặc {{vnodeCount < 1}}.
+- {{removeNode(name)}}: gỡ toàn bộ vnode của node. Ném {{IllegalArgumentException}} nếu không tồn tại.
+- {{owner(key)}}: trả về tên node vật lý sở hữu key (successor theo chiều kim đồng hồ, có wrap-around). Ném {{IllegalStateException}} nếu ring rỗng.
+- {{distribution(keys)}}: trả về {{Map<String,Integer>}} đếm số key mỗi node sở hữu (chỉ gồm node có ít nhất 1 key).
+- {{movedCount(keys, before, after)}} là static: đếm số key có owner khác nhau giữa hai ring {{before}} và {{after}} trên cùng tập key.`,
+      starter: `class ConsistentRing {
+    void addNode(String name, int vnodeCount) { throw new UnsupportedOperationException("TODO"); }
+    void removeNode(String name) { throw new UnsupportedOperationException("TODO"); }
+    String owner(String key) { throw new UnsupportedOperationException("TODO"); }
+    java.util.Map<String, Integer> distribution(java.util.List<String> keys) { throw new UnsupportedOperationException("TODO"); }
+    static int movedCount(java.util.List<String> keys, ConsistentRing before, ConsistentRing after) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+ static int p=0,n=0; static void c(String s, boolean b){n++;if(b){p++;System.out.println("PASS "+s);}else System.out.println("FAIL "+s+": incorrect");}
+ public static void main(String[] x){
+  ConsistentRing r=new ConsistentRing(); r.addNode("A",5); r.addNode("B",5);
+  c("deterministic owner", r.owner("user-1").equals(r.owner("user-1")));
+  c("wrap-around works", r.owner("zzz-wrap-key")!=null);
+  java.util.List<String> keys=new java.util.ArrayList<>();
+  for(int i=0;i<1000;i++) keys.add("key-"+i);
+  ConsistentRing before=new ConsistentRing(); before.addNode("A",50); before.addNode("B",50);
+  ConsistentRing after=new ConsistentRing(); after.addNode("A",50); after.addNode("B",50); after.addNode("C",50);
+  int moved=ConsistentRing.movedCount(keys,before,after);
+  boolean onlyC=true;
+  for(String k:keys){ if(!before.owner(k).equals(after.owner(k)) && !after.owner(k).equals("C")) onlyC=false; }
+  c("adding node moves some keys", moved>0 && moved<1000);
+  c("moved keys go only to new node", onlyC);
+  ConsistentRing rm=new ConsistentRing(); rm.addNode("A",50); rm.addNode("B",50); rm.addNode("C",50); rm.removeNode("C");
+  int back=ConsistentRing.movedCount(keys,rm,before);
+  c("remove then compare is stable", back==0);
+  java.util.Map<String,Integer> dist=after.distribution(keys);
+  int sum=0; for(int v:dist.values()) sum+=v;
+  c("distribution sums to key count", sum==1000 && dist.containsKey("A") && dist.containsKey("B") && dist.containsKey("C"));
+  boolean dup=false; try{ r.addNode("A",1);}catch(IllegalArgumentException e){ dup=true; }
+  boolean bad=false; try{ r.addNode("D",0);}catch(IllegalArgumentException e){ bad=true; }
+  c("invalid add rejected", dup && bad);
+  ConsistentRing empty=new ConsistentRing(); boolean emptyErr=false; try{ empty.owner("k"); }catch(IllegalStateException e){ emptyErr=true; }
+  c("empty ring throws", emptyErr);
+  System.out.println("RESULT "+p+"/"+n);
+ }
+}`,
+      reference: `class ConsistentRing {
+    private final java.util.TreeMap<Integer,String> ring=new java.util.TreeMap<>();
+    private final java.util.Set<String> nodes=new java.util.HashSet<>();
+    void addNode(String name,int vnodeCount){
+        if(name==null||name.isEmpty()||vnodeCount<1||!nodes.add(name)) throw new IllegalArgumentException();
+        for(int i=0;i<vnodeCount;i++){
+            int h=Math.floorMod((name+"#"+i).hashCode(),100000);
+            while(ring.containsKey(h)) h=(h+1)%100000;
+            ring.put(h,name);
+        }
+    }
+    void removeNode(String name){
+        if(!nodes.remove(name)) throw new IllegalArgumentException();
+        ring.entrySet().removeIf(e -> e.getValue().equals(name));
+    }
+    String owner(String key){
+        if(ring.isEmpty()) throw new IllegalStateException();
+        int h=Math.floorMod(key.hashCode(),100000);
+        java.util.Map.Entry<Integer,String> e=ring.ceilingEntry(h);
+        return (e==null?ring.firstEntry():e).getValue();
+    }
+    java.util.Map<String,Integer> distribution(java.util.List<String> keys){
+        java.util.Map<String,Integer> m=new java.util.HashMap<>();
+        for(String k:keys){ String o=owner(k); m.put(o, m.getOrDefault(o,0)+1); }
+        return m;
+    }
+    static int movedCount(java.util.List<String> keys, ConsistentRing before, ConsistentRing after){
+        int moved=0; for(String k:keys) if(!before.owner(k).equals(after.owner(k))) moved++; return moved;
+    }
+}`,
+      hints: [
+        'Dùng {{TreeMap<Integer,String>}} (vị trí -> tên node vật lý) để {{ceilingEntry}} tìm successor và {{firstEntry}} để wrap-around.',
+        'Khi thêm vnode, nếu vị trí hash đã có thì tăng dần {{(h+1) % 100000}} cho tới khi tìm được chỗ trống; lưu cả {{Set<String>}} tên node để phát hiện trùng tên.',
+        'Xoá node: duyệt {{ring.entrySet().removeIf(...)}} theo tên vật lý; {{movedCount}} chỉ cần so {{owner}} trước/sau trên cùng danh sách key.'
+      ],
+      explain: `Lời giải tách rõ hai lớp: vòng lưu nhiều điểm (vnode) nhưng mỗi điểm trỏ về tên node vật lý, nên {{owner}} luôn trả về node thật. {{ceilingEntry}} cho successor; null nghĩa là key nằm sau vnode cuối cùng và phải quay về {{firstEntry}}. Dò tuyến tính khi trùng vị trí tránh ghi đè vnode khác. Khi thêm node C, chỉ các key rơi vào đoạn mà vnode của C vừa chiếm mới đổi owner, và chúng chỉ có thể chuyển sang C. {{distribution}} cho cái nhìn cân bằng tải: vnode càng nhiều, số key mỗi node càng gần nhau.`
+    }, [
+      { q: 'Thêm 1 node mới vào ring consistent hashing đang có 4 node (vnode đủ nhiều). Phát biểu nào đúng nhất?', options: ['Gần như tất cả key phải chuyển và rải đều sang 5 node', 'Khoảng 1/5 key chuyển và chúng chỉ chuyển sang node mới', 'Không key nào chuyển, node mới chỉ nhận key phát sinh sau này', 'Khoảng 1/4 key chuyển qua lại giữa các node cũ'], answer: 1, explain: 'Node mới chỉ "cắt" một số đoạn trên vòng nên chỉ các key trong đoạn đó đổi owner, xấp xỉ 1/(N+1). Các key chuyển đều đi sang node mới. "Gần như tất cả" là hành vi của hash modulo khi đổi N.' },
+      { q: 'Vì sao cần virtual node (nhiều điểm mỗi node vật lý) thay vì 1 điểm?', options: ['Để cùng một key có thể nằm trên nhiều node', 'Để phân bố key đều hơn và cho phép gán trọng số khác nhau cho node mạnh/yếu', 'Để không cần hàm hash', 'Để tự động nhân bản (replicate) dữ liệu'], answer: 1, explain: 'Một điểm mỗi node dễ tạo đoạn vòng dài/ngắn lệch nhau; nhiều vnode rải điểm khắp vòng giúp cân bằng. Node mạnh có thể có nhiều vnode hơn. Vnode không thay thế replication.' },
+      { q: 'Bỏ qua bước wrap-around (khi hash(key) lớn hơn mọi vnode) sẽ gây lỗi gì?', options: ['Key đó bị gán cho node có hash lớn nhất, đúng theo vòng', 'Key đó không tìm được owner dù ring không rỗng', 'Ring tự thêm vnode mới', 'Chỉ ảnh hưởng hiệu năng, không ảnh hưởng kết quả'], answer: 1, explain: 'Nếu không có vnode nào >= hash(key) thì successor hợp lệ là vnode nhỏ nhất (đầu vòng) vì vòng khép kín. Không quay vòng sẽ trả về null/exception cho một phần key hợp lệ.' }
+    ], ['consistent-hashing', 'hash-ring', 'distribution']),
+    lesson('008', 8, 'Quorum đọc/ghi: khi nào đọc được dữ liệu cũ và vì sao R + W > N', 'lead', [
+      'Mô phỏng N replica với tham số W (ghi) và R (đọc), hiểu ý nghĩa chồng lấp tập hợp',
+      'Phát hiện trường hợp đọc dữ liệu cũ khi R + W <= N và giải thích trade-off nhất quán/khả dụng/độ trễ'
+    ], `**Tóm tắt:** Trong hệ có N bản sao (replica - bản sao của cùng dữ liệu trên nhiều máy), ghi xác nhận trên W replica và đọc từ R replica: nếu {{R + W > N}} thì tập replica được đọc và tập vừa được ghi chắc chắn có ít nhất 1 replica chung, nên đọc mạnh (strong read) có thể trả về bản mới nhất (với cơ chế chọn phiên bản). Nếu {{R + W <= N}} thì có thể đọc toàn bộ từ các replica chưa kịp nhận bản ghi, dẫn tới đọc dữ liệu cũ (stale read).
+
+### Thuật ngữ cơ bản
+- **Replica** (bản sao): mỗi máy giữ một bản copy của dữ liệu. Ví dụ 3 server đều lưu số dư tài khoản "U1".
+- **N**: tổng số replica lưu dữ liệu đó.
+- **W** (write quorum): số replica phải xác nhận đã ghi thành công thì phép ghi mới được coi là thành công. Ví dụ W=2 với N=3 nghĩa là ghi xong trên 2 máy là báo OK, máy thứ 3 có thể cập nhật trễ.
+- **R** (read quorum): số replica phải trả lời khi đọc; client chọn bản "mới nhất" trong R kết quả (thường dựa trên version/timestamp).
+- **Version** (phiên bản): một số tăng dần gắn với mỗi lần ghi để biết bản nào mới hơn. Không có version, khi 2 replica trả về giá trị khác nhau ta không biết cái nào đúng.
+- **Stale read** (đọc cũ): đọc ra giá trị chưa bao gồm lần ghi gần nhất đã "thành công" theo W.
+
+### Vì sao R + W > N đảm bảo giao nhau?
+Đây là lập luận tập hợp đơn giản (pigeonhole principle - nguyên lý chuồng bồ câu):
+- Tập ghi G có {{|G| = W}} replica.
+- Tập đọc D có {{|D| = R}} replica.
+- Tổng "chỗ" đã dùng: {{W + R}}. Nếu lớn hơn N (tổng replica tồn tại), hai tập không thể hoàn toàn rời nhau, nên {{G ∩ D}} có ít nhất {{R + W - N}} phần tử.
+- Replica chung đó đã nhận bản ghi mới nhất => trong R bản đọc có ít nhất 1 bản mới.
+
+Ví dụ số liệu: N=3, W=2, R=2. Ghi "v=5" thành công trên replica {A,B} (version 1), replica C vẫn giữ "v=0". Đọc với R=2: có thể đọc {A,C} hoặc {B,C} hoặc {A,B} - mọi trường hợp đều có A hoặc B, nên chọn version cao nhất sẽ được 5.
+
+Ngược lại N=3, W=1, R=1: ghi thành công chỉ trên A (v=5, ver 1), đọc từ C (v=0, ver 0) => stale read vì {{1+1 <= 3}} và hai tập {A}, {C} không giao nhau.
+
+~~~text
+N=3 (A,B,C), version tăng dần mỗi lần ghi
+W=2: ghi v=7 ver2 lên {A,B} OK, C còn ver1  -> đọc R=2 {B,C} thấy ver2,ver1 => chọn ver2 (mới)
+W=1,R=1: ghi v=7 ver2 lên {A} OK            -> đọc R=1 {C} thấy ver1 => CŨ (stale)
+~~~
+
+### Trade-off khi chọn R, W
+| Cấu hình (N=3) | Tính chất | Đổi lấy |
+|---|---|---|
+| W=3, R=1 | Đọc rất nhanh, luôn mới nếu ghi xong | Ghi chậm/yếu: 1 replica chết là không ghi được |
+| W=1, R=3 | Ghi rất nhanh | Đọc chậm; ghi có thể mất nếu replica ghi chưa kịp nhân bản rồi chết |
+| W=2, R=2 | Cân bằng, đọc/ghi chịu được 1 replica lỗi | Độ trễ trung bình cho cả đọc và ghi |
+| W=1, R=1 | Rất nhanh, sẵn sàng cao | Có thể đọc cũ và mất ghi (R+W <= N) |
+
+"Chịu được 1 replica lỗi" nghĩa là còn đủ replica sống để đạt W hoặc R: với N=3,W=2, chỉ cần 2 máy sống là vẫn ghi/đọc được.
+
+### Những điều mô hình đơn giản chưa nói hết
+- **Xung đột ghi đồng thời** (write conflict): hai client ghi cùng key lên các tập replica khác nhau cùng lúc; cần cơ chế hợp nhất (last-write-wins theo timestamp, vector clock, hoặc CRDT). Bài học này tập trung vào điều kiện đọc thấy ghi đã xác nhận.
+- **Replica trễ/đứt mạng**: bản sao chưa nhận được ghi (hinted handoff, read repair sẽ sửa dần) là nguồn gốc stale read khi quorum không giao.
+- **Không phải "linearizable" miễn phí**: R+W>N với version đơn giản cho đọc nhất quán trong nhiều trường hợp nhưng cạnh tranh phức tạp cần giao thức mạnh hơn (Paxos/Raft). Hệ thực tế (Cassandra, DynamoDB) cho phép chọn mức nhất quán.
+
+### Lỗi hay gặp
+- Nhầm lẫn "W=1 là đã an toàn" vì ghi trả về thành công: thực ra chỉ 1 bản có dữ liệu, hỏng bản đó trước khi nhân bản là mất.
+- So sánh version sai kiểu (so chuỗi thay vì số) dẫn tới chọn bản cũ.
+- Nghĩ tăng N tự động tăng tính nhất quán: nếu giữ R=1,W=1 thì N lớn hơn càng dễ đọc lệch.
+
+### Liên hệ phỏng vấn
+Trả lời theo công thức: nêu N,R,W, điều kiện {{R + W > N}} và lý do tập giao nhau; đưa ví dụ số cụ thể (N=3,W=2,R=2) và phản ví dụ stale read (W=1,R=1). Nêu trade-off độ trễ/khả dụng (chịu bao nhiêu node chết) và nhắc hệ thật cho phép cấu hình per-request (Cassandra {{CONSISTENCY}}, DynamoDB consistent read). Phân biệt "quorum nhất quán" với "consensus bầu leader" (Raft/Paxos) - liên quan nhưng khác bài toán.
+`, {
+      title: 'Mô phỏng N replica, ghi W đọc R và phát hiện stale read',
+      prompt: `Cài {{ReplicaStore}} mô phỏng N replica cho một key duy nhất, mỗi replica lưu {{value}} (int) và {{version}} (int, tăng dần).
+- Constructor {{ReplicaStore(int n)}}: tạo N replica, ban đầu value=0, version=0. Ném {{IllegalArgumentException}} nếu {{n < 1}}.
+- {{write(int value, int w)}}: tăng version toàn hệ lên +1, ghi {{(value, version mới)}} vào đúng W replica đầu tiên (index 0..W-1) và trả về version mới. Ném {{IllegalArgumentException}} nếu {{w < 1 || w > n}}. (Mô phỏng: các replica còn lại chưa nhận bản mới.)
+- {{read(int r)}}: đọc từ R replica cuối cùng (index n-r..n-1), trả về value của replica có version lớn nhất trong R bản đó. Ném {{IllegalArgumentException}} nếu {{r < 1 || r > n}}.
+- {{isStale(int latestVersion, int r)}}: trả về {{true}} nếu {{read(r)}} có version nhỏ hơn {{latestVersion}} (đọc trượt bản mới nhất đã ghi thành công).
+- {{quorumOverlap(int n, int r, int w)}}: static, trả về {{true}} nếu {{r + w > n}}.`,
+      starter: `class ReplicaStore {
+    ReplicaStore(int n) { throw new UnsupportedOperationException("TODO"); }
+    int write(int value, int w) { throw new UnsupportedOperationException("TODO"); }
+    int read(int r) { throw new UnsupportedOperationException("TODO"); }
+    boolean isStale(int latestVersion, int r) { throw new UnsupportedOperationException("TODO"); }
+    static boolean quorumOverlap(int n, int r, int w) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+ static int p=0,nf=0; static void c(String s, boolean b){nf++;if(b){p++;System.out.println("PASS "+s);}else System.out.println("FAIL "+s+": incorrect");}
+ public static void main(String[] x){
+  ReplicaStore s=new ReplicaStore(3);
+  int v1=s.write(10,2);
+  c("write returns version", v1==1);
+  c("quorum read sees latest when R+W>N", !s.isStale(v1,2) && s.read(2)==10);
+  ReplicaStore s2=new ReplicaStore(3);
+  int v2=s2.write(7,1);
+  c("stale read when R+W<=N", ReplicaStore.quorumOverlap(3,1,1)==false && s2.isStale(v2,1) && s2.read(1)==0);
+  ReplicaStore s3=new ReplicaStore(3);
+  int a=s3.write(1,2); int b=s3.write(2,2);
+  c("version increases and latest visible", b==a+1 && s3.read(2)==2);
+  c("overlap formula", ReplicaStore.quorumOverlap(5,3,3) && !ReplicaStore.quorumOverlap(5,2,3) && ReplicaStore.quorumOverlap(3,2,2));
+  boolean bad=false; try{ new ReplicaStore(0);}catch(IllegalArgumentException e){ bad=true; }
+  boolean bad2=false; try{ s.read(0);}catch(IllegalArgumentException e){ bad2=true; }
+  c("invalid args rejected", bad && bad2);
+  System.out.println("RESULT "+p+"/"+nf);
+ }
+}`,
+      reference: `class ReplicaStore {
+    private final int n;
+    private final int[] val;
+    private final int[] ver;
+    private int latestVer = 0;
+    ReplicaStore(int n){
+        if(n<1) throw new IllegalArgumentException();
+        this.n=n; this.val=new int[n]; this.ver=new int[n];
+    }
+    int write(int value, int w){
+        if(w<1||w>n) throw new IllegalArgumentException();
+        latestVer++;
+        for(int i=0;i<w;i++){ val[i]=value; ver[i]=latestVer; }
+        return latestVer;
+    }
+    int read(int r){
+        if(r<1||r>n) throw new IllegalArgumentException();
+        int bestV=-1, bestVal=0;
+        for(int i=n-r;i<n;i++){ if(ver[i]>bestV){ bestV=ver[i]; bestVal=val[i]; } }
+        return bestVal;
+    }
+    boolean isStale(int latestVersion, int r){
+        if(r<1||r>n) throw new IllegalArgumentException();
+        int bestV=-1;
+        for(int i=n-r;i<n;i++){ if(ver[i]>bestV) bestV=ver[i]; }
+        return bestV < latestVersion;
+    }
+    static boolean quorumOverlap(int n, int r, int w){ return r + w > n; }
+}`,
+      hints: [
+        'Lưu hai mảng độ dài N: {{val[i]}} và {{ver[i]}}. {{write}} tăng {{latestVer}} rồi cập nhật index 0..w-1; {{read}} duyệt n-r..n-1 chọn phần tử có {{ver}} lớn nhất.',
+        '{{isStale}} so sánh version lớn nhất nhìn thấy khi đọc r replica với {{latestVersion}} đã ghi thành công.',
+        '{{quorumOverlap}} chỉ là phép so sánh {{r + w > n}}; kiểm tra ví dụ N=3: (2,2) giao nhau, (1,1) thì không.'
+      ],
+      explain: `Mô hình cố định tập replica ghi là 0..W-1 và đọc là n-r..n-1 để quan sát rõ giao nhau: khi R+W>N hai dải luôn chồng (ví dụ W=2,R=2,N=3 => ghi 0,1 và đọc 1,2 giao ở index 1), nên {{read(2)}} luôn thấy version mới nhất sau {{write(...,2)}}. Khi W=1,R=1,N=3, ghi chạm index 0 còn đọc chỉ nhìn index 2 - không giao nhau - nên đọc ra giá trị cũ (stale). Điều kiện {{R+W>N}} bảo đảm mọi cặp tập hợp kích thước R,W đều có giao; {{R+W<=N}} thì tồn tại tập đọc không chứa replica vừa ghi. Hệ thực tế dùng version/timestamp (hoặc vector clock) để chọn bản thắng khi các replica trả về khác nhau.`
+    }, [
+      { q: 'Với N=5 replica, cấu hình nào đảm bảo mọi lần đọc (chọn bản version lớn nhất) thấy được lần ghi gần nhất đã xác nhận?', options: ['W=2, R=2', 'W=2, R=3', 'W=1, R=4', 'W=3, R=3'], answer: 3, explain: 'Cần R + W > N. Với N=5: (2,2)=4 không đủ, (2,3)=5 không đủ (phải lớn hơn N), (1,4)=5 không đủ, (3,3)=6 > 5 nên giao nhau chắc chắn.' },
+      { q: 'Khi R + W <= N, điều gì có thể xảy ra?', options: ['Hệ thống tự động chuyển sang chế độ nhất quán mạnh', 'Có thể đọc phải giá trị cũ (stale) vì tập replica đọc và tập replica vừa ghi có thể không giao nhau', 'Ghi sẽ bị từ chối', 'Mọi replica luôn có cùng dữ liệu'], answer: 1, explain: 'Nếu tổng nhỏ hơn hoặc bằng N, tồn tại khả năng chọn R replica để đọc nằm ngoài W replica vừa nhận ghi, nên không replica nào trong tập đọc có bản mới. Hệ không tự nâng cấp nhất quán; ghi vẫn có thể thành công theo W; replica không tự đồng bộ tức thì.' },
+      { q: 'Trong mô hình quorum, vì sao mỗi bản ghi/replica cần version (hoặc timestamp)?', options: ['Để nén dữ liệu', 'Để khi đọc từ R replica có thể chọn bản mới nhất trong các giá trị khác nhau', 'Để giảm số replica cần ghi', 'Để thay thế hoàn toàn cơ chế quorum'], answer: 1, explain: 'Khi R replica trả về giá trị khác nhau, client cần tiêu chí so sánh để biết bản nào mới hơn; version tăng đơn điệu hoặc timestamp phục vụ việc đó. Nó không nén dữ liệu, không giảm W, và không thay thế điều kiện giao nhau của quorum.' },
+      { q: 'Với N=3, W=1, R=1, phát biểu nào đúng?', options: ['Không bao giờ đọc được dữ liệu cũ', 'Có thể vừa đọc cũ vừa mất dữ liệu nếu replica duy nhất nhận ghi hỏng trước khi nhân bản', 'Luôn chậm hơn N=3, W=2, R=2', 'Tương đương nhất quán mạnh'], answer: 1, explain: 'W=1 nghĩa chỉ 1 replica xác nhận ghi: nếu nó hỏng trước khi sao sang replica khác, bản ghi mất; R=1 đọc từ 1 replica có thể không phải bản vừa ghi (R+W=2 <= 3). Đổi lại độ trễ thấp và sẵn sàng cao hơn khi node chết, nhưng không đảm bảo nhất quán mạnh.' }
+    ], ['quorum', 'replication', 'consistency']),
+
   );
 })();
