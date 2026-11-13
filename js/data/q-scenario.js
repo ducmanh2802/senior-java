@@ -7668,4 +7668,440 @@ AI viết được Terraform; nó không chịu trách nhiệm cho **phạm vi �
   ],
   tags: ['Terraform', 'infrastructure as code', 'policy as code', 'change management', 'ai-proof', 'case study']
 },
+{
+  id: 'scenario-131',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Sau khi deploy bản mới, CPU của service tăng lên gần 100% trên tất cả pod (trước đó chỉ 30–40%), p99 cũng tăng gấp 3 trong khi traffic không đổi. Bạn điều tra và xử lý thế nào?',
+  a: `**Tóm tắt:** CPU tăng ngay sau deploy gần như luôn do **code mới làm nhiều việc hơn trên mỗi request**, hoặc do **một đường đi tốn CPU** (vòng lặp, regex, parse, log, GC), chứ không phải do traffic. Tôi so sánh hai bản, xác định nơi đốt CPU bằng **async-profiler** và nhiều **thread dump**, đọc flame graph để tìm method nóng, sửa hoặc rollback; song song kiểm tra **CPU limit và throttling** vì container có thể bị bóp dù node còn CPU.
+
+### Vì sao CPU tăng ngay sau deploy
+- Traffic không đổi → CPU trên mỗi request tăng. Các nhóm nguyên nhân thường gặp:
+  1. **Code mới chạy nhiều hơn**: vòng lặp O(n²), regex có backtracking, parse JSON lớn, copy mảng, tính toán nặng trong request thay vì cache.
+  2. **N+1 query** hoặc query nặng hơn: nhiều round-trip DB, hoặc ORM map kết quả lớn (nhiều object tạm → GC nhiều).
+  3. **Log**: thêm log INFO/DEBUG trong vòng lặp; mỗi dòng log phải format chuỗi, rất tốn CPU khi 10 nghìn dòng/giây.
+  4. **GC**: cấu hình heap thay đổi, hoặc rò rỉ bộ nhớ làm GC chạy liên tục; các GC thread có thể chiếm 50–100% CPU.
+  5. **JIT**: vài phút đầu sau deploy chạy code chưa được tối ưu (C1/C2), nhưng hiện tượng này ngắn, không kéo dài hàng giờ.
+  6. **Lock/đồng bộ**: nhiều thread chờ lock hoặc spin, CPU tăng nhưng throughput lại giảm.
+
+### Điều tra từng bước
+1. **Xác nhận "100%" là của ai**: {{kubectl top pod}}, {{container_cpu_usage_seconds_total}}. Nếu usage chạm {{limit}} nhưng node còn idle thì đó là **CPU throttling** (kernel bóp CPU của container theo quota), latency tăng dù host khỏe.
+2. **Xem có phải GC không**: bật GC log của Java 17 bằng {{-Xlog:gc*:file=/tmp/gc.log:time,uptime,level,tags}} hoặc chạy {{jstat -gcutil <pid> 1s}}. Nếu old gen (vùng chứa object sống lâu) tăng liên tục và số Full GC tăng nhanh thì là rò rỉ, không phải code nóng.
+3. **Lấy 5–10 thread dump** liên tiếp cách nhau vài giây: {{jstack <pid>}} hoặc {{jcmd <pid> Thread.print}}. Tìm các thread {{http-nio-*}} đang RUNNABLE ở **cùng một stack** → đó là đường nóng.
+4. **Chạy async-profiler** 30–60 giây ở chế độ CPU: {{./profiler.sh -e cpu -d 30 -f /tmp/cpu.html <pid>}}. Flame graph (biểu đồ cột thể hiện thời gian CPU theo method) cho biết chính xác method nào chiếm CPU.
+5. **So sánh với bản trước**: {{git diff}} giữa hai tag, chỉ đọc phần nằm trên đường request.
+
+### Ví dụ code: regex có backtracking
+~~~java
+// TRƯỚC: nhóm lặp lồng nhau (a+)+ → khi không khớp, engine thử vô số cách chia chuỗi
+private static final Pattern BAD = Pattern.compile("^([a-zA-Z0-9]+)+$");
+
+// SAU: bỏ nhóm lặp lồng nhau; thêm giới hạn độ dài ở tầng trên
+private static final Pattern GOOD = Pattern.compile("^[a-zA-Z0-9]{1,64}$");
+~~~
+Giải thích: với input 30 ký tự, {{([a-zA-Z0-9]+)+}} có thể mất vài giây đến vài chục giây vì số cách chia chuỗi tăng theo cấp số nhân (khoảng 2 mũ n). Đây gọi là **catastrophic backtracking**. Một attacker chỉ cần gửi email 60 ký tự là đủ đốt gần trọn một CPU core cho mỗi request.
+
+### Bảng trade-off
+| Cách xử lý | Khi nào dùng | Rủi ro |
+|---|---|---|
+| Rollback ngay | CPU 100%, user bị ảnh hưởng, chưa rõ nguyên nhân | mất tính năng mới, có thể còn lỗi khác chờ |
+| Tăng pod / tăng CPU limit | thiếu tài nguyên tạm thời, DB còn chịu được | nếu do code thì chỉ trì hoãn sự cố |
+| Sửa code nóng | đã tìm ra method | cần test và deploy lại |
+| Bật profiler thường trực | hệ thống quan trọng | overhead nhẹ, cần bảo mật dữ liệu dump |
+
+### Pitfall
+- "CPU 100%" trên dashboard có thể là 100% của **limit 1 vCPU** chứ không phải của node; khi đó node còn idle nhưng pod bị throttling.
+- Một lần {{jstack}} không đủ: có thể bắt đúng lúc thread đang chờ; cần nhiều lần mới thấy method nóng.
+- Tăng heap khi rò rỉ chỉ làm GC đến muộn hơn, không chữa gốc.
+- Log DEBUG trong vòng lặp trên production: 10 nghìn dòng/giây đủ đốt một core.
+- Dùng regex do người dùng nhập mà không giới hạn độ dài là lỗ hổng DoS phổ biến.
+
+### Ví dụ đời thực
+Một service Java 17 trên Kubernetes, 6 pod, CPU 350m (0,35 core), sau release 10:00 tăng lên 980m với limit 1 vCPU; p99 từ 180ms lên 700ms; traffic vẫn 1.200 request/giây. {{kubectl top}} cho thấy CPU chạm limit và {{container_cpu_cfs_throttled_periods_total}} tăng mạnh. async-profiler 30 giây: 38% thời gian CPU nằm ở {{java.util.regex.Pattern$Curly.match0}}; thread dump xác nhận 20/32 thread {{http-nio}} đang ở đó. Nguyên nhân: validator email mới dùng regex {{^([a-zA-Z0-9._%+-]+)+@...}} trên email có ký tự lạ, input 60 ký tự do một client gửi. Sửa: đổi sang pattern không lồng nhóm, giới hạn 254 ký tự, thêm test với input xấu. Sau deploy 20:00: CPU 320m, p99 190ms. Thêm cảnh báo {{throttled_periods / periods > 0,2}} trong 5 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi bắt đầu bằng việc phân biệt CPU tăng do traffic hay do mỗi request. Traffic không đổi nên tôi tìm nơi đốt CPU. Trước hết tôi kiểm tra throttling: CPU usage có thể bằng limit nhưng node vẫn rảnh, khi đó phải tăng limit chứ không phải tối ưu code. Sau đó tôi xem GC log: nếu old gen tăng liên tục và Full GC dày thì là rò rỉ, không phải code nóng. Nếu không phải GC, tôi chạy async-profiler 30 giây ở chế độ CPU và đọc flame graph, kết hợp 5–10 thread dump để thấy thread http nio đang ở stack nào. Trong một sự cố, flame graph chỉ một regex có nhóm lặp trên email: input 60 ký tự làm engine thử vô số cách chia chuỗi, mỗi request đốt gần một core. Tôi sửa pattern, giới hạn độ dài, thêm test input xấu và cảnh báo throttling. Kết quả CPU về mức cũ sau vài phút."
+
+> Senior tip: trước khi tối ưu, hãy xác định CPU đang bị đốt bởi **app code, GC hay throttling**; ba hướng này có cách sửa hoàn toàn khác nhau.`,
+  follow: [
+    'Làm sao phân biệt CPU tăng do GC và do code ứng dụng?',
+    'CPU limit và CPU request trong Kubernetes ảnh hưởng thế nào tới throttling?',
+    'Nếu không có async-profiler thì bạn dùng công cụ nào để tìm method nóng?'
+  ],
+  tags: ['CPU', 'performance', 'async-profiler', 'JVM', 'Kubernetes', 'regex']
+},
+{
+  id: 'scenario-132',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'p99 của API tăng chậm theo từng ngày: tuần đầu 180ms, sau 3 tuần 900ms; CPU vẫn khoảng 40%, không deploy gì, traffic không đổi. Bạn điều tra thế nào?',
+  a: `**Tóm tắt:** p99 tăng tuyến tính theo ngày, kèm heap tăng dần và GC nhiều hơn, là dấu hiệu kinh điển của **rò rỉ bộ nhớ (memory leak)**: object không được giải phóng làm old gen đầy dần, GC chạy thường xuyên hơn và mỗi lần lâu hơn, nên một tỷ lệ nhỏ request bị "đứng hình" và đội p99. Tôi đo **heap còn lại sau mỗi Full GC** theo ngày, so **histogram class** ở hai thời điểm, tìm đường giữ tham chiếu bằng heap dump và MAT, sửa leak, rồi đặt cảnh báo theo **xu hướng** thay vì ngưỡng tuyệt đối.
+
+### Vì sao leak làm p99 tăng dần
+- Mỗi request tạo ra object; object sống lâu (cache, session, static collection, listener chưa gỡ) không bị GC.
+- **Old gen** (vùng heap chứa object sống lâu) đầy dần → **Full GC** (GC quét toàn bộ heap) xảy ra thường xuyên hơn; mỗi lần Full GC có **Stop-The-World** (mọi thread ứng dụng dừng) 200ms–2 giây.
+- p50 gần như không đổi vì phần lớn request không rơi vào pause; p99/p999 tăng mạnh vì pause rơi vào một tỷ lệ nhỏ request.
+- Theo ngày, **live set** (lượng bộ nhớ còn sống sau Full GC) tăng đều → đó là bằng chứng leak, không phải chỉ là tải.
+
+### Điều tra từng bước
+1. **Bật GC log** (Java 17): {{-Xlog:gc*:file=/tmp/gc.log:time,uptime,level,tags}}. Xem sau mỗi Full GC old gen còn bao nhiêu MB; nếu tăng đều mỗi ngày thì là leak.
+2. **So sánh histogram hai thời điểm**: {{jcmd <pid> GC.class_histogram}} hôm nay và 24 giờ sau; xem class nào tăng (ví dụ {{HashMap$Node}} tăng hàng triệu).
+3. **Chụp heap dump**: {{jcmd <pid> GC.heap_dump /tmp/heap.hprof}}; mở bằng Eclipse MAT, xem **Dominator Tree** (cây object giữ nhiều bộ nhớ nhất) và **Path to GC Roots** (đường tham chiếu khiến object không bị thu).
+4. **So sánh hai heap dump** trong MAT để lấy delta theo class.
+5. **Kiểm tra tăng theo tải**: nếu heap vẫn tăng khi traffic thấp thì leak đến từ timer/scheduler, không phải request.
+
+### Ví dụ code: cache tĩnh không giới hạn
+~~~java
+// SAI: cache toàn cục không giới hạn, sống suốt vòng đời JVM
+public class UserCache {
+  private static final Map<String, UserDTO> CACHE = new HashMap<>();
+  public static UserDTO get(String id) { return CACHE.computeIfAbsent(id, UserCache::load); }
+}
+
+// ĐÚNG: cache có giới hạn kích thước và TTL, không giữ dữ liệu nặng lâu
+private static final Cache<String, UserDTO> CACHE = Caffeine.newBuilder()
+    .maximumSize(50_000)
+    .expireAfterWrite(Duration.ofMinutes(10))
+    .build();
+~~~
+Giải thích: static map sống suốt vòng đời JVM; mỗi user mới thêm một entry và không bao giờ bị xóa, nên old gen tăng đều vài trăm KB mỗi ngày. {{Caffeine}} là thư viện cache trong bộ nhớ, tự loại entry khi vượt {{maximumSize}} hoặc hết {{expireAfterWrite}}.
+
+### Bảng: leak hay chỉ do tải
+| Dấu hiệu | Rò rỉ bộ nhớ | Chỉ do tải tăng |
+|---|---|---|
+| Live set sau Full GC theo ngày | tăng đều | ổn định |
+| Tăng khi traffic thấp | vẫn tăng | gần như không |
+| Full GC | dày dần, pause dài dần | ổn định |
+| Restart | chỉ giảm tạm thời | không cần |
+
+### Pitfall
+- So sánh heap **đang dùng** (used) là sai: nó dao động theo tải; phải so **sau Full GC**.
+- {{HeapDumpOnOutOfMemoryError}} chỉ chụp khi đã OOM; leak chậm thì không có dump.
+- Cache ngoài (Redis) không làm leak heap Java; leak thường nằm ở collection trong JVM.
+- Tăng heap chỉ kéo dài thời gian giữa hai lần restart.
+- Đặt cảnh báo "heap > 80%" dễ báo động giả vì JVM có thể chưa GC; nên đặt cảnh báo theo **tốc độ tăng live set**.
+
+### Ví dụ đời thực
+API Java 17, 4 pod, heap 2GB. Tuần 1 p99 180ms; tuần 3 p99 900ms. Live set sau Full GC tăng từ 620MB lên 1,45GB. GC log: Full GC từ 2 lần/ngày lên 40 lần/ngày, pause trung bình từ 120ms lên 480ms. {{jcmd GC.class_histogram}} cho thấy {{LinkedHashMap$Entry}} tăng khoảng 40 triệu; Path to GC Roots chỉ vào một static {{Map}} trong {{ReportCache}} đang giữ {{byte[]}} của các file PDF đã render (không xóa sau khi gửi). Sửa: chuyển sang Caffeine {{maximumSize(10_000)}} và {{expireAfterWrite(30 phút)}}, xóa entry sau khi gửi. Sau 1 tuần: live set ổn định 640MB, p99 về 190ms. Thêm cảnh báo: live set sau Full GC tăng quá 10% trong 24 giờ.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không nhìn heap đang dùng vì nó dao động theo tải; tôi nhìn heap còn lại sau mỗi Full GC. Nếu con số đó tăng đều theo ngày thì đó là rò rỉ. Tôi bật GC log, chạy histogram class hai lần cách một ngày để biết class nào tăng, rồi chụp heap dump và dùng MAT xem dominator tree cùng path to GC roots. Thủ phạm thường là một static collection hoặc cache không giới hạn, hoặc listener không được gỡ. Tôi sửa bằng cache có giới hạn và TTL hoặc gỡ đăng ký, sau đó theo dõi live set sau Full GC để xác nhận. Tôi cũng đặt cảnh báo theo xu hướng chứ không theo ngưỡng tuyệt đối, vì JVM có thể chưa GC dù heap cao. Nếu cần, tôi thêm test tải để chắc chắn bộ nhớ không tăng theo thời gian."
+
+> Senior tip: một đường leak 200MB/ngày nghe có vẻ nhỏ, nhưng sau 10 ngày nó biến thành 40 lần Full GC mỗi ngày và p99 gấp 5 lần; hãy cảnh báo sớm bằng live set.`,
+  follow: [
+    'Vì sao p50 không đổi nhưng p99 tăng mạnh khi có GC pause?',
+    'Bạn bật GC log và đọc chỉ số nào trên Java 17?',
+    'Làm sao phân biệt leak do cache trong JVM và do số lượng session tăng?'
+  ],
+  tags: ['memory leak', 'GC', 'JVM', 'heap dump', 'performance']
+},
+{
+  id: 'scenario-133',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Giờ cao điểm, API đồng loạt trả lỗi {{Connection is not available, request timed out after 30000ms}}; HikariCP cho thấy active connections bằng maximumPoolSize và số thread chờ (pending) tăng dần. Bạn điều tra và xử lý thế nào?',
+  a: `**Tóm tắt:** Pool cạn nghĩa là **mọi connection đang bị giữ** và request mới phải xếp hàng; nguyên nhân gần như luôn là **connection bị giữ quá lâu** (transaction dài, gọi HTTP trong transaction, N+1, connection leak) chứ không phải "pool quá nhỏ" — tăng pool chỉ đẩy sự cố sang DB. Tôi đo 4 số của Hikari (active, idle, pending, thời gian giữ), tìm chỗ giữ connection lâu bằng leak detection và thread dump, sửa thời lượng giữ, đặt timeout fail-fast, và chỉ tăng pool sau khi tính theo công thức và kiểm tra giới hạn của DB.
+
+### Vì sao pool cạn
+- Mỗi request vào API cần một connection từ pool. Nếu connection được trả lại ngay sau query (vài mili giây), pool 10–20 là đủ cho hàng nghìn request/giây.
+- Nếu transaction kéo dài (gọi service ngoài, gửi email, đọc file, xử lý trong {{@Transactional}}), connection bị giữ hàng trăm mili giây đến vài giây.
+- Nếu connection không được đóng (leak), pool cạn dần và không hồi phục sau khi cao điểm qua đi.
+- DB có giới hạn {{max_connections}}; pool quá lớn làm DB hết connection, swap hoặc throttling, càng chậm.
+
+### Đo và hiểu 4 con số
+- {{hikaricp_connections_active}}: số connection đang được dùng.
+- {{hikaricp_connections_idle}}: số connection rảnh trong pool.
+- {{hikaricp_connections_pending}}: số thread đang chờ lấy connection — số này tăng nghĩa là pool đã cạn.
+- {{hikaricp_connections_usage_seconds}} (hoặc thời gian acquired): thời gian một request giữ connection.
+- Log của Hikari khi cạn: {{HikariPool- 1 - Pool stats (total=10, active=10, idle=0, waiting=5)}}.
+
+### Công thức và cấu hình
+~~~yaml
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 20      # không phải càng lớn càng tốt
+      minimum-idle: 5
+      connection-timeout: 3000   # 3 giây: fail nhanh thay vì treo 30 giây
+      validation-timeout: 1000
+      leak-detection-threshold: 5000   # cảnh báo connection giữ quá 5 giây
+      max-lifetime: 1800000      # 30 phút, ngắn hơn wait_timeout của DB
+~~~
+- Ước tính số connection cần: {{pool ≈ QPS × thời gian giữ connection (giây)}}. Ví dụ 800 request/giây × 15 mili giây = 12 connection; nếu thời gian giữ là 200 mili giây thì cần 160 connection, và câu trả lời đúng là sửa code chứ không phải tăng pool.
+- Kiểm tra giới hạn của DB: {{SHOW max_connections}} (MySQL) hoặc {{SELECT current_setting('max_connections')}} (PostgreSQL). Tổng pool của tất cả instance cộng admin phải nhỏ hơn giới hạn này.
+
+### Code: không giữ connection khi gọi HTTP
+~~~java
+// SAI: connection bị giữ trong suốt lời gọi HTTP 500ms
+@Transactional
+public void place(Order o) {
+  orderRepo.save(o);
+  paymentClient.charge(o);   // 500ms — connection vẫn bị giữ
+}
+
+// ĐÚNG: transaction chỉ bọc phần DB, gọi HTTP nằm ngoài
+private final TransactionTemplate tx;
+
+public void place(Order o) {
+  tx.execute(status -> orderRepo.save(o));  // connection chỉ giữ vài ms
+  paymentClient.charge(o);                  // gọi HTTP ngoài transaction
+}
+~~~
+Giải thích: {{TransactionTemplate}} cho phép giới hạn phạm vi transaction đúng bằng đoạn code cần nó. Khi lời gọi HTTP chậm nằm trong transaction, connection bị giữ bằng thời gian của HTTP cộng thời gian DB.
+
+### Bảng trade-off
+| Cách | Khi nào dùng | Rủi ro |
+|---|---|---|
+| Tăng pool | DB còn dư tài nguyên, thời gian giữ ngắn | DB quá tải, latency tăng toàn hệ thống |
+| Rút ngắn transaction | đúng nguyên nhân | cần sửa code và test kỹ |
+| Timeout ngắn + circuit breaker | downstream chậm | user nhận lỗi nhanh hơn nhưng không treo |
+| Tách read pool | workload đọc nhiều | phức tạp, phải xử lý replication lag |
+
+### Pitfall
+- {{@Transactional}} gọi từ method khác trong cùng class (self-invocation) không tạo transaction — lỗi hay gặp nhưng không phải nguyên nhân cạn pool.
+- {{connection-timeout}} mặc định 30 giây làm request treo 30 giây; nên đặt 2–3 giây để fail nhanh.
+- Tăng pool mà không sửa transaction chỉ dời sự cố sang DB.
+- Trong JDBC thuần, quên đóng {{Connection}}/{{Statement}} là leak; dùng try-with-resources.
+- Không bật {{leak-detection-threshold}} trên production 24/7 vì nó thêm chi phí; chỉ bật khi điều tra.
+
+### Ví dụ đời thực
+API thanh toán 10 pod, Hikari maximumPoolSize 20, DB max_connections 300. Cao điểm 20:00, 900 request/giây, lỗi {{Connection is not available}} sau 30 giây. Hikari: active=20, idle=0, pending=45. Thread dump: 30 thread {{http-nio}} đang ở {{paymentClient.charge}} bên trong {{@Transactional}}, mỗi lời gọi mất 1,8 giây do đối tác chậm. Connection bị giữ 1,8 giây, nên số connection cần khoảng 900 × 1,8 = 1.620 (theo công thức), pool 20 chắc chắn cạn. Xử lý: (1) đưa lời gọi HTTP ra ngoài transaction, connection chỉ còn giữ cho 2 query 8 mili giây, cần khoảng 15 connection; (2) thêm circuit breaker 2 giây; (3) đặt connection-timeout 3 giây. Sau sửa: pending=0, lỗi 0, p99 320ms, pool vẫn 20. Nếu tăng pool lên 200 thì 10 pod × 200 = 2.000 vượt xa max_connections 300, DB sẽ báo {{too many connections}} và sập toàn hệ thống.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thấy pool cạn, tôi không tăng pool ngay. Tôi xem bốn số của Hikari: active, idle, pending và thời gian giữ connection. Nếu active bằng maximum và pending tăng thì connection đang bị giữ quá lâu. Tôi bật leak detection, lấy thread dump để xem thread nào đang giữ connection và đang làm gì. Trong một sự cố, 30 thread đang gọi API đối tác 1,8 giây bên trong transaction, nên pool 20 không thể chịu 900 request mỗi giây. Tôi đưa lời gọi HTTP ra ngoài transaction, chỉ giữ connection cho phần DB, đặt connection-timeout 3 giây và circuit breaker. Sau đó pending về 0. Nếu đúng là thiếu connection, tôi tính lại theo QPS và thời gian giữ, kiểm tra max_connections của DB rồi mới tăng pool."
+
+> Senior tip: connection pool là tài nguyên dùng chung; hãy đo **thời gian giữ connection** trước khi tăng kích thước, vì tăng pool thường chỉ làm DB chậm hơn.`,
+  follow: [
+    'Công thức ước lượng số connection cần thiết là gì?',
+    'Làm sao phát hiện connection leak trong JDBC thuần?',
+    'Tách read/write sang hai pool có những vấn đề gì?'
+  ],
+  tags: ['HikariCP', 'connection pool', 'database', 'performance', 'transaction']
+},
+{
+  id: 'scenario-134',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Consumer lag của topic {{order-events}} tăng liên tục và không bao giờ giảm, dù đã tăng số consumer từ 3 lên 6. Không có lỗi, consumer vẫn commit offset đều. Bạn phân tích năng lực xử lý và đưa ra kế hoạch thế nào?',
+  a: `**Tóm tắt:** Lag = tốc độ produce trừ tốc độ consume. Nếu lag tăng đều, **consume rate nhỏ hơn produce rate một cách hệ thống**; thêm consumer chỉ hiệu quả khi số partition còn dư, vì mỗi partition trong một group chỉ được gán cho **một** consumer. Tôi đo produce và consume rate theo từng partition, thời gian xử lý mỗi batch, rồi tối ưu theo thứ tự: ghi DB theo lô, tách I/O khỏi poll thread, tăng partition nếu cần, và chỉ thêm consumer sau khi đã hết cách tối ưu đơn luồng.
+
+### Hiểu đúng lag
+- Topic chia thành các **partition**; mỗi partition là một hàng đợi có thứ tự, mỗi message có **offset** (số thứ tự tăng dần).
+- **Consumer group**: các consumer cùng {{group.id}} chia nhau partition. Mỗi partition chỉ thuộc về một consumer tại một thời điểm.
+- 6 consumer với 12 partition → mỗi consumer 2 partition. 6 consumer với 6 partition → consumer thứ 7 sẽ **nhàn rỗi** hoàn toàn.
+- Lag = tổng trên các partition của (offset mới nhất trừ offset đã commit).
+- Hai số quyết định: {{records-consumer-rate}} (message/giây mỗi consumer) và {{records-lag-max}} (lag lớn nhất của một partition).
+
+### Điều tra
+1. **Xem lag theo từng partition**: nếu chỉ vài partition tăng thì là lệch key (hot partition) hoặc một consumer chậm; nếu tất cả tăng đều thì thiếu năng lực chung.
+2. **Đo produce rate**: metric broker {{kafka.server:type=BrokerTopicMetrics,name=MessagesInPerSec}}; consume rate từ consumer metrics.
+3. **Đo thời gian xử lý một batch**: {{max.poll.records × thời gian xử lý mỗi record}} có vượt {{max.poll.interval.ms}} không? Nếu vượt, consumer bị kick khỏi group, gây rebalance và lag tăng thêm.
+4. **Thread dump hoặc async-profiler**: consumer thread đang chờ DB, gọi HTTP hay chờ lock?
+5. **Kiểm tra cấu hình**: {{max.poll.records}} quá lớn cộng xử lý tuần tự làm throughput thấp dù CPU chưa cao.
+
+### Sơ đồ: vì sao ghi từng record làm chậm
+~~~seq
+title: Consumer chậm vì ghi DB từng record
+actors: Producer | Kafka | Consumer | DB
+Producer -> Kafka: produce 5.000 msg/s
+Kafka -> Consumer: poll batch 500
+Consumer -> DB: INSERT từng dòng (500 lần)
+DB --> Consumer: mỗi lần 2ms
+Consumer -> Kafka: commit offset
+note Consumer..DB: 500 × 2ms = 1s cho 1 batch, chỉ 500 msg/s
+~~~
+Giải thích: nếu ghi 500 dòng trong một transaction bằng JDBC batch mất khoảng 10ms, throughput tăng hàng chục lần.
+
+### Cách sửa theo thứ tự
+1. **Ghi DB theo lô**: gom {{max.poll.records}} thành một batch, dùng {{saveAll}} hoặc JDBC batch, commit offset sau khi ghi xong.
+2. **Tách I/O khỏi poll thread**: poll rồi đẩy sang worker pool; phải tự quản lý offset (chỉ commit sau khi xử lý xong) và bảo đảm idempotent.
+3. **Tăng partition**: nếu mỗi partition đã tối ưu mà vẫn thiếu, tăng số partition (ví dụ 12 sang 24) rồi tăng consumer tương ứng.
+4. **Tách luồng nóng**: luồng cần xử lý nhanh đi topic riêng, luồng nặng (gửi email, tạo PDF) đi topic khác.
+5. **Giảm việc trên mỗi message**: gộp nhiều lời gọi API, cache dữ liệu ít đổi.
+
+### Bảng trade-off
+| Cách | Khi nào | Rủi ro |
+|---|---|---|
+| Ghi DB theo lô | nhiều record nhỏ | cần idempotent, xử lý lỗi cả batch |
+| Tăng consumer | còn partition dư | vô ích nếu đã bão hòa partition |
+| Tăng partition | đã tối ưu từng partition | đổi phân phối key, phải migrate |
+| Xử lý async | nhiều I/O, cần throughput | quản lý offset và thứ tự phức tạp |
+| Thêm topic ưu tiên | có luồng nóng | vận hành nhiều topic hơn |
+
+### Pitfall
+- Thêm consumer khi số partition đã bằng số consumer chỉ làm tăng rebalance, không tăng throughput.
+- Commit offset trước khi xử lý xong sẽ mất message khi crash; commit sau khi xử lý nhưng xử lý quá lâu sẽ bị kick và xử lý trùng.
+- {{max.poll.records}} lớn cộng xử lý chậm làm vượt {{max.poll.interval.ms}}.
+- Batch ghi DB mà một dòng lỗi làm cả batch rollback; cần retry hoặc dead-letter queue.
+- Chỉ nhìn tổng lag mà không nhìn lag theo partition sẽ không thấy hot partition.
+
+### Ví dụ đời thực
+Topic {{order-events}} có 12 partition, 3 consumer, produce 8.000 message/giây, lag tăng 200 nghìn mỗi giờ. Consumer metrics: consume 2.400 message/giây. Thread dump: consumer thread đang ở {{INSERT INTO order_events}}, mỗi record 2ms, {{max.poll.records}} 500 → 1 giây cho một batch, 3 consumer chỉ đạt khoảng 1.500 message/giây. Xử lý: (1) dùng JDBC batch với {{rewriteBatchedStatements=true}} (MySQL), 500 dòng mất khoảng 12ms, một consumer đạt khoảng 6.000 message/giây; (2) tăng partition lên 24 và consumer lên 6; (3) theo dõi lag theo từng partition. Sau một ngày: consume 9.500 message/giây, lớn hơn produce 8.200, lag giảm dần về 0 vào giờ thấp điểm. Nếu chỉ tăng consumer từ 3 lên 6 mà giữ 12 partition thì mỗi consumer vẫn 2 partition và tốc độ ghi từng record vẫn là trần, lag tiếp tục tăng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi bắt đầu bằng công thức: lag tăng nghĩa là consume rate nhỏ hơn produce rate. Tôi xem lag theo từng partition để biết là thiếu năng lực chung hay lệch key. Nếu tất cả partition tăng đều, tôi đo thời gian xử lý một batch và tìm chỗ nghẽn bằng thread dump. Ở đây consumer thread đang insert từng record, mỗi record 2 mili giây, batch 500 mất một giây. Tôi chuyển sang ghi theo lô bằng JDBC batch và điều chỉnh max.poll.records, sau đó mới tăng partition và consumer. Tôi cũng đặt cảnh báo theo lag từng partition, không chỉ tổng lag. Nếu sau khi tối ưu vẫn thiếu, tôi cân nhắc tách luồng nóng sang topic riêng."
+
+> Senior tip: trước khi thêm consumer, hãy đếm partition: thêm consumer vượt số partition chỉ làm rebalance và không tăng throughput.`,
+  follow: [
+    'Vì sao mỗi partition chỉ có một consumer trong group?',
+    'Commit offset trước hay sau khi xử lý? Trade-off là gì?',
+    'Tăng partition ảnh hưởng thế nào tới thứ tự và phân phối theo key?'
+  ],
+  tags: ['Kafka', 'consumer lag', 'throughput', 'partition', 'batch']
+},
+{
+  id: 'scenario-135',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Sau mỗi lần deploy, DB bị quá tải trong 5–10 phút: QPS tăng gấp 20 lần, p99 tăng vọt, có pod bị restart. Cache dường như mất sạch sau deploy. Bạn xử lý thế nào?',
+  a: `**Tóm tắt:** Cache mất sau deploy thường do **cache nằm trong process** (in-memory, mỗi pod một bản) và pod mới khởi động với cache rỗng, hoặc do key/version đổi làm toàn bộ entry cũ miss. Khi hàng nghìn request cùng miss một key nóng, tất cả cùng đập DB — gọi là **thundering herd** (đàn ngựa phi nước đại). Tôi xử lý theo lớp: cache ngoài ổn định, **warmup có kiểm soát**, **single-flight** để một JVM chỉ có một request đi DB cho cùng key, **TTL jitter**, **stale-while-revalidate**, và **deploy từng phần**.
+
+### Vì sao deploy làm mất cache
+1. **Cache in-process** (Caffeine, Guava): mỗi pod giữ một map riêng; pod mới khởi động là rỗng. Deploy thay dần pod → tỷ lệ hit giảm dần, DB tăng dần.
+2. **Cache ngoài Redis nhưng đổi key prefix hoặc version theo build**: toàn bộ key cũ không còn được đọc.
+3. **Redis bị flush hoặc restart khi deploy**: nếu cache dùng chung instance với dữ liệu khác, hoặc script deploy chạy {{FLUSHDB}}.
+4. **TTL của key nóng trùng thời điểm deploy**: nhiều key hết hạn cùng lúc.
+
+### Thundering herd là gì
+Hàng nghìn request cùng đọc một key vừa hết hạn; tất cả cùng đi DB và cùng tạo một giá trị, khiến DB nhận gấp hàng chục lần tải. Tệ hơn khi key nóng (ví dụ {{product:123}} trong flash sale) hết hạn đúng lúc cao điểm.
+
+### Sơ đồ: mất cache sau deploy
+~~~seq
+title: Mất cache sau deploy
+actors: LB | Pod mới | Redis | DB
+LB -> Pod mới: 1.000 request/giây
+Pod mới -> Redis: GET product:123 (miss)
+note Pod mới..Redis: cache in-process rỗng sau restart
+Pod mới -> DB: SELECT product (1.000 request cùng lúc)
+DB --> Pod mới: trả kết quả chậm, connection pool cạn
+~~~
+Giải thích: khi cache trong process rỗng, mọi request đều phải hỏi Redis; nếu Redis cũng miss thì tất cả dồn xuống DB.
+
+### Giải pháp theo lớp
+1. **Warmup có kiểm soát**: khi khởi động, nạp các key nóng (ví dụ top 1.000 product) trước khi nhận traffic; {{readinessProbe}} chỉ bật sau khi warmup xong. Không nạp quá nhiều để tránh OOM.
+2. **Single-flight / request coalescing**: trong một JVM, chỉ một thread đi DB cho cùng key, các thread khác chờ và nhận cùng kết quả.
+~~~java
+// Gộp các request cùng key: chỉ một lời gọi DB, các request khác chờ
+private final ConcurrentHashMap<String, CompletableFuture<Result>> inflight = new ConcurrentHashMap<>();
+
+public Result load(String key) throws Exception {
+  CompletableFuture<Result> f =
+      inflight.computeIfAbsent(key, k -> CompletableFuture.supplyAsync(() -> loadFromDb(k)));
+  try {
+    return f.get(3, TimeUnit.SECONDS);   // timeout để không chờ vô hạn
+  } finally {
+    inflight.remove(key, f);             // chỉ xóa đúng future của mình
+  }
+}
+~~~
+Giải thích: 1.000 request cùng key chỉ tạo một {{CompletableFuture}}; 999 request còn lại chờ tối đa 3 giây và nhận cùng kết quả. Nếu không có timeout, một DB treo sẽ làm mọi thread chờ vô hạn.
+3. **TTL jitter**: thay vì TTL cố định 300 giây cho mọi key, dùng 300 giây cộng trừ ngẫu nhiên 30 giây để chặn hàng loạt key hết hạn cùng lúc.
+4. **Stale-while-revalidate**: trả giá trị cũ ngay, đồng thời refresh ngầm; DB chỉ nhận một request refresh.
+5. **Cache ngoài ổn định**: dùng Redis làm cache dùng chung; key có version của **schema dữ liệu** chứ không phải của build, để deploy không làm mất toàn bộ key.
+6. **Progressive delivery**: {{maxUnavailable}} nhỏ, {{maxSurge}} hợp lý, deploy từng đợt; theo dõi QPS của DB và tạm dừng nếu vượt ngưỡng.
+7. **Chống hot key**: nhân bản key nóng (thêm hậu tố ngẫu nhiên) để nhiều shard Redis cùng giữ; hoặc dùng local cache TTL 1–2 giây cho key siêu nóng.
+
+### Bảng trade-off
+| Cách | Khi nào | Rủi ro |
+|---|---|---|
+| Warmup | cache có key nóng xác định | khởi động lâu, cần dữ liệu |
+| Single-flight | cùng JVM, key trùng | thread chờ, cần timeout |
+| TTL jitter | nhiều key cùng TTL | không giải quyết miss đầu tiên |
+| Stale-while-revalidate | chấp nhận dữ liệu cũ vài giây | có thể trả dữ liệu cũ |
+| Redis cluster | cache lớn, cần HA | vận hành phức tạp |
+| Progressive rollout | deploy thường xuyên | thời gian deploy lâu hơn |
+
+### Pitfall
+- Warmup nạp toàn bộ bảng làm pod OOM hoặc không bao giờ ready.
+- Single-flight không có timeout làm thread chờ vô hạn khi DB treo.
+- Đặt TTL quá ngắn cho key nóng làm miss thường xuyên.
+- Dùng cache in-process cho dữ liệu thay đổi theo user làm các pod trả kết quả khác nhau.
+- Deploy với {{maxUnavailable=100%}} làm mất cache hoàn toàn.
+
+### Ví dụ đời thực
+Service product 6 pod, Caffeine local cache 10 nghìn key, TTL 5 phút. Khi deploy (rolling, {{maxUnavailable=1}}), DB QPS từ 1.500 lên 32.000, p99 1,2 giây, 2 pod OOM do connection pool cạn. Nguyên nhân: pod mới có cache rỗng; key {{product:hot}} của một sản phẩm khuyến mãi nhận 4.000 request/giây; cả 6 pod cùng miss. Xử lý: (1) chuyển key nóng sang Redis cộng local cache 1 giây; (2) single-flight trong JVM; (3) warmup top 500 key theo số lần truy cập của hôm trước, readiness chỉ bật sau khi nạp xong; (4) TTL jitter cộng trừ 20%; (5) deploy {{maxUnavailable=0}}, {{maxSurge=1}}, tạm dừng 2 phút giữa các đợt. Sau 2 tuần: QPS của DB khi deploy chỉ tăng 2,1 lần thay vì 20 lần; p99 khi deploy 260ms; không pod nào restart.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi phân biệt cache in-process và cache ngoài. Nếu là Caffeine trong từng pod, deploy làm pod mới rỗng nên hit giảm; nếu là Redis, có thể key prefix đổi theo version hoặc Redis bị flush. Khi cache mất, hàng nghìn request cùng miss một key nóng sẽ đập DB cùng lúc, đó là thundering herd. Tôi xử lý theo lớp: warmup top key nóng trước khi nhận traffic và chỉ bật readiness sau khi xong; single-flight để một JVM chỉ có một request đi DB cho cùng key; TTL jitter để key không hết hạn đồng loạt; stale-while-revalidate để trả dữ liệu cũ và refresh ngầm; và deploy từng phần kèm theo dõi QPS của DB. Tôi cũng kiểm tra script deploy không flush Redis."
+
+> Senior tip: một key nóng 4.000 request/giây đủ làm sập DB khi cache mất; hãy đo QPS của các key nóng trước mỗi lần deploy.`,
+  follow: [
+    'Single-flight hoạt động thế nào khi có nhiều instance?',
+    'Warmup bao nhiêu key là đủ và làm sao chọn key?',
+    'Stale-while-revalidate ảnh hưởng gì tới tính đúng đắn của dữ liệu?'
+  ],
+  tags: ['cache', 'thundering herd', 'Redis', 'deploy', 'performance']
+},
+{
+  id: 'scenario-136',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Một service 8 pod: 7 pod bình thường, 1 pod liên tục trả 500 và timeout, log báo lỗi kết nối DB và phân giải DNS. Các pod cùng image, cùng cấu hình. Bạn điều tra và xử lý thế nào?',
+  a: `**Tóm tắt:** Khi chỉ một pod lỗi dù cùng image, nguyên nhân gần như luôn nằm ở **thứ khác code**: node (đĩa, mạng, CPU throttling, kernel), cấu hình cấp node hoặc pod (ConfigMap/Secret chưa đồng bộ, env, timezone, DNS, JVM flags do resource limit khác), hoặc dữ liệu cục bộ (đĩa tạm đầy). Tôi so sánh pod lỗi với pod tốt theo bốn trục **node → cấu hình → runtime → traffic**, dùng {{kubectl describe}}, log node, {{/actuator/env}}, thread dump và JFR, rồi sửa bằng cách loại bỏ cấu hình trôi nổi (image bất biến, config tập trung, admission policy).
+
+### Vì sao cùng image mà hành xử khác nhau
+- **Node khác nhau**: một node có đĩa sắp đầy, network plugin lỗi, CPU bị chia sẻ với pod khác (noisy neighbour), đồng hồ lệch, MTU khác, hoặc CoreDNS pod trên node đó lỗi.
+- **Resource limit khác nhau**: pod đặt request/limit khác làm JVM tính heap theo cgroup khác, hoặc CPU limit quá nhỏ gây throttling nặng.
+- **Config chưa đồng bộ**: ConfigMap/Secret mount dạng volume có độ trễ cập nhật khác nhau; env chỉ áp dụng cho pod mới, pod cũ giữ env cũ.
+- **Local state**: cache hoặc file tạm trên {{emptyDir}}, log trên node, session cục bộ.
+- **JVM flags khác nhau**: {{MaxRAMPercentage}} hoặc {{ActiveProcessorCount}} cho ra heap và số GC thread khác.
+
+### Điều tra theo bốn trục
+1. **Node**: {{kubectl get pod -o wide}} để biết node; {{kubectl describe node}} xem {{DiskPressure}}, {{MemoryPressure}}, {{PIDPressure}} và điều kiện node; trên node chạy {{df -h}}, {{free -m}}, {{dmesg}} để xem OOM killer hoặc lỗi mạng.
+2. **Pod**: {{kubectl describe pod}} xem Events ({{OOMKilled}}, probe fail), container ID và số lần restart.
+3. **Cấu hình**: {{kubectl get pod <tên> -o yaml}} cho cả pod lỗi và pod tốt rồi {{diff}}: image digest, env, args, ConfigMap/Secret, resource limits, nodeSelector, tolerations, serviceAccount, securityContext.
+4. **Runtime**: {{kubectl exec}} vào pod lỗi: {{env}}, {{cat /etc/resolv.conf}}, {{nslookup}}, {{df -h}}, {{jcmd 1 VM.flags}}, {{jcmd 1 Thread.print}}, {{curl}} tới DB.
+5. **Traffic**: kiểm tra pod có nhận request đặc biệt không (sticky session, shard theo user) bằng cách đối chiếu request ID trong log.
+
+### Sơ đồ: so sánh pod lỗi với pod tốt
+~~~seq
+title: So sánh pod lỗi và pod tốt
+actors: Pod lỗi | Node | API server | Pod tốt
+Pod lỗi -> Node: kiểm tra disk, CPU, network
+Node --> Pod lỗi: DiskPressure, throttling
+Pod lỗi -> API server: describe pod, so sánh spec
+API server --> Pod lỗi: env và ConfigMap khác
+Pod lỗi -> Pod tốt: diff YAML, so sánh image digest
+~~~
+Giải thích: cùng image digest loại trừ khả năng khác code; khi đó khác biệt nằm ở node hoặc cấu hình lúc chạy.
+
+### Ví dụ code: heap theo cgroup
+~~~yaml
+resources:
+  requests: { cpu: "500m", memory: "1Gi" }
+  limits:   { cpu: "1",    memory: "2Gi" }
+~~~
+Giải thích: JVM 17 đọc cgroup để tính heap mặc định. Cùng image nhưng limit 2Gi và 4Gi cho ra heap khác nhau; pod có limit nhỏ sẽ GC nhiều hơn hoặc OOM.
+
+### Bảng: nguyên nhân một pod lỗi
+| Trục | Dấu hiệu | Cách xác nhận |
+|---|---|---|
+| Node | chỉ pod trên một node lỗi | {{kubectl get pod -o wide}}, describe node |
+| Cấu hình | env hoặc ConfigMap khác | diff YAML, {{exec env}} |
+| Resource | CPU throttling, OOM | metrics cgroup, {{kubectl top}} |
+| Mạng/DNS | phân giải lỗi, timeout | {{nslookup}}, {{curl}} từ pod |
+| Dữ liệu cục bộ | đĩa đầy | {{df -h}} trong pod hoặc trên node |
+| Traffic | chỉ pod đó nhận request đặc biệt | log request ID, sticky session |
+
+### Pitfall
+- Chỉ đọc log ứng dụng mà không xem node sẽ bỏ sót DiskPressure hoặc lỗi mạng.
+- {{kubectl describe pod}} không hiện env cũ; phải so sánh YAML của pod đang chạy.
+- ConfigMap mount dạng volume cập nhật trễ theo chu kỳ của kubelet; env thì không tự cập nhật.
+- Xóa pod để nó lên node khác có thể chữa triệu chứng nhưng không tìm nguyên nhân, nên bệnh sẽ tái diễn.
+- Không đặt {{requests}} làm scheduler xếp quá nhiều pod trên một node, gây noisy neighbour.
+
+### Ví dụ đời thực
+Tám pod {{payment-api}}, một pod trên node {{ip-10-0-3-14}} trả 500 {{UnknownHostException: db-primary.internal}}. Bảy pod còn lại bình thường. {{kubectl get pod -o wide}}: tất cả cùng image digest, khác node. {{kubectl describe node}}: {{DiskPressure=True}}, {{/var/lib/docker}} đã dùng 92% do log container của một job khác. {{df -h}} trong pod: {{/tmp}} trên {{emptyDir}} đầy. Trong pod lỗi, {{/etc/resolv.conf}} trỏ tới CoreDNS pod trên node đó; {{nslookup}} timeout; CoreDNS pod trên node đó {{CrashLoopBackOff}} vì đĩa đầy không ghi được. Xử lý: dọn log trên node, bật log rotation và cảnh báo {{DiskPressure > 80%}}, cordon node, xóa CoreDNS pod để nó lên node khác; đặt {{requests}} cho job ghi log; đổi {{/tmp}} của payment-api sang volume có {{sizeLimit}}. Pod hết lỗi sau 10 phút. Sau đó thêm policy cấm pod ghi log không giới hạn lên node.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi chỉ một pod lỗi, tôi không đọc code trước mà so sánh pod đó với pod tốt. Trục đầu tiên là node: {{kubectl get pod -o wide}} để biết node, {{kubectl describe node}} để xem DiskPressure, MemoryPressure, PIDPressure và dmesg. Trục thứ hai là cấu hình: diff YAML của pod lỗi và pod tốt, kiểm tra image digest, env, ConfigMap, Secret, resource limit, securityContext. Trục thứ ba là runtime: exec vào pod xem env, resolv.conf, df, JVM flags, thread dump. Trong một sự cố, pod lỗi ở node có DiskPressure và CoreDNS pod trên node đó crash, nên DNS trong pod timeout và log báo UnknownHostException. Tôi cordon node, dọn đĩa, thêm log rotation và cảnh báo, rồi cho pod chạy lại trên node khác. Sau đó tôi đặt request/limit và sizeLimit để tránh tái diễn."
+
+> Senior tip: cùng image không có nghĩa là cùng môi trường; node, cgroup và cấu hình mount mới là nơi khác biệt trú ẩn.`,
+  follow: [
+    'Làm sao so sánh cấu hình giữa hai pod một cách hiệu quả?',
+    'ConfigMap và Secret được cập nhật thế nào khi pod đang chạy?',
+    'JVM điều chỉnh heap theo cgroup ra sao?'
+  ],
+  tags: ['Kubernetes', 'troubleshooting', 'DNS', 'configuration', 'production']
+},
 );
