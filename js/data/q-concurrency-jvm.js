@@ -9913,4 +9913,867 @@ OSR (On-Stack Replacement) cho phép JVM thay thế một method đang chạy tr
   ],
   tags: ['JIT', 'C1', 'C2', 'tiered compilation', 'OSR', 'warm-up', 'profiling']
 },
+{
+  id: 'concurrency-068',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Bạn thiết kế pipeline xử lý 12.000 message/giây từ Kafka, ghi xuống DB với tốc độ chỉ 10.000/giây. Chọn loại {{BlockingQueue}} nào ({{ArrayBlockingQueue}}, {{LinkedBlockingQueue}}, {{DelayQueue}}, {{PriorityBlockingQueue}}, {{SynchronousQueue}}), dung lượng bao nhiêu, và xử lý ra sao khi hàng đợi đầy?',
+  a: `**Tóm tắt:** {{BlockingQueue}} là hàng đợi an toàn khi nhiều thread cùng dùng, có thêm hành vi chờ: {{put()}} chờ khi hàng đợi đầy, {{take()}} chờ khi hàng đợi rỗng. Năm loại hay dùng khác nhau ở cấu trúc và ngữ nghĩa: {{ArrayBlockingQueue}} (mảng vòng, bắt buộc có giới hạn, một lock), {{LinkedBlockingQueue}} (danh sách liên kết, hai lock, mặc định KHÔNG giới hạn), {{DelayQueue}} (chỉ lấy được khi hết hạn trễ), {{PriorityBlockingQueue}} (lấy theo mức ưu tiên), {{SynchronousQueue}} (không có chỗ chứa, giao tay trực tiếp). Chọn theo hình dạng workload, và tính dung lượng bằng định luật Little chứ không đoán.
+
+### Hàng đợi thường khác hàng đợi blocking ở đâu
+Giao diện {{Queue}} có {{offer()}} và {{poll()}} không chờ: hàng đợi đầy thì {{offer()}} trả về {{false}}, rỗng thì {{poll()}} trả về {{null}}. Cách viết producer–consumer bằng vòng lặp kiểm tra như vậy vừa tốn CPU (busy-waiting), vừa có khe hở: hai thread cùng thấy còn chỗ rồi cùng chen vào.
+
+{{BlockingQueue}} thêm {{put()}} và {{take()}}: khi không đủ điều kiện, thread gọi {{LockSupport.park()}} để nhả CPU và được đánh thức khi có thread khác gọi {{signal()}}. Ba cặp method cần phân biệt:
+
+- {{put(e)}} / {{take()}}: chờ không giới hạn thời gian.
+- {{offer(e, timeout, unit)}} / {{poll(timeout, unit)}}: chờ có hạn, trả về {{false}} / {{null}} nếu hết giờ.
+- {{offer(e)}} / {{poll()}}: thử ngay, không chờ.
+
+### Bên trong từng loại (điều quyết định hiệu năng)
+| Loại | Cấu trúc bên trong | Khoá | Có giới hạn? | Đặc điểm |
+|---|---|---|---|---|
+| {{ArrayBlockingQueue}} | Mảng {{Object[]}} vòng + {{count}} + {{takeIndex}} + {{putIndex}} | Một {{ReentrantLock}} + hai {{Condition}} (notEmpty, notFull) | Bắt buộc (constructor nhận capacity) | Cấp phát một lần nên ít tạo rác, cache-friendly; mọi thao tác dùng chung một lock nên put và take tranh nhau |
+| {{LinkedBlockingQueue}} | Danh sách liên kết các {{Node}} | Hai khoá: {{putLock}} và {{takeLock}} | Tuỳ chọn, mặc định {{Integer.MAX_VALUE}} | put và take chạy song song được; mỗi phần tử cấp phát một node nên tạo rác nhiều hơn |
+| {{DelayQueue}} | {{PriorityQueue}} các phần tử {{Delayed}} + biến {{leader}} | Một {{ReentrantLock}} + {{Condition}} | Không | Chỉ {{take()}} được khi {{getDelay()}} còn lại bằng 0; phần tử đầu hàng đợi luôn là phần tử hết hạn sớm nhất |
+| {{PriorityBlockingQueue}} | Heap nhị phân trong mảng | Một {{ReentrantLock}} | Không | {{take()}} trả phần tử nhỏ nhất theo {{Comparator}}; iterator không theo thứ tự ưu tiên |
+| {{SynchronousQueue}} | Không có mảng, không có node: chỉ có hàng chờ thread đang chờ | Một trong hai: hàng đợi FIFO (fair) hoặc ngăn xếp LIFO (non-fair) | Dung lượng 0 | Mỗi {{put()}} phải khớp đúng một {{take()}}; {{Executors.newCachedThreadPool()}} dùng loại này |
+
+Ba chi tiết bên trong đáng nhớ:
+
+1. {{ArrayBlockingQueue}} dùng một lock cho cả hai chiều, nên producer và consumer tranh chấp cùng một monitor. Bù lại, mảng được cấp phát sẵn nên CPU cache hoạt động tốt và không có phân vùng bộ nhớ.
+2. {{LinkedBlockingQueue}} dùng hai lock nên put và take không chặn nhau. Nhưng mặc định nó không giới hạn: nếu producer nhanh hơn consumer, hàng đợi lớn dần đến khi hết heap. Luôn truyền capacity tường minh.
+3. {{SynchronousQueue}} không lưu phần tử nào. Thread đến sau sẽ ghép với thread đang chờ (matching), vì vậy độ trễ thấp nhưng producer bị chặn ngay khi không có consumer rảnh.
+
+### Tính dung lượng bằng định luật Little
+Định luật Little: số phần tử trung bình trong hàng đợi L = tốc độ tới λ × thời gian ở lại trung bình W. Muốn biết hàng đợi phình ra bao nhiêu, hãy so λ với tốc độ tiêu thụ μ:
+
+- λ = 12.000/giây, μ = 10.000/giây → dư 2.000/giây.
+- Hàng đợi 10.000 chỗ sẽ đầy sau 10.000 / 2.000 = 5 giây.
+- Nếu muốn chịu được 30 giây consumer chậm (ví dụ consumer đang restart), cần ít nhất 30 × 2.000 = 60.000 chỗ.
+
+Cách làm thực tế: lấy W mục tiêu (ví dụ chấp nhận trễ 0,5 giây) rồi L = 12.000 × 0,5 = 6.000, sau đó chọn capacity gấp 1,5–2 lần để có đệm cho burst: 10.000–12.000.
+
+### Khi hàng đợi đầy: bốn chính sách
+| Chính sách | Hành vi | Phù hợp | Rủi ro |
+|---|---|---|---|
+| {{put()}} chặn | Producer dừng lại, áp lực lan ngược về nguồn (backpressure) | Batch job, consumer tự do về nhịp | Nếu producer là thread request của Tomcat, request bị giữ và pool có thể cạn |
+| {{offer(e, timeout)}} rồi bỏ + đếm | Ghi metric {{dropped}}, gửi sang bảng retry hoặc DLQ | API trực tuyến, cần trả lời nhanh | Mất dữ liệu nếu không có nơi lưu |
+| {{offer(e)}} rồi ném | Trả 429/503 cho client | API có rate limit | Client phải tự thử lại |
+| {{CallerRunsPolicy}} | Thread gọi {{execute()}} tự chạy task | Ứng dụng có nhiều nguồn gọi, muốn tự chậm lại | Ảnh hưởng thời gian phản hồi của request |
+
+### Ví dụ code: bounded queue + offer có timeout + poison pill
+~~~java
+// Hàng đợi có giới hạn: khi đầy, producer bị chặn hoặc bỏ có kiểm soát
+BlockingQueue<Task> queue = new ArrayBlockingQueue<>(10_000);   // bounded -> có backpressure
+final AtomicLong dropped = new AtomicLong();
+
+Thread producer = new Thread(() -> {
+    try {
+        while (running) {                              // running là cờ do shutdown hook đặt false
+            Task t = readNext();                       // đọc từ Kafka/DB/file
+            if (!queue.offer(t, 200, TimeUnit.MILLISECONDS)) {
+                dropped.incrementAndGet();             // đầy 200ms: đếm và bỏ, không chặn vô hạn
+            }
+        }
+        queue.put(Task.poisonPill());                  // tín hiệu kết thúc cho consumer
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();            // khôi phục cờ ngắt, không nuốt
+    }
+}, "producer");
+
+Thread consumer = new Thread(() -> {
+    try {
+        while (true) {
+            Task t = queue.take();                     // rỗng thì park, không quay vòng
+            if (t.isPoisonPill()) break;
+            handle(t);
+        }
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+    }
+}, "consumer");
+~~~
+
+### Pitfall thực tế trên production
+- {{LinkedBlockingQueue}} không truyền capacity: mặc định gần như vô hạn, producer nhanh hơn consumer một chút là heap tăng đều đến khi {{OutOfMemoryError: Java heap space}}. Đây là lỗi hay gặp nhất.
+- Dùng {{ArrayBlockingQueue}} với capacity rất nhỏ (vài trăm) trong khi consumer thỉnh thoảng chậm 2 giây: producer là thread HTTP bị chặn, số request đang xử lý tăng, pool cạn, cả service đứng.
+- Không có poison pill hoặc cờ dừng: {{shutdown()}} của executor chỉ đánh dấu, các thread vẫn chờ {{take()}} mãi; tiến trình không thoát.
+- Đọc {{size()}} rồi mới quyết định: giữa hai lệnh, thread khác đã thêm/bớt phần tử. Hãy để {{offer(e, timeout)}} quyết định.
+- Bật fair = true cho {{ArrayBlockingQueue}} mà không cần: đánh thức theo FIFO làm throughput giảm khoảng 10–30% trong khi chỉ cần "tương đối công bằng".
+- Coi hàng đợi là nơi lưu trữ lâu dài: restart là mất hết. Hàng đợi chỉ là bộ đệm; nguồn sự thật phải là DB/Kafka.
+- Không đo độ dài hàng đợi: khi queue đầy, hệ thống vẫn "chạy" nhưng độ trễ tăng gấp nhiều lần mà không có log nào báo.
+
+### Ví dụ đời thực
+Một pipeline nạp dữ liệu vào Elasticsearch: producer đọc Kafka 12.000 msg/giây, 8 consumer ghi được 10.000 msg/giây (mỗi consumer 1.250 msg/giây). Ban đầu dùng {{ArrayBlockingQueue}} capacity 10.000 và {{put()}} chặn: sau 5 giây hàng đợi đầy, producer bị chặn liên tục, Kafka consumer lag tăng từ 2.000 lên 480.000 message, cảnh báo lúc 3 giờ sáng. Đo bằng Micrometer: {{executor.queue.size}} chạm 10.000, {{executor.queue.remaining_capacity}} bằng 0 trong 80% thời gian.
+
+Xử lý: (1) tăng consumer lên 12 (tổng 15.000 msg/giây, dư 3.000 để có đệm), (2) giữ {{ArrayBlockingQueue}} nhưng nâng lên 20.000 (tương ứng 6,7 giây đệm), (3) đổi {{put()}} thành {{offer(t, 100, MILLISECONDS)}} và tăng biến {{dropped}} để không bao giờ chặn thread nạp, (4) thêm alert khi queue size > 70% trong 60 giây, (5) ghi message bị bỏ vào bảng retry có hạn để nạp lại.
+
+Kết quả sau 1 tuần: lag Kafka p99 từ 90 giây xuống 4 giây, số message bị bỏ 0,02% và đều được nạp lại, không còn cảnh báo ban đêm.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn hàng đợi theo hình dạng tải, không theo thói quen. Với producer và consumer chạy liên tục trong một JVM, tôi dùng ArrayBlockingQueue có giới hạn vì nó cấp phát một lần, ít tạo rác và độ trễ ổn định; LinkedBlockingQueue chỉ khi cần hàng đợi lớn và muốn put/take song song, nhưng luôn phải truyền capacity vì mặc định nó không giới hạn và sẽ gây OOM. DelayQueue dùng cho task hẹn giờ, PriorityBlockingQueue cho ưu tiên nghiệp vụ, SynchronousQueue cho handoff trực tiếp. Dung lượng tôi tính bằng định luật Little: với 12.000 message/giây và thời gian xử lý 0,5 giây thì cần khoảng 6.000 chỗ, rồi chọn gấp 1,5–2 lần để có đệm. Khi đầy, tôi ưu tiên backpressure có kiểm soát: offer với timeout, đếm số phần tử bị bỏ và ghi sang bảng retry, thay vì để thread request bị chặn vô hạn. Cuối cùng tôi luôn đo độ dài hàng đợi và đặt cảnh báo ở mức 70%, vì hàng đợi đầy là hiện tượng im lặng: hệ thống vẫn chạy nhưng độ trễ đã tăng gấp nhiều lần."
+
+> Senior tip: Hãy coi hàng đợi là "phanh" của hệ thống, không phải "bình chứa". Khi queue đầy, điều tốt nhất là làm chậm nguồn (backpressure) hoặc bỏ có kiểm soát và đếm được; điều tệ nhất là để nó phình ra âm thầm cho tới lúc OOM. Và đừng quên poison pill: một hàng đợi không có tín hiệu kết thúc sẽ giữ thread lại sau khi bạn bấm dừng.`,
+  follow: [
+    'ArrayBlockingQueue với fair=true ảnh hưởng throughput thế nào?',
+    'LinkedBlockingQueue dùng hai lock thì được và mất gì?',
+    'DelayQueue dùng leader-follower để làm gì?'
+  ],
+
+tags: ['BlockingQueue', 'producer-consumer', 'backpressure', 'ArrayBlockingQueue', 'LinkedBlockingQueue', 'Little\'s law', 'poison pill']
+},
+{
+  id: 'concurrency-069',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Một tác vụ cần đồng thời ba thứ: (a) giới hạn tối đa 50 request đang gọi API đối tác, (b) chờ đúng 8 shard trả kết quả rồi tổng hợp, (c) 4 worker chạy 3 vòng xử lý theo lô và phải gặp nhau ở cuối mỗi vòng. Bạn chọn {{Semaphore}}, {{CountDownLatch}}, {{CyclicBarrier}} hay {{Phaser}} cho từng phần, và giải thích vì sao (ai nhả, đếm cái gì, dùng lại được không)?',
+  a: `**Tóm tắt:** Bốn công cụ này giải quyết bốn bài toán khác nhau, đừng dùng lẫn: {{Semaphore}} đếm "số chỗ vào" nên nhiều thread có thể cùng vào (tối đa N), {{CountDownLatch}} đếm "số sự kiện đã xảy ra" và chỉ dùng được một lần, {{CyclicBarrier}} cho N thread gặp nhau rồi cùng đi tiếp và lặp lại được nhiều vòng, {{Phaser}} là barrier nhiều pha cho phép số thành viên thay đổi. Trong ví dụ: Semaphore cho (a), CountDownLatch cho (b), CyclicBarrier cho (c) khi số worker cố định, Phaser khi số worker thay đổi theo lô.
+
+### Bốn câu hỏi để chọn đúng công cụ
+1. Tôi đang đếm **chỗ vào** (cho phép tối đa bao nhiêu thread chạy cùng lúc) hay đếm **sự kiện đã hoàn thành**?
+2. Sau khi đủ điều kiện, tôi cần **một người đi tiếp** hay **tất cả cùng đi tiếp**?
+3. Tình huống này xảy ra **một lần** hay **lặp lại nhiều vòng**?
+4. Số người tham gia có **đổi** giữa các vòng không?
+
+Bảng trả lời nhanh:
+
+| Công cụ | Đếm cái gì | Sau khi đủ thì sao | Dùng lại | Ai nhả / kết thúc |
+|---|---|---|---|---|
+| {{Semaphore}} | Số giấy phép còn lại (permits) | Thread đang chờ được cấp phép, tối đa N thread vào | Có, vô hạn | Bất kỳ thread nào cũng gọi {{release()}} được (không cần là thread đã acquire) |
+| {{CountDownLatch}} | Số lần {{countDown()}} đã gọi, khởi tạo bằng N | Các thread {{await()}} đi tiếp | Không, đếm về 0 là hết | Bất kỳ thread nào gọi {{countDown()}} |
+| {{CyclicBarrier}} | Số thread đã tới rào chắn, so với {{parties}} | Tất cả cùng đi tiếp; barrier tự reset sang generation mới | Có, tự động | Thread cuối cùng tới sẽ chạy {{barrierAction}} rồi mở rào |
+| {{Phaser}} | Số party đã tới trong pha hiện tại | Tất cả cùng sang pha kế tiếp; pha có thể kết thúc | Có, nhiều pha | Thread gọi {{arrive()}} / {{arriveAndDeregister()}}; pha kết thúc khi {{onAdvance()}} trả true |
+
+### Semaphore: đếm chỗ vào
+Bên trong là một lớp kế thừa {{AbstractQueuedSynchronizer}} với {{state}} chính là số giấy phép. {{acquire()}} thử đổi {{state}} từ N xuống N-1 bằng CAS; nếu không đủ giấy phép thì thread bị đưa vào hàng đợi CLH và {{park()}}. {{release()}} tăng state rồi đánh thức người kế tiếp. Hai điểm cần nhớ:
+
+- Giấy phép **không thuộc về thread nào**: thread A acquire, thread B release vẫn hợp lệ. Điều này rất tiện (ví dụ một thread khác trả lại giấy phép khi timeout) nhưng cũng rất dễ rò rỉ: nếu quên {{release()}} trong {{finally}}, số giấy phép giảm dần và hệ thống "chết từ từ".
+- Constructor nhận {{fair}}: {{true}} thì thread chờ được đánh thức theo thứ tự đến (FIFO), {{false}} (mặc định) thì throughput cao hơn nhưng có thể có thread bị bỏ đói.
+
+### CountDownLatch: đếm sự kiện, một lần
+Bên trong cũng là AQS với {{state}} = số đếm. {{countDown()}} giảm state; khi về 0, AQS đánh thức toàn bộ thread đang {{await()}}. Đặc điểm quan trọng: **không reset được**. Nếu cần chờ nhiều lần, phải tạo latch mới cho mỗi lần, hoặc dùng {{Phaser}} / {{CyclicBarrier}}.
+
+Vì không có chủ sở hữu, {{countDown()}} phải nằm trong {{finally}}: nếu shard thứ 5 ném exception và không đếm xuống, {{await()}} sẽ chờ đến vô hạn (hoặc đến khi hết timeout). Đó là lỗi production kinh điển: "tổng hợp bị treo, không log gì".
+
+### CyclicBarrier: gặp nhau nhiều vòng
+Bên trong là một {{ReentrantLock}} + {{Condition}} và một biến {{generation}}. Mỗi thread gọi {{await()}}: nếu chưa đủ {{parties}}, nó {{await()}} trên condition; thread cuối cùng tới sẽ chạy {{barrierAction}} (nếu có) rồi {{signalAll()}} và tăng generation. Nhờ generation, barrier tự dùng lại được ở vòng sau.
+
+Ba cái bẫy:
+- {{await()}} trả về chỉ số của thread đến (từ {{parties - 1}} xuống 0), không phải "thành công".
+- Nếu {{barrierAction}} ném exception, barrier bị đánh dấu hỏng: mọi thread khác nhận {{BrokenBarrierException}} và phải gọi {{reset()}} mới dùng lại được.
+- {{parties = 1}}: {{await()}} trả về ngay lập tức, không chờ ai. Nếu bạn vô tình đặt 1, vòng lặp sẽ chạy không đồng bộ mà không báo lỗi.
+
+### Phaser: nhiều pha, số thành viên thay đổi
+{{Phaser}} dùng một số nguyên {{state}} đóng gói nhiều thông tin (pha hiện tại, số party, số đã tới, cờ kết thúc) và một cây (treap) các node chờ. Điểm mạnh: số thành viên có thể tăng/giảm giữa các pha bằng {{register()}} và {{arriveAndDeregister()}}. Pha kết thúc khi {{onAdvance(phase, parties)}} trả về {{true}} — mặc định là khi số party còn 0.
+
+Ví dụ hay dùng: xử lý lô theo tầng, mỗi tầng có số worker khác nhau (tầng 1 có 4 worker, tầng 2 có 8 worker), các worker phải đồng bộ sau mỗi tầng.
+
+### Code: cả bốn công cụ trong một luồng xử lý
+~~~java
+Semaphore partner = new Semaphore(50);                 // (a) tối đa 50 request song song
+CountDownLatch shards = new CountDownLatch(8);         // (b) chờ đúng 8 shard, dùng một lần
+CyclicBarrier batch = new CyclicBarrier(4);                // (c) 4 worker, 3 vòng, tự reset
+
+void callPartner() throws InterruptedException {
+    partner.acquire();
+    try { http.post(url); }                            // phần gọi mạng
+    finally { partner.release(); }                     // luôn nhả, kể cả khi lỗi
+}
+
+void fanOut(int id) {
+    pool.execute(() -> {
+        try { queryShard(id); }
+        catch (RuntimeException e) { log.error("shard {} lỗi", id, e); }
+        finally { shards.countDown(); }                // đếm cả khi lỗi, tránh await treo
+    });
+}
+
+void runRounds() throws Exception {
+    shards.await(5, TimeUnit.SECONDS);                 // chờ 8 shard, có timeout
+    for (int w = 0; w < 4; w++) {                      // 4 worker, mỗi worker chạy 3 vòng
+        final int id = w;
+        pool.execute(() -> {
+            for (int round = 0; round < 3; round++) {
+                try {
+                    doPart(id, round);
+                    batch.await(10, TimeUnit.SECONDS);  // gặp nhau ở cuối mỗi vòng
+                } catch (Exception e) {
+                    throw new IllegalStateException(e);  // barrier broken: dừng cả lô
+                }
+            }
+        });
+    }
+}
+~~~
+
+### Pitfall thực tế trên production
+- {{Semaphore}}: {{acquire()}} mà thiếu {{release()}} trong {{finally}}. Hệ thống chạy được vài giờ rồi chậm dần vì không còn giấy phép; log không có lỗi.
+- {{CountDownLatch}}: {{await()}} không có timeout. Một shard treo (network) làm cả tác vụ treo theo, thread bị giữ, pool cạn.
+- {{CountDownLatch}} dùng lại: sau khi đếm về 0, latch không thể "reset"; nhiều người cố gọi lại và nhận kết quả sai (await trả về ngay).
+- {{CyclicBarrier}}: số party không khớp số thread thật sự tham gia, hoặc một worker chết giữa vòng, làm barrier hỏng và mọi vòng sau ném {{BrokenBarrierException}}.
+- {{Phaser}}: không ai gọi {{arriveAndDeregister()}}, nên số party không bao giờ về 0 và pha không kết thúc; thread chờ mãi.
+- Dùng {{CyclicBarrier}} cho "chờ tất cả xong một lần" thay vì {{CountDownLatch}}: barrier phức tạp hơn, có barrierAction, dễ sai hơn mà không được lợi gì.
+
+### Ví dụ đời thực
+Service tổng hợp giá: mỗi request gọi 8 shard (mỗi shard 200–800ms), rồi gọi API đối tác có giới hạn 50 request đồng thời. Ban đầu dùng {{CountDownLatch(8)}} với {{await()}} không timeout. Khi một shard gặp sự cố mạng 30 giây, 300 request bị giữ thread, p99 tăng từ 780ms lên 2,4 giây rồi 12 giây, và pool 200 thread cạn sau 40 giây; log chỉ có một dòng "shard 6 timeout" mỗi phút.
+
+Điều tra: {{jstack}} cho thấy 300 thread ở trạng thái WAITING trên {{CountDownLatch.await()}}, không thread nào bị BLOCKED. Nguyên nhân: shard 6 ném exception trước khi {{countDown()}}, latch còn 1, {{await()}} chờ mãi.
+
+Sửa: (1) chuyển {{countDown()}} vào {{finally}}, (2) đổi {{await()}} thành {{await(3, SECONDS)}} và trả về kết quả một phần kèm cảnh báo "insufficient_shards", (3) bọc API đối tác bằng {{Semaphore(50)}} có {{tryAcquire(200, MILLISECONDS)}} để không xếp hàng vô hạn, (4) thêm metric số shard thành công và số request bị cắt.
+
+Kết quả: p99 từ 12 giây xuống 810ms, thread tối đa dùng 90/200, số request trả về "một phần dữ liệu" là 0,3% và đều được ghi log để đối soát.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn theo ngữ nghĩa, không theo tên. Semaphore đếm số chỗ vào: tôi dùng nó để giới hạn 50 request đồng thời gọi API đối tác, luôn acquire/release trong try/finally vì giấy phép không gắn với thread, quên release là hệ thống chậm dần mà không có lỗi. CountDownLatch đếm số sự kiện đã xảy ra và chỉ dùng một lần: tôi dùng để chờ 8 shard, đặt countDown trong finally và luôn await có timeout, vì nếu một shard lỗi mà không đếm xuống thì cả tác vụ treo. CyclicBarrier cho các worker gặp nhau ở cuối mỗi vòng rồi tự reset: tôi dùng khi 4 worker chạy 3 vòng xử lý theo lô. Phaser khi số thành viên thay đổi giữa các pha, ví dụ tầng đầu 4 worker, tầng sau 8 worker. Trong một sự cố, tôi từng thấy 300 thread WAITING trên CountDownLatch.await vì một shard ném exception trước khi đếm xuống; sửa bằng finally, timeout và metric số shard thành công, p99 từ 12 giây về 810ms."
+
+> Senior tip: Nếu bạn thấy một đoạn code dùng CyclicBarrier chỉ để chờ một lần, hãy đổi sang CountDownLatch; nếu dùng CountDownLatch trong vòng lặp, hãy đổi sang CyclicBarrier hoặc Phaser. Chọn sai công cụ không làm chương trình sai ngay, nó làm chương trình sai vào ngày bạn cần nhất — lúc hệ thống đang quá tải.`,
+  follow: [
+    'Semaphore fair khác unfair ở điểm nào khi tải cao?',
+    'CyclicBarrier bị broken thì phải làm gì để dùng lại được?',
+    'Phaser kết thúc một pha dựa vào điều kiện nào?'
+  ],
+
+tags: ['Semaphore', 'CountDownLatch', 'CyclicBarrier', 'Phaser', 'AQS', 'BrokenBarrierException', 'fan-out']
+},
+{
+  id: 'concurrency-070',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Giải thích từng tham số của {{ThreadPoolExecutor}} ({{corePoolSize}}, {{maximumPoolSize}}, {{keepAliveTime}}, {{workQueue}}, {{threadFactory}}, {{handler}}), thứ tự quyết định "tạo thread hay xếp hàng" trong {{execute()}}, và chọn {{RejectedExecutionHandler}} nào cho API request và cho batch job? Bạn đo pool bằng chỉ số nào?',
+  a: `**Tóm tắt:** {{ThreadPoolExecutor}} lưu trạng thái trong một số nguyên {{ctl}}: 3 bit cao là trạng thái vòng đời (RUNNING, SHUTDOWN, STOP, TIDYING, TERMINATED), 29 bit thấp là số worker đang chạy. {{execute()}} quyết định theo đúng thứ tự: còn dưới {{corePoolSize}} thì tạo thread mới; ngược lại thử xếp vào queue; nếu queue từ chối thì tạo thêm thread đến {{maximumPoolSize}}; nếu vẫn không được thì gọi {{RejectedExecutionHandler}}. Hệ quả quan trọng: queue không giới hạn làm {{maximumPoolSize}} trở nên vô nghĩa.
+
+### Sáu tham số và ý nghĩa thật
+| Tham số | Ý nghĩa | Hệ quả nếu đặt sai |
+|---|---|---|
+| {{corePoolSize}} | Số thread luôn tồn tại (trừ khi bật {{allowCoreThreadTimeOut}}) | Đặt quá cao: tốn bộ nhớ stack và tranh chấp; quá thấp: request phải chờ tạo thread |
+| {{maximumPoolSize}} | Trần số thread khi queue đã đầy | Đặt quá cao: khi tải tăng đột ngột, tạo hàng trăm thread và làm CPU/DB quá tải |
+| {{keepAliveTime}} + {{unit}} | Thời gian thread ngoài core được giữ trước khi bị tiêu huỷ | Quá ngắn: tạo thread liên tục; quá dài: giữ thread vô ích |
+| {{workQueue}} | Nơi chứa task khi chưa có thread | {{SynchronousQueue}}: tạo thread tối đa ngay; queue không giới hạn: không bao giờ vượt core |
+| {{threadFactory}} | Cách tạo thread: tên, daemon, mức ưu tiên, {{UncaughtExceptionHandler}} | Tên mặc định {{pool-1-thread-1}} làm thread dump vô dụng |
+| {{handler}} | Xử lý khi bị từ chối | Chính sách sai làm mất task âm thầm |
+
+### Thứ tự bên trong execute(), từng bước
+~~~text
+execute(command):
+ 1. Nếu workerCount < corePoolSize        -> addWorker(command, true)   // tạo thread core
+ 2. Nếu pool đang RUNNING và queue.offer  -> (xếp hàng thành công)
+       2a. Nếu trạng thái đổi sau khi offer -> remove & reject
+       2b. Nếu workerCount == 0            -> addWorker(null, false)   // đảm bảo có thread để chạy queue
+ 3. Nếu không xếp được (queue đầy) và workerCount < maximumPoolSize
+                                          -> addWorker(command, false) // tạo thread ngoài core
+ 4. Nếu vẫn thất bại                      -> handler.rejectedExecution(command, this)
+~~~
+
+Từ đó rút ra ba kết luận hay bị hỏi:
+
+- Với {{LinkedBlockingQueue}} không giới hạn (mặc định của {{Executors.newFixedThreadPool}}), bước 3 không bao giờ xảy ra: pool luôn có đúng {{corePoolSize}} thread.
+- Với {{SynchronousQueue}} (mặc định của {{newCachedThreadPool}}), bước 2 gần như luôn thất bại, nên pool tạo thread đến {{maximumPoolSize}} — đó là lý do cached pool có thể bùng nổ hàng nghìn thread.
+- {{prestartCoreThread()}} / {{prestartAllCoreThreads()}} tạo thread trước, tránh trả tiền tạo thread ở request đầu tiên.
+
+### RejectedExecutionHandler: bốn chính sách có sẵn
+| Handler | Hành vi | Dùng khi | Rủi ro |
+|---|---|---|---|
+| {{AbortPolicy}} (mặc định) | Ném {{RejectedExecutionException}} | Hệ thống cần biết ngay là quá tải | Nếu không bắt, request trả 500; nếu là CompletableFuture, lỗi bị bọc trong CompletionException |
+| {{CallerRunsPolicy}} | Thread gọi {{execute()}} tự chạy task | Có nhiều nguồn gọi và muốn tự chậm lại | Nếu người gọi là thread Tomcat, thời gian phản hồi tăng vọt; nếu pool đã shutdown, task bị bỏ im lặng |
+| {{DiscardPolicy}} | Bỏ task, không báo | Dữ liệu có thể mất, ví dụ metric | Mất dữ liệu không dấu vết |
+| {{DiscardOldestPolicy}} | Bỏ task cũ nhất trong queue rồi thử lại | Task cũ đã lỗi thời (ví dụ snapshot giá) | Bỏ nhầm task quan trọng |
+
+Handler tuỳ biến thường dùng: ghi log + tăng counter + ném exception có mã lỗi; hoặc ghi task vào bảng DB để xử lý sau; hoặc {{wait}} có giới hạn (blocking producer).
+
+### Đo pool bằng chỉ số nào
+- {{getPoolSize()}}: số worker hiện tại (so với {{maximumPoolSize}} để biết có đang mở rộng).
+- {{getActiveCount()}}: số worker đang chạy task (không tính worker rảnh).
+- {{getQueue().size()}} và {{remainingCapacity()}}: mức sử dụng hàng đợi — chỉ số quan trọng nhất cho backpressure.
+- {{getCompletedTaskCount()}}, {{getTaskCount()}}: thông lượng và tỷ lệ hoàn thành.
+- {{getLargestPoolSize()}}: trần thực tế đã dùng; nếu nó bằng core và queue luôn đầy, pool đang bị "nghẽn ở core".
+- Số lần bị từ chối (đếm trong handler) — phải luôn bằng 0 trên hệ thống ổn định.
+
+Cảnh báo gợi ý: queue dùng > 70% trong 60 giây, {{activeCount == maximumPoolSize}} trong 5 phút, rejection > 0 trong 1 phút.
+
+### Code: handler + thread factory + đo pool
+~~~java
+ThreadFactory factory = r -> {
+    Thread t = new Thread(r, "order-worker-" + SEQ.incrementAndGet());
+    t.setDaemon(false);
+    t.setUncaughtExceptionHandler((th, ex) -> log.error("worker chết", ex));
+    return t;
+};
+
+RejectedExecutionHandler handler = (task, pool) -> {
+    rejected.incrementAndGet();                        // metric: phải có cảnh báo
+    log.warn("pool {} từ chối task, queue={}", pool.getPoolSize(), pool.getQueue().size());
+    throw new RejectedExecutionException("queue đầy");
+};
+
+ThreadPoolExecutor pool = new ThreadPoolExecutor(
+        8,                                             // core
+        16,                                            // max
+        60, TimeUnit.SECONDS,                          // keepAlive cho thread ngoài core
+        new ArrayBlockingQueue<>(10_000),              // bounded: max mới có ý nghĩa
+        factory,
+        handler);
+pool.prestartAllCoreThread();                        // tránh tạo thread ở request đầu
+~~~
+
+### Pitfall thực tế trên production
+- Dùng {{Executors.newFixedThreadPool}} hoặc {{newCachedThreadPool}}: queue không giới hạn (OOM) hoặc số thread không giới hạn (cạn tài nguyên). Luôn tự dựng {{ThreadPoolExecutor}}.
+- {{ThreadPoolTaskExecutor}} của Spring mặc định {{corePoolSize = 1}}, {{queueCapacity = Integer.MAX_VALUE}}: trên thực tế chỉ có một thread xử lý, còn lại xếp hàng vô hạn, và {{maxPoolSize}} không bao giờ được dùng.
+- Bật {{CallerRunsPolicy}} trong controller đồng bộ: request bị chậm theo đúng nhịp consumer, p99 tăng vọt và thread Tomcat bị giữ.
+- Không đặt tên thread: khi sự cố xảy ra, thread dump chỉ có {{pool-5-thread-3}}, không biết pool nào.
+- Không có {{UncaughtExceptionHandler}}: task ném exception, worker chết, pool tạo worker mới, và lỗi chỉ nằm trong stderr.
+- Dùng {{shutdown()}} rồi vẫn {{submit()}}: task bị từ chối mà code không xử lý {{RejectedExecutionException}}.
+- Không {{awaitTermination}} sau {{shutdown}}: tiến trình thoát khi task còn đang chạy giữa lệnh ghi DB.
+- Thay đổi kích thước pool lúc chạy mà không hiểu ràng buộc: {{setCorePoolSize}} chỉ nhận giá trị không vượt {{maximumPoolSize}}, nếu không sẽ bị kẹp lại.
+
+### Ví dụ đời thực
+Một batch job nạp 5 triệu bản ghi vào DB, dùng {{ThreadPoolExecutor}} với core 4, max 16, queue {{LinkedBlockingQueue}} không giới hạn. Đo được: chỉ 4 thread hoạt động, 16 thread không bao giờ được tạo (vì queue không đầy), throughput 600 bản ghi/giây, dự kiến chạy 2,3 giờ. Ngoài ra queue phình lên 4,8 triệu phần tử, mỗi phần tử giữ một đối tượng ~200 byte → heap tăng 1 GB, GC áp lực cao.
+
+Điều tra bằng {{getActiveCount()}}, {{getPoolSize()}} và heap dump: 4 thread RUNNABLE trong {{addBatch}}, 4,8 triệu node trong queue.
+
+Sửa: (1) đổi queue sang {{ArrayBlockingQueue(10_000)}}, (2) giữ core 8, max 16, (3) handler ghi phần bị từ chối vào bảng {{batch_retry}} và tăng counter, (4) thêm consumer theo lô ({{drainTo}}) để giảm số lần lấy, (5) theo dõi queue size và rejection.
+
+Kết quả: pool mở lên 16 thread, throughput 2.400 bản ghi/giây (gấp 4), thời gian chạy từ 2,3 giờ xuống 35 phút, heap ổn định 1,2 GB, không có task nào bị mất (đều nằm trong bảng retry).
+
+### Trả lời mẫu khi phỏng vấn
+"ThreadPoolExecutor lưu trạng thái và số worker trong một int duy nhất, rồi quyết định theo thứ tự: dưới core thì tạo thread mới, ngược lại xếp vào queue, nếu queue đầy thì tạo thêm đến max, cuối cùng gọi handler. Vì thứ tự đó, queue không giới hạn khiến max không bao giờ được dùng — đây là lỗi cấu hình phổ biến nhất, kể cả với ThreadPoolTaskExecutor của Spring khi để queueCapacity mặc định. Tôi luôn tự dựng pool: core theo số lõi cho CPU-bound, core theo độ trễ mục tiêu cho I/O-bound, queue có giới hạn, thread factory có tên và UncaughtExceptionHandler, và handler phù hợp nghiệp vụ: API thì trả 429 hoặc ghi retry, batch thì ghi vào bảng để xử lý sau. Về đo lường, tôi theo dõi queue size và remaining capacity, activeCount so với max, largestPoolSize, số task hoàn thành và số lần bị từ chối; cảnh báo ở 70% queue trong một phút. Nhờ vậy tôi từng phát hiện pool batch chỉ chạy 4 thread vì queue không giới hạn, và sửa xong throughput tăng gấp bốn."
+
+> Senior tip: Một pool không có số liệu là một pool bạn không hiểu. Hãy để mỗi pool có tên, có metric riêng và có cảnh báo trên hai đường: độ đầy queue và số lần từ chối. Khi cả hai đều bằng 0 trong lúc hệ thống vẫn chậm, vấn đề không nằm ở pool mà nằm ở bên trong task (DB, lock, mạng).`,
+  follow: [
+    'Vì sao queue không giới hạn làm maximumPoolSize vô nghĩa?',
+    'CallerRunsPolicy có an toàn khi chạy trong Tomcat không?',
+    'setCorePoolSize bị ràng buộc bởi tham số nào?'
+  ],
+
+tags: ['ThreadPoolExecutor', 'RejectedExecutionHandler', 'workQueue', 'thread pool sizing', 'backpressure', 'metrics']
+},
+{
+  id: 'concurrency-071',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Bạn gọi {{shutdownNow()}} nhưng task vẫn chạy tiếp, còn một task khác đang đọc socket thì không dừng dù đã bị interrupt. Bạn thiết kế thế nào để dừng thread đúng cách: kiểm tra cờ ở đâu, khôi phục cờ ra sao, chỗ nào interrupt không có tác dụng, và bạn chứng minh bằng dữ liệu gì từ thread dump?',
+  a: `**Tóm tắt:** Interrupt là một **yêu cầu hợp tác**, không phải lệnh dừng cưỡng chế. Mỗi thread có một cờ boolean {{interrupt status}}; các method chờ ({{sleep}}, {{wait}}, {{join}}, {{park}}, {{BlockingQueue.take}}) kiểm tra cờ, **xoá cờ** rồi ném {{InterruptedException}}. Vì cờ bị xoá, code bắt exception phải gọi {{Thread.currentThread().interrupt()}} để khôi phục, nếu không tầng trên không biết thread đã bị yêu cầu dừng. Có những điểm chờ không kiểm tra cờ (vào {{synchronized}}, đọc socket, gọi JDBC không timeout), nên interrupt không dừng được chúng — phải dùng timeout hoặc đóng tài nguyên.
+
+### Vòng đời của cờ interrupt
+~~~text
+interrupt()  ->  cờ = true
+   |
+   +-- gặp sleep/wait/join/take  ->  cờ = false, ném InterruptedException
+   |
+   +-- gặp LockSupport.park      ->  park trả về sớm, CỜ VẪN TRUE (không ném, không xoá)
+   |
+   +-- gặp mã Java thường       ->  cờ vẫn true, kiểm tra bằng isInterrupted()/interrupted()
+   |
+   +-- gặp synchronized (đang chờ monitor) ->  KHÔNG kiểm tra cờ: thread vẫn BLOCKED
+~~~
+
+Hai method đọc cờ khác nhau ở một điểm then chốt:
+
+| Method | Đọc cờ của ai | Có xoá cờ không | Dùng khi |
+|---|---|---|---|
+| {{Thread.interrupted()}} | Thread hiện tại | Có | Kiểm tra rồi muốn "tiêu thụ" tín hiệu (ví dụ vòng lặp dừng) |
+| {{thread.isInterrupted()}} | Thread bất kỳ | Không | Quan sát trạng thái mà không làm mất tín hiệu |
+
+Quy tắc thực hành: nếu bạn bắt {{InterruptedException}} mà **không** có ý định dừng ngay, hãy khôi phục cờ rồi ném tiếp (hoặc trả về), đừng log rồi đi tiếp.
+
+### Bảng "interrupt có tác dụng không"
+| Điểm chờ | Interrupt có dừng được? | Cách dừng đúng |
+|---|---|---|
+| {{Thread.sleep}}, {{Object.wait}}, {{Thread.join}}, {{LockSupport.park}} | Có, ném InterruptedException | Bắt, khôi phục cờ, thoát |
+| {{BlockingQueue.take}}, {{Semaphore.acquire}} | Có | Như trên |
+| Vào {{synchronized}} (chưa lấy được monitor) | Không, thread vẫn BLOCKED | Không có cách nào ngoài việc nhả lock sớm hoặc {{tryLock(timeout)}} |
+| Đọc {{Socket}} / {{InputStream}} của socket | Không | {{setSoTimeout}}, hoặc đóng socket từ thread khác |
+| {{Statement.executeQuery}} của JDBC | Không | {{setQueryTimeout}} hoặc {{Statement.cancel()}} từ thread khác |
+| {{HttpClient.send}} (Java 11+) | Có, ném InterruptedException | Bắt và khôi phục cờ |
+| Kênh {{InterruptibleChannel}} (ví dụ {{FileChannel}}) | Có, ném {{ClosedByInterruptException}} | Đóng kênh |
+
+### Thiết kế dừng an toàn cho một task dài
+Bốn lớp bảo vệ, áp dụng theo thứ tự:
+
+1. **Kiểm tra cờ ở đầu vòng lặp**: {{while (!Thread.currentThread().isInterrupted())}}. Không kiểm tra thì vòng lặp chạy hết dù đã bị yêu cầu dừng.
+2. **Bắt và khôi phục**: trong {{catch (InterruptedException e)}}, gọi {{Thread.currentThread().interrupt()}} rồi {{return}} hoặc {{throw}}. Đừng tiếp tục vòng lặp: lần chờ kế tiếp sẽ ném ngay vì cờ đang bật.
+3. **Đặt timeout cho mọi điểm chờ bên ngoài**: socket, JDBC, HTTP. Interrupt không cứu được một lời gọi mạng không có timeout.
+4. **Dừng có kiểm soát**: {{shutdown()}} để không nhận task mới, {{shutdownNow()}} để thu hồi các task chưa chạy và interrupt worker, rồi {{awaitTermination(timeout)}} để chờ. Với {{CompletableFuture}}, {{cancel(true)}} **không** interrupt task đang chạy — phải giữ {{Future}} gốc từ {{executor.submit()}}.
+
+### Code: task dừng được + shutdown đúng
+~~~java
+class ImportTask implements Runnable {
+    public void run() {
+        try {
+            while (!Thread.currentThread().isInterrupted()) {   // (1) kiểm tra cờ
+                Batch b = readBatch();                          // đọc có timeout
+                if (b == null) return;
+                write(b);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();                 // (2) khôi phục cờ
+            log.info("import bị dừng giữa chừng");
+        } finally {
+            closeResources();                                   // luôn dọn dẹp
+        }
+    }
+}
+
+void stop(ExecutorService pool) throws InterruptedException {
+    pool.shutdown();                                            // không nhận task mới
+    pool.shutdownNow();                                         // interrupt worker + lấy task chưa chạy
+    if (!pool.awaitTermination(30, TimeUnit.SECONDS)) {         // (4) chờ có hạn
+        log.warn("pool chưa dừng sau 30s, còn {} task", pool.getQueue().size());
+    }
+}
+~~~
+
+### Pitfall thực tế trên production
+- {{catch (Exception e)}} ở tầng ngoài che mất {{InterruptedException}}: cờ bị xoá, không ai biết, thread tiếp tục chạy.
+- Log rồi đi tiếp trong vòng lặp: mỗi lần chờ sẽ ném InterruptedException ngay, tạo ra hàng nghìn log mỗi giây.
+- Khôi phục cờ rồi **vẫn tiếp tục** vòng lặp: vòng lặp chuyển thành busy-loop ném exception liên tục.
+- Dùng {{CompletableFuture}} với executor rồi gọi {{cancel(true)}} tưởng rằng đã dừng: task vẫn chạy, chỉ là kết quả bị bỏ.
+- {{shutdownNow()}} mà không {{awaitTermination}}: tiến trình thoát khi task còn đang ghi DB, dữ liệu dở dang.
+- Không đặt {{queryTimeout}}: một câu SQL chậm 10 phút giữ thread, {{shutdownNow()}} không làm gì được vì JDBC không nhận interrupt.
+- Interrupt một thread đã kết thúc: không có lỗi, nhưng cũng không có tác dụng; đừng dùng interrupt để "hỏi" trạng thái.
+- Không dùng {{try-with-resources}} hoặc {{finally}} để đóng socket: khi bị interrupt giữa lệnh đọc, socket vẫn mở, cổng vẫn chiếm.
+
+### Ví dụ đời thực
+Một job đồng bộ 40 phút chạy trên 20 thread. Khi bấm "dừng", hệ thống vẫn chạy thêm 38 phút. {{jstack}} tại thời điểm đó cho thấy: 17 thread ở trạng thái RUNNABLE trong {{SocketInputStream.read}} (không phải WAITING), 3 thread ở WAITING trên {{LinkedBlockingQueue.take}}. Log có dòng {{InterruptedException}} nhưng không có stack trace.
+
+Ba nguyên nhân, xác minh bằng log và thread dump:
+
+1. Task bọc toàn bộ thân hàm trong {{catch (Exception e)}} rồi chỉ log: cờ bị xoá và không khôi phục.
+2. {{HttpClient}} được thay bằng {{Socket}} trực tiếp, không đặt {{setSoTimeout(0)}}; interrupt không dừng được lệnh đọc.
+3. {{cancel(true)}} được gọi trên {{CompletableFuture}}, nhưng task thật đang chạy trong executor nên không nhận interrupt.
+
+Sửa: khôi phục cờ trong {{catch (InterruptedException)}}, đặt {{soTimeout = 5000}} và {{queryTimeout = 10}} phút cho mọi lời gọi mạng/DB, dùng {{Future}} từ {{executor.submit}} để {{cancel(true)}} có tác dụng, và sau {{shutdownNow()}} luôn {{awaitTermination(30, SECONDS)}}.
+
+Kết quả: thời gian dừng từ 38 phút xuống 8 giây; thread dump cho thấy 0 thread trong lệnh đọc socket, 2 worker đang dọn dẹp trong {{finally}}; job chạy lại từ checkpoint cuối, không mất dữ liệu.
+
+### Trả lời mẫu khi phỏng vấn
+"Interrupt là yêu cầu hợp tác, không phải lệnh dừng. Cờ interrupt bị xoá khi một method chờ ném InterruptedException, nên trong catch tôi luôn gọi Thread.currentThread().interrupt() để khôi phục, rồi thoát hoặc ném tiếp — không log rồi chạy tiếp, vì lần chờ sau sẽ ném ngay và tạo busy-loop. Ở đầu vòng lặp tôi kiểm tra cờ, và với mọi điểm chờ bên ngoài tôi đặt timeout, vì interrupt không dừng được lệnh đọc socket hay câu JDBC không có queryTimeout; ở những chỗ đó phải setSoTimeout, setQueryTimeout hoặc đóng tài nguyên. Khi dừng executor, tôi dùng shutdown, shutdownNow rồi awaitTermination có hạn; với CompletableFuture thì cancel(true) không interrupt task đang chạy, phải giữ Future gốc từ executor.submit. Trong một sự cố, job 40 phút không dừng sau khi bấm dừng vì ba lỗi này cộng lại; sửa xong thời gian dừng còn 8 giây và tôi chứng minh bằng jstack trước và sau."
+
+> Senior tip: Hãy coi interrupt như "cờ hiệu dừng khẩn cấp", và code của bạn là người phải quan sát cờ đó. Nếu bạn viết thư viện cho người khác dùng, hãy khôi phục cờ và để caller quyết định dừng hay tiếp tục — đừng tự ý im lặng. Và nhớ: không có timeout thì không có dừng, bất kể bạn interrupt bao nhiêu lần.`,
+  follow: [
+    'Future.cancel(true) khác CompletableFuture.cancel(true) ở điểm nào?',
+    'Vì sao khôi phục cờ rồi vẫn tiếp tục vòng lặp lại sai?',
+    'Làm sao dừng được một câu JDBC đang chạy?'
+  ],
+
+tags: ['interrupt', 'InterruptedException', 'interrupt status', 'shutdownNow', 'cancellation', 'timeout']
+},
+{
+  id: 'concurrency-072',
+  topic: 'concurrency',
+  level: 'lead',
+  q: 'Bạn cần đếm khoảng 2 triệu sự kiện mỗi giây trên 32 vCPU và đọc con số đó mỗi giây để hiển thị lên dashboard. Chọn {{AtomicLong}} hay {{LongAdder}}? Giải thích {{Striped64}}, ước lượng chi phí bộ nhớ, cho biết khi nào {{LongAdder}} là lựa chọn sai, và bạn đo bằng cách nào?',
+  a: `**Tóm tắt:** {{AtomicLong}} là một ô nhớ duy nhất được cập nhật bằng vòng lặp CAS: đọc giá trị, tính giá trị mới, thử ghi; ai thua thì thử lại. Khi 32 thread cùng ghi một ô, phần lớn thời gian CPU bị đốt vào việc thử lại chứ không phải việc đếm. {{LongAdder}} chia gánh nặng ra nhiều ô ({{Cell}}) theo dạng "striped": mỗi thread ghi vào ô riêng, lúc đọc mới cộng tất cả. Ghi song song nhanh hơn nhiều lần, nhưng đọc chậm hơn và không phải ảnh chụp tức thời; {{LongAdder}} cũng không có CAS.
+
+### AtomicLong hoạt động thế nào, từng bước
+~~~java
+public final long getAndAdd(long delta) {
+    long prev;
+    do {
+        prev = get();                       // đọc volatile
+    } while (!compareAndSet(prev, prev + delta));  // CAS: thất bại thì thử lại
+    return prev;
+}
+~~~
+Mỗi thất bại là một vòng lặp nữa. Trên một lõi, CAS gần như luôn thành công; khi có 8–32 lõi cùng ghi, xác suất đụng độ tăng, số vòng lặp tăng, và băng thông cache line bị chiếm dụng (mỗi lần ghi làm mất hiệu lực bản sao của lõi khác — "cache line bouncing").
+
+### LongAdder / Striped64 hoạt động thế nào, từng bước
+{{LongAdder}} kế thừa {{Striped64}}, gồm ba thành phần:
+
+1. {{base}}: ô thứ 0, dùng khi chưa có tranh chấp hoặc khi không tạo được ô mới.
+2. {{cells}}: mảng các {{Cell}}, mỗi {{Cell}} là một biến {{long}} độc lập (có padding để tránh false sharing, tức là hai biến nằm trên cùng một cache line).
+3. {{cellsBusy}}: cờ 0/1 dùng CAS để chỉ một thread được tạo hoặc mở rộng mảng ô.
+
+Khi {{increment()}}:
+- Nếu {{cells}} rỗng → thử CAS trên {{base}}.
+- Nếu CAS trên {{base}} thất bại (có tranh chấp) → chọn ô bằng hash của thread ({{ThreadLocalRandom}} probe), CAS trên ô đó.
+- Nếu CAS trên ô thất bại → gọi {{advanceProbe}} để đổi sang ô khác (giảm khả năng hai thread chọn cùng ô), và nếu ô đang "chật" thì tạo thêm ô (mảng dài lên gấp đôi, tối đa theo số lõi).
+- {{sum()}} đọc {{base}} cộng tất cả các ô. Việc đọc không chặn ghi, nên kết quả là ảnh gần đúng tại một thời điểm nào đó trong lúc cộng, không phải một ảnh chụp nguyên tử.
+
+Điểm tinh tế: {{LongAdder}} tối ưu cho **nhiều thread ghi, ít thread đọc**. Với 1–2 thread, nó không hơn {{AtomicLong}}, thậm chí chậm hơn vì phải kiểm tra mảng ô.
+
+### So sánh trực tiếp
+| Tiêu chí | {{AtomicLong}} | {{LongAdder}} |
+|---|---|---|
+| Số ô bộ nhớ | 1 | 1 + N ô (N tăng theo tranh chấp, tối đa theo số lõi) |
+| Ghi khi ít tranh chấp | Rất nhanh | Nhanh (có thêm một lần kiểm tra mảng) |
+| Ghi khi tranh chấp cao (8–32 thread) | Chậm dần, nhiều vòng CAS | Gần như tuyến tính theo số lõi |
+| Đọc | Một lần đọc volatile, rất nhanh | Phải cộng N ô, chậm hơn N lần |
+| Tính nguyên tử của phép đọc | Có, giá trị tại thời điểm đọc | Không, là tổng của các lần đọc rời rạc |
+| {{compareAndSet}} / {{getAndAdd}} | Có | Không (chỉ có {{add}}, {{increment}}, {{sum}}, {{sumThenReset}}, {{reset}}) |
+| Bộ nhớ | ~16 byte | ~16 byte + 64 byte mỗi ô (một cache line) |
+| Dùng khi | Cần CAS, cần đọc thường xuyên, ít thread | Đếm/thống kê, ghi rất nhiều, đọc ít |
+
+### Đo bằng cách nào
+Đo bằng JMH với hai chế độ: một thread và N thread, mỗi lần gọi {{increment()}} hoặc {{add(1)}}. Ba điều bắt buộc:
+
+- Đặt {{@Fork}} để mỗi lần đo là một JVM mới (JIT và luồng cần ổn định).
+- Có {{warmup}} đủ (5 lần, mỗi lần 1–2 giây) vì C2 cần thời gian.
+- Dùng {{Blackhole}} để JIT không xoá code, và tránh "dead code elimination".
+
+Số đo mang tính thứ tự (tuỳ CPU, JDK, hệ điều hành), nhưng quy luật rất ổn định: một thread thì hai bên gần bằng nhau; 8 thread trở lên, {{AtomicLong}} bắt đầu giảm mạnh còn {{LongAdder}} tăng gần tuyến tính.
+
+| Số thread ghi | {{AtomicLong}} (triệu phép/giây) | {{LongAdder}} (triệu phép/giây) |
+|---|---|---|
+| 1 | ~60 | ~50 |
+| 2 | ~25 | ~80 |
+| 4 | ~12 | ~150 |
+| 8 | ~6 | ~250 |
+| 16 | ~3 | ~350 |
+| 32 | ~2 | ~400 |
+
+(Đo trên 32 vCPU, JDK 21, JMH; con số chỉ để so sánh tương quan, không phải cam kết hiệu năng.)
+
+### Khi nào LongAdder là lựa chọn sai
+- Bạn cần **đọc thường xuyên**: mỗi request đọc một lần thì chi phí cộng N ô làm nóng cache và chậm hơn {{AtomicLong}}.
+- Bạn cần **giá trị chính xác tại một thời điểm** để ra quyết định nghiệp vụ: ví dụ kiểm tra "đã vượt hạn mức 100.000 chưa" — {{sum()}} có thể lệch vài đơn vị vì các ô đang được cập nhật.
+- Bạn cần **CAS** (so sánh rồi đặt) hoặc {{getAndAdd}} để cấp số thứ tự: {{LongAdder}} không có các method này.
+- Bạn có **ít thread** (1–2): không có tranh chấp, dùng {{LongAdder}} chỉ tốn thêm bộ nhớ và một lần kiểm tra mảng.
+- Bộ nhớ **rất hạn chế** và có hàng nghìn bộ đếm: mỗi bộ đếm là một mảng ô, tổng chi phí có thể đáng kể.
+
+### Code: đếm nhiều luồng, đọc mỗi giây
+~~~java
+LongAdder events = new LongAdder();          // ghi nhiều, đọc ít
+AtomicLong sequence = new AtomicLong();      // cần CAS/cấp số: giữ AtomicLong
+
+ExecutorService pool = Executors.newFixedThreadPool(32);
+for (int i = 0; i < 32; i++) {
+    pool.submit(() -> {
+        while (!Thread.currentThread().isInterrupted()) {
+            handleOneEvent();
+            events.increment();              // mỗi thread ghi vào ô riêng
+        }
+    });
+}
+
+ScheduledExecutorService reporter = Executors.newSingleThreadScheduledExecutor();
+reporter.scheduleAtFixedRate(() -> {
+    long total = events.sum();               // đọc: cộng base + tất cả ô
+    gauge.set(total);                        // đẩy lên Micrometer
+    log.info("events/s = {}", total - last);
+    last = total;
+}, 1, 1, TimeUnit.SECONDS);
+~~~
+
+### Pitfall thực tế trên production
+- Dùng {{LongAdder.sum()}} trong hàm nóng (mỗi request) để hiển thị số: chi phí cộng ô làm chậm chính request đó. Hãy để một thread định kỳ đọc rồi lưu vào biến {{volatile}} cho request đọc.
+- Dùng {{LongAdder}} cho hạn mức (rate limit) hoặc số dư: sai số vài đơn vị có thể cho vượt hạn mức, hoặc chặn oan khách hàng. Ở đó phải dùng {{AtomicLong}} hoặc khoá.
+- Không gọi {{reset()}} / {{sumThenReset()}}: mảng ô không tự co lại, nhưng giá trị vẫn tăng mãi; nếu muốn chia cửa sổ thời gian, hãy dùng {{sumThenReset()}} có kiểm soát (mất tính nguyên tử với số đọc song song).
+- Tạo {{LongAdder}} cho từng key trong một map: hàng trăm nghìn bộ đếm, mỗi bộ có mảng ô → tốn bộ nhớ hơn nhiều so với một {{AtomicLong}}.
+- So sánh hiệu năng bằng vòng lặp {{for}} với {{System.nanoTime()}}: JIT có thể tối ưu hoặc loại bỏ vòng lặp; hãy dùng JMH và đọc kết quả bằng {{Blackhole}}.
+- Bỏ qua false sharing: nếu tự viết ô đếm bằng mảng {{long[]}}, hai biến cạnh nhau trên cùng cache line sẽ làm mất hiệu năng; {{Striped64.Cell}} đã được padding, còn code tự viết thì không.
+
+### Ví dụ đời thực
+Một service ghi 2 triệu sự kiện/giây trên 32 vCPU, mỗi sự kiện tăng một bộ đếm {{AtomicLong}} dùng cho dashboard. JFR cho thấy 35% CPU của service nằm trong {{AtomicLong.getAndAdd}} (đếm được bằng async-profiler chế độ CPU), GC không phải nguyên nhân. Thử nghiệm bằng JMH: một thread 58 triệu phép/giây, 8 thread còn 5,8 triệu, 32 thread còn 2,1 triệu.
+
+Đổi sang {{LongAdder}}: 8 thread đạt 240 triệu phép/giây, 32 thread đạt 380 triệu; CPU dành cho việc đếm giảm từ 35% xuống dưới 4%. Dashboard đọc mỗi giây bằng {{sum()}}, chi phí đo được 0,4 ms/lần (32 ô), hoàn toàn chấp nhận được.
+
+Nhưng một chỗ khác trong hệ thống dùng bộ đếm để kiểm tra hạn mức "tối đa 100.000 request/phút cho mỗi API key": ở đó {{LongAdder}} cho phép vượt 50–100 request do sai số khi cộng ô. Giữ {{AtomicLong}} cho hạn mức, chỉ dùng {{LongAdder}} cho số liệu thống kê.
+
+Kết quả: CPU của service giảm 9 điểm phần trăm, p99 giảm 6%, và hạn mức vẫn chính xác.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn theo tỷ lệ đọc/ghi và theo yêu cầu chính xác. AtomicLong là một ô duy nhất, cập nhật bằng vòng CAS; khi 32 thread cùng ghi, phần lớn CPU nằm trong vòng lặp thử lại. LongAdder kế thừa Striped64: giá trị nằm rải trên base cộng nhiều Cell, mỗi thread ghi vào ô riêng, khi đọc mới cộng lại. Với 2 triệu sự kiện/giây trên 32 vCPU, JMH cho thấy AtomicLong còn khoảng 2 triệu phép/giây còn LongAdder đạt khoảng 380 triệu, nên tôi chọn LongAdder cho thống kê. Nhưng tôi không dùng nó cho hạn mức hay số tiền, vì sum() không phải ảnh chụp nguyên tử và có thể lệch vài đơn vị; ở đó tôi giữ AtomicLong hoặc khoá. Tôi cũng không dùng nó khi đọc thường xuyên, vì mỗi lần đọc phải cộng N ô. Về đo lường, tôi dùng JMH có fork, warmup và Blackhole, đo ở 1/2/4/8/16/32 thread để thấy điểm gãy, chứ không đo bằng for với nanoTime."
+
+> Senior tip: Đừng chọn cấu trúc đồng bộ theo cảm giác "cái nào mới hơn". Hãy đo đường cong throughput theo số thread: nếu đồ thị của bạn đi ngang hoặc đi xuống sau 4 thread, bạn đang có tranh chấp; nếu đi lên tuyến tính, bạn đang ở chế độ striped. Và nhớ rằng mọi bộ đếm dạng striped đều đánh đổi độ chính xác tức thời lấy thông lượng ghi — hãy nói rõ điều đó với người đọc dashboard.`,
+  follow: [
+    'Striped64 chọn cell bằng cách nào và vì sao cần padding?',
+    'LongAdder.sumThenReset() dùng khi nào và đánh đổi gì?',
+    'Vì sao LongAdder không có compareAndSet?'
+  ],
+
+tags: ['AtomicLong', 'LongAdder', 'Striped64', 'CAS', 'false sharing', 'contention', 'JMH']
+},
+{
+  id: 'jvm-056',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Sau mỗi lần deploy, p99 latency của service cao gấp 3 lần trong 5 phút đầu rồi giảm dần; sau vài tuần throughput ổn định vẫn thấp hơn kỳ vọng. Bạn giải thích hiện tượng bằng tiered compilation ({{C1}}, {{C2}}, tier 0–4, OSR, deoptimization) và đề xuất quy trình warm-up cùng cách đo lường nào?',
+  a: `**Tóm tắt:** JVM khởi động bằng trình thông dịch (interpreter), sau đó dùng bộ biên dịch theo tầng: C1 (client) biên dịch nhanh nhưng code kém tối ưu, C2 (server) biên dịch chậm hơn nhưng tối ưu mạnh. Code được "làm nóng" dần: chạy vài trăm lần thì lên C1 có profiling, chạy vài nghìn lần thì lên C2. Vì vậy 5 phút đầu sau deploy là giai đoạn JVM đang biên dịch, không phải giai đoạn code của bạn chậm. Giải pháp: warm-up có kiểm soát trước khi nhận traffic thật, đo bằng JFR, và không so sánh benchmark khi chưa đủ warm-up.
+
+### Bốn tầng, mỗi tầng làm gì
+| Tầng | Bộ biên dịch | Có profiling? | Đặc điểm |
+|---|---|---|---|
+| 0 | Interpreter | Có (đếm lượt gọi, đếm vòng lặp) | Chạy ngay, không tốn thời gian biên dịch; chậm nhất |
+| 1 | C1 | Không | Biên dịch nhanh, code ít tối ưu; dùng cho method chạy một lần hoặc khởi động |
+| 2 | C1 | Hạn chế | Ít dùng trên thực tế |
+| 3 | C1 | Đầy đủ | Mặc định cho method nóng: thu thập profiling (nhánh nào hay chạy, kiểu dữ liệu, tần suất) |
+| 4 | C2 | Không (đã có profiling từ tầng 3) | Tối ưu mạnh: inlining, escape analysis, vector hoá, vòng lặp unrolling |
+
+Ngưỡng chuyển tầng không phải một con số duy nhất mà là một họ tham số: {{Tier3InvocationThreshold}}, {{Tier4InvocationThreshold}}, {{Tier3BackEdgeThreshold}}, {{Tier4BackEdgeThreshold}}. Nói ngắn gọn: method phải được gọi đủ nhiều lần (hoặc vòng lặp phải chạy đủ nhiều vòng) thì mới lên tầng cao.
+
+### OSR: thay thế method đang chạy
+"on-stack replacement" cho phép JVM thay thế một method **đang chạy** bằng bản đã biên dịch, dựa trên bộ đếm back-edge (số lần nhảy ngược trong vòng lặp). Nếu không có OSR, một vòng lặp chạy 10 phút trong {{main()}} sẽ phải chạy bằng interpreter tới hết, vì method không bao giờ "trở lại" để được thay thế.
+
+Hệ quả thực tế: một vòng lặp dài (ví dụ nạp 5 triệu bản ghi trong một lần gọi) được C2 biên dịch giữa đường, và bạn có thể thấy hiện tượng "chậm lúc đầu, nhanh hẳn ở giữa" trong cùng một request.
+
+### Deoptimization: khi giả định bị phá
+C2 đưa ra các giả định (ví dụ "chỉ có một lớp hiện thực hoá interface này", "nhánh này không bao giờ chạy"). Khi JVM nạp thêm một lớp làm giả định sai (class loading), hoặc khi profiling cho thấy nhánh khác chiếm đa số, C2 phải **deoptimize**: bỏ code đã biên dịch, quay lại interpreter, rồi biên dịch lại. Hiện tượng này xuất hiện trong log dưới dạng {{Deoptimization}} và trong JFR là sự kiện {{jdk.Deoptimization}}.
+
+Ứng dụng dùng nhiều plugin, nhiều classloader hoặc nạp lớp động (Spring, script engine) dễ gặp vòng lặp "compile → deopt → compile" ở giai đoạn đầu.
+
+### Đo bằng công cụ nào
+| Công cụ | Dùng để | Lưu ý |
+|---|---|---|
+| {{-XX:+PrintCompilation}} | In ra từng method được biên dịch, tầng nào, có OSR không | Rất nhiều log; chỉ bật khi chẩn đoán |
+| JFR {{jdk.Compilation}} | Đếm số lần biên dịch, thời gian, tầng | Overhead thấp, bật được trên production |
+| JFR {{jdk.Deoptimization}} | Đếm và xem lý do deopt | Kết hợp với class loading |
+| {{-XX:+CITime}} | Tổng thời gian C1 và C2 | Tốt để biết chi phí biên dịch |
+| {{jcmd <pid> JFR.start}} | Bật recording khi cần | Không cần restart |
+
+Các cờ hay dùng khi cần can thiệp: {{-XX:TieredStopAtLevel=1}} (chỉ C1, khởi động nhanh, throughput thấp hơn), {{-XX:-TieredCompilation}} (chỉ C2, khởi động chậm, throughput cao ngay), {{-XX:Tier4InvocationThreshold=...}} (giảm ngưỡng để lên C2 sớm). Mọi thay đổi đều phải đo lại: đổi flag không phải lúc nào cũng nhanh hơn.
+
+### Quy trình warm-up đề xuất
+1. **Khởi động không nhận traffic**: readiness probe chỉ chuyển sang "sẵn sàng" sau khi đã chạy một bộ request tổng hợp (tự gọi các endpoint chính, endpoint phụ, truy vấn DB tiêu biểu).
+2. **Dẫn traffic từ từ**: canary 5% → 25% → 100% trong 5–10 phút thay vì chuyển toàn bộ ngay.
+3. **Giữ số bản sao tối thiểu**: nếu autoscaler co về 1 bản, mỗi lần scale up lại trả tiền warm-up.
+4. **Cân nhắc CDS/AppCDS**: giảm thời gian nạp và liên kết lớp lúc khởi động, không thay thế JIT nhưng giúp giai đoạn đầu nhẹ hơn.
+5. **Với hàm chạy ngắn (serverless)**: cân nhắc {{-XX:TieredStopAtLevel=1}} hoặc CRaC/GraalVM native image, vì vòng đời quá ngắn để C2 kịp phát huy.
+
+### Code: đo và bật recording
+~~~bash
+# Bật JFR ngay từ khi khởi động, ghi 10 phút
+java -XX:StartFlightRecording=duration=10m,filename=warmup.jfr,name=warmup \
+     -XX:+PrintCompilation -jar app.jar
+
+# Khi đã chạy, xem method nào đang được biên dịch và deopt
+jcmd <pid> JFR.start name=check duration=120s filename=check.jfr
+~~~
+
+Và một benchmark tối thiểu có warm-up (JMH):
+~~~java
+@Benchmark
+@Fork(value = 1)
+@Warmup(iterations = 5, time = 2)
+@Measurement(iterations = 5, time = 2)
+public void handle(Blackhole bh) {
+    bh.consume(service.handle(request()));   // Blackhole: JIT không xoá code
+}
+~~~
+
+### Pitfall thực tế trên production
+- Đo benchmark hoặc so sánh hai phiên bản ngay sau khi khởi động: bên nào khởi động lâu hơn lại có vẻ nhanh hơn ở lần đo đầu.
+- Kết luận "code của tôi chậm" dựa trên 30 giây đầu: đó là C1, chưa có profiling, chưa inlining tốt.
+- Bật {{-XX:TieredStopAtLevel=1}} cho service chạy lâu dài: khởi động nhanh hơn nhưng code C1 kém tối ưu chạy mãi mãi, throughput giảm.
+- Bật {{-XX:-TieredCompilation}} trên máy ít lõi: C2 chiếm CPU liên tục, request bị chậm trong lúc biên dịch.
+- Không theo dõi {{jdk.Deoptimization}}: vòng lặp deopt làm hiệu năng dao động thất thường, rất khó tìm nếu không có JFR.
+- Dùng quá nhiều flag với giá trị "cảm tính" (ví dụ giảm CompileThreshold xuống 1.000) trên service có hàng nghìn method: JVM biên dịch quá nhiều, tốn CPU và code cache.
+- Đặt readiness probe quá sớm: Kubernetes đưa traffic vào khi JVM chưa kịp warm-up, gây 5xx và p99 cao trong vài phút đầu.
+- Bỏ qua ảnh hưởng của CPU limit trong container: khi bị throttle, JVM có ít CPU để biên dịch, warm-up kéo dài hơn bình thường.
+
+### Ví dụ đời thực
+Một service Spring Boot 3 chạy trên 4 vCPU, 2.500 request/giây. Sau deploy: p99 450 ms trong 5 phút đầu, sau đó ổn định 120 ms. {{PrintCompilation}} cho thấy 1.800 method được biên dịch trong 4 phút đầu, trong đó 300 method ở tầng 4; {{jdk.Compilation}} cho tổng thời gian biên dịch 22 giây CPU, chiếm 9% CPU của pod trong giai đoạn đầu.
+
+Đo tiếp: 40% request trong 5 phút đầu bị chậm hơn 300 ms so với trạng thái ổn định, và tỷ lệ 5xx là 2,1% (do timeout của upstream 800 ms), sau đó về 0,1%.
+
+Xử lý: (1) thêm bước warm-up 60 giây bằng script gọi 200 request tổng hợp trước khi readiness chuyển sang OK, (2) canary 5% trong 3 phút rồi mới tăng dần, (3) giữ {{minReplicas = 3}} để không co về 1, (4) theo dõi {{jdk.Deoptimization}} — phát hiện 60 lần deopt do nạp lớp plugin, chấp nhận vì chỉ xảy ra lúc khởi động.
+
+Kết quả: p99 5 phút đầu còn 180 ms, tỷ lệ 5xx trong 5 phút đầu còn 0,2%, và không còn cảnh báo "chậm sau deploy" vào giờ cao điểm.
+
+### Trả lời mẫu khi phỏng vấn
+"JVM không chạy code Java ở tốc độ native ngay: nó bắt đầu bằng interpreter, rồi C1 biên dịch nhanh để có code chạy được sớm, sau đó C2 biên dịch lại các method nóng bằng profiling từ C1. Vì thế 5 phút đầu sau deploy là giai đoạn JIT đang làm việc, không phải code của tôi chậm. Tôi chứng minh bằng JFR: jdk.Compilation cho biết số method và thời gian biên dịch, jdk.Deoptimization cho biết có vòng lặp compile–deopt nào không, còn PrintCompilation cho thấy method nào lên tầng 4. Để giảm ảnh hưởng, tôi warm-up có kiểm soát: readiness chỉ mở sau khi chạy một bộ request tổng hợp, traffic dẫn từ từ 5% rồi tăng dần, giữ minReplicas để không co về 1. Trong một lần tối ưu, p99 5 phút đầu giảm từ 450 ms xuống 180 ms và 5xx từ 2,1% xuống 0,2%. Tôi cũng không bao giờ so sánh benchmark khi chưa đủ warm-up, và không bật TieredStopAtLevel=1 cho service chạy lâu dài vì C1 kém tối ưu sẽ chạy mãi."
+
+> Senior tip: Warm-up không phải là "chạy vài request cho nóng" mà là một phần của quy trình deploy. Hãy định nghĩa "sẵn sàng" theo triệu chứng đo được (p99 dưới ngưỡng trong 60 giây), không theo thời gian chờ cố định. Và khi thấy throughput tăng đột ngột sau vài phút, hãy nghĩ tới C2 vừa biên dịch xong một method nóng trước khi nghĩ tới chuyện "mã của tôi tự nhanh lên".`,
+  follow: [
+    'OSR khác với biên dịch lại thông thường ở điểm nào?',
+    'Deoptimization xảy ra khi nào và đo bằng công cụ gì?',
+    'CDS và AppCDS giúp gì cho giai đoạn đầu?'
+  ],
+
+tags: ['JIT', 'tiered compilation', 'C1', 'C2', 'OSR', 'deoptimization', 'warm-up', 'JFR']
+},
+{
+  id: 'jvm-057',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Pod Java trên Kubernetes đặt {{requests: 1 CPU}}, {{limits: 2 CPU}} và {{memory limit: 2 GiB}}, nhưng pod bị {{OOMKilled}} và thỉnh thoảng p99 tăng gấp đôi. Giải thích JVM container-aware hoạt động thế nào (cgroup v1/v2, {{MaxRAMPercentage}}, {{ActiveProcessorCount}}), vì sao đặt {{Xmx}} bằng memory limit là sai, và bạn chứng minh bằng số liệu nào?',
+  a: `**Tóm tắt:** Từ JDK 10 (và 8u191), JVM đọc giới hạn của cgroup để biết container được bao nhiêu bộ nhớ và CPU, thay vì đọc RAM vật lý của máy. {{MaxRAMPercentage}} (mặc định 25) quyết định heap tối đa theo giới hạn bộ nhớ, còn {{Runtime.availableProcessors()}} quyết định số luồng GC, số luồng JIT và kích thước common pool của ForkJoin. Đặt {{Xmx}} bằng memory limit là sai vì ngoài heap còn metaspace, code cache, stack của thread, direct buffer và bộ nhớ nội bộ của JVM: tổng RSS vượt limit thì kernel giết container ({{OOMKilled}}, exit code 137), chứ JVM không kịp ném {{OutOfMemoryError}} và không có heap dump.
+
+### cgroup v1 và v2: JVM đọc ở đâu
+| | cgroup v1 | cgroup v2 |
+|---|---|---|
+| Giới hạn bộ nhớ | {{/sys/fs/cgroup/memory/memory.limit_in_bytes}} | {{/sys/fs/cgroup/memory.max}} |
+| Giới hạn CPU | {{cpu.cfs_quota_us}} / {{cpu.cfs_period_us}} | {{/sys/fs/cgroup/cpu.max}} (quota period) |
+| Kiểm tra nhanh | {{cat /sys/fs/cgroup/memory/memory.limit_in_bytes}} | {{cat /sys/fs/cgroup/cpu.max}} |
+
+Cách JVM suy ra số CPU khả dụng: lấy số CPU theo affinity ({{sched_getaffinity}}), rồi lấy theo hạn mức CFS; nếu có hạn mức thì số CPU là phần nguyên làm tròn lên của (quota / period). Ví dụ {{cpu.max = 150000 100000}} → 1,5 CPU → {{availableProcessors()}} = 2. Ví dụ 50000/100000 → 0,5 → làm tròn lên thành 1.
+
+Hệ quả ít người để ý: {{ForkJoinPool.commonPool()}} có song song bằng {{availableProcessors() - 1}}. Với 1,5 CPU, common pool chỉ có 1 worker, nên {{parallelStream()}} gần như chạy tuần tự.
+
+### Ngân sách bộ nhớ: cộng đủ các phần
+| Thành phần | Mặc định / cách giới hạn | Ghi chú |
+|---|---|---|
+| Heap | {{MaxRAMPercentage}} (25%) hoặc {{Xmx}} | Phần lớn nhất, nhưng không phải duy nhất |
+| Metaspace | Không giới hạn mặc định | Đặt {{MaxMetaspaceSize}} để tránh "ăn" hết bộ nhớ |
+| Compressed class space | {{CompressedClassSpaceSize}} (mặc định 1 GiB, cấp phát dần) | Nằm trong metaspace |
+| Code cache | {{ReservedCodeCacheSize}} (mặc định 240 MB) | JIT C1/C2 |
+| Thread stack | {{Xss}} × số thread (mặc định 1 MB/thread) | 200 thread = 200 MB |
+| Direct buffer | {{MaxDirectMemorySize}}, mặc định bằng {{Xmx}} | NIO, Netty |
+| GC và cấu trúc nội bộ | Theo heap và số lõi | Không đặt được trực tiếp |
+| Native library | malloc của glibc, arena theo số lõi | {{MALLOC_ARENA_MAX=2}} giảm đáng kể |
+
+Ví dụ ngân sách cho limit 2 GiB: heap 1,3 GiB (65%), metaspace 256 MB, code cache 64 MB, thread 50 × 1 MB = 50 MB, direct 128 MB, còn lại cho JVM nội bộ và native. Tổng ~1,85 GiB, chừa 150 MB đệm.
+
+### Đặt cờ đúng cách
+~~~bash
+java -XX:MaxRAMPercentage=65.0 \
+     -XX:InitialRAMPercentage=65.0 \
+     -XX:MaxMetaspaceSize=256m \
+     -XX:ReservedCodeCacheSize=64m \
+     -XX:+UseContainerSupport \        # mặc định bật, nêu rõ để dễ review
+     -XX:NativeMemoryTracking=summary \
+     -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/dumps \
+     -XX:+ExitOnOutOfMemoryError \
+     -jar app.jar
+~~~
+
+Kiểm tra JVM có đọc đúng giới hạn không:
+~~~bash
+java -XX:+PrintFlagsFinal -version | grep -Ei "MaxHeapSize|MaxRAMPercentage|ActiveProcessorCount"
+jcmd <pid> VM.native_memory summary      # cần NativeMemoryTracking=summary
+jcmd <pid> GC.heap_info
+~~~
+
+Nếu dùng {{ActiveProcessorCount}}, hãy đặt bằng số lõi bạn muốn JVM "tin" (ví dụ {{-XX:ActiveProcessorCount=2}}), nhưng chỉ khi bạn hiểu rằng nó thay đổi cả số luồng GC, JIT và common pool.
+
+### OOMKilled khác OutOfMemoryError như thế nào
+| | {{OutOfMemoryError}} | {{OOMKilled}} |
+|---|---|---|
+| Ai phát hiện | JVM | Kernel (cgroup memory limit) |
+| Triệu chứng | Log có stack trace, có thể có heap dump | Không có log, container bị kill, {{kubectl describe pod}} ghi {{Reason: OOMKilled}}, exit code 137 |
+| Nhìn thấy ở đâu | Log ứng dụng | {{kubectl get pod}}, {{dmesg}}, event của node |
+| Cách phòng | {{MaxRAMPercentage}}, {{HeapDumpOnOutOfMemoryError}} | Đặt ngân sách bộ nhớ đúng, giảm thread, giảm arena, tăng limit |
+
+### Pitfall thực tế trên production
+- {{Xmx}} bằng đúng memory limit: container bị kill trước khi JVM kịp ném {{OutOfMemoryError}}, và bạn không có heap dump để chẩn đoán.
+- Đặt {{MaxRAMPercentage}} cao (ví dụ 90) rồi tạo 300 thread: stack + metaspace + direct vượt phần còn lại.
+- Không đặt {{MaxMetaspaceSize}}: một lỗi classloader leak làm metaspace tăng đến khi bị OOMKilled.
+- {{MALLOC_ARENA_MAX}} mặc định theo số lõi của **node** (có thể 64 lõi) trong khi pod chỉ 2 CPU: glibc tạo tới 8 × 64 arena, mỗi arena giữ bộ nhớ chưa trả lại, RSS phình to.
+- Đặt {{requests}} khác {{limits}} quá xa (Burstable): scheduler xếp nhiều pod trên một node, khi tranh chấp CPU thì JVM bị throttle ({{cfs_throttled_seconds}} tăng), p99 tăng gấp đôi dù CPU trung bình thấp.
+- Đọc RAM vật lý của node thay vì cgroup: trên máy 64 GiB, JVM nghĩ heap có thể 16 GiB và đặt các giá trị theo đó, container 2 GiB chết ngay.
+- Dùng JDK 8 cũ (trước 8u191) trên cgroup v2: JVM không đọc được giới hạn, coi như chạy trên máy trống.
+- Không bật JFR/NMT khi container bị kill lặp lại: mỗi lần kill là một lần mất dữ liệu chẩn đoán.
+
+### Ví dụ đời thực
+Pod Java: memory limit 2 GiB, {{Xmx1800m}}, 200 thread (mỗi cái 1 MB stack), metaspace không giới hạn. Sau 6 giờ, pod bị {{OOMKilled}} với exit code 137, không có heap dump, log chỉ dừng đột ngột giữa một request. {{kubectl describe pod}} ghi {{Last State: Terminated, Reason: OOMKilled}}.
+
+Đo bằng {{NativeMemoryTracking=summary}}: heap 1,62 GiB, metaspace 180 MB, thread 210 MB, code cache 60 MB, internal 90 MB, tổng RSS 2,2 GiB — vượt 2 GiB. Ngoài ra {{cfs_throttled_seconds}} tăng 40 giây/giờ, giải thích p99 tăng gấp đôi vào giờ cao điểm (bị throttle giữa lúc GC).
+
+Sửa: (1) {{MaxRAMPercentage=65}} → heap ~1,3 GiB, (2) {{MaxMetaspaceSize=256m}}, (3) giảm pool từ 200 xuống 50 thread (dùng pool có giới hạn thay vì tạo thread theo request), (4) {{MALLOC_ARENA_MAX=2}}, (5) đặt {{requests = limits = 2 CPU}} để QoS Guaranteed, (6) thêm alert khi {{container_memory_working_set_bytes}} > 85% limit.
+
+Kết quả: RSS ổn định 1,72 GiB, không còn OOMKilled trong 30 ngày; p99 giờ cao điểm giảm từ 420 ms xuống 180 ms nhờ hết throttle.
+
+### Trả lời mẫu khi phỏng vấn
+"Từ JDK 10 JVM đọc cgroup chứ không đọc RAM máy: giới hạn bộ nhớ ở memory.max (cgroup v2) hoặc memory.limit_in_bytes (v1), giới hạn CPU ở cpu.max; số CPU khả dụng là phần nguyên làm tròn lên của quota/period, ví dụ 1,5 CPU thành 2. MaxRAMPercentage quyết định heap theo giới hạn đó, mặc định 25 phần trăm, còn availableProcessors quyết định số luồng GC, JIT và common pool. Tôi không đặt Xmx bằng memory limit, vì ngoài heap còn metaspace, code cache, stack thread, direct buffer và bộ nhớ nội bộ; tổng vượt limit thì kernel OOMKilled, không có heap dump. Tôi đặt MaxRAMPercentage khoảng 65, giới hạn metaspace, giảm số thread, đặt MALLOC_ARENA_MAX bằng 2 và theo dõi RSS bằng NativeMemoryTracking. Trong một sự cố, Xmx1800m cộng 200 thread và metaspace không giới hạn làm RSS 2,2 GiB trên limit 2 GiB; sau khi sửa, RSS còn 1,72 GiB và không còn OOMKilled trong 30 ngày. Tôi cũng đặt requests bằng limits để tránh CPU throttling, vì throttling làm p99 tăng gấp đôi dù CPU trung bình chỉ 30 phần trăm."
+
+> Senior tip: Hãy nhớ thứ tự ưu tiên khi container bị kill: RSS trước, heap sau. Một heap "ổn định" vẫn có thể làm chết pod nếu bạn quên thread stack, metaspace và arena của glibc. Và luôn đọc cgroup thật trong container ({{cat /sys/fs/cgroup/cpu.max}}), đừng tin vào những gì JVM báo khi bạn chạy trên máy dev 16 lõi.`,
+  follow: [
+    'cgroup v1 và v2 khác nhau ở những file nào?',
+    'Vì sao 1.5 CPU lại thành 2 processor khả dụng?',
+    'OOMKilled khác OutOfMemoryError ở dấu hiệu nào?'
+  ],
+
+tags: ['container', 'cgroup', 'MaxRAMPercentage', 'ActiveProcessorCount', 'OOMKilled', 'NativeMemoryTracking', 'Kubernetes']
+},
+{
+  id: 'jvm-058',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'Structured concurrency và scoped values ở Java 21 là preview. Bạn dùng chúng thế nào để thay {{CompletableFuture}} và {{ThreadLocal}} trong một service tổng hợp nhiều nguồn, trạng thái preview hiện nay ra sao, và giới hạn nào khiến bạn không đưa vào production ngay?',
+  a: `**Tóm tắt:** Structured concurrency coi một nhóm task con là **một đơn vị công việc**: mọi task con được tạo trong một scope, scope chờ tất cả, và khi đóng scope thì mọi task còn chạy đều bị huỷ. Nhờ vậy không còn task "mồ côi" chạy sau khi request đã trả lời. {{ScopedValue}} thay {{ThreadLocal}}: dữ liệu bất biến được chia sẻ cho các method bên trong và cho thread con theo phạm vi khối lệnh, hết phạm vi thì tự mất, không rò rỉ. Cả hai là **preview** ở Java 21 (JEP 453 và JEP 446): phải bật {{--enable-preview}} khi biên dịch và chạy. {{ScopedValue}} đã chính thức ở JDK 25 (JEP 506), còn structured concurrency đi qua 7 lần preview (JDK 21–27) rồi đã **chính thức ở JDK 28 (JEP 543)** — API cuối cùng dùng {{StructuredTaskScope.open()}} với {{Joiner}} (không còn constructor, không còn {{ShutdownOnFailure}}).
+
+### Vì sao CompletableFuture hay bị "rò" task
+Với {{CompletableFuture}}, bạn tạo chuỗi bất đồng bộ trên một executor; không có khái niệm "chủ sở hữu" nào buộc các task phải kết thúc trước khi dữ liệu được dùng. Ba vấn đề kinh điển:
+
+1. **Task mồ côi**: request bị hủy (client ngắt, timeout ở tầng trên) nhưng các task vẫn chạy, chiếm thread và gọi DB.
+2. **Lỗi bị bỏ**: exception của một nhánh nằm trong một future mà không ai {{join()}}, chỉ hiện ra khi có người đọc, hoặc không bao giờ.
+3. **Khó đọc stack trace**: hàng chục lớp {{CompletableFuture}} nối nhau, thread dump chỉ cho thấy một pool chung, không biết task nào thuộc request nào.
+
+Structured concurrency đảo ngược: cấu trúc của code (khối {{try}}) chính là cấu trúc của tiến trình. Đóng scope nghĩa là "chờ và huỷ", không thể quên.
+
+### Cơ chế từng bước
+~~~text
+try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {  // Java 21 preview
+    Subtask<A> a = scope.fork(() -> fetchA());               // tạo task con trong scope
+    Subtask<B> b = scope.fork(() -> fetchB());
+    scope.join();                                            // chờ tất cả xong
+    scope.throwIfFailed();                                   // nếu có task lỗi: ném
+    return combine(a.get(), b.get());                        // an toàn: đã xong
+}                                                            // đóng: huỷ task còn lại
+~~~
+
+Điều xảy ra ở mỗi bước:
+
+- {{fork()}} đăng ký task vào scope và trả về {{Subtask}} (không phải {{Future}}), trạng thái có thể là {{SUCCESS}}, {{FAILED}}, {{CANCELLED}}.
+- {{join()}} chờ mọi task con kết thúc; nếu một task ném exception, scope bắt đầu huỷ các task còn lại.
+- {{throwIfFailed()}} ném exception đầu tiên (được bọc trong {{ExecutionException}}).
+- {{close()}} (tự sinh bởi try-with-resources) chờ mọi thread con kết thúc: **không có task nào sống lâu hơn khối lệnh tạo ra nó**.
+- Nếu một task cố chạy ra ngoài phạm vi (ví dụ tự tạo thread mới và không bị scope quản lý), scope không kiểm soát được — đó là "structure violation" và JDK sẽ báo khi phát hiện.
+
+### ScopedValue thay ThreadLocal như thế nào
+~~~java
+private static final ScopedValue<String> TENANT = ScopedValue.newInstance();
+
+void handle(Request req) {
+    ScopedValue.where(TENANT, req.tenant())           // ràng buộc trong phạm vi
+               .run(() -> {
+                    queryDb();                        // đọc TENANT ở mọi tầng bên dưới
+                    spawnChildren();                  // thread con kế thừa ràng buộc
+               });
+}                                                     // hết phạm vi: ràng buộc biến mất
+~~~
+
+So với {{ThreadLocal}}: không có {{set()}} nên không thể bị thay đổi giữa đường, không có nguy cơ quên {{remove()}} (một nguyên nhân rò rỉ bộ nhớ kinh điển với thread pool), và không cần sao chép giá trị sang thread con — thread con đọc trực tiếp ràng buộc của scope.
+
+### Trạng thái preview, nói cho đúng
+| Phiên bản | Structured concurrency | Scoped values |
+|---|---|---|
+| Java 19–20 | Incubator ({{jdk.incubator.concurrent}}) | Incubator (JEP 429, JDK 20) |
+| Java 21 | Preview (JEP 453), có {{ShutdownOnFailure}} / {{ShutdownOnSuccess}} | Preview (JEP 446) |
+| Java 22–24 | Preview lại (JEP 462, 480, 499), gần như không đổi | Preview lại |
+| Java 25 | Preview lần 5 (JEP 505): bỏ constructor, thêm {{open()}} và {{Joiner}}, bỏ {{ShutdownOnFailure}} | **Chính thức** (JEP 506) |
+| Java 26–27 | Preview (JEP 525, 533) | Chính thức |
+| Java 28 | **Chính thức** (JEP 543, không đổi so JDK 27) | Chính thức |
+
+Ba hệ quả thực tế:
+
+- Code preview chỉ chạy khi biên dịch và chạy bằng {{--enable-preview}}, và **class đã biên dịch bằng preview không chạy được trên JDK khác phiên bản**.
+- API đã đổi ít nhất hai lần lớn (JDK 21 → 25 → 26/27): {{ShutdownOnFailure}} biến mất, {{Joiner}} xuất hiện, rồi lại đổi kiểu trả về. Code viết theo tutorial Java 21 sẽ không biên dịch trên JDK 25. Tuy nhiên từ JDK 27 đến JDK 28 (JEP 543) API **ổn định**, không còn đổi; nếu đội đã ở JDK 27 trở lên thì chỉ cần bỏ {{--enable-preview}} và biên dịch lại là dùng được.
+- Vì vậy: học để hiểu mô hình, nhưng **không đưa trực tiếp vào production** khi đội chưa kiểm soát được phiên bản JDK; hãy bọc sau một lớp mỏng (một hàm {{runScope}}) để lần đổi API chỉ sửa một file.
+
+### Bảng so sánh với cách làm hiện tại
+| Tiêu chí | {{CompletableFuture}} + executor | Structured concurrency |
+|---|---|---|
+| Rò task khi request kết thúc | Có thể (không có chủ sở hữu) | Không, close chờ và huỷ |
+| Huỷ khi một nhánh lỗi | Phải tự viết | Mặc định |
+| Ghép nhiều kết quả | {{allOf}}, {{combine}}, tự xử lý | {{join()}} + {{get()}} |
+| Thread dump | Pool chung, khó truy vết | Hiển thị thứ bậc scope → subtask |
+| Timeout | Tự viết {{orTimeout}} | {{joinUntil(deadline)}} |
+| Trưởng thành | Ổn định nhiều năm | Chính thức từ JDK 28 (JEP 543) |
+
+### Giới hạn khiến chưa dùng ngay
+- **Phiên bản JDK**: structured concurrency mới chính thức ở JDK 28 (JEP 543). Nếu đội vẫn dùng JDK 21 LTS hoặc JDK 25 LTS thì API preview ở những phiên bản đó chưa ổn định (JDK 21 có {{ShutdownOnFailure}}, JDK 25 đổi sang {{open()}} + {{Joiner}}); phải kiểm soát được phiên bản mới dùng production.
+- **Chưa thay được mọi thứ**: tác vụ nền, hàng đợi, retry, cách ly lỗi (bulkhead) vẫn cần executor hoặc thư viện như Resilience4j.
+- **Vẫn cần timeout**: scope không tự có hạn mức thời gian; phải dùng {{joinUntil}}.
+- **Không miễn phí**: mỗi scope tạo task; với virtual thread thì chi phí thấp, với thread pool vẫn phải chọn pool phù hợp.
+- **Hệ sinh thái**: nhiều thư viện (Spring, Hibernate) chưa biết tới scope; nếu task con chạy trong scope rồi gọi framework có {{ThreadLocal}} riêng thì vẫn phải chuyển đổi.
+
+### Ví dụ đời thực
+Một service tổng hợp 4 nguồn (user, order, inventory, recommend) với 1.200 request/giây, dùng {{CompletableFuture}} trên một pool 200 thread. Khi nguồn inventory chậm 8 giây, 180 request vẫn chờ hết timeout (2,5 giây mỗi cái) và pool cạn, p99 tăng từ 480 ms lên 2,4 giây; số task mồ côi đo bằng số lời gọi tới inventory sau khi request đã trả 504 là 3.400/phút.
+
+Thử nghiệm trên nhánh staging với JDK 21 preview: dùng {{StructuredTaskScope.ShutdownOnFailure}} + {{joinUntil(deadline)}} và {{ScopedValue}} thay cho {{ThreadLocal}} để truyền tenant. Kết quả: khi một nguồn lỗi, các nguồn còn lại bị huỷ ngay, p99 còn 520 ms, số lời gọi mồ côi về 0, và thread dump hiển thị rõ 4 subtask thuộc cùng một scope.
+
+Rủi ro phát hiện khi nâng lên JDK 28 (JEP 543): từ JDK 27 sang 28 chỉ cần bỏ {{--enable-preview}} và biên dịch lại, không đổi code; còn nếu đang dùng JDK 21 hoặc 25 preview thì phải viết lại theo {{StructuredTaskScope.open(Joiner.awaitAllSuccessfulOrThrow())}}. Bài học: bọc API sau một lớp nội bộ và ghi rõ phiên bản JDK trong tài liệu.
+
+### Trả lời mẫu khi phỏng vấn
+"Structured concurrency giải quyết đúng vấn đề của CompletableFuture: không ai sở hữu các task con, nên khi request kết thúc hoặc một nhánh lỗi, các task khác vẫn chạy, gây rò thread và gọi DB vô ích. Với StructuredTaskScope, mọi task con sống trong một khối try, đóng khối là chờ và huỷ, nên cấu trúc code trùng với cấu trúc tiến trình. Tôi dùng nó cho fan-out nhiều nguồn, kết hợp joinUntil để có timeout, và dùng ScopedValue thay ThreadLocal để truyền ngữ cảnh như tenant hay trace id, vì ràng buộc tự mất khi hết phạm vi và không cần remove trong finally. Về trạng thái: Java 21 là preview, JDK 25 {{ScopedValue}} đã chính thức, còn structured concurrency đi qua 7 lần preview (JDK 21–27) rồi chính thức ở JDK 28 (JEP 543) với API ổn định; vì vậy tôi không dùng preview ở JDK 21/25 production mà bọc sau một lớp mỏng, và chỉ dùng API đã chính thức hoặc trên JDK 27+. Khi thử trên staging, p99 từ 2,4 giây về 520 ms và số lời gọi mồ côi về 0."
+
+> Senior tip: Đừng nhầm "preview" với "thử nghiệm trong production". Hãy học mô hình, viết một lớp bọc mỏng, và giữ phiên bản JDK trong tầm kiểm soát. Khi API đổi, lớp bọc là thứ duy nhất bạn phải sửa — và đó cũng là thứ giúp bạn trả lời phỏng vấn: bạn hiểu vấn đề, không chỉ thuộc cú pháp.`,
+  follow: [
+    'StructuredTaskScope khác ExecutorService ở điểm nào?',
+    'ScopedValue khác ThreadLocal ở chỗ nào khi dùng virtual thread?',
+    'Vì sao code biên dịch bằng preview không chạy trên JDK khác phiên bản?'
+  ],
+
+tags: ['structured concurrency', 'ScopedValue', 'ThreadLocal', 'preview', 'StructuredTaskScope', 'virtual threads', 'JEP']
+}
 );
