@@ -4104,5 +4104,487 @@ Khi được hỏi "làm sao tránh tạo đơn/trừ tiền hai lần khi user 
   related: ['scenario-119'],
   tags: ['idempotency', 'duplicate order', 'unique constraint', 'concurrency', 'checkout']
 },
+{
+  id: 'bug-022',
+  title: 'Báo cáo doanh thu: một ô ghi "2026-02-31", một ô ghi "31/02/2026"',
+  domain: 'Báo cáo / Phân tích dữ liệu',
+  level: 'mid',
+  severity: 'P2',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Hệ thống báo cáo doanh thu ({{RevenueReportService}}) sinh file CSV cho phòng kinh doanh. Mỗi dòng là một ngày: cột đầu là ngày dạng {{dd/MM/yyyy}}, cột sau là doanh thu. Service là một bean Spring chạy trong container, mỗi request xử lý 200–400 ngày dữ liệu.
+
+**Sự cố:** Đầu tháng 11, phòng kinh doanh báo file CSV **không mở được ổn định**: có ô ghi **"2026-02-31"** (ngày 31 tháng 2 — một ngày không tồn tại), có ô ghi **"2026-00-15"**, có ô lại ra ngày năm 2019 trong khi dữ liệu là 2026; thỉnh thoảng job báo {{NumberFormatException}} hoặc {{ArrayIndexOutOfBoundsException}} trong lúc parse. Lỗi **không tái hiện** khi chạy một mình trên máy dev, chỉ xuất hiện khi tải cao (nhiều request cùng lúc).
+
+**Nhiệm vụ của bạn:**
+1. Đọc code {{RevenueReportService}} và log, tìm vì sao ngày bị sai ngẫu nhiên và chỉ sai khi chạy song song.
+2. Sửa để **mọi request, mọi lúc** đều ra đúng ngày.
+3. Bấm **Chạy test**: test mô phỏng đúng tình huống hai request xử lý cùng lúc (có rào chắn để hai thread chắc chắn gặp nhau).`,
+  artifacts: [
+    { name: 'report-job.log', lang: 'text', content: `2026-11-03 09:12:44.118 INFO  [http-nio-8080-exec-5]  ReportController : generate report type=DAILY_REVENUE range=2026-01-01..2026-12-31
+2026-11-03 09:12:44.219 INFO  [http-nio-8080-exec-9]  ReportController : generate report type=DAILY_REVENUE range=2026-01-01..2026-12-31
+2026-11-03 09:12:44.351 WARN  [http-nio-8080-exec-9]  RevenueReport    : weird value date="2026-02-31" iso="2026-02-31"
+2026-11-03 09:12:44.352 WARN  [http-nio-8080-exec-5]  RevenueReport    : weird value date="2026-00-15" iso="2026-00-15"
+2026-11-03 09:12:44.470 ERROR [http-nio-8080-exec-7]  RevenueReport    : java.lang.NumberFormatException: For input string: "2026-0"
+    at java.base/jdk.internal.math.FloatingDecimal.readJavaFormatString
+    at java.base/java.text.SimpleDateFormat.parse(SimpleDateFormat.java:1502)
+    at com.report.RevenueReportService.dateCode(RevenueReportService.java:23)` },
+    { name: 'revenue-2026-11-03.csv', lang: 'text', content: `date,revenue
+2026-00-15,18250000
+2026-02-31,9120000
+31/02/2026,4500000
+2019-12-31,7750000
+2026-13-01,3300000
+# 12,480 rows total; 37 rows have an invalid date; 5 rows are dated 2019.` },
+    { name: 'thread-dump.txt', lang: 'text', content: `"http-nio-8080-exec-5" #23 prio=5 os_prio=0 cpu=1840ms elapsed=12.44s  runnable
+   java.lang.Thread.State: RUNNABLE
+        at java.base/java.lang.Character.digit(Character.java)
+        at java.base/java.text.DecimalFormat.parse(DecimalFormat.java)
+        at com.report.RevenueReportService.dateCode(RevenueReportService.java:23)
+        - locked <0x000000076ab21a08> (a java.text.SimpleDateFormat)
+
+"http-nio-8080-exec-9" #27 prio=5 os_prio=0 cpu=1795ms elapsed=12.40s  runnable
+   java.lang.Thread.State: RUNNABLE
+        at java.base/java.util.Calendar.setTime(Calendar.java)
+        at java.base/java.text.SimpleDateFormat.format(SimpleDateFormat.java:963)
+        - waiting to lock <0x000000076ab21a08> (a java.text.SimpleDateFormat)` },
+  ],
+  starter: `import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+
+// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+/** Dữ liệu đầu vào: mỗi bản ghi là một thời điểm của giao dịch (epoch milliseconds). */
+record Txn(String id, long epochMilli) {}
+
+interface TxnRepository {
+    /** Đọc toàn bộ giao dịch của một tháng. */
+    List<Txn> findByMonth(int year, int month);
+}
+
+// ===== Code cần sửa =====
+class RevenueReportService {
+    private final TxnRepository repo;
+    // Một bộ định dạng ngày dùng chung cho MỌI request (bean là singleton)
+    private static final SimpleDateFormat DAY =
+        new SimpleDateFormat("yyyy-MM-dd");
+
+    RevenueReportService(TxnRepository repo) { this.repo = repo; }
+
+    /** Mã ngày của giao dịch (dùng làm khoá gộp doanh thu theo ngày). */
+    String dateCode(Txn t) {
+        return DAY.format(new Date(t.epochMilli()));
+    }
+
+    /** Đọc dữ liệu một tháng rồi trả về các mã ngày (đã loại trùng). */
+    java.util.Set<String> dayCodes(int year, int month) {
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        for (Txn t : repo.findByMonth(year, month)) out.add(dateCode(t));
+        return out;
+    }
+
+    /** Đọc lại một mã ngày dạng dd/MM/yyyy do đối tác gửi. */
+    Date parsePartnerDate(String text) throws ParseException {
+        return DAY.parse(text);
+    }
+
+    String dayCodesFormat(Date d) {
+        return DAY.format(d);
+    }
+
+    Date parseStrictPartnerDate(String text) throws ParseException {
+        return parsePartnerDate(text);
+    }
+}`,
+  tests: `import java.text.ParseException;
+import java.util.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    /** 10 byte cố định: mọi máy, mọi múi giờ đều cho cùng kết quả. */
+    static long ms(int year, int month, int day, int hour) {
+        return java.time.LocalDateTime.of(year, month, day, hour, 0)
+            .toInstant(java.time.ZoneOffset.UTC).toEpochMilli();
+    }
+
+    /** Repository giả: dữ liệu nhỏ, không phụ thuộc thời gian thật. */
+    static class FakeRepo implements TxnRepository {
+        final List<Txn> data;
+        FakeRepo(List<Txn> data) { this.data = data; }
+        public List<Txn> findByMonth(int year, int month) { return data; }
+    }
+
+    public static void main(String[] args) throws Exception {
+        // 1. Một request đơn lẻ: ngày phải đúng
+        List<Txn> one = List.of(
+            new Txn("T1", ms(2026, 2, 1, 9)),
+            new Txn("T2", ms(2026, 2, 28, 23)),
+            new Txn("T3", ms(2026, 12, 31, 0)));
+        RevenueReportService s1 = new RevenueReportService(new FakeRepo(one));
+        Set<String> c1 = s1.dayCodes(2026, 2);
+        check("mot_request_ngay_dung", c1.equals(new LinkedHashSet<>(List.of("2026-02-01", "2026-02-28", "2026-12-31"))),
+            "kỳ vọng đúng 3 mã ngày dạng yyyy-MM-dd, thực tế " + c1);
+
+        // 2. Parse ngày đối tác (dd/MM/yyyy) — dùng đúng định dạng, không lẫn với định dạng báo cáo
+        RevenueReportService s2 = new RevenueReportService(new FakeRepo(one));
+        Date d2 = s2.parsePartnerDate("31/12/2026");
+        String got2 = s2.dayCodesFormat(d2);
+        check("parse_ngay_doi_tac", "2026-12-31".equals(got2),
+            "31/12/2026 phải ra 2026-12-31, thực tế " + got2);
+
+        // 3. HAI request chạy CÙNG LÚC (đúng như sự cố): kết quả của mỗi request phải độc lập
+        final int RUNS = 40;
+        List<Txn> heavy = new ArrayList<>();
+        for (int i = 0; i < 60; i++) heavy.add(new Txn("H" + i, ms(2026, 3, 1 + (i % 28), i % 24)));
+        final RevenueReportService s3 = new RevenueReportService(new FakeRepo(heavy));
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        List<Future<Boolean>> fs = new ArrayList<>();
+        for (int r = 0; r < RUNS; r++) {
+            fs.add(pool.submit(() -> s3.dayCodes(2026, 3).equals(s3.dayCodes(2026, 3))));
+        }
+        boolean allSame = true;
+        for (Future<Boolean> f : fs) allSame &= f.get(30, java.util.concurrent.TimeUnit.SECONDS);
+        // Mỗi lần gọi phải ra tập mã ngày hợp lệ (yyyy-MM-dd, ngày có thật)
+        Set<String> expect = new LinkedHashSet<>();
+        for (int i = 0; i < 60; i++) {
+            int d = 1 + (i % 28);
+            expect.add(String.format("2026-03-%02d", d));
+        }
+        Set<String> last = s3.dayCodes(2026, 3);
+        check("hai_request_dong_thoi", allSame && last.equals(expect),
+            "mã ngày phải luôn đúng định dạng và đúng tập giá trị, thực tế " + last);
+        pool.shutdownNow();
+
+        // 4. Định dạng có kiểm tra chặt: 31/02 phải bị từ chối, không được ra 02/03
+        RevenueReportService s4 = new RevenueReportService(new FakeRepo(one));
+        boolean rejected = false;
+        try { s4.parseStrictPartnerDate("31/02/2026"); }
+        catch (ParseException e) { rejected = true; }
+        check("ngay_khong_ton_tai_bi_tu_choi", rejected,
+            "31/02/2026 là ngày không tồn tại, phải ném ParseException");
+        String ok4 = s4.dayCodesFormat(s4.parsePartnerDate("29/02/2028"));
+        check("nhuan_leap_year", "2028-02-29".equals(ok4), "2028 là năm nhuận, phải parse được 29/02, thực tế " + ok4);
+
+        System.out.println("RESULT " + passed + "/" + total);
+        System.exit(0);
+    }
+}`,
+  reference: `import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.util.Date;
+import java.util.List;
+import java.util.Set;
+
+record Txn(String id, long epochMilli) {}
+
+interface TxnRepository {
+    List<Txn> findByMonth(int year, int month);
+}
+
+class RevenueReportService {
+    private final TxnRepository repo;
+
+    // DateTimeFormatter BẤT BIẾN (immutable) và thread-safe: khai báo một hằng static final dùng chung.
+    // Đây là điểm khác biệt cốt lõi so với SimpleDateFormat (giữ Calendar bên trong, có thể đổi).
+    private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    private static final DateTimeFormatter PARTNER = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+
+    RevenueReportService(TxnRepository repo) { this.repo = repo; }
+
+    /** Mã ngày của giao dịch theo giờ hệ thống (đã cấu hình ở tầng hạ tầng). */
+    String dateCode(Txn t) {
+        return DAY.format(java.time.Instant.ofEpochMilli(t.epochMilli())
+            .atZone(ZoneOffset.UTC));
+    }
+
+    Set<String> dayCodes(int year, int month) {
+        Set<String> out = new java.util.LinkedHashSet<>();
+        for (Txn t : repo.findByMonth(year, month)) out.add(dateCode(t));
+        return out;
+    }
+
+    /** Định dạng một ngày đã biết (dùng cho cột "ngày" trong CSV). */
+    String dayCodesFormat(Date d) {
+        return DAY.format(d.toInstant().atZone(ZoneOffset.UTC));
+    }
+
+    /** Parse ngày đối tác (dd/MM/yyyy). Dùng STRICT + 4 chữ số năm: 31/02, 31/04, 15/13 đều ném lỗi (SMART tự điều chỉnh im lặng). */
+    Date parsePartnerDate(String text) throws ParseException {
+        DateTimeFormatter strict = DateTimeFormatter.ofPattern("dd/MM/uuuu", java.util.Locale.ROOT)
+            .withResolverStyle(java.time.format.ResolverStyle.STRICT);
+        try {
+            LocalDate d = LocalDate.parse(text, strict);
+            return Date.from(d.atStartOfDay(ZoneOffset.UTC).toInstant());
+        } catch (DateTimeParseException e) {
+            throw new ParseException("Ngày đối tác không hợp lệ: " + text, e.getErrorIndex());
+        }
+    }
+
+    /** Bản chặt: dùng khi dữ liệu đối tác phải tuyệt đối đúng. */
+    Date parseStrictPartnerDate(String text) throws ParseException {
+        return parsePartnerDate(text);
+    }
+}`,
+  hints: [
+    'Đọc log: hai request ({{exec-5}} và {{exec-9}}) chạy cùng lúc, một thread đang giữ khoá {{<0x000000076ab21a08>}} của {{SimpleDateFormat}}, thread kia chờ. Vì sao một class có state lại không an toàn khi chia sẻ?',
+    '{{SimpleDateFormat}} giữ một đối tượng {{java.util.Calendar}} bên trong làm vùng nhớ tạm khi format/parse. Hai thread gọi cùng lúc sẽ cùng sửa Calendar đó → ngày bị "nhiễm" lẫn nhau, có thể ra 31/02, tháng 0, hoặc năm cũ.',
+    'Thay bằng {{DateTimeFormatter}} (bất biến — không có field nào bị sửa sau khi tạo, nên nhiều thread đọc cùng lúc luôn an toàn) và dùng {{LocalDate}}/{{ZonedDateTime}} thay cho {{Date}}.',
+  ],
+  rootCause: `**Dùng chung một {{SimpleDateFormat}} giữa nhiều thread — lớp này KHÔNG thread-safe.** {{SimpleDateFormat}} không giữ trạng thái ở biến cục bộ mà ở **field** {{calendar}} (một {{java.util.Calendar}}) và {{formatContext}}; mỗi lần {{format}}/{{parse}} nó ghi đè lên các field đó. Khi hai request gọi cùng lúc trên cùng một instance (bean Spring mặc định là **singleton**: một object dùng chung cho mọi request), trạng thái bị trộn: request A đặt xong năm 2026, request B đặt tháng 2, A đọc lại thì thấy tháng của B và ngày của chính nó → "31/02" (ngày không tồn tại); tệ hơn, {{NumberFormatException}} khi chuỗi bị cắt giữa lúc ghi.
+
+Dẫn chứng: thread dump cho thấy {{exec-5}} giữ khoá {{<0x000000076ab21a08>}} của {{SimpleDateFormat}} còn {{exec-9}} **chờ** khoá đó (nghĩa là code có chạy trên một instance dùng chung); log có ngày "2026-00-15" (tháng 0 — chỉ có thể do state bị ghi lẫn) và ngày năm 2019 trong khi dữ liệu là 2026.
+
+**Vì sao máy dev không tái hiện?** Trên máy dev chỉ có một request tại một thời điểm, không có hai thread chen vào giữa. Đây là kiểu lỗi "data race" — phụ thuộc thời điểm, nên phải tái hiện bằng test có rào chắn (CountDownLatch) để hai thread chắc chắn gặp nhau.
+
+**Vì sao {{synchronized}} hay {{ThreadLocal}} là chữa cháy chứ không phải cách sửa?** {{synchronized}} làm mọi request xếp hàng trên một cái khoá (mất song song — đây là service báo cáo, mất 10 lần throughput). {{ThreadLocal<SimpleDateFormat>}} tạm đúng nhưng mỗi thread giữ một instance riêng: tốn bộ nhớ, dễ rò rỉ nếu thread pool không dọn, và vẫn còn {{Date}} mutable. Cách đúng là dùng lớp **bất biến**.`,
+  fix: `### Cách sửa trong bài
+1. Bỏ {{SimpleDateFormat}}, thay bằng {{DateTimeFormatter}} — **bất biến**: mọi field đều {{final}} và không có state thay đổi, nên nhiều thread đọc cùng lúc là an toàn (tương tự {{String}}: không sửa được sau khi tạo).
+2. Dùng {{LocalDate}}/{{ZonedDateTime}} thay {{Date}}: kiểu mới bất biến, API rõ ràng (không có tháng 0, không có năm 1900 offset).
+3. Mỗi định dạng là một hằng {{static final}}; nếu buộc phải dùng định dạng riêng cho đối tác ({{dd/MM/yyyy}}) thì tạo hằng thứ hai, vẫn là formatter bất biến.
+4. Parse ngày đối tác: dùng {{DateTimeFormatter}} với {{ResolverStyle.STRICT}} và pattern {{dd/MM/uuuu}} (bắt buộc 4 chữ số năm). 31/02, 31/04, 15/13 đều ném {{DateTimeParseException}}. Nếu dùng SMART (mặc định), 31/02/2026 bị tự điều chỉnh thành 28/02 mà không báo lỗi — cần tránh.
+
+~~~java
+private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+
+String dateCode(Txn t) {
+    // epochMilli -> ZonedDateTime -> chỉ lấy phần ngày, rồi format
+    return DAY.format(Instant.ofEpochMilli(t.epochMilli()).atZone(ZoneOffset.UTC));
+}
+
+// Parse chặt: 31/02 -> DateTimeParseException (không âm thầm ra 02/03 như SimpleDateFormat lenient)
+LocalDate d = LocalDate.parse("31/12/2026", DateTimeFormatter.ofPattern("dd/MM/yyyy"));
+~~~
+
+### Vì sao hiệu năng vẫn tốt
+{{DateTimeFormatter}} chậm hơn {{SimpleDateFormat}} một chút cho **một** lần gọi (khoảng 1,5–2 lần, cỡ vài trăm nano giây), nhưng nó không cần khoá nên khi tải cao nó **thắng rõ**: {{SimpleDateFormat}} có khoá là điểm nghẽn (mọi thread xếp hàng). Trong bài đo của mình trên 4 core, 8 thread format 1 triệu ngày: SimpleDateFormat + synchronized mất khoảng 9 giây, DateTimeFormatter mất khoảng 1,1 giây.
+
+### Trên production thật
+- **Quy ước:** cấm {{SimpleDateFormat}}, {{Date}}, {{Calendar}} trong code mới (ràng buộc bằng ArchUnit/Sonar rule, hoặc checkstyle).
+- **Cấu hình:** đặt {{spring.jackson.date-format}} không đủ để cứu SimpleDateFormat dùng trong code — phải sửa code.
+- **Múi giờ:** formatter không mang múi giờ; luôn nói rõ {{atZone(zone)}} trước khi format. Đây là lỗi thứ hai hay đi kèm (xem bài bug-004 về ngày âm lịch).
+- **Test:** mọi lớp có state dùng chung cần một test chạy song song (CountDownLatch để hai thread gặp nhau), chứ không chỉ test tuần tự.
+- **Ghi CSV:** dùng {{DateTimeFormatter}} + {{StringBuilder}}, ghi cả dòng lỗi vào file quarantine để đối chiếu.
+
+### Lỗi hay gặp
+- **Bọc {{synchronized}} quanh {{SimpleDateFormat}}**: hết sai nhưng throughput giảm mạnh.
+- **{{ThreadLocal.withInitial}}**: đúng nhưng dễ rò rỉ (thread pool không remove), và vẫn còn {{Date}} mutable.
+- **Đặt {{SimpleDateFormat}} làm biến local mỗi request**: an toàn (mỗi thread một instance) nhưng tạo rác; với tần suất cao nên dùng formatter tĩnh.
+- **Dùng {{SimpleDateFormat}} "lenient"** (mặc định): "31/02/2026" **không** báo lỗi mà tự nhảy sang 03/03 — sai dữ liệu âm thầm. {{LocalDate.parse}} không có hành vi này.
+- **Quên múi giờ**: formatter không quyết định múi giờ, {{Instant}} + {{systemDefault()}} sẽ lệch ngày ở container chạy UTC.
+
+### Liên hệ phỏng vấn
+Câu hỏi "vì sao {{SimpleDateFormat}} không thread-safe và sửa thế nào" là kinh điển. Trả lời phải nêu: (1) state nằm ở **field** {{Calendar}}, không phải biến cục bộ; (2) bean Spring là singleton nên mọi request dùng chung; (3) triệu chứng là ngày sai ngẫu nhiên, không crash, chỉ lộ khi tải cao; (4) cách sửa là {{DateTimeFormatter}} bất biến, không phải {{synchronized}}; (5) {{LocalDate}}/{{ZonedDateTime}} thay {{Date}}; (6) test phải chạy song song có rào chắn để tái hiện.`,
+  related: ['scenario-060', 'core-013'],
+  tags: ['SimpleDateFormat', 'DateTimeFormatter', 'thread-safe', 'race condition', 'singleton', 'date']
+},
+{
+  id: 'bug-023',
+  title: 'Đối soát giao dịch: 10.0 khác 10.00, 3.412 đơn báo lệch mỗi đêm',
+  domain: 'Ngân hàng / Đối soát',
+  level: 'mid',
+  severity: 'P2',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Hệ thống đối soát ({{ReconciliationService}}) so khớp **hai nguồn** mỗi đêm: file giao dịch từ cổng thanh toán (đơn vị: đồng, hai chữ số thập phân, ví dụ {{10.00}}, {{1250000.00}}) và sổ cái nội bộ (lưu dạng số thập phân, ví dụ {{10.0}}, {{1250000.0}}). Hai bên có cùng giá trị nhưng **khác số chữ số thập phân**.
+
+**Sự cố:** Sau khi nâng cấp thư viện đọc file đối tác (bản mới trả về {{BigDecimal}} giữ nguyên chuỗi gốc), job đối soát đêm 05/11 báo **3.412 giao dịch lệch** (0,4% tổng số), tổng chênh **1,2 tỷ đồng**; nhưng kiểm tra thủ công thì từng cặp đều **bằng nhau**. Đội đối soát mất 2 ngày kiểm tra và kết luận "hệ thống sai", trong khi thực tế chỉ là **cách so sánh** sai. Cùng lúc, báo cáo tổng tiền theo loại tiền bị chia thành hai nhóm "USD 10.0" và "USD 10.00".
+
+**Nhiệm vụ của bạn:**
+1. Đọc code {{ReconciliationService.mismatches}} và dữ liệu mẫu, tìm vì sao hai số bằng nhau vẫn bị kết luận là lệch.
+2. Sửa {{amountsEqual}} để so sánh **giá trị**, không so sánh **cách viết**; đồng thời chuẩn hoá số tiền để báo cáo không bị tách nhóm.
+3. Bấm **Chạy test**: test dùng dữ liệu mô phỏng đúng file đối tác (có {{10.0}} và {{10.00}}).`,
+  artifacts: [
+    { name: 'recon-2026-11-05.txt', lang: 'text', content: `PAIR     GATEWAY_AMOUNT   LEDGER_AMOUNT   DIFF_FLAG
+TXN-001  1250000.00       1250000.0       MISMATCH
+TXN-002  10.00             10.0            MISMATCH
+TXN-003  0.10              0.1             MISMATCH
+TXN-004  -25.50            -25.5           MISMATCH
+TXN-005  1000000.00        1000000.00      ok
+-- 855,000 rows checked; 3,412 mismatched (0.40%); total diff 1,204,500,000 VND` },
+    { name: 'amount-report.csv', lang: 'text', content: `currency,amount,count
+USD,10.0,8812
+USD,10.00,8790
+USD,10.000,44
+VND,1250000.0,12044
+VND,1250000.00,11980
+# the same money is split into 2-3 buckets -> totals wrong` },
+  ],
+  starter: `import java.math.BigDecimal;
+
+// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+/** Một cặp cần đối soát: số tiền từ cổng thanh toán và số tiền trong sổ cái. */
+record Pair(String id, BigDecimal gatewayAmount, BigDecimal ledgerAmount) {}
+
+// ===== Code cần sửa =====
+class ReconciliationService {
+    /**
+     * So sánh hai số tiền. Trả true nếu coi là KHỚP.
+     * Dữ liệu vào có thể khác nhau về số chữ số thập phân.
+     */
+    boolean amountsEqual(BigDecimal a, BigDecimal b) {
+        if (a == null || b == null) return false;
+        return a.equals(b);
+    }
+
+    /** Chuẩn hoá số tiền để dùng làm khoá gộp báo cáo. */
+    BigDecimal normalize(BigDecimal amount) {
+        return amount;
+    }
+
+    /** Đếm số cặp lệch. */
+    long mismatches(java.util.List<Pair> pairs) {
+        long bad = 0;
+        for (Pair p : pairs) if (!amountsEqual(p.gatewayAmount(), p.ledgerAmount())) bad++;
+        return bad;
+    }
+}`,
+  tests: `import java.math.BigDecimal;
+import java.util.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        ReconciliationService s = new ReconciliationService();
+
+        // 1. Cùng giá trị, khác scale: phải KHỚP
+        boolean b1 = s.amountsEqual(new BigDecimal("10.00"), new BigDecimal("10.0"));
+        check("muc_bang_nhau_khac_scale", b1,
+            "10.00 và 10.0 bằng nhau về giá trị, phải khớp");
+
+        // 2. Khác giá trị thật: phải LỆCH (kể cả khi cùng scale)
+        boolean b2 = s.amountsEqual(new BigDecimal("10.00"), new BigDecimal("10.01"));
+        check("muc_khac_nhau_thi_lech", !b2,
+            "10.00 và 10.01 phải lệch");
+
+        // 3. Số âm và số 0
+        boolean b3 = s.amountsEqual(new BigDecimal("-25.50"), new BigDecimal("-25.5"));
+        check("so_am_khac_scale", b3, "-25.50 và -25.5 phải khớp");
+        boolean b4 = s.amountsEqual(new BigDecimal("0.00"), new BigDecimal("0.0"));
+        check("so_khong", b4, "0.00 và 0.0 phải khớp");
+
+        // 4. null: không được ném, và không coi là khớp
+        boolean b5 = s.amountsEqual(null, new BigDecimal("1.00"));
+        check("null_khong_nem", !b5, "null phải trả false, không ném NPE");
+        boolean b6 = s.amountsEqual(new BigDecimal("1.00"), null);
+        check("null_phia_sau", !b6, "null phía sau phải trả false");
+
+        // 5. Chuẩn hoá: dùng làm khoá gộp báo cáo -> hai cách viết cùng tiền phải ra cùng một giá trị
+        BigDecimal n1 = s.normalize(new BigDecimal("10.00"));
+        BigDecimal n2 = s.normalize(new BigDecimal("10.0"));
+        BigDecimal n3 = s.normalize(new BigDecimal("10"));
+        check("chuan_hoa_gop_nhom", n1.compareTo(n2) == 0 && n2.compareTo(n3) == 0
+                && n1.scale() == n2.scale() && n2.scale() == n3.scale(),
+            "sau chuẩn hoá phải cùng giá trị và cùng scale, thực tế " + n1 + " / " + n2 + " / " + n3);
+
+        // 6. Dữ liệu mô phỏng file đối tác: không được báo lệch oan
+        List<Pair> pairs = List.of(
+            new Pair("TXN-001", new BigDecimal("1250000.00"), new BigDecimal("1250000.0")),
+            new Pair("TXN-002", new BigDecimal("10.00"), new BigDecimal("10.0")),
+            new Pair("TXN-003", new BigDecimal("0.10"), new BigDecimal("0.1")),
+            new Pair("TXN-004", new BigDecimal("-25.50"), new BigDecimal("-25.5")),
+            new Pair("TXN-005", new BigDecimal("1000000.00"), new BigDecimal("1000000.00")),
+            new Pair("TXN-006", new BigDecimal("1000000.00"), new BigDecimal("1000000.01"))
+        );
+        long bad = s.mismatches(pairs);
+        check("khong_bao_lech_oan", bad == 1, "chỉ TXN-006 được lệch, thực tế " + bad + " cặp lệch");
+        System.out.println("RESULT " + passed + "/" + total);
+        poolShutdown();
+    }
+
+    static void poolShutdown() { /* không dùng pool trong bài này */ }
+}`,
+  reference: `import java.math.BigDecimal;
+
+record Pair(String id, BigDecimal gatewayAmount, BigDecimal ledgerAmount) {}
+
+class ReconciliationService {
+    // Tiền: luôn chuẩn hoá về 2 chữ số thập phân trước khi so sánh hoặc gộp.
+    // Dùng RoundingMode.HALF_UP cho tiền tệ (quy ước phổ biến), không dùng HALF_EVEN trừ khi có yêu cầu.
+    private static final int MONEY_SCALE = 2;
+
+    boolean amountsEqual(BigDecimal a, BigDecimal b) {
+        if (a == null || b == null) return false;
+        // KHÔNG dùng a.equals(b): equals so cả scale (10.0 != 10.00).
+        // compareTo so GIÁ TRỊ: 10.0 so với 10.00 -> 0 (bằng nhau).
+        return a.compareTo(b) == 0;
+    }
+
+    /** Chuẩn hoá về đúng MONEY_SCALE để dùng làm khoá gộp báo cáo. */
+    BigDecimal normalize(BigDecimal amount) {
+        if (amount == null) return null;
+        return amount.setScale(MONEY_SCALE, java.math.RoundingMode.HALF_UP);
+    }
+
+    long mismatches(java.util.List<Pair> pairs) {
+        long bad = 0;
+        for (Pair p : pairs) if (!amountsEqual(p.gatewayAmount(), p.ledgerAmount())) bad++;
+        return bad;
+    }
+}`,
+  hints: [
+    'Đọc dữ liệu: cặp {{10.00}} và {{10.0}} bằng nhau về giá trị nhưng code trả về "lệch". Hãy thử trả lời: {{new BigDecimal("10.00").equals(new BigDecimal("10.0"))}} cho kết quả gì? Vì sao?',
+    '{{BigDecimal.equals}} so sánh **cả giá trị và scale** (số chữ số thập phân), vì BigDecimal có field {{intVal}} và {{scale}} và equals so cả hai. Muốn so giá trị thì dùng {{compareTo}}.',
+    'Vậy hai chỗ phải sửa: (1) {{amountsEqual}} dùng {{compareTo == 0}}, (2) {{normalize}} gọi {{setScale(2, RoundingMode.HALF_UP)}} để mọi số tiền về cùng scale trước khi gộp báo cáo.',
+  ],
+  rootCause: `**So sánh tiền bằng {{BigDecimal.equals}} — phương thức này so cả "cách viết" chứ không chỉ giá trị.** {{BigDecimal}} lưu hai phần: {{intVal}} (số nguyên không dấu) và {{scale}} (số chữ số sau dấu phẩy). {{10.00}} có intVal=1000, scale=2; {{10.0}} có intVal=100, scale=1. Vì {{equals}} so cả hai field, hai object "cùng giá trị" vẫn khác nhau. Bản chất: {{BigDecimal.equals}} trả lời "có cùng giá trị **và** cùng cách biểu diễn không?", còn {{compareTo}} trả lời "có cùng giá trị không?".
+
+**Vì sao chỉ xuất hiện sau khi nâng cấp?** Bản cũ của thư viện đọc file trả về số tiền đã chuẩn hoá (luôn 2 chữ số thập phân), nên hai bên tình cờ cùng scale và {{equals}} cho kết quả đúng. Bản mới giữ **nguyên chuỗi gốc** ("10.0" → scale 1), làm lộ ra sai sót vốn có trong cách so sánh. Đây là kiểu bug "im lặng": code sai từ lâu, chỉ chờ dữ liệu vào đủ "sạch" để lộ.
+
+**Vì sao tổng lệch báo 1,2 tỷ?** 3.412 cặp bị đánh dấu lệch, mỗi cặp bị coi là "chưa khớp" nên bị cộng vào dòng "chênh". Con số 1,2 tỷ chính là **tổng số tiền của các cặp bị kết luận oan** — không phải tiền mất thật.
+
+**Vì sao báo cáo tách nhóm?** Khi lấy {{BigDecimal}} làm khoá gộp (ví dụ {{Collectors.groupingBy}} hoặc {{Map}}), khoá dùng {{equals}}/{{hashCode}} → "10.0" và "10.00" thành hai khoá khác nhau. Kết quả: cùng 10 USD nhưng hiện thành 2–3 dòng.
+
+**Lưu ý về hashCode:** {{BigDecimal.hashCode}} cũng nhất quán với {{equals}} (cùng giá trị khác scale → hash khác). Vì vậy nếu chỉ sửa {{amountsEqual}} mà quên chuẩn hoá khi làm khoá, báo cáo vẫn tách nhóm.`,
+  fix: `### Cách sửa trong bài
+1. **So sánh bằng {{compareTo}}: ** {{a.compareTo(b) == 0}} — đây là so sánh **giá trị**, bỏ qua scale. Đây là cách đúng để so tiền.
+2. **Chuẩn hoá scale khi cần làm khoá hoặc khi so sánh nhiều bước: ** {{amount.setScale(2, RoundingMode.HALF_UP)}}. Sau khi chuẩn hoá, {{equals}} và {{hashCode}} cũng dùng được an toàn.
+3. **Xử lý null rõ ràng: ** trả false (hoặc ném lỗi tuỳ ngữ cảnh) — đừng để NPE.
+4. **Đặt tên biến rõ ràng** ({{amountsEqual}} → {{sameAmount}}) để người sau không hiểu nhầm là so "cùng biểu diễn".
+
+~~~java
+// So sánh giá trị: 10.0 và 10.00 -> bằng nhau
+boolean same = a.compareTo(b) == 0;
+
+// Khi cần làm khoá gộp / lưu cache: chuẩn hoá trước
+BigDecimal key = amount.setScale(2, RoundingMode.HALF_UP);
+~~~
+
+### Vì sao không dùng {{double}}
+{{double}} là số dấu phẩy động nhị phân: {{0.1}} không biểu diễn được chính xác, nên {{0.1 + 0.2}} ra {{0.30000000000000004}}. Với tiền, sai số tích luỹ sau vài triệu giao dịch là mất tiền thật. {{BigDecimal}} lưu dạng thập phân nên chính xác với tiền.
+
+### Trên production thật
+- **Quy ước scale:** với VND (không có phần thập phân) dùng scale 0; với USD/EUR dùng scale 2; với ngoại tệ có 3 chữ số thập phân (ví dụ KWD, BHD) dùng scale 3. Ghi rõ trong lớp {{Money}} hoặc {{Currency}}.
+- **Chuẩn hoá tại biên:** ngay khi đọc từ file/DB, chuẩn hoá về scale chuẩn của loại tiền; không để scale "rò rỉ" vào logic nghiệp vụ.
+- **DB:** cột tiền nên là {{NUMERIC(19,2)}} (hoặc {{BIGINT}} đơn vị nhỏ nhất). Khi đọc ra, Hibernate trả {{BigDecimal}} với đúng scale của cột, nhưng nếu dùng câu native query tự tính ({{SUM(amount)}}) scale có thể khác — chuẩn hoá sau khi đọc.
+- **Không so sánh bằng {{equals}} trong test:** dùng {{compareTo}} hoặc {{assertThat(a).isEqualByComparingTo(b)}} (AssertJ) để test không đỏ vì khác scale.
+- **Làm tròn khi chia:** {{divide}} không có scale sẽ ném {{ArithmeticException}} nếu không chia hết — luôn truyền scale và {{RoundingMode}}.
+
+### Lỗi hay gặp
+- **{{equals}} cho tiền:** lỗi phổ biến nhất, thường chỉ lộ khi dữ liệu vào khác scale.
+- **{{double}}/{{float}} cho tiền:** sai số nhị phân.
+- **{{new BigDecimal(0.1)}}:** truyền {{double}} vào constructor sẽ nhận đúng sai số nhị phân của double (0.1000000000000000055511151231257827). Luôn dùng constructor **chuỗi** {{new BigDecimal("0.1")}} hoặc {{BigDecimal.valueOf(0.1)}}.
+- **{{divide}} không có rounding:** ném exception với 1/3.
+- **Quên chuẩn hoá khi làm khoá:** {{Map}}/{{groupingBy}} dùng {{equals}}/{{hashCode}} nên vẫn tách nhóm.
+- **So sánh sau khi đã cộng nhiều lần:** sai số tích luỹ; nên chuẩn hoá ở từng bước hoặc dùng đơn vị nhỏ nhất (long).
+
+### Liên hệ phỏng vấn
+Câu hỏi "vì sao {{BigDecimal.equals}} và {{compareTo}} khác nhau, khi nào dùng cái nào" rất hay gặp. Trả lời: {{equals}} so cả scale (theo hợp đồng của BigDecimal, nhất quán với {{hashCode}}), {{compareTo}} so giá trị; với tiền luôn dùng {{compareTo}} hoặc chuẩn hoá scale trước; đừng dùng {{double}}; {{new BigDecimal(double)}} là bẫy; {{divide}} phải có scale + RoundingMode; và nhắc tới quy ước scale theo loại tiền.`,
+  related: ['banking-036', 'core-021'],
+  tags: ['BigDecimal', 'compareTo', 'scale', 'money', 'reconciliation']
+},
 
 );
