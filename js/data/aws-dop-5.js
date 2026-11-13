@@ -1480,4 +1480,507 @@ SNS hỗ trợ cấu hình **dead-letter queue ở cấp subscription** cho endp
 > Exam tip: EventBridge schema discovery giúp tìm cấu trúc event; schema registry và code bindings hỗ trợ consumer. Đây là tài liệu/kiểu dữ liệu, không phải cơ chế tự validate mọi event runtime.`,
   services: ['Amazon EventBridge']
 },
+{
+  id: 'dop-219',
+  exam: 'dop-c02',
+  domain: 'dop-d1',
+  q: `A company has separate AWS accounts for CI tools and production. Its CodePipeline pipeline in the tools account must deploy AWS CloudFormation stacks into the production account. The pipeline stores build artifacts in an S3 bucket in the tools account, and the production account must read those artifacts during deployment. Which solution meets these requirements with the least operational overhead?`,
+  options: [
+    'Encrypt the artifact bucket with SSE-S3 and add a bucket policy that allows the production account root user',
+    'Encrypt the artifact bucket with a customer managed KMS key, add a key policy allowing the production account deployment role, and grant that role permission to use the key in its own IAM policy',
+    'Copy artifacts to a public S3 bucket in the production account after every build',
+    'Deploy stacks from the tools account using the production account AWS root access keys'
+  ],
+  answer: 1,
+  explain: `**Từ khóa:** hai tài khoản AWS (tools và production), CodePipeline cần triển khai stack ở tài khoản khác, bucket chứa artifact (tệp trung gian của pipeline) phải được tài khoản đích đọc, ít vận hành nhất. KMS (AWS Key Management Service) là dịch vụ quản lý khóa mã hoá; customer managed key là khóa do bạn tự tạo và kiểm soát chính sách sử dụng. Key policy là chính sách gắn trực tiếp vào khóa KMS qui định ai được mã hoá hoặc giải mã.
+
+### Vì sao đáp án B đúng
+Với SSE-S3, khóa do AWS sở hữu không thể chia sẻ sang tài khoản khác, nên tài khoản production không thể giải mã artifact. Đáp án B dùng customer managed KMS key: thêm key policy cho phép vai trò triển khai của tài khoản production sử dụng khóa, đồng thời cấp quyền kms:Decrypt (và kms:Encrypt nếu cần) cho vai trò đó trong chính sách IAM của chính tài khoản production. Việc mã hoá cross-account cần **cả hai** phía: key policy và IAM policy. CodePipeline sau đó dùng vai trò đó để lấy artifact và triển khai CloudFormation, không cần sao chép tệp thủ công hay lưu khóa root.
+
+### Vì sao các phương án khác sai
+- A: SSE-S3 dùng khóa do AWS sở hữu, không cho phép truy cập mã hoá từ tài khoản khác.
+- C: bucket công khai lộ artifact ra internet, vi phạm bảo mật và không phải vận hành ít nhất.
+- D: dùng khóa root và access keys dài hạn là thực hành nguy hiểm, khó quay vòng và kiểm toán.
+
+> Exam tip: Cross-account mã hoá bằng KMS luôn cần key policy ở sở hữu khóa và IAM policy ở tài khoản sử dụng; thiếu một phía là access denied.`,
+  services: ['AWS CodePipeline', 'AWS CloudFormation', 'AWS KMS', 'Amazon S3'],
+},
+{
+  id: 'dop-220',
+  exam: 'dop-c02',
+  domain: 'dop-d1',
+  q: `A company deploys a new version of an AWS Lambda function using CodeDeploy blue/green deployment with traffic shifting. The team wants to run validation tests before any production traffic is shifted to the new version, and automatically roll back if a CloudWatch alarm fires during the shift. Which solution meets these requirements?`,
+  options: [
+    'Use deployment configuration CodeDeployDefault.LambdaAllAtOnce and add a BeforeAllowTraffic hook in the AppSpec file',
+    'Use a canary or linear deployment configuration, add a BeforeAllowTraffic lifecycle hook in the AppSpec file to run validation tests, and enable automatic rollback on CloudWatch alarms',
+    'Update the Lambda alias manually after testing the new version directly',
+    'Use AWS Step Functions to invoke both versions and route traffic based on response time'
+  ],
+  answer: 1,
+  explain: `**Từ khóa:** CodeDeploy là dịch vụ tự động hóa triển khai; blue/green chạy phiên bản mới (green) song song với phiên bản cũ (blue) rồi chuyển dần lượt truy cập; canary chuyển một phần nhỏ truy cập trước, linear chuyển qua nhiều đợt; AppSpec là tệp cấu hình triển khai; BeforeAllowTraffic là hook chạy kiểm tra trước khi CodeDeploy chuyển lượt truy cập sang phiên bản mới; CloudWatch alarm theo dõi chỉ số (lỗi, độ trễ) và có thể kích hoạt rollback tự động.
+
+### Vì sao đáp án B đúng
+Cấu hình canary hoặc linear (ví dụ Canary10Percent5Minutes) chuyển một phần lượt truy cập sang phiên bản mới theo từng đợt, giảm rủi ro. Hook BeforeAllowTraffic trong AppSpec chạy kiểm tra xác thực (ví dụ gọi API kiểm tra khói) trước khi lượt truy cập được chuyển; nếu kiểm tra thất bại, CodeDeploy huỷ triển khai. Bật automatic rollback trên alarm CloudWatch giúp CodeDeploy quay lại phiên bản cũ ngay khi chỉ số xấu trong quá trình chuyển, không cần can thiệp thủ công.
+
+### Vì sao các phương án khác sai
+- A: AllAtOnce chuyển toàn bộ lượt truy cập cùng lúc, không kiểm soát rủi ro, không phù hợp muốn kiểm tra trước khi chuyển.
+- C: Cập nhật alias thủ công không có cơ chế chuyển dần, kiểm tra tự động hay rollback theo alarm.
+- D: Step Functions điều phối luồng công việc, không thay thế cơ chế chuyển lượt truy cập và rollback của CodeDeploy.
+
+> Exam tip: Muốn kiểm tra trước khi chuyển lượt truy cập thì dùng hook BeforeAllowTraffic; muốn rollback tự động khi lỗi thì bật automatic rollback trên alarm CloudWatch của deployment group.`,
+  services: ['AWS CodeDeploy', 'AWS Lambda', 'Amazon CloudWatch'],
+},
+{
+  id: 'dop-221',
+  exam: 'dop-c02',
+  domain: 'dop-d1',
+  q: `A Java development team wants to host internal Maven libraries in AWS and let developers download public libraries from Maven Central through the same repository, without setting up and operating a Nexus or Artifactory server. Developers must not be able to publish libraries that have the same names as internal libraries. Which solution meets these requirements?`,
+  options: [
+    'Create an AWS CodeArtifact domain and repository, add an external connection to Maven Central, and configure package origin control so packages with internal names can only be published internally',
+    'Run Nexus Repository Manager on an Amazon EC2 instance behind an Application Load Balancer',
+    'Store Maven JAR files in an Amazon S3 bucket and point Maven settings.xml at the S3 URL',
+    'Publish internal libraries to the public Maven Central repository so all teams can download them'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** CodeArtifact là kho artifact quản lý của AWS cho Maven, npm, Python…; domain là nhóm chứa các repository; external connection kết nối repository với nguồn công khai (Maven Central) để tải thư viện công khai qua cùng kho; package origin control qui định gói nào được phép xuất bản từ đâu, ngăn gói có tên như thư viện nội bộ bị ghi đè từ bên ngoài. Maven là công cụ quản lý thư viện và xây dựng dự án Java.
+
+### Vì sao đáp án A đúng
+CodeArtifact domain + repository chứa các thư viện Maven nội bộ; external connection tới Maven Central giúp các lập trình viên tải thư viện công khai qua cùng repository, không cần cài đặt hay vận hành Nexus/Artifactory trên EC2. Package origin control chặn việc xuất bản gói có tên như thư viện nội bộ từ nguồn bên ngoài, giữ tên gói nội bộ an toàn. CodeArtifact cũng quản lý phiên bản và kiểm soát quyền truy cập qua IAM.
+
+### Vì sao các phương án khác sai
+- B: Cài Nexus hay Artifactory trên EC2 phải tự quản lý máy, bản vá, sao lưu và độ sẵn sàng, vận hành cao.
+- C: S3 không phải repository Maven chuyên dụng; không quản lý phiên bản, metadata hay kiểm soát xuất bản như CodeArtifact.
+- D: Xuất bản thư viện nội bộ lên Maven Central công khai lộ mã và không phải cách quản lý nội bộ an toàn.
+
+> Exam tip: Muốn kho artifact chung cho thư viện nội bộ và thư viện công khai (Maven Central, npmjs…) mà không tự vận hành server, dùng CodeArtifact với external connection và package origin control.`,
+  services: ['AWS CodeArtifact', 'Amazon EC2', 'AWS IAM'],
+},
+{
+  id: 'dop-222',
+  exam: 'dop-c02',
+  domain: 'dop-d1',
+  q: `A platform team manages production infrastructure with AWS CloudFormation. Before updating a stack, the team wants to preview whether any resources will be replaced, and after deployment it wants to detect resources that were changed manually outside CloudFormation. Which two actions should it take? (Choose two.)`,
+  options: [
+    'Create a change set before updating the stack and inspect the changes, especially resources marked with Replacement = True',
+    'Run drift detection on the stack after deployment to find resources whose actual configuration differs from the template',
+    'Delete and recreate the stack on every change to guarantee no drift',
+    'Use AWS Config to delete resources created outside CloudFormation',
+    'Enable automatic rollback only after the stack update completes'
+  ],
+  answer: [0, 1],
+  multi: true,
+  explain: `**Từ khóa:** CloudFormation quản lý hạ tầng bằng mã (IaC); stack là tập hợp tài nguyên được tạo từ template; change set là bản xem trước các thay đổi trước khi áp dụng, cho thấy tài nguyên nào sẽ được thêm, sửa hoặc thay thế (Replacement = True nghĩa là tài nguyên bị xóa và tạo lại, có thể làm gián đoạn dịch vụ); drift detection là phát hiện sự chênh lệch giữa cấu hình thực tế và template do ai đó thay đổi thủ công trên console.
+
+### Vì sao hai đáp án đúng
+A: Change set để xem trước trước khi cập nhật, đặc biệt kiểm tra Replacement = True để tránh xóa tài nguyên quan trọng ngớ ngẩn.
+B: Drift detection sau khi triển khai tìm tài nguyên bị thay đổi ngoài CloudFormation (ví dụ sửa security group trên console), từ đó khôi phục lại đúng template.
+
+### Vì sao các phương án khác sai
+- C: Xóa và tạo lại stack mỗi lần thay đổi làm gián đoạn dịch vụ và mất dữ liệu nếu không cẩn thận.
+- D: AWS Config ghi nhận cấu hình và có thể khắc phục tự động, nhưng không xóa tài nguyên thay đổi ngoài CloudFormation như quy trình chuẩn của CloudFormation.
+- E: Automatic rollback được bật trước khi cập nhật (kèm alarm), không phải sau khi hoàn tất — rollback sau khi xong thì không còn ý nghĩa.
+
+> Exam tip: Luôn xem change set trước khi cập nhật stack sản xuất; đổi cấu hình thủ công trên console gây drift và cần phát hiện sớm.`,
+  services: ['AWS CloudFormation', 'AWS Config'],
+},
+{
+  id: 'dop-223',
+  exam: 'dop-c02',
+  domain: 'dop-d2',
+  q: `A company must apply security patches to 500 Amazon EC2 instances running Amazon Linux 2023 on a fixed schedule every weekend, and it wants to report which instances are missing critical patches. Which solution meets these requirements with the least operational overhead?`,
+  options: [
+    'Use AWS Systems Manager Patch Manager with a patch baseline and a maintenance window to scan and install patches on the fleet',
+    'Log in to each instance over SSH and run the package manager manually every weekend',
+    'Use AWS Config to record installed packages and trigger a Lambda script to patch instances',
+    'Replace all instances with new AMIs every weekend using EC2 Image Builder'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** Patch Manager là tính năng của Systems Manager quét và cài bản vá hệ thống trên hàng loạt EC2; patch baseline qui định bản vá nào được phép cài hay từ chối; maintenance window là khung thời gian bảo trì (ví dụ cuối tuần) chạy các tác vụ định kỳ; SSM Agent là phần mềm cài trên instance để Systems Manager điều khiển, không cần mở cổng SSH.
+
+### Vì sao đáp án A đúng
+Patch Manager quét toàn bộ 500 instance, chỉ cài bản vá quan trọng theo patch baseline, chạy theo lịch maintenance window, và báo cáo instance thiếu bản vá. Tất cả được quản lý từ trung tâm, không cần đăng nhập từng máy, ít vận hành nhất.
+
+### Vì sao các phương án khác sai
+- B: SSH thủ công 500 máy mỗi tuần rất tốn công, dễ lỗi và khó kiểm tra.
+- C: AWS Config ghi cấu hình nhưng không phải công cụ cài bản vá hệ thống; viết Lambda tự vá phức tạp và dễ bỏ sót.
+- D: Thay thế toàn bộ instance bằng AMI mới mỗi tuần tốn kém, làm gián đoạn dịch vụ và không cần cho việc vá định kỳ.
+
+> Exam tip: Vá hệ thống hàng loạt EC2 theo lịch cố định thì chọn Systems Manager Patch Manager + patch baseline + maintenance window.`,
+  services: ['AWS Systems Manager', 'Amazon EC2'],
+},
+{
+  id: 'dop-224',
+  exam: 'dop-c02',
+  domain: 'dop-d2',
+  q: `The security policy of a company requires all Amazon S3 buckets to block public access. The team wants to detect any bucket that becomes publicly accessible and automatically remediate it without writing custom code. Which solution meets these requirements?`,
+  options: [
+    'Use an AWS Config managed rule that evaluates S3 Block Public Access, with automatic remediation using an AWS Systems Manager Automation document',
+    'Use Amazon GuardDuty to send a finding when a bucket is public and delete the bucket',
+    'Use Amazon Macie to classify objects in public buckets',
+    'Create an S3 Lifecycle rule that expires objects in public buckets'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** AWS Config theo dõi cấu hình tài nguyên và so sánh với quy tắc (rule) mong muốn; managed rule là quy tắc có sẵn của AWS (ví dụ kiểm tra S3 Block Public Access); Systems Manager Automation document là tài liệu chạy thao tác khắc phục tự động (ví dụ bật Block Public Access cho bucket); S3 Block Public Access chặn truy cập công khai trên bucket.
+
+### Vì sao đáp án A đúng
+AWS Config managed rule phát hiện bucket bị mở công khai ngay khi cấu hình thay đổi, rồi gọi Systems Manager Automation để khắc phục tự động (bật Block Public Access), không cần viết code riêng. Đây là lặp lại chuẩn phát hiện khắc phục ít vận hành nhất.
+
+### Vì sao các phương án khác sai
+- B: GuardDuty phát hiện đe dọa bảo mật, không dùng để khắc cấu hình bucket và xóa bucket là hành động quá khốc.
+- C: Macie phân loại dữ liệu nhạy cảm, không cấu hình hay khắc quy truy cập công khai bucket.
+- D: S3 Lifecycle quy trình vòng đời đối tượng (chuyển lớp lưu trữ, xoá cũ), không kiểm soát truy cập công khai.
+
+> Exam tip: Phát hiện cấu hình sai và khắc phục tự động mà không viết code thì dùng AWS Config rule kết hợp Systems Manager Automation remediation.`,
+  services: ['AWS Config', 'AWS Systems Manager', 'Amazon S3'],
+},
+{
+  id: 'dop-225',
+  exam: 'dop-c02',
+  domain: 'dop-d2',
+  q: `A company wants engineers to access private Amazon EC2 instances without opening SSH (port 22) inbound and without managing bastion hosts. It also wants to audit every command run on the instances. Which solution meets these requirements?`,
+  options: [
+    'Use AWS Systems Manager Session Manager with the SSM Agent installed on instances, and log sessions to Amazon S3 or CloudWatch Logs',
+    'Open port 22 in the security group for the IP addresses of engineers',
+    'Use AWS Site-to-Site VPN to connect laptops of engineers directly to the VPC',
+    'Assign a public IP address to each instance and use SSH key pairs'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** Session Manager cho phép truy cập instance qua trình duyệt hoặc AWS CLI mà không cần mở cổng SSH (port 22), không cần bastion host (máy trung gian truy cập); SSM Agent chạy trên instance và tạo kênh an toàn tới Systems Manager; phiên làm việc có thể được ghi nhật ký vào S3 hoặc CloudWatch Logs để kiểm toán mọi lệnh.
+
+### Vì sao đáp án A đúng
+Session Manager loại bỏ nhu cầu mở cổng SSH vào VPC và quản lý bastion host, đồng thời cung cấp kiểm toán phiên (session logging) vào S3/CloudWatch Logs, đáp ứng cả bảo mật và giám sát với ít vận hành.
+
+### Vì sao các phương án khác sai
+- B: Mở port 22 tăng bề mặt tấn công, và IP của các lập trình viên có thể thay đổi.
+- C: Site-to-Site VPN kết nối mạng on-premises với VPC, quá phức tạp chỉ để truy cập quản lý instance và không thay thế bastion một cách gọn gàng.
+- D: Gán public IP và SSH khóa làm instance trực tiếp tiếp xúc internet, nguy hiểm và khó kiểm toán.
+
+> Exam tip: Truy cập EC2 riêng không mở SSH, không bastion, có kiểm toán lệnh thì dùng Systems Manager Session Manager.`,
+  services: ['AWS Systems Manager', 'Amazon EC2'],
+},
+{
+  id: 'dop-226',
+  exam: 'dop-c02',
+  domain: 'dop-d3',
+  q: `A company wants to recover its on-premises servers in AWS within minutes after a disaster, with recovery points going back several hours. It needs a managed solution that replicates servers continuously and can launch them in AWS during recovery. Which solution meets these requirements?`,
+  options: [
+    'Use AWS Elastic Disaster Recovery (DRS) to replicate servers continuously, keep recovery points for several hours, and launch recovery instances in AWS during a disaster',
+    'Use AWS Backup to back up on-premises servers directly without any gateway',
+    'Use Amazon S3 Cross-Region Replication to copy server disk images',
+    'Use AWS DataSync to copy server files to Amazon S3 once a day'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** Elastic Disaster Recovery (DRS) là dịch vụ khôi phục thảm họa: cài agent trên server on-premises, sao chép liên tục dữ liệu server sang AWS, giữ nhiều recovery point (điểm khôi phục theo thời gian), và khi sự cố xảy ra thì launch instance Recovery trong vài phút. On-premises là hệ thống máy chủ của công ty đặt ở trung tâm dữ liệu riêng, không phải AWS.
+
+### Vì sao đáp án A đúng
+DRS sao chép liên tục nên dữ liệu gần như không mất, giữ recovery point vài giờ để quay lại thời điểm trước sự cố, và launch instance trong AWS nhanh, đáp ứng RTO ngắn (thời gian khôi phục) mà không tự dựng hạ tầng sao chép.
+
+### Vì sao các phương án khác sai
+- B: AWS Backup cần gateway (ví dụ Storage Gateway) để sao lưu server on-premises, không trực tiếp, và không launch instance phục hồi trong vài phút như DRS.
+- C: S3 Cross-Region Replication sao chép đối tượng S3 giữa các Region, không dùng cho sao lưu và phục hồi server vật lý.
+- D: DataSync sao chép tệp theo lịch (ví dụ một ngày một lần) không phải liên tục, không tạo recovery point bằng giây và không launch instance phục hồi.
+
+> Exam tip: Phục hồi server on-premises sang AWS trong vài phút, có recovery point kế sau giây thì chọn AWS Elastic Disaster Recovery; không nhầm với AWS Backup hay DataSync.`,
+  services: ['AWS Elastic Disaster Recovery', 'Amazon EC2'],
+},
+{
+  id: 'dop-227',
+  exam: 'dop-c02',
+  domain: 'dop-d3',
+  q: `A company runs its application in two AWS Regions and must write to Amazon DynamoDB in either Region, with changes visible in the other Region within seconds. Users should be served from the closest Region. Which solution meets these requirements?`,
+  options: [
+    'Use DynamoDB global tables with multi-Region writes enabled',
+    'Use DynamoDB on-demand backup and restore to a new table in the second Region every hour',
+    'Use DynamoDB Streams with a custom Lambda function to copy items to a table in the other Region',
+    'Use one DynamoDB table in us-east-1 and configure the application to call that Region from everywhere'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** DynamoDB global tables là bảng được sao chép giữa nhiều Region, cho phép ghi ở bất kỳ Region nào (multi-Region writes) và dữ liệu xuất hiện ở Region khác trong giây. Region là một khu vực địa lý độc lập của AWS (ví dụ us-east-1, eu-west-1). Last writer wins là quy tắc khi cùng dữ liệu được ghi ở hai Region: bản ghi cuối cùng thắng.
+
+### Vì sao đáp án A đúng
+Global tables tự động sao chép hai chiều, ứng dụng ghi ở Region gần người dùng nhất, dữ liệu đồng bộ nhanh, và ứng dụng có thể đọc cục bộ trong Region đó — ít vận hành nhất vì AWS quản lý sự sao chép.
+
+### Vì sao các phương án khác sai
+- B: Backup/restore mỗi giờ chỉ tạo bảng mới tại một thời điểm, không đồng bộ liên tục và mất dữ liệu trong giờ.
+- C: Streams + Lambda tự viết có thể làm nhưng phải xử lý lỗi, thử lại, thứ tự và vòng lặp, vận hành cao và không đảm bảo nhất quán như global tables.
+- D: Một bảng duy nhất ở us-east-1 khiến người dùng ở xa phải gọi qua biển cả, độ trễ cao và không chịu lỗi vùng.
+
+> Exam tip: Ghi multi-Region với đồng bộ giây cho DynamoDB thì chọn global tables; hãy nhớ quy tắc last writer wins khi thiết kế dữ liệu.`,
+  services: ['Amazon DynamoDB'],
+},
+{
+  id: 'dop-228',
+  exam: 'dop-c02',
+  domain: 'dop-d3',
+  q: `A company wants to test whether its application stays available when an Amazon EC2 instance in an Auto Scaling group is suddenly stopped. It wants to run the failure test in a controlled way with automatic safety stops, without manually stopping instances. Which solution meets these requirements?`,
+  options: [
+    'Use AWS Fault Injection Service (FIS) with an experiment template that stops EC2 instances, plus stop conditions based on CloudWatch alarms',
+    'Manually terminate instances in the Auto Scaling group during office hours',
+    'Use Amazon CloudWatch alarms to stop instances when CPU is low',
+    'Use AWS Config to mark instances as unhealthy'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** Fault Injection Service (FIS) là dịch vụ thí nghiệm lỗi (chaos engineering): tạo experiment template qui định hành động (ví dụ dừng instance EC2), mục tiêu và điều kiện dừng an toàn (stop condition, ví dụ alarm CloudWatch báo lỗi cao thì tự dừng thí nghiệm). Auto Scaling group là nhóm instance tự động thay thế máy bị hỏng.
+
+### Vì sao đáp án A đúng
+FIS cho phép chạy thử nghiệm lỗi theo ý muốn, dừng instance theo mã và tự dừng nếu ứng dụng bắt đầu xấu (qua stop condition), giúp nhóm kiểm tra khả phục hồi mà không làm tăng rủi ro sản xuất.
+
+### Vì sao các phương án khác sai
+- B: Dừng thủ công không có điều kiện dừng an toàn, dễ ảnh hưởng khách hàng và không thể đo lường có hệ thống.
+- C: CloudWatch alarm dừng instance khi CPU thấp không phải cách thử lỗi và không giúp kiểm tra khả sẵn sàng.
+- D: AWS Config đánh giá cấu hình, không dùng để tiêm lỗi hay kiểm tra phục hồi.
+
+> Exam tip: Thử lỗi có kiểm soát trên AWS (ví dụ dừng instance, mất vùng) thì dùng AWS FIS với experiment template và stop condition.`,
+  services: ['AWS Fault Injection Service', 'Amazon EC2 Auto Scaling'],
+},
+{
+  id: 'dop-229',
+  exam: 'dop-c02',
+  domain: 'dop-d4',
+  q: `A company needs to audit AWS API activity across its account and answer questions such as who deleted this security group rule last month. It wants to run SQL queries directly on CloudTrail logs without loading data into another analytics service. Which solution meets these requirements?`,
+  options: [
+    'Use AWS CloudTrail Lake to store and query CloudTrail events using SQL',
+    'Use Amazon Athena to query CloudTrail logs delivered to Amazon S3',
+    'Use AWS Config to view the current configuration of the security group',
+    'Use Amazon CloudWatch Logs Insights to search CloudTrail event history'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** CloudTrail ghi tất cả gọi API trong tài khoản AWS (ai, khi nào, làm gì); CloudTrail Lake là kho dữ liệu được quản lý của CloudTrail, lưu sự kiện dài hạn và cho phép truy vấn bằng SQL trực tiếp trên sự kiện đã lưu, không cần gửi dữ liệu sang dịch vụ phân tích khác. Security group là tường lửa virtual điều khiển lưu lượng vào/ra instance.
+
+### Vì sao đáp án A đúng
+CloudTrail Lake giữ sự kiện API (mặc định 7 năm) và cung cấp giao diện truy vấn SQL, nên đội có thể tìm ai xóa quy tắc security group tháng ngoái ngay trong CloudTrail, ít vận hành nhất.
+
+### Vì sao các phương án khác sai
+- B: Athena truy vấn nhật ký CloudTrail đã lưu trên S3, nhưng đó là dịch vụ phân tích riêng và phải thiết lập bảng, partition, tốn thêm công sức trái yêu cầu không dùng dịch vụ phân tích khác.
+- C: AWS Config chỉ cho cấu hình hiện tại (hoặc lịch sử cấu hình tài nguyên), không trả lời ai gọi API xóa quy tắc.
+- D: CloudWatch Logs Insights truy vấn nhật ký, không phải kho sự kiện API CloudTrail có truy vấn SQL chuẩn như Lake.
+
+> Exam tip: Truy vấn sự kiện API AWS bằng SQL mà không dựng hệ thống phân tích riêng thì dùng CloudTrail Lake.`,
+  services: ['AWS CloudTrail', 'Amazon CloudWatch'],
+},
+{
+  id: 'dop-230',
+  exam: 'dop-c02',
+  domain: 'dop-d4',
+  q: `A Java application calls several internal services and a database, and engineers cannot tell which component causes slow requests. They want a visual service map showing request flow and latency per component, with minimal code changes. Which solution meets these requirements?`,
+  options: [
+    'Instrument the application with the AWS X-Ray SDK and view the service map and traces in the X-Ray console',
+    'Use VPC Flow Logs to see which IP addresses the application talks to',
+    'Use Amazon CloudWatch alarms on CPU utilization of each service',
+    'Use AWS CloudTrail to record every database query'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** AWS X-Ray là dịch vụ theo vết yêu cầu (distributed tracing): SDK được thêm vào ứng dụng ghi lại mỗi đoạn gọi (segment/subsegment), từ đó thấy luồng request và độ trễ từng thành phần. Service map là bản đồ dịch vụ vẽ tự động từ các trace, hiển thị các thành phần gọi nhau và độ trễ/lỗi từng cạnh. Instrument là thêm mã thu thập telemetry vào ứng dụng.
+
+### Vì sao đáp án A đúng
+X-Ray SDK thu thập trace từ ứng dụng Java, X-Ray tự xây dựng service map cho thấy thành phần nào chậm hoặc lỗi, giúp định vị nút thắt mà không cần công cụ monitoring riêng. Việc thêm SDK là thay đổi mã tối thiểu so với giá trị đã nhận được.
+
+### Vì sao các phương án khác sai
+- B: VPC Flow Logs chỉ ghi metadata lưu lượng IP (nguồn, đích, cổng), không thấy thành phần ứng dụng hay câu SQL chậm.
+- C: CloudWatch alarm trên CPU chỉ báo hiệu máy quá tải, không biết request đi qua thành phần nào hay SQL nào chậm.
+- D: CloudTrail ghi gọi API quản trị AWS, không ghi từng truy vấn cơ sở dữ liệu của ứng dụng.
+
+> Exam tip: Muốn thấy luồng yêu cầu và độ trễ theo từng thành phần trong ứng dụng phân tán thì dùng AWS X-Ray; CPU alarm chỉ nói máy bị quá tải, không nói thành phần nào gây chậm.`,
+  services: ['AWS X-Ray', 'Amazon CloudWatch'],
+},
+{
+  id: 'dop-231',
+  exam: 'dop-c02',
+  domain: 'dop-d4',
+  q: `A company wants to measure real end-user experience for its web application: page load time, JavaScript errors, and layout shift by country and browser, without deploying monitoring probes around the world. Which solution meets these requirements?`,
+  options: [
+    'Enable Amazon CloudWatch RUM (Real User Monitoring) on the application and add the RUM web client to the page',
+    'Use CloudWatch Synthetics canaries running from one AWS Region',
+    'Use VPC Flow Logs to inspect traffic from user devices',
+    'Use Amazon CloudFront logs to calculate page load time for each user'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** CloudWatch RUM (Real User Monitoring) là giám sát người dùng thực: thêm đoạn mã web client vào trang web, trình duyệt của người dùng gửi chỉ số (trang tải bao lâu, lỗi JavaScript, layout shift) về CloudWatch theo quốc gia và trình duyệt. Canary là robot trình duyệt chạy theo lịch từ các vùng AWS, mô phỏng người dùng chứ không phải người dùng thật.
+
+### Vì sao đáp án A đúng
+RUM thu thập chỉ số từ trình duyệt thực của người dùng trên toàn cầu, chia theo quốc gia/trình duyệt, không cần triển khai probe ở đâu. Dữ liệu giúp phân biệt chậm do mạng người dùng hay do backend.
+
+### Vì sao các phương án khác sai
+- B: Synthetics canary chạy từ một số vùng AWS, không thể đại diện cho mọi mạng người dùng trên thế giới.
+- C: VPC Flow Logs chỉ nhìn lưu lượng trong VPC, không thấy thiết bị của người dùng bên ngoài AWS.
+- D: CloudFront logs chỉ biết thời gian trả về từ CloudFront, không đo trải nghiệm thực ở trình duyệt người dùng (render, lỗi JavaScript…).
+
+> Exam tip: Muốn đo trải nghiệm người dùng thật theo quốc gia/trình duyệt mà không tự dựng probe thì chọn CloudWatch RUM; canary dùng để kiểm tra hành trình quan trọng từ các điểm cố định.`,
+  services: ['Amazon CloudWatch', 'Amazon CloudFront'],
+},
+{
+  id: 'dop-232',
+  exam: 'dop-c02',
+  domain: 'dop-d5',
+  q: `A company has multiple AWS accounts and wants application events produced in member accounts to be consumed by an event bus in a central account for processing. It does not want to poll APIs or run forwarders in each account. Which solution meets these requirements?`,
+  options: [
+    'Send events from member accounts to the custom EventBridge event bus of the central account using an event bus policy that allows the member accounts',
+    'Use Amazon SNS to forward every event to the central account',
+    'Run an AWS Lambda function in each account that polls EventBridge and calls the central account',
+    'Use AWS DataSync to copy event buses between accounts'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** EventBridge event bus là trung tâm nhận và chuyển sự kiện; custom event bus là bus do bạn tạo cho ứng dụng; event bus policy là chính sách trên bus qui định các tài khoản khác được phép gửi sự kiện vào bus này. Cross-account là làm việc qua nhiều tài khoản AWS. Poll là liên tục hỏi API xem có sự kiện mới không.
+
+### Vì sao đáp án A đúng
+Tài khoản thành viên gửi sự kiện trực tiếp vào bus trung tâm (PutEvents đến bus ARN của tài khoản trung tâm); bus trung tâm gắn event bus policy cho phép các tài khoản thành viên gửi. Không cần chạy forwarder hay poll API ở mỗi tài khoản, ít vận hành nhất.
+
+### Vì sao các phương án khác sai
+- B: SNS có thể phân phối thông báo nhưng không phải cách tiêu chuẩn gửi sự kiện EventBridge cross-account, và mỗi thành viên vẫn cần tích đẩy SNS.
+- C: Lambda poll EventBridge ở mỗi tài khoản thì vận hành cao, trái yêu cầu không chạy forwarder.
+- D: DataSync sao chép dữ liệu lưu trữ, không dùng cho sự kiện EventBridge.
+
+> Exam tip: Gửi sự kiện EventBridge qua nhiều tài khoản thì dùng custom event bus ở tài khoản đích kết hợp event bus policy cho phép tài khoản nguồn.`,
+  services: ['Amazon EventBridge', 'AWS IAM'],
+},
+{
+  id: 'dop-233',
+  exam: 'dop-c02',
+  domain: 'dop-d5',
+  q: `A company wants to invoke an AWS Lambda function once every night at 02:00 to clean up temporary data, and also invoke it one time on a specific date next month. It does not want to manage a cron server. Which solution meets these requirements?`,
+  options: [
+    'Use Amazon EventBridge Scheduler with a recurring schedule for the nightly task and a one-time schedule for the specific date',
+    'Run a cron job on an EC2 instance that calls the Lambda API',
+    'Use an Amazon CloudWatch alarm scheduled every night',
+    'Use AWS Lambda console test invocation every day'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** EventBridge Scheduler là dịch vụ lập lịch gọi mục tiêu (ví dụ Lambda) theo lịch lặp lại (recurring schedule, ví dụ mỗi ngày 02:00) hoặc lịch một lần (one-time schedule, một ngày nhất định trong tương lai). Target là mục tiêu nhận sự kiện (hàm Lambda). Không cần quản lý máy chủ cron.
+
+### Vì sao đáp án A đúng
+Scheduler xử lý cả hai trường hợp: cron mỗi đêm và sự kiện một lần, tự động gọi Lambda, quản lý retry và lỗi, không cần vận hành cron server.
+
+### Vì sao các phương án khác sai
+- B: Cron trên EC2 phải tự quản lý máy, cài đặt, giám sát và xử lý nếu máy bị lỗi.
+- C: CloudWatch alarm phản ứng theo chỉ số, không dùng để lập lịch gọi Lambda theo giờ cố định.
+- D: Gõ test bằng tay mỗi ngày không tự động và không thể mở rộng.
+
+> Exam tip: Gọi Lambda theo lịch (hàng ngày, từng giờ, một lần trong tương lai) mà không quản cron server thì dùng Amazon EventBridge Scheduler.`,
+  services: ['Amazon EventBridge', 'AWS Lambda'],
+},
+{
+  id: 'dop-234',
+  exam: 'dop-c02',
+  domain: 'dop-d5',
+  q: `The operations team of a company receives operational alerts from many AWS services and wants a single place to view, assign, and resolve operational items (OpsItems), including incidents related to database failover, with integration to chat channels. Which solution meets these requirements?`,
+  options: [
+    'Use AWS Systems Manager OpsCenter to view and manage OpsItems from multiple services, and integrate with Incident Manager and chat',
+    'Create one CloudWatch alarm per service and check them manually',
+    'Use AWS CloudTrail to search for operational events',
+    'Send all alerts to an Amazon SNS topic and read emails'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** Systems Manager OpsCenter là trung tâm vận hành thu thập OpsItem (mục vận hành) từ nhiều dịch vụ AWS (ví dụ CloudWatch alarm, Incident Manager), cho phép xem, gán người xử lý và giải quyết theo một chỗ. OpsItem là một sự kiện vận hành cần theo dõi cho đến khi xong. Incident Manager quản lý phản ứng sự cố lớn (runbook, liên hệ, kênh chat).
+
+### Vì sao đáp án A đúng
+OpsCenter đưa cảnh báo từ nhiều dịch vụ vào một bảng điều khiển, đội gán và theo dõi từng OpsItem, có thể liên kết Incident Manager và kênh chat, ít vận hành nhất.
+
+### Vì sao các phương án khác sai
+- B: Nhiều alarm kiểm tra thủ công không có nơi tập trung theo dõi tình trạng xử lý.
+- C: CloudTrail ghi sự kiện API, không quản lý việc xử lý cảnh báo vận hành.
+- D: SNS gửi email nhưng không có quy trình gán, theo dõi và giải quyết mục vận hành.
+
+> Exam tip: Nhiều cảnh báo từ nhiều dịch vụ cần một nơi tập trung xem/gán/giải quyết thì dùng Systems Manager OpsCenter (OpsItem), có thể kết hợp Incident Manager cho sự cố lớn.`,
+  services: ['AWS Systems Manager', 'Amazon CloudWatch'],
+},
+{
+  id: 'dop-235',
+  exam: 'dop-c02',
+  domain: 'dop-d6',
+  q: `A company wants to find Amazon S3 buckets and IAM roles that are accessible by external AWS accounts or anonymous internet users, so it can tighten access. It wants a managed report of findings without writing its own policy scanner. Which solution meets these requirements?`,
+  options: [
+    'Use AWS IAM Access Analyzer to analyze resource policies and IAM policies, then review findings for external access',
+    'Use AWS Config to record bucket names only',
+    'Use Amazon Macie to classify sensitive objects in buckets',
+    'Use AWS Trusted Advisor to list all S3 buckets in the account'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** IAM Access Analyzer là dịch vụ phân tích chính sách tài nguyên (resource policy, ví dụ bucket policy) và chính sách IAM để tìm tài nguyên có thể được truy cập bởi tài khoản AWS khác hoặc người dùng ẩn danh trên internet; kết quả gọi là finding (phát hiện). Anonymous internet user là ai cũng có thể truy cập mà không cần đăng nhập AWS.
+
+### Vì sao đáp án A đúng
+Access Analyzer quét bucket policy và IAM policy, rồi liệt kê finding về truy cập bên ngoài; đội xem xét và chặt chẽ hơn chính sách, không cần viết công cụ quét chính sách riêng.
+
+### Vì sao các phương án khác sai
+- B: AWS Config ghi cấu hình tài nguyên (tên bucket…) nhưng không phân tích ai được phép truy cập bucket từ bên ngoài.
+- C: Macie phân loại dữ liệu nhạy cảm (ví dụ thông tin cá nhân), không phân tích quyền truy cập crossing-account.
+- D: Trusted Advisor liệt kê bucket nhưng không đưa ra báo cáo chi tiết truy cập bên ngoài như Access Analyzer.
+
+> Exam tip: Tìm bucket và role bị truy cập từ tài khoản khác hay internet ẩn danh thì dùng IAM Access Analyzer, xem từng finding rồi chặt chính sách.`,
+  services: ['AWS IAM', 'AWS IAM Access Analyzer', 'Amazon S3'],
+},
+{
+  id: 'dop-236',
+  exam: 'dop-c02',
+  domain: 'dop-d6',
+  q: `A company wants continuous threat detection for its AWS accounts: unusual API calls, calls from known malicious IP addresses, and EC2 instances communicating with command-and-control servers. It wants managed findings with severity levels without deploying sensors. Which solution meets these requirements?`,
+  options: [
+    'Enable Amazon GuardDuty in the account; it analyzes CloudTrail, VPC Flow Logs, and DNS logs and produces findings with severity',
+    'Use AWS WAF to block all external IP addresses',
+    'Use Amazon Inspector to scan for open network ports',
+    'Use AWS Config rules to detect changes to security groups'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** Amazon GuardDuty là dịch vụ phát hiện đe dọa bảo mật liên tục: phân tích nhật ký CloudTrail (gọi API), VPC Flow Logs (lưu lượng mạng) và DNS logs, sau đó tạo finding (kết quả phát hiện) với mức độ nghiêm trọng (severity: thấp, trung bình, cao). Không cần cài agent hay sensor trên instance. Command-and-control server là máy điều khiển phần mềm độc hại.
+
+### Vì sao đáp án A đúng
+GuardDuty bật là nhận phát hiện liên tục (API bất thường, IP độc hại, liên lạc C&C), đưa finding có severity để đội ưu tiên xử lý, không cần triển khai sensor.
+
+### Vì sao các phương án khác sai
+- B: WAF bảo vệ ứng dụng web (HTTP/HTTPS), không phát hiện lệnh gọi API bất thường hay liên lạc C&C; chặn mọi IP ngoài cũng không khả thi.
+- C: Inspector quét lỗ hổng phần mềm, không phát hiện hoạt động tấn công đang diễn ra.
+- D: AWS Config đoán thay đổi cấu hình, không phát hiện đe dọa bảo mật theo thời gian thực.
+
+> Exam tip: Phát hiện đe dọa liên tục trên tài khoản AWS (API lạ, IP độc hại, liên lạc C&C) không cần cài agent thì chọn Amazon GuardDuty.`,
+  services: ['Amazon GuardDuty', 'AWS CloudTrail', 'Amazon VPC'],
+},
+{
+  id: 'dop-237',
+  exam: 'dop-c02',
+  domain: 'dop-d6',
+  q: `A company runs Amazon EC2 instances, container images in Amazon ECR, and AWS Lambda functions. It wants to scan them for software vulnerabilities and receive a list of affected packages with fix recommendations, without installing agents on every instance. Which solution meets these requirements?`,
+  options: [
+    'Use Amazon Inspector to run automated vulnerability scans for EC2, ECR, and Lambda and view findings with affected packages and fixes',
+    'Use AWS Config to record the operating system version of each instance',
+    'Use Amazon GuardDuty to detect vulnerability exploit attempts',
+    'Use AWS Systems Manager Inventory to list installed software manually'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** Amazon Inspector là dịch vụ quét lỗ hổng bảo mật tự động cho EC2, images trong Amazon ECR (kho chứa container), và Lambda functions; kết quả finding liệt kê gói phần mềm bị ảnh hưởng và cách khắc phục (fix recommendation). Không cần cài agent trên mọi instance. Vulnerability là lỗ hổng phần mềm có thể được khai thác; ECR là nơi lưu trữ image Docker.
+
+### Vì sao đáp án A đúng
+Inspector quét liên tục EC2 (qua SSM Agent hoặc scan không agent tùy cấu hình), image ECR và Lambda, đưa finding kèm gói bị ảnh hưởng và hướng dẫn khắc phục, ít vận hành nhất.
+
+### Vì sao các phương án khác sai
+- B: AWS Config chỉ ghi phiên bản hệ điều hành, không quét lỗ hổng hay hướng dẫn khắc phục.
+- C: GuardDuty phát hiện đe dọa đang diễn ra, không quét lỗ hổng phần mềm.
+- D: SSM Inventory liệt kê phần mềm đã cài nhưng đội phải tự tìm lỗ hổng và cách sửa, không tự động.
+
+> Exam tip: Quét lỗ hổng phần mềm cho EC2, container image ECR và Lambda mà không cài agent thì dùng Amazon Inspector.`,
+  services: ['Amazon Inspector', 'Amazon EC2', 'Amazon ECR', 'AWS Lambda'],
+},
+{
+  id: 'dop-238',
+  exam: 'dop-c02',
+  domain: 'dop-d6',
+  q: `A company stores database credentials in AWS Secrets Manager and wants them rotated automatically every 30 days by a Lambda function, with applications retrieving the latest secret at runtime without hardcoding credentials. Which solution meets these requirements?`,
+  options: [
+    'Enable automatic rotation in Secrets Manager with a Lambda rotation function, and have the application call Secrets Manager to fetch the current secret',
+    'Store credentials in an environment variable in the application and redeploy when they change',
+    'Store credentials in AWS Systems Manager Parameter Store as plain text',
+    'Embed credentials in the application source code and update them in every release'
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** AWS Secrets Manager là dịch vụ lưu trữ và quản lý bí mật (mật khẩu database, API key); rotation là xoay mật khẩu định kỳ (ví dụ 30 ngày) bằng hàm Lambda do Secrets Manager gọi; hardcoding là viết credentials trực tiếp vào mã nguồn, rất nguy hiểm khi mã được chia sẻ hoặc lưu lên repository.
+
+### Vì sao đáp án A đúng
+Bật automatic rotation trong Secrets Manager với hàm Lambda xoay (ví dụ đổi mật khẩu database và cập nhật secret); ứng dụng gọi Secrets Manager khi chạy để lấy secret mới, không cần lưu mật khẩu trong mã hay biến môi trường cứng.
+
+### Vì sao các phương án khác sai
+- B: Biến môi trường cần redeploy ứng dụng mỗi khi đổi mật khẩu, không tự động và dễ lỗi.
+- C: Parameter Store lưu văn bản thẳng không mã hoá mạnh như Secrets Manager và không có rotation tự động bằng Lambda trong trường hợp này.
+- D: Gộp mật khẩu vào mã nguồn lộ thông tin khi mã được xem hoặc đưa lên repository, vi phạm bảo mật nghiêm trọng.
+
+> Exam tip: Mật khẩu database cần xoay tự động và ứng dụng lấy khi chạy thì dùng Secrets Manager với rotation bằng Lambda; không bao giờ hardcoding credential vào mã nguồn.`,
+  services: ['AWS Secrets Manager', 'AWS Lambda'],
+},
 );
