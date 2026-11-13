@@ -1194,4 +1194,154 @@ In conclusion, learning a foreign language early can be beneficial because it cr
   ],
   tags: ["education", "language"]
 },
+{
+  "id": "toeic-s5-011",
+  "part": "s5",
+  "prompt": "Do you think companies should allow employees to take short breaks during the workday? Give reasons and examples to support your opinion.",
+  "sample": "I believe companies should allow employees to take short breaks during the workday. First, brief breaks help people stay focused. When someone works on the same task for many hours, it is easy to lose concentration and make small mistakes. A short walk or a few minutes away from the screen can help them return with a clear mind. For example, at my previous company, our team took a ten minute break in the afternoon, and we finished our reports with fewer errors. Second, breaks can reduce stress and improve communication. Employees may talk with coworkers, share ideas, or simply relax before the next meeting. However, companies should set reasonable rules so breaks do not interrupt urgent work. Overall, short breaks support both productivity and employee well-being when they are managed properly.",
+  "tips": [
+    "Mở bài bằng I believe và nêu rõ quan điểm; sau đó dùng First và Second để tách hai lý do chính.",
+    "Nêu ví dụ cụ thể có thời gian hoặc con số như ten minute break để câu trả lời thuyết phục hơn.",
+    "Dùng However để thêm một điều kiện thực tế, giúp bài nói cân bằng thay vì khẳng định một chiều."
+  ],
+  "tags": ["workplace", "productivity"]
+},
+{
+  "id": "toeic-s5-012",
+  "part": "s5",
+  "prompt": "Some people prefer to shop in local stores, while others prefer to shop online. Which do you think is better? Use reasons and examples to support your answer.",
+  "sample": "I think shopping in local stores is better for many everyday purchases. First, customers can see and try products before they buy them. For example, when I buy shoes or office supplies, I can check the size, quality, and price immediately instead of waiting for delivery. This helps me avoid returns and saves time. Second, local stores provide personal service. A sales assistant can answer questions, suggest options, and solve problems quickly if something is wrong. Shopping locally also supports small businesses in the community, which can create jobs and keep neighborhoods active. Of course, online shopping is convenient for busy people, but it may involve shipping delays or damaged items. For these reasons, I prefer local stores because they offer a more reliable and personal experience.",
+  "tips": [
+    "Chọn một phía rõ ràng ngay từ đầu thay vì nói cả hai đều tốt như nhau trong suốt bài.",
+    "Dùng ví dụ đời sống quen thuộc như shoes hoặc office supplies để người nghe dễ hình dung.",
+    "Thừa nhận lợi ích của lựa chọn còn lại bằng Of course, nhưng kết luận vẫn phải quay về ý kiến của bạn."
+  ],
+  "tags": ["shopping", "daily life"]
+},
+{
+  "id": "toeic-s5-013",
+  "part": "s5",
+  "prompt": "Do you agree or disagree that managers should give employees feedback on their work regularly? Explain your opinion with reasons and examples.",
+  "sample": "I agree that managers should give employees feedback on their work regularly. To begin with, regular feedback helps people understand what they are doing well and what they need to improve. If employees wait until the end of the year to hear comments, they may repeat the same mistakes for months. For example, in my team, our manager gives short weekly feedback after client meetings, and this helps us adjust our presentations quickly. In addition, feedback can increase motivation. When employees know their efforts are noticed, they often feel more confident and engaged in their work. Managers should be clear and respectful so the feedback is useful, not discouraging. In conclusion, regular feedback supports professional growth and helps the whole team perform better.",
+  "tips": [
+    "Với câu agree/disagree, nêu lập trường ở câu đầu và giữ nhất quán đến cuối bài.",
+    "Dùng cụm chuyển ý như To begin with và In addition để bài nói có cấu trúc dễ theo dõi.",
+    "Thêm điều kiện ngắn như clear and respectful để cho thấy bạn hiểu cách đưa phản hồi hiệu quả."
+  ],
+  "tags": ["management", "feedback"]
+},
+{
+  "id": "toeic-s5-014",
+  "part": "s5",
+  "prompt": "Some people believe that learning to use new technology is important for career success. Do you agree? Support your answer with reasons and examples.",
+  "sample": "I strongly agree that learning to use new technology is important for career success. First, many jobs now require digital tools, and employees who can use them efficiently have an advantage. For instance, learning how to use project management software or data analysis tools can help a worker complete tasks faster and communicate results clearly. Second, technology changes quickly, so people who continue learning are better prepared for new responsibilities. When a company introduces a new system, adaptable employees can support their teams instead of falling behind. However, technology skills should be combined with communication and problem solving abilities, because tools alone do not guarantee success. In my view, people who keep updating their skills will have more opportunities and feel more confident in a changing workplace.",
+  "tips": [
+    "Dùng ví dụ công cụ quen thuộc như project management software để làm rõ ý mà không cần thuật ngữ quá khó.",
+    "Tránh nói công nghệ là yếu tố duy nhất; thêm communication and problem solving để lập luận thực tế hơn.",
+    "Kết bài bằng In my view hoặc For these reasons để nhấn mạnh lại quan điểm một cách tự nhiên."
+  ],
+  "tags": ["technology", "career"]
+},
+{
+  "id": "toeic-s5-015",
+  "part": "s5",
+  "prompt": "Do you think it is better for students to study alone or in a group? Give reasons and examples to support your opinion.",
+  "sample": "I think it is better for students to study in a group in many situations. First, group study allows students to share ideas and explain difficult topics to each other. When one person understands a lesson well, they can help others learn more quickly. For example, while preparing for an exam, my classmates and I divided the material and taught each section to the group, which made the review process easier. Second, studying together can keep students motivated because they feel responsible for attending and participating. Group members can also practice communication skills that are useful in future jobs. Of course, students sometimes need quiet time to study alone, especially when they must memorize details. Overall, group study is often more effective because it combines learning with cooperation.",
+  "tips": [
+    "Nêu rõ bối cảnh in many situations để tránh khẳng định tuyệt đối và thể hiện cách suy nghĩ linh hoạt.",
+    "Đưa ví dụ học tập cụ thể như preparing for an exam để minh họa lợi ích của học nhóm.",
+    "Dùng Of course để nhắc ngắn gọn lợi ích của học một mình, rồi quay lại kết luận chính."
+  ],
+  "tags": ["education", "study"]
+},
+{
+  "id": "toeic-s5-016",
+  "part": "s5",
+  "prompt": "Some companies encourage employees to participate in volunteer activities. Do you think this is a good idea? Use reasons and examples to explain your opinion.",
+  "sample": "I believe encouraging employees to participate in volunteer activities is a good idea. First, volunteering can strengthen teamwork. When colleagues work together outside the office, they often build trust and communicate more comfortably. For example, employees who help organize a community clean up event may learn to cooperate in a new way. Second, volunteer programs can improve a company's image. Customers and job applicants may respect a business that supports local communities and social causes. This can also make employees feel proud of where they work. However, participation should be voluntary and should not interfere with important work deadlines. Companies can offer flexible schedules so employees can join when they are available. In conclusion, volunteer activities can benefit both employees and the company when they are planned thoughtfully.",
+  "tips": [
+    "Nhấn mạnh participation should be voluntary để tránh hiểu sai rằng nhân viên bị bắt buộc tham gia.",
+    "Dùng ví dụ hoạt động cộng đồng đơn giản như community clean up event để dễ nói và dễ nghe.",
+    "Kết hợp lợi ích cho nhân viên và cho công ty để bài trả lời có chiều sâu hơn."
+  ],
+  "tags": ["workplace", "community"]
+},
+{
+  "id": "toeic-w2-009",
+  "part": "w2",
+  "email": "From: Ms. Karen Lopez, Training Coordinator\nTo: All New Employees\nSubject: Orientation Session Next Week\n\nDear New Employees,\n\nWe are planning an orientation session next week to help you learn more about our company policies and meet team members. The session will include a short presentation and a tour of the office.\n\nPlease reply to this email with your availability and any questions you may have.\n\nBest regards,\nKaren Lopez\nTraining Coordinator",
+  "task": "Respond to the email. In your response, give two pieces of information and ask one question.",
+  "sample": "Dear Ms. Lopez,\n\nThank you for informing us about the orientation session next week. I am available on Tuesday morning and Wednesday afternoon, so either of those times would work well for me. I am especially interested in learning more about the company's communication tools because I will be working with different teams.\n\nCould you please let me know how long the orientation session is expected to last? This will help me plan my schedule for the rest of the day.\n\nThank you for organizing this session. I look forward to attending.\n\nBest regards,\nLinh Nguyen",
+  "tips": [
+    "Đọc kỹ task và trả lời đủ hai thông tin cùng một câu hỏi; có thể dùng dấu chấm câu rõ ràng để tách từng yêu cầu.",
+    "Khi nói lịch trống, nêu cụ thể ngày và buổi như Tuesday morning để email hữu ích và chuyên nghiệp.",
+    "Giữ giọng lịch sự với cảm ơn ở đầu và câu kết như I look forward to attending ở cuối thư."
+  ],
+  "tags": ["training", "workplace"]
+},
+{
+  "id": "toeic-w2-010",
+  "part": "w2",
+  "email": "From: Mr. Thomas Reed, Event Organizer\nTo: Conference Participants\nSubject: Information About the Business Conference\n\nDear Participants,\n\nThank you for registering for the upcoming business conference at the City Convention Center. We are preparing the final schedule and would like to make sure we have the correct information for all attendees.\n\nPlease reply with any details we should know before the event.\n\nSincerely,\nThomas Reed\nEvent Organizer",
+  "task": "Respond to the email. In your response, provide two pieces of information and ask one question.",
+  "sample": "Dear Mr. Reed,\n\nThank you for your message about the upcoming business conference. I plan to attend the full day program, and I would prefer a vegetarian lunch if meal options are available. I will also arrive early because I am traveling from another city that morning.\n\nCould you please tell me whether printed materials will be provided at the registration desk, or should I bring my own copies? Knowing this in advance will help me prepare.\n\nThank you for your assistance. I look forward to the conference.\n\nSincerely,\nAnh Pham",
+  "tips": [
+    "Trả lời ngắn gọn nhưng cụ thể: nêu rõ thông tin như full day program hoặc vegetarian lunch thay vì nói chung chung.",
+    "Câu hỏi nên liên quan trực tiếp đến sự kiện, ví dụ về tài liệu, địa điểm, hoặc thời gian check in.",
+    "Tránh dùng ngôn ngữ quá thân mật; với người tổ chức sự kiện, nên dùng Dear Mr./Ms. và Sincerely."
+  ],
+  "tags": ["event", "conference"]
+},
+{
+  "id": "toeic-w2-011",
+  "part": "w2",
+  "email": "From: Ms. Helen Carter, Office Administrator\nTo: Department Staff\nSubject: Office Supply Request\n\nDear Staff,\n\nWe are placing a new order for office supplies this Friday. To make sure we purchase what each department needs, please send your requests as soon as possible.\n\nReply to this email with the items your team needs.\n\nBest regards,\nHelen Carter\nOffice Administrator",
+  "task": "Respond to the email. In your response, request two items and ask one question.",
+  "sample": "Dear Ms. Carter,\n\nThank you for giving us the opportunity to request office supplies. Our team would like to order two boxes of A4 printer paper and one set of black pens for daily use. We have been using these items frequently during the past month.\n\nCould you please let me know if we may also request a new desk calendar for the meeting room? If that is possible, I can confirm the preferred size.\n\nThank you for handling the order. Please let me know if you need any additional information.\n\nBest regards,\nTuan Le",
+  "tips": [
+    "Khi đề bài yêu cầu request two items, hãy liệt kê rõ tên và số lượng để người nhận dễ xử lý đơn hàng.",
+    "Thêm một câu ngắn giải thích nhu cầu giúp email tự nhiên hơn, nhưng không nên viết quá dài.",
+    "Câu hỏi cuối nên thực tế, liên quan đến quy định đặt hàng hoặc thời gian nhận đồ."
+  ],
+  "tags": ["office", "request"]
+},
+{
+  "id": "toeic-w2-012",
+  "part": "w2",
+  "email": "From: Mr. Jason Miller, Customer Service Manager\nTo: Store Customers\nSubject: Your Recent Visit to Greenfield Electronics\n\nDear Customer,\n\nThank you for visiting Greenfield Electronics last weekend. We hope you were satisfied with our service. We are always looking for ways to improve our store experience.\n\nPlease reply to this message and share your feedback with us.\n\nSincerely,\nJason Miller\nCustomer Service Manager",
+  "task": "Respond to the email. In your response, describe two things and make one suggestion.",
+  "sample": "Dear Mr. Miller,\n\nThank you for contacting me about my recent visit to Greenfield Electronics. The staff members were friendly and helped me compare different laptop models patiently. I also appreciated that the store was clean and the products were easy to find.\n\nI would like to suggest adding more chairs near the customer service area, because several people were waiting while their devices were being checked. This small change could make the waiting time more comfortable.\n\nThank you for asking for feedback. I hope my comments are helpful.\n\nSincerely,\nMai Tran",
+  "tips": [
+    "Với email phản hồi, hãy nêu hai điểm cụ thể đã trải nghiệm trước khi đưa góp ý để giọng điệu cân bằng.",
+    "Khi make one suggestion, dùng cấu trúc lịch sự như I would like to suggest và giải thích ngắn lý do.",
+    "Tránh phàn nàn chung chung; mô tả tình huống rõ ràng giúp người nhận hiểu và cải thiện dịch vụ."
+  ],
+  "tags": ["customer service", "feedback"]
+},
+{
+  "id": "toeic-w2-013",
+  "part": "w2",
+  "email": "From: Ms. Sophia Adams, Project Coordinator\nTo: Project Team Members\nSubject: Preparing for Tomorrow's Meeting\n\nDear Team Members,\n\nTomorrow's project meeting will focus on the timeline for our new website update. I would like everyone to come prepared so we can make decisions efficiently.\n\nPlease reply with the information you can share before the meeting.\n\nBest regards,\nSophia Adams\nProject Coordinator",
+  "task": "Respond to the email. In your response, provide two pieces of information and ask one question.",
+  "sample": "Dear Ms. Adams,\n\nThank you for your reminder about tomorrow's project meeting. I can share an update on the homepage design, which is almost complete, and I have also prepared a draft schedule for the content review. I believe these updates will help the team discuss the next steps.\n\nCould you please confirm whether the meeting will include the marketing team, or will it be only for the project members? This will help me decide which materials to bring.\n\nThank you, and I look forward to the meeting.\n\nBest regards,\nQuang Ho",
+  "tips": [
+    "Cung cấp hai thông tin có ích cho cuộc họp, ví dụ tiến độ công việc và tài liệu bạn đã chuẩn bị.",
+    "Câu hỏi nên giúp bạn chuẩn bị tốt hơn, như danh sách người tham dự, thời lượng, hoặc mục tiêu cuộc họp.",
+    "Dùng thì hiện tại hoàn thành hoặc hiện tại đơn phù hợp: I have prepared, I can share, I look forward to."
+  ],
+  "tags": ["meeting", "project"]
+},
+{
+  "id": "toeic-w2-014",
+  "part": "w2",
+  "email": "From: Mr. Daniel Brooks, Facilities Manager\nTo: Office Employees\nSubject: Building Maintenance This Weekend\n\nDear Employees,\n\nPlease note that maintenance work will take place in our office building this weekend. Some areas may be temporarily unavailable, and there may be some noise during the work.\n\nIf you plan to come to the office, please reply to this message.\n\nSincerely,\nDaniel Brooks\nFacilities Manager",
+  "task": "Respond to the email. In your response, give two pieces of information and ask one question.",
+  "sample": "Dear Mr. Brooks,\n\nThank you for informing us about the building maintenance this weekend. I plan to come to the office on Saturday morning from 9:00 a.m. to 11:00 a.m. to finish a report, and I will need access to the third floor meeting room during that time.\n\nCould you please let me know whether the elevators will be operating normally on Saturday? This information will help me plan my visit.\n\nThank you for the update.\n\nSincerely,\nHoa Bui",
+  "tips": [
+    "Nêu rõ thời gian và khu vực bạn cần sử dụng để người quản lý cơ sở vật chất có thể hỗ trợ chính xác.",
+    "Câu hỏi nên liên quan đến ảnh hưởng thực tế của bảo trì, như thang máy, điện, hoặc lối vào.",
+    "Giữ email ngắn, lịch sự và tập trung vào thông tin cần thiết; tránh kể thêm chi tiết không liên quan."
+  ],
+  "tags": ["office", "maintenance"]
+},
 );
