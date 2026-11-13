@@ -5491,5 +5491,427 @@ Phản ứng **phòng thủ**: câu chuyện thực chất là ứng viên bác 
 - **Câu 2**: hỏi mỗi bên tác động, rồi gửi đề xuất ưu tiên cho manager — cách xử lý trong suốt, chịu trách nhiệm đưa dữ liệu để người có thẩm quyền quyết định.
 
 > Senior tip: ở cấp Senior trở lên, câu "không phải tôi một mình quyết định ưu tiên, nhưng tôi chịu trách nhiệm đưa đủ dữ liệu để người có thẩm quyền quyết định nhanh" thể hiện đúng tầm. Kể thêm bạn đã cập nhật lại cho bên bị lùi lịch thế nào sẽ là điểm cộng.`
+},
+{
+  id: 'qz-sql-021',
+  topic: 'sql',
+  q: `Bảng {{orders}} có 2 triệu dòng, cột {{status}} chỉ nhận 3 giá trị: 'NEW', 'PAID', 'SHIPPED', trong đó 'PAID' chiếm 60% số dòng. Một báo cáo chạy nhiều lần mỗi ngày dùng đúng câu sau:
+~~~sql
+SELECT id, amount FROM orders WHERE status = 'PAID' AND amount > 1000000 ORDER BY created_at DESC;
+~~~
+Bạn đang cân nhắc tạo {{CREATE INDEX ix_orders_status ON orders(status)}}. Vì sao đây thường là lựa chọn tệ, và làm thế nào tốt hơn?`,
+  options: [
+    'Nên tạo index (amount, status) để lọc amount trước rồi mới đến status',
+    'Index trên status luôn tệ vì PostgreSQL không hỗ trợ index trên cột enum-like; phải đổi status sang kiểu số',
+    'Vấn đề là thiếu thống kê; chỉ cần ANALYZE orders là index status trở nên chọn lọc hơn',
+    'Index một cột trên status không chọn lọc (60% dòng trùng giá trị) nên planner vẫn phải đọc rất nhiều heap page; nên dùng partial index + cột sắp xếp, ví dụ (created_at DESC) WHERE status = \'PAID\' hoặc index (status, created_at DESC)'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: partial index (hoặc index tổ hợp có cột sắp xếp) thay cho index một cột trên status.**
+
+### Vì sao index một cột trên status tệ
+Độ chọn lọc (selectivity) của một index là tỉ lệ số dòng mà nó giúp loại bớt. Ở đây {{status = 'PAID'}} vẫn còn **1,2 triệu dòng** trên 2 triệu — tức index chỉ loại được 40%. Khi phải đọc tới hàng triệu dòng rời rạc, planner thường ước lượng rằng **Seq Scan** (đọc tuần tự, tận dụng prefetch và cache) còn nhanh hơn là nhảy 1,2 triệu lần vào heap. Kết quả: index bị bỏ qua, hoặc nếu bị dùng thì còn chậm hơn.
+
+### Cách tốt hơn
+~~~sql
+-- 1) Partial index: chỉ chứa đúng tập đang cần lọc
+CREATE INDEX ix_orders_paid_created
+  ON orders (created_at DESC)
+  WHERE status = 'PAID';
+~~~
+- Index chỉ chứa 1,2 triệu dòng của status 'PAID', nhỏ hơn, và sắp sẵn theo {{created_at DESC}} nên {{ORDER BY created_at DESC}} không cần sort nữa (PostgreSQL đọc thẳng index theo chiều DESC — "Index Scan Backward"). Lưu ý: index trên (created_at DESC) một cột phục vụ được cả ORDER BY created_at DESC lẫn ORDER BY created_at ASC (PostgreSQL quét ngược index), nên không cần tạo hai index cho hai chiều.
+- Còn {{amount > 1000000}}? Nếu amount cũng lọc mạnh, cân nhắc {{CREATE INDEX ... ON orders (created_at DESC) WHERE status = 'PAID'}} kèm điều kiện amount trong index, hoặc index {{ (status, created_at DESC) }} nếu cần truy vấn cả các status khác.
+
+### Vì sao các phương án khác sai
+- **PostgreSQL không hỗ trợ index cột enum-like**: sai sự thật; B-tree index mọi kiểu có so sánh được.
+- **Thiếu thống kê**: {{ANALYZE}} không làm thay đổi độ chọn lọc thật của dữ liệu; 60% vẫn là 60%.
+- **Index (amount, status)**: thứ tự cột sai. Cột đầu tiên ({{amount}}) là điều kiện **khoảng** ({{>}}), sau đó status không còn là prefix liên tục; hơn nữa ORDER BY created_at vẫn phải sort.
+
+> Senior tip: đừng tạo index theo cảm giác "cột này hay dùng để lọc". Hãy nhìn EXPLAIN (ANALYZE, BUFFERS): nếu thấy {{Rows Removed by Filter}} rất lớn, index hiện tại không chọn lọc; nếu thấy {{Sort Method: external merge Disk}}, thiếu index cho ORDER BY. Partial index là công cụ mạnh cho cột có phân bố lệch.`
+},
+{
+  id: 'qz-sql-022',
+  topic: 'sql',
+  q: `Query đếm số đơn thành công theo khách hàng chạy chậm. EXPLAIN ANALYZE trả về:
+~~~text
+HashAggregate  (cost=1050.00..1052.00 rows=200 width=12) (actual time=3100.2..3100.5 rows=250000 loops=1)
+  Group Key: customer_id
+  ->  Seq Scan on orders  (cost=0.00..1000.00 rows=200000 width=12) (actual time=0.02..2100.0 rows=200000 loops=1)
+        Filter: (status = 'PAID')
+        Rows Removed by Filter: 800000
+~~~
+Planner **ước lượng** 200 nhóm ({{rows=200}} ở HashAggregate) nhưng chạy thật ra 250.000 nhóm ({{actual rows=250000}} ở HashAggregate). Vấn đề này ảnh hưởng gì và nên xử lý ra sao?`,
+  options: [
+    'Sai ở số nhóm chỉ ảnh hưởng ORDER BY, không ảnh hưởng hiệu năng aggregate',
+    'Cần tạo index trên status để Seq Scan biến thành Index Scan, lúc đó ước lượng mới đúng',
+    'Sai ở số nhóm khiến planner chọn sai chiến lược (ví dụ chọn HashAggregate thay vì GroupAggregate sắp xếp, hoặc ngược lại) và cấp phát hash table sai kích thước, có thể tràn ra đĩa; chạy ANALYZE để cập nhật thống kê phân bố customer_id, cân nhắc tăng statistics target cho cột',
+    'Không ảnh hưởng vì HashAggregate dùng hash table, không cần bộ nhớ theo số nhóm; chỉ cần tăng work_mem'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: ước lượng số nhóm sai làm planner chọn sai thuật toán aggregate và cấp phát hash table không đúng.**
+
+### Vì sao ước lượng nhóm quan trọng
+HashAggregate dựng một bảng băm với **một ô cho mỗi nhóm**. Planner dùng số nhóm để tính bộ nhớ cần thiết và so sánh chi phí với GroupAggregate (sắp xếp rồi gom nhóm). Ước lượng quá thấp → cấp ít bộ nhớ, khi chạy thực tế hash table lớn hơn {{work_mem}} nên phải **spill ra đĩa** (nhìn thấy qua "Disk Usage" hoặc plan chậm hẳn). Ước lượng quá cao → planner có thể chọn GroupAggregate rồi sort 1 triệu dòng thay vì hash, cũng chậm.
+
+### Vì sao chạy ANALYZE
+Ước lượng dựa trên thống kê trong {{pg_statistic}}: {{n_distinct}} của cột customer_id — ở đây thống kê nói chỉ có ~200 khách hàng, còn thực tế 250.000. Nếu dữ liệu phân bố lệch (vài khách hàng khổng lồ) hoặc cột có tương quan với status, thống kê mặc định có thể sai. {{ANALYZE orders}} lấy mẫu mới; nếu vẫn sai, tăng độ phân giải:
+~~~sql
+ALTER TABLE orders ALTER COLUMN customer_id SET STATISTICS 500;
+ANALYZE orders;
+~~~
+Với tương quan giữa nhiều cột, {{CREATE STATISTICS st ON customer_id, status FROM orders;}} rồi ANALYZE.
+
+### Vì sao các phương án khác sai
+- **HashAggregate không cần bộ nhớ theo nhóm**: sai; hash table phải chứa toàn bộ nhóm, bộ nhớ tỉ lệ với số nhóm.
+- **Chỉ ảnh hưởng ORDER BY**: không có ORDER BY trong plan này; vấn đề là chiến lược aggregate.
+- **Index trên status**: chỉ đổi cách đọc bảng (Seq → Index Scan), không sửa ước lượng số nhóm; hơn nữa status 60% thì index thường không được chọn.
+
+> Senior tip: dấu hiệu planner ước lượng sai là so {{rows=}} ước lượng với {{actual rows}} ở từng node, đặc biệt các node có vòng lặp (loops > 1 thì actual rows là trung bình mỗi vòng). Với cột phân bố lệch, luôn kiểm tra {{pg_stats}} (n_distinct, most_common_vals) trước khi kết luận "thiếu index".`
+},
+{
+  id: 'qz-sql-023',
+  topic: 'sql',
+  multi: true,
+  q: `Hai transaction trên PostgreSQL (mặc định READ COMMITTED) chạy như sau. Những nhận định nào **đúng** về hành vi khoá và dữ liệu? (Chọn 2)
+~~~text
+-- Bảng accounts(id, balance), ban đầu (1, 1000)
+T1: BEGIN;
+T1: UPDATE accounts SET balance = balance - 100 WHERE id = 1;   -- 1 dòng, chưa commit
+T2: BEGIN;
+T2: UPDATE accounts SET balance = balance + 50 WHERE id = 1;    -- chờ T1
+~~~
+Giả sử T1 sau đó COMMIT rồi T2 tiếp tục chạy.`,
+  options: [
+    'T2 bị chặn (chờ) tại câu UPDATE cho tới khi T1 commit hoặc rollback, vì PostgreSQL dùng row-level lock trên dòng id = 1',
+    'Sau khi T1 commit, UPDATE của T2 đọc lại bản ghi mới nhất nên balance = 900 + 50 = 950; không có lost update cho phép cộng tương đối',
+    'T2 sẽ luôn nhìn thấy balance = 1050 ngay khi bắt đầu, vì READ COMMITTED đọc dữ liệu mới nhất của mọi transaction',
+    'Hai giao dịch này chắc chắn gây deadlock và một bên bị huỷ với SQLSTATE 40P01'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 0 và 1.**
+
+### Vì sao 0 đúng
+PostgreSQL khoá **mức dòng** (row-level lock) cho UPDATE/DELETE. Khi T1 sửa dòng id=1, nó giữ khoá đến khi kết thúc transaction. T2 sửa cùng dòng phải **chờ** — không phải deadlock, chỉ là chờ tuần tự.
+
+### Vì sao 1 đúng
+Sau khi T1 COMMIT, khoá được nhả. Ở READ COMMITTED, câu UPDATE của T2 **đọc lại bản ghi mới nhất** (re-evaluate sau khi hết chờ), thấy balance = 900, rồi {{balance = balance + 50}} → 950. Vì phép cộng là **tương đối** trên giá trị hiện có (không gán tuyệt đối), thay đổi của T1 không bị mất. Đây là lý do nên viết {{balance = balance - :amount}} thay vì đọc vào Java rồi UPDATE giá trị tuyệt đối.
+
+### Vì sao 2 và 4 sai
+- **Phương án 2**: T2 **không** thấy 1050. Khi T2 bắt đầu, T1 chưa commit; và câu UPDATE của T2 bị **chặn** cho tới khi T1 kết thúc. Chỉ sau khi T1 commit thì T2 mới đọc được bản mới nhất (900), không phải 1050.
+- **Phương án 4**: không có vòng chờ. Deadlock cần T1 chờ T2 **và** T2 chờ T1 cùng lúc. Ở đây T1 không chờ ai, chỉ T2 chờ T1 → chờ bình thường, không có lỗi 40P01.
+
+### Hệ quả thực tế
+Nếu T1 **rollback**, T2 tiếp tục trên giá trị gốc 1000 → 1050. Hành vi "đọc lại bản mới nhất sau khi hết chờ" giúp tránh lost update, miễn là câu lệnh dùng biểu thức tương đối.
+
+> Senior tip: hiểu đúng "snapshot theo câu lệnh + row lock" giúp dự đoán chính xác hành vi đồng thời. Nếu cần T1 thấy đúng dữ liệu tại thời điểm BEGIN (kể cả thay đổi của chính mình), dùng REPEATABLE READ — nhưng khi đó cập nhật cùng dòng sẽ lỗi "could not serialize access due to concurrent update" và phải retry.`
+},
+{
+  id: 'qz-sql-024',
+  topic: 'sql',
+  q: `Bảng {{events}} có index {{CREATE INDEX ix_events_type_created ON events(type, created_at)}}. Câu truy vấn sau có **dùng hiệu quả** index này không?
+~~~sql
+SELECT * FROM events WHERE created_at >= '2024-06-01' ORDER BY type;
+~~~
+Giải thích đúng là gì?`,
+  options: [
+    'Dùng tốt: index sắp theo (type, created_at) nên lọc created_at rồi ORDER BY type đều nhanh',
+    'Không hiệu quả: cột đầu của index là type nhưng không có điều kiện trên type, nên created_at nằm rải rác; planner thường Seq Scan hoặc quét toàn index. Cần index (created_at, type) hoặc (created_at) cho truy vấn này',
+    'Dùng hiệu quả nếu thêm ANALYZE, vì lúc đó planner mới biết thứ tự cột',
+    'PostgreSQL tự động đảo thứ tự cột trong index khi cần'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: index (type, created_at) không phù hợp với truy vấn này.**
+
+### Vì sao
+Cây B-tree ghép sắp xếp **type trước**, rồi trong cùng một type mới sắp theo created_at. Truy vấn không có điều kiện {{type = ...}} → không thể "nhảy" vào một vùng liên tục của index; muốn tìm {{created_at >= '2024-06-01'}} phải quét toàn bộ index (hoặc planner chọn Seq Scan vì rẻ hơn). Ngoài ra, dù {{ORDER BY type}} có vẻ khớp với cột đầu của index, PostgreSQL **không** dùng được thứ tự sắp đó cho câu này: vì điều kiện lọc lại nằm trên cột **sau** (created_at), các dòng thỏa điều kiện bị rải trên nhiều giá trị type, nên muốn trả kết quả theo type vẫn phải sắp xếp lại (Sort). Chỉ khi cột đầu bị ràng buộc bằng ({{type = ...}}) thì mới vừa lọc theo created_at vừa giữ được thứ tự type.
+
+### Cách sửa
+~~~sql
+-- Phục vụ đúng truy vấn này
+CREATE INDEX ix_events_created_type ON events (created_at, type);
+-- hoặc nếu chỉ cần lọc thời gian:
+CREATE INDEX ix_events_created ON events (created_at);
+~~~
+Nguyên tắc leftmost prefix: muốn dùng index ghép cho một điều kiện, điều kiện đó phải là **tiền tố** của index (cột đầu, hoặc đầu + liên tiếp).
+
+### Vì sao các phương án khác sai
+- **"Dùng tốt"**: nhầm rằng mọi cột trong index đều dùng được độc lập; chỉ tiền tố trái mới hiệu quả cho lọc.
+- **ANALYZE**: thống kê không đổi cấu trúc index.
+- **PostgreSQL tự đảo cột**: không có cơ chế đó; thứ tự cột là cố định lúc tạo.
+
+> Senior tip: khi đọc EXPLAIN, thấy "Index Scan using ix_..." nhưng {{Rows Removed by Filter}} lớn, hoặc thấy Seq Scan kèm Sort, hãy nghĩ ngay tới "đúng tiền tố trái chưa" và "ORDER BY có khớp index không". Với ORDER BY, index phải khớp cả thứ tự cột lẫn chiều (ASC/DESC) để tránh sort.`
+},
+{
+  id: 'qz-sql-025',
+  topic: 'sql',
+  multi: true,
+  q: `Một bảng {{products}} có {{price numeric}} và {{category text}}. Có người đề xuất 4 truy vấn sau cho các yêu cầu báo cáo. Những truy vấn nào **đúng về cú pháp và logic** (chạy được và trả về kết quả đúng)? (Chọn 2)`,
+  options: [
+    'SELECT category, max(price) FROM products GROUP BY category; — hợp lệ: mỗi category một dòng, max(price) là giá cao nhất trong nhóm',
+    'SELECT category, count(*) FROM products WHERE price > 100 GROUP BY category HAVING count(*) > 5; — lọc trước, gom nhóm, rồi lọc nhóm',
+    'SELECT category, count(*) FROM products GROUP BY category WHERE price > 100; — hợp lệ vì WHERE và GROUP BY độc lập',
+    'SELECT category, count(*) FROM products WHERE sum(price) > 1000000 GROUP BY category HAVING count(*) > 5; — lọc theo tổng trước rồi gom nhóm'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 0 và 1.**
+
+### Vì sao 0 đúng
+{{max(price) GROUP BY category}} là mẫu chuẩn: mỗi category một dòng, kèm giá trị lớn nhất trong nhóm; PostgreSQL tính đúng kết quả.
+
+### Vì sao 1 đúng
+Thứ tự logic đúng: **WHERE lọc dòng → GROUP BY gom nhóm → HAVING lọc nhóm**. Lọc {{price > 100}} trước làm giảm số dòng vào group, còn {{HAVING count(*) > 5}} loại nhóm nhỏ. Đây là mẫu chuẩn.
+
+### Vì sao 2 sai
+Sai cú pháp — {{WHERE}} phải đứng **trước** {{GROUP BY}}. Thứ tự đúng là SELECT → FROM → WHERE → GROUP BY → HAVING → ORDER BY → LIMIT. PostgreSQL báo lỗi cú pháp ngay.
+
+### Vì sao 3 sai
+Sai cú pháp/logic — {{WHERE}} lọc **từng dòng** trước khi gom nhóm nên không dùng được hàm tổng hợp như {{sum(price)}}. Muốn lọc theo tổng của nhóm phải dùng {{HAVING sum(price) > 1000000}} sau {{GROUP BY}}.
+
+### Phân biệt WHERE vs HAVING
+- {{WHERE}}: lọc **từng dòng** trước khi gom nhóm, không dùng được hàm tổng hợp ({{sum}}, {{count}}).
+- {{HAVING}}: lọc **sau khi** gom nhóm, dùng được hàm tổng hợp.
+- Luôn đặt điều kiện lọc dòng ở WHERE (giảm dữ liệu sớm) và điều kiện trên nhóm ở HAVING.
+
+> Senior tip: nếu HAVING chỉ chứa điều kiện trên hàm tổng hợp mà có thể tính được ở tầng ứng dụng sau khi lấy kết quả, hãy cân nhắc — nhưng thường để DB làm vẫn tốt hơn vì giảm dữ liệu truyền về. Với nhóm cực lớn, kiểm tra EXPLAIN xem GroupAggregate có spill ra đĩa không.`
+},
+{
+  id: 'qz-sql-026',
+  topic: 'sql',
+  q: `Bạn cần lấy **top 3 sản phẩm bán chạy nhất mỗi danh mục** (theo số lượng bán), mỗi danh mục có nhiều sản phẩm. Cách viết nào đúng đắn nhất trên PostgreSQL?`,
+  options: [
+    'SELECT category, product_id, sold FROM sales WHERE sold IN (SELECT sold FROM sales ORDER BY sold DESC LIMIT 3); — lọc theo sold',
+    'SELECT category, product_id, max(sold) FROM sales GROUP BY category, product_id LIMIT 3;',
+    'SELECT category, product_id, sold FROM (SELECT *, row_number() OVER (PARTITION BY category ORDER BY sold DESC) rn FROM sales) t WHERE rn <= 3;',
+    'SELECT category, product_id, sold FROM sales GROUP BY category, product_id, sold ORDER BY category, sold DESC LIMIT 3;'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: window function row_number() với PARTITION BY.**
+
+### Vì sao phương án 2 đúng
+{{row_number() OVER (PARTITION BY category ORDER BY sold DESC)}} đánh số 1, 2, 3… **độc lập trong từng danh mục**, theo thứ tự sold giảm dần. Sau đó lọc {{rn <= 3}} ở truy vấn ngoài (không được lọc trực tiếp trong WHERE của cùng cấp vì window function chạy sau WHERE). Đây chính là mẫu "top-N per group" chuẩn.
+
+### Vì sao các phương án khác sai
+- **Phương án 0 (sold IN ... LIMIT 3)**: lấy 3 mức sold cao nhất toàn cục rồi lọc mọi sản phẩm có sold thuộc 3 mức đó — có thể ra nhiều hơn 3 dòng mỗi danh mục, và trộn lẫn danh mục. Không đảm bảo "3 sản phẩm mỗi danh mục".
+- **Phương án 1 (GROUP BY ... LIMIT 3)**: GROUP BY gộp theo (category, product_id) nên mỗi sản phẩm một dòng, nhưng LIMIT 3 cắt **toàn bộ kết quả** còn 3 dòng, không phải 3 dòng mỗi danh mục.
+- **Phương án 3 (GROUP BY category, product_id, sold ... LIMIT 3)**: cũng chỉ trả 3 dòng tổng, không phải 3 mỗi nhóm. (GROUP BY không hoàn toàn vô nghĩa — nó gộp các dòng trùng cả ba cột — nhưng với giả định mỗi (category, product_id) đã là một dòng thì việc thêm sold vào GROUP BY không giúp gì cho yêu cầu.)
+
+### Lưu ý khi dùng window function
+- Không thể viết {{WHERE row_number() ... <= 3}} cùng cấp: window function được tính **sau** WHERE, nên phải bọc trong subquery/CTE rồi lọc ngoài.
+- Nếu có sản phẩm cùng sold (hòa) và muốn lấy tất cả, dùng {{rank()}} hoặc {{dense_rank()}} thay {{row_number()}}.
+- Thứ tự trong {{OVER (ORDER BY ...)}} quyết định "top"; nếu hai sản phẩm cùng sold, thêm tie-breaker (ví dụ {{ORDER BY sold DESC, product_id}}) để kết quả xác định.
+
+> Senior tip: index {{ (category, sold DESC) }} giúp window function tránh sort toàn bộ; PostgreSQL có thể dùng index để đọc từng phân vùng theo thứ tự. Với dữ liệu rất lớn, cân nhắc thêm điều kiện lọc trước (WHERE) để giảm số dòng vào cửa sổ.`
+},
+{
+  id: 'qz-sql-027',
+  topic: 'sql',
+  q: `Một API dùng câu sau để kiểm tra user có tồn tại trước khi tạo mới (kiểm tra trùng email):
+~~~sql
+SELECT id FROM users WHERE email = 'an@example.com';
+~~~
+Hai request đăng ký đồng thời cùng email xuất hiện. Vì sao vẫn có thể tạo được **hai** tài khoản trùng email dù đã có câu kiểm tra này trong code?`,
+  options: [
+    'Vì SELECT không bao giờ thấy dữ liệu do transaction khác vừa chèn',
+    'Vì câu kiểm tra và câu INSERT là hai hành động riêng, không nằm trong cùng một giao thức nguyên tử; cả hai request cùng SELECT thấy "chưa có" rồi cùng INSERT. Chỉ ràng buộc UNIQUE trong DB mới chặn được tuyệt đối',
+    'Vì cần SET TRANSACTION ISOLATION LEVEL SERIALIZABLE thì SELECT mới thấy dữ liệu mới',
+    'Vì email không phải primary key nên không thể chống trùng'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: race condition giữa check và insert — cần UNIQUE constraint trong DB.**
+
+### Vì sao lỗi xảy ra
+Đây là mẫu "check-then-act" (kiểm tra rồi hành động) không nguyên tử. Hai transaction cùng chạy:
+~~~text
+T1: SELECT ... WHERE email = 'an@x.com'  -> 0 dòng
+T2: SELECT ... WHERE email = 'an@x.com'  -> 0 dòng
+T1: INSERT ... 'an@x.com'                -> thành công
+T2: INSERT ... 'an@x.com'                -> thành công (nếu không có UNIQUE)
+~~~
+Ở READ COMMITTED, mỗi câu SELECT thấy snapshot tại thời điểm chạy; cả hai cùng thấy "chưa có" vì chưa ai commit. Khoảng trống giữa SELECT và INSERT là cửa sổ race.
+
+### Cách sửa đúng
+1. **Ràng buộc UNIQUE trong DB** — chặn tuyệt đối, bất kể ứng dụng có bao nhiêu instance:
+~~~sql
+ALTER TABLE users ADD CONSTRAINT ux_users_email UNIQUE (email);
+~~~
+2. Nếu muốn xử lý "đã tồn tại thì lấy lại user cũ" thay vì báo lỗi, dùng {{INSERT ... ON CONFLICT (email) DO NOTHING}} rồi SELECT lại, hoặc {{ON CONFLICT DO UPDATE}}.
+3. SERIALIZABLE cũng phát hiện, nhưng vẫn cần retry và không thay thế được UNIQUE về mặt toàn vẹn.
+
+### Vì sao các phương án khác sai
+- **SELECT không thấy dữ liệu chưa commit**: đúng ở READ COMMITTED, nhưng đó chính là nguyên nhân — không phải biện pháp chống trùng.
+- **SERIALIZABLE làm SELECT thấy dữ liệu mới**: không đảm bảo; vấn đề là tính nguyên tử của check+insert, và SERIALIZABLE sẽ báo lỗi serialization chứ không "cho thấy dữ liệu mới" trong cùng snapshot.
+- **Email không phải primary key**: UNIQUE constraint hoạt động trên mọi cột, không cần là primary key.
+
+> Senior tip: mọi "kiểm tra rồi ghi" trên dữ liệu chia sẻ đều là race nếu không có ràng buộc DB hoặc khoá. Trong hệ phân tán, UNIQUE trong DB là tuyến phòng thủ cuối cùng đáng tin cậy nhất; kiểm tra ở tầng ứng dụng chỉ là tối ưu để báo lỗi đẹp.`
+},
+{
+  id: 'qz-sql-028',
+  topic: 'sql',
+  multi: true,
+  q: `Bảng {{sessions}} có cột {{user_id}}, {{created_at}}, {{ip}}. Cần tăng tốc các truy vấn "phiên gần đây của một user" ({{WHERE user_id = ? ORDER BY created_at DESC LIMIT n}}) và "các phiên gần đây từ một IP" ({{WHERE ip = ? ORDER BY created_at DESC LIMIT n}}). Những chỉ-mục-đề-xuất nào **phù hợp**? (Chọn 2)`,
+  options: [
+    'CREATE INDEX ON sessions (user_id, created_at DESC); — phục vụ "phiên gần đây của một user"',
+    'CREATE INDEX ON sessions (ip); — phục vụ "liệt kê phiên theo một IP"',
+    'CREATE INDEX ON sessions (created_at); — phục vụ mọi truy vấn lọc theo user_id',
+    'CREATE INDEX ON sessions (ip, created_at DESC); — phục vụ "các phiên gần đây từ một IP"'
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: phương án 0 và 3.**
+
+### Vì sao 0 đúng
+{{WHERE user_id = ? ORDER BY created_at DESC LIMIT n}}: cột đầu index là user_id (so sánh bằng) nên nhảy thẳng tới nhóm phiên của user; trong nhóm đó created_at đã sắp giảm dần → không cần sort, đọc vài dòng đầu là đủ. Đây là mẫu "cột bằng trước, cột sắp xếp sau".
+
+### Vì sao 3 đúng
+Tương tự cho truy vấn theo IP: ip là điều kiện bằng, created_at DESC là thứ tự sắp xếp trong nhóm. Cùng logic leftmost prefix + ORDER BY khớp. (Cột created_at DESC trong index là chiều sắp xếp của index; với một cột thì chiều ASC hay DESC đều phục vụ được cả hai chiều ORDER BY, nhưng ghi DESC cho khớp ý định "mới nhất trước".)
+
+### Vì sao 1 và 2 sai
+- **Phương án 1 (ip đơn)**: không sai hoàn toàn — nó vẫn phục vụ được "liệt kê phiên theo một IP" nếu không cần sắp xếp, nhưng **không** phủ được truy vấn "các phiên gần đây từ một IP" vì thiếu created_at nên vẫn phải sort. So với (ip, created_at DESC) thì kém hơn hẳn.
+- **Phương án 2 (created_at đơn)**: không giúp gì cho lọc {{user_id = ?}}; user_id là điều kiện chính, index không có user_id thì phải quét.
+
+### Nguyên tắc rút ra
+- Cột điều kiện **bằng** đặt trước, cột **khoảng/sắp xếp** đặt sau.
+- Nếu ORDER BY khớp với các cột sau trong index và cùng chiều, PostgreSQL tránh được bước Sort.
+- Index thừa làm chậm INSERT/UPDATE và tốn bộ nhớ; chỉ tạo cái thực sự dùng (kiểm tra {{pg_stat_user_indexes.idx_scan}}).
+
+> Senior tip: đọc EXPLAIN để xác nhận "Index Scan ... " không kèm "Sort" node. Nếu thấy "Sort Method: quicksort Memory" thì index chưa khớp ORDER BY; nếu thấy "top-N heapsort" với LIMIT nhỏ thì thường vẫn nhanh. Với bảng ghi nhiều, mỗi index thêm vào là chi phí ghi — đừng tạo "cho chắc".`
+},
+{
+  id: 'qz-sql-029',
+  topic: 'sql',
+  q: `Bạn chạy EXPLAIN ANALYZE cho một câu có {{ORDER BY created_at}} và thấy:
+~~~text
+Sort  (actual time=5200.1..5210.3 rows=1000 loops=1)
+  Sort Key: created_at
+  Sort Method: external merge  Disk: 45632kB
+  ->  Seq Scan on posts  (actual rows=1000000 loops=1)
+~~~
+Người dùng phàn nàn truy vấn chậm. Chẩn đoán và cách xử lý đúng là gì?`,
+  options: [
+    'Thiếu work_mem; tăng work_mem là đủ vì sort đã gần xong',
+    'Do có ORDER BY nên không thể tối ưu; chấp nhận chậm',
+    'Thiếu index trên created_at; tạo index (created_at) để PostgreSQL đọc theo thứ tự, tránh sort toàn bộ 1 triệu dòng ra đĩa',
+    'Do Seq Scan; chỉ cần ANALYZE là planner chuyển sang index'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: thiếu index cho ORDER BY, gây sort 1 triệu dòng tràn ra đĩa.**
+
+### Đọc dấu hiệu
+- {{Sort Method: external merge Disk: 45632kB}} — sort **không vừa work_mem** nên phải ghi ra đĩa rồi merge, rất chậm.
+- {{Seq Scan ... rows=1000000}} — đọc toàn bảng.
+- Không có node Index Scan → không có index phù hợp để đọc theo thứ tự.
+
+### Cách sửa
+~~~sql
+CREATE INDEX ix_posts_created ON posts (created_at);
+-- nếu thường lọc kèm điều kiện, ví dụ status:
+CREATE INDEX ix_posts_status_created ON posts (status, created_at);
+~~~
+Khi có index, PostgreSQL đọc theo đúng thứ tự created_at (Index Scan), trả về ngay từ đầu, không cần sort; với {{LIMIT}} nhỏ thì chỉ đọc vài dòng đầu (top-N heapsort cũng chỉ cần đọc N dòng). Tăng work_mem giúp sort vừa RAM nhưng **không loại bỏ** việc phải sort 1 triệu dòng — chỉ giảm chi phí chứ không giải quyết gốc rễ.
+
+### Vì sao các phương án khác sai
+- **Chỉ tăng work_mem**: sort vẫn phải xử lý toàn bộ dữ liệu; chỉ hết tràn đĩa, không nhanh bằng đọc theo thứ tự.
+- **ANALYZE**: thống kê không tạo ra index.
+- **ORDER BY không tối ưu được**: sai; index có thể cung cấp dữ liệu đã sắp xếp.
+
+> Senior tip: nhìn "Sort Method" là biết ngay vấn đề bộ nhớ sort. Nếu bạn buộc phải sort lớn (GROUP BY, DISTINCT), tăng work_mem theo phiên (SET LOCAL work_mem) có thể giúp; nhưng với ORDER BY thuần trên cột, index thường là lời giải đúng. Kết hợp EXPLAIN (ANALYZE, BUFFERS) để thấy số block đọc.`
+},
+{
+  id: 'qz-sql-030',
+  topic: 'sql',
+  q: `Hai giao dịch trên PostgreSQL chạy như sau (mặc định READ COMMITTED). Câu hỏi: T2 nhận được gì?
+~~~text
+-- Bảng: accounts(id, balance)
+-- ban đầu: (1, 100), (2, 200)
+
+T1: BEGIN;
+T1: UPDATE accounts SET balance = balance + 50 WHERE id = 1;   -- 1 dòng, chưa commit
+T2: BEGIN;
+T2: UPDATE accounts SET balance = balance + 50 WHERE id = 1;   -- ??
+~~~
+T2 đang chờ. Điều gì xảy ra tiếp theo nếu T1 **commit** trước?`,
+  options: [
+    'T2 bị lỗi ngay "deadlock detected" vì hai giao dịch cùng sửa một dòng',
+    'T2 tiếp tục, cập nhật trên giá trị mới (100+50=150 rồi +50=200); kết quả cuối balance = 200',
+    'T2 tiếp tục nhưng ghi đè mất thay đổi của T1, kết quả cuối balance = 200',
+    'T2 bị hủy vì vi phạm unique'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: T2 chờ T1, sau khi T1 commit thì T2 cập nhật trên bản ghi mới nhất → 200.**
+
+### Cơ chế row lock
+PostgreSQL dùng **row-level lock** cho UPDATE/DELETE. Khi T1 sửa dòng id=1, nó giữ khoá trên dòng đó đến khi commit/rollback. T2 sửa cùng dòng phải **chờ**. Khi T1 commit:
+- T2 được cấp khoá.
+- Ở READ COMMITTED, T2 **đọc lại bản ghi mới nhất** (re-evaluate) sau khi hết chờ, nên thấy balance = 150, rồi cộng 50 → 200.
+- Đây là điểm khác biệt quan trọng: T2 **không** mất thay đổi của T1 (không có lost update) vì nó làm việc trên giá trị đã cập nhật.
+
+### Vì sao không phải các đáp án khác
+- **Deadlock**: deadlock cần **vòng chờ** (T1 chờ T2 và T2 chờ T1). Ở đây chỉ T2 chờ T1, một chiều → không deadlock, chỉ là chờ bình thường.
+- **Ghi đè mất thay đổi**: sai; vì UPDATE của T2 áp dụng trên bản ghi mới nhất sau khi T1 commit, phép cộng là tương đối ({{balance = balance + 50}}), không phải gán giá trị tuyệt đối nên không mất.
+- **Vi phạm unique**: không liên quan, id=1 là khoá chính, không có ràng buộc bị vi phạm.
+
+### Nếu T1 **rollback**
+T2 tiếp tục trên giá trị gốc 100 → 150. Tương tự, UPDATE luôn đọc bản mới nhất sau khi hết chờ.
+
+> Senior tip: hiểu row-level lock giúp dự đoán hành vi đồng thời. Nếu muốn "mất thay đổi" xảy ra, đó là do ứng dụng đọc giá trị vào biến Java rồi mới UPDATE giá trị tuyệt đối — không phải do DB. Dùng UPDATE tương đối (balance = balance + n) hoặc SELECT FOR UPDATE để kiểm soát.`
+},
+{
+  id: 'qz-sql-031',
+  topic: 'sql',
+  q: `Bảng {{orders}} có 5 triệu dòng. Một câu báo cáo chạy mỗi sáng:
+~~~sql
+SELECT count(*) FROM orders WHERE status = 'PAID' AND created_at >= '2024-01-01';
+~~~
+Trước đây status 'PAID' chiếm 40% (2 triệu dòng); sau chiến dịch marketing, giờ chiếm 70% (3,5 triệu). Giả sử câu này đang dùng index một cột trên {{status}} ({{CREATE INDEX ON orders(status)}}). Câu truy vấn đột nhiên chậm hơn rõ rệt dù dữ liệu chỉ tăng nhẹ. Vì sao?`,
+  options: [
+    'Vì PostgreSQL không cập nhật thống kê khi dữ liệu thay đổi; chạy ANALYZE sẽ tự khắc nhanh lại như cũ',
+    'Vì bảng quá lớn; cần partition theo created_at ngay lập tức',
+    'Vì count(*) luôn chậm; nên thay bằng count(1) cho nhanh',
+    'Vì index trên status trở nên kém chọn lọc: planner chuyển sang Seq Scan (hoặc quét phần lớn index), đọc nhiều hơn trước; nên cân nhắc partial index hoặc index tổ hợp theo created_at, hoặc dùng index (created_at) khi status không còn chọn lọc'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: độ chọn lọc của status giảm, khiến index trên status mất tác dụng.**
+
+### Vì sao chậm
+Trước: status='PAID' còn 40% → planner có thể dùng index trên status để loại 60% dòng. Sau: còn 70% → index chỉ loại 30%, đọc heap gần như toàn bảng; planner so sánh chi phí và chọn Seq Scan (đọc tuần tự nhanh hơn nhảy 3,5 triệu lần). Kết quả là đọc nhiều block hơn, chậm hơn — dù tổng số dòng chỉ tăng nhẹ. Đây là hiện tượng "index bị bỏ khi độ chọn lọc giảm".
+
+### Cách xử lý
+- Nếu điều kiện thực sự lọc theo ngày (created_at >= ...), index {{ (created_at) }} hoặc {{ (created_at) WHERE status='PAID' }} (partial) thường tốt hơn: created_at có độ chọn lọc cao hơn nhiều so với status.
+- Nếu vẫn cần lọc status, partial index {{ (created_at) WHERE status = 'PAID' }} loại bỏ dòng không phải PAID ngay từ đầu.
+- Đừng kỳ vọng ANALYZE làm query nhanh lại "như cũ" — thống kê chỉ giúp planner chọn đúng, nhưng độ chọn lọc thật của status đã giảm.
+
+### Vì sao các phương án khác sai
+- **ANALYZE làm nhanh lại**: thống kê cập nhật giúp planner chọn đúng dựa trên phân bố mới, nhưng không thay đổi việc status kém chọn lọc; Seq Scan có thể vẫn là lựa chọn đúng.
+- **Partition theo created_at**: là giải pháp lớn, không phải nguyên nhân tức thời; partition giúp prune theo ngày nhưng không sửa gốc "status kém chọn lọc".
+- **count(1) nhanh hơn count(*)**: hai cách tương đương về hiệu năng trong PostgreSQL; khác biệt không đáng kể.
+
+> Senior tip: khi một index "đột nhiên" không còn được dùng, hãy kiểm tra phân bố cột ({{pg_stats}}: n_distinct, most_common_vals, histogram_bounds) và so sánh với trước. Độ chọn lọc giảm theo thời gian/dữ liệu là nguyên nhân phổ biến; giải pháp là index theo cột có độ phân biệt cao hoặc partial index đúng tập đang cần.`
+},
+{
+  id: 'qz-sql-032',
+  topic: 'sql',
+  q: `Bạn cần đếm số đơn mỗi ngày trong 30 ngày gần nhất từ bảng {{orders}} (cột created_at timestamptz). Cách viết nào **đúng và tận dụng index** tốt nhất?`,
+  options: [
+    'SELECT date_trunc(\'day\', created_at) d, count(*) FROM orders WHERE created_at >= now() - interval \'30 days\' GROUP BY d ORDER BY d;',
+    'SELECT date_trunc(\'day\', created_at) d, count(*) FROM orders WHERE created_at >= now() - interval \'30 days\' AND created_at < now() GROUP BY d ORDER BY d;',
+    'SELECT cast(created_at as date) d, count(*) FROM orders GROUP BY d HAVING d >= current_date - 30;',
+    'SELECT date_trunc(\'day\', created_at) d, count(*) FROM orders WHERE cast(created_at as date) >= current_date - 30 GROUP BY d ORDER BY d;'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Vì sao 1 đúng
+- Điều kiện lọc {{created_at >= now() - interval '30 days' AND created_at < now()}} là **khoảng trên cột created_at** — index B-tree trên created_at dùng được (range scan), không bọc hàm lên cột.
+- {{date_trunc('day', created_at)}} chỉ dùng ở SELECT/GROUP BY (trên biểu thức), không cản index lọc.
+- GROUP BY + ORDER BY cùng biểu thức d: dữ liệu sau khi lọc đã theo thứ tự thời gian, PostgreSQL gom nhóm và trả kết quả theo ngày tăng dần.
+
+### Vì sao 2, 3, 4 chưa tối ưu
+- **Phương án 2**: thiếu {{created_at < now()}} — nếu có đơn trong tương lai (giờ lệch, dữ liệu test) vẫn bị đếm; và điều kiện chỉ một phía, không phải lỗi nặng nhưng kém chặt chẽ.
+- **Phương án 3**: không có {{WHERE}}, chỉ {{HAVING d >= current_date - 30}} → PostgreSQL phải đọc **toàn bộ bảng** rồi mới gom nhóm và lọc (HAVING chạy sau khi gom nhóm), nên không dùng được index trên created_at. Đây là lỗi "lọc muộn": điều kiện giảm dữ liệu nên đặt ở WHERE.
+- **Phương án 4**: cũng bọc hàm {{cast(created_at as date)}} trong WHERE → mất index.
+
+### Nguyên tắc
+Không viết hàm lên cột đã index trong điều kiện lọc. Nếu cần so sánh theo ngày, dùng khoảng: {{created_at >= :start AND created_at < :end}} (nửa mở để tránh vấn đề biên với timestamp).
+
+> Senior tip: với bảng lớn theo thời gian, cân nhắc **partition theo range created_at** (theo tháng) — planner prune partition theo điều kiện range, chỉ đọc các partition liên quan. Với timezone, chú ý timestamptz vs timestamp: date_trunc trên timestamptz phụ thuộc timezone phiên ({{SET TIME ZONE}}); nếu cần cố định, chuyển sang timestamp hoặc chỉ định rõ.`
 }
 );
