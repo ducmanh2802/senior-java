@@ -3482,5 +3482,1112 @@ class AbaDemo {
   related: ['concurrency-014', 'concurrency-012', 'concurrency-009'],
   tags: ['lock-free', 'Treiber stack', 'CAS', 'ABA', 'AtomicStampedReference', 'AtomicReference'],
 },
+{
+  id: 'lesson-concurrency-012',
+  track: 'concurrency',
+  order: 12,
+  title: 'Java Memory Model nâng cao: safe publication, final fields, memory barrier và stack trace protection',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích được safe publication: tại sao "ghi object xong rồi mới publish reference" cần happens-before, và các cách publish an toàn',
+    'Hiểu final field semantics: constructor xong thì field final chắc chắn nhìn thấy được, miễn không để lộ this (this escape)',
+    'Biết memory barrier (StoreLoad, LoadLoad, StoreStore, LoadStore) mà JIT chèn cho volatile/synchronized/final, và khi nào cần Unsafe.fullFence()',
+    'Nhận ra stack trace protection trong JDK 17+: hidden classes, stack walker, và tại sao exception không lộ stack internals',
+  ],
+  body: `### Tóm tắt
+**Safe publication** là việc đưa một object đã khởi tạo xong vào tầm nhìn của thread khác sao cho **mọi field (kể cả non-final) đều được thấy đúng giá trị**. Nếu chỉ gán reference vào biến thường, thread khác có thể thấy reference không null nhưng bên trong field còn 0/null (reordering). Các cách publish an toàn: volatile write/read, final field, synchronized/unlock-lock, thread start/join, BlockingQueue/ConcurrentMap put/take, AtomicReference.set/get. **Final field** (JLS 17.5) có ngữ nghĩa đặc biệt: sau khi constructor kết thúc, mọi thread nhận reference của object đó chắc chắn thấy đúng giá trị các field final — miễn là constructor **không để lộ {{this}}** (gán {{this}} vào static field, start thread, đăng ký listener...). Memory barrier là lệnh CPU/JIT ngăn reordering: StoreLoad (sau ghi volatile), LoadLoad/LoadStore (đọc volatile), và Release/Acquire (unlock/lock). JDK 17+ thêm **stack trace protection**: hidden classes (JEP 371) cho framework, StackWalker API thay thế SecurityManager, và exception message không còn in ra call stack nội bộ nhạy cảm.
 
+### Vấn đề: object "nửa vời" bị thread khác nhìn thấy
+Khi thread A tạo object và gán reference cho thread B, có ba điều có thể sai:
+1. **Reordering ghi field**: JIT/CPU có thể ghi reference trước khi ghi field bên trong object.
+2. **Visibility**: thread B đọc reference thấy không null, nhưng cache của core B chưa cập nhật field.
+3. **Constructor escape (this escape)**: trong constructor, gán {{this}} vào nơi public (static field, register listener, {{executor.submit(this)}}) ⇒ thread khác có thể lấy {{this}} khi field final chưa được ghi xong.
+
+Kết quả: thread B thấy object "nửa vời" — reference không null nhưng field {{final}} vẫn là default (0, null), hoặc field non-final bị stale.
+
+### Safe publication: 6 cách chuẩn JMM
+Mục tiêu: tạo cạnh **happens-before** từ "ghi xong object" đến "thread khác đọc reference".
+
+| Cách | Code ví dụ | Happens-before nào |
+|---|---|---|
+| **volatile field** | {{volatile Holder holder;}} / {{holder = new Holder(42);}} | Volatile write hb volatile read |
+| **final field** | ~~~java\\nfinal int x;\\nHolder(int v) { x = v; }\\nholder = new Holder(42);\\n~~~ | Final field semantics (JLS 17.5) |
+| **synchronized block** | ~~~java\\nsynchronized (lock) {\\n    holder = new Holder(42);\\n}\\nsynchronized (lock) {\\n    h = holder;\\n}\\n~~~ | Unlock hb lock |
+| **Thread start** | ~~~java\\nThread t = new Thread(() -> holder = new Holder(42));\\nt.start();\\nt.join();\\n~~~ | Start hb thread body; thread body hb join |
+| **BlockingQueue / ConcurrentMap** | ~~~java\\nqueue.put(new Holder(42));\\nHolder h = queue.take();\\n~~~ | Put hb take (implementation dùng volatile/CAS) |
+| **AtomicReference** | ~~~java\\nref.set(new Holder(42));\\nHolder h = ref.get();\\n~~~ | set hb get (volatile/CAS semantics) |
+
+> **Quy tắc vàng**: đừng tự nghĩ ra cách publish mới. Dùng một trong sáu cách trên. Viết {{static Holder holder = new Holder(42);}} ở static initializer **cũng an toàn** vì class initialization có lock nội bộ của JVM.
+
+### Final field semantics: constructor xong = an toàn (nếu không escape this)
+JLS 17.5: "Một thread đọc reference của object sau khi constructor kết thúc chắc chắn thấy đúng giá trị mọi field final." Cơ chế: JVM chèn **StoreStore barrier** sau ghi field final trong constructor, và **LoadLoad barrier** trước khi đọc field final qua reference vừa lấy. Trên x86 barrier thường là no-op (x86 TSO), nhưng trên ARM/Power thì cần lệnh {{dmb}}/{{lwsync}}.
+
+**Cấm**: để lộ {{this}} trong constructor.
+~~~java
+class Bad {
+    final int x;
+    Bad() {
+        x = 42;
+        Registry.register(this);   // this escape: thread khác có thể đọc Bad.x = 0
+        new Thread(() -> use(this)).start(); // this escape
+    }
+}
+~~~
+Thread đăng ký/listener có thể chạy **ngay** trong constructor, đọc {{x}} trước khi {{x = 42}} hoàn thành theo JMM. Sửa: dùng factory method, hoặc {{volatile Holder holder}} + gán sau constructor, hoặc {{CompletableFuture.supplyAsync(() -> new Holder(42))}}.
+
+### Memory barrier: JIT chèn cái gì cho volatile/synchronized/final?
+| Nơi | Barrier (x86) | Barrier (ARM) | Mục đích |
+|---|---|---|---|
+| **volatile write** | {{lock add [rsp], 0}} (StoreLoad) | {{dmb ishst}} + {{dmb ish}} | Ghi trước không bị dời xuống sau; flush store buffer |
+| **volatile read** | (thường không barrier, LoadLoad/LoadStore ngầm) | {{dmb ishld}} | Đọc sau không bị dời lên trước |
+| **unlock (monitor exit)** | {{lock add}} (StoreLoad) | {{dmb ish}} | Release: mọi ghi trong critical section hb lock tiếp theo |
+| **lock (monitor enter)** | (thường không barrier) | {{dmb ish}} | Acquire: đọc sau lock thấy mọi ghi trước unlock |
+| **final field write (trong constructor)** | (thường không) | {{dmb ishst}} | StoreStore: ghi field final hb ghi reference object |
+| **final field read (qua reference)** | (thường không) | {{dmb ishld}} | LoadLoad: đọc reference hb đọc field final |
+
+JDK dùng **C++ HotSpot** barrier; Java code không gọi trực tiếp. Nếu bạn viết low-level (VarHandle, Unsafe), có {{VarHandle.fullFence()}} / {{Unsafe.fullFence()}} (StoreLoad|LoadLoad|LoadStore|StoreStore) — hiếm khi cần, chỉ khi tự xây lock-free structure.
+
+### Stack trace protection (JDK 17+)
+- **Hidden classes (JEP 371)**: {{Lookup.defineHiddenClass}} tạo class không xuất hiện trong stack trace, không load được bằng {{Class.forName}}, dùng cho framework (Spring, Quarkus) sinh proxy/bytecode mà không lộ internal class.
+- **StackWalker API (JEP 259, JDK 9)**: thay thế {{Thread.getStackTrace()}} và {{SecurityManager}}. Cho phép lọc frame, không cấp quyền nhạy cảm, hiệu năng tốt hơn.
+- **Exception message không in stack internals**: {{NullPointerException}} message giờ chỉ nói "Cannot read field 'x' because 'y' is null" (JEP 358), không in full stack. Giảm rò rỉ thông tin và log noise.
+
+> Senior tip: Khi debug production, dùng {{-XX:+ShowHiddenFrames}} để thấy hidden class trong stack trace, và {{StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE)}} để lấy {{Class}} object an toàn.
+
+### Lỗi production hay gặp
+- **Publish bằng biến thường**: {{public Holder holder = new Holder(42);}} — thread khác thấy holder không null nhưng {{holder.x == 0}}. Sửa: {{volatile}} hoặc {{AtomicReference}}.
+- **This escape trong constructor Spring bean**: {{@PostConstruct}} chạy sau constructor, nhưng field {{@Autowired}} inject **trước** constructor xong (nếu dùng field injection) ⇒ listener thấy bean chưa init xong. Dùng constructor injection.
+- **Final field mutable object**: {{final List<String> list = new ArrayList<>();}} — final chỉ bảo vệ reference {{list}}, không bảo vệ nội dung bên trong. Thread khác thấy {{list}} đúng nhưng {{list.get(0)}} có thể stale nếu không có happens-before riêng.
+- **Tự nghĩ "x86 mạnh nên không cần volatile"**: JIT hoisting vòng lặp đọc biến thường vẫn xảy ra trên x86; ARM (Graviton, Apple Silicon) memory model yếu hơn, bug chỉ lộ khi deploy production.
+
+### Liên hệ phỏng vấn
+Câu hay: "Final field thread-safe không?", "Object vừa new xong gán cho biến static, thread khác đọc được không?", "Memory barrier là gì, JIT chèn ở đâu?". Trả lời senior: nêu 6 cách safe publication, final field semantics + điều kiện không escape this, barrier table (volatile write = StoreLoad, unlock = Release, lock = Acquire), và nhắc stack trace protection JDK 17+ cho framework.`,
+  exercises: [
+    {
+      title: 'Safe publication race: sửa code publish object bằng 4 cách, test lặp 100.000 lần bắt race',
+      prompt: `File test cung cấp class {{UnsafePublisher}} có bug: constructor gán {{this}} vào {{static volatile Holder leaked}} (this escape), và {{publish()}} gán object mới vào {{static Holder plain}} (biến thường). Bạn phải viết 4 class con sửa lỗi bằng 4 cách publish an toàn:
+1. {{VolatilePublisher}}: dùng {{static volatile Holder ref}}
+2. {{FinalFieldPublisher}}: object có {{final int payload}}, publish qua {{static FinalFieldPublisher ref}} (biến thường) — final field semantics bảo vệ
+3. {{SynchronizedPublisher}}: dùng {{static Holder ref}} + {{static final Object lock = new Object()}}, synchronized khi ghi và đọc
+4. {{AtomicPublisher}}: dùng {{static AtomicReference<Holder> ref}}
+
+Mỗi class có {{static void publish(int payload)}} và {{static Holder get()}}. Test chạy 4 thread, mỗi thread lặp 25.000 lần: publish(payload) rồi ngay get() kiểm tra payload khớp. Tổng 100.000 lần, **không lần nào được phép sai** (race = FAIL). Test dùng {{CountDownLatch}} đồng bộ xuất phát để race xảy ra dày đặc.
+Lưu ý: {{FinalFieldPublisher}} **không** được dùng volatile/synchronized/Atomic — chỉ final field + biến thường, để chứng minh final field semantics.`,
+      starter: `class Holder { int payload; Holder(int p) { this.payload = p; } }
+
+class SafePublisher {
+    static volatile Holder leaked;   // this escape trong constructor UnsafePublisher
+    static Holder plain;             // biến thường: race ở đây
+}
+
+class VolatilePublisher extends SafePublisher {
+    static volatile Holder ref;
+    static void publish(int payload) { throw new UnsupportedOperationException("TODO"); }
+    static Holder get() { throw new UnsupportedOperationException("TODO"); }
+}
+
+class FinalFieldPublisher extends SafePublisher {
+    static class ImmutableHolder { final int payload; ImmutableHolder(int p) { this.payload = p; } }
+    static ImmutableHolder ref;   // biến thường, NHỰNG payload là final
+    static void publish(int payload) { throw new UnsupportedOperationException("TODO"); }
+    static ImmutableHolder get() { throw new UnsupportedOperationException("TODO"); }
+}
+
+class SynchronizedPublisher extends SafePublisher {
+    static Holder ref;
+    static final Object lock = new Object();
+    static void publish(int payload) { throw new UnsupportedOperationException("TODO"); }
+    static Holder get() { throw new UnsupportedOperationException("TODO"); }
+}
+
+class AtomicPublisher extends SafePublisher {
+    static final java.util.concurrent.atomic.AtomicReference<Holder> ref = new java.util.concurrent.atomic.AtomicReference<>();
+    static void publish(int payload) { throw new UnsupportedOperationException("TODO"); }
+    static Holder get() { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void ok(boolean cond, String msg) {
+        total++;
+        if (cond) { passed++; System.out.println("PASS " + msg); }
+        else System.out.println("FAIL " + msg);
+    }
+    static void raceTest(String name, java.util.function.IntConsumer publish, java.util.function.IntSupplier getPayload) throws Exception {
+        final int THREADS = 4, PER_THREAD = 25000;
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger errors = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger success = new java.util.concurrent.atomic.AtomicInteger();
+        Thread[] ts = new Thread[THREADS];
+        for (int t = 0; t < THREADS; t++) {
+            final int base = (t + 1) * 100000; // gia tri > 0, khong trung giua cac luong
+            ts[t] = new Thread(() -> {
+                try { start.await(); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                for (int i = 1; i <= PER_THREAD; i++) {
+                    int payload = base + i;
+                    try {
+                        publish.accept(payload);
+                        int got = getPayload.getAsInt();
+                        // publish an toan: khong duoc thay object nua voi (payload mac dinh 0)
+                        if (got <= 0) errors.incrementAndGet();
+                        else success.incrementAndGet();
+                    } catch (Throwable ex) {
+                        errors.incrementAndGet();
+                        return;
+                    }
+                }
+            });
+        }
+        for (Thread th : ts) th.start();
+        start.countDown();
+        for (Thread th : ts) th.join(10000);
+        int totalOps = THREADS * PER_THREAD;
+        ok(errors.get() == 0 && success.get() == totalOps, name + ": " + success.get() + " ok, " + errors.get() + " errors out of " + totalOps);
+    }
+    public static void main(String[] args) throws Exception {
+        raceTest("VolatilePublisher", VolatilePublisher::publish, () -> VolatilePublisher.get().payload);
+        raceTest("FinalFieldPublisher", FinalFieldPublisher::publish, () -> FinalFieldPublisher.get().payload);
+        raceTest("SynchronizedPublisher", SynchronizedPublisher::publish, () -> SynchronizedPublisher.get().payload);
+        raceTest("AtomicPublisher", AtomicPublisher::publish, () -> AtomicPublisher.get().payload);
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class Holder { int payload; Holder(int p) { this.payload = p; } }
+
+class SafePublisher {
+    static volatile Holder leaked;
+    static Holder plain;
+}
+
+class VolatilePublisher extends SafePublisher {
+    static volatile Holder ref;
+    static void publish(int payload) { ref = new Holder(payload); }
+    static Holder get() { return ref; }
+}
+
+class FinalFieldPublisher extends SafePublisher {
+    static class ImmutableHolder { final int payload; ImmutableHolder(int p) { this.payload = p; } }
+    static ImmutableHolder ref;
+    static void publish(int payload) { ref = new ImmutableHolder(payload); }
+    static ImmutableHolder get() { return ref; }
+}
+
+class SynchronizedPublisher extends SafePublisher {
+    static Holder ref;
+    static final Object lock = new Object();
+    static void publish(int payload) { synchronized (lock) { ref = new Holder(payload); } }
+    static Holder get() { synchronized (lock) { return ref; } }
+}
+
+class AtomicPublisher extends SafePublisher {
+    static final java.util.concurrent.atomic.AtomicReference<Holder> ref = new java.util.concurrent.atomic.AtomicReference<>();
+    static void publish(int payload) { ref.set(new Holder(payload)); }
+    static Holder get() { return ref.get(); }
+}`,
+      hints: [
+        'VolatilePublisher: {{ref = new Holder(payload);}} — ghi volatile tạo hb với đọc volatile.',
+        'FinalFieldPublisher: {{ref = new ImmutableHolder(payload);}} — constructor ghi final field xong, ghi reference ref (biến thường) được final field semantics bảo vệ. Không dùng volatile/synchronized.',
+        'SynchronizedPublisher: cả publish và get đều {{synchronized (lock)}} — unlock hb lock.',
+        'AtomicPublisher: {{ref.set(...)}} và {{ref.get()}} — AtomicReference dùng volatile/CAS nội bộ.',
+      ],
+      explain: `Bốn cách đều tạo happens-before từ "ghi object xong" đến "đọc object":
+- Volatile: ghi volatile {{ref}} hb đọc volatile {{ref}}.
+- Final field: constructor ghi {{final int payload}} hb constructor xong hb ghi {{ref}} (program order) hb đọc {{ref}} (program order trong cùng thread) hb đọc {{payload}} (final field semantics). **Không** cần volatile trên {{ref}}.
+- Synchronized: unlock ở publish hb lock ở get.
+- AtomicReference: set/get có ngữ nghĩa volatile.
+
+Test 100.000 lần với 4 thread đồng xuất phát ép race xảy ra dày đặc. Code sai (ví dụ VolatilePublisher quên volatile, hoặc FinalFieldPublisher bỏ final) sẽ bị bắt lỗi race ít nhất một lần. Đây là cách test deterministic cho publication safety — không dựa vào may mắn JIT/CPU.`,
+    },
+    {
+      title: 'StackWalker vs getStackTrace: lọc frame nhạy cảm, so sánh hiệu năng',
+      prompt: `Viết {{StackTraceDemo}} có 3 method:
+1. {{legacyStackTrace()}}: dùng {{Thread.currentThread().getStackTrace()}}, trả về số frame (trừ 2 frame đầu: getStackTrace + legacyStackTrace).
+2. {{walkerStackTrace()}}: dùng {{StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE).walk(s -> s.count())}}, trả về số frame.
+3. {{walkerFiltered()}}: dùng StackWalker lọc **bỏ** frame thuộc package {{java.*}}, {{jdk.*}}, {{sun.*}}, {{com.sun.*}} (framework/internal), chỉ giữ frame do ứng viên viết (ví dụ package {{com.example}} hoặc không có package). Trả về danh sách tên class của frame còn lại.
+
+Test so sánh: gọi mỗi method 10.000 lần đo thời gian trung bình (nano giây), in ra. Kết quả không được assert giá trị tuyệt đối (máy khác nhau), chỉ in để người học quan sát. Đảm bảo code compile Java 17+.`,
+      starter: `import java.lang.StackWalker;
+import java.util.List;
+import java.util.stream.Collectors;
+
+class StackTraceDemo {
+    static int legacyStackTrace() {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static int walkerStackTrace() {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static List<String> walkerFiltered() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static void ok(boolean cond, String msg) { if (cond) System.out.println("PASS " + msg); else System.out.println("FAIL " + msg); }
+    static long timeIt(java.util.function.IntSupplier task, int iterations) {
+        long start = System.nanoTime();
+        for (int i = 0; i < iterations; i++) task.getAsInt();
+        return (System.nanoTime() - start) / iterations;
+    }
+    static long timeItList(java.util.function.Supplier<List<String>> task, int iterations) {
+        long start = System.nanoTime();
+        for (int i = 0; i < iterations; i++) task.get();
+        return (System.nanoTime() - start) / iterations;
+    }
+    public static void main(String[] args) {
+        int iters = 10000;
+        long t1 = timeIt(StackTraceDemo::legacyStackTrace, iters);
+        long t2 = timeIt(StackTraceDemo::walkerStackTrace, iters);
+        long t3 = timeItList(StackTraceDemo::walkerFiltered, iters);
+        System.out.println("legacy avg: " + t1 + " ns");
+        System.out.println("walker  avg: " + t2 + " ns");
+        System.out.println("filtered avg: " + t3 + " ns");
+        ok(StackTraceDemo.legacyStackTrace() > 0, "legacy returns frame count");
+        ok(StackTraceDemo.walkerStackTrace() > 0, "walker returns frame count");
+        List<String> filtered = StackTraceDemo.walkerFiltered();
+        ok(!filtered.isEmpty(), "filtered returns non-empty list");
+        boolean hasInternal = filtered.stream().anyMatch(s -> s.startsWith("java.") || s.startsWith("jdk.") || s.startsWith("sun.") || s.startsWith("com.sun."));
+        ok(!hasInternal, "filtered removes internal frames");
+        System.out.println("Filtered frames: " + filtered);
+        System.out.println("RESULT 4/4");
+    }
+}`,
+      reference: `import java.lang.StackWalker;
+import java.util.List;
+import java.util.stream.Collectors;
+
+class StackTraceDemo {
+    static int legacyStackTrace() {
+        StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+        return stack.length - 2;   // bỏ getStackTrace() và legacyStackTrace()
+    }
+    static int walkerStackTrace() {
+        return StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE)
+                .walk(s -> (int) s.count());
+    }
+    static List<String> walkerFiltered() {
+        return StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE)
+                .walk(s -> s.filter(f -> {
+                    String cn = f.getClassName();
+                    return !(cn.startsWith("java.") || cn.startsWith("jdk.") || cn.startsWith("sun.") || cn.startsWith("com.sun."));
+                })
+                .map(StackWalker.StackFrame::getClassName)
+                .collect(Collectors.toList()));
+    }
+}`,
+      hints: [
+        'StackWalker.getInstance(Option.RETAIN_CLASS_REFERENCE) để có thể lấy Class object nếu cần.',
+        'StackWalker.walk(Function<Stream<StackFrame>, R>) — stream lazy, chỉ duyệt khi cần.',
+        'Lọc frame: {{frame.getClassName()}} không bắt đầu bằng {{java.}}, {{jdk.}}, {{sun.}}, {{com.sun.}}.',
+      ],
+      explain: `StackWalker (JDK 9+) thay thế {{Thread.getStackTrace()}}:
+- **Lazy**: chỉ capture frame khi stream consume, không allocate mảng đầy đủ nếu chỉ cần count/filter.
+- **Security**: không cần SecurityManager, Option.RETAIN_CLASS_REFERENCE cho phép lấy {{Class}} object an toàn.
+- **Performance**: thường nhanh hơn getStackTrace 2-5x vì không tạo mảng {{StackTraceElement[]}} đầy đủ.
+- **Hidden classes** (JEP 371, JDK 15+): frame của hidden class bị ẩn mặc định, tránh lộ internal class framework.
+
+Legacy {{getStackTrace()}} luôn allocate mảng đầy đủ, chậm hơn, và trả về cả frame nội bộ JVM. Trong production logging, dùng StackWalker + filter để log gọn, ít rác, hiệu năng tốt hơn.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Một class có {{final List<String> items = new ArrayList<>();}}. Thread A tạo object, thread B lấy reference qua biến volatile. Thread B có chắc chắn thấy {{items}} không null không? Có chắc chắn thấy phần tử bên trong {{items}} không?',
+      options: ['Cả hai đều chắc chắn', 'Chắc chắn items không null, nhưng KHÔNG chắc chắn thấy phần tử bên trong', 'Không chắc chắn items, nhưng chắc chắn phần tử', 'Cả hai đều không chắc chắn'],
+      answer: 1,
+      explain: 'Final field semantics bảo vệ **reference** {{items}} (không null, đúng object). Nhưng **nội dung** bên trong ArrayList (mảng nội bộ, size) không được final field bảo vệ — cần happens-before riêng (volatile write/read đã đủ vì volatile write hb volatile read, Bắc cầu qua reference). Nếu publish qua biến thường thì cả hai đều không chắc.',
+    },
+    {
+      q: 'Trong constructor, gán {{this}} vào một {{static volatile}} field. Thread khác đọc field volatile đó ngay lập tức. Thread kia có chắc chắn thấy field final của object đúng giá trị không?',
+      options: ['Có, vì volatile write hb volatile read', 'Không, vì this escape trong constructor vi phạm final field semantics', 'Có, vì final field luôn an toàn', 'Phụ thuộc vào CPU'],
+      answer: 1,
+      explain: 'Final field semantics **chỉ** bảo vệ nếu constructor hoàn thành **trước** khi reference được publish. Gán {{this}} vào static field **trong** constructor là this escape — thread khác có thể lấy reference khi constructor chưa xong, field final chưa kịp ghi. Volatile write/read không thể sửa lỗi logic này: happens-before chỉ từ write đến read, nhưng write xảy ra **trước** khi final field được ghi xong.',
+    },
+    {
+      q: 'StackWalker so với Thread.getStackTrace() có ưu điểm gì?',
+      options: ['Chỉ nhanh hơn', 'Lazy evaluation, không cần SecurityManager, hỗ trợ filter frame, hidden class support', 'Chỉ hỗ trợ filter', 'Không có ưu điểm, chỉ API mới'],
+      answer: 1,
+      explain: 'StackWalker lazy (chỉ capture frame khi stream consume), không cần SecurityManager, có Option.RETAIN_CLASS_REFERENCE, filter frame dễ dàng, và ẩn hidden class mặc định. Hiệu năng thường tốt hơn 2-5x so với getStackTrace().',
+    },
+    {
+      q: 'Memory barrier nào được JIT chèn sau ghi volatile (x86)?',
+      options: ['LoadLoad', 'StoreStore', 'StoreLoad (lock add)', 'LoadStore'],
+      answer: 2,
+      explain: 'Volatile write cần StoreLoad barrier: ngăn ghi trước đó bị dời xuống sau ghi volatile, và flush store buffer. Trên x86 HotSpot dùng {{lock add [rsp], 0}} (locked instruction) làm full barrier.',
+    },
+  ],
+  related: ['concurrency-001', 'concurrency-005', 'concurrency-010'],
+  tags: ['JMM', 'safe publication', 'final field', 'this escape', 'memory barrier', 'StackWalker', 'hidden class'],
+},
+{
+  id: 'lesson-concurrency-013',
+  track: 'concurrency',
+  order: 13,
+  title: 'ExecutorService nâng cao: ScheduledExecutorService, ForkJoinPool, graceful shutdown và virtual thread executor',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Phân biệt ScheduledExecutorService (fixed-rate vs fixed-delay) và biết tại sao task ném exception làm dừng lịch chạy định kỳ',
+    'Hiểu ForkJoinPool.commonPool() dùng chung cho parallel stream và CompletableFuture, và khi nào cần pool riêng',
+    'Viết graceful shutdown pattern đúng: shutdown -> awaitTermination -> shutdownNow, xử lý InterruptedException',
+    'Biết Executors.newVirtualThreadPerTaskExecutor() (JDK 21) không pool, dùng Semaphore giới hạn đồng thời, và pinning với synchronized',
+  ],
+  body: `### Tóm tắt
+**ScheduledExecutorService** cho phép chạy task định kỳ: {{scheduleAtFixedRate}} (bắt đầu mới mỗi {{period}} ms kể từ lần bắt đầu trước) và {{scheduleWithFixedDelay}} (chờ {{delay}} ms sau khi lần trước **kết thúc**). Cả hai **ném exception thì task bị huỷ**, lịch không chạy nữa — đây là bẫy lớn production. **ForkJoinPool.commonPool()** là pool mặc định cho parallel stream và CompletableFuture không truyền executor; parallelism = số core - 1, dùng work-stealing. Đừng nhét IO chặn vào commonPool. **Graceful shutdown** chuẩn: {{shutdown()}} (không nhận task mới) -> {{awaitTermination(timeout)}} -> nếu timeout thì {{shutdownNow()}} (interrupt task đang chạy, trả về task chưa chạy). Luôn bọc {{awaitTermination}} trong try-catch {{InterruptedException}} và khôi phục cờ interrupt. **Virtual thread executor** (JDK 21): {{Executors.newVirtualThreadPerTaskExecutor()}} tạo virtual thread cho mỗi task, **không pool**, close() chờ mọi task xong. Giới hạn đồng thời bằng {{Semaphore}}, không bằng kích thước pool. Cẩn thận pinning: virtual thread trong {{synchronized}} block (JDK 21-23) bị pin carrier thread.
+
+### ScheduledExecutorService: fixed-rate vs fixed-delay, và cái bẫy exception
+~~~java
+ScheduledExecutorService ses = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r); t.setDaemon(true); return t; });
+// fixed-rate: chu kỳ 100ms, kể từ lúc BẮT ĐẦU lần trước
+ses.scheduleAtFixedRate(() -> doWork(), 0, 100, TimeUnit.MILLISECONDS);
+// fixed-delay: nghỉ 100ms sau khi KẾT THÚC lần trước
+ses.scheduleWithFixedDelay(() -> doWork(), 0, 100, TimeUnit.MILLISECONDS);
+~~~
+| Đặc điểm | scheduleAtFixedRate | scheduleWithFixedDelay |
+|---|---|---|
+| Khoảng cách giữa các lần chạy | Cố định (tính từ start) | Cố định (tính từ end) |
+| Nếu task chạy > period | Lần sau chạy **ngay lập tức** (bù) | Lần sau chờ delay đầy đủ |
+| Phù hợp cho | Metric collector, heartbeat | Polling ngoài hệ thống chậm, backoff |
+
+**Bẫy exception**: nếu task ném exception (unchecked), **ScheduledFuture.get()** ném {{ExecutionException}}, và **lịch chạy bị huỷ hoàn toàn** — không có retry tự động. Production phải bọc task trong try-catch, log lỗi, không để exception bốc ra.
+
+> Senior tip: Dùng {{scheduleWithFixedDelay}} cho polling bên ngoài (HTTP, DB) để tránh chồng chéo khi downstream chậm. Luôn wrap task:
+~~~java
+() -> {
+    try { doWork(); }
+    catch (Throwable t) { log.error("scheduled task failed", t); }
+}
+~~~
+.
+
+### ForkJoinPool.commonPool(): shared resource, đừng lạm dụng
+{{ForkJoinPool.commonPool()}} là một singleton pool dùng work-stealing (mỗi thread có deque riêng, lấy task từ đuôi deque của thread khác khi rảnh). Mặc định parallelism = {{Runtime.getRuntime().availableProcessors() - 1}} (trên 8 core = 7).
+- **Parallel stream**: {{list.parallelStream().forEach(...)}} chạy trên commonPool.
+- **CompletableFuture.supplyAsync(() -> ...)}** không truyền executor cũng chạy trên commonPool.
+
+**Rủi ro**: một task IO chặn (HTTP call 5s) chiếm một thread commonPool. 7 task như vậy = pool cạn, **mọi** parallel stream và CF khác trong JVM bị treo.
+**Giải pháp**: luôn truyền executor riêng cho IO. Dùng commonPool chỉ cho CPU-bound ngắn.
+
+### Graceful shutdown pattern: ba bước, không bỏ sót
+~~~java
+ExecutorService pool = Executors.newFixedThreadPool(4);
+try {
+    // submit tasks...
+} finally {
+    pool.shutdown();                    // 1. không nhận task mới
+    try {
+        if (!pool.awaitTermination(30, TimeUnit.SECONDS)) { // 2. chờ task chạy xong
+            pool.shutdownNow();         // 3. interrupt task còn lại, trả list chưa chạy
+        }
+    } catch (InterruptedException e) {
+        pool.shutdownNow();             // bị interrupt khi chờ -> shutdown ngay
+        Thread.currentThread().interrupt(); // khôi phục cờ cho caller
+    }
+}
+~~~
+- {{shutdown()}}: từ chối task mới ({{execute}} ném {{RejectedExecutionException}}), task đã submit tiếp tục chạy.
+- {{awaitTermination(timeout)}}: chặn caller tới khi pool rỗng hoặc hết timeout. Trả {{true}} nếu xong hết, {{false}} nếu timeout.
+- {{shutdownNow()}}: cố gắng interrupt task đang chạy ({{Thread.interrupt()}}), trả về list task **chưa bao giờ chạy** (đang trong queue). Task đang chạy **không** tự dừng trừ khi tự kiểm tra {{Thread.interrupted()}}.
+- **Java 19+**: {{ExecutorService}} implement {{AutoCloseable}}. {{try (var pool = Executors.newFixedThreadPool(4))}} tự gọi {{shutdown()}} rồi chờ xong (tương đương {{awaitTermination(Long.MAX_VALUE, ...)}}).
+
+**Lỗi hay gặp**:
+- Quên {{shutdown()}}: pool non-daemon giữ JVM không thoát.
+- {{shutdownNow()}} ngay không {{awaitTermination}}: task đang chạy bị interrupt đột ngột, có thể để dữ liệu không nhất quán.
+- Bắt {{InterruptedException}} mà không {{Thread.currentThread().interrupt()}}: caller không biết bị interrupt, logic retry/shutdown bị gãy.
+
+### Virtual thread executor (JDK 21): không pool, dùng Semaphore
+~~~java
+// JDK 21: một virtual thread cho mỗi task, không giới hạn số thread
+try (ExecutorService ex = Executors.newVirtualThreadPerTaskExecutor()) {
+    for (int i = 0; i < 100_000; i++) {
+        ex.submit(() -> httpClient.send(req(i), BodyHandlers.ofString()));
+    }
+} // close() chờ mọi task xong
+~~~
+Virtual thread executor **không có khái niệm pool size**. Mỗi {{submit}} tạo một virtual thread mới (rẻ, heap-only stack). Thread pool truyền thống giới hạn đồng thời bằng số thread; virtual thread executor giới hạn bằng **tài nguyên phía sau** (DB connection pool, HTTP client connection limit, rate limit đối tác) — dùng {{Semaphore}}.
+
+~~~java
+Semaphore permits = new Semaphore(50);   // tối đa 50 request đồng thời tới API đối tác
+try (ExecutorService ex = Executors.newVirtualThreadPerTaskExecutor()) {
+    for (int i = 0; i < 100_000; i++) {
+        ex.submit(() -> {
+            permits.acquire();           // virtual thread chờ ở đây sẽ unmount, không tốn carrier
+            try { return api.call(i); }
+            finally { permits.release(); }
+        });
+    }
+}
+~~~
+
+**Pinning (JDK 21-23)**: virtual thread đang chạy trong khối {{synchronized}} (hoặc native call) **không unmount** được khi chờ. Nếu 50 virtual thread cùng chờ {{synchronized(lock)}} trong lúc gọi HTTP, 50 carrier thread bị pin -> ứng dụng đứng. Sửa: thay {{synchronized}} bằng {{ReentrantLock}}, hoặc nâng cấp JDK 24+ (JEP 491 cho unmount trong synchronized).
+
+> Senior tip: Đừng bao giờ viết {{Executors.newFixedThreadPool(100, Thread.ofVirtual().factory())}} — đó là "pool virtual thread", mất hết lợi ích. Virtual thread executor = unbounded creation + bounded resource (Semaphore).
+
+### Lỗi production hay gặp
+- **ScheduledExecutorService task ném exception**: metric collector chết im lặng sau một lần lỗi DB, không ai nhận ra. Luôn wrap try-catch.
+- **Parallel stream chèn IO**: {{list.parallelStream().map(x -> httpCall(x))}} làm cạn commonPool, toàn bộ service treo. Tách executor riêng.
+- **Shutdown không awaitTermination**: pod nhận SIGTERM, Spring gọi {{shutdownNow()}} ngay, task ghi DB bị interrupt giữa chừng -> data inconsistency. Luôn await timeout trước khi force shutdown.
+- **Virtual thread + synchronized + JDBC**: driver cũ dùng synchronized -> pin carrier -> throughput sập. Kiểm tra JFR {{jdk.VirtualThreadPinned}}.
+- **ForkJoinPool commonPool parallelism = 1** (máy 2 core): parallel stream và CF chạy tuần tự. Trên container cgroup-limited CPU, {{availableProcessors()}} có thể trả về host core count -> parallelism sai. Dùng {{-XX:ActiveProcessorCount=4}} hoặc set parallelism thủ công.
+
+### Liên hệ phỏng vấn
+Câu hay: "scheduleAtFixedRate khác scheduleWithFixedDelay?", "CompletableFuture supplyAsync không truyền executor chạy đâu?", "Virtual thread executor shutdown như thế nào?", "Tại sao không pool virtual thread?". Trả lời senior: fixed-rate bù kịp, fixed-delay an toàn cho downstream chậm; commonPool dùng chung toàn JVM, đừng chèn IO; virtual thread executor close() chờ xong, giới hạn bằng Semaphore; pinning synchronized JDK 21-23, JEP 491 JDK 24 fix.`,
+  exercises: [
+    {
+      title: 'Scheduled task an toàn: wrap exception, fixed-delay, shutdown có timeout',
+      prompt: `Viết {{SafeScheduler}} quản lý một {{ScheduledExecutorService}} single-thread:
+- Constructor: {{SafeScheduler(Runnable task, long initialDelayMs, long delayMs, TimeUnit unit)}} — chạy task với {{scheduleWithFixedDelay}}, bắt đầu sau {{initialDelayMs}}, khoảng cách {{delayMs}} sau khi lần trước **kết thúc**.
+- Task **phải được wrap try-catch**: exception bất kỳ được log ({{System.err.println("Task failed: " + e)}}), **không** làm dừng lịch chạy.
+- {{void start()}}: bắt đầu lịch (nếu chưa start). {{void stop(long timeoutMs)}}: {{shutdown()}}, {{awaitTermination(timeoutMs)}}, nếu timeout thì {{shutdownNow()}}, trả về {{true}} nếu xong sạch, {{false}} nếu buộc shutdownNow.
+- Đa luồng an toàn: gọi {{start()}} nhiều lần chỉ start một lần; {{stop()}} chỉ shutdown một lần.
+- Test: chạy task 50ms/lần, task ném exception 1/3 lần, kiểm tra lịch vẫn chạy, stop timeout 200ms trả về true.`,
+      starter: `import java.util.concurrent.*;
+
+class SafeScheduler {
+    private final Runnable task;
+    private final long initialDelayMs;
+    private final long delayMs;
+    private final TimeUnit unit;
+    private final ScheduledExecutorService scheduler;
+    private volatile ScheduledFuture<?> future;
+
+    SafeScheduler(Runnable task, long initialDelayMs, long delayMs, TimeUnit unit) {
+        this.task = task;
+        this.initialDelayMs = initialDelayMs;
+        this.delayMs = delayMs;
+        this.unit = unit;
+        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r); t.setDaemon(true); return t; });
+    }
+
+    public synchronized void start() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    public boolean stop(long timeoutMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static void ok(boolean cond, String msg) { if (cond) System.out.println("PASS " + msg); else System.out.println("FAIL " + msg); }
+    static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
+    public static void main(String[] args) throws Exception {
+        AtomicInteger runs = new AtomicInteger();
+        AtomicInteger errors = new AtomicInteger();
+        Runnable flaky = () -> {
+            runs.incrementAndGet();
+            if (runs.get() % 3 == 0) throw new IllegalStateException("simulated failure");
+        };
+        SafeScheduler s = new SafeScheduler(flaky, 10, 50, TimeUnit.MILLISECONDS);
+        s.start();
+        sleep(300);                         // ~6 runs, 2 errors expected
+        ok(runs.get() >= 5, "task ran at least 5 times: " + runs.get());
+        ok(errors.get() == 0, "errors should be caught internally, not thrown"); // scheduler catches
+        boolean clean = s.stop(200);
+        ok(clean, "stop returned true (graceful shutdown)");
+        ok(!schedulerIsRunning(s), "scheduler should be terminated");
+        System.out.println("RESULT 4/4");
+    }
+    // helper to check scheduler state via reflection
+    static boolean schedulerIsRunning(SafeScheduler s) {
+        try {
+            java.lang.reflect.Field f = SafeScheduler.class.getDeclaredField("scheduler");
+            f.setAccessible(true);
+            ScheduledExecutorService ses = (ScheduledExecutorService) f.get(s);
+            return !ses.isTerminated();
+        } catch (Exception e) { return true; }
+    }
+}`,
+      reference: `import java.util.concurrent.*;
+
+class SafeScheduler {
+    private final Runnable task;
+    private final long initialDelayMs;
+    private final long delayMs;
+    private final TimeUnit unit;
+    private final ScheduledExecutorService scheduler;
+    private volatile ScheduledFuture<?> future;
+
+    SafeScheduler(Runnable task, long initialDelayMs, long delayMs, TimeUnit unit) {
+        this.task = task;
+        this.initialDelayMs = initialDelayMs;
+        this.delayMs = delayMs;
+        this.unit = unit;
+        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r); t.setDaemon(true); return t; });
+    }
+
+    public synchronized void start() {
+        if (future != null) return; // already started
+        future = scheduler.scheduleWithFixedDelay(() -> {
+            try { task.run(); }
+            catch (Throwable e) { System.err.println("Task failed: " + e); }
+        }, initialDelayMs, delayMs, unit);
+    }
+
+    public boolean stop(long timeoutMs) {
+        scheduler.shutdown();
+        try {
+            if (!scheduler.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)) {
+                scheduler.shutdownNow();
+                return false;
+            }
+            return true;
+        } catch (InterruptedException e) {
+            scheduler.shutdownNow();
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+}`,
+      hints: [
+        'Dùng {{scheduleWithFixedDelay}} cho khoảng cách sau khi task kết thúc.',
+        'Wrap task.run() trong try-catch {{Throwable}} (kể cả Error), log ra System.err.',
+        '{{start()}} synchronized, kiểm tra {{future != null}} để idempotent.',
+        '{{stop()}}: shutdown -> awaitTermination(timeoutMs) -> nếu false thì shutdownNow(); catch InterruptedException thì shutdownNow() + restore interrupt flag.',
+      ],
+      explain: `Ba điểm then chốt:
+1. **scheduleWithFixedDelay** an toàn hơn fixed-rate cho task có độ trễ biến động: nếu task chạy 60ms mà delay 50ms, fixed-rate sẽ cố gắng bù (chạy liên tục), fixed-delay sẽ nghỉ 50ms sau khi xong -> không quá tải downstream.
+2. **Exception wrapping**: ScheduledExecutorService **huỷ lịch** nếu task ném exception ra ngoài. Bắt {{Throwable}} (kể cả {{OutOfMemoryError}} tuy không nên) và log là cách duy nhất giữ lịch sống.
+3. **Graceful shutdown**: {{shutdown()}} trước, {{awaitTermination}} với timeout, {{shutdownNow()}} chỉ khi timeout. {{InterruptedException}} khi chờ phải khôi phục cờ interrupt ({{Thread.currentThread().interrupt()}}) để caller biết.
+Test chạy 300ms với delay 50ms → ~6 lần chạy, 2 lần ném exception (1/3), lịch vẫn tiếp tục. {{stop(200)}} đủ thời gian shutdown sạch.`,
+    },
+    {
+      title: 'Virtual thread batch với Semaphore: giới hạn 50 đồng thời, 10.000 task',
+      prompt: `Viết {{VirtualBatch.run(executor, tasks, maxConcurrent)}}:
+- {{executor}}: {{ExecutorService}} (trong test là fixed thread pool, production là virtual thread executor).
+- {{tasks}}: danh sách {{Callable<String>}} (mỗi task trả về string kết quả).
+- {{maxConcurrent}}: số task cho phép chạy đồng thời (dùng {{Semaphore}}).
+- Trả về danh sách kết quả **cùng thứ tự** với {{tasks}}. Task ném exception -> kết quả là {{"ERR-" + index}}.
+- **Không shutdown executor** (người gọi sở hữu).
+- {{maxConcurrent < 1}} ném {{IllegalArgumentException}}. Danh sách rỗng trả về rỗng.
+- Code phải compile Java 17 (không dùng API virtual thread), nhưng logic Semaphore là pattern chuẩn cho virtual thread executor.`,
+      starter: `import java.util.concurrent.*;
+
+class VirtualBatch {
+    static List<String> run(ExecutorService executor, List<Callable<String>> tasks, int maxConcurrent) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static void ok(boolean cond, String msg) { if (cond) System.out.println("PASS " + msg); else System.out.println("FAIL " + msg); }
+    static void eq(Object e, Object a) { if (!Objects.equals(e, a)) throw new AssertionError("expected " + e + " got " + a); }
+    static ExecutorService pool(int n) {
+        AtomicInteger seq = new AtomicInteger();
+        return Executors.newFixedThreadPool(n, r -> { Thread t = new Thread(r, "vt-" + seq.incrementAndGet()); t.setDaemon(true); return t; });
+    }
+    public static void main(String[] args) throws Exception {
+        ExecutorService ex = pool(32);
+        try {
+            List<Callable<String>> tasks = new ArrayList<>();
+            for (int i = 0; i < 10000; i++) {
+                final int idx = i;
+                tasks.add(() -> { if (idx % 7 == 0) throw new IllegalStateException("fail"); return "OK" + idx; });
+            }
+            List<String> out = VirtualBatch.run(ex, tasks, 50);
+            eq(10000, out.size());
+            for (int i = 0; i < 10000; i++) {
+                if (i % 7 == 0) eq("ERR-" + i, out.get(i));
+                else eq("OK" + i, out.get(i));
+            }
+            ok(!ex.isShutdown(), "executor not shutdown");
+        } finally { ex.shutdownNow(); }
+
+        // edge cases
+        ex = pool(4);
+        try {
+            eq(List.of(), VirtualBatch.run(ex, List.of(), 10));
+            try { VirtualBatch.run(ex, List.of(() -> "x"), 0); ok(false, "should throw"); } catch (IllegalArgumentException e) { ok(true, "maxConcurrent < 1 throws"); }
+        } finally { ex.shutdownNow(); }
+
+        // concurrency limit respected
+        ex = pool(100);
+        AtomicInteger active = new AtomicInteger(), maxA = new AtomicInteger();
+        try {
+            List<Callable<String>> tasks = new ArrayList<>();
+            for (int i = 0; i < 200; i++) tasks.add(() -> { maxA.accumulateAndGet(active.incrementAndGet(), Math::max); Thread.sleep(5); active.decrementAndGet(); return "x"; });
+            VirtualBatch.run(ex, tasks, 8);
+            ok(maxA.get() <= 8, "max concurrent <= 8, got " + maxA.get());
+            ok(maxA.get() >= 2, "actually parallel");
+        } finally { ex.shutdownNow(); }
+
+        System.out.println("RESULT 5/5");
+    }
+}`,
+      reference: `import java.util.concurrent.*;
+
+class VirtualBatch {
+    static List<String> run(ExecutorService executor, List<Callable<String>> tasks, int maxConcurrent) {
+        if (maxConcurrent < 1) throw new IllegalArgumentException("maxConcurrent must be >= 1");
+        Semaphore permits = new Semaphore(maxConcurrent);
+        List<Future<String>> futures = new ArrayList<>(tasks.size());
+        for (int i = 0; i < tasks.size(); i++) {
+            final int idx = i;
+            Callable<String> task = tasks.get(i);
+            futures.add(executor.submit(() -> {
+                permits.acquire();
+                try { return task.call(); }
+                catch (Exception e) { return "ERR-" + idx; }
+                finally { permits.release(); }
+            }));
+        }
+        List<String> results = new ArrayList<>(tasks.size());
+        for (int i = 0; i < futures.size(); i++) {
+            try { results.add(futures.get(i).get()); }
+            catch (Exception e) { results.add("ERR-" + i); }
+        }
+        return results;
+    }
+}`,
+      hints: [
+        'Tạo {{Semaphore(maxConcurrent)}}; mỗi task {{acquire()}} -> try task -> finally {{release()}}.',
+        'Submit tất cả task trước, giữ {{List<Future<String>>}}, rồi {{get()}} lần lượt để giữ thứ tự.',
+        'Bắt {{Exception}} trong task để trả về {{"ERR-" + index}}. Không {{executor.shutdown()}}.',
+      ],
+      explain: `Đây là pattern chuẩn cho virtual thread executor (JDK 21+):
+~~~java
+try (var ex = Executors.newVirtualThreadPerTaskExecutor()) {
+    List<String> out = VirtualBatch.run(ex, tasks, 50);
+}
+~~~
+Mỗi task một virtual thread, {{Semaphore}} giới hạn tài nguyên (50 kết nối API). Virtual thread chờ {{acquire()}} sẽ **unmount** -> không tốn carrier thread. Test dùng pool thường nhưng logic y hệt.
+Lưu ý: reference solution dùng index trong loop để gán {{"ERR-" + i}} khi {{get()}} ném exception. Task ném exception bên trong {{submit}} bị bọc trong {{ExecutionException}}, {{get()}} ném ra, catch thì gán error string.`,
+    },
+  ],
+  check: [
+    {
+      q: 'scheduleAtFixedRate(period=100ms), task chạy 150ms. Lần chạy thứ 2 bắt đầu khi nào?',
+      options: ['Sau 100ms kể từ lần 1 bắt đầu (tức là chồng chéo)', 'Sau 150ms (task xong) + 100ms = 250ms', 'Ngay sau lần 1 kết thúc (150ms), không chờ period', 'Bị bỏ qua, lịch chạy huỷ'],
+      answer: 0,
+      explain: 'fixed-rate cố gắng giữ chu kỳ: lần 2 scheduled ở t=100ms. Vì lần 1 chưa xong (chạy 150ms), lần 2 chờ tới t=150ms rồi chạy **ngay** (bù kịp). fixed-delay thì sẽ nghỉ delay sau khi xong.',
+    },
+    {
+      q: 'CompletableFuture.supplyAsync(() -> httpCall()) không truyền executor. Task chạy trên pool nào (JDK 17, 8 core)?',
+      options: ['Thread pool của Tomcat', 'ForkJoinPool.commonPool() (parallelism 7)', 'Thread pool mới được tạo cho CF', 'Thread main'],
+      answer: 1,
+      explain: 'Mặc định là commonPool (parallelism = availableProcessors - 1 = 7). Chỉ khi parallelism < 2 (máy 1-2 core) thì tạo thread mới per task. Đây là lý do KHÔNG BAO GIỜ để IO chặn chạy trên supplyAsync không executor.',
+    },
+    {
+      q: 'ExecutorService pool = Executors.newFixedThreadPool(4); pool.shutdown(); pool.awaitTermination(10, SECONDS) trả về false. Ý nghĩa và bước tiếp theo?',
+      options: ['Pool đã xong hết task, không cần làm gì', 'Timeout: còn task đang chạy/chờ, nên gọi shutdownNow() để interrupt', 'Pool bị deadlock, restart JVM', 'Tất cả task đã xong nhưng pool chưa terminate'],
+      answer: 1,
+      explain: 'awaitTermination trả false = hết timeout mà pool chưa rỗng (còn task chạy hoặc chờ trong queue). Bước đúng: pool.shutdownNow() để interrupt task đang chạy và lấy back task chưa chạy. Sau đó có thể log task chưa chạy để retry sau.',
+    },
+    {
+      q: 'Virtual thread executor (JDK 21) dùng Semaphore(50) giới hạn 100.000 task. Tại sao không bị OOM hay tạo 100.000 platform thread?',
+      options: ['JVM tự giới hạn virtual thread ở 50', 'Virtual thread rẻ (heap stack), chờ Semaphore sẽ unmount, carrier thread chỉ ~số core', 'Semaphore tự động queue task chờ', 'ExecutorService internal queue giới hạn'],
+      answer: 1,
+      explain: 'Virtual thread là object Java trên heap, stack co giãn. Chờ Semaphore.acquire() virtual thread unmount -> trả carrier thread. Chỉ có ~số core carrier thread chạy thực sự. 100.000 virtual thread chờ chỉ tốn vài MB heap.',
+    },
+  ],
+  related: ['concurrency-003', 'concurrency-005', 'concurrency-007'],
+  tags: ['ScheduledExecutorService', 'ForkJoinPool', 'commonPool', 'graceful shutdown', 'virtual threads', 'ExecutorService', 'Semaphore', 'pinning'],
+},
+{
+  id: 'lesson-concurrency-014',
+  track: 'concurrency',
+  order: 14,
+  title: 'Java Memory Model: visibility, volatile va happens-before',
+  level: 'mid',
+  minutes: 35,
+  goals: [
+    'Giai thich duoc vi sao mot luong co the khong thay gia tri ma luong khac da ghi (visibility)',
+    'Neu duoc cac quy tac happens-before quan trong va dung chung de chung minh doan code dung hay sai',
+    'Biet {{volatile}} dam bao gi (visibility, thu tu) va khong dam bao gi (tinh nguyen tu cua {{count++}})',
+    'Viet dung co dung luong va cong bao ket qua an toan qua bien volatile',
+  ],
+  body: `### Tom tat
+Java Memory Model (JMM) la "hop dong" giua chuong trinh Java va phan cung/JIT: no quy dinh khi nao mot luong duoc phep thay gia tri ma luong khac vua ghi. Mac dinh, ghi cua luong A **khong** tu dong hien len ngay cho luong B — luong B co the thay gia tri cu, thap chi khong bao thoi thay thay doi. {{volatile}} tao quan he **happens-before** giua lan ghi va lan doc sau do tren cung bien, giup luong B chac chan thay gia tri moi nhat. Bai nay giai thich tu co ban: cache cua CPU, tai sao vong lap co the bi hoist thanh vo han, cac quy tac happens-before, va volatile dam bao / khong dam bao gi.
+
+### Vi sao luong B co the khong thay ghi cua luong A
+Moi nhan vien (core) cua CPU co cache rieng va mot vung doi goi **store buffer**. Khi luong A ghi mot bien, gia tri co the chi nam trong store buffer cua nhan vien A mot lat, con luong B chay tren nhan vien khac van doc gia tri cu tu cache cua minh. Ngoai ra, compiler/JIT co the **xep lai thu tu** cac lenh (reordering) miễn ket qua trong **mot** luong khong doi.
+
+Ví du, doan code sau co the chay **mai mai** tren luong A:
+~~~java
+class Flag {
+    private boolean stop = false;   // BINH THUONG, khong volatile
+    void loop() { while (!stop) { /* lam viec nhe */ } }   // luong A
+    void stopNow() { stop = true; }                           // luong B goi
+}
+~~~
+Luong B gan stop = true, nhung luong A co the van quay vong mai vi:
+1. **JIT hoisting**: JIT thay than vong lap khong ghi {{stop}}, nen doc {{stop}} **mot lan** roi bien vong lap thanh {{if (!stop) while (true)}} — tu doa khong bao thoi doc lai bo nho.
+2. **Store buffer / cache rieng**: lenh ghi cua luong B co the con nam trong store buffer, chua flush ra RAM/cache chung.
+3. **Reordering**: hai lenh ghi vao hai bien khac co the duoc luong khac thay theo thu tu nghich lai.
+
+Java khong bat ban hieu tung loai CPU. Thay vao do, JMM dua ra hop dong: neu hai thao tac co quan he **happens-before** thi ket qua cua thao tac truoc chac chan duoc thay boi thao tac sau. Khong co quan he do thi moi ket qua deu hop le, ke ca "khong bao thoi thay" — goi la **data race**.
+
+### Cac quy tac happens-before can thuoc
+| Quy tac | Nghia thuc te |
+|---|---|
+| Program order | Trong **mot** luong, lenh truoc happens-before lenh sau |
+| Monitor lock | {{unlock}} mot monitor happens-before moi {{lock}} sau do tren **cung** monitor |
+| Volatile write/read | Ghi bien volatile happens-before moi lan doc sau do cua **cung** bien do |
+| Thread start | {{t.start()}} happens-before moi lenh trong luong {{t}} |
+| Thread join | Moi lenh trong {{t}} happens-before {{t.join()}} tra ve |
+| Transitivity | A hb B va B hb C thi A hb C |
+
+Vi du "piggyback" tren volatile — bien {{data}} thong duoc bao ve nhi bien cong {{ready}} volatile:
+~~~java
+int data;                    // bien thuong
+volatile boolean ready;      // bien "cong"
+
+data = 42;                   // (1) program order: (1) hb (2)
+ready = true;                // (2) ghi volatile
+
+if (ready) {                 // (3) doc volatile thay true: (2) hb (3)
+    System.out.println(data); // (4) ban cua: chac chan in 42
+}
+~~~
+Dieu kien: luong B phai **doc chinh bien volatile do** va **thay gia tri** A vua ghi. Doc mot volatile khac thi khong co quan he happens-before nao.
+
+### volatile dam bao gi, khong dam bao gi
+- **Visibility**: moi lan doc volatile lay gia tri moi nhat theo thu tu dong bo; JIT khong duoc cache no trong thanh ghi hay hoist ra khoi vong lap.
+- **Ordering**: lenh ghi thong thuong **truoc** mot lenh ghi volatile khong duoc di xuoi sau no; lenh doc thong thuong **sau** mot lenh doc volatile khong duoc di len truoc no.
+- **Atomic cho long/double**: ghi {{long}}/{{double}} thong thuong co the bi tach thanh hai nua 32 bit; khai bao volatile thi khong.
+
+Nhung volatile **khong** bien thao tac gop thanh nguyen tu. {{count++}} la ba buoc doc-cong-ghi; hai luong cung doc 5 roi cung ghi 6 van mot lan tang bi mat, du {{count}} la volatile. Can {{AtomicInteger}} hay {{synchronized}} cho viec do.
+
+### Loi production hay gap
+- **Co dung khong volatile** trong bean Spring hoac consumer Kafka tu viet: goi {{shutdown()}} ma luong khong dung, pod bi kill sau grace period va mat message dang xu ly. Loi nay thuong chi lo ra sau khi JIT da toi uu (chay lau), nen test ngan tren may dev van pass.
+- Dung {{volatile int counter}} roi {{counter++}}: so lieu metric thap hon thuc te tai tai cao.
+- **De lo {{this}} trong constructor** (dang ky listener, start luong trong constructor): luong khac thay object khi field {{final}} chua chac da duoc ghi.
+- Tin rang "x86 co memory model manh nen khong sao": JIT reordering va hoisting van xay ra tren x86, va con chay tren ARM (Graviton, Apple Silicon) voi memory model yeu hon.
+- Sua data race bang {{Thread.sleep}}: sleep khong tao quan he happens-before nao.
+
+> Senior tip: muon kiem chung code co data race hay khong, dung duoa vao "chay thu thay dung". Hay chi ra **chuoi happens-before** tu lenh ghi toi lenh doc. Khong chi ra duoc thi code sai, du test co pass.
+
+### Liet he phong van
+Cau hoi kinh dien: "volatile khac synchronized the nao?", "volatile count++ co thread-safe khong?", "vi sao co dung can volatile?", "luong nay co the khong dung khong?". Cau tra loi senior noi dung ten quy tac happens-before dang dung (volatile write/read, unlock/lock, start/join) thay noi chung chung "volatile doc thang tu RAM" — cach noi do sai ve ky thuat vi cache coherence cua CPU van hoat dong, van de nam o JIT, store buffer va reordering.`,
+  exercises: [
+    {
+      title: 'Sua loi visibility: co dung va cong bao ket qua an toan',
+      prompt: `{{VisibilityPair}} co hai truong: {{int data}} va {{boolean ready}}. Mot luong goi {{publish(v)}} de ghi {{data = v}} roi {{ready = true}}; luong khac goi {{read()}} de quay vong cho toi khi {{ready}} la true roi tra ve {{data}}.
+
+Yeu cau:
+- {{publish(int v)}}: ghi {{data = v}} sau do moi ghi {{ready = true}}.
+- {{int read()}}: lap cho toi khi {{ready}} true, roi tra ve {{data}}. Khong dung {{Thread.sleep}}.
+- {{ready}} phai la {{volatile}} (test kiem tra bang reflection).
+- Sau khi {{read()}} thay {{ready}} true, gia tri tra ve phai **luon bang** {{v}} vua publish (ban cua happens-before qua {{ready}}).
+
+Test lap nhieu lan: 100 round, moi round publish mot gia tri, mot luong viet, mot luong doc voi gioi han 2 giay; khong duoc round nao sai. Code sai (ready khong volatile) co the bi hoist vong lap thanh vo han hoac doc thay data cu.`,
+      starter: `class VisibilityPair {
+    private int data;
+    private boolean ready;   // BUG: khong volatile -> luong doc co the khong bao thoi thay true
+
+    void publish(int v) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int read() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void awaitTrue(java.util.function.BooleanSupplier cond, long ms, String what) {
+        long end = System.nanoTime() + ms * 1_000_000L;
+        while (!cond.getAsBoolean()) {
+            if (System.nanoTime() > end) throw new AssertionError("timeout " + ms + "ms: " + what);
+            Thread.onSpinWait();
+        }
+    }
+    static void joinOrFail(Thread t, String what) {
+        try { t.join(2000); } catch (InterruptedException e) { throw new AssertionError(e); }
+        if (t.isAlive()) throw new AssertionError(what + " van chay sau 2s");
+    }
+    public static void main(String[] args) {
+        check("1 luong: publish roi read thay gia tri", () -> {
+            VisibilityPair p = new VisibilityPair();
+            p.publish(42);
+            eq(42, p.read());
+        });
+        check("ready phai la volatile (reflection)", () -> {
+            boolean found = false;
+            for (java.lang.reflect.Field f : VisibilityPair.class.getDeclaredFields()) {
+                if (f.getType() == boolean.class) {
+                    if (!java.lang.reflect.Modifier.isVolatile(f.getModifiers()))
+                        throw new AssertionError("truong '" + f.getName() + "' phai la volatile");
+                    found = true;
+                }
+            }
+            if (!found) throw new AssertionError("khong tim thay truong boolean nao");
+        });
+        check("100 round: read luon dung gia tri, dung duoi 2s", () -> {
+            int failures = 0;
+            for (int i = 0; i < 100; i++) {
+                VisibilityPair p = new VisibilityPair();
+                final int v = i % 500;
+                final int[] result = new int[1];
+                final java.util.concurrent.atomic.AtomicBoolean done = new java.util.concurrent.atomic.AtomicBoolean(false);
+                Thread writer = new Thread(() -> { try { Thread.sleep(30); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } p.publish(v); });
+                Thread reader = new Thread(() -> { result[0] = p.read(); done.set(true); });
+                writer.start();
+                reader.start();
+                awaitTrue(done::get, 2000, "reader khong doc kip (ready thieu volatile hoac bi hoist vong lap)");
+                joinOrFail(reader, "reader");
+                joinOrFail(writer, "writer");
+                if (result[0] != v) failures++;
+                if (failures > 2) throw new AssertionError("co " + failures + "/100 round sai gia tri");
+            }
+            if (failures > 0) throw new AssertionError("co " + failures + "/100 round sai gia tri (ready thieu volatile?)");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class VisibilityPair {
+    private int data;
+    private volatile boolean ready;   // ghi volatile ready: cau tien luong doc thay data
+
+    void publish(int v) {
+        data = v;        // (1) ghi data
+        ready = true;    // (2) ghi volatile ready: (1) happens-before (2)
+    }
+
+    int read() {
+        while (!ready) { Thread.onSpinWait(); }   // (3) doc volatile ready; thay true thi (2) hb (3)
+        return data;         // (4) ban cua (1) hb (4): chac chan thay data = v
+    }
+}`,
+      hints: [
+        'Khai bao {{private volatile boolean ready}}.',
+        'Trong {{publish}}: ghi {{data}} truoc, moi ghi {{ready = true}}. Thu tu nay than trong.',
+        'Trong {{read}}: vong lap {{while (!ready)}} doc volatile moi lan, nen JIT khong duoc hoist ra ngoai.',
+        'Test reflection kiem tra truong boolean phai co modifier volatile.',
+      ],
+      explain: `Hai canh happens-before lam loi giai dung:
+- {{publish}} ghi volatile {{ready}}; vong lap doc {{ready}} moi lan, nen lan doc **sau** lenh ghi chac chan thay true. JIT khong duoc bien vong lap thanh {{while (true)}}.
+- {{data = v}} o truoc {{ready = true}} trong program order; luong doc thay {{ready}} la true thi co canh volatile write/read, ban cua sang lenh ghi {{data}}. Day la ky thuat "piggyback": mot bien volatile lam cong cho nhieu bien thuong.
+
+Loi hay gap:
+- Dao thu tu: ghi {{ready = true}} truoc roi moi ghi {{data = v}}: luong doc co the thay ready nhung data van la 0.
+- Dung boolean thuan khong volatile: JIT hoist vong lap thanh vo han, reader khong bao thoi thay true.
+- Thay volatile bo {{Thread.sleep}} trong vong lap: sleep khong tao happens-before, bo duy loi quay lai.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Luong A: {{data = 42; ready = true;}} ({{ready}} volatile, {{data}} thuan). Luong B: {{if (ready) System.out.println(data);}}. B in gi neu vao duoc nhanh if?',
+      options: ['Luon la 42', 'Co the la 0 vi data khong volatile', 'Co the la 0 hoac 42 tuong ung CPU', 'Khong xac dinh vi khong co synchronized'],
+      answer: 0,
+      explain: 'Ghi {{data}} truoc ghi volatile {{ready}} (program order); B doc {{ready}} thay true nen co canh volatile write/read; ban cua cho {{data = 42}} happens-before {{System.out.println(data)}}. "data khong volatile" la sai vi data duoc piggyback qua ready. Ket qua khong phu cpu: JMM dam bao moi nen tat. Synchronized khong bat buot: volatile cung tao happens-before.',
+    },
+    {
+      q: '{{volatile int count}} duoc 4 luong cung chay {{count++}} moi luong 1.000 lan. Ket qua cuoi?',
+      options: ['Luon la 4000 vi volatile dam bao visibility', 'Co thap hon 4000', 'Co cao hon 4000', 'Nem ConcurrentModificationException'],
+      answer: 1,
+      explain: '{{count++}} la doc, cong, ghi: hai luong cung doc 10 roi cung ghi 11 thi mot lan tang bi mat. Volatile chi dam bao moi lan doc thay gia tri moi nhat tai luc doc, khong khoa ca chuoi ba buoc. Khong the cao hon 4000 vi moi lan tang chi cong 1 vao mot gia tri da ton tai. CME chi lien quan den collection. Dung {{AtomicInteger.incrementAndGet()}} hoac {{LongAdder}}.',
+    },
+  ],
+  related: ['concurrency-001'],
+  tags: ['JMM', 'volatile', 'happens-before', 'visibility'],
+},
+{
+  id: 'lesson-concurrency-015',
+  track: 'concurrency',
+  order: 15,
+  title: 'ExecutorService va graceful shutdown',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Mo duoc chinh xac ThreadPoolExecutor.execute quyet dinh tao luong, xep hang hay tu choi theo thu tu nao',
+    'Giai thich vi sao cac factory newFixedThreadPool/newCachedThreadPool nguy hiem tren production',
+    'Duoc luong kich thuoc pool cho viec CPU-bound va IO-bound, chon rejection policy phu hop',
+    'Dung invokeAll, xu ly exception cua task va shutdown pool dung cach (graceful shutdown)',
+  ],
+  body: `### Tom tat
+Tao mot luong (thread) cua he dieu hanh ton kem: moi luong co stack rieng (khoang 1 MB vung nho ao), tao va huy can goi he dieu hanh, va chuyen nghia giua cac luong ton CPU. Neu tao mot luong cho moi request, khi tai tang dot bien so luong tang khong gioi han toi khi het bo nho hoac CPU chi con lo chuyen nghia. Thread pool giai quyet hai viec: **tai su dung** luong va **gioi han** so viec chay dong thoi. ExecutorService / ThreadPoolExecutor la cong cu chuan cua Java de lam viec nay.
+
+### Vi sao can thread pool
+Hinh dung mot quay giao dich ngan hang. corePoolSize la so giao dich vien chinh thuc, queue la hang ghe cho, maximumPoolSize la tong so giao dich vien khi goi them nguoi lam thoi vu. Dieu bat ngo: ngan hang chi goi nguoi thoi vu khi **hang ghe cho da kin**, khong phai khi khach vua bat dau dong. Neu hang ghe dai vo han thi khong bao gi co nguoi thoi vu va khach cho mai (ban thanh OOM bo nho).
+
+### Sau tham so cua ThreadPoolExecutor
+~~~java
+ThreadPoolExecutor pool = new ThreadPoolExecutor(
+    4,                                      // corePoolSize: so luong thong truc
+    8,                                      // maximumPoolSize: tran so luong
+    30, TimeUnit.SECONDS,                   // keepAlive: luong vuot core rang qua 30s thi bi huy
+    new ArrayBlockingQueue<>(100),          // workQueue: hang doi CO GIOU HAN
+    namedFactory("order-worker"),           // ThreadFactory: dat ten de doc thread dump
+    new ThreadPoolExecutor.CallerRunsPolicy() // khi day het: thread goi tu chay task
+);
+~~~
+
+### Thu tu xu ly khi submit mot task (hay hoi nhat nhat)
+{{execute(task)}} qua ba buoc:
+1. So luong luong **< corePoolSize**: tao luong moi chay task nay ngay lap tuc, ngay luc khi co luong core khac dang rang.
+2. Nguoc lai: thu {{workQueue.offer(task)}}. Con cho thi task xep hang.
+3. Hang doi day: neu so luong luong **< maximumPoolSize** thi tao luong moi chay **ngay task nay**; neu da du max thi goi **RejectedExecutionHandler**.
+
+He tan quan trong:
+- Thread vuot core **duoc tao chi khi hang doi da day**. Voi hang doi khong gioi han, maximumPoolSize vo nghia: pool khong bao gi vuot core, task chat den trong RAM.
+- Task duoc chay tai buoc 3 duoc chay **trước** cac task dang o trong hang doi, nen thu tu thuc thi khong phai FIFO tuyet doi.
+- Voi {{SynchronousQueue}} (khong chua phan tu nao), {{offer}} chi thanh cong khi co luong dang cho nhan, nen gan het moi task deu tao luong moi toi max.
+
+| Factory | Cau hinh thuc | Rui ro production |
+|---|---|---|
+| {{newFixedThreadPool(n)}} | core = max = n, {{LinkedBlockingQueue}} khong gioi han | Hang doi phinh toi OOM khi downstream cham; do tre tang ma khong ai bao loi |
+| {{newCachedThreadPool()}} | core 0, max {{Integer.MAX_VALUE}}, {{SynchronousQueue}}, keepAlive 60s | Tai dot bien tao hang nghin luong, het bo nho native |
+| {{newSingleThreadExecutor()}} | 1 luong, hang doi khong gioi han | Giong fixed: hang doi phinh |
+| {{newScheduledThreadPool(n)}} | hang doi delay khong gioi han | Task nem exception thi lich chay dinh ki cua no **dung im lang** |
+
+### Rejection policy
+| Policy | Hanh vi | Khi nao dung |
+|---|---|---|
+| {{AbortPolicy}} (mac dinh) | Nem {{RejectedExecutionException}} | API tra 503/429 ngay, de client retry |
+| {{CallerRunsPolicy}} | Thread goi {{execute}} tu chay task | Backpressure tu nhien cho producer noi bo |
+| {{DiscardPolicy}} | Bo task, khong bao gi | Nguoc lai khong nen; chi cho du lieu "mat cung duoc" |
+| {{DiscardOldestPolicy}} | Bo task cu nhat trong hang doi roi thu lai | Du lieu chi can ban moi nhat (vi tri GPS, gia) |
+
+### Duong luong: bao nhieu luong la du
+- **CPU-bound** (tinh toan, nen, ma hoa): khoang so core ({{Runtime.getRuntime().availableProcessors()}}), them nhieu hon chi tang chuyen nghia.
+- **IO-bound**: cong thuc cua Brian Goetz: {{luong = core x (1 + thoi gian cho / thoi gian tinh)}}. Vi du 8 core, moi request cho DB 90 ms va tinh 10 ms: 8 x (1 + 9) = 80 luong.
+- Dinh luat Little: so viec dong thoi = throughput x thoi gian xu ly moi viec. Can 400 request/s, moi request 100 ms thi khoang 40 viec chay song song. Nho gioi han phia sau: pool 80 luong nhung connection pool DB chi co 10 connection thi 70 luong se dung cho connection.
+
+### Exception: execute, submit, invokeAll
+- {{execute(r)}}: exception chet luong nhan vien (pool tao luong thay the) va duoc in boi uncaught exception handler.
+- {{submit(c)}}: exception bi **bo trong Future**; neu khong ai goi {{get()}} thi loi bien mat hoan toan, khong co log.
+- {{invokeAll(tasks)}}: chan den khi **moi** task xong, tra danh sach Future **cung thu tu**; {{get()}} tren Future cua task loi nem {{ExecutionException}} co cause la exception goc.
+
+### Graceful shutdown: ba buoc, khong bo sot
+Khi ung dung tat, can dung pool sinh hoa (khong mat task, khong treo JVM):
+~~~java
+ExecutorService pool = Executors.newFixedThreadPool(4);
+try {
+    // gui nhieu task...
+} finally {
+    pool.shutdown();                          // 1. khong nhan task moi
+    try {
+        if (!pool.awaitTermination(30, TimeUnit.SECONDS)) { // 2. cho task chay xong
+            pool.shutdownNow();               // 3. interrupt task con lai, tra list task chua chay
+        }
+    } catch (InterruptedException e) {
+        pool.shutdownNow();                   // bi interrupt khi cho -> shutdown ngay
+        Thread.currentThread().interrupt();   // khoi phuc co cho caller
+    }
+}
+~~~
+- {{shutdown()}}: tu choi task moi ({{execute}} nem {{RejectedExecutionException}}), task da gui tiep tuc chay.
+- {{awaitTermination(timeout)}}: chan caller den khi pool rong hoac het timeout. Tra {{true}} neu xong het, {{false}} neu timeout.
+- {{shutdownNow()}}: co giong interrupt task dang chay ({{Thread.interrupt()}}), tra list task **chua bao gio chay** (dang o trong queue). Task dang chay **khong** tu dung neu khong tu kiem tra {{Thread.interrupted()}}.
+- Tu **Java 19**, {{ExecutorService}} la {{AutoCloseable}}: {{try (var pool = Executors.newFixedThreadPool(4))}} tu goi shutdown roi cho xong, dung duoc voi try-with-resources.
+
+Loi hay gap:
+- Quen {{shutdown()}}: pool non-daemon giu JVM khong thoat.
+- {{shutdownNow()}} ngay khong {{awaitTermination}}: task dang chay bi interrupt dot ngot, co the de lieu khong nhat quan.
+- Bat {{InterruptedException}} ma khong {{Thread.currentThread().interrupt()}}: caller khong biet bi interrupt, logic retry/shutdown bi gaya.
+- Task trong pool cho ket qua cua task khac **cung pool** (pool 4 luong, 4 task cha cung cho 4 task con o trong hang doi): thread starvation deadlock.
+
+### Loi production hay gap
+- Spring Boot auto-config task executor mac dinh core 8, **hang doi khong gioi han**, max {{Integer.MAX_VALUE}}: max khong bao gi duoc duoc dung, {{@Async}} chat hang trieu task trong RAM khi downstream cham. Luon dat {{spring.task.execution.pool.queue-capacity}}.
+- Tao pool moi **trong moi request** roi quen shutdown: so luong luong tang dan toi khi {{OutOfMemoryError: unable to create native thread}}.
+- Khong dat ten luong: thread dump toan {{pool-7-thread-3}}, khong biet pool nao cua module nao.
+
+### Liet he phong van
+Cau hoi kinh dien: "core 4, max 8, queue 100: task thu 5 chay o dau? task thu 105?" (thu 5 vao hang doi; thu 105 tao luong thu 5 vi hang day). Tra loi senior them: luon su dung hang doi co gioi han, chon rejection policy theo nghiep vu, dat ten luong, theo doi {{getActiveCount}}/{{getQueue().size()}} qua Micrometer, va shutdown co timeout khi ung dung tat.`,
+  exercises: [
+    {
+      title: 'Chay mot batch nhieu task va shutdown dung cach',
+      prompt: `Viet {{BatchRunner.runAll(tasks, threads, timeoutMs)}}:
+
+- Tao pool co dinh dung {{threads}} luong.
+- Gui tat ca task (moi task la mot {{Runnable}}) bang {{execute}}.
+- Truoc khi tra ve, pool phai duoc **shutdown**: goi {{shutdown()}}, sau do {{awaitTermination(timeoutMs)}}.
+- Neu het timeout ma con task dang chay/dang cho: goi {{shutdownNow()}} de interrupt va tra ve {{false}}. Neu tat ca xong: tra ve {{true}}.
+- Neu bi interrupt khi cho: goi {{shutdownNow()}}, khoi phuc co interrupt bang {{Thread.currentThread().interrupt()}}, tra ve {{false}}.
+- Danh sach rong tra ve {{true}}. **Khong shutdown pool cua nguoi goi** ngoai khoi ham (pool duoc tao trong ham).
+
+Test chay 10 task ngan (moi task tang bo dem), task cham (dang o {{CountDownLatch.await()}} khong bao gio duoc mo), va danh sach rong.`,
+      starter: `class BatchRunner {
+    static boolean runAll(List<Runnable> tasks, int threads, long timeoutMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("10 task ngan: true va het task chay", () -> {
+            AtomicInteger ran = new AtomicInteger();
+            List<Runnable> tasks = new ArrayList<>();
+            for (int i = 0; i < 10; i++) tasks.add(() -> ran.incrementAndGet());
+            eq(true, BatchRunner.runAll(tasks, 4, 5000));
+            eq(10, ran.get());
+        });
+        check("1 task cham vuot timeout: false", () -> {
+            CountDownLatch gate = new CountDownLatch(1);
+            List<Runnable> tasks = List.of(() -> { try { gate.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } });
+            eq(false, BatchRunner.runAll(tasks, 1, 300));
+        });
+        check("danh sach rong: true", () -> eq(true, BatchRunner.runAll(new ArrayList<>(), 2, 1000)));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class BatchRunner {
+    static boolean runAll(List<Runnable> tasks, int threads, long timeoutMs) {
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        for (Runnable t : tasks) pool.execute(t);
+        pool.shutdown();
+        try {
+            if (pool.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)) return true;
+            pool.shutdownNow();
+            return false;
+        } catch (InterruptedException e) {
+            pool.shutdownNow();
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+}`,
+      hints: [
+        'Dung {{Executors.newFixedThreadPool(threads)}} va gui tat ca task bang {{execute}} truoc khi shutdown.',
+        '{{pool.shutdown()}} roi {{pool.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)}}; neu tra false thi {{pool.shutdownNow()}}.',
+        'Bat {{InterruptedException}}: goi {{pool.shutdownNow()}}, roi {{Thread.currentThread().interrupt()}} de khoi phuc co.',
+      ],
+      explain: `Ba quyet dinh lam loi giai dung:
+1. **Gui het truoc khi shutdown**: tat ca task duoc nhan vao pool truoc, sau moi chuan bi dung.
+2. **Graceful shutdown**: {{shutdown()}} khong nhan task moi, {{awaitTermination}} cho task chay xong trong han timeout, {{shutdownNow()}} chi khi timeout de interrupt task con lai.
+3. **Khoi phuc co interrupt**: neu bi interrupt khi cho, phai goi {{Thread.currentThread().interrupt()}} de caller o ngoai biet bi yeu cau dung.
+
+Loi hay gap:
+- Quen {{shutdown()}}: pool non-daemon giu luong song, JVM khong thoat.
+- {{shutdownNow()}} ngay khong {{awaitTermination}}: task dang chay bi interrupt dot ngot.
+- Bat {{InterruptedException}} mat co: caller khong biet bi interrupt.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Pool: core 4, max 8, {{ArrayBlockingQueue(100)}}. Moi task chay rat lau. Task thu 50 duoc xu ly the nao?',
+      options: ['Tao luong thu 5 vi con duoi max', 'Vao hang doi', 'Bi tu choi', 'Cho den khi mot luong core rang roi moi nhan'],
+      answer: 1,
+      explain: '4 task dau tao 4 luong core; tu task thu 5 toi thu 104 vao hang doi (100 cho). Thread vuot core chi duoc tao khi hang doi day, luc task thu 105; task thu 109 tro di bi tu choi. "Cho den luong rong nhan" sai vi {{execute}} khong bao gi chan nguoi goi: no xep hang hoac tu choi.',
+    },
+    {
+      q: 'Vi sao {{Executors.newFixedThreadPool(20)}} nguy hiem khi downstream (DB, API ngoai) cham di?',
+      options: ['Vi no tao luong khong gioi han', 'Vi hang doi {{LinkedBlockingQueue}} khong gioi han: task chat trong RAM, do tre tang, co the OOM', 'Vi no dung ForkJoinPool.commonPool', 'Vi luong cua no la daemon nen mat task khi tat'],
+      answer: 1,
+      explain: 'Fixed pool co dung 20 luong nhung hang doi khong gioi han, nen khong bao gi tu choi: task chat trong RAM, do tre tang, co the OOM. Luong khong gioi han la van de cua {{newCachedThreadPool}}. Fixed pool dung ThreadPoolExecutor biet, khong dung commonPool. Thread mac dinh cua no la non-daemon.',
+    },
+    {
+      q: 'Ban {{submit()}} mot task nem {{NullPointerException}} va khong bao gi goi {{get()}}. Dieu gi xay ra?',
+      options: ['Stack trace duoc in ra stderr', 'Luong nhan chet va pool tao luong moi', 'Loi nam trong Future, khong co log nao', 'Pool tu shutdown'],
+      answer: 2,
+      explain: '{{submit}} bo task trong {{FutureTask}}, exception luu vao Future va chi loi ra khi goi {{get()}}. In stack trace va luong chet la hanh vi cua {{execute()}}. Pool khong bao gi tu shutdown vi task loi.',
+    },
+  ],
+  related: ['concurrency-003'],
+  tags: ['ExecutorService', 'ThreadPoolExecutor', 'shutdown', 'graceful shutdown'],
+},
 );
