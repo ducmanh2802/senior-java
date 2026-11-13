@@ -3329,7 +3329,7 @@ Màn hình quản trị cho phép nhảy tới trang bất kỳ của 30 triệu
 Index trên (a, b, c) sort theo a rồi b rồi c. Query:
 - {{WHERE a=1}} → dùng index (prefix a).
 - {{WHERE a=1 AND b=2}} → dùng index.
-- {{WHERE b=2}} → thường KHÔNG dùng được index (không có prefix a), nên tạo index riêng trên b. Ngoại lệ: **MySQL 8.0.13+ có skip scan**, dùng được index khi cột a có ít giá trị khác nhau (nhảy qua từng giá trị a); PostgreSQL có skip scan cho B-tree từ bản 18 (2025), các bản trước thì không; đừng thiết kế dựa vào nó cho truy vấn nóng.
+- {{WHERE b=2}} → thường KHÔNG dùng được index (không có prefix a), nên tạo index riêng trên b. Ngoại lệ: **MySQL 8.0.13 (2018) có skip scan**, dùng được index khi cột a có ít giá trị khác nhau (nhảy qua từng giá trị a); **PostgreSQL 18 (released 2025-09-25) có skip scan cho B-tree**, các bản trước thì không; đừng thiết kế dựa vào nó cho truy vấn nóng.
 - {{WHERE a=1 AND c=3}} → dùng prefix a, filter c sau.
 
 ### Thứ tự cột: equality trước, range sau
@@ -4781,5 +4781,729 @@ Bảng {{order}} 1,2TB, 900 triệu dòng. Dashboard chậm dần sau 6 tuần: 
     'Transaction ID wraparound là gì, dấu hiệu nào cho thấy nó sắp xảy ra?'
   ],
   tags: ['MVCC', 'VACUUM', 'autovacuum', 'bloat', 'wraparound', 'xmin']
+},
+{
+  id: 'sql-053',
+  topic: 'sql',
+  level: 'senior',
+  q: 'API danh sách đơn hàng chạy trên bảng 50 triệu dòng: vì sao OFFSET 200.000 chậm dần, keyset pagination (cursor) hoạt động thế nào ở mức chỉ mục, và thiết kế cursor ra sao khi sắp xếp theo nhiều cột hoặc có NULL?',
+  a: `**Tóm tắt:** OFFSET chậm vì PostgreSQL phải duyệt và bỏ qua đúng bằng số dòng offset trước khi lấy 20 dòng; trang 200.000 trên bảng 50 triệu dòng nghĩa là đi qua 200.000 entry của index. Keyset pagination (còn gọi là seek method) thay bằng điều kiện so sánh theo bản ghi: {{WHERE (created_at, id) < (:ts, :id)}} để B-tree nhảy thẳng tới vị trí bắt đầu, chi phí gần như không đổi khi trang sâu hơn. Cursor phải chứa đủ khoá sắp xếp và một tie-breaker duy nhất (thường là {{id}}), được ký hoặc encode mờ để client không tự chế giá trị.
+
+### OFFSET thực sự làm gì
+Thứ tự logic của một câu SELECT là FROM → WHERE → GROUP BY → HAVING → SELECT → ORDER BY → LIMIT/OFFSET. OFFSET không phải "nhảy tới trang" mà là "bỏ qua N dòng của kết quả đã sắp xếp". PostgreSQL vẫn phải tạo ra N dòng đầu tiên rồi mới trả 20 dòng cuối. Nếu có index phù hợp {{ORDER BY}}, nó có thể đi trên index và bỏ qua N entry mà không đọc heap, nhưng chi phí vẫn tỉ lệ với N. Nếu không có index phù hợp, planner phải sắp xếp (top-N heapsort nếu LIMIT nhỏ, sort toàn bộ nếu work_mem không đủ): với OFFSET lớn, chi phí vẫn tăng theo N và có thể tràn ra đĩa.
+
+~~~text
+Bảng 50 triệu dòng, trang 1:  OFFSET 0       -> đọc 20 dòng
+Trang 100:                 OFFSET 2.000    -> bỏ 2.000 entry
+Trang 10.000:              OFFSET 200.000  -> bỏ 200.000 entry
+~~~
+OFFSET còn có vấn đề "trôi": nếu giữa hai lần tải có đơn mới được chèn lên đầu danh sách, trang 2 bằng OFFSET 20 sẽ lặp lại một đơn đã thấy ở trang 1; nếu có đơn bị xoá, một đơn khác bị bỏ qua. Với bảng đang ghi liên tục, kết quả phân trang bằng OFFSET gần như luôn sai lệch ở mức nào đó.
+
+### Keyset hoạt động thế nào
+Giả sử sắp xếp theo {{created_at DESC, id DESC}}. Trang trước trả về dòng cuối có {{created_at = 2026-03-01 10:00:00}} và {{id = 98765}}. Câu tiếp theo là:
+
+~~~sql
+SELECT id, created_at, total
+FROM orders
+WHERE (created_at, id) < (:last_ts, :last_id)
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
+~~~
+PostgreSQL hiểu so sánh theo bản ghi là so sánh từ trái sang phải: {{a < x}} đúng, hoặc {{a = x}} và {{b < y}}. Nó tương đương:
+
+~~~sql
+WHERE created_at < :last_ts
+   OR (created_at = :last_ts AND id < :last_id)
+~~~
+Với index {{CREATE INDEX CONCURRENTLY idx_orders_created_id ON orders (created_at DESC, id DESC)}}, planner dùng Index Scan (hoặc Backward Index Scan), định vị ngay entry đầu tiên nhỏ hơn cặp khoá, rồi đọc tiếp 20 entry. Không có bước bỏ qua tuyến tính, nên trang thứ 10.000 vẫn khoảng vài millisecond thay vì vài giây.
+
+Vì sao cần tie-breaker {{id}}? Vì {{created_at}} có thể trùng nhau: hai đơn cùng mili-giây là chuyện bình thường khi hệ thống ghi 500 đơn/giây. Nếu chỉ dùng {{created_at}}, các dòng cùng timestamp có thể xuất hiện ở cả hai trang hoặc biến mất. Thêm {{id}} làm thứ tự trở thành **toàn phần** (total order): không có hai dòng nào bằng nhau trên cả hai khoá, nên mỗi dòng có đúng một vị trí.
+
+### Thiết kế cursor cho đúng
+Cursor nên là một chuỗi mờ, ví dụ Base64URL của một JSON gồm ts và id. Server tự decode và kiểm tra chữ ký HMAC để client không sửa {{id}} thành giá trị bất kỳ. Không đưa cursor thô dạng "offset=200000" vì như thế lại quay về OFFSET. Không tin cursor từ client: nếu timestamp sai định dạng, trả 400 thay vì để database lỗi.
+
+~~~java
+// Cursor mờ: client chỉ thấy một chuỗi, server tự tách và xác thực.
+record Cursor(OffsetDateTime ts, long id) { }
+
+Cursor decode(String raw, SecretKey key) {
+    byte[] bytes = Base64.getUrlDecoder().decode(raw);
+    String json = new String(bytes, StandardCharsets.UTF_8);
+    JsonNode n = objectMapper.readTree(json);          // kiểm tra HMAC trước khi tin
+    return new Cursor(OffsetDateTime.parse(n.get("ts").asText()), n.get("id").asLong());
+}
+
+String sql = """
+    SELECT id, created_at, total FROM orders
+    WHERE (created_at, id) < (?, ?)
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+    """;
+
+List<OrderRow> nextPage(JdbcTemplate jdbc, String rawCursor, int size) {
+    Cursor c = decode(rawCursor, KEY);                 // 20 dòng, không offset
+    return jdbc.query(sql, orderRowMapper(), c.ts(), c.id(), size + 1); // +1 để biết còn trang
+}
+~~~
+
+### So sánh các cách phân trang
+| Cách | Chi phí khi trang sâu | Ưu điểm | Nhược điểm |
+|---|---|---|---|
+| OFFSET | O(offset) | đơn giản, nhảy được trang bất kỳ | chậm dần, trôi kết quả khi dữ liệu đổi |
+| Keyset/cursor | O(log n + limit) | nhanh ổn định, phù hợp infinite scroll | chỉ next/prev, khó nhảy trang, cần index đúng thứ tự |
+| Keyset + count đã cache | O(log n + limit) | hiển thị được tổng gần đúng | tổng có thể lệch, phải làm mới định kỳ |
+| Window function + OFFSET | O(n log n) | chia trang ổn định trong một snapshot | tốn bộ nhớ, không phù hợp bảng khổng lồ |
+
+Với bảng 50 triệu dòng và API mobile, keyset là lựa chọn mặc định. Với màn hình admin cần "trang 3/2500", có thể dùng OFFSET nhưng giới hạn số trang hoặc dùng keyset kèm tổng số đã cache.
+
+### Lỗi hay gặp trên production
+- **NULL trong khoá sắp xếp**: mặc định {{ORDER BY col DESC}} đặt NULL lên đầu ({{NULLS FIRST}}). Điều kiện {{col < :v}} không bao giờ đúng với NULL, nên cursor sẽ dừng khi gặp NULL. Cách an toàn là chọn cột {{NOT NULL}} làm khoá, hoặc viết {{NULLS LAST}} kèm điều kiện riêng cho NULL, hoặc dùng một sentinel như {{created_at = '1970-01-01'}}.
+- **Thiếu tie-breaker**: hai dòng cùng timestamp bị lặp hoặc mất.
+- **Index không khớp thứ tự**: index {{ (tenant_id, created_at) }} không phục vụ {{WHERE tenant_id = ? ORDER BY created_at}} nếu thiếu cột đầu; ngược lại index {{ (created_at, id) }} không phục vụ nếu ORDER BY thêm cột khác. Luôn kiểm tra bằng EXPLAIN.
+- **Đếm tổng mỗi trang**: {{SELECT count(*)}} trên 50 triệu dòng có thể mất vài giây; chỉ đếm một lần rồi cache, hoặc dùng ước lượng từ planner, hoặc bỏ tổng.
+- **Cursor bị sửa**: nếu không ký, client có thể đọc dữ liệu của người khác bằng cách đổi id.
+- **So sánh cột kiểu text**: thứ tự phụ thuộc collation; cursor và query phải dùng cùng collation, nếu không index có thể bị bỏ.
+
+### Ví dụ đời thực
+Một sàn thương mại điện tử có bảng {{orders}} 50 triệu dòng, API "đơn hàng của tôi" dùng OFFSET 20. Đo production: trang 1 khoảng 9 ms, trang 5.000 khoảng 480 ms, trang 10.000 khoảng 1,1 giây; p95 của API tăng từ 120 ms lên 2,4 giây khi người dùng cuộn sâu. Đổi sang keyset với index {{ (created_at DESC, id DESC) }}: mọi trang còn khoảng 6–11 ms, p95 còn 140 ms. Cursor được ký HMAC, có TTL 24 giờ. Sau một tháng, CPU database giảm 22% vì không còn các câu OFFSET quét hàng trăm nghìn entry.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi phân biệt hai vấn đề: chi phí bỏ qua dòng và tính đúng đắn khi dữ liệu thay đổi. OFFSET phải duyệt N dòng, nên trang càng sâu càng chậm; keyset dùng điều kiện so sánh bản ghi để index định vị thẳng vị trí bắt đầu, chi phí gần như không đổi. Tôi luôn thêm tie-breaker id để thứ tự là toàn phần, vì created_at có thể trùng. Cursor tôi encode mờ và ký HMAC để client không tự chế. Với cột nullable, tôi cố tình chọn cột NOT NULL làm khoá hoặc xử lý NULLS LAST riêng, vì so sánh thông thường sẽ bỏ qua NULL. Tôi cũng không đếm tổng mỗi trang trên bảng lớn; tôi cache số tổng hoặc dùng ước lượng. Cuối cùng tôi xác nhận bằng EXPLAIN rằng planner dùng đúng index và không có bước sort toàn bảng. Khi bảng nhỏ và cần nhảy trang, tôi vẫn dùng OFFSET; với bảng lớn, tôi đo ở trang sâu nhất rồi chọn keyset.”
+
+> Senior tip: hãy đo bằng EXPLAIN (ANALYZE, BUFFERS) ở trang sâu nhất, không chỉ trang 1. Một index đúng cho trang 1 vẫn có thể bị bỏ nếu ORDER BY có cột phụ hoặc collation khác; khi đó keyset cũng chậm như OFFSET.`,
+
+follow: [
+  'Khi nào OFFSET vẫn là lựa chọn hợp lý dù bảng lớn, và làm sao giảm tác hại của nó?',
+  'Cursor nên trả về opaque hay JSON đọc được? Bạn chống giả mạo cursor thế nào?',
+  'Nếu người dùng lọc theo nhiều điều kiện rồi sắp xếp, bạn thiết kế index và cursor ra sao để không phải sort toàn bộ?'
+],
+tags: ['pagination', 'keyset', 'cursor', 'OFFSET', 'PostgreSQL', 'index']
+},
+{
+  id: 'sql-054',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bạn đặt maximumPoolSize của HikariCP bao nhiêu cho một service Java 17 kết nối PostgreSQL 8 vCPU? Giải thích công thức, cách đo bằng load test, và những metric nào cho biết pool quá nhỏ hay quá lớn?',
+  a: `**Tóm tắt:** Điểm khởi đầu là công thức của PostgreSQL/HikariCP: {{connections ≈ (số nhân vật lý × 2) + số đĩa hiệu dụng}}. Với 8 vCPU và SSD, con số xung quanh 17 connection đang hoạt động là hợp lý, không phải 100. Nhưng con số cuối cùng phải đo: tăng pool chỉ tăng throughput tới khi database bão hoà, sau đó latency tăng còn CPU database có thể giảm vì tranh chấp. Theo dõi active/idle/pending, connectionTimeout và thời gian giữ connection để biết pool quá nhỏ hay quá lớn.
+
+### Vì sao pool lớn không tốt hơn
+Mỗi connection trong PostgreSQL là một backend process riêng. Nó tiêu tốn bộ nhớ (thường vài MB đến hơn chục MB tuỳ cấu hình), có chi phí context switch và các cấu trúc khoá nội bộ. Database chỉ có một số nhân vật lý nhất định; khi có 200 backend cùng chạy trên 8 vCPU, chúng không chạy nhanh hơn 17 backend, mà chỉ chuyển đổi qua lại nhiều hơn, cache bị chia nhỏ hơn và lock nội bộ nóng hơn. Đó là lý do HikariCP viết: “You want a small pool, saturated with threads waiting for connections” — hàng đợi nên nằm ở JVM, nơi chi phí chờ rẻ, thay vì ở database.
+
+Công thức gốc lấy từ PostgreSQL wiki và HikariCP wiki: {{connections = ((core_count * 2) + effective_spindle_count)}}. {{core_count}} là số nhân vật lý, không tính hyper-threading như nhân thật. {{effective_spindle_count}} xấp xỉ số đĩa quay; nếu dữ liệu nóng nằm hết trong RAM/cache thì coi như 0; với SSD thường lấy 0 hoặc 1 làm điểm bắt đầu. Ví dụ 4 nhân vật lý + 1 SSD: {{4×2+1 = 9}}, làm tròn 10. 8 nhân vật lý: {{8×2+1 = 17}}.
+
+### Little's law cho người không biết
+Nếu mỗi request giữ connection trung bình {{h}} giây và hệ thống cần xử lý {{λ}} request/giây, số connection cần đồng thời xấp xỉ {{λ × h}}. Ví dụ 200 request/giây, mỗi request giữ 25 ms: {{200 × 0,025 = 5}} connection. Nếu 5% request chạy batch mất 2 giây: {{200 × 0,95 × 0,025 + 200 × 0,05 × 2 = 4,75 + 20 = 24,75}} connection. Vì vậy pool phải tính theo cả request thường lẫn request chậm, không chỉ trung bình.
+
+### Cấu hình HikariCP
+~~~java
+@Bean
+DataSource dataSource() {
+    HikariConfig c = new HikariConfig();
+    c.setJdbcUrl("jdbc:postgresql://db:5432/app");
+    c.setMaximumPoolSize(12);            // bắt đầu từ công thức, đo lại
+    c.setMinimumIdle(12);                // fixed-size: tránh tạo connection lúc tăng tải
+    c.setConnectionTimeout(3_000);       // fail nhanh thay vì xếp hàng 30 giây
+    c.setMaxLifetime(1_800_000);         // phải nhỏ hơn idle timeout của DB/LB
+    c.setKeepaliveTime(120_000);         // giữ NAT/firewall không cắt connection chết
+    c.setLeakDetectionThreshold(10_000); // cảnh báo khi một connection bị giữ quá 10 giây
+    return new HikariDataSource(c);
+}
+~~~
+{{minimumIdle = maximumPoolSize}} biến pool thành cố định: HikariCP không phải tạo connection mới lúc traffic tăng đột biến, đổi lại lúc rảnh vẫn giữ đủ connection. Nếu dùng pool động, hãy đặt {{minimumIdle}} thấp hơn và theo dõi thời gian tạo connection.
+
+### Đo bằng load test
+Đừng chọn 10 rồi tin là đúng. Chạy load test ở các mức 5, 10, 20, 40, 80 connection, mỗi mức đủ lâu để JIT và cache ổn định. Vẽ throughput (TPS) và p95 latency theo pool size. Thông thường TPS tăng tới một điểm rồi đi ngang hoặc giảm, trong khi p95 tăng. Điểm gãy (knee) trước khi latency bùng nổ chính là vùng nên chọn. Nếu database dùng chung cho nhiều service, tổng pool của tất cả instance phải nhỏ hơn {{max_connections}} trừ đi kết nối dành cho admin/migration.
+
+### Metric cần xem
+| Metric | Ý nghĩa | Dấu hiệu |
+|---|---|---|
+| hikaricp.connections.active | connection đang được dùng | bằng max liên tục là pool có thể quá nhỏ |
+| hikaricp.connections.idle | connection rảnh | luôn bằng 0 và pending cao: thiếu hoặc query chậm |
+| hikaricp.connections.pending | thread đang chờ connection | > 0 kéo dài là pool nhỏ hoặc connection bị giữ lâu |
+| hikaricp.connections.usage | thời gian giữ connection | tăng đột biến: transaction dài, N+1, hoặc gọi mạng trong transaction |
+| hikaricp.connections.timeout | số lần hết kiên nhẫn | tăng: connectionTimeout quá thấp hoặc pool quá nhỏ |
+| pg_stat_activity | số backend theo state | active nhiều nhưng CPU thấp: có thể do lock |
+
+Nếu {{active}} đã bằng {{max}} mà {{pending}} vẫn cao, pool có thể quá nhỏ hoặc connection đang bị giữ lâu. Nếu {{active}} chưa bằng {{max}} mà {{pending}} vẫn cao, việc tạo connection mới đang chậm (database quá tải) hoặc có connection bị rò rỉ. Trong cả hai trường hợp, hãy tìm câu query chậm, transaction quên commit hoặc lời gọi HTTP trong transaction trước khi tăng pool; tăng pool khi database đã quá tải chỉ làm mọi thứ chậm hơn.
+
+### Lỗi hay gặp trên production
+- **Pool quá lớn**: 6 instance × 50 connection = 300 backend, vượt {{max_connections = 100}} → lỗi “too many clients already” hoặc “remaining connection slots are reserved”. Giảm còn 10/instance, thêm PgBouncer nếu thật sự cần nhiều client.
+- **Pool quá nhỏ**: request xếp hàng, {{Connection is not available, request timed out after 30000ms}}. Tăng pool hoặc giảm thời gian giữ connection.
+- **maxLifetime lớn hơn timeout của DB/LB**: connection bị phía kia đóng im lặng, HikariCP phát hiện trễ, request lỗi. Đặt {{maxLifetime}} nhỏ hơn idle timeout của hạ tầng.
+- **Transaction dài**: một batch 40 phút giữ một connection, pool 12 có thể cạn chỉ với vài batch chạy song song. Chia lô, commit thường xuyên.
+- **Quên đóng connection**: {{leakDetectionThreshold}} giúp phát hiện, nhưng phải sửa code chứ không chỉ tăng pool.
+
+### Ví dụ đời thực
+Một service có 6 instance, mỗi instance đặt {{maximumPoolSize = 50}} vì “cho chắc”. Database PostgreSQL 8 vCPU có {{max_connections = 100}}. Khi traffic tăng, 300 backend làm CPU database 100%, p95 tăng từ 30 ms lên 2,8 giây, log đầy “too many clients”. Nhóm giảm còn 10 connection/instance (tổng 60), đặt {{connectionTimeout = 3s}}, chia batch job thành lô 2.000 dòng. Kết quả: p95 còn 34 ms, CPU database khoảng 45%, throughput không giảm. Bài học: pool không phải càng lớn càng nhanh; nó phải vừa với số nhân của database và thời gian giữ connection.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi bắt đầu từ công thức của HikariCP: pool xấp xỉ hai lần số nhân vật lý cộng số đĩa hiệu dụng, nên với 8 vCPU SSD tôi thử khoảng 17 connection đang hoạt động. Nhưng tôi không chốt bằng công thức: tôi load test các mức 5, 10, 20, 40, 80 rồi nhìn đường TPS và p95 để tìm điểm gãy. Tôi theo dõi active, idle, pending và usage. Nếu pending cao, tôi phân biệt: active đã bằng max thì pool có thể quá nhỏ hoặc connection bị giữ; active chưa bằng max mà pending cao thường là tạo connection chậm hoặc rò rỉ. Tôi tìm transaction dài, N+1 và connection quên đóng trước khi tăng pool, đồng thời kiểm tra tổng pool nhân với số instance so với max_connections, đặt maxLifetime nhỏ hơn idle timeout của hạ tầng, và bật leak detection để bắt connection quên đóng. Tôi còn xem CPU database: nếu CPU đã cao mà pool tăng, đó là dấu hiệu phải giảm pool hoặc tối ưu query.”
+
+> Senior tip: pool đúng là pool mà database vẫn còn CPU dự phòng và pending gần 0. Khi thấy pending tăng, đừng tăng pool ngay: hãy tìm connection bị giữ lâu bằng pg_stat_activity và leak detection trước.`,
+
+follow: [
+  'Vì sao active chưa bằng maximumPoolSize mà pending vẫn cao? Bạn xử lý thế nào?',
+  'Khi chạy nhiều instance trên Kubernetes, bạn tính tổng connection ra sao và khi nào cần PgBouncer?',
+  'connectionTimeout, maxLifetime và keepaliveTime nên đặt bao nhiêu, và vì sao maxLifetime không được lớn hơn timeout của hạ tầng?'
+],
+tags: ['HikariCP', 'connection pool', 'PostgreSQL', 'performance', 'Little law']
+},
+{
+  id: 'sql-055',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Một batch job mở một transaction chạy 40 phút để UPDATE 5 triệu dòng. Ngay sau đó DDL trên cùng bảng bị treo và mọi API đọc cũng chậm dần. Giải thích cơ chế khoá, xmin và VACUUM, rồi cách phòng ngừa và xử lý.',
+  a: `**Tóm tắt:** Một transaction dài giữ khoá row-level trên hàng triệu dòng và giữ một xmin (snapshot) suốt 40 phút. VACUUM chỉ được xoá tuple chết khi không còn transaction nào có thể nhìn thấy nó, nên dead tuple tích tụ, bảng và index phình. DDL cần khoá ACCESS EXCLUSIVE phải chờ transaction đó; vì hàng đợi khoá của PostgreSQL, các request khoá phía sau — kể cả SELECT — cũng chờ theo, làm cả bảng “đứng”. Cách chữa là chia lô commit ngắn, đặt timeout, không để DDL chen vào giờ cao điểm, và theo dõi xmin/lock.
+
+### Kiểm tra giả định: SELECT có bị block không?
+Ở mức READ COMMITTED, SELECT thường không bị block bởi row lock của một UPDATE: MVCC cho phép đọc bản snapshot cũ. Nhưng có hai ngoại lệ lớn. Thứ nhất, nếu SELECT cần một loại khoá bảng xung đột với khoá đang được giữ bởi DDL, nó sẽ chờ. Thứ hai, khi một DDL như ALTER TABLE đang chờ ACCESS EXCLUSIVE, các request khoá mới — kể cả SELECT cần ACCESS SHARE — phải xếp hàng sau DDL. PostgreSQL không cho SELECT “chen ngang” qua một DDL đang chờ. Đây là lý do một câu ALTER TABLE tưởng như vô hại có thể làm tê liệt cả API đọc.
+
+### Diễn biến từng bước
+1. Batch BEGIN; UPDATE 5 triệu dòng. Mỗi dòng tạo một tuple mới, giữ row lock tới commit.
+2. Một transaction khác chạy ALTER TABLE ... ADD COLUMN. Nó xin ACCESS EXCLUSIVE trên bảng.
+3. ALTER TABLE chờ vì batch đang giữ ROW EXCLUSIVE (do UPDATE) và ACCESS SHARE (do SELECT).
+4. Mọi câu SELECT mới xin ACCESS SHARE. Vì ALTER TABLE đang xếp hàng trước, chúng phải chờ sau ALTER TABLE. Hàng đợi lock hoạt động gần như FIFO, nên traffic dừng lại.
+5. Batch chạy 40 phút; trong thời gian đó xmin của nó giữ lại mọi tuple mà nó có thể nhìn thấy. VACUUM không xoá được các tuple chết mới hơn xmin, nên dead tuple tích tụ, bảng phình, autovacuum chạy liên tục mà không dọn được.
+
+### xmin và VACUUM hoạt động thế nào
+PostgreSQL không xoá tuple ngay khi UPDATE/DELETE. Nó đánh dấu tuple cũ là chết, giữ lại cho tới khi mọi transaction có thể cần nó đã kết thúc. Mỗi transaction có một xmin: snapshot cho biết “tôi nhìn thấy dữ liệu tới thời điểm nào”. Nếu một transaction mở 40 phút, xmin của nó là một mốc cũ; VACUUM không được xoá tuple nào có thể hiển thị với mốc đó, vì nếu không, transaction sẽ đọc thiếu dữ liệu. Kết quả là dead tuple nằm lại, index phình theo, và autovacuum bị “chặn trên trần” — chạy mãi mà không giảm được bloat.
+
+~~~sql
+-- ai đang giữ transaction lâu?
+SELECT pid, state, wait_event_type, wait_event,
+       now() - xact_start AS xact_age,
+       now() - state_change AS since,
+       backend_xmin,
+       left(query, 100) AS query
+FROM pg_stat_activity
+WHERE xact_start IS NOT NULL
+ORDER BY xact_start
+LIMIT 20;
+~~~
+~~~sql
+-- ai đang chặn ai?
+SELECT blocked.pid, blocking.pid, blocked.wait_event,
+       left(blocked.query, 60) AS blocked_query,
+       left(blocking.query, 60) AS blocking_query
+FROM pg_stat_activity blocked
+JOIN LATERAL unnest(pg_blocking_pids(blocked.pid)) AS b(pid) ON true
+JOIN pg_stat_activity blocking ON blocking.pid = b.pid;
+~~~
+Ngoài ra xem {{pg_stat_progress_vacuum}} để biết VACUUM đang ở giai đoạn nào, và {{pg_stat_user_tables.n_dead_tup}} để biết bảng nào nhiều tuple chết. {{age(relfrozenxid)}} cho biết bảng đã bao lâu chưa freeze; nếu con số tiến gần 2 tỷ thì có nguy cơ wraparound, phải xử lý ngay.
+
+### Sửa code: chia lô và commit riêng
+~~~java
+// SAI: cả vòng lặp nằm trong một @Transactional, lock giữ 40 phút.
+// ĐÚNG: mỗi lô là một transaction độc lập, commit ngay sau khi xử lý.
+int batchSize = 2_000;
+long lastId = 0;
+while (true) {
+    List<Long> ids = jdbc.queryForList(
+        "SELECT id FROM product WHERE id > ? ORDER BY id LIMIT ?",
+        Long.class, lastId, batchSize);
+    if (ids.isEmpty()) break;
+
+    transactionTemplate.execute(status -> {
+        jdbc.batchUpdate("""
+            UPDATE product p SET price = s.price
+            FROM staging_price s
+            WHERE p.id = ? AND p.sku = s.sku
+            """, ids.toArray(new Long[0]));
+        return null;
+    });
+
+    lastId = ids.get(ids.size() - 1);   // keyset, không dùng OFFSET
+    Thread.sleep(50);                   // nhường I/O và cho replica theo kịp
+}
+~~~
+Mỗi lô giữ lock vài trăm millisecond. Nếu một lô lỗi, chỉ lô đó rollback; job có thể chạy lại từ {{lastId}} hoặc từ đầu với điều kiện idempotent. Không gọi HTTP, gửi email hay tính toán nặng bên trong transaction.
+
+### Xử lý sự cố đang xảy ra
+1. Tìm PID giữ transaction lâu bằng câu query ở trên.
+2. Nếu chỉ là một câu query chậm, dùng {{pg_cancel_backend(pid)}} để huỷ câu query, giữ session.
+3. Nếu session vẫn không chịu (ví dụ đang chờ I/O hoặc code không kiểm tra huỷ), dùng {{pg_terminate_backend(pid)}}; đây là thao tác mạnh, phải chắc chắn đúng PID và đã báo cho người liên quan.
+4. Đặt {{idle_in_transaction_session_timeout}} (ví dụ 5 phút) để PostgreSQL tự đóng session “idle in transaction”; đặt {{lock_timeout}} cho DDL (ví dụ 3 giây) để DDL fail nhanh thay vì chặn cả hệ thống; đặt {{statement_timeout}} cho request thường.
+5. Sau khi batch kết thúc, chạy {{VACUUM (VERBOSE)}} bảng chính; nếu bloat nặng, dùng {{pg_repack}} hoặc VACUUM FULL trong cửa sổ bảo trì. VACUUM FULL lấy ACCESS EXCLUSIVE và viết lại bảng, nên không chạy giờ cao điểm.
+
+### Bảng so sánh cách chạy batch
+| Cách | Lock giữ | Rủi ro |
+|---|---|---|
+| Một transaction 5 triệu dòng | suốt 40 phút | chặn DDL, bloat, replica lag, rollback rất lâu |
+| Lô 5.000 dòng, commit mỗi lô | vài trăm ms | job dở dang nếu crash, cần checkpoint/idempotent |
+| COPY vào staging rồi merge theo lô | ngắn | phức tạp hơn, cần bảng staging |
+| Tăng autovacuum mạnh hơn (tăng cost_limit/scale_factor) | không giải quyết gốc | tốn I/O, không dọn được khi còn xmin |
+
+### Ví dụ đời thực
+Một hệ thống bán lẻ chạy batch cập nhật giá lúc 2 giờ sáng, ban đầu gói 5 triệu dòng trong một transaction. Bảng {{product}} 120 GB, sau ba đêm phình lên 380 GB; autovacuum chạy liên tục nhưng không giảm được. Đêm thứ tư, một deploy chạy ALTER TABLE thêm cột, bị batch giữ; DDL chờ 18 phút, mọi API đọc đơn hàng cũng chờ theo, p95 tăng từ 40 ms lên hơn 10 giây và có timeout. Đội chia batch thành lô 5.000 dòng, thêm {{idle_in_transaction_session_timeout = 5 phút}}, {{lock_timeout = 3 giây}} cho migration, đặt VACUUM sau mỗi lô lớn. Kết quả: batch còn 8 phút, lock mỗi lô dưới 300 ms, bloat giảm về 1,1 lần, p95 API trở lại 35 ms.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi trước hết tách hai vấn đề: lock bảng và xmin. Một transaction UPDATE 5 triệu dòng giữ row lock rất lâu; nếu có DDL cần ACCESS EXCLUSIVE, DDL phải chờ, và vì hàng đợi lock, cả SELECT phía sau cũng chờ theo. Song song, transaction giữ xmin cũ nên VACUUM không xoá được dead tuple, bảng phình dần. Tôi tìm PID bằng pg_stat_activity và pg_blocking_pids, huỷ câu query nếu được, rồi sửa gốc bằng cách chia lô vài nghìn dòng và commit mỗi lô để lock chỉ giữ vài trăm millisecond. Tôi cũng đặt idle_in_transaction_session_timeout, lock_timeout cho migration và statement_timeout cho API, đồng thời theo dõi n_dead_tup và age(relfrozenxid). Sau sự cố, tôi chạy VACUUM, cân nhắc pg_repack nếu bloat nặng, và thêm kiểm tra CI để không ai commit một transaction batch khổng lồ. Tôi cũng theo dõi hàng đợi lock và pg_locks để phát hiện sớm DDL bị chặn, và đặt lock_timeout cho migration để nó fail nhanh thay vì kéo cả hệ thống xuống.”
+
+> Senior tip: hãy coi mỗi transaction là một khoảng thời gian giữ tài nguyên. Batch 5 triệu dòng không chỉ chậm; nó biến xmin thành “van chặn” của VACUUM và biến một ALTER TABLE thành nút chặn toàn cục. Đo bằng pg_stat_activity trước khi tăng bất kỳ timeout nào.`,
+
+follow: [
+  'Vì sao SELECT thường không bị row lock của UPDATE block, nhưng vẫn bị block khi có ALTER TABLE đang chờ?',
+  'Bạn phân biệt pg_cancel_backend và pg_terminate_backend thế nào, và khi nào dùng cái nào?',
+  'VACUUM FULL và pg_repack khác nhau ra sao, và vì sao không chạy VACUUM FULL giờ cao điểm?'
+],
+tags: ['PostgreSQL', 'transaction', 'lock', 'VACUUM', 'xmin', 'bloat']
+},
+{
+  id: 'sql-056',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Bạn đọc từ read replica để giảm tải primary. Vì sao người dùng vừa cập nhật profile nhưng tải lại vẫn thấy dữ liệu cũ, replica lag đo bằng gì, và thiết kế đọc-sau-ghi (read-after-write) thế nào cho đúng?',
+  a: `**Tóm tắt:** Replica áp WAL bất đồng bộ: primary commit trước, replica nhận và áp lại sau một khoảng trễ. “Lag” gồm write lag, flush lag và replay lag; đo bằng {{pg_last_wal_replay_lsn()}} trên standby và {{replay_lag}} trong {{pg_stat_replication}} trên primary. Đọc-sau-ghi cần đảm bảo request đọc nhìn thấy bản ghi vừa viết: route đọc về primary trong một cửa sổ ngắn, hoặc chờ tới LSN của write, hoặc dùng {{synchronous_commit = remote_apply}} cho thao tác quan trọng. Không có cách “miễn phí” nào đảm bảo đọc replica luôn mới.
+
+### Cơ chế replication từng bước
+1. Primary nhận transaction, ghi WAL (write-ahead log) và commit. Mỗi WAL record có một LSN (log sequence number) — số thứ tự byte trong log.
+2. WAL sender trên primary stream WAL tới standby. Standby có WAL receiver, ghi vào đĩa (write), fsync (flush), rồi áp vào dữ liệu (replay).
+3. Ba giai đoạn này có độ trễ khác nhau. Một standby có thể đã nhận WAL nhưng chưa fsync, hoặc đã fsync nhưng chưa replay. Chỉ sau replay, câu SELECT trên standby mới thấy dữ liệu mới.
+4. Nếu primary có nhiều standby, mỗi standby có LSN riêng. “Lag bằng 0” trên một standby không có nghĩa standby khác cũng bằng 0.
+
+Trên primary, {{pg_stat_replication}} cho biết từng standby đang ở đâu: {{sent_lsn}}, {{write_lsn}}, {{flush_lsn}}, {{replay_lsn}}, cùng {{write_lag}}, {{flush_lag}}, {{replay_lag}}. Trên standby, {{pg_last_wal_receive_lsn()}} là WAL đã nhận, {{pg_last_wal_replay_lsn()}} là WAL đã áp. Khoảng cách giữa hai giá trị là phần “nhận rồi nhưng chưa áp”.
+
+~~~sql
+-- trên primary: từng standby đang theo kịp tới đâu
+SELECT client_addr, state, sent_lsn, write_lsn, flush_lsn, replay_lsn,
+       write_lag, flush_lag, replay_lag
+FROM pg_stat_replication;
+~~~
+~~~sql
+-- trên standby: nhận tới đâu, áp tới đâu
+SELECT pg_last_wal_receive_lsn() AS received,
+       pg_last_wal_replay_lsn()  AS replayed,
+       pg_last_xact_replay_timestamp() AS last_replay_ts;
+~~~
+Có thể tính chênh lệch bằng {{pg_wal_lsn_diff(primary_lsn, replay_lsn)}}. Nếu replay lag tăng liên tục, hãy xem standby có bị long query chặn không, hoặc có batch import lớn đang tạo WAL khủng.
+
+### Vì sao user thấy dữ liệu cũ
+Người dùng đổi tên lúc 10:00:00. Primary commit, WAL được stream. Replica đang có replay lag 2,4 giây. Người dùng tải lại lúc 10:00:01; request đọc được route tới replica, replica mới áp tới 09:59:59, nên trả về tên cũ. Đây không phải bug cache, mà là semantics của asynchronous replication. Với các thao tác “đọc ngay sau khi ghi” như đổi mật khẩu, xác nhận đơn, cập nhật số dư, dữ liệu cũ có thể gây hậu quả nghiệp vụ.
+
+### Các cách đảm bảo đọc-sau-ghi
+| Cách | Đảm bảo | Giá phải trả |
+|---|---|---|
+| Đọc từ primary trong N giây sau ghi | Mạnh, dễ hiểu | Tăng tải primary, cần chia sẻ trạng thái “vừa ghi” |
+| Chờ LSN: primary trả LSN, standby poll tới khi replay >= LSN | Mạnh, đúng cho từng write | Thêm độ trễ, cần polling hoặc callback |
+| synchronous_commit = remote_apply | Standby áp xong trước khi commit trả về | Ghi chậm hơn, standby phải sống |
+| Token/version ở client, route theo token | Linh hoạt | Phức tạp, phải quản lý TTL |
+| Chỉ đọc replica cho dữ liệu không nhạy cảm | Đơn giản | Không giải quyết được bài toán đọc-sau-ghi |
+
+{{synchronous_commit}} có các mức: {{off}}, {{local}}, {{remote_write}}, {{on}} (mặc định là on: chờ WAL được flush trên standby), {{remote_apply}} (chờ standby áp xong). {{remote_apply}} cho đảm bảo mạnh nhất nhưng mỗi commit phải chờ network + apply, nên chỉ dùng cho thao tác quan trọng như thanh toán, không dùng cho toàn bộ hệ thống. Có thể dùng {{synchronous_standby_names = 'ANY 1 (s1, s2)'}} để không phụ thuộc một standby duy nhất.
+
+### Thiết kế trong Spring
+~~~java
+// Đánh dấu "vừa ghi" trong session/request scope, TTL ngắn.
+if (session.justWrote()) {
+    return primaryJdbc.query("SELECT ...", mapper);   // đọc primary trong 5 giây
+}
+return replicaJdbc.query("SELECT ...", mapper);       // bình thường đọc replica
+~~~
+Có thể dùng {{AbstractRoutingDataSource}} với một lookup key “primary” hoặc “replica”, hoặc hai DataSource riêng. Nếu dùng Spring Data, {{@Transactional(readOnly = true)}} có thể đi tới replica nếu cấu hình routing theo readOnly; nhưng hãy cẩn thận: readOnly không đảm bảo route, và một transaction ghi vẫn phải về primary. Đặt TTL của cờ “vừa ghi” khoảng 5–10 giây, đủ dài hơn replay lag p95 nhưng không quá dài để không dồn tải về primary.
+
+### Lỗi hay gặp trên production
+- **Đọc replica cho số dư, tồn kho, ghế**: hai request đồng thời đọc replica cũ rồi cùng trừ, gây oversell. Các thao tác này phải đọc primary hoặc dùng điều kiện cập nhật nguyên tử.
+- **Failover**: khi primary chết, một replica được promote. Replica đó có thể thiếu vài transaction cuối nếu asynchronous; cần kiểm tra LSN và có quy trình đối soát.
+- **Long query trên replica**: một báo cáo chạy 10 phút có thể bị hủy khi replay cần áp WAL, hoặc làm replay lag tăng. {{max_standby_streaming_delay}} quyết định standby chờ bao lâu trước khi hủy query; {{hot_standby_feedback}} cho primary biết standby đang cần tuple cũ, tránh vacuum sớm nhưng có thể làm bloat trên primary.
+- **Batch import lớn**: một câu COPY/UPDATE khổng lồ tạo WAL lớn, replica replay lâu; chia lô.
+- **Connection pool**: replica cũng cần pool riêng, theo dõi lag trước khi tăng pool.
+
+### Ví dụ đời thực
+Một ứng dụng có 1 primary và 3 read replica, replay lag p95 2,4 giây. Sau khi user đổi mật khẩu, họ đăng nhập lại bằng mật khẩu cũ trong 3 giây, tạo hơn 200 ticket hỗ trợ mỗi tháng. Đội thêm cờ “vừa ghi” trong session TTL 10 giây: các request đọc ngay sau khi đổi mật khẩu đi về primary, còn lại vẫn đọc replica. Kết quả: 0 ticket đọc-sau-ghi trong tháng tiếp theo, tải primary tăng khoảng 6% vì chỉ một tỷ lệ nhỏ request bị route về primary. Với thanh toán, đội đặt {{synchronous_commit = remote_apply}} cho đúng một service, chấp nhận p99 ghi tăng từ 40 ms lên 90 ms.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi không coi read replica là bản sao tức thời; replication là bất đồng bộ nên luôn có cửa sổ trễ. Tôi đo bằng replay_lag trong pg_stat_replication và so pg_last_wal_receive_lsn với pg_last_wal_replay_lsn trên standby, vì nhận WAL khác với đã áp. Với đọc-sau-ghi, tôi chọn theo mức độ quan trọng: thao tác bình thường đọc replica, thao tác vừa ghi thì route về primary trong vài giây, hoặc chờ LSN cụ thể của write. Với thanh toán hoặc dữ liệu không được phép sai, tôi dùng synchronous_commit remote_apply cho service đó và chấp nhận ghi chậm hơn. Tôi cũng theo dõi long query trên replica vì nó làm replay lag tăng, và kiểm tra quy trình failover để biết replica được promote có thiếu WAL cuối hay không. Tôi đặt TTL của cờ vừa ghi dài hơn p99 replay lag một chút, và đo lại sau mỗi lần deploy. Tôi cũng kiểm tra luồng nào đang dùng synchronous replication và luồng nào chấp nhận bất đồng bộ, để không trả giá latency cho toàn hệ thống.”
+
+> Senior tip: hãy viết rõ trong thiết kế “đọc replica chấp nhận trễ bao nhiêu giây”. Nếu không có con số đó, mọi bug đọc-sau-ghi sẽ bị đổ cho cache. Đo replay lag p95 và p99, đặt TTL của cờ “vừa ghi” dài hơn p99 một chút, và chỉ dùng synchronous_commit cho những luồng thật sự cần.`,
+
+follow: [
+  'replay_lag và write_lag khác nhau thế nào, và vì sao replay_lag có thể tăng dù mạng rất nhanh?',
+  'hot_standby_feedback giúp gì cho query trên replica, nhưng gây hại gì cho primary?',
+  'Khi failover, làm sao biết replica được promote có thiếu transaction cuối cùng không, và xử lý ra sao?'
+],
+tags: ['read replica', 'replication lag', 'read-after-write', 'PostgreSQL', 'synchronous_commit']
+},
+{
+  id: 'sql-057',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Bạn phải thêm một cột NOT NULL và một index lớn vào bảng 2 tỷ dòng mà không downtime. Thiết kế migration Flyway theo expand–contract thế nào, và những câu SQL nào không được chạy trong transaction?',
+  a: `**Tóm tắt:** Không bao giờ ALTER một bước rồi deploy. Làm ba pha: expand (thêm cột nullable, tạo index CONCURRENTLY, backfill theo lô), migrate (code viết và đọc cả hai), contract (drop cột cũ sau khi chắc chắn không còn ai đọc). Flyway chạy mỗi migration trong transaction theo mặc định; các lệnh như {{CREATE INDEX CONCURRENTLY}} không thể chạy trong transaction, nên phải khai báo {{executeInTransaction = false}} cho đúng script đó, nếu không sẽ lỗi “CREATE INDEX CONCURRENTLY cannot run inside a transaction block”.
+
+### Vì sao không ALTER một bước
+Một câu {{ALTER TABLE ... ADD COLUMN ... NOT NULL}} trên bảng 2 tỷ dòng phải scan toàn bảng để kiểm tra không có NULL, giữ khoá ACCESS EXCLUSIVE suốt thời gian đó. Một câu {{CREATE INDEX}} thường cũng giữ khoá SHARE, chặn mọi câu ghi trong hàng chục phút. Với hệ thống 24/7, đó là downtime dù không ai “tắt server”. Expand–contract chia nhỏ từng bước để mỗi bước giữ khoá ngắn, có thể chạy khi hệ thống đang sống, và có đường lùi nếu lỗi.
+
+### Ba pha expand–contract
+**Expand** — chỉ thêm, không sửa dữ liệu cũ:
+1. Thêm cột nullable, không default hoặc default hằng số. {{ADD COLUMN}} chỉ đổi metadata; PostgreSQL 11+ không viết lại bảng khi default là hằng số.
+2. Tạo index bằng {{CREATE INDEX CONCURRENTLY}}: hai lần quét bảng, không chặn ghi, nhưng không chạy trong transaction.
+3. Backfill theo lô, mỗi lô một transaction ngắn. Không dùng một câu UPDATE 2 tỷ dòng.
+4. Thêm ràng buộc {{CHECK (col IS NOT NULL) NOT VALID}} (không quét dữ liệu cũ), rồi {{VALIDATE CONSTRAINT}} (chỉ tốn SHARE UPDATE EXCLUSIVE, không chặn ghi).
+5. Sau khi check đã hợp lệ, {{ALTER COLUMN SET NOT NULL}}. PostgreSQL 12+ có thể tận dụng check đã validate để không phải quét lại toàn bảng; vẫn nên kiểm tra plan.
+
+**Migrate** — deploy code viết cả cột cũ và cột mới, đọc cột mới nhưng fallback về cột cũ khi cột mới null. Không có release nào chỉ đọc cột cũ sau pha này.
+
+**Contract** — sau 1–2 tuần, khi metric xác nhận không còn đọc cột cũ, drop cột cũ trong một migration riêng. Drop cột là metadata nhanh, nhưng phải chắc chắn không còn view, index, code hay báo cáo phụ thuộc.
+
+### Vì sao một số câu không chạy được trong transaction
+PostgreSQL có thể rollback DDL trong transaction, nhưng {{CREATE INDEX CONCURRENTLY}}, {{REINDEX CONCURRENTLY}}, {{ALTER TYPE ... ADD VALUE}} (trong một số phiên bản), và {{VACUUM}} không chạy trong transaction. Flyway phát hiện một số trường hợp và đánh dấu script là non-transactional, nhưng đừng dựa vào may mắn: hãy khai báo rõ {{executeInTransaction = false}} trong file cấu hình script (ví dụ {{V2__expand_index.sql.conf}}), hoặc dùng Java migration và override {{canExecuteInTransaction()}} trả về false.
+
+~~~sql
+-- V1__expand_add_status.sql: metadata, lock rất ngắn
+ALTER TABLE orders ADD COLUMN status text;
+~~~
+~~~text
+# V2__expand_index_status.sql.conf
+executeInTransaction=false
+~~~
+~~~sql
+-- V2__expand_index_status.sql
+CREATE INDEX CONCURRENTLY idx_orders_status_created
+ON orders (status, created_at);
+~~~
+Nếu index build lỗi giữa chừng, PostgreSQL để lại một index ở trạng thái INVALID. Phải drop index đó rồi tạo lại; không được coi là đã xong. Kiểm tra bằng {{pg_index.indisvalid}}.
+
+### Backfill theo lô
+~~~java
+// Mỗi lô là một transaction riêng: lock ngắn, không bloat khổng lồ.
+int lastId = 0;
+while (true) {
+    List<Long> ids = jdbc.queryForList(
+        "SELECT id FROM orders WHERE id > ? ORDER BY id LIMIT 5000",
+        Long.class, lastId);
+    if (ids.isEmpty()) break;
+
+    transactionTemplate.execute(status -> {
+        jdbc.batchUpdate("UPDATE orders SET status = 'NEW' WHERE id = ?", ids);
+        return null;
+    });
+
+    lastId = ids.get(ids.size() - 1);
+    Thread.sleep(50);              // nhường I/O và cho replica theo kịp
+}
+~~~
+Backfill phải idempotent: nếu job dừng giữa chừng, chạy lại từ đầu vẫn đúng vì điều kiện {{WHERE status IS NULL}} hoặc {{id > lastId}} không tạo bản ghi trùng. Không commit một lô khổng lồ “cho nhanh”; bloat và WAL sẽ quay lại cắn bạn.
+
+### Bảng mức khoá của từng câu
+| Câu | Mức khoá | Chặn gì |
+|---|---|---|
+| ADD COLUMN nullable | ACCESS EXCLUSIVE rất ngắn | hầu như không chặn vì chỉ đổi catalog |
+| CREATE INDEX | SHARE | chặn INSERT/UPDATE/DELETE |
+| CREATE INDEX CONCURRENTLY | SHARE UPDATE EXCLUSIVE | không chặn DML, chặn DDL khác |
+| ADD CONSTRAINT CHECK NOT VALID | SHARE ROW EXCLUSIVE | chặn ghi, không chặn đọc |
+| VALIDATE CONSTRAINT | SHARE UPDATE EXCLUSIVE | không chặn DML |
+| SET NOT NULL | ACCESS EXCLUSIVE + scan | chặn tất cả nếu không có check |
+| DROP COLUMN | ACCESS EXCLUSIVE ngắn | chặn ngắn, nhưng phải chắc không còn phụ thuộc |
+
+### Lỗi hay gặp trên production
+- **Migration transaction che mất lỗi**: nếu migration lỗi giữa chừng, Flyway đánh dấu failed; phải {{repair}} hoặc sửa thủ công trước khi chạy tiếp. Đừng bỏ qua.
+- **CREATE INDEX CONCURRENTLY trong transaction**: lỗi ngay, nhưng nếu đã có index INVALID thì phải dọn trước khi tạo lại.
+- **ADD COLUMN DEFAULT volatile**: default như {{random()}} hoặc {{now()}} có thể buộc PostgreSQL viết lại bảng. Dùng default hằng số hoặc nullable rồi backfill.
+- **Backfill không theo dõi được**: job chạy 8 tiếng, không biết đang ở đâu. Chia lô và ghi checkpoint.
+- **Contract quá sớm**: drop cột khi còn một báo cáo cũ đọc nó → lỗi runtime. Kiểm tra log truy vấn, pg_stat_statements, dependency của view, rồi mới drop.
+- **Out-of-order**: hotfix có version nhỏ hơn version đã chạy; bật {{outOfOrder}} chỉ khi thật sự cần và hiểu rủi ro.
+
+### Ví dụ đời thực
+Một bảng {{orders}} 2,1 tỷ dòng, 380 GB. Đề bài: thêm {{status}} NOT NULL và index {{ (status, created_at) }}. Bản nháp đầu chạy {{ALTER TABLE ... SET NOT NULL}} và {{CREATE INDEX}} thường; migration bị kill sau 3 giờ vì deploy timeout, bảng bị khoá khiến API đơn hàng timeout hàng loạt. Đội chia thành 7 migration Flyway qua 3 lần deploy: thêm cột nullable, tạo index CONCURRENTLY (18 phút, p95 ghi tăng 8%), backfill 2.000 dòng/lô (42 phút, không downtime), thêm check NOT VALID + validate, set NOT NULL, deploy code đọc/ghi hai cột, sau 2 tuần drop cột cũ. Tổng thời gian migration 1 giờ 6 phút, không có phút downtime nào; index 24 GB, dung lượng tăng 6%.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi không bao giờ coi một câu ALTER lớn là migration an toàn. Tôi làm expand–contract: thêm cột nullable, tạo index CONCURRENTLY, backfill từng lô, rồi mới ràng buộc NOT NULL. Flyway mặc định bọc mỗi script trong transaction, nên với CREATE INDEX CONCURRENTLY tôi phải đặt executeInTransaction=false ở script config; nếu không sẽ lỗi ngay. Tôi chia backfill thành lô vài nghìn dòng, mỗi lô một transaction, có checkpoint để chạy lại. Sau khi deploy code đọc/ghi cả hai, tôi theo dõi pg_stat_statements và log để chắc không còn ai đọc cột cũ, rồi mới drop trong một migration riêng. Tôi cũng chuẩn bị đường lùi: nếu index lỗi, drop index INVALID rồi tạo lại; nếu backfill lỗi, sửa idempotent và chạy tiếp. Trước khi chạy thật, tôi thử migration trên bản sao production, đo thời gian từng bước và kiểm tra lock_timeout. Mục tiêu là mỗi bước giữ khoá ngắn và có thể dừng giữa chừng mà hệ thống vẫn sống.”
+
+> Senior tip: hãy viết migration như viết code có review. Mỗi script chỉ làm một việc, có thể chạy lại, và có câu lệnh kiểm tra trước khi deploy. Một migration 2 tỷ dòng không sai cú pháp vẫn có thể là một sự cố downtime nếu nó giữ ACCESS EXCLUSIVE.`,
+
+follow: [
+  'Vì sao VALIDATE CONSTRAINT không chặn ghi, còn ADD CONSTRAINT CHECK NOT VALID lại chặn ghi?',
+  'Khi nào nên dùng CREATE INDEX CONCURRENTLY, và làm sao biết index vừa tạo có hợp lệ?',
+  'Bạn làm gì nếu migration Flyway thất bại giữa chừng và schema history bị đánh dấu failed?'
+],
+tags: ['Flyway', 'zero-downtime', 'migration', 'expand-contract', 'PostgreSQL', 'lock']
+},
+{
+  id: 'sql-058',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bảng event 2 tỷ dòng có payload JSONB. Query lọc theo payload->>\'tenant_id\' và payload->>\'sku\', sắp xếp theo created_at, LIMIT 20. GIN index có giúp gì không, khi nào nên dùng expression index B-tree, và làm sao biết index thật sự được dùng?',
+  a: `**Tóm tắt:** GIN index trên JSONB nhanh cho containment ({{@>}}, {{?}}) và không sắp xếp được; với filter equality + ORDER BY + LIMIT, B-tree composite trên expression {{((payload->>'tenant_id'), (payload->>'sku'), created_at)}} thường thắng vì nó vừa lọc vừa trả row theo thứ tự, dừng sớm ở LIMIT. Expression index chỉ được dùng khi câu query viết đúng expression đó, cùng cast và collation. Luôn xác nhận bằng {{EXPLAIN (ANALYZE, BUFFERS)}}: thấy Index Scan hay Bitmap Scan, rows thực tế, và có sort hay không.
+
+### JSONB và các loại index
+JSONB lưu JSON ở dạng nhị phân đã phân tích, giữ key và giá trị nhưng không giữ khoảng trắng hay thứ tự key. Để tìm trong JSONB, PostgreSQL có hai họ index chính:
+- **GIN** (generalized inverted index): tạo một entry cho mỗi key/giá trị bên trong JSON. Truy vấn containment {{payload @> ...}} kiểm tra: JSON bên trái có chứa mọi key/value của JSON bên phải không (ví dụ {{tenant_id}} và {{sku}}). {{jsonb_ops}} hỗ trợ cả key existence ({{?}}, {{?|}}, {{?&}}); {{jsonb_path_ops}} chỉ hỗ trợ {{@>}}, nhỏ hơn và nhanh hơn cho containment nhưng không trả lời được “key có tồn tại không”.
+- **B-tree expression**: index trên một biểu thức scalar, ví dụ {{payload->>'tenant_id'}}. Nó giống index trên cột text: hỗ trợ equality, range, ORDER BY, LIMIT.
+
+GIN không trả row theo thứ tự. Nếu filter chọn 200.000 row, GIN phải bitmap heap scan 200.000 row rồi sort để lấy 20 row mới nhất; B-tree composite có thể đi thẳng theo {{created_at DESC}} và dừng sau 20 row. Đó là lý do “GIN có index rồi” không đồng nghĩa với “query nhanh”.
+
+### Expression index hoạt động thế nào
+PostgreSQL chỉ dùng expression index khi biểu thức trong index **trùng khớp** biểu thức trong query, kể cả cast và collation. Nếu index là {{((payload->>'sku'))}} (text), query phải so sánh với text: {{payload->>'sku' = 's1'}}. Nếu query viết {{payload->'sku' = '"s1"'::jsonb}}, planner không dùng index text đó. Nếu index dùng {{lower(payload->>'sku')}}, query cũng phải viết {{lower(payload->>'sku')}}.
+
+Index cũng phải là IMMUTABLE. {{payload->>'x'}} là immutable; {{now()}} thì không, nên không thể index trực tiếp. Collation mặc định của index là collation của biểu thức (thường lấy theo cột hoặc database); nếu query thêm {{COLLATE "C"}} mà index không có, index bị bỏ.
+
+### Index đề xuất
+~~~sql
+-- equality trước, cột sắp xếp sau
+CREATE INDEX CONCURRENTLY idx_event_tenant_sku_created
+ON event (((payload->>'tenant_id')), ((payload->>'sku')), created_at DESC);
+~~~
+~~~sql
+SELECT id, payload, created_at
+FROM event
+WHERE payload->>'tenant_id' = $1
+  AND payload->>'sku' = $2
+ORDER BY created_at DESC
+LIMIT 20;
+~~~
+Với index trên, planner có thể dùng Index Scan: định vị cặp (tenant_id, sku), rồi đọc theo created_at giảm dần, dừng sau 20 row. Nếu một trong hai điều kiện là range (ví dụ {{payload->>'tenant_id' >= 't1'}}), thì phần ORDER BY sau range không còn được sắp xếp sẵn; khi đó cần cân nhắc index riêng hoặc chấp nhận sort. Thứ tự cột trong index: cột equality có selectivity cao đặt trước, nhưng nếu cả hai đều equality thì thứ tự không ảnh hưởng khả năng dùng; điều quan trọng là created_at nằm sau để phục vụ ORDER BY.
+
+~~~java
+// Truyền tham số đúng kiểu text để expression index được dùng; không nối chuỗi SQL.
+String sql = """
+    SELECT id, created_at FROM event
+    WHERE payload->>'tenant_id' = ? AND payload->>'sku' = ?
+    ORDER BY created_at DESC
+    LIMIT 20
+    """;
+List<EventRow> rows = jdbc.query(sql, eventMapper, tenantId, sku);
+~~~
+
+### Khi nào GIN vẫn tốt
+- Lọc “có chứa” với nhiều key linh hoạt: {{payload @> ...}} với JSON chứa tenant_id và sku.
+- Không biết trước key nào sẽ lọc; GIN không cần tạo một index cho mỗi key.
+- Filter chọn ít row và không cần ORDER BY theo created_at; bitmap scan + sort nhỏ là chấp nhận được.
+- Cần key existence: {{payload ? 'tenant_id'}}.
+
+Có thể tạo cả hai: GIN cho truy vấn linh hoạt, B-tree expression cho truy vấn nóng có ORDER BY. Nhưng mỗi index tốn dung lượng và làm ghi chậm hơn, nên đo trước khi thêm.
+
+### Lỗi hay gặp trên production
+- **Nhầm ->> và ->**: {{->>}} trả text, {{->}} trả jsonb. Index một bên không phục vụ bên kia.
+- **Sai kiểu khi so sánh**: {{->>}} trả về text, nên {{payload->>'amount' > 100}} không so sánh số mà so sánh theo thứ tự text: chuỗi {{'9'}} lớn hơn {{'100'}}, tức kết quả sai nghiệp vụ. Muốn so sánh số phải cast rõ ràng — {{((payload->>'amount')::numeric > 100)}} — rồi tạo expression index đúng trên biểu thức đã cast đó (cast text sang numeric là immutable nên index được). Còn nếu so sánh theo thứ tự jsonb thì dùng toán tử {{->}}, ví dụ {{(payload->'amount') > '100'::jsonb}}.
+- **Collation**: {{COLLATE}} khác index làm index vô dụng.
+- **LIKE với wildcard đầu chuỗi**: {{payload->>'sku' LIKE '%abc%'}} không dùng B-tree; cần pg_trgm hoặc GIN trigram.
+- **GIN cho ORDER BY**: không có; đừng kỳ vọng.
+- **Index INVALID sau CREATE CONCURRENTLY lỗi**: kiểm tra {{pg_index.indisvalid}}.
+- **Bloat GIN**: {{fastupdate}} để bật mặc định, pending list có thể làm index chậm; với ghi nhiều, cân nhắc {{fastupdate = off}} hoặc tune {{gin_pending_list_limit}}.
+- **Index không được dùng vì thống kê cũ**: chạy {{ANALYZE event}} sau khi nạp dữ liệu lớn.
+
+### Ví dụ đời thực
+Bảng event 2 tỷ dòng, payload JSONB, có GIN {{jsonb_path_ops}} 90 GB. Query “event của tenant t1, sku s1, mới nhất” mất 3,5 giây vì GIN trả 1,8 triệu row rồi sort. Đội thêm B-tree composite trên expression (tenant_id, sku, created_at DESC), dung lượng 24 GB; query còn 12 ms, p95 API từ 4,1 giây xuống 180 ms. Ghi chậm khoảng 8% do thêm một index; đội giữ GIN cho các truy vấn analytics linh hoạt. Index build CONCURRENTLY mất 26 phút, không downtime.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi phân biệt hai loại index: GIN cho containment và key existence, B-tree expression cho equality, range và ORDER BY. Với filter tenant_id, sku cộng ORDER BY created_at LIMIT 20, tôi chọn B-tree composite trên ba expression, vì nó có thể dừng sau 20 row; GIN phải tìm tất cả row khớp rồi sort, nên chậm khi filter chọn nhiều row. Tôi viết expression trong index và query giống hệt nhau, cùng cast và collation, nếu không planner sẽ bỏ index. Sau khi tạo, tôi chạy EXPLAIN (ANALYZE, BUFFERS) để xác nhận Index Scan, số row thực tế và không có Sort. Tôi cũng kiểm tra index INVALID sau CREATE CONCURRENTLY và cân nhắc chi phí ghi, vì mỗi index thêm sẽ làm INSERT/UPDATE chậm hơn. Nếu GIN đã có, tôi vẫn đo xem B-tree có đáng thêm chi phí ghi không; nếu query đổi key liên tục, tôi giữ GIN và chấp nhận sort.”
+
+> Senior tip: một index JSONB không phải “một index cho mọi query”. Hãy bắt đầu từ 3–5 query nóng nhất, viết đúng expression của chúng, rồi đo bằng EXPLAIN. Nếu query thay đổi key liên tục, GIN là lưới an toàn; nếu query ổn định, B-tree expression gần như luôn nhanh hơn cho ORDER BY + LIMIT.`,
+
+follow: [
+  'jsonb_ops và jsonb_path_ops khác nhau thế nào, và bạn chọn cái nào dựa trên query nào?',
+  'Khi nào expression index trên payload->>\'key\' không dùng được dù đã tạo, và bạn kiểm tra bằng cách nào?',
+  'Bạn đo tác động của một GIN index tới tốc độ ghi và dung lượng như thế nào trên production?'
+],
+tags: ['JSONB', 'GIN', 'expression index', 'PostgreSQL', 'index', 'EXPLAIN']
+},
+{
+  id: 'sql-059',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bạn cần một hàng đợi job trong PostgreSQL cho 5 worker, mỗi job chạy vài giây. Thiết kế SELECT ... FOR UPDATE SKIP LOCKED thế nào để không worker nào nhận trùng, job không mất khi worker crash, và khi nào không nên dùng database làm hàng đợi?',
+  a: `**Tóm tắt:** Mỗi worker chạy một transaction READ COMMITTED, dùng {{SELECT ... FOR UPDATE SKIP LOCKED LIMIT n}} để chỉ nhận row chưa bị worker khác khoá; cập nhật trạng thái và lease trong cùng transaction rồi commit ngay. Job không mất nhờ lease (visibility timeout) + số lần thử + dead-letter: worker crash thì lease hết hạn, worker khác nhận lại. Database queue hợp khi vài trăm job/giây và cần transaction với dữ liệu nghiệp vụ; throughput rất cao hoặc cần replay thì dùng Kafka/SQS.
+
+### SKIP LOCKED làm gì
+{{FOR UPDATE}} khoá row được chọn cho tới khi transaction kết thúc. Nếu hai worker cùng chạy {{SELECT ... FOR UPDATE}} trên cùng row, worker thứ hai phải chờ. {{SKIP LOCKED}} thay vì chờ, nó bỏ qua row đang bị khoá và lấy row khác. Kết quả: N worker chạy song song, mỗi worker nhận một tập row rời nhau, không có “thundering herd” (một đám đông cùng thức dậy tranh nhau một tài nguyên). Đây là cách PostgreSQL biến một bảng thành hàng đợi đơn giản.
+
+Hai điều kiện quan trọng: nên chạy ở mức READ COMMITTED (mỗi câu thấy snapshot mới nhất tại thời điểm bắt đầu câu), và câu SELECT phải có ORDER BY + LIMIT để chọn tập nhỏ. {{FOR UPDATE}} không dùng được với {{GROUP BY}}, {{DISTINCT}}, aggregate hoặc {{UNION}}, vì row trả về không còn ánh xạ 1-1 với row bảng; khi đó phải bọc trong subquery/CTE.
+
+### Câu claim
+~~~sql
+WITH claimed AS (
+    SELECT id
+    FROM job
+    WHERE status = 'PENDING'
+      AND run_after <= now()
+    ORDER BY priority, id
+    LIMIT 5
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE job j
+SET status = 'RUNNING',
+    owner = $1,
+    lease_until = now() + interval '30 seconds',
+    attempts = attempts + 1
+FROM claimed
+WHERE j.id = claimed.id
+RETURNING j.*;
+~~~
+Sau câu này, commit ngay để nhả row lock. Việc xử lý job diễn ra ngoài transaction; không giữ lock trong lúc gọi API hay tính toán. Khi xong, worker chạy {{UPDATE job SET status='DONE' WHERE id=? AND owner=?}}; điều kiện {{owner}} là fencing token, tránh worker cũ ghi đè sau khi lease đã hết và worker khác nhận lại.
+
+### Lease và retry
+Job có thể mất nếu worker crash sau khi nhận nhưng trước khi đánh dấu DONE. Cách phòng ngừa:
+- {{lease_until}}: nếu quá hạn mà vẫn RUNNING, worker khác được phép nhận lại.
+- {{attempts}}: tăng mỗi lần claim; khi vượt {{max_attempts}}, chuyển sang trạng thái DEAD (dead-letter queue).
+- {{run_after}}: retry với backoff, ví dụ {{now() + interval '1 minute' * attempts}}.
+- Xử lý phải idempotent: nếu worker crash sau khi đã gọi API đối tác nhưng trước khi ghi DONE, job sẽ chạy lại; side effect phải an toàn khi lặp (dùng idempotency key).
+
+~~~sql
+-- reclaim job bị bỏ rơi
+UPDATE job
+SET status = 'PENDING', owner = NULL
+WHERE status = 'RUNNING'
+  AND lease_until < now();
+~~~
+Nếu dùng {{DELETE ... RETURNING}} để claim (at-most-once), worker crash sau khi delete sẽ làm mất job vĩnh viễn. Chỉ dùng khi job có thể tính lại hoặc mất một lần là chấp nhận được. Với đa số hệ thống, at-least-once + idempotent là lựa chọn đúng.
+
+### Java
+~~~java
+// Claim ngắn, commit ngay, xử lý ngoài transaction.
+List<Job> jobs = jdbc.query("""
+    WITH claimed AS (
+        SELECT id FROM job
+        WHERE status = 'PENDING' AND run_after <= now()
+        ORDER BY priority, id
+        LIMIT 5
+        FOR UPDATE SKIP LOCKED
+    )
+    UPDATE job j
+    SET status = 'RUNNING', owner = ?, lease_until = now() + interval '30 seconds'
+    FROM claimed WHERE j.id = claimed.id
+    RETURNING j.*
+    """, jobMapper(), workerId);
+
+for (Job job : jobs) {
+    try {
+        handler.handle(job);
+        markDone(job);                  // WHERE id = ? AND owner = ?
+    } catch (Exception e) {
+        markFailed(job);                // để lease hết hạn hoặc retry có backoff
+    }
+}
+~~~
+{{workerId}} là UUID của process, không phải biến đếm; nhiều instance có thể chạy cùng lúc.
+
+### Database queue hay Kafka?
+| Tiêu chí | PostgreSQL SKIP LOCKED | Kafka / SQS |
+|---|---|---|
+| Transaction với dữ liệu nghiệp vụ | Mạnh, cùng DB | Cần outbox pattern |
+| Throughput | Trăm đến vài nghìn job/s | Rất cao, hàng trăm nghìn msg/s |
+| Replay | Khó, cần lưu message | Dễ, theo offset |
+| Thứ tự | Theo ORDER BY, không toàn cục | Theo partition |
+| Vận hành | Không thêm hệ thống | Thêm cluster/broker |
+| Phù hợp | Job nền, outbox, retry, ít throughput | Luồng event lớn, analytics, nhiều consumer |
+
+Đừng dùng bảng DB làm queue cho hàng triệu message/giây: mỗi lần UPDATE tạo dead tuple, index phình, autovacuum chạy liên tục. Khi đó dùng Kafka/SQS, hoặc ít nhất là bảng partition + archive.
+
+### Lỗi hay gặp trên production
+- **Giữ transaction quá lâu**: claim xong mà xử lý trong transaction sẽ khoá row 30 giây, worker khác không nhận được. Commit trước khi xử lý.
+- **Không có lease**: worker crash làm job kẹt RUNNING mãi.
+- **Không có fencing**: worker cũ “sống lại” sau lease và ghi DONE đè kết quả mới.
+- **Retry không backoff**: job lỗi liên tục quay vòng, làm queue nóng.
+- **Bảng queue bloat**: thêm index {{ (status, run_after, priority) }}, partition theo ngày, archive job DONE.
+- **SKIP LOCKED ở REPEATABLE READ**: snapshot cố định có thể gây serialization error khi row bị transaction khác sửa; queue nên dùng READ COMMITTED.
+- **now() và timezone**: dùng {{timestamptz}}; so sánh {{run_after}} với {{now()}} cùng timezone.
+- **LISTEN/NOTIFY**: nếu worker chỉ poll mỗi 5 giây, job mới chờ tối đa 5 giây; có thể dùng NOTIFY để đánh thức, nhưng vẫn cần poll dự phòng.
+
+### Ví dụ đời thực
+Một hệ thống gửi email có 5 worker, 1,2 triệu job/ngày. Bản đầu dùng {{SELECT ... FOR UPDATE}} không SKIP LOCKED; 5 worker chờ nhau, p95 xử lý 8,2 giây, nhiều job trùng vì timeout. Đổi sang SKIP LOCKED + lease 30 giây + owner fencing: p95 còn 240 ms, không có job trùng trong 2 tuần. Một lần worker bị kill giữa job, job được worker khác nhận sau 31 giây và hoàn tất; phía đối tác nhận đúng một email vì idempotency key. Bảng job 50 triệu row được partition theo tháng; job DONE cũ được archive, index chỉ còn vài triệu row nóng.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi dùng SKIP LOCKED cho hàng đợi trong PostgreSQL khi job không quá dày. Mỗi worker chạy một transaction READ COMMITTED, claim 5 job bằng CTE có ORDER BY và LIMIT FOR UPDATE SKIP LOCKED, rồi commit ngay để nhả lock; xử lý diễn ra ngoài transaction. Để job không mất khi worker crash, tôi dùng lease_until và attempts: job quá hạn lease được worker khác nhận lại, vượt max_attempts thì vào dead-letter. Tôi luôn có fencing token owner khi ghi DONE để worker cũ không đè kết quả mới. Tôi theo dõi queue depth, oldest pending, lease expired và dead-letter. Tôi cũng theo dõi số job RUNNING quá lease; nếu queue tăng liên tục, tôi kiểm tra worker có chậm hay job có retry vô hạn không. Nếu throughput cần hàng trăm nghìn message/giây hoặc cần replay, tôi chuyển sang Kafka/SQS, vì bảng DB sẽ bloat và autovacuum không theo kịp.”
+
+> Senior tip: hãy thiết kế hàng đợi như một state machine, không phải một câu SELECT. PENDING → RUNNING → DONE/DEAD, mỗi lần chuyển trạng thái có điều kiện và có người dọn dẹp. Lease và fencing quan trọng hơn SKIP LOCKED; thiếu chúng, queue sẽ mất job hoặc chạy trùng trong lần worker đầu tiên bị crash.`,
+
+follow: [
+  'Vì sao SKIP LOCKED chỉ an toàn ở READ COMMITTED, và điều gì xảy ra nếu dùng REPEATABLE READ?',
+  'Bạn thiết kế dead-letter queue và retry backoff thế nào để job lỗi không làm nghẽn worker?',
+  'Khi nào nên chuyển từ database queue sang Kafka, và outbox pattern giải quyết vấn đề gì?'
+],
+tags: ['SKIP LOCKED', 'queue', 'PostgreSQL', 'worker', 'lease', 'idempotent']
+},
+{
+  id: 'sql-060',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bạn nghi một API chậm do database. Hãy đọc pg_stat_statements để tìm những query tốn kém nhất: cột nào cần xem, vì sao xếp theo total_exec_time chứ không phải mean_exec_time, và làm sao phân biệt N+1 với một query chậm đơn lẻ?',
+  a: `**Tóm tắt:** {{pg_stat_statements}} tổng hợp theo {{queryid}} — hash của câu query đã chuẩn hoá, literal được thay bằng {{$1}}. Tìm theo {{total_exec_time}} giảm dần để thấy tổng gánh nặng; {{mean_exec_time}} chỉ cho biết độ chậm trung bình. {{calls}} rất cao + {{rows}} thấp thường là N+1; {{temp_blks_read/written}} cao là sort/hash tràn đĩa; {{shared_blks_read}} cao là đọc I/O; {{wal_bytes}} cao là ghi nhiều. Cần {{shared_preload_libraries}} và {{CREATE EXTENSION}} trước khi dùng.
+
+### Bật và giới hạn
+PostgreSQL không ghi sẵn thống kê này; phải nạp thư viện lúc khởi động: {{shared_preload_libraries = 'pg_stat_statements'}}, sau đó restart (trên RDS là sửa parameter group rồi reboot). Trong database, chạy {{CREATE EXTENSION pg_stat_statements;}}. Mặc định chỉ theo dõi câu top-level; {{pg_stat_statements.track = 'all'}} để thấy cả câu bên trong function. {{pg_stat_statements.max}} giới hạn số câu được theo dõi; nếu quá nhỏ, câu ít gặp bị đẩy ra. {{track_utility}} quyết định có theo dõi câu tiện ích như SET không.
+
+### Những cột cần xem
+- {{queryid}}: định danh câu query đã chuẩn hoá. Cùng một queryid có thể có nhiều plan khác nhau tuỳ giá trị tham số.
+- {{query}}: text đã chuẩn hoá, literal thành {{$1}}; bị cắt ngắn theo {{track_activity_query_size}}.
+- {{calls}}: số lần thực thi.
+- {{total_exec_time}}: tổng thời gian thực thi (PG 13+; PG 12 trở về trước là {{total_time}}).
+- {{mean_exec_time}}: trung bình (PG 13+; trước đó là {{mean_time}}).
+- {{rows}}: tổng số row trả về; chia cho {{calls}} để biết mỗi lần trả bao nhiêu row.
+- {{shared_blks_hit}}, {{shared_blks_read}}, {{shared_blks_dirtied}}, {{shared_blks_written}}: block đọc từ cache, đọc từ đĩa, bẩn, ghi.
+- {{temp_blks_read}}, {{temp_blks_written}}: block tạm do sort/hash tràn đĩa.
+- {{wal_bytes}}: lượng WAL sinh ra; hữu ích khi nghi ghi nhiều hoặc bloat.
+- {{jit_*}}: thống kê JIT nếu bật.
+
+### Câu truy vấn top
+~~~sql
+SELECT queryid,
+       left(query, 120) AS query,
+       calls,
+       round(total_exec_time::numeric, 1) AS total_ms,
+       round(mean_exec_time::numeric, 2) AS mean_ms,
+       round(100 * total_exec_time / sum(total_exec_time) OVER ()::numeric, 1) AS pct,
+       rows,
+       round(rows::numeric / nullif(calls, 0), 1) AS rows_per_call,
+       shared_blks_hit,
+       shared_blks_read,
+       temp_blks_read,
+       temp_blks_written,
+       wal_bytes
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC
+LIMIT 10;
+~~~
+Nếu nghi một query cụ thể chậm nhưng ít gọi, xem thêm theo {{mean_exec_time}} với điều kiện {{calls > 100}} để tránh nhiễu.
+
+~~~java
+// Đọc top query theo tổng thời gian để đưa vào dashboard giám sát.
+List<QueryStat> top = jdbc.query("""
+    SELECT left(query, 120) AS query, calls,
+           total_exec_time, mean_exec_time, rows
+    FROM pg_stat_statements
+    ORDER BY total_exec_time DESC
+    LIMIT 20
+    """, queryStatMapper);
+~~~
+
+### Vì sao xếp theo total_exec_time
+Giả sử query A mất 2 ms, gọi 1 triệu lần: tổng 2.000 giây. Query B mất 800 ms, gọi 10 lần: tổng 8 giây. Nếu chỉ nhìn mean, B có vẻ “tệ hơn” (800 ms so với 2 ms), nhưng A mới là thứ đang ăn CPU database và làm API chậm. {{total_exec_time}} trả lời câu hỏi “query nào đang tiêu tốn tài nguyên nhất”; {{mean_exec_time}} trả lời “một lần chạy có chậm không”. Cả hai đều cần, nhưng ưu tiên sửa theo tổng trước.
+
+### Phân biệt N+1 với query chậm đơn lẻ
+- **N+1**: {{calls}} rất lớn (hàng chục nghìn đến hàng triệu), {{mean_exec_time}} nhỏ (1–5 ms), {{rows_per_call}} thường 1–2. Mẫu query lặp lại như {{SELECT ... WHERE id = $1}}. Đây là dấu hiệu ORM load từng bản con thay vì join.
+- **Query chậm đơn lẻ**: {{calls}} thấp, {{mean_exec_time}} cao (hàng trăm ms đến giây), {{total_exec_time}} lớn. Thường thiếu index, filter sai, hoặc plan xấu.
+- **Query vừa chậm vừa nhiều**: cần tối ưu cả hai; sửa index trước, rồi giảm số lần gọi.
+
+Cách xác nhận N+1: bật log SQL của Hibernate (hoặc p6spy), đếm số câu cùng queryid trong một request. Nếu một request sinh 200 câu {{SELECT ... WHERE id = ?}}, đó là N+1. Sửa bằng join fetch, {{@EntityGraph}}, hoặc batch size; sau đó {{calls}} phải giảm mạnh.
+
+### Các dấu hiệu khác
+- {{temp_blks_read/written}} > 0: sort/hash không đủ work_mem; tăng work_mem cho session báo cáo hoặc thêm index phù hợp.
+- {{shared_blks_read}} cao, {{shared_blks_hit}} thấp: cache chưa đủ hoặc query quét nhiều; xem EXPLAIN.
+- {{wal_bytes}} cao: nhiều INSERT/UPDATE; kiểm tra index thừa, bloat, hoặc batch quá lớn.
+- {{jit_*}}: JIT compile có thể tốn thời gian với query ngắn; trong OLTP có thể đặt {{SET jit = off}} cho session, nhưng đo trước.
+- {{rows}} lớn mà API chỉ cần vài row: thiếu LIMIT hoặc filter.
+
+### Lỗi hay gặp
+- **Reset quá thường xuyên**: {{pg_stat_statements_reset()}} xoá toàn bộ lịch sử; nếu reset mỗi giờ, bạn mất bức tranh dài hạn. Hãy chụp snapshot vào bảng riêng nếu cần so sánh.
+- **Chỉ nhìn mean**: bỏ sót query được gọi rất nhiều lần.
+- **Query text bị cắt**: literal đã chuẩn hoá, nhưng câu dài có thể bị cắt; dùng {{queryid}} để đối chiếu với log.
+- **Plan generic vs custom**: prepared statement có thể dùng plan generic cho tham số khác; thống kê trung bình trên nhiều lần chạy không cho biết plan nào xấu. Dùng {{auto_explain}} hoặc EXPLAIN với giá trị thật.
+- **Không thấy query đang chạy**: pg_stat_statements chỉ ghi câu đã hoàn tất; query đang chạy nằm ở {{pg_stat_activity}}.
+- **Không phân biệt user/service**: thống kê gộp toàn database; nếu nhiều service dùng chung, cần tách theo user hoặc dùng nhiều database.
+
+### Ví dụ đời thực
+API p95 3,8 giây. {{pg_stat_statements}} cho thấy query {{SELECT * FROM "Order" WHERE customer_id = $1}} có 420.000 calls, mean 2,8 ms, total 1.176 giây, chiếm 38% thời gian DB — dấu hiệu N+1 trong service đơn hàng. Đội thay vì load từng order rồi query từng dòng, dùng một câu join hoặc {{@EntityGraph}}; số call giảm còn 18 cho cùng request, p95 còn 220 ms, CPU DB giảm 40%. Một báo cáo khác chỉ có 1 call nhưng mean 40 giây; thiếu index trên {{created_at}}, thêm index CONCURRENTLY đưa về 1,2 giây.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi bật pg_stat_statements bằng shared_preload_libraries rồi restart, sau đó tạo extension. Tôi xếp theo total_exec_time giảm dần vì nó cho biết query nào đang ăn tài nguyên tổng thể, không chỉ chậm một lần. Tôi xem calls, mean, rows_per_call, temp_blks và shared_blks_read. Nếu calls rất cao và rows_per_call bằng 1–2, tôi nghi N+1 và kiểm tra log SQL để đếm số câu trong một request. Nếu calls thấp mà mean cao, tôi xem EXPLAIN để tìm thiếu index hoặc filter sai. Tôi cũng chụp snapshot định kỳ thay vì reset liên tục, và dùng auto_explain khi cần plan thật với tham số thật. Tôi đối chiếu với log và pg_stat_activity, vì thống kê chỉ ghi câu đã hoàn tất; query đang chạy phải xem trực tiếp. Sau khi sửa, tôi đo lại cùng bộ metric để chắc tổng thời gian giảm, không chỉ mean. Tôi lưu snapshot vào bảng riêng để so sánh giữa các lần deploy và không mất lịch sử khi reset.”
+
+> Senior tip: hãy coi pg_stat_statements là “hóa đơn tài nguyên” của database. Đừng tối ưu câu có mean cao nhất; hãy tối ưu câu có tổng lớn nhất trước, vì đó là thứ đang lấy CPU, I/O và làm API chậm. Sau mỗi lần sửa, chụp lại snapshot để so sánh.`,
+
+follow: [
+  'Vì sao queryid giống nhau nhưng mean_exec_time có thể thay đổi theo tham số, và bạn xử lý thế nào?',
+  'auto_explain khác pg_stat_statements thế nào, và khi nào nên bật auto_explain trên production?',
+  'Bạn làm gì nếu pg_stat_statements không thấy một query đang chạy chậm, dù API vẫn timeout?'
+],
+tags: ['pg_stat_statements', 'performance', 'N+1', 'PostgreSQL', 'EXPLAIN', 'monitoring']
 },
 );
