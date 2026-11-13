@@ -3221,5 +3221,323 @@ Mất song song mức chunk nhưng loại hẳn nguy cơ kẹt; thường đủ 
     'Đề xuất sửa gốc: tách pool cha/con hoặc bỏ lồng (song song 1 mức) hoặc cơ chế fork-join phù hợp ({{invokeAll}} từ thread ngoài, gợi ý {{ForkJoinPool+ManagedBlocker}}); kèm giảm blast radius: {{get(timeout)}}, giới hạn hàng đợi + {{RejectedExecutionHandler}}, metric/alert (completed đứng yên, active==max).'
   ],
   tags: ['thread-pool', 'futuretask', 'starvation-deadlock', 'executorservice', 'fixedthreadpool', 'jstack']
+},
+{
+  id: 'lab-thread-013',
+  category: 'thread',
+  title: 'Virtual threads pinned by synchronized around JDBC calls (batch 5000 customers)',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Batch xử lý 5000 khách hàng trên Spring Boot 3.4, Java 21, pod 8 vCPU. Mỗi khách cần một truy vấn SELECT tổng hợp (~50ms) qua JdbcTemplate. Code bọc lời gọi repository trong khối {{synchronized(customer)}} — mỗi khách một monitor riêng (theo thói quen bảo vệ state customer). Dùng {{Executors.newVirtualThreadPerTaskExecutor()}} để tận dụng virtual thread. Baseline platform thread ({{ExecutorService}} cố định 200 thread): wall-clock 1,3s, Hikari active max 198/200, CPU ~80%. Sau khi đổi sang virtual thread: wall-clock 31s (chậm gấp ~24 lần), Hikari active chỉ 8, CPU ~5%, không OOM, heap ổn định. {{jstack}} chỉ thấy 8 carrier thread {{ForkJoinPool-1-worker-*}}, mỗi cái {{Carrying virtual thread #N}} và đứng trong JDBC; {{jcmd Thread.dump_to_file}} cho thấy hàng nghìn virtual thread chưa mount được (đang chờ carrier). Bật {{jdk.tracePinnedThreads=full}} in ra nhiều dòng {{reason:MONITOR}} kèm {{<== monitors:1}} tại BatchService.java:44.`,
+  artifacts: [
+    {
+      name: 'jstack-vt-batch-01.txt',
+      lang: 'text',
+      content: `2026-11-12 03:45:12
+Full thread dump OpenJDK 64-Bit Server VM (21.0.5+11-LTS-151 mixed mode, sharing):
+
+"ForkJoinPool-1-worker-1" #21 daemon prio=5 os_prio=0 cpu=8123.45ms elapsed=480.21s tid=0x00007f8a1c01a000 nid=0x1a2b runnable  [0x00007f8a0c1fd000]
+   Carrying virtual thread #12
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.5/Native Method)
+        at java.base/java.lang.VirtualThread.parkOnCarrierThread(java.base@21.0.5/VirtualThread.java:677)
+        at java.base/sun.nio.ch.NioSocketImpl.park(java.base@21.0.5/NioSocketImpl.java:181)
+        at java.base/sun.nio.ch.NioSocketImpl.implRead(java.base@21.0.5/NioSocketImpl.java:330)
+        at java.base/java.net.SocketInputStream.socketRead0(java.base@21.0.5/Native Method)
+        at com.example.batch.CustomerRepository.findById(CustomerRepository.java:18)
+        at com.example.batch.BatchService.lambda$process$0(BatchService.java:44)
+        at java.base/java.lang.VirtualThread.run(java.base@21.0.5/VirtualThread.java:309)
+
+"ForkJoinPool-1-worker-2" #22 daemon prio=5 os_prio=0 cpu=7987.12ms elapsed=480.21s tid=0x00007f8a1c01c000 nid=0x1a2c runnable  [0x00007f8a0c0fc000]
+   Carrying virtual thread #13
+        ... (same stack, BatchService.java:44 -> CustomerRepository.findById -> JDBC socket read) ...
+
+... (8 carrier threads, mỗi cái carrying một virtual thread; 4992 virtual thread còn lại unmounted, không xuất hiện trong jstack) ...
+`
+    },
+    {
+      name: 'trace-pinned-threads.log',
+      lang: 'text',
+      content: `Thread[#42,ForkJoinPool-1-worker-3,5,CarrierThreads] reason:MONITOR
+    java.base/java.lang.VirtualThread$VThreadContinuation.onPinned(VirtualThread.java:183)
+    java.base/jdk.internal.vm.Continuation.onPinned0(Continuation.java:393)
+    java.base/java.lang.VirtualThread.parkOnCarrierThread(VirtualThread.java:677)
+    java.base/sun.nio.ch.NioSocketImpl.park(NioSocketImpl.java:181)
+    java.base/sun.nio.ch.NioSocketImpl.implRead(NioSocketImpl.java:330)
+    java.base/java.net.SocketInputStream.socketRead0(SocketInputStream.java:83)
+    com.example.batch.CustomerRepository.findById(CustomerRepository.java:18)
+    com.example.batch.BatchService.lambda$process$0(BatchService.java:44) <== monitors:1
+    java.base/java.lang.VirtualThread.run(VirtualThread.java:309)
+
+Thread[#43,ForkJoinPool-1-worker-5,5,CarrierThreads] reason:MONITOR
+    ... (same pattern; jdk.tracePinnedThreads lọc stack trùng theo vị trí) ...`
+    }
+  ],
+  questions: [
+    'Tại sao virtual threads bị chậm hơn platform threads khi bọc JDBC trong {{synchronized(customer)}}? Giải thích cơ chế pin carrier thread và vì sao nó triệt tiêu lợi ích của virtual thread.',
+    'Dòng {{<== monitors:1}} trong log {{jdk.tracePinnedThreads=full}} và dòng {{Carrying virtual thread #N}} trong jstack chỉ ra điều gì? Làm sao xác định vị trí code gây pin chính xác từ artifact?',
+    'So sánh hai cách sửa: (1) thay {{synchronized}} bằng {{ReentrantLock}} trên từng customer, (2) dùng {{Semaphore}} giới hạn concurrency bằng kích thước Hikari pool. Khi nào nên dùng cách nào? JEP 491 (JDK 24) thay đổi hành vi {{synchronized}} như thế nào?'
+  ],
+  hints: [
+    'Virtual thread chạy trên carrier thread (ForkJoinPool worker). Khi vào {{synchronized(customer)}} rồi block trong JDBC, JVM pin carrier — carrier không unmount được virtual thread để chạy virtual thread khác. Mặc định chỉ có ~số CPU core carrier (8 vCPU → 8 carrier), nên concurrency giảm từ 200 xuống 8; 5000 task × 50ms / 8 ≈ 31s.',
+    'Log {{jdk.tracePinnedThreads=full}} in {{reason:MONITOR}} và gắn {{<== monitors:1}} vào frame giữ monitor (BatchService.java:44). jstack không liệt kê virtual thread unmounted; nó chỉ hiện carrier qua dòng {{Carrying virtual thread #N}}. Dùng {{jcmd Thread.dump_to_file}} để thấy toàn bộ virtual thread. JDK 21-23 hỗ trợ flag này; JDK 24 gỡ bỏ (JEP 491).'
+  ],
+  answer: `**Tóm tắt:** {{synchronized(customer)}} pin carrier thread của virtual thread trong JDK 21-23 khi virtual thread block trong JDBC. Mặc định chỉ có ~8 carrier (8 vCPU), nên concurrency giảm từ 200 platform thread xuống 8 → throughput sụt từ 1,3s xuống 31s. Fix: dùng {{ReentrantLock}} trên từng customer (không pin) hoặc {{Semaphore}} giới hạn concurrency = Hikari pool size. JEP 491 (JDK 24) làm {{synchronized}} không còn pin (kể cả khi chờ monitor và {{Object.wait}}), nhưng vẫn serialize theo từng monitor; với lock per-customer thì không tranh chấp chéo.
+
+### Nguyên nhân gốc
+
+Virtual thread được thiết kế để unmount khỏi carrier thread khi blocking (I/O, sleep, park). Tuy nhiên, trong JDK 21-23, khi virtual thread **nắm monitor** của một khối {{synchronized}}, JVM pin nó vào carrier: carrier không thể unmount cho tới khi thoát khối. Nếu bên trong khối có blocking I/O (ở đây là JDBC socket read), carrier bị chiếm dụng suốt thời gian đó. Mặc định scheduler chỉ có số carrier xấp xỉ số CPU khả dụng (8 vCPU → 8 carrier), nên số task chạy đồng thời trong DB giảm từ 200 xuống 8. 5000 task × 50ms / 8 ≈ 31s; platform 200 thread: 5000 × 50ms / 200 ≈ 1,3s.
+
+JDK 21-23 còn pin cả khi virtual thread **chờ vào** monitor (blocking to acquire) và khi {{Object.wait()}}. Chỉ {{synchronized}} (native monitor) gây pin; {{ReentrantLock}}, {{Semaphore}}, {{CountDownLatch}}... là Java thuần → không pin. Native frame/JNI cũng pin.
+
+### Dẫn chứng (trích artifact)
+
+**jstack (jstack-vt-batch-01.txt):**
+- jstack chỉ liệt kê platform thread; virtual thread unmounted không xuất hiện. Ở đây thấy 8 carrier {{ForkJoinPool-1-worker-*}}, mỗi cái có dòng {{Carrying virtual thread #N}} và stack dừng tại {{BatchService.java:44}} → {{CustomerRepository.findById}} → JDBC socket read.
+- Các carrier đều {{runnable}} và {{cpu}} tăng đều; đây là dấu hiệu carrier bị chiếm dụng, không phải virtual thread chạy song song.
+
+**trace-pinned-threads.log ({{jdk.tracePinnedThreads=full}}):**
+- Dòng đầu: {{Thread[#42,ForkJoinPool-1-worker-3,5,CarrierThreads] reason:MONITOR}}.
+- Frame {{com.example.batch.BatchService.lambda$process$0(BatchService.java:44) <== monitors:1}} chỉ đúng vị trí {{monitorenter}} — khối {{synchronized(customer)}} bọc {{repo.findById}}.
+- Dùng {{jcmd <pid> Thread.dump_to_file -format=text}} để thấy hàng nghìn virtual thread chưa mount được (đang chờ carrier).
+
+### Cách sửa
+
+**Cách 1: {{ReentrantLock}} trên từng customer (không pin)**
+~~~java
+private final ConcurrentHashMap<Long, Lock> locks = new ConcurrentHashMap<>();
+
+public Customer process(Long id) {
+    Lock lock = locks.computeIfAbsent(id, k -> new ReentrantLock());
+    lock.lock();
+    try {
+        return repo.findById(id); // blocking I/O, virtual thread unmount bình thường
+    } finally {
+        lock.unlock();
+    }
+}
+~~~
+{{ReentrantLock}} dùng AQS Java → virtual thread unmount khi park; carrier tự do chạy virtual thread khác. Lưu ý: lock phải **per-customer**, không phải một lock toàn cục — lock toàn cục vẫn serialize mọi task (dù không pin).
+
+**Cách 2: {{Semaphore}} giới hạn concurrency = Hikari pool size**
+~~~java
+private final Semaphore dbPermits = new Semaphore(20); // = Hikari maximumPoolSize
+
+public Customer process(Long id) {
+    dbPermits.acquire();
+    try {
+        return repo.findById(id);
+    } finally {
+        dbPermits.release();
+    }
+}
+~~~
+{{Semaphore}} cũng không pin. Lợi ích: giới hạn đúng số connection, tránh bão hòa pool và timeout lấy connection.
+
+**Cách 3 (JDK 24+): JEP 491**
+Từ JDK 24, JVM theo dõi monitor theo virtual thread, nên {{synchronized}} không còn pin khi block trong khối, khi chờ monitor, hay {{Object.wait()}}. {{synchronized}} vẫn serialize **theo từng monitor**, nhưng với lock per-customer thì các task khác customer không bị chặn. {{jdk.tracePinnedThreads}} bị gỡ bỏ (đặt cũng không có tác dụng); JFR event {{jdk.VirtualThreadPinned}} vẫn còn cho native/JNI. Nếu giữ {{synchronized}} bọc I/O, vẫn nên giới hạn concurrency DB bằng {{Semaphore}}.
+
+### Phòng ngừa
+
+- **Code review rule:** Báo đỏ mọi {{synchronized}} bọc I/O (DB, HTTP, file) trong code dùng virtual thread; thay bằng {{ReentrantLock}}/{{Semaphore}} hoặc thu hẹp critical section.
+- **Test pinning:** JDK 21-23 dùng {{jdk.tracePinnedThreads=short}}; JDK 24+ dùng JFR event {{jdk.VirtualThreadPinned}}. Alert nếu có pin trong workload production-like.
+- **Giám sát:** Carrier utilization; nếu carrier 100% busy mà virtual thread queue lớn → nghi pin. Dùng {{jcmd Thread.dump_to_file}} (jstack không thấy virtual thread unmounted).
+- **HikariCP sizing:** connections = ((core_count * 2) + effective_spindle_count) tính theo **DB server**, không phải app; virtual thread không thay thế connection pool.
+- **Nâng cấp JDK:** JDK 24 bỏ pin cho {{synchronized}}, nhưng vẫn cần giới hạn concurrency xuống tài nguyên hữu hạn.
+
+> Senior tip: Virtual thread không phải "bùa phép" — nó chỉ unmount khi blocking. Trong JDK 21-23, {{synchronized}} bọc I/O là bẫy pin kinh điển: carrier (vài CPU core) bị chiếm dụng, throughput tụt về mức "số carrier". Nguyên tắc: không giữ monitor qua I/O; dùng {{ReentrantLock}}/{{Semaphore}}; giới hạn concurrency xuống DB bằng {{Semaphore}}. Và nhớ jstack không thấy virtual thread unmounted — dùng {{jcmd Thread.dump_to_file}}.`,
+  rubric: [
+    'Chỉ ra {{synchronized(customer)}} pin carrier thread (JDK 21-23) khi virtual thread block trong JDBC; carrier không unmount được, nên concurrency giảm từ 200 xuống ~8 (số CPU core), throughput sụt từ 1,3s xuống 31s.',
+    'Trích dẫn artifact: jstack có 8 carrier {{ForkJoinPool-1-worker-*}} với {{Carrying virtual thread #N}} và stack tại {{BatchService.java:44}}; trace log có {{reason:MONITOR}} và {{<== monitors:1}} tại dòng 44. Giải thích jstack không thấy virtual thread unmounted, phải dùng {{jcmd Thread.dump_to_file}}.',
+    'Đề xuất sửa đúng: {{ReentrantLock}} per-customer hoặc {{Semaphore}} = Hikari pool size, giải thích VÌ SAO không pin (Java thuần). Nêu JEP 491 (JDK 24) bỏ pin cho {{synchronized}} (kể cả chờ monitor, Object.wait) nhưng vẫn serialize theo monitor; {{jdk.tracePinnedThreads}} bị gỡ bỏ.'
+  ],
+  tags: ['virtual-thread', 'pinning', 'jdbc', 'synchronized', 'jdk-21', 'jep-491', 'reentrantlock', 'semaphore', 'hikaricp']
+},
+{
+  id: 'lab-thread-014',
+  category: 'thread',
+  title: 'CPU 100% do cờ không volatile trong busy-wait loop (Java 17)',
+  level: 'senior',
+   scenario: `**Bối cảnh:** Dịch vụ thanh toán Java 17 (Spring Boot 3.2) chạy trên Kubernetes pod 2 vCPU. Một luồng nền (background worker) poll trạng thái từ biến {{boolean shutdown = false}} để dừng vòng lặp xử lý. Lúc 14:22, CPU pod tăng lên ~100% (1/2 core), latency API tăng từ 15ms lên 2s, không GC spike, heap ổn định. {{top -H}} chỉ ra một thread Java (TID 4112) chiếm ~100% CPU. {{jstack}} khớp nid=0x1010 (hex của 4112) dừng tại vòng lặp:
+~~~java
+while (!shutdown) {
+    // busy wait
+}
+~~~
+Biến {{shutdown}} KHÔNG có {{volatile}}. JIT tối ưu hoisting read ra khỏi vòng lặp → thread quay vòng vô hạn đọc giá trị cached (false) trong register, không thấy HTTP handler set {{shutdown = true}}. Fix: thêm {{volatile}} hoặc dùng {{AtomicBoolean}}.
+Ngoài ra, code dùng {{HashMap}} chung giữa các thread (không đồng bộ) để cache metadata — rủi ro mất update, entry biến mất, size sai khi resize đồng thời (JDK 7 có thể tạo vòng lặp vô hạn, JDK 8+ không còn vòng lặp nhưng vẫn hỏng dữ liệu).`,
+  artifacts: [
+    {
+      name: 'top-H-output.txt',
+      lang: 'text',
+      content: `PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+4112 root      20   0  452312  12456   3212 R  99.7   1.5   5:21.45 java
+4113 root      20   0  452312  12456   3212 S   0.3   1.5   0:00.12 java
+4114 root      20   0  452312  12456   3212 S   0.1   1.5   0:00.08 java
+4115 root      20   0  452312  12456   3212 S   0.0   1.5   0:00.05 java
+`
+    },
+    {
+      name: 'jstack-cpu-100.txt',
+      lang: 'text',
+      content: `2026-11-13 14:25:10
+Full thread dump OpenJDK 64-Bit Server VM (17.0.12+7-LTS-151 mixed mode, sharing):
+
+"payment-worker-1" #21 prio=5 os_prio=0 cpu=321450.00ms elapsed=321.45s tid=0x00007f5a1c001000 nid=0x1010 runnable  [0x00007f5a0c1fd000]
+   java.lang.Thread.State: RUNNABLE
+        at com.example.payment.PaymentWorker.run(PaymentWorker.java:12)
+        at java.lang.Thread.run(java.base@17.0.12/Thread.java:833)
+
+   Locked ownable synchronizers:
+        - None
+
+"http-nio-8080-exec-1" #25 prio=5 os_prio=0 cpu=12.34ms elapsed=310.12s tid=0x00007f5a1c002000 nid=0x1014 waiting on condition  [0x00007f5a0c0fc000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@17.0.12/Native Method)
+        - parking to wait for  <0x000000076a1b0010> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+        at java.util.concurrent.locks.LockSupport.park(java.base@17.0.12/LockSupport.java:221)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(java.base@17.0.12/AbstractQueuedSynchronizer.java:2153)
+        at java.util.concurrent.LinkedBlockingQueue.take(java.base@17.0.12/LinkedBlockingQueue.java:443)
+        at java.util.concurrent.ThreadPoolExecutor.getTask(java.base@17.0.12/ThreadPoolExecutor.java:1087)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@17.0.12/ThreadPoolExecutor.java:1144)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@17.0.12/ThreadPoolExecutor.java:642)
+        at java.lang.Thread.run(java.base@17.0.12/Thread.java:833)
+
+   Locked ownable synchronizers:
+        - None
+
+... (other threads normal) ...
+`
+    },
+    {
+      name: 'PaymentWorker.java',
+      lang: 'java',
+      content: `package com.example.payment;
+
+import java.util.HashMap;
+import java.util.Map;
+
+public class PaymentWorker implements Runnable {
+    private boolean shutdown = false; // NOT volatile
+    private final Map<String, String> metadataCache = new HashMap<>(); // shared, unsynchronized
+
+    @Override
+    public void run() {
+        while (!shutdown) {
+            // busy-wait: no sleep, no park, no yield
+        }
+        metadataCache.clear();
+    }
+
+    public void requestShutdown() {
+        shutdown = true;
+    }
+
+    public void putMetadata(String key, String value) {
+        metadataCache.put(key, value);
+    }
+
+    public String getMetadata(String key) {
+        return metadataCache.get(key);
+    }
+}
+`
+    }
+  ],
+  questions: [
+    'Tại sao thread payment-worker-1 tiêu thụ 100% CPU? Giải thích cơ chế JIT hoisting read của biến không volatile ra khỏi vòng lặp.',
+    'Làm sao để đổi TID từ {{top -H}} (thập phân 4112) sang nid trong {{jstack}} (hex 0x1010)? Khi nào nid in thập phân thay vì hex (JDK version)?',
+    'Biến {{metadataCache}} ({{HashMap}} dùng chung không đồng bộ) gây rủi ro gì trên Java 17? So sánh với JDK 7 (vòng lặp vô hạn khi resize) và nêu cách sửa an toàn.'
+  ],
+  hints: [
+    'Biến {{shutdown}} không {{volatile}}. JIT (C2) biên dịch vòng lặp {{while (!shutdown)}}, thấy {{shutdown}} không thay đổi trong phương thức → hoist read ra khỏi loop (cache vào register). Thread chạy {{while (cachedFalse)}} vô hạn, không bao giờ thấy {{shutdown = true}} từ thread khác. CPU 100% vì vòng lặp rỗng chạy liên tục.',
+    '{{top -H}} ra TID thập phân (4112). Chuyển hex: 4112 = 0x1010. JDK 17 in nid hex (0x1010). JDK 18+ in nid thập phân. Khớp nid trong jstack: {{nid=0x1010}} chính là thread payment-worker-1.'
+  ],
+  answer: `**Tóm tắt:** Biến {{shutdown}} thiếu {{volatile}} khiến JIT hoist read ra khỏi vòng lặp {{while (!shutdown)}} → thread quay vòng vô hạn (busy-wait) tiêu thụ 100% CPU. {{top -H}} TID 4112 → hex 0x1010 khớp {{nid=0x1010}} trong jstack (JDK 17 in hex). Fix: thêm {{volatile}} hoặc dùng {{AtomicBoolean}}. Bên cạnh đó, {{HashMap}} dùng chung không đồng bộ rủi ro mất update, entry biến mất, size sai khi resize đồng thời (JDK 7 có thể vòng lặp vô hạn; JDK 8+ không còn vòng lặp nhưng vẫn hỏng dữ liệu) → dùng {{ConcurrentHashMap}} hoặc immutable snapshot.
+
+### Nguyên nhân gốc
+
+**1. Busy-wait do thiếu {{volatile}} (root cause CPU 100%):**
+Trong Java Memory Model, viết/đọc biến non-volatile không có *happens-before* giữa các thread. JIT compiler (C2) khi biên dịch nóng (tiered compilation) thấy vòng lặp {{while (!shutdown)}} mà biến {{shutdown}} không bị ghi trong phương thức {{run()}} → tối ưu: đọc {{shutdown}} **một lần** vào register, sau đó vòng lặp kiểm tra giá trị cached đó. Thread khác (HTTP handler) gọi {{requestShutdown()}} ghi {{shutdown = true}} vào main memory, nhưng worker thread vẫn đọc register cũ (false) → vòng lặp không bao giờ thoát → CPU 100% (runnable, không park, không yield).
+
+Đây là hành vi **đúng chuẩn JMM** — không phải bug JVM. {{volatile}} tạo *happens-before*: write volatile {{happens-before}} read volatile sau đó. {{AtomicBoolean}} dùng {{VarHandle}}/{{Unsafe}} có semantics tương tự.
+
+**2. {{HashMap}} dùng chung không đồng bộ (rủi ro phụ):**
+{{metadataCache}} là {{HashMap}} truy cập từ nhiều thread ({{putMetadata}}, {{getMetadata}}, {{clear}} trong {{run()}}). JDK 7 resize có thể tạo vòng lặp {{Entry.next}} khi hai thread cùng resize → {{get}} lặp vô hạn. JDK 8+ resize giữ thứ tự, không còn vòng lặp đó, nhưng race vẫn gây:
+- Mất update: ghi đè bucket, size sai.
+- Entry biến mất / dữ liệu không nhất quán (key tìm không thấy dù đã put).
+Không gây CPU 100% nhưng gây logic error production.
+
+### Dẫn chứng (trích artifact)
+
+**top-H-output.txt:**
+- Dòng 2: {{4112 ... R 99.7% ... java}}. TID 4112 là thread nóng nhất; các thread khác ~0%.
+
+**jstack-cpu-100.txt:**
+- Thread {{"payment-worker-1" #21 ... nid=0x1010 runnable}} tại {{PaymentWorker.run(PaymentWorker.java:12)}} — dòng 12 là:
+~~~java
+while (!shutdown) {
+    // busy wait
+}
+~~~
+- {{cpu=321450.00ms}} ≈ {{elapsed=321.45s}} → thread dùng gần 100% CPU liên tục.
+- Chuyển đổi: 4112 (dec) = 0x1010 (hex). **Khớp chính xác**.
+- Lưu ý: JDK 17 in nid **hex** (0x1010). JDK 18+ in **thập phân** (4112). Xác nhận JVM 17.0.12.
+
+**PaymentWorker.java (source):**
+- Dòng 7: {{private boolean shutdown = false;}} — **không volatile**.
+- Dòng 12:
+~~~java
+while (!shutdown) {
+    // busy-wait
+}
+~~~
+— busy-wait không {{Thread.sleep}}, không {{LockSupport.park}}.
+- Dòng 19: {{shutdown = true;}} — write từ thread khác (không synchronized/volatile).
+- Dòng 8: {{private final Map<String, String> metadataCache = new HashMap<>();}} — dùng chung, không đồng bộ.
+
+### Cách sửa
+
+**Fix 1 (root cause): Thêm {{volatile}} cho cờ dừng**
+~~~java
+private volatile boolean shutdown = false;
+~~~
+Hoặc dùng {{AtomicBoolean}} (khuyên dùng cho code mới, API rõ ràng):
+~~~java
+private final AtomicBoolean shutdown = new AtomicBoolean(false);
+// trong run: while (!shutdown.get()) { ... }
+// requestShutdown: shutdown.set(true);
+~~~
+{{volatile}}/{{AtomicBoolean}} đảm bảo write {{happens-before}} read → worker thấy giá trị mới và thoát loop. CPU giảm từ 100% xuống ~0% khi idle.
+
+**Fix 2 (phòng ngừa HashMap): Thay {{HashMap}} bằng {{ConcurrentHashMap}}**
+~~~java
+private final Map<String, String> metadataCache = new ConcurrentHashMap<>();
+~~~
+{{ConcurrentHashMap}} thread-safe cho read/write đồng thời, không resize race, performance tốt (segment-free từ JDK 8). Không cần {{synchronized}}.
+
+**Fix 3 (tốt hơn): Immutable snapshot / copy-on-write** nếu read nhiều, write ít:
+~~~java
+private final AtomicReference<Map<String, String>> metadataCache = new AtomicReference<>(Map.of());
+// put: metadataCache.updateAndGet(m -> { var n = new HashMap<>(m); n.put(k,v); return n; });
+// get: metadataCache.get().get(key);
+~~~
+Loại bỏ hoàn toàn contention. Phù hợp metadata thay đổi hiếm.
+
+**Không khuyên: {{Collections.synchronizedMap}}** — lock toàn bộ map, throughput kém, dễ deadlock nếu lồng gọi.
+
+### Phòng ngừa
+
+- **Code review rule:** Báo đỏ mọi vòng lặp kiểm tra cờ ({{while (!flag)}}/{{for(;!flag;)}}) mà cờ **không volatile/Atomic**. Yêu cầu {{volatile}} hoặc {{AtomicBoolean}}/{{AtomicInteger}}.
+- **Không dùng busy-wait thuần túy** — thay bằng {{LockSupport.parkNanos}}, {{Condition.await}}, {{CountDownLatch}}, {{CompletableFuture}}, hoặc {{Thread.sleep}} có timeout. Busy-wait chỉ chấp nhận được trong micro-benchmark / spin-lock cực ngắn (nano giây) với {{Thread.onSpinWait()}}.
+- **Thread-safe collections:** Mặc định dùng {{ConcurrentHashMap}}, {{CopyOnWriteArrayList}}, {{ConcurrentLinkedQueue}}. Chỉ dùng {{HashMap}}/{{ArrayList}} khi **chắc chắn** single-thread hoặc guarded by lock.
+- **Giám sát:** Alert khi có thread {{RUNNABLE}} CPU > 90% kéo dài > 30s (không GC, không I/O). Dùng {{jcmd <pid> Thread.print}} hoặc {{jstack}} map TID→nid.
+- **JDK version awareness:** JDK 17 nid hex, JDK 18+ nid decimal. Luôn verify version trước khi convert TID→nid.
+
+> Senior tip: "CPU 100% mà không GC, không I/O, không exception" gần như chắc chắn là **busy-wait non-volatile** hoặc **spin-lock sai**. Quy trình 30 giây: {{top -H}} lấy TID nóng → đổi hex → {{jstack}} tìm nid → đọc source tại dòng stack. Nếu thấy {{while (!flag)}} không volatile → fix ngay {{volatile}}/{{AtomicBoolean}}. Đừng đoán lung tung — đây là pattern nhận diện ngay. Và nhớ: {{HashMap}} race không gây CPU 100% (JDK 8+), nhưng vẫn hỏng dữ liệu — dùng {{ConcurrentHashMap}} là "mặc định an toàn".`,
+  rubric: [
+    'Chỉ ra biến {{shutdown}} thiếu {{volatile}} khiến JIT hoist read ra khỏi vòng lặp → busy-wait 100% CPU. Giải thích đúng JMM: write non-volatile không happens-before read, JIT cache vào register.',
+    'Trích dẫn artifact: top-H TID 4112 → hex 0x1010 khớp jstack nid=0x1010 tại PaymentWorker.java:12 (while loop). Giải thích chuyển đổi hex/dec và lưu ý JDK 17 in hex, JDK 18+ in dec.',
+    'Nêu rủi ro {{HashMap}} dùng chung (mất update, entry biến mất, size sai), phân biệt JDK 7 (vòng lặp vô hạn khi resize) vs JDK 8+ (không vòng lặp nhưng vẫn hỏng). Đề xuất {{ConcurrentHashMap}} hoặc immutable snapshot. Có đề cập không dùng busy-wait thuần, nên dùng park/await/latch.'
+  ],
+  tags: ['volatile', 'jit-hoisting', 'busy-wait', 'cpu-100', 'jmm', 'hashmap', 'concurrenthashmap', 'jstack', 'top', 'nid', 'java-17']
 }
 );
