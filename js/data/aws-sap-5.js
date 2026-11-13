@@ -1244,4 +1244,390 @@
   > Exam tip: private REST API của API Gateway dùng interface endpoint; endpoint policy và API resource policy là hai lớp kiểm soát khác nhau.`,
   services: ['Amazon API Gateway', 'Amazon VPC', 'AWS PrivateLink'],
 },
+{
+  id: 'sap-217', exam: 'sap-c02', domain: 'sap-d1',
+  q: `A company has 150 member accounts in AWS Organizations. The security team wants to prevent any member account from creating resources in AWS Regions outside of ap-southeast-1 and us-east-1, while still allowing IAM and Organizations operations globally. The restriction must apply to all principals in the member accounts, including administrators. Which solution meets these requirements with the least operational overhead?`,
+  options: [
+    "Attach a service control policy (SCP) to the root of the organization that denies all actions except IAM, Organizations, STS, and Support when the requested Region is not ap-southeast-1 or us-east-1.",
+    "Create an IAM policy that denies EC2 actions in unapproved Regions and attach it to every IAM user and role in every member account.",
+    "Use AWS Config rules in each member account to detect resources created in unapproved Regions and automatically delete them.",
+    "Enable AWS Control Tower and configure a preventive guardrail that blocks API calls to unapproved Regions."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** chặn tạo tài nguyên ở Region không được phép cho toàn bộ principal trong member account, vẫn cho phép IAM/Organizations/STS/Support toàn cầu, overhead thấp nhất. **Service Control Policy (SCP)** gắn ở cấp organization áp dụng cho mọi principal (kể cả root/admin) trong member accounts. SCP dùng Condition {{code}}aws:RequestedRegion{{code}} với {{code}}StringNotEquals{{code}} để deny các action khi Region không nằm trong danh sách cho phép. Cần loại trừ {{code}}iam:*{{code}}, {{code}}organizations:*{{code}}, {{code}}sts:*{{code}}, {{code}}support:*{{code}} khỏi deny vì các dịch vụ này là global và không có Region.
+  **Vì sao đúng:** A dùng một SCP duy nhất ở root OU, áp dụng tổ chức, không cần duy trì policy cho từng user/role.
+  **Vì sao phương án khác sai:**
+  - B IAM policy gắn cho từng user/role tốn công sức lớn, admin có thể gỡ policy hoặc tạo role mới không có policy.
+  - C AWS Config là detective (phát hiện sau khi tạo) và auto-remediation không bao phủ mọi loại tài nguyên; SCP ngăn chặn trước khi tài nguyên được tạo (preventive).
+  - D Control Tower preventive guardrails là managed rule dựa trên SCP/Config, nhưng SCP tùy chỉnh vẫn là cách trực tiếp và linh hoạt nhất cho yêu cầu cụ thể này.
+  > Exam tip: SCP không cấp quyền, chỉ giới hạn quyền tối đa; dùng Condition {{code}}aws:RequestedRegion{{code}} để kiểm soát Region; luôn loại trừ dịch vụ global (IAM, STS, Organizations, Support) khỏi deny Region.`,
+  services: ['AWS Organizations', 'Service Control Policies', 'AWS IAM'],
+},
+{
+  id: 'sap-218', exam: 'sap-c02', domain: 'sap-d1',
+  q: `A company uses AWS Control Tower to manage a landing zone with 80 accounts. The audit team needs a centralized, immutable log of all management events across the organization for seven years. The log must be protected from deletion even by the management account root user. Which combination of steps should the team take? (Choose two.)`,
+  options: [
+    "Create an organization trail in CloudTrail that logs management events to an S3 bucket in the dedicated Log Archive account.",
+    "Enable S3 Object Lock on the log bucket with compliance-mode retention for seven years.",
+    "Use AWS Config aggregator to collect configuration history from all accounts as the primary audit log.",
+    "Enable S3 Versioning on the log bucket and rely on MFA Delete to prevent deletion.",
+    "Create a CloudTrail trail in each member account and replicate logs to the Log Archive account using S3 Cross-Region Replication."
+  ],
+  answer: [0, 1],
+  multi: true,
+  explain: `**Từ khóa:** log tập trung toàn tổ chức, bất biến (immutable) 7 năm, kể cả root management account không được xóa. **Organization trail** của CloudTrail ghi management events từ mọi account vào một bucket S3 trung tâm (Log Archive account). **S3 Object Lock compliance mode** đặt retention period 7 năm: không ai (kể cả root trong account sở hữu bucket) có thể xóa object hoặc rút ngắn retention trước khi hết hạn. Governance mode cho phép bypass bằng permission đặc biệt, nên compliance mode phù hợp hơn cho yêu cầu "kể cả root".
+  **Vì sao A và B đúng:** Organization trail tập trung log; Object Lock compliance mode đảm bảo WORM (Write Once Read Many) thực sự.
+  **Vì sao phương án khác sai:**
+  - C Config aggregator thu thập configuration state, không phải management event log đầy đủ như CloudTrail.
+  - D MFA Delete chỉ yêu cầu MFA khi xóa version, không cấm xóa vĩnh viễn như Object Lock; root vẫn có thể xóa với MFA.
+  - E Trail từng account rồi replicate phức tạp, dễ bỏ sót, và replication không bảo vệ object gốc khỏi xóa.
+  > Exam tip: cần log audit bất biến → Organization Trail + S3 Object Lock compliance mode; governance mode có exception cho phép bypass.`,
+  services: ['AWS CloudTrail', 'Amazon S3 Object Lock', 'AWS Control Tower'],
+},
+{
+  id: 'sap-219', exam: 'sap-c02', domain: 'sap-d1',
+  q: `A company has 200 AWS accounts in an organization. The platform team wants to share a centrally managed Amazon EventBridge event bus and a Transit Gateway with selected workload accounts. The sharing must be controlled centrally, and workload accounts should not be able to modify the shared resources. Which service should the platform team use to share these resources?`,
+  options: [
+    "AWS Resource Access Manager (RAM) with resource shares targeting specific accounts or organizational units.",
+    "AWS Organizations service control policies (SCPs) to grant permission to use the EventBridge bus and Transit Gateway.",
+    "Cross-account IAM roles in each workload account that assume a role in the platform account to access the resources.",
+    "AWS Service Catalog portfolios containing the EventBridge bus and Transit Gateway as provisioned products."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** chia sẻ EventBridge bus và Transit Gateway đến account/OU được chọn, kiểm soát tập trung, workload account không được sửa resource gốc. **AWS RAM (Resource Access Manager)** cho phép chia sẻ các loại resource được hỗ trợ (EventBridge event bus, Transit Gateway, License Manager configuration, Route 53 Resolver rule, v.v.) với account, OU, hoặc toàn bộ organization. Resource owner quản lý resource share; principal nhận share chỉ có quyền sử dụng (ví dụ: PutEvents vào bus, attach VPC vào TGW) chứ không có quyền sửa đổi hoặc xóa resource gốc.
+  **Vì sao đúng:** A là dịch vụ chuyên dụng chia sẻ resource cross-account có quản trị tập trung.
+  **Vì sao phương án khác sai:**
+  - B SCP chỉ giới hạn quyền tối đa (deny/allow), không thể "grant" quyền truy cập resource cụ thể cross-account; RAM mới cấp quyền sử dụng resource.
+  - C Cross-account role yêu cầu workload account tự assume role, phân tán quản trị, và platform team không kiểm soát được việc workload account có dùng role hay không.
+  - D Service Catalog dùng cho self-service provisioning sản phẩm, không chia sẻ resource hiện có như EventBridge bus hay Transit Gateway.
+  > Exam tip: chia sẻ resource AWS có sẵn (EventBridge bus, TGW, License config, Resolver rule...) → RAM; cấp quyền API cross-account → IAM role; self-service deploy → Service Catalog.`,
+  services: ['AWS Resource Access Manager', 'Amazon EventBridge', 'AWS Transit Gateway'],
+},
+{
+  id: 'sap-220', exam: 'sap-c02', domain: 'sap-d1',
+  q: `A company uses AWS IAM Identity Center (successor to AWS SSO) with an external SAML identity provider. The security team wants to assign permissions to users based on their corporate group membership. Users in the "FinanceAdmins" group should get AdministratorAccess in the Finance OU accounts; users in "Developers" group should get PowerUserAccess in the Development OU accounts. Which approach should the team use?`,
+  options: [
+    "Create permission sets for AdministratorAccess and PowerUserAccess, then assign the FinanceAdmins group to the Finance OU accounts with the AdministratorAccess permission set, and the Developers group to the Development OU accounts with the PowerUserAccess permission set.",
+    "Create IAM roles in each account with the required policies, then configure SAML assertions to map groups directly to role ARNs.",
+    "Use AWS Organizations SCPs to grant AdministratorAccess to FinanceAdmins and PowerUserAccess to Developers based on group membership.",
+    "Create a single permission set with inline policies that check the user's group via a condition key and apply different permissions."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** IAM Identity Center + external IdP, gán quyền theo group membership, OU-based account assignment. **Permission sets** trong IAM Identity Center định nghĩa bộ quyền (AWS managed policy hoặc inline policy). **Account assignments** gán user/group từ identity source vào account/OU cụ thể kèm permission set. Đây là mô hình quản trị chuẩn: tập trung identity ở IdP, permission set định nghĩa "làm được gì", account assignment quyết định "làm ở đâu".
+  **Vì sao đúng:** A tách biệt permission set (quyền) và account assignment (phạm vi), dễ audit và thay đổi.
+  **Vì sao phương án khác sai:**
+  - B SAML assertion mapping group → role ARN là cách cũ (IAM federation), không tận dụng IAM Identity Center permission sets và account assignments.
+  - C SCP không cấp quyền theo group membership; SCP là guardrail giới hạn quyền tối đa cho account, không phân biệt user/group.
+  - D Một permission set với condition key kiểm tra group không được hỗ trợ trực tiếp trong IAM Identity Center; permission set được cung cấp như một managed policy, condition key {{code}}aws:PrincipalTag{{code}} hoặc {{code}}identitystore:groupId{{code}} không áp dụng theo cách này.
+  > Exam tip: IAM Identity Center = identity source + permission sets + account assignments; không dùng SCP hay SAML role mapping để cấp quyền theo group.`,
+  services: ['AWS IAM Identity Center', 'AWS Organizations'],
+},
+{
+  id: 'sap-221', exam: 'sap-c02', domain: 'sap-d1',
+  q: `A company wants to implement a chargeback model where each business unit sees customized pricing for AWS services that differs from the actual AWS rates. The finance team needs to present negotiated rates (e.g., 15% discount on EC2, 10% markup on Data Transfer) while preserving the original consolidated billing relationship with AWS. Which service is designed for this purpose?`,
+  options: [
+    "AWS Billing Conductor to create billing groups and pricing plans with custom rates for internal chargeback views.",
+    "AWS Cost Explorer with custom reports that apply discount factors to the actual costs.",
+    "AWS Budgets with custom cost thresholds that recalculate spend based on negotiated rates.",
+    "AWS Organizations tag policies to assign custom prices to cost allocation tags."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** chargeback nội bộ với custom pricing (discount/markup) khác giá AWS thực, giữ nguyên consolidated billing. **AWS Billing Conductor** cho phép tạo billing groups (gom tài khoản theo business unit) và pricing plans (định nghĩa custom rates: discount, markup, tiered pricing). Kết quả là pro forma billing view cho nội bộ; AWS vẫn xuất hóa đơn theo giá thực tế. Finance team dùng Billing Conductor để trình bày chi phí đã điều chỉnh cho từng đơn vị.
+  **Vì sao đúng:** A chính xác mục đích thiết kế của Billing Conductor: mô hình hóa billing nội bộ không thay đổi hóa đơn AWS.
+  **Vì sao phương án khác sai:**
+  - B Cost Explorer chỉ phân tích/hiển thị chi phí thực, không tạo pricing plan tùy chỉnh.
+  - C Budgets đặt ngưỡng cảnh báo/hành động, không viết lại chi phí theo custom rate.
+  - D Tag policies chuẩn hóa key/value của tag, không liên quan đến pricing.
+  > Exam tip: cần chargeback/showback giá nội bộ → Billing Conductor; cần phân tích chi phí thực → Cost Explorer; cần cảnh báo ngân sách → Budgets.`,
+  services: ['AWS Billing Conductor', 'AWS Cost Explorer', 'AWS Organizations'],
+},
+{
+  id: 'sap-222', exam: 'sap-c02', domain: 'sap-d2',
+  q: `A company is building an event-driven application that receives order events from an external partner via HTTPS. The partner cannot modify their integration to use AWS SDKs. The application must validate the event schema, transform the payload, and route it to different downstream services based on the order type. The team wants a managed solution with minimal operational overhead. Which combination of services should be used?`,
+  options: [
+    "Amazon API Gateway HTTP API with a Lambda authorizer for validation, EventBridge Pipes for transformation and filtering, and EventBridge rules to route to target services.",
+    "Amazon API Gateway REST API with request validation models, EventBridge Pipes with input transformation and filter, and EventBridge rules to route to targets.",
+    "Application Load Balancer with AWS WAF for validation, Lambda for transformation, and Amazon SNS fan-out to downstream services.",
+    "Amazon EventBridge API destination with a public endpoint, Schema Registry for validation, and EventBridge rules for routing."
+  ],
+  answer: 1,
+  explain: `**Từ khóa:** partner gửi HTTPS (không dùng SDK), cần validate schema, transform payload, route theo order type, managed solution. **API Gateway REST API** hỗ trợ **request validation models** (JSON Schema) để validate payload trước khi vào backend. **EventBridge Pipes** nối source (API Gateway) đến target, hỗ trợ **input transformation** (thay đổi payload) và **filter** (chỉ chuyển event thỏa điều kiện). **EventBridge rules** trên bus nhận event từ Pipe và route đến các target (Lambda, SQS, Step Functions, v.v.) dựa trên {{code}}detail-type{{code}} hoặc {{code}}detail.orderType{{code}}.
+  **Vì sao đúng:** B kết hợp request validation (REST API), transformation/filter (Pipes), routing (rules) — tất cả managed, không cần server.
+  **Vì sao phương án khác sai:**
+  - A HTTP API không có request validation models tích hợp (REST API mới có); Lambda authorizer dùng cho auth, không phải validate schema payload.
+  - C ALB + WAF không validate JSON schema; Lambda transform tự vận hành; SNS fan-out không filter/route dựa trên content như EventBridge rules.
+  - D EventBridge API destination dùng để *gọi* endpoint ngoài, không phải *nhận* event từ partner; Schema Registry lưu schema nhưng không tự validate request đến.
+  > Exam tip: validate JSON schema cho HTTP request → API Gateway REST API request models; transform/filter event → EventBridge Pipes; route event → EventBridge rules.`,
+  services: ['Amazon API Gateway', 'Amazon EventBridge Pipes', 'Amazon EventBridge'],
+},
+{
+  id: 'sap-223', exam: 'sap-c02', domain: 'sap-d2',
+  q: `A company runs a Java Spring Boot application on AWS Lambda that processes financial transactions. The function must maintain a persistent in-memory cache of reference data (updated daily) and serve requests with sub-10ms latency after the cache is warm. Traffic is steady at 500 requests/second during business hours and near zero at night. The team wants to minimize cold-start latency and cost. Which configuration should they evaluate first?`,
+  options: [
+    "Enable Lambda SnapStart for the Java 17+ runtime, publish a function version, and configure provisioned concurrency for the alias during business hours only.",
+    "Use provisioned concurrency 24/7 at the peak request rate to keep all instances warm.",
+    "Migrate the function to Amazon ECS on Fargate with a minimum of 2 tasks running continuously.",
+    "Increase the function memory to 10 GB and rely on the init phase to load the cache on every cold start."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** Java Lambda, cache reference data, sub-10ms latency sau warm, traffic steady ban ngày/near zero ban đêm, tối ưu cold-start và chi phí. **Lambda SnapStart** (Java 11+, Python 3.12+) tạo snapshot sau init phase (khi publish version) và restore snapshot thay vì chạy init lại, giảm cold-start đáng kể. **Provisioned concurrency** giữ instance warm; nhưng traffic near zero ban đêm → nên bật provisioned concurrency **chỉ trong giờ hành chính** (dùng schedule hoặc API) để tiết kiệm chi phí. Kết hợp SnapStart (giảm init) + provisioned concurrency scheduled (giữ warm khi cần) là tối ưu nhất.
+  **Vì sao đúng:** A dùng SnapStart cho cold-start, provisioned concurrency scheduled cho warm period, tắt khi không cần.
+  **Vì sao phương án khác sai:**
+  - B Provisioned concurrency 24/7 tốn chi phí cho traffic near zero ban đêm.
+  - C ECS Fargate chạy liên tục tốn chi phí idle và mất serverless benefits; cold-start không còn khái niệm nhưng phải quản lý container.
+  - D Tăng memory không giảm init time; cache vẫn phải load mỗi cold start; 10 GB memory rất đắt.
+  > Exam tip: Java cold-start → SnapStart (publish version + invoke alias/version); traffic có pattern → scheduled provisioned concurrency.`,
+  services: ['AWS Lambda', 'Lambda SnapStart', 'Provisioned Concurrency'],
+},
+{
+  id: 'sap-224', exam: 'sap-c02', domain: 'sap-d2',
+  q: `A company has a multi-tenant SaaS application on Amazon ECS Fargate. Each tenant's data must be isolated in a separate Amazon Aurora PostgreSQL database. The application uses a shared connection pool, and the team wants to route each tenant's requests to their dedicated database without modifying the application code to manage multiple connections. Which solution meets these requirements?`,
+  options: [
+    "Use Amazon RDS Proxy with a target group for each tenant's Aurora database, and configure the application to connect to the RDS Proxy endpoint with the tenant ID in the connection string.",
+    "Use Amazon RDS Proxy with a single target group containing all tenant databases, and rely on RDS Proxy to route based on the database user.",
+    "Create a separate RDS Proxy endpoint for each tenant and store the endpoints in AWS Secrets Manager for the application to retrieve.",
+    "Use AWS PrivateLink to create a service endpoint for each tenant's database and route traffic through a Network Load Balancer."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** multi-tenant SaaS, mỗi tenant có Aurora DB riêng, shared connection pool, route request đến DB đúng tenant không sửa code quản lý multi-connection. **Amazon RDS Proxy** cho phép tạo **multiple target groups** (mỗi target group trỏ đến một Aurora DB). Ứng dụng kết nối đến **một endpoint RDS Proxy** duy nhất, và trong connection string (hoặc session variable) truyền tenant identifier. RDS Proxy dùng thông tin đó để route connection đến target group tương ứng. Code ứng dụng chỉ quản lý một connection pool đến RDS Proxy.
+  **Vì sao đúng:** A tách routing logic ra RDS Proxy, ứng dụng chỉ dùng single endpoint.
+  **Vì sao phương án khác sai:**
+  - B RDS Proxy không tự route dựa trên database user trong single target group; target group đại diện cho một DB cluster.
+  - C Tạo nhiều RDS Proxy endpoint tăng chi phí và phức tạp; ứng dụng vẫn phải chọn endpoint đúng.
+  - D PrivateLink + NLB dùng cho network connectivity, không giải quyết connection pooling và routing logic multi-tenant ở lớp database.
+  > Exam tip: multi-tenant DB isolation + shared pool → RDS Proxy multiple target groups; single endpoint cho app, proxy lo routing.`,
+  services: ['Amazon RDS Proxy', 'Amazon Aurora PostgreSQL', 'Amazon ECS'],
+},
+{
+  id: 'sap-225', exam: 'sap-c02', domain: 'sap-d2',
+  q: `A company wants to deploy a new microservice that must be accessible only from specific VPCs in the same AWS account and from a partner's AWS account. The service runs on private EC2 instances behind a load balancer. The team wants a managed solution that provides private connectivity, does not traverse the public internet, and allows resource policies to restrict which VPCs can access the service. Which solution should they use?`,
+  options: [
+    "Create an AWS PrivateLink interface VPC endpoint service (endpoint service) backed by a Network Load Balancer, and use an endpoint policy to restrict access to the allowed VPCs and the partner account.",
+    "Create an Application Load Balancer with a security group allowing only the CIDR ranges of the allowed VPCs and the partner account's VPC.",
+    "Use AWS Transit Gateway to connect all VPCs and the partner account's VPC, and attach the EC2 instances to a shared Transit Gateway route table.",
+    "Create a VPC peering connection between each allowed VPC and the service VPC, and use security groups to restrict access."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** service private, chỉ VPC cụ thể (cùng account + partner account) truy cập, không đi internet, resource policy kiểm soát VPC nào được gọi. **AWS PrivateLink (interface VPC endpoint service)** tạo endpoint service backed by **Network Load Balancer** (NLB) trước các EC2 private. Consumer VPC tạo interface endpoint đến service này; traffic đi qua AWS backbone, không ra internet. **Endpoint policy** (gắn vào endpoint service) cho phép giới hạn principal/VPC endpoint nào được kết nối. Partner account cũng tạo interface endpoint đến service name.
+  **Vì sao đúng:** A cung cấp private connectivity, NLB hỗ trợ static IP/TLS, endpoint policy kiểm soát truy cập granular.
+  **Vì sao phương án khác sai:**
+  - B ALB security group chỉ lọc IP/CIDR; partner account VPC CIDR có thể trùng hoặc thay đổi; không có resource policy managed; traffic vẫn có thể đi internet nếu không cẩn thận.
+  - C Transit Gateway kết nối network layer, không cung cấp service-level access control với resource policy; mọi workload trong VPC đều thấy nhau.
+  - D VPC peering không transitive, phải tạo peering cho từng cặp VPC (quản trị phức tạp), không có resource policy dịch vụ, CIDR không được trùng.
+  > Exam tip: private service consumption cross-account/VPC với policy → PrivateLink endpoint service + NLB + endpoint policy.`,
+  services: ['AWS PrivateLink', 'Network Load Balancer', 'Amazon VPC'],
+},
+{
+  id: 'sap-226', exam: 'sap-c02', domain: 'sap-d2',
+  q: `A company stores 10 PB of genomic data in Amazon S3. Researchers need to run ad-hoc SQL queries on this data daily. The data is in CSV format, partitioned by project and date. The team wants to minimize query cost and latency without managing infrastructure. Which combination of steps should they take? (Choose two.)`,
+  options: [
+    "Convert the CSV data to Apache Parquet format using AWS Glue jobs, partitioned by project and date.",
+    "Create an AWS Glue Data Catalog table pointing to the Parquet data and query it with Amazon Athena.",
+    "Load the CSV data into Amazon Redshift provisioned clusters and query with SQL.",
+    "Use Amazon S3 Select to run SQL queries directly on the CSV objects.",
+    "Use Amazon EMR Serverless to run Spark SQL queries on the CSV data."
+  ],
+  answer: [0, 1],
+  multi: true,
+  explain: `**Từ khóa:** 10 PB data, ad-hoc SQL hàng ngày, CSV partitioned, minimize cost/latency, no infrastructure. **Apache Parquet** là định dạng cột (columnar) nén tốt, cho phép Athena đọc chỉ cột cần thiết (column pruning) và skip row group không cần (partition pruning), giảm data scanned lớn. **AWS Glue job** chuyển đổi CSV → Parquet batch/streaming. **Glue Data Catalog** lưu metadata (schema, partition) cho Athena. **Amazon Athena** serverless, pay-per-query (data scanned), không quản lý cluster. Partition theo project/date giúp Athena prune hiệu quả.
+  **Vì sao A và B đúng:** Parquet + partition + Athena = chi phí thấp nhất cho ad-hoc query trên data lake lớn.
+  **Vì sao phương án khác sai:**
+  - C Redshift provisioned cluster quản lý infrastructure, chi phí cố định, không tối ưu cho ad-hoc query thưa trên data lake.
+  - D S3 Select chỉ query trong *một* object, không hỗ trợ query qua hàng tỷ object/partition.
+  - E EMR Serverless vẫn chạy Spark cluster (serverless nhưng vẫn có overhead), phù hợp ETL phức tạp hơn ad-hoc SQL đơn giản.
+  > Exam tip: data lake ad-hoc SQL → Athena + Parquet + partition; ETL phức tạp → EMR/Glue; data warehouse reporting → Redshift.`,
+  services: ['Amazon Athena', 'AWS Glue', 'Amazon S3'],
+},
+{
+  id: 'sap-227', exam: 'sap-c02', domain: 'sap-d2',
+  q: `A company is migrating a legacy on-premises application to AWS. The application uses a commercial message broker that supports the AMQP 1.0 protocol. The team wants to replace it with a managed AWS service that supports AMQP 1.0, provides durable message storage, and integrates with AWS Lambda for event-driven processing. Which service should they choose?`,
+  options: [
+    "Amazon MQ for RabbitMQ, which supports AMQP 1.0 and can trigger Lambda functions via event source mapping.",
+    "Amazon SQS, which supports AMQP 1.0 through a protocol translation layer and integrates with Lambda.",
+    "Amazon EventBridge, which natively speaks AMQP 1.0 and routes events to Lambda targets.",
+    "Amazon Kinesis Data Streams, which supports AMQP 1.0 for producer applications and consumes via Lambda."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** legacy app dùng AMQP 1.0, muốn managed service hỗ trợ AMQP 1.0, durable storage, tích hợp Lambda. **Amazon MQ for RabbitMQ** là managed RabbitMQ (hỗ trợ AMQP 0.9.1, AMQP 1.0, MQTT, STOMP). RabbitMQ hỗ trợ AMQP 1.0; Amazon MQ cung cấp event source mapping để **trigger Lambda** khi có message trong queue. Message được lưu durable trong broker.
+  **Vì sao đúng:** A là managed message broker hỗ trợ AMQP 1.0 và tích hợp Lambda.
+  **Vì sao phương án khác sai:**
+  - B SQS dùng protocol riêng (HTTPS), không hỗ trợ AMQP 1.0; không có protocol translation layer cho AMQP.
+  - C EventBridge dùng event bus rule/pattern, không phải AMQP broker; không hỗ trợ AMQP 1.0 producer.
+  - D Kinesis Data Streams dùng KPL/KCL hoặc HTTPS, không hỗ trợ AMQP 1.0.
+  > Exam tip: cần managed AMQP/MQTT/STOMP broker → Amazon MQ (RabbitMQ hoặc ActiveMQ); cloud-native queue → SQS; event routing → EventBridge; streaming → Kinesis.`,
+  services: ['Amazon MQ', 'AWS Lambda', 'Amazon SQS'],
+},
+{
+  id: 'sap-228', exam: 'sap-c02', domain: 'sap-d3',
+  q: `A company has a critical application running on Amazon EC2 instances in an Auto Scaling group behind an Application Load Balancer. The operations team wants to detect when the application's 95th percentile latency exceeds 500 ms for 5 consecutive minutes and automatically trigger a runbook in AWS Systems Manager Automation. The solution must not require custom metric publishing code in the application. Which combination of services should be used?`,
+  options: [
+    "Enable Application Load Balancer access logs, use Amazon CloudWatch Metric Filters to extract latency, create a CloudWatch alarm on the 95th percentile statistic, and configure the alarm to start a Systems Manager Automation runbook.",
+    "Install the CloudWatch Agent on the EC2 instances to publish custom latency metrics, create a CloudWatch alarm, and trigger a Lambda function that starts the runbook.",
+    "Use AWS X-Ray to trace requests, create a CloudWatch alarm on the X-Ray service graph latency metric, and trigger the runbook via EventBridge.",
+    "Enable AWS Config rules to evaluate the ALB target group health check latency and trigger the runbook when non-compliant."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** ALB trước ASG, detect p95 latency > 500ms trong 5 phút, trigger SSM Automation runbook, **không custom metric code**. **ALB access logs** ghi {{code}}target_processing_time{{code}} (latency backend). **CloudWatch Metric Filters** trên log group tạo metric từ pattern log (ví dụ parse {{code}}target_processing_time{{code}}). Metric filter tạo metric numeric; CloudWatch alarm có thể dùng statistic {{code}}p95{{code}} (percentile) trên metric đó. Alarm action có thể **start Systems Manager Automation runbook** trực tiếp. Cách này không cần code trong ứng dụng.
+  **Vì sao đúng:** A dùng log sẵn có của ALB, metric filter tạo metric, alarm p95, action SSM Automation.
+  **Vì sao phương án khác sai:**
+  - B CloudWatch Agent cần cài đặt và config custom metric; yêu cầu "không custom metric code" nhưng agent vẫn là overhead vận hành.
+  - C X-Ray trace sampling, không đảm bảo p95 chính xác cho mọi request; service graph latency không bằng ALB target_processing_time.
+  - D AWS Config đánh giá cấu hình resource, không phải monitoring latency real-time; rule không trigger runbook dựa trên metric p95.
+  > Exam tip: ALB access log + Metric Filter = custom metric từ log sẵn có; alarm statistic p95/p99; alarm action có thể là SSM Automation, SNS, Lambda.`,
+  services: ['Application Load Balancer', 'Amazon CloudWatch', 'AWS Systems Manager Automation'],
+},
+{
+  id: 'sap-229', exam: 'sap-c02', domain: 'sap-d3',
+  q: `A company runs a large Amazon ElastiCache for Redis cluster (cluster mode enabled) with 10 shards. The application experiences intermittent {{code}}MOVED{{code}} redirection errors during high write throughput. The team wants to understand the root cause and implement a client-side fix without changing the cluster configuration. Which explanation and solution are correct?`,
+  options: [
+    "The errors occur because the client is using a stale slot map; the solution is to use a cluster-aware Redis client that periodically refreshes the slot map and follows MOVED redirections.",
+    "The errors occur because the cluster is resharding; the solution is to disable cluster mode and use a single primary node to avoid slot redistribution.",
+    "The errors occur because the replica nodes are lagging; the solution is to increase the number of replicas per shard to reduce replication lag.",
+    "The errors occur because the client is connecting to the wrong endpoint; the solution is to use the configuration endpoint and let the client discover all shards."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** ElastiCache Redis cluster mode enabled, 10 shards, {{code}}MOVED{{code}} redirection errors khi write throughput cao, fix client-side không đổi cluster. **Redis Cluster** phân chia keyspace thành 16384 slots; mỗi shard chịu trách nhiệm một tập slots. Khi **resharding** (di chuyển slots giữa shards) hoặc **failover**, slot map thay đổi. Client **không cluster-aware** (single-node client) cache slot map cục bộ và gửi request đến shard cũ → nhận {{code}}MOVED{{code}} redirection. **Cluster-aware client** (như Lettuce, StackExchange.Redis, redis-py cluster) duy trì slot map, tự refresh định kỳ, và tự follow {{code}}MOVED{{code}}/{{code}}ASK{{code}} redirection.
+  **Vì sao đúng:** A giải thích đúng nguyên nhân (stale slot map do resharding/failover) và fix (cluster-aware client + refresh slot map).
+  **Vì sao phương án khác sai:**
+  - B Disable cluster mode mất horizontal scaling; không phải fix client-side.
+  - C Replica lag gây stale read, không gây {{code}}MOVED{{code}}; {{code}}MOVED{{code}} là slot ownership change.
+  - D Configuration endpoint giúp discover shards ban đầu, nhưng client vẫn phải cluster-aware để xử lý slot map thay đổi sau đó.
+  > Exam tip: Redis Cluster {{code}}MOVED{{code}}/{{code}}ASK{{code}} = slot map change (resharding/failover); luôn dùng cluster-aware client (Lettuce, Jedis cluster mode, v.v.) và bật auto-reconnect/refresh.`,
+  services: ['Amazon ElastiCache for Redis', 'Redis Cluster'],
+},
+{
+  id: 'sap-230', exam: 'sap-c02', domain: 'sap-d3',
+  q: `A company uses Amazon CloudFront to serve a global web application. The security team wants to block requests from known malicious IP ranges (updated daily by a threat intelligence feed) and allow a specific partner's IP range to bypass all WAF rules. The solution must have minimal latency impact and be manageable via infrastructure as code. Which approach should they use?`,
+  options: [
+    "Use AWS WAF web ACL with an IP set reference for the threat intelligence feed (updated via API), a rule to block matching IPs, and a rule with higher priority to allow the partner's IP range.",
+    "Use CloudFront Functions to check the client IP against a hardcoded list of malicious ranges and return 403, with an exception for the partner IP.",
+    "Use AWS Network Firewall in the VPC where the origin resides to filter traffic before it reaches the ALB.",
+    "Use AWS Shield Advanced automatic application layer DDoS protection and add the partner IP to the allow list in the Shield console."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** CloudFront global, block malicious IP (feed cập nhật hàng ngày), allow partner IP bypass WAF, low latency, IaC manageable. **AWS WAF web ACL** gắn vào CloudFront distribution. **IP set reference** cho phép tham chiếu IP set được quản lý riêng (có thể cập nhật qua API/CLI/SDK hàng ngày từ threat feed). Rule {{code}}Block{{code}} match IP set với priority thấp hơn rule {{code}}Allow{{code}} partner IP → partner bypass. WAF ở edge (CloudFront) latency gần 0. Quản lý qua CloudFormation/CDK/Terraform (IP set ARN, web ACL, rules).
+  **Vì sao đúng:** A dùng WAF IP set reference (dynamic update), priority ordering allow/block, edge latency thấp, IaC native.
+  **Vì sao phương án khác sai:**
+  - B CloudFront Functions giới hạn CPU/time, không phù hợp check hàng nghìn IP range; hardcoded list không cập nhật được hàng ngày; không IaC friendly cho list lớn.
+  - C Network Firewall ở VPC origin, traffic đã đi qua CloudFront → ALB → VPC; không bảo vệ edge; partner IP bypass phức tạp hơn.
+  - D Shield Advanced bảo vệ DDoS, không phải WAF rule engine cho IP reputation hàng ngày; allow list Shield không bypass WAF rules.
+  > Exam tip: dynamic IP block/allow ở edge → WAF IP set reference + priority; feed cập nhật thường xuyên → update IP set qua API, không hardcode.`,
+  services: ['AWS WAF', 'Amazon CloudFront', 'AWS Shield'],
+},
+{
+  id: 'sap-231', exam: 'sap-c02', domain: 'sap-d3',
+  q: `A company has an Amazon RDS for PostgreSQL database that serves a high-traffic application. During a marketing campaign, the application experiences a surge in connections, causing {{code}}FATAL: remaining connection slots reserved for non-replication superuser connections{{code}} errors. The team wants to resolve this without increasing the {{code}}max_connections{{code}} parameter (which requires a reboot) and without changing the application code immediately. Which solution should they implement?`,
+  options: [
+    "Create an Amazon RDS Proxy for the database, configure the application to connect to the proxy endpoint, and set the proxy's max connections to a higher value.",
+    "Create a read replica and direct all new application connections to the replica.",
+    "Increase the instance class to a larger size, which automatically increases max_connections without a reboot.",
+    "Use Amazon ElastiCache for Redis to cache query results and reduce database connections."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** RDS PostgreSQL, connection surge, lỗi {{code}}max_connections{{code}} exhausted, không tăng {{code}}max_connections{{code}} (cần reboot), không đổi code app ngay. **Amazon RDS Proxy** đứng giữa app và database, quản lý **connection pooling**. Proxy giữ pool kết nối đến DB (có thể cấu hình {{code}}max_connections{{code}} của proxy cao hơn DB), app chỉ mở ít kết nối đến proxy. Proxy reuse connection, giảm connection churn, và xử lý surge bằng queue/throttle. Proxy endpoint thay thế DB endpoint trong connection string app (đổi config, không đổi code). {{code}}max_connections{{code}} của proxy độc lập với DB.
+  **Vì sao đúng:** A RDS Proxy giải quyết connection pooling, surge handling, không cần reboot DB, không đổi code app.
+  **Vì sao phương án khác sai:**
+  - B Read replica giải quyết read scaling, không giải quyết connection limit của primary (write vẫn về primary); app phải đổi code để route read/write.
+  - C Tăng instance class **cần reboot** (đổi instance type); {{code}}max_connections{{code}} mặc định tăng theo memory nhưng vẫn cần reboot.
+  - D ElastiCache giảm query load, không giảm số connection mở từ app; app vẫn giữ connection pool riêng.
+  > Exam tip: connection exhaustion → RDS Proxy (connection pooling, reuse, surge queue); read scaling → read replica; write scaling → sharding/partitioning.`,
+  services: ['Amazon RDS Proxy', 'Amazon RDS for PostgreSQL'],
+},
+{
+  id: 'sap-232', exam: 'sap-c02', domain: 'sap-d3',
+  q: `A company wants to optimize costs for a 50 TB Amazon S3 data lake. Objects have unpredictable access patterns: some are accessed daily, others once a year, and access patterns change over time. The team does not want to build a custom access prediction model or manually manage lifecycle rules. They also want to avoid retrieval latency for any object. Which storage class should they use?`,
+  options: [
+    "S3 Intelligent-Tiering, which automatically moves objects between frequent, infrequent, and archive access tiers based on observed access patterns.",
+    "S3 Standard-IA for all objects, with a lifecycle rule to transition to Glacier Deep Archive after 90 days.",
+    "S3 Glacier Instant Retrieval for all objects to minimize storage cost while keeping millisecond access.",
+    "S3 Express One Zone for all objects to achieve the lowest latency, accepting single-AZ durability."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** 50 TB data lake, access pattern unpredictable/thay đổi, không muốn custom model/manual lifecycle, không chấp nhận retrieval latency. **S3 Intelligent-Tiering** tự động theo dõi access pattern của từng object và di chuyển giữa các tier: Frequent Access (mặc định), Infrequent Access (30 ngày không truy cập), Archive Instant Access (90 ngày), Archive Access (180 ngày), Deep Archive Access (365 ngày). Không retrieval latency cho Frequent/Infrequent/Archive Instant Access (truy cập mili giây); chỉ Archive Access/Deep Archive Access cần restore. Không phí retrieval cho các tier truy cập tức thì. Phí monitoring/automation nhỏ cho object đủ điều kiện (>128 KB, >30 ngày).
+  **Vì sao đúng:** A tự động tối ưu theo pattern thực tế, không retrieval latency cho hầu hết tier, không cần quản trị lifecycle.
+  **Vì sao phương án khác sai:**
+  - B Standard-IA → Glacier Deep Archive: object 90 ngày không truy cập bị chuyển Glacier, cần restore (phút đến giờ) → có retrieval latency.
+  - C Glacier Instant Retrieval: chi phí storage thấp hơn Standard nhưng vẫn cao hơn Intelligent-Tiering cho object truy cập thường xuyên; không tự tier down cho object cold.
+  - D S3 Express One Zone: hiệu năng cao, chi phí GB cao, durability đơn AZ, không phù hợp data lake 50 TB với access pattern thay đổi.
+  > Exam tip: unpredictable access + no retrieval latency → Intelligent-Tiering; archive acceptable latency → Glacier tiers; predictable cold → lifecycle rules.`,
+  services: ['Amazon S3 Intelligent-Tiering', 'Amazon S3 Glacier'],
+},
+{
+  id: 'sap-233', exam: 'sap-c02', domain: 'sap-d4',
+  q: `A manufacturing company runs a custom ERP application on an on-premises VMware vSphere cluster. The application is tied to specific hardware licenses and cannot be modified or rehosted on a different hypervisor for the next 24 months. The company wants to start using AWS services for disaster recovery and burst capacity while keeping the application on VMware. They do not want to purchase or manage AWS hardware on premises. Which solution best meets these requirements?`,
+  options: [
+    "Use VMware Cloud on AWS to extend the on-premises vSphere environment into an AWS-managed SDDC, enabling vMotion and hybrid DR without on-premises AWS hardware.",
+    "Deploy AWS Outposts racks in the data center to run the VMware cluster on AWS hardware.",
+    "Use AWS Application Migration Service (MGN) to replicate the ERP VMs to Amazon EC2 and run a pilot light DR in AWS.",
+    "Use AWS DataSync to replicate the ERP application data to Amazon S3 and rebuild the application on EC2 during a disaster."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** ERP trên VMware on-prem, license gắn hardware/hypervisor, không sửa/rehost 24 tháng, muốn AWS services cho DR/burst, **không muốn phần cứng AWS tại chỗ**. **VMware Cloud on AWS (VMC)** triển khai SDDC (vCenter, NSX, vSAN) trên bare metal AWS trong Region, do AWS quản lý phần cứng. Mở rộng on-prem vSphere: stretched cluster, vMotion workload giữa on-prem và SDDC, dùng AWS services (S3, RDS, CloudWatch) cho DR/burst. Không lắp rack AWS tại data center.
+  **Vì sao đúng:** A giữ VMware stack, dùng AWS services, không hardware AWS on-prem.
+  **Vì sao phương án khác sai:**
+  - B Outposts **đặt hardware AWS tại data center**, trái yêu cầu.
+  - C MGN replicate VM sang EC2 (không phải VMware), thay đổi hypervisor → vi phạm license constraint.
+  - D DataSync chỉ replicate data, không cung cấp DR cho ứng dụng VMware running; rebuild trên EC2 vẫn đổi hypervisor.
+  > Exam tip: cần VMware trên AWS không lắp hardware on-prem → VMware Cloud on AWS; cần AWS hardware tại nhà máy → Outposts.`,
+  services: ['VMware Cloud on AWS', 'AWS Outposts', 'AWS Application Migration Service'],
+},
+{
+  id: 'sap-234', exam: 'sap-c02', domain: 'sap-d4',
+  q: `A company has a 200 TB on-premises Oracle database that must be migrated to Amazon RDS for Oracle. The source database must remain online during the initial load, and changes during migration must be continuously replicated until a planned cutover. The team wants to use a managed service that supports Oracle-to-Oracle homogeneous migration with minimal application changes. Which combination of steps is most appropriate? (Choose two.)`,
+  options: [
+    "Use AWS Database Migration Service to perform a full load from the source Oracle database to the RDS for Oracle target.",
+    "Enable ongoing change data capture (CDC) in the DMS task to replicate transactions from the Oracle redo logs to the target.",
+    "Use AWS Schema Conversion Tool to convert the Oracle schema to Amazon Aurora PostgreSQL and then migrate.",
+    "Take a one-time Oracle Data Pump export, upload to S3, and import into RDS for Oracle.",
+    "Use AWS DataSync to copy the Oracle data files directly to the RDS storage volume."
+  ],
+  answer: [0, 1],
+  multi: true,
+  explain: `**Từ khóa:** Oracle-to-Oracle, nguồn online, CDC liên tục đến cutover, dịch vụ managed, thay đổi app tối thiểu. Đây là migration **homogeneous** (cùng engine). **AWS DMS** hỗ trợ full load + CDC từ Oracle redo logs (LogMiner hoặc Binary Reader) sang RDS for Oracle. CDC giữ target đồng bộ với source cho đến khi team quyết định cutover. Cần kiểm tra các loại dữ liệu/DDL được hỗ trợ, replication lag, và quyền truy cập redo logs.
+  **Vì sao A và B đúng:** Full load đưa dữ liệu hiện có; CDC đồng bộ các giao dịch mới trong lúc ứng dụng vẫn ghi. Trước cutover phải xác minh dữ liệu, kiểm tra lag, và lên kế hoạch chuyển đổi.
+  **Vì sao phương án khác sai:**
+  - C Schema Conversion Tool dùng khi **đổi engine** (Oracle → PostgreSQL); không cần thiết ở đây.
+  - D Export một lần không bắt được transaction sau export; dữ liệu sẽ lệch nếu source tiếp tục ghi.
+  - E DataSync truyền file, không replicate transaction log vào managed database và không truy cập storage RDS trực tiếp.
+  > Exam tip: cùng engine + giữ nguồn online = DMS full load + CDC; khác engine mới cần SCT và kiểm thử tương thích kỹ.`,
+  services: ['AWS Database Migration Service', 'Amazon RDS for Oracle'],
+},
+{
+  id: 'sap-235', exam: 'sap-c02', domain: 'sap-d4',
+  q: `A company is evaluating 300 on-premises applications before selecting migration strategies. They have collected server inventory, utilization, and dependency data using an agentless discovery tool. They want AWS to analyze this data and recommend modernization opportunities, operating system risks, and candidate strategies such as rehost, replatform, or refactor for each application. Which service should they use?`,
+  options: [
+    "AWS Migration Hub Strategy Recommendations",
+    "AWS Migration Evaluator",
+    "AWS Application Migration Service (MGN)",
+    "AWS Control Tower Account Factory"
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** đã có inventory/utilization/dependency data, cần đề xuất chiến lược hiện đại hóa theo từng ứng dụng. **AWS Migration Hub Strategy Recommendations** phân tích dữ liệu discovery để đưa ra khuyến nghị như rehost, replatform, refactor và chỉ ra các rủi ro (OS end-of-life, kiến trúc phức tạp). Đầu vào chất lượng cao rất quan trọng: dữ liệu thiếu hoặc cũ sẽ làm khuyến nghị kém chính xác.
+  **Vì sao đúng:** A là công cụ đánh giá chiến lược sau giai đoạn discovery, giúp sàng lọc danh mục lớn trước khi thiết kế migration wave.
+  **Vì sao phương án khác sai:**
+  - B Migration Evaluator tập trung business case chi phí dựa trên utilization, không tự sinh chiến lược modernize mức ứng dụng.
+  - C MGN chủ yếu rehost server (lift-and-shift), không thay thế công cụ đánh giá chiến lược cho toàn bộ portfolio.
+  - D Control Tower tạo/quản trị multi-account landing zone; Account Factory không khám phá ứng dụng hay lập kế hoạch migration.
+  > Exam tip: business case/chi phí → Migration Evaluator; chiến lược ứng dụng → Migration Hub Strategy Recommendations; rehost server → MGN.`,
+  services: ['AWS Migration Hub Strategy Recommendations', 'AWS Migration Evaluator', 'AWS Application Migration Service'],
+},
+{
+  id: 'sap-236', exam: 'sap-c02', domain: 'sap-d4',
+  q: `A company must move 500 TB of files from an on-premises NFS file server to an Amazon S3 bucket over an existing 10 Gbps AWS Direct Connect connection. Production traffic shares the link, so migration traffic must be capped at 2 Gbps and run only during weekends. The team needs recurring incremental copies and data integrity verification without writing custom transfer tools. Which solution meets these requirements?`,
+  options: [
+    "Create an AWS DataSync task with an NFS source location and S3 destination, configure a bandwidth limit of 2 Gbps and a weekend schedule, and enable data verification.",
+    "Use S3 Transfer Acceleration to transfer the NFS file system directly into S3 and set a per-task bandwidth limit.",
+    "Use AWS Snowball Edge devices for each weekend incremental copy and manually merge objects after each device returns.",
+    "Use AWS Storage Gateway File Gateway to automatically sync NFS files to S3 on a schedule."
+  ],
+  answer: 0,
+  explain: `**Từ khóa:** nguồn NFS, đích S3, copy tăng dần theo lịch cuối tuần, giới hạn băng thông 2 Gbps trên link 10 Gbps dùng chung production, cần kiểm tra toàn vẹn. **AWS DataSync** là dịch vụ truyền dữ liệu được quản lý; NFS là vị trí nguồn được hỗ trợ, S3 là đích, task có thể chạy lặp lại theo lịch (cron), cấu hình giới hạn băng thông (bandwidth limit) và verification (checksum). Agent DataSync cần đặt nơi truy cập được NFS share và kết nối AWS (qua Direct Connect VIF).
+  **Vì sao đúng:** A giải quyết lịch, băng thông, xác minh mà không tự xây công cụ. Direct Connect cung cấp đường riêng nhưng vẫn cần cap vì dùng chung production traffic.
+  **Vì sao phương án khác sai:**
+  - B Transfer Acceleration tăng tốc upload tới S3 qua edge location; không đọc NFS share như DataSync và không phải công cụ đồng bộ file theo lịch.
+  - C Snowball phù hợp khi mạng không đủ; mang thiết bị qua lại mỗi cuối tuần không thực tế cho incremental sync 500 TB.
+  - D File Gateway trình bày NFS share cho ứng dụng on-prem; nó không quét/copy file server NFS hiện có thành object S3 theo lịch.
+  > Exam tip: DataSync phù hợp chuyển/đồng bộ file qua mạng; link dùng chung → luôn giới hạn băng thông và lên lịch ngoài giờ cao điểm.`,
+  services: ['AWS DataSync', 'Amazon S3', 'AWS Direct Connect'],
+},
 );
