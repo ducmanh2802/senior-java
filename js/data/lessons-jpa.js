@@ -1366,5 +1366,330 @@ em.remove(line2);        // thêm delete action
 ],
 check:[{q:'Hibernate flush theo thứ tự nào?',options:['Theo thứ tự bạn gọi persist/remove','insert → update → delete','delete → update → insert','Ngẫu nhiên'],answer:1,explain:`ActionQueue sắp xếp insert trước, update giữa, delete sau để insert cha trước con và delete con trước cha, tôn trọng FK và constraint.`},{q:'Trong một transaction bạn xóa user email a@x.com rồi thêm user mới cùng email. Điều gì xảy ra lúc flush?',options:['Hibernate tự sắp xếp delete trước insert','INSERT chạy trước DELETE → vi phạm unique','Không có SQL nào','Hibernate ném lỗi compile'],answer:1,explain:`Hibernate flush insert trước delete, nên INSERT chạy khi bản ghi cũ chưa bị xóa → unique constraint bị vi phạm. Cách sửa: gọi flush() giữa hai thao tác, hoặc dùng UPDATE.`},{q:'Vì sao ActionQueue không gửi SQL theo thứ tự bạn gọi persist/remove?',options:['Để giảm số câu SQL','Để insert cha trước con và delete con trước cha, tôn trọng FK và constraint','Vì database yêu cầu','Để tái dùng prepared statement'],answer:1,explain:`Nếu gửi theo thứ tự gọi, persist con trước cha sẽ vi phạm FK; remove cha trước con cũng vi phạm. ActionQueue sắp xếp để an toàn. Đây là lý do log SQL thường không khớp với code Java.`},{q:'Cách nào sửa lỗi "xóa rồi thêm cùng unique key" trong cùng transaction?',options:['Gọi flush() giữa hai thao tác để gửi DELETE xuống DB trước khi INSERT','Chờ commit rồi làm lại','Dùng UPDATE thay vì delete+insert, hoặc flush giữa chừng','Bỏ unique constraint'],answer:2,explain:`Gọi em.flush() giữa hai thao tác: flush đầu tiên gửi DELETE xuống DB, sau đó INSERT mới không bị ngăn. Hoặc dùng UPDATE thay vì delete+insert. Deferred constraint ở DB cũng có thể giúp nhưng Hibernate không tự bật; cần cấu hình DB.`}],
   tags:['ActionQueue','flush order','unique constraint']
+},
+{
+  id:'lesson-jpa-010',track:'jpa',order:10,title:'Transaction và persistence context: flush, commit, detach',level:'mid',minutes:25,
+  goals:['Giải thích transaction là gì và tại sao các thao tác ghi dữ liệu phải nằm trong một transaction','Hiểu persistence context (EntityManager/Session của Hibernate): identity map, snapshot, dirty checking và khi nào Hibernate sinh SQL','Phân biệt flush và commit; biết rollback làm gì với dữ liệu vừa sửa','Biết detach/clear là gì và tại sao sửa entity sau khi transaction kết thúc bị bỏ qua lặng'],
+  body:`**Tóm tắt:** Transaction là một nhóm các thao tác với database được xử lý như một đơn vị duy nhất: hoặc tất cả thành công, hoặc tất cả bị hủy (ví dụ chuyển tiền: trừ tài khoản A và cộng tài khoản B phải cùng xảy ra, không được một bên thành công một bên thất bại). Persistence context (EntityManager của JPA, Hibernate gọi là Session) là "bàn làm việc" gắn với một transaction: entity được load vào đây sẽ được theo dõi, và Hibernate tự sinh SQL khi flush hoặc commit. Sửa entity sau khi context đã đóng (detached) thì Hibernate không ghi gì và cũng không báo lỗi — dữ liệu vãng lại như chưa chạm.
+
+### Transaction là gì, và tại sao cần
+Transaction (giao dịch database) là một nhóm các thao tác đọc/ghi database được gói thành một đơn vị duy nhất: **hoàn thành hoàn toàn hoặc hủy hoàn toàn**. Hãy hình dung giao dịch ngân hàng: chuyển 100.000 từ tài khoản A sang B gồm hai bước — trừ A, cộng B. Nếu máy chủ mất điện đúng giữa chừng, không được phép chỉ trừ A mà không cộng B. Transaction đảm bảo: cả hai bước đều ghi vào database, hoặc cả hai đều bị hủy, cái nào cũng không xảy ra.
+
+Trong Spring, bạn đánh dấu một method bằng {{@Transactional}}: Spring mở transaction trước khi method chạy và commit khi method kết thúc bình thường; nếu method ném exception, Spring rollback (hủy) mọi thay đổi đã làm trong method đó.
+
+Ví dụ:
+~~~java
+@Transactional
+public void transfer(long from, long to, long amount) {
+    Account a = em.find(Account.class, from); // load A
+    Account b = em.find(Account.class, to);   // load B
+    a.setBalance(a.getBalance() - amount);    // sửa trong RAM, chưa gửi SQL
+    b.setBalance(b.getBalance() + amount);    // sửa trong RAM, chưa gửi SQL
+} // commit: Hibernate flush và ghi cả hai UPDATE xuống database
+~~~
+
+Nếu setBalance bị lỗi ở bước B, transaction rollback: việc trừ A cũng không được ghi vào database. Số tiền không bao giờ "bị mất vào không gian".
+
+### Persistence context: "bàn làm việc" của EntityManager
+EntityManager (JPA) hoặc Session (Hibernate) là đối tượng chính để ứng dụng nói chuyện với database. Mỗi EntityManager giữ một **persistence context**: vùng nhớ chứa các entity mà nó đang **quản lý (managed)**. Hãy hình dung đó là một bản nháp in chậm: bạn sửa trên bản nháp, dữ liệu mới được in ra giấy (ghi vào database) khi flush hoặc commit.
+
+Bên trong persistence context có **identity map**: một map có khoá là (loại entity, id), giá trị là object Java. Khi gọi {{em.find(Account.class, 7L)}}:
+1. Hibernate tra map trước. Nếu đã có object id 7, trả về đúng object đó, không chạy SQL.
+2. Nếu chưa có, chạy SELECT, tạo object, đưa vào map rồi trả về.
+
+Vì vậy trong cùng một transaction, {{find}} hai lần cùng id trả về **cùng một instance** ({{a1 == a2}} là true). Cache này chỉ sống trong một persistence context; transaction khác có map riêng.
+
+Khi nạp entity, Hibernate lưu thêm một **snapshot**: ảnh chụp giá trị các field lúc đọc (bản sao giá trị, không phải tham chiếu tới object). Setter chỉ đổi object trong RAM, chưa chạy SQL. Đến lúc flush, Hibernate duyệt các entity managed, so sánh từng field với snapshot; field nào khác thì sinh UPDATE. Đó là **dirty checking**: với entity đang managed, bạn **không cần** gọi {{save}}.
+
+~~~java
+@Transactional
+public void rename(long id) {
+    Account a = em.find(Account.class, id); // SELECT; a managed, snapshot = {name: "Lan"}
+    a.setName("Mai");                       // chỉ đổi object trong RAM, chưa có SQL
+} // commit → flush: so với snapshot, thấy name khác → sinh UPDATE
+~~~
+
+### Flush khác commit, và cả hai khác rollback
+**Flush** = gửi các câu SQL đang chờ xuống database, **vẫn trong khoảng thời gian transaction còn mở**. **Commit** = kết thúc transaction: thay đổi trở nên bền vững và transaction khác mới nhìn thấy được.
+
+| | Flush | Commit |
+|---|---|---|
+| Ý nghĩa | Gửi SQL chờ xuống database | Kết thúc transaction |
+| Dữ liệu bền vững? | Chưa (vẫn có thể rollback) | Có |
+| Transaction khác nhìn thấy? | Chưa | Có |
+| Sau đó transaction vẫn mở? | Có | Không |
+
+Flush xảy ra:
+- tự động trước commit;
+- trước một câu query JPQL có thể bị ảnh hưởng bởi thay đổi đang chờ (FlushMode mặc định là AUTO), để query thấy dữ liệu mới nhất;
+- khi bạn gọi {{em.flush()}} thủ công.
+
+Sau flush, transaction vẫn có thể rollback và mọi SQL đã flush bị hủy. Vì vậy flush **không phải** tín hiệu "dữ liệu đã lưu".
+
+~~~text
+begin transaction
+   SELECT * FROM account WHERE id = 1   -- load vào persistence context, lưu snapshot
+   setName("Mai")                       -- chỉ sửa RAM
+   flush()                              -- gửi UPDATE xuống database (chưa bền vững)
+commit                                   -- dữ liệu bền vững, context thường bị xóa
+~~~
+
+Nếu thay commit bằng **rollback**, mọi thay đổi trong transaction bị hủy, database quay về như chưa có transaction này, và persistence context bị xóa sạch.
+
+### Bốn trạng thái của entity
+| Trạng thái | Nghĩa | Sửa field thì sao? |
+|---|---|---|
+| New/transient | Vừa {{new}}, chưa persist | Không ai theo dõi; cần {{persist}} hoặc cascade |
+| Managed | Đang nằm trong persistence context | Phát hiện lúc flush, tự sinh UPDATE |
+| Detached | Từng managed nhưng context đã đóng, clear hoặc detach | Không được theo dõi, không tự ghi |
+| Removed | Đã gọi {{remove}} | Sinh DELETE lúc flush |
+
+### Detach và clear: setter bị bỏ qua lặng
+{{em.detach(entity)}} gỡ một entity ra khỏi persistence context; {{em.clear()}} gỡ hết. Entity đã detach không còn được Hibernate theo dõi: bạn gọi setter, object trong RAM đổi, nhưng không sinh SQL nào, và Hibernate cũng không báo lỗi.
+
+Lỗi hay gặp: transaction kết thúc (commit hoặc rollback) thì persistence context thường bị xóa, mọi entity bạn đang giữ trong biến trở thành **detached**. Nếu bạn hoặc tầng gọi tiếp (ví dụ controller) sửa field trên entity đó rồi hy vọng lưu lại, dữ liệu vãng lại lặng lên. Spring Data {{save()}} trên entity detached thực ra gọi {{merge()}}: Hibernate tìm (hoặc nạp) instance managed cùng id, chép state từ object của bạn sang instance đó, rồi trả về **instance managed mới**. Object bạn truyền vào vẫn detached — nên phải dùng giá trị trả về: {{account = repo.save(account)}}.
+
+### Ví dụ đời thực: import 500.000 sản phẩm trong một transaction
+Một job import giá cho 500.000 sản phẩm trong **một** transaction: load hết 500.000 entity rồi sửa từng cái. Persistence context giữ 500.000 entity **cùng cả 500.000 snapshot** → heap phình lên 4GB, và mỗi lần flush Hibernate phải so sánh từng entity với snapshot → mất 9 phút, full GC liên tục.
+
+Điều tra phát hiện gốc rễ: persistence context lớn quá và flush quét toàn bộ mỗi lần. Cách sửa: xử lý theo chunk (ví dụ 1.000 entity), mỗi chunk persist xong gọi {{flush()}} rồi {{clear()}}. **Phải flush trước clear**, nếu không thay đổi chưa gửi xuống database sẽ bị mất. Kết quả: thời gian còn 60 giây, heap tối đa khoảng 400MB.
+
+### Trả lời mẫu khi phỏng vấn
+"Transaction là nhóm các thao tác database thành một đơn vị all-or-nothing: hoặc tất cả thành công, hoặc tất cả bị hủy; trong Spring tôi đánh dấu method bằng @Transactional. Persistence context là EntityManager theo dõi các entity đã load: có identity map (cùng id trong một transaction trả về cùng object) và snapshot, nên sửa setter trên managed entity đủ, Hibernate tự sinh UPDATE khi flush. Flush gửi SQL xuống database nhưng transaction vẫn mở, có thể rollback; commit thì dữ liệu bền vững và context thường bị xóa, biến entity thành detached — sửa entity detached sẽ bị Hibernate bỏ qua lặng. Vì vậy import lớn tôi chia chunk, flush rồi clear mỗi chunk (flush trước clear), và dùng read-only transaction cho endpoint chỉ đọc."
+
+### Liên hệ phỏng vấn
+1. **"Transaction kết thúc rồi entity bạn giữ trong biến có còn được Hibernate theo dõi không?"** — Không. Sau commit (hoặc rollback) persistence context thường bị xóa, entity trở thành detached, setter không còn sinh SQL. Muốn ghi lại phải load lại entity hoặc dùng giá trị trả về của {{save()}}/{{merge()}} (instance managed mới).
+2. **"Flush khác commit ở chỗ nào?"** — Flush gửi các câu SQL đang chờ xuống database nhưng transaction vẫn còn mở, nên vẫn có thể rollback hết. Commit kết thúc transaction, dữ liệu trở nên bền vững và transaction khác mới nhìn thấy.
+3. **"Vì sao import lớn phải flush rồi clear theo chunk?"** — Mỗi entity managed tốn RAM (object và snapshot), mỗi flush duyệt tất cả entity managed. Chunk giữ persistence context nhỏ; flush trước clear để thay đổi đã được gửi xuống database trước khi giải phóng context.`,
+  exercises:[{title:'Unit of Work: load, sửa, flush, commit, detach, rollback',prompt:`Mô phỏng persistence context (unit of work) bằng class {{UnitOfWork}} quản lý entity {{Account}} (có {{id}} và {{name}}):
+- {{load(id, name)}}: nếu id đã có trong identity map thì trả về **cùng object** cũ (bỏ qua {{name}} truyền vào); nếu chưa thì tạo {{Account}}, đưa vào identity map và lưu snapshot (bản sao giá trị {{name}}).
+- {{setName(id, name)}}: nếu entity đang được quản lý thì đổi {{name}} trong RAM; nếu không (đã detach) thì không làm gì cả.
+- {{flush()}}: với mỗi entity đang được quản lý (theo thứ tự load), so {{name}} hiện tại với snapshot; khác thì thêm câu {{"UPDATE account SET name='<name>' WHERE id=<id>"}} vào danh sách trả về, và cập nhật snapshot. Entity không đổi thì không có câu SQL.
+- {{commit()}}: xóa toàn bộ persistence context (mọi entity trở thành detached).
+- {{detach(id)}}: gỡ một entity ra khỏi context.
+- {{rollback()}}: khôi phục giá trị của mọi entity đang quản lý về snapshot (hủy mọi thay đổi chưa flush).`,
+  starter:`class Account {long id;String name;Account(long i,String n){id=i;name=n;}}
+class UnitOfWork {
+    Account load(long id,String name){throw new UnsupportedOperationException("TODO");}
+    void setName(long id,String name){throw new UnsupportedOperationException("TODO");}
+    List<String> flush(){throw new UnsupportedOperationException("TODO");}
+    void commit(){throw new UnsupportedOperationException("TODO");}
+    void detach(long id){throw new UnsupportedOperationException("TODO");}
+    void rollback(){throw new UnsupportedOperationException("TODO");}}`,
+  tests:`public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        UnitOfWork u = new UnitOfWork();
+        Account a = u.load(1, "A");
+        check("cung id tra ve cung object", a == u.load(1, "Z"), "khac instance");
+        check("giu trang thai cu khi load lai", "A".equals(a.name), "name = " + a.name);
+        List<String> s = u.flush();
+        check("flush trong khi khong sua", s.isEmpty(), "sql = " + s);
+        u.setName(1, "B");
+        s = u.flush();
+        check("phat hien sua ten", s.equals(List.of("UPDATE account SET name='B' WHERE id=1")), "sql = " + s);
+        s = u.flush();
+        check("sau flush thi sach", s.isEmpty(), "sql = " + s);
+        u.detach(1);
+        u.setName(1, "C");
+        s = u.flush();
+        check("da detach thi khong the theo doi", s.isEmpty(), "sql = " + s);
+        u.load(2, "P");
+        u.setName(2, "Q");
+        s = u.flush();
+        check("ghi entity moi", s.equals(List.of("UPDATE account SET name='Q' WHERE id=2")), "sql = " + s);
+        u.rollback();
+        List<String> s2 = u.flush();
+        check("rollback huy het", s2.isEmpty(), "sql = " + s2);
+        u.setName(2, "R");
+        u.rollback();
+        Account b = u.load(2, "X");
+        check("rollback da khoi phuc gia tri cu", "Q".equals(b.name) && b == u.load(2, "Y"), "name = " + b.name);
+        u.commit();
+        u.setName(2, "R");
+        s = u.flush();
+        check("sau commit entities la detached", s.isEmpty(), "sql = " + s);
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference:`class Account {long id;String name;Account(long i,String n){id=i;name=n;}}
+class UnitOfWork {
+    Map<Long,Account> managed=new LinkedHashMap<>();   // identity map, giu thu tu load
+    Map<Long,String> snapshot=new HashMap<>();         // snapshot: ban sao gia tri, khong phai tham chieu
+    Account load(long id,String name){
+        Account a=managed.get(id);
+        if(a!=null)return a;
+        a=new Account(id,name);managed.put(id,a);snapshot.put(id,name);return a;
+    }
+    void setName(long id,String name){
+        Account a=managed.get(id);
+        if(a!=null)a.name=name;                        // da detach thi lam giang
+    }
+    List<String> flush(){
+        List<String> sql=new ArrayList<>();
+        for(Account a:managed.values()){
+            String old=snapshot.get(a.id);
+            if(!Objects.equals(old,a.name)){
+                sql.add("UPDATE account SET name='"+a.name+"' WHERE id="+a.id);
+                snapshot.put(a.id,a.name);             // cap nhat snapshot de khong lap lai
+            }
+        }
+        return sql;
+    }
+    void commit(){managed.clear();snapshot.clear();}   // ca het tro thanh detached
+    void detach(long id){managed.remove(id);snapshot.remove(id);}
+    void rollback(){
+        for(Account a:managed.values())a.name=snapshot.get(a.id); // khoi phuc tu snapshot
+    }
+}`,
+  hints:['Dung LinkedHashMap<Long, Account> lam identity map, giu thu tu load.','Snapshot phai la ban sao gia tri (String), khong phai tham chieu den Account.','flush: duyet managed, so name voi snapshot, khac thi them SQL va ghi de snapshot.','commit xoa ca map va snapshot; rollback gan lai name tu snapshot; detach chi xoa mot entity.'],
+  explain:`Flush so sanh gia tri hien tai voi snapshot; chi field khac moi sinh SQL, sau flush Hibernate ghi de snapshot de lan sau khong lap lai cau SQL cu. Detach xoa entity khoi persistence context nen setter sau do khong duoc theo doi — bẫy "sua xong khong co gi xay ra". Commit xoa toan bo context, moi entity dang giu tro thanh detached; rollback khoi phuc gia tri tu snapshot, va vi flush chua ben cung du lieu cho nen khong co gi trong database bi thay doi.`,
+  }],check:[{q:'Flush khac commit o dau?',options:['Flush dua SQL xu du DB van trong transaction (van rollback duoc); commit ket thuc transaction, du lieu ben cung','Commit chi xoa persistence context, flush moi dua SQL xu DB','Hai cung la cung mot luc: dua SQL va ket thuc transaction','Flush chi xay ra khi goi em.flush(), commit tu dong xay ra luon'],answer:0,explain:`Flush gui cac cau SQL dang cho xu xu database nhung transaction van con nen, nen van co the rollback. Commit ket thuc transaction, du lieu tro nen ben cung va transaction khac moi thay duoc. Co 3 lan flush tuong tu: truoc commit, truoc query JPQL (FlushMode AUTO), va khi goi em.flush() thu cong.`},{q:'Ban goi em.detach(entity) sau do goi setter sua field. Luc commit, Hibernate co sinh UPDATE khong?',options:['Co, Hibernate luon ghi entity da duoc load','Khong; entity da detached boi detach nen setter khong duoc theo doi, khong co SQL','Co nhung chi neu co cascade','Chua biet, phu thuoc database'],answer:1,explain:`Detach xoa entity khoi persistence context, Hibernate bo qua no: setter doi object trong RAM nhung khong sinh SQL, cung khong bao loi. Day la bat "sua xong mat ma khong biet sao".`},{q:'Transaction bi rollback sau khi da goi em.flush(). Du lieu vua flush co nam trong database khong?',options:['Co, flush da dua SQL xu DB nen khong the hoan tac','Khong; rollback huy tat ca thay doi trong transaction, database quay lai nhu chua co transaction','Co phan, chi luu cac cau da flush truoc commit','Chua biet'],answer:1,explain:`Flush chua la ket thuc transaction; rollback huy het, cac cau SQL da gui van trong khoang transaction va bo qua. Chi commit moi lam du lieu ben cung.`}],related:['jpa-002'],tags:['transaction','persistence context','dirty checking','flush','detach']
+},
+{
+  id:'lesson-jpa-011',track:'jpa',order:11,title:'Optimistic locking voi @Version: chan lost update va retry',level:'senior',minutes:25,
+  goals:['Giải thích lost update (mat cap nhat) va tai sao isolation mac dinh cua database khong chong duoc','Hieu @Version sinh cau UPDATE co dieu kien version, va chac lan gi xay ra khi version da doi','Biet retry sau OptimisticLockException phai lam gi: transaction moi, doc state moi, ap dung lai y dinh, gioi han so lan','So sanh optimistic locking voi pessimistic lock (SELECT FOR UPDATE) va biet chon cai nao'],
+  body:`**Tóm tắt:** Lost update (mất cập nhật) xảy ra khi hai transaction cùng đọc một giá trị, cùng tính toán trong ứng dụng rồi cùng ghi, và lần ghi sau silently ghi đè mất lần ghi trước — database ở mức isolation mặc định (READ COMMITTED) không báo lỗi vì hai câu UPDATE đều hợp lệ. @Version giải quyết bằng cách thêm cột version vào entity; mỗi UPDATE kèm điều kiện {{WHERE version = ?}}. Nếu transaction khác đã sửa hàng này, số hàng bị ảnh hưởng là 0 và Hibernate ném exception. Sau exception phải mở transaction mới, đọc lại trạng thái mới, và áp dụng lại ý định (không ghi lại kết quả cũ), với số lần thử bị giới hạn.
+
+### Lost update: khi hai lan ghi de lai nhau
+Lost update (mất cập nhật) là tình huống hai người cùng sửa một bản ghi mà thay đổi của người đầu tiên biến mất. Ví dụ:
+- Nhân viên A mở sản phẩm, tồn kho hiện 10. A bán 3 nên tính 10 − 3 = 7.
+- Nhân viên B cũng mở cùng sản phẩm, tồn kho vẫn 10 (B đọc trước khi A lưu). B nhập thêm 5 nên tính 10 + 5 = 15.
+- A lưu trước (ghi 7), B lưu sau (ghi 15). Kết quả là 15, sai: đúng là 12. Thay đổi của A bị **ghi đè âm thầm**. Đó là lost update.
+
+~~~text
+A: SELECT stock=10    B: SELECT stock=10
+A: tinh 7             B: tinh 15
+A: UPDATE stock=7     B: UPDATE stock=15   <-- mat 3 san pham cu A
+~~~
+
+Database ở mức isolation mặc định (READ COMMITTED) không ngăn được: hai câu UPDATE đều hợp lệ, database không biết chúng sinh ra từ hai bản đọc khác nhau. Vì vậy cần cơ chế khác, ví dụ @Version.
+
+### @Version va cau UPDATE co dieu kien version
+Them mot cot {{version}} vao entity (Java 17, Spring Boot 3, Hibernate 6):
+
+~~~java
+@Entity
+class Product {
+    @Id Long id;
+    int stock;
+    @Version int version;   // Hibernate tu quan ly, ung dung khong tu tang
 }
+~~~
+
+Khi flush mot thay doi, Hibernate sinh:
+
+~~~sql
+UPDATE product SET stock = ?, version = 5 WHERE id = ? AND version = 4
+~~~
+
+Cau UPDATE chi ket hop (match) hang neu version trong database **van con la 4**, tuc chua ai sua tai khoan cua ban doc. Database thuc hien kiem tra va ghi trong **cung mot cau lenh nguyen tu**, nen khong co kho het giua "kiem tra" va "ghi". Neu so hang bi anh huong la 0 (da co nguoi tang version, hoac hang bi xoa), Hibernate nem {{StaleObjectStateException}}, JPA boi thanh {{OptimisticLockException}}, va Spring dich thanh {{ObjectOptimisticLockingFailureException}}.
+
+~~~text
+A doc v4  -> UPDATE ... WHERE version=4 -> 1 hang -> v5, thanh cong
+B doc v4  -> UPDATE ... WHERE version=4 -> 0 hang -> exception
+B mo transaction moi -> doc v5 -> ap dung lai "nhap them 5" -> UPDATE ... WHERE version=5 -> thanh cong
+~~~
+
+Goi la "optimistic" (lach quan) vi khong giu khoa gi trong database trong khi nguoi dung suy nghinh hay may tinh toan; chi phat hien xung dot luc ghi. @Version cung duoc kiem tra khi {{merge}} mot entity detached: neu version trong object cu hon database thi cung bi tu choi, rat co ich cho form web mo lau.
+
+### Cac buoc tu doc den commit
+Khi mot transaction doc entity co {{@Version}}, Hibernate lam cac buoc sau:
+
+1. **SELECT**: Hibernate doc cac cot cua entity, trong do cot {{version}}. Luu gia tri nay vao **snapshot** (anh chup gia tri, khong phai tham chieu).
+2. **Sua trong RAM**: ban goi setter tren entity managed. Chi doi object Java, chua phat sinh SQL. Snapshot van giu gia tri cu.
+3. **Flush**: truoc commit, Hibernate duyet entity managed, so field hien tai voi snapshot. Entity khac thi sinh UPDATE.
+4. **UPDATE co dieu kien version**: cau UPDATE sinh ra la {{UPDATE product SET stock = ?, version = ? WHERE id = ? AND version = ?}}. Cau nay la compare-and-set nguyen tu: database kiem tra version trong DB con la khi doc khong, neu khong thi anh huong 0 hang.
+5. **Ket qua**: anh huong 1 hang -> commit thanh cong, version tang. Anh huong 0 hang -> Hibernate nem {{StaleObjectStateException}}, JPA boi thanh {{OptimisticLockException}}, Spring dich thanh {{ObjectOptimisticLockingFailureException}}.
+
+Tai sao phai lam nhu the? Vi optimistic locking **khong giu kho** trong khi nguoi dung suy nghinh (khac pessimistic lock kho hang trong DB trong toan bo transaction). Uu diem: khong gay block, khong deadlock, phu hop voi doc nhieu ghi it. Nhuoc diem: phai retry hoac tra 409 khi xung dot.
+
+### Retry dung cach
+Khong the gui lai UPDATE voi version cu — no se fail mai. Retry dung nghia la:
+1. Mo **transaction moi** (transaction cu da bi danh dau rollback-only, khong dung tiep duoc).
+2. Doc lai state moi (version moi).
+3. Ap dung lai **y dinh** (vi "cong them 5"), khong ghi lai **ket qua** da tinh (15).
+4. Gioi han so lan (vi du 3), co backoff nho khi tai cao.
+
+Vay retry phai dat **ben ngoai** method {{@Transactional}}: mot method khac goi vao service transactional qua proxy, hoac {{@Retryable}} cua Spring Retry dat lop ngoai. Bat exception ben trong cung transaction roi thu lai la sai.
+
+Khong retry mu vi thao tac co side effect ngoai database (gui email, goi cong thanh toan): dung idempotency key hoac outbox. Va khong phai xung dot nao cung nen retry: neu nguoi dung quyet dan du lieu da thay doi (gia moi, han muc moi), hien tra HTTP 409 de ho xem lai.
+
+| Chien luoc | Chon khi | Cai gia |
+|---|---|---|
+| Optimistic (@Version) | xung dot hiem, doc nhieu ghi it, thao tac dai | phai retry hoac tra 409 |
+| Pessimistic ({{PESSIMISTIC_WRITE}}, SELECT ... FOR UPDATE) | tranh chap cao tren it hang nong, xu ly ngan | giu kho, cho, timeout, deadlock |
+
+### Bat tai production
+- **Bulk JPQL** ({{UPDATE Product p SET p.stock = 0}}) khong tu tang version, nen cac transaction khac khong phat hien xung dot. Phai tu tang ({{SET p.version = p.version + 1}}; HQL co cuc phap {{UPDATE VERSIONED}}) va clear persistence context.
+- **Retry vo han** lam tai tang trong luc database dang tranh chap. Do ti le conflict va gioi han so lan.
+- **@Version chi bao viet tung hang**. Rang truoc tren nhieu hang (vi du tong ca truc >= 2 nguoi) can unique/check constraint hoac khoa khac.
+- **Hang "nong"** (mot bo dem moi cung request cung sua) se conflict lien tuc; optimistic khong hop, can nhac UPDATE nguyen tu {{SET stock = stock - 1 WHERE stock > 0}} hoac pessimistic lock.
+
+### Vi du doi thuc: he thong dat ve phong kham
+Benh vien co 30.000 benh nhan/ngay, 80% luot khoa tac chi doc lich kham, 20% dat/luu lich. Mot gio cao diem, 3 nhan vien vien phi cung mo form chinh sua sua khoa cua bac thuoc 42: A sua gio kham, B sua phong kham, C sua gia, ba cung doc version = 11. A luu dau tien (version 12 thanh cong). B luu sau: version DB da 12 khac 11 -> 0 hang -> ObjectOptimisticLockingFailureException -> API tra 409 ke version moi, giao dien bao "Khoa da du nguoi khac cap nhat, tai lai?". C nhan 409, tai lai form, ap dung lai sua gia cua minh, luu thanh cong. Ket qua: 0 ca mat cap nhat, ty le 409 duoi 1% va duoc bao dong de phat hien UI cache qua lau.
+
+### Tra loi mau khi pham van
+"Em xac dinh lost update: hai transaction cung doc mot gia tri, cung tinh trong ung dung, cung ghi, lan ghi sau de mat lan truoc; DB o READ COMMITTED khong bao loi. Em giai quyet theo thu tu uu tien: neu phep tinh bieu dien bang SQL (tru ton kho) thi day vao cau UPDATE nguyen tu co dieu kien; neu sua nhieu truong qua form, em dung @Version va tra 409 de nguoi dung tai lai. Sau OptimisticLockException, em mo transaction moi, doc lai entity (version moi), ap dung lai y dinh khong ghi lai ket qua cu, gioi han 3 lan co backoff. Khong retry trong cung transaction vi da rollback-only. Neu xung dot rat cao (bo dem hang chuc nghin request/giay), em chuyen sang SELECT FOR UPDATE hoac UPDATE nguyen tu. Luon co buoc doi soat de sua du lieu da sai."
+
+### Lien he pham van
+1. **"Cau UPDATE co dieu kien version lam gi, va tai sao no chong duoc lost update?"** — Hibernate them cot version moi thanh ghi. Luc flush, UPDATE cot cot cua entity them {{WHERE version = ?}} voi version ban doc. Neu nguoi khac da sua, version DB da doi, UPDATE anh huong 0 hang, Hibernate nem OptimisticLockException. No la compare-and-set nguyen tu o cap database.
+2. **"Retry sau OptimisticLockException phai lam gi?"** — Mo transaction **moi**, doc lai entity (version moi), ap dung lai **y dinh** (vi cong them 5), khong ghi lai ket qua cu. Gioi han 3 lan co backoff. Khong retry trong cung transaction (da rollback-only).
+3. **"Khi nao chon pessimistic lock thay vi @Version?"** — Tranh chap cao tren it hang nong (bo dem, dat ve phong kham) va xu ly ngan. @Version phu hop doc nhieu ghi it, form web mo lau. Pessimistic kho hang DB, co the deadlock, timeout.`,
+  exercises:[{title:'Version check va retry (tai toan bo khoan)',prompt:`Mot tai khoan co {{balance}} va {{version}} (ca hai bat dau bang 0):
+- {{update(expectedVersion, delta)}}: neu {{version}} hien tai khac {{expectedVersion}} thi tra {{false}} va **khong** doi gi; neu khop thi cong {{delta}} vao {{balance}}, tang {{version}} them 1 va tra {{true}} (giong UPDATE ... WHERE version = ?).
+- {{credit(delta)}}: thu toi da **3 lan**; moi lan **doc version hien tai** roi goi {{update}}. Thanh cong thi dung. Sau 3 lan that bai niem {{IllegalStateException}}.`,
+  starter:`class Wallet {long id;long balance;int version;Wallet(long i){id=i;}boolean update(int v,long d){throw new UnsupportedOperationException("TODO");}void credit(long d){throw new UnsupportedOperationException("TODO");}}`,
+  tests:`public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        Wallet w = new Wallet(1);
+        check("update dau tien thanh cong", w.update(0, 100) && w.balance == 100 && w.version == 1, "balance=" + w.balance + ", version=" + w.version);
+        check("version cu bi tu choi va khong doi gi", !w.update(0, 50) && w.balance == 100 && w.version == 1, "balance=" + w.balance + ", version=" + w.version);
+        w.credit(30);
+        check("credit doc version moi", w.balance == 130 && w.version == 2, "balance=" + w.balance + ", version=" + w.version);
+        w.credit(20);
+        check("credit lan hai", w.balance == 150 && w.version == 3, "balance=" + w.balance + ", version=" + w.version);
+        // an writer khac chen vao giua: lan thu dau tien coi nhu version da doi
+        Wallet flaky = new Wallet(2) {
+            int calls;
+            boolean update(int v, long d) { if (calls++ == 0) { version++; return false; } return super.update(v, d); }
+        };
+        flaky.credit(25);
+        check("retry doc lai version sau xung dot", flaky.balance == 25 && flaky.version == 2, "balance=" + flaky.balance + ", version=" + flaky.version);
+        int[] attempts = {0};
+        Wallet busy = new Wallet(3) { boolean update(int v, long d) { attempts[0]++; return false; } };
+        boolean thrown = false;
+        try { busy.credit(7); } catch (IllegalStateException e) { thrown = true; }
+        check("thu 3 lan roi niem exception", thrown && attempts[0] == 3, "thrown=" + thrown + ", attempts=" + attempts[0]);
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference:`class Wallet {long id;long balance;int version;Wallet(long i){id=i;}
+    boolean update(int v,long d){
+        if(version!=v)return false;   // giong UPDATE ... WHERE version = ? anh huong 0 hang
+        balance+=d;version++;return true;
+    }
+    void credit(long d){
+        for(int i=0;i<3;i++){
+            int seen=version;            // doc lai state moi moi lan thu
+            if(update(seen,d))return;    // ap dung lai y dinh (cong d), khong ghi lai ket qua cu
+        }
+        throw new IllegalStateException("conflict after 3 attempts");
+    }
+}`,
+  hints:['update: so version truoc; khong khop thi return false ngay, khong doi balance/version.','credit: doc version **trong** vong lap, khong phai mot lan truoc vong lap.','Het 3 lan ma chua thanh cong thi throw new IllegalStateException(...).'],
+  explain:`{{update}} mo phong compare-and-set ma database lam trong mot cau UPDATE co dieu kien version. Loi hay gap nhat la doc version **mot lan truoc vong lap**: sau khi xung dot, lan thu sau van dung version cu, nen lan nao cung that bai. Test {{flaky}} bat chinh loi nay. O ung dung thuc, moi lan thu la mot transaction moi (doc entity moi tu DB), vong retry o lop ngoai method @Transactional. Gioi han 3 lan giup khong khuong dia tai khi tranh chap cao.`,
+  }],check:[{q:'Retry sau khi gap OptimisticLockException (Spring boi thanh ObjectOptimisticLockingFailureException) nen lam gi?',options:['Gui lai UPDATE voi version cu','Mo transaction moi, doc entity moi (version moi), ap dung lai y dinh, gioi han so lan','Xoa cot version de het loi','Bat exception roi thu lai trong cung transaction, retry den khi thanh cong'],answer:1,explain:`Version cu chac chan tiep tuc that bai. Transaction hien da bi danh dau rollback-only nen khong the tiep tuc trong no, va retry vo han khuong dia tai. Xoa version thi quay lai lost update. Cach dung: transaction moi, doc lai, ap dung lai y dinh, co gioi han.`},{q:'@Query("UPDATE Product p SET p.stock = 0") @Modifying co tu tang cot @Version khong?',options:['Co, Hibernate luon tang version','Chi khi co @Transactional','Khong; bulk DML bo qua entity, phai tu SET version = version + 1 (hoac UPDATE VERSIONED trong HQL)','Chi tren PostgreSQL'],answer:2,explain:`Bulk DML chay thang xu database, khong qua entity managed nen khong co tang version tu dong. Hanh vi nay khong phu thuoc loai database, va retry khong lien quan. Neu khong tu tang version, cac transaction dang giu ban cu se ghi de khong phat hien duoc.`},{q:'Khi nao chon pessimistic lock (SELECT ... FOR UPDATE) hon @Version?',options:['Xung dot cuc hiem','Tranh chap cao tren it hang nong, xu ly ngan','Muon tranh hoan toan deadlock','Nguoi dung mo form sua 10 phut'],answer:1,explain:`Tranh chap cao tren hang nong lam optimistic lien tuc that va retry; kho ngan hieu qua hon. Form mo 10 phut ma kho DB thi chan nguoi khac het thoi gian, nen optimistic hon hon. Xung dot hiem cung la dat cua optimistic. Pessimistic lock van **co the** gay deadlock khong phai tranh duoc.`}],related:['jpa-004'],tags:['optimistic locking','@Version','lost update','retry']
+},
 );
