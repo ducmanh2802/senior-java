@@ -2749,4 +2749,394 @@ Response có thể là {{200}} với {{items: []}}, {{page: 0}} và metadata nh�
 
 > Senior tip: thống nhất response cho danh sách rỗng và tài nguyên đơn không tồn tại. Sự nhất quán giúp frontend tránh phải đoán liệu 404 là dữ liệu rỗng hay lỗi route.`
 },
+{
+  id: 'qz-jpa-030',
+  topic: 'jpa',
+  q: `Endpoint danh sách trả về 200 order. Log cho thấy 1 câu lấy order rồi 200 câu SELECT vào bảng order_item. Code repository và entity như sau (mặc định của JPA):
+~~~java
+@Entity
+class Order {
+    @Id Long id;
+    @OneToMany(mappedBy = "order")
+    List<OrderItem> items;   // không khai báo fetch
+}
+~~~`,
+  options: [
+    'N+1 do @OneToMany mặc định EAGER, nên Hibernate load toàn bộ items ngay khi lấy order',
+    'Do thiếu index trên cột order_id của order_item, chỉ cần thêm index là hết N+1',
+    'Do OSIV: tắt spring.jpa.open-in-view là số câu SELECT giảm ngay',
+    'N+1 select: do bên @OneToMany mặc định là LAZY, nên mỗi order phải chạy thêm một câu SELECT để nạp items; sửa bằng JOIN FETCH, @EntityGraph hoặc @BatchSize'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: N+1 select do @OneToMany mặc định LAZY, sửa bằng JOIN FETCH, @EntityGraph hoặc @BatchSize.**
+
+### Vì sao đúng
+- "1 + N" nghĩa là: 1 câu lấy danh sách order, rồi **N** câu nữa, mỗi câu nạp items của một order.
+- Theo đặc tả JPA, phía "to-many" ({{@OneToMany}}, {{@ManyToMany}}, {{@ElementCollection}}) mặc định **LAZY**. LAZY nghĩa là lúc load order, Hibernate chỉ chạy câu SELECT cho bảng order; danh sách items là một "hàng chờ", chưa có dữ liệu.
+- Khi code gọi {{o.getItems()}} cho từng order, Hibernate mới chạy một câu SELECT cho **từng** order: 1 + 200 = 201 câu. Đó là N+1: chậm vì mỗi câu là một lần đi lại qua mạng (round-trip), nhân với số dòng.
+- Ba cách sửa: {{join fetch o.items}} (một câu SQL), {{@EntityGraph}} (khai báo đồ thị tải kèm), hoặc {{@BatchSize}} (gom nhiều id vào một câu SELECT ... WHERE order_id IN (...)).
+
+### Vì sao các phương án còn lại sai
+- **EAGER**: nếu EAGER thì đã load items ngay trong câu đầu, không có N+1 kiểu này (nhưng EAGER trên JPQL cũng gây N+1 khi Hibernate phải load bù từng order — xem câu qz-jpa-009).
+- **Thiếu index**: index làm **một** câu SELECT nhanh hơn, không làm giảm **số** câu. Vẫn 201 lần đi lại mạng.
+- **OSIV**: tắt OSIV làm session đóng sớm; khi template gọi getItems() sẽ ném LazyInitializationException, tức là vẫn N+1 nếu bạn load lười từng order trong service. OSIV không phải nguyên nhân.
+
+### Cách đo
+~~~text
+spring.jpa.properties.hibernate.generate_statistics=true
+logging.level.org.hibernate.SQL=DEBUG   # chỉ bật ở dev/staging
+~~~
+
+> Senior tip: N+1 hầu như luôn là nguyên nhân số 1 của "API chậm mà DB không tải". Hãy assert số câu query trong integration test, đừng chờ đọc log production.`
+},
+{
+  id: 'qz-jpa-031',
+  topic: 'jpa',
+  q: `Service sau đọc hoá đơn để đưa ra màn hình (không gọi setData):
+~~~java
+@Transactional
+public InvoiceView view(Long id) {
+    Invoice inv = invoiceRepo.findById(id).orElseThrow();
+    return new InvoiceView(inv.getNumber(), inv.getCustomer().getName());
+}
+~~~`,
+  options: [
+    '@Transactional(readOnly = true) là bắt buộc: thiếu nó Hibernate sẽ ghi đè bản ghi dù ta không sửa gì',
+    'Method không có câu UPDATE nào, vì chỉ có SELECT và không có thay đổi state nào so với snapshot lúc load',
+    'Một câu UPDATE luôn chạy ở commit, vì mọi entity managed đều được ghi lại toàn bộ cột khi commit',
+    'Ném TransactionRequiredException vì không gọi save'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không có câu UPDATE nào, vì persistence context chỉ thấy các entity không đổi so với snapshot.**
+
+### Vì sao đúng
+- {{findById}} chạy một câu SELECT và đưa Invoice vào **persistence context** (sổ tay của Hibernate trong session này), kèm một **snapshot** (bản chụp trạng thái lúc load).
+- {{getNumber()}}, {{getCustomer().getName()}} chỉ **đọc**: không setter nào được gọi, nên không có field nào khác snapshot. Lúc commit, Hibernate flush: dirty checking so từng entity với snapshot, không thấy khác → **không sinh UPDATE**.
+- {{@Transactional}} (không readOnly) chỉ đảm bảo có transaction và session mở suốt method; nó không tự tạo câu ghi.
+
+### Vì sao các phương án còn lại sai
+- **Thiếu readOnly là bị ghi đè**: readOnly là **lưới an toàn**, không phải điều kiện để "không ghi". Với readOnly = true, Spring đặt FlushMode **MANUAL**: chỉ {{em.flush()}} gọi tay mới đẩy thay đổi xuống DB. Không có gì dirty thì MANUAL hay AUTO đều không sinh UPDATE.
+- **Mọi entity managed đều UPDATE toàn bộ cột khi commit**: sai hai lần — chỉ entity **dirty** mới được UPDATE, và Hibernate 6 chỉ đưa **cột đã đổi** vào câu UPDATE, không phải cả 40 cột.
+- **TransactionRequiredException**: lỗi này xuất hiện khi chạy câu JPQL bulk {{@Modifying}} hoặc repository write method ngoài transaction, không phải khi đọc.
+
+> Senior tip: readOnly không làm query nhanh hơn; nó chỉ bỏ dirty checking/snapshot và đánh dấu connection read-only (có thể route sang replica). Muốn giảm số câu SELECT thì dùng DTO projection (xem qz-jpa-018), không phải readOnly.`
+},
+{
+  id: 'qz-jpa-032',
+  topic: 'jpa',
+  multi: true,
+  q: 'Trong một transaction, persistence context đã có entity Invoice (managed). Bạn chạy bulk update xoá hàng loạt dòng invoice_item của hoá đơn đó rồi gọi itemRepo.findAllByInvoiceId(id). Những phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'Câu bulk update đi thẳng xuống DB, bỏ qua persistence context; entity đã load trước đó vẫn giữ giá trị cũ trong bộ nhớ',
+    'Nếu entity đó bị dirty và commit sau bulk update, dirty checking có thể ghi đè lại giá trị cũ lên dữ liệu vừa bulk update',
+    'Nếu câu bulk update nằm trước lệnh find trong cùng transaction, find sẽ thấy dữ liệu mới vì bulk update ghi ngay xuống DB',
+    '@Modifying luôn tự clear persistence context trước khi chạy câu bulk',
+    'Bulk update không được phép chạy trong transaction'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: bulk update bỏ qua persistence context (entity cũ giữ giá trị cũ) và dirty checking sau đó có thể ghi đè.**
+
+### Vì sao đúng
+- Câu bulk ({{@Modifying @Query("update ...")}} hoặc {{delete ...}}) được Hibernate gửi **thẳng** xuống DB, không cập nhật các object đang nằm trong persistence context. Bạn update 500 dòng trong DB, nhưng 500 entity đã load trong session vẫn giữ snapshot cũ.
+- Nguy hiểm nhất là **ghi đè ngược**: nếu một entity trong session đang dirty (khác snapshot), lúc flush Hibernate sinh UPDATE với giá trị trong bộ nhớ và **đè** lên giá trị DB vừa bị bulk update. Kết quả: thay đổi âm thầm biến mất.
+- Cách phòng ngừa: {{@Modifying(clearAutomatically = true, flushAutomatically = true)}} — flush các thay đổi đang chờ **trước** khi chạy bulk, clear session **sau** đó để lần đọc sau lấy dữ liệu mới từ DB.
+
+### Vì sao các phương án còn lại sai
+- **Bulk nằm trước find thì find thấy dữ liệu mới**: trong **cùng** transaction, câu bulk đã chạy và đã ghi xuống DB, nên find sau đó đọc đúng dữ liệu mới; nhưng nếu entity đã có trong persistence context, Hibernate trả về **bản trong bộ nhớ** (first-level cache) chứ không query DB. Vì vậy phát biểu này không đúng trong trường hợp entity đã được load.
+- **@Modifying luôn tự clear**: mặc định **không**; {{clearAutomatically = true}} mới bật. Tương tự {{flushAutomatically}}.
+- **Không được chạy trong transaction**: ngược lại, {{@Modifying}} thiếu {{@Transactional}} sẽ ném TransactionRequiredException.
+
+> Senior tip: quy tắc thực dụng — bulk update chỉ dùng cho hàng nghìn dòng trở lên, và luôn bật clearAutomatically. Với vài chục dòng, load entity rồi sửa bằng setter an toàn và dễ đọc hơn nhiều.`
+},
+{
+  id: 'qz-jpa-033',
+  topic: 'jpa',
+  q: `Trong một transaction, code thay đổi trạng thái của một entity managed rồi commit:
+~~~java
+Order o = orderRepo.findById(7L).orElseThrow();   // SELECT
+o.setStatus(OrderStatus.PAID);                    // KHÔNG gọi save
+// transaction commit
+~~~
+Điều gì xảy ra khi commit?`,
+  options: [
+    'Không có gì: thiếu orderRepo.save(o) nên thay đổi không được lưu',
+    'Một câu UPDATE chạy lúc commit (dirty checking), vì flush mode mặc định là AUTO và UPDATE chỉ gồm các cột thực sự đổi',
+    'Một câu UPDATE chạy ngay tại dòng setStatus',
+    'Ném TransactionRequiredException vì không gọi save'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: một câu UPDATE lúc commit, do dirty checking; flush mode mặc định AUTO và chỉ cột đổi mới nằm trong câu UPDATE.**
+
+### Vì sao đúng
+- **Persistence context** (còn gọi là first-level cache) là "sổ tay" của Hibernate trong một session: nó giữ các entity đã load kèm một **snapshot** (bản chụp trạng thái lúc load).
+- {{findById}} chạy SELECT, đưa entity vào sổ tay và đánh dấu **managed** (Hibernate theo dõi).
+- {{setStatus}} chỉ sửa field trong bộ nhớ, chưa có SQL nào.
+- Lúc commit, Hibernate **flush**: so sánh từng entity managed với snapshot, thấy khác → sinh UPDATE. Flush mode mặc định của Hibernate là **AUTO**: flush trước khi commit và trước những query cần dữ liệu mới. Nếu method là {{@Transactional(readOnly = true)}}, Spring đặt MANUAL nên sẽ không có UPDATE.
+- Hibernate 6 chỉ đưa **cột đã đổi** vào câu UPDATE (dynamic update mặc định theo cột thay đổi), không phải toàn bộ 40 cột.
+
+### Vì sao các phương án còn lại sai
+- **Thiếu save thì không lưu**: với entity **managed**, dirty checking đủ; {{save()}} chỉ cần cho entity mới hoặc detached.
+- **UPDATE ngay tại setStatus**: setter chỉ đổi bộ nhớ; không có SQL cho tới khi flush.
+- **TransactionRequiredException**: lỗi đó xảy ra khi thực thi câu JPQL bulk hoặc gọi repository write method ngoài transaction, không phải khi sửa field của entity managed.
+
+> Senior tip: vì dirty checking chạy trên toàn bộ entity managed, một method {{readOnly = false}} vô tình sửa field sẽ âm thầm ghi DB. Dùng readOnly cho method đọc để biến "quên" thành an toàn.`
+},
+{
+  id: 'qz-jpa-034',
+  topic: 'jpa',
+  q: `Service (không có @Transactional) gọi repo.findById(id) trả về Order, rồi ở controller gọi order.getItems().count() để tính số sản phẩm. Exception nào xuất hiện?`,
+  options: [
+    'Ném TransactionRequiredException ngay tại findById',
+    'Ném EntityNotFoundException vì items chưa được load',
+    'Không có exception nào, vì mọi quan hệ đều được load kèm trong cùng câu SELECT',
+    'Ném LazyInitializationException khi controller truy cập items, vì transaction đã kết thúc và session đóng khi repo.findById trả về; sửa bằng cách load items trong service đang mở transaction'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: LazyInitializationException khi truy cập collection lazy ngoài session.**
+
+### Vì sao đúng
+- Không có {{@Transactional}}, mỗi lần gọi repository method Spring mở một transaction ngắn, mở session, chạy SELECT rồi **đóng session**. Entity trả về là **detached**: nó có dữ liệu nhưng không còn "người theo dõi" để nạp thêm.
+- {{items}} là collection lazy (mặc định to-many LAZY). Lúc load Order, items chưa được nạp. Khi controller gọi {{getItems().count()}}, Hibernate cần chạy một câu SELECT nữa nhưng session đã đóng → ném LazyInitializationException.
+- Cách sửa: load đủ trong service đang có transaction — {{@EntityGraph(attributePaths = "items")}} trên method, hoặc {{join fetch}}, hoặc trả về DTO/projection đã tính sẵn số lượng.
+
+### Vì sao các phương án còn lại sai
+- **TransactionRequiredException**: chỉ xuất hiện khi chạy câu lệnh ghi/bulk ngoài transaction.
+- **EntityNotFoundException**: xảy ra khi truy cập một proxy (getReference) mà hàng không tồn tại, không phải khi session đóng.
+- **Không exception vì đã load kèm**: chỉ đúng nếu quan hệ EAGER hoặc đã fetch; ở đây là LAZY mặc định.
+
+> Senior tip: LazyInitializationException thường xuất hiện **sau khi** tắt OSIV (spring.jpa.open-in-view=false) — đó là dấu hiệu bạn đang đọc dữ liệu ở tầng sai. Hãy chuyển việc "đếm/hiển thị" vào service, đừng để controller chạm vào collection.`
+},
+{
+  id: 'qz-jpa-035',
+  topic: 'jpa',
+  q: `Entity Account có @Version. Hai request cùng sửa số dư:
+~~~java
+// T1 (đọc version = 7)            // T2 (đọc version = 7)
+a.setBalance(90);                  b.setBalance(80);
+aRepo.save(a);                     bRepo.save(b);
+// T1 commit trước                // T2 commit sau
+~~~
+Kết quả của T2 là gì?`,
+  options: [
+    'T2 bị chặn (block) cho tới khi T1 commit rồi mới đọc được bản ghi mới nhất',
+    'T2 ném StaleObjectStateException ngay khi gọi save vì version trong bộ nhớ đã cũ',
+    'T2 nhận OptimisticLockException (thường được Spring bọc thành ObjectOptimisticLockingFailureException): câu UPDATE kèm WHERE version = 7 không khớp vì version đã là 8',
+    'T2 commit thành công và ghi đè balance của T1, vì Hibernate không so sánh version khi save'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: T2 nhận OptimisticLockException khi flush, vì điều kiện version không khớp.**
+
+### Vì sao đúng
+- {{@Version}} thêm một cột version. Lúc load, entity giữ version = 7. Câu UPDATE của Hibernate có dạng {{update account set balance = ?, version = 8 where id = ? and version = 7}}.
+- T1 commit trước: UPDATE khớp (DB version = 7) → 1 dòng bị thay đổi, DB version thành 8.
+- T2 commit sau: DB version đã là 8, nhưng câu UPDATE vẫn mang điều kiện version = 7 → **0 dòng** bị ảnh hưởng → Hibernate ném OptimisticLockException (Spring bọc thành ObjectOptimisticLockingFailureException, thường map sang HTTP 409).
+- Lỗi xảy ra ở **flush lúc commit**, không phải lúc gọi save: save chỉ đưa entity vào hàng chờ. Đó là lý do bạn cần bọc retry ở tầng service, **ngoài** transaction.
+
+### Vì sao các phương án còn lại sai
+- **Ghi đè bản T1**: đó là "last write wins" — chính thứ @Version sinh ra để chặn.
+- **Bị chặn (block)**: đó là pessimistic lock (SELECT ... FOR UPDATE, xem câu qz-jpa-017), không phải optimistic.
+- **Ném ngay tại save**: save không chạy UPDATE; chỉ flush mới thực thi. (Một số provider có thể ném sớm hơn, nhưng mặc định Hibernate là lúc flush.)
+
+### Cách retry đúng
+~~~java
+@Retryable(retryFor = ObjectOptimisticLockingFailureException.class, maxAttempts = 3)
+@Transactional(propagation = Propagation.REQUIRES_NEW)
+public void updateBalance(Long id, BigDecimal amount) { ... }
+~~~
+
+> Senior tip: optimistic hợp với tranh chấp thấp (form sửa hồ sơ). Với tranh chấp cao như trừ tồn kho flash sale, retry liên tục sẽ thừa — dùng câu UPDATE có điều kiện hoặc pessimistic lock. Đừng retry bên trong cùng transaction: entity cũ vẫn nằm trong session.`
+},
+{
+  id: 'qz-jpa-036',
+  topic: 'jpa',
+  multi: true,
+  q: 'Entity dùng @GeneratedValue(strategy = GenerationType.IDENTITY). Bạn import 200.000 dòng bằng saveAll, đã bật hibernate.jdbc.batch_size=50 nhưng log vẫn cho thấy 200.000 câu INSERT riêng lẻ. Những phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'Batch size bị bỏ qua vì mỗi INSERT phải chạy một câu SELECT lấy id trước',
+    'Batch chỉ có tác dụng với UPDATE và DELETE, không áp dụng cho INSERT',
+    'Chỉ cần tăng batch_size lên 5.000 là IDENTITY batch được',
+    'IDENTITY bắt buộc Hibernate lấy generated key ngay sau mỗi INSERT nên phải insert ngay tại persist; muốn batch được thì đổi sang SEQUENCE (hoặc TABLE generator)',
+    'Với SEQUENCE + allocationSize = 50 (pooled optimizer), Hibernate lấy một khối 50 id bằng một lần gọi sequence rồi mới gom INSERT'
+  ],
+  answer: [3, 4],
+  explain: `**Đáp án đúng: IDENTITY buộc insert ngay để lấy key (mất batch); SEQUENCE + pooled optimizer cấp id theo khối nên batch được.**
+
+### Vì sao đúng
+- Với IDENTITY, DB sinh id khi INSERT chạy (auto_increment / identity column). Hibernate cần id để đưa entity vào persistence context (id là khoá của first-level cache), nên nó **phải** thực thi INSERT ngay tại {{persist()}} rồi đọc generated key. Không thể hoãn để gom batch → mỗi dòng một round-trip.
+- Với SEQUENCE, Hibernate gọi sequence một lần lấy **một khối** id (allocationSize = 50, pooled optimizer) và cấp dần trong bộ nhớ. Vì đã biết id trước, entity có thể nằm chờ trong session và INSERT được gom thành batch lúc flush.
+- Kèm theo: {{hibernate.order_inserts=true}} để các INSERT cùng bảng nằm cạnh nhau, và {{flush()}} + {{clear()}} mỗi lô để session không phình.
+
+### Vì sao các phương án còn lại sai
+- **Mỗi INSERT có một SELECT lấy id**: đó là hành vi của generator cũ (SELECT max(id)), không phải IDENTITY và không phải SEQUENCE.
+- **Batch chỉ cho UPDATE/DELETE**: {{hibernate.jdbc.batch_size}} áp dụng cho INSERT, UPDATE và DELETE.
+- **Tăng batch_size là batch được**: con số không giải quyết được nguyên nhân gốc; Hibernate vẫn phải insert ngay từng dòng vì IDENTITY.
+
+> Senior tip: trên PostgreSQL dùng SEQUENCE + allocationSize (nhớ để INCREMENT BY khớp allocationSize); MySQL không có sequence thì dùng TABLE generator. Với hàng chục triệu dòng, cân nhắc bỏ JPA hẳn: JdbcTemplate.batchUpdate hoặc COPY nhanh hơn một bậc.`
+},
+{
+  id: 'qz-jpa-037',
+  topic: 'jpa',
+  q: `Danh sách 200 book, mỗi book có khoảng 5 author. Method sau chạy trên một danh sách như vậy:
+~~~java
+@Transactional(readOnly = true)
+public Map<Long, Integer> countAuthors(List<Long> bookIds) {
+    Map<Long, Integer> result = new HashMap<>();
+    for (Long id : bookIds) {
+        Book b = bookRepo.findById(id).orElseThrow();
+        result.put(id, b.getAuthors().size());
+    }
+    return result;
+}
+~~~`,
+  options: [
+    '400 câu SELECT: mỗi book chạy 1 câu findById + 1 câu nạp authors (N+1 nhân đôi); sửa bằng JOIN FETCH, @EntityGraph hoặc @BatchSize',
+    '201 câu SELECT, vì @ManyToMany mặc định EAGER nên Hibernate đã nạp sẵn authors trong câu SELECT book đầu tiên',
+    '400 câu SELECT, nhưng nguyên nhân là readOnly = true: readOnly khiến Hibernate phải query lại từng quan hệ',
+    '400 câu SELECT, nhưng vì getAuthors().size() luôn chạy một câu SELECT COUNT cho từng phần tử'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: N+1 select nhân đôi — to-many mặc định LAZY nên mỗi book chạy 1 câu findById + 1 câu nạp authors.**
+
+### Vì sao đúng
+- Vòng lặp gọi {{findById}} cho **từng** id: 200 câu SELECT cho bảng book.
+- {{authors}} là quan hệ **to-many** nên mặc định **LAZY**: lúc load book, danh sách author chưa được nạp.
+- {{b.getAuthors()}} buộc Hibernate khởi tạo collection: một câu SELECT vào bảng nối + bảng author cho **từng** book → 200 câu nữa.
+- Tổng: 200 + 200 = 400 câu. Đây là biến thể N+1: N câu cho entity chính + N câu cho collection.
+- Ba cách sửa: {{@Query("select b from Book b join fetch b.authors where b.id in :ids")}}, {{@EntityGraph(attributePaths = "authors")}} trên method, hoặc {{@BatchSize(size = 50)}} để gom 50 book vào một câu SELECT ... WHERE book_id IN (...).
+
+### Vì sao các phương án còn lại sai
+- **EAGER**: to-many mặc định là LAZY, không phải EAGER. Nếu là EAGER thì Hibernate vẫn phải nạp bù **từng** book khi chạy JPQL → vẫn N+1, chỉ khác cách load (xem qz-jpa-009).
+- **readOnly**: chỉ đặt flush mode MANUAL; không liên quan tới việc nạp quan hệ.
+- **size() chạy COUNT cho từng phần tử**: Hibernate nạp collection rồi trả về size trong bộ nhớ; không có COUNT cho từng phần tử.
+
+> Senior tip: đếm số lượng thì đừng nạp cả collection — dùng projection hoặc câu {{select b.id, count(a) from Book b join b.authors a where b.id in :ids group by b.id}}. Nạp 200 book × 5 author chỉ để lấy con số là lãng phí heap và round-trip.`
+},
+{
+  id: 'qz-jpa-038',
+  topic: 'jpa',
+  q: `Entity Order có:
+~~~java
+@OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
+private List<OrderItem> items = new ArrayList<>();
+
+public void addItem(OrderItem item) {
+    items.add(item);      // thiếu item.setOrder(this)
+}
+~~~
+Trong một transaction, code tạo order mới, gọi addItem(item) rồi orderRepo.save(order) và commit. Cột order_item.order_id nhận giá trị nào?`,
+  options: [
+    'NULL (hoặc lỗi constraint nếu cột NOT NULL), vì phía sở hữu quan hệ là OrderItem.order và nó không được gán',
+    'id của order, vì cascade ALL đã cập nhật khoá ngoại giúp',
+    'Item không được lưu, vì cascade chỉ áp dụng khi gọi itemRepo.save(item)',
+    'id của order, vì Hibernate tự đồng bộ hai phía của quan hệ hai chiều'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: order_id = NULL (hoặc vi phạm NOT NULL), vì owning side là OrderItem.order không được gán.**
+
+### Vì sao đúng
+- Trong quan hệ hai chiều, chỉ **owning side** (phía **không** có {{mappedBy}}, ở đây là {{OrderItem.order}}) quyết định giá trị khoá ngoại. Phía {{mappedBy}} chỉ là "gương" để đọc.
+- {{cascade = ALL}} khiến item được persist cùng order, nhưng khi ghi cột order_id, Hibernate đọc {{item.getOrder()}} — đang null → ghi NULL.
+- orphanRemoval không liên quan: nó chỉ quyết định "gỡ khỏi collection thì con có bị xoá không".
+- Cách đúng là helper đồng bộ hai phía: {{items.add(item); item.setOrder(this);}}.
+
+### Vì sao các phương án còn lại sai
+- **Tự đồng bộ**: Hibernate không tự làm (trừ khi bật bytecode enhancement với association management, ít dùng).
+- **Cascade cập nhật khoá ngoại**: cascade chỉ lan toả thao tác persist/remove, không ghi cột.
+- **Item không được lưu**: cascade ALL từ order vẫn persist item; chỉ cột order_id sai.
+
+### Cách đúng: helper đồng bộ hai phía
+~~~java
+public void addItem(OrderItem item) {
+    items.add(item);
+    item.setOrder(this);   // owning side phải được gán
+}
+~~~
+
+> Senior tip: luôn để cột khoá ngoại NOT NULL ở DB (Flyway/Liquibase) để bug kiểu này nổ ngay trong test, thay vì âm thầm tạo dữ liệu mồ côi. Và đặt helper addItem/removeItem ở một chỗ duy nhất, đừng rải setOrder khắp service.`
+},
+{
+  id: 'qz-jpa-039',
+  topic: 'jpa',
+  multi: true,
+  q: 'Entity Inventory có @Version và @OneToMany(mappedBy = "inventory", cascade = ALL, orphanRemoval = true) List<StockMovement> movements. Bạn cần trừ tồn kho 1 đơn vị dưới tải 5.000 request/giây trên **cùng** một dòng. Những cách nào xử lý đúng? (Chọn 2)',
+  options: [
+    'Gọi quantity-- rồi save trong transaction dài, dùng @Version để đảm bảo đúng',
+    'Dùng pessimistic lock (SELECT ... FOR UPDATE) rồi gọi API thanh toán bên ngoài trong lúc vẫn giữ lock',
+    ' Optimistic lock: load entity có @Version, trừ quantity rồi save, retry nhiều lần khi OptimisticLockException',
+    'Câu UPDATE nguyên tử có điều kiện: update inventory set quantity = quantity - 1 where sku = ? and quantity >= 1, kiểm tra số dòng ảnh hưởng (1 là thành công, 0 là hết hàng)',
+    'Đẩy phần "giữ chỗ" sang Redis (DECR hoặc Lua script), sau đó ghi bản ghi tồn kho chính thức qua hàng đợi'
+  ],
+  answer: [3, 4],
+  explain: `**Đáp án đúng: UPDATE nguyên tử có điều kiện ở DB, hoặc đẩy việc giữ chỗ sang Redis rồi ghi sổ qua hàng đợi.**
+
+### Vì sao đúng
+- **UPDATE nguyên tử**: cả đọc, kiểm tra và ghi diễn ra trong một câu lệnh bên trong DB, không có vòng "đọc qua mạng → sửa trong JVM → ghi lại". Điều kiện {{quantity >= 1}} chặn bán quá tồn. Kiểm tra số dòng ảnh hưởng: 1 = thành công, 0 = hết hàng.
+- **Redis + hàng đợi**: ở mức vài nghìn request/giây trên một khoá nóng, row lock của DB cũng là điểm nghẽn. Các hệ thống thật giữ "suất" bằng {{DECR}} hoặc Lua script (nguyên tử trong Redis), rồi ghi kho chính thức bất đồng bộ qua Kafka/SQS. Đổi lại: phải xử lý bù trừ, đối soát và idempotency khi ghi sổ.
+- Cả hai đều tránh vòng read-modify-write qua JVM.
+
+### Vì sao các phương án còn lại sai
+- **Optimistic + retry nhiều lần**: 5.000 request cùng tranh một version → hầu hết đều thua, retry chỉ nhân tải (retry storm). Tỉ lệ lỗi và p99 tăng vọt.
+- **Transaction dài giữ entity**: giữ lock và connection rất lâu, thông lượng sụp.
+- **PESSIMISTIC_WRITE + gọi API thanh toán trong lúc giữ lock**: giữ lock trong lúc gọi mạng chậm → mọi request khác xếp hàng; timeout thanh toán có thể làm treo cả cụm.
+
+### Bài học
+> Senior tip: khoá nóng là bài toán "một dòng, nhiều writer". Giải pháp luôn là **giảm thời gian giữ lock** (một câu UPDATE nguyên tử) hoặc **giảm số writer tranh một khoá** (chia bucket tồn kho, hàng đợi, Redis). Đừng cố "tăng retry" để chữa nghẽn.`
+},
+{
+  id: 'qz-jpa-040',
+  topic: 'jpa',
+  q: `Export báo cáo cần khoảng 20 trang, mỗi trang 20 order, kèm toàn bộ danh sách dòng sản phẩm (mỗi order khoảng 8 item). Code hiện tại:
+~~~java
+@Query("select o from Order o join fetch o.items")
+List<Order> findAllWithItems(Pageable pageable);   // pageable size = 20
+~~~
+Bảng order có 5 triệu dòng, order_item 30 triệu dòng. Log cảnh báo HHH90003004. Vấn đề là gì?`,
+  options: [
+    'Cần thêm INDEX trên order_item.order_id để Hibernate áp dụng LIMIT đúng',
+    'JOIN FETCH trên collection làm mỗi item thành một dòng, nên Hibernate bỏ LIMIT và tải toàn bộ kết quả rồi phân trang trong bộ nhớ; sửa bằng hai bước: phân trang id trước rồi fetch theo danh sách id',
+    'JOIN FETCH với Pageable luôn ném exception, phải bỏ Pageable',
+    'Hibernate tự chuyển thành hai query nên không có vấn đề gì'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Hibernate không thể LIMIT trên SQL khi fetch collection nên tải hết rồi phân trang trong bộ nhớ.**
+
+### Vì sao đúng
+- {{join fetch o.items}} làm mỗi order_item thành một dòng kết quả. Nếu đặt LIMIT 20 vào SQL, DB cắt sau 20 dòng — có thể cắt ngang giữa các item của một order, trả về order thiếu item. Sai dữ liệu.
+- Vì vậy Hibernate **bỏ** LIMIT khỏi SQL, tải toàn bộ 5 triệu order × số item vào bộ nhớ, rồi mới lấy 20 order. Kết quả đúng nhưng chậm, tốn heap, và cảnh báo HHH90003004 chính là để nhắc bạn.
+- Cách đúng là **hai bước**: (1) SELECT id có phân trang + ORDER BY; (2) SELECT ... WHERE order_id IN (:ids) kèm join fetch. Hoặc bỏ JPA cho báo cáo, dùng DTO projection + JDBC.
+
+### Vì sao các phương án còn lại sai
+- **Luôn ném exception**: chỉ khi bật {{hibernate.query.fail_on_pagination_over_collection_fetch=true}}, và lúc đó lỗi xảy ra khi chạy query chứ không phải luôn luôn.
+- **Thêm index**: index giúp truy vấn nhanh hơn, không cho phép LIMIT đúng trên kết quả join.
+- **Hibernate tự tách hai query**: Hibernate không tự làm; bạn phải viết.
+
+> Senior tip: bật cờ fail_on_pagination_over_collection_fetch=true ở môi trường dev để biến cảnh báo im lặng thành lỗi thấy được. Với báo cáo lớn, DTO projection + JDBC (hoặc chỉ SELECT các cột cần) gần như luôn nhanh hơn entity + join fetch.`
+},
+{
+  id: 'qz-jpa-041',
+  topic: 'jpa',
+  multi: true,
+  q: 'Entity dùng Lombok @Data (sinh equals/hashCode trên toàn bộ field, kể cả quan hệ) và được thêm vào HashSet. Những rủi ro nào có thể xảy ra? (Chọn 3)',
+  options: [
+    '@Data thêm @Entity giúp cho entity, nên không cần khai báo @Entity nữa',
+    '@Data làm entity không thể compile với JPA vì thiếu equals do framework quản lý',
+    'equals gọi getter của quan hệ lazy → có thể kích hoạt LazyInitializationException hoặc thêm câu SELECT khi so sánh',
+    'Quan hệ hai chiều Order ↔ OrderItem có thể khiến equals/hashCode đệ quy vô hạn (StackOverflowError)',
+    'hashCode đổi sau khi entity thay đổi (ví dụ id được gán sau persist) → entity đã nằm trong HashSet không tìm lại được bằng contains'
+  ],
+  answer: [2, 3, 4],
+  explain: `**Đáp án đúng: lazy khi so sánh, đệ quy vô hạn, và hashCode đổi sau khi thay đổi trạng thái.**
+
+### Vì sao đúng
+- **Lazy khi so sánh**: {{@Data}} sinh equals/hashCode trên **mọi** field non-static, gồm cả quan hệ. So sánh hai entity sẽ gọi getter của collection/proxy → chạy SELECT hoặc ném LazyInitializationException nếu session đã đóng. Đây là N+1 ẩn trong lúc so sánh.
+- **Đệ quy vô hạn**: quan hệ hai chiều Order.items ↔ OrderItem.order khiến equals gọi lẫn nhau qua getter; với collection, so sánh từng phần tử lại quay lại cha → StackOverflowError.
+- **hashCode đổi**: nếu hashCode tính từ field thay đổi được (hoặc từ id null → có giá trị sau persist), object đã nằm trong HashSet sẽ rơi vào bucket cũ; contains/get sau đó không tìm thấy vì hashCode tính lại đã khác.
+- Cách an toàn: dùng @Getter/@Setter (không @Data), hoặc @EqualsAndHashCode(onlyExplicitlyIncluded = true) chỉ include khoá nghiệp vụ **bất biến** (ví dụ mã SKU), và cân nhắc dùng {{getClass().hashCode()}} hằng số (xem qz-jpa-012).
+
+### Vì sao các phương án còn lại sai
+- **Không compile**: @Data không xung đột với JPA ở mức biên dịch; vấn đề là hành vi lúc chạy.
+- **@Data thêm @Entity**: @Data là của Lombok, không liên quan JPA; vẫn phải khai báo @Entity và @Id.
+
+> Senior tip: entity là model cho DB, DTO là model cho API. Đừng đưa entity vào HashSet/HashMap làm key; nếu bắt buộc, dùng khoá nghiệp vụ bất biến hoặc id kèm hashCode hằng. Và luôn viết test so sánh equals cho entity có quan hệ hai chiều.`
+},
 );
