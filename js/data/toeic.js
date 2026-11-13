@@ -1344,4 +1344,168 @@ In conclusion, learning a foreign language early can be beneficial because it cr
   ],
   "tags": ["office", "maintenance"]
 },
+{
+  id: "toeic-s1-009",
+  part: "s1",
+  text: "All employees are reminded that the annual performance review period begins next Monday, November 18. Please log into the HR portal and complete your self-assessment by Friday, November 29. Managers will then schedule one-on-one meetings during the first two weeks of December. If you need assistance accessing the system, contact the IT help desk at extension 4000. Thank you for your timely cooperation.",
+  stress: ["annual performance review", "next Monday, November 18", "HR portal", "Friday, November 29", "one-on-one meetings", "first two weeks of December", "IT help desk", "extension 4000"],
+  tips: ["Thông báo nội bộ cần giọng chuyên nghiệp, trung lập; nhấn mốc thời gian quan trọng để nhân viên nhớ.", "Đọc rõ extension 4000 như từng số riêng biệt; self-assessment phát âm là self-uh-ses-ment."]
+},
+{
+  id: "toeic-s1-010",
+  part: "s1",
+  text: "Welcome to the Greenfield Tech Summit 2024. Registration opens at eight a.m. in the main lobby, where you will receive your badge and conference bag. The keynote address by CEO Sarah Mitchell starts at nine sharp in Hall A. Breakout sessions begin at ten thirty; please refer to the mobile app for room assignments. Lunch will be served in the garden terrace at twelve fifteen. We hope you have a productive day.",
+  stress: ["Greenfield Tech Summit 2024", "eight a.m.", "main lobby", "Sarah Mitchell", "nine sharp", "Hall A", "ten thirty", "garden terrace", "twelve fifteen"],
+  tips: ["Chào mừng hội nghị cần giọng nhiệt tình, chào đón; nhấn tên CEO và địa điểm hall chính.", "Breakout sessions phát âm là break-out; đọc giờ nine sharp rõ ràng là chín giờ đúng."]
+},
+{
+  id: "toeic-s1-011",
+  part: "s1",
+  text: "This is a message for Mr. Alan Thompson regarding your appointment with Dr. Patricia Wong at Meridian Dental Clinic. Your check-up is confirmed for Wednesday, December 4 at two fifteen p.m. Please arrive ten minutes early to update your insurance information. If you need to reschedule, call our office at 555-0198 at least twenty-four hours in advance. We look forward to seeing you.",
+  stress: ["Alan Thompson", "Dr. Patricia Wong", "Meridian Dental Clinic", "Wednesday, December 4", "two fifteen p.m.", "ten minutes early", "555-0198", "twenty-four hours"],
+  tips: ["Tin nhắn nhắc lịch hẹn cần đọc chậm, rõ ràng từng thông tin: tên bác sĩ, tên phòng khám, giờ.", "Reschedule nhấn vào re-; twenty-four hours đọc liên tục, không tách twenty four."]
+},
+{
+  id: "toeic-s1-012",
+  part: "s1",
+  text: "The Brookfield Parks Department is pleased to announce the grand opening of the new Riverwalk Trail this Saturday at ten a.m. The two-mile paved path connects Riverside Park to the historic downtown district. There will be live music, free bike rentals for the first fifty visitors, and a guided nature walk at eleven. Parking is available at the community center lot. Join us for a morning of outdoor fun.",
+  stress: ["Brookfield Parks Department", "grand opening", "Riverwalk Trail", "this Saturday at ten a.m.", "two-mile paved path", "historic downtown district", "fifty visitors", "community center lot"],
+  tips: ["Thông báo sự kiện cộng đồng giọng vui tươi, mời gọi; nhấn grand opening và các hoạt động miễn phí.", "Two-mile phát âm là two-mile (ghép); paved path nhấn vào paved; downtown district đọc liên tục."]
+},
+{
+  id: "toeic-s1-013",
+  part: "s1",
+  text: "Attention shoppers: Maplewood Mall will extend holiday hours starting tomorrow. Stores will open at nine a.m. and close at ten p.m. Monday through Saturday, and eleven a.m. to seven p.m. on Sundays. The food court opens thirty minutes earlier each day. Gift wrapping service is available near the center court until December 24. Happy holidays from all of us at Maplewood Mall.",
+  stress: ["Maplewood Mall", "extend holiday hours", "nine a.m.", "ten p.m.", "Monday through Saturday", "eleven a.m. to seven p.m.", "food court", "Gift wrapping service", "December 24"],
+  tips: ["Thông báo trung tâm thương mại cần giọng rõ ràng, dễ nghe giữa không gian ồn ào; nhấn giờ mở cửa/đóng cửa.", "Monday through Saturday đọc liền; gift wrapping service nhấn vào gift và wrapping."]
+},
+{
+  id: "toeic-s1-014",
+  part: "s1",
+  text: "Good morning, team. This is Jennifer from Facilities Management. Please be advised that the east parking garage will be closed for resurfacing from Monday, December 9 through Wednesday, December 11. During this time, please use the west garage or the overflow lot on Oak Street. Shuttle buses will run every fifteen minutes between the overflow lot and the main building. We apologize for the temporary inconvenience.",
+  stress: ["Jennifer from Facilities Management", "east parking garage", "closed for resurfacing", "December 9 through December 11", "west garage", "overflow lot on Oak Street", "every fifteen minutes", "main building"],
+  tips: ["Thông báo từ bộ phận cơ sở vật chất giọng thông cảm, chuyên nghiệp; nhấn ngày đóng và phương án thay thế.", "Resurfacing phát âm là re-sur-fac-ing; overflow lot nhấn vào over-flow; every fifteen minutes đọc nhịp đều."]
+},
+{
+  id: "toeic-s2-009",
+  part: "s2",
+  scene: `Một bức ảnh chụp khu vực tiếp khách của một công ty công nghệ. Ở tiền cảnh, một nhân viên lễ tân nữ đang mỉm cười chào đón một khách đến, tay cầm một tấm thẻ khách. Phía sau quầy là một tấm bảng logo công ty phát sáng. Hai ghế sofa hiện đại và một bàn trà thấp đặt dọc tường; trên bàn có một chậu lan và một chồng tạp chí. Cửa kính tự động mở ra, phía ngoài có một người đang bước vào.`,
+  sample: "This picture shows a modern reception area in a technology company. A female receptionist is greeting a visitor and handing over a visitor badge. Behind the desk, there is an illuminated company logo. Two modern sofas and a low coffee table are placed along the wall, with an orchid plant and a stack of magazines on the table. The automatic glass doors are open, and someone is entering the building.",
+  tips: ["Mô tả quầy lễ tân trước (người, hành động), sau đó đến không gian chờ (sofa, bàn, trang trí).", "Dùng illuminated logo cho logo phát sáng; handing over cho hành động đưa thẻ; automatic glass doors cho cửa kính tự động."]
+},
+{
+  id: "toeic-s2-010",
+  part: "s2",
+  scene: `Ảnh chụp một khu vực làm việc chung (coworking space) rộng rãi. Nhiều bàn làm việc được xếp thành hàng, mỗi bàn có một màn hình máy tính và một chiếc đèn bàn. Ở giữa không gian, một nhóm ba người đang đứng حولها một bảng trắng lớn, một người đang viết bằng bút màu. Những người khác ngồi làm việc độc lập, một số đeo tai nghe. Phía sau là quầy cà phê với máy pha espresso và vài loại bánh. Trần nhà cao, có đèn treo và ống dẫn hơi lộ rõ.`,
+  sample: "This photo shows a spacious coworking space with rows of desks, each equipped with a monitor and a desk lamp. In the center, a group of three people is gathered around a large whiteboard, and one person is writing with a marker. Other members are working independently at their desks, some wearing headphones. In the background, there is a coffee bar with an espresso machine and pastries. The high ceiling has pendant lights and exposed ducts.",
+  tips: ["Coworking space là không gian làm việc chung; hãy dùng equipped with cho thiết bị trên bàn.", "Gathered around白板 (whiteboard) cho nhóm người quanh bảng; exposed ducts cho ống dẫn hơi lộ ra ngoài."]
+},
+{
+  id: "toeic-s2-011",
+  part: "s2",
+  scene: `Một góc sân thượng (rooftop) của tòa nhà văn phòng vào lúc hoàng hôn. Có vài bàn high-top và ghế bar xếp quanh lan can kính. Một nhóm bốn đồng nghiệp đang đứng uống ly nước, hai người cầm lon bia, hai người cầm ly nước ép. Mặt trời đang lặn phía sau các tòa nhà cao tầng, tạo ánh sáng vàng ấm. Một người đang chụp ảnh bằng điện thoại. Sàn được lát gỗ, có vài chậu cây nhỏ đặt dọc lan can.`,
+  sample: "This picture captures a rooftop terrace of an office building at sunset. Several high-top tables and bar stools are arranged along the glass railing. A group of four colleagues is standing and having drinks -- two with cans of beer and two with juice glasses. The sun is setting behind the skyscrapers, casting a warm golden light. One person is taking a photo with a smartphone. The floor is wooden, and small potted plants line the railing.",
+  tips: ["Rooftop terrace là sân thượng; high-top tables là bàn cao, bar stools là ghế bar.", "Dùng casting a warm golden light cho ánh hoàng hôn; line the railing cho cây nhỏ dọc lan can; skyscrapers cho tòa nhà cao tầng."]
+},
+{
+  id: "toeic-s2-012",
+  part: "s2",
+  scene: `Ảnh chụp trong một phòng server (server room) hiện đại. Các rack máy chủ đen xếp thành hàng dài, đèn LED xanh và vàng nhấp nháy trên các thiết bị. Ở tiền cảnh, một kỹ sư nam mặc áo khoác phòng sạch đang kiểm tra một máy chủ, một tay cầm máy tính bảng, tay kia chạm vào rack. Sàn nâng (raised floor) có các lỗ thoáng gió. Tường phía sau có màn hình giám sát hiển thị biểu đồ nhiệt độ và sử dụng CPU. Không gian sạch sẽ, có ánh sáng trắng sáng.`,
+  sample: "This image shows a modern server room with rows of black server racks. Blue and yellow LED lights are blinking on the equipment. In the foreground, a male engineer in a cleanroom jacket is inspecting a server, holding a tablet in one hand and touching the rack with the other. The raised floor has ventilation grilles. A monitoring screen on the back wall displays temperature and CPU usage graphs. The room is clean and brightly lit with white lights.",
+  tips: ["Server rack là giá máy chủ; LED lights blinking cho đèn nhấp nháy; raised floor cho sàn nâng.", "Cleanroom jacket là áo khoác phòng sạch; ventilation grilles cho lỗ thoáng gió; monitoring screen cho màn hình giám sát."]
+},
+{
+  id: "toeic-s2-013",
+  part: "s2",
+  scene: `Một buổi đào tạo (training session) trong phòng hội nghị lớn. Một huấn luyện viên nữ đứng ở phía trước, tay cầm điều khiển từ xa (clicker), đang chỉ vào màn hình chiếu slide về quy trình an ninh mạng. Khoảng mười lăm người học ngồi theo kiểu theater, mỗi người có một cuốn sổ tay và bút trước mặt. Một vài người đang ghi chép, người khác nghe tập trung. Phía sau phòng có một bàn trà, nước và bánh quy.`,
+  sample: "This picture shows a training session in a large conference room. A female trainer is standing at the front, holding a clicker and pointing to a projected slide about cybersecurity processes. About fifteen participants are seated in theater style, each with a notebook and pen in front of them. Some are taking notes while others are listening attentively. At the back of the room, there is a refreshment table with tea, water, and cookies.",
+  tips: ["Training session là buổi đào tạo; theater style cho ghế ngồi kiểu rạp (nhìn về một phía).", "Clicker là điều khiển slide từ xa; projected slide cho slide được chiếu; refreshment table cho bàn đồ ăn nhẹ."]
+},
+{
+  id: "toeic-s2-014",
+  part: "s2",
+  scene: `Ảnh chụp một khu vực logistic/bưu kiện. Nhiều thùng carton được xếp chồng thành hàng trên vựa bê tông. Một xe nâng (forklift) màu vàng đang nâng một pallet hàng hóa. Hai nhân viên kho mặc áo phản quang và mũ bảo hộ: một người điều khiển xe nâng, người kia đứng gần đó cầm clipboard kiểm tra. Phía xa là cửa kho lớn đang mở, nhìn ra được bãi đỗ xe tải. Trời nắng, bóng của xe tải đổ dài trên mặt đất.`,
+  sample: "This photo shows a logistics warehouse area. Many cardboard boxes are stacked in rows on the concrete apron. A yellow forklift is lifting a pallet of goods. Two warehouse workers wearing reflective vests and hard hats are present -- one operating the forklift and the other standing nearby with a clipboard, checking the shipment. A large open bay door in the distance reveals a truck parking lot. It is a sunny day, and the truck's shadow stretches long across the ground.",
+  tips: ["Logistics warehouse là kho vận tải/logistics; forklift là xe nâng; pallet là pa-lét hàng hóa.", "Reflective vest là áo phản quang; clipboard là bàn ghi tay; bay door là cửa kho lớn; stretched long cho bóng đổ dài."]
+},
+{
+  id: "toeic-w1-021",
+  part: "w1",
+  scene: "Trong văn phòng, một nhân viên nữ đang ngồi trước máy tính, tay phải cầm chuột, tay trái đang gõ bàn phím. Trên màn hình hiển thị một bảng tính (spreadsheet) với nhiều hàng số liệu.",
+  words: ["analyze", "data"],
+  sample: "The employee is analyzing the data on the spreadsheet.",
+  tips: ["Analyze (phân tích) ở đây chia thành is analyzing vì hành động đang diễn ra.", "Data là danh từ không đếm được, không thêm 's' ở số nhiều; trên spreadsheet dùng on."]
+},
+{
+  id: "toeic-w1-022",
+  part: "w1",
+  scene: "Tại quầy nhận khách của một khách sạn, một nhân viên nam mặc vest đang trao chìa khóa phòng cho một khách du lịch. Khách đó cầm vali và có vẻ mệt mỏi sau chuyến bay dài.",
+  words: ["check", "in"],
+  sample: "The guest is checking in at the front desk.",
+  tips: ["Check in (đăng ký nhận phòng) là động từ tách thành hai từ; ở hiện tại tiếp diễn thành is checking in.", "At the front desk dùng at cho địa điểm cụ thể (quầy)."]
+},
+{
+  id: "toeic-w1-023",
+  part: "w1",
+  scene: "Trong một cuộc họp trực tuyến (video call), một người đàn ông đang chia sẻ màn hình (share screen) để trình bày báo cáo. Các thành viên khác trong cuộc gọi đang nhìn vào màn hình chung và một người đang giơ tay để hỏi.",
+  words: ["present", "report"],
+  sample: "The man is presenting the report to his colleagues.",
+  tips: ["Present (trình bày) chia thành is presenting; present the report (trình bày báo cáo) là cụm quen thuộc.", "To his colleagues chỉ người nhận hành động; có thể dùng for thay vì to."]
+},
+{
+  id: "toeic-w1-024",
+  part: "w1",
+  scene: "Ở khu vực bãi đỗ xe công ty, một nhân viên bảo vệ đang kiểm tra thẻ xe của một chiếc sedan đen trước khi cho vào. Biển số xe rõ ràng, cổng chắn đang nâng lên.",
+  words: ["verify", "vehicle"],
+  sample: "The security guard is verifying the vehicle at the gate.",
+  tips: ["Verify (xác minh/kiểm tra) chia thành is verifying; verify the vehicle (kiểm tra xe) đúng ngữ cảnh bảo vệ.", "At the gate (tại cổng) dùng at cho vị trí cụ thể."]
+},
+{
+  id: "toeic-w1-025",
+  part: "w1",
+  scene: "Trong phòng nghỉ (break room), một nữ nhân viên đang nấu cà phê bằng máy pha tự động. Cô ấy đặt một cốc vào khay, bấm nút và chờ cà phê chảy ra. Bên cạnh là một tủ lạnh nhỏ và vi sóng.",
+  words: ["make", "coffee"],
+  sample: "The woman is making coffee with the automatic machine.",
+  tips: ["Make coffee (pha cà phê) là cụm cố định; ở đây chia thành is making coffee.", "With the automatic machine chỉ công cụ/dụng cụ dùng để làm."]
+},
+{
+  id: "toeic-w1-026",
+  part: "w1",
+  scene: "Tại khu vực tải hàng của kho, một nhân viên đang dùng máy dán băng keo (tape gun) để niêm phong một thùng carton lớn. Thùng đã được ghi địa chỉ người nhận bằng bút dày.",
+  words: ["seal", "box"],
+  sample: "The worker is sealing the box with a tape gun.",
+  tips: ["Seal (niêm phong/kín) chia thành is sealing; seal the box (niêm phong thùng) đúng ngữ cảnh kho hàng.", "With a tape gun chỉ dụng cụ; tape gun là súng dán băng keo chuyên dụng."]
+},
+{
+  id: "toeic-w1-027",
+  part: "w1",
+  scene: "Trong phòng phỏng vấn, một người phụ nữ mặc vest chính thức đang bắt tay với một người nam ngồi tại bàn phỏng vấn. Cả hai đều mỉm cười, trên bàn có hồ sơ CV và một ly nước.",
+  words: ["greet", "candidate"],
+  sample: "The interviewer is greeting the candidate with a handshake.",
+  tips: ["Greet (chào đón) chia thành is greeting; greet the candidate (chào ứng viên) phù hợp bối cảnh phỏng vấn.", "With a handshake (bằng cách bắt tay) chỉ cách thức chào; handshake là bắt tay."]
+},
+{
+  id: "toeic-w1-028",
+  part: "w1",
+  scene: "Ở sân bay, một hành khách nam đang đặt vali của mình lên băng tải bảo an (conveyor belt) để qua cửa kiểm tra an ninh. Anh ta cởi thắt lưng và bỏ vào khay cùng với ví và điện thoại.",
+  words: ["place", "belt"],
+  sample: "The passenger is placing his suitcase on the conveyor belt.",
+  tips: ["Place (đặt) chia thành is placing; place on (đặt lên) đi với giới từ on.", "Conveyor belt là băng tải; suitcase là vali; his chỉ sở hữu."]
+},
+{
+  id: "toeic-w1-029",
+  part: "w1",
+  scene: "Trong cửa hàng điện tử, một khách hàng nữ đang thử đeo một chiếc tai nghe không dây (wireless headphones) và nhìn vào điện thoại để kiểm tra kết nối Bluetooth. Nhân viên bán hàng đứng gần đó quan sát.",
+  words: ["test", "connection"],
+  sample: "The customer is testing the Bluetooth connection on her phone.",
+  tips: ["Test (kiểm tra/thử) chia thành is testing; test the connection (kiểm tra kết nối) cụm thường dùng.", "Bluetooth connection là kết nối Bluetooth; on her phone chỉ nơi kiểm tra."]
+},
+{
+  id: "toeic-w1-030",
+  part: "w1",
+  scene: "Tại một nhà máy sản xuất, một kỹ sư đang cầm máy quét mã vạch (barcode scanner) quét nhãn trên một thành phần (component) trên dây chuyền lắp ráp. Màn hình máy hiển thị màu xanh xác nhận đã quét thành công.",
+  words: ["scan", "label"],
+  sample: "The engineer is scanning the label with a barcode scanner.",
+  tips: ["Scan (quét) chia thành is scanning; scan the label (quét nhãn) đúng ngữ cảnh sản xuất/kho.", "With a barcode scanner chỉ dụng cụ; barcode scanner là máy quét mã vạch."]
+},
 );
