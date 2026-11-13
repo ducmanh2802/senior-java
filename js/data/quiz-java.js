@@ -4259,4 +4259,368 @@ Parser tưởng chuỗi kết thúc trước chữ Senior. Jackson trong Spring 
 
 > Senior tip: khi thấy 502/504, so sánh log proxy với log backend theo cùng request id. Backend không có request thường gợi ý vấn đề kết nối/routing; backend ghi nhận xử lý lâu thường hướng tới timeout hoặc phụ thuộc chậm.`
 },
+{
+  id: 'qz-jvm-034', topic: 'jvm',
+  q: 'Một service chạy trong container giới hạn 1GB RAM. Team không đặt {{-Xmx}} nhưng đặt {{-XX:MaxRAMPercentage=50}} (JDK 17). Ban đầu heap tối đa JVM có thể dùng xấp xỉ bao nhiêu, và vì sao nên dùng cờ phần trăm trong container?',
+  options: [
+    'Khoảng 500MB; cờ phần trăm dựa trên giới hạn bộ nhớ mà container cấp nên heap tự co giãn theo limit thay vì cố định số tuyệt đối',
+    'Khoảng 1GB; JVM luôn chiếm toàn bộ RAM container cho heap để tránh GC',
+    'Khoảng 50MB; MaxRAMPercentage tính trên 100MB mặc định của JVM',
+    'Không xác định vì JVM trong container không nhìn thấy cgroup memory limit'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Với giới hạn 1GB và {{MaxRAMPercentage=50}}, heap tối đa ban đầu xấp xỉ 500MB. Cờ phần trăm giúp JVM điều chỉnh heap theo memory limit của container (cgroup - cơ chế Linux kernel giới hạn tài nguyên cho process/container) thay vì hard-code {{-Xmx}}.
+
+### "Container RAM limit" và heap là gì?
+- **Container memory limit**: giới hạn bộ nhớ tối đa (ví dụ 1GB) mà orchestrator (Kubernetes, Docker) cho phép container dùng. Vượt quá, kernel có thể giết process bằng OOM Killer (cơ chế kernel dừng process để bảo vệ hệ thống).
+- **Heap**: vùng nhớ JVM lưu object Java. Heap chỉ là một phần; ngoài heap còn metaspace, thread stack, direct memory, native memory của thư viện.
+
+### Cách tính và vì sao cần
+- {{-XX:MaxRAMPercentage}} (có từ JDK 10+, mặc định thường 25% ở server class trong một số môi trường cũ, nhưng nên đặt rõ) lấy tỷ lệ trên bộ nhớ vật lý/giới hạn khả dụng để tính {{MaxHeapSize}} khi không có {{-Xmx}}.
+- 1GB * 50% = ~512MB (xấp xỉ 500MB). Phần còn lại dành cho non-heap và tiến trình khác trong container.
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng (A)**: tính đúng theo tỷ lệ limit; lợi ích là khi bạn đổi limit container (ví dụ lên 2GB), không cần sửa image/command vì heap theo phần trăm.
+- **Sai (B)**: heap không thể chiếm toàn bộ 1GB; nếu chiếm hết sẽ không còn chỗ cho metaspace, stack, GC… dễ bị OOMKilled hoặc {{OutOfMemoryError}}.
+- **Sai (C)**: MaxRAMPercentage không tính trên 100MB mặc định; nó dựa trên bộ nhớ khả dụng/container limit.
+- **Sai (D)**: từ JDK 8u191+/10+ JVM hỗ trợ container awareness, đọc cgroup limits tốt (JDK 17 càng hoàn thiện). Nếu không nhận limit, tính toán mới sai — nhưng nói "không nhìn thấy" là sai với JDK hiện đại.
+
+### Ví dụ thực tế
+~~~text
+Container limit: 1024m
+-XX:MaxRAMPercentage=50
+=> Max heap ~512m
+Còn lại ~512m cho metaspace, ~1MB*threads cho stacks, direct buffers, code cache...
+~~~
+
+> Senior tip: đặt cả {{-XX:MaxRAMPercentage}} (heap) và {{-XX:InitialRAMPercentage}} hợp lý, đồng thời cân nhắc {{-XX:MaxMetaspaceSize}} và giám sát native memory ({{Native Memory Tracking}} nếu cần). Trong Kubernetes, luôn đặt {{resources.limits.memory}} và test dưới load; 50-75% cho heap là điểm khởi đầu phổ biến tùy workload.`
+},
+{
+  id: 'qz-jvm-035', topic: 'jvm',
+  q: 'Sau khi deploy, service Java 17 bị chậm trong 2-3 phút đầu (latency p99 cao), sau đó ổn định. CPU tăng nhẹ lúc đầu. Bạn nghi ngờ do JIT (Just-In-Time compiler). Giải thích nào đúng nhất?',
+  options: [
+    'JIT biên dịch bytecode sang mã máy native khi method "nóng" chạy nhiều lần; giai đoạn warm-up có chi phí biên dịch nên ban đầu chậm hơn, sau đó nhanh nhờ code đã tối ưu',
+    'JIT chỉ chạy khi heap đầy để dọn rác, nên vài phút đầu GC làm chậm',
+    'JIT tải class từ mạng ở lần đầu nên chậm, sau đó cache trên disk',
+    'JIT là cơ chế nén heap; warm-up là thời gian JVM giải nén object'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** JIT (Just-In-Time compiler - trình biên dịch tại thời điểm chạy) chuyển bytecode (mã trung gian .class) của các method được gọi nhiều lần thành mã máy native tối ưu. Giai đoạn "warm-up" (làm nóng) tốn CPU để biên dịch và profiling nên latency cao tạm thời; khi ổn định, code chạy nhanh hơn interpreter.
+
+### Hoạt động từng bước
+1. JVM khởi động, chạy bytecode bằng **interpreter** (trình thông dịch - thực thi từng lệnh, chậm nhưng khởi động nhanh).
+2. JVM đếm số lần gọi/vòng lặp (profiling). Method vượt ngưỡng trở thành "hot".
+3. JIT (C1/C2 trong HotSpot) biên dịch method hot sang native code, có thể tối ưu (inlining - nhúng hàm, loại bỏ check thừa) dựa trên profiling.
+4. Lần sau gọi dùng native code nhanh hơn. Nếu giả định tối ưu sai, JVM có thể **deoptimize** (quay lại interpreter) — hiếm nhưng có thể gây giật.
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng (A)**: mô tả đúng warm-up JIT: chi phí compile ban đầu đổi lấy hiệu năng ổn định.
+- **Sai (B)**: dọn rác là nhiệm vụ của GC (Garbage Collector), không phải JIT. GC có thể góp phần chậm nhưng nguyên nhân nêu không đúng bản chất JIT.
+- **Sai (C)**: tải class là class loading từ classpath/jar (thường local), không phải JIT; JIT không tải từ mạng theo định nghĩa đó.
+- **Sai (D)**: JIT không nén heap; heap do GC và allocator quản lý.
+
+### Ví dụ tình huống
+Sau deploy rolling, pod mới nhận traffic: 2 phút đầu p99 800ms, sau đó 120ms. Biểu đồ CPU có spike nhẹ đầu pod. Đây là dấu hiệu warm-up điển hình.
+
+> Senior tip: với service latency-sensitive, cân nhắc warm-up traffic (gửi request giả trước khi nhận traffic thật), dùng {{-XX:+TieredCompilation}} (mặc định bật ở server) để có C1 nhanh rồi C2 tối ưu, hoặc cân nhắc AOT (GraalVM native image) nếu phù hợp — đánh đổi startup nhanh vs peak throughput/khả năng tối ưu runtime.`
+},
+{
+  id: 'qz-jvm-036', topic: 'jvm', multi: true,
+  q: 'Application log báo {{java.lang.OutOfMemoryError: Java heap space}}. Bạn thu thập heap dump và thấy một {{HashMap}} cache tăng mãi không giảm. Những hành động nào hợp lý để xử lý gốc rễ? (Chọn 2)',
+  options: [
+    'Phân tích heap dump (ví dụ bằng Eclipse MAT) để tìm đường tham chiếu (GC root path) giữ {{HashMap}} sống, rồi sửa code: giới hạn kích thước/TTL hoặc dùng cache có eviction (Caffeine, Guava)',
+    'Chỉ tăng {{-Xmx}} thật lớn mà không sửa code, vì OOM heap space luôn hết khi heap nhỏ',
+    'Kiểm tra và loại bỏ reference không cần thiết (listener, static collection) khiến object không được GC thu hồi; đảm bảo key/value không bị giữ vô hạn',
+    'Tắt GC bằng cờ JVM để heap không bị dọn và tránh OOM',
+    'Đổi sang {{OutOfMemoryError: Metaspace}} bằng cách giảm MaxMetaspaceSize'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** {{OutOfMemoryError: Java heap space}} nghĩa là heap không còn chỗ cấp phát object và GC không giải phóng đủ. Nguyên nhân gốc thường là **memory leak logic** (object bị giữ tham chiếu nên GC không thu hồi) hoặc dữ liệu thực sự quá lớn. Cần tìm ai giữ tham chiếu và sửa chiến lược lưu trữ.
+
+### Thuật ngữ
+- **Heap dump**: ảnh chụp toàn bộ object trên heap tại một thời điểm (file .hprof). Dùng để xem object nào chiếm nhiều và bị giữ bởi ai.
+- **GC root**: điểm xuất phát mà GC dùng để duyệt object còn "sống" (thread stack, static field...). Nếu từ GC root đi tới object, object không bị thu hồi.
+- **Eviction/TTL**: cơ chế tự loại bỏ entry cache khi đầy hoặc quá hạn.
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng (A)**: heap dump + công cụ phân tích cho biết {{HashMap}} bị giữ bởi đâu (ví dụ static field singleton). Sửa bằng giới hạn size, TTL, hoặc thư viện cache có eviction/policy.
+- **Sai (B)**: tăng {{-Xmx}} chỉ trì hoãn nếu cache tăng vô hạn; còn làm GC pause dài hơn và che giấu leak. Cần xử lý gốc rễ.
+- **Đúng (C)**: bỏ reference thừa (clear cache, remove listener, tránh static giữ request-scoped object) giúp GC thu hồi được.
+- **Sai (D)**: không thể "tắt GC" theo cách giải quyết OOM; JVM luôn cần GC. Tắt/giảm GC sẽ làm tệ hơn.
+- **Sai (E)**: Metaspace là vùng nhớ metadata class (khác heap). Giảm MaxMetaspaceSize có thể gây {{OutOfMemoryError: Metaspace}} sớm hơn, không liên quan HashMap trên heap.
+
+### Ví dụ
+Heap dump cho thấy {{com.app.UserCache.map}} (static) giữ 2 triệu entry, retained size 800MB, key là userId không bao giờ bị xóa. Fix: dùng {{Caffeine.newBuilder().maximumSize(100_000).expireAfterWrite(10, TimeUnit.MINUTES)}}.
+
+> Senior tip: bật {{-XX:+HeapDumpOnOutOfMemoryError}} và {{-XX:HeapDumpPath=...}} trên production (đảm bảo đủ disk). Phân biệt {{heap space}} (object sống nhiều/leak) với {{GC overhead limit exceeded}} (GC chạy mãi nhưng thu hồi ít).`
+},
+{
+  id: 'qz-jvm-037', topic: 'jvm',
+  q: 'Bạn xem GC log (Unified GC Logging, JDK 17) của ứng dụng dùng G1GC và thấy dòng dạng: {{[gc,pause] GC(45) Pause Young (Normal) (G1 Evacuation Pause) 512M->120M(1024M) 35.2ms}}. Thông tin nào đọc đúng từ dòng này?',
+  options: [
+    'Đây là pause thu gom vùng Young: heap dùng giảm từ ~512M xuống ~120M (heap tổng ~1024M), pause khoảng 35.2ms; "Evacuation" nghĩa là copy object sống sang region khác',
+    'Đây là Full GC dọn toàn bộ heap và metaspace, ứng dụng dừng 35.2 giây',
+    '512M->120M nghĩa là cấp thêm 512M bộ nhớ cho JVM từ hệ điều hành',
+    'Dòng này cho biết Metaspace đã đầy và cần tăng MaxMetaspaceSize'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Dòng log mô tả một **Young GC pause** của G1: thu gom vùng Young (Eden/Survivor), heap occupancy giảm 512M→120M trong tổng heap 1024M, thời gian dừng (stop-the-world - các thread ứng dụng tạm dừng) ~35.2ms. Evacuation là bước di chuyển (copy) object còn sống.
+
+### Giải thích thuật ngữ
+- **G1GC (Garbage First)**: bộ thu gom rác chia heap thành nhiều region nhỏ, ưu tiên thu gom region có nhiều rác (garbage) trước.
+- **Young generation/region**: nơi object mới tạo. Young GC thường ngắn và xảy ra thường xuyên.
+- **Evacuation Pause**: copy object sống từ region nguồn sang region đích trống, sau đó giải phóng region nguồn.
+- **Heap before->after(total)**: 512M trước GC, 120M sau GC, tổng dung lượng heap hiện tại 1024M.
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng (A)**: đọc đúng loại pause, hướng giảm bộ nhớ, tổng heap và thời gian (ms, không phải giây).
+- **Sai (B)**: không phải Full GC; Full GC thường ghi rõ "Pause Full" và tốn thời gian lớn hơn nhiều. 35.2ms là mili-giây.
+- **Sai (C)**: 512M->120M là mức sử dụng trước/sau GC, không phải xin thêm RAM từ OS.
+- **Sai (D)**: log Young GC không nói về Metaspace; Metaspace có log/tag riêng (metaspace) nếu bật.
+
+### Ví dụ đọc nhanh
+~~~text
+Pause Young ... 512M->120M(1024M) 35.2ms
+- Trước: dùng 512M
+- Sau:  còn 120M (đa số object trẻ đã chết)
+- Tổng: 1024M
+- Dừng app: ~35ms (thường chấp nhận được với web API)
+~~~
+
+> Senior tip: bật log GC trong production với overhead thấp: {{-Xlog:gc*:file=gc.log:time,uptime,level,tags:filecount=5,filesize=20m}}. Theo dõi xu hướng: nếu sau Young GC heap vẫn cao và dần tiến tới Full GC/Concurrent Mark, cần điều tra allocation rate hoặc leak.`
+},
+{
+  id: 'qz-jvm-038', topic: 'jvm',
+  q: 'Service xử lý giao dịch tài chính yêu cầu latency ổn định (p99 thấp), heap ~8GB, chạy JDK 17. Bạn cân nhắc giữa G1GC và ZGC. Lựa chọn và lý do nào phù hợp nhất?',
+  options: [
+    'ZGC thường cho pause rất ngắn (thường dưới vài ms, phần lớn concurrent) phù hợp latency-sensitive; G1GC là mặc định cân bằng tốt nhưng pause có thể lớn hơn khi heap lớn hoặc có nhiều vùng cần evacuate',
+    'G1GC luôn có pause bằng 0ms nên luôn tốt hơn ZGC cho latency',
+    'ZGC không thu gom rác Young generation nên không phù hợp ứng dụng tạo nhiều object tạm',
+    'Chọn Serial GC vì giao dịch tài chính cần một thread GC duy nhất để an toàn dữ liệu'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** ZGC (Z Garbage Collector) được thiết kế cho pause time rất thấp (mục tiêu sub-millisecond đến vài ms) bằng cách làm phần lớn công việc concurrent (song song với ứng dụng). G1GC là collector mặc định, tổng quát tốt, nhưng pause có thể tăng theo lượng live data/evacuation. Với yêu cầu p99 thấp, ZGC thường là lựa chọn đáng cân nhắc (cần đo thực tế).
+
+### Thuật ngữ
+- **Pause/Stop-the-world (STW)**: khoảng thời gian JVM dừng thread ứng dụng để GC làm việc an toàn.
+- **Concurrent GC**: GC chạy cùng lúc với ứng dụng phần lớn thời gian, giảm STW.
+- **Latency-sensitive**: hệ thống nhạy với độ trễ (ví dụ thanh toán, trading) — một pause dài có thể gây timeout.
+
+### So sánh ngắn
+| Tiêu chí | G1GC | ZGC |
+|---|---|---|
+| Mục tiêu | Throughput/latency cân bằng | Pause rất thấp |
+| Pause điển hình | chục đến vài trăm ms tùy tình huống | thường rất thấp (vài ms) |
+| Heap lớn | ổn nhưng pause có thể tăng | thiết kế cho heap lớn tốt |
+| Overhead | thấp-vừa | có overhead CPU/bộ nhớ nhất định |
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng (A)**: phản ánh đúng đặc tính chính: ZGC tối ưu pause thấp; G1GC mặc định tốt nhưng không đảm bảo pause cực thấp như ZGC trong mọi case.
+- **Sai (B)**: G1GC vẫn có STW pause (Young/Mixed/Full trong trường hợp xấu), không bằng 0.
+- **Sai (C)**: ZGC hiện đại (JDK 17+) xử lý generational (ZGC thế hệ) trên các bản JDK mới hơn/tùy cấu hình; nói "không thu gom Young" là không chính xác như một khẳng định chung và không phải lý do loại ZGC.
+- **Sai (D)**: Serial GC dùng một thread, pause dài, không phù hợp server đa lõi/latency thấp. An toàn dữ liệu không đến từ việc dùng 1 thread GC.
+
+> Senior tip: luôn benchmark với workload thật (allocation rate, live set, số core). Bật GC log và so sánh p99/p999. ZGC đổi pause thấp lấy một phần throughput/CPU; G1GC dễ vận hành mặc định. Trên JDK 17, ZGC đã production-ready; trên JDK mới hơn có cải tiến generational ZGC.`
+},
+{
+  id: 'qz-jvm-039', topic: 'jvm', multi: true,
+  q: 'Bạn điều tra {{OutOfMemoryError: Metaspace}} trên service Spring Boot 3 (JDK 17) sau nhiều lần redeploy/reload trong môi trường dev. Nguyên nhân và cách xử lý nào hợp lý? (Chọn 2)',
+  options: [
+    'Metaspace lưu metadata của class (cấu trúc class, method...); nếu tạo class loader mới liên tục (ví dụ reload) và class loader không được GC, metadata tích lũy gây đầy Metaspace',
+    'Tăng {{-XX:MaxMetaspaceSize}} có thể giúp tránh OOM tạm thời, nhưng cần tìm nguyên nhân leak class loader/class (ví dụ tool reload giữ reference) để sửa gốc',
+    'Metaspace nằm trong Java heap nên chỉ cần tăng {{-Xmx}} là hết lỗi',
+    'Giải pháp đúng là tắt hoàn toàn class loading để JVM không nạp class mới',
+    'Chuyển toàn bộ object nghiệp vụ sang Metaspace để giảm áp lực heap'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Metaspace là vùng nhớ native (ngoài heap, từ JDK 8 thay PermGen) chứa metadata của class. {{OutOfMemoryError: Metaspace}} thường do nạp quá nhiều class hoặc **ClassLoader leak** (class loader bị giữ tham chiếu nên class và metadata không thể unload). Cần giới hạn/cấu hình hợp lý và xử lý leak.
+
+### Thuật ngữ
+- **Class metadata**: thông tin JVM cần để mô tả class (tên, field, method, bytecode metadata...).
+- **ClassLoader**: thành phần nạp class. Class chỉ được unload khi ClassLoader của nó không còn được tham chiếu.
+- **Redeploy/reload**: tạo ClassLoader mới để nạp phiên bản class mới; nếu ClassLoader cũ còn bị giữ (bởi thread, cache, JDBC driver registration...), class cũ không unload.
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng (A)**: mô tả đúng nguyên nhân phổ biến: ClassLoader leak làm Metaspace tăng dần sau mỗi lần reload.
+- **Đúng (B)**: tăng {{MaxMetaspaceSize}} (hoặc để tự tăng nếu chưa giới hạn) có thể là biện pháp tạm thời/giới hạn an toàn, nhưng gốc rễ là leak phải được sửa (dùng profiler/heap dump xem ClassLoader instances).
+- **Sai (C)**: Metaspace nằm ngoài heap (native memory). Tăng {{-Xmx}} không giải quyết Metaspace.
+- **Sai (D)**: không thể và không nên tắt class loading; ứng dụng cần nạp class để chạy.
+- **Sai (E)**: Metaspace không dùng để lưu object nghiệp vụ (object nằm trên heap).
+
+### Ví dụ
+Dev dùng hot-reload nhiều lần, thấy số class tăng liên tục trong {{jcmd <pid> VM.classloader_stats}} hoặc {{jcmd <pid> GC.class_histogram}} (gián tiếp). Heap dump cho thấy nhiều {{WebappClassLoader}} bị ThreadLocal giữ.
+
+> Senior tip: đặt {{-XX:MaxMetaspaceSize}} hợp lý để fail-fast thay vì ăn hết RAM native. Tránh đăng ký driver/thread pool/static cache trong ClassLoader có vòng đời ngắn mà không dọn khi unload. Trên server production ít redeploy trong cùng JVM nên lỗi này hay gặp ở môi trường dev/app server cũ.`
+},
+{
+  id: 'qz-jvm-040', topic: 'jvm',
+  q: 'Trong log startup của Java 17 bạn thấy {{[class,load] com.example.PaymentService source: file:/app/app.jar}}. Câu nào mô tả đúng vai trò của Class Loader và thứ tự ủy quyền (delegation) mặc định?',
+  options: [
+    'Class Loader nạp bytecode class vào JVM; theo mô hình delegation chuẩn, loader con thường hỏi loader cha trước (Bootstrap -> Platform/Extension -> Application) để tránh nạp trùng class lõi và đảm bảo nhất quán',
+    'Application Class Loader luôn tự nạp mọi class trước, không bao giờ hỏi Bootstrap để tăng tốc',
+    'Bootstrap Class Loader được viết bằng Java và nạp class từ thư mục ứng dụng /app',
+    'Class loading chỉ xảy ra một lần khi JVM tắt, không liên quan lúc chạy'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Class Loader (bộ nạp lớp) chịu trách nhiệm tìm và nạp bytecode (.class) thành đối tượng Class trong JVM khi cần. Mô hình **parent delegation** (ủy quyền cha) mặc định: khi được yêu cầu nạp class, loader thường ủy quyền cho cha trước, giúp class lõi Java ({{java.lang.*}}) được nạp nhất quán bởi Bootstrap và tránh xung đột/giả mạo.
+
+### Các loader chính (HotSpot)
+- **Bootstrap Class Loader**: nạp class lõi JDK ({{rt}}/modules cơ bản), thường viết bằng native/C++, không phải object Java thông thường.
+- **Platform Class Loader** (trước đây Extension): nạp các module/platform class.
+- **Application/System Class Loader**: nạp class từ classpath của ứng dụng (ví dụ {{/app/app.jar}}).
+
+### Luồng delegation đơn giản
+1. App loader nhận yêu cầu nạp {{com.example.PaymentService}}.
+2. Hỏi cha (Platform) -> cha hỏi Bootstrap.
+3. Nếu cha không tìm thấy, loader con tự tìm trong nguồn của nó (classpath).
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng (A)**: mô tả đúng vai trò và nguyên tắc delegation chuẩn.
+- **Sai (B)**: ngược lại delegation chuẩn; tự nạp trước là hành vi "child-first" (một số container như servlet container dùng biến thể có kiểm soát), không phải mặc định JVM nói chung cho mọi class.
+- **Sai (C)**: Bootstrap không viết bằng Java và không nạp từ {{/app}}; nó nạp core JDK.
+- **Sai (D)**: class được nạp **on-demand** (khi lần đầu dùng: new, truy cập static, reflection...) trong quá trình chạy.
+
+> Senior tip: hiểu delegation giúp debug lỗi kinh điển {{ClassNotFoundException}} vs {{NoClassDefFoundError}} và xung đột phiên bản thư viện (classpath hell). Trong ứng dụng server/module, có thể gặp loader tùy biến; dùng {{-verbose:class}} hoặc {{-Xlog:class+load}} (JDK 9+) để quan sát.`
+},
+{
+  id: 'qz-jvm-041', topic: 'jvm',
+  q: 'Một ứng dụng Spring Boot được triển khai với cờ: {{java -XX:InitialRAMPercentage=50 -XX:MaxRAMPercentage=50 -XX:MinRAMPercentage=50 -jar app.jar}} trong container 2GB. Hành vi nào đúng nhất?',
+  options: [
+    'Initial/Max/Min cùng 50% sẽ khiến JVM cố gắng đặt heap ban đầu và tối đa gần ~1GB (ổn định kích thước heap, giảm resize), đổi lấy việc dùng nhiều bộ nhớ sớm hơn',
+    'Ba cờ này chỉ ảnh hưởng Metaspace, không ảnh hưởng heap',
+    'JVM sẽ báo lỗi vì không được đặt Initial và Max bằng nhau',
+    'Ứng dụng sẽ chỉ dùng đúng 50MB heap vì RAMPercentage tính theo đơn vị MB cố định'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Các cờ {{InitialRAMPercentage}}, {{MaxRAMPercentage}}, {{MinRAMPercentage}} điều khiển kích thước heap (ban đầu/tối đa/tối thiểu theo điều kiện) dựa trên tỷ lệ bộ nhớ khả dụng. Đặt cả ba bằng nhau (50% của 2GB ~ 1GB) làm heap gần như cố định, giảm việc mở rộng/thu hẹp heap trong runtime.
+
+### Ý nghĩa từng cờ
+- **InitialRAMPercentage**: heap ban đầu khi JVM khởi động.
+- **MaxRAMPercentage**: trần heap tối đa.
+- **MinRAMPercentage**: dùng trong một số công thức với máy bộ nhớ nhỏ (ít gặp khi bạn set rõ), nhưng đặt cùng giá trị thể hiện ý định heap cố định.
+
+### Lợi ích và đánh đổi
+- **Lợi ích**: ít biến động kích thước heap, có thể giảm overhead resize và giúp dự đoán bộ nhớ; hữu ích khi bạn đã benchmark và muốn ổn định.
+- **Đánh đổi**: JVM giữ phần heap lớn ngay từ đầu, container có ít "dư địa" cho non-heap nếu tính toán chật.
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng (A)**: mô tả đúng hiệu ứng gần cố định ~1GB và trade-off.
+- **Sai (B)**: các cờ này dành cho heap sizing, không phải Metaspace.
+- **Sai (C)**: đặt bằng nhau là hợp lệ và là cách cấu hình heap cố định theo phần trăm.
+- **Sai (D)**: RAMPercentage là tỷ lệ phần trăm trên bộ nhớ, không phải 50MB cố định.
+
+> Senior tip: heap cố định giúp tránh một số bất ngờ nhưng phải đảm bảo tổng (heap + metaspace + threads*stack + direct memory + overhead) nằm trong limit container. Nếu không chắc, để Initial thấp hơn Max cho JVM linh hoạt, nhưng luôn load-test và giám sát {{container_memory_working_set_bytes}} / OOMKilled.`
+},
+{
+  id: 'qz-jvm-042', topic: 'jvm', multi: true,
+  q: 'Production báo lỗi {{java.lang.OutOfMemoryError: unable to create native thread}} dù heap còn trống. Những nguyên nhân/thao tác kiểm tra nào hợp lý? (Chọn 2)',
+  options: [
+    'Mỗi thread Java cần bộ nhớ native cho stack (điều khiển bởi {{-Xss}}, ví dụ 1MB/thread); tạo quá nhiều thread có thể cạn RAM/native memory hoặc chạm giới hạn số thread của OS/container dù heap chưa đầy',
+    'Kiểm tra số lượng thread đang chạy ({{jcmd <pid> Thread.print}} hoặc monitoring), giới hạn thread pool, và xem giới hạn {{ulimit -u}}/cgroup pids/memory trong container',
+    'Lỗi này luôn do heap quá nhỏ nên chỉ cần tăng {{-Xmx}}',
+    'Giảm {{-Xss}} xuống 0 để thread không tốn stack',
+    'Tăng kích thước Metaspace sẽ tạo thêm khả năng sinh thread native'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** {{unable to create native thread}} xảy ra khi JVM/OS không thể cấp phát tài nguyên để tạo thread mới (thường là bộ nhớ cho thread stack hoặc chạm giới hạn số lượng tiến trình/thread). Đây là vấn đề **native/OS-level**, không phải thiếu heap Java.
+
+### Thuật ngữ
+- **Thread stack**: vùng nhớ riêng của mỗi thread để lưu frame lời gọi hàm, biến local... Kích thước mặc định phụ thuộc nền tảng (thường ~1MB). {{-Xss}} đặt stack size mỗi thread.
+- **Native memory**: bộ nhớ ngoài heap do JVM/OS cấp (stack, direct buffer, metaspace, thư viện native...).
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng (A)**: nhiều thread * stack size lớn có thể ăn hết RAM còn lại; container limit thấp càng dễ xảy ra. Heap trống không giúp nếu native memory hết.
+- **Đúng (B)**: kiểm tra thread count/pool (ví dụ tạo thread không giới hạn per request), giới hạn OS {{nproc}}/ulimit, và cgroup limits là bước chuẩn để khoanh vùng.
+- **Sai (C)**: tăng {{-Xmx}} có thể làm **tệ hơn** vì bớt bộ nhớ còn lại cho native/thread stacks.
+- **Sai (D)**: không thể đặt stack size bằng 0; stack quá nhỏ sẽ gây {{StackOverflowError}}.
+- **Sai (E)**: Metaspace không cấp phát thread; không liên quan trực tiếp.
+
+### Ví dụ
+Ứng dụng tạo {{new Thread(...)}} cho mỗi request thay vì dùng thread pool giới hạn; dưới tải có 5000 thread * ~1MB stack = ~5GB ngoài heap -> OOM native thread.
+
+> Senior tip: luôn dùng thread pool có giới hạn ({{ExecutorService}} với bounded queue/pool hợp lý). Trong container, cân đối {{-Xmx}}, {{-Xss}}, số thread tối đa và memory limit. Công cụ: {{jcmd VM.native_memory}} (nếu bật NMT), {{/proc/<pid>/limits}}, {{pmap}} (Linux).`
+},
+{
+  id: 'qz-jvm-043', topic: 'jvm',
+  q: 'Bạn cần chọn collector cho một batch job chạy ban đêm: quan trọng nhất là xử lý xong nhanh (throughput cao), có thể chấp nhận pause vài giây thỉnh thoảng, heap 4GB, JDK 17 trên máy 8 CPU. Lựa chọn nào thường hợp lý nhất?',
+  options: [
+    'G1GC (mặc định) hoặc Parallel GC; Parallel GC thường tối ưu throughput bằng cách dùng nhiều thread GC và chấp nhận pause dài hơn, phù hợp batch khi latency không quan trọng',
+    'ZGC vì batch job luôn cần pause dưới 1ms',
+    'Serial GC vì có 8 CPU nhưng batch chỉ nên dùng 1 CPU để tiết kiệm điện',
+    'Epsilon GC (no-op) để không tốn thời gian GC và tăng throughput'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Với batch job ưu tiên **throughput** (tổng lượng công việc/giờ) và chấp nhận pause, **Parallel GC** (còn gọi Throughput Collector) là lựa chọn truyền thống: thu gom bằng nhiều thread song song, tối ưu thời gian CPU dành cho ứng dụng nhưng pause có thể dài. G1GC cũng là lựa chọn tốt/cân bằng và là mặc định.
+
+### Thuật ngữ
+- **Throughput**: tỷ lệ thời gian chạy ứng dụng / (thời gian chạy + thời gian GC). Cao nghĩa là ít bị GC chiếm.
+- **Pause time**: thời gian ứng dụng bị dừng do GC.
+- **Parallel GC**: {{-XX:+UseParallelGC}} (ở một số cấu hình cũ là mặc định, tùy JDK/máy; JDK 9+ server thường mặc định G1).
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng (A)**: đúng định hướng: Parallel GC nghiêng về throughput; G1GC cân bằng — cả hai có thể phù hợp batch, cần đo nhưng Parallel là đáp án kinh điển khi chấp nhận pause.
+- **Sai (B)**: ZGC tối ưu pause thấp, thường trả chi phí throughput/CPU; batch không cần pause cực thấp.
+- **Sai (C)**: Serial GC chỉ dùng 1 thread GC, không tận dụng 8 CPU, pause/throughput kém cho batch lớn.
+- **Sai (D)**: Epsilon GC không thu gom rác; heap sẽ đầy và ứng dụng crash {{OutOfMemoryError}} — không dùng cho job chạy lâu.
+
+> Senior tip: chọn GC theo SLO: latency (ZGC/Shenandoah/G1 mục tiêu pause) vs throughput (Parallel). Với batch, đo thời gian hoàn thành job end-to-end. Đừng quên cấu hình heap đủ lớn để giảm tần suất GC nhưng tránh vượt RAM máy.`
+},
+{
+  id: 'qz-jvm-044', topic: 'jvm',
+  q: 'Khi dịch {{javac Hello.java}} ra {{Hello.class}}, file .class chứa gì và JVM làm gì ở bước "bytecode verification"?',
+  options: [
+    'File .class chứa bytecode (mã trung gian) và metadata; bytecode verification kiểm tra bytecode an toàn/hợp lệ (kiểu, stack map, nhảy lệnh hợp lệ...) trước khi thực thi để bảo vệ JVM khỏi code lỗi hoặc độc hại',
+    'File .class chứa mã máy x86 đã tối ưu nên JVM chạy trực tiếp không cần kiểm tra',
+    'Verification là bước nén file .class để giảm dung lượng trên disk',
+    'Verification chỉ kiểm tra chính tả tên biến trong source code .java'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{.class}} chứa **bytecode** (tập lệnh của JVM, độc lập nền tảng) và constant pool/metadata. Khi class được nạp, JVM thực hiện **verification** (xác minh) để đảm bảo bytecode tuân thủ quy tắc (type safety, không tràn operand stack, jump hợp lệ...), giúp tránh crash hoặc lỗ hổng do bytecode sai.
+
+### Quy trình liên quan (đơn giản hóa)
+1. {{javac}}: source {{.java}} -> bytecode {{.class}}.
+2. **Loading**: ClassLoader nạp bytecode.
+3. **Linking**: gồm verification, preparation (cấp phát static), resolution (liên kết tham chiếu).
+4. **Initialization**: chạy static initializer.
+5. Thực thi bằng interpreter/JIT.
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng (A)**: mô tả đúng nội dung class file và mục đích verification trong an toàn/thành correctness.
+- **Sai (B)**: bytecode không phải mã máy native của CPU cụ thể; mã máy native có thể được JIT tạo lúc runtime.
+- **Sai (C)**: verification không phải nén; nén là việc khác (ví dụ jar/zip).
+- **Sai (D)**: source .java không còn trong .class như mã nguồn để kiểm tra chính tả; verification làm việc trên bytecode.
+
+> Senior tip: lỗi {{VerifyError}} thường gặp khi class được biên dịch/biến đổi không tương thích (instrumentation, mismatch version thư viện). Hiểu bytecode/verification giúp debug lỗi class loading khó và các vấn đề khi dùng agent APM/bytecode weaving.`
+},
+{
+  id: 'qz-jvm-045', topic: 'jvm',
+  q: 'Service Java 17 trong container đôi khi bị Linux OOM Killer giết (exit code 137) nhưng trong log ứng dụng không thấy {{OutOfMemoryError}} của JVM. Tình huống nào giải thích hợp lý nhất?',
+  options: [
+    'Tiến trình vượt memory limit của container do bộ nhớ ngoài heap (native memory: thread stacks, direct buffers, metaspace, JNI...) tăng; kernel OOM Killer kết thúc process trước khi JVM kịp ném OutOfMemoryError trong heap',
+    'JVM luôn ném OutOfMemoryError trước, nên exit 137 chắc chắn do lỗi code logic không liên quan bộ nhớ',
+    'Exit 137 chứng tỏ heap Java đầy và GC log sẽ luôn có Full GC ngay trước đó',
+    'Container limit không áp dụng cho tiến trình Java nên OOM Killer không thể giết JVM'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Exit code 137 thường nghĩa là process bị kill bởi SIGKILL (128+9), hay gặp khi **cgroup OOM** trong container. JVM có thể chết do tổng bộ nhớ (heap + native) vượt limit; nếu vượt ở native, JVM có thể không ném {{OutOfMemoryError}} heap, và kernel có thể giết đột ngột.
+
+### Thuật ngữ
+- **OOM Killer**: cơ chế Linux chọn process để kill khi hệ thống/cgroup hết bộ nhớ.
+- **Direct buffer**: bộ nhớ native cấp phát qua NIO ({{ByteBuffer.allocateDirect}}), nằm ngoài heap.
+- **RSS/working set**: tổng bộ nhớ thực tế process đang dùng (bao gồm heap và native).
+
+### Điều tra gợi ý
+1. Kiểm tra sự kiện container: "OOMKilled".
+2. So sánh {{-Xmx}} + ước lượng non-heap với memory limit.
+3. Xem metrics: heap usage, direct memory, thread count, metaspace.
+4. Bật {{NativeMemoryTracking}} (NMT) ở môi trường phù hợp: {{-XX:NativeMemoryTracking=summary}}.
+
+### Vì sao từng phương án đúng hoặc sai
+- **Đúng (A)**: đúng nguyên nhân phổ biến: native memory vượt limit dẫn đến OOMKilled mà không có OOMError heap trong log Java.
+- **Sai (B)**: JVM không phải lúc nào cũng kịp/log OOMError nếu kernel kill; exit 137 rất hay liên quan bộ nhớ container.
+- **Sai (C)**: heap chưa chắc đầy; có thể heap nhỏ nhưng native lớn. Full GC không phải dấu hiệu bắt buộc.
+- **Sai (D)**: container limit (cgroup) áp dụng cho toàn bộ process trong container, bao gồm JVM.
+
+> Senior tip: quy tắc thực hành: đặt {{-Xmx}} đủ nhỏ để chừa "headroom" cho non-heap (thường 25-40% limit tùy số thread, direct buffer, thư viện native). Giám sát {{container_memory_working_set_bytes}} và tỷ lệ OOMKilled. Tránh leak direct buffer (Netty, NIO) và giới hạn thread/connection pool.`
+}
 );
