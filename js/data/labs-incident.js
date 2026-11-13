@@ -3914,4 +3914,357 @@ Thêm kiểm thử xác định: fake provider luôn trả 529 thì một reques
   ],
   tags: ['llm', 'provider-overload', 'http-529', 'retry', 'backoff', 'budget', 'rate-limit', 'observability']
 },
+{
+  id: 'lab-incident-031',
+  category: 'incident',
+  title: 'Consumer Kafka lag tăng vọt sau deploy: xử lý chậm vượt max.poll.interval.ms, group rebalance liên tục',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Sàn **ShopVN** có service **order-consumer** (Spring Boot 3.2, spring-kafka 3.1) đọc topic **orders.created** trên Kafka 3.6 (3 broker, 12 partition). Topic là kênh message của Kafka. Partition là đoạn nhỏ của topic dùng để nhiều consumer đọc song song; trong cùng một consumer group (nhóm consumer cùng mục đích), mỗi partition chỉ thuộc một consumer tại một thời điểm. Triển khai 6 pod × concurrency 2 (số luồng đọc trên mỗi pod) = 12 consumer, khớp đúng 12 partition. Broker là máy chủ lưu và truyền message của Kafka. Bình thường mỗi bản ghi (một sự kiện đơn hàng) xử lý khoảng 80 ms, lag (số message còn trong topic chưa được đọc xong) gần bằng 0.
+
+**Triệu chứng:** Ngày 05/11/2026, sau khi deploy phiên bản v2.3 lúc 10:00 (phiên bản mới thêm bước gọi API khuyến mãi bên ngoài, đồng bộ, ngay bên trong listener Kafka — thành phần lắng nghe message), lag tăng liên tục. Đến 14:30 lag đạt hơn **600.000 message**. Dashboard cho thấy consumer vẫn chạy, pod không restart, CPU thấp. Một bạn đề xuất tăng lên 12 pod.
+
+**Dữ liệu thu thập:** Hai lần chạy kafka-consumer-groups.sh (công cụ kiểm tra nhóm consumer của Kafka) cách nhau 30 phút, log của một pod, metric và cấu hình consumer.`,
+  artifacts: [
+    {
+      name: 'kafka-consumer-groups.txt',
+      lang: 'text',
+      content: `$ date; kafka-consumer-groups.sh --bootstrap-server kafka-1:9092 --describe --group order-consumer
+Thu Nov  5 14:00:05 +07 2026
+
+Warning: Consumer group 'order-consumer' is rebalancing.
+
+GROUP           TOPIC         PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG             CONSUMER-ID     HOST            CLIENT-ID
+order-consumer  orders.created  0          7180013         7230013         50000           -               -               -
+order-consumer  orders.created  1          7230532         7280532         50000           -               -               -
+order-consumer  orders.created  2          7259034         7309034         50000           -               -               -
+order-consumer  orders.created  3          7310284         7360284         50000           -               -               -
+order-consumer  orders.created  4          7376021         7426021         50000           -               -               -
+order-consumer  orders.created  5          7349896         7399896         50000           -               -               -
+order-consumer  orders.created  6          7344138         7394138         50000           -               -               -
+order-consumer  orders.created  7          7373778         7423778         50000           -               -               -
+order-consumer  orders.created  8          7401560         7451560         50000           -               -               -
+order-consumer  orders.created  9          7318583         7368583         50000           -               -               -
+order-consumer  orders.created  10         7269338         7319338         50000           -               -               -
+order-consumer  orders.created  11         7303898         7353898         50000           -               -               -
+
+$ date; kafka-consumer-groups.sh --bootstrap-server kafka-1:9092 --describe --group order-consumer
+Thu Nov  5 14:30:07 +07 2026
+
+Warning: Consumer group 'order-consumer' is rebalancing.
+
+GROUP           TOPIC         PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG             CONSUMER-ID     HOST            CLIENT-ID
+order-consumer  orders.created  0          7180013         7248013         68000           -               -               -
+order-consumer  orders.created  1          7230532         7298532         68000           -               -               -
+order-consumer  orders.created  2          7259034         7327034         68000           -               -               -
+order-consumer  orders.created  3          7310284         7378284         68000           -               -               -
+order-consumer  orders.created  4          7376021         7444021         68000           -               -               -
+order-consumer  orders.created  5          7349896         7417896         68000           -               -               -
+order-consumer  orders.created  6          7344138         7412138         68000           -               -               -
+order-consumer  orders.created  7          7373778         7441778         68000           -               -               -
+order-consumer  orders.created  8          7401560         7469560         68000           -               -               -
+order-consumer  orders.created  9          7318583         7386583         68000           -               -               -
+order-consumer  orders.created  10         7269338         7337338         68000           -               -               -
+order-consumer  orders.created  11         7303898         7371898         68000           -               -               -
+
+$ kafka-consumer-groups.sh --bootstrap-server kafka-1:9092 --describe --group order-consumer --state
+GROUP                     COORDINATOR (ID)          ASSIGNMENT-STRATEGY  STATE                #MEMBERS
+order-consumer            kafka-2:9092 (2)          range                PreparingRebalance   12`
+    },
+    {
+      name: 'order-consumer-a7x9.log',
+      lang: 'text',
+      content: `2026-11-05T14:00:02.118+07:00  INFO 1 --- [order-consumer] [ntainer#0-0-C-1] v.s.order.OrderConsumer           : batch start partition=orders.created-0 records=500 firstOffset=7180013
+2026-11-05T14:00:03.618+07:00  INFO 1 --- [order-consumer] [ntainer#0-0-C-1] v.s.order.PromotionClient         : enrich orderId=ORD-261105-0871233 -> 200 OK (1498 ms)
+2026-11-05T14:00:05.119+07:00  INFO 1 --- [order-consumer] [ntainer#0-0-C-1] v.s.order.PromotionClient         : enrich orderId=ORD-261105-0871234 -> 200 OK (1502 ms)
+... (500 bản ghi, mỗi bản ghi gọi API khuyến mãi khoảng 1.5 giây) ...
+2026-11-05T14:05:02.130+07:00  WARN 1 --- [order-consumer] [ order-consumer] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-order-consumer-3, groupId=order-consumer] consumer poll timeout has expired. This means the time between subsequent calls to poll() was longer than the configured max.poll.interval.ms, which typically implies that the poll loop is spending too much time processing messages. You can address this either by increasing max.poll.interval.ms or by reducing the maximum size of batches returned in poll() with max.poll.records.
+2026-11-05T14:05:02.131+07:00  INFO 1 --- [order-consumer] [ order-consumer] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-order-consumer-3-6f2a9c1e-0d4b-4e8a-b1f7-3c5d9e2a7b10, groupId=order-consumer] Member consumer-order-consumer-3-6f2a9c1e-0d4b-4e8a-b1f7-3c5d9e2a7b10 sending LeaveGroup request to coordinator kafka-2:9092 (id: 2147483645 rack: null) due to consumer poll timeout has expired.
+2026-11-05T14:05:52.412+07:00  INFO 1 --- [order-consumer] [ntainer#0-0-C-1] v.s.order.OrderConsumer           : batch done partition=orders.created-0 records=500 took 750294 ms
+2026-11-05T14:05:52.420+07:00 ERROR 1 --- [order-consumer] [ntainer#0-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : Consumer exception
+org.apache.kafka.clients.consumer.CommitFailedException: Offset commit cannot be completed since the consumer is not part of an active group for auto partition assignment; it is likely that the consumer was kicked out of the group.
+	at org.apache.kafka.clients.consumer.internals.ConsumerCoordinator.sendOffsetCommitRequest(ConsumerCoordinator.java:1351)
+	...
+2026-11-05T14:05:52.468+07:00  INFO 1 --- [order-consumer] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-order-consumer-3, groupId=order-consumer] Giving away all assigned partitions as lost since generation/memberID has been reset, indicating that the consumer is in old state or no longer part of the group
+2026-11-05T14:05:52.469+07:00  INFO 1 --- [order-consumer] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-order-consumer-3, groupId=order-consumer] Lost previously assigned partitions orders.created-0
+2026-11-05T14:05:52.470+07:00  INFO 1 --- [order-consumer] [ntainer#0-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : order-consumer: partitions lost: [orders.created-0]
+2026-11-05T14:05:52.471+07:00  INFO 1 --- [order-consumer] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-order-consumer-3, groupId=order-consumer] (Re-)joining group
+2026-11-05T14:05:55.903+07:00  INFO 1 --- [order-consumer] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-order-consumer-3-a81e4b07-5c2d-4f19-8e6a-0b3d7c9f1e24, groupId=order-consumer] Successfully joined group with generation Generation{generationId=1874, memberId=consumer-order-consumer-3-a81e4b07-5c2d-4f19-8e6a-0b3d7c9f1e24, protocol=range}
+2026-11-05T14:05:55.917+07:00  INFO 1 --- [order-consumer] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-order-consumer-3-a81e4b07-5c2d-4f19-8e6a-0b3d7c9f1e24, groupId=order-consumer] Adding newly assigned partitions: orders.created-0
+2026-11-05T14:05:55.931+07:00  INFO 1 --- [order-consumer] [ntainer#0-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : order-consumer: partitions assigned: [orders.created-0]
+2026-11-05T14:05:56.012+07:00  INFO 1 --- [order-consumer] [ntainer#0-0-C-1] v.s.order.OrderConsumer           : batch start partition=orders.created-0 records=500 firstOffset=7180013
+2026-11-05T14:05:56.719+07:00  INFO 1 --- [order-consumer] [ntainer#0-0-C-1] v.s.order.PromotionClient         : enrich orderId=ORD-261105-0869012 -> 200 OK (1507 ms)`
+    },
+    {
+      name: 'metrics-and-config.txt',
+      lang: 'text',
+      content: `# lag = sum(kafka_consumergroup_lag{consumergroup="order-consumer"})
+# committed/s = sum(rate(kafka_consumergroup_current_offset{consumergroup="order-consumer"}[5m]))
+# tbp_max = max(kafka_consumer_time_between_poll_max) (khoảng thời gian giữa hai lần poll, ms, Micrometer KafkaClientMetrics)
+# rebal/h = sum(increase(kafka_consumer_coordinator_rebalance_total[1h])) (số lần rebalance mỗi giờ)
+
+time    in_msg/s  committed/s  lag      rebal/h  tbp_max
+13:30   119.0     119.0        1,200    0        91,000
+14:00   121.0     0.0          600,000  44       751,234
+14:30   119.0     0.0          816,000  46       752,100
+
+# application.yml (order-consumer)
+spring:
+  kafka:
+    bootstrap-servers: kafka-1:9092,kafka-2:9092,kafka-3:9092
+    consumer:
+      group-id: order-consumer
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      # max-poll-records: không đặt -> mặc định 500 record mỗi lần poll
+      properties:
+        partition.assignment.strategy: org.apache.kafka.clients.consumer.RangeAssignor
+        # max.poll.interval.ms: không đặt -> mặc định 300000 ms (5 phút)
+    listener:
+      concurrency: 2
+      ack-mode: batch            # commit offset sau khi xử lý xong TOÀN BỘ record của một lần poll()
+
+// OrderConsumer.java
+@KafkaListener(topics = "orders.created")
+public void onEvent(List<OrderEvent> events) {
+    for (OrderEvent e : events) {
+        promotionClient.enrich(e);   // gọi API bên ngoài, đồng bộ, khoảng 1.5 giây mỗi bản ghi
+        orderRepository.save(e.toOrder());
+    }
+}`
+    }
+  ],
+  questions: [
+    'Vì sao lag tăng đúng bằng tốc độ message đến, trong khi consumer vẫn chạy và không pod restart nào?',
+    'Giải thích chuỗi cơ chế: max.poll.records, max.poll.interval.ms, ack-mode batch, rebalance của Kafka. Vì sao heartbeat vẫn chạy nhưng consumer vẫn bị đá khỏi group?',
+    'Tăng lên 12 pod có giúp không? Đề xuất gỡ ngay, sửa dài hạn và alert cần có.'
+  ],
+  hints: [
+    'So sánh CURRENT-OFFSET của cùng partition ở hai lần describe (ví dụ orders.created-0 ở 7180013). Rồi nhìn metric committed/s.',
+    'Mỗi lần poll() trả tối đa 500 record, mỗi record gọi API bên ngoài khoảng 1.5 giây. Một batch mất bao lâu so với max.poll.interval.ms mặc định 300.000 ms? Với ack-mode batch, offset được commit lúc nào?',
+    'Topic có 12 partition. Consumer thứ 13 trở đi làm gì? Và nếu mỗi batch vẫn mất hơn 300 giây thì thêm consumer có giúp commit được không?'
+  ],
+  answer: `**Tóm tắt:** Consumer group rơi vào vòng lặp rebalance không có tiến trình (livelock: trạng thái chạy liên tục nhưng không tiến bước công việc). Mỗi lần poll() trả 500 record, mỗi record gọi API khuyến mãi bên ngoài đồng bộ khoảng 1.5 giây, nên một batch mất khoảng 750 giây, vượt max.poll.interval.ms mặc định 300 giây. Consumer bị coordinator (thành phần Kafka phân công partition và theo dõi thành viên) đánh là chết trước khi kịp commit, vì ack-mode batch chỉ commit sau khi xong toàn bộ batch. Partition được giao cho consumer khác, consumer đó bắt đầu lại từ offset cũ. Offset không nhích, nên lag tăng bằng đúng tốc độ message đến (khoảng 120 message/giây).
+
+### Nguyên nhân gốc
+
+Bốn yếu tố cộng lại:
+
+**1. Deploy thêm xử lý chậm vào listener.** Phiên bản v2.3 gọi API khuyến mãi bên ngoài cho mỗi bản ghi, khoảng 1.5 giây mỗi bản ghi, ngay trong luồng xử lý của listener Kafka.
+
+**2. max.poll.records = 500 (mặc định).** Mỗi lần poll() trả tối đa 500 record, nên một batch mất 500 × 1.5 ≈ 750 giây.
+
+**3. max.poll.interval.ms = 300.000 ms (mặc định, 5 phút).** Đây là thời gian tối đa giữa hai lần gọi poll(). Nếu listener không gọi poll() kịp, coordinator coi consumer đã chết và yêu cầu consumer rời nhóm. Đây chính là thông điệp consumer poll timeout has expired trong log.max.poll.interval.ms kiểm tra **thread xử lý**: nếu thread xử lý không gọi poll() trong 300 giây, Kafka coi như thread bị treo.
+
+**4. ack-mode batch:** Spring Kafka chỉ commit offset (ghi vị trí đã xử lý lên Kafka để không đọc lại) sau khi xử lý xong **toàn bộ** record của một lần poll(). Batch chưa xong trong 300 giây thì không bao giờ commit.
+
+Kết quả: consumer liên tục bị đá khỏi group, partition được giao cho consumer mới, consumer mới bắt đầu lại từ offset đã commit (cũ). Offset đứng yên, lag tăng theo tốc độ message đến. Heartbeat (tín hiệu báo đến coordinator rằng consumer vẫn sống) vẫn được gửi bởi thread nền nên session.timeout.ms (giới hạn thời gian không nhận heartbeat trước khi coi consumer chết) không hết, nhưng max.poll.interval.ms đã hết — chính vì vậy consumer vẫn bị đá ngay cả khi heartbeat chuẩn.
+
+### Dẫn chứng
+
+- Hai lần describe: CURRENT-OFFSET của cùng partition (ví dụ orders.created-0 ở 7180013) đứng yên ở 14:00 và 14:30, LOG-END-OFFSET tăng. Tổng lag tăng từ 600.000 lên 816.000, tức 216.000 trong 1.800 giây, khoảng **120 message/giây**, khớp in_msg/s. Metric committed/s = 0.0 sau khoảng 10:15.
+- Log: batch bắt đầu 14:00:02.118, thread coordinator báo consumer poll timeout has expired lúc **14:05:02.130**, đúng 300 giây sau. Listener vẫn tiếp tục xử lý đến batch done ... took 750294 ms lúc 14:05:52. CommitFailedException ... the consumer was kicked out of the group, sau đó partitions lost: [orders.created-0]. Sau khi rejoin, consumer nhận orders.created-0 và bắt đầu từ offset 7180013 — đúng bằng CURRENT-OFFSET đang đứng yên trong describe. Vòng lặp lại tiếp tục.
+- tbp_max khoảng 751.000–752.000 ms, vượt 300.000 ms. Describe luôn báo is rebalancing, state PreparingRebalance.
+- Nhiễu: health UP, CPU thấp, không pod restart. Consumer "sống" nhưng không làm được việc có ích.
+
+### Vì sao tăng pod không giúp
+
+Topic có 12 partition, nên tối đa 12 consumer có việc làm. 6 pod × 2 = 12 consumer đã dùng hết partition. Thêm pod chỉ tạo consumer ngồi đợi, đồng thời mỗi thành viên mới vào hoặc ra là một lần rebalance: toàn bộ group dừng đọc cho đến khi chia xong partition (RangeAssignor, chiến lược mặc định, chia partition theo dải liên tục). Quan trọng hơn: mỗi batch vẫn mất 750 giây, nên vẫn không commit được.
+
+### Cách sửa
+
+**Gỡ ngay (cấu hình, rolling restart):**
+
+~~~yaml
+spring:
+  kafka:
+    consumer:
+      max-poll-records: 20               # 20 x 1.5 giay = 30 giay moi batch, du thua xa so voi 300 giay
+      properties:
+        max.poll.interval.ms: 600000     # them bien an toan khi ben ngoai cham chinh bat thuong
+~~~
+
+Sau khi doi, offset se bat dau nich. Khoang 500 ban ghi dau tien moi partition van phai goi lai API (moi loi goi khoang 1.5 giay); co the tam bo qua neu consumer tu luu ma don hang da xu ly thanh cong.
+
+**Dai han:**
+
+- **Tai xu ly ra khoi thread listener:** consumer chi doc message va day vao hang doi noi bo (vi du Queue/Channel co gioi han), worker rieng goi API va ghi DB. poll() thi duoc goi lien tuc, khong bi vuot interval.
+- **Hoac xu ly song song theo ma don hang:** cung ma don hang thi tuan tu, ma khac thi song song trong mot partition, van giu thu tu theo tung don hang.
+- **Commit thuan xuyen hon:** doi ack-mode sang RECORD hoac COUNT/TIME de offset nhich nhanh, giam luong viec phai lam lai khi mat partition.
+- **CooperativeStickyAssignor:** rebalance tang dan, chi partition can di chuyen bi thu hoi, cac consumer van con van doc.
+- **Static membership** (group.instance.id = ten pod): rolling restart khong gay rebalance neu pod quay lai trong session.timeout.ms.
+- **Thiet ke so partition theo cong suat:** voi 1.5 giay moi message va 120 message/giay, can xu ly song song khoang 180 luong neu xu ly tuan tu, nen phai dung xu ly theo lo hoac song song theo ma don hang.
+
+### Phong ngu va alert
+
+- Alert khi lag chia cho toc do den vuot 60 giay (thoi gian cho cua hang doi, khong chi so message).
+- committed/s = 0 trong 5 phut van co message den: dau hieu chinh xac nhat cua livelock.
+- tbp_max vuot 70% max.poll.interval.ms.
+- So rebalance/gio lon hon 0 khi khong co deploy.
+- Ty le goi API ben ngoai that bai/cham: neu cao bat thuong nghia la listener dang xu ly lai.
+
+> Senior tip: Voi consumer goi he thong ben ngoai, toi luon tinh truoc max.poll.records nhan p99 latency cua ben ngoai trong truong hop xau nhat va giu duoi khoang mot nua max.poll.interval.ms. Thong diep consumer poll timeout has expired trong log nen duoc coi la su co, khong phai warning. Khong bao gab tra loi "lag cao" bang cach them pod truoc khi kiem tra so partition va xem offset co nich hay khong.`,
+  rubric: [
+    'Chỉ ra livelock: CURRENT-OFFSET dung yen giua hai lan describe (vi du orders.created-0 o 7180013), committed/s = 0, lag tang khoang 120 message/giay bang toc do den.',
+    'Giai thich co che: 500 record x khoang 1.5 giay = 750 giay vuot max.poll.interval.ms 300 giay, consumer tu roi group (log poll timeout), CommitFailedException vi ack-mode batch chi commit sau ca batch, partition bat dau lai tu offset cu.',
+    'Phan biet session.timeout.ms (thread nen heartbeat, van chay) voi max.poll.interval.ms (thread xu ly poll, het han), va nuot tac dong cua rebalance voi RangeAssignor.',
+    'Giai thich vi sao them pod khong giup: toi da 12 consumer theo 12 partition, moi batch van lon hon 300 giay.',
+    'De xuat: giam max.poll.records, tang max.poll.interval.ms co can nhac, tai xu ly ra khoi thread listener (hoac song song theo ma don hang), commit thuan xuyen hon, CooperativeStickyAssignor, static membership; alert theo committed rate, time-between-poll, rebalance.'
+  ],
+  tags: ['kafka', 'consumer-lag', 'rebalance', 'max-poll-interval', 'spring-kafka', 'deploy']
+},
+{
+  id: 'lab-incident-032',
+  category: 'incident',
+  title: 'Cache stampede khi key het hang thuc don: CPU DB 100%, hang chuc truy vun giong nhau',
+  level: 'senior',
+  scenario: `**Bối cảnh:** ShopVN co service **report-service** (Spring Boot 3.3) phuc vu trang bao cao doanh thu hom nay cho quan ly. Ket qua duoc cache trong Redis (kho luu tru du lieu dang khoa-gia tri trong RAM, nhanh nhung bo nho han che) voi key **report:revenue:today**, TTL 24 gio (thoi gian song cua du lieu trong cache), het hang chinh xac luc 12:00 moi ngay — dung gio cao diem khi khoang 5.000 request/giay vao trang bao cao. Khi cache miss (khong tim thay du lieu trong cache), service chay mot truy van join 4 bang tren PostgreSQL 15 (co so du lieu quan li ma mo), khoang 420 ms khi DB rong.
+
+**Trieu chung:** Luc 12:03 (3 phut sau khi key het hang), CPU DB len 100%, trang bao cao cham tu 150 ms len hon 20 giay, va hit ratio (ty le yeu cau duoc tra ve tu cache) roi tu 99.5% xuong gan 0%. Mot bo de xuan "tang TTL len 7 ngay" va mot bo de xuan khac "them jitter cho TTL" (tron ngau nhien thoi gian het hang).
+
+**Du lieu thu thap:** Metric 10 giay quanh 12:00, Redis MONITOR (lay sample vai giay), log ung dung, pg_stat_activity va ma cau hinh cache.`,
+  artifacts: [
+    {
+      name: 'grafana-12h00.txt',
+      lang: 'text',
+      content: `# hit_ratio = ty le yeu cau duoc tra ve tu cache
+# miss/s    = so lan cache khong co moi giay
+# db_query  = so truy van join 4 bang chay tren PostgreSQL moi giay (delta 10s)
+# tomcat    = tong luong Tomcat ban cua report-service (toi da 20 x 20 pod = 400)
+# hikari    = so ket noi DB dang su dung / dang cho (toi da active 400)
+
+time       req/s  hit_ratio  miss/s  db_query  report_p99  tomcat  hikari(act/pend)  db_cpu
+11:59:50   5,020     99.5%      25       0        150 ms      180          22/0         30%
+12:00:00   5,010     99.5%      25       0        148 ms      178          21/0         31%
+12:00:10   4,750     12.3%    4,166    398       8.2 s     2,940         400/1,680      92%
+12:00:20   3,600      0.0%    3,600    302      15.4 s     4,000         400/3,240      99%
+12:00:30   4,210     45.0%    2,315    248      18.1 s     4,000         400/2,970      99%
+12:00:40   5,840     99.2%      40       38       5.6 s     2,850         312/210      86%
+12:00:50   5,030     99.6%      20       0        165 ms      420          28/0         42%
+12:01:00   5,010     99.5%      25       0        152 ms      182          23/0         32%
+
+# Key report:revenue:today het hang TTL 24 gio dung 12:00:00. Luc 12:00:40 truy van dau tien xong va ghi vao Redis, nhung hang nghin loader da khoi dong truoc do van chay va ghi tiep den 12:00:50.`
+    },
+    {
+      name: 'redis-monitor.txt',
+      lang: 'text',
+      content: `$ redis-cli MONITOR | grep "report:revenue:today"   (lay sample voi giay)
+1792646400.102114 [0 10.42.6.14:51022] "GET" "report:revenue:today"
+1792646400.102131 [0 10.42.7.33:40418] "GET" "report:revenue:today"
+1792646400.102159 [0 10.42.5.90:38710] "GET" "report:revenue:today"
+... (hang chuc nghinh lenh GET cung khoa tra ve nil trong khoang 20 giay sau 12:00:00) ...
+1792646440.118006 [0 10.42.7.33:40418] "SET" "report:revenue:today" "{\"doanh_thu\":4250000000,\"top\":[...]}" "PX" "86400000"
+1792646441.120410 [0 10.42.6.14:51022] "SET" "report:revenue:today" "{\"doanh_thu\":4250000000,\"top\":[...]}" "PX" "86400000"
+... (tong cong 302 lenh SET cung khoa, cung noi dung, tu 12:00:40.118 den 12:00:50.702) ...
+1792646450.702233 [0 10.42.6.21:52944] "SET" "report:revenue:today" "{\"doanh_thu\":4250000000,\"top\":[...]}" "PX" "86400000"`
+    },
+    {
+      name: 'postgres-and-code.txt',
+      lang: 'text',
+      content: `-- pg_stat_activity luc 12:00:20
+shop=# SELECT state, coalesce(wait_event_type,'CPU') AS wait, count(*), left(query, 60) AS q
+   FROM pg_stat_activity WHERE datname = 'shop' GROUP BY 1, 2, 4 ORDER BY 3 DESC LIMIT 4;
+ state  |  wait  | count |                              q
+--------+--------+-------+--------------------------------------------------------------
+ active | CPU    |   341 | SELECT r.product_id, r.revenue, r.rank, p.name FROM report...
+ active | LWLock |    39 | SELECT r.product_id, r.revenue, r.rank, p.name FROM report...
+ active | Lock   |    20 | SELECT r.product_id, r.revenue, r.rank, p.name FROM report...
+ idle   | Client |    40 | COMMIT
+(4 rows)
+
+-- Tong 400 session = gioi han Hikari (20 ket noi/pod x 20 pod), toan bo chay cung mot truy van join 4 bang.
+
+// ===== RevenueReportService.java =====
+@Cacheable(cacheNames = "report", key = "'revenue:' + #day")
+public RevenueReport getToday(long day) {
+    log.debug("cache miss report:revenue:today -> loading");
+    long t0 = System.nanoTime();
+    RevenueReport report = repo.loadTodayRevenue(day);   // join 4 bang, khoang 420 ms khi DB rong
+    log.info("loaded day={} in {} ms", day, (System.nanoTime() - t0) / 1_000_000);
+    return report;
+}
+
+// ===== CacheConfig.java =====
+@Bean
+RedisCacheManager cacheManager(RedisConnectionFactory cf) {
+    RedisCacheConfiguration cfg = RedisCacheConfiguration.defaultCacheConfig()
+            .entryTtl(Duration.ofHours(24))
+            .serializeValuesWith(RedisSerializationContext.SerializationPair
+                    .fromSerializer(new GenericJackson2JsonRedisSerializer()));
+    return RedisCacheManager.builder(cf).cacheDefaults(cfg).enableStatistics().build();
+}`
+    }
+  ],
+  questions: [
+    'Giai thich co che gay dot treo dung phut key het hang. Vi sao CPU DB 100% du chi mot key het hang?',
+    'Moi dot co bao nhieu truy van DB thay lai mot? Du bang chung tu Redis MONITOR va pg_stat_activity. Vi sao hit ratio roi xuong 0%?',
+    'Danh gia hai de xuat "tang TTL len 7 ngay" va "them jitter cho TTL". Ban se sua the nao ngay va dai han?'
+  ],
+  hints: [
+    'Ca trang dung MOT key. @Cacheable mac dinh khong khoa: ai miss thi tu chay truy van, khong gop request.',
+    'Dem lenh GET cung khoa trong MONITOR va so truy van trong pg_stat_activity. Mot dot co hang chuc den hang tram truy van giong nhau chay cung luc.',
+    'Jitter co ich khi nhieu key cung het hang. O day chi mot key hot bi hang nghin request doc dong thoi; can khoa theo khoa, TTL ngau nhien va lam moi truoc khi het hang.'
+  ],
+  answer: `**Tóm tắt:** Đây là cache stampede (còn gọi là dogpile hoặc thundering herd: rất nhiều yêu cầu cùng tấn công một tài nguyên cùng lúc) trên một hot key report:revenue:today (key được truy cập rất nhiều). Khi key hết hạn đúng giờ cao điểm, hàng nghìn request cùng thấy miss, và vì @Cacheable không có khoá, mỗi request tự chạy truy vấn nặng. Hàng chục đến hàng trăm truy vấn giống nhau cùng lúc làm CPU DB 100%, mỗi truy vấn mất 15–20 giây thay vì 420 ms, trang báo cáo chậm hơn 20 giây.
+
+### Nguyên nhân gốc
+
+**1. Một hot key, TTL hết đúng giờ cao điểm.** Mọi request đọc báo cáo đều đi qua key này.
+
+**2. @Cacheable không khoá.** Mấy nghìn request thấy miss cùng lúc, mỗi request tự chạy truy vấn join 4 bảng. Không có cơ chế gộp nhiều request thành một lần nạp.
+
+**3. Thiếu làm mới trước khi hết hạn (refresh-ahead) và khoá theo key.** Cache chỉ là lưới an toàn, không phải cơ chế làm mới chính.
+
+### Dẫn chứng
+
+- **Redis MONITOR:** hàng chục nghìn lệnh GET report:revenue:today trả về nil trong khoảng 20 giây sau 12:00:00, rồi khoảng 302 lệnh SET cùng key với PX 86400000 (TTL 24 giờ) từ 12:00:40 đến 12:00:50. Mỗi lệnh SET cũng đặt lại TTL theo lệnh cuối cùng.
+- **pg_stat_activity:** khoảng 341 + 39 + 20 = 400 session chạy đúng truy vấn join 4 bảng (341 dùng CPU, 39 chờ LWLock - loại chờ nội bộ của PostgreSQL, 20 chờ Lock) — đúng bằng giới hạn Hikari 20 kết nối × 20 pod. Mỗi kết nối idle (không làm gì) vẫn chiếm chỗ, và 400 truy vấn cùng chạy làm truy vấn 420 ms trở thành 15–20 giây vì tranh chấp CPU.
+- **Metric:** hit_ratio 99,5% → 0% lúc 12:00:20, miss/s từ 25 lên 4.166, db_query từ 0 lên 398/s, db_cpu 31% → 99%, report_p99 150 ms → 18,1 giây. Sau khi truy vấn đầu tiên xong và ghi vào Redis lúc 12:00:40, hit_ratio quay lại 99,2%.
+- **Nhiễu:** truy vấn khác (ví dụ xem chi tiết đơn hàng) có cache riêng, không bị ảnh hưởng.
+
+### Danh gia cac de xuat
+
+- **Tang TTL len 7 ngay:** chi lam dot stampede hiem hon (moi 7 ngay mot lan), moi dot van sap 20-30 giay. Du lieu bao cao cung co the cu toi 7 ngay. Khong giai quyet goc.
+- **Them jitter cho TTL:** co ich khi nhieu key cung nap roi cung het hang (vi du job warm-up nap 10.000 bao cao cung luc). O day chi mot key hot bi hang nghin request doc dong thoi, nen jitter khong thay doi gi.
+
+### Cach sua
+
+**Ngan han (deploy trong ngay):**
+
+1. **@Cacheable(sync = true):** trong mot JVM, chi mot thread nap moi key, cac thread con lai cho ket qua. So truy van moi dot giam tu hang tram xuong toi da 20 (moi pod mot), DB chiu duoc. Luu ý: day la khoa trong mot JVM, khong phai khoa phan tan.
+2. **Lam moi truoc khi het hang (refresh-ahead):** job @Scheduled moi 10 phut goi phuong thuc co @CachePut cho bao cao hom nay, TTL van giu 24 gio lam luoi an toan. Trong dieu kien binh thuong, key khong bao giay het hang.
+
+**Dai han:**
+
+- **Stale-while-revalidate (lam moi khi du lieu cu):** luu gia tri kem theo softExpireAt, TTL vat ly dai hon (vi du 7 ngay). Khi qua softExpireAt, mot request nhan khoa phan tan (SET lock:report:revenue:today <ma> NX PX 30000) va lam moi bat dong bo; moi request con lai van tra du lieu cu vai giay. Khong ai phai cho DB.
+- **Cache 2 tang:** Caffeine trong moi pod (refreshAfterWrite 30 giay, expireAfterWrite 4 gio) va Redis lam tang 2. Cach nay cung giam hang nghinh lenh GET/giay vao mot key Redis duy nhat (hot key cung lam qua tai mot shard Redis - mot phan doan cua cum Redis).
+- **Bao ve DB:** truy van trong dung ket noi DB rieng va nho (bulkhead: cach tach tai nguyen de mot tinh khong the ca het tai nguyen cua tinh khac), dat statement_timeout cho truy van doc, de trang bao cao khong ca het DB cua cac tinh khac.
+
+~~~java
+// Stale-while-revalidate don gian (mot JVM)
+CachedValue<RevenueReport> v = cache.get(key);
+if (v != null && v.softExpireAt().isAfter(now)) return v.data();
+if (v != null && lock.tryAcquire("lock:" + key, 10 giay)) {
+    refreshAsync(day);          // mot request lam moi
+    return v.data();            // con lai tra du lieu cu
+}
+return loadWithLockOrWait(day); // chua co gi: khoa va cho ngan
+~~~
+
+### Phong ngu va alert
+
+- Alert khi miss/s cua mot cache tang dot bo (vi du tren 100 lan muc binh thuong) hoac hit ratio duoi 90% trong 30 giay.
+- Alert so lan chay truy van nap cache trong pg_stat_activity vuot ngương moi giay (binh thuong gan 0).
+- Nhan dien mau "loi dung phut key het hang": gan nhu luon la stampede.
+- Load test co tinh huong co yeu xoa hot key (lenh DEL) khi dang chiu tai cao.
+
+> Senior tip: Voi moi key nong (trang chu, bao cao, cau hinh), cau hoi dau tien toi dat ra la: "Khi key nay bi mat vao luc tai cao nhat thi dieu gi xay ra?" Cau tra loi duy chap nhan duoc la "mot tien trinh di nap lai, cac tien trinh con lai van dung du lieu cu". TTL nen la luoi an toan, khong phai co che lam moi chinh. Va hay nho: moi lenh SET se dat lai TTL: nhieu loader cung ghi se lam thoi gian het hang troi di, day la manh lau tot khi doc dashboard.`,
+  rubric: [
+    'Nhận diện cache stampede trên một hot key: key hết hạn, @Cacheable không khoá nên mọi request miss đều tự chạy truy vấn nặng; hàng chục đến hàng trăm truy vấn giống nhau cùng lúc (giới hạn bởi Hikari 20 × 20 pod) làm DB lên 100%.',
+    'Dẫn chứng định lượng: hàng chục nghìn GET cùng key trong MONITOR, khoảng 302 lệnh SET cùng key, pg_stat_activity 400 session cùng truy vấn, hit_ratio 99,5% xuống 0%, miss/s 25 lên 4.166, db_cpu 99%.',
+    'Giải thích vì sao CPU DB 100%: 400 truy vấn join 4 bảng tranh chấp CPU, truy vấn 420 ms trở thành 15–20 giây.',
+    'Phản biện đúng: tăng TTL chỉ làm đợt hiếm hơn và dữ liệu cũ hơn; jitter chỉ giúp khi nhiều key cùng hết hạn, không giúp với một hot key.',
+    'Đề xuất: sync=true (khoá trong một JVM), refresh-ahead hoặc stale-while-revalidate kèm khoá phân tán (SET NX), cache 2 tầng (Caffeine refreshAfterWrite), bulkhead và statement_timeout cho DB; alert theo miss rate và hit_ratio.'
+  ],
+  tags: ['cache-stampede', 'redis', 'hot-key', 'spring-cache', 'postgresql', 'ttl']
+}
 );
