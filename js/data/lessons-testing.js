@@ -3605,4 +3605,646 @@ class TokenCleanupJob {
   related: ['testing-002', 'testing-008', 'testing-010'],
   tags: ['Clock', 'time testing', 'JWT', 'refresh token', 'sliding window', 'rate limiter', 'promotion', 'flash sale', 'scheduled job', 'DST', 'MutableClock'],
 },
+{
+  id: 'lesson-testing-010',
+  track: 'testing',
+  order: 10,
+  title: 'Clock trong test: kiểm soát thời gian để kiểm thử dịch vụ hết hạn token',
+  level: 'mid',
+  minutes: 25,
+  goals: [
+    'Hiểu vì sao gọi thời gian hệ thống trực tiếp ({{Instant.now()}}, {{System.currentTimeMillis()}}) khiến test phụ thuộc thời gian và không ổn định',
+    'Dùng {{java.time.Clock}} (Clock — đồng hồ trừu tượng do JDK cung cấp, có thể thay thế trong test) để tiêm thời gian vào service và kiểm soát mốc hiện tại',
+    'Viết test xác định (deterministic — kết quả giống nhau mỗi lần chạy) cho dịch vụ hết hạn token bằng {{Clock.fixed()}} và {{Clock.offset()}}',
+  ],
+  body: `### Vấn đề: code phụ thuộc thời gian thật khó kiểm thử
+Khi kiểm tra "token đã hết hạn chưa", cách viết tự nhiên là so sánh thời điểm hết hạn với thời gian hiện tại:
+
+~~~java
+// Cách viết phụ thuộc thời gian hệ thống — khó test
+boolean isExpired(Instant expiresAt) {
+    return Instant.now().isAfter(expiresAt); // đọc đồng hồ thật của máy
+}
+~~~
+
+**Vì sao khó test?** Bạn không điều khiển được {{Instant.now()}}. Muốn test trường hợp "token hết hạn sau 10 phút" bạn phải chờ thật 10 phút (không thể chấp nhận), hoặc dùng {{Thread.sleep}} (chậm, flaky — lúc chạy được lúc không do môi trường). Muốn test "đúng tại thời điểm hết hạn" thì gần như không thể canh chính xác.
+
+Thuật ngữ: **flaky test** (test không ổn định) là test có lúc pass lúc fail dù code không đổi, thường do phụ thuộc thời gian thật, mạng, hay thứ tự thực thi.
+
+### Giải pháp: tiêm Clock (dependency injection cho thời gian)
+**Dependency injection** (tiêm phụ thuộc — đưa đối tượng cần dùng vào từ bên ngoài thay vì tự tạo bên trong) áp dụng được cả cho thời gian. JDK cung cấp {{java.time.Clock}} — một lớp trừu tượng đại diện cho "nguồn thời gian hiện tại".
+
+- Trong production: dùng {{Clock.systemUTC()}} hoặc {{Clock.systemDefaultZone()}} để lấy thời gian thật.
+- Trong test: dùng {{Clock.fixed(instant, zone)}} để "đóng băng" thời gian tại một mốc cố định, hoặc {{Clock.offset(base, duration)}} để dịch chuyển tương đối.
+
+~~~java
+import java.time.*;
+
+class TokenService {
+    private final Clock clock;
+    private final Duration ttl; // TTL = Time To Live, thời gian sống của token
+
+    TokenService(Clock clock, Duration ttl) {
+        this.clock = clock;   // tiêm clock từ ngoài vào
+        this.ttl = ttl;
+    }
+
+    // Cấp token: ghi lại thời điểm phát hành theo clock được tiêm
+    Instant issueAt() {
+        return clock.instant();
+    }
+
+    // Tính thời điểm hết hạn = thời điểm phát hành + TTL
+    Instant expiresAt(Instant issuedAt) {
+        return issuedAt.plus(ttl);
+    }
+
+    // Token hết hạn khi "bây giờ" >= thời điểm hết hạn
+    boolean isExpired(Instant issuedAt) {
+        Instant now = clock.instant();              // đọc thời gian từ clock đã tiêm
+        return !now.isBefore(expiresAt(issuedAt));  // hết hạn nếu now >= expiresAt
+    }
+}
+~~~
+
+**Hoạt động thế nào:**
+1. {{Clock.instant()}} trả về {{Instant}} (một mốc thời gian tuyệt đối trên trục thời gian UTC).
+2. {{Clock.fixed(fixedInstant, ZoneOffset.UTC)}} luôn trả về cùng một {{fixedInstant}} dù gọi bao nhiêu lần — thời gian "đứng yên".
+3. {{Clock.offset(baseClock, Duration.ofMinutes(10))}} trả về thời gian của {{baseClock}} cộng thêm 10 phút — giúp mô phỏng "10 phút sau" mà không cần chờ.
+
+### Ví dụ cụ thể: test dịch vụ hết hạn token
+~~~java
+Instant base = Instant.parse("2026-01-01T10:00:00Z");
+Clock atIssue = Clock.fixed(base, ZoneOffset.UTC);
+TokenService svc = new TokenService(atIssue, Duration.ofMinutes(30));
+
+Instant issued = svc.issueAt(); // luôn là 2026-01-01T10:00:00Z
+
+// Tại thời điểm phát hành: chưa hết hạn
+// -> svc.isExpired(issued) == false
+
+// Đúng thời điểm hết hạn (30 phút sau): coi như hết hạn
+Clock atExpiry = Clock.fixed(base.plus(Duration.ofMinutes(30)), ZoneOffset.UTC);
+TokenService svcAtExpiry = new TokenService(atExpiry, Duration.ofMinutes(30));
+// -> svcAtExpiry.isExpired(issued) == true
+
+// Sau 1 giây so với hết hạn: chắc chắn hết hạn
+Clock afterExpiry = Clock.offset(atExpiry, Duration.ofSeconds(1));
+TokenService svcAfter = new TokenService(afterExpiry, Duration.ofMinutes(30));
+// -> svcAfter.isExpired(issued) == true
+~~~
+
+**Vì sao xác định (deterministic)?** Mọi mốc thời gian đều do ta kiểm soát qua clock, không phụ thuộc đồng hồ máy hay tốc độ chạy test. Cùng input luôn cho cùng output.
+
+### Biên (boundary) cần test
+Với logic hết hạn, các biên quan trọng:
+- **Trước hết hạn** (1 giây trước): token còn hợp lệ.
+- **Đúng thời điểm hết hạn**: tùy quy ước nghiệp vụ; thường coi là hết hạn ({{now >= expiresAt}}). Phải thống nhất rõ.
+- **Sau hết hạn** (1 giây sau): token hết hạn.
+
+Nếu dùng {{isAfter}} thay vì {{!isBefore}} (tương đương {{>=}}), bạn sẽ cho phép token dùng được đúng tại giây hết hạn — khác biệt 1 giây nhưng có thể là lỗ hổng bảo mật.
+
+### Lỗi hay gặp
+- **Tạo {{Instant.now()}} bên trong method** thay vì dùng clock đã tiêm: test vẫn phụ thuộc thời gian thật.
+- **Dùng {{new Date()}} / {{System.currentTimeMillis()}}** rải rác: khó thay thế. Nên gom vào một nguồn thời gian (clock) duy nhất.
+- **Quên timezone khi dùng {{Clock.systemDefaultZone()}}**: test chạy trên máy UTC và máy UTC+7 cho kết quả khác nếu code so sánh {{LocalDateTime}}. Ưu tiên {{Instant}} và {{Clock.systemUTC()}} cho logic hết hạn.
+- **So sánh lỏng lẻo**: dùng {{equals}} cho thời điểm hết hạn thay vì {{!isBefore}} khi nghiệp vụ cho phép biên.
+
+> Senior tip: Mọi logic so sánh "bây giờ" với một mốc (hết hạn token, TTL cache, cửa sổ retry, rate limit) đều nên nhận {{Clock}} thay vì gọi {{Instant.now()}} trực tiếp. Đó là khoản đầu tư nhỏ giúp test nhanh, ổn định và kiểm soát được mọi biên thời gian.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "Làm sao test code phụ thuộc thời gian?", "Tại sao không dùng {{Thread.sleep}} trong unit test?", "Clock injection là gì?". Câu trả lời tốt: trích xuất thời gian thành dependency ({{Clock}}), tiêm {{Clock.fixed/offset}} trong test để kiểm soát mốc thời gian, bao phủ các biên (trước/đúng/sau hết hạn). Nêu thêm: trong Spring Boot 3 có thể khai báo {{@Bean Clock clock()}} và tiêm vào service; trong test thay bằng clock cố định.`,
+  exercises: [
+    {
+      title: 'Viết TokenService kiểm tra hết hạn bằng Clock',
+      prompt: `Hoàn thiện class {{TokenService}} dùng {{java.time.Clock}} để kiểm soát thời gian:
+- Constructor nhận {{Clock clock}} và {{Duration ttl}} (TTL = thời gian sống của token).
+- {{issueAt()}}: trả về thời điểm hiện tại theo {{clock}} (thời điểm phát hành token).
+- {{expiresAt(Instant issuedAt)}}: trả về {{issuedAt + ttl}}.
+- {{isExpired(Instant issuedAt)}}: trả về {{true}} nếu token đã hết hạn, tức thời điểm hiện tại {{>= expiresAt(issuedAt)}}. Dùng {{clock.instant()}} để lấy "bây giờ".
+- {{secondsUntilExpiry(Instant issuedAt)}}: trả về số giây còn lại cho đến khi hết hạn. Nếu đã hết hạn (hoặc đúng thời điểm hết hạn) thì trả về {{0}}.
+
+Gợi ý: {{Duration.between(now, exp).getSeconds()}} cho số giây chênh lệch; so sánh {{now.isBefore(expiresAt)}} để kiểm tra còn hạn.`,
+      starter: `import java.time.*;
+
+class TokenService {
+    private final Clock clock;
+    private final Duration ttl;
+
+    TokenService(Clock clock, Duration ttl) {
+        this.clock = clock;
+        this.ttl = ttl;
+    }
+
+    Instant issueAt() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Instant expiresAt(Instant issuedAt) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean isExpired(Instant issuedAt) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long secondsUntilExpiry(Instant issuedAt) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.time.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name);
+    }
+    public static void main(String[] args) {
+        Instant base = Instant.parse("2026-06-01T08:00:00Z");
+        Clock fixed = Clock.fixed(base, ZoneOffset.UTC);
+        TokenService svc = new TokenService(fixed, Duration.ofMinutes(15));
+
+        Instant issued = svc.issueAt();
+        check("issueAt returns clock instant", issued.equals(base));
+        check("expiresAt is issuedAt plus ttl", svc.expiresAt(issued).equals(base.plus(Duration.ofMinutes(15))));
+
+        // Tại thời điểm phát hành: chưa hết hạn
+        check("not expired at issue time", !svc.isExpired(issued));
+        check("secondsUntilExpiry at issue is 900", svc.secondsUntilExpiry(issued) == 900L);
+
+        // 14 phút sau: vẫn còn hạn
+        Clock at14 = Clock.offset(fixed, Duration.ofMinutes(14));
+        TokenService svc14 = new TokenService(at14, Duration.ofMinutes(15));
+        check("not expired 1 minute before", !svc14.isExpired(issued));
+        check("60 seconds left 1 minute before", svc14.secondsUntilExpiry(issued) == 60L);
+
+        // Đúng thời điểm hết hạn (15 phút): hết hạn
+        Clock atExp = Clock.offset(fixed, Duration.ofMinutes(15));
+        TokenService svcExp = new TokenService(atExp, Duration.ofMinutes(15));
+        check("expired exactly at expiry", svcExp.isExpired(issued));
+        check("0 seconds at expiry", svcExp.secondsUntilExpiry(issued) == 0L);
+
+        // 1 giây sau hết hạn: hết hạn
+        Clock after = Clock.offset(fixed, Duration.ofMinutes(15).plusSeconds(1));
+        TokenService svcAfter = new TokenService(after, Duration.ofMinutes(15));
+        check("expired after expiry", svcAfter.isExpired(issued));
+        check("0 seconds after expiry", svcAfter.secondsUntilExpiry(issued) == 0L);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.time.*;
+
+class TokenService {
+    private final Clock clock;
+    private final Duration ttl;
+
+    TokenService(Clock clock, Duration ttl) {
+        this.clock = clock;
+        this.ttl = ttl;
+    }
+
+    Instant issueAt() {
+        return clock.instant();
+    }
+
+    Instant expiresAt(Instant issuedAt) {
+        return issuedAt.plus(ttl);
+    }
+
+    boolean isExpired(Instant issuedAt) {
+        Instant now = clock.instant();
+        // Hết hạn khi now >= expiresAt (tức không còn "trước" thời điểm hết hạn)
+        return !now.isBefore(expiresAt(issuedAt));
+    }
+
+    long secondsUntilExpiry(Instant issuedAt) {
+        Instant now = clock.instant();
+        long seconds = Duration.between(now, expiresAt(issuedAt)).getSeconds();
+        return seconds > 0 ? seconds : 0;
+    }
+}`,
+      hints: [
+        '{{issueAt()}} chỉ cần {{return clock.instant();}} — luôn đọc từ clock đã tiêm, không gọi {{Instant.now()}}.',
+        'Để "đúng tại thời điểm hết hạn" cũng tính là hết hạn, dùng {{!now.isBefore(expiresAt(issuedAt))}} thay vì {{now.isAfter(...)}}.',
+        '{{secondsUntilExpiry}}: tính {{Duration.between(now, expiresAt(issuedAt)).getSeconds()}} rồi trả về {{Math.max(0, seconds)}} hoặc dùng điều kiện if.',
+      ],
+      explain: `Lời giải đọc thời gian hiện tại duy nhất qua {{clock.instant()}} nên hoàn toàn kiểm soát được trong test.
+- {{isExpired}} dùng {{!now.isBefore(expiresAt)}} để bao gồm cả biên "đúng bằng expiresAt" (coi là hết hạn) — đây là quy ước an toàn cho token.
+- {{secondsUntilExpiry}} chặn giá trị âm về 0 khi đã quá hạn, tránh trả về số âm gây hiểu nhầm phía gọi.
+
+Lỗi hay gặp: dùng {{now.isAfter(expiresAt)}} (bỏ sót biên bằng nhau), hoặc gọi {{Instant.now()}} trực tiếp trong method khiến test không còn xác định.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao gọi {{Instant.now()}} trực tiếp trong service làm unit test khó viết?',
+      options: [
+        'Vì {{Instant.now()}} chạy chậm hơn {{Clock.instant()}}',
+        'Vì thời gian thật thay đổi liên tục nên không kiểm soát được mốc "bây giờ" trong test, dẫn đến test phụ thuộc thời gian và có thể không ổn định',
+        'Vì {{Instant.now()}} không hoạt động trên Java 17',
+        'Vì {{Instant}} không so sánh được với nhau',
+      ],
+      answer: 1,
+      explain: `{{Instant.now()}} đọc đồng hồ hệ thống thật — mỗi lần gọi có thể trả giá trị khác. Test không thể "đóng băng" hay tua thời gian để kiểm tra biên hết hạn, nên phải dùng {{Thread.sleep}} (chậm, flaky) hoặc chấp nhận test yếu. Tiêm {{Clock}} cho phép thay bằng {{Clock.fixed/offset}} để kiểm soát hoàn toàn.`,
+    },
+    {
+      q: 'Trong test, bạn muốn kiểm tra token "hết hạn đúng sau 30 phút" kể từ mốc phát hành cố định. Cách nào phù hợp nhất?',
+      options: [
+        'Dùng {{Thread.sleep(30 * 60 * 1000)}} rồi kiểm tra',
+        'Dùng {{Clock.offset(Clock.fixed(issuedAt, ZoneOffset.UTC), Duration.ofMinutes(30))}} để mô phỏng thời điểm 30 phút sau',
+        'Gọi {{Instant.now()}} và cộng 30 phút vào kết quả',
+        'Không cần test trường hợp biên này',
+      ],
+      answer: 1,
+      explain: `{{Clock.fixed}} cố định mốc phát hành, {{Clock.offset}} dịch thêm 30 phút — mô phỏng chính xác "30 phút sau" mà không chờ thật. Test chạy tức thì và xác định. {{Thread.sleep}} 30 phút là không khả thi; {{Instant.now()}} không kiểm soát được mốc; biên hết hạn là trường hợp quan trọng cần kiểm thử.`,
+    },
+    {
+      q: 'Nếu nghiệp vụ quy định "token hết hạn khi thời gian hiện tại >= thời điểm hết hạn", biểu thức kiểm tra nào đúng?',
+      options: [
+        '{{now.isAfter(expiresAt)}}',
+        '{{!now.isBefore(expiresAt)}}',
+        '{{now.isBefore(expiresAt)}}',
+        '{{now.equals(expiresAt)}}',
+      ],
+      answer: 1,
+      explain: `{{!now.isBefore(expiresAt)}} tương đương {{now >= expiresAt}}: trả về true khi bằng nhau hoặc sau đó — đúng quy ước. {{now.isAfter(expiresAt)}} bỏ sót trường hợp bằng nhau (biên). {{now.isBefore}} là còn hạn. {{equals}} chỉ đúng tại đúng một khoảnh khắc, bỏ sót mọi thời điểm sau đó.`,
+    },
+  ],
+  related: ['testing-001', 'testing-005'],
+  tags: ['clock', 'time', 'token', 'testing', 'deterministic', 'java-time'],
+},
+{
+  id: 'lesson-testing-011',
+  track: 'testing',
+  order: 11,
+  title: 'Test double: stub, mock, fake và phát hiện N+1 bằng fake repository đếm truy vấn',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Phân biệt stub, mock và fake: mục đích, cách dùng và khi nào chọn loại nào',
+    'Hiểu N+1 query (vấn đề hiệu năng: 1 truy vấn lấy danh sách + N truy vấn phụ theo từng phần tử) và vì sao cần phát hiện sớm bằng test',
+    'Viết fake repository đếm số lần gọi (call count) để test tự phát hiện hành vi N+1 trong service',
+  ],
+  body: `### Test double là gì?
+**Test double** (đối tượng thay thế trong kiểm thử — thuật ngữ mượn từ "stunt double", diễn viên đóng thế) là một đối tượng giả lập thay cho phụ thuộc thật (database, API, hàng đợi...) để cô lập đơn vị cần test. Có nhiều loại, mỗi loại phục vụ mục đích khác nhau:
+
+| Loại | Mục đích | Đặc điểm |
+|---|---|---|
+| **Stub** (giả lập trả về cố định) | Cung cấp dữ liệu đầu vào cố định cho test | Chỉ trả về giá trị cấu hình sẵn, không kiểm tra cách được gọi |
+| **Mock** (đối tượng giả lập có kỳ vọng) | Kiểm tra **tương tác**: method nào được gọi, bao nhiêu lần, với tham số gì | Thường dùng thư viện (Mockito); test fail nếu tương tác không đúng kỳ vọng |
+| **Fake** (cài đặt giả hoạt động được) | Cài đặt đơn giản nhưng **hoạt động đúng logic** (ví dụ lưu trong {{HashMap}} thay vì DB) | Không dùng hạ tầng thật, nhưng có hành vi gần thật; có thể thêm khả năng quan sát (đếm lần gọi) |
+
+**Khi nào chọn gì?**
+- Cần dữ liệu đầu vào đơn giản, không quan tâm tương tác: **stub**.
+- Cần xác minh "service đã gọi gửi email đúng 1 lần": **mock** (verify interaction).
+- Cần logic lưu/truy xuất hoạt động được để test luồng nghiệp vụ, hoặc muốn quan sát hành vi (như số lần truy vấn): **fake**. Fake thường bền hơn mock vì không gắn chặt vào chi tiết lời gọi.
+
+### Vấn đề N+1 query
+**N+1 query** (truy vấn N+1) là một anti-pattern hiệu năng phổ biến khi làm việc với cơ sở dữ liệu (database — nơi lưu trữ dữ liệu):
+
+1. **1 truy vấn** lấy danh sách N phần tử (ví dụ: danh sách đơn hàng).
+2. **N truy vấn** tiếp theo, mỗi truy vấn lấy dữ liệu liên quan cho từng phần tử (ví dụ: lấy tên khách hàng cho từng đơn).
+
+Tổng cộng N+1 truy vấn thay vì 1-2 truy vấn (dùng join hoặc batch fetch). Với 100 đơn hàng là 101 truy vấn; với 10.000 đơn là 10.001 — độ trễ tăng tuyến tính, dễ gây nghẽn trên production.
+
+Ví dụ code gây N+1 (mô phỏng bằng Java thuần):
+
+~~~java
+// Interface repository (lớp truy cập dữ liệu)
+interface OrderRepository {
+    List<String> findAllOrderIds();           // 1 truy vấn: lấy danh sách id
+    String findCustomerNameByOrderId(String orderId); // 1 truy vấn mỗi lần gọi
+    Map<String, String> findCustomerNamesByOrderIds(List<String> ids); // batch: 1 truy vấn
+}
+
+class OrderReportService {
+    private final OrderRepository repo;
+    OrderReportService(OrderRepository repo) { this.repo = repo; }
+
+    // CÁCH XẤU: gọi findCustomerNameByOrderId trong vòng lặp -> N+1
+    List<String> buildReportNaive() {
+        List<String> ids = repo.findAllOrderIds();        // 1 lần
+        List<String> lines = new ArrayList<>();
+        for (String id : ids) {
+            String name = repo.findCustomerNameByOrderId(id); // N lần
+            lines.add(id + ":" + name);
+        }
+        return lines;
+    }
+
+    // CÁCH TỐT: lấy tất cả tên khách hàng trong 1 lần (batch)
+    List<String> buildReportBatch() {
+        List<String> ids = repo.findAllOrderIds();        // 1 lần
+        Map<String, String> names = repo.findCustomerNamesByOrderIds(ids); // 1 lần
+        List<String> lines = new ArrayList<>();
+        for (String id : ids) {
+            lines.add(id + ":" + names.get(id));
+        }
+        return lines;
+    }
+}
+~~~
+
+### Phát hiện N+1 bằng fake repository đếm số lần gọi
+Thay vì kết nối DB thật, ta viết một **fake repository** cài đặt interface bằng bộ nhớ ({{Map}}, {{List}}) và **đếm số lần mỗi method được gọi**. Test sẽ assert rằng tổng số lần truy vấn không vượt quá ngưỡng hợp lý (ví dụ <= 2 cho batch), từ đó phát hiện hồi quy N+1.
+
+~~~java
+class CountingFakeOrderRepository implements OrderRepository {
+    private final List<String> orderIds;
+    private final Map<String, String> orderToCustomer;
+    int findAllCalls = 0;
+    int findByIdCalls = 0;
+    int findBatchCalls = 0;
+
+    CountingFakeOrderRepository(List<String> orderIds, Map<String, String> orderToCustomer) {
+        this.orderIds = new ArrayList<>(orderIds);
+        this.orderToCustomer = new HashMap<>(orderToCustomer);
+    }
+
+    public List<String> findAllOrderIds() {
+        findAllCalls++; // đếm mỗi lần được gọi
+        return new ArrayList<>(orderIds);
+    }
+
+    public String findCustomerNameByOrderId(String orderId) {
+        findByIdCalls++; // nếu gọi trong vòng lặp, số này sẽ = N
+        return orderToCustomer.get(orderId);
+    }
+
+    public Map<String, String> findCustomerNamesByOrderIds(List<String> ids) {
+        findBatchCalls++;
+        Map<String, String> res = new HashMap<>();
+        for (String id : ids) res.put(id, orderToCustomer.get(id));
+        return res;
+    }
+
+    int totalCalls() { return findAllCalls + findByIdCalls + findBatchCalls; }
+}
+~~~
+
+**Vì sao fake chứ không phải mock?** Fake có logic thật (trả đúng dữ liệu từ bộ nhớ) nên service chạy được end-to-end trong unit test; đồng thời ta gắn thêm bộ đếm để quan sát. Mock (ví dụ Mockito {{verify(repo, times(1))}}) cũng đếm được nhưng thường gắn chặt vào chi tiết lời gọi; fake linh hoạt hơn khi muốn kiểm tra "tổng số truy vấn" bất kể phân bổ.
+
+### Ví dụ minh họa số liệu
+- 5 đơn hàng, cách naive: {{findAllCalls=1}}, {{findByIdCalls=5}} -> tổng 6 truy vấn.
+- 5 đơn hàng, cách batch: {{findAllCalls=1}}, {{findBatchCalls=1}} -> tổng 2 truy vấn.
+- 500 đơn hàng, naive thành 501 truy vấn; batch vẫn 2. Chênh lệch này chính là lý do N+1 nguy hiểm khi dữ liệu tăng.
+
+### Lỗi hay gặp
+- **Chỉ test kết quả đúng, không test số lần truy vấn**: code naive vẫn trả đúng dữ liệu nhưng chậm; nếu không assert call count, N+1 lọt qua test.
+- **Dùng mock verify từng method cứng nhắc**: refactor hợp lệ (gộp lời gọi) làm test gãy dù hành vi đúng. Đếm tổng/truy vấn theo "ngân sách" (budget) linh hoạt hơn.
+- **Fake không phản ánh ràng buộc thật**: fake in-memory không có latency, lock, hay lỗi mạng — vẫn cần integration test với DB thật (Testcontainers) cho các kịch bản đó.
+- **Nhầm stub với fake**: stub chỉ trả giá trị cố định cho một lời gọi cụ thể; fake có trạng thái và logic, phục vụ nhiều tương tác.
+
+> Senior tip: Hãy đặt "query budget" trong test cho các service đọc danh sách: assert số lần gọi repository không vượt ngưỡng (ví dụ {{totalCalls <= 2}}). Khi ai đó vô tình đưa lại vòng lặp gọi DB, test sẽ fail ngay trên CI trước khi lên production.
+
+### Liên hệ phỏng vấn
+Câu hỏi hay gặp: "Stub, mock, fake khác nhau thế nào?", "N+1 query là gì, phát hiện và xử lý ra sao?". Trả lời tốt: nêu rõ định nghĩa từng loại test double và mục đích; giải thích N+1 (1 + N truy vấn do lặp), cách phát hiện (log SQL, metric, hoặc fake đếm call trong test), cách khắc phục (batch fetch/join fetch/{{@EntityGraph}} trong JPA, hoặc API batch). Nêu ví dụ đo được: "với 100 bản ghi, naive 101 query, batch 2 query".`,
+  exercises: [
+    {
+      title: 'Fake repository đếm truy vấn để phát hiện N+1',
+      prompt: `Cho interface {{OrderRepository}} và class {{OrderReportService}} với hai cách xây báo cáo:
+- {{buildReportNaive()}}: lấy danh sách id rồi gọi {{findCustomerNameByOrderId}} cho từng id (gây N+1).
+- {{buildReportBatch()}}: lấy danh sách id rồi gọi {{findCustomerNamesByOrderIds}} một lần (tốt).
+
+Hãy hoàn thiện {{CountingFakeOrderRepository}} (fake lưu dữ liệu trong bộ nhớ và đếm số lần gọi) và hoàn thiện {{buildReportBatch()}} trong service:
+- {{findAllOrderIds()}}: tăng {{findAllCalls}}, trả về bản sao danh sách id.
+- {{findCustomerNameByOrderId(orderId)}}: tăng {{findByIdCalls}}, trả về tên khách hàng theo id (hoặc {{null}} nếu không có).
+- {{findCustomerNamesByOrderIds(ids)}}: tăng {{findBatchCalls}}, trả về {{Map<orderId, customerName>}} cho các id được yêu cầu.
+- {{totalCalls()}}: tổng {{findAllCalls + findByIdCalls + findBatchCalls}}.
+
+{{buildReportBatch()}} phải trả về danh sách chuỗi dạng {{orderId + ":" + customerName}} theo đúng thứ tự id, và chỉ dùng {{findAllOrderIds}} + {{findCustomerNamesByOrderIds}} (không gọi {{findCustomerNameByOrderId}}).`,
+      starter: `import java.util.*;
+
+interface OrderRepository {
+    List<String> findAllOrderIds();
+    String findCustomerNameByOrderId(String orderId);
+    Map<String, String> findCustomerNamesByOrderIds(List<String> ids);
+}
+
+class CountingFakeOrderRepository implements OrderRepository {
+    private final List<String> orderIds;
+    private final Map<String, String> orderToCustomer;
+    int findAllCalls = 0;
+    int findByIdCalls = 0;
+    int findBatchCalls = 0;
+
+    CountingFakeOrderRepository(List<String> orderIds, Map<String, String> orderToCustomer) {
+        this.orderIds = new ArrayList<>(orderIds);
+        this.orderToCustomer = new HashMap<>(orderToCustomer);
+    }
+
+    public List<String> findAllOrderIds() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    public String findCustomerNameByOrderId(String orderId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    public Map<String, String> findCustomerNamesByOrderIds(List<String> ids) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int totalCalls() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class OrderReportService {
+    private final OrderRepository repo;
+    OrderReportService(OrderRepository repo) { this.repo = repo; }
+
+    // Cách naive (gây N+1) - đã cho sẵn để so sánh
+    List<String> buildReportNaive() {
+        List<String> ids = repo.findAllOrderIds();
+        List<String> lines = new ArrayList<>();
+        for (String id : ids) {
+            String name = repo.findCustomerNameByOrderId(id);
+            lines.add(id + ":" + name);
+        }
+        return lines;
+    }
+
+    // Cách batch (tốt) - cần hoàn thiện
+    List<String> buildReportBatch() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.util.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name);
+    }
+    static CountingFakeOrderRepository sampleRepo() {
+        List<String> ids = Arrays.asList("O1", "O2", "O3", "O4", "O5");
+        Map<String, String> m = new HashMap<>();
+        m.put("O1", "An"); m.put("O2", "Binh"); m.put("O3", "Chi");
+        m.put("O4", "Dung"); m.put("O5", "Em");
+        return new CountingFakeOrderRepository(ids, m);
+    }
+    public static void main(String[] args) {
+        // Fake trả dữ liệu đúng và đếm
+        CountingFakeOrderRepository repo = sampleRepo();
+        List<String> ids = repo.findAllOrderIds();
+        check("findAll returns ids", ids.size() == 5 && ids.get(0).equals("O1"));
+        check("findAllCalls counted", repo.findAllCalls == 1);
+        String name = repo.findCustomerNameByOrderId("O3");
+        check("findById returns name", "Chi".equals(name));
+        check("findByIdCalls counted", repo.findByIdCalls == 1);
+        Map<String, String> batch = repo.findCustomerNamesByOrderIds(Arrays.asList("O1", "O5"));
+        check("batch returns map", "An".equals(batch.get("O1")) && "Em".equals(batch.get("O5")));
+        check("findBatchCalls counted", repo.findBatchCalls == 1);
+        check("totalCalls correct", repo.totalCalls() == 3);
+
+        // Naive gây N+1: 1 + N truy vấn
+        CountingFakeOrderRepository naiveRepo = sampleRepo();
+        OrderReportService naiveSvc = new OrderReportService(naiveRepo);
+        List<String> naiveReport = naiveSvc.buildReportNaive();
+        check("naive report correct", naiveReport.size() == 5 && naiveReport.get(2).equals("O3:Chi"));
+        check("naive causes N+1 calls", naiveRepo.findAllCalls == 1 && naiveRepo.findByIdCalls == 5 && naiveRepo.totalCalls() == 6);
+
+        // Batch tốt: chỉ 2 truy vấn
+        CountingFakeOrderRepository batchRepo = sampleRepo();
+        OrderReportService batchSvc = new OrderReportService(batchRepo);
+        List<String> batchReport = batchSvc.buildReportBatch();
+        check("batch report correct", batchReport.size() == 5 && batchReport.get(0).equals("O1:An") && batchReport.get(4).equals("O5:Em"));
+        check("batch avoids N+1 total", batchRepo.totalCalls() == 2);
+        check("batch uses batch call not per-id", batchRepo.findByIdCalls == 0 && batchRepo.findBatchCalls == 1 && batchRepo.findAllCalls == 1);
+
+        // Trường hợp rỗng
+        CountingFakeOrderRepository emptyRepo = new CountingFakeOrderRepository(Collections.emptyList(), Collections.emptyMap());
+        OrderReportService emptySvc = new OrderReportService(emptyRepo);
+        List<String> emptyReport = emptySvc.buildReportBatch();
+        check("empty batch report", emptyReport.isEmpty());
+        check("empty still bounded calls", emptyRepo.totalCalls() <= 2);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+
+interface OrderRepository {
+    List<String> findAllOrderIds();
+    String findCustomerNameByOrderId(String orderId);
+    Map<String, String> findCustomerNamesByOrderIds(List<String> ids);
+}
+
+class CountingFakeOrderRepository implements OrderRepository {
+    private final List<String> orderIds;
+    private final Map<String, String> orderToCustomer;
+    int findAllCalls = 0;
+    int findByIdCalls = 0;
+    int findBatchCalls = 0;
+
+    CountingFakeOrderRepository(List<String> orderIds, Map<String, String> orderToCustomer) {
+        this.orderIds = new ArrayList<>(orderIds);
+        this.orderToCustomer = new HashMap<>(orderToCustomer);
+    }
+
+    public List<String> findAllOrderIds() {
+        findAllCalls++;
+        return new ArrayList<>(orderIds);
+    }
+
+    public String findCustomerNameByOrderId(String orderId) {
+        findByIdCalls++;
+        return orderToCustomer.get(orderId);
+    }
+
+    public Map<String, String> findCustomerNamesByOrderIds(List<String> ids) {
+        findBatchCalls++;
+        Map<String, String> res = new HashMap<>();
+        for (String id : ids) {
+            res.put(id, orderToCustomer.get(id));
+        }
+        return res;
+    }
+
+    int totalCalls() {
+        return findAllCalls + findByIdCalls + findBatchCalls;
+    }
+}
+
+class OrderReportService {
+    private final OrderRepository repo;
+    OrderReportService(OrderRepository repo) { this.repo = repo; }
+
+    List<String> buildReportNaive() {
+        List<String> ids = repo.findAllOrderIds();
+        List<String> lines = new ArrayList<>();
+        for (String id : ids) {
+            String name = repo.findCustomerNameByOrderId(id);
+            lines.add(id + ":" + name);
+        }
+        return lines;
+    }
+
+    List<String> buildReportBatch() {
+        List<String> ids = repo.findAllOrderIds();
+        Map<String, String> names = repo.findCustomerNamesByOrderIds(ids);
+        List<String> lines = new ArrayList<>();
+        for (String id : ids) {
+            lines.add(id + ":" + names.get(id));
+        }
+        return lines;
+    }
+}`,
+      hints: [
+        'Trong mỗi method của fake, tăng biến đếm tương ứng ({{findAllCalls++}}...) trước khi trả dữ liệu. Trả về bản sao ({{new ArrayList<>(orderIds)}}) để tránh người gọi sửa dữ liệu nội bộ.',
+        '{{findCustomerNamesByOrderIds}}: duyệt qua {{ids}} và lấy tên từ {{orderToCustomer}} cho từng id, đưa vào {{Map}} kết quả.',
+        '{{buildReportBatch}}: gọi {{findAllOrderIds()}} một lần, rồi {{findCustomerNamesByOrderIds(ids)}} một lần, sau đó ghép chuỗi theo thứ tự {{ids}}. Không gọi {{findCustomerNameByOrderId}} trong vòng lặp.',
+      ],
+      explain: `Fake repository vừa cung cấp dữ liệu đúng (để service tạo báo cáo chính xác) vừa quan sát hành vi (đếm truy vấn).
+- Cách naive: 1 (lấy ids) + N (lấy từng tên) = N+1 truy vấn — đúng kết quả nhưng kém hiệu năng.
+- Cách batch: 1 (lấy ids) + 1 (lấy map tên) = 2 truy vấn — cùng kết quả, số truy vấn không tăng theo N.
+
+Test assert {{findByIdCalls == 0}} và {{totalCalls == 2}} đóng vai trò "query budget", giúp phát hiện sớm hồi quy N+1. Lỗi hay gặp: quên tăng biến đếm, trả về collection nội bộ thay vì bản sao, hoặc trong batch vẫn gọi nhầm {{findCustomerNameByOrderId}}.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Điểm khác biệt chính giữa **fake** và **mock** trong kiểm thử?',
+      options: [
+        'Fake chỉ dùng cho unit test, mock chỉ dùng cho integration test',
+        'Fake là cài đặt đơn giản nhưng hoạt động đúng logic (có thể quan sát được trạng thái), còn mock tập trung kiểm tra tương tác (method được gọi ra sao) theo kỳ vọng',
+        'Fake luôn kết nối database thật, mock thì không',
+        'Không có khác biệt, hai tên gọi cùng một thứ',
+      ],
+      answer: 1,
+      explain: `Fake có hành vi hoạt động (ví dụ in-memory repository lưu/đọc được) nên test dựa trên kết quả và trạng thái; mock đặt kỳ vọng về lời gọi (verify interaction). Fake thường ít gãy khi refactor chi tiết nội bộ, trong khi mock gắn chặt hơn với cách service tương tác với phụ thuộc.`,
+    },
+    {
+      q: 'N+1 query xảy ra khi nào?',
+      options: [
+        'Khi thực hiện 1 truy vấn duy nhất trả về N bản ghi',
+        'Khi thực hiện 1 truy vấn lấy danh sách N phần tử rồi thực hiện thêm N truy vấn để lấy dữ liệu liên quan cho từng phần tử',
+        'Khi database có N+1 bảng',
+        'Khi có N+1 người dùng truy cập cùng lúc',
+      ],
+      answer: 1,
+      explain: `N+1 nghĩa là 1 truy vấn ban đầu cộng N truy vấn phụ (thường trong vòng lặp). Ví dụ: lấy 100 đơn hàng (1) rồi với mỗi đơn lấy khách hàng (100) = 101 truy vấn. Cách khắc phục: dùng batch fetch/join để lấy dữ liệu liên quan trong 1-2 truy vấn.`,
+    },
+    {
+      q: 'Vì sao nên assert số lần gọi repository (query budget) trong test khi đọc danh sách?',
+      options: [
+        'Vì số lần gọi càng nhiều thì code càng đúng',
+        'Vì giúp phát hiện sớm hồi quy N+1: nếu ai đó đổi sang lặp gọi từng phần tử, test sẽ fail do vượt ngân sách truy vấn',
+        'Vì framework bắt buộc phải đếm số lần gọi',
+        'Vì stub không thể trả về dữ liệu đúng nếu không đếm',
+      ],
+      answer: 1,
+      explain: `Test chỉ kiểm tra kết quả có thể pass dù code thực hiện N+1 truy vấn (kết quả vẫn đúng nhưng chậm). Đặt ngưỡng {{totalCalls <= 2}} biến yêu cầu hiệu năng thành điều kiện kiểm thử tự động, ngăn hồi quy khi refactor hoặc thêm tính năng.`,
+    },
+  ],
+  related: ['testing-002', 'testing-003', 'testing-009'],
+  tags: ['test-double', 'stub', 'mock', 'fake', 'n+1', 'repository', 'performance'],
+}
+
 );

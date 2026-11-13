@@ -2090,6 +2090,8 @@ window.DATA_INDEX = {
     {"id":"lesson-testing-007","track":"testing","order":7,"title":"Mutation testing tự viết: biết suite của bạn thật sự bắt được bao nhiêu lỗi","level":"senior","minutes":30},
     {"id":"lesson-testing-008","track":"testing","order":8,"title":"Test double trong thuc te: fake database, stub HTTP client, mock event publisher","level":"senior","minutes":35},
     {"id":"lesson-testing-009","track":"testing","order":9,"title":"Test logic nghiep vu theo thoi gian: token JWT, khuyen mai gioi han, scheduled cleanup","level":"senior","minutes":30},
+    {"id":"lesson-testing-010","track":"testing","order":10,"title":"Clock trong test: kiểm soát thời gian để kiểm thử dịch vụ hết hạn token","level":"mid","minutes":25},
+    {"id":"lesson-testing-011","track":"testing","order":11,"title":"Test double: stub, mock, fake và phát hiện N+1 bằng fake repository đếm truy vấn","level":"senior","minutes":30},
     {"id":"lesson-api-001","track":"api","order":1,"title":"HTTP từ bên trong: method an toàn, status code và header","level":"mid","minutes":25},
     {"id":"lesson-api-002","track":"api","order":2,"title":"Thiết kế REST resource, validation và lỗi chuẩn Problem Details","level":"mid","minutes":30},
     {"id":"lesson-api-003","track":"api","order":3,"title":"Idempotency key cho POST: chống trừ tiền hai lần","level":"senior","minutes":35},
