@@ -3084,6 +3084,419 @@ Ngân hàng ABC xử lý 2.000 giao dịch thẻ/giây (QPS) vào giờ cao đi�
     'Audit log bất biến thực hiện thế nào ở cấp hạ tầng?'
   ],
   tags: ['PCI DSS', 'tokenization', 'HSM', 'microservices', 'audit log']
+},
+{
+  id: 'banking-039',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Chuyển tiền giữa hai tài khoản trong sổ cái kép: làm sao ghi bút toán Nợ/Có sao cho sổ luôn cân bằng, tránh deadlock khi nhiều giao dịch đụng cùng hai tài khoản, và tính số dư hiện tại mà không quét toàn bộ bảng ledger?',
+  a: `**Tóm tắt:** Một giao dịch chuyển tiền trong sổ cái kép phải ghi ít nhất hai bút toán (Nợ tài khoản người gửi, Có tài khoản người nhận) trong một giao dịch cơ sở dữ liệu, và tổng Nợ bằng tổng Có. Khi nhiều giao dịch cùng chạy, phải khóa hai tài khoản theo thứ tự cố định (theo mã tài khoản tăng dần) để tránh deadlock (vòng chờ khóa). Số dư hiện tại không nên tính bằng quét toàn bộ ledger mỗi lần; nên lưu bảng số dư snapshot và cập nhật nó trong cùng giao dịch với bút toán ledger.
+
+### Sổ cái kế toán kép là gì (giải thích từ đầu)
+Sổ cái kế toán kép (double-entry ledger) là sổ ghi mọi biến động tiền dưới dạng bút toán. Mỗi bút toán có hướng: Nợ (Debit) hoặc Có (Credit). Đối với tiền gửi của khách hàng, ghi Nợ ở tài khoản A nghĩa là tiền A bị giảm, ghi Có ở B nghĩa là tiền B tăng. Mỗi giao dịch chuyển 2.000.000 VND từ A sang B tạo hai dòng:
+- Dòng 1: tài khoản A, Nợ 2.000.000 (A bị trừ)
+- Dòng 2: tài khoản B, Có 2.000.000 (B được cộng)
+Tổng Nợ và Tổng Có của giao dịch phải bằng nhau (2.000.000 = 2.000.000). Nếu không bằng, giao dịch bị từ chối. Chỉ được INSERT dòng mới, không UPDATE hay DELETE dòng cũ (append-only), để luôn có lịch sử kiểm toán.
+
+### Giao dịch cơ sở dữ liệu là gì
+Giao dịch DB (transaction) là gói nhiều lệnh SQL thành một đơn vị: hoặc tất cả thành công (COMMIT) hoặc tất cả thất bại (ROLLBACK). Nếu hệ thống gián đoạn giữa lúc ghi hai dòng ledger, toàn bộ bị hủy, không để lại một dòng đơn lẻ gây mất tiền.
+
+~~~seq
+title: Chuyen tien 2 tai khoan trong 1 transaction
+actors: App | Dich vu | LedgerDB
+App -> Dich vu: chuyen 2 trieu tu A sang B
+Dich vu -> LedgerDB: BEGIN
+Dich vu -> LedgerDB: khoa tai khoan co id nho hon truoc
+Dich vu -> LedgerDB: INSERT DEBIT A 2 trieu
+Dich vu -> LedgerDB: INSERT CREDIT B 2 trieu
+Dich vu -> LedgerDB: kiem tra tong No = tong Co
+Dich vu -> LedgerDB: COMMIT
+Dich vu --> App: thanh cong, co ma giao dich
+~~~
+
+### Deadlock la gi va tranh nhu the nao
+Deadlock (vong cho khoa) xay ra khi giao dich G1 khoa tai khoan A roi cho khoa B, cung luc G2 khoa B roi cho A. Hai giao dich cho nhau ma, he thong phai huy mot ben.
+Vi du chuyen hai chieu dong thoi: G1 chuyen A-sang-B (khoa A truoc), G2 chuyen B-sang-A (khoa B truoc) -> deadlock.
+
+Cach sua: luon khoa hai tai khoan theo thu tu ma tai khoan tang dan (id nho truoc, id lon sau). Ca G1 va G2 deu khoa A truoc roi B, nen khong bao gi cho vong tron. Neu co so du lieu phat hien deadlock, no huy mot giao dich va ung dung co the retry sau khoang thoi gian ngan.
+
+### Tinh so du tu ledger: bang snapshot
+Ledger ghi tung but toan, bang co the tram trieu dong. Tinh so du bang SUM tat ca dong cua tai khoan moi lan doc la cham. Gia phap: bang so du snapshot (moi tai khoan mot dong: account_id, balance, version). Khi ghi ledger, cap nhat so du snapshot trong cung giao dich:
+- So du moi = so du cu - 2.000.000 (tai khoan A)
+- So du moi = so du cu + 2.000.000 (tai khoan B)
+Doc so du cho khach tu bang snapshot (nhanh), va hang ngay doc soat tong bang snapshot voi tong ledger de phat hien lech.
+
+### Code Java (yeu tuong)
+~~~java
+public void transfer(String from, String to, BigDecimal amount) {
+    // luon khoa hai tai khoan theo thu tu id tang dan de tranh deadlock
+    String first = from.compareTo(to) < 0 ? from : to;
+    String second = from.compareTo(to) < 0 ? to : from;
+    db.update("BEGIN");
+    db.update("SELECT * FROM accounts WHERE id IN (?, ?) ORDER BY id FOR UPDATE", first, second);
+    String txId = java.util.UUID.randomUUID().toString();
+    db.update("INSERT INTO ledger_entries (tx_id, account_id, direction, amount) VALUES (?, ?, 'DEBIT', ?)", txId, from, amount);
+    db.update("INSERT INTO ledger_entries (tx_id, account_id, direction, amount) VALUES (?, ?, 'CREDIT', ?)", txId, to, amount);
+    db.update("UPDATE accounts SET balance = balance - ? WHERE id = ?", amount, from);
+    db.update("UPDATE accounts SET balance = balance + ? WHERE id = ?", amount, to);
+    db.update("COMMIT");
+}
+~~~
+
+### Loi hay gap
+- Khoa hai tai khoan theo thu tu ngau nhien (G1 khoa A truoc, G2 khoa B truoc) -> deadlock vao gio cao diem.
+- Ghi hai but ledger khong dong mot giao dich DB -> he thong bi giua chuan luot mot dong, so sai, khong phuc hoi duoc.
+- Tinh so du bang SUM toan bo ledger moi lan doc -> cham khi bang lon, khong thoa man thuc thoi.
+- Dung double cho tien -> sai so lam tron, so du le mot dong.
+
+### Vi du doi thuc
+Mot ngan hang xu ly 300.000 chuyen tien/ngay. Buoi chieu, he thong tre nhien nhieu giao dich loi deadlock. Dieu tra thay hai luong chuyen tien nguoc chieu (A->B va B->A) khong sap xep thu tu khoa tai khoan: G1 khoa A xong cho B, G2 khoa B xong cho A. Postgres huy mot giao dich, luong loi deadlock tang len 40 ca/ngay. Cach xu ly: sua code de luon khoa tai khoan co id nho hon truoc, them monitoring lock_wait. Ket qua: deadlock giam ve duoi 5 ca/ngay, giao dich chay lien lap trong gio cao diem.
+
+### Tra loi muon khi pham van
+"Em thiet ke chuyen tien theo so cai kep: moi giao dich ghi hai but toan, No o tai khoan gui va Co o tai khoan nhan, tong No bang tong Co, chi INSERT chu khong sua dong cu. De tranh deadlock khi nhieu giao dich dung cung hai tai khoan, em luon khoa hai hang tai khoan theo thu tu ma tang dan (id nho truoc) trong mot giao dich DB, nen hai giao dich chuyen nguoc chieu khong bao gi cho vong tron. So du hien thi cho khach em lay tu bang so du snapshot, duoc cap nhat trong cung giao dich voi but toan ledger; hang ngay em doc soat tong bang snapshot voi tong ledger de phat hien sai som. Tat ca tien tien dung BigDecimal chu khong phai double."
+
+> Senior tip: Trong pham van, hinh dung so du la mot con so duoc phep (derived) tu so cai, khong nguyen nguyen. Nguyen nguyen la cac but toan khong bao nhi sua. Khi khoa nhieu tai khoan, luot dat quy tuc khoa theo thu tu id tang dan cho he thong toan bo, khong de moi nguoi tu quy et.
+
+  `,
+  follow: [
+    'Neu hai giao dich chuyen A-sang-B va B-sang-A cung luc, tai sao khoa theo thu tu id tang dan vua phong deadlock vua khong giam nhieu hieu nang?',
+    'So du snapshot bi lech so voi ledger thi xu ly ra sao khong dung dung he thong?',
+    'Mot but toan dieu chinh (reversal) khi ghi sai so tien duoc viet nhu the nao tren so cai append-only?'
+  ],
+  tags: ['double-entry', 'ledger', 'deadlock', 'balance snapshot', 'transaction']
+},
+{
+  id: 'banking-040',
+  topic: 'banking',
+  level: 'mid',
+  q: 'Khi doi tac thanh toan khong co API hoi trang thai, giao dich chuyen tien bi timeout lam gi, tien nguoi gui duoc giu bao lau, va khi nao hoan tien?',
+  a: `**Tóm tắt:** Timeout khi đối tác không phản hồi có nghĩa là "chưa biết kết quả", chứ không phải "thất bại". Khi đối tác chỉ gửi file đối soát hằng ngày (không có API hỏi trạng thái realtime), hệ thống phải chuyển giao dịch sang trạng thái chờ, giữ tạm tiền người gửi, không tự động hoàn tiền hay gửi lại lệnh, và chờ file đối soát hôm sau để chốt thành công hay thất bại. Giao dịch vẫn treo quá lâu phải được leo thang cho nhân viên tra soát ngoài hệ thống.
+
+### Thuat ngu: timeout, hold, file doi soat
+- Timeout (het thoi gian cho): gui lenh sang doi tac nhung khong nhan phan hop trong thoi gian cho phep (vi 10 giay).
+- Hold (tam giu tien): tien cua nguoi gui duoc da danh dau khong duoc dung, chua tru het khoi so du (xem chi tiet tai banking-031).
+- File doi soat: file CSV/XML cua doi tac gui hang ngay, chua danh sach giao dich va trang thai cua tung giao dich do dai xu ly.
+
+### May trang thai giao dich khi khong co API tra sot
+~~~text
+[SENT] --nhan SUCCESS--> [THANH_CONG]
+[SENT] --nhan FAILED--> [THAT_BAI] -> hoan tien tam giu
+[SENT] --timeout/mang loi--> [CHO_DOI_FILE] -> tien duoc hold
+[CHO_DOI_FILE] --file doi soat co giao dich, thanh cong--> [THANH_CONG] -> ghi no chinh thuc
+[CHO_DOI_FILE] --file doi soat co giao dich, that bai/khong co--> [CAN_THUC_SOAT] -> nhan vien lien he doi tac
+~~~
+
+Khi timeout, he thong khong bao loi ngay cho khach, ma thong bao "dang xu ly, vui long cho". Tien duoc hold (tam giu) de khach khong chi tieu nhieu lai.
+
+### Khong tu dong hoan ngay va khong tu dong gui lai
+Neu coi timeout = that bai va hoan tien ngay, truong hop doi tac da xu ly thanh cong nhung phan hoi bi mat se tien duoc hoan hai lan. Neu tu dong gui lai lenh moi, cung co nguy trac tien nhan duoc hai lan. Dung: dung lai, cho doi tac co thoi gian xu ly, chu ki file doi soat hinh thuc chot ket qua.
+
+### Giu hold bao lau
+Dat thoi gian toan cuc (TTL) cho hold, vi du 7 ngay. Mot job chay moi 4 gio quet cac giao dich CHO_DOI_FILE qua 48 gio chua co file doi soat: gui canh bao nhan vien, nhan vien lien he doi tac qua email/dien thoai de xac dinh trang thai. Chua co ket qua chinh thuc thi khong tu y hoan, vi tien van co the dang o doi tac.
+
+### Vi du so lieu
+Mot he thong xu ly 5.000 chuyen tien/ngay, khoang 0,5% bi timeout. File doi tac gui den luc 10:00 hom sau. Trong ca nghi, 25 giao dich bi timeout va file cua doi tac bi gui tre mot ngay vi ngay le. He thong hold tien cho 25 giao dich, khach thong bao dang xu ly. File den hom sau: 22 giao dich thanh cong (ghi no), 3 giao dich khong co trong file (lien he doi tac, xac nhan that bai, hoan tien). Ket qua: 0 truong hop tru tien hai lam, 0 tien duoc hold qua 7 ngay.
+
+### Code/SQL (yeu tuong)
+~~~sql
+CREATE TABLE transfer_tx (
+  id            BIGINT PRIMARY KEY,
+  partner_ref   VARCHAR(64) NOT NULL UNIQUE, -- ma tham chieu duy tien gui doi tac
+  status        VARCHAR(20) NOT NULL,        -- SENT / CHO_DOI_FILE / THANH_CONG / THAT_BAI
+  amount        NUMERIC(20,0) NOT NULL,
+  hold_amount   NUMERIC(20,0) NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL
+);
+-- job quet hold qua han
+SELECT id FROM transfer_tx
+WHERE status = 'CHO_DOI_FILE' AND created_at < now() - interval '48 hours';
+~~~
+
+### Loi hay gap
+- Timeout xem that bai va hoan tien ngay -> tien co da o doi tac, hoan hai lan.
+- Cho khach bam gui lai khi giao dich dang treo -> tao giao dich moi, tien nhan duoc hai lan.
+- Khong luu ma tham chieu duy tien -> khong the tra sot khi file den.
+- Hold khong co thoi gian het han -> tien khach bi khoa vinh vien.
+- Tu y hoan tien sau N phut timeout chua xac dinh -> co the hoan nham khi doi tac da xu ly thanh cong.
+
+### Vi du doi thuc
+Mot van phong giao dich xu ly tien cho doanh nghiep. Mot ngay, 200 giao dich bi timeout vi he thong doi tac bi tre. Dev sai lam tu dong hoan tien cho het sau 30 phut, ket qua 15 giao dich thuc da thanh cong o doi tac, tien duoc hoan ve nguoi gui nhung nguoi nhan van du tien -> ngan hang mat 450 trieu, phai goi dien loi moi khach. Cach xu ly: dung hoan tu dong, chuyen sang trang thai cho, kiem file doi soat hom sau, chi hoan khi co xac nhan that bai hoac qua 7 ngay voi phe duyet nhan vien. Ket qua: thang sau khong con tru tien hai lam, khieu nai giam 90%.
+
+### Tra loi muon khi pham van
+"Khi giao dich sang doi tac bi timeout, em khong coi do la that bai — chi la chua biet ket qua. Giao dich chuyen sang trang thai cho, tien nguoi gui duoc giu tam (hold), ung dung thong bao khach "dang xu ly" va khong cho gui lai lenh moi. Vi doi tac chi gui file doi soat hang ngay, khong co API hoi trang thai, he thong cho file hom sau: giao dich trong file va thanh cong thi ghi no chinh thuc, trong file va that bai thi hoan tien tam giu, khong co trong file thi chuyen cho nhan vien lien he doi tac. Moi giao dich chi hoan tien khi co xac nhan that bai hoac sau thoi gian TTL (vi du 7 ngay) ke phe duyet nhan vien. Ma tham chieu duy tien duoc luu de doc soat chinh xac khi file den."
+
+> Senior tip: Tham lam hoan tien ngay khi timeout la sai nghia trong thanh toan. Tien an toan hon trinh tu nhanh: thà ba khach cho it nhat co het hon hoan/ghi trung sai. Luon co mot gioi han thoi gian cho hold va mot nguoi chi tra khi hold qua han.
+
+  `,
+  follow: [
+    'Tai sao khong tu dong hoan tien ngay khi giao dich voi doi tac bi timeout?',
+    'File doi tac gui tre 2 ngay, he thong xu ly giao dich cho nhu the nao?',
+    'Nhan vien duoc phep hoan tien giao dich cho khi nao, can phan duyen khong?'
+  ],
+  tags: ['timeout', 'hold', 'doi tac', 'file doi soat', 'tra sot']
+},
+{
+  id: 'banking-041',
+  topic: 'banking',
+  level: 'mid',
+  q: 'Doi soat cuoi ngay giua he thong core banking va so cai ke toan (GL): tien chua khop nam o tai khoan suspense ra sao, va xu ly khoan chua khop nhu the nao?',
+  a: `**Tóm tắt:** Core banking là sổ giao dịch của khách hàng, còn sổ cái kế toán (GL) là sổ tổng hợp của toàn ngân hàng. Cuối ngày, tổng số tiền trong core phải bằng tổng các bản ghi kế toán tương ứng trong GL. Khoản tiền đã ghi trong core nhưng chưa rõ sổ kế toán nào được đặt vào tài khoản suspense (tài khoản chờ đối soát). Mọi khoản chưa khớp phải được tra soát và điều chỉnh bằng bút toán mới (append-only), có người duyệt (maker-checker), không được sửa trực tiếp số liệu cũ.
+
+### Core banking va GL (giai thich tu dau)
+Core banking luu so du va lich su cua tung tai khoan khach hang. GL (General Ledger - so cai tong hop) luu cac tai khoan ke toan tong hop: tien gui khach hang, tien vay, phi, lai... Moi giao dich trong core (vi du khach A chuyen 2 trieu cho B) tao ra but toan ke toan: ghi co tai khoan tong hop "Tien gui khach hang" tai chi nhanh A, ghi no tai khoan tong hop tai chi nhanh B...
+So du cua khach trong core tong lai phai bang so du tai khoan tong hop trong GL. Neu khac -> co lech can xet xet.
+
+### Tai khoan suspense (tai khoan cho doi soat) la gi
+Suspense la tai khoan tam dung de "chan" tien khi chua biet ghi vao tai khoan chinh thuc dau. Vi du: giao dich chuyen tien giua hai chi nhanh ma chi nhanh nhan ma sai so tai khoan, he thong khong biet ghi tien cho ai -> dua tien vao tai khoan suspense de so du khong bi sai, sau khi tim chu so huu thi chuyen tien ra tai khoan chinh.
+
+### Quy trinh doi soat cuoi ngay noi bo
+1. Lay tong so du tat ca tai khoan khach tu core va tong so du cac tai khoan tong hop tu GL.
+2. Neu hai tong khac nhau -> tien con lai la lech, can tim tung giao dich.
+3. Xet tung giao dich: so sanh ma giao dich, so tien, thoi gian giua core va GL.
+4. Phan loai: khop (MATCH) hoac lech (BREAK).
+5. Xu ly break: tim nguyen nhan (ma tai khoan sai, giao dich tre, tien duoc dua vao suspense...), tao but toan dieu chinh moi, co nguoi duyet (maker-checker), cap nhat trang thai.
+
+### Vi du so lieu
+Core tong 500.000.000.000 VND (500 ty), GL tong 499.800.000.000 VND. Lech 200.000.000 VND (200 trieu). Dieu tra thay 3 giao dich: (1) chuyen 50 trieu giua chi nhanh ma code sai tai khoan -> tien o tai khoan suspense; (2) giao dich 100 trieu bi timeout, core chua ghi nhung GL da ghi (hoac nguoc lai); (3) phi dich vu 50 trieu chua duoc ghi vao GL. Xu ly: chuyen 50 trieu tu suspense ve tai khoan chinh, bo sung but toan phi vao GL, cap nhat giao dich timeout. Sau do tong hai he thong bang nhau.
+
+### Code/SQL (yeu tuong)
+~~~sql
+SELECT 'CORE' AS NGUON, SUM(balance) FROM accounts
+UNION ALL
+SELECT 'GL', SUM(balance) FROM gl_accounts WHERE account_type = 'CUSTOMER_DEPOSIT';
+-- bang suspense
+CREATE TABLE suspense (
+  id            BIGINT PRIMARY KEY,
+  amount        NUMERIC(20,0) NOT NULL,
+  reason        VARCHAR(200),
+  created_at    TIMESTAMPTZ NOT NULL,
+  resolved_at   TIMESTAMPTZ,
+  resolved_by   VARCHAR(50)
+);
+~~~
+
+### Loi hay gap
+- Chi so sanh tong tien -> 2 sai lech xuong voi nhau se bo qua duoc (50 trieu thieu tai A va thua 50 trieu tai B, tong van bang).
+- Dieu chinh so lieu cu thang (UPDATE xoa du lieu cu) -> mat lich su kiem tra, khong biet loi xua dau o dau.
+- Khong quan ly thoi gian cua tien trong suspense -> tien o tai khoan suspense thang nam khong ai xu ly.
+- Dieu chinh khong qua nguoi duyet -> nhan vien co the sua so tien theo muon, nguy ro gian lan.
+
+### Vi du doi thuc
+Mot ngan hang co 200 chi nhanh. Cuoi ngay, bo kiem toan thong bao so core va so GL lech 120.000.000 VND. Dieu tra thay mot giao dich chuyen 120 trieu giua hai chi nhanh ma nhan vien nhap sai ma tai khoan nhan, tien duoc dua vao tai khoan suspense ma khong ai kiem tra trong 3 ngay. Cach xu ly: sua ma tai khoan, tao but toan chuyen tien tu suspense ve tai khoan chinh, nhan vien kiem toan duyet, ghi lich su. Bo sung bo canh bao khi tien trong suspense qua 24 gio chua duoc giai quyet. Ket qua: lech cuoi ngay giam ve 0, tien trong suspense xu ly duoi 24 gio.
+
+### Tra loi muon khi pham van
+"Core banking luu so du tung khach hang, con so cai ke toan (GL) luu tong hop theo tai khoan ke toan. Cuoi ngay em doc soat tong core voi tong GL; neu khac, em xem xet tung giao dich de tim khoan chua khop. Tien chua ro so ke toan nao duoc dat vao tai khoan suspense (tai khoan cho doi soat) thay de de so sai lorspr. Moi khoan chua khop duoc dieu chinh bang but toan moi (append-only), khong sua dong cu, va phai co nguoi khac duyet (maker-checker) truoc khi ghi so. Em cung theo doi tai khoan suspense de tien khong bi treo ma."
+
+> Senior tip: Trong pham van, hinh thanh toan "so cua chung ta phai bang so cua ke toan" la cau chot. Nhat dinh phai xem xet tung giao dich khong chi so tong, vi tong khop van co the che duoc sai lech buo tro nhau. Co loi hay gap la chua quan ly thoi gian cua tien trong tai khoan suspense.
+
+  `,
+  follow: [
+    'Tai sao chi doc soat tong tien khong du, phai kiem tra tung giao dich?',
+    'Tai khoan suspense dung cho truong hop nao, va tien trong suspense qua han xu ly ra sao?',
+    'Dieu chinh so cai sau doi soat phai co nguoi duyet khong, tai sao?'
+  ],
+  tags: ['doi soat', 'core banking', 'GL', 'suspense', 'maker-checker']
+},
+{
+  id: 'banking-042',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Khoan vay tra gop hang thang: lai moi ky lam tron the nao, phan du khi chia cho 12 thang duoc cong vao ky nao, va dung BigDecimal nhu the nao cho dung?',
+  a: `**Tóm tắt:** Khách vay 120 triệu trong 12 tháng, trả mỗi tháng một khoản tiền bằng nhau. Lãi của mỗi tháng được tính và làm tròn đến đơn vị đồng (VND không có phần thập phân). Tổng lãi 12 tháng sau khi làm tròn từng tháng phải bằng chính xác tổng lãi của hợp đồng; phần dư do làm tròn (tiền lẻ đồng) được cộng vào kỳ trả cuối cùng. Tất cả tính toán dùng BigDecimal, không dùng double.
+
+### Vay tra gop la gi
+Khach vay mot so tien lon, tra lai theo nhieu ky (vi du 12 thang). Moi thang tra mot khoan gom phan lai va phan goc. Lai thang duoc tinh tren du no con lai. Vi du: vay 120.000.000 VND, lai 6%/nam, tra 12 thang.
+
+### Lam tro tien voi VND
+VND (dong Viet Nam) khong co phan thap phan trong giao dien dien tu — so tien la so nguyen dong. Phep chia tao ra phan du ("le dong") phai duoc phan bo co muc tieu de tong cac phan bang so tien goc.
+Vi du chia lai 10.000 dong cho 3 thang: 10000/3 = 3333 du 1. Neu moi thang tra 3333, tong 9999 — thieu 1 dong. Cach xu ly: lay thuong va du (divideAndRemainder), cong du 1 dong vao mot thang theo quy tuc co dinh (vi du thang cuoi cung), tong luon bang 10.000.
+
+### Cong thuc tinh lai mot ky
+Lai ky = du no ky truoc x lai suat x so ngay / 365 (quy actual/365). Tinh bang BigDecimal, tinh giu khong lam tro trong gian, chi lam tro o buoc cuoi bang setScale(0, RoundingMode.HALF_UP) vi VND la so nguyen.
+
+### Vi du so lieu
+Vay 120.000.000, lai 6%/nam, 12 thang, tra gop goc bang dan.
+- Thang 1: du no 120.000.000, lai = 120.000.000 x 0.06 x 30/365 = 591.780,82... -> lam tro 591.781 (HALF_UP).
+- Tinh 12 thang, tong lai thuc te sau khi lam tro moi thang co the le 1-2 dong so voi tong tinh theo cong thuc toan bo. Phan du nay duoc dieu chinh o ky cuoi de tong hop dong khong bi sai.
+
+### Code Java (yeu tuong)
+~~~java
+// Tinh lai hang thang tren du no giam dan (declining balance)
+// Tra ve danh sach lai moi ky, da lam tron HALF_UP, tong khop hop dong
+static List<BigDecimal> calculateMonthlyInterest(BigDecimal principal, BigDecimal annualRate, int months, int daysPerMonth) {
+    List<BigDecimal> interestList = new ArrayList<>();
+    BigDecimal remaining = principal;
+    BigDecimal dailyRate = annualRate.divide(BigDecimal.valueOf(365), 10, RoundingMode.HALF_UP);
+    
+    for (int i = 0; i < months; i++) {
+        BigDecimal interest = remaining.multiply(dailyRate).multiply(BigDecimal.valueOf(daysPerMonth));
+        interest = interest.setScale(0, RoundingMode.HALF_UP); // lam tron den dong
+        interestList.add(interest);
+        // Cap nhat du no cho ky sau (chi minh hoa, thuc te goc tra rieng)
+    }
+    return interestList;
 }
 
+// Neu tong lai hop dong da biet truoc va can phan bo (equal principal payment):
+static List<BigDecimal> splitTotalInterest(BigDecimal totalInterest, int months) {
+    BigDecimal[] div = totalInterest.divideAndRemainder(BigDecimal.valueOf(months));
+    BigDecimal base = div[0].setScale(0, RoundingMode.DOWN);
+    int remainder = div[1].setScale(0, RoundingMode.DOWN).intValueExact();
+    List<BigDecimal> result = new ArrayList<>();
+    for (int i = 0; i < months; i++) {
+        result.add(i == months - 1 ? base.add(BigDecimal.valueOf(remainder)) : base);
+    }
+    return result;
+}
+~~~
+
+### RoundingMode chon cai nao
+- HALF_UP: lam tro theo quy tuc toan hoc (0,5 len 1), phu hop hien thi cho khach.
+- HALF_EVEN (banker's rounding): lam tro ve so chan, giam thien lech khi cong don nhieu dong, phu hop khi tinh tong hoa don nhieu dong.
+Chon mot che do, ghi vao tai lieu, dung nhat thuan toan he thong. Phep divide tren BigDecimal bat buoc phai chi dinh scale va RoundingMode, nguoc lai se nem ArithmeticException neu chia khong het.
+
+### Loi hay gap
+- Dung double cho tien -> sai so, tong lai 12 thang khop hop dong.
+- Lam tro moi thang nhung khong cong du vao ky cuoi -> tong lai 12 thang thieu 1-2 dong, hop dong khong khop, kiem toan chap thuan khong duoc.
+- Moi module chon RoundingMode khac nhau -> cung mot khoan vay, hai nguoi tinh ra hai ket qua.
+- Tinh lai ngay dung ngay lich, khong quan ly quy actual/365 -> sai so ngay, sai tien lai.
+
+### Vi du doi thuc
+Mot cong ty tai chinh cho vay tra gop 50.000 hop dong, moi hop dong 12 thang. Thang dau trien khai, bo ke toan bao cao tong lai 12 thang khong khop voi tong tong tien lai tung hop dong, lech tu 1 den 3 dong moi hop dong, tong chung lech hai chuc nghin dong/thang. Nguyen nhan: tinh lai theo double va lam tro moi thang khong cong phan du. Dev sua: dung BigDecimal, tien toan bo gia tri tu String, lam tro mot lan o buoc cuoi, phan bo phan du vao ky cuoi, them unit test cho cac truong hop (chia het, du 1, du 2, so tien lon). Ket qua: tong lai 12 thang luon khop hop dong, bao cao lai lo cuoi thang duoc kiem toan chap nhan.
+
+### Tra loi muon khi pham van
+"Khoan vay tra gop 12 thang, em tinh lai moi thang bang BigDecimal khoi tao tu String, khong dung double. Lai ky = so du no ky truoc x lai suat x so ngay thuc / 365, lam tro mot lan o buoc cuoi bang setScale(0, HALF_UP) vi VND la so nguyen dong. Tong lai 12 ky sau khi lam tro tung ky phai bang tong lai hop dong; phan du do lam tro (tien le dong) duoc cong vao ky tra cuoi cung theo quy tuc co dinh va ghi ro. Em chon mot che do lam tro (HALF_UP cho hien thi, HALF_EVEN neu can giam thien lech cong don) va ap dung nhat thuan toan he thong, ke unit test cac truong hop chia het va co phan du."
+
+> Senior tip: O phan du (tien le dong) la cau an dat trong kiem toan: 1 dong cung phai duoc bo sinh va co quy tuc co dinh. Hinh dong "cong vao ky cuoi" de tot truoc, nhung quy tuc phai duoc xac dinh voi ke toan truoc khi code.
+
+  `,
+  follow: [
+    'Tai sao VND khong co phan thap phan va dieu do anh huong the nao den code?',
+    'Phan du do lam tro duoc cong vao ky tra cuoi hay phan bo deu, chon cai nao va tai sao?',
+    'Hai lap trien vien tinh cung mot khoan vay ra hai con so khac nhau, nguyen nhan thuong la gi?'
+  ],
+  tags: ['tra gop', 'lai', 'BigDecimal', 'lam tron', 'phan du']
+},
+{
+  id: 'banking-043',
+  topic: 'banking',
+  level: 'mid',
+  q: 'Import file giao dich tu doi tac moi sang: file co the duoc gui lai khi loi mang, lam sao import khong tao giao dich trung va khong lam fail toan bo file vi mot dong sai?',
+  a: `**Tóm tắt:** Hang sang, he thong nhan file giao dich tu doi tac (CSV/XML/ISO). File co the duoc gui lai nhieu lan (re-send) khi mang lo. Moi dong trong file co ma tham chieu duy tien cua doi tac. Import phai idempotent: ma tham chieu da xu ly thi bo qua, khong tao giao dich moi. Mot dong sai (so tien sai dinh dang, ma tai khoan khong ton tai) khong duoc lam fail toan bo file — dua vao hang doi loi de nhan vien xu ly, cac dong con lai van nhap binh thuong.
+
+### File giao dich la gi va tai sao gui lai
+File giao dich la danh sach cac giao dich cua doi tac trong mot ngay (vi du Napas gui file dich vu, file the...). Mang loi -> doi tac gui lai cung mot file hoac file moi chua nhung giao dich cu. Neu he thong khong kiem tra trung, nhung giao dich cu duoc nhap hai lam -> tien duoc cong hai lan.
+
+### Ma tham chieu duy tien tren moi dong
+Moi dong trong file co ma tham chieu duy tien (vi du RRN - Retrieval Reference Number trong giao dich the, hoac STAN). He thong luu ma da xu ly trong bang voi rang buoc duy nhat (unique constraint). Truoc khi nhap dong, kiem tra ma da co chua:
+- Da co -> bo qua dong, tra ket qua cu (idempotent).
+- Chua co -> nhap giao dich, luu ma.
+
+~~~sql
+CREATE TABLE imported_tx (
+  partner_ref   VARCHAR(64) NOT NULL,
+  import_date   DATE NOT NULL,
+  amount        NUMERIC(20,0) NOT NULL,
+  status        VARCHAR(20) NOT NULL,
+  PRIMARY KEY (partner_ref, import_date) -- cung mot ma chi duoc nhap mot lan moi ngay
+);
+~~~
+
+### Khong fail toan bo file vi mot dong sai
+Chi dinh nhap theo bo (batch): doc tung dong, kiem tra, neu dong sai (so tien sai, tai khoan khong ton tai, ma bi trung trong cung file) -> ghi vao bang loi voi ly do, tiep tuc dong tiep theo. Cuoi cung bao cao: tong so dong, so dong thanh cong, so dong loi, danh sach ly do. Nhan vien sua dong loi, chay lai chi nhung dong loi (vi ma tham chieu da luu, chay lai khong tao trung).
+
+### Xu ly file bi gui trung
+Hai file giao nhau hoac cung file gui hai lan: ma tham chieu trung o bang imported_tx -> tat ca dong trung bi bo qua, chi nhap dong moi. Tinh ket qua cua file lan hai giong lan dau (khong tao giao dich them).
+
+### Code yeu tuong (Java)
+~~~java
+void importFile(List<TransactionRow> rows, LocalDate date) {
+    for (TransactionRow row : rows) {
+        try {
+            // insertIfNew va ledgerService.post phai trong CUNG mot transaction
+            txTemplate.execute(status -> {
+                boolean inserted = txRepo.insertIfNew(row.partnerRef(), date, row.amount(), row.status());
+                if (!inserted) return false; // da xu ly, bo qua
+                ledgerService.post(row); // ghi so cai
+                return true;
+            });
+        } catch (Exception e) {
+            errorQueue.add(row, e.getMessage()); // dong loi, khong dung toan bo file
+        }
+    }
+}
+~~~
+
+### Loi hay gap
+- Kiem tra trung trong bo nho dem (cache) thay DB -> may khoi dong lai mat cache, nhap trung.
+- Mot dong sai dung toan bo file -> nhieu giao dich hop le khong duoc nhap.
+- Khong co ma tham chieu duy tien -> khong biet dong nao da xu ly, chi duoc so sanh so tien + thoi gian (bi gap nhieu giao dich cung so tien).
+- Nhap dong loi nhung khong ghi ly do -> nhan vien khong biet sua sao.
+
+### Vi du doi thuc
+Mot ngan hang nhan file Napas khoang 100.000 dong/ngay. Mot ngay, loi mang dich vu gui lai file cu ke file moi. Dev cu nhap thuan tuan khong kiem tra trung -> 2.300 giao dich duoc nhap hai lam, tong tien dup 12 ty VND, phai hoan ve thu cong. Dev sua: them bang imported_tx voi ma tham chieu duy tien, kiem tra truoc khi nhap, dong loi dua vao hang doi loi bo loc, chay lai chi dong loi. Ket qua: ngay sau khong con giao dich nhap trung, nhap file xu ly duoc 100.000 dong it nhat 99.5% thanh cong, loi duoc xu ly cung ngay.
+
+### Tra loi muon khi pham van
+"File giao dich tu doi tac moi sang co the bi gui lai khi mang lo, nen import phai chan trung. Em dung ma tham chieu duy tien cua doi tac (RRN/STAN) lam khoa chinh cung ngay import, kiem tra truoc khi nhap: ma da co thi bo qua, chua co thi moi ghi so. Import theo dong, khong dung mot transaction cho toan bo file: dong sai (sai dinh dang, tai khoan khong ton tai) dua vao hang doi loi voi ly do chi tiet, cac dong hop le van nhap binh thuong. Sau khi xong, bao cao tong dong, dong thanh cong, dong loi. Nhan vien chi can sua va nhap lai hang doi loi — vi ma da luu, nhap lai khong tao giao dich trung."
+
+> Senior tip: Nhap file doi tac la noi xay ra loi "nhap trung" quan trong nhat boi vi file den thang nam va nguoi gui tu dong gui lai khi loi. Rang buoc duy nhat o DB, khong chi trong bo nho dem, va mot transaction cho moi dong (khong fail toan bo file) la hai chot.
+
+  `,
+  follow: [
+    'Neu cung mot file duoc gui lai hai lan cung luc (hai luong), he thong xu ly nhu the nao?',
+    'Mot dong trong file bi loi, cac dong sau van duoc nhap hay dung toan bo file? Tai sao?',
+    'Ma tham chieu duy tien duoc tao o dau, va neu doi tac khong co ma nao thi lam gi?'
+  ],
+  tags: ['import file', 'idempotency', 'doi tac', 'batch', 'hang doi loi']
+},
+{
+  id: 'banking-044',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Tham chieu du lieu (lai suat, phi, cut-off) co hieu luc theo ngay: lam sao luu phien ban, ai duoc thay doi, va audit trail khong sua duoc?',
+  a: `**Tóm tắt:** Lãi suất tiền gửi, phí dịch vụ, giờ cut-off thay đổi theo thời gian. Không được lưu một giá trị duy nhất và ghi đè khi thay đổi, vì sổ cũ phải tính theo lãi suất ngày mở sổ. Cần lưu phiên bản (version) kèm ngày bắt đầu và ngày hết hiệu lực (effective_from, effective_to). Mọi thay đổi phải ghi ai, khi nào, từ giá trị gì sang giá trị gì vào audit trail append-only, không được sửa hoặc xóa. Chỉ người có quyền (ví dụ quản lý sản phẩm) mới được thay đổi, và mỗi bản ghi mới phải được duyệt trước khi có hiệu lực.
+
+### Tham chieu du lieu la gi
+Tham chieu du lieu la du lieu quy tuc duoc nhieu giao dich su dung: bang lai suat theo tung ky han, bang phi, ngay gio cut-off, danh sach ngay nghi. Khac voi giao dich (moi khach mot dong), tham chieu du lieu it dong nhanh anh huong den tram trieu giao dich.
+
+### Luu phien ban theo ngay
+~~~text
+bang deposit_rate:
+rate_id, product_code, term_months, rate_value, effective_from, effective_to, created_by, created_at, approved_by, approved_at, status
+Vi du: KY12M, 12 thang, 7.5%, tu 01/01/2024 den 30/09/2024, approved
+Vi du: KY12M, 12 thang, 4.2%, tu 01/10/2024 den null (co luc), approved
+~~~
+
+Job tinh lai hang ngay (accrual) join theo dieu kieu effective_from <= ngay_tinh < effective_to. Nhu va so mo nam 2023 van duoc tinh theo 7.5% neu bang co phien ban cu, khong bi ghi de boi lai suat moi.
+
+### Ai duoc thay doi va duyet truoc
+- Nhan vien san pham tao yeu thay doi lai suat/phi (trang thai PENDING).
+- Nhan vien khac (checker) duyet hoac tu choi (maker-checker, xem banking-026).
+- Sau duyet, ban ghi moi co effective_from tu ngay xac dinh, ban ghi cu co effective_to = ngay truoc ngay effect moi. Khong bao nhi sua ban ghi cu (append-only).
+
+### Audit trail khong sua duoc
+Moi thay doi luu: nguoi thuc hien, thoi gian, hanh dong (TAO/THAY_DOI/DUYET), loai tai nguyen (bang lai suat), id ban ghi, gia tri truoc (before_json), gia tri sau (after_json), dia chi IP, ket luat (OK/DENY). Luu o kho an toan (WORM, ghi mot lan doc nhieu), nguoi quan tri he thong cung khong xoa duoc.
+
+### Loi hay gap
+- Luu mot gia tri duy tinh, ghi de khi thay doi -> so cu tinh sai lai, khieu nai hang tram khach.
+- Cho bo phan vien IT sua truc tiep du lieu trong DB, khong qua duyet -> khong co nguoi tra chiu, nguy ro gian lan.
+- Audit log thieu truoc/sau -> khong biet xem chinh sua gi.
+- Ghi de ban ghi cu thay vi tao ban ghi moi -> so duoc nhap thanh thang cu khong phuc hoi duoc.
+
+### Vi du doi thuc
+Mot ngan hang quan ly 2 trieu so tiet kiem. Quy 1/2023 lai ky 12 thang 7.5%/nam. Quy 3, thi truong giam, ngan hang giam bieu lau xuong 4.2%. 15.000 khach goi khieu nai "lai bi giam giua chuan". Dieu tra thay bang deposit_rate chi co mot dong cho moi ki han, khong co cot effective_from/effective_to. Cap nhat lai moi ghi de lai cu, job tinh lai hang ngay dung lai 4.2% cho ca so mo dau nam 2023. Nguyen nhan khong phien ban lai suat theo ngay. Cach xu ly: chay script bo dam chenh lech lai cho 15.000 so (tinh lai theo 7.5% tu ngay mo den hom nay), them cot rate_version voi effective_from/effective_to, job accrual va tat toan join theo dieu kieu ngay. Ket qua: khong con khieu nai lai sai, kiem toan chap nhan bao cao lai theo phien ban dung.
+
+### Tra loi muon khi pham van
+"Em luu tham chieu du lieu (lai suat, phi, cut-off) theo phien ban: moi ban ghi co effective_from va effective_to, va trang thai duyet. Job tinh lai hang ngay chi ap dung ban ghi co ngay tinh nam trong khoang [effective_from, effective_to), nen so cu van duoc tinh theo lai suat ky luc mo so, khong bi anh huong bieu lau moi. Moi thay doi phai qua yeu cau maker-checker, luu audit trail append-only (ai, luc nao, truoc/sau, IP, ket qua), khong sua/xoa ban ghi cu. Thuc te: mot ngan hang giam lai suat thang 9 nhung bi ghi de, 15.000 khach khieu nai; sau khi bo dam va them phien ban, khong con khieu nai nao."
+
+> Senior tip: Cau tro cho lead la tach ba luc: lai suat theo hop dich (khong doi, luu theo ngay mo), bieu lau thi truong (thay doi), chinh sach lam tro/phi (cau hinh). Khoi dong pham van bang cau "toi se luu phien ban va khoa cong thuc theo ngay" — trong ngan hang thuc su, nhung dieu nay duoc xay dung sau cac su co khieu nai lai.
+
+  `,
+  follow: [
+    'Hai ban ghi lai suat co khoang thoi gian dung nhau (overlap) he thong xu ly the nao?',
+    'Job tinh lai can biet bang phien ban nao de ap dung, va kiem tra duoc tai cau lenh SQL nhat the nao?',
+    'Nhan vien IT sua truc tiep bang lai suat trong DB, he thong phat hien duoc khong?'
+  ],
+  tags: ['tham chieu du lieu', 'phien ban', 'lai suat', 'audit trail', 'effective-dated']
+},
 );
