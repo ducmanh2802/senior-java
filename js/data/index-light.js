@@ -2255,6 +2255,8 @@ window.DATA_INDEX = {
     {"id":"sd-036","title":"Nền tảng feature flag dùng chung cho nhiều ứng dụng"},
     {"id":"sd-037","title":"Dịch vụ chat AI cho 1 triệu người dùng (streaming SSE, lịch sử hội thoại, quota, chọn model theo tải)"},
     {"id":"sd-038","title":"Ghép chuyến xe công nghệ (vị trí tài xế thời gian thực, geohash/H3, ghép cặp, giá động, trạng thái chuyến)"},
+    {"id":"sd-039","title":"Trợ lý AI chăm sóc khách hàng cho ngân hàng"},
+    {"id":"sd-040","title":"Hệ thống gợi ý sản phẩm cho thương mại điện tử"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},
