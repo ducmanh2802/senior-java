@@ -6325,4 +6325,488 @@ Tôi sẽ phân loại PDF có text, scan và tài liệu nhiều bảng trướ
   ],
   tags: ['agent', 'pdf', 'ocr', 'multimodal']
 },
+{
+  id: 'ai-095',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Ứng dụng LLM production cần các lớp gateway, prompt store, retrieval, guardrail, eval và observability. Mỗi lớp giải quyết vấn đề gì và chúng kết nối với nhau như thế nào trong một lời gọi của người dùng?',
+  a: `**Tóm tắt:** Một ứng dụng LLM production không chỉ là một lời gọi tới model; nó là hệ thống gồm nhiều lớp, mỗi lớp chịu trách nhiệm một việc: gateway kiểm soát điểm vào, prompt store quản lý lệnh hệ thống, retrieval lấy ngữ cảnh liên quan, guardrail kiểm tra đầu vào/đầu ra, eval đo chất lượng và observability ghi lại điều xảy ra. Mục tiêu là câu trả lời đúng, an toàn, có thể theo dõi và điều khiển chi phí.
+
+### Luồng một lời gọi
+~~~seq
+title: Luồng một yêu cầu chat qua hệ thống LLM production
+actors: Người dùng | Gateway | Ứng dụng | Prompt store | LLM provider | Observability
+Người dùng -> Ứng dụng: Gửi câu hỏi trong hội thoại
+Ứng dụng -> Gateway: Kiểm tra quyền và hạn mức
+Gateway --> Ứng dụng: Cho phép hoặc từ chối
+Ứng dụng -> Prompt store: Lấy lệnh hệ thống phiên bản hiện tại
+Prompt store --> Ứng dụng: Trả về nội dung prompt
+Ứng dụng -> Ứng dụng: Truy xuất đoạn tài liệu liên quan (RAG)
+Ứng dụng -> LLM provider: Gửi prompt kèm ngữ cảnh
+LLM provider --> Ứng dụng: Trả về câu trả lời
+Ứng dụng -> Observability: Ghi trace, số token, chi phí
+Ứng dụng --> Người dùng: Trả kết quả kèm trích dẫn
+~~~
+
+### Gateway — cánh cổng vào
+Gateway là thành phần tiếp nhận tất cả yêu cầu trước khi gửi vào hệ thống chính, giống lễ tân tiếp nhận tại cửa công ty.
+- **Cái gì**: lớp xác thực người dùng, kiểm soát quyền truy cập, giới hạn số request (rate limit) và định tuyến yêu cầu.
+- **Vì sao cần**: nếu không có gateway, một khách hàng có thể gửi hàng nghìn request mỗi giây, làm đòn đầu toàn hệ thống hoặc gây chi phí vọt.
+- **Hoạt động thế nào**: yêu cầu đến → gateway kiểm tra danh sách cho phép và quota → nếu vượt thì trả lỗi ngay, không gọi LLM → nếu đủ điều kiện thì chuyển tiếp.
+- **Ví dụ**: mỗi người dùng được gọi tối đa 60 LLM request mỗi phút; request thứ 61 nhận "vui lòng thử lại sau" trước khi tốn một đồng.
+
+### Prompt store — kho lưu trữ lệnh hệ thống
+Prompt là câu nói hướng dẫn model, ví dụ "Bạn là trợ lý tư vấn, chỉ trả lời dựa trên tài liệu được cung cấp".
+- **Cái gì**: nơi lưu trữ các bản prompt theo phiên bản, thay vì ghi cứng trong code.
+- **Vì sao cần**: nếu prompt nằm rải rác trong code, mỗi lần chỉnh sửa phải build lại ứng dụng và không thể khôi phục bản cũ khi bản mới gây sai.
+- **Hoạt động thế nào**: mỗi bản prompt có mã phiên bản (ví dụ prompt-v3) và ngày bắt đầu áp dụng. Ứng dụng hỏi prompt store về bản hiện tại, nhận nội dung kèm mã phiên bản, và ghi mã này vào nhật ký mỗi lần gọi để tái hiện sau này.
+- Code minh họa (tên class chỉ để giải thích ý tưởng):
+~~~java
+String version = promptStore.phienBanHienTai("tro-chat-khach-hang"); // ví dụ "v3"
+String noiDung = promptStore.noiDung(version); // nội dung câu lệnh hệ thống
+trace.log("prompt.version", version); // ghi mã phiên bản để tái hiện sau này
+~~~
+
+### Retrieval — lấy ngữ cảnh liên quan (RAG)
+Retrieval là bước tìm các đoạn tài liệu liên quan tới câu hỏi trước khi đưa cho model (xem chi tiết câu ai-003 về RAG).
+- **Cái gì**: hệ thống nhúng câu hỏi và tài liệu thành vector (danh sách số biểu diễn ý nghĩa), rồi tìm đoạn gần nhất trong vector store.
+- **Vì sao cần**: model không nhớ tất cả tài liệu công ty và có thể trả lời lỗi thời; retrieval đưa chỉ phần cần thiết vào prompt, kèm trích dẫn nguồn.
+- **Hoạt động thế nào**: câu hỏi → vector → tìm top-k đoạn trong pgvector/OpenSearch → ghép vào prompt với yêu cầu trích dẫn.
+
+### Guardrail — hàng rào bảo vệ
+Guardrail là quy tắc kiểm tra đầu vào và đầu ra, giống đồ bảo hộ trên máy chạy.
+- **Cái gì**: kiểm tra từ censor, độ dài, định dạng JSON, trích dẫn phải thật, và không thực hiện hành động nguy hiểm mà không xác nhận.
+- **Vì sao cần**: model có thể bị lừa (prompt injection) hoặc trả dữ liệu nhạy cảm; guardrail lọc trước khi gây hại.
+- **Hoạt động thế nào**: trước khi gửi model, quét prompt tìm lệnh "bỏ qua mọi hướng dẫn"; sau khi nhận câu trả lời, kiểm tra schema và trích dẫn.
+
+### Eval — đo chất lượng có dữ liệu
+Eval là đánh giá có con số, không dựa vào cảm giác vài lần thử.
+- **Cái gì**: chạy bộ câu hỏi mẫu có đáp án chuẩn (golden set), tính tỷ lệ đúng, tỷ lệ JSON hợp lệ, độ trễ và chi phí.
+- **Vì sao cần**: mỗi thay đổi prompt hoặc model có thể làm chất lượng tụt mà không ai biết nếu không có eval.
+- **Hoạt động thế nào**: sau mỗi thay đổi, chạy eval trên bộ mẫu, so sánh với mức trước (baseline) và chỉ tiếp nhận nếu không giảm quá ngưỡng cho phép.
+
+### Observability — quan sát hệ thống
+Observability là khả năng hiểu hệ thống đang làm gì qua dữ liệu (nhật ký, chỉ số, truy vết).
+- **Cái gì**: ghi mã truy vết (trace ID) xuyên suốt yêu cầu, thời gian từng bước, số token và chi phí.
+- **Vì sao cần**: khi khách hàng phàn nàn "trả lời sai", cần biết việc sai do đoạn tài liệu lấy ra hay do model.
+- **Hoạt động thế nào**: mỗi yêu cầu nhận một trace ID; các lớp gateway, retrieval, guardrail, LLM ghi thêm vào cùng trace ID.
+
+### Bảng đánh đổi: tập trung ở gateway versus phân tán
+| Vị trí kiểm soát | Lợi ích | Rủi ro |
+|---|---|---|
+| Tất cả ở gateway | Quản lý tập trung, dễ sửa | Gateway có thể trở thành điểm nghẽn |
+| Mỗi service tự kiểm soát | Linh hoạt, không phụ thuộc gateway | Khó thống nhất, dễ bỏ sót một chỗ |
+Khuyến khích: gateway làm rate limit và xác thực, các service còn tự kiểm tra nghiệp vụ của mình.
+
+### Lỗi hay gặp trong production
+- Không có timeout: nhà cung cấp LLM chậm kéo sập toàn bộ yêu cầu.
+- Không ghi mã phiên bản prompt: không tái hiện được câu trả lời cũ.
+- Chỉ đo HTTP 200: hệ thống vui vẻ nhưng câu trả lời toàn sai.
+- Không giới hạn ngữ cảnh: prompt quá dài, chi phí cao và thông tin quan trọng bị chìm ở giữa.
+
+### Ví dụ đời thực
+Hệ thống tư vấn sản phẩm cho 5.000 người dùng. Ban đầu mọi yêu cầu gọi trực tiếp LLM, không có giới hạn. Lúc cao điểm, một người dùng vô tình gửi 800 request mỗi phút do lỗi script, chi phí LLM nhảy từ 3.000.000 đồng lên 25.000.000 đồng một tháng, và khách khác bị chậm. Điều tra qua nhật ký thấy một tài khoản gây ra sự cố. Cách xử lý: thêm gateway với giới hạn 60 request/người/phút, lưu prompt vào prompt store có phiên bản, thêm guardrail kiểm tra trích dẫn, và bật observability ghi token theo khách. Kết quả đo được: chi phí giảm xuống 8.000.000 đồng/tháng (giảm 68 phần trăm), p95 độ trễ từ 12 giây xuống 3 giây, và có thể truy vấn mọi câu trả lời qua trace ID. (Số liệu minh họa, tương tự mô hình và nhà cung cấp.)
+
+### Trả lời mẫu khi phỏng vấn
+"Em chia ứng dụng LLM production thành sáu lớp. Gateway là điểm vào, kiểm tra quyền và giới hạn số yêu cầu của mỗi người để không bị dồn tải. Prompt store lưu các bản lệnh hệ thống theo phiên bản, không ghi cứng trong code. Retrieval lấy đoạn tài liệu liên quan từ vector store và đưa vào ngữ cảnh. Guardrail kiểm tra đầu vào và đầu ra, chặn lệnh độc hại và sai định dạng. Eval chạy bộ câu hỏi chuẩn mỗi khi thay đổi prompt hoặc model. Observability ghi mã truy vết, thời gian, số token và chi phí từng bước. Trong ví dụ thực tế, thêm giới hạn ở gateway giúp giảm chi phí lớn và độ trễ p95 từ mười hai giây xuống ba giây. Mẹo là bắt đầu bằng gateway và observability, sau đó bổ sung từng lớp khác khi cần."
+
+> Senior tip: Bắt đầu bằng gateway (xác thực và giới hạn tần suất) cùng observability (mã truy vết và số token). Hai lớp này rẻ nhưng giải quyết phần lớn sự cố "chi phí vọt" và "không biết sai ở đâu". Prompt store và guardrail bổ sung sau theo mức độ rủi ro của từng tính năng.
+
+`,
+  follow: [
+    'Vì sao cần lưu mã phiên bản prompt cùng mỗi nhật ký gọi LLM?',
+    'Guardrail nên đặt ở đâu: trước khi gửi model, sau khi nhận câu trả lời, hay cả hai?',
+    'Observability giúp điều tra gì khi khách hàng phàn nàn chat bot trả lời sai?'
+  ],
+  tags: ['system design', 'LLM', 'gateway', 'observability', 'RAG', 'eval']
+},
+{
+  id: 'ai-096',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Gọi LLM ngay trong yêu cầu HTTP (gọi đồng bộ) so với đưa vào hàng đợi xử lý sau (job bất đồng bộ): mỗi cách dùng khi nào, và làm sao người dùng vẫn nhận được kết quả cho tác vụ mất vài phút?',
+  a: `**Tóm tắt:** Gọi đồng bộ là ứng dụng đợi LLM trả lời trước khi phản hồi người dùng, phù hợp tác vụ nhanh dưới vài giây. Job bất đồng bộ là ghi yêu cầu vào hàng đợi, người dùng nhận mã theo dõi và được thông báo khi xong, phù hợp tác vụ dài từ vài phút trở lên. Cần chọn phù hợp để tránh treo kết nối và job bị quên.
+
+### Goi dong bo (sync request)
+- **Cái gì**: ung dung gui yeu cau toi LLM va dung thang tren ket noi HTTP, khong phan hoi cho nguoi duoc cho den khi co cau tra loi.
+- **Vì sao can**: nguoi duoc muon nhan cau tra loi ngay trong hop thoai, vi du hoi tin tuc.
+- **Hoat dong the nao**: trinh duyet -> yeu cau HTTP -> server goi LLM -> doi ket qua -> tra phan hoi HTTP. Thong thu co timeout (gioi han thoi gian doi), vi du 30 giay.
+- **Gioi han**: neu LLM mat 40 giay, ket noi HTTP co the bi ngat truoc khi xong; nhieu nguoi goi dong bo cung luc se can nguon ket noi cua server.
+
+### Job bat dong bo (async job)
+- **Cái gì**: server nhan yeu cau, ghi vao hang doi (queue) va tra ma job cho nguoi duoc ngay. Mot nhan vien xu ly (worker) lay tu hang doi, goi LLM, luu ket qua. Nguoi duoc sau do tra ma job hoac nhan thong bao.
+- **Vì sao can**: tac vu nhu tom tat 50 trang hop dong va phan tich 10.000 email mat vay phut, khong the giu ket noi HTTP mo ca luc do.
+- **Hoat dong the nao**: nguoi duoc gui -> server ghi job (trang thai cho xu ly) -> tra ma job ngay -> worker lay job, goi LLM, luu ket qua -> nguoi duoc tra ma job xem ket qua.
+
+### Kafka (hang doi tin nhan)
+Kafka la he thong luu va truyen tin qua hang doi: nhieu ung dung co the ghi va doc cung mot luong tin nhan, dung de noi cac he thong chay doc lap.
+- Hữu ích khi nhiều worker cần xử lý cùng một hàng chờ, hoặc muốn giữ tin nhắn trong một thời gian để xử lý lại sau sự cố.
+- Nếu đội chưa có Kafka, hàng đợi trong cơ sở dữ liệu (dùng câu lệnh SQL lấy và đánh dấu đã xử lý) hoặc Redis cũng đủ cho giai đoạn đầu. Redis là kho lưu dữ liệu trong bộ nhớ, truy cập nhanh để lưu trạng thái tạm và hàng đợi nhỏ.
+
+### Lam nguoi duoc van biet ket qua
+- **Polling (tra cuu)**: ung dung nguoi duoc hoi lai server moi vay giay "job xong chua". Don gian nhung tinh request neu hoi qua nhieu.
+- **Webhook (thong bao ngau chua)**: server gui thong bao den dia chi cua ung dung khac khi xong. Phu hop he thong ngoai nhung can xu ly lai neu thong bao that bai.
+- **WebSocket / Server-Sent Events**: server day ket qua ngay khi co, nguoi duoc khong can hoi lai. Phu hop trang web hien dai.
+
+### Idempotency (khong xu ly trung)
+- **Cái gì**: viec xu ly cung yeu cau nhieu lan cho ket qua giong nhu xu ly mot lan.
+- **Vì sao can**: mang bi giat, worker co the nhan cung mot job hai lan; neu job tao giao dich thi se bi trung.
+- **Hoat dong the nao**: moi job nhan mot ma duy nhat (idempotency key). Worker truoc khi xu ly kiem tra xem ma da duoc xu ly chua; neu da co, bo qua.
+
+### Bang doi doi
+| Tieu chi | Goi dong bo | Job bat dong bo |
+|---|---|---|
+| Thoi gian thich hop | Duoi 30 giay | Tu vay phut tro len |
+| Tra nghiem nguoi duoc | Tra loi ngay | Nhan ma, doi thong bao |
+| Tinh on dinh | Dung bi treo neu LLM cham | Phuc hoi tot sau su co |
+| Van hanh | Dung go loi | Can theo doi hang cho va job loi |
+
+### Loi hay gap
+- Goi tac vu dai dong bo: nguoi duoc thay trang treo, ket noi bi ngat.
+- Khong co timeout: mot LLM cham can ca he thong.
+- Job bo quen: hang cho cong va khong ai xu ly loi.
+- Xu ly trung job: tao giao dich hai lan neu khong co idempotency key.
+- Khong bao loi cho nguoi duoc: job that bai lang lang, khach nghĩ da xong.
+
+### Vi du doi thuc
+He thong tom tat hop dong phap ly cho 200 nguoi duoc moi ngay. Ban dau goi LLM dong bo voi timeout 30 giay; hop dong dai mat 50 giay, 18% yeu cau that bai va nguoi duoc phai gui lai, lam doi so lan goi LLM. Doi chuyen sang job bat dong bo: nguoi duoc nhan ma job, worker xu ly trong trung binh 45 giay, ket qua luu va nguoi duoc tra ma. Sau mot thang: ty le that bai tu 18% xuong duoi 0,5%, so lan goi LLM giam gan mot nua vi khong con gui lai do loi treo. (So lieu minh hoa, tuong tu tai lieu va mo hinh.)
+
+### Trả lời mẫu khi phỏng vấn
+"Em khuyen goi dong bo khi tac vu hoan thanh duoi ba muoi giay va nguoi duoc can tra loi ngay, vi du hoi thoai chat. Voi tac vu dai hon, vi du tom tat tai lieu nhieu trang hoac phan tich hang nghin email, em dua vao hang doi job bat dong bo: server tra ma nhan dang ngay, worker xu ly sau, va nguoi duoc tra ma hoac nhan thong bao qua webhook. Moi job can ma duy nhat de chan xu ly trung khi mang giat. Neu doi chua co he thong hang doi nhu Kafka, co the bat dau bang hang doi trong co so du lieu hoac Redis. Quan trong la luon co timeout, theo doi job loi va bao ket qua ro rang cho nguoi duoc."
+
+> Senior tip: Don chi chon theo cong nghaje. Hay do do dai tac vu thuc the (phan vi p95) va dat gioi han cho; tac vu nao vuot qua gioi han thi chuyen sang job bat dong bo, kèm theo cach nguoi duoc biet ket qua va cach xu ly khi job that bai.
+
+`,
+  follow: [
+    'Khi nao nen dung webhook thay vi de nguoi duoc tra cuu ma job?',
+    'Idempotency key giai quyet van de gi khi worker nhan cung mot job hai lan?',
+    'Ban theo doi job bat dong bo the nao de biet co job bi quen hay that bai lang lang?'
+  ],
+  tags: ['sync', 'async', 'job queue', 'Kafka', 'idempotency']
+},
+{
+  id: 'ai-097',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Nhieu khach hang (tenant) dung cung he thong RAG. Lam sao dam bao du lieu cua khach hang A khong bao gi hien thi cho khach hang B, khi chia sang vector store, cache va ma ung dung?',
+  a: `**Tóm tắt:** Cach ly du lieu tenant nghia la moi khach hang chi thay tai lieu cua minh, khong bao gi doan tai lieu cua khach khac. Trong RAG, cach ly phai duoc ap dung o moi lop: khi nap tai lieu (chunk), khi luu vector, khi truy xuat va khi cache ket qua. Thiet ke sai co the gay ro rui du lieu giua khach hang ma khong ai phat hien ngay.
+
+### Tenant la gi
+Tenant (khach hang thue) la don vi su dung dich vu, moi tenant co du lieu rieng va khong duoc nhin du lieu cua tenant khac. Vi du hai cong ty dung cung ung dung chat bot noi bo; cong ty A khong duoc xem luong nhan vien cua cong ty B.
+
+### Hai cach to chuc vector store
+- **Chi muc rieng cho moi tenant**: moi tenant co mot chi muc vector hoac schema rieng. Cach ly manh, nhan quan ly nhieu chi muc tinh cong va chi phi.
+- **Chi muc chung + ma tenant tren moi doan**: luu tat ca vector trong mot chi muc, moi doan vector kem ma tenant (tenant_id). Khi truy xuat, them dieu kien loc tenant_id truoc khi tim. Tiet kiem hon, nhung phai tin vao co che loc cua he thong vector.
+
+Khuyen khich bat dau bang chi muc chung + ma tenant vi de van hanh, chi chi tach chi muc khi khach hang yeu cau cach ly vat ly hoac quy dinh phap luat bat buot.
+
+### Luu va truy xuat toan an
+- Khi nap tai lieu, gắn tenant_id vao moi doan (chunk) va metadata (ma tai khoan, phong ban, ngay).
+- Khi truy xuat, luon them bo loc tenant_id cua nguoi dang hoi. Khong bao gi de model hay prompt quyet dan quyen truy cap.
+- Vector store co the la PostgreSQL + pgvector, OpenSearch... (xem cau ai-010 ve vector store). Quan trong la kiem tra he thong ban dung co ho tro loc truoc khi tim hay loc sau; loc sau co the bo sot tai lieu.
+
+### Cache phai cach ly theo tenant
+Cache luu lai cau tra loi hoac doan truy xuat de khong goi LLM lai. Neu cache dung key chi theo cau hoi, khach hang A co the nhan cau tra loi tinh tu tai lieu cua khach hang B vi cau hoi giong nhau.
+- Key cache phai bao gom tenant_id (va phien ban tai lieu, quyen truy cap).
+- Hoac khong cache cau tra loi hoan toan, chi cache nhung (embedding) va truy xuat, it ru ro hon.
+
+### Loi hay gap
+- Quen gan tenant_id khi nap tai lieu cu: doan khong co ma chu so huu co the bi lo cho moi tenant.
+- Cache key thieu tenant_id: tra loi cheo giua khach hang.
+- Phan quyen duoc prompt ("chi tra loi tai lieu cua cong ty A"): model co the bi lua, khong phai hang rao bao mat.
+- Khong cap nhat quyen khi nhan vien chuyen phong: tai lieu cu van hien thi.
+- Log luu toan bo cau tra loi co doan tai lieu cua khach khac ma khong kiem tra quyen xem log.
+
+### Vi du doi thuc
+Mot nen tang chat bot phuc vu 30 cong ty, moi cong ty khoang 50.000 doan tai lieu. Ban dau doi dung chi muc chung nhung quen gan tenant_id cho 12.000 doan nap dau tien. Khi kiem tra, thay nguoi dung cua cong ty A co the nhan doan chinh sach luong cua cong ty B trong ngon ngu. Cach xu ly: gan lai tenant_id cho toan bo doan cu, ap bo loc tenant_id truoc moi truy xuat, va doi key cache thanh "tenantId:hash(cau hoi)". Ket qua: khong con truong hop lo cheo trong 500 cau hoi kiem tra, va moi truy xuat chi quet trong khoang 50.000 doan cua chinh tenant thay ca 1,5 trieu doan. (So lieu minh hoa, tuong tu he thong.)
+
+### Trả lời mẫu khi phỏng vấn
+"Em khuyen luu tat ca vector trong mot chi muc chung va gan ma khach hang (tenant_id) vao moi doan, thay vi tao chi muc rieng cho moi khach, vi de van hanh hon. Khi truy xuat, luon them dieu kien loc theo ma khach hang cua nguoi hoi truoc khi tim, va khong bao gi de lenh he thong quyet dan quyen truy cap. Cache luu ket qua phai co ma khach hang trong khoa, neu khong khach A co the nhan cau tra loi tinh tu du lieu cua khach B. Khi nap tai lieu, gan ma khach hang cung ngay va phien ban; khi quyen thay doi, cap nhat hoac danh dau doan cu. Trong vi du thuc them, them bo loc theo khach hang giup moi truy xuat chi quet doan cua chinh khach hang thay ca he thong, va loai bo hoan toan tinh trang lo cheo sau khi sua khoa cache."
+
+> Senior tip: Cach ly du lieu khong the doi sau khi he thong chay. Hay thiet ke khoa cache, metadata doan va quy trinh nap tai lieu kem ma tenant tu ngay dau, va kiem thu bang truong hop "nhan vien khach hang A co tam hoi ve tai lieu cua khach hang B".
+
+`,
+  follow: [
+    'Khac biet giua chi muc rieng va chi muc chung kem ma tenant la gi, chon cai nao khi nao?',
+    'Vi sao khoa cache phai chua ma khach hang, khong chi chua cau hoi?',
+    'Ban kiem thu cach ly du lieu truoc khi ra mat the nao?'
+  ],
+  tags: ['multi-tenant', 'RAG', 'data isolation', 'vector store', 'cache']
+},
+{
+  id: 'ai-098',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Tai lieu trong kho tri thuc (knowledge base) thay doi nhieu lan moi ngay. Lam sao cap nhat chi muc RAG gan thoi gian thuc ma khong xu ly lai toan bo, va sao chac khong tra loi tu tai lieu cu da bi xoa hoac sua?',
+  a: `**Tóm tắt:** Cap nhat gan thoi gian thuc nghia la khi tai lieu duoc them, sua hoac xoa, doan tuong ung trong chi muc vector duoc them, cap nhat hoac xoa trong vay phut, khong cho rebuild toan bo. Can theo doi thay doi, xu ly tang dan (incremental), danh dau doan cu khong con dung va kiem tra khong tra loi tu tai lieu da het han.
+
+### Knowledge base va chi muc la gi
+Knowledge base la bo tai lieu cung cap cho RAG (chinh sach, huong dan, bang gia...). Chi muc la no luu vector (danh sach so bieu dien y nghia) va metadata cua moi doan de tim nhanh (xem cau ai-003 ve RAG).
+
+### Luong cap nhat tang dan
+1. Phat hien thay doi: he thong tai lieu gui thong bao (webhook) hoac ung dung quet dinh ky moi vay phut de tim tai lieu moi, sua hoac xoa.
+2. Chi xu ly doan thay doi: voi tai lieu moi, chia doan va nhung; voi tai lieu sua, xoa toan bo doan cu cua tai lieu do roi nap doan moi; voi tai lieu xoa, xoa toan bo doan lien quan.
+3. Gan phien ban: moi tai lieu co ma phien ban (vi du ngay gio chinh sua cuoi). Đoan trong chi muc luu ma phien ban nay.
+4. Xac nhan hoan tat: chi danh dau tai lieu la "da cap nhat trong chi muc" khi vector da duoc ghi thanh cong.
+
+### Tra anh tra loi tu tai lieu cu
+- Khi truy xuat, chi chap nhan doan co phien ban moi nhat cua tai lieu. Neu chi muc con doan cu do loi, loc theo phien ban truoc khi dua vao ngon ngu.
+- Co khoang thoi gian ton tinh (stale window): trong vay phut sau khi tai lieu sua, he thong co the van tra doan cu. Khuyen khich canh bao nguoi dung "thong tin duoc cap nhat vao luc..." hoac uu tai tai lieu moi.
+- Khi xoa tai lieu, xoa ngay doan trong chi muc; khong de doan mo co (orphan chunk) gay sai.
+
+### Vi du ve ma phien ban va xoa (minh hoa)
+~~~text
+Tai lieu: hoa-don-001, phien ban: 2026-10-01T08:00
+  -> doan 1 (vector + metadata: taiLieuId=hoa-don-001, phienBan=2026-10-01T08:00)
+Tai lieu sua thanh phien ban: 2026-10-02T14:30
+  -> xoa toan bo doan co taiLieuId=hoa-don-001
+  -> nap lai doan moi, phienBan=2026-10-02T14:30
+~~~
+
+### Loi hay gap
+- Chi them moi, khong xoa ban cu: tai lieu het hieu luc van nam trong chi muc va duoc tra loi.
+- Xoa tai lieu o ngoai nhung quet xoa doan trong vector store.
+- Cap nhat batch dem mot lan: trong ngay, nguoi duoc van thay thong tin cu.
+- Kiem tra thanh cong ghi vector: cho rang da cap nhat nhung lan truy xuat sau van dung doan cu.
+- Metadata thieu phien ban: khong the phan biet doan cu va doan moi.
+
+### Vi du doi thuc
+He thong huong dan su dung san pham cho 40.000 tai lieu, moi ngay khoang 1.200 tai lieu duoc them hoac sua. Ban dau doi rebuild toan bo chi muc moi tuan, nen tai lieu sua hom nay moi xuat hien sau bay ngay, va 6% cau tra loi trich doan da bo. Doi chuyen sang cap nhat tang dan moi phut: lang nghe su ki tu he thong tai lieu, chi xu ly doan thay doi, gan phien ban va xoa doan cu khi tai lieu sua. Sau hai tuan: ty le tra loi tu doan cu tu 6% xuong duoi 0,2%, va thoi gian tu khi tai lieu sua den khi tim thay duoi hai phut. (So lieu minh hoa, tuong tu he thong va nha cung cap vector.)
+
+### Trả lời mẫu khi phỏng vấn
+"Em thiet ke cap nhat tang dan thay vi rebuild toan bo moi lan. He thong tai lieu thong bao qua su ki hoac ung dung quet dinh ky, roi chi xu ly doan cua tai lieu moi, sua hoac xoa. Moi doan luu ma phien ban cua tai lieu; khi tai lieu sua, xoa toan bo doan cu cua tai lieu do truoc khi nap doan moi. Khi truy xuat, loc theo phien ban moi nhat de khong dung doan da bo. Co khoang thoi gian ton tinh vay phut, nen em hien thi thoi diem cap nhat gan nhat cho nguoi dung biet. Trong vi du thuc them, chuyen sang cap nhat moi phut giup ty le cau tra loi tu doan cu tu sau phan tram xuong duoi 0,2 phan tram, va thoi gian phan anh sua doi duoi hai phut."
+
+> Senior tip: Cap nhat gan thoi gian thuc khong chi la nap lai vector; quan trong nhat la xoa doan cu va theo doi phien ban, neu khong chi muc se lap day bo du lieu khong con dung va he thong tra loi thong tin da bo.
+
+`,
+  follow: [
+    'Khi tai lieu duoc sua, ban xoa doan cu truoc hay sau khi nap doan moi? Tai sao?',
+    'Khoang thoi gian ton tinh la bao nhieu la chap nhan duoc, va ban bao nguoi dung nhu the nao?',
+    'Ban lam sao biet vector da duoc ghi thanh cong truoc khi danh dau tai lieu la da cap nhat?'
+  ],
+  tags: ['RAG', 'knowledge base', 'incremental update', 'versioning']
+},
+{
+  id: 'ai-099',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Sau khi ra mat, lam sao biet cau tra loi cua LLM dung hay sai khong doc tung cuoc hoi thoai: thu phan hoi nguoi duoc, lay mau danh gia (sampling), va bien phan hoi thanh bo kiem tra?',
+  a: `**Tóm tắt:** Do chat luong online nghia la sau khi ung dung chay that, thu thu phan hoi cua nguoi dung (thich/khong thich, ban goc/chinh lai), lay mot phan cuoc hoi thoai de nhan vien danh gia chi tiet (sampling), va dung cuoc hoi thoai loi lam bai kiem tra (eval) de cai tien. Khong doc toan bo vi tinh tien va thoi gian.
+
+### Feedback (phan hoi nguoi duoc)
+- **Cái gì**: nut thich/khong thich, binh luan ngan, hoac hanh vi nhu sao chep, chinh lai cau tra loi, bo cuoc tro chuyen.
+- **Vì sao can**: nguoi duoc la nguoi dau tien biet cau tra loi sai, va feedback chi tieu phi nho.
+- **Hoat dong the nao**: sau moi cau tra loi, hien nut "Co huu ich" va "Khong". Khi nguoi duoc bam khong huu ich, ghi lai cau hoi, cau tra loi, ma phien ban model va ly do neu co.
+- **Tin hieu ngam**: neu nguoi duoc sao chep cau tra loi thi thong thu huu ich; neu chinh lai nhieu thi cau tra loi chua du tot; neu bo cuoc thi co the khong hai long.
+
+### Sampling (lay mau danh gia)
+- **Cái gì**: chon mot phan nho cuoc hoi thoai (vi du 1-5%) de nhan vien chuyen mon danh gia dung/sai theo rubric (tieu chi cham), thay vi doc het.
+- **Vì sao can**: 10.000 cuoc hoi thoai moi ngay khong ai doc het; mau ngau nhien du lon da cho biet chat luong tong the.
+- **Hoat dong the nao**: moi ngay chon ngau nhien 500 cuoc hoi thoai, nhan vien cham tung cau tra loi theo thang diem (vi du 1-5) va ghi nguyen han loi (trich xuat sai, thieu thong tin, tra loi khong lien quan).
+
+### Online eval (danh gia khi dang chay)
+- Chuyen cuoc hoi thoai co phan hoi xau hoac mau danh gia vao bo kiem tra truc tuyen (online eval set).
+- Moi khi thay doi prompt, model hoac truy xuat, chay lai bo kiem tra nao de thay chat luong thay doi truoc khi anh huong nhieu nguoi.
+- Tinh cac chi so: ty le phan hoi khong huu ich, ty le cau tra loi bi danh gia sai, do dung trich dan, do tre p95, chi phi moi cuoc hoi thoai.
+
+### Bien phan hoi thanh bai kiem tra
+- Moi loi duoc xac nhan them vao bo cau hoi chuan (golden set) voi dau an dung.
+- Chay regression (kiem tra hoi quy) truoc khi trien khai thay doi: neu diem eval giam, khong trien khai.
+- Dong vong phan hoi: khi da sua loi, thong bao cho nguoi duoc bao loi neu co the.
+
+### Loi hay gap
+- Chi dem so luot thich: mot cau tra loi sai nhung nghe khoe co the duoc thich nhieu.
+- Khong lay mau ngau nhien: chi doc nhung cuoc hoi thoai nhan vien chon, thieu khach quan.
+- Thu feedback nhung khong xu ly: nguoi duoc ngung bao loi.
+- Khong gan phien ban model/prompt: khong biet chat luong tuot do thay doi nao.
+- Danh gia toan bo cuoc hoi thoai thay vi tung cau tra loi: kho biet loi o dau.
+
+### Vi du doi thuc
+Chat bot ho tro 15.000 cuoc hoi thoai moi tuan. Ban dau doi chi doc 20 cuoc goi chon san va coi he thong on dinh. Sau do them nut phan hoi va lay mau ngau nhien 1% (khoang 150 cuoc) moi tuan de nhan vien cham. Tim thay khoang 8% cau tra loi trich dan sai nguon va 3% tra loi khong lien quan. Doi dua 200 truong hop loi vao golden set, chay eval truoc moi lan thay doi prompt. Sau hai thang: ty le cau tra loi bi danh gia sai tu 8% xuong 1,2%, va phat hien som hai su co do thay doi prompt truoc khi anh huong nhieu khach. (So lieu minh hoa.)
+
+### Trả lời mẫu khi phỏng vấn
+"Em khuyen khong doc tung cuoc hoi thoai, ma ket hop ba thu. Thu nhat, nut phan hoi ngay tren giao dien: huu ich hay khong, kem hanh vi ngam nhu sao chep hoac chinh lai. Thu hai, sampling: chon ngau nhien mot phan nho, vi du mot phan tram cuoc hoi thoai moi tuan, de nhan vien cham dung sai theo tieu chi ro rang. Thu tu ba, dua cac truong hop loi vao bo kiem tra chuan va chay lai truoc khi thay doi prompt hoac model, de phat hien som chat luong tuot. Cac chi so theo doi bao gom ty le phan hoi khong huu ich, ty le cau tra loi sai va chi phi moi cuoc hoi thoai. Trong thuc the, viec them phan hoi va mau danh gia giup giam ty le cau tra loi bi danh gia sai tu tam phan tram xuong khoang mot phan tram hai trong hai thang."
+
+> Senior tip: Feedback chi gia tri khi ai do xu ly. Hay dat quy trinh "feedback xau -> tao bai kiem tra -> chay truoc khi trien khai", neu khong nguoi duoc ngung bao loi vi cam thang khong ai doc.
+
+`,
+  follow: [
+    'Ban lay mau bao nhieu phan tram cuoc hoi thoai de danh gia, va lam sao biet mau du dai dien?',
+    'Feedback nguoi duoc co the bi sai lech the nao, va sampling giup gi?',
+    'Ban bien mot cuoc hoi thoai loi thanh bai kiem tra trong eval ra sao?'
+  ],
+  tags: ['online evaluation', 'feedback', 'sampling', 'LLM eval']
+},
+{
+  id: 'ai-100',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Muon thay doi model LLM (vi du tu model A sang model B). Lam sao thiet ke thu nghiem A/B cong bang, chia traffic, do so lieu va quyet dinh khi nao chuyen toan bo?',
+  a: `**Tóm tắt:** Thu nghiem A/B model la chay hai phien ban model cung luc tren nhom nguoi duoc khac nhau, do chat luong va chi phi tren moi nhom, roi chi chuyen toan bo sang model tot hon khi co bang chung ro rang. Muc tieu khong phai doi model vi model moi ma la doi vi no thuc su tot hon cho nguoi duoc va chi phi chap nhan duoc.
+
+### Thiet ke thu nghiem
+- **Cái gì**: chia nguoi duoc hoac yeu cau thanh hai nhom ngau nhien: nhom A dung model hien tai, nhom B dung model moi. Moi dieu khac (prompt, ngon ngu, guardrail) phai giong nhau.
+- **Vì sao can**: neu doi toan bo luc nao va chat luong tuot, khong biet do model hay do nguyen nhan khac. A/B tach biet tac dong cua model.
+- **Hoat dong the nao**: gateway hoac dich vu nhan yeu cau, dua theo ma nguoi duoc (hash) gan nhom A hoac B, goi model tuong ung, ghi ket qua cung ma nhom.
+
+### Don vi chia: nguoi duoc hay yeu cau
+- Chia theo nguoi duoc (user-level): cung mot nguoi luon gap cung mot model, trai nghiem on dinh qua thoi gian. Phu hop khi quan tam cam than nguoi duoc theo thoi gian.
+- Chia theo yeu cau (request-level): moi yeu cau ngau nhien mot model, can it nguoi duoc hon de co ket qua nhanh. Phu hop bai tu doc lap moi yeu cau, nhung cung mot nguoi co the thay hai model khac nhau.
+
+### So lieu can do
+- Chat luong: ty le phan hoi khong huu ich, ty le cau tra loi bi danh gia sai (xem cau ai-099), diem eval tren mau, do dung trich dan.
+- Chi phi: so token dau vao/dau ra va chi phi moi yeu cau.
+- Do tre: thoi gian den token dau tien va tong thoi gian (p95).
+- Do tin cay: ty le loi, ty le lai attempt, ty le JSON sai schema.
+
+### Nghia thong ke va kich thuoc mau
+- Khong ket luan sau mot ngay hoac muoi cuoc hoi thoai. Sai so ngau nhien co the lam mot nhom thang tot hon.
+- Can kich thuoc mau du lon (ngan cuoc hoi thoai) va chay it nhat mot den hai tuan de bao gom ngay trong tuan va gio cao diem.
+- Dat nguong truoc: chi chuyen toan bo neu model B tot hon ro rang (vi du chat luong cao hon va chi phi khong cao hon qua 10 phan tram).
+
+### Quyet dinh va rollback
+- Neu model B tot hon: tang dan phan tram traffic sang B (canary: 10% -> 50% -> 100%) trong khi theo doi.
+- Neu model B kem hon hoac chi phi cao qua nhieu: dung thu nghiem, giu model A.
+- Luon co cach quay lai ngay lap tuc (feature flag) neu model moi gay su co sau khi chuyen toan bo.
+
+### Loi hay gap
+- Chia theo yeu cau ma quen cung mot nguoi duoc thay hai model: trai nghiem khong lien tin.
+- Danh gia chi theo do tre, quen chat luong: model moi nhanh nhung tra sai.
+- Ket luan qua som: mau nho, sai so ngau nhien.
+- Khong co nhom dieu khien (model cu): khong biet su thay doi la do model hay do du lieu nguoi duoc thay doi theo thoi gian.
+- Khong co ke hoach rollback: doi model xong khong the quay lai nhanh khi su co.
+
+### Vi du doi thuc
+Dich vu trich xuat thong tin tu hoa don xu ly 100.000 yeu cau moi thang. Doi muon doi tu model A sang model B moi hon. Thu nghiem A/B trong ba thang: 50% yeu cau model A, 50% model B. Ket qua: model B chinh xac hon 2 phan tram (tu 93% len 95%) nhung chi phi cao hon 40 phan tram va cham hon 1,5 giay p95. Doi quyet dinh khong chuyen toan bo vi chi phi tang khong xung voi loi ich nho, va giu model A cho trich xuat, dung model B cho tom tat noi dung khong quan trong. (So lieu minh hoa.)
+
+### Trả lời mẫu khi phỏng vấn
+"Em khuyen thu nghiem A/B thay doi toan bo mot lan. Chia nguoi duoc hoac yeu cau thanh hai nhom ngau nhien, nhom dung model cu va nhom dung model moi, moi dieu khac nhu prompt va ngon ngu phai giong nhau. Do ca chat luong (ty le phan hoi khong huu ich, diem eval), chi phi (token moi yeu cau) va do tre (p95). Chi chuyen toan bo khi co bang chung ro rang trong it nhat mot den hai thang, va luon co cach quay lai ngay lap tuc neu model moi gay su co. Trong vi du thuc them, model moi chinh xac hon hai phan tram nhung chi phi cao hơn bốn mươi phần trăm, nen em quyet dinh khong chuyen toan bo ma chi dung cho tac vu phu hop."
+
+> Senior tip: Model moi khong nhat dinh tot hon cho bai toan cua ban. Hay co nhom dieu khien (model cu), do dung ca chat luong va chi phi, va chi chap nhan doi khi loi ich ro rang vuot chenh lech chi phi.
+
+`,
+  follow: [
+    'Ban chia thu nghiem theo nguoi duoc hay theo yeu cau, chon duoc y tuong nao?',
+    'Thu nghiem can chay bao thang va co bao nhieu cuoc hoi thoai la du de ket luan?',
+    'Neu model B tot hon chat luong nhung cao chi phi qua nhieu, ban quyet dinh ra sao?'
+  ],
+  tags: ['A/B testing', 'model', 'experiment', 'LLM']
+},
+{
+  id: 'ai-101',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Luu luong ung dung LLM tang gap muoi lan, chi phi cung theo. Lam sao giam chi phi khong giam chat luong: routing model, cache, prompt ngan hon, batch, va gioi han theo tenant?',
+  a: `**Tóm tắt:** Khi luu luong tang gap muoi lan, chi phi LLM co the tang gap muoi va hon neu khong can thiep. Viec tiet kiem hieu qua nhat thong thu la giam so token khong can thiet, dung cache cho cau hoi lap lai, chon model nho cho tac vu don gian, xu ly batch cong viec khong khan cap, va gioi han chi phi theo moi khach hang. Nhen do truoc khi toi uu, neu khong hy sinh chat luong ma khong biet minh duoc bao nhieu.
+
+### Do truoc khi toi uu
+- **Cái gì**: thu thuat so lieu thuc the: so yeu cau moi ngay, so token dau vao/dau ra moi yeu cau, chi phi moi yeu cau, do tre p95, phan bo theo moi khach hang (tenant).
+- **Vì sao can**: khong biet phan nao tieu nhieu, nen khong biet cat o dau. Mot tinh nang it dung nhung prompt dai co the tieu nhieu hon tinh nang hay dung nhung prompt ngan.
+- **Hoat dong the nao**: moi yeu cau LLM ghi ma tenant, so token dau vao/dau ra, thoi gian va chi phi tuong tu. Xem bang tong hop hang ngay de tim phan lon chi phi.
+
+### Chon model theo moi buoc (model routing)
+- **Cái gì**: khong phai moi yeu cau deu can model lon va dat. Phan loai do kho truoc, chi gui yeu cau kho len model manh.
+- **Hoat dong the nao**: yeu cau don gian (phan loai email, trich xuat ma don hang) dung model nho/re; yeu cau phuc tap (tu van nhieu buoc, lap luan) dung model lon. Co the dung chinh model nho de phan loai muc do kho.
+- **Luu y**: sau khi doi model cho mot buoc, phai chay eval de dam bao chat luong khong tuot (xem cau ai-065, ai-099).
+
+### Cache cau tra loi
+- **Cache chinh xac (exact cache)**: luu cau tra loi theo khoa la noi dung cau hoi + model + tham so. Cau hoi giong nhau nhan cau tra loi da co, khong goi LLM. Huu ich cho cau hoi thuong gap (FAQ).
+- **Cache ngữ nghĩa (semantic cache)**: dung embedding de tim cau hoi da tra loi gan nghia. Huu ich cho FAQ, nhung phai dat nguong do gong cao va thoi gian het han (TTL), neu khong se tra loi sai cho cau hoi gan gong nhung nghia khac.
+- Cache phai kem ma tenant de khach A khong nhan cau tra loi cua khach B.
+
+### Prompt ngan hon
+- Bo vi du few-shot khong con can, rut gion lenh he thong, chi lay doan tai lieu lien quan sau re-ranking (top 3-5 khong phai 20).
+- Gioi han so token dau ra (max_tokens) phu hop; dau ra dai la chi phi dat nhat.
+- Token la don vi van text sau khi may cat van ban; tieng Viet thong thu tieu nhieu token hon tieng Anh cung noi dung.
+
+### Batch cho cong viec khong khan cap
+- **Batch API** (neu nha cung cap ho tro): gui nhieu yeu cau trong mot cuoc goi, re hon cuoc goi biet liet, nhung cham hon (ket qua sau vay phut den vay gio). Phu hop phan tich backlog, tom tat tai lieu cu.
+- Khong goi LLM trong vong lap xu ly tung ban ghi mot; gom thanh mot yeu cau co cau truc neu co the.
+
+### Gioi han theo tenant (quota)
+- Mỗi khách hàng có ngân sách chi phí hoặc token mỗi ngày/tháng; khi vượt, từ chối hoặc chuyển hạng chờ, không cho một khách dồn tải toàn bộ.
+- Canh bao khi chi phi dot bien (vi du mot khach mo ra 10 lan binh thuong).
+
+### Bang uu tien toi uu tai gap muoi lan luu luong
+| Buoc | Tac dong den chi phi | Ru ro |
+|---|---|---|
+| Gioi han ngon ngu va dau ra | Cao | Thap |
+| Cache cau hoi lap lai | Cao voi FAQ | Thap |
+| Model nho cho tac vu don gian | Cao | Trung binh (chat luong) |
+| Batch cong viec khong khan cap | Cao cho tac vu nen | Không gấp |
+| Gioi han theo tenant | Cao khi co khach lon | Trung binh (trai nghiem) |
+
+### Loi hay gap
+- Toi uu model truoc khi do: khong biet minh da dich giao chat luong bao nhieu.
+- Cache khong kem ma tenant: khach A nhan cau tra loi cua khach B.
+- Semantic cache nguong qua thap: tra loi tu tin cho cau hoi khac nghia.
+- Gioi han max_tokens qua nho: cau tra loi bi cat giua cau hoac JSON hong.
+- Khong gioi han theo tenant: mot khach tao ra phan lon chi phi.
+
+### Vi du doi thuc
+Ung dung chat bot noi bo tu 500 len 5.000 nguoi duoc moi ngay (tang gap muoi lan ve danh sach nguoi dung, nhung so cuoc tro chuyen tang gap muoi hai lan su dung nhieu hon). Chi phi LLM tuong tu tu 15.000.000 dong/thang len gan 200.000.000 dong neu khong thay doi. Doi ap dung: gioi han ngon ngu top 5 doan, cache cau hoi pho bien, dung model nho cho phan loai va model lon chi cho tu van phuc tap, va quota 200.000 token/khach/ngay. Ket qua duoc do: chi phi vao khoang 65.000.000 dong/thang (giam hon mot nua so voi du bao chua toi uu), ty le cau tra loi dung khong thay doi đánh giá trên bộ kiểm tra 1.000 cau. (So lieu minh hoa, tuong tu mo hinh va nha cung cap.)
+
+### Trả lời mẫu khi phỏng vấn
+"Em khuyen do truoc khi toi uu: xem chi phi theo tung khach hang va tung tinh nang de biet phan nao tieu nhieu nhat. Khi luu luong tang gap muoi lan, cac viec tiet kiem nho cung dan thanh lon. Em se ap dung theo thu tu: giam ngon ngu va gioi han dau ra, cache cau hoi lap lai, dung model nho cho tac vu don gian va model lon cho tac vu kho, xu ly cong viec khong khan cap bang batch, va dat gioi han chi phi theo tung khach hang. Moi thay doi model phai chay lai danh gia chat luong truoc. Trong vi du thuc them, viec nay giup chi phi tang gap muoi lan luu luong chi tang mot nua thay vi tang gap muoi, va chat luong van on dinh tren bo kiem tra."
+
+> Senior tip: O quy mo lon, 60-80% chi phi LLM thuong nam o ngon ngu dai va dau ra dai. Cat hai cho nay thong thu hieu qua hon viec doi model, va ru ro thap hon.
+
+`,
+  follow: [
+    'Vi sao nen do chi phi theo tung khach hang truoc khi toi uu?',
+    'Cache ngữ nghĩa có rủi ro gì và bạn đặt ngưỡng độ giống ra sao?',
+    'Khi luu luong tang gap muoi lan, buoc dau tien ban lam gi?'
+  ],
+  tags: ['cost', 'latency', 'caching', 'model routing', 'quota']
+},
+{
+  id: 'ai-102',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Luat yeu cau luu nhat ky prompt/phan hoi theo quy dinh va xoa du lieu nguoi duoc khi ho yeu cau. Lam sao thiet ke luu log prompt, thoi gian luu giu, va xoa theo yeu cau trong he thong dung LLM (bao cung vector store va cache)?',
+  a: `**Tóm tắt:** Tuan thu du lieu trong he thong LLM nghia la biet chinh xac du lieu nguoi duoc duoc luu o dau (prompt, cau tra loi, vector, cache, nhat ky), bao luong duoc luu va cach xoa hoan toan khi nguoi duoc yeu cau (quyen duoc quet). Vi du lieu nguoi duoc co the chay vao nhieu noi, can ban do luu tru va quy trinh xoa co the kiem chung.
+
+### Luu nhat ky prompt va cau tra loi
+- **Cái gì**: luu lai cau hoi cua nguoi duoc, cau tra loi cua model, ma phien ban model/prompt, thoi gian va ma tenant de kiem tra sau nay.
+- **Vì sao can**: phuc vu dieu tra su co, kiem tra quy dinh va chung minh he thong hoat dong dung. Nhung log cung chua du lieu nhan cam, can bao ve.
+- **Hoat dong the nao**: moi yeu cau LLM ghi mot ban ghi nhat ky co ma truy vet (trace ID). Truoc khi ghi, che du lieu nhan dien ca nhan (PII) nhu email, so dien thoai, so tai khoan bang placeholder hoac ma hoa. Gioi han thoi gian luu (retention), vi du 30-90 ngay, sau do xoa tu dong.
+- Khong luu khoa API, ma bao mat hoac toan bo tai lieu mat vao log.
+
+### Xoa theo yeu cau (quyen duoc quet)
+- **Cái gì**: khi nguoi duoc yeu cau xoa du lieu cua minh, he thong phai xoa toan bo ban sao lien quan: prompt va cau tra loi trong log, doan tai lieu cua nguoi duoc trong vector store (neu co), ket qua trong cache, va sao luu neu co the.
+- **Vì sao can**: phap luat (vi du GDPR) va nien tin nguoi duoc. Xoa chi trong ung dung chinh ma con de lai trong vector store hoac cache la vi pham.
+- **Hoat dong the nao**: moi ban du lieu gan ma nguoi duoc (user_id) va ma khach hang (tenant_id). Nhan yeu cau xoa -> tim moi noi luu ma do -> xoa hoac thay bang ma khong the lien ket lai -> ghi nhan trong nhat ky kiem tra (audit log).
+
+### Vector store va cache
+- Doan tai lieu trong vector store co the chua noi dung cua nguoi duoc (vi du tai lieu ho upload de hoi). Khi xoa nguoi duoc, xoa toan bo doan co ma user_id/tenant_id. Mot so vector store khong ho tro xoa tung doan nhanh; can lap lich rebuild chi muc khong chua doan do.
+- Cache luu cau tra loi theo ma tenant va cau hoi; khi xoa, xoa muc cache lien quan hoac dat thoi gian het han ngan (TTL) de tu mat.
+
+### Ban do luu tru va kiem tra
+- Liet ke moi noi du lieu nguoi duoc co the di den: ung dung chinh, log LLM, vector store, cache, sao luu, he thong phan tich.
+- Moi noi ghi ro thoi gian luu giu va cach xoa. Kiem tra dinh ky de khong co "khu du lieu hoang" bi quen.
+- Nhat ky kiem tra ghi ai yeu cau xoa, khi nao va ket qua, nhung khong luu noi dung nhan cam cua du lieu bi xoa.
+
+### Loi hay gap
+- Chi xoa trong co so du lieu chinh, quen log LLM, vector store va cache.
+- Luu toan bo prompt khong che PII: log tro thanh noi ro rui du lieu.
+- Khong co thoi gian luu giu: du lieu bi giu ma ma.
+- Xoa yeu cau nhung khong kiem chung: khong biet da xoa het chua.
+- Dung ma nguoi duoc lam khoa cache ma khong xoa khi tai khoan bi xoa.
+
+### Vi du doi thuc
+Ung dung tro luong cho 20.000 nhan vien, moi nguoi trung binh 50 cuoc hoi thoai moi thang. Phap luat yeu cau luu nhat ky LLM 90 ngay va xoa toan bo du lieu nhan vien khi ho nghi viec. Doi thiet lap: log prompt che PII, giu 90 ngay roi xoa tu dong; moi doan vector va muc cache gan ma nhan vien. Khi mot nhan vien nghi viec, he thong xoa log, doan vector va cache cua ma do trong vòng 24 giờ và gửi báo cáo kiểm tra. Sau 6 thang, co 120 yeu cau xoa va tat ca duoc hoan thanh trong thoi han, khong con du lieu cua nhan vien nghi viec trong he thong LLM. (So lieu minh hoa.)
+
+### Trả lời mẫu khi phỏng vấn
+"Em khuyen thiet ke ban do luu tru ngay tu dau dau: biet du lieu nguoi duoc di den ung dung chinh, log LLM, vector store, cache va sao luu o dau. Luu nhat ky prompt va cau tra loi nhung phai che du lieu nhan dien ca nhan truoc khi ghi, va chi giu trong thoi gian quy dinh, ví dụ chín mươi ngày, roi xoa tu dong. Khi nguoi duoc yeu cau xoa, tim moi noi co ma nguoi duoc, xoa hoac thay bang ma khong lien ket lai, va ghi vao nhat ky kiem tra. Vector store va cache khong duoc quen, neu khong quyen duoc quet chi la nua cuoc. Trong vi du thuc them, he thong xu ly mot tram hai muoi yeu cau xoa trong 6 thang, tất cả hoàn thành dưới hai mươi bốn giờ."
+
+> Senior tip: Quyen duoc quet khong the kiem chung sau khi he thong chay bang tay moi lan. Hay thiet lap quy trinh xoa tu dong co ma nguoi duoc tren moi lop luu tru va kiem thu dinh ky bang yeu cau xoa gia.
+
+`,
+  follow: [
+    'Du lieu nguoi duoc co the di den noi nao trong he thong LLM, va moi noi xoa ra sao?',
+    'Ban thiet lap thoi gian luu giu (retention) cho log prompt bao nhieu ngay, va xoa tu dong nhu the nao?',
+    'Ban kiem chung da xoa het du lieu cua mot nguoi duoc sau khi ho yeu cau ra sao?'
+  ],
+  tags: ['data compliance', 'privacy', 'GDPR', 'retention', 'deletion']
+},
 );
