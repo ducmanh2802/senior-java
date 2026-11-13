@@ -15570,6 +15570,592 @@ class Solution {
 }`,
   complexity: 'Time O(n), Space O(n)',
   follow: ['Cài đặt bằng Union-Find (DSU) thì code ra sao?', 'Nếu mảng đã sort thì tối ưu thế nào?']
+},
+{
+  id: 'algo-141',
+  title: '01 Matrix',
+  difficulty: 'medium',
+  pattern: 'Graph / Multi-source BFS',
+  tags: ['matrix', 'bfs', 'grid', 'shortest-path'],
+  prompt: `Cho ma trận {{mat}} kích thước {{m}} hàng × {{n}} cột, chỉ số tính từ 0. Mỗi ô {{mat[r][c]}} là {{0}} (ô đích) hoặc {{1}} (ô cần điền). Với **mỗi ô**, tính khoảng cách ngắn nhất tới một ô {{0}} bất kỳ: mỗi bước chỉ được đi sang ô kề cạnh (lên, xuống, trái, phải), **không đi chéo**. Trả về ma trận {{dist}} cùng kích thước, trong đó {{dist[r][c]}} là khoảng cách đó (số bước). Ô {{0}} có khoảng cách 0.
+
+### Ví dụ
+~~~text
+Input:  mat = [[0,0,0],
+               [0,1,0],
+               [0,0,0]]
+Output: [[0,0,0],
+         [0,1,0],
+         [0,0,0]]
+
+Input:  mat = [[0,0,0],
+               [0,1,0],
+               [1,1,1]]
+Output: [[0,0,0],
+         [0,1,0],
+         [1,2,1]]
+Giải thích: ô (2,1) gần ô 0 nhất là (1,1) -> 2 bước
+(theo đường (2,1) -> (2,0) -> (1,0)).
+~~~
+
+### Ràng buộc
+- {{1 <= m, n <= 10^4}}
+- {{1 <= m * n <= 10^4}} (tổng số ô không quá 10.000)
+- {{mat[r][c]}} là {{0}} hoặc {{1}}
+- Đề đảm bảo có **ít nhất một** ô {{0}}
+- Không được sửa {{mat}}`,
+  hints: [
+    'Khoảng cách trên lưới không trọng số chính là đường đi ngắn nhất. Thuật toán nào thăm các ô theo đúng thứ tự khoảng cách tăng dần?',
+    'Chạy BFS riêng từ từng ô {{1}} sẽ tốn O((m·n)²) vì mỗi ô phải duyệt lại gần như cả lưới. Hãy nghĩ tới việc xuất phát **cùng lúc từ mọi ô {{0}}**.',
+    'Đưa toàn bộ ô {{0}} vào hàng đợi ngay từ đầu với khoảng cách 0. Ô nào được chạm tới đầu tiên thì khoảng cách đã là ngắn nhất — đánh dấu đã thăm **khi enqueue**, không phải khi dequeue.',
+    'Có thể không dùng hàng đợi: hai lượt quét (trên-trái rồi dưới-phải) cũng ra đáp án với bộ nhớ phụ O(m·n) cho mảng kết quả, không thêm hàng đợi.'
+  ],
+  solution: `### Ý tưởng — BFS nhiều nguồn (multi-source BFS)
+**Thuật ngữ cần biết trước khi đọc tiếp**
+- **BFS** (breadth-first search — tìm kiếm theo chiều rộng): cách duyệt "loang" theo từng lớp, giống giọt mực rơi trên giấy thấm: vùng ẩm lan đều ra mọi hướng với cùng tốc độ. Trong đồ thị **không trọng số** (mỗi cạnh tốn đúng 1 bước), BFS thăm các đỉnh theo thứ tự khoảng cách tăng dần, nên lần đầu chạm tới một đỉnh là đã đi đường ngắn nhất.
+- **Queue** (hàng đợi): vùng chứa kiểu "vào trước ra sau" (FIFO), giống xếp hàng mua cà phê — ai đến trước được phục vụ trước. Ở đây hàng đợi chính là "đám mực đang loang".
+- **Nguồn (source)**: điểm xuất phát. Bài này có **nhiều nguồn** — mọi ô {{0}} cùng xuất phát một lượt.
+- **Visited / đã thăm**: đánh dấu ô đã có khoảng cách, để không xử lý lại.
+
+**Vì sao không BFS từ từng ô {{1}}?**
+Mỗi lần BFS tốn tới {{m*n}} bước; nhân với số ô {{1}} là O((m·n)²). Lưới 200×200 (40.000 ô) thành khoảng 1,6·10^9 phép — vừa chậm vừa làm lại việc đã làm, vì các đường đi ngắn nhất của các ô nằm cạnh nhau gần như trùng nhau.
+
+**Ý tưởng đúng:** xuất phát từ **mọi ô {{0}}** cùng lúc. Khi BFS loang ra, mỗi ô {{1}} được "chạm" đầu tiên bởi nguồn gần nó nhất; giá trị ghi lại chính là khoảng cách ngắn nhất.
+
+**Các bước**
+1. {{dist[r][c] = 0}} nếu {{mat[r][c] == 0}}; ngược lại đặt {{-1}} với nghĩa "chưa biết khoảng cách".
+2. Đưa **toàn bộ** ô {{0}} vào hàng đợi (lớp 0).
+3. Lấy ô {{cur}} ra khỏi hàng đợi; với mỗi ô kề {{next}} còn {{-1}}: đặt {{dist[next] = dist[cur] + 1}}, đẩy {{next}} vào hàng đợi.
+4. Hàng đợi rỗng → mọi ô đã có khoảng cách (đề đảm bảo có ít nhất một ô 0 nên không có ô nào bị bỏ sót).
+
+**Chạy tay với một hàng 5 ô {{mat = [1, 1, 0, 1, 1]}}**
+~~~text
+Hàng đợi ban đầu: [2]        dist = [-1, -1, 0, -1, -1]
+
+Lấy ô 2 -> ô 1 và ô 3 còn -1: đặt 1, enqueue
+Hàng đợi: [1, 3]             dist = [-1, 1, 0, 1, -1]
+
+Lấy ô 1 -> ô 0 đặt 2, enqueue
+Lấy ô 3 -> ô 4 đặt 2, enqueue
+Hàng đợi: [0, 4]             dist = [2, 1, 0, 1, 2]
+
+Hết hàng đợi -> xong
+~~~
+Đọc kết quả: ô 0 cách ô 0 duy nhất (chỉ số 2) đúng 2 bước, ô 4 cũng 2 bước, hai ô sát nguồn là 1 bước. Mỗi ô vào hàng đợi đúng một lần nên tổng công việc tỉ lệ số ô.
+
+~~~java
+class Solution {
+    public int[][] updateMatrix(int[][] mat) {
+        int m = mat.length, n = mat[0].length;
+        int[][] dist = new int[m][n];
+        Deque<int[]> q = new ArrayDeque<>();
+
+        // buoc 1-2: moi o 0 la mot nguon, vao hang doi voi khoang cach 0
+        for (int r = 0; r < m; r++) {
+            for (int c = 0; c < n; c++) {
+                if (mat[r][c] == 0) {
+                    dist[r][c] = 0;
+                    q.add(new int[]{r, c});
+                } else {
+                    dist[r][c] = -1;                 // -1 = chua biet
+                }
+            }
+        }
+
+        int[][] dirs = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        while (!q.isEmpty()) {
+            int[] cur = q.poll();
+            for (int[] d : dirs) {
+                int r = cur[0] + d[0], c = cur[1] + d[1];
+                if (r < 0 || r >= m || c < 0 || c >= n) continue;   // ra ngoai luoi
+                if (dist[r][c] != -1) continue;                     // da co nguon gan hon
+                dist[r][c] = dist[cur[0]][cur[1]] + 1;              // nguon gan nhat = lop nay
+                q.add(new int[]{r, c});                             // danh dau khi enqueue
+            }
+        }
+        return dist;
+    }
+}
+~~~
+
+### Cách 2 — quy hoạch động hai lượt (không cần hàng đợi)
+Với mỗi ô, khoảng cách tối ưu phải đi qua ô kề của nó. Vì vậy có thể quét hai lượt:
+- Lượt 1 đi từ trên xuống, trái sang phải: mỗi ô nhận {{min(trên + 1, trái + 1)}}.
+- Lượt 2 đi từ dưới lên, phải sang trái: mỗi ô nhận thêm {{min(dưới + 1, phải + 1)}}.
+
+Hai lượt này đủ vì mọi đường đi ngắn nhất trên lưới đều "gấp khúc" theo chiều trên-trái hoặc dưới-phải: một đường đi chỉ đi xuống/phải rồi chỉ đi lên/trái (hoặc ngược lại), không cần đổi hướng nhiều lần.
+
+~~~java
+class Solution {
+    public int[][] updateMatrix(int[][] mat) {
+        int m = mat.length, n = mat[0].length;
+        int INF = m + n;                       // lon hon moi khoang cach that
+        int[][] d = new int[m][n];
+        for (int r = 0; r < m; r++)
+            for (int c = 0; c < n; c++)
+                d[r][c] = (mat[r][c] == 0) ? 0 : INF;
+
+        for (int r = 0; r < m; r++) {          // luot 1: tren -> duoi, trai -> phai
+            for (int c = 0; c < n; c++) {
+                if (d[r][c] == 0) continue;
+                int best = d[r][c];
+                if (r > 0) best = Math.min(best, d[r - 1][c] + 1);
+                if (c > 0) best = Math.min(best, d[r][c - 1] + 1);
+                d[r][c] = best;
+            }
+        }
+        for (int r = m - 1; r >= 0; r--) {     // luot 2: duoi -> tren, phai -> trai
+            for (int c = n - 1; c >= 0; c--) {
+                if (d[r][c] == 0) continue;
+                int best = d[r][c];
+                if (r + 1 < m) best = Math.min(best, d[r + 1][c] + 1);
+                if (c + 1 < n) best = Math.min(best, d[r][c + 1] + 1);
+                d[r][c] = best;
+            }
+        }
+        return d;
+    }
+}
+~~~
+
+### So sánh hai cách
+| Cách | Thời gian | Bộ nhớ phụ | Khi nào chọn |
+|---|---|---|---|
+| BFS nhiều nguồn | O(m·n) | O(m·n) cho hàng đợi | mặc định, dễ giải thích trong phỏng vấn |
+| DP hai lượt | O(m·n) | O(1) ngoài mảng kết quả | bộ nhớ chật, hoặc cần đi chệch hướng đặc biệt |
+
+### Ví dụ đời thực
+Một hệ thống định tuyến nội bộ có 40.000 ô (200×200 lưới) đánh dấu trạm máy chủ (ô 0) và các điểm cần phủ sóng (ô 1). Cách "mỗi điểm một BFS" tốn khoảng 1,6·10^9 phép; BFS nhiều nguồn chỉ chạm mỗi ô một lần nên còn 4·40.000 = 160.000 phép cập nhật, dưới 10 ms trên một lõi — đủ để chạy lại mỗi khi bản đồ thay đổi. Cùng mô hình này xuất hiện ở: bản đồ "khoảng cách tới bệnh viện gần nhất", vùng phủ sóng, hay tính chi phí di chuyển trên lưới trước khi chạy A*.
+
+### Lưu ý khi phỏng vấn
+- Đánh dấu visited **khi enqueue**. Nếu đánh dấu khi dequeue, một ô có thể bị enqueue nhiều lần từ nhiều hàng xóm: hàng đợi phình to, mất tính chất "mỗi ô một lần" (vẫn đúng kết quả nhưng chậm và tốn RAM).
+- Đừng khởi tạo khoảng cách bằng {{Integer.MAX_VALUE}} rồi cộng 1 — sẽ tràn số (thành số âm) và làm hỏng so sánh. Dùng {{-1}} làm mốc "chưa thăm", hoặc một giá trị lớn có kiểm soát như {{m + n}}.
+- BFS loang đều nên **không** cần priority queue: mỗi cạnh giá trị như nhau. Nếu đề cho chi phí khác nhau (đi vào ô 1 tốn 5, ô 2 tốn 1) thì phải dùng Dijkstra hoặc 0-1 BFS.
+- Hỏi lại đề: đi 4 hướng hay 8 hướng? Khoảng cách Manhattan hay Euclid? Hai câu trả lời cho ra bài khác nhau.
+- Nếu {{mat}} có kích thước rất lớn và chỉ có vài ô 0, vẫn nên BFS nhiều nguồn — chi phí tỉ lệ số ô, không tỉ lệ số cặp ô.
+
+> Senior tip: Đây là bài "distance transform" kinh điển. Trong phỏng vấn Senior, hãy nói ngay hai câu: "mô hình hoá thành đồ thị không trọng số, nhiều nguồn" và "mỗi ô vào hàng đợi đúng một lần nên O(m·n)". Nếu interviewer hỏi thêm "nếu chỉ được sửa tại chỗ, không cấp phát mảng mới?" thì trả lời: dùng chính {{mat}} để lưu khoảng cách (đổi 1 thành -1 rồi ghi số), nhưng phải hỏi trước vì làm hỏng dữ liệu của caller.`,
+  starter: `class Solution {
+    public int[][] updateMatrix(int[][] mat) {
+        // TODO
+        return new int[0][];
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected "
+                + Arrays.deepToString(new Object[]{expected}) + " got " + Arrays.deepToString(new Object[]{actual}));
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static int[][] ones(int rows, int cols) {
+        int[][] g = new int[rows][cols];
+        for (int[] row : g) Arrays.fill(row, 1);
+        return g;
+    }
+    public static void main(String[] args) {
+        run("example 1", new int[][]{{0,0,0},{0,1,0},{0,0,0}},
+            () -> new Solution().updateMatrix(new int[][]{{0,0,0},{0,1,0},{0,0,0}}));
+        run("example 2", new int[][]{{0,0,0},{0,1,0},{1,2,1}},
+            () -> new Solution().updateMatrix(new int[][]{{0,0,0},{0,1,0},{1,1,1}}));
+        run("single zero", new int[][]{{0}},
+            () -> new Solution().updateMatrix(new int[][]{{0}}));
+        run("all zeros", new int[][]{{0,0},{0,0}},
+            () -> new Solution().updateMatrix(new int[][]{{0,0},{0,0}}));
+        run("one row", new int[][]{{2,1,0,1,2}},
+            () -> new Solution().updateMatrix(new int[][]{{1,1,0,1,1}}));
+        run("corner source", new int[][]{{0,1,2},{1,2,3},{2,3,4}},
+            () -> new Solution().updateMatrix(new int[][]{{0,1,1},{1,1,1},{1,1,1}}));
+        run("two sources", new int[][]{{1,0,1,0,1}},
+            () -> new Solution().updateMatrix(new int[][]{{1,0,1,0,1}}));
+        run("big row 10001", 5000,
+            () -> {
+                int[] row = new int[10001];
+                Arrays.fill(row, 1);
+                row[5000] = 0;
+                return new Solution().updateMatrix(new int[][]{row})[0][0];
+            });
+        run("200x200 corner source", 398,
+            () -> { int[][] g = ones(200, 200); g[0][0] = 0; return new Solution().updateMatrix(g)[199][199]; });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(m * n), Space O(m * n)',
+  follow: ['Nếu chi phí đi vào mỗi ô khác nhau thì đổi thuật toán nào?', 'Nếu chỉ được trả về khoảng cách của một ô (r, c) thì có cách nhanh hơn không?']
+}
+);
+
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-142',
+  title: 'Minimum Height Trees',
+  difficulty: 'medium',
+  pattern: 'Topological Sort (Leaf Peeling)',
+  tags: ['graph', 'tree', 'topological-sort', 'bfs'],
+  prompt: `Cho một **cây vô hướng** gồm {{n}} đỉnh đánh số {{0..n-1}} và mảng {{edges}} gồm {{n - 1}} cạnh {{[u, v]}} (cây = đồ thị liên thông, không có chu trình).
+
+Chọn một đỉnh làm **gốc**. **Chiều cao** của cây có gốc là số **đỉnh** trên đường đi dài nhất từ gốc xuống một lá (gốc tính là 1). Hãy tìm **tất cả** đỉnh có thể làm gốc sao cho chiều cao nhỏ nhất, trả về danh sách **tăng dần**.
+
+### Ví dụ
+~~~text
+Input:  n = 4, edges = [[1,0],[1,2],[1,3]]
+Output: [1]
+Giải thích: chọn 1 làm gốc, cây cao 2 (1 -> 0). Mọi đỉnh khác
+đều cho chiều cao 3.
+
+Input:  n = 6, edges = [[3,0],[3,1],[3,2],[3,4],[5,4]]
+Output: [3,4]
+Giải thích: 3 và 4 là hai đỉnh "giữa"; chọn 5 hoặc 0 làm gốc
+thì chiều cao là 4.
+~~~
+
+### Ràng buộc
+- {{1 <= n <= 2 * 10^4}}
+- {{edges.length == n - 1}}
+- {{0 <= u, v < n}}, {{u != v}}
+- Đầu vào luôn là một cây hợp lệ (liên thông, không chu trình)`,
+  hints: [
+    'Một **lá** (leaf) là đỉnh chỉ có đúng 1 cạnh. Lá không thể là gốc tốt: nó luôn nằm ở "rìa", kéo chiều cao dài ra.',
+    'Hãy bóc từng lớp lá giống bóc củ hành: xoá hết lá hiện tại, các đỉnh mới chỉ còn 1 cạnh lại thành lá. Phần lõi cuối cùng chính là đáp án.',
+    'Dùng mảng {{degree}} (số cạnh của mỗi đỉnh) và một hàng đợi chứa các lá ban đầu. Mỗi vòng xoá cả lớp lá, giảm {{degree}} của đỉnh kề; đỉnh nào còn đúng 1 cạnh thì thành lá của lớp sau.',
+    'Cây luôn còn lại **1 hoặc 2** đỉnh ở lớp cuối (hai đỉnh này kề nhau). Riêng {{n == 1}} phải xử lý riêng: đỉnh 0 có bậc 0 nên không vào hàng đợi.'
+  ],
+  solution: `### Ý tưởng — bóc lá (leaf peeling / topological sort theo bậc)
+**Thuật ngữ**
+- **Cây (tree)**: đồ thị liên thông, không chu trình, có đúng {{n - 1}} cạnh với {{n}} đỉnh. Quan hệ "cha - con" chỉ tồn tại sau khi chọn gốc; trước đó mọi đỉnh đều bình đẳng.
+- **Lá (leaf)**: đỉnh có đúng một cạnh, tức {{degree == 1}}. Nó chỉ có một đường duy nhất để đi ra.
+- **Bậc (degree)**: số cạnh nối vào một đỉnh.
+- **Trung tâm của cây (center)**: đỉnh (hoặc hai đỉnh) mà khoảng cách tới đỉnh xa nhất là nhỏ nhất.
+
+**Vì sao bóc lá tìm được trung tâm?**
+Mỗi vòng xoá hết lá hiện tại làm mọi khoảng cách trong phần còn lại ngắn đi 1. Đỉnh nằm ở "giữa" cây sẽ sống sót lâu nhất — giống như bóc củ hành, phần lõi còn lại cuối cùng là tâm. Hình dung đơn giản hơn: lấy đường đi dài nhất của cây (đường kính); gốc tối ưu phải nằm ở **chính giữa** đường đó. Bóc lá chính là cách "gọt" hai đầu đường kính về phía giữa mà không cần tìm đường kính trước.
+
+**Vì sao chỉ còn 1 hoặc 2 đỉnh?**
+Trung tâm của một cây luôn là 1 đỉnh (khi đường kính có số **đỉnh lẻ**) hoặc 2 đỉnh kề nhau (khi số đỉnh chẵn). Nếu có 3 trung tâm trở lên thì trong ba đỉnh đó có hai đỉnh không kề nhau, và đỉnh ở giữa đường nối chúng sẽ có khoảng cách lớn hơn — mâu thuẫn với định nghĩa trung tâm.
+
+**Các bước**
+1. Dựng danh sách kề {{adj}} và mảng {{degree}}.
+2. Đưa mọi đỉnh có {{degree == 1}} vào hàng đợi (lớp lá đầu tiên).
+3. Còn hơn 2 đỉnh: lấy **đúng số phần tử hiện có** trong hàng đợi (một lớp lá), xoá chúng, giảm {{degree}} của đỉnh kề; đỉnh nào {{degree}} giảm về 1 thì thành lá của lớp sau.
+4. Khi còn {{<= 2}} đỉnh, các đỉnh trong hàng đợi chính là đáp án (sort tăng dần).
+
+**Chạy tay ví dụ 2 ({{n = 6}})**
+~~~text
+     0
+     |
+1 - 3 - 2
+     |
+     4
+     |
+     5
+
+degree: 0:1  1:1  2:1  3:4  4:2  5:1
+Lớp lá 0: 0, 1, 2, 5   -> còn 2 đỉnh: 3, 4
+Nhìn 3: mất 3 lá, degree 4 -> 1
+Nhìn 4: mất 1 lá, degree 2 -> 1
+Còn 2 đỉnh 3 và 4 -> dung, tra loi [3, 4]
+~~~
+
+~~~java
+class Solution {
+    public List<Integer> findMinHeightTrees(int n, int[][] edges) {
+        if (n == 1) return new ArrayList<>(List.of(0));   // cay 1 dinh: goc la 0
+
+        List<List<Integer>> adj = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) adj.add(new ArrayList<>());
+        int[] degree = new int[n];
+        for (int[] e : edges) {
+            adj.get(e[0]).add(e[1]);
+            adj.get(e[1]).add(e[0]);                  // vo huong: them ca hai chieu
+            degree[e[0]]++;
+            degree[e[1]]++;
+        }
+
+        Deque<Integer> leaves = new ArrayDeque<>();
+        for (int i = 0; i < n; i++) {
+            if (degree[i] == 1) leaves.add(i);        // dinh chi co 1 canh = la
+        }
+
+        int remaining = n;
+        while (remaining > 2) {
+            int size = leaves.size();                 // ca lop la hien tai
+            remaining -= size;
+            for (int i = 0; i < size; i++) {
+                int leaf = leaves.poll();
+                for (int nb : adj.get(leaf)) {
+                    if (--degree[nb] == 1) leaves.add(nb);   // nb vua thanh la
+                }
+            }
+        }
+
+        List<Integer> res = new ArrayList<>(leaves);
+        Collections.sort(res);
+        return res;
+    }
+}
+~~~
+
+### Ví dụ đời thực
+Một chuỗi 5.000 chi nhánh (đồ thị cây) cần chọn **một** nơi đặt máy chủ trung tâm để độ trễ tới chi nhánh xa nhất là nhỏ nhất. Bài toán "tìm trung tâm cây" cho đúng 1 hoặc 2 lựa chọn; chọn 1 trong 2 đỉnh đó (giữa hai đỉnh, chọn đỉnh có tổng khoảng cách nhỏ hơn). Cùng thuật toán này được dùng để tìm gốc khi thuật toán tree DP cần "chọn gốc tối ưu" (rerooting), hoặc để tìm nút cổ chai trong mạng MPLS.
+
+### Lưu ý khi phỏng vấn
+- {{n == 1}}: đỉnh 0 có {{degree == 0}}, không bao giờ vào hàng đợi, nên phải trả về {{[0]}} trước vòng lặp. Đây là lỗi hay gặp nhất của bài này.
+- Vòng lặp dừng khi còn 2 đỉnh, **không** chạy tiếp tới 0: nếu bóc tiếp thì hàng đợi rỗng và mất đáp án.
+- Mỗi đỉnh vào/ra hàng đợi đúng một lần, mỗi cạnh được xét hai lần (theo hai chiều) → O(n) chứ không phải O(n²). Đừng gọi BFS riêng từ từng đỉnh để tính chiều cao: tốn O(n²).
+- Với {{n == 2}} (một cạnh {{[0,1]}}): cả hai đỉnh đều là lá, còn đúng 2 đỉnh → trả {{[0, 1]}}.
+- Nếu đề cho một **rừng** (nhiều cây rời nhau) thì phải chạy thuật toán trên từng thành phần liên thông, không chỉ một hàng đợi chung.
+
+> Senior tip: Trong phỏng vấn, hãy nói rõ "đây là topological sort theo bậc, nhưng bóc lá thay vì bóc đỉnh bậc 0". Câu đó cho thấy bạn thấy được quan hệ với thuật toán Kahn ở bài Course Schedule: cùng một ý tưởng "leo thang từ ngoài vào trong", chỉ khác điều kiện dừng (ở Kahn là hết đỉnh, ở đây là còn 2 đỉnh).`,
+  starter: `class Solution {
+    public List<Integer> findMinHeightTrees(int n, int[][] edges) {
+        // TODO
+        return new ArrayList<>();
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> list(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static int[][] pathEdges(int n) {
+        int[][] e = new int[n - 1][];
+        for (int i = 0; i + 1 < n; i++) e[i] = new int[]{i, i + 1};
+        return e;
+    }
+    public static void main(String[] args) {
+        run("example 1", list(1), () -> new Solution().findMinHeightTrees(4, new int[][]{{1,0},{1,2},{1,3}}));
+        run("example 2", list(3, 4), () -> new Solution().findMinHeightTrees(6, new int[][]{{3,0},{3,1},{3,2},{3,4},{5,4}}));
+        run("single node", list(0), () -> new Solution().findMinHeightTrees(1, new int[0][]));
+        run("two nodes", list(0, 1), () -> new Solution().findMinHeightTrees(2, new int[][]{{0,1}}));
+        run("path of 3", list(1), () -> new Solution().findMinHeightTrees(3, new int[][]{{0,1},{1,2}}));
+        run("path of 5", list(2), () -> new Solution().findMinHeightTrees(5, new int[][]{{0,1},{1,2},{2,3},{3,4}}));
+        run("star", list(0), () -> new Solution().findMinHeightTrees(5, new int[][]{{0,1},{0,2},{0,3},{0,4}}));
+        run("two branches", list(0), () -> new Solution().findMinHeightTrees(7, new int[][]{{0,1},{0,2},{1,3},{1,4},{2,5},{2,6}}));
+        run("empty edges for n=1", list(0), () -> new Solution().findMinHeightTrees(1, new int[][]{}));
+        run("large path 20000", list(9999, 10000), () -> new Solution().findMinHeightTrees(20000, pathEdges(20000)));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(n)',
+  follow: ['Nếu đề cho một rừng (nhiều cây rời nhau) thì sửa thế nào?', 'Làm sao trả về cả chiều cao nhỏ nhất đó (không chỉ các gốc)?']
+}
+);
+
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-143',
+  title: 'Kth Smallest Element in a BST',
+  difficulty: 'medium',
+  pattern: 'Tree / Inorder + Stack',
+  tags: ['bst', 'tree', 'inorder', 'stack'],
+  prompt: `Cho gốc {{root}} của một **cây tìm kiếm nhị phân** (BST — binary search tree: mọi đỉnh ở cây con trái đều **nhỏ hơn** đỉnh hiện tại, mọi đỉnh ở cây con phải đều **lớn hơn** đỉnh hiện tại) và số nguyên {{k}} (đếm từ 1). Trả về giá trị **nhỏ thứ {{k}}** trong cây.
+
+### Ví dụ
+~~~text
+Input:  root = [3,1,4,null,2], k = 1
+        3
+       / \\
+      1   4
+       \\
+        2
+Output: 1
+
+Input:  root = [3,1,4,null,2], k = 3
+Output: 3
+Giải thích: duyệt inorder (trái - gốc - phải) cho dãy tăng dần
+1, 2, 3, 4; phần tử thứ 3 là 3.
+~~~
+
+### Ràng buộc
+- {{1 <= số đỉnh <= 10^5}}
+- {{1 <= k <= số đỉnh}}
+- {{-10^4 <= Node.val <= 10^4}}
+- Giá trị các đỉnh **không trùng nhau** (tính chất BST)
+
+{{TreeNode}} đã được định nghĩa sẵn trong harness (kèm helper dựng cây từ mảng level-order).`,
+  hints: [
+    'Nhắc lại tính chất quan trọng nhất của BST: duyệt **inorder** (trái → gốc → phải) cho ra dãy các giá trị **tăng dần**.',
+    'Vậy bài toán trở thành "lấy phần tử thứ k của dãy inorder". Không cần duyệt hết cây: dừng ngay khi đếm đủ k.',
+    'Dùng một stack để mô phỏng đệ quy: đi hết nhánh trái, pop xử lý, rồi sang nhánh phải. Cách này an toàn với cây lệch sâu 10^5 đỉnh (đệ quy sẽ tràn stack).',
+    'Nếu cây bị chèn/xoá liên tục và cần truy vấn rank nhiều lần, hãy nâng cấp mỗi đỉnh thêm số đỉnh của cây con (subtree size) để trả lời trong O(h).'
+  ],
+  solution: `### Ý tưởng — duyệt inorder có kiểm soát, dừng ở phần tử thứ k
+**Thuật ngữ**
+- **BST** (binary search tree): cây nhị phân có thứ tự — với mỗi đỉnh, toàn bộ cây con trái nhỏ hơn nó, toàn bộ cây con phải lớn hơn nó. Nhờ vậy tìm kiếm, chèn, xoá trung bình mất O(h) với {{h}} là chiều cao cây.
+- **Inorder** (duyệt giữa): thứ tự "trái → gốc → phải". Trên BST, dãy nhận được luôn tăng dần.
+- **Chiều cao {{h}}**: số đỉnh trên đường đi dài nhất từ gốc tới lá. Cây cân bằng có {{h ≈ log2(n)}}; cây lệch (mỗi đỉnh chỉ có một con) có {{h = n}}.
+
+**Vì sao inorder cho dãy tăng dần?**
+Với mỗi đỉnh {{x}}, mọi giá trị trong cây con trái đều nhỏ hơn {{x}}, mọi giá trị trong cây con phải đều lớn hơn {{x}}. Duyệt trái trước → in ra toàn bộ phần nhỏ hơn {{x}} (đã sắp thứ tự bởi đệ quy); rồi in {{x}}; rồi duyệt phải → in ra phần lớn hơn. Ghép lại đúng thứ tự tăng dần.
+
+**Vì sao không đệ quy?**
+Cây lệch hoàn toàn (ví dụ chèn 0,1,2,...,99999 theo thứ tự tăng) có chiều cao 100.000. Đệ quy sẽ gọi hàm 100.000 tầng liên tiếp và tràn stack của JVM ({{StackOverflowError}}) — một lỗi rất hay gặp khi "chạy được trên ví dụ nhỏ". Bản dùng stack tường minh chỉ tốn bộ nhớ heap, an toàn với mọi dạng cây.
+
+**Các bước (stack tường minh)**
+1. {{cur = root}}, stack rỗng.
+2. Đi hết nhánh trái: cứ còn {{cur != null}} thì push {{cur}} rồi {{cur = cur.left}}.
+3. Pop một đỉnh {{x}} — đây là đỉnh **nhỏ nhất chưa được xử lý**. Giảm {{k}}; nếu {{k == 0}} thì {{x.val}} chính là đáp án.
+4. Chuyển sang cây con phải: {{cur = x.right}}, quay lại bước 2.
+
+**Chạy tay với cây trên, {{k = 3}}**
+~~~text
+Cay:      3
+         / \\
+        1   4
+         \\
+          2
+
+cur=3: push 3, cur=1
+cur=1: push 1, cur=null
+pop 1  -> day inorder: 1        (k: 3 -> 2)
+cur = 1.right = 2: push 2, cur=null
+pop 2  -> day inorder: 1, 2     (k: 2 -> 1)
+cur = null
+pop 3  -> day inorder: 1, 2, 3  (k: 1 -> 0) -> tra ve 3
+~~~
+
+~~~java
+class Solution {
+    public int kthSmallest(TreeNode root, int k) {
+        Deque<TreeNode> stack = new ArrayDeque<>();
+        TreeNode cur = root;
+        while (cur != null || !stack.isEmpty()) {
+            while (cur != null) {          // di het nhanh trai
+                stack.push(cur);
+                cur = cur.left;
+            }
+            cur = stack.pop();             // dinh nho nhat chua xu ly
+            if (--k == 0) return cur.val;  // phan tu thu k = dap an
+            cur = cur.right;               // sau do moi sang nhanh phai
+        }
+        return -1;                         // khong the xay ra khi 1 <= k <= n
+    }
+}
+~~~
+
+### Cách 2 — đệ quy thu gọn (ngắn hơn, nhưng giới hạn độ sâu)
+Nếu biết trước cây không quá sâu (ví dụ <= 1000 đỉnh), có thể đếm bằng biến {{int[]}} hoặc {{AtomicInteger}}:
+~~~java
+class Solution {
+    private int count = 0;
+    private int answer = -1;
+
+    public int kthSmallest(TreeNode root, int k) {
+        this.count = k;
+        inorder(root);
+        return answer;
+    }
+
+    private void inorder(TreeNode node) {
+        if (node == null || count == 0) return;   // da tim thay: dung som
+        inorder(node.left);
+        if (count == 0) return;
+        if (--count == 0) { answer = node.val; return; }
+        inorder(node.right);
+    }
+}
+~~~
+Bản đệ quy vẫn tốn O(h) stack, nên với 10^5 đỉnh lệch nó sẽ {{StackOverflowError}}. Khi phỏng vấn, hãy nói rõ bạn chọn bản lặp **vì** ràng buộc dữ liệu.
+
+### So sánh các cách
+| Cách | Thời gian | Bộ nhớ | Ghi chú |
+|---|---|---|---|
+| Inorder lặp, dừng ở k | O(h + k) | O(h) | tốt nhất cho BST, không sửa cây |
+| Đệ quy | O(h + k) | O(h) stack | dễ viết, rủi ro tràn stack |
+| Cây có subtree size | O(h) mỗi truy vấn | O(n) | hợp khi truy vấn rank nhiều lần |
+| Đưa hết vào mảng rồi sort | O(n log n) | O(n) | bỏ qua tính chất BST, bị trừ điểm |
+
+### Ví dụ đời thực
+Một API xếp hạng người dùng lưu dữ liệu trong BST/cây chỉ mục (hoặc B-tree trong PostgreSQL). Khi cần "người có điểm cao thứ 100" thì không sort cả bảng: đi inorder và dừng ở phần tử thứ 100, tốn O(log n + 100) thay vì O(n log n). Câu lệnh {{SELECT score FROM users ORDER BY score LIMIT 100}} trên PostgreSQL cũng dừng sớm như vậy nhờ chỉ mục — cùng một ý tưởng "dừng khi đủ k".
+
+### Lưu ý khi phỏng vấn
+- {{k}} đếm từ 1, không phải từ 0. Lỗi off-by-one phổ biến: dùng {{if (k-- == 0)}} thay vì {{if (--k == 0)}}.
+- Đừng sort toàn bộ rồi lấy phần tử thứ k: mất tính chất BST, tốn O(n log n) và O(n) bộ nhớ. Nếu interviewer hỏi "có cách nào nhanh hơn không?" thì trả lời: nếu cây được **nâng cấp với subtree size** thì O(h) mà không cần duyệt k phần tử.
+- Cây có giá trị âm vẫn đúng vì so sánh chỉ dựa vào thứ tự, không giả định giá trị dương.
+- Nếu đề cho phép giá trị trùng (multiset), inorder vẫn không giảm nhưng phải định nghĩa lại "nhỏ thứ k" (đếm cả bản sao). Hỏi lại đề trước khi code.
+- Với cây rỗng, đề thường không cho; nếu có thì phải trả về giá trị báo lỗi thay vì {{null}} (kiểu trả về là {{int}}).
+
+> Senior tip: Khi phỏng vấn, hãy nói "bài này là truy vấn rank trên BST; bản lặp tốn O(h + k)". Sau đó chủ động nêu follow-up: nếu hệ thống chèn/xoá liên tục và rank được hỏi hàng nghìn lần mỗi giây, ta lưu thêm số đỉnh mỗi cây con vào từng node để trả lời O(h) mà không cần duyệt k phần tử. Đó là chi tiết cho thấy bạn nghĩ tới hệ thống thật chứ không chỉ lời giải đúng.`,
+  starter: `class Solution {
+    public int kthSmallest(TreeNode root, int k) {
+        // TODO
+        return -1;
+    }
+}`,
+  tests: `
+class TreeNode {
+    int val;
+    TreeNode left, right;
+    TreeNode(int v) { val = v; }
+}
+public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    // dung cay tu mang level-order, null = khong co con
+    static TreeNode build(Integer[] vals) {
+        if (vals == null || vals.length == 0 || vals[0] == null) return null;
+        TreeNode root = new TreeNode(vals[0]);
+        Deque<TreeNode> q = new ArrayDeque<>();
+        q.add(root);
+        int i = 1;
+        while (!q.isEmpty() && i < vals.length) {
+            TreeNode cur = q.poll();
+            if (i < vals.length) {
+                if (vals[i] != null) { cur.left = new TreeNode(vals[i]); q.add(cur.left); }
+                i++;
+            }
+            if (i < vals.length) {
+                if (vals[i] != null) { cur.right = new TreeNode(vals[i]); q.add(cur.right); }
+                i++;
+            }
+        }
+        return root;
+    }
+    static TreeNode chain(int n) {                  // cay lech phai: 0 -> 1 -> 2 ...
+        TreeNode root = new TreeNode(0), cur = root;
+        for (int i = 1; i < n; i++) { cur.right = new TreeNode(i); cur = cur.right; }
+        return root;
+    }
+    public static void main(String[] args) {
+        run("example k=1", 1, () -> new Solution().kthSmallest(build(new Integer[]{3,1,4,null,2}), 1));
+        run("example k=2", 2, () -> new Solution().kthSmallest(build(new Integer[]{3,1,4,null,2}), 2));
+        run("example k=3", 3, () -> new Solution().kthSmallest(build(new Integer[]{3,1,4,null,2}), 3));
+        run("example k=4", 4, () -> new Solution().kthSmallest(build(new Integer[]{3,1,4,null,2}), 4));
+        run("single node", 7, () -> new Solution().kthSmallest(build(new Integer[]{7}), 1));
+        run("negatives", -3, () -> new Solution().kthSmallest(build(new Integer[]{-5,null,-3,null,-1}), 2));
+        run("k equals n", 7, () -> new Solution().kthSmallest(build(new Integer[]{5,3,8,2,4,7,9}), 5));
+        run("left skewed", 1, () -> new Solution().kthSmallest(build(new Integer[]{5,3,null,1}), 1));
+        run("chain 100000, k = 1", 0, () -> new Solution().kthSmallest(chain(100000), 1));
+        run("chain 100000, k = n", 99999, () -> new Solution().kthSmallest(chain(100000), 100000));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(h + k) với h là chiều cao cây (tệ nhất O(n)), Space O(h)',
+  follow: ['Nếu cây bị chèn/xoá liên tục và rank được hỏi rất nhiều thì thiết kế lại cấu trúc thế nào?', 'Nếu BST cho phép giá trị trùng thì định nghĩa "nhỏ thứ k" ra sao?']
 }
 );
 })();

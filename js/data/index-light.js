@@ -2008,6 +2008,9 @@ window.DATA_INDEX = {
     {"id":"algo-138","title":"Top K Frequent Elements","difficulty":"medium","pattern":"Heap / Hash Map"},
     {"id":"algo-139","title":"Product of Array Except Self","difficulty":"medium","pattern":"Array / Prefix Product"},
     {"id":"algo-140","title":"Longest Consecutive Sequence","difficulty":"medium","pattern":"Hash Set"},
+    {"id":"algo-141","title":"01 Matrix","difficulty":"medium","pattern":"Graph / Multi-source BFS"},
+    {"id":"algo-142","title":"Minimum Height Trees","difficulty":"medium","pattern":"Topological Sort (Leaf Peeling)"},
+    {"id":"algo-143","title":"Kth Smallest Element in a BST","difficulty":"medium","pattern":"Tree / Inorder + Stack"},
   ],
   lessons: [
     {"id":"lesson-collections-001","track":"collections","order":1,"title":"HashMap từ bên trong: hash, bucket, resize và hợp đồng equals/hashCode","level":"mid","minutes":25},
