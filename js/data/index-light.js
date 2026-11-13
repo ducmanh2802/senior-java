@@ -1909,6 +1909,9 @@ window.DATA_INDEX = {
     {"id":"algo-135","title":"N-Queens","difficulty":"hard","pattern":"Backtracking"},
     {"id":"algo-136","title":"Word Search","difficulty":"medium","pattern":"Backtracking"},
     {"id":"algo-137","title":"Palindrome Partitioning","difficulty":"medium","pattern":"Backtracking"},
+    {"id":"algo-138","title":"Top K Frequent Elements","difficulty":"medium","pattern":"Heap / Hash Map"},
+    {"id":"algo-139","title":"Product of Array Except Self","difficulty":"medium","pattern":"Array / Prefix Product"},
+    {"id":"algo-140","title":"Longest Consecutive Sequence","difficulty":"medium","pattern":"Hash Set"},
   ],
   lessons: [
     {"id":"lesson-collections-001","track":"collections","order":1,"title":"HashMap từ bên trong: hash, bucket, resize và hợp đồng equals/hashCode","level":"mid","minutes":25},

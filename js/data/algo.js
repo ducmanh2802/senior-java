@@ -15180,4 +15180,396 @@ class Solution {
   follow: ['Nếu chỉ cần đếm số cách cắt thì có cách nào nhanh hơn liệt kê?', 'Tính trước bảng isPal bằng DP như thế nào và tiết kiệm được bao nhiêu?']
 }
 );
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-138',
+  title: 'Top K Frequent Elements',
+  difficulty: 'medium',
+  pattern: 'Heap / Hash Map',
+  tags: ['heap', 'hashmap', 'bucket-sort', 'frequency'],
+  prompt: `Cho mảng số nguyên {{nums}} và số nguyên {{k}}, trả về {{k}} phần tử xuất hiện nhiều nhất. Kết quả có thể theo thứ tự bất kỳ.
+
+### Ví dụ
+~~~text
+Input:  nums = [1,1,1,2,2,3], k = 2
+Output: [1,2]
+
+Input:  nums = [1], k = 1
+Output: [1]
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 10^5}}
+- {{-10^4 <= nums[i] <= 10^4}}
+- {{k}} nằm trong phạm vi {{[1, số phần tử phân biệt]}}.`,
+  hints: [
+    'Đếm tần số từng giá trị bằng HashMap. Sau đó chọn k phần tử có tần số cao nhất.',
+    'Cách 1: Dùng min-heap kích thước k để giữ k ứng viên tốt nhất — O(n + u log k) với u là số giá trị phân biệt.',
+    'Cách 2: Bucket sort — tạo mảng bucket où bucket[i] chứa các giá trị xuất hiện i lần. Duyệt từ cuối về đầu để lấy k phần tử — O(n) thời gian, O(n) bộ nhớ.'
+  ],
+  solution: `### Ý tưởng
+Bước 1: Đếm tần số bằng {{HashMap}} — O(n).
+Bước 2: Chọn top-k. Hai cách phổ biến:
+- **Min-heap kích thước k**: đẩy từng entry vào heap, nếu heap vượt k thì pop phần tử yếu nhất (tần số thấp nhất). Cuối cùng heap chứa k phần tử tần số cao nhất. O(u log k).
+- **Bucket sort**: tần số tối đa là n. Tạo mảng {{bucket}} kích thước n+1, bucket[i] lưu các giá trị có tần số i. Duyệt từ n xuống 1, lấy phần tử cho đến khi đủ k. O(n) — nhanh nhất về mặt lý thuyết.
+
+Dưới đây cài cả hai cách; bucket sort thường ưu tiên trong phỏng vấn vì O(n) và dễ giải thích.
+
+~~~java
+class Solution {
+    // Cách 1: Min-heap — O(n + u log k)
+    public int[] topKFrequentHeap(int[] nums, int k) {
+        Map<Integer, Integer> freq = new HashMap<>();
+        for (int x : nums) freq.merge(x, 1, Integer::sum);
+
+        PriorityQueue<Map.Entry<Integer, Integer>> heap =
+            new PriorityQueue<>((a, b) -> Integer.compare(a.getValue(), b.getValue()));
+
+        for (Map.Entry<Integer, Integer> e : freq.entrySet()) {
+            heap.add(e);
+            if (heap.size() > k) heap.poll();
+        }
+
+        int[] res = new int[k];
+        for (int i = k - 1; i >= 0; i--) res[i] = heap.poll().getKey();
+        return res;
+    }
+
+    // Cách 2: Bucket sort — O(n) time, O(n) space
+    public int[] topKFrequentBucket(int[] nums, int k) {
+        Map<Integer, Integer> freq = new HashMap<>();
+        for (int x : nums) freq.merge(x, 1, Integer::sum);
+
+        List<Integer>[] bucket = new List[nums.length + 1];
+        for (Map.Entry<Integer, Integer> e : freq.entrySet()) {
+            int f = e.getValue();
+            if (bucket[f] == null) bucket[f] = new ArrayList<>();
+            bucket[f].add(e.getKey());
+        }
+
+        int[] res = new int[k];
+        int idx = 0;
+        for (int f = bucket.length - 1; f >= 0 && idx < k; f--) {
+            if (bucket[f] != null) {
+                for (int val : bucket[f]) {
+                    res[idx++] = val;
+                    if (idx == k) break;
+                }
+            }
+        }
+        return res;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Bucket sort chỉ tốt khi tần số tối đa không quá lớn (ở đây tối đa n). Nếu tần số có thể rất lớn (ví dụ stream vô hạn), heap là lựa chọn an toàn hơn.
+- Không dùng {{a.getValue() - b.getValue()}} trong comparator vì có thể tràn số; dùng {{Integer.compare}}.
+- Kết quả có thể trả về theo bất kỳ thứ tự nào — đừng lãng phí thời gian sort kết quả.
+- Nếu cần trả về theo thứ tự tần số giảm dần (và giá trị tăng dần khi bằng nhau), heap có thể điều chỉnh comparator, bucket sort cần sort từng bucket.
+
+> Senior tip: Top-k tần số là bài rất hay bị biến thể: "top-k trong luồng streaming" (dùng Count-Min Sketch + heap), "top-k theo cửa sổ thời gian" (sliding window + heap với lazy deletion), "top-k phân tán trên nhiều node" (mỗi node lấy top-k cục bộ, coordinator merge). Hãy nhận ra pattern này.`,
+  starter: "class Solution {\n    public int[] topKFrequent(int[] nums, int k) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Arrays.equals((int[]) expected, (int[]) actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + Arrays.toString((int[]) expected) + " got " + Arrays.toString((int[]) actual));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Arrays.equals((int[]) expected, (int[]) actual)) {
+            throw new AssertionError(what + " expected " + Arrays.toString((int[]) expected) + " got " + Arrays.toString((int[]) actual));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example 1", new int[]{1, 2}, () -> new Solution().topKFrequentBucket(new int[]{1, 1, 1, 2, 2, 3}, 2));
+        run("example 2", new int[]{1}, () -> new Solution().topKFrequentBucket(new int[]{1}, 1));
+        run("negatives", new int[]{2, -1}, () -> new Solution().topKFrequentBucket(new int[]{-1, -1, 2, 2, 2}, 2));
+        run("all same", new int[]{5}, () -> new Solution().topKFrequentBucket(new int[]{5, 5, 5, 5}, 1));
+        run("k equals distinct", new int[]{1, 2, 3}, () -> new Solution().topKFrequentBucket(new int[]{1, 2, 3}, 3));
+        run("large array", new int[]{100000, 99999}, () -> {
+            int[] a = new int[200000];
+            for (int i = 0; i < 100000; i++) a[i] = 100000;
+            for (int i = 100000; i < 200000; i++) a[i] = 99999;
+            return new Solution().topKFrequentBucket(a, 2);
+        });
+        // test heap version too
+        run("heap example 1", new int[]{1, 2}, () -> new Solution().topKFrequentHeap(new int[]{1, 1, 1, 2, 2, 3}, 2));
+        run("heap example 2", new int[]{1}, () -> new Solution().topKFrequentHeap(new int[]{1}, 1));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Heap: Time O(n + u log k), Space O(u + k). Bucket: Time O(n), Space O(n).',
+  follow: ['Nếu dữ liệu là stream vô hạn thì dùng cấu trúc gì?', 'So sánh heap và bucket sort khi nào dùng cái nào?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-139',
+  title: 'Product of Array Except Self',
+  difficulty: 'medium',
+  pattern: 'Array / Prefix Product',
+  tags: ['array', 'prefix-product', 'two-pass'],
+  prompt: `Cho mảng số nguyên {{nums}}, trả về mảng {{answer}} sao cho {{answer[i]}} bằng tích của tất cả phần tử trong {{nums}} **trừ** {{nums[i]}}. Yêu cầu: không được dùng phép chia, O(n) thời gian, O(1) bộ nhớ phụ (không tính mảng kết quả).
+
+### Ví dụ
+~~~text
+Input:  nums = [1,2,3,4]
+Output: [24,12,8,6]
+
+Input:  nums = [-1,1,0,-3,3]
+Output: [0,0,9,0,0]
+~~~
+
+### Ràng buộc
+- {{2 <= nums.length <= 10^5}}
+- {{-30 <= nums[i] <= 30}}
+- Tích của bất kỳ tiền tố/hậu tố nào đều nằm trong phạm vi {{int}} (32-bit signed).`,
+  hints: [
+    'Tích ngoại trừ chính nó = (tích các phần tử bên trái) × (tích các phần tử bên phải).',
+    'Có thể tính prefix product trong một mảng, suffix product trong mảng khác, rồi nhân đôi — nhưng tốn O(n) bộ nhớ.',
+    'Tối ưu O(1) bộ nhớ: dùng mảng kết quả làm nơi lưu prefix product, sau đó duyệt ngược và nhân dồn suffix product vào ngay.'
+  ],
+  solution: `### Ý tưởng
+Với mỗi vị trí {{i}}, tích cần tìm là:
+- {{left[i]}} = tích {{nums[0] * ... * nums[i-1]}} (tiền tố)
+- {{right[i]}} = tích {{nums[i+1] * ... * nums[n-1]}} (hậu tố)
+- {{answer[i] = left[i] * right[i]}}
+
+Thay vì cấp phát hai mảng phụ, ta dùng {{answer}} làm mảng prefix:
+1. {{answer[0] = 1}}. Với {{i = 1..n-1}}: {{answer[i] = answer[i-1] * nums[i-1]}}. Lúc này {{answer}} giữ tích tiền tố.
+2. Duyệt ngược với biến {{suffix = 1}}. Với {{i = n-1..0}}: {{answer[i] *= suffix}}; {{suffix *= nums[i]}}.
+
+Hai lượt duyệt, không cấp phát thêm, không dùng phép chia.
+
+~~~java
+class Solution {
+    public int[] productExceptSelf(int[] nums) {
+        int n = nums.length;
+        int[] answer = new int[n];
+
+        // pass 1: prefix product
+        answer[0] = 1;
+        for (int i = 1; i < n; i++) {
+            answer[i] = answer[i - 1] * nums[i - 1];
+        }
+
+        // pass 2: multiply suffix product
+        int suffix = 1;
+        for (int i = n - 1; i >= 0; i--) {
+            answer[i] *= suffix;
+            suffix *= nums[i];
+        }
+        return answer;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Ràng buộc "không dùng phép chia" bắt buộc dùng phương pháp prefix/suffix. Nếu được phép chia, chỉ cần tính tích toàn bộ rồi chia từng phần tử (nhưng phải xử lý 0 đặc biệt).
+- Với {{nums[i]}} có thể bằng 0: code trên tự động xử lý đúng vì prefix/suffix là 0 ở các vị trí phù hợp.
+- Tích có thể tràn {{int}} nếu ràng buộc lớn hơn; khi đó dùng {{long}} cho biến trung gian và mảng kết quả.
+- Có thể mở rộng sang 2D: product of matrix except self tại mỗi ô — dùng prefix/suffix theo hàng và cột.
+
+> Senior tip: Đây là bài kiểm tra khả năng "biến đổi không gian" — dùng mảng đầu ra làm lưu trữ trung gian. Trong production, pattern này xuất hiện khi tính gradient cho neural network (backpropagation qua element-wise multiply) hoặc khi cần loại bỏ bias của một feature trong feature importance.`,
+  starter: "class Solution {\n    public int[] productExceptSelf(int[] nums) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Arrays.equals((int[]) expected, (int[]) actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + Arrays.toString((int[]) expected) + " got " + Arrays.toString((int[]) actual));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Arrays.equals((int[]) expected, (int[]) actual)) {
+            throw new AssertionError(what + " expected " + Arrays.toString((int[]) expected) + " got " + Arrays.toString((int[]) actual));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example 1", new int[]{24, 12, 8, 6}, () -> new Solution().productExceptSelf(new int[]{1, 2, 3, 4}));
+        run("example 2", new int[]{0, 0, 9, 0, 0}, () -> new Solution().productExceptSelf(new int[]{-1, 1, 0, -3, 3}));
+        run("two elements", new int[]{2, 1}, () -> new Solution().productExceptSelf(new int[]{1, 2}));
+        run("with zero", new int[]{2, 0, 0}, () -> new Solution().productExceptSelf(new int[]{0, 1, 2}));
+        run("multiple zeros", new int[]{0, 0, 0}, () -> new Solution().productExceptSelf(new int[]{0, 0, 5}));
+        run("negatives", new int[]{-24, -12, -8, -6}, () -> new Solution().productExceptSelf(new int[]{-1, -2, -3, -4}));
+        run("large", new int[]{99999, 99999}, () -> new Solution().productExceptSelf(new int[]{99999, 99999}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(1) bộ nhớ phụ (không tính mảng kết quả)',
+  follow: ['Nếu được phép dùng phép chia thì code đơn giản hơn thế nào?', 'Mở rộng sang product of 2D matrix except self thì làm sao?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-140',
+  title: 'Longest Consecutive Sequence',
+  difficulty: 'medium',
+  pattern: 'Hash Set',
+  tags: ['hashset', 'array', 'union-find'],
+  prompt: `Cho mảng số nguyên {{nums}} chưa sắp xếp, tìm độ dài của dãy số nguyên liên tiếp dài nhất (các số theo thứ tự như 3,4,5,6...). Yêu cầu O(n) thời gian.
+
+### Ví dụ
+~~~text
+Input:  nums = [100,4,200,1,3,2]
+Output: 4
+Giải thích: dãy liên tiếp dài nhất là [1,2,3,4].
+
+Input:  nums = [0,3,7,2,5,8,4,6,0,1]
+Output: 9
+Giải thích: dãy [0,1,2,3,4,5,6,7,8].
+~~~
+
+### Ràng buộc
+- {{0 <= nums.length <= 10^5}}
+- {{-10^9 <= nums[i] <= 10^9}}`,
+  hints: [
+    'Nếu sort mảng thì O(n log n). Để đạt O(n), cần tra cứu O(1) xem một số có tồn tại hay không — dùng HashSet.',
+    'Chỉ bắt đầu đếm từ các số là "đầu dãy": số {{x}} là đầu dãy nếu {{x-1}} không có trong tập.',
+    'Từ mỗi đầu dãy, tăng dần {{x+1, x+2...}} cho đến khi không tìm thấy. Mỗi số chỉ được thăm một lần.'
+  ],
+  solution: `### Ý tưởng
+Đưa tất cả số vào {{HashSet}}. Duyệt qua tập: nếu {{x-1}} không có trong tập thì {{x}} là đầu của một dãy liên tiếp. Từ {{x}}, đếm {{x+1, x+2...}} trong tập. Cập nhật độ dài max.
+
+Tại sao O(n)? Mỗi số chỉ được kiểm tra một lần khi là "đầu dãy", và vòng lặp while chỉ chạy qua các số trong dãy — tổng cộng mỗi số được duyệt tối đa 2 lần (một lần trong for, một lần trong while).
+
+~~~java
+class Solution {
+    public int longestConsecutive(int[] nums) {
+        Set<Integer> set = new HashSet<>();
+        for (int x : nums) set.add(x);
+
+        int best = 0;
+        for (int x : set) {
+            if (!set.contains(x - 1)) {   // x la dau day
+                int len = 1;
+                while (set.contains(x + len)) len++;
+                best = Math.max(best, len);
+            }
+        }
+        return best;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Phải duyệt qua {{set}} chứ không phải {{nums}} để tránh xử lý trùng lặp (nếu nums có trùng, for trên nums sẽ kiểm tra cùng một số nhiều lần).
+- Kiểm tra {{x-1}} không có trong tập là chìa khóa — nếu có {{x-1}} thì {{x}} sẽ được xử lý khi duyệt đến {{x-1}}.
+- Union-Find (DSU) cũng giải quyết được bài này: union các số kề nhau, sau đó tìm kích thước component lớn nhất. Code dài hơn nhưng pattern DSU hữu ích cho nhiều bài graph động.
+
+> Senior tip: Longest Consecutive Sequence là ví dụ kinh điển cho "O(n) nhờ HashSet + chỉ bắt đầu từ điểm đặc biệt". Pattern này xuất hiện trong: tìm dãy IP liên tiếp trong log, dãy session ID không bị gián đoạn, dãy ngày có giao dịch. Khi nghe "liên tiếp" + "O(n)", hãy nghĩ ngay HashSet + kiểm tra "điểm bắt đầu".`,
+  starter: "class Solution {\n    public int longestConsecutive(int[] nums) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected " + expected + " got " + actual);
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example 1", 4, () -> new Solution().longestConsecutive(new int[]{100, 4, 200, 1, 3, 2}));
+        run("example 2", 9, () -> new Solution().longestConsecutive(new int[]{0, 3, 7, 2, 5, 8, 4, 6, 0, 1}));
+        run("empty", 0, () -> new Solution().longestConsecutive(new int[]{}));
+        run("single", 1, () -> new Solution().longestConsecutive(new int[]{5}));
+        run("duplicates", 3, () -> new Solution().longestConsecutive(new int[]{1, 2, 2, 3}));
+        run("negative", 3, () -> new Solution().longestConsecutive(new int[]{-2, -1, 0, 5}));
+        run("large", 100000, () -> {
+            int[] a = new int[100000];
+            for (int i = 0; i < a.length; i++) a[i] = i + 1;
+            return new Solution().longestConsecutive(a);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(n)',
+  follow: ['Cài đặt bằng Union-Find (DSU) thì code ra sao?', 'Nếu mảng đã sort thì tối ưu thế nào?']
+}
+);
 })();
