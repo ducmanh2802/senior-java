@@ -10806,6 +10806,574 @@ Service checkout gọi 3 API bằng {{RestTemplate}} tạo mới mỗi lần, kh
 }
 ,
 {
+  id: 'spring-066',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Bạn cấu hình @Async executor cho một service Spring Boot 3.x như thế nào để tránh OOM khi traffic tăng, và TaskDecorator giải quyết vấn đề gì liên quan đến ThreadLocal (MDC, SecurityContext)?',
+  a: `**Tóm tắt:** @Async chạy method trên thread pool do TaskExecutor quản lý. Mặc định Boot 3 tự tạo ThreadPoolTaskExecutor core 8, queue không giới hạn — dưới tải cao queue phình gây OOM. Cấu hình rõ ràng: core/max pool, queue giới hạn, rejection policy, thread name prefix; dùng TaskDecorator để copy MDC (traceId) và SecurityContext sang thread async. Exception void method bị nuốt, trả CompletableFuture để caller xử lý lỗi.
+
+### Cơ chế và lý do phải cấu hình tường minh
+- Spring Boot 3 tự tạo {@code ThreadPoolTaskExecutor} với {@code corePoolSize=8}, {@code maxPoolSize=Integer.MAX_VALUE}, {@code queueCapacity=Integer.MAX_VALUE} — queue không giới hạn, dưới tải cao task tích lũy, heap phình → OOM.
+- Thread pool không được Spring quản lý lifecycle nếu tự new {@code ThreadPoolTaskExecutor} mà không đăng ký bean; cần {@code @Bean} để shutdown graceful.
+- {@code TaskDecorator} (Spring 4.3+) bọc {@code Runnable} để copy context {@code ThreadLocal} (MDC traceId, {@code SecurityContext}) sang thread worker; nếu không decorator, log async mất traceId, {@code SecurityContextHolder} rỗng → {@code @PreAuthorize} fail.
+
+### Cấu hình khuyến nghị production
+~~~java
+@Configuration
+@EnableAsync
+class AsyncConfig {
+  @Bean("appTaskExecutor")
+  ThreadPoolTaskExecutor appExecutor() {
+    ThreadPoolTaskExecutor ex = new ThreadPoolTaskExecutor();
+    ex.setCorePoolSize(16);                  // core threads thường xuyên
+    ex.setMaxPoolSize(64);                   // burst ngắn
+    ex.setQueueCapacity(2000);               // giới hạn queue, tránh OOM
+    ex.setThreadNamePrefix("app-async-");    // dễ debug log/trace
+    ex.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy()); // backpressure nhẹ
+    ex.setWaitForTasksToCompleteOnShutdown(true);
+    ex.setAwaitTerminationSeconds(30);
+    ex.setTaskDecorator(runnable -> {
+      Map<String, String> mdc = MDC.getCopyOfContextMap();
+      SecurityContext ctx = SecurityContextHolder.getContext();
+      return () -> {
+        try (MDC.MDCCloseable ignored = mdc == null ? null : MDC.setContextMap(mdc)) {
+          SecurityContextHolder.setContext(ctx);
+          runnable.run();
+        } finally {
+          SecurityContextHolder.clearContext();
+        }
+      };
+    });
+    ex.initialize();
+    return ex;
+  }
+}
+~~~
+
+### Void vs CompletableFuture — xử lý exception
+| Kiểu trả về | Exception behavior | Khuyến nghị |
+|---|---|---|
+| {@code void} | {@code AsyncUncaughtExceptionHandler} (mặc định log ERROR) — caller không biết | Chỉ cho fire-and-forget không quan trọng |
+| {@code CompletableFuture<T>} | Exception bọc trong future, caller {@code .exceptionally()} hoặc {@code .join()} | Mặc định cho mọi tác vụ cần biết kết quả/lỗi |
+
+### Trade-off queue bounded vs unbounded
+| Chiến lược | Ưu | Nhược | Khi nào dùng |
+|---|---|---|---|
+| Bounded + {@code CallerRunsPolicy} | Chống OOM, backpressure tự nhiên (caller chờ) | Caller block có thể làm chậm luồng chính | API đồng bộ cần đảm bảo không quá tải |
+| Bounded + {@code AbortPolicy} | Fail fast, caller bắt {@code RejectedExecutionException} | Cần retry/håndling ở caller | Hệ thống ưu tiên độ tin cậy hơn throughput |
+| Unbounded | Đơn giản, không reject | Rủi ro OOM khi spike | Chỉ dev/test hoặc workload rất đều |
+
+### Pitfall production
+- **Quên {@code TaskDecorator}**: log async không có traceId, debugging distributed trace mất gốc; {@code @Async} method gọi {@code @PreAuthorize} ném {@code AccessDeniedException} vì {@code SecurityContext} rỗng.
+- **Dùng {@code @Async} cho tác vụ chạy lâu (phút/giờ)**: thread pool bị chiếm, request khác không vào được. Tách thành job riêng (Spring Batch, message queue, scheduler).
+- **Không shutdown graceful**: pod terminated mà task chưa xong → dữ liệu dở. Cần {@code waitForTasksToCompleteOnShutdown=true} và {@code terminationGracePeriodSeconds} đủ lớn.
+
+### Ví dụ đời thực
+Hệ thống gửi email xác nhận đơn hàng dùng {@code @Async(void)} trên pool mặc định. Black Friday: 12k đơn/phút, queue phình heap từ 2GB → 6GB, pod OOM kill, email không gửi. Sửa: pool bounded (core 32, max 64, queue 5000), {@code CallerRunsPolicy}, trả {@code CompletableFuture}, decorator copy MDC/SecurityContext. Kết quả: heap ổn định 2.8GB, 0 OOM, email 99.9% gửi thành công, traceId đầy đủ trong log.
+
+### Trả lời mẫu khi phỏng vấn
+"Với @Async trên Spring Boot 3, tôi không dùng pool mặc định (queue unbounded → OOM). Tôi cấu hình ThreadPoolTaskExecutor bean: core/max pool size hợp lý, queue bounded (ví dụ 2000), rejection policy CallerRunsPolicy để backpressure nhẹ, thread name prefix để dễ quan sát. Quan trọng là TaskDecorator để copy MDC traceId và SecurityContext sang thread worker — nếu không, log mất traceId và @PreAuthorize fail vì SecurityContext rỗng. Tôi luôn trả CompletableFuture thay vì void để caller xử lý exception; void chỉ cho fire-and-forget không quan trọng. Tôi cũng bật waitForTasksToCompleteOnShutdown và awaitTerminationSeconds để graceful shutdown không mất task."
+
+> Senior tip: @Async phù hợp tác vụ ngắn (<1s), I/O bound. Tác vụ nặng/dài dùng message broker (Kafka/Rabbit) + consumer riêng để tách vòng đời deploy, retry, DLQ, quan sát độc lập.
+
+### Câu hỏi đào sâu
+1. Khi nào nên dùng message broker thay vì @Async cho tác vụ nền?
+2. Làm sao truyền traceId sang thread async khi dùng virtual thread?
+3. Làm sao test @Async method với TaskDecorator trong integration test?
+`,
+  follow: ['Khi nào nên dùng message broker thay vì @Async cho tác vụ nền?', 'Làm sao truyền traceId sang thread async khi dùng virtual thread?', 'Làm sao test @Async method với TaskDecorator trong integration test?'],
+  tags: ['Async', 'TaskExecutor', 'ThreadPoolTaskExecutor', 'TaskDecorator', 'MDC', 'CompletableFuture', 'SecurityContext']
+}
+,
+{
+  id: 'spring-067',
+  topic: 'spring',
+  level: 'senior',
+  q: '@TransactionalEventListener khác @EventListener thế nào về thời điểm chạy, và bạn dùng phase AFTER_COMMIT hay AFTER_ROLLBACK để đảm bảo event chỉ phát khi transaction thành công?',
+  a: `**Tóm tắt:** @EventListener chạy ngay trong transaction của publisher; nếu transaction sau đó rollback, event đã chạy có thể gây tác dụng phụ (gửi email, publish message). @TransactionalEventListener cho phép gắn phase: AFTER_COMMIT (mặc định) chỉ chạy sau khi transaction commit thành công, AFTER_ROLLBACK chỉ chạy khi rollback, AFTER_COMPLETION chạy trong cả hai. Dùng AFTER_COMMIT cho outbox, gửi thông báo, đồng bộ cache — đảm bảo tính nhất quán.
+
+### Cơ chế hoạt động chi tiết
+- {@code @EventListener}: Spring đăng ký {@code ApplicationListener}, khi {@code ApplicationEventPublisher.publishEvent()} gọi, listener thực thi **ngay lập tức** trên cùng thread và transaction của publisher. Nếu publisher có {@code @Transactional} và sau đó rollback, listener đã chạy — side effect (email, HTTP call, message) không thể quay lui.
+- {@code @TransactionalEventListener}: Spring bọc listener trong {@code TransactionSynchronization} (qua {@code TransactionSynchronizationManager.registerSynchronization()}). Listener chỉ được kích hoạt khi transaction kết thúc theo phase:
+  - {@code AFTER_COMMIT} (mặc định): transaction commit thành công.
+  - {@code AFTER_ROLLBACK}: transaction rollback.
+  - {@code AFTER_COMPLETION}: cả hai trường hợp.
+  - {@code BEFORE_COMMIT}: ngay trước commit (hiếm dùng, rủi ro nếu commit fail).
+
+### Phase AFTER_COMMIT — pattern Outbox
+~~~java
+@Service
+@RequiredArgsConstructor
+class OrderService {
+  private final ApplicationEventPublisher publisher;
+  private final OrderRepository repo;
+
+  @Transactional
+  public Order create(OrderRequest req) {
+    Order o = repo.save(new Order(req));
+    // Chỉ phát sau khi commit thành công
+    publisher.publishEvent(new OrderCreatedEvent(o.getId(), o.getCustomerEmail()));
+    return o;
+  }
+}
+
+@Component
+@RequiredArgsConstructor
+class OrderEventHandler {
+  private final EmailService email;
+
+  @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+  void handle(OrderCreatedEvent e) {
+    email.sendConfirmation(e.customerEmail(), e.orderId());
+  }
+}
+~~~
+
+### AFTER_ROLLBACK —bù đắp / audit
+~~~java
+@TransactionalEventListener(phase = TransactionPhase.AFTER_ROLLBACK)
+void auditFailed(OrderCreatedEvent e) {
+  auditLog.log("ORDER_CREATE_ROLLBACK", e.orderId());
+}
+~~~
+
+### AFTER_COMPLETION — cleanup resource
+~~~java
+@TransactionalEventListener(phase = TransactionPhase.AFTER_COMPLETION)
+void cleanup(TempFileCreatedEvent e) {
+  Files.deleteIfExists(e.path()); // xóa file tạm dù thành công hay fail
+}
+~~~
+
+### Trade-off phase
+| Phase | Use case | Rủi ro |
+|---|---|---|
+| {@code AFTER_COMMIT} | Gửi email, publish Kafka, đồng bộ cache, outbox | Listener chạy **ngoài transaction** — nếu listener fail, không rollback được DB. Cần idempotency/retry. |
+| {@code AFTER_ROLLBACK} | Audit thất bại, alert, cleanup bù | Chỉ chạy khi rollback, ít dùng chính. |
+| {@code AFTER_COMPLETION} | Cleanup resource (file, lock) | Chạy cả success/fail; không phân biệt được. |
+
+### Pitfall production
+- **Gọi service transactional khác trong AFTER_COMMIT**: listener chạy không có transaction đang mở; nếu gọi method {@code @Transactional} khác, nó sẽ mở transaction mới. Nếu listener fail sau khi service kia commit → dữ liệu không nhất quán. Khuyến nghị: listener chỉ làm side effect idempotent (gửi message, ghi log), không sửa DB nghiệp vụ.
+- **Listener ném exception**: Spring log ERROR nhưng **không rollback transaction gốc** (đã commit). Cần try/catch trong listener hoặc dùng {@code @Async} + retry/DLQ.
+- **Test listener**: {@code @Sql} setup data, gọi service, flush transaction, assert listener chạy. Dùng {@code @Transactional} trên test method để kiểm soát commit/rollback.
+
+### Test listener chỉ chạy sau commit
+~~~java
+@SpringBootTest
+@Transactional // test method rollback mặc định
+class OrderEventHandlerTest {
+  @Autowired OrderService svc;
+  @Autowired OrderEventHandler handler;
+  @Autowired ApplicationEventPublisher publisher;
+
+  @Test
+  @Commit // commit để kích AFTER_COMMIT
+  void listenerRunsAfterCommit() {
+    Order o = svc.create(new OrderRequest("a@b.com"));
+    // handler.handle() đã chạy vì test commit
+    assertThat(handler.getLastEvent()).isNotNull();
+  }
+
+  @Test
+  // không @Commit → rollback → listener KHÔNG chạy
+  void listenerNotRunOnRollback() {
+    Order o = svc.create(new OrderRequest("a@b.com"));
+    // rollback sau test
+    assertThat(handler.getLastEvent()).isNull();
+  }
+}
+~~~
+
+### Ví dụ đời thực
+Hệ thống ngân hàng: service tạo giao dịch publish {@code TransactionCreatedEvent}. Ban đầu dùng {@code @EventListener} gửi email/SMS ngay trong transaction. Sự cố: DB deadlock rollback, nhưng email/SMS đã gửi → khách nhận thông báo giao dịch thất bại. Sửa: chuyển sang {@code @TransactionalEventListener(AFTER_COMMIT)} cho email/SMS, {@code AFTER_ROLLBACK} ghi audit fail. Kết quả: 0 tin nhắn sai lệch trong 6 tháng, audit trail đầy đủ cho compliance.
+
+### Trả lời mẫu khi phỏng vấn
+"@EventListener chạy ngay trong transaction publisher — nếu rollback, side effect (gửi email, publish message) đã xảy ra và không quay lui được. @TransactionalEventListener cho phép gắn phase: AFTER_COMMIT (mặc định) chỉ chạy sau commit thành công, AFTER_ROLLBACK chỉ khi rollback, AFTER_COMPLETION cả hai. Tôi dùng AFTER_COMMIT cho outbox pattern, gửi thông báo, đồng bộ cache — đảm bảo chỉ phát event khi dữ liệu đã commit chắc chắn. Lưu ý: listener AFTER_COMMIT chạy ngoài transaction, nếu fail không rollback DB được, nên chỉ làm side effect idempotent, có retry/DLQ. Test dùng @Commit/@Rollback trên test method để kiểm soát transaction."
+
+> Senior tip: coi listener AFTER_COMMIT như một **giao dịch riêng biệt** — thiết kế idempotent, có retry, không sửa DB nghiệp vụ chính. Nếu cần đảm bảo atomic giữa DB và message, dùng Transactional Outbox (ghi event vào bảng outbox cùng transaction, relay riêng publish).
+
+### Câu hỏi đào sâu
+1. Vì sao không nên gọi service transactional khác trong listener AFTER_COMMIT?
+2. Làm sao test listener chỉ chạy sau commit bằng @Sql?
+3. Khi nào dùng Transactional Outbox thay vì @TransactionalEventListener trực tiếp?
+`,
+  follow: ['Vì sao không nên gọi service transactional khác trong listener AFTER_COMMIT?', 'Làm sao test listener chỉ chạy sau commit bằng @Sql?', 'Khi nào dùng Transactional Outbox thay vì @TransactionalEventListener trực tiếp?'],
+  tags: ['@TransactionalEventListener', 'phase', 'AFTER_COMMIT', 'event', 'outbox', 'TransactionPhase']
+}
+,
+{
+  id: 'spring-068',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Spring Cache (@Cacheable, @CachePut, @CacheEvict) có những bẫy nào về key generation, cache stampede, và TTL không đồng bộ giữa các node trong cluster?',
+  a: `**Tóm tắt:** Spring Cache abstraction mặc định dùng SimpleCacheManager (ConcurrentMap) — chỉ phù hợp dev/single node. Production cần Redis/Caffeine. Bẫy: key generator mặc định hash args có thể va chạm; cache stampede khi nhiều request cùng miss và tính toán nặng; TTL khác nhau giữa node gây dữ liệu lệch; @CachePut không update nếu key sai; condition/unless expression phức tạp. Dùng @Cacheable sync=true cho stampede, key tường minh, và Redis với TTL nhất quán.
+
+### Cơ chế key generation và va chạm
+- Mặc định {@code SimpleKeyGenerator}: nếu 1 param → dùng param; nhiều param → {@code SimpleKey(params[])} hashCode. Hash collision hiếm nhưng có thể; key phức tạp (List, Map) {@code hashCode()} không ổn định giữa JVM.
+- Khuyến nghị: key tường minh {@code @Cacheable(key = "#id")} hoặc {@code @Cacheable(key = \"#root.methodName + ':' + #id\")}. Tránh key động phức tạp trong SpEL.
+
+### Cache Stampede (thundering herd)
+- Tình huống: key hot (sản phẩm bán chạy) hết hạn/không có cache → hàng trăm request cùng miss → tất cả gọi DB/tính toán → overload.
+- Giải pháp:
+  1. {@code @Cacheable(sync = true)}: Spring khóa theo key, chỉ 1 thread tính toán, các thread khác chờ kết quả (từ Spring 4.3). Chỉ hoạt động với CacheManager hỗ trợ (Redis, Caffeine, Ehcache — không phải ConcurrentMap).
+  2. **Probabilistic early expiration**: TTL ngẫu nhiên (base + jitter) để key không hết hạn cùng lúc.
+  3. **Refresh ahead**: Job định kỳ refresh key hot trước khi hết hạn.
+
+### TTL không đồng bộ cluster
+- {@code @Cacheable} không có TTL attribute; TTL cấu hình ở CacheManager/Redis.
+- Nếu node A TTL=5m, node B TTL=10m → node A refresh trước, node B vẫn trả dữ liệu cũ → inconsistency.
+- Giải pháp: TTL tập trung ở Redis (server-side), không cấu hình per-node. Dùng {@code RedisCacheConfiguration} với {@code entryTtl(Duration)} thống nhất.
+
+### @CachePut / @CacheEvict bẫy
+| Annotation | Bẫy thường gặp | Khắc phục |
+|---|---|---|
+| {@code @CachePut} | Key expression khác {@code @Cacheable} → put key A, get key B | Key tường minh giống hệt nhau; dùng constant/SpEL chung |
+| {@code @CacheEvict} | {@code allEntries=true} xóa toàn bộ cache region | Chỉ dùng khi rõ ràng; tránh trên production cao tải |
+| {@code condition/unless} | SpEL phức tạp, tham chiếu bean/service → khởi tạo vòng tròn | Giữ đơn giản: {@code unless = \"#result == null\")} |
+
+### Cấu hình Redis production
+~~~yaml
+spring:
+  cache:
+    type: redis
+  data:
+    redis:
+      host: redis-cluster
+      port: 6379
+  cache:
+    redis:
+      time-to-live: 300s        # TTL thống nhất 5 phút
+      cache-null-values: false  # không cache null tránh stampede null
+      use-key-prefix: true      # prefix key dễ quản lý
+~~~
+~~~java
+@Configuration
+@EnableCaching
+class CacheConfig {
+  @Bean
+  RedisCacheManager cacheManager(RedisConnectionFactory cf) {
+    RedisCacheConfiguration cfg = RedisCacheConfiguration.defaultCacheConfig()
+        .entryTtl(Duration.ofMinutes(5))
+        .disableCachingNullValues()
+        .serializeKeysWith(RedisSerializationContext.SerializationPair
+            .fromSerializer(new StringRedisSerializer()))
+        .serializeValuesWith(RedisSerializationContext.SerializationPair
+            .fromSerializer(new GenericJackson2JsonRedisSerializer()));
+    return RedisCacheManager.builder(cf)
+        .cacheDefaults(cfg)
+        .withCacheConfiguration("products", cfg.entryTtl(Duration.ofMinutes(10))) // override per cache
+        .build();
+  }
+}
+~~~
+
+### Trade-off Caffeine vs Redis
+| Tiêu chí | Caffeine (local) | Redis (distributed) |
+|---|---|---|
+| Latency | ~ns (in-process) | ~ms (network) |
+| Consistency | Mỗi node tự đời → stale data | Single source of truth |
+| Capacity | Heap JVM (GB) | RAM cluster (TB) |
+| Stampede | {@code sync=true} native | {@code sync=true} + Redis lock |
+| Phù hợp | Reference data, ít thay đổi, read-heavy | Shared state, multi-node, cần nhất quán |
+
+### Pitfall production
+- **Dùng SimpleCacheManager (ConcurrentMap) trên production multi-node**: mỗi node cache riêng → dữ liệu lệch, memory leak khi deploy mới node không xóa cache cũ.
+- **Cache null values**: key không tồn tại cache null → stampede null mỗi lần gọi. Tắt {@code cache-null-values=false}.
+- **Key chứa object lớn/non-serializable**: Redis serializer fail. Key chỉ dùng primitive/String.
+
+### Ví dụ đời thực
+E-commerce flash sale: key {@code product:123} TTL 5 phút, 50k RPS. Không {@code sync=true} → stampede khi hết hạn: MySQL CPU 100%, 503 40%. Bật {@code @Cacheable(sync=true)} + Redis cluster, TTL jitter 4-6 phút, Caffeine L2 cache 1 phút trước Redis. Kết quả: stampede 0, p99 45ms, MySQL CPU <20%.
+
+### Trả lời mẫu khi phỏng vấn
+"Spring Cache abstraction mặc định dùng ConcurrentMap — chỉ dev. Production tôi dùng Redis (distributed) hoặc Caffeine (local L2). Bẫy chính: key generator mặc định hash args dễ va chạm, nên key tường minh; cache stampede khi key hot hết hạn cùng lúc — bật @Cacheable(sync=true) để single-flight, thêm TTL jitter; TTL phải cấu hình tập trung ở Redis, không per-node. @CachePut/@CacheEvict key phải khớp chính xác @Cacheable. Condition/unless giữ đơn tránh SpEL phức tạp. Với multi-node, Redis là source of truth; Caffeine chỉ làm L2 cache ngắn (1-2 phút) trước Redis."
+
+> Senior tip: cache không phải miễn phí — mỗi layer thêm độ phức tạp, inconsistency, debug khó. Chỉ cache khi đo được bottleneck (DB CPU, latency) và có chiến lược invalidate rõ ràng. "Cache invalidation is one of the two hard things in CS."
+
+### Câu hỏi đào sâu
+1. Khi nào nên dùng Caffeine local cache thay vì Redis?
+2. Làm sao xử lý cache stampede cho key nóng mà không dùng sync=true?
+3. Làm sao thiết kế multi-level cache (Caffeine L1 + Redis L2) an toàn?
+`,
+  follow: ['Khi nào nên dùng Caffeine local cache thay vì Redis?', 'Làm sao xử lý cache stampede cho key nóng mà không dùng sync=true?', 'Làm sao thiết kế multi-level cache (Caffeine L1 + Redis L2) an toàn?'],
+  tags: ['Spring Cache', '@Cacheable', 'cache stampede', 'Redis', 'TTL', 'key generation', 'Caffeine']
+}
+,
+
+
+{
+  id: 'jpa-052',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Open Session in View (OSIV - spring.jpa.open-in-view) giữ EntityManager mở suốt request HTTP. Tại sao nó che giấu N+1, gây cạn connection pool, và bạn tắt an toàn theo từng bước ra sao?',
+  a: `**Tóm tắt:** OSIV (OpenEntityManagerInViewInterceptor) bind EntityManager từ đầu request đến sau render. Lợi ích: tránh LazyInitializationException khi serializer chạm LAZY. Hại: connection bị giữ sau transaction service (Spring Boot mặc định DELAYED_ACQUISITION_AND_HOLD), N+1 chạy lẻ ngoài transaction, pool Hikari cạn dưới tải. Tắt an toàn: spring.jpa.open-in-view=false, trả DTO thay entity, fetch trong @Transactional bằng EntityGraph/join fetch, bật log SQL và datasource-proxy đo query, triển khai dần từng module.
+
+### Cơ chế OSIV hoạt động thế nào
+- {@code OpenEntityManagerInViewInterceptor} (servlet filter / WebMvcConfigurer) mở {@code EntityManager} khi request vào, bind vào {@code ThreadLocal}, **giữ mở cho đến sau khi view render xong** (sau {@code DispatcherServlet} trả response).
+- Spring Boot mặc định {@code spring.jpa.open-in-view=true} và {@code spring.jpa.properties.hibernate.connection.handling_mode=DELAYED_ACQUISITION_AND_HOLD}: connection lấy khi cần, giữ sau transaction commit cho đến end of request.
+
+### Tại sao che giấu N+1
+- Service trả entity (chỉ load root, collection LAZY). Transaction service kết thúc, nhưng OSIV vẫn giữ EntityManager + connection mở.
+- Serializer (Jackson) truy cập collection LAZY → Hibernate phát lazy loading, chạy query **ngoài transaction** (auto-commit true hoặc transaction read-only mới).
+- Dev thấy chạy ngon, không biết N+1 đang chạy lẻ từng request render.
+
+### Gây cạn connection pool
+- Mỗi request giữ connection từ đầu đến hết render (có thể 100-500ms cho HTML, 50-200ms cho JSON).
+- Dưới tải cao (1000 RPS), Hikari pool (mặc định 10) cạn ngay → request chờ {\@code getConnection} timeout.
+- Với virtual thread: thread không block OS thread nhưng connection pool vẫn giới hạn vật lý.
+
+### Quy trình tắt an toàn (gradual rollout)
+1. **Đo baseline**: bật {\@code spring.jpa.open-in-view=true}, log SQL + datasource-proxy, đo số query/request, connection usage.
+2. **Tắt global**: {\@code spring.jpa.open-in-view=false}.
+3. **Sửa module từng cái**:
+   - Repository: dùng {\@code EntityGraph}, {\@code @NamedEntityGraph}, {\@code JOIN FETCH} trong query.
+   - Service: mở {\@code @Transactional(readOnly=true)} bao toàn bộ logic fetch (bao gồm cả serializer nếu dùng DTO mapping trong transaction).
+   - DTO projection: {\@code @Query(\"select new com.example.OrderView(o.id, o.total, c.name) from Order o join o.customer c\")} — không load entity, không LAZY.
+4. **Test integration**: {\@code @SpringBootTest} + {\@code @AutoConfigureMockMvc}, assert không {\@code LazyInitializationException}, số query giảm.
+5. **Canary deploy**: bật cho 10% traffic, quan sát connection pool, error rate, latency.
+
+### Code mẫu: fetch an toàn không OSIV
+~~~java
+// Repository - EntityGraph
+@EntityGraph(attributePaths = {"items", "customer"}, type = EntityGraphType.LOAD)
+List<Order> findOrdersWithItemsByCustomer(Long customerId);
+
+// Hoặc DTO projection (không entity, không LAZY)
+@Query("select new com.example.view.OrderSummary(o.id, o.total, c.name, count(i)) " +
+       "from Order o join o.customer c left join o.items i " +
+       "where c.id = :cid group by o.id, o.total, c.name")
+List<OrderSummary> findSummariesByCustomer(@Param("cid") Long cid);
+
+// Service - transaction bao fetch
+@Transactional(readOnly = true)
+public List<OrderSummary> getOrders(Long customerId) {
+  return repo.findSummariesByCustomer(customerId); // 1 query, không LAZY
+}
+~~~
+
+### Trade-off DTO vs Entity
+| Tiêu chí | Entity + OSIV | DTO Projection (không OSIV) |
+|---|---|---|
+| Query count | N+1 ẩn (render time) | 1 (tối ưu) |
+| Connection hold | Lâu (toàn request) | Ngắn (chỉ trong @Transactional) |
+| Memory | Entity + snapshot trong PC | Chỉ DTO (nhẹ) |
+| Refactor effort | Thấp (bật OSIV) | Cao (viết DTO, query) |
+| Type safety | Entity compile-time | DTO compile-time |
+| Serialization | Jackson handle circular ref | DTO flat, dễ kiểm soát |
+
+### Pitfall production
+- **Tắt OSIV một lúc toàn app**: hàng trăm endpoint ném {\@code LazyInitializationException} → 500. Phải gradual.
+- **Serializer truy cập LAZY trong @Transactional(readOnly=true)**: nếu mapping DTO trong transaction, OK; nếu mapping ở controller (ngoài transaction) → fail.
+- **Quên fetch collection**: DTO thiếu data → frontend bug. Code review bắt buộc.
+
+### Ví dụ đời thực
+Admin dashboard load 50 đơn hàng, mỗi đơn 10 items. OSIV bật: 501 query (1 orders + 500 items), connection hold 300ms, pool 20 → 50 RPS max. Tắt OSIV, dùng EntityGraph fetch items + customer: 1 query, connection hold 15ms, pool 20 → 800 RPS. Dùng datasource-proxy đo: query/request từ 501 → 1, p99 latency 280ms → 45ms.
+
+### Trả lời mẫu khi phỏng vấn
+"OSIV giữ EntityManager mở suốt request để tránh LazyInitializationException khi serializer chạm LAZY. Nhưng hại: connection bị giữ sau transaction service (DELAYED_ACQUISITION_AND_HOLD), N+1 chạy lẻ ngoài transaction khi render, pool Hikari cạn dưới tải. Tắt an toàn: spring.jpa.open-in-view=false, trả DTO projection hoặc fetch trong @Transactional bằng EntityGraph/join fetch, bật log SQL và datasource-proxy đo query, triển khai dần từng module. DTO projection tốt hơn: không LAZY, query 1 lần, connection hold ngắn, memory nhẹ."
+
+> Senior tip: OSIV là "nợ kỹ thuật" tiện lợi dev nhưng nguy hiểm production. Mục tiêu: **mọi query chạy trong @Transactional rõ ràng**, không phụ thuộc filter servlet. Dùng datasource-proxy (gav: com.github.gavlyukovskiy:datasource-proxy-spring-boot-starter) để đo query/request trên mọi môi trường.
+
+### Câu hỏi đào sâu
+1. Vì sao LazyInitializationException thường chỉ xuất hiện sau khi tắt OSIV?
+2. DTO projection giúp gì ngoài tránh LAZY, và khi nào nó làm repository phình ra?
+3. Làm sao dùng datasource-proxy đo N+1 tự động trong CI?
+`,
+  follow: ['Vì sao LazyInitializationException thường chỉ xuất hiện sau khi tắt OSIV?', 'DTO projection giúp gì ngoài tránh LAZY, và khi nào nó làm repository phình ra?', 'Làm sao dùng datasource-proxy đo N+1 tự động trong CI?'],
+  tags: ['OSIV', 'Open Session in View', 'spring.jpa.open-in-view', 'LazyInitializationException', 'connection pool', 'N+1', 'EntityGraph', 'DTO projection']
+}
+,
+{
+  id: 'jpa-053',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Batch fetch (hibernate.default_batch_fetch_size, @BatchSize) và EntityGraph/@NamedEntityGraph so sánh như thế nào về số query, phân trang an toàn, và tránh MultipleBagFetchException?',
+  a: `**Tóm tắt:** Batch fetch gom id vào IN (≈ 1 + ceil(N/batch) query), an toàn với phân trang DB, tránh MultipleBagFetchException vì không join. EntityGraph/join fetch cho 1 query nhưng join collection + paging gây HHH000104 (phân trang trong memory), hai bag join fetch ném MultipleBagFetchException. Với API danh sách phân trang: ưu tiên keyset pagination + batch fetch hoặc Slice + batch fetch; tránh join fetch collection trực tiếp với Pageable.
+
+### Batch fetch cơ chế
+- {@code hibernate.default_batch_fetch_size} (global) hoặc {@code @BatchSize(size=N)} (per entity/collection): khi truy cập collection LAZY, Hibernate không chạy 1 query/element mà gom id cha vào {\@code IN (...)} lấy batch con.
+- Ví dụ: load 20 Order, truy cập items → 1 query {\@code select * from item where order_id in (?,?,...)} thay vì 20 query.
+- {\@code default_batch_fetch_size=20} → 1 + ceil(20/20) = 2 query (1 orders + 1 items batch).
+- Không join → không nhân bản row cha, không gây MultipleBagFetchException.
+
+### EntityGraph / JOIN FETCH
+- {\@code @EntityGraph(attributePaths = {"items"})} hoặc JPQL {\@code JOIN FETCH o.items}: chạy 1 query {\@code SELECT ... FROM order o LEFT JOIN FETCH o.items}.
+- **Vấn đề phân trang**: {\@code Pageable} + join fetch collection → Hibernate log {\@code HHH000104: firstResult/maxResults specified with collection fetch; applying in memory}. DB trả tất cả row, Hibernate cắt trong memory → OOM nếu data lớn.
+- **MultipleBagFetchException**: 2 collection {\@code @OneToMany} (List/Bag) join fetch cùng lúc → Cartesian product, Hibernate không xác định được row thuộc collection nào → ném exception.
+
+### So sánh chi tiết
+| Tiêu chí | Batch Fetch | EntityGraph / JOIN FETCH |
+|---|---|---|
+| **Số query** | 1 (root) + ceil(N/batch) (con) | 1 (join) |
+| **Phân trang DB (Page/Slice)** | **An toàn** — root query có LIMIT/OFFSET | **Không an toàn** — HHH000104, in-memory paging |
+| **Keyset pagination** | **An toàn** — root query có WHERE cursor | An toàn nếu không join collection |
+| **MultipleBagFetchException** | **Không bao giờ** (không join) | **Hay xảy ra** (2+ bag join) |
+| **Memory** | Chỉ load batch con cần thiết | Load toàn bộ join result (nhân bản row cha) |
+| **Network roundtrip** | 2+ roundtrip | 1 roundtrip |
+| **Phù hợp** | Danh sách phân trang, collection lớn | Single entity, collection nhỏ, không paging |
+
+### Khi nào dùng cái nào
+| Use case | Khuyến nghị |
+|---|---|
+| API danh sách có phân trang (Page/Slice) | **Batch fetch** + keyset pagination hoặc Slice |
+| Chi tiết 1 entity (detail view) | EntityGraph/JOIN FETCH (1 query, không paging) |
+| Collection lớn (>50 phần tử) | Batch fetch (tránh join nhân bản row) |
+| 2+ collection @OneToMany trên 1 entity | **Chỉ batch fetch** — join fetch ném MultipleBagFetchException |
+
+### Fix MultipleBagFetchException
+1. **Đổi List → Set** (không còn Bag) — nhưng {@code equals/hashCode} phải đúng, rủi ro performance.
+2. **Dùng @OrderColumn** (List có thứ tự) — Hibernate quản lý index, không Bag.
+3. **Batch fetch** — không join, tránh hẳn exception (khuyên dùng).
+
+### Cấu hình batch fetch production
+~~~yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        default_batch_fetch_size: 20  # global, hoặc @BatchSize per entity
+~~~
+~~~java
+@Entity
+class Order {
+  @OneToMany(mappedBy = "order")
+  @BatchSize(size = 20)  // override per collection
+  List<OrderItem> items;
+
+  @OneToMany(mappedBy = "order")
+  @BatchSize(size = 20)
+  List<OrderHistory> history;  // 2 collection → batch fetch an toàn
+}
+~~~
+
+### Trade-off batch size
+| Batch size | Ưu | Nhược |
+|---|---|---|
+| Nhỏ (10-20) | Query IN ngắn, plan cache ổn định, memory ít | Nhiều roundtrip nếu N lớn |
+| Lớn (100-500) | Ít roundtrip | IN clause dài, một số DB giới hạn (Oracle 1000, PostgreSQL không giới hạn nhưng plan cache có thể bloat) |
+| Khuyến nghị | **20-50** cho hầu hết trường hợp | Tune theo data thực tế |
+
+### Ví dụ đời thực
+API danh sách đơn hàng phân trang 20/trang, mỗi đơn 15 items + 5 history.
+- **EntityGraph join fetch**: 1 query join 3 bảng, Pageable → HHH000104, in-memory paging, 5000 đơn → load 75k items + 25k history vào memory, OOM.
+- **Batch fetch (size=20) + Slice**: 1 query orders (LIMIT 21), 1 query items (IN 20 id), 1 query history (IN 20 id) = 3 query, memory chỉ 20 đơn, phân trang DB an toàn. p99 45ms vs 2.1s, heap ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+"Batch fetch dùng hibernate.default_batch_fetch_size hoặc @BatchSize: khi truy cập collection LAZY, Hibernate gom id cha vào IN clause lấy batch con (1 + ceil(N/batch) query). Ưu điểm: không join nên an toàn phân trang DB (Page/Slice/keyset), không MultipleBagFetchException, memory thấp. EntityGraph/JOIN FETCH cho 1 query nhưng join collection + Pageable gây HHH000104 (in-memory paging), 2+ bag join fetch ném MultipleBagFetchException. Với API danh sách phân trang tôi ưu tiên batch fetch + keyset pagination hoặc Slice; detail view 1 entity dùng EntityGraph. Fix MultipleBagFetchException: đổi List→Set (cẩn thận equals/hashCode), @OrderColumn, hoặc tốt nhất dùng batch fetch tránh join hẳn."
+
+> Senior tip: Mặc định {\@code hibernate.default_batch_fetch_size=20} toàn app an toàn và hiệu quả. Chỉ dùng JOIN FETCH khi chắc chắn không paging và collection nhỏ. MultipleBagFetchException là dấu hiệu thiết kế sai — tránh join fetch nhiều collection.
+
+### Câu hỏi đào sâu
+1. Tại sao đổi List sang Set có thể sửa MultipleBagFetchException nhưng tạo rủi ro equals/hashCode?
+2. Khi nào chọn default_batch_fetch_size toàn cục thay vì @BatchSize theo entity?
+3. Làm sao kết hợp batch fetch với keyset pagination cho API infinite scroll?
+`,
+  follow: ['Tại sao đổi List sang Set có thể sửa MultipleBagFetchException nhưng tạo rủi ro equals/hashCode?', 'Khi nào chọn default_batch_fetch_size toàn cục thay vì @BatchSize theo entity?', 'Làm sao kết hợp batch fetch với keyset pagination cho API infinite scroll?'],
+  tags: ['batch fetch', 'default_batch_fetch_size', '@BatchSize', 'EntityGraph', 'MultipleBagFetchException', 'pagination', 'JOIN FETCH']
+}
+,
+{
+  id: 'jpa-054',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Bulk update/delete bằng JPQL (@Modifying) bỏ qua persistence context, không chạy callback, không tăng @Version. Rủi ro stale entity trong cùng transaction là gì và cách dùng an toàn (flush, clear, @Modifying clearAutomatically)?',
+  a: `**Tóm tắt:** Bulk JPQL chạy thẳng SQL: không load entity, không callback @PreUpdate, không cascade, không tự tăng @Version. Persistence context không được cập nhật — entity đã load trước đó giữ giá trị cũ và flush sau đó có thể ghi đè ngược kết quả bulk. An toàn: @Modifying(flushAutomatically=true, clearAutomatically=true) hoặc tách bulk ra transaction riêng, flush trước bulk, clear sau bulk. Cần version: tự SET version = version + 1.
+
+### Cơ chế bulk JPQL
+- {@code @Modifying} + {@code @Query("UPDATE ...")} / {@code @Query("DELETE ...")}: Hibernate biên dịch JPQL thành SQL và executeUpdate trực tiếp qua JDBC.
+- **Không qua persistence context**: entity không load, không dirty-check, không snapshot, không lifecycle callback ({@code @PreUpdate}, {@code @PostUpdate}, {@code @PreRemove}, {@code @PostRemove}).
+- **Không tự tăng @Version**: cột version không tự động +1, optimistic lock không bảo vệ bulk.
+
+### Rủi ro stale entity trong cùng transaction
+~~~java
+@Transactional
+void badExample(OrderRepository repo, long id) {
+  Order o = repo.findById(id).orElseThrow();  // load entity, version=1
+  repo.bulkUpdateStatus(id, Status.CANCELLED); // @Modifying UPDATE order SET status='CANCELLED' WHERE id=?
+  // o vẫn ở managed state, version=1, status=PENDING
+  o.setNote("Cancelled by admin");             // sửa field khác
+  // transaction commit → Hibernate flush o
+  // UPDATE order SET note='...', version=2 WHERE id=? AND version=1
+  // → ghi đè status=CANCELLED về PENDING! version thành 2
+}
+~~~
+Kết quả: bulk update bị ghi đè, dữ liệu sai, không có lỗi.
+
+### Cách dùng an toàn
+
+**Cách 1: @Modifying(flushAutomatically=true, clearAutomatically=true)** (Spring Data JPA 2.5+)
+~~~java
+@Modifying(flushAutomatically = true, clearAutomatically = true)
+@Query("UPDATE Order o SET o.status = :status WHERE o.id = :id")
+int bulkUpdateStatus(@Param("id") Long id, @Param("status") String status);
+~~~
+- {\@code flushAutomatically}: flush persistence context trước bulk → entity dirty được đẩy xuống DB trước.
+- {\@code clearAutomatically}: clear persistence context sau bulk → entity stale bị detach, không flush sau đó.
+
+**Cách 2: Tách transaction riêng**
+~~~java
+@Transactional
+void safeSeparateTx(OrderRepository repo, long id) {
+  repo.bulkUpdateStatus(id, Status.CANCELLED); // transaction 1: bulk + commit
+  // transaction kết thúc, persistence context clear
+}
+
+@Transactional  
+void thenLoadFresh(OrderRepository repo, long id) {
+  Order o = repo.findById(id).orElseThrow();   // transaction 2: load fresh, version đúng
+}
+~~~
+
+**Cách 3: Flush + Clear thủ công (cần thiết khi không tách tx)**
+~~~java
+@Transactional
+void safeManual(EntityManager em, OrderRepository repo, long id) {
+  Order o = repo.findById(id).orElseThrow();
+  em.flush();           // đẩy dirty entity trước
+  em.clear();           // detach all, tránh flush sau ghi đè
+  repo.bulkUpdateStatus(id, Status.CANCELLED);
+  // transaction commit: không entity managed nào để flush
+}
+~~~
+
+### Cập nhật @Version cùng bulk (optimistic lock)
+~~~java
+@Modifying(flushAutomatically = true, clearAutomatically = true)
+@Query("UPDATE Order o SET o.status = :status, o.version = o.version + 1 WHERE o.id = :id AND o.version = :version")
+int bulkUpdateWithVersion(@Param("id") Long id, @Param("status") String status, @Param("version") Long version);
+// Trả về số row affected: 0 = concurrent modification / stale
+~~~
+
+### Trade-off các cách
+| Cách | Ưu | Nhược | Khi dùng |
+|---|---|---|---|
+| {\@code flushAutomatically/clearAutomatically} | Đơn giản, annotation-driven | Chỉ Spring Data JPA 2.5+, cần hiểu cơ chế | Bulk đơn lẻ trong transaction có entity managed trước |
+| Tách transaction | Rõ ràng, an toàn nhất | Phải chia method, propagation management | Bulk phức tạp, nhiều bước, cần rollback riêng |
+| Manual flush/clear | Kiểm soát tinh vi | Dễ quên, code verbose | Legacy code không dùng Spring Data annotation |
+
+### Pitfall production
+- **Quên clearAutomatically**: entity stale flush sau bulk → ghi đè dữ liệu, bug im lặng months.
+- **Bulk delete không cascade**: {@code DELETE FROM Order} không xóa OrderItem (FK constraint fail) hoặc orphan remain. Dùng {@code ON DELETE CASCADE} DB hoặc xóa con trước.
+- **Bulk update nhiều row**: transaction lớn, lock table lâu. Chia batch (500-1000 row/lô), commit giữa chừng.
+- **@Version không tăng**: concurrent bulk + entity update → lost update. Luôn SET version = version + 1 trong bulk JPQL.
+
+### Ví dụ đời thực
+Hệ thống hủy đơn hàng hàng loạt: admin chọn 5000 đơn → bulk UPDATE status=CANCELLED. Code cũ: load 5000 entity, duyệt set status, saveAll → 5000 UPDATE, 45s, lock table, timeout. Sửa: @Modifying bulk UPDATE + SET version=version+1 + clearAutomatically, chia batch 1000, 5 transaction. Kết quả: 2.3s, không lock table lâu, version tăng đúng, 0 lost update.
+
+### Trả lời mẫu khi phỏng vấn
+"Bulk JPQL @Modifying chạy thẳng SQL, bỏ qua persistence context: không load entity, không callback @PreUpdate, không tự tăng @Version. Rủi ro: entity đã load trước bulk giữ giá trị cũ, flush sau transaction ghi đè ngược kết quả bulk (lost update). An toàn: @Modifying(flushAutomatically=true, clearAutomatically=true) — flush trước, clear sau; hoặc tách bulk ra transaction riêng. Nên dùng optimistic lock: thêm SET version=version+1 vào bulk JPQL, check row affected = 0 nghĩa là conflict. Cần lưu ý: bulk delete không cascade, bulk lớn chia batch tránh lock table lâu."
+
+> Senior tip: Bulk JPQL là "vũ khí hạt nhân" — mạnh nhưng nguy hiểm. Luôn pair với @Version, clearAutomatically, và integration test khẳng định không lost update. Nếu logic phức tạp (cascade, event, audit), đừng dùng bulk — dùng batch processing (Spring Batch, chunk) load entity và saveAll.
+
+### Câu hỏi đào sâu
+1. Vì sao @Modifying(clearAutomatically=true) trong Spring Data quan trọng?
+2. Làm sao kết hợp bulk update với optimistic lock (@Version)?
+3. Khi nào nên dùng Spring Batch chunk processing thay vì @Modifying bulk?
+`,
+  follow: ['Vì sao @Modifying(clearAutomatically=true) trong Spring Data quan trọng?', 'Làm sao kết hợp bulk update với optimistic lock (@Version)?', 'Khi nào nên dùng Spring Batch chunk processing thay vì @Modifying bulk?'],
+  tags: ['bulk update', '@Modifying', 'persistence context', 'stale', 'flushAutomatically', 'clearAutomatically', '@Version', 'optimistic lock']
+}
+,
+{
   id: 'spring-063',
   topic: 'spring',
   level: 'senior',
