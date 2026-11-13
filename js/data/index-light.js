@@ -2089,6 +2089,8 @@ window.DATA_INDEX = {
     {"id":"lesson-jpa-009","track":"jpa","order":9,"title":"Thứ tự flush và ActionQueue","level":"senior","minutes":25},
     {"id":"lesson-jpa-010","track":"jpa","order":10,"title":"Transaction và persistence context: flush, commit, detach","level":"mid","minutes":25},
     {"id":"lesson-jpa-011","track":"jpa","order":11,"title":"Optimistic locking voi @Version: chan lost update va retry","level":"senior","minutes":25},
+    {"id":"lesson-jpa-012","track":"jpa","order":12,"title":"N+1 query: phat hien, do luong va khac phuc bang fetch plan","level":"senior","minutes":30},
+    {"id":"lesson-jpa-013","track":"jpa","order":13,"title":"Vong doi entity: transient, managed, detached, removed va merge vs persist","level":"senior","minutes":30},
     {"id":"lesson-design-001","track":"design","order":1,"title":"Rate limiter: token bucket và sliding window log","level":"mid","minutes":30},
     {"id":"lesson-design-002","track":"design","order":2,"title":"Cache eviction: LRU và LFU","level":"mid","minutes":30},
     {"id":"lesson-design-003","track":"design","order":3,"title":"Consistent hashing và virtual nodes","level":"senior","minutes":30},
