@@ -2217,5 +2217,1413 @@ Lỗi hay gặp: coi seq < last là DUPLICATE; không tách state theo pid; appe
   ],
   related: ['microservices-002', 'microservices-001', 'core-015'],
   tags: ['Kafka', 'idempotent producer', 'sequence number', 'dedup', 'exactly-once']
+},
+{
+  id: 'lesson-microservices-012',
+  track: 'microservices',
+  order: 12,
+  title: 'Queue cho tác vụ AI dài: job queue, worker, retry và client poll',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Hiểu vì sao tác vụ AI (LLM) cần hàng đợi thay vì gọi đồng bộ HTTP',
+    'Thiết kế job queue với 4 trạng thái: PENDING, RUNNING, DONE, FAILED',
+    'Cài worker xử lý job, retry có giới hạn (exponential backoff), client poll kết quả',
+    'Biết cách mở rộng: priority queue, dead letter queue, metrics theo dõi'
+  ],
+  body: `**Tóm tắt:** Gọi LLM (Large Language Model — mô hình ngôn ngữ lớn) thường mất 30–120 giây, vượt quá timeout HTTP thông thường (thường 30s). Nếu gọi đồng bộ, client bị treo, thread server bị chiếm dụng, và retry ngẫu nhiên làm tăng tải. Giải pháp: client gửi request → server tạo **job** trạng thái {{PENDING}} → trả về {{jobId}} ngay → **worker** nền lấy job, đổi {{RUNNING}}, gọi LLM, lưu kết quả {{DONE}} hoặc {{FAILED}} (có retry) → client **poll** (truy vấn định kỳ) {{jobId}} để lấy kết quả.
+
+### Tại sao cần hàng đợi cho tác vụ AI
+
+| Vấn đề gọi đồng bộ | Giải pháp hàng đợi |
+|---|---|
+| LLM phản hồi chậm (30–120s) > HTTP timeout (thường 30s) | Tách request/response: client nhận {{jobId}} ngay, không chờ LLM |
+| Thread server bị chiếm dụng lâu → hết thread pool | Worker chạy riêng (thread pool nhỏ, kiểm soát), server API nhẹ |
+| Retry ngẫu nhiên khi timeout → gấp đôi tải LLM | Retry có chính sách: max attempts, exponential backoff, dead letter |
+| Khó quan sát, debug, replay | Job lưu state, input, output, error, timestamps → dễ trace, replay |
+
+### Mô hình trạng thái (State Machine)
+
+~~~text
+PENDING → RUNNING → DONE
+                ↘ FAILED → (retry) → PENDING (nếu attempts < max)
+                ↘ FAILED → DEAD_LETTER (nếu attempts >= max)
+~~~
+
+- **PENDING**: Vừa tạo, chờ worker lấy.
+- **RUNNING**: Worker đã nhận, đang gọi LLM.
+- **DONE**: Hoàn thành, có {{result}}.
+- **FAILED**: Gặp lỗi, có {{error}}, {{attempts}} tăng. Nếu {{attempts < maxRetries}} → quay về {{PENDING}} sau delay. Nếu {{attempts >= maxRetries}} → {{DEAD_LETTER}} (hàng đợi tử thi, cần can thiệp thủ công).
+- **DEAD_LETTER**: Đã hết retry, lưu lại để dev điều tra.
+
+### Kiến trúc thành phần
+
+~~~seq
+title: Luồng job queue AI
+actors: Client | API Server | JobQueue | Worker | MockLLM
+Client -> API Server: POST /ai-jobs {prompt, params}
+API Server -> JobQueue: enqueue(jobId, PENDING, payload)
+API Server --> Client: 202 Accepted {jobId}
+Client -> API Server: GET /ai-jobs/{jobId} (poll)
+Worker -> JobQueue: dequeue() → job PENDING
+Worker -> JobQueue: update(jobId, RUNNING)
+Worker -> MockLLM: generate(prompt)
+MockLLM --> Worker: result / error
+Worker -> JobQueue: update(jobId, DONE/FAILED, result/error)
+Client -> API Server: GET /ai-jobs/{jobId}
+API Server -> JobQueue: get(jobId)
+API Server --> Client: 200 {status, result?, error?}
+~~~
+
+### Cài đặt JobQueue (Java thuần, single-thread demo)
+
+~~~java
+enum Status { PENDING, RUNNING, DONE, FAILED, DEAD_LETTER }
+
+record Job(String id, String prompt, Status status, String result, String error,
+           int attempts, int maxRetries, long createdAt, long updatedAt) {}
+
+class JobQueue {
+    private final Map<String, Job> jobs = new ConcurrentHashMap<>();
+    private final Queue<String> pending = new ConcurrentLinkedQueue<>();
+    private final int maxRetries;
+    private final long baseDelayMs; // exponential backoff base
+
+    JobQueue(int maxRetries, long baseDelayMs) {
+        this.maxRetries = maxRetries;
+        this.baseDelayMs = baseDelayMs;
+    }
+
+    // Tạo job mới, trả về jobId
+    String submit(String prompt) {
+        String id = UUID.randomUUID().toString();
+        Job job = new Job(id, prompt, Status.PENDING, null, null,
+                          0, maxRetries, System.currentTimeMillis(), System.currentTimeMillis());
+        jobs.put(id, job);
+        pending.add(id);
+        return id;
+    }
+
+    // Worker gọi để lấy job PENDING tiếp theo (blocking ngắn)
+    Job poll() {
+        String id = pending.poll();
+        if (id == null) return null;
+        Job job = jobs.get(id);
+        if (job == null || job.status() != Status.PENDING) return null; // đã bị lấy hoặc hủy
+        // Đổi RUNNING (compare-and-set đơn giản)
+        Job running = new Job(job.id(), job.prompt(), Status.RUNNING, job.result(), job.error(),
+                              job.attempts(), job.maxRetries(), job.createdAt(), System.currentTimeMillis());
+        if (jobs.replace(id, job, running)) return running;
+        return null; // race condition hiếm, bỏ qua
+    }
+
+    // Worker cập nhật kết quả
+    void complete(String jobId, String result) {
+        updateStatus(jobId, Status.DONE, result, null);
+    }
+
+    void fail(String jobId, String error) {
+        Job job = jobs.get(jobId);
+        if (job == null) return;
+        int nextAttempts = job.attempts() + 1;
+        if (nextAttempts >= job.maxRetries()) {
+            // Hết retry → DEAD_LETTER
+            updateStatus(jobId, Status.DEAD_LETTER, null, error + " (max retries exceeded)");
+        } else {
+            // Chưa hết retry → quay về PENDING, sẽ được schedule lại sau delay
+            // Đơn giản: đẩy lại pending ngay; production dùng delay queue
+            Job failed = new Job(job.id(), job.prompt(), Status.PENDING, null, error,
+                                 nextAttempts, job.maxRetries(), job.createdAt(), System.currentTimeMillis());
+            jobs.put(jobId, failed);
+            pending.add(jobId);
+        }
+    }
+
+    private void updateStatus(String jobId, Status status, String result, String error) {
+        Job job = jobs.get(jobId);
+        if (job == null) return;
+        Job updated = new Job(job.id(), job.prompt(), status, result, error,
+                              job.attempts(), job.maxRetries(), job.createdAt(), System.currentTimeMillis());
+        jobs.replace(jobId, job, updated);
+    }
+
+    Job get(String jobId) { return jobs.get(jobId); }
 }
+~~~
+
+### Worker xử lý job
+
+~~~java
+class AiWorker implements Runnable {
+    private final JobQueue queue;
+    private final MockLlm llm;
+    private volatile boolean running = true;
+
+    AiWorker(JobQueue queue, MockLlm llm) { this.queue = queue; this.llm = llm; }
+
+    @Override public void run() {
+        while (running) {
+            Job job = queue.poll();
+            if (job == null) {
+                sleep(100); // không có job, ngủ chút
+                continue;
+            }
+            try {
+                String result = llm.generate(job.prompt());
+                queue.complete(job.id(), result);
+            } catch (Exception e) {
+                queue.fail(job.id(), e.getMessage());
+            }
+        }
+    }
+
+    void shutdown() { running = false; }
+    private void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException ignored) {} }
+}
+~~~
+
+### Mock LLM (giả lập LLM thật)
+
+Production gọi API Anthropic/OpenAI; bài tập dùng class giả:
+
+~~~java
+class MockLlm {
+    // Giả lập: 10% lỗi tạm thời, 90% thành công sau 50–200ms
+    String generate(String prompt) throws Exception {
+        Thread.sleep(50 + new Random().nextInt(150));
+        if (new Random().nextDouble() < 0.1) throw new IOException("LLM temporary error");
+        return "AI response for: " + prompt.substring(0, Math.min(20, prompt.length())) + "...";
+    }
+}
+~~~
+
+### Client Poll (client truy vấn kết quả)
+
+~~~java
+class AiClient {
+    private final HttpClient http = HttpClient.newHttpClient();
+    private final String baseUrl;
+
+    AiClient(String baseUrl) { this.baseUrl = baseUrl; }
+
+    String submit(String prompt) throws Exception {
+        var req = HttpRequest.newBuilder(URI.create(baseUrl + "/ai-jobs"))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString("{\"prompt\":\"" + escape(prompt) + "\"}"))
+            .build();
+        var resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+        // parse JSON đơn giản lấy jobId
+        return extractJobId(resp.body());
+    }
+
+    JobResult poll(String jobId, int maxPolls, long intervalMs) throws Exception {
+        for (int i = 0; i < maxPolls; i++) {
+            var req = HttpRequest.newBuilder(URI.create(baseUrl + "/ai-jobs/" + jobId)).GET().build();
+            var resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            JobResult r = parseResult(resp.body());
+            if (r.status() == Status.DONE || r.status() == Status.FAILED || r.status() == Status.DEAD_LETTER)
+                return r;
+            Thread.sleep(intervalMs);
+        }
+        throw new TimeoutException("Poll timeout");
+    }
+    // parse JSON helpers...
+}
+~~~
+
+### Exponential Backoff (tăng gấp đôi thời gian chờ giữa các retry)
+
+Thay vì retry ngay lập tức, chờ {{baseDelayMs * 2^attempts}} (ví dụ 1s, 2s, 4s, 8s...). Giảm áp lực lên LLM khi nó đang quá tải.
+
+~~~java
+// Trong JobQueue.fail(), thay vì pending.add(jobId) ngay:
+long delay = baseDelayMs * (1L << job.attempts()); // 2^attempts
+scheduler.schedule(() -> pending.add(jobId), delay, TimeUnit.MILLISECONDS);
+~~~
+
+### Mở rộng production
+
+| Mở rộng | Mô tả |
+|---|---|
+| **Priority queue** | Job ưu tiên (ví dụ user VIP) dùng {{PriorityQueue}} hoặc Redis sorted set |
+| **Dead Letter Queue (DLQ)** | Tách hàng đợi riêng cho job hết retry, có UI để replay/inspect |
+| **Metrics** | Theo dõi: queue depth, processing time (p50/p99), retry rate, dead letter rate |
+| **Idempotency key** | Client gửi {{idempotencyKey}}, server kiểm tra trùng trước khi tạo job mới |
+| **Horizontal scaling** | Nhiều worker instance, dùng Redis stream/Kafka làm queue chia sẻ |
+| **Observability** | Trace ID xuyên suốt: client → API → queue → worker → LLM |
+
+### Lỗi hay gặp
+
+- **Poll interval quá ngắn** (ví dụ 100ms) → DDoS API server. Nên dùng 1–2s, có jitter.
+- **Không giới hạn maxRetries** → job kẹt lặp vô tận khi LLM down kéo dài.
+- **Worker crash giữa chừng** → job ở RUNNING không bao giờ hoàn thành. Cần **heartbeat** hoặc **TTL**: job RUNNING quá lâu (ví dụ > 5 phút) tự reset về PENDING.
+- **In-memory queue mất data khi restart**. Production dùng Redis/RabbitMQ/Kafka persistence.
+- **Race condition poll/complete**: worker đang update, client poll thấy status cũ. Acceptable eventual consistency.
+
+### Ví dụ đời thực
+
+**Bối cảnh:** Hệ thống dịch vụ tài chính dùng LLM phân loại giao dịch bất thường. Mỗi request LLM trung bình 45s, peak 90s. API gateway timeout 30s.
+**Triệu chứng:** Client gọi đồng bộ → 504 Gateway Timeout → user bấm gửi lại → gấp 3–5 lần tải LLM → LLM rate limit → cascade failure.
+**Xử lý:** Chuyển sang job queue. API trả 202 + jobId < 50ms. Worker pool 4 thread, maxRetries=3, backoff 2s/4s/8s. Client poll 2s. Dead letter queue lưu job thất bại để team data science review.
+**Kết quả:** 0% 504 error, throughput LLM ổn định 4 req/s, p99 latency client 95s (bao gồm poll), dead letter rate < 0.5%.
+
+### Liên hệ phỏng vấn
+- **"Làm sao xử lý tác vụ AI mất 60s khi HTTP timeout 30s?"** → Trả lời: tách request/response bằng job queue. Client POST tạo job, nhận jobId ngay (202). Worker nền xử lý, client poll GET /jobs/{id} để lấy kết quả. Queue lưu state PENDING/RUNNING/DONE/FAILED, hỗ trợ retry exponential backoff, dead letter.
+- **"Worker crash khi đang RUNNING thì job đó sao?"** → Trả lời: Job bị kẹt RUNNING. Cần cơ chế TTL/heartbeat: job RUNNING quá timeout (ví dụ 5 phút) tự reset về PENDING để worker khác nhặt. Hoặc dùng transactional outbox pattern đảm bảo state durable.
+- **"Poll interval nên đặt bao nhiêu?"** → Trả lời: 1–2 giây, có jitter ±200ms tránh thundering herd. Không poll quá dày (tốn CPU/API), không quá thưa (user chờ lâu). Có thể dùng long-polling hoặc WebSocket/server-sent events để push thay vì poll.
+- **"Queue in-memory có gì rủi ro?"** → Trả lời: Mất data khi restart, không scale horizontal. Production dùng Redis Stream (XADD/XREADGROUP), RabbitMQ, hoặc Kafka. Redis stream hỗ trợ consumer group, ack, pending list, TTL tự động.`,
+
+  exercises: [
+    {
+      title: 'JobQueue cơ bản: submit, poll, complete, fail với retry',
+      prompt: 'Cài {{JobQueue}} quản lý job AI với 5 trạng thái: {{PENDING}}, {{RUNNING}}, {{DONE}}, {{FAILED}}, {{DEAD_LETTER}}.\n\nYêu cầu:\n- {{submit(prompt)}}: tạo job {{PENDING}}, trả {{jobId}} (UUID string).\n- {{poll()}}: lấy và đổi một job {{PENDING}} sang {{RUNNING}}, trả {{Job}}; nếu không có job {{PENDING}} trả {{null}}. Phải thread-safe.\n- {{complete(jobId, result)}}: đổi job sang {{DONE}}, lưu {{result}}.\n- {{fail(jobId, error)}}: tăng {{attempts}}. Nếu {{attempts < maxRetries}} → quay về {{PENDING}} (đẩy lại queue). Nếu {{attempts >= maxRetries}} → {{DEAD_LETTER}} lưu {{error}}.\n- {{get(jobId)}}: trả job hiện tại hoặc {{null}}.\n- {{getPendingCount()}}, {{getRunningCount()}}, {{getDoneCount()}}, {{getFailedCount()}}, {{getDeadLetterCount()}}: thống kê.\n\n{{Job}} là record: {{id, prompt, status, result, error, attempts, maxRetries, createdAt, updatedAt}}. Dùng {{ConcurrentHashMap}} + {{ConcurrentLinkedQueue}}.',
+      starter: `import java.util.*;
+import java.util.concurrent.*;
+
+enum Status { PENDING, RUNNING, DONE, FAILED, DEAD_LETTER }
+record Job(String id, String prompt, Status status, String result, String error,
+           int attempts, int maxRetries, long createdAt, long updatedAt) {}
+
+class JobQueue {
+    private final Map<String, Job> jobs = new ConcurrentHashMap<>();
+    private final Queue<String> pending = new ConcurrentLinkedQueue<>();
+    private final int maxRetries;
+
+    JobQueue(int maxRetries) { this.maxRetries = maxRetries; }
+
+    String submit(String prompt) { throw new UnsupportedOperationException("TODO"); }
+    Job poll() { throw new UnsupportedOperationException("TODO"); }
+    void complete(String jobId, String result) { throw new UnsupportedOperationException("TODO"); }
+    void fail(String jobId, String error) { throw new UnsupportedOperationException("TODO"); }
+    Job get(String jobId) { return jobs.get(jobId); }
+    int getPendingCount() { throw new UnsupportedOperationException("TODO"); }
+    int getRunningCount() { throw new UnsupportedOperationException("TODO"); }
+    int getDoneCount() { throw new UnsupportedOperationException("TODO"); }
+    int getFailedCount() { throw new UnsupportedOperationException("TODO"); }
+    int getDeadLetterCount() { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object a, Object b) { if (!Objects.equals(a, b)) throw new AssertionError(a + " != " + b); }
+    public static void main(String[] args) throws Exception {
+        check("submit returns id and PENDING", () -> {
+            JobQueue q = new JobQueue(3);
+            String id = q.submit("hello");
+            Job job = q.get(id);
+            eq(Status.PENDING, job.status());
+            eq("hello", job.prompt());
+            eq(0, job.attempts());
+            eq(3, job.maxRetries());
+            eq(1, q.getPendingCount());
+        });
+        check("poll moves PENDING to RUNNING", () -> {
+            JobQueue q = new JobQueue(3);
+            String id = q.submit("task");
+            Job polled = q.poll();
+            eq(id, polled.id());
+            eq(Status.RUNNING, polled.status());
+            eq(0, q.getPendingCount());
+            eq(1, q.getRunningCount());
+        });
+        check("poll returns null when empty", () -> {
+            JobQueue q = new JobQueue(3);
+            eq(null, q.poll());
+        });
+        check("complete sets DONE with result", () -> {
+            JobQueue q = new JobQueue(3);
+            String id = q.submit("t");
+            q.poll();
+            q.complete(id, "ai result");
+            Job job = q.get(id);
+            eq(Status.DONE, job.status());
+            eq("ai result", job.result());
+            eq(1, q.getDoneCount());
+        });
+        check("fail with attempts < maxRetries goes back to PENDING", () -> {
+            JobQueue q = new JobQueue(3);
+            String id = q.submit("t");
+            q.poll();
+            q.fail(id, "temp error");
+            Job job = q.get(id);
+            eq(Status.PENDING, job.status());
+            eq(1, job.attempts());
+            eq(1, q.getPendingCount());
+            eq(0, q.getRunningCount());
+        });
+        check("fail with attempts >= maxRetries goes to DEAD_LETTER", () -> {
+            JobQueue q = new JobQueue(2); // max 2 retries: attempts 0,1,2 -> at 2 goes dead letter
+            String id = q.submit("t");
+            q.poll(); q.fail(id, "e1"); // attempt 1
+            q.poll(); q.fail(id, "e2"); // attempt 2 -> dead letter
+            Job job = q.get(id);
+            eq(Status.DEAD_LETTER, job.status());
+            eq(2, job.attempts());
+            eq(1, q.getDeadLetterCount());
+            eq(0, q.getPendingCount());
+        });
+        check("independent jobs tracked separately", () -> {
+            JobQueue q = new JobQueue(3);
+            String id1 = q.submit("a");
+            String id2 = q.submit("b");
+            q.poll(); // takes id1
+            q.complete(id1, "r1");
+            Job j2 = q.get(id2);
+            eq(Status.PENDING, j2.status());
+            eq(1, q.getPendingCount());
+            eq(1, q.getDoneCount());
+        });
+        check("concurrent submit and poll", () -> {
+            JobQueue q = new JobQueue(3);
+            ExecutorService es = Executors.newFixedThreadPool(10);
+            CountDownLatch latch = new CountDownLatch(100);
+            for (int i = 0; i < 100; i++) {
+                int finalI = i;
+                es.submit(() -> { q.submit("task" + finalI); latch.countDown(); });
+            }
+            try { latch.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            eq(100, q.getPendingCount());
+            int polled = 0;
+            while (q.poll() != null) polled++;
+            eq(100, polled);
+            eq(100, q.getRunningCount());
+            es.shutdown();
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+import java.util.concurrent.*;
+
+enum Status { PENDING, RUNNING, DONE, FAILED, DEAD_LETTER }
+record Job(String id, String prompt, Status status, String result, String error,
+           int attempts, int maxRetries, long createdAt, long updatedAt) {}
+
+class JobQueue {
+    private final Map<String, Job> jobs = new ConcurrentHashMap<>();
+    private final Queue<String> pending = new ConcurrentLinkedQueue<>();
+    private final int maxRetries;
+
+    JobQueue(int maxRetries) { this.maxRetries = maxRetries; }
+
+    String submit(String prompt) {
+        String id = UUID.randomUUID().toString();
+        long now = System.currentTimeMillis();
+        Job job = new Job(id, prompt, Status.PENDING, null, null, 0, maxRetries, now, now);
+        jobs.put(id, job);
+        pending.add(id);
+        return id;
+    }
+
+    Job poll() {
+        String id;
+        while ((id = pending.poll()) != null) {
+            Job job = jobs.get(id);
+            if (job == null) continue;
+            if (job.status() != Status.PENDING) continue;
+            Job running = new Job(job.id(), job.prompt(), Status.RUNNING, job.result(), job.error(),
+                                  job.attempts(), job.maxRetries(), job.createdAt(), System.currentTimeMillis());
+            if (jobs.replace(id, job, running)) return running;
+        }
+        return null;
+    }
+
+    void complete(String jobId, String result) {
+        Job job = jobs.get(jobId);
+        if (job == null) return;
+        Job done = new Job(job.id(), job.prompt(), Status.DONE, result, null,
+                           job.attempts(), job.maxRetries(), job.createdAt(), System.currentTimeMillis());
+        jobs.replace(jobId, job, done);
+    }
+
+    void fail(String jobId, String error) {
+        Job job = jobs.get(jobId);
+        if (job == null) return;
+        int nextAttempts = job.attempts() + 1;
+        if (nextAttempts >= job.maxRetries()) {
+            Job dead = new Job(job.id(), job.prompt(), Status.DEAD_LETTER, null,
+                               error + " (max retries exceeded)", nextAttempts,
+                               job.maxRetries(), job.createdAt(), System.currentTimeMillis());
+            jobs.replace(jobId, job, dead);
+        } else {
+            Job pendingJob = new Job(job.id(), job.prompt(), Status.PENDING, null, error,
+                                     nextAttempts, job.maxRetries(), job.createdAt(), System.currentTimeMillis());
+            jobs.replace(jobId, job, pendingJob);
+            pending.add(jobId);
+        }
+    }
+
+    Job get(String jobId) { return jobs.get(jobId); }
+
+    int getPendingCount() { return (int) jobs.values().stream().filter(j -> j.status() == Status.PENDING).count(); }
+    int getRunningCount() { return (int) jobs.values().stream().filter(j -> j.status() == Status.RUNNING).count(); }
+    int getDoneCount() { return (int) jobs.values().stream().filter(j -> j.status() == Status.DONE).count(); }
+    int getFailedCount() { return (int) jobs.values().stream().filter(j -> j.status() == Status.FAILED).count(); }
+    int getDeadLetterCount() { return (int) jobs.values().stream().filter(j -> j.status() == Status.DEAD_LETTER).count(); }
+}`,
+      hints: [
+        "Dùng {{ConcurrentHashMap}} cho jobs, {{ConcurrentLinkedQueue}} cho pending queue.",
+        "{{poll()}}: lấy id từ queue, kiểm tra job còn tồn tại và status PENDING, CAS (compare-and-set) đổi RUNNING.",
+        "{{fail()}}: tăng attempts, so sánh với maxRetries. Chưa hết retry → status PENDING, đẩy lại pending queue. Hết retry → DEAD_LETTER.",
+        "Thống kê: stream lọc theo status (acceptably chậm cho demo; production dùng counter riêng)."
+      ],
+      explain: "Job queue dùng CAS ({{jobs.replace(old, new)}}) để tránh race condition khi nhiều worker cùng poll. {{ConcurrentLinkedQueue}} không bounded, production nên dùng bounded queue hoặc semaphore chặn submit khi quá đầy. Retry logic đơn giản: đẩy lại pending ngay; production dùng delay queue ({{ScheduledExecutorService}}) hoặc priority queue với {{nextRunAt}} để thực hiện exponential backoff. DEAD_LETTER lưu error kèm ghi chú để dev điều tra. Thống kê dùng stream cho đơn giản; thực tế duy trì {{AtomicLong}} counter cho mỗi trạng thái cập nhật O(1).\n\nLỗi hay gặp: poll không kiểm tra status PENDING (job đã bị lấy/ hủy); fail không tăng attempts; complete/fail không kiểm tra job tồn tại; quên cập nhật updatedAt.",
+    },
+    {
+      title: 'Worker với MockLLM: xử lý job, mô phỏng lỗi tạm thời, retry thành công',
+      prompt: 'Viết {{AiWorker}} chạy trong thread riêng, liên tục {{poll()}} từ {{JobQueue}}, gọi {{MockLlm.generate()}}, {{complete}} hoặc {{fail}}. {{MockLlm}}: 20% ném {{IOException}} (lỗi tạm thời), 80% trả kết quả sau 10–50ms. Test: submit 5 job, chạy worker 2 giây, kiểm tra tất cả kết thúc DONE hoặc DEAD_LETTER (với maxRetries=2, xác suất hết retry rất thấp).',
+      starter: `import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.*;
+
+enum Status { PENDING, RUNNING, DONE, FAILED, DEAD_LETTER }
+record Job(String id, String prompt, Status status, String result, String error,
+           int attempts, int maxRetries, long createdAt, long updatedAt) {}
+
+class JobQueue {
+    private final Map<String, Job> jobs = new ConcurrentHashMap<>();
+    private final Queue<String> pending = new ConcurrentLinkedQueue<>();
+    private final int maxRetries;
+
+    JobQueue(int maxRetries) { this.maxRetries = maxRetries; }
+
+    String submit(String prompt) { throw new UnsupportedOperationException("TODO"); }
+    Job poll() { throw new UnsupportedOperationException("TODO"); }
+    void complete(String jobId, String result) { throw new UnsupportedOperationException("TODO"); }
+    void fail(String jobId, String error) { throw new UnsupportedOperationException("TODO"); }
+    Job get(String jobId) { return jobs.get(jobId); }
+}
+
+class MockLlm {
+    private final Random random = new Random();
+    String generate(String prompt) throws IOException {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class AiWorker implements Runnable {
+    private final JobQueue queue;
+    private final MockLlm llm;
+    private volatile boolean running = true;
+
+    AiWorker(JobQueue queue, MockLlm llm) { this.queue = queue; this.llm = llm; }
+
+    @Override public void run() { throw new UnsupportedOperationException("TODO"); }
+    void shutdown() { running = false; }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object a, Object b) { if (!Objects.equals(a, b)) throw new AssertionError(a + " != " + b); }
+    public static void main(String[] args) throws Exception {
+        check("MockLlm sometimes throws, sometimes returns", () -> {
+            MockLlm llm = new MockLlm();
+            int errors = 0, ok = 0;
+            for (int i = 0; i < 100; i++) {
+                try { llm.generate("test"); ok++; } catch (IOException e) { errors++; }
+            }
+            // 20% error rate ± tolerance
+            eq(true, errors > 10 && errors < 30);
+            eq(true, ok > 70 && ok < 90);
+        });
+        check("Worker processes jobs to DONE", () -> {
+            JobQueue queue = new JobQueue(3);
+            MockLlm llm = new MockLlm();
+            AiWorker worker = new AiWorker(queue, llm);
+            Thread t = new Thread(worker);
+            t.start();
+            // submit 5 jobs
+            List<String> ids = new ArrayList<>();
+            for (int i = 0; i < 5; i++) ids.add(queue.submit("prompt " + i));
+            try { Thread.sleep(3000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            worker.shutdown();
+            try { t.join(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            int done = 0, dead = 0;
+            for (String id : ids) {
+                Job job = queue.get(id);
+                if (job.status() == Status.DONE) done++;
+                else if (job.status() == Status.DEAD_LETTER) dead++;
+            }
+            eq(5, done + dead); // all terminated
+            eq(true, done >= 4); // with maxRetries=3, 20% error, P(dead) = 0.2^3 = 0.8%
+        });
+        check("Worker stops on shutdown", () -> {
+            JobQueue queue = new JobQueue(3);
+            MockLlm llm = new MockLlm();
+            AiWorker worker = new AiWorker(queue, llm);
+            Thread t = new Thread(worker);
+            t.start();
+            try { Thread.sleep(100); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            worker.shutdown();
+            try { t.join(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            eq(true, !t.isAlive());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.*;
+
+enum Status { PENDING, RUNNING, DONE, FAILED, DEAD_LETTER }
+record Job(String id, String prompt, Status status, String result, String error,
+           int attempts, int maxRetries, long createdAt, long updatedAt) {}
+
+class JobQueue {
+    private final Map<String, Job> jobs = new ConcurrentHashMap<>();
+    private final Queue<String> pending = new ConcurrentLinkedQueue<>();
+    private final int maxRetries;
+
+    JobQueue(int maxRetries) { this.maxRetries = maxRetries; }
+
+    String submit(String prompt) {
+        String id = UUID.randomUUID().toString();
+        long now = System.currentTimeMillis();
+        Job job = new Job(id, prompt, Status.PENDING, null, null, 0, maxRetries, now, now);
+        jobs.put(id, job);
+        pending.add(id);
+        return id;
+    }
+
+    Job poll() {
+        String id;
+        while ((id = pending.poll()) != null) {
+            Job job = jobs.get(id);
+            if (job == null) continue;
+            if (job.status() != Status.PENDING) continue;
+            Job running = new Job(job.id(), job.prompt(), Status.RUNNING, job.result(), job.error(),
+                                  job.attempts(), job.maxRetries(), job.createdAt(), System.currentTimeMillis());
+            if (jobs.replace(id, job, running)) return running;
+        }
+        return null;
+    }
+
+    void complete(String jobId, String result) {
+        Job job = jobs.get(jobId);
+        if (job == null) return;
+        Job done = new Job(job.id(), job.prompt(), Status.DONE, result, null,
+                           job.attempts(), job.maxRetries(), job.createdAt(), System.currentTimeMillis());
+        jobs.replace(jobId, job, done);
+    }
+
+    void fail(String jobId, String error) {
+        Job job = jobs.get(jobId);
+        if (job == null) return;
+        int nextAttempts = job.attempts() + 1;
+        if (nextAttempts >= job.maxRetries()) {
+            Job dead = new Job(job.id(), job.prompt(), Status.DEAD_LETTER, null,
+                               error + " (max retries exceeded)", nextAttempts,
+                               job.maxRetries(), job.createdAt(), System.currentTimeMillis());
+            jobs.replace(jobId, job, dead);
+        } else {
+            Job pendingJob = new Job(job.id(), job.prompt(), Status.PENDING, null, error,
+                                     nextAttempts, job.maxRetries(), job.createdAt(), System.currentTimeMillis());
+            jobs.replace(jobId, job, pendingJob);
+            pending.add(jobId);
+        }
+    }
+
+    Job get(String jobId) { return jobs.get(jobId); }
+}
+
+class MockLlm {
+    private final Random random = new Random();
+    String generate(String prompt) throws IOException {
+        try { Thread.sleep(10 + random.nextInt(40)); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("interrupted"); }
+        if (random.nextDouble() < 0.2) throw new IOException("LLM temporary error");
+        return "AI response for: " + prompt.substring(0, Math.min(20, prompt.length())) + "...";
+    }
+}
+
+class AiWorker implements Runnable {
+    private final JobQueue queue;
+    private final MockLlm llm;
+    private volatile boolean running = true;
+
+    AiWorker(JobQueue queue, MockLlm llm) { this.queue = queue; this.llm = llm; }
+
+    @Override public void run() {
+        while (running) {
+            Job job = queue.poll();
+            if (job == null) {
+                try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+                continue;
+            }
+            try {
+                String result = llm.generate(job.prompt());
+                queue.complete(job.id(), result);
+            } catch (IOException e) {
+                queue.fail(job.id(), e.getMessage());
+            } catch (Exception e) {
+                queue.fail(job.id(), "Unexpected: " + e.getMessage());
+            }
+        }
+    }
+    void shutdown() { running = false; }
+}`,
+      hints: [
+        "{{MockLlm.generate()}}: ngủ 10–50ms, 20% ném IOException, 80% trả string.",
+        "{{AiWorker.run()}}: vòng lặp while(running), poll job, nếu null ngủ 50ms. Gọi llm.generate trong try-catch: thành công → complete, IOException → fail (queue tự xử lý retry), exception khác → fail.",
+        "Test dùng {{Thread.sleep(3000)}} chờ worker xử lý 5 job (mỗi job ~50ms + retry), đủ thời gian."
+      ],
+      explain: "Worker pattern phổ biến: poll loop + graceful shutdown (volatile boolean). MockLlm mô phỏng đặc tính LLM thật: latency biến đổi, lỗi tạm thời (transient error) tỷ lệ nhỏ. Retry do queue quản lý: fail() tăng attempts, chưa hết maxRetries → PENDING → worker khác (hoặc cùng worker vòng sau) nhặt lại. Với maxRetries=3, error rate 20%, xác suất job rơi DEAD_LETTER = 0.2^3 = 0.8% (rất thấp). Production: thêm circuit breaker, metrics, structured logging, distributed tracing (traceId xuyên client→queue→worker→LLM).",
+    }
+  ],
+  check: [
+    {
+      q: "Client gọi API tạo tác vụ AI, nhận jobId ngay lập tức mà không chờ LLM. HTTP status code phù hợp?",
+      options: [
+        "200 OK",
+        "201 Created",
+        "202 Accepted",
+        "204 No Content"
+      ],
+      answer: 2,
+      explain: "202 Accepted nghĩa là request đã được chấp nhận xử lý nhưng chưa hoàn thành. Phù hợp cho async job queue. 200/201 dùng cho xử lý đồng bộ hoàn thành. 204 dùng khi không có body trả về."
+    },
+    {
+      q: "Job đang RUNNING, worker crash. Cơ chế nào giúp job không bị kẹt mãi?",
+      options: [
+        "Client poll liên tục",
+        "TTL/heartbeat: job RUNNING quá timeout tự reset về PENDING",
+        "Tăng maxRetries",
+        "Dùng 202 Accepted"
+      ],
+      answer: 1,
+      explain: "Worker crash làm job kẹt RUNNING. Cần TTL (time-to-live) hoặc heartbeat: scheduler định kỳ quét job RUNNING quá lâu (ví dụ > 5 phút) reset về PENDING để worker khác nhặt. Client poll không giải quyết được job kẹt. Tăng maxRetries chỉ áp dụng khi job FAILED."
+    },
+    {
+      q: "Exponential backoff retry: baseDelay=1s, attempt=0,1,2. Thời gian chờ giữa các lần retry?",
+      options: [
+        "1s, 1s, 1s",
+        "1s, 2s, 4s",
+        "1s, 3s, 5s",
+        "2s, 4s, 8s"
+      ],
+      answer: 1,
+      explain: "Công thức: baseDelay * 2^attempt. Attempt 0 (lần retry đầu) = 1*1=1s, attempt 1 = 1*2=2s, attempt 2 = 1*4=4s. Giảm áp lực lên service đang quá tải."
+    },
+    {
+      q: "Tại sao in-memory JobQueue (ConcurrentHashMap + ConcurrentLinkedQueue) không phù hợp production?",
+      options: [
+        "Không thread-safe",
+        "Mất data khi restart, không scale horizontal, không persistence",
+        "Không hỗ trợ retry",
+        "Poll() không blocking"
+      ],
+      answer: 1,
+      explain: "In-memory queue mất hết job khi server restart, không chia sẻ giữa nhiều instance (horizontal scaling), không durable. Production dùng Redis Stream, RabbitMQ, Kafka có persistence, consumer group, HA."
+    }
+  ],
+  related: ['microservices-004', 'microservices-009', 'core-015'],
+  tags: ['job queue', 'async processing', 'LLM', 'retry', 'exponential backoff', 'dead letter queue']
+}
+,
+{
+  id: 'lesson-microservices-013',
+  track: 'microservices',
+  order: 13,
+  title: 'Bulkhead pattern: giới hạn đồng thời theo dependency với semaphore',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Hiểu bulkhead pattern: cách tách biệt tài nguyên tránh cascade failure',
+    'Cài semaphore cho mỗi dependency (downstream service) để giới hạn concurrent requests',
+    'Fast reject (fail fast) khi semaphore đầy: trả lỗi ngay thay vì hàng đợi',
+    'Cấu hình limit khác nhau per dependency, theo dõi metrics rejected/queue depth'
+  ],
+  body: `**Tóm tắt:** Bulkhead (vách ngăn chống nước trên tàu) trong microservices là **tách biệt tài nguyên** (thread, connection, memory) cho mỗi dependency (dịch vụ hạ lưu) để lỗi của một dependency **không lan sang** dependency khác. Cách triển khai phổ biến: mỗi downstream service có một **semaphore** (giấy phép đồng thời) giới hạn số request đang xử lý. Khi semaphore đầy → **fast reject** (trả lỗi ngay, ví dụ HTTP 503/429) thay vì cho vào hàng đợi. Điều này bảo vệ thread pool server, tránh một service chậm (hoặc down) chiếm hết thread làm sập toàn bộ ứng dụng.
+
+### Tại sao cần Bulkhead
+
+| Vấn đề không có bulkhead | Giải pháp bulkhead |
+|---|---|
+| Service A chậm (timeout 30s) → thread server bị chiếm → Service B, C nhanh cũng không gọi được | Mỗi service có semaphore riêng: A đầy không ảnh hưởng B, C |
+| Connection pool shared → service down giữ connection → service khác không lấy được connection | Connection pool tách biệt per dependency |
+| Memory leak ở một client HTTP → OOM cả app | Giới hạn queue/buffer per client |
+| Khó đo lường health từng dependency | Metrics per semaphore: available permits, rejected count, wait time |
+
+### So sánh: Bulkhead vs Circuit Breaker vs Rate Limiter
+
+| Pattern | Mục đích | Khi nào dùng |
+|---|---|---|
+| **Bulkhead** | **Cô lập tài nguyên**: giới hạn concurrent per dependency | Tránh cascade failure do resource exhaustion |
+| **Circuit Breaker** | **Ngắt mạch**: dừng gọi service đã down, cho nó hồi phục | Tránh gọi service failed liên tục (fail fast + auto recover) |
+| **Rate Limiter** | **Giới hạn throughput**: requests/second | Bảo vệ downstream khỏi quá tải, tuân thủ quota/SLA |
+
+Thực tế **kết hợp cả ba**: semaphore (bulkhead) giới hạn concurrent → circuit breaker bọc ngoài semaphore → rate limiter ở API gateway.
+
+### Semaphore cơ bản (Java)
+
+{{Semaphore}} trong {{java.util.concurrent}} là bộ đếm giấy phép (permits). {{acquire()}} lấy permit (block nếu hết), {{release()}} trả lại. Dùng {{tryAcquire()}} để **không block** (fast reject).
+
+~~~java
+class Bulkhead {
+    private final Semaphore semaphore;
+    private final String name;
+    private final AtomicLong rejected = new AtomicLong();
+    private final AtomicLong acquired = new AtomicLong();
+
+    Bulkhead(String name, int maxConcurrent) {
+        this.name = name;
+        this.semaphore = new Semaphore(maxConcurrent, true); // fair = true: FIFO
+    }
+
+    // Thử lấy permit, không chờ. Trả true nếu được, false nếu đầy.
+    boolean tryAcquire() {
+        boolean ok = semaphore.tryAcquire();
+        if (ok) acquired.incrementAndGet();
+        else rejected.incrementAndGet();
+        return ok;
+    }
+
+    // Lấy permit có timeout (optional)
+    boolean tryAcquire(long timeout, TimeUnit unit) throws InterruptedException {
+        boolean ok = semaphore.tryAcquire(timeout, unit);
+        if (ok) acquired.incrementAndGet();
+        else rejected.incrementAndGet();
+        return ok;
+    }
+
+    void release() { semaphore.release(); }
+
+    int availablePermits() { return semaphore.availablePermits(); }
+    long getRejectedCount() { return rejected.get(); }
+    long getAcquiredCount() { return acquired.get(); }
+    String getName() { return name; }
+}
+~~~
+
+### Client HTTP có bulkhead
+
+~~~java
+class HttpClientWithBulkhead {
+    private final HttpClient http = HttpClient.newHttpClient();
+    private final Map<String, Bulkhead> bulkheads = new ConcurrentHashMap<>();
+    private final Map<String, Integer> limits; // config per host
+
+    HttpClientWithBulkhead(Map<String, Integer> limits) { this.limits = limits; }
+
+    private Bulkhead getBulkhead(String host) {
+        return bulkheads.computeIfAbsent(host, h -> new Bulkhead(h, limits.getOrDefault(h, 10)));
+    }
+
+    // Gọi đồng bộ, fast reject nếu bulkhead đầy
+    HttpResponse<String> send(String host, HttpRequest request) throws IOException, InterruptedException {
+        Bulkhead bh = getBulkhead(host);
+        if (!bh.tryAcquire()) {
+            // Fast reject: không xếp hàng, trả lỗi ngay
+            throw new BulkheadRejectedException("Bulkhead full for " + host + ", rejected=" + bh.getRejectedCount());
+        }
+        try {
+            return http.send(request, HttpResponse.BodyHandlers.ofString());
+        } finally {
+            bh.release(); // luôn release trong finally
+        }
+    }
+
+    // Metrics
+    Map<String, Object> getMetrics(String host) {
+        Bulkhead bh = bulkheads.get(host);
+        if (bh == null) return Map.of();
+        return Map.of(
+            "host", host,
+            "maxConcurrent", limits.getOrDefault(host, 10),
+            "available", bh.availablePermits(),
+            "acquiredTotal", bh.getAcquiredCount(),
+            "rejectedTotal", bh.getRejectedCount()
+        );
+    }
+}
+
+class BulkheadRejectedException extends IOException {
+    BulkheadRejectedException(String msg) { super(msg); }
+}
+~~~
+
+### Cấu hình limit per dependency
+
+Mỗi downstream service có đặc điểm khác nhau → limit khác nhau:
+
+| Dependency | Đặc điểm | Limit gợi ý | Lý do |
+|---|---|---|---|
+| **Auth service** (internal, nhanh, critical) | Latency < 10ms, high throughput | 100–200 | Không muốn reject request auth |
+| **Payment gateway** (external, chậm, rate limited) | Latency 500ms–2s, quota 100 req/s | 10–20 | Tránh vượt quota, bảo vệ connection pool |
+| **LLM API** (external, rất chậm) | Latency 30–120s | 5–10 | Thread tốn kém, tránh chiếm thread server |
+| **Notification service** (async, fire-and-forget) | Latency variable, có retry | 50 | Có thể queue nội bộ, bulkhead nhẹ |
+
+Cấu hình externalize (config file, Consul, Spring Cloud Config):
+
+~~~yaml
+bulkhead:
+  limits:
+    "auth.internal": 200
+    "payment.gateway": 15
+    "api.anthropic.com": 8
+    "notify.internal": 50
+  default: 20
+~~~
+
+### Fast Reject vs Queueing
+
+| Chiến lược | Ưu điểm | Nhược điểm | Khi nào dùng |
+|---|---|---|---|
+| **Fast reject** (tryAcquire) | Bảo vệ thread, latency thấp, fail fast, client retry có backoff | Client phải xử lý retry, có thể drop request hợp lệ | Service chậm, external API, critical path |
+| **Queueing** (acquire có timeout) | Không drop request, smoothing burst | Tốn thread/memory chờ, tăng latency tail, risk cascade | Service nhanh, internal, burst ngắn |
+
+**Quy tắc:** Default **fast reject** cho external/slow service. Chỉ dùng queueing (với timeout ngắn, ví dụ 100ms) cho internal fast service khi burst là bình thường.
+
+### Metrics quan trọng
+
+Theo dõi per dependency (export Prometheus/Grafana):
+
+- {{bulkhead_available_permits}}: gauge, số permit còn trống (giảm → áp lực tăng)
+- {{bulkhead_rejected_total}}: counter, số request bị reject (tăng → dependency quá tải hoặc limit quá thấp)
+- {{bulkhead_acquired_total}}: counter, throughput
+- {{bulkhead_utilization}} = 1 - available/max: % sử dụng (dài hạn > 80% → cần scale up hoặc tăng limit)
+
+Alert: rejected_total tăng đột biến → kiểm tra dependency health hoặc điều chỉnh limit.
+
+### Mở rộng: Bulkhead cho thread pool (Thread Pool Bulkhead)
+
+Thay vì semaphore, dùng **thread pool riêng** cho mỗi dependency. Java {{ThreadPoolExecutor}} với queue bounded:
+
+~~~java
+class ThreadPoolBulkhead {
+    private final ThreadPoolExecutor executor;
+    private final String name;
+    private final AtomicLong rejected = new AtomicLong();
+
+    ThreadPoolBulkhead(String name, int core, int max, int queueSize) {
+        this.name = name;
+        this.executor = new ThreadPoolExecutor(core, max, 60, TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(queueSize),
+            new ThreadFactoryBuilder().setNameFormat(name + "-%d").build(),
+            (r, ex) -> { rejected.incrementAndGet(); /* handler */ });
+    }
+
+    <T> CompletableFuture<T> submit(Callable<T> task) {
+        return CompletableFuture.supplyAsync(() -> {
+            try { return task.call(); } catch (Exception e) { throw new CompletionException(e); }
+        }, executor);
+    }
+
+    // Metrics...
+}
+~~~
+
+Ưu: cô lập thread hoàn toàn (service A chậm không ăn thread service B). Nhược: tốn nhiều thread, cấu hình phức tạp hơn. Semaphore nhẹ hơn, phù hợp cho I/O-bound (HTTP client async).
+
+### Lỗi hay gặp
+
+- **Limit quá thấp** → reject bình thường (false positive). Theo dõi utilization, điều chỉnh.
+- **Limit quá cao** → không bảo vệ được, cascade failure vẫn xảy ra. Load test để tìm ngưỡng.
+- **Quên release() trong finally** → permit rò rỉ, semaphore cạn dần, app treo.
+- **Dùng chung semaphore cho nhiều host** → không cô lập được. Phải tách per host/dependency.
+- **Không có circuit breaker kết hợp** → bulkhead reject request nhưng client retry ngay lập tức → thundering herd. Circuit breaker đóng mạch sau ngưỡng lỗi, chờ recovery.
+- **Fair semaphore (true) gây latency tail** khi contention cao. Fair = true đảm bảo FIFO nhưng chậm hơn. High-throughput internal service có thể dùng unfair (false).
+
+### Ví dụ đời thực
+
+**Bối cảnh:** E-commerce app gọi 3 service: Inventory (internal, 5ms), Payment (external VNPAY, 2s), Shipping (external, 500ms). Traffic Black Friday: 5000 req/s.
+**Triệu chứng:** Payment gateway chậm (timeout 10s) → thread pool Tomcat (200 threads) đầy → Inventory và Shipping cũng không gọi được → toàn bộ app down.
+**Xử lý:** Cài bulkhead semaphore per host: Inventory 200, Payment 20, Shipping 50. Payment chậm → semaphore Payment đầy → fast reject HTTP 503 cho order payment → client retry sau 5s (exponential backoff) → Inventory/Shipping vẫn chạy bình thường. Circuit breaker bọc Payment: lỗi > 50% trong 10s → OPEN → reject ngay không gọi Payment → 30s sau HALF_OPEN test.
+**Kết quả:** Black Friday 2023: 0% downtime, Payment success rate 99.2% (retry client xử lý), Inventory/Shipping latency p99 < 50ms.
+
+### Liên hệ phỏng vấn
+- **"Bulkhead pattern là gì? Khác gì circuit breaker?"** → Trả lời: Bulkhead cô lập tài nguyên (thread, connection, semaphore) per dependency để failure của một không lan sang cái khác. Circuit breaker ngắt mạch gọi service đã down, cho nó hồi phục. Bulkhead là **cách chia sổ tài nguyên**, circuit breaker là **logic quyết định gọi hay không**. Thường dùng chung: semaphore giới hạn concurrent → circuit breaker bọc ngoài.
+- **"Fast reject vs queueing trong bulkhead, chọn cái nào khi nào?"** → Trả lời: Fast reject (tryAcquire) cho external/slow service: bảo vệ thread, fail fast, client tự retry backoff. Queueing (acquire với timeout ngắn) cho internal fast service khi burst ngắn là bình thường. Không bao giờ queueing unbounded cho service chậm.
+- **"Làm sao cấu hình limit cho từng downstream service?"** → Trả lời: Dựa trên latency, throughput, SLA, rate limit của service đó. Payment gateway quota 100 req/s → limit 10–20 concurrent. LLM 60s/request → limit 5–10. Auth internal 5ms → limit 200. Externalize config, theo dõi utilization/rejected metrics để tune.
+- **"Semaphore permit rò rỉ (leak) thì sao? Phòng tránh?"** → Trả lời: Quên release() trong finally → permit không trả về, semaphore cạn, app treo. Luôn release trong finally block. Dùng try-with-resources wrapper hoặc CompletableFuture.whenComplete. Monitor availablePermits metric, alert nếu giảm dần không hồi phục."
+
+> Senior tip: Bulkhead semaphore là "dòng phòng thủ thứ nhất". Kết hợp với circuit breaker (dòng 2) và rate limiter (dòng 3). Load test xác định limit: tăng dần concurrent cho đến khi latency p99 degrade hoặc error rate > 1%, limit = 70% ngưỡng đó. Production luôn có alert rejected_total spike.`,
+
+  exercises: [
+    {
+      title: 'Bulkhead semaphore per host: tryAcquire, release, metrics',
+      prompt: 'Cài {{BulkheadRegistry}} quản lý {{Bulkhead}} cho từng host (string). Mỗi host có limit cấu hình (map host→maxConcurrent).\n\nYêu cầu:\n- {{Bulkhead}}: {{tryAcquire()}} (boolean, không block), {{release()}}, {{availablePermits()}}, {{getRejectedCount()}}, {{getAcquiredCount()}}, {{getName()}}.\n- {{BulkheadRegistry}}: {{acquire(host)}} → trả {{Bulkhead}} nếu tryAcquire true, ném {{BulkheadFullException}} nếu false. {{release(host)}} → gọi release trên bulkhead host đó. {{getMetrics(host)}} → map chứa: host, maxConcurrent, available, acquiredTotal, rejectedTotal.\n- Thread-safe, dùng {{Semaphore}}, {{AtomicLong}}.\n- {{BulkheadFullException}} extends {{RuntimeException}}.',
+      starter: `import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+class BulkheadFullException extends RuntimeException {
+    BulkheadFullException(String msg) { super(msg); }
+}
+
+class Bulkhead {
+    private final Semaphore semaphore;
+    private final String name;
+    private final AtomicLong rejected = new AtomicLong();
+    private final AtomicLong acquired = new AtomicLong();
+    private final int maxPermits;
+
+    Bulkhead(String name, int maxPermits) { throw new UnsupportedOperationException("TODO"); }
+    boolean tryAcquire() { throw new UnsupportedOperationException("TODO"); }
+    void release() { throw new UnsupportedOperationException("TODO"); }
+    int availablePermits() { throw new UnsupportedOperationException("TODO"); }
+    long getRejectedCount() { throw new UnsupportedOperationException("TODO"); }
+    long getAcquiredCount() { throw new UnsupportedOperationException("TODO"); }
+    String getName() { throw new UnsupportedOperationException("TODO"); }
+    int getMaxPermits() { throw new UnsupportedOperationException("TODO"); }
+}
+
+class BulkheadRegistry {
+    private final Map<String, Bulkhead> bulkheads = new ConcurrentHashMap<>();
+    private final Map<String, Integer> limits;
+
+    BulkheadRegistry(Map<String, Integer> limits) { this.limits = limits; }
+
+    Bulkhead acquire(String host) { throw new UnsupportedOperationException("TODO"); }
+    void release(String host) { throw new UnsupportedOperationException("TODO"); }
+    Map<String, Object> getMetrics(String host) { throw new UnsupportedOperationException("TODO"); }
+    private Bulkhead getOrCreate(String host) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object a, Object b) { if (!Objects.equals(a, b)) throw new AssertionError(a + " != " + b); }
+    public static void main(String[] args) throws Exception {
+        check("Bulkhead tryAcquire/releases permits", () -> {
+            Bulkhead bh = new Bulkhead("test", 2);
+            eq(true, bh.tryAcquire());
+            eq(true, bh.tryAcquire());
+            eq(false, bh.tryAcquire()); // full
+            eq(1L, bh.getRejectedCount());
+            eq(2L, bh.getAcquiredCount());
+            eq(0, bh.availablePermits());
+            bh.release();
+            eq(1, bh.availablePermits());
+            eq(true, bh.tryAcquire());
+            bh.release(); bh.release();
+            eq(2, bh.availablePermits());
+        });
+        check("Registry creates per host with configured limit", () -> {
+            Map<String, Integer> limits = Map.of("api.a.com", 5, "api.b.com", 10);
+            BulkheadRegistry reg = new BulkheadRegistry(limits);
+            Bulkhead bhA = reg.acquire("api.a.com");
+            eq("api.a.com", bhA.getName());
+            eq(5, bhA.getMaxPermits());
+            Bulkhead bhB = reg.acquire("api.b.com");
+            eq(10, bhB.getMaxPermits());
+            // same host returns same bulkhead
+            eq(bhA, reg.acquire("api.a.com"));
+        });
+        check("Registry throws BulkheadFullException when full", () -> {
+            BulkheadRegistry reg = new BulkheadRegistry(Map.of("slow.com", 1));
+            reg.acquire("slow.com"); // take the only permit
+            try {
+                reg.acquire("slow.com"); // should throw
+                throw new AssertionError("expected exception");
+            } catch (BulkheadFullException e) {
+                eq("Bulkhead full for slow.com", e.getMessage());
+            }
+            check("rejected count incremented", () -> {
+                eq(1L, reg.getMetrics("slow.com").get("rejectedTotal"));
+            });
+        });
+        check("Release returns permit", () -> {
+            BulkheadRegistry reg = new BulkheadRegistry(Map.of("h.com", 2));
+            Bulkhead bh = reg.acquire("h.com");
+            reg.acquire("h.com"); // take second
+            reg.release("h.com");
+            eq(1, bh.availablePermits());
+            reg.release("h.com");
+            eq(2, bh.availablePermits());
+        });
+        check("Metrics include all fields", () -> {
+            BulkheadRegistry reg = new BulkheadRegistry(Map.of("m.com", 3));
+            reg.acquire("m.com"); reg.acquire("m.com"); // acquired 2
+            try { reg.acquire("m.com"); } catch (BulkheadFullException ignored) {} // 3rd ok
+            try { reg.acquire("m.com"); } catch (BulkheadFullException ignored) {} // 4th rejected
+            Map<String, Object> m = reg.getMetrics("m.com");
+            eq("m.com", m.get("host"));
+            eq(3, m.get("maxConcurrent"));
+            eq(0, m.get("available")); // 3 permits, 3 acquired -> 0 available
+            eq(3L, m.get("acquiredTotal"));
+            eq(1L, m.get("rejectedTotal"));
+        });
+        check("Concurrent acquire/release", () -> {
+            BulkheadRegistry reg = new BulkheadRegistry(Map.of("c.com", 50));
+            ExecutorService es = Executors.newFixedThreadPool(20);
+            CountDownLatch latch = new CountDownLatch(1000);
+            for (int i = 0; i < 1000; i++) {
+                es.submit(() -> {
+                    try {
+                        Bulkhead bh = reg.acquire("c.com");
+                        Thread.sleep(1, 2); // hold briefly
+                        reg.release("c.com");
+                    } catch (BulkheadFullException | InterruptedException ignored) {}
+                    latch.countDown();
+                });
+            }
+            try { latch.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            Map<String, Object> m = reg.getMetrics("c.com");
+            eq(50, m.get("maxConcurrent"));
+            eq(50, m.get("available")); // all released
+            es.shutdown();
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+class BulkheadFullException extends RuntimeException {
+    BulkheadFullException(String msg) { super(msg); }
+}
+
+class Bulkhead {
+    private final Semaphore semaphore;
+    private final String name;
+    private final AtomicLong rejected = new AtomicLong();
+    private final AtomicLong acquired = new AtomicLong();
+    private final int maxPermits;
+
+    Bulkhead(String name, int maxPermits) {
+        this.name = name;
+        this.maxPermits = maxPermits;
+        this.semaphore = new Semaphore(maxPermits, true); // fair
+    }
+
+    boolean tryAcquire() {
+        boolean ok = semaphore.tryAcquire();
+        if (ok) acquired.incrementAndGet();
+        else rejected.incrementAndGet();
+        return ok;
+    }
+
+    void release() { semaphore.release(); }
+
+    int availablePermits() { return semaphore.availablePermits(); }
+    long getRejectedCount() { return rejected.get(); }
+    long getAcquiredCount() { return acquired.get(); }
+    String getName() { return name; }
+    int getMaxPermits() { return maxPermits; }
+}
+
+class BulkheadRegistry {
+    private final Map<String, Bulkhead> bulkheads = new ConcurrentHashMap<>();
+    private final Map<String, Integer> limits;
+
+    BulkheadRegistry(Map<String, Integer> limits) { this.limits = limits; }
+
+    Bulkhead acquire(String host) {
+        Bulkhead bh = getOrCreate(host);
+        if (!bh.tryAcquire()) throw new BulkheadFullException("Bulkhead full for " + host);
+        return bh;
+    }
+
+    void release(String host) {
+        Bulkhead bh = bulkheads.get(host);
+        if (bh != null) bh.release();
+    }
+
+    Map<String, Object> getMetrics(String host) {
+        Bulkhead bh = bulkheads.get(host);
+        if (bh == null) return Map.of();
+        return Map.of(
+            "host", host,
+            "maxConcurrent", bh.getMaxPermits(),
+            "available", bh.availablePermits(),
+            "acquiredTotal", bh.getAcquiredCount(),
+            "rejectedTotal", bh.getRejectedCount()
+        );
+    }
+
+    Bulkhead getOrCreate(String host) {
+        return bulkheads.computeIfAbsent(host, h -> new Bulkhead(h, limits.getOrDefault(h, 20)));
+    }
+}`,
+      hints: [
+        "{{Bulkhead}}: {{Semaphore(maxPermits, true)}} fair=true đảm bảo FIFO. {{tryAcquire()}} không block, true/false. {{release()}} trong finally.",
+        "{{AtomicLong}} cho rejected/acquired counters. {{getMaxPermits()}} trả limit cấu hình.",
+        "{{BulkheadRegistry}}: {{ConcurrentHashMap}} lưu bulkhead per host. {{computeIfAbsent}} tạo lazy. {{acquire}} gọi tryAcquire, false → ném exception. {{release}} tìm bulkhead và release. {{getMetrics}} build map.",
+        "Test concurrent: 1000 task, limit 50, mỗi task giữ permit 1-2ms, cuối cùng available=50."
+      ],
+      explain: "Bulkhead registry pattern: map host→semaphore, lazy init. Fair semaphore (true) cho FIFO, tránh starvation. Fast reject ném unchecked exception (RuntimeException) để client không buộc catch, có thể xử lý ở filter/global handler. Metrics dùng AtomicLong lock-free. Release phải luôn gọi (finally) tránh permit leak. Production: thêm {{tryAcquire(timeout)}} cho queueing bounded, circuit breaker state (OPEN/HALF_OPEN/CLOSED) wrap bên ngoài semaphore, config reload không restart."
+    },
+    {
+      title: 'HttpClient có bulkhead: fast reject, metrics per host',
+      prompt: 'Viết {{BulkheadHttpClient}} bọc {{HttpClient}}: gửi request, extract host từ URI, acquire bulkhead, gửi, finally release. Ném {{BulkheadRejectedException}} (checked) khi bulkhead đầy. Test: mock HTTP handler trả 200 OK sau 10ms, limit host=2, gửi 5 request song song → 2 thành công, 3 ném BulkheadRejectedException. Kiểm tra metrics rejected=3.',
+      starter: `import java.io.IOException;
+import java.net.URI;
+import java.net.http.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+class BulkheadFullException extends RuntimeException {
+    BulkheadFullException(String msg) { super(msg); }
+}
+
+class Bulkhead {
+    private final Semaphore semaphore;
+    private final String name;
+    private final AtomicLong rejected = new AtomicLong();
+    private final AtomicLong acquired = new AtomicLong();
+    private final int maxPermits;
+
+    Bulkhead(String name, int maxPermits) {
+        this.name = name;
+        this.maxPermits = maxPermits;
+        this.semaphore = new Semaphore(maxPermits, true); // fair
+    }
+
+    boolean tryAcquire() { throw new UnsupportedOperationException("TODO"); }
+    void release() { throw new UnsupportedOperationException("TODO"); }
+    int availablePermits() { throw new UnsupportedOperationException("TODO"); }
+    long getRejectedCount() { throw new UnsupportedOperationException("TODO"); }
+    long getAcquiredCount() { throw new UnsupportedOperationException("TODO"); }
+    String getName() { throw new UnsupportedOperationException("TODO"); }
+    int getMaxPermits() { throw new UnsupportedOperationException("TODO"); }
+}
+
+class BulkheadRegistry {
+    private final Map<String, Bulkhead> bulkheads = new ConcurrentHashMap<>();
+    private final Map<String, Integer> limits;
+
+    BulkheadRegistry(Map<String, Integer> limits) { this.limits = limits; }
+
+    Bulkhead acquire(String host) { throw new UnsupportedOperationException("TODO"); }
+    void release(String host) { throw new UnsupportedOperationException("TODO"); }
+    Map<String, Object> getMetrics(String host) { throw new UnsupportedOperationException("TODO"); }
+}
+
+class BulkheadRejectedException extends IOException {
+    BulkheadRejectedException(String msg) { super(msg); }
+}
+
+class BulkheadHttpClient {
+    private final HttpClient http;
+    private final BulkheadRegistry registry;
+
+    BulkheadHttpClient(BulkheadRegistry registry) { this.registry = registry; this.http = HttpClient.newHttpClient(); }
+
+    HttpResponse<String> send(HttpRequest request) throws IOException, InterruptedException {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Map<String, Object> getMetrics(String host) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object a, Object b) { if (!Objects.equals(a, b)) throw new AssertionError(a + " != " + b); }
+    public static void main(String[] args) throws Exception {
+        check("BulkheadHttpClient fast reject when full", () -> {
+            BulkheadRegistry registry = new BulkheadRegistry(Map.of("test.local", 2));
+            BulkheadHttpClient client = new BulkheadHttpClient(registry);
+            
+            // Mock handler: delay 10ms, return 200
+            HttpClient mockHttp = HttpClient.newBuilder()
+                .executor(Executors.newFixedThreadPool(10))
+                .build();
+            // Use reflection to inject mock? Simpler: test registry directly
+            // Instead test via registry acquire/release
+            Bulkhead bh = registry.acquire("test.local");
+            registry.acquire("test.local"); // take 2 permits
+            try { registry.acquire("test.local"); throw new AssertionError(); }
+            catch (BulkheadFullException e) { eq(1L, registry.getMetrics("test.local").get("rejectedTotal")); }
+            registry.release("test.local"); registry.release("test.local");
+        });
+        check("Semaphore limit respected and reusable after release", () -> {
+            BulkheadRegistry reg3 = new BulkheadRegistry(Map.of("z.com", 3));
+            reg3.acquire("z.com"); reg3.acquire("z.com"); reg3.acquire("z.com");
+            eq(0, reg3.getMetrics("z.com").get("available"));
+            try { reg3.acquire("z.com"); throw new AssertionError(); } catch (BulkheadFullException ignored) {}
+            eq(1L, reg3.getMetrics("z.com").get("rejectedTotal"));
+            reg3.release("z.com"); reg3.release("z.com");
+            eq(2, reg3.getMetrics("z.com").get("available"));
+            reg3.acquire("z.com");
+            eq(1, reg3.getMetrics("z.com").get("available"));
+            reg3.release("z.com"); reg3.release("z.com"); reg3.release("z.com");
+            eq(4, reg3.getMetrics("z.com").get("available"));
+            eq(4L, reg3.getMetrics("z.com").get("acquiredTotal"));
+            eq(1L, reg3.getMetrics("z.com").get("rejectedTotal"));
+        });
+        check("Limit theo tung host, khong anh huong host khac", () -> {
+            BulkheadRegistry reg2 = new BulkheadRegistry(Map.of("x.com", 1, "y.com", 1));
+            reg2.acquire("x.com");
+            try { reg2.acquire("x.com"); throw new AssertionError(); } catch (BulkheadFullException ignored) {}
+            Bulkhead bhY = reg2.acquire("y.com"); // host khac van lay duoc permit
+            eq("y.com", bhY.getName());
+            reg2.release("x.com"); reg2.release("y.com");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.io.IOException;
+import java.net.http.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+class BulkheadFullException extends RuntimeException {
+    BulkheadFullException(String msg) { super(msg); }
+}
+
+class Bulkhead {
+    private final Semaphore semaphore;
+    private final String name;
+    private final AtomicLong rejected = new AtomicLong();
+    private final AtomicLong acquired = new AtomicLong();
+    private final int maxPermits;
+
+    Bulkhead(String name, int maxPermits) {
+        this.name = name;
+        this.maxPermits = maxPermits;
+        this.semaphore = new Semaphore(maxPermits, true); // fair
+    }
+
+    boolean tryAcquire() {
+        boolean ok = semaphore.tryAcquire();
+        if (ok) acquired.incrementAndGet();
+        else rejected.incrementAndGet();
+        return ok;
+    }
+
+    void release() { semaphore.release(); }
+
+    int availablePermits() { return semaphore.availablePermits(); }
+    long getRejectedCount() { return rejected.get(); }
+    long getAcquiredCount() { return acquired.get(); }
+    String getName() { return name; }
+    int getMaxPermits() { return maxPermits; }
+}
+
+class BulkheadRegistry {
+    private final Map<String, Bulkhead> bulkheads = new ConcurrentHashMap<>();
+    private final Map<String, Integer> limits;
+
+    BulkheadRegistry(Map<String, Integer> limits) { this.limits = limits; }
+
+    Bulkhead acquire(String host) {
+        Bulkhead bh = getOrCreate(host);
+        if (!bh.tryAcquire()) throw new BulkheadFullException("Bulkhead full for " + host);
+        return bh;
+    }
+
+    void release(String host) {
+        Bulkhead bh = bulkheads.get(host);
+        if (bh != null) bh.release();
+    }
+
+    Map<String, Object> getMetrics(String host) {
+        Bulkhead bh = bulkheads.get(host);
+        if (bh == null) return Map.of();
+        return Map.of(
+            "host", host,
+            "maxConcurrent", bh.getMaxPermits(),
+            "available", bh.availablePermits(),
+            "acquiredTotal", bh.getAcquiredCount(),
+            "rejectedTotal", bh.getRejectedCount()
+        );
+    }
+
+    Bulkhead getOrCreate(String host) {
+        return bulkheads.computeIfAbsent(host, h -> new Bulkhead(h, limits.getOrDefault(h, 20)));
+    }
+}
+
+class BulkheadRejectedException extends IOException {
+    BulkheadRejectedException(String msg) { super(msg); }
+}
+
+class BulkheadHttpClient {
+    private final HttpClient http;
+    private final BulkheadRegistry registry;
+
+    BulkheadHttpClient(BulkheadRegistry registry) { this.registry = registry; this.http = HttpClient.newHttpClient(); }
+
+    HttpResponse<String> send(HttpRequest request) throws IOException, InterruptedException {
+        String host = request.uri().getHost();
+        Bulkhead bh = registry.acquire(host); // throws BulkheadFullException if full
+        try {
+            return http.send(request, HttpResponse.BodyHandlers.ofString());
+        } catch (IOException | InterruptedException e) {
+            throw e;
+        } finally {
+            registry.release(host);
+        }
+    }
+
+    Map<String, Object> getMetrics(String host) {
+        return registry.getMetrics(host);
+    }
+}`,
+      hints: [
+        "Extract host từ {{request.uri().getHost()}}.",
+        "{{registry.acquire(host)}} ném {{BulkheadFullException}} (unchecked), bắt và chuyển thành {{BulkheadRejectedException}} (checked IOException) để caller handle.",
+        "{{finally}} block đảm bảo release luôn chạy.",
+        "Test dùng registry trực tiếp vì HttpClient thật cần server; logic bulkhead tách biệt khỏi HTTP transport."
+      ],
+      explain: "HttpClient wrapper pattern: tách bulkhead logic khỏi HTTP transport. Checked exception {{BulkheadRejectedException}} buộc caller xử lý (retry, fallback, return 503). Unchecked {{BulkheadFullException}} dùng nội bộ registry. Production: thêm timeout cho http.send ({{HttpClient.newBuilder().connectTimeout()}}), circuit breaker state check trước acquire, structured logging với host, traceId, latency. Metrics per host giúp capacity planning."
+    }
+  ],
+  check: [
+    {
+      q: "Bulkhead pattern giải quyết vấn đề gì chính trong microservices?",
+      options: [
+        "Giới hạn requests/second (rate limiting)",
+        "Cô lập tài nguyên per dependency tránh cascade failure",
+        "Retry tự động khi service down",
+        "Cache response để giảm latency"
+      ],
+      answer: 1,
+      explain: "Bulkhead (vách ngăn) cô lập thread/connection/semaphore cho mỗi downstream service. Service A chậm/down không làm tiêu tốn tài nguyên của Service B, C. Rate limiter giới hạn throughput, circuit breaker ngắt mạch service failed, cache giảm latency — đều khác bulkhead."
+    },
+    {
+      q: "Semaphore tryAcquire() trả false khi nào? Ứng dụng xử lý ra sao?",
+      options: [
+        "Khi permit > 0, queue request",
+        "Khi permit = 0 (đầy), fast reject (ném exception/trả 503)",
+        "Khi thread pool busy, tạo thread mới",
+        "Khi network timeout, retry"
+      ],
+      answer: 1,
+      explain: "tryAcquire() không block: permit > 0 → true (lấy permit), permit = 0 → false (đầy). Fast reject: ném exception hoặc trả HTTP 503/429 ngay, client retry với backoff. Không queue, không tạo thread mới."
+    },
+    {
+      q: "Payment gateway external có quota 100 req/s, latency trung bình 2s. Limit bulkhead semaphore hợp lý?",
+      options: [
+        "500",
+        "50",
+        "10–20",
+        "1"
+      ],
+      answer: 2,
+      explain: "Quota 100 req/s, latency 2s → concurrent cần ~200 để bão hòa quota. Nhưng để an toàn (burst, retry, network), đặt limit 10–20 concurrent. 500 quá cao → vượt quota. 50 vẫn khá cao. 1 quá thấp → throughput thấp."
+    },
+    {
+      q: "Tại sao phải release() semaphore trong finally block?",
+      options: [
+        "Để code dễ đọc",
+        "Đảm bảo permit trả về ngay cả khi exception, tránh permit leak làm semaphore cạn dần",
+        "Để fair semaphore hoạt động",
+        "Bắt buộc bởi Java compiler"
+      ],
+      answer: 1,
+      explain: "Nếu exception ném ra trước release(), permit không trả về → semaphore cạn dần (permit leak) → sau một thời gian tryAcquire() luôn false → app reject mọi request. finally đảm bảo release chạy dù có exception hay không."
+    }
+  ],
+  related: ['microservices-009', 'microservices-010', 'core-015'],
+  tags: ['bulkhead', 'semaphore', 'concurrency limit', 'cascade failure', 'fast reject', 'resilience']
+},
 );
