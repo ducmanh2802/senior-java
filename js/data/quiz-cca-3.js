@@ -879,4 +879,194 @@
 
 > Mẹo Senior: trong sản xuất, hãy giới hạn số request đồng thời, concurrency, và có hàng đợi riêng cho các tác vụ không khẩn cấp.`
 },
+{
+  id: 'qz-ccap-046',
+  topic: 'claude',
+  q: "[Prompt Engineering] A team puts safety rules in the system parameter, but a user message says ignore previous instructions and do X. Which design best keeps the system rules in effect?",
+  options: [
+    "Tell the model to always obey the latest user message",
+    "Keep rules in system and treat user text as untrusted data in a delimited section, validating sensitive actions server-side",
+    "Remove the system parameter so there is no conflict",
+    "Repeat the rules at the end of every user message"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: giữ quy tắc trong system, coi văn bản user là dữ liệu không đáng tin trong vùng được phân tách, và xác thực hành động nhạy cảm ở phía server.** Trong Claude Messages API, system chứa vai trò và quy tắc tin cậy, còn messages chứa nội dung từng lượt. Khi người dùng nói “bỏ qua hướng dẫn trước”, đó là nỗ lực ghi đè chỉ dẫn; ứng dụng không nên tự tin vào lời đó mà phải giữ system là nguồn quyền hạn và kiểm tra hành động nhạy cảm bằng logic server.
+
+### Vì sao các phương án còn lại sai
+- **Luôn tuân theo tin nhắn mới nhất:** cho phép nội dung do người dùng đưa vào can thiệp vào quy tắc ứng dụng, gây prompt injection.
+- **Bỏ system:** làm mất nơi khai báo quy tắc tin cậy, khó bảo vệ hành vi ổn định.
+- **Lặp quy tắc cuối mỗi tin nhắn user:** làm prompt dài, tốn chi phí và quy tắc dễ bị lẫn với nội dung khách hàng gửi; không giải quyết vấn đề căn nguyên.`
+},
+{
+  id: 'qz-ccap-047',
+  topic: 'claude',
+  q: "[Prompt Engineering] A team caches a large policy document with Claude prompt caching. The cache is not hit on some requests even though the document is unchanged. What is the most likely cause?",
+  options: [
+    "The cached block expired after its time-to-live because it was not accessed for a while",
+    "Claude caches only the first 1,000 tokens of any block",
+    "The model must see the exact same user message for a cache hit",
+    "Caching only works with the Messages API streaming mode"
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: khối cache đã hết hạn sau thời gian tồn tại TTL nếu không được truy cập trong khoảng thời gian đó.** Prompt caching của Claude lưu các phần prompt dùng lại, nhưng mỗi khối cache có thời gian tồn tại; nếu không có request nào tiếp tục dùng khối đó, khối bị hết hạn và request sau sẽ không trúng cache, phải tính lại từ đầu.
+
+### Vì sao các phương án còn lại sai
+- **Claude chỉ cache 1.000 token đầu:** không đúng; cấu trúc cache của Claude không giới hạn như vậy.
+- **Cần cùng tin nhắn user chính xác:** cache trùng dựa trên nội dung khối được đánh dấu cache, không phải toàn bộ tin nhắn user phải giống hệt.
+- **Chỉ cache khi streaming:** cache hoạt động cả với streaming và non-streaming, không giới hạn ở chế độ nào.`
+},
+{
+  id: 'qz-ccap-048',
+  topic: 'claude',
+  q: "[Prompt Engineering] A team caches a long system prompt with Claude prompt caching. They add one dynamic customer ID to the cached block. What happens to cache hits?",
+  options: [
+    "Cache hits improve because the ID helps identify the customer",
+    "Adding dynamic content to a cached block breaks the cache prefix; later requests with different IDs miss the cache",
+    "Cache is unaffected; Claude ignores dynamic content inside cached blocks",
+    "Cache hits only work if the ID is moved to the user message"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: thêm nội dung động vào khối cache phá vỡ tiền tố cache; các request có ID khác sẽ không trúng cache.** Prompt caching hiệu quả khi tiền tố giống hệt nhau giữa các request. Nếu một customer ID thay đổi nằm trong khối được đánh dấu cache, mỗi ID khác nhau tạo ra một tiền tố khác, do đó cache không được tái sử dụng và chi phí tăng theo từng khách.
+
+### Vì sao các phương án còn lại sai
+- **ID giúp trúng cache:** ID khác nhau làm tiền tố cache khác nhau, nên tỷ lệ trúng cache giảm, không tăng.
+- **Claude bỏ qua nội dung động trong khối cache:** toàn bộ khối được đánh dấu cache phải khớp nhau giữa các request; Claude không chọn lọc phần nào trong khối.
+- **ID trong user message làm mất cache:** nếu ID nằm trong user message bên ngoài khối cache, nó không ảnh hưởng tiền tố cache, nên không làm mất cache; đây chính là cách nên làm.`
+},
+{
+  id: 'qz-ccap-049',
+  topic: 'claude',
+  q: "[Prompt Engineering] A ticket-routing classifier must answer in under 200 ms. The team considers enabling Claude extended thinking. What is the best decision?",
+  options: [
+    "Enable extended thinking with a large budget for every request to maximize accuracy",
+    "Do not enable extended thinking for this low-latency classification; test temperature and few-shot instead",
+    "Enable extended thinking only when the model itself detects an ambiguous ticket",
+    "Extended thinking always reduces latency, so enable it"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không bật extended thinking cho phân loại cần phản hồi dưới 200 ms; hãy thử temperature ít và few-shot trên tập riêng trước.** Extended thinking dành thêm token để suy luận trước câu trả lời cuối, tăng độ trễ và chi phí, phù hợp bài toán nhiều bước khó hơn là phân loại đơn giản cần trả về ngay.
+
+### Vì sao các phương án còn lại sai
+- **Bật extended thinking lớn cho mọi request:** tăng độ trễ quá mức cho yêu cầu dưới 200 ms, không phù hợp phân loại đơn giản.
+- **Chỉ bật khi mô hình tự thấy mơ hồ:** extended thinking là cài đặt hệ thống, không phải điều kiện mô hình tự quyết định trong lúc chạy.
+- **Extended thinking luôn giảm độ trễ:** sai, nó tăng độ trễ vì mô hình cần sinh thêm token suy luận trước khi trả lời.`
+},
+{
+  id: 'qz-ccap-050',
+  topic: 'claude',
+  q: "[Prompt Engineering] A team defines a tool to update customer records, but Claude picks the wrong tool or passes wrong fields. Which prompt-level change most helps?",
+  options: [
+    "Increase max_tokens so the model has more room to choose",
+    "Write clear descriptions for each tool and parameter, including when to use the tool and field constraints",
+    "Remove all but one tool so the model has no choice",
+    "Set temperature to zero and remove tool descriptions"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: viết mô tả rõ cho từng công cụ và tham số, bao gồm khi nào dùng công cụ và ràng buộc trường.** Mô tả tool là phần chỉ dẫn cho mô hình chọn đúng công cụ và điền đúng giá trị; mô tả tốt giúp mô hình hiểu ý nghĩa từng trường, ví dụ “mã khách hàng, 8 chữ số, bắt buộc” thay vì tên trường mập mờ.
+
+### Vì sao các phương án còn lại sai
+- **Tăng max_tokens:** giới hạn độ dài đầu ra, không giúp mô hình chọn công cụ hay điền trường chính xác hơn.
+- **Chỉ để một công cụ:** loại bỏ khả năng lựa chọn nhưng không giải quyết trường hợp cần nhiều công cụ; cũng không dạy mô hình dùng công cụ duy nhất đúng.
+- **Temperature 0 và bỏ mô tả:** temperature thấp giảm ngẫu nhiên nhưng không thay thế mô tả; bỏ mô tả làm mô hình thiếu thông tin để chọn trường.`
+},
+{
+  id: 'qz-ccap-051',
+  topic: 'claude',
+  q: "[Prompt Engineering] A few-shot prompt contains eight examples, four of label A then four of label B. Production shows the model favors label B on borderline cases. What is the likely cause and fix?",
+  options: [
+    "Label B is inherently more probable; stop using few-shot",
+    "Later examples often weigh more due to recency effect; reorder or balance examples and re-evaluate",
+    "Increase temperature to reduce label preference",
+    "Remove all examples and add a longer instruction"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: ví dụ ở cuối thường có tác dụng nhiều hơn do hiệu ứng gần nhất; hãy sắp xếp lại hoặc cân bằng ví dụ rồi đánh giá lại.** Few-shot examples đóng vai trò khuôn mẫu; ví dụ xuất hiện gần cuối phần ví dụ có xu hướng bị nhớ nhiều hơn, làm mô hình lệch sang nhãn đó trên các trường hợp ranh giới.
+
+### Vì sao các phương án còn lại sai
+- **Nhãn B có xác suất cao hơn bản chất:** không có cơ sở; sự lệch có thể đến từ thứ tự ví dụ chứ không phải nhãn.
+- **Tăng temperature:** làm đầu ra ngẫu nhiên hơn, không khắc phục hiện tượng lệch do thứ tự ví dụ.
+- **Bỏ hết ví dụ:** mất nguồn khuôn mẫu hữu ích; nên điều chỉnh thứ tự thay vì loại bỏ hoàn toàn.`
+},
+{
+  id: 'qz-ccap-052',
+  topic: 'claude',
+  q: "[Prompt Engineering] A Claude assistant needs to look up a customer record and check inventory before replying. The two lookups are independent. Which two statements are true? (Choose 2)",
+  options: [
+    "Independent lookups can be issued in parallel by Claude, reducing total latency",
+    "Claude always calls tools one at a time, even when they do not depend on each other",
+    "If the inventory check needs a value from the customer lookup, the calls are dependent and must be sequential",
+    "Parallel tool calls always cost more per request than sequential calls",
+    "Results from parallel tool calls cannot be merged before sending back to Claude"
+  ],
+  multi: true,
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 0 và 2.** Claude có thể gọi các công cụ độc lập cùng lúc để giảm tổng thời gian chờ, nhưng nếu lệnh thứ hai cần giá trị từ lệnh đầu thì hai lệnh phụ thuộc nhau và phải chạy từng bước.
+
+### Vì sao từng phương án
+- **0 đúng:** công cụ không liên quan có thể được gọi song song; tổng thời gian chờ bằng lúc chậm nhất chứ không phải tổng cộng.
+- **1 sai:** Claude hỗ trợ gọi nhiều công cụ cùng lúc khi chúng không phụ thuộc lẫn nhau.
+- **2 đúng:** phụ thuộc dữ liệu giữa các lệnh buộc thứ tự thực hiện.
+- **3 sai:** gọi song song không nhất thiết tốn nhiều hơn; mỗi lệnh công cụ vẫn tính token bình thường.
+- **4 sai:** kết quả từ các lệnh song song vẫn có thể được tổng hợp trước khi gửi lại cho mô hình; không có hạn chế đó.`
+},
+{
+  id: 'qz-ccap-053',
+  topic: 'claude',
+  q: "[Prompt Engineering] A team caches a policy document but needs to include a per-request date. Which approach keeps cache hits high?",
+  options: [
+    "Put the date inside the cached policy block so it is part of the cached prefix",
+    "Put dynamic per-request content, like the date, in the user message outside the cached block",
+    "Disable caching entirely when any dynamic field is present",
+    "Append the date to the end of every cached block"
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: đặt nội dung động theo từng request, như ngày tháng, vào tin nhắn người dùng bên ngoài khối đã được cache.** Chỉ phần prefix giống hệt nhau giữa các request mới được tái sử dụng từ cache. Nội dung thay đổi mỗi lần nên nằm ngoài khối cache để các request khác nhau vẫn trúng cache trên phần chính sách ổn định.
+
+### Vì sao các phương án còn lại sai
+- **Ngày trong khối cache:** mỗi ngày khác nhau tạo tiền tố khác, làm mỗi request không trúng cache.
+- **Tắt cache khi có trường động:** không cần thiết; chỉ cần tách phần động ra ngoài khối cache.
+- **Thêm ngày vào cuối mỗi khối cache:** cùng lý do trên, tạo tiền tố khác nhau, giảm tỷ lệ trúng cache.`
+},
+{
+  id: 'qz-ccap-054',
+  topic: 'claude',
+  q: "[Prompt Engineering] A code-review assistant finds simple typos quickly but misses subtle logic bugs. The team enables Claude extended thinking. Which two statements are true? (Choose 2)",
+  options: [
+    "Extended thinking adds reasoning tokens before the final answer, which can help catch subtle logic bugs",
+    "Extended thinking replaces unit tests and human code review",
+    "Extended thinking raises latency and cost; enable it for hard cases and measure first",
+    "Extended thinking is equally useful for one-word answers and complex refactoring"
+  ],
+  multi: true,
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 0 và 2.** Extended thinking cho mô hình nhiều token hơn để suy luận trước câu trả lời cuối, giúp phát hiện lỗi logic tinh vi; nhưng nó tăng độ trễ và chi phí, nên chỉ bật cho các trường hợp khó và đo kết quả trước khi mở rộng.
+
+### Vì sao từng phương án
+- **0 đúng:** nhiều token suy luận giúp mô hình xem xét nhiều đường đi hơn trước khi kết luận.
+- **1 sai:** extended thinking không thay thế kiểm thử đơn vị và đánh giá của con người; nó chỉ hỗ trợ viết review tốt hơn.
+- **2 đúng:** chi phí và độ trễ cao hơn, nên áp dụng chọn lọc và đo lường.
+- **3 sai:** câu trả lời một từ không cần suy luận sâu; extended thinking hữu ích nhất cho bài toán phức tạp, nhiều bước.`
+},
+{
+  id: 'qz-ccap-055',
+  topic: 'claude',
+  q: "[Prompt Engineering] A long chat session approaches Claude's context window limit. Which two practices help keep the conversation usable? (Choose 2)",
+  options: [
+    "Summarize or drop older turns and pass only the needed context in a new request",
+    "Keep sending the entire history with every message so nothing is forgotten",
+    "The context window only counts the latest message, not history",
+    "Use system instructions to restate key facts instead of resending long history",
+    "Increase max_tokens to expand the context window"
+  ],
+  multi: true,
+  answer: [0, 3],
+  explain: `**Đáp án đúng: phương án 0 và 3.** Khung ngữ cảnh là tổng số token mô hình có thể xử lý trong một yêu cầu, bao gồm toàn bộ lịch sử. Khi gần đến giới hạn, nhóm nên tóm tắt hoặc loại bỏ các lượt cũ và chỉ gửi phần cần thiết, đồng thời dùng system để nhắc nhở lại sự kiện quan trọng thay vì gửi lại lịch sử dài.
+
+### Vì sao từng phương án
+- **0 đúng:** giảm tổng số token trong request, giúp nằm trong khung ngữ cảnh.
+- **1 sai:** gửi toàn bộ lịch sử mỗi lần nhanh chóng vượt quá khung ngữ cảnh.
+- **2 sai:** khung ngữ cảnh tính tất cả token trong yêu cầu, bao gồm lịch sử, không chỉ lượt mới nhất.
+- **3 đúng:** system là nơi thích hợp để khai báo lại sự kiện quan trọng một cách ngắn gọn.
+- **4 sai:** max_tokens giới hạn độ dài đầu ra, không mở rộng khung ngữ cảnh đầu vào.`
+},
 );
