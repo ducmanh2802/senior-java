@@ -2491,6 +2491,422 @@ Tăng -Xmx không giúp direct memory. Netty pooled allocator cache có thể gi
     'Phòng ngừa: NMT periodic alert, đặt container limit = Xmx + MaxDirect + margin.'
   ],
   tags: ['gc', 'oom', 'direct-memory', 'netty', 'nio', 'nmt', 'container', 'off-heap']
+},
+{
+  id: 'lab-gc-013',
+  category: 'gc',
+  title: 'Import hóa đơn PDF: humongous allocation trên G1 gây To-space exhausted và Full GC',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Ngân hàng **SunPay** có service **invoice-import** (Spring Boot 3.2, JDK 17.0.10) cho phép khách hàng doanh nghiệp tải lên hóa đơn PDF để đối soát. Pod Kubernetes 4 vCPU, memory limit 5Gi. JVM chạy với {{-Xms4g -Xmx4g -XX:+UseG1GC -Xlog:gc*:file=/logs/gc.log:time,uptime,level,tags}}. Theo thiết kế, mỗi file tối đa 20 MB và tối đa 6 request import chạy đồng thời mỗi pod. Service này dùng thư viện parse PDF nội bộ, nhận dữ liệu dạng {{byte[]}}.
+
+**Triệu chứng:** Ngày **10/11/2026**, lúc **14:05**, đối tác kế toán gửi đợt nhập 18 hóa đơn, trong đó có 4 file khoảng **8–9 MB** (PDF scan nhiều trang). Từ **14:06:10** đến **14:07:40**, p99 của {{POST /api/invoices/import}} tăng từ 350 ms lên hơn 9 giây, dashboard GC ghi nhận **3 lần Pause Full (G1 Compaction Pause)**, mỗi lần khoảng 1.6–1.9 giây. CPU của container chỉ khoảng 1.4/4 core. Không có {{OutOfMemoryError}}, pod không bị OOMKilled. Sau 14:08, khi đợt upload kết thúc, latency và heap quay về bình thường.
+
+**Dữ liệu thu thập:** GC log JDK 17 (-Xlog:gc*), log ứng dụng của pod và đoạn code xử lý upload.`,
+  artifacts: [
+    {
+      name: 'gc-invoice-import.log',
+      lang: 'text',
+      content: `[2026-11-10T12:00:00.014+0700][0.014s][info][gc,init] Version: 17.0.10+7 (release)
+[2026-11-10T12:00:00.014+0700][0.014s][info][gc,init] CPUs: 4 total, 4 available
+[2026-11-10T12:00:00.014+0700][0.014s][info][gc,init] Memory: 5120M
+[2026-11-10T12:00:00.014+0700][0.014s][info][gc,init] Heap Region Size: 2M
+[2026-11-10T12:00:00.014+0700][0.014s][info][gc,init] Heap Min Capacity: 4G
+[2026-11-10T12:00:00.014+0700][0.014s][info][gc,init] Heap Initial Capacity: 4G
+[2026-11-10T12:00:00.014+0700][0.014s][info][gc,init] Heap Max Capacity: 4G
+[2026-11-10T12:00:00.014+0700][0.014s][info][gc,init] Parallel Workers: 4
+[2026-11-10T12:00:00.014+0700][0.014s][info][gc,init] Concurrent Workers: 1
+[2026-11-10T12:00:00.014+0700][0.014s][info][gc,init] Concurrent Refinement Workers: 4
+... (young GC đều đặn, đã lược bớt) ...
+[2026-11-10T14:05:41.208+0700][7541.208s][info][gc] GC(602) Pause Young (Normal) (G1 Evacuation Pause) 1488M->186M(4096M) 12.441ms
+[2026-11-10T14:06:02.517+0700][7562.517s][info][gc] GC(603) Pause Young (Normal) (G1 Evacuation Pause) 1510M->214M(4096M) 13.902ms
+[2026-11-10T14:06:12.901+0700][7572.901s][info][gc,start] GC(604) Pause Young (Concurrent Start) (G1 Humongous Allocation)
+[2026-11-10T14:06:12.901+0700][7572.901s][info][gc,task] GC(604) Using 4 workers of 4 for evacuation
+[2026-11-10T14:06:12.946+0700][7572.946s][info][gc,phases] GC(604)   Evacuate Collection Set: 41.8ms
+[2026-11-10T14:06:12.946+0700][7572.946s][info][gc,heap] GC(604) Eden regions: 310->0(420)
+[2026-11-10T14:06:12.946+0700][7572.946s][info][gc,heap] GC(604) Survivor regions: 18->14(41)
+[2026-11-10T14:06:12.946+0700][7572.946s][info][gc,heap] GC(604) Old regions: 96->118
+[2026-11-10T14:06:12.946+0700][7572.946s][info][gc,heap] GC(604) Humongous regions: 612->612
+[2026-11-10T14:06:12.946+0700][7572.946s][info][gc] GC(604) Pause Young (Concurrent Start) (G1 Humongous Allocation) 2072M->1488M(4096M) 45.113ms
+[2026-11-10T14:06:12.946+0700][7572.946s][info][gc] GC(605) Concurrent Mark Cycle
+[2026-11-10T14:06:13.882+0700][7573.882s][info][gc,marking] GC(605) Concurrent Mark (7572.946s, 7573.882s) 936.104ms
+[2026-11-10T14:06:13.891+0700][7573.891s][info][gc] GC(605) Pause Remark 2420M->2418M(4096M) 6.204ms
+[2026-11-10T14:06:13.901+0700][7573.901s][info][gc] GC(605) Concurrent Mark Cycle 955.211ms
+[2026-11-10T14:06:16.104+0700][7576.104s][info][gc] GC(606) Pause Young (Normal) (G1 Humongous Allocation) 2684M->2096M(4096M) 52.337ms
+[2026-11-10T14:06:19.512+0700][7579.512s][info][gc] GC(607) Pause Young (Normal) (G1 Humongous Allocation) 3012M->2540M(4096M) 61.884ms
+[2026-11-10T14:06:23.044+0700][7583.044s][info][gc] GC(608) Pause Young (Normal) (G1 Humongous Allocation) 3368M->2988M(4096M) 74.220ms
+[2026-11-10T14:06:27.118+0700][7587.118s][info][gc,start] GC(609) Pause Young (Normal) (G1 Evacuation Pause)
+[2026-11-10T14:06:27.118+0700][7587.118s][info][gc,task] GC(609) Using 4 workers of 4 for evacuation
+[2026-11-10T14:06:27.411+0700][7587.411s][info][gc] GC(609) To-space exhausted
+[2026-11-10T14:06:27.411+0700][7587.411s][info][gc,phases] GC(609)   Evacuate Collection Set: 132.6ms
+[2026-11-10T14:06:27.411+0700][7587.411s][info][gc,phases] GC(609)   Post Evacuate Collection Set: 159.7ms
+[2026-11-10T14:06:27.411+0700][7587.411s][info][gc,heap] GC(609) Eden regions: 102->0(6)
+[2026-11-10T14:06:27.411+0700][7587.411s][info][gc,heap] GC(609) Survivor regions: 13->0(15)
+[2026-11-10T14:06:27.411+0700][7587.411s][info][gc,heap] GC(609) Old regions: 412->522
+[2026-11-10T14:06:27.411+0700][7587.411s][info][gc,heap] GC(609) Humongous regions: 1502->1502
+[2026-11-10T14:06:27.411+0700][7587.411s][info][gc] GC(609) Pause Young (Normal) (G1 Evacuation Pause) 4058M->4048M(4096M) 293.004ms
+[2026-11-10T14:06:27.412+0700][7587.412s][info][gc,start] GC(610) Pause Full (G1 Compaction Pause)
+[2026-11-10T14:06:27.412+0700][7587.412s][info][gc,task] GC(610) Using 4 workers of 4 for full compaction
+[2026-11-10T14:06:27.781+0700][7587.781s][info][gc,phases] GC(610) Phase 1: Mark live objects 369.112ms
+[2026-11-10T14:06:27.863+0700][7587.863s][info][gc,phases] GC(610) Phase 2: Prepare for compaction 81.664ms
+[2026-11-10T14:06:28.031+0700][7588.031s][info][gc,phases] GC(610) Phase 3: Adjust pointers 168.220ms
+[2026-11-10T14:06:29.102+0700][7589.102s][info][gc,phases] GC(610) Phase 4: Compact heap 1071.004ms
+[2026-11-10T14:06:29.110+0700][7589.110s][info][gc,heap] GC(610) Eden regions: 0->0(96)
+[2026-11-10T14:06:29.110+0700][7589.110s][info][gc,heap] GC(610) Survivor regions: 0->0(13)
+[2026-11-10T14:06:29.110+0700][7589.110s][info][gc,heap] GC(610) Old regions: 522->141
+[2026-11-10T14:06:29.110+0700][7589.110s][info][gc,heap] GC(610) Humongous regions: 1502->1502
+[2026-11-10T14:06:29.110+0700][7589.110s][info][gc] GC(610) Pause Full (G1 Compaction Pause) 4048M->3286M(4096M) 1698.221ms
+[2026-11-10T14:06:33.820+0700][7593.820s][info][gc] GC(611) Pause Young (Normal) (G1 Humongous Allocation) 3820M->3604M(4096M) 88.401ms
+[2026-11-10T14:06:36.990+0700][7596.990s][info][gc] GC(612) To-space exhausted
+[2026-11-10T14:06:36.990+0700][7596.990s][info][gc] GC(612) Pause Young (Normal) (G1 Evacuation Pause) 4066M->4058M(4096M) 304.118ms
+[2026-11-10T14:06:38.844+0700][7598.844s][info][gc] GC(613) Pause Full (G1 Compaction Pause) 4058M->3310M(4096M) 1842.600ms
+[2026-11-10T14:06:55.402+0700][7615.402s][info][gc,start] GC(614) Pause Young (Normal) (G1 Evacuation Pause)
+[2026-11-10T14:06:55.424+0700][7615.424s][info][gc,heap] GC(614) Eden regions: 296->0(610)
+[2026-11-10T14:06:55.424+0700][7615.424s][info][gc,heap] GC(614) Survivor regions: 0->12(76)
+[2026-11-10T14:06:55.424+0700][7615.424s][info][gc,heap] GC(614) Old regions: 148->156
+[2026-11-10T14:06:55.424+0700][7615.424s][info][gc,heap] GC(614) Humongous regions: 1188->18
+[2026-11-10T14:06:55.424+0700][7615.424s][info][gc] GC(614) Pause Young (Normal) (G1 Evacuation Pause) 3264M->372M(4096M) 21.776ms
+... (một chu kỳ tương tự lặp lại, tổng cộng 3 lần Pause Full trong 14:06-14:07) ...
+[2026-11-10T14:08:31.118+0700][7711.118s][info][gc] GC(632) Pause Young (Normal) (G1 Evacuation Pause) 1504M->198M(4096M) 13.100ms`
+    },
+    {
+      name: 'app-2026-11-10.log',
+      lang: 'text',
+      content: `2026-11-10T14:05:58.114+07:00  INFO 1 --- [nio-8080-exec-3] v.s.invoice.InvoiceImportController  : import request invoiceId=INV-778201 merchant=M-ACME size=8912896 bytes
+2026-11-10T14:05:58.117+07:00  INFO 1 --- [nio-8080-exec-7] v.s.invoice.InvoiceImportController  : import request invoiceId=INV-778202 merchant=M-ACME size=8650752 bytes
+2026-11-10T14:05:58.121+07:00  INFO 1 --- [nio-8080-exec-2] v.s.invoice.InvoiceImportController  : import request invoiceId=INV-778203 merchant=M-ACME size=8388608 bytes
+2026-11-10T14:05:58.125+07:00  INFO 1 --- [nio-8080-exec-5] v.s.invoice.InvoiceImportController  : import request invoiceId=INV-778204 merchant=M-ACME size=8126464 bytes
+2026-11-10T14:06:02.602+07:00  INFO 1 --- [nio-8080-exec-1] v.s.invoice.InvoiceImportController  : import request invoiceId=INV-778205 merchant=M-ACME size=524288 bytes
+2026-11-10T14:06:13.944+07:00  WARN 1 --- [nio-8080-exec-11] v.s.invoice.InvoiceImportController : slow import invoiceId=INV-778205 took=11342ms
+2026-11-10T14:06:29.118+07:00  INFO 1 --- [nio-8080-exec-3] v.s.invoice.InvoiceImportController  : import done invoiceId=INV-778201 took=31004ms
+2026-11-10T14:06:29.221+07:00  INFO 1 --- [nio-8080-exec-7] v.s.invoice.InvoiceImportController  : import done invoiceId=INV-778202 took=31104ms
+2026-11-10T14:06:38.860+07:00  INFO 1 --- [nio-8080-exec-2] v.s.invoice.InvoiceImportController  : import done invoiceId=INV-778203 took=40739ms
+2026-11-10T14:06:39.010+07:00  INFO 1 --- [nio-8080-exec-5] v.s.invoice.InvoiceImportController  : import done invoiceId=INV-778204 took=40885ms
+2026-11-10T14:06:55.430+07:00  INFO 1 --- [nio-8080-exec-9] v.s.invoice.InvoiceImportController  : import request invoiceId=INV-778206 merchant=M-ACME size=1835008 bytes
+2026-11-10T14:06:56.102+07:00  INFO 1 --- [nio-8080-exec-9] v.s.invoice.InvoiceImportController  : import done invoiceId=INV-778206 took=672ms`
+    },
+    {
+      name: 'InvoiceImportController.java',
+      lang: 'text',
+      content: `package vn.sunpay.invoice.controller;
+
+import java.io.IOException;
+import java.io.InputStream;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+import vn.sunpay.invoice.InvoiceParser;
+import vn.sunpay.invoice.InvoiceRecord;
+
+@RestController
+@RequestMapping("/api/invoices")
+public class InvoiceImportController {
+
+    private final InvoiceParser parser;
+
+    public InvoiceImportController(InvoiceParser parser) {
+        this.parser = parser;
+    }
+
+    @PostMapping(value = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ImportResult> importInvoice(@RequestParam("file") MultipartFile file)
+            throws IOException {
+        // Đọc toàn bộ nội dung upload vào một mảng byte trong heap
+        byte[] bytes;
+        try (InputStream in = file.getInputStream()) {
+            bytes = in.readAllBytes();     // Java 17: tạo byte[] mới, có thể copy/grow bên trong
+        }
+        InvoiceRecord record = parser.parse(bytes);   // thư viện parse nhận byte[]
+        return ResponseEntity.ok(new ImportResult(record.id(), bytes.length));
+    }
+}`
+    }
+  ],
+  questions: [
+    'Tại sao GC log lại có cause "G1 Humongous Allocation", rồi "To-space exhausted" và cuối cùng là Pause Full (G1 Compaction Pause)? Trích dòng cụ thể và giải thích theo cơ chế humongous của G1.',
+    'Vì sao Full GC không giảm được Humongous regions, nhưng GC(614) lại giảm mạnh Humongous regions từ 1188 xuống 18 và heap về 372M? Đây có phải memory leak không?',
+    'Bạn sẽ sửa thế nào ngay và về lâu dài? Việc tăng G1HeapRegionSize có vai trò gì và cần cân nhắc điều gì?'
+  ],
+  hints: [
+    'Nhìn dòng "Heap Region Size: 2M". Trong G1, object có kích thước từ một nửa region trở lên được coi là humongous và nằm trên các region liên tiếp trong old gen. Một byte[] 8.5 MB cần bao nhiêu region?',
+    'So sánh Humongous regions ở GC(609), GC(610) (Full GC) và GC(614). Object humongous chỉ được giải phóng khi không còn tham chiếu; humongous đã chết (mọi object bên trong không còn tham chiếu) có thể được eagerly thu hồi ở young GC.',
+    'readAllBytes() và thư viện parse đều giữ dữ liệu trong heap. 4 file 8–9 MB đồng thời cộng thêm bản sao bên trong parser có thể chiếm hàng nghìn region.'
+  ],
+  answer: `**Tóm tắt:** Service đọc toàn bộ file PDF upload vào heap bằng {{InputStream.readAllBytes()}}, rồi truyền {{byte[]}} cho parser. Với 4 file 7.7–8.5 MB chạy song song, mỗi request giữ một hoặc vài mảng byte rất lớn cùng lúc. Heap region của G1 là 2 MB nên mảng từ 1 MB trở lên là **humongous object**: phải cấp phát trên nhiều region **liên tiếp** trong old gen. Khi nhiều humongous còn sống, heap bị chiếm chỗ và phân mảnh, G1 không còn region trống để evacuate nên xảy ra {{To-space exhausted}} và phải chạy {{Pause Full (G1 Compaction Pause)}}. Khi request xử lý xong, humongous hết tham chiếu và được thu hồi nhanh ở GC(614), nên đây không phải memory leak.
+
+### Cơ chế: humongous allocation trên G1
+
+- **Humongous object là gì?** G1 (Garbage-First, bộ thu gom rác mặc định từ JDK 9) chia heap thành các region bằng nhau. Dòng {{Heap Region Size: 2M}} cho biết heap 4 GB có 2048 region. Object có kích thước >= 50% kích thước region (ở đây >= 1 MB) được xếp là humongous. Một {{byte[]}} 8.5 MB cần 5 region liên tiếp (làm tròn lên). Một {{byte[]}} 7.7 MB cần 4 region.
+- **Cấp phát ở đâu?** Humongous object không cấp phát trong Eden như object thường, mà cấp phát thẳng vào old gen trên chuỗi region humongous liên tiếp. Vì phải liên tiếp, heap có thể còn trống tổng cộng nhưng vẫn không tìm được dãy region liền kề đủ dài.
+- **Vì sao log ghi G1 Humongous Allocation?** Mỗi lần cấp phát humongous, G1 kiểm tra ngưỡng IHOP (Initiating Heap Occupancy Percent) để xem có nên bắt đầu chu kỳ concurrent mark hay không. Vì vậy pause có cause {{G1 Humongous Allocation}} và có thể kèm {{Concurrent Start}} như ở GC(604).
+- **Thu hồi thế nào?** Humongous region khi **tất cả object bên trong đã chết** (ví dụ mảng {{byte[]}} lớn không còn được tham chiếu) **có thể được eagerly reclaimed** ngay trong một young GC. Ngược lại, nếu humongous còn sống, young/mixed/concurrent cycle bình thường không di chuyển được nó. Full GC của G1 trên JDK 17 cũng **không di chuyển** humongous region, nên không giải quyết được việc humongous còn sống và không chữa được phân mảnh do humongous chiếm chỗ.
+
+### Dẫn chứng (trích từ artifact)
+
+- GC init: {{Heap Region Size: 2M}}, {{Heap Max Capacity: 4G}} (gc-invoice-import.log). Nghĩa là ngưỡng humongous là 1 MB.
+- Lúc bình thường: {{GC(603) Pause Young (Normal) (G1 Evacuation Pause) 1510M->214M(4096M) 12.441ms}} và các GC trước đó cho thấy heap sau GC chỉ ~186–214 MB, Eden/S0/S1 quay vòng ổn định.
+- Bắt đầu có humongous: {{GC(604) Pause Young (Concurrent Start) (G1 Humongous Allocation) 2072M->1488M(4096M) 45.113ms}}. Dòng heap: {{Humongous regions: 612->612}}. 612 region * 2 MB = 1224 MB đang nằm trong các region humongous. Cause {{G1 Humongous Allocation}} cho thấy chính việc xin cấp phát object humongous đã kích hoạt pause.
+- Humongous còn sống tăng dần khi nhiều request chạy song song: GC(606) còn 2096M sau GC, GC(607) 2540M, GC(608) 2988M, đều với cause {{G1 Humongous Allocation}}. Concurrent mark {{GC(605) Pause Remark 2420M->2418M(4096M)}} cho thấy sau khi mark xong, lượng region rỗng thu hồi được không đáng kể vì phần lớn heap là humongous còn sống.
+- Cạn chỗ evacuate: {{GC(609) To-space exhausted}}, {{Eden regions: 102->0(6)}}, {{Survivor regions: 13->0(15)}}, {{Old regions: 412->522}}, {{Humongous regions: 1502->1502}}, pause {{4058M->4048M(4096M) 293.004ms}}. G1 cố gắng dọn Eden/Survivor nhưng không còn region trống để copy object sống sang (to-space). Các vùng evacuate thất bại bị chuyển thành old (412->522) nhưng heap gần như không giảm.
+- Full GC: {{GC(610) Pause Full (G1 Compaction Pause) 4048M->3286M(4096M) 1698.221ms}}. Kết quả: {{Old regions: 522->141}} (compact old thường tốt), nhưng **{{Humongous regions: 1502->1502}}** không đổi. Đây là bằng chứng mạnh: các mảng humongous vẫn còn được tham chiếu (request import chưa xong), nên Full GC không thể trả region đó về free.
+- Lặp lại: {{GC(612) To-space exhausted}} rồi {{GC(613) Pause Full (G1 Compaction Pause) 4058M->3310M(4096M) 1842.600ms}}, vẫn còn humongous lớn.
+- Kết thúc đợt upload: {{GC(614) Pause Young (Normal) (G1 Evacuation Pause) 3264M->372M(4096M) 21.776ms}} với {{Humongous regions: 1188->18}}. Khi thread xử lý xong (log: {{import done invoiceId=INV-778201 took=31004ms}} quanh thời điểm Full GC), các {{byte[]}} không còn tham chiếu và G1 eagerly reclaim humongous region trong một young GC bình thường. Heap về 372M, gần mức nền 198M ở {{GC(632)}}.
+- Ứng dụng: 4 request đồng thời {{size=8912896}}, {{8650752}}, {{8388608}}, {{8126464}} bytes (app-2026-11-10.log). Code đọc toàn bộ bằng {{bytes = in.readAllBytes();}} rồi truyền cho {{parser.parse(bytes)}} (InvoiceImportController.java). Mỗi request giữ ít nhất 1 mảng humongous lớn; parser có thể cấp phát thêm bản sao/buffer nội bộ, nên tổng humongous tăng lên ~1502 region (~3 GB) là hợp lý khi 4 request và các bản sao cùng sống.
+
+### Nguyên nhân gốc
+
+Nguyên nhân gốc là **humongous allocation bùng phát do giữ toàn bộ file lớn trong heap dưới dạng {{byte[]}}**, kết hợp với xử lý đồng thời nhiều file cỡ MB. Cụ thể: {{readAllBytes()}} tạo (và có thể grow/copy) mảng byte có kích thước bằng file; thư viện parse nhận {{byte[]}} nên dữ liệu không được stream. Mỗi mảng >= 1 MB trở thành humongous, chiếm region liên tiếp trong old gen, gây thiếu free region để evacuate (To-space exhausted) và buộc Full GC nặng nhưng vô ích với humongous còn sống. Đây **không phải memory leak**: heap sau GC không tăng nền theo thời gian, và ngay khi tải kết thúc GC(614) thu hồi humongous (1188->18) và heap về 372M.
+
+### Cách sửa
+
+**Ngắn hạn (giảm rủi ro ngay):**
+- Giới hạn số request import chạy đồng thời mỗi pod (ví dụ Semaphore/bulkhead tối đa 1–2 request import nặng) và trả 429/503 khi vượt, để không tích lũy nhiều humongous cùng lúc.
+- Giới hạn kích thước upload thực tế ở API gateway / reverse proxy và trong controller (từ chối file vượt ngưỡng an toàn), vì "tối đa 20 MB" trong thiết kế nhưng xử lý bằng {{byte[]}} trong heap 4 GB không an toàn khi có đồng thời.
+- Nếu cần giảm số region mỗi humongous, có thể cân nhắc tăng {{-XX:G1HeapRegionSize}} (ví dụ lên 4M hoặc 8M) để một mảng 8–9 MB chiếm ít region hơn và giảm áp lực liên tiếp. Đây là **biện pháp giảm triệu chứng**, không giải quyết gốc rễ giữ toàn bộ file trong heap.
+- Theo dõi GC log và metric, cảnh báo khi xuất hiện {{To-space exhausted}} hoặc {{Pause Full}} hoặc khi tần suất {{G1 Humongous Allocation}} tăng đột biến.
+
+**Dài hạn (đúng kiến trúc):**
+- **Streaming thay vì đọc hết vào {{byte[]}}:** nếu thư viện cho phép, truyền {{InputStream}} hoặc đọc theo chunk để parser xử lý dần; nếu không, ghi upload ra file tạm (disk) rồi để thư viện đọc từ file/stream, tránh giữ nhiều bản sao MB trong heap.
+- Tách luồng xử lý nặng: nhận file -> lưu object storage (S3/MinIO) -> xử lý bất đồng bộ (queue/job). Pod API không giữ file lớn trong heap.
+- Với thư viện bắt buộc nhận {{byte[]}}, cân nhắc giới hạn độ lớn file chặt, tăng region size phù hợp sau đo đạc, và cô lập workload import sang pool/pod riêng để không ảnh hưởng traffic nhẹ.
+- Kiểm thử tải với kịch bản xấu nhất: N file lớn nhất cho phép đồng thời, quan sát Humongous regions, To-space exhausted và pause time trên GC log JDK 17.
+
+**Cân nhắc khi tăng {{G1HeapRegionSize}}:**
+- **Lợi ích:** tăng ngưỡng humongous (region 4M → ngưỡng 2 MB; region 8M → ngưỡng 4 MB), giảm số region một object cần và bớt yêu cầu chuỗi liên tiếp cho cùng object. Một số mảng 1–2 MB có thể không còn là humongous.
+- **Nhược điểm:** số region trên heap giảm (ví dụ 4 GB với region 4M chỉ còn 1024 region, với region 8M chỉ còn 512 region), làm giảm độ nhạy cảm của các policy dựa trên số region như IHOP và selection của collection set; region lớn hơn làm lãng phí khi có nhiều object hơi lớn nhưng chưa tới ngưỡng mới; thay đổi hành vi phân vùng/GC cần benchmark. Giá trị phải là lũy thừa 2 trong khoảng cho phép (1M–32M), và heap phải là bội số của region size.
+- **Kết luận:** tăng {{G1HeapRegionSize}} có thể giúp giảm tần suất sự cố trong trường hợp này, nhưng **không thay thế** việc bỏ {{readAllBytes()}}/streaming và giới hạn đồng thời.
+
+### Phòng ngừa
+
+- **Giám sát:** thu thập GC log {{-Xlog:gc*}} (hoặc JFR) tập trung; alert khi có {{Pause Full (G1 Compaction Pause)}}, khi log xuất hiện {{To-space exhausted}}, hoặc khi tỷ lệ thời gian GC tăng. Theo dõi {{jvm_gc_pause_seconds}} theo cause nếu exporter có nhãn.
+- **Metric ứng dụng:** đếm/đo kích thước upload, số request import đang chạy, thời gian parse; từ chối sớm file quá lớn.
+- **Thiết kế API:** ưu tiên streaming (InputStream/part streaming) cho payload lớn; không dùng {{byte[]}} cho dữ liệu kích thước không kiểm soát. Quy ước code review: cấm {{readAllBytes()}}/{{toByteArray()}} trên dữ liệu upload không có giới hạn chặt.
+- **Kiểm chứng:** test với file ở biên kích thước và số lượng đồng thời; so sánh heap/GC trước và sau khi đổi sang streaming.
+- **Runbook:** khi thấy Full GC + Humongous cao nhưng heap giảm mạnh sau khi tải hết (như GC(614)), nghĩ đến humongous sống tạm (burst) hơn là leak; vẫn phải sửa để tránh tái diễn.
+
+> Senior tip: Khi G1 vào {{Pause Full}} nhưng {{Humongous regions}} gần như không đổi qua Full GC, hãy coi đó là dấu hiệu humongous object vẫn còn sống (đang bị tham chiếu), không phải "GC không dọn được rác" theo nghĩa leak vĩnh viễn. So sánh với một young GC sau khi request kết thúc: nếu humongous giảm mạnh và heap về đáy, nguyên nhân là burst allocation (như đọc file lớn vào {{byte[]}}). Cách chữa bền là stream/giới hạn kích thước và concurrency; tăng {{G1HeapRegionSize}} chỉ là đòn giảm đau, phải đo bằng GC log và latency thật.`,
+  rubric: [
+    'Nêu đúng cơ chế humongous của G1: region 2M nên object >= 1M là humongous, cấp phát trên region liên tiếp trong old gen, cause G1 Humongous Allocation.',
+    'Trích dẫn được bằng chứng GC log: Humongous regions tăng (612 rồi 1502), To-space exhausted (GC 609/612), Pause Full ~1.7-1.8s nhưng Humongous regions 1502->1502, và GC(614) Humongous regions 1188->18, heap 3264M->372M.',
+    'Kết luận không phải leak, giải thích humongous còn sống trong lúc request chạy và được eagerly reclaim sau khi hết tham chiếu; liên hệ readAllBytes()/byte[] và 4 file 8-9MB đồng thời.',
+    'Đề xuất sửa ngắn hạn (giới hạn đồng thời/kích thước, theo dõi) và dài hạn (streaming/ghi file tạm/xử lý async, không giữ byte[] lớn trong heap).',
+    'Giải thích đúng vai trò và hạn chế của tăng G1HeapRegionSize (giảm triệu chứng, cần đo, không thay thế streaming).'
+  ],
+  tags: ['g1', 'humongous', 'gc-log', 'to-space-exhausted', 'full-gc', 'byte-array', 'upload']
+},
+{
+  id: 'lab-gc-014',
+  category: 'gc',
+  title: 'Old gen tăng dần 3 ngày: cache static không giới hạn giữ ProductDetail',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Sàn thương mại điện tử **NovaMart** chạy service **product-catalog** (Spring Boot 3.2, JDK 17.0.10, {{-Xms2g -Xmx2g -XX:+UseG1GC}}) phục vụ API chi tiết sản phẩm cho web và mobile. Pod có 2 vCPU, memory limit 3Gi. Lưu lượng ổn định khoảng 120 req/s, tỉ lệ xem lại cùng sản phẩm trong phiên không cao (catalog > 2 triệu SKU, long-tail). Tuần này chưa deploy bản mới, pod chạy liên tục.
+
+**Triệu chứng:** Trong 3 ngày (07/11 đến 10/11/2026), đồ thị heap cho thấy **Old Gen sau mỗi lần GC tăng dần**: đáy (heap used sau GC) đi lên từ ~220 MB lên ~1.6 GB, dù traffic không tăng. GC tần suất cao hơn, pause young GC dài hơn nhẹ (từ ~18 ms lên ~55 ms), CPU GC tăng nhưng chưa OOM và chưa có Full GC. Team nghi ngờ "GC không thu hồi hết" và đề xuất tăng heap, nhưng muốn tìm nguyên nhân gốc.
+
+**Dữ liệu thu thập:** Ba lần {{jcmd 1 GC.class_histogram}} (mỗi ngày một lần), trích metric heap/GC theo ngày và đoạn code cache sản phẩm.`,
+  artifacts: [
+    {
+      name: 'class_histogram_day1.txt',
+      lang: 'text',
+      content: `# 2026-11-07 10:00:00 +0700, uptime 26h, pod catalog-7d8f6c9b5-mk2p1
+# jcmd 1 GC.class_histogram
+ num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:        482114       67295960  [B (java.base@17.0.10)
+   2:        812340       58488480  [C (java.base@17.0.10)
+   3:        612004       14688096  java.lang.String (java.base@17.0.10)
+   4:         82014        9185568  vn.novamart.catalog.ProductDetail
+   5:        164028        5248896  java.util.HashMap$Node (java.base@17.0.10)
+   6:        120114        3843648  java.util.ArrayList (java.base@17.0.10)
+   7:         82014        2624448  java.util.HashMap (java.base@17.0.10)
+   8:         90112        2162688  java.util.concurrent.ConcurrentHashMap$Node (java.base@17.0.10)
+   9:         41007        1968336  [Ljava.util.HashMap$Node; (java.base@17.0.10)
+  10:         22018        1761440  [Ljava.lang.Object; (java.base@17.0.10)
+  11:         18022        1009232  java.lang.Class (java.base@17.0.10)
+  12:          4096         524288  [I (java.base@17.0.10)
+Total       2891024      186442112`
+    },
+    {
+      name: 'class_histogram_day2.txt',
+      lang: 'text',
+      content: `# 2026-11-08 10:00:00 +0700, uptime 50h, pod catalog-7d8f6c9b5-mk2p1
+# jcmd 1 GC.class_histogram
+ num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:       1438206      200748840  [B (java.base@17.0.10)
+   2:       2410022      173521584  [C (java.base@17.0.10)
+   3:       1814012       43536288  java.lang.String (java.base@17.0.10)
+   4:        242014       27105568  vn.novamart.catalog.ProductDetail
+   5:        484028       15488896  java.util.HashMap$Node (java.base@17.0.10)
+   6:        352114       11267648  java.util.ArrayList (java.base@17.0.10)
+   7:        242014        7744448  java.util.HashMap (java.base@17.0.10)
+   8:        250112        6002688  java.util.concurrent.ConcurrentHashMap$Node (java.base@17.0.10)
+   9:        121007        5808336  [Ljava.util.HashMap$Node; (java.base@17.0.10)
+  10:         42018        3361440  [Ljava.lang.Object; (java.base@17.0.10)
+  11:         18024        1009344  java.lang.Class (java.base@17.0.10)
+  12:          8192        1048576  [I (java.base@17.0.10)
+Total       8421563      540761656`
+    },
+    {
+      name: 'class_histogram_day3.txt',
+      lang: 'text',
+      content: `# 2026-11-09 10:00:00 +0700, uptime 74h, pod catalog-7d8f6c9b5-mk2p1
+# jcmd 1 GC.class_histogram
+ num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:       2396118      334656520  [B (java.base@17.0.10)
+   2:       4012034      288866448  [C (java.base@17.0.10)
+   3:       3016020       72384480  java.lang.String (java.base@17.0.10)
+   4:        402014       45025568  vn.novamart.catalog.ProductDetail
+   5:        804028       25728896  java.util.HashMap$Node (java.base@17.0.10)
+   6:        586114       18755648  java.util.ArrayList (java.base@17.0.10)
+   7:        402014       12864448  java.util.HashMap (java.base@17.0.10)
+   8:        410112        9842688  java.util.concurrent.ConcurrentHashMap$Node (java.base@17.0.10)
+   9:        201007        9648336  [Ljava.util.HashMap$Node; (java.base@17.0.10)
+  10:         62018        4961440  [Ljava.lang.Object; (java.base@17.0.10)
+  11:         18024        1009344  java.lang.Class (java.base@17.0.10)
+  12:         12288        1572864  [I (java.base@17.0.10)
+Total      14011781      896252680`
+    },
+    {
+      name: 'heap-metrics-3days.txt',
+      lang: 'text',
+      content: `# Prometheus, pod catalog-7d8f6c9b5-mk2p1, mẫu 10:00 mỗi ngày
+# old_gen_used_after_gc: ước lượng từ used heap ngay sau young/mixed GC gần nhất (MB)
+# heap_used: jvm_memory_used_bytes{area="heap"} tại thời điểm mẫu (MB)
+# young_gc_count_24h: số lần Pause Young trong 24h trước
+# avg_young_pause_ms: trung bình pause young GC trong 24h
+
+date        old_gen_used_after_gc  heap_used  young_gc_count_24h  avg_young_pause_ms  req_per_s
+2026-11-07           220 MB           510 MB               1180                18 ms        118
+2026-11-08           920 MB          1180 MB               1460                34 ms        121
+2026-11-09          1600 MB          1820 MB               1890                55 ms        119
+
+# Không có Pause Full (G1 Compaction Pause) trong 3 ngày.
+# Không deploy mới, không thay đổi cấu hình JVM.`
+    },
+    {
+      name: 'ProductService.java',
+      lang: 'text',
+      content: `package vn.novamart.catalog;
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.stereotype.Service;
+
+@Service
+public class ProductService {
+
+    // Cache "đơn giản" chia sẻ toàn JVM để giảm gọi DB
+    private static final Map<String, ProductDetail> CACHE = new ConcurrentHashMap<>();
+
+    private final ProductRepository repo;
+
+    public ProductService(ProductRepository repo) {
+        this.repo = repo;
+    }
+
+    public ProductDetail getById(String productId) {
+        return CACHE.computeIfAbsent(productId, repo::findDetailById);
+    }
+
+    // Chưa có giới hạn kích thước, chưa có TTL/expire, chưa có eviction
+}`
+    }
+  ],
+  questions: [
+    'Hãy dùng 3 lần GC.class_histogram và số liệu heap 3 ngày để chứng minh có memory leak và xác định đối tượng nào đang bị giữ lại.',
+    'Vì sao Old Gen sau mỗi GC vẫn tăng dần dù GC có chạy? Chuỗi tham chiếu (GC root) giữ các ProductDetail là gì? Vì sao đây là điển hình của cache static không giới hạn?',
+    'Bạn sẽ khắc phục ngắn hạn và dài hạn thế nào? Hãy nêu cấu hình Caffeine (maximumSize/expire) phù hợp và các biện pháp phòng ngừa.'
+  ],
+  hints: [
+    'jcmd GC.class_histogram thường đi kèm full GC (tùy phiên bản/cờ) và liệt kê object còn sống. So sánh số instance của vn.novamart.catalog.ProductDetail qua 3 ngày: 82014 -> 242014 -> 402014. Các mảng [B, [C, String, HashMap* tăng cùng nhịp gợi ý chúng là dữ liệu bên trong ProductDetail.',
+    'Old Gen tăng vì object được promote/tenure và vẫn reachable nên GC không thu hồi. Tìm GC root: field static của class được ClassLoader giữ. CACHE là static final ConcurrentHashMap không có eviction.',
+    'Caffeine hỗ trợ maximumSize (giới hạn số phần tử, eviction theo kích thước/chính sách) và expireAfterWrite/expireAfterAccess (TTL). Chọn giới hạn dựa trên dung lượng ước lượng mỗi entry và heap, và thêm metric hit/miss/eviction.'
+  ],
+  answer: `**Tóm tắt:** Bộ nhớ tăng đều qua 3 ngày do **cache static không giới hạn** ({{ProductService.CACHE}} là {{static final ConcurrentHashMap}} không có {{maximumSize}} và không có TTL/expire). Mỗi sản phẩm mới được xem sẽ được {{computeIfAbsent}} nạp vào map và không bao giờ bị loại bỏ, nên số {{ProductDetail}} còn sống tăng từ ~82k lên ~242k rồi ~402k, kéo theo {{String}}, {{byte[]}}, {{char[]}}, {{HashMap}} bên trong chúng tăng tương ứng. Các object này vẫn reachable từ GC root (static field), vì vậy sau mỗi lần GC Old Gen không giảm về đáy cũ mà đi lên dần, đúng kiểu memory leak logic do cache vô hạn.
+
+### 1) Dẫn chứng: histogram 3 ngày và heap sau GC
+
+**Cách đọc {{jcmd GC.class_histogram}}:** lệnh này in ra các class và số instance/bytes còn sống (live) tại thời điểm chạy (thường kèm cơ chế thu gom để chỉ còn live object, tùy môi trường). Điều quan trọng là so sánh **xu hướng** giữa các thời điểm trên cùng một pod không deploy lại.
+
+- **Đối tượng tăng đều theo thời gian:**
+  - {{vn.novamart.catalog.ProductDetail}}: 82,014 (ngày 1) -> 242,014 (ngày 2) -> 402,014 (ngày 3). Mỗi ngày tăng ~160,000 instance và vẫn còn sống.
+  - {{java.util.HashMap}} và {{java.util.ArrayList}} bên trong ProductDetail cũng tăng đồng bộ: 82,014/120,114 -> 242,014/352,114 -> 402,014/586,114.
+  - {{java.lang.String}}: 612,004 -> 1,814,012 -> 3,016,020; {{[B]}} (mảng byte — backing của {{String}} với compact strings từ JDK 9) và {{[C]}} (mảng char do các buffer/xử lý ký tự khác tạo ra) tăng mạnh tương ứng. Đây là dữ liệu thuộc về các {{ProductDetail}} (tên, mô tả, thuộc tính) được giữ lại.
+  - Ngược lại, {{java.lang.Class}} gần như cố định (~18,022-18,024), cho thấy không phải leak classloader/Metaspace mà là leak object dữ liệu trên heap.
+- **Heap/GC theo ngày (heap-metrics-3days.txt):**
+  - {{old_gen_used_after_gc}}: 220 MB -> 920 MB -> 1600 MB. "Sau mỗi GC" mà đáy vẫn tăng nghĩa là tập object sống (live set) tăng, GC không thể thu hồi vì chúng còn được tham chiếu.
+  - {{heap_used}} tăng 510 -> 1180 -> 1820 MB, {{avg_young_pause_ms}} 18 -> 34 -> 55 ms, {{young_gc_count_24h}} 1180 -> 1460 -> 1890. Khi Old Gen chiếm nhiều hơn, áp lực GC tăng, pause dài hơn, nhưng **không có Full GC** trong 3 ngày: chưa chạm ngưỡng buộc full compaction, song xu hướng sẽ tiến tới OOM/Full GC kéo dài nếu không xử lý.
+  - Traffic ổn định (~118-121 req/s), không deploy mới: loại trừ nguyên nhân do tải tăng đột biến hay bản phát hành mới.
+
+### 2) Nguyên nhân gốc: cache static không giới hạn
+
+- **Cấu trúc gây giữ tham chiếu:** {{ProductService}} khai báo {{private static final Map<String, ProductDetail> CACHE = new ConcurrentHashMap<>()}} (ProductService.java). {{static}} nghĩa là field thuộc về class {{ProductService}}, sống suốt vòng đời classloader (thường là suốt vòng đời ứng dụng). {{CACHE}} là GC root (reachable từ static fields). Mọi {{ProductDetail}} được {{put}} vào map sẽ reachable: {{CACHE -> ConcurrentHashMap -> Node -> ProductDetail -> (HashMap/String/byte[]/char[]...)}}.
+- **Không có cơ chế xóa:** {{computeIfAbsent(productId, repo::findDetailById)}} chỉ thêm khi thiếu, không bao giờ remove. Không có {{maximumSize}} (giới hạn số phần tử), không có {{expireAfterWrite}} / {{expireAfterAccess}} (hết hạn theo thời gian), không có eviction. Catalog có > 2 triệu SKU và traffic long-tail nên số key khác nhau được truy cập tăng dần theo thời gian -> map phình vô hạn.
+- **Vì sao GC chạy mà Old Gen vẫn tăng?** GC (Garbage Collector) chỉ thu hồi object **không còn reachable** từ GC root. Ở đây ProductDetail vẫn reachable từ static CACHE, nên dù young GC/mixed GC có chạy, các object đã promote lên Old Gen vẫn sống. Sau mỗi chu kỳ, chỉ rác tạm (request-scoped) bị thu hồi, còn live set do cache giữ lại ngày càng lớn -> đáy Old Gen sau GC tăng dần. Đây là "leak" về mặt logic (ứng dụng giữ tham chiếu không cần thiết vô hạn), khác với leak do bug native, nhưng hậu quả trên heap tương tự: tiến tới Full GC thường xuyên và cuối cùng {{OutOfMemoryError: Java heap space}}.
+- **Ước lượng nhanh:** ProductDetail tăng ~160k/ngày, kèm cấu trúc bên trong (String/array/Map) làm tổng live set tăng ~350-360 MB/ngày theo histogram/heap. old_gen_used_after_gc tăng ~700-680 MB mỗi mốc 24h cao hơn tốc độ tăng live set đo bằng histogram vì G1 mixed GC chỉ thu hồi một phần old region mỗi chu kỳ, nên old gen còn chứa rác chưa thu hồi (floating garbage); xu hướng tuyến tính là dấu hiệu điển hình của cache không giới hạn theo cardinality key.
+
+### 3) Cách sửa
+
+**Ngắn hạn (giảm rủi ro ngay):**
+- **Restart/rollout** pod để giải phóng heap tạm thời (chỉ là chữa cháy, leak sẽ lặp lại).
+- Nếu cần giảm tức thì mà chưa kịp refactor lớn: thêm cơ chế xóa thủ công an toàn tạm thời (ví dụ giới hạn kích thước tối đa và evict entry cũ nhất) hoặc chuyển sang cấu trúc có bound. Nhưng tự cài eviction trên {{ConcurrentHashMap}} dễ sai (race, không có chính sách tốt), nên ưu tiên dùng thư viện cache chuẩn.
+- Giới hạn tác động: bật/tăng cảnh báo, chuẩn bị tăng heap tạm thời **chỉ** để mua thời gian (không phải fix gốc).
+
+**Dài hạn (sửa đúng): dùng Caffeine với giới hạn và hết hạn**
+- Thay {{ConcurrentHashMap}} tĩnh bằng cache có chính sách eviction. Với Java/Spring, **Caffeine** là lựa chọn phổ biến (hiệu năng cao, API rõ). Ví dụ cấu hình minh họa:
+
+~~~java
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import java.time.Duration;
+
+@Service
+public class ProductService {
+    private final Cache<String, ProductDetail> cache = Caffeine.newBuilder()
+            .maximumSize(50_000)                 // giới hạn số entry (bound bộ nhớ)
+            .expireAfterWrite(Duration.ofMinutes(30))  // TTL: dữ liệu cũ hết hạn
+            .expireAfterAccess(Duration.ofMinutes(10)) // tùy chọn: bỏ entry ít dùng
+            .recordStats()                       // bật thống kê hit/miss/eviction
+            .build();
+
+    private final ProductRepository repo;
+
+    public ProductService(ProductRepository repo) {
+        this.repo = repo;
+    }
+
+    public ProductDetail getById(String productId) {
+        return cache.get(productId, repo::findDetailById);
+    }
+}
+~~~
+
+- **Cách chọn tham số:**
+  - {{maximumSize}}: ước lượng kích thước trung bình một {{ProductDetail}} (từ histogram/ước lượng object graph, ví dụ vài KB) nhân số entry để đảm bảo cache chỉ chiếm một phần heap (ví dụ vài trăm MB, không phải 1.6 GB). 50k là ví dụ; cần tính theo heap 2 GB và tải thực tế.
+  - {{expireAfterWrite}}: phù hợp khi dữ liệu sản phẩm có thể thay đổi (giá/tồn kho/mô tả) và cần độ tươi; 10-60 phút là điểm khởi đầu thường gặp, chỉnh theo yêu cầu nghiệp vụ.
+  - {{expireAfterAccess}}: hữu ích cho long-tail, giữ entry hay dùng gần đây. Có thể dùng một trong hai hoặc kết hợp tùy bài toán (Caffeine hỗ trợ cả hai).
+  - (Nâng cao) {{maximumWeight}}/{{weigher}} nếu entry có kích thước chênh lệch lớn; {{refreshAfterWrite}} nếu muốn làm mới bất đồng bộ.
+- **Không dùng {{static}} trừ khi thực sự cần phạm vi toàn classloader:** cache nên là bean (instance) để lifecycle rõ ràng, dễ test và tránh giữ qua các ngữ cảnh không mong muốn. Nếu nhiều node/pod cần chia sẻ, cân nhắc cache phân tán (Redis/Memcached) với TTL, nhưng vẫn phải có bound và chiến lược invalidation.
+- **Invalidation khi cập nhật:** nếu sản phẩm thay đổi, cần {{cache.invalidate(id)}} hoặc cơ chế cập nhật (event) để tránh trả dữ liệu cũ quá TTL.
+
+### 4) Phòng ngừa
+
+- **Giám sát:** expose metric cache (Caffeine {{stats}}: hitRate, evictionCount, estimatedSize) và {{jvm_memory_used_bytes}} theo vùng nhớ. Đặt cảnh báo khi Old Gen đáy sau GC tăng liên tục N giờ/ngày, hoặc khi {{estimatedSize}} tiến sát {{maximumSize}} bất thường.
+- **Kiểm tra định kỳ:** so sánh {{GC.class_histogram}} (hoặc heap dump phân tích bằng MAT) giữa các mốc để phát hiện live set tăng bất thường theo loại nghiệp vụ (ProductDetail, Session, RequestContext...).
+- **Quy ước code:** cấm/soát xét {{static Map/List/Set}} dùng làm cache không có bound và không có TTL. Code review checklist: mọi cache phải có {{maximumSize/maximumWeight}} và/hoặc {{expire*}}, có metric, có owner rõ.
+- **Kiểm thử:** test soak/longevity (chạy nhiều giờ/ngày với phân phối key rộng) và quan sát heap đáy sau GC; test với cardinality key lớn để đảm bảo eviction hoạt động.
+
+> Senior tip: Cache là con dao hai lưỡi: không có bound (kích thước/TTL) thì nó trở thành memory leak "hợp pháp". Khi thấy Old Gen sau GC tăng dần đều theo ngày, hãy so sánh {{GC.class_histogram}} nhiều thời điểm để tìm class nghiệp vụ tăng tuyến tính (ví dụ ProductDetail) và lần ngược GC root (static field, singleton, registry). Với Caffeine, luôn đặt {{maximumSize}} hoặc {{maximumWeight}} và {{expireAfterWrite/expireAfterAccess}} phù hợp dữ liệu, đồng thời bật {{recordStats()}} để theo dõi hit/miss/eviction thay vì "cache mù".`,
+  rubric: [
+    'Dùng được bằng chứng 3 histogram (ProductDetail 82014->242014->402014 và các String/byte[]/char[]/HashMap tăng tương ứng) và heap-metrics (old_gen_used_after_gc 220->920->1600 MB) để chứng minh live set tăng và leak logic.',
+    'Giải thích đúng vì sao GC không thu hồi: ProductDetail vẫn reachable từ GC root là static field CACHE (ConcurrentHashMap) không eviction; phân biệt leak tham chiếu với việc GC có chạy.',
+    'Chỉ ra đúng nguyên nhân trong ProductService: static final Map cache, computeIfAbsent chỉ thêm, không maximumSize, không TTL/expire.',
+    'Đề xuất sửa dùng Caffeine có maximumSize và expireAfterWrite/expireAfterAccess (hoặc tương đương), kèm lưu ý chọn tham số theo heap/dữ liệu và invalidation khi cập nhật.',
+    'Có biện pháp phòng ngừa/quan sát: metric hit/miss/eviction hoặc estimatedSize, cảnh báo Old Gen đáy tăng, quy ước không dùng static cache vô hạn, kiểm thử soak/cardinality cao.'
+  ],
+  tags: ['memory-leak', 'gc', 'old-gen', 'class-histogram', 'cache', 'static', 'caffeine', 'heap']
 }
 
 );
