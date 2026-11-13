@@ -5506,4 +5506,197 @@ follow: [
 ],
 tags: ['pg_stat_statements', 'performance', 'N+1', 'PostgreSQL', 'EXPLAIN', 'monitoring']
 },
+{
+  id: 'sql-061',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bảng events(user_id, event_name, event_ts, properties JSONB): cần tính thời gian giữa hai sự kiện liên tiếp của cùng user (ví dụ: "view_product" → "add_to_cart"), và phân tích funnel chuyển đổi theo session (session = các sự kiện cách nhau ≤ 30 phút). Viết query dùng LAG, FIRST_VALUE và frame clause. Giải thích RANGE vs ROWS khi event_ts có trùng giá trị.',
+  a: `**Tóm tắt:** Dùng {{LAG(event_ts) OVER (PARTITION BY user_id ORDER BY event_ts)}} lấy timestamp sự kiện trước, trừ ra {{interval}} là thời gian chờ giữa hai sự kiện liên tiếp. Session hóa: tính gap = {{event_ts - LAG(event_ts) OVER (...)}}, nếu gap > 30 phút thì bắt đầu session mới; gán {{session_id}} bằng running count {{SUM(CASE WHEN gap > INTERVAL '30 minutes' THEN 1 ELSE 0 END) OVER (PARTITION BY user_id ORDER BY event_ts ROWS UNBOUNDED PRECEDING)}}. Funnel chuyển đổi: trong mỗi (user_id, session_id), dùng {{FIRST_VALUE(CASE WHEN event_name = 'add_to_cart' THEN 1 ELSE 0 END) OVER (PARTITION BY user_id, session_id ORDER BY event_ts ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)}} để đánh dấu session có add_to_cart. {{ROWS}} frame an toàn khi timestamp trùng vì tính theo vị trí dòng vật lý; {{RANGE}} gom peer rows (cùng giá trị ORDER BY) nên FIRST_VALUE có thể trả giá trị từ dòng peer chứ không phải dòng đầu tiên thực sự.
+
+### Hiểu nhanh
+Hãy tưởng tượng bạn xem lại camera ghi hành vi khách trong siêu thị. **LAG** giống việc bạn quay ngược băng 1 giây để xem khách làm gì ngay trước khi đặt hàng vào giỏ. **Session hóa** giống việc chia video thành các đoạn: nếu khách đi ra khỏi cửa > 30 phút thì quay lại là một "lượt thăm" mới. **Funnel** giống việc đếm: trong mỗi lượt thăm, khách có "vò sản phẩm → đặt giỏ → thanh toán" hay không. **Frame clause** quyết định "cửa sổ nhìn" bao xa: ROWS nhìn theo số dòng vật lý (dòng 1, 2, 3...), RANGE nhìn theo giá trị thời gian (tất cả dòng cùng timestamp).
+
+### Thuật ngữ
+- **Event stream**: luồng sự kiện theo thời gian (event_ts), mỗi dòng là một hành động user.
+- **Sessionization**: gom các sự kiện gần nhau theo thời gian thành một session (phiên).
+- **Gap-and-islands**: kỹ thuật tìm "đảo" (session) bằng cách detect "khoảng trống" (gap > 30 phút).
+- **FIRST_VALUE / LAST_VALUE**: window function lấy giá trị đầu/cuối trong frame.
+- **Frame clause**: {{ROWS BETWEEN ...}} hoặc {{RANGE BETWEEN ...}} xác định tập dòng window function được phép "nhìn thấy".
+- **Peer rows**: các dòng có cùng giá trị ORDER BY (cùng event_ts).
+
+### Cơ chế từng bước
+1. **Partition theo user_id, sort theo event_ts**: mỗi user có luồng sự kiện riêng, thứ tự thời gian quan trọng.
+2. **LAG(event_ts)**: với mỗi sự kiện, lấy timestamp của sự kiện ngay trước nó trong cùng user.
+3. **Tính gap = event_ts - prev_ts**: nếu gap > 30 phút ⇒ đây là sự kiện đầu của session mới.
+4. **Running SUM của flag gap > 30p**: {{SUM(CASE WHEN gap > '30 min' THEN 1 ELSE 0 END) OVER (PARTITION BY user_id ORDER BY event_ts ROWS UNBOUNDED PRECEDING)}}. Mỗi lần gặp gap lớn, sum tăng 1 ⇒ session_id tăng.
+5. **Funnel**: trong mỗi (user_id, session_id), dùng FIRST_VALUE trên cột flag {{CASE WHEN event_name = 'add_to_cart' THEN 1 ELSE 0 END}} với frame {{ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING}} (toàn bộ partition). Nếu session có add_to_cart, FIRST_VALUE = 1 cho mọi dòng trong session.
+6. **Aggregate cuối**: GROUP BY user_id, session_id, lấy MIN(event_ts) AS session_start, COUNT(*) AS event_count, MAX(has_add_to_cart) AS converted.
+
+### SQL mẫu
+~~~sql
+WITH lagged AS (
+    SELECT
+        e.user_id,
+        e.event_name,
+        e.event_ts,
+        LAG(e.event_ts) OVER (PARTITION BY e.user_id ORDER BY e.event_ts) AS prev_ts
+    FROM events e
+),
+gapped AS (
+    SELECT
+        l.*,
+        l.event_ts - l.prev_ts AS gap,
+        CASE WHEN l.prev_ts IS NULL OR l.event_ts - l.prev_ts > INTERVAL '30 minutes' THEN 1 ELSE 0 END AS new_session_flag
+    FROM lagged l
+),
+sessionized AS (
+    SELECT
+        g.*,
+        SUM(g.new_session_flag) OVER (PARTITION BY g.user_id ORDER BY g.event_ts ROWS UNBOUNDED PRECEDING) AS session_id
+    FROM gapped g
+),
+funneled AS (
+    SELECT
+        s.*,
+        FIRST_VALUE(CASE WHEN s.event_name = 'add_to_cart' THEN 1 ELSE 0 END) OVER (
+            PARTITION BY s.user_id, s.session_id
+            ORDER BY s.event_ts
+            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+        ) AS has_add_to_cart
+    FROM sessionized s
+)
+SELECT
+    f.user_id,
+    f.session_id,
+    MIN(f.event_ts) AS session_start,
+    MAX(f.event_ts) AS session_end,
+    COUNT(*) AS event_count,
+    MAX(f.has_add_to_cart) AS converted_to_cart
+FROM funneled f
+GROUP BY f.user_id, f.session_id
+ORDER BY f.user_id, f.session_id;
+~~~
+
+### ROWS vs RANGE – tại sao quan trọng với FIRST_VALUE
+- {{ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING}}: frame bao gồm **tất cả dòng vật lý** trong partition, từ dòng đầu đến dòng cuối. FIRST_VALUE trả giá trị của **dòng đầu tiên vật lý** (theo ORDER BY).
+- {{RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING}}: frame bao gồm tất cả **peer rows** (dòng có cùng giá trị ORDER BY). Nếu 3 sự kiện cùng {{event_ts = '2026-03-15 10:00:00'}}, cả 3 là peer. FIRST_VALUE với RANGE sẽ thấy cả 3 dòng peer cùng lúc ⇒ kết quả phụ thuộc implementation, không đảm bảo là dòng đầu tiên theo ý nghĩa nghiệp vụ.
+- **Khi event_ts có độ phân giải giây/ms**, trùng timestamp hiếm nhưng có thể xảy ra (batch import, đồng hồ hệ thống). Luôn dùng ROWS khi cần xác định chắc chắn "dòng đầu/cuối".
+
+### Hiệu năng & index
+- Index composite: {{(user_id, event_ts)}}. Window function cần sort theo (user_id, event_ts); index này cho phép index scan tránh sort.
+- Với bảng lớn (hàng trăm triệu events), cân nhắc partition theo thời gian (ngày/tháng) + index local.
+
+### Lỗi hay gặp
+1. **Dùng RANGE cho FIRST_VALUE/LAST_VALUE khi timestamp có thể trùng**. Triệu chứng: kết quả funnel không ổn định, đôi khi chuyển đổi ra 0 dù session có add_to_cart. Cách tránh: luôn ghi rõ {{ROWS}}.
+2. **Quên xử lý NULL từ LAG dòng đầu**. Triệu chứng: gap = NULL, new_session_flag = 1 (vì NULL > 30 phút là UNKNOWN, CASE WHEN NULL THEN 1 ELSE 0 END ra 0? – thực ra NULL so sánh ra UNKNOWN, CASE WHEN UNKNOWN THEN ... nhảy nhánh ELSE). Cách tránh: {{CASE WHEN prev_ts IS NULL OR gap > '30 min' THEN 1 ELSE 0 END}}.
+3. **Session gap threshold hard-code**. Triệu chứng: đổi quy tắc từ 30p sang 15p phải sửa code SQL. Cách tránh: dùng parameter hoặc config table.
+4. **FIRST_VALUE không có frame clause**. Triệu chứng: frame mặc định là {{RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}} ⇒ FIRST_VALUE chỉ nhìn từ đầu đến dòng hiện tại, không thấy add_to_cart ở dòng sau. Cách tránh: luôn ghi frame toàn partition.
+
+### Ví dụ đời thực
+Triệu chứng: hệ thống e-commerce (PostgreSQL 15, bảng {{events}} 2,4 tỷ dòng/tháng) dùng query funnel để báo cáo chuyển đổi "view → add_to_cart → purchase" theo session 30 phút. Sau khi thêm tính năng "quick view" (popup xem chi tiết không load trang mới), team data thấy tỷ lệ add_to_cart báo cáo giảm từ 18% xuống 12% dù business metric thực tế không đổi. Điều tra: query funnel dùng {{FIRST_VALUE(...) OVER (PARTITION BY user_id, session_id ORDER BY event_ts RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)}}. "quick view" sinh event {{view_quick}} cùng timestamp với {{view_product}} (cùng {{event_ts}} do client gửi batch). Với RANGE, cả hai là peer rows, FIRST_VALUE có thể lấy {{view_quick}} (flag = 0) thay vì {{view_product}} (flag = 0) – nhưng quan trọng hơn là {{add_to_cart}} ở dòng sau cũng là peer nếu cùng giây ⇒ FIRST_VALUE thấy flag 0. Nguyên nhân gốc: dùng RANGE frame cho FIRST_VALUE khi timestamp có thể trùng. Cách xử lý: đổi sang {{ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING}}, thêm {{event_seq}} (sequence number client) vào ORDER BY để tie-break. Kết quả: tỷ lệ funnel khớp lại 18%, query p95 không đổi.
+
+### Trả lời mẫu khi phỏng vấn
+"Để phân tích funnel theo session, tôi dùng LAG lấy timestamp sự kiện trước, tính gap, nếu gap > 30 phút thì đánh dấu session mới bằng running SUM. Trong mỗi session, tôi dùng FIRST_VALUE trên cột flag 'có add_to_cart không' với frame ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING để biết session đó có chuyển đổi không. Tôi chọn ROWS thay vì RANGE vì RANGE gom peer rows (cùng timestamp), khiến FIRST_VALUE không xác định khi có sự kiện cùng giây – một bug thực tế tôi từng gặp khi client gửi batch event. Về hiệu năng, index (user_id, event_ts) là bắt buộc để tránh sort lớn."
+
+### Senior tip
+Khi phỏng vấn, hãy vẽ sơ đồ: "Event A (10:00) → Event B (10:05) → Gap 40p → Event C (10:45)". Giải thích: "LAG cho gap, SUM flag cho session_id, FIRST_VALUE cho funnel". Nêu rõ: "Tôi luôn dùng ROWS frame, không bao giờ RANGE cho FIRST_VALUE/LAST_VALUE, vì timestamp trùng là bug yên lặng". Đó là dấu hiệu bạn đã debug production thực sự.
+
+`,
+  follow: [
+    'Tại sao dùng ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING thay vì RANGE cho FIRST_VALUE funnel?',
+    'Làm thế nào để tính "thời gian trung bình từ view đến purchase" chỉ trên các session đã purchase?'
+  ],
+  tags: ['window function', 'LAG', 'FIRST_VALUE', 'sessionization', 'funnel', 'frame clause', 'ROWS vs RANGE']
+},
+{
+  id: 'sql-062',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Giải thích CTE (WITH) trong PostgreSQL: nó là "optimization fence" (rào cản tối ưu) như thế nào? Khi nào CTE tốt hơn subquery, khi nào lại tệ hơn? Viết recursive CTE duyệt đồ thị có hướng (không phải cây) để tìm tất cả đường đi từ node A đến node B, phòng vòng lặp bằng path array.',
+  a: `**Tóm tắt:** PostgreSQL 11 trở về trước **luôn materialize** CTE (chạy CTE thành bảng tạm riêng, không merge vào query ngoài) ⇒ CTE là "optimization fence": optimizer không push predicate vào CTE, không reorder join giữa CTE và query cha. PostgreSQL 12+ **inline** CTE nếu CTE không có side-effect (không VOLATILE function, không recursive, không DISTINCT/GROUP BY/LIMIT/OFFSET, không window function) ⇒ CTE trong 12+ thường **không** còn là fence. Recursive CTE **luôn** materialize. Subquery trong FROM thường được inline sớm hơn CTE. **Khi nào CTE tốt**: chia query phức tạp thành bước dễ đọc, tái sử dụng kết quả trung gian nhiều lần (materialize một lần dùng nhiều lần), đệ quy. **Khi nào CTE tệ**: CTE lớn không được filter sớm, optimizer không push predicate xuống ⇒ quét toàn bộ dữ liệu trung gian. Recursive CTE cho đồ thị có hướng: anchor chọn node xuất phát A, recursive term join edges table {{ON edges.from_node = cte.to_node}}, dùng path array {{ARRAY[...]}} để detect cycle ({{next_node <> ALL(path)}}) và tránh lặp vô hạn, dừng khi đến node B hoặc path quá dài.
+  `,
+  follow: [
+    'PostgreSQL 12+ inline CTE khi nào, và làm sao để ép buộc materialize (hint)?',
+    'Recursive CTE tìm "đường đi ngắn nhất" (shortest path) giữa hai node: tại sao CTE đệ quy thông thường không tối ưu, và giải pháp thực tế là gì?'
+  ],
+  tags: ['CTE', 'WITH', 'optimization fence', 'materialize', 'recursive CTE', 'graph traversal', 'cycle detection']
+},
+{
+  id: 'sql-063',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Hệ thống tài chính cập nhật số dư nhiều tài khoản trong một transaction. Giải thích deadlock xảy ra ra sao (wait-for graph), và triển khai 3 lớp phòng thủ: (1) DB: khóa hàng theo thứ tự cố định (ORDER BY id) + SELECT FOR UPDATE SKIP LOCKED/NOWAIT, (2) Application: retry với exponential backoff + jitter, (3) Schema: advisory lock cho logic nghiệp vụ phức tạp. Code Java minh hoạ retry pattern.',
+  a: `**Tóm tắt:** Deadlock = chu trình chờ khóa (wait-for cycle) trong wait-for graph: T1 giữ khóa hàng A chờ khóa B, T2 giữ B chờ A. PostgreSQL detect bằng deadlock detector (chạy mỗi {{deadlock_timeout}}, mặc định 1s) và abort victim (thường là transaction tốn ít công việc hơn). **Phòng thủ 3 lớp**: (1) **DB level**: mọi UPDATE/DELETE/SELECT FOR UPDATE **luôn** ORDER BY khóa chính (id) nhất quán trong toàn ứng dụng ⇒ tránh cycle; dùng {{FOR UPDATE SKIP LOCKED}} (bỏ qua hàng đang bị khóa, không chờ) cho job worker xử lý batch, {{FOR UPDATE NOWAIT}} (trả lỗi {{55P03}} ngay lập tức) cho API real-time cần phản hồi nhanh; (2) **Application level**: bắt {{SQLState 40P01}} (deadlock_detected) hoặc {{55P03}} (lock_not_available từ NOWAIT/SKIP LOCKED), retry với exponential backoff (base 50ms, max 2s, multiplier 2) + jitter ±25% để tránh thundering herd; log retry count để alert; (3) **Schema level**: {{pg_advisory_xact_lock(hash(key))}} khoá logic ở mức ứng dụng (ví dụ khoá theo user_id khi chuyển tiền giữa 2 tài khoản), không chạm row lock, tự giải phóng khi transaction kết thúc. **Java retry pattern**: wrapper method nhận {{Callable}}, try-catch {{SQLException}}, kiểm tra {{sql.getSQLState()}}, sleep với {{ThreadLocalRandom}} jitter, retry tối đa 3 lần.
+  `,
+  follow: [
+    'Vì sao ORDER BY id trong SELECT FOR UPDATE không đủ nếu transaction còn UPDATE bảng khác theo thứ tự khác?',
+    'FOR UPDATE SKIP LOCKED vs NOWAIT: khi nào dùng cái nào, và rủi ro của SKIP LOCKED là gì?'
+  ],
+  tags: ['deadlock', 'wait-for graph', 'SELECT FOR UPDATE', 'SKIP LOCKED', 'NOWAIT', 'advisory lock', 'retry pattern', 'exponential backoff']
+},
+{
+  id: 'sql-064',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Thiết kế soft delete cho bảng orders(id, user_id, status, deleted_at): unique constraint trên (user_id, order_code) chỉ áp dụng cho bản ghi **chưa xoá** (deleted_at IS NULL). PostgreSQL dùng partial unique index. MySQL không có partial index → cách thay thế. Query performance: index partial giúp SELECT WHERE deleted_at IS NULL nhanh hơn, nhưng JOIN cần chú ý. Migration từ hard delete sang soft delete an toàn như thế nào?',
+  a: `**Tóm tắt:** Soft delete = thêm cột {{deleted_at TIMESTAMPTZ DEFAULT NULL}}, xoá = {{UPDATE ... SET deleted_at = NOW()}}. **Partial unique index (PostgreSQL)**: {{CREATE UNIQUE INDEX uk_orders_user_code_active ON orders (user_id, order_code) WHERE deleted_at IS NULL;}} – chỉ enforce unique trên bản ghi active, cho phép nhiều bản ghi xoá trùng (user_id, order_code). **MySQL**: không có partial index → dùng generated column {{active_code}} = {{CASE WHEN deleted_at IS NULL THEN order_code ELSE NULL END}}, unique index trên {{(user_id, active_code)}} (MySQL cho phép nhiều NULL trong unique index). **Performance**: partial index nhỏ hơn, SELECT {{WHERE deleted_at IS NULL}} dùng index tốt; nhưng JOIN bảng khác trên orders phải thêm {{AND o.deleted_at IS NULL}} vào ON clause, nếu không planner không dùng được partial index. **Migration**: thêm cột deleted_at DEFAULT NULL, backfill NULL cho dữ liệu cũ, tạo partial index CONCURRENTLY, đổi code SELECT thêm {{WHERE deleted_at IS NULL}}, đổi DELETE thành UPDATE, thêm CHECK constraint {{CHECK (deleted_at IS NULL OR status IN ('CANCELLED','REFUNDED'))}}.
+  `,
+  follow: [
+    'Tại sao partial unique index cho phép nhiều bản ghi xoá có cùng (user_id, order_code)?',
+    'Khi JOIN bảng orders (soft delete) với order_items, làm sao để planner dùng được partial index trên orders?'
+  ],
+  tags: ['soft delete', 'partial index', 'unique constraint', 'generated column', 'migration', 'deleted_at']
+},
+{
+  id: 'sql-065',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bảng events 500 triệu dòng: cần COUNT(*) real-time cho dashboard. Giải thích vì sao COUNT(*) chậm (MVCC, visibility check), và triển khai 3 giải pháp: (1) {{pg_class.reltuples}} ước lượng nhanh (không chính xác), (2) trigger duy trì counter chính xác trong bảng stats (write amplification), (3) HyperLogLog (extension {{hll}}) cho distinct count xấp xỉ. So sánh trade-off: độ chính xác, latency ghi/đọc, dung lượng, phức tạp vận hành.',
+  a: `**Tóm tắt:** {{COUNT(*)}} trên bảng lớn chậm vì PostgreSQL **MVCC** phải quét toàn bộ bảng (Seq Scan hoặc Index Only Scan) và kiểm tra visibility của **mỗi dòng** đối với snapshot hiện tại – không có metadata "số dòng" toàn cục. **Giải pháp 1**: {{SELECT reltuples FROM pg_class WHERE relname = 'events'}} – ước lượng từ thống kế planner, nhanh (< 1ms) nhưng sai lệch 10–20% sau VACUUM/ANALYZE. **Giải pháp 2**: bảng {{table_counts(table_name, row_count)}}, trigger {{AFTER INSERT/DELETE ON events}} {{UPDATE table_counts SET row_count = row_count + 1/-1}} – chính xác 100%, nhưng mỗi ghi tăng {{row lock}} trên counter (hotspot), throughput giảm ~15–30%. **Giải pháp 3**: extension {{hll}} – {{hll_add_agg}} cho distinct count (ví dụ unique user/ngày), dung lượng nhỏ (KB), merge được, sai số ~1–2%; không cho exact COUNT(*). **Production**: thường kết hợp – dashboard dùng reltuples cho "tổng sự kiện", hll cho "unique user", exact count chỉ cho báo cáo đối soát hàng ngày (materialized view refresh đêm).
+  `,
+  follow: [
+    'Trigger counter gây hotspot row lock: làm thế nào để sharding counter (ví dụ counter per ngày) rồi cộng lại khi đọc?',
+    'HyperLogLog không cho exact count: tại sao không dùng hll cho COUNT(*) mà chỉ dùng cho COUNT(DISTINCT)?'
+  ],
+  tags: ['COUNT', 'large table', 'MVCC', 'pg_class.reltuples', 'trigger counter', 'HyperLogLog', 'hll extension', 'write amplification']
+},
+{
+  id: 'sql-066',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Phân trang keyset (cursor-based) trên bảng orders(customer_id, created_at, id) với sort nhiều cột: {{ORDER BY created_at DESC, id DESC}}. Client gửi cursor là base64 của {{created_at|id}}. Viết query next page và previous page. Giải thích tại sao cursor phải chứa **đầy đủ** các cột sort + tie-break PK, và làm sao để page trước/ sau ổn định khi có INSERT song song vào giữa cursor.',
+  a: `**Tóm tắt:** Keyset pagination dùng composite key so sánh: next page {{WHERE (created_at, id) < (cursor_created_at, cursor_id) ORDER BY created_at DESC, id DESC LIMIT 21}} (lấy 21 để biết có trang sau, trả 20). Cursor = base64(JSON {{ts, id}}). Previous page: {{WHERE (created_at, id) > (cursor_created_at, cursor_id) ORDER BY created_at ASC, id ASC LIMIT 21}} rồi reverse ở app. **Cursor phải đủ cột sort + PK** vì {{(created_at, id)}} là composite key duy nhất (tie-break); thiếu id thì các dòng cùng created_at bị gom chung, next page bị bỏ sót hoặc trùng lặp. **INSERT song song**: keyset pagination **không ổn định** khi có INSERT vào giữa cursor – trang sau có thể thiếu dòng mới insert (vì cursor đã qua vị trí đó) hoặc trang trước xuất hiện dòng mới (nếu INSERT created_at > cursor_created_at). Giải pháp thực tế: (a) thêm anchor timestamp {{WHERE created_at <= :anchor_ts}} (anchor tại load trang đầu tiên) để freeze upper bound, (b) dùng MVCC snapshot isolation {{SET TRANSACTION ISOLATION LEVEL REPEATABLE READ}} cho session đọc danh sách (PostgreSQL freeze snapshot tại BEGIN đầu tiên), (c) hoặc dùng system column {{xmin}} làm cursor phụ để detect dòng mới insert sau snapshot. Trade-off: REPEATABLE READ giữ snapshot lâu làm tăng bloat nếu transaction dài; anchor timestamp đơn giản nhưng không cover được INSERT có created_at trong quá khứ (backfill).
+  `,
+  follow: [
+    'Tại sao keyset pagination không hỗ trợ "nhảy tới trang 50" (random access) như OFFSET?',
+    'Cursor encoding base64 có gì rủi ro (tampering, versioning), và cách chống lại?'
+  ],
+  tags: ['keyset pagination', 'cursor-based', 'composite sort', 'tie-break', 'concurrent insert', 'snapshot isolation', 'REPEATABLE READ']
+},
+{
+  id: 'sql-067',
+  topic: 'sql',
+  level: 'senior',
+  q: 'So sánh ba loại timeout trong PostgreSQL/Java: {{statement_timeout}} (hủy câu lệnh chạy quá lâu), {{lock_timeout}} (hủy khi chờ khóa quá lâu), {{idle_in_transaction_session_timeout}} (hủy session nhàn rỗi trong transaction). Cấu hình ở đâu (postgresql.conf, ALTER ROLE, SET LOCAL, HikariCP)? Khi nào dùng cái nào? Ví dụ: API đọc báo cáo đặt statement_timeout 30s, job ghi đặt lock_timeout 5s, connection pool đặt idle_in_transaction 60s. Java code set timeout per-request.',
+  a: `**Tóm tắt:** Ba timeout phục vụ mục đích khác nhau: **statement_timeout** – giới hạn thời gian **chạy câu lệnh** (CPU + I/O), vượt quá → {{ERROR 57014}} hủy statement, rollback transaction hiện tại; dùng cho báo cáo, query ad-hoc, migration. **lock_timeout** – giới hạn thời gian **chờ khóa** (row lock, table lock), vượt quá → {{ERROR 55P03}} hủy statement; dùng cho OLTP ghi (UPDATE/DELETE/SELECT FOR UPDATE) để tránh giữ connection chờ deadlock victim. **idle_in_transaction_session_timeout** – giới hạn thời gian session ở trạng thái **idle in transaction** (đã BEGIN/START TRANSACTION nhưng chưa COMMIT/ROLLBACK), vượt quá → hủy session, rollback; dùng cho connection pool phòng leak transaction. **Cấu hình**: postgresql.conf (mặc định toàn cluster), ALTER ROLE/DATABASE (mặc định per user/db), {{SET LOCAL}} (chỉ transaction hiện tại – **khuyên dùng** cho per-request), HikariCP {{connectionInitSql}} hoặc {{SET statement_timeout = ...}} khi borrow connection. **Java pattern**: wrapper method {{withStatementTimeout(30_000, () -> jdbc.query(...))}} dùng {{SET LOCAL}} rồi {{RESET}} trong finally.
+  `,
+  follow: [
+    'statement_timeout có hủy cả transaction hay chỉ statement hiện tại?lock_timeout thì sao?',
+    'HikariCP maximumPoolSize và idle_in_transaction_session_timeout có quan hệ gì? Khi pool đầy do leak transaction, timeout nào kích hoạt trước?'
+  ],
+  tags: ['statement_timeout', 'lock_timeout', 'idle_in_transaction_session_timeout', 'HikariCP', 'SET LOCAL', 'timeout', 'connection pool']
+},
+{
+  id: 'sql-068',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Chọn kiểu dữ liệu cho tiền tệ và thời gian: tiền dùng DECIMAL/NUMERIC(precision, scale) – precision bao nhiêu, scale bao nhiêu cho VND/USD/crypto? Thời gian dùng TIMESTAMPTZ (timestamp with time zone) – tại sao KHÔNG dùng TIMESTAMP (without time zone) và KHÔNG lưu epoch long trong BIGINT? Java: BigDecimal cho tiền, OffsetDateTime/Instant cho thời điểm, ZoneId cho múi giờ. Pitfall: {{NUMERIC(19,4)}} vs {{NUMERIC(38,18)}} cho crypto, rounding mode HALF_EVEN vs HALF_UP, timezone conversion ở DB vs Java.',
+  a: `**Tóm tắt:** **Tiền tệ**: **luôn** {{DECIMAL}}/{{NUMERIC}}, không bao giờ {{FLOAT}}/{{DOUBLE}}/{{REAL}} (binary floating-point không biểu diễn chính xác 0.1). **Precision/scale**: VND (không lẻ) → {{NUMERIC(19,0)}} hoặc {{NUMERIC(19,2)}} nếu lưu phân tiền; USD/major currency → {{NUMERIC(19,4)}} (4 chữ số thập phân đủ cho tỷ giá, fee); Crypto (BTC 8dp, ETH 18dp, token tùy ý) → {{NUMERIC(38,18)}} an toàn cho mọi token hiện nay. **Rounding**: tài chính dùng {{HALF_UP}} (5 lên), thống kê/bao cáo dùng {{HALF_EVEN}} (banker's rounding, giảm bias tích lũy) – Java {{BigDecimal.setScale(scale, RoundingMode.HALF_UP)}}. **Thời gian**: **luôn** {{TIMESTAMPTZ}} (lưu UTC nội bộ, hiển thị theo session TimeZone), **không** {{TIMESTAMP}} (không biết múi giờ, convert sai khi server đổi TZ), **không** epoch BIGINT (mất timezone, khó debug, không dùng được date function). Java: {{Instant}} (thời điểm tuyệt đối, UTC), {{OffsetDateTime}} (thời điểm + offset, tốt cho serialize JSON), {{ZonedDateTime}} (có quy tắc DST, tốt cho hiển thị user) – **không** dùng {{LocalDateTime}} cho timestamp DB. **Pitfall**: DB {{TIMESTAMPTZ}} nhập {{'2026-03-01 00:00+07'}} → lưu UTC {{2026-02-28 17:00Z}}; select trong session TZ=UTC hiện {{2026-02-28 17:00}} – phải set session TZ hoặc convert tại Java. Index {{(created_at)}} trên TIMESTAMPTZ dùng được cho range query half-open.
+  `,
+  follow: [
+    'Tại sao NUMERIC(19,4) đủ cho USD nhưng không đủ cho tỷ giá chuyển đổi nội bộ (ví dụ 1 USD = 23.456789 VND)?',
+    'Java BigDecimal.divide() không có scale và rounding mode ném ArithmeticException: ví dụ thực tế và cách sửa?'
+  ],
+  tags: ['DECIMAL', 'NUMERIC', 'money', 'currency', 'TIMESTAMPTZ', 'TIMESTAMP', 'BigDecimal', 'OffsetDateTime', 'Instant', 'rounding', 'precision', 'scale']
+},
 );
