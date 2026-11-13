@@ -3686,4 +3686,423 @@ Nói: system prompt phải được bảo vệ như một phần bất biến c�
   related: ['ai-058', 'ai-060'],
   tags: ['LLM', 'context window', 'token', 'sliding window', 'safety', 'LangChain4j']
 },
+{
+  id: 'bug-020',
+  title: 'Service tỉ giá: cache check-then-act gọi API ngoài 2 lần và ghi đè',
+  domain: 'Tài chính / Tỉ giá ngoại tệ',
+  level: 'senior',
+  severity: 'P2',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Ứng dụng ngân hàng số hiển thị và quy đổi tỉ giá ngoại tệ (ví dụ USD/VND). Service {{ExchangeRateService}} (Spring Boot, 4 pod) có một lớp cache trong bộ nhớ (in-memory cache — vùng nhớ RAM tạm trong cùng tiến trình JVM, dùng để lưu kết quả đã lấy nhằm tránh gọi lại) để không phải hỏi nhà cung cấp tỉ giá ngoài ở mỗi request. Nhà cung cấp ngoài tính phí theo mỗi lần gọi API và đôi khi trả chậm.
+
+**Sự cố:** Sáng thứ Ba, dashboard giám sát cho thấy trong giờ cao điểm có nhiều cặp tiền bị gọi API ngoài **2 lần gần như cùng lúc** cho cùng một cặp (log: hai request vào cách nhau 3–5ms, cả hai đều in {{cache miss}} rồi đều gọi provider). Tháng đó chi phí API tăng ~18% so với dự kiến. Ngoài lãng phí, có trường hợp hiếm hai lần trả về giá hơi khác nhau và lần ghi sau **ghi đè** (overwrite — ghi giá trị mới đè lên giá trị cũ) lên lần ghi trước, khiến hai người dùng thấy tỉ giá khác nhau trong cùng khoảnh khắc.
+
+**Nhiệm vụ của bạn:**
+1. Đọc code {{ExchangeRateService.getRate}} và log, giải thích vì sao hai request cùng lúc đều gọi provider.
+2. Sửa code để **với cùng một cặp tiền**, provider chỉ được gọi **đúng một lần** khi cache đang trống, kể cả khi nhiều request đến cùng lúc; các request khác phải dùng lại kết quả đó.
+3. Bấm **Chạy test**: test dùng rào chặn (barrier/latch — cơ chế khiến các luồng chờ nhau tại một điểm để tái hiện đúng thời điểm chạy song song) để ép hai luồng cùng rơi vào nhánh {{cache miss}}.`,
+  artifacts: [
+    { name: 'rate-service.log', lang: 'text', content: `2026-11-05 09:10:14.201 INFO  [http-nio-8080-exec-11] ExchangeRateService : getRate pair=USD/VND
+2026-11-05 09:10:14.204 INFO  [http-nio-8080-exec-19] ExchangeRateService : getRate pair=USD/VND
+2026-11-05 09:10:14.206 DEBUG [http-nio-8080-exec-11] ExchangeRateService : cache miss pair=USD/VND -> call provider
+2026-11-05 09:10:14.207 DEBUG [http-nio-8080-exec-19] ExchangeRateService : cache miss pair=USD/VND -> call provider
+2026-11-05 09:10:14.512 INFO  [http-nio-8080-exec-11] RateProviderClient  : fetched USD/VND = 25480 cost=1
+2026-11-05 09:10:14.519 INFO  [http-nio-8080-exec-19] RateProviderClient  : fetched USD/VND = 25485 cost=1
+2026-11-05 09:10:14.520 DEBUG [http-nio-8080-exec-11] ExchangeRateService : cache put USD/VND=25480
+2026-11-05 09:10:14.523 DEBUG [http-nio-8080-exec-19] ExchangeRateService : cache put USD/VND=25485 (overwrite)` },
+    { name: 'cost-report.txt', lang: 'text', content: `EXCHANGE RATE PROVIDER COST 2026-11-05 09:00-10:00 ICT
+Distinct pairs requested : 12
+Total provider calls     : 19
+Duplicate concurrent calls (same pair, < 20ms apart): 7
+Extra cost vs expected   : +58% in peak hour
+Note: last-write-wins overwrote 2 pairs with a slightly different value within the same second.` },
+  ],
+  starter: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+interface RateProvider {
+    /** Gọi API nhà cung cấp tỉ giá ngoài. Mỗi lần gọi đều tốn phí. */
+    long fetch(String pair);
+}
+
+// ===== Code cần sửa =====
+class ExchangeRateService {
+    private final RateProvider provider;
+    private final Map<String, Long> cache = new HashMap<>();
+
+    ExchangeRateService(RateProvider provider) { this.provider = provider; }
+
+    /** Lấy tỉ giá cho cặp tiền (ví dụ "USD/VND"). Nên dùng cache để tránh gọi provider lặp lại. */
+    long getRate(String pair) {
+        Long rate = cache.get(pair);
+        if (rate == null) {                 // cache miss: chưa có trong cache
+            rate = provider.fetch(pair);    // gọi API ngoài (tốn phí)
+            cache.put(pair, rate);          // lưu vào cache
+        }
+        return rate;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    /** Provider giả lập: đếm số lần gọi. Khi bật gate, lần gọi đầu chờ (tối đa 300ms)
+     *  để lần gọi thứ hai (nếu có) cũng kịp xảy ra — tái hiện hai request cùng cache miss. */
+    static class CountingProvider implements RateProvider {
+        final AtomicInteger calls = new AtomicInteger();
+        volatile CountDownLatch gate;
+        public long fetch(String pair) {
+            calls.incrementAndGet();
+            CountDownLatch g = gate;
+            if (g != null) {
+                g.countDown();
+                try { g.await(300, TimeUnit.MILLISECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            }
+            return pair.hashCode() & 0xffffL; // giá trị xác định theo cặp tiền
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        // 1. Lần đầu lấy tỉ giá: gọi provider 1 lần và trả về giá trị
+        CountingProvider p1 = new CountingProvider();
+        ExchangeRateService s1 = new ExchangeRateService(p1);
+        long r1 = s1.getRate("USD/VND");
+        check("lan_dau_goi_provider", p1.calls.get() == 1 && r1 == ("USD/VND".hashCode() & 0xffffL),
+            "kỳ vọng gọi 1 lần, thực tế " + p1.calls.get() + " lần, rate=" + r1);
+
+        // 2. Gọi lại cùng cặp: phải dùng cache, không gọi provider thêm
+        long r1b = s1.getRate("USD/VND");
+        check("dung_cache", p1.calls.get() == 1 && r1b == r1,
+            "kỳ vọng vẫn 1 lần gọi và cùng giá trị, thực tế " + p1.calls.get() + " lần, rate=" + r1b);
+
+        // 3. Hai request cùng lúc cho cùng một cặp khi cache trống (đúng như sự cố)
+        CountingProvider p3 = new CountingProvider();
+        p3.gate = new CountDownLatch(2);
+        ExchangeRateService s3 = new ExchangeRateService(p3);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        Future<Long> f1 = pool.submit(() -> s3.getRate("EUR/VND"));
+        Future<Long> f2 = pool.submit(() -> s3.getRate("EUR/VND"));
+        long v1 = f1.get(5, TimeUnit.SECONDS);
+        long v2 = f2.get(5, TimeUnit.SECONDS);
+        p3.gate = null;
+        check("dong_thoi_mot_lan_goi", p3.calls.get() == 1 && v1 == v2,
+            "kỳ vọng provider chỉ gọi 1 lần và hai request nhận cùng giá trị, thực tế " + p3.calls.get() + " lần, v1=" + v1 + " v2=" + v2);
+
+        // 4. Hai cặp tiền khác nhau: mỗi cặp gọi provider 1 lần (tổng 2), không chặn nhau sai
+        CountingProvider p4 = new CountingProvider();
+        ExchangeRateService s4 = new ExchangeRateService(p4);
+        s4.getRate("USD/VND");
+        s4.getRate("JPY/VND");
+        s4.getRate("USD/VND");
+        check("hai_cap_khac_nhau", p4.calls.get() == 2,
+            "kỳ vọng đúng 2 lần gọi cho 2 cặp khác nhau, thực tế " + p4.calls.get() + " lần");
+
+        pool.shutdownNow();
+        System.out.println("RESULT " + passed + "/" + total);
+        System.exit(0);
+    }
+}`,
+  reference: `interface RateProvider {
+    long fetch(String pair);
+}
+
+class ExchangeRateService {
+    private final RateProvider provider;
+    // ConcurrentHashMap: map an toàn khi nhiều luồng đọc/ghi cùng lúc (thread-safe — nhiều luồng dùng chung mà không hỏng dữ liệu)
+    private final ConcurrentHashMap<String, Long> cache = new ConcurrentHashMap<>();
+
+    ExchangeRateService(RateProvider provider) { this.provider = provider; }
+
+    long getRate(String pair) {
+        // computeIfAbsent: kiểm tra và (nếu thiếu) tính+ghi trong MỘT thao tác nguyên tử theo từng key.
+        // Với cùng key, hàm mapping (provider.fetch) chỉ chạy một lần; các luồng khác chờ và nhận cùng kết quả.
+        return cache.computeIfAbsent(pair, provider::fetch);
+    }
+}`,
+  hints: [
+    'Đọc log: hai thread cùng in {{cache miss}} rồi cùng gọi provider cho {{USD/VND}}. Vì sao cả hai đều thấy cache trống? Gợi ý: {{cache.get}} (kiểm tra) và {{cache.put}} (ghi) là hai bước tách rời, không nguyên tử (atomic — thực hiện trọn vẹn như một bước, không bị luồng khác chen vào giữa).',
+    'Đây là race condition (tình huống tranh chấp: kết quả sai vì nhiều luồng chạy xen kẽ ngoài ý muốn) kiểu check-then-act: "kiểm tra rồi mới hành động". Cần biến "nếu thiếu thì gọi provider và lưu" thành một bước không thể bị chen ngang cho CÙNG một key.',
+    '{{ConcurrentHashMap.computeIfAbsent(key, mappingFunction)}} làm đúng việc đó: nếu key chưa có, nó chạy mappingFunction một lần và ghi kết quả; nếu key đã có (hoặc luồng khác vừa ghi xong), nó trả về giá trị sẵn có. Mapping function chỉ nên gọi provider, không tự sửa map ngoài.',
+  ],
+  rootCause: `**Race condition (tình huống tranh chấp giữa các luồng — thread, luồng thực thi, là một "dòng" chạy song song trong chương trình) kiểu check-then-act trên cache.** Hai request xử lý {{USD/VND}} gần như cùng lúc. Cả hai gọi {{cache.get("USD/VND")}} và đều nhận {{null}} (cache miss — không tìm thấy trong cache) vì chưa luồng nào kịp {{put}}. Sau đó **cả hai** gọi {{provider.fetch}}, rồi **cả hai** {{put}} vào cache. Hậu quả: provider bị gọi 2 lần (tốn phí gấp đôi) và lần ghi sau ghi đè lần ghi trước (last-write-wins — ghi sau thắng), nên nếu hai lần trả giá hơi khác nhau thì giá trị cuối cùng phụ thuộc vào luồng nào ghi sau.
+
+**Bản chất "check-then-act" (kiểm tra rồi hành động):** đoạn kiểm tra {{cache.get}} rồi {{provider.fetch}} rồi {{cache.put}}
+gồm nhiều bước tách rời. Giữa bước "thấy null" và bước "put", luồng khác có thể chạy xen vào và cũng thấy null. Muốn đúng, cả cụm "nếu thiếu thì tính và ghi" phải là một thao tác nguyên tử (atomic — không thể bị chia cắt/chen ngang) theo từng key.
+
+Ngoài ra {{HashMap}} thường (không an toàn khi nhiều luồng cùng ghi) có thể bị hỏng cấu trúc bên trong khi sửa đồng thời; nhưng lỗi quan trọng nhất ở đây là logic check-then-act, nên dù đổi sang map "an toàn" mà vẫn tách kiểm tra/ghi thì vẫn gọi provider hai lần.`,
+  fix: `### Cách sửa trong bài
+Dùng {{ConcurrentHashMap}} (bản đồ an toàn cho nhiều luồng — thread-safe map) và {{computeIfAbsent}}:
+- {{computeIfAbsent(key, f)}}: nếu {{key}} chưa có giá trị, chạy {{f(key)}} **một lần** để tính giá trị, ghi vào map và trả về; nếu đã có, trả về ngay giá trị đang có. Việc kiểm tra + tính + ghi được thực hiện nguyên tử theo từng key, nên hai luồng cùng hỏi một cặp tiền thì chỉ một luồng thực sự gọi provider, luồng kia nhận lại kết quả.
+
+~~~java
+class ExchangeRateService {
+    private final RateProvider provider;
+    private final ConcurrentHashMap<String, Long> cache = new ConcurrentHashMap<>();
+
+    ExchangeRateService(RateProvider provider) { this.provider = provider; }
+
+    long getRate(String pair) {
+        return cache.computeIfAbsent(pair, provider::fetch); // nguyên tử theo key
+    }
+}
+~~~
+
+### Vì sao cách này đúng
+- **Một lần gọi cho mỗi key đang thiếu:** {{computeIfAbsent}} đồng bộ hoá (synchronise — sắp xếp để không chạy chồng chéo) trên phần tử của key đó, nên mapping function không chạy trùng.
+- **Các key khác nhau không chặn nhau:** khoá theo key (không khoá cả map), nên {{USD/VND}} và {{JPY/VND}} có thể nạp song song.
+- **Trả cùng một giá trị:** mọi luồng nhận đúng giá trị được ghi một lần, không còn ghi đè chéo.
+
+### Cách khác (khi cần kiểm soát chi tiết hơn)
+- **Khoá theo key tự quản lý:** giữ một {{ConcurrentHashMap<String, Object>}} các ổ khoá, lấy ổ khoá bằng {{computeIfAbsent(key, k -> new Object())}} rồi {{synchronized(lock)}} quanh đoạn kiểm tra–tính–ghi. Linh hoạt nhưng dễ quên nhánh lỗi.
+- **{{Future}}/memoizer:** cache chứa {{Future}} (lời hứa kết quả sẽ có sau) để luồng đến sau chờ cùng một lần tính; nhớ xoá entry nếu tính lỗi, nếu không lỗi sẽ bị "cache" mãi.
+
+### Trên production thật
+- Cache trong bộ nhớ chỉ đúng **trong một JVM** (một tiến trình Java). Hệ thống có 4 pod thì mỗi pod vẫn có thể gọi provider một lần khi khởi động/lúc cache trống — chấp nhận được nếu có TTL (time-to-live — thời gian sống, hết hạn thì nạp lại) ngắn; nếu cần "chỉ một lần cho cả cụm", dùng khoá phân tán (distributed lock, ví dụ Redis {{SETNX}}) hoặc một cache chia sẻ (Redis) với chiến lược single-flight.
+- Không cache giá trị {{null}}/lỗi bằng {{computeIfAbsent}} tuỳ ý (mapping trả null thì không ghi gì, sẽ gọi lại — thường là đúng; nhưng cần phân biệt "không có dữ liệu" và "lỗi tạm thời").
+- Đặt TTL và cơ chế làm mới nền để tỉ giá không bị cũ; log/metric số lần gọi provider và tỉ lệ cache hit (tìm thấy trong cache) để phát hiện bất thường.
+
+### Liên hệ phỏng vấn
+Đây là ví dụ kinh điển của "cache stampede" ở mức nhỏ: nhiều luồng cùng miss và cùng tải. Trả lời nên nêu: (1) check-then-act không nguyên tử, (2) {{computeIfAbsent}}/khoá theo key để chỉ một luồng nạp, (3) khác biệt cache trong tiến trình vs cache phân tán, (4) xử lý lỗi và TTL. Nhấn mạnh: an toàn luồng (thread-safe) không chỉ là "dùng ConcurrentHashMap" mà là làm trọn vẹn cả thao tác gộp.
+
+> Senior tip: {{computeIfAbsent}} rất tiện nhưng mapping function không được sửa chính cái map đó và không nên chạy quá lâu (nó giữ đồng bộ theo key). Với tác vụ nạp chậm, cân nhắc cache {{Future}} (single-flight) và luôn có đường xoá entry khi lỗi để tránh "cache vĩnh viễn một lần thất bại".`,
+  related: ['core-010', 'core-012'],
+  tags: ['concurrency', 'cache', 'check-then-act', 'computeIfAbsent', 'race condition']
+},
+{
+  id: 'bug-021',
+  title: 'Bấm Thanh toán hai lần tạo hai đơn hàng trùng (thiếu idempotency key)',
+  domain: 'Thương mại điện tử / Thanh toán',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Ứng dụng đặt đồ ăn. Khi người dùng bấm **"Thanh toán"**, app gửi request tạo đơn lên {{CheckoutService}}. Để chống việc gửi lặp do mạng chậm (client tự retry) hoặc người dùng bấm liên tục, app sinh một {{idempotency key}} (khoá chống trùng lặp — một chuỗi định danh duy nhất cho "một lần bấm/một ý định thanh toán"; các request mang cùng key phải cho ra **cùng một kết quả**, không tạo thêm bản ghi mới) và gửi kèm theo request.
+
+**Sự cố:** Cuối tuần, bộ phận CSKH nhận nhiều khiếu nại "bị trừ tiền 2 lần / nhận 2 đơn giống hệt". Truy vết cho thấy: người dùng bấm "Thanh toán" hai lần khi app quay vòng chờ, app gửi **hai request với cùng {{idempotency key}}**; nhưng server tạo ra **hai đơn hàng khác nhau** và trừ tiền hai lần. Log và truy vấn DB cho thấy cùng {{idemKey=pay-7f3a}} nhưng có 2 {{orderId}} khác nhau.
+
+**Nhiệm vụ của bạn:**
+1. Đọc code {{CheckoutService.placeOrder}} và log: vì sao cùng một idempotency key vẫn tạo hai đơn?
+2. Sửa code để cùng {{idempotencyKey}} chỉ tạo **đúng một** đơn và **trả lại kết quả cũ** cho các lần gọi sau (kể cả khi gọi đồng thời). Gợi ý: dùng ràng buộc duy nhất (unique constraint — quy tắc ở nơi lưu dữ liệu: giá trị của cột/trường phải không trùng; nếu chèn trùng, thao tác bị từ chối) theo idempotency key.
+3. Bấm **Chạy test**: test kiểm tra gọi tuần tự, gọi đồng thời và các key khác nhau.`,
+  artifacts: [
+    { name: 'checkout.log', lang: 'text', content: `2026-11-08 19:22:41.103 INFO  [http-nio-8080-exec-3]  CheckoutController : placeOrder user=U-220 idemKey=pay-7f3a amount=185000
+2026-11-08 19:22:41.910 INFO  [http-nio-8080-exec-9]  CheckoutController : placeOrder user=U-220 idemKey=pay-7f3a amount=185000 (client retry, same key)
+2026-11-08 19:22:41.355 INFO  [http-nio-8080-exec-3]  CheckoutService    : created orderId=ORD-90041 idemKey=pay-7f3a
+2026-11-08 19:22:42.180 INFO  [http-nio-8080-exec-9]  CheckoutService    : created orderId=ORD-90042 idemKey=pay-7f3a
+2026-11-08 19:22:42.181 WARN  [reconcile-job]            ReconcileJob       : duplicate orders for idemKey=pay-7f3a -> ORD-90041, ORD-90042` },
+    { name: 'orders-query.sql', lang: 'sql', content: `SELECT idempotency_key, count(*) AS orders, string_agg(order_id, ',') AS ids
+FROM orders
+WHERE created_at >= '2026-11-08' AND idempotency_key IS NOT NULL
+GROUP BY idempotency_key HAVING count(*) > 1
+ORDER BY orders DESC LIMIT 3;
+-- idempotency_key | orders | ids
+-- pay-7f3a        |      2 | ORD-90041,ORD-90042
+-- pay-81bc        |      2 | ORD-90077,ORD-90078
+-- (23 rows)
+-- Note: column idempotency_key has NO unique constraint.` },
+  ],
+  starter: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+class Order {
+    final String orderId;
+    final String idempotencyKey;
+    final long amount;
+    Order(String orderId, String idempotencyKey, long amount) {
+        this.orderId = orderId; this.idempotencyKey = idempotencyKey; this.amount = amount;
+    }
+}
+
+interface OrderRepository {
+    /** Lưu đơn mới và trả về chính đơn đó. Trong DB thật, cột idempotencyKey nên có unique constraint. */
+    Order save(Order order);
+    /** Tìm đơn theo idempotency key, trả null nếu chưa có. */
+    Order findByIdempotencyKey(String idempotencyKey);
+    /** Sinh mã đơn mới. */
+    String nextOrderId();
+}
+
+// ===== Code cần sửa =====
+class CheckoutService {
+    private final OrderRepository repo;
+
+    CheckoutService(OrderRepository repo) { this.repo = repo; }
+
+    /** Tạo đơn thanh toán. Gọi nhiều lần với cùng idempotencyKey phải cho ra cùng một đơn. */
+    Order placeOrder(String idempotencyKey, long amount) {
+        String orderId = repo.nextOrderId();
+        return repo.save(new Order(orderId, idempotencyKey, amount));
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    /** Repository giả lập DB: cột idempotencyKey nên có unique constraint (trong prod đang thiếu nên bị tạo trùng).
+     *  Khi bật gate, lần save đầu chờ (tối đa 300ms) để lần save thứ hai (nếu code bỏ qua kiểm tra)
+     *  cũng kịp xảy ra — tái hiện hai request đồng thời cùng key. */
+    static class FakeOrderRepo implements OrderRepository {
+        final AtomicInteger seq = new AtomicInteger();
+        final AtomicInteger saveCount = new AtomicInteger();
+        final Map<String, Order> byKey = new ConcurrentHashMap<>();
+        volatile CountDownLatch gate;
+        public String nextOrderId() { return "ORD-" + seq.incrementAndGet(); }
+        public Order save(Order order) {
+            CountDownLatch g = gate;
+            if (g != null) {
+                g.countDown();
+                try { g.await(300, TimeUnit.MILLISECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            }
+            // lưu đơn (mô phỏng DB: không chặn ở đây để thấy bug tạo trùng; service phải tự đảm bảo idempotency)
+            Order prev = byKey.putIfAbsent(order.idempotencyKey, order);
+            if (prev == null) {
+                saveCount.incrementAndGet();
+                return order;
+            }
+            // đã có đơn cho key này nhưng caller vẫn cố tạo đơn khác -> ghi nhận là bản ghi trùng
+            saveCount.incrementAndGet();
+            return prev;
+        }
+        public Order findByIdempotencyKey(String key) { return byKey.get(key); }
+    }
+
+    public static void main(String[] args) throws Exception {
+        // 1. Tạo đơn bình thường
+        FakeOrderRepo r1 = new FakeOrderRepo();
+        CheckoutService s1 = new CheckoutService(r1);
+        Order o1 = s1.placeOrder("k1", 100000);
+        check("tao_don_binh_thuong", o1 != null && o1.amount == 100000 && r1.saveCount.get() == 1,
+            "kỳ vọng tạo 1 đơn 100000, thực tế saveCount=" + r1.saveCount.get() + " order=" + (o1 == null ? "null" : o1.orderId));
+
+        // 2. Gọi lại cùng idempotency key (tuần tự): phải trả lại đúng đơn cũ, không tạo thêm
+        Order o1b = s1.placeOrder("k1", 100000);
+        check("trung_key_tuan_tu", o1b != null && o1b.orderId.equals(o1.orderId) && r1.saveCount.get() == 1,
+            "kỳ vọng trả lại " + o1.orderId + " và vẫn 1 bản ghi, thực tế saveCount=" + r1.saveCount.get() + " order=" + (o1b == null ? "null" : o1b.orderId));
+
+        // 3. Hai request cùng idempotency key đến đồng thời (đúng như sự cố bấm 2 lần)
+        FakeOrderRepo r3 = new FakeOrderRepo();
+        r3.gate = new CountDownLatch(2);
+        CheckoutService s3 = new CheckoutService(r3);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        Future<Order> f1 = pool.submit(() -> s3.placeOrder("pay-7f3a", 185000));
+        Future<Order> f2 = pool.submit(() -> s3.placeOrder("pay-7f3a", 185000));
+        Order a = f1.get(5, TimeUnit.SECONDS);
+        Order b = f2.get(5, TimeUnit.SECONDS);
+        r3.gate = null;
+        check("trung_key_dong_thoi", r3.saveCount.get() == 1 && a != null && b != null && a.orderId.equals(b.orderId),
+            "kỳ vọng chỉ 1 đơn được tạo và cả hai request nhận cùng orderId, thực tế saveCount=" + r3.saveCount.get()
+                + " a=" + (a == null ? "null" : a.orderId) + " b=" + (b == null ? "null" : b.orderId));
+
+        // 4. Hai idempotency key khác nhau: phải tạo hai đơn khác nhau
+        FakeOrderRepo r4 = new FakeOrderRepo();
+        CheckoutService s4 = new CheckoutService(r4);
+        Order x = s4.placeOrder("kA", 50000);
+        Order y = s4.placeOrder("kB", 70000);
+        check("hai_key_khac_nhau", r4.saveCount.get() == 2 && x != null && y != null && !x.orderId.equals(y.orderId),
+            "kỳ vọng 2 đơn khác nhau, thực tế saveCount=" + r4.saveCount.get());
+
+        pool.shutdownNow();
+        System.out.println("RESULT " + passed + "/" + total);
+        System.exit(0);
+    }
+}`,
+  reference: `class Order {
+    final String orderId;
+    final String idempotencyKey;
+    final long amount;
+    Order(String orderId, String idempotencyKey, long amount) {
+        this.orderId = orderId; this.idempotencyKey = idempotencyKey; this.amount = amount;
+    }
+}
+
+interface OrderRepository {
+    Order save(Order order);
+    Order findByIdempotencyKey(String idempotencyKey);
+    String nextOrderId();
+}
+
+class CheckoutService {
+    private final OrderRepository repo;
+    // Khoá theo từng idempotency key: hai request CÙNG key chạy tuần tự, key khác nhau vẫn song song.
+    private final ConcurrentHashMap<String, Object> locks = new ConcurrentHashMap<>();
+
+    CheckoutService(OrderRepository repo) { this.repo = repo; }
+
+    Order placeOrder(String idempotencyKey, long amount) {
+        Object lock = locks.computeIfAbsent(idempotencyKey, k -> new Object());
+        synchronized (lock) {
+            // 1) Đã có kết quả cho key này -> trả lại đúng đơn cũ (idempotent)
+            Order existing = repo.findByIdempotencyKey(idempotencyKey);
+            if (existing != null) return existing;
+            // 2) Chưa có -> tạo mới và lưu; DB thật sẽ từ chối nếu trùng key (unique constraint)
+            try {
+                String orderId = repo.nextOrderId();
+                return repo.save(new Order(orderId, idempotencyKey, amount));
+            } catch (RuntimeException duplicate) {
+                // Phòng trường hợp hiếm vẫn bị trùng (ví dụ chạy nhiều tiến trình): đọc lại và trả kết quả cũ
+                Order again = repo.findByIdempotencyKey(idempotencyKey);
+                if (again != null) return again;
+                throw duplicate;
+            }
+        }
+    }
+}`,
+  hints: [
+    'Đọc log: hai request mang cùng {{idemKey=pay-7f3a}} nhưng handler luôn tạo {{orderId}} mới rồi {{save}}. Code có dùng {{findByIdempotencyKey}} hay kiểm tra key đã tồn tại chưa? Idempotency key vô nghĩa nếu không được kiểm tra.',
+    'Muốn idempotent: nếu đã có đơn cho key này thì **trả lại đơn cũ**; chỉ khi chưa có mới tạo và lưu. Nhưng "kiểm tra rồi lưu" là check-then-act: hai request đồng thời cùng thấy "chưa có" thì vẫn tạo hai đơn.',
+    'Cần (1) ràng buộc duy nhất (unique constraint) trên idempotency key ở nơi lưu để lần chèn trùng bị từ chối, và (2) biến kiểm tra–lưu thành thao tác an toàn theo từng key (khoá theo key) rồi khi gặp trùng thì đọc lại và trả kết quả cũ.',
+  ],
+  rootCause: `**Thiếu cơ chế idempotency (tính bất biến khi lặp lại — gọi 1 lần hay nhiều lần với cùng một ý định cho ra cùng kết quả, không tạo thêm tác dụng phụ).** Client đã gửi đúng {{idempotency key}} ở cả hai request, nhưng {{placeOrder}} phớt lờ nó: luôn sinh {{orderId}} mới và {{save}}. Vì không có bước "nếu key này đã xử lý thì trả kết quả cũ", mỗi lần gọi đều tạo một đơn mới. Log cho thấy cùng {{idemKey=pay-7f3a}} nhưng tạo {{ORD-90041}} và {{ORD-90042}}.
+
+**Vì sao "chỉ kiểm tra if chưa có rồi mới lưu" vẫn chưa đủ khi có đồng thời?** Đó là check-then-act (kiểm tra rồi hành động): hai request cùng lúc có thể cùng {{findByIdempotencyKey}} thấy {{null}}, rồi cùng đi tạo đơn. Cần một điểm chốt duy nhất: hoặc khoá theo key trong tiến trình, hoặc (chắc chắn hơn) ràng buộc duy nhất (unique constraint) ở nơi lưu dữ liệu để lần chèn trùng bị từ chối.
+
+**Vì sao cần cả "trả lại kết quả cũ"?** Idempotency không chỉ là "không tạo thêm", mà còn là "lần gọi lặp nhận lại **cùng** kết quả". Nếu lần hai chỉ báo lỗi "đã tồn tại" mà không trả về đơn đã tạo, client (đang retry vì nghĩ lần đầu thất bại) sẽ không biết đơn nào là của mình.`,
+  fix: `### Cách sửa trong bài
+1. **Khoá theo idempotency key** (trong một tiến trình): {{ConcurrentHashMap<key, lock>}} + {{synchronized}} để các request cùng key chạy tuần tự, key khác nhau không chặn nhau.
+2. **Kiểm tra trước:** {{findByIdempotencyKey}} thấy đã có → trả lại đơn cũ ngay.
+3. **Tạo và lưu:** nếu chưa có thì tạo đơn mới và {{save}}. Lớp lưu dữ liệu có ràng buộc duy nhất (unique constraint) trên key: nếu trùng sẽ ném lỗi.
+4. **Khi bị trùng:** bắt lỗi, {{findByIdempotencyKey}} lại và trả về đơn cũ (để lần gọi lặp vẫn nhận đúng kết quả).
+
+~~~java
+Object lock = locks.computeIfAbsent(idempotencyKey, k -> new Object());
+synchronized (lock) {
+    Order existing = repo.findByIdempotencyKey(idempotencyKey);
+    if (existing != null) return existing;       // trả lại kết quả cũ
+    try {
+        return repo.save(new Order(repo.nextOrderId(), idempotencyKey, amount));
+    } catch (RuntimeException dup) {             // unique constraint từ chối bản trùng
+        Order again = repo.findByIdempotencyKey(idempotencyKey);
+        if (again != null) return again;
+        throw dup;
+    }
+}
+~~~
+
+### Trên production thật (nhiều pod / nhiều tiến trình)
+Khoá trong JVM chỉ chặn trong **một** tiến trình; hai request cùng key có thể rơi vào hai pod khác nhau. Điểm chốt phải nằm ở **nơi lưu dữ liệu dùng chung** (database):
+~~~sql
+-- cột idempotency_key phải có unique constraint
+ALTER TABLE orders ADD CONSTRAINT uq_orders_idem UNIQUE (idempotency_key);
+~~~
+- Trong một transaction (giao dịch — nhóm thao tác hoặc thành công hết hoặc thất bại hết): thử {{INSERT}}; nếu vi phạm unique constraint thì {{SELECT}} lại đơn theo key và trả về. Đây là mẫu "insert-or-return-existing".
+- Có thể lưu bảng {{idempotency_keys(key, request_hash, response, status)}} riêng: ghi key ở trạng thái "đang xử lý" (unique) trước, xử lý xong cập nhật kết quả; request lặp thấy key đã xong thì trả lại {{response}} đã lưu. Nhớ so sánh {{request_hash}} để từ chối trường hợp **cùng key nhưng nội dung khác**.
+- Đặt thời hạn (TTL) dọn key cũ nếu dung lượng lớn, nhưng phải đủ dài để bao trùm cửa sổ retry của client.
+
+### Lỗi hay gặp
+- **Kiểm tra xong mới lưu mà không có unique constraint:** vẫn trùng khi chạy đồng thời hoặc nhiều pod.
+- **Bắt lỗi trùng nhưng không trả lại kết quả cũ:** client retry không biết đơn nào đã tạo.
+- **Chỉ dựa vào "chống bấm hai lần" ở phía giao diện (UI):** UI chỉ giảm khả năng, không thay thế được idempotency ở server (mạng retry, app mở lại, gọi API trực tiếp).
+- **Dùng key không đủ duy nhất:** key phải gắn với "một ý định thanh toán" (ví dụ sinh ở client khi mở màn hình thanh toán), không dùng timestamp thô.
+
+### Liên hệ phỏng vấn
+Khi được hỏi "làm sao tránh tạo đơn/trừ tiền hai lần khi user bấm hai lần?", trả lời theo lớp: (1) client gửi idempotency key cho mỗi ý định, (2) server kiểm tra và trả lại kết quả cũ cho cùng key, (3) unique constraint ở DB là chốt cuối cùng chống trùng trên nhiều tiến trình, (4) khi đụng unique constraint thì đọc lại và trả kết quả thay vì báo lỗi. Nhắc thêm: idempotency áp dụng cho mọi thao tác tạo/trừ tiền (POST thanh toán, webhook, job retry).
+
+> Senior tip: idempotency key là "hợp đồng" giữa client và server: client hứa gửi lại cùng key khi retry, server hứa cùng key cho cùng kết quả. Unique constraint ở DB là mạng lưới an toàn rẻ và chắc nhất — đừng tin hoàn toàn vào kiểm tra trong bộ nhớ hay khoá trong một tiến trình khi hệ thống chạy nhiều pod.`,
+  related: ['scenario-119'],
+  tags: ['idempotency', 'duplicate order', 'unique constraint', 'concurrency', 'checkout']
+},
+
 );
