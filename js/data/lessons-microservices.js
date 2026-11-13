@@ -3626,4 +3626,581 @@ class BulkheadHttpClient {
   related: ['microservices-009', 'microservices-010', 'core-015'],
   tags: ['bulkhead', 'semaphore', 'concurrency limit', 'cascade failure', 'fast reject', 'resilience']
 },
+{
+  id: 'lesson-microservices-014',
+  track: 'microservices',
+  order: 14,
+  title: 'Idempotent consumer: dedupe theo messageId khi Kafka giao lặp',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích at-least-once delivery của Kafka và tại sao consumer phải tự chống trùng',
+    'Thiết kế in-memory dedup store theo messageId với TTL và thread-safety',
+    'Mô phỏng consumer nhận message trùng lặp và đảm bảo số dư tài khoản đúng'
+  ],
+  body: `**Tóm tắt:** Kafka đảm bảo at-least-once (ít nhất một lần) — message có thể được giao lại khi consumer crash sau khi xử lý nhưng trước khi commit offset. Consumer phải tự deduplicate bằng messageId ổn định (do outbox sinh). Giải pháp: lưu messageId đã xử lý trong transaction cùng cập nhật state (inbox table hoặc dedup store). Bài này mô phỏng bằng Java thuần: consumer giả nhận message trùng, dùng Set lưu messageId để chặn duplicate, đảm bảo số dư không bị cộng/trừ hai lần.
+
+### At-least-once và duplicate
+Kafka consumer đọc message từ partition theo offset. Commit offset đánh dấu "đã đọc tới đây". Nếu process message thành công nhưng crash TRƯỚC khi commit offset, lần restart consumer đọc lại từ offset cũ -> message được xử lý lần hai. Đây là thiết kế có chủ đích: ưu tiên không mất message (at-least-once), chấp nhận duplicate. Broker không biết side effect DB đã commit hay chưa.
+
+### MessageId ổn định
+Để deduplicate, message CÓ messageId duy nhất, ổn định qua retry. Transactional outbox (bài 001) gán eventId UUID khi ghi outbox. CDC (Debezium) đọc transaction log -> eventId đi cùng message. Producer tự sinh message.key cũng dùng làm dedup key nếu ổn định. Không dùng offset làm key vì offset thay đổi khi rebalance hoặc restart.
+
+### Cơ chế dedup trong transaction
+Consumer trong một DB transaction cục bộ:
+1. INSERT vào bảng inbox (consumer_name, message_id) unique key
+2. Nếu conflict (duplicate key) -> rollback, bỏ qua side effect
+3. Nếu thành công -> cập nhật state nghiệp vụ (cộng tiền, trừ kho, v.v.)
+4. Commit transaction -> inbox row và state cùng bền vững
+5. Sau đó commit offset
+
+Cách này đảm bảo atomic: hoặc cả hai (inbox + state) đều thành công, hoặc cả hai rollback. Unique constraint là trọng tài giữa các replica.
+
+### TTL và cleanup
+Inbox table phình nếu không dọn. Cần TTL (ví dụ 7 ngày > max retention Kafka + cửa sổ replay). Job dọn định kỳ xóa messageId cũ. Với traffic lớn, shard theo consumer + date.
+
+### Minh họa luồng
+~~~seq
+title: Consumer xử lý message, crash trước commit offset -> duplicate
+actors: Kafka | Consumer | DB
+Kafka -> Consumer: message (eventId=abc, amount=100)
+Consumer -> DB: BEGIN
+Consumer -> DB: INSERT inbox(abc) -- thành công
+Consumer -> DB: UPDATE account SET balance=balance+100 -- thành công
+Consumer -> DB: COMMIT
+Consumer -> Kafka: commit offset -- CRASH ở đây!
+note Kafka..Consumer: offset chưa commit
+Kafka -> Consumer: restart, đọc lại offset cũ
+Kafka -> Consumer: message (eventId=abc, amount=100)
+Consumer -> DB: BEGIN
+Consumer -> DB: INSERT inbox(abc) -- CONFLICT unique key!
+Consumer -> DB: ROLLBACK
+Consumer -> DB: -- không cập nhật balance lần 2
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** Số dư tài khoản sai lệch (cộng/trừ gấp đôi) sau rebalance hoặc restart consumer. **Nguyên nhân:** Dedup chỉ bằng HashSet trong RAM -> mất khi restart, mỗi replica có Set riêng -> hai instance cùng xử lý trước khi biết nhau. **Cách sửa:** Dùng inbox table unique constraint trong DB chia sẻ, insert và side effect trong cùng transaction.
+- **Triệu chứng:** Bảng inbox tăng không ngừng, insert chậm. **Nguyên nhân:** Không có retention/TTL. **Cách sửa:** Job xóa messageId cũ hơn max retention + buffer; partition table theo thời gian.
+- **Triệu chứng:** Event cũ (version 1) đến sau event mới (version 3) -> state bị lùi. **Nguyên nhân:** Chỉ dedup theo messageId, không check version. **Cách sửa:** Lưu version per aggregate, chỉ apply khi version mới hơn (xem bài 002).
+
+### Ví dụ đời thực
+**Bối cảnh:** Hệ thống ví điện tử nhận message nạp tiền từ Kafka. Mỗi message có messageId, amount. Consumer cộng tiền vào balance.
+**Triệu chứng:** Khách nạp 100k nhưng balance tăng 200k. **Điều tra:** Consumer restart giữa chừng, message được xử lý 2 lần. Code chỉ có balance += amount mà không dedup.
+**Xử lý:** Thêm bảng inbox (message_id PRIMARY KEY). Consumer: INSERT INTO inbox VALUES (?, ?) ON CONFLICT DO NOTHING -> nếu row count = 0 là duplicate -> bỏ qua. Balance chỉ cộng 1 lần.
+**Kết quả:** Test chaos: kill consumer 100 lần giữa chừng -> balance luôn đúng.
+
+### Liên hệ phỏng vấn
+- **Hỏi:** Kafka at-least-once nghĩa là gì? Consumer phải làm gì? **Trả lời ngắn:** Message có thể giao trùng khi crash trước commit offset. Consumer phải idempotent: lưu messageId (inbox unique key) trong cùng transaction với side effect.
+- **Hỏi:** Vì sao không dùng offset làm dedup key? **Trả lời ngắn:** Offset thay đổi khi rebalance, restart, partition assign lại. MessageId do outbox sinh ổn định suốt đời event.
+- **Hỏi:** Hai consumer replica cùng nhận message trùng, dùng check-then-act (if set.contains) -> sai? **Trả lời ngắn:** Check-then-act không atomic. Cần unique constraint DB hoặc CAS atomic. Inbox table unique key là trọng tài.
+- **Hỏi:** Inbox table phình to, làm sao dọn? **Trả lời ngắn:** TTL dựa trên max retention Kafka + cửa sổ replay (ví dụ 7-14 ngày). Dọn theo batch, partition theo thời gian.
+
+> Senior tip: Đo duplicate rate theo topic/consumer. Tỷ lệ tăng đột ngột thường chỉ ra rebalance, timeout hoặc DB latency, không nhất thiết là lỗi broker.`,
+ exercises: [
+   {
+     title: 'Dedup consumer: nhận message trùng, đảm bảo số dư đúng',
+     prompt: `Cài {{DedupConsumer}} mô phỏng consumer Kafka nhận message có {{messageId}} và {{amount}} (long, có thể âm cho rút tiền).
+
+Yêu cầu:
+- {{handle(messageId, amount)}}: nếu messageId CHƯA xử lý -> cộng amount vào {{balance}}, lưu messageId, trả {{true}} (đã xử lý). Nếu messageId ĐÃ xử lý -> bỏ qua, trả {{false}} (duplicate).
+- {{getBalance()}} trả số dư hiện tại.
+- {{getProcessedCount()}} trả số messageId duy nhất đã xử lý (kể cả duplicate).
+- Tất cả method {{synchronized}} để thread-safe.
+- Dùng {{Set<String>}} lưu messageId (in-memory mô phỏng inbox).`,
+     starter: `class DedupConsumer {
+    private final Set<String> processed = new HashSet<>();
+    private long balance = 0;
+
+    synchronized boolean handle(String messageId, long amount) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized long getBalance() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized int getProcessedCount() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+     tests: `public class Main {
+  static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+  static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+  public static void main(String[] z){
+    ck("first message updates balance",()->{DedupConsumer c=new DedupConsumer();if(!c.handle("msg-1",100))throw new AssertionError();eq(100L,c.getBalance());eq(1,c.getProcessedCount());});
+    ck("duplicate message ignored, balance unchanged",()->{DedupConsumer c=new DedupConsumer();c.handle("msg-1",100);if(c.handle("msg-1",100))throw new AssertionError();eq(100L,c.getBalance());eq(1,c.getProcessedCount());});
+    ck("negative amount (withdraw) works",()->{DedupConsumer c=new DedupConsumer();if(!c.handle("msg-2",-50))throw new AssertionError();eq(-50L,c.getBalance());});
+    ck("mixed duplicate and new messages",()->{DedupConsumer c=new DedupConsumer();c.handle("a",100);c.handle("b",200);c.handle("a",100);c.handle("c",-50);eq(250L,c.getBalance());eq(3,c.getProcessedCount());});
+    ck("concurrent duplicate handling",()->{DedupConsumer c=new DedupConsumer();ExecutorService es=Executors.newFixedThreadPool(10);CountDownLatch latch=new CountDownLatch(100);for(int i=0;i<100;i++)es.submit(()->{c.handle("same",10);latch.countDown();});try{latch.await();}catch(InterruptedException e){Thread.currentThread().interrupt();}es.shutdown();eq(10L,c.getBalance());eq(1,c.getProcessedCount());});
+    System.out.println("RESULT "+p+"/"+t);
+  }
+}`,
+     reference: `class DedupConsumer {
+    private final Set<String> processed = new HashSet<>();
+    private long balance = 0;
+
+    synchronized boolean handle(String messageId, long amount) {
+        if (processed.contains(messageId)) return false;
+        processed.add(messageId);
+        balance += amount;
+        return true;
+    }
+
+    synchronized long getBalance() { return balance; }
+
+    synchronized int getProcessedCount() { return processed.size(); }
+}`,
+     hints: [
+       'Kiểm tra messageId trong Set TRƯỚC khi cập nhật balance. Dùng contains -> add pattern.',
+       'Trả true khi lần đầu xử lý (add thành công), false khi duplicate (contains trả true).',
+       'synchronized trên method đảm bảo atomic check-then-act trong JVM đơn giản. Production dùng DB unique constraint.'
+     ],
+     explain: `Set mô phỏng inbox table: contains = check duplicate, add = insert. synchronized làm check-then-act nguyên tử trong một JVM. Trong production, Set trong RAM không đủ (mất khi restart, không chia sẻ replicas) -> cần bảng inbox có unique constraint (consumer_name, message_id) và INSERT trong cùng transaction với UPDATE balance. Nếu side effect gọi service ngoài, cần outbox hoặc idempotency key ở đích.
+
+Lỗi thường gặp: cập nhật balance trước khi add vào Set (crash giữa chừng -> balance đã đổi nhưng chưa ghi nhận messageId -> lần retry đổi lại); dùng messageId không ổn định (offset, timestamp); quên synchronized -> race condition khi nhiều thread cùng handle messageId mới.`
+   }
+ ],
+ check: [
+   {
+     q: 'Kafka consumer crash SAU KHI xử lý message nhưng TRƯỚC KHI commit offset. Hậu quả?',
+     options: [
+       'Message bị mất vĩnh viễn',
+       'Message được giao lại (duplicate) khi consumer restart',
+       'Broker tự động xóa message',
+       'Offset tự động rollback'
+     ],
+     answer: 1,
+     explain: 'Offset chưa commit -> consumer restart đọc lại từ offset cũ -> message xử lý lần 2. Đây là at-least-once: ưu tiên không mất message, chấp nhận duplicate. Consumer phải tự dedup.'
+   },
+   {
+     q: 'Vì sao dùng messageId (eventId) làm dedup key thay vì Kafka offset?',
+     options: [
+       'Offset ngắn hơn, tiết kiệm bộ nhớ',
+       'Offset thay đổi khi rebalance/restart, messageId ổn định suốt đời event',
+       'Broker không cung cấp offset cho consumer',
+       'messageId được Kafka sinh tự động cho mọi message'
+     ],
+     answer: 1,
+     explain: 'Offset là vị trí đọc trong partition, thay đổi khi partition assign lại (rebalance) hoặc consumer restart từ đầu. messageId do outbox/producer sinh (UUID) gắn liền với event nghiệp vụ, không thay đổi.'
+   },
+   {
+     q: 'Hai consumer replica cùng nhận message trùng, dùng if (!set.contains(id)) set.add(id) -> vấn đề?',
+     options: [
+       'Set không lưu được String',
+       'Check-then-act không atomic: cả hai cùng qua if rồi cùng xử lý -> side effect chạy 2 lần',
+       'Kafka không gửi message trùng cho 2 replica',
+       'Offset tự phân biệt được duplicate'
+     ],
+     answer: 1,
+     explain: 'Set cục bộ không chia sẻ giữa process, thao tác check + add không nguyên tử. Cần unique constraint DB (trọng tài chung) trong cùng transaction với side effect, hoặc atomic CAS (ConcurrentHashMap.putIfAbsent).'
+   },
+   {
+     q: 'Inbox table unique constraint (consumer_name, message_id). Consumer INSERT vào inbox -> conflict -> rollback. Side effect có chạy không?',
+     options: [
+       'Chạy bình thường vì INSERT đã thành công',
+       'Không chạy vì transaction rollback, cả inbox lẫn side effect đều bị huỷ',
+       'Chạy một nửa rồi dừng',
+       'Tùy cấu hình isolation level'
+     ],
+     answer: 1,
+     explain: 'Unique constraint conflict ném SQLException, transaction rollback -> inbox row không được ghi, side effect (UPDATE balance) cũng rollback. Lần sau nhận message trùng -> INSERT conflict -> rollback -> side effect không chạy. Atomic guaranteed.'
+   }
+ ],
+ related: ['microservices-002', 'microservices-006', 'microservices-041'],
+ tags: ['idempotent consumer', 'Kafka', 'deduplication', 'messageId', 'at-least-once', 'inbox']
+},
+{
+ id: 'lesson-microservices-015',
+ track: 'microservices',
+ order: 15,
+ title: 'Circuit breaker từ gốc: closed/open/half-open',
+ level: 'senior',
+ minutes: 30,
+ goals: [
+   'Hiểu state machine circuit breaker: Closed -> Open -> Half-Open -> Closed',
+   'Tự cài CircuitBreaker với Clock giả để test deterministic',
+   'Giải thích failure threshold, timeout, success threshold và tại sao cần Half-Open'
+ ],
+ body: `**Tóm tắt:** Circuit breaker (máy cắt tự động) bảo vệ hệ thống không gọi liên tục vào dependency đang lỗi. Ba trạng thái: {{Closed}} (bình thường, cho gọi qua, đếm lỗi), {{Open}} (quá nhiều lỗi, chặn gọi ngay, trả lỗi nhanh), {{Half-Open}} (sau timeout, cho 1- vài request thử, thành công -> Closed, thất bại -> Open). Bài này tự cài bằng Java thuần, dùng Clock injectable để test không cần sleep thật.
+
+### Tại sao cần circuit breaker
+Khi downstream service (payment gateway, LLM API, auth service) chậm hoặc down, caller tiếp tục gửi request -> thread pool caller bị chiếm hết (thread starvation) -> cascade failure lan sang service khác. Circuit breaker phát hiện lỗi liên tiếp, nhảy sang Open, fail fast (trả lỗi ngay không gọi downstream) -> giải phóng thread, cho downstream hồi phục.
+
+### State machine
+~~~text
+CLOSED: bình thường
+  - Gọi downstream, thành công -> reset failureCount
+  - Thất bại -> failureCount++
+  - failureCount >= threshold -> OPEN, ghi openedAt = now
+
+OPEN: chặn mọi request, fail fast
+  - now - openedAt >= timeout -> HALF_OPEN
+  - chưa hết timeout -> reject ngay
+
+HALF_OPEN: cho request thử (probe)
+  - Thành công -> CLOSED, reset failureCount
+  - Thất bại -> OPEN, openedAt = now
+~~~
+
+### Tham số quan trọng
+- **Failure threshold (failureThreshold):** Số lỗi liên tiếp trong CLOSED mới bật OPEN. Thường 5-10.
+- **Timeout (resetTimeoutMs):** Thời gian ở OPEN trước khi chuyển HALF_OPEN. Phải > downstream recovery time ước lượng (ví dụ 30-60s).
+- **Success threshold (successThreshold):** Số request thành công liên tiếp trong HALF_OPEN mới về CLOSED. Thường 1-3 (an toàn hơn để 2-3).
+- **Half-Open request limit:** Giới hạn số request đồng thời trong HALF_OPEN (thường 1-3) tránh thundering herd khi vừa hồi phục.
+
+### Clock injectable để test deterministic
+Production dùng {{System.currentTimeMillis()}}. Test inject {{Clock}} (interface có {{millis()}}) -> test tiến thời gian tự do, không sleep.
+
+~~~java
+interface Clock { long millis(); }
+class CircuitBreaker {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    private final int failureThreshold;
+    private final long resetTimeoutMs;
+    private final int successThreshold;
+    private final Clock clock;
+
+    private State state = State.CLOSED;
+    private int failureCount = 0;
+    private int successCount = 0;
+    private long openedAt = 0;
+
+    CircuitBreaker(int failureThreshold, long resetTimeoutMs, int successThreshold, Clock clock) {
+        this.failureThreshold = failureThreshold;
+        this.resetTimeoutMs = resetTimeoutMs;
+        this.successThreshold = successThreshold;
+        this.clock = clock;
+    }
+
+    boolean canCall() { ... }
+    void recordSuccess() { ... }
+    void recordFailure() { ... }
+    State getState() { return state; }
+}
+~~~
+
+### CanCall logic
+- CLOSED: luôn true
+- OPEN: nếu {{clock.millis() - openedAt >= resetTimeoutMs}} -> chuyển HALF_OPEN, trả true; còn lại false
+- HALF_OPEN: true (cho probe), nhưng production giới hạn concurrent probe
+
+### RecordSuccess / RecordFailure
+- CLOSED: success -> failureCount=0; failure -> failureCount++, nếu >= threshold -> OPEN, openedAt=now
+- HALF_OPEN: success -> successCount++, nếu >= successThreshold -> CLOSED, reset counts; failure -> OPEN, openedAt=now, reset counts
+- OPEN: không gọi record (canCall=false)
+
+### Lỗi hay gặp
+- **Quên reset failureCount khi thành công trong CLOSED:** Một lỗi rời rạc làm bật OPEN sai.
+- **Không có Half-Open:** OPEN mãi không bao giờ thử lại -> dependency hồi phục mà không ai biết.
+- **Half-Open cho quá nhiều request cùng lúc:** Dependency vừa hồi phục bị dồn request -> sập lại. Giới hạn 1-3 probe.
+- **Timeout quá ngắn:** Chuyển Half-Open trước khi downstream kịp hồi phục -> OPEN -> Half-Open lặp vô tận.
+- **Không inject Clock:** Test phải sleep thật -> chậm, flaky.
+
+### Minh họa luồng
+~~~seq
+title: Circuit breaker state transitions
+actors: Caller | CircuitBreaker | Downstream
+Caller -> CircuitBreaker: canCall() -> true
+Caller -> Downstream: request (thất bại)
+Caller -> CircuitBreaker: recordFailure()
+note Caller..CircuitBreaker: failureCount=1 (threshold=3)
+Caller -> CircuitBreaker: recordFailure() -> state=OPEN, openedAt=now
+Caller -> CircuitBreaker: canCall() -> false (fail fast)
+note Caller..CircuitBreaker: chờ resetTimeoutMs
+Caller -> CircuitBreaker: canCall() -> true (-> HALF_OPEN)
+Caller -> Downstream: request (thành công)
+Caller -> CircuitBreaker: recordSuccess() -> state=CLOSED
+~~~
+
+### Ví dụ đời thực
+**Bối cảnh:** Service gọi payment gateway external. Gateway đôi khi quá tải trả 503.
+**Triệu chứng:** Payment down 2 phút -> caller thread pool hết (timeout 30s * 100 req/s) -> toàn bộ app sập.
+**Xử lý:** Thêm circuit breaker (threshold=5, timeout=30s, successThreshold=2). Khi 5 lỗi liên tiếp -> OPEN -> fail fast trả 503 ngay -> thread giải phóng. 30s sau -> HALF_OPEN cho 2 request thử. 2 thành công -> CLOSED.
+**Kết quả:** App không sập khi payment down. Recovery tự động.
+
+### Liên hệ phỏng vấn
+- **Hỏi:** Circuit breaker 3 trạng thái là gì? Chuyển trạng thái khi nào? **Trả lời ngắn:** CLOSED (bình thường, đếm lỗi) -> OPEN (lỗi >= threshold, chặn gọi, fail fast) -> HALF_OPEN (sau timeout, cho probe) -> thành công đủ successThreshold -> CLOSED, thất bại -> OPEN.
+- **Hỏi:** Vì sao cần Half-Open, không OPEN trực tiếp về CLOSED? **Trả lời ngắn:** Cần probe để xác nhận dependency đã hồi phục thực sự. Nếu OPEN -> CLOSED mà không test, dependency vẫn down -> flood request -> sập lại.
+- **Hỏi:** Failure threshold=5, resetTimeout=30s, successThreshold=2. Lỗi 5 lần -> OPEN. 30s sau -> HALF_OPEN. Request 1 thành công, request 2 thất bại -> trạng thái? **Trả lời ngắn:** OPEN. Half-Open thất bại bất kỳ lúc nào đều quay về OPEN (reset successCount, openedAt=now).
+- **Hỏi:** Production cần metric gì cho circuit breaker? **Trả lời ngắn:** state (gauge), failureCount, successCount, rejectedTotal (counter), latency p99. Alert khi state=OPEN kéo dài hoặc rejected rate tăng.
+
+> Senior tip: Circuit breaker không thay thế retry. Retry cho lỗi transient (network glitch), circuit breaker cho lỗi systematic (dependency down). Kết hợp: retry với backoff trong CLOSED, OPEN thì fail fast không retry. Resilience4j, Spring Cloud CircuitBreaker có sẵn, nhưng hiểu gốc mới tinh chỉnh đúng.`,
+ exercises: [
+   {
+     title: 'CircuitBreaker: Closed/Open/Half-Open với Clock giả',
+     prompt: `Cài {{CircuitBreaker}} theo state machine:
+
+- Constructor: {{CircuitBreaker(int failureThreshold, long resetTimeoutMs, int successThreshold, Clock clock)}}
+- Enum {{State}}: {{CLOSED}}, {{OPEN}}, {{HALF_OPEN}}
+- {{boolean canCall()}}: CLOSED -> true; OPEN -> nếu {{now - openedAt >= resetTimeoutMs}} chuyển HALF_OPEN trả true, ngược lại false; HALF_OPEN -> true
+- {{void recordSuccess()}}: CLOSED -> failureCount=0; HALF_OPEN -> successCount++, nếu >= successThreshold -> CLOSED, reset counts; OPEN -> bỏ qua
+- {{void recordFailure()}}: CLOSED -> failureCount++, nếu >= failureThreshold -> OPEN, openedAt=now; HALF_OPEN -> OPEN, openedAt=now, reset counts; OPEN -> bỏ qua
+- {{State getState()}} trả trạng thái hiện tại
+- {{int getFailureCount()}}, {{int getSuccessCount()}} cho test quan sát
+
+{{Clock}} interface: {{long millis()}}. Test dùng {{AtomicLong}} làm clock.
+
+Tất cả method {{synchronized}}.
+
+Lưu ý: {{openedAt}} chỉ set khi chuyển sang OPEN. Chuyển HALF_OPEN KHÔNG reset openedAt (chỉ khi recordFailure trong HALF_OPEN hoặc recordSuccess đủ successThreshold về CLOSED mới reset).`,
+     starter: `interface Clock { long millis(); }
+
+class CircuitBreaker {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+
+    private final int failureThreshold;
+    private final long resetTimeoutMs;
+    private final int successThreshold;
+    private final Clock clock;
+
+    private State state = State.CLOSED;
+    private int failureCount = 0;
+    private int successCount = 0;
+    private long openedAt = 0;
+
+    CircuitBreaker(int failureThreshold, long resetTimeoutMs, int successThreshold, Clock clock) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized boolean canCall() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized void recordSuccess() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized void recordFailure() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized State getState() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized int getFailureCount() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized int getSuccessCount() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+     tests: `public class Main {
+  static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+  static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+  public static void main(String[] z){
+    ck("closed allows calls, failure threshold triggers open",()->{
+      AtomicLong clock=new AtomicLong(0);
+      CircuitBreaker cb=new CircuitBreaker(3,1000,2,clock::get);
+      eq(true,cb.canCall());
+      cb.recordFailure(); cb.recordFailure();
+      eq(CircuitBreaker.State.CLOSED,cb.getState()); eq(2,cb.getFailureCount());
+      cb.recordFailure(); // 3rd failure -> OPEN
+      eq(CircuitBreaker.State.OPEN,cb.getState());
+      eq(false,cb.canCall());
+    });
+    ck("open rejects until timeout, then half-open",()->{
+      AtomicLong clock=new AtomicLong(0);
+      CircuitBreaker cb=new CircuitBreaker(2,1000,2,clock::get);
+      cb.recordFailure(); cb.recordFailure(); // OPEN
+      eq(false,cb.canCall());
+      clock.set(500); // chưa hết timeout
+      eq(false,cb.canCall());
+      clock.set(1000); // hết timeout -> HALF_OPEN
+      eq(true,cb.canCall());
+      eq(CircuitBreaker.State.HALF_OPEN,cb.getState());
+    });
+    ck("half-open success threshold -> closed",()->{
+      AtomicLong clock=new AtomicLong(0);
+      CircuitBreaker cb=new CircuitBreaker(2,1000,2,clock::get);
+      cb.recordFailure(); cb.recordFailure(); // OPEN
+      clock.set(1000); // HALF_OPEN
+      cb.canCall(); // trigger transition
+      cb.recordSuccess(); // 1st success
+      eq(CircuitBreaker.State.HALF_OPEN,cb.getState()); eq(1,cb.getSuccessCount());
+      cb.recordSuccess(); // 2nd success -> CLOSED
+      eq(CircuitBreaker.State.CLOSED,cb.getState());
+      eq(0,cb.getFailureCount()); eq(0,cb.getSuccessCount());
+    });
+    ck("half-open failure -> back to open",()->{
+      AtomicLong clock=new AtomicLong(0);
+      CircuitBreaker cb=new CircuitBreaker(2,1000,2,clock::get);
+      cb.recordFailure(); cb.recordFailure(); // OPEN
+      clock.set(1000); // HALF_OPEN
+      cb.canCall();
+      cb.recordFailure(); // failure in half-open -> OPEN
+      eq(CircuitBreaker.State.OPEN,cb.getState());
+      eq(false,cb.canCall()); // ngay lập tức reject
+    });
+    ck("closed success resets failure count",()->{
+      AtomicLong clock=new AtomicLong(0);
+      CircuitBreaker cb=new CircuitBreaker(3,1000,2,clock::get);
+      cb.recordFailure(); cb.recordFailure(); // 2 failures
+      eq(2,cb.getFailureCount());
+      cb.recordSuccess(); // success -> reset
+      eq(0,cb.getFailureCount());
+      eq(CircuitBreaker.State.CLOSED,cb.getState());
+    });
+    System.out.println("RESULT "+p+"/"+t);
+  }
+}`,
+     reference: `interface Clock { long millis(); }
+
+class CircuitBreaker {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+
+    private final int failureThreshold;
+    private final long resetTimeoutMs;
+    private final int successThreshold;
+    private final Clock clock;
+
+    private State state = State.CLOSED;
+    private int failureCount = 0;
+    private int successCount = 0;
+    private long openedAt = 0;
+
+    CircuitBreaker(int failureThreshold, long resetTimeoutMs, int successThreshold, Clock clock) {
+        if (failureThreshold <= 0) throw new IllegalArgumentException("failureThreshold > 0");
+        if (resetTimeoutMs <= 0) throw new IllegalArgumentException("resetTimeoutMs > 0");
+        if (successThreshold <= 0) throw new IllegalArgumentException("successThreshold > 0");
+        if (clock == null) throw new IllegalArgumentException("clock required");
+        this.failureThreshold = failureThreshold;
+        this.resetTimeoutMs = resetTimeoutMs;
+        this.successThreshold = successThreshold;
+        this.clock = clock;
+    }
+
+    synchronized boolean canCall() {
+        long now = clock.millis();
+        switch (state) {
+            case CLOSED:
+                return true;
+            case OPEN:
+                if (now - openedAt >= resetTimeoutMs) {
+                    state = State.HALF_OPEN;
+                    successCount = 0;
+                    return true;
+                }
+                return false;
+            case HALF_OPEN:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    synchronized void recordSuccess() {
+        switch (state) {
+            case CLOSED:
+                failureCount = 0;
+                break;
+            case HALF_OPEN:
+                successCount++;
+                if (successCount >= successThreshold) {
+                    state = State.CLOSED;
+                    failureCount = 0;
+                    successCount = 0;
+                    openedAt = 0;
+                }
+                break;
+            case OPEN:
+                // no-op
+                break;
+        }
+    }
+
+    synchronized void recordFailure() {
+        switch (state) {
+            case CLOSED:
+                failureCount++;
+                if (failureCount >= failureThreshold) {
+                    state = State.OPEN;
+                    openedAt = clock.millis();
+                }
+                break;
+            case HALF_OPEN:
+                state = State.OPEN;
+                openedAt = clock.millis();
+                failureCount = 0;
+                successCount = 0;
+                break;
+            case OPEN:
+                // no-op
+                break;
+        }
+    }
+
+    synchronized State getState() { return state; }
+    synchronized int getFailureCount() { return failureCount; }
+    synchronized int getSuccessCount() { return successCount; }
+}`,
+     hints: [
+       'canCall() phải check timeout trong OPEN: now - openedAt >= resetTimeoutMs -> chuyển HALF_OPEN, reset successCount=0.',
+       'recordSuccess() trong HALF_OPEN: tăng successCount, đủ successThreshold -> CLOSED, reset counts + openedAt=0.',
+       'recordFailure() trong HALF_OPEN: ngay lập tức OPEN, openedAt=now, reset counts.',
+       'CLOSED: recordSuccess reset failureCount=0; recordFailure tăng, đủ threshold -> OPEN, openedAt=now.',
+       'Validator yêu cầu constructor validate tham số > 0, clock not null.'
+     ],
+     explain: `State machine 3 trạng thái là lõi circuit breaker. Clock injectable cho phép test tiến thời gian không sleep: test 2 set clock=500, 1000 thay vì Thread.sleep(500). Production dùng System.currentTimeMillis() hoặc Instant.now().
+
+Chi tiết dễ sai:
+- Quên reset successCount khi mới vào HALF_OPEN (canCall chuyển trạng thái).
+- Quên reset failureCount/successCount khi HALF_OPEN failure -> OPEN.
+- Quên reset openedAt=0 khi về CLOSED.
+- Không validate constructor params (threshold <= 0, clock null).
+- OPEN state không cho gọi recordSuccess/recordFailure (canCall=false nên caller không gọi, nhưng method vẫn phải no-op an toàn).
+
+Production: Resilience4j, Spring Cloud CircuitBreaker cung cấp sẵn. Hiểu gốc giúp config đúng: failureRateThreshold, waitDurationInOpenState, permittedNumberOfCallsInHalfOpenState, slidingWindowType.`
+   }
+ ],
+ check: [
+   {
+     q: 'Circuit breaker ở trạng thái OPEN. canCall() trả true khi nào?',
+     options: [
+       'Luôn false cho đến khi restart ứng dụng',
+       'Khi now - openedAt >= resetTimeoutMs (chuyển HALF_OPEN)',
+       'Khi downstream service báo healthy qua health check',
+       'Khi failureCount giảm về 0'
+     ],
+     answer: 1,
+     explain: 'OPEN chuyển HALF_OPEN dựa trên timeout (resetTimeoutMs), không phải health check chủ động. Khi now - openedAt >= resetTimeoutMs, canCall() chuyển state = HALF_OPEN và trả true cho phép probe.'
+   },
+   {
+     q: 'Trong HALF_OPEN, recordFailure() làm gì?',
+     options: [
+       'Giữ HALF_OPEN, tăng failureCount',
+       'Chuyển ngay lập tức về OPEN, reset counts, openedAt = now',
+       'Chuyển về CLOSED',
+       'Không làm gì'
+     ],
+     answer: 1,
+     explain: 'HALF_OPEN là trạng thái thử nghiệm. Bất kỳ failure nào cũng chứng minh downstream chưa hồi phục -> quay về OPEN ngay, reset successCount/failureCount, openedAt = now để đếm timeout mới.'
+   },
+   {
+     q: 'CLOSED state, failureThreshold=5. Ghi nhận 2 failure, rồi 1 success, rồi 3 failure. Trạng thái cuối?',
+     options: [
+       'CLOSED (failureCount=3)',
+       'OPEN (failureCount=5)',
+       'HALF_OPEN',
+       'CLOSED (failureCount=0)'
+     ],
+     answer: 0,
+     explain: 'CLOSED: success reset failureCount=0. Sequence: F,F (count=2), S (count=0), F,F,F (count=3). Chưa đủ 5 -> vẫn CLOSED, failureCount=3. (B) sai vì failureCount=5 mới mở, ở đây chỉ 3. (C) sai vì HALF_OPEN chỉ từ OPEN sau timeout. (D) sai vì failureCount=3, không reset sau failure.'
+   },
+   {
+     q: 'Tại sao CircuitBreaker cần Clock injectable thay vì dùng System.currentTimeMillis() trực tiếp?',
+     options: [
+       'Để code chạy nhanh hơn',
+       'Để test deterministic: tiến thời gian tự do không sleep, không flaky',
+       'Để thread-safe',
+       'Để hỗ trợ time zone khác nhau'
+     ],
+     answer: 1,
+     explain: 'Test unit cần kiểm soát thời gian: set clock=0, 500, 1000 ms thay vì Thread.sleep(500). Dùng System.currentTimeMillis() ép test phải sleep thật -> chậm, flaky, khó test edge case (timeout boundary).'
+   }
+ ],
+ related: ['microservices-009', 'microservices-013', 'microservices-025'],
+ tags: ['circuit breaker', 'resilience', 'closed', 'open', 'half-open', 'fail fast', 'state machine']
+},
 );

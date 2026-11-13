@@ -2110,6 +2110,8 @@ window.DATA_INDEX = {
     {"id":"lesson-microservices-011","track":"microservices","order":11,"title":"Idempotent producer: sequence number, dedup và lỗi OUT_OF_ORDER","level":"senior","minutes":40},
     {"id":"lesson-microservices-012","track":"microservices","order":12,"title":"Queue cho tác vụ AI dài: job queue, worker, retry và client poll","level":"senior","minutes":40},
     {"id":"lesson-microservices-013","track":"microservices","order":13,"title":"Bulkhead pattern: giới hạn đồng thời theo dependency với semaphore","level":"senior","minutes":35},
+    {"id":"lesson-microservices-014","track":"microservices","order":14,"title":"Idempotent consumer: dedupe theo messageId khi Kafka giao lặp","level":"senior","minutes":30},
+    {"id":"lesson-microservices-015","track":"microservices","order":15,"title":"Circuit breaker từ gốc: closed/open/half-open","level":"senior","minutes":30},
     {"id":"lesson-db-001","track":"db","order":1,"title":"Isolation level qua lịch xen kẽ: dirty read, non-repeatable read và lost update","level":"senior","minutes":30},
     {"id":"lesson-db-002","track":"db","order":2,"title":"Optimistic locking: version check và retry có giới hạn","level":"senior","minutes":25},
     {"id":"lesson-db-003","track":"db","order":3,"title":"B-tree index và full scan: đếm phép so sánh, hiểu chọn lọc","level":"mid","minutes":25},
