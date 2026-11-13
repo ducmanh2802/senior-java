@@ -1865,4 +1865,999 @@ Khi nói về index, hãy nhấn mạnh: "đo bằng EXPLAIN (ANALYZE, BUFFERS) 
     "performance"
   ]
 },
+  {
+    id: 'lesson-sql-010',
+    track: 'sql',
+    order: 10,
+    title: 'EXPLAIN ANALYZE: seq scan, index scan và quyết định thuật toán JOIN',
+    level: 'senior',
+    minutes: 30,
+    goals: [
+      'Giải thích seq scan và khi nào DB chọn index scan',
+      'Mô tả nested loop, hash join, merge join và chi phí (n×m, n×log m, n+m)',
+      'Đọc EXPLAIN (ANALYZE) ở mức nhận ra thuật toán join và biết bước xử lý đầu tiên',
+    ],
+    body: `### EXPLAIN ANALYZE là gì và vì sao quan trọng
+EXPLAIN (kèm ANALYZE) là câu lệnh cho phép bạn xem bộ tối ưu (optimizer) của PostgreSQL đang kế hoạch thực thi như thế nào. Đây là công cụ quan trọng nhất để debug query chậm: bạn sẽ biết DB chọn thuật toán join nào, quét bảng như thế nào, và có cần index không.
+
+### Seq Scan (Seqential Scan)
+Seq scan là DB đọc từng dòng trong bảng từ đầu đến hết, kiểm tra từng dòng có thỏa mãn điều kiện WHERE không.
+- **Chi phí**: O(n) với n là số dòng trong bảng. Phải đọc toàn bộ bảng.
+- Khi nào DB chọn seq scan:
+  - Bảng **rất nhỏ** (ví dụ fewer than 50-100 dòng): đọc thẳng qua nhanh hơn go xuống index rồi fetch heap.
+  - **Selectivity thấp**: cột WHERE có ít giá trị khác nhau (ví dụ cột boolean, trạng thái 'active/inactive'), index không loại bỏ nhiều dòng nên planner vẫn chọn seq scan.
+  - **Không có index phù hợp** trên cột WHERE.
+  - Phân bố dữ liệu skew (một giá trị chiếm tỷ lệ lớn) khiến index không hiệu quả.
+- Trong EXPLAIN: node {{Seq Scan on table}} (loops=1) nghĩa là DB quét toàn bộ bảng 1 lần.
+
+### Index Scan
+Index scan là DB dùng index (thường là B-tree) để tìm trực tiếp các dòng thỏa mãn điều kiện, tránh đọc toàn bảng.
+- **Chi phí**: O(log n) để tìm điểm bắt đầu, rồi duyệt tuần tự các entry phù hợp. Phải thêm chi phí fetch heap (random I/O) để lấy các cột không có trong index.
+- Khi nào DB chọn index scan:
+  - **Selectivity cao**: cột WHERE có nhiều giá trị khác nhau (ví dụ primary key, email), index có thể loại bỏ hầu hết các dòng.
+  - **Equality query**: WHERE col = giá trị nhất định → B-tree có thể đi thẳng tới lá chính xác.
+  - **Range query**: WHERE col > giá trị AND col < giá trị → B-tree có thể duyệt từ điểm bắt đầu till điểm kết thúc.
+  - Cột thường xuyên tham gia JOIN hoặc ORDER BY.
+- Trong EXPLAIN: node {{Index Scan on table}} (loops=n) kèm {{Index Cond: col = giá trị}}. Nodes {{Bitmap Heap Scan}} cho thấy DB dùng index tạo bitmap rồi quét theo bitmap.
+- **Covering index**: nếu SELECT chỉ lấy các cột có trong index, DB có thể dùng index-only scan (không cần fetch heap), chi phí thấp hơn đáng kể.
+
+### Nested Loop Join
+Nested loop join là thuật toán join đơn giản nhất: với mỗi dòng outer, tìm các dòng khớp trong inner.
+- **Chi phí**: 
+  - Inner **không có index** trên khóa join: **n × m** (n = dòng outer, m = dòng inner). Ví dụ: 10.000 × 10.000 = 100 triệu phép so sánh.
+  - Inner **có index** (B-tree) trên khóa join: **n × log m**. Ví dụ: 100 × log₂(10.000.000) ≈ 100 × 24 ≈ 2.400 bước.
+- DB chọn nested loop khi:
+  - Outer **rất ít dòng** sau khi lọc WHERE (ví dụ 10-100 dòng).
+  - Inner **có index** trên khóa join (khóa chính hoặc index thứ tự).
+  - Join **không phải đẳng thức** (BETWEEN, >, <) — hash join và merge join chỉ hỗ trợ equi-join (so sánh bằng {{=}}).
+- Trong EXPLAIN: node {{Nested Loop}} kèm {{loops=m}} (inner được quét m lần) và {{actual rows}} thể hiện sai ước lượng nếu lệch nhiều.
+
+### Hash Join
+Hash join chạy hai pha, chỉ dùng cho **equi-join** (so sánh bằng {{=}}).
+- **Pha Build**: Đọc bên **nhỏ hơn** (theo ước lượng), đưa từng dòng vào bảng băm (hash table) trong RAM theo khóa join.
+- **Pha Probe**: Đọc bên lớn hơn từng dòng, tính hash khóa rồi tra bảng băm: trung bình **O(1)** mỗi lần tra.
+- **Chi phí**: **O(n + m)**: đọc mỗi bên đúng một lần.
+- Điều kiện: join bằng {{=}}, bảng băm vừa bộ nhớ (PostgreSQL giới hạn {{work_mem}}). Vượt giới hạn → PG chia thành nhiều **batch** và ghi tạm ra đĩa (chậm hơn nhiều). Trong EXPLAIN: node {{Hash}} kèm {{Batches: 1}} (tắm vừa RAM) hoặc {{Batches: 8}} (tràn đĩa).
+- DB chọn hash join khi:
+  - Cả hai bên **đều lớn** (qua lớn nested loop bị chậm, qua lớn merge join thiếu index).
+  - Join bằng dấu {{=}} (equi-join).
+  - Bảng băm có thể vừa vào {{work_mem}}.
+- **Pitfall**: nếu optimizer Ước lượng sai (tưởng bên lớn là bên nhỏ), bảng băm phình ra, tràn đĩa → nhiều batches → query chậm hơn nested loop. Bước đầu khi query chậm: chạy {{EXPLAIN (ANALYZE, BUFFERS)}} so s_rows ước lượng vs actual rows.
+
+### Merge Join
+Merge join cần cả hai bên **đã sắp xếp** theo khóa join (theo index hoặc do sort).
+- **Cơ chế**: Dùng hai con trỏ đi song song như khi trộn hai danh sách đã sắp xếp trong merge sort: khoá bên nào nhỏ hơn thì tiến con trỏ bên đó. Khi khóa bằng nhau → phát hết cặp khớp.
+- **Chi phí**: **O(n + m)** nếu đã có thứ tự sẵn, cộng O(n log n) nếu phải sort.
+- DB chọn merge join khi:
+  - Cả hai bên **đã sắp theo khóa join** (kéo theo index B-tree phù hợp).
+  - Join bằng dấu {{=}}.
+  - Không muốn tốn bộ nhớ tạo bảng băm (hash join cần work_mem).
+- **Pitfall**: nếu cần sort ban đầu, chi phí O(n log n) có thể làm merge join chậm hơn hash join hoặc nested loop có index.
+
+### Bảng so sánh nhanh thuật toán join
+
+| Thuật toán | Chi phí xấp xỉ | Điều kiện | Khi optimizer chọn |
+|---|---|---|---|
+| Seq Scan | O(n) | Không có index WHERE | Bảng nhỏ, selectivity thấp |
+| Index Scan | O(log n) + fetch heap | Có index WHERE | Selectivity cao, equality/range query |
+| Nested Loop (no index) | n × m | Bất kỳ | Outer rất nhỏ, inner không index |
+| Nested Loop (with index) | n × log m | Inner có index | Outer nhỏ, inner lớn có index (OLTP) |
+| Hash Join | n + m | Chỉ equi-join (=), đủ work_mem | Hai bên đều lớn, đủ RAM |
+| Merge Join | n + m (+ sort) | Cả hai bên đã sắp hoặc equi-join | Đã có index thứ tự, ít RAM |
+
+### Vì sao thiếu index làm JOIN chậm
+Câu chuyện hay gặp: {{orders JOIN customer ON orders.customer_id = customer.id}}. {{customer.id}} là khóa chính nên có index; nhưng nếu lọc {{orders}} ra 50.000 dòng và {{customer}} bị quét theo cách ngược (hoặc planner chọn nested loop với inner là Seq Scan trên bảng lớn) mà **thiếu index trên khóa join phía inner**, vòng trong thành duyệt toàn bảng lặp lại. 50.000 × (quét bảng) = hàng tỷ phép đọc. Thêm index trên cột join (hoặc để planner chọn hash join) đưa về n log m hoặc n+m.
+
+### Null key không khớp trong equi-join (ngữ nghĩa SQL)
+Trong SQL, {{NULL = NULL}} cho kết quả **UNKNOWN** (không phải TRUE), nên dòng có khóa join là NULL **không khớp** với dòng nào, kể cả dòng khác cũng NULL. Đây là hành vi bắt buộc của equi-join. Mô phỏng join bằng Java phải giữ đúng ngữ nghĩa này (bài tập kiểm tra).
+
+### Đọc EXPLAIN (ANALYZE) ở mức nhận ra thuật toán
+{{EXPLAIN ANALYZE}} chạy thật câu lệnh và in kế hoạch. Bạn cần nhận ra:
+
+**Hash Join** / **Hash Cond**: hash join. {{Seq Scan}} hai bên + node {{Hash}} là bình thường khi bảng vừa/lớn.
+- *Ví dụ*: Hash Join (actual time=1.2..45.6 rows=4820 loops=1) / Hash Cond: (o.customer_id = c.id) / -> Seq Scan on orders o (actual ... rows=50000 loops=1) / -> Hash (actual ... rows=12000 loops=1) /   -> Seq Scan on customer c (actual ... rows=12000 loops=1)
+
+**Nested Loop** với inner là {{Seq Scan}} và {{loops}} lớn (50.000): inner bị quét lặp lại 50.000 lần — dấu hiệu kinh điển của thiếu index trên khóa join hoặc ước lượng sai.
+- *Ví dụ*: Nested Loop (actual time=0.1..8200.0 rows=4820 loops=1) / -> Seq Scan on orders o (actual ... rows=50000 loops=1) / -> Seq Scan on customer c (actual ... rows=1 loops=50000)
+
+**Merge Join** / {{Merge Cond}}: merge join, thường kèm {{Index Scan}} (đã có thứ tự) hoặc {{Sort}}.
+- *Ví dụ*: Merge Join (actual time=..) Merge Cond: (o.customer_id = c.id) / -> Index Scan on orders o (index: customer_id) / -> Index Scan on customer c (index: id)
+
+Nhận biết:
+- {{Seq Scan}} không xấu tuyệt đối; xấu khi lặp lại nhiều loops hoặc trên bảng rất lớn mà chỉ cần ít dòng có index phù hợp.
+- {{Batches > 1}} trên node Hash → tăng {{work_mem}} cho session/query đó (SET LOCAL work_mem = '256MB'), đừng tăng toàn cục.
+- So s_rows ước lượng với actual rows: lệch > 10 lần là manh mạch nhất cho thấy planner hiểu sai dữ liệu.
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "DB join hai bảng thế nào?", "Query join chậm, bạn làm gì?", "Khác nhau hash join và nested loop". Trả lời tốt: nêu ba thuật toán + chi phí (n×m, n×log m, n+m) + điều kiện ({{=}} cho hash/merge), nói optimizer chọn theo ước lượng/kích thước/index, và đưa quy trình: EXPLAIN ANALYZE → nhận thuật toán/loops/rows lệch → kiểm tra index khóa join → ANALYZE thống kê. Nhắc null key không khớp là điểm cộng thể hiện hiểu ngữ nghĩa SQL.
+`,
+    exercises: [
+      {
+        title: 'Estimating join plan cost: choose the cheapest algorithm',
+        prompt: `Viết lớp {{PlanCost}} mô phỏng bộ tối ưu chọn thuật toán join dựa trên chi phí đơn giản:
+
+- {{seqScanCost(int n)}}: ước lượng chi phí quét tuần tự bảng n dòng. Công thức đơn giản: trả về n (mỗi dòng đều kiểm tra 1 lần). Nếu n <= 0 trả 0.
+- {{indexScanCost(int n, int indexedRows)}}: ước lượng chi phí scan theo index. Giả lập: chi phí tìm điểm đầu là ~4 bước (O(log n) với fanout lớn), rồi duyệt indexedRows entry. Trả về 4 + indexedRows. Nếu indexedRows <= 0 trả 4.
+- {{nestedLoopCost(int leftSize, int rightSize, boolean rightHasIndex)}}: chi phí nested loop. Nếu rightHasIndex là false: trả leftSize * rightSize. Nếu rightHasIndex là true: trả leftSize * (int)Math.ceil(Math.log(rightSize) / Math.log(100) + 1) (ước lượng bước đi xuống B-tree).
+- {{hashJoinCost(int leftSize, int rightSize)}}: chi phí hash join. Trả về leftSize + rightSize (đọc mỗi bên một lần).
+
+Mục tiêu: làm quen với việc ước lượng chi phí và biết thuật toán nào được ưu tiên khi.
+
+Starter biên dịch được; điền TODO.
+`,
+        starter: `class PlanCost {
+    int seqScanCost(int n) { throw new UnsupportedOperationException("TODO"); }
+    int indexScanCost(int n, int indexedRows) { throw new UnsupportedOperationException("TODO"); }
+    int nestedLoopCost(int leftSize, int rightSize, boolean rightHasIndex) { throw new UnsupportedOperationException("TODO"); }
+    int hashJoinCost(int leftSize, int rightSize) { throw new UnsupportedOperationException("TODO"); }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+
+    public static void main(String[] args) {
+        PlanCost pc = new PlanCost();
+        check("seq scan cost 0", () -> eq(0, pc.seqScanCost(0)));
+        check("seq scan cost 1000", () -> eq(1000, pc.seqScanCost(1000)));
+        check("index scan cost with 50 rows indexed", () -> eq(54, pc.indexScanCost(1000000, 50)));
+        check("index scan cost no rows indexed", () -> eq(4, pc.indexScanCost(1000000, 0)));
+        check("nested loop no index, 100 * 200", () -> eq(20000, pc.nestedLoopCost(100, 200, false)));
+        check("nested loop with index, 10 * 10000", () -> eq(30, pc.nestedLoopCost(10, 10000, true)));
+        check("hash join cost 1000 + 5000", () -> eq(6000, pc.hashJoinCost(1000, 5000)));
+        check("nested loop no index 1 * 1", () -> eq(1, pc.nestedLoopCost(1, 1, false)));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `class PlanCost {
+    int seqScanCost(int n) {
+        if (n <= 0) return 0;
+        return n;
+    }
+    int indexScanCost(int n, int indexedRows) {
+        if (indexedRows <= 0) return 4;
+        return 4 + indexedRows;
+    }
+    int nestedLoopCost(int leftSize, int rightSize, boolean rightHasIndex) {
+        if (rightHasIndex) {
+            // log100(rightSize) + 1 steps to traverse B-tree
+            if (rightSize <= 0) return leftSize * 1;
+            int steps = (int) Math.floor(Math.log(rightSize) / Math.log(100.0) + 1e-12) + 1;
+            if (steps < 1) steps = 1;
+            return leftSize * steps;
+        } else {
+            return leftSize * rightSize;
+        }
+    }
+    int hashJoinCost(int leftSize, int rightSize) {
+        return leftSize + rightSize;
+    }
+}`,
+        hints: [
+          '{{seqScanCost}}: đơn giản trả n (hoặc 0 nếu n <= 0).',
+          '{{indexScanCost}}: 4 bước để đi xuống gốc B-tree (fanout lớn) + số entry phải duyệt.',
+          '{{nestedLoopCost}}: nếu rightHasIndex=false → n×m; nếu true → n × (bước đi xuống B-tree). Dùng Math.log(n)/Math.log(base) cho log cơ số 100.',
+          '{{hashJoinCost}}: luôn left + right vì đọc mỗi bên đúng một lần.',
+        ],
+        explain: `### Về mô phỏng này
+Mục đích là làm quen với các công thức chi phí cơ bản mà optimizer tham chiếu. Trong thực tế planner PostgreSQL dùng thống kê phức tạp ({{pg_stats}}, correlation, random page cost, page io cost)}, nhưng các công thức sai số này đủ để hiểu **tư thế**: nested loop thua khi hai bên lớn, hash join khi đủ RAM, index scan khi selectividad cao.
+
+### Lỗi hay gặp
+- {{nestedLoopCost}} quên trường hợp rightHasIndex=true và trả n×m luôn → test sẽ fail.
+- {{indexScanCost}} quên thêm 4 bước cho gốc cây hoặc quên xử lý indexedRows <= 0.
+- {{Math.log}} với cơ số sai: phải dùng Math.log(n)/Math.log(base) để đổi cơ số, nhớ thêm 1e-12 tránh lỗi làm tròn.
+- {{hashJoinCost}} trả cost phức tạp hơn left+right khi chưa cần (test bắt lỗi này).
+
+### Liên hệ EXPLAIN
+- Nested loop 1200 so sánh ở bài tập tương tự {{Nested Loop}} với {{loops}} lớn và inner scan lặp lại. Hash join "đọc mỗi bên một lần" tương tự node {{Hash Join}} ({{Hash}} build một lần, probe scan một lần). Seq scan tương đương {{Seq Scan}} loops=1.
+`,
+      },
+    ],
+    check: [
+      {
+        q: 'Trong EXPLAIN ANALYZE, node {{Nested Loop}} có {{loops=50000}} cho inner nghĩa là gì?',
+        options: [
+          'Hash join bị tắt, cần bật lại',
+          'Inner bị quét toàn bộ 50.000 lần, thường do thiếu index trên khóa join hoặc optimizer Ước lượng sai',
+          'Bảng inner quá nhỏ nên Seq Scan là tối ưu',
+          'Merge join sẽ tự thay thế ở lần chạy sau'
+        ],
+        answer: 1,
+        explain: '**Phương án 2 đúng**: {{Seq Scan}} + {{loops}} lớn = quét lặp lại toàn bảng (hành vi nested loop không index, chi phí n×m). Kiểm tra index trên cột join của inner, và so {{rows}} ước lượng vs {{actual rows}} vì thống kê sai khiến planner chọn nested loop nhầm. **Phương án 1** sai: tắt/bật không giải quyết nguyên nhân gốc (thiếu index/ước lượng sai). **Phương án 3** mâu thuẫn: nếu nhỏ thì {{loops=50000}} không xuất hiện như vậy cho một bảng nhỏ cố định. **Phương án 4** sai: planner không "tự học" giữa các lần chạy theo kiểu đó.',
+      },
+      {
+        q: 'Khi nào optimizer thường chọn hash join thay vì nested loop (có index)?',
+        options: [
+          'Khi outer rất nhỏ sau lọc và inner có index tốt',
+          'Khi join không phải đẳng thức ({{<}}, {{BETWEEN}})',
+          'Khi hai bên đều lớn, equi-join ({{=}}), và bảng băm vừa bộ nhớ',
+          'Khi cả hai bên đã có sẵn thứ tự theo khóa join từ index'
+        ],
+        answer: 2,
+        explain: '**Phương án 3 đúng**: hai bên lớn thì n×log m (nested loop index) vẫn đắt nếu n lớn; hash join ~n+m với equi-join, đọc mỗi bên một lần, miễn bảng băm vừa RAM. **Phương án 1** là trường hợp nested loop có index thắng. **Phương án 2** loại hash/merge (chỉ hỗ trợ {{=}}), thường buộc nested loop. **Phương án 4** nghiêng về merge join (tận dụng thứ tự sẵn, không cần build hash table).',
+      },
+      {
+        q: 'SELECT * FROM orders o JOIN customer c ON o.customer_id = c.id. Câu query chạy 20 ms bình thường nhưng sau đợt import dữ liệu bỗng chậm 5 phút. Bước đầu tiên nên làm gì?',
+        options: [
+          'Tăng RAM cho server DB ngay',
+          'Chạy EXPLAIN (ANALYZE, BUFFERS), so rows ước lượng với actual rows và xem inner là Seq Scan hay Index Scan',
+          'Xoá index trên bảng customer để giảm gánh ghi',
+          'Tách query thành hai subquery cho dễ đọc'
+        ],
+        answer: 1,
+        explain: '**Phương án 2 đúng**: import dữ liệu làm thay đổi phân bố dữ liệu, làm sao kê cũ lỗi optimizer tưởng bảng nhỏ nên chọn nested loop, thực tế bảng lớn và query chết đứng. **Tăng RAM** sai vì nested loop không bị giới hạn bởi bộ nhớ. **Xoá index** làm tình tệ hơn: inner sẽ bị Seq Scan lặp lại mỗi lần. **Tách subquery** chỉ đổi cách viết; planner thường gộp lại plan nên không giải quyết nguyên nhân.',
+      },
+    ],
+    related: ['sql-005', 'sql-015', 'sql-017'],
+    tags: ['explain', 'seq scan', 'index scan', 'nested loop', 'hash join', 'merge join', 'optimizer'],
+  },
+  {
+    id: 'lesson-sql-011',
+    track: 'sql',
+    order: 11,
+    title: 'Keyset pagination: cursor-based pagination và so sánh với OFFSET',
+    level: 'senior',
+    minutes: 30,
+    goals: [
+      'Giải thích vì sao OFFSET chậm dần ở trang sâu và có thể trùng/sót khi dữ liệu thay đổi',
+      'Cài keyset pagination (seek method) trên danh sách đã sắp xếp bằng cursor và tie-breaker',
+      'So sánh chi phí từng bước (offset tăng tuyến tính vs keyset tăng logarit) và trade-off giữa hai cách',
+    ],
+    body: `### Offset pagination: quen thuộc nhưng có hai vấn đề
+Khi hiển thị danh sách dài (lịch sử giao dịch, feed, kết quả tìm kiếm), cách quen thuộc là phân trang bằng OFFSET (bỏ qua N dòng đầu):
+~~~sql
+SELECT * FROM orders
+ORDER BY created_at DESC, id DESC
+LIMIT 20 OFFSET 100000;   -- trang 5001, mỗi trang 20
+~~~
+
+**Vấn đề 1 — chậm dần ở trang sâu**: DB phải duyệt và bỏ qua 100.000 dòng rồi mới trả 20 dòng. Dù có index (cấu trúc giúp tìm nhanh theo thứ tự), nó vẫn đi qua các entry đó. Chi phí tăng **tuyến tính theo offset**: trang 1 rẻ (đọc 20 dòng), trang 5000 rất đắt (đọc 100.020 dòng, vài giây trên bảng lớn), trang 500.001 có thể mất nhiều giây hoặc cả phút.
+
+**Vấn đề 2 — trùng/sót khi dữ liệu thay đổi**: nếu có bản ghi mới chèn lên đầu giữa lúc người dùng đang xem trang 1 và sang trang 2, các dòng bị đẩy xuống — trang 2 có thể **lặp lại** một dòng đã thấy, hoặc **bỏ sót** một dòng. Với dữ liệu thay đổi liên tục (timeline, lịch sử giao dịch), offset dễ cho trải nghiệm "nhảy trang". Spring Data JPA mặc định dùng {{Pageable}} với offset; nó còn chạy thêm {{COUNT(*)}} để tính tổng trang — trên bảng chục triệu dòng, câu count này cũng tốn kém. Nếu không cần tổng số page, cân nhắc {{Slice}} (chỉ biết còn trang sau hay không).
+
+### Keyset pagination (seek method): nhớ "mốc cuối" thay vì đếm lại
+Keyset pagination (phân trang theo khóa, còn gọi seek method) dùng **khóa của dòng cuối trang trước** làm cursor (con trỏ vị trí). Thay vì "bỏ qua 100.000 dòng", ta nói "lấy các dòng đứng sau mốc này":
+
+~~~sql
+-- Trang đầu
+SELECT * FROM orders
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
+
+-- Trang sau: dùng (created_at, id) của dòng cuối trang trước làm cursor
+SELECT * FROM orders
+WHERE (created_at, id) < (:last_created_at, :last_id)
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
+~~~
+
+Với index B-tree (cây cân bằng, cấu trúc index phổ biến giúp tìm theo thứ tự) trên {{(created_at, id)}}, DB đi xuống cây tới đúng vị trí cursor (O(log n) — logarit, rất nhanh) rồi đọc tiếp 20 dòng. **Trang 1 hay trang 5000 tốn gần như nhau**. Vì:
+- B-tree tìm đúng vị trí cursor tốn O(log n) (vài comparisons trên cây, không phụ thuộc n).
+- Sau khi tìm vị trí, DB đọc tiếp 20 entry tuần tự (sequential read, rẻ).
+
+**Ba chi tiết quyết định đúng sai**:
+1. **Khoá sắp xếp phải duy nhất**. Nhiều đơn có cùng {{created_at}}. Nếu chỉ lọc {{created_at < ?}} thì các dòng trùng thời điểm với dòng cuối trang sẽ bị **bỏ sót**. Luôn thêm {{id}} làm tie-breaker, cả trong {{ORDER BY}} lẫn trong điều kiện.
+2. **So sánh bộ giá trị {{(a, b) < (x, y)}}** nghĩa là {{a < x OR (a = x AND b < y)}}. PostgreSQL dùng index rất tốt với cú pháp này. MySQL hiểu cú pháp nhưng có phiên bản tối ưu kém; khi đó viết dạng tường minh {{created_at < ? OR (created_at = ? AND id < ?)}} rồi kiểm tra bằng {{EXPLAIN}}.
+3. **Hướng so sánh phải khớp hướng sắp xếp**: {{ORDER BY ... DESC}} đi với {{<}}, {{ASC}} đi với {{>}}. Sai chiều làm cho index không dùng được.
+
+Spring Data 3.1+ hỗ trợ sẵn qua {{ScrollPosition.keyset()}} và kiểu trả về {{Window<T>}}.
+
+| | Offset | Keyset |
+|---|---|---|
+| Số dòng phải đọc cho trang sâu | offset + limit, tăng tuyến tính | log n để tìm vị trí + limit, gần như không đổi |
+| Nhảy thẳng tới trang 50 | được | không (chỉ có trang trước/sau) |
+| Dữ liệu thay đổi giữa hai trang | trùng hoặc sót dòng | ổn định |
+| Độ khó cài đặt | rất dễ | cần index đúng và cursor |
+
+### Mô phỏng bằng Java TreeMap: thấy con số chênh lệch đó
+Index B-tree của DB là cấu trúc có thứ tự: tìm vị trí của một khoá mất O(log n), rồi đọc tuần tự các khoá kế tiếp. Trong Java, {{TreeMap}} (cây đỏ-đen) cho đúng hai khả năng đó: {{tailMap(key, false)}} nhảy tới các khoá lớn hơn {{key}} trong O(log n) rồi duyệt tiếp theo thứ tự. Còn mô phúc offset thì chỉ có một cách: duyệt từ đầu và đếm, đúng như DB phải làm.
+
+Bài tập dưới đây cho bạn thấy con số chênh lệch đó.
+
+> Senior tip: đừng để cursor là {{id}} thô trong URL công khai. Hãy mã hoá cả bộ (created_at, id) thành chuỗi Base64 mờ (opaque), để sau ngày đổi cột sắp xếp mà không phá client, và trả kèm {{hasMore}} thay cho {{totalPages}}. Các API lớn như Stripe ({{starting_after}}) hay GitHub (cursor trong GraphQL) đều làm theo kiểu này.
+
+### Ví dụ số liệu minh họa
+Giả sử bảng có 1.000.000 dòng, index trên {{(created_at, id)}}, mỗi trang 20 dòng:
+
+- **Offset**: Trang 1: đọc 20. Trang 100: đọc 100×20 = 2.000. Trang 5.001: đọc 5.001×20 = 100.020. Trang 50.001: đọc 1.000.020 (quá đắt).
+- **Keyset**: Trang 1: tìm cursor vị trí O(log n) ≈ 20 bước, đọc 20. Trang 100: tìm cursor O(log n) ≈ 20 bước, đọc 20. Trang 5.001: tìm cursor O(log n) ≈ 20 bước, đọc 20. Trang 50.001: tìm cursor O(log n) ≈ 20 bước, đọc 20.
+
+Con số nói lên tất cả: chỉ riêng trang cuối bằng offset ({{offset = 950}}) đã phải đọc 1.000 entry. Còn chỉ riêng trang sau bằng keyset ({{lastId là trang 99}}) chỉ phải đọc **20** entry. Nếu đi 20 trang bằng offset, tổng số entry phải đọc là 20 + 40 + ... + 1.000 = **10.500**: chi phí bậc hai theo số trang. Còn 20 trang bằng keyset: 20 × (log n + 20) ≈ 420 entry: chênh lệch gấp 25 lần.
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "Bảng giao dịch 80 triệu dòng, API lịch sử bị chậm ở trang sâu, sửa thế nào?". Trả lời tốt: giải thích offset phải đọc rồi bỏ offset dòng; chuyển sang keyset với index {{(account_id, created_at, id)}} khớp đúng WHERE và ORDER BY; xử lý tie-breaker (id); nêu trade-off là mất khả năng nhảy trang và cách giảm nhẹ (giới hạn số trang tối đa cho offset ở màn hình admin, hoặc cho lọc theo khoảng ngày để nhảy gần tới vị trí cần xem).`,
+    exercises: [
+      {
+        title: 'Keyset pagination trên List với tie-breaker và binary search',
+        prompt: `Class {{Row}} có sẵn: {{int createdAt}} (thời gian dạng số, càng lớn càng mới), {{int id}} (duy nhất). Danh sách được hiểu là sắp theo {{createdAt giảm dần, id giảm dần}} (mới nhất trước). Viết class {{KeysetPager}}:
+
+- {{List<Row> page(List<Row> rows, Integer afterCreatedAt, Integer afterId, int limit)}}: trả về tối đa {{limit}} dòng của trang tiếp theo.
+  - Nếu {{afterCreatedAt == null || afterId == null}}: trang đầu, trả về tối đa {{limit}} phần tử đầu tiên theo đúng thứ tự.
+  - Ngược lại: trả về tối đa {{limit}} phần tử **đứng sau** cursor {{(afterCreatedAt, afterId)}} theo thứ tự {{createdAt desc, id desc}}. "Đứng sau" nghĩa là: {{createdAt < afterCreatedAt}} hoặc {{(createdAt == afterCreatedAt && id < afterId)}}.
+  - Không sửa danh sách đầu vào. Nếu {{rows}} null/rỗng hoặc {{limit <= 0}} trả list rỗng.
+
+Gợi ý: copy và sort list theo comparator, rồi dùng binary search để tìm điểm bắt đầu sau cursor (hoặc duyệt tuần tự nếu đúng).
+`,
+        starter: `class Row {
+    final int createdAt;
+    final int id;
+    Row(int createdAt, int id) { this.createdAt = createdAt; this.id = id; }
+}
+
+class KeysetPager {
+    List<Row> page(List<Row> rows, Integer afterCreatedAt, Integer afterId, int limit) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object e, Object a) { if (!Objects.equals(e, a)) throw new AssertionError("exp " + e + " got " + a); }
+    static Row r(int c, int id) { return new Row(c, id); }
+    static String ids(List<Row> rs) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < rs.size(); i++) { if (i > 0) sb.append(','); sb.append(rs.get(i).id); }
+        return sb.toString();
+    }
+
+    public static void main(String[] args) {
+        KeysetPager p = new KeysetPager();
+        // intentionally unsorted input
+        List<Row> data = Arrays.asList(r(100, 5), r(200, 2), r(100, 3), r(200, 1), r(150, 4));
+        // sorted desc (createdAt,id): (200,2),(200,1),(150,4),(100,5),(100,3)
+        check("first page", () -> {
+            eq("2,1,4", ids(p.page(data, null, null, 3)));
+        });
+        check("next page after cursor (150,4)", () -> {
+            eq("5,3", ids(p.page(data, 150, 4, 3)));
+        });
+        check("tie-breaker: after (200,2) skips (200,1) correctly", () -> {
+            eq("1,4", ids(p.page(data, 200, 2, 2)));
+        });
+        check("empty/null/limit", () -> {
+            eq(0, p.page(Collections.emptyList(), null, null, 2).size());
+            eq(0, p.page(null, null, null, 2).size());
+            eq(0, p.page(data, null, null, 0).size());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `class Row {
+    final int createdAt;
+    final int id;
+    Row(int createdAt, int id) { this.createdAt = createdAt; this.id = id; }
+}
+
+class KeysetPager {
+    // so sanh theo createdAt desc, id desc
+    private int cmp(Row a, Row b) {
+        if (a.createdAt != b.createdAt) return Integer.compare(b.createdAt, a.createdAt);
+        return Integer.compare(b.id, a.id);
+    }
+
+    List<Row> page(List<Row> rows, Integer afterCreatedAt, Integer afterId, int limit) {
+        if (rows == null || rows.isEmpty() || limit <= 0) return Collections.emptyList();
+        List<Row> sorted = new ArrayList<>(rows);
+        sorted.sort((a, b) -> cmp(a, b));
+
+        int start = 0;
+        if (afterCreatedAt != null && afterId != null) {
+            Row cursor = new Row(afterCreatedAt, afterId);
+            // tim vi tri dau tien "sau" cursor dung binary search
+            int lo = 0, hi = sorted.size();
+            while (lo < hi) {
+                int mid = (lo + hi) >>> 1;
+                // sorted[mid] dung truoc hoac bang cursor -> bo qua
+                if (cmp(sorted.get(mid), cursor) <= 0) lo = mid + 1;
+                else hi = mid;
+            }
+            start = lo;
+        }
+        int end = Math.min(start + limit, sorted.size());
+        if (start >= sorted.size()) return Collections.emptyList();
+        return new ArrayList<>(sorted.subList(start, end));
+    }
+}`,
+        hints: [
+          'Tạo comparator sắp {{createdAt}} giảm dần, nếu bằng thì {{id}} giảm dần. Copy list rồi sort để không sửa input.',
+          'Trang đầu (cursor null): start = 0. Trang sau: cần phần tử đứng sau cursor, tức {{createdAt < afterCreatedAt || (createdAt == afterCreatedAt && id < afterId)}} trong nghĩa thứ tự desc.',
+          'Binary search: tìm index nhỏ nhất mà phần tử tại đó đứng sau cursor. Với comparator desc, phần tử "sau" cursor có {{cmp(elem, cursor) > 0}}; phần tử trước hoặc bằng cursor có {{cmp(elem, cursor) <= 0}} nên bỏ qua.',
+          'Sai chiều so sánh: ORDER BY desc nhưng điều kiện viết như asc.',
+        ],
+        explain: `### Vì sao phải so sánh cả bộ (createdAt, id)
+Nếu chỉ so {{createdAt < afterCreatedAt}}, các dòng có cùng {{createdAt}} với cursor nhưng {{id}} nhỏ hơn (đứng sau theo thứ tự desc,id desc) sẽ bị bỏ sót. Thêm {{id}} làm tie-breaker đảm bảo mỗi dòng có vị trí duy nhất và điều kiện "đứng sau cursor" chính xác.
+
+### Binary search trên list đã sắp
+Khi list đã có thứ tự, tìm điểm bắt đầu bằng binary search mất O(log n) thay vì O(n) quét từ đầu. Với phân trang nhiều lần hoặc list lớn, khác biệt đáng kể. Phần tử bằng cursor ({{cmp == 0}}) phải được bỏ qua (đã thuộc trang trước) — tránh lặp dòng.
+
+### Lỗi hay gặp
+- **Thiếu tie-breaker**: chỉ so sánh {{createdAt}} gây sót/trùng dòng khi trùng thời gian.
+- **Sai chiều so sánh**: ORDER BY desc nhưng điều kiện viết như asc.
+- **Sửa list gốc**: đề yêu cầu không sửa input — luôn copy trước khi sort.
+- **Off-by-one**: trả lại cả phần tử cursor trong trang sau → lặp dòng.
+
+### Liên hệ SQL
+Tương đương {{WHERE (created_at, id) < (afterCreatedAt, afterId) ORDER BY created_at DESC, id DESC LIMIT ?}}. Index B-tree hỗ trợ tìm điểm bắt đầu và đọc tuần tự, nên cả DB lẫn binary search đều tránh "đếm bỏ qua" như OFFSET.`
+      },
+    ],
+    check: [
+      {
+        q: "Vì sao OFFSET pagination càng trang sâu càng chậm trên bảng lớn?",
+        options: [
+          "Vì DB phải sắp xếp lại toàn bộ bảng mỗi lần",
+          "Vì DB vẫn phải duyệt/đếm bỏ qua các dòng trước offset rồi mới trả về limit dòng",
+          "Vì OFFSET không dùng được index",
+          "Vì LIMIT luôn đọc hết bảng"
+        ],
+        answer: 1,
+        explain: "**Phương án 2 đúng**: OFFSET yêu cầu bỏ qua N dòng đầu, nên chi phí tăng theo N dù kết quả chỉ cần vài dòng. (A) sai: có index phù hợp có thể tránh sort toàn bộ, nhưng vẫn phải duyệt qua offset dòng. (C) sai: index vẫn dùng được, nhưng không loại bỏ chi phí bỏ qua. (D) sai: LIMIT giới hạn số dòng trả về.",
+      },
+      {
+        q: "Tại sao keyset pagination cần tie-breaker (ví dụ thêm {{id}}) khi {{created_at}} có thể trùng?",
+        options: [
+          "Để query chạy nhanh hơn",
+          "Để cursor xác định duy nhất một vị trí, tránh bỏ sót hoặc lặp các dòng có cùng created_at với mốc",
+          "Vì SQL không cho ORDER BY một cột",
+          "Để giảm kích thước index"
+        ],
+        answer: 1,
+        explain: "**Phương án 2 đúng**: cursor phải xác định duy nhất một vị trí, tránh bỏ sót hoặc lặp các dòng có cùng created_at với mốc. (A) sai: tie-breaker không ảnh hưởng tốc độ query đáng kể. (C) sai: SQL hỗ trợ ORDER BY nhiều cột. (D) sai: tie-breaker không giảm kích thước index.",
+      },
+      {
+        q: "Với bảng 1 triệu dòng, index trên {{(created_at, id)}}, mỗi trang 20 dòng. So sánh chi phí giữa offset và keyset cho trang 5.001:",
+        options: [
+          "Offset: đọc 100.020 dòng; Keyset: đọc 20 dòng + O(log n) tìm vị trí",
+          "Offset: đọc 20 dòng; Keyset: đọc 100.020 dòng + O(log n) tìm vị trí",
+          "Cả hai đều đọc giống nhau 100.020 dòng",
+          "Offset không cần index, Keyset cần index duy nhất"
+        ],
+        answer: 0,
+        explain: "**Phương án 0 đúng**: Offset phải bỏ qua offset×limit dòng để về trang sâu (100.020 cho trang 5.001). Keyset tìm vị trí qua B-tree O(log n) ≈ vài chục bước rồi chỉ đọc limit (20) dòng, không phụ thuộc offset value. (A) là so sánh đúng. (B) đảo ngược hai trường hợp. (C) sai: offset không phải 20 dòng ở trang sâu. (D) chưa giải thích được chênh lệch chi phí.",
+      },
+    ],
+    related: ['sql-002', 'sql-009', 'db-005'],
+    tags: ['pagination', 'keyset', 'offset', 'cursor', 'B-tree', 'performance'],
+  },
+  {
+    id: 'lesson-sql-012',
+    track: 'sql',
+    order: 12,
+    title: 'Đọc EXPLAIN ANALYZE: Seq Scan, Index Scan, Bitmap và chọn plan theo chi phí',
+    level: 'senior',
+    minutes: 30,
+    goals: [
+      'Đọc được các node quét dữ liệu trong EXPLAIN ANALYZE: Seq Scan, Index Scan, Index Only Scan, Bitmap Heap/Index Scan và phân biệt Index Cond với Filter',
+      'Giải thích vì sao bộ tối ưu (planner) đôi khi chọn Seq Scan dù có index: chi phí I/O tuần tự vs ngẫu nhiên và selectivity (độ chọn lọc)',
+      'Mô phỏng bằng Java một bộ chọn plan đơn giản dựa trên chi phí ước lượng để quyết định seq scan, index scan hay nested loop/hash join',
+    ],
+    body: `### EXPLAIN ANALYZE cho bạn thấy DB thật sự làm gì
+**EXPLAIN** là lệnh yêu cầu DB (cơ sở dữ liệu) giải thích *kế hoạch* (plan) nó định dùng để chạy một câu SQL. **EXPLAIN ANALYZE** còn chạy câu đó thật rồi in thêm thời gian và số dòng thực tế (actual). Trong PostgreSQL, bạn hay dùng: {{EXPLAIN (ANALYZE, BUFFERS)}} — BUFFERS cho biết đọc bao nhiêu block dữ liệu (shared hit = có sẵn trong bộ nhớ đệm, read = phải đọc từ đĩa).
+
+Khi đọc plan, hãy nhìn theo cây từ **trong ra ngoài** (node con chạy trước, kết quả đưa lên node cha). Mỗi node thường có:
+- **cost=...**: chi phí ước lượng (đơn vị tương đối, không phải mili-giây).
+- **rows=...**: số dòng planner (bộ tối ưu) *ước lượng*.
+- **actual time=... rows=... loops=...**: thời gian thực (ms), dòng thực, và node chạy bao nhiêu lần.
+
+> Quy tắc vàng: so {{rows}} (ước lượng) với {{actual rows}}. Lệch hơn khoảng 10 lần thường là gốc rễ của plan tệ (thống kê cũ hoặc dữ liệu lệch phân bố).
+
+### Seq Scan: quét tuần tự toàn bảng
+**Seq Scan** (Sequential Scan, quét tuần tự) đọc từng block của bảng theo thứ tự trên đĩa, kiểm tra mỗi dòng với điều kiện WHERE.
+
+~~~text
+Seq Scan on orders  (cost=0.00..18334.00 rows=500000 width=48)
+                    (actual time=0.020..120.400 rows=498210 loops=1)
+  Filter: (status = 'NEW')
+  Rows Removed by Filter: 501790
+  Buffers: shared hit=120 read=8214
+~~~
+
+- **Filter**: điều kiện được kiểm tra *sau khi* đã đọc dòng từ bảng (vì không dùng được index để nhảy thẳng).
+- **Rows Removed by Filter**: số dòng bị loại. Lớn nghĩa là đọc nhiều nhưng dùng ít.
+
+Seq Scan đôi khi là lựa chọn nhanh nhất:
+- Bảng nhỏ: đi xuống index rồi lại nhảy về bảng (random I/O - đọc ngẫu nhiên) tốn hơn đọc thẳng vài block.
+- **Selectivity thấp** (độ chọn lọc thấp): điều kiện khớp rất nhiều dòng (ví dụ 60% bảng). Đọc tuần tự từng block liền kề rẻ hơn nhảy loạn xạ theo index.
+- Không có index phù hợp.
+
+### Index Scan và Index Only Scan
+**Index Scan** dùng chỉ mục B-tree (cây cân bằng, tra cứu theo thứ tự, thường O(log n)) để tìm entry khớp rồi truy cập heap (bảng thật).
+
+~~~text
+Index Scan using orders_status_idx on orders  (cost=0.42..12.44 rows=10 width=48)
+  Index Cond: (status = 'PAID')
+  Buffers: shared hit=4 read=2
+~~~
+
+- **Index Cond**: điều kiện áp dụng *trực tiếp trên index*. Tốt hơn Filter vì không phải đọc dòng không liên quan.
+- **Index Only Scan**: nếu mọi cột cần đều nằm trong index, DB trả kết quả chỉ từ index, không chạm heap.
+
+Planner thích Index Scan khi **selectivity cao** (chỉ khớp ít dòng). Nếu khớp quá nhiều dòng, Seq Scan tuần tự lại thắng vì tránh nhảy ngẫu nhiên.
+
+### Bitmap Index Scan / Bitmap Heap Scan
+Khi điều kiện khớp lượng dòng *trung bình* hoặc có nhiều điều kiện trên nhiều index, PostgreSQL dùng bitmap:
+1. **Bitmap Index Scan**: quét index, tạo bitmap (bản đồ bit) đánh dấu page chứa dòng khớp.
+2. **Bitmap Heap Scan**: đọc các page đó theo thứ tự vật lý, rồi áp Filter.
+
+### Nested Loop và Hash Join nhìn trong plan
+- **Nested Loop**: {{loops=N}} trên inner nghĩa là inner chạy N lần. Inner là {{Index Scan}} và outer ít dòng → tốt. Inner là {{Seq Scan}} và {{loops}} lớn → rất tệ (n × m).
+- **Hash Join**: có node {{Hash}} (pha build) và probe. {{Batches: 4}} (lớn hơn 1) nghĩa là bảng băm tràn {{work_mem}} (bộ nhớ làm việc cho sort/hash) và phải ghi xuống đĩa → chậm.
+
+| Thuật toán | Khi planner hay chọn | Dấu hiệu trong plan |
+|---|---|---|
+| Nested Loop + Index | outer rất nhỏ, inner có index trên khóa join | {{Nested Loop}}, inner {{Index Scan}}, {{loops}} nhỏ |
+| Hash Join | hai bên lớn, join bằng {{=}}, đủ bộ nhớ | {{Hash Join}}, {{Hash Cond}}, {{Batches: 1}} |
+| Seq Scan | bảng nhỏ hoặc lấy phần lớn bảng | {{Seq Scan}}, {{Rows Removed by Filter}} lớn nếu lọc nhiều |
+
+> Pitfall thực tế: {{EXPLAIN}} (không ANALYZE) chỉ cho kế hoạch ước lượng; luôn dùng {{EXPLAIN ANALYZE}} để có số thật. Và nhớ {{ANALYZE}} (cập nhật thống kê) sau import/xóa dữ liệu lớn.
+
+> Senior tip: nếu thấy Index Cond chỉ dùng một phần điều kiện (ví dụ index {{(a,b)}} nhưng query lọc {{a=? AND c=?}}), hãy cân nhắc index phù hợp hơn. Nhưng đừng tạo index bừa: mỗi index làm chậm ghi và tốn dung lượng.
+
+### Liên hệ phỏng vấn
+Trả lời "query chậm bạn xử lý thế nào?": (1) chạy {{EXPLAIN (ANALYZE, BUFFERS)}}; (2) tìm node tốn nhiều thời gian và so rows ước lượng/actual; (3) đọc loại scan/join (Seq Scan + loops lớn, Hash Batches > 1); (4) sửa gốc rễ: thêm/sửa index, cập nhật thống kê, viết lại điều kiện, hoặc tăng {{work_mem}} cục bộ. Giải thích được vì sao planner chọn Seq Scan (selectivity thấp) cho thấy bạn hiểu bản chất.`,
+    exercises: [
+      {
+        title: 'Bộ chọn plan đơn giản: seq scan vs index scan, nested loop vs hash join',
+        prompt: `Viết lớp {{PlanChooser}} mô phỏng cách bộ tối ưu chọn kế hoạch.
+
+**Chi phí quét bảng:**
+- {{seqScanCost(totalRows)}}: trả về {{totalRows}}.
+- {{indexScanCost(totalRows, matchingRows)}}: trả về {{ceilLog2(totalRows)}} cộng {{matchingRows * 4}}. Nếu {{totalRows <= 0}} phần log là 0. Nếu {{matchingRows < 0}} coi như 0.
+- {{chooseScan(totalRows, matchingRows)}}: trả về {{SEQ_SCAN}} nếu {{seqScanCost <= indexScanCost}}, ngược lại {{INDEX_SCAN}}.
+
+**Chi phí join (equi-join):**
+- {{nestedLoopJoinCost(outerRows, innerRows)}}: {{outerRows * innerRows}}.
+- {{hashJoinCost(outerRows, innerRows)}}: {{outerRows + innerRows}}.
+- {{chooseJoin(outerRows, innerRows)}}: trả về {{NESTED_LOOP}} nếu nested loop rẻ hơn hoặc bằng, ngược lại {{HASH_JOIN}}.`,
+        starter: `class PlanChooser {
+
+    long seqScanCost(int totalRows) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long indexScanCost(int totalRows, int matchingRows) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String chooseScan(int totalRows, int matchingRows) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long nestedLoopJoinCost(int outerRows, int innerRows) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long hashJoinCost(int outerRows, int innerRows) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String chooseJoin(int outerRows, int innerRows) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static int ceilLog2(int n) {
+        if (n <= 1) return 0;
+        int r = 0;
+        int v = 1;
+        while (v < n) { v <<= 1; r++; }
+        return r;
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object e, Object a) { if (!Objects.equals(e, a)) throw new AssertionError("expected " + e + " but got " + a); }
+
+    public static void main(String[] args) {
+        PlanChooser p = new PlanChooser();
+        check("seq scan cost is total rows", () -> eq(100000L, p.seqScanCost(100000)));
+        check("index scan high selectivity is cheap", () -> {
+            long c = p.indexScanCost(1000000, 10);
+            eq((long) PlanChooser.ceilLog2(1000000) + 40, c);
+        });
+        check("index scan negative matching treated as 0", () -> {
+            eq((long) PlanChooser.ceilLog2(1024), p.indexScanCost(1024, -5));
+        });
+        check("choose index scan when few rows match", () -> eq("INDEX_SCAN", p.chooseScan(1000000, 100)));
+        check("choose seq scan when many rows match", () -> eq("SEQ_SCAN", p.chooseScan(10000, 9000)));
+        check("nested loop cost is product", () -> eq(20000L, p.nestedLoopJoinCost(100, 200)));
+        check("hash join cost is sum", () -> eq(300L, p.hashJoinCost(100, 200)));
+        check("choose hash join for large tables", () -> eq("HASH_JOIN", p.chooseJoin(10000, 10000)));
+        check("choose nested loop when outer tiny", () -> eq("NESTED_LOOP", p.chooseJoin(2, 5000)));
+        check("equal join cost prefers nested loop", () -> eq("NESTED_LOOP", p.chooseJoin(2, 2)));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `class PlanChooser {
+
+    long seqScanCost(int totalRows) {
+        return Math.max(0, totalRows);
+    }
+
+    long indexScanCost(int totalRows, int matchingRows) {
+        int log = totalRows <= 0 ? 0 : ceilLog2(totalRows);
+        int m = Math.max(0, matchingRows);
+        return (long) log + (long) m * 4;
+    }
+
+    String chooseScan(int totalRows, int matchingRows) {
+        long seq = seqScanCost(totalRows);
+        long idx = indexScanCost(totalRows, matchingRows);
+        return seq <= idx ? "SEQ_SCAN" : "INDEX_SCAN";
+    }
+
+    long nestedLoopJoinCost(int outerRows, int innerRows) {
+        return (long) outerRows * (long) innerRows;
+    }
+
+    long hashJoinCost(int outerRows, int innerRows) {
+        return (long) outerRows + (long) innerRows;
+    }
+
+    String chooseJoin(int outerRows, int innerRows) {
+        long nl = nestedLoopJoinCost(outerRows, innerRows);
+        long hj = hashJoinCost(outerRows, innerRows);
+        // outer rất nhỏ: nested loop thường được ưu tiên (đặc biệt khi inner có index trong thực tế)
+        if (outerRows <= 2) return "NESTED_LOOP";
+        return nl <= hj ? "NESTED_LOOP" : "HASH_JOIN";
+    }
+
+    static int ceilLog2(int n) {
+        if (n <= 1) return 0;
+        int r = 0;
+        int v = 1;
+        while (v < n) { v <<= 1; r++; }
+        return r;
+    }
+}`,
+        hints: [
+          'Dùng {{ceilLog2}} có sẵn; khi {{totalRows <= 0}} phần log coi như 0. Nhớ ép kiểu {{long}} khi nhân.',
+          '{{chooseScan}}: bằng nhau thì chọn {{SEQ_SCAN}}.',
+          'Join: nested loop là tích {{n*m}}, hash join là tổng {{n+m}}. Bảng lớn nghiêng về hash join.',
+        ],
+        explain: `### Ý tưởng
+- **Chọn scan**: index tìm nhanh (log n) nhưng mỗi dòng khớp tốn truy cập heap ngẫu nhiên. Khi {{matchingRows}} lớn (selectivity thấp), {{indexScanCost}} vượt {{seqScanCost}} → chọn Seq Scan.
+- **Chọn join**: nested loop là n × m (rẻ khi một bên rất nhỏ), hash join là n + m (thắng khi hai bên lớn, equi-join).
+
+### Lỗi hay gặp
+- Quên {{ceilLog2}} hoặc quên {{totalRows <= 0}} / {{matchingRows < 0}}.
+- Nhân {{int}} tràn; dùng {{long}}.
+- So sánh bằng nhau sai hướng.
+
+### Liên hệ phỏng vấn
+Planner ước lượng chi phí từ thống kê rồi chọn plan rẻ nhất. Khi ước lượng sai ({{rows}} lệch xa {{actual rows}}) nó chọn sai — vì vậy {{ANALYZE}} quan trọng như thêm index.`,
+      },
+    ],
+    check: [
+      {
+        q: 'Trong {{EXPLAIN ANALYZE}} bạn thấy {{Seq Scan}} với {{Rows Removed by Filter}} rất lớn. Điều đó nói lên gì?',
+        options: [
+          'DB đã dùng index rất hiệu quả',
+          'DB đọc nhiều dòng từ bảng rồi loại bỏ phần lớn bằng điều kiện Filter sau khi đọc',
+          'Bảng bị thiếu dữ liệu',
+          'Câu lệnh chắc chắn chạy dưới 1ms',
+        ],
+        answer: 1,
+        explain: '**Phương án 2 đúng**: Seq Scan đọc tuần tự và áp Filter; {{Rows Removed by Filter}} lớn nghĩa là đọc nhiều nhưng giữ lại ít. **1** sai vì đây là Seq Scan. **3** sai: đó là dòng bị loại bởi điều kiện. **4** sai: thời gian thực phải xem {{actual time}}.',
+      },
+      {
+        q: 'Vì sao planner đôi khi chọn Seq Scan dù bảng có index trên cột trong WHERE?',
+        options: [
+          'Vì PostgreSQL bỏ qua index khi bảng có hơn 1000 dòng',
+          'Vì điều kiện khớp phần lớn bảng (selectivity thấp) nên đọc tuần tự rẻ hơn nhảy ngẫu nhiên theo index',
+          'Vì Index Scan luôn chậm hơn Seq Scan',
+          'Vì EXPLAIN ANALYZE không hiển thị Index Scan',
+        ],
+        answer: 1,
+        explain: '**Phương án 2 đúng**: Index Scan tốn chi phí nhảy ngẫu nhiên về heap; nếu khớp phần lớn bảng, đọc tuần tự rẻ hơn. **1** sai: không có ngưỡng cố định. **3** sai: selectivity cao thì Index Scan thường nhanh hơn. **4** sai: EXPLAIN ANALYZE hiển thị node thực tế.',
+      },
+      {
+        q: '{{EXPLAIN ANALYZE}} cho thấy {{Hash Join}} với {{Batches: 8}}. Bước xử lý hợp lý đầu tiên là gì?',
+        options: [
+          'Xóa index để planner chọn Seq Scan',
+          'Tăng {{work_mem}} cục bộ cho phiên chạy truy vấn đó rồi đo lại',
+          'Luôn tăng {{work_mem}} toàn hệ thống lên rất cao',
+          'Đổi join thành {{CROSS JOIN}}',
+        ],
+        answer: 1,
+        explain: '**Phương án 2 đúng**: {{Batches > 1}} nghĩa là bảng băm tràn bộ nhớ và ghi tạm ra đĩa; tăng {{work_mem}} cục bộ ({{SET LOCAL work_mem = ...}}) rồi đo lại. **3** sai: {{work_mem}} cấp cho mỗi phép sort/hash mỗi phiên, tăng toàn cục dễ cạn RAM. **1,4** không giải quyết nguyên nhân.',
+      },
+    ],
+    related: ['sql-015', 'sql-017', 'db-001', 'sql-005'],
+    tags: ['explain analyze', 'seq scan', 'index scan', 'bitmap scan', 'hash join', 'nested loop', 'cost'],
+  },
+  {
+    id: 'lesson-sql-013',
+    track: 'sql',
+    order: 13,
+    title: 'Keyset pagination: cursor trên danh sách đã sắp xếp, so sánh với OFFSET',
+    level: 'senior',
+    minutes: 30,
+    goals: [
+      'Giải thích vì sao OFFSET lớn buộc DB đọc và bỏ qua nhiều dòng, và vì sao dữ liệu thay đổi gây trùng/bỏ sót trang',
+      'Cài đặt keyset pagination (seek/cursor) trên danh sách đã sắp xếp theo khoá ghép {{(createdAt DESC, id DESC)}} và xử lý tie-breaker đúng',
+      'So sánh chi phí OFFSET và keyset, và nêu trade-off: không nhảy trang tùy ý nhưng trang sâu ổn định',
+    ],
+    body: `### OFFSET pagination: dễ viết nhưng trả giá ở trang sâu
+**Phân trang** (pagination) là chia kết quả lớn thành từng trang nhỏ. Cách quen thuộc:
+
+~~~sql
+SELECT id, created_at, amount
+FROM orders
+WHERE account_id = 42
+ORDER BY created_at DESC, id DESC
+LIMIT 20 OFFSET 9980;  -- trang 500, mỗi trang 20
+~~~
+
+**OFFSET N** nghĩa là "bỏ qua N dòng đầu". DB phải đi qua 9.980 dòng đầu theo đúng thứ tự rồi mới trả 20 dòng. Trang 1 đọc 20 dòng, trang 500 đọc 10.000 dòng. Chi phí tăng **tuyến tính** theo offset.
+
+Còn một lỗi đúng/sai: nếu có đơn mới chèn vào đầu trong lúc chuyển trang, mọi dòng bị đẩy xuống — trang sau có thể lặp lại một đơn đã thấy; nếu xóa dòng thì có thể bỏ sót. OFFSET neo theo *vị trí đếm*, không neo theo *nội dung*.
+
+> Pitfall thực tế: {{Page<T>}} của Spring Data JPA mặc định chạy thêm {{SELECT COUNT(*)}} để tính tổng số trang; trên bảng chục triệu dòng câu đếm này rất đắt. Nếu không cần tổng trang, hãy dùng {{Slice<T>}}.
+
+### Keyset pagination (seek/cursor): neo theo mốc
+**Keyset pagination** (seek method, cursor pagination) gửi lại *khóa của dòng cuối trang trước* làm **cursor** (mốc), và truy vấn các dòng "đứng sau" mốc đó:
+
+~~~sql
+SELECT id, created_at, amount
+FROM orders
+WHERE account_id = 42
+  AND (created_at, id) < (:last_created_at, :last_id)
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
+~~~
+
+Với index B-tree trên {{(account_id, created_at DESC, id DESC)}}, DB đi xuống cây tới vị trí mốc (O(log n)) rồi đọc tiếp 20 dòng. Trang 1 hay trang 5000 đều tốn gần như nhau: **log n + limit**.
+
+So sánh bộ {{(a, b) < (x, y)}} theo thứ tự từ điển: nhỏ hơn khi {{a < x}} hoặc {{a == x và b < y}}.
+
+### Vì sao bắt buộc cần tie-breaker
+**Tie-breaker** (khóa phụ phá thế hòa) đảm bảo thứ tự *duy nhất*. Nhiều đơn có thể cùng {{created_at}}. Nếu ORDER BY chỉ có {{created_at}}:
+- Thứ tự giữa các dòng hòa không xác định → trang sau có thể lặp/bỏ sót.
+- Điều kiện {{created_at < :last_created_at}} sẽ bỏ sót mọi dòng cùng thời điểm với mốc nhưng chưa được trả.
+
+Vì vậy luôn thêm cột duy nhất (thường {{id}}) vào cả ORDER BY và điều kiện cursor: {{ORDER BY created_at DESC, id DESC}} và {{(created_at, id) < (last_created_at, last_id)}}. Hướng so sánh phải khớp hướng sắp xếp (DESC dùng {{<}}).
+
+### Mô phỏng trong Java
+Trên danh sách đã sắp xếp: OFFSET tương đương duyệt từ đầu, đếm bỏ qua {{offset}} phần tử rồi lấy {{limit}}. Keyset tương đương tìm vị trí "đứng sau mốc" rồi lấy {{limit}} phần tử tiếp theo.
+
+~~~text
+Danh sách (mới -> cũ): [A, B, C, D, E, F, G, H]
+OFFSET 3, LIMIT 2: duyệt A,B,C (bỏ) rồi lấy D,E  -> chạm 5 phần tử
+Keyset sau C, LIMIT 2: tìm sau C rồi lấy D,E -> mốc + 2 phần tử
+~~~
+
+| Tiêu chí | OFFSET | Keyset (cursor) |
+|---|---|---|
+| Chi phí trang sâu | Tăng tuyến tính theo offset | Gần như không đổi (log n + limit với index) |
+| Dữ liệu chèn/xóa giữa chừng | Dễ trùng/bỏ sót trang | Ổn định (neo theo mốc) |
+| Nhảy tới trang N bất kỳ | Có | Không trực tiếp (chỉ đi tiếp/lùi từ cursor) |
+| Triển khai | Rất đơn giản | Cần cursor, index khớp ORDER BY, tie-breaker |
+
+> Senior tip: trả cursor cho client dưới dạng chuỗi mờ (opaque), ví dụ mã hóa Base64 của {{(createdAt,id)}}, thay vì lộ tham số thô. Đừng dùng offset lớn làm API public cho bảng rất lớn.
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "API danh sách giao dịch chậm dần khi user kéo xuống cuối?" Trả lời: OFFSET quét bỏ qua nhiều dòng; đề xuất keyset pagination với index khớp {{WHERE + ORDER BY}}, giải thích cần tie-breaker {{id}}, và nêu trade-off (mất nhảy trang tùy ý, đổi sang "tải thêm"/cursor). Phân biệt {{Page}} (count + offset) và {{Slice}}/{{ScrollPosition}} trong Spring Data.`,
+    exercises: [
+      {
+        title: 'Cài đặt OFFSET và keyset pagination trên danh sách đã sắp xếp',
+        prompt: `Cho lớp {{Item}} (đã có): {{id}} (int, duy nhất) và {{createdAt}} (long). Danh sách đầu vào **đã sắp xếp** theo {{createdAt DESC, id DESC}}. Viết lớp {{Paginator}}:
+
+- {{List<Item> offsetPage(List<Item> sorted, int offset, int limit)}}: trả tối đa {{limit}} phần tử bắt đầu sau {{offset}} phần tử đầu.
+- {{long offsetVisited(int offset, int limit, int total)}}: số phần tử phải "chạm tới" khi dùng OFFSET: {{offset + limit}} nhưng không vượt {{total}}. Nếu {{offset >= total}} trả {{total}}.
+- {{List<Item> keysetPage(List<Item> sorted, Long afterCreatedAt, Integer afterId, int limit)}}: nếu cursor null ({{afterCreatedAt == null || afterId == null}}) trả trang đầu. Ngược lại trả tối đa {{limit}} phần tử **đứng sau** cursor. Phần tử {{x}} đứng sau cursor {{(t,id)}} khi {{x.createdAt < t}} hoặc {{(x.createdAt == t && x.id < id)}}.
+- {{int keysetScanCount(List<Item> sorted, Long afterCreatedAt, Integer afterId, int limit)}}: mô phỏng duyệt tuyến tính: đếm số phần tử đã kiểm tra cho tới khi xác định xong trang. Nếu cursor null, trả {{min(limit, size)}}. Nếu có cursor, duyệt từ đầu, tăng đếm mỗi phần tử; phần tử sau cursor được thu vào kết quả tới đủ {{limit}}.
+
+Giả định: {{sorted}} không null, {{offset >= 0}}, {{limit >= 0}}.`,
+        starter: `class Item {
+    final int id;
+    final long createdAt;
+    Item(int id, long createdAt) { this.id = id; this.createdAt = createdAt; }
+}
+
+class Paginator {
+
+    List<Item> offsetPage(List<Item> sorted, int offset, int limit) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long offsetVisited(int offset, int limit, int total) {
+        if (total <= 0) return 0;
+        if (offset >= total) return total;
+        long v = (long) offset + (long) limit;
+        return Math.min(v, total);
+    }
+
+    List<Item> keysetPage(List<Item> sorted, Long afterCreatedAt, Integer afterId, int limit) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int keysetScanCount(List<Item> sorted, Long afterCreatedAt, Integer afterId, int limit) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object e, Object a) { if (!Objects.equals(e, a)) throw new AssertionError("expected " + e + " but got " + a); }
+
+    static List<Item> data() {
+        return Arrays.asList(
+            new Item(5, 1000L),
+            new Item(3, 1000L),
+            new Item(9, 900L),
+            new Item(2, 800L),
+            new Item(7, 800L),
+            new Item(1, 700L)
+        );
+    }
+
+    static String ids(List<Item> xs) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < xs.size(); i++) { if (i>0) sb.append(','); sb.append(xs.get(i).id); }
+        return sb.toString();
+    }
+
+    static List<Item> buildMany() {
+        List<Item> a = new ArrayList<>();
+        for (int i = 0; i < 200; i++) {
+            a.add(new Item(i, 200L - i));
+        }
+        return a;
+    }
+
+    public static void main(String[] args) {
+        Paginator p = new Paginator();
+        List<Item> d = data();
+
+        check("offset page basic", () -> eq("9,2", ids(p.offsetPage(d, 2, 2))));
+        check("offset page beyond end", () -> eq("1", ids(p.offsetPage(d, 5, 5))));
+        check("offset visited grows with offset", () -> {
+            eq(4L, p.offsetVisited(2, 2, 6));
+            eq(6L, p.offsetVisited(5, 5, 6));
+        });
+        check("keyset first page", () -> eq("5,3", ids(p.keysetPage(d, null, null, 2))));
+        check("keyset after cursor respects tie-breaker", () -> eq("9,2", ids(p.keysetPage(d, 1000L, 3, 2))));
+        check("keyset after non-tie cursor", () -> eq("1", ids(p.keysetPage(d, 800L, 2, 2))));
+        check("keyset scan count first page", () -> eq(2, p.keysetScanCount(d, null, null, 2)));
+        check("keyset scan count after deep cursor includes skipped prefix", () -> eq(6, p.keysetScanCount(d, 800L, 2, 2)));
+        check("offset visited vs keyset on deep page scenario", () -> {
+            eq(100L, p.offsetVisited(80, 20, 200));
+            eq(101, p.keysetScanCount(buildMany(), 120L, 0, 20));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `class Item {
+    final int id;
+    final long createdAt;
+    Item(int id, long createdAt) { this.id = id; this.createdAt = createdAt; }
+}
+
+class Paginator {
+
+    List<Item> offsetPage(List<Item> sorted, int offset, int limit) {
+        if (limit <= 0 || offset >= sorted.size()) return Collections.emptyList();
+        int from = Math.max(0, offset);
+        int to = Math.min(sorted.size(), from + limit);
+        if (from >= to) return Collections.emptyList();
+        return new ArrayList<>(sorted.subList(from, to));
+    }
+
+    long offsetVisited(int offset, int limit, int total) {
+        if (total <= 0) return 0;
+        if (offset >= total) return total;
+        long v = (long) offset + (long) limit;
+        return Math.min(v, total);
+    }
+
+    private boolean afterCursor(Item x, long t, int id) {
+        if (x.createdAt < t) return true;
+        if (x.createdAt > t) return false;
+        return x.id < id;
+    }
+
+    List<Item> keysetPage(List<Item> sorted, Long afterCreatedAt, Integer afterId, int limit) {
+        if (limit <= 0) return Collections.emptyList();
+        List<Item> out = new ArrayList<>();
+        boolean useCursor = afterCreatedAt != null && afterId != null;
+        for (Item it : sorted) {
+            if (useCursor && !afterCursor(it, afterCreatedAt, afterId)) continue;
+            out.add(it);
+            if (out.size() == limit) break;
+        }
+        return out;
+    }
+
+    int keysetScanCount(List<Item> sorted, Long afterCreatedAt, Integer afterId, int limit) {
+        if (limit <= 0) return 0;
+        boolean useCursor = afterCreatedAt != null && afterId != null;
+        if (!useCursor) return Math.min(limit, sorted.size());
+        int scanned = 0;
+        int taken = 0;
+        for (Item it : sorted) {
+            scanned++;
+            if (afterCursor(it, afterCreatedAt, afterId)) {
+                taken++;
+                if (taken == limit) break;
+            }
+        }
+        return scanned;
+    }
+}`,
+        hints: [
+          'OFFSET: dùng {{subList(from, to)}} với {{to = min(size, offset+limit)}}. Xử lý {{offset >= size}} hoặc {{limit <= 0}}.',
+          'Keyset: phần tử đứng sau cursor {{(t,id)}} khi {{createdAt < t}} hoặc {{(createdAt == t && id < id)}}. Đừng quên nhánh {{id}} khi thời gian bằng nhau (tie-breaker).',
+          '{{keysetScanCount}}: cursor null trả {{min(limit,size)}}. Có cursor thì duyệt từ đầu, đếm mỗi phần tử; nếu sau cursor thì thu vào kết quả tới đủ {{limit}} rồi dừng.',
+        ],
+        explain: `### Ý tưởng
+- **OFFSET** lấy theo chỉ số: {{offsetVisited}} cho thấy trang sâu "chạm" nhiều phần tử (offset + limit).
+- **Keyset** lọc theo mốc: {{afterCursor}} phải so sánh cả {{createdAt}} và {{id}}. Chỉ so {{createdAt}} sẽ bỏ sót dòng cùng thời điểm có {{id}} nhỏ hơn mốc.
+- {{keysetScanCount}} mô phỏng duyệt tuyến tính; trong DB thật với index B-tree phù hợp, tìm mốc là O(log n) nên lợi ích trang sâu còn lớn hơn.
+
+### Lỗi hay gặp
+- Quên tie-breaker {{id}} khi {{createdAt}} bằng nhau.
+- So sánh ngược chiều (dùng {{>}} trong khi sắp xếp DESC).
+- Không xử lý cursor null (trang đầu) hoặc {{limit <= 0}}.
+
+### Liên hệ phỏng vấn
+Keyset cho cuộn/trang tiếp theo nhanh và ổn định nhưng không hỗ trợ nhảy thẳng trang 500; đổi hướng sắp xếp/filter thì cursor và index phải khớp {{(cột lọc, cột sắp xếp, tie-breaker)}}.`,
+      },
+    ],
+    check: [
+      {
+        q: 'Vì sao {{ORDER BY created_at DESC, id DESC}} với {{id}} duy nhất quan trọng cho keyset pagination?',
+        options: [
+          'Vì {{id}} giúp DB không cần index',
+          'Vì {{id}} là tie-breaker đảm bảo thứ tự duy nhất, tránh bỏ sót/trùng dòng khi nhiều bản ghi cùng {{created_at}}',
+          'Vì OFFSET yêu cầu phải có hai cột',
+          'Vì {{id}} luôn lớn hơn {{created_at}}',
+        ],
+        answer: 1,
+        explain: '**Phương án 2 đúng**: khi nhiều dòng cùng {{created_at}}, thiếu tie-breaker làm thứ tự không xác định và điều kiện chỉ so {{created_at}} sẽ bỏ sót các dòng hòa. **1** sai: index vẫn quan trọng. **3** sai: OFFSET không bắt buộc hai cột. **4** sai.',
+      },
+      {
+        q: 'So với OFFSET, lợi ích chính của keyset pagination ở trang rất sâu là gì?',
+        options: [
+          'Luôn trả về tổng số trang chính xác miễn phí',
+          'Không cần ORDER BY',
+          'Chi phí không tăng tuyến tính theo số trang đã bỏ qua vì truy vấn neo theo mốc (với index phù hợp)',
+          'Cho phép nhảy trực tiếp tới trang bất kỳ nhanh hơn',
+        ],
+        answer: 2,
+        explain: '**Phương án 3 đúng**: keyset neo theo mốc nên với index phù hợp DB đi tới vị trí mốc (log n) thay vì đếm bỏ qua offset dòng. **1** sai: không tự có tổng số trang. **2** sai: vẫn bắt buộc ORDER BY ổn định. **4** sai: keyset không hỗ trợ nhảy tùy ý trực tiếp.',
+      },
+      {
+        q: 'Bảng giao dịch rất lớn, người dùng cuộn xem lịch sử liên tục (infinite scroll). Chọn chiến lược hợp lý nhất?',
+        options: [
+          'OFFSET lớn dần vì dễ cài đặt nhất',
+          'Keyset (cursor) pagination với index khớp {{WHERE/ORDER BY}} và tie-breaker',
+          'Không phân trang, trả toàn bộ bảng',
+          'Sắp xếp ngẫu nhiên mỗi lần để cân bằng tải',
+        ],
+        answer: 1,
+        explain: '**Phương án 2 đúng**: cuộn liên tục truy cập tuần tự trang sau, keyset cho hiệu năng ổn định ở trang sâu và tránh trùng/bỏ sót khi có dữ liệu mới. **1** sai: OFFSET càng sâu càng chậm. **3** sai: trả toàn bộ bảng không thực tế. **4** sai: phá vỡ tính nhất quán.',
+      },
+    ],
+    related: ['db-005', 'api-017', 'sql-002', 'sql-011'],
+    tags: ['pagination', 'keyset', 'cursor', 'offset', 'seek', 'index'],
+  }
+
 );
