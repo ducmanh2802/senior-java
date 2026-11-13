@@ -7590,4 +7590,533 @@ Hệ thống agent tư vấn y tế cho 50 bệnh viện, agent có tool {{sched
   ],
   tags: ['incident response', 'kill switch', 'rollback', 'observability', 'postmortem', 'agent', 'operations']
 },
+{
+  id: 'ai-109',
+  topic: 'ai',
+  level: 'senior',
+  q: 'MCP (Model Context Protocol) là gì và khác với việc gọi function/tool trực tiếp (function calling) của LLM như thế nào? Khi nào nên dùng MCP thay vì tích hợp tool trực tiếp?',
+  a: `**Tóm tắt:** MCP (Model Context Protocol - giao thức chuẩn mở để ứng dụng AI kết nối với công cụ và dữ liệu) và function calling (gọi hàm trực tiếp: model trả về tên hàm và tham số, ứng dụng của bạn tự thực thi) giải quyết hai tầng khác nhau. Function calling là cơ chế trong một lần gọi model; MCP là giao thức (tập quy tắc trao đổi thông điệp) giữa client AI và server công cụ để khám phá, mô tả và gọi tool theo chuẩn chung. MCP hữu ích khi bạn muốn tái sử dụng công cụ cho nhiều client và chuẩn hoá tích hợp; tool trực tiếp đơn giản hơn khi chỉ một ứng dụng cần vài công cụ.
+
+### Thuật ngữ cơ bản (giải thích cho người mới)
+- **LLM (Large Language Model - mô hình ngôn ngữ lớn)**: chương trình AI sinh văn bản, ví dụ Claude, GPT. Nó chỉ "suy nghĩ" bằng văn bản; nó không tự chạy code hay chạm vào database.
+- **Function calling / tool calling**: tính năng cho phép bạn gửi kèm danh sách hàm (tên, mô tả, schema tham số dạng JSON Schema - mô tả cấu trúc dữ liệu JSON). Model thay vì trả lời bằng chữ sẽ trả về một yêu cầu gọi hàm (ví dụ JSON):
+~~~json
+{"name": "traDonHang", "arguments": {"orderId": "A1"}}
+~~~
+  Ứng dụng của bạn thực thi hàm rồi gửi kết quả lại cho model.
+- **MCP client**: ứng dụng AI nói chuyện với server (ví dụ một IDE, desktop assistant, hoặc agent service của bạn).
+- **MCP server**: tiến trình cung cấp tools (hàm có thể gọi), resources (dữ liệu đọc được), prompts (mẫu hướng dẫn) qua giao thức MCP.
+- **JSON-RPC 2.0**: cách đóng gói yêu cầu/phản hồi dạng JSON có {{id, method, params}}; MCP dùng chuẩn này để hai bên hiểu nhau.
+
+### So sánh từng bước: hoạt động thế nào và vì sao khác
+
+#### Gọi tool trực tiếp (function calling trong ứng dụng của bạn)
+1. App Java chuẩn bị danh sách tool và schema ngay trong code (hoặc cấu hình) của chính app đó.
+2. App gọi LLM API gửi {{messages}} + {{tools}}.
+3. Model trả về {{tool_use}} (tên tool + arguments).
+4. App tra tên tool trong registry (bản đăng ký hàm) nội bộ, validate, thực thi hàm Java, lấy kết quả.
+5. App gửi {{tool_result}} lại model để model tổng hợp câu trả lời.
+Vì sao đơn giản: mọi thứ nằm trong một codebase, không cần tiến trình hay giao thức riêng. Vì sao hạn chế: mỗi client/app phải tự viết và bảo trì tích hợp; tool khó chia sẻ lại.
+
+#### Dùng MCP
+1. MCP server khởi động (cục bộ qua {{stdio}} - đọc/ghi qua luồng chuẩn của tiến trình, hoặc từ xa qua HTTP) và công bố capability (khả năng).
+2. MCP client kết nối, gửi {{initialize}}, rồi {{tools/list}} để khám phá tool kèm JSON schema.
+3. Khi model cần, client gửi {{tools/call}} với tên tool và arguments tới server.
+4. Server validate, kiểm quyền, thực thi, trả kết quả có cấu trúc.
+5. Client đưa kết quả vào ngữ cảnh model như tool result.
+Vì sao hữu ích: server mô tả chính nó (self-describing) nên client tương thích MCP có thể dùng lại mà không viết glue code riêng cho từng hệ thống. Vì sao phức tạp hơn: thêm giao thức, version, vận hành server, xác thực và quan sát.
+
+~~~seq
+title: Function calling truc tiep vs MCP
+actors: User | App | LLM | MCP Server | He thong noi bo
+User -> App: Hoi tra cuu don hang
+App -> LLM: messages + tools schema (noi bo)
+LLM --> App: tool_use(traDonHang, id)
+App -> He thong noi bo: goi service Java truc tiep
+He thong noi bo --> App: ket qua
+App -> LLM: tool_result
+LLM --> User: tra loi
+note App..MCP Server: Neu dung MCP, App goi MCP Server
+App -> MCP Server: tools/call traDonHang
+MCP Server -> He thong noi bo: kiem quyen + goi service
+He thong noi bo --> MCP Server: ket qua
+MCP Server --> App: tool_result
+~~~
+
+### Ví dụ minh hoạ (Java - tích hợp trực tiếp đơn giản)
+~~~java
+// Dang ky tool truc tiep: ung dung tu so huu schema va ham thuc thi
+record OrderArgs(String orderId) {}
+
+Tool orderTool = Tool.builder()
+    .name("traDonHang")
+    .description("Tra trang thai don hang theo ma")
+    .inputSchema("{\\"type\\":\\"object\\",\\"properties\\":{\\"orderId\\":{\\"type\\":\\"string\\"}},\\"required\\":[\\"orderId\\"]}")
+    .handler((OrderArgs args) -> orderService.find(args.orderId())) // thuc thi tai cho
+    .build();
+// Khi dung MCP: schema va handler nam o MCP server; client chi can tools/list va tools/call.
+~~~
+
+### Bảng trade-off / khi nào dùng
+
+| Tiêu chí | Function calling trực tiếp | MCP |
+|---|---|---|
+| Độ phức tạp ban đầu | Thấp, vài hàm trong app | Cao hơn: server, protocol, deploy |
+| Tái sử dụng giữa nhiều client | Kém, mỗi app tự tích hợp | Tốt, một server cho nhiều client tương thích |
+| Khám phá tool động | Thường tĩnh trong code | Client có thể {{tools/list}} lúc chạy |
+| Kiểm soát và debug | Dễ trace trong một app | Cần trace xuyên client-server, correlation ID |
+| Tách biệt đội phát triển | Khó (tool dính app) | Tốt (đội platform sở hữu server) |
+| Phù hợp | 1 app, vài tool, thay đổi nhanh | Nhiều agent/client, hệ nội bộ dùng chung, chuẩn hoá |
+
+- Chọn **trực tiếp** khi: một service Java, 2-10 tool ổn định, không cần chia sẻ cho tool khác.
+- Chọn **MCP** khi: nhiều client (IDE, chatbot, agent) cần cùng bộ công cụ; bạn muốn chuẩn hoá và quản lý tập trung quyền, audit, version.
+
+### Pitfall production
+- Nghĩ MCP "tự bảo mật": MCP chuẩn hoá gọi tool, nhưng phân quyền (authorization - ai được làm gì) và xác thực (authentication - bạn là ai) vẫn do bạn triển khai.
+- Dùng MCP cho bài toán quá nhỏ: chi phí vận hành server, transport, observability lớn hơn lợi ích.
+- Không version schema tool: client cũ/agent đang chạy gãy khi tham số đổi.
+- Trả kết quả tool quá lớn vào context (ngữ cảnh model) gây tốn token và chậm; cần phân trang/tóm tắt.
+- Nhầm "model gọi tool" với "model thực thi": model chỉ đề xuất; app/server mới là nơi chạy code.
+
+### Ví dụ đời thực
+Một công ty có 3 kênh AI: chatbot CSKH, trợ lý nội bộ cho dev, và agent vận hành. Ban đầu mỗi kênh tự viết function calling gọi API tra đơn hàng và tra kho: sau 4 tháng có 3 implementation lệch nhau, 2 chỗ quên kiểm tra tenant. Đội platform gom thành 1 MCP server nội bộ expose 6 tool chỉ đọc: {{lookupOrder}}, {{lookupInventory}} với xác thực SSO và audit chung. Kết quả sau 8 tuần: giảm khoảng 60% mã tích hợp trùng lặp (đo theo số adapter bị xoá), thời gian thêm một client mới dùng lại tool từ ~5 ngày xuống ~1 ngày, và 100% lượt gọi tool được ghi audit tập trung. Đổi lại, đội phải vận hành thêm 1 service (2 pod, p95 gọi tool ~120 ms, thêm ~30-40 ms so với gọi nội bộ trực tiếp do qua transport).
+
+### Trả lời mẫu khi phỏng vấn
+"Em phân biệt hai tầng. Function calling hay tool calling là cơ chế của LLM API: em gửi schema hàm, model trả về tên hàm và tham số, ứng dụng của em tự thực thi và gửi kết quả lại. Nó gắn chặt với một ứng dụng. MCP, Model Context Protocol, là giao thức mở dựa trên JSON-RPC để client AI khám phá và gọi tools, resources từ server theo chuẩn chung. Nghĩa là server tự mô tả công cụ, nhiều client tương thích có thể dùng lại mà không viết tích hợp riêng. Về mặt hoạt động, trực tiếp thì registry và handler nằm trong app; MCP thì có bước initialize, tools list và tools call qua transport như stdio hoặc HTTP. Em chọn trực tiếp khi hệ nhỏ, ít tool, một app. Em chọn MCP khi cần tái sử dụng cho nhiều client, muốn đội platform quản lý tập trung xác thực, phân quyền, audit và version. Nhưng MCP không thay thế bảo mật: mỗi lần gọi vẫn phải kiểm quyền trên dữ liệu, validate input và giới hạn kết quả. Em cũng cân nhắc chi phí vận hành thêm so với lợi ích chuẩn hoá."
+
+> Senior tip: coi MCP như "API contract cho công cụ AI": dùng khi bạn có vấn đề đa client/đa đội và cần chuẩn hoá; nếu chỉ một service cần vài tool, function calling trực tiếp thường cho độ tin cậy và tốc độ triển khai tốt hơn.`,
+  follow: [
+    'Trong một hệ thống đã có function calling ổn định, dấu hiệu nào cho thấy nên chuyển sang MCP?',
+    'MCP dùng transport stdio và HTTP khác nhau thế nào về bảo mật và vận hành?',
+    'Khi MCP server trả lỗi, client/agent nên phân biệt lỗi nghiệp vụ, lỗi quyền và lỗi hạ tầng ra sao?'
+  ],
+  tags: ['MCP', 'tool calling', 'function calling', 'integration', 'architecture']
+},
+{
+  id: 'ai-110',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Khi nào một tổ chức nên tự viết MCP server cho hệ thống nội bộ, và khi nào không nên? Hãy phân tích tiêu chí kỹ thuật, tổ chức, bảo mật và chi phí vận hành.',
+  a: `**Tóm tắt:** Nên viết MCP server nội bộ khi nhiều client/agent cần truy cập cùng một nhóm hệ thống, lợi ích chuẩn hoá (một chỗ quản lý tool, quyền, audit, schema) lớn hơn chi phí vận hành thêm một dịch vụ. Không nên viết khi chỉ có một tích hợp nhỏ, hệ thống thay đổi quá nhanh, hoặc rủi ro bảo mật/tuân thủ chưa kiểm soát được; lúc đó function calling trực tiếp hoặc connector có sẵn an toàn và nhanh hơn.
+
+### MCP server nội bộ là gì (bối cảnh)
+- **Hệ thống nội bộ**: CRM, ERP, hệ quản lý đơn hàng, kho tri thức, ticket... chỉ dùng trong công ty.
+- **MCP server**: tiến trình chuẩn hoá việc agent/client "nhìn thấy" và gọi công cụ. Viết server nghĩa là bạn xây và vận hành một lớp adapter (bộ chuyển đổi) giữa giao thức MCP và API/dịch vụ thật.
+- **Build vs reuse**: "build" là tự viết; "reuse" là dùng MCP server/vendor connector có sẵn nếu đã đáp ứng yêu cầu và được đánh giá an toàn.
+
+### Tiêu chí quyết định: vì sao cần hay không cần
+
+#### 1) Kỹ thuật
+- Cần MCP khi: cùng dữ liệu/chức năng phải phục vụ >= 2 client (IDE assistant, chatbot, agent batch), tool cần khám phá động, schema cần nhất quán.
+- Không cần khi: 1 app, 1-3 tool, logic đặc thù một màn hình; overhead (chi phí thêm) của protocol, phiên bản, transport không mang lại giá trị.
+- Tín hiệu kỹ thuật thuận lợi: API nội bộ đã có lớp service rõ ràng, có xác thực tập trung (SSO - đăng nhập một lần), có logging/metrics sẵn.
+
+#### 2) Tổ chức
+- Cần khi có đội (hoặc owner) chịu trách nhiệm vận hành: SLA (cam kết mức dịch vụ), on-call (trực xử lý sự cố), roadmap schema. MCP server trở thành "sản phẩm nền tảng" dùng chung.
+- Không nên khi chưa ai sở hữu: server sẽ xuống cấp, schema lệch, client tự làm workaround và lợi ích chuẩn hoá biến mất.
+
+#### 3) Bảo mật và tuân thủ (compliance - tuân thủ quy định)
+- Cần đánh giá: dữ liệu nhạy cảm (PII - thông tin định danh cá nhân), quyền truy cập theo vai trò (RBAC - role-based access control), yêu cầu audit, nơi đặt server (on-prem hay cloud), và bề mặt tấn công mới (prompt injection khiến model gọi tool sai).
+- Không nên tự mở server nếu không thể đáp ứng: cách ly tenant, kiểm soát egress (kết nối ra ngoài), mã hoá, và quy trình review bảo mật.
+
+#### 4) Chi phí vận hành
+- Chi phí: thiết kế tool contract, triển khai, test tương thích client, giám sát, vá lỗi, versioning, tài liệu. Ước lượng thực tế: một server nhỏ 5-10 tool read-only có thể cần 2-4 tuần kỹ sư để làm chắc (authz, audit, limit) và ~0.2-0.5 FTE duy trì tuỳ mức thay đổi.
+- Lợi ích: giảm trùng lặp, rút ngắn thời gian onboard client mới, tập trung kiểm soát rủi ro.
+
+### Quy trình ra quyết định (từng bước)
+
+~~~text
+Buoc 1: Liet ke use case va client (ai dung, goi tool nao, tan suat)
+Buoc 2: Kiem tra co connector/MCP server san co va dat yeu cau bao mat khong
+Buoc 3: Uoc luong so tool, muc thay doi schema, va nhu cau tai su dung
+Buoc 4: Danh gia kha nang van hanh (owner, on-call, monitoring, rollout)
+Buoc 5: Neu loi ich tai su dung + kiem soat > chi phi -> pilot nho (read-only)
+        Neu khong -> function calling truc tiep / tich hop point-to-point co kiem soat
+~~~
+
+### Bảng trade-off
+
+| Phương án | Ưu điểm | Nhược điểm | Khi phù hợp |
+|---|---|---|---|
+| Tự viết MCP server nội bộ | Chuẩn hoá, tái sử dụng, kiểm soát tập trung | Chi phí build/vận hành, thêm bề mặt tấn công | Nhiều client, nhu cầu dài hạn, có đội platform |
+| Dùng connector/server có sẵn | Nhanh, ít code | Phụ thuộc vendor, có thể không khớp quyền nghiệp vụ | Hệ phổ biến, yêu cầu chuẩn, vendor uy tín |
+| Function calling trực tiếp | Đơn giản, ít moving parts | Trùng lặp, khó quản lý nhất quán | Ít client, ít tool, thay đổi nhanh |
+| Không expose tool (chỉ RAG/search) | Giảm rủi ro side effect | Không thực hiện hành động | Chỉ cần tra cứu, không cần thao tác |
+
+### Pitfall production
+- Viết MCP server vì "xu hướng" nhưng chỉ có 1 chatbot dùng: lãng phí, thêm điểm hỏng.
+- Biến MCP server thành cổng "god mode" truy cập mọi hệ thống: một lỗ hổng/prompt injection ảnh hưởng diện rộng.
+- Không chỉ định owner: 6 tháng sau schema cũ, tài liệu sai, client tự làm workaround.
+- Bỏ qua data residency (nơi dữ liệu được lưu/xử lý): server từ xa có thể kéo dữ liệu nhạy cảm qua vùng không được phép.
+- Pilot luôn bằng tool ghi/xoá: nên bắt đầu read-only, có giới hạn và audit.
+
+### Ví dụ đời thực
+Một ngân hàng nội bộ (môi trường thử nghiệm nội bộ) có 4 nhóm muốn agent tra cứu: tra khách hàng, tra giao dịch, tra ticket, tra tài liệu quy trình. Đánh giá ban đầu: nếu mỗi nhóm tự tích hợp trực tiếp cần ~3 tuần/nhóm và rất khó audit thống nhất (ước tính 12 tuần tổng, 4 kiểu log khác nhau). Đội platform đề xuất MCP server read-only 8 tool, 1 owner, chạy sau API gateway nội bộ, RBAC theo phòng ban, audit về SIEM (hệ thu thập log bảo mật) tập trung. Pilot 6 tuần: 2 client đầu tiên tích hợp trong 3 ngày và 2 ngày (nhờ {{tools/list}} và schema chung), p95 180 ms/tool call, 100% truy cập bị từ chối do sai quyền được ghi nhận. Quyết định mở rộng dần; tool ghi (tạo ticket) chỉ bật sau khi có bước xác nhận và duyệt quyền, trì hoãn 1 quý.
+
+### Trả lời mẫu khi phỏng vấn
+"Em quyết định viết MCP server nội bộ dựa trên bốn trục: kỹ thuật, tổ chức, bảo mật và chi phí. Về kỹ thuật, em chỉ build khi có nhiều client hoặc agent cần tái sử dụng cùng bộ công cụ và cần schema nhất quán; nếu chỉ một app và vài tool thì function calling trực tiếp rẻ và dễ kiểm soát hơn. Về tổ chức, MCP server là sản phẩm nền tảng nên phải có owner, SLA, on-call và quy trình thay đổi schema. Về bảo mật, em coi mỗi tool như một API mới: cần xác thực, phân quyền theo tài nguyên, audit, rate limit, và bắt đầu từ tool chỉ đọc. Về chi phí, em so sánh thời gian build và vận hành với lợi ích giảm trùng lặp và rút ngắn onboard client mới. Trong thực tế em hay đề xuất pilot nhỏ read-only phía sau gateway nội bộ, đo p95, tỉ lệ lỗi quyền, và mức tái sử dụng trước khi mở rộng. Em cũng luôn cân nhắc dùng connector có sẵn nếu đáp ứng yêu cầu và vượt qua review bảo mật, thay vì tự viết mọi thứ."
+
+> Senior tip: hãy ra quyết định bằng một pilot read-only có số đo (số client tái dùng, thời gian tích hợp, p95, coverage audit). Nếu sau pilot không chứng minh được lợi ích chuẩn hoá, quay lại tích hợp trực tiếp sẽ rẻ hơn duy trì một nền tảng không ai dùng đúng cách.`,
+  follow: [
+    'Bạn sẽ chọn chỉ số nào để đánh giá pilot MCP server thành công hay thất bại sau 1-2 tháng?',
+    'Làm thế nào để thuyết phục đội bảo mật khi muốn expose hệ thống nội bộ qua MCP cho agent?',
+    'Khi nào nên tách nhiều MCP server nhỏ theo domain thay vì một server lớn?'
+  ],
+  tags: ['MCP', 'platform', 'security', 'RBAC', 'cost', 'architecture']
+},
+{
+  id: 'ai-111',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Khi agent sử dụng MCP server để truy cập hệ thống nội bộ, bạn thiết kế phân quyền (authorization) và audit (ghi vết kiểm toán) như thế nào để đảm bảo agent chỉ làm đúng phần được phép và mọi hành động đều truy vết được?',
+  a: `**Tóm tắt:** Phân quyền cho agent qua MCP phải dựa trên danh tính thật của người dùng (hoặc danh tính dịch vụ) và quyền trên từng tài nguyên, không dựa vào prompt hay tham số model tự truyền. Audit phải ghi lại ai yêu cầu, agent/tool nào chạy, trên tài nguyên nào, kết quả cho phép/từ chối, và correlation ID để truy vết toàn bộ chuỗi, đồng thời không ghi lộ secret hay dữ liệu nhạy cảm.
+
+### Thuật ngữ
+- **Authentication (xác thực)**: xác minh "bạn là ai" (ví dụ token SSO/OAuth).
+- **Authorization (phân quyền)**: quyết định "bạn được làm gì" trên tài nguyên nào.
+- **RBAC (Role-Based Access Control)**: gán quyền theo vai trò.
+- **ABAC (Attribute-Based Access Control)**: quyết định dựa trên thuộc tính (phòng ban, tenant, độ nhạy dữ liệu).
+- **Audit log (nhật ký kiểm toán)**: bản ghi bất biến phục vụ điều tra, tuân thủ.
+- **Principal**: danh tính đã được xác thực (người dùng hoặc service account).
+
+### Thiết kế phân quyền: từng bước và vì sao
+
+1. **Xác định principal tại biên**: MCP server/transport phải nhận diện người dùng từ token phiên đã xác thực. Vì sao: nếu tin {{userId}} trong tool arguments, model (hoặc attacker qua prompt injection - chèn chỉ thị độc vào dữ liệu) có thể giả mạo.
+2. **Uỷ quyền thu hẹp (least privilege - đặc quyền tối thiểu)**: cấp cho agent chỉ các tool và scope cần cho tác vụ. Vì sao: giảm blast radius (phạm vi ảnh hưởng) khi agent bị lừa gọi sai.
+3. **Kiểm quyền tại service sở hữu dữ liệu**: mỗi {{tools/call}} đi qua {{principal + action + resource}}. Vì sao: mô tả tool không phải tường lửa; chỉ service biết chủ sở hữu/tenant của bản ghi.
+4. **Tách tool đọc/ghi và hành động nguy hiểm**: tool ghi tiền/xoá cần bước xác nhận hoặc phê duyệt (human-in-the-loop - có người duyệt). Vì sao: agent có thể hiểu sai ý.
+5. **Giới hạn phạm vi dữ liệu trả về**: lọc cột nhạy cảm, mask PII, phân trang. Vì sao: dù được phép đọc, trả thừa dữ liệu làm tăng rủi ro rò rỉ qua context.
+
+~~~java
+// Vi du minh hoa: kiem quyen o lop service, khong tin tham so tu model
+OrderView lookup(Principal p, String orderId) {
+    requireValidId(orderId); // validate dinh dang, do dai
+    // Service tu gan tenant/owner tu principal da xac thuc
+    return orderService.findVisibleTo(p.tenantId(), p.userId(), orderId)
+        .map(v -> redact(v)) // che truong nhay cam neu can
+        .orElseThrow(NotFoundException::new);
+}
+~~~
+
+~~~seq
+title: Luong kiem quyen va audit cho MCP tool call
+actors: User | Agent Client | MCP Server | AuthZ Service | Biz Service | Audit Store
+User -> Agent Client: Yeu cau tra cuu ho so
+Agent Client -> MCP Server: tools/call (token phien)
+MCP Server -> MCP Server: xac thuc principal
+MCP Server -> AuthZ Service: check(principal, action, resource)
+AuthZ Service --> MCP Server: allow/deny
+MCP Server -> Audit Store: ghi su kien (allow/deny, correlationId)
+MCP Server -> Biz Service: goi nghiep vu neu allow
+Biz Service --> MCP Server: ket qua da loc
+MCP Server --> Agent Client: response hoac loi khong ro chi tiet
+~~~
+
+### Thiết kế audit: ghi gì, không ghi gì
+
+Nên ghi (mỗi sự kiện):
+- {{timestamp}}, {{correlationId}} / {{traceId}}, {{sessionId}}.
+- {{principal}} (id đã băm hoặc id nội bộ), vai trò/scope tại thời điểm gọi.
+- {{toolName}}, {{action}}, định danh tài nguyên (đã mã hoá/giảm chi tiết nếu nhạy cảm), {{tenant}}.
+- Kết quả: allow/deny/error, mã lỗi, thời gian xử lý, kích thước phản hồi.
+- Nguồn gọi: client/agent id, phiên bản MCP server/tool schema.
+
+Không ghi: token/secret, mật khẩu, nội dung PII thô, toàn bộ payload nhạy cảm. Vì sao: audit log thường được sao chép rộng rãi cho điều tra và dễ trở thành nguồn rò rỉ.
+
+### Lưu trữ và vận hành audit
+- Ghi vào kho append-only (chỉ ghi thêm) hoặc SIEM; đặt thời gian lưu theo quy định (ví dụ 90-365 ngày tuỳ ngành).
+- Cảnh báo bất thường: tỉ lệ deny tăng đột biến, gọi tool nhạy cảm ngoài giờ, truy cập chéo tenant, volume đọc lớn bất thường.
+- Tách quyền xem audit khỏi quyền vận hành tool.
+
+### Bảng trade-off
+
+| Lựa chọn | Lợi ích | Đánh đổi |
+|---|---|---|
+| RBAC đơn giản theo vai trò | Dễ hiểu, dễ triển khai | Khó biểu đạt ngữ cảnh tài nguyên phức tạp |
+| ABAC theo thuộc tính (tenant, owner) | Chính xác theo tài nguyên | Phức tạp chính sách, cần test kỹ |
+| Audit chi tiết payload | Dễ điều tra | Rủi ro rò rỉ, tốn lưu trữ |
+| Audit metadata + mẫu che | An toàn hơn | Cần cơ chế tái tạo ngữ cảnh khi điều tra |
+| Check quyền ở gateway + service | Phòng thủ nhiều lớp | Trùng logic, cần nhất quán |
+
+### Pitfall production
+- Chỉ kiểm quyền ở UI/agent, MCP server tin mọi request: kẻ tấn công gọi thẳng server.
+- Dùng một service account quyền cao cho mọi agent: mất khả năng truy vết theo người dùng.
+- Log toàn bộ request/response gồm dữ liệu khách hàng: vi phạm tuân thủ và phình chi phí log.
+- Không gắn {{correlationId}} xuyên agent -> MCP -> backend: sự cố không tái hiện được.
+- Từ chối quyền trả về quá nhiều chi tiết: lộ sự tồn tại dữ liệu.
+
+### Ví dụ đời thực
+Hệ thống tra cứu hồ sơ bảo hiểm nội bộ cho phép agent hỗ trợ nhân viên. Ban đầu tool {{getClaim}} nhận {{claimId}} và dùng service account chung: kiểm tra mẫu 5.000 lượt/ngày cho thấy 12 lượt truy cập hồ sơ ngoài phòng ban (do prompt injection trong email đính kèm hướng agent thử ID khác), phát hiện muộn vì log không có principal người dùng cuối. Sau khi sửa: bắt buộc token người dùng, kiểm quyền {{principal + claimId + department}} tại claim service, mask số CMND/điện thoại trong response, audit append-only với {{correlationId}} và kết quả allow/deny. Trong 30 ngày theo dõi: 100% lượt gọi có principal, 47 truy cập trái phép bị chặn đúng (deny), thời gian điều tra một sự cố giảm từ ~3 giờ xuống ~25 phút nhờ truy vết theo correlation ID.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi agent dùng MCP server, em không bao giờ tin prompt hay tham số model cho quyết định phân quyền. Em xác thực principal từ phiên hoặc token, áp dụng least privilege cho bộ tool, và kiểm tra quyền theo từng tài nguyên tại service sở hữu dữ liệu, thường kết hợp RBAC và thuộc tính như tenant hoặc chủ sở hữu. Tool đọc và tool ghi được tách quyền, hành động rủi ro cao có bước xác nhận. Về audit, em ghi ai làm gì trên tài nguyên nào, khi nào, từ client nào, kết quả allow hay deny, latency và correlationId để nối với trace của agent; em không ghi secret hay PII thô và lưu audit ở kho append-only để phục vụ điều tra. Em cũng đặt cảnh báo cho deny tăng bất thường, truy cập chéo tenant hoặc volume lớn. Cách làm này giúp dù agent bị prompt injection gợi ý gọi sai, lớp phân quyền và audit vẫn chặn và để lại dấu vết rõ ràng."
+
+> Senior tip: hãy kiểm thử phân quyền bằng các ca "đúng tool, sai tài nguyên" (cross-tenant, đổi ID) và xem audit có đủ ngữ cảnh điều tra mà không lộ dữ liệu nhạy cảm; đây là nơi hệ thống agent thường thất bại dù demo chạy tốt.`,
+  follow: [
+    'Bạn phân biệt audit log phục vụ tuân thủ với log debug/trace kỹ thuật như thế nào trong pipeline thu thập?',
+    'Khi dùng service account cho tác vụ nền, bạn vẫn đảm bảo truy vết được trách nhiệm ra sao?',
+    'Làm sao để phát hiện và ứng phó khi tỉ lệ gọi tool bị từ chối tăng đột biến?'
+  ],
+  tags: ['MCP', 'authorization', 'audit', 'RBAC', 'ABAC', 'security']
+},
+{
+  id: 'ai-112',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Bạn thiết kế một MCP tool có thể trả về dữ liệu lớn (ví dụ danh sách giao dịch hoặc log). Làm thế nào để hỗ trợ phân trang, tóm tắt, và giới hạn kích thước trả về để vừa hữu ích cho agent vừa an toàn và tiết kiệm token?',
+  a: `**Tóm tắt:** Tool trả dữ liệu lớn phải có hợp đồng (contract) rõ: giới hạn kích thước mặc định, phân trang bằng con trỏ (cursor) ổn định, tuỳ chọn tóm tắt/thống kê, và lọc phía server. Mục tiêu là model nhận đủ thông tin để quyết định bước tiếp theo mà không làm phình context (ngữ cảnh) hay lộ dữ liệu thừa.
+
+### Vì sao dữ liệu lớn là vấn đề
+- **Context window (cửa sổ ngữ cảnh)**: số token tối đa model xử lý trong một lần; nhồi hàng nghìn dòng log sẽ đẩy thông tin quan trọng ra ngoài hoặc tốn chi phí lớn.
+- **Token**: đơn vị tính phí/xử lý của LLM; 1 MB JSON có thể tương đương hàng trăm nghìn token (tuỳ nội dung).
+- **Rủi ro**: trả thừa PII, làm chậm agent, và model dễ "lạc" trong dữ liệu dài.
+
+### Thiết kế từng bước
+
+1. **Đặt giới hạn cứng phía server**: {{maxBytes}} hoặc {{maxItems}} (ví dụ mặc định 50 bản ghi, tối đa 200; payload <= 32 KB). Vì sao: không tin client/model tự kiềm chế.
+2. **Phân trang bằng cursor (con trỏ)** thay vì offset lớn khi dữ liệu thay đổi. Cursor là mã hoá vị trí (ví dụ {{createdAt,id}}) để trang sau ổn định. Vì sao: offset sâu chậm và dễ trùng/bỏ sót khi có bản ghi mới.
+3. **Cho phép lọc và chọn trường (projection)**: tham số {{from,to,status,fields}}. Vì sao: lấy đúng thứ cần, giảm kích thước.
+4. **Cung cấp chế độ tóm tắt**: {{mode: "summary" | "items" | "sample"}}. Summary trả count, min/max, phân bố; items trả bản ghi trang. Vì sao: nhiều câu hỏi ("có bao nhiêu lỗi hôm nay?") không cần toàn bộ dữ liệu.
+5. **Trả metadata phân trang**: {{nextCursor}}, {{hasMore}}, {{totalApprox}} (nếu rẻ), {{truncated}}. Vì sao: agent biết còn dữ liệu và có nên gọi tiếp.
+6. **Sắp xếp xác định**: luôn {{ORDER BY createdAt DESC, id DESC}} (hoặc ASC nhất quán) khi dùng cursor. Vì sao: cursor phụ thuộc thứ tự.
+
+~~~java
+record TxnQuery(String accountId, String from, String to, String cursor, int limit, String mode) {}
+record Page<T>(java.util.List<T> items, String nextCursor, boolean hasMore, boolean truncated) {}
+
+Page<TxnView> listTransactions(Principal p, TxnQuery q) {
+    int limit = Math.min(Math.max(q.limit(), 1), 200); // gioi han cung
+    // validate accountId thuoc quyen cua principal (khong tin model)
+    accountService.assertReadable(p, q.accountId());
+    var slice = txnRepo.fetchSlice(q.accountId(), q.from(), q.to(), q.cursor(), limit + 1);
+    boolean hasMore = slice.size() > limit;
+    var items = slice.stream().limit(limit).map(this::redact).toList();
+    String next = hasMore ? encodeCursor(items.get(items.size() - 1)) : null;
+    return new Page<>(items, next, hasMore, false);
+}
+~~~
+
+~~~json
+{
+  "tool": "listTransactions",
+  "arguments": { "accountId": "acc-123", "from": "2026-11-01", "to": "2026-11-13", "limit": 50, "mode": "items" },
+  "result": {
+    "items": [ { "id": "tx-9", "amount": 120000, "time": "2026-11-13T08:10:00Z", "status": "OK" } ],
+    "nextCursor": "eyJ0IjoiMjAyNi0xMS0xM1QwODoxMDowMFoiLCJpIjoidHgtOSJ9",
+    "hasMore": true,
+    "truncated": false
+  }
+}
+~~~
+
+### Bảng trade-off / lựa chọn thiết kế
+
+| Cách | Ưu điểm | Nhược điểm | Khi dùng |
+|---|---|---|---|
+| Offset/limit | Dễ hiểu, dễ nhảy trang | Chậm ở offset lớn, không ổn định khi dữ liệu đổi | Bộ dữ liệu nhỏ, ít thay đổi |
+| Cursor (keyset) | Ổn định, hiệu năng tốt | Không nhảy tuỳ ý tới trang N, cần sắp xếp ổn định | Danh sách lớn, dữ liệu thay đổi |
+| Trả toàn bộ + cắt chuỗi | Dễ cài đặt | Mất dữ liệu ngẫu nhiên, khó xử lý tiếp | Không khuyến nghị cho production |
+| Summary trước, chi tiết sau | Tiết kiệm token, agent quyết định tốt | Cần thiết kế 2 chế độ | Log/giao dịch/metric lớn |
+| Streaming từng chunk | Xử lý dần | MCP/tool contract và client phải hỗ trợ; phức tạp | Kết quả rất lớn, pipeline chuyên biệt |
+
+### Pitfall production
+- Không có giới hạn cứng: một truy vấn rộng trả 200.000 dòng làm timeout và tốn chi phí.
+- Cursor không ràng buộc với bộ lọc: client đổi {{from/to}} nhưng giữ cursor cũ dẫn tới kết quả sai.
+- Lộ PII trong từng trang: phân trang không thay thế việc che dữ liệu.
+- Trả thông báo lỗi kèm dữ liệu nhạy cảm hoặc stack trace nội bộ.
+- Cho phép model tự đặt {{limit=100000}}: phải clamp (kẹp) về ngưỡng tối đa.
+- Không báo {{truncated}}: agent tưởng đã thấy hết và kết luận sai.
+
+### Ví dụ đời thực
+Một MCP tool {{searchAuditLogs}} phục vụ agent điều tra sự cố. Bản đầu trả tối đa 5.000 dòng log thô (~1,8 MB JSON, ước tính ~450k token nếu đưa vào context), gây timeout 30s và chi phí tăng vọt; agent cũng hay trích nhầm vì log có token truy cập. Thiết kế lại: mặc định {{mode:"summary"}} trả {{total=12430}}, {{byLevel}}, {{topErrors}} (~2 KB); {{mode:"items"}} trả 50 dòng/trang, {{limit}} tối đa 200, cursor theo {{timestamp,id}}, lọc bắt buộc theo {{service}} và {{timeRange <= 24h}}, và hàm redact che token/PII. Sau thay đổi: p95 mỗi lần gọi 220 ms (trang 50 dòng), payload trung bình 18 KB, agent thường dùng 1 summary + 1-2 trang chi tiết thay vì đọc toàn bộ; chi phí token cho bước điều tra giảm khoảng 85% trong 200 phiên thử nghiệm.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế MCP tool trả dữ liệu lớn, em coi context và bảo mật là ràng buộc ngay từ schema. Em đặt giới hạn cứng phía server cho số bản ghi và kích thước payload, clamp mọi tham số limit. Em dùng phân trang cursor dựa trên trường sắp xếp ổn định như thời gian và id, trả nextCursor, hasMore và truncated để agent biết còn dữ liệu. Em hỗ trợ lọc theo khoảng thời gian và các trường cần thiết, cùng chế độ summary để trả thống kê trước khi agent yêu cầu trang chi tiết. Ở tầng dữ liệu em luôn kiểm quyền theo principal, redact PII và không để agent tự quyết định phạm vi truy cập. Với log hoặc giao dịch, cách này giúp mỗi lần gọi chỉ vài chục KB thay vì hàng trăm nghìn token, p95 ổn định và giảm rủi ro lộ dữ liệu. Nếu cần kết quả rất lớn, em cân nhắc tách thành job bất đồng bộ và tool lấy trạng thái/tóm tắt thay vì đổ hết vào một response."
+
+> Senior tip: thiết kế tool theo mẫu "summary trước, drill-down có kiểm soát sau" và luôn trả dấu hiệu {{hasMore/truncated}}; agent thiếu tín hiệu này sẽ suy luận như thể đã thấy toàn bộ sự thật.`,
+  follow: [
+    'Khi nào bạn chọn cursor pagination thay vì offset, và làm sao mã hoá cursor an toàn?',
+    'Bạn xử lý thế nào nếu agent cần dữ liệu lớn hơn nhiều lần context window (ví dụ xuất báo cáo)?',
+    'Làm sao để cân bằng giữa việc redact dữ liệu nhạy cảm và vẫn giữ đủ thông tin cho agent điều tra?'
+  ],
+  tags: ['MCP', 'pagination', 'cursor', 'context window', 'performance', 'security']
+},
+{
+  id: 'ai-113',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Trong vòng lặp agent (agent loop) gọi MCP tool, bạn xử lý tool chậm hoặc lỗi như thế nào để hệ thống vừa bền vững (resilient) vừa không lặp vô hạn, không gây tác dụng phụ trùng lặp?',
+  a: `**Tóm tắt:** Xử lý tool chậm/lỗi trong agent loop cần bốn lớp: (1) timeout và huỷ (cancellation) cho từng lần gọi, (2) retry có kiểm soát chỉ cho lỗi tạm thời (transient) và kèm backoff/jitter, (3) idempotency (tính lũy đẳng - gọi lại không tạo tác dụng phụ thêm) cho tool ghi, và (4) ngân sách vòng lặp (số bước, thời gian, chi phí) cùng circuit breaker (cầu dao ngắt khi lỗi dây chuyền) để dừng sớm và trả trạng thái rõ ràng.
+
+### Thuật ngữ
+- **Agent loop (vòng lặp agent)**: chu trình model suy nghĩ -> yêu cầu tool -> nhận kết quả -> suy nghĩ tiếp cho đến khi hoàn thành hoặc dừng.
+- **Transient error (lỗi tạm thời)**: lỗi có thể hết khi thử lại (mạng chập chờn, 429 rate limit, 503 quá tải).
+- **Permanent error (lỗi vĩnh viễn)**: sai tham số, không có quyền, tài nguyên không tồn tại (400/403/404 nghiệp vụ).
+- **Idempotency key (khoá lũy đẳng)**: mã định danh yêu cầu để lần gọi lại trả về cùng kết quả/tác động một lần.
+- **Circuit breaker**: cơ chế ngắt tạm thời khi tỉ lệ lỗi/độ trễ vượt ngưỡng, tránh dội lỗi vào hệ thống đang yếu.
+
+### Thiết kế từng bước
+
+1. **Phân loại lỗi**: timeout/mạng/429/503 -> có thể retry; 400/401/403/404/422 -> không retry mù, phải sửa input hoặc dừng. Vì sao: retry lỗi vĩnh viễn chỉ tốn thời gian và token.
+2. **Timeout theo tầng**: timeout kết nối, timeout đọc, và timeout tổng cho một bước tool. Vì sao: không có timeout, một tool treo sẽ treo cả vòng lặp.
+3. **Retry có ngân sách**: tối đa N lần (ví dụ 2-3), exponential backoff (lùi thời gian tăng dần) + jitter (ngẫu nhiên nhỏ) để tránh dội đồng loạt; tôn trọng {{Retry-After}} nếu có. Vì sao: retry ngay lập tức làm quá tải hệ thống đang lỗi.
+4. **Idempotency cho tool ghi**: mỗi hành động ghi kèm {{idempotencyKey}} lưu phía server; lần lặp lại trả kết quả đã thực hiện. Vì sao: timeout không có nghĩa là server chưa xử lý - retry không an toàn nếu không lũy đẳng.
+5. **Circuit breaker và fallback**: mở mạch sau M lỗi liên tiếp trong cửa sổ thời gian; fallback sang tool khác, dữ liệu cache, hoặc trả lời một phần. Vì sao: bảo vệ hệ thống đích và giới hạn thời gian chờ người dùng.
+6. **Ngân sách vòng lặp**: giới hạn {{maxSteps}}, {{maxWallTime}}, {{maxToolErrors}}, {{maxTokens/cost}}. Khi vượt, dừng có kiểm soát và báo trạng thái. Vì sao: model có thể lặp gọi lại tool mãi khi không đạt mục tiêu.
+7. **Trả lỗi có cấu trúc cho agent**: phân biệt {{retryable}}, {{code}}, {{message an toàn}}, {{suggestion}}. Vì sao: giúp model quyết định thử lại, đổi chiến lược, hay hỏi người dùng.
+
+~~~java
+// Vi du retry co kiem soat cho loi tam thoi (minh hoa)
+<T> T callWithRetry(Supplier<T> call) {
+    int max = 3;
+    long backoffMs = 200;
+    for (int attempt = 1; attempt <= max; attempt++) {
+        try {
+            return call.get();
+        } catch (TransientToolException e) {
+            if (attempt == max) throw e; // het ngan sach retry
+            sleep(backoffMs + jitter()); // backoff + jitter tranh doi dong loat
+            backoffMs = Math.min(backoffMs * 2, 2000);
+        } catch (PermanentToolException e) {
+            throw e; // khong retry loi vinh vien
+        }
+    }
+    throw new IllegalStateException("unreachable");
+}
+~~~
+
+~~~seq
+title: Xu ly tool cham/loi trong agent loop
+actors: Agent Loop | MCP Client | MCP Tool | He thong dich
+Agent Loop -> MCP Client: yeu cau goi tool (step 1)
+MCP Client -> MCP Tool: tools/call + idempotencyKey (neu ghi)
+MCP Tool -> He thong dich: thuc thi
+He thong dich --> MCP Tool: timeout/503
+MCP Tool --> MCP Client: loi retryable
+MCP Client -> MCP Client: backoff + retry (toi da N)
+MCP Client --> Agent Loop: ket qua hoac loi co cau truc
+Agent Loop -> Agent Loop: doi chien luoc / hoi user / dung neu het ngan sach
+~~~
+
+### Bảng trade-off
+
+| Kỹ thuật | Giúp gì | Rủi ro/chi phí | Ghi chú |
+|---|---|---|---|
+| Timeout ngắn | Giải phóng nhanh | Cắt request chậm nhưng hợp lệ | Chọn theo p95/p99 của tool |
+| Timeout dài | Ít cắt oan | Treo vòng lặp, UX kém | Cần kết hợp tổng thời gian |
+| Retry | Vượt lỗi tạm thời | Tăng tải, trùng tác dụng phụ | Chỉ transient + idempotent |
+| Circuit breaker | Bảo vệ hệ thống yếu | Từ chối tạm thời cả request hợp lệ | Cần ngưỡng và thời gian half-open |
+| Fallback/cache | Duy trì một phần chức năng | Dữ liệu cũ/không đầy đủ | Phải ghi rõ cho người dùng |
+| Giới hạn bước vòng lặp | Ngăn lặp vô hạn | Dừng giữa chừng | Trả trạng thái và phần đã làm |
+
+### Pitfall production
+- Retry tool ghi không idempotent: timeout lần 1 nhưng server đã trừ tiền/tạo đơn, retry tạo bản ghi trùng.
+- Retry mọi lỗi: 403/400 được lặp lại tới khi hết ngân sách.
+- Không phân biệt "tool chậm" với "tool chết": thiếu circuit breaker làm dội request vào hệ thống đang phục hồi.
+- Để model tự quyết định retry vô hạn: chi phí token tăng và có thể gây vòng lặp.
+- Nuốt lỗi và trả "thành công": agent/ người dùng tin vào kết quả sai.
+- Không log attempt, latency, error code: không thể điều tra.
+
+### Ví dụ đời thực
+Agent hỗ trợ đối soát gọi MCP tool {{queryPayment}} (đọc) và {{createRefund}} (ghi). Giờ cao điểm hệ thanh toán p95 tăng từ 300 ms lên 2,8 s, tỉ lệ 503 khoảng 4%. Bản đầu: timeout 10 s, retry 5 lần cho mọi lỗi, không idempotency key -> khi {{createRefund}} timeout sau khi xử lý, retry tạo 17 yêu cầu hoàn tiền trùng trong 1 giờ (phát hiện qua đối soát). Thiết kế lại: timeout 3 s/attempt, retry tối đa 2 lần chỉ cho 429/503/timeout với backoff+jitter, circuit breaker mở sau 10 lỗi trong 30 s, và {{createRefund}} nhận {{idempotencyKey}} (lưu 24h) nên retry trả kết quả cũ; agent loop giới hạn 8 bước và 45 s tổng. Sau 2 tuần: 0 giao dịch trùng, tỉ lệ hoàn thành tác vụ đọc 99,2% (nhờ retry hợp lý), và khi hệ thanh toán sự cố, breaker mở trong ~12 s giúp p95 của agent giảm từ 40 s xuống 6 s (thất bại nhanh, có thông báo rõ).
+
+### Trả lời mẫu khi phỏng vấn
+"Trong vòng lặp agent gọi MCP tool, em xử lý chậm và lỗi theo từng lớp. Trước hết em đặt timeout rõ cho mỗi lần gọi và tổng thời gian bước, vì treo một tool sẽ treo cả loop. Em phân loại lỗi: chỉ retry lỗi tạm thời như timeout, 429, 503 với số lần giới hạn, exponential backoff và jitter; lỗi 400, 403, 404 là vĩnh viễn nên không retry mù. Với tool ghi, em bắt buộc idempotency key để retry sau timeout không tạo tác dụng phụ trùng, vì timeout không đồng nghĩa request chưa được xử lý. Em dùng circuit breaker để ngắt khi hệ thống đích lỗi dây chuyền và có fallback hoặc trả lời một phần nếu phù hợp. Ngoài ra agent loop phải có ngân sách bước, thời gian và chi phí; khi vượt ngưỡng em dừng có kiểm soát và trả trạng thái. Mỗi attempt được log với correlationId, latency và error code. Cách này giúp hệ bền trước lỗi tạm thời nhưng vẫn tránh lặp vô hạn và tránh hành động ghi bị nhân đôi."
+
+> Senior tip: mọi tool có side effect (tác dụng phụ) trong agent loop phải được thiết kế idempotent trước khi bạn bật retry; nếu không, "resilience" (độ bền) sẽ biến thành nhân đôi giao dịch.`,
+  follow: [
+    'Làm thế nào để chọn ngưỡng timeout và số lần retry phù hợp dựa trên p95/p99 và SLA của tool?',
+    'Bạn thiết kế idempotency key như thế nào để an toàn qua nhiều lần agent lập kế hoạch lại?',
+    'Khi circuit breaker mở, bạn báo cho người dùng và cho agent biết thế nào để vẫn hữu ích?'
+  ],
+  tags: ['MCP', 'agent loop', 'retry', 'timeout', 'idempotency', 'circuit breaker']
+},
+{
+  id: 'ai-114',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Bạn cần version hoá (quản lý phiên bản) MCP tool và schema của nó mà không làm hỏng các agent đang chạy trên production. Bạn thiết kế chiến lược versioning, tương thích ngược, rollout và deprecation như thế nào?',
+  a: `**Tóm tắt:** Version hoá MCP tool là quản lý thay đổi hợp đồng (tên, mô tả, input/output schema, ngữ nghĩa) sao cho agent đang chạy không gãy. Chiến lược an toàn: ưu tiên thay đổi tương thích ngược (backward compatible), gắn version rõ ràng (tool hoặc schema), rollout song song (song hành cũ/mới), quan sát mức dùng và lỗi, rồi deprecation (ngừng hỗ trợ) có lộ trình với thông báo và thời gian đủ dài.
+
+### Thuật ngữ
+- **Contract (hợp đồng)**: cam kết về tên tool, tham số, kiểu dữ liệu, ràng buộc và ý nghĩa kết quả.
+- **Schema**: mô tả cấu trúc input/output (thường JSON Schema); agent/model dựa vào đây để gọi đúng.
+- **Backward compatible (tương thích ngược)**: thay đổi mà client/agent cũ vẫn hoạt động đúng (ví dụ thêm trường tuỳ chọn có mặc định).
+- **Breaking change (thay đổi phá vỡ)**: client cũ có thể lỗi hoặc hiểu sai (đổi tên trường bắt buộc, đổi kiểu, đổi ngữ nghĩa).
+- **Deprecation**: đánh dấu phiên bản cũ sẽ bị ngừng, nhưng vẫn chạy trong thời gian chuyển tiếp.
+- **Rollout**: quá trình phát hành có kiểm soát (song song, canary, theo nhóm).
+
+### Các loại thay đổi và cách xử lý
+
+| Thay đổi | Loại | Cách an toàn |
+|---|---|---|
+| Thêm tham số tuỳ chọn có default | Tương thích ngược | Giữ nguyên hành vi cũ khi không truyền |
+| Thêm trường trong output | Thường tương thích | Client cũ nên bỏ qua trường lạ; ghi rõ trong mô tả |
+| Đổi tên/xoá trường bắt buộc | Phá vỡ | Phát hành tool/version mới, giữ bản cũ |
+| Đổi kiểu/định dạng (string -> int) | Phá vỡ | Version mới + chuyển đổi tường minh |
+| Đổi ngữ nghĩa (cùng trường, ý nghĩa khác) | Phá vỡ ngầm (rất nguy hiểm) | Tránh; nếu buộc phải, coi như version mới và thông báo rõ |
+| Thu hẹp quyền/giới hạn | Có thể phá vỡ hành vi | Thông báo, rollout dần, theo dõi lỗi |
+
+### Chiến lược versioning (lựa chọn thực dụng)
+1. **Version trong tên tool** cho thay đổi phá vỡ: {{lookupOrder}} (v1, ổn định) và {{lookupOrder_v2}}. Rõ ràng cho agent chọn đúng tool khi {{tools/list}}.
+2. **Version schema/endpoint server** cho tiến hoá chung: server hỗ trợ song song hợp đồng cũ/mới trong thời gian chuyển tiếp.
+3. **Trường {{schemaVersion}} trong response**: giúp client biết định dạng đang nhận, hữu ích khi debug.
+4. **Nguyên tắc tiến hoá**: chỉ thêm, không sửa nghĩa; mọi trường mới nên tuỳ chọn; giữ giá trị mặc định tương đương hành vi cũ.
+
+~~~text
+Vi du mo ta tool (minh hoa, mo ta bang text):
+- lookupOrder (v1, stable): input {orderId: string} -> {status, total, currency}
+- lookupOrder_v2 (new): input {orderId: string, includeItems?: boolean=false}
+                        -> {status, total, currency, items?: [] , schemaVersion:"2"}
+Agent cu chi thay/goi v1 van dung; agent moi chon v2 khi can items.
+~~~
+
+~~~seq
+title: Rollout va deprecation tool MCP
+actors: Platform Team | MCP Server | Agent A cu | Agent B moi | Monitoring
+Platform Team -> MCP Server: deploy v1 + v2 song song
+MCP Server --> Agent A cu: tools/list co lookupOrder (v1)
+MCP Server --> Agent B moi: tools/list co lookupOrder, lookupOrder_v2
+Agent A cu -> MCP Server: goi lookupOrder (v1)
+Agent B moi -> MCP Server: goi lookupOrder_v2
+Monitoring -> Platform Team: ti le goi v1/v2, loi schema
+Platform Team -> MCP Server: danh dau v1 deprecated (canh bao)
+Platform Team -> MCP Server: tat v1 sau thoi gian chuyen tiep
+~~~
+
+### Quy trình rollout an toàn
+1. **Thiết kế & review contract**: tài liệu hoá input/output, lỗi, ngữ nghĩa; đánh dấu trường bắt buộc/tuỳ chọn.
+2. **Tương thích ngược mặc định**: server chấp nhận trường thừa không biết (nếu an toàn) và bỏ qua; client bỏ qua trường output lạ.
+3. **Chạy song song**: v1 và v2 cùng tồn tại. Không tắt v1 khi còn traffic.
+4. **Canary theo agent/nhóm**: cho một nhóm agent dùng v2, theo dõi tỉ lệ lỗi validate, latency, kết quả nghiệp vụ.
+5. **Quan sát**: metric theo {{toolName, version}}: số lần gọi, tỉ lệ lỗi 4xx/5xx, p95, tỉ lệ parse lỗi phía client (nếu có phản hồi). Gắn log với {{schemaVersion}}.
+6. **Deprecation có lộ trình**: công bố ngày bắt đầu cảnh báo, ngày ngừng chấp nhận, kênh liên lạc owner agent; cung cấp hướng dẫn di chuyển. Thời gian phụ thuộc tổ chức (thường nhiều tuần đến vài tháng).
+7. **Kill/rollback**: nếu v2 lỗi, tắt lộ trình v2 hoặc định tuyến về v1 mà không ảnh hưởng agent chưa nâng cấp.
+
+### Kiểm thử tương thích
+- **Contract test**: bộ test cố định request/response mẫu cho v1 chạy trên mỗi lần deploy server.
+- **Replay**: phát lại mẫu {{tools/call}} thực tế (đã ẩn dữ liệu nhạy cảm) chống schema mới.
+- **Fuzz/validate**: input thiếu trường, kiểu sai, trường lạ; đảm bảo lỗi rõ ràng (4xx có mã lỗi) thay vì crash.
+
+### Pitfall production
+- "Sửa nhỏ" đổi ngữ nghĩa trường {{status}} (ví dụ từ mã nội bộ sang mã mới) mà giữ tên: agent ra quyết định sai nhưng không lỗi kỹ thuật.
+- Tắt v1 khi vẫn còn agent chạy theo lịch (batch đêm, cron) hoặc agent bên đội khác chưa biết.
+- Không có metric theo version: không biết ai còn dùng v1, deprecation mù mờ.
+- Mô tả tool không cập nhật: model chọn tham số theo mô tả cũ.
+- Bỏ qua thời gian cache/khởi động: agent có thể giữ danh sách tool cũ trong phiên dài.
+
+### Ví dụ đời thực
+Một nền tảng nội bộ có 12 agent dùng MCP tool {{searchDocs}} (v1) trả tối đa 20 kết quả không có {{score}}. Nhu cầu mới cần {{score}} và lọc {{source}}. Đội platform phát hành {{searchDocs_v2}} thêm tham số tuỳ chọn {{source}} và trường {{score}} ({{schemaVersion:"2"}}), giữ v1 nguyên vẹn. Rollout: tuần 1 chạy song song, 2 agent pilot dùng v2; metric cho thấy p95 tăng nhẹ 15 ms (210 -> 225 ms) nhưng tỉ lệ chọn tài liệu đúng trong đánh giá mẫu 200 truy vấn tăng từ 71% lên 84% nhờ agent dùng {{score}}. Tuần 3-6 mở cho 10 agent còn lại; tuần 8 v1 còn 3% traffic (1 agent batch quên nâng cấp), đội liên hệ owner và gia hạn 2 tuần. Tuần 10 tắt v1 sau khi traffic 0 trong 7 ngày. Không có downtime; 0 lỗi phá vỡ nhờ contract test v1 chạy trong CI mỗi lần deploy.
+
+### Trả lời mẫu khi phỏng vấn
+"Em coi mỗi MCP tool như một API có hợp đồng công khai với agent. Khi cần thay đổi, em ưu tiên tương thích ngược: thêm trường tuỳ chọn có giá trị mặc định, không đổi ngữ nghĩa trường cũ. Với thay đổi phá vỡ như đổi tên, đổi kiểu hay đổi ý nghĩa, em phát hành version mới của tool hoặc schema, ví dụ lookupOrder_v2, và chạy song song với bản cũ. Quá trình rollout gồm contract test và replay request thật đã ẩn dữ liệu, canary cho một nhóm agent, và theo dõi metric theo version như tỉ lệ gọi, lỗi validate, p95. Em chỉ deprecate khi có số liệu cho thấy traffic bản cũ về gần 0, có thông báo và thời gian chuyển tiếp đủ dài cho cả agent batch. Nếu bản mới có vấn đề, em có thể định tuyến hoặc tắt v2 mà không ảnh hưởng agent chưa nâng cấp. Điểm quan trọng là không đổi ngữ nghĩa ngầm và luôn quan sát theo version, vì agent đang chạy trên production sẽ không 'tự biết' schema đã đổi."
+
+> Senior tip: thay đổi ngữ nghĩa ngầm là breaking change nguy hiểm nhất vì không ném lỗi; hãy version hoá và đo chất lượng theo version trước khi tin rằng "chỉ sửa logic bên trong".`,
+  follow: [
+    'Bạn truyền thông và phối hợp deprecation tool như thế nào khi nhiều đội sở hữu các agent khác nhau?',
+    'Làm sao để agent tự chọn đúng phiên bản tool khi server công bố nhiều phiên bản trong tools/list?',
+    'Những metric và cảnh báo nào cho biết việc rollout version mới đang gây hại?'
+  ],
+  tags: ['MCP', 'versioning', 'schema', 'backward compatibility', 'deprecation', 'rollout']
+},
 );
