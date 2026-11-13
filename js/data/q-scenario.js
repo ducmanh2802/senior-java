@@ -8104,4 +8104,817 @@ Tám pod {{payment-api}}, một pod trên node {{ip-10-0-3-14}} trả 500 {{Unkn
   ],
   tags: ['Kubernetes', 'troubleshooting', 'DNS', 'configuration', 'production']
 },
+{
+  id: 'scenario-137',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Hệ thống ghi thời gian giao dịch bằng {{LocalDateTime}} và lưu vào cột {{TIMESTAMP}} của PostgreSQL (không lưu múi giờ). Khách hàng khiếu nại lịch sử giao dịch hiển thị sai giờ khi hệ thống chuyển sang server ở múi giờ khác, và giao dịch vào lúc chuyển giờ mùa hè bị trống hoặc xuất hiện hai lần. Nguyên nhân và cách sửa?',
+  a: `**Tóm tắt:** {{LocalDateTime}} chỉ là ngày giờ trên tường đồng hồ tường (năm, tháng, ngày, giờ, phút, giây), không biết mình đang ở múi giờ nào. Nếu lưu giá trị thô này vào cột {{TIMESTAMP}} của PostgreSQL, giờ hiển thị sẽ thay đổi tùy theo múi giờ của server hoặc của phiên kết nối, và vào thời điểm chuyển giờ mùa hè một thời điểm local có thể không tồn tại hoặc xuất hiện hai lần. Cách đúng là lưu thời điểm duy nhất bằng {{Instant}} vào cột {{TIMESTAMPTZ}}, rồi quy đổi sang múi giờ của khách hàng chỉ khi hiển thị.
+
+### Các khái niệm cần biết
+- **Múi giờ (time zone):** quy ước địa phương để chuyển một thời điểm thành giờ/ngày theo khu vực (ví dụ Việt Nam là UTC+7, New York là UTC-5 vào mùa đông và UTC-4 vào mùa hè). Chính phủ từng nước có thể thay đổi quy tắc đổi giờ, nên múi giờ cố định như {{GMT+7}} không an toàn cho mọi nơi.
+- **UTC:** thời điểm chuẩn toàn cầu, không đổi theo mùa hay địa điểm, dùng làm thước đo chung.
+- **{{Instant}} (Java):** thời điểm trên đường thẳng thời gian, tính bằng mili giây kể từ 00:00 ngày 1 tháng 1 năm 1970 theo UTC. Giá trị này không đổi dù bạn đang ở Hà Nội hay New York.
+- **{{LocalDateTime}} (Java):** ngày giờ "trường trọ" trên tường đồng hồ (2026-06-15 14:30) **không kèm múi giờ**. Hai người ở Hà Nội và New York cùng viết 14:30 thì đó là hai thời điểm thực khác nhau.
+- **{{ZonedDateTime}} (Java):** {{LocalDateTime}} cộng múi giờ (ví dụ Asia/Ho_Chi_Minh), xác định duy nhất một thời điểm thực.
+- **{{OffsetDateTime}} (Java):** ngày giờ cộng độ lệch múi giờ (ví dụ +07:00).
+- **{{TIMESTAMP}} trong PostgreSQL:** lưu ngày giờ thô, không biết múi giờ, khi server hay phiên kết nối đổi múi giờ thì giá trị hiển thị thay đổi — nguy hiểm cho dữ liệu giao dịch.
+- **{{TIMESTAMPTZ}} trong PostgreSQL:** lưu thời điểm, quy đổi về UTC khi ghi, và hiển thị lại theo múi giờ của phiên kết nối khi đọc — an toàn cho dữ liệu sự kiện.
+
+### Cơ chế lỗi từng bước
+Giả sử nhân viên tại Hà Nội nhập giao dịch lúc 2026-03-29 02:30 giờ Việt Nam và code lưu trực tiếp giá trị {{LocalDateTime}} đó vào cột {{TIMESTAMP}}:
+1. Giao dịch A ghi 2026-03-29 02:30 vào cột {{TIMESTAMP}}.
+2. Hệ thống chuyển sang server mới ở múi giờ UTC+0 (Londres). Khi đọc, cột {{TIMESTAMP}} vẫn trả 2026-03-29 02:30, nhưng giờ đó trên giờ London thực ra là 09:30 giờ Việt Nam — hiển thị sai 7 giờ.
+3. Vào tháng 3 ở Mỹ, đồng hồ nhảy từ 01:59 lên 03:00 (chuyển giờ mùa hè). Khung thời gian 02:00-02:59 **không tồn tại** ở múi giờ đó. Nếu nhập 02:30, Java hoặc PostgreSQL có thể lén dịch sang 03:30 mà không báo lỗi, và dữ liệu sai về phút giây.
+4. Vào tháng 11, đồng hồ lùi từ 02:00 về 01:00. Khung 01:30 xuất hiện **hai lần** (một lần trước khi lùi, một lần sau khi lùi). Nếu chỉ lưu {{LocalDateTime}}, không biết lần nào là lần trước, lần sau — hai giao dịch khác nhau bị trùng giá trị hiển thị.
+
+Vì vậy, dữ liệu sau khi chuyển server hay vào mốc chuyển giờ sẽ sai lặng lẽ, rất khó phát hiện vì không có exception.
+
+### Sửa bằng code Java
+~~~java
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+
+public class ThoiGianGiaoDich {
+    // Luôn lưu thời điểm thực sự bằng Instant, không phụ thuộc múi giờ của server
+    private final Instant thoiDiem;
+
+    public ThoiGianGiaoDich(Instant thoiDiem) {
+        this.thoiDiem = thoiDiem;
+    }
+
+    public Instant layThoiDiem() {
+        return thoiDiem;
+    }
+
+    // Hiển thị cho khách hàng theo múi giờ địa phương của họ (ví dụ Việt Nam)
+    public String hienThiTheoMuiGioVietNam() {
+        return thoiDiem.atZone(ZoneId.of("Asia/Ho_Chi_Minh"))
+                .format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm"));
+    }
+
+    // Chuyển ngày giờ nhập từ form sang thời điểm thực, kèm múi giờ rõ ràng
+    public static ThoiGianGiaoDich tuNgayGioNhap(java.time.LocalDateTime nhap, ZoneId muiGioCuaNguoiDung) {
+        return new ThoiGianGiaoDich(nhap.atZone(muiGioCuaNguoiDung).toInstant());
+    }
+}
+~~~
+Trong SQL, lưu vào cột {{TIMESTAMPTZ}}:
+~~~sql
+CREATE TABLE giao_dich (
+    id bigserial PRIMARY KEY,
+    thoi_diem timestamptz NOT NULL,   -- lưu thời điểm, không dùng timestamp thuần
+    so_tien numeric(18,0) NOT NULL
+);
+INSERT INTO giao_dich (thoi_diem, so_tien) VALUES (?, ?);  -- driver Java gui Instant, Postgres luu UTC
+~~~
+
+### Ví dụ đời thực
+Hệ thống đặt lịch khám bệnh online ban đầu lưu giờ hẹn bằng {{LocalDateTime}} vào cột {{TIMESTAMP}}. Server cũ ở Việt Nam (UTC+7) nên hiển thị đúng. Sau khi dịch sang server mới tại Singapore (UTC+8), mọi lịch hẹn cũ hiển thị lệch 1 giờ, và 12% khách đến nhầm giờ trong tháng đầu, khoảng 40 cuộc khiếu nại CSKH mỗi ngày. Nguyên nhân: cột {{TIMESTAMP}} không chứa múi giờ, nên giá trị 14:00 được hiểu là 14:00 theo giờ server mới. Cách xử lý: (1) đổi cột sang {{TIMESTAMPTZ}} và mã ứng dụng gửi {{Instant}}; (2) khi hiển thị, quy đổi theo múi giờ lưu trong hồ sơ khách hàng (ví dụ Asia/Ho_Chi_Minh); (3) không cho phép nhập {{LocalDateTime}} trần vào form mà phải chọn múi giờ. Kết quả sau một tháng: lịch hẹn sai giờ xuống còn 0,2%, số khiếu nại giảm hơn 90%, và không còn sự cố khi chuyển server lần sau.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi lưu thời gian giao dịch, tôi không dùng LocalDateTime cùng cột TIMESTAMP vì hai thứ này đều không biết múi giờ. Cùng giá trị 14:30 ở Việt Nam và ở London là hai thời điểm khác nhau, và vào lúc chuyển giờ mùa hè một giờ local có thể không tồn tại hoặc xuất hiện hai lần. Tôi lưu thời điểm thực sự bằng Instant vào cột TIMESTAMPTZ của PostgreSQL — Postgres sẽ quy đổi về UTC khi lưu và hiển thị lại theo múi giờ của phiên kết nối. Khi hiển thị cho khách hàng, tôi quy đổi Instant sang múi giờ của khách (ví dụ Asia/Ho_Chi_Minh). Nếu form yêu cầu người dùng nhập giờ, tôi bắt kèm múi giờ rõ ràng, không để giá trị trần. Mặc định tôi coi TIMESTAMPTZ là tiêu chuẩn cho mọi cột thời điểm sự kiện, và chỉ dùng DATE khi thực sự chỉ cần ngày (ví dụ ngày sinh). Tránh dùng java.util.Date và java.util.Calendar cũ vì chúng thay đổi được (mutable) và thiết kế lỗi thời."
+
+> Senior tip: truoc khi chon kieu cot thoi gian, hay hoi "gia tri nay la thoi diem su kien da xay ra chi la ngay tren lich?". Neu la thoi diem su kien (dat hang, thanh toan, ghi log), dung Instant + TIMESTAMPTZ. Neu chi la ngay sinh hay ngay phat hai hop dong, DATE la du va an toan hon.
+
+`,
+  follow: [
+    'Instant, ZonedDateTime va OffsetDateTime duoc dung trong truong hop nao, khac nhau ra sao?',
+    'Cot TIMESTAMPTZ cua PostgreSQL quy doi theo mu gio cua ai, va co anh huong gi khi doi mu gio session?',
+    'Neu quy luat cua nuoc doi quy tuc gio mua he, he thong cua ban can lam gi de du lieu lich su khong sai?'
+  ],
+  tags: ['java-time', 'Instant', 'LocalDateTime', 'PostgreSQL', 'mu gio']
+},
+{
+  id: 'scenario-138',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Service Java tren server Linux dot nen su dung day mot lop CPU, p99 API tang gap 10, khong co deploy moi va traffic khong doi. Ban tim luong nao dang gay loi va xu ly nhu the nao?',
+  a: `**Tóm tắt:** CPU 100% tren mot lop nghia la mot thread dang quay vong (busy spin) khong ngung nghỉ va chap het nguyen cua lop do. Ban can tim luong do bang cong cu {{top -H}} va {{jstack}}, xet stack trace cua luong do, sua vong lap khong ngung bang cach doi co dieu kien va co thoi gian cho. Khong may CPU 100% cung la loi; co the cong viec thuc su nhieu, nen can phan biet.
+
+### Cac khai niem can biet
+- **CPU 100% mot lop:** mot thread chi su dung nguyen cua mot lop CPU de tinh toan hoac kiem tra dieu kien lap lai, khong bo thoi gian cho cac luong khac tren cung mot lop.
+- **{{top -H -p <PID tien trinh Java}}:** cong cu Linux hien thi tung luong (khong chi tien trinh), cot %CPU cho biet luong nao dang dot CPU nhat. PID hien thi la so thap phan cua luong.
+- **{{jstack <PID tien trinh Java}}:** cong cu cua JDK in stack trace cua tung luong tai thoi diem hien tai. Trong ket qua, moi luong co mot nid (native thread id, ma luong he thong) duoc viet bang he luc thap (0x...). Ban chuyen PID thap phan cua luong tu {{top -H}} sang he luc thap, sau do tim nid trung khop trong ket qua {{jstack}} de biet luong do dang lam gi.
+- **Trang thai luong trong {{jstack}}:** runnable nghia luong dang su dung CPU hoang cho I/O; waiting hay timed_waiting nghia luong dang ngiu ho cho, khong dot CPU. Neu mot luong runnable va stack o cung mot ham tinh toan cua minh, do nguy co rat cao.
+- **Vong lap khong ngung (busy spin):** vong lap while kiem tra dieu kien lap lai khong ngung, khong co lenh ngiu (Thread.sleep, Object.wait, BlockingQueue.poll…), nen luong luon o trang thai runnable va chap het CPU.
+
+### Cach tim luong gay loi, buoc buoc
+1. Chay {{top -H -p <PID tien trinh Java>}}. Xem cot %CPU, ghi lai PID (so thap phan) cua luong dot CPU nhat (vi du 98-100%).
+2. Chuyen PID luong sang he luc thap: {{printf '%x' <PID luong>}}. Vi du PID 1234 doi thanh 0x4d2.
+3. Chay {{jstack <PID tien trinh Java>}}, tim dong co nid=0x4d2 va trang thai runnable. Xem stack trace cua luong do dang o ham nao, lap lai bao nhieu lan.
+4. Chup {{jstack}} 3 lan cach nhau 5 giay. Neu stack cua cung mot luong khong thay doi, chac chan do la vong lap khong ngung.
+5. Sua code: thay vong lap kiem tra lien tục bang doi co dieu kien co thoi gian cho (co Thread.sleep hoac BlockingQueue.poll voi thoi gian han).
+
+### Vi du code
+~~~java
+// SAI: vong lap kiem tra lien tuc khong ngung, luong luon RUNNABLE va dot CPU
+public class VongLapSai {
+    private boolean coLieu = false;
+
+    public void choCoLieuSai() {
+        while (!coLieu) {   // nếu coLieu không bao giờ thành true, vòng chạy mãi
+            ;               // không làm gì, nhưng CPU vẫn bị chiếm hết
+        }
+        xuLy();
+    }
+}
+
+// DUNG: doi co dieu kien co thoi gian han, giai phong CPU trong khoang doi
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.time.Duration;
+
+public class VongLapDung {
+    private final BlockingQueue<String> hangDoi = new LinkedBlockingQueue<>();
+
+    public void xuLyCoHan() throws InterruptedException {
+        String mail = hangDoi.poll();               // lay neu co, khong doi
+        if (mail == null) {
+            mail = hangDoi.poll(Duration.ofSeconds(5)); // doi toi da 5 giay, CPU ngu
+            if (mail == null) {
+                throw new IllegalStateException("Khong co du lieu sau 5 giay");
+            }
+        }
+        xuLy(mail);
+    }
+}
+~~~
+
+### Vi du doi thuc
+Mot xu ly hang doi email co bug: while (!hangDoi.isEmpty()) { xuLy(hangDoi.peek()); } nhung quen goi hangDoi.poll() de lay khoi hang, cung mot email duoc xu ly mai mot chot. Server 4 lop, mot luong dot 100% mot lop, tong CPU hien 25% nhung p99 API tu 200ms len 5s (container gioi han 1 vCPU nen mot luong chap het nguyen luc xu ly cua container). Sau khi sua bang poll(Duration) thay vong lap trong, CPU ve khoang 3% mot lop, p99 con 250ms.
+
+### Loi hay gap
+- Khong may CPU 100% cung la loi. Cong viec thuc su nhieu (tinh bao cao) cung lam CPU cao, nhung trong stack se co nhieu luong runnable o cac ham khac nhau, khong la mot luong chay lap lai cung mot ham.
+- Neu container khong co {{jstack}} (vi image distroless), ban co the su dung {{jcmd}} neu con con, hoac gioi han CPU de biet xem pod co bi restart khong, hoac them log de biet duong nao dang chay.
+
+> Senior tip: neu ho nghi, hãy chup {{jstack}} 3-5 lan cach nhau 5 giay va so sanh; stack cua cung mot luong khong thay doi o cung mot ham la diem noc can tim.
+
+`,
+  follow: [
+    'Lam sao phan biet CPU 100% do vong lap va cong viec thuc su nhieu?',
+    'Neu container khong co jstack/jcmd (image distroless), ban chuan doan nhu the nao?',
+    'Bien coLieu o tren neu khong dung tu khoa volatile co nguy hiem gi trong moi truong da luong?'
+  ],
+  tags: ['CPU', 'troubleshooting', 'jstack', 'top', 'thread', 'Java']
+},
+{
+  id: 'scenario-139',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Sau khi them metric dem so lan goi API va gan nhan la {{user_id}} de theo doi tung khach hang, server Prometheus su dung RAM tang tu 4GB len 24GB va cac canh bao lo tien. Nguyen nhan va thiet kế metric an toan nhu the nao?',
+  a: `**Tóm tắt:** Prometheus luu tung ket hop cua ten metric va toan bo nhan (label) lam mot chuoi thoi gian (time series). Nhan {{user_id}} co the co tram va tram gia tri khac nhau, khi do so chuoi thoi gian nhan len theo ty le, bo nho RAM cua Prometheus tang vo cung, server cham het va canh bao khong bao gio chay dung. Cach sua: bo nhan co gia tri nhieu khoi metric, chi gan nhan cho cac gia tri it thay doi (endpoint, trang thai, phuong thuc), va truy doi khach hang qua log thay vì qua metric.
+
+### Cac khai nem can biet (Prometheus la he thong moi cho nhieu doc gia)
+- **Prometheus:** he thong thu thap va luu so lieu cua ung dung theo thoi gian, dung de ve bieu do va dat canh bao.
+- **Metric:** mot con so co ten (vi du so_lan_goi_api_tong).
+- **Nhan (label):** thong tin mo ta them kèm theo metric (vi du endpoint=/api/tao_don, trang_thai=200). Ten metric cong toan bo nhan tao thanh mot chuoi thoi gian.
+- **Cardinality:** so luong chuoi thoi gian khac nhau. Moi nhan them voi nhieu gia tri khac nhau lam so chuoi thoi gian nhan len theo ty le (vi du 10 endpoint x 5 trang thai x 3 phuong thuc = 150 chuoi; them user_id co 1 trieu gia tri -> 150 trieu chuoi).
+- Moi chuoi thoi gian tốn bo nho RAM o Prometheus; qua nhieu chuoi lam server cham, het RAM, va canh bao bao loi thuc su khong bao gio chay.
+
+### Vi du code (Micrometer)
+~~~java
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Tags;
+
+public class TheoDoiApi {
+    private final Counter counter;
+
+    public TheoDoiApi(MeterRegistry registry, String endpoint) {
+        // SAI (khong lam): user_id co the nhan tram va tram gia tri khac nhau
+        // this.counter = Counter.builder("api.calls")
+        //     .tags("endpoint", endpoint, "userId", userId)   // cardinality cao
+        //     .register(registry);
+
+        // DUNG: nhan chi cac gia tri it thay doi
+        this.counter = Counter.builder("api.calls")
+                .tags("endpoint", endpoint, "phuong_thuc", "POST", "trang_thai", "200")
+                .register(registry);
+    }
+
+    public void dem() {
+        counter.increment();
+    }
+}
+~~~
+
+### Vi du doi thuc
+Dich vu thanh toan them metric api_calls{user_id} de theo doi tung khach hang VIP. Hai tuan sau, Prometheus tu 4GB tang len 24GB, pod bi OOMKilled restart, canh bao loi tan le khong bao gi chay vi server qua tai. Sua: bo user_id khoi nhan metric, giu endpoint, phuong thuc, trang thai; theo doi khach hang qua log co trace_id va truy van he thong luu tru log (ELK hoac Loki) thay vì qua metric. Ket qua: Prometheus ve lai 4GB, canh bao hoat dong binh thuong, co phat hien su co trong mot phut.
+
+### Bang trade-off
+| Loai nhan | Vi du | Nhan duoc khong? |
+| Nhan thap cardinality | endpoint, phuong_thuc, trang_thai, vung | Co, it gia tri |
+| Nhan cao cardinality | user_id, order_id, transaction_id, email, dia chi IP | Khong, tránh triet de |
+
+> Senior tip: quy tắc vang — truoc khi them nhan, hay hoi "nhan nay co the nhan bao nhieu gia tri khac nhau?". Neu tra loi la "tuy so khach hang" hoac "khong gioi han", khong nhan vao nhan, hay bo vao noi dung log va truy van log thay vi metric.
+
+`,
+  follow: [
+    'Histogram va Summary trong Prometheus khac nhau nhu the nao, dung khi nao?',
+    'Lam sao phat hien som cardinality cua metric dang tang (vi du qua dashboard Prometheus)?',
+    'Neu bat buoc phai theo doi tung khach hang, ban lam sao ma khong lam sap Prometheus?'
+  ],
+  tags: ['Prometheus', 'metrics', 'cardinality', 'observability', 'nhan']
+},
+{
+  id: 'scenario-140',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'API tong hop thong tin don hang goi 3 dich vu trong bo (kho, van chuyen, khuyen mai) bang {{CompletableFuture.allOf(cf1, cf2, cf3).join()}}. Khi dich vu van chuyen bi cham 30 giay, toan bo luong xu ly cua API bi ket, p99 tang gap 20 va cac API khac trong cung service cung loi 503. Nguyen nhan va cach xu ly?',
+  a: `**Tóm tắt:** {{.join()}} (hoặc {{.get()}}) dung luong goi cho den khi tac vu hoan tat. {{allOf()}} chi hoan tat khi **tat ca** cac tac vu nhap vao hoan tat, neu mot bi cham, {{allOf()}} bi cham theo va {{.join()}} giu luong ma mot thoi gian cho duoc dat. Luong web (Tomcat) co so luong han che (vi du 200), neu moi luong deu dang {{.join()}} cho dich vu cham, request moi khong con luong xu ly, toan bo service loi, khong chi API tong hop.
+
+### Cac khai nem can biet
+- **{{CompletableFuture}}:** doi tuong bieu dien ket qua se co sau nay cua mot tac vu bat dong bo.
+- **{{.join()}}:** cho luong goi den va cho den khi tac vu xong, sau do lay ket qua. Luong goi bi dung (block) trong thoi gian doi.
+- **{{allOf()}}:** tra ve mot Future hoan tat khi tat ca cac Future nhap vao hoan tat. Neu mot cai bi cham, allOf bi cham theo.
+- **{{ForkJoinPool.commonPool()}}:** nhom luong dung chung cua toan bo JVM, CompletableFuture chay tac vu tren nhom neu ban khong cung cap nhom rieng.
+
+### Cach xu ly
+Moi dich vu chi duoc cho toi da 800 miligiay, sau do tra gia tri thay the bang {{exceptionally}} thay vi cho mai:
+
+~~~java
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+
+public class TongHopDonHang {
+    public ThongTin tongHop(String maDon) {
+        CompletableFuture<Kho> cfKho = CompletableFuture.supplyAsync(() -> khoClient.lay(maDon));
+        CompletableFuture<VanChuyen> cfVc = CompletableFuture.supplyAsync(() -> vanChuyenClient.lay(maDon));
+        CompletableFuture<KhuyenMai> cfKm = CompletableFuture.supplyAsync(() -> khuyenMaiClient.lay(maDon));
+
+        Kho kho = cfKho.orTimeout(800, TimeUnit.MILLISECONDS)
+                .exceptionally(ex -> new Kho(null, "đã hết thời gian chờ")).join();
+        VanChuyen vc = cfVc.orTimeout(800, TimeUnit.MILLISECONDS)
+                .exceptionally(ex -> new VanChuyen(null, "đã hết thời gian chờ")).join();
+        KhuyenMai km = cfKm.orTimeout(800, TimeUnit.MILLISECONDS)
+                .exceptionally(ex -> new KhuyenMai(null, "đã hết thời gian chờ")).join();
+
+        return new ThongTin(kho, vc, km);
+    }
+}
+~~~
+
+### Loi hay gap
+- {{orTimeout}} khong huy tac vu dang chay, chi lam luong goi khong con doi. Tac vu cu tiep tuc chay nen phai lam bo nhi cho an toan (idempotent).
+- Khong goi {{.join()}} tren luong xu ly request neu co the tránh; neu bat buoc, phai co thoi gian cho cho moi loi goi.
+- Neu timeout quý lau (vi du 30 giay) va nhieu request cung cham, luong van bi het cho neu khong co gioi han luong dong thoi (bulkhead) cho tung dich vu.
+
+### Vi du doi thuc
+API tong hop don hang goi 3 dich vu, p99 binh thuong 300ms. Khi van chuyen cham 30 giay, {{.join()}} giu 200 luong Tomcat, p99 len 6s, API khac (dang nhap, xem san pham) cung service cung 503. Sau them {{orTimeout}} 800 miligiay: p99 ve 900ms, service khong con sap.
+
+### Tra loi mau khi pham van
+"Khi goi nhieu dich vu bat dong bo va cho ket qua, toi luon dat thoi gian cho cho moi loi goi. CompletableFuture.allOf() cho den khi tat ca hoan tat, neu mot dich vu cham 30 giay, .join() giu luong web ma mot, toan bo service bi chan. Tao sua bang orTimeout(800ms) cho moi dich vu, dung exceptionally tra gia tri thay thay (vi du kho trong, van chuyen chua co thong tin), sau do join(). Ket qua p99 tu 6s ve 900ms va service khong sap nua. Luu y orTimeout khong huy tac vu dang chay nen phai lam bo nhi cho an toan, va khong cho .join() tren luong request neu co the tranh."
+
+> Senior tip: bao giot cung dat thoi gian cho moi loi goi bat dong bo, va coi moi dich vu ngoai deu co the treo ma; co gioi han luong dong thoi (bulkhead) cho tung dich vu de mot dich vu cham khong lam het het luong cua toan bo service.
+
+`,
+  follow: [
+    'orTimeout khac completeOnTimeout nhu the nao?',
+    'Tac vu CompletableFuture bi cham co bi huy khi orTimeout het han khong? Dieu gi xay ra?',
+    'Tại sao khong nen su dung ForkJoinPool.commonPool() cho tac vu goi I/O trong ung dung web?'
+  ],
+  tags: ['CompletableFuture', 'timeout', 'thread pool', 'cascading failure', 'Java concurrency']
+},
+{
+  id: 'scenario-141',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Lap trinh vien su dung {{danhSach.parallelStream().map(...)}} de tinh phi cho 10.000 don hang trong mot request API. API nhanh nguoi it su dung, nhung khi nhieu nguoi cung goi, toan bo API trong service cung cham, dung CPU server chi 40%. Nguyen nhan va cach xu ly?',
+  a: `**Tóm tắt:** {{parallelStream()}} chay cong viec song song tren {{ForkJoinPool.commonPool()}}, nhom luong dung chung cua toan bo JVM (so luong mac dinh = so lop CPU tru 1). Trong request web, cac luong Tomcat gui nhiem vu vao nhom chung roi **dung cho den khi xong**. Neu nhieu request cung tinh toan nang, nhom chung bi day, luong Tomcat khong con luong nhan request moi, toan service cham, dung CPU thap (cac luong dang cho, khong tinh toan).
+
+### Cac khai nem can biet
+- **{{parallelStream()}}:** chia danh sach thanh nhieu phan va xu ly song song de nhanh hon tren nhieu lop CPU.
+- **{{ForkJoinPool.commonPool()}}:** nhom luong dung chung cua toan bo JVM, parallelStream mac dinh su dung nhom nay.
+- **I/O-bound vs CPU-bound:** I/O-bound la viec cho mang/DB (luong thoi gian cho), CPU-bound la viec tinh toan (luong thoi gian CPU). parallelStream chi ly honh cho tinh toan CPU nang, va chi khi su dung nhom luong rieng.
+- **Doi luong luong (thread starvation):** nhom luong bi day, luong khac khong duoc luong de lam viec.
+
+### Cach xu ly
+- **KHONG** su dung {{parallelStream()}} trong request web (HTTP).
+- Neu can tinh toan song song nang, su dung {{ForkJoinPool}} rieng voi so luong han che, hoac dời tac vu sang job nen, khong lam doi luong luong web.
+
+### Vi du code
+~~~java
+import java.math.BigDecimal;
+import java.util.List;
+
+// SAI: su dung nhom luong dung chung cua toan bo JVM, de lam doi luong web
+public BigDecimal tongPhiSai(List<DonHang> danhSach) {
+    return danhSach.parallelStream()   // su dung ForkJoinPool.commonPool()
+            .map(DonHang::tinhPhi)     // tinh toan nang, chap luong chung
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+}
+
+// DUNG: tinh toan thuan tu trong request HTTP
+public BigDecimal tongPhiDung(List<DonHang> danhSach) {
+    return danhSach.stream()   // khong su dung parallelStream trong request HTTP
+            .map(DonHang::tinhPhi)
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+}
+~~~
+
+Neu can tinh toan song song:
+~~~java
+import java.util.concurrent.ForkJoinPool;
+
+// Nhom luong rieng, gioi han 4 luong, khong anh huong luong web
+ForkJoinPool pool = new ForkJoinPool(4);
+BigDecimal tong = pool.submit(() -> danhSach.parallelStream()
+        .map(DonHang::tinhPhi)
+        .reduce(BigDecimal.ZERO, BigDecimal::add)).join();
+~~~
+
+### Vi du doi thuc
+Server 8 lop, nhom chung 7 luong; Tomcat 200 luong. 3 nhan vien cung xuat bao cao tinh phi 10.000 don: 7 luong nhom chung bi day, 200 luong Tomcat bi cho, p99 toan service tu 150ms len 8s, CPU 40% (luong Tomcat dang cho, khong tinh toan). Sua: bo parallelStream, tinh thuan tu; bao cao sau do 1.5s nhung khong anh huong API khac; hoac doti sang job nen.
+
+> Senior tip: quy tắc don gian — ma xu ly request HTTP khong duoc su dung parallelStream(). Neu thuc su can tinh toan song song nang, dung nhom luong rieng voi so luong han che, hoac doti tac vu sang job nen, khong lam doi luong luong xu ly web.
+
+`,
+  follow: [
+    'parallelStream giup nhanh hon tren bao nhiêu lop CPU, va khi nao thi chua hon stream thuan tu?',
+    'ForkJoinPool.commonPool con dung cho viec nao khac trong ung dung?',
+    'Virtual thread (Java 21) co giai quyet tri de van de nay khong?'
+  ],
+  tags: ['parallelStream', 'ForkJoinPool', 'doi luong luong', 'CPU', 'Java concurrency']
+},
+{
+  id: 'scenario-142',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'He thong su dung PostgreSQL chinh (primary) va mot ban sao chi doc (read replica) de giam tai co so du lieu. Khach hang cap nhat so dien thoai roi lap tai tai lai trang, nhung lai thay so dien thoai cu. Vao gio cao diem, do tre sach giua primary va replica tang len 10 giay. Nguyen nhan va thiet ke sao cho khach luon thay du lieu moi nhat sau khi chinh sua xong?',
+  a: `**Tóm tắt:** Read replica chi doc, du lieu duoc sao chep tu primary sau khi ghi xong tren primary. Viec sao chep khong luc lap, co the cham mot so giay den mot so phut (replication lag). Sau khi khach sua du lieu, neu doc ngay luc do thay replica van chua nhan du lieu moi, khach thay du lieu cu. Cach sua: ghi tren primary, sau do trong khoang thoi gian ngan (vi du 5 giay) doc lai tu primary cho cung mot phien lam viec; cac lan doc khac doc replica va chap nhan du lieu co the cu. Du lieu tien tien (so du, vi) luon doc primary, khong bao gi doc replica de ra quyet dich vu.
+
+### Cac khai nem can biet
+- **Primary:** co so du lieu chinh nhan moi ghi (them, sua, xoa).
+- **Read replica:** ban sao cua primary chi cho phep doc. Du lieu duoc sao chep tu primary qua mang sau khi ghi xong tren primary.
+- **Replication lag (do tre sach):** khoang thoi gian giua khi du lieu duoc ghi tren primary va khi ban sao nhan duoc du lieu do. Co the tu mot so giay den mot so phut.
+- **Read-your-writes consistency:** sau khi nguoi dung ghi du lieu, khi doc ngay sau do phai thay du lieu vua sua.
+- Nguyen nhan replica tre: nhieu ghi tren primary, mang cham, Postgres mac dinh sao chep bat dong bo (async), truy van chay dai tren replica lam cham trinh sao chep.
+
+### Cach xu ly
+1. Ghi tren primary.
+2. Sau khi ghi, danh dau phien lam viec cua khach la "vua ghi" trong khoang thoi gian ngan (vi du 5 giay). Trong khoang nay, tat ca doc cua khach di den primary.
+3. Cac lan doc khac di den replica, chap nhan du lieu co the cu mot so giay.
+4. Du lieu tien tien (so du, vi, han muc) luon doc primary, khong bao gi doc replica de ra quyet dich vu.
+
+### Vi du code
+~~~java
+public class KhachHangService {
+    private final KhachHangRepository primaryRepo;   // ghi va doc du lieu moi nhat
+    private final KhachHangRepository replicaRepo;   // doc du lieu co the cham mot so giay
+
+    public void capNhatSoDienThoai(String maKhach, String soDienThoai) {
+        primaryRepo.capNhatSoDienThoai(maKhach, soDienThoai);   // ghi trên primary
+        // đánh dấu phiên làm việc này vừa ghi, đọc từ primary trong 5 giây tới
+        luuTruPhien.danhDangVuaGhi(maKhach, 5000);               // lưu trữ phiên: ví dụ HttpSession hoặc bộ nhớ trong ứng dụng
+    }
+
+    public KhachHang layThongTin(String maKhach) {
+        if (luuTruPhien.vuaGhi(maKhach)) {
+            return primaryRepo.timTheoId(maKhach);   // doc primary de thay ngay du lieu vua sua
+        }
+        return replicaRepo.timTheoId(maKhach);   // doc replica cho cac lan tra cuu binh thuong
+    }
+}
+~~~
+
+### Vi du doi thuc
+Ngan hang so, khach sua so dien thoai trong app roi tai lai trang, thay so cu, goi CSKH nghi mat so. Replica lag trung binh 2 giay, gio cao diem 12 giay; khoang 8% khach tai reload ngay sau khi sua thay du lieu cu. Sau khi ap dung doc primary trong 5 giay sau moi lan sua: 0% truong hop thay du lieu cu, va p99 doc khong tang dan nghia vi chi mot phan nho luot truy cap doc primary.
+
+### Bang trade-off
+| Cach doc | Uu diet | Nhu diem |
+| Doc luon primary | du lieu luon moi nhat | primary som qua tai vi phuc vu ca doc ca ghi |
+| Doc luon replica | giam tai primary | du lieu co the cu, khong dam bao thay ngay du lieu vua sua |
+| Doc primary ngan thoi gian sau khi ghi | can thang giua tinh moi va tai | can theo doi phien lam viech cua tung khach |
+
+> Senior tip: du lieu lien quan tien (so du, vi, han muc) luon doc primary, khong bao gi doc replica de ra quyet dich vu; replica dung cho bao cao, thong ke, danh sach san pham chap nhan du lieu cu mot so giay.
+
+`,
+  follow: [
+    'Replication lag la gi va bo bang chi so nao tren PostgreSQL?',
+    'Khi nao nen dung synchronous_commit = on, va trade-off la gi?',
+    'Neu primary loi va chuyen doc sang replica (failover), can luu y gi?'
+  ],
+  tags: ['PostgreSQL', 'read replica', 'replication lag', 'consistency', 'primary-replica']
+},
+{
+  id: 'scenario-143',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Bật luồng ảo (virtual threads) của Java 21 nhưng latency p99 tăng thay vì giảm. Nguyên nhân và cách xử lý thế nào?',
+  a: `**Tóm tắt:** latency p99 (độ trễ của 1% request chậm nhất, đo trải nghiệm tệ nhất phần lớn) tăng sau khi bật virtual threads thường do **pinning**: luồng ảo bị "dính" vào luồng hệ điều hành khi chạy mã dùng từ khóa {{synchronized}} hoặc gọi I/O nguyên bản, khiến số lượng luồng carrier hạn chế nhanh cạn kiệt và các request khác phải chờ. Cách sửa: thay {{synchronized}} bằng {{ReentrantLock}} trên đường nóng, tránh I/O nguyên bản trên luồng ảo, và không dùng virtual threads cho công việc tính toán nặng (CPU-bound).
+
+### Khái niệm cần biết
+- **Virtual threads:** luồng được JVM quản lý, rất nhẹ, có thể chạy hàng triệu cùng lúc; phù hợp công việc chờ I/O (gọi DB, gọi HTTP). Hãy hình dung như một nhân viên phục vụ nhiều bàn ăn khi khách chờ món, thay vì mỗi khách một nhân viên riêng.
+- **Platform/carrier thread:** luồng hệ điều hành thực sự chở luồng ảo; trên máy 4 lõi thường chỉ có vài carrier (giới bằng số lõi CPU).
+- **Pinning:** luồng ảo "dính" vào carrier khi vào khối {{synchronized}} hoặc gọi I/O nguyên bản; carrier không thể quay sang luồng khác trong khoảng đó, nên nhiều luồng ảo bị dính sẽ làm cạn carrier.
+- **p99:** giữa 100 request, loại bỏ 1 request chậm nhất, giá trị lớn nhất còn lại là p99.
+
+### Triệu chứng và số liệu
+Trước khi bật virtual threads, p99 API khoảng 60ms. Sau khi bật (ví dụ {{server.tomcat.threads.virtual=true}} trên Spring Boot 3.2), p99 nhảy lên 3–5 giây vào giờ cao điểm, CPU 4 lõi dùng khoảng 90% dù chỉ có hàng trăm request/giây. Request trên các đường không bị pinning vẫn nhanh, chỉ một phần nhỏ request lại bị kéo dài cực kỳ.
+
+### Nguyên nhân: pinning hoạt động thế nào
+Khi một virtual thread vào đoạn mã {{synchronized}}, JVM không thể tháo luồng ảo ra khỏi carrier để xử lý request khác. Nếu 200 request cùng vào cùng một khối {{synchronized}} trên một đối tượng dùng chung (ví dụ validator singleton), 200 luồng ảo bị dính, 8 carrier trên máy 8 lõi hết trong chớp mắt, các request mới phải xếp hàng đợi Carrier. Cùng lúc đó, heap và GC vẫn bình thường — nên việc chỉ xem metrics JVM heap không phát hiện được vấn đề.
+
+### Điều tra bằng công cụ cụ thể
+1. Bắt **JFR (Java Flight Recorder)** trong 60 giây, lọc sự kiện {{jdk.ThreadPinning}} xem luồng nào bị dính và stack trace ngăn xếp. Lệnh ví dụ: {{jcmd PID_JAVA JFR.start name=pinning duration=60s}}.
+2. Dùng {{top -H -p PID_JAVA}} xem carrier thread nào đang dùng %CPU cao.
+3. Dùng {{jstack PID_JAVA}} tìm carrier thread ở trạng thái RUNNABLE với stack đọng vào monitor/khóa.
+4. So sánh p99 trước/sau bằng histogram (không dùng giá trị trung bình, vì trung bình bị làm mờ bởi các giá trị cực đoan); đo riêng p50 và p99.
+
+### Cách xử lý
+1. Thay {{synchronized}} bằng {{ReentrantLock}} trên đường nóng — ReentrantLock không gây pinning cho virtual thread.
+2. Tách công việc tính toán nặng ra khỏi virtual thread (dùng một pool platform thread riêng) hoặc chia nhỏ để không chiếm carrier lâu.
+3. Tránh I/O nguyên bản (ví dụ {{FileInputStream}} cũ) trên virtual thread; dùng NIO/HTTP client hiện đại mà JVM biết tháo carrier khi chờ.
+4. Giám sát p99 và sự kiện pinning trước khi mở virtual threads cho toàn bộ traffic.
+
+### Ví dụ mã
+~~~java
+// TRƯỚC: virtual thread bị pin vì synchronized trên đối tượng dùng chung
+private final Object khoa = new Object();
+
+public void xuLy(String maDonHang) {
+    synchronized (khoa) {          // virtual thread dính vào carrier ở đây
+        kiemTraDuLieu(maDonHang);  // xử lý nặng trong khoảng khóa -> pinning
+    }
+}
+
+// SAU: ReentrantLock không gây pinning cho virtual thread
+private final ReentrantLock khoa = new ReentrantLock();
+
+public void xuLy(String maDonHang) {
+    khoa.lock();
+    try {
+        kiemTraDuLieu(maDonHang);
+    } finally {
+        khoa.unlock();
+    }
+}
+~~~
+
+### Bang trade-off
+| Phuong an | Uu diem | Nhu diem |
+| Virtual threads + synchronized | Doi voi code co san, thay doi it | Pinning lam cạn carrier, p99 tang |
+| Virtual threads + ReentrantLock | Khong pinning, su dung luong tot | Can sua code duong nóng |
+| Platform thread pool | Khong co van de pinning | Mot luong tốn khoảng 1 MB, so luong luong han che |
+
+### Loi hay gap
+- Su dung {{Executors.newVirtualThreadPerTaskExecutor()}} cho tat ca cac nhan vu bao gom tinh toan trong -> khong tang ket qua va co the lam chenh lech tai nguyen.
+- Quen coi virtual threads lam tat call khong block -> chung van block carrier neu gap synchronized hoac I/O nguyen ban.
+- Chua xem p99, trung bình lat 60ms che duoc p99 tang den giay.
+
+### Vi du doi thuc
+He thong xu ly 500.000 don hang/ngay, bật virtual threads trên Spring Boot 3.2 + Tomcat. p99 tu 60ms len 3,5 giay gio cao diem. Dieu tra bang JFR thay 88% thoi gian luong an o duoc dinh den carrier do phuong thuc {{kiemTraDonHang}} su dung {{synchronized}} tren doi tuong validator chung; jstack thay carrier thread RUNNABLE dang cho monitor. Sua: thay bang {{ReentrantLock}}, tach xu ly trong khoi khoa ra ngoai, dung {{ThreadLocal}} cho formatter. Ket qua: p99 ve 75ms, CPU 4 loi o o 35% o din.
+
+### Tra loi mau khi phong van
+"Virtual threads giam chi phí luồng nhưng không tự động làm ứng dụng nhanh hơn. Khi p99 tăng sau khi bật, tôi nghi ngờ pinning: luồng ảo dính vào carrier vì mã dùng synchronized hoặc I/O nguyên bản, làm cạn số lượng carrier hạn chế. Tôi dùng JFR để bắt sự kiện jdk.ThreadPinning, dùng jstack và top -H để xác định carrier thread nào bị chiếm, rồi thay synchronized bằng ReentrantLock trên đường nóng và tách công việc tính toán nặng ra khỏi virtual thread. Quan trọng là không áp dụng virtual threads cho toàn bộ trước khi đo p99 trước/sau, vì trung bình có thể ẩn dấu hiệu."
+
+> Senior tip: virtual threads phù hợp nhất với công việc chờ I/O nhiều luồng (gọi DB, gọi API), không phải cho tính toán nặng. Luôn đo p99 và sự kiện pinning trước khi bật cho toàn bộ traffic.`,
+
+  follow: [
+    'Pinning xuat hien o dau va luong an o co bi khoa carrier vinh vien khong?',
+    'Khi nao KHONG nen dung virtual threads (CPU-bound, I/O nguyen ban)?',
+    'Lam sao quy doi cac executor hien co sang virtual threads khong can sua code moi noi?'
+  ],
+  tags: ['virtual-threads', 'pinning', 'p99', 'Java-21', 'hieu-suat']
+},
+{
+  id: 'scenario-144',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'CPU nhảy lên 100% và các API chờ mãi không hồi đáp. Bạn biết cách tìm luồng gây sự cố bằng top -H và jstack không, regex và vòng lặp vô hạn có liên quan gì?',
+  a: `**Tóm tắt:** CPU 100% thường do một luồng Java bị kẹt tính toán liên tục — điển hình là mẫu regex kém thiết kế gây ReDoS (Regular Expression Denial of Service) hoặc vòng lặp vô hạn trong code. Cách tìm: dùng {{top -H -p PID}} để xem luồng hệ điều hành nào chiếm Processor, đổi mã số luồng sang hệ thập lục phân, rồi dùng {{jstack}} để xem stack trace của luồng đó và xác định chính xác hàm đang lặp vô hạn.
+
+### Khái niệm cần biết
+- **Regex (bieu thuc chinh quy):** mo de tim kiem chuoi, vi dieu kiem tra email hay ma don hang.
+- **ReDoS:** Regular Expression Denial of Service — mau regex co cac khoi lap noi nhau (vi du {{(a+)+}}) tren chuoi dai khong khop, may regex thu vo so cach phan chia, CPU 100% trong giay hoac phut.
+- **Vong lap vo han:** lap khong co dieu kien dung hoac dieu kien khong bao giờ thanh false.
+- **top -H -p PID:** lenh Linux liet ke tung luong cua tien trinh Java, cot PID la ma luong he dieu hanh (thap phan), cot %CPU thay luong nao dang chay noi bat.
+- **jstack PID:** in danh sach luong Java va stack trace; moi luong co {{nid}} duoi dang thap luc phan (hexadecimal), vi du {{nid=0x3e8}}.
+- **Doi soat he thap luc phan:** lenh {{printf '%x' 1000}} in ra {{0x3e8}} (1000 thap phan bang 3e8 thap luc phan).
+
+### Buoc dieu tra
+1. Chay {{top -H -p PID_JAVA}}: tim luong %CPU gan 100%, ghi lai ma luong (vi du 4712).
+2. Doi ma luong sang thap luc phan: {{printf '%x' 4712}} ket qua {{0x1268}}.
+3. Chay {{jstack PID_JAVA}} va tim dong chua {{nid=0x1268}}: stack trace bi ket o ham nao, trang thai {{RUNNABLE}} khong thay doi giua hai lần dump cach nhau 5 giay.
+4. Neu stack khong ro, dung Java Flight Recorder (JFR) de xem mot hinh anh su kien CPU.
+
+### Vi du ma loi va sua
+~~~java
+// LOI: kiem tra tung lan goi, mau regex kha the gay ReDoS
+public boolean hopLe(String ma) {
+    return ma.matches("^(a+)+$");   // chuoi 'aaaaaaaaaaa!' lam CPU 100%
+}
+
+// DUNG: bieu thuc duoc bieu hien mot lan, gioi han do dai, khong lap noi
+private static final Pattern MA_DON_HANG = Pattern.compile("^[A-Z0-9]{1,20}$");
+
+public boolean hopLe(String ma) {
+    if (ma == null || ma.length() > 20) return false;
+    return MA_DON_HANG.matcher(ma).matches();
+}
+~~~
+
+Vong lap vo han:
+~~~java
+// LOI: thieu i++ -> vong vo han
+int i = 0;
+while (i < items.size()) {
+    xuLy(items.get(i));
+}
+// DUNG:
+for (int i = 0, n = items.size(); i < n; i++) {
+    xuLy(items.get(i));
+}
+~~~
+
+### Vi du doi thuc
+API tim kiem don hang nhan tu khoa 'aaaaaaaaaaaaaaaa!' (16 ky tu a cua dau than). Mau regex '^(a+)+$' kiem tra ma don hang lam 4 bo xu ly chien len 100% CPU trong 45 giay, moi request tuong tu chung một core, p99 API tu 80ms len 20 giay. Restart pod khong cap phat vi yeu cau moi tiep tuc dieu tri. Dieu tra bang top -H thay luong 4712 o 99% CPU, jstack thay stack bi ket o java.util.regex.Pattern va Matcher, trang thai RUNNABLE khong thay doi. Sua: doi regex thanh '^[A-Za-z0-9]+$', bieu hien mot lan thanh {{static final Pattern}}, gioi han do dai dau vao it nhat 50 ky tu. Sau sua, cung dau vao xu ly duoi 2ms, CPU ve muc binh thuong.
+
+### Bang trade-off
+| Phuong an | Uu diem | Nhu diem |
+| String.matches() | Ngan gon, de viet | Bieu hien regex moi lan goi, cham, de bi ReDoS |
+| Pattern static final | Bieu hien mot lan, nhanh, de kiem tra | Phai xu ly PatternSyntaxException o khoi tao |
+| Thuvien RE2J | Thoi gian thuc du bao, khong bi ReDoS | Them phu thuoc, thi gian tien xu ly it phai hon |
+
+### Loi hay gap
+- Chua test regex voi chuoi dai khong khop (vi du 10.000 ky tu) truoc khi cong bo.
+- Quen gioi han do dai dau vao: chuoi nhieu tram kiloba ky tu cung lam regex cham.
+- Dung jstack mot lan lan cuoi khong du: vong vo han co the chay rat nhe, can dump hai lan cach nhau de xac nhan stack khong di chuyen.
+
+### Tra loi mau khi phong van
+"Khi CPU 100% hoan toan do mot luong, tau chinh xac nhu thuat don: top -H -p PID tim luong chay noi bat, doi ma luong ra thap luc phan bang printf '%x', sau do jstack tim nid tuong ung va xem stack trace — neu o o java.util.regex.Pattern/Matcher, that la ReDoS; neu o vong lap cua ung dung, that la vong vo han. Sua bang bieu hien regex mot lan, tránh mau lap noi nhau, gioi han do dai dau vao, va them dieu kien dung buoc cho vong lap. De phat tre som, em test regex voi dau vao dich de dai 10.000 ky tu khong khop truoc khi cong bo."
+
+> Senior tip: luon test regex voi chuoi dau vao dich de (adversarial) dai 10.000 ky tu khong khop truoc khi cong bo, va gioi han do dai dau vao o api gateway; mot regex xau mot duy nhat co the danh het het tat ca core.`,
+
+  follow: [
+    'Biet regex nao de bi ReDoS khong can chay thu?',
+    'jstack chi chot mot lan; lam sao bat luong CPU 100% neu su co ngan hon 10 giay?',
+    'Vong lap vo han trong Stream API (flatMap sinh vo han) xu ly ra sao?'
+  ],
+  tags: ['CPU-100', 'regex', 'ReDoS', 'jstack', 'top-H', 'vong-lap-vo-han']
+},
+{
+  id: 'scenario-145',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Container Java bi OOMKilled ngay lap tuc nhung heap con trong bo nho. Nguyen co o bo nho native (ngan xep luong, bo nho truc tiep) va ban chan doan nhu the nao?',
+  a: `**Tóm tắt:** OOMKilled (ma thoat 137) la het bo nho cua container, khac OutOfMemoryError cua heap Java. Neu heap con trong nhung container van bi het RAM, nguyen co thuong o bo nho native ngoai heap — pho bien nhat la ngan xep luong (thread stack) khi co hang nghin luong platform, bo nho truc tiep (direct buffer), hoac metaspace. Chan doan bang top -H, /proc/<pid>/status, jstack va jcmd VM.native_memory.
+
+### Khái niệm cần biết
+- **Heap:** vung nho JVM luu doi tuong Java, garbage collection dong dlop.
+- **Bo nho native:** bo nho ngoai heap (ngan xep luong, metaspace, bo nho truc tiep), khong do GC Java quan ly, deu tinh vao gioi han RAM cua container.
+- **RSS:** bo nho thuc te (resident set size) cua tien trinh, kernel dung de quyet dinh OOMKill.
+- **Ma thoat 137:** container bi kernel gui SIGKILL (9 + 128 = 137) vi vuot gioi han RAM.
+- **Ngan xep luong:** moi luong Java chuan (platform thread) chiem khoang 1 MB vung ngan xep native, ton tai toan thoi gian cua luong.
+
+### Buoc chan doan
+1. {{top -H -p PID_JAVA}}: so luong luong tang dan theo gio; cac luong it tieu CPU nhung van ton tai.
+2. {{cat /proc/PID_JAVA/status}} tim dong {{Threads:}} (so luong luong he dieu hanh, bao gom ca luong JVM).
+3. {{jstack PID_JAVA | grep -c '"'}}: dem so luong Java, so sanh giua hai thoi diem cach nhau bao nhieu gio.
+4. {{jcmd PID_JAVA VM.native_memory summary}}: neu muc {{Thread}} tang dan trong khi heap o din, nguyen co la ngan xep luong.
+
+### Vi du ma va sua
+~~~java
+// LOI: tao luong moi cho moi yeu cau, khong gioi han
+public void xuLy(File f) {
+    new Thread(() -> xuLyFile(f)).start();   // moi luong khoang 1 MB native
+}
+// DUNG: pool co dinh va xoa ThreadLocal
+private static final ExecutorService BO_LOC = Executors.newFixedThreadPool(200);
+
+public void xuLy(File f) {
+    BO_LOC.submit(() -> {
+        try { xuLyFile(f); }
+        finally { bienCucLy.remove(); }   // khong giu doi tuong theo luong
+    });
+}
+~~~
+
+### Vi du doi thuc
+Dich vu nhan file tu khach hang, moi file tach thanh 100 khoi, moi khoi xu ly tren mot luong moi, pool khong gioi han. Heap su dung 800MB/2GB (40%, o din), nhung sau 3 ngay co 3500 luong -> ngan xep 3,5GB native; tong RSS 4,3GB > gioi han container 4GB -> OOMKilled ma 137 moi ngay, khong co file heap dump vi day khong phai OutOfMemoryError cua heap. Sua: pool co dinh 200 luong, dung virtual threads cho viec cho I/O (Java 21), xoa {{ThreadLocal}} trong {{finally}}. RSS o din o 1,1GB, khong con OOMKilled trong hai thang.
+
+### Bang trade-off
+| Phuong an | Uu diem | Nhu diem |
+| Pool co dinh | Duan so luong luong, du duoc bo nho | Gioi han so yeu cau xu ly cung luc |
+| Virtual threads (Java 21) | Ngan nho, tot cho viec cho I/O | Khong giup viec tinh toan trong |
+| Tao luong moi | Don gian | 1 MB/luong, de cham het bo nho container |
+
+### Loi hay gap
+- Chi theo dõi heap (% su dung) thi bo qua bo nho native, khong phat hien OOMKilled som.
+- Luong bi giu do ThreadLocal khong xoa -> so luong luong tang dan voi thoi gian.
+- -Xss lon (kich thuoc ngan xep) tang bo nho moi luong nhung khong can thiet cho viec I/O.
+
+### Tra loi mau khi phong van
+"OOMKilled ma 137 la het bo nho cua container, khong phai het heap cua Java; neu heap con trong nhung container van het RAM, bo nho native la ngươn can nghi dau tien. Mau thuong nhat la hang nghin luong platform, moi luong chiem khoang 1 MB ngan xep native, cac luong nay khong do garbage collection quan ly. Em chan doan bang top -H dem luong, /proc/PID/status xem so luong, jstack dem luong Java, va jcmd VM.native_memory xem muc Thread tang dan. Sua bang pool co dinh, xoa ThreadLocal trong finally, va dung virtual threads cho viec cho I/O Java 21. Neu nghi metaspace, em co the them -XX:MaxMetaspaceSize va kiem tra lop duoc tai len."
+
+> Senior tip: quy tac cap bo nho JVM tren container: gioi han container = heap x 1,25 + bo dem cho metaspace, ngan xep luong va bo nho truc tiep (Netty, v.v.). Mot pod Xmx 1 GB voi gioi han 1 GB se bi OOMKilled trong gio cao diem.`,
+
+  follow: [
+    'Nen dat gioi han ngan xep luong (-Xss) bao nhieu va tac dong sao?',
+    'Metaspace tang cung gay OOMKilled; phan biet voi ngan xep luong ra sao?',
+    'Virtual threads co chiem ngan xep 1 MB khong?'
+  ],
+  tags: ['OOMKilled', 'bo-nho-native', 'ngan-xep-luong', 'Kubernetes', 'JVM']
+},
+{
+  id: 'scenario-146',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Ung dung batch chay toi chay cham gấp 5 lan sau khi du lieu tang. Ban dieu tri va sua them cho du lieu lon nhat the nao?',
+  a: `**Tóm tắt:** chi phi cam tang theo hinh khong tuyen tinh (O(n^2), truy van N+1, doc toan bo bang vao RAM) thi voi du lieu nho khong dam bao ma voi du lieu lon thi cham noc. Dieu tri bang so sanh thoi gian chay voi so luong du lieu, {{EXPLAIN (ANALYZE, BUFFERS)}} va {{pg_stat_statements}}, sau do sua bang chi muc, truy van hop nhat (JOIN) va doc theo con tro (fetchSize/keyset) khong nap het vao RAM.
+
+### Khái niệm cần biết
+- **Truy van N+1:** lay danh sach N don hang, sau do moi don hang chay them mot truy van lay chi tiet -> tong N+1 truy van, chi phi tang tuy theo so don hang.
+- **Doc toan bo bang (full table scan):** khi co chua chi muc khop, Postgres doc het bang, thoi gian tang theo kich thuoc bang.
+- **Con tro doc (fetchSize/keyset):** doc du lieu theo tung lo nhho nho thay thu nap toan bo vao RAM, tranh Garbage Collection dai.
+- **Garbage Collection (GC):** JVM dung ung dung de dong doi tuong khong dung; du lieu lon trong RAM lam GC thuc hien dai hon.
+
+### Buoc dieu tri
+1. So sanh thoi gian chay voi so luong du lieu: 10.000 don 40 giay, 100.000 don 200 giay (gá 5 lan) -> chi phi siêu tuyen tinh, nghi N+1 hoac O(n^2).
+2. Chay {{EXPLAIN (ANALYZE, BUFFERS)}} tren truy van chinh: thay {{Seq Scan}} tren bang lon hoac nhieu truy van nho theo tung don hang.
+3. Xem {{pg_stat_statements}}: truy van chay nhieu nhat va tong thoi gian.
+4. Dung {{jstat -gcutil PID 5s}}: the he old tang dan -> ung dung u thiu RAM.
+5. Xem code: vong lap Java goi DB tung don hang.
+
+### Cach sua
+~~~java
+// LOI: N+1, moi don hang truy van rieng
+for (DonHang dh : donHangs) {
+    List<ChiTiet> ct = jdbc.query("SELECT * FROM chi_tiet WHERE don_hang_id = ?", dh.getId());
+    tinhTien(dh, ct);
+}
+// DUNG: truy van nhat, doc theo con tro, khong nap het vao RAM
+String sql = "SELECT * FROM don_hang WHERE ngay_giao_dich = ? ORDER BY id";
+try (Connection conn = ds.getConnection();
+     PreparedStatement ps = conn.prepareStatement(sql)) {
+    ps.setFetchSize(5000);   // doc 5000 dong moi lan, khong nap het vao RAM
+    ps.setString(1, ngay);
+    try (ResultSet rs = ps.executeQuery()) {
+        while (rs.next()) {
+            xuLyNgay(rs);   // xu ly luon, khong luu toan bo danh sach
+        }
+    }
+}
+~~~
+
+### Vi du doi thuc
+Ung dung batch doc soat 4 trieu giao dich, du lieu tang tu 100.000 len 1.000.000, thoi gian chay tu 40 phut len 200 phut (gá 5 lan). Nguyen co: moi giao dich goi them truy van kiem tra ton kho (N+1) va nap toan bo vao List (GC dai). Sua: them chi muc tren {{ngay_giao_dich}}, truy van JOIN chi tiet trong mot cau, xu ly theo lo 10.000 voi fetchSize. Thoi gian xuong con 45 phut, GC khong neu nua.
+
+### Bang trade-off
+| Phuong an | Uu diem | Nhu diem |
+| fetchSize lon | Giam lan truy van | Tang RAM cho moi lan doc |
+| Chi muc | Doc nhanh theo dieu kien | Ghi cham hon, tieu bo nho them |
+| JOIN mot cau | Khong bi N+1 | Cau truy van phuc tap hon |
+
+### Loi hay gap
+- Chua test voi kich thuoc du lieu thuc te production (staging du lieu it khong phat hien).
+- Quen them chi muc va quan trong them cac truy van khac cham vi chi muc qua nhieu.
+- Nap toan bo ket qua vao List thi List bi danh dai, GC lien tuc.
+
+### Tra loi mau khi phong van
+"Khi du lieu tang nhung batch cham gáp 5 lan, nghi nguyen co o chi phi siêu tuyen tinh: N+1 hay full table scan. Em so sanh thoi gian chay voi so luong du lieu, dung EXPLAIN ANALYZE de thay Seq Scan, dung pg_stat_statements de tim truy van chay nhieu nhat, va jstat de xem GC. Sua bang them chi muc, doi truy van N+1 thanh JOIN mot cau, doc theo con tro fetchSize khong nap het vao RAM, va xu ly theo lo nho. De kiem tra, em dung k6 hoac Gatling voi du lieu kich thuoc production thay vi staging du lieu it."
+
+> Senior tip: batch xu ly du lieu lon can kiem tra voi du lieu thuc te hoac sao y production, khong duoc chin thu trên staging voi du lieu it; chi phi O(n^2) voi du lieu nho rat nhanh ma voi du lieu lon thang het.`,
+
+  follow: [
+    'Khac biet giua OFFSET va con tro (keyset) xu ly batch du lieu lon?',
+    'Lam sao do chi phi thuc cua N+1 tren staging co du lieu nhu production?',
+    'Khi nao nen tach batch job thanh nhieu job chay song song?'
+  ],
+  tags: ['batch', 'hieu-suat', 'SQL', 'chi-muc', 'N+1']
+},
+{
+  id: 'scenario-147',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Bao cáo doanh thu theo ngay sai ngay sau khi chuyen server, va giao dich o gio chuan gio muc he sai ngay. Nguyen co va cach sua dung cho cong ty co khach hang o nhieu mui gio?',
+  a: `**Tóm tắt:** nguyen co thuong la su dung {{LocalDateTime}} (ngay gio khong biet mu gio) hoac {{ZoneId.systemDefault()}} (mu gio cua may chu, thay doi duoc) de tinh ngay nghiep ve. Dung dung: luu thoi điểm b?ng {{Instant}} va quy doi sang mu gio cua khach hang chi luc hien thi, lay mu gio tu ho so khach hang, khong bao gio su dung mac dinh cua may chu trong logic may chu.
+
+### Khái niệm cần biết
+- **Instant:** thoi diem duy nhất tren truc thoi gian, tinh tu 01/01/1970 00:00 UTC, khong thay doi khi ban chuyen thanh pho.
+- **LocalDateTime:** ngay gio 'trong tro' (2026-10-25 14:30) khong biet dang o mu gio nao.
+- **ZoneId.systemDefault():** mu gio mac dinh cua may chu, co the thay doi khi chuyen server — khong dung trong logic may chu.
+- **Ngay nghiep ve (business date):** ngay theo mu gio cua khach hang, khong phai ngay theo dong ho server UTC.
+
+### Buoc dieu tri
+1. So sanh bao cao theo mu gio server va theo ho so khach hang: thay lech.
+2. Kiem tra cron job 'bao cao ngay hom qua' chay 00:05 UTC = 07:05 gio Viet Nam, bo qua giao dich 00:00–07:00 dia phuong.
+3. Giao dich o khoang gio chuyen muc he (2:30 khong ton tai hoac 1:30 xuat hiện hai lan) neu chi luu LocalDateTime.
+
+### Cach sua
+~~~java
+// LOI: tinh ngay theo mu gio may chu, sai khi chuyen server
+LocalDate ngay = thoiDiem.atZone(ZoneId.systemDefault()).toLocalDate();
+
+// DUNG: quy doi theo mu gio khach hang (luu trong ho so)
+LocalDate ngay = thoiDiem.atZone(khachHang.getMuiGio()).toLocalDate();
+~~~
+
+Bao cao theo ngay:
+~~~java
+public BaoCao ngay(Instant thoiDiem, ZoneId muiGioKhachHang) {
+    ZonedDateTime batDau = thoiDiem.atZone(muiGioKhachHang)
+            .toLocalDate().atStartOfDay(muiGioKhachHang);
+    ZonedDateTime ketThuc = batDau.plusDays(1);
+    return repo.tongDoanhThu(batDau.toInstant(), ketThuc.toInstant());
+}
+~~~
+
+### Vi du doi thuc
+San sang ban hang chuyen server tu UTC+7 sang UTC. Bao cao doanh thu ngay 25/10 su dung ZoneId.systemDefault() cua server moi (UTC): don hang 00:30 gio Viet Nam ngay 25/10 = 17:30 UTC ngay 24/10, bi xep vao ngay 24. Ket qua: 12% don nham ngay, doi soat sai 1,2 tỷ VND thang dau. Sua: luu mu gio khach hang, quy doi tai ranh gio bao cao, chay job theo ZoneId.of('Asia/Ho_Chi_Minh'). Sai so ve 0, khong con su co ngay chuyen server.
+
+### Bang trade-off
+| Luu thoi gian | Uu diem | Nhu diem |
+| Instant + TIMESTAMPTZ | Duy nhat, khong bi doi mu gio server | Can quy doi luc hien thi |
+| LocalDateTime + TIMESTAMP | Dang thap, quen thuoc | Bi doi khi server doi mu gio, loi o khoang chuyen muc he |
+| DATE | An toan cho ngay sinh, ngay hop dong | Khong luu gio, khong dung cho giao dich |
+
+### Loi hay gap
+- Chuyen doi ngay thang o tung thinh may voi mac dinh khac nhau -> ket qua khong dien tu.
+- Dung java.util.Date hoac java.util.Calendar cu (doi tuong, thiet ke cu) thay vi java.time.
+- Cho nguoi dung nhap LocalDateTime trong form khong kèm mu gio -> khong biet thoi diem thuc su.
+
+### Tra loi mau khi phong van
+"Khi chuyen server va bao cao ngay bi sai, em nghi nguyen co o su dung LocalDateTime hoac ZoneId.systemDefault() — may chu moi co mui gio khac nhau voi cu, va ngay UTC khong trung voi ngay dia phuong cua khach. Em luu tat ca thoi diem su kien bang Instant cot TIMESTAMPTZ, chi quy doi sang mui gio cua khach hang (luu trong ho so) luc hien thi va tinh ngay nghiep ve. Code may chu khong bao gio goi ZoneId.systemDefault(). Job bao cao chay theo mui gio co dinh (vi du Asia/Ho_Chi_Minh) thay doi gio server. Voi form nhap gio, em bat buoc chon mui gio ro rang thay thay gia tri trong tro."
+
+> Senior tip: truoc khi chon kieu cot thoi gian, hoi 'gia tri nay la thoi diem su kien da xay ra chi la ngay tren lich?'. Neu la thoi diem su kien (dat hang, thanh toan, ghi log), dung Instant + TIMESTAMPTZ; neu chi can ngay (ngay sinh, ngay ky hop dong), DATE du va an toan hon.`,
+
+  follow: [
+    'Instant, LocalDateTime, ZonedDateTime, OffsetDateTime dung khi nao?',
+    'Vi sao khong su dung ZoneId.systemDefault() tren may chu?',
+    'Chuyen he thong dang dung LocalDateTime sang Instant co can doi schema khong?'
+  ],
+  tags: ['mui-gio', 'timezone', 'Instant', 'LocalDateTime', 'bao-cao']
+},
+{
+  id: 'scenario-148',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Sau deploy, clients nhan loi 502/504 nhieu trong mot hai phut. Dien giai cac nghiep thu (graceful shutdown, keep-alive, cold start) va thiet kế deploy khong loi request.',
+  a: `**Tóm tắt:** 502 Bad Gateway (gateway khong nhan tra loi hop le tu pod nguon) va 504 (gateway timeout) sau deploy thuong co ba nghiep thu: (1) ket noi keep-alive tu client/gateway van duoc den pod da nhan SIGTERM, (2) pod moi readiness UP truoc khi warm-up xong (JIT, pool ket noi DB) de request dau timeout, (3) grace period ngan hon thoi gian request dai nhat nen bi SIGKILL giua chinh xu ly. Sua bang preStop, graceful shutdown, grace period du dai, readiness sau warm-up, va client retry co idempotency key.
+
+### Khái niệm cần biết
+- **502 Bad Gateway:** gateway/load balancer gui request den pod nguon nhung khong nhan tra loi hop le (pod da tat hoac chua san sang).
+- **Keep-alive:** ung dung dung lai mot ket noi TCP cho nhieu request de tranh chi phi mo ket noi moi.
+- **Graceful shutdown:** dung nhan request moi, cho request dang chay xong roi moi tat.
+- **Readiness probe:** K8s kiem tra pod san sang nhan traffic chua; pod chua pass se khong nhan request tu Service.
+- **terminationGracePeriodSeconds:** thoi gian toi da tu luc bat dau tat den khi kernel gui SIGKILL (mac dinh 30s).
+
+### Buoc dieu tri
+1. Xem access log gateway: 502 den IP pod cu sau SIGTERM, hay 504 toi IP pod moi trong phut dau deploy.
+2. Log pod cu: thoi gian nhan SIGTERM so voi thoi gian IP khoi EndpointSlice.
+3. Log pod moi: thoi gian tu khoi dong den readiness UP, va thoi gian request dau tien.
+4. Kiem tra {{server.shutdown}}: Spring Boot 3.4 tro len mac dinh graceful, ban cu mac dinh immediate (tat ngay).
+
+### Cach sua
+~~~yaml
+spec:
+  terminationGracePeriodSeconds: 60   # lon hon preStop (10s) + shutdown timeout (40s)
+  containers:
+  - name: payment
+    lifecycle:
+      preStop:
+        httpGet: { path: /actuator/shutdown, port: 8081 }   # hoac sleep 10s
+    readinessProbe:
+      httpGet: { path: /actuator/health/readiness, port: 8080 }
+      failureThreshold: 3
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 2 }
+~~~
+~~~properties
+server.shutdown=graceful
+spring.lifecycle.timeout-per-shutdown-phase=40s
+~~~
+
+Them o client: retry voi idempotency key, gioi han tuoi ket noi connection pool, va LB idle timeout nho hon grace period.
+
+### Vi du doi thuc
+Dich vu thanh toan 10 pod, deploy luc 14:00, khach nhan 200–400 loi 502/504 trong hai phut, tap trung o nhung client giu ket noi keep-alive den pod cu. Pod moi UP sau 3 giay nhung request dau 8 giay (cold start: JIT, pool ket noi DB) vuot timeout gateway 5s -> 504/502. Sua: preStop drain 10s, graceful shutdown 40s, grace 60s, readiness chi UP sau warm-up, maxUnavailable 0, client retry co idempotency key. Ket qua: 0 loi 5xx trong cua so deploy.
+
+### Bang trade-off
+| Phuong an | Uu diem | Nhu diem |
+| Graceful shutdown + preStop | Khong loi request dang chay | Deploy cham chut |
+| maxUnavailable: 0 | Luon co pod san sang | Can it nhat 2 pod de rolling |
+| Readiness sau warm-up | Khong gui traffic toi pod chua san | Can thiet lap warm-up |
+
+### Loi hay gap
+- preStop sleep lon hon grace period: kernel SIGKILL giua chinh, tat ca request dang chay chet.
+- Chỉ cai {{server.shutdown=graceful}} quen preStop: van loi request vi race xoa endpoint.
+- Grace period ngan hon request dai nhat (vi du goi ngan hang 15 giay): bi SIGKILL giua chinh xu ly.
+
+### Tra loi mau khi phong van
+"502 sau deploy co ba nghiep thu chinh: ket noi keep-alive cua client van duoc den pod da nhan SIGTERM, pod moi san sang truoc khi warm-up xong de request dau timeout, va grace period ngan hon request dai nhat bi SIGKILL giua chinh. Em xac minh bang access log gateway, log SIGTERM cua pod cu, va thoi gian readiness cua pod moi. Sua bang preStop drain, server.shutdown=graceful voi timeout lon hon nhat request, grace period bao trum preStop va shutdown, readiness chi UP sau warm-up, maxUnavailable: 0, va client retry co idempotency key de khong loi request neu can gui lai."
+
+> Senior tip: con so grace period phai tinh tu request dai nhat chap nhan hoan tat, khong chon so lon; voi dich vu goi ngan hang p99.9 15 giay, em dat shutdown timeout 40 giay va grace 60 giay.`,
+
+  follow: [
+    'Vi sao readiness probe da co van can preStop?',
+    'Lam sao biet grace period du dai cho request dai nhat?',
+    'Khi client retry nhung request da xu ly xong o pod cu thi sao?'
+  ],
+  tags: ['502', 'graceful-shutdown', 'deploy', 'Kubernetes', 'keep-alive']
+},
 );
