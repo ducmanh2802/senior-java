@@ -3002,4 +3002,215 @@ Trong JVM thật, minor GC còn phải xét tham chiếu từ old generation và
   related: ['jvm-002', 'jvm-004', 'jvm-005'],
   tags: ['GC', 'generational', 'minor GC', 'promotion', 'Survivor', 'Eden'],
 },
+{
+  id: 'lesson-jvm-009',
+  track: 'jvm',
+  order: 9,
+  title: 'Heap, Stack, Metaspace và các loại OutOfMemoryError: Cách chẩn đoán từ log',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Phân biệt được dữ liệu nào nằm ở Heap, Stack và Metaspace để gán bộ nhớ đúng chỗ',
+    'Giải thích được vì sao đệ quy gây ra {{StackOverflowError}} còn tạo object gây ra {{OutOfMemoryError}}',
+    'Nhận diện đúng 5 loại {{OutOfMemoryError}} phổ biến từ log và biết vùng nhớ nào đang bị cạn kiệt',
+    'Đề xuất được tham số JVM phù hợp ({{-Xmx}}, {{-Xss}}, {{-XX:MaxMetaspaceSize}}) để xử lý từng loại lỗi',
+  ],
+  body: `**Tóm tắt:** JVM chia bộ nhớ thành nhiều vùng với mục đích khác nhau: **Heap** lưu object dùng chung cho các thread, **Stack** lưu biến local riêng cho mỗi thread, và **Metaspace** lưu thông tin class. Khi một vùng cạn kiệt, JVM ném ra lỗi tương ứng. Hiểu đúng thông điệp lỗi trong log giúp bạn biết ngay cần tăng tham số nào ({{-Xmx}}, {{-Xss}}, hay {{-XX:MaxMetaspaceSize}}) hoặc cần đi tìm memory leak ở đâu thay vì đoán mò.
+
+### 1) Heap vs Stack vs Metaspace: Cái gì nằm ở đâu?
+
+Để quản lý bộ nhớ hiệu quả, JVM chia RAM thành các khu vực riêng biệt:
+
+| Vùng nhớ | Chứa gì | Phạm vi | Tham số điều chỉnh |
+|---|---|---|---|
+| **Heap** | Mọi object tạo bằng {{new}}, kể cả mảng. | Toàn bộ thread dùng chung | {{-Xms}} (min), {{-Xmx}} (max) |
+| **Stack** | Biến primitive (int, long...), tham chiếu (con trỏ) tới object, stack frame của method. | Riêng cho mỗi thread | {{-Xss}} (mặc định ~1MB/thread) |
+| **Metaspace** | Metadata của class (cấu trúc, method, hằng số). Lưu ở Native Memory. | Toàn bộ thread dùng chung | {{-XX:MaxMetaspaceSize}} |
+
+**Ví dụ đời thực:** Hãy tưởng tượng Heap là **kho chứa hàng** lớn dùng chung cho cả công ty; Stack là **bàn làm việc cá nhân** của từng nhân viên; và Metaspace là **cuốn sổ tay quy trình** ghi lại cách làm việc của từng bộ phận.
+- Nếu kho đầy (Heap space), bạn không thể nhập thêm hàng mới.
+- Nếu bàn làm việc chất quá nhiều giấy tờ chồng lên nhau (Stack overflow), bạn không còn chỗ để viết.
+- Nếu cuốn sổ tay quy trình quá dày (Metaspace), thư viện không còn chỗ chứa.
+
+### 2) Hiểu về Stack và lỗi {{StackOverflowError}}
+
+Mỗi khi bạn gọi một method, JVM tạo ra một **Stack Frame** đẩy vào Stack của thread đó. Frame chứa các biến local của method đó. Khi method chạy xong, frame bị pop (xoá) ra.
+
+- **Nguyên nhân gây lỗi:** Nếu bạn gọi đệ quy vô hạn hoặc đệ quy quá sâu, các frame cứ chồng chất mãi mà không được xoá, cho đến khi vượt quá kích thước {{-Xss}} (thường là 1MB).
+- **Dấu hiệu:** Log ghi {{java.lang.StackOverflowError}}, đi kèm một stack trace lặp đi lặp lại cùng một method hàng nghìn lần.
+- **Cách xử lý:** Kiểm tra điều kiện dừng của đệ quy. Đừng vội tăng {{-Xss}} vì nó sẽ làm giảm số lượng thread mà hệ thống có thể tạo ra (do mỗi thread chiếm 1MB RAM thật).
+
+### 3) Năm loại lỗi bộ nhớ kinh điển
+
+Khi JVM gặp sự cố về bộ nhớ, nó ném ra các loại lỗi khác nhau. Phổ biến nhất là {{java.lang.OutOfMemoryError}} (OOM) cho các vùng heap/metaspace/native, và {{java.lang.StackOverflowError}} cho stack. Mỗi loại chỉ ra một "thủ phạm" khác nhau:
+
+#### A. {{OutOfMemoryError: Java heap space}}
+- **Cái gì hết:** Vùng Heap.
+- **Vì sao:** Bạn tạo quá nhiều object sống lâu (ví dụ nạp 1 triệu bản ghi từ DB vào List) hoặc có **Memory Leak** (object không còn dùng nhưng vẫn bị một biến static trỏ tới).
+- **Cách xử lý:** Lấy heap dump ({{.hprof}}), dùng MAT tìm xem object nào chiếm nhiều bộ nhớ nhất. Nếu code đúng mà thiếu thật thì tăng {{-Xmx}}.
+
+#### B. {{OutOfMemoryError: GC overhead limit exceeded}}
+- **Cái gì hết:** Thời gian của CPU (và hiệu quả GC).
+- **Vì sao:** JVM dành hơn 98% thời gian để chạy GC nhưng chỉ thu hồi được dưới 2% bộ nhớ. Đây là dấu hiệu Heap sắp đầy và GC đang "vùng vẫy" trong tuyệt vọng.
+- **Cách xử lý:** Giống như lỗi Heap space. Đây là lời cảnh báo sớm trước khi Heap thực sự cạn kiệt.
+
+#### C. {{OutOfMemoryError: Metaspace}}
+- **Cái gì hết:** Bộ nhớ lưu thông tin Class (Metaspace, bộ nhớ native).
+- **Vì sao:** Ứng dụng nạp quá nhiều class (thường gặp khi dùng nhiều framework sinh proxy động như CGLIB, Groovy, hoặc hot-reload webapp nhiều lần mà không restart server).
+- **Cách xử lý:** Kiểm tra Classloader leak. Nếu cần thiết thì tăng {{-XX:MaxMetaspaceSize}}.
+
+#### D. {{OutOfMemoryError: Direct buffer memory}}
+- **Cái gì hết:** Bộ nhớ Native (ngoài Heap) dùng cho NIO.
+- **Vì sao:** Bạn dùng {{ByteBuffer.allocateDirect()}} (thường qua Netty, Kafka, hoặc xử lý file lớn) nhưng không giải phóng đúng cách hoặc tốc độ giải phóng chậm hơn tốc độ cấp phát.
+- **Cách xử lý:** Tăng {{-XX:MaxDirectMemorySize}} hoặc kiểm tra việc đóng các resource NIO.
+
+#### E. {{OutOfMemoryError: Unable to create new native thread}}
+- **Cái gì hết:** Tài nguyên của Hệ điều hành (OS) cho thread stack.
+- **Vì sao:** Ứng dụng tạo quá nhiều thread (ví dụ mỗi request tạo 1 thread mới mà không dùng Thread Pool). OS từ chối vì hết bộ nhớ cho stack hoặc vượt quá giới hạn {{ulimit}}.
+- **Cách xử lý:** Sử dụng Thread Pool ({{ExecutorService}}) và giới hạn số thread tối đa.
+
+#### F. {{StackOverflowError}} (không phải OOM)
+- **Cái gì hết:** Stack của một thread.
+- **Vì sao:** Đệ quy vô hạn hoặc đệ quy quá sâu, các frame chồng chất vượt quá {{-Xss}} (mặc định ~1MB).
+- **Cách xử lý:** Sửa điều kiện dừng đệ quy hoặc chuyển sang thuật toán lặp. Đừng vội tăng {{-Xss}} vì sẽ giảm số thread tối đa.
+
+### 4) Quy trình chẩn đoán từ log
+
+Khi thấy lỗi bộ nhớ, hãy làm theo các bước:
+1. **Đọc đúng dòng lỗi đầu tiên**: Nó nằm ngay sau chữ {{java.lang.OutOfMemoryError: ...}}.
+2. **Xem Stack Trace**: Tìm xem code của bạn (tên package của dự án) nằm ở đâu trong trace để biết phương thức nào đang yêu cầu bộ nhớ.
+3. **Phân tích bối cảnh**: Lỗi xảy ra lúc startup (thiếu bộ nhớ cấu hình) hay sau khi chạy một lúc (nghi rò rỉ bộ nhớ)?
+4. **Dùng công cụ**: Nếu là Heap space, bắt buộc phải có Heap Dump để "bắt tận tay" object nào đang chiếm chỗ.
+
+> Senior tip: Đừng bao giờ tăng {{-Xmx}} như phản xạ đầu tiên khi thấy OOM. Nếu là rò rỉ bộ nhớ (leak), tăng heap chỉ giúp ứng dụng "sống thêm" được một lát trước khi lại crash. Hãy luôn tìm nguyên nhân gốc rễ (root cause) trước.
+
+### Liên hệ phỏng vấn
+Interviewer rất thích hỏi: "Kể tên các loại lỗi bộ nhớ bạn biết và cách xử lý". Trả lời tốt là phải phân biệt được **Heap** (dữ liệu), **Metaspace** (cấu trúc class), **Native memory** (direct buffer, thread stack), và **StackOverflowError** (đệ quy, không phải OOM). Hãy kể thêm về kinh nghiệm dùng MAT để đọc heap dump, đó là điểm cộng cực lớn cho level Senior. Bài tập dưới đây sẽ giúp bạn luyện kỹ năng "nhìn log đoán bệnh".`,
+  exercises: [
+    {
+      title: 'OomAnalyzer: Bộ chẩn đoán lỗi bộ nhớ từ log',
+      prompt: `Hãy hoàn thiện lớp {{OomAnalyzer}} để phân tích các chuỗi log lỗi và trả về vùng bộ nhớ cần xử lý.
+
+Yêu cầu:
+- Hàm {{analyze(String log)}} nhận vào một dòng log (hoặc stack trace).
+- Trả về một Enum {{MemoryArea}} tương ứng:
+    - {{HEAP}}: nếu lỗi là {{Java heap space}} hoặc {{GC overhead limit exceeded}}.
+    - {{STACK}}: nếu lỗi là {{StackOverflowError}}.
+    - {{METASPACE}}: nếu lỗi liên quan đến {{Metaspace}}.
+    - {{NATIVE}}: nếu lỗi là {{Direct buffer memory}} hoặc {{Unable to create new native thread}}.
+    - {{UNKNOWN}}: nếu không nhận diện được.
+- Phân tích phải **không phân biệt chữ hoa chữ thường** (case-insensitive).`,
+      starter: `enum MemoryArea { HEAP, STACK, METASPACE, NATIVE, UNKNOWN }
+
+class OomAnalyzer {
+    static MemoryArea analyze(String log) {
+        if (log == null) return MemoryArea.UNKNOWN;
+        // TODO: Thực hiện phân tích chuỗi log
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("Nhận diện lỗi Heap space", () -> {
+            eq(MemoryArea.HEAP, OomAnalyzer.analyze("java.lang.OutOfMemoryError: Java heap space"));
+            eq(MemoryArea.HEAP, OomAnalyzer.analyze("Exception in thread \\"main\\" java.lang.OutOfMemoryError: java heap space"));
+        });
+        check("Nhận diện lỗi GC overhead", () -> {
+            eq(MemoryArea.HEAP, OomAnalyzer.analyze("java.lang.OutOfMemoryError: GC overhead limit exceeded"));
+        });
+        check("Nhận diện lỗi StackOverflow", () -> {
+            eq(MemoryArea.STACK, OomAnalyzer.analyze("java.lang.StackOverflowError at com.example.MyService.recursive(MyService.java:10)"));
+        });
+        check("Nhận diện lỗi Metaspace", () -> {
+            eq(MemoryArea.METASPACE, OomAnalyzer.analyze("java.lang.OutOfMemoryError: Metaspace"));
+        });
+        check("Nhận diện lỗi Native (Direct/Thread)", () -> {
+            eq(MemoryArea.NATIVE, OomAnalyzer.analyze("java.lang.OutOfMemoryError: Direct buffer memory"));
+            eq(MemoryArea.NATIVE, OomAnalyzer.analyze("java.lang.OutOfMemoryError: unable to create new native thread"));
+        });
+        check("Trường hợp không xác định", () -> {
+            eq(MemoryArea.UNKNOWN, OomAnalyzer.analyze("Something went wrong"));
+            eq(MemoryArea.UNKNOWN, OomAnalyzer.analyze(null));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `enum MemoryArea { HEAP, STACK, METASPACE, NATIVE, UNKNOWN }
+
+class OomAnalyzer {
+    static MemoryArea analyze(String log) {
+        if (log == null) return MemoryArea.UNKNOWN;
+        String l = log.toLowerCase();
+        if (l.contains("stackoverflowerror")) return MemoryArea.STACK;
+        if (l.contains("java heap space") || l.contains("gc overhead limit exceeded")) return MemoryArea.HEAP;
+        if (l.contains("metaspace")) return MemoryArea.METASPACE;
+        if (l.contains("direct buffer memory") || l.contains("unable to create new native thread")) return MemoryArea.NATIVE;
+        return MemoryArea.UNKNOWN;
+    }
+}`,
+      hints: [
+        'Dùng {{toLowerCase()}} để việc so sánh không phụ thuộc vào chữ hoa/thường.',
+        'Sử dụng {{contains()}} để tìm kiếm từ khoá trong chuỗi log.',
+        '{{StackOverflowError}} không phải là một {{OutOfMemoryError}} nhưng cũng là một lỗi bộ nhớ quan trọng.',
+      ],
+      explain: `Phân tích log là kỹ năng sinh tồn của dev khi hệ thống gặp sự cố. Bằng cách tìm các từ khoá đặc trưng, ta biết ngay vùng bộ nhớ nào đang bị lỗi:
+- **Java heap space / GC overhead**: Lỗi vùng Heap, cần xem lại lượng object hoặc leak.
+- **StackOverflowError**: Lỗi vùng Stack, thường do đệ quy.
+- **Metaspace**: Lỗi vùng Metaspace, thường do nạp class quá nhiều.
+- **Direct buffer / Native thread**: Lỗi vùng Native (ngoài Heap), liên quan đến OS hoặc NIO.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vùng bộ nhớ nào lưu trữ các biến local và tham chiếu của method trong một thread?',
+      options: ['Heap', 'Stack', 'Metaspace', 'Code Cache'],
+      answer: 1,
+      explain: `Mỗi thread có một **Stack** riêng để lưu trữ các stack frame, mỗi frame chứa các biến local và tham chiếu của method đang thực thi. Heap dùng chung cho mọi thread để lưu object; Metaspace lưu metadata của class.`,
+    },
+    {
+      q: 'Lỗi {{java.lang.OutOfMemoryError: Metaspace}} thường do nguyên nhân nào?',
+      options: [
+        'Tạo quá nhiều object bằng từ khoá new',
+        'Gọi đệ quy vô hạn',
+        'Nạp quá nhiều class hoặc lỗi classloader leak',
+        'Dùng quá nhiều thread pool',
+      ],
+      answer: 2,
+      explain: `Metaspace lưu trữ thông tin về class. Lỗi này xảy ra khi số lượng class được nạp vượt quá giới hạn bộ nhớ native cho phép, thường do framework sinh proxy động hoặc webapp redeploy nhiều lần gây leak classloader.`,
+    },
+    {
+      q: 'Bạn nên làm gì ĐẦU TIÊN khi thấy lỗi {{Java heap space}} trên production?',
+      options: [
+        'Tăng ngay tham số -Xmx lên gấp đôi',
+        'Restart server và hy vọng lỗi không lặp lại',
+        'Lấy heap dump và dùng công cụ như MAT để phân tích nguyên nhân',
+        'Giảm số lượng thread trong hệ thống',
+      ],
+      answer: 2,
+      explain: `Tăng heap chỉ là giải pháp tạm thời nếu có rò rỉ bộ nhớ (leak). Restart cũng vậy. Bước chuẩn nhất là lấy **heap dump** để xác định chính xác object nào đang chiếm bộ nhớ và vì sao chúng không được giải phóng.`,
+    },
+    {
+      q: 'Sự khác biệt chính giữa {{StackOverflowError}} và {{OutOfMemoryError}} là gì?',
+      options: [
+        'StackOverflowError chỉ xảy ra ở Java 8',
+        'StackOverflowError liên quan đến độ sâu của lời gọi hàm; OutOfMemoryError liên quan đến tổng dung lượng dữ liệu',
+        'OutOfMemoryError luôn đi kèm với treo CPU',
+        'Không có sự khác biệt, chúng là một',
+      ],
+      answer: 1,
+      explain: `{{StackOverflowError}} xảy ra khi vùng Stack của một thread bị đầy do quá nhiều frame (đệ quy); còn {{OutOfMemoryError}} xảy ra khi các vùng bộ nhớ (Heap, Metaspace, Native) không còn đủ chỗ để cấp phát dữ liệu mới.`,
+    },
+  ],
+  related: ['jvm-001', 'jvm-005', 'jvm-008'],
+  tags: ['heap', 'stack', 'metaspace', 'OutOfMemoryError', 'StackOverflowError'],
+},
 );
