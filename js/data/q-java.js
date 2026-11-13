@@ -9679,6 +9679,548 @@ Hệ thống legacy dùng Java RMI truyền {{Serializable}} command object. Pen
     'ObjectInputFilter',
     'JSON',
     'protobuf'
-  ]
+  ],
+},
+{
+  id: 'collections-043',
+  topic: 'collections',
+  level: 'lead',
+  q: 'HashMap không an toàn khi nhiều thread put đồng thời, nhất là khi kích hoạt resize (tăng kích thước bảng băm). Giải thích tại sao capacity phải là lũy thừa của 2, load factor 0.75, treeify khi bucket quá đông, và có gì xảy ra khi hai thread resize cùng lúc.',
+  a: `**Tóm tắt:** HashMap lưu phần tử vào các bucket theo chỉ số {{hash & (capacity - 1)}}; capacity lũy thừa 2 làm phép & nhanh và phân phối đều. Khi số phần tử vượt {{capacity * loadFactor}} (mặc định 0.75), HashMap resize gấp đôi và rehash toàn bộ phần tử. Bucket quá đông (≥ 8 phần tử) chuyển từ danh sách liên kết sang cây đỏ đen (treeify) để tra cứu O(log n) thay vì O(n). HashMap **không thread-safe**: hai thread resize cùng lúc có thể mất dữ liệu / ghi đè (JDK 8+) hoặc tạo vòng lặp vô hạn (JDK 7). Chia sẻ HashMap giữa thread phải đồng bộ hoặc dùng {{ConcurrentHashMap}}.
+
+### Cách HashMap tính chỉ số bucket và tại sao capacity lũy thừa 2
+Mỗi key được băm bằng {{hashCode()}} rồi truyền qua hàm spread (xáo trộn bit cao xuống bit thấp) để giảm va chạm khi hashCode kém. Chỉ số bucket = {{hashSpread(key.hashCode()) & (capacity - 1)}}. Vì capacity là lũy thừa 2, {{capacity - 1}} là mặt nạ bit toàn 1 ở phần thấp, nên phép & lấy nhanh phần thấp của hash — tương đương lấy modulo capacity nhưng nhanh hơn và phân phối đều hơn khi hash có bit thấp kém.
+
+Ví dụ capacity 16 (mặt nạ 15 = {{0b1111}}): hai key có hash khác nhau ở bit cao nhưng cùng bit thấp 4 sẽ rơi cùng bucket → va chạm, HashMap dùng danh sách liên kết trong bucket để lưu cả hai.
+
+~~~java
+int index = hashSpread(key.hashCode()) & (capacity - 1); // capacity 16, 32, 64...
+~~~
+
+Nếu capacity không phải lũy thừa 2, phải dùng % modulo (chậm hơn) và phân phối kém hơn với hashCode yếu. Đây là lý do HashMap bắt capacity thành lũy thừa 2 (nếu truyền capacity khác, constructor làm tròn lên lũy thừa 2 gần nhất).
+
+### Resize, load factor và treeify
+- Load factor 0.75: khi size > capacity * 0.75, resize gấp đôi capacity và rehash mọi phần tử (chỉ số bucket thay vì capacity đổi).
+- Threshold (ngưỡng resize) = capacity * loadFactor, tính bằng số nguyên.
+- Khi bucket ≥ 8 phần tử và capacity ≥ 64, danh sách liên kết chuyển thành cây đỏ đen (treeify) → get/put/remove trong bucket đó O(log n) thay vì O(n). Khi bucket giảm xuống ≤ 6, cay về lại danh sách (untreeify), khoảng tránh dao động liên tục giữa hai trạng thái.
+- Resize tốn O(n): phải tạo bảng mới và rehash từng phần tử, nên tránh tạo HashMap với capacity quá nhỏ rồi để tự resize nhiều lần. Có thể truyền capacity dự kiến vào constructor {{new HashMap<>(expectedSize)}}.
+
+~~~java
+Map<String, User> cache = new HashMap<>(200); // dự kiến 200 mục, ít resize hơn
+cache.put("user-1", user);
+User u = cache.get("user-1"); // tính hash, vào bucket, so sánh equals bên trong bucket
+~~~
+
+### Vì sao HashMap không thread-safe (resize race)
+HashMap giữ trạng thái mutable: bảng {{Node[] table}}, kích thước {{size}}, và {{modCount}}. Khi nhiều thread gọi {{put}} đồng thời:
+- Hai thread cùng thấy bảng chưa đạt ngưỡng, cùng tính chỉ số, cùng ghi vào cùng bucket → một giá trị bị ghi đè mất (lost update).
+- Khi kích hoạt resize, JDK 8+ dùng thuật toán transfer có đuôi (tail) tránh vòng lặp vô hạn, nhưng **vẫn** có thể mất dữ liệu / ghi đè khi resize song song. JDK 7 từng gây vòng lặp bucket dẫn đến get() lặp vô hạn, CPU 100%.
+- Iterator của HashMap là fail-fast: nếu cấu trúc bảng thay đổi khi duyệt (modCount đổi), iterator ném {{ConcurrentModificationException}}.
+
+| Tình huống | Hệ quả | Cách khắc phục |
+|---|---|---|
+| Nhiều thread put HashMap same instance | Ghi đè dữ liệu, lost update, resize race | Đồng bộ hoá hoặc dùng {{ConcurrentHashMap}} |
+| Iterator duyệt bên ngoài while thread khác put | {{ConcurrentModificationException}} | Dùng iterator của ConcurrentHashMap (không đảm bảo snapshot) hoặc khoá toàn bộ vòng lặp |
+| Tạo HashMap capacity nhỏ, tự resize nhiều lần | O(n) rehash lặp lại, CPU/Giảm-throughput | Truyền capacity dự kiến vào constructor |
+
+### Pitfall production
+- Đưa HashMap làm field của Spring singleton service, nhiều request cùng ghi → race ngẫu nhiên khó tái hiện local.
+- Gần ngưỡng resize, latency spike do rehash O(n); đo p99 sẽ thấy gốc đọc.
+- Giả định get() trả null có nghĩa key không tồn tại: HashMap cho phép 1 key null và nhiều value null, nên get(null) trả null không phân biệt được "không có key" và "key có giá trị null". Dùng {{containsKey}} khi cần phân biệt.
+- Treeify yêu cầu key triển khai {{Comparable}} hoặc so sánh được; nếu key không có thứ tự tự nhiên và va chạm nhiều, treeify ném {{ClassCastException}}.
+
+### Ví dụ đời thực
+Một dịch vụ đọc cấu hình lưu vào static {{HashMap<String, Config>}}}, nhiều servlet thread cùng cập nhật khi reload. Ở tải thường ổn, nhưng khi 50 thread reload đồng thời kích hoạt resize, một thread gặp race resize JDK 8+ khiến ~12% cấu hình bị mất/gái sau reload. Khắc phục: đổi thành {{ConcurrentHashMap}} dùng {{computeIfAbsent}} để chỉ một thread tính giá trị mới, khác thread nhận kết quả đã có. Sau thay đổi, 10.000 lần reload đồng thời không còn mất cấu hình. Số liệu là kịch bản minh hoạ; JDK 8+ khử vòng lặp vô hạn nhưng không khử mất dữ liệu khi resize song song.
+
+### Trả lời mẫu khi phỏng vấn
+"HashMap tính bucket bằng hash sau khi xáo trộn bit, sau đó &: với (capacity - 1). Vì capacity là lũy thừa 2, phép & nhanh, lấy phần thấp của hash, và phân phối đều. Khi size vượt capacity nhân 0.75, HashMap resize gấp đôi và rehash toàn bộ phần tử, tốn O(n). Bucket có trên 8 phần tử chuyển sang cây đỏ đen để tra cứu O(log n), giảm xuống 6 thì cay về lại danh sách. HashMap không an toàn đa luồng: nhiều thread put đồng thời có thể ghi đè dữ liệu, và resize song song có thể mất dữ liệu (JDK 8+) hoặc treo vòng lặp (cũ). Vì vậy dùng ConcurrentHashMap khi chia sẻ giữa thread, truyền capacity dự kiến để ít resize, và dùng containsKey nếu cần phân biệt key null với giá trị null. Khi treeify, key phải so sánh được, ngược lại ClassCastException khi va chạm nhiều."
+
+> Senior tip: HashMap chỉ an toàn khi một thread ghi và nhiều thread đọc **không đồng thời với ghi**. Mọi shared mutable map trong ứng dụng web hãy để ConcurrentHashMap hoặc khoá rõ ranh giới; đừng dựa vào "thường ổn" để bỏ qua race condition.
+
+`,
+  follow: [
+    'Vì sao HashMap bắt capacity thành lũy thừa 2, và điều đó tác dụng gì cho phép tính chỉ số bucket?',
+    'Hai thread resize HashMap cùng lúc gây ra gì, và JDK 8 đã khử hết vấn đề chưa?',
+    'Khi nào dùng containsKey thay vì kiểm tra get() trả null trong HashMap?'
+  ],
+  tags: ['HashMap', 'resize', 'treeify', 'thread-safety', 'ConcurrentHashMap', 'load factor']
+},
+{
+  id: 'collections-044',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Khi nào chọn {{ArrayList}} thay vì {{LinkedList}} (và ngược lại), xem xét cache locality và chi phí chèn/xoá ở đầu/dau danh sách? LinkedList thật sự nhanh hơn trong những trường hợp nào?',
+  a: `**Tóm tắt:** {{ArrayList}} lưu phần tử trong mảng liền kề, truy cập ngẫu nhiên O(1), duyệt nhanh nhờ cache locality (CPU đọc dữ liệu nằm gần nhau trong RAM). Chèn/xoá ở cuối amortized O(1), nhưng chèn/xoá ở đầu hoặc giữa O(n) vì phải dời phần tử. {{LinkedList}} mỗi phần tử là node riêng có con trỏ prev/next, tốn thêm bộ nhớ và cache miss khi duyệt; thêm/xoá đầu O(1) nếu đã có nút, nhưng tìm vị trí vẫn O(n). Hầu hết trường hợp ArrayList hoặc ArrayDeque tốt hơn LinkedList.
+
+### Cache locality là gì và vì sao quan trọng
+CPU đọc dữ liệu từ RAM qua các dòng cache (cache line, thường 64 byte). Khi mảng liền kề như ArrayList, việc đọc phần tử tiếp theo thường đã có trong cache → nhanh. LinkedList các node phân tán khắp heap, mỗi lần nhảy con trỏ có thể miss cache, CPU phải chờ RAM. Do đó dù Big-O của một số thao tác trông hấp dẫn, ArrayList thường nhanh hơn thực tế, đặc biệt với n nhỏ và duyệt toàn bộ danh sách.
+
+### So sánh ArrayList vs LinkedList
+| Thao tác | ArrayList | LinkedList |
+|---|---|---|
+| Truy cập get(i) | O(1), trực tiếp qua chỉ số | O(n), phải đi theo con trỏ từ đầu |
+| Duyệt toàn bộ | Nhanh, cache-friendly | Chậm, nhiều cache miss |
+| Thêm/xoá cuối | Amortized O(1) | O(1) nếu có tail |
+| Thêm/xoá đầu | O(n), phải dời toàn bộ phần tử | O(1) |
+| Thêm/xoá giữa | O(n): tìm O(n) + dời O(n) | O(n): tìm O(n) + chỉnh con trỏ O(1) |
+| Bộ nhớ mỗi phần tử | Ít, chỉ giá trị | Nhiều, node kèm prev/next |
+
+~~~java
+// ArrayList: thêm đầu O(n), toàn bộ phần tử sau bị dời
+list.add(0, item);
+
+// LinkedList: thêm đầu O(1) nhưng node tốn thêm bộ nhớ và cache kém
+deque.addFirst(item); // thường dùng ArrayDeque thay vì LinkedList
+~~~
+
+### Khi nào dùng cái nào
+- **ArrayList** là mặc định: đọc nhiều, truy cập theo chỉ số, duyệt, thêm cuối.
+- **ArrayDeque**: hàng đợi FIFO / ngăn xếp, thêm/xoá đầu-cuối O(1), không cho null, nhanh hơn LinkedList cả về tốc độ và bộ nhớ.
+- **LinkedList**: gần như không dùng làm danh sách-general-purpose. Chỉ cân nhác khi thực sự cần thêm/xoá đầu liên tục **và** đã có trỏ đến nút (ví dụ cấu trúc nội bộ đặc thù), thậm chí ArrayDeque thường vẫn tốt hơn.
+
+### Pitfall production
+- Dùng {{LinkedList}} vì "chèn giữa nhanh": bạn vẫn mất O(n) để tìm vị trí, node rải rác cache miss, gần như luôn thua ArrayList/ArrayDeque khi đo thực tế.
+- Dùng {{ArrayList.add(0, ...)}} trong vòng lặp lớn: mỗi lần dời O(n), tổng O(n²); nếu cần thêm đầu thường xuyên hãy dùng ArrayDeque hoặc thêm cuối rồi đảo ngược.
+- Dùng {{LinkedList}} làm hàng đợi giữa các thread: không thread-safe; dùng {{ArrayBlockingQueue}} / {{LinkedBlockingQueue}}.
+- Dùng {{list.contains(x)}} trong vòng lặp trên danh sách khác: O(n*m); chuyển một bên sang {{HashSet}} giảm về O(n + m).
+
+### Ví dụ đời thực
+API lọc đơn hàng nhận 20.000 id, kiểm tra từng id có trong danh sách 20.000 id hợp lệ. Ban đầu dùng {{List.contains}} lồng nhau: khoảng 400 triệu phép so sánh, p95 endpoint 1,8 giây. Đổi danh sách hợp lệ thành {{HashSet<Long>}} (xây dựng một lần O(n), tra cứu O(1) trung bình): tổng chỉ còn khoảng 20.000 tra cứu băm, p95 xuống 45 ms. Số liệu là kịch bản minh hoạ, không phải con số tất yếu. Việc chọn cấu trúc theo thao tác chạy nhiều nhất (hot path) mang lại lợi ích lớn hơn việc vi m écrits micro-optimization cú pháp.
+
+### Trả lời mẫu khi phỏng vấn
+"Em chọn ArrayList làm mặc định vì mảng liền kề có cache locality: truy cập chỉ số O(1), duyệt nhanh, thêm cuối amortized O(1). LinkedList mỗi phần tử là node tách lẻ với con trỏ prev/next, tốn thêm bộ nhớ và dễ miss cache khi duyệt, dù thêm/xoá đầu lý thuyết O(1). Vì tìm vị trí vẫn O(n), LinkedList gần như không thắng ArrayList hoặc ArrayDeque trong thực tế. Em dùng ArrayDeque cho hàng đợi/ngăn xếp, và tránh add(0) trên ArrayList trong vòng lặp lớn vì dời mảng O(n). Nếu cần kiểm tra thành viên lặp lại, em dùng HashSet thay vì contains trên List. Cuối cùng em đo trên dữ liệu thực vì Big-O chỉ là xu hướng, cache locality và hằng số quyết định ai nhanh ở kích thước thực."
+
+> Senior tip: Đừng chọn cấu trúc dữ liệu theo "cảm giác" hay thói quen cũ. Xác định thao tác nào chạy nhiều nhất, ước lượng n, chọn cấu trúc tối ưu thao tác đó, rồi xác nhận bằng benchmark hoặc profiler. LinkedList trong Java hiếm khi là đáp án đúng.
+
+`,
+  follow: [
+    'Vì sao ArrayList thường nhanh hơn LinkedList thực tế dù LinkedList có một số thao tác O(1) hơn về Big-O?',
+    'Khi nào bạn tránh ArrayList.add(0, ...) và dùng gì thay thế?',
+    'Vì sao list.contains trong vòng lặp là bẫy hiệu năng, và cách khắc phục là gì?'
+  ],
+  tags: ['ArrayList', 'LinkedList', 'ArrayDeque', 'cache locality', 'Big-O', 'performance']
+},
+{
+  id: 'collections-045',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Vòng lặp for-each xóa phần tử của danh sách thường ném {{ConcurrentModificationException}}. Giải thích fail-fast iterator, modCount, và cách xóa an toàn (Iterator.remove, removeIf, stream filter) cả trong một luồng.',
+  a: `**Tóm tắt:** for-each (và iterator) của ArrayList/HashMap là fail-fast: nếu cấu trúc danh sách thay đổi trong khi duyệt (trừ khi xóa qua chính iterator đó), iterator ném {{ConcurrentModificationException}}. Nguyên nhân là trường {{modCount}} tăng mỗi lần cấu trúc thay đổi; iterator so sánh {{expectedModCount}} tại mỗi lần {{hasNext}}/{{next}}. Xóa an toàn bằng {{Iterator.remove()}}, {{Collection.removeIf()}} (Java 8), hoặc lọc rồi gán lại bằng stream. Đây là lỗi trong **một luồng**, không phải chỉ nhiều luồng.
+
+### Fail-fast iterator và modCount là gì
+Fail-fast nghĩa là lỗi được phát hiện sớm, rõ ràng, thay để để hỏng dữ liệu im lặng. ArrayList giữ {{int modCount}} tăng mỗi khi cấu trúc thay đổi (add, remove, clear...). Iterator chép giá trị {{expectedModCount = modCount}} khi tạo. Tại mỗi {{hasNext()}} / {{next()}}, iterator kiểm tra {{modCount != expectedModCount}}; nếu khác, ném {{ConcurrentModificationException}}.
+
+Ví dụ lỗi (xóa bằng list.remove trong for-each):
+~~~java
+List<String> ids = new ArrayList<>(List.of("A", "B", "C", "D"));
+for (String id : ids) {      // for-each dùng iterator ngầm
+    if (id.startsWith("B")) ids.remove(id); // CME: modCount đổi, iterator không biết
+}
+~~~
+
+for-each trên ArrayList compile thành iterator; gọi {{ids.remove}} thay đổi {{modCount}} mà không cập nhật iterator, nên lần kiểm tra tiếp theo ném CME.
+
+### Cách xóa an toàn
+| Cách | Code | Ghi chú |
+|---|---|---|
+| Iterator.remove | {{Iterator.remove()}} sau mỗi next() | Đúng, xóa phần tử hiện tại an toàn |
+| removeIf (Java 8) | {{ids.removeIf(id -> id.startsWith("B"))}} | Gọn, khuyên dùng |
+| Stream filter | {{ids = ids.stream().filter(...).collect(toList())}} | Tạo danh sách mới, phù hợp khi cần giữ bản gốc |
+
+~~~java
+// Đúng: xóa qua chính iterator
+for (Iterator<String> it = ids.iterator(); it.hasNext();) {
+    String id = it.next();
+    if (id.startsWith("B")) it.remove(); // cập nhật expectedModCount, không ném CME
+}
+
+// Hoặc removeIf
+ids.removeIf(id -> id.startsWith("B"));
+~~~
+
+Iterator.remove chỉ được gọi **một lần sau mỗi next()**; gọi hai lần liên tiếp ném {{IllegalStateException}}. removeIf là lựa chọn gọn nhất cho ArrayList/LinkedList.
+
+### ConcurrentHashMap iterator khác: weakly consistent
+ConcurrentHashMap không ném CME khi được sửa song song. Iterator của nó weakly consistent: có thể nhìn thấy một phần cập nhật happening-together, nhưng không ném CME và không đảm bảo snapshot chính xác. Không dùng iterator ConcurrentHashMap để đối soát cần con số chính xác.
+
+### Pitfall production
+- Xóa phần tử trong for-each bằng list.remove → CME, crash ứng dụng khi chạy đoạn đó.
+- Gọi iterator.remove() hai lần liên tiếp → IllegalStateException.
+- Dùng for-each trên danh sách được chia sẻ giữa thread, thread khác sửa → CME ngay cả khi logic bản thân đúng.
+- Giả định ConcurrentHashMap iterator là snapshot để tính báo cáo → số liệu có thể sai do cập nhật đồng thời.
+- Xóa theo index lùi ngược (for i từ size-1 xuống 0) tránh bị lệch chỉ số sau khi xóa, là cách thủ công nhưng dễ sai; ưu tiên removeIf.
+
+### Ví dụ đời thực
+Một batch dọn đơn hàng hết hạn: duyệt danh sách 50.000 đơn, xóa đơn đã xử lý bằng {{orders.remove(order)}} trong for-each. Chạy local với vài trăm đơn ổn, nhưng sản xuất với 50.000 đơn ném {{ConcurrentModificationException}} sau vài nghìn đơn, batch dừng giữa chừng, một số đơn hết hạn không được xóa. Khắc phục bằng {{orders.removeIf(order -> order.isExpired())}}. Batch sau xử lý hết 50.000 đơn, không còn CME, và mã gọn hơn. Số liệu là kịch bản minh hoạ.
+
+### Trả lời mẫu khi phỏng vấn
+"For-each trên ArrayList dùng iterator ngầm, và iterator là fail-fast: nó lưu modCount khi tạo, nếu cấu trúc danh sách thay đổi (add/remove) qua cách khác ngoài chính iterator, lần kiểm tra tiếp theo ném ConcurrentModificationException. Đây là lỗi trong một luồng, không chỉ nhiều luồng. Xóa an toàn bằng Iterator.remove (một lần sau mỗi next), removeIf (Java 8, gọn nhất), hoặc stream filter tạo danh sách mới. ConcurrentHashMap iterator khác: không ném CME nhưng weakly consistent, không phải snapshot. Tôi từng sửa batch dơn hàng: xóa trong for-each ném CME ở sản xuất, đổi sang removeIf xong vấn đề biến mất."
+
+> Senior tip: Khi cần xóa phần tử trong khi duyệt, hãy dùng removeIf (Java 8) — ngắn, đúng và dễ đọc. Tránh xóa qua list.remove trong for-each, và đừng coi iterator ConcurrentHashMap như snapshot chính xác.
+
+`,
+  follow: [
+    'Vì sao xóa phần tử bằng list.remove trong for-each ném ConcurrentModificationException dù chỉ chạy một luồng?',
+    'Iterator.remove() có thể gọi bao lần sau mỗi next(), và gọi hai lần xảy ra gì?',
+    'Iterator của ConcurrentHashMap có ném ConcurrentModificationException không, và nó đảm bảo snapshot không?'
+  ],
+  tags: ['fail-fast', 'ConcurrentModificationException', 'modCount', 'Iterator.remove', 'removeIf']
+},
+{
+id: 'core-056',
+  topic: 'core',
+  level: 'senior',
+  q: 'String.intern() và string deduplication của G1 khác nhau như thế nào? Khi nào nên dùng intern(), và rủi ro nếu intern tất cả chuỗi đầu vào người dùng?',
+  a: `**Tóm tắt:** {{String.intern()}} trả về biểu diễn chuẩn (canonical representative) của một chuỗi từ bản nội bộ (string pool), cho phép so sánh bằng {{==}} thay vì {{equals()}}. Pool nằm trên heap (từ Java 7, không còn PermGen). String deduplication của G1 là cơ chế khác: G1 gộp các mảng byte[]/char[] trùng nhau trên heap để giảm bộ nhớ, **không** thay đổi kết quả {{==}} hay {{equals()}}. Dùng {{intern()}} cho chuỗi lặp lại nhiều (mã trạng thái, mã quốc gia, mã tiền tệ) để giảm bộ nhớ và so sánh nhanh; **không** intern tất cả đầu vào người dùng vì pool có thể tăng mãi và gây OOM / tấn công từ chối dịch vụ.
+
+### String pool và intern() hoạt động thế nào
+Khai báo hằng chuỗi {{"ACTIVE"}} trong code Java thường được đặt vào string pool khi nạp class. {{new String("ACTIVE")}} tạo object mới trên heap, không tự vào pool. Gọi {{s.intern()}}: nếu pool đã có chuỗi bằng nhau (theo {{equals}}), trả về tham chiếu pool đó; nếu chưa, thêm chuỗi vào pool và trả về tham chiếu pool. Do đó hai chuỗi bằng nhau sau intern trùng tham chiếu, so sánh {{==}} được.
+
+~~~java
+String a = "ACTIVE";
+String b = new String("ACTIVE").intern(); // b == a là true
+System.out.println(a == b); // true
+System.out.println(a.equals(b)); // true
+~~~
+
+intern() hữu ích khi cùng một giá trị chuỗi xuất hiện hàng triệu lần (ví dụ trạng thái đơn hàng, mã lỗi, mã quốc gia): thay vì lưu hàng triệu bản sao, chỉ lưu một tham chiếu pool, bộ nhớ giảm và {{==}} nhanh hơn {{equals()}}. Nhưng intern() tốn CPU khi gọi (tra pool), nên chỉ intern khi chuỗi sẽ được tái sử dụng nhiều lần, không phải intern từng chuỗi một lần rồi vứt.
+
+### String deduplication của G1 khác intern() ở đâu
+G1 garbage collector có tính năng **String Deduplication** (-XX:+UseStringDeduplication): khi GC chạy, G1 tìm các object {{String}} có mảng byte[]/char[] giống nhau và gộp chúng thành một mảng chia sẻ, chỉ giữ một bản sao. Mục đích giảm heap, không phải so sánh nhanh.
+
+Sự khác biệt then chốt:
+- {{intern()}}: thay đổi **danh tính** (identity), hai chuỗi bằng nhau trùng tham chiếu, {{==}} trả true. Pool nằm trên heap, sống lâu (gần như không bị GC trừ khi class được unload).
+- G1 dedup: không đổi danh tính, {{==}} vẫn false cho hai object khác, chỉ giảm bộ nhớ heap bằng cách chia sẻ mảng byte[]/char[] nội bộ. Mảng có thể được thu hồi khi String object bị GC.
+
+| Tiêu chí | String.intern() | G1 String Deduplication |
+|---|---|---|
+| Mục đích | So sánh nhanh bằng ==, giảm pool bản sao | Giảm heap bằng cách chia sẻ mảng byte/char |
+| Thay đổi ==? | Có (trùng tham chiếu) | Không |
+| Vùng nhớ | Heap (pool trên heap) | Heap (mảng byte/char chia sẻ) |
+| Tuổi thọ | Sống lâu, gần như không bị GC | Theo vòng đời String object |
+| Khi dùng | Chuỗi lặp lại nhiều, so sánh thường xuyên | Giảm heap tổng thể, bật cờ JVM |
+
+### Rủi ro intern tất cả đầu vào người dùng
+Pool string intern gần như không bị GC (chỉ sạch khi class chứa hằng được unload, rất hiếm). Nếu intern mọi chuỗi từ người dùng (tên tài khoản, mã giao dịch, nội dung form), pool tăng mãi mà không bao giờ thu hồi → **OutOfMemoryError** (java.lang.OutOfMemoryError: Java heap space), ứng dụng bị treo/restart. Attacker cũng có thể gửi hàng triệu chuỗiUnique khác nhau để làm đầy pool (tấn công từ chối dịch vụ).
+
+Do đó:
+- Chỉ intern chuỗi có giá trị từ tập nhỏ, dự đoán được (mã trạng thái, mã lỗi, mã tiền tệ, mã quốc gia).
+- Không intern chuỗi tự do từ người dùng.
+- Nếu cần lưu nhiều chuỗi distinct, dùng HashSet/HashMap bình thường trên heap (có thể GC) thay vì intern pool.
+
+### Pitfall production
+- Gọi {{intern()}} trên mỗi request cho chuỗi khác nhau → pool tăng liên tục, heap đầy, Full GC liên tục, p99 vọt.
+- Nhầm lẫn intern() với G1 dedup, kỳ vọng intern() giảm heap tạm thời hoặc dedup() làm == đúng — đều sai.
+- So sánh {{==}} trên chuỗi không intern (kết quả new String hay concatenation) → false dù nội dung bằng nhau, lỗi logic khó phát hiện.
+- Giữ tham chiếu interned string trong cache lâu dài trong khi chuỗi gốc đã không cần → pool không bao giờ thu hồi giá trị đó.
+
+### Ví dụ đời thực
+Hệ thống xử lý hàng triệu sự kiện, mỗi sự kiện có trường {{status}} lấy từ tập nhỏ {{PENDING}}, {{APPROVED}}, {{REJECTED}}. Ban đầu status là String thông thường, mỗi sự kiện một bản sao, heap lớn. Với 5 triệu sự kiện, khoảng 300 MB chỉ là bản sao status. Équipe intern status khi tạo sự kiện: chỉ giữ 3 bản sao trong pool, so sánh status bằng {{==}}, heap giảm vài trăm MB và p95 xử lý giảm. Điều kiện là status chỉ từ tập nhỏ cố định, intern một lần khi tạo, tái sử dụng hàng triệu lần. Nếu intern mã giao dịch duy nhất mỗi sự kiện, pool sẽ tăng mãi — đã loại bỏ khỏi thiết kế.
+
+### Trả lời mẫu khi phỏng vấn
+"String.intern() trả về tham chiếu chuẩn từ string pool (nằm trên heap từ Java 7, không còn PermGen), nên hai chuỗi bằng nhau sau intern trùng tham chiếu và so sánh bằng == được. G1 String Deduplication là cơ chế khác: GC gộp mảng byte[]/char[] trùng nhau trên heap để giảm bộ nhớ, nhưng không đổi ==. Em chỉ intern chuỗi từ tập nhỏ cố định (mã trạng thái, mã lỗi) được tái sử dụng nhiều lần; không intern chuỗi tự do từ người dùng vì pool gần như không bị GC, intern sai có thể gây OOM heap hay bị tấn công làm đầy pool. Nếu cần lưu nhiều chuỗi khác nhau, dùng HashSet/HashMap trên heap có thể bị GC thay vì intern pool. Em từng intern status của 5 triệu sự kiện, giảm vài trăm MB heap vì chỉ giữ 3 bản sao và so sánh bằng ==."
+
+> Senior tip: intern() là công cụ cho tập giá trị nhỏ, ổn định, được dùng lại nhiều lần. Mọi chuỗi độc lập từ người dùng hãy để trên heap thông thường, không intern. Nếu thấy code intern chuỗi nhập từ form hay header HTTP, đó là điềm báo rủi ro OOM heap.
+
+`,
+  follow: [
+    'String pool intern nằm ở vùng nhớ nào, và tại sao intern sai có thể gây OOS Metaspace?',
+    'G1 String Deduplication khác intern() ở điểm nào, và nó có làm == trả true không?',
+    'Bạn sẽ intern chuỗi nào, và tránh intern chuỗi nào trong ứng dụng web?'
+  ],
+  tags: ['String', 'intern', 'string pool', 'Metaspace', 'G1', 'deduplication', 'memory']
+},
+{
+  id: 'core-057',
+  topic: 'core',
+  level: 'senior',
+  q: 'Làm việc với tiền tệ bằng {{BigDecimal}}: tại sao không dùng {{double}}/{{float}}, cách chọn {{scale}} và {{RoundingMode}}, và sự khác biệt giữa {{equals()}} và {{compareTo()}} với ví dụ {{2.0}} vs {{2.00}}.',
+  a: `**Tóm tắt:** Tiền tệ không dùng {{double}}/{{float}} vì số thực nhị phân không biểu diễn chính xác số thập phân (ví dụ 0.1 + 0.2 != 0.3), dẫn sai số lẫn vào tính toán và đối soát. {{BigDecimal}} lưu số nguyên lớn hơn scale (số chữ số thập phân), tính toán chính xác mà cần chọn {{scale}} và {{RoundingMode}} cho phép nhân/chia/làm tròn. {{equals()}} so sánh cả giá trị lẫn scale ({{2.0}} != {{2.00}}), còn {{compareTo()}} chỉ so sánh giá trị số ({{2.0}} == {{2.00}}). Đối với tiền, thường lưu số tiền nhỏ (cents) bằng {{long}} và dùng {{BigDecimal}} chỉ khi chia/thuế cần làm tròn chính xác.
+
+### Tại sao double/float không dùng cho tiền
+double là số thực IEEE 754, biểu diễn bằng nhị phân. Số thập phân như 0.1 không thể biểu diễn chính xác bằng nhị phân hữu hạn, nên 0.1 + 0.2 cho 0.30000000000000004 thay vì 0.3. Tính toán tiền lặp lại (cộng, thuế, giảm giá) làm sai số tích lũy, không chấp nhận được trong tiền tệ và đối soát.
+
+~~~java
+double a = 0.1, b = 0.2;
+System.out.println(a + b); // 0.30000000000000004, không phải 0.3
+~~~
+
+BigDecimal tránh bằng cách lưu số nguyên (unscaled value) kèm scale. {{new BigDecimal("0.1")}} chính xác; {{new BigDecimal(0.1)}} lại mang sai số nhị phân của double — phải dùng constructor nhận {{String}}.
+
+### Scale, precision và RoundingMode
+- Precision: tổng số chữ số có nghĩa.
+- Scale: số chữ số sau dấu phẩy thập phân.
+- Số tiền thường scale 2 (cents) hoặc lưu nguyên đồng (long cents).
+- Phép chia có thể tạo số dư vô hạn (1 / 3) → phải chỉ định {{RoundingMode}} hoặc dùng {{MathContext}}, ngược lại ném {{ArithmeticException}}.
+
+RoundingMode phổ biến:
+- {{HALF_UP}}: làm tròn gần nhất, .5 round lên (thông dụng cho tiền).
+- {{HALF_EVEN}}: round đến số chẵn (banker's rounding), giảm sai số tích lũy, dùng trong tài chính/kỹ thuật.
+- {{UP}} / {{DOWN}}: luôn làm tròn lên/xuôi về 0.
+
+~~~java
+BigDecimal price = new BigDecimal("100.00");
+BigDecimal tax = price.multiply(new BigDecimal("0.08")); // 8.0000
+BigDecimal taxRounded = tax.setScale(2, RoundingMode.HALF_UP); // 8.00
+~~~
+
+### equals() vs compareTo(): bẫy 2.0 vs 2.00
+{{new BigDecimal("2.0").equals(new BigDecimal("2.00"))}} là **false** vì scale khác nhau (1 vs 2), mặc dù giá trị số bằng nhau. {{compareTo()}} trả 0 vì so sánh giá trị số. Do đó:
+- {{HashSet<BigDecimal>}} có thể chứa cả 2.0 và 2.00 (equals khác).
+- {{TreeSet<BigDecimal>}} chỉ giữ một (compareTo trả 0 = trùng).
+- Không dùng {{equals()}} để kiểm tra "số tiền bằng nhau" nếu scale có thể khác; chuẩn hoá scale trước bằng {{stripTrailingZeros()}} hoặc dùng {{compareTo()}} == 0.
+
+### Làm việc với tiền trong thực tế
+Quy tắc phổ biến: lưu số tiền nhỏ nhất (ví dụ cents, đồng) bằng {{long}} trong database và code, tránh BigDecimal cho cộng/nhân đơn giản. Dùng {{BigDecimal}} khi cần chia (chia tiền giữa nhiều người, tính thuế, tỷ giá) và làm tròn theo quy tắc nghiệp vụ. Luôn ghi rõ scale và RoundingMode trong tài liệu API, và test biên (số lẻ, số chia hết không, giá trị lớn).
+
+### Pitfall production
+- Dùng {{double}} cho tiền và hiển thị sao cho "nhìn được" nhưng backend đối soát sai vài đồng, tích lũy qua hàng triệu giao dịch.
+- {{new BigDecimal(0.1)}} thay vì {{new BigDecimal("0.1")}} mang sai số nhị phân từ đầu.
+- Dùng {{equals()}} so sánh tiền có scale khác → cho "không bằng" dù số tiền bằng nhau.
+- Chia BigDecimal không chỉ định RoundingMode → {{ArithmeticException}} khi số dư vô hạn.
+- Lưu BigDecimal vào {{HashSet}} làm key mà không chuẩn hoá scale → trùng dữ liệu theo cách không mong muốn.
+
+### Ví dụ đời thực
+Hệ thống thanh toán tính thuế 8% trên đơn 100.000 đồng: tax = 8.000, làm tròn HALF_UP thành 8.00. Một module khác dùng double và in 8.000000000002, làm file đối soát sai 0.000000000002 mỗi đơn; qua 2 triệu đơn/ch tháng, sai số lúmenes nhưng report không khớp, bộ tài chính phải kiểm tra thủ công. Équipe thống nhất: lưu tiền bằng long đồng, dùng BigDecimal chỉ khi chia/thuế với HALF_UP scale 2, test biên 0.005, 0.015, 999.995. Sau đó đối soát khớp 100%, không còn sai lẻ.
+
+### Trả lời mẫu khi phỏng vấn
+"Tiền không dùng double vì số thực nhị phân không biểu diễn chính xác 0.1, sai số lẫn vào tính toán lặp lại. Em dùng BigDecimal với constructor String (không dùng double) và chọn scale phù hợp (thường 2 chữ số thập phân hoặc lưu cents bằng long). Khi chia, em luôn chỉ định RoundingMode, ví dụ HALF_UP, tránh ArithmeticException. Em phân biệt equals() (so sánh cả scale, nên 2.0 khác 2.00) với compareTo() (chỉ so sánh giá trị số); kiểm tra số tiền bằng nhau em dùng compareTo() == 0 hoặc chuẩn hoá scale trước. Với BigDecimal làm key HashSet, em chuẩn hoá scale để tránh trùng không mong muốn. Tôi từng xử lý báo cáo đối soát sai lẻ do double, thống nhất long đồng + BigDecimal khi chia, report khớp 100%."
+
+> Senior tip: Quy ước tiền nên ghi rõ đơn vị (cents/đồng), scale và RoundingMode ở tài liệu API. Không bao giờ dùng float/double cho tiền, và không dùng equals() để so sánh BigDecimal tiền có thể khác scale.
+
+`,
+  follow: [
+    'Vì sao double không dùng cho tiền, và ví dụ số cụ thể cho thấy sai số là gì?',
+    '{{BigDecimal("2.0").equals(BigDecimal("2.00"))}} là gì, còn compareTo() thì ra sao?',
+    'Khi chia BigDecimal có thể ném exception nào, và bạn xử lý thế nào?'
+  ],
+  tags: ['BigDecimal', 'money', 'scale', 'RoundingMode', 'equals', 'compareTo', 'double']
+},
+{
+  id: 'modern-055',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Sắp xếp nhiều trường bằng {{Comparator}} chain và sort ổn định (stable sort): Comparator.comparing/thenComparing/reversed, và tại sao Arrays.sort trên mảng primitive không ổn định trong khi List.sort ổn định.',
+  a: `**Tóm tắt:** {{Comparator.comparing}}, {{thenComparing}}, {{reversed}}, {{nullsFirst}}, {{nullsLast}} dùng để sắp xếp theo nhiều trường, từng lớp ưu tiên. Java dùng **TimSort** (ổn định: các phần tử bằng nhau giữ thứ tự ban đầu) cho {{List.sort}} và {{Arrays.sort(Object[])}}, nhưng {{Arrays.sort}} trên mảng primitive ({{int[]}}, {{long[]}}) dùng quicksort đa trục **không ổn định**. Stable sort cho phép sắp xếp theo trường thứ yếu trước rồi trường chính sau mà thứ tự thứ yếu vẫn được giữ lại trong nhóm bằng nhau.
+
+### Comparator chain và sắp xếp nhiều trường
+~~~java
+// Sắp xếp đơn hàng: ngày tăng dần, cùng ngày thì id giảm dần
+orders.sort(
+    Comparator.comparing(Order::orderDate)
+        .thenComparing(Comparator.comparingInt(Order::id).reversed())
+);
+~~~
+
+- {{comparing(keyExtractor)}}: so sánh theo giá trị trích xuất (phải Comparable).
+- {{thenComparing(other)}}: trường đánh thác khi trường trước bằng nhau.
+- {{reversed()}}: đảo ngược thứ tự.
+- {{nullsFirst()}} / {{nullsLast()}}: đặt null đầu/cuối (tránh NullPointerException).
+
+~~~java
+Comparator<Order> cmp = Comparator
+    .comparing(Order::orderDate, Comparator.nullsLast(Comparator.naturalOrder()))
+    .thenComparing(Comparator.comparingInt(Order::id).reversed());
+~~~
+
+### Stable sort là gì và vì sao quan trọng
+Stable sort (sắp xếp ổn định) giữ thứ tự tương đối của các phần tử **bằng nhau theo comparator** sau khi sắp xếp. Java dùng TimSort cho List.sort và Arrays.sort(Object[]) — ổn định, O(n log n) phổ biến, tốt trên dữ liệu có sẵn thứ tự một phần.
+
+Vì ổn định, bạn có thể sắp xếp theo thứ yếu trước, rồi trường chính sau:
+~~~java
+// Bước 1: sắp xếp theo id (thứ yếu)
+// Bước 2: sắp xếp theo ngày (chính) — cùng ngày vẫn giữ thứ tự id từ bước 1
+~~~
+
+Nếu sort không ổn định, thứ tự id trong cùng ngày có thể bị loạn sau bước 2.
+
+### Arrays.sort primitive không ổn định
+{{Arrays.sort(int[])}} dùng quicksort đa trục (dual-pivot quicksort), **không ổn định**, nhưng nhanh cho primitive và không cần object comparator. {{Arrays.sort(Object[])}} và {{List.sort()}} dùng TimSort, ổn định. Nếu bạn sắp xếp mảng int[] theo giá trị rồi kỳ vọng thứ tự secondary được giữ, sẽ thất bại.
+
+| API | Thuật toán | ổn định? | Dùng khi |
+|---|---|---|---|
+| List.sort | TimSort | Có | Sắp xếp danh sách đối tượng, cần ổn định |
+| Arrays.sort(Object[]) | TimSort | Có | Mảng đối tượng |
+| Arrays.sort(int[]/long[]/...) | Dual-pivot quicksort | Không | Mảng primitive, chỉ cần sắp giá trị |
+| Arrays.parallelSort | TimSort / quicksort | Có (đối tượng), không (primitive) | Mảng lớn, song song |
+
+### Pitfall production
+- Giả định mọi Arrays.sort đều ổn định → dùng trên int[] và kỳ vọng thứ tự secondary giữ, sai.
+- Dùng comparator không xử lý null → NullPointerException khi có trường null.
+- Comparator không nhất quán (violation của bắc cầu/đối xứng) → kết quả sắp xếp lạ hoặc kỳThrows IllegalArgumentException từ TimSort.
+- Sắp xếp theo field mutable và thay đổi field sau khi đã sắp xếp → thứ tự không còn chính xác.
+- Sắp xếp lớn trong request HTTP trực tiếp làm tăng latency; nếu dữ liệu đã có sẵn thứ tự, TimSort nhanh hơn.
+
+### Ví dụ đời thực
+Báo cáo đơn hàng cần sắp xếp theo ngày tạo tăng dần, cùng ngày thì mã đơn giảm dần. Ban đầu code sắp xếp theo ngày rồi sau đó sắp xếp lại theo mã đơn, làm mất thứ tự ngày. Sửa thành comparator chain comparator.comparing(date).thenComparing(comparingInt(id).reversed()). Một module khác sắp xếp mã đơn bằng Arrays.sort(int[]) rồi gán lại, thứ tự ngày trong cùng mã bị loạn vì quicksort không ổn định; đổi sang List.sort với comparator chain hoặc Integer[] + Arrays.sort(Object[]) khôi phục chính xác. Số liệu là kịch bản minh hoạ trên 100.000 đơn.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng Comparator.comparing và thenComparing để sắp xếp theo nhiều trường, từng lớp ưu tiên, kèm reversed/nullsLast tuỳ nghiệp vụ. Java sắp xếp List và mảng đối tượng bằng TimSort, ổn định: phần tử bằng nhau giữ thứ tự ban đầu, nên em có thể sắp xếp thứ yếu rồi trường chính. Nhưng Arrays.sort trên mảng primitive (int[], long[]) dùng quicksort đa trục không ổn định — em không dùng nó nếu cần giữ thứ tự secondary. Em cũng xử lý null bằng nullsLast/nullsFirst và tránh comparator không nhất quán. Tôi từng sửa báo cáo đơn hàng: sắp xếp lại nhiều lần làm mất thứ tự, đổi sang comparator chain giải quyết; và Arrays.sort(int[]) làm loạn thứ tự ngày, đổi sang List.sort ổn định."
+
+> Senior tip: Stable sort là công cụ thiết kế: sắp xếp theo thứ yếu trước rồi trường chính sau, thứ tự thứ yếu được giữ trong nhóm bằng nhau. Nhớ rằng Arrays.sort primitive không ổn định — chỉ dùng khi chỉ sắp giá trị primitive.
+
+`,
+  follow: [
+    'Comparator chain thìComparing được dùng để làm gì, và thứ tự gọi có quan trọng không?',
+    'Tại sao Arrays.sort(int[]) không ổn định, còn List.sort() thì ổn định?',
+    'Stable sort giúp bạn làm gì mà sort không ổn định không làm được?'
+  ],
+  tags: ['Comparator', 'stable sort', 'TimSort', 'thenComparing', 'Arrays.sort', 'List.sort']
+},
+{
+  id: 'modern-056',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Autoboxing với varargs và Integer cache (-128..127): tại sao so sánh {{Integer}} bằng {{==}} đôi khi "đúng" rồi lại sai, và varargs tạo mảng mới mỗi lần gọi ảnh hưởng hiệu năng như thế nào.',
+  a: `**Tóm tắt:** Autoboxing tự chuyển {{int}} thành {{Integer}} (và ngược lại unboxing). {{Integer.valueOf()}} cache các giá trị từ -128 đến 127, nên {{Integer a = 100; Integer b = 100; a == b}} là true, nhưng {{1000}} ra hai object khác nhau, {{a == b}} false. Đây là lỗi so sánh danh tính thay vì giá trị. Varargs ({{Integer...}}) tạo một mảng mới ở mỗi lần gọi, Boxing từng phần tử int; trong hot loop hoặc gọi nhiều lần, gây allocation và GC. Luôn dùng {{equals()}} để so sánh giá trị wrapper, và cân nhắc chi phí varargs trong đường dẫn nóng.
+
+### Integer cache và bẫy ==
+Tất cả wrapper số nguyên ({{Byte}}, {{Short}}, {{Integer}}, {{Long}}) cache các instance thường dùng trong khoảng **-128 đến 127** (upper bound Integer có thể mở rộng bằng {{-XX:AutoBoxCacheMax}}). Giá trị trong cache tái sử dụng object, ngoài khoảng mỗi boxing tạo object mới.
+
+~~~java
+Integer a = 100;  // Integer.valueOf(100), lấy từ cache
+Integer b = 100;  // cùng tham chiếu cache
+System.out.println(a == b); // true (tử tình)
+
+Integer x = 1000; // ngoài cache, object mới
+Integer y = 1000; // object khác
+System.out.println(x == y); // false, dù giá trị bằng nhau
+System.out.println(x.equals(y)); // true, so sánh giá trị
+~~~
+
+Vì vậy {{==}} trên wrapper chỉ "đúng tình cờ" trong vùng cache, ngoài ra luôn sai. Quy tắc: **so sánh wrapper bằng {{equals()}}**, không bao giờ {{==}} (trừ khi bạn cố ý kiểm tra danh tính và chắc chắn đã intern/cache).
+
+Autoboxing cũng xảy ra khi gán primitive vào biến wrapper, và unboxing khi dùng wrapper trong phép số hoặc gán về primitive. Unboxing {{null}} ném {{NullPointerException}}.
+
+~~~java
+Integer total = null;
+int sum = total; // NullPointerException tại runtime
+~~~
+
+### Varargs tạo mảng mới mỗi lần gọi
+Phương thức varargs {{void m(Integer... values)}} thực chất nhận một mảng {{Integer[]}}. Mỗi lần gọi, Java tạo mảng mới (thậm chí khi không truyền phần tử, mảng rỗng), và boxing mỗi int thành Integer. Điều này ổn cho gọi hiếm, nhưng trong hot loop hoặc API gọi nhiều lần, allocation mảng + wrapperInteger khiến GC tăng.
+
+~~~java
+// Gọi varargs: mỗi lần tạo Integer[] mới + box mỗi int
+logValues(1, 2, 3); // Integer[]{1, 2, 3}, ba lần boxing
+logValues();        // Integer[]{}, vẫn tạo mảng rỗng
+~~~
+
+Nếu phương thức được gọi hàng triệu lần (ví dụ logging, metric, callback), hãy cân nhắc overload không varargs, hoặc truyền mảng có sẵn, hoặc dùng primitive-specialized collection khi thực sự cần hiệu năng.
+
+### Pitfall production
+- So sánh {{Integer}} bằng {{==}}: true với 100, false với 1000 → bug chỉ xuất hiện ở giá trị lớn, khó tái hiện local.
+- Dùng wrapper trong cấu trúc dữ liệu nóng ({{List<Integer>}}, {{Map<String, Integer>}}) và cập nhật liên tục → boxing/unboxing lặp lại, allocation cao.
+- Varargs trong method được gọi mỗi request → mảng mới mỗi lần, GC dày đặc ở tải lớn.
+- Unboxing null → NullPointerException không mong muốn.
+
+### Ví dụ đời thực
+Một dịch vụ ghi log metric dùng varargs {{void addMetric(String name, Integer... values)}} được gọi mỗi request, hàng nghìn request/giây. Profiling thấy mảng Integer[] và wrapperInteger tạo thành phần lớn allocation young generation, young GC chạy liên tục. Équipe đổi thành overload để chấp nhận mảng int[] có sẵn hoặc primitive long, và ghi metric theo batch, allocation giảm đáng kể. Cách khác: nếu chỉ cần log vài giá trị, dùng String concatenation có điều kiện hoặc logger tham số hoá (SLF4J) để không tạo chuỗi khi mức log tắt. Số liệu là kịch bản minh hoạ.
+
+### Trả lời mẫu khi phỏng vấn
+"Autoboxing tự chuyển int thành Integer, và Integer cache các giá trị từ -128 đến 127, nên == có thể đúng tại một số giá trị nhỏ nhưng sai ở giá trị lớn (ví dụ 1000) vì tạo object khác nhau. Em luôn dùng equals() để so sánh giá trị wrapper, và tránh unboxing null để tránh NullPointerException. Varargs tạo mảng mới mỗi lần gọi và boxing từng phần tử, nên trong hot loop hoặc API gọi nhiều lần, em cân nhắc overload không varargs, truyền mảng có sẵn, hoặc dùng primitive. Tôi từng tối ưu service ghi metric varargs mỗi request: mảng Integer[] và wrapper là nguồn allocation lớn, đổi sang mảng int[] có sẵn/ghi batch làm giảm young GC."
+
+> Senior tip: So sánh giá trị wrapper bằng equals(), không bao giờ ==; coi varargs là "tạo mảng mới mỗi gọi" và tránh đặt nó trong hot path trừ khi đã đo thấy không phải vấn đề.
+
+`,
+  follow: [
+    'Vì sao {{Integer}} == {{Integer}} đúng với 100 nhưng sai với 1000, và bạn so sánh giá trị wrapper thế nào?',
+    'Unboxing một wrapper null gây lỗi gì, và khi nào có thể xảy ra?',
+    'Varargs tạo điều gì ở mỗi lần gọi, và tại sao điều đó quan trọng trong hot loop?'
+  ],
+  tags: ['autoboxing', 'Integer cache', 'varargs', 'equals', 'performance', 'GC']
+},
+{
+  id: 'modern-057',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Switch expression và pattern matching cho {{instanceof}} (Java 21): viết switch trả giá trị, exhaustive check với sealed, pattern matching deconstruct record, và xử lý null. So sánh với if-else cũ.',
+  a: `**Tóm tắt:** Switch expression (JEP 361, chuẩn từ Java 14) cho phép switch **trả giá trị** bằng mũi dấu {{->}} (không cần break) hoặc {{yield}}, và phải **exhaustive** (bổ trùm mọi trường hợp hoặc có {{default}}). Pattern matching cho {{instanceof}} (Java 16+) kiểm tra kiểu và gán biến thành phần trong một bước, kết hợp switch pattern (Java 21, JEP 441) deconstruct record ngay trong case. Với sealed type, compiler kiểm tra đầy đủ nhánh; thiếu nhánh lỗi biên dịch. Helpful NPE (Java 14+) báo rõ biến nào null khi null trong switch/case.
+
+### Switch expression trả giá trị
+Cũ (lệnh):
+~~~java
+String label;
+switch (status) {
+    case PENDING: label = "Chờ xử lý"; break;
+    case APPROVED: label = "Đã duyệt"; break;
+    default: label = "Không biết";
+}
+~~~
+
+Mới (expression, arrow):
+~~~java
+String label = switch (status) {
+    case PENDING -> "Chờ xử lý";
+    case APPROVED -> "Đã duyệt";
+    default -> "Không biết";
+};
+~~~
+
+- Mũi tên {{->}} không rơi nhánh (no fall-through), không cần break.
+- Nhánh có nhiều dòng dùng {{yield value}} để trả kết quả.
+- Switch expression phải đảm bảo mọi giá trị có nhánh xử lý, hoặc có {{default}}.
+
+### Pattern matching cho instanceof và switch
+Instanceof pattern kiểm tra kiểu và gán biến ngay:
+~~~java
+if (obj instanceof String s) {
+    System.out.println(s.length()); // s đã là String, không cần cast
+}
+~~~
+
+Switch pattern deconstruct record (Java 21, JEP 441):
+~~~java
+sealed interface Event permits OrderCreated, OrderPaid {}
+record OrderCreated(String id, long amount) implements Event {}
+record OrderPaid(String id, String ref) implements Event {}
+
+String desc = switch (event) {
+    case OrderCreated(var id, var amt) -> "Đặt " + id + " " + amt;
+    case OrderPaid(var id, var ref) -> "Thanh toán " + id + " " + ref;
+}; // exhaustive nhờ sealed, không cần default
+~~~
+
+- {{var}} trong pattern: suy kiểu thành phần (Java 21).
+- Pattern khớp theo **vị trí** thành phần record, không theo tên biến.
+- {{case null -> ...}} xử lý null rõ ràng (Java 21), tránh NullPointerException ngầm.
+
+### Exhaustive check với sealed
+Khi switch trên sealed hierarchy, compiler biết mọi subtype được phép. Thiếu một subtype → lỗi biên dịch, buộc cập nhật mọi switch khi thêm loại mới. Ngược lại nếu có {{default}} "nuốt" mọi trường hợp, thêm subtype mới sẽ không bị compiler cảnh báo và đi vào nhánh mặc định, xử lý sai im lặng. Do đó trong domain nội bộ ưu tiên switch đầy đủ không default.
+
+### Helpful NPE
+Java 14+ helpful NullPointerException mô tả rõ biến nào null và tại đây, giúp debug nhanh hơn so với NPE cũ chỉ báo dòng số.
+
+### So sánh switch expression vs if-else cũ
+| Tiêu chí | if-else cũ | Switch expression + pattern matching |
+|---|---|---|
+| Trả giá trị | Phải gán biến trong mỗi nhánh | Biểu thức trả trực tiếp |
+| Fall-through | Không có | Mũi tên {{->}} không rơi nhánh |
+| Kiểm tra bỏ sót nhánh | Không tự động | Compiler báo nếu thiếu (sealed) |
+| Phân tích record | instanceof + cast + getter | Một mẫu case deconstruct |
+| Xử lý null | Phải kiểm tra thủ công | case null rõ ràng |
+
+### Pitfall production
+- Thêm {{default}} để "an toàn" trong domain switch sealed → mất lợi ích compiler báo thiếu nhánh, subtype mới đi vào default xử lý sai.
+- Quên {{case null}} và truyền null → NullPointerException (trừ khi có nhánh null).
+- Đổi thứ tự thành phần record → pattern khớp theo vị trí, là breaking change.
+- Dùng switch expression với nhiều dòng nhưng quên {{yield}} → lỗi biên dịch.
+- Giả định pattern matching exhaustive bảo vệ consumer cũ (Kafka/REST) → exhaustiveness chỉ tại compile-time của build hiện tại; consumer độc lập cần schema evolution riêng.
+
+### Ví dụ đời thực
+Hệ thống đơn hàng có trạng thái {{OrderStatus}} (PENDING, PAID, SHIPPED, CANCELLED) và muốn hiển thị nhãn tiếng Việt. Ban đầu if-else dài, dễ bỏ sót trạng thái mới hoặc sai chính tả. Chuyển sang switch expression exhaustiven: thêm trạng thái mới vào enum, compiler báo thiếu nhánh ở mọi switch hiển thị, fix xong mới deploy. Nhờ đó 0 trạng thái mới bị hiển thị nhãn sai sau khi mở rộng. Số liệu là kịch bản minh hoạ.
+
+### Trả lời mẫu khi phỏng vấn
+"Switch expression (JEP 361) trong Java cho phép switch trả giá trị bằng mũi tên, không cần break, và phải exhaustive (mọi trường hợp có nhánh hoặc có default). Pattern matching cho instanceof kiểm tra kiểu và gán biến thành phần một bước; switch pattern (Java 21, JEP 441) deconstruct record ngay trong case theo vị trí thành phần. Với sealed type, compiler kiểm tra đủ nhánh: thiếu subtype thì lỗi biên dịch, giúp không bỏ sót trường hợp mới. Em xử lý null bằng case null hoặc kiểm tra trước, và tránh default 'nuốt' trong domain để giữ lợi ích cảnh báo compiler. Helpful NPE trong Java 14+ giúp biết biến nào null. Tôi từng chuyển if-else hiển thị trạng thái đơn hàng sang switch expression; thêm trạng thái mới compiler báo thiếu nhánh mọi nơi, fix xong mới deploy, không còn trạng thái bị nhãn sai."
+
+> Senior tip: Switch expression + sealed biến lỗi bỏ sót nghiệp vụ thành lỗi biên dịch. Ưu tiên switch đầy đủ (không default) cho domain quan trọng, và chỉ dùng default ở ranh giới xử lý loại chưa biết một cách cố ý.
+
+`,
+  follow: [
+    'Switch expression mũi tên {{->}} khác switch lệnh cũ ở điểm nào, và cần break không?',
+    'Vì sao switch exhaustiveness với sealed lại báo lỗi biên dịch khi thiếu nhánh, và default có thể làm mất lợi ích này?',
+    'Pattern matching deconstruct record khớp theo vị trí hay tên thành phần, và refactor thứ tự thành phần ảnh hưởng thế nào?'
+  ],
+  tags: ['switch expression', 'pattern matching', 'instanceof', 'sealed', 'Java 21', 'exhaustive']
 }
 );
