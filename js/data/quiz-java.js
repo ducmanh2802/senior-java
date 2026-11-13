@@ -4622,5 +4622,380 @@ Dev dùng hot-reload nhiều lần, thấy số class tăng liên tục trong {{
 - **Sai (D)**: container limit (cgroup) áp dụng cho toàn bộ process trong container, bao gồm JVM.
 
 > Senior tip: quy tắc thực hành: đặt {{-Xmx}} đủ nhỏ để chừa "headroom" cho non-heap (thường 25-40% limit tùy số thread, direct buffer, thư viện native). Giám sát {{container_memory_working_set_bytes}} và tỷ lệ OOMKilled. Tránh leak direct buffer (Netty, NIO) và giới hạn thread/connection pool.`
+},
+{
+  id: 'qz-collections-030', topic: 'collections',
+  q: `Hệ thống cần tra cứu đơn hàng theo mã đơn {{orderId}} trong thời gian gần như không phụ thuộc số lượng đơn, đồng thời khi xuất báo cáo phải duyệt đơn theo thứ tự nhập hệ thống. Cấu trúc nào phù hợp nhất?`,
+  options: [
+    `HashMap<String, Order> — tra cứu nhanh nhưng thứ tự duyệt không xác định và có thể thay đổi sau khi resize.`,
+    `TreeMap<String, Order> — duyệt theo thứ tự sắp xếp mã đơn, không phải thứ tự nhập, và thao tác O(log n).`,
+    `LinkedHashMap<String, Order> mặc định giữ thứ tự chèn, tra cứu O(1) trung bình.`,
+    `ConcurrentHashMap<String, Order> — an toàn luồng nhưng không đảm bảo thứ tự duyệt.`
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: LinkedHashMap<String, Order> giữ thứ tự chèn và tra cứu O(1) trung bình.**
+
+### Vì sao đúng
+HashMap băm key vào mảng bucket; thứ tự phần tử phụ thuộc hashCode và capacity, không đảm bảo thứ tự chèn, và có thể thay đổi khi resize. TreeMap duyệt theo thứ tự khóa (theo Comparator hoặc compareTo), không theo thứ tự thêm, và mỗi thao tác O(log n). LinkedHashMap là HashMap kèm danh sách liên kết kép nối các entry theo thứ tự chèn: get/put/remove vẫn O(1) trung bình (thêm chi phí nhỏ cho liên kết), và keySet/entrySet duyệt theo thứ tự chèn.
+
+### Vì sao các phương án còn lại sai
+- HashMap: thứ tự duyệt không đặc tả, phụ thuộc hashCode; sau resize có thể thay đổi.
+- TreeMap: sắp xếp theo khóa, không theo thứ tự nhập; O(log n) chậm hơn O(1) khi chỉ cần tra cứu.
+- ConcurrentHashMap: iterator weakly consistent, không cam kết thứ tự nào; dùng cho nhiều luồng ghi, không phải khi cần thứ tự chèn.
+
+> Senior tip: cần thread-safe và thứ tự chèn → bọc LinkedHashMap bằng Collections.synchronizedMap và luôn khóa chính wrapper khi duyệt. Cần thứ tự sắp xếp khóa đồng thời → {{ConcurrentSkipListMap}}. Cần LRU cache → LinkedHashMap(16, 0.75f, true) kèm override removeEldestEntry (không thread-safe, trên production hãy dùng Caffeine).`
+},
+{
+  id: 'qz-collections-031', topic: 'collections',
+  q: `Làm sao sau khi put vào HashMap rồi sửa trường dùng trong hashCode/equals của key, sau đó get lại key đó?
+~~~java
+class UserKey {
+    String username;
+    UserKey(String username) { this.username = username; }
+    @Override public int hashCode() { return username.hashCode(); }
+    @Override public boolean equals(Object o) {
+        return o instanceof UserKey k && k.username.equals(username);
+    }
 }
+Map<UserKey, String> map = new HashMap<>();
+UserKey k = new UserKey("alice");
+map.put(k, "vip");
+k.username = "alice2";
+System.out.println(map.get(k) + " " + map.get(new UserKey("alice")) + " " + map.size());
+~~~`,
+  options: [
+    `null null 1`,
+    `vip vip 1`,
+    `null vip 2`,
+    `vip null 1`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: null null 1.**
+
+### Vì sao đúng
+HashMap tính bucket từ hashCode lúc put: "alice" hash vào một bucket và lưu entry ở đó. Sau đó k.username = "alice2" thay đổi trạng thái của object key, nhưng entry vẫn nằm bucket cũ.
+
+- map.get(k): hash của key hiện tại là "alice2" → đi bucket khác → không tìm thấy → null.
+- map.get(new UserKey("alice")): đi đúng bucket cũ, nhưng entry lưu key k có username "alice2" → equals sai → null.
+- size() vẫn là 1: entry mồ côi vẫn còn trong map, chỉ không tìm lại được được.
+
+### Vì sao các phương án còn lại sai
+- vip vip 1: tưởng HashMap theo dõi sự thay đổi của key hoặc get theo chuỗi tham chiếu object — sai.
+- null vip 2: put cùng key logic (username "alice") chỉ tạo một entry; sửa key không tạo entry mới.
+- vip null 1: đảo ngược kết quả của hai lệnh get.
+
+### Nguyên tắc
+Khóa dùng cho HashMap/HashSet nên bất biến sau khi đưa vào, hoặc ít nhất không được sửa các trường tham gia hashCode/equals. Nếu phải sửa, hãy remove entry cũ rồi put lại — dễ nhầm, tránh nếu có thể.
+
+> Senior tip: bug này hay gặp khi object entity dùng làm key trong cache/map rồi sau khi cập nhật DB, trường id/code thay đổi: map "bị mất" entry và rò rỉ bộ nhớ (entry mồ côi không bao giờ remove). Dùng immutable record làm key, hoặc tra cứu bằng ID thô (String/Long) thay vì đối tượng domain.`
+},
+{
+  id: 'qz-collections-032', topic: 'collections',
+  q: `Dùng for-each để xoá phần tử ở giữa danh sách, đoạn code sau in ra gì?
+~~~java
+List<String> logs = new ArrayList<>(List.of("a", "b", "c", "d"));
+for (String s : logs) {
+    if (s.equals("b")) {
+        logs.remove(s);
+    }
+}
+System.out.println(logs);
+~~~`,
+  options: [
+    `[a, c, d]`,
+    `ném ConcurrentModificationException`,
+    `[a, b, c, d]`,
+    `vòng lặp chạy vô hạn`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: ném ConcurrentModificationException.**
+
+### Vì sao đúng
+For-each trên ArrayList dùng Iterator ẩn danh. Iterator giữ expectedModCount = giá trị modCount của list khi tạo. Mỗi lần gọi next() so sánh modCount; khác nhau → ném ConcurrentModificationException (fail-fast).
+
+Diễn biến: trả về "a", next() lấy "b"; logs.remove("b") xoá, modCount tăng, list thành ["a", "c", "d"]. Lần tiếp theo Iterator gọi next() để lấy phần tử sau → phát hiện modCount khác → ném exception trước khi đọc "c".
+
+### Vì sao các phương án còn lại sai
+- [a, c, d]: chỉ đúng nếu dùng Iterator.remove() hoặc removeIf() (cập nhật expectedModCount).
+- [a, b, c, d]: remove đã xảy ra trước khi exception ném ra.
+- Vòng lặp chạy vô hạn: con trỏ Iterator không lùi; vòng lặp kết thúc khi hết phần tử hoặc ném exception.
+
+> Senior tip: fail-fast chỉ là cố gắng phát hiện (best-effort), Javadoc khuyên không dựa vào nó. Code đúng: logs.removeIf(s -> s.equals("b")) hoặc for (Iterator<String> it = logs.iterator(); it.hasNext();) { if (...) it.remove(); }. Tránh sửa list trực tiếp trong for-each.`
+},
+{
+  id: 'qz-collections-033', topic: 'collections',
+  q: `TreeMap dùng comparator so sánh chỉ theo mã, trong khi equals so sánh cả mã và tên. Đoạn code sau in ra gì?
+~~~java
+record Code(String ma, String ten) {}
+Comparator<Code> cmp = Comparator.comparing(Code::ma);
+TreeMap<Code, String> map = new TreeMap<>(cmp);
+map.put(new Code("A", "Alpha"), "first");
+map.put(new Code("A", "Beta"), "second");
+System.out.println(map.size() + " " + map.get(new Code("A", "Gamma")) + " "
+    + new Code("A", "Alpha").equals(new Code("A", "Beta")));
+~~~`,
+  options: [
+    `1 second false`,
+    `2 first true`,
+    `2 second false`,
+    `1 null true`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: 1 second false.**
+
+### Vì sao đúng
+TreeMap/TreeSet không dùng equals/hashCode; chúng coi hai phần tử "trùng" khi comparator trả về 0. Ở đây comparator chỉ so sánh ma:
+
+- Put "A"/"Alpha": entry 1.
+- Put "A"/"Beta": compare với entry 1 về ma = 0 → coi là trùng key → ghi đè giá trị thành "second". Size vẫn 1.
+- get(new Code("A", "Gamma")): compare với entry về ma = 0 → tìm thấy → trả "second", mặc dù object key khác và equals(...) là false.
+
+### Vì sao các phương án còn lại sai
+- 2 first true: TreeMap không giữ hai entry "compare bằng 0", và get trả "second" sau khi ghi đè.
+- 2 second false: size không thể 2 vì hai entry compare == 0.
+- 1 null true: get tìm thấy vì comparator báo bằng 0; equals của record so sánh cả hai thành phần nên false.
+
+### Điều kiện
+Comparator dùng trong TreeMap/TreeSet nên nhất quán với equals: compare(a, b) == 0 khớp với a.equals(b). Nếu không, put/get/contains cho kết quả ngạc nhiên và mất dữ liệu im lặng.
+
+> Senior tip: khi sắp theo trường không duy nhất (ví dụ thời gian giao dịch), luôn thêm tie-breaker: comparingInt(Code::ma).thenComparing(Code::ten). Bug thật: dùng TreeSet khử trùng giao dịch theo timestamp, hai giao dịch cùng mili giây bị mất một cái mà không báo lỗi.`
+},
+{
+  id: 'qz-collections-034', topic: 'collections',
+  q: `List.of tạo list bất biến. Đoạn code sau in ra gì?
+~~~java
+List<String> list = List.of("a", "b");
+try {
+    list.add("c");
+    list.set(0, "x");
+    System.out.println("chưa ném");
+} catch (UnsupportedOperationException e) {
+    System.out.println("UnsupportedOperationException");
+}
+~~~`,
+  options: [
+    `UnsupportedOperationException`,
+    `chưa ném`,
+    `NullPointerException`,
+    `không ném exception, list thành [x, b, c]`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: UnsupportedOperationException.**
+
+### Vì sao đúng
+List.of (Java 9+) trả về list bất biến về cấu trúc: add, remove, set, clear, sort đều ném UnsupportedOperationException. Ở ví dụ, list.add("c") đã ném ngay, nên set và println không chạy.
+
+List.of cũng cấm phần tử null: List.of("a", null) ném NullPointerException ngay khi tạo. Tuy nhiên bất biến chỉ là nóng: nếu phần tử là đối tượng mutable, nội dung đối tượng đó vẫn có thể sửa.
+
+### Vì sao các phương án còn lại sai
+- chưa ném: add không thành công, điều khiển nhảy vào catch.
+- NullPointerException: List.of ném NPE khi phần tử null, không phải khi add vào list không chứa null.
+- không ném exception: list từ List.of không cho sửa gì cả.
+
+> Senior tip: cần list sửa được → new ArrayList<>(List.of(...)). Trả collection từ API public: nếu caller có thể sửa list gốc, dùng List.copyOf (snapshot thật); Collections.unmodifiableList chỉ là view chỉ đọc, list gốc sửa thì view thay đổi theo.`
+},
+{
+  id: 'qz-collections-035', topic: 'collections',
+  q: `Danh sách ArrayList 1 triệu phần tử, cần thường xuyên xoá phần tử theo chỉ số i và gọi contains. Phát biểu nào đúng về chi phí?`,
+  options: [
+    `remove(i) O(1) vì chỉ đánh dấu phần tử đó là xóa`,
+    `remove(i) O(n) vì phải dồn các phần tử sau i lên trước; contains O(n) duyệt tuần tự và dùng equals`,
+    `Cả hai O(1) nhờ ArrayList dựa trên mảng`,
+    `remove(i) O(n log n) do phải sắp xếp lại`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: remove(i) O(n), contains O(n).**
+
+### Vì sao đúng
+ArrayList lưu phần tử trong mảng Object[] liên tiếp:
+
+- remove(i): xoá phần tử ở i, rồi dùng System.arraycopy dồn tất cả phần tử sau i sang trái một vị trí → trung bình O(n); khi i = 0 thì gần n phần tử bị dồn.
+- contains(e): duyệt từ đầu tới cuối, gọi equals cho mỗi phần tử → O(n); không có hash nên không tra cứu ngay.
+
+### Vì sao các phương án còn lại sai
+- O(1) đánh dấu xoá: ArrayList không dùng tombstone/delete mark; mảng phải dồn để không có khoảng trống.
+- Cả hai O(1): chỉ get(i)/set(i) mới O(1) nhờ truy cập trực tiếp mảng.
+- O(n log n): không có sắp xếp nào xảy ra khi xoá.
+
+### Lựa chọn thực tế
+Nếu xoá giữa danh sách rất nhiều và thứ tự không quan trọng, thủ thuật đổi phần tử tại i với phần tử cuối rồi removeLast() (Java 21) là O(1), nhưng thay đổi thứ tự. Nếu cần tra cứu theo khóa thường xuyên, hãy dùng HashMap thay vì duyệt contains trên list.
+
+> Senior tip: remove(Object o) (xoá theo giá trị) cũng O(n) vì phải tìm phần tử bằng equals trước rồi mới dồn mảng. Phân biệt rõ hai overload remove(int index) và remove(Object): truyền Integer vào List<Integer> sẽ gọi remove(Object) — xoá theo giá trị chứ không phải vị trí, đây là nguồn bug hay gặp.`
+},
+{
+  id: 'qz-collections-036', topic: 'collections', multi: true,
+  q: `(Chọn 2) Về độ phức tạp thao tác collection phổ biến, phát biểu nào đúng?`,
+  options: [
+    `ArrayList.get(i) O(1) vì truy cập trực tiếp qua mảng nội bộ`,
+    `LinkedList.add(index, e) luôn O(1) vì chỉ thay đổi liên kết`,
+    `HashMap.get(key) O(1) đảm bảo mọi lúc, kể cả nhiều va chạm`,
+    `TreeMap.get(key) O(log n) trung bình và xấu nhất do cây đỏ-đen cân bằng`,
+    `ArrayList.contains(e) O(1) vì dùng băm`
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: ArrayList.get(i) O(1) và TreeMap.get(key) O(log n).**
+
+### Vì sao đúng
+- ArrayList dựa trên mảng: lấy phần tử theo chỉ số là phép toán mảng trực tiếp O(1).
+- TreeMap là cây đỏ-đen cân bằng: get/put/remove đều O(log n) trong mọi trường hợp, khác HashMap phụ thuộc chất lượng hashCode.
+
+### Vì sao các phương án còn lại sai
+- LinkedList.add(index, e) O(1): chỉ O(1) sau khi đã đến được nút đó; duyệt đến vị trí index là O(n). Thêm vào đầu/cuối thì O(1).
+- HashMap.get O(1) đảm bảo: O(1) trung bình assumes hashCode phân bố tốt. Nhiều va chạm → bin dài O(n), hoặc cây O(log n) sau treeify (ngưỡng 8, table ≥ 64).
+- ArrayList.contains O(1): không có cấu trúc băm; duyệt và equals từng phần tử → O(n).
+
+> Senior tip: phỏng vấn hay hỏi "khi nào chọn ArrayList vs LinkedList?" — đáp án thực tế: gần như luôn ArrayList (cache-friendly, O(1) random access), LinkedList chỉ khi thêm/xoá nhiều ở đầu hoặc cuối danh sách và không truy cập ngẫu nhiên. Với tra cứu theo khóa, dùng Map thay vì contains trên List.`
+},
+{
+  id: 'qz-collections-037', topic: 'collections',
+  q: `HashMap cho phép mấy key null, hệ số tải mặc định bao nhiêu, và put key đã có làm gì?
+~~~java
+Map<String, Integer> map = new HashMap<>();
+map.put(null, 10);
+map.put(null, 20);
+System.out.println(map.get(null) + " " + map.size());
+~~~`,
+  options: [
+    `10 1`,
+    `20 1`,
+    `20 2`,
+    `ném NullPointerException vì key null`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: 20 1.**
+
+### Vì sao đúng
+HashMap cho phép một key null (hash của null quy ước là 0, nằm bucket 0) và nhiều value null. put(null, 10) tạo entry; put(null, 20) tìm thấy cùng key null → ghi đè giá trị thành 20. Size là 1 vì chỉ có một entry key null.
+
+Hệ số tải mặc định là 0.75. Khi size > capacity * 0.75, HashMap tạo bảng mới gấp đôi capacity và rehash mọi entry vào vị trí mới (chi phí O(n)). Default capacity 16 → threshold 12.
+
+### Vì sao các phương án còn lại sai
+- 10 1: put với key đã có ghi đè, không giữ cả hai.
+- 20 2: chỉ một key null được phép, nên không có hai entry.
+- Ném NullPointerException vì key null: HashMap chấp nhận null key/value; là ConcurrentHashMap cấm cả null key lẫn null value (ném NPE).
+
+> Senior tip: put null vào map dùng để đếm hoặc lưu trạng thái là bẫy: nếu sau đó gán int n = map.get(key) thì unboxing null ném NullPointerException. Dùng Integer và kiểm tra null tường minh, hoặc map.merge(k, 1, Integer::sum) (key chưa có sẽ gán giá trị mới, không bao giờ null).`
+},
+{
+  id: 'qz-collections-038', topic: 'collections',
+  q: `Map<String, Integer> sync = Collections.synchronizedMap(new HashMap<>());
+sync.put("a", 1);
+Hai luồng cùng chạy, một luồng duyệt sync.keySet() bằng for-each không khóa wrapper, luồng khác gọi sync.put(...). Điều gì có thể xảy ra?`,
+  options: [
+    `An toàn vì synchronizedMap đã khóa toàn bộ map trong toàn bộ vòng lặp duyệt`,
+    `Có thể ném ConcurrentModificationException ở luồng duyệt nếu luồng khác sửa map; phải khóa wrapper: synchronized(sync) { for (...) }`,
+    `Không bao giờ ném exception vì wrapper đã xử lý đồng bộ mọi thao tác`,
+    `Chỉ ném exception nếu map rỗng`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: có thể ném ConcurrentModificationException; phải khóa wrapper khi duyệt.**
+
+### Vì sao đúng
+Collections.synchronizedMap gói map và khóa một đối tượng nội bộ mỗi lần gọi một phương án duy nhất (get, put, size…). Nhưng việc duyệt sync.keySet() là nhiều lần gọi iterator/hasNext/next trên view của HashMap gốc; iterator của bản gốc không biết đến wrapper. Nếu luồng khác put giữa lúc duyệt, modCount của HashMap gốc thay đổi → iterator ném ConcurrentModificationException.
+
+Cách đúng:
+~~~java
+synchronized (sync) {
+    for (String k : sync.keySet()) { ... }
+}
+~~~
+Trong khối này, đồng thời chặn các luồng khác sửa sync (tất cả thao tác trên wrapper khóa cùng một monitor).
+
+### Vì sao các phương án còn lại sai
+- An toàn toàn vòng lặp: wrapper chỉ bảo đảm nguyên tử từng lệnh, không kéo dài khóa qua vòng lặp.
+- Không bao giờ ném: đúng là vi phạm non-interference, iterator của bản gốc sẽ phát hiện sự thay đổi.
+- Chỉ khi rỗng: race xảy ra bất cứ khi nào có sửa song song, không phụ thuộc rỗng hay không.
+
+> Senior tip: quy tắc: duyệt collection được bọc synchronizedMap/Hashtable/Vector phải synchronized trên chính đối tượng bọc trong toàn bộ thời gian duyệt. Tiện hơn là dùng {{ConcurrentHashMap}} (iterator weakly consistent, không ném ConcurrentModificationException) khi cần đồng thời.`
+},
+{
+  id: 'qz-collections-039', topic: 'collections', multi: true,
+  q: `(Chọn 2) Đoạn code nào sau đây ném ConcurrentModificationException khi chạy trên ArrayList?`,
+  options: [
+    `Dùng for-each, gọi list.remove(e) trong vòng lặp khi tìm thấy phần tử cần xoá`,
+    `Dùng Iterator tường minh và gọi it.remove() ngay sau it.next()`,
+    `Gọi list.removeIf(e -> ...)`,
+    `Dùng stream().forEach(e -> list.remove(e))`,
+    `Duyệt ngược for (int i = list.size() - 1; i >= 0; i--) và list.remove(i)`
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: for-each + list.remove và stream().forEach + list.remove.**
+
+### Vì sao đúng
+- For-each tạo ẩn danh Iterator. list.remove(s) sửa trực tiếp list, làm tăng modCount; lần gọi next() tiếp theo của Iterator so sánh expectedModCount, khác nhau → ném ConcurrentModificationException.
+- stream().forEach(e -> list.remove(e)): spliterator của ArrayList là fail-fast; trong lúc stream đang duyệt, việc sửa list trực tiếp làm thay đổi modCount → lần truy cập phần tử tiếp theo ném exception (vi phạm non-interference).
+
+### Vì sao các phương án còn lại sai
+- Iterator.remove(): xóa phần tử vừa trả về và cập nhật expectedModCount → an toàn, không ném exception.
+- removeIf(): đánh dấu cần xoá rồi dồn mảng một lần, cập nhật modCount một cách nhất quán → không ném exception.
+- Duyệt ngược remove(i): không dùng Iterator, chỉ thay đổi mảng theo chỉ số của mình → không ai kiểm tra modCount → không ném exception.
+
+> Senior tip: cần lọc và xoá trong cùng lúc → ưu tiên list.removeIf(predicate) (gọn, O(n) dồn một lần). Nếu cần cả phần tử xoá mà Iterator.remove() quá chậm trên ArrayList (dồn O(n) mỗi lần), hãy xây list mới bằng stream filter hoặc dùng cấu trúc phù hợp hơn.`
+},
+{
+  id: 'qz-collections-040', topic: 'collections',
+  q: `Dùng đối tượng mutable làm key HashMap, sau khi put rồi sửa trường dùng trong hashCode/equals, sau đó remove key theo giá trị ban đầu?
+~~~java
+class Key {
+    int id;
+    Key(int id) { this.id = id; }
+    @Override public int hashCode() { return id; }
+    @Override public boolean equals(Object o) {
+        return o instanceof Key k && k.id == id;
+    }
+}
+Map<Key, String> map = new HashMap<>();
+Key k = new Key(1);
+map.put(k, "a");
+k.id = 2;
+System.out.println(map.remove(new Key(1)) + " " + map.size());
+~~~`,
+  options: [
+    `a 1`,
+    `null 1`,
+    `a 0`,
+    `null 0`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: null 1.**
+
+### Vì sao đúng
+map.put(k, "a"): key có id = 1, hash 1, entry lưu trong bucket 1. Sau k.id = 2, object key thay đổi nhưng entry vẫn nằm bucket 1.
+
+map.remove(new Key(1)): tính hash 1 → vào bucket 1, duyệt entry, gọi equals(entry.key = k có id = 2, new Key(1) id = 1) → false → không tìm thấy → trả null. Entry mồ côi vẫn còn trong map → size() = 1.
+
+### Vì sao các phương án còn lại sai
+- a 1: remove không tìm thấy key vì hashCode/equals của key đã bị thay đổi sau khi put.
+- a 0 / null 0: entry chưa bao giờ bị lấy ra, size vẫn 1.
+
+### Hậu quả
+Entry mồ côi giữ mạnh cả key và value → không bị GC, rò rỉ bộ nhớ, và không bao giờ remove/tra cứu được bằng key logic ban đầu.
+
+> Senior tip: khóa trong HashMap/HashSet nên bất biến (record, String, Integer, Long…) và không bao giờ sửa trường tham gia hashCode/equals sau khi đưa vào map. Nách thiết kế: tra cứu bằng ID thô (String/Long) thay vì đối tượng domain có thể thay đổi.`
+},
+{
+  id: 'qz-collections-041', topic: 'collections', multi: true,
+  q: `(Chọn 2) Về List.of (Java 9+), phát biểu nào đúng?`,
+  options: [
+    `List.of(null) ném NullPointerException vì collection này không chấp nhận phần tử null`,
+    `list.add("c") ném UnsupportedOperationException vì cấu trúc bất biến`,
+    `list.set(0, "x") chạy được vì List.of chỉ cấm thêm/xoá`,
+    `List.of("a", null) chứa được một phần tử null`
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: List.of(null) ném NullPointerException và add ném UnsupportedOperationException.**
+
+### Vì sao đúng
+- List.of kiểm tra null ngay khi tạo: bất kỳ phần tử null nào → NullPointerException. Điều này cũng áp dụng List.of("a", null).
+- Trả về list bất biến cấu trúc: add, remove, set, clear, sort đều ném UnsupportedOperationException.
+
+### Vì sao các phương án còn lại sai
+- set chạy được: set cũng sửa cấu trúc (thay phần tử tại vị trí) → UnsupportedOperationException, giống add.
+- List.of("a", null) chứa null: null bị chặn ở lúc tạo, ném NullPointerException trước khi list có thể tồn tại.
+
+### Lưu ý
+Bất biến là nóng: danh sách không được thay thành phần, nhưng nếu phần tử là đối tượng mutable (ví dụ List.of(new StringBuilder("a"))), nội dung phần tử đó vẫn có thể sửa và ảnh hưởng tới danh sách.
+
+> Senior tip: dùng List.of cho hằng số dữ liệu (cấu hình, danh sách mã trạng thái) để ngăn sửa nhầm và thể hiện ý định "không đụng". Cần list sửa được → new ArrayList<>(List.of(...)); cần snapshot an toàn từ list caller → List.copyOf.`
+},
 );
