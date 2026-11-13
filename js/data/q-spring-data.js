@@ -10646,4 +10646,556 @@ Một starter nội bộ tạo client bên thứ ba dù ứng dụng không cấ
   ],
   tags: ['Spring Boot', 'auto-configuration', 'Conditional', 'starter', 'ApplicationContextRunner']
 },
+{
+  id: 'spring-061',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Khi bật virtual thread trong Spring Boot 3.2+ ({{spring.threads.virtual.enabled=true}} trên Java 21+), connection pool (ví dụ HikariCP) và các tài nguyên bị giới hạn bị ảnh hưởng thế nào? Bạn cấu hình và đo lường ra sao để không làm hệ thống tệ hơn?',
+  a: `**Tóm tắt:** Virtual thread (luồng ảo: luồng nhẹ do JVM quản lý, có thể gắn/bỏ gắn trên ít carrier thread — luồng OS thật) giúp phục vụ rất nhiều request I/O blocking (chờ DB, HTTP, file) đồng thời mà không tốn một thread nền tảng cho mỗi request. Nhưng connection pool (bể kết nối: tập kết nối DB tái sử dụng có giới hạn, ví dụ HikariCP mặc định tối đa 10) không tự giãn theo số virtual thread, nên concurrency cao hơn có thể chỉ chuyển nút thắt sang "chờ lấy connection", làm latency đuôi tệ hơn. Cần giới hạn đồng thời ở biên tài nguyên, theo dõi hàng đợi pool và kiểm tra pinning (bị ghim: virtual thread giữ carrier thread, mất lợi ích).
+
+### Cái gì — vì sao cần hiểu tác động lên pool
+- Bật {{spring.threads.virtual.enabled=true}} trên Spring Boot 3.2+ (Java 21+) khiến Tomcat/Jetty dùng virtual thread cho mỗi request và nhiều executor mặc định chuyển sang virtual thread. Một request blocking (JDBC, gọi HTTP) khi chờ I/O sẽ nhường carrier thread.
+- Trước đây {{maxThreads}} của Tomcat vừa là giới hạn concurrency vừa gián tiếp giới hạn số request tranh connection. Với virtual thread, số request chạy đồng thời có thể tăng gấp nhiều lần trong khi {{maximumPoolSize}} của HikariCP giữ nguyên → hàng nghìn virtual thread cùng chờ {{getConnection()}}.
+
+### Hoạt động thế nào (từng bước)
+1. 500 virtual thread đồng thời vào handler, mỗi cái cần 1 connection JDBC (kết nối tới DB).
+2. Pool có {{maximumPoolSize=20}}: 20 lấy được connection, 480 gọi {{pool.getConnection()}} và bị park (treo chờ) cho tới khi có connection trả về hoặc {{connectionTimeout}} (mặc định 30 giây) hết hạn.
+3. DB vẫn chỉ chạy ~20 query song song (giới hạn thực), còn 480 request xếp hàng ở ứng dụng: p95/p99 tăng, có thể ném {{SQLTransientConnectionException}} khi timeout.
+4. Nếu pool quá lớn (ví dụ 200) để "hết chờ", DB lại quá tải (quá nhiều query, lock, CPU) → tệ theo hướng khác.
+
+~~~java
+// application.yaml: bat virtual thread va dat pool co chu dich
+spring:
+  threads:
+    virtual:
+      enabled: true  # Boot 3.2+, JDK 21+: request/executor dung virtual thread
+  datasource:
+    hikari:
+      maximum-pool-size: 20      # gioi han truy cap DB, khong tang theo so virtual thread
+      minimum-idle: 10
+      connection-timeout: 2000   # ms: that bai nhanh thay vi cho 30s xep hang
+      max-lifetime: 1800000
+~~~
+
+### Giới hạn đồng thời và pinning
+- Dùng bulkhead (vách ngăn: giới hạn số cuộc gọi đồng thời vào một tài nguyên) khi gọi dịch vụ ngoài: {{Semaphore}} (đếm vé: chỉ N tác vụ đi qua cùng lúc) để không tạo hàng nghìn request outbound.
+~~~java
+// Gioi han so tac vu cham vao tai nguyen hiem
+private final Semaphore dbPermits = new Semaphore(20);
+
+public Order find(long id) throws Exception {
+  if (!dbPermits.tryAcquire(200, TimeUnit.MILLISECONDS)) {
+    throw new TooManyRequestsException("he thong dang tai"); // fail nhanh
+  }
+  try { return repo.findById(id).orElseThrow(); }
+  finally { dbPermits.release(); } // luon tra permit
+}
+~~~
+- Pinning: trên Java 21, virtual thread bị pin khi blocking bên trong {{synchronized}} hoặc native call, giữ carrier thread (mất khả năng mở rộng). Phát hiện bằng JFR event {{jdk.VirtualThreadPinned}} hoặc {{-Djdk.tracePinnedThreads=full}}; thay {{synchronized}} ôm I/O bằng {{ReentrantLock}}. (Java 24+ cải thiện pinning với {{synchronized}} theo JEP 491, nhưng native frame vẫn pin.)
+
+### Đo lường và khi nào dùng
+| Chỉ số | Ý nghĩa | Dấu hiệu xấu |
+|---|---|---|
+| {{hikaricp.connections.pending}} | request đang chờ connection | > 0 kéo dài, tăng theo tải |
+| {{hikaricp.connections.acquire}} | thời gian lấy connection | p99 tăng mạnh |
+| DB {{active connections}} | tải thực lên DB | chạm max_connections |
+| JFR {{jdk.VirtualThreadPinned}} | virtual thread bị ghim | xuất hiện khi tải cao |
+
+### Ví dụ đời thực
+Service tra cứu đơn (Spring MVC, PostgreSQL) trước có Tomcat 200 thread, Hikari {{max=30}}. Sau bật virtual thread, 800 request đồng thời giờ cao điểm: CPU 25% nhưng p99 tăng từ 350ms lên 2.1s, log đầy {{SQLTransientConnectionException: Connection is not available, request timed out after 30000ms}}. Điều tra: {{hikaricp.connections.pending}} dao động 400-700, DB chỉ có 30 session hoạt động. Nguyên nhân: concurrency tăng nhưng pool vẫn 30 và timeout chờ 30s giữ request treo lâu. Xử lý: giảm {{connectionTimeout}} xuống 1500ms (fail nhanh), thêm semaphore 40 cho luồng gọi DB, tối ưu 2 query chậm để giải phóng connection nhanh hơn, giữ {{maximumPoolSize=30}}. Kết quả: p99 còn 420ms, lỗi chuyển thành 503 có kiểm soát khi quá tải thay vì treo 30s, DB CPU 55%.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi bật spring.threads.virtual.enabled trên Boot 3.2 và Java 21, mỗi request web chạy trên virtual thread nên ứng dụng chịu được rất nhiều request I/O đồng thời. Nhưng connection pool như HikariCP không tự lớn theo: nếu pool max là 20 thì chỉ 20 request dùng DB cùng lúc, phần còn lại xếp hàng chờ connection và p99 xấu đi, thậm chí timeout. Tôi không tăng pool bừa mà đặt theo khả năng của DB, giảm connectionTimeout để fail nhanh, và dùng bulkhead như semaphore để giới hạn số tác vụ chạm vào tài nguyên hiếm. Tôi theo dõi hikaricp.connections.pending, thời gian acquire và số connection active trên DB. Ngoài ra tôi kiểm tra pinning bằng JFR vì synchronized ôm I/O trên Java 21 giữ carrier thread. Virtual thread tăng concurrency của phần chờ, còn throughput thực vẫn bị chặn bởi DB, pool và dịch vụ downstream."
+
+> Senior tip: xem HikariCP như van điều tiết bảo vệ DB; với virtual thread hãy giới hạn concurrency ở từng tài nguyên (DB, HTTP client) và cảnh báo khi {{pending}} tăng, thay vì coi CPU thấp là còn dư tải.`,
+  follow: [
+    'Vì sao tăng maximumPoolSize của HikariCP quá lớn thường làm DB chậm hơn thay vì nhanh hơn?',
+    'Làm sao phát hiện và khắc phục virtual thread pinning trong staging?'
+  ],
+  tags: ['Spring Boot 3', 'virtual threads', 'HikariCP', 'connection pool', 'Java 21']
+}
+,
+{
+  id: 'spring-062',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Trong Spring Boot 3.2+, bạn chọn {{RestClient}}, {{WebClient}} hay {{RestTemplate}} để gọi HTTP tới dịch vụ khác như thế nào? Hãy so sánh mô hình, cách cấu hình timeout/connection pool và tiêu chí lựa chọn thực tế.',
+  a: `**Tóm tắt:** {{RestClient}} (Spring Framework 6.1 / Boot 3.2+) là HTTP client đồng bộ (blocking: thread chờ phản hồi) với API fluent hiện đại, thay thế dần {{RestTemplate}} cho lối đồng bộ. {{WebClient}} là client reactive/non-blocking (không giữ thread chờ, dùng {{Mono}}/{{Flux}}) trong {{spring-webflux}}, phù hợp khi đã dùng WebFlux hoặc cần streaming. {{RestTemplate}} vẫn chạy nhưng ở chế độ maintenance (chỉ sửa lỗi, không phát triển thêm); code mới ưu tiên {{RestClient}} hoặc {{WebClient}} tuỳ mô hình.
+
+### Cái gì — vì sao cần phân biệt
+- **HTTP client**: thành phần gửi request HTTP và nhận response từ dịch vụ khác.
+- {{RestTemplate}}: client đồng bộ lâu đời, API nhiều overload, khó đọc; Spring giữ để tương thích.
+- {{RestClient}}: đồng bộ, API fluent (chuỗi {{.get().uri()...retrieve()}}), dùng chung {{RestClient.Builder}} do Boot auto-config (gắn sẵn converter, observation/tracing nếu có).
+- {{WebClient}}: non-blocking dựa trên Reactive Streams (dòng dữ liệu bất đồng bộ); trả {{Mono<T>}} (0 hoặc 1 phần tử) / {{Flux<T>}} (0..n). Cần runtime reactive (mặc định Reactor Netty).
+
+### Hoạt động và ví dụ
+~~~java
+// RestClient: dong bo, fluent - phu hop Spring MVC/JPA thong thuong
+@Service
+class InventoryClient {
+  private final RestClient client;
+  InventoryClient(RestClient.Builder builder) {
+    this.client = builder.baseUrl("https://inventory.internal")
+        .defaultHeader("Accept", "application/json").build(); // bean dung lai
+  }
+  StockDto getStock(String sku) {
+    return client.get().uri("/stock/{sku}", sku)
+        .retrieve()
+        .onStatus(s -> s.is4xxClientError(), (req, res) -> {
+          throw new BusinessException("sku khong hop le");
+        })
+        .body(StockDto.class); // thread cho toi khi co response
+  }
+}
+~~~
+~~~java
+// WebClient: reactive - tra Mono, khong block thread cho I/O
+Mono<StockDto> getStock(String sku) {
+  return webClient.get().uri("/stock/{sku}", sku)
+      .retrieve().bodyToMono(StockDto.class);
+}
+~~~
+
+### Bảng so sánh và tiêu chí chọn
+| Tiêu chí | {{RestTemplate}} | {{RestClient}} | {{WebClient}} |
+|---|---|---|---|
+| Mô hình | Đồng bộ | Đồng bộ | Non-blocking/reactive |
+| Trạng thái | Maintenance | Khuyến nghị (blocking) | Khuyến nghị (reactive) |
+| API | Nhiều overload | Fluent, rõ ràng | Fluent, {{Mono/Flux}} |
+| Streaming/SSE | Hạn chế | Không phải mục tiêu | Hỗ trợ tốt |
+| MVC + JPA + virtual thread | Được | **Rất phù hợp** | Thêm phức tạp |
+
+- **Chọn RestClient**: ứng dụng Spring MVC (blocking) điển hình, kể cả bật virtual thread.
+- **Chọn WebClient**: stack WebFlux end-to-end hoặc cần streaming/gọi song song bất đồng bộ. Tránh {{.block()}} khắp MVC.
+- **Giữ RestTemplate**: chỉ cho code cũ.
+
+### Timeout và connection pool (rất quan trọng)
+~~~java
+// Cau hinh timeout + pool cho RestClient (Apache HttpClient 5)
+@Bean
+RestClient restClient(RestClient.Builder builder) {
+  PoolingHttpClientConnectionManager cm = new PoolingHttpClientConnectionManager();
+  cm.setMaxTotal(100);              // tong connection
+  cm.setDefaultMaxPerRoute(20);     // moi host dich
+  HttpClient http = HttpClients.custom().setConnectionManager(cm)
+      .setDefaultRequestConfig(RequestConfig.custom()
+          .setConnectTimeout(Timeout.ofMilliseconds(500))       // thoi gian noi ket noi
+          .setResponseTimeout(Timeout.ofMilliseconds(2000))     // cho response
+          .build()).build();
+  return builder.requestFactory(new HttpComponentsClientHttpRequestFactory(http))
+      .baseUrl("https://inventory.internal").build();
+}
+~~~
+- **Connect timeout**: chờ bắt tay TCP; đặt ngắn để fail nhanh khi host chết. **Read/response timeout**: chờ dữ liệu; theo SLO. **Connection pool**: tái sử dụng kết nối (keep-alive), đặt {{maxPerRoute}} theo downstream.
+
+### Pitfall production
+- Không đặt timeout: dịch vụ đối tác treo giữ thread/connection tới cạn. Tạo client mới mỗi request làm mất connection reuse.
+
+### Ví dụ đời thực
+Service checkout gọi 3 API bằng {{RestTemplate}} tạo mới mỗi lần, không timeout. Khi dịch vụ giá treo, 200 thread Tomcat bị giữ sau 35 giây, checkout 504 hàng loạt (p99 từ 280ms lên 25s). Nhóm chuyển sang {{RestClient}} bean dùng chung, Apache HttpClient 5 với connect 300ms, response 1500ms, pool {{maxPerRoute=30}}, thêm circuit breaker (ngắt mạch: tự ngừng gọi dịch vụ lỗi để fail nhanh). Kết quả: khi giá chậm, checkout fallback trong ~1.7s, 504 giảm từ 22% xuống 0.4%.
+
+### Trả lời mẫu khi phỏng vấn
+"Với Spring Boot 3.2+, tôi dùng RestClient cho gọi HTTP đồng bộ vì API fluent, tích hợp RestClient.Builder của Boot và phù hợp MVC/JPA, nhất là khi bật virtual thread. WebClient tôi dùng khi hệ thống WebFlux end-to-end hoặc cần streaming và bất đồng bộ; tôi tránh block() tùy tiện trong luồng blocking. RestTemplate tôi coi là mã cũ, không dùng cho client mới. Dù chọn gì tôi cũng đặt connect và read timeout, dùng client bean có connection pool để tái sử dụng kết nối, và bảo vệ bằng circuit breaker/bulkhead để một dịch vụ chậm không kéo cạn thread của mình."
+
+> Senior tip: timeout + pool là bắt buộc cho mọi outbound call; {{RestClient}} trên virtual thread cho sự đơn giản của blocking với khả năng chịu tải I/O tốt mà không cần chuyển sang reactive.`,
+  follow: [
+    'Làm thế nào để chia sẻ interceptor, tracing và timeout giữa nhiều RestClient?',
+    'Khi nào HTTP interface ({{@HttpExchange}}) hữu ích hơn gọi RestClient trực tiếp?'
+  ],
+  tags: ['RestClient', 'WebClient', 'RestTemplate', 'Spring Boot 3', 'HTTP client']
+}
+,
+{
+  id: 'spring-063',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Spring Boot 3.x hỗ trợ trả lỗi theo chuẩn Problem Details (RFC 9457, kế thừa RFC 7807) như thế nào? Bạn thiết kế API lỗi nhất quán với {{ProblemDetail}} và {{@ControllerAdvice}} ra sao để client dễ xử lý và không lộ thông tin nhạy cảm?',
+  a: `**Tóm tắt:** Problem Details (RFC 9457) là chuẩn JSON mô tả lỗi HTTP với các trường {{type}}, {{title}}, {{status}}, {{detail}}, {{instance}} và cho phép mở rộng. Spring Framework 6 / Boot 3 hỗ trợ {{ProblemDetail}} và content-type {{application/problem+json}}; dùng {{@RestControllerAdvice}} để map exception nghiệp vụ/validation thành lỗi có cấu trúc, mã lỗi ổn định và thông điệp an toàn.
+
+### Cái gì — vì sao cần chuẩn lỗi
+- **Problem Details** (chi tiết vấn đề): định dạng lỗi máy đọc được, thay vì mỗi API tự bịa cấu trúc khác nhau. Client phân nhánh theo {{type}}/{{status}} ổn định, dễ log/trace.
+- RFC 9457 cập nhật RFC 7807 (tương thích, bổ sung làm rõ); Spring dùng lớp {{ProblemDetail}} và cho phép thuộc tính mở rộng.
+
+### Hoạt động thế nào (từng bước)
+1. Request lỗi/validation thất bại → ném exception.
+2. {{@RestControllerAdvice}} bắt bằng {{@ExceptionHandler}} và tạo {{ProblemDetail}} với status, title, detail.
+3. Spring MVC trả {{application/problem+json}} gồm trường chuẩn + mở rộng ({{code}}, {{traceId}}, lỗi field).
+4. Lỗi 500: map thành thông điệp trung tính; chi tiết thật chỉ ghi log kèm trace id.
+
+~~~java
+@RestControllerAdvice
+class ApiErrors {
+  @ExceptionHandler(OrderNotFoundException.class)
+  ProblemDetail notFound(OrderNotFoundException ex, HttpServletRequest req) {
+    ProblemDetail pd = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+    pd.setType(URI.create("https://api.example.com/problems/order-not-found"));
+    pd.setTitle("Khong tim thay don hang");
+    pd.setDetail(ex.getMessage()); // thong diep an toan
+    pd.setProperty("code", "ORDER_NOT_FOUND"); // ma on dinh cho client
+    pd.setInstance(URI.create(req.getRequestURI()));
+    return pd; // tra application/problem+json
+  }
+
+  @ExceptionHandler(MethodArgumentNotValidException.class)
+  ProblemDetail invalid(MethodArgumentNotValidException ex) {
+    ProblemDetail pd = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+    pd.setTitle("Du lieu khong hop le");
+    var fields = ex.getBindingResult().getFieldErrors().stream()
+        .collect(Collectors.toMap(FieldError::getField, FieldError::getDefaultMessage, (a,b)->a));
+    pd.setProperty("errors", fields); // loi theo tung truong
+    return pd;
+  }
+}
+~~~
+
+### Thiết kế nhất quán
+| Quy tắc | Vì sao |
+|---|---|
+| {{type}} là URI ổn định theo loại lỗi | Client phân nhánh bền vững |
+| {{code}} ổn định | Hỗ trợ i18n và tích hợp máy-máy |
+| {{detail}} an toàn, không lộ stack/SQL | Tránh rò rỉ thông tin nhạy cảm |
+| 500: detail chung + {{traceId}} | Điều tra qua log/tracing |
+
+Có thể bật {{spring.mvc.problemdetails.enabled=true}} để Spring tự trả Problem Details cho một số lỗi MVC mặc định; vẫn cần tùy biến lỗi nghiệp vụ.
+
+### Pitfall production
+- Trả {{ex.getMessage()}} của lỗi hệ thống (JDBC, NullPointer) ra client: lộ tên bảng, câu lệnh. Bắt {{Exception}} quá rộng và nuốt lỗi làm mất stack trace ở log. Luôn log {{ex}} đầy đủ phía server kèm traceId.
+- Nhiều format lỗi song song trong hệ thống: client phải xử lý đặc biệt từng API.
+
+### Ví dụ đời thực
+Hệ thống thanh toán có 12 API trả lỗi khác cấu trúc, một endpoint lộ {{SQLException}} ra mobile. Nhóm chuẩn hóa: mọi lỗi qua {{@RestControllerAdvice}} trả {{ProblemDetail}} với {{type}} URI, {{code}} ổn định, {{traceId}}; validation trả map field; 500 chỉ trả "Loi he thong" + traceId. Kết quả: frontend dùng một hàm xử lý lỗi, ticket "không đọc được lỗi" giảm 70% trong 2 tháng, pentest sau không còn rò rỉ thông tin DB.
+
+### Trả lời mẫu khi phỏng vấn
+"Từ Spring Framework 6 và Boot 3, tôi dùng ProblemDetail để trả lỗi theo RFC 9457 với content-type application/problem+json. Tôi đặt @RestControllerAdvice để map exception nghiệp vụ thành ProblemDetail có status, type URI ổn định, title, detail an toàn và thuộc tính mở rộng như code hay traceId. Lỗi validation tôi trả danh sách theo field. Lỗi 500 bất ngờ tôi log đầy đủ stack trace kèm traceId ở server nhưng chỉ trả thông điệp chung cho client. Nhờ vậy client xử lý lỗi nhất quán theo type/code thay vì parse chuỗi message, và đội vận hành tra cứu nhanh qua traceId."
+
+> Senior tip: coi {{type}} và {{code}} như hợp đồng công khai; giữ {{detail}} cho con người đọc nhưng đừng để logic client phụ thuộc vào câu chữ tự do.`,
+  follow: [
+    'Khác nhau thực dụng giữa RFC 7807 và RFC 9457 khi dùng với Spring ProblemDetail là gì?',
+    'Bạn truyền traceId vào ProblemDetail và log tương quan như thế nào?'
+  ],
+  tags: ['ProblemDetail', 'RFC 9457', 'ControllerAdvice', 'Spring Boot 3', 'API error']
+}
+,
+{
+  id: 'spring-064',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Bạn triển khai observability (khả năng quan sát hệ thống) cho ứng dụng Spring Boot 3.x với Micrometer Observation và distributed tracing (truy vết phân tán) như thế nào? Metrics, traces, logs liên kết ra sao và cần lưu ý gì ở production?',
+  a: `**Tóm tắt:** Observability dựa trên ba tín hiệu: metrics (số đo tổng hợp như latency, tỉ lệ lỗi), traces (vết một request đi qua các service), logs (sự kiện chi tiết). Spring Boot 3 dùng Micrometer Observation API làm lớp trừu tượng: một observation có thể sinh cả timer metric lẫn span trace; Micrometer Tracing + bridge (OpenTelemetry hoặc Brave) truyền {{traceId/spanId}} qua HTTP/message và đưa vào MDC để log liên kết. Cần cấu hình sampling, propagation và kiểm soát chi phí.
+
+### Cái gì — vì sao cần
+- **Metric**: biết hệ thống "đang thế nào" (p95, RPS, error rate). **Trace**: biết request chậm ở đâu, đi qua service nào. **Log**: biết chi tiết sự kiện.
+- Liên kết bằng {{traceId}}: từ alert metric → trace → log đúng request. **MDC** (Mapped Diagnostic Context): ngữ cảnh gắn vào log của thread hiện tại.
+
+### Hoạt động thế nào (từng bước)
+~~~seq
+title: Mot request duoc truy vet qua 2 service
+actors: Client | Order API | Inventory API | Backend
+Client -> Order API: GET /orders/1
+Order API -> Order API: tao traceId, span root (HTTP observation)
+Order API -> Inventory API: GET /stock (propagate traceparent)
+Inventory API -> Inventory API: tao child span cung traceId
+Inventory API --> Order API: 200 OK
+Order API -> Backend: export span + metric (OTLP/Prometheus)
+Order API --> Client: 200 OK
+~~~
+1. Inbound HTTP tạo/tiếp tục trace, gắn {{traceId}} vào MDC.
+2. Outbound ({{RestClient/WebClient}} tạo từ builder của Spring) gắn header {{traceparent}} (W3C Trace Context).
+3. ObservationHandler ghi timer (metric) và span (trace) qua bridge.
+4. Log appender in {{traceId, spanId}}.
+
+~~~yaml
+# vi du cau hinh (can dependency micrometer-tracing + exporter)
+management:
+  tracing:
+    sampling:
+      probability: 0.1   # lay mau 10% de kiem soat chi phi
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+~~~
+~~~java
+// Tu tao observation cho doan nghiep vu
+return observationRegistry.observation("order.price")
+    .lowCardinalityKeyValue("region", region) // tag it gia tri
+    .observe(() -> pricingService.quote(req));
+~~~
+
+### Liên kết ba tín hiệu
+| Tín hiệu | Công cụ điển hình | Lưu ý |
+|---|---|---|
+| Metrics | Micrometer + Prometheus | Tag cardinality (số tổ hợp nhãn) thấp, không dùng userId |
+| Traces | Micrometer Tracing + OTLP → Tempo/Jaeger | Sampling, propagate {{traceparent}} |
+| Logs | Logback JSON + MDC | Không log PII/token, luôn có traceId |
+
+- Qua {{@Async}}/thread pool: dùng executor được instrument để giữ context. JDBC/Kafka cần instrumentation tương ứng.
+
+### Pitfall production
+- Cardinality nổ: gắn {{userId/orderId}} vào metric tag làm bộ nhớ tăng vọt. 100% sampling trace tốn chi phí.
+- Trace đứt: tự tạo {{HttpClient}} không qua builder Spring → không propagate header. Log không có traceId nếu chưa cấu hình pattern/MDC. Không ghi dữ liệu nhạy cảm vào span/log.
+
+### Ví dụ đời thực
+Service thanh toán (3 service Boot 3) p99 thỉnh thoảng 8s. Nhóm bật Micrometer Observation + Tracing (OpenTelemetry, OTLP về Tempo), Prometheus metrics, log JSON kèm {{traceId}}, sampling 10% và 100% với request lỗi. Một trace cho thấy span gọi fraud-service chiếm 7.4s do retry 3 lần timeout 2.5s; log cùng traceId cho thấy 503. Nhóm giảm timeout, thêm circuit breaker: thời gian điều tra giảm từ ~50 phút xuống ~6 phút, p99 còn 900ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Trên Spring Boot 3 tôi dùng Micrometer Observation làm lớp quan sát chung: HTTP server/client và thành phần được instrument tạo observation sinh metric và span. Tôi gắn Micrometer Tracing với bridge OpenTelemetry, export trace qua OTLP, metric qua Prometheus. Trace context propagate bằng header W3C traceparent nên tôi luôn tạo RestClient/WebClient từ builder của Spring để không đứt trace. Tôi đưa traceId, spanId vào MDC để log JSON liên kết. Tôi kiểm soát sampling để cân bằng chi phí, giữ tag metric cardinality thấp và không ghi dữ liệu nhạy cảm. Nhờ vậy tôi đi từ alert metric đến trace rồi đến log của đúng request."
+
+> Senior tip: bắt đầu từ RED metrics (Rate, Errors, Duration) và trace đường đi quan trọng; đo cả chi phí quan sát (sampling, cardinality) như một phần thiết kế.`,
+  follow: [
+    'Vì sao tag metric có cardinality cao (như userId) nguy hiểm cho Prometheus?',
+    'Làm thế nào giữ traceId khi xử lý bất đồng bộ với @Async hoặc message queue?'
+  ],
+  tags: ['Micrometer', 'Observation', 'tracing', 'OpenTelemetry', 'observability']
+}
+,
+{
+  id: 'jpa-051',
+  topic: 'jpa',
+  level: 'senior',
+  q: '{{@Transactional(readOnly = true)}} thực sự tác động những gì đến Hibernate và kết nối JDBC trong Spring? Khi nào flag này giúp ích, khi nào gần như không có tác dụng, và có bẫy nào dễ gây bug?',
+  a: `**Tóm tắt:** {{@Transactional(readOnly = true)}} là gợi ý (hint) ở nhiều lớp: Spring set {{Connection.setReadOnly(true)}} và đánh dấu transaction read-only; Hibernate đặt {{FlushMode.MANUAL}} cho persistence context (ngữ cảnh bám entity: bộ nhớ theo dõi đối tượng) nên không dirty-checking/flush ngầm, giảm snapshot và chi phí CPU. Nó không tự làm query nhanh nếu thiếu index, và với một số DB/driver lợi ích tầng JDBC rất nhỏ; cần tránh ghi nhầm trong transaction read-only.
+
+### Cái gì — vì sao cần
+- **Dirty checking** (kiểm tra thay đổi): Hibernate so sánh trạng thái entity với snapshot khi flush để sinh {{UPDATE}}. Luồng chỉ đọc không cần snapshot/so sánh.
+- **Flush** (đẩy thay đổi xuống DB): đồng bộ persistence context với DB.
+
+### Hoạt động thế nào (từng bước)
+1. Spring bắt đầu transaction, gọi {{connection.setReadOnly(true)}} (nếu hỗ trợ) và gắn cờ read-only.
+2. Hibernate chuyển {{FlushMode}} sang {{MANUAL}} (không auto-flush, không flush thay đổi khi commit).
+3. Khi load entity, Hibernate có thể bỏ qua snapshot cho dirty checking, tiết kiệm bộ nhớ/CPU khi đọc nhiều.
+4. Nếu code sửa field entity, thay đổi thường **không flush** khi commit → DB không đổi, dễ bug ngầm.
+
+~~~java
+@Service
+class ReportService {
+  @Transactional(readOnly = true) // chi doc: tat dirty checking/auto-flush
+  public List<OrderView> topOrders(OrderRepository repo) {
+    return repo.findTop100ByOrderByTotalDesc()
+        .stream().map(OrderView::from).toList();
+  }
+
+  @Transactional // read-write
+  public void approve(OrderRepository repo, long id) {
+    Order o = repo.findById(id).orElseThrow();
+    o.setStatus(Status.APPROVED); // duoc dirty-check va flush
+  }
+}
+~~~
+
+### Lợi ích thật và khi nào "gần như không"
+| Tình huống | Tác dụng |
+|---|---|
+| Đọc nhiều entity trong 1 transaction Hibernate | Có lợi: giảm snapshot/dirty checking |
+| JDBC thuần, query đơn giản | Ít/không đáng kể |
+| Mong DB nhanh hơn nhờ read-only | Phụ thuộc DB/driver, thường không phải nguồn chính |
+| Route sang read-replica (bản sao chỉ đọc) | Spring không tự route; cần {{AbstractRoutingDataSource}} dựa trên cờ read-only |
+
+### Pitfall production
+- **Ghi trong read-only**: sửa entity mong lưu — không flush, không lỗi rõ ràng, dữ liệu "mất". **Propagation** {{REQUIRED}} tham gia transaction ngoài: nếu ngoài là read-only, method ghi bên trong cũng không flush như mong đợi.
+- Đặt read-only khắp nơi mà không tách ranh giới đọc/ghi gây bug im lặng.
+
+### Ví dụ đời thực
+API báo cáo đọc 50.000 Order: thiếu {{readOnly=true}} khiến Hibernate giữ snapshot, auto-flush so sánh tốn CPU, p95 3.2s, heap tăng 180MB/request. Thêm {{@Transactional(readOnly = true)}} và dùng DTO projection: p95 còn 1.1s. Ca khác: service "xem rồi cập nhật lastViewedAt" đặt read-only → field sửa nhưng không xuống DB suốt 2 ngày, khách báo số liệu sai. Sửa bằng tách method ghi sang transaction read-write.
+
+### Trả lời mẫu khi phỏng vấn
+"@Transactional(readOnly = true) với Spring và Hibernate chủ yếu là hint: Spring đặt connection read-only và Hibernate chuyển FlushMode sang MANUAL nên persistence context không dirty-checking và không auto-flush, tiết kiệm chi phí khi đọc nhiều entity. Nó không tự làm query nhanh nếu thiếu index và hiệu quả tầng JDBC phụ thuộc driver/DB. Tôi dùng cho luồng thuần đọc và tách rõ method ghi sang transaction read-write, vì sửa entity trong read-only có thể không flush và tạo bug ngầm. Nếu cần route sang read replica tôi phải tự cấu hình routing theo cờ read-only; Spring không làm tự động."
+
+> Senior tip: coi {{readOnly=true}} là tối ưu và hợp đồng ý định cho ORM; dùng integration test khẳng định luồng ghi không bị đặt nhầm trong transaction chỉ đọc.`,
+  follow: [
+    'Spring có tự route read-only sang read replica không hay cần tự cấu hình?',
+    'Khác biệt giữa DTO projection và load entity trong transaction read-only về bộ nhớ?'
+  ],
+  tags: ['@Transactional', 'readOnly', 'Hibernate', 'FlushMode', 'Spring Data JPA']
+}
+,
+{
+  id: 'db-057',
+  topic: 'db',
+  level: 'senior',
+  q: 'Trong Spring Data JPA, bạn so sánh phân trang bằng {{Page}}, {{Slice}} và keyset pagination (phân trang theo khóa/cursor) như thế nào? Ảnh hưởng tới truy vấn {{count}} và hiệu năng khi bảng lớn ra sao, và khi nào chọn cách nào?',
+  a: `**Tóm tắt:** {{Page}} trả dữ liệu kèm tổng số phần tử (thường chạy thêm {{COUNT}}), {{Slice}} biết có trang tiếp theo không (lấy {{size+1}}) nhưng không đếm tổng, còn keyset/cursor pagination dùng điều kiện trên cột đã sắp xếp (ví dụ {{WHERE (created_at,id) < (...)}}) để nhảy thẳng bằng index, ổn định và nhanh ở trang sâu. Bảng lớn và luồng "cuộn tiếp" nên ưu tiên {{Slice}} hoặc keyset; cần tổng số trang mới dùng {{Page}}.
+
+### Cái gì — vì sao khác nhau
+- **Offset pagination** (dời theo vị trí): {{OFFSET n LIMIT m}} — DB bỏ qua n dòng. {{Page}}/{{Slice}} với {{Pageable}} thường dựa offset.
+- **Keyset (seek/cursor)**: dùng mốc dòng cuối trang trước làm {{WHERE}}, không đếm từ đầu.
+- **Query COUNT**: đếm tổng bản ghi thỏa điều kiện, có thể rất tốn trên bảng lớn/join phức tạp.
+
+### Hoạt động và ví dụ Spring Data
+~~~java
+public interface OrderRepo extends JpaRepository<Order, Long> {
+  // Page: thuong chay them "select count(...)"
+  Page<Order> findByStatus(Status st, Pageable p);
+
+  // Slice: lay size+1 de biet con trang sau, KHONG count tong
+  Slice<Order> findSliceByStatus(Status st, Pageable p);
+
+  // Keyset: dua tren moc, can ORDER BY on dinh (createdAt, id)
+  @Query("select o from Order o where o.status = :st " +
+         "and (o.createdAt < :ts or (o.createdAt = :ts and o.id < :id)) " +
+         "order by o.createdAt desc, o.id desc")
+  List<Order> nextPage(@Param("st") Status st, @Param("ts") Instant ts,
+                       @Param("id") Long id, Pageable p);
+}
+~~~
+
+### Bảng so sánh
+| Cách | Biết tổng? | Truy vấn thêm | Trang sâu | Ổn định khi dữ liệu đổi |
+|---|---|---|---|---|
+| {{Page}} (offset) | Có | {{COUNT(*)}} | Chậm dần, tốn IO | Có thể trùng/bỏ sót khi chèn/xóa |
+| {{Slice}} (offset) | Không | Không count, lấy {{size+1}} | Vẫn chậm khi offset lớn | Như offset |
+| Keyset/cursor | Không | Chỉ query chính | Ổn định, dùng index | Ổn định theo mốc |
+
+- Keyset cần sort có thứ tự toàn phần ({{createdAt, id}}) và index phù hợp, ví dụ {{(status, created_at desc, id desc)}}.
+
+### Khi nào dùng / không dùng
+- **Page**: UI cần tổng số trang, dữ liệu nhỏ/ít đổi. **Slice**: "tải thêm"/feed, không cần tổng. **Keyset**: bảng rất lớn, trang sâu, API duyệt/export; không hỗ trợ nhảy tới trang 500 trực tiếp.
+
+### Pitfall production
+- {{Page}} trên bảng triệu dòng: {{COUNT}} chạy lâu gây timeout; trả {{Page}} mà UI không dùng {{totalElements}} là lãng phí. Offset lớn vẫn quét/bỏ qua nhiều dòng.
+- Keyset thiếu tie-breaker (chỉ {{createdAt}}): giá trị trùng gây bỏ sót/lặp; luôn thêm {{id}}.
+
+### Ví dụ đời thực
+Màn hình admin dùng {{Page<Order>}} với {{COUNT}} trên 12 triệu bản ghi join: p95 2.8s, DB CPU 80% do count. Nhóm tách: admin giữ {{Page}} với filter hẹp; app khách dùng {{Slice}}; endpoint đồng bộ đối tác chuyển keyset theo {{(updated_at,id)}} với index: duyệt 5 triệu bản ghi từ 45 phút xuống 11 phút, không timeout, không trùng/thiếu khi có bản ghi mới.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong Spring Data JPA, Page trả nội dung kèm tổng nên framework chạy thêm query count, còn Slice biết còn trang sau bằng cách lấy size+1 nên tránh count. Cả hai thường dùng offset qua Pageable nên offset lớn vẫn chậm. Với bảng lớn tôi ưu tiên keyset pagination: dùng điều kiện trên cột sort có index (createdAt và id của bản ghi cuối) để truy vấn vào đúng dải index và ổn định. Tôi dùng Page khi thực sự cần tổng, Slice cho tải thêm, và keyset cho duyệt dữ liệu lớn hoặc trang sâu."
+
+> Senior tip: đừng trả {{Page}} mặc định; bỏ {{COUNT}} trên đường nóng thường là cải thiện rẻ, và keyset là giải pháp đúng cho phân trang sâu.`,
+  follow: [
+    'Thiết kế API cursor (encode/decode) an toàn cho keyset pagination như thế nào?',
+    'Keyset pagination khó khăn gì khi join hoặc sort theo nhiều bảng?'
+  ],
+  tags: ['Spring Data JPA', 'Page', 'Slice', 'keyset pagination', 'performance']
+}
+,
+{
+  id: 'db-058',
+  topic: 'db',
+  level: 'senior',
+  q: 'Bạn quản lý migration (thay đổi schema DB) an toàn với Flyway hoặc Liquibase trong môi trường Spring Boot và triển khai liên tục như thế nào? Hãy nêu cách hoạt động, chiến lược expand/contract và các lỗi nguy hiểm trên production.',
+  a: `**Tóm tắt:** Flyway/Liquibase version hóa schema DB: mỗi thay đổi là migration có phiên bản, công cụ lưu lịch sử đã chạy (bảng metadata như {{flyway_schema_history}}) và chỉ áp dụng bản mới, dùng checksum phát hiện sửa file cũ. Triển khai an toàn cần migration tương thích tiến/lùi (expand/contract), tách thay đổi nặng khỏi startup, khóa chống chạy song song, và không sửa migration đã áp dụng.
+
+### Cái gì — vì sao cần
+- **Migration**: thay đổi có kiểm soát (tạo bảng/cột, index, backfill) theo phiên bản thay vì sửa DB tay.
+- **Flyway**: file SQL/Java {{V1__...sql}}, đơn giản tuyến tính. **Liquibase**: changelog (XML/YAML/SQL), hỗ trợ precondition/rollback có khai báo, nhiều DB.
+- Nhiều môi trường và nhiều instance app phải cùng schema; deploy tự động cần bước DB lặp lại, kiểm toán được.
+
+### Hoạt động thế nào (từng bước)
+1. Khởi động (hoặc job) → đọc bảng lịch sử trong DB.
+2. So migration trong classpath với lịch sử: bỏ qua bản đã chạy (khớp phiên bản + checksum), lấy bản mới.
+3. Xin khóa (lock) trên bảng lịch sử để chỉ một instance chạy.
+4. Thực thi migration mới theo thứ tự, ghi kết quả + checksum.
+5. Checksum lệch (file cũ bị sửa) → báo lỗi và dừng.
+
+~~~sql
+-- V12__add_phone_to_customer.sql (expand: tuong thich code cu)
+ALTER TABLE customer ADD COLUMN phone VARCHAR(32); -- cho phep NULL
+~~~
+~~~sql
+-- V14__backfill_phone.sql (sau khi app moi ghi ca 2 noi)
+UPDATE customer SET phone = legacy_phone WHERE phone IS NULL;
+-- bang rat lon: chia batch o job rieng, tranh transaction lau
+~~~
+
+### Chiến lược expand/contract
+| Giai đoạn | Làm gì | Vì sao |
+|---|---|---|
+| Expand | Thêm cột/bảng mới tương thích (nullable) | App cũ và mới cùng chạy |
+| Migrate code | Deploy app đọc/ghi cả cũ và mới, backfill | Không downtime |
+| Contract | Sau khi mọi instance mới: thêm ràng buộc, bỏ cột cũ | Dọn nợ |
+
+- Thay đổi nặng: {{CREATE INDEX CONCURRENTLY}} (PostgreSQL), backfill theo lô; tách chạy bằng job nếu mất phút.
+
+### Pitfall production
+- **Sửa migration đã chạy**: checksum mismatch; sửa tay bảng lịch sử → môi trường lệch. Luôn thêm migration mới. **DDL khóa bảng lâu** (index thường, rewrite) gây timeout/503; đo trên dữ liệu cỡ prod.
+- **Nhiều instance chạy cùng lúc**: thiếu khóa → race. Kiểm soát {{spring.flyway.enabled}} hoặc chạy một nơi. {{baseline/repair}} bừa che giấu sai lệch.
+
+### Ví dụ đời thực
+Thêm cột {{NOT NULL DEFAULT}} vào bảng {{orders}} 40 triệu dòng trong migration lúc startup: pod đầu giữ lock 9 phút, pod khác timeout readiness, một nửa traffic 503. Lần sau dùng expand/contract: (1) {{ADD COLUMN ... NULL}}; (2) deploy app ghi cột mới; (3) backfill 50k dòng/lô; (4) {{SET NOT NULL}} + {{CREATE INDEX CONCURRENTLY}} ở bước riêng; (5) bỏ cột cũ bản sau. Deploy không downtime, khóa bảng tối đa dưới 200ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng Flyway hoặc Liquibase để version hóa schema: mỗi migration có phiên bản, công cụ lưu lịch sử và checksum, xin lock rồi chỉ chạy bản mới. Tôi không sửa migration đã áp dụng mà thêm migration mới. Khi deploy liên tục tôi dùng expand/contract: thêm cấu trúc tương thích, deploy app hỗ trợ cả hai, backfill dần, rồi mới siết ràng buộc và bỏ cũ. Với bảng lớn tôi tránh DDL khóa lâu, dùng index concurrent, backfill theo batch và có thể tách migration khỏi startup. Tôi đảm bảo chỉ một nơi thực thi tại một thời điểm để tránh race."
+
+> Senior tip: coi migration là thay đổi rủi ro vận hành — review kỹ, thử trên bản sao dữ liệu cỡ production và có kế hoạch quay lui ở tầng ứng dụng (expand/contract) thay vì trông chờ rollback DDL.`,
+  follow: [
+    'Migration Flyway thất bại giữa chừng ảnh hưởng bảng history và DB ra sao tùy loại DDL/DB?',
+    'Chọn Flyway hay Liquibase khi nào, đặc biệt với nhu cầu rollback có kiểm soát?'
+  ],
+  tags: ['Flyway', 'Liquibase', 'schema migration', 'expand-contract', 'Spring Boot']
+}
+,
+{
+  id: 'spring-065',
+  topic: 'spring',
+  level: 'lead',
+  q: 'Bạn thiết kế graceful shutdown (tắt ứng dụng êm, không cắt ngang request) cho ứng dụng Spring Boot 3.x chạy trên Kubernetes như thế nào? Cần phối hợp những thành phần nào để giảm lỗi khi deploy/scale-down, và các bẫy thường gặp là gì?',
+  a: `**Tóm tắt:** Graceful shutdown nghĩa là khi nhận tín hiệu dừng, ứng dụng ngừng nhận request mới, chờ request đang xử lý hoàn tất trong thời hạn, rồi đóng tài nguyên. Spring Boot 3 hỗ trợ {{server.shutdown=graceful}} cho web server; trên Kubernetes phải phối hợp rút Pod khỏi Service (readiness/endpoints), {{preStop}}, {{terminationGracePeriodSeconds}}, và tắt consumer/scheduler/thread pool theo đúng thứ tự và timeout.
+
+### Cái gì — vì sao cần
+- **Graceful shutdown** (tắt êm): hoàn tất công việc đang làm trước khi thoát. **Kubernetes termination**: kubelet gửi SIGTERM; sau {{terminationGracePeriodSeconds}} (mặc định 30s) nếu còn sống gửi SIGKILL (kill cứng).
+- Không phối hợp: load balancer vẫn gửi request tới Pod đang tắt → 502/504; message đang xử lý có thể mất hoặc dở.
+
+### Hoạt động thế nào (từng bước)
+~~~seq
+title: Trinh tu tat Pod an toan tren Kubernetes
+actors: K8s/Service | kubelet | Spring Boot | Downstream
+K8s/Service -> K8s/Service: rut Pod khoi endpoints
+kubelet -> Spring Boot: chay preStop (sleep 5-10s)
+kubelet -> Spring Boot: gui SIGTERM
+Spring Boot -> Spring Boot: ngung nhan request moi, drain in-flight
+Spring Boot -> Downstream: dung consumer, commit/ack, dong pool
+Spring Boot --> kubelet: thoat truoc SIGKILL
+~~~
+1. Pod Terminating: endpoint bị gỡ nhưng propagation (cập nhật iptables/ingress) không tức thì (vài giây).
+2. {{preStop}}: thường {{sleep}} để chờ traffic không còn tới.
+3. SIGTERM: {{server.shutdown=graceful}} ngừng nhận kết nối mới, chờ request in-flight trong {{spring.lifecycle.timeout-per-shutdown-phase}}.
+4. ApplicationContext đóng: {{@PreDestroy}}, dừng scheduler/listener; Kafka consumer commit/ack an toàn.
+
+~~~yaml
+# application.yaml
+server:
+  shutdown: graceful
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 25s # < terminationGracePeriodSeconds
+~~~
+~~~yaml
+# Pod spec (y tuong)
+spec:
+  terminationGracePeriodSeconds: 40
+  containers:
+    - name: app
+      lifecycle:
+        preStop:
+          exec:
+            command: ["sh", "-c", "sleep 10"]
+~~~
+
+### Thành phần cần phối hợp
+| Thành phần | Vai trò | Lưu ý |
+|---|---|---|
+| Readiness probe | Báo Pod sẵn sàng nhận traffic | Chuyển NotReady sớm khi tắt |
+| {{preStop}} sleep | Đệm endpoint propagation | 5-15s tùy cụm |
+| {{server.shutdown=graceful}} | Drain request in-flight | Chỉ web request |
+| {{terminationGracePeriodSeconds}} | Trần trước SIGKILL | > preStop + drain + đóng tài nguyên |
+| Consumer/scheduler | Dừng nhận việc mới, hoàn tất/ack | Idempotency cho retry |
+
+### Pitfall production
+- **Timeout không khớp**: tổng preStop + drain > {{terminationGracePeriodSeconds}} → SIGKILL cắt giữa chừng. Thiếu {{preStop}}: vài giây đầu vẫn nhận request rồi bị ngắt, 502 tăng mỗi deploy.
+- Request/job chạy quá lâu không kịp drain: cần timeout downstream và thiết kế tác vụ dài thành job bất đồng bộ. Thread pool tự tạo không do Spring quản lý có thể bị bỏ rơi.
+
+### Ví dụ đời thực
+Service đặt hàng 12 pod, rolling update: ~0.6% request 502 (120/phút cao điểm). Không có {{preStop}}, ingress còn route 3-4s; grace period không đủ cho request 20s. Nhóm bật {{server.shutdown=graceful}}, {{timeout-per-shutdown-phase}} 20s, {{preStop sleep 8s}}, {{terminationGracePeriodSeconds}} 45s, readiness qua Actuator. Kết quả: 502 khi deploy giảm còn ~0.02%, 30 lần rollout không còn cắt request < 15s.
+
+### Trả lời mẫu khi phỏng vấn
+"Với Spring Boot 3 trên Kubernetes, tôi bật server.shutdown=graceful và đặt timeout-per-shutdown-phase để web server ngừng nhận request mới và drain request in-flight. Tôi phối hợp preStop sleep để chờ endpoint bị rút, readiness phản ánh đúng trạng thái, và đặt terminationGracePeriodSeconds lớn hơn tổng preStop, drain và thời gian đóng tài nguyên. Tôi dừng consumer/scheduler để không nhận việc mới, hoàn tất hoặc ack an toàn, và dùng idempotency vì retry có thể xảy ra. Tôi kiểm tra bằng rolling update dưới tải để tinh timeout, tránh SIGKILL đến trước khi drain xong."
+
+> Senior tip: graceful shutdown giảm mất request in-flight nhưng không đảm bảo "không mất nghiệp vụ"; cần timeout hợp lý, retry có idempotency và đưa tác vụ dài thành job bền vững (outbox/queue).`,
+  follow: [
+    'Vì sao cần preStop sleep dù đã bật server.shutdown=graceful?',
+    'Xử lý consumer Kafka đang xử lý message dở khi Pod nhận SIGTERM như thế nào?'
+  ],
+  tags: ['graceful shutdown', 'Spring Boot 3', 'Kubernetes', 'deployment', 'reliability']
+},
 );
