@@ -2254,5 +2254,497 @@ class WalStore {
   ],
   related: ['db-006', 'db-035'],
   tags: ['WAL', 'crash-recovery', 'redo', 'checkpoint', 'durability']
-}
+},
+{
+  id: 'lesson-db-012',
+  track: 'db',
+  order: 12,
+  title: 'Index composite và thứ tự cột: leftmost prefix, selectivity và chi phí ghi',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích index composite là gì và vì sao thứ tự cột quyết định truy vấn nào dùng được',
+    'Mô phỏng tìm kiếm trên index đã sắp theo nhiều cột và đếm số entry phải xét',
+    'Chọn thứ tự cột theo equality, range và selectivity',
+    'Nêu chi phí ghi và bẫy index thừa trên PostgreSQL'
+  ],
+  body: `**Tóm tắt:** Index composite (index nhiều cột) là một B-tree được sắp theo thứ tự cột bạn khai báo, giống danh bạ sắp theo (họ, tên) chứ không phải theo tên. Nó chỉ phục vụ tốt những truy vấn lọc theo **tiền tố bên trái** (leftmost prefix) của thứ tự đó, nên thứ tự cột quyết định query nào nhanh, index có chọn lọc hay không, và mỗi lần ghi phải trả bao nhiêu.
+
+### Vì sao cần index nhiều cột
+Một index một cột chỉ sắp theo đúng một cột. Khi truy vấn lọc đồng thời {{WHERE tenant_id = 42 AND created_at >= '2026-01-01'}}, index trên tenant_id trả về toàn bộ đơn của tenant đó (hàng nghìn entry), database phải đọc heap rồi lọc created_at trên từng dòng. Index (tenant_id, created_at) sắp theo cả hai, nên nó seek thẳng tới vùng cần.
+
+### Index composite lưu gì trong lá
+Mỗi entry ở lá gồm các giá trị cột theo thứ tự khai báo, rồi tới con trỏ TID (địa chỉ vật lý của hàng trong heap). Các entry được sắp theo thứ tự từ điển: so cột 1 trước; nếu bằng thì so cột 2; nếu bằng nữa thì so cột 3.
+
+~~~text
+entry (tenant_id, created_at)      -> TID
+(7, 2026-01-01 09:00)              -> [block 120, offset 3]
+(7, 2026-01-01 09:05)              -> [block 120, offset 4]
+(7, 2026-01-02 08:00)              -> [block 121, offset 1]
+(9, 2026-01-01 07:00)              -> [block 200, offset 9]
+~~~
+
+### Leftmost prefix: quy tắc vàng
+- {{WHERE tenant_id = 42}}: dùng được, vì tenant_id là cột đầu tiên.
+- {{WHERE created_at >= ...}}: không dùng được index này để seek, vì created_at không phải cột đầu; database phải quét toàn bộ entry của index (hoặc chuyển sang seq scan).
+- {{WHERE tenant_id = 42 AND created_at >= ...}}: dùng được cả hai — seek tới (42, ...) rồi đi tiếp theo created_at.
+- {{WHERE tenant_id = 42 ORDER BY created_at}}: không cần sort, vì trong cùng một tenant, các entry đã có thứ tự theo created_at.
+
+Nói ngắn: index (a, b, c) phục vụ các tiền tố (a), (a, b), (a, b, c). Nó không phục vụ (b), (c), (b, c).
+
+### Thứ tự cột: equality trước, range sau
+Quy tắc thực dụng:
+1. Cột dùng dấu {{=}} (equality) đặt trước.
+2. Cột dùng range ({{>}}, {{<}}, {{BETWEEN}}) hoặc ORDER BY đặt sau trong nhóm đó.
+3. Giữa nhiều cột equality, nếu có cột selectivity cao (ít giá trị trùng) thì đặt trước để index nhỏ hơn khi truy vấn chỉ lọc một phần.
+
+Ví dụ truy vấn {{WHERE tenant_id = ? AND status = ? AND created_at BETWEEN ? AND ?}} nên có index {{(tenant_id, status, created_at)}}. Nếu đảo thành {{(created_at, tenant_id, status)}} thì điều kiện tenant_id và status không còn là tiền tố, index mất tác dụng seek.
+
+Selectivity (độ chọn lọc) = số giá trị khác nhau chia cho số hàng. Cột boolean chỉ có 2 giá trị nên selectivity rất thấp; đặt nó đầu index gần như vô dụng. Index composite (tenant_id, created_at) có selectivity cao hơn hẳn từng cột riêng.
+
+### Ví dụ số liệu cụ thể
+Bảng {{orders}} 10 triệu dòng, 1000 tenant, mỗi tenant 10 nghìn đơn.
+- Index (tenant_id): mỗi tenant 10 nghìn entry.
+- Index (tenant_id, created_at): truy vấn "đơn của tenant 7 trong tháng 1" seek tới (7, 2026-01-01) rồi quét khoảng 1 nghìn entry, thay vì 10 nghìn.
+- Truy vấn "mọi đơn có created_at trong ngày" không dùng được index trên (vì cột đầu là tenant_id); nếu truy vấn này phổ biến, cần index riêng trên created_at.
+
+### Covering index và INCLUDE
+Nếu index đã chứa mọi cột mà SELECT cần, PostgreSQL có thể trả kết quả bằng index-only scan, không phải đọc heap. {{CREATE INDEX ON orders (tenant_id, created_at) INCLUDE (status, total)}}. Giá phải trả: index rộng hơn, ghi chậm hơn, tốn WAL hơn.
+
+### Chi phí ghi
+Mỗi index là một B-tree riêng. INSERT phải chèn entry vào mọi index; UPDATE một cột nằm trong index phải đánh dấu entry cũ và chèn entry mới; mỗi thay đổi sinh WAL. Index càng nhiều cột hoặc cột càng dài thì WAL và bloat càng tăng. Thống kê {{pg_stat_user_indexes.idx_scan}} giúp tìm index không ai dùng.
+
+### Cơ chế từng bước khi PostgreSQL dùng index
+1. Planner đọc thống kê (pg_statistic) và ước lượng số hàng mỗi điều kiện trả về.
+2. Nếu điều kiện khớp tiền tố trái, nó đi xuống B-tree: so sánh cột đầu ở internal page, rồi cột thứ hai ở lá.
+3. Lấy TID của các entry khớp, đọc heap (trừ khi index-only scan).
+4. Kiểm tra visibility theo MVCC.
+5. Nếu số hàng lớn, planner có thể chọn bitmap heap scan hoặc seq scan.
+
+### Mô phỏng trong Java
+~~~java
+// Index (a, b) sắp theo a rồi b. Truy vấn a = 7 và b trong [5, 15]:
+int lo = firstNotBefore(7, 5);    // binary search entry (7, 5)
+int hi = firstNotBefore(7, 16);   // entry (7, 16) la bien tren
+int examined = hi - lo;           // chi cac entry cua a=7, b trong [5, 15]
+// Neu index la (b, a): phai quet moi entry co b trong [5, 15]
+// roi moi loc a = 7 -> examined lon hon nhieu.
+~~~
+
+### Lỗi hay gặp trên production
+1. Thứ tự cột ngược: index (created_at, tenant_id) không phục vụ {{WHERE tenant_id = ?}}.
+2. Cột selectivity thấp đứng đầu: index (is_active, tenant_id) gần như vô dụng khi is_active chỉ có 2 giá trị.
+3. Index thừa trùng tiền tố: đã có (a, b) thì index (a) thường bỏ được.
+4. Hàm trên cột: {{WHERE date(created_at) = ...}} không dùng được index; viết thành range {{created_at >= ... AND created_at < ...}}.
+5. Quên ANALYZE sau bulk load: planner dùng thống kê cũ và chọn sai plan.
+
+### Liên hệ phỏng vấn
+- **"Index composite là gì và leftmost prefix nghĩa là gì?"** → Index sắp theo thứ tự cột khai báo; chỉ tiền tố bên trái dùng được: (a, b, c) phục vụ (a), (a, b), (a, b, c), không phục vụ (b).
+- **"Thứ tự cột trong composite index nên thế nào?"** → Equality trước, range/ORDER BY sau; cột selectivity cao cân nhắc đặt trước; index phải khớp cả WHERE lẫn ORDER BY.
+- **"Khi nào composite index vô dụng?"** → Khi điều kiện không phải tiền tố, cột đầu selectivity thấp, hoặc có hàm trên cột.
+- **"Chi phí của một index thêm là gì?"** → Mỗi INSERT/UPDATE phải duy trì nó, sinh WAL, tăng bloat; index rộng còn làm index-only scan khó hơn.
+
+> Senior tip: trước khi thêm index, viết đúng câu truy vấn rồi đọc {{EXPLAIN (ANALYZE, BUFFERS)}}; một composite index khớp cả WHERE lẫn ORDER BY thường thay được hai index một cột.`,
+  exercises: [
+    {
+      title: 'CompositeIndex: cột đầu quyết định số entry phải xét',
+      prompt: `Mô phỏng index composite trên bảng có mọi cặp (a, b) với 1 <= a <= aMax và 1 <= b <= bMax (tổng aMax nhân bMax hàng).
+
+Constructor {{CompositeIndex(order, aMax, bMax)}}: {{order}} là {{"ab"}} (cột đầu là a) hoặc {{"ba"}} (cột đầu là b). Xây mảng entry đã sắp theo thứ tự từ điển của order.
+
+{{examined(aEq, bLo, bHi)}}: số entry index phải xét cho truy vấn {{a = aEq AND b BETWEEN bLo AND bHi}}. Với {{"ab"}}: seek tới (aEq, bLo), duyệt tới hết (aEq, bHi). Với {{"ba"}}: seek tới b = bLo, duyệt hết các entry có b trong khoảng [bLo, bHi] (không lọc được a khi seek).
+
+{{matched(aEq, bLo, bHi)}}: số entry khớp cả hai điều kiện.
+
+Tự sắp mảng và dùng binary search; không dùng TreeMap.`,
+      starter: `class CompositeIndex {
+    private final String order;
+    private final int[] as;
+    private final int[] bs;
+
+    CompositeIndex(String order, int aMax, int bMax) { throw new UnsupportedOperationException("TODO"); }
+
+    int examined(int aEq, int bLo, int bHi) { throw new UnsupportedOperationException("TODO"); }
+
+    int matched(int aEq, int bLo, int bHi) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+ static int p=0,t=0;
+ static void c(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(int a,int b){if(a!=b)throw new AssertionError(a+" != "+b);}
+ static void ok(boolean b){if(!b)throw new AssertionError("expected true");}
+ public static void main(String[]z){
+  c("ab index examines only the matching slice",()->{CompositeIndex x=new CompositeIndex("ab",50,20);eq(11,x.examined(7,5,15));eq(11,x.matched(7,5,15));});
+  c("ba index must scan the whole b range",()->{CompositeIndex x=new CompositeIndex("ba",50,20);eq(550,x.examined(7,5,15));eq(11,x.matched(7,5,15));});
+  c("column order changes the examined count",()->{CompositeIndex ab=new CompositeIndex("ab",50,20);CompositeIndex ba=new CompositeIndex("ba",50,20);ok(ab.examined(7,5,15)<ba.examined(7,5,15));});
+  c("single b value with ab",()->{CompositeIndex x=new CompositeIndex("ab",50,20);eq(1,x.examined(7,5,5));eq(1,x.matched(7,5,5));});
+  c("single b value with ba scans all a",()->{CompositeIndex x=new CompositeIndex("ba",50,20);eq(50,x.examined(7,5,5));eq(1,x.matched(7,5,5));});
+  c("full b range for one a",()->{CompositeIndex x=new CompositeIndex("ab",50,20);eq(20,x.examined(7,1,20));eq(20,x.matched(7,1,20));});
+  c("empty range",()->{CompositeIndex x=new CompositeIndex("ab",50,20);eq(0,x.examined(7,10,5));eq(0,x.matched(7,10,5));});
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+      reference: `class CompositeIndex {
+    private final String order;
+    private final int[] as;
+    private final int[] bs;
+
+    CompositeIndex(String order, int aMax, int bMax) {
+        if (!order.equals("ab") && !order.equals("ba")) throw new IllegalArgumentException("order");
+        if (aMax < 0 || bMax < 0) throw new IllegalArgumentException("size");
+        this.order = order;
+        int n = aMax * bMax;
+        int[] bigA = new int[n], bigB = new int[n];
+        int k = 0;
+        for (int a = 1; a <= aMax; a++)
+            for (int b = 1; b <= bMax; b++) { bigA[k] = a; bigB[k] = b; k++; }
+        Integer[] idx = new Integer[n];
+        for (int i = 0; i < n; i++) idx[i] = i;
+        final boolean ab = order.equals("ab");
+        Arrays.sort(idx, (i, j) -> {
+            int x = ab ? Integer.compare(bigA[i], bigA[j]) : Integer.compare(bigB[i], bigB[j]);
+            if (x != 0) return x;
+            return ab ? Integer.compare(bigB[i], bigB[j]) : Integer.compare(bigA[i], bigA[j]);
+        });
+        as = new int[n];
+        bs = new int[n];
+        for (int i = 0; i < n; i++) { as[i] = bigA[idx[i]]; bs[i] = bigB[idx[i]]; }
+    }
+
+    int examined(int aEq, int bLo, int bHi) {
+        if (bLo > bHi) return 0;
+        int lo, hi;
+        if (order.equals("ab")) { lo = lowerAb(aEq, bLo); hi = lowerAb(aEq, bHi + 1); }
+        else { lo = lowerB(bLo); hi = lowerB(bHi + 1); }
+        return hi - lo;
+    }
+
+    int matched(int aEq, int bLo, int bHi) {
+        if (bLo > bHi) return 0;
+        int lo, hi;
+        if (order.equals("ab")) { lo = lowerAb(aEq, bLo); hi = lowerAb(aEq, bHi + 1); }
+        else { lo = lowerB(bLo); hi = lowerB(bHi + 1); }
+        int count = 0;
+        for (int i = lo; i < hi; i++) if (as[i] == aEq) count++;
+        return count;
+    }
+
+    private int lowerAb(int a, int b) {
+        int lo = 0, hi = as.length;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (as[mid] < a || (as[mid] == a && bs[mid] < b)) lo = mid + 1; else hi = mid;
+        }
+        return lo;
+    }
+
+    private int lowerB(int b) {
+        int lo = 0, hi = bs.length;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (bs[mid] < b) lo = mid + 1; else hi = mid;
+        }
+        return lo;
+    }
+}`,
+      hints: [
+        'Sắp entry theo đúng thứ tự cột: với order ab thì so a trước rồi b; với order ba thì so b trước rồi a.',
+        'Vùng cần xét là đoạn liên tiếp trong mảng đã sắp: tìm biên dưới và biên trên bằng binary search, rồi lấy hiệu hai chỉ số.',
+        'Với order ba, mọi entry có b trong khoảng đều bị xét (không loại được a khi seek); matched vẫn đếm entry có a bằng aEq.'
+      ],
+      explain: `Bài tập tách hai đại lượng: **examined** (số entry index phải liếc qua) và **matched** (số entry thực sự khớp). Với index (a, b) và truy vấn a = 7, b trong [5, 15], hai biên seek được là (7, 5) và (7, 16), nên chỉ có 11 entry của đúng a = 7 bị xét. Với index (b, a), cột đầu là b nên seek được tới b = 5 nhưng trong mỗi b vẫn phải duyệt mọi a; vì a = 7 nằm rải rác, examined bằng 50 nhân 11 bằng 550. Đó là nội dung của leftmost prefix: chỉ tiền tố bên trái mới dùng được để thu hẹp.
+
+Lỗi hay gặp khi cài: dùng == cho chuỗi order (phải dùng equals); quên xử lý bLo > bHi (khoảng rỗng); tính biên trên bằng bHi thay vì bHi + 1 làm mất entry ở đúng biên trên. Trong PostgreSQL, cùng ý này thể hiện ở thứ tự cột của index và ở việc planner chọn index scan hay seq scan; hãy kiểm chứng bằng {{EXPLAIN (ANALYZE, BUFFERS)}} thay vì suy đoán.`
+    }
+  ],
+  check: [
+    {
+      q: 'Index (a, b, c) phục vụ những tiền tố điều kiện nào?',
+      options: [
+        'Chỉ (a, b, c)',
+        '(a), (a, b) và (a, b, c)',
+        '(b) và (c)',
+        'Mọi tổ hợp của a, b, c'
+      ],
+      answer: 1,
+      explain: 'B-tree sắp theo thứ tự từ điển nên chỉ tiền tố bên trái dùng được; (b) hay (c) đứng một mình không phải tiền tố.'
+    },
+    {
+      q: 'Truy vấn WHERE tenant_id = ? AND created_at BETWEEN ? AND ? nên dùng index nào?',
+      options: [
+        '(created_at, tenant_id)',
+        '(tenant_id, created_at)',
+        '(created_at)',
+        '(status, tenant_id)'
+      ],
+      answer: 1,
+      explain: 'Equality tenant_id đứng trước, range created_at đứng sau, khớp đúng tiền tố và cho phép range scan.'
+    },
+    {
+      q: 'Vấn đề của index (is_active, created_at) khi is_active là boolean?',
+      options: [
+        'Boolean không được index',
+        'Cột đầu selectivity rất thấp nên index gần như không thu hẹp được',
+        'PostgreSQL không cho index boolean',
+        'created_at không được đứng sau'
+      ],
+      answer: 1,
+      explain: 'is_active chỉ có 2 giá trị, mỗi giá trị trỏ tới khoảng nửa bảng; đặt nó đầu khiến index scan phải đọc rất nhiều entry.'
+    },
+    {
+      q: 'Vì sao thêm một index làm INSERT chậm đi?',
+      options: [
+        'Vì index chiếm RAM của application',
+        'Vì mỗi INSERT phải chèn entry vào mọi index và sinh thêm WAL',
+        'Vì index làm transaction dài hơn',
+        'Vì PostgreSQL phải ANALYZE sau mỗi INSERT'
+      ],
+      answer: 1,
+      explain: 'Mỗi index là một B-tree riêng; INSERT phải duy trì tất cả, ghi WAL và có thể gây page split.'
+    }
+  ],
+  related: ['db-001', 'db-022', 'db-023'],
+  tags: ['composite-index', 'index', 'leftmost-prefix', 'PostgreSQL']
+},
+{
+  id: 'lesson-db-013',
+  track: 'db',
+  order: 13,
+  title: 'Non-repeatable read và phantom: mô phỏng lịch giao dịch và snapshot',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Phân biệt non-repeatable read và phantom read bằng lịch giao dịch cụ thể',
+    'Giải thích vì sao READ COMMITTED cho phép còn REPEATABLE READ của PostgreSQL thì không',
+    'Mô phỏng snapshot của transaction và thấy kết quả hai lần đọc',
+    'Nêu cách phòng ngừa trong code và trên PostgreSQL'
+  ],
+  body: `**Tóm tắt:** Non-repeatable read là khi một transaction đọc cùng một hàng hai lần nhưng nhận hai giá trị đã commit khác nhau, vì transaction khác cập nhật và commit ở giữa. Phantom read là khi cùng một truy vấn theo điều kiện chạy hai lần mà lần sau thấy thêm (hoặc bớt) hàng, vì transaction khác INSERT/DELETE rồi commit. Cả hai đều hợp lệ ở READ COMMITTED; REPEATABLE READ của PostgreSQL chặn cả hai bằng snapshot.
+
+### Lịch giao dịch (schedule) là gì
+Schedule là cách sắp xen kẽ các thao tác đọc/ghi của nhiều transaction theo thời gian. Ký hiệu R là đọc (read), W là ghi (write), C là commit. Một dòng như {{R1(x) = 100}} nghĩa là transaction 1 đọc hàng x và nhận 100.
+
+Non-repeatable read:
+~~~text
+T1                                   T2
+|-- R1(x) -> 100                    |
+|                                   |-- W(x, 80)
+|                                   |-- C (commit)
+|-- R2(x) -> 80   <-- khac lan 1
+~~~
+
+Phantom read:
+~~~text
+T1                                        T2
+|-- SELECT count(*) WHERE v < 100 -> 3    |
+|                                         |-- INSERT (v = 50)
+|                                         |-- C (commit)
+|-- SELECT count(*) WHERE v < 100 -> 4    |
+~~~
+
+### Vì sao hai hiện tượng này xảy ra
+Ở READ COMMITTED (mức mặc định của PostgreSQL), mỗi câu lệnh SQL lấy một snapshot mới. Câu SELECT thứ hai chạy sau khi T2 commit nên thấy dữ liệu mới: non-repeatable read là chuyện bình thường, không phải lỗi.
+Ở REPEATABLE READ, snapshot được lấy ở câu lệnh đầu tiên của transaction và giữ nguyên tới khi commit. Mọi câu lệnh sau đó làm việc trên cùng một ảnh chụp logic, nên đọc lại vẫn ra giá trị cũ và không thấy hàng mới. Giá phải trả: nếu transaction muốn ghi một hàng đã bị người khác sửa và commit sau snapshot, PostgreSQL không ghi đè mà báo {{could not serialize access due to concurrent update}} (SQLSTATE 40001), buộc ứng dụng retry cả transaction.
+
+~~~seq
+title: Non-repeatable read ở READ COMMITTED
+actors: T1 | PostgreSQL | T2
+T1 -> PostgreSQL: SELECT balance lan 1
+PostgreSQL --> T1: 100
+T2 -> PostgreSQL: UPDATE balance = 80
+T2 -> PostgreSQL: COMMIT
+PostgreSQL --> T2: OK
+T1 -> PostgreSQL: SELECT balance lan 2
+PostgreSQL --> T1: 80 (snapshot moi)
+~~~
+
+### Bảng so sánh anomaly và mức isolation
+| Hiện tượng | READ COMMITTED | REPEATABLE READ (PostgreSQL) | SERIALIZABLE |
+|---|---|---|---|
+| Non-repeatable read | có thể | không | không |
+| Phantom read | có thể | không | không |
+| Lost update | có thể | chặn bằng 40001 | chặn bằng 40001 |
+| Write skew | có thể | có thể | chặn bằng 40001 |
+
+PostgreSQL không cho dirty read ở bất kỳ mức nào: {{READ UNCOMMITTED}} được xử lý như {{READ COMMITTED}}.
+
+MySQL InnoDB khác về cơ chế: ở REPEATABLE READ, đọc thường dùng snapshot (chặn non-repeatable và phantom), còn locking read ({{SELECT ... FOR UPDATE}}) dùng next-key lock để chặn phantom, nhưng chính gap lock lại có thể gây deadlock khi INSERT (xem bài về deadlock).
+
+### Cơ chế từng bước
+1. Transaction BEGIN.
+2. Ở REPEATABLE READ, câu lệnh đầu tiên lấy snapshot (danh sách transaction đã commit tại thời điểm đó). Ở READ COMMITTED, mỗi câu lệnh lấy snapshot riêng.
+3. Transaction khác ghi và commit.
+4. Transaction của bạn đọc lại: REPEATABLE READ dùng snapshot cũ nên thấy dữ liệu cũ; READ COMMITTED dùng snapshot mới nên thấy dữ liệu mới.
+5. Kết thúc: ở REPEATABLE READ, nếu bạn cố ghi đè một hàng đã đổi sau snapshot, PostgreSQL báo 40001.
+
+### Ví dụ đời thực
+Một báo cáo doanh thu chạy trong transaction 30 giây ở READ COMMITTED: câu SELECT đầu đếm 10 nghìn đơn, câu SELECT thứ hai đếm 10 nghìn 5 trăm đơn vì đơn mới commit ở giữa. Con số tổng không khớp với bất kỳ thời điểm nào. Cách sửa: chạy ở REPEATABLE READ, hoặc gộp thành một câu SQL, hoặc ghi kết quả ra bảng snapshot theo ngày.
+
+Ví dụ khác: kiểm tra email chưa tồn tại rồi INSERT. Hai request cùng chạy ở READ COMMITTED đều thấy chưa tồn tại nên cùng insert. Cách sửa: unique constraint trên email (database chặn), hoặc SERIALIZABLE, hoặc {{INSERT ... ON CONFLICT DO NOTHING}}.
+
+### Lỗi hay gặp trên production
+1. Đọc nhiều lần trong một transaction ở READ COMMITTED rồi so sánh số liệu — non-repeatable read làm kết quả vô nghĩa.
+2. Dùng SELECT rồi tính trong Java rồi UPDATE — lost update (xem bài isolation trước).
+3. Kiểm tra tồn tại rồi INSERT mà không có unique constraint — race tạo bản trùng.
+4. Nâng lên SERIALIZABLE nhưng không retry lỗi 40001 — ứng dụng nổ theo.
+5. Transaction dài ở REPEATABLE READ giữ snapshot, chặn VACUUM dọn tuple chết.
+
+### Liên hệ phỏng vấn
+- **"Non-repeatable read khác phantom read ở đâu?"** → Non-repeatable là cùng một hàng, hai lần đọc ra hai giá trị; phantom là cùng một điều kiện, hai lần đọc ra hai tập hàng khác nhau.
+- **"READ COMMITTED và REPEATABLE READ chặn được gì?"** → READ COMMITTED không chặn cả hai; REPEATABLE READ của PostgreSQL chặn cả hai bằng snapshot, nhưng phải retry 40001 khi ghi đè.
+- **"Vì sao PostgreSQL không cho dirty read?"** → PostgreSQL không có mức READ UNCOMMITTED thật; nó xử lý như READ COMMITTED.
+- **"Làm sao tránh race khi kiểm tra rồi insert?"** → Unique constraint, SERIALIZABLE, hoặc INSERT ON CONFLICT; đừng dựa vào SELECT rồi INSERT ở READ COMMITTED.
+
+> Senior tip: chọn mức isolation theo invariant nghiệp vụ, không theo thói quen; phần lớn hệ thống OLTP dùng READ COMMITTED và bọc các thao tác cần nhất quán bằng UPDATE nguyên tử, FOR UPDATE hoặc SERIALIZABLE cộng retry.`,
+  exercises: [
+    {
+      title: 'IsolationSim: đọc hai lần và đếm phantom theo mức isolation',
+      prompt: `Mô phỏng một bảng nhỏ trong bộ nhớ để thấy hai anomaly.
+
+Constructor {{IsolationSim(level, initialValues...)}}: {{level}} là {{"RC"}} (READ COMMITTED) hoặc {{"RR"}} (REPEATABLE READ). {{initialValues}} là giá trị các hàng theo id 1, 2, 3... (mỗi phần tử là một hàng).
+
+{{nonRepeatableRead(id, newVal)}}: mở transaction T1, đọc hàng {{id}}, cho T2 cập nhật hàng đó thành {{newVal}} rồi commit, sau đó T1 đọc lại. Trả về mảng hai phần tử {đọc lần 1, đọc lần 2}.
+- RR: T1 dùng snapshot lấy lúc bắt đầu, nên hai lần đọc bằng nhau.
+- RC: mỗi lần đọc lấy snapshot mới, nên lần 2 thấy giá trị mới.
+
+{{phantom(threshold, insertVal)}}: mở transaction T1, đếm số hàng có giá trị nhỏ hơn {{threshold}}, cho T2 INSERT một hàng giá trị {{insertVal}} rồi commit, sau đó T1 đếm lại. Trả về mảng hai phần tử {đếm lần 1, đếm lần 2}.
+- RR: T1 đếm trên snapshot cũ, kết quả không đổi.
+- RC: T1 thấy hàng mới nếu {{insertVal}} nhỏ hơn {{threshold}}.
+
+Không dùng thread, không sleep; kết quả phải xác định.`,
+      starter: `class IsolationSim {
+    private final boolean repeatableRead;
+    private final java.util.List<Integer> live = new java.util.ArrayList<>();
+    private java.util.List<Integer> snapshot;
+
+    IsolationSim(String level, int... initial) {
+        this.repeatableRead = "RR".equalsIgnoreCase(level);
+        for (int v : initial) live.add(v);
+    }
+
+    int[] nonRepeatableRead(int id, int newVal) { throw new UnsupportedOperationException("TODO"); }
+
+    int[] phantom(int threshold, int insertVal) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+ static int p=0,t=0;
+ static void c(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(int a,int b){if(a!=b)throw new AssertionError(a+" != "+b);}
+ public static void main(String[]z){
+  c("repeatable read keeps the first value",()->{IsolationSim x=new IsolationSim("RR",100);int[] r=x.nonRepeatableRead(1,80);eq(100,r[0]);eq(100,r[1]);});
+  c("read committed sees the committed update",()->{IsolationSim x=new IsolationSim("RC",100);int[] r=x.nonRepeatableRead(1,80);eq(100,r[0]);eq(80,r[1]);});
+  c("repeatable read blocks phantom",()->{IsolationSim x=new IsolationSim("RR",10,20,30);int[] r=x.phantom(100,40);eq(3,r[0]);eq(3,r[1]);});
+  c("read committed allows phantom",()->{IsolationSim x=new IsolationSim("RC",10,20,30);int[] r=x.phantom(100,40);eq(3,r[0]);eq(4,r[1]);});
+  c("insert outside the predicate changes nothing",()->{IsolationSim x=new IsolationSim("RC",10,20,30);int[] r=x.phantom(25,100);eq(2,r[0]);eq(2,r[1]);});
+  c("repeatable read rereads the same row from snapshot",()->{IsolationSim x=new IsolationSim("RR",5,6,7);int[] r=x.nonRepeatableRead(2,60);eq(6,r[0]);eq(6,r[1]);});
+  c("read committed updates only the targeted row",()->{IsolationSim x=new IsolationSim("RC",5,6,7);int[] r=x.nonRepeatableRead(2,60);eq(6,r[0]);eq(60,r[1]);});
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+      reference: `import java.util.*;
+
+class IsolationSim {
+    private final boolean repeatableRead;
+    private final List<Integer> live;
+    private List<Integer> snapshot;
+
+    IsolationSim(String level, int... initial) {
+        this.repeatableRead = "RR".equalsIgnoreCase(level) || "REPEATABLE READ".equalsIgnoreCase(level);
+        this.live = new ArrayList<>();
+        for (int v : initial) live.add(v);
+    }
+
+    private void begin() {
+        snapshot = repeatableRead ? new ArrayList<>(live) : null;
+    }
+
+    private List<Integer> view() {
+        return repeatableRead ? snapshot : live;
+    }
+
+    private int read(int id) {
+        return view().get(id - 1);
+    }
+
+    private int countBelow(int threshold) {
+        int count = 0;
+        for (int v : view()) if (v < threshold) count++;
+        return count;
+    }
+
+    int[] nonRepeatableRead(int id, int newVal) {
+        begin();
+        int first = read(id);
+        live.set(id - 1, newVal);
+        int second = read(id);
+        return new int[]{first, second};
+    }
+
+    int[] phantom(int threshold, int insertVal) {
+        begin();
+        int first = countBelow(threshold);
+        live.add(insertVal);
+        int second = countBelow(threshold);
+        return new int[]{first, second};
+    }
+}`,
+      hints: [
+        'Với RR, chụp một bản sao danh sách hàng khi transaction bắt đầu; mọi lần đọc trong transaction dùng bản sao đó.',
+        'Với RC, không chụp snapshot: đọc trực tiếp danh sách hiện tại mỗi lần.',
+        'nonRepeatableRead: đọc, cho T2 ghi, đọc lại. phantom: đếm, cho T2 insert, đếm lại. Trả về cặp {lần 1, lần 2}.'
+      ],
+      explain: `Toàn bộ bài tập gói trong một ý: **điểm chụp ảnh (snapshot)**. REPEATABLE READ chụp một lần ở đầu transaction nên đọc lại vẫn thấy giá trị cũ và không thấy hàng mới; READ COMMITTED chụp lại mỗi câu lệnh nên thấy commit mới. Đó là lý do chuẩn SQL định nghĩa READ COMMITTED cho phép non-repeatable read và phantom, còn REPEATABLE READ thì không.
+
+Đơn giản hoá so với PostgreSQL: bài mô phỏng dùng danh sách trong RAM, không có MVCC tuple, không có 40001 khi ghi đè. Trong PostgreSQL thật, REPEATABLE READ giữ snapshot nhưng khi bạn UPDATE hàng đã bị người khác sửa và commit sau snapshot, nó abort transaction với SQLSTATE 40001 thay vì ghi đè. Muốn chặn cả write skew (ví dụ hai transaction cùng kiểm tra tổng số dư rồi cùng trừ) thì cần SERIALIZABLE.`
+    }
+  ],
+  check: [
+    {
+      q: 'Non-repeatable read là gì?',
+      options: [
+        'Cùng một hàng, hai lần đọc trong một transaction cho hai giá trị đã commit khác nhau',
+        'Cùng một điều kiện, hai lần đọc cho hai tập hàng khác nhau',
+        'Đọc được dữ liệu chưa commit',
+        'Hai transaction cùng ghi một hàng'
+      ],
+      answer: 0,
+      explain: 'Đối tượng là một hàng cụ thể; giá trị đổi vì transaction khác commit ở giữa. Hiện tượng tập hàng đổi là phantom.'
+    },
+    {
+      q: 'Phantom read là gì?',
+      options: [
+        'Đọc lại một hàng ra giá trị khác',
+        'Cùng một điều kiện, hai lần đọc cho hai tập hàng khác nhau do INSERT/DELETE rồi commit',
+        'Đọc dữ liệu chưa commit',
+        'Mất kết nối giữa transaction'
+      ],
+      answer: 1,
+      explain: 'Phantom nói về tập kết quả của một predicate, không phải một hàng cố định.'
+    },
+    {
+      q: 'REPEATABLE READ của PostgreSQL chặn non-repeatable read và phantom bằng cách nào?',
+      options: [
+        'Bằng gap lock như InnoDB',
+        'Bằng cách giữ snapshot lấy ở đầu transaction suốt transaction',
+        'Bằng cách tắt MVCC',
+        'Bằng cách ghi đè dữ liệu cũ'
+      ],
+      answer: 1,
+      explain: 'PostgreSQL dùng snapshot (MVCC), không dùng gap lock; đọc lại dùng snapshot cũ nên không thấy thay đổi đã commit.'
+    },
+    {
+      q: 'Vì sao hai SELECT trong cùng một transaction ở READ COMMITTED có thể ra hai kết quả?',
+      options: [
+        'Vì PostgreSQL bỏ qua câu lệnh thứ hai',
+        'Vì mỗi câu lệnh lấy một snapshot mới, nên thấy commit mới ở giữa',
+        'Vì READ COMMITTED tắt transaction',
+        'Vì index bị hỏng'
+      ],
+      answer: 1,
+      explain: 'READ COMMITTED chụp ảnh theo từng câu lệnh; đó chính là định nghĩa cho phép non-repeatable read.'
+    }
+  ],
+  related: ['db-002', 'db-033', 'db-034'],
+  tags: ['isolation', 'non-repeatable-read', 'phantom-read', 'snapshot', 'PostgreSQL']
+},
 );

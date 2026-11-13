@@ -1941,6 +1941,8 @@ window.DATA_INDEX = {
     {"id":"lesson-db-009","track":"db","order":9,"title":"WAL, commit và crash recovery: vì sao mất điện không mất dữ liệu đã commit","level":"senior","minutes":30},
     {"id":"lesson-db-010","track":"db","order":10,"title":"B+ tree thu nhỏ: node lá, tách node, và range scan theo chuỗi lá","level":"senior","minutes":35},
     {"id":"lesson-db-011","track":"db","order":11,"title":"WAL và khôi phục sau crash: redo commit, bỏ qua chưa commit","level":"senior","minutes":35},
+    {"id":"lesson-db-012","track":"db","order":12,"title":"Index composite và thứ tự cột: leftmost prefix, selectivity và chi phí ghi","level":"senior","minutes":30},
+    {"id":"lesson-db-013","track":"db","order":13,"title":"Non-repeatable read và phantom: mô phỏng lịch giao dịch và snapshot","level":"senior","minutes":30},
     {"id":"lesson-jvm-001","track":"jvm","order":1,"title":"Heap và bốn loại reference: vì sao static Map giữ object mãi mãi","level":"senior","minutes":30},
     {"id":"lesson-jvm-002","track":"jvm","order":2,"title":"GC mark-and-sweep từ con số 0: reachability, tri-color và vì sao cần compact","level":"senior","minutes":35},
     {"id":"lesson-jvm-003","track":"jvm","order":3,"title":"Class loading và static init: thứ tự khởi tạo, holder idiom và bẫy classloader","level":"senior","minutes":30},
