@@ -2408,444 +2408,508 @@ Muốn gần Spring hơn: đổi {{early}} thành {{Map<Class<?>, Supplier<Objec
   },
   {
     id: 'lesson-spring-012', track: 'spring', order: 12,
-    title: 'AOP: chuỗi interceptor, @Order và cuộc chiến giữa @Transactional và @Retryable',
-    level: 'senior', minutes: 40,
+    title: 'Spring Security: filter chain xác thực và phân quyền', level: 'senior', minutes: 45,
     goals: [
-      'Giải thích proxy AOP, MethodInterceptor và vai trò của proceed() trong chuỗi gọi',
-      'Nói đúng quy tắc sắp xếp advisor theo @Order/Ordered: giá trị nhỏ hơn chạy ngoài hơn, và hệ quả khi transaction gặp retry',
-      'Tự dựng proxy bằng java.lang.reflect.Proxy với chuỗi interceptor có thứ tự và quan sát thứ tự log + hành vi retry'
+      'Vẽ được đường đi request qua DelegatingFilterProxy, FilterChainProxy và SecurityFilterChain',
+      'Phân biệt xác thực và phân quyền; biết 401 khác 403 và xử lý như thế nào',
+      'Cấu hình nhiều chain cho các path khác nhau và xếp thứ tự bằng {{@Order}}'
     ],
-    body: `**Tóm tắt:** AOP (Aspect-Oriented Programming — lập trình hướng khía cạnh: thêm hành vi "cắt ngang" như log, transaction, bảo mật mà không sửa code nghiệp vụ) trong Spring chạy qua **proxy** (đối tượng đứng giữa, thay bean thật nhận lời gọi). Mỗi hành vi là một **interceptor/advice** (bộ chặn xen vào) xếp thành chuỗi; gọi {{proceed()}} (tiếp tục) để chuyển sang mắt xích kế tiếp rồi tới method thật. Thứ tự quyết định ai bọc ai: advisor có **order nhỏ hơn** có mức ưu tiên cao hơn và thường nằm **ngoài** hơn, nên nó chạy trước khi vào và sau khi ra. Vì vậy "{{@Transactional}} bọc {{@Retryable}} hay ngược lại" không phải câu đố — nó phụ thuộc order của từng advisor.
+    body: `**Tóm tắt:** Spring Security không để controller tự kiểm tra bảo mật. Thay vào đó, nó đặt một chuỗi **Servlet Filter** (bộ lọc — thành phần của tiêu chuẩn server web Java như Tomcat, chạy trước khi request tới controller) trước mọi request. Request đi qua {{DelegatingFilterProxy}} (cầu nối giữa Tomcat và Spring), rồi {{FilterChainProxy}} chọn chain phù hợp với đường dẫn và chạy lần lượt các filter: xác thực trước, phân quyền sau. Chưa chứng minh danh tính → {{401 Unauthorized}}; đã chứng minh nhưng không đủ quyền → {{403 Forbidden}}.
 
-### Proxy và chuỗi interceptor: cơ chế từng bước
-1. **Bạn gọi method trên bean.** Nếu bean được áp dụng AOP, reference bạn cầm thường là proxy, không phải object bạn {{new}}.
-2. **Proxy dựng chuỗi interceptor** phù hợp với method đó (transaction, retry, cache, security...).
-3. **Mắt xích 1 chạy phần "before"**, rồi gọi {{proceed()}}.
-4. **{{proceed()}} nhảy vào mắt xích 2**, ... đến method thật.
-5. **Kết quả/exception đi ngược ra ngoài**: mắt xích 2 xử lý phần "after", rồi mắt xích 1. Giống việc bọc quà nhiều lớp: lớp ngoài cùng mở ra trước, đóng lại sau.
+### Servlet Filter là gì
+Filter là thành phần của Servlet specification (chuẩn của server web Java). Nó ngồi trước controller: request đến Tomcat → Tomcat chạy filter → mới giao cho controller. Mỗi filter có thể (1) đọc request, (2) chuyển request xuống filter kế tiếp, hoặc (3) dừng và trả phản hồi ngay (ví dụ {{401}}). Ví dụ đời thường: như bảo vệ kiểm tra vé trước khi để khách vào sân thi đấu. Không có vé → bảo vệ chặn ngay, không cần để khách vào sân rồi mới hỏi.
 
-~~~text
-caller -> [Interceptor A, order thấp, ngoài]
-            before A
-              -> [Interceptor B, order cao, trong]
-                   before B
-                     -> method thật
-                   after B
-            after A
-       <- kết quả
-~~~
+### FilterChainProxy và SecurityFilterChain
+Spring Security đăng ký một filter duy nhất tên {{DelegatingFilterProxy}} với Tomcat. Lớp này không tự xử lý bảo mật — nó tìm bean {{FilterChainProxy}} trong Spring context và ủy quyền hết cho nó. {{FilterChainProxy}} giữ danh sách nhiều {{SecurityFilterChain}}; mỗi chain gồm một đường dẫn khớp (ví dụ {{/api/**}}) và một danh sách filter đã xếp thứ tự. FilterChainProxy chọn chain **đầu tiên** có đường dẫn khớp request — giống danh sách quy tắc đọc từ trên xuống, quy tắc đầu tiên thắng. Bên trong chain được chọn, các filter chạy theo thứ tự cố định của Spring Security: filter xác thực chạy trước filter phân quyền, vì để biết bạn được vào hệ thống, nó phải biết bạn là ai trước.
 
-Trong Spring AOP "thuần", contract lõi là {{org.aopalliance.intercept.MethodInterceptor}} với {{Object invoke(MethodInvocation mi)}}; bên trong bạn **phải** gọi {{mi.proceed()}} nếu muốn method thật chạy. Nếu quên {{proceed()}}, chuỗi đứng lại, method thật không bao giờ được gọi — bug im lặng rất khó thấy. (Spring còn có {{@Aspect}} với {{@Around}}/{{ProceedingJoinPoint}}; khái niệm proceed giống hệt.)
+Browser
+  │
+  ▼
+Tomcat (Servlet container)
+  │
+  ▼
+DelegatingFilterProxy ──┐  (cầu nối sang Spring)
+  │                     │
+  ▼                     │
+FilterChainProxy        │
+  Chain A (order 1):    │
+    path /**            │
+    [SessionFilter, …]  │──▶ khớp /** → chạy chain A, chain B không đến lượt
+  Chain B (order 2):    │
+    path /api/**        │
+    [BearerTokenAuthFilter, AuthorizationFilter, …]
+  │
+  ▼
+Controller (nếu mọi filter đều cho qua)
 
-### @Order/Ordered: ai ở ngoài?
-Spring sắp advisor theo {{Ordered.getOrder()}} (hoặc {{@Order}}). **Quy tắc nhớ:** giá trị nhỏ hơn = ưu tiên cao hơn = thường được đặt **ngoài** hơn trong chuỗi advice. Giá trị mặc định nếu không khai báo là "thấp ưu tiên nhất" ({{Ordered.LOWEST_PRECEDENCE}}). Vì các loại advice khác nhau có logic xếp riêng, cách an toàn nhất là **đặt order tường minh** cho advisor bạn kiểm soát, đừng đoán.
+### Các filter quan trọng
+- {{BearerTokenAuthenticationFilter}}: đọc header {{Authorization: Bearer <token>}}. Token là chuỗi minh định danh tính (như chứng minh thư tạm thời). Thiếu header hoặc token sai → ném ngoại lệ xác thực. Filter này **xác thực**: trả lời "bạn là ai".
+- {{AuthorizationFilter}}: kiểm tra quyền dựa trên danh tính đã biết (ví dụ role {{ADMIN}}). **Phân quyền**: trả lời "bạn được vào nơi nào".
+- {{ExceptionTranslationFilter}}: bắt ngoại lệ từ các filter trên và chuyển thành mã HTTP: ngoại lệ xác thực → {{401 Unauthorized}} (chưa chứng minh danh tính); ngoại lệ phân quyền → {{403 Forbidden}} (đã chứng minh nhưng không đủ quyền).
 
-Hệ quả kinh điển: **{{@Transactional}} (mở/đóng transaction DB — giao dịch: nhóm thao tác thành công hết hoặc rollback hết) gặp {{@Retryable}} (thử lại khi lỗi, thường từ Spring Retry)**.
+Thứ tự trong chain: xác thực trước, phân quyền sau.
 
-| Thứ tự (ngoài → trong) | Điều gì xảy ra | Khi nào hợp lý |
-|---|---|---|
-| Transaction **ngoài**, Retry **trong** | Mở 1 transaction → chạy method → lỗi thì retry **trong cùng transaction** đó (thường không tự mở transaction mới trừ khi propagation cấu hình khác) → retry hết lần vẫn lỗi thì transaction ngoài rollback toàn bộ | Ít dùng; retry trong transaction đang bẩn/rollback-only (đánh dấu chỉ được rollback) thường vô nghĩa với DB |
-| Retry **ngoài**, Transaction **trong** | Mỗi lần thử lại chạy trong **một transaction mới**: lần 1 fail → rollback tx1 → thử lại mở tx2 → ... | Hay dùng khi lỗi tạm thời (deadlock, timeout) và bạn muốn mỗi lần thử là một giao dịch sạch |
+### 401 và 403 khác nhau ở điểm nào
+- {{401 Unauthorized}}: request chưa chứng minh được danh tính (chưa có token, token sai, token hết hạn). Hành động đúng: đăng nhập lại, cung cấp token đúng.
+- {{403 Forbidden}}: hệ thống biết bạn là ai (token hợp lệ), nhưng tài khoản không được phép truy cập tài nguyên này (ví dụ user thường vào URL {{/admin}}). Hành động đúng: không phải đăng nhập lại — là yêu cầu cấp quyền hoặc liên hệ admin.
 
-~~~seq
-title: Retry ngoài, Transaction trong (mỗi lần thử = tx mới)
-actors: Caller | Retry | Tx | DB
-Caller -> Retry: gọi method
-Retry -> Tx: lần thử 1
-Tx -> DB: begin + SQL
-DB --> Tx: lỗi tạm thời
-Tx --> Retry: rollback tx1
-Retry -> Tx: lần thử 2
-Tx -> DB: begin + SQL
-DB --> Tx: OK
-Tx --> Retry: commit tx2
-Retry --> Caller: kết quả
-note Retry,Tx: Retry bọc ngoài Tx: mỗi lần thử có transaction riêng
-~~~
+Ví dụ: khách mang vé tham dự sân quà nhưng vào khu VVIP → {{403}} (có vé, không được vào khu đó); khách không mang vé → {{401}} (không được vào sân).
 
-Lưu ý thực tế: thứ tự mặc định giữa {{TransactionInterceptor}} và advice của Spring Retry phụ thuộc phiên bản/cấu hình (Spring Retry dùng {{@EnableRetry(order=...)}}; {{@Transactional}} có {{@EnableTransactionManagement(order=...)}}). **Đừng dựa vào mặc định khi hành vi đúng phụ thuộc thứ tự** — hãy đặt order rõ ràng và kiểm chứng bằng test/log.
+### Nhiều chain và thứ tự {{@Order}}
+Hệ thống thực tế cần rule khác nhau theo nhóm path: {{/api/**}} dùng JWT stateless (không tạo session), {{/admin/**}} dùng form login + session. Mỗi rule = một {{SecurityFilterChain}} riêng, khai báo bằng {{@Bean}} trong class {{@Configuration}}, gắn {{securityMatcher}} để chỉ khớp đúng path, và {{@Order}} để xếp thứ tự.
 
-### Ví dụ khái niệm (minh họa thứ tự)
+Quan trọng: chain tổng quát (khớp {{/**}}) phải đặt **sau** chain cụ thể (khớp {{/api/**}}). Nếu ngược lại, chain {{/**}} chạy trước và "nuốt" mọi request, chain {{/api/**}} không bao giờ được chọn. Triệu chứng thực tế: nhiều request API trả {{401}} dù JWT đúng vì filter đọc JWT của chain API không bao giờ chạy.
+
 ~~~java
-// Minh hoa: interceptor in truoc/sau va goi proceed()
-class LoggingInterceptor implements MethodInterceptor { // aopalliance
-  public Object invoke(MethodInvocation mi) throws Throwable {
-    System.out.println("log: before " + mi.getMethod().getName());
-    try { return mi.proceed(); }               // CHUYEN TIEP: bat buoc
-    finally { System.out.println("log: after"); }
-  }
-}
-// RetryInterceptor tuong tu: vong lap goi mi.proceed(), bat exception roi thu lai
+@Bean
+@Order(2)
+SecurityFilterChain apiChain(HttpSecurity http) { /* /api/**, JWT, stateless */ }
+
+@Bean
+@Order(1)
+SecurityFilterChain webChain(HttpSecurity http) { /* /admin/**, form login, session */ }
 ~~~
 
-### Bẫy hay gặp
-- **Quên {{proceed()}}**: method thật không chạy, trả về {{null}} hoặc nuốt logic — khó debug vì không có stack trace rõ.
-- **Tự gọi method trong cùng class** ({{this.other()}}): lời gọi nội bộ đi thẳng vào object thật, **bỏ qua proxy**, nên AOP (transaction, retry, cache) không kích hoạt. Cách sửa: tách bean, tự inject chính nó qua proxy, hoặc dùng AopContext (hiếm, cần cấu hình).
-- **Retry trong transaction bẩn**: transaction đã gặp lỗi có thể bị đánh dấu rollback-only (tùy DB/driver/JPA) — retry trong cùng tx sẽ thất bại dù logic "đáng lẽ" thử lại được.
-- **Nuốt exception trong interceptor**: retry/transaction dựa vào exception để quyết định; nuốt lỗi làm hệ thống tưởng thành công.
-- **Đoán order mặc định**: thay đổi version/config có thể đổi thứ tự; luôn đặt {{@Order}}/{{order}} rõ ràng khi quan trọng.
+### Cơ chế từng bước
+Giả sử request {{GET /api/orders}} kèm header {{Authorization: Bearer abc123}}:
+
+1. **Tomcat nhận request**, gửi qua filter chain của container, tìm {{DelegatingFilterProxy}} (đã đăng ký khi thêm dependency spring-boot-starter-security).
+2. **DelegatingFilterProxy** tìm bean {{FilterChainProxy}} trong Spring context, gọi nó.
+3. **FilterChainProxy** duyệt danh sách {{SecurityFilterChain}} theo thứ tự {{@Order}}: chain {{/**}} (tổng quát) xem xong, sau đó chain {{/api/**}} khớp đường dẫn → chọn chain này.
+4. **Chạy filter theo thứ tự**: {{BearerTokenAuthenticationFilter}} đọc header, thấy Bearer abc123, validate hợp lệ → gắn danh tính (principal) vào ngữ cảnh bảo mật; {{AuthorizationFilter}} thấy role {{USER}}, endpoint cần {{USER}} → cho qua; {{ExceptionTranslationFilter}} không bắt ngoại lệ nào.
+5. **Request đến controller**, controller trả dữ liệu đơn hàng.
+6. Nếu thiếu header → {{BearerTokenAuthenticationFilter}} ném ngoại lệ xác thực → {{ExceptionTranslationFilter}} bắt → trả **{{401}}**. Nếu token hợp lệ nhưng role {{GUEST}} cần {{ADMIN}} → {{AuthorizationFilter}} ném ngoại lệ phân quyền → **{{403}}**.
+
+### Lỗi hay gặp trên production
+- **Thứ tự chain sai**: chain {{/**}} đặt trước chain {{/api/**}} → mọi request vào chain tổng quát → API trả {{401}}. Cách sửa: đặt chain cụ thể {{@Order}} nhỏ hơn (ưu tiên hơn), dùng {{securityMatcher}} rõ ràng.
+- **Xác thực sau phân quyền**: đặt {{AuthorizationFilter}} trước {{BearerTokenAuthenticationFilter}} → hệ thống chưa biết là ai mà đã kiểm tra quyền → {{403}} sai hoặc lỗi.
+- **Token không gửi kèm mỗi request**: JWT stateless, server không nhớ session, nên mỗi request phải mang token trong header {{Authorization}}.
+- **Nhầm {{401}} với {{403}} ở client**: client retry vĩnh viễn khi nhận {{403}} (sai: {{403}} không khôi phục bằng đăng nhập lại).
 
 ### Liên hệ phỏng vấn
-Trả lời gọn: "AOP Spring dùng proxy bọc bean; mỗi advice là interceptor gọi {{proceed()}} để đi tiếp. Order nhỏ hơn ưu tiên cao hơn và nằm ngoài hơn. Với transaction và retry, thường muốn **retry ngoài, transaction trong** để mỗi lần thử là một transaction mới; nếu transaction bọc ngoài retry thì các lần thử nằm trong cùng transaction — hay không đúng ý khi cần rollback sạch giữa các lần." Nêu thêm bẫy self-invocation để lấy điểm senior.
+1. **Request đi qua những thành phần nào trong Spring Security, và filter xác thực chạy trước hay sau filter phân quyền?** — Tomcat → {{DelegatingFilterProxy}} → {{FilterChainProxy}} chọn {{SecurityFilterChain}} → các filter. Xác thực trước, phân quyền sau, vì phân quyền cần biết danh tính.
+2. **{{401}} và {{403}} khác nhau thế nào, client xử lý ra sao?** — {{401}} chưa chứng minh danh tính (đăng nhập lại); {{403}} đã chứng minh nhưng không đủ quyền (không nên retry đăng nhập, yêu cầu cấp quyền).
+3. **Sao hệ thống cần nhiều {{SecurityFilterChain}}, và thứ tự quan trọng như thế nào?** — Các nhóm path khác nhau cần rule khác nhau (JWT cho API, form login cho trang quản trị). {{FilterChainProxy}} chọn chain đầu tiên khớp, nên chain cụ thể phải có {{@Order}} cao hơn (số nhỏ hơn) và đứng trước chain tổng quát.
 
-> Senior tip: Khi hành vi "đôi khi commit, đôi khi rollback lạ" xuất hiện cùng retry, hãy log thứ tự advisor (debug AOP hoặc bật log {{org.springframework.aop}}) và kiểm tra propagation. Đừng sửa bằng cách thêm {{@Transactional}} chồng chéo khi chưa hiểu interceptor nào đang bọc ngoài cùng.`,
-    exercises: [
-      {
-        title: 'Dựng proxy JDK với chuỗi interceptor có thứ tự và retry',
-        prompt: `Cho interface {{CounterOps}} và class {{CounterImpl}} (mỗi lần {{work()}} gọi sẽ tăng {{CounterImpl.calls}}; nếu {{failTimes > 0}} thì ném {{RuntimeException("boom")}} và giảm {{failTimes}}). Viết {{Aop.wrap(target, iface, interceptors)}} dùng {{java.lang.reflect.Proxy}} để bọc {{target}}: khi gọi method, phải chạy chuỗi {{interceptors}} theo **đúng thứ tự trong list** (phần tử 0 là **ngoài cùng**), mỗi interceptor gọi {{inv.proceed()}} để đi tiếp; cuối cùng mới gọi method thật trên {{target}}. Bạn được dùng các kiểu hỗ trợ đã cho trong starter: {{Around}} (interceptor) và {{Invocation}} (giữ target/method/args/list/index và {{proceed()}}). Test sẽ kiểm tra thứ tự log before/after và một interceptor retry (thử lại tối đa N lần khi gặp {{RuntimeException}}).`,
-        starter: `import java.lang.reflect.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
+> Senior tip: Khi debug Spring Security, đừng đoán — bật {{logging.level.org.springframework.security=DEBUG}} (hoặc TRACE) và đọc log của {{FilterChainProxy}}: nó in chính xác chain nào được chọn và dãy filter chạy cho từng request. Nếu endpoint bạn nghĩ đã mở mà vẫn {{401}}, 90% là do chain/matcher không khớp hoặc filter đọc token không chạy; 10% còn lại là filter CSRF từ chối do thiếu token. Luôn viết test {{MockMvc}} cho đủ ba ca: đúng quyền → {{200}}, sai quyền → {{403}}, chưa đăng nhập → {{401}}.`,
+    exercises: [{
+      title: 'Mô phỏng filter chain xác thực token rồi phân quyền theo role',
+      prompt: `Hoàn thiện {{FilterChain}} — một bộ lọc Servlet tí hon mô phỏng cách Spring Security chạy chain xác thực rồi phân quyền:
 
-interface Around {
-    Object invoke(Invocation inv) throws Throwable;
+- {{Request}}: có {{path}} (String), {{authorization}} (header Authorization, null nếu không có), {{principal}} (đối tượng danh tính sau khi xác thực, ban đầu null).
+- {{Response}}: có {{status}} (mã HTTP, mặc định 200), {{committed}} (boolean, true khi một filter đã dừng chain và trả lỗi), {{body}} (thông điệp).
+- {{Handler}} (endpoint/controller): interface một method {{handle(Request, Response)}}.
+- {{Filter}}: interface một method {{doFilter(Request, Response, FilterChain)}}.
+- {{FilterChain.apply(req, filters, handler)}}: chạy các filter theo thứ tự trong danh sách. Một filter gọi {{chain.doFilter(req, res)}} để sang filter kế tiếp; nếu filter **không** gọi (ví dụ trả {{401}}/{{403}}) thì chain dừng, các filter sau không chạy. Sau khi chạy hết các filter mà response chưa bị dừng, gọi {{handler.handle(req, res)}} (trả 200).
+- {{AuthFilter}}: đọc {{req.authorization}}. Nếu null hoặc không bắt đầu bằng {{Bearer }} → status {{401}}, committed = true, không gọi chain. Nếu token là {{admin-token}} → principal là object có role {{ADMIN}}; nếu {{user-token}} → role {{USER}}; token khác → {{401}}. Token hợp lệ → gọi chain.
+- {{RoleFilter}}: có constructor nhận {{requiredRole}} (String). Nếu {{req.principal}} null hoặc role của principal khác {{requiredRole}} → status {{403}}, committed = true, không gọi chain. Ngược lại gọi chain.`,
+      starter: `import java.util.*;
+
+class User {
+    final String role;
+    User(String role) { this.role = role; }
 }
 
-class Invocation {
-    final Object target; final Method method; final Object[] args;
-    final List<Around> chain; int index;
-    Invocation(Object target, Method method, Object[] args, List<Around> chain, int index) {
-        this.target = target; this.method = method; this.args = args; this.chain = chain; this.index = index;
-    }
-    public Object proceed() throws Throwable {
-        throw new UnsupportedOperationException("TODO");
-    }
+class Request {
+    final String path;
+    String authorization;
+    Object principal;
+    Request(String path) { this.path = path; }
 }
 
-interface CounterOps { String work(); }
-class CounterImpl implements CounterOps {
-    int calls = 0; int failTimes = 0;
-    public String work() {
-        calls++;
-        if (failTimes > 0) { failTimes--; throw new RuntimeException("boom"); }
-        return "ok";
-    }
+class Response {
+    int status = 200;
+    boolean committed;
+    String body;
 }
 
-class Aop {
-    static <T> T wrap(T target, Class<T> iface, List<Around> interceptors) {
-        throw new UnsupportedOperationException("TODO");
+interface Handler {
+    void handle(Request req, Response res);
+}
+
+interface Filter {
+    void doFilter(Request req, Response res, FilterChain chain);
+}
+
+class FilterChain {
+    private final List<Filter> filters;
+    private final Handler handler;
+    private int pc;
+    FilterChain(List<Filter> filters, Handler handler) { throw new UnsupportedOperationException("TODO"); }
+    void doFilter(Request req, Response res) { throw new UnsupportedOperationException("TODO"); }
+    static Response apply(Request req, List<Filter> filters, Handler handler) { throw new UnsupportedOperationException("TODO"); }
+}
+
+class AuthFilter implements Filter {
+    public void doFilter(Request req, Response res, FilterChain chain) { throw new UnsupportedOperationException("TODO"); }
+}
+
+class RoleFilter implements Filter {
+    final String requiredRole;
+    RoleFilter(String requiredRole) { this.requiredRole = requiredRole; }
+    public void doFilter(Request req, Response res, FilterChain chain) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `import java.util.*;
+public class Main {
+    static int p=0, t=0;
+    static void ck(String n, Runnable r) { t++; try { r.run(); p++; System.out.println("PASS " + n); } catch (Throwable e) { System.out.println("FAIL " + n + ": " + e); } }
+    static void eq(Object a, Object b) { if (!Objects.equals(a, b)) throw new AssertionError(a + " != " + b); }
+    public static void main(String[] x) {
+        ck("token hop le va role ADMIN vao /admin tra 200", () -> {
+            Request req = new Request("/admin"); req.authorization = "Bearer admin-token";
+            List<Filter> filters = new ArrayList<>();
+            filters.add(new AuthFilter());
+            filters.add(new RoleFilter("ADMIN"));
+            Response res = FilterChain.apply(req, filters, (r, s) -> { s.body = "ok"; });
+            eq(200, res.status);
+        });
+        ck("token user vao /admin can role ADMIN tra 403", () -> {
+            Request req = new Request("/admin"); req.authorization = "Bearer user-token";
+            List<Filter> filters = new ArrayList<>();
+            filters.add(new AuthFilter());
+            filters.add(new RoleFilter("ADMIN"));
+            Response res = FilterChain.apply(req, filters, (r, s) -> { s.body = "ok"; });
+            eq(403, res.status);
+        });
+        ck("khong co token tra 401", () -> {
+            Request req = new Request("/api"); req.authorization = null;
+            List<Filter> filters = new ArrayList<>();
+            filters.add(new AuthFilter());
+            filters.add(new RoleFilter("USER"));
+            Response res = FilterChain.apply(req, filters, (r, s) -> { s.body = "ok"; });
+            eq(401, res.status);
+        });
+        ck("token sai tra 401", () -> {
+            Request req = new Request("/api"); req.authorization = "Bearer bad-token";
+            List<Filter> filters = new ArrayList<>();
+            filters.add(new AuthFilter());
+            filters.add(new RoleFilter("USER"));
+            Response res = FilterChain.apply(req, filters, (r, s) -> { s.body = "ok"; });
+            eq(401, res.status);
+        });
+        ck("thứ tự filter quan trọng: role chạy trước auth, mặc dù token đúng", () -> {
+            Request req = new Request("/admin"); req.authorization = "Bearer admin-token";
+            List<Filter> filters = new ArrayList<>();
+            filters.add(new RoleFilter("ADMIN"));
+            filters.add(new AuthFilter());
+            Response res = FilterChain.apply(req, filters, (r, s) -> { s.body = "ok"; });
+            eq(403, res.status);
+        });
+        ck("chi co auth filter khong co role filter thi handler chay tra 200", () -> {
+            Request req = new Request("/public"); req.authorization = "Bearer user-token";
+            List<Filter> filters = new ArrayList<>();
+            filters.add(new AuthFilter());
+            Response res = FilterChain.apply(req, filters, (r, s) -> { s.body = "ok"; });
+            eq(200, res.status);
+        });
+        System.out.println("RESULT " + p + "/" + t);
     }
 }`,
-        tests: `public class Main {
-    static int passed = 0, total = 0;
-    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name);} catch (Throwable t){ System.out.println("FAIL " + name + ": " + t.getMessage()); } }
-    public static void main(String[] args) throws Exception {
-        check("order: outer before/after wraps inner", () -> {
-            List<String> log = new ArrayList<>();
-            CounterImpl impl = new CounterImpl();
-            Around outer = inv -> { log.add("A-before"); try { return inv.proceed(); } finally { log.add("A-after"); } };
-            Around inner = inv -> { log.add("B-before"); try { return inv.proceed(); } finally { log.add("B-after"); } };
-            CounterOps p = Aop.wrap(impl, CounterOps.class, List.of(outer, inner));
-            String r = p.work();
-            if (!"ok".equals(r)) throw new RuntimeException("bad result " + r);
-            List<String> exp = List.of("A-before","B-before","B-after","A-after");
-            if (!exp.equals(log)) throw new RuntimeException("order " + log);
-            if (impl.calls != 1) throw new RuntimeException("calls " + impl.calls);
-        });
-        check("retry inside outer: retries call proceed (and target) until success", () -> {
-            List<String> log = new ArrayList<>();
-            CounterImpl impl = new CounterImpl(); impl.failTimes = 2;
-            Around outer = inv -> { log.add("A-before"); try { return inv.proceed(); } finally { log.add("A-after"); } };
-            Around retry = inv -> {
-                for (int i = 1; i <= 3; i++) {
-                    try { log.add("try" + i); return inv.proceed(); }
-                    catch (RuntimeException e) { if (i == 3) throw e; }
-                }
-                throw new RuntimeException("unreachable");
-            };
-            CounterOps p = Aop.wrap(impl, CounterOps.class, List.of(outer, retry));
-            String r = p.work();
-            if (!"ok".equals(r)) throw new RuntimeException("bad result");
-            // outer wraps whole operation once; retry makes 3 attempts -> target called 3 times
-            List<String> exp = List.of("A-before","try1","try2","try3","A-after");
-            if (!exp.equals(log)) throw new RuntimeException("log " + log);
-            if (impl.calls != 3) throw new RuntimeException("calls " + impl.calls);
-        });
-        check("no proceed: target not called", () -> {
-            CounterImpl impl = new CounterImpl();
-            Around block = inv -> "blocked";
-            CounterOps p = Aop.wrap(impl, CounterOps.class, List.of(block));
-            String r = p.work();
-            if (!"blocked".equals(r)) throw new RuntimeException("bad " + r);
-            if (impl.calls != 0) throw new RuntimeException("target called");
-        });
-        System.out.println("RESULT " + passed + "/" + total);
-    }
-}`,
-        reference: `import java.lang.reflect.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
+      reference: `import java.util.*;
 
-interface Around {
-    Object invoke(Invocation inv) throws Throwable;
+class User {
+    final String role;
+    User(String role) { this.role = role; }
 }
 
-class Invocation {
-    final Object target; final Method method; final Object[] args;
-    final List<Around> chain; int index;
-    Invocation(Object target, Method method, Object[] args, List<Around> chain, int index) {
-        this.target = target; this.method = method; this.args = args; this.chain = chain; this.index = index;
-    }
-    public Object proceed() throws Throwable {
-        if (index < chain.size()) {
-            Around next = chain.get(index++);
-            return next.invoke(this);
+class Request {
+    final String path;
+    String authorization;
+    Object principal;
+    Request(String path) { this.path = path; }
+}
+
+class Response {
+    int status = 200;
+    boolean committed;
+    String body;
+}
+
+interface Handler {
+    void handle(Request req, Response res);
+}
+
+interface Filter {
+    void doFilter(Request req, Response res, FilterChain chain);
+}
+
+class FilterChain {
+    private final List<Filter> filters;
+    private final Handler handler;
+    private int pc;
+    FilterChain(List<Filter> filters, Handler handler) { this.filters = filters; this.handler = handler; }
+    void doFilter(Request req, Response res) {
+        if (res.committed) return;
+        if (pc < filters.size()) {
+            int i = pc++;
+            filters.get(i).doFilter(req, res, this);
+        } else {
+            handler.handle(req, res);
         }
-        try { return method.invoke(target, args); }
-        catch (InvocationTargetException e) { throw e.getCause(); }
+    }
+    static Response apply(Request req, List<Filter> filters, Handler handler) {
+        FilterChain chain = new FilterChain(filters, handler);
+        Response res = new Response();
+        chain.doFilter(req, res);
+        return res;
     }
 }
 
-interface CounterOps { String work(); }
-class CounterImpl implements CounterOps {
-    int calls = 0; int failTimes = 0;
-    public String work() {
-        calls++;
-        if (failTimes > 0) { failTimes--; throw new RuntimeException("boom"); }
-        return "ok";
+class AuthFilter implements Filter {
+    public void doFilter(Request req, Response res, FilterChain chain) {
+        String auth = req.authorization;
+        if (auth == null || !auth.startsWith("Bearer ")) {
+            res.status = 401;
+            res.committed = true;
+            res.body = "missing or malformed token";
+            return;
+        }
+        String token = auth.substring(7);
+        if ("admin-token".equals(token)) req.principal = new User("ADMIN");
+        else if ("user-token".equals(token)) req.principal = new User("USER");
+        else {
+            res.status = 401;
+            res.committed = true;
+            res.body = "invalid token";
+            return;
+        }
+        chain.doFilter(req, res);
     }
 }
 
-class Aop {
-    @SuppressWarnings("unchecked")
-    static <T> T wrap(T target, Class<T> iface, List<Around> interceptors) {
-        List<Around> chain = List.copyOf(interceptors);
-        InvocationHandler h = (proxy, method, args) -> {
-            // bo qua cac method cua Object (toString/hashCode/equals) cho don gian
-            if (method.getDeclaringClass() == Object.class) {
-                return method.invoke(target, args);
-            }
-            Invocation inv = new Invocation(target, method, args, chain, 0);
-            return inv.proceed();
-        };
-        return (T) Proxy.newProxyInstance(iface.getClassLoader(), new Class<?>[]{iface}, h);
+class RoleFilter implements Filter {
+    final String requiredRole;
+    RoleFilter(String requiredRole) { this.requiredRole = requiredRole; }
+    public void doFilter(Request req, Response res, FilterChain chain) {
+        String userRole = req.principal == null ? null : ((User) req.principal).role;
+        if (!requiredRole.equals(userRole)) {
+            res.status = 403;
+            res.committed = true;
+            res.body = "forbidden";
+            return;
+        }
+        chain.doFilter(req, res);
     }
 }`,
-        hints: [
-          '{{Invocation.proceed()}}: nếu {{index < chain.size()}} thì lấy {{chain.get(index++)}} và gọi {{next.invoke(this)}}; nếu hết chuỗi thì {{method.invoke(target, args)}}. Dùng {{index++}} để tiến tới mắt xích kế tiếp.',
-          'Trong Aop.wrap, tạo InvocationHandler: với method business, tạo new Invocation rồi return inv.proceed(). Dùng Proxy.newProxyInstance.',
-          'Phần tử 0 của list là ngoài cùng: nó được gọi đầu tiên bởi {{proceed()}} đầu tiên, nên log "A-before" xuất hiện trước "B-before". Retry interceptor lặp gọi {{inv.proceed()}} — mỗi lần sẽ chạy phần còn lại của chuỗi tới target.'
-        ],
-        explain: `Lời giải thể hiện đúng hai ý cốt lõi của Spring AOP proxy. (1) **Chuỗi tĩnh, con trỏ động:** {{Invocation}} giữ {{index}}; mỗi {{proceed()}} nhảy tới interceptor kế tiếp, hết chuỗi mới reflect-invoke method thật. Vì phần tử 0 chạy trước, nó tự nhiên "bọc ngoài" phần tử 1 — nên before/after tạo hình chữ U: {{A-before, B-before, (target), B-after, A-after}}. (2) **Retry = gọi lại {{proceed()}}:** interceptor retry nằm trong chuỗi; khi nó gọi {{proceed()}} lần 2, nó chạy lại phần còn lại của chuỗi (và tới target) — đó là lý do {{calls == 3}}. Nếu retry nằm **trong** một interceptor transaction (transaction ngoài, retry trong) và transaction đó chỉ mở một lần ở ngoài, các lần retry sẽ chia sẻ cùng bối cảnh — mô hình hoá đúng bài toán "{{@Transactional}} bọc {{@Retryable}}". Đảo vị trí retry ra ngoài transaction interceptor (ở mức framework) mới cho mỗi lần thử một transaction riêng.`
-      }
-    ],
+      hints: ['Dùng trường {{pc}} (program counter): tăng trước khi gọi filter, nên mỗi filter chỉ chạy một lần trên một request.', 'Filter gọi {{chain.doFilter(req, res)}} để nhầm qua filter kế tiếp. Nếu filter dừng (trả {{401}}/{{403}}) thì gán {{committed = true}} và không gọi {{chain.doFilter}}; các filter sau và handler không chạy.', 'Handler chỉ chạy khi mọi filter đều cho qua và {{!res.committed}} — tương tự controller chỉ chạy khi mọi filter bảo mật đều qua.'],
+      explain: `Bài tập dựng lại đúng mô hình của Spring Security ở mức Servlet thuần túy.
+- {{FilterChain.apply}} giữ bộ đếm {{pc}}: mỗi lần chạy, tăng {{pc}} rồi gọi filter ở vị trí đó, nên mỗi filter chỉ chạy một lần trên một request.
+- Filter gọi {{chain.doFilter(req, res)}} để nhầm qua filter kế tiếp. Nếu filter quyết định dừng (ví dụ {{AuthFilter}} thấy thiếu token → {{401}}, {{RoleFilter}} thấy thiếu quyền → {{403}}) thì gán {{committed = true}} và **không** gọi {{chain.doFilter}}; các filter sau và handler đều không chạy.
+- Handler (controller) chỉ chạy khi mọi filter đều cho qua và {{!res.committed}}.
+Thứ tự filter quyết định kết quả: test "role chạy trước auth" cho thấy nếu phân quyền chạy trước xác thực thì {{principal}} vẫn là {{null}} và request bị chặn sai — giống rủi ro thực tế khi sắp xếp filter sai thứ tự trong Spring Security.`,
+    }],
     check: [
-      { q: 'Trong chuỗi AOP Spring, điều gì xảy ra nếu một {{MethodInterceptor}} không gọi {{proceed()}}?', options: ['Method đích vẫn chạy nhưng không có after-advice', 'Method đích không chạy và các interceptor phía trong cũng bị bỏ qua', 'Spring tự động gọi {{proceed()}} hộ', 'Chỉ ảnh hưởng logging, không ảnh hưởng transaction'], answer: 1, explain: '{{proceed()}} là cơ chế chuyển tiếp chuỗi. Không gọi nó thì không ai chạy method thật hay các mắt xích phía trong — có thể chặn hẳn lời gọi (dùng có chủ đích cho security/cache), nhưng quên gọi là bug.' },
-      { q: 'Muốn mỗi lần {{@Retryable}} thử lại đều chạy trong **một transaction mới** (rollback sạch rồi thử lại), thứ tự advisor nào phù hợp hơn?', options: ['@Transactional bọc ngoài @Retryable (retry chạy bên trong cùng transaction)', '@Retryable bọc ngoài @Transactional (mỗi lần thử mở transaction mới bên trong)', 'Thứ tự không ảnh hưởng vì mỗi annotation tự quản lý', 'Chỉ cần đặt propagation = REQUIRED'], answer: 1, explain: 'Retry ở ngoài sẽ gọi lại toàn bộ phần bên trong, bao gồm interceptor transaction — nên mỗi lần thử đi qua mở transaction/commit hoặc rollback riêng. Nếu transaction bọc ngoài retry, mọi lần thử nằm trong một transaction. Thực tế phải cấu hình order tường minh (Spring Retry {{@EnableRetry(order)}}, transaction management {{order}}) vì mặc định có thể khác kỳ vọng.' },
-      { q: 'Vì sao gọi {{this.internal()}} (có {{@Transactional}}) từ một method khác trong cùng class thường **không** mở transaction?', options: ['Vì {{@Transactional}} chỉ áp dụng cho method public static', 'Vì lời gọi nội bộ đi thẳng vào object thật, bỏ qua proxy AOP', 'Vì Java không cho phép gọi method của chính mình', 'Vì transaction chỉ mở khi có {{@Autowired}}'], answer: 1, explain: 'AOP Spring (mặc định proxy-based) chỉ can thiệp khi lời gọi đi **qua proxy**. Tự gọi {{this...}} không đi qua proxy nên interceptor transaction/retry không chạy. Đây là bẫy kinh điển (self-invocation).' }
+      { q: 'FilterChainProxy chọn chain nào cho một request?', options: ['Chain có đường dẫn khớp và {{@Order}} cao hơn (số nhỏ hơn) đứng đầu danh sách', 'Chain cuối cùng trong danh sách', 'Chain ngẫu nhiên', 'Chain có nhiều filter nhất'], answer: 0, explain: `{{FilterChainProxy}} chọn chain đầu tiên có đường dẫn khớp theo thứ tự {{@Order}}, nên chain cụ thể (ví dụ {{/api/**}}) phải đặt trước chain tổng quát ({{/**}}).` },
+      { q: 'Request không có token gọi API cần xác thực. Spring Security trả mã gì?', options: ['{{403 Forbidden}}', '{{401 Unauthorized}}', '{{200 OK}}', '{{500 Internal Server Error}}'], answer: 1, explain: `{{401}} có nghĩa là chưa chứng minh danh tính (chưa có token hoặc token sai); {{403}} có nghĩa là đã chứng minh nhưng không đủ quyền.` },
+      { q: 'Hai filter trong một chain: filter A kiểm tra token, filter B kiểm tra role. Đặt B trước A gây gì?', options: ['Không ảnh hưởng vì Spring tự sắp xếp lại', 'B chạy trước khi biết danh tính ({{principal}} vẫn null) nên có thể chặn sai hoặc lỗi', 'Controller chạy hai lần', 'Request bị chặn bằng {{404}}'], answer: 1, explain: `Phân quyền cần biết danh tính. Nếu role filter chạy trước auth filter, {{principal}} vẫn là {{null}} nên request bị chặn sai — cùng nguy cơ khi sắp xếp filter sai thứ tự trong Spring Security.` },
+      { q: '{{@Order}} trong {{SecurityFilterChain}} dùng để gì?', options: ['Xếp thứ tự các chain; chain {{@Order}} nhỏ hơn được xét trước khi khớp đường dẫn', 'Xếp thứ tự method trong controller', 'Bật/tắt CSRF', 'Thiết lập timeout session'], answer: 0, explain: `{{@Order}} quyết định thứ tự duyệt danh sách chain trong {{FilterChainProxy}}. Chain cụ thể cần {{@Order}} nhỏ hơn (ưu tiên hơn) để đứng trước chain tổng quát.` }
     ],
-    related: ['spring-001', 'spring-010', 'spring-028'], tags: ['AOP', 'proxy', 'MethodInterceptor', '@Order', '@Transactional', '@Retryable', 'proceed']
+    related: ['security-042'], tags: ['Spring Security', 'filter chain', 'authentication', 'authorization', '401', '403']
   },
   {
     id: 'lesson-spring-013', track: 'spring', order: 13,
-    title: 'Vòng đời bean và BeanPostProcessor: từ instantiate tới proxy',
-    level: 'senior', minutes: 40,
-    goals: [
-      'Kể đúng thứ tự các bước vòng đời bean: instantiate → populate → Aware → BPP before → init → BPP after',
-      'Giải thích BeanPostProcessor.before/after và vì sao proxy AOP thường được tạo ở afterInitialization',
-      'Tự viết mini container ghi lại thứ tự callback và trả về một proxy từ BPP, rồi xác minh bean nhận được là proxy'
-    ],
-    body: `**Tóm tắt:** Spring tạo một bean singleton qua nhiều bước có thứ tự cố định. Hai móc quan trọng là **BeanPostProcessor** (BPP — bộ xử lý hậu kỳ bean: chạy cho *mọi* bean) với {{postProcessBeforeInitialization}} và {{postProcessAfterInitialization}}. Proxy AOP ({{@Transactional}}, {{@Async}}, {{@Cacheable}}...) thường được gắn vào ở **afterInitialization** bằng cách trả về một đối tượng bọc khác — nên code chạy trong {{@PostConstruct}} (bước init) có thể **chưa** đi qua proxy.
+    title: 'Cache với @Cacheable: TTL, invalidation và phòng cache stampede', level: 'senior', minutes: 45,
+    goals: ['Vẽ được cách @Cacheable kiểm tra cache trước khi chạy method và khi nào bỏ qua cache', 'Hiểu TTL, hit rate và cache stampede, cùng cách phòng bằng khoá theo key', 'Biết khi nào dùng invalidation (@CacheEvict) và khi nào không nên cache'],
+    body: `**Tóm tắt:** Cache (bộ nhớ đệm) lưu bản sao dữ liệu gần nơi xử lý để lần sau đọc nhanh hơn, không phải truy vấn cơ sở dữ liệu (nơi lưu dữ liệu chính thức, thường chậm hơn bộ nhớ) lại — như tách giá bo trên quầy hàng thay vào đi kho hàng đếm lại mỗi khi khách hỏi. Spring Cache ({{@Cacheable}}, {{@CacheEvict}}, {{@CachePut}}) là lớp trừu tượng (giao diện thống nhất cho nhiều engine cache như Caffeine hoặc Redis) giúp đánh dấu method cần cache mà không viết mã quản lý cache tay. {{@Cacheable}} lưu kết quả method theo key; {{@CacheEvict}} xóa cache khi dữ liệu đổi. Cần hiểu TTL (thời gian tồn tại của một bản cache, như hạn sử dụng trên bao thực phẩm), tỉ lệ hit (cache hit rate, phần lần đọc được lấy từ cache), và cache stampede (nhiều request cùng miss một key được truy cập nhiều → cùng truy vấn cơ sở dữ liệu, có thể làm sập cơ sở dữ liệu). Khoá theo key (per-key lock) phòng stampede: chỉ một request tính toán, các request khác cùng key chờ đợi kết quả đầu tiên.
 
-### Thứ tự vòng đời (rút gọn, đủ dùng khi debug)
-1. **Instantiate** (khởi tạo đối tượng): gọi constructor → có instance "thô".
-2. **Populate properties** (tiêm phụ thuộc): gán {{@Autowired}} field/setter, giá trị cấu hình.
-3. **Aware callbacks** (biết ngữ cảnh): nếu bean implement {{BeanNameAware}}, {{BeanFactoryAware}}, {{ApplicationContextAware}}... Spring gọi các setter tương ứng.
-4. **{{BeanPostProcessor.postProcessBeforeInitialization}}**: chạy trước init — có thể sửa/thay bean.
-5. **Initialization** (khởi tạo logic): theo thứ tự {{@PostConstruct}} → {{InitializingBean.afterPropertiesSet()}} → {{init-method}} (khai báo trong cấu hình).
-6. **{{BeanPostProcessor.postProcessAfterInitialization}}**: chạy sau init — **có thể trả về proxy** bọc bean gốc. Đây là nơi nhiều tính năng AOP "gắn" vào.
-7. **Bean sẵn sàng** đưa vào context (và với singleton, nằm trong cache). Khi tắt context: {{@PreDestroy}} → {{DisposableBean.destroy()}} → {{destroy-method}}.
+### Cache là gì và ví dụ đời thường
+Cache là bộ nhớ đệm lưu dữ liệu đã đọc một lần để đọc lần sau nhanh hơn. Ví dụ đời thường: quán bánh ghi số lượng bánh còn lại trên bảng ván đen (cache) thay vào vào kho đếm lại mỗi khi khách hỏi. Bản sao này có thể cũ so với kho thực (dữ liệu stale, nghĩa là cũ không đồng bộ), nên cần TTL hoặc xóa khi nhập bánh mới (invalidation, nghĩa là làm hết hạn hoặc xóa cache).
 
-~~~seq
-title: Vòng đời bean rút gọn (singleton)
-actors: Container | Bean | BPP
-Container -> Bean: 1. new (instantiate)
-Container -> Bean: 2. inject dependencies
-Container -> Bean: 3. Aware callbacks
-Container -> BPP: 4. postProcessBeforeInitialization(bean)
-BPP --> Container: bean (hoac sua)
-Container -> Bean: 5. @PostConstruct / init
-Container -> BPP: 6. postProcessAfterInitialization(bean)
-BPP --> Container: proxy (co the thay bean)
-note Container,BPP: sau buoc 6, reference trong context co the la proxy
-~~~
+### Spring Cache và {{@Cacheable}}
+{{@Cacheable}} là annotation của Spring Cache (không phải Hibernate, không phải Redis trực tiếp — Spring Cache là lớp abstract, Redis/Caffeine là engine thực tế). Đánh dấu trên method: Spring bọc bean bằng proxy (lớp vỏ chặn lời gọi, giống lesson về AOP). Lần đầu gọi method với tham số X → proxy chạy method thật, lưu kết quả vào cache dưới key lấy từ tham số. Lần sau gọi cùng X → proxy trả kết quả từ cache, **không chạy method** (cache hit). Vì là proxy, gọi method trong cùng class ({{this.method()}}) không qua proxy → không được cache, không có cảnh báo. Đây là cùng nguyên nhân khiến {{@Transactional}} và {{@Async}} bị bỏ qua khi gọi nội bộ.
 
-### BeanPostProcessor: "chạy cho mọi bean"
+{{@Cacheable}} cần bật caching: Spring Boot với starter cache bật sẵn, hoặc khai {{@EnableCaching}}.
+
+### Cache key và TTL
+Key mặc định gộp các tham số method. Nên dùng SpEL (ngôn ngữ biểu thức Spring, viết như {{key = "#customerId + ':' + #tenantId"}}) để key phản ánh **mọi** điều kiện ảnh hưởng kết quả. Nếu thiếu {{tenantId}}, khách hàng B có thể đọc cache của khách hàng A — lỗi rò rỉ dữ liệu, nghiêm trọng hơn lỗi chậm.
+
+TTL (time-to-live, thời gian tồn tại): mỗi bản cache tự hết hạn sau một khoảng thời gian, như sữa trong tủ lạnh có hạn sử dụng. Hết hạn → đọc lại là miss → tính toán mới. TTL cấu hình tùy engine: Caffeine ({{expireAfterWrite}}), Redis ({{RedisCacheConfiguration}}). TTL quá ngắn → cache gần như vô ích; quá dài → dữ liệu cũ nguy hiểm (giá sai, số dư sai).
+
+### Tỉ lệ hit và khi nào dùng cache
+Hit rate = số lần đọc trùng cache chia tổng số lần đọc. Dùng cache cho dữ liệu đọc nhiều, ít thay đổi, tính toán đắt (danh mục sản phẩm, cấu hình, phí ship). Không dùng cache cho dữ liệu phải chính xác từng đồng (số dư ví điện tử) hoặc bị hệ thống khác sửa (ETL, script SQL) nếu không có cơ chế invalidation đồng bộ.
+
+### Cache invalidation và cache stampede
+Khi dữ liệu thay đổi, cache cũ phải bị xóa ({{@CacheEvict}}) hoặc ghi mới ({{@CachePut}}), nếu không khách hàng đọc dữ liệu cũ (stale cache).
+
+Cache stampede: một key hot hết hạn đúng lúc nhiều người cùng đọc → tất cả miss → cùng truy vấn cơ sở dữ liệu → cơ sở dữ liệu spike (tải vọt). Phòng bằng per-key lock (khoá theo từng key): chỉ một request được phép tính toán và ghi cache, các request khác cùng key chờ đợi kết quả đầu tiên thay vì cùng xuống cơ sở dữ liệu. Hoặc jitter TTL (thêm thời gian ngẫu nhiên vào mỗi bản để hạn sử dụng khác nhau lúc).
+
+### Cơ chế từng bước (một lần gọi {{@Cacheable}})
+1. Caller gọi method trên bean (thực ra đang gọi proxy, Spring tạo proxy khi khởi động).
+2. Proxy kiểm tra cache có key từ tham số method và chưa hết TTL hay không.
+3. Có (hit) → trả kết quả từ cache, **không chạy method**.
+4. Không (miss) → proxy chạy method thật, lấy kết quả, lưu vào cache với TTL, trả về caller.
+5. Method có {{@CacheEvict}} → sau khi chạy thành công, xóa key (hoặc toàn bộ cache) khỏi cache.
+
 ~~~java
-public interface BeanPostProcessor {
-  // goi TRUOC init (@PostConstruct)
-  default Object postProcessBeforeInitialization(Object bean, String beanName) { return bean; }
-  // gọi SAU init: trả về bean hoặc PROXY bọc bean
-  default Object postProcessAfterInitialization(Object bean, String beanName) { return bean; }
+@Cacheable(value = "showtimes", key = "#movieId + ':' + #showDate")
+public List<Showtime> showtimes(String movieId, LocalDate showDate) {
+    // truy vấn cơ sở dữ liệu, đắt
+    return showtimeRepo.findByMovieAndDate(movieId, showDate);
+}
+
+@CacheEvict(value = "showtimes", key = "#movieId + ':' + #showDate")
+public void updateShowtime(Showtime showtime) {
+    showtimeRepo.save(showtime);
 }
 ~~~
-**Ý nghĩa thực tế:** framework dùng BPP để "gắn năng lực" mà không sửa class của bạn. Ví dụ điển hình: bộ xử lý AOP quét annotation ({{@Transactional}}, {{@Async}}) và ở bước 6 trả về proxy. Nếu bean implement interface, Spring thường dùng **JDK dynamic proxy**; nếu không, dùng **CGLIB** (tạo subclass) — nhưng với Spring Boot hiện đại mặc định proxy-target-class thường bật cho nhất quán; điều quan trọng khi debug là: bạn đang gọi qua proxy hay gọi thẳng.
 
-### Hệ quả quan trọng (hay ra phỏng vấn và production)
-- **{{@PostConstruct}} chạy ở bước 5, proxy thường có ở bước 6:** nếu bạn gọi một method {{@Transactional}}/{{@Async}} của *chính bean đó* từ trong {{@PostConstruct}}, lời gọi nội bộ có thể **không** đi qua proxy → transaction/async không áp dụng. Cách xử lý: đưa logic sang chỗ khác, gọi qua bean proxy được inject, hoặc dùng {{ApplicationReadyEvent}}/{{SmartInitializingSingleton}} tùy mục đích.
-- **Self-invocation (tự gọi trong cùng class)** bỏ qua proxy — cùng nguyên nhân với AOP.
-- **Proxy thường chỉ chặn method public** (với proxy mặc định); gọi method {{private}}/{{protected}}/package hay gọi nội bộ sẽ không kích hoạt advice.
-- **Constructor injection vs field injection** ảnh hưởng bước 1–2: phụ thuộc constructor có sẵn từ bước 1; field injection gán ở bước 2. Vòng phụ thuộc constructor có thể làm context không khởi động được.
+### Lỗi hay gặp trên production
+- **Gọi nội bộ không được cache**: method {{@Cacheable}} gọi method {{@Cacheable}} khác trong cùng class qua {{this}} → bỏ qua proxy → không cache. Cách sửa: tách method sang bean khác để lời gọi đi qua proxy.
+- **Key thiếu điều kiện phân biệt**: cache theo {{customerId}} nhưng thiếu {{tenantId}} → khách B đọc được cache của khách A.
+- **Quên invalidation**: cập nhật cơ sở dữ liệu nhưng không xóa cache → khách hàng thấy giá đã đổi lâu.
+- **Cache miss liên tục với key không tồn tại (cache penetration)**: mỗi lần đọc key không có đều xuống cơ sở dữ liệu. Phòng bằng cache giá trị null với TTL ngắn, hoặc kiểm tra đầu vào.
+- **Không phòng cache stampede**: key hot hết hạn cùng lúc → hàng nghìn request cùng xuống cơ sở dữ liệu. Phòng bằng per-key lock hoặc jitter TTL.
+
+### Ví dụ đời thực
+Hệ thống bán vé phim: lịch chiếu thay đổi ít, nhưng đọc mỗi giây hàng ngàn lần. Team gắn {{@Cacheable}} TTL 5 phút vào method tra lịch chiếu với key chứa mã phim và ngày. Tỉ lệ hit tăng từ 40% lên 98%, truy vấn cơ sở dữ liệu giảm từ 12.000 lần/phút xuống 200 lần/phút. Lúc thêm suất chiếu mới, quên {{@CacheEvict}} → khách hàng không thấy suất mới trong 5 phút. Sự cố lớn hơn: suất hot hết hạn đúng lúc khuyến mãi giảm giá 50%, 2.000 request/giây cùng miss → cơ sở dữ liệu CPU 100%. Sửa: khoá theo mã suất (per-key lock) + TTL có jitter. Kết quả: cơ sở dữ liệu ổn định, khách hàng vẫn thấy dữ liệu đúng sau khi invalidate.
 
 ### Liên hệ phỏng vấn
-Nhấn mạnh: "instantiate → populate → Aware → BPP before → init ({{@PostConstruct}}) → BPP after (proxy thường ở đây)". Câu hỏi hay gặp: "Tại sao {{@Transactional}} không ăn trong {{@PostConstruct}}?" → vì init chạy trước khi BPP after gắn proxy / hoặc do self-invocation; bản chất là lời gọi chưa đi qua proxy. Nêu thêm self-invocation và method non-public để thể hiện kinh nghiệm debug.
+1. **{{@Cacheable}} hoạt động thế nào, và sao gọi method trong cùng class không được cache?** — {{@Cacheable}} là advice AOP qua proxy: proxy kiểm tra cache trước khi chạy method. {{this.method()}} gọi thẳng target, bỏ qua proxy → không kiểm tra cache.
+2. **Cache key phải chứa những gì, TTL cấu hình như thế nào?** — Key phải chứa mọi tham số ảnh hưởng kết quả (ví dụ {{customerId}} + {{tenantId}}), nếu không sẽ rò rỉ dữ liệu hoặc trả kết quả sai. TTL cấu hình theo engine (Caffeine {{expireAfterWrite}}, Redis {{RedisCacheConfiguration}}), chọn sao cho dữ liệu cũ vẫn chấp nhận được.
+3. **Cache stampede là gì, phòng bằng cách nào?** — Nhiều request cùng miss key hot → cùng xuống cơ sở dữ liệu → sập. Phòng bằng per-key lock (chỉ một request tính toán, các request khác chờ) hoặc jitter TTL.
 
-> Senior tip: Khi nghi AOP "không chạy", kiểm tra 3 thứ theo thứ tự: (1) bạn có đang gọi qua proxy không (inject bean, đừng {{new}}; đừng self-invocation), (2) method có phải {{public}} và được proxy chặn không, (3) thời điểm gọi có nằm trước khi proxy gắn (như trong constructor/{{@PostConstruct}} của luồng khởi tạo) không. Bật debug AOP hoặc log class thực tế ({{bean.getClass()}}) thường cho câu trả lời nhanh hơn đoán.`,
-    exercises: [
-      {
-        title: 'Mini container: thứ tự callback và BPP trả về proxy',
-        prompt: `Viết {{MiniContainer}} mô phỏng vòng đời rút gọn. {{createBean(Class<?> clazz, List<String> log)}} thực hiện đúng thứ tự và ghi log: (1) {{instantiate:<SimpleName>}} sau khi tạo instance bằng constructor không tham số; (2) nếu instance implement {{NamedAware}} thì gọi {{setBeanName("<SimpleName>")}} và ghi {{aware:<name>}} (bước Aware); (3) gọi từng {{BeanPostProcessor}} trong {{this.bpps}} theo thứ tự list: ghi {{bpp-before:<bppSimpleName>:<beanSimpleName>}} rồi gán {{bean = bpp.postProcessBeforeInitialization(bean, name)}}; (4) nếu instance gốc implement {{Init}} thì gọi {{afterPropertiesSet()}} và ghi {{init:<name>}}; (5) gọi từng BPP: ghi {{bpp-after:<bppSimpleName>:<beanSimpleName>}} rồi {{bean = bpp.postProcessAfterInitialization(bean, name)}}; (6) ghi {{ready:<SimpleName>}} và **trả về** {{bean}} cuối cùng (có thể là proxy). {{MiniContainer}} có {{addBpp(BeanPostProcessor bpp)}} thêm vào {{this.bpps}}. {{WrapBpp}} sẽ bọc bean bằng {{java.lang.reflect.Proxy}} nếu bean implement {{Work}} (mô phỏng AOP gắn proxy ở after). Fixture đã cho trong starter/tests.`,
-        starter: `import java.lang.reflect.*;
+> Senior tip: Không bật cache cho dữ liệu về tiền nếu bạn chưa trả lời được "khi nào xóa cache" và "dữ liệu cũ bao lâu thì chấp nhận được". Cache nhầm là tạo ra sự cố dữ liệu, không chỉ làm chậm vài mili giây. Luôn theo dõi cache hit rate như một metric, và viết test cho cả ca hit lẫn miss.`,
+    exercises: [{
+      title: 'Lập cache đơn giản có TTL, invalidation và phòng cache stampede',
+      prompt: `Hoàn thiện {{SimpleCache<K, V>}} — một cache tự viết mô phỏng ý tưởng cốt lõi của Spring Cache (đếm hit/miss, hết hạn theo TTL, xóa theo key) và phòng cache stampede bằng khoá theo từng key:
+
+- {{SimpleCache(long ttlMs, Clock clock)}}: {{ttlMs}} là thời gian tồn tại của mỗi bản cache (milliseconds, tương tự TTL của Redis/Caffeine), {{clock}} cung cấp thời gian hiện tại để test xác định (deterministic).
+- {{V get(K key, Loader<K, V> loader)}}: nếu cache có key và chưa hết hạn → hit, tăng bộ đếm hit, trả giá trị. Nếu miss (không có hoặc đã hết hạn) → tăng miss, lấy khoá theo key (per-key lock), kiểm tra lại trong khoá, nếu vẫn miss thì gọi {{loader.load(key)}} để tính, lưu kết quả với thời gian hết hạn = now + ttlMs, trả kết quả. Các truy cập cùng key khi đang miss chỉ được tính toán một lần, các request khác chờ đợi kết quả của lần đầu — đây chính là phòng cache stampede.
+- {{void put(K key, V value)}}: ghi giá trị trực tiếp, đặt hết hạn = now + ttlMs, không đổi bộ đếm hit/miss.
+- {{void evict(K key)}}: xóa bản cache của key (invalidation, làm hết hạn theo yêu cầu).
+- {{long hits()}}, {{long misses()}}, {{double hitRate()}}: hitRate = hits chia (hits + misses); nếu tổng bằng 0 thì trả 0.0.
+- {{Loader<K, V>}}: interface một method {{V load(K key)}}.`,
+      starter: `import java.time.*;
 import java.util.*;
 
-interface NamedAware { void setBeanName(String name); }
-interface Init { void afterPropertiesSet(); }
-interface BeanPostProcessor {
-    Object postProcessBeforeInitialization(Object bean, String beanName);
-    Object postProcessAfterInitialization(Object bean, String beanName);
-}
-interface Work { String run(String s); }
-
-class MyService implements Work, NamedAware, Init {
-    String beanName;
-    public void setBeanName(String name) { this.beanName = name; }
-    public void afterPropertiesSet() { /* init */ }
-    public String run(String s) { return "real:" + s + ":" + beanName; }
+interface Loader<K, V> {
+    V load(K key);
 }
 
-class WrapBpp implements BeanPostProcessor {
-    public Object postProcessBeforeInitialization(Object bean, String beanName) { return bean; }
-    public Object postProcessAfterInitialization(Object bean, String beanName) {
-        if (!(bean instanceof Work)) return bean;
-        Work target = (Work) bean;
-        return Proxy.newProxyInstance(Work.class.getClassLoader(), new Class<?>[]{Work.class},
-            (p, m, args) -> {
-                if (m.getDeclaringClass() == Object.class) return m.invoke(target, args);
-                return "proxy>" + m.invoke(target, args);
-            });
-    }
-}
-
-class MiniContainer {
-    final List<BeanPostProcessor> bpps = new ArrayList<>();
-    void addBpp(BeanPostProcessor bpp) { bpps.add(bpp); }
-    Object createBean(Class<?> clazz, List<String> log) {
-        throw new UnsupportedOperationException("TODO");
+class SimpleCache<K, V> {
+    final long ttlMs;
+    Clock clock;
+    SimpleCache(long ttlMs, Clock clock) { throw new UnsupportedOperationException("TODO"); }
+    V get(K key, Loader<K, V> loader) { throw new UnsupportedOperationException("TODO"); }
+    void put(K key, V value) { throw new UnsupportedOperationException("TODO"); }
+    void evict(K key) { throw new UnsupportedOperationException("TODO"); }
+    long hits() { throw new UnsupportedOperationException("TODO"); }
+    long misses() { throw new UnsupportedOperationException("TODO"); }
+    double hitRate() { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `import java.time.*;
+import java.util.*;
+public class Main {
+    static int p=0, t=0;
+    static void ck(String n, Runnable r) { t++; try { r.run(); p++; System.out.println("PASS " + n); } catch (Throwable e) { System.out.println("FAIL " + n + ": " + e); } }
+    static void eq(Object a, Object b) { if (!Objects.equals(a, b)) throw new AssertionError(a + " != " + b); }
+    static void eqd(double a, double b) { if (Math.abs(a - b) > 1e-9) throw new AssertionError(a + " != " + b); }
+    public static void main(String[] x) {
+        ck("miss sau do hit", () -> {
+            Clock c = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
+            SimpleCache<String,String> cache = new SimpleCache<>(60_000, c);
+            int[] loads = {0};
+            String v1 = cache.get("k", k -> { loads[0]++; return "v"; });
+            String v2 = cache.get("k", k -> { loads[0]++; return "v2"; });
+            eq("v", v1); eq("v", v2); eq(1, loads[0]);
+            eq(1L, cache.hits()); eq(1L, cache.misses()); eqd(0.5, cache.hitRate());
+        });
+        ck("qua TTL thi tinh lai", () -> {
+            Clock c = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
+            SimpleCache<String,String> cache = new SimpleCache<>(1000, c);
+            int[] loads = {0};
+            cache.get("k", k -> { loads[0]++; return "v"; });
+            eq(0L, cache.hits()); eq(1L, cache.misses()); eq(1, loads[0]);
+            cache.clock = Clock.fixed(Instant.parse("2026-01-01T00:00:01.001Z"), ZoneOffset.UTC);
+            cache.get("k", k -> { loads[0]++; return "v2"; });
+            eq(2, loads[0]); eq(0L, cache.hits()); eq(2L, cache.misses()); eqd(0.0, cache.hitRate());
+        });
+        ck("evict xoa ban cache", () -> {
+            Clock c = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
+            SimpleCache<String,String> cache = new SimpleCache<>(60_000, c);
+            int[] loads = {0};
+            cache.get("k", k -> { loads[0]++; return "v"; });
+            cache.evict("k");
+            cache.get("k", k -> { loads[0]++; return "v2"; });
+            eq(2, loads[0]); eq(0L, cache.hits()); eq(2L, cache.misses());
+        });
+        ck("put giap tiep roi get la hit", () -> {
+            Clock c = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
+            SimpleCache<String,String> cache = new SimpleCache<>(60_000, c);
+            int[] loads = {0};
+            cache.put("k", "v");
+            String v = cache.get("k", k -> { loads[0]++; return "v2"; });
+            eq("v", v); eq(0, loads[0]); eq(1L, cache.hits()); eq(0L, cache.misses());
+        });
+        ck("hitRate bang 0 khi chua co lan doc nao", () -> {
+            SimpleCache<String,String> cache = new SimpleCache<>(60_000, Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
+            eqd(0.0, cache.hitRate());
+        });
+        System.out.println("RESULT " + p + "/" + t);
     }
 }`,
-        tests: `public class Main {
-    static int passed = 0, total = 0;
-    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name);} catch (Throwable t){ System.out.println("FAIL " + name + ": " + t.getMessage()); } }
-    public static void main(String[] args) throws Exception {
-        check("bpp after returns proxy and it is used", () -> {
-            MiniContainer c = new MiniContainer(); c.addBpp(new WrapBpp());
-            List<String> log = new ArrayList<>();
-            Object b = c.createBean(MyService.class, log);
-            if (!(b instanceof Work)) throw new RuntimeException("not Work");
-            String out = ((Work) b).run("x");
-            if (!"proxy>real:x:MyService".equals(out)) throw new RuntimeException("out " + out);
-            if (!java.lang.reflect.Proxy.isProxyClass(b.getClass())) throw new RuntimeException("not proxy");
-        });
-        check("lifecycle order is correct", () -> {
-            MiniContainer c = new MiniContainer(); c.addBpp(new WrapBpp());
-            List<String> log = new ArrayList<>();
-            c.createBean(MyService.class, log);
-            List<String> exp = List.of(
-                "instantiate:MyService",
-                "aware:MyService",
-                "bpp-before:WrapBpp:MyService",
-                "init:MyService",
-                "bpp-after:WrapBpp:MyService",
-                "ready:MyService"
-            );
-            if (!exp.equals(log)) throw new RuntimeException("log " + log);
-        });
-        check("no bpp: returns real bean and still runs callbacks", () -> {
-            MiniContainer c = new MiniContainer();
-            List<String> log = new ArrayList<>();
-            Object b = c.createBean(MyService.class, log);
-            if (b.getClass() != MyService.class) throw new RuntimeException("should be real");
-            String out = ((Work) b).run("y");
-            if (!"real:y:MyService".equals(out)) throw new RuntimeException("out " + out);
-            if (!log.contains("init:MyService") || !log.contains("aware:MyService")) throw new RuntimeException("missing callbacks " + log);
-        });
-        System.out.println("RESULT " + passed + "/" + total);
-    }
-}`,
-        reference: `import java.lang.reflect.*;
+      reference: `import java.time.*;
 import java.util.*;
 
-interface NamedAware { void setBeanName(String name); }
-interface Init { void afterPropertiesSet(); }
-interface BeanPostProcessor {
-    Object postProcessBeforeInitialization(Object bean, String beanName);
-    Object postProcessAfterInitialization(Object bean, String beanName);
-}
-interface Work { String run(String s); }
-
-class MyService implements Work, NamedAware, Init {
-    String beanName;
-    public void setBeanName(String name) { this.beanName = name; }
-    public void afterPropertiesSet() { /* init */ }
-    public String run(String s) { return "real:" + s + ":" + beanName; }
+interface Loader<K, V> {
+    V load(K key);
 }
 
-class WrapBpp implements BeanPostProcessor {
-    public Object postProcessBeforeInitialization(Object bean, String beanName) { return bean; }
-    public Object postProcessAfterInitialization(Object bean, String beanName) {
-        if (!(bean instanceof Work)) return bean;
-        Work target = (Work) bean;
-        return Proxy.newProxyInstance(Work.class.getClassLoader(), new Class<?>[]{Work.class},
-            (p, m, args) -> {
-                if (m.getDeclaringClass() == Object.class) return m.invoke(target, args);
-                return "proxy>" + m.invoke(target, args);
-            });
+class SimpleCache<K, V> {
+    private static class Entry<V> {
+        V value;
+        long expiryMs;
+        Entry(V value, long expiryMs) { this.value = value; this.expiryMs = expiryMs; }
     }
-}
-
-class MiniContainer {
-    final List<BeanPostProcessor> bpps = new ArrayList<>();
-    void addBpp(BeanPostProcessor bpp) { bpps.add(bpp); }
-    Object createBean(Class<?> clazz, List<String> log) {
-        try {
-            Object bean = clazz.getDeclaredConstructor().newInstance();
-            String name = clazz.getSimpleName();
-            log.add("instantiate:" + name);
-            if (bean instanceof NamedAware) {
-                ((NamedAware) bean).setBeanName(name);
-                log.add("aware:" + name);
-            }
-            for (BeanPostProcessor bpp : bpps) {
-                log.add("bpp-before:" + bpp.getClass().getSimpleName() + ":" + name);
-                bean = bpp.postProcessBeforeInitialization(bean, name);
-            }
-            if (bean instanceof Init) {
-                ((Init) bean).afterPropertiesSet();
-                log.add("init:" + name);
-            }
-            for (BeanPostProcessor bpp : bpps) {
-                log.add("bpp-after:" + bpp.getClass().getSimpleName() + ":" + name);
-                bean = bpp.postProcessAfterInitialization(bean, name);
-            }
-            log.add("ready:" + name);
-            return bean;
-        } catch (Exception e) { throw new RuntimeException(e); }
+    private final long ttlMs;
+    Clock clock;
+    private final Map<Object, Entry<Object>> store = new HashMap<>();
+    private final Map<Object, Object> locks = new HashMap<>();
+    private long hits;
+    private long misses;
+    SimpleCache(long ttlMs, Clock clock) { this.ttlMs = ttlMs; this.clock = clock; }
+    @SuppressWarnings("unchecked")
+    V get(K key, Loader<K, V> loader) {
+        long now = clock.millis();
+        Entry<Object> entry = store.get(key);
+        if (entry != null && entry.expiryMs > now) { hits++; return (V) entry.value; }
+        misses++;
+        Object lock = locks.computeIfAbsent(key, k -> new Object());
+        synchronized (lock) {
+            entry = store.get(key);
+            if (entry != null && entry.expiryMs > now) { return (V) entry.value; }
+            V value = loader.load(key);
+            store.put(key, new Entry<>(value, now + ttlMs));
+            return value;
+        }
+    }
+    @SuppressWarnings("unchecked")
+    void put(K key, V value) {
+        store.put(key, new Entry<>(value, clock.millis() + ttlMs));
+    }
+    void evict(K key) {
+        store.remove(key);
+    }
+    long hits() { return hits; }
+    long misses() { return misses; }
+    double hitRate() {
+        long total = hits + misses;
+        return total == 0 ? 0.0 : (double) hits / total;
     }
 }`,
-        hints: [
-          'Thứ tự: new instance → log instantiate → Aware ({{instanceof NamedAware}}) → vòng BPP before (log rồi gán {{bean = ...before...}}) → init ({{instanceof Init}}) → vòng BPP after (log rồi gán {{bean = ...after...}}) → log ready → return bean.',
-          'Luôn gán lại {{bean}} bằng giá trị BPP trả về: BPP after có thể trả proxy thay object gốc. Kiểm tra {{NamedAware/Init}} trên instance gốc bạn vừa tạo (trong đặc tả này init/aware thuộc instance gốc).',
-          'Dùng {{clazz.getDeclaredConstructor().newInstance()}} để instantiate. Tên log dùng {{clazz.getSimpleName()}} và {{bpp.getClass().getSimpleName()}}.'
-        ],
-        explain: `Lời giải bám đúng chuỗi bước rút gọn của Spring: Aware nằm sau populate (ở đây chỉ minh họa Aware), BPP before chạy trước init, init (afterPropertiesSet, tương đương {{@PostConstruct}}) chạy, rồi BPP after — và **kết quả BPP after được dùng làm bean cuối**. {{WrapBpp}} trả về một {{Proxy}} bọc {{Work}} nên {{createBean}} trả proxy, giống cách Spring AOP gắn transaction/async: mã gọi bean nhận proxy, còn logic init đã chạy trên instance gốc ở bước trước. Đây là lý do gọi method transactional của chính mình từ {{@PostConstruct}} hay dễ không qua proxy: bước 5 xảy ra trước bước 6 (và còn self-invocation khi đã có proxy).`
-      }
-    ],
+      hints: ['Dùng {{HashMap}} lưu giá trị cùng thời điểm hết hạn ({{now + ttlMs}}); bản còn hạn khi {{expiryMs > now}}.', 'Khoá theo key: {{Map<K, Object> locks}} với {{computeIfAbsent}}, rồi {{synchronized (lock)}}; kiểm tra lại cache trong khoá để tránh tính toán trùng.', 'Hit/miss chỉ tính trong {{get}}; {{put}} và {{evict}} không đổi bộ đếm; {{hitRate}} chia cho tổng, tránh chia cho không.'],
+      explain: `Bài tập dựng lại đúng ý tưởng cốt lõi của Spring Cache ở mức Java thuần.
+- Mỗi bản cache là {{Entry}} gồm giá trị và thời điểm hết hạn ({{now + ttlMs}}), tương tự TTL của Redis hoặc {{expireAfterWrite}} của Caffeine.
+- {{get}} đọc cache trước (hit), mới tính toán (miss) — chính hành vi của {{@Cacheable}}.
+- Khoá theo từng key trong {{locks}} ngăn cache stampede: chỉ một request tính toán cho một key, các request khác cùng key chờ đợi thay vì cùng xuống cơ sở dữ liệu. Đây là mô hình đơn giản của lock phân tán thực tế (ví dụ Redis Redlock), chỉ chạy trong một JVM như {{@Cacheable(sync = true)}} của Spring.
+- Hit/miss bộ đếm và {{hitRate}} giúp team biết cache thật sự giúp ích hay chỉ chiếm bộ nhớ — metric nên theo dõi trên production.`,
+    }],
     check: [
-      { q: 'Proxy AOP (ví dụ cho {{@Transactional}}) thường được tạo/áp dụng ở bước nào của vòng đời bean?', options: ['Instantiate (trong constructor)', 'Populate properties', '{{postProcessBeforeInitialization}}', '{{postProcessAfterInitialization}}'], answer: 3, explain: 'BPP có thể thay bean ở {{postProcessAfterInitialization}} bằng cách trả về proxy bọc bean gốc — đây là thời điểm điển hình để gắn AOP. Init ({{@PostConstruct}}) chạy trước bước này.' },
-      { q: 'Thứ tự nào đúng (rút gọn) cho một bean Spring singleton?', options: ['init → populate → Aware → instantiate → BPP', 'instantiate → populate → Aware → BPP before → init → BPP after', 'instantiate → init → populate → Aware → BPP after', 'populate → instantiate → BPP before → init → BPP after'], answer: 1, explain: 'Tạo đối tượng, tiêm phụ thuộc, callback Aware, BPP before, khởi tạo ({{@PostConstruct}}/afterPropertiesSet/init-method), BPP after (thường tạo proxy), rồi bean sẵn sàng.' },
-      { q: 'Gọi một method {{@Transactional}} của chính bean từ trong {{@PostConstruct}} có thể không chạy trong transaction. Nguyên nhân nào hay gặp nhất?', options: ['{{@PostConstruct}} chỉ chạy với prototype bean', 'Init chạy trước BPP after (proxy thường gắn ở đây) và/hoặc lời gọi nội bộ không qua proxy', 'JPA không hỗ trợ {{@PostConstruct}}', 'Vì populate chưa xong ở bước init'], answer: 1, explain: 'Transaction được áp dụng qua proxy/advice (thường gắn ở BPP after). Gọi trong {{@PostConstruct}} (bước init) hoặc tự gọi {{this.method()}} dễ bỏ qua proxy nên advice không chạy. Cần thiết kế lại luồng khởi tạo (event, gọi qua proxy, tách trách nhiệm).' }
+      { q: '{{@Cacheable}} lưu gì vào cache?', options: ['Kết quả trả về của method theo key built từ tham số method', 'Toàn bộ class bean', 'Chỉ kết quả là null', 'Câu lệnh SQL của method'], answer: 0, explain: `{{@Cacheable}} lưu kết quả trả về của method dưới key lấy từ tham số (mặc định gộp tất cả tham số, hoặc ghi đè bằng SpEL như {{key = "#id"}}). Nó không lưu class bean, không chỉ lưu null, và method Java không chứa câu lệnh SQL.` },
+      { q: 'Gọi method {{@Cacheable}} từ method khác trong cùng class qua {{this}} có được cache không?', options: ['Có, Spring tự hiểu', 'Không: lời gọi không qua proxy nên annotation bị bỏ qua', 'Chỉ khi method là static', 'Chỉ khi class có interface'], answer: 1, explain: `{{@Cacheable}} là advice AOP, chỉ chạy khi lời gọi đi qua proxy (bean được Spring inject). {{this.method()}} gọi thẳng target, bỏ qua proxy → không kiểm tra cache, cũng không có cảnh báo. Cách sửa: tách method sang bean khác. static và interface không thay đổi việc này.` },
+      { q: 'TTL trong cache có nghĩa là gì?', options: ['Số lần tối đa được đọc trước khi xóa', 'Thời gian tồn tại của một bản cache trước khi hết hạn và phải tính lại', 'Thời gian chờ giữa hai request', 'Thời gian transaction giữ kết nối cơ sở dữ liệu'], answer: 1, explain: `TTL (time-to-live) là thời gian tồn tại của một bản cache, như hạn sử dụng trên bao thực phẩm. Hết hạn → đọc lại là miss → tính toán mới và lưu lại với hạn mới. TTL không phải số lần đọc, không phải thời gian chờ giữa request, cũng không phải thời gian giữ kết nối DB.` },
+      { q: 'Cache stampede là gì và phòng bằng cách nào?', options: ['Nhiều request cùng miss một key hot → cùng truy vấn cơ sở dữ liệu có thể làm sập; phòng bằng khoá theo từng key (chỉ một request tính toán, các request khác chờ) hoặc jitter TTL', 'Cache bị xóa nhầm do {{@CacheEvict}}', 'Cache chỉ lưu được một giá trị', 'Cache stampede không thể phòng được'], answer: 0, explain: `Cache stampede xảy ra khi một key phổ biến hết hạn đúng lúc nhiều người cùng đọc: tất cả miss, cùng truy vấn cơ sở dữ liệu, tải vọt. Phòng bằng per-key lock (chỉ một request tính toán, các request khác cùng key chờ đợi kết quả đầu tiên) hoặc jitter TTL (giới hạn sử dụng khác nhau theo từng bản). {{@CacheEvict}} chỉ xóa cache, không phải nguyên nhân hay cách phòng stampede.` }
     ],
-    related: ['spring-001', 'spring-010', 'spring-012'], tags: ['bean lifecycle', 'BeanPostProcessor', '@PostConstruct', 'proxy', 'AOP']
+    related: ['spring-020'], tags: ['Spring Cache', '@Cacheable', 'TTL', 'cache stampede', 'invalidation']
   }
 );
