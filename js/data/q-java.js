@@ -8500,4 +8500,595 @@ Pipeline tổng hợp 2 triệu đơn dùng {{peek(audit::record)}} để ghi c�
   ],
   tags: ['Stream', 'lazy evaluation', 'peek', 'parallelStream', 'side effect']
 },
+{
+  id: 'modern-050',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Virtual thread (Java 21) khác platform thread thế nào về mô hình thực thi và chi phí? Trong những trường hợp nào virtual thread không mang lại lợi ích, thậm chí có thể làm hệ thống tệ hơn?',
+  a: `**Tóm tắt:** Virtual thread (luồng ảo, nhẹ, do JVM quản lý) cho phép gắn công việc vào một platform thread (luồng hệ điều hành, nặng hơn) chỉ khi thực sự chạy trên CPU, và tự "nhả" (unmount) khi chờ I/O; nhờ vậy ta có thể tạo rất nhiều tác vụ đồng thời mà không tốn hàng MB stack cho mỗi tác vụ. Nhưng virtual thread không làm CPU nhanh hơn, không phù hợp với công việc thuần tính toán (CPU-bound), và có thể gây hại khi code giữ khóa lâu, chặn carrier thread (pinning), hoặc làm quá tải tài nguyên hạ nguồn.
+
+### Virtual thread và platform thread là gì?
+
+- **Platform thread** (luồng nền tảng): là luồng do hệ điều hành (OS - hệ điều hành, phần mềm quản lý máy như Linux/Windows) cấp phát và lập lịch. Mỗi platform thread thường gắn với một vùng nhớ stack (ngăn xếp gọi hàm) riêng, mặc định có thể lên tới ~1 MB tuỳ JVM/OS. Tạo nhiều thread đồng nghĩa tốn RAM và chi phí chuyển ngữ cảnh (context switch - OS dừng luồng này, lưu trạng thái, chạy luồng khác).
+- **Virtual thread** (Java 21, JEP 444, chính thức): là luồng "nhẹ" do JVM (Java Virtual Machine - máy ảo chạy chương trình Java) quản lý. Virtual thread không chiếm cố định một OS thread; khi cần chạy, JVM gắn (mount) nó lên một **carrier thread** (platform thread trong pool nhỏ, thường là ForkJoinPool). Khi virtual thread gặp thao tác chờ (blocking I/O - chờ mạng/đĩa), JVM gỡ (unmount) nó khỏi carrier, lưu trạng thái tiếp tục (continuation - ảnh chụp ngăn xếp để chạy tiếp sau), và carrier rảnh để chạy virtual thread khác.
+
+~~~java
+// Cách tạo: mỗi tác vụ một virtual thread (mô hình thread-per-request)
+try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    for (Request r : requests) {
+        executor.submit(() -> {
+            // Blocking I/O: gọi DB/HTTP — JVM sẽ unmount, carrier không bị giữ
+            String data = httpClient.get(r.url());
+            db.save(data);
+            return data;
+        });
+    }
+} // try-with-resources chờ tất cả tác vụ xong
+~~~
+
+### Vì sao mô hình này mở rộng tốt với I/O-bound?
+
+Với dịch vụ web thông thường, phần lớn thời gian luồng **chờ** phản hồi từ cơ sở dữ liệu (database - nơi lưu dữ liệu) hoặc dịch vụ khác qua mạng. Platform thread bị "treo" chờ mà vẫn chiếm stack và slot OS. Virtual thread biến thời gian chờ thành cơ hội: hàng chục nghìn virtual thread có thể cùng chờ, trong khi chỉ cần vài carrier thread (gần bằng số lõi CPU) để xử lý phần thực sự tính toán.
+
+### Khi nào virtual thread KHÔNG có lợi hoặc có hại?
+
+| Tình huống | Vì sao không lợi / có hại | Nên làm gì |
+|---|---|---|
+| CPU-bound (tính toán nặng: mã hoá, nén, tính toán số) | Không có khoảng chờ I/O để nhường; thêm luồng ảo chỉ tăng chi phí lập lịch, không tăng thông lượng CPU | Dùng pool platform thread giới hạn ~ số lõi ({{ForkJoinPool}}/{{parallelStream}} có kiểm soát) |
+| Pinning (ghim carrier) | Virtual thread giữ {{synchronized}} hoặc chạy trong native/JNI code mà bị block → không unmount được, carrier bị chiếm | Dùng {{java.util.concurrent.locks.ReentrantLock}} thay {{synchronized}} quanh đoạn I/O; cập nhật JDK (Java 21+ đã giảm pinning trong nhiều trường hợp nhưng chưa hết) |
+| Quá tải tài nguyên hạ nguồn | Tạo 50.000 virtual thread gọi cùng lúc vào DB có pool 50 connection → 49.950 tác vụ xếp hàng chờ connection, timeout dây chuyền | Giới hạn đồng thời bằng {{Semaphore}} (cái chốt đếm số lượt) hoặc bulkhead; không để virtual thread "nổ" vào tài nguyên hữu hạn |
+| {{ThreadLocal}} nặng | Virtual thread rất nhiều, mỗi cái giữ bản sao ThreadLocal → tốn heap; dữ liệu có thể "rò" nếu dùng pool tái sử dụng sai | Hạn chế ThreadLocal, cân nhắc {{ScopedValue}} (preview ở Java 21, ổn định dần ở bản sau) cho dữ liệu ngữ cảnh bất biến theo phạm vi |
+| Giả định dựa trên danh tính thread | Code cache theo thread-id, pool platform thread nhỏ để giới hạn, hoặc dùng thread làm định danh tài nguyên | Sửa thiết kế: giới hạn ở tài nguyên (connection/semaphore), không giới hạn bằng cách đếm thread |
+
+### Pitfall thực tế trên production
+
+- Thay {{Executors.newFixedThreadPool(200)}} bằng virtual thread nhưng quên rằng phía sau có connection pool 30: lưu lượng tăng đột biến làm queue chờ connection phình, p99 tăng vọt dù CPU rảnh.
+- Dùng {{synchronized}} bọc lời gọi HTTP client cũ: carrier bị pin, throughput thực tế chỉ bằng số carrier (~ số lõi) thay vì hàng nghìn.
+- Log/MDC (Mapped Diagnostic Context - ngữ cảnh gắn vào log) dựa ThreadLocal bị nhân bản khắp nơi, GC (Garbage Collector - bộ dọn rác bộ nhớ) phải quét nhiều hơn.
+
+### Ví dụ đời thực
+
+Một API tổng hợp gọi 3 dịch vụ downstream (dưới luồng) tuần tự, mỗi lần 80 ms, tổng ~240 ms/ request. Hệ thống dùng pool 200 platform thread: tối đa ~833 req/s lý thuyết nếu CPU không phải nút thắt. Sau khi chuyển sang {{newVirtualThreadPerTaskExecutor()}} và **giữ nguyên** semaphore giới hạn 400 cuộc gọi downstream đồng thời, với cùng máy 8 vCPU: throughput tăng từ ~780 req/s lên ~2.900 req/s, p95 từ 260 ms xuống 95 ms, trong khi số carrier thread thực tế ~8-16. Nhưng khi bỏ semaphore để "thả" 10.000 virtual thread gọi thẳng DB pool 50 connection, p99 tăng từ 120 ms lên 3,5 giây do chờ connection và timeout — phải thêm lại bulkhead thì mới ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Virtual thread là luồng nhẹ do JVM quản lý, còn platform thread là luồng của hệ điều hành có stack lớn và chi phí context switch cao. Khi virtual thread thực hiện blocking I/O, JVM unmount nó khỏi carrier thread và lưu continuation, nên một số ít carrier có thể phục vụ rất nhiều tác vụ đang chờ. Mô hình này phù hợp với workload I/O-bound như web API gọi DB hay HTTP. Em không dùng virtual thread cho tác vụ CPU-bound vì không có thời gian chờ để nhường, throughput bị giới hạn bởi số lõi. Em cũng cẩn thận với pinning khi giữ synchronized quanh I/O, với ThreadLocal nặng, và đặc biệt với việc quá tải tài nguyên hạ nguồn: virtual thread tạo dễ nhưng connection pool hay dịch vụ downstream vẫn hữu hạn, nên em luôn đặt giới hạn đồng thời bằng semaphore/bulkhead và đo p95/p99, số connection chờ trước khi kết luận."
+
+> Senior tip: Virtual thread giải bài toán "chờ rẻ", không giải bài toán "CPU rẻ" hay "DB rẻ". Mọi lần chuyển đổi, hãy giới hạn đồng thời ở tài nguyên hạ nguồn (DB, HTTP pool, hàng đợi) và quan sát carrier pinning bằng JFR (Java Flight Recorder - công cụ ghi sự kiện JVM) sự kiện {{jdk.VirtualThreadPinned}}.
+`,
+  follow: [
+    'Pinning xảy ra khi nào với virtual thread và vì sao {{ReentrantLock}} thường an toàn hơn {{synchronized}} quanh đoạn I/O?',
+    'Vì sao tạo nhiều virtual thread không đồng nghĩa có thể bỏ qua giới hạn connection pool của cơ sở dữ liệu?',
+    'Bạn sẽ dùng công cụ/metric nào để xác nhận virtual thread thực sự cải thiện p95 thay vì chỉ tăng số luồng?'
+  ],
+  tags: [
+    'virtual thread',
+    'platform thread',
+    'Project Loom',
+    'pinning',
+    'performance'
+  ]
+},
+{
+  id: 'modern-051',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Record pattern và pattern matching cho {{switch}} (Java 21) hoạt động thế nào? Hãy giải thích cơ chế "tháo gỡ" (deconstruction), kiểm tra tính đầy đủ (exhaustiveness), và so sánh với cách viết bằng {{instanceof}} + ép kiểu thủ công.',
+  a: `**Tóm tắt:** Record pattern (Java 21, JEP 440) cho phép "tháo" (deconstruct - lấy các thành phần bên trong) một record ngay trong {{instanceof}} hoặc nhánh {{case}} của {{switch}}, vừa kiểm tra kiểu vừa gán biến thành phần mà không cần gọi getter và ép kiểu thủ công. Kết hợp với sealed type (kiểu niêm phong - giới hạn lớp con) và {{switch}} có pattern, compiler (trình biên dịch) có thể kiểm tra tính đầy đủ để bạn không bỏ sót nhánh.
+
+### Record pattern là gì và vì sao cần?
+
+Record (từ Java 16) là lớp dữ liệu bất biến nông với các **component** (thành phần) khai báo trong header, ví dụ {{record Point(int x, int y)}}. Trước Java 21, để lấy {{x}}, {{y}} từ một {{Object}} bạn phải: kiểm tra kiểu, ép kiểu, rồi gọi {{p.x()}}, {{p.y()}}. Record pattern gộp thành một bước khai báo mẫu (pattern):
+
+~~~java
+record Point(int x, int y) {}
+record Line(Point start, Point end) {}
+
+static int lengthSquared(Object obj) {
+    // instanceof với record pattern: kiểm tra + deconstruct + gán biến
+    if (obj instanceof Point(int x, int y)) {
+        return x * x + y * y; // x, y đã sẵn sàng, đúng kiểu
+    }
+    return -1;
+}
+
+// Pattern lồng nhau (nested): tháo nhiều tầng
+static String describe(Object obj) {
+    return switch (obj) {
+        case Line(Point(int x1, int y1), Point(int x2, int y2)) ->
+            "Line từ (" + x1 + "," + y1 + ") tới (" + x2 + "," + y2 + ")";
+        case Point(int x, int y) -> "Point(" + x + "," + y + ")";
+        case null -> "null";                // null có thể là nhánh riêng
+        default -> "Khác";
+    };
+}
+~~~
+
+### Cơ chế bên trong hoạt động thế nào?
+
+1. **Kiểm tra hình dạng (shape test):** runtime kiểm tra đối tượng có thực sự là kiểu record đó (hoặc khớp mẫu) không. Nếu không khớp, nhánh bị bỏ qua, không ném ngoại lệ.
+2. **Deconstruction:** compiler sinh mã gọi các accessor component theo thứ tự ({{x()}}, {{y()}}) và gán vào biến mẫu. Với nested pattern, việc này lặp đệ quy theo cấu trúc mẫu.
+3. **Dominance (nhánh che):** compiler từ chối nhánh đứng sau mà bị nhánh trước bao trùm hoàn toàn, vì nó sẽ không bao giờ chạy (lỗi biên dịch giúp tránh bug logic).
+4. **Exhaustiveness (tính đầy đủ):** khi {{switch}} dùng với sealed hierarchy, compiler biết mọi kiểu con được phép; nếu bạn liệt kê đủ (hoặc có {{default}}/{{case}} bao trùm), switch được coi là đầy đủ. Thiếu nhánh → lỗi biên dịch, buộc bạn cập nhật khi thêm subtype mới.
+
+### So sánh cách cũ và cách mới
+
+| Tiêu chí | {{instanceof}} + cast + getter | Record/pattern matching switch |
+|---|---|---|
+| Số bước | Kiểm tra, ép kiểu, gọi getter từng thành phần | Một mẫu khai báo: kiểm tra + gán |
+| An toàn null trong switch | Phải tự xử lý {{null}} trước | Có thể {{case null}} hoặc mẫu tổng quát |
+| Kiểm tra bỏ sót nhánh | Không có (trừ tự kỷ luật) | Compiler kiểm tra với sealed type |
+| Đọc hiểu cấu trúc dữ liệu | Phải nhìn nhiều dòng | Mẫu lồng nhau phản ánh cấu trúc |
+
+### Pitfall thực tế trên production
+
+- **Quên cập nhật khi thêm subtype:** nếu dùng {{default}} "nuốt" mọi trường hợp, thêm một record mới vào sealed hierarchy sẽ không bị compiler nhắc; dữ liệu mới đi vào nhánh mặc định và xử lý sai trong im lặng.
+- **Mẫu quá phức tạp:** nested pattern 3-4 tầng khó đọc, khó debug. Nên tách thành bước trung gian hoặc method đặt tên rõ.
+- **Nhầm bất biến:** record bất biến nông; component là {{List}} vẫn bị sửa từ bên ngoài nếu không copy phòng thủ, dù pattern tháo ra trông "an toàn".
+- **Giả định thứ tự component:** record pattern khớp theo **vị trí** component khai báo, không theo tên biến bạn đặt; đổi thứ tự component trong định nghĩa record là thay đổi phá vỡ tương thích.
+
+### Ví dụ đời thực
+
+Một hệ thống thanh toán dùng sealed interface {{PaymentResult}} với 3 biến thể {{Success(txId, amount)}}, {{Declined(reasonCode)}}, {{Retryable(error)}}. Ban đầu code dùng chuỗi {{if (r instanceof Success)}} rồi {{else if}} ... và một nhánh {{else}} log "unknown". Khi team thêm {{FraudBlocked}} (nghi ngờ gian lận), 4.200 giao dịch/ngày rơi vào nhánh "unknown", bị log nhưng không chặn, gây rủi ro. Sau khi chuyển sang {{switch}} đầy đủ trên sealed type với record pattern và bỏ {{default}}, compiler báo lỗi ngay tại 6 điểm gọi chưa xử lý {{FraudBlocked}}; sau khi bổ sung, 100% giao dịch loại mới được định tuyến đúng luồng chặn trong vòng deploy tiếp theo (số liệu kịch bản minh hoạ).
+
+### Trả lời mẫu khi phỏng vấn
+
+"Record pattern trong Java 21 cho phép deconstruct một record ngay trong instanceof hoặc case của switch: compiler kiểm tra kiểu ở runtime, gọi accessor các component và gán vào biến mẫu, kể cả lồng nhau theo cấu trúc dữ liệu. So với cách cũ phải instanceof, ép kiểu rồi gọi getter, cách này ngắn và thể hiện rõ hình dạng dữ liệu. Khi kết hợp với sealed hierarchy, pattern matching cho switch được compiler kiểm tra exhaustiveness: nếu thiếu nhánh cho một subtype, code không biên dịch, nên thêm biến thể mới sẽ buộc cập nhật mọi điểm xử lý. Em tránh dùng default để nuốt trường hợp chưa biết, vì nó làm mất lợi ích cảnh báo. Em cũng chú ý record chỉ bất biến nông và pattern khớp theo vị trí component, nên thay đổi thứ tự component là breaking change."
+
+> Senior tip: Giá trị lớn nhất của pattern matching + sealed không phải "viết ít dòng", mà là biến lỗi bỏ sót nghiệp vụ thành lỗi biên dịch. Hãy ưu tiên switch đầy đủ (không default) cho domain model quan trọng, và giữ pattern đủ đơn giản để người đọc thấy ngay cấu trúc dữ liệu.
+`,
+  follow: [
+    'Vì sao dùng {{default}} trong {{switch}} trên sealed type có thể làm mất lợi ích kiểm tra exhaustiveness?',
+    'Record pattern khớp theo tên hay theo vị trí component, và điều đó ảnh hưởng thế nào khi refactor?',
+    'Nested record pattern quá sâu gây khó đọc ra sao, bạn sẽ tách như thế nào?'
+  ],
+  tags: [
+    'record pattern',
+    'pattern matching',
+    'switch',
+    'sealed',
+    'Java 21'
+  ]
+},
+{
+  id: 'modern-052',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Text block (Java 15) và {{String.formatted()}} (Java 15) giúp viết chuỗi nhiều dòng và nội suy giá trị như thế nào? Hãy giải thích quy tắc canh lề (indent), escape, và những lỗi dễ gặp khi dùng để sinh SQL/JSON/log.',
+  a: `**Tóm tắt:** Text block (chuỗi khối, viết giữa {{"""}}) cho phép viết chuỗi nhiều dòng gần với hình dạng hiển thị, JVM/compiler tự bỏ phần thụt lề chung (incidental indentation) và chuẩn hoá xuống dòng. {{String.formatted(args)}} là cách gọi {{String.format}} theo kiểu instance để chèn giá trị. Cả hai giúp dễ đọc, nhưng không tự "an toàn" cho SQL/HTML/JSON: nội suy chuỗi không thay thế tham số hoá (parameterization).
+
+### Text block hoạt động thế nào?
+
+Text block bắt đầu bằng {{"""}} theo sau là xuống dòng, và kết thúc bằng {{"""}}. Compiler xử lý qua các bước: chuẩn hoá line terminator về {{\\n}}, loại bỏ khoảng trắng thụt chung do căn lề mã nguồn (incidental indentation - phần thụt chỉ để code đẹp), giữ khoảng trắng thụt tương đối bên trong, và xử lý escape. Vị trí đóng {{"""}} ảnh hưởng: đặt {{"""}} trên dòng riêng ở cột thụt chung sẽ quyết định mức cắt lề.
+
+~~~java
+String json = """
+        {
+          "id": %d,
+          "name": "%s"
+        }
+        """.formatted(42, "An"); // nội suy theo định dạng printf
+
+String sql = """
+        SELECT id, email
+        FROM users
+        WHERE status = 'ACTIVE'
+        """;
+~~~
+
+- **{{\\s}}**: trong text block biểu thị một khoảng trắng "giữ lại" (trailing space thường bị bỏ), hữu ích khi cần space cuối dòng có ý nghĩa.
+- **{{\\}}** ở cuối dòng (line continuation): nối dòng mà không chèn {{\\n}} vào kết quả.
+
+### {{String.formatted()}} và so sánh
+
+{{String.formatted(Object... args)}} tương đương {{String.format(this, args)}} dùng cùng cú pháp định dạng ({{%s}}, {{%d}}, {{%.2f}}...). Nó tiện khi gắn ngay sau text block. Nhưng định dạng phụ thuộc **locale** (bản địa hoá - quy ước ngôn ngữ/vùng) nếu dùng specifier nhạy locale; ví dụ số thực có thể ra dấu phẩy hoặc chấm. Với dữ liệu máy đọc (JSON, SQL literal hiếm khi nên dùng), cần kiểm soát locale bằng {{String.format(Locale.US, ...)}} khi cần dấu chấm thập phân ổn định.
+
+| Nhu cầu | Cách phù hợp | Lưu ý |
+|---|---|---|
+| Chuỗi nhiều dòng tĩnh (template nhìn rõ) | Text block {{"""..."""}} | Kiểm tra lề và xuống dòng cuối |
+| Chèn giá trị hiển thị/log | {{formatted()}} hoặc {{String.format}} | Log người dùng nhập vào cần cẩn trọng (log injection) |
+| Sinh JSON | Thư viện (Jackson, Gson) | {{formatted}} không tự escape {{\\"}}, xuống dòng trong giá trị |
+| Sinh SQL có giá trị người dùng | PreparedStatement với {{?}} | **Không** dùng {{formatted}} để ghép giá trị vào SQL |
+
+### Pitfall thực tế trên production
+
+- **SQL injection (tiêm SQL) bằng text block:** ghép giá trị người dùng trực tiếp vào chuỗi SQL bằng {{formatted()}} vẫn nguy hiểm như nối chuỗi thường. Text block/ formatted chỉ là cú pháp, không phải cơ chế an toàn.
+- **JSON hỏng:** tên chứa dấu nháy kép hoặc xuống dòng chèn thẳng bằng {{formatted}} tạo JSON không hợp lệ hoặc bị chèn cấu trúc.
+- **Lệch thụt/lệch dòng cuối:** đóng {{"""}} sai vị trí làm chuỗi có thêm hoặc mất {{\\n}}, khiến so sánh chuỗi (snapshot test, checksum) thất bại khó hiểu.
+- **Locale bất ngờ:** {{ "%.2f".formatted(1.5) }} có thể cho {{1,50}} trên môi trường locale dùng dấu phẩy, làm hệ thống khác parse lỗi.
+
+### Ví dụ đời thực
+
+Một batch job tạo email HTML bằng text block và {{formatted(name, amount)}}. Khi chạy trên server cấu hình locale {{vi-VN}}, số tiền {{1234.50}} hiển thị thành {{1234,50}}, khiến hệ thống đối soát phía đối tác (parse bằng locale {{en-US}}) từ chối 1.800/12.000 bản ghi mỗi ngày (15%). Đồng thời một truy vấn báo cáo nội bộ ghép tham số từ URL vào text block SQL, bị kiểm thử bảo mật phát hiện lỗ hổng tiêm truy vấn. Khắc phục: dùng {{String.format(Locale.US, "%.2f", amount)}} cho dữ liệu trao đổi máy, Jackson để dựng JSON/HTML data an toàn, và PreparedStatement cho mọi giá trị truy vấn; lỗi đối soát giảm về 0% sau 2 kỳ chạy.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Text block trong Java 15 cho phép viết chuỗi nhiều dòng bằng ba nháy kép, compiler tự xử lý xuống dòng và bỏ phần thụt lề chung do căn code, nên template như JSON hay SQL tĩnh dễ đọc hơn. String.formatted là cách gọi String.format trên chính chuỗi, tiện để chèn giá trị theo placeholder như %s, %d. Em chú ý quy tắc đóng text block quyết định lề, có thể dùng backslash cuối dòng để nối dòng và \\\\s để giữ khoảng trắng cuối. Quan trọng là hai tính năng này chỉ cải thiện cú pháp: em không dùng formatted để ghép giá trị người dùng vào SQL hay JSON vì vẫn có nguy cơ injection hoặc chuỗi hỏng; SQL phải dùng PreparedStatement, JSON/HTML nên dùng thư viện. Với số thập phân trao đổi giữa hệ thống, em chỉ định Locale rõ để tránh khác biệt dấu phẩy/chấm."
+
+> Senior tip: Hãy coi text block + {{formatted}} là "template để nhìn", không phải "template an toàn". Mọi dữ liệu đi vào SQL, JSON, HTML hay shell đều phải đi qua cơ chế escape/parameterization đúng ngữ cảnh, và nên có test chụp (snapshot) kiểm tra đúng xuống dòng/lề sau khi refactor.
+`,
+  follow: [
+    'Vì sao {{String.formatted()}} không thể thay thế PreparedStatement khi chèn giá trị vào SQL?',
+    'Vị trí đóng {{"""}} ảnh hưởng thế nào tới incidental indentation và dòng trống cuối chuỗi?',
+    'Khi nào bạn cần chỉ định {{Locale}} tường minh khi dùng {{String.format}}/{{formatted}} cho dữ liệu trao đổi giữa hệ thống?'
+  ],
+  tags: [
+    'text block',
+    'String.formatted',
+    'Java 15',
+    'escaping',
+    'security'
+  ]
+},
+{
+  id: 'modern-053',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Sequenced Collections (Java 21) thêm khái niệm "có thứ tự đầu-cuối" vào Collections Framework như thế nào? Hãy giải thích các interface mới, method chính, và cách chúng thống nhất API của {{List}}, {{Deque}}, {{SortedSet}}, {{LinkedHashSet}}.',
+  a: `**Tóm tắt:** Sequenced Collections (JEP 431, Java 21) giới thiệu các interface {{SequencedCollection}}, {{SequencedSet}}, {{SequencedMap}} để biểu diễn tập hợp có thứ tự gặp (encounter order) với đầu và cuối xác định. Chúng bổ sung API thống nhất như {{getFirst/getLast}}, {{addFirst/addLast}}, {{removeFirst/removeLast}}, và {{reversed()}} (trả về view đảo ngược), giúp code thao tác phần tử đầu/cuối nhất quán trên nhiều kiểu collection thay vì phải nhớ method riêng của từng lớp.
+
+### Vấn đề trước Java 21 và giải pháp
+
+Trước đây, "lấy phần tử đầu/cuối" phụ thuộc từng kiểu: {{List}} dùng {{get(0)}}/{{get(size-1)}} (và phải tự xử lý rỗng), {{Deque}} có {{getFirst/getLast}}, {{SortedSet}} có {{first/last}}, {{LinkedHashSet}} lại không có API trực tiếp cho phần tử cuối. Điều này làm code khó tái sử dụng và dễ sai khi đổi kiểu collection.
+
+Java 21 thêm ba interface và gắn chúng vào hệ phân cấp:
+
+~~~text
+SequencedCollection<E> extends Collection<E>
+  - List<E> implements SequencedCollection (ArrayList, LinkedList...)
+  - Deque<E> extends SequencedCollection (ArrayDeque, LinkedList...)
+  - SequencedSet<E> extends SequencedCollection, Set<E>
+      - SortedSet<E> extends SequencedSet (TreeSet...)
+      - LinkedHashSet implements SequencedSet
+
+SequencedMap<K,V> extends Map<K,V>
+  - SortedMap<K,V> extends SequencedMap (TreeMap...)
+  - LinkedHashMap implements SequencedMap
+~~~
+
+Các method chính (tên gọi thể hiện ý nghĩa "đầu/cuối" rõ ràng):
+
+~~~java
+SequencedCollection<String> seq = new LinkedHashSet<>();
+seq.addFirst("A"); seq.addLast("B"); seq.addLast("C"); // [A, B, C]
+String first = seq.getFirst(); // "A"
+String last  = seq.removeLast(); // "C" và xoá khỏi collection
+SequencedCollection<String> rev = seq.reversed(); // view đảo: duyệt từ cuối lên
+// rev là view: thay đổi trên rev phản ánh lên seq và ngược lại
+~~~
+
+### Bảng: thao tác đầu/cuối thống nhất
+
+| Thao tác | SequencedCollection | Trước đây (ví dụ) |
+|---|---|---|
+| Lấy đầu/cuối | {{getFirst()}} / {{getLast()}} | {{list.get(0)}}, {{deque.peekFirst()}}, {{sortedSet.first()}} |
+| Thêm đầu/cuối | {{addFirst(e)}} / {{addLast(e)}} | {{deque.addFirst(e)}}, {{list.add(0,e)}} (tốn O(n) với ArrayList) |
+| Xoá đầu/cuối | {{removeFirst()}} / {{removeLast()}} | {{deque.pollFirst()}}, {{list.remove(list.size()-1)}} |
+| Duyệt ngược | {{reversed()}} | tự dùng {{descendingIterator()}} (Deque) hoặc {{descendingSet()}} (NavigableSet) |
+
+### {{reversed()}} là view, không phải bản sao
+
+{{reversed()}} trả về một **view** (khung nhìn) cùng dữ liệu nền: thêm/xoá qua view ảnh hưởng collection gốc. Đây là điểm mạnh (không tốn sao chép) nhưng cũng là bẫy nếu bạn nghĩ mình có bản sao độc lập.
+
+### Pitfall thực tế trên production
+
+- **Nhầm view với copy:** giữ {{var rev = seq.reversed()}} để "lưu trạng thái lúc đó", nhưng mọi thay đổi sau trên {{seq}} đều làm {{rev}} đổi theo. Cần snapshot thì phải {{new ArrayList<>(seq.reversed())}}.
+- **Chi phí {{addFirst}} trên ArrayList:** {{ArrayList}} là SequencedCollection nên có {{addFirst}}, nhưng bên trong phải dời toàn bộ phần tử (O(n)). Dùng nhầm trong vòng lặp lớn gây chậm nghiêm trọng; nếu thường xuyên thêm đầu, hãy chọn {{ArrayDeque}}.
+- **Collection rỗng:** {{getFirst/getLast/removeFirst/removeLast}} ném {{NoSuchElementException}} khi rỗng. Phải kiểm tra {{isEmpty()}} hoặc dùng API phù hợp với ngữ cảnh.
+- **Sửa khi đang duyệt view:** thay đổi cấu trúc không qua iterator trên view/nguồn có thể gây {{ConcurrentModificationException}} với collection fail-fast.
+
+### Ví dụ đời thực
+
+Một service giữ lịch sử 10.000 thao tác gần nhất trong {{LinkedHashSet}} để vừa khử trùng lặp vừa giữ thứ tự chèn. Khi cần "5 thao tác mới nhất" để hiển thị, code cũ chuyển sang {{ArrayList}} rồi duyệt ngược thủ công, tốn ~1,2 ms/lần gọi và cấp phát mảng tạm; ở 5.000 req/phút tạo ~5.000 list tạm/phút. Sau khi nâng Java 21, dùng {{history.reversed().stream().limit(5).toList()}} trên view, bỏ bước copy toàn bộ 10.000 phần tử: thời gian trung bình đoạn xử lý giảm còn ~0,2 ms, allocation tạm giảm ~95% cho thao tác này (số liệu kịch bản minh hoạ, đo trên JMH cục bộ). Ngược lại, một chỗ khác đổi {{ArrayDeque}} thành {{ArrayList}} nhưng vẫn gọi {{addFirst}} trong vòng lặp 50.000 phần tử, thời gian bước đó tăng từ ~1 ms lên ~420 ms do dịch mảng lặp lại.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Sequenced Collections là nhóm interface mới trong Java 21 gồm SequencedCollection, SequencedSet và SequencedMap, thêm vào Collections Framework khái niệm tập hợp có encounter order với đầu và cuối xác định. Chúng cung cấp API thống nhất như getFirst, getLast, addFirst, addLast, removeFirst, removeLast và reversed. Nhờ đó List, Deque, SortedSet, LinkedHashSet hay LinkedHashMap đều thao tác đầu/cuối theo cùng cách, thay vì phải nhớ first/last hay get(0)/get(size-1) tuỳ loại. Em lưu ý reversed trả về view chia sẻ dữ liệu gốc, không phải bản sao, nên sửa một bên sẽ thấy ở bên kia. Em cũng không giả định addFirst luôn rẻ: ArrayList hỗ trợ nhưng chi phí O(n), còn ArrayDeque mới phù hợp khi thêm/xoá đầu thường xuyên. Khi collection rỗng, các method get/remove đầu cuối sẽ ném NoSuchElementException nên cần xử lý."
+
+> Senior tip: Khi thiết kế API, hãy nhận {{SequencedCollection}} thay vì {{List}} nếu bạn chỉ cần "thứ tự có đầu/cuối", để người gọi tự chọn cấu trúc có chi phí thao tác phù hợp (ArrayList vs ArrayDeque). Và luôn nói rõ trong tài liệu/javadoc khi bạn trả về view {{reversed()}} hay bản sao.
+`,
+  follow: [
+    '{{reversed()}} trả về view hay bản sao, và điều đó ảnh hưởng thế nào nếu bạn sửa collection gốc sau đó?',
+    'Vì sao {{addFirst}} trên {{ArrayList}} có thể rất chậm dù API đã có sẵn từ SequencedCollection?',
+    'Khi nào bạn nên nhận tham số kiểu {{SequencedCollection}} thay vì {{List}} trong chữ ký method?'
+  ],
+  tags: [
+    'Sequenced Collections',
+    'Java 21',
+    'JEP 431',
+    'List',
+    'Deque',
+    'LinkedHashSet'
+  ]
+},
+{
+  id: 'core-046',
+  topic: 'core',
+  level: 'senior',
+  q: 'Autoboxing/unboxing trong vòng lặp "nóng" (hot loop - đoạn chạy rất nhiều lần) ảnh hưởng hiệu năng thế nào? Hãy giải thích cơ chế, chi phí bộ nhớ/GC, cache của wrapper, và cách tránh allocation không cần thiết.',
+  a: `**Tóm tắt:** Autoboxing (tự đóng gói) là việc compiler tự chuyển kiểu nguyên thủy (primitive: {{int}}, {{long}} - giá trị thô, lưu trực tiếp) thành đối tượng wrapper ({{Integer}}, {{Long}} - đối tượng trên heap). Unboxing là chiều ngược lại. Trong hot loop, autoboxing có thể tạo hàng triệu object tạm, tăng áp lực GC (Garbage Collector - bộ dọn rác), và unboxing lặp lại tốn chi phí giải tham chiếu; với {{long}}/giá trị ngoài cache thì hầu như luôn cấp phát mới.
+
+### Autoboxing/unboxing hoạt động thế nào?
+
+Khi bạn viết {{Integer x = 5;}}, compiler biến thành {{Integer.valueOf(5)}} (gọi factory có thể trả về instance cache). Khi viết {{int y = x;}}, compiler chèn {{x.intValue()}} (và ném {{NullPointerException}} nếu {{x}} là {{null}}). Trong biểu thức số học, wrapper bị unbox để tính rồi có thể box lại để gán.
+
+~~~java
+// Xấu trong hot loop: tạo ~N object Long (ngoài cache) và unbox/box lặp lại
+Long sum = 0L; // wrapper
+for (long i = 0; i < 10_000_000L; i++) {
+    sum = sum + i; // unbox sum -> cộng -> box kết quả mới -> gán
+}
+
+// Tốt: dùng primitive, không cấp phát object cho tổng
+long sum2 = 0L;
+for (long i = 0; i < 10_000_000L; i++) {
+    sum2 += i; // thao tác trên thanh ghi/stack, không object tạm
+}
+~~~
+
+### Cache của wrapper và giới hạn
+
+{{Integer.valueOf}} (và các wrapper tích phân khác) cache theo chuẩn trong khoảng thường là **-128 đến 127** (có thể mở rộng upper bound Integer bằng {{-XX:AutoBoxCacheMax}}). Giá trị trong cache được tái sử dụng; ngoài khoảng, mỗi lần box tạo object mới. {{Long}}, {{Double}} trong vòng lặp tính toán hiếm khi nằm trong cache nhỏ này. Ngoài ra, so sánh {{Integer}} bằng {{==}} chỉ "đúng tình cờ" trong vùng cache — luôn dùng {{equals}} cho wrapper.
+
+| Khía cạnh | Primitive ({{long}}, {{int}}) | Wrapper ({{Long}}, {{Integer}}) |
+|---|---|---|
+| Lưu trữ | Giá trị trực tiếp (stack/field/mảng primitive) | Tham chiếu tới object trên heap (header + giá trị) |
+| Allocation trong loop | Không | Có thể rất nhiều (ngoài cache) |
+| Null | Không thể | Có thể {{null}} → unbox ném NPE |
+| Dùng trong generic/collection | Không trực tiếp (phải box) | Bắt buộc với {{List<Integer>}}... |
+
+### Pitfall thực tế trên production
+
+- **Dùng {{Long}} làm biến cộng dồn:** như ví dụ, 10 triệu lần lặp có thể tạo ~10 triệu object {{Long}}, GC chạy dày đặc, độ trễ tăng đột biến.
+- **{{Map<String, Integer>}} cập nhật đếm liên tục:** {{map.put(k, map.get(k)+1)}} unbox rồi box giá trị mới mỗi lần tăng; tần suất cao gây cấp phát lớn. Cân nhắc {{MutableInt}} tự viết, thư viện primitive-collection (fastutil, Eclipse Collections), hoặc {{Map<String, int[]>}} tuỳ ngữ cảnh.
+- **Stream trên boxed:** {{list.stream().mapToInt(Integer::intValue).sum()}} tốt hơn {{list.stream().reduce(0, Integer::sum)}} ở chỗ tránh giữ chuỗi box trung gian trong một số pipeline, nhưng nếu nguồn đã là {{List<Integer>}} thì dữ liệu vẫn boxed; với mảng lớn ưu tiên {{int[]}}.
+- **NPE ẩn:** {{Integer total = null; total += 1;}} ném NPE ở runtime, khó thấy khi review.
+
+### Ví dụ đời thực
+
+Một job tính điểm xếp hạng duyệt 5 triệu bản ghi, cộng dồn điểm vào {{Long total = 0L}}. Profiling (đo đạc hiệu năng) bằng JFR cho thấy allocation rate ~320 MB/s, GC trẻ (young GC) chạy ~18 lần/giây, thời gian job ~9,4 giây. Chỉ đổi {{Long}} sang {{long}} và bỏ một chỗ {{List<Long>}} trung gian thành mảng {{long[]}}, allocation rate giảm xuống ~25 MB/s, young GC còn ~2 lần/giây, thời gian còn ~3,1 giây trên cùng máy (số liệu kịch bản minh hoạ). Kết quả đúng không đổi vì phép cộng số nguyên không phụ thuộc boxing.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Autoboxing là cơ chế compiler tự chuyển primitive như int, long sang wrapper như Integer, Long, và unboxing là chiều ngược lại. Trong hot loop, boxing tạo object mới trên heap ở hầu hết giá trị ngoài vùng cache -128 đến 127, nên vài triệu vòng lặp có thể sinh vài triệu object tạm, làm tăng allocation rate và tần suất GC, kéo theo độ trễ. Unboxing lặp lại còn thêm chi phí gọi method và rủi ro NullPointerException nếu wrapper null. Vì vậy với biến tích luỹ, chỉ số, bộ đếm em luôn dùng primitive, tránh boxed trong cấu trúc dữ liệu nóng, và nếu cần map đếm tần suất cao em cân nhắc cấu trúc primitive-specialized thay vì Map<String, Integer> cập nhật liên tục. Em xác nhận bằng profiler/JFR xem allocation và GC thực sự đến từ đâu trước khi tối ưu."
+
+> Senior tip: Quy tắc nhanh: "hot path = primitive, cold/config path = thoải mái wrapper/generic". Khi buộc dùng collection generic, hãy đo allocation (JFR, {{-XX:+PrintGCDetails}} hoặc async-profiler alloc profile) thay vì suy luận; đôi khi chi phí I/O/DB át hết chi phí boxing.
+`,
+  follow: [
+    'Vì sao {{Integer}} trong khoảng -128 đến 127 đôi khi so sánh {{==}} cho kết quả "đúng", và vì sao không nên dựa vào đó?',
+    'Khi phải dùng {{Map<String, Integer>}} làm bộ đếm tần suất cao, bạn có lựa chọn nào để giảm boxing?',
+    'Unboxing có thể gây lỗi runtime nào nếu giá trị wrapper là {{null}}?'
+  ],
+  tags: [
+    'autoboxing',
+    'unboxing',
+    'performance',
+    'GC',
+    'hot loop'
+  ]
+},
+{
+  id: 'collections-042',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Khi chọn cấu trúc dữ liệu trong Java Collections, bạn dựa vào độ phức tạp thời gian/không gian và đặc tính truy cập như thế nào? Hãy so sánh các lựa chọn phổ biến (ArrayList, LinkedList, HashSet/HashMap, TreeSet/TreeMap, ArrayDeque) theo tình huống thực tế.',
+  a: `**Tóm tắt:** Chọn cấu trúc dữ liệu là cân bằng giữa độ phức tạp Big-O (cách chi phí tăng theo kích thước n), tính chất truy cập (ngẫu nhiên, tuần tự, đầu/cuối, theo khoá, có thứ tự sắp xếp), và chi phí thực tế (bộ nhớ, cache locality - dữ liệu nằm gần nhau trong RAM nên CPU đọc nhanh). Không có cấu trúc "nhanh nhất mọi việc": ArrayList thường thắng truy cập ngẫu nhiên/duyệt, HashMap thắng tra cứu theo khoá trung bình O(1), TreeMap giữ thứ tự sắp xếp với O(log n), ArrayDeque thắng hàng đợi/ngăn xếp.
+
+### Độ phức tạp là gì (nhắc nhanh)?
+
+- **O(1)**: gần như không đổi theo n (truy cập mảng theo chỉ số, tra cứu hash trung bình).
+- **O(log n)**: tăng chậm theo n (cây cân bằng: tìm/chèn/xoá trong TreeMap/TreeSet).
+- **O(n)**: tỉ lệ thuận n (duyệt hết, tìm tuyến tính, chèn/xoá giữa ArrayList phải dời phần tử).
+- Big-O mô tả xu hướng; hằng số và cache locality quyết định ai nhanh hơn ở n thực tế.
+
+### So sánh theo tình huống
+
+| Cấu trúc | Truy cập/tra cứu | Chèn/xoá | Bộ nhớ/đặc tính | Khi dùng |
+|---|---|---|---|---|
+| {{ArrayList}} | get(i) O(1); contains O(n) | cuối amortized O(1); giữa/đầu O(n) | Mảng liền, cache-friendly, overhead thấp | Danh sách đọc/duyệt nhiều, thêm cuối |
+| {{LinkedList}} | get(i) O(n) | đầu/cuối O(1) nếu có node; giữa O(n) tìm + O(1) chỉnh | Mỗi node thêm prev/next (overhead lớn), cache kém | Rất hiếm; hầu hết trường hợp {{ArrayDeque}}/ {{ArrayList}} tốt hơn |
+| {{HashMap/HashSet}} | get/contains trung bình O(1), xấu nhất O(n) (hiếm) | put/add trung bình O(1) | Bảng băm + bucket, cần {{hashCode/equals}} đúng | Tra cứu theo khoá, khử trùng lặp không cần thứ tự sắp xếp |
+| {{LinkedHashMap/Set}} | như Hash + giữ thứ tự chèn/truy cập | như Hash | Thêm liên kết hai chiều | Cần tra cứu nhanh và lặp theo thứ tự chèn (LRU đơn giản) |
+| {{TreeMap/TreeSet}} | get/contains O(log n) | put/add/remove O(log n) | Cây đỏ-đen, phần tử phải so sánh được | Cần thứ tự sắp xếp, range query ({{subMap}}, {{floor/ceiling}}) |
+| {{ArrayDeque}} | peek đầu/cuối O(1) | add/remove đầu/cuối O(1) amortized | Mảng vòng, nhanh, không cho {{null}} (khuyến nghị) | Hàng đợi (queue), ngăn xếp (stack), thay {{Stack}}/{{LinkedList}} |
+
+~~~java
+// Tra cứu theo id: HashMap O(1) trung bình
+Map<Long, User> byId = new HashMap<>();
+User u = byId.get(42L);
+
+// Cần luôn lấy theo điểm tăng dần và range: TreeMap O(log n)
+NavigableMap<Integer, String> byScore = new TreeMap<>();
+byScore.subMap(80, true, 90, false); // các mục [80,90)
+~~~
+
+### Pitfall thực tế trên production
+
+- **Chọn {{LinkedList}} vì "chèn giữa nhanh":** bạn vẫn mất O(n) để tìm vị trí, và mỗi phần tử tốn thêm ~24-32 byte overhead + con trỏ, duyệt chậm do cache miss. Đo thực tế gần như luôn thua {{ArrayList}}/{{ArrayDeque}}.
+- **HashMap với khoá mutable hoặc {{hashCode/equals}} sai:** sửa field tham gia hash sau khi put làm phần tử "mất tích" khi get. Khoá nên bất biến.
+- **TreeMap cho tra cứu đơn thuần:** trả O(log n) và ép so sánh trong khi HashMap cho O(1) trung bình; chỉ dùng khi thực sự cần thứ tự/range.
+- **Dùng {{contains}} trên List trong vòng lặp:** {{list.contains(x)}} trong vòng lặp trên list khác thành O(n*m); chuyển một bên sang {{HashSet}} giảm còn O(n+m).
+
+### Ví dụ đời thực
+
+Một API lọc đơn hàng nhận 20.000 id và kiểm tra từng id có trong danh sách 20.000 id hợp lệ. Ban đầu dùng {{List<Long>.contains}} lồng nhau: ~400 triệu phép so sánh, p95 endpoint 1,8 giây. Đổi danh sách hợp lệ sang {{HashSet<Long>}} (build một lần O(n), tra cứu O(1) trung bình), tổng kiểm tra còn ~20.000 tra cứu băm, p95 xuống 45 ms. Một trường hợp khác, báo cáo cần top theo thời gian tăng dần và truy vấn theo khoảng ngày: thay {{HashMap}} + sort lại mỗi lần (O(n log n)/request) bằng {{TreeMap<LocalDate, ...>}} với {{subMap}}, giảm thời gian truy vấn khoảng từ 120 ms xuống 8 ms ở 100.000 bản ghi (số liệu kịch bản minh hoạ).
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi chọn cấu trúc dữ liệu em xét ba thứ: thao tác chủ đạo là gì (truy cập ngẫu nhiên, tra cứu theo khoá, thêm/xoá đầu cuối, hay duyệt theo thứ tự sắp xếp), độ phức tạp Big-O của thao tác đó, và chi phí thực tế như bộ nhớ và cache locality. ArrayList phù hợp đọc/duyệt và truy cập theo chỉ số O(1); HashMap/HashSet cho tra cứu và khử trùng lặp trung bình O(1) nhưng cần hashCode/equals đúng và khoá bất biến; TreeMap/TreeSet cho O(log n) kèm thứ tự sắp xếp và range query; ArrayDeque là lựa chọn mặc định cho queue/stack. Em gần như không dùng LinkedList vì overhead bộ nhớ và cache kém. Cuối cùng em đo trên dữ liệu thực vì hằng số và pattern truy cập có thể lật kết luận Big-O ở kích thước vừa."
+
+> Senior tip: Đừng chọn theo "cảm giác" hay thói quen. Hãy viết ra thao tác nào chạy nhiều nhất (hot path), ước lượng n, chọn cấu trúc tối ưu thao tác đó, rồi xác nhận bằng benchmark/profiler. Đổi {{List.contains}} trong vòng lặp sang {{HashSet}} là một trong những tối ưu mang lại lợi ích lớn nhất với rủi ro thấp.
+`,
+  follow: [
+    'Vì sao {{LinkedList}} thường thua {{ArrayList}} hoặc {{ArrayDeque}} trong thực tế dù Big-O của vài thao tác trông hấp dẫn?',
+    'Khi nào bạn chọn {{TreeMap}} thay vì {{HashMap}} dù tra cứu chậm hơn về Big-O?',
+    'Điều gì xảy ra nếu dùng object mutable làm khoá {{HashMap}} rồi thay đổi field tham gia {{hashCode}}?'
+  ],
+  tags: [
+    'Collections',
+    'Big-O',
+    'ArrayList',
+    'HashMap',
+    'ArrayDeque',
+    'performance'
+  ]
+},
+{
+  id: 'core-047',
+  topic: 'core',
+  level: 'senior',
+  q: 'JMH (Java Microbenchmark Harness) dùng để đo hiệu năng vi mô như thế nào cho đúng? Hãy giải thích vì sao benchmark tự viết thường sai, các annotation cơ bản, warmup, chế độ đo, và cách tránh dead-code elimination/constant folding.',
+  a: `**Tóm tắt:** JMH (bộ khung đo hiệu năng vi mô cho Java, do nhóm OpenJDK phát triển) giúp đo những đoạn code rất nhỏ (vài nano/micro-giây) một cách có kiểm soát. Benchmark tự viết bằng {{System.nanoTime()}} trong vòng lặp thường sai vì bỏ qua warmup JIT (Just-In-Time compiler - trình biên dịch của JVM biến bytecode nóng thành mã máy tối ưu), GC, dead-code elimination (JVM bỏ phép tính không ai dùng), và nhiễu hệ thống. JMH cung cấp warmup, nhiều fork/iteration, và cơ chế {{Blackhole}} để giữ kết quả.
+
+### Vì sao benchmark tự viết hay cho kết quả sai?
+
+- **JIT chưa "nóng":** vài nghìn lần chạy đầu, JVM diễn giải hoặc biên dịch ở mức thấp; sau khi hot, JIT inline, unroll, vectorize → nhanh hơn nhiều. Đo lẫn cả giai đoạn lạnh cho số liệu vô nghĩa.
+- **Dead-code elimination (DCE):** nếu kết quả phép tính không được dùng và không có tác dụng phụ quan sát được, JIT có thể xoá hẳn đoạn code, bạn đo "không làm gì".
+- **Constant folding:** nếu đầu vào là hằng số, JIT tính sẵn lúc biên dịch.
+- **GC và nhiễu:** một lần GC giữa vòng đo làm thời gian vọt lên; chạy chung tiến trình với tác vụ khác gây nhiễu.
+- **Deoptimization/biến thiên:** một lần chạy không đại diện cho phân phối.
+
+### Cấu trúc benchmark JMH cơ bản
+
+~~~java
+import org.openjdk.jmh.annotations.*;
+import org.openjdk.jmh.infra.Blackhole;
+import java.util.concurrent.TimeUnit;
+
+@BenchmarkMode(Mode.AverageTime)      // đo thời gian trung bình mỗi lần gọi
+@OutputTimeUnit(TimeUnit.NANOSECONDS) // đơn vị kết quả
+@State(Scope.Thread)                  // state riêng cho mỗi thread benchmark
+@Warmup(iterations = 5, time = 1)     // 5 vòng khởi động, mỗi vòng 1s (không tính)
+@Measurement(iterations = 5, time = 1)
+@Fork(2)                              // chạy 2 tiến trình JVM riêng để giảm nhiễu chéo
+public class SumBench {
+
+    @Param({"1000", "10000"})         // chạy với nhiều kích thước đầu vào
+    int n;
+    long[] data;
+
+    @Setup(Level.Trial)
+    public void setup() {             // chuẩn bị dữ liệu ngoài phần đo
+        data = new long[n];
+        for (int i = 0; i < n; i++) data[i] = i;
+    }
+
+    @Benchmark
+    public void loopSum(Blackhole bh) {
+        long s = 0;
+        for (long v : data) s += v;
+        bh.consume(s);                // "tiêu thụ" kết quả để chống DCE
+    }
+}
+~~~
+
+- **{{@State}}:** giữ dữ liệu dùng chung; {{Scope.Thread}} an toàn khi benchmark đa luồng.
+- **{{@Setup}} / {{@TearDown}}:** chuẩn bị/dọn dẹp; đặt ở {{Level.Trial/Iteration/Invocation}} tuỳ chi phí.
+- **{{Blackhole.consume(...)}}:** báo cho JIT rằng giá trị "được dùng", ngăn DCE/constant folding.
+- **{{@BenchmarkMode}}:** {{Throughput}} (ops/s), {{AverageTime}}, {{SampleTime}}, {{SingleShotTime}}.
+- **{{@Fork}}:** tách JVM để mỗi lần đo có profile JIT độc lập, tránh ô nhiễm giữa benchmark.
+
+### Pitfall thực tế trên production (khi tin benchmark sai)
+
+- **Không {{consume}} kết quả:** JIT xoá cả vòng lặp, bạn "chứng minh" cách A nhanh hơn B gấp 100 lần nhưng thực ra không đo gì.
+- **Setup nằm trong {{@Benchmark}}:** thời gian tạo dữ liệu lẫn vào kết quả, át thời gian thật.
+- **Warmup quá ít hoặc không fork:** số liệu phụ thuộc trạng thái JIT lúc đó, chạy lại ra kết quả khác.
+- **So sánh khác allocation profile nhưng chỉ nhìn thời gian:** cách nhanh hơn 5% nhưng cấp phát gấp 3 lần có thể tệ hơn dưới GC pressure thật.
+- **Kết luận vượt phạm vi:** microbenchmark đo CPU thuần túy trong cache; không đại diện cho hệ thống có I/O, lock, contention.
+
+### Ví dụ đời thực
+
+Team tranh luận giữa hai cách parse ID: dùng {{Long.parseLong}} và cách tự viết. Benchmark tự viết bằng {{System.nanoTime()}} trong 1 vòng lặp 1 triệu lần (không warmup, không consume) cho thấy cách tự viết "nhanh gấp 8 lần". Khi chuyển sang JMH với {{@Warmup(5)}}, {{@Fork(2)}}, {{Blackhole.consume}}, kết quả đảo ngược: {{Long.parseLong}} ~12 ns/op, cách tự viết ~18 ns/op và cấp phát thêm ở nhánh lỗi (do tạo chuỗi phụ). Quyết định giữ {{Long.parseLong}} giúp tránh một tối ưu sai và giảm ~30% allocation trong luồng parse (kịch bản minh hoạ; số ns/op phụ thuộc JDK/phần cứng).
+
+### Trả lời mẫu khi phỏng vấn
+
+"JMH là framework chuẩn để viết microbenchmark cho Java vì nó kiểm soát những yếu tố làm benchmark tự viết sai: warmup để JIT biên dịch tối ưu trước khi đo, nhiều iteration và fork JVM riêng để giảm nhiễu, và Blackhole.consume để ngăn dead-code elimination hay constant folding loại bỏ phép tính. Em dùng @Benchmark cho phương thức đo, @State để giữ dữ liệu, @Setup để chuẩn bị ngoài vùng đo, chọn mode như AverageTime hay Throughput tuỳ câu hỏi. Em cẩn thận không đặt setup trong benchmark, không dùng hằng số làm đầu vào duy nhất, và đọc cả kết quả allocation/GC nếu cần. Đồng thời em không suy rộng microbenchmark ra toàn hệ thống: nó trả lời câu hỏi vi mô, còn hiệu năng end-to-end vẫn phải đo bằng profiler và load test."
+
+> Senior tip: Hãy dùng JMH khi bạn cần so sánh hai cách viết trong hot path đã được profiler xác định là nút thắt. Nếu chưa biết nút thắt ở đâu, bắt đầu bằng profiler (async-profiler, JFR) trước; tối ưu chỗ không hot chỉ tạo benchmark đẹp nhưng không cải thiện sản phẩm.
+`,
+  follow: [
+    '{{Blackhole.consume}} giải quyết vấn đề gì mà benchmark tự viết thường bỏ qua?',
+    'Vì sao JMH dùng {{@Fork}} để chạy benchmark trong nhiều tiến trình JVM riêng?',
+    'Khi nào kết quả microbenchmark JMH không đủ để kết luận hiệu năng end-to-end của hệ thống?'
+  ],
+  tags: [
+    'JMH',
+    'benchmark',
+    'JIT',
+    'performance',
+    'Blackhole'
+  ]
+},
+{
+  id: 'core-048',
+  topic: 'core',
+  level: 'lead',
+  q: 'Bạn sẽ đo và giảm allocation (cấp phát bộ nhớ đối tượng) trong một dịch vụ Java đang chịu áp lực GC như thế nào? Hãy trình bày cách đo (JFR, profiler, GC log), nhận diện nguồn gây cấp phát, và các kỹ thuật giảm allocation an toàn.',
+  a: `**Tóm tắt:** Allocation (cấp phát) là việc tạo object trên heap (vùng nhớ động). Cấp phát cao làm GC (Garbage Collector - bộ dọn rác) chạy thường xuyên hơn, tăng pause/CPU overhead và kéo xấu p99. Quy trình đúng: đo để tìm **điểm nóng cấp phát** (allocation hot spot) bằng JFR/profiler và GC log, xác nhận tác động lên độ trễ, rồi giảm bằng thay đổi có mục tiêu (tái dùng hợp lý, tránh object tạm, cấu trúc dữ liệu phù hợp), luôn đo lại để chắc không đánh đổi sai.
+
+### Đo trước: allocation đến từ đâu, ảnh hưởng ra sao?
+
+1. **GC log** (nhật ký GC, bật bằng tuỳ chọn JVM như {{-Xlog:gc*:file=gc.log}} trên JDK 9+): cho thấy tần suất GC, thời gian pause, heap trước/sau, promotion. Dấu hiệu: young GC rất dày, pause tăng khi tải tăng.
+2. **JFR (Java Flight Recorder)**: công cụ ghi sự kiện tích hợp JDK, overhead thấp, phù hợp production. Sự kiện {{jdk.ObjectAllocationInNewTLAB}} / {{jdk.ObjectAllocationOutsideTLAB}} và allocation profile cho biết **kiểu object nào** được cấp phát nhiều và **stack trace** nào gây ra. Có thể mở bằng {{jcmd <pid> JFR.start}} và xem trong JDK Mission Control.
+3. **Profiler allocation** (async-profiler, VisualVM): flame graph/alloc view để khoanh vùng hot path. Luôn đo trên workload đại diện (tải và dữ liệu giống thật).
+
+~~~bash
+# Ví dụ: bật GC log (JDK 17) và ghi JFR 60 giây
+java -Xlog:gc*:file=gc.log:time,uptime,level,tags -jar app.jar
+jcmd <pid> JFR.start name=alloc duration=60s filename=alloc.jfr settings=profile
+~~~
+
+### Quy trình phân tích (từng bước)
+
+- Xác nhận triệu chứng: allocation rate (MB/s), tần suất young GC, pause p99/p999, CPU dùng cho GC.
+- Tìm top allocation site: class nào ({{byte[]}}, {{String}}, {{HashMap$Node}}, wrapper...) và method/stack nào tạo ra.
+- Gắn với request/tính năng: tỉ lệ allocation nằm ở endpoint/luồng nào, có tỷ lệ với throughput không.
+- Đặt giả thuyết và sửa một điểm, rồi đo lại so sánh cùng tải.
+
+### Kỹ thuật giảm allocation (chọn theo nguyên nhân)
+
+| Nguyên nhân hay gặp | Cách giảm | Cảnh báo |
+|---|---|---|
+| Nối chuỗi trong vòng lặp, {{String.format}} trong hot path | {{StringBuilder}} cục bộ, hoặc format một lần; log dùng placeholder của framework (SLF4J) để không tạo chuỗi khi mức log tắt | Đừng tối ưu log mức DEBUG hiếm khi chạy nếu không hot |
+| Boxing/unboxing, stream tạo object trung gian | Primitive, mảng primitive, {{IntStream}}/primitive-specialized collection khi thật sự hot | Generic collection vẫn cần boxed; chỉ đổi chỗ đo được |
+| Tạo {{ArrayList}}/{{HashMap}} tạm mỗi request với kích thước biết trước | Cấp {{initialCapacity}} hợp lý để giảm resize/copy | Đừng set capacity quá lớn gây giữ heap dư |
+| Chuyển đổi dữ liệu lặp lại (serialize/parse/map DTO) | Tái dùng buffer cục bộ an toàn, tránh copy không cần ({{Arrays.copyOf}} thừa), chọn thư viện/codec ít cấp phát | **Không** dùng object pool tự viết cho object thường — dễ lỗi concurrency và thường thua GC hiện đại |
+| Thu thập trung gian lớn | Stream/iterator, xử lý theo lô, tránh {{collect}} ra list khổng lồ chỉ để đếm/lọc | Giữ đúng ngữ nghĩa và khả năng đọc |
+
+~~~java
+// Ví dụ: tránh tạo chuỗi log khi không cần
+log.debug("user={} action={}", userId, action); // tham số hoá, không nối sẵn
+~~~
+
+### Pitfall thực tế trên production
+
+- **Tối ưu sớm chỗ không hot:** giảm vài KB allocation ở luồng chạy 10 lần/phút không ảnh hưởng p99, nhưng làm code phức tạp.
+- **Object pool tự chế:** với object sống ngắn, GC vùng young (generational GC) thu hồi rất rẻ; pool tự quản lý dễ rò rỉ, sai thread-safety, và giữ object sang old gen gây GC nặng hơn.
+- **Tái dùng buffer chia sẻ không an toàn:** buffer dùng chung giữa request gây race condition và lộ dữ liệu.
+- **Chỉ nhìn average:** GC pause gây long-tail; phải theo dõi p95/p99 và max pause.
+- **Đổi thuật toán vì allocation nhưng quên độ đúng:** luôn giữ test và so sánh kết quả.
+
+### Ví dụ đời thực
+
+Một dịch vụ JSON API (Spring Boot 3, JDK 17) ở 2.000 req/s thấy p99 tăng từ 120 ms lên 650 ms giờ cao điểm. GC log cho thấy young GC ~20 lần/giây, pause 30-80 ms. JFR allocation profile 10 phút chỉ ra 48% allocation là {{byte[]}} và {{String}} từ việc serialize JSON và log debug dựng chuỗi bằng nối {{+}} trong hot path, 22% là {{HashMap$Node}} do tạo map tạm mỗi request. Team: (1) đổi log sang tham số hoá SLF4J, (2) bỏ bước copy trung gian khi ghi response, (3) đặt initial capacity cho map có kích thước dự đoán được. Sau thay đổi, allocation rate giảm ~55% (từ ~900 MB/s xuống ~400 MB/s, đo trên cùng tải), young GC còn ~8 lần/giây, p99 giảm về ~180 ms (kịch bản minh hoạ; cần lặp đo nhiều lần).
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi dịch vụ chịu áp lực GC, em bắt đầu bằng đo: GC log để xem tần suất và pause, JFR hoặc async-profiler allocation profile để tìm kiểu object và stack trace cấp phát nhiều nhất trên workload thật. Em xác nhận allocation hot spot nằm ở hot path và tương quan với p99. Sau đó em giảm có mục tiêu: ví dụ bỏ nối chuỗi/boxing trong vòng lặp, dùng StringBuilder cục bộ, tham số hoá log, tránh collection trung gian và cấp initialCapacity hợp lý. Em tránh object pool tự viết cho object sống ngắn vì GC hiện đại xử lý tốt còn pool dễ gây bug; mọi buffer tái dùng phải an toàn luồng. Sau mỗi thay đổi em đo lại allocation rate, tần suất GC và p95/p99 cùng kịch bản tải để chắc cải thiện thực và không làm xấu long-tail."
+
+> Senior tip: "Allocation thấp" không phải mục tiêu tự thân — mục tiêu là độ trễ/throughput ổn định với chi phí hợp lý. Hãy ưu tiên sửa vài allocation site chiếm phần lớn (theo luật 80/20 từ profiler), giữ code đơn giản, và xem GC log + JFR như cặp công cụ mặc định khi điều tra p99 bất thường.
+`,
+  follow: [
+    'Sự khác nhau giữa thông tin bạn lấy từ GC log và từ JFR allocation profile là gì?',
+    'Vì sao object pool tự viết cho object sống ngắn thường không phải ý tưởng tốt trên JVM hiện đại?',
+    'Sau khi giảm allocation, bạn theo dõi những chỉ số nào để xác nhận p99 thực sự cải thiện?'
+  ],
+  tags: [
+    'allocation',
+    'GC',
+    'JFR',
+    'profiling',
+    'performance'
+  ]
+},
 );
