@@ -11766,4 +11766,638 @@ Service đặt hàng 12 pod, rolling update: ~0.6% request 502 (120/phút cao đ
   ],
   tags: ['graceful shutdown', 'Spring Boot 3', 'Kubernetes', 'deployment', 'reliability']
 },
+{
+  id: 'spring-069',
+  topic: 'spring',
+  level: 'lead',
+  q: 'Bạn viết một filter tùy biến (request id, log, API key) cho Spring Security: đặt nó vào đúng vị trí nào trong filter chain, và vì sao thứ tự sai lại gây lỗi? Khi có nhiều SecurityFilterChain thì chain nào được chọn?',
+  a: `**Tóm tắt:** Mỗi request đi qua một **servlet filter chain** do container (Tomcat) quản lý; trong đó Spring Security đăng ký **một** filter tên {{springSecurityFilterChain}}, bên trong là {{FilterChainProxy}} giữ danh sách các security filter **có thứ tự**. Filter tùy biến của bạn có hai lựa chọn: (1) đăng ký như servlet filter bằng {{FilterRegistrationBean}} – nó nằm **ngoài** security chain, trước hoặc sau toàn bộ chain; (2) chèn vào **bên trong** chain bằng {{http.addFilterBefore}} hoặc {{http.addFilterAfter}} – chỉ khi đó bạn chắc chắn thấy {{SecurityContext}} đã được xác thực. Nhiều {{SecurityFilterChain}} được chọn theo {{@Order}}: chain có matcher khớp **đầu tiên** (order nhỏ nhất) sẽ xử lý, các chain sau không chạy.
+
+### Bên trong có gì
+- Servlet container chạy filter theo thứ tự đã đăng ký: số nhỏ chạy trước, rồi mới tới {{DispatcherServlet}}.
+- Spring Boot đăng ký security filter qua {{DelegatingFilterProxyRegistrationBean}} với order = {{SecurityProperties.DEFAULT_FILTER_ORDER}} = **-100**. Trong khi đó, một {{Filter}} bean thông thường có order mặc định là {{Ordered.LOWEST_PRECEDENCE}} (Integer.MAX_VALUE) ⇒ **mọi filter thường sẽ chạy sau security chain**, kể cả khi bạn không cố ý.
+- Bên trong {{FilterChainProxy}}: danh sách {{SecurityFilterChain}}, mỗi chain gồm một {{RequestMatcher}} và danh sách {{OrderedFilter}}. Chain đầu tiên khớp sẽ được dùng, các chain sau **không** chạy.
+- Thứ tự mặc định của các security filter do {{FilterOrderRegistration}} định nghĩa. Rút gọn cho Spring Security 6:
+
+~~~text
+DisableEncodeUrlFilter
+WebAsyncManagerIntegrationFilter
+SecurityContextHolderFilter
+HeaderWriterFilter
+CorsFilter
+CsrfFilter
+LogoutFilter
+BearerTokenAuthenticationFilter
+RequestCacheAwareFilter
+SecurityContextHolderAwareRequestFilter
+AnonymousAuthenticationFilter
+SessionManagementFilter
+ExceptionTranslationFilter
+AuthorizationFilter
+~~~
+
+> Ghi nhớ: {{SecurityContextHolderFilter}} chạy **sớm** (nạp SecurityContext từ repository), nhưng {{AuthorizationFilter}} chạy **cuối**. Một filter chèn trước {{BearerTokenAuthenticationFilter}} sẽ không thấy Authentication; chèn sau nó thì có.
+
+### Hai cách chèn
+~~~java
+@Configuration
+@EnableWebSecurity
+class SecurityConfig {
+
+    @Bean
+    @Order(1)
+    SecurityFilterChain api(HttpSecurity http) throws Exception {
+        http.securityMatcher("/api/**")
+            .addFilterAfter(new RequestIdFilter(), BearerTokenAuthenticationFilter.class)
+            .authorizeHttpRequests(a -> a.anyRequest().authenticated());
+        return http.build();   // filter nằm trong chain, sau khi token đã xác thực
+    }
+
+    @Bean
+    @Order(2)
+    SecurityFilterChain web(HttpSecurity http) throws Exception {
+        http.authorizeHttpRequests(a -> a.anyRequest().permitAll());
+        return http.build();   // chain mặc định, order lớn hơn nên nằm sau
+    }
+}
+~~~
+
+### Vì sao thứ tự sai gây lỗi
+1. Filter chạy **trước** {{SecurityContextHolderFilter}} → SecurityContext trống → {{@AuthenticationPrincipal}} null, NPE khi gọi {{getName()}}.
+2. Filter chạy **sau** toàn bộ chain (servlet filter order > -100) → {{SecurityContextHolderFilter}} đã gọi {{clearContext()}} trong khối finally → vẫn thấy context trống.
+3. Filter chặn request và gọi {{response.sendError(...)}} → các filter sau không chạy, kể cả {{ExceptionTranslationFilter}} → mất CORS header, response không đúng chuẩn.
+4. Filter không kế thừa {{OncePerRequestFilter}} → chạy hai lần khi forward hoặc error dispatch → ghi log và gọi API hai lần.
+5. {{addFilterBefore(x, Foo.class)}} với Foo không có trong chain → Spring báo lỗi lúc khởi động (filter mốc phải tồn tại).
+6. Filter là singleton: không lưu trạng thái request vào field, nếu không sẽ lẫn dữ liệu giữa các request.
+
+### Ví dụ đời thực
+Hệ thống 60 pod, 4,2 triệu request/ngày. Team thêm {{RequestIdFilter}} để gắn correlation id vào MDC, đăng ký bằng bean {{FilterRegistrationBean}} với {{addUrlPatterns("/api/*")}} và không đặt order. Triệu chứng: 1,1% request (khoảng 46.000/ngày) trả 500 với NPE tại {{SecurityContextHolder.getContext().getAuthentication().getName()}} trong filter; chỉ xảy ra ở các endpoint đã qua xác thực, còn {{/actuator/health}} thì bình thường. Điều tra: bật DEBUG cho {{org.springframework.security.web.FilterChainProxy}}, log chỉ liệt kê các filter bên trong chain và **không có** RequestIdFilter; thêm log trong filter cho thấy nó chạy sau khi response đã commit, tức sau khi {{SecurityContextHolderFilter}} đã dọn context. Nguyên nhân gốc: filter là servlet filter nên nằm ngoài chain, order mặc định lớn hơn -100. Sửa: chuyển sang {{http.addFilterAfter(new RequestIdFilter(), BearerTokenAuthenticationFilter.class)}}; nếu cần request id cho cả endpoint không qua security thì đặt {{FilterRegistrationBean}} với order -200 và **không** đọc SecurityContext trong filter. Kết quả: 500 do NPE về 0, request id có trong 100% log, thời gian điều tra 40 phút thay vì đoán mò.
+
+### Trả lời mẫu khi phỏng vấn
+"Spring Security là một chuỗi filter: container chạy filter springSecurityFilterChain với order -100, bên trong FilterChainProxy chọn SecurityFilterChain đầu tiên khớp request và chạy các filter theo thứ tự đã đăng ký. Khi cần thêm filter của mình, tôi phân biệt hai vị trí: nếu là servlet filter thì nó nằm ngoài chain, mặc định chạy sau security nên SecurityContext đã bị clear; nếu cần đọc SecurityContext thì tôi chèn bằng http.addFilterAfter hoặc addFilterBefore vào đúng filter mốc, ví dụ sau BearerTokenAuthenticationFilter. Với nhiều chain, tôi dùng securityMatcher và @Order để chain /api/** đứng trước chain mặc định. Lỗi hay gặp là filter chạy quá sớm nên SecurityContext trống, filter chạy hai lần vì không dùng OncePerRequestFilter, hoặc filter chặn request làm mất xử lý lỗi tập trung. Tôi luôn kiểm tra thứ tự bằng log DEBUG của FilterChainProxy thay vì đoán."
+> Senior tip: thứ tự filter không phải chi tiết vặt – nó quyết định filter của bạn thấy request ở trạng thái nào. Trước khi viết filter, hãy hỏi: "tôi cần SecurityContext chưa?" Nếu chưa, đặt trước chain; nếu rồi, chèn vào sau filter xác thực tương ứng.
+
+`,
+  follow: [
+    'Vì sao filter của bạn không thấy SecurityContext khi chạy trước SecurityContextHolderFilter?',
+    'Làm sao để một filter chỉ áp dụng cho /api/** mà không ảnh hưởng actuator?'
+  ],
+  tags: ['Spring Security', 'filter chain', 'FilterChainProxy', 'OncePerRequestFilter', 'SecurityFilterChain']
+},
+{
+  id: 'spring-070',
+  topic: 'spring',
+  level: 'senior',
+  q: 'So sánh xác thực bằng session (server giữ trạng thái) với JWT stateless: mỗi cách hoạt động thế nào, khi nào chọn cái nào? Với JWT, bạn xử lý logout, thu hồi token và refresh token ra sao khi server không giữ session?',
+  a: `**Tóm tắt:** Session là **server giữ state**: session id nằm trong cookie, dữ liệu người dùng nằm trong RAM hoặc Redis. JWT là **token tự chứa**: header, payload (claims) và chữ ký; server chỉ kiểm tra chữ ký và hạn, **không tra cứu DB** mỗi request. JWT stateless mở rộng ngang dễ vì không cần sticky session, nhưng **không thu hồi được ngay** – cái giá phải trả. Cách làm thực tế: access token ngắn hạn, refresh token rotation, và deny-list khi thật sự cần thu hồi.
+
+### Session hoạt động thế nào
+1. Client gửi {{POST /login}} với user/pass.
+2. Server xác thực, tạo {{HttpSession}} (JSESSIONID), lưu attribute (userId, roles) trong RAM hoặc Redis.
+3. Server trả {{Set-Cookie: JSESSIONID=...; HttpOnly; Secure; SameSite=Lax}}.
+4. Các request sau trình duyệt **tự động** gửi cookie; filter nạp session từ store và dựng {{SecurityContext}}.
+5. Logout = {{session.invalidate()}} → cookie chết ngay ở phía server.
+
+Thuật ngữ: **cookie** là mẩu dữ liệu nhỏ trình duyệt tự gửi kèm request cùng domain. **Session** là "hồ sơ" của một người dùng do server giữ; session id là chìa khoá để tìm hồ sơ đó.
+
+### JWT hoạt động thế nào
+JWT gồm ba phần base64url: header (thuật toán, {{kid}}), payload (claims: {{sub}}, {{iss}}, {{exp}}, {{aud}}, {{scope}}), signature. Server xác minh: chữ ký đúng, {{iss}} đúng, {{exp}} chưa qua (cho phép lệch giờ khoảng 60 giây), {{aud}} đúng, scope đủ quyền.
+
+~~~text
+header.payload.signature
+~~~
+
+Vì token tự chứa thông tin, server **không cần** session store ⇒ stateless.
+
+### So sánh
+| Tiêu chí | Session (stateful) | JWT (stateless) |
+|---|---|---|
+| Server nhớ gì | Toàn bộ session | Không gì, chỉ verify |
+| Scale ngang | Cần sticky session hoặc Redis chung | Không cần |
+| Thu hồi tức thì | Có, invalidate | Khó, chờ exp hoặc deny-list |
+| Mỗi request | 1 lần đọc store | 1 lần verify chữ ký (CPU, không I/O) |
+| Kích thước | Cookie nhỏ | Token lớn hơn vì chứa claims |
+| CSRF | Có, cookie tự gửi | Gần như không, token ở header |
+| Đa thiết bị | Dễ, mỗi thiết bị một session | Dễ, mỗi thiết bị một refresh token |
+| Auth server chết | Mọi request cần store | Vẫn verify được bằng public key |
+
+### Khi nào chọn
+- **Web truyền thống, server-render**: session + Redis là đủ và dễ thu hồi.
+- **API cho mobile, SPA, nhiều service**: JWT + OAuth2, mỗi service tự verify bằng JWKS.
+- **Cần thu hồi ngay (banking, admin)**: opaque token (chuỗi ngẫu nhiên) tra cứu cache, hoặc session; JWT chỉ dùng cho service không nhạy cảm.
+- **Hybrid**: web dùng session cookie, API nội bộ dùng JWT ngắn hạn.
+
+### Logout và thu hồi
+1. Access token 5–15 phút, refresh token 7–30 ngày.
+2. Logout: xoá access token ở client, **thu hồi refresh token ở server** (xoá hash trong DB).
+3. Refresh rotation: mỗi lần refresh cấp refresh token mới và xoá cái cũ; nếu token cũ bị dùng lại → phát hiện đánh cắp, thu hồi cả họ token.
+4. Thu hồi khẩn (đổi mật khẩu, admin ban): thêm claim {{ver}} hoặc {{pwdChangedAt}}; resource server so với bản cache trong Redis – coarse-grained, một lần tra cứu cho mỗi user thay vì mỗi request.
+5. Deny-list {{jti}} trong Redis với TTL bằng thời gian còn lại của token – chỉ dùng cho logout tất cả thiết bị hoặc sự cố.
+6. Filter kiểm tra version phải được chèn vào chain bằng {{http.addFilterAfter(new TokenVersionFilter(cache), BearerTokenAuthenticationFilter.class)}}; nếu để {{@Component}} thì Boot đăng ký như servlet filter, nó chạy sau chain khi {{SecurityContext}} đã bị clear và sẽ không thấy token.
+
+~~~java
+class TokenVersionFilter extends OncePerRequestFilter {   // chèn vào chain, không để Boot tự đăng ký
+    private final UserSessionCache cache;                 // Redis: userId -> ver
+
+    TokenVersionFilter(UserSessionCache cache) { this.cache = cache; }
+
+    protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
+            throws ServletException, IOException {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth instanceof JwtAuthenticationToken jwt) {
+            Number ver = jwt.getToken().getClaim("ver");
+            if (ver == null || ver.longValue() != cache.version(jwt.getName())) {
+                res.sendError(HttpServletResponse.SC_UNAUTHORIZED);   // token đã bị thu hồi
+                return;
+            }
+        }
+        chain.doFilter(req, res);
+    }
+}
+~~~
+
+### Ví dụ đời thực
+App mobile 1,2 triệu người dùng, access token 7 ngày, không refresh rotation. Một điện thoại bị mất: kẻ gian dùng token trong ví (app) để gọi API suốt 6 ngày; user bấm logout nhưng server không có cách nào vô hiệu token vì chữ ký vẫn hợp lệ. Điều tra: bảng audit cho thấy token của user vẫn gọi API sau logout; không có bản ghi refresh token nào. Xử lý: rút access token xuống 15 phút, refresh token 30 ngày, rotation + lưu hash; thêm claim {{ver}}, filter kiểm tra Redis; logout gọi API thu hồi refresh token và tăng {{ver}}. Kết quả: sau logout, mọi token cũ bị từ chối trong dưới 1 giây; cửa sổ lộ token từ 7 ngày xuống 15 phút; Redis thêm khoảng 1.500 op/s, p99 0,4 ms. Một lưu ý thực tế: ngay sau deploy, tỉ lệ 401 tăng từ 0,1% lên 2,3% vì app chưa tự refresh đúng; sau khi sửa vòng refresh, về 0,2%.
+
+### Trả lời mẫu khi phỏng vấn
+"Session giữ state ở server nên thu hồi tức thì bằng invalidate, nhưng cần sticky session hoặc Redis chung và mỗi request phải đọc store. JWT tự chứa claims và chữ ký nên server chỉ verify, không tra cứu DB; điều đó giúp scale ngang và tránh single point of failure, nhưng bù lại không thu hồi được ngay. Tôi chọn session cho web truyền thống, JWT cho API nhiều service, và với hệ thống nhạy cảm thì dùng opaque token để thu hồi được. Với JWT, tôi dùng access token 15 phút, refresh token 30 ngày có rotation và phát hiện reuse; logout thì thu hồi refresh token ở server, còn access token sẽ hết hạn. Khi cần thu hồi khẩn, tôi thêm claim version và kiểm tra cache của user, hoặc deny-list jti với TTL bằng thời gian còn lại. Tôi cũng luôn kiểm tra iss, aud, exp và không dùng HS256 với secret dùng chung giữa nhiều service."
+
+> Senior tip: stateless không có nghĩa là "không quản lý phiên". Thiết kế tốt là **token ngắn + refresh dài + thu hồi ở refresh**, cộng thêm version claim cho các trường hợp khẩn. Nếu bạn không trả lời được "logout thì token cũ sống thêm bao lâu?", kiến trúc của bạn chưa xong.
+
+`,
+  follow: [
+    'Vì sao không nên lưu access token trong localStorage?',
+    'Opaque token với introspection khác JWT ở điểm nào khi cần thu hồi ngay?'
+  ],
+  tags: ['JWT', 'session', 'OAuth2', 'refresh token', 'stateless']
+},
+{
+  id: 'spring-071',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Bạn đặt isolation và timeout cho {{@Transactional}} như thế nào? Vì sao khai báo isolation trên một method join transaction sẵn có lại không có tác dụng, và khi vượt timeout thì điều gì thực sự xảy ra ở tầng JDBC/DB?',
+  a: `**Tóm tắt:** {{@Transactional(isolation = ..., timeout = ...)}} chỉ là dữ liệu mô tả transaction ({{TransactionDefinition}}). Isolation do **database** thực thi; Spring chỉ yêu cầu mức đó khi **thực sự mở** một transaction mới. Timeout được truyền xuống JDBC như **query timeout** – DB huỷ câu SQL đang chạy, chứ không phải một "đồng hồ" cắt ngang method Java.
+
+### Isolation là gì
+Mức isolation quyết định transaction này nhìn thấy dữ liệu của transaction khác đang chạy như thế nào. Bốn mức chuẩn SQL:
+
+| Mức | Dirty read | Non-repeatable read | Phantom read | Ghi chú |
+|---|---|---|---|---|
+| READ UNCOMMITTED | Có | Có | Có | Gần như không dùng |
+| READ COMMITTED | Không | Có | Có | Mặc định PostgreSQL, Oracle |
+| REPEATABLE READ | Không | Không | Có | MySQL InnoDB; PostgreSQL dùng snapshot |
+| SERIALIZABLE | Không | Không | Không | PostgreSQL SSI, có thể bị abort |
+
+Ví dụ lost update: hai giao dịch cùng đọc {{balance = 100}}, mỗi bên trừ 30, cùng ghi 70. Kết quả đúng phải là 40. READ COMMITTED không ngăn được vì mỗi câu UPDATE là một statement mới; cần {{@Version}} hoặc {{UPDATE ... WHERE balance >= 30}}.
+
+Ví dụ write skew: hai bác sĩ cùng trực, mỗi người huỷ ca của mình khi thấy "còn người khác trực"; REPEATABLE READ vẫn cho cả hai commit vì mỗi transaction chỉ đọc, không ghi đè nhau; chỉ SERIALIZABLE chặn được.
+
+### Spring áp dụng thế nào
+1. {{@Transactional}} → {{TransactionInterceptor}} → {{PlatformTransactionManager}}.
+2. {{AbstractPlatformTransactionManager.getTransaction()}} kiểm tra propagation. Nếu là REQUIRED và đã có transaction → **tham gia** transaction đó; mức isolation khai báo **không được áp dụng** vì không thể đổi isolation giữa chừng. Chỉ khi tạo transaction mới (REQUIRES_NEW, hoặc không có transaction) thì {{doBegin}} mới lấy connection và set isolation.
+3. {{timeout}} tính bằng giây (mặc định -1 là không giới hạn) được truyền xuống {{EntityManager}} qua thuộc tính {{jakarta.persistence.query.timeout}}, hoặc xuống {{Statement.setQueryTimeout}} với JDBC.
+
+### Code
+~~~java
+@Service
+public class TransferService {
+
+    @Transactional(isolation = Isolation.READ_COMMITTED, timeout = 5, rollbackFor = Exception.class)
+    public void transfer(long from, long to, BigDecimal amount) {
+        accountRepo.debit(from, amount);      // UPDATE ... WHERE balance >= amount
+        accountRepo.credit(to, amount);
+    }
+}
+~~~
+
+{{timeout = 5}} là 5 giây; nếu câu UPDATE thứ hai chưa xong, DB huỷ câu đó và transaction rollback. Nhưng nếu method này được gọi từ một method {{@Transactional}} khác (REQUIRED), isolation và timeout ở đây **bị bỏ qua** vì đã tham gia transaction của caller.
+
+### Timeout thực sự cắt cái gì
+- JDBC {{setQueryTimeout(n)}}: driver đặt hẹn giờ; pgjdbc gửi **cancel request** tới backend → câu SQL bị huỷ. Trên PostgreSQL thường thấy {{ERROR: canceling statement due to user request}}.
+- Timeout áp cho **từng câu SQL**, không phải toàn bộ thời gian transaction: mỗi statement có tối đa {{timeout}} giây. Vòng lặp Java, lời gọi HTTP, tính toán trong RAM **không** bị ngắt; transaction vẫn có thể kéo dài.
+- Khi DB huỷ, transaction bị đánh dấu rollback-only; exception thường là {{RuntimeException}} bọc {{SQLException}}. Với JTA, Spring có thể ném {{TransactionTimedOutException}}; với local transaction thì lỗi đến từ DB.
+- {{timeout}} không thay thế {{statement_timeout}} của PostgreSQL: nên đặt cả hai để phòng khi driver không gửi cancel.
+
+### Pitfall production
+- Đặt timeout cho batch import 500.000 dòng: một transaction không thể xong trong 30 giây → huỷ giữa chừng, mất việc; phải chia lô.
+- {{SERIALIZABLE}} cần retry khi gặp lỗi {{40001}} (serialization failure); nếu không retry, user thấy 500.
+- {{readOnly = true}} kết hợp isolation: Hibernate đặt {{FlushMode.MANUAL}} và bỏ dirty-checking.
+- Đặt isolation trên method được gọi nội bộ (self-invocation) → annotation bị bỏ qua hoàn toàn.
+- Transaction dài giữ connection Hikari → pool cạn (nguyên nhân phía code, không phải phía cấu hình pool).
+
+### Ví dụ đời thực
+Job báo cáo doanh thu ban đêm chạy một câu {{UPDATE accounts SET ...}} trên 2 triệu dòng trong **một** transaction, {{timeout = 60}}. Đêm nào cũng dừng ở khoảng 1,4 triệu dòng với {{ERROR: canceling statement due to user request}}, rollback toàn bộ, sáng ra số liệu cũ; job chạy lại đêm sau và lặp lại y hệt. Điều tra: log cho thấy một transaction duy nhất giữ connection 60 giây; {{pg_stat_activity}} ghi {{idle in transaction}} trong lúc ứng dụng xử lý. Xử lý: chia thành 2.000 lô × 1.000 dòng, mỗi lô một transaction {{timeout = 5}}, thêm {{statement_timeout = 10s}} ở tầng DB, theo dõi {{pg_stat_activity}}. Kết quả: job từ "không bao giờ xong" còn 6 phút; thời gian giữ lock bảng giảm từ hàng chục giây xuống dưới 200 ms; không còn câu nào bị huỷ.
+
+### Trả lời mẫu khi phỏng vấn
+"@Transactional(isolation, timeout) chỉ là mô tả transaction; isolation do database thực thi và chỉ áp dụng khi Spring thực sự mở transaction mới. Nếu method join vào transaction đang có thì isolation và timeout khai báo sẽ bị bỏ qua, đó là lý do đặt isolation trên method được gọi nội bộ thường không có tác dụng. Timeout được truyền xuống JDBC như query timeout nên database huỷ câu SQL đang chạy, chứ không cắt được vòng lặp Java hay lời gọi HTTP. Tôi dùng READ COMMITTED cho hầu hết nghiệp vụ, chỉ nâng lên REPEATABLE READ hoặc SERIALIZABLE khi có bất biến cần bảo vệ, và luôn có retry cho lỗi serialization. Với batch tôi chia lô để mỗi transaction ngắn, đặt timeout theo p99 của lô, và theo dõi lock wait cùng pg_stat_activity. Tôi cũng kiểm tra self-invocation và thứ tự proxy trước khi kết luận transaction không hoạt động."
+> Senior tip: isolation và timeout là hai "chiết áp" khác nhau: isolation đổi **kiểu nhìn dữ liệu**, timeout đổi **thời gian được phép giữ tài nguyên**. Đừng dùng SERIALIZABLE để sửa một lỗi lost update; hãy dùng @Version hoặc UPDATE có điều kiện, vì SERIALIZABLE chỉ chuyển lỗi sang chỗ khác và buộc bạn phải retry.
+
+`,
+  follow: [
+    'READ COMMITTED và REPEATABLE READ khác nhau ở PostgreSQL như thế nào khi hai transaction cùng cập nhật một dòng?',
+    'Timeout của @Transactional có bảo vệ được một lời gọi HTTP chậm không?'
+  ],
+  tags: ['Transactional', 'isolation', 'timeout', 'JDBC', 'PostgreSQL']
+},
+{
+  id: 'spring-072',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Bạn thiết kế retry cho một API ghi (chuyển tiền, tạo đơn) bằng {{@Retryable}}: retry exception nào, backoff ra sao, và làm sao retry không tạo bản ghi trùng? Vì sao không đặt {{@Retryable}} trên cùng method với {{@Transactional}}?',
+  a: `**Tóm tắt:** Retry chỉ dành cho lỗi **tạm thời** (timeout, 502/503, connection reset), không retry lỗi 4xx hay lỗi nghiệp vụ. {{@Retryable}} chạy qua proxy AOP nên phải đặt ở bean ngoài, **không** cùng method với {{@Transactional}} (nếu cùng, retry nằm trong transaction đã hỏng). Để không nhân đôi tác dụng, operation ghi phải **idempotent**: client gửi {{Idempotency-Key}}, server lưu khoá và kết quả trong bảng có unique constraint.
+
+### Retry: cơ chế
+- {{@EnableRetry}} (Spring Boot 3: thêm dependency {{spring-retry}}); annotation nằm ở {{org.springframework.retry.annotation}}.
+- {{@Retryable(retryFor = ..., noRetryFor = ..., maxAttempts = 3, backoff = @Backoff(delay = 200, multiplier = 2, maxDelay = 2000, random = 0.3))}}.
+- {{maxAttempts}} là **tổng số lần gọi** (3 = lần đầu + 2 retry). {{backoff}} tăng dần theo hàm mũ; {{random}} thêm jitter (nhiễu ngẫu nhiên) để tránh "thundering herd" – mọi client cùng retry một lúc.
+- {{retryFor}} (Spring Retry 2.x; {{includes}} đã deprecate) liệt kê exception được retry; {{noRetryFor}} loại trừ.
+- {{@Recover}}: method dự phòng khi hết attempt; chữ ký gồm tham số của method gốc và exception cuối.
+- {{RetryTemplate}} cho code không dùng annotation; {{RetryListener}} để ghi metric.
+
+~~~java
+@Service
+public class PaymentClient {
+
+    private final PaymentGateway gateway;
+
+    @Retryable(retryFor = {SocketTimeoutException.class, Gateway5xxException.class},
+               noRetryFor = PaymentRejectedException.class,
+               maxAttempts = 4,
+               backoff = @Backoff(delay = 200, multiplier = 2, maxDelay = 2000, random = 0.3))
+    public PaymentResult pay(PaymentRequest req) {
+        return gateway.charge(req);
+    }
+
+    @Recover
+    public PaymentResult recover(PaymentRequest req, Exception e) {
+        return PaymentResult.pending(req.idempotencyKey());   // để job đối soát xử lý
+    }
+}
+~~~
+
+### Vì sao không cùng method với @Transactional
+- {{@Transactional}} mở transaction trước khi vào method. Nếu {{@Retryable}} cũng nằm trên method đó, lần đầu thất bại làm transaction bị đánh dấu rollback-only; các lần retry sau **tham gia** transaction hỏng và luôn ném {{UnexpectedRollbackException}}.
+- Đúng: tách hai lớp. Bean ngoài retry gọi bean trong (transactional), mỗi attempt mở transaction mới:
+
+~~~java
+@Service
+public class CheckoutFacade {                 // retry ở đây
+    private final OrderService orderService;  // @Transactional ở đây
+
+    public Order checkout(OrderDraft draft) {
+        return retryTemplate.execute(ctx -> orderService.create(draft));
+    }
+}
+~~~
+
+### Idempotency
+- Client sinh {{Idempotency-Key}} (UUID) cho mỗi hành động nghiệp vụ và gửi kèm header.
+- Server dùng bảng {{idempotency_keys(key text primary key, request_hash text, status text, response jsonb, created_at timestamptz)}}.
+- Luồng: {{INSERT ... ON CONFLICT (key) DO NOTHING RETURNING *}} → nếu insert được thì xử lý; nếu không thì đọc bản ghi và trả lại response cũ (hoặc 409 nếu đang xử lý).
+- {{request_hash}} là hash của body và user; cùng key nhưng khác hash → 422 (client dùng lại key sai).
+- TTL: dọn sau 24–48 giờ, index trên {{created_at}}.
+- Với thao tác có khoá tự nhiên (mã đơn từ hệ thống ngoài), dùng unique constraint trên cột đó và {{ON CONFLICT DO NOTHING}} – không cần bảng riêng.
+
+### Không retry cái gì
+- 4xx (validation, hết tiền, duplicate) → lỗi tất định, retry vô ích.
+- Timeout **không biết** request đã thành công hay chưa → đây chính là lúc cần idempotency key, không phải lý do để không retry.
+- Retry bão hoà: đặt retry budget (ví dụ tối đa 10% lưu lượng), circuit breaker (Resilience4j) và deadline tổng.
+
+### Ví dụ đời thực
+Cổng thanh toán 8.000 giao dịch/ngày; 0,6% request timeout. Code cũ retry 3 lần cố định và không có idempotency → 12 giao dịch bị trừ tiền hai lần trong một tuần (0,15%), phát sinh khiếu nại. Xử lý: thêm idempotency key + unique constraint, retry exponential có jitter, circuit breaker mở sau 5 lỗi liên tiếp, retry budget 10%. Kết quả: timeout còn 0,4% (do đối tác), **0** duplicate trong 2 tháng. Một lần đối tác chậm 12 giây: 500 request/giây × 4 attempt = 2.000 request/giây; circuit breaker mở và retry budget giữ downstream ở khoảng 600 request/giây thay vì 2.000.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chỉ retry lỗi tạm thời: timeout, 502/503, connection reset; không retry 4xx vì lỗi tất định. @Retryable đặt trên bean ngoài, không cùng method với @Transactional, vì nếu cùng thì các lần retry tham gia transaction đã rollback-only và luôn ném UnexpectedRollbackException; tôi tách facade retry gọi service transactional để mỗi attempt mở transaction mới. Backoff dùng exponential có jitter và maxDelay để tránh thundering herd, kèm retry budget và circuit breaker. Với operation ghi, tôi bắt buộc idempotency key: client sinh UUID, server lưu key, hash request và response trong bảng có unique constraint, INSERT ON CONFLICT DO NOTHING để request thứ hai trả lại kết quả cũ. Timeout là trường hợp nguy hiểm nhất vì không biết request đã thành công chưa, nên idempotency key chính là thứ làm retry an toàn. Tôi cũng phân biệt rõ retry (lỗi tạm thời) với reprocess (job đối soát) cho các trường hợp đã gửi đi nhưng không nhận được phản hồi."
+
+> Senior tip: retry là "vay" độ tin cậy của hệ thống đích; nếu không có idempotency, bạn đang vay bằng tiền của khách hàng. Hãy viết test cho đúng một tình huống: request timeout nhưng downstream đã ghi thành công, rồi retry – kết quả phải là một bản ghi.
+
+`,
+  follow: [
+    'Làm sao biết một exception là tạm thời để retry?',
+    'Thiết kế idempotency key khi client là một batch job chạy lại nhiều lần?'
+  ],
+  tags: ['Retryable', 'idempotency', 'backoff', 'Resilience4j', 'transaction']
+},
+{
+  id: 'jpa-055',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Bạn dùng {{SEQUENCE}} với {{allocationSize}} để batch insert: {{pooled}} và {{pooled-lo}} khác nhau thế nào? Vì sao {{allocationSize}} phải khớp {{INCREMENT BY}} của sequence, và làm sao phát hiện id bị trùng hoặc nhảy cách?',
+  a: `**Tóm tắt:** {{allocationSize = N}} nghĩa là Hibernate **xin trước một lô N id** rồi cấp phát trong bộ nhớ, mỗi lần xin chỉ tốn một round-trip tới DB. {{pooled}} giả định DB sequence tăng đúng N mỗi lần {{nextval}} nên phải tạo sequence với {{INCREMENT BY N}}; {{pooled-lo}} không cần đổi DB nhưng id có dạng {{hi * N + lo}} và **có khoảng trống**. Sai lệch giữa allocationSize và INCREMENT BY là nguyên nhân kinh điển của {{duplicate key}} trên production.
+
+### Cơ chế từng bước
+1. Không optimizer (allocationSize = 1): mỗi entity insert gọi {{select nextval('order_id_seq')}} → một round-trip. Một triệu dòng là một triệu lần gọi sequence.
+2. {{allocationSize = 50}}, DB {{INCREMENT BY 50}} (pooled): Hibernate coi giá trị {{nextval}} là **biên trên** của lô. Với sequence {{START WITH 50 INCREMENT BY 50}}, lần đầu {{nextval}} trả 50 → Hibernate cấp id 1 đến 50; lần sau {{nextval}} trả 100 → cấp 51 đến 100. Một round-trip cho 50 dòng.
+3. Nếu DB {{INCREMENT BY 1}} nhưng Hibernate tưởng 50: {{nextval}} trả 1 → Hibernate cấp từ -48 đến 1; {{nextval}} tiếp theo trả 2 → Hibernate cấp từ -47 đến 2 → các id dương **bị trùng** (1, 2...), insert chết vì primary key.
+4. {{pooled-lo}}: Hibernate coi {{nextval}} là **chỉ số lô** (hi). Với sequence {{INCREMENT BY 1}}, {{nextval}} trả 1 → Hibernate cấp {{1*50}} đến {{1*50+49}}, tức 50 đến 99; {{nextval}} trả 2 → 100 đến 149. Không cần đổi DB, nhưng id có khoảng trống và không liên tục.
+
+~~~java
+@Entity
+public class Order {
+    @Id
+    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "order_seq")
+    @SequenceGenerator(name = "order_seq", sequenceName = "order_id_seq",
+                       allocationSize = 50)
+    private Long id;
+}
+~~~
+
+~~~sql
+-- pooled: INCREMENT BY phải bằng allocationSize; START WITH bằng allocationSize để lô đầu là 1..50
+CREATE SEQUENCE order_id_seq INCREMENT BY 50 START WITH 50;
+-- pooled-lo: giữ INCREMENT BY 1
+CREATE SEQUENCE order_id_seq INCREMENT BY 1 START WITH 1;
+~~~
+
+Hibernate 6 chọn optimizer qua {{hibernate.id.optimizer.pooled.preferred}}:
+- {{true}} → {{PooledOptimizer}}: cần {{INCREMENT BY}} bằng allocationSize, không nhảy cách nếu dùng hết lô.
+- {{false}} → {{PooledLoOptimizer}}: không cần đổi sequence, nhưng nhảy cách.
+
+### Vì sao id bị nhảy cách
+- Rollback: lô 50 id đã lấy, chỉ dùng 3 → mất 47.
+- Restart: lô còn lại trong RAM bị bỏ.
+- {{pooled-lo}}: mỗi instance lấy một khối, dùng không hết.
+- {{allocationSize}} quá lớn (1.000) → mỗi lần restart nhảy 1.000.
+- Sequence bị {{setval}} sai hoặc restore DB không khôi phục {{last_value}}.
+
+### Phát hiện
+- Log có {{duplicate key value violates unique constraint "order_pkey"}}; số câu {{select nextval}} nhiều hơn dự kiến.
+- Kiểm tra: {{SELECT last_value, increment_by FROM order_id_seq;}} và {{SELECT * FROM pg_sequences WHERE sequencename = 'order_id_seq';}} (PostgreSQL 10+).
+- Nếu {{increment_by = 1}} mà {{allocationSize = 50}} → gần như chắc chắn sẽ trùng.
+- Nếu id nhảy hàng trăm nhưng không trùng → pooled-lo hoặc rollback/restart; chấp nhận nếu nghiệp vụ không cần id liên tục.
+
+### Chọn gì
+| Nhu cầu | Lựa chọn |
+|---|---|
+| PostgreSQL, cần batch nhanh, chấp nhận đổi sequence | pooled cộng {{INCREMENT BY}} bằng allocationSize |
+| Không muốn đổi DB, chấp nhận id nhảy | pooled-lo |
+| MySQL (không có sequence) | TABLE generator hoặc UUID/ULID |
+| Nhiều service ghi cùng bảng, cần id toàn cục | Snowflake hoặc segment riêng cho từng service |
+| Cần id liên tục tuyệt đối | Không dùng optimizer, chấp nhận chậm |
+
+### Pitfall production
+- {{GenerationType.AUTO}} trên Hibernate 6 chọn sequence cho PostgreSQL và identity cho MySQL → đổi DB là đổi hành vi; hãy khai báo tường minh.
+- Đổi {{allocationSize}} mà không đổi {{INCREMENT BY}} (hoặc ngược lại) → lỗi chỉ xuất hiện khi hết lô đầu, thường sau vài giờ chạy.
+- {{initialValue}} không khớp {{START WITH}} → id bắt đầu sai.
+- Sequence không nằm trong migration → môi trường mới thiếu sequence, app fail khi insert.
+- Bật/tắt {{hibernate.id.optimizer.pooled.preferred}} khác nhau giữa các instance → hai instance có thể cấp cùng id.
+
+### Ví dụ đời thực
+Job nhập 200.000 đơn mỗi đêm, 3 pod, batch 500. {{allocationSize = 100}}, nhưng sequence được script cũ tạo với {{INCREMENT BY 1}}. Đêm thứ ba, pod 2 chết ở dòng 37.412 với {{duplicate key value violates unique constraint "order_pkey"}}; log cho thấy {{nextval}} trả 1, 2, 3... nhưng Hibernate cấp 100 id mỗi lần. Điều tra: {{SELECT increment_by FROM order_id_seq}} trả 1. Sửa: {{ALTER SEQUENCE order_id_seq INCREMENT BY 100}} và {{setval}} đúng, hoặc chuyển sang pooled-lo. Sau sửa: 200.000 dòng trong 6 phút (trước 22 phút), không còn lỗi; thêm startup check so sánh {{increment_by}} với {{allocationSize}} và fail fast nếu lệch.
+
+### Trả lời mẫu khi phỏng vấn
+"allocationSize là kích thước lô id mà Hibernate xin trước để tránh round-trip mỗi dòng. Với pooled, Hibernate gọi nextval một lần rồi cấp N id liên tiếp, nên sequence trong DB phải được tạo với INCREMENT BY đúng bằng allocationSize; nếu sequence tăng 1 mà Hibernate tưởng tăng 100 thì lô thứ hai sẽ cấp lại các id đã dùng và primary key nổ. Với pooled-lo, Hibernate lấy nextval rồi dùng công thức hi nhân allocationSize cộng lo, không cần đổi DB nhưng id có khoảng trống và mỗi lần restart có thể mất cả lô. Tôi kiểm tra bằng cách so sánh increment_by của sequence với allocationSize, xem last_value và pg_sequences, và bật log SQL để đếm số lần nextval. Trong thực tế tôi từng gặp duplicate key sau vài giờ chạy vì sequence cũ để INCREMENT BY 1; sửa sequence và thêm startup check, job từ 22 phút xuống 6 phút nhờ batch size 500."
+> Senior tip: sequence là "bộ chia số", allocationSize là "kích thước phần"; hai bên phải nói cùng một ngôn ngữ. Khi thấy duplicate key sau vài giờ chạy, đừng nhìn code Java trước – hãy nhìn {{increment_by}} của sequence.
+
+`,
+  follow: [
+    'Vì sao id nhảy cách không phải là bug trong nhiều hệ thống?',
+    'Khi nào nên dùng UUID thay cho sequence?'
+  ],
+  tags: ['sequence', 'allocationSize', 'pooled optimizer', 'batch insert', 'Hibernate']
+},
+{
+  id: 'jpa-056',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Với quan hệ {{@OneToMany}} hai chiều, ai là owning side, vì sao chỉ thêm phần tử vào collection mà không set phía con thì khoá ngoại không được ghi, và Hibernate sinh thứ tự INSERT/UPDATE nào? Khi nào nên bỏ hẳn collection khỏi entity?',
+  a: `**Tóm tắt:** Owning side là phía **giữ khoá ngoại**, thường là {{@ManyToOne}} ở entity con; {{mappedBy}} đánh dấu phía còn lại là "gương" (inverse side). Hibernate chỉ ghi khoá ngoại theo owning side, nên phải set **cả hai phía**: {{order.getItems().add(item)}} và {{item.setOrder(order)}}. Với bidirectional đúng cách, Hibernate insert child kèm FK (không có UPDATE thừa); với unidirectional {{@OneToMany}} cộng {{@JoinColumn}}, Hibernate insert child rồi UPDATE FK – mỗi dòng hai câu SQL.
+
+### Ai giữ khoá ngoại
+~~~java
+@Entity
+class Order {
+    @Id @GeneratedValue Long id;
+    @OneToMany(mappedBy = "order", cascade = {CascadeType.PERSIST, CascadeType.MERGE})
+    private List<OrderItem> items = new ArrayList<>();
+
+    void addItem(OrderItem item) {      // helper: đồng bộ hai phía
+        items.add(item);
+        item.setOrder(this);
+    }
+}
+
+@Entity
+class OrderItem {
+    @Id @GeneratedValue Long id;
+    @ManyToOne(fetch = FetchType.LAZY)  // owning side: cột order_id
+    @JoinColumn(name = "order_id", nullable = false)
+    private Order order;
+}
+~~~
+
+{{Order}} là inverse side: thay đổi {{order.items}} không sinh SQL. {{OrderItem.order}} là owning side: gán {{item.setOrder(order)}} mới sinh INSERT/UPDATE cho {{order_id}}.
+
+### Vì sao "chỉ thêm vào list" là bug
+- Hibernate flush dựa trên owning side. Nếu chỉ {{order.getItems().add(item)}}:
+  - {{item.order}} là null → insert item với {{order_id = null}} (nếu cột nullable) hoặc lỗi {{not-null constraint}} (nếu {{nullable = false}}).
+  - Với collection đã load, Hibernate không phát hiện phần tử mới ở phía inverse → không insert gì.
+- Nếu chỉ {{item.setOrder(order)}} mà không thêm vào list: item được insert, nhưng {{order.items}} trong bộ nhớ thiếu phần tử → JSON/UI sai, lần đọc sau mới đúng.
+- Vì vậy helper {{addItem()}} và {{removeItem()}} là bắt buộc; đây là quy ước của aggregate root.
+
+### Thứ tự SQL
+- Bidirectional, parent đã persist: {{INSERT INTO order_item (order_id, ...)}} – FK đi kèm, **không** có UPDATE.
+- Bidirectional, parent mới: {{INSERT INTO orders}}, rồi {{INSERT INTO order_item}} (id cha đã có).
+- Unidirectional {{@OneToMany}} cộng {{@JoinColumn}}: {{INSERT INTO order_item (...)}} với {{order_id = null}}, rồi {{UPDATE order_item SET order_id = ?}} – **hai câu cho mỗi dòng**.
+- Unidirectional {{@OneToMany}} không {{@JoinColumn}}: Hibernate tạo **bảng join** {{order_item(order_id, item_id)}} – thêm một insert và một insert bảng join cho mỗi dòng.
+- {{List}} không có {{@OrderColumn}} hoặc {{@OrderBy}}: thứ tự phần tử **không được đảm bảo** khi đọc lại. Dùng {{Set}} (không cần index) hoặc {{@OrderBy("id ASC")}}.
+
+### Khi nào bỏ collection khỏi entity
+- Collection rất lớn (hàng chục nghìn phần tử): load hết là OOM hoặc N+1; truy vấn trực tiếp {{itemRepo.findByOrderId(id, pageable)}}.
+- Chỉ cần đọc: dùng DTO projection, không cần quan hệ hai chiều.
+- Entity con được dùng ở nhiều aggregate: không đặt cascade hoặc orphanRemoval; quản lý bằng service.
+- JSON: tránh vòng lặp vô hạn bằng {{@JsonIgnore}} ở phía con hoặc DTO; không dựa vào {{@JsonManagedReference}} như một thiết kế.
+
+### Pitfall production
+- {{cascade = PERSIST}} mà không set FK → insert item với {{order_id}} null.
+- {{orphanRemoval}} cộng thay collection bằng setter → {{A collection with cascade=all-delete-orphan was no longer referenced}}.
+- {{equals}} và {{hashCode}} theo id (null khi mới) → {{HashSet}} loại phần tử mới; theo business key thì phải cẩn thận khi sửa key.
+- {{@ManyToOne}} EAGER (mặc định) → N+1 khi đọc danh sách order.
+- {{nullable = false}} giúp phát hiện sớm bug "chỉ set một phía" – nên bật.
+
+### Ví dụ đời thực
+API tạo đơn với 10 dòng. Log SQL: 1 {{INSERT orders}}, 10 {{INSERT order_item}} (order_id null), 10 {{UPDATE order_item SET order_id = ?}} – 21 round-trip. Nguyên nhân: quan hệ unidirectional {{@OneToMany}} cộng {{@JoinColumn}}, không có helper đồng bộ. Sửa: thêm {{OrderItem.order}} ({{@ManyToOne}}, {{nullable = false}}) và {{addItem()}}; chuyển thành bidirectional. Kết quả: 11 round-trip; p95 API từ 480 ms xuống 210 ms ở mức 10 dòng; với 50 dòng, từ 1,9 giây xuống 320 ms. Đồng thời {{order.items}} không còn null sau khi đọc.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong quan hệ một-nhiều, owning side là phía giữ khoá ngoại, thường là ManyToOne ở entity con; mappedBy đánh dấu phía inverse chỉ để đọc cho tiện. Hibernate chỉ ghi khoá ngoại theo owning side, nên nếu chỉ thêm phần tử vào collection mà không gán item.order thì order_id không được ghi, hoặc là null hoặc là lỗi not-null. Tôi luôn viết helper addItem và removeItem đồng bộ cả hai phía. Với bidirectional đúng cách, Hibernate insert child kèm FK, không có UPDATE thừa; còn unidirectional OneToMany với JoinColumn thì insert rồi update FK, tức hai câu cho mỗi dòng, nên tôi chuyển sang bidirectional khi thấy log SQL có nhiều UPDATE. Tôi dùng Set thay vì List khi không cần thứ tự, đặt ManyToOne LAZY tường minh để tránh N+1, và bỏ collection khỏi entity khi nó quá lớn hoặc chỉ cần đọc, chuyển sang truy vấn phân trang hoặc DTO."
+> Senior tip: hãy đọc log SQL như một bản thiết kế: nếu thấy INSERT rồi UPDATE cùng một bảng cho mỗi dòng con, quan hệ của bạn đang ở phía "unidirectional" và bạn đang trả tiền cho hai round-trip mỗi dòng. Thêm 10 dòng đơn không đáng gì, thêm 10.000 dòng là 10.000 UPDATE thừa.
+
+`,
+  follow: [
+    'Vì sao nên dùng Set thay vì List cho @OneToMany?',
+    'Làm sao tránh vòng lặp JSON giữa hai entity hai chiều?'
+  ],
+  tags: ['OneToMany', 'mappedBy', 'owning side', 'Hibernate', 'N+1']
+},
+{
+  id: 'jpa-057',
+  topic: 'jpa',
+  level: 'lead',
+  q: 'Bạn bật {{orphanRemoval}} để xoá dòng hàng khi gỡ khỏi đơn, nhưng bản ghi vẫn còn trong DB hoặc ứng dụng ném {{A collection with cascade=all-delete-orphan was no longer referenced}}. Giải thích cơ chế và cách xử lý; {{cascade}} và {{orphanRemoval}} khác nhau ở đâu?',
+  a: `**Tóm tắt:** {{cascade}} lan truyền **thao tác** từ cha sang con (PERSIST, MERGE, REMOVE...); {{orphanRemoval}} xoá con khi nó **không còn được tham chiếu** bởi collection đã load của một entity đang được quản lý (managed). Orphan removal chỉ hoạt động khi entity cha là managed, collection đã được khởi tạo, và bạn sửa **trên chính collection đó**. Thay collection bằng setter, sửa trên entity detached, hoặc xoá bằng bulk query đều phá vỡ cơ chế này.
+
+### Điều kiện để orphanRemoval chạy
+1. Cha được nạp trong persistence context hiện tại (managed, không detached).
+2. Collection đã được khởi tạo (không còn lazy chưa load) – nếu chưa load, gỡ phần tử không có ý nghĩa.
+3. Phần tử bị gỡ khỏi **chính** collection đó: {{order.getItems().remove(item)}}.
+4. {{orphanRemoval = true}} khai báo trên quan hệ cha–con (một chiều hoặc {{mappedBy}}).
+5. Đến flush/commit, Hibernate phát hiện con không còn trong collection → {{DELETE}} con.
+
+### Các lỗi hay gặp
+1. **Thay collection bằng setter**
+~~~java
+order.setItems(newItems);   // NGUY HIỂM với orphanRemoval
+~~~
+Hibernate không biết phần tử nào bị bỏ (collection cũ bị thay hoàn toàn) → ném {{PersistenceException: A collection with cascade=all-delete-orphan was no longer referenced}}. Cách đúng: {{items.clear(); items.addAll(newItems);}} hoặc so khớp theo id rồi add/remove từng phần tử.
+
+2. **Entity detached**: nạp order trong transaction trước, đóng session, sửa collection, {{merge}} sau. Collection detached không được theo dõi; thay đổi bị bỏ qua. Tắt OSIV là hay gặp.
+
+3. **Bulk delete**: {{@Modifying @Query("delete from OrderItem i where i.order.id = :id")}} xoá thẳng DB, không qua persistence context → entity trong context vẫn còn, orphanRemoval không liên quan.
+
+4. **Con vẫn còn tham chiếu**: nếu {{item.order}} vẫn trỏ về order và bạn chỉ gỡ khỏi list, orphanRemoval vẫn xoá vì nó dựa trên collection; nhưng nếu con được chia sẻ bởi order khác, việc xoá sẽ vi phạm FK hoặc mất dữ liệu.
+
+5. **equals và hashCode theo id null**: phần tử mới chưa có id; {{HashSet}} coi mọi phần tử mới là bằng nhau → {{add}} không thêm, {{remove}} không tìm thấy.
+
+6. **@ManyToMany không có orphanRemoval** (JPA cấm): muốn bỏ quan hệ, gọi {{student.getCourses().remove(course)}} trên owning side; chỉ dòng bảng join bị xoá.
+
+7. **{{CascadeType.ALL}} không bao gồm orphanRemoval**: ALL gồm PERSIST, MERGE, REMOVE, REFRESH, DETACH. Nếu chỉ có ALL mà không có orphanRemoval, gỡ khỏi list **không** xoá bản ghi con.
+
+8. **Soft delete**: {{@SQLDelete}} khiến {{remove}} thành {{UPDATE ... SET deleted = true}}; orphanRemoval cũng đi qua đường delete nên con "mất" khỏi collection nhưng vẫn còn trong bảng → truy vấn phải có filter {{deleted = false}}.
+
+### So sánh
+| | cascade | orphanRemoval |
+|---|---|---|
+| Kích hoạt | Thao tác trên cha (persist, merge, remove) | Con bị gỡ khỏi collection (hoặc cha bị xoá) |
+| Phạm vi | Cha sang con | Con bị xoá |
+| Mục đích | Tự động lưu/xoá theo aggregate | Dọn con không còn thuộc về ai |
+| Rủi ro | Xoá lan (REMOVE), lưu ngoài ý muốn | Xoá khi thay collection, khi entity detached |
+
+### Code đúng
+~~~java
+@Entity
+class Order {
+    @OneToMany(mappedBy = "order",
+               cascade = {CascadeType.PERSIST, CascadeType.MERGE},
+               orphanRemoval = true)
+    private List<OrderItem> items = new ArrayList<>();
+
+    void addItem(OrderItem item) {
+        items.add(item);
+        item.setOrder(this);
+    }
+
+    void replaceItems(Collection<OrderItem> next) {
+        items.clear();                  // orphanRemoval sẽ xoá các con bị gỡ
+        next.forEach(this::addItem);    // addItem set cả hai phía
+    }
+}
+~~~
+
+### Ví dụ đời thực
+Màn hình sửa đơn gửi cả danh sách mới; code gọi {{order.setItems(newItems)}} trên entity nạp ở request trước (OSIV tắt). Khoảng 4% request sửa đơn trả 500 với {{A collection with cascade=all-delete-orphan was no longer referenced}}; số request còn lại im lặng bỏ qua thay đổi, khiến 3 dòng hàng bị xoá vẫn còn trong DB và báo cáo lệch 1,8% doanh thu trong hai tuần. Điều tra: bật {{show-sql}}, không thấy {{DELETE order_item}} nào sau khi gỡ dòng; stacktrace chỉ vào {{AbstractPersistentCollection}} khi replace collection. Sửa: dùng {{clear()}} cộng {{addAll()}} trên collection managed, helper {{addItem()}} set hai phía, thêm test tích hợp đếm số dòng trong DB sau khi sửa. Kết quả: 0 lỗi 500, số dòng khớp đơn vị, p95 không đổi.
+
+### Trả lời mẫu khi phỏng vấn
+"cascade lan truyền thao tác từ cha sang con, còn orphanRemoval xoá con khi nó không còn nằm trong collection của một entity đang được quản lý. Điều kiện là cha phải managed, collection đã load, và mình sửa trên chính collection đó. Lỗi kinh điển là thay cả collection bằng setter: Hibernate không biết phần tử nào bị bỏ nên ném collection was no longer referenced; hoặc sửa trên entity detached thì thay đổi bị bỏ qua im lặng, khiến bản ghi mồ côi vẫn còn trong DB. Tôi luôn dùng clear rồi addAll, hoặc so khớp theo id, và viết helper addItem/removeItem đồng bộ hai phía. Bulk delete bằng @Modifying bỏ qua persistence context nên không liên quan orphanRemoval; @ManyToMany thì JPA cấm orphanRemoval, chỉ xoá dòng bảng join. Tôi cũng nhớ rằng CascadeType.ALL không bao gồm orphanRemoval, nên chỉ có ALL thì gỡ khỏi list không xoá gì cả. Cuối cùng tôi thêm test đếm số bản ghi con trong DB sau thao tác sửa."
+> Senior tip: orphanRemoval là "thu gom rác" của JPA, nhưng nó chỉ hoạt động khi bạn sửa đúng object đang được quản lý. Khi thấy exception collection no longer referenced, đừng bọc try/catch – hãy sửa cách cập nhật collection; còn khi bản ghi mồ côi vẫn còn, hãy kiểm tra entity có detached hay không trước khi nghi Hibernate.
+
+`,
+  follow: [
+    'orphanRemoval có chạy khi xoá entity cha không?',
+    'Làm sao test được orphanRemoval mà không cần database thật?'
+  ],
+  tags: ['orphanRemoval', 'cascade', 'JPA', 'Hibernate', 'detached']
+},
+{
+  id: 'spring-073',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Bạn thiết kế health check cho service chạy trên Kubernetes: liveness, readiness và startup khác nhau thế nào? Cấu hình health group của Actuator ra sao, và khi DB hoặc Kafka chậm thì probe nên fail hay không?',
+  a: `**Tóm tắt:** **Liveness** trả lời "process có cần restart không" → chỉ kiểm tra process, **không** kiểm tra dependency. **Readiness** trả lời "có nhận traffic không" → kiểm tra dependency thiết yếu (DB, cache) và trạng thái {{ReadinessState}}. **Startup** cho app khởi động chậm (JVM, nạp dữ liệu) trước khi liveness và readiness bắt đầu. Actuator cung cấp {{/actuator/health/liveness}}, {{/actuator/health/readiness}}, và cho phép tự khai báo **health group**.
+
+### Vì sao phải tách
+- Nếu liveness kiểm tra DB: DB chậm 10 giây → tất cả pod bị restart → restart không làm DB hết chậm, chỉ làm mất thêm capacity (cascading failure).
+- Nếu readiness không kiểm tra DB: pod vẫn nhận traffic trong khi mọi query lỗi → 500 hàng loạt.
+- Startup probe: Spring Boot có thể mất 30–60 giây để nạp (Flyway, cache, kết nối). Liveness với {{initialDelaySeconds}} quá ngắn → bị kill trước khi xong.
+
+### Ba loại probe
+| Probe | Câu hỏi | Endpoint gợi ý | Khi nào fail |
+|---|---|---|---|
+| Startup | Process đã khởi động xong chưa | {{/actuator/health/liveness}} hoặc custom group | App chưa sẵn sàng, JVM chưa load |
+| Liveness | Process có cần restart | {{/actuator/health/liveness}} | Deadlock, lỗi không tự hồi phục |
+| Readiness | Có nhận traffic | {{/actuator/health/readiness}} | DB down, pool cạn, đang shutdown |
+
+Spring Boot không có health group {{startup}} mặc định. Startup probe thường trỏ vào liveness (chỉ kiểm tra process đã lên), hoặc vào một custom group chứa một {{HealthIndicator}} báo "đã nạp xong dữ liệu tham chiếu".
+
+### Cấu hình
+~~~yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true          # tự bật khi chạy trên Kubernetes
+      show-details: never      # production: không lộ chi tiết
+      group:
+        readiness:
+          include: readinessState,db,redis
+          show-details: never
+        liveness:
+          include: livenessState
+~~~
+
+~~~java
+@Bean
+HealthIndicator cacheWarmUp() {
+    return () -> cacheReady
+        ? Health.up().withDetail("cache", "warm").build()
+        : Health.down().withDetail("cache", "loading").build();
+}
+~~~
+
+~~~yaml
+startupProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8080 }
+  failureThreshold: 30
+  periodSeconds: 5
+livenessProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8080 }
+  periodSeconds: 10
+readinessProbe:
+  httpGet: { path: /actuator/health/readiness, port: 8080 }
+  periodSeconds: 5
+  failureThreshold: 3
+~~~
+
+### Readiness có nên fail khi Kafka chậm?
+- Kafka **không thiết yếu** cho request HTTP (ví dụ chỉ dùng để bắn event bất đồng bộ): **không** đưa vào readiness; dùng metric consumer lag và alert.
+- Kafka **bắt buộc** (xử lý thanh toán theo message): đưa vào readiness, nhưng đặt timeout ngắn và {{failureThreshold}} hợp lý để tránh flapping.
+- DB thường thiết yếu → readiness; nhưng dùng validation timeout ngắn (1–2 giây) và {{failureThreshold}} 3 để một hiccup không rút toàn bộ pod.
+- Nguyên tắc: readiness fail nghĩa là "tôi không xử lý được traffic"; liveness fail nghĩa là "tôi không thể tự phục hồi".
+
+### Pitfall production
+- {{show-details: always}} lộ thông tin DB và URL.
+- Health endpoint public trên Internet.
+- Readiness gồm dependency flaky → tất cả pod NotReady → downtime toàn bộ.
+- Liveness timeout 1 giây trong khi GC pause 2 giây → restart loop.
+- Probe trỏ vào port chính (8080) trong khi management port là 8081 → 404, không bao giờ ready.
+- {{initialDelaySeconds}} quá ngắn cho app có Flyway migration lớn.
+- {{additional-path}} của health group không khớp → probe 404.
+
+### Ví dụ đời thực
+40 pod, Kafka broker có GC pause 8 giây. Readiness gồm {{kafka}} → 40/40 pod NotReady trong 3 phút, API trả 503 dù DB hoàn toàn bình thường. Điều tra: {{/actuator/health/readiness}} trả về {{status: DOWN}} với thành phần {{kafka: DOWN}}; log cho thấy admin client timeout 5 giây. Sửa: bỏ {{kafka}} khỏi readiness (chỉ giữ {{readinessState,db}}), thêm alert consumer lag trên 10.000 trong 5 phút, tăng timeout admin client. Kết quả: rolling update không còn bị block, sự cố Kafka không còn làm API sập; ba lần broker restart sau đó không ảnh hưởng traffic.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách ba loại probe theo câu hỏi mà chúng trả lời. Liveness chỉ kiểm tra process, vì nếu nó kiểm tra DB thì DB chậm sẽ khiến Kubernetes restart toàn bộ pod và làm sự cố nặng hơn; readiness kiểm tra các dependency thiết yếu để rút pod khỏi load balancer khi chưa xử lý được traffic; startup cho app có thời gian nạp trước khi liveness bắt đầu. Với Actuator, tôi bật probes, đặt show-details never, và khai báo health group readiness gồm readinessState và db, liveness chỉ gồm livenessState. Tôi không đưa Kafka vào readiness nếu nó không thiết yếu cho request HTTP, mà theo dõi consumer lag và alert; nếu bắt buộc thì đặt timeout ngắn và failureThreshold hợp lý để tránh flapping. Tôi cũng kiểm tra management port, additional-path và timeout để probe không bị 404, và diễn tập rolling update dưới tải."
+> Senior tip: hãy viết health check như một quyết định vận hành: "nếu fail, hệ thống sẽ làm gì?" Nếu câu trả lời là "restart pod" thì đó là liveness; nếu là "rút khỏi load balancer" thì đó là readiness. Đưa một dependency không thiết yếu vào readiness là cách nhanh nhất để biến sự cố của một service thành sự cố của cả hệ thống.
+
+`,
+  follow: [
+    'Readiness và liveness nên trỏ vào port nào khi management port khác 8080?',
+    'Vì sao startupProbe không nên dùng chung cấu hình với livenessProbe?'
+  ],
+  tags: ['Actuator', 'health group', 'readiness', 'liveness', 'Kubernetes']
+},
 );
