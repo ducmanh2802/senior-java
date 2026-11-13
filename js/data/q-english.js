@@ -10731,4 +10731,172 @@ The turning point was month 6 when he caught a race condition in the refund idem
   ],
   tags: ['leadership', 'mentoring', 'growing-engineers', 'career-development'],
 },
+{
+  id: 'english-206',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'A non-technical client asks you to explain RAG. How would you explain what it is, why we need it, and what the risks are, without using technical jargon?',
+  a: `**Tóm tắt:** Interviewer muốn xem bạn có **dịch** (translate) một khái niệm kỹ thuật sang ngôn ngữ của người không làm kỹ thuật, đúng và ngắn. **RAG** (Retrieval-Augmented Generation: máy vừa tra cứu tài liệu vừa viết câu trả lời) không phải là "AI thông minh hơn", mà là cách bắt buộc câu trả lời phải dựa trên tài liệu thật của khách hàng. Hãy nói theo mạch: **vấn đề của khách → ý tưởng theo cách đời thường → luồng 3 bước → giới hạn và rủi ro → cách bạn chứng minh nó chạy đúng**.
+
+### Sample answer
+I would start with the problem, not the technology. I would say: today our assistant answers from its general knowledge, so it can sound confident and still be wrong about your own policies.
+
+RAG means we make the assistant look things up before it answers. Think of a good new employee: before replying to a customer, they open your policy folder, find the right page, and then write the reply based on that page.
+
+The flow has three steps. First, we take your approved documents and split them into small sections. Second, when a question comes in, the system finds the few sections that are probably relevant. Third, it gives those sections to the model and asks it to answer using only that text, and to show which document it used.
+
+The benefit is that answers follow your documents, not the model's memory. When a price or a policy changes, we update the document instead of retraining anything.
+
+The risks are also simple to state. Retrieval can miss the right section, and a badly scanned document can lead to a wrong answer. That is why we show sources, we keep a person in the loop for sensitive cases, and we measure the percentage of answers that a reviewer marks as supported by the source. In a pilot on 300 real questions, that number went from 61 percent to 93 percent.
+
+### Useful phrases
+- **I would start with the problem, not the technology** — tôi bắt đầu từ vấn đề, không phải từ công nghệ
+- **look things up before it answers** — tra cứu trước khi trả lời
+- **the few sections that are probably relevant** — vài đoạn có khả năng liên quan
+- **answer using only that text** — chỉ trả lời dựa trên đoạn văn bản đó
+- **instead of retraining anything** — thay vì phải huấn luyện lại mô hình
+- **keep a person in the loop** — cho người thật kiểm tra trước khi dùng
+- **the percentage of answers supported by the source** — tỉ lệ câu trả lời có căn cứ từ tài liệu
+
+### Lỗi người Việt hay mắc
+- **Dùng ngay thuật ngữ:** nói {{embedding}}, {{vector store}}, {{chunk}} với khách không kỹ thuật. Hãy nói "small sections", "search", "documents".
+- **Nói RAG là "huấn luyện AI":** hai việc khác nhau. RAG chỉ tra cứu lúc trả lời; huấn luyện lại (fine-tune) là thay đổi chính mô hình và tốn nhiều tiền.
+- **Hứa "chính xác 100%":** khách sẽ thất vọng. Hãy nói {{reduces wrong answers}}, {{shows the source}}, {{a person can review}}.
+- **Quên phần rủi ro:** câu trả lời chỉ mạnh khi bạn nêu được điểm yếu và cách kiểm soát nó.
+
+> Senior tip: Khách không mua RAG, khách mua "trả lời đúng và có căn cứ". Nếu chỉ có 60 giây, hãy nói: "Nó tra tài liệu của anh trước khi trả lời, nó ghi rõ nguồn, và nó nói 'không biết' khi không tìm thấy" — đủ để khách hiểu và đủ để chứng minh bạn kiểm soát được rủi ro.`,
+  follow: [
+    'How would you explain to the client why the assistant sometimes says "I do not know" instead of guessing?',
+    'What would you do if the client insists that the assistant must always give an answer?',
+    'How do you explain the difference between RAG and fine-tuning to a business person in one sentence?'
+  ],
+  tags: ['english', 'rag', 'llm', 'non-technical', 'communication']
+},
+{
+  id: 'english-207',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'Tell me about a time you worked with a remote team across time zones on a tight deadline. What was hard, and what did you change?',
+  a: `**Tóm tắt:** Câu này kiểm tra bạn có **cách làm việc async** (async: không họp trực tiếp mà trao đổi qua văn bản, mỗi người làm theo giờ của mình) và có kỷ luật giao tiếp khi bị deadline ép hay không. Đừng kể "chúng tôi họp nhiều hơn". Hãy kể một tình huống cụ thể: quy mô team, số múi giờ, deadline, **cái gì bị tắc vì lệch giờ**, bạn đổi cách làm gì, và kết quả đo được (thời gian chờ review, số lần phải họp lại, ngày giao hàng).
+
+### Sample answer
+Last year I worked on a payment reporting module with a team of nine: five engineers in Vietnam, three in Germany, one in Brazil. We had six weeks to deliver before a client audit, so the deadline was fixed.
+
+The first week was painful. A pull request opened at 9 AM in Vietnam would wait twenty hours for a German review, and then the reviewer's question arrived when our team was offline. We measured an average wait of 18 hours per review, and we were losing about two days per feature.
+
+We changed three things. First, we made every pull request small — under 200 lines — so a review took fifteen minutes, not an hour. Second, we agreed on a written rule: each pull request description must contain the context, the risk, and the exact question for the reviewer, and the author must record a two-minute video walkthrough for anything non-obvious. Third, we protected a four-hour overlap window from 2 PM to 6 PM for live discussion only, and we moved everything else to comments.
+
+We also split the work by ownership instead of by task, so one person owned one module end to end and nobody waited for a handover.
+
+After two weeks, the average review wait dropped to five hours, and we delivered four days before the deadline with only one late-night call per person for the whole project.
+
+### Useful phrases
+- **the deadline was fixed** — deadline đã được ấn định, không thể dời
+- **wait for a review** — chờ người khác review code
+- **we lost about two days per feature** — mỗi feature mất thêm khoảng hai ngày
+- **we made every pull request small** — chúng tôi chia nhỏ mỗi pull request
+- **an overlap window** — khoảng giờ làm việc chung giữa hai nước
+- **split the work by ownership** — chia việc theo người sở hữu module
+- **we delivered four days before the deadline** — giao hàng trước deadline bốn ngày
+
+### Lỗi người Việt hay mắc
+- **Nói "we worked hard and stayed up late":** nghe như bạn không kiểm soát được tiến độ. Hãy nói bạn **thay đổi quy trình** và có số liệu trước/sau.
+- **Thiếu số liệu cụ thể:** nói {{many hours}} là mơ hồ. Hãy nói {{an average wait of 18 hours}} hoặc {{six weeks}}.
+- **Dùng sai "onshore/offshore":** offshore là đội ở nước khác; nearshore là nước gần; đừng dùng lẫn.
+- **Bỏ qua văn hóa:** nói rõ bạn xử lý khác biệt múi giờ **và** khác biệt cách phản hồi (thẳng thắn hay gián tiếp), vì interviewer senior thường hỏi thêm câu này.
+
+> Senior tip: Người trả lời giỏi nói về **chi phí chờ đợi** (waiting cost) trước, giải pháp sau. Một câu rất mạnh: "We did not have a people problem, we had a handover problem" — nó cho thấy bạn sửa hệ thống làm việc, không đổ lỗi cho đồng đội.`,
+  follow: [
+    'What did you do when a decision really needed a live conversation and nobody was online?',
+    'How did you make sure the person in the other time zone was not always the one taking the late call?',
+    'What would you do differently if the team were twelve hours apart with no overlap at all?'
+  ],
+  tags: ['english', 'remote-team', 'time-zones', 'async', 'deadline']
+},
+{
+  id: 'english-208',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'How do you estimate an AI feature when the scope is uncertain? Walk me through how you would give a client a date you can trust.',
+  a: `**Tóm tắt:** Interviewer muốn thấy bạn **không đoán** rồi hứa bừa. **Uncertain scope** (phạm vi chưa rõ) là chuyện bình thường với AI, vì chất lượng chỉ biết sau khi chạy thử. Hãy trả lời theo mạch: **tách phần chắc và phần chưa chắc → timebox spike (thử nghiệm có giới hạn thời gian) → ước lượng theo khoảng (range) → chia giai đoạn có điểm dừng → cam kết theo cột mốc, không cam kết một ngày duy nhất**.
+
+### Sample answer
+I split the work into two parts: the part I can estimate normally, and the part that depends on model quality.
+
+For a support-answering feature, the normal part was clear: ingestion, storage, the API, logging, and the admin screen. I estimated that from past work, about three weeks for two engineers.
+
+The uncertain part was answer quality. I did not guess. I asked for one week with a fixed goal: a corpus of 300 real questions with reference answers, and a rule that we would proceed only if at least 85 percent of answers were factually supported. I called this a time-boxed spike. If the number was too low, we would stop and change approach instead of burning the whole budget.
+
+After that week we had real data, so I could give the client a range instead of a single date: the first working version in six weeks, and a production version in ten if quality passed. I also wrote down what would change the estimate — for example, scanned PDFs that need OCR, or a policy that requires human review of every answer.
+
+We reviewed the estimate every Friday against the measured numbers, and we moved the release by one week when the review requirement was added. The client was fine with that, because the range and the assumptions were written down from day one.
+
+### Useful phrases
+- **I split the work into two parts** — tôi chia việc thành hai phần
+- **the part I can estimate normally** — phần tôi ước lượng được theo cách thông thường
+- **a time-boxed spike** — một spike có giới hạn thời gian (thử nghiệm ngắn để lấy dữ liệu)
+- **we would proceed only if** — chúng tôi chỉ tiếp tục nếu
+- **a range instead of a single date** — một khoảng thời gian thay vì một ngày duy nhất
+- **what would change the estimate** — điều gì làm thay đổi ước lượng
+- **the assumptions were written down** — các giả định được ghi lại
+
+### Lỗi người Việt hay mắc
+- **Hứa một ngày chắc chắn:** nói {{it will be done in four weeks}} khi chất lượng mô hình còn chưa biết. Hãy nói {{a range, with the assumptions}}.
+- **Dùng "estimate" như "commit":** estimate là ước lượng; commit là cam kết. Nói rõ cái nào là cái nào.
+- **Bỏ qua phần dữ liệu:** 60–70% công sức của một feature AI thường nằm ở dữ liệu và đánh giá, không phải ở dòng code gọi model.
+- **Không nêu tiêu chí dừng:** hãy nói {{we would stop and change approach if}} — điều này cho thấy bạn bảo vệ ngân sách của khách.
+
+> Senior tip: Với AI, hãy bán **giai đoạn học** (discovery) trước, không bán kết quả cuối. Công thức dễ nhớ: "Timebox the uncertainty, then commit to a range." Và luôn nói: "The model is the easy part; the measurement is the hard part."`,
+  follow: [
+    'What did you do if the spike failed to reach your quality bar?',
+    'How do you explain a range estimate to a client who wants one fixed date?',
+    'Which metrics would you track to decide whether the feature is good enough to ship?'
+  ],
+  tags: ['english', 'estimation', 'ai', 'uncertain-scope', 'delivery']
+},
+{
+  id: 'english-209',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'Describe a time you disagreed with a client requirement. How did you handle it, and what happened?',
+  a: `**Tóm tắt:** Interviewer muốn xem bạn có **bảo vệ chất lượng kỹ thuật mà vẫn giữ quan hệ** hay không. Đừng kể chuyện bạn thắng cuộc tranh luận, cũng đừng kể chuyện bạn im lặng làm theo. Hãy nói theo mạch: **yêu cầu của khách → vì sao nó có rủi ro (kèm dữ liệu) → bạn đề xuất phương án khác có lợi hơn cho khách → khách quyết định thế nào → kết quả đo được → bài học**.
+
+### Sample answer
+A client asked us to add a "delete user" button that removed the user row and all related records immediately, with no confirmation screen. They saw it as a simple feature.
+
+I was concerned because we had seen a similar case before. The account table was referenced by orders and invoices, so a hard delete would either fail on a foreign key or silently remove billing history that the client is legally required to keep for seven years.
+
+Instead of saying no, I brought numbers. I showed them two support tickets from another project where a mistaken delete took four hours to restore from a backup, and I explained that restoring a single invoice is not possible once it is gone.
+
+Then I proposed an alternative: a soft delete, where the user is marked inactive and disappears from all screens but stays in the database, plus an admin-only restore screen. I estimated it at three days, which was actually less than the two days they expected, because we did not have to write the cascade deletion logic.
+
+The client accepted. We shipped the soft delete, and six months later they used the restore screen twice after a wrong deletion by an intern. They later told their account manager that this was the best decision we made for them.
+
+### Useful phrases
+- **I was concerned because** — tôi lo ngại vì
+- **instead of saying no, I brought numbers** — thay vì từ chối, tôi đưa ra số liệu
+- **a hard delete** — xoá thật khỏi cơ sở dữ liệu
+- **a soft delete** — xoá mềm: đánh dấu là không dùng nhưng vẫn giữ dữ liệu
+- **I proposed an alternative** — tôi đề xuất một phương án khác
+- **they accepted the proposal** — khách chấp nhận đề xuất
+- **the best decision we made for them** — quyết định tốt nhất chúng tôi làm cho họ
+
+### Lỗi người Việt hay mắc
+- **Dịch "disagree" thành "từ chối":** nói {{I refused}} nghe đối đầu. Hãy nói {{I pushed back}}, {{I raised a concern}}, {{I suggested a different approach}}.
+- **Không đưa dữ liệu:** nói {{it was risky}} mà không có ví dụ hay số liệu thì khách không đổi ý.
+- **Nói xấu khách:** đừng nói {{the client was wrong}}; hãy nói {{the requirement had a risk we had not seen before}}.
+- **Quên kết quả:** câu trả lời phải kết bằng kết quả đo được (số ngày, số lần khôi phục, số ticket), không kết bằng cảm giác.
+
+> Senior tip: Công thức an toàn là **"I agree with the goal, I see a risk in this specific way, here is an alternative that reaches the same goal more safely"**. Người phỏng vấn chấm điểm ở chỗ bạn có biến bất đồng thành dữ liệu hay không, chứ không phải bạn có thắng hay không.`,
+  follow: [
+    'What would you have done if the client had insisted on the hard delete?',
+    'How do you document that kind of decision so the whole team knows why it was made?',
+    'Tell me about a time you disagreed with a client and it turned out they were right.'
+  ],
+  tags: ['english', 'client', 'disagreement', 'soft-delete', 'stakeholder']
+},
 );
