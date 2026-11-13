@@ -9091,4 +9091,594 @@ Một dịch vụ JSON API (Spring Boot 3, JDK 17) ở 2.000 req/s thấy p99 t�
     'performance'
   ]
 },
+{
+  id: 'core-049',
+  topic: 'core',
+  level: 'senior',
+  q: 'Type erasure (xoá kiểu) trong generics hoạt động thế nào? Vì sao List<String> và List<Integer> cùng là List (raw type) ở runtime, và heap pollution (ô nhiễm heap) xảy ra ra sao?',
+  a: `**Tóm tắt:** Java generics dùng **type erasure** (xoá kiểu tại compile-time): thông tin generic bị xoá khỏi bytecode, {{List<String>}} và {{List<Integer>}} cùng trở thành {{List}} raw type (kiểu thô) ở runtime. Compiler chèn **bridge method** (phương thức cầu nối) để giữ đa hình sau erasure, và kiểm tra kiểu tại biên dịch. Heap pollution xảy ra khi raw type hoặc varargs generic cho phép gán giá trị sai kiểu mà không báo lỗi ngay, gây {{ClassCastException}} muộn ở chỗ dùng.
+
+### Cơ chế erasure từng bước
+1. **Compile-time:** {{javac}} kiểm tra generic, sau đó xoá tất cả tham số kiểu: {{List<String>}} → {{List}}, {{Map<K,V>}} → {{Map}}. Các bound (ràng buộc) như {{<T extends Number>}} trở thành {{Number}}.
+2. **Bridge method:** khi class implement interface generic, compiler sinh method cầu nối để tham số sau erasure khớp chữ ký interface. Ví dụ {{class Box<T> implements Comparable<Box<T>>}} sinh {{compareTo(Box)}} và bridge {{compareTo(Object)}}.
+3. **Runtime:** JVM chỉ thấy raw type. {{new ArrayList<String>().getClass() == new ArrayList<Integer>().getClass()}} là true. Ép kiểu unchecked warning là compiler cảnh báo bạn đang bỏ qua kiểm tra mà nó không thể thực thi ở runtime.
+
+~~~java
+class Node<T> {
+    T data;
+    Node(T d) { data = d; }
+}
+// Bytecode sau erasure:
+// class Node { Object data; Node(Object d) { data = d; } }
+~~~
+
+### Heap pollution - khi nào và vì sao
+- Raw type: {{List raw = new ArrayList<String>(); raw.add(123);}} // compile warning, runtime OK, nhưng {{String s = raw.get(1)}} ném CCE.
+- Varargs generic: {{void m(T... args)}} runtime sinh mảng theo type argument: nếu T là reifiable (String, Integer) → mảng {{String[]}}/{{Integer[]}}; nếu T non-reifiable (parameterized type) → {{Object[]}}. Nếu method lưu mảng đó hoặc ép thành {{T[]}} rồi ghi giá trị sai kiểu → pollution.
+- {{@SafeVarargs}} (Java 7+) khẳng định method không gây pollution; dùng khi bạn chắc chắn an toàn.
+
+### Reifiable vs non-reifiable
+| Loại | Ví dụ | Có instanceof được không? |
+|---|---|---|
+| Reifiable (kiểu cụ thể) | {{String}}, {{List}}, {{int}}, {{List<?>}} | Có |
+| Non-reifiable (bị erasure) | {{List<String>}}, {{T}}, {{Map<K,V>}} | Không ({{list instanceof List<String>}} lỗi compile) |
+
+### Pitfall production
+- Dùng raw type trong API public → caller mất kiểm tra kiểu, pollution lan rộng.
+- {{List<String>[]}} không tạo được (generic array creation error) vì mảng covariant + erasure = an toàn kiểu vỡ. Dùng {{List<List<String>>}}.
+- {{Collections.emptyList()}} trả {{List<Object>}} (kiểu inferred); gán vào {{List<String>}} cần unchecked cast.
+
+### Ví dụ đời thực
+Một thư viện cache cũ nhận {{Map<Object, Object>>}} raw. Service mới truyền {{Map<String, User>>}}; bên trong thư viện làm {{map.put(123, "raw")}}. Sau đó service đọc {{User u = map.get("key")}} ném {{ClassCastException: Integer cannot be cast to User}} ở chỗ hoàn toàn khác code gây ra. Điều tra heap dump thấy key {{Integer}} trong map. Sửa: ép thư viện dùng generic {{Map<K,V>>}} hoặc validate kiểu khi put. (số liệu kịch bản minh hoạ)
+
+### Trả lời mẫu khi phỏng vấn
+"Java generics chỉ tồn tại lúc compile. Compiler xoá toàn bộ tham số kiểu (erasure), {{List<String>}} và {{List<Integer>}} cùng là {{List}} raw type ở runtime. Để giữ đa hình, compiler sinh bridge method — method cầu nối với chữ ký sau erasure. Heap pollution xảy ra khi raw type hoặc varargs generic cho phép ghi giá trị sai kiểu vào cấu trúc dữ liệu mà không báo lỗi ngay; {{ClassCastException}} nổ sau đó ở chỗ đọc. Reifiable type (như {{List<?>}}, mảng) vẫn giữ thông tin kiểu ở runtime nên instanceof được; non-reifiable như {{List<String>}} thì không. Khi thiết kế API tôi tránh raw type, dùng {{List<?>}} hoặc bounded wildcard, và không tạo mảng generic. Tôi từng debug bug cache: thư viện raw type ghi {{Integer}} vào {{Map<String, User>>}}, đọc sau ném CCE ở chỗ khác; fix bằng validate kiểu tại biên giao dịch."
+
+> Senior tip: erasure không phải khuyết tắc — nó cho tương thích ngược (backward compatibility) với code trước Java 5. Câu trả lời lead là: "tôi hiểu erasure, bridge method, reifiable type, và biết **không** tạo {{new T[]}} hay {{List<String>[]}}; tôi dùng {{List<List<String>>}} hoặc {{@SafeVarargs}} khi cần."
+`,
+  follow: [
+    'Bridge method là gì, và compiler sinh nó khi nào?',
+    'Vì sao {{List<String>[]}} không được phép tạo, còn {{List<List<String>>}} thì được?',
+    '{{@SafeVarargs}} đảm bảo điều gì, và khi nào bạn tự thêm annotation này?'
+  ],
+  tags: [
+    'generics',
+    'type erasure',
+    'heap pollution',
+    'bridge method',
+    'reifiable'
+  ]
+},
+{
+  id: 'core-050',
+  topic: 'core',
+  level: 'senior',
+  q: 'PECS (Producer Extends, Consumer Super) là nguyên tắc gì khi dùng wildcard? Hãy giải thích {{? extends T}}, {{? super T}} và khi nào dùng cái nào với ví dụ {{List}}, {{Comparator}}, {{Function}}.',
+  a: `**Tóm tắt:** PECS = **Producer Extends, Consumer Super**. Khi một cấu trúc dữ liệu **chỉ đọc (producer)** dùng {{? extends T}} (upper bound - giới hạn trên); khi **chỉ ghi (consumer)** dùng {{? super T}} (lower bound - giới hạn dưới). {{List}} thường producer khi duyệt, consumer khi thêm; {{Comparator}} là consumer (nhận object để so sánh); {{Function<T,R>}} là consumer ở tham số, producer ở kết quả.
+
+### Tại sao cần wildcard
+Generics trong Java **invariant** (bất biến): {{List<String>}} **không** là subtype của {{List<Object>}} dù {{String}} subtype {{Object}}. Nếu cho phép thì {{List<Object> list = new ArrayList<String>(); list.add(new Object());}} phá vỡ an toàn kiểu. Wildcard cho phép "xoay" quan hệ subtype cho phù hợp mục đích dùng.
+
+### Producer extends ({{? extends T}})
+- Ý nghĩa: "đây là nguồn sản xuất {{T}} hoặc subtype của {{T}}".
+- Cho phép **đọc** như {{T}}: {{T item = list.get(0);}} an toàn vì mọi phần tử đều là {{T}}.
+- **Không** cho phép ghi (trừ {{null}}): {{list.add(new T())}} lỗi compile vì không biết subtype cụ thể là gì.
+- Ví dụ: {{void printAll(List<? extends Number> nums)}} nhận {{List<Integer>}}, {{List<Double>}}, duyệt an toàn.
+
+### Consumer super ({{? super T}})
+- Ý nghĩa: "đây là nơi tiêu thụ {{T}} hoặc supertype của {{T}}".
+- Cho phép **ghi** {{T}}: {{list.add(new T());}} an toàn vì list chấp nhận {{T}} và cha của nó.
+- Đọc ra chỉ như {{Object}}: {{Object o = list.get(0);}} vì không biết chính xác là gì.
+- Ví dụ: {{void addIntegers(List<? super Integer> list)}} nhận {{List<Integer>}}, {{List<Number>}}, {{List<Object>}}, add {{Integer}} an toàn.
+
+### Bảng quyết định nhanh
+| Tình huống | Wildcard | Ví dụ API |
+|---|---|---|
+| Chỉ đọc, lấy giá trị | {{? extends T}} | {{Collections.copy(dest, src)}} src là producer |
+| Chỉ ghi, thêm giá trị | {{? super T}} | {{Collections.copy(dest, src)}} dest là consumer |
+| Cần cả đọc (như T) và ghi (nhận T) | Không wildcard ({{List<T>}}) | {{List<T>}} invariant, truyền đúng kiểu |
+| Comparator so sánh T | {{Comparator<? super T>}} | {{Collections.sort(list, cmp)}} |
+| Function biến đổi T -> R | {{Function<? super T, ? extends R>}} | Consumer ở T, producer ở R |
+
+### Pitfall production
+- Dùng {{? extends T}} cho parameter cần add → compile error, dev buộc cast raw type → mất an toàn.
+- Dùng {{? super T}} cho parameter cần get như {{T}} → chỉ nhận được {{Object}}, ép kiểu thủ công dễ sai.
+- {{Comparator<? super T>}} cho phép so sánh cha so sánh con (ví dụ {{Comparator<Number>}} sắp {{Integer}}); ngược lại {{Comparator<? extends T>}} chỉ so sánh đúng T.
+- Nested wildcard: {{List<? extends List<? extends Number>>}} khó đọc; tách thành method riêng.
+
+### Ví dụ đời thực
+API xuất báo cáo nhận {{List<? extends Sale>}} để cho phép truyền {{List<OnlineSale>}}, {{List<OfflineSale>}}. Bên trong chỉ duyệt {{for (Sale s : list)}} và đọc field — đúng producer. Module nhập liệu nhận {{List<? super Sale>}} để {{add(new OnlineSale())}}, {{add(new OfflineSale())}} — đúng consumer. Dev junior nhầm dùng {{List<Sale>}} cho cả hai; client có {{List<OnlineSale>}} không truyền được (invariant), phải copy thủ công tốn O(n) và dễ sai. Sửa sang wildcard, client truyền trực tiếp, copy giảm đến 0, latency p99 nhập báo cáo từ 120ms xuống 45ms (số liệu kịch bản minh hoạ).
+
+### Trả lời mẫu khi phỏng vấn
+"PECS: Producer Extends, Consumer Super. Khi một collection chỉ được **đọc** (producer) thì dùng {{? extends T}} — ví dụ {{List<? extends Number>}} nhận {{List<Integer>}}, lấy ra an toàn như {{Number}}. Khi chỉ được **ghi** (consumer) thì dùng {{? super T}} — ví dụ {{List<? super Integer>}} nhận {{List<Number>}}, {{add(1)}} an toàn. Generics Java invariant nên {{List<String>}} không gán cho {{List<Object>}}; wildcard xoay quan hệ subtype cho đúng mục đích. {{Comparator}} là consumer nên dùng {{Comparator<? super T>}}; {{Function}} consumer ở input producer ở output nên {{Function<? super T, ? extends R>}}. Tôi từng thấy team dùng {{List<Sale>}} cho cả nhập/xuất khiến client {{List<OnlineSale>}} phải copy; đổi sang {{? extends Sale}} và {{? super Sale}} client truyền trực tiếp, copy biến mất, p99 giảm."
+
+> Senior tip: nhớ bằng câu "GET = extends, ADD = super". Khi sign method, hỏi: "param này mình chỉ đọc hay chỉ ghi?" — trả lời đúng wildcard tự ra.
+`,
+  follow: [
+    'Vì sao {{List<String>}} không phải subtype của {{List<Object>}}? Minh hoạ lỗi an toàn kiểu nếu cho phép.',
+    '{{Comparator<? super T>}} khác {{Comparator<T>}} ở chỗ nào khi sắp xếp list con?',
+    'Khi nào bạn dùng {{List<?>}} (unbounded wildcard) thay vì {{List<Object>}}?'
+  ],
+  tags: [
+    'generics',
+    'wildcard',
+    'PECS',
+    'producer extends',
+    'consumer super'
+  ]
+},
+{
+  id: 'core-051',
+  topic: 'core',
+  level: 'senior',
+  q: 'Optional (Java 8) nên dùng như thế nào trong thiết kế API? So sánh {{orElse}} vs {{orElseGet}}, {{ifPresent}} vs {{ifPresentOrElse}}, và những anti-pattern hay gặp (Optional field, Optional parameter, Optional trong collection).',
+  a: `**Tóm tắt:** {{Optional<T>}} là container có thể rỗng hoặc chứa giá trị non-null, dùng để **biểu diễn "có thể thiếu" ở kiểu trả về** thay vì trả {{null}}. Không dùng làm field, parameter, hay phần tử collection. {{orElseGet}} lazy (chỉ chạy khi rỗng), {{orElse}} eager (luôn chạy). {{ifPresentOrElse}} (Java 9) xử lý cả hai nhánh. Anti-pattern: Optional field (serialization, JPA proxy), Optional parameter (overload tốt hơn), Optional trong List (List<Optional<T>> rối, hãy lọc rỗng trước).
+
+### Mục đích thiết kế
+- Thay {{null}} ở **return type** để caller **bắt buộc** xử lý trường hợp rỗng (compile-time nhắc nhở).
+- Không phải để "tránh null mọi nơi" — {{Optional}} bản thân có thể {{null}} (dev quên khởi tạo), và unwrap sai vẫn ném {{NoSuchElementException}}.
+
+### {{orElse}} vs {{orElseGet}} (quan trọng)
+~~~java
+String name = optional.orElse(computeDefault()); // eager: computeDefault() **luôn chạy**
+String name = optional.orElseGet(() -> computeDefault()); // lazy: chỉ chạy khi optional.empty()
+~~~
+- {{orElseGet}} tránh tính toán tốn kém hoặc side effect khi không cần. Benchmark: optional có giá trị, {{orElse}} vẫn gọi hàm mặc định, {{orElseGet}} không.
+
+### {{ifPresent}} vs {{ifPresentOrElse}} (Java 9)
+~~~java
+opt.ifPresent(v -> log.info(v));           // chỉ có nhánh có giá trị
+opt.ifPresentOrElse(v -> log.info(v), () -> log.warn("empty")); // cả hai nhánh
+~~~
+- Dùng {{ifPresentOrElse}} khi cần log/metric cho cả hai trường hợp, tránh lặp logic rỗng.
+
+### Anti-pattern hay gặp
+| Anti-pattern | Vì sao sai | Cách đúng |
+|---|---|---|
+| {{private Optional<String> field;}} | Serialize phiền, JPA proxy không hiểu, thêm indirection | Dùng {{String}} có thể {{null}}, validate ở setter/getter |
+| {{void foo(Optional<String> param)}} | Caller phải wrap, overload {{foo(String)}} {{foo()}} rõ ràng hơn | Overload hoặc dùng {{@Nullable}} + javadoc |
+| {{List<Optional<User>>> users}} | Phải unwrap lặp, rối logic | Lọc trước: {{users.stream().flatMap(Optional::stream).toList()}} |
+| {{opt.get()}} không check | Ném {{NoSuchElementException}} runtime | Dùng {{orElseThrow}}, {{orElse}}, {{ifPresent}} |
+| Trả {{Optional<Collection>}} | Collection rỗng đã biểu diễn "không có", Optional thừa | Trả collection rỗng ({{Collections.emptyList()}}) |
+
+### Pitfall production
+- Optional field trong entity JPA: Hibernate không proxy được, serialization Jackson cần config {{SerializationFeature.WRITE_SINGLE_ELEM_ARRAYS_UNWRAPPED}}.
+- Optional parameter khiến call site rối: {{svc.foo(Optional.of(x))}} vs {{svc.foo(Optional.empty())}} vs {{svc.foo(null)}} ba cách khác nhau.
+- {{Optional.ofNullable}} nhận {{null}} an toàn; {{Optional.of}} ném NPE nếu arg null — dùng đúng chỗ.
+- Stream {{flatMap(Optional::stream)}} (Java 8) biến {{Stream<Optional<T>>}} thành {{Stream<T>}} bỏ qua rỗng — pattern hữu ích.
+
+### Ví dụ đời thực
+Service tìm user theo ID trả {{Optional<User>}}. Controller cũ dùng {{userOpt.get()}} → 500 khi không tìm thấy. Sửa: {{userOpt.orElseThrow(() -> new NotFoundException("user"))}} map thành HTTP 404. Một dev khác thêm {{Optional<String> note}} vào entity {{Order}}; Jackson serialize thành object lồng:
+~~~json
+{"note": {"present": true, "value": "..."}}
+~~~
+frontend parse lỗi. Sửa field thành {{String note}} cho phép {{null}}, đánh dấu {{@JsonInclude(JsonInclude.Include.NON_NULL)}} để bỏ field null. Kết quả: API ổn định, response JSON gọn, không còn 500 do unwrap sai.
+
+### Trả lời mẫu khi phỏng vấn
+"Optional thiết kế cho return type biểu diễn 'có thể thiếu' ép caller xử lý rỗng. Tôi dùng {{orElseGet}} cho default tốn kém (lazy), {{orElse}} cho hằng số/rẻ. {{ifPresentOrElse}} xử lý hai nhánh gọn. Anti-pattern ba cái: (1) Optional field — JPA/serialize phiền, dùng field nullable; (2) Optional parameter — overload method rõ ràng hơn; (3) Optional trong collection — lọc rỗng trước bằng {{flatMap(Optional::stream)}}. Tôi từng sửa bug: entity có Optional field làm Jackson serialize thành object lồng, frontend hỏng; đổi thành String nullable xong. Và controller dùng {{get()}} ném 500, đổi {{orElseThrow}} map thành 404."
+
+> Senior tip: Optional không phải "bảo hiểm chống null" — nó là **kiểu trả về có ngữ nghĩa**. Nếu bạn thấy Optional lan man field/param/collection, đó là code smell. Hãy trả collection rỗng thay vì Optional<Collection>, và overload method thay vì Optional param.
+`,
+  follow: [
+    'Vì sao {{Optional.ofNullable}} an toàn hơn {{Optional.of}}, và khi nào dùng cái nào?',
+    '{{Stream<Optional<T>>}} biến thành {{Stream<T>}} như thế nào, và từ Java bao nhiêu?',
+    'Optional field trong JPA entity gây vấn đề cụ thể nào với lazy loading và proxy?'
+  ],
+  tags: [
+    'Optional',
+    'Java 8',
+    'orElse',
+    'orElseGet',
+    'anti-pattern',
+    'API design'
+  ]
+},
+{
+  id: 'core-052',
+  topic: 'core',
+  level: 'senior',
+  q: 'Thiết kế exception hierarchy như thế nào cho ứng dụng enterprise? Phân biệt checked vs unchecked, khi nào wrap exception, và cách giữ stack trace gốc khi ném exception mới.',
+  a: `**Tóm tắt:** Checked exception (kéo extends {{Exception}}) buộc caller xử lý — dùng cho lỗi **khôi phục được** (recoverable) mà caller có thể làm gì đó (ví dụ {{IOException}}, {{SQLException}}). Unchecked exception (extends {{RuntimeException}}) không buộc — dùng cho lỗi **lập trình** (bug: {{NullPointerException}}, {{IllegalArgumentException}}) hoặc lỗi **không khôi phục** (system down). Wrap exception bằng constructor {{new MyException(cause)}} để giữ stack trace gốc; đừng dùng {{throw new MyException(e.getMessage())}} vì mất nguyên nhân. Custom exception nên có error code, severity, và context nghiệp vụ.
+
+### Checked vs Unchecked - quyết định bằng câu hỏi
+- Caller có thể **làm gì** khi bắt được exception này không?
+  - Có (retry, fallback, báo user nhập lại) → **Checked**.
+  - Không (bug code, config sai, DB chết, network down) → **Unchecked**.
+- Ví dụ: {{InsufficientFundsException}} (checked, caller có thể yêu cầu nạp tiền), {{DatabaseConnectionException}} (unchecked, caller chỉ log và để circuit breaker xử lý).
+
+### Exception hierarchy mẫu
+~~~java
+abstract class AppException extends Exception {
+    final String errorCode;        // ví dụ "PAYMENT_001"
+    final ErrorSeverity severity;  // WARN / ERROR / CRITICAL
+    AppException(String code, ErrorSeverity sev, String msg, Throwable cause) {
+        super(msg, cause);         // QUAN TRỌNG: truyền cause giữ stack trace gốc
+        this.errorCode = code;
+        this.severity = sev;
+    }
+}
+class BusinessException extends AppException { ... }      // checked: nghiệp vụ có thể khôi phục
+class SystemException extends RuntimeException { ... }    // luôn unchecked: infra lỗi
+class ValidationException extends BusinessException { ... } // checked: input sai, caller sửa được
+~~~
+
+### Wrap exception đúng cách
+~~~java
+try {
+    return jdbc.query(sql, mapper);
+} catch (SQLException e) {
+    // SAI: throw new DataAccessException(e.getMessage()); // MẤT stack trace gốc
+    // ĐÚNG:
+    throw new DataAccessException("DB_ERROR", ErrorSeverity.ERROR, "Query failed: " + sql, e);
+}
+~~~
+- Luôn truyền {{cause}} vào constructor cha ({{super(msg, cause)}}).
+- Thêm context nghiệp vụ (sql, userId, requestId) vào message để debug không cần stack trace.
+- Không catch {{Exception}} chung rồi wrap — bắt cụ thể hoặc dùng multi-catch (Java 7).
+
+### Giữ stack trace khi ném lại (rethrow)
+- {{throw e;}} (không phải {{throw new Exception(e);}}) giữ nguyên stack trace.
+- Nếu phải ném loại khác: dùng constructor có cause.
+- {{Throwable.addSuppressed}} (Java 7) gắn exception phụ (ví dụ lỗi close resource) vào exception chính — try-with-resources tự làm.
+
+### Pitfall production
+- Checked exception lan man lên controller → controller ném {{throws Exception}} hoặc catch log rồi swallow → mất thông tin.
+- Custom exception không có cause → stack trace bắt đầu từ điểm wrap, không thấy gốc (DB, network).
+- Dùng exception làm control flow (throw để thoát vòng lặp) — tốn chi phí tạo stack trace.
+- {{Error}} ({{OutOfMemoryError}}, {{StackOverflowError}}) không catch trừ khi shutdown graceful.
+
+### Ví dụ đời thực
+Payment service ném {{InsufficientFundsException}} (checked) khi số dư không đủ; controller catch trả HTTP 400 với mã lỗi. DB connection fail ném {{DataAccessException}} (unchecked, wrap {{SQLException}} với cause); circuit breaker catch loại này, mở breaker, trả HTTP 503. Một lần dev catch {{SQLException}} rồi {{throw new RuntimeException(e.getMessage())}} — stack trace chỉ còn ở service, mất dòng {{PreparedStatement.execute}} gốc; DBA không biết query nào chậm. Sửa: wrap giữ cause, thêm {{requestId}} vào message. Log aggregation (ELK) tìm theo errorCode + requestId thấy ngay gốc.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi phân biệt checked và unchecked bằng câu: 'caller có làm gì được không?'. Khôi phục được (retry, fallback, nhờ user sửa) → checked. Bug, infra down, không khôi phục → unchecked. Custom exception base class giữ errorCode, severity, và **luôn truyền cause** vào super để stack trace gốc không mất. Wrap: {{throw new MyEx("msg", cause)}}; KHÔNG {{throw new MyEx(e.getMessage())}}. Try-with-resources tự addSuppressed cho lỗi close. Tôi từng gặp bug: dev wrap SQLException mất cause, DBA không truy vết được query chậm; sửa truyền cause thêm requestId vào message, log aggregation tìm được ngay."
+
+> Senior tip: exception không phải để "báo lỗi" — nó là **hợp đồng khôi phục**. Checked = "caller PHẢI xử lý", Unchecked = "hệ thống tự xử lý (circuit breaker, retry, alert)". Đừng dùng exception cho control flow thông thường.
+`,
+  follow: [
+    'Khi nào bạn chọn checked exception cho lỗi validation input, và khi nào unchecked?',
+    '{{addSuppressed}} dùng khi nào, và try-with-resources tự động làm gì với nó?',
+    'Làm sao thiết kế exception hierarchy để cả error code (cho client) và stack trace (cho dev) đều có?'
+  ],
+  tags: [
+    'exception',
+    'checked',
+    'unchecked',
+    'wrap',
+    'stack trace',
+    'error handling'
+  ]
+},
+{
+  id: 'modern-054',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Kết hợp Sequenced Collections (Java 21) và Record Patterns (Java 21) để xử lý danh sách có thứ tự các bản ghi domain như thế nào? Hãy cho ví dụ dùng {{reversed()}}, {{getFirst}}/{{getLast}}, và pattern matching deconstruct record ngay trong switch expression.',
+  a: `**Tóm tắt:** Java 21 đưa **Sequenced Collections** ({{SequencedCollection}}, {{SequencedSet}}, {{SequencedMap}}) thống nhất API đầu/cuối ({{getFirst}}, {{getLast}}, {{addFirst}}, {{addLast}}, {{reversed}}), và **Record Patterns** cho phép deconstruct record ngay trong {{instanceof}}/{{switch}}. Kết hợp cả hai: duyệt {{SequencedCollection<Record>}} theo thứ tự hoặc ngược, lấy phần tử đầu/cuối, và switch expression exhaustive deconstruct từng record để xử lý nghiệp vụ gọn gàng.
+
+### Sequenced Collections - tóm tắt API mới
+{{SequencedCollection<E>}} mở rộng {{Collection}} thêm:
+- {{getFirst()}}, {{getLast()}} — ném {{NoSuchElementException}} nếu rỗng
+- {{addFirst(E)}}, {{addLast(E)}} — {{ArrayList}} O(n), {{ArrayDeque}} O(1)
+- {{removeFirst()}}, {{removeLast()}}
+- {{reversed()}} — trả **view** ngược, chia sẻ dữ liệu gốc
+
+{{LinkedHashSet}}, {{LinkedHashMap}}, {{ArrayDeque}}, {{List}} đều implement.
+
+### Record Patterns - deconstruct trong switch
+~~~java
+sealed interface Event permits OrderCreated, OrderPaid, OrderShipped, OrderCancelled {}
+record OrderCreated(String orderId, long amountCents, String customerId) implements Event {}
+record OrderPaid(String orderId, String paymentRef) implements Event {}
+record OrderShipped(String orderId, String trackingNumber) implements Event {}
+record OrderCancelled(String orderId, String reason) implements Event {}
+
+String describe(Event e) {
+    return switch (e) {
+        case OrderCreated(var id, var amt, var cid) -> "Created " + id + " $" + amt/100;
+        case OrderPaid(var id, var ref) -> "Paid " + id + " ref " + ref;
+        case OrderShipped(var id, var track) -> "Shipped " + id + " track " + track;
+        case OrderCancelled(var id, var reason) -> "Cancelled " + id + ": " + reason;
+    }; // exhaustive vì sealed, không cần default
+}
+~~~
+- {{var}} trong pattern: type inference cho component (Java 21).
+- Nested pattern: {{case OrderCreated(var id, var amt, var cid)}} khớp theo **vị trí** component.
+
+### Kết hợp thực tế: xử lý lịch sử sự kiện theo thứ tự
+~~~java
+SequencedCollection<Event> history = new LinkedHashSet<>();
+// ... thêm sự kiện theo thời gian
+
+// 1. Lấy sự kiện mới nhất và cũ nhất
+Event latest = history.getLast();
+Event earliest = history.getFirst();
+
+// 2. Duyệt ngược (mới -> cũ) không cấp phát list mới
+for (Event e : history.reversed()) {
+    String desc = describe(e); // switch exhaustive deconstruct
+    auditLog.info(desc);
+}
+
+// 3. Chỉ xử lý 3 sự kiện gần nhất
+var recentThree = history.reversed().stream().limit(3).toList();
+~~~
+
+### Pitfall production
+- {{reversed()}} trả **view**, không phải snapshot: sửa collection gốc làm view đổi theo. Cần snapshot thì {{new ArrayList<>(history.reversed())}}.
+- {{ArrayList.addFirst}} O(n) do dịch mảng; thêm đầu thường xuyên hãy dùng {{ArrayDeque}}.
+- Record pattern khớp theo **vị trí component**, không phải tên. Đổi thứ tự component trong record = breaking change cho pattern.
+- Sealed interface exhaustive check chỉ hoạt động khi **cùng compile**. Consumer độc lập (Kafka, REST) cần schema evolution riêng.
+
+### Ví dụ đời thực
+Hệ thống đơn hàng lưu lịch sử 50.000 sự kiện trong {{LinkedHashSet<Event>}} (giữ thứ tự chèn, khử trùng). Cũ: chuyển sang {{ArrayList}} rồi duyệt ngược thủ công tốn ~1.2ms, cấp phát list tạm. Mới: {{history.reversed().stream().limit(100).forEach(describe)}} dùng view ngược, không copy, switch exhaustive deconstruct record. Thời gian xử lý 100 sự kiện gần nhất giảm từ 1.2ms xuống 0.15ms, allocation giảm 95%. Khi thêm {{OrderRefunded}} vào {{permits}}, compiler báo lỗi 4 chỗ switch thiếu case — fix xong mới deploy được. Số liệu kịch bản minh hoạ trên JMH cục bộ.
+
+### Trả lời mẫu khi phỏng vấn
+"Sequenced Collections cho API thống nhất đầu/cuối: {{getFirst}}, {{getLast}}, {{addFirst}}, {{addLast}}, {{reversed}} (view ngược). Record Patterns cho deconstruct record ngay trong switch: {{case OrderCreated(var id, var amt, var cid)}}. Kết hợp: {{history.reversed()}} duyệt ngược không copy, switch exhaustive xử lý từng loại event. {{ArrayList.addFirst}} O(n) nên thêm đầu nhiều dùng {{ArrayDeque}}. View {{reversed}} chia sẻ dữ liệu — sửa gốc thì view đổi, cần snapshot thì copy. Sealed + switch exhaustive bắt compile-time khi thêm variant. Tôi dùng cho audit log lịch sử sự kiện: 50k event, reversed view + switch pattern giảm 95% allocation so với copy list cũ."
+
+> Senior tip: dùng {{SequencedCollection}} làm parameter type thay vì {{List}} khi chỉ cần "có đầu/cuối", để caller tự chọn {{ArrayDeque}} (thêm đầu nhanh) hoặc {{LinkedHashSet}} (khử trùng + thứ tự). Luôn nói rõ trong Javadoc khi trả về {{reversed()}} view.
+`,
+  follow: [
+    'Vì sao {{reversed()}} trả view thay vì bản sao, và hệ quả gì nếu sửa collection gốc?',
+    'Record pattern khớp theo vị trí hay tên component? Điều đó ảnh hưởng refactor thế nào?',
+    'Khi nào bạn chọn {{ArrayDeque}} thay vì {{LinkedHashSet}} cho sequenced collection?'
+  ],
+  tags: [
+    'Sequenced Collections',
+    'Record Patterns',
+    'Java 21',
+    'switch expression',
+    'sealed'
+  ]
+},
+{
+  id: 'core-053',
+  topic: 'core',
+  level: 'senior',
+  q: 'Viết {{equals}}/{{hashCode}} cho class trong hierarchy kế thừa (inheritance) như thế nào để đảm bảo symmetry (đối xứng), transitivity (bắc cầu) và consistent with equals? Hãy giải thích canEqual pattern và tại sao {{instanceof}} check trong equals thường vi phạm contract khi có subclass.',
+  a: `**Tóm tắt:** {{equals}} trong inheritance khó vì phải giữ **symmetry** ({{a.equals(b) == b.equals(a)}}) và **transitivity** ({{a=b && b=c ⇒ a=c}}). Dùng {{instanceof}} trong cha thường phá symmetry khi con thêm field: cha {{equals}} con true (chỉ so sánh field cha), nhưng con {{equals}} cha false (so sánh thêm field con). Giải pháp: **canEqual pattern** ({{protected boolean canEqual(Object other)}}) — cha kiểm tra {{other.canEqual(this)}}, con override trả {{false}} khi so với cha, hoặc dùng **composition over inheritance** cho value object.
+
+### Vấn đề symmetry với instanceof
+~~~java
+class Point { int x, y; 
+  @Override boolean equals(Object o) {
+    if (!(o instanceof Point)) return false; // instanceof
+    Point p = (Point) o; return x==p.x && y==p.y; }
+}
+class ColorPoint extends Point { Color color; 
+  @Override boolean equals(Object o) {
+    if (!(o instanceof ColorPoint)) return false;
+    ColorPoint cp = (ColorPoint) o; return super.equals(cp) && color==cp.color; }
+}
+Point p = new Point(1,2);
+ColorPoint cp = new ColorPoint(1,2,RED);
+p.equals(cp) -> true  (Point.equals chỉ so x,y)
+cp.equals(p) -> false (ColorPoint.equals instanceof ColorPoint fail)
+// SYMMETRY VỠ!
+~~~
+
+### CanEqual pattern (Martin Odersky, Scala; áp dụng Java)
+Ý tưởng: object **chỉ bằng** object khác nếu **hai bên đồng ý** (mutual agreement).
+~~~java
+class Point {
+    int x, y;
+    @Override public boolean equals(Object o) {
+        if (o == this) return true;
+        if (!(o instanceof Point)) return false;
+        Point other = (Point) o;
+        return other.canEqual(this) && x==other.x && y==other.y;
+    }
+    protected boolean canEqual(Object other) { return other instanceof Point; }
+    @Override public int hashCode() { return Objects.hash(x, y); }
+}
+
+class ColorPoint extends Point {
+    Color color;
+    @Override public boolean equals(Object o) {
+        if (!super.equals(o)) return false; // cha đã check canEqual
+        if (!(o instanceof ColorPoint)) return false;
+        ColorPoint other = (ColorPoint) o;
+        return color == other.color;
+    }
+    @Override protected boolean canEqual(Object other) { return other instanceof ColorPoint; }
+    @Override public int hashCode() { return Objects.hash(super.hashCode(), color); }
+}
+// Kết quả: p.equals(cp) -> false (cp.canEqual(p) trả false), cp.equals(p) -> false. SYMMETRY ĐƯỢC BẢO TOÀN.
+~~~
+- {{canEqual}} trong cha trả true cho cùng loại cha; trong con trả true chỉ cho cùng loại con.
+- {{hashCode}} phải consistent: bằng nhau khi equals true. Con kết hợp hash cha + field con.
+
+### Composition over inheritance (thường tốt hơn cho value object)
+Thay vì kế thừa, dùng field tham chiếu:
+~~~java
+record Point(int x, int y) {} // record tự sinh equals/hashCode đúng
+record ColoredPoint(Point point, Color color) {} // equals theo cả hai field
+~~~
+- Record/class bất biến composition tránh hoàn toàn bài toán equality inheritance.
+
+### Pitfall production
+- Lombok {{@EqualsAndHashCode(callSuper=true)}} trên entity JPA: nếu subclass thêm field, symmetry vỡ; nếu không thêm field, callSuper thừa.
+- Dùng {{getClass() == o.getClass()}} (strict equality) thay instanceof: bảo toàn symmetry nhưng phá Liskov — subclass không thể equals cha, {{List<Point>}} chứa {{ColorPoint}} thì {{contains}} sai.
+- {{hashCode}} chỉ dùng field cha mà equals dùng thêm field con → hash collision gây {{HashMap}} hành vi lạ.
+- Mutable field trong equals/hashCode: object trong {{HashSet}} đổi field → mất object.
+
+### Ví dụ đời thực
+Thư viện geometry dùng {{Point}} và {{ColorPoint}} kế thừa. Client code {{Set<Point>}} add {{ColorPoint}}; {{set.contains(new Point(1,2))}} trả true/false tuỳ cài equals. Với instanceof pattern: contains trả true nhưng {{ColorPoint}} trong set không equals {{Point}} → logic set vỡ. Với canEqual: {{ColorPoint}} không equals {{Point}}, set chứa {{ColorPoint}} thì {{contains(Point)}} đúng trả false. Team migrate sang record composition: {{record ColoredPoint(Point p, Color c)}}, equals tự động đúng, không còn bài toán inheritance. Test regression 0 lỗi equality sau 6 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Equals trong inheritance dễ vi phạm symmetry: cha dùng instanceof thì cha.equals(con) true, nhưng con.equals(cha) false nếu con thêm field. Giải pháp canEqual pattern: cha có {{protected boolean canEqual(Object)}} trả true cho instanceof cha; con override trả true chỉ cho instanceof con. Trong equals, cha check {{other.canEqual(this)}} trước khi so sánh field. HashCode con phải kết hợp hash cha + field con. Cách hiện đại hơn: tránh inheritance cho value object, dùng composition (record ColoredPoint(Point p, Color c)) — record tự sinh equals/hashCode đúng. Tôi từng debug bug Set<Point> chứa ColorPoint: contains(Point) trả true/false bất định do symmetry vỡ; sửa sang canEqual rồi sau đó composition record."
+
+> Senior tip: Nếu bạn thấy cần override equals trong subclass, hãy hỏi: "có thể dùng composition không?". Composition + record loại bỏ toàn bộ bài toán canEqual. Nếu buộc inheritance (framework yêu cầu), canEqual là bắt buộc.
+`,
+  follow: [
+    'Vì sao {{getClass() == o.getClass()}} bảo toàn symmetry nhưng phá Liskov substitution principle?',
+    'Lombok {{@EqualsAndHashCode(callSuper=true)}} có an toàn khi subclass thêm field không?',
+    'Record tự động sinh equals/hashCode — nó xử lý composition như thế nào?'
+  ],
+  tags: [
+    'equals',
+    'hashCode',
+    'inheritance',
+    'canEqual',
+    'symmetry',
+    'composition'
+  ]
+},
+{
+  id: 'core-054',
+  topic: 'core',
+  level: 'senior',
+  q: 'Reflection ({{java.lang.reflect}}) và Annotation Processing (compile-time) chi phí hiệu năng ra sao? Khi nào dùng reflection, khi nào dùng annotation processor, và cách giảm overhead (cache, MethodHandle, LambdaMetafactory).',
+  a: `**Tóm tắt:** Reflection (runtime introspection) tốn chi phí: kiểm tra truy cập, boxing primitive, tạo {{Object[]}} cho varargs, không inline được JIT dễ dàng. Annotation Processing ({{javax.annotation.processing}}, chạy lúc **compile-time**) sinh code/java resource — **chi phí runtime bằng 0**. Khi cần metadata tại runtime (plugin, framework DI, serialization) dùng reflection có cache; khi có thể sinh code compile-time (builder, DTO, query) dùng annotation processor. Giảm overhead reflection: cache {{Method}}/{{Field}}, dùng {{MethodHandle}} + {{LambdaMetafactory}} sinh function thay {{Method.invoke}}.
+
+### Reflection chi phí ở đâu
+- {{Method.invoke(obj, args)}}: kiểm tra {{public}}/{{private}}, AccessibleObject.setAccessible, boxing primitive → {{Object[]}}, varargs array allocation, exception wrapping.
+- JIT khó inline {{Method.invoke}} vì target method quyết định lúc runtime. Từ Java 18 core reflection dùng MethodHandle nội bộ nên nhanh hơn nhưng vẫn chậm hơn direct call.
+- {{Field.get/set}}: tương tự, thêm overhead kiểm tra modifier.
+
+~~~java
+// Reflection chậm
+Method m = clazz.getMethod("process", String.class);
+m.setAccessible(true);
+for (String s : items) m.invoke(handler, s); // boxing, array, check mỗi lần
+
+// Nhanh hơn: MethodHandle cache
+MethodHandle mh = MethodHandles.lookup().unreflect(m);
+for (String s : items) mh.invokeExact(handler, s); // vẫn boxing nhưng bỏ check truy cập
+
+// Nhanh nhất: LambdaMetafactory sinh Function
+MethodHandle mh = MethodHandles.lookup().findVirtual(Handler.class, "process", MethodType.methodType(void.class, String.class));
+Function<String, Void> fn = (Function) LambdaMetafactory.metafactory(
+    MethodHandles.lookup(), "apply",
+    MethodType.methodType(Function.class, Handler.class),
+    mh.type().generic(), mh, mh.type()
+).getTarget().invokeExact(handler);
+for (String s : items) fn.apply(s); // JIT inline như direct call
+~~~
+
+### Annotation Processing - chi phí 0 runtime
+- Chạy trong **javac** (compile-time), đọc annotation, sinh file {{.java}}, {{.class}}, resource ({{META-INF/services}}).
+- Ví dụ: Lombok, MapStruct, Room (Android), Dagger/Hilt, Spring AOT.
+- Runtime không còn annotation (trừ {{RetentionPolicy.RUNTIME}}), code sinh sẵn sàng chạy — không reflection.
+- Trade-off: build chậm hơn, cần config processor, generated code debug khó hơn.
+
+### Khi nào dùng cái nào
+| Nhu cầu | Lựa chọn | Ví dụ |
+|---|---|---|
+| Plugin system nạp class động, tên method chỉ biết lúc chạy | Reflection (cache {{Method}}) | Script engine, hot reload |
+| DI container, serialization, ORM mapping metadata | Reflection + cache, hoặc **compile-time processor** | Spring (runtime), Micronaut/Quarkus (compile-time) |
+| Sinh builder, equals/hashCode, toString, DTO mapper | Annotation Processor | Lombok, MapStruct, Immutables |
+| Validation constraint, OpenAPI spec generate | Annotation Processor | Hibernate Validator, SpringDoc |
+
+### Giảm overhead reflection thực tế
+1. **Cache {{Method}}/{{Field}}** trong {{static final}} hoặc {{ConcurrentHashMap}} — lookup một lần.
+2. **{{setAccessible(true)}}** một lần, không lặp.
+3. **{{MethodHandle}}** thay {{Method.invoke}}: bỏ check truy cập, vẫn boxing.
+4. **{{LambdaMetafactory}}** sinh {{Function}}/{{Consumer}}: JIT inline được, gần bằng direct call.
+5. **Tránh reflection trong hot path** — đo bằng JMH/async-profiler trước khi tối ưu.
+
+### Pitfall production
+- Reflection không cache: {{clazz.getMethod}} trong vòng lặp → allocation {{Method}} object, chậm gấp 100x.
+- {{setAccessible(true)}} trên module không open (Java 9+) ném {{InaccessibleObjectException}}; cần {{--add-opens}} hoặc dùng public API.
+- Annotation processor sinh code không deterministic (dùng timestamp, random) → build không reproducible.
+- Dùng reflection để bypass encapsulation (gọi private method) → vỡ khi module system chặt hơn.
+
+### Ví dụ đời thực
+Gateway API mapping 200 field request dùng reflection {{Method.invoke}}: p99 120ms, CPU 85%. Team viết cache {{MethodHandle}} per field: p99 45ms, CPU 50%. Tiếp tục dùng {{LambdaMetafactory}} sinh {{Function<String, Void>}} cache per handler: p99 18ms, CPU 22%, throughput tăng 4x. Số liệu kịch bản minh hoạ. Annotation processor (MapStruct) dùng cho mapper DTO entity: build sinh code mapper, runtime 0 reflection, compile-time tăng 30s nhưng loại bỏ toàn bộ mapping reflection.
+
+### Trả lời mẫu khi phỏng vấn
+"Reflection tốn: kiểm tra truy cập, boxing, Object[] allocation, JIT không inline tốt. Annotation processor chạy lúc compile, sinh code, chi phí runtime 0. Dùng reflection khi metadata chỉ biết runtime (plugin, hot reload); dùng processor khi có thể sinh code (mapper, builder, validator). Giảm overhead: cache Method/Field, setAccessible một lần, lên MethodHandle, tốt nhất LambdaMetafactory sinh Function để JIT inline. Tôi từng tối ưu gateway mapping 200 field: reflection 120ms p99 -> MethodHandle 45ms -> LambdaMetafactory 18ms, CPU 85% -> 22%. MapStruct annotation processor cho mapper DTO: runtime 0 reflection."
+
+> Senior tip: "Reflection là last resort". Nếu bạn thấy reflection trong hot path, hãy hỏi: "có thể dịch sang compile-time processor hoặc LambdaMetafactory không?". Cache Method/Field là điều kiện tối thiểu.
+`,
+  follow: [
+    'Vì sao {{LambdaMetafactory}} cho phép JIT inline mà {{MethodHandle.invoke}} thì khó hơn?',
+    'Annotation processor có thể đọc annotation {{RetentionPolicy.SOURCE}} không? Vì sao?',
+    'Khi migration từ Spring (runtime reflection) sang Micronaut/Quarkus (compile-time), những thay đổi lớn nào?'
+  ],
+  tags: [
+    'reflection',
+    'annotation processing',
+    'MethodHandle',
+    'LambdaMetafactory',
+    'compile-time',
+    'performance'
+  ]
+},
+{
+  id: 'core-055',
+  topic: 'core',
+  level: 'senior',
+  q: 'Java Serialization ({{Serializable}}) có những lỗ hổng bảo mật và vấn đề hiệu năng gì? Hãy giải thích deserialization attack (gadget chain), {{serialVersionUID}}, và các thay thế an toàn (JSON, protobuf, Externalizable, custom serialization).',
+  a: `**Tóm tắt:** Java Serialization ({{implements Serializable}}) **không an toàn** cho dữ liệu không tin cậy: attacker gửi byte stream giả mạo tạo object tùy ý, kích hoạt **gadget chain** (chuỗi gadget — các class có sẵn trong classpath như {{HashMap}}, {{AnnotationInvocationHandler}}, {{TemplatesImpl}}) thực thi code tùy ý (RCE). Hiệu năng kém: format verbose, chậm, phụ thuộc {{serialVersionUID}}, khó evolve schema. Thay thế: JSON (Jackson/Gson), protobuf/MessagePack, {{Externalizable}} (tự kiểm soát), hoặc custom {{readObject}}/{{writeObject}} với validation chặt.
+
+### Deserialization Attack (RCE qua gadget chain)
+1. App nhận serialized object từ network/file (RMI, JMS, HTTP upload, session store).
+2. {{ObjectInputStream.readObject()}} tái tạo object graph **bất kỳ class nào** implement {{Serializable}} trong classpath.
+3. Attacker chọn class có {{readObject}} hoặc {{readResolve}} thực hiện side effect nguy hiểm ({{Runtime.exec}}, {{File.delete}}, JNDI lookup).
+4. Gadget chain: nối nhiều class benign ({{HashMap}}, {{PriorityQueue}}, {{BadAttributeValueExpException}}, {{TemplatesImpl}}...) để đạt RCE. Thư viện phổ biến: **ysoserial** sinh payload cho nhiều gadget chain.
+
+~~~java
+// Ví dụ gadget đơn giản (không phải exploit thật, chỉ minh hoạ ý tưởng)
+class Evil implements Serializable {
+    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
+        in.defaultReadObject();
+        Runtime.getRuntime().exec("calc.exe"); // side effect trong readObject
+    }
+}
+~~~
+
+### {{serialVersionUID}} và evolution
+- Không khai báo → JVM tính hash từ cấu trúc class (field, method, interface...). Thêm field private → UID đổi → {{InvalidClassException}} khi deserialize bản cũ.
+- Khai báo {{private static final long serialVersionUID = 1L;}} → tự quản lý. Nhưng **UID trùng không đảm bảo tương thích** — field mới/field xoá/kiểu đổi vẫn có thể gây lỗi logic hoặc default value sai.
+- {{Externalizable}} bắt buộc tự implement {{writeExternal}}/{{readExternal}}, không phụ thuộc UID mặc định.
+
+### Hiệu năng và.format
+- Binary Java serialization verbose: ghi tên class, field, type, handle (shared reference). Object 10 field ~500-1000 byte vs JSON ~200 byte vs protobuf ~50 byte.
+- Deserialization chậm: reflection, handle table, graph resolution.
+- Không hỗ trợ schema evolution tốt (required/optional field, default, rename).
+
+### Thay thế an toàn
+| Cách | Ưu điểm | Nhược điểm |
+|---|---|---|
+| **Jackson JSON** | Tiêu chuẩn web, schema evolution tốt, validation | Text lớn hơn binary |
+| **Protobuf / MessagePack** | Binary nhỏ, nhanh, schema contract (.proto), multi-lang | Cần compile .proto, học curve |
+| **{{Externalizable}}** | Tự kiểm soát format, bỏ field transient, validate khi read | Viết tay nhiều, vẫn Java-only |
+| **Custom {{readObject}}/{{writeObject}}** | Giữ {{Serializable}} interface nhưng validate | Vẫn rủi ro gadget nếu không cấm class nguy hiểm |
+
+### Biên pháp phòng thủ nếu BẮT BUỘC dùng Serializable
+1. **ObjectInputFilter** (Java 9+): {{ObjectInputStream.setObjectInputFilter(info -> ...)}} chặn class không trong whitelist.
+2. **Không deserialize dữ liệu không tin cậy** — ký/hmac payload, hoặc dùng format an toàn.
+3. **{{transient}}** field nhạy cảm (password, key, session).
+4. **{{readObject}} validate** trạng thái sau deserialize (invariant check).
+
+### Pitfall production
+- Session store serialize {{HttpSession}} (tomcat default) → attacker upload serialized object → RCE. CVE-2016-1000031 (Apache Commons Collections gadget).
+- RMI registry expose {{ObjectInputStream}} không filter → RCE từ xa.
+- {{serialVersionUID}} thiếu → deploy bản mới làm session cũ invalid, user bị logout hàng loạt.
+- Dùng {{Serializable}} cho DTO qua Kafka/RabbitMQ → consumer version khác deserialize fail hoặc dữ liệu sai.
+
+### Ví dụ đời thực
+Hệ thống legacy dùng Java RMI truyền {{Serializable}} command object. Pen-test phát hiện gadget chain {{CommonsCollections4}} cho RCE. Khắc phục: (1) bật {{ObjectInputFilter}} whitelist chỉ cho phép class command nội bộ; (2) migration sang JSON over HTTP + signature HMAC; (3) khai báo {{serialVersionUID}} rõ ràng cho các class còn dùng. Sau migration, 0 lỗ hổng deserialize, latency trung bình giảm từ 45ms (RMI serialize) xuống 12ms (JSON), payload giảm 70%.
+
+### Trả lời mẫu khi phỏng vấn
+"Java Serialization nguy hiểm: {{ObjectInputStream.readObject()}} tái tạo object bất kỳ trong classpath, attacker dùng gadget chain (ysoserial) kết hợp class benign có sẵn (HashMap, TemplatesImpl...) để RCE. Hiệu năng kém: format verbose, chậm, phụ thuộc serialVersionUID. Thay thế: JSON (Jackson), protobuf, MessagePack. Nếu buộc dùng Serializable: ObjectInputFilter whitelist class (Java 9+), transient field nhạy, validate trong readObject, ký payload. Tôi từng migration RMI Serializable sang JSON + HMAC: loại bỏ RCE, payload giảm 70%, latency 45→12ms. Quan trọng: không bao giờ deserialize dữ liệu không tin cậy."
+
+> Senior tip: Java Serialization là "legacy trap". Mặc định **cấm** trong thiết kế mới. Nếu thấy {{implements Serializable}} trong code review, hỏi: "tại sao không dùng JSON/protobuf?". Nếu phải dùng, **ObjectInputFilter whitelist là bắt buộc**.
+`,
+  follow: [
+    'ObjectInputFilter (Java 9) hoạt động như thế nào, và viết filter whitelist ra sao?',
+    'Gadget chain là gì, và tại sao class benign như HashMap có thể thành gadget?',
+    'Khi migrate từ Serializable sang JSON, làm sao xử lý backward compatibility cho dữ liệu cũ trong store?'
+  ],
+  tags: [
+    'serialization',
+    'Serializable',
+    'deserialization attack',
+    'gadget chain',
+    'ObjectInputFilter',
+    'JSON',
+    'protobuf'
+  ]
+}
 );
