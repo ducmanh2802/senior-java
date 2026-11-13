@@ -1942,5 +1942,619 @@ Entity {{Product}} có {{@ManyToOne(fetch = FetchType.LAZY) private Category cat
   ],
   tags: ['postgresql', 'n-plus-one', 'hibernate', 'lazy-loading', 'pg-stat-statements'],
 },
+{id:'lab-sql-015',category:'sql',title:'REINDEX TABLE trong giờ cao điểm làm 619 backend chờ lock trên bảng 38 triệu dòng',level:'senior',scenario:`**Bối cảnh.** Sàn giao nhận **LogiChain** vận hành service {{tracking-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Service chạy **18 instance**, mỗi instance dùng HikariCP **40 connection** (tổng tối đa 720 connection tới RDS). Bảng {{shipments}} lưu toàn bộ đơn hàng của 2.000 đối tác: sau 4 năm đã có **38.214.507 dòng** (~8,4 GB heap + 6,1 GB index). Giờ cao điểm 17:00–19:00 hệ thống xử lý **1.400 giao dịch/giây**, mọi API đọc/ghi đơn hàng đều đi qua bảng này.
+
+**Triệu chứng (14/03/2026, 17:05).** DBA chạy migration dọn bloat index để tăng tốc báo cáo Đơn hàng theo trạng thái:
+~~~sql
+REINDEX TABLE shipments;
+~~~
+Trong vòng **4 phút**, **toàn bộ** endpoint trả 504, CPU RDS vẫn **8%** (không phải CPU), connection pool cạn sạch, log ứng dụng tràn {{HikariPool-1 - Connection is not available, request timed out after 3000ms}}. Kill migration thì hệ thống hồi phục ngay. Migration chạy lại lúc 02:00 cùng câu SQL mất **3 phút 50 giây** và thành công. Không ai đổi code giữa hai lần.
+
+**Việc bạn có.** Ba artifact dưới đây lấy từ production lúc 17:05:30–17:06:00. Hãy tìm nguyên nhân gốc, dựng chuỗi chờ, và đề xuất cách chạy migration an toàn.`,
+  artifacts: [
+    {
+      name: 'pg-stat-activity-lockwait.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 17:05:30 +07, chụp từ RDS logichain-primary (PostgreSQL 15.6)
+logichain=# SELECT pid, state, wait_event_type, wait_event, now() - xact_start AS xact_age,
+       left(query, 70) AS query
+FROM pg_stat_activity
+WHERE datname = 'logichain' AND backend_type = 'client backend'
+ORDER BY xact_start
+LIMIT 12;
+  pid  |        state        | wait_event_type | wait_event |    xact_age     |                              query
+  -------+--------------------+-----------------+------------+-----------------+--------------------------------------------------------------------
+   41822 | active             | Lock            | relation   | 00:03:41.203    | REINDEX TABLE shipments;
+   41823 | active             | Lock            | relation   | 00:00:02.114    | SELECT id, status, tracking_no FROM shipments WHERE id = $1
+   41824 | active             | Lock            | relation   | 00:00:02.088    | UPDATE shipments SET status = $1 WHERE id = $2
+   41825 | active             | Lock            | relation   | 00:00:02.051    | INSERT INTO shipments (...) VALUES (...)
+   41826 | active             | Lock            | relation   | 00:00:02.019    | SELECT count(*) FROM shipments WHERE customer_id = $1
+   41827 | active             | Lock            | relation   | 00:00:01.997    | SELECT id, amount FROM shipments WHERE status = $1
+   41828 | active             | Lock            | relation   | 00:00:01.974    | SELECT id, status FROM shipments WHERE id = $1
+   41829 | active             | Lock            | relation   | 00:00:01.941    | UPDATE shipments SET status = $1 WHERE id = $2
+   41830 | active             | Lock            | relation   | 00:00:01.912    | SELECT count(*) FROM shipments WHERE customer_id = $1
+   41831 | active             | Lock            | relation   | 00:00:01.888    | SELECT id, status FROM shipments WHERE id = $1
+   41832 | active             | Lock            | relation   | 00:00:01.861    | SELECT id, tracking_no FROM shipments WHERE customer_id = $1
+  -- Tổng: 1 migration + 618 backend đang chờ lock trên cùng một relation (chỉ hiển thị 12 đầu)
+  -- wait_event = relation: đang chờ lock trên bảng shipments (relation-level lock)
+  -- wait_event_type = Lock: đang trong hàng đợi lock, không chạy
+
+logichain=# SELECT state, wait_event_type, count(*) FROM pg_stat_activity
+WHERE datname = 'logichain' AND backend_type = 'client backend' GROUP BY 1, 2 ORDER BY 3 DESC;
+    state        | wait_event_type | count
+    -------------------+-----------------+-------
+     active            | Lock            |   619
+    idle              | Client          |    12
+    active            |                 |     3
+  (3 rows)`,
+    },
+    {
+      name: 'pg-locks-migration.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 17:05:31 +07
+logichain=# SELECT l.locktype, l.mode, l.granted, count(*) AS n
+FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE l.relation = 'shipments'::regclass
+GROUP BY l.locktype, l.mode, l.granted ORDER BY n DESC;
+  locktype  |           mode           | granted |   n
+  ------------+--------------------------+---------+-----
+  relation   | AccessShareLock          | f       | 512
+  relation   | RowExclusiveLock         | f       | 106
+  relation   | AccessShareLock          | t       |   2
+  relation   | AccessExclusiveLock      | f       |   1
+  (4 rows)
+
+  -- AccessShareLock granted = f (512) + RowExclusiveLock granted = f (106) = 618 query ứng dụng
+  --   (SELECT / INSERT / UPDATE) đến SAU migration, đang xếp hàng chờ lock trên shipments.
+  -- AccessShareLock granted = t (2): 2 SELECT xin lock TRƯỚC migration nên đã được cấp, vẫn đang chạy.
+  -- AccessExclusiveLock granted = f (1): REINDEX đang chờ, chưa được cấp.
+
+  -- Quy tắc tương thích lock (lock conflict table):
+  --   AccessExclusiveLock không tương thích với BẤT CỨ lock nào khác.
+  -- PostgreSQL hàng đợi lock theo thứ tự đến (FIFO): khi migration xin AccessExclusiveLock,
+  -- nó được xếp vào hàng đợi. Mọi query đến sau cũng phải đứng sau nó, dù lock của chúng
+  -- (AccessShareLock) tương thích với các query đã cấp trước đó.
+
+logichain=# SELECT pid, pg_blocking_pids(pid) AS blocked_by FROM pg_stat_activity
+WHERE datname='logichain' AND wait_event_type = 'Lock' AND pid = 41823;
+    pid  | blocked_by
+    ---------+------------
+     41823 | {41822}`,
+    },
+    {
+      name: 'app-connection-exhausted.log',
+      lang: 'text',
+      content: `2026-03-14 17:05:31.204 WARN  [http-nio-8080-exec-21] c.z.h.pool.HikariPool : LogiChain-HikariPool-1 - Connection is not available, request timed out after 3000ms (total=40, active=40, idle=0, waiting=43)
+2026-03-14 17:05:31.219 ERROR [http-nio-8080-exec-21] c.l.t.TrackingController : GET /api/v1/shipments/abc123 -> 504 in 3021 ms
+2026-03-14 17:05:31.882 WARN  [http-nio-8080-exec-33] c.z.h.pool.HikariPool : LogiChain-HikariPool-1 - Connection is not available, request timed out after 3000ms (total=40, active=40, idle=0, waiting=41)
+2026-03-14 17:05:31.901 ERROR [http-nio-8080-exec-33] c.l.t.TrackingController : GET /api/v1/shipments/def456 -> 504 in 3018 ms
+2026-03-14 17:05:32.444 WARN  [http-nio-8080-exec-12] c.z.h.pool.HikariPool : LogiChain-HikariPool-1 - Connection is not available, request timed out after 3000ms (total=40, active=40, idle=0, waiting=39)
+2026-03-14 17:05:32.461 ERROR [http-nio-8080-exec-12] c.l.t.TrackingController : GET /api/v1/shipments/xyz789 -> 504 in 3019 ms
+2026-03-14 17:05:33.012 WARN  [http-nio-8080-exec-45] c.z.h.pool.HikariPool : LogiChain-HikariPool-1 - Connection is not available, request timed out after 3000ms (total=40, active=40, idle=0, waiting=37)
+2026-03-14 17:05:33.029 ERROR [http-nio-8080-exec-45] c.l.t.TrackingController : GET /api/v1/shipments/uvw000 -> 504 in 3020 ms
+-- pattern: mỗi ~600ms một request 504, pool luôn full (active=40, idle=0), waiting queue giảm dần vì client retry RateLimit
+-- CPU RDS: 8% (các thread ứng dụng đều đang chờ lock, không tính CPU)`,
+    },
+  ],
+  questions: [
+    'Vì sao một câu REINDEX TABLE đơn giản lại làm 618 query ứng dụng phải chờ? Giải thích cơ chế lock trên bảng và hàng đợi lock FIFO của PostgreSQL.',
+    'Vì sao cùng câu SQL lúc 02:00 lại thành công trong 3 phút 50 giây, còn lúc 17:05 treo toàn hệ thống 4 phút?',
+    'Bạn sẽ chạy migration này thế nào để không-blocking, và thêm guardrail gì để không tái diễn?',
+  ],
+  hints: [
+    'Đọc cột wait_event_type = Lock, wait_event = relation của cả 619 phiên: tất cả đang chờ lock trên relation shipments, không có phiên nào đang chạy.',
+    'So sánh AccessExclusiveLock (granted = f) với AccessShareLock (granted = t): migration cần lock mạnh nhất, không tương thích với bất kỳ lock nào, nên đứng đầu hàng đợi và mọi query đến sau đều bị xếp sau.',
+    'REINDEX TABLE (không CONCURRENTLY) cần AccessExclusiveLock và giữ trong toàn bộ thời gian build (~4 phút với 6,1 GB index). REINDEX CONCURRENTLY (PG 12+) chỉ cần ShareUpdateExclusiveLock — tương thích với SELECT/INSERT/UPDATE/DELETE, chỉ cấm DDL song song. Lưu ý: CREATE INDEX (không CONCURRENTLY) chỉ cần ShareLock, nên nó KHÔNG chặn SELECT (chỉ chặn INSERT/UPDATE/DELETE).',
+  ],
+  answer: `**Tóm tắt:** Migration {{REINDEX TABLE shipments}} (không dùng CONCURRENTLY) cần **AccessExclusiveLock** trên bảng {{shipments}} — lock mạnh nhất, không tương thích với bất kỳ lock nào khác. Vì bảng đang nóng (1.400 giao dịch/giây), lock phải chờ các query đang chạy xong; ngay khi được cấp, nó **chặt** mọi query đến sau nhờ hàng đợi lock FIFO: 618 query ứng dụng (SELECT/INSERT/UPDATE) đều phải đứng sau nó dù chúng chỉ cần AccessShareLock. Kết quả: toàn bộ hệ thống treo 4 phút, CPU 8% (chỉ có các thread chờ, không có gì chạy). Sửa: {{REINDEX TABLE CONCURRENTLY}} (hoặc {{CREATE INDEX CONCURRENTLY}} khi mục tiêu là một index mới) — chỉ cần ShareUpdateExclusiveLock, tương thích với thao tác dữ liệu; đặt {{lock_timeout}} cho role migration, chạy ngoài giờ cao điểm, và thêm {{statement_timeout}} + {{idle_in_transaction_session_timeout}} để tự dọn các phiên treo.
+
+### Kiến thức nền: lock trên bảng (relation lock)
+PostgreSQL có nhiều mức lock trên một relation (bảng), theo thứ tự mạnh dần:
+
+| Lock | Ai lấy | Tương thích với |
+|---|---|---|
+| AccessShareLock | SELECT | mọi lock trừ AccessExclusiveLock |
+| RowShareLock | SELECT FOR UPDATE / FOR SHARE | mọi lock trừ EXCLUSIVE và AccessExclusiveLock |
+| RowExclusiveLock | INSERT / UPDATE / DELETE | mọi lock trừ SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE, AccessExclusiveLock |
+| ShareUpdateExclusiveLock | VACUUM, ANALYZE, CREATE INDEX CONCURRENTLY, REINDEX CONCURRENTLY, CREATE STATISTICS | mọi lock trừ SHARE UPDATE EXCLUSIVE, SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE, AccessExclusiveLock |
+| ShareLock | CREATE INDEX (không CONCURRENTLY) | mọi lock trừ ROW EXCLUSIVE, SHARE UPDATE EXCLUSIVE, SHARE ROW EXCLUSIVE, EXCLUSIVE, AccessExclusiveLock |
+| ShareRowExclusiveLock | CREATE TRIGGER, một số ALTER TABLE | mọi lock trừ ROW EXCLUSIVE, SHARE UPDATE EXCLUSIVE, SHARE ROW EXCLUSIVE, EXCLUSIVE, AccessExclusiveLock |
+| ExclusiveLock | REFRESH MATERIALIZED VIEW CONCURRENTLY | chỉ tương thích với AccessShareLock (chặn mọi thao tác ghi) |
+| AccessExclusiveLock | ALTER TABLE, DROP TABLE, TRUNCATE, REINDEX (không CONCURRENTLY), CLUSTER, VACUUM FULL, REFRESH MATERIALIZED VIEW, LOCK TABLE | **không tương thích với bất kỳ lock nào** |
+
+Hai lock **tương thích** khi tập xung đột của chúng không chứa nhau (xem bảng trên). AccessExclusiveLock cần bảng **hoàn toàn trống lock**: không có SELECT, không có INSERT, không có UPDATE, không có DDL song song.
+
+### Hàng đợi lock: tại sao một migration làm treo 618 query
+1. 17:05:00 migration bắt đầu, xin AccessExclusiveLock trên {{shipments}}.
+2. lúc đó đang có nhiều query ứng dụng đang chạy (giữ AccessShareLock/RowExclusiveLock). Migration phải **chờ** chúng commit/rollback → AccessExclusiveLock {{granted = f}}.
+3. Ngay khi các query hiện tại xong, AccessExclusiveLock được cấp — nhưng **bất kỳ query nào đến sau migration đều bị xếp vào hàng đợi phía sau nó**, dù query đó chỉ cần AccessShareLock (SELECT). PostgreSQL hàng đợi lock theo thứ tự đến (FIFO), không phân biệt mức độ tương thích.
+4. Kết quả: 618 query ứng dụng (SELECT/INSERT/UPDATE) đều phải đứng sau AccessExclusiveLock → tất cả {{wait_event_type = Lock}}, {{wait_event = relation}}, không có phiên nào chạy. Connection pool cạn trên mọi instance (40 connection/instance đều giữ các thread đang chờ), request timeout 3 giây → 504.
+5. CPU 8%: các thread đều **ngồi chờ**, không tính CPU. Đây là **blocking**, không phải quá tải — thêm CPU hay thêm connection đều vô hiệu.
+
+### Dẫn chứng
+- Artifact 1: pid 41822 (migration) {{state = active}}, {{wait_event_type = Lock}}, {{wait_event = relation}}, {{xact_age = 00:03:41}} — đã chờ 3 phút 41 giây và vẫn chưa xong. Các pid 41823–41832 (ứng dụng) đều {{wait_event_type = Lock}}, {{wait_event = relation}}, xact_age từ 1,8–2,1 giây — đang chờ. Tổng {{619}} phiên đang chờ Lock.
+- Artifact 2: AccessExclusiveLock {{granted = f}} n = 1 (migration đang chờ); AccessShareLock {{granted = f}} n = 512 và RowExclusiveLock {{granted = f}} n = 106 (618 query đến sau, đang xếp hàng); AccessShareLock {{granted = t}} n = 2 (2 SELECT xin trước migration nên đã được cấp). {{pg_blocking_pids(41823) = 41822}} — query ứng dụng bị migration chắn.
+- Artifact 3: {{HikariPool-1 - Connection is not available, request timed out after 3000ms (total=40, active=40, idle=0, waiting=43)}} — pool cạn, waiting queue tăng. Mỗi ~600ms một request 504.
+
+### Vì sao 02:00 thành công
+Ngoài giờ cao điểm, bảng {{shipments}} không có traffic (1.400 giao dịch/giây chỉ vào 17:00–19:00). Migration xin AccessExclusiveLock và được cấp ngay vì không có lock nào đang giữ → build xong trong 3 phút 50 giây. Vấn đề không phải câu SQL hay kích thước bảng, mà là **thời điểm** và **loại lock**.
+
+### Cách sửa
+**Ngắn hạn (hôm nay):**
+- Dùng {{REINDEX TABLE CONCURRENTLY shipments;}} (PostgreSQL 12+), hoặc {{CREATE INDEX CONCURRENTLY idx_shipments_status_created ON shipments (status, created_at);}} khi mục tiêu chỉ là một index mới. Lock chỉ là ShareUpdateExclusiveLock — SELECT/INSERT/UPDATE/DELETE vẫn chạy trong lúc build (chỉ DDL song song bị chặn). Build sẽ chậm hơn (khoảng 5–6 phút với 6,1 GB index) nhưng **không treo hệ thống**.
+- Đặt {{lock_timeout}} cho role migration (ví dụ {{SET lock_timeout = '30s'}} hoặc {{ALTER ROLE ... SET lock_timeout = '5s'}}): nếu migration phải chờ lock quá 30 giây nó tự rollback, fail nhanh thay vì chờ vô hạn; retry sau khi giải phóng.
+- Nếu migration phải chạy trong giờ cao điểm: tạm dừng service hoặc chuyển sang read-replica để không có traffic, rồi chạy.
+
+**Dài hạn:**
+- **Chia migration nhỏ:** thêm cột/đổi tên cột (metadata, nhanh) và tạo index là hai bước riêng; index luôn dùng CONCURRENTLY và không bọc trong transaction (CREATE INDEX CONCURRENTLY không thể chạy trong transaction block). Flyway bọc mỗi migration trong một transaction, nên câu này phải chạy thủ công bằng psql (hoặc tách thành job riêng), rồi để Flyway đánh dấu version đã áp dụng.
+- **Chạy migration ngoài giờ cao điểm:** quy tắc deploy — mọi DDL trên bảng lớn (> 1 triệu dòng) phải được schedule vào khung quiet hours (02:00–04:00).
+- **Theo dõi lock:** alert khi {{pg_locks}} có AccessExclusiveLock {{granted = f}}; dashboard số query đang chờ lock theo relation.
+- **Tự dọn phiên treo:** {{idle_in_transaction_session_timeout = 30s}} và {{statement_timeout}} cho role ứng dụng, để một connection leak không giữ lock mãi mãi.
+
+### Lỗi hay gặp
+- Nghĩ REINDEX/CREATE INDEX nhanh vì "chỉ cần đọc bảng": sai — REINDEX (không CONCURRENTLY) cần AccessExclusiveLock và giữ trong toàn bộ thời gian build; còn CREATE INDEX (không CONCURRENTLY) chỉ cần ShareLock nên chặn ghi chứ không chặn đọc.
+- Chạy migration trong transaction (Flyway mặc định): CREATE INDEX CONCURRENTLY / REINDEX CONCURRENTLY sẽ lỗi "CREATE INDEX CONCURRENTLY cannot run inside a transaction block".
+- Kill migration rồi chạy lại ngay trong giờ cao điểm: lại treo.
+
+### Trả lời miệng 1 phút
+"REINDEX TABLE không concurrent cần AccessExclusiveLock — lock mạnh nhất, không tương thích với bất kỳ lock nào. Bảng đang nóng nên lock phải chờ các query hiện tại xong; ngay khi được cấp, nó cắt mọi query đến sau nhờ hàng đợi lock FIFO: 618 SELECT/INSERT/UPDATE đều phải đứng sau nó dù chúng chỉ cần AccessShareLock. Toàn bộ hệ thống treo 4 phút, CPU 8% vì các thread đều ngồi chờ. Ngoài giờ cao điểm không có lock nên migration thành công. Tôi sẽ dùng REINDEX CONCURRENTLY hoặc CREATE INDEX CONCURRENTLY (lock ShareUpdateExclusiveLock, tương thích với thao tác dữ liệu), đặt lock_timeout cho role migration, chạy ngoài quiet hours, và thêm monitoring cho AccessExclusiveLock granted = f."
+
+> Senior tip: Trên PostgreSQL, **một AccessExclusiveLock đang chờ là "cổ chai"**, và một AccessExclusiveLock đang được cấp thì **chặt hoàn toàn bảng**. Vì vậy mọi DDL trên bảng nóng phải dùng CONCURRENTLY (index), hoặc VACUUM FULL/REINDEX phải được schedule. Quy tắc vàng: **trong giờ cao điểm, không có bất kỳ DDL nào (kể cả ADD COLUMN) được chạy trên bảng nóng**. Và hãy luôn đặt lock_timeout cho role migration — nó biến một sự cố treo 4 phút thành một sự cố fail nhanh và retry được.`,
+  rubric: [
+    'Nhận ra REINDEX (không concurrent) cần AccessExclusiveLock và bị chặn bởi các query đang chạy',
+    'Giải thích cơ chế hàng đợi lock FIFO: mọi query đến sau đều bị xếp sau AccessExclusiveLock dù lock yếu hơn',
+    'Dẫn chứng đúng: 619 phiên wait_event_type=Lock, AccessExclusiveLock granted=f, pg_blocking_pids, pool exhausted, CPU 8%',
+    'Giải thích vì sao ngoài giờ cao điểm thành công (không có lock giữ)',
+    'Đề xuất sửa: REINDEX/CREATE INDEX CONCURRENTLY, lock_timeout, chạy ngoài quiet hours, monitoring AccessExclusiveLock',
+  ],
+  tags: ['postgresql', 'lock', 'reindex', 'concurrent', 'access-exclusive-lock', 'migration'],
+},
+{id:'lab-sql-016',category:'sql',title:'Index trên email không dùng vì lower() và ép kiểu varchar vs bigint',level:'senior',scenario:`**Bối cảnh.** SaaS liên lạc **CloudChat** chạy {{auth-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB). Bảng {{app_user}} lưu tài khoản của 4.200 tổ chức: sau 5 năm đã có **8.412.607 dòng** (~2,1 GB heap). Mỗi phút có khoảng 2.500 lần đăng nhập, mỗi lần gọi endpoint {{GET /api/v1/auth/login}} chạy câu:
+~~~sql
+SELECT id, name, email FROM app_user WHERE lower(email) = lower($1) AND status = 'ACTIVE';
+~~~
+Index hiện có: {{idx_app_user_email}} btree trên {{email}} (varchar), và {{idx_app_user_status}} btree trên {{status}}.
+
+**Triệu chứng (14/03/2026, 09:15).** p95 của endpoint login nhảy từ 120 ms lên **4,1 giây**, CPU RDS từ 18% lên 82%. DBA chạy EXPLAIN ANALYZE trên production và thấy **Seq Scan toàn bảng 8,4 triệu dòng** dù index {{idx_app_user_email}} đã tồn tại. Sau khi dev "vá" lỗi bằng cách ép kiểu tham số (truyền {{Long}} cho cột {{contract_ref}} ở một endpoint khác), một endpoint khác cũng bị Seq Scan.
+
+**Việc bạn có.** Ba artifact: EXPLAIN ANALYZE của câu login, schema + danh sách index, và log ứng dụng. Hãy chỉ ra vì sao index không được dùng và cách sửa đúng.`,
+  artifacts: [
+    {
+      name: 'explain-login.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 09:15:41 +07, psql trên RDS cloudchat-primary (PostgreSQL 15.6)
+cloudchat=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, name, email FROM app_user
+WHERE lower(email) = lower($1) AND status = 'ACTIVE';
+                                                                QUERY PLAN
+      ------------------------------------------------------------------------------------------------------------------------------------
+       Seq Scan on app_user  (cost=0.00..147231.56 rows=42063 width=56) (actual time=0.021..3876.412 rows=1 loops=1)
+         Filter: ((lower(email) = lower($1)) AND ((status)::text = 'ACTIVE'::text))
+         Rows Removed by Filter: 8412606
+         Buffers: shared hit=145210 read=118433
+       Planning Time: 0.312 ms
+       Execution Time: 3877.204 ms
+      (6 rows)
+
+      Time: 3877.520 ms
+
+      -- So sánh: cùng câu, bỏ lower() trên cột:
+cloudchat=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, name, email FROM app_user
+WHERE email = $1 AND status = 'ACTIVE';
+                                                                QUERY PLAN
+      ------------------------------------------------------------------------------------------------------------------------------------
+       Index Scan using idx_app_user_email on app_user  (cost=0.43..32.45 rows=1 width=56) (actual time=0.051..0.312 rows=1 loops=1)
+         Index Cond: ((email = $1) AND ((status)::text = 'ACTIVE'::text))
+         Buffers: shared hit=12 read=2
+       Planning Time: 0.284 ms
+       Execution Time: 0.401 ms
+      (6 rows)
+
+      Time: 0.871 ms`,
+    },
+    {
+      name: 'schema-and-index.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 09:16:02 +07
+cloudchat=# \\d app_user
+                                       Table "public.app_user"
+         Column    |           Type           | Collation | Nullable |              Default
+      --------------+--------------------------+-----------+----------+-----------------------------------
+       id           | bigint                   |           | not null | nextval('app_user_id_seq'::regclass)
+       name         | character varying(128)   |           | not null |
+       email        | character varying(254)   |           | not null |
+       status       | character varying(16)    |           | not null |
+       created_at   | timestamp with time zone |           | not null | now()
+      Indexes:
+         "idx_app_user_email" btree (email)
+         "idx_app_user_status" btree (status)
+         "app_user_pkey" PRIMARY KEY, btree (id)
+
+      -- Danh sách index theo cột:
+cloudchat=# SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'app_user';
+             indexname          |                                   indexdef
+      -------------------------+------------------------------------------------------------------
+       idx_app_user_email      | CREATE INDEX idx_app_user_email ON public.app_user USING btree (email)
+       idx_app_user_status     | CREATE INDEX idx_app_user_status ON public.app_user USING btree (status)
+       app_user_pkey           | CREATE UNIQUE INDEX app_user_pkey ON public.app_user USING btree (id)`,
+    },
+    {
+      name: 'app-login-slow.log',
+      lang: 'text',
+      content: `2026-03-14 09:15:42.101 DEBUG [http-nio-8080-exec-14] o.h.SQL : select u1_0.id,u1_0.name,u1_0.email from app_user u1_0 where lower(u1_0.email) = lower($1) and u1_0.status = 'ACTIVE'
+2026-03-14 09:15:45.980 INFO  [http-nio-8080-exec-14] c.c.a.AuthController : POST /api/v1/auth/login -> 200 in 3881 ms
+2026-03-14 09:15:46.222 DEBUG [http-nio-8080-exec-7] o.h.SQL : select u1_0.id,u1_0.name,u1_0.email from app_user u1_0 where lower(u1_0.email) = lower($1) and u1_0.status = 'ACTIVE'
+2026-03-14 09:15:50.114 INFO  [http-nio-8080-exec-7] c.c.a.AuthController : POST /api/v1/auth/login -> 3894 ms
+2026-03-14 09:15:50.440 DEBUG [http-nio-8080-exec-21] o.h.SQL : select u1_0.id,u1_0.name,u1_0.email from app_user u1_0 where lower(u1_0.email) = lower($1) and u1_0.status = 'ACTIVE'
+2026-03-14 09:15:54.319 INFO  [http-nio-8080-exec-21] c.c.a.AuthController : POST /api/v1/auth/login -> 3881 ms
+-- pattern: mỗi request login mất ~3,9 giây, không có request nào dưới 1 giây`,
+    },
+  ],
+  questions: [
+    'Vì sao index idx_app_user_email (đã tồn tại) không được dùng cho câu WHERE lower(email) = lower($1)? Chỉ ra bằng dòng trong EXPLAIN.',
+    'So sánh với câu email = $1 (0,4 ms): đây là minh chứng gì cho nguyên tắc "sargable"?',
+    'Bạn sửa câu query và index thế nào để login về dưới 100 ms? Khi nào nên dùng expression index và cần lưu ý gì về IMMUTABLE?',
+  ],
+  hints: [
+    'Đọc dòng "Filter: (lower(email) = lower($1))" trong EXPLAIN: điều kiện bọc hàm lower() quanh cột email, planner không thể dùng index btree trên email vì key trong index là giá trị email thô, không phải lower(email).',
+    'Index chỉ được dùng khi vế trái là cột trần, vế phải là hằng số/tham số. Bọc hàm biến điều kiện thành biểu thức — planner không có thống kê cho biểu thức đó (trừ khi đã có expression index).',
+    'Expression index: CREATE INDEX ... ON app_user (lower(email)). Function lower() phải IMMUTABLE — lower() là IMMUTABLE trong PostgreSQL, nhưng date_trunc() không phải (phụ thuộc timezone). Sau khi tạo index, cần ANALYZE để planner có statistics cho biểu thức.',
+  ],
+  answer: `**Tóm tắt:** Câu login viết {{WHERE lower(email) = lower($1)}} — **bọc hàm lower() quanh cột email** — làm mất khả năng dùng index: planner không thể so sánh giá trị trong index {{idx_app_user_email}} (lưu giá trị email thô) với biểu thức {{lower(email)}} nên chọn **Seq Scan toàn bảng 8.412.607 dòng** (3,9 giây). Câu viết đúng {{WHERE email = $1}} dùng lại index và chỉ mất **0,4 ms** — chênh lệch ~10.000 lần. Sửa: viết query so sánh cột trần với tham số đã chuẩn hóa (lower ở ứng dụng), hoặc tạo **expression index** {{CREATE INDEX idx_app_user_lower_email ON app_user (lower(email))}}.
+
+### Kiến thức nền: sargable và expression index
+Nguyên tắc **sargable** (SARG = Search ARGment): **index chỉ được dùng khi điều kiện WHERE là "cột_so_sánh_toán_tử_hằng_số"**, tức vế trái là cột trần, vế phải là hằng số hoặc tham số đã bind.
+
+| Viết | Có dùng index không? | Vì sao |
+|---|---|---|
+| {{WHERE email = $1}} | Có | cột_so_sánh_hằng_số — index btree trên email dùng được |
+| {{WHERE lower(email) = lower($1)}} | Không | bọc hàm → biểu thức — planner không có key tương đương |
+| {{WHERE email LIKE 'a%'}} | Có | prefix match dùng được với btree |
+| {{WHERE email LIKE '%a'}} | Không | tiền tố ẩn — phải scan |
+
+**Expression index** (chỉ dùng khi thực sự cần): {{CREATE INDEX idx ON table (expr)}}. Index lưu giá trị của **biểu thức** (ví dụ {{lower(email)}}), không phải giá trị cột thô. Khi đó planner có thể dùng index cho câu {{WHERE lower(email) = $1}} vì biểu thức trong query **khớp** với biểu thức trong index.
+
+### Nguyên nhân gốc, từng bước
+1. Query login: {{WHERE lower(email) = lower($1) AND status = 'ACTIVE'}}. Điều kiện {{lower(email)}} là biểu thức — planner không dùng được {{idx_app_user_email}} (lưu email thô).
+2. Planner không có index nào khớp biểu thức {{lower(email)}} (index btree trên {{email}} không chứa biểu thức này) nên chỉ còn đường Seq Scan; nó cũng không có thống kê cho biểu thức, ước lượng selectivity mặc định 0,5% (khoảng 42.000 dòng).
+3. Seq Scan đọc toàn bộ 8.412.607 dòng, lọc bỏ 8.412.606, giữ 1 dòng: {{Rows Removed by Filter: 8412606}}, {{Buffers: shared hit=145210 read=118433}} (~263.643 page), {{Execution Time: 3877.204 ms}}.
+4. Câu viết đúng {{WHERE email = $1}}: planner dùng {{idx_app_user_email}}, {{Index Cond: (email = $1)}}, chỉ đọc {{Buffers: shared hit=12 read=2}} (14 page), {{Execution Time: 0.401 ms}}.
+
+### Dẫn chứng
+- Artifact 1: {{Seq Scan on app_user ... Filter: ((lower(email) = lower($1)) ...)}}, {{Rows Removed by Filter: 8412606}}, {{Execution Time: 3877.204 ms}}. Câu thứ hai {{Index Scan using idx_app_user_email ... Execution Time: 0.401 ms}} — cùng index, chỉ khác cách viết.
+- Artifact 2: index {{idx_app_user_email}} btree trên {{email}} — không phải trên {{lower(email)}}.
+- Artifact 3: log ứng dụng mỗi request login mất ~3,9 giây, không có request nào dưới 1 giây.
+
+### Cách sửa
+**Ngắn hạn (hôm nay):**
+- Sửa query so sánh cột trần với tham số đã chuẩn hóa ở ứng dụng: {{WHERE email = :emailLower}} (Java: {{email.toLowerCase()}} trước khi bind). Nếu cần tìm không phân biệt hoa, hãy chuẩn hóa dữ liệu ngay khi insert/update (lưu email đã lower) rồi so sánh cột đã lower — collation không phân biệt hoa (ICU nondeterministic) không dùng được với btree ở PostgreSQL 15.
+- Nếu không thể sửa query: tạo expression index:
+~~~sql
+CREATE INDEX CONCURRENTLY idx_app_user_lower_email ON app_user (lower(email));
+~~~
+Sau đó {{ANALYZE app_user;}} để planner có statistics cho biểu thức {{lower(email)}}.
+
+**Dài hạn:**
+- Chuẩn hóa dữ liệu: lưu {{email}} dưới dạng lower (ví dụ cột {{email_lower}} generated always as (lower(email)) stored) và index trên {{email_lower}} — index nhỏ và query luôn sargable.
+- Nếu cần tìm kiếm không phân biệt hoa với dữ liệu đã lower từ trước: {{WHERE email_lower = :emailLower}} — index scan.
+- Với các cột số được lưu dưới dạng varchar (ví dụ {{contract_ref}}) và tham số từ Java là {{Long}}: ép kiểu ở **vế tham số** {{WHERE contract_ref = CAST(:ref AS varchar)}} — hoặc tốt hơn, đổi cột sang {{bigint}} theo mô hình expand/contract (thêm cột mới, backfill, dual-write, đổi index, drop cột cũ).
+
+### Expression index cần lưu ý gì
+- Function trong index expression phải **IMMUTABLE**. {{lower()}} là IMMUTABLE (kết quả chỉ phụ thuộc locale của database, cố định từ khi tạo database), nhưng {{date_trunc()}} không phải (phụ thuộc timezone), {{now()}} không phải.
+- Kích thước expression index tuỳ biểu thức: {{lower(email)}} xấp xỉ index trên cột thô, còn {{contract_ref::bigint}} nhỏ hơn (8 byte/dòng thay vì chuỗi varchar). Dù bằng cách nào, index phải được {{ANALYZE}} để planner có statistics.
+- Không tạo expression index một cách tùy tiện: chỉ tạo khi query thực tế cần và đã thử chỉnh query về dạng sargable.
+
+### Lỗi hay gặp
+- "Tao index rồi mà vẫn Seq Scan": vì index trên cột thô, query bọc hàm — planner không dùng.
+- Ép kiểu ở vế cột ({{contract_ref::bigint}}) để "vá" lỗi operator does not exist: làm mất index (như lab-sql-006).
+- Tạo expression index mà quên ANALYZE: planner không có statistics → vẫn chọn Seq Scan.
+
+### Trả lời miệng 1 phút
+"Query login viết lower(email) = lower($1) — bọc hàm quanh cột nên planner không thể dùng index idx_app_user_email (lưu email thô) và chọn Seq Scan 8,4 triệu dòng, 3,9 giây. Câu viết email = $1 dùng lại index và chỉ 0,4 ms — chênh lệch 10.000 lần. Sửa: chuẩn hóa tham số ở ứng dụng và so sánh cột trần, hoặc tạo expression index CREATE INDEX ... ON app_user (lower(email)) kèm ANALYZE. Với cột varchar chứa số, ép kiểu ở vế tham số, không ép ở vế cột."
+
+> Senior tip: Khi EXPLAIN vẫn Seq Scan dù đã có index, hãy hỏi "điều kiện WHERE có bọc hàm hay ép kiểu quanh cột không?" — đó là nguyên nhân phổ biến thứ hai sau statistics cũ. Quy tắc vàng: **hãy viết query để cột luôn là vế trái, tham số/hằng số là vế phải**. Nếu bắt buộc phải dùng hàm, hãy tạo expression index và nhớ ANALYZE; nhưng ưu tiên số 1 luôn là chỉnh query.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân: lower(email) bọc hàm quanh cột → không sargable → Seq Scan 8,4 triệu dòng',
+    'Dẫn chứng đúng: Seq Scan + Filter lower(email) + Rows Removed 8.412.606 + Execution Time 3877 ms, so sánh với Index Scan 0,4 ms',
+    'Giải thích nguyên tắc sargable và vai trò của expression index',
+    'Đề xuất sửa: query cột trần + tham số chuẩn hóa, expression index (lower(email)) + ANALYZE, và trường hợp varchar-vs-number (ép vế tham số)',
+    'Nêu lưu ý IMMUTABLE và không tạo expression index tùy tiện',
+  ],
+  tags: ['postgresql', 'index', 'expression-index', 'sargable', 'lower', 'implicit-cast'],
+},
+{
+  id: 'lab-sql-017',
+  category: 'sql',
+  title: 'Migration ALTER TABLE trên bảng lớn giờ cao điểm làm hàng chờ lock',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn flash sale FlashDeal chạy {{order-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Service chạy **12 instance**, mỗi instance dùng HikariCP **40 connection** (tổng tối đa 480 connection tới RDS). Bảng {{invoices}} lưu hoá đơn: **38.752.110 dòng** (~8,6 GB heap). Giờ cao điểm 09:30–11:00 hệ thống xử lý **1.200 giao dịch/giây**, mọi API đọc/ghi hoá đơn đều đi qua bảng này.
+
+**Triệu chứng (15/03/2026, 10:02).** Deploy bản v2.18.0 kèm migration Flyway {{V53__add_invoice_no_to_invoices.sql}} chạy câu:
+~~~sql
+ALTER TABLE invoices ADD COLUMN invoice_no varchar(32);
+~~~
+Trong vòng 2 phút, **toàn bộ** endpoint trả 504, CPU RDS chỉ **9%** (không phải quá tải CPU), connection pool cạn sạch, log tràn {{HikariPool-1 - Connection is not available, request timed out after 3000ms}}. DBA terminate migration lúc 10:04:30 thì hệ thống hồi phục trong 30 giây. Migration chạy lại lúc 23:00 cùng câu SQL xong trong 25 giây và thành công.
+
+**Việc bạn có.** Ba artifact: log Flyway, ảnh pg_stat_activity và pg_locks lúc 10:02:30. Hãy tìm nguyên nhân gốc, dựng chuỗi chờ, và đề xuất cách chạy migration an toàn.`,
+  artifacts: [
+    {
+      name: 'flyway-migration.log',
+      lang: 'text',
+      content: `2026-03-15 10:00:00.012 INFO  [main] o.f.core.internal.command.DbMigrate : Migrating schema "public" to version "53 - add invoice no to invoices"
+2026-03-15 10:00:00.015 INFO  [main] o.f.core.internal.sqlscript.DefaultSqlScriptExecutor : Executing SQL: ALTER TABLE invoices ADD COLUMN invoice_no varchar(32)
+2026-03-15 10:04:30.118 ERROR [main] o.f.core.internal.command.DbMigrate : Migration of schema "public" to version "53" failed! Please restore backups...
+2026-03-15 10:04:30.119 ERROR [main] o.f.core.internal.command.DbMigrate : SQL State  : 57P01 --- Error Code : 0 --- Message  : FATAL: terminating connection due to administrator command
+-- 57P01 = admin_shutdown: backend bị DBA terminate lúc 10:04:30 (pg_terminate_backend).
+-- Câu ALTER TABLE đã chờ lock từ 10:00:00 tới khi bị terminate, tức 4 phút 30 giây.`,
+    },
+    {
+      name: 'pg-stat-activity-100230.txt',
+      lang: 'text',
+      content: `-- 2026-03-15 10:02:30 +07, RDS flashdeal-primary
+flashdeal=# SELECT pid, state, wait_event_type, wait_event, now() - xact_start AS xact_age,
+       left(query, 72) AS query
+FROM pg_stat_activity WHERE datname='flashdeal' ORDER BY backend_start;
+  pid   |        state        | wait_event_type | wait_event |    xact_age     |                                query
+--------+---------------------+-----------------+------------+-----------------+----------------------------------------------------------------
+  42110 | active              | Lock            | relation   | 00:02:30.402  | ALTER TABLE invoices ADD COLUMN invoice_no varchar(32)
+  42111 | active              | Lock            | relation   | 00:00:15.230  | SELECT count(*) FROM invoices WHERE created_at >= '2026-03-15 09:00'
+  42112 | active              | Lock            | relation   | 00:00:15.211  | UPDATE invoices SET status = $1 WHERE id = $2
+  42113 | active              | Lock            | relation   | 00:00:15.195  | INSERT INTO invoices (...) VALUES (...)
+  42114 | active              | Lock            | relation   | 00:00:15.172  | SELECT invoice_id FROM invoices WHERE customer_id = $1
+  42115 | active              | Lock            | relation   | 00:00:15.150  | UPDATE invoices SET status = $1 WHERE id = $2
+-- (tổng 420 backend đang chờ lock trên cùng một relation, chỉ hiển thị 6 đầu)
+-- wait_event_type = Lock, wait_event = relation: đang chờ cấp lock trên bảng invoices, không phải đang chạy
+
+flashdeal=# SELECT state, wait_event_type, count(*) FROM pg_stat_activity
+WHERE datname = 'flashdeal' AND backend_type = 'client backend' GROUP BY 1, 2 ORDER BY 3 DESC;
+        state        | wait_event_type | count
+---------------------+-----------------+-------
+ active              | Lock            |   420
+ idle                | Client          |    15
+ active              |                 |     5
+(3 rows)`,
+    },
+    {
+      name: 'pg-locks-100230.txt',
+      lang: 'text',
+      content: `-- 2026-03-15 10:02:30 +07
+flashdeal=# SELECT l.locktype, l.mode, l.granted, count(*) AS n
+FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE l.relation = 'invoices'::regclass
+GROUP BY l.locktype, l.mode, l.granted ORDER BY n DESC;
+  locktype  |           mode           | granted |   n
+------------+--------------------------+---------+-----
+ relation   | AccessShareLock          | f       | 401
+ relation   | RowExclusiveLock         | f       |  18
+ relation   | AccessShareLock          | t       |   3
+ relation   | RowExclusiveLock         | t       |   2
+ relation   | AccessExclusiveLock      | f       |   1
+
+-- AccessShareLock f (401) + RowExclusiveLock f (18) = 419 query ứng dụng đến SAU migration,
+--   đang xếp hàng chờ lock (đúng bằng cột count = 420 ở pg_stat_activity).
+-- AccessShareLock t (3) + RowExclusiveLock t (2) = 5 phiên đang giữ lock, khớp với 5 backend
+--   "active / wait_event_type = rỗng" trong pg_stat_activity: đó chính là nhóm migration phải chờ.
+-- AccessExclusiveLock granted = f (1): migration đang chờ, chưa được cấp.
+-- Sau khi migration nhận được lock, mọi query mới đến (kể cả SELECT chỉ cần AccessShareLock)
+--   đều phải xếp hàng SAU migration theo thứ tự đến (FIFO).
+-- pg_blocking_pids(42110) trả về pid của các phiên đang giữ lock xung đột (hard block),
+--   tức 5 backend đang chạy ở trên.`,
+    },
+  ],
+  questions: [
+    'Vì sao migration xin AccessExclusiveLock bị chặn, và tại sao 419 query SELECT (chỉ cần AccessShareLock) cũng bị treo?',
+    'Dựng chuỗi chờ từ artifacts: migration chờ ai, và query mới chờ migration, với bằng chứng số liệu.',
+    'Vì sao cùng migration lúc 23:00 thành công trong 25 giây, nhưng lúc 10:02 treo toàn hệ thống?',
+  ],
+  hints: [
+    'PostgreSQL hàng đợi lock theo thứ tự đến (FIFO): một AccessExclusiveLock đang chờ sẽ chặn mọi lock mới trên cùng relation, kể cả lock yếu hơn.',
+    'ALTER TABLE thêm cột trong PG 11+ chỉ ghi metadata (không rewrite bảng), nên chính câu lệnh rất nhanh; vấn đề nằm ở việc xin lock, không ở độ dài câu lệnh.',
+    'Có một nhóm query/transaction đang giữ lock AccessShareLock/RowExclusiveLock trước migration; migration phải chờ chúng xong.',
+  ],
+  answer: `**Tóm tắt:** Migration {{ALTER TABLE invoices ADD COLUMN invoice_no varchar(32)}} cần **AccessExclusiveLock** trên bảng {{invoices}} — lock mạnh nhất, không tương thích với bất kỳ lock nào khác. Bảng đang nóng (1.200 giao dịch/giây) nên migration phải chờ 5 phiên đang giữ AccessShareLock/RowExclusiveLock xong (AccessExclusiveLock granted = f). Sau khi được cấp, migration chặn đúng đầu hàng đợi lock FIFO: mọi query mới đến, kể cả SELECT chỉ cần AccessShareLock, cũng phải xếp hàng SAU migration. Hết 420 backend chờ lock, connection pool cạn, toàn hệ thống trả 504 trong khi CPU chỉ 9% (các thread đang chờ, không tính CPU). Sửa: đặt lock_timeout ngắn cho role migration, tìm và kết thúc session giữ lock, chạy migration ngoài giờ cao điểm; dài hạn chia migration (thêm cột nullable → backfill theo lô → NOT NULL), tạo index CONCURRENTLY ngoài transaction, và theo dõi AccessExclusiveLock granted = f.
+
+### Kiến thức nền: lock trên bảng (relation lock)
+PostgreSQL có nhiều mức lock trên một relation, theo thứ tự mạnh dần:
+~~~text
+Lock                     | Ai lấy                                                        | Xung đột với
+AccessShareLock          | SELECT                                                        | chỉ AccessExclusiveLock
+RowExclusiveLock         | INSERT / UPDATE / DELETE / MERGE                              | SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE, AccessExclusiveLock
+ShareUpdateExclusiveLock | CREATE INDEX CONCURRENTLY, REINDEX CONCURRENTLY, ANALYZE, VACUUM | chính nó, SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE, AccessExclusiveLock
+AccessExclusiveLock      | ALTER TABLE, DROP TABLE, REINDEX, CLUSTER, VACUUM FULL, TRUNCATE, LOCK TABLE | mọi lock
+~~~
+Hai lock tương thích nếu được cấp cùng lúc. AccessExclusiveLock cần bảng hoàn toàn trống lock: không có SELECT, không có INSERT, không có UPDATE, không có DDL song song.
+
+### Nguyên nhân gốc, từng bước
+1. 10:00:00 migration bắt đầu, xin AccessExclusiveLock trên {{invoices}}.
+2. Lúc đó 5 phiên ứng dụng đang chạy và giữ AccessShareLock/RowExclusiveLock. Migration phải chờ → AccessExclusiveLock có {{granted = f}}, xact_age tăng lên 2 phút 30 khi chụp ảnh.
+3. PostgreSQL hàng đợi lock FIFO: khi migration đang chờ AccessExclusiveLock, mọi query mới đến cũng phải xếp hàng SAU nó, kể cả khi query đó chỉ cần AccessShareLock và tương thích với lock đã cấp trước đó.
+4. Kết quả: 420 backend chờ lock (wait_event_type = Lock, wait_event = relation), connection pool Hikari cạn trên mọi instance (40 connection/instance đều giữ thread đang chờ), mỗi request timeout 3 giây → 504. CPU 9% vì các thread đang chờ, không có gì chạy. Đây là blocking, không phải quá tải — thêm CPU hay thêm connection đều vô hiệu.
+
+### Dẫn chứng
+- Artifact 1: Flyway báo **FATAL: terminating connection due to administrator command** (SQLSTATE 57P01) lúc 10:04:30 — chính là lúc DBA terminate migration đang chờ lock.
+- Artifact 2: pid 42110 (migration) có {{wait_event_type = Lock}}, {{wait_event = relation}}, {{xact_age = 00:02:30.402}} — đã chờ 2 phút 30 giây. 419 phiên còn lại cũng {{wait_event_type = Lock}} chờ cùng relation. Tổng 420 backend chờ lock.
+- Artifact 3: AccessExclusiveLock {{granted = f}} n = 1 (migration); AccessShareLock {{granted = f}} n = 401 và RowExclusiveLock {{granted = f}} n = 18 (419 query ứng dụng đến sau) + 1 migration = 420 phiên đang xếp hàng; AccessShareLock {{granted = t}} n = 3 và RowExclusiveLock {{granted = t}} n = 2 (5 phiên đã được cấp trước migration, vẫn đang chạy).
+
+### Vì sao lúc 23:00 thành công
+Ngoài giờ cao điểm, bảng {{invoices}} không có traffic (1.200 giao dịch/giây chỉ vào 09:30–11:00). Migration xin AccessExclusiveLock và được cấp ngay vì không có lock nào đang giữ → xong trong 25 giây. Vấn đề không phải câu SQL hay kích thước bảng, mà là **thời điểm** và **loại lock**. (Thêm sau: PG 11+ thêm cột với DEFAULT hằng số chỉ ghi metadata, không rewrite bảng, kể cả khi có NOT NULL DEFAULT; vẫn phải chờ lock.)
+
+### Cách sửa
+**Ngắn hạn (hôm nay):**
+- Đặt {{lock_timeout}} ngắn cho role migration (ví dụ 5 giây): migration không chờ vô hạn, mà thất bại nhanh và có thể thử lại sau khi lock được giải phóng.
+- Tìm và kết thúc session giữ lock: {{SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle in transaction' ...}} hoặc sửa code để commit/rollback sớm.
+- Chạy migration ngoài giờ cao điểm (23:00–04:00); không deploy migration trong giờ cao điểm.
+
+**Dài hạn:**
+- Chia migration từng bước: (1) thêm cột nullable (metadata, nhanh, không cần lock lâu), (2) backfill dữ liệu theo lô (mỗi lô một transaction ngắn, cập nhật theo khoảng id), (3) sau đó {{ALTER COLUMN ... SET NOT NULL}}, (4) tạo {{CREATE INDEX CONCURRENTLY idx_invoices_invoice_no ON invoices (invoice_no)}} NGOÀI transaction (CREATE INDEX CONCURRENTLY không chạy được trong transaction block — Flyway mặc định chạy mỗi migration trong transaction, nên câu này phải chạy thủ công bằng psql hoặc tách thành job riêng).
+- Đặt {{statement_timeout}} và {{lock_timeout}} cho role ứng dụng; theo dõi {{pg_stat_activity}} state {{idle in transaction}} và connection leak.
+- Cảnh báo khi {{pg_locks}} có AccessExclusiveLock {{granted = f}}.
+
+### Lỗi hay gặp
+- Nghĩ migration chậm vì rewrite bảng: PG 11+ thêm cột chỉ ghi metadata, vẫn phải chờ lock.
+- Kill migration rồi chạy lại ngay trong giờ cao điểm: lại treo.
+- Bỏ CREATE INDEX CONCURRENTLY trong transaction: lỗi "CREATE INDEX CONCURRENTLY cannot run inside a transaction block".
+
+### Trả lời miệng 1 phút
+"Migration ALTER TABLE cần AccessExclusiveLock, lock mạnh nhất, không tương thích với bất kỳ lock nào. Bảng đang nóng nên migration phải chờ 5 phiên đang giữ AccessShareLock/RowExclusiveLock xong. Sau khi được cấp, nó chặn đúng đầu hàng đợi FIFO: mọi query mới đến, kể cả SELECT, cũng phải xếp hàng sau nó. Hết 420 backend chờ lock, pool cạn, hệ thống trả 504, CPU 9% vì các thread đang chờ. Ngoài giờ cao điểm không có lock nên migration xong trong 25 giây. Tôi sẽ đặt lock_timeout cho role migration, chia migration (cột nullable → backfill → NOT NULL), tạo index CONCURRENTLY ngoài transaction, chạy ngoài giờ cao điểm, và cảnh báo AccessExclusiveLock granted = f."
+
+> Senior tip: Một AccessExclusiveLock đang chờ là "cổ chai" chặn tất cả, kể cả SELECT. Vì vậy migration DDL trên bảng nóng luôn phải có lock_timeout và chạy lúc bảng ít lock nhất. Một connection leak (idle in transaction) có thể làm toàn hệ thống dừng, nên theo dõi pg_stat_activity và đặt idle_in_transaction_session_timeout là bắt buộc.`,
+  rubric: [
+    'Chính xác nguyên nhân: migration cần AccessExclusiveLock bị chặn bởi các query đang giữ AccessShareLock/RowExclusiveLock',
+    'Giải thích đúng hàng đợi lock FIFO khiến query AccessShareLock sau migration cũng bị chặn',
+    'Dẫn chứng đúng số liệu: AccessExclusiveLock granted = f, 420 backend wait_event_type = Lock, xact_age 2 phút 30 giây, pool cạn, CPU 9%',
+    'Giải thích đúng vì sao 23:00 thành công (không có lock giữ) và ADD COLUMN trong PG 11+ không rewrite bảng',
+    'Đề xuất sửa đúng: lock_timeout, kết thúc session giữ lock, chia migration (cột nullable → backfill → NOT NULL), CREATE INDEX CONCURRENTLY ngoài transaction, cảnh báo AccessExclusiveLock granted = f',
+  ],
+  tags: ['postgresql', 'lock', 'migration', 'flyway', 'access-exclusive-lock', 'fifo'],
+},
+{
+  id: 'lab-sql-018',
+  category: 'sql',
+  title: 'Index trên contract_ref không được dùng vì so sánh varchar với số',
+  level: 'senior',
+  scenario: `**Bối cảnh.** SaaS hợp đồng điện tử SignNow chạy {{contract-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{contracts}} lưu hợp đồng của 3.200 tổ chức: **8.214.500 dòng** (~2,4 GB heap). Cột {{contract_ref}} kiểu {{varchar(32)}} chứa mã hợp đồng chỉ gồm chữ số (ví dụ {{20260314000142}}). Mỗi phút khoảng 2.500 lần tra cứu hợp đồng qua GET /api/v1/contracts/{contractRef}; Java nhận path variable là {{Long}}, Hibernate bind tham số dạng {{bigint}}.
+
+**Triệu chứng (14/03/2026, 09:15).** p95 tra cứu hợp đồng nhảy từ 60 ms lên **4,2 giây**, CPU RDS từ 18% lên 84%. DBA chạy EXPLAIN ANALYZE trên production: **Seq Scan toàn bảng 8.214.500 dòng** dù index {{idx_contracts_contract_ref}} (btree trên {{contract_ref}}) đã tồn tại. Một dev đã gặp lỗi "operator does not exist: character varying = bigint" và "vá" câu SQL bằng cách ép kiểu cột: {{WHERE contract_ref::bigint = $1}}.
+
+**Việc bạn có.** Ba artifact: EXPLAIN ANALYZE của câu tra cứu, schema + index, và log ứng dụng. Hãy chỉ ra vì sao index không được dùng và cách sửa đúng.`,
+  artifacts: [
+    {
+      name: 'explain-contract-ref.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 09:15:41 +07, psql tren RDS signnow-primary (PostgreSQL 15.6)
+signnow=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, contract_ref, customer_name, status
+FROM contracts
+WHERE contract_ref::bigint = 20260314000142;
+                                                      QUERY PLAN
+--------------------------------------------------------------------------------
+ Seq Scan on contracts  (cost=0.00..167231.56 rows=41072 width=68) (actual time=0.023..4188.712 rows=1 loops=1)
+   Filter: ((contract_ref)::bigint = 20260314000142::bigint)
+   Rows Removed by Filter: 8214499
+   Buffers: shared hit=171000 read=140000
+ Planning Time: 0.312 ms
+ Execution Time: 4189.401 ms
+(6 rows)
+
+-- So sánh: cùng câu, truyền tham số là chuỗi (không ép cột):
+signnow=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, contract_ref, customer_name, status
+FROM contracts
+WHERE contract_ref = '20260314000142';
+                                                      QUERY PLAN
+--------------------------------------------------------------------------------
+  Index Scan using idx_contracts_contract_ref on contracts  (cost=0.43..8.45 rows=1 width=68) (actual time=0.048..0.512 rows=1 loops=1)
+    Index Cond: (contract_ref = '20260314000142'::character varying)
+    Buffers: shared hit=4 read=1
+  Planning Time: 0.284 ms
+  Execution Time: 0.704 ms
+(5 rows)`,
+    },
+    {
+      name: 'schema-and-index.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 09:16:02 +07
+signnow=# \d contracts
+                                        Table "public.contracts"
+   Column     |           Type           | ...
+--------------+--------------------------+...
+ id           | bigint                   | not null
+ contract_ref | character varying(32)    | not null  -- mã hợp đồng chỉ gồm chữ số
+ customer_name | character varying(128) | not null
+ status       | character varying(16)    | not null
+ created_at   | timestamp with time zone | not null | now()
+Indexes:
+    "idx_contracts_contract_ref" btree (contract_ref)
+    "contracts_pkey" PRIMARY KEY, btree (id)`,
+    },
+    {
+      name: 'app-contract-slow.log',
+      lang: 'text',
+      content: `2026-03-14 09:15:42.101 DEBUG [http-nio-8080-exec-14] o.h.SQL : select c1_0.id,c1_0.contract_ref,c1_0.customer_name,c1_0.status from contracts c1_0 where c1_0.contract_ref::bigint = ?
+2026-03-14 09:15:45.980 INFO  [http-nio-8080-exec-14] c.c.s.ContractController : GET /api/v1/contracts/20260314000142 -> 200 in 4211 ms
+2026-03-14 09:15:46.222 DEBUG [http-nio-8080-exec-7] o.h.SQL : select c1_0.id,c1_0.contract_ref,c1_0.customer_name,c1_0.status from contracts c1_0 where c1_0.contract_ref::bigint = ?
+2026-03-14 09:15:50.114 INFO  [http-nio-8080-exec-7] c.c.s.ContractController : GET /api/v1/contracts/20260315000243 -> 200 in 4198 ms
+-- Lỗi trước khi "vá" (lấy từ app.log ngày 13/03, lúc 08:41:22):
+-- ERROR:  operator does not exist: character varying = bigint
+-- LINE 1: where c1_0.contract_ref = ?
+--                      ^
+-- HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+-- pattern: mỗi request tra cứu mất khoảng 4,2 giây, không có request nào dưới 1 giây`,
+    },
+  ],
+  questions: [
+    'Vì sao index idx_contracts_contract_ref không được dùng câu WHERE contract_ref::bigint = $1? Chỉ ra bằng dòng nào trong EXPLAIN.',
+    'So sánh với câu WHERE contract_ref = \'20260314000142\' (0,7 ms): đây là minh chứng gì cho nguyên tắc sargable, và tại sao ép kiểu phải đặt ở vế tham số, không phải ở vế cột?',
+    'Bạn sửa query và index thế nào để tra cứu dưới 10 ms? Khi nào nên dùng expression index, và lưu ý gì về IMMUTABLE?',
+  ],
+  hints: [
+    'Đọc dòng "Filter: ((contract_ref)::bigint = ...)" trong EXPLAIN: ép kiểu đặt ở vế cột, index lưu giá trị varchar thô nên không khớp.',
+    'Index chỉ được dùng khi vế trái là cột thuần, vế phải là hằng số/tham số. Ép kiểu cột biến điều kiện thành biểu thức; planner không có thống kê cho biểu thức đó → Seq Scan.',
+    'Sửa: truyền tham số dạng String (String.valueOf) hoặc ép kiểu ở vế tham số WHERE contract_ref = CAST($1 AS varchar). Nếu không sửa được query: tạo expression index CREATE INDEX ... ON contracts ((contract_ref::bigint)) + ANALYZE. Dài hạn: đổi cột sang bigint qua mô hình expand/contract (thêm cột mới, backfill theo lô, dual-write, đổi index, drop cột cũ).',
+  ],
+  answer: `**Tóm tắt:** Câu tra cứu viết {{WHERE contract_ref::bigint = $1}} — **ép kiểu ở vế cột** contract_ref — làm mất index: index lưu giá trị varchar thô của {{contract_ref}}, không phải giá trị sau khi ép sang bigint, nên planner chọn **Seq Scan toàn bảng 8.214.500 dòng** (4,2 giây). Câu viết đúng {{WHERE contract_ref = $1}} với tham số String dùng lại index, chỉ mất **0,7 ms** — chậm khoảng 6.000 lần. Nguyên then chốt: **ép kiểu ở vế tham số, không ở vế cột**; nếu không sửa được query, dùng expression index + ANALYZE; dài hạn đổi cột sang bigint qua expand/contract.
+
+### Nguyên tắc sargable
+**Sargable** (SARG = Search ARGument) là nguyên tắc: index chỉ được dùng khi điều kiện WHERE có dạng **cột_so_sánh_toán_tử_hằng_số**, nghĩa là vế trái là cột thuần, vế phải là hằng số hoặc tham số đã bind.
+
+~~~text
+Viết                            | Dùng index? | Lý do
+WHERE contract_ref = $1         | Có          | cột thuần so sánh hằng số → index btree trên contract_ref dùng được
+WHERE contract_ref::bigint = $1 | Không       | ép kiểu cột → biểu thức, index lưu varchar thô không khớp
+WHERE lower(email) = lower($1)  | Không       | hàm bọc quanh cột cũng làm mất index
+~~~
+
+### Nguyên nhân gốc, từng bước
+1. API tra cứu nhận contractRef thành {{Long}} từ client, Hibernate bind tham số dạng {{bigint}}.
+2. Lần đầu chạy câu bị lỗi "operator does not exist: character varying = bigint" vì PostgreSQL không có toán tử so sánh varchar với bigint.
+3. Dev "vá" lỗi bằng cách ép kiểu ở **vế cột**: {{WHERE contract_ref::bigint = $1}}. Cast ở vế cột nghĩa là index btree trên {{contract_ref}} (lưu giá trị varchar) không được dùng nữa — key trong index là "20260314000142" (varchar), còn câu truyền so sánh biểu thức {{contract_ref::bigint}}.
+4. Planner không có index nào khớp biểu thức {{contract_ref::bigint}} (index btree trên {{contract_ref}} lưu giá trị varchar) nên chỉ còn Seq Scan; nó cũng không có thống kê cho biểu thức, ước lượng selectivity mặc định 0,5% (khoảng 41.000 dòng).
+5. Seq Scan đọc hết 8.214.500 dòng, lọc bỏ 8.214.499, giữ 1 dòng: {{Rows Removed by Filter: 8214499}}, {{Buffers: shared hit=171000 read=140000}} (~311.000 trang ≈ 2,4 GB), {{Execution Time: 4189.401 ms}}.
+6. Câu chỉnh {{WHERE contract_ref = $1}} (tham số String): index scan, {{Index Cond: (contract_ref = ...)}}, {{Buffers: shared hit=4 read=1}} (5 trang), {{Execution Time: 0.704 ms}}.
+
+### Dẫn chứng
+- Artifact 1: {{Seq Scan on contracts ... Filter: ((contract_ref)::bigint = 20260314000142::bigint)}}, {{Rows Removed by Filter: 8214499}}, {{Execution Time: 4189.401 ms}}. Câu thứ hai {{Index Scan using idx_contracts_contract_ref ... Execution Time: 0.704 ms}} — cùng index, chỉ khác cách viết điều kiện.
+- Artifact 2: index {{idx_contracts_contract_ref}} btree trên {{contract_ref}} (varchar), không phải trên {{contract_ref::bigint}}.
+- Artifact 3: lỗi trước khi vá "operator does not exist: character varying = bigint"; sau khi vá mỗi request tra cứu mất khoảng 4,2 giây.
+
+### Cách sửa
+**Ngắn hạn (hôm nay):**
+- Sửa query: truyền tham số dạng {{String}} (Java: {{String.valueOf(contractRef)}} hoặc lấy path variable thành String), viết {{WHERE contract_ref = :contractRef}}. Index được dùng ngay.
+- Nếu bắt buộc phải gửi tham số số: ép kiểu ở **vế tham số**: {{WHERE contract_ref = CAST($1 AS varchar)}} — index được duy trì, chỉ thêm chi phí cast một giá trị duy nhất.
+- Nếu không sửa được query (code cũ): tạo expression index:
+~~~sql
+CREATE INDEX CONCURRENTLY idx_contracts_contract_ref_bigint ON contracts ((contract_ref::bigint));
+ANALYZE contracts;
+~~~
+Câu {{WHERE contract_ref::bigint = $1}} thì dùng được index này vì biểu thức trong câu khớp biểu thức trong index.
+
+**Dài hạn:**
+- Chuẩn hóa dữ liệu: lưu mã hợp đồng trong cột {{bigint}} (hoặc thêm cột generated {{contract_ref_num}} = contract_ref::bigint stored) và index cột này; query hoàn toàn sargable.
+- Đổi cột {{contract_ref}} sang {{bigint}} qua mô hình expand/contract: thêm cột mới, backfill theo lô, dual-write, đổi index, drop cột cũ — tuyệt đối không {{ALTER TABLE ... TYPE}} trực tiếp trên bảng 8,2 triệu dòng.
+
+### Expression index cần lưu ý
+- Hàm trong biểu thức phải **IMMUTABLE**. Cast {{::bigint}} từ varchar toàn chữ số là IMMUTABLE (kết quả không phụ thuộc cấu hình) nên dùng được trong index; hàm như {{date_trunc()}} thì không (phụ thuộc múi giờ), {{now()}} cũng không.
+- Kích thước expression index tuỳ biểu thức: {{contract_ref::bigint}} nhỏ hơn index trên cột varchar thô (8 byte/dòng), nhưng index vẫn phải được {{ANALYZE}} để planner có thống kê.
+- Không tạo expression index tùy tiện: chỉ tạo khi query thực sự cần và đã thử chỉnh query về dạng sargable.
+
+### Lỗi hay gặp
+- "Tạo index rồi mà vẫn Seq Scan": vì index trên cột thuần, còn query ép kiểu/bọc hàm cột → planner không dùng.
+- Ép kiểu ở vế cột (contract_ref::bigint) để "vá" lỗi operator does not exist: làm mất index (như lab-sql-006).
+- Tạo expression index mà quên ANALYZE: planner không có thống kê → vẫn chọn Seq Scan.
+
+### Trả lời miệng 1 phút
+"Câu tra cứu viết contract_ref::bigint = $1 — ép kiểu ở vế cột nên planner không thể dùng index idx_contracts_contract_ref (lưu varchar thô) và chọn Seq Scan 8,2 triệu dòng, 4,2 giây. Câu viết contract_ref = $1 với tham số String dùng lại index, 0,7 ms — nhanh khoảng 6.000 lần. Nguyên then chốt: ép kiểu ở vế tham số, không ở vế cột. Nếu không sửa được query, tạo expression index (contract_ref::bigint) kèm ANALYZE. Dài hạn đổi cột sang bigint qua expand/contract."
+
+> Senior tip: Khi EXPLAIN vẫn Seq Scan dù đã có index, hãy hỏi "điều kiện WHERE có ép kiểu hoặc bọc hàm cột không?" — đây là nguyên nhân phổ biến thứ hai sau thống kê cũ. Quy tắc vàng: **viết query để cột luôn ở vế trái, tham số/hằng số ở vế phải**. Nếu bắt buộc phải dùng hàm, tạo expression index và nhớ ANALYZE; nhưng ưu tiên số 1 luôn là chính sửa câu truy vấn.`,
+  rubric: [
+    'Chính xác nguyên nhân: ép kiểu ở vế cột trong điều kiện WHERE làm mất index (non-sargable), chọn Seq Scan 8,2 triệu dòng',
+    'Dẫn chứng đúng: dòng Filter ((contract_ref)::bigint = ...), Rows Removed by Filter 8.214.499, Execution Time 4189 ms, so sánh với Index Scan 0,7 ms',
+    'Giải thích đúng nguyên tắc sargable và vị trí ép kiểu (vế tham số, không vế cột)',
+    'Đề xuất sửa đúng: tham số String / CAST($1 AS varchar), expression index + ANALYZE, mô hình expand/contract đổi cột sang bigint',
+    'Lưu ý IMMUTABLE và không tạo expression index tùy tiện',
+  ],
+  tags: ['postgresql', 'index', 'implicit-cast', 'sargable', 'expression-index'],
+}
 );
 
