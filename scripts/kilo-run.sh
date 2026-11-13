@@ -4,7 +4,7 @@
 # Tries each model of $KILO_MODELS in turn; moves on only when the run fails because the free model's usage
 # limit is reached, so a normal failure is not retried on another model.
 out=$(mktemp)
-for m in ${KILO_MODELS:-${KILO_MODEL:-kilo/kilo-auto/free} kilo/nvidia/nemotron-3-ultra-550b-a55b:free kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free}; do
+for m in ${KILO_MODELS:-${KILO_MODEL:-kilo/kilo-auto/free} kilo/nvidia/nemotron-3-ultra-550b-a55b:free kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free kilo/nvidia/nemotron-3.5-super-vl:free kilo/dots-studio/dots-3-note-preview:free kilo/openrouter/free kilo/baidu/ernie-5.5-flash-preview:free kilo/nvidia/nemotron-3.5-lightning:free}; do
   echo "[kilo-run] model $m"
   kilo run --auto -m "$m" --title "$1" "$2" 2>&1 | tee "$out"
   code=${PIPESTATUS[0]}
