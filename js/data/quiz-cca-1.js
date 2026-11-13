@@ -853,4 +853,163 @@
 - **D:** context quá nhỏ có thể làm agent không đủ thông tin.
 - **E:** skip error handling là bad practice, không liên quan đến cost optimization.`
 },
+{
+  id: 'qz-cca-066',
+  topic: 'claude',
+  q: '[Agentic Architecture] An agent calls two tools in parallel: one appends a line to deploy.log, and another overwrites deploy.log with a summary. Both report success. What is the most likely problem?',
+  options: ['The log will contain both entries in the exact order the tools were listed', 'One write may overwrite the other, losing data; parallel writes to the same resource are unsafe', 'Claude API automatically merges parallel tool results into one file', 'The second tool will fail because the file is locked by the first'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Khi hai tool chạy song song và đều ghi vào cùng một tệp, thứ tự hoàn thành không garant. Nó có thể ghi đè lẫn nhau: ví dụ công cụ A đang nối dòng mới vào cuối file trong khi công cụ B ghi đè toàn bộ file bằng bản tóm tắt, thì dòng của A bị mất. Đây là vấn đề race condition (tranh tài nguyên): nhiều tác vụ cùng truy cập hoặc ghi một tài nguyên chia sẻ mà không điều phối, dẫn đến kết quả không dự đoán được và có thể bị hỏng dữ liệu. Cách xử lý đúng là chạy các thao tác ghi cùng một tệp theo thứ tự tuần tự, hoặc chỉ để một công cụ chịu trách nhiệm ghi file sau khi đã thu thập hết dữ liệu cần thiết.
+
+### Vì sao các phương án còn lại sai
+- **A:** song song không đảm bảo thứ tự; hai lệnh ghi cùng một tệp không thể tự động sắp xếp đúng thứ tự.
+- **C:** API Claude chỉ chuyển kết quả tool về cho model, không hiểu ý nghĩa nội dung file và không hợp nhất file cho bạn.
+- **D:** không có cơ chế khóa file tự động trong tool gọi kiểu này; hai công việc đều báo thành công nhưng dữ liệu có thể đã bị mất.`
+},
+{
+  id: 'qz-cca-067',
+  topic: 'claude',
+  q: '[Agentic Architecture] An agent can start a model training job that costs about $500 per hour. What control should be in place before the start-training tool runs?',
+  options: ['Run immediately; the agent decides based on its own judgment', 'Human approval gate showing estimated cost, duration, and expected outcome before execution', 'Start the job and stop it only if the user complains later', 'Ask the model to estimate the cost and trust its estimate'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Hành động tốn kém và khó đảo ngược (huấn luyện mô hình tốn khoảng 500 USD mỗi giờ) cần cổng duyệt của con người trước khi thực thi. Harness nên hiện thông tin chi tiết (chi phí ước tính, thời gian chạy, kết quả mong đợi), chờ người dùng nhấn duyệt hoặc từ chối, rồi mới gọi tool. Điều này ngăn chặn việc agent vô tình gây chi phí lớn do hiểu nhầm yêu cầu.
+
+### Vì sao các phương án còn lại sai
+- **A:** agent có thể hiểu sai yêu cầu hoặc ưa chọn giải pháp tốn kém; không nên tin toàn bộ quyết định của model với hành động tốn phí lớn.
+- **C:** dừng sau khi khách hàng phàn nàn đã gây thiệt hại tài chính; phải ngăn chặn trước khi hành động xảy ra.
+- **D:** ước tính của model không chính xác 100% và không thay thế được sự đồng ý của con người.`
+},
+{
+  id: 'qz-cca-068',
+  topic: 'claude',
+  q: '[Agentic Architecture] You want a subagent to reformat 200 Java files to a specific coding style. What makes the brief effective?',
+  options: ['Only state the goal "reformat all files"; let the subagent guess the style', 'Goal, allowed tools, input/output format, before/after examples, and a clear stop condition', 'Paste the entire repository contents into the brief', 'Do not give a brief; subagents infer everything from context'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Subagent chạy trong ngữ cảnh riêng và không xem lịch sử của orchestrator, vì vậy brief phải tự chứa đủ mọi thứ: mục tiêu, phạm vi (200 file Java), tool được phép (đọc và ghi file), định dạng đầu vào/đầu ra, ví dụ trước/sau kiểu code, và điều kiện dừng (khi nào coi như xong). Ví dụ rõ giúp subagent hiểu chuẩn mực mà không cần hỏi lại, và điều kiện dừng tránh vòng lặp vô hạn.
+
+### Vì sao các phương án còn lại sai
+- **A:** chỉ có mục tiêu là không đủ; subagent không biết kiểu code mà bạn muốn và sẽ đoán sai.
+- **C:** dán toàn bộ nội dung repository vào brief làm brief quá dài, tốn context, và chứa nhiều thông tin không cần thiết.
+- **D:** subagent không thể suy luận mọi thứ; thiếu brief dẫn đến kết quả không ổn định và sai yêu cầu.`
+},
+{
+  id: 'qz-cca-069',
+  topic: 'claude',
+  q: '[Agentic Architecture] An agent has been working for two hours and the conversation is approaching the context window limit. What should the harness do to keep the agent effective?',
+  options: ['Keep adding every message; context is unlimited', 'Summarize earlier turns into a compact summary and continue with recent turns plus the summary', 'Start a brand new agent with no history', 'Delete the most recent turns'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Context window là giới hạn lượng text model có thể xử lý trong một lượt. Khi gần hết, harness nên tóm tắt các lượt trước thành một bản tóm tắt ngắn gọn (giữ lại quyết định quan trọng, kết quả tool, trạng thái công việc), rồi kết hợp bản tóm tắt đó với các lượt gần nhất để gửi lại model. Như vậy agent vẫn bám được bối cảnh mà không vượt giới hạn.
+
+### Vì sao các phương án còn lại sai
+- **A:** context window có giới hạn cố định; vượt quá sẽ khiến request bị lỗi.
+- **C:** bắt đầu agent mới mất toàn bộ lịch sử, agent phải làm lại từ đầu và bỏ qua kết quả đã đạt được.
+- **D:** xoá lượt gần nhất là xoá thông tin mới nhất và quan trọng nhất, làm agent mất bối cảnh hiện tại.`
+},
+{
+  id: 'qz-cca-070',
+  topic: 'claude',
+  q: '[Agentic Architecture] An agent repeatedly fetches the same user profile that changes once per day. How to reduce cost and latency?',
+  options: ['Fetch every time; never cache', 'Cache the result with a TTL (for example 24 hours) and reuse it within the TTL', 'Store the profile in a vector database', 'Ask the user for the profile on every request'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Nếu hồ sơ người dùng chỉ thay đổi một lần mỗi ngày, bạn có thể lưu kết quả vào bộ nhớ đệm (cache) với thời gian sống (TTL) ví dụ 24 giờ. Trong khoảng thời gian TTL, agent sử dụng bản cache thay vì gọi tool lại, giúp giảm số lần gọi API (tiết kiệm chi phí) và giảm độ chờ (giảm latency). Sau khi TTL hết, agent gọi tool lại để lấy bản mới nhất.
+
+### Vì sao các phương án còn lại sai
+- **A:** gọi lại mỗi lần tốn phí và thời gian trong khi dữ liệu không đổi.
+- **C:** vector database dùng để tìm kiếm ngữ nghĩa, không phải để lưu đệm ngắn hạn có thời gian hết hạn.
+- **D:** hỏi người dùng mỗi lần làm chậm trải nghiệm và dữ liệu đã có sẵn qua tool.`
+},
+{
+  id: 'qz-cca-071',
+  topic: 'claude',
+  q: '[Agentic Architecture] A tool has failed five times in a row with the same error. What should the harness do?',
+  options: ['Retry forever until it succeeds', 'Stop calling that tool, report the failure to the model or user, and try an alternative path', 'Ignore the errors and pretend the tool succeeded', 'Restart the entire agent session'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Khi một công cụ thất bại nhiều lần liên tiếp với cùng lỗi, thử lại vĩnh viễn sẽ tạo vòng lặp vô hạn, tốn phí và làm chậm hệ thống. Harness nên ngừng gọi công cụ đó, báo lỗi rõ ràng cho model hoặc người dùng, và chuyển sang hướng giải quyết thay thế (ví dụ dùng tool khác hoặc hỏi người dùng). Đây là mô hình circuit breaker (ngắt mạch): ngắt kết nối khi lỗi lặp lại để bảo vệ hệ thống.
+
+### Vì sao các phương án còn lại sai
+- **A:** thử lại vĩnh viễn không giải quyết nguyên nhân gốc của lỗi và tốn tài nguyên.
+- **C:** giả vờ thành công khiến agent làm việc dựa trên dữ liệu sai, dẫn đến quyết định sai.
+- **D:** khởi động lại toàn bộ session tốn phí và mất bối cảnh; không cần thiết nếu chỉ một công cụ bị lỗi.`
+},
+{
+  id: 'qz-cca-072',
+  topic: 'claude',
+  q: '[Agentic Architecture] An agent fans out 50 parallel calls and hits Anthropic rate limits (HTTP 429). What is the best practice?',
+  options: ['Retry all 50 calls immediately in parallel again', 'Split calls into smaller groups with backoff and retry on 429, respecting rate limits', 'Switch to a cheaper model to avoid rate limits', 'Reduce max_tokens to fix rate limits'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** HTTP 429 có nghĩa là bạn gửi quá nhiều request trong một khoảng thời gian (vượt quá rate limit của Anthropic). Cách xử lý đúng là chia 50 lệnh thành các đợt nhỏ hơn, gọi tuần tự hoặc ít song song, và khi nhận 429 thì đợi một khoảng thời gian (backoff) trước khi thử lại. Điều này tránh bị chặn tạm thời và giữ hệ thống ổn định.
+
+### Vì sao các phương án còn lại sai
+- **A:** thử lại ngay lập tức tất cả 50 lệnh sẽ tiếp tục vượt giới hạn, có thể dẫn đến bị chặn lâu hơn.
+- **C:** đổi model rẻ hơn không thay đổi rate limit theo cách đó; rate limit gắn với tài khoản và endpoint.
+- **D:** max_tokens chỉ điều khiển độ dài output, không liên quan đến số lượng request hay rate limit.`
+},
+{
+  id: 'qz-cca-073',
+  topic: 'claude',
+  multi: true,
+  q: '[Agentic Architecture] An orchestrator uses a subagent that returns structured JSON. Which practices reduce the risk of using bad subagent output? (Choose 2)',
+  options: ['Validate the subagent output against a schema before using it', 'Trust the subagent output blindly; subagents never make mistakes', 'Ask the subagent to return output plus a confidence or rationale field and review low-confidence cases', 'Always run the subagent three times and pick the majority answer', 'Never let subagents return structured data'],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: A, C.** Đầu ra của subagent có thể sai định dạng hoặc chứa thông tin không chính xác. Bạn nên xác thực (validate) output theo schema (ví dụ các trường bắt buộc, kiểu dữ liệu) trước khi dùng, và yêu cầu subagent kèm theo trường tin cậy hoặc lý do để bạn có thể kiểm tra lại các trường hợp confidence thấp. Hai cách này giúp phát hiện lỗi sớm trước khi ảnh hưởng đến quy trình chính.
+
+### Vì sao các phương án còn lại sai
+- **B:** subagent cũng có thể nhầm lẫn hoặc bỏ sót; tin tưởng mù lòa là nguyên nhân của lỗi production.
+- **D:** chạy ba lần tốn ba lần phí và không đảm bảo câu trả lời đa số là đúng (cả ba lần có thể sai cùng cách).
+- **E:** dữ liệu có cấu trúc dễ xử lý hơn; việc không bao giờ sử dụng dữ liệu có cấu trúc là không hợp lý và khó xử lý.`
+},
+{
+  id: 'qz-cca-074',
+  topic: 'claude',
+  multi: true,
+  q: '[Agentic Architecture] An agent works on a task that may take hours and could be interrupted. Which practices help it resume correctly? (Choose 2)',
+  options: ['Persist agent state (message history, tool results, progress) to durable storage', 'Keep all state only in memory; restart from scratch if interrupted', 'Save checkpoints after each major step so the harness can reload and continue', 'Hope the system never restarts', 'Store state only in the model context window'],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: A, C.** Đối với tác vụ chạy kéo dài hàng giờ, hệ thống có thể khởi động lại hoặc gián đoạn bất cứ lúc nào. Bạn nên lưu trạng thái agent (lịch sử tin nhắn, kết quả tool, tiến độ) vào lưu trữ bền vững và tạo điểm kiểm tra (checkpoint) sau mỗi bước quan trọng. Khi khôi phục, harness nạp trạng thái gần nhất và agent tiếp tục từ đó thay vì bắt đầu lại từ đầu.
+
+### Vì sao các phương án còn lại sai
+- **B:** chỉ lưu trong bộ nhớ thì mất hết khi khởi động lại; phải làm lại từ đầu.
+- **D:** hy vọng hệ thống không khởi động lại không phải là chiến pháp đáng tin cậy.
+- **E:** context window có giới hạn và bị mất khi phiên kết thúc; không thể dùng làm lưu trữ dài hạn.`
+},
+{
+  id: 'qz-cca-075',
+  topic: 'claude',
+  multi: true,
+  q: '[Agentic Architecture] Which improvements to a tool description help the model pick and use the tool correctly? (Choose 2)',
+  options: ['Describe what the tool does, its parameters, required vs optional fields, and when to use it', 'Give every tool the same generic description so the model is not confused', 'Include example inputs/outputs and error meanings in the description', 'Make descriptions as short as possible (one word)', 'Never describe tools; the model knows them'],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: A, C.** Mô tả tool là cách chính để model biết công cụ đó làm gì và khi nào gọi. Một mô tả tốt cần giải thích mục đích, danh sách tham số (bắt buộc và tùy chọn), và trường hợp sử dụng. Kèm ví dụ đầu vào/đầu ra và ý nghĩa các lỗi giúp model chọn đúng công cụ và xử lý lỗi thích hợp.
+
+### Vì sao các phương án còn lại sai
+- **B:** mô tả chung chung giống hệt nhau khiến model không phân biệt được công cụ nào dùng cho mục đích gì, dẫn đến gọi nhầm.
+- **D:** mô tả quá ngắn không cung cấp đủ thông tin để model sử dụng đúng.
+- **E:** model không biết công cụ trừ khi bạn khai báo và mô tả trong request.`
+},
+{
+  id: 'qz-cca-076',
+  topic: 'claude',
+  q: '[Agentic Architecture] A user says "fix the bug" without specifying which bug or where it is. What should the agent do first?',
+  options: ['Guess which bug and start fixing immediately', 'Ask the user for clarification before acting', 'Fix all bugs in the repository', 'Refuse to answer'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Khi yêu cầu của người dùng mơ hồ (không biết lỗi nào, nằm ở đâu), agent nên hỏi ngược lại để làm rõ thay vì đoán. Việc đoán có thể dẫn đến sửa nhầm chỗ, làm hỏng code, và bỏ lỡ lỗi thực sự. Một agent tốt xác định mục tiêu trước khi hành động.
+
+### Vì sao các phương án còn lại sai
+- **A:** đoán lỗi gây nguy cơ sửa nhầm, tạo ra lỗi mới, và lãng phí thời gian.
+- **C:** sửa tất cả lỗi là không thực tế và không phải những gì người dùng hỏi.
+- **D:** từ chối hoàn toàn không giúp ích; agent nên yêu cầu thêm thông tin để có thể phục vụ.`
+},
+{
+  id: 'qz-cca-077',
+  topic: 'claude',
+  q: '[Agentic Architecture] An agent cannot resolve a customer issue after trying several tools. What is the best handoff design?',
+  options: ['Drop the conversation silently', 'Escalate to a human with a summary of what was tried, tool results, and current state', 'Make up a solution to avoid escalation', 'Restart the agent from the beginning'],
+  answer: 1,
+  explain: `**Đáp án đúng: B.** Khi agent đã thử nhiều cách nhưng chưa giải quyết được, nó nên chuyển tiếp cho người hỗ trợ nhân sự kèm theo bản tóm tắt: đã thử công cụ nào, kết quả của mỗi công cụ, và trạng thái hiện tại của vấn đề. Người hỗ trợ nắm bắt nhanh tình trạng mà không cần hỏi lại khách hàng từ đầu, làm trải nghiệm mượt hơn.
+
+### Vì sao các phương án còn lại sai
+- **A:** ngắt đối thoại lặng lẽ khiến khách hàng bị bỏ rơi và cảm thấy bức xúc.
+- **C:** bịa ra giải pháp không xác thực có thể làm trầm trọng thêm vấn đề và làm mất niềm tin.
+- **D:** khởi động lại từ đầu làm mất toàn bộ bối cảnh đã thu thập, tốn thời gian của cả hai bên.`
+},
 );
