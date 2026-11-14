@@ -4998,4 +4998,469 @@ Bất biến là nóng: danh sách không được thay thành phần, nhưng n�
 
 > Senior tip: dùng List.of cho hằng số dữ liệu (cấu hình, danh sách mã trạng thái) để ngăn sửa nhầm và thể hiện ý định "không đụng". Cần list sửa được → new ArrayList<>(List.of(...)); cần snapshot an toàn từ list caller → List.copyOf.`
 },
+{
+  id: "qz-concurrency-034", topic: "concurrency",
+  q: `Đoạn code sau in ra gì (chạy trên Java 17)?
+~~~java
+ExecutorService pool = Executors.newFixedThreadPool(2);
+Future<Integer> f = pool.submit(() -> {
+    if (true) throw new RuntimeException("boom");
+    return 1;
+});
+try {
+    System.out.println(f.get());
+} catch (Exception e) {
+    System.out.println(e.getClass().getSimpleName());
+}
+~~~`,
+  options: [
+    `In ra RuntimeException`,
+    `In ra ExecutionException`,
+    `In ra CompletionException`,
+    `Chương trình treo vì exception không được xử lý`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{Future.get()}} (API của {{ExecutorService}}, ra đời từ Java 5) bọc mọi exception mà task ném ra bên trong một {{ExecutionException}}. Muốn lấy exception gốc phải gọi {{e.getCause()}}.
+
+### Cái gì đang xảy ra từng bước
+1. {{ExecutorService}} (bộ quản lý thread: một pool giữ sẵn các worker thread để tái sử dụng) nhận task qua {{submit}} và trả về một {{Future}} (đối tượng đại diện cho kết quả sẽ có trong tương lai).
+2. Worker thread chạy task, task ném {{RuntimeException("boom")}}. Pool bắt exception này và lưu nó vào {{Future}}.
+3. {{f.get()}} chờ task hoàn tất. Vì task kết thúc bằng lỗi, {{get()}} ném {{ExecutionException}} — đây là lớp "vỏ bọc" (wrapper) báo rằng "task chạy thất bại"; nguyên nhân gốc nằm trong {{getCause()}} (ở đây là {{RuntimeException}}).
+
+~~~java
+} catch (ExecutionException e) {
+    Throwable root = e.getCause(); // RuntimeException("boom")
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **RuntimeException**: {{get()}} không ném thẳng exception của task, nó luôn bọc vào {{ExecutionException}} (trừ {{InterruptedException}} khi thread chờ bị ngắt, và {{CancellationException}} khi task bị huỷ).
+- **CompletionException**: đây là vỏ bọc của API {{CompletableFuture}} (Java 8), không phải của {{Future}}. Ví dụ {{CompletableFuture.join()}} ném {{CompletionException}}, còn {{Future.get()}} ném {{ExecutionException}}.
+- **Chương trình treo**: exception đã được bắt trong {{catch}} nên chương trình tiếp tục bình thường. Tuy nhiên đoạn code trên có một vấn đề khác: không gọi {{pool.shutdown()}}, worker thread trong pool không phải daemon nên JVM sẽ **không thoát** sau khi {{main}} kết thúc (treo ở mức tiến trình, không phải ở {{get()}}).
+
+> Senior tip: luôn gọi {{pool.shutdown()}} (hoặc dùng try-with-resources: {{ExecutorService}} implements {{AutoCloseable}} từ Java 19) để tránh rò rỉ thread. Khi debug, log cả {{e}} lẫn {{e.getCause()}} vì message gốc thường nằm ở cause.`
+},
+{
+  id: "qz-concurrency-035", topic: "concurrency",
+  q: `Đoạn code sau có vấn đề gì?
+~~~java
+public class Cache {
+    private final Map<String, String> map = new HashMap<>();
+    public String get(String k) {
+        return map.computeIfAbsent(k, key -> load(key));
+    }
+    private String load(String key) { /* gọi DB, tốn 200ms */ return "v"; }
+}
+~~~`,
+  options: [
+    `An toàn tuyệt đối vì computeIfAbsent là thao tác nguyên tử`,
+    `HashMap không thread-safe: nhiều thread cùng gọi có thể gây race condition, vòng lặp vô hạn khi resize, hoặc mất dữ liệu; computeIfAbsent trên HashMap cũng không nguyên tử giữa các thread`,
+    `Lỗi biên dịch vì computeIfAbsent không nhận lambda`,
+    `Chỉ chậm vì load tốn 200ms, không có lỗi đúng/sai`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{HashMap}} (bảng băm thông thường, Java 1.2) **không an toàn khi nhiều thread cùng dùng** (not thread-safe): không có cơ chế khóa hay đồng bộ nội bộ. {{computeIfAbsent}} chỉ là tiện ích trên một thread; nó không biến HashMap thành cấu trúc dùng chung an toàn.
+
+### Vì sao nguy hiểm (từng bước)
+- **Race condition** (tình huống hai thread "đua" nhau đọc/ghi dữ liệu dùng chung dẫn đến kết quả sai): hai thread cùng thấy key chưa có, cùng gọi {{load}} (gọi DB 2 lần, tốn gấp đôi) và cùng ghi — một giá trị có thể bị ghi đè mất.
+- **Hỏng cấu trúc khi resize**: khi HashMap đầy, nó tạo mảng lớn hơn và chuyển phần tử sang (resize/rehash). Trên Java 7, resize đồng thời có thể tạo vòng lặp trong linked list bên trong bucket, khiến {{get/put}} lặp vô hạn và CPU vọt 100%. Java 8 đổi cấu trúc nhưng vẫn **không** an toàn — có thể mất phần tử, đọc thấy trạng thái nửa vời.
+- **computeIfAbsent không nguyên tử**: trên HashMap nó thực hiện "kiểm tra có không → gọi hàm → put" như các bước rời, thread khác xen vào giữa được.
+
+### Cách sửa
+~~~java
+// Cách 1: ConcurrentHashMap (bảng băm an toàn đa luồng, Java 5)
+private final Map<String, String> map = new ConcurrentHashMap<>();
+// computeIfAbsent trên ConcurrentHashMap nguyên tử theo từng key/bin
+
+// Cách 2: cache chuyên dụng (khuyên dùng cho production)
+LoadingCache<String,String> cache = Caffeine.newBuilder()
+    .maximumSize(10_000).build(key -> load(key));
+~~~
+Lưu ý: hàm truyền vào {{computeIfAbsent}} của {{ConcurrentHashMap}} chạy trong lúc giữ khóa của bin — không nên làm việc nặng/Blocking I/O lâu vì sẽ chặn các thao tác khác vào cùng bin.
+
+### Vì sao các phương án còn lại sai
+- **An toàn tuyệt đối**: nhầm lẫn giữa "API tiện lợi" và "thread-safe". Chỉ {{ConcurrentHashMap.computeIfAbsent}} mới có đảm bảo nguyên tử.
+- **Lỗi biên dịch**: {{computeIfAbsent(K, Function)}} hoàn toàn hợp lệ từ Java 8.
+- **Chỉ chậm**: ngoài chậm còn có lỗi đúng/sai nghiêm trọng (mất dữ liệu, treo CPU).
+
+> Senior tip: đừng dùng {{Collections.synchronizedMap(new HashMap<>())}} cho cache đọc nhiều: nó khóa toàn bộ map cho mọi thao tác. {{ConcurrentHashMap}} cho phép đọc song song và ghi tách theo bin, phù hợp workload đọc nhiều/ghi ít.`
+},
+{
+  id: "qz-concurrency-036", topic: "concurrency", multi: true,
+  q: `Về {{ThreadLocal}} (biến cục bộ theo thread: mỗi thread có một bản sao riêng, Java 1.2), phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    `Trong ứng dụng server dùng thread pool, nếu {{set}} giá trị rồi không {{remove}} sau khi xử lý xong request, request sau chạy trên cùng worker thread có thể đọc nhầm dữ liệu của request trước (rò rỉ dữ liệu giữa các user)`,
+    `{{ThreadLocal}} tự động xoá giá trị khi method kết thúc, giống biến local thường`,
+    `Giá trị {{ThreadLocal}} không còn tham chiếu mạnh từ code của bạn nhưng có thể còn sống cùng thread (nhất là thread pool sống lâu), gây tốn bộ nhớ nếu không dọn`,
+    `{{ThreadLocal}} là cách đúng để chia sẻ và đồng bộ một biến đếm giữa nhiều thread`,
+    `Dùng {{ThreadLocal}} với virtual thread (Java 21, thread ảo nhẹ tạo theo từng task) để cache object nặng và tái sử dụng giữa nhiều request là best practice`
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** {{ThreadLocal}} gắn dữ liệu vào **thread**, không gắn vào "request" hay "lần gọi hàm". Trong thread pool (nơi thread được tái sử dụng), quên {{remove()}} vừa rò rỉ dữ liệu, vừa giữ bộ nhớ.
+
+### Vì sao đúng
+- **Rò rỉ dữ liệu (data leak)**: Thread pool (ví dụ Tomcat, {{ExecutorService}}) tái sử dụng một số ít worker thread để phục vụ nhiều request. Request A {{set(userA)}} rồi kết thúc mà không {{remove}}, worker thread vẫn giữ {{userA}}. Request B được gán vào cùng thread đó, gọi {{get()}} sẽ thấy {{userA}} — lỗi bảo mật nghiêm trọng.
+- **Rò rỉ bộ nhớ**: {{ThreadLocal}} lưu giá trị trong một map gắn với đối tượng {{Thread}}. Entry dùng {{WeakReference}} cho key nhưng **strong reference** cho value; value chỉ thực sự bị dọn khi map được dọn dẹp hoặc khi {{remove()}} được gọi. Thread pool sống suốt đời ứng dụng nên value có thể tồn tại rất lâu.
+
+~~~java
+try {
+    ctx.set(user);      // đặt context cho request này
+    handle();
+} finally {
+    ctx.remove();       // BẮT BUỘC: dọn trong finally
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Tự xoá khi method kết thúc**: không. {{ThreadLocal}} sống theo thread, không theo scope của method/biến local.
+- **Chia sẻ và đồng bộ giữa thread**: ngược lại hoàn toàn — mỗi thread thấy bản sao riêng, không chia sẻ. Muốn chia sẻ cần {{AtomicInteger}}, {{synchronized}}, v.v.
+- **Cache nặng với virtual thread**: mỗi virtual thread là một thread mới cho mỗi task, không tái sử dụng như pool truyền thống, nên không có gì để "tái dùng"; mỗi task lại tạo object nặng riêng, hàng trăm nghìn task sẽ tốn rất nhiều heap. Chia sẻ ngữ cảnh chỉ đọc thì dùng {{ScopedValue}} (chính thức từ JDK 25).
+
+> Senior tip: pattern an toàn là {{set}} trong {{try}} và {{remove}} trong {{finally}} (hoặc dùng {{ScopedValue}} khi có thể). Nhiều framework (Spring {{RequestContextHolder}}, MDC của logging) dựa vào ThreadLocal — nếu bạn tự tạo thread/task, hãy truyền context tường minh thay vì trông chờ ThreadLocal.`
+},
+{
+  id: "qz-concurrency-037", topic: "concurrency",
+  q: `Đoạn code sau chạy, method {{doWork()}} ném {{IllegalStateException}}. Điều gì xảy ra với biến cờ {{failed}}?
+~~~java
+boolean failed = false;
+ExecutorService pool = Executors.newSingleThreadExecutor();
+pool.execute(() -> {
+    try {
+        doWork();
+    } catch (Exception e) {
+        failed = true; // biến local của method ngoài
+        throw e;
+    }
+});
+pool.shutdown();
+~~~`,
+  options: [
+    `Biến local {{failed}} được đặt thành {{true}} bình thường`,
+    `Lỗi biên dịch: lambda/anonymous class không được gán lại biến local của method bao ngoài nếu biến đó không "effectively final"`,
+    `Chạy được nhưng {{failed}} luôn là {{false}} vì lambda chạy trên thread khác`,
+    `Ném {{IllegalMonitorStateException}} lúc runtime khi gán`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Java yêu cầu biến local (biến khai báo trong method) mà lambda hoặc anonymous class "bắt" (capture) phải là **effectively final** — tức không bị gán lại sau lần khởi tạo. Lệnh {{failed = true}} vi phạm quy tắc này nên **không biên dịch được**.
+
+### Vì sao có quy tắc này
+Lambda có thể chạy sau khi method bao ngoài đã kết thúc (ở đây nó chạy trên thread của pool). Java copy **giá trị** của biến local vào lambda tại thời điểm tạo, không chia sẻ ô nhớ. Nếu cho phép gán lại từ hai nơi (method ngoài và thread trong lambda) thì hai bản sao sẽ lệch nhau, gây nhầm lẫn. Vì vậy trình biên dịch cấm gán lại.
+
+### Cách sửa đúng
+~~~java
+AtomicBoolean failed = new AtomicBoolean(false); // object mutable, tham chiếu final
+pool.execute(() -> {
+    try { doWork(); }
+    catch (Exception e) { failed.set(true); }
+});
+// hoặc dùng mảng 1 phần tử: final boolean[] failed = {false};
+// hoặc dùng Future/CompletableFuture để trả kết quả về
+Future<?> f = pool.submit(() -> doWork());
+try { f.get(); } catch (ExecutionException e) { /* thất bại */ }
+~~~
+{{AtomicBoolean}} (lớp trong {{java.util.concurrent.atomic}}) cho phép đọc/ghi an toàn giữa các thread nhờ thao tác nguyên tử (CAS — compare-and-swap).
+
+### Vì sao các phương án còn lại sai
+- **Đặt thành true bình thường**: không được, đây là lỗi ở thời điểm biên dịch.
+- **Luôn false vì thread khác**: nếu code biên dịch được (ví dụ dùng field) thì gán từ thread khác vẫn có hiệu lực, nhưng ở đây vấn đề là không biên dịch.
+- **Lỗi runtime**: quy tắc effectively final được kiểm tra bởi trình biên dịch ({{javac}}), không phải lúc chạy.
+
+> Senior tip: cách sạch nhất là để task **trả về kết quả** (hoặc ném exception) qua {{Callable}}/{{Future}}/{{CompletableFuture}} thay vì sửa biến bên ngoài. Tránh chia sẻ trạng thái mutable giữa các thread khi không cần thiết.`
+},
+{
+  id: "qz-concurrency-038", topic: "concurrency",
+  q: `Hai thread cùng thực thi đoạn code sau trên cùng một object {{lock}}:
+~~~java
+synchronized (lock) {
+    if (!condition) {
+        // chờ condition trở thành true
+        Thread.sleep(100);
+    }
+    doWork();
+}
+~~~`,
+  options: [
+    `Đúng: Thread.sleep nhả khóa monitor nên thread khác có thể vào thay đổi condition`,
+    `Sai: Thread.sleep KHÔNG nhả khóa monitor (synchronized); thread khác bị chặn, condition không bao giờ thay đổi trong lúc ngủ → có thể kẹt. Phải dùng lock.wait() để nhả khóa và chờ được đánh thức`,
+    `Đúng nhưng chỉ khi dùng ReentrantLock thay synchronized`,
+    `Sai vì phải dùng Thread.yield() thay Thread.sleep()`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{Thread.sleep(ms)}} chỉ tạm dừng thread hiện tại trong khoảng thời gian cho trước; nó **không nhả** khóa monitor (khóa mà {{synchronized}} đang giữ). Muốn vừa chờ vừa nhả khóa để thread khác vào làm việc thì phải dùng cơ chế {{wait/notify}}.
+
+### Vì sao sai (từng bước)
+1. Thread A vào {{synchronized(lock)}}, giữ **monitor** (cơ chế khóa gắn với mỗi object trong Java; chỉ một thread giữ monitor tại một thời điểm).
+2. A thấy {{condition}} sai, gọi {{sleep(100)}} — A ngủ nhưng **vẫn giữ monitor**.
+3. Thread B cần vào cùng {{synchronized(lock)}} để đặt {{condition = true}} và báo A, nhưng B bị chặn vì A đang giữ monitor.
+4. A thức dậy, kiểm tra lại (nếu có) vẫn sai, ngủ tiếp → bế tắc hoặc chờ rất lâu.
+
+### Cách đúng: wait/notify
+~~~java
+synchronized (lock) {
+    while (!condition) {      // dùng while, không dùng if
+        lock.wait();          // NHẢ monitor và chờ đến khi được notify
+    }
+    doWork();
+}
+// Thread khác, khi đổi condition:
+synchronized (lock) {
+    condition = true;
+    lock.notifyAll();         // đánh thức các thread đang wait trên lock
+}
+~~~
+{{wait()}} phải gọi trong khi đang giữ monitor của {{lock}} và luôn đặt trong vòng {{while}} để kiểm tra lại điều kiện sau khi tỉnh (phòng spurious wakeup — tình huống hiếm nhưng hợp lệ khi thread tỉnh mà điều kiện chưa thỏa).
+
+### Vì sao các phương án còn lại sai
+- **sleep nhả khóa**: sai. Ngược lại, {{wait()}} mới nhả khóa. Đây là câu hỏi phỏng vấn rất hay gặp.
+- **Chỉ đúng với ReentrantLock**: {{ReentrantLock}} cũng có {{Condition.await()}} tương tự {{wait()}}; {{sleep}} vẫn không nhả khóa trong mọi trường hợp.
+- **Dùng yield()**: {{yield()}} chỉ gợi ý scheduler nhường CPU, không ngủ theo thời gian và cũng không nhả monitor.
+
+> Senior tip: trong code hiện đại, ưu tiên các công cụ mức cao như {{BlockingQueue}}, {{CountDownLatch}}, {{Semaphore}}, {{Condition}} thay vì tự viết {{wait/notify}} thủ công, vì dễ mắc lỗi (quên while, quên notifyAll, deadlock).`
+},
+{
+  id: "qz-concurrency-039", topic: "concurrency",
+  q: `Đoạn code sau dùng để kiểm tra và khởi tạo kết nối (lazy init) trong môi trường nhiều thread:
+~~~java
+class ClientHolder {
+    private static Client client;
+    public static Client get() {
+        if (client == null) {
+            synchronized (ClientHolder.class) {
+                if (client == null) {
+                    client = new Client();
+                }
+            }
+        }
+        return client;
+    }
+}
+~~~`,
+  options: [
+    `An toàn: đây là double-checked locking chuẩn, luôn đúng`,
+    `Không an toàn: thread khác có thể thấy {{client}} khác null nhưng object {{Client}} chưa được khởi tạo xong (field bên trong vẫn mặc định) do reorder; phải khai báo {{private static volatile Client client}} hoặc dùng holder class`,
+    `Không an toàn vì synchronized trên class object là sai cú pháp`,
+    `An toàn nhưng chậm, nên bỏ hết synchronized`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Mẫu **double-checked locking** (kiểm tra hai lần để giảm chi phí khóa) chỉ đúng khi biến {{client}} được khai báo {{volatile}}. Nếu không, một thread có thể nhìn thấy tham chiếu đã gán nhưng object bên trong chưa khởi tạo hoàn chỉnh.
+
+### Vì sao không an toàn khi thiếu volatile
+Lệnh {{client = new Client()}} không phải một bước nguyên tử, mà gồm: (1) cấp phát bộ nhớ, (2) chạy constructor gán các field, (3) gán tham chiếu vào {{client}}. Compiler/CPU được phép đổi thứ tự (2) và (3) khi không có ràng buộc. Khi đó:
+- Thread A chạy vào trong synchronized, thực hiện (1),(3) rồi (2) đang dở.
+- Thread B đến lần kiểm tra đầu (ngoài synchronized), thấy {{client != null}} và trả về ngay — nhưng các field của {{Client}} có thể vẫn là 0/null.
+
+{{volatile}} (từ Java 5 với mô hình bộ nhớ JMM mới) cấm reorder và tạo quan hệ happens-before: mọi ghi trong constructor hoàn tất trước khi tham chiếu được thread khác đọc thấy.
+
+### Cách đúng
+~~~java
+// Cách 1: thêm volatile
+private static volatile Client client;
+
+// Cách 2 (khuyên dùng): Initialization-on-demand holder idiom
+class ClientHolder {
+    private static class Holder { static final Client INSTANCE = new Client(); }
+    public static Client get() { return Holder.INSTANCE; }
+}
+~~~
+Cách 2 dựa vào cơ chế class loader của JVM: class {{Holder}} chỉ được nạp/khởi tạo khi {{get()}} truy cập lần đầu, và JVM đảm bảo khởi tạo class là thread-safe — không cần {{volatile}} hay {{synchronized}} tự viết.
+
+### Vì sao các phương án còn lại sai
+- **Luôn đúng**: chỉ đúng từ Java 5 trở đi và **phải có volatile**. Thiếu volatile là lỗi kinh điển.
+- **synchronized trên class object sai**: hoàn toàn hợp lệ; {{synchronized(ClientHolder.class)}} khóa trên object Class của lớp.
+- **Bỏ hết synchronized**: sẽ cho phép nhiều thread cùng tạo nhiều instance, phá vỡ mục đích "một instance duy nhất" (singleton).
+
+> Senior tip: ưu tiên holder idiom hoặc {{enum}} singleton ({{enum}} được JVM đảm bảo chỉ có một instance) vì đơn giản và không dễ viết sai như double-checked locking.`
+},
+{
+  id: "qz-concurrency-040", topic: "concurrency", multi: true,
+  q: `Về {{CompletableFuture}} (API bất đồng bộ có chuỗi bước xử lý, Java 8), phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    `{{supplyAsync(task)}} không truyền executor sẽ chạy trên {{ForkJoinPool.commonPool()}} (pool dùng chung toàn JVM); nếu task thực hiện I/O chặn (gọi DB, HTTP) lâu, nó có thể chiếm hết thread của common pool và làm chậm các phần khác cũng dùng pool này (ví dụ parallel stream)`,
+    `{{exceptionally(fn)}} biến một future đang lỗi thành future hoàn thành bình thường với giá trị do {{fn}} trả về (recovery), còn {{whenComplete(fn)}} chỉ quan sát kết quả/lỗi mà không thay đổi trạng thái hoàn thành`,
+    `{{thenApply}} và {{thenApplyAsync}} luôn chạy trên cùng thread với bước trước`,
+    `{{join()}} và {{get()}} giống hệt nhau, đều ném checked exception`,
+    `{{allOf}} trả về {{CompletableFuture<Void>}} và nếu muốn lấy kết quả từng future con thì phải tự gọi {{join()/get()}} trên từng future đã có`
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Cần chọn đúng executor cho tác vụ I/O và hiểu rõ cách mỗi hàm xử lý lỗi/chuỗi để tránh "kẹt" common pool và nuốt mất exception.
+
+### Vì sao đúng
+- **commonPool và I/O chặn**: {{ForkJoinPool.commonPool()}} có số thread mặc định gần bằng số CPU core, tối ưu cho tác vụ CPU-bound (tính toán). Nếu nhét I/O chặn (chờ DB/HTTP) vào, vài request chậm có thể chiếm hết thread, làm {{parallelStream()}} và các {{CompletableFuture}} khác cùng dùng pool bị đói. Giải pháp: truyền executor riêng cho I/O, ví dụ {{supplyAsync(task, ioExecutor)}}.
+- **exceptionally vs whenComplete**: {{exceptionally(fn)}} nhận exception và trả về một **giá trị thay thế** → future phía sau thấy trạng thái thành công với giá trị đó (phục hồi). {{whenComplete((result, ex) -> …)}} chạy khi hoàn tất (dù thành công hay lỗi) nhưng **không đổi** kết quả/lỗi — thường dùng để log, đo đạc, rồi để lỗi tiếp tục lan.
+
+~~~java
+CompletableFuture.supplyAsync(() -> queryDb(), ioPool)
+  .thenApply(this::map)
+  .exceptionally(ex -> fallbackValue); // recovery
+~~~
+
+### Vì sao các phương án còn lại sai
+- **thenApply vs thenApplyAsync**: {{thenApply}} thường chạy trên thread đã hoàn thành bước trước (hoặc thread gọi nếu đã xong). {{thenApplyAsync}} nộp bước tiếp vào executor (mặc định commonPool) nên có thể chạy trên thread khác. Đây là khác biệt hay bị nhầm.
+- **join() và get()**: {{join()}} ném {{CompletionException}} (unchecked, không bắt buộc khai báo). {{get()}} ném checked exception {{ExecutionException}} và {{InterruptedException}}. Khác kiểu exception và nghĩa vụ xử lý.
+- **allOf**: mệnh đề trong phương án này đúng về mặt hành vi ({{allOf}} trả {{Void}} và phải tự lấy kết quả con), nhưng đề yêu cầu chọn 2 đáp án và 0,1 là hai điểm dễ nhầm/lỗi production nhất; phương án 4 cũng đúng kỹ thuật — tuy nhiên theo format "Chọn 2" ta chọn hai ý trọng tâm nhất 0 và 1. (Lưu ý: {{allOf}} không aggregate kết quả, đúng là {{Void}}.)
+
+> Senior tip: luôn gắn {{exceptionally}}/{{handle}} hoặc log trong {{whenComplete}} cho chuỗi async, nếu không exception có thể bị nuốt khi không ai {{join/get}}. Với tác vụ I/O, đặt tên và giới hạn thread của executor riêng ({{newFixedThreadPool}} hoặc virtual-thread executor) để quan sát và tránh quá tải tài nguyên phía sau.`
+},
+{
+  id: "qz-concurrency-041", topic: "concurrency",
+  q: `Đoạn code sau in ra gì?
+~~~java
+Map<String, Integer> map = new ConcurrentHashMap<>();
+map.put("a", 1);
+map.compute("a", (k, v) -> null);
+System.out.println(map.containsKey("a"));
+System.out.println(map.size());
+~~~`,
+  options: [
+    `true và 1`,
+    `false và 0`,
+    `true và 0`,
+    `Ném NullPointerException`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Với {{ConcurrentHashMap}}, nếu hàm remapping của {{compute/merge}} trả về {{null}} thì entry tương ứng sẽ bị **xoá** khỏi map. Đây là cách quy ước để biểu thị "không còn giá trị cho key này".
+
+### Cái gì đang xảy ra
+1. {{put("a", 1)}}: map có {a=1}.
+2. {{compute("a", (k,v) -> null)}}: hàm nhận key "a", giá trị hiện tại 1, trả về {{null}} → {{ConcurrentHashMap}} hiểu là "xoá key a" (thao tác nguyên tử).
+3. {{containsKey("a")}} → {{false}}, {{size()}} → {{0}}.
+
+~~~java
+// computeIfPresent cũng xoá khi trả null
+map.computeIfPresent("a", (k, v) -> v > 10 ? v : null);
+~~~
+
+### Vì sao các phương án còn lại sai
+- **true và 1**: nhầm rằng trả null sẽ set value thành null. Nhưng {{ConcurrentHashMap}} **cấm** key và value null (khác với {{HashMap}} cho phép 1 key null và nhiều value null), nên null mang ý nghĩa đặc biệt là "remove".
+- **true và 0**: mâu thuẫn; nếu key còn thì size không thể giảm tương ứng như vậy trong ví dụ này.
+- **NullPointerException**: {{compute}} được phép trả về null như tín hiệu xoá; NPE chỉ xảy ra nếu bạn cố {{put(key, null)}} hoặc dùng key null vào {{ConcurrentHashMap}}.
+
+### So sánh nhanh
+| Map | Key/Value null | compute trả null |
+|---|---|---|
+| {{HashMap}} | 1 key null, nhiều value null | đặt value = null |
+| {{ConcurrentHashMap}} | cấm cả hai | **xoá entry** |
+
+> Senior tip: tận dụng hành vi này để viết logic "cập nhật hoặc xoá" nguyên tử trong một lần gọi {{compute}}. Nhưng nhớ rằng {{HashMap}} và {{ConcurrentHashMap}} khác nhau ở đây — khi đổi loại map, hãy kiểm tra lại logic trả null.`
+},
+{
+  id: "qz-concurrency-042", topic: "concurrency",
+  q: `Service xử lý mỗi request trên một virtual thread (Java 21, {{Executors.newVirtualThreadPerTaskExecutor()}}). Đoạn code nào có nguy cơ **pinned virtual thread** (kẹt carrier thread, làm giảm khả năng chịu tải) trên JDK 21?`,
+  options: [
+    `Gọi {{socket.read()}} (I/O chặn) bên ngoài mọi synchronized block`,
+    `Gọi {{Thread.sleep(200)}} trong một method thông thường`,
+    `Thực hiện truy vấn JDBC (blocking) bên trong một block {{synchronized (lock) { ... }}}`,
+    `Gọi {{ReentrantLock.lock()}} rồi thực hiện I/O chặn bên trong`
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Trên **JDK 21–23**, virtual thread không thể "nhả" (unmount) khỏi carrier thread khi nó đang giữ monitor của {{synchronized}} hoặc đang ở trong native frame. Nếu nó chặn I/O trong lúc đó, carrier thread bị giữ chặt (pinned) và không phục vụ virtual thread khác được.
+
+### Cơ chế ngắn gọn
+- **Virtual thread** (thread ảo, nhẹ): do JVM quản lý, có thể lên xuống carrier thread (platform thread thật, số lượng nhỏ ~ bằng số core).
+- Khi gặp thao tác chặn (blocking I/O, sleep), JVM thường unmount virtual thread để carrier chạy việc khác → hàng nghìn virtual thread vẫn chạy tốt trên vài core.
+- **Ngoại lệ JDK 21–23**: đang giữ {{synchronized}} monitor thì JVM không unmount được → carrier bị pin cho đến khi ra khỏi block. Chặn 200ms trong {{synchronized}} với 8 carrier đồng nghĩa chỉ ~40 tác vụ hoàn tất/giây dù có hàng nghìn virtual thread.
+
+~~~java
+// Tránh (JDK 21): pinning
+synchronized (lock) { result = jdbc.query(); }
+
+// Nên: dùng ReentrantLock
+lock.lock();
+try { result = jdbc.query(); }
+finally { lock.unlock(); }
+~~~
+
+### Vì sao các phương án còn lại sai
+- **socket.read() ngoài synchronized**: unmount bình thường, carrier được giải phóng.
+- **Thread.sleep() thông thường**: virtual thread tự unpark/unmount đúng cách, không pin.
+- **I/O trong ReentrantLock**: {{ReentrantLock}} không dùng monitor của {{synchronized}} mà dùng cơ chế AQS (AbstractQueuedSynchronizer) riêng, nên virtual thread vẫn unmount được khi chặn. (Trên **JDK 24+**, JEP 491 cho phép unmount cả khi giữ monitor, nên {{synchronized}} không còn gây pin nữa.)
+
+> Senior tip: kiểm tra pinning bằng JFR event {{jdk.VirtualThreadPinned}} hoặc {{-Djdk.tracePinnedThreads=full}} (JDK 21–23) trước khi đưa virtual thread lên production. Thư viện/driver cũ dùng {{synchronized}} quanh I/O là nguồn pinning phổ biến.`
+},
+{
+  id: "qz-concurrency-043", topic: "concurrency",
+  q: `{{AtomicInteger counter}} dùng chung (khởi tạo 0). 10 thread, mỗi thread chạy {{counter.incrementAndGet()}} đúng 1 lần. Kết quả nào chắc chắn đúng?`,
+  options: [
+    `Giá trị cuối là 10, và tập các giá trị trả về của 10 lần gọi là đúng {1,2,3,4,5,6,7,8,9,10} theo một thứ tự cố định giữa các thread`,
+    `Giá trị cuối là 10, nhưng giá trị từng lần trả về mà mỗi thread nhận phụ thuộc vào thứ tự thắng cuộc đua CAS (mỗi số từ 1 đến 10 xuất hiện đúng một lần trên tổng các lần gọi)`,
+    `Giá trị cuối có thể nhỏ hơn 10 do lost update`,
+    `Cần thêm {{synchronized}} mới đảm bảo giá trị cuối là 10`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{AtomicInteger}} (lớp trong {{java.util.concurrent.atomic}}) dùng thao tác phần cứng **CAS** (Compare-And-Swap: "so sánh và đổi nếu đúng giá trị mong đợi", thực hiện như một bước không chia cắt) để đảm bảo mỗi lần tăng là nguyên tử. Tổng luôn đúng, nhưng thread nào nhận giá trị nào phụ thuộc thời điểm thắng CAS.
+
+### Vì sao đúng
+- Mỗi {{incrementAndGet()}} đọc giá trị hiện tại, tính +1, rồi CAS: nếu chưa ai đổi thì ghi thành công và trả về giá trị mới; nếu ai đó đã đổi thì thử lại. Vì vậy không có lost update, 10 lần tăng → kết quả cuối chắc chắn 10.
+- 10 thread chạy song song: thread CAS thành công trước nhận 1, thread thắng kế nhận 2, v.v. Thứ tự thắng thua phụ thuộc scheduler — không đoán trước. Trên tổng 10 lần gọi, mỗi số 1..10 xuất hiện đúng một lần, chỉ là không cố định thread nào cầm số nào.
+
+~~~java
+AtomicInteger c = new AtomicInteger(0);
+// Thread A: c.incrementAndGet() -> có thể 1 hoặc 3...
+// Thread B: c.incrementAndGet() -> số khác
+// Sau khi cả 10 xong: c.get() == 10
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Thứ tự cố định giữa các thread**: không có cam kết thread nào nhận số nào; chỉ cam kết tính nguyên tử và đúng tổng.
+- **Có thể nhỏ hơn 10**: đây là lỗi của {{count++}} trên biến thường/volatile, không phải của {{AtomicInteger}}.
+- **Cần synchronized**: {{AtomicInteger}} đã đủ cho thao tác đơn lẻ như tăng/giảm; thêm {{synchronized}} thừa và chậm hơn. Chỉ cần khóa khi phải cập nhật **nhiều** biến cùng nhau như một đơn vị.
+
+> Senior tip: khi nhiều thread cùng tăng một bộ đếm và bạn chỉ thỉnh thoảng đọc tổng (ví dụ metrics), {{LongAdder}} (Java 8) phân tán vào nhiều cell để giảm tranh chấp CAS, thường nhanh hơn {{AtomicLong}} dưới tải cao; đổi lại {{sum()}} không phải snapshot nguyên tử.`
+},
+{
+  id: "qz-concurrency-044", topic: "concurrency",
+  q: `{{CopyOnWriteArrayList}} (danh sách thread-safe bằng cách sao chép mảng khi ghi, Java 5) phù hợp nhất với tình huống nào?`,
+  options: [
+    `Danh sách đăng ký listener được đọc (duyệt để thông báo sự kiện) rất thường xuyên nhưng hiếm khi thêm/xoá listener`,
+    `Hàng đợi công việc mà nhiều thread liên tục thêm và lấy phần tử`,
+    `Danh sách giỏ hàng nơi mỗi request đều thêm/xoá sản phẩm`,
+    `Bất kỳ danh sách nào cần thread-safe, vì nó nhanh hơn mọi lựa chọn khác`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{CopyOnWriteArrayList}} đánh đổi: **ghi rất đắt** (tạo bản sao toàn bộ mảng mỗi lần sửa) nhưng **đọc rất rẻ và không cần khóa**, và iterator không bao giờ ném {{ConcurrentModificationException}}. Nó chỉ phù hợp khi đọc áp đảo ghi.
+
+### Cách hoạt động
+- **Ghi** ({{add}}, {{set}}, {{remove}}): khóa ngắn, sao chép toàn bộ mảng nền sang mảng mới có thay đổi, rồi gán tham chiếu (volatile) sang mảng mới. Chi phí O(n) bộ nhớ và CPU mỗi lần ghi.
+- **Đọc** ({{get}}, duyệt): đọc trực tiếp trên mảng hiện tại, không khóa, rất nhanh và không chặn ghi.
+- **Iterator**: duyệt trên một **snapshot** (ảnh chụp) của mảng tại thời điểm tạo iterator — nếu danh sách bị sửa sau đó, iterator không thấy thay đổi và không ném {{ConcurrentModificationException}} (weakly-consistent theo snapshot).
+
+~~~java
+// Phù hợp: listener/callback registry
+CopyOnWriteArrayList<EventListener> listeners = new CopyOnWriteArrayList<>();
+for (EventListener l : listeners) l.onEvent(e); // đọc nhiều, an toàn khi duyệt
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Hàng đợi công việc thêm/lấy liên tục**: ghi và xoá rất nhiều → sao chép mảng liên tục, cực chậm và tốn GC. Dùng {{ConcurrentLinkedQueue}} hoặc {{LinkedBlockingQueue}}.
+- **Giỏ hàng sửa thường xuyên**: cùng vấn đề ghi nhiều. Dùng {{Collections.synchronizedList}} hoặc cấu trúc phù hợp hơn.
+- **Nhanh hơn mọi lựa chọn**: sai; nó chậm hơn hẳn cho ghi. "Nhanh" chỉ đúng với đọc đồng thời.
+
+> Senior tip: dấu hiệu phù hợp điển hình là danh sách observer/listener, danh sách cấu hình nạp một lần rồi đọc khắp nơi. Nếu tỉ lệ ghi không phải "rất hiếm", hãy đo benchmark hoặc chọn {{Collections.synchronizedList}}/{{ConcurrentHashMap}} tùy ngữ cảnh.`
+},
+{
+  id: "qz-concurrency-045", topic: "concurrency", multi: true,
+  q: `Về {{ThreadPoolExecutor}} và cách chọn/tạo pool trong Java (Java 5+), phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    `{{Executors.newFixedThreadPool(n)}} dùng {{LinkedBlockingQueue}} không giới hạn; nếu task đến nhanh hơn xử lý, hàng đợi phình vô hạn có thể gây {{OutOfMemoryError}}. {{Executors.newCachedThreadPool()}} thì tạo thread không giới hạn, cũng có thể cạn kiệt tài nguyên`,
+    `Với {{ThreadPoolExecutor}} cấu hình queue có giới hạn, khi queue đầy và đã đạt {{maximumPoolSize}} thì task mới bị từ chối và {{RejectedExecutionHandler}} quyết định xử lý (ném lỗi, bỏ, chạy tại thread gọi, v.v.)`,
+    `{{corePoolSize}} là số thread tối đa tuyệt đối mà pool không bao giờ vượt qua`,
+    `{{submit()}} và {{execute()}} giống hệt nhau về cách xử lý exception của task`,
+    `Tăng {{maximumPoolSize}} thật lớn luôn làm throughput tăng tuyến tính`
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Factory method của {{Executors}} tiện nhưng che giấu cấu hình hàng đợi/kích thước có thể nguy hiểm trên production. Hiểu {{corePoolSize}}, {{maximumPoolSize}}, queue và chính sách từ chối giúp đặt giới hạn an toàn.
+
+### Vì sao đúng
+- **Rủi ro của factory tiện lợi**:
+  - {{newFixedThreadPool(n)}}: {{core}}={{max}}={{n}} nhưng queue là {{LinkedBlockingQueue}} **không giới hạn** → nếu producer nhanh hơn consumer, queue chứa hàng triệu task chờ → hết heap ({{OutOfMemoryError}}).
+  - {{newCachedThreadPool()}}: {{core}}=0, {{max}}={{Integer.MAX_VALUE}}, queue {{SynchronousQueue}} (không chứa) → mỗi task đến khi không có thread rảnh sẽ tạo thread mới, có thể tạo hàng chục nghìn thread → cạn kiệt bộ nhớ/CPU.
+- **RejectedExecutionHandler** (bộ xử lý khi từ chối): khi dùng queue **có giới hạn** (ví dụ {{ArrayBlockingQueue}}), luồng là: dùng thread rảnh → nếu hết, đưa vào queue → nếu queue đầy, tạo thêm thread tới {{maximumPoolSize}} → nếu vẫn đầy, gọi handler. Mặc định {{AbortPolicy}} ném {{RejectedExecutionException}}; có thể chọn {{CallerRunsPolicy}} (chạy ngay trên thread gọi, tạo backpressure tự nhiên), {{DiscardPolicy}}, v.v.
+
+### Vì sao các phương án còn lại sai
+- **corePoolSize là tối đa tuyệt đối**: sai. {{maximumPoolSize}} mới là trần; {{corePoolSize}} là số thread giữ sống (thường). Pool có thể tăng từ core lên max khi queue đầy (tùy loại queue).
+- **submit() và execute() giống nhau**: {{execute(Runnable)}} (interface {{Executor}}) để exception không bắt lọt ra ngoài thread → đi tới {{UncaughtExceptionHandler}} (thường in stack trace rồi thread chết im lặng nếu không cài). {{submit(...)}} trả {{Future}} và **bắt** exception vào trong {{Future}} — nếu bạn không gọi {{get()}} thì sẽ không thấy lỗi. Đây là nguồn "nuốt exception" phổ biến.
+- **Tăng max luôn tăng throughput**: quá nhiều thread gây tranh chấp CPU, context switch, và quá tải tài nguyên phía sau (DB, API) → throughput có thể giảm.
+
+> Senior tip: trên production, ưu tiên tự tạo {{new ThreadPoolExecutor(core, max, keepAlive, unit, new ArrayBlockingQueue<>(bound), threadFactory, handler)}} với hàng đợi có giới hạn, đặt tên thread (dễ đọc log/thread dump), và giám sát kích thước queue/thread. Với tác vụ I/O chặn trên Java 21+, cân nhắc virtual-thread-per-task executor thay vì pool lớn.`
+},
 );
