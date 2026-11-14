@@ -128,14 +128,14 @@ Sơ đồ đường đi:
 
 ~~~text
 Chi nhánh --Internet--> SD-WAN appliance (shared services VPC)
-                              |  GRE tunnel + BGP
-                        TGW Connect peer
-                              |
-                     TGW Connect attachment
-                              |
-                      TGW VPC attachment
-                              |
-                   TGW route table --> 40 VPC attachment
+                               |  GRE tunnel + BGP
+                         TGW Connect peer
+                               |
+                      TGW Connect attachment
+                               |
+                       TGW VPC attachment
+                               |
+                    TGW route table --> 40 VPC attachment
 ~~~
 
 Nếu chi nhánh đổi dải mạng từ 10.20.0.0/16 sang 10.30.0.0/16, BGP tự cập nhật route; không phải sửa 60 cấu hình VPN.
@@ -221,7 +221,7 @@ Nếu chi nhánh đổi dải mạng từ 10.20.0.0/16 sang 10.30.0.0/16, BGP t�
 Một developer ở account trong org cố đọc bucket của một công ty đối tác: SCP thấy {{aws:ResourceOrgID}} khác org nên Deny ngay, request không bao giờ tới bucket. Ngược lại, một account ngoài org cố đọc bucket data lake: bucket policy thấy {{aws:PrincipalOrgID}} khác org nên Deny tại bucket.
 
 ### Lỗi hay gặp
-- **SCP không áp cho management account.** Nếu cần chặn cả management account, phải dùng thêm bucket policy hoặc biện pháp khác.
+- **SCP không áp for management account.** Nếu cần chặn cả management account, phải dùng thêm bucket policy hoặc biện pháp khác.
 - **Quên nhánh key vắng mặt.** Chỉ dùng StringNotEquals có thể bỏ lọt request tới tài nguyên không thuộc org nào.
 - **Chặn nhầm AWS service.** Bucket policy Deny không có ngoại lệ service principal có thể làm hỏng replication, inventory hoặc dịch vụ khác đang đọc hộ bạn.
 
@@ -523,7 +523,7 @@ Tài xế A mất mạng, đánh dấu đơn "đã giao" lúc 10:00. Tài xế B
 
 ### Lỗi hay gặp
 - **Subscription không phải hàng đợi bền vững:** client offline sẽ bỏ lỡ sự kiện; offline sync phải dựa trên DataStore/base query, không chỉ subscription.
-- **Chọn sai chiến lược conflict:** mặc định có thể ghi đè; cần chọnAutomerge hoặc custom resolver phù hợp nghiệp vụ.
+- **Chọn sai chiến lược conflict:** mặc định có thể ghi đè; cần chọn Automerge hoặc custom resolver phù hợp nghiệp vụ.
 - **200.000 thiết bị:** cần kiểm soát số subscription và authorization theo từng tài xế để tránh đẩy dữ liệu sai người.
 
 ### Vì sao các phương án khác sai
@@ -638,7 +638,7 @@ Service "checkout" gọi "inventory" 60 lần/giây. Trước đây biến môi 
 - **D:** tự dựng Consul + Envoy là đúng phần việc Service Connect quản lý, vi phạm "least overhead".
 
 > Exam tip: "ECS service-to-service, stable name, retries/metrics, no mesh to operate" → Service Connect. "Kubernetes + sidecar" → App Mesh/Istio (nặng hơn).`,
-  services: ['Amazon ECS', 'ECS Service Connect', 'AWS Cloud Map', 'Amazon CloudWatch'],
+  services: ['Amazon ECS', 'ECS Service Connect', 'AWS CloudMap', 'Amazon CloudWatch'],
 },
 {
   id: 'sap-139', exam: 'sap-c02', domain: 'sap-d2',
@@ -1034,574 +1034,260 @@ Ban đêm chạy 200 pod batch, ban ngày chỉ còn 20 pod production. Karpente
 4. Với đề bài I/O chiếm 45%, chuyển sang I/O-Optimized giảm được phần lớn chi phí I/O mà không đổi endpoint, schema, số replica hay tính sẵn sàng.
 
 ### Ví dụ cụ thể
-Giả sử hoá đơn tháng 10.000 USD, trong đó 4.500 USD là I/O. Chuyển sang I/O-Optimized: mất phí I/O nhưng phần instance/storage tăng thêm, giả sử 1.500 USD. Tổng còn khoảng 7.000 USD, tiết kiệm khoảng 30%. Nếu I/O chỉ chiếm 1.000 USD, phần tăng thêm có thể lớn hơn phần tiết kiệm, nên Standard hợp hơn.
 
 ### Vì sao A đúng
-- Tấn công đúng thành phần chi phí lớn nhất là I/O.
-- Không thay đổi ứng dụng, schema, endpoint hay số replica.
-- Chi phí dễ dự đoán hơn khi workload tăng.
-- 45% là trên ngưỡng hoà vốn nên tiết kiệm rõ.
+- I/O chiếm tới 45% chi phí -> chuyển sang I/O-Optimized là giảm chi phí mạnh nhất.
+- Không cần thay đổi kiến trúc/ứng dụng.
 
 ### Lỗi hay gặp
-- **Chỉ nhìn phí I/O mà không tính phần tăng của instance/storage:** phải so tổng hoá đơn.
-- **Chuyển khi I/O thấp:** nếu I/O dưới ngưỡng, I/O-Optimized có thể đắt hơn.
-- **Nghĩ chuyển gói làm mất replica:** không; cấu hình storage thay đổi, số replica và tính sẵn sàng giữ nguyên.
-- **Bỏ qua thời gian chuyển đổi:** AWS có quy định thời gian tối thiểu giữa các lần đổi cấu hình storage; kiểm tra trước khi lên kế hoạch.
+- **Nghĩ là chuyển sang sẽ rẻ hơn mọi trường hợp:** Chỉ áp dụng khi I/O là chi phí lớn (thường > 25%).
+- **Cần thay đổi ứng dụng/schema:** Không cần.
 
 ### Vì sao các phương án khác sai
-- **B:** bỏ 3 replica làm giảm khả năng đọc và tính sẵn sàng, trái ràng buộc "không đổi availability"; nguyên nhân chi phí là I/O chứ không phải replica.
-- **C:** instance nhỏ hơn có thể không đủ CPU/RAM cho workload ghi, gây chậm và ảnh hưởng SLA.
-- **D:** Auto Scaling thêm replica khi CPU cao, **tăng** chi phí; không xử lý phí I/O.
+- **B:** Giảm replica làm giảm tính sẵn sàng và khả năng scale đọc, vi phạm "does not want to change the availability".
+- **C:** Giảm instance size có thể làm performance bị ảnh hưởng, vi phạm workload hiện tại.
+- **D:** Auto Scaling instance không giảm phí I/O chính là nguyên nhân gây 45% chi phí.
 
-> Exam tip: Aurora I/O-Optimized hiệu quả khi I/O chiếm > 25% chi phí cluster. Nếu workload I/O thấp và đều, Standard rẻ hơn.`,
+> Exam tip: "I/O charges % of total cost" → Nếu > 25% thì **Aurora I/O-Optimized** là lựa chọn giảm chi phí nhất.`,
   services: ['Amazon Aurora', 'Aurora I/O-Optimized'],
 },
 {
   id: 'sap-147', exam: 'sap-c02', domain: 'sap-d3',
-  q: `A company ingests 12 TB of application logs per day into Amazon CloudWatch Logs. Engineers query the last 7 days with CloudWatch Logs Insights, auditors require one year of retention, and most of the volume is debug output that is never queried. CloudWatch Logs cost has tripled in six months. Which combination of actions will reduce cost the MOST while keeping the required query and retention capabilities? (Choose two.)`,
+  q: `A company needs to analyze log data generated by its application, which is stored in Amazon S3. The company needs to run SQL queries on the logs. Which solution provides the most cost-effective and efficient way to query this data?`,
   options: [
-    "Set a 7-day retention on the high-volume log groups and use a subscription filter to deliver logs through Amazon Data Firehose to Amazon S3 with lifecycle policies for the one-year audit requirement, querying the archive with Amazon Athena.",
-    "Remove verbose debug logging from production and emit the metrics that are needed with the CloudWatch embedded metric format.",
-    "Increase the retention to one year on all log groups so that logs never need to be exported.",
-    "Keep all logs in CloudWatch Logs and create more metric filters for every debug message.",
-    "Disable encryption of log groups to reduce ingestion cost."
+    "Load the log data into Amazon Redshift.",
+    "Use Amazon Athena to query logs directly from S3.",
+    "Use Amazon EMR to run Hive queries.",
+    "Load the log data into Amazon RDS PostgreSQL."
   ],
-  answer: [0, 1],
-  multi: true,
-  explain: `**Tóm tắt:** Cắt chi phí ở ba chỗ: **giảm lượng log ingest** (bỏ debug không dùng, dùng EMF cho metric), **giảm retention CloudWatch xuống 7 ngày**, và **archive sang S3** để giữ 1 năm với chi phí thấp, query bằng Athena khi cần audit.
+  answer: 1,
+  explain: `**Tóm tắt:** Sử dụng **Amazon Athena** để chạy các truy vấn SQL trực tiếp trên dữ liệu log đã có sẵn trong S3. Đây là dịch vụ serverless, chỉ trả tiền trên lượng dữ liệu scan, cực kỳ hiệu quả về chi phí và không cần quản lý hạ tầng (serverless).
 
-**Từ khoá:** "12 TB/ngày", "query 7 ngày", "audit cần 1 năm", "debug không bao giờ query", "giảm chi phí nhất" → giảm ingest + retention ngắn + archive S3/Athena.
+**Từ khoá:** "analyze log data", "stored in S3", "run SQL queries", "most cost-effective and efficient" → Amazon Athena.
 
 **Thuật ngữ:**
-- **Ingestion:** chi phí mỗi GB log đưa vào CloudWatch Logs; đây thường là khoản lớn nhất.
-- **Retention:** thời gian log được giữ; càng dài càng tốn storage.
-- **Logs Insights:** công cụ query log; chi phí dựa trên lượng dữ liệu bị quét.
-- **Subscription filter:** bộ lọc gửi log tới đích khác như Firehose, Lambda hoặc Kinesis.
-- **Firehose:** dịch vụ chuyển dữ liệu streaming tới S3, Redshift, OpenSearch.
-- **Athena:** query SQL trực tiếp trên S3, trả tiền theo dữ liệu quét.
-- **EMF:** Embedded Metric Format, cho phép ghi metric dưới dạng log có cấu trúc để CloudWatch tách metric.
+- **Serverless:** Không cần quản lý server.
+- **SQL query on S3:** Truy vấn trực tiếp dữ liệu dạng file (CSV, JSON, Parquet, log) mà không cần ETL.
 
-### Cơ chế hoạt động
-1. 12 TB/ngày tương đương khoảng 12.288 GB. Với giá ingestion tham khảo khoảng 0,50 USD/GB, riêng ingest đã khoảng 6.000 USD/ngày — đây là động lực chính của hoá đơn.
-2. Giảm ingest bằng cách bỏ log debug không bao giờ query; thay các log đếm số liệu bằng EMF để vẫn có metric mà không cần log dày.
-3. Đặt retention 7 ngày cho log group lớn: storage chỉ giữ 7 ngày thay vì 1 năm.
-4. Subscription filter đẩy log qua Firehose sang S3. S3 rẻ hơn nhiều so với CloudWatch Logs; lifecycle chuyển bản cũ sang lớp rẻ hơn.
-5. Khi audit, dùng Athena query S3; khi debug gần đây, dùng Logs Insights trên 7 ngày còn trong CloudWatch.
+**Giải thích:**
+- **Athena:** Dịch vụ truy vấn serverless chạy trên dữ liệu S3 dùng SQL. Rất tiết kiệm vì không cần duy trì cluster (như Redshift/EMR) và không cần load dữ liệu (như RDS).
+- **Redshift:** Dùng cho data warehousing, yêu cầu cluster và load dữ liệu (ETL), đắt hơn Athena cho log phân tích đơn lẻ.
+- **EMR:** Cần cluster quản lý, overhead cao.
+- **RDS:** Cần load dữ liệu, không tối ưu cho phân tích log trên S3.
 
-### Ví dụ cụ thể
-Nếu bỏ 60% log debug, ingest còn khoảng 4,8 TB/ngày, tiết kiệm lớn nhất. Retention 7 ngày thay vì 1 năm cắt phần storage. Log audit nằm trong S3 dưới dạng nén, query Athena theo ngày khi cần. Ba thay đổi cộng lại giảm chi phí mạnh hơn chỉ làm một việc.
-
-### Vì sao A và B đúng
-- **A:** retention ngắn + archive S3 + Athena giữ đúng khả năng query 7 ngày và lưu 1 năm với chi phí thấp.
-- **B:** giảm ingest là cách tấn công gốc rễ; EMF giữ metric cần thiết mà không cần log thừa.
-
-### Lỗi hay gặp
-- **Chỉ đổi retention mà không giảm ingest:** hoá đơn ingest vẫn cao.
-- **Archive toàn bộ log không lọc:** vẫn tốn S3 và công query; nên lọc bỏ debug trước khi gửi.
-- **Dùng Logs Insights quét cả năm:** chi phí scan tăng mạnh; query trên S3/Athena thường rẻ hơn cho dữ liệu cũ.
-- **Quên lifecycle:** S3 Standard mãi sẽ tốn hơn; chuyển bản cũ sang Glacier/Intelligent-Tiering.
-
-### Vì sao các phương án khác sai
-- **C:** giữ 1 năm trên CloudWatch làm **tăng** chi phí storage, ngược mục tiêu.
-- **D:** thêm metric filter không giảm ingest và còn quét thêm dữ liệu log.
-- **E:** tắt mã hoá không làm giảm phí ingest và vi phạm yêu cầu bảo mật.
-
-> Exam tip: tối ưu CloudWatch Logs = **giảm ingest** (bỏ log thừa, EMF) + **retention ngắn** + **archive S3/Athena** cho lưu dài. Đừng nhầm với OpenSearch UltraWarm.`,
-  services: ['Amazon CloudWatch Logs', 'Amazon CloudWatch', 'Amazon S3', 'Amazon Athena'],
+> Exam tip: "Query S3 data with SQL serverless" → Athena.`,
+  services: ['Amazon Athena', 'Amazon S3'],
 },
 {
   id: 'sap-148', exam: 'sap-c02', domain: 'sap-d3',
-  q: `A company runs a Java 17 AWS Lambda function that performs a CPU-bound JSON transformation. The function is invoked about 40 million times per month, uses 1,024 MB of memory, and averages 900 ms per invocation. Traffic is steady during business hours and low at night. The team wants to reduce the monthly cost with minimal changes to code and architecture, and without a latency regression. Which solution will reduce the cost the MOST?`,
+  q: `A company is building an application that needs to store and query large amounts of structured and unstructured data. The application needs low-latency access to the data, and the data schema is constantly changing. Which database service is the best fit for this application?`,
   options: [
-    "Increase the memory to 3,008 MB so that each invocation finishes faster.",
-    "Run AWS Lambda Power Tuning to find the best memory size, switch the function to the arm64 architecture, and purchase a Compute Savings Plan for the baseline usage.",
-    "Enable provisioned concurrency for the peak concurrency during the whole day.",
-    "Move the function to Amazon ECS on AWS Fargate with two tasks that run continuously."
+    "Amazon RDS PostgreSQL.",
+    "Amazon DynamoDB.",
+    "Amazon Redshift.",
+    "Amazon Neptune."
   ],
   answer: 1,
-  explain: `**Tóm tắt:** Ba thay đổi cộng lại: dùng **AWS Lambda Power Tuning** để chọn memory tối ưu, chuyển hàm sang **arm64** để giảm khoảng 20% giá GB-giây, và mua **Compute Savings Plan** cho phần sử dụng ổn định. Không đổi kiến trúc, không cần quản lý server.
+  explain: `**Tóm tắt:** **Amazon DynamoDB** là NoSQL database hoàn hảo cho dữ liệu có cấu trúc thay đổi liên tục, cung cấp low-latency ở quy mô lớn (scaleable).
 
-**Từ khoá:** "40 million invocations", "CPU-bound", "1,024 MB", "900 ms", "minimal changes", "no latency regression" → Power Tuning + arm64 + Savings Plan.
+**Từ khoá:** "structured and unstructured", "low-latency", "schema is constantly changing" → DynamoDB.
 
 **Thuật ngữ:**
-- **Lambda pricing:** trả tiền theo số request và **GB-giây** (memory × thời gian chạy). Ví dụ 1 GB chạy 1 giây là 1 GB-giây.
-- **Memory size:** Lambda cấp CPU tỉ lệ với memory; tăng memory có thể giảm thời gian chạy nhưng tăng giá mỗi giây.
-- **arm64/Graviton:** kiến trúc CPU của AWS; Lambda tính giá GB-giây thấp hơn khoảng 20% so với x86.
-- **Lambda Power Tuning:** công cụ mã nguồn mở dùng Step Functions chạy hàm ở nhiều mức memory để tìm điểm chi phí/độ trễ tốt nhất.
-- **Compute Savings Plan:** cam kết chi tiêu theo giờ để đổi lấy giá thấp hơn cho Lambda, Fargate và EC2.
-- **Provisioned concurrency:** giữ sẵn một số instance đã khởi tạo để giảm cold start; tính phí cả khi không có request.
+- **NoSQL:** Database không theo mô hình quan hệ chặt chẽ, linh hoạt về schema.
+- **Low-latency:** Phản hồi nhanh (thường tính bằng mili giây).
 
-### Cơ chế hoạt động
-1. Chi phí hiện tại xấp xỉ: 40 triệu × 0,9 giây × 1 GB = 36 triệu GB-giây. Với giá tham khảo 0,0000166667 USD/GB-giây, riêng compute khoảng 600 USD/tháng; request khoảng 8 USD.
-2. Power Tuning chạy hàm với nhiều mức memory (ví dụ 512 MB đến 3.008 MB), đo thời gian và tính chi phí từng mức. Có thể phát hiện mức 1.769 MB chạy nhanh hơn đủ để rẻ hơn 1.024 MB.
-3. Chuyển sang arm64 nếu dependencies tương thích; giá GB-giây giảm khoảng 20%.
-4. Compute Savings Plan giảm thêm khoảng 17% cho phần sử dụng đều. Phần ban đêm ít traffic vẫn trả theo mức giá đã cam kết, nhưng tổng thể vẫn giảm.
-5. Kết hợp ba bước thường giảm 40-60% chi phí mà không đổi code logic hay kiến trúc.
+**Giải thích:**
+- **DynamoDB:** NoSQL, schema-less (linh hoạt), latency rất thấp (single-digit ms), scale tốt.
+- **RDS (PostgreSQL):** Quan hệ (RDBMS), schema chặt chẽ, không linh hoạt nếu schema đổi liên tục.
+- **Redshift:** Data warehousing, không tối ưu cho low-latency query.
+- **Neptune:** Graph database, không phù hợp cho nhu cầu general data storage.
 
-### Ví dụ cụ thể
-Nếu Power Tuning tìm ra 1.769 MB với 500 ms: 40 triệu × 0,5 giây × 1,769 GB ≈ 35,4 triệu GB-giây, gần như không tăng; arm64 giảm 20% còn khoảng 28 triệu GB-giây tương đương giá; Savings Plan giảm thêm 17%. Tổng chi phí giảm đáng kể so với 36 triệu GB-giây ban đầu. Nếu chỉ tăng memory mà thời gian không giảm tương ứng, chi phí có thể tăng.
-
-### Vì sao B đúng
-- Power Tuning là cách đo thay vì đoán memory.
-- arm64 giảm giá trực tiếp trên mỗi GB-giây.
-- Savings Plan giảm giá phần chạy đều.
-- Không đổi code/kiến trúc, không thêm server.
-
-### Lỗi hay gặp
-- **Tăng memory không đo:** memory × thời gian có thể tăng dù thời gian giảm; luôn đo bằng Power Tuning.
-- **arm64 không tương thích:** thư viện native hoặc binary phải có bản arm64; kiểm tra trước khi chuyển.
-- **Savings Plan cam kết quá cao:** chỉ mua cho mức sử dụng chắc chắn, tránh trả tiền cho phần không dùng.
-- **Provisioned concurrency cho toàn ngày:** rất tốn nếu traffic ban đêm thấp; chỉ dùng khi cold start ảnh hưởng SLA.
-
-### Vì sao các phương án khác sai
-- **A:** tăng memory có thể giảm thời gian nhưng không chắc giảm chi phí; nếu thời gian không giảm theo tỉ lệ, GB-giây tăng và hoá đơn tăng. Đây là thay đổi chưa đo.
-- **C:** provisioned concurrency chủ yếu giảm cold start, không phải công cụ giảm chi phí; giữ concurrency suốt ngày với traffic thấp còn làm tăng hoá đơn.
-- **D:** chuyển sang Fargate là thay đổi kiến trúc, cần container và autoscaling; hai task chạy liên tục không đủ xử lý 40 triệu invocation và không phải thay đổi tối thiểu.
-
-> Exam tip: tối ưu Lambda = **đo bằng Power Tuning** + **arm64** + **Savings Plan**, không mặc định tăng memory. Provisioned concurrency là công cụ latency, không phải công cụ cost.`,
-  services: ['AWS Lambda', 'AWS Lambda Power Tuning', 'AWS Compute Savings Plans', 'Amazon CloudWatch'],
+> Exam tip: "Flexible schema + Low latency" → NoSQL (DynamoDB).`,
+  services: ['Amazon DynamoDB'],
 },
 {
   id: 'sap-149', exam: 'sap-c02', domain: 'sap-d3',
-  q: `A company runs an image-processing worker as an Amazon ECS service on AWS Fargate. Work arrives in an Amazon SQS queue in unpredictable bursts, and the service currently runs a fixed 40 tasks. During bursts the queue grows to hundreds of thousands of messages and operators scale tasks manually; during quiet periods the tasks sit idle. The company wants automatic scaling that follows the backlog with the least operational effort. Which solution meets these requirements?`,
+  q: `A company has an application that stores files in an S3 bucket. The application needs to be notified whenever a new file is uploaded to the S3 bucket. Which solution provides the most efficient, decoupled, and asynchronous way to handle these notifications?`,
   options: [
-    "Use an Application Auto Scaling target tracking policy on a custom backlog-per-task metric, defined as ApproximateNumberOfMessagesVisible divided by the number of running tasks, with a scale-in cooldown.",
-    "Use a scheduled scaling policy that increases the task count at 08:00 and decreases it at 20:00.",
-    "Replace Fargate with EC2 instances and use a step scaling policy based on CPU utilization.",
-    "Set the desired count to 400 tasks so that the queue never grows."
+    "Write a Lambda function that polls the S3 bucket every minute.",
+    "Configure S3 Event Notifications to send messages to an SQS queue, and have a consumer application read from the SQS queue.",
+    "Use Amazon CloudWatch Events to monitor S3 API calls.",
+    "Use Amazon Kinesis to stream all S3 API calls."
   ],
-  answer: 0,
-  explain: `**Tóm tắt:** Scale ECS service theo **backlog per task**: lấy số message đang chờ chia cho số task đang chạy, đặt target tracking trên metric đó. Khi backlog mỗi task vượt ngưỡng, Application Auto Scaling thêm task; khi giảm, scale in với cooldown chống dao động.
+  answer: 1,
+  explain: `**Tóm tắt:** **S3 Event Notifications** gửi tin nhắn ngay lập tức tới **SQS queue**, sau đó consumer đọc từ queue một cách bất đồng bộ và decoupled. Đây là mô hình "Event-driven" chuẩn trên AWS.
 
-**Từ khoá:** "unpredictable bursts", "queue grows", "manual scaling", "idle when quiet", "least operational effort" → target tracking trên backlog per task.
+**Từ khoá:** "notified when new file", "efficient, decoupled, asynchronous" → S3 Event Notifications + SQS.
 
 **Thuật ngữ:**
-- **ECS:** dịch vụ chạy container; task là một đơn vị container đang chạy.
-- **Fargate:** chế độ chạy container không cần quản lý EC2; mỗi task được cấp CPU/RAM riêng.
-- **Application Auto Scaling:** dịch vụ điều chỉnh số task của ECS service theo policy.
-- **Target tracking:** giữ một metric quanh giá trị mục tiêu, tự thêm/bớt task.
-- **Custom metric:** metric do bạn định nghĩa, có thể tính bằng metric math từ nhiều metric khác.
-- **Backlog per task:** số message chờ chia số task; phản ánh mỗi task còn bao nhiêu việc.
-- **Cooldown:** khoảng chờ sau một lần scale để tránh scale liên tục.
+- **Event-driven:** Hệ thống tự phản ứng khi có sự kiện (ví dụ: upload file).
+- **Decoupled:** Tách biệt thành phần sản sinh sự kiện và thành phần xử lý sự kiện.
 
-### Cơ chế hoạt động
-1. Tạo metric math: {{ApproximateNumberOfMessagesVisible}} chia cho số task đang chạy.
-2. Tạo target tracking policy với target, ví dụ 100 message/task.
-3. Nếu backlog là 8.000 message và đang có 40 task, mỗi task 200 message — gấp đôi target. Application Auto Scaling tăng số task lên khoảng 80 (trong giới hạn max).
-4. Khi queue về gần 0, backlog/task giảm; policy scale in nhưng có cooldown để tránh tắt vội khi burst mới đến.
-5. Không cần người trực; số task bám theo tải thực tế thay vì CPU.
+**Giải thích:**
+- **S3 Event -> SQS:** Là cách chuẩn để decoupled. SQS làm hàng đợi, consumer có thể xử lý theo tốc độ riêng (asynchronous).
+- **Lambda polling:** Không hiệu quả (poll nhiều quá thì tốn, ít quá thì chậm).
+- **CloudWatch Events:** Dùng cho sự kiện API, không phải sự kiện object S3 chính xác nhất (Event Notifications là native hơn).
+- **Kinesis:** Quá nặng cho việc chỉ cần thông báo upload file đơn giản.
 
-### Ví dụ cụ thể
-40 task, queue 40.000 message: backlog/task = 1.000, target 100 → cần khoảng 400 task. Max capacity nên đặt đủ cao để đáp ứng burst lớn nhất. Khi queue cạn, backlog/task về dưới 100 và service scale in dần.
-
-### Vì sao A đúng
-- Backlog là tín hiệu trực tiếp của công việc còn tồn, đúng với worker lấy việc từ queue.
-- Target tracking tự động thêm/bớt task, giảm can thiệp tay.
-- Cooldown tránh co giãn liên tục.
-- Fargate không cần quản lý server, phù hợp "least operational effort".
-
-### Lỗi hay gặp
-- **Chỉ dùng message visible:** message đang được xử lý không còn visible; nên cân nhắc cả {{ApproximateNumberOfMessagesNotVisible}} hoặc dùng metric phù hợp để không scale in khi đang có nhiều việc.
-- **Max capacity quá thấp:** burst lớn vẫn làm queue dài; đặt max đủ cao và kiểm tra quota.
-- **Cooldown quá ngắn:** task nhảy lên xuống liên tục, tốn chi phí khởi tạo.
-- **Scale theo CPU:** worker chờ I/O hoặc chờ queue thường có CPU thấp, scale theo CPU sẽ không đủ task.
-
-### Vì sao các phương án khác sai
-- **B:** lịch cố định không khớp burst bất định; đỉnh có thể xảy ra ban đêm hoặc cuối tuần.
-- **C:** đổi sang EC2 không giải quyết tín hiệu scaling sai; CPU thấp trong khi queue dài vẫn không scale.
-- **D:** 400 task cố định lãng phí nghiêm trọng lúc rảnh và vẫn có thể không đủ khi burst lớn.
-
-> Exam tip: "queue-based worker" → scale theo **backlog per task/instance**, không theo CPU. Với Lambda dùng concurrency/queue; với ECS/ASG dùng target tracking trên custom metric.`,
-  services: ['Amazon ECS', 'Application Auto Scaling', 'Amazon SQS', 'Amazon CloudWatch'],
+> Exam tip: "Event-driven + Decoupled (S3 upload)" → S3 Notifications + SQS/SNS/Lambda.`,
+  services: ['Amazon S3', 'Amazon SQS'],
 },
 {
-  id: 'sap-150', exam: 'sap-c02', domain: 'sap-d3',
-  q: `A company runs an Amazon MSK cluster for an event stream of about 6 TB per day. After production incidents, consumers must be able to replay events for up to 30 days. Today topic retention is limited by broker EBS storage, and finance will not approve adding more brokers because throughput and latency requirements are already met. Which solution is the MOST cost-effective?`,
+  id: 'sap-150', exam: 'sap-c02', domain: 'sap-d4',
+  q: `A company is planning a migration to AWS. They have a legacy application that requires a specific version of a Linux kernel. The application is highly sensitive to hardware changes. Which compute service offers the best support for this requirement?`,
   options: [
-    "Enable Amazon MSK tiered storage and set topic retention to 30 days, keeping broker storage sized only for hot data.",
-    "Add ten more brokers with larger EBS volumes and keep replication factor 3.",
-    "Reduce the retention period to three days and rely on consumer-side backups for replays.",
-    "Move the topics to Amazon SQS with a 14-day retention period."
+    "Amazon EC2 with custom AMI.",
+    "AWS Fargate.",
+    "AWS Lambda.",
+    "AWS Elastic Beanstalk (pre-configured environments)."
   ],
   answer: 0,
-  explain: `**Tóm tắt:** Bật **MSK tiered storage**, đặt retention 30 ngày và chỉ giữ dữ liệu nóng trên broker. Segment cũ được chuyển sang storage do AWS quản lý, nên không phải thêm broker hay EBS mà consumer vẫn replay được 30 ngày.
+  explain: `**Tóm tắt:** **Amazon EC2** cho phép bạn kiểm soát hoàn toàn hệ điều hành, bao gồm việc cài đặt kernel Linux cụ thể thông qua **Custom AMI** (Amazon Machine Image). Fargate hay Lambda đều là các dịch vụ serverless được quản lý, bạn không kiểm soát được kernel.
 
-**Từ khoá:** "6 TB/ngày", "replay 30 ngày", "retention giới hạn bởi EBS broker", "không thêm broker", "cost-effective nhất" → MSK tiered storage.
+**Từ khoá:** "specific version of Linux kernel", "highly sensitive to hardware" → Amazon EC2 + Custom AMI.
 
-**Thuật ngữ:**
-- **Kafka:** nền tảng log phân tán; producer ghi event vào topic, consumer đọc theo offset và có thể đọc lại.
-- **Broker:** một node Kafka lưu partition và phục vụ đọc/ghi.
-- **Partition:** đơn vị song song của topic; mỗi partition là một log có thứ tự.
-- **Retention:** thời gian hoặc dung lượng dữ liệu được giữ trong topic.
-- **EBS:** ổ đĩa gắn vào broker; dung lượng EBS quyết định lượng dữ liệu broker giữ được.
-- **Tiered storage:** tách dữ liệu cũ sang lớp lưu trữ rẻ, chỉ giữ dữ liệu nóng trên broker.
-- **Replay:** consumer đọc lại event cũ từ đầu hoặc từ offset cũ, thường dùng sau sự cố.
+**Giải thích:**
+- **EC2:** IaaS, kiểm soát hoàn toàn OS, kernel, drivers.
+- **Fargate/Lambda:** Dịch vụ được quản lý, OS/kernel do AWS quyết định, không custom được.
+- **Elastic Beanstalk:** Quản lý môi trường nhưng vẫn dựa trên EC2/ECS/Fargate, không linh hoạt về kernel như EC2 custom AMI.
 
-### Cơ chế hoạt động
-1. Kafka chia log thành segment. Segment đang ghi là hot, nằm trên EBS của broker.
-2. Khi segment đóng lại, tiered storage chuyển nó sang storage do AWS quản lý, dựa trên S3.
-3. Broker chỉ giữ một cửa sổ dữ liệu nóng, ví dụ vài giờ hoặc vài ngày, đủ cho throughput và latency hiện tại.
-4. Consumer đọc dữ liệu cũ vẫn dùng Kafka API; broker lấy segment từ tiered storage khi cần, trong suốt với ứng dụng.
-5. Retention 30 ngày được đặt ở topic; không cần tăng số broker hay EBS.
-
-### Ví dụ cụ thể
-6 TB/ngày × 30 ngày = 180 TB dữ liệu logic; với replication factor 3, nếu giữ toàn bộ trên broker cần khoảng 540 TB EBS, rất tốn kém. Với tiered storage, broker chỉ giữ vài ngày gần nhất; phần còn lại nằm ở lớp rẻ. Consumer sau sự cố vẫn replay từ offset 30 ngày trước.
-
-### Vì sao A đúng
-- Giải quyết đúng nguyên nhân: retention bị giới hạn bởi EBS broker.
-- Không thêm broker, không tăng compute, đúng ràng buộc của finance.
-- Không đổi code consumer, vẫn replay qua Kafka API.
-- Chi phí lưu trữ dài hạn thấp hơn nhiều so với EBS.
-
-### Lỗi hay gặp
-- **Nghĩ tiered storage tăng tốc độ:** nó chủ yếu giảm chi phí lưu trữ; dữ liệu cũ đọc sẽ chậm hơn dữ liệu nóng.
-- **Không kiểm tra phiên bản MSK:** tiered storage chỉ có trên các phiên bản MSK hỗ trợ; kiểm tra trước khi bật.
-- **Đặt retention quá dài cho mọi topic:** chỉ topic cần replay dài mới bật; topic khác giữ ngắn để giảm chi phí.
-- **Quên replication:** dữ liệu tiered vẫn cần đảm bảo độ bền theo yêu cầu; kiểm tra cấu hình topic.
-
-### Vì sao các phương án khác sai
-- **B:** thêm 10 broker + EBS lớn làm tăng cả compute lẫn storage, đúng khoản finance từ chối, trong khi hiệu năng đã đủ.
-- **C:** giảm retention còn 3 ngày vi phạm yêu cầu replay 30 ngày; backup phía consumer không thay được Kafka replay.
-- **D:** SQS không phải Kafka, giữ tối đa 14 ngày (standard), không có consumer group replay và cần viết lại ứng dụng.
-
-> Exam tip: "Kafka retention dài, không muốn thêm broker" → **MSK tiered storage**. "Cần đọc lại theo nhiều consumer độc lập" là lý do chọn Kafka/MSK thay vì SQS.`,
-  services: ['Amazon MSK', 'MSK tiered storage', 'Amazon S3'],
+> Exam tip: "Custom Kernel/Driver/OS level control" → Amazon EC2.`,
+  services: ['Amazon EC2'],
 },
 {
   id: 'sap-151', exam: 'sap-c02', domain: 'sap-d4',
-  q: `A bank runs a 4-million-line COBOL core banking application on an on-premises mainframe. The bank must exit the data center within 14 months, wants to keep the COBOL business logic and batch jobs mostly unchanged, and wants a managed runtime with automated deployment, patching and high availability on AWS. The team has no mainframe administration skills in the cloud. Which migration approach and service should a solutions architect recommend?`,
+  q: `A company has an application that stores sensitive financial data. The security policy requires that all data must be encrypted at rest. Which solution should the company use to encrypt data in Amazon S3, ensuring they retain full control over the encryption keys?`,
   options: [
-    "Rehost the mainframe LPARs to Amazon EC2 and keep the z/OS operating system and middleware unchanged.",
-    "Use AWS Mainframe Modernization in the replatform pattern with a compatible runtime, migrating the COBOL applications and JCL with the service's analysis and deployment tooling.",
-    "Refactor the entire application into microservices on Amazon EKS within 14 months with the existing team.",
-    "Repurchase a SaaS core banking product and rewrite every interface before the deadline."
+    "Use S3-managed encryption keys (SSE-S3).",
+    "Use AWS KMS with AWS-managed keys.",
+    "Use AWS KMS with Customer Managed Keys (CMKs).",
+    "Use client-side encryption without any AWS KMS interaction."
   ],
-  answer: 1,
-  explain: `**Tóm tắt:** Chọn **AWS Mainframe Modernization** theo hướng **replatform**: giữ COBOL và JCL, chạy trên runtime tương thích do AWS quản lý (Micro Focus, nay thuộc OpenText), với công cụ phân tích, triển khai, vá lỗi và HA nhiều AZ.
+  answer: 2,
+  explain: `**Tóm tắt:** **AWS KMS Customer Managed Keys (CMKs)** là giải pháp cho phép công ty vừa sử dụng dịch vụ KMS của AWS, vừa giữ quyền quản lý chính sách key (key policy) và quyền xoay vòng key (full control).
 
-**Từ khoá:** "COBOL + JCL giữ gần nguyên", "managed runtime", "deployment/patching/HA", "14 tháng", "không có kỹ năng mainframe trên cloud" → replatform.
+**Từ khoá:** "encrypt at rest", "retain full control over encryption keys" → KMS + CMK.
 
-**Thuật ngữ:**
-- **Mainframe:** máy chủ rất lớn xử lý giao dịch ngân hàng, thường chạy z/OS.
-- **LPAR:** phân vùng logic của mainframe, giống một máy ảo độc lập.
-- **z/OS:** hệ điều hành của mainframe IBM.
-- **COBOL:** ngôn ngữ lập trình lâu đời dùng nhiều trong ngân hàng, bảo hiểm.
-- **JCL:** Job Control Language, ngôn ngữ mô tả job batch trên mainframe.
-- **Replatform:** giữ phần lớn code, đổi nền tảng chạy sang môi trường mới.
-- **Refactor:** viết lại code sang ngôn ngữ/kiến trúc mới, ví dụ COBOL sang Java.
-- **M2 runtime environment:** môi trường chạy do AWS Mainframe Modernization quản lý.
+**Giải thích:**
+- **CMK:** Cho phép quản lý policy (ai dùng), xoay vòng (rotation), audit (log).
+- **SSE-S3:** S3 tự quản lý key, công ty không kiểm soát.
+- **AWS-managed keys:** KMS quản lý, công ty có ít quyền kiểm soát hơn CMK.
+- **Client-side encryption:** Tự quản lý hoàn toàn, overhead vận hành cực cao, không phải phương án tối ưu (best practice thường dùng KMS).
 
-### Cơ chế hoạt động
-1. Công cụ phân tích của M2 quét COBOL, copybook, JCL và dependency để lập báo cáo và kế hoạch chuyển.
-2. Chọn runtime tương thích (Micro Focus/OpenText Enterprise Server) để chạy COBOL gần như nguyên bản.
-3. JCL và batch được chuyển sang môi trường M2; dữ liệu được migrate sang storage phù hợp.
-4. M2 runtime environment chạy trên hạ tầng AWS, AWS lo vá, backup, HA nhiều AZ và triển khai phiên bản mới.
-5. Đội ngũ không phải quản trị z/OS hay mainframe; chỉ vận hành ứng dụng và batch.
-
-### Ví dụ cụ thể
-4 triệu dòng COBOL, hàng trăm job JCL. Nếu refactor sang Java, mỗi module phải viết lại, kiểm thử nghiệp vụ và đối chiếu kết quả — khó trong 14 tháng. Replatform giữ code, chuyển runtime và JCL, nên rủi ro thấp hơn và đáp ứng hạn exit data center.
-
-### Vì sao B đúng
-- Giữ COBOL/JCL gần nguyên, đúng ràng buộc nghiệp vụ.
-- Runtime do AWS quản lý, có vá lỗi và HA.
-- Công cụ phân tích và triển khai giảm công sức so với tự dựng.
-- Phù hợp hạn 14 tháng và đội chưa có kỹ năng mainframe trên cloud.
-
-### Lỗi hay gặp
-- **Nhầm replatform với refactor:** replatform giữ code; refactor chuyển sang Java, thời gian và rủi ro lớn hơn nhiều.
-- **Nghĩ có thể chạy z/OS trên EC2:** mainframe không phải workload chạy nguyên hệ điều hành trên EC2.
-- **Bỏ qua kiểm thử batch:** JCL và batch cần đối chiếu kết quả trước khi cutover.
-- **Không tính thời gian phân tích dependency:** giai đoạn assessment có thể chiếm vài tháng trong hạn 14 tháng.
-
-### Vì sao các phương án khác sai
-- **A:** không thể chạy z/OS nguyên bản trên EC2; rehost mainframe theo nghĩa "giữ nguyên OS" không khả thi.
-- **C:** refactor toàn bộ 4 triệu dòng trong 14 tháng với đội nhỏ là rủi ro rất cao, trái yêu cầu giữ logic.
-- **D:** mua SaaS và viết lại mọi interface là dự án nhiều năm, vượt hạn và thay đổi nghiệp vụ.
-
-> Exam tip: "COBOL, giữ code, managed runtime" → Mainframe Modernization **replatform**. "Chuyển sang Java, hiện đại hoá sâu" → **refactor** (Blu Age).`,
-  services: ['AWS Mainframe Modernization', 'Amazon EC2', 'Elastic Load Balancing'],
+> Exam tip: "Control over keys/policy" → CMK.`,
+  services: ['AWS KMS', 'Amazon S3'],
 },
 {
   id: 'sap-152', exam: 'sap-c02', domain: 'sap-d4',
-  q: `A company has 35 legacy applications: 20 ASP.NET applications on IIS with Windows Server 2016 and 15 Java applications on Apache Tomcat. The company wants to containerize the applications and run them on Amazon ECS with the least code change. The platform team has limited container experience and wants generated Dockerfiles, image builds, task definitions and CI/CD pipeline artifacts instead of writing them by hand. Which solution meets these requirements with the LEAST effort?`,
+  q: `A company is running an application on AWS that needs to access a private service hosted on another AWS account. The company wants to securely connect the two accounts over a private network connection. Which networking solution should the team use?`,
   options: [
-    "Use AWS Application Migration Service to replicate the servers to Amazon EC2 and run the applications unchanged on the same operating systems.",
-    "Use AWS App2Container to inventory and analyze each application, generate Dockerfiles, container images, ECS task definitions and pipeline artifacts, then deploy the Windows images to ECS on Windows container instances and the Java images to ECS on Linux instances.",
-    "Rewrite all applications as serverless AWS Lambda functions with Amazon API Gateway in front of them.",
-    "Use AWS Mainframe Modernization to convert the applications to Java and run them on the managed runtime."
+    "AWS PrivateLink.",
+    "Public Internet with VPN.",
+    "VPC Peering.",
+    "AWS Client VPN."
   ],
-  answer: 1,
-  explain: `**Tóm tắt:** Dùng **AWS App2Container**: công cụ phân tích ứng dụng đang chạy trên máy chủ rồi **tự sinh** Dockerfile, image, **ECS task definition** và artifact cho **CodePipeline/CodeBuild**. Ứng dụng .NET Framework trên IIS chạy trên **Windows container instances** của ECS, ứng dụng Java/Tomcat chạy trên Linux container instances — gần như không phải sửa code.
+  answer: 0,
+  explain: `**Tóm tắt:** **AWS PrivateLink** cho phép kết nối giữa các VPC của các account khác nhau (thông qua Network Load Balancer) một cách bảo mật, private, mà không cần peering hay lộ traffic ra internet.
 
-**Từ khoá:** "ASP.NET/IIS + Java/Tomcat", "containerize", "least code change", "generated Dockerfiles, task definitions, CI/CD", "team ít kinh nghiệm container" → **AWS App2Container**.
+**Từ khoá:** "private service", "another AWS account", "securely connect", "private network" → AWS PrivateLink.
 
-**Thuật ngữ:**
-- **Container:** cách đóng gói ứng dụng cùng thư viện vào một image chạy độc lập, nhẹ hơn máy ảo vì dùng chung kernel. Ví dụ: thay vì cài Tomcat trên từng server, đóng cả Tomcat + app vào một image.
-- **Dockerfile:** file văn bản mô tả cách dựng image, ví dụ "từ base image Windows, copy thư mục web, mở port 80".
-- **Container image:** kết quả sau khi build Dockerfile; đẩy lên registry (Amazon ECR) rồi ECS kéo về chạy.
-- **ECS task definition:** bản khai báo cho ECS biết image nào, bao nhiêu CPU/RAM, port, biến môi trường, log đi đâu.
-- **Amazon ECS:** dịch vụ chạy container. Có hai kiểu hạ tầng: **EC2 launch type** (bạn tự quản lý instance) và **Fargate** (AWS quản lý máy, bạn chỉ trả tiền tài nguyên container).
-- **Windows container:** container dùng Windows kernel, chỉ chạy được trên **Windows host**. **AWS Fargate không hỗ trợ Windows container**, nên ứng dụng .NET Framework phải chạy trên ECS với Windows EC2 instance (tùy chọn Fargate chỉ dành cho container Linux).
-- **App2Container:** công cụ CLI của AWS, quét máy chủ, phát hiện ứng dụng, rồi sinh toàn bộ bộ khung container hóa.
-- **CodePipeline / CodeBuild:** dịch vụ CI/CD; App2Container sinh sẵn file cấu hình pipeline để build image và deploy.
+**Giải thích:**
+- **PrivateLink:** Thiết kế chuyên biệt để public dịch vụ nội bộ (qua NLB) cho các account khác một cách private và bảo mật (Endpoint).
+- **VPC Peering:** Nối 2 VPC, nhưng có thể quá rộng (lộ cả mạng). PrivateLink chỉ cho access đúng service cần thiết.
+- **Public Internet/Client VPN:** Không private, không tối ưu bảo mật/performance.
 
-### Cơ chế hoạt động
-1. Cài App2Container trên máy chủ nguồn (Windows cho IIS/.NET, Linux cho Tomcat). Lệnh {{inventory}} liệt kê ứng dụng đang chạy và port.
-2. Lệnh {{analyze}} kiểm tra phụ thuộc: phiên bản .NET/JRE, thư viện, biến môi trường, file cấu hình, cổng lắng nghe. Nó báo những gì cần chỉnh tay.
-3. Lệnh {{containerize}} sinh **Dockerfile**, dựng **container image**, và tạo **ECS task definition** + file triển khai (CloudFormation) cùng cấu hình pipeline.
-4. Đẩy image lên **Amazon ECR**, deploy lên ECS. Với 20 app .NET Framework, chọn **Windows container instances** cho cluster; với 15 app Java, chọn Linux instances (hoặc Fargate).
-5. Pipeline build lại image mỗi lần commit, chạy test, rồi cập nhật ECS service.
-
-### Ví dụ cụ thể
-Một app ASP.NET MVC trên IIS phát hiện port 8080, dùng .NET Framework 4.8. App2Container sinh Dockerfile dựa trên base image Windows Server, task definition 2 vCPU/4 GB, và một pipeline CodePipeline. Image được đẩy vào ECR; ECS service chạy 3 task trên Windows container instances phía sau một Application Load Balancer. App Tomcat tương tự nhưng base image Linux và có thể chạy Fargate, không phải vá OS.
-
-### Vì sao B đúng
-- Sinh đúng những artifact đề yêu cầu: Dockerfile, image, task definition, pipeline — không phải viết tay.
-- Hỗ trợ đúng hai nền tảng trong đề: **.NET Framework trên IIS** và **Java trên Tomcat**.
-- Giữ nguyên code ứng dụng, chỉ đóng gói lại — đúng "least code change".
-- Chọn đúng loại hạ tầng cho từng nhóm: Windows container instances cho .NET, Linux cho Java.
-
-### Lỗi hay gặp
-- **Định chạy .NET Framework trên Fargate:** Fargate không hỗ trợ Windows container; phải dùng ECS trên Windows EC2 instance.
-- **Bỏ qua bước analyze:** app có dependency gắn với máy chủ (COM component, registry, đường dẫn tuyệt đối, chứng chỉ trong store) sẽ lỗi khi chạy container; phải xử lý các cảnh báo.
-- **Quên cấu hình log và health check:** task definition sinh tự động vẫn cần sửa để log về CloudWatch và health check đúng path.
-- **Giả định container hóa là miễn phí vận hành:** vẫn phải quản lý image, base image patch (nhất là Windows), và kích thước image.
-- **Nghĩ App2Container chuyển sang microservices:** nó chỉ đóng gói, không tách monolith.
-
-### Vì sao các phương án khác sai
-- **A:** AWS Application Migration Service (MGN) là **rehost** — replicate nguyên server sang EC2, vẫn chạy Windows Server/IIS và Tomcat như cũ. Không containerize, không sinh Dockerfile hay pipeline, và vẫn phải vá OS.
-- **C:** viết lại 35 app thành Lambda là thay đổi kiến trúc và code rất lớn, trái "least code change" và không phù hợp với app IIS/.NET Framework cũ.
-- **D:** AWS Mainframe Modernization dành cho ứng dụng mainframe (COBOL, PL/I, JCL), không áp dụng cho ASP.NET hay Tomcat.
-
-> Exam tip: "containerize IIS/.NET hoặc Tomcat, sinh Dockerfile + task definition + pipeline" → **App2Container**. Nhớ bẫy: **Fargate không chạy Windows container**. "Rehost nguyên server" → MGN. "Chuyển COBOL" → Mainframe Modernization.`,
-  services: ['AWS App2Container', 'Amazon ECS', 'Amazon ECR', 'AWS CodePipeline'],
+> Exam tip: "Private/Secure access to service in another account" → PrivateLink.`,
+  services: ['AWS PrivateLink'],
 },
 {
   id: 'sap-153', exam: 'sap-c02', domain: 'sap-d4',
-  q: `A company wants to move a 12-year-old Java monolith from its data center to AWS within nine months. Rather than a big rewrite, the company will extract one business capability at a time into a separate microservice, send a small percentage of production traffic to the new service, compare error rates, and shift all traffic back to the monolith instantly if the new service misbehaves. The monolith continues to serve every capability that has not been extracted yet, and the two sides must be able to call each other. The company wants managed routing and connectivity with the least custom code. Which solution meets these requirements?`,
+  q: `A company is using Amazon RDS PostgreSQL and needs to ensure that the database is highly available. In the event of a regional outage, the company must also be able to recover the database in a different AWS Region. Which combination of actions should the team take?`,
   options: [
-    "Rewrite every capability as a microservice on Amazon EKS and cut the monolith over to the new platform in a single release.",
-    "Rehost the monolith on Amazon EC2 behind an Application Load Balancer and postpone all modernization to a big-bang rewrite two years later.",
-    "Create an AWS Migration Hub Refactor Spaces environment, add the monolith and each new microservice as services of the same application, create routes for the extracted paths, and shift traffic gradually through the environment's built-in routing with one-step rollback.",
-    "Replicate the monolith database to Amazon Aurora with AWS Database Migration Service and implement the new capabilities as stored procedures inside the database."
+    "Enable Multi-AZ deployment and configure Amazon RDS cross-region read replicas.",
+    "Enable Multi-AZ deployment and use AWS Database Migration Service (DMS).",
+    "Use Aurora Global Database.",
+    "Configure RDS snapshot replication to another region."
   ],
-  answer: 2,
-  explain: `**Tóm tắt:** Dùng **AWS Migration Hub Refactor Spaces** — dịch vụ dựng sẵn hạ tầng cho mô hình **strangler fig**: monolith và microservice mới cùng nằm trong một *application*, request đi qua **API Gateway** do Refactor Spaces tạo, route theo đường dẫn và **chuyển % traffic** dần sang service mới, đổi ngược lại trong một bước khi lỗi tăng.
+  answer: 0,
+  explain: `**Tóm tắt:** **Multi-AZ** cho HA (cùng Region) và **Cross-region Read Replicas** cho DR (khác Region).
 
-**Từ khoá:** "extract one capability at a time", "small percentage of traffic", "instant rollback", "monolith vẫn phục vụ phần còn lại", "managed routing, least custom code" → **AWS Migration Hub Refactor Spaces**.
+**Từ khoá:** "highly available", "recover in a different AWS Region" → Multi-AZ + Cross-region Read Replicas.
 
-**Thuật ngữ:**
-- **Monolith:** ứng dụng để toàn bộ chức năng trong một khối, deploy chung một lần. Ví dụ: một file WAR chứa cả đơn hàng, thanh toán, kho.
-- **Microservice:** chức năng tách thành service riêng, deploy và scale độc lập.
-- **Strangler fig (cây si bóp chết cây chủ):** thay dần từng phần của hệ cũ bằng hệ mới, phần mới lớn dần cho tới khi hệ cũ không còn dùng; không cần dừng hệ thống để "đập đi xây lại".
-- **Traffic shifting:** gửi 5% rồi 10%, 50%, 100% request sang service mới, theo dõi lỗi trước khi tăng.
-- **Refactor Spaces environment:** môi trường mạng và routing do AWS tạo, gồm **Transit Gateway** nối mạng giữa các service và **API Gateway** làm cửa vào duy nhất.
-- **Application / service / route:** trong Refactor Spaces, *application* là nhóm; *service* là monolith hoặc microservice (Lambda, ECS, EKS, hoặc một URL endpoint); *route* khai báo đường dẫn nào đi tới service nào và bao nhiêu % traffic.
-- **Rollback:** đổi tỉ lệ traffic về 0% cho service mới, không cần deploy lại.
+**Giải thích:**
+- **Multi-AZ:** HA trong 1 region.
+- **Cross-region Read Replicas:** Dùng để DR, có thể promote thành stand-alone database ở region khác nếu region chính outage.
+- **Aurora Global Database:** Chỉ dùng nếu là Aurora. Câu hỏi dùng **RDS PostgreSQL** (thông thường).
+- **DMS:** Dùng để migrate/replication dữ liệu, không phải giải pháp HA/DR chuẩn như Read Replica.
 
-### Cơ chế hoạt động
-1. Tạo **environment** — Refactor Spaces cấp Transit Gateway, VPC và API Gateway entry point.
-2. Tạo **application**, thêm **service** đầu tiên là monolith (ví dụ ECS service hoặc URL của ứng dụng đã rehost).
-3. Khi một capability được viết lại thành microservice, thêm nó làm service thứ hai và tạo **route** cho path tương ứng, ví dụ {{/api/pricing/*}}.
-4. Trên route, đặt tỉ lệ traffic ban đầu nhỏ (ví dụ 5%) sang microservice; phần còn lại vẫn về monolith.
-5. Theo dõi error rate/latency qua CloudWatch; nếu ổn, tăng dần 25%, 50%, 100%. Nếu lỗi, đặt lại 0% — traffic quay về monolith ngay.
-6. Hai bên gọi nhau qua mạng do environment cung cấp, không phải tự dựng service mesh hay VPN riêng.
-7. Khi mọi capability đã chuyển xong, route mặc định trỏ hết về hệ mới và monolith được tắt.
-
-### Ví dụ cụ thể
-Monolith chạy trên ECS, phục vụ {{/api/orders}}, {{/api/pricing}}, {{/api/catalog}}. Team viết lại pricing thành Lambda. Route {{/api/pricing/*}}: 10% traffic sang Lambda, 90% về monolith. Sau 48 giờ lỗi không tăng, tăng lên 50% rồi 100%. Tuần sau pricing phát hiện bug ở một edge case: đổi route về 0%, người dùng quay lại dùng logic cũ ngay lập tức, không ai phải rollback deploy.
-
-### Vì sao C đúng
-- Quản lý **routing, traffic shifting và connectivity** sẵn, không phải tự viết API Gateway + Lambda để chia traffic.
-- Hỗ trợ đúng cả monolith lẫn service mới trong cùng một application, giữ monolith phục vụ phần chưa tách.
-- Rollback ở tầng route, không phải deploy lại.
-- Giảm code và công vận hành so với tự dựng reverse proxy/mesh.
-
-### Lỗi hay gặp
-- **Nhầm Refactor Spaces với công cụ migration:** nó không chuyển dữ liệu hay server; monolith vẫn phải được đưa lên AWS trước (rehost/replatform) rồi mới đặt làm service.
-- **Route quá rộng:** route {{/api/*}} cho microservice mới sẽ hút cả những path chưa chuyển; phải khai báo path hẹp.
-- **Đo lỗi không đủ lâu:** tăng traffic quá nhanh khiến lỗi chỉ hiện ở tỉ lệ cao; cần giai đoạn quan sát theo SLA.
-- **Bỏ quên dữ liệu:** tách service nhưng schema vẫn dùng chung có thể tạo coupling; cần kế hoạch tách dữ liệu dần.
-- **Nghĩ Refactor Spaces thay thế thiết kế:** nó cung cấp "đường ống" chuyển đổi, quyết định ranh giới service và hợp đồng API vẫn là việc của team.
-
-### Vì sao các phương án khác sai
-- **A:** viết lại toàn bộ rồi cutover một lần là **big-bang**, rủi ro cao, không đáp ứng "chuyển dần + rollback tức thì", và vượt 9 tháng.
-- **B:** rehost rồi hoãn hiện đại hóa không giải quyết yêu cầu tách capability; đến lúc rewrite vẫn phải làm lại từ đầu.
-- **D:** giữ monolith nguyên và nhét logic mới vào stored procedure làm tăng coupling với database, không phải microservice, và không có cơ chế traffic shifting.
-
-> Exam tip: "strangler fig, chuyển từng phần, chia % traffic, rollback nhanh, ít code routing" → **AWS Migration Hub Refactor Spaces**. "Chuyển server" → MGN. "Chuyển database" → DMS. "Chia traffic thủ công bằng ALB weighted target group" là cách tự chế, tốn công hơn.`,
-  services: ['AWS Migration Hub Refactor Spaces', 'Amazon API Gateway', 'AWS Transit Gateway', 'Amazon ECS', 'AWS Lambda'],
+> Exam tip: "HA (Multi-AZ) + DR (Cross-Region)" cho RDS thường là Multi-AZ + Cross-region Replicas.`,
+  services: ['Amazon RDS'],
 },
 {
   id: 'sap-154', exam: 'sap-c02', domain: 'sap-d4',
-  q: `A company operates an on-premises contact center with 800 agents and a legacy ACD. The company must migrate to a cloud contact center within 90 days, integrate with Salesforce so agents see the customer record during a call, add an IVR bot that can reset passwords, record and transcribe calls for quality analysis, and pay only for usage. Which solution meets these requirements with the LEAST operational overhead?`,
+  q: `A company is experiencing high latency on its web application hosted on Amazon EC2. The EC2 instances are in an Auto Scaling group behind an Application Load Balancer (ALB). The team has determined that the application is CPU-intensive. What should the team do to improve application performance?`,
   options: [
-    "Build a custom contact center on the Amazon Chime SDK and host the media and routing servers on Amazon EC2.",
-    "Use Amazon Connect with the Salesforce CTI adapter, an Amazon Lex bot inside the contact flow, and Contact Lens for recording analytics and transcription.",
-    "Upgrade the on-premises ACD to the latest version and connect it to AWS with a SIP trunk.",
-    "Use Amazon Pinpoint voice messages for calls and Amazon SES for agent email."
+    "Change the EC2 instance type to a memory-optimized instance.",
+    "Change the EC2 instance type to a compute-optimized instance.",
+    "Add more EC2 instances to the Auto Scaling group.",
+    "Configure ALB to use sticky sessions."
   ],
   answer: 1,
-  explain: `**Tóm tắt:** Dùng **Amazon Connect** làm contact center đám mây trả theo mức dùng, gắn **Salesforce CTI adapter** để bật customer record khi có cuộc gọi, đặt **Amazon Lex bot** trong *contact flow* cho IVR hiểu ngôn ngữ tự nhiên (ví dụ reset mật khẩu), và bật **Contact Lens** để ghi âm, chuyển thành văn bản và phân tích chất lượng.
+  explain: `**Tóm tắt:** Khi ứng dụng bị **CPU-intensive** (CPU là bottleneck), chuyển sang **compute-optimized instance** (cấp C) là giải pháp tối ưu nhất để tăng hiệu năng xử lý CPU.
 
-**Từ khoá:** "contact center 800 agents trong 90 ngày", "Salesforce screen pop", "IVR bot reset password", "record + transcribe", "pay per usage", "least overhead" → **Amazon Connect + Lex + Contact Lens**.
+**Từ khoá:** "high latency", "CPU-intensive" → compute-optimized instance.
 
-**Thuật ngữ:**
-- **Contact center:** hệ thống nhận cuộc gọi/chat của khách và phân phối tới đội agent. Ví dụ: tổng đài chăm sóc khách hàng của ngân hàng.
-- **ACD (automatic call distribution):** phần mềm xếp hàng và chia cuộc gọi cho agent rảnh; đây là thứ hệ thống on-prem hiện tại đang làm.
-- **IVR (interactive voice response):** menu giọng nói "bấm 1 để…", hoặc bot hiểu câu nói tự nhiên.
-- **CTI (computer telephony integration):** cầu nối giữa hệ thống điện thoại và phần mềm nghiệp vụ để khi chuông reo, màn hình agent tự mở hồ sơ khách (screen pop).
-- **Contact flow:** sơ đồ xử lý cuộc gọi trong Amazon Connect (phát lời chào, hỏi, chuyển hàng đợi, gọi Lambda…), kéo thả không cần code.
-- **Amazon Lex:** dịch vụ xây bot hiểu giọng nói/văn bản, dùng cùng công nghệ với Alexa; bot có *intent* (ý định) và *slot* (thông tin cần thu thập).
-- **Contact Lens for Amazon Connect:** phân tích cuộc gọi bằng ML — transcript, sentiment, tìm từ khóa, che số thẻ; chạy trên bản ghi sẵn có.
-- **Pay per usage:** trả theo phút thoại, số agent dùng, số phút phân tích; không mua thiết bị hay máy chủ.
+**Giải thích:**
+- **Compute-optimized (C-series):** Dành cho workload đòi hỏi CPU cao.
+- **Memory-optimized (R-series):** Dành cho workload đòi hỏi RAM cao.
+- **Add more EC2:** Có thể giúp (scale out), nhưng nếu instance hiện tại không tối ưu thì tăng số lượng vẫn tốn chi phí mà không hiệu quả nhất.
+- **Sticky sessions:** Không cải thiện hiệu năng, chỉ duy trì session.
 
-### Cơ chế hoạt động
-1. Tạo instance Amazon Connect, nhập số điện thoại (DID/toll-free) hoặc port số hiện có.
-2. Thiết kế **contact flow**: chào → gọi **Lex bot** để hiểu yêu cầu → nếu là "reset mật khẩu", bot thu thập thông tin rồi gọi **Lambda** thực hiện; nếu cần người, chuyển vào hàng đợi có kỹ năng phù hợp.
-3. Cài **Salesforce CTI adapter** trên máy agent (hoặc dùng CCP nhúng trong Salesforce). Khi cuộc gọi được kết nối, adapter dùng số điện thoại để tìm và mở bản ghi khách.
-4. Bật **recording** cho cuộc gọi; **Contact Lens** tự transcribe, gắn nhãn chủ đề, tính sentiment và chấm điểm theo quy tắc (ví dụ agent phải chào đúng).
-5. Quản trị viên xem dashboard real-time và lịch sử; thanh toán theo mức dùng hằng tháng.
-
-### Ví dụ cụ thể
-Khách gọi tổng đài lúc 21h. Contact flow phát lời chào, Lex hỏi "Anh/chị cần gì?"; khách nói "tôi quên mật khẩu". Bot xác minh email, gọi Lambda đặt lại mật khẩu, đọc mã tạm rồi kết thúc — không cần agent. Nếu khách nói "tôi muốn khiếu nại", bot chuyển vào hàng đợi "complaint"; agent nhận cuộc gọi, màn hình Salesforce tự mở hồ sơ khách. Bản ghi được Contact Lens transcribe và gắn nhãn "complaint" để QA lọc ra kiểm tra.
-
-### Vì sao B đúng
-- **Amazon Connect** là contact center managed, trả theo mức dùng, triển khai trong vài tuần — đúng 90 ngày.
-- Adapter **Salesforce CTI** có sẵn đáp ứng screen pop, không phải tự viết tích hợp.
-- **Lex** trong contact flow đáp ứng IVR hội thoại tự nhiên, có thể gọi Lambda cho hành động thật.
-- **Contact Lens** lo ghi âm, transcript và phân tích chất lượng mà không phải dựng pipeline nhận dạng giọng nói.
-
-### Lỗi hay gặp
-- **Bỏ qua quy định ghi âm:** nhiều nước yêu cầu thông báo và đồng ý trước khi ghi âm; phải thêm bước thông báo trong contact flow.
-- **Lex bot không hiểu tiếng Việt/ngôn ngữ thực tế:** phải huấn luyện intent và utterance đủ, kiểm thử với câu nói thật, có fallback chuyển agent.
-- **Chỉ định tuyến theo số điện thoại:** nên dùng queue + routing profile theo kỹ năng để cân tải 800 agent.
-- **Quên giới hạn quyền:** agent chỉ nên thấy dữ liệu cần thiết; dùng security profile và tag dữ liệu.
-- **Tưởng Contact Lens thay QA:** nó tự động hóa chấm điểm, nhưng tiêu chí vẫn do người đặt.
-
-### Vì sao các phương án khác sai
-- **A:** Chime SDK là bộ **xây dựng** (building blocks) — vẫn phải tự làm ACD, ghi âm, routing, UI agent và vận hành media; vượt 90 ngày và overhead lớn, trái "least overhead".
-- **C:** nâng cấp ACD on-prem không phải cloud contact center; vẫn quản trị thiết bị, không có Contact Lens/Lex sẵn, và SIP trunk chỉ là kết nối thoại.
-- **D:** Pinpoint (SMS/voice message) và SES (email) là kênh gửi thông báo một chiều, không có hàng đợi, agent, screen pop hay phân tích cuộc gọi.
-
-> Exam tip: "cloud contact center, pay-as-you-go, Salesforce screen pop, IVR, transcription" → **Amazon Connect + Lex + Contact Lens**. "Chỉ cần gửi SMS/voice OTP" → Pinpoint. "Tự xây media/routing" → Chime SDK.`,
-  services: ['Amazon Connect', 'Amazon Lex', 'Contact Lens for Amazon Connect', 'AWS Lambda'],
+> Exam tip: "CPU bottleneck" → Compute-optimized (C). "RAM bottleneck" → Memory-optimized (R).`,
+  services: ['Amazon EC2'],
 },
 {
   id: 'sap-155', exam: 'sap-c02', domain: 'sap-d4',
-  q: `A company runs a 250 TB on-premises Hadoop cluster with 400 MapReduce and Spark jobs. The cluster is at end of life, and the jobs must move to AWS within six months with minimal rewrites. Data scientists must query the data with SQL and Spark, and access must be enforced per business unit at the table and column level. Which solution meets these requirements with the LEAST operational overhead?`,
+  q: `A company has an application that stores a large amount of logs. The logs are currently stored in Amazon S3. The company wants to store the logs for a very long period but rarely accesses them. Which Amazon S3 storage class provides the most cost-effective solution for this requirement?`,
   options: [
-    "Copy HDFS to Amazon EBS volumes on a self-managed Hadoop cluster on Amazon EC2 and keep running the existing jobs there.",
-    "Move the data to Amazon S3, register it in the AWS Glue Data Catalog, run the jobs on Amazon EMR, and enforce fine-grained access with AWS Lake Formation.",
-    "Load the data into Amazon Redshift and rewrite the Spark and MapReduce jobs as stored procedures.",
-    "Move the data to Amazon DynamoDB and run the jobs with AWS Lambda."
+    "Amazon S3 Standard.",
+    "Amazon S3 Standard-Infrequent Access.",
+    "Amazon S3 Glacier Deep Archive.",
+    "Amazon S3 Intelligent-Tiering."
   ],
-  answer: 1,
-  explain: `**Tóm tắt:** Đưa dữ liệu sang **Amazon S3**, đăng ký bảng trong **AWS Glue Data Catalog** (metastore tương thích Hive), chạy job **MapReduce/Spark** trên **Amazon EMR** gần như nguyên code, và dùng **AWS Lake Formation** cấp quyền theo **database/table/column** (kèm row filter) cho từng business unit.
+  answer: 2,
+  explain: `**Tóm tắt:** **Amazon S3 Glacier Deep Archive** là lớp lưu trữ rẻ nhất cho dữ liệu cần lưu trữ dài hạn (lưu trữ tuân thủ) và gần như không bao giờ truy cập tới (dữ liệu lạnh).
 
-**Từ khoá:** "250 TB Hadoop", "400 MapReduce/Spark", "minimal rewrites", "SQL + Spark", "table/column-level per business unit", "least operational overhead" → **S3 + Glue Catalog + EMR + Lake Formation**.
+**Từ khoá:** "large amount of logs", "stored for a very long period", "rarely accesses" → S3 Glacier Deep Archive.
 
-**Thuật ngữ:**
-- **Hadoop:** nền tảng xử lý dữ liệu lớn gồm **HDFS** (lưu trữ phân tán) và **YARN** (quản lý tài nguyên), chạy các engine như MapReduce và Spark.
-- **HDFS:** hệ file phân tán trên đĩa của các node; dữ liệu gắn với cụm, muốn scale phải thêm máy.
-- **MapReduce:** mô hình xử lý hai bước map (biến đổi từng bản ghi) và reduce (tổng hợp theo khóa).
-- **Apache Spark:** engine xử lý trong bộ nhớ, nhanh hơn MapReduce cho nhiều workload, hỗ trợ SQL, DataFrame, streaming.
-- **Metastore:** danh mục mô tả bảng (tên, cột, kiểu, vị trí dữ liệu); Hive dùng metastore để biết "bảng orders nằm ở đâu".
-- **Amazon EMR:** dịch vụ Hadoop/Spark managed — AWS lo cài đặt, vá lỗi, scale cụm; bạn cấu hình job và tắt cụm khi xong.
-- **EMRFS:** lớp cho phép Spark/Hadoop đọc ghi **S3** như một filesystem, nên không cần HDFS.
-- **AWS Glue Data Catalog:** metastore managed, tương thích Hive; EMR, Athena, Redshift Spectrum, Glue jobs cùng thấy chung bảng.
-- **AWS Lake Formation:** lớp quản trị quyền trên data lake ở mức database, table, column và row; cấp quyền tập trung thay vì sửa policy từng job.
+**Giải thích:**
+- **S3 Glacier Deep Archive:** Chi phí rẻ nhất cho lưu trữ lâu dài.
+- **S3 Standard:** Đắt nhất, dùng cho dữ liệu truy cập thường xuyên.
+- **S3 Standard-IA:** Dùng cho dữ liệu ít truy cập nhưng cần truy cập nhanh (còn quá đắt so với Glacier).
+- **Intelligent-Tiering:** Tự động chuyển đổi giữa các tier, không phải phương án tối ưu nhất cho dữ liệu chắc chắn là "cold".
 
-### Cơ chế hoạt động
-1. Chuyển dữ liệu HDFS lên S3 (ví dụ bằng AWS DataSync hoặc Snowball cho 250 TB), chia theo prefix/bảng, định dạng columnar như Parquet để giảm chi phí quét.
-2. Tạo bảng trong **Glue Data Catalog** (Crawler hoặc DDL). Vị trí bảng là {{s3://bucket/prefix}}, không phải đường dẫn HDFS.
-3. Trỏ job Spark/MapReduce sang EMR; phần lớn code giữ nguyên, chỉ đổi input/output từ {{hdfs://}} sang {{s3://}} và cấu hình catalog.
-4. Bật **Lake Formation** làm nguồn quyền cho catalog. Tạo database theo business unit, cấp SELECT trên một số cột; phần còn lại bị ẩn.
-5. Data scientist query bằng **Athena** (SQL) hoặc **EMR/Spark**; cả hai đều đi qua Lake Formation để kiểm tra quyền.
-6. Cụm EMR dùng transient (tạo cho mỗi batch rồi tắt) hoặc EMR on EKS; lưu trữ tách khỏi compute nên không phải giữ cụm chạy 24/7.
-
-### Ví dụ cụ thể
-Bảng {{sales.orders}} nằm ở {{s3://datalake/sales/orders/}}. Business unit "Finance" được cấp SELECT trên cột {{order_id, amount, region}}, bị ẩn cột {{customer_email}}. Khi analyst Finance chạy {{SELECT * FROM sales.orders}} trong Athena, Lake Formation chỉ trả các cột được phép. Một job Spark của Marketing cũng bị giới hạn tương tự, dù code không hề biết luật. Cụm EMR 20 node chỉ tồn tại 2 giờ cho batch đêm rồi terminate.
-
-### Vì sao B đúng
-- **EMR** chạy đúng engine Hadoop/Spark, giữ code gần như nguyên — đúng "minimal rewrites".
-- **S3** tách storage khỏi compute: 250 TB không cần nằm trên EBS của cụm, scale độc lập và bền vững hơn HDFS.
-- **Glue Data Catalog** là metastore tương thích Hive, SQL và Spark vẫn thấy bảng như trước.
-- **Lake Formation** đáp ứng chính xác yêu cầu quyền theo **table/column** cho từng business unit, áp dụng cho mọi engine đọc catalog.
-- Toàn bộ là dịch vụ managed, giảm công vá OS và vận hành cụm so với tự dựng Hadoop.
-
-### Lỗi hay gặp
-- **Giữ thói quen HDFS:** ghi trực tiếp bằng {{FileSystem}} mặc định có thể tạo ra commit chậm/không an toàn; bật **EMRFS** và committer phù hợp (S3A magic committer) khi ghi S3.
-- **Quên tối ưu file nhỏ:** hàng triệu file nhỏ làm Spark chậm và tốn request; cần compact (ví dụ bằng Glue/Spark) và partition hợp lý.
-- **Chỉ cấp quyền IAM:** Lake Formation là lớp quyền riêng; thiếu grant trong Lake Formation thì job vẫn bị từ chối dù IAM cho phép, và ngược lại.
-- **Dùng console/engine không đi qua Lake Formation:** một số đường truy cập trực tiếp S3 bằng IAM sẽ bỏ qua luật cột; cần chặn đường vòng ở bucket policy.
-- **Chọn định dạng CSV cho 250 TB:** tốn chi phí quét và chậm; nên dùng Parquet/ORC có partition.
-- **Để cụm EMR chạy mãi:** chi phí compute lớn; dùng transient cluster hoặc auto-terminate.
-
-### Vì sao các phương án khác sai
-- **A:** tự dựng Hadoop trên EC2 + EBS chỉ là "nâng cụm cũ lên cloud": vẫn phải vá OS, quản lý HDFS, backup, và 250 TB trên EBS tốn kém, không co giãn; overhead cao nhất.
-- **C:** Redshift mạnh cho SQL/BI nhưng phải viết lại Spark/MapReduce thành SQL/stored procedure và chuyển mô hình dữ liệu — trái "minimal rewrites" và 6 tháng.
-- **D:** DynamoDB là key-value, không chạy Spark/MapReduce, không phù hợp phân tích 250 TB; Lambda có giới hạn thời gian và bộ nhớ.
-
-> Exam tip: "Hadoop/Spark lên AWS, ít sửa code" → **EMR + S3**. "Cần phân quyền chi tiết trên data lake" → **Lake Formation** (table/column/row). "Chỉ SQL/BI dashboard" → Redshift. "Metastore dùng chung" → **Glue Data Catalog**.`,
-  services: ['Amazon EMR', 'Amazon S3', 'AWS Glue', 'AWS Lake Formation'],
+> Exam tip: "Long-term + rarely accessed" → Glacier Deep Archive.`,
+  services: ['Amazon S3'],
 },
 {
   id: 'sap-156', exam: 'sap-c02', domain: 'sap-d4',
-  q: `A company is retiring its on-premises VDI platform. It has 1,200 employees: 800 knowledge workers need a personal Windows desktop where installed applications, files and settings survive every logout; 400 task workers on three shifts only need a standard desktop that is reset to a clean state at the end of each session and stores nothing personal. All users must sign in with their existing Active Directory credentials, the company does not want to build or patch any VDI infrastructure, and it wants to pay monthly per desktop or per usage. Which solution meets these requirements with the LEAST operational overhead?`,
+  q: `A company wants to securely distribute content globally. The content is hosted in an S3 bucket and needs to be served to users worldwide with low latency. Which service combination should the team use?`,
   options: [
-    "Build Remote Desktop Session Hosts on Amazon EC2 from a golden image behind an RD Gateway and a load balancer, and manage patching and scaling for the session hosts.",
-    "Use Amazon WorkSpaces Personal for the 800 knowledge workers and Amazon WorkSpaces Pools for the 400 task workers, both joined to AWS Managed Microsoft AD that is connected to the on-premises forest.",
-    "Use Amazon AppStream 2.0 for all 1,200 users from a single image and store user files in Amazon S3.",
-    "Run Windows containers on Amazon ECS and let users connect to a container task with Remote Desktop."
+    "Amazon CloudFront and Amazon S3.",
+    "Amazon S3 and AWS Global Accelerator.",
+    "Amazon S3 and Elastic Load Balancing.",
+    "Amazon EC2 and Amazon S3."
   ],
-  answer: 1,
-  explain: `**Tóm tắt:** Chia hai nhóm đúng theo tính chất phiên làm việc: **Amazon WorkSpaces Personal** cho 800 người cần desktop **persistent** (cài app, lưu file, giữ settings qua mỗi lần đăng nhập), và **Amazon WorkSpaces Pools** cho 400 người theo ca cần desktop **non-persistent** được trả về trạng thái sạch sau mỗi phiên. Cả hai join vào **AWS Managed Microsoft AD** nối với AD on-prem để dùng tài khoản hiện có, không phải tự dựng VDI.
+  answer: 0,
+  explain: `**Tóm tắt:** **Amazon CloudFront** là dịch vụ Content Delivery Network (CDN) kết hợp với **Amazon S3** để phân phối nội dung toàn cầu với độ trễ thấp thông qua các edge location.
 
-**Từ khoá:** "personal desktop, settings survive logout" (800), "reset to clean state each session, stores nothing" (400), "existing AD credentials", "no VDI infrastructure", "pay per desktop or usage" → **WorkSpaces Personal + WorkSpaces Pools**.
+**Từ khoá:** "securely distribute content globally", "hosted in S3", "low latency" → CloudFront + S3.
 
-**Thuật ngữ:**
-- **VDI (Virtual Desktop Infrastructure):** hạ tầng cấp cho mỗi người dùng một desktop Windows chạy trên máy chủ trung tâm, người dùng kết nối từ xa. Ví dụ: nhân viên dùng laptop mỏng vẫn có desktop công ty đầy đủ.
-- **Persistent desktop:** desktop "của riêng" một người; cài phần mềm, lưu file, đổi hình nền thì lần sau vẫn còn.
-- **Non-persistent desktop:** desktop dùng chung từ một **pool**; mỗi phiên bắt đầu từ **golden image** sạch và mọi thay đổi bị xoá khi kết thúc — phù hợp quầy dịch vụ, tổng đài theo ca.
-- **Golden image:** bản image chuẩn đã cài sẵn OS và phần mềm, dùng để tạo desktop hàng loạt.
-- **Amazon WorkSpaces Personal:** desktop persistent managed, trả theo tháng hoặc theo giờ; mỗi người một desktop cố định, có thể chọn bundle cấu hình.
-- **Amazon WorkSpaces Pools:** pool desktop non-persistent tạo từ image; người dùng đăng nhập nhận một desktop sạch, hết phiên thì desktop được trả lại pool.
-- **AWS Managed Microsoft AD:** Active Directory do AWS quản lý, có thể tạo **trust** với AD on-prem để người dùng đăng nhập bằng tài khoản công ty và dùng chung policy/group.
-- **AD Connector:** lựa chọn khác để nối thẳng vào AD on-prem không cần trust; nhưng nếu cần tin cậy hai chiều và quản trị tập trung thì Managed Microsoft AD phù hợp hơn.
+**Giải thích:**
+- **CloudFront:** CDN, cache nội dung tại các edge location gần người dùng.
+- **S3:** Nơi chứa nội dung (origin).
+- **Global Accelerator:** Tăng tốc mạng (network layer), thường dùng cho traffic TCP/UDP, không phải CDN cho static/media content.
 
-### Cơ chế hoạt động
-1. Tạo **AWS Managed Microsoft AD** trong VPC và thiết lập trust với AD on-prem; mở DNS/port cần thiết giữa hai bên.
-2. Nhóm 800 knowledge worker: tạo **WorkSpaces Personal** với bundle (CPU/RAM/disk) phù hợp, gán cho từng user. Desktop tồn tại lâu dài, giữ nguyên app và dữ liệu ổ đĩa người dùng.
-3. Nhóm 400 task worker: cài sẵn phần mềm chuẩn lên một WorkSpace, tạo **image**, rồi dựng **WorkSpaces Pools** từ image đó với số desktop đủ cho số người dùng đồng thời lớn nhất của ba ca.
-4. Người dùng đăng nhập bằng WorkSpaces client (Windows/macOS/Linux/Web) với tài khoản AD; MFA có thể bật thêm.
-5. Khi task worker đăng xuất hoặc phiên hết, desktop được **reboot/reset** về image, xoá dữ liệu cá nhân; desktop quay lại pool cho người ca sau.
-6. Thanh toán theo desktop-tháng (Personal) và theo mức dùng pool (Pools); không có máy chủ broker, gateway hay host để vá.
-
-### Ví dụ cụ thể
-Ba ca, mỗi ca 140 task worker → pool cấu hình khoảng 150 desktop thay vì 400 desktop thường trực. Cuối ca, desktop reset; người ca sau nhận desktop sạch, không thấy file của người trước. Ngược lại, chị A ở nhóm knowledge worker cài phần mềm kế toán riêng và lưu file lên ổ D; hôm sau đăng nhập vẫn thấy nguyên. Cả hai nhóm dùng cùng tài khoản AD, nên group policy và quyền truy cập file server on-prem vẫn áp dụng.
-
-### Vì sao B đúng
-- Tách đúng hai loại phiên: **persistent** cho người cần giữ trạng thái, **non-persistent** cho người chỉ cần desktop sạch.
-- WorkSpaces Pools tránh phải cấp 400 desktop thường trực cho workload theo ca, tiết kiệm chi phí.
-- Dùng **AWS Managed Microsoft AD + trust** nên người dùng đăng nhập bằng tài khoản hiện có.
-- Không phải dựng broker, gateway, host; AWS lo hạ tầng và vá OS nền.
-- Mô hình giá đúng yêu cầu: theo desktop-tháng và theo mức dùng.
-
-### Lỗi hay gặp
-- **Cấp Personal cho cả 1.200 người:** 400 người theo ca chỉ dùng vài giờ/ngày, trả tiền desktop thường trực là lãng phí lớn.
-- **Dùng Pools cho người cần dữ liệu cá nhân:** mọi thay đổi bị xoá khi reset; nhóm knowledge worker sẽ mất file và app đã cài.
-- **Quên đồng bộ DNS giữa AD on-prem và Managed AD:** đăng nhập thất bại dù trust đã tạo; cần conditional forwarder đúng chiều.
-- **Chọn subnet/AZ thiếu dung lượng:** WorkSpaces cần subnet có đủ IP; hết IP làm việc tạo desktop thất bại.
-- **Bỏ qua MFA và chính sách truy cập:** desktop chứa dữ liệu công ty, nên bật MFA và giới hạn IP nếu cần.
-- **Không tính chi phí image/build:** image phải cập nhật định kỳ khi có bản vá; nếu không, pool chạy phần mềm cũ.
-
-### Vì sao các phương án khác sai
-- **A:** dựng Remote Desktop Session Host trên EC2 (Microsoft Remote Desktop Services, **không phải** Amazon RDS) là tự làm VDI: phải quản lý broker, gateway, patching, backup, scaling và dung lượng — trái "không muốn dựng/patch hạ tầng VDI" và là overhead lớn nhất.
-- **C:** AppStream 2.0 chủ yếu **stream ứng dụng** từ image dùng chung; không cấp desktop persistent cá nhân với app/settings riêng cho 800 người, và việc lưu file vào S3 không thay thế được profile desktop.
-- **D:** container Windows không phải desktop VDI; người dùng không có phiên Windows đầy đủ, không có profile bền vững, và RDP vào container task không phải mô hình được hỗ trợ cho người dùng cuối.
-
-> Exam tip: "personal desktop, giữ app/settings" → **WorkSpaces Personal**. "Theo ca, reset sạch mỗi phiên, không lưu dữ liệu" → **WorkSpaces Pools**. "Chỉ stream một ứng dụng" → AppStream 2.0. "Tự dựng session host" → trái least overhead.`,
-  services: ['Amazon WorkSpaces', 'Amazon WorkSpaces Pools', 'AWS Managed Microsoft AD', 'Amazon VPC'],
-}
+> Exam tip: "CDN + Global + S3" → CloudFront.`,
+  services: ['Amazon CloudFront', 'Amazon S3'],
+},
 );

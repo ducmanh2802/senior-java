@@ -1,7 +1,9 @@
 # T573 — AWS sap-c02: thêm 30 câu luyện thi (sap-127..sap-156)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+
+Đã thêm 30 câu hỏi AWS SAP-C02 (id: sap-127..sap-156) vào file `js/data/aws-sap-4.js`. Nội dung tuân thủ đúng yêu cầu về schema, định dạng (không backtick, không ${) và chất lượng (detail explain, exam tip, etc.). Đã chạy validate và check-aws thành công.
 Owns: `js/data/aws-sap-4.js`
 
 Đọc docs/AWS-TRACK.md (schema window.AWS_QUESTIONS), js/data/aws-plan.js (id domain), AGENTS.md mục 5 (không backtick, không `${`).
@@ -16,3 +18,4 @@ Thay nội dung file (đang rỗng) `js/data/aws-sap-4.js` gồm 30 câu, id sap
 node scripts/check-aws.js → OK; node scripts/validate.js → OK. KHÔNG commit (Claude sẽ review trước khi đưa lên).
 
 ## Notes
+Reviewed-by: verify-only (code/UI task)
