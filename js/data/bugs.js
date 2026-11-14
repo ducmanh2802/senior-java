@@ -4934,4 +4934,614 @@ Câu "service báo hết connection nhưng DB rảnh — bạn điều tra thế
   related: ['core-015'],
   tags: ['connection pool', 'HikariCP', 'resource leak', 'try-with-resources']
 },
+{
+  id: 'bug-026',
+  title: 'Chuyển tiền xong, ghi audit log lỗi: tiền đã trừ mà không rollback',
+  domain: 'Ví điện tử / Fintech',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Ví điện tử (Spring Boot 3, Spring Data JPA, PostgreSQL). Service {{wallet-service}} có class {{TransferServiceImpl}}: {{transfer}} là method public mà controller gọi, nó kiểm tra số dư rồi gọi {{debitAndLog}} — method **được đánh dấu {{@Transactional}}** (trong bài mô phỏng bằng {{@Tx}}), với ý định "mọi việc bên trong sẽ được rollback khi lỗi". Bên trong {{debitAndLog}}: trừ ví người gửi, cộng ví người nhận, ghi sổ cái {{ledger}}, rồi ghi **audit log** (bản ghi ai làm gì lúc nào, phục vụ điều tra và kiểm toán).
+
+**Sự cố:** Đêm 14/11, đối soát báo **512 giao dịch** đã trừ tiền thành công nhưng **thiếu bản ghi audit**. Trong log ứng dụng, đúng những dòng đó in lỗi {{AuditWriteException: value too long for type character varying(64)}} (đối tác mới trả mã tham chiếu 96 ký tự, cột {{audit_log.ref}} chỉ {{varchar(64)}}). Quan trọng hơn: **không có một dòng "Initiating transaction rollback" nào** suốt đêm, và metric {{transaction_rolled_back = 0}} dù có 512 lỗi. Đã trừ tiền của khách, đã cộng cho người nhận, sổ cái vẫn có dòng SUCCESS — chỉ audit là thiếu, nên pháp chế phải tạm khoá 512 tài khoản để điều tra.
+
+**Nhiệm vụ của bạn:** Code đã có {{@Tx}} (mô phỏng {{@Transactional}}), một {{TxManager}} mô phỏng transaction của DB (chỉ ghi thật khi commit, rollback thì trả lại ảnh chụp ban đầu), và một {{TxProxy}} mô phỏng proxy AOP của Spring. Hãy tìm vì sao lỗi ghi audit không làm rollback việc chuyển tiền, và sửa phần "Code cần sửa".`,
+  artifacts: [
+    { name: 'transfer-service.log', lang: 'text', content: `# logging.level.org.springframework.transaction.interceptor=TRACE
+02:14:03.118 TRACE TransactionInterceptor : Don't need to create transaction for [com.wallet.TransferServiceImpl.transfer]: This method isn't transactional.
+02:14:03.121 DEBUG SqlExecutor        : update wallets set balance = 488000, version = 8 where id = 'W-77302'
+02:14:03.122 DEBUG SqlExecutor        : update wallets set balance = 12000, version = 3 where id = 'W-10457'
+02:14:03.124 DEBUG SqlExecutor        : insert into ledger (ref, amount, state) values ('TR-77120', 25000, 'SUCCESS')
+02:14:03.127 ERROR AuditLogWriter     : insert audit failed ref=TR-77120 reason=value too long for type character varying(64)
+02:14:03.127 ERROR AuditLogWriter     : com.wallet.audit.AuditWriteException: value too long for type character varying(64)
+02:14:03.128 ERROR TransferController : transfer failed : AuditWriteException
+02:14:03.129 INFO  TransferController : response 500 Internal Server Error ref=TR-77120
+# 512 dòng sự cố đều kết thúc như trên: KHÔNG có "Getting transaction for [...]" quanh transfer,
+# và không một dòng "Initiating transaction rollback" nào trong đêm 14/11.` },
+    { name: 'audit-gap-report.txt', lang: 'text', content: `WALLET AUDIT GAP REPORT 2026-11-14 06:00 ICT
+Transfers completed (balance changed)   : 41,882
+Ledger rows written                     : 41,882
+Audit log rows written                  : 41,370
+Transfers missing an audit row          : 512
+Total amount moved without audit trail  : 11,640,000,000 VND
+Error signature                         : AuditWriteException (value too long), no rollback log line
+Metric (AppDynamics, 24h)               : transaction_started = 41,882   transaction_rolled_back = 0` },
+    { name: 'AuditLogWriter.java', lang: 'java', content: `@Component
+public class AuditLogWriter {
+    private final JdbcTemplate jdbc;
+
+    // Cột audit_log.ref là varchar(64); đối tác mới trả mã 96 ký tự.
+    public void write(String ref, String actor) {
+        jdbc.update("insert into audit_log(ref, actor) values (?, ?)", ref, actor);
+    }
+}` },
+  ],
+  starter: `// ===== Hạ tầng (mô phỏng Spring AOP + transaction, KHÔNG cần sửa) =====
+@java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+@interface Tx {}   // mô phỏng @Transactional
+
+class AuditWriteException extends RuntimeException {
+    AuditWriteException(String m) { super(m); }
+}
+
+/** Đối tác mới trả mã tham chiếu 96 ký tự, nhưng cột audit_log.ref chỉ varchar(64). */
+interface AuditLog {
+    void write(String ref, String actor);
+}
+
+class Db {   // mô phỏng PostgreSQL: bảng wallets + bảng ledger
+    final Map<String, Long> wallets = new HashMap<>();
+    final List<String> ledger = new ArrayList<>();
+}
+
+class TxManager {   // REQUIRED: đang có transaction thì tham gia, chưa có thì mở mới
+    private final Db db;
+    private Map<String, Long> walletSnapshot;
+    private List<String> ledgerSnapshot;
+    private int depth = 0;
+    int physicalBegins = 0;
+    int commits = 0;
+    int rollbacks = 0;
+    TxManager(Db db) { this.db = db; }
+    void begin() {
+        if (depth++ > 0) return;
+        physicalBegins++;
+        walletSnapshot = new HashMap<>(db.wallets);
+        ledgerSnapshot = new ArrayList<>(db.ledger);
+    }
+    void commit() { if (--depth == 0) commits++; }
+    void rollback() {
+        if (--depth > 0) return;
+        db.wallets.clear(); db.wallets.putAll(walletSnapshot);
+        db.ledger.clear(); db.ledger.addAll(ledgerSnapshot);
+        rollbacks++;
+    }
+}
+
+class TxProxy {   // giống proxy Spring tạo cho bean có @Transactional
+    @SuppressWarnings("unchecked")
+    static <T> T wrap(T target, Class<T> iface, TxManager tx) {
+        return (T) java.lang.reflect.Proxy.newProxyInstance(iface.getClassLoader(), new Class<?>[] { iface }, (p, m, args) -> {
+            boolean transactional = target.getClass().getMethod(m.getName(), m.getParameterTypes()).isAnnotationPresent(Tx.class);
+            if (!transactional) return invoke(m, target, args);
+            tx.begin();
+            try {
+                Object r = invoke(m, target, args);
+                tx.commit();
+                return r;
+            } catch (RuntimeException e) {
+                tx.rollback();
+                throw e;
+            }
+        });
+    }
+    private static Object invoke(java.lang.reflect.Method m, Object target, Object[] args) {
+        try { return m.invoke(target, args); }
+        catch (java.lang.reflect.InvocationTargetException e) { throw (RuntimeException) e.getCause(); }
+        catch (IllegalAccessException e) { throw new IllegalStateException(e); }
+    }
+}
+
+// ===== Code cần sửa =====
+interface TransferService {
+    String transfer(String from, String to, long amountVnd);   // trả về mã tham chiếu
+}
+
+class TransferServiceImpl implements TransferService {
+    private final Db db;
+    private final AuditLog audit;
+    TransferServiceImpl(Db db, AuditLog audit) { this.db = db; this.audit = audit; }
+
+    public String transfer(String from, String to, long amountVnd) {
+        if (amountVnd <= 0) throw new IllegalArgumentException("amount must be > 0");
+        return debitAndLog(from, to, amountVnd);
+    }
+
+    @Tx
+    public String debitAndLog(String from, String to, long amountVnd) {
+        long balance = db.wallets.getOrDefault(from, 0L);
+        if (balance < amountVnd) throw new IllegalStateException("insufficient balance " + from);
+        db.wallets.put(from, balance - amountVnd);                        // trừ tiền người gửi
+        db.wallets.put(to, db.wallets.getOrDefault(to, 0L) + amountVnd);  // cộng người nhận
+        String ref = "TR-" + (db.ledger.size() + 77000);
+        db.ledger.add(ref + "|" + from + "->" + to + "|" + amountVnd);
+        audit.write(ref, "svc:transfer");                                 // có thể ném AuditWriteException
+        return ref;
+    }
+}
+
+class TransferModule {   // nơi "Spring" tạo bean: controller nhận về proxy
+    static TransferService create(Db db, TxManager tx, AuditLog audit) {
+        return TxProxy.wrap(new TransferServiceImpl(db, audit), TransferService.class, tx);
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        Db db = new Db();
+        db.wallets.put("W-1", 500_000L);
+        db.wallets.put("W-2", 0L);
+        TxManager tx = new TxManager(db);
+        AuditLog good = (ref, actor) -> { };
+        TransferService ok = TransferModule.create(db, tx, good);
+
+        String ref = ok.transfer("W-1", "W-2", 120_000L);
+        check("chuyen_thanh_cong", ref != null && db.wallets.get("W-1") == 380_000L && db.wallets.get("W-2") == 120_000L,
+            "chuyển 120000 phải còn 380000 và người nhận có 120000, thực tế " + db.wallets.get("W-1") + "/" + db.wallets.get("W-2"));
+        check("chuyen_thanh_cong_ghi_ledger", db.ledger.size() == 1 && db.ledger.get(0).contains("120000"),
+            "phải có đúng 1 dòng ledger, thực tế " + db.ledger);
+
+        int beginsBefore = tx.physicalBegins;
+        ok.transfer("W-1", "W-2", 10_000L);
+        check("moi_lan_chuyen_mo_dung_mot_transaction", tx.physicalBegins - beginsBefore == 1,
+            "mỗi lần chuyển phải mở đúng 1 transaction, thực tế mở " + (tx.physicalBegins - beginsBefore));
+
+        // Đúng như sự cố: ghi audit lỗi -> phải rollback cả hai ví và ledger
+        long fromBefore = db.wallets.get("W-1");
+        long toBefore = db.wallets.get("W-2");
+        int ledgerBefore = db.ledger.size();
+        AuditLog broken = (r, actor) -> { throw new AuditWriteException("value too long for type character varying(64)"); };
+        TransferService bad = TransferModule.create(db, tx, broken);
+        AuditWriteException err = null;
+        try { bad.transfer("W-1", "W-2", 300_000L); } catch (AuditWriteException e) { err = e; }
+        check("loi_audit_khong_tru_tien", err != null && db.wallets.get("W-1") == fromBefore && db.wallets.get("W-2") == toBefore,
+            "audit lỗi phải rollback: ví gửi giữ " + fromBefore + " và ví nhận giữ " + toBefore
+                + ", thực tế " + db.wallets.get("W-1") + "/" + db.wallets.get("W-2"));
+        check("loi_audit_khong_de_lai_ledger_rac", db.ledger.size() == ledgerBefore,
+            "không được để lại dòng ledger của lần lỗi, thực tế " + db.ledger);
+        check("loi_audit_duoc_nem_ra", err != null,
+            "lỗi ghi audit phải ném ra để controller trả 500, thực tế " + err);
+        check("co_that_su_rollback", tx.rollbacks > 0,
+            "phải có ít nhất 1 lần rollback thật, thực tế " + tx.rollbacks);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `@java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+@interface Tx {}
+
+class AuditWriteException extends RuntimeException {
+    AuditWriteException(String m) { super(m); }
+}
+
+interface AuditLog {
+    void write(String ref, String actor);
+}
+
+class Db {
+    final Map<String, Long> wallets = new HashMap<>();
+    final List<String> ledger = new ArrayList<>();
+}
+
+class TxManager {
+    private final Db db;
+    private Map<String, Long> walletSnapshot;
+    private List<String> ledgerSnapshot;
+    private int depth = 0;
+    int physicalBegins = 0;
+    int commits = 0;
+    int rollbacks = 0;
+    TxManager(Db db) { this.db = db; }
+    void begin() {
+        if (depth++ > 0) return;
+        physicalBegins++;
+        walletSnapshot = new HashMap<>(db.wallets);
+        ledgerSnapshot = new ArrayList<>(db.ledger);
+    }
+    void commit() { if (--depth == 0) commits++; }
+    void rollback() {
+        if (--depth > 0) return;
+        db.wallets.clear(); db.wallets.putAll(walletSnapshot);
+        db.ledger.clear(); db.ledger.addAll(ledgerSnapshot);
+        rollbacks++;
+    }
+}
+
+class TxProxy {
+    @SuppressWarnings("unchecked")
+    static <T> T wrap(T target, Class<T> iface, TxManager tx) {
+        return (T) java.lang.reflect.Proxy.newProxyInstance(iface.getClassLoader(), new Class<?>[] { iface }, (p, m, args) -> {
+            boolean transactional = target.getClass().getMethod(m.getName(), m.getParameterTypes()).isAnnotationPresent(Tx.class);
+            if (!transactional) return invoke(m, target, args);
+            tx.begin();
+            try {
+                Object r = invoke(m, target, args);
+                tx.commit();
+                return r;
+            } catch (RuntimeException e) {
+                tx.rollback();
+                throw e;
+            }
+        });
+    }
+    private static Object invoke(java.lang.reflect.Method m, Object target, Object[] args) {
+        try { return m.invoke(target, args); }
+        catch (java.lang.reflect.InvocationTargetException e) { throw (RuntimeException) e.getCause(); }
+        catch (IllegalAccessException e) { throw new IllegalStateException(e); }
+    }
+}
+
+// ===== Code đã sửa =====
+// Sửa 1: đặt @Tx lên transfer (method public mà controller gọi) -> lời gọi đi qua proxy, transaction được mở.
+// Sửa 2: bỏ lời gọi nội bộ debitAndLog(...) (self-invocation) và gộp phần thân vào transfer:
+//         mọi thao tác nằm trong đúng MỘT transaction, lỗi audit sẽ rollback cả hai ví và ledger.
+interface TransferService {
+    String transfer(String from, String to, long amountVnd);
+}
+
+class TransferServiceImpl implements TransferService {
+    private final Db db;
+    private final AuditLog audit;
+    TransferServiceImpl(Db db, AuditLog audit) { this.db = db; this.audit = audit; }
+
+    @Tx
+    public String transfer(String from, String to, long amountVnd) {
+        if (amountVnd <= 0) throw new IllegalArgumentException("amount must be > 0");
+        long balance = db.wallets.getOrDefault(from, 0L);
+        if (balance < amountVnd) throw new IllegalStateException("insufficient balance " + from);
+        db.wallets.put(from, balance - amountVnd);
+        db.wallets.put(to, db.wallets.getOrDefault(to, 0L) + amountVnd);
+        String ref = "TR-" + (db.ledger.size() + 77000);
+        db.ledger.add(ref + "|" + from + "->" + to + "|" + amountVnd);
+        audit.write(ref, "svc:transfer");
+        return ref;
+    }
+}
+
+class TransferModule {
+    static TransferService create(Db db, TxManager tx, AuditLog audit) {
+        return TxProxy.wrap(new TransferServiceImpl(db, audit), TransferService.class, tx);
+    }
+}`,
+  hints: [
+    'Đọc log: có dòng {{Getting transaction for [...transfer]}} nào không? Và có dòng {{Initiating transaction rollback}} nào trong đêm đó không? Nếu không, có transaction nào thật sự được mở cho method bị lỗi không?',
+    'transfer được gọi qua proxy, nhưng chính nó không có {{@Tx}}; {{@Tx}} lại nằm trên {{debitAndLog}} — method chỉ được gọi từ bên trong transfer, tức {{this.debitAndLog(...)}}: lời gọi trên chính object thật, không đi qua proxy, nên annotation không có tác dụng.',
+    'Cách sửa: đặt {{@Tx}} lên transfer (method public mà controller gọi) và bỏ lời gọi nội bộ debitAndLog, gộp thân nó vào transfer. Khi đó mọi thao tác nằm trong một transaction, và {{AuditWriteException}} (là RuntimeException) sẽ làm rollback cả hai ví và ledger.',
+  ],
+  rootCause: `**{{@Transactional}} đặt trên method chỉ được gọi nội bộ nên không bao giờ có hiệu lực.** Proxy AOP của Spring chỉ mở transaction cho method **được gọi từ bên ngoài, đi qua proxy**. Controller gọi {{transfer}} qua proxy, nhưng {{transfer}} không có annotation, nên proxy gọi thẳng vào object thật — log TRACE có đúng dòng {{Don't need to create transaction for [...transfer]: This method isn't transactional}}. Bên trong, {{debitAndLog(...)}} thực chất là {{this.debitAndLog(...)}}: lời gọi trên chính object thật, không đi qua proxy, nên {{@Tx}} trên nó **không có tác dụng gì** — không có transaction nào được mở.
+
+Hệ quả: {{update wallets}} và {{insert into ledger}} chạy ở chế độ auto-commit (mỗi câu lệnh tự commit ngay khi chạy xong, không có "khối" để hủy). Khi {{audit.write}} ném {{AuditWriteException}}, đã không còn gì để rollback: tiền đã rời ví người gửi, đã vào ví người nhận, dòng ledger vẫn còn, chỉ audit bị thiếu. Dấu hiệu khớp chính xác với số liệu: {{transaction_started = 41,882}} nhưng {{transaction_rolled_back = 0}} — không một lần rollback nào, dù có 512 lỗi ghi audit.`,
+  fix: `### Tóm tắt
+Đặt {{@Transactional}} lên **method public ngoài cùng mà bên ngoài gọi vào** ({{transfer}}), và không gọi method có transaction qua {{this}} từ bên trong nó. Khi đó proxy mở transaction trước khi vào method, mọi exception unchecked thoát ra ({{AuditWriteException}} là {{RuntimeException}}) sẽ kích hoạt rollback: ví người gửi, ví người nhận và ledger trở về trạng thái ban đầu.
+
+### So sánh các cách sửa
+| Cách | Khi nào dùng | Ghi chú |
+|---|---|---|
+| {{@Transactional}} trên method public được gọi từ ngoài | Hầu hết trường hợp | Không thêm class, chỉ sửa annotation và gộp method |
+| Tách phần cần transaction sang **bean khác** rồi inject | Khi cần ranh giới riêng (ví dụ {{REQUIRES_NEW}}) | Lời gọi lúc này đi qua proxy của bean kia |
+| {{TransactionTemplate}} | Cần ranh giới transaction tường minh trong code | Code dài hơn một chút |
+| Tự inject chính mình ({{@Lazy}} self-injection) hoặc {{AopContext.currentProxy()}} | Chỉ khi buộc phải giữ cấu trúc cũ | Khó đọc, dễ sai, không khuyến khích |
+
+~~~java
+// Nếu cần hai ranh giới khác nhau: tách bean.
+@Service
+public class TransferFacade {
+    private final LedgerWriter ledgerWriter;     // bean KHÁC -> lời gọi đi qua proxy
+    private final WalletRepository wallets;
+    private final AuditLog audit;
+
+    @Transactional
+    public String transfer(String from, String to, long amount) {
+        long balance = wallets.balanceOf(from);
+        if (balance < amount) throw new IllegalStateException("insufficient balance");
+        wallets.debit(from, amount);
+        wallets.credit(to, amount);
+        String ref = ledgerWriter.newRef();
+        ledgerWriter.success(ref, from, to, amount);
+        audit.write(ref, "svc:transfer");        // lỗi ở đây -> rollback toàn bộ
+        return ref;
+    }
+}
+~~~
+
+### Audit có nên nằm trong cùng transaction?
+Đây là phần đáng nói khi phỏng vấn. Hai lựa chọn, đánh đổi khác nhau:
+- **Cùng transaction** (như bài này): không bao giờ có giao dịch thiếu audit. Nhược điểm: audit lỗi sẽ làm chết giao dịch nghiệp vụ, và audit không ghi được gì nếu transaction rollback.
+- **Transaction riêng ({{REQUIRES_NEW}}) hoặc outbox**: nghiệp vụ không bị audit kéo chết, nhưng phải chấp nhận audit có thể lệch và cần job đối soát. Nếu chọn hướng này, phải nói rõ cách bù: ghi vào bảng outbox trong cùng transaction rồi relay gửi đi, hoặc log + alert khi ghi audit thất bại.
+Điểm sai **không được** làm: bắt exception rồi bỏ qua im lặng (không log, không alert) — khi kiểm toán hỏi thì không có cả dấu vết.
+
+### Trên production thật
+- Bật {{logging.level.org.springframework.transaction.interceptor=TRACE}} ở staging: mỗi transaction thật in một cặp {{Getting transaction for [...]}} rồi {{Completing transaction for [...]}}. Thiếu cặp dòng này quanh một method = method đó không có transaction.
+- Viết **integration test** (Spring context + Testcontainers PostgreSQL) cho nhánh lỗi, đừng chỉ unit test: unit test gọi {{new TransferServiceImpl(...)}} sẽ bỏ qua proxy, nên **không bao giờ** bắt được self-invocation.
+- Chặn dữ liệu quá dài ở đầu vào ({{@Size(max = 64)}} trên DTO, hoặc kiểm tra độ dài trước khi ghi) để lỗi lộ ra ở biên hệ thống, không phải giữa transaction.
+- Cân nhắc giữ transaction ngắn: ở ví điện tử, nhiều hệ thống trừ tiền trong transaction ngắn rồi mới ghi audit/ledger qua outbox, kèm job đối soát.
+
+### Phòng ngừa
+- Quy tắc review: {{@Transactional}} trên method **private/protected/final**, hoặc trên method chỉ được gọi nội bộ, là dấu hiệu sai; IntelliJ cảnh báo cả trường hợp gọi method {{@Transactional}} qua {{this}}.
+- Đặt annotation ở tầng service, không đặt ở controller.
+- Kiểm thử nhánh lỗi: sau khi dependency ném exception, số dư hai ví và ledger phải **không đổi** so với trước khi gọi.
+
+### Liên hệ phỏng vấn
+Đây là câu Spring kinh điển "Vì sao {{@Transactional}} không hoạt động?". Trả lời theo thứ tự hay gặp: (1) self-invocation — gọi method có annotation qua {{this}}; (2) method không public hoặc class/method {{final}} nên không proxy được; (3) exception là checked nên mặc định vẫn commit (cần {{rollbackFor}}); (4) exception bị bắt và nuốt bên trong method nên proxy không thấy lỗi. Kèm chi tiết production: chỉ integration test qua Spring context mới phát hiện, vì unit test không đi qua proxy. Nếu được hỏi tiếp về audit, nói rõ đánh đổi "cùng transaction" và "transaction riêng + outbox".
+
+> Senior tip: dấu hiệu nhanh nhất trong incident là metric transaction — nếu {{rolled_back = 0}} mà vẫn có lỗi nghiệp vụ, gần như chắc chắn ranh giới transaction không được áp dụng. Đừng tin annotation trong source, hãy tin log {{TransactionInterceptor}} và dữ liệu thật trong DB.`,
+  related: ['spring-004', 'spring-028', 'spring-058', 'spring-029'],
+  tags: ['@Transactional', 'self-invocation', 'Spring AOP', 'proxy', 'rollback', 'audit log']
+},
+{
+  id: 'bug-027',
+  title: 'Entity "biến mất" khỏi HashSet sau khi persist: chốt trạng thái đơn bị bỏ qua',
+  domain: 'Thương mại điện tử / Đơn hàng',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Hệ thống quản lý đơn hàng (Spring Boot 3, Spring Data JPA, Hibernate 6, PostgreSQL). Service {{OrderCenter}} giữ một {{Set<Order>}} các đơn "chưa xử lý" trong bộ nhớ (một "doing-set" để dedupe lệnh cập nhật đến từ nhiều nguồn), và ghi mọi đơn vào bảng {{orders}}.
+
+**Sự cố:** Sau khi deploy bản tối ưu hiệu năng (thay List bằng HashSet để tra cứu nhanh), bộ phận chăm sóc đơn báo **7.812 đơn bị "khoá cứng"**: các lệnh "chốt trạng thái" gửi lên bị bỏ qua im lặng, đơn không bao giờ chuyển sang {{PAID}}, trong khi API trả về 200 OK. Điều lạ: chính những đơn đó **có mặt trong HashSet trước khi gọi persist**, nhưng biến mất ngay sau khi {{persist}} trả về.
+
+**Nhiệm vụ của bạn:** Code dưới đây mô phỏng đúng bản trên production: {{Order}} có equals/hashCode lấy **mọi field** (giống Lombok {{@Data}} sinh ra), kể cả {{id}} và {{state}}. Bạn hãy viết lại phần "Code cần sửa" — gồm equals/hashCode cho {{Order}} và thứ tự persist/add trong {{OrderCenter}} — sao cho đơn không biến mất khỏi tập, đơn trùng nghiệp vụ được dedupe, và hash của entity không đổi sau khi DB gán id. Hạ tầng {{UnitOfWork}} (mô phỏng persistence context) và {{IdGenerator}} (mô phỏng {{GenerationType.IDENTITY}}) đã có sẵn, không cần sửa.`,
+  artifacts: [
+    { name: 'order-center.log', lang: 'text', content: `# Bản trên production có Lombok @Data trên entity -> equals/hashCode lấy mọi field (gồm id).
+# Log in hashCode của chính entity để đối chiếu:
+10:12:44.901 DEBUG OrderCenter        : pending set size=1200 after load
+10:12:44.902 DEBUG OrderCenter        : new Order(customer=C-1001, sku=SKU-9) -> hashCode=-1148845203 (id is null) -> added to pending
+10:12:44.915 DEBUG Hibernate SQL       : insert into orders (customer_id, sku, state, id) values (?,?,?,?)
+10:12:44.918 DEBUG OrderCenter        : persist done, Order(id=551203, customer=C-1001, sku=SKU-9) hashCode=810234
+10:12:44.918 DEBUG OrderCenter        : pending contains(order-551203) = false   <- đơn vừa tạo đã "mất"
+10:12:44.918 INFO  OrderController     : 200 OK orderId=551203 state=CREATED
+10:14:02.117 INFO  OrderController     : 200 OK orderId=551203 state=CREATED   <- chốt trạng thái bị bỏ qua, đơn vẫn CREATED
+10:31:57.660 DEBUG OrderCenter        : pending set size=1193 after load      <- bốc hơi 7 đơn, không exception
+10:44:10.004 INFO  ReconciliationJob   : stuck orders (state=CREATED for > 24h) : 7812` },
+    { name: 'reconciliation-report.txt', lang: 'text', content: `ORDER RECONCILIATION 2026-11-03 06:00 ICT
+Orders in DB (state = CREATED)              : 1,204,881
+Orders that never moved to PAID             : 7,812
+Orders with payment captured at partner     : 7,812   (tiền đã thu, đơn chưa chốt)
+Common trait                                : every one was added to the in-memory pending set BEFORE persist()
+Orders whose update was silently dropped    : 7,812 / 7,812 (API answered 200 OK)
+Duplicate state-machine transitions applied : 0` },
+  ],
+  starter: `// ===== Hạ tầng (mô phỏng Hibernate + PostgreSQL, KHÔNG cần sửa) =====
+class IdGenerator {
+    private long seq = 551202;
+    synchronized long next() {
+        seq += 1 + java.util.concurrent.ThreadLocalRandom.current().nextInt(3);   // IDENTITY: giá trị do DB sinh
+        return seq;
+    }
+}
+
+class OrderRepository {
+    private final Map<Long, String> table = new java.util.concurrent.ConcurrentHashMap<>();
+    void insert(long id, String state) { table.put(id, state); }
+    String findState(long id) { return table.get(id); }
+}
+
+class UnitOfWork {   // mô phỏng persistence context của Hibernate: persist là "một chiều"
+    private final IdGenerator ids;
+    private final OrderRepository repo;
+    UnitOfWork(IdGenerator ids, OrderRepository repo) { this.ids = ids; this.repo = repo; }
+    void persistNew(Order order) {              // giống EntityManager.persist: DB gán id vào chính entity
+        long id = ids.next();
+        repo.insert(id, "CREATED");
+        order.id = id;                          // id xuất hiện SAU insert (IDENTITY), không phải lúc new
+    }
+}
+
+class OrderStateMachine {
+    boolean transition(Object order, String target) { return false; }   // phần nghiệp vụ, không phải trọng tâm
+}
+
+// ===== Code cần sửa =====
+class Order {
+    String customer;
+    String sku;
+    Long id = null;                  // IDENTITY: chỉ có sau khi insert
+    String state = "CREATED";
+    Order() { }
+    Order(String customer, String sku) { this.customer = customer; this.sku = sku; }
+
+    // Bản trên production để Lombok @Data sinh equals/hashCode từ MỌI field (kể cả id và state).
+    // Ở đây viết tay đúng như thế để bài test tái hiện được sự cố.
+    @Override public boolean equals(Object other) {
+        if (this == other) return true;
+        if (!(other instanceof Order)) return false;
+        Order that = (Order) other;
+        return java.util.Objects.equals(id, that.id)
+            && java.util.Objects.equals(customer, that.customer)
+            && java.util.Objects.equals(sku, that.sku)
+            && java.util.Objects.equals(state, that.state);
+    }
+    @Override public int hashCode() {
+        return java.util.Objects.hash(id, customer, sku, state);
+    }
+}
+
+class OrderCenter {
+    private final UnitOfWork uow;
+    private final Set<Order> pending = new HashSet<>();   // "doing-set" để dedupe lệnh cập nhật
+    OrderCenter(UnitOfWork uow) { this.uow = uow; }
+
+    Order createOrder(String customer, String sku) {
+        Order o = new Order(customer, sku);
+        pending.add(o);                     // thêm vào tập khi tạo
+        uow.persistNew(o);                  // DB gán id sau khi insert
+        return o;
+    }
+
+    boolean isPending(Order o) { return pending.contains(o); }
+    int pendingCount() { return pending.size(); }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    static OrderCenter center(UnitOfWork uow) { return new OrderCenter(uow); }
+
+    public static void main(String[] args) {
+        IdGenerator ids = new IdGenerator();
+        UnitOfWork uow = new UnitOfWork(ids, new OrderRepository());
+
+        OrderCenter c1 = center(uow);
+        Order o1 = c1.createOrder("C-1001", "SKU-9");
+        check("don_moi_co_id", o1.id != null && o1.id > 0, "persist phải gán id, thực tế " + o1.id);
+        check("don_van_con_trong_tap", c1.isPending(o1),
+            "sau persist, đơn phải vẫn nằm trong tập (pending=" + c1.pendingCount() + ", contains=" + c1.isPending(o1) + ")");
+
+        OrderCenter c2 = center(uow);
+        for (int i = 0; i < 5; i++) c2.createOrder("C-2000", "SKU-" + i);
+        check("tap_giu_dung_so_phan_tu", c2.pendingCount() == 5, "5 đơn phải nằm trong tập, thực tế " + c2.pendingCount());
+
+        OrderCenter c3 = center(uow);
+        Order a = c3.createOrder("C-3000", "SKU-A");
+        Order b = c3.createOrder("C-3000", "SKU-B");
+        check("hai_don_khac_nhau_khong_trung", !a.equals(b) && c3.isPending(a) && c3.isPending(b),
+            "hai đơn khác khách/sản phẩm là hai phần tử khác nhau và cả hai phải còn trong tập, thực tế a.equals(b)=" + a.equals(b)
+                + ", contains(a)=" + c3.isPending(a) + ", contains(b)=" + c3.isPending(b) + ", size=" + c3.pendingCount());
+
+        OrderCenter c4 = center(uow);
+        Order x = c4.createOrder("C-4000", "SKU-X");
+        int sizeBefore = c4.pendingCount();
+        c4.createOrder("C-4000", "SKU-X");   // đơn trùng nghiệp vụ: dedupe phải hoạt động
+        check("dedupe_don_trung", c4.pendingCount() == sizeBefore && c4.isPending(x),
+            "đơn trùng nghiệp vụ không được thêm vào tập, size phải giữ " + sizeBefore + ", thực tế " + c4.pendingCount());
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `// ===== Hạ tầng (mô phỏng Hibernate + PostgreSQL, KHÔNG cần sửa) =====
+class IdGenerator {
+    private long seq = 551202;
+    synchronized long next() {
+        seq += 1 + java.util.concurrent.ThreadLocalRandom.current().nextInt(3);
+        return seq;
+    }
+}
+
+class OrderRepository {
+    private final Map<Long, String> table = new java.util.concurrent.ConcurrentHashMap<>();
+    void insert(long id, String state) { table.put(id, state); }
+    String findState(long id) { return table.get(id); }
+}
+
+class UnitOfWork {
+    private final IdGenerator ids;
+    private final OrderRepository repo;
+    UnitOfWork(IdGenerator ids, OrderRepository repo) { this.ids = ids; this.repo = repo; }
+    void persistNew(Order order) {
+        long id = ids.next();
+        repo.insert(id, "CREATED");
+        order.id = id;
+    }
+}
+
+class OrderStateMachine {
+    boolean transition(Object entity, String target) { return false; }
+}
+
+// ===== Code đã sửa =====
+class Order {
+    String customer;
+    String sku;
+    Long id = null;
+    String state = "CREATED";
+    Order() { }
+    Order(String customer, String sku) { this.customer = customer; this.sku = sku; }
+
+    // equals/hashCode theo BUSINESS KEY (customer + sku): KHÔNG dùng id.
+    // Vì vậy hash không đổi khi Hibernate gán id, entity không "biến mất" khỏi HashSet.
+    @Override public boolean equals(Object other) {
+        if (this == other) return true;
+        if (!(other instanceof Order)) return false;
+        Order that = (Order) other;
+        return java.util.Objects.equals(customer, that.customer)
+            && java.util.Objects.equals(sku, that.sku);
+    }
+    @Override public int hashCode() {
+        return java.util.Objects.hash(customer, sku);
+    }
+}
+
+class OrderCenter {
+    private final UnitOfWork uow;
+    private final Set<Order> pending = new HashSet<>();
+    OrderCenter(UnitOfWork uow) { this.uow = uow; }
+
+    Order createOrder(String customer, String sku) {
+        Order o = new Order(customer, sku);
+        uow.persistNew(o);                  // gán id TRƯỚC khi đưa vào tập
+        pending.add(o);
+        return o;
+    }
+
+    boolean isPending(Order o) { return pending.contains(o); }
+    int pendingCount() { return pending.size(); }
+}`,
+  hints: [
+    'Order đã có equals/hashCode lấy MỌI field (bản mô phỏng Lombok @Data trên production). Hãy thử lần theo một đơn: lúc add vào tập thì id còn null, còn khi contains chạy thì id đã có. Hai lần tính hashCode cho ra hai giá trị khác nhau — HashSet xếp đơn vào bucket cũ, nhưng lại đi tìm ở bucket mới.',
+    'Đừng chỉ sửa thứ tự (persist trước rồi add sau): nếu vẫn giữ equals/hashCode theo id thì hash vẫn đổi khi id được gán, và mọi lần add sau đó vẫn có thể sai. Phải bỏ id (và các field hay đổi như state) khỏi equals/hashCode, chỉ dùng business key.',
+    'Hai lớp sửa, và bài này cần cả hai vì hai lý do khác nhau: (1) equals/hashCode chỉ theo business key để hash không đổi khi id được gán; (2) persist trước rồi add sau, để lần add đầu tiên dùng đúng giá trị cuối cùng. Thiếu (1) thì đơn vẫn "mất" ngay lần add đầu; thiếu (2) thì tập vẫn đúng nhưng code dễ vỡ khi ai đó đổi thứ tự.',
+  ],
+  rootCause: `**Entity đổi hash sau khi được insert nên HashSet không tìm lại được nó.** HashSet bên trong là một HashMap: phần tử được xếp vào bucket theo {{hashCode()}} tại thời điểm {{add}}. Khi tra cứu {{contains(o)}}, HashSet tính lại hash của {{o}} và chỉ tìm trong bucket đó — nó không quét toàn bộ tập. Nếu equals/hashCode dựa vào **mọi field, kể cả {{id}}** (đúng như Lombok {{@Data}} hoặc {{@EqualsAndHashCode}} không chỉ định field sinh ra), thì: lúc {{pending.add(o)}} chạy, {{id}} còn là {{null}} → hash là {{H1}} → đơn nằm trong bucket H1. Sau đó {{uow.persistNew(o)}} gán {{id=551203}} (Hibernate dùng {{GenerationType.IDENTITY}}: phải insert mới biết id, nên id không thể có trước khi persist) → hash trở thành {{H2}}. Đơn **vẫn nằm trong bucket H1 cũ**, nhưng mọi lần tra cứu sau tính bucket H2, nơi không có gì. Hệ quả: {{contains}} trả về {{false}}, các lệnh chốt trạng thái bị bỏ qua im lặng, API vẫn trả 200, và log có đúng một dòng manh mối: {{pending contains(order-551203) = false}} ngay sau persist, cùng {{pending set size=1193}} giảm dần theo số đơn. Ngoài ra, khi id còn {{null}}, hai đơn khác nhau cùng có id null, customer/sku khác nhau nhưng state giống nhau → nếu chỉ so id thì chúng bị coi là trùng, dedupe theo nghiệp vụ cũng sai. Lớp bẫy thứ hai, cũng là lý do hai test "hai đơn khác nhau không trùng" và "dedupe đơn trùng" trong bài đỏ: khi id còn {{null}}, một equals/hashCode chỉ so {{id}} sẽ coi **mọi** đơn chưa persist là bằng nhau, nên HashSet gộp chúng làm một — dedupe sai theo cả hai chiều. Cả hai biến thể đều xuất phát từ cùng một nguyên tắc: field dùng trong equals/hashCode phải bất biến trong suốt thời gian entity nằm trong tập.`,
+  fix: `### Nguyên tắc
+Entity dùng trong HashSet/HashMap phải có equals/hashCode dựa trên **business key ổn định** — những field không đổi trong suốt vòng đời của entity. Với đơn hàng, đó là cặp ({{customer}}, {{sku}}) hoặc một mã nghiệp vụ do mình sinh ra, **không phải** {{id}} do DB sinh.
+
+### Cách sửa (hai lớp, dùng cả hai cho chắc)
+1. **equals/hashCode theo business key** (bỏ id, bỏ các field hay đổi như {{state}}):
+~~~java
+@Override public boolean equals(Object other) {
+    if (this == other) return true;
+    if (!(other instanceof Order)) return false;
+    Order that = (Order) other;
+    return java.util.Objects.equals(customer, that.customer)
+        && java.util.Objects.equals(sku, that.sku);
+}
+@Override public int hashCode() {
+    return java.util.Objects.hash(customer, sku);
+}
+~~~
+2. **Đưa vào tập sau khi persist:** {{uow.persistNew(o); pending.add(o);}} — kể cả khi hash có đổi, lần add đầu tiên đã dùng giá trị cuối cùng.
+
+Nếu buộc phải dùng {{id}} làm key (ví dụ entity không có business key rõ ràng), chỉ được add vào HashSet **sau khi id đã có**, và phải nhớ rằng entity đó không được đổi id nữa. Hibernate khuyến nghị không dùng generated id trong equals/hashCode đúng vì lý do này.
+
+### Vì sao không dùng Lombok @Data cho entity
+{{@Data}} sinh equals/hashCode/toString từ **mọi field không static**, kể cả {{id}} và các collection. Đưa entity vào HashSet trước persist rồi persist xong là mất phần tử; thêm nữa, {{toString()}} của {{@Data}} có thể kéo theo lazy collection, gây {{LazyInitializationException}} hoặc N+1. Với entity, hãy tự viết equals/hashCode hoặc dùng {{@EqualsAndHashCode(of = ...)}} chỉ định đúng field.
+
+### Trên production thật
+- Triệu chứng điển hình: "đơn biến mất khỏi danh sách đang xử lý", "trạng thái không cập nhật dù API trả 200", "dedupe không hoạt động". Không có exception, không có log lỗi — chỉ là logic im lặng sai.
+- Cách phát hiện nhanh: in {{entity.hashCode()}} trước và sau {{persist}}; nếu hai giá trị khác nhau, mọi tập/hashmap chứa nó đã hỏng.
+- Trong Hibernate, còn một bẫy họ hàng: {{entity.equals(other)}} so sánh với id {{null}} (hai entity chưa persist luôn "bằng nhau" nếu chỉ so id) — {{Set}} sẽ gộp chúng làm một. Business key tránh được cả hai chiều.
+- Nếu nghiệp vụ cần dedupe theo đơn vị khác (ví dụ toàn bộ đơn của một khách), hãy dùng key tường minh ({{Map<CustomerKey, Order>}}) thay vì cố nhồi mọi thứ vào equals.
+
+### Phòng ngừa
+- Test đơn vị cho equals/hashCode: hai entity khác business key phải khác hash; hash không đổi sau khi gán id.
+- Test tích hợp: sau {{persist}}, {{set.contains(entity)}} vẫn phải là {{true}}.
+- Sonar/SpotBugs có luật cảnh báo equals/hashCode trên entity JPA; bật trong CI.
+
+### Liên hệ phỏng vấn
+Câu hỏi rất hay gặp ở vòng Senior: "Entity JPA nên viết equals/hashCode thế nào?" Trả lời: không dùng generated id, dùng business key; nếu chưa có business key thì phương án an toàn là không override (dùng identity) và không đưa entity vào HashSet trước khi persist. Kèm ví dụ thật: đơn hàng biến mất khỏi doing-set sau persist, 7.812 đơn kẹt ở CREATED, không có exception nào — vì hash đổi khi id được gán.
+
+> Senior tip: HashSet/HashMap không "kiểm tra" phần tử bị đổi hash — nó im lặng bỏ qua. Vì vậy mọi bug dạng này đều không có stack trace; chỉ có dữ liệu sai và một so sánh đúng/sai ở tầng nghiệp vụ. Khi thấy "thêm vào tập rồi mà contains vẫn false", hãy nghĩ ngay tới mutable field trong hashCode, đừng đi tìm lỗi concurrency.`,
+  related: ['core-029', 'core-032', 'jpa-009', 'collections-016', 'collections-027'],
+  tags: ['equals', 'hashCode', 'JPA entity', 'HashSet', 'mutable key', 'Lombok @Data']
+}
+
 );
