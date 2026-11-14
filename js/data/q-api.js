@@ -4485,4 +4485,675 @@ Ngân hàng nhận 90.000 callback/ngày từ 12 partner. Một partner xoay sec
   ],
   tags: ['Webhook', 'HMAC', 'Key Rotation', 'Replay Protection', 'Idempotency']
 },
+{
+  id: 'api-055',
+  topic: 'api',
+  level: 'senior',
+  q: 'App mobile thường xuyên mất mạng: người dùng bấm Chuyển tiền khi đang ở thang máy, request timeout, họ bấm lại. Bạn thiết kế retry và idempotency thế nào để không chuyển tiền hai lần, và client xử lý trạng thái offline ra sao?',
+  a: `**Tóm tắt:** Không retry mù. Client phân loại request theo tính idempotent; mỗi ý định nghiệp vụ sinh một {{Idempotency-Key}} (UUID) và lưu xuống đĩa **trước khi** gửi; chỉ retry khi lỗi thuộc loại "không biết server đã xử lý chưa" (timeout, mất kết nối, 502/503/504, 429 có {{Retry-After}}) với backoff lũy tiến cộng jitter. Server lưu (key, fingerprint, trạng thái, response) trong bảng có unique constraint: request đã xong thì replay response cũ, đang xử lý thì trả 409, khác payload thì 422.
+
+### Vì sao mobile khó hơn server-to-server
+Một request giữa hai service trong cùng data center thường xong trong 50–200ms; trên 4G, p95 (ngưỡng mà 95% request nhanh hơn mức đó) có thể là 2–5 giây và đứt bất cứ lúc nào. Khi client không nhận được response, có ba khả năng: server chưa nhận, server đang xử lý, server đã commit nhưng response mất. Client không phân biệt được, nên mọi quyết định retry phải dựa trên **hợp đồng idempotent** chứ không phải may mắn.
+
+Thêm ba đặc thù mobile:
+- Người dùng bấm lại theo phản xạ; nếu chỉ disable nút 300ms thì vẫn kịp gửi hai request.
+- Hệ điều hành có thể suspend app khi vào nền, hoặc kill hẳn; hàng đợi offline phải nằm trên đĩa.
+- Retry có thể xảy ra sau nhiều giờ (mở app lại ở nơi có mạng), nên key phải ổn định và server phải giữ đủ lâu.
+
+### Thuật ngữ
+- **Idempotent**: áp dụng một lần hay N lần cũng cho cùng trạng thái cuối. {{GET}}, {{PUT}}, {{DELETE}}, {{HEAD}} idempotent về mặt HTTP; {{POST}} thì không. Nhưng idempotent không có nghĩa là response giống nhau: một lần có thể trả 201, lần sau 200 kèm body đã lưu.
+- **Idempotency key**: một chuỗi client sinh ra đại diện cho "một ý định nghiệp vụ", giữ nguyên qua mọi lần retry.
+- **Fingerprint**: mã băm của payload, dùng để phát hiện cùng key nhưng nội dung khác.
+- **Exponential backoff + jitter**: delay tăng dần 1s, 2s, 4s... và cộng ngẫu nhiên ±20% để nhiều client không retry cùng một lúc.
+- **Retry budget**: trần số lần hoặc tổng thời gian retry cho mỗi request.
+- **Circuit breaker**: sau N lỗi liên tiếp thì tạm dừng gọi, tránh dồn request vào server đang chết.
+
+### Bảng quyết định retry
+| Tình huống | Có retry? | Vì sao |
+|---|---|---|
+| 2xx | Không | Đã xong |
+| 400, 401, 403, 404, 422 | Không | Lỗi dữ liệu hoặc quyền; retry vô ích, cần sửa request |
+| 408, 429 | Có, sau {{Retry-After}} | Server nói "chưa phải lỗi của bạn" |
+| 409 từ tầng idempotency | Có, sau khi chờ | Request trước cùng key chưa xong; chờ rồi gửi lại đúng key đó |
+| 502, 503, 504 | Có, có giới hạn | Server tạm quá tải hoặc mạng đứt |
+| Timeout, mất kết nối | Có nếu request idempotent hoặc có key | Không biết server đã xử lý chưa |
+
+### Client: hàng đợi offline và key
+~~~java
+// Mỗi ý định nghiệp vụ: sinh key MỘT LẦN, lưu cùng bản ghi trước khi gọi mạng (write-ahead)
+public final class Outbox {
+    private final OutboxDao dao;                  // SQLite/Room: (id, key, payload, attempts, next_at)
+    public String enqueue(String payload) {
+        String key = UUID.randomUUID().toString(); // key ổn định qua mọi lần retry
+        dao.insert(key, payload, now());           // lưu TRƯỚC khi có mạng
+        return key;
+    }
+    public void flush(ApiClient api) {
+        for (OutboxRow r : dao.due(now())) {
+            try {
+                api.transfer(r.key, r.payload);    // header Idempotency-Key: r.key
+                dao.delete(r.id);
+            } catch (RetryableException e) {       // timeout, 502/503/504, 429
+                dao.backoff(r.id, nextDelay(r.attempts++)); // 1s, 2s, 4s... + jitter
+            } catch (NonRetryableException e) {
+                dao.markFailed(r.id, e.getMessage()); // 4xx: báo người dùng, không tự thử
+            }
+        }
+    }
+}
+~~~
+Điểm quan trọng: {{enqueue}} phải chạy **trước** khi gọi API; nếu không, app bị kill giữa request thì không còn dấu vết để retry. Và {{key}} không được sinh lại trong {{flush}}.
+
+### Server: hợp đồng Idempotency-Key
+Bảng tối thiểu:
+~~~sql
+create table idempotency (
+  user_id       uuid not null,
+  key           uuid not null,
+  endpoint      text not null,
+  fingerprint   text not null,          -- sha-256 của payload
+  status        text not null,          -- IN_PROGRESS | DONE
+  response_code int,
+  response_body jsonb,
+  created_at    timestamptz not null default now(),
+  expires_at    timestamptz not null default now() + interval '24 hours',
+  primary key (user_id, key)            -- unique: chặn race khi 2 request cùng key
+);
+~~~
+Luồng xử lý:
+1. Tính fingerprint, thử {{INSERT ... ON CONFLICT DO NOTHING}} với trạng thái {{IN_PROGRESS}}.
+2. Nếu insert thành công: xử lý nghiệp vụ, cập nhật {{DONE}} cộng response, trả response thật.
+3. Nếu conflict: đọc bản ghi.
+   - Khác fingerprint thì trả 422 (key bị dùng cho việc khác).
+   - Đang {{IN_PROGRESS}} thì trả 409 (request trước chưa xong; client chờ rồi retry).
+   - Đã {{DONE}} thì replay đúng status và body cũ, **không** chạy lại side effect.
+
+~~~java
+@PostMapping("/transfers")
+ResponseEntity<?> transfer(@RequestHeader("Idempotency-Key") UUID key,
+                           @RequestBody TransferRequest req) {
+    var fp = sha256(req);
+    var claimed = repo.insertIfAbsent(userId(), key, "transfers", fp, "IN_PROGRESS");
+    if (claimed.isEmpty()) {                       // key đã tồn tại
+        var old = repo.get(userId(), key);
+        if (!old.fingerprint().equals(fp)) throw new KeyReused();        // 422
+        if ("IN_PROGRESS".equals(old.status())) throw new InProgress();  // 409: lần trước chưa xong
+        return ResponseEntity.status(old.responseCode()).body(old.responseBody()); // DONE -> replay
+    }
+    try {
+        var result = service.transfer(req);        // side effect thật
+        repo.finish(userId(), key, 200, result);
+        return ResponseEntity.ok(result);
+    } catch (RuntimeException e) {
+        // chỉ xoá khi transaction nghiệp vụ đã rollback (lỗi ném ra trước khi commit);
+        // nếu side effect đã commit, giữ bản ghi DONE để lần retry sau replay
+        repo.delete(userId(), key);
+        throw e;
+    }
+}
+~~~
+
+### Sơ đồ
+~~~seq
+title: Timeout nhưng server đã commit
+actors: App | API | DB
+App -> API: POST /transfers, key K
+API -> DB: INSERT (user,K) IN_PROGRESS
+API -> DB: UPDATE balance, INSERT transfer
+DB --> API: commit
+API --> App: response bị mất trên đường
+note App..API: App không biết đã commit hay chưa
+App -> API: POST lại, cùng key K
+API -> DB: conflict rồi đọc bản ghi
+DB --> API: DONE và response cũ
+API --> App: 200 replay, không trừ tiền lần 2
+~~~
+
+### Pitfall production
+- Sinh key mới ở mỗi lần retry (thường do tạo key trong hàm gửi thay vì khi người dùng bấm).
+- Giữ key trong RAM: app bị kill là mất, retry sau đó không có key, dẫn tới duplicate.
+- Dùng chung key cho hai hành động khác nhau (chuyển tiền và nạp tiền).
+- Check key ở controller nhưng side effect nằm ở service khác (Kafka, email) nên dedup không trọn.
+- Không có TTL thì bảng phình to; TTL quá ngắn thì retry sau hai ngày bị xử lý lần hai.
+- Chỉ áp dụng cho {{POST}}, quên {{PATCH}} (PATCH có thể không idempotent, xem câu api-053).
+- Trả 200 cho request đã timeout kiểu fire-and-forget, người dùng tưởng đã chuyển tiền.
+- Xoá bản ghi idempotency khi side effect đã commit nhưng transaction vẫn lỗi: retry sẽ chạy lại side effect. Chỉ xoá khi transaction nghiệp vụ thật sự rollback.
+
+### Ví dụ đời thực
+Một ngân hàng số có 8.000 giao dịch chuyển tiền mỗi ngày. Trên mạng 4G, 1,2% request timeout (khoảng 96 request/ngày). Trước khi có idempotency, nhóm ghi nhận 37 giao dịch trùng trên 1.000 giao dịch (3,7%), tức khoảng 300 khách bị trừ tiền hai lần mỗi ngày và phải xử lý thủ công. Nhóm thêm bảng {{idempotency}} với unique {{user_id, key}}, client sinh key khi bấm nút và lưu vào Room, server replay response cũ. Sau 3 tháng: 0 giao dịch trùng; 0,3% request trả 409 do người dùng bấm lại khi request đầu đang chạy; p95 của API là 240ms nên cửa sổ 409 rất hẹp. Bảng idempotency khoảng 8.000 dòng/ngày, TTL 24 giờ nên luôn dưới 10.000 dòng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không retry mù. Đầu tiên tôi phân loại request: GET/PUT/DELETE có thể retry theo cách truyền thống, còn POST/PATCH thì phải có idempotency key. Trên mobile, key được sinh một lần khi người dùng bấm và lưu xuống đĩa cùng với bản ghi việc cần làm, trước khi gọi mạng; như vậy app bị kill thì worker nền vẫn retry đúng key đó. Client chỉ retry khi lỗi thuộc nhóm 'không biết server đã xử lý chưa' — timeout, mất kết nối, 502/503/504, 429 — với exponential backoff cộng jitter và một retry budget; còn 4xx thì báo người dùng chứ không tự thử. Server lưu (key, fingerprint, trạng thái, response) trong một bảng có unique (user, key): nếu đã DONE thì replay response cũ, nếu đang IN_PROGRESS thì trả 409, nếu khác payload thì trả 422. Tôi cũng đặt TTL 24 giờ và có job dọn bảng. Kết quả thực tế: từ 3,7% giao dịch trùng xuống 0, và 409 chỉ chiếm 0,3% vì p95 chỉ 240ms."
+
+> Senior tip: **Đừng đặt timeout client ngắn hơn p99 của server.** Nếu p99 là 4 giây mà timeout là 3 giây, mỗi request chậm sẽ tạo thêm một retry, và đúng lúc server đang chậm nhất thì tải tăng gấp đôi. Tôi thường lấy timeout bằng 2–3 lần p99, cộng một retry budget toàn cục (ví dụ 3 lần, tổng 30 giây) và circuit breaker ở tầng HTTP client; khi breaker mở thì hàng đợi offline giữ việc lại thay vì bắn request vào chỗ đã biết là đang chết.
+`,
+  follow: [
+    'Idempotency key nên do client hay server sinh? Nếu client không hợp tác (đối tác cũ) thì bạn làm gì?',
+    'Nếu side effect là một event Kafka thì dedup nên đặt ở producer, broker hay consumer?',
+    'Làm sao kiểm thử tự động hành vi mất mạng và retry trên CI mà không cần máy thật?'
+  ],
+  tags: ['Idempotency', 'Mobile', 'Retry', 'Outbox', 'Offline']
+},
+{
+  id: 'api-056',
+  topic: 'api',
+  level: 'lead',
+  q: 'Một team đề xuất thay toàn bộ REST API bằng một GraphQL endpoint duy nhất cho web và mobile. Bạn đánh giá thế nào? Khi nào GraphQL thắng, khi nào REST vẫn tốt hơn, và chi phí vận hành thật sự nằm ở đâu?',
+  a: `**Tóm tắt:** GraphQL thắng khi nhiều client cần "cắt" dữ liệu khác nhau từ một đồ thị quan hệ sâu và schema thay đổi thường xuyên; nó không thắng ở caching HTTP/CDN, rate limit theo request, upload file hay hệ thống đơn giản. Mua sự linh hoạt bằng chi phí thật: không cache được ở tầng HTTP, phải phân tích và giới hạn độ phức tạp query, N+1, auth/audit theo field khó hơn, và versioning/deprecation phải tự làm.
+
+### GraphQL chạy thế nào, từng bước
+1. Client gửi một query string cộng variables tới một endpoint duy nhất, thường là {{POST /graphql}}.
+2. Server parse thành AST (cây cú pháp trừu tượng — cấu trúc cây mô tả các field được yêu cầu), validate với schema viết bằng SDL (Schema Definition Language — ngôn ngữ mô tả kiểu dữ liệu và quan hệ).
+3. Executor đi qua AST, gọi resolver cho từng field; field lồng nhau thì resolver lồng nhau.
+4. Kết quả là JSON đúng hình dạng client yêu cầu, không thừa field.
+5. Nếu mỗi item lại gọi DB một lần thì thành N+1; dùng DataLoader để gom nhiều key thành một query.
+
+Ví dụ REST trả về 20 field nhưng mobile chỉ cần 3: hoặc mobile nhận thừa, hoặc server phải thêm tham số {{?fields=}} rồi tự bảo trì. GraphQL để client viết:
+~~~text
+query {
+  account(id: "A1") {
+    fullName
+    cards { last4, expiry }
+  }
+}
+~~~
+
+### Khi nào GraphQL thắng
+- **BFF cho nhiều client**: màn hình mobile, web admin và landing page cần tổ hợp field khác nhau; không phải tạo endpoint riêng cho từng màn hình.
+- **Quan hệ sâu**: user → orders → items → product; REST dễ thành 5 round-trip hoặc một endpoint "khổng lồ".
+- **Schema tiến hoá nhanh**: thêm field không phá client cũ; xoá field thì đánh dấu {{@deprecated}} kèm lý do và thời hạn.
+- **Client tự khám phá**: introspection cho phép công cụ sinh code, nhưng nên tắt ở production.
+
+### Khi nào REST vẫn tốt hơn
+- **Cần HTTP cache và CDN**: {{GET}} có URL ổn định, {{ETag}}, {{Cache-Control}}; GraphQL thường dùng {{POST}} nên không được cache mặc định. Có thể dùng persisted query (hash) cộng {{GET}} để lấy lại cache, nhưng đó là thêm hạ tầng.
+- **Rate limit theo request**: một REST endpoint có chi phí tương đối cố định; một GraphQL query có thể nặng gấp trăm lần query khác.
+- **CRUD đơn giản, ít quan hệ**: thêm GraphQL chỉ tăng độ phức tạp.
+- **Upload và download file, streaming**: multipart và byte range thuộc về HTTP, không phải GraphQL.
+- **Audit, logging, observability theo endpoint**: một endpoint duy nhất làm mọi metric trở nên khó đọc.
+- **Đội nhỏ, chưa có người giữ schema**: schema registry, CI kiểm tra breaking change và deprecation là chi phí con người thật.
+
+### Chi phí vận hành thật sự
+- **Query cost và DoS**: cần giới hạn depth (độ sâu), complexity (tổng "điểm" của các field), số lượng phần tử trả về, và timeout. Nên dùng persisted query hoặc allowlist để client không gửi SQL tùy ý.
+- **N+1**: DataLoader gom theo request, có cache per-request; nếu quên thì một query danh sách có thể tạo hàng nghìn câu SQL.
+- **Auth**: không chỉ middleware "đã đăng nhập"; nhiều field cần phân quyền riêng, dễ sót.
+- **Error model**: GraphQL trả HTTP 200 kèm mảng {{errors}}; muốn theo RFC 9457 thì phải tự map.
+- **Caching**: HTTP cache gần như vô dụng; phải cache ở resolver hoặc dùng persisted query cộng CDN.
+- **Versioning**: không có {{/v2}}; thay đổi schema phải theo tiến hoá, kiểm tra breaking change trong CI và theo dõi client nào còn dùng field cũ.
+
+### Code Spring for GraphQL
+~~~java
+@Controller
+class AccountGraph {
+    @QueryMapping                                   // query { account(id: "...") { ... } }
+    Account account(@Argument String id) { return service.find(id); }
+
+    @SchemaMapping(typeName = "Account", field = "orders")
+    List<Order> orders(Account account, DataLoader<Long, List<Order>> loader) {
+        return loader.load(account.id()).join();     // N account -> 1 query, tránh N+1
+    }
+}
+// loader = DataLoaderFactory.newDataLoader(keys -> orderService.byAccounts(keys));
+// đặt vào DataLoaderRegistry để cache theo đúng phạm vi request
+// build.gradle: implementation 'org.springframework.boot:spring-boot-starter-graphql'
+// application.yml production: spring.graphql.graphiql.enabled và spring.graphql.schema.introspection.enabled để false
+~~~
+
+### Bảng so sánh
+| Tiêu chí | REST | GraphQL |
+|---|---|---|
+| Hình dạng response | Server quyết định | Client quyết định |
+| HTTP cache, CDN | Tốt | Kém (trừ persisted query cộng GET) |
+| Rate limit | Dễ theo endpoint | Khó, cần cost analysis |
+| N+1 | Ít gặp hơn | Thường gặp, cần DataLoader |
+| Auth | Middleware theo route | Theo field/resolver, dễ sót |
+| Versioning | URL hoặc header | Tiến hoá schema, không có v2 |
+| File upload | Tự nhiên | Phải dùng REST riêng |
+| Độ phức tạp vận hành | Thấp | Cao |
+
+### Pitfall production
+- Query sâu 50 tầng hoặc chọn list 100.000 phần tử làm server và DB quá tải; cần depth/complexity limit trước khi deploy.
+- Bật introspection ở production, lộ toàn bộ schema cho đối tượng xấu.
+- Cho phép mutation qua {{GET}} để "cho dễ", làm mất cache và an toàn.
+- Trả 200 cho mọi lỗi, client không phân biệt được lỗi mạng và lỗi nghiệp vụ.
+- Không có schema registry, hai team deploy hai phiên bản schema khác nhau.
+- Dùng DataLoader sai phạm vi (cache toàn cục thay vì per-request) làm trả dữ liệu của user khác.
+
+### Ví dụ đời thực
+Một app bảo hiểm có 6 client (iOS, Android, web agent, web khách hàng, đối tác, dashboard nội bộ). Trước GraphQL, mỗi màn hình gọi 12–18 request, gộp thành 8–12 round-trip, payload thừa 40–60%. Nhóm chuyển sang một GraphQL BFF: một màn hình còn 1 request, payload giảm 62%. Nhưng tuần đầu p95 tăng từ 420ms lên 1,9 giây vì N+1 (mỗi account gọi orders riêng, khoảng 900 câu SQL/request). Thêm DataLoader gom theo account và cache per-request, p95 về 380ms. Một đối tác gửi query chọn 5.000 order một lần làm DB tăng 300%; nhóm thêm complexity limit 1.000 điểm và max page size 100, sau đó không còn sự cố. Kết luận: GraphQL không tự nhanh hơn, nó chỉ chuyển chi phí từ network sang resolver.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không thay toàn bộ REST bằng GraphQL. Tôi chọn theo câu hỏi: client có cần cắt dữ liệu khác nhau từ một đồ thị sâu không? Nếu có, một BFF GraphQL cho mobile và web là hợp lý, vì mỗi màn hình tự chọn field, thêm field mới không cần deploy client, và quan hệ sâu chỉ còn một round-trip. Nhưng tôi luôn nói rõ cái giá: GraphQL dùng POST nên mất HTTP cache và CDN, một query có thể nặng gấp trăm lần, nên phải có depth limit, complexity limit, persisted query, và DataLoader để chặn N+1; auth phải làm theo field, error phải tự chuẩn hoá. Với CRUD đơn giản, upload file, hoặc hệ thống cần cache mạnh, REST vẫn tốt hơn. Thực tế tôi đã làm: một màn hình giảm từ 10 round-trip xuống 1 và payload giảm 62%, nhưng p95 ban đầu tăng vì N+1, phải thêm DataLoader mới về 380ms. Tôi cũng tắt introspection ở production và đặt complexity limit sau khi một đối tác làm DB tăng 300%."
+
+> Senior tip: **Đừng so sánh GraphQL với REST bằng "số request".** So sánh bằng tổng bytes, tổng thời gian resolver, số câu SQL và chi phí cache. Tôi thường bắt đầu bằng một BFF GraphQL chỉ cho 1–2 màn hình nặng nhất, giữ REST cho phần còn lại; nếu sau ba tháng không đo được cải thiện p95 hoặc giảm payload ít nhất 30% thì quay lại REST. Và luôn có một "circuit breaker" cho query: complexity limit, timeout, và kill switch tắt GraphQL khi DB quá tải.
+`,
+  follow: [
+    'GraphQL có cache được ở CDN không? Nếu có thì bằng cách nào?',
+    'Làm sao chặn một query GraphQL quá nặng trước khi nó chạm DB?',
+    'Khi nào bạn từ chối GraphQL dù cả team muốn dùng?'
+  ],
+  tags: ['GraphQL', 'REST', 'API Design', 'BFF', 'Caching']
+},
+{
+  id: 'api-057',
+  topic: 'api',
+  level: 'senior',
+  q: 'API của bạn trả 429 khi khách vượt hạn mức. Ngoài status code, bạn trả những header nào để client tự điều chỉnh? Thiết kế contract này theo chuẩn nào và những lỗi triển khai nào hay gặp?',
+  a: `**Tóm tắt:** Ít nhất phải có {{Retry-After}} (số giây hoặc HTTP-date) trên 429. Nếu theo chuẩn hoá mới thì thêm {{RateLimit-Policy}} (chính sách: q là quota, w là cửa sổ tính bằng giây) và {{RateLimit}} (r là số request còn lại, t là số giây còn lại của cửa sổ) từ draft IETF; legacy {{X-RateLimit-Limit/Remaining/Reset}} vẫn phổ biến nhưng không có semantics thống nhất. Mọi response, kể cả 200, nên trả {{RateLimit}} để client biết còn bao nhiêu, không chỉ khi bị chặn.
+
+### Các header cần biết
+- {{Retry-After}}: delay-seconds (ví dụ {{30}}) hoặc HTTP-date. RFC 9110 định nghĩa cho 503 và mọi 3xx; RFC 6585 thêm 429.
+- {{RateLimit-Policy: "peruser";q=100;w=60}}: công bố quota 100 request trong 60 giây cho partition "peruser". Tham số {{qu}} là đơn vị (mặc định requests), {{pk}} là partition key.
+- {{RateLimit: "peruser";r=37;t=42}}: còn 37 request, cửa sổ hiện tại còn 42 giây.
+- {{RateLimit: "peruser";r=0;t=12}}: hết quota; 12 là cửa sổ hiệu lực, không phải mốc "được cấp lại đủ 100 request".
+- Legacy: {{X-RateLimit-Limit}}, {{X-RateLimit-Remaining}}, {{X-RateLimit-Reset}}. Vấn đề là {{Reset}} có thể là số giây còn lại, unix timestamp, hoặc mili-giây tùy nhà cung cấp; nếu dùng thì phải ghi rõ đơn vị trong tài liệu.
+- **Token bucket**: mỗi request lấy một token từ "xô", xô được nạp lại theo thời gian; hết token thì bị chặn.
+- **Redis**: máy chủ key-value chạy riêng, các instance cùng đọc/ghi để chia sẻ trạng thái đếm.
+
+### Ví dụ response
+~~~http
+HTTP/1.1 200 OK
+RateLimit-Policy: "peruser";q=100;w=60
+RateLimit: "peruser";r=37;t=42
+Content-Type: application/json
+~~~
+
+~~~http
+HTTP/1.1 429 Too Many Requests
+RateLimit-Policy: "peruser";q=100;w=60
+RateLimit: "peruser";r=0;t=12
+Retry-After: 12
+Content-Type: application/problem+json
+
+{
+  "type": "https://iana.org/assignments/http-problem-types#quota-exceeded",
+  "title": "Request cannot be satisfied as assigned quota has been exceeded",
+  "status": 429,
+  "violated-policies": ["peruser"]
+}
+~~~
+
+### Code: filter gắn header
+~~~java
+@Component
+class RateLimitHeaders implements Filter {
+    private final RateLimiter limiter;               // token bucket, trạng thái ở Redis (incr có TTL trên key user)
+    @Override public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
+            throws IOException, ServletException {
+        var bucket = limiter.check(userId(req));     // {limit, remaining, resetAt}
+        var h = (HttpServletResponse) res;
+        // item value là chuỗi: partition key PHẢI nằm trong dấu ngoặc kép (Structured Fields)
+        h.setHeader("RateLimit-Policy", "\"peruser\";q=" + bucket.limit() + ";w=60");
+        h.setHeader("RateLimit", "\"peruser\";r=" + bucket.remaining() + ";t=" + bucket.windowSeconds());
+        if (bucket.remaining() == 0) {
+            h.setHeader("Retry-After", String.valueOf(bucket.windowSeconds()));
+            h.setStatus(429);
+            h.setContentType("application/problem+json");
+            h.getWriter().write("""
+                {"type":"https://iana.org/assignments/http-problem-types#quota-exceeded",
+                 "title":"Quota exceeded","status":429}""");
+            return;
+        }
+        chain.doFilter(req, res);
+    }
+}
+~~~
+
+### Client nên đọc gì
+1. Nếu có {{Retry-After}} thì dùng nó; draft quy định {{Retry-After}} được ưu tiên hơn {{RateLimit}} và cửa sổ hiệu lực {{t}} có thể bỏ qua.
+2. Nếu không có, dùng {{t}} (số giây còn lại của cửa sổ) cộng jitter.
+3. Khi {{r}} thấp (ví dụ dưới 10% quota), chủ động giảm tốc trước khi bị 429.
+4. Không dùng {{X-RateLimit-Reset}} như timestamp nếu không biết đơn vị; đây là lỗi phổ biến khi tích hợp nhiều nhà cung cấp.
+
+### Bảng header
+| Header | Xuất hiện | Ý nghĩa | Bẫy thường gặp |
+|---|---|---|---|
+| {{Retry-After}} | 429, 503, 3xx | Chờ bao lâu | Dạng HTTP-date phụ thuộc clock, lệch giờ với client |
+| {{RateLimit-Policy}} | Mọi response | Quota và cửa sổ | Quên đơn vị {{qu}} |
+| {{RateLimit}} | Mọi response | Còn lại bao nhiêu | Tính trên từng instance nên khác nhau |
+| {{X-RateLimit-Limit}} | Legacy | Tổng quota | Không nói cửa sổ |
+| {{X-RateLimit-Remaining}} | Legacy | Còn lại | Có thể là giây, ms hoặc timestamp |
+| {{X-RateLimit-Reset}} | Legacy | Khi nào reset | Ba định dạng khác nhau trên thị trường |
+
+### Pitfall production
+- Trả 429 mà không có {{Retry-After}}: client retry ngay, tạo retry storm, server càng quá tải.
+- {{X-RateLimit-Reset}} là timestamp tuyệt đối cộng clock skew giữa các instance, client nhận thời điểm đã qua.
+- Tính rate limit trên từng instance sau load balancer: 4 instance cho quota 100/phút thực tế thành 400/phút.
+- Chỉ gắn header trên response 200, quên response lỗi — đúng lúc client cần nhất.
+- Response được cache (CDN, proxy) kèm {{RateLimit}} cũ; draft khuyến nghị bỏ qua giá trị này trên response từ cache.
+- Trả 429 cho request đọc ({{GET}}) khi người dùng chỉ đang xem, làm UI đứng.
+- Công bố {{r}} rất lớn nhưng không nói đơn vị, client hiểu nhầm thành "vô hạn".
+
+### Ví dụ đời thực
+Một API công khai có 300 đối tác, 2 triệu request/ngày, giới hạn 100 request/phút/key. Trước đây khi vượt hạn mức, server trả 429 trơn; đối tác retry ngay với 5 luồng, làm 429 tăng gấp 8 lần và p95 của endpoint tăng từ 180ms lên 1,2 giây. Nhóm thêm {{RateLimit-Policy}} và {{RateLimit}} trên mọi response, {{Retry-After}} trên 429, và trả {{429}} kèm problem+json có {{violated-policies}}. Sau hai tuần: số request retry trong 1 giây sau 429 giảm 70%, 429 còn 0,4% tổng request, p95 về 210ms. Một đối tác lớn còn dùng {{RateLimit}} để tự điều chỉnh, giảm 429 từ 12.000 xuống 300 mỗi ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi trả 429 kèm {{Retry-After}} — đây là phần bắt buộc, vì thiếu nó thì client retry ngay và tạo bão. Nếu muốn chuẩn hoá, tôi dùng bộ {{RateLimit-Policy}} và {{RateLimit}} của draft IETF: {{RateLimit-Policy}} công bố quota và cửa sổ, {{RateLimit}} cho biết còn lại bao nhiêu và cửa sổ hiệu lực dài bao nhiêu giây. Tôi gắn cả hai trên mọi response, kể cả 200, để client biết mà tự chậm lại trước khi bị chặn; chỉ khi đó rate limit mới thực sự bảo vệ được server. Tôi cũng trả body problem+json với {{violated-policies}} để đối tác biết chính sách nào bị vượt. Nếu phải giữ {{X-RateLimit-*}} cho tương thích, tôi ghi rõ {{Reset}} là số giây còn lại, không phải timestamp. Về triển khai, tôi đếm bằng token bucket trên Redis để nhiều instance dùng chung một quota, và luôn kiểm thử bằng cách vượt quota có chủ đích để xem header và 429 có đúng không."
+
+> Senior tip: **Rate limit không phải để phạt client, mà để client biết đường mà tránh.** Nếu chỉ trả 429, bạn đã đẩy toàn bộ chi phí điều tiết sang phía client và biến một chính sách bảo vệ thành một cuộc đấu retry. Đo lường bằng ba con số: tỉ lệ 429, số request retry trong 1 giây sau 429, và p95 của endpoint; nếu retry sau 429 không giảm khi bạn thêm header, vấn đề nằm ở client chứ không phải ở thuật toán đếm.
+`,
+  follow: [
+    'Retry-After nên là số giây hay ngày giờ? Khi nào mỗi loại phù hợp hơn?',
+    'Nếu nhiều instance thì RateLimit tính thế nào cho đúng, và Redis có phải điểm chết không?',
+    'Bạn có nên cho client biết giới hạn thật không? Điều này có gây rủi ro bảo mật hay bị khai thác không?'
+  ],
+  tags: ['Rate Limit', '429', 'Retry-After', 'RateLimit headers', 'API Design']
+},
+{
+  id: 'api-058',
+  topic: 'api',
+  level: 'lead',
+  q: 'API tạo báo cáo trả 202 và giao cho worker chạy nền. Worker có thể bị kill giữa chừng, job có thể được retry, và message queue giao at-least-once. Thiết kế thế nào để job không bị chạy hai lần, không kẹt trạng thái RUNNING, và client biết kết quả?',
+  a: `**Tóm tắt:** Tách {{job}} (ý định) khỏi {{attempt}} (một lần chạy). Worker claim job bằng một câu UPDATE atomic, cấp lease có hạn và heartbeat; worker chết thì reaper thu hồi lease và job trở về PENDING để chạy attempt mới. Mỗi lần chạy phải idempotent: side effect bên ngoài (file, email) dùng idempotency key ổn định theo job; kết quả và outbox ghi cùng transaction; chỉ chuyển SUCCEEDED khi thật sự xong. Client theo dõi bằng GET /jobs/{id} hoặc webhook.
+
+### Vì sao at-least-once luôn đi kèm chạy hai lần
+Message queue (hàng đợi trung gian: producer đẩy message vào, consumer lấy ra xử lý) như Kafka, RabbitMQ hay SQS thường giao ít nhất một lần: consumer xử lý xong nhưng chưa ack mà bị kill thì message được giao lại. Vì vậy consumer phải idempotent theo khóa nghiệp vụ. Nếu không, một job tạo PDF có thể tạo hai file, một job gửi email có thể gửi hai lần.
+
+### Mô hình dữ liệu
+- {{jobs}}: id, type, payload, status (PENDING, RUNNING, SUCCEEDED, FAILED, CANCELLED), attempt, max_attempt, lease_until, worker_id, result_key, error, created_at, updated_at.
+- {{job_attempts}}: job_id, attempt, worker_id, started_at, finished_at, error để audit và biết attempt nào đã chạy.
+- {{outbox}}: job_id, kind, payload, created_at; side effect sẽ gửi sau, cùng transaction với thay đổi trạng thái.
+
+### Claim atomic
+~~~sql
+with next as (
+  select id from jobs
+  where status = 'PENDING' and attempt < max_attempt
+  order by created_at
+  limit 1
+  for update skip locked
+)
+update jobs j
+   set status = 'RUNNING',
+       attempt = attempt + 1,
+       lease_until = now() + interval '30 seconds',
+       worker_id = :worker
+  from next
+ where j.id = next.id
+returning j.*;
+~~~
+{{FOR UPDATE SKIP LOCKED}} giúp nhiều worker cùng chạm bảng mà không chọi nhau: mỗi worker lấy row chưa bị ai khoá rồi khoá luôn row đó trong cùng transaction. Nếu dùng {{FOR UPDATE}} thường, worker thứ hai phải chờ worker đầu commit nên các worker chạy gần như tuần tự.
+
+### Idempotency khi chạy lại
+- {{job.type + payload hash}} là khóa nghiệp vụ; client tạo job trùng sẽ nhận job cũ thay vì job mới.
+- Worker trước khi chạy kiểm tra {{status}}: nếu đã SUCCEEDED thì không chạy lại.
+- Side effect bên ngoài: {{outbox}} với key {{job_id + ':' + kind}}, worker gửi sau; consumer đầu cuối dedup theo key này.
+- File PDF: ghi vào key S3 cố định theo job, ví dụ {{jobs/ID/report.pdf}}; ghi đè vẫn ra cùng kết quả, không sinh UUID mới mỗi attempt.
+- Nếu side effect không thể idempotent (gửi SMS), phải có bảng {{sent}} unique {{job_id, kind}} và kiểm tra trước khi gửi.
+
+### Lease và reaper
+~~~java
+@Scheduled(fixedDelay = 5000)
+void reap() {
+    // job RUNNING quá lease cộng grace 10s -> PENDING nếu còn attempt, ngược lại FAILED
+    int n = jobs.reapExpiredLeases(Instant.now());
+    log.info("reclaimed {} jobs", n);
+}
+
+public void run(String jobId) {
+    var job = jobs.claim(jobId, workerId(), Duration.ofSeconds(30)); // atomic
+    if (job.isEmpty()) return;                                      // worker khác đang chạy
+    try {
+        var result = executor.execute(job.get().payload());          // I/O: S3, PDF, DB
+        jobs.finishWithOutbox(jobId, workerId(), result,           // MỘT transaction: UPDATE có điều kiện + INSERT outbox
+                            "REPORT_READY", result.url());             // chỉ worker còn giữ lease mới ghi
+    } catch (Exception e) {
+        jobs.failOrRetryIfOwner(jobId, workerId(), e.getMessage()); // attempt < max -> PENDING
+    }
+}
+~~~
+{{finishWithOutbox}} chạy trong đúng một transaction và phải so {{worker_id}} với {{lease_until}} trong câu UPDATE có điều kiện (kiểm worker_id thôi là chưa đủ: id worker cũ có thể được tái dùng cho attempt khác): nếu không, một worker sống lại sau khi lease bị thu hồi có thể ghi đè kết quả của attempt mới, hoặc outbox báo xong trong khi job chưa chuyển SUCCEEDED.
+
+### Client biết kết quả
+| Cách | Độ trễ | Khi nào chọn |
+|---|---|---|
+| Polling GET /jobs/{id} | Theo chu kỳ 2–10 giây | Mobile, UI đơn giản |
+| Webhook | Gần tức thì | Đối tác server-to-server |
+| SSE | Tức thì | Dashboard đang mở |
+
+Polling nên backoff 2s, 4s, 8s, tối đa 30s và dừng khi SUCCEEDED hoặc FAILED; đừng poll 200ms.
+
+### Sơ đồ
+~~~seq
+title: Worker chết giữa chừng, job chạy lại
+actors: API | DB | Worker | S3
+API -> DB: INSERT job PENDING
+Worker -> DB: claim SKIP LOCKED, RUNNING
+Worker -> S3: tạo file báo cáo
+note Worker..S3: process bị kill, chưa kịp update
+DB --> Worker: mất kết nối
+Worker -> DB: reaper: RUNNING quá lease, PENDING
+Worker -> DB: claim lại, attempt 2
+Worker -> S3: ghi đè đúng key jobs/id/report.pdf
+Worker -> DB: SUCCEEDED và outbox
+~~~
+
+### Pitfall production
+- Không có lease: job kẹt RUNNING vĩnh viễn; người dùng bấm lại tạo job mới, job cũ vẫn chạy.
+- Queue giao lại job đã SUCCEEDED: tạo file hoặc email lần hai.
+- Outbox ghi ở transaction khác: job báo SUCCEEDED nhưng email không bao giờ gửi.
+- Không giới hạn max_attempt: job lỗi dữ liệu retry vô hạn, tốn tiền LLM hoặc SMS.
+- Kết quả để trong DB dạng base64 PDF: bảng phình, backup chậm.
+- Poll quá dày hoặc poll cả khi job đã xong.
+- Không có metric: không biết bao nhiêu job kẹt, p95 hoàn thành, số attempt trung bình.
+
+### Ví dụ đời thực
+Một hệ thống sao kê có 1.200 export mỗi ngày, mỗi job 3–5 phút, 6 worker. Worker bị OOM kill 12 lần/tuần; 3% job kẹt RUNNING (36 job/ngày), người dùng bấm lại tạo job trùng, tổng 180 job rác mỗi ngày. Nhóm thêm lease 30 giây cộng heartbeat 10 giây, reaper 5 giây, {{FOR UPDATE SKIP LOCKED}}, và key S3 cố định theo job. Sau 4 tuần: job kẹt còn 0; job trùng còn 0 vì client nhận lại job cũ; p95 hoàn thành giảm từ 6,5 phút xuống 4,2 phút do 6 worker chạy song song thay vì xếp hàng; job rác giảm 100%. Một lần queue giao lại đã tạo email thứ hai, nhóm thêm bảng {{sent}} unique {{job_id, kind}} và chấm dứt.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách job khỏi attempt. Job là ý định, attempt là một lần chạy; job có lease 30 giây và worker heartbeat mỗi 10 giây. Khi worker chết, lease hết hạn, reaper đưa job về PENDING và attempt tăng; worker khác claim bằng một câu UPDATE có {{FOR UPDATE SKIP LOCKED}} nên không chọi nhau. Để không chạy hai lần, tôi kiểm tra trạng thái trước khi chạy, ghi file vào key S3 cố định theo job, và đưa mọi side effect bên ngoài vào outbox cùng transaction với việc chuyển trạng thái; consumer đầu cuối dedup theo cặp job và kind. Kết quả chỉ được ghi bởi worker còn giữ lease, tránh worker cũ sống lại ghi đè. Client theo dõi bằng GET /jobs/{id} với polling backoff, hoặc webhook nếu là đối tác. Thực tế: 3% job kẹt RUNNING về 0, job trùng về 0, và p95 giảm từ 6,5 xuống 4,2 phút khi đủ 6 worker chạy song song."
+
+> Senior tip: **Đừng coi message queue là nơi lưu trạng thái job.** Queue chỉ là phương tiện giao việc; sự thật về job phải nằm trong DB, có lease và attempt. Tôi luôn đo ba metric: số job RUNNING quá lease, số job có attempt lớn hơn 1, và số side effect bị dedup ở consumer; nếu attempt nhiều hơn 1 tăng vọt mà job không xong, vấn đề là lỗi dữ liệu chứ không phải worker chậm, và retry chỉ làm tốn tiền.
+`,
+  follow: [
+    'Lease bao lâu là hợp lý? Nếu job chạy 10 phút thì heartbeat và lease nên đặt thế nào?',
+    'Làm sao phân biệt job FAILED vĩnh viễn do dữ liệu sai với lỗi tạm thời cần retry?',
+    'Nếu client tạo job trùng nhưng payload khác nhau thì server nên trả gì?'
+  ],
+  tags: ['Job', 'Worker', 'Idempotency', 'Outbox', 'Queue']
+},
+{
+  id: 'api-059',
+  topic: 'api',
+  level: 'senior',
+  q: 'Khách hàng upload sao kê PDF 2 GB từ app mobile, mạng 4G chập chờn, cứ 30 giây lại mất kết nối. Bạn thiết kế API upload thế nào để không mất byte nào, có thể resume, và không làm nghẽn service Java?',
+  a: `**Tóm tắt:** Không nhận file 2 GB qua API Spring; base64 trong JSON còn tệ hơn (tăng 33% kích thước và giữ trong RAM). Dùng presigned URL để client upload thẳng lên S3, chia multipart 8–16 MB và cho phép resume: client nhớ uploadId, part number và ETag, mất mạng thì gửi tiếp part còn thiếu. Với file dưới 10 MB, {{multipart/form-data}} qua API là đủ.
+
+### Vì sao không đẩy qua API
+- {{Base64}}: 2 GB thành khoảng 2,7 GB text; JSON parser và JVM heap không chịu nổi.
+- {{MultipartFile}}: Spring ghi tạm xuống đĩa (mặc định chỉ 1 MB/file và 10 MB/request, vượt thì phải tăng cấu hình), nhưng file vẫn đi qua service, dễ timeout, không resume, và tốn băng thông hai lần (client → API → S3).
+- Upload một lần: mất kết nối ở byte 1,9 GB là phải làm lại từ đầu.
+
+### Thuật ngữ
+- **Presigned URL**: URL đã kèm chữ ký tạm thời, ai có URL cũng upload được vào đúng key trong thời hạn; client không cần AWS access key.
+- **Multipart upload**: chia file thành các part, upload song song, S3 ghép lại; mỗi part trừ part cuối tối thiểu 5 MiB và tối đa 5 GiB, nhiều nhất 10.000 part (nên object tối đa khoảng 48,8 TiB).
+- **ETag**: định danh của một part sau khi upload, cần khi gọi complete. Với multipart, ETag của cả file không phải MD5 của cả file.
+- **Resumable**: client lưu trạng thái, mất mạng thì hỏi "đã có bao nhiêu byte" rồi gửi tiếp.
+- **tus**: chuẩn HTTP cho upload có thể resume ({{POST}} tạo, {{PATCH}} gửi byte, {{HEAD}} hỏi offset).
+
+### Luồng S3 multipart cộng presigned
+~~~seq
+title: Upload 2GB có resume qua S3
+actors: App | API | S3
+App -> API: POST /uploads, name và size
+API -> S3: CreateMultipartUpload
+S3 --> API: uploadId
+API --> App: 201 uploadId, partSize, presigned URLs
+App -> S3: PUT part 1
+App -> S3: PUT part 2
+note App..S3: mất mạng, chỉ gửi lại part dở
+App -> API: POST complete, danh sách part
+API -> S3: CompleteMultipartUpload
+S3 --> API: 200 OK
+API --> App: 201 fileId, status SCANNING
+~~~
+
+### Code
+~~~java
+@PostMapping("/uploads")
+Map<String, Object> create(@RequestBody CreateUpload req) {
+    var mpu = s3.createMultipartUpload(CreateMultipartUploadRequest.builder()
+        .bucket(bucket).key("statements/" + UUID.randomUUID() + ".pdf").build());
+    int partSize = 16 * 1024 * 1024;                       // 16 MiB
+    int parts = (int) Math.ceil(req.size() / (double) partSize);
+    var urls = IntStream.rangeClosed(1, parts).mapToObj(n -> Map.of(
+        "part", n,
+        "url", s3Presigner.presignUploadPart(UploadPartPresignRequest.builder()
+            .signatureDuration(Duration.ofMinutes(15))      // URL chỉ sống 15 phút
+            .uploadPartRequest(UploadPartRequest.builder()
+                .bucket(bucket).key(mpu.key()).uploadId(mpu.uploadId())
+                .partNumber(n).build())
+            .build()).url().toString()))
+        .toList();
+    return Map.of("uploadId", mpu.uploadId(), "partSize", partSize, "parts", urls);
+}
+
+@PostMapping("/uploads/{uploadId}/complete")
+Map<String, Object> complete(@PathVariable String uploadId, @RequestBody CompleteRequest req) {
+    var completed = req.parts().stream()
+        .map(p -> CompletedPart.builder().partNumber(p.part()).eTag(p.etag()).build()).toList();
+    s3.completeMultipartUpload(CompleteMultipartUploadRequest.builder()
+        .bucket(bucket).key(req.key()).uploadId(uploadId)
+        .multipartUpload(CompletedMultipartUpload.builder().parts(completed).build()).build());
+    return Map.of("fileId", req.key(), "status", "SCANNING");  // quét virus bất đồng bộ
+}
+~~~
+
+### Nếu không dùng S3: tus
+~~~http
+POST /files HTTP/1.1
+Tus-Resumable: 1.0.0
+Upload-Length: 2147483648
+Upload-Metadata: filename aGVsbG8ucGRm,filetype YXBwbGljYXRpb24vcGRm
+
+HTTP/1.1 201 Created
+Location: /files/24e533e0
+Tus-Resumable: 1.0.0
+~~~
+~~~http
+HEAD /files/24e533e0 HTTP/1.1
+Tus-Resumable: 1.0.0
+
+HTTP/1.1 200 OK
+Upload-Offset: 1073741824
+Upload-Length: 2147483648
+~~~
+~~~http
+PATCH /files/24e533e0 HTTP/1.1
+Tus-Resumable: 1.0.0
+Content-Type: application/offset+octet-stream
+Upload-Offset: 1073741824
+
+[1 MiB tiếp theo]
+
+HTTP/1.1 204 No Content
+Upload-Offset: 1074790400
+~~~
+Giải thích: {{Upload-Offset}} lệch thì server trả 409 và không sửa file; client gửi {{HEAD}} để biết offset hiện tại; phiên bản không hỗ trợ thì trả 412 kèm {{Tus-Version}}. {{Upload-Metadata}} là các cặp key-value đã base64.
+
+### Bảng so sánh
+| Cách | Giới hạn | Resume | Qua API Java | Độ phức tạp |
+|---|---|---|---|---|
+| multipart/form-data qua API | khoảng 100 MB | Không | Có | Thấp |
+| Presigned URL một lần | 5 GB | Không | Không, đi thẳng S3 | Thấp |
+| S3 multipart cộng presigned | 48,8 TiB | Có, theo part | Không, đi thẳng S3 | Trung bình |
+| tus qua API | Theo {{Tus-Max-Size}} của server | Có, theo byte | Có | Cao |
+| Base64 trong JSON | Vài chục MB | Không | Có | Thấp nhưng tốn RAM |
+
+### Pitfall production
+- Part không phải part cuối nhỏ hơn 5 MiB: S3 từ chối khi complete.
+- Quên complete: part rác tồn tại và vẫn tính tiền lưu trữ; đặt lifecycle {{AbortIncompleteMultipartUpload}} sau 7 ngày.
+- Presigned URL TTL quá dài thì lộ link; quá ngắn thì upload dở.
+- Chưa cấu hình CORS trên bucket (cơ chế trình duyệt kiểm tra server có cho phép origin khác gọi không; thiếu thì preflight OPTIONS bị chặn): {{PUT}} từ app bị chặn.
+- ETag của multipart không phải MD5 của cả file (S3 tính MD5 từng part rồi băm tiếp các MD5 đó, thêm "-số part"); đừng so sánh để kiểm tra toàn vẹn, hãy dùng checksum SHA-256 hoặc CRC32.
+- Quét virus sau upload: phải có trạng thái SCANNING hoặc INFECTED và không cho download ngay.
+- Client đặt {{Content-Type}} tùy ý; nếu Content-Type nằm trong chữ ký thì giá trị khác sẽ bị 403 SignatureDoesNotMatch, còn không thì phải kiểm ở bước hoàn tất (chỉ PDF, PNG...).
+
+### Ví dụ đời thực
+Một ngân hàng nhận khoảng 20 GB sao kê mỗi ngày từ 400 khách hàng doanh nghiệp; 1,4% upload thất bại (khoảng 6 lần/ngày), mỗi lần thất bại ở phút thứ 7 là người dùng phải gửi lại file 2 GB, trung bình 8 phút. Nhóm chuyển sang S3 multipart 16 MiB với presigned URL: client chỉ gửi lại part dở, thời gian upload trung bình còn 95 giây, băng thông giảm 41%, và 0 file sai checksum trong 2 tháng. Nhóm cũng đặt lifecycle abort sau 7 ngày, tiết kiệm khoảng 180 GB lưu trữ rác mỗi tháng. Khi quét virus, 3 file PDF chứa macro bị chặn ở trạng thái INFECTED, không tới được khách.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không nhận file 2 GB qua API Java. Với file lớn, tôi dùng presigned URL để client upload thẳng lên S3, chia multipart 16 MiB và cho phép resume: client lưu uploadId, part number và ETag; mất mạng thì gọi HEAD hoặc API để biết part nào đã xong, rồi gửi tiếp part còn thiếu. Khi đủ part, client gọi complete với danh sách ETag, S3 ghép file, server trả fileId và trạng thái SCANNING để quét virus. Nếu không dùng S3, tôi dùng tus: POST tạo, PATCH gửi byte, HEAD hỏi offset, offset lệch thì 409. Tôi đặt lifecycle abort các multipart chưa hoàn tất sau 7 ngày để không tốn lưu trữ rác, cấu hình CORS, giới hạn Content-Type, và không cho download khi chưa scan xong. Thực tế: từ 1,4% upload lỗi và 8 phút mỗi lần gửi lại, còn 95 giây trung bình, băng thông giảm 41%."
+
+> Senior tip: **Part size là bài toán cân bằng giữa overhead và khả năng resume.** Part quá nhỏ (1 MiB) thì 2 GB cần 2.000 request, mỗi request có preflight, chữ ký và round-trip; part quá lớn (100 MiB) thì mất mạng ở phút cuối mất trắng 100 MiB. Tôi thường chọn 8–16 MiB cho 4G, đo lại theo tỉ lệ thất bại: nếu tỉ lệ rớt trên 5% thì giảm part xuống 8 MiB, nếu mạng ổn định và file 10 GB thì tăng lên 32 MiB. Và luôn đặt lifecycle abort, vì lưu trữ rác từ multipart không hoàn tất là khoản tiền âm thầm nhưng rất thật.
+`,
+  follow: [
+    'Part size bao nhiêu là hợp lý? Vì sao không quá nhỏ hoặc quá lớn?',
+    'Làm sao client biết part nào đã upload thành công khi mất mạng giữa chừng?',
+    'Nếu presigned URL bị lộ thì bạn xử lý thế nào?'
+  ],
+  tags: ['Upload', 'S3', 'Presigned URL', 'Multipart', 'Resumable']
+},
+{
+  id: 'api-060',
+  topic: 'api',
+  level: 'senior',
+  q: 'Bạn thiết kế endpoint chat với LLM cho app web và mobile: model sinh từng token, client muốn thấy chữ chạy dần. Chọn SSE, WebSocket hay NDJSON? Xử lý abort, token usage và client mất kết nối thế nào?',
+  a: `**Tóm tắt:** Chat một chiều (server → client) thì SSE là hợp lý nhất: một HTTP request, {{text/event-stream}}, tự nối lại, qua được proxy. WebSocket chỉ khi cần hai chiều thật (voice, interrupt bằng giọng nói); NDJSON là lựa chọn khi client dùng fetch streaming và cần gửi header Authorization. Điểm khó không phải giao thức mà là abort: khi client đóng kết nối, phải hủy subscription để nhà cung cấp ngừng sinh token (tiết kiệm tiền), và phải tính usage ở sự kiện cuối.
+
+### Cơ chế từng bước
+1. Client gửi {{POST /chat}} với {{Accept: text/event-stream}}.
+2. Server gọi LLM ở chế độ stream; Spring AI {{ChatClient...stream().content()}} trả {{Flux<String>}}, mỗi phần tử là một token.
+3. Controller trả {{Flux<ServerSentEvent<String>>}} với {{produces = MediaType.TEXT_EVENT_STREAM_VALUE}}; Spring WebFlux giữ kết nối và đẩy từng event.
+4. Mỗi token là một dòng {{data: ...}}; cuối cùng gửi {{event: done}} kèm usage (hoặc dòng {{data: [DONE]}} theo kiểu OpenAI).
+5. Client đọc stream: {{EventSource}} chỉ làm được với endpoint {{GET}}, còn với {{POST /chat}} thì phải dùng fetch cộng ReadableStream (hoặc thư viện fetch-event-source) để có body và header {{Authorization}}.
+
+Giải thích thêm: **token** là một mảnh nhỏ của câu trả lời (khoảng 3–4 ký tự tiếng Anh); **NDJSON** là mỗi dòng một JSON hoàn chỉnh, client đọc từng dòng khi server đẩy, không có cú pháp event như SSE.
+
+### Protocol
+| Tiêu chí | SSE | WebSocket | NDJSON |
+|---|---|---|---|
+| Hướng | Server → client | Hai chiều | Server → client |
+| API client | {{EventSource}} (chỉ GET) hoặc fetch cộng reader | {{WebSocket}} | {{fetch}} cộng reader |
+| Header Authorization | Không (chỉ GET, không body, không custom header) | Có | Có |
+| Tự nối lại | Có, {{retry}} cộng {{Last-Event-ID}} (chỉ khi dùng {{EventSource}}) | Tự viết | Tự viết |
+| Qua proxy | Tốt nếu tắt buffering | Cần hiểu Upgrade | Tốt |
+| Phù hợp | Chat, log, tiến độ | Voice, game, collaborative | Mobile fetch, API đơn giản |
+
+### Code Spring AI
+~~~java
+@PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+Flux<ServerSentEvent<String>> chat(@RequestBody ChatRequest req) {
+    return ChatClient.create(chatModel).prompt().user(req.message())
+        .stream().content()                                    // Flux<String> từng token
+        .map(t -> ServerSentEvent.builder(t).build())
+        .doOnCancel(() -> log.info("client abort: stop upstream")) // hủy -> đóng HTTP upstream
+        .concatWith(Flux.just(ServerSentEvent.builder("[DONE]").event("done").build()));
+}
+~~~
+Khi client đóng kết nối, WebFlux hủy subscription (tín hiệu cancel lan ngược lên upstream); nếu dùng WebClient để gọi Anthropic hoặc OpenAI, HTTP request upstream cũng bị hủy và nhà cung cấp ngừng sinh token. Nếu chỉ log {{doFinally}} mà không hủy subscription thì token vẫn được sinh và vẫn bị tính tiền.
+
+### Anthropic events
+Một stream Anthropic gồm {{message_start}}, {{content_block_start}}, nhiều {{content_block_delta}} (chữ chạy dần), {{content_block_stop}}, {{message_delta}} (chứa usage), {{message_stop}}. Usage đến ở {{message_delta}} và là số luỹ kế; nếu client ngắt giữa chừng thì không có sự kiện này (OpenAI thì chỉ trả usage khi bật {{stream_options.include_usage}}), nên server phải tự ghi usage khi stream kết thúc hoặc bị hủy.
+
+### Abort và chi phí
+- Hủy đúng chỗ: khi người dùng bấm Stop hoặc đóng màn hình, hủy subscription và đóng HTTP upstream.
+- Đo bằng {{doOnCancel}} và so sánh số token sinh ra với số token nếu chạy hết.
+- Đừng retry cả stream khi lỗi giữa chừng: có thể sinh token hai lần và client thấy chữ lặp.
+- Ghi usage ở server khi hoàn tất hoặc hủy, không dựa vào client.
+
+### Pitfall production
+- nginx buffering: token dồn cục, client thấy "typing" rồi chữ hiện đột ngột; tắt {{proxy_buffering}} cho endpoint hoặc thêm {{X-Accel-Buffering: no}}.
+- gzip trên SSE làm trễ; thường tắt nén cho {{text/event-stream}}.
+- Không heartbeat: proxy cắt kết nối sau 60 giây im lặng; gửi comment {{: ping}} mỗi 15 giây.
+- Load balancer timeout 60 giây: đặt timeout dài hơn hoặc heartbeat.
+- Client {{EventSource}} tự nối lại sau khi server đóng stream (trừ khi server trả 204): gửi lại từ đầu; dùng id hoặc cờ final.
+- {{EventSource}} không gửi được header Authorization và chỉ gửi {{GET}}: dùng cookie HttpOnly hoặc fetch streaming.
+- Timeout LLM quá ngắn: stream đứt giữa câu; đặt timeout theo p99 của model.
+- Thiếu CORS hoặc credentials.
+
+### Ví dụ đời thực
+Một app hỏi đáp có 1.200 lượt chat mỗi ngày, p95 first token 900ms. Ban đầu dùng WebSocket: 8% kết nối rớt khi mạng chuyển 4G và WiFi, phải tự viết reconnect và state. Chuyển sang SSE cộng heartbeat 15 giây, rớt còn 0,6%; thêm {{doOnCancel}} đúng chỗ, số token bị bỏ trên mỗi request giảm từ 520 xuống 400 (23%), chi phí model giảm từ 310 USD xuống 240 USD mỗi tháng. Một lần client bấm Stop nhưng server không hủy subscription, một request sinh 4.100 token vô ích; sau khi thêm hủy, không còn request nào vượt 1.500 token khi bị abort.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn SSE cho chat một chiều. Client mở một request với {{Accept: text/event-stream}}, server giữ kết nối và đẩy từng token; SSE tự nối lại, qua proxy tốt, và đủ cho cả web lẫn mobile. WebSocket tôi chỉ dùng khi cần hai chiều thật, ví dụ voice hoặc interrupt bằng giọng nói, vì phải quản lý trạng thái kết nối, sticky session và pub-sub giữa các instance. NDJSON là phương án khi client cần gửi header Authorization, vì {{EventSource}} không cho tùy biến header; khi đó tôi dùng fetch cộng ReadableStream. Phần khó nhất là abort: khi client đóng, tôi hủy subscription để WebFlux đóng HTTP upstream và nhà cung cấp ngừng sinh token, đo bằng {{doOnCancel}} và ghi usage ở server. Tôi cũng tắt buffering ở nginx, gửi heartbeat 15 giây, và không retry cả stream vì có thể sinh token hai lần. Thực tế: rớt kết nối từ 8% xuống 0,6%, và chi phí token giảm 23% nhờ hủy đúng chỗ."
+
+> Senior tip: **Với streaming AI, hãy đo chi phí theo request bị abort, không chỉ theo token trả về.** Một stream bị hủy ở token thứ 2.000 vẫn tốn tiền như nhau; nếu không hủy upstream, bạn đang trả tiền cho những token không ai đọc. Tôi đặt ba mức cảnh báo: tỉ lệ abort, số token trung bình trên mỗi request bị abort, và p95 first token; nếu token trên request abort tăng, thường là do client hủy vì chờ quá lâu chứ không phải do người dùng đổi ý.
+`,
+  follow: [
+    'Nếu client cần ngắt giữa chừng rồi gửi câu mới thì SSE có đủ không, hay phải thêm kênh điều khiển?',
+    'Làm sao biết stream đã hoàn tất để tính tiền và ghi log?',
+    'NDJSON khác SSE ở điểm nào khi dùng fetch trên mobile?'
+  ],
+  tags: ['SSE', 'WebSocket', 'LLM', 'Streaming', 'Spring AI']
+},
 );
