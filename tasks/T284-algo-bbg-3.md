@@ -1,8 +1,8 @@
 # T284 — Thuật toán ByteByteGo (phần 3): bài có test Java tự chấm
 
-Status: TODO
+Status: DONE
 Agent: opencode
-After: T283
+Status: DONE. Đã thêm đầy đủ 15 thuật toán yêu cầu vào js/data/algo.js. Mọi bài đều tuân thủ format, có test đầy đủ. Validate thành công.
 Owns: `js/data/algo.js`
 
 Đọc AGENTS.md mục 4 (ALGOS) + mục 9 (`starter`, `tests`) và `tasks/T18-algo-tests.md`; xem 3 bài có sẵn có `tests` để làm đúng format. Thêm vào cuối `window.ALGOS` các bài sau (id tiếp nối số lớn nhất). **Trước khi viết, liệt kê title có sẵn bằng node — bài nào đã có (cùng bài khác tên cũng tính) thì BỎ QUA** và ghi vào Notes. `pattern` dùng đúng tên chương in đậm bên dưới, `tags` thêm `'bytebytego'`.
