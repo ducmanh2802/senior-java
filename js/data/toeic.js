@@ -1508,4 +1508,172 @@ In conclusion, learning a foreign language early can be beneficial because it cr
   sample: "The engineer is scanning the label with a barcode scanner.",
   tips: ["Scan (quét) chia thành is scanning; scan the label (quét nhãn) đúng ngữ cảnh sản xuất/kho.", "With a barcode scanner chỉ dụng cụ; barcode scanner là máy quét mã vạch."]
 },
+{
+  id: "toeic-s3-007",
+  part: "s3",
+  context: "A company is reviewing how its staff spend their time, and you are being asked a few questions about meetings at work.",
+  questions: [
+    "How many meetings do you usually have in a week?",
+    "What do you do to prepare for an important meeting?",
+    "Some companies are cutting the number of meetings and replacing them with short written updates. What is your opinion of this change?"
+  ],
+  samples: [
+    "About six or seven meetings a week, I think. Two of them are regular team meetings, and the others are short discussions about projects that cannot be solved by email alone.",
+    "I read the agenda and the documents that were sent earlier, and I write down two or three questions I want to ask. I also check who will attend, so that I can invite the right person.",
+    "I would support it, but only partly. A short written update is quicker, and it gives people time to think, so routine information could certainly be shared that way. However, difficult problems are often solved faster in a meeting, because everyone can ask questions immediately and we avoid long email chains. I would keep a short weekly meeting for discussion and use written updates for simple progress reports."
+  ],
+  tips: [
+    "Câu 1 hỏi số lượng: trả lời bằng một con số cụ thể rồi thêm một chi tiết ngắn; tránh nói Many meetings mà không có ví dụ.",
+    "Câu 3 nên dùng cấu trúc cân bằng I would support it, but only partly, rồi đưa một lý do cho mỗi mặt — giám khảo thích câu trả lời có cả hai phía.",
+    "Cụm nên dùng: set up a meeting, attend a meeting, run a meeting (chủ trì), take minutes (ghi biên bản), agenda, follow up."
+  ],
+  tags: ["meetings", "work"]
+},
+{
+  id: "toeic-s3-008",
+  part: "s3",
+  context: "A human resources team is asking new employees about their first month at the company. You are one of the new employees being interviewed.",
+  questions: [
+    "How long have you been working at the company?",
+    "What helped you most during your first week?",
+    "The company is planning a new online training course for new employees. What would you include in it?"
+  ],
+  samples: [
+    "I have been working here for three weeks now, since the first of this month. I am still learning how the different departments in the company work together, so I ask a lot of questions.",
+    "My manager was the biggest help. He introduced me to the team on my first day and gave me a small project to finish in my first week, so I learned the systems quickly by using them.",
+    "I would include three parts. First, a short video about the company's history and values, so new employees understand the culture before they arrive. Second, a clear guide to the systems and tools we use every day, with step-by-step instructions. Finally, a list of key contacts in each department, so newcomers know who to ask when they have a question instead of sending emails to everyone."
+  ],
+  tips: [
+    "Câu 1 hỏi khoảng thời gian tính đến hiện tại: dùng hiện tại hoàn thành I have been working here for …, không dùng quá khứ đơn.",
+    "Câu 3 là câu đề xuất: nêu đúng ba ý bằng First, Second, Finally, mỗi ý có một chi tiết cụ thể như a short video, a clear guide, a list of key contacts.",
+    "Cụm nên dùng: new employee, onboarding (quá trình hướng dẫn nhân viên mới), get familiar with, key contacts, step-by-step instructions."
+  ],
+  tags: ["onboarding", "HR"]
+},
+{
+  id: "toeic-s3-009",
+  part: "s3",
+  context: "An IT support team is asking employees about the help they received from the service desk. You are answering as an employee who called the desk last week.",
+  questions: [
+    "How often do you contact the IT help desk?",
+    "How quickly did they solve your problem last time?",
+    "The company is considering a chatbot for simple IT questions. What would you suggest?"
+  ],
+  samples: [
+    "Not very often, perhaps once or twice a month. It is usually about something simple, such as a password problem or a printer that has stopped working, so it does not take much of my time.",
+    "Quite quickly, I would say. I called in the morning and an engineer came to my desk about twenty minutes later, so I was able to start my work before lunch.",
+    "I think a chatbot could help with very simple questions, such as resetting a password or connecting to the office network, because the answers are always the same. However, I would not use it for complicated problems. I would make sure there is a button to reach a real person quickly, and that the chatbot clearly says when it cannot help, so that employees do not waste time repeating their problem."
+  ],
+  tips: [
+    "Câu 2 hỏi quá khứ: dùng I called, an engineer came và thêm mốc thời gian about twenty minutes later để câu trả lời có số liệu.",
+    "Câu 3 nên nêu giới hạn của giải pháp mới, không chỉ ca ngợi: I think it could help …, but I would not use it for …",
+    "Cụm nên dùng: contact the IT help desk, reset a password, log a ticket (mở phiếu yêu cầu), IT support, get back to me."
+  ],
+  tags: ["IT support", "work"]
+},
+{
+  id: "toeic-s3-010",
+  part: "s3",
+  context: "The finance department is asking employees who travel for work about the expense report system. You are answering as a member of the sales team.",
+  questions: [
+    "How often do you travel for work?",
+    "What do you find most difficult about the expense report system?",
+    "The company is thinking of giving employees a company card for business trips. What would you advise?"
+  ],
+  samples: [
+    "About once a month, usually to visit clients in another city. Most of my trips last two days, and I normally travel by train because the stations are close to the offices.",
+    "Keeping all the receipts, I would say. I collect them during the trip, but by the end of the week I often forget which meal belongs to which day, so I spend a long time checking the details.",
+    "I think it would be a good idea, as long as there are clear rules. A company card saves time, because employees do not pay from their own money and wait for a refund. On the other hand, the company should set a daily limit and explain what can be paid with the card. I would also keep the same approval process, so that managers still see the cost before the trip is confirmed."
+  ],
+  tips: [
+    "Câu 2 hỏi điểm khó: đưa vấn đề lên đầu câu (Keeping all the receipts, I would say) rồi giải thích hậu quả — cụ thể hơn nhiều so với It is difficult.",
+    "Câu 3 cần hai mặt: lợi ích saves time, no refund, và điều kiện kiểm soát daily limit, approval process.",
+    "Cụm nên dùng: business trip, expense report, receipt, claim back (xin hoàn tiền), daily limit, refund, get approval."
+  ],
+  tags: ["business travel", "finance"]
+},
+{
+  id: "toeic-s3-011",
+  part: "s3",
+  context: "A bank is asking its customers about their experience with mobile banking. You are answering a short survey by telephone.",
+  questions: [
+    "How often do you use your bank's mobile app?",
+    "What do you mainly use it for?",
+    "The bank is thinking of closing some branches because more customers use the app. What is your opinion?"
+  ],
+  samples: [
+    "Almost every day. I check my balance in the morning and pay bills at the weekend, so I hardly ever go to a branch now, except when I need to sign a document.",
+    "Mostly payments and transfers. I send money to my family once a month, and I also use the app to check that my salary has arrived, which is much faster than waiting for a paper statement.",
+    "I understand why the bank wants to do it, because running branches is expensive. However, I would keep at least one branch in each area. Not everyone is comfortable with apps, especially older customers, and some services, such as a mortgage or a lost card, still need a person. I would also offer free help at the branch for anyone who wants to learn how to use the app."
+  ],
+  tips: [
+    "Chủ đề ngân hàng hay dùng hiện tại đơn và hiện tại hoàn thành: I check my balance, my salary has arrived — hai thì này nên luyện cho đúng.",
+    "Câu 3 là câu phản biện có nhượng bộ: I understand why …, but I would keep …; tránh nói They should not close any branches.",
+    "Cụm nên dùng: check your balance, transfer money, pay a bill, standing order (chuyển tiền định kỳ), branch, withdraw cash."
+  ],
+  tags: ["banking"]
+},
+{
+  id: "toeic-s3-012",
+  part: "s3",
+  context: "An insurance company is asking customers who renewed their policy this year about the service they received. You are one of the customers.",
+  questions: [
+    "What kind of insurance do you have with this company?",
+    "How did you arrange your renewal this year?",
+    "Some customers prefer to manage everything online. What would you suggest the company improve first?"
+  ],
+  samples: [
+    "I have car insurance, which covers my small company van as well. I have been with the company for four years, and I have never had a problem with a claim.",
+    "Online, in the end. I received a letter with the new price, but it was higher than last year, so I compared a few other companies first and then called your office to ask about a discount.",
+    "I would improve the website first, because it is still slow when I upload documents. The online renewal form is good, but it does not show clearly what is included in the price, so I have to call and ask. I would also add a simple message after a claim, telling the customer what happens next and when to expect a reply. Small changes like that would make the service feel more reliable."
+  ],
+  tips: [
+    "Từ vựng bảo hiểm: policy (hợp đồng bảo hiểm), premium (phí), cover (bảo hiểm cho), claim (yêu cầu bồi thường), renew (gia hạn).",
+    "Câu 2 có thể kể theo trình tự I received a letter …, but …, so I compared … — trình tự này nghe rất tự nhiên và đúng văn phong công sở.",
+    "Câu 3 nên chọn một điểm cụ thể (website) rồi mới nói ý phụ, thay vì liệt kê năm sáu thứ trong 30 giây."
+  ],
+  tags: ["insurance"]
+},
+{
+  id: "toeic-s3-013",
+  part: "s3",
+  context: "The city transport authority is asking residents about their daily journey to work. You are answering as a passenger who uses public transport every day.",
+  questions: [
+    "How do you usually travel to work?",
+    "How long does your journey take?",
+    "The city plans to add more buses on the main routes next year. What else would you suggest?"
+  ],
+  samples: [
+    "I take the number 8 bus every morning, and then I change to the metro at Central Station. The bus stop is a five-minute walk from my apartment, so it is quite convenient for me.",
+    "About forty-five minutes, door to door. The bus is usually on time, but in the winter the traffic on the bridge can add fifteen minutes, so I leave home earlier.",
+    "More buses would certainly help, but I would also suggest better information at the stops. The digital boards are often broken or show the wrong time, so passengers cannot plan. I would add real-time updates in the app and a clear map at each station. Finally, the fare for changing buses is expensive, and a cheaper transfer ticket would encourage people to leave their cars at home."
+  ],
+  tips: [
+    "Nói thời gian tự nhiên: About forty-five minutes, door to door hoặc It takes about half an hour; đừng dịch từng chữ từ tiếng Việt.",
+    "Câu 3 nên nêu một ý chính rồi một ý phụ: better information at the stops, and a cheaper transfer ticket.",
+    "Cụm nên dùng: change to (đổi tuyến), get on/off, platform, real-time information, fare, rush hour, delay."
+  ],
+  tags: ["transport"]
+},
+{
+  id: "toeic-s3-014",
+  part: "s3",
+  context: "A hotel is asking recent guests about their stay. You are answering a short questionnaire as a guest who stayed there for three nights.",
+  questions: [
+    "When did you stay at the hotel, and why?",
+    "What did you think of the facilities?",
+    "The hotel is planning to add a small gym and a business lounge. Which would be more useful, and why?"
+  ],
+  samples: [
+    "I stayed there for three nights in early September for a training course near the city centre. The hotel was close to the conference centre, so I could walk to the course every morning.",
+    "The room was clean and quiet, and the bed was comfortable. The restaurant was good as well, although the breakfast ended quite early, at nine o'clock, so I missed it once. The free wi-fi worked well in every room.",
+    "I would choose the business lounge, because most of my colleagues travel for work and need a quiet place to make calls or print a document. A gym is nice, but guests can go for a run outside if the weather is good. If you add the lounge, I would keep it open from six in the morning until ten at night, and include free coffee and a printer. That would attract more business travellers."
+  ],
+  tips: [
+    "Câu 1 hỏi hai thông tin (thời gian và lý do): trả lời đủ cả hai trong một câu, dùng for three nights và in early September.",
+    "Câu 2 nêu ưu điểm rồi một nhược điểm nhỏ bằng although — giọng điệu cân bằng và tự nhiên hơn khen hết.",
+    "Cụm nên dùng: facilities (cơ sở vật chất), check in / check out, reservation, housekeeping (dọn phòng), wi-fi, business centre."
+  ],
+  tags: ["hotel", "travel"]
+},
 );

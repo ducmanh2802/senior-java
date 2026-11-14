@@ -9867,6 +9867,272 @@ Một batch dọn đơn hàng hết hạn: duyệt danh sách 50.000 đơn, xóa
   tags: ['fail-fast', 'ConcurrentModificationException', 'modCount', 'Iterator.remove', 'removeIf']
 },
 {
+  id: 'collections-046',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Key là enum trong Map/Set: EnumMap vs HashMap, EnumSet thay thế bitSet thế nào, và lưu ý khi dùng?',
+  a: `**Tóm tắt:** Khi key là enum, {{EnumMap}} và {{EnumSet}} thường ưu hơn {{HashMap}}/{{HashSet}}. {{EnumMap}} lưu giá trị trong mảng nội bộ theo ordinal (thứ tự khai báo) của enum, không cần tính hashCode, không tạo entry object, tra cứu O(1) compact. {{EnumSet}} lưu dưới dạng bitSet (một long cho đến 64 phần tử, hai long trở lên), các thao tác là bitwise cực nhanh. Cả hai không thread-safe và không chấp nhận null.
+
+### Cơ chế bên trong
+- {{EnumMap}}: constructor nhận class enum. Nội bộ là mảng Object[] kích thước bằng số hằng số enum. {{put(key, value)}} lấy {{key.ordinal()}} làm chỉ số mảng, gán trực tiếp — không hash, không bucket, không resize. {{get(key)}} lấy ordinal rồi trả phần tử mảng. Vì enum là singleton cố định, key không bị mutate hay đổi hash nên không bao giờ "mất" phần tử như key mutable trong HashMap.
+- {{EnumSet}}: trừu tượng trên mảng long[] (hoặc một long). Mỗi phần tử enum ánh xạ thành một bit theo ordinal. Thêm = OR bit, xóa = AND NOT, kiểm tra = AND. Dưới 65 phần tử dùng một long (RegularEnumSet), trên đó dùng mảng long (JumboEnumSet). Mọi thao tác O(1) bitwise.
+
+### Code minh hoạ
+~~~java
+import java.util.*;
+
+enum Role { ADMIN, MANAGER, STAFF, GUEST }
+
+Map<Role, Integer> limitByRole = new EnumMap<>(Role.class);
+limitByRole.put(Role.ADMIN, 100);
+limitByRole.put(Role.GUEST, 5);                 // không cần hashCode của Role
+int limit = limitByRole.get(Role.ADMIN);        // O(1), trực tiếp mảng
+
+Set<Role> roles = EnumSet.of(Role.ADMIN, Role.MANAGER);
+boolean isAdmin = roles.contains(Role.ADMIN);   // kiểm tra bit
+EnumSet<Role> all = EnumSet.allOf(Role.class);  // tất cả role
+EnumSet<Role> none = EnumSet.noneOf(Role.class); // tập rỗng
+~~~
+
+### Khi nào dùng / không dùng
+| Tình huống | Khuyến nghị |
+|---|---|
+| Key là enum | {{EnumMap}}: compact, nhanh, không hash, an toàn |
+| Tập hợp enum (flags, quyền) | {{EnumSet}}: thay thế bitSet, thao tác bitwise |
+| Cần thread-safe | Gói bằng {{Collections.synchronizedMap}} / {{Collections.synchronizedSet}} hoặc dùng ConcurrentHashMap |
+| Key không phải enum | Không dùng EnumMap/EnumSet, dùng HashMap/HashSet |
+| Cần null key | EnumMap không chấp nhận null key; dùng HashMap |
+
+### Ví dụ đời thực
+Hệ thống phân quyền xử lý ~50.000 request/giây, mỗi request kiểm tra vai trò user (ADMIN, MANAGER, STAFF, GUEST) trước khi cho phép hành động. Ban đầu dùng HashMap<Role, Boolean> để tra cứu quyền: mỗi lần tính hashCode enum, tạo entry object, bộ nhớ rải rác. Đo JMH thấy HashMap get khoảng 40 ns/lần. Đổi sang {{EnumMap<Role, Integer>}}: get trực tiếp theo mảng, khoảng 12 ns/lần, nhanh hơn ba lần. Cùng lúc dùng {{EnumSet<Role>}} lưu tập quyền của user (4 bit trong một long) thay vì HashSet (mỗi phần tử một entry object). Heap giảm khoảng 15 MB đối với một triệu user session. Code cũng ngắn gọn và rõ ý định hơn.
+
+### Trả lời mẫu khi phỏng vấn
+Khi key là enum, tôi ưu tiên EnumMap và EnumSet. EnumMap lưu giá trị trong mảng theo ordinal của enum nên không cần tính hashCode, không tạo entry object, tra cứu O(1) cực nhanh và không bị lỗi key mutable như HashMap. EnumSet lưu các phần tử dưới dạng bit trên một long (dưới 65 phần tử) nên add, contains, remove là thao tác bitwise, rất compact và nhanh, thích hợp lưu flags hoặc quyền hạn. Cả hai không thread-safe và không chấp nhận null, nên nếu cần đồng bộ tôi gói bằng synchronized wrapper hoặc dùng ConcurrentHashMap. Tôi từng thay HashMap<Role, Boolean> bằng EnumMap trong hệ thống phân quyền 50.000 request/giây, giảm latency tra cứu từ 40 ns xuống 12 ns và tiết kiệm khoảng 15 MB heap cho một triệu session.
+
+> Senior tip: enum là singleton cố định nên EnumMap/EnumSet an toàn tuyệt đối khỏi vấn đề key mutable của HashMap. Nếu cần thread-safe, hãy gói bằng Collections.synchronizedMap/synchronizedSet — nhưng nhớ đồng bộ toàn bộ khối khi lặp, không chỉ từng thao tác.`,
+  follow: ['EnumMap không cần hashCode vì sao, và nó có resize như HashMap không?', 'EnumSet dưới 65 phần tử dùng một long, trên 64 dùng mảng long, điều đó có ý nghĩa gì?', 'Bạn sẽ dùng EnumMap hay HashMap khi key là enum nhưng có thể thêm hằng số mới sau này?'],
+  tags: ['EnumMap', 'EnumSet', 'enum', 'ordinal', 'bitSet']
+},
+{
+  id: 'collections-047',
+  topic: 'collections',
+  level: 'lead',
+  q: 'Cấu trúc đã sắp xếp an toàn đa luồng: ConcurrentSkipListMap/Set hoạt động thế nào, dùng khi nào, và trade-off so với ConcurrentHashMap?',
+  a: `**Tóm tắt:** {{ConcurrentSkipListMap}} và {{ConcurrentSkipListSet}} là bản đồ/tập đã sắp xếp, an toàn đa luồng, dựa trên danh sách nhảy (skip list) xác suất. Các thao tác put/get/remove/contains O(log n) mà không khóa toàn bộ bảng, thích hợp cần duyệt theo thứ tự, truy vấn khoảng (range query) và leaderboard đồng thời. Không cho null key, lặp weakly consistent (không ném ConcurrentModificationException nhưng không phải snapshot chính xác).
+
+### Cơ chế bên trong
+Skip list là cấu trúc có nhiều lớp liên kết, mỗi lớp là danh sách kết nối vùng; tìm kiếm bỏ qua nhánh để đạt O(log n). ConcurrentSkipListMap thiết kế các thao tác chính không khóa toàn bảng (dùng khóa nhẹ/CAS trên node), nên nhiều luồng ghi các vùng khác nhau có thể chạy đồng thời. Cấu trúc giữ thứ tự sắp xếp theo Comparable của key hoặc comparator truyền vào, hỗ trợ firstKey, lastKey, subMap, headMap, tailMap, descendingMap.
+
+### Trade-off so với ConcurrentHashMap
+| Tiêu chí | ConcurrentHashMap | ConcurrentSkipListMap |
+|---|---|---|
+| Tra cứu theo key | O(1) | O(log n) |
+| Thứ tự | Không đảm bảo | Có, theo comparator/Comparable |
+| Truy vấn khoảng | Không hỗ trợ tốt | subMap/headMap/tailMap O(log n + k) |
+| Duyệt | entrySet không theo thứ tự | descendingMap duyệt ngược theo thứ tự |
+| Chi phí | Nhẹ, nhanh | Nhiều hơn, mỗi node giữ nhiều tham chiếu forward |
+| Null key | Không cho null | Không cho null |
+
+### Code minh hoạ
+~~~java
+import java.time.*;
+import java.util.*;
+import java.util.concurrent.*;
+
+ConcurrentSkipListMap<Instant, Order> ordersByTime = new ConcurrentSkipListMap<>();
+ordersByTime.put(instant1, order1);
+ordersByTime.put(instant2, order2);
+// range query: đơn từ start đến end
+NavigableMap<Instant, Order> range = ordersByTime.subMap(start, true, end, false);
+Order first = ordersByTime.firstEntry().getValue(); // đơn cũ nhất
+Order last = ordersByTime.lastEntry().getValue();   // đơn mới nhất
+~~~
+
+### Ví dụ đời thực
+Hệ thống leaderboard game 2 triệu người chơi, cập nhật điểm liên tục, cần top 100 và truy vấn khoảng điểm. Ban đầu dùng ConcurrentHashMap rồi sắp xếp lại mỗi lần lấy top: đọc ghi cao, top-100 tốn O(n log n). Đổi sang ConcurrentSkipListMap theo điểm: top-100 bằng descendingMap().limit(100) là O(k log n), range query điểm O(log n + k). Ghi ~15.000 cập nhật/giây đồng thời, p95 put giảm từ 2 ms xuống 0,6 ms, top-100 từ 400 ms xuống 8 ms. Không cho null key nên dùng userId không null.
+
+### Trả lời mẫu khi phỏng vấn
+ConcurrentSkipListMap và ConcurrentSkipListSet là bản đồ/tập đã sắp xếp an toàn đa luồng dựa trên skip list. Mỗi thao tác put, get, remove, contains là O(log n), nhưng không khóa toàn bộ bảng nên nhiều luồng ghi khác vùng có thể chạy đồng thời. Cấu trúc giữ thứ tự sắp xếp theo Comparable hoặc comparator của key, nên hỗ trợ firstKey, lastKey, subMap, headSet, tailSet và duyệt descending — rất thích hợp leaderboard, bảng xếp hạng, truy vấn khoảng giá/thời gian. So với ConcurrentHashMap (O(1) nhưng không thứ tự), ConcurrentSkipListMap chậm hơn O(log n) và tốn bộ nhớ nhiều hơn do mỗi node giữ nhiều tham chiếu forward, không chấp nhận null key. Iterator là weakly consistent: không ném ConcurrentModificationException nhưng không đảm bảo snapshot chính xác. Tôi từng dùng ConcurrentSkipListMap theo thời gian để truy vấn đơn hàng trong khoảng, p95 put giảm từ 2 ms xuống 0,6 ms và top-100 từ 400 ms xuống 8 ms.
+
+> Senior tip: Dùng ConcurrentSkipListMap khi cần cùng lúc sắp xếp và đồng thời ghi; nếu chỉ cần tra cứu theo key không quan tâm thứ tự, ConcurrentHashMap nhanh hơn và nhẹ hơn. Không bỏ null vào key, và đừng coi iterator như snapshot khi tính báo cáo cần số chính xác.`,
+  follow: ['Skip list là gì và tại sao tìm kiếm O(log n)?', 'ConcurrentSkipListMap có cho null key không, và sai thì ra sao?', 'Iterator weakly consistent khác snapshot như thế nào, và có ảnh hưởng báo cáo không?'],
+  tags: ['ConcurrentSkipListMap', 'ConcurrentSkipListSet', 'skip list', 'concurrent', 'NavigableMap']
+},
+{
+  id: 'collections-048',
+  topic: 'collections',
+  level: 'senior',
+  q: 'NavigableSet và NavigableMap cung cấp view subSet/headSet/tailSet/subMap: hoạt động thế nào, chỉnh sửa view ảnh hưởng bản gốc, và bẫy khi lặp?',
+  a: `**Tóm tắt:** {{NavigableSet}} (TreeSet) và {{NavigableMap}} (TreeMap) cung cấp view phân đoạn {{subSet}}, {{headSet}}, {{tailSet}}, {{subMap}}. View là "cửa sổ" nhìn vào một khoảng của cấu trúc gốc: chỉnh sửa qua view ảnh hưởng ngay bản gốc và ngược lại, nhưng view không phải bản sao. Việc thay đổi cấu trúc bản gốc (thêm/xoá) trong khi đang lặp qua view ném {{ConcurrentModificationException}}.
+
+### Cơ chế bên trong
+View giữ tham chiếu đến bản gốc và khoảng ranh giới. Thao tác trên view được ủy thác sang bản gốc với điều kiện kiểm tra ranh giới. Vì chỉ là view, thêm phần tử nằm ngoài ranh giới qua view ném {{IllegalArgumentException}}. Structural modification (thêm/xoá) trên bản gốc trong khi có iterator view đang hoạt động → {{ConcurrentModificationException}}.
+
+### Code minh hoạ
+~~~java
+import java.util.*;
+
+TreeSet<Integer> scores = new TreeSet<>(List.of(10, 20, 30, 40, 50, 60, 70, 80, 90, 100));
+NavigableSet<Integer> band = scores.subSet(30, true, 70, false); // [30, 70)
+band.add(45);            // scores cũng có 45
+scores.remove(50);       // band mất 50
+System.out.println(scores.contains(45)); // true — view và gốc đồng bộ
+// band.add(5);           // IllegalArgumentException: ngoài ranh giới [30, 70)
+~~~
+
+### Khi nào dùng / không dùng
+| Tình huống | Khuyến nghị |
+|---|---|
+| Truy vấn khoảng (giá, thời gian) | subSet/headSet/tailSet, subMap |
+| Cần snapshot riêng | Sao chép ra HashSet/ArrayList mới trước khi xử lý |
+| Lặp và sửa bản gốc | Ném CME, tránh; dùng iterator của bản gốc hoặc sao chép |
+| Thêm phần tử ngoài ranh giới qua view | IllegalArgumentException |
+
+### Ví dụ đời thực
+Hệ thống giảm giá áp dụng đơn trong khoảng giá [50.000, 200.000) đồng. Dùng TreeMap<Double, List<Order>> theo tổng tiền, view subMap để lấy đơn đủ điều kiện áp mã giảm giá. Trong ca promo, hàng chục đơn/giây được thêm/xoá. Nếu duyệt view và đồng thời thread khác thêm đơn vào TreeMap gốc (ngoài khoảng view), iterator view ném CME, promo dừng giữa chừng. Sửa: sao chép view ra ArrayList mới (new ArrayList<>(band)) rồi xử lý bên ngoài, hoặc đồng bộ hóa toàn bộ khối trên bản gốc. Kết quả: promo chạy ổn định 10.000 đơn/ca, không còn CME.
+
+### Trả lời mẫu khi phỏng vấn
+NavigableSet (TreeSet) và NavigableMap (TreeMap) cung cấp view phân đoạn qua subSet, headSet, tailSet và subMap. View là cửa sổ nhìn vào một khoảng của cấu trúc gốc, không phải bản sao: thêm/xoá qua view ảnh hưởng ngay bản gốc và ngược lại, và thêm phần tử nằm ngoài ranh giới qua view ném IllegalArgumentException. Vì chỉ là view, structural modification (thêm/xoá) trên bản gốc trong khi đang lặp qua view ném ConcurrentModificationException, giống fail-fast. Tôi dùng subMap cho truy vấn khoảng giá hoặc thời gian, nhưng khi cần xử lý dài hạn tôi sao chép view ra danh sách mới để tránh ảnh hưởng từ luồng khác. Nếu phải sửa bản gốc khi đang dùng view, tôi đồng bộ hóa toàn bộ khối trên bản gốc, không chỉ từng thao tác. Tôi từng sửa ca khuyến mãi: duyệt view đơn trong khoảng giá trong khi thread khác thêm đơn vào TreeMap gốc gây CME, đổi sang sao chép view ra ArrayList rồi xử lý, vấn đề biến mất.
+
+> Senior tip: View subSet/subMap liên kết chặt với bản gốc — đừng coi nó là bản sao độc lập. Nếu cần xử lý lâu hoặc sửa liên tục, hãy sao chép ra collection mới; nếu phải sửa bản gốc, đồng bộ toàn bộ khối trên bản gốc để tránh ConcurrentModificationException.`,
+  follow: ['View subSet là bản sao hay cửa sổ vào bản gốc?', 'Thêm phần tử ngoài ranh giới qua view xảy ra gì?', 'Sửa bản gốc khi đang lặp view ném exception nào, và khắc phục ra sao?'],
+  tags: ['NavigableSet', 'NavigableMap', 'TreeSet', 'TreeMap', 'subSet', 'subMap', 'view']
+},
+{
+  id: 'collections-049',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Tìm kiếm nhị phân trên List bằng Collections.binarySearch: yêu cầu List đã sắp xếp, giá trị trả về khi không tìm thấy (điểm chèn), và so sánh với contains?',
+  a: `**Tóm tắt:** {{Collections.binarySearch(list, key)}} tìm kiếm nhị phân O(log n) trên List đã sắp xếp theo thứ tự tự nhiên hoặc comparator đã cho. Yêu cầu list **đã sắp xếp**; nếu chưa, kết quả không xác định (có thể trả giá trị sai lầm mà không ném exception). Khi không tìm thấy, trả về điểm chèn dưới dạng số âm: {{-(indexChèn + 1)}}. So với {{contains()}} (O(n) cho ArrayList), binarySearch nhanh hơn rất nhiều trên danh sách lớn đã sắp xếp, nhưng chi phí sắp xếp đầu tiên O(n log n) phải được tính vào.
+
+### Cơ chế bên trong
+Chia đôi khoảng tìm kiếm, so sánh phần tử giữa với key, chuẩn bị nửa bên trái hoặc phải. Lặp đến khi tìm được hoặc khoảng trống. Vì List có thể không hỗ trợ truy cập ngẫu nhiên hiệu quả (LinkedList), binarySearch trên LinkedList vẫn O(log n) so sánh nhưng mỗi bước di chuyển iterator O(n) → tổng O(n log n), chậm hơn contains. Do đó chỉ dùng binarySearch trên List hỗ trợ RandomAccess (ArrayList, array-backed) hoặc mảng.
+
+### Code minh hoạ
+~~~java
+import java.util.*;
+
+List<Integer> ids = new ArrayList<>(List.of(10, 20, 30, 40, 50)); // đã sắp xếp
+int idx = Collections.binarySearch(ids, 30);   // 2 (tìm thấy)
+int idx2 = Collections.binarySearch(ids, 35);  // -4 (không tìm thấy, điểm chèn là index 3)
+// điểm chèn thực tế = -(-4) - 1 = 3
+ids.add(-idx2 - 1, 35);                        // chèn giữ thứ tự: [10,20,30,35,40,50]
+// binarySearch trên list chưa sắp xếp: kết quả không xác định, không ném exception
+~~~
+
+### Khi nào dùng / không dùng
+| Tình huống | Khuyến nghị |
+|---|---|
+| List đã sắp xếp, tra cứu nhiều lần | binarySearch O(log n) |
+| List chưa sắp xếp, tra cứu một vài lần | contains O(n), không sắp xếp vừa vặn |
+| Cần duy trì thứ tự và chèn | binarySearch tìm điểm chèn, add tại vị trí |
+| LinkedList | tránh binarySearch, dùng contains hoặc chuyển sang ArrayList |
+| Cập nhật liên tục + tra cứu | TreeSet/TreeMap thay vì List sort liên tục |
+
+### Ví dụ đời thực
+Hệ thống duy trì danh sách mã khách hàng VIP đã sắp xếp (~200.000 mã), tra cứu hàng nghìn lần/giây để quyết định giảm giá. Ban đầu dùng ids.contains(mã) O(n), mỗi lần quét trung bình 100.000 phần tử, CPU spike. Đổi sang Collections.binarySearch sau khi đảm bảo danh sách sắp xếp: mỗi tra cứu O(log n) ≈ 18 bước, latency tra cứu từ ~1.2 ms xuống ~15 µs, CPU giảm 70%. Danh sách chỉ thay đổi một lần mỗi ngày (cập nhật danh sách VIP), nên sắp xếp một lần rồi binarySearch nhiều lần là lý tưởng. Nếu danh sách thay đổi liên tục, tôi dùng TreeSet thay vì sắp xếp List liên tục.
+
+### Trả lời mẫu khi phỏng vấn
+Collections.binarySearch thực hiện tìm kiếm nhị phân O(log n) trên List đã sắp xếp theo thứ tự tự nhiên hoặc comparator truyền vào. Điều kiện trước là list phải đã sắp xếp; nếu chưa, kết quả không xác định và không ném exception, nên dễ gây bug im lặng. Khi không tìm thấy phần tử, hàm trả về điểm chèn dưới dạng số âm: -(index chèn + 1), cho phép chèn phần tử mới giữ thứ tự bằng add(-idx - 1, value). So với contains() (O(n) đối với ArrayList), binarySearch nhanh hơn rất nhiều trên danh sách lớn đã sắp xếp, nhưng chỉ nên dùng trên List hỗ trợ truy cập ngẫu nhiên như ArrayList; trên LinkedList mỗi bước di chuyển iterator tốn O(n) khiến tổng chi phí O(n log n), chậm hơn contains. Nếu danh sách thay đổi liên tục, TreeSet/TreeMap là lựa chọn tốt hơn daripada sắp xếp List liên tục. Tôi từng dùng binarySearch trên danh sách 200.000 mã VIP tra cứu hàng nghìn lần/giây, giảm latency từ 1,2 ms xuống 15 micro giây và CPU giảm 70%.
+
+> Senior tip: Chỉ gọi binarySearch khi chắc chắn List đã sắp xếp theo cùng comparator dùng để tìm. Kết quả âm là điểm chèn, không phải "không tìm thấy" đơn thuần — hãy chuyển bằng -idx - 1 trước khi chèn. Tránh binarySearch trên LinkedList.`,
+  follow: ['binarySearch trả về giá trị âm nghĩa là gì, và chuyển thành điểm chèn ra sao?', 'Tại sao không gọi binarySearch trên list chưa sắp xếp, và có ném exception không?', 'Tại sao tránh binarySearch trên LinkedList?'],
+  tags: ['Collections.binarySearch', 'binary search', 'sorted list', 'contains', 'RandomAccess']
+},
+{
+  id: 'collections-050',
+  topic: 'collections',
+  level: 'mid',
+  q: 'Collections.singletonList/emptyList/singletonMap: trả về danh sách/tập/map bất biến thay vì null, và an toàn như thế nào?',
+  a: `**Tóm tắt:** {{Collections.singletonList}}, {{Collections.emptyList}}, {{Collections.emptySet}}, {{Collections.emptyMap}}, {{Collections.singletonMap}} trả về collection bất biến (immutable), thread-safe, serialization-friendly, dùng để trả về "không có kết quả" hoặc một phần tử duy nhất thay vì trả {{null}}. Tránh NullPointerException ở caller và truyền Intent rõ ràng. Collection trả về không cho thêm/xoá/sửa (ném {{UnsupportedOperationException}}), và singletonList/singletonMap chỉ chứa một phần tử.
+
+### Cơ chế bên trong
+Internal class private, tất cả phương thức mutate ném UnsupportedOperationException. emptyList()/emptySet()/emptyMap() trả về hằng số duy nhất (singleton) được chia sẻ, tiết kiệm bộ nhớ. singletonList(o) gói một phần tử. Vì bất biến, an toàn chia sẻ giữa nhiều luồng mà không đồng bộ. Không cho null phần tử (trong singletonList/singletonMap) — ném NullPointerException nếu truyền null.
+
+### Code minh hoạ
+~~~java
+import java.util.*;
+
+public List<String> getRoles(User user) {
+    if (user == null || user.getRoles() == null) {
+        return Collections.emptyList();   // trả về rỗng bất biến, không trả null
+    }
+    return user.getRoles();
+}
+
+public Map<String, String> getHeader(String traceId) {
+    if (traceId == null) return Collections.emptyMap();
+    return Collections.singletonMap("X-Trace-Id", traceId);
+}
+
+// caller không cần null check
+for (String role : getRoles(user)) { ... } // an toàn khi rỗng
+// getRoles(user).add("admin");  // UnsupportedOperationException
+~~~
+
+### Khi nào dùng / không dùng
+| Tình huống | Khuyến nghị |
+|---|---|
+| Trả về "không có dữ liệu" | emptyList/emptySet/emptyMap thay vì null |
+| Trả về một giá trị duy nhất | singletonList/singletonMap |
+| Caller cần sửa collection | Tạo ArrayList/HashMap mới, không dùng singleton |
+| Phần tử có thể null | Không dùng singletonList(null), dùng ArrayList |
+
+### Ví dụ đời thực
+API truy vấn đơn hàng theo mã trả về danh sách đơn. Ban đầu trả null khi không tìm thấy, caller quên null check → NullPointerException làm fail ~0,5% request, p99 tăng. Đổi sang trả Collections.emptyList() khi không tìm thấy: caller lặp for-each an toàn, không cần null check, taux lỗi xuống 0. Cùng lúc trả singletonMap cho header trace-id khi có. Heap tiết kiệm vì emptyList chia sẻ một hằng số thay vì tạo ArrayList rỗng mới mỗi lần (~40 byte × triệu lượt gọi = vài chục MB tiết kiệm/ngày).
+
+### Trả lời mẫu khi phỏng vấn
+Collections.singletonList, emptyList, emptySet, emptyMap và singletonMap trả về collection bất biến, an toàn đa luồng, dùng để trả về "không có kết quả" hoặc một phần tử duy nhất thay vì trả null. Điều này giúp caller không phải null check, tránh NullPointerException, và truyền intent rõ ràng. Collection trả về không cho thêm/xoá/sửa (ném UnsupportedOperationException), singletonList/singletonMap không chấp nhận phần tử null. emptyList()/emptySet()/emptyMap() trả về hằng số duy nhất được chia sẻ, tiết kiệm bộ nhớ so với tạo collection rỗng mới mỗi lần. Vì bất biến, an toàn chia sẻ giữa nhiều luồng mà không đồng bộ. Tôi từng sửa API trả null khi không tìm thấy đơn hàng, gây NullPointerException làm fail 0,5% request; đổi sang trả Collections.emptyList(), lỗi xuống không còn và caller không cần null check nữa.
+
+> Senior tip: Trả collection rỗng bất biến thay vì null là quy tắc golden để tránh NullPointerException. Nhớ không thể thêm phần tử vào singleton/empty collection, và không truyền null vào singletonList/singletonMap.`,
+  follow: ['Trả emptyList thay vì null có lợi ích gì cho caller?', 'Singleton list có thêm phần tử được không, và sai thì ném exception nào?', 'emptyList có tạo object mới mỗi lần gọi không?'],
+  tags: ['Collections.emptyList', 'singletonList', 'immutable', 'null', 'UnsupportedOperationException']
+},
+{
+  id: 'collections-051',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Map.compute, computeIfPresent và merge dùng để cập nhật có điều kiện theo key: trong ConcurrentHashMap thao tác nguyên tử như thế nào, và tránh gì trong hàm remapping?',
+  a: `**Tóm tắt:** {{compute}}, {{computeIfPresent}}, {{computeIfAbsent}} và {{merge}} cho phép cập nhật giá trị theo key trong một thao tác, tránh đọc-ghi hai bước gây race condition. Trong {{ConcurrentHashMap}}, thao tác trên cùng một key là nguyên tử (khóa đối tượng node/bucket đó), nhiều luồng cập nhật các key khác nhau có thể chạy đồng thời. Hàm remapping (mapping function) **không được** thực hiện tác vụ nặng, chặn I/O, hoặc sửa bản đồ khác bên trong — vì đang giữ khóa, dễ gây deadlock hoặc giảm throughput dramatically.
+
+### Cơ chế bên trong
+compute(key, f): nếu f trả null thì xoá key (nếu tồn tại) hoặc không thêm (nếu không tồn tại). computeIfPresent chỉ tác vụ khi key tồn tại. computeIfAbsent chỉ tính khi key không có, kết quả được put nếu không null. merge(key, value, f): nếu key chưa có thì put value, nếu có thì gọi f(oldValue, newValue) để tính giá trị mới (hoặc xoá nếu f trả null). Toàn bộ kiểm tra-tính toán-ghi cho cùng một key diễn ra nguyên tử.
+
+### Code minh hoạ
+~~~java
+import java.util.*;
+import java.util.concurrent.*;
+
+Map<String, Integer> countMap = new ConcurrentHashMap<>();
+// đếm lượt truy cập, nguyên tử theo key
+countMap.compute(ip, (k, old) -> old == null ? 1 : old + 1);
+// hoặc merge ngắn gọn hơn
+countMap.merge(ip, 1, Integer::sum);
+// chỉ tính khi chưa có
+cache.computeIfAbsent(userId, k -> loadProfileFromDb(k));
+// tránh: tác vụ nặng/chặn bên trong hàm
+// countMap.compute(ip, (k, old) -> http.call(...)); // KHÔNG
+~~~
+
+### Khi nào dùng / không dùng
+| Tình huống | Khuyến nghị |
+|---|---|
+| Cập nhật có điều kiện theo key (đếm, tích lũy) | compute/merge, nguyên tử trong CHM |
+| Tính toán expensive chỉ khi key chưa có | computeIfAbsent |
+| Hàm remapping chặn I/O, gọi DB, sửa map khác | KHÔNG, gây deadlock/giam throughput |
+| Cần snapshot nhất quán nhiều key | CHM không garant toàn-bản, dùng đồng bộ hoặc snapshot |
+
+### Ví dụ đời thực
+Dịch vụ theo dõi lượt xem bài viết, ~30.000 lượt/giây, mỗi lượt tăng counter của bài viết. Ban đầu dùng Integer old = map.get(id); map.put(id, old + 1); → race condition, mất lượt under load. Đổi sang map.merge(id, 1, Integer::sum) trên ConcurrentHashMap: nguyên tử theo key, không mất lượt, throughput ~28.000 cập nhật/giây, p95 ~0,4 ms. Một dev thêm gọi API bên trong hàm remapping để làm giàu dữ liệu → giữ khóa node khi chờ HTTP, throughput rơi xuống 2.000/giây và gần deadlock. Sửa: lấy dữ liệu trước rồi merge, hoặc tính toán bên ngoài. Kết quả: ổn định 30.000 lượt/giây.
+
+### Trả lời mẫu khi phỏng vấn
+compute, computeIfPresent, computeIfAbsent và merge cho phép cập nhật giá trị theo key trong một thao tác, tránh race condition của mô hình đọc-ghi hai bước (get rồi put). Trong ConcurrentHashMap, thao tác trên cùng một key là nguyên tử: bản đồ khóa đối tượng node/bucket của key đó, nên nhiều luồng cập nhật các key khác nhau có thể chạy đồng thời. compute(key, f) cho phép f trả null để xoá key; computeIfPresent chỉ tác vụ khi key đã tồn tại; computeIfAbsent chỉ tính và put khi key chưa có; merge(key, value, f) put value nếu chưa có hoặc gọi f(old, new) để tính giá trị mới. Quan trọng: hàm remapping không được thực hiện tác vụ nặng, chặn I/O, gọi DB hay sửa bản đồ khác bên trong, vì đang giữ khóa — dễ gây deadlock hoặc suy giảm throughput nghiêm trọng. Tôi từng sửa dịch vụ đếm lượt xem 30.000 lượt/giây: từ get-put hai bước gây mất lượt, đổi sang merge(id, 1, Integer::sum) trên ConcurrentHashMap, nguyên tử, không mất lượt, throughput ổn định.
+
+> Senior tip: Ưu tiên merge(Integer::sum) cho đếm thay vì compute phức tạp. Không đặt logic nặng hoặc I/O vào hàm remapping vì nó giữ khóa node. Nếu cần tính toán đắt đỏ, hãy lấy dữ liệu trước rồi mới merge.`,
+  follow: ['computeIfAbsent chỉ tính khi key chưa có, và kết quả null thì sao?', 'Trong ConcurrentHashMap, compute trên cùng một key có nguyên tử không, và các key khác chạy đồng thời được không?', 'Tại sao không gọi I/O hay sửa map khác bên trong hàm remapping?'],
+  tags: ['ConcurrentHashMap', 'compute', 'merge', 'computeIfAbsent', 'atomic', 'race condition']
+},
+{
 id: 'core-056',
   topic: 'core',
   level: 'senior',

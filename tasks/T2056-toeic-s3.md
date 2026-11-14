@@ -24,28 +24,23 @@ Chất lượng: tiếng Anh tự nhiên, đúng ngữ pháp, đúng văn phong 
 
 ## Notes
 
-Đã thêm 8 object s3 vào `js/data/toeic.js` bằng `node scripts/qtool.js append js/data/toeic.js logs/tmp-T2056.js`:
-`toeic-s3-007` (meetings ở công sở), `toeic-s3-008` (onboarding nhân viên mới), `toeic-s3-009` (IT helpdesk),
-`toeic-s3-010` (chi phí công tác / expense report), `toeic-s3-011` (mobile banking), `toeic-s3-012` (bảo hiểm xe),
-`toeic-s3-013` (giao thông công cộng đi làm), `toeic-s3-014` (khách sạn / hotel stay).
-Không trùng chủ đề s3-001…006 (mua sắm, du lịch nghỉ dưỡng, thể thao, công nghệ ở công sở, menu nhà hàng, làm việc từ xa).
+Đã thêm 8 object **s3** vào `js/data/toeic.js` bằng `node scripts/qtool.js append js/data/toeic.js logs/tmp-T2056.js`:
+`toeic-s3-015` (bệnh viện / phòng khám ngoại trú), `toeic-s3-016` (sửa chữa đồ gia dụng), `toeic-s3-017` (giao hàng / courier),
+`toeic-s3-018` (thuê căn hộ), `toeic-s3-019` (hãng bay / sân bay), `toeic-s3-020` (lớp học nấu ăn),
+`toeic-s3-021` (tình nguyện sự kiện cộng đồng), `toeic-s3-022` (nhà mạng internet / broadband).
 
-Mỗi bài đúng 3 `questions` + 3 `samples` + 3 `tips` (tiếng Việt, có cụm dùng ngay); `tags` 1–2 mục. Tên người/công ty/địa điểm hư cấu, số liệu trong bài tự nhất quán.
+Id nối tiếp id lớn nhất của part s3 khi bắt đầu (toeic-s3-014). Các bài s3-007…014 đã có sẵn từ task trước, không đụng tới.
 
-Số từ mẫu (kiểm tra bằng script, đúng thời lượng ETS): câu 1–2 = 30–39 từ (15 giây), câu 3 = 66–75 từ (30 giây).
+Mỗi bài đúng 3 `questions` + 3 `samples` + 3 `tips` (tiếng Việt, có cụm dùng ngay); `tags` 1–2 mục. Tên người/công ty/địa điểm hư cấu, số liệu trong bài tự nhất quán (giờ, ngày, giá khớp nhau).
+
+Số từ mẫu (kiểm tra bằng script, đúng thời lượng ETS): câu 1–2 = 28–37 từ (15 giây), câu 3 = 69–76 từ (30 giây).
 
 Nghiệm thu:
 - `node --check js/data/toeic.js` → OK.
-- `node scripts/build-light-index.js` → `Đã ghi js/data/index-light.js (291.3 KB)`.
-- `node scripts/validate.js toeic.js` → `OK — không có lỗi.` TOEIC S&W: 114 bài `{s1:14, s2:14, s3:14, s4:6, s5:16, w1:30, w2:14, w3:6}`.
-- `git diff --numstat js/data/toeic.js` = **168 thêm / 0 xoá** (không sửa dòng có sẵn).
+- `node scripts/build-light-index.js` → OK (ghi lại `js/data/index-light.js`).
+- `node scripts/validate.js` → `OK — không có lỗi.` TOEIC S&W: 122 bài `{s1:14, s2:14, s3:22, s4:6, s5:16, w1:30, w2:14, w3:6}` (s3 tăng từ 14 lên 22).
 - KHÔNG commit.
 
-Vướng ngoài phạm vi (không tự sửa theo luật 3): `node scripts/validate.js` (toàn repo) còn đúng 1 lỗi ở file của task khác —
-`q-java.js: collections-057.a: inline code {{synchronized (map) { for (...) … }} chứa dấu { } lồng nhau`.
-Đây là nội dung **chưa commit** của task khác (q-java.js +743 dòng, mtime 09:10 cùng ngày, không phải file T2056 sở hữu).
-Khi file đó được sửa, `node scripts/validate.js` sẽ in `OK — không có lỗi.`
+Lưu ý cho integrator: nhiều task TOEIC (T2056/T2057/T2058/T2059/T2060/T2061/T2062/T2063/T2064) cùng sở hữu `js/data/toeic.js` và chạy song song trên một worktree. Trong lúc chạy, một worker khác đã `git stash` toàn bộ thay đổi chưa commit (khoảng 18:15), đẩy cả `toeic.js` vào `stash@{0}` và đưa file về bản HEAD (mất 8 id). Tôi đã khôi phục `js/data/toeic.js` từ `stash@{0}` và xác minh đủ `toeic-s3-015…022`. Nếu sau này thấy thiếu, kiểm tra `git stash list` và khôi phục lại từ stash.
 
-Lưu ý cho integrator: giữa lúc chạy, `js/data/toeic.js` từng bị một tiến trình khác đưa về bản gốc sau khi append (phát hiện qua `git diff --numstat` = 0).
-Đã append lại và xác minh 168/0 + `validate toeic.js` OK ngay sau đó. Nếu thấy thiếu 8 id trên, chạy lại:
-`node scripts/qtool.js append js/data/toeic.js logs/tmp-T2056.js` (file tạm vẫn còn trong `logs/`).
+CẢNH BÁO QUAN TRỌNG: do đúng lúc `toeic.js` đang bị stash (về bản HEAD), autopilot đã commit nhầm `c6057e9 "Task T2056: DONE, no content change left to commit"` — tức là HEAD hiện ĐÁNH DẤU T2056 = DONE nhưng **KHÔNG có nội dung** 8 bài s3. Vì T2056 đã DONE trong HEAD, autopilot sẽ **bỏ qua T2056 ở mọi vòng sau** (COMMITTED), nên phần nội dung thật (`toeic-s3-015…022`) chỉ nằm ở **working tree** và cần **integrator commit bù** (`js/data/toeic.js` + task file này). Bằng chứng: `git show HEAD:js/data/toeic.js` chỉ có tới `toeic-s3-006`, còn working tree có đủ `toeic-s3-015…022` và `node scripts/validate.js` = OK (s3:22).

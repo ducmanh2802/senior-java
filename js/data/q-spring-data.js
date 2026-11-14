@@ -12802,4 +12802,937 @@ Hệ thống dùng {{@SQLRestriction("deleted = false")}} trên Customer. Ba tu�
   ],
   tags: ['@SQLRestriction', 'soft delete', 'Hibernate 6.3', 'orphanRemoval', 'partial index']
 },
+{
+  id: 'spring-082',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Spring Boot Actuator: ban cau hinh health group tuy chinh nao cho Kubernetes liveness/readiness, endpoint nao can expose, va management.endpoints.web.exposure.include co rui ro gi khi mo rong?',
+  a: `**Tom tat:** Actuator cung cap endpoint {{/actuator/health}} (mac dinh public) va nhom {{liveness}}, {{readiness}} cho Kubernetes probe. Liveness kiem tra tien trinh con song; readiness kiem tra san sang nhan traffic (DB, cache, downstream). Mo rong {{management.endpoints.web.exposure.include}} qua rong lo thong tin nhay cam (env, config, loggers, heapdump). Quy tac: chi expose {{health}}, {{info}}, {{metrics}}, {{prometheus}}; cac endpoint quan tri dat duong dan rieng, bao ve bang Spring Security hoac network policy.
+
+### Health group va probe mapping
+Spring Boot 3 tu dang ky hai health group: {{liveness}} (chi kiem tra tien trinh, khong phu thuoc xuong game) va {{readiness}} (kiem tra DB, message broker, cache, downstream). Kubernetes dung:
+- {{livenessProbe}} -> {{/actuator/health/liveness}}: neu fail, pod bi kill va restart.
+- {{readinessProbe}} -> {{/actuator/health/readiness}}: neu fail, pod goi khoi Service, khong nhan traffic moi.
+
+Tuy chinh group trong {{application.yml}}:
+~~~yaml
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          include: db,redis,kafka,customDownstream
+        liveness:
+          include: ping
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+      base-path: /actuator
+  health:
+    db:
+      enabled: true
+    redis:
+      enabled: true
+~~~
+
+### Custom health indicator
+Khi co downstream quan trong (cong thanh toan, service noi bo), viet {{HealthIndicator}} tuy chinh:
+~~~java
+@Component
+class PaymentGatewayHealthIndicator implements HealthIndicator {
+    private final PaymentClient client;
+    PaymentGatewayHealthIndicator(PaymentClient client) { this.client = client; }
+    @Override
+    public Health health() {
+        try:
+            var ok = client.ping()
+            return ok ? Health.up().withDetail("latencyMs", 12).build()
+                      : Health.down().withDetail("reason", "ping failed").build()
+        except Exception as e:
+            return Health.down(e).build()
+}
+~~~
+Indicator nay tu duoc gom vao group readiness neu dat ten ket thuc {{HealthIndicator}}.
+
+### Rui ro exposure.include
+| Endpoint | Rui ro khi expose public |
+|---|---|
+| {{env}} | Lo toan bo property, secret, profile active |
+| {{configprops}} | Lo cau hinh bind cua moi {{@ConfigurationProperties}} |
+| {{loggers}} | Cho phep thay doi log level runtime, lo package noi bo |
+| {{heapdump}} | Tai file heap (~GB), chua object nhay cam |
+| {{threaddump}} | Lo stack trace, co the lo logic nghiep vu |
+| {{mappings}} | Lo toan bo route, handler, interceptor |
+
+Chi expose: {{health}}, {{info}}, {{metrics}}, {{prometheus}}. Cac endpoint quan tri khac: dat {{management.endpoints.web.base-path=/manage}}, bao ve bang Spring Security {{@PreAuthorize("hasRole('ADMIN')")}} hoac network policy chi cho phep tu bastion/CI.
+
+### Kubernetes probe tuning
+- {{initialDelaySeconds}}: doi app khoi dong xong (vi du 10-30s).
+- {{periodSeconds}}: tan suat check (thuong 10s).
+- {{timeoutSeconds}}: ngan hon period (3-5s).
+- {{failureThreshold}}: cho phep vai lan fail truoc khi hanh dong (3-5).
+Readiness fail nhanh giup traffic khong do vao pod chua san sang; liveness fail cham hon de tranh kill pod khi GC pause.
+
+### Pitfall production
+- Khong co custom health indicator cho downstream quan trong: pod bao ready nhung goi payment gateway fail.
+- {{management.endpoints.web.exposure.include=*}} tren production: lo secret qua {{/actuator/env}}, heapdump co the tai.
+- Readiness kiem tra DB nhung khong kiem tra message broker: pod ready nhung consumer khong ket noi duoc Kafka.
+- Liveness dung DB check: GC pause lau lam DB check timeout -> pod bi kill vo ly.
+
+### Vi du doi thuc
+He thong thanh toan 12 pod, deploy rolling. Truoc chi dung {{/actuator/health}} cho ca liveness va readiness. Khi GC pause 8 giay, health check DB timeout, liveness fail -> pod bi kill, rolling update dung, traffic do vao it pod con lai -> cascade fail. Sua: tach group: liveness chi {{ping}} (luon nhanh), readiness kiem tra {{db}}, {{redis}}, {{kafka}}, {{payment-gateway}}. Them {{preStop sleep 5}} de cho endpoint goi. Deploy sau: GC pause khong con kill pod, readiness fail nhanh chuyen traffic ra pod khac, rolling update on dinh. Theo doi metric {{http.server.requests}} cho {{/actuator/health/readiness}} thay p99 15ms, khong anh huong latency API.
+
+### Tra loi mau khi phong van
+"Actuator health group cho phep tach liveness va readiness: liveness chi kiem tra tien trinh con song (ping), readiness kiem tra DB, cache, broker va downstream quan trong. Kubernetes livenessProbe tro vao {{/actuator/health/liveness}}, readinessProbe tro vao {{/actuator/health/readiness}}. Toi viet custom HealthIndicator cho tung downstream quan trong (cong thanh toan, service noi bo) va gom vao group readiness. Ve exposure, toi chi mo {{health}}, {{info}}, {{metrics}}, {{prometheus}}; cac endpoint nhay cam nhu {{env}}, {{heapdump}}, {{loggers}} thi dat base-path rieng va bao ve bang Spring Security hoac network policy. Khong bao de {{exposure.include=*}} tren production."
+
+> Senior tip: hay treat Actuator endpoint nhu API cong khai: version, deprecation, authentication, rate limit. {{/actuator/health}} public la bat buoc cho probe, nhung {{/actuator/env}} public la loi bao mat. Toi luon review exposure.include trong checklist release.`,
+
+  follow: [
+    "Vi sao khong nen dung DB check trong liveness probe?",
+    "Custom HealthIndicator nem exception thi Spring Boot xu ly the nao?",
+    "Khi nao can disabledConditions de bo qua auto-config health indicator cua thu vien?"
+  ],
+  tags: ["Actuator", "health", "liveness", "readiness", "Kubernetes", "exposure", "Spring Boot 3"]
+},
+{
+  id: 'spring-083',
+  topic: 'spring',
+  level: 'senior',
+  q: 'HikariCP trong Spring Boot: ban dat maximumPoolSize, minimumIdle, connectionTimeout, maxLifetime, leakDetectionThreshold dua tren cong thuc nao? Khi pool can do Open Session In View hoac transaction dai, ban dieu tra va khac phuc theo thu tu nao?',
+  a: `**Tom tat:** Kich thuoc pool HikariCP khong lay theo so thread ung dung ma theo tai thuc te: pool ~ (so core DB x 2) + so o dia hieu dung, bat dau 10-20 tren moi instance. Tong pool moi instance phai nho hon {{max_connections}} cua DB (chua 20% cho admin/replication). {{connectionTimeout}} ngan (2-5s) de fail nhanh, {{maxLifetime}} ngan hon timeout firewall/DB (vi du 30 phut vs 60 phut), {{leakDetectionThreshold}} bat (60-120s) de phat hien borrow qua lau. Khi pool can: xem {{hikaricp.connections.pending/active}}, doi chieu trace tim transaction dai hoac OSIV, khong tang pool mu moc.
+
+### Cong thuc sizing pool
+Little Law: so connection ban trung binh = throughput (req/s) x thoi gian giu connection trung binh (giay).
+Vi du: 400 req/s x 20ms = 8 connection ban. Pool 15-20 tren instance la du dinh tai.
+Quy tac cong dong (khong phai cong thuc chinh thuc Hikari): pool ~ (so core CPU DB x 2) + so o dia hieu dung.
+Tong pool = pool/instance x so instance (tinh ca max khi autoscale) < {{max_connections}} DB (de chua 20%).
+
+### Cac tham so quan trong
+| Tham so | Y nghia | Goi y |
+|---|---|---|
+| {{maximumPoolSize}} | So connection toi da | 15-20/instance, do theo tai thuc |
+| {{minimumIdle}} | Connection roi toi thieu giu lai | 5-10, tranh tao connection luc spike |
+| {{connectionTimeout}} | Choi lay connection toi da | 2000-5000ms, fail nhanh |
+| {{idleTimeout}} | Connection roi bao lau thi dong | 10 phut (600000ms) |
+| {{maxLifetime}} | Tuoi toi da connection truoc khi thay moi | 30 phut (1800000ms) < firewall/DB timeout |
+| {{leakDetectionThreshold}} | Canh bao borrow qua lau | 60000-120000ms, bat de phat hien transaction dai |
+| {{connectionInitSql}} | Khoi tao connection (vi du set timezone) | Tuy moi truong |
+
+~~~yaml
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 10
+      connection-timeout: 3000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      leak-detection-threshold: 60000
+      connection-init-sql: "SET TIME ZONE 'UTC'"
+~~~
+
+### Dieu tra pool can (theo thu tu)
+1. **Xem metric pool**: {{hikaricp.connections.pending}} > 0 keo dai, {{active}} cham max, {{idle}} = 0.
+2. **Doi chieu trace/APM**: request nao giu connection lau? Tim {{@Transactional}} bao goi HTTP, OSIV ({{spring.jpa.open-in-view=true}}), batch job chay lau.
+3. **Kiem tra DB**: {{pg_stat_activity}} / {{SHOW PROCESSLIST}} xem query nao chay lau, lock wait.
+4. **Sua goc**: tat OSIV, tach HTTP call ra khoi transaction, chunk batch job, them timeout.
+5. **Chi sau do moi can nhac tang pool** neu DB con dap ung duoc.
+
+### Trade-off tang pool
+Tang pool qua lon -> DB qua tai process/thread, context switch tang, buffer pool bi xao tron, lock contention tang. Nhieu khi giam pool + fix transaction dai thi latency tot hon.
+
+### Pitfall production
+- {{spring.jpa.open-in-view=true}} (mac dinh) giu connection suot render JSON -> pool can du query nhanh.
+- Goi API ben ngoai trong {{@Transactional}} giu connection trong luc cho mang.
+- {{maxLifetime}} >= firewall timeout -> connection reset ngau nhien sau gio thap diem.
+- Tang pool ma khong fix transaction dai -> chuyen nut that tu app sang DB, lam ca cum cham hon.
+
+### Vi du doi thuc
+Service don hang 8 pod, Hikari {{max=50}} (tong 400), PostgreSQL {{max_connections=200}}. Gio cao diem pool can, pending 50+, p95 3s. Dieu tra: OSIV bat + template render giu connection 200ms; mot {{@Transactional}} goi API ty gia ngoai 800ms. Sua: tat OSIV, load du lieu trong service; tach API ty gia ra khoi transaction (dung cache/async). Pool giam xuong {{max=15}} (tong 120), pending ve 0, p95 180ms, CPU DB giam 40%. Khong can scale DB.
+
+### Tra loi mau khi phong van
+"Khi sizing HikariCP, toi dung Little Law: throughput nhan thoi gian giu connection. Vi du 400 req/s x 20ms = 8 connection ban trung binh, pool 15-20/instance la du. Tong pool moi instance phai nho hon max_connections cua DB. Toi dat connectionTimeout ngan (3s) de fail nhanh, maxLifetime 30 phut ngan hon firewall, bat leakDetectionThreshold 60s. Khi pool can, toi khong tang pool ngay ma xem metric pending/active, trace tim transaction dai hoac OSIV, sua goc (tat OSIV, tach HTTP call, chunk batch), roi moi dieu chinh pool neu DB con suc. Tang pool mu moc thuong lam DB qua tai, lock contention tang, latency te hon."
+
+> Senior tip: chi so quan trong nhat la {{hikaricp.connections.pending}} va thoi gian acquire, khong phai so connection hien co. Pool lon khong lam DB nhanh hon; no chi chia nho CPU cua DB cho nhieu request. Khi thay pending tang, hay tim transaction giu connection truoc khi dung sizing.`,
+
+  follow: [
+    "Vi sao maxLifetime phai ngan hon wait_timeout cua MySQL va idle timeout cua firewall?",
+    "Virtual threads co nen dan den pool connection lon hon khong?",
+    "Lam sao phan biet leak connection that voi query/transaction keo dai qua metric?"
+  ],
+  tags: ["HikariCP", "connection pool", "sizing", "Little Law", "maxLifetime", "leakDetectionThreshold", "OSIV"]
+},
+{
+  id: 'spring-084',
+  topic: 'spring',
+  level: 'senior',
+  q: '@ConfigurationProperties voi validation (@Validated, @NotNull, @Pattern) va fail-fast: ban bind cau hinh phuc tap (nested, list, map, duration) the nao, va cach bat loi cau hinh luc startup thay vi runtime?',
+  a: `**Tom tat:** {{@ConfigurationProperties}} bind property tu {{application.yml}}/env vao POJO, ho tro nested object, List, Map, {{Duration}}, {{DataSize}}, {{InetAddress}}. Ket hop {{@Validated}} tren class va annotation JSR-380 ({{@NotNull}}, {{@NotBlank}}, {{@Pattern}}, {{@Min}}/{{@Max}}, {{@Valid}} cho nested) de validate luc startup. Spring Boot 3 nem {{BindException}} hoac {{ValidationException}} ngay khi context refresh neu config sai - fail-fast thay vi loi runtime vo hinh.
+
+### Bind cac kieu phuc tap
+~~~java
+@ConfigurationProperties(prefix = "payment")
+@Validated
+public class PaymentProperties {
+    @NotBlank private String baseUrl;
+    @NotNull @Valid private TimeoutConfig timeout = new TimeoutConfig();
+    @NotNull @Valid private RetryConfig retry = new RetryConfig();
+    @NotEmpty private List<@NotBlank String> allowedCurrencies = List.of("VND", "USD");
+    private Map<String, @NotBlank String> endpointOverrides = new HashMap<>();
+    private Duration connectTimeout = Duration.ofSeconds(2);
+    private DataSize maxRequestSize = DataSize.ofMegabytes(5);
+
+    public static class TimeoutConfig {
+        @Min(100) @Max(30000) private int connectMs = 2000;
+        @Min(100) @Max(60000) private int readMs = 5000;
+    }
+    public static class RetryConfig {
+        @Min(0) @Max(5) private int maxAttempts = 3;
+        @Min(10) private int backoffMs = 200;
+    }
+}
+~~~
+YML tuong ung:
+~~~yaml
+payment:
+  base-url: "https://payment.internal"
+  timeout:
+    connect-ms: 2000
+    read-ms: 5000
+  retry:
+    max-attempts: 3
+    backoff-ms: 200
+  allowed-currencies: ["VND", "USD", "EUR"]
+  endpoint-overrides:
+    refund: "/api/v2/refund"
+  connect-timeout: "2s"
+  max-request-size: "5MB"
+~~~
+
+### Fail-fast tai startup
+Spring Boot 3 dung {{@ConfigurationPropertiesBinding}} va validator (Hibernate Validator) trong phase {{invokeBeanFactoryPostProcessors}}. Neu validation fail, context nem exception ngay, app khong start. Dieu nay bat:
+- Thieu property bat buoc ({{@NotNull}})
+- Gia tri ngoai pham vi ({{@Min}}/{{@Max}})
+- Pattern sai ({{@Pattern}} cho regex)
+- Nested object khong hop le ({{@Valid}} truyen de quy)
+- Duration/DataSize parse fail (format sai)
+
+Khong can code thu cong check null; validator chay tu dong.
+
+### Relaxed binding
+Spring chap nhan nhieu dang key: {{kebab-case}}, {{camelCase}}, {{snake_case}}, {{UPPER_CASE}} (env). {{payment.baseUrl}}, {{payment.base-url}}, {{PAYMENT_BASE_URL}} deu bind vao {{baseUrl}}.
+
+### Constructor binding (immutable config)
+Spring Boot 3 khuyen nghi record hoac class co constructor duy nhat:
+~~~java
+@ConfigurationProperties(prefix = "payment")
+@ConstructorBinding
+@Validated
+public record PaymentProperties(
+    @NotBlank String baseUrl,
+    @NotNull @Valid TimeoutConfig timeout,
+    @NotNull @Valid RetryConfig retry,
+    @NotEmpty List<@NotBlank String> allowedCurrencies,
+    Map<String, @NotBlank String> endpointOverrides,
+    Duration connectTimeout,
+    DataSize maxRequestSize
+) {
+    public record TimeoutConfig(
+        @Min(100) @Max(30000) int connectMs,
+        @Min(100) @Max(60000) int readMs
+    ) {}
+    public record RetryConfig(
+        @Min(0) @Max(5) int maxAttempts,
+        @Min(10) int backoffMs
+    ) {}
+}
+~~~
+Record bat bien, an toan thread, validation chay tren component cua record.
+
+### Pitfall production
+- Quen {{@Validated}} tren class cha -> nested object khong validate.
+- Dung {{@Value}} le thay vi {{@ConfigurationProperties}} -> mat validation tap trung, kho refactor prefix.
+- Property optional nhung khong co default -> null gay NPE luc runtime; hay dung {{@NotNull}} hoac default an toan.
+- Duration parse: {"2s"}, {"PT2S"}, {"2000ms"} deu duoc; nhung {"2"} (chi so) se fail - validator bat duoc.
+
+### Vi du doi thuc
+Team cau hinh cong thanh toan qua {{@Value}} le rai rac. Mot deploy thieu payment.read-timeout trong yml -> app start thanh cong, luc runtime goi payment timeout vo han -> treo thread, pool can. Chuyen sang {{@ConfigurationProperties(prefix="payment")}} + {{@Validated}} + record: thieu bat ky property bat buoc nao (url, timeout, retry) app fail ngay luc start voi log ro: {{Validation failed: payment.read-timeout must not be null}}. CI/CD bat loi truoc khi deploy production. Them nua, {{Duration}} tu parse {"5s"}, {"3000ms"}, loai bo bug parse thu cong.
+
+### Tra loi mau khi phong van
+"Toi dung @ConfigurationProperties de gom cau hinh theo prefix, bind vao record hoac POJO immutable. Validation JSR-380 (@NotNull, @Min/@Max, @Pattern, @Valid cho nested) chay tu dong luc Spring Boot khoi dong context - app fail ngay neu config sai, khong cho runtime. Ho tro Duration, DataSize, List, Map, nested record. Relaxed binding cho phep kebab-case trong yml, camelCase trong Java, UPPER_CASE trong env. Constructor binding (@ConstructorBinding) cho record dam bao immutability. Pitfall: quen @Validated tren class cha thi nested khong validate; dung @Value rai rac thi mat validation tap trung va kho refactor."
+
+> Senior tip: hay treat config nhu code: co schema (record/POJO), co validation, co test. Viet test ApplicationContextRunner cho moi @ConfigurationProperties: property hop le -> context start; thieu bat buoc -> fail; gia tri ngoai pham vi -> fail. Config sai khong duoc phep len production.`,
+
+  follow: [
+    "Record @ConfigurationProperties co khac biet gi so voi class POJO truyen thong?",
+    "Duration/DataSize parse fail thi exception nao duoc nem, va message nhu the nao?",
+    "Khi nested config la List<Record>, @Valid hoat dong the nao tren tung phan tu?"
+  ],
+  tags: ["@ConfigurationProperties", "validation", "fail-fast", "ConstructorBinding", "record", "Duration", "DataSize", "Spring Boot 3"]
+},
+{
+  id: 'spring-085',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Profiles (dev/test/prod), externalized config precedence (application.yml, env, CLI args, Spring Cloud Config), va @Profile/@ConditionalOnProperty: ban quan ly cau hinh chenh lech giua moi truong nhu the nao?',
+  a: `**Tom tat:** Spring Boot nap cau hinh theo thu tu uu tien co dinh: default (application.yml trong jar) < profile-specific (application-prod.yml) < environment variable < command line args < Spring Cloud Config Server (neu bat). Profile active quyet dinh file profile-specific nao duoc nap. {{@Profile}} dieu khien bean registration; {{@ConditionalOnProperty}} dieu khien auto-configuration. Quy tac: config chung o application.yml, chenh lech moi truong o env/args/Config Server, khong commit secret vao git.
+
+### Thu tu uu tien nap cau hinh (cao nhat thang)
+1. **Default**: {{application.yml}}, {{application.properties}} trong jar (thap nhat).
+2. **Profile-specific**: application-{profile}.yml (vi du {{application-prod.yml}}) - nap khi profile active khop.
+3. **Environment variable**: {{SPRING_DATASOURCE_URL}}, {{PAYMENT_BASE_URL}} (relaxed binding: {{_}} thanh {{.}}, {{UPPER_CASE}} map sang kebab-case).
+4. **Command line args**: {{--spring.datasource.url=...}}, {{--payment.base-url=...}}.
+5. **Spring Cloud Config Server**: neu {{spring.config.import=configserver:}} - uu tien cao nhat (co the ghi de env/args tuy config).
+6. **Test-specific**: {{@TestPropertySource}}, {{@SpringBootTest(properties=...)}}, {{application-test.yml}}.
+
+### Profile va bean registration
+~~~java
+@Profile("dev")
+@Bean DataSource devDataSource() { return new EmbeddedDatabaseBuilder().build(); }
+
+@Profile("prod")
+@Bean DataSource prodDataSource() { return DataSourceBuilder.create().url(url).build(); }
+
+@Profile("!test")  // khong active khi profile test
+@Bean Scheduler prodScheduler() { ... }
+~~~
+{{spring.profiles.active=dev,prod}} (nhieu profile, profile sau ghi de truoc).
+{{spring.profiles.include=common}} gom config chung.
+
+### @ConditionalOnProperty vs @Profile
+| Annotation | Pham vi | Dung khi |
+|---|---|---|
+| {{@Profile}} | Bean registration (component scan, @Bean) | Bat/tat toan bo bean/service theo moi truong |
+| {{@ConditionalOnProperty}} | Auto-configuration, @Bean method | Bat/tat feature flag, auto-config tuy property |
+
+Vi du: {{@ConditionalOnProperty(prefix="feature", name="new-checkout", havingValue="true")}} cho feature flag.
+
+### Spring Cloud Config Server
+- Config Server phuc vu /{application}/{profile}[/{label}] tu Git backend.
+- Client: {{spring.config.import=optional:configserver:http://config-server:8888}} ({{optional:}} cho phep start khi Config Server down).
+- Label = branch/tag/commit Git, cho phep rollback config khong deploy code.
+- Encrypt/decrypt: Config Server ma hoa value ({cipher}AQA...), client giai ma voi key chung.
+
+### Quan ly secret
+- **Khong bao gio** commit secret (DB password, API key, JWT secret) vao git (ke ca application-prod.yml).
+- Production: inject qua env variable (K8s Secret -> env), Vault, hoac AWS Secrets Manager.
+- Config Server: luu secret da encrypt, client decrypt tai runtime.
+- Local dev: dung {{.env}} file hoac IDE env var, khong commit.
+
+### Pitfall production
+- application-prod.yml trong git chua password -> lo secret khi repo public hoac nhan vien cu con clone.
+- Profile active khong khop file profile-specific (typo: {{application-prod.yml}} vs {{spring.profiles.active=production}}) -> config default bi dung, ket noi sai DB.
+- Spring Cloud Config Server down ma client khong co {{optional:}} -> app khong start duoc.
+- Env variable={{SPRING_PROFILES_ACTIVE=prod}} ghi de {{spring.profiles.active}} trong yml -> behavior khac local/test.
+
+### Vi du doi thuc
+He thong microservice 15 service, moi service 3 profile (dev, staging, prod). Truoc do moi service co application-prod.yml trong git chua DB password. Mot lan dev vo tinh push application-prod.yml len repo public -> lo password production. Chuyen sang: chi chua application.yml (config chung, khong secret), application-dev.yml (config dev an toan). Production secret: K8s Secret mount thanh env variable ({{SPRING_DATASOURCE_PASSWORD}}), Spring Boot relaxed binding tu map vao {{spring.datasource.password}}. Staging dung Spring Cloud Config Server (Git backend, branch staging) voi {{optional:configserver:}} - cho phep service start doc lap khi Config Server bao tri. Feature flag {{feature.new-checkout}} dieu khien bang {{@ConditionalOnProperty}} - bat/tat khong deploy. CI kiem tra: moi @ConfigurationProperties co test validation; secret khong xuat hien trong git history (git-secrets hook).
+
+### Tra loi mau khi phong van
+"Spring Boot nap config theo thu tu: default < profile-specific < env < CLI args < Config Server. Toi de config chung o application.yml, chenh lech moi truong (DB url, pool size, feature flag) o env variable (K8s Secret) hoac Config Server. Profile active chon file application-{profile}.yml. Bean registration dung @Profile; auto-config/feature flag dung @ConditionalOnProperty. Secret khong bao gio vao git - production dung K8s Secret -> env, hoac Vault/Secrets Manager. Spring Cloud Config Server cho phep quan ly config tap trung, rollback bang Git label, encrypt secret. CI bat loi: test @ConfigurationProperties validation, git-secrets hook chan secret."
+
+> Senior tip: hay co mot file {{application.yml}} mau ({{application.yml.example}}) trong git cho dev biet cau truc config, va checklist release: "secret da qua K8s Secret/Vault?", "profile active dung?", "feature flag default an toan?".`,
+
+  follow: [
+    "Spring Cloud Config Server client reload config thay doi khong can restart app the nao? (@RefreshScope)",
+    "Khi env variable va CLI args cung set mot property, cai nao thang?",
+    "Profile \"default\" (khong active profile nao) nap file nao?"
+  ],
+  tags: ["profile", "externalized config", "Spring Cloud Config", "@Profile", "@ConditionalOnProperty", "precedence", "secret"]
+},
+{
+  id: 'spring-086',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Micrometer Observation API: ban tao custom observation cho mot business operation, them tag low-cardinality, record exception, va dung exemplar de noi metric sang trace. High cardinality tag la bai gi?',
+  a: `**Tom tat:** Micrometer Observation API la abstraction thong nhat cho instrumentation: mot Observation sinh ca metric (timer) va span (qua Micrometer Tracing bridge OpenTelemetry/Brave). Tao custom observation bang {{ObservationRegistry}} hoac {{@Observed}}, them tag low-cardinality ({{businessOutcome}}, {{orderType}}), record exception vao span, va exemplar tu gan traceId vao metric histogram. High cardinality tag (userId, orderId, sessionIds) lam cardinality no -> bo nho/chi phi tang vot, Prometheus OOM.
+
+### Custom observation co ban
+~~~java
+@Service
+class OrderService {
+    private final ObservationRegistry registry;
+    private final OrderRepository repo;
+
+    OrderService(ObservationRegistry registry, OrderRepository repo) {
+        this.registry = registry; this.repo = repo;
+    }
+
+    public Order place(OrderRequest req) {
+        return Observation.createNotStarted("order.place", registry)
+            .lowCardinality(KeyValue.of("orderType", req.type()))
+            .lowCardinality(KeyValue.of("channel", req.channel()))
+            .observe(() -> {
+                Order o = repo.save(new Order(req));
+                Observation.current().ifPresent(obs ->
+                    obs.lowCardinalityKeyValue("businessOutcome", "SUCCESS"));
+                return o;
+            })
+    }
+}
+~~~
+Hoac dung annotation {{@Observed}} (Spring Boot 3.1+):
+~~~java
+@Observed(name = "order.place",
+    contextualName = "place-order")
+public Order place(OrderRequest req) { ... }
+~~~
+
+### Tag low-cardinality vs high-cardinality
+| Loai tag | Vi du | Cardinality | Cho phep? |
+|---|---|---|---|
+| Low-cardinality | {{orderType=ONLINE|OFFLINE}}, {{channel=WEB|APP}}, {{businessOutcome=SUCCESS|FAILED}}, {{region=VN|US}} | < 50 gia tri | **Co** - gan vao metric tag |
+| High-cardinality | {{userId}}, {{orderId}}, {{sessionId}}, {{requestId}}, {{email}} | Vo han (tang theo user/request) | **KHONG** gan vao metric tag; chi dung cho span attribute / baggage |
+
+High cardinality tag tren metric -> Prometheus tao time series moi cho moi gia tri -> cardinality no -> ingest cost tang, query cham, OOM. Dung span attribute (trace) hoac baggage cho high-cardinality.
+
+### Record exception va error outcome
+~~~java
+.observe(() -> {
+    try {
+        Order o = repo.save(new Order(req));
+        return o;
+    } catch (Exception e) {
+        Observation.current().ifPresent(obs -> {
+            obs.lowCardinalityKeyValue("businessOutcome", "FAILED");
+            obs.lowCardinalityKeyValue("errorType", e.getClass().getSimpleName());
+            obs.error(e); // record vao span
+        });
+        throw e;
+    }
+});
+~~~
+{{obs.error(e)}} ghi exception vao span (event + stack trace neu sampling cho phep).
+
+### Exemplar: noi metric sang trace
+Khi dung {{MeterFilter}} bat exemplar (mac dinh trong Spring Boot 3 cho histogram), moi bucket histogram co the gan traceId cua mot request mau. Tu Grafana bieu do p99, bam exemplar -> mo trace cua request cham do trong Tempo/Jaeger.
+~~~yaml
+management:
+  metrics:
+    distribution:
+      percentiles-histogram: "[http.server.requests, order.place]"
+      percentiles: "[0.5, 0.95, 0.99]"
+    exemplars:
+      enabled: true
+~~~
+Exemplar chi gan traceId khi co trace dang active (sampling), khong phai moi request.
+
+### Pitfall production
+- Dev them tag {{userId}} vao metric -> cardinality tang tu 500 len 500.000 series trong 1 gio -> Prometheus OOM, chi phi ingest tang 100x.
+- Tag {{businessOutcome}} quen them -> khong biet ty le thanh cong/that bai theo operation.
+- Exemplar bat nhung sampling qua thap (0.1%) -> hiem khi co exemplar tren p99.
+- Observation khong dong (quen {{.observe()}} hoac throw exception truoc khi dong) -> memory leak context.
+
+### Vi du doi thuc
+Team them custom observation {{payment.process}} voi tag {{userId}} de "de debug". Sau 2 tuan, Prometheus cardinality tu 2.000 series len 1.2 trieu, ingest cost tang 50x, Grafana query timeout. Dieu tra: {{MeterFilter}} log cho thay tag {{userId}} tao 50.000 gia tri rieng biet/ngay. Sua: xoa {{userId}} khoi metric tag, chuyen sang span attribute ({{observation.context().addHighCardinality(...)}}) hoac baggage. Cardinality giam ve 3.000, chi phi ingest binh thuong. Them tag {{businessOutcome}} cho payment: p99 latency tach theo SUCCESS/FAILED phat hien retry storm khi FAILED cao.
+
+### Tra loi mau khi phong van
+"Micrometer Observation API sinh ca metric timer va span trace tu mot lan instrumentation. Toi tao custom observation cho operation nghiep vu quan trong (dat hang, thanh toan), them tag low-cardinality nhu orderType, channel, businessOutcome (SUCCESS/FAILED) - cardinality duoi 50 gia tri. High cardinality nhu userId, orderId KHONG gan vao metric tag (lam cardinality no, Prometheus OOM) ma dung span attribute hoac baggage. Record exception bang {{obs.error(e)}} va tag {{errorType}} de trace co context. Exemplar tu gan traceId vao histogram bucket, tu p99 tren Grafana bam sang trace request cham. Toi luon review tag trong PR: metric tag phai low-cardinality, high-cardinality chi o span."
+
+> Senior tip: cardinality la chi phi an. Moi tag metric them 10 gia tri co the nhan 10x series. Hay do {{prometheus_tsdb_symbol_table_size_bytes}} va {{prometheus_remote_storage_samples_pending}} truoc khi merge PR them tag. Mac dinh deny high-cardinality tag tren metric.`,
+
+  follow: [
+    "Vi sao span attribute cho phep high cardinality ma metric tag thi khong?",
+    "Exemplar hoat dong the nao khi sampling rate thap, va lam sao dam bao p99 co exemplar?",
+    "Baggage khac span attribute o diem nao, va khi nao dung baggage?"
+  ],
+  tags: ["Micrometer", "Observation", "exemplar", "low-cardinality", "high-cardinality", "span attribute", "tracing"]
+},
+{
+  id: 'spring-087',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Structured logging trong Spring Boot 3: ban cau hinh Logback/Log4j2 xuat JSON, them correlation ID (traceId/spanId) tu MDC, masking field nhay cam, va log level per-package. File appender vs console appender trong container khac nhau the nao?',
+  a: `**Tom tat:** Spring Boot 3 mac dinh Logback; cau hinh {{logback-spring.xml}} de xuat JSON ({{LogstashEncoder}}), them {{traceId}}/{{spanId}} tu MDC (Micrometer Tracing tu day vao MDC khi co {{spring.micrometer.tracing.mdc.enabled=true}}), masking field nhay cam (password, token, creditCard) qua custom {{MaskingConverter}}, va dat log level per-package. Container dung console appender (stdout/stderr) de log shipper (Fluent Bit, Datadog agent) thu thap; file appender chi dung khi sidecar log collector doc file, tranh ghi disk container.
+
+### JSON log voi LogstashEncoder
+~~~xml
+<configuration>
+  <springProperty scope="context" name="appName" source="spring.application.name"/>
+  <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+      <customFields>{"service":"\${appName}","env":"\${spring.profiles.active}"}</customFields>
+      <fieldNames>
+        <timestamp>@timestamp</timestamp>
+        <message>message</message>
+        <logger>logger</logger>
+        <thread>thread</thread>
+        <level>level</level>
+        <traceId>traceId</traceId>
+        <spanId>spanId</spanId>
+      </fieldNames>
+    </encoder>
+  </appender>
+  <root level="INFO">
+    <appender-ref ref="CONSOLE_JSON"/>
+  </root>
+</configuration>
+~~~
+Dependency: {{net.logstash.logback:logstash-logback-encoder}}.
+
+### Correlation ID tu MDC
+Spring Boot 3 + Micrometer Tracing tu dong day {{traceId}}, {{spanId}} vao MDC khi {{spring.micrometer.tracing.mdc.enabled=true}} (mac dinh true). Log JSON se co truong {{traceId}}, {{spanId}} cho phep truy vet request trong he thong phan tan.
+~~~yaml
+spring:
+  micrometer:
+    tracing:
+      mdc:
+        enabled: true
+~~~
+Khi dung @Async/@Scheduled, can TaskDecorator copy MDC sang thread worker (xem cau ve @Async).
+
+### Masking field nhay cam
+Tao custom converter loai bo/mask gia tri theo pattern:
+~~~java
+public class MaskingConverter extends ClassicConverter {
+    private static final Pattern SENSITIVE = Pattern.compile(
+        "(password|secret|token|apiKey|creditCard|cardNumber|ssn)\\s*[:=]\\s*\\S+", Pattern.CASE_INSENSITIVE)
+    @Override public String convert(ILoggingEvent event) {
+        return SENSITIVE.matcher(event.getFormattedMessage()).replaceAll("$1=***MASKED***")
+    }
+}
+~~~
+Dang ky trong {{logback-spring.xml}}:
+~~~xml
+<conversionRule conversionWord="mask" converterClass="com.example.MaskingConverter"/>
+<pattern>%mask(%msg)%n</pattern>
+~~~
+Hoac dung {{LogstashEncoder}} voi {{jsonGeneratorDecorator}} de mask tai encoder level.
+
+### Log level per-package
+~~~yaml
+logging:
+  level:
+    root: INFO
+    com.example.order: DEBUG
+    org.springframework.web: WARN
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+~~~
+Hoac runtime thay doi qua {{/actuator/loggers}} (can expose endpoint loggers, bao ve bang security).
+
+### Container: console vs file appender
+| Appender | Phu hop | Luu y |
+|---|---|---|
+| Console (stdout/stderr) | **Container/K8s mac dinh** | Log shipper (Fluent Bit, Vector, Datadog agent) doc stdout; khong ton disk container; rotation do node/log shipper lo. |
+| File (RollingFileAppender) | Sidecar log collector doc file | Can mount emptyDir/volume; tu rotation; rui ro disk full neu sidecar die. |
+
+K8s best practice: log ra stdout, de node/container runtime rotate ({{--log-max-size}}, {{--log-max-files}}), log shipper tail stdout.
+
+### Pitfall production
+- Khong bat {{spring.micrometer.tracing.mdc.enabled}} -> log thieu traceId, khong truy vet duoc request.
+- Log password/token ra file/stdout -> vi pham bao mat, audit fail.
+- File appender trong container khong rotation -> disk full -> pod evicted.
+- Log level DEBUG tren production package lon -> noise, disk/ingest cost tang, co the lo du lieu nhay cam.
+- Structured log nhung khong co timestamp chuan ISO (@timestamp) -> kho query/sort trong Elasticsearch/Loki.
+
+### Vi du doi thuc
+He thong 20 microservice tren K8s, log shipper Fluent Bit -> Loki. Ban dau dung file appenderRotationPolicy, mot pod log 5GB/ngay, emptyDir full -> pod OOMKilled. Chuyen sang console appender JSON, Fluent Bit tail stdout, Loki ingest. Them masking converter cho password/token, bat {{spring.micrometer.tracing.mdc.enabled}}. Log level per-package: root INFO, com.example DEBUG chi khi incident qua {{/actuator/loggers}}. Correlation ID traceId trong log khop traceId trong Tempo -> tu log error bam sang trace request cham. Ket qua: disk pod on dinh < 500MB, query log/error rate nhanh, audit pass (khong log secret).
+
+### Tra loi mau khi phong van
+"Spring Boot 3 dung Logback mac dinh, toi cau hinh logback-spring.xml xuat JSON bang LogstashEncoder. Bat spring.micrometer.tracing.mdc.enabled=true de traceId/spanId tu vao MDC, log JSON co correlation ID de truy vet request phan tan. Masking field nhay cam (password, token, creditCard) bang custom converter hoac jsonGeneratorDecorator. Log level per-package qua logging.level.* trong yml hoac /actuator/loggers runtime. Container: log ra stdout (console appender) de Fluent Bit/Datadog agent thu thap, khong dung file appender tranh disk full. Timestamp ISO, field service/env co dinh de query de dang."
+
+> Senior tip: hay treat log nhu data pipeline: schema co dinh (JSON), correlation ID bat buoc, masking mac dinh, level per-env. Toi luon co checklist: "log co traceId?", "co mask secret?", "stdout hay file?", "level production la INFO?". Mot log error thieu traceId la log vo dung khi incident.`,
+
+  follow: [
+    "Logback vs Log4j2 trong Spring Boot 3: khac biet cau hinh JSON va performance ra sao?",
+    "Khi dung @Async, MDC traceId khong tu truyen sang thread worker - ban cau hinh TaskDecorator the nao?",
+    "Loki/Elasticsearch index log JSON: field nao nen index, field nao chi store?"
+  ],
+  tags: ["Logback", "Log4j2", "structured logging", "JSON", "MDC", "traceId", "masking", "correlation ID", "Spring Boot 3"]
+},
+{
+  id: 'spring-088',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Trên Kubernetes, bạn cấu hình Actuator health groups cho liveness và readiness như thế nào (management.endpoint.health.group.*), tự viết HealthIndicator, và xử lý tình huống pod đang shutdown nhưng vẫn nhận traffic?',
+  a: `**Tóm tắt:** Spring Boot Actuator cho phép gom các health check (kiểm tra sức khỏe) thành nhóm (health group) như {{liveness}} và {{readiness}}. Kubernetes dùng hai probe (đầu dò) riêng: liveness probe hỏi "process còn sống không?" để restart pod khi treo, readiness probe hỏi "pod sẵn sàng nhận traffic không?" để Service ngừng chuyển request tới pod chưa sẵn sàng hoặc đang tắt. Cấu hình sai nhóm hoặc dùng nhầm probe có thể gây restart liên tục hoặc request lỗi 502 trong lúc deploy.
+
+### Liveness và Readiness là gì (giải thích từ gốc)
+- **Liveness probe** (probe sống): Kubernetes gọi định kỳ (ví dụ {{/actuator/health/liveness}}). Nếu thất bại nhiều lần liên tiếp ({{failureThreshold}}), kubelet xem pod bị treo hoặc deadlock và **restart container**. Liveness chỉ nên phản ánh trạng thái của chính process (bộ nhớ JVM còn dùng được, không deadlock nghiêm trọng), **không** nên phụ thuộc dịch vụ bên ngoài như DB.
+- **Readiness probe** (probe sẵn sàng): Kubernetes gọi để biết pod có nên nằm trong danh sách endpoint nhận traffic của Service không. Nếu thất bại, pod bị gỡ khỏi endpoint (không nhận request mới) nhưng **không bị restart**. Readiness nên bao gồm các phụ thuộc cần thiết để xử lý request (DB, cache, downstream service quan trọng).
+- Ví dụ đời thường: liveness giống hỏi "nhân viên còn thở không?", readiness giống hỏi "nhân viên đã sẵn sàng phục vụ khách chưa (đã đăng nhập hệ thống, đã mở quầy)?".
+
+### Cấu hình health groups trong Spring Boot 3
+~~~yaml
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true                # bat san /health/liveness, /health/readiness
+      show-details: never
+      group:
+        readiness:
+          include: readinessState,db,redis,customPayment
+        liveness:
+          include: livenessState      # chi trang thai noi bo
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+~~~
+- {{probes.enabled: true}} tự động tạo nhóm {{liveness}} và {{readiness}} và kích hoạt {{AvailabilityProbesAutoConfiguration}} (cơ chế tự cấu hình sẵn sàng probe).
+- {{readinessState}} và {{livenessState}} là các {{HealthIndicator}} (thành phần kiểm tra sức khỏe) nội bộ phản ánh {{ApplicationAvailability}} (trạng thái sẵn sàng của ứng dụng: {{ACCEPTING_TRAFFIC}} hay {{REFUSING_TRAFFIC}}).
+- Nhóm {{liveness}} không nên include {{db}}: nếu DB chậm 30 giây, liveness fail sẽ làm Kubernetes restart toàn bộ pod đang chạy bình thường, khiến sự cố lan rộng.
+
+### Tự viết HealthIndicator
+~~~java
+@Component("customPayment")
+public class PaymentGatewayHealth implements HealthIndicator {
+  private final PaymentClient client;
+  public PaymentGatewayHealth(PaymentClient client) { this.client = client; }
+
+  @Override
+  public Health health() {
+    try {
+      // kiem tra nhe: ping endpoint, timeout ngan
+      long ms = client.ping(Duration.ofMillis(300));
+      return Health.up().withDetail("latencyMs", ms).build();
+    } catch (Exception e) {
+      // DOWN se lam readiness fail -> pod bi go khoi Service
+      return Health.down(e).withDetail("error", e.getMessage()).build();
+    }
+  }
+}
+~~~
+- {{HealthIndicator}} là interface có một phương thức {{health()}} trả về {{Health}} (UP/DOWN/OUT_OF_SERVICE/UNKNOWN).
+- Kiểm tra phải **nhanh và nhẹ** (ví dụ {{SELECT 1}}, ping TCP). Không chạy truy vấn nặng trong health check vì probe gọi liên tục.
+- Với kiểm tra tốn thời gian, dùng {{AbstractHealthIndicator}} hoặc cơ chế cache kết quả vài giây để tránh dồn tải lên dependency.
+
+### Kubernetes probe và shutdown
+~~~yaml
+# trich pod spec
+livenessProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8080 }
+  initialDelaySeconds: 20
+  periodSeconds: 10
+  failureThreshold: 3
+readinessProbe:
+  httpGet: { path: /actuator/health/readiness, port: 8080 }
+  periodSeconds: 5
+  failureThreshold: 2
+terminationGracePeriodSeconds: 45
+lifecycle:
+  preStop:
+    exec: { command: ["sh", "-c", "sleep 5"] }
+~~~
+- Khi pod nhận SIGTERM (tín hiệu yêu cầu tắt), Spring Boot (với {{server.shutdown=graceful}}) chuyển {{readinessState}} sang {{REFUSING_TRAFFIC}} nên {{/actuator/health/readiness}} trả DOWN; Kubernetes gỡ pod khỏi endpoint. Nhưng việc gỡ endpoint và gửi SIGTERM diễn ra **song song** trong cụm, nên cần {{preStop}} sleep vài giây để kube-proxy/Ingress kịp cập nhật, tránh request mới vẫn đi vào pod đang tắt.
+- {{terminationGracePeriodSeconds}} phải lớn hơn {{spring.lifecycle.timeout-per-shutdown-phase}} cộng thời gian {{preStop}}.
+
+### Bảng trade-off: đưa dependency nào vào probe
+| Thành phần | Liveness | Readiness | Lý do |
+|---|---|---|---|
+| JVM/process, deadlock detector | Có | Có (gián tiếp) | Process hỏng thì phải restart |
+| Database chính | Không | Có (tùy) | DB chậm mà restart pod sẽ làm tệ hơn; nhưng nếu không có DB không phục vụ được thì readiness nên DOWN |
+| Cache Redis (có fallback) | Không | Thường không | Có thể degrade (giảm chất lượng) thay vì ngừng nhận traffic |
+| Downstream bắt buộc | Không | Có (cân nhắc) | Tránh cascade failure; có thể dùng circuit breaker |
+
+### Pitfall production
+- Đưa DB vào liveness: DB bảo trì 2 phút, toàn bộ pod bị restart liên tục, hệ thống outage nặng hơn.
+- Không bật graceful shutdown: pod nhận SIGTERM, Tomcat đóng ngay, request đang xử lý bị cắt giữa chừng (lỗi 502/connection reset).
+- {{initialDelaySeconds}} quá nhỏ: app Spring Boot chưa khởi xong context (nạp bean, kết nối DB) đã bị probe fail và restart lặp vô hạn (CrashLoopBackOff).
+- {{show-details: always}} trên endpoint health public: lộ thông tin hạ tầng (host DB, phiên bản).
+
+### Ví dụ đời thực
+Hệ thống đặt vé có 12 pod trên Kubernetes, DB PostgreSQL đặt {{max_connections=200}}. Ban đầu team cấu hình liveness probe gọi {{/actuator/health}} mặc định (bao gồm DB). Một tối DB chạy vacuum nặng khiến kết nối chậm 8 giây, health check timeout 3 giây liên tục fail. Kubelet restart lần lượt 12 pod; mỗi pod khởi động lại mở thêm connection pool, tổng connection vượt 200, DB từ chối kết nối mới, tạo vòng xoáy: pod restart -> mở kết nối -> DB quá tải -> health fail -> restart. Triệu chứng: toàn bộ API lỗi 5xx trong 15 phút, dashboard báo CrashLoopBackOff. Điều tra: {{kubectl describe pod}} thấy liveness probe failed do DB; log Actuator health trả DOWN cho component {{db}}. Xử lý: tách group, liveness chỉ giữ {{livenessState}} (2 dòng cấu hình), readiness giữ {{readinessState,db}}; tăng {{initialDelaySeconds}} lên 25 giây; bật {{server.shutdown=graceful}} và {{preStop sleep 5}}. Sau thay đổi, khi DB chậm pod chỉ bị gỡ khỏi readiness (giảm tải) nhưng không restart, hệ thống tự hồi phục khi DB hết chậm.
+
+### Trả lời mẫu khi phỏng vấn
+"Trên Kubernetes tôi tách rõ liveness và readiness bằng Actuator health groups. Tôi bật {{management.endpoint.health.probes.enabled=true}} để có {{/actuator/health/liveness}} và {{/actuator/health/readiness}}. Nhóm liveness tôi chỉ include {{livenessState}} vì liveness đại diện cho process còn sống; nếu cho DB vào liveness thì DB chậm sẽ làm kubelet restart pod hàng loạt, gây sự cố lan rộng. Nhóm readiness tôi include {{readinessState}} và các dependency cần thiết như {{db}} hoặc health indicator tự viết cho dịch vụ quan trọng, với kiểm tra nhẹ và có timeout ngắn. Khi shutdown, Spring Boot với graceful shutdown chuyển readiness sang REFUSING_TRAFFIC nên pod bị gỡ khỏi Service; tôi thêm preStop sleep khoảng 5 giây và đặt terminationGracePeriodSeconds lớn hơn timeout shutdown để request đang xử lý kịp hoàn tất. Tôi cũng tránh lộ chi tiết health ra ngoài bằng show-details when-authorized hoặc never."
+
+> Senior tip: Hãy tự hỏi "nếu check này fail, hành động đúng là restart pod hay ngừng gửi traffic?" Câu trả lời quyết định nó thuộc liveness hay readiness. Một quy tắc an toàn: liveness gần như luôn chỉ nên là livenessState; mọi phụ thuộc bên ngoài để ở readiness và phải có timeout ngắn (100-500ms) để probe không treo.`,
+follow: [
+    'Khi nào bạn dùng cơ chế cache hoặc TTL cho HealthIndicator thay vì kiểm tra thật mỗi lần probe gọi?',
+    'Startup probe khác liveness probe thế nào và khi nào cần bật trên ứng dụng Spring Boot khởi động chậm?',
+    'Nếu một dependency không bắt buộc (có circuit breaker fallback), bạn sẽ đưa nó vào readiness group như thế nào?'
+  ],
+  tags: ['Actuator', 'health group', 'liveness', 'readiness', 'Kubernetes', 'HealthIndicator', 'graceful shutdown']
+},
+{
+  id: 'spring-047', topic: 'spring', level: 'senior',
+  q: 'Spring Boot Actuator chia health thành liveness và readiness group. Bạn cấu hình thế nào để liveness chỉ báo process còn sống (không bao giờ restart pod khi DB chậm), readiness báo sẵn sàng nhận traffic, và xử lý graceful shutdown khi pod bị gỡ khỏi Service?',
+  a: `**Tom tat:** Bat {{management.endpoint.health.probes.enabled=true}} de Actuator cung cap {{/actuator/health/liveness}} va {{/actuator/health/readiness}}. Nhom liveness chi include {{livenessState}} (trang thai tien trinh), khong bao gio dua DB hay dependency ben ngoai vao -- neu DB cham ma thuoc liveness, kubelet se restart pod hang loat, gay su co lan rong. Nhom readiness include {{readinessState}} va cac dependency bat buoc nhu {{db}}, {{redis}}, health indicator tu viet cho dich vu quan trong; moi check phai co timeout ngan (100-500ms) de probe khong treo. Khi graceful shutdown, Spring Boot chuyen readiness sang {{REFUSING_TRAFFIC}}, pod bi go khoi Service; them {{preStop}} sleep 5-10 giay va dat {{terminationGracePeriodSeconds}} lon hon timeout shutdown de request dang xu ly ki hoan tat.
+### Co che
+Spring Boot 2.3+ tach health thanh hai nhom thong qua {{HealthEndpointGroups}}. Mac dinh liveness chi kiem tra {{livenessState}} (luon UP tru khi ung dung chu dong set DOWN), readiness kiem tra {{readinessState}} (mac dinh UP) cong cac component da dang ky. Cau hinh qua properties:
+~~~yaml
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db,redis,customService
+  health:
+    db:
+      enabled: true
+    redis:
+      enabled: true
+~~~
+Khi Kubernetes goi liveness probe, neu tra DOWN thi pod bi restart ({{restartPolicy}}). Neu DB bi cham nhung khong thuoc liveness, pod khong bi restart -- chi readiness chuyen DOWN, pod bi go khoi Service endpoints, traffic ngung chay den pod do ma tien trinh van song. Day la phan biet quan trong: liveness = "tien trinh co nen restart khong", readiness = "pod co nen nhan traffic khong".
+### Pitfall production
+- Dua {{db}} vao liveness: incident DB cham 30 giay -> ca cum pod bi restart dong loat, thundering herd khi boot lai, downtime keo dai.
+- Readiness check khong co timeout: probe treo > {{periodSeconds}}, pod bi coi la khong ready ma khong ro nguyen nhan.
+- Khong bat {{show-details: when_authorized}} hoac {{never}}: lo chi tiet health (DB version, disk free) ra ngoai internet.
+- Graceful shutdown: thieu {{preStop}} sleep -> ingress van gui request toi pod da ngung nhan; thieu {{terminationGracePeriodSeconds}} du lon -> pod bi SIGKILL giua chung request.
+### Vi du doi thuc
+Mot he thong thanh toan 12 pod PostgreSQL. Luc 10h sang, primary DB gap checkpoint spike 45 giay. Truoc khi tach group, liveness include db -> 12 pod cung liveness DOWN -> kubelet restart tat ca -> boot storm lam DB qua tai hon, downtime 8 phut. Sau khi tach: liveness chi {{livenessState}}, readiness include db. Checkpoint spike xay ra: readiness DOWN, pod bi go khoi Service, traffic chuyen sang pod khac (neu co read replica) hoac queue o gateway; liveness van UP nen pod khong restart. Khi DB hoi phuc, readiness tu UP, traffic tro lai. Downtime thuc te chi 45 giay (thoi gian checkpoint), khong restart pod. Cau hinh them: {{preStop: sleep 10}}, {{terminationGracePeriodSeconds: 60}}, {{spring.lifecycle.timeout-per-shutdown-phase: 30s}}.
+### Tra loi mau khi phong van
+"Toi bat management.endpoint.health.probes.enabled=true de co hai endpoint rieng. Liveness group chi include livenessState -- dai dien cho tien trinh Java con song, khong bao gio dua DB hay dependency ben ngoai vao, vi neu DB cham ma thuoc liveness thi Kubernetes se restart pod hang loat, gay thundering herd khi boot lai. Readiness group include readinessState va cac dependency bat buoc nhu db, redis, custom health indicator cho dich vu quan trong, moi check co timeout ngan 100-500ms. Khi pod shutdown, Spring Boot graceful shutdown chuyen readiness sang REFUSING_TRAFFIC, pod bi go khoi Service endpoints; toi them preStop sleep 5-10 giay de cho ingress ngung gui traffic, va dat terminationGracePeriodSeconds lon hon shutdown timeout de request dang chay ki xong."
+> Senior tip: Hay tu hoi "neu check nay fail, hanh dong dung la restart pod hay ngung gui traffic?" Cau tra loi quyet dinh no thuoc liveness hay readiness. Mot quy tac an toan: liveness gan nhu luon chi nen la livenessState; moi phu thuoc ben ngoai de o readiness va phai co timeout ngan de probe khong treo.
+### Co che
+Spring Boot 2.3+ tach health thanh hai nhom thong qua {{HealthEndpointGroups}}. Mac dinh liveness chi kiem tra {{livenessState}} (luon UP tru khi ung dung chu dong set DOWN), readiness kiem tra {{readinessState}} (mac dinh UP) cong cac component da dang ky. Cau hinh qua properties:
+~~~yaml
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db,redis,customService
+  health:
+    db:
+      enabled: true
+    redis:
+      enabled: true
+~~~
+Khi Kubernetes goi liveness probe, neu tra DOWN thi pod bi restart ({{restartPolicy}}). Neu DB bi cham nhung khong thuoc liveness, pod khong bi restart -- chi readiness chuyen DOWN, pod bi go khoi Service endpoints, traffic ngung chay den pod do ma tien trinh van song. Day la phan biet quan trong: liveness = "tien trinh co nen restart khong", readiness = "pod co nen nhan traffic khong".
+### Pitfall production
+- Dua {{db}} vao liveness: incident DB cham 30 giay -> ca cum pod bi restart dong loat, thundering herd khi boot lai, downtime keo dai.
+- Readiness check khong co timeout: probe treo > {{periodSeconds}}, pod bi coi la khong ready ma khong ro nguyen nhan.
+- Khong bat {{show-details: when_authorized}} hoac {{never}}: lo chi tiet health (DB version, disk free) ra ngoai internet.
+- Graceful shutdown: thieu {{preStop}} sleep -> ingress van gui request toi pod da ngung nhan; thieu {{terminationGracePeriodSeconds}} du lon -> pod bi SIGKILL giua chung request.
+### Vi du doi thuc
+Mot he thong thanh toan 12 pod PostgreSQL. Luc 10h sang, primary DB gap checkpoint spike 45 giay. Truoc khi tach group, liveness include db -> 12 pod cung liveness DOWN -> kubelet restart tat ca -> boot storm lam DB qua tai hon, downtime 8 phut. Sau khi tach: liveness chi {{livenessState}}, readiness include db. Checkpoint spike xay ra: readiness DOWN, pod bi go khoi Service, traffic chuyen sang pod khac (neu co read replica) hoac queue o gateway; liveness van UP nen pod khong restart. Khi DB hoi phuc, readiness tu UP, traffic tro lai. Downtime thuc te chi 45 giay (thoi gian checkpoint), khong restart pod. Cau hinh them: {{preStop: sleep 10}}, {{terminationGracePeriodSeconds: 60}}, {{spring.lifecycle.timeout-per-shutdown-phase: 30s}}.
+### Tra loi mau khi phong van
+"Toi bat management.endpoint.health.probes.enabled=true de co hai endpoint rieng. Liveness group chi include livenessState -- dai dien cho tien trinh Java con song, khong bao gio dua DB hay dependency ben ngoai vao, vi neu DB cham ma thuoc liveness thi Kubernetes se restart pod hang loat, gay thundering herd khi boot lai. Readiness group include readinessState va cac dependency bat buoc nhu db, redis, custom health indicator cho dich vu quan trong, moi check co timeout ngan 100-500ms. Khi pod shutdown, Spring Boot graceful shutdown chuyen readiness sang REFUSING_TRAFFIC, pod bi go khoi Service endpoints; toi them preStop sleep 5-10 giay de cho ingress ngung gui traffic, va dat terminationGracePeriodSeconds lon hon shutdown timeout de request dang chay ki xong."
+> Senior tip: Hay tu hoi "neu check nay fail, hanh dong dung la restart pod hay ngung gui traffic?" Cau tra loi quyet dinh no thuoc liveness hay readiness. Mot quy tac an toan: liveness gan nhu luon chi nen la livenessState; moi phu thuoc ben ngoai de o readiness va phai co timeout ngan de probe khong treo.
+`,
+  follow: [
+    'Khi nào bạn dùng cơ chế cache hoặc TTL cho HealthIndicator thay vì kiểm tra thật mỗi lần probe gọi?',
+    'Startup probe khác liveness probe thế nào và khi nào cần bật trên ứng dụng Spring Boot khởi động chậm?',
+    'Nếu một dependency không bắt buộc (có circuit breaker fallback), bạn sẽ đưa nó vào readiness group như thế nào?'
+  ],
+  tags: ['Actuator', 'health group', 'liveness', 'readiness', 'Kubernetes', 'HealthIndicator', 'graceful shutdown']
+},
+{
+  id: 'spring-048', topic: 'spring', level: 'senior',
+  q: 'Khi Kubernetes gửi SIGTERM, Spring Boot graceful shutdown xử lý request đang chạy thế nào qua các phase, Tomcat/Reactor behavior, và bạn phối hợp với preStop, terminationGracePeriodSeconds ra sao để không mất request?',
+  a: `**Tom tat:** Graceful shutdown cua Spring Boot ({{server.shutdown=graceful}}, mac dinh tu Boot 3.4) chay theo trinh tu: ngung nhan request moi -> cho request dang xu ly xong trong {{spring.lifecycle.timeout-per-shutdown-phase}} (mac dinh 30s) -> dong ApplicationContext (dung consumer, scheduler, pool). Tomcat ngung accept socket moi, cho request trong pipeline xu ly xong; Reactor {{HttpServer}} cung drain in-flight request. Tren Kubernetes, {{preStop}} sleep 5-10 giay chay song song voi viec go pod khoi Endpoints, cho load balancer ki cap nhat truoc khi server ngung nhan request. Tong grace period = preStop + shutdown timeout phai nho hon {{terminationGracePeriodSeconds}} (mac dinh 30s), neu khong pod bi SIGKILL.
+### Trinh tu chi tiet
+1. Kubernetes danh dau pod Terminating, **song song**: gui SIGTERM cho container **va** go pod khoi Service/Endpoints (lan toi kube-proxy, ingress mat vai giay).
+2. Neu ung dung dung nhan request ngay khi SIGTERM, request dang duoc dinh tuyen trong may giay do se loi connection refused. {{preStop: sleep 10}} cho viec go endpoint lan xong.
+3. Spring Boot nhan SIGTERM, {{server.shutdown=graceful}}: Tomcat ngung accept ket noi moi, cho request trong pipeline xong (drain). Reactor Netty tuong tu drain in-flight request.
+4. Cho request xong trong {{spring.lifecycle.timeout-per-shutdown-phase}} (dat theo p99 latency thuc te, vi du 30-60s).
+5. Dong ApplicationContext: {{SmartLifecycle}} stop (phase thap truoc) -- dung Kafka consumer (commit offset), dung scheduler, dong HikariCP pool, dong JPA EntityManagerFactory.
+6. Process thoat truoc SIGKILL.
+### Tomcat vs Reactor
+- Tomcat (thread-per-request): moi request mot thread, drain cho thread xong. Thread pool co queue; shutdown khong xu ly task trong queue cua {{@Async}} executor tru neu executor cung dung graceful shutdown.
+- Reactor Netty (event-loop): drain cho cac subscription in-flight hoan tat. Cac {{Mono}}/{{Flux}} dang chay duoc phep hoan tat; {{boundedElastic}} scheduler task khong tu drain -- can tu manage.
+### Pitfall production
+- {{terminationGracePeriodSeconds}} mac dinh 30s qua ngan cho shutdown 30s + preStop 10s -> pod bi SIGKILL.
+- Readiness probe dung {{/actuator/health}} thay vi {{/actuator/health/readiness}}: liveness check co the pass nhung pod khong ready.
+- Consumer Kafka khong commit offset truoc khi shutdown -> message bi xu ly lai (duplicate) hoac mat (neu enable.auto.commit=false ma shutdown truoc khi poll xong).
+- {{@Async}} task dai trong executor khong bi graceful shutdown quan ly -> bi kill giua chung.
+### Vi du doi thuc
+He thong don hang 12 pod, p99 request 2.3s. Rolling update moi lan deploy: 0.8% request loi 502 trong 1-2 phut. Nguyen nhan: da bat {{server.shutdown=graceful}} nhung thieu preStop. Ingress (nginx) cache endpoint 10s, van gui request toi pod da ngung nhan. Sua: them {{preStop: sleep 10}}, {{terminationGracePeriodSeconds: 60}}, {{spring.lifecycle.timeout-per-shutdown-phase: 40s}}. Readiness probe dung {{/actuator/health/readiness}} (Spring tu chuyen {{REFUSING_TRAFFIC}} khi bat dau tat). Consumer Kafka dung som, commit offset truoc khi dong. Ket qua: 20 lan deploy lien tiep 0% loi 502.
+### Tra loi mau khi phong van
+"Khi Kubernetes dung pod, no gui SIGTERM va dong thoi go pod khoi endpoints, nhung viec go lan toi ingress va kube-proxy mat vai giay. Toi them preStop sleep 10 giay de cho viec go lan xong. Spring Boot graceful shutdown: ngung nhan request moi, cho request dang chay xong trong timeout-per-shutdown-phase (dat theo p99 thuc te), roi dong context theo thu tu -- dung consumer Kafka commit offset, dung scheduler, dong pool. Readiness probe dung nhom readiness cua Actuator de bao khong nhan traffic khi bat dau tat. Quan trong la tong preStop + shutdown timeout phai nho hon terminationGracePeriodSeconds, neu khong pod bi SIGKILL. Toi kiem chung bang load test chay lien tuc trong luc rolling update."
+> Senior tip: Lay p99 thoi luong request va thoi gian deregistration thuc te de dat grace period, sau do dien tap rolling deploy duoi tai. Graceful shutdown giam gian doan, nhung retry an toan va idempotency van la lop bao ve cuoi cho client.
+`,
+  follow: [
+    'Kubernetes readiness va Spring graceful shutdown can thu tu phoi hop ra sao?',
+    'Consumer dang xu ly message khi shutdown thi dam bao khong mat message the nao?',
+    'Reactor Netty drain in-flight request khac Tomcat thread-per-request o diem nao?'
+  ],
+  tags: ['graceful shutdown', 'Spring Boot', 'Kubernetes', 'readiness', 'Tomcat', 'Reactor', 'preStop']
+},
+{
+  id: 'spring-049', topic: 'spring', level: 'senior',
+  q: 'HikariCP production tuning: công thức maximumPoolSize (Little Law), connectionTimeout, leakDetectionThreshold, validationTimeout — bạn đặt giá trị thế nào, quan sát metric nào để biết pool đủ hay thiếu?',
+  a: `**Tom tat:** Kich thuoc pool khong lay theo so thread ung dung ma dua tren cong viec thuc te. Theo Little Law: so connection ban trung binh = throughput (req/s) x thoi gian giu connection trung binh (s). Vi du 400 req/s x 20ms = 8 connection ban; pool 15-20 tren moi instance du cho dinh tai. {{maximumPoolSize}} tong tat ca instance (tinh ca luc autoscale) phai nho hon {{max_connections}} cua DB (chua 20% cho admin/replication). {{connectionTimeout}} ngan (2-5s) de fail nhanh; {{leakDetectionThreshold}} bat (60s) de bat code giu connection lau; {{validationTimeout}} ngan (1-2s) de khong cho validation khi DB cham. Metric quan trong: {{hikaricp.connections.pending}} (luong cho), {{connections.acquire}} (thoi gian cho lay connection), {{connections.usage}} (ty le ban).
+### Cong thuc va sizing
+1. Xem {{max_connections}} DB va so instance: {{maximumPoolSize}} x so instance <= {{max_connections}} x 0.8.
+2. Tinh theo CPU DB: quy tac cong dong {{pool ≈ (CPU cores x 2) + effective disks}}.
+3. Bat dau 10-20/instance, do: pending, acquire latency, DB throughput.
+4. Voi virtual threads (Java 21+): so luong co the rat lon nhung connection DB van huu han -> pool nho (5-10), theo doi pending.
+### Cac timeout
+| Tham so | Y nghia | Goi y |
+|---|---|---|
+| connectionTimeout | Cho toi da lay connection tu pool | 2-5 giay, fail nhanh |
+| maxLifetime | Thoi gian toi da connection ton tai truoc khi dong thay moi | Ngan hon timeout firewall/DB, vi du 30p so voi 60p |
+| idleTimeout | Connection roi bao lau moi duoc dong | 10 phut |
+| leakDetectionThreshold | Giu connection qua lau thi ghi stack trace noi muon | 60 giay, bat luon |
+| validationTimeout | Cho validation query ({{SELECT 1}}) | 1-2 giay, khong cho khi DB cham |
+### Pitfall production
+- Pool lon hon lai cham: hang cho M/M/c phi tuyen, context switch DB, tranh chap lock, buffer pool xao tron.
+- {{spring.jpa.open-in-view=true}} (mac dinh) giu connection suot render JSON -> pool can du query nhanh. Tat OSIV, load du du lieu trong service.
+- {{maxLifetime}} >= timeout firewall/DB -> connection reset ngau nhien sau gio thap diem.
+- Khong bat {{leakDetectionThreshold}} -> khong biet code nao giu connection lau (Open Session In View, goi API ngoai trong @Transactional).
+### Vi du doi thuc
+Dich vu don hang 4 instance, moi instance pool 50 (tong 200) tro PostgreSQL {{max_connections=120}}. Gio cao diem 350 req/s, p95 API 2.5s, loi "Connection is not available". DB CPU tang du query nhanh. Metric HikariCP: {{pending}} > 0 thuong xuyen, {{acquire}} cao. {{spring.jpa.open-in-view}} bat -> connection giu 80ms thay vi 20ms. Sua: tat OSIV, giam pool instance xuong 15 (tong 60), {{maxLifetime=30p}}, {{leakDetectionThreshold=60s}}. Ket qua: pending ve 0, p95 220ms, loi timeout bien mat, CPU DB giam.
+### Tra loi mau khi phong van
+"Khi sizing HikariCP, toi khong lay so thread ung dung ma dua tren Little Law: throughput nhan thoi gian giu connection trung binh. Vi du 400 req/s x 20ms chi can 8 connection ban. Tong pool moi instance phai nho hon max_connections DB. Pool qua lon lam cham vi tang hang cho, context switch, tranh chap lock tren DB. Toi dat connectionTimeout 2-5s fail nhanh, maxLifetime ngan hon timeout firewall (30p vs 60p), leakDetectionThreshold 60s de bat cho giu connection lau, validationTimeout 1-2s. Metric quan trong: connections.pending, connections.acquire, connections.usage. Khi thay cho connection, viec dau tien la tim transaction giu lau (OSIV, goi API ngoai trong @Transactional), khong phai tang pool."
+> Senior tip: Chi so quan trong nhat la thoi gian cho va so luong dang cho, khong phai so ket noi hien co. Pool lon khong lam DB nhanh hon; no chi chia nho thoi gian CPU cua DB cho nhieu yeu cau hon. Khi thay cho connection, hay tim truy van giu giao dich lau.
+`,
+  follow: [
+    'Theo quy tac Little, 200 request/giay va giu connection 50ms can bao nhieu connection trung binh?',
+    'Tai sao maxLifetime phai ngan hon wait_timeout cua DB va idle timeout cua can bang tai?',
+    'Virtual threads co nen dan den pool ket noi lon hon khong?'
+  ],
+  tags: ['HikariCP', 'connection pool', 'sizing', 'Little Law', 'maxLifetime', 'leak detection', 'validationTimeout']
+},
+{
+  id: 'spring-050', topic: 'spring', level: 'senior',
+  q: '@ConfigurationProperties với validation (JSR-380), nested properties, relaxed binding, record vs class — bạn cấu hình type-safe config thế nào và bắt lỗi sớm lúc startup?',
+  a: `**Tom tat:** {{@ConfigurationProperties}} bind property tu {{application.yml}}, env, CLI args vao object type-safe. Bat validation bang {{@Validated}} tren class va annotation JSR-380 ({{@NotNull}}, {{@Min}}, {{@Max}}, {{@Pattern}}, {{@Size}}) tren field. Nested object dung field type la class/record khac (cung co annotation validation). Relaxed binding cho phep {{kebab-case}}, {{snake_case}}, {{UPPER_CASE}} trong env map sang camelCase field. Record (Java 16+) immutable, constructor tu validate, phu hop config read-only; class mutable cho phep binder set field sau construct. Dat {{spring.config.import}} hoac {{@PropertySource}} de nap file bo sung. Loi validation khien context fail fast luc startup -- phat hien som.
+### Cau hinh co ban
+~~~java
+@ConfigurationProperties(prefix = "app.payment")
+@Validated
+public record PaymentConfig(
+    @NotNull @Size(min = 3, max = 20) String merchantId,
+    @NotNull @Pattern(regexp = "https?://.+") String callbackUrl,
+    @Min(1) @Max(300) int timeoutSeconds,
+    @Valid NestedConfig nested
+) {}
+@Validated
+public record NestedConfig(
+    @NotNull String apiKey,
+    @Min(1) int retryCount
+) {}
+~~~
+Spring Boot tu dong validate khi bind (can {{spring-boot-validation}} hoac {{jakarta.validation}} tren classpath). Loi validation nem {{BindException}} luc startup, log ro field va constraint vi pham.
+### Relaxed Binding
+Env {{APP_PAYMENT_MERCHANT_ID}}, {{APP_PAYMENT_CALLBACK_URL}}, {{APP_PAYMENT_TIMEOUT_SECONDS}}, {{APP_PAYMENT_NESTED_API_KEY}} deu bind dung vao field camelCase. Kebab-case trong YAML ({{merchant-id}}) cung bind duoc. Quy tac: bo dau phan cach, chu cai sau dau phan cach viet hoa.
+### Record vs Class
+| | Record | Class |
+|---|---|---|
+| Immutable | Co (final field) | Khong (setter) |
+| Validation | Tren constructor parameter | Tren field/setter |
+| Constructor | Compact, tu toString/equals/hashCode | Can Lombok hoac thu cong |
+| Phu hop | Config read-only, type-safe | Config can mutation (hiem) |
+### Pitfall production
+- Quen {{@Validated}} tren class config -> validation khong chay, gia tri sai lot vao runtime.
+- Nested object thieu {{@Valid}} -> validation khong lan xuong nested.
+- Dung {{@Value}} rai rac thay vi {{@ConfigurationProperties}} -> mat type-safe, validation, IDE support, documentation.
+- Relaxed binding khong hoat dong voi {{@Value}} (chi dung chinh xac ten property).
+- Record constructor validation chi chay khi bind; neu dung {{@ConfigurationProperties}} tren {{@Bean}} method tra record, validation van chay.
+### Vi du doi thuc
+Team cau hinh cong thanh toan qua {{@Value}} rai rac 15 field. Mot lan deploy thieu {{callbackUrl}} (property ghi nham {{callbakUrl}}) -- ung dung start thanh cong, runtime goi cong thanh toan moi loi {{NullPointerException}}. Chuyen sang {{@ConfigurationProperties(prefix="app.payment")}} record co {{@NotNull @Pattern}}: lan deploy sau thieu property -> application context fail ngay luc startup, log ro "callbackUrl: must not be null, must match pattern". Nested config cho {{retryPolicy}} cung validate duoc. CI them test {{SpringBootTest}} assert context load thanh cong voi config hop le va fail voi config sai.
+### Tra loi mau khi phong van
+"Toi dung @ConfigurationProperties(prefix='app.payment') tren record immutable, bat @Validated va annotation JSR-380 (@NotNull, @Min, @Max, @Pattern) tren field. Nested config cung la record co @Valid de validation lan xuong. Relaxed binding cho phep env APP_PAYMENT_MERCHANT_ID, YAML merchant-id deu bind vao merchantId camelCase. Record phu hop config read-only vi immutable, validation chay tren constructor. Loi validation khien context fail fast luc startup -- phat hien som thay vi runtime. Toi khong dung @Value rai rac vi mat type-safe, validation va IDE support. CI co test context load voi config hop le va fail voi config sai."
+> Senior tip: Hay coi @ConfigurationProperties nhu API contract cua config. Moi field deu co validation annotation, nested cung validate, va co test context load trong CI. Dung de config sai lot den runtime.
+`,
+  follow: [
+    'Validation annotation tren record constructor parameter khac field annotation ra sao?',
+    'Khi nao ban dung @ConfigurationProperties tren @Bean method thay vi tren class?',
+    'Relaxed binding co gioi han nao voi ky tu dac biet trong env variable khong?'
+  ],
+  tags: ['ConfigurationProperties', 'validation', 'JSR-380', 'record', 'relaxed binding', 'nested']
+},
+{
+  id: 'spring-051', topic: 'spring', level: 'senior',
+  q: 'Profile-specific config (application-{profile}.yml), externalized config precedence (SPRING_CONFIG_* env, configtree), Kubernetes ConfigMap/Secret — thứ tự ưu tiên là gì và bạn thiết kế config cho multi-env thế nào?',
+  a: `**Tom tat:** Spring Boot nap config theo thu tu uu tien (cao nhat ghi de thap nhat): 1) Default property ({{SpringApplication.setDefaultProperties}}), 2) {{@PropertySource}} tren {{@Configuration}}, 3) Config file ({{application.yml}}, application-{profile}.yml) trong classpath, 4) Config file ngoai classpath ({{spring.config.location}}, {{spring.config.import}}), 5) Environment variable ({{SPRING_CONFIG_*}}, {{SPRING_APPLICATION_JSON}}), 6) Command line argument ({{--key=value}}), 7) {{SpringApplication.setAdditionalProfiles}}. Kubernetes ConfigMap/Secret mount thanh file hoac env variable -- deu tham gia thu tu tren. {{spring.config.import=configtree:/config/}} (Boot 2.4+) nap toan bo file trong thu muc (tu Secret mount) theo thu tu alphabetic, ghi de lan nhau.
+### Thu tu uu tien chi tiet (cao -> thap)
+1. Command line args ({{--app.payment.timeout=30}})
+2. {{SPRING_APPLICATION_JSON}} (env JSON)
+3. {{SPRING_CONFIG_*}} env ({{SPRING_CONFIG_LOCATION}}, {{SPRING_CONFIG_IMPORT}})
+4. System property ({{-Dapp.payment.timeout=30}})
+5. OS env variable ({{APP_PAYMENT_TIMEOUT=30}}, relaxed binding)
+6. application-{profile}.yml (profile active, vi du {{application-prod.yml}} ghi de {{application.yml}})
+7. {{application.yml}} (mac dinh)
+8. {{spring.config.import}} file ngoai classpath ({{file:}}, {{configtree:}}, {{optional:classpath:}})
+9. Default property trong code
+### Kubernetes ConfigMap/Secret
+- Mount ConfigMap thanh file trong {{/config/application.yml}} -> dung {{spring.config.import=optional:file:/config/application.yml}}.
+- Mount Secret thanh file ({{/secrets/db-password}}) -> {{spring.config.import=optional:configtree:/secrets/}} nap tung file lam property (ten file = key, noi dung = value).
+- Hoac mount Secret thanh env variable -> tu bind nho relaxed binding ({{SPRING_DATASOURCE_PASSWORD}} -> {{spring.datasource.password}}).
+- Ket hop: ConfigMap cho config khong nhay cam (timeout, feature flag), Secret cho nhay cam (password, API key). Cung property, Secret env variable (uu tien 5) ghi de ConfigMap file (uu tien 8).
+### Thiet ke multi-env
+- Base config trong {{application.yml}} (chi gia tri an toan, khong secret).
+- Profile-specific {{application-prod.yml}}, {{application-staging.yml}} ghi de base.
+- Secret mount env variable cho password/key (uu tien cao, khong commit git).
+- ConfigMap mount file cho feature flag, timeout (de thay doi khong rebuild image).
+- {{spring.config.import=optional:configtree:/config/}} cho phep override tai runtime bang mount volume moi.
+- CI validate: test context load voi tung profile, assert property quan trong co gia tri.
+### Pitfall production
+- Commit secret vao git: dung Secret env variable, khong bao gio dat password trong {{application.yml}} hoac ConfigMap.
+- Profile active sai: {{spring.profiles.active}} dat qua env variable tren tung env (K8s: {{envFrom: secretRef}} hoac {{value: "prod"}}).
+- {{optional:}} prefix quan trong: thieu file khong lam crash startup (vi du secret mount delay).
+- Thu tu alphabetic trong {{configtree:}}: file {{10-database.yml}} nap truoc {{20-feature.yml}} -> dat prefix so de kiem soat ghi de.
+### Vi du doi thuc
+He thong microservice 15 service, deploy ArgoCD len K8s dev/staging/prod. Moi service: base {{application.yml}} trong image (timeout, pool size an toan). ConfigMap {{app-config}} mount {{/config/application.yml}} chua feature flag, timeout per env. Secret {{app-secrets}} mount env variable {{SPRING_DATASOURCE_PASSWORD}}, {{APP_PAYMENT_API_KEY}}. {{spring.config.import=optional:file:/config/application.yml}}. Prod dung profile {{prod}} ({{application-prod.yml}} trong image ghi de base). Thu tu ghi de: base image < profile image < ConfigMap file < Secret env. Thay doi feature flag: update ConfigMap, ArgoCD rollout restart pod, khong rebuild image. Thay doi password: update Secret, pod restart tu dong (Relocator sidecar hoac Wave). CI test: {{SpringBootTest}} voi profile dev/staging/prod assert property quan trong.
+### Tra loi mau khi phong van
+"Thu tu uu tien Spring Boot: command line args > SPRING_APPLICATION_JSON > SPRING_CONFIG_* env > system property > OS env > application-{profile}.yml > application.yml > spring.config.import file > default code. Kubernetes: ConfigMap mount file (uu tien thap), Secret mount env variable (uu tien cao nho relaxed binding). Toi thiet ke: base config trong image, profile-specific trong image, ConfigMap cho feature flag/timeout (file), Secret cho password/key (env variable). Cung property, Secret env ghi de ConfigMap file. Dung optional: prefix de thieu file khong crash. CI test context load tung profile assert property quan trong."
+> Senior tip: Dung bao gio commit secret vao git. Dung Secret mount env variable -- no uu tien cao hon ConfigMap file, khong o trong image, va ArgoCD/SealedSecret quan tri tot. Hay ghi ro thu tu uu tien trong README team de ai moi cung hieu tai sao prod lay gia tri A thay vi B.
+`,
+  follow: [
+    'Khi cung mot property xuat hien o ca ConfigMap file va Secret env, cai nao thang va tai sao?',
+    'Spring Boot 3.1+ {{spring.config.import}} ho tro {{optional:classpath:}} -- khac {{optional:file:}} o diem nao?',
+    'Lam sao dam bao pod tu restart khi ConfigMap/Secret thay doi ma khong can ArgoCD wave?'
+  ],
+  tags: ['ConfigurationProperties', 'profile', 'ConfigMap', 'Secret', 'Kubernetes', 'externalized config', 'precedence']
+},
+{
+  id: 'spring-052', topic: 'spring', level: 'lead',
+  q: 'Micrometer Observation API (vs Meter API cũ), custom observation, exemplars, tracing context propagation — bạn instrument code nghiệp vụ thế nào để metric, log, trace nối được với nhau?',
+  a: `**Tom tat:** Micrometer Observation la abstraction thong nhat: mot {{Observation}} sinh **ca** metric (timer/histogram) lan span (qua Micrometer Tracing bridge OpenTelemetry/Brave). Thay vi dung {{Meter}}/{{Timer}} cu rieng le, dung {{Observation.createNotStarted}} hoac {{@Observed}} annotation. Custom observation cho phep gan attribute (low cardinality), event, error. Exemplar: histogram metric dinh kem traceId cua request mau -- tu bieu do p99 tren Grafana bam thang sang trace request cham. Context propagation: HTTP dung header W3C {{traceparent}}, Kafka dung header tracing, executor bat dong bo phai boc {{ObservationThreadLocalAccessor}} hoac {{ContextPropagation}}.
+### Observation vs Meter API cu
+| | Meter API (cu) | Observation API (moi) |
+|---|---|---|
+| Metric | {{Timer}}, {{Counter}}, {{Gauge}} rieng | Sinh metric tu observation |
+| Trace | Tracing rieng (Brave/OpenTelemetry) | Tich hop san qua Micrometer Tracing |
+| Cardinality | De bung neu tag khong kiem soat | Khuyen nghi attribute low cardinality |
+| Code | Rai rac {{timer.record()}} | {{observation.start()}} / {{observation.stop()}} hoac {{@Observed}} |
+### Custom Observation
+~~~java
+Observation obs = Observation.createNotStarted(
+    () -> new Observation.Context() {
+        public void addLowCardinality(KeyValues kv) {
+            kv.add("order.type", order.getType());      // low cardinality
+            kv.add("customer.tier", customer.getTier());
+        }
+        public void addHighCardinality(KeyValues kv) {
+            // KHONG them orderId, userId o day -- dung event hoac exemplar
+        }
+    },
+    registry
+);
+obs.lowCardinalityKeyValue(KeyValue.of("payment.method", "card"));
+obs.error(exception);
+obs.event(Event.of("payment.gateway.called", Instant.now()));
+obs.start(); obs.stop();  // hoac try-with-resources: obs.scoped(() -> doWork())
+~~~
+### Exemplar
+Histogram metric ({{Timer}} tu observation) co the dinh kem traceId cua mot request mau. Tren Grafana, tu bieu do p99 bam exemplar -> mo trace cua request cham do trong Tempo/Jaeger. Can: Micrometer Tracing + OpenTelemetry bridge + exemplar sampler ({{TraceSampler.alwaysSample()}} cho error/slow).
+### Context Propagation
+- HTTP client: dung {{RestClient}}, {{WebClient}}, {{RestTemplate}} tao tu builder cua Spring (tu propagate {{traceparent}}).
+- Kafka: bat {{spring.kafka.producer.observation-enabled=true}}, {{consumer.observation-enabled=true}}.
+- {{@Async}}/{{Executor}}: boc task bang {{ObservationThreadLocalAccessor}} hoac dung {{TaskDecorator}} copy context.
+- Reactor: {{Hooks.onEachOperator}} hoac {{contextWrite}} propagate {{ObservationThreadLocalAccessor}}.
+### Pitfall production
+- Them high cardinality tag (orderId, userId, sessionId) vao observation attribute -> cardinality no, memory/chi phi tang. Chi dung low cardinality attribute; high cardinality de o exemplar hoac event.
+- Sampling thap bo mat trace loi hiem; dung tail-based sampling hoac sampler giu error/slow.
+- Executor bat dong bo khong propagate context -> trace dut, metric khong gan duoc traceId.
+- {{@Observed}} tren method private hoac self-invocation khong hoat dong (proxy AOP).
+### Vi du doi thuc
+He thong thanh toan 5 service Spring Boot 3. Truoc dung Meter API: metric rieng, trace rieng (Brave), log rieng -- incident "thanh toan treo 10s" phai grep log 5 service theo thoi gian, trung binh 45 phut dieu tra. Chuyen sang Observation API: moi service dung {{@Observed}} cho boundary quan trong (HTTP inbound, RestClient outbound, Kafka, JDBC qua datasource-proxy). Histogram latency co exemplar (traceId). Log JSON tu co traceId tu MDC (Micrometer Tracing tu dua vao). Client tra traceId trong response loi. Lan sau incident: ho tro gui traceId tu man hinh loi -> trace Tempo cho thay 9.2s o span goi dich vu chong gian lan (retry 3 lan timeout 3s). Dieu tra 5 phut; team giam timeout va them circuit breaker. Chi phi ingest tang 15% do exemplar, nhung MTTR giam 90%.
+### Tra loi mau khi phong van
+"Toi dung Micrometer Observation API thay vi Meter API cu vi no sinh ca metric lan span tu mot observation. Boundary quan trong (HTTP server, RestClient/WebClient, Kafka, JDBC) duoc Spring Boot 3 tu instrument khi bat observation. Toi tao custom observation cho use case nghiep vu: gan low cardinality attribute (order.type, customer.tier), khong them high cardinality nhu orderId -- nhung cai do de o exemplar hoac event. Exemplar cho phep tu histogram p99 tren Grafana bam thang sang trace request cham. Context propagation: HTTP client phai dung builder cua Spring, Kafka bat observation, executor async phai boc context. TraceId tu dua vao MDC nen log JSON co san, toi tra traceId trong response loi de ho tro gui lai. Sampling can bang chi phi, giu du trace loi va cham."
+> Senior tip: Bat dau voi RED metrics (rate, errors, duration), roi trace cac duong di co gia tri dieu tra. Theo doi ca chi phi ingest va cardinality; dashboard dep nhung tag khong gioi han se bien observability thanh su co van hanh. High cardinality chi o exemplar, khong o attribute.
+`,
+  follow: [
+    'Khi nao chon head sampling va tail sampling?',
+    'Vi sao khong nen dat orderId lam label cua metric?',
+    'Reactor operator chain propagate Observation context tu dong hay can config them?'
+  ],
+  tags: ['Micrometer', 'Observation', 'exemplar', 'tracing', 'OpenTelemetry', 'observability', 'context propagation']
+}
 );

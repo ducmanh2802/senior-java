@@ -4245,6 +4245,798 @@ Test assert {{findByIdCalls == 0}} và {{totalCalls == 2}} đóng vai trò "quer
   ],
   related: ['testing-002', 'testing-003', 'testing-009'],
   tags: ['test-double', 'stub', 'mock', 'fake', 'n+1', 'repository', 'performance'],
+},
+{
+  id: 'lesson-testing-012',
+  track: 'testing',
+  order: 12,
+  title: 'Test tích hợp đúng cách cho Spring Boot 3: test pyramid, slice test, Testcontainers và dọn dữ liệu',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích test pyramid (tháp kiểm thử) và chọn đúng tầng test cho từng loại logic',
+    'Phân biệt @SpringBootTest với @WebMvcTest/@DataJpaTest và biết vì sao slice test nhanh hơn',
+    'Dùng Testcontainers với @ServiceConnection để test trên PostgreSQL thật, và dọn dữ liệu giữa các test để diệt flaky',
+  ],
+  body: `### Vì sao phải chọn đúng tầng test
+Một hệ thống có nhiều tầng: controller (nhận HTTP), service (logic nghiệp vụ), repository (truy vấn SQL), database thật. Nếu test nào cũng dựng cả hệ thống (mở Spring context, kết nối database, gọi HTTP), test sẽ chạy rất chậm và dễ vỡ. **Test pyramid** (tháp kiểm thử — hình tháp chia theo số lượng và tốc độ) trả lời câu hỏi "nên viết bao nhiêu test ở mỗi tầng".
+
+| Tầng | Tên tiếng Anh | Đặc điểm | Số lượng | Tốc độ |
+|---|---|---|---|---|
+| Đáy | Unit test | Một class, không Spring, không DB | Rất nhiều | Vài mili giây |
+| Giữa | Slice / integration test | Một lát mỏng của app (chỉ web, chỉ JPA) | Vừa phải | Vài trăm mili giây |
+| Đỉnh | End-to-end test | Chạy toàn bộ app qua HTTP thật | Rất ít | Vài giây |
+
+Nguyên tắc: **càng lên cao càng ít test**. Logic nghiệp vụ thuần (tính phí, tính thuế, kiểm tra điều kiện) nên nằm ở đáy — viết unit test rẻ và nhanh. Chỉ những thứ **chỉ sai khi có hạ tầng thật** (SQL, transaction, JSON binding, security filter) mới cần slice hoặc e2e test. Một sai lầm phổ biến là viết 500 test e2e chậm chạp thay vì 5000 unit test nhanh: CI thành 40 phút và ai cũng ngại chạy.
+
+### Ba annotation cần phân biệt
+Spring Boot 3 cung cấp các "slice test" — mỗi annotation chỉ nạp một phần context:
+
+| Annotation | Nạp gì | KHÔNG nạp gì | Dùng khi |
+|---|---|---|---|
+| {{@SpringBootTest}} | Toàn bộ application context: mọi bean, mọi auto-config | (không, đây là full context) | Cần cả chuỗi controller→service→repository→DB |
+| {{@WebMvcTest}} | Controller, filter, exception handler, Jackson | Service, repository, JPA, DB | Test HTTP: status, JSON, validation, security |
+| {{@DataJpaTest}} | Repository Spring Data, EntityManager, datasource | Controller, service, web | Test truy vấn SQL, JPQL, mapping |
+
+**Cơ chế bên trong:** {{@WebMvcTest}} không tạo bean {{OrderService}} hay {{DataSource}}, nên context khởi tạo trong khoảng 300–600 ms thay vì 3–8 giây như {{@SpringBootTest}}. Bạn phải **mock** các dependency mà controller cần (bằng {{@MockitoBean}} của Spring Boot 3.4+, hoặc {{@MockBean}} ở bản cũ hơn). {{@DataJpaTest}} mặc định chạy trong **transaction rollback**: mỗi test chạy trong một transaction, xong thì tự rollback, nên database sạch sau mỗi test (bạn không phải dọn tay).
+
+### Ví dụ: test controller bằng @WebMvcTest
+~~~java
+@WebMvcTest(OrderController.class)
+class OrderControllerTest {
+
+    @Autowired MockMvc mvc;              // giả lập HTTP request/response, không mở port thật
+    @MockitoBean OrderService service;   // thay service bằng mock: controller không gọi DB
+
+    @Test
+    void getOrder_returnsJson() throws Exception {
+        given(service.find(7L)).willReturn(new Order(7L, "PAID", 120_000));
+
+        mvc.perform(get("/api/orders/7"))       // gửi GET giả lập
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.status").value("PAID"))
+           .andExpect(jsonPath("$.total").value(120000));
+    }
+}
+~~~
+
+Ở đây không có database nào cả: service là mock, controller chỉ được kiểm tra về mặt HTTP. Nếu bạn dùng {{@SpringBootTest}} cho việc này, mỗi lần chạy mất vài giây và cần Postgres thật — quá đắt cho một test chỉ kiểm tra JSON.
+
+### Testcontainers với @ServiceConnection: test trên PostgreSQL thật
+Fake/H2 (database nhỏ chạy trong bộ nhớ) trả lời nhanh nhưng **khác PostgreSQL thật**: H2 không hỗ trợ {{SELECT FOR UPDATE}} đúng ngữ nghĩa, không có {{jsonb}}, hành vi transaction isolation khác. Những bug này chỉ lộ ra trên DB thật. **Testcontainers** là thư viện khởi động Docker container từ bên trong test: nó chạy một container PostgreSQL, chờ tới khi sẵn sàng, rồi trả về connection.
+
+@ServiceConnection (Spring Boot 3.1+) tự động trỏ datasource của app vào container đó, bạn không cần khai báo URL rườm rà:
+
+~~~java
+@SpringBootTest
+@Testcontainers                                   // bật tích hợp JUnit 5 cho Testcontainers
+class OrderRepositoryIT {
+
+    @Container
+    @ServiceConnection
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+
+    @Autowired OrderRepository repository;
+
+    @Test
+    void lockRow_blocksConcurrentReaders() { /* dùng DB thật, SELECT FOR UPDATE */ }
+}
+~~~
+
+**Vì sao đắt hơn fake:** mỗi container mất 3–15 giây để khởi động và chiếm RAM. Vì vậy khai báo {{static}} (dùng chung cho cả class) để container chỉ khởi động một lần, không phải mỗi test. Đặt tên class là {{*IT}} (integration test) rồi cấu hình Failsafe chạy riêng, để build nhanh (Surefire, chỉ unit test) không phải chờ container.
+
+### Dọn dữ liệu giữa các test: nguyên nhân flaky số một
+Flaky test (test chập chờn — lúc xanh lúc đỏ dù code không đổi) hay đến từ **dữ liệu dùng chung**. Nếu test A tạo đơn hàng id=1 và không dọn, test B chạy sau thấy "đã tồn tại" và đỏ — nhưng chạy một mình thì xanh. Đây là lỗi phụ thuộc thứ tự.
+
+Ba cách dọn, chọn theo ngữ cảnh:
+
+| Cách | Cơ chế | Khi nào |
+|---|---|---|
+| Transaction rollback | {{@DataJpaTest}} tự rollback sau mỗi test | Test chỉ đọc/ghi qua JPA, không cần commit thật |
+| {{@Sql(scripts=..., executionPhase=AFTER_TEST_METHOD)}} | Chạy script SQL xoá bảng sau mỗi test | Cần dữ liệu thật sự commit (test isolation, test @Async) |
+| Truncate thủ công trong {{@BeforeEach}} | {{TRUNCATE TABLE ... RESTART IDENTITY CASCADE}} | Test @SpringBootTest dùng DB thật, cần sạch tuyệt đối |
+
+Với Testcontainers + {{@SpringBootTest}}, transaction rollback **không** áp dụng tự động (không có slice), nên phải dùng {{@Sql}} hoặc truncate. Đừng quên {{RESTART IDENTITY}} nếu test dựa vào id tăng dần, và {{CASCADE}} để xoá cả bảng con.
+
+### Một test tích hợp hoàn chỉnh
+~~~java
+@SpringBootTest
+@Testcontainers
+@Transactional                 // rollback sau mỗi test: dữ liệu tự sạch
+class OrderServiceIT {
+
+    @Container @ServiceConnection
+    static PostgreSQLContainer<?> pg = new PostgreSQLContainer<>("postgres:16-alpine");
+
+    @Autowired OrderService service;
+    @Autowired OrderRepository repo;
+
+    @Test
+    void placeOrder_savesOrderWithStatusPaid() {
+        Order saved = service.place(new PlaceOrder("CUST-1", 250_000));
+        assertThat(saved.status()).isEqualTo("PAID");
+        assertThat(repo.findById(saved.id())).isPresent();   // đọc lại từ DB thật
+    }
+}
+~~~
+
+{{@Transactional}} trên test class khiến mọi thao tác DB chạy trong một transaction và rollback khi test kết thúc. Kết hợp Testcontainers, bạn có DB thật + tự sạch — vừa đúng ngữ nghĩa PostgreSQL, vừa không lây dữ liệu.
+
+### Bẫy production hay gặp
+- **Dùng {{@SpringBootTest}} cho mọi thứ**: mỗi test vài giây, suite 500 test thành 40 phút. Hãy dùng slice test cho controller/JPA, chỉ dùng full context cho test cần nhiều bean phối hợp.
+- **Quên {{@DirtiesContext}} khi đổi cấu hình**: nếu test thay đổi bean (ví dụ đổi clock, đổi datasource) mà không đánh dấu, các test sau dùng context cũ đã bị thay đổi. Nhưng lạm dụng {{@DirtiesContext}} (xoá context sau mỗi test) làm mọi test phải khởi tạo lại — rất chậm.
+- **Container khai báo non-static**: Testcontainers khởi động lại container cho từng test, tăng thời gian từ vài giây lên hàng chục giây.
+- **Dọn dữ liệu bằng tay không đủ**: chỉ xoá bảng chính mà quên bảng liên kết, hoặc quên reset sequence, khiến id nhảy cóc và test dựa vào id đỏ ngẫu nhiên.
+- **Test phụ thuộc thứ tự ngầm định**: đặt tên test {{test01_...}}, {{test02_...}} rồi dựa vào thứ tự đó — JUnit không đảm bảo thứ tự, và chạy song song sẽ vỡ. Mỗi test phải tự tạo dữ liệu của nó.
+
+> Senior tip: mình từng điều tra một suite flaky 1/20 lần đỏ. Nguyên nhân: một test @SpringBootTest dùng chung database, chạy song song với test khác, cả hai cùng insert id=1. Cách sửa không phải tăng timeout mà là thêm {{RESTART IDENTITY}} vào truncate trong {{@BeforeEach}} và tách riêng nhóm test có DB thật. Sau đó flaky về 0. Nguyên tắc: nếu một test đỏ không tái hiện được khi chạy một mình, gần như chắc chắn là shared state.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "{{@SpringBootTest}} khác {{@WebMvcTest}} ở đâu?", "Testcontainers với @ServiceConnection hoạt động thế nào?", "Bạn dọn dữ liệu giữa các test ra sao?", "Test pyramid là gì và bạn phân bổ test thế nào?". Trả lời tốt: nói rõ slice test nạp một phần context nên nhanh; Testcontainers chạy container thật và {{@ServiceConnection}} tự nối datasource; dọn dữ liệu bằng transaction rollback cho slice, bằng {{@Sql}}/truncate cho full context; và nhấn mạnh "càng lên cao càng ít test". Bài tập dưới đây mô phỏng cơ chế "quét annotation + đếm truy vấn + dọn dữ liệu" bằng Java thuần để bạn thấy vì sao slice test nhanh và vì sao phải dọn.`,
+  exercises: [
+    {
+      title: 'SliceTestSimulator: quét annotation, đếm truy vấn DB và dọn dữ liệu',
+      prompt: `Mô phỏng cách một test runner quyết định "dựng hạ tầng nào" dựa trên annotation, và cách fake database đếm truy vấn + dọn dữ liệu. Viết trong class {{SliceTestSimulator}}:
+
+- {{ infrastructureFor(TestCase tc) }}: trả về tên hạ tầng cần dựng:
+  - {{webSlice}} nếu chỉ có annotation {{@WebMvcTest}} (không có @SpringBootTest, không có @DataJpaTest).
+  - {{dataJpaSlice}} nếu có {{@DataJpaTest}} (và không có @SpringBootTest).
+  - {{fullContext}} nếu có {{@SpringBootTest}} (ưu tiên cao nhất).
+  - {{unitTest}} nếu không có annotation nào trong ba cái trên.
+  - Bỏ qua annotation lạ ({{@WebMvcTest}}, {{@DataJpaTest}}, {{@SpringBootTest}}, {{@SomethingElse}}).
+- {{ totalQueries(TestCase tc) }}: giả lập số truy vấn database. Mỗi vòng lặp của {{for}} trong {{exercises}} được mô phỏng bằng một lần gọi {{String exercise}} có chứa ký tự ký tự L in hoa (viết tắt "loop"); mỗi lần như vậy là 1 truy vấn. Cộng thêm 1 nếu exercise gọi {{findById}}. Cộng thêm 2 nếu exercise gọi {{findAll}}.
+- {{ runIsolated(TestCase tc) }}: nếu {{tc.transactional()}} là true → trả về {{true}} (transaction rollback tự dọn). Nếu không, chạy dọn dữ liệu: đặt {{rows.clear()}}, tăng {{truncateCount}}, rồi trả về {{rows.isEmpty()}}.
+
+Test sẽ tạo các TestCase khác nhau và kiểm tra từng nhánh, nên đọc kỹ các hằng số và enum đã cho.`,
+      starter: `import java.util.*;
+
+class SliceTestSimulator {
+
+    enum Infra { UNIT, WEB_SLICE, DATA_JPA_SLICE, FULL_CONTEXT }
+
+    static final class TestCase {
+        final String name;
+        final List<String> annotations;
+        final List<String> exercises;   // mỗi phần tử mô phỏng một câu lệnh trong test
+        final boolean transactional;
+
+        TestCase(String name, List<String> annotations, List<String> exercises, boolean transactional) {
+            this.name = name;
+            this.annotations = annotations;
+            this.exercises = exercises;
+            this.transactional = transactional;
+        }
+    }
+
+    static String infrastructureFor(TestCase tc) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static int totalQueries(TestCase tc) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    // Dùng chung bởi runIsolated: mô phỏng bảng DB bằng một danh sách "hàng".
+    static List<String> rows = new ArrayList<>();
+    static int truncateCount = 0;
+
+    static boolean runIsolated(TestCase tc) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.util.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static SliceTestSimulator.TestCase tc(String name, List<String> ann, List<String> ex, boolean tx) {
+        return new SliceTestSimulator.TestCase(name, ann, ex, tx);
+    }
+    public static void main(String[] args) {
+        check("web slice when only @WebMvcTest", () -> {
+            eq("webSlice", SliceTestSimulator.infrastructureFor(tc("t", List.of("@WebMvcTest"), List.of(), false)));
+        });
+        check("data jpa slice when only @DataJpaTest", () -> {
+            eq("dataJpaSlice", SliceTestSimulator.infrastructureFor(tc("t", List.of("@DataJpaTest"), List.of(), false)));
+        });
+        check("full context wins over slice annotations", () -> {
+            eq("fullContext", SliceTestSimulator.infrastructureFor(tc("t",
+                List.of("@SpringBootTest", "@WebMvcTest", "@DataJpaTest"), List.of(), false)));
+        });
+        check("unit test when no infrastructure annotation", () -> {
+            eq("unitTest", SliceTestSimulator.infrastructureFor(tc("t",
+                List.of("@DisplayName", "@SomethingElse"), List.of(), false)));
+        });
+        check("queries: loop costs 1 per L, plus findById and findAll", () -> {
+            SliceTestSimulator.TestCase t = tc("t", List.of(), List.of("findAll", "L", "findById", "L", "L"), false);
+            eq(6, SliceTestSimulator.totalQueries(t));   // findAll=2 + findById=1 + 3 vòng lặp=3 => 6
+        });
+        check("queries with only loops", () -> {
+            eq(2, SliceTestSimulator.totalQueries(tc("t", List.of(), List.of("L", "L"), false)));
+        });
+        check("queries with no db access", () -> {
+            eq(0, SliceTestSimulator.totalQueries(tc("t", List.of(), List.of("assert", "assertEquals"), false)));
+        });
+        check("transactional test is isolated without truncate", () -> {
+            SliceTestSimulator.rows.clear();
+            SliceTestSimulator.rows.add("row1");
+            boolean clean = SliceTestSimulator.runIsolated(tc("t", List.of(), List.of(), true));
+            eq(true, clean);
+            eq(0, SliceTestSimulator.truncateCount);   // không cần truncate vì transaction rollback
+        });
+        check("non-transactional test truncates and empties the table", () -> {
+            SliceTestSimulator.rows.clear();
+            SliceTestSimulator.truncateCount = 0;
+            SliceTestSimulator.rows.add("a");
+            SliceTestSimulator.rows.add("b");
+            boolean clean = SliceTestSimulator.runIsolated(tc("t", List.of(), List.of(), false));
+            eq(true, clean);
+            eq(1, SliceTestSimulator.truncateCount);
+            eq(0, SliceTestSimulator.rows.size());
+        });
+        check("truncate is idempotent across runs", () -> {
+            SliceTestSimulator.rows.clear();
+            SliceTestSimulator.truncateCount = 0;
+            SliceTestSimulator.runIsolated(tc("t", List.of(), List.of(), false));
+            SliceTestSimulator.rows.add("x");
+            SliceTestSimulator.runIsolated(tc("t", List.of(), List.of(), false));
+            eq(2, SliceTestSimulator.truncateCount);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+
+class SliceTestSimulator {
+
+    enum Infra { UNIT, WEB_SLICE, DATA_JPA_SLICE, FULL_CONTEXT }
+
+    static final class TestCase {
+        final String name;
+        final List<String> annotations;
+        final List<String> exercises;
+        final boolean transactional;
+
+        TestCase(String name, List<String> annotations, List<String> exercises, boolean transactional) {
+            this.name = name;
+            this.annotations = annotations;
+            this.exercises = exercises;
+            this.transactional = transactional;
+        }
+    }
+
+    static String infrastructureFor(TestCase tc) {
+        if (tc.annotations.contains("@SpringBootTest")) return "fullContext";
+        if (tc.annotations.contains("@WebMvcTest")) return "webSlice";
+        if (tc.annotations.contains("@DataJpaTest")) return "dataJpaSlice";
+        return "unitTest";
+    }
+
+    static int totalQueries(TestCase tc) {
+        int q = 0;
+        for (String e : tc.exercises) {
+            if (e.contains("L")) q += 1;          // mỗi vòng lặp = 1 truy vấn cho phần tử
+            if (e.contains("findById")) q += 1;
+            if (e.contains("findAll")) q += 2;
+        }
+        return q;
+    }
+
+    static List<String> rows = new ArrayList<>();
+    static int truncateCount = 0;
+
+    static boolean runIsolated(TestCase tc) {
+        if (tc.transactional) {                       // transaction rollback: dữ liệu tự sạch
+            rows.clear();
+            return rows.isEmpty();
+        }
+        rows.clear();                                 // dọn bằng truncate
+        truncateCount++;
+        return rows.isEmpty();
+    }
+}`,
+      hints: [
+        '{{infrastructureFor}}: kiểm tra {{@SpringBootTest}} TRƯỚC (ưu tiên cao nhất), rồi tới {{@WebMvcTest}}, {{@DataJpaTest}}; không có cái nào thì trả {{unitTest}}.',
+        '{{totalQueries}}: duyệt từng phần tử trong {{tc.exercises}}; cộng 1 nếu chứa ký tự L in hoa (vòng lặp), cộng 1 nếu chứa {{findById}}, cộng 2 nếu chứa {{findAll}}.',
+        '{{runIsolated}}: nếu {{transactional}} thì {{rows.clear()}} rồi trả về {{rows.isEmpty()}} (rollback lo việc dọn, không cần truncate); nếu không thì {{rows.clear()}}, tăng {{truncateCount}} rồi trả về {{rows.isEmpty()}}.',
+      ],
+      explain: `Bài này mô phỏng hai quyết định mà Spring Boot/Surefire làm thật:
+
+- **Chọn hạ tầng theo annotation**: @SpringBootTest nạp full context (chậm), @WebMvcTest chỉ nạp web (nhanh), @DataJpaTest chỉ nạp JPA. Thứ tự ưu tiên là full > web > dataJpa, vì nếu có @SpringBootTest thì các slice khác không cần.
+- **Đếm truy vấn và dọn dữ liệu**: mỗi vòng lặp là một truy vấn N+1 thu nhỏ; transactional test tự rollback (không cần truncate), còn full context phải truncate thủ công (tăng {{truncateCount}}).
+
+Lỗi hay gặp: quên ưu tiên @SpringBootTest khiến test web bị nhận nhầm là full context; đếm truy vấn sai công thức; và với test không transactional, quên dọn khiến test sau thấy dữ liệu rác.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Bạn chỉ cần test một controller REST: kiểm tra status HTTP, JSON trả về và validation đầu vào. Annotation nào phù hợp nhất?',
+      options: [
+        '@SpringBootTest (nạp toàn bộ context)',
+        '@WebMvcTest (chỉ nạp controller, filter, Jackson; mock service)',
+        '@DataJpaTest (chỉ nạp repository và JPA)',
+        'Không cần annotation, viết main() thuần',
+      ],
+      answer: 1,
+      explain: '@WebMvcTest nạp đúng lát mỏng web: controller, filter, exception handler, Jackson. Bạn mock service bằng @MockitoBean nên không cần DB. @SpringBootTest nạp cả app, chậm hơn vài giây và cần hạ tầng; @DataJpaTest chỉ dành cho repository; main() thuần không test được vòng HTTP.',
+    },
+    {
+      q: 'Vì sao khai báo container Testcontainers là static và dùng chung cho cả class?',
+      options: [
+        'Vì Testcontainers không hỗ trợ instance field',
+        'Để container chỉ khởi động một lần, tránh mỗi test khởi động lại mất vài giây',
+        'Vì @ServiceConnection bắt buộc static',
+        'Vì container không thể tạo trong @BeforeEach',
+      ],
+      answer: 1,
+      explain: 'Container mất 3–15 giây để khởi động. Nếu khai báo non-static, mỗi test (hoặc mỗi instance test) khởi động lại một container, biến suite thành hàng chục giây. Static + @Container khiến container dùng chung cho cả class. Testcontainers hoàn toàn hỗ trợ instance field; @ServiceConnection không bắt buộc static; và container có thể tạo trong @BeforeEach nhưng sẽ rất chậm.',
+    },
+    {
+      q: 'Test @SpringBootTest của bạn thỉnh thoảng đỏ khi chạy cùng các test khác, nhưng xanh khi chạy một mình. Nguyên nhân khả dĩ nhất?',
+      options: [
+        'JVM chạy out of memory',
+        'Dữ liệu dùng chung (shared state): test khác để lại row làm test này thấy bản ghi đã tồn tại',
+        'Testcontainers không hỗ trợ PostgreSQL',
+        'JUnit không cho chạy song song',
+      ],
+      answer: 1,
+      explain: 'Triệu chứng "xanh khi chạy một mình, đỏ khi chạy cùng" là dấu hiệu kinh điển của shared state: dữ liệu rò rỉ giữa các test do không dọn (hoặc do chạy song song). Cách sửa là dọn dữ liệu trong @BeforeEach (truncate RESTART IDENTITY CASCADE) hoặc dùng @Transactional cho slice test. OOM và Testcontainers không phải nguyên nhân điển hình; JUnit hoàn toàn cho phép chạy song song (bạn phải tự bật cấu hình).',
+    },
+  ],
+  related: ['testing-001', 'testing-002', 'testing-050'],
+  tags: ['test pyramid', '@SpringBootTest', '@WebMvcTest', '@DataJpaTest', 'Testcontainers', '@ServiceConnection', 'integration test', 'flaky'],
+},
+{
+  id: 'lesson-testing-013',
+  track: 'testing',
+  order: 13,
+  title: 'Test xác định cho service: fake repository + Clock cố định, diệt flaky do thời gian và thứ tự',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích test xác định (deterministic) là gì và vì sao phụ thuộc thời gian/thứ tự sinh ra flaky',
+    'Viết fake repository có đếm truy vấn và tiêm java.time.Clock cố định để test service không cần DB, không ngủ',
+    'Bảo đảm test độc lập: mỗi test tự tạo dữ liệu, không chia sẻ state, và có thể chạy lại cho cùng kết quả',
+  ],
+  body: `### Flaky là gì và vì sao nó nguy hiểm
+Một test **xác định** (deterministic — cùng input, cùng code thì luôn cho cùng kết quả) là điều kiện tối thiểu để test có giá trị. Test **flaky** (chập chờn) là test có lúc xanh lúc đỏ dù bạn không đổi một dòng code nào. Nó nguy hiểm vì khi team thấy "suite đỏ", phản xạ đầu tiên là chạy lại — nếu xanh thì bỏ qua. Dần dần mọi người mất niềm tin vào CI, và bug thật cũng bị coi là "chắc lại flaky".
+
+Ba nguồn flaky phổ biến nhất ở tầng service:
+
+| Nguồn | Triệu chứng | Cách diệt |
+|---|---|---|
+| Phụ thuộc thời gian thật ({{Instant.now()}}, {{System.currentTimeMillis()}}) | Test hết hạn token lúc xanh lúc đỏ | Tiêm {{Clock}} cố định |
+| Chia sẻ dữ liệu giữa các test (static, DB dùng chung) | Xanh khi chạy một mình, đỏ khi chạy cùng | Mỗi test tự tạo dữ liệu, không dùng chung state |
+| Phụ thuộc thứ tự chạy / thread | Đỏ khi đảo thứ tự test | Mỗi test độc lập, không giả định thứ tự |
+
+### Nguyên tắc 1: không để service tự đọc đồng hồ
+Đoạn code hay viết:
+
+~~~java
+boolean isExpired(Instant issuedAt) {
+    return Duration.between(Instant.now(), issuedAt).isNegative();  // đọc đồng hồ thật
+}
+~~~
+
+Test muốn kiểm tra "token hết hạn sau 30 phút" thì phải chờ thật 30 phút, hoặc dùng {{Thread.sleep}} (chậm + vẫn flaky dưới tải). Cách đúng: đưa thời gian vào từ ngoài bằng {{java.time.Clock}}:
+
+~~~java
+class TokenService {
+    private final Clock clock;
+    private final Duration ttl;
+
+    TokenService(Clock clock, Duration ttl) { this.clock = clock; this.ttl = ttl; }
+
+    boolean isExpired(Instant issuedAt) {
+        Instant now = clock.instant();                       // chỉ đọc clock ở đây
+        return !now.isBefore(issuedAt.plus(ttl));            // hết hạn khi now >= issuedAt + ttl
+    }
+}
+~~~
+
+Trong test, {{Clock.fixed(instant, zone)}} "đóng băng" thời gian tại một mốc. Bạn kiểm tra được cả ba biên: trước hết hạn, đúng hết hạn, sau hết hạn — mà không cần chờ.
+
+### Nguyên tắc 2: fake repository thay cho database thật
+Một service đọc/ghi qua repository. Nếu test cần Postgres thật, mỗi test tốn vài trăm mili giây cộng hạ tầng. **Fake repository** cài đặt cùng interface bằng bộ nhớ ({{HashMap}}), đủ để service chạy end-to-end:
+
+~~~java
+interface AccountRepository {
+    Optional<Account> find(String id);
+    void save(Account account);
 }
 
+class FakeAccountRepository implements AccountRepository {
+    private final Map<String, Account> store = new HashMap<>();
+
+    @Override public Optional<Account> find(String id) {
+        return Optional.ofNullable(store.get(id));       // đúng ngữ nghĩa "không có" = empty
+    }
+
+    @Override public void save(Account account) {
+        store.put(account.id(), account);                // upsert: cùng id thì ghi đè
+    }
+}
+~~~
+
+Ưu điểm lớn nhất: test kiểm tra **state** (số dư cuối cùng) thay vì kiểm tra service gọi repository mấy lần. Nhờ vậy refactor bên trong service không làm test đỏ. Nếu cần phát hiện N+1, thêm bộ đếm truy vấn vào fake (như bài 011).
+
+### Nguyên tắc 3: mỗi test tự tạo dữ liệu, không chia sẻ state
+Đây là nguyên tắc bị vi phạm nhiều nhất. Nếu bạn dùng một field static cho fake repository, hoặc một database dùng chung không dọn, thì thứ tự test ảnh hưởng lẫn nhau. Cách đúng: **mỗi test tạo fake mới** (hoặc gọi {{@BeforeEach}} để reset):
+
+~~~java
+class TokenServiceTest {
+
+    private FakeAccountRepository repo;
+    private TokenService service;
+
+    @BeforeEach
+    void setUp() {
+        repo = new FakeAccountRepository();                              // fake MỚI mỗi test
+        Clock clock = Clock.fixed(Instant.parse("2026-03-01T00:00:00Z"), ZoneOffset.UTC);
+        service = new TokenService(clock, Duration.ofMinutes(30));
+    }
+
+    @Test
+    void expired_afterTtl() {
+        Instant issued = Instant.parse("2026-03-01T00:00:00Z");
+        // tại 00:30 đúng hạn: coi là hết hạn
+        // (đổi clock trong test này nếu cần)
+    }
+}
+~~~
+
+Nếu bạn cần thay đổi thời gian trong một test, hãy tạo {{Clock}} mới cho test đó ({{Clock.offset}} hoặc một {{MutableClock}} tự viết). Đừng dùng chung một clock mutable giữa các test rồi advance — test trước advance làm test sau lệch, sinh flaky.
+
+### Đi trọn một ví dụ: service rút tiền với phí theo giờ
+Hãy viết một service rút tiền: phí = 0 nếu rút trong giờ hành chính (giờ UTC 8:00–17:00), ngược lại phụ phí 10.000. Service đọc giờ từ {{Clock}} và đọc/ghi tài khoản qua repository. Test cần phủ:
+
+| Test | Mốc giờ (Clock) | Kỳ vọng |
+|---|---|---|
+| Giờ hành chính | 2026-03-02T10:00:00Z | Phí 0, số dư giảm đúng amount |
+| Ngoài giờ | 2026-03-02T20:00:00Z | Phí 10.000, số dư giảm amount + 10.000 |
+| Không đủ tiền | 2026-03-02T10:00:00Z | Ném exception, không save gì |
+| Tài khoản không tồn tại | 2026-03-02T10:00:00Z | Ném IllegalArgumentException, không save |
+
+Bốn test này dùng cùng một fake repository mới ở mỗi test, và một {{Clock.fixed}} khác nhau. Không cần database, không cần ngủ, chạy trong vài mili giây và cho cùng kết quả mọi lúc.
+
+### Bẫy production hay gặp
+- **Dùng {{Thread.sleep}} để "chờ" cho hết hạn**: làm suite chậm, và vẫn flaky vì đồng hồ hệ thống không chính xác tuyệt đối.
+- **Một {{MutableClock}} static dùng chung**: test này advance, test sau thấy thời gian đã bị dịch. Tạo clock mới mỗi test.
+- **Fake repository static hoặc dùng chung**: dữ liệu rò rỉ, test phụ thuộc thứ tự. Luôn tạo fake mới trong {{@BeforeEach}} hoặc đầu mỗi test.
+- **Test phụ thuộc thứ tự chạy**: đặt tên {{test1}}, {{test2}} và giả định JUnit chạy theo thứ tự đó. JUnit không đảm bảo thứ tự; chạy song song sẽ vỡ. Mỗi test phải độc lập.
+- **So sánh thời gian bằng {{equals}}**: {{Instant.now()}} trên JDK 17 có độ phân giải nano giây, còn database thường lưu micro giây. Lưu rồi đọc lại, giá trị bị cắt nên {{equals}} false. Dùng clock cố định, hoặc so sánh bằng {{isBefore}}/{{isAfter}} trên biên đã thống nhất.
+
+> Senior tip: quy ước của mình là "không có {{now()}} không tham số trong domain code". Mọi chỗ cần thời gian đều nhận {{Clock}} từ ngoài; chỉ bean cấu hình mới gọi {{Clock.systemUTC()}}. Khi review, {{grep -n '\\.now()' js/ src/}} là ra ngay vi phạm. Một test flaky không phải "xui rủi" — nó là bằng chứng thiết kế đang giấu một dependency ẩn (thời gian, thứ tự, hoặc state dùng chung).
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "Làm sao test một service phụ thuộc thời gian?", "Fake repository khác mock ở điểm nào khi test service?", "Bạn đảm bảo các test độc lập thế nào?", "Thế nào là test xác định?". Trả lời tốt: tiêm {{Clock}} và dùng {{Clock.fixed/offset}} để kiểm soát biên thời gian; dùng fake repository để test state thay vì số lời gọi; mỗi test tự tạo dữ liệu của nó, không chia sẻ state, không giả định thứ tự; và kết luận "test flaky là lỗi thiết kế, không phải may rủi". Bài tập dưới đây bắt bạn viết đúng một service như vậy: fake repository + clock cố định + các test độc lập.`,
+  exercises: [
+    {
+      title: 'WithdrawalService: fake repository + Clock cố định, test độc lập',
+      prompt: `Viết một service rút tiền có phí phụ thuộc giờ, rồi viết fake repository và các tiện ích test (tất cả trong các class cho sẵn):
+
+**1. {{WithdrawalService.withdraw(accountId, amount)}}** (đơn vị: đồng):
+- Nếu {{amount <= 0}} → ném {{IllegalArgumentException}}.
+- Tìm tài khoản bằng {{repo.find(accountId)}}; không có → ném {{IllegalArgumentException}}.
+- Nếu {{balance < amount + fee}} → ném {{IllegalStateException}} (không đủ tiền, tính cả phí).
+- Phí = {{0}} nếu giờ hiện tại (theo {{clock}}) nằm trong giờ hành chính {{8:00..17:00}} UTC (bao gồm 8:00, **không** bao gồm 17:00); ngược lại phí = {{10_000}}.
+- Trừ {{amount + fee}} khỏi số dư và lưu lại ({{repo.save}}). Trả về {{WithdrawalResult}} gồm {{account}} sau khi trừ và {{fee}}.
+- Nếu số dư không đủ (sau khi tính phí) thì không được save.
+
+**2. {{FakeAccountRepository}}**:
+- {{find(id)}}: trả {{Optional.ofNullable(store.get(id))}}.
+- {{save(account)}}: {{store.put(account.id(), account)}} (upsert).
+- {{seed(id, balance)}}: tiện ích tạo và lưu tài khoản mới.
+- {{balanceOf(id)}}: trả số dư hiện tại, hoặc {{null}} nếu không có.
+
+**3. {{FixedClockServiceTestRunner}}}**: không cần viết test JUnit thật; hãy viết {{runWithClock(instant)}} tiện ích: tạo một {{Clock.fixed}} tại {{instant}} (UTC), khởi tạo {{WithdrawalService}} với clock đó và fake repository đã seed, rồi trả về service.
+
+Chú ý: giờ hành chính tính theo {{clock.instant()}} đã chuyển sang UTC, không dùng giờ hệ thống.`,
+      starter: `import java.time.*;
+import java.util.*;
+
+class WithdrawalService {
+    interface AccountRepository {
+        Optional<Account> find(String id);
+        void save(Account account);
+    }
+
+    static final class Account {
+        final String id;
+        long balance;
+        Account(String id, long balance) { this.id = id; this.balance = balance; }
+        String id() { return id; }
+        long balance() { return balance; }
+    }
+
+    static final class WithdrawalResult {
+        final Account account;
+        final long fee;
+        WithdrawalResult(Account account, long fee) { this.account = account; this.fee = fee; }
+        Account account() { return account; }
+        long fee() { return fee; }
+    }
+
+    private final AccountRepository repo;
+    private final Clock clock;
+
+    WithdrawalService(AccountRepository repo, Clock clock) {
+        this.repo = repo;
+        this.clock = clock;
+    }
+
+    WithdrawalResult withdraw(String accountId, long amount) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static long feeFor(Clock clock) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class FakeAccountRepository implements WithdrawalService.AccountRepository {
+    private final Map<String, WithdrawalService.Account> store = new HashMap<>();
+
+    @Override public Optional<WithdrawalService.Account> find(String id) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    @Override public void save(WithdrawalService.Account account) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void seed(String id, long balance) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Long balanceOf(String id) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class FixedClockServiceTestRunner {
+    static WithdrawalService withClock(String instant, FakeAccountRepository repo) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.time.*;
+import java.util.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void throwsType(Class<? extends Throwable> type, Runnable r) {
+        try { r.run(); } catch (Throwable t) {
+            if (type.isInstance(t)) return;
+            throw new AssertionError("mong doi " + type.getSimpleName() + " nhung nhan " + t.getClass().getSimpleName());
+        }
+        throw new AssertionError("mong doi " + type.getSimpleName() + " nhung khong nem gi");
+    }
+    static final String IN_HOURS = "2026-03-02T10:00:00Z";   // 10:00 UTC -> trong gio hanh chinh
+    static final String OFF_HOURS = "2026-03-02T20:00:00Z";  // 20:00 UTC -> ngoai gio
+    static final String BOUNDARY_START = "2026-03-02T08:00:00Z";
+    static final String BOUNDARY_END = "2026-03-02T17:00:00Z";
+
+    public static void main(String[] args) {
+        check("business hours: no fee and balance decreases by amount", () -> {
+            FakeAccountRepository repo = new FakeAccountRepository();
+            repo.seed("A1", 100_000);
+            WithdrawalService svc = FixedClockServiceTestRunner.withClock(IN_HOURS, repo);
+            WithdrawalService.WithdrawalResult r = svc.withdraw("A1", 30_000);
+            eq(0L, r.fee());
+            eq(70_000L, r.account().balance());
+            eq(70_000L, repo.balanceOf("A1"));
+        });
+        check("off hours: 10.000 fee added to the debit", () -> {
+            FakeAccountRepository repo = new FakeAccountRepository();
+            repo.seed("A2", 100_000);
+            WithdrawalService svc = FixedClockServiceTestRunner.withClock(OFF_HOURS, repo);
+            WithdrawalService.WithdrawalResult r = svc.withdraw("A2", 30_000);
+            eq(10_000L, r.fee());
+            eq(60_000L, r.account().balance());        // 100.000 - 30.000 - 10.000
+        });
+        check("boundary 08:00 is business hours (inclusive), 17:00 is not", () -> {
+            FakeAccountRepository repo1 = new FakeAccountRepository();
+            repo1.seed("B", 50_000);
+            eq(0L, FixedClockServiceTestRunner.withClock(BOUNDARY_START, repo1).withdraw("B", 10_000).fee());
+            FakeAccountRepository repo2 = new FakeAccountRepository();
+            repo2.seed("B", 50_000);
+            eq(10_000L, FixedClockServiceTestRunner.withClock(BOUNDARY_END, repo2).withdraw("B", 10_000).fee());
+        });
+        check("insufficient funds: throws and does not save (balance unchanged)", () -> {
+            FakeAccountRepository repo = new FakeAccountRepository();
+            repo.seed("A3", 25_000);
+            WithdrawalService svc = FixedClockServiceTestRunner.withClock(IN_HOURS, repo);
+            throwsType(IllegalStateException.class, () -> svc.withdraw("A3", 30_000));
+            eq(25_000L, repo.balanceOf("A3"));          // không save
+        });
+        check("fee counts toward affordability: 100.000 cannot withdraw 95.000 off hours", () -> {
+            FakeAccountRepository repo = new FakeAccountRepository();
+            repo.seed("A4", 100_000);
+            WithdrawalService svc = FixedClockServiceTestRunner.withClock(OFF_HOURS, repo);
+            throwsType(IllegalStateException.class, () -> svc.withdraw("A4", 95_000));
+            eq(100_000L, repo.balanceOf("A4"));
+        });
+        check("unknown account throws IllegalArgumentException", () -> {
+            FakeAccountRepository repo = new FakeAccountRepository();
+            WithdrawalService svc = FixedClockServiceTestRunner.withClock(IN_HOURS, repo);
+            throwsType(IllegalArgumentException.class, () -> svc.withdraw("ghost", 10_000));
+        });
+        check("non-positive amount throws IllegalArgumentException", () -> {
+            FakeAccountRepository repo = new FakeAccountRepository();
+            repo.seed("A5", 50_000);
+            WithdrawalService svc = FixedClockServiceTestRunner.withClock(IN_HOURS, repo);
+            throwsType(IllegalArgumentException.class, () -> svc.withdraw("A5", 0));
+            throwsType(IllegalArgumentException.class, () -> svc.withdraw("A5", -5));
+            eq(50_000L, repo.balanceOf("A5"));
+        });
+        check("fake repository upsert and balanceOf", () -> {
+            FakeAccountRepository repo = new FakeAccountRepository();
+            eq(null, repo.balanceOf("none"));
+            repo.seed("X", 1_000);
+            eq(1_000L, repo.balanceOf("X"));
+            repo.save(new WithdrawalService.Account("X", 500));
+            eq(500L, repo.balanceOf("X"));              // upsert ghi de
+        });
+        check("tests are independent: a fresh repo per test has no leaked state", () -> {
+            FakeAccountRepository repoA = new FakeAccountRepository();
+            repoA.seed("A", 10_000);
+            WithdrawalService svcA = FixedClockServiceTestRunner.withClock(IN_HOURS, repoA);
+            svcA.withdraw("A", 10_000);
+            eq(0L, repoA.balanceOf("A"));
+            FakeAccountRepository repoB = new FakeAccountRepository();  // fake mới, không thấy state của A
+            eq(null, repoB.balanceOf("A"));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.time.*;
+import java.util.*;
+
+class WithdrawalService {
+    interface AccountRepository {
+        Optional<Account> find(String id);
+        void save(Account account);
+    }
+
+    static final class Account {
+        final String id;
+        long balance;
+        Account(String id, long balance) { this.id = id; this.balance = balance; }
+        String id() { return id; }
+        long balance() { return balance; }
+    }
+
+    static final class WithdrawalResult {
+        final Account account;
+        final long fee;
+        WithdrawalResult(Account account, long fee) { this.account = account; this.fee = fee; }
+        Account account() { return account; }
+        long fee() { return fee; }
+    }
+
+    private final AccountRepository repo;
+    private final Clock clock;
+
+    WithdrawalService(AccountRepository repo, Clock clock) {
+        this.repo = repo;
+        this.clock = clock;
+    }
+
+    WithdrawalResult withdraw(String accountId, long amount) {
+        if (amount <= 0) throw new IllegalArgumentException("amount must be positive");
+        Account account = repo.find(accountId)
+                .orElseThrow(() -> new IllegalArgumentException("unknown account " + accountId));
+        long fee = feeFor(clock);
+        long total = amount + fee;
+        if (account.balance() < total) throw new IllegalStateException("insufficient funds");
+        Account updated = new Account(account.id(), account.balance() - total);
+        repo.save(updated);
+        return new WithdrawalResult(updated, fee);
+    }
+
+    static long feeFor(Clock clock) {
+        int hour = ZonedDateTime.ofInstant(clock.instant(), ZoneOffset.UTC).getHour();
+        return (hour >= 8 && hour < 17) ? 0L : 10_000L;   // [8:00, 17:00) UTC
+    }
+}
+
+class FakeAccountRepository implements WithdrawalService.AccountRepository {
+    private final Map<String, WithdrawalService.Account> store = new HashMap<>();
+
+    @Override public Optional<WithdrawalService.Account> find(String id) {
+        return Optional.ofNullable(store.get(id));
+    }
+
+    @Override public void save(WithdrawalService.Account account) {
+        store.put(account.id(), account);
+    }
+
+    void seed(String id, long balance) {
+        store.put(id, new WithdrawalService.Account(id, balance));
+    }
+
+    Long balanceOf(String id) {
+        WithdrawalService.Account a = store.get(id);
+        return a == null ? null : a.balance();
+    }
+}
+
+class FixedClockServiceTestRunner {
+    static WithdrawalService withClock(String instant, FakeAccountRepository repo) {
+        Clock clock = Clock.fixed(Instant.parse(instant), ZoneOffset.UTC);
+        return new WithdrawalService(repo, clock);
+    }
+}`,
+      hints: [
+        '{{feeFor}}: chuyển {{clock.instant()}} sang UTC bằng {{ZonedDateTime.ofInstant(clock.instant(), ZoneOffset.UTC)}}, lấy {{getHour()}}, giờ hành chính là {{hour >= 8 && hour < 17}} (bao gồm 8:00, không bao gồm 17:00).',
+        '{{withdraw}}: kiểm tra {{amount <= 0}} trước, tìm tài khoản, tính {{fee}}, nếu {{balance < amount + fee}} thì ném {{IllegalStateException}} **trước khi** save, ngược lại trừ và save.',
+        '{{FakeAccountRepository}}: {{find}} dùng {{Optional.ofNullable(store.get(id))}}; {{save}} là {{store.put}}; {{balanceOf}} trả {{null}} nếu không có.',
+        '{{withClock}}: {{Clock.fixed(Instant.parse(instant), ZoneOffset.UTC)}} — mỗi test tạo một clock riêng nên không có state dùng chung.',
+      ],
+      explain: `Bài này ghép ba kỹ thuật chống flaky:
+
+- **Clock cố định**: {{feeFor}} đọc giờ từ {{clock.instant()}}, không gọi {{Instant.now()}}. Nhờ vậy test kiểm tra được giờ hành chính, ngoài giờ, và đúng biên 8:00/17:00 mà không cần chờ thời gian thật.
+- **Fake repository**: service đọc/ghi qua fake in-memory, test kiểm tra **state** (số dư cuối) chứ không kiểm tra số lời gọi. Refactor bên trong service không làm test đỏ.
+- **Độc lập**: mỗi test tạo fake repository mới qua {{seed}}, không chia sẻ state. Test "fresh repo per test" chứng minh không có rò rỉ dữ liệu.
+
+Lỗi hay gặp:
+- Dùng {{hour <= 8}} hoặc {{hour <= 17}} làm lệch biên 8:00 và 17:00. Phải là {{hour >= 8 && hour < 17}}.
+- Tính phí sau khi trừ tiền, hoặc trừ tiền trước khi kiểm tra đủ tiền → số dư âm.
+- Save khi không đủ tiền (quên kiểm tra trước) → dữ liệu sai.
+- Dùng {{Instant.now()}} trong service thay vì clock → test không kiểm soát được thời gian.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao tiêm {{Clock}} vào service quan trọng cho test xác định?',
+      options: [
+        'Vì {{Clock}} nhanh hơn {{Instant.now()}}',
+        'Vì {{Clock.fixed/offset}} cho phép đóng băng hoặc dịch thời gian, kiểm tra được biên mà không cần chờ thật',
+        'Vì {{Instant.now()}} bị deprecated',
+        'Vì {{Clock}} tự động dùng UTC',
+      ],
+      answer: 1,
+      explain: '{{Clock.fixed}} đóng băng thời gian tại một mốc, {{Clock.offset}} dịch thêm một khoảng. Nhờ vậy test kiểm tra "đúng lúc hết hạn" hay "ngoài giờ" trong vài mili giây, thay vì chờ đồng hồ thật. Clock không nhanh hơn đáng kể; Instant.now() không bị deprecated; và Clock không tự động dùng UTC (bạn chọn zone khi tạo).',
+    },
+    {
+      q: 'Test của bạn xanh khi chạy một mình nhưng đỏ khi chạy cùng các test khác. Cách sửa đúng?',
+      options: [
+        'Tăng timeout cho suite',
+        'Đảm bảo mỗi test tự tạo dữ liệu của nó, không chia sẻ fake repository hay DB dùng chung',
+        'Đảo thứ tự chạy test',
+        'Tắt chạy song song',
+      ],
+      answer: 1,
+      explain: 'Triệu chứng này là dấu hiệu của shared state: test khác để lại dữ liệu làm test này thấy bản ghi đã tồn tại. Cách sửa là mỗi test tạo fake/DB riêng hoặc dọn trong @BeforeEach. Tăng timeout không giải quyết; đảo thứ tự chỉ che; tắt song song chỉ giảm triệu chứng chứ không diệt nguyên nhân gốc (dữ liệu rò rỉ vẫn còn khi chạy tuần tự).',
+    },
+    {
+      q: 'Giờ hành chính là [8:00, 17:00) UTC. Lúc 17:00 đúng thì phí là bao nhiêu?',
+      options: [
+        '0 (vì 17:00 vẫn trong giờ)',
+        '10.000 (vì 17:00 đã ngoài giờ)',
+        '5.000 (nửa phí)',
+        'Không xác định',
+      ],
+      answer: 1,
+      explain: 'Khoảng [8:00, 17:00) bao gồm 8:00 nhưng không bao gồm 17:00. Lúc 17:00 đúng, giờ không còn trong giờ hành chính nên phải chịu phí 10.000. Nếu dùng điều kiện {{hour <= 17}} sẽ tính nhầm 17:00 là trong giờ — lỗi biên kinh điển.',
+    },
+  ],
+  related: ['testing-002', 'testing-005', 'testing-010'],
+  tags: ['deterministic test', 'Clock', 'fake repository', 'flaky', 'shared state', 'withdrawal', 'timezone'],
+},
 );
