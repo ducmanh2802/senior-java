@@ -3139,4 +3139,362 @@ Bảng order có 5 triệu dòng, order_item 30 triệu dòng. Log cảnh báo H
 
 > Senior tip: entity là model cho DB, DTO là model cho API. Đừng đưa entity vào HashSet/HashMap làm key; nếu bắt buộc, dùng khoá nghiệp vụ bất biến hoặc id kèm hashCode hằng. Và luôn viết test so sánh equals cho entity có quan hệ hai chiều.`
 },
+{
+  id: 'qz-spring-030',
+  topic: 'spring',
+  q: `Ứng dụng khai báo **hai** bean {{SecurityFilterChain}}, mỗi bean đều gọi {{http.authorizeHttpRequests(...)}} nhưng khác {{securityMatcher}}:
+~~~java
+@Bean @Order(1)
+SecurityFilterChain api(HttpSecurity http) throws Exception {
+    return http.securityMatcher("/api/**").authorizeHttpRequests(a -> a.requestMatchers("/api/public/**").permitAll().anyRequest().authenticated()).build();
+}
+@Bean @Order(2)
+SecurityFilterChain web(HttpSecurity http) throws Exception {
+    return http.securityMatcher("/admin/**").authorizeHttpRequests(a -> a.anyRequest().hasRole("ADMIN")).build();
+}
+~~~
+Một request {{GET /api/orders}} đi qua chuỗi nào?`,
+  options: [
+    'Chỉ chuỗi {{@Order(2)}} (web), vì nó được khai báo sau nên được ưu tiên',
+    'Cả hai chuỗi nối tiếp nhau: đi hết chuỗi 1 rồi tiếp tục chuỗi 2',
+    'Chuỗi {{@Order(1)}} (api) xử lý; chuỗi web không được áp dụng cho request này',
+    'Spring báo lỗi vì không được khai báo nhiều SecurityFilterChain'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: request chỉ đi qua chuỗi {{@Order(1)}} (api), vì matcher của nó khớp {{/api/**}} và chuỗi được sắp theo {{@Order}} tăng dần.**
+
+### Vì sao đúng
+Trong Spring Security 6, mỗi {{SecurityFilterChain}} là một bộ lọc độc lập gắn với một {{securityMatcher}}. Khi request đến, Spring duyệt các chuỗi theo thứ tự {{@Order}} tăng dần và **chọn chuỗi đầu tiên** mà {{securityMatcher}} khớp. {{/api/orders}} khớp {{/api/**}} nên chuỗi 1 xử lý và dừng; request không bao giờ rơi xuống chuỗi 2. Đây là lý do thứ tự {{@Order}} rất quan trọng: nếu chuỗi 1 khai báo matcher rộng (ví dụ {{/**}}) đặt trước, nó sẽ "ăn" mọi request và các chuỗi sau thành vô dụng.
+
+### Vì sao các phương án còn lại sai
+- **Chuỗi @Order(2) vì khai báo sau**: sai, thứ tự tăng dần nghĩa là số nhỏ xử lý trước; hơn nữa matcher {{/admin/**}} không khớp {{/api/orders}}.
+- **Nối tiếp hai chuỗi**: mỗi chuỗi có bộ filter riêng; một request chỉ đi qua **một** chuỗi, không nối tiếp.
+- **Báo lỗi khi khai báo nhiều**: hoàn toàn hợp lệ; đây là cách chuẩn để tách cấu hình API và web (ví dụ API stateless dùng JWT, web dùng form login).
+
+> Senior tip: khi có nhiều matcher, hãy đặt chuỗi **cụ thể** (matcher hẹp) lên trước, chuỗi **chung** ({{/**}}) xuống sau cùng. Thêm kiểm tra bằng {{spring-security-test}}'s {{MockMvc}} để chắc mỗi đường dẫn đi đúng chuỗi, tránh lỗ hổng "quên route" do matcher lỡ tay rộng.`
+},
+{
+  id: 'qz-spring-031',
+  topic: 'spring',
+  q: `Class cấu hình sau, ứng dụng khởi động với {{app.cache.ttl=30}} trong application.yml nhưng **không** có {{app.cache.max-entries}}:
+~~~java
+@ConfigurationProperties(prefix = "app.cache")
+public record CacheProps(int ttl, Integer maxEntries) {}
+~~~
+Class này được đăng ký bằng cách nào để giá trị được inject và binding xảy ra?`,
+  options: [
+    'Chỉ cần đánh dấu {{@ConfigurationProperties}} là đủ, Spring tự quét mọi package',
+    'Cần một trong ba: {{@EnableConfigurationProperties(CacheProps.class)}}, hoặc {{@ConfigurationPropertiesScan}}, hoặc khai báo {{@Bean}} trả về {{CacheProps}}; nếu chỉ có annotation mà không đăng ký, bean sẽ không tồn tại',
+    '{{@ConfigurationProperties}} chỉ hoạt động trên class {{@Component}}, record không được hỗ trợ',
+    'Thiếu {{max-entries}} nên khởi động fail với lỗi binding bắt buộc'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: cần đăng ký bean bằng @EnableConfigurationProperties, @ConfigurationPropertiesScan, hoặc @Bean; chỉ đánh dấu annotation mà không đăng ký thì không có bean.**
+
+### Vì sao đúng
+{{@ConfigurationProperties}} chỉ là **metadata** mô tả cách bind, nó không tự tạo bean. Spring cần một trong ba cách để biết class này tồn tại:
+~~~java
+@EnableConfigurationProperties(CacheProps.class)   // cách tường minh, khuyên dùng
+// hoặc @ConfigurationPropertiesScan trên class chính
+// hoặc @Bean CacheProps cacheProps() { ... }
+~~~
+Thiếu {{max-entries}} không gây lỗi, vì record binding cho phép giá trị null khi property không có (khác với primitive {{int}}). Nếu là {{int}} thì thiếu property mới fail.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ annotation là đủ**: sai, đây là hiểu lầm phổ biến nhất; quên bước đăng ký là lỗi "bean not found" kinh điển.
+- **Record không hỗ trợ**: sai, từ Spring Boot 2.6+ record binding được hỗ trợ đầy đủ (constructor binding), còn là cách **khuyên dùng** vì immutable.
+- **Thiếu max-entries nên fail**: sai, {{Integer}} nhận null khi thiếu; chỉ primitive hoặc field có validation {{@NotNull}} mới fail.
+
+> Senior tip: dùng constructor binding (record) + {{@Validated}} để validate ngay lúc khởi động, biến lỗi cấu hình thành "fail fast" thay vì NPE lúc chạy. Đặt thuộc tính qua biến môi trường trên Kubernetes để không phải build lại image khi đổi cấu hình.`
+},
+{
+  id: 'qz-spring-032',
+  topic: 'spring',
+  multi: true,
+  q: 'Thứ tự khởi tạo một singleton bean trong Spring Boot 3 (không có AOP proxy, không có @PostConstruct tranh chấp). Phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'Constructor chạy trước, sau đó inject field/setter, rồi mới tới các callback khởi tạo',
+    '{{@PostConstruct}} chạy trước {{InitializingBean.afterPropertiesSet()}}, và cả hai đều chạy trước khi bean được đưa vào sử dụng',
+    '{{@PostConstruct}} chạy trước constructor để chuẩn bị dependency',
+    '{{DisposableBean.destroy()}} chạy khi context đóng, sau khi bean không còn được dùng',
+    'Thứ tự giữa @PostConstruct và afterPropertiesSet là ngẫu nhiên, không xác định'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: constructor → inject → @PostConstruct → afterPropertiesSet/init-method; destroy() chạy khi context đóng.**
+
+### Vì sao đúng
+Thứ tự chuẩn của vòng đời bean (không tính BeanPostProcessor):
+~~~text
+1. Constructor (constructor injection)
+2. Inject field/setter (@Autowired)
+3. @PostConstruct          <- CommonAnnotationBeanPostProcessor xử lý
+4. afterPropertiesSet()    <- InitializingBean
+5. init-method khai báo trong @Bean
+6. bean sẵn sàng dùng
+...
+7. @PreDestroy / destroy() / close() khi context tắt
+~~~
+{{@PostConstruct}} luôn chạy **trước** {{afterPropertiesSet()}}: cả hai được gọi trong pha khởi tạo, và thứ tự này là cố định trong Spring, không ngẫu nhiên.
+
+### Vì sao các phương án còn lại sai
+- **@PostConstruct chạy trước constructor**: bất khả thi, object phải tồn tại trước thì mới gọi được method của nó.
+- **@PreDestroy chạy ngẫu nhiên so với afterPropertiesSet**: sai, thứ tự là cố định như bảng trên.
+- **destroy() giữa lúc chạy**: sai, nó chỉ chạy khi context đóng (ví dụ shutdown hook).
+
+> Senior tip: đừng dùng cả @PostConstruct lẫn afterPropertiesSet cho cùng một việc, dễ gây khó hiểu. Với logic cần transaction lúc khởi động (warm cache), dùng ApplicationRunner/ApplicationReadyEvent — lúc đó mọi proxy đã sẵn sàng, khác với @PostConstruct (xem qz-spring-009).`
+},
+{
+  id: 'qz-spring-033',
+  topic: 'spring',
+  q: `Bạn thêm file {{src/main/resources/app-extra.properties}} chứa {{app.name=from-file}} và muốn nạp nó vào Environment. Bạn viết:
+~~~java
+@PropertySource("classpath:app-extra.properties")
+@Configuration
+class ExtraConfig { /* ... */ }
+~~~
+Property source này có **thấp hơn** hay **cao hơn** {{application.yml}} do Spring Boot quản lý?`,
+  options: [
+    'Thấp hơn: @PropertySource thêm vào sau, và nguồn thêm bằng API luôn có ưu tiên thấp hơn các nguồn mặc định của Boot (application.yml, env, dòng lệnh)',
+    'Cao hơn application.yml vì nó được nạp tường minh',
+    'Bằng nhau, Spring gộp rồi chọn giá trị dài hơn',
+    'Báo lỗi vì @PropertySource không đọc được .properties'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: thấp hơn, vì @PropertySource thêm vào cuối danh sách property source, và các nguồn của Boot (application.yml, biến môi trường, dòng lệnh) có ưu tiên cao hơn.**
+
+### Vì sao đúng
+Boot nạp các nguồn theo thứ tự ưu tiên giảm dần (cao → thấp): tham số dòng lệnh > system properties > biến môi trường > application-{profile}.yml ngoài jar > application-{profile}.yml trong jar > application.yml > ... {{@PropertySource}} mặc định chèn vào **sau** các nguồn lõi đó (qua {{ConfigurationClassPostProcessor}}), nên nếu cùng key, giá trị của Boot thắng. Lưu ý quan trọng: {{@PropertySource}} **không** biết profile, nó nạp file bất kể profile nào, nên không thay thế được file application-{profile}.yml.
+
+### Vì sao các phương án còn lại sai
+- **Cao hơn vì nạp tường minh**: "nạp tường minh" không đồng nghĩa ưu tiên cao; thứ tự phụ thuộc vị trí chèn vào danh sách.
+- **Gộp rồi chọn giá trị dài hơn**: không có logic chọn chuỗi dài; key trùng thì một nguồn thắng theo thứ tự.
+- **Không đọc được .properties**: sai, .properties là định dạng mặc định và được hỗ trợ đầy đủ.
+
+> Senior tip: để @PropertySource thắng, dùng {{@PropertySource(..., ignoreResourceNotFound = true)}} và kiểm tra bằng {{/actuator/env/app.name}}. Nhưng tốt hơn là dùng {{spring.config.import}} (Boot 2.4+) để nạp thêm file config mà vẫn tôn trọng profile và thứ tự chuẩn.`
+},
+{
+  id: 'qz-spring-034',
+  topic: 'spring',
+  q: `Ứng dụng có **hai** class {{@ControllerAdvice}} cùng bắt {{IllegalStateException}}:
+~~~java
+@ControllerAdvice @Order(1)
+class AdviceA { @ExceptionHandler(IllegalStateException.class) ... }
+
+@ControllerAdvice   // không khai báo @Order
+class AdviceB { @ExceptionHandler(IllegalStateException.class) ... }
+~~~
+Khi controller ném {{IllegalStateException}}, exception handler nào được chọn?`,
+  options: [
+    'AdviceB, vì nó không có @Order nên được Spring ưu tiên',
+    'Cả hai handler cùng chạy, kết quả gộp lại',
+    'Spring báo lỗi vì trùng handler',
+    'AdviceA, vì nó có @Order(1) ưu tiên cao hơn; @ControllerAdvice không @Order được coi là LOWEST_PRECEDENCE'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: AdviceA được chọn vì nó có @Order(1) ưu tiên cao hơn; advice không khai báo @Order rơi về LOWEST_PRECEDENCE.**
+
+### Vì sao đúng
+Spring xếp các {{@ControllerAdvice}} theo {{@Order}} (hoặc implements {{Ordered}}), giá trị nhỏ = ưu tiên cao. Advice không khai báo {{@Order}} nhận mặc định {{Ordered.LOWEST_PRECEDENCE}} (là {{Integer.MAX_VALUE}}), nên xếp sau mọi advice có @Order cụ thể. Với cùng một exception, Spring chọn handler của advice ưu tiên cao nhất; advice khác không chạy. Đây là cách bạn kiểm soát "advice nào bắt exception nào trước".
+
+### Vì sao các phương án còn lại sai
+- **AdviceB vì không có @Order**: ngược lại, không @Order là ưu tiên **thấp nhất**.
+- **Cả hai cùng chạy**: chỉ một handler xử lý một exception, không gộp kết quả.
+- **Báo lỗi vì trùng**: hợp lệ; @Order chính là cơ chế phân xử khi nhiều advice cùng bắt một exception.
+
+> Senior tip: đặt advice "bắt rộng" (ví dụ Exception.class) ở @Order thấp (số lớn), advice "bắt hẹp" (ví dụ validation) ở @Order cao. Nếu không, một advice bắt Exception chung sẽ nuốt mọi exception trước khi handler cụ thể kịp chạy.`
+},
+{
+  id: 'qz-spring-035',
+  topic: 'spring',
+  multi: true,
+  q: 'Method {{sendMail()}} của service có {{@Async}}. Phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'Gọi {{this.sendMail()}} từ method khác trong cùng bean vẫn chạy bất đồng bộ',
+    'Gọi {{sendMail()}} qua bean khác (đã inject) mới chạy bất đồng bộ, vì @Async cần đi qua proxy',
+    '@Async dùng executor {{applicationTaskExecutor}} mặc định của Boot (thread pool) khi không khai báo executor riêng',
+    '@Async chạy đồng bộ nếu bean không có executor nào được cấu hình',
+    'Return type của method @Async nên là void hoặc Future/CompletableFuture; trả về giá trị thường sẽ bị bỏ'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: @Async cần gọi qua proxy (từ bean khác); mặc định dùng applicationTaskExecutor.**
+
+### Vì sao đúng
+- {{@Async}} hoạt động nhờ một {{AsyncAnnotationBeanPostProcessor}} tạo proxy quanh bean. Chỉ lời gọi từ **bên ngoài qua proxy** mới bị bọc để chạy trên executor khác. Gọi {{this.sendMail()}} là self-invocation, bỏ qua proxy, nên method chạy **đồng bộ** trên thread của caller (cùng lỗi như @Transactional tự gọi, xem qz-spring-029).
+- Mặc định Boot auto-config {{ThreadPoolTaskExecutor}} tên {{applicationTaskExecutor}} (8 core thread, queue không giới hạn — xem qz-spring-013). Bạn có thể khai báo executor riêng và chỉ định bằng {{@Async("executorName")}}.
+
+### Vì sao các phương án còn lại sai
+- **this.sendMail() vẫn async**: sai, self-invocation bỏ qua proxy nên chạy đồng bộ.
+- **Chạy đồng bộ nếu không có executor**: sai, luôn có executor mặc định; chỉ khi executor không tồn tại mới có lỗi, không phải tự chuyển đồng bộ.
+- **Trả về giá trị thường sẽ bị bỏ**: trả về void/Future là **khuyến nghị**, nhưng trả về kiểu khác không "bị bỏ" — nó chỉ không mang ý nghĩa bất đồng bộ; phát biểu này quá tuyệt đối nên không chọn.
+
+> Senior tip: nếu method @Async trả về giá trị, hãy dùng {{CompletableFuture}}; với việc gửi mail/notification khối lượng lớn, đừng dùng @Async trong bộ nhớ mà đẩy sang message queue, vì restart pod là mất toàn bộ task đang xếp hàng trong queue (xem qz-spring-013).`
+},
+{
+  id: 'qz-spring-036',
+  topic: 'spring',
+  q: `Service sau, method {{process()}} là {{private}} và được gọi từ method public cùng class:
+~~~java
+@Transactional
+private void process() { orderRepo.save(new Order("PENDING")); }
+
+public void handle() { process(); }
+~~~
+Hành vi transaction của {{process()}} khi {{handle()}} được gọi từ controller?`,
+  options: [
+    'Vẫn có transaction đầy đủ vì @Transactional áp dụng cho cả class',
+    'Không có transaction nào được mở cho process(), vì proxy không thể can thiệp vào method private và lời gọi this.process() là self-invocation',
+    'Transaction mở nhưng chỉ read-only vì method private',
+    'Compile lỗi vì @Transactional không được đặt trên method private'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không có transaction, vì proxy không bao bọc được method private và self-invocation bỏ qua proxy.**
+
+### Vì sao đúng
+Spring AOP dùng proxy (JDK dynamic proxy hoặc CGLIB). Cả hai đều chỉ can thiệp được method **public/protected** (CGLIB subclass không thể override method private; JDK proxy chỉ làm việc qua interface). Method {{private}} nằm ngoài tầm với của proxy. Hơn nữa, {{handle()}} gọi {{this.process()}} là self-invocation, không đi qua proxy. Kết quả: {{@Transactional}} trên {{process()}} **hoàn toàn vô hiệu**, không có transaction nào được mở.
+
+### Vì sao các phương án còn lại sai
+- **Áp dụng cho cả class**: @Transactional đặt trên method chỉ áp dụng method đó; đặt trên class mới áp dụng mọi method public. Và kể cả đặt trên class, method private vẫn không được proxy.
+- **Transaction read-only**: không có transaction nào cả, không nói tới readOnly.
+- **Compile lỗi**: code compile bình thường; annotation chỉ đơn giản là bị bỏ qua lúc chạy — đây là bẫy nguy hiểm vì không có cảnh báo.
+
+> Senior tip: quy tắc an toàn là **chỉ đặt @Transactional trên method public** của bean được gọi từ bean khác. Nếu cần transaction cho logic private, hãy để method public gọi một bean khác có @Transactional, hoặc tự quản lý bằng {{TransactionTemplate}} (không phụ thuộc proxy).`
+},
+{
+  id: 'qz-spring-037',
+  topic: 'spring',
+  q: `Controller nhận request body qua {{@Valid @RequestBody OrderRequest req}}. Client gửi thiếu trường {{email}} (đã khai báo {{@NotBlank}}). Không có {{@ControllerAdvice}} nào. Response trả về là gì?`,
+  options: [
+    'HTTP 200 với body rỗng, lỗi bị bỏ qua',
+    'HTTP 400 Bad Request, body chứa thông tin lỗi validation (MethodArgumentNotValidException được xử lý bởi ResponseEntityExceptionHandler mặc định)',
+    'HTTP 500 Internal Server Error',
+    'HTTP 422 Unprocessable Entity do Spring Boot 3 mặc định'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: HTTP 400, body chứa lỗi validation.**
+
+### Vì sao đúng
+Khi {{@Valid}} thất bại, Spring ném {{MethodArgumentNotValidException}} trong lúc bind request body. Nếu bạn không tự viết {{@ControllerAdvice}}, Spring cung cấp một {{ResponseEntityExceptionHandler}} mặc định (qua {{ ResponseEntityExceptionHandler}}) biến exception này thành **HTTP 400** với body JSON mô tả lỗi từng field (mặc định Boot 3 tắt phần "message" chi tiết trong một số cấu hình, nhưng status vẫn là 400). Đây là hành vi "bảo vệ" mặc định, không phải 500.
+
+### Vì sao các phương án còn lại sai
+- **200 body rỗng**: sai, validation fail là lỗi phía client, Spring không nuốt im lặng.
+- **500**: 500 dành cho lỗi hệ thống (NullPointerException, DB lỗi). Validation sai dữ liệu đầu vào là lỗi 4xx.
+- **422 mặc định**: Spring **không** mặc định dùng 422 cho validation; 422 thường do bạn tự cấu hình hoặc do framework khác (ví dụ JAX-RS). Boot mặc định là 400.
+
+> Senior tip: đừng dựa vào body lỗi mặc định (nó thay đổi giữa các phiên bản và có thể lộ chi tiết nội bộ). Hãy tự viết một {{@RestControllerAdvice}} bắt {{MethodArgumentNotValidException}} trả về DTO lỗi ổn định: mã lỗi, field, thông điệp đã i18n. Đây là điểm phỏng vấn hay hỏi về "consistent error contract".`
+},
+{
+  id: 'qz-spring-038',
+  topic: 'spring',
+  multi: true,
+  q: 'API REST stateless dùng JWT, không dùng session, FE gọi từ domain khác. Cấu hình Spring Security 6 nào là hợp lý? (Chọn 3)',
+  options: [
+    '{{http.csrf(csrf -> csrf.disable())}} khi dùng JWT stateless, vì không có session cookie để bảo vệ',
+    '{{http.cors(...)}} để cho phép domain của FE gọi API',
+    'Bật lại CSRF token trong header để an toàn hơn cho JWT',
+    '{{http.sessionManagement(s -> s.sessionCreationPolicy(STATELESS))}} để không tạo session',
+    'Dùng {{authorizeHttpRequests}} với {{requestMatchers("/actuator/**").permitAll()}} cho mọi endpoint actuator'
+  ],
+  answer: [0, 1, 3],
+  explain: `**Đáp án đúng: tắt CSRF (stateless JWT), bật CORS, đặt session STATELESS.**
+
+### Vì sao đúng
+- CSRF (Cross-Site Request Forgery) khai thác việc trình duyệt **tự động gửi cookie** session. API stateless dùng JWT (thường gửi trong header Authorization) không có cookie để kẻ tấn công lợi dụng, nên tắt CSRF là chuẩn.
+- CORS (Cross-Origin Resource Sharing) là cơ chế của **trình duyệt**, cần cấu hình để domain FE khác được phép gọi. Đây là việc của Spring Security hoặc WebMvc, không phải "tắt bảo mật".
+- {{sessionCreationPolicy(STATELESS)}}: Spring không tạo và không dùng HttpSession, phù hợp API thuần JWT.
+
+### Vì sao các phương án còn lại sai
+- **Bật lại CSRF cho JWT**: không cần và gây rắc rối; JWT không dựa vào cookie. (Nếu sau này bạn chuyển sang cookie httpOnly thì mới cần bật lại.)
+- **permitAll mọi /actuator/**: rất nguy hiểm, /actuator/env và /actuator/heapdump có thể lộ secret và dữ liệu bộ nhớ. Chỉ permitAll đúng endpoint cần (thường là /actuator/health cho probe) và tách cổng actuator riêng (xem qz-spring-016).
+
+> Senior tip: nguyên tắc là **tắt cái không cần, mở đúng cái cần**. Với JWT, hãy để token trong Authorization header (không phải cookie) và đặt chính sách CORS whitelist rõ ràng thay vì {{allowedOrigins("*")}} khi dùng credentials.`
+},
+{
+  id: 'qz-spring-039',
+  topic: 'spring',
+  q: `Class cấu hình sau, application.yml có {{app.pool.max-size: 20}} và {{app.pool.min-idle: 5}}, nhưng {{app.pool.timeout-ms}} bị thiếu:
+~~~java
+@ConfigurationProperties(prefix = "app.pool")
+@Validated
+public class PoolProps {
+    @NotNull @Min(1) private Integer maxSize = 10;
+    @NotNull private Integer minIdle = 2;
+    @NotNull private Long timeoutMs;
+    // getter/setter
+}
+~~~
+Ứng dụng khởi động với cấu hình này thì sao?`,
+  options: [
+    'Khởi động bình thường, timeoutMs = 0 vì là Long',
+    'Khởi động bình thường, mọi field dùng giá trị mặc định đã khai báo',
+    'Khởi động bình thường, binding bỏ qua field thiếu',
+    'Khởi động fail với lỗi validation, vì timeoutMs là @NotNull nhưng không được cung cấp (giá trị mặc định không gán cho nó)'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: khởi động fail vì timeoutMs là @NotNull nhưng không có giá trị nào được cung cấp.**
+
+### Vì sao đúng
+{{@Validated}} trên class {{@ConfigurationProperties}} kích hoạt validation bằng Jakarta Bean Validation ngay khi binding xong. {{timeoutMs}} không có giá trị mặc định (khác maxSize=10, minIdle=2 đã gán sẵn) và không được cung cấp trong yml, nên sau binding nó là null. {{@NotNull}} fail, Spring ném lỗi binding và **chặn khởi động** — đây chính là "fail fast" mong muốn. Lưu ý: giá trị mặc định chỉ "cứu" field không bị validate null; nếu field có @NotNull mà mặc định là null thì vẫn fail.
+
+### Vì sao các phương án còn lại sai
+- **timeoutMs = 0 vì Long**: Long null vẫn là null, không tự thành 0.
+- **Mọi field dùng mặc định**: timeoutMs không có mặc định, nên không thể "dùng giá trị mặc định".
+- **Binding bỏ qua field thiếu**: binding không bỏ qua field thiếu khi có validation; @NotNull biến nó thành lỗi.
+
+> Senior tip: luôn khai báo giá trị mặc định hợp lý **hoặc** @NotNull, đừng để field nullable mà không có mặc định. Trong hồ sơ phỏng vấn, đây là minh chứng bạn dùng cấu hình "fail fast" thay vì để lỗi cấu hình nổ ra lúc production chạy.`
+},
+{
+  id: 'qz-spring-040',
+  topic: 'spring',
+  q: `Method {{A.report()}} có {{@Transactional(propagation = Propagation.SUPPORTS)}} và được gọi từ controller (hiện **không** có transaction nào đang mở). {{report()}} chỉ đọc dữ liệu. Điều gì xảy ra?`,
+  options: [
+    'Spring mở một transaction mới vì SUPPORTS luôn mở',
+    'Method chạy **không** có transaction, vì SUPPORTS tham gia transaction nếu có, còn không thì chạy không transaction',
+    'Spring ném exception vì SUPPORTS cần transaction',
+    'Method chạy với transaction read-only mặc định'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: chạy không có transaction, vì SUPPORTS = "có thì tham gia, không có thì chạy không transaction".**
+
+### Vì sao đúng
+Propagation {{SUPPORTS}} nghĩa là: nếu đã có transaction đang chạy thì method **tham gia** vào đó; nếu không có thì method thực thi **bình thường không transaction**. Đây khác với {{REQUIRED}} (luôn có: tham gia nếu có, mở mới nếu không), {{REQUIRES_NEW}} (luôn mở transaction mới), {{MANDATORY}} (bắt buộc phải có transaction, không có thì ném exception). Với một method đọc thuần, SUPPORTS là lựa chọn hợp lý vì không ép mở transaction tốn connection khi caller không cần.
+
+### Vì sao các phương án còn lại sai
+- **Luôn mở mới**: đó là REQUIRED, không phải SUPPORTS.
+- **Ném exception**: đó là MANDATORY.
+- **Transaction read-only mặc định**: SUPPORTS không tạo transaction, nên không có readOnly; readOnly chỉ có nghĩa khi có transaction (xem qz-spring-014).
+
+> Senior tip: SUPPORTS và REQUIRED khác nhau ở "khi không có transaction". Trên thực tế hầu hết method service dùng REQUIRED (mặc định). SUPPORTS/NOT_SUPPORTED chỉ dùng ở method có thể nằm trong hoặc ngoài transaction tùy caller — hãy chọn có ý thức, đừng để mặc định "nuốt" mọi thứ.`
+},
+{
+  id: 'qz-spring-041',
+  topic: 'spring',
+  q: `Bạn viết một {{BeanPostProcessor}}:
+~~~java
+public class AuditPostProcessor implements BeanPostProcessor {
+    @Override
+    public Object postProcessAfterInitialization(Object bean, String name) {
+        return bean; // (giả sử bọc proxy ở đây)
+    }
+}
+~~~
+Vấn đề nào là thật khi bean này áp dụng lên chính nó hoặc lên một bean {{@Configuration}} khác trong cùng context?`,
+  options: [
+    'BeanPostProcessor chạy quá sớm, trước khi bean được tạo',
+    'BeanPostProcessor áp dụng cho mọi bean, kể cả chính nó và các BeanPostProcessor khác, dễ gây vòng lặp hoặc proxy bị bọc nhiều lớp; Spring xử lý bằng cách bỏ qua một số loại bean (ví dụ chính các BeanPostProcessor)',
+    'BeanPostProcessor không bao giờ áp dụng cho bean @Configuration',
+    'BeanPostProcessor chỉ chạy khi khởi động app lần đầu rồi bị xoá'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: BeanPostProcessor áp dụng cho mọi bean trong context, kể cả chính nó và các BeanPostProcessor khác; Spring có cơ chế tránh tự bọc chính nó.**
+
+### Vì sao đúng
+{{BeanPostProcessor}} được Spring gọi với **mọi** bean đi qua, không trừ ai. Nếu nó bọc proxy cho mọi bean, thì chính nó và các BeanPostProcessor khác cũng bị bọc, dễ gây vòng lặp vô hạn hoặc bọc nhiều lớp. Spring xử lý bằng cách: (1) bỏ qua chính instance của BeanPostProcessor khi gọi callback, (2) tạo BeanPostProcessor sớm hơn các bean thường. Vì BeanPostProcessor phải sẵn sàng trước, nó không thể phụ thuộc vào bean thường (nếu inject bean thường vào BeanPostProcessor, Spring sẽ tạo bean đó sớm và bỏ qua bước post-process, gây lỗi).
+
+### Vì sao các phương án còn lại sai
+- **Chạy trước khi bean được tạo**: sai, nó chạy **sau** khi bean đã được tạo và inject (postProcessAfterInitialization), trước khi bean đưa vào dùng.
+- **Không áp dụng cho @Configuration**: sai, @Configuration cũng là bean thường, vẫn bị post-process (đây là lý do @Configuration có thể bị CGLIB proxy).
+- **Chỉ chạy lần đầu rồi xoá**: sai, nó là singleton sống suốt vòng đời context, không bị xoá.
+
+> Senior tip: nếu BeanPostProcessor của bạn bọc proxy lên mọi bean, hãy kiểm tra {{bean instanceof AopInfrastructureBean}} hoặc tên bean để tránh bọc chính hạ tầng AOP. Và đừng inject bean nghiệp vụ vào BeanPostProcessor — nó sẽ bị tạo quá sớm, làm mất tác dụng của các post-processor khác.`
+},
 );
