@@ -1,6 +1,6 @@
 # T1049 — Thêm dấu tiếng Việt: lessons-api.js, lessons-aws.js
 
-Status: TODO
+Status: BLOCKED (legacy, không nằm trong hàng đợi worker; chặn autopilot commit file chung — 2026-11-15)
 Agent: kilo
 Owns: `js/data/lessons-api.js`, `js/data/lessons-aws.js`
 

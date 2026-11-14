@@ -1,6 +1,6 @@
 # T1040 — Thêm dấu tiếng Việt: sdlc.js
 
-Status: TODO
+Status: BLOCKED (legacy, không nằm trong hàng đợi worker; chặn autopilot commit file chung — 2026-11-15)
 Agent: kilo
 Owns: `js/data/sdlc.js`
 
