@@ -10222,5 +10222,545 @@ Hệ thống đơn hàng có trạng thái {{OrderStatus}} (PENDING, PAID, SHIPP
     'Pattern matching deconstruct record khớp theo vị trí hay tên thành phần, và refactor thứ tự thành phần ảnh hưởng thế nào?'
   ],
   tags: ['switch expression', 'pattern matching', 'instanceof', 'sealed', 'Java 21', 'exhaustive']
+},
+{
+  id: 'modern-058',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Trong Spring Boot 3 + Hibernate 6, bạn dùng record làm DTO/JPA projection như thế nào? So sánh interface projection, constructor expression và entity, vì sao record không làm entity được?',
+  a: `**Tóm tắt:** Record hợp làm DTO và projection chỉ đọc vì nó bất biến, có equality theo giá trị và gần như không có boilerplate. Trong Spring Data JPA có ba cách lấy projection: interface projection (proxy), class-based DTO/constructor expression, và record với JPQL {{select new}}; từ Hibernate 6.2 record còn làm được {{@Embeddable}} (Hibernate gọi canonical constructor). Nhưng record **không** làm được {{@Entity}}: JPA đòi class non-final, constructor không tham số, property theo chuẩn JavaBean, còn Hibernate cần tạo proxy subclass cho lazy loading và ghi lại field khi dirty checking.
+
+### Hiểu đúng ba khái niệm trước khi chọn
+- **Entity** là object có vòng đời và identity (định danh) riêng, ánh xạ một bảng. Hai entity khác bộ nhớ nhưng cùng id là "cùng một bản ghi"; state thay đổi theo nghiệp vụ và Hibernate theo dõi thay đổi để UPDATE.
+- **DTO** (Data Transfer Object - đối tượng chuyển dữ liệu) là "hộp dữ liệu" đi qua ranh giới (controller → service, service → API). Nó không có identity, thường bất biến, chỉ để đọc/ghi dữ liệu ra ngoài.
+- **Projection** (phép chiếu) là kết quả truy vấn chỉ chứa một phần cột, ví dụ màn hình danh sách chỉ cần id, tên, tổng tiền. Projection không phải entity: nó không có dirty checking, không lazy loading theo vòng đời, chỉ là ảnh chụp dữ liệu lúc query.
+
+Ví dụ đời thường: entity giống "hồ sơ nhân viên đầy đủ trong tủ"; DTO giống "tờ in thông tin cần dán lên bảng"; projection giống "truy vấn chỉ lấy cột họ tên và phòng ban".
+
+### Ba cách lấy projection trong Spring Data JPA
+
+**1) Interface projection.** Bạn khai báo một interface chỉ có getter, Spring tạo proxy và map kết quả query theo tên property.
+
+~~~java
+public interface OrderSummary {
+    Long getId();
+    BigDecimal getTotalCents();
+    String getCustomerEmail(); // phải khớp alias/cột trong query
 }
+~~~
+
+Ưu điểm: không cần class DTO, ít code. Nhược điểm: tên property phải khớp alias (hoặc đường dẫn property), và proxy có thể làm bạn khó debug; nếu query không lấy cột mà getter cần, giá trị có thể null hoặc phát sinh truy vấn phụ tuỳ cấu hình - phải kiểm tra bằng số query thật.
+
+**2) Constructor expression.** JPQL gọi thẳng constructor của class/record, kiểu tham số phải khớp chính xác với select list.
+
+~~~java
+@Query("""
+       select new com.app.OrderView(o.id, o.totalCents, c.email)
+       from Order o join o.customer c
+       where o.status = :status
+       """)
+List<OrderView> findViews(@Param("status") OrderStatus status);
+~~~
+
+**3) Record DTO.** Record chính là class-based DTO: khai báo component, compiler sinh canonical constructor đúng thứ tự, nên constructor expression ở trên chạy được. Record cũng serialize/deserialize tốt với Jackson.
+
+~~~java
+public record OrderView(Long id, BigDecimal totalCents, String customerEmail) {}
+~~~
+
+**4) Record làm {{@Embeddable}}.** Từ Hibernate 6.2, một record bất biến có thể là value object nhúng trong entity. Hibernate dùng canonical constructor để tạo instance; thứ tự component quyết định thứ tự field.
+
+~~~java
+@Embeddable
+public record Address(String street, String city) {}
+
+@Entity
+class Customer {
+    @Id Long id;
+    @Embedded Address address;      // không có setter cho từng field
+    void moveTo(Address a) { this.address = a; } // thay cả record
+}
+~~~
+
+Nếu dùng Hibernate 6.0/6.1, bạn phải tự viết {{EmbeddableInstantiator}}; 6.2 trở lên đã tự làm. Record embeddable không có identity riêng, chỉ là cụm giá trị nằm cùng bảng với entity.
+
+### Vì sao record không làm entity được
+1. **JPA yêu cầu class non-final:** record là final, Hibernate không thể tạo proxy subclass cho lazy loading (ví dụ {{customer.getOrders()}} nạp trễ).
+2. **Constructor không tham số:** Hibernate tạo instance rỗng rồi gán field; record không có constructor rỗng.
+3. **Field final, không có setter:** dirty checking cần ghi lại field khi merge/refresh; record không cho gán lại.
+4. **Equality theo toàn bộ component:** hai record cùng giá trị là bằng nhau, trong khi entity thường so equality theo id. Trộn record vào {{Set}} entity có thể làm mất phần tử hoặc gộp nhầm.
+
+### Bảng chọn
+| Nhu cầu | Lựa chọn | Vì sao |
+|---|---|---|
+| API response/DTO bất biến | record | ít boilerplate, equality theo giá trị, Jackson tốt |
+| Danh sách chỉ đọc, ít cột | record + constructor expression | một query, không dirty checking |
+| Projection không muốn tạo class | interface projection | ít code, nhưng phụ thuộc tên property/alias |
+| Value object nhúng trong entity | record {{@Embeddable}} (Hibernate 6.2+) | bất biến, thay cả cụm khi đổi |
+| Entity có vòng đời, lazy, dirty checking | class thường | JPA/Hibernate yêu cầu |
+
+### Pitfall production
+- **Kiểu trong select list lệch record:** {{o.totalCents}} là {{BigDecimal}} nhưng record khai {{double}}; JPQL là chuỗi nên không bị compiler bắt, lỗi chỉ lộ khi chạy query.
+- **Thêm component vào record:** canonical constructor đổi, JPQL {{select new ...}} không tự cập nhật; phải sửa cả query và test. Nếu chỉ test service mà không chạy query, lỗi lọt lên production.
+- **Interface projection dùng primitive:** {{long getTotalCents()}} gặp cột null sẽ NPE khi unbox; dùng {{Long}}/{{BigDecimal}}.
+- **N+1 khi map entity sang DTO:** gọi {{order.getCustomer().getEmail()}} trong vòng lặp 50 đơn có thể tạo 51 query. Dùng join fetch hoặc projection ngay trong JPQL.
+- **Record embeddable bị sửa "tại chỗ":** không có setter; muốn đổi phải tạo record mới và gán lại. Nếu cố dùng reflection để đổi field final sẽ vỡ bất biến và có thể bị JVM chặn.
+
+### Ví dụ đời thực
+Một màn hình danh sách đơn hàng trả 50 dòng. Code cũ load entity rồi map sang DTO trong service, gọi {{order.getCustomer().getEmail()}}; log SQL cho thấy 51 query (1 query đơn + 50 query khách hàng), p95 của endpoint là 420 ms, DB CPU 70% vào giờ cao điểm. Nhóm đổi sang một JPQL constructor expression với {{join o.customer c}} và trả về {{List<OrderView>}}, còn 2 query (1 chính + 1 count cho phân trang), p95 xuống 45 ms, số query giảm 96%. Sau đó một dev thêm field {{discountCents}} vào record nhưng quên sửa JPQL; test đơn vị vẫn xanh vì mock repository, chỉ khi chạy {{@DataJpaTest}} với đúng câu query mới thấy lỗi số tham số constructor. Nhóm bổ sung test projection và quy ước "đổi record DTO thì grep mọi {{select new}}". Số liệu là kịch bản minh hoạ; query thực tế phụ thuộc mapping và index.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng record cho DTO và projection vì nó bất biến, equality theo giá trị và không có boilerplate. Trong Spring Data JPA có ba cách: interface projection tạo proxy theo tên getter, constructor expression gọi thẳng constructor, và record thường đi với {{select new com.app.OrderView(...)}} để lấy đúng cột cần. Record cũng làm được {{@Embeddable}} từ Hibernate 6.2, nhưng không làm entity được: JPA cần class non-final, constructor không tham số và setter để dirty checking, còn Hibernate cần tạo proxy subclass cho lazy loading. Vì vậy entity vẫn là class thường, còn record đứng ở ranh giới controller/API hoặc làm value object nhúng. Em chú ý kiểu tham số trong select list phải khớp record, tên property projection phải khớp alias, và thêm component thì phải sửa cả JPQL lẫn test. Thực tế em giảm một endpoint danh sách từ 51 query xuống 2 query và p95 từ 420 ms xuống 45 ms nhờ chuyển từ entity sang projection."
+
+> Senior tip: chọn projection ngay từ tầng repository khi màn hình chỉ đọc; đừng load entity rồi map sang DTO trong service. Và coi record DTO là "hợp đồng dữ liệu": đổi component là đổi API, phải grep mọi {{select new}} và mọi nơi dùng canonical constructor.
+
+`,
+  follow: [
+    'Vì sao Hibernate không tạo được proxy lazy loading cho record, và điều đó ảnh hưởng gì khi entity có quan hệ {{@OneToMany}}?',
+    'Thêm một component vào record DTO có thể làm hỏng những chỗ nào, và bạn kiểm tra bằng cách nào trước khi deploy?',
+    'Giữa interface projection và constructor expression, bạn chọn theo tiêu chí nào khi hiệu năng và khả năng bảo trì xung đột?'
+  ],
+  tags: ['record', 'DTO', 'JPA projection', 'Hibernate 6.2', 'Spring Data JPA']
+},
+{
+  id: 'modern-059',
+  topic: 'modern',
+  level: 'lead',
+  q: '(Lead) Bạn thiết kế domain lỗi cho một hệ thống có nhiều service: sealed hierarchy lỗi nghiệp vụ, ánh xạ sang ProblemDetail/HTTP và quyết định retry. Hãy giải thích mô hình, trade-off với exception, và cách tránh 500 giả.',
+  a: `**Tóm tắt:** Dùng {{sealed interface DomainError}} với các record biến thể để biến lỗi nghiệp vụ thành dữ liệu có mã lỗi ổn định và ngữ cảnh có cấu trúc; tại biên (controller/advice) dùng switch expression exhaustive để ánh xạ từng biến thể sang {{ProblemDetail}} và HTTP status. Exception vẫn cần cho lỗi hạ tầng không thể phục hồi, nhưng không nên để lỗi nghiệp vụ đi khắp nơi dưới dạng exception rồi mới đoán mã ở tầng web. Cách này ép compiler xử lý đủ loại lỗi khi thêm biến thể, và cho phép phân loại retry (tạm thời vs vĩnh viễn) ngay trên kiểu lỗi.
+
+### Vì sao cần mô hình lỗi riêng
+Một hệ thống thật có ít nhất bốn loại lỗi khác nhau về ý nghĩa và cách xử lý:
+- **Không tìm thấy** (404): vĩnh viễn, không retry, có thể chỉ là dữ liệu người dùng nhập sai.
+- **Xung đột** (409): có thể retry sau khi reload, ví dụ optimistic locking hoặc trạng thái đã đổi.
+- **Chưa xác thực/chưa phân quyền** (401/403): vĩnh viễn cho request hiện tại, cần làm mới token hoặc đổi quyền.
+- **Phụ thuộc tạm thời không sẵn sàng** (503): retry được với backoff và jitter, có thể cần idempotent key.
+
+Nếu tất cả được biểu diễn bằng một {{BusinessException}} có trường {{message}} dạng chuỗi, tầng web phải "đoán" status bằng {{if (message.contains(...))}}. Khi thêm loại lỗi mới, không có cơ chế nào nhắc bạn cập nhật chỗ đoán. Sealed hierarchy biến "danh sách loại lỗi" thành kiểu dữ liệu đóng, và switch exhaustive biến "ánh xạ sang HTTP" thành hàm tổng (total function): thiếu biến thể là lỗi biên dịch.
+
+### Mô hình đề xuất
+~~~java
+sealed interface DomainError permits NotFound, Conflict, Unavailable {
+    String code();
+    default boolean retryable() { return false; }
+}
+
+record NotFound(String code, String entity, Object id) implements DomainError {
+    public NotFound { if (code == null || code.isBlank()) throw new IllegalArgumentException("code"); }
+}
+record Conflict(String code, String field, Object current) implements DomainError {}
+record Unavailable(String code, String dependency) implements DomainError {
+    @Override public boolean retryable() { return true; }
+}
+~~~
+
+Mỗi biến thể là một record: có mã lỗi ổn định cho client/observability, có dữ liệu có cấu trúc để log, và có thể override {{retryable()}}. Mã lỗi nên là hằng số ở nơi khác (enum hoặc hằng chuỗi) để không gõ sai; ở đây giữ trong record cho gọn.
+
+### Exception hay Result?
+- **Exception** phù hợp khi luồng không thể tiếp tục và bạn muốn stack trace chỉ nơi phát sinh. Một {{DomainException}} unchecked mang {{DomainError}} là lựa chọn thực dụng trong Spring: transaction rollback mặc định với unchecked, và @RestControllerAdvice bắt một chỗ.
+- **Result/return type** phù hợp ở API thư viện nội bộ, nơi caller bắt buộc phải xử lý lỗi (không thể quên catch). Nhược điểm: phải bọc/unwrap nhiều, dễ quên ở tầng sâu, và không tự rollback transaction.
+- **Lỗi hạ tầng** (DB mất kết nối, HTTP 500 từ downstream) nên vẫn là exception; đừng nhét vào sealed domain error rồi trả 200 hoặc 503 cho mọi thứ. Ranh giới: lỗi nghiệp vụ là "kết quả có thể dự đoán"; lỗi hạ tầng là "tai nạn".
+
+### Ánh xạ sang ProblemDetail
+Spring Boot 3 hỗ trợ {{org.springframework.http.ProblemDetail}} theo RFC 9457. Bạn trả về một ProblemDetail có status, title, detail, instance và thuộc tính "code" để client không phụ thuộc message tiếng Việt.
+
+~~~java
+@RestControllerAdvice
+class DomainErrorAdvice {
+    @ExceptionHandler(DomainException.class)
+    ProblemDetail handle(DomainException e) {
+        DomainError err = e.error();
+        ProblemDetail p = switch (err) {
+            case NotFound n -> ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, "Không tìm thấy " + n.entity());
+            case Conflict c -> ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, "Xung đột ở " + c.field());
+            case Unavailable u -> ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, "Thử lại sau");
+        };
+        p.setProperty("code", err.code());
+        return p;
+    }
+}
+~~~
+
+Switch không có {{default}}: thêm biến thể mới sẽ lỗi biên dịch tại đây, buộc bạn quyết định status và message. Đây là lợi ích lớn nhất so với {{instanceof}} chuỗi hoặc {{default -> 500}}.
+
+### Bảng trade-off
+| Cách biểu diễn | Ưu | Nhược | Khi nào chọn |
+|---|---|---|---|
+| Exception có message chuỗi | ít code, stack trace | đoán mã, dễ 500 giả | code nhỏ, một vài lỗi |
+| Exception + enum code | đơn giản, dễ log | không mang được dữ liệu có cấu trúc | lỗi phân loại thô |
+| Sealed DomainError + exception ở biên | exhaustive, có dữ liệu, retry rõ | cần thêm lớp exception/advice | hệ thống nhiều loại lỗi, nhiều service |
+| Result<T, DomainError> | ép xử lý lỗi | boilerplate, khó rollback transaction | API thư viện, use case thuần |
+
+### Pitfall production
+- **Rollback bị bỏ lỡ:** bắt {{DomainException}} trong service rồi trả Result, transaction vẫn commit các thay đổi trước đó. Nếu muốn rollback, phải ném exception ra khỏi biên transaction hoặc đánh dấu rollback-only.
+- **Mã lỗi bị mất khi bọc:** bắt {{DomainException}} rồi ném lại {{RuntimeException}} với chỉ message làm mất {{code}} và biến lỗi 409 thành 500.
+- **Retry sai loại:** retry {{NotFound}} hoặc {{Conflict}} không điều kiện gây retry storm; chỉ retry {{Unavailable}} với backoff + jitter và idempotent key.
+- **Lộ chi tiết nội bộ:** ProblemDetail chứa tên bảng, SQL, stack trace; chỉ log ở server, không trả về client.
+- **Thêm biến thể mà không cập nhật nơi phát sinh:** compiler chỉ bắt được các switch exhaustive; những chỗ tạo lỗi bằng chuỗi vẫn có thể tạo mã lạ.
+
+### Ví dụ đời thực
+Một hệ thống đặt lịch có 6 mã lỗi nghiệp vụ. Ban đầu mọi lỗi đều ném {{BusinessException}} rồi advice trả 500; 12% request 4xx lẽ ra là lỗi người dùng bị đếm vào error rate, dashboard alert liên tục và on-call phải trực đêm. Nhóm chuyển sang sealed {{BookingError}} với các biến thể {{SlotTaken}}, {{OutsideWindow}}, {{Unavailable}}, switch exhaustive trong advice; thêm {{retryable()}} để chỉ cổng retry thử lại {{Unavailable}} 3 lần với backoff 200/400/800 ms cộng jitter. Sau 2 tuần: tỉ lệ 500 giảm từ 12% xuống 1,8% (phần còn lại là lỗi hạ tầng thật), alert on-call giảm 70%, và khi thêm biến thể {{Waitlisted}} compiler chỉ 3 chỗ ánh xạ còn thiếu. Số liệu là kịch bản minh hoạ; điều quan trọng là lỗi nghiệp vụ không còn giả dạng sự cố hệ thống.
+
+### Trả lời mẫu khi phỏng vấn
+"Em mô hình hoá lỗi nghiệp vụ bằng sealed interface, mỗi biến thể là một record có mã lỗi ổn định và dữ liệu có cấu trúc; thêm {{retryable()}} để phân loại lỗi tạm thời. Ở biên web, một advice dùng switch expression exhaustive để ánh xạ sang ProblemDetail và HTTP status, không có default, nên thêm biến thể mới là lỗi biên dịch. Exception vẫn dùng cho lỗi hạ tầng không thể phục hồi, nhưng em không để lỗi nghiệp vụ đi khắp nơi dưới dạng exception rồi đoán mã ở tầng web. Em cũng chú ý rollback: nếu bắt lỗi trong service rồi trả Result, transaction có thể vẫn commit, nên phải ném ra khỏi biên transaction hoặc đánh dấu rollback-only. Với retry, em chỉ retry lỗi 503 với backoff và jitter, kèm idempotent key, không retry 404/409 vô điều kiện. Thực tế cách này giảm tỉ lệ 500 giả từ 12% xuống dưới 2% và giúp on-call không bị alert nhiễu."
+
+> Senior tip: lỗi nghiệp vụ là một phần của domain, không phải "exception cho tiện". Hãy đặt tên biến thể theo kết quả nghiệp vụ (SlotTaken, OutsideWindow) thay vì theo HTTP (BadRequest), rồi để một switch exhaustive duy nhất ở biên dịch sang HTTP. Khi thêm biến thể, compiler sẽ chỉ đúng những chỗ phải quyết định status và thông điệp.
+
+`,
+  follow: [
+    'Vì sao bắt DomainException trong service rồi trả Result có thể làm transaction commit những thay đổi không mong muốn, và bạn xử lý thế nào?',
+    'Khi nào nên dùng Result thay vì exception cho lỗi nghiệp vụ, và cái giá phải trả là gì?',
+    'Làm sao đảm bảo mã lỗi trong DomainError không bị trùng hoặc bị dùng như message hiển thị?'
+  ],
+  tags: ['sealed', 'domain error', 'ProblemDetail', 'RFC 9457', 'retry', 'Spring Boot 3']
+},
+{
+  id: 'modern-060',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Text block (Java 15) trong code production khác gì so với chuỗi thường: chuẩn hoá xuống dòng, dòng trống cuối, encoding, hằng số annotation và an toàn dữ liệu động? Hãy giải thích cơ chế và bẫy khi dùng cho SQL/HTML/log.',
+  a: `**Tóm tắt:** Text block không phải "chuỗi thô": compiler chuẩn hoá mọi line terminator (CRLF/CR) về {{\\n}}, cắt phần thụt lề chung nhỏ nhất (incidental indentation), và thêm một {{\\n}} nếu dấu đóng {{\"\"\"}} nằm trên dòng riêng. Nó là biểu thức hằng nếu nội dung là hằng, nên dùng được trong annotation và case label; nhưng nó vẫn chỉ là chuỗi, không tự escape HTML/SQL, và dữ liệu động ghép vào vẫn gây injection. Dùng cho template tĩnh (SQL, HTML, email, test fixture), không dùng cho log nhiều dòng hay dữ liệu người dùng.
+
+### Cơ chế biên dịch, theo thứ tự
+1. **Mở block:** {{\"\"\"}} phải theo sau là line terminator; nội dung bắt đầu từ dòng kế tiếp.
+2. **Chuẩn hoá line terminator:** CR, CRLF trong source được chuyển thành LF ({{\\n}}) trong giá trị. Vì vậy một file soạn trên Windows và một file trên Linux cho cùng nội dung logic, nhưng test so sánh snapshot phải dùng LF ở cả hai.
+3. **Tính incidental whitespace:** compiler tìm số ký tự thụt lề nhỏ nhất trên các dòng không trống và trên dòng chứa dấu đóng {{\"\"\"}}, rồi cắt đúng bấy nhiêu khỏi mọi dòng. Tab tính là 1 ký tự, nên trộn tab/space làm lệch kết quả.
+4. **Dòng cuối:** nếu dấu đóng ở dòng riêng, giá trị có thêm một {{\\n}} ở cuối. Muốn bỏ, đặt dấu đóng sát nội dung hoặc dùng {{\\}} ở cuối dòng.
+5. **Escape vẫn chạy:** {{\\n}}, {{\\t}}, {{\\\"}}, {{\\\\}} và {{\\s}} (giữ một space, chống cắt trailing space). {{\\}} cuối dòng nối dòng mà không chèn {{\\n}}.
+6. **Hằng số:** nếu không có biểu thức nhúng, text block là constant expression; dùng được trong annotation, trong case label của switch, và không tốn chi phí runtime (nằm trong constant pool).
+
+Ví dụ đời thường: text block giống một tờ giấy in sẵn có canh lề; compiler cắt lề trái theo lề nhỏ nhất, giống như bạn cắt bỏ phần giấy trắng thừa trước khi in.
+
+### Ví dụ code
+~~~java
+String html = """
+    <html>
+      <body>
+        <p>Xin chào %s</p>
+      </body>
+    </html>
+    """.formatted(HtmlUtils.htmlEscape(name)); // escape trước khi chèn
+
+String sql = """
+    select id, email
+    from users
+    where status = 'ACTIVE'
+    """; // hằng, không có dữ liệu người dùng
+
+String noTrailingNewline = """
+    dong 1
+    dong 2"""; // dấu đóng sát nội dung -> không có \\n cuối
+~~~
+
+Lưu ý: {{HtmlUtils.htmlEscape}} là của Spring; nếu không dùng Spring, tự escape 5 ký tự {{& < > " '}}. Với SQL có giá trị động, dùng PreparedStatement; text block chỉ chứa phần SQL tĩnh.
+
+### Bảng chọn cách tạo chuỗi
+| Nhu cầu | Cách phù hợp | Vì sao |
+|---|---|---|
+| SQL/HTML/email tĩnh, nhiều dòng | text block | dễ đọc, ít escape, là hằng |
+| Chèn vài giá trị vào template | {{String.formatted}} / {{MessageFormat}} | printf hoặc i18n; nhớ locale |
+| SQL có giá trị người dùng | PreparedStatement với {{?}} | parameterization, không injection |
+| JSON | Jackson/Gson | tự escape dấu nháy và xuống dòng |
+| Log có cấu trúc | một dòng JSON, không text block | dễ parse, tránh log injection |
+| Ghép chuỗi trong vòng lặp nóng | {{StringBuilder}} | tránh tạo nhiều String trung gian |
+
+### Pitfall thực tế trên production
+- **Snapshot fail vì line ending:** file test trên Windows lưu CRLF, expected string viết bằng {{\\n}}; text block chuẩn hoá về LF nên expected phải là LF. Đừng so sánh bằng cách đọc file thô rồi so trực tiếp.
+- **Dòng trống cuối:** dấu đóng lệch một dòng làm chuỗi thừa {{\\n}}; checksum, chữ ký email hoặc header HTTP có thể sai mà không ai để ý.
+- **Tab/space:** thụt lề bằng tab ở một số dòng, space ở dòng khác làm phần cắt lệch; dùng formatter của team và tránh tab trong text block.
+- **Injection:** {{formatted}} không escape; tên khách hàng chứa {{<script>}} sẽ vào HTML, dấu nháy đơn sẽ phá SQL. Luôn dùng cơ chế escape/parameterize đúng ngữ cảnh.
+- **% trong formatted:** {{width: 100%}} làm {{formatted}} báo lỗi định dạng; phải viết {{100%%}}. Tương tự, dấu {{%}} trong SQL LIKE cần {{%%}}.
+- **Encoding:** file UTF-8 nhưng compiler đọc theo encoding khác (ví dụ Windows-1252) sẽ làm hỏng dấu tiếng Việt; đặt {{project.build.sourceEncoding=UTF-8}} (maven-compiler-plugin dùng giá trị này làm mặc định cho tham số {{encoding}}, nên không cần khai báo thêm).
+- **Log injection:** text block nhiều dòng cộng dữ liệu người dùng có {{\\n}} tạo dòng log giả; log giá trị đã escape hoặc dùng structured logging.
+
+### Ví dụ đời thực
+Một batch job sinh email HTML bằng text block + {{formatted(name, amount)}}. Trên máy dev Windows, file template lưu CRLF; test snapshot so sánh với expected viết bằng {{\\n}} nên luôn fail, nhưng trên CI Linux lại pass - nhóm mất nửa ngày mới phát hiện text block chuẩn hoá line terminator. Sau khi chuẩn hoá expected về LF, test ổn định. Tiếp đó, một template có {{width: 100%}} làm {{formatted}} ném {{UnknownFormatConversionException}} cho 1/500 email; sửa thành {{100%%}}. Cuối cùng, tên khách hàng chứa {{<script>alert(1)</script>}} đi thẳng vào HTML; nhóm thêm {{HtmlUtils.htmlEscape}} và test bảo mật với payload cố định. Sau 1 tuần, số email lỗi định dạng về 0, test snapshot không còn phụ thuộc OS, và không còn lỗi XSS qua template. Số liệu là kịch bản minh hoạ.
+
+### Trả lời mẫu khi phỏng vấn
+"Text block tiện cho chuỗi nhiều dòng như SQL, HTML hay email tĩnh, nhưng em luôn nhớ nó được compiler xử lý: CRLF và CR được chuẩn hoá về LF, phần thụt lề chung nhỏ nhất bị cắt, và dấu đóng trên dòng riêng sẽ thêm một xuống dòng ở cuối. Vì vậy test snapshot phải so sánh với LF và vị trí dấu đóng phải nhất quán. Text block cũng là hằng nếu không có biểu thức nhúng, nên dùng được trong annotation; nhưng nó vẫn chỉ là chuỗi: em không ghép dữ liệu người dùng vào SQL hay HTML bằng formatted, mà dùng PreparedStatement và escape HTML. Với log, em tránh text block nhiều dòng vì dữ liệu có xuống dòng có thể tạo log giả; em dùng structured logging một dòng. Thực tế em từng mất nửa ngày vì test snapshot fail do CRLF trên Windows, và từng gặp lỗi formatted vì dấu phần trăm trong CSS - cả hai đều là lỗi do hiểu sai cơ chế, không phải do text block."
+
+> Senior tip: coi text block là "hằng chuỗi có định dạng", không phải template engine. Quy ước team: text block chỉ cho nội dung tĩnh; mọi giá trị động đi qua escape/parameterize; test snapshot chuẩn hoá LF; và đặt encoding UTF-8 trong build để dấu tiếng Việt không bị vỡ.
+
+`,
+  follow: [
+    'Vì sao text block chuẩn hoá CRLF về LF, và điều đó ảnh hưởng thế nào đến test snapshot hoặc chữ ký file?',
+    'Dấu đóng {{\"\"\"}} đặt ở dòng riêng và đặt sát nội dung khác nhau ở điểm nào ngoài dòng trống cuối?',
+    'Khi nào text block là compile-time constant, và vì sao điều đó quan trọng với annotation hoặc case label?'
+  ],
+  tags: ['text block', 'Java 15', 'line terminator', 'encoding', 'SQL injection', 'logging']
+},
+{
+  id: 'modern-061',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Dùng switch pattern với record pattern (Java 21) để viết evaluator/validator cho biểu thức: deconstruct lồng nhau, guard {{when}}, {{yield}}, constant folding và giới hạn về primitive pattern. Hãy giải thích cơ chế compiler và bẫy.',
+  a: `**Tóm tắt:** Với {{sealed interface Expr}} và các record biến thể, switch pattern cho phép deconstruct biểu thức ngay trong case (ví dụ {{case Add(Expr l, Expr r)}}), guard {{when}} thêm điều kiện theo giá trị, và {{yield}} trả kết quả từ block. Compiler kiểm tra kiểu ở runtime, gọi accessor theo thứ tự component, rồi kiểm tra dominance (nhánh bị che) và exhaustiveness (đủ nhánh). Nhưng guard không làm case phủ hết subtype, Java 21 chưa có pattern cho primitive, và switch pattern không có fall-through - mỗi nhánh là một mũi tên hoặc block có yield.
+
+### Mô hình biểu thức
+~~~java
+sealed interface Expr permits Const, Neg, Add, Mul, Div {}
+record Const(long value) implements Expr {}
+record Neg(Expr inner) implements Expr {}
+record Add(Expr left, Expr right) implements Expr {}
+record Mul(Expr left, Expr right) implements Expr {}
+record Div(Expr left, Expr right) implements Expr {}
+~~~
+
+Đây là algebraic data type (kiểu dữ liệu đại số): một tập biến thể đóng, mỗi biến thể mang dữ liệu riêng. Sealed cho compiler biết danh sách đóng; record cho deconstruct theo vị trí.
+
+### Evaluator cơ bản
+~~~java
+long eval(Expr e) {
+    return switch (e) {
+        case Const(long v) -> v;
+        case Neg(Expr inner) -> -eval(inner);
+        case Add(Expr l, Expr r) -> eval(l) + eval(r);
+        case Mul(Expr l, Expr r) -> eval(l) * eval(r);
+        case Div(Expr l, Expr r) -> {
+            if (r instanceof Const(long d) && d == 0) {
+                throw new ArithmeticException("chia cho 0");
+            }
+            yield eval(l) / eval(r);
+        }
+    }; // exhaustive: không cần default
+}
+~~~
+
+Điểm cần giải thích:
+- {{case Const(long v)}} vừa kiểm tra kiểu record vừa gán component vào biến {{v}}; không cần {{instanceof}} + cast + {{value()}}.
+- {{case Div(Expr l, Expr r)}} lồng accessor: {{l}}, {{r}} là các component của Div.
+- Block có nhiều lệnh dùng {{yield}}; mũi tên đơn giản không cần.
+- Switch pattern không có fall-through: không có {{case A: case B:}} kiểu cũ.
+
+### Guard {{when}} và exhaustiveness
+Guard chỉ chạy sau khi khớp kiểu. Nó giúp xử lý điều kiện theo giá trị, nhưng compiler chỉ tính exhaustiveness theo kiểu, không theo điều kiện.
+
+~~~java
+long safeDiv(Expr e) {
+    return switch (e) {
+        case Div(Expr l, Expr r) when !(r instanceof Const(long d) && d == 0) -> eval(l) / eval(r);
+        case Div(Expr l, Expr r) -> throw new ArithmeticException("chia cho 0");
+        default -> eval(e); // chỉ để phủ các nhánh còn lại
+    };
+}
+~~~
+
+Nếu chỉ có case có guard, switch không exhaustive: compiler không biết guard luôn đúng. Vì vậy phải có nhánh không guard cho cùng subtype, hoặc {{default}}. Trong domain đóng, ưu tiên nhánh không guard hơn {{default}} để giữ cảnh báo khi thêm biến thể.
+
+### Constant folding và thứ tự nhánh
+~~~java
+long evalFast(Expr e) {
+    return switch (e) {
+        case Add(Const(long a), Const(long b)) -> a + b; // gộp hằng
+        case Mul(Const(long a), Const(long b)) -> a * b;
+        case Const(long v) -> v;
+        case Neg(Expr x) -> -evalFast(x);
+        case Add(Expr l, Expr r) -> evalFast(l) + evalFast(r);
+        case Mul(Expr l, Expr r) -> evalFast(l) * evalFast(r);
+        case Div(Expr l, Expr r) -> evalFast(l) / evalFast(r);
+    };
+}
+~~~
+
+Nhánh {{Add(Const, Const)}} phải đứng trước {{Add(Expr, Expr)}}; nếu đặt sau, nó bị dominated (không bao giờ chạy) và compiler báo lỗi. Đây là lỗi thứ tự hay gặp khi refactor.
+
+### Cơ chế compiler, từng bước
+1. **Type test:** runtime kiểm tra object có phải record tương ứng không; nếu không, nhánh bị bỏ, không ném exception.
+2. **Deconstruction:** compiler sinh lệnh gọi accessor theo thứ tự component và gán vào biến pattern; với nested pattern thì đệ quy.
+3. **Guard:** nếu có {{when}}, biểu thức điều kiện được đánh giá sau type test; nếu false, nhánh không khớp và chuyển sang nhánh sau.
+4. **Dominance:** compiler từ chối nhánh sau bị nhánh trước bao trùm hoàn toàn.
+5. **Exhaustiveness:** với sealed hierarchy, compiler chứng minh mọi subtype đã có nhánh (guard không được tính là phủ hết). Thiếu nhánh → lỗi biên dịch.
+6. **Null:** selector null gây {{NullPointerException}} trừ khi có {{case null}}; với biểu thức, nên chặn null ở biên hoặc thêm {{case null -> throw ...}}.
+
+### Giới hạn và bẫy
+- **Java 21 chưa có primitive pattern:** không viết {{case int i}} hay {{case 0}} trong switch pattern; chỉ có type pattern cho reference type và record pattern. Với selector {{int}}, switch thường vẫn dùng case hằng; pattern matching cho primitive là các bản JDK sau, phải kiểm tra phiên bản.
+- **Không fall-through:** không thể "rơi" từ case này sang case khác; muốn dùng chung logic thì gọi method hoặc dùng guard.
+- **Đệ quy sâu:** {{eval}} đệ quy theo cây biểu thức; biểu thức 100.000 nút có thể {{StackOverflowError}}. Dùng stack tường minh hoặc trampoline cho parser/ AST lớn.
+- **Guard che nhầm:** đặt guard quá rộng rồi quên nhánh không guard; compiler báo không exhaustive, nhưng nếu thêm {{default}} thì mất cảnh báo.
+- **Pattern lồng quá sâu:** 3-4 tầng record pattern khó đọc; tách thành hàm có tên hoặc biến trung gian.
+- **Record thay đổi thứ tự component:** pattern khớp theo vị trí, nên đổi thứ tự component là breaking change cho mọi switch.
+
+### Ví dụ đời thực
+Một rule engine tính chiết khấu dùng chuỗi {{if (expr instanceof ...)}} với 9 nhánh. Khi thêm loại {{Tiered}}, hai chỗ xử lý bị bỏ sót và rơi vào {{else}} trả 0, gây tính sai 3% đơn trong 2 ngày. Nhóm chuyển sang sealed {{Expr}} + switch exhaustive: compiler báo 3 chỗ thiếu {{Tiered}} ngay khi build, sửa xong mới deploy. Sau đó thêm constant folding {{Add(Const, Const)}} và {{Mul(Const, Const)}}, cây biểu thức trung bình giảm 38% số nút khi đánh giá 200.000 rule, p95 từ 2,4 ms xuống 1,5 ms. Một lần khác, guard {{Div}} quên trường hợp mẫu số 0 nên ném {{ArithmeticException}} 3 lần/ngày; thêm nhánh không guard xử lý 0 giúp lỗi về 0. Số liệu là kịch bản minh hoạ trên JMH cục bộ.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng sealed interface cộng record cho biểu thức, rồi switch pattern để deconstruct: {{case Add(Expr l, Expr r)}} vừa kiểm tra kiểu vừa lấy hai toán hạng, không cần instanceof và cast. Với điều kiện theo giá trị, em dùng guard {{when}}; nhưng guard không làm case phủ hết subtype, nên phải có nhánh không guard hoặc default. Trong block nhiều lệnh, em dùng {{yield}} để trả giá trị. Compiler kiểm tra dominance nên nhánh tổng quát không được đặt trước nhánh cụ thể; với sealed type, thiếu nhánh là lỗi biên dịch. Em cũng chú ý Java 21 chưa có primitive pattern, switch pattern không có fall-through, và đệ quy sâu có thể StackOverflow. Thực tế em chuyển rule engine từ if-instanceof sang switch exhaustive, compiler chỉ đúng 3 chỗ thiếu khi thêm loại rule mới; thêm constant folding giúp giảm 38% số nút và p95 từ 2,4 ms xuống 1,5 ms."
+
+> Senior tip: dùng switch pattern cho domain đóng và biểu thức có cấu trúc; giữ nhánh cụ thể trước nhánh tổng quát; guard đặt sau cùng cho mỗi subtype; và nếu cây biểu thức có thể rất sâu, viết evaluator không đệ quy thay vì tin vào stack.
+
+`,
+  follow: [
+    'Vì sao guard {{when}} không làm switch exhaustive, và bạn xử lý phần còn lại của subtype đó thế nào?',
+    'Thứ tự nhánh trong switch pattern ảnh hưởng ra sao đến dominance, và lỗi này compiler báo khi nào?',
+    'Giới hạn của Java 21 về primitive pattern ảnh hưởng thế nào đến việc viết switch trên {{int}} hoặc {{long}}?'
+  ],
+  tags: ['switch pattern', 'record pattern', 'sealed', 'guard', 'Java 21', 'evaluator']
+},
+{
+  id: 'modern-062',
+  topic: 'modern',
+  level: 'senior',
+  q: 'String templates (JEP 430/459) đã bị rút khỏi JDK: chuyện gì đã xảy ra, vì sao bị rút, và nếu codebase còn code preview thì migrate sang gì? Hãy nói đúng trạng thái và cách quản trị preview feature.',
+  a: `**Tóm tắt:** String templates là preview ở JDK 21 (JEP 430) và preview lần hai ở JDK 22 (JEP 459), nhưng đã bị rút trước JDK 23: dự định re-preview lần ba (JEP 465) đã bị hủy vì thiết kế "processor-centric" khó hiểu và thiếu compositionality; JDK 23 không có tính năng này, kể cả ở dạng preview. Hiện không có JDK chính thức nào có string templates, nên không dùng trong production. Thay thế: text block cho chuỗi nhiều dòng, {{String.formatted}}/{{MessageFormat}} cho nội suy, {{StringBuilder}} cho vòng lặp nóng, PreparedStatement cho SQL, template engine cho HTML.
+
+### String templates từng là gì
+Cú pháp preview trông như sau (chỉ để nhận diện, không biên dịch được trên JDK 23+):
+
+~~~java
+String name = "An";
+int age = 30;
+String msg = STR."Chào \{name}, bạn \{age} tuổi.";
+String sql = FMT."select * from users where age = \{age}";
+~~~
+
+Điểm khác text block: {{STR}} và {{FMT}} là **template processor** (bộ xử lý mẫu), không phải chuỗi. Một template expression gồm literal text, các biểu thức nhúng trong ngoặc nhọn, và processor quyết định kết quả: {{STR}} trả String, {{FMT}} trả String có định dạng, processor khác có thể trả StringBuilder hoặc object riêng. Ý tưởng là tách "mẫu" khỏi "cách xử lý", nhưng chính sự tách này gây khó hiểu.
+
+### Vì sao bị rút
+Theo thông báo của Project Amber và JDK 23 release notes, sau khi thử nghiệm prototype, thiết kế processor-centric gây nhầm lẫn cho người dùng và thiếu compositionality (khó kết hợp các template với nhau). Không có đồng thuận về thiết kế lại, nên nhóm quyết định rút tạm thời. CSR JDK-8329949 ghi rõ: xóa hỗ trợ preview khỏi compiler và API; rủi ro tương thích source/binary ở mức medium vì đã preview ở 21/22; dự án đã dùng phải viết lại.
+
+Đây là một bài học quan trọng về JEP 12 (Preview Features): preview có thể thay đổi hoặc bị xóa; nó không phải cam kết ổn định. Production không nên bật {{--enable-preview}} cho tính năng ngôn ngữ, vì class file phụ thuộc phiên bản và preview flag; nâng JDK có thể làm build/deploy fail.
+
+### Nếu codebase còn code preview thì làm gì
+1. **Gỡ {{--enable-preview}}** khỏi build production và CI; kiểm tra {{maven.compiler.enablePreview}} / {{compilerArgs}} hoặc cấu hình Gradle.
+2. **Tìm nơi dùng {{STR}}/{{FMT}}:** grep {{\\bSTR\\.}}, {{\\bFMT\\.}}, {{StringTemplate}}; các file này sẽ không biên dịch trên JDK 23+.
+3. **Migrate theo loại:**
+   - Nội suy đơn giản: {{String.formatted}} (printf: {{%s}}, {{%d}}, {{%.2f}}) hoặc {{MessageFormat}} cho i18n.
+   - Chuỗi nhiều dòng tĩnh: text block.
+   - SQL: PreparedStatement với {{?}}; không ghép giá trị.
+   - HTML: template engine có auto-escaping (Thymeleaf, FreeMarker) hoặc escape thủ công.
+   - JSON: Jackson/Gson.
+   - Vòng lặp nóng: {{StringBuilder}}, không nối chuỗi bằng {{+}}.
+4. **Thêm test/CI chặn hồi quy:** một test ArchUnit hoặc bước grep fail nếu còn {{--enable-preview}} trong profile production; một test biên dịch với JDK LTS mục tiêu.
+
+### Bảng thay thế
+| Nhu cầu | Thay thế | Lưu ý |
+|---|---|---|
+| Chào/tên/tuổi | {{String.formatted("%s ... %d", ...)}} | nhớ locale cho số thực |
+| Đa ngôn ngữ | {{MessageFormat}} với placeholder {{0}}, {{1}} | dấu nháy đơn phải viết thành hai dấu liền nhau |
+| SQL nhiều dòng | text block + PreparedStatement | không dùng formatted cho giá trị |
+| HTML/email | template engine auto-escape | không tự nối chuỗi |
+| JSON | Jackson | tự escape |
+| Log | parameterized logging với placeholder id và giá trị truyền riêng | tránh nối chuỗi và log injection |
+
+### Pitfall thực tế
+- **Copy code mẫu từ blog cũ:** nhiều bài viết trước 2024 dùng {{STR.\\"...\\"}}; dán vào JDK 23 sẽ lỗi "string templates are a preview feature" hoặc không tìm thấy symbol.
+- **Bật preview trong production:** class chỉ chạy trên đúng JDK có preview; triển khai lên JDK khác sẽ lỗi {{UnsupportedClassVersionError}} hoặc {{PreviewFeatureNotSupportedException}}.
+- **formatted với phần trăm:** {{100%}} phải là {{100%%}}; SQL LIKE cũng cần {{%%}}.
+- **Locale:** {{String.formatted}} dùng default locale; số thực có thể ra dấu phẩy ở một số máy, làm hệ thống khác parse sai. Dùng {{String.format(Locale.US, ...)}} cho dữ liệu máy.
+- **MessageFormat và dấu nháy:** dấu nháy đơn là ký tự quote trong MessageFormat; muốn in một dấu nháy đơn literal phải viết hai dấu liền nhau.
+- **Preview API khác:** đừng gộp string templates với text block (Java 15, stable) hoặc switch pattern (Java 21, stable); chúng có trạng thái khác nhau.
+
+### Ví dụ đời thực
+Một thư viện nội bộ dùng 3 biểu thức string templates để sinh câu SQL báo cáo trên JDK 22 preview. Khi CI nâng lên JDK 23, build fail với lỗi preview feature; nhóm phải gỡ {{--enable-preview}}, viết lại 12 call site bằng text block cho phần SQL tĩnh và {{String.formatted}} cho tham số hiển thị, đồng thời chuyển giá trị động sang PreparedStatement. Việc này mất 2 ngày, nhưng sau đó build ổn định trên JDK 21/23 và không còn phụ thuộc preview. Nhóm thêm một bước CI grep {{enable-preview}} để chặn tái phạm. Số liệu là kịch bản minh hoạ; điểm cốt lõi là preview feature có thể biến mất giữa hai bản JDK.
+
+### Trả lời mẫu khi phỏng vấn
+"String templates từng là preview ở JDK 21 và 22, nhưng đã bị rút trước JDK 23 vì thiết kế processor-centric khó hiểu và thiếu compositionality; hiện không có trong JDK chính thức nào, kể cả preview. Em không dùng nó trong production. Nếu codebase còn code preview, em gỡ enable-preview, tìm các biểu thức STR/FMT, rồi thay bằng text block cho chuỗi nhiều dòng, String.formatted hoặc MessageFormat cho nội suy, PreparedStatement cho SQL và template engine có escape cho HTML. Em cũng thêm CI chặn enable-preview trong profile production, vì preview có thể đổi hoặc bị xóa giữa các bản JDK. Thực tế nhóm em từng mất 2 ngày để migrate 12 call site sau khi nâng JDK 23, và từ đó quy ước là chỉ dùng API stable cho production."
+
+> Senior tip: coi preview là "vay tạm" của JDK, không phải tính năng. Trước khi dùng, đọc JEP và trạng thái hiện tại; trong production, pin JDK LTS, cấm enable-preview, và ưu tiên API stable. Nếu một feature bị rút, chi phí migrate thường nhỏ nếu bạn không rải nó khắp codebase.
+
+`,
+  follow: [
+    'Vì sao preview feature có thể bị xóa, và rủi ro cụ thể khi bật enable-preview trong production là gì?',
+    'Giữa String.formatted và MessageFormat, bạn chọn theo tiêu chí nào cho nội suy chuỗi và i18n?',
+    'Bạn làm gì để CI phát hiện sớm codebase còn dùng API preview hoặc cú pháp đã bị rút?'
+  ],
+  tags: ['string templates', 'JEP 430', 'JEP 459', 'preview', 'JDK 23', 'migration']
+},
+{
+  id: 'modern-063',
+  topic: 'modern',
+  level: 'lead',
+  q: '(Lead) Bật {{spring.threads.virtual.enabled=true}} trong Spring Boot 3.2+: chính xác cái gì đổi, cái gì không đổi, và bạn đo/kiểm soát thế nào trước khi bật trên production?',
+  a: `**Tóm tắt:** Từ Spring Boot 3.2 trên JDK 21, property {{spring.threads.virtual.enabled=true}} bật virtual thread (luồng ảo) cho nhiều thành phần: Tomcat/Jetty xử lý mỗi request trên một virtual thread; {{applicationTaskExecutor}} (@Async, MVC async, WebFlux blocking) dùng {{SimpleAsyncTaskExecutor}} với virtual thread; {{taskScheduler}} dùng {{SimpleAsyncTaskScheduler}} với virtual thread; listener Kafka/Rabbit và Redis cluster cũng dùng executor ảo. Nó **không** đổi HikariCP pool, không đổi event loop Netty của WebFlux, và không tự giới hạn tài nguyên hạ nguồn. Phải xử lý pinning (JDK 21-23), đặt giới hạn đồng thời, và đo bằng JFR/load test.
+
+### Trước tiên: virtual thread là gì
+Platform thread (luồng hệ điều hành) tốn khoảng 1 MB stack và bị OS lập lịch; tạo hàng nghìn thread là tốn RAM và context switch. Virtual thread là luồng nhẹ do JVM quản lý: khi gặp blocking I/O, JVM tháo (unmount) nó khỏi carrier thread và cho carrier chạy việc khác; khi I/O xong thì gắn lại. Nhờ vậy một request blocking vẫn có thể phục vụ hàng chục nghìn request đồng thời mà không cần reactive.
+
+### Property này đổi chính xác những gì
+Theo Spring Boot 3.2 release notes và auto-configuration:
+- **Tomcat/Jetty:** request processing dùng virtual thread; code controller chạy trên virtual thread. {{server.tomcat.threads.max}} cấu hình pool platform thread, nên không còn là trần đồng thời cho request khi VT bật; {{server.tomcat.max-connections}} và {{accept-count}} vẫn có ý nghĩa.
+- **{{applicationTaskExecutor}}:** thành {{SimpleAsyncTaskExecutor}} dùng virtual thread. Ảnh hưởng {{@EnableAsync}}/{{@Async}}, async request của Spring MVC, và blocking execution của WebFlux.
+- **{{taskScheduler}}:** thành {{SimpleAsyncTaskScheduler}} dùng virtual thread: {{spring.task.scheduling.thread-name-prefix}} và {{spring.task.scheduling.simple.*}} vẫn áp dụng, còn các thuộc tính pool (ví dụ {{spring.task.scheduling.pool.size}}) bị bỏ qua vì không còn pool để đặt cỡ.
+- **Kafka/Rabbit listener:** auto-configure executor ảo cho listener.
+- **Spring Data Redis cluster:** {{ClusterCommandExecutor}} dùng virtual thread.
+- **WebFlux/Netty:** event loop không đổi; chỉ phần blocking được gọi từ WebFlux mới dùng executor ảo.
+
+Điều quan trọng: virtual thread làm *thread* rẻ, không làm *kết nối DB* hay *downstream* rẻ hơn.
+
+### Cái gì KHÔNG đổi
+- **HikariCP:** {{maximum-pool-size}} vẫn là số kết nối tối đa; 10.000 virtual thread vẫn xếp hàng chờ 20 connection. Phải đặt semaphore/bulkhead nếu muốn giới hạn ở tầng ứng dụng.
+- **{{@Transactional}}:** transaction giữ một JDBC connection đến khi commit/rollback; transaction dài vẫn chiếm connection và có thể làm cạn pool.
+- **ThreadLocal/MDC:** vẫn là ThreadLocal; mỗi virtual thread có bản riêng. Không dùng ThreadLocal để cache object đắt; luôn {{MDC.clear()}} trong finally. Trên JDK 25 {{ScopedValue}} đã final nhưng tích hợp Spring vẫn theo cơ chế hiện có, không mặc định thay MDC.
+- **SecurityContext:** mặc định ThreadLocal; với @Async cần {{DelegatingSecurityContextExecutor}} hoặc cấu hình tương ứng để không mất context.
+- **Giới hạn tài nguyên hạ nguồn:** không có gì tự động; virtual thread có thể tạo 10.000 request tới một API chỉ chịu 100 req/s.
+
+### Pinning: bẫy lớn nhất trên JDK 21-23
+Pinning xảy ra khi virtual thread đang giữ {{synchronized}} hoặc ở native code và bị block: nó không unmount được, carrier thread bị chiếm. Hậu quả: throughput thực tế chỉ bằng số carrier (thường xấp xỉ số lõi), dù tạo hàng nghìn VT. JDK 24 (JEP 491) đã sửa pinning do {{synchronized}}; trên JDK 21-23 phải:
+- Thay {{synchronized}} quanh I/O bằng {{ReentrantLock}}.
+- Nâng thư viện/driver còn dùng {{synchronized}}.
+- Chẩn đoán bằng {{-Djdk.tracePinnedThreads=short}} (JDK 21-23) hoặc JFR event {{jdk.VirtualThreadPinned}}.
+
+### Cấu hình an toàn
+~~~yaml
+spring:
+  threads:
+    virtual:
+      enabled: true
+  main:
+    keep-alive: true          # tránh JVM thoát khi mọi thread là virtual/daemon
+  datasource:
+    hikari:
+      maximum-pool-size: 20
+      connection-timeout: 2000
+server:
+  shutdown: graceful          # chờ request đang xử lý
+  tomcat:
+    max-connections: 5000
+    accept-count: 100
+~~~
+
+Và giới hạn ở tầng ứng dụng cho từng downstream:
+
+~~~java
+@Bean
+Semaphore paymentPermits() {
+    return new Semaphore(20); // bằng connection pool hoặc rate limit của đối tác
+}
+~~~
+
+Không đặt {{server.tomcat.threads.max}} thật lớn rồi tưởng nó giới hạn VT; nó chỉ áp dụng khi không dùng VT. Không tăng pool DB theo số VT; hãy tăng theo năng lực DB và đo.
+
+### Bảng theo dõi
+| Hạng mục | Trước khi bật | Sau khi bật | Cách đo |
+|---|---|---|---|
+| Số thread OS | vài trăm | giảm mạnh | {{jcmd Thread.print}} / JFR |
+| p95/p99 request | phụ thuộc pool | cải thiện nếu I/O-bound | load test, Micrometer |
+| Số connection chờ | ít | có thể tăng vọt | Hikari {{pending}}, DB {{pg_stat_activity}} |
+| Pinning | không áp dụng | cần kiểm tra | JFR {{jdk.VirtualThreadPinned}} |
+| CPU | có thể tăng | tăng nếu quá tải | container metrics |
+
+### Pitfall production
+- **Bật rồi tăng pool platform thread:** không có tác dụng với request; chỉ tốn tài nguyên.
+- **{{@Async}} không giới hạn:** {{SimpleAsyncTaskExecutor}} tạo VT mỗi task; 5.000 task gọi DB pool 20 gây queue và timeout. Dùng executor có giới hạn hoặc semaphore.
+- **{{@Scheduled}} với fixedRate:** VT không có pool chặn, job trước chưa xong job sau đã chạy, dễ chồng lấn; dùng fixedDelay hoặc khóa phân tán.
+- **Quên {{keep-alive}}:** nếu mọi thread là virtual/daemon, JVM có thể thoát sớm; đặt {{spring.main.keep-alive=true}} khi cần.
+- **Pinning không được phát hiện:** bật VT trên JDK 21 với HTTP client cũ dùng synchronized; p99 không cải thiện hoặc còn xấu hơn.
+- **Không có bulkhead:** một downstream chậm làm 10.000 VT chờ, hết connection, timeout dây chuyền.
+
+### Ví dụ đời thực
+Một service Spring Boot 3.2 trên JDK 21, 8 vCPU, Tomcat 200 thread, peak 900 req/s, p99 4,8 giây dù CPU 35%. Nhóm bật {{spring.threads.virtual.enabled=true}}, thêm {{Semaphore(20)}} bằng {{maximum-pool-size}} của Hikari, {{max-connections=5000}}, và thay HTTP client cũ dùng {{synchronized}} bằng client dùng {{ReentrantLock}}. Kết quả: p99 còn 1,1 giây, CPU 60%, số thread OS giảm từ 260 xuống 40. Nhưng một job {{@Async}} báo cáo tạo 3.000 VT gọi DB, làm {{pending}} của Hikari tăng; nhóm giới hạn executor @Async và chuyển sang fixedDelay cho job. Sau 2 tuần, không còn alert pool exhausted; JFR không còn {{VirtualThreadPinned}}. Số liệu là kịch bản minh hoạ; kết quả phụ thuộc workload và cấu hình.
+
+### Trả lời mẫu khi phỏng vấn
+"Em coi {{spring.threads.virtual.enabled=true}} là thay đổi mô hình thread, không phải thay đổi năng lực hệ thống. Khi bật, Tomcat/Jetty xử lý request trên virtual thread, applicationTaskExecutor và taskScheduler cũng dùng virtual thread, listener Kafka/Rabbit và Redis cluster dùng executor ảo. Nhưng HikariCP vẫn giới hạn connection, @Transactional vẫn giữ connection, và downstream vẫn có rate limit. Vì vậy em đặt semaphore theo pool DB hoặc giới hạn đối tác, kiểm tra pinning trên JDK 21-23 bằng JFR hoặc tracePinnedThreads, thay synchronized quanh I/O bằng ReentrantLock, và đo p95/p99, số connection chờ, CPU trước/sau bằng load test. Em cũng đặt keep-alive và graceful shutdown, và không tăng pool platform thread vì nó không còn là trần đồng thời. Thực tế nhóm em giảm p99 từ 4,8 giây xuống 1,1 giây, nhưng phải thêm bulkhead cho @Async để tránh cạn connection."
+
+> Senior tip: virtual thread giải bài toán "chờ rẻ", không giải bài toán "DB rẻ" hay "downstream rẻ". Trước khi bật: kiểm tra JDK, đo pinning, đặt giới hạn đồng thời ở mọi tài nguyên hữu hạn, và so sánh p95/p99 với cùng workload. Sau khi bật: theo dõi số connection chờ và queue của executor, không chỉ nhìn số thread.
+
+`,
+  follow: [
+    'Vì sao {{server.tomcat.threads.max}} không còn giới hạn số request đồng thời khi bật virtual thread, và bạn thay bằng gì?',
+    'Pinning trên JDK 21-23 xảy ra khi nào, làm sao phát hiện, và vì sao JDK 24 giảm được vấn đề này?',
+    'Bạn giới hạn {{@Async}} và {{@Scheduled}} như thế nào để virtual thread không làm cạn connection pool?'
+  ],
+  tags: ['virtual threads', 'Spring Boot 3.2', 'spring.threads.virtual.enabled', 'pinning', 'HikariCP', 'JFR']
+},
 );
