@@ -1950,4 +1950,245 @@ Cancellation: free up to 14 days before, 50% within 7 days, no refund within 48 
   ],
   tags: ["hotel", "conference"]
 },
+{
+  id: "toeic-w3-007",
+  part: "w3",
+  prompt: "Some companies now allow employees to work from home several days a week. Do you think this hybrid work arrangement is beneficial for both employees and employers?",
+  outline: [
+    "Làm việc hybrid tiết kiệm thời gian đi lại và chi phí",
+    "Nhân viên cân bằng công việc và cuộc sống tốt hơn",
+    "Cần công cụ và quy tắc rõ ràng để hợp tác nhóm hiệu quả",
+    "Một số vai trò không phù hợp làm việc từ xa",
+    "Kết luận: hybrid tốt nếu được quản lý đúng cách"
+  ],
+  sample: `I believe a hybrid work arrangement can benefit both employees and employers when it is designed carefully. Giving people the option to work from home part of the week helps them manage personal responsibilities, but the company must also protect teamwork and communication.
+
+First, hybrid schedules reduce commuting time and cost. Employees who travel long distances save several hours each week and spend less on fuel or transit fares. For example, a project manager who lives forty minutes from the office now works from home on Tuesdays and Thursdays. She uses the saved time to prepare for meetings and has more energy for focused tasks. She also feels less rushed in the morning and can start her day earlier when working remotely.
+
+Second, people often concentrate better on complex work in a quiet home environment. An analyst may complete a detailed spreadsheet or write a report with fewer interruptions than in an open office. When the team gathers on office days, they can use that time for brainstorming, quick decisions, and building relationships. This mix of deep work and collaboration can raise overall productivity.
+
+However, hybrid only works if expectations are clear. Managers should agree on core hours when everyone is reachable, choose reliable tools for video calls and file sharing, and track results rather than hours logged. If a team member is unavailable during a critical discussion, the whole group slows down. Companies also need to ensure that remote employees still receive the same opportunities for learning and promotion as those who come to the office more often.
+
+Some roles, such as reception, laboratory work, and equipment maintenance, require physical presence. Hybrid should be offered where the job allows it, with fair guidelines for all departments.
+
+In conclusion, I support hybrid work because it gives employees flexibility while keeping the benefits of in-person interaction. Success depends on clear communication rules, shared tools, and performance measured by outcomes. When these conditions exist, both people and the organization gain.`,
+
+  tips: [
+    "Mở bài bằng I believe a hybrid work arrangement can benefit both sides when it is designed carefully; nêu quan điểm rõ ràng và điều kiện thành công.",
+    "Dùng First, Second, However, In conclusion để tạo cấu trúc 5 đoạn; mỗi đoạn thân bài có một lý do chính và một ví dụ cụ thể.",
+    "Ví dụ nên lấy từ bối cảnh văn phòng: project manager, analyst, core hours — từ vựng TOEIC phổ biến.",
+    "Thừa nhận ngoại lệ (reception, lab work) để bài luận cân bằng và thực tế."
+  ],
+  tags: ["hybrid work", "workplace"]
+},
+
+{
+  id: "toeic-w3-008",
+  part: "w3",
+  prompt: "Many companies provide IT helpdesk support to their employees. Some people think this service should be available twenty-four hours a day. Others believe standard business hours are enough. Which view do you agree with?",
+  outline: [
+    "Hỗ trợ 24/7 cần thiết cho nhân viên ca đêm và sự cố khẩn cấp",
+    "Chi phí vận hành liên tục rất cao so với lợi ích thực tế",
+    "Hầu hết vấn đề IT không cần giải quyết ngay lập tức",
+    "Giải pháp thay thế: tự phục vụ và hỗ trợ ưu tiên cho sự cố nghiêm trọng",
+    "Kết luận: giờ làm việc chuẩn là đủ, bổ sung kênh khẩn cấp"
+  ],
+  sample: `I agree that standard business hours are sufficient for most IT helpdesk services, although companies should provide a clear emergency channel for critical issues. Running a full twenty-four-hour desk adds significant cost while only a small number of requests actually need immediate attention outside normal hours.
+
+To begin with, the majority of IT questions can wait until the next business day. Forgotten passwords, software installation requests, and printer setup issues do not stop the entire organization from functioning. If an employee cannot print a document at ten in the evening, they can usually complete the task the following morning. At my current workplace, the helpdesk analyzed six months of tickets and found that fewer than three percent arrived after six p.m., and most of those were routine.
+
+However, some situations do require faster response. A server outage that affects an e-commerce website or a security alert on a company laptop may need action within minutes. Instead of staffing a full night shift, a company can define a short list of critical incidents and assign an on-call engineer who receives alerts by phone. This approach covers true emergencies without the expense of a round-the-clock desk.
+
+I also think self-service options reduce the need for extended hours. A well-organized knowledge base with step-by-step guides for common tasks lets employees solve simple problems themselves at any time. Many companies also use chatbots that can reset passwords or suggest solutions based on keywords. These tools are available twenty-four hours a day at a fraction of the cost of human operators.
+
+In conclusion, a standard helpdesk schedule meets most needs, especially when combined with self-service resources and an on-call process for critical incidents. Companies should focus their budget on fast response during peak hours and clear escalation paths for the rare events that truly cannot wait.`,
+
+  tips: [
+    "Chọn một lập trường rõ ràng: I agree that standard business hours are sufficient…; tránh lưỡng lự.",
+    "Dùng To begin with, However, I also think, In conclusion để chuyển ý; mỗi đoạn một lập luận.",
+    "Ví dụ nên có số liệu (fewer than three percent) để tăng tính thuyết phục.",
+    "Đề xuất giải pháp thực tế (on-call engineer, knowledge base, chatbot) thể hiện tư duy giải quyết vấn đề."
+  ],
+  tags: ["IT support", "helpdesk"]
+},
+
+{
+  id: "toeic-w3-009",
+  part: "w3",
+  prompt: "Banks often charge fees for services such as monthly account maintenance, ATM withdrawals at other banks, and international transfers. Do you think these fees are reasonable, or should basic banking services be free?",
+  outline: [
+    "Ngân hàng có chi phí vận hành và rủi ro, phí giúp duy trì dịch vụ",
+    "Một số phí cơ bản quá cao gây khó khăn cho người thu nhập thấp",
+    "Cạnh tranh và ngân hàng số đang ép giảm phí",
+    "Khách hàng có thể tránh phí bằng cách chọn tài khoản phù hợp",
+    "Kết luận: phí hợp lý nếu minh bạch và có lựa chọn miễn phí"
+  ],
+  sample: `I believe banking fees are reasonable when they are transparent and customers have genuine alternatives, but basic services should remain accessible to everyone. Banks incur real costs for security, technology, compliance, and staff, and fees help cover those expenses.
+
+First, running a bank is not free. Every transaction requires fraud monitoring, data protection, and regulatory reporting. When a customer uses an ATM from another network, the bank pays an interchange fee to the ATM owner. If a transfer crosses borders, multiple institutions handle the money and check for compliance. Charging a fee for these specific services reflects the actual cost rather than forcing all customers to subsidize them through higher account minimums or lower interest rates.
+
+At the same time, fees for basic access can burden people with limited income. A monthly maintenance fee of ten or fifteen dollars may seem small, but it adds up for someone living paycheck to paycheck. In many countries, regulators now require banks to offer a no-fee basic account with essential features such as deposits, withdrawals, and a debit card. Competition from digital banks has also pushed traditional banks to waive fees when customers set up direct deposit or maintain a modest balance.
+
+Customers can often avoid fees by choosing the right account and using in-network ATMs. Reading the fee schedule before opening an account and setting up alerts for low balances are practical habits. Banks should make fee information easy to find and explain how to qualify for waivers in plain language.
+
+In conclusion, fees for specialized or optional services are fair because they match real costs. Core banking access, however, should not depend on a customer's ability to pay a monthly charge. A transparent fee structure with a genuine free option protects both the bank's sustainability and the public's financial inclusion.`,
+
+  tips: [
+    "Nêu quan điểm cân bằng: I believe banking fees are reasonable when they are transparent and customers have genuine alternatives.",
+    "Dùng First, At the same time, Customers can often, In conclusion cho cấu trúc 4–5 đoạn.",
+    "Ví dụ cụ thể: monthly maintenance fee, interchange fee, direct deposit waiver — từ vựng ngân hàng TOEIC.",
+    "Nhắc đến going concern (digital banks, regulators) để bài luận có chiều sâu thực tế."
+  ],
+  tags: ["banking", "fees"]
+},
+
+{
+  id: "toeic-w3-010",
+  part: "w3",
+  prompt: "Patients often wait a long time to see a doctor, even with an appointment. Some people think hospitals should guarantee a maximum waiting time. Others say this is unrealistic due to emergencies. What is your opinion?",
+  outline: [
+    "Thời gian chờ quá lâu gây căng thẳng và ảnh hưởng điều trị",
+    "Bệnh viện không thể kiểm soát được ca cấp cứu và biến chứng",
+    "Có thể cải thiện bằng quản trị lịch hẹn tốt hơn và phân luồng",
+    "Cam kết thời gian chờ tối đa có thể ép bác sĩ vội vã",
+    "Kết luận: nên giảm chờ thực tế thay vì cam kết cứng nhắc"
+  ],
+  sample: `I believe hospitals should work to reduce actual waiting times rather than promise a strict maximum. Long waits frustrate patients and can delay treatment, but a rigid guarantee may create unintended pressure on medical staff and reduce the quality of care.
+
+To begin with, excessive waiting is a real problem. Patients who arrive on time for a scheduled appointment may sit for an hour or more while earlier visits run long. This wastes their time, increases anxiety, and can discourage people from seeking follow-up care. At a clinic I visited, the receptionist showed a screen with current wait times, which helped patients decide whether to stay or reschedule. Transparency alone does not shorten the wait, but it respects the patient's time.
+
+However, emergencies are unpredictable. A doctor who is seeing a routine patient may need to leave immediately for a trauma case or a complicated delivery. If the hospital must meet a fixed wait-time target, the physician might rush the current appointment or refer the patient elsewhere to avoid a penalty. Neither outcome serves the patient well. Flexibility is essential in clinical settings.
+
+Practical improvements can make a difference without rigid rules. Staggering appointment slots, grouping similar visit types, and using a triage nurse to handle simple questions before the doctor enters the room can smooth the flow. Some hospitals also send text updates when the schedule shifts, so patients can adjust their arrival. These steps address the root cause instead of imposing a number.
+
+In conclusion, I support efforts to minimize waiting through better scheduling, clear communication, and adequate staffing. A guaranteed maximum wait time sounds appealing but risks compromising clinical judgment. The goal should be a system where most patients are seen promptly, and unexpected delays are explained honestly.`,
+
+  tips: [
+    "Chọn lập trường: I believe hospitals should work to reduce actual waiting times rather than promise a strict maximum.",
+    "Dùng To begin with, However, Practical improvements, In conclusion; thừa nhận thực tế y tế (emergencies are unpredictable).",
+    "Ví dụ thực tế: receptionist showing wait times, triage nurse, text updates — từ vựng y tế, hành chính.",
+    "Tránh tuyệt đối hóa: không nói eliminate all waits, mà nói minimize waiting through better scheduling."
+  ],
+  tags: ["healthcare", "waiting time"]
+},
+
+{
+  id: "toeic-w3-011",
+  part: "w3",
+  prompt: "Public transportation in many cities is crowded, unreliable, or expensive. Some people think the government should make it completely free for everyone. Others believe users should pay a fair share. Which view do you agree with?",
+  outline: [
+    "Miễn phí khuyến khích dùng xe buýt/tàu, giảm kẹt xe và ô nhiễm",
+    "Chi phí vận hành lớn, tiền thuế phải bao phủ nếu miễn phí hoàn toàn",
+    "Vé rẻ cho người thu nhập thấp, giá đầy đủ cho người có điều kiện",
+    "Đầu tư cải thiện chất lượng quan trọng hơn là miễn phí",
+    "Kết luận: không nên miễn phí hoàn toàn; nên giá phân cấp và đầu tư dịch vụ"
+  ],
+  sample: `I believe public transportation should not be completely free, but fares should be affordable for low-income riders and the system should be funded through a mix of user fees and public investment. Making transit free for everyone sounds generous, yet it shifts the full cost to taxpayers without guaranteeing better service.
+
+First, fares cover part of the daily operating cost. Buses and trains need fuel, maintenance, driver salaries, and cleaning. If every ride is free, the city must pay the entire bill from general taxes. That money competes with schools, hospitals, and housing. In a mid-sized city I know, the transit agency estimated that eliminating fares would require an additional forty million dollars per year, which would mean a property tax increase or cuts elsewhere.
+
+Second, a small price helps manage demand. When something is free, people may use it for very short trips they could walk, crowding vehicles and slowing service for commuters who have no alternative. A modest fare encourages riders to combine trips or choose the most efficient route. Many cities already offer discounted passes for students, seniors, and people receiving assistance, so cost is not a barrier for those who need help most.
+
+I think the priority should be reliability and coverage. A bus that comes every ten minutes and reaches employment centers is more valuable than a free bus that runs once an hour. Investing in dedicated lanes, real-time tracking, and weekend service attracts more riders and reduces car dependence. Revenue from fares can be reinvested in these improvements.
+
+In conclusion, I support a balanced approach: keep fares reasonable, provide targeted discounts, and use both fare revenue and public funding to build a transit system that people actually want to use. Free rides alone do not solve crowding or unreliability.`,
+
+  tips: [
+    "Nêu quan điểm: I believe public transportation should not be completely free, but fares should be affordable…; nêu cả hai khía cạnh.",
+    "Dùng First, Second, I think, In conclusion; ví dụ có số liệu (forty million dollars per year) tăng sức nặng.",
+    "Phân biệt free for everyone vs. targeted discounts — thể hiện tư duy chính sách.",
+    "Nhấn mạnh reliability and coverage quan trọng hơn miễn phí; đây là lập luận thực tế TOEIC hay gặp."
+  ],
+  tags: ["public transport", "policy"]
+},
+
+{
+  id: "toeic-w3-012",
+  part: "w3",
+  prompt: "Local governments often organize community events such as festivals, markets, and sports tournaments. Some people think these events are a good use of public money. Others believe the funds should go to essential services instead. What is your opinion?",
+  outline: [
+    "Sự kiện cộng đồng tạo sự gắn kết, hỗ trợ kinh tế địa phương",
+    "Chi phí tổ chức có thể cao, cần minh bạch ngân sách",
+    "Dịch vụ thiết yếu (y tế, giáo dục, an ninh) phải ưu tiên",
+    "Có thể tìm tài trợ tư nhân và phí tham gia để giảm gánh ngân sách",
+    "Kết luận: tổ chức sự kiện hợp lý nếu cân đối ngân sách và có lợi ích rõ ràng"
+  ],
+  sample: `I believe community events are a worthwhile use of public funds when they are well planned and balanced with essential services. Festivals and markets bring people together, support local businesses, and improve quality of life, but they should not crowd out spending on health, safety, or education.
+
+To begin with, public gatherings create social connections that are hard to measure but easy to feel. A summer street fair gives neighbors a reason to talk, lets children play in a safe space, and showcases local artisans. Vendors often report their highest sales of the year during these events. In one town I know, a weekend food festival attracted visitors from nearby cities, and the increased foot traffic helped several new cafes stay open through a slow season.
+
+However, organizing events costs money. Permits, security, sanitation, stage rental, and promotion can add up quickly. If a city spends a large portion of its discretionary budget on a single celebration while roads need repair or a community center needs renovation, residents may question the priority. Transparency about the budget and expected benefits helps maintain trust.
+
+Many communities reduce the public share by seeking sponsorships, charging vendor fees, or applying for cultural grants. A local business might sponsor a stage in exchange for signage, and a nonprofit could run a volunteer crew. These partnerships stretch the budget and give more stakeholders a reason to make the event succeed.
+
+In conclusion, I support funding community events as part of a balanced municipal budget. They strengthen civic life and the local economy, but they must be sized appropriately and supplemented with non-tax revenue. When officials show how each dollar serves the public, both essential services and shared celebrations can coexist.`,
+
+  tips: [
+    "Mở bài: I believe community events are a worthwhile use of public funds when they are well planned and balanced with essential services.",
+    "Dùng To begin with, However, Many communities, In conclusion; ví dụ cụ thể: summer street fair, food festival, vendor fees.",
+    "Từ vựng: discretionary budget, sponsorships, civic life, foot traffic — phù hợp chủ đề public administration.",
+    "Thừa nhận trade-off (events vs. roads, community center) để bài luận thực tế, không lý tưởng hóa."
+  ],
+  tags: ["community", "public spending"]
+},
+
+{
+  id: "toeic-w3-013",
+  part: "w3",
+  prompt: "When booking a hotel, some travelers prefer to pay a higher rate that includes free cancellation. Others choose a cheaper non-refundable rate. Which option do you think is better for most travelers?",
+  outline: [
+    "Free cancellation giảm rủi ro khi kế hoạch thay đổi",
+    "Non-refundable tiết kiệm chi phí nếu chắc chắn lịch trình",
+    "Khác biệt giá thường từ 10–20%, cần cân nhắc xác suất huỷ",
+    "Bảo hiểm du lịch hoặc thẻ tín dụng có thể bảo vệ khoản non-refundable",
+    "Kết luận: free cancellation an toàn hơn cho đa số; non-refundable phù hợp người có lịch cố định"
+  ],
+  sample: `I believe a refundable rate with free cancellation is the better choice for most travelers because it protects against unexpected changes, and the price difference is often modest. Non-refundable rates save money only when the trip goes exactly as planned, which is not guaranteed.
+
+First, travel plans change for many reasons. A family emergency, a flight cancellation, a sudden illness, or a work deadline can force someone to cancel or reschedule. With a free-cancellation booking, the traveler receives a full refund, usually up to twenty-four or forty-eight hours before check-in. Without that flexibility, the entire prepaid amount is lost. In my experience, the refundable option typically costs ten to twenty percent more per night, which on a three-night stay might be an extra thirty to sixty dollars — a reasonable price for peace of mind.
+
+Second, many people book hotels months in advance when details are still uncertain. A conference date might shift, a visa could be delayed, or a traveling companion might drop out. Locking in a non-refundable rate early adds risk that grows as the stay approaches. Some booking platforms now show a clear comparison: "Pay $180 now, non-refundable" versus "Pay $210, free cancellation until 6 p.m. the day before." Seeing the numbers side by side helps travelers decide.
+
+That said, non-refundable rates make sense when the schedule is firm. A business traveler with a confirmed meeting, a couple attending a destination wedding with fixed dates, or someone using a limited-time promotion may accept the restriction. Travel insurance or a credit card with trip cancellation coverage can also reduce the risk of a non-refundable booking.
+
+In conclusion, I recommend free cancellation for most leisure and business trips because plans change more often than people expect. The extra cost is usually small compared to the potential loss. Travelers should read the cancellation policy carefully, compare the total price, and choose the option that matches their certainty about the dates.`,
+
+  tips: [
+    "Chọn lập trường: I believe a refundable rate with free cancellation is the better choice for most travelers; nêu lý do chính ngay.",
+    "Dùng First, Second, That said, In conclusion; ví dụ có con số: ten to twenty percent more, thirty to sixty dollars.",
+    "Nhắc đến travel insurance, credit card coverage — thể hiện kiến thức thực tế du lịch.",
+    "So sánh rõ ràng hai lựa chọn; tránh nói non-refundable luôn tồi, phải nói when the schedule is firm."
+  ],
+  tags: ["hotel booking", "travel"]
+},
+
+{
+  id: "toeic-w3-014",
+  part: "w3",
+  prompt: "Companies often set a daily allowance for meals and transportation during business trips. Some employees think this amount should be based on actual receipts. Others prefer a fixed per diem that does not require receipts. Which system do you think is fairer?",
+  outline: [
+    "Thực chi (receipts) công bằng với người chi tiêu ít, nhưng rườm rà",
+    "Per diem cố định đơn giản, tiết kiệm thời gian xử lý hồ sơ",
+    "Per diem cho phép nhân viên tự quyết định chi tiêu, nhưng có thể lạm dụng",
+    "Kết hợp: per diem cho ăn/uống, thực chi cho khách sạn và vé máy bay",
+    "Kết luận: per diem hợp lý cho chi phí ngày, thực chi cho khoản lớn"
+  ],
+  sample: `I believe a fixed per diem for daily meals and local transport is fairer and more practical for most business trips, while large expenses such as hotels and flights should be reimbursed based on actual receipts. This hybrid approach balances simplicity with accountability.
+
+First, a per diem eliminates the hassle of collecting and submitting receipts for every coffee, taxi, or lunch. An employee on a three-day trip might generate twenty small receipts, each of which must be photographed, categorized, and approved. The finance team then spends hours verifying them. With a per diem, the traveler receives a set amount — for example, seventy-five dollars per day — and decides how to allocate it. If they eat a modest breakfast and save the difference for a nicer dinner, that is their choice.
+
+Second, per diem rates can be adjusted by city to reflect local costs. A standard table published by the government or the company ensures that travelers to expensive cities receive more than those visiting smaller towns. This is simpler than auditing every restaurant bill. The U.S. General Services Administration, for instance, publishes per diem rates by location, and many private firms adopt similar schedules.
+
+However, per diem should not apply to major costs. Hotel rooms and airfare vary widely, and a fixed amount might overpay or underpay significantly. Requiring receipts for these items protects both the company and the employee. It also creates a clear record for tax purposes.
+
+In conclusion, I support a per diem for meals and incidental expenses because it reduces paperwork, trusts employees to manage their daily budget, and adapts to local prices. For hotels and transportation, receipt-based reimbursement remains the fairer method. A clear policy that separates the two categories avoids confusion and disputes.`,
+
+  tips: [
+    "Nêu quan điểm hybrid: I believe a fixed per diem for daily meals and local transport is fairer… while large expenses… should be reimbursed based on actual receipts.",
+    "Dùng First, Second, However, In conclusion; ví dụ cụ thể: seventy-five dollars per day, GSA per diem rates.",
+    "Từ vựng: per diem, incidental expenses, reimburse, accountability, tax purposes — chính sách công ty TOEIC.",
+    "Phân biệt rõ daily expenses vs. major costs; không áp dụng một quy tắc cho tất cả."
+  ],
+  tags: ["business travel", "expenses"]
+},
 );
