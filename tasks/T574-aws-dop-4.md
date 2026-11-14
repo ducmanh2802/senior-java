@@ -1,8 +1,10 @@
 # T574 — AWS dop-c02: thêm 30 câu luyện thi (dop-129..dop-158)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/aws-dop-4.js`
+
+Ghi chú: Đã kiểm tra nội dung file js/data/aws-dop-4.js, bao gồm 30 câu hỏi từ dop-129 đến dop-158. Đã xác thực dữ liệu bằng scripts/validate.js và cập nhật index. OK.
 
 Đọc docs/AWS-TRACK.md (schema window.AWS_QUESTIONS), js/data/aws-plan.js (id domain), AGENTS.md mục 5 (không backtick, không `${`).
 Đọc các file js/data/aws-dop-*.js đã có để KHÔNG trùng tình huống.
