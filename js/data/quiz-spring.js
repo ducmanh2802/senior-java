@@ -3497,4 +3497,430 @@ Vấn đề nào là thật khi bean này áp dụng lên chính nó hoặc lên
 
 > Senior tip: nếu BeanPostProcessor của bạn bọc proxy lên mọi bean, hãy kiểm tra {{bean instanceof AopInfrastructureBean}} hoặc tên bean để tránh bọc chính hạ tầng AOP. Và đừng inject bean nghiệp vụ vào BeanPostProcessor — nó sẽ bị tạo quá sớm, làm mất tác dụng của các post-processor khác.`
 },
+{
+  id: 'qz-spring-042',
+  topic: 'spring',
+  q: `Bạn viết auto-configuration cho một thư viện nội bộ:
+~~~java
+@AutoConfiguration
+@ConditionalOnClass(RedisTemplate.class)
+public class MyCacheAutoConfiguration {
+    @Bean
+    @ConditionalOnMissingBean
+    public MyCacheClient myCacheClient(RedisTemplate<String, String> redis) { return new MyCacheClient(redis); }
+}
+~~~
+Điều gì xảy ra nếu bạn **quên** {{@ConditionalOnMissingBean}} trên method {{myCacheClient}}?`,
+  options: [
+    'Người dùng tự khai báo một {{@Bean MyCacheClient}} của riêng họ: context có 2 bean cùng kiểu và fail lúc inject với {{NoUniqueBeanDefinitionException}}',
+    'Auto-configuration tự ghi đè bean của người dùng vì nó luôn được nạp sau',
+    'Bean của người dùng bị bỏ qua một cách im lặng, không có lỗi nào',
+    'Ứng dụng không khởi động vì thiếu {{@ConditionalOnMissingBean}} là lỗi cú pháp'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: có hai bean cùng kiểu, và mọi chỗ inject {{MyCacheClient}} sẽ fail vì không biết chọn bean nào.**
+
+### Vì sao đúng
+- "Auto-configuration" (tự động cấu hình) là cách Spring Boot đoán giúp bạn các bean thường dùng (DataSource, ObjectMapper, RedisTemplate...) dựa trên classpath và thuộc tính. Mỗi bean do Boot tạo đều được bọc bằng {{@ConditionalOnMissingBean}}: "chỉ tạo nếu người dùng chưa tự tạo bean cùng loại".
+- Thiếu điều kiện đó, bean của Boot **vẫn được tạo** kể cả khi người dùng đã khai báo bean riêng. Kết quả là context có 2 bean cùng kiểu {{MyCacheClient}}.
+- Spring chỉ báo lỗi khi có chỗ cần **inject** (hoặc khi bạn gọi {{getBean(MyCacheClient.class)}}): lúc đó nó thấy 2 ứng viên, không có {{@Primary}} để phân xử, nên ném {{NoUniqueBeanDefinitionException}}. Đây là lỗi lúc khởi động nếu có bean phụ thuộc vào nó, nhưng nguyên nhân là "hai ứng viên", không phải "thiếu điều kiện".
+- Một biến thể hay gặp nữa: nếu inject bằng {{List<MyCacheClient>}} thì không có lỗi nào — ứng dụng chạy với 2 bean, và có thể dùng cả hai mà không hề biết.
+
+### Vì sao các phương án còn lại sai
+- **Boot ghi đè bean người dùng**: auto-configuration không ghi đè bean khai báo thủ công; nó chỉ thêm bean còn thiếu.
+- **Bean người dùng bị bỏ im lặng**: ngược lại, bean thủ công luôn được giữ; chính bean của Boot mới là bean "dư".
+- **Lỗi cú pháp**: annotation là tuỳ chọn, không có nó thì code vẫn hợp lệ.
+
+### Cách đúng
+~~~java
+@Bean
+@ConditionalOnMissingBean        // Boot lùi lại khi người dùng đã có bean riêng
+public MyCacheClient myCacheClient(RedisTemplate<String, String> redis) { ... }
+~~~
+
+> Senior tip: xem báo cáo bằng {{--debug}} (Condition Evaluation Report) hoặc bật {{logging.level.org.springframework.boot.autoconfigure=DEBUG}}. Quy tắc chung khi viết starter: customize thì dùng Customizer/thuộc tính, còn {{@ConditionalOnMissingBean}} dùng cho mọi bean có thể thay thế.`
+},
+{
+  id: 'qz-spring-043',
+  topic: 'spring',
+  q: `Service khai báo một field {{prototype}} và inject vào một singleton:
+~~~java
+@Service
+public class ReportService {
+    @Autowired private ReportData data;   // ReportData scope = prototype
+
+    public void render() { data.reset(); data.load(); }
+}
+~~~
+{{ReportData}} được tạo bao nhiêu lần?`,
+  options: [
+    'Hai lần: một lần lúc khởi động ứng dụng, một lần mỗi lần gọi {{render()}}',
+    'Một lần mỗi lần gọi {{render()}} vì prototype luôn tạo mới khi được dùng',
+    'Một lần duy nhất lúc khởi động: singleton chỉ nhận đúng một instance prototype lúc nó được tạo, nên mọi lời gọi {{render()}} dùng chung một object',
+    'Hai instance được luân phiên giữa các lần gọi'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: một lần duy nhất, lúc singleton được tạo; sau đó mọi lời gọi dùng lại chính object đó.**
+
+### Vì sao đúng
+- "Scope" (phạm vi sống) quyết định bean được tạo bao nhiêu lần. {{singleton}} = một instance cho cả context; {{prototype}} = **mỗi lần có ai yêu cầu** thì tạo một instance mới.
+- Chữ "yêu cầu" ở đây là lúc **dependency được giải quyết**, không phải mỗi lần method chạy. Khi Spring tạo {{ReportService}} (một singleton, tạo đúng một lần lúc khởi động), nó phải inject field {{data}}: nó gọi {{getBean}} một lần, nhận một instance prototype, rồi **giữ tham chiếu đó trong field** suốt đời bean.
+- Vì vậy trong ví dụ, {{render()}} dùng **cùng một** {{data}} ở mọi request. Nếu {{render()}} chạy đồng thời trên nhiều thread (mỗi request một thread), hai request sẽ cùng sửa state của một object → dữ liệu lẫn lộn. Đây là bug "prototype inject vào singleton" kinh điển.
+- Cách đúng: không giữ prototype trong field, mà lấy mới mỗi lần dùng:
+~~~java
+@Service
+public class ReportService {
+    private final ObjectProvider<ReportData> provider;   // hoặc ApplicationContext / @Lookup
+    public ReportData newData() { return provider.getObject(); }  // mỗi lần một instance mới
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Hai lần (khởi động + mỗi render)**: Spring không "làm mới" field; nó chỉ inject một lần.
+- **Mỗi lần render một instance mới**: chỉ đúng nếu bạn chủ động lấy bean qua {{ObjectProvider}}/{{ApplicationContext}}/{{@Lookup}} hoặc khai báo method {{@Bean}} trong class cấu hình.
+- **Luân phiên hai instance**: không có cơ chế như vậy.
+
+### Cách kiểm tra nhanh
+Đặt một field id tăng dần trong {{ReportData}} và log nó trong {{render()}}: sẽ thấy cùng một id ở mọi request.
+
+> Senior tip: singleton giữ state per-request (danh sách kết quả, biến tạm, EntityManager) là một trong các nguyên nhân hàng đầu của lỗi "dữ liệu của user A hiện cho user B". Hãy để state đó ở biến local của method hoặc ở bean scope {{request}}/{{prototype}} lấy qua provider, và dùng {{@Scope(proxyMode = ...)}} khi cần inject trực tiếp.`
+},
+{
+  id: 'qz-spring-044',
+  topic: 'spring',
+  multi: true,
+  q: 'Bạn viết một class {{@Configuration}} và inject bean {{auditService}} vào field của chính nó rồi gọi từ trong method. Phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'Class {{@Configuration}} được Spring bọc bằng một subclass CGLIB, nhờ đó gọi {{this.myBean()}} trả về đúng singleton đang được quản lý chứ không tạo bean mới mỗi lần',
+    'Không nên inject bean nghiệp vụ vào field của class {{@Configuration}}: nó làm các bean bị tạo sớm, trước khi các BeanPostProcessor kịp chạy, dẫn tới bean thiếu proxy hoặc vòng phụ thuộc',
+    'Class {{@Configuration}} luôn là bean thường, không bao giờ bị proxy',
+    'Cách tốt nhất để dùng lại logic trong class cấu hình là tự gọi method cấu hình bằng {{this}} thay vì qua Spring'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: @Configuration bị CGLIB subclass nên this.myBean() vẫn đi qua lớp proxy đó; nhưng không nên inject bean nghiệp vụ vào field của class cấu hình vì nó tạo bean quá sớm.**
+
+### Vì sao đúng
+- **CGLIB proxy cho @Configuration**: để bảo đảm mỗi method {{@Bean}} chỉ tạo bean **một lần**, Spring bọc class cấu hình bằng một **subclass** (CGLIB) ghi đè các method {{@Bean}}. Trong subclass đó, method {{@Bean}} kiểm tra "bean đã tồn tại trong context chưa" rồi mới quyết định trả về instance cũ hay tạo mới. Vì vậy gọi {{this.myBean()}} từ method khác trong cùng class vẫn đi qua subclass và vẫn trả về đúng singleton (khác với self-invocation của bean thường).
+- **Không inject bean nghiệp vụ vào field cấu hình**: class cấu hình được xử lý **rất sớm**. Nếu bạn {{@Autowired}} một bean nghiệp vụ vào field của nó, Spring phải tạo bean đó ngay để tiêm, tức là bean đó được tạo **trước** khi các BeanPostProcessor (AOP, @Transactional, @Async) sẵn sàng → bean có thể mất proxy, hoặc sinh vòng phụ thuộc. Thay vào đó hãy nhận bean làm **tham số của method @Bean**, hoặc dùng {{ObjectProvider}}.
+
+### Vì sao các phương án còn lại sai
+- **@Configuration luôn là bean thường**: chỉ khi khai báo {{@Configuration(proxyBeanMethods = false)}} để tắt proxy (thường dùng cho các class cấu hình thuần hàm, muốn nhẹ hơn).
+- **Tự gọi this để dùng lại logic**: với method @Bean thì this là đúng, nhưng kết luận "cách tốt nhất là tự gọi this" không đúng cho mọi tình huống; logic dùng lại nên nằm ở service riêng, còn class cấu hình chỉ khai báo bean.
+
+### Cách đúng
+~~~java
+@Configuration
+class CacheConfig {
+    @Bean
+    MyCacheClient client(RedisTemplate<String, String> redis, ObjectProvider<Metrics> metrics) {
+        return new MyCacheClient(redis, metrics.getIfAvailable());  // nhận qua tham số, không inject field
+    }
+}
+~~~
+
+> Senior tip: dấu hiệu "cấu hình bị tạo quá sớm" là log kiểu "Bean X is not eligible for getting processed by all BeanPostProcessors". Khi thấy nó, hãy bỏ field injection khỏi class @Configuration, hoặc cân nhắc tách phần logic ra @Component riêng.`
+},
+{
+  id: 'qz-spring-045',
+  topic: 'spring',
+  q: `Service có method {{importFile}} (mất 2 giây đọc file) rồi mới ghi DB bằng một câu INSERT, cả method đều {{@Transactional}}. Vấn đề nghiêm trọng nhất của cách viết này là gì?`,
+  options: [
+    'Giữ transaction mở trong lúc đọc file làm connection DB bị chiếm 2 giây; tải cao sẽ cạn HikariCP và request khác phải chờ lấy connection',
+    '{{@Transactional}} làm method chậm hơn đáng kể vì phải bắt đầu transaction trước khi vào code',
+    'Nên đổi sang {{REQUIRES_NEW}} cho {{importFile}} để nó không giữ connection lâu',
+    'Đọc file xong mới ghi DB nên hai thao tác không cùng transaction, dữ liệu có thể lệch'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: transaction mở lâu chiếm connection; nên tách I/O ra khỏi transaction.**
+
+### Vì sao đúng
+- Transaction không phải "miễn phí về tài nguyên": khi một method {{@Transactional}} bắt đầu, Spring lấy một connection từ HikariCP và **giữ nó tới khi commit/rollback**. Connection là tài nguyên hữu hạn (mặc định {{maximumPoolSize = 10}}).
+- Nếu transaction kéo dài 2 giây vì đọc file, mỗi request giữ 1 connection suốt 2 giây. Với 20 request đồng thời, pool 10 sẽ cạn ngay: các request còn lại xếp hàng chờ connection ({{connectionTimeout}} mặc định 30 giây rồi ném {{SQLTransientConnectionException}}). Đây là cách một tính năng "chỉ đọc file" làm sập cả API.
+- Cách đúng: đọc/validate file **ngoài** transaction (biến local), chỉ bọc đoạn ghi DB trong một transaction ngắn:
+~~~java
+public void importFile(Path file) throws IOException {
+    List<Row> rows = parse(Files.readAllBytes(file));   // không có connection nào bị giữ
+    saveAll(rows);                                      // @Transactional, chỉ vài trăm ms
+}
+~~~
+- Quy tắc: transaction nên tính bằng **mili giây**, chỉ chứa thao tác DB. Không gọi HTTP, không đọc file, không gửi email, không {{Thread.sleep}} bên trong {{@Transactional}}.
+
+### Vì sao các phương án còn lại sai
+- **@Transactional làm code chậm hơn đáng kể**: chi phí bắt đầu transaction là nhỏ (vài micro giây); vấn đề là **thời gian giữ connection**, không phải tốc độ chạy câu lệnh.
+- **REQUIRES_NEW cho importFile**: {{REQUIRES_NEW}} tạo transaction thứ hai, vẫn giữ connection trong suốt 2 giây — thậm chí còn giữ **hai** connection nếu caller đã có transaction (xem qz-spring-027). Không giải quyết vấn đề.
+- **Hai thao tác không cùng transaction**: sai, cả method đang nằm trong một transaction nên đọc và ghi vẫn cùng một đơn vị công việc (đọc file chỉ là I/O, không tham gia rollback).
+
+> Senior tip: theo dõi metric {{hikaricp_connections_pending}} và {{hikaricp_connections_usage_seconds}}. Nếu pending cao mà DB vẫn rảnh, gần như chắc chắn có transaction dài do I/O hoặc gọi service ngoài nằm bên trong.`
+},
+{
+  id: 'qz-spring-046',
+  topic: 'spring',
+  q: 'Ứng dụng Spring Boot 3 (Spring Framework 6.2) không khai báo cấu hình gì thêm. Bean {{PaymentService}} có constructor nhận {{PaymentClient}} và cả {{PaymentService}} lẫn {{PaymentClient}} đều nhận nhau qua constructor. Khi khởi động thì sao?',
+  options: [
+    'Boot tự động bật lại {{spring.main.allow-circular-references=true}} nên ứng dụng chạy được',
+    'Ứng dụng không khởi động được: constructor injection không thể phá vòng, Spring ném {{BeanCurrentlyInCreationException}} và Boot in báo cáo "The dependencies of some of the beans in the application context form a cycle"',
+    'Spring tạo một instance thứ hai của một trong hai bean để phá vòng',
+    'Ứng dụng khởi động được nhưng một trong hai bean là null'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: khởi động fail với lỗi vòng phụ thuộc.**
+
+### Vì sao đúng
+- Constructor injection nghĩa là dependency phải sẵn sàng **trước khi** object được tạo. Để tạo A cần B, để tạo B cần A → không có điểm bắt đầu. Đây là lý do constructor injection "fail fast": vòng phụ thuộc bị phát hiện ngay lúc khởi động, kèm sơ đồ chuỗi bean.
+- Từ Spring Boot 2.6, vòng phụ thuộc **bị cấm mặc định** ({{spring.main.allow-circular-references=false}}), kể cả với field/setter injection (vốn Spring giải được bằng "early reference": tạo object A chưa xong, đưa tham chiếu sớm cho B, rồi hoàn thiện A sau). Bật lại cờ này chỉ là lùi về hành vi cũ, không phải cách sửa.
+- Cách sửa đúng: tách phần dùng chung ra bean thứ ba, hoặc đảo chiều phụ thuộc bằng event ({{ApplicationEventPublisher}}), hoặc dùng {{@Lazy}} trên một tham số constructor như giải pháp tạm.
+
+### Vì sao các phương án còn lại sai
+- **Boot tự bật lại cờ**: Boot không tự bật; mặc định là chặn. Bạn phải tự đặt thuộc tính (và không nên).
+- **Tạo instance thứ hai**: singleton không bao giờ được nhân đôi để phá vòng.
+- **Một bean null**: Spring không bao giờ âm thầm inject null cho dependency bắt buộc.
+
+### Cấu hình "chạy được" (không khuyến nghị)
+~~~yaml
+spring.main.allow-circular-references: true   # chỉ là băng keo, xem qz-spring-010
+~~~
+
+> Senior tip: khi phỏng vấn hỏi về vòng phụ thuộc, câu trả lời tốt nhất là "tôi coi nó là lỗi thiết kế, không phải lỗi cấu hình". Hãy chỉ ra hai class đang ôm cùng một trách nhiệm và đề xuất tách.`
+},
+{
+  id: 'qz-spring-047',
+  topic: 'spring',
+  multi: true,
+  q: 'Bạn muốn chạy một đoạn logic ngay sau khi ứng dụng đã sẵn sàng nhận request (ví dụ warm cache từ DB). Những cách nào phù hợp? (Chọn 2)',
+  options: [
+    '{{@PostConstruct}} trên một bean được khởi tạo sớm',
+    'Bean implements {{ApplicationRunner}} (hoặc {{CommandLineRunner}})',
+    '{{@EventListener(ApplicationReadyEvent.class)}} trên một method',
+    'Bắt đầu một thread mới ngay trong static initializer của class'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: ApplicationRunner/CommandLineRunner và listener của ApplicationReadyEvent.**
+
+### Vì sao đúng
+- {{ApplicationRunner}}/{{CommandLineRunner}}: Boot gọi {{run()}} sau khi context đã refresh xong, ngay trước khi ứng dụng "báo đã sẵn sàng". Đây là chỗ tiêu chuẩn cho việc khởi tạo dữ liệu hay warm cache.
+- {{ApplicationReadyEvent}}: sự kiện được phát **sau cùng** khi ứng dụng đã sẵn sàng (sau khi các runner chạy xong). Dùng {{@EventListener}} để xử lý; nếu cần transaction thì mở {{@Transactional}} bình thường — lúc này mọi proxy đã tồn tại.
+- Cả hai đều chạy trên thread chính lúc khởi động. Nếu việc warm cache mất 30 giây, hãy cân nhắc chạy bất đồng bộ (có executor riêng) hoặc chuyển sang job nền, vì readiness probe của Kubernetes có thể fail trong lúc chờ.
+
+### Vì sao các phương án còn lại sai
+- **@PostConstruct**: chạy quá sớm. Lúc đó proxy AOP (transaction, async) còn chưa được tạo, các bean khác có thể chưa sẵn sàng, và connection pool có thể chưa "ấm". Gọi method {{@Transactional}} trong đó cũng không có transaction (self-invocation, xem qz-spring-009).
+- **Thread trong static block**: không có context, không có transaction, không có cách báo lỗi gọn gàng; lỗi trong đó chỉ in ra log rồi mất. Khởi tạo hạ tầng không nên trốn trong static.
+
+### Ví dụ
+~~~java
+@Component
+class Warmup {
+    private final PriceCache cache;
+    Warmup(PriceCache cache) { this.cache = cache; }
+
+    @EventListener(ApplicationReadyEvent.class)
+    @Transactional(readOnly = true)
+    public void warm() { cache.reload( findAllLatestPrices() ); }
+}
+~~~
+
+> Senior tip: đặt timeout cho warm-up và log thời gian thực hiện. Nếu warm-up quá lâu, dùng {{management.endpoint.health.group.readiness}} hoặc tách probe để Kubernetes không đưa traffic vào pod chưa sẵn sàng.`
+},
+{
+  id: 'qz-spring-048',
+  topic: 'spring',
+  q: '{{OrderService.create()}} có {{@Transactional}}, bên trong publish {{OrderCreated}}. Bean {{AuditListener}} có hai method: {{onOrder}} ({{@EventListener}}) và {{onOrderTx}} ({{@TransactionalEventListener}}, không khai báo phase). Hỏi: nếu {{create()}} được gọi từ một method **không có** transaction thì điều gì xảy ra?',
+  options: [
+    '{{onOrder}} chạy đồng bộ ngay trong lúc publish; {{onOrderTx}} mặc định cũng chạy ngay vì nó là @EventListener',
+    '{{onOrder}} không chạy vì không có transaction; {{onOrderTx}} chạy ngay',
+    '{{onOrder}} chạy bình thường, còn {{onOrderTx}} bị bỏ qua hoàn toàn (im lặng) vì mặc định fallbackExecution = false',
+    'Cả hai đều ném exception vì thiếu transaction'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: @EventListener vẫn chạy; @TransactionalEventListener bị bỏ qua im lặng vì fallbackExecution = false.**
+
+### Vì sao đúng
+- {{@EventListener}} là listener đồng bộ, đơn giản: method được gọi ngay tại thời điểm {{publishEvent}}, trên **cùng thread**, trong cùng transaction (nếu có). Nó không cần transaction, nên vẫn chạy bình thường.
+- {{@TransactionalEventListener}} không gọi listener ngay. Nó đăng ký một {{TransactionSynchronization}} gắn với transaction hiện tại; phase mặc định là {{AFTER_COMMIT}}, nên listener chỉ chạy khi commit **thành công**. Nếu **không có** transaction nào, Spring không có gì để đăng ký, và mặc định {{fallbackExecution = false}} khiến listener **bị bỏ qua hoàn toàn** — không lỗi, không log, event biến mất. Đây là cái bẫy nguy hiểm nhất của cơ chế này.
+- Sau commit, transaction đã kết thúc: nếu listener cần ghi DB, nó phải tự mở transaction mới ({{@Transactional(propagation = REQUIRES_NEW)}} hoặc để method có {{@Transactional}} trên một bean khác).
+
+### Vì sao các phương án còn lại sai
+- **onOrderTx chạy ngay vì là @EventListener**: nó là {{@TransactionalEventListener}}, không phải {{@EventListener}}; và kể cả có transaction thì nó cũng chờ tới sau commit.
+- **onOrder không chạy khi không có transaction**: {{@EventListener}} không liên quan tới transaction.
+- **Cả hai ném exception**: không có exception nào; listener bị bỏ qua là hành vi im lặng.
+
+### Hai cái bẫy cần nhớ
+~~~text
+1. publish khi không có transaction  -> onOrderTx KHÔNG chạy (im lặng!)
+2. AFTER_COMMIT + ghi DB          -> phải mở transaction mới, nếu không sẽ không được commit
+~~~
+
+> Senior tip: AFTER_COMMIT vẫn có khe hở: commit xong mà pod chết trước khi gửi mail thì event mất. Khi event bắt buộc phải tới nơi (thanh toán, tồn kho), dùng transactional outbox: ghi event vào bảng outbox trong cùng transaction, một relay đẩy sang broker (xem qz-spring-015).`
+},
+{
+  id: 'qz-spring-049',
+  topic: 'spring',
+  q: '{{CatalogService}} cần gọi chính method {{@Async}} của nó từ một method {{@Transactional}} khác trong cùng class, để việc index diễn ra sau khi transaction commit. Bạn đề xuất cách nào?',
+  options: [
+    'Đặt {{@Async}} lên method rồi gọi {{this.index()}} ở cuối method {{@Transactional}}',
+    'Dùng {{TransactionSynchronizationManager.registerSynchronization(...)}} với {{afterCommit}} để gọi một bean khác có method {{@Async}} (hoặc gọi trong {{@TransactionalEventListener(AFTER_COMMIT)}})',
+    'Đặt {{@Async}} lên **class** thay vì method, như vậy self-invocation sẽ được áp dụng',
+    'Gọi {{this.index()}} ngay đầu method {{@Transactional}}, trước khi có exception nào'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: đăng ký callback afterCommit, và gọi executor/bean khác ở thời điểm đó.**
+
+### Vì sao đúng
+Cần đồng thời hai thứ:
+1. **Thời điểm đúng**: công việc chỉ nên chạy sau khi commit (nếu không, thread async có thể đọc dữ liệu chưa commit hoặc đọc dữ liệu đã bị rollback).
+2. **Proxy đúng**: {{@Async}} chỉ có tác dụng khi lời gọi đi qua proxy, tức là từ **bean khác**. Gọi {{this.index()}} là self-invocation, chạy đồng bộ trên thread của caller (xem qz-spring-035).
+
+Cách làm:
+~~~java
+@Service
+public class CatalogService {
+    private final Indexer indexer;   // bean khác, có @Async
+
+    @Transactional
+    public void create(Catalog c) {
+        catalogRepo.save(c);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCommit() { indexer.indexAsync(c.id()); }  // qua proxy
+        });
+    }
+}
+~~~
+Hoặc gọn hơn: publish event và để listener dùng {{@TransactionalEventListener(phase = AFTER_COMMIT)}} + {{@Async}} trên method của listener (lúc đó listener là một bean riêng, nên proxy hoạt động).
+
+### Vì sao các phương án còn lại sai
+- **this.index() ở cuối method @Transactional**: chạy **trước** commit, và chạy đồng bộ — sai cả thời điểm lẫn cơ chế.
+- **@Async trên class**: @Async vẫn là AOP dựa trên proxy; self-invocation vẫn bỏ qua proxy dù annotation đặt ở class. (Đặt trên class chỉ có nghĩa "mọi method public đều async", không thay đổi cách proxy hoạt động.)
+- **Gọi đầu method**: chạy trước cả khi save, và vẫn là self-invocation.
+
+> Senior tip: nếu thứ tự "commit rồi mới gửi" quan trọng, hãy nghĩ tới outbox: ghi một dòng công việc vào DB trong cùng transaction, một scheduler/Debezium đọc và đẩy đi. Callback afterCommit mất tác dụng nếu pod chết ngay sau commit — điều rất dễ xảy ra khi deploy.`
+},
+{
+  id: 'qz-spring-050',
+  topic: 'spring',
+  multi: true,
+  q: 'Bạn thêm một starter mới vào ứng dụng Spring Boot 3 và một bean của bạn "biến mất" sau khi nâng cấp. Cách nào giúp chẩn đoán nhanh vì sao auto-configuration của starter không áp dụng (hoặc áp dụng sai)? (Chọn 2)',
+  options: [
+    'Chạy ứng dụng với {{--debug}} để xem Condition Evaluation Report (báo cáo điều kiện) và phần "Negative matches" giải thích vì sao từng auto-config bị loại',
+    'Bật {{logging.level.org.springframework.boot.autoconfigure=DEBUG}} để thấy chi tiết điều kiện',
+    'Xoá sạch {{target}} và build lại, vì mọi lỗi auto-config đều do file cũ',
+    'Thêm {{@ComponentScan}} thủ công để quét lại package của starter'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: Condition Evaluation Report (--debug) và log DEBUG của package autoconfigure.**
+
+### Vì sao đúng
+- {{--debug}} (hoặc {{java -jar app.jar --debug}}) bật Condition Evaluation Report. Nó liệt kê từng auto-configuration kèm "Positive matches" (điều kiện thoả, bean đã được tạo) và "Negative matches" (điều kiện không thoả, kèm lý do cụ thể như "Did not find 'some.Class' on the classpath" hay "None of the beans matched").
+- {{logging.level.org.springframework.boot.autoconfigure=DEBUG}} cho thông tin tương tự ngay trong log thường, hữu ích khi chạy trên Kubernetes (dễ hơn là phải thêm tham số khởi động).
+- Với lỗi "bean của tôi biến mất", thường là do @ConditionalOnMissingBean của chính bạn (bạn đã tự khai báo bean trùng nên bean kia bị loại), hoặc do thiếu class/property. Báo cáo điều kiện chỉ thẳng nguyên nhân.
+
+### Vì sao các phương án còn lại sai
+- **Xoá target rồi build lại**: không phải nguyên nhân của lỗi auto-config (và cũng không chẩn đoán được gì).
+- **Thêm @ComponentScan thủ công**: auto-configuration không nằm trong package của bạn, nó được nạp từ {{META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports}}. Quét lại package không giúp gì, còn có thể vô tình bật những thứ không mong muốn.
+
+### Câu lệnh hữu ích
+~~~bash
+java -jar app.jar --debug | grep -A 3 "Negative matches" | head -50
+~~~
+
+> Senior tip: nếu bạn tự viết starter, hãy đặt tên class theo quy ước ({{XxxAutoConfiguration}}), khai báo trong file imports, và viết test {{ApplicationContextRunner}} để khẳng định bean được tạo khi có điều kiện và **không** được tạo khi thiếu — đây là cách duy nhất chắc chắn starter không "chết im lặng".`
+},
+{
+  id: 'qz-spring-051',
+  topic: 'spring',
+  q: '{{ReportService}} có hai dependency: {{JasperReportService}} đánh dấu {{@Lazy}} trên tham số constructor, và {{PdfRenderer}} (bean thường). Khi khởi động, điều gì xảy ra?',
+  options: [
+    'Cả hai bean đều được tạo ngay lúc khởi động như bình thường',
+    'Bean được {{@Lazy}} nhận một proxy: nó chưa được tạo lúc khởi động, chỉ được tạo ở lần gọi method đầu tiên; còn {{PdfRenderer}} vẫn được tạo ngay',
+    '{{@Lazy}} làm ứng dụng khởi động chậm hơn vì phải tạo proxy',
+    '{{@Lazy}} chỉ có tác dụng trên {{@Bean}} method, không dùng trên tham số constructor'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: @Lazy trên tham số constructor khiến Spring inject một proxy; bean thật chỉ được tạo ở lần dùng đầu tiên.**
+
+### Vì sao đúng
+- {{@Lazy}} (Spring 4.3+ hỗ trợ trên tham số constructor) làm Spring không tạo bean đó lúc khởi động. Thay vào đó nó inject một **proxy** cùng kiểu; proxy sẽ gọi {{getBean}} và khởi tạo bean thật ở **lần gọi method đầu tiên** (hoặc lần truy cập field đầu tiên).
+- Đây là công cụ chính thức để phá vòng phụ thuộc: một trong hai bean không cần tồn tại ngay, nên chuỗi "tạo A cần B, tạo B cần A" không còn là vòng.
+- Giá trị khác: khởi động nhanh hơn, và nếu bean đó có lỗi cấu hình thì lỗi chỉ nổ ra khi thực sự dùng (đánh đổi: "fail fast" bị hoãn lại). Vì vậy {{@Lazy}} là giải pháp **cho vòng phụ thuộc**, không phải cách tăng tốc chung — nó làm chậm lần gọi đầu (và có thể gây "lần đầu request bị chậm" nếu khởi tạo nặng).
+- {{@Lazy}} cũng dùng được trên {{@Bean}} method, trên field {{@Autowired}}, và trên {{@Configuration}} class.
+
+### Vì sao các phương án còn lại sai
+- **Cả hai tạo ngay**: chỉ đúng với bean không có @Lazy.
+- **@Lazy làm khởi động chậm hơn vì tạo proxy**: tạo proxy là chi phí nhỏ; khởi động thường **nhanh hơn** vì không phải tạo bean.
+- **Chỉ dùng trên @Bean method**: sai, @Lazy dùng được ở nhiều vị trí như trên.
+
+### Lưu ý khi test
+~~~java
+@Lazy @Autowired private PaymentClient client;   // proxy, chưa khởi tạo
+// client.doSomething();                           // lần gọi đầu -> bean thật được tạo
+~~~
+
+> Senior tip: đừng lạm dụng @Lazy để "chữa" mọi vấn đề khởi động. Nếu một bean @Lazy hoá ra luôn được dùng trong 5 phút đầu, bạn chỉ dời chi phí khởi tạo sang request của khách hàng. Vòng phụ thuộc thật sự thì nên tách bean hoặc dùng event.`
+},
+{
+  id: 'qz-spring-052',
+  topic: 'spring',
+  q: 'Một ứng dụng Spring Boot 3 (Spring 6.2) dùng field injection: {{@Autowired private OrderRepository repo;}}. Điều gì xảy ra nếu không có bean {{OrderRepository}} nào trong context?',
+  options: [
+    'Vẫn hoạt động bình thường, field nhận null và lỗi chỉ xuất hiện khi gọi method',
+    'Spring tự tạo một instance {{OrderRepository}} rỗng để ứng dụng chạy được',
+    'Field injection làm bean được tạo hai lần (một cho field, một cho class)',
+    'Ứng dụng fail lúc khởi động với {{NoSuchBeanDefinitionException}} (bọc trong {{UnsatisfiedDependencyException}}), vì {{required = true}} là mặc định'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: fail lúc khởi động, vì @Autowired(required = true) là mặc định.**
+
+### Vì sao đúng
+- Mặc định {{@Autowired(required = true)}}: nếu không tìm thấy bean nào phù hợp, Spring ném {{NoSuchBeanDefinitionException}} (bọc trong {{UnsatisfiedDependencyException}}) và **chặn khởi động**. Đây là "fail fast": lỗi cấu hình nổ ra lúc boot, không phải lúc khách hàng gọi API.
+- Muốn cho phép thiếu thì {{@Autowired(required = false)}} hoặc dùng {{Optional<T>}}/{{ObjectProvider<T>}} — nhưng khi đó bạn phải tự xử lý trường hợp null.
+- Field injection vẫn chạy được, chỉ bất tiện: field không thể {{final}} (Spring set giá trị sau khi constructor chạy), unit test thuần phải dùng reflection hoặc {{@InjectMocks}}, và class dễ phình mà không ai để ý (không thấy dependency trong constructor).
+
+### Vì sao các phương án còn lại sai
+- **Field nhận null**: chỉ khi {{required = false}}; mặc định là fail.
+- **Spring tự tạo instance rỗng**: Spring không bao giờ tự tạo bean không được khai báo.
+- **Bean được tạo hai lần**: injection chỉ **tham chiếu** tới một bean đã tồn tại; số lần tạo bean do scope quyết định (singleton tạo một lần).
+
+### So sánh nhanh
+~~~java
+// field injection: test phải dùng reflection
+@Service class A { @Autowired private B b; }
+
+// constructor injection: test bằng new, dependency final
+@Service class A { private final B b; A(B b) { this.b = b; } }
+~~~
+
+> Senior tip: constructor injection là mặc định ngầm định của các dự án Spring hiện đại (Spring 4.3+ không cần @Autowired khi chỉ có một constructor). Khi review, một constructor dài 6–7 tham số là tín hiệu tách class.`
+},
+{
+  id: 'qz-spring-053',
+  topic: 'spring',
+  q: '{{PaymentService.applyRefund}} là method {{public}} có {{@Transactional}}, được gọi từ {{OrderController}} qua bean {{paymentService}} (đi qua proxy). Câu nào mô tả đúng thứ tự các bước Spring thực hiện?',
+  options: [
+    'Mở transaction → chạy method → commit/rollback; exception RuntimeException làm rollback, checked exception mặc định vẫn commit',
+    'Chạy method trước, nếu có exception thì mở transaction rồi rollback',
+    'Spring mở transaction khi bean được khởi tạo, không phải khi gọi method',
+    'Spring commit trước khi method kết thúc để dữ liệu sẵn sàng cho các listener AFTER_COMMIT'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: mở transaction trước khi vào method, commit/rollback sau khi method trả về hoặc ném exception.**
+
+### Vì sao đúng
+Trình tự thực tế của một lời gọi {{@Transactional}} đi qua proxy:
+~~~text
+1. Proxy chặn lời gọi từ controller (đi qua bean paymentService)
+2. TransactionInterceptor mở transaction: lấy connection từ pool, setAutoCommit(false)
+3. Gọi method thật
+   - nếu ném RuntimeException/Error  -> đánh dấu rollback, rollback khi ra khỏi method
+   - nếu ném checked exception        -> mặc định vẫn COMMIT, rồi mới ném tiếp lên caller
+   - nếu return bình thường           -> commit
+4. Trả connection về pool, trả kết quả (hoặc ném exception) cho caller
+~~~
+Điểm quan trọng cho phỏng vấn: exception **không** tự động rollback như bạn nghĩ — mặc định chỉ unchecked. Đây là lý do câu qz-spring-007 và thuộc tính {{rollbackFor = Exception.class}} tồn tại.
+Và vì transaction mở ở **proxy** (bên ngoài), mọi lời gọi {{this.method()}} đều không có bước 1–4: đó là self-invocation (qz-spring-021, qz-spring-036).
+
+### Vì sao các phương án còn lại sai
+- **Chạy method trước rồi mới mở transaction**: bất khả thi; transaction phải tồn tại trước khi câu SQL đầu tiên chạy.
+- **Mở transaction lúc bean khởi tạo**: transaction gắn với **lời gọi method** (thread hiện tại), không phải với vòng đời bean.
+- **Commit trước khi method kết thúc để listener chạy**: ngược lại, AFTER_COMMIT chạy **sau** commit, tức sau khi method đã kết thúc.
+
+> Senior tip: đặt một log ở đầu và cuối method có @Transactional, so với log trong một {{TransactionSynchronization.beforeCommit/afterCommit}}: bạn sẽ thấy rõ thứ tự này. Đây là bài kiểm tra nhỏ nhưng rất hiệu quả để chứng minh bạn hiểu proxy chứ không chỉ học thuộc annotation.`
+},
 );
