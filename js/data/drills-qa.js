@@ -990,4 +990,132 @@
     sample: "I would use multipart upload directly to object storage like S3 or MinIO. The client requests an upload session from the API, which creates a multipart upload ID in the object store and returns it with a presigned URL for each part. The client uploads parts in parallel, and the API tracks the received part numbers in Redis so the user can resume after a network failure. Once all parts are uploaded, the client calls complete, and the API triggers an async virus scan using a scanner like ClamAV running in a container. The file stays in a quarantine bucket until the scan passes, then it moves to the clean bucket and the metadata is updated. Progress is tracked by the part count in Redis, and the UI polls a lightweight endpoint. I would also enforce size and type limits at the API layer, not just the client. For very large files I would add a checksum verification after each part. This design handled 10 GB uploads with 99.5 percent success rate and automatic resume after interruptions.",
     phrases: ["multipart upload directly to object storage", "tracks the received part numbers in Redis", "triggers an async virus scan", "file stays in a quarantine bucket until the scan passes", "checksum verification after each part"]
   },
+{
+  "id": "drill-qa-154",
+  "kind": "qa",
+  "theme": "project",
+  "level": "senior",
+  "seconds": 90,
+  "q": "Can you walk me through your approach to building this feature?",
+  "sample": "I would start by clarifying the goal, the users, and what success means, because a clear scope prevents wasted work. An API is the way two programs talk to each other over the network, so I would first agree on the inputs, outputs, and error cases. Next I would sketch a simple design: for a Java backend I usually use Spring Boot 3.x, which is a framework that helps build web services quickly, with PostgreSQL for storing data. Then I would break the work into small tasks, build the core flow first, and add automated tests, which are small programs that check the code, so we catch bugs early. I would deploy a small version to a staging environment, meaning a safe copy of production, and share a short demo for feedback. I would also think about logging and basic monitoring before launch. This keeps risk low and lets us adjust based on what you see.",
+  "phrases": [
+    "clarifying the goal, the users, and what success means",
+    "agree on the inputs, outputs, and error cases",
+    "break the work into small tasks",
+    "add automated tests",
+    "deploy a small version to a staging environment"
+  ]
+},
+{
+  "id": "drill-qa-155",
+  "kind": "qa",
+  "theme": "project",
+  "level": "mid",
+  "seconds": 90,
+  "q": "How long will it take to complete this work?",
+  "sample": "I can give a realistic estimate once I understand the scope, but here is how I think about it. For example, if this is a basic REST API, which is a common way for a server to receive and return data, with three endpoints, database changes, and tests, I would expect about five to seven working days. I break the time into parts: one day to confirm requirements, two or three days to build, and one or two days for testing and fixes. I also add a small buffer for unknown issues, because integrations often take longer than expected. I will share a simple plan with milestones, meaning clear checkpoints, so you can see progress. If the scope changes, I will explain how that affects the timeline before I continue. My goal is to finish on time, but I prefer an honest estimate over a rushed promise.",
+  "phrases": [
+    "give a realistic estimate once I understand the scope",
+    "break the time into parts",
+    "add a small buffer for unknown issues",
+    "share a simple plan with milestones",
+    "prefer an honest estimate over a rushed promise"
+  ]
+},
+{
+  "id": "drill-qa-156",
+  "kind": "qa",
+  "theme": "negotiation",
+  "level": "senior",
+  "seconds": 90,
+  "q": "What is your rate for this project?",
+  "sample": "My standard freelance rate is seventy-five dollars per hour, but I am happy to discuss the best structure for this project. For a well-defined scope, a fixed price can be easier to plan around, because you know the total cost up front. For work where requirements may change, an hourly rate is usually fairer. My rate includes not only writing code, but also design, testing, documentation, and time for clear communication. For example, on a recent backend task I spent about sixty percent of the time coding and the rest on testing and review, which helped avoid production bugs. If your budget is limited, we can reduce the scope for the first phase and deliver the most important part first. Could you tell me your budget range and timeline so I can suggest the right option?",
+  "phrases": [
+    "happy to discuss the best structure for this project",
+    "a fixed price can be easier to plan around",
+    "an hourly rate is usually fairer",
+    "reduce the scope for the first phase",
+    "tell me your budget range and timeline"
+  ]
+},
+{
+  "id": "drill-qa-157",
+  "kind": "qa",
+  "theme": "project",
+  "level": "mid",
+  "seconds": 90,
+  "q": "Have you done something similar to this project before?",
+  "sample": "Yes, I have worked on similar backend features before. For example, I built a Java service with Spring Boot 3.x that handled user registration and order tracking for a small e-commerce site. The service exposed REST APIs and stored data in PostgreSQL, which is a relational database, meaning it keeps data in tables with clear relationships. I also added input validation to reject bad data early and wrote automated tests to check the main flows. In one case, adding proper database indexes, which are like a book index that helps find rows faster, reduced a slow query from about 800 milliseconds to under 50 milliseconds. Even if the business domain is different, the core patterns are similar: clear requirements, safe data changes, and good testing. If you share more details, I can explain how my experience maps to your project.",
+  "phrases": [
+    "I have worked on similar backend features before",
+    "exposed REST APIs and stored data in PostgreSQL",
+    "added input validation",
+    "adding proper database indexes",
+    "explain how my experience maps to your project"
+  ]
+},
+{
+  "id": "drill-qa-158",
+  "kind": "qa",
+  "theme": "project",
+  "level": "mid",
+  "seconds": 90,
+  "q": "What do you need from us to get started?",
+  "sample": "To start smoothly, I need a few things from you. First, a clear goal and the main user stories, meaning short descriptions of what users need to do. Second, access to the code repository, which is the place where the source code is stored, and any setup instructions. If there is an existing database or API, I will need connection details for a development environment, not production, so I can work safely. I also need to know the priority: what must be done first and what can wait. It helps if you can point me to a contact person for quick questions, because fast answers avoid delays. Finally, please tell me your preferred way to communicate and how often you want updates. With this information, I can set up my environment and start on the first task within a day.",
+  "phrases": [
+    "a clear goal and the main user stories",
+    "access to the code repository",
+    "connection details for a development environment, not production",
+    "know the priority",
+    "point me to a contact person for quick questions"
+  ]
+},
+{
+  "id": "drill-qa-159",
+  "kind": "qa",
+  "theme": "project",
+  "level": "senior",
+  "seconds": 90,
+  "q": "How do you report progress during the project?",
+  "sample": "I keep progress visible so you always know where things stand. I usually send a short written update two or three times a week, depending on what you prefer. Each update includes what I finished, what I am working on now, and any blockers, meaning problems that stop me from moving forward. For example, I might report that the API endpoint is done, tests are passing, and I am waiting for access to the staging server. I also like to share small demos or screenshots when a feature becomes usable, so you can give early feedback. If I find a risk that could affect the deadline or cost, I raise it immediately instead of waiting until the end. This way there are no surprises, and we can make decisions together based on clear information.",
+  "phrases": [
+    "keep progress visible",
+    "a short written update two or three times a week",
+    "any blockers, meaning problems that stop me",
+    "share small demos or screenshots",
+    "raise it immediately instead of waiting until the end"
+  ]
+},
+{
+  "id": "drill-qa-160",
+  "kind": "qa",
+  "theme": "negotiation",
+  "level": "senior",
+  "seconds": 90,
+  "q": "What happens if the requirements change in the middle of the project?",
+  "sample": "Changes are normal, so I handle them in a clear and controlled way. First, I ask you to describe the new requirement and the reason behind it. Then I assess the impact, meaning how it affects the timeline, cost, and existing work. For example, adding a new field to an API might take half a day, but changing the database structure could take two or three days because we also need data migration, which means moving or transforming existing data safely. I will explain the options and give you an updated estimate before I start the change. If the change is small, we can include it in the current scope; if it is larger, I suggest treating it as a separate task or phase. This keeps the project predictable and avoids misunderstandings about delivery time.",
+  "phrases": [
+    "handle them in a clear and controlled way",
+    "assess the impact",
+    "give you an updated estimate before I start the change",
+    "treat it as a separate task or phase",
+    "keeps the project predictable"
+  ]
+},
+{
+  "id": "drill-qa-161",
+  "kind": "qa",
+  "theme": "negotiation",
+  "level": "senior",
+  "seconds": 90,
+  "q": "Why should we choose you for this freelance project?",
+  "sample": "You should choose me if you want a reliable backend engineer who communicates clearly and delivers working software. I have about four years of experience with Java and Spring Boot 3.x, building and maintaining APIs, database integrations, and background jobs. A background job is a task that runs behind the scenes, such as sending emails or processing data on a schedule. I focus on practical quality: I write tests, handle errors carefully, and document what I build so it is easy to maintain later. When I worked on a payment-related feature, careful validation and retry handling helped avoid duplicate records in production. I am comfortable working remotely, I respond quickly, and I explain trade-offs in plain language so you can make informed decisions. I suggest starting with a small milestone so you can see my work before committing to the full project.",
+  "phrases": [
+    "a reliable backend engineer who communicates clearly",
+    "building and maintaining APIs, database integrations, and background jobs",
+    "focus on practical quality",
+    "explain trade-offs in plain language",
+    "starting with a small milestone"
+  ]
+},
 );
