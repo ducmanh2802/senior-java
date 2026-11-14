@@ -2747,4 +2747,528 @@ class IsolationSim {
   related: ['db-002', 'db-033', 'db-034'],
   tags: ['isolation', 'non-repeatable-read', 'phantom-read', 'snapshot', 'PostgreSQL']
 },
+{
+  id: 'lesson-db-014',
+  track: 'db',
+  order: 14,
+  title: 'B-tree, covering index (INCLUDE) và partial index: tra cứu đúng chỗ, đọc ít dữ liệu',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích B-tree trong PostgreSQL hoạt động thế nào từ gốc: page, chiều cao cây, leaf chain và heap fetch',
+    'Hiểu covering index với INCLUDE cho index-only scan và điều kiện visibility map',
+    'Biết khi nào dùng partial index để index nhỏ, chọn lọc cao và ít tốn ghi',
+    'Mô phỏng tra cứu bằng cấu trúc có thứ tự như B-tree và đếm số bước so với quét tuần tự'
+  ],
+  body: `**Tóm tắt:** PostgreSQL dùng B-tree index (cây B, cấu trúc dữ liệu dạng cây cân bằng trên đĩa, mỗi nút là một page 8KB chứa nhiều khóa) để nhảy thẳng tới vài page thay vì đọc toàn bộ bảng. Covering index (index bao phủ: index chứa đủ mọi cột truy vấn cần) với {{INCLUDE}} có thể trả kết quả mà không đọc heap (bảng dữ liệu gốc). Partial index (index bộ phận: index chỉ một tập hàng thỏa điều kiện {{WHERE}}) giữ index nhỏ và chọn lọc cao khi truy vấn thường nhắm vào một nhóm hàng hiếm.
+
+### B-tree hoạt động thế nào từ gốc
+**Page (trang)** là đơn vị đọc/ghi cơ bản của PostgreSQL, mặc định 8KB. Mỗi node của B-tree là một page: internal page lưu các khóa ngăn cách và con trỏ tới page con; leaf page (lá) lưu cặp (khóa index, TID). **TID (tuple identifier)** là địa chỉ vật lý của một hàng trong heap, gồm số block và offset trong block.
+
+Cơ chế tra cứu từng bước (ví dụ {{WHERE email = 'a@x.com'}} trên index {{(email)}}):
+1. Đọc **root page** (gốc). Root nằm trong metadata của index; nếu chưa có trong shared buffers (bộ nhớ đệm dùng chung của PostgreSQL) thì đọc từ đĩa.
+2. **Binary search** (tìm nhị phân: vì khóa trong page đã sắp thứ tự) trong page để chọn con trỏ con phù hợp. Lặp xuống internal page tiếp theo.
+3. Tới **leaf page**: tìm khóa khớp. Leaf pages được nối ngang bằng **sibling pointers** (con trỏ anh em) nên range scan (quét khoảng, ví dụ {{>=}}) đi tuần tự sang lá kế tiếp mà không phải leo lại từ gốc.
+4. **Heap fetch**: dùng TID đọc heap page để lấy các cột còn thiếu và kiểm tra **visibility** (tính nhìn thấy theo MVCC: một hàng chỉ hiện với transaction nếu phiên bản đó hợp lệ với snapshot của transaction). Nếu hàng đã bị UPDATE/DELETE, index entry cũ vẫn có thể còn đó cho tới khi VACUUM dọn.
+5. Trả kết quả.
+
+Vì sao chiều cao thấp? **Fanout** (số nhánh/con trỏ con trong một node) lớn: một page 8KB chứa hàng trăm khóa nên cây 3-4 tầng đã chỉ mục được hàng tỷ hàng (mỗi tầng là một page đọc tiềm năng). Đây là khác biệt cốt lõi với cây nhị phân trong RAM (mỗi node 1 khóa, fanout 2, cao ~30 tầng cho 1 tỷ).
+
+~~~text
+                 [root: 100 | 500]          (internal)
+                /        |        \\
+        [10|40|70]   [120|300]   [520|800]  (internal/leaf)
+           ...          ...          ...
+  leaf: (8,TID)-(10,TID)-(12,TID) <-> (40,TID)-...  (sibling chain)
+~~~
+
+### Covering index (INCLUDE) và index-only scan
+**Index-only scan** (quét chỉ trên index) trả kết quả mà không đọc heap. Điều kiện: mọi cột trong {{SELECT}}, {{WHERE}}, {{JOIN}}, {{ORDER BY}} đều nằm trong index. Nhưng MVCC đòi hỏi biết tuple có "nhìn thấy" không; PostgreSQL dùng **visibility map** (bản đồ đánh dấu page nào có mọi tuple đều đã commit và hiển thị với tất cả transaction). Nếu page chưa được đánh dấu all-visible, engine vẫn phải kiểm tra heap.
+
+{{INCLUDE}} thêm cột "payload" vào lá mà **không** đưa vào khóa sắp xếp (khác với cột khóa): cột INCLUDE không tham gia so sánh thứ tự, chỉ để trả về. Điều này giữ cây gọn hơn so với nhét mọi cột vào khóa.
+
+~~~sql
+-- truy vấn: SELECT status, total FROM orders WHERE tenant_id = 1 AND created_at >= '2026-01-01'
+CREATE INDEX idx_orders_cov
+  ON orders (tenant_id, created_at)   -- khóa: dùng để seek/range
+  INCLUDE (status, total);            -- payload: chỉ để trả về
+~~~
+
+| Kiểu | Đọc heap? | Khi nào |
+|---|---|---|
+| Index scan | Có (theo TID) | Thiếu cột hoặc visibility map chưa cho phép |
+| Index-only scan | Không (thường) | Đủ cột + page all-visible |
+| Bitmap index scan | Có, gom theo block | Nhiều TID rải rác, giảm random I/O |
+
+Trade-off: index rộng hơn, tốn dung lượng, mọi INSERT/UPDATE phải cập nhật index (ghi chậm hơn, WAL nhiều hơn). Chỉ thêm INCLUDE cho truy vấn thực sự nóng và ổn định.
+
+### Partial index
+Partial index có mệnh đề {{WHERE}}: chỉ những hàng thỏa điều kiện mới được đưa vào index. Lợi ích: index nhỏ, ít tốn ghi, chọn lọc rất cao cho đúng truy vấn mục tiêu.
+
+~~~sql
+-- 95% đơn đã 'DONE', truy vấn thường lấy đơn 'PENDING'
+CREATE INDEX idx_orders_pending_created
+  ON orders (created_at)
+  WHERE status = 'PENDING';
+-- planner dùng index này khi truy vấn cũng có WHERE status = 'PENDING'
+~~~
+
+Quy tắc: predicate trong truy vấn phải **bao hàm** (imply) predicate của index thì planner mới dùng. {{WHERE status = 'PENDING' AND tenant_id = 7}} dùng được index trên; {{WHERE status = 'FAILED'}} thì không. Partial index cũng hữu ích cho unique có điều kiện, ví dụ {{CREATE UNIQUE INDEX ... ON users(email) WHERE deleted_at IS NULL}} (chỉ email của user chưa xóa phải duy nhất).
+
+### Liên hệ phỏng vấn
+- "B-tree của PostgreSQL khác cây nhị phân thế nào?" → fanout lớn, mỗi node là page 8KB, chiều cao 3-4 tầng cho dữ liệu rất lớn, leaf có sibling chain cho range scan; tối ưu cho I/O trang trên đĩa.
+- "Khi nào index-only scan thực sự không đọc heap?" → khi index chứa đủ cột và visibility map đánh dấu page all-visible (VACUUM/autovacuum đã chạy).
+- "Partial index dùng khi nào?" → khi truy vấn lặp lại nhắm vào một tập con hàng có điều kiện ổn định (trạng thái hiếm, chưa xóa); giúp index nhỏ và nhanh hơn.
+
+> Senior tip: dùng {{EXPLAIN (ANALYZE, BUFFERS)}} để xem "Index Only Scan" hay "Index Scan" và số {{Heap Fetches}}. Nếu heap fetches cao dù index đủ cột, kiểm tra autovacuum/vacuum và {{pg_stat_user_tables.n_dead_tup}}.
+`,
+  exercises: [
+    {
+      title: 'Mô phỏng quét tuần tự và tra cứu theo index có thứ tự',
+      prompt: `Cài đặt lớp {{IndexSim}} mô phỏng một "bảng" gồm các hàng có khóa số nguyên tăng dần (đã sắp theo khóa, giống dữ liệu trong leaf của B-tree).
+
+- Constructor {{IndexSim(int[] sortedKeys)}}: nhận mảng khóa đã sắp tăng dần.
+- {{int sequentialSteps(int target)}}: đếm số bước khi **quét tuần tự** từ đầu mảng để tìm {{target}}. Mỗi lần so sánh một phần tử với {{target}} tính là 1 bước. Nếu tìm thấy thì dừng và trả về số bước đã thực hiện; nếu duyệt hết mà không thấy thì trả về tổng số phần tử.
+- {{int indexSteps(int target)}}: đếm số bước khi tra cứu bằng **tìm nhị phân** (binary search) trên mảng đã sắp, mô phỏng việc đi xuống cây có thứ tự. Mỗi lần so sánh phần tử giữa với {{target}} tính là 1 bước (kể cả lần tìm ra kết quả). Nếu mảng rỗng trả về 0.
+- {{boolean contains(int target)}}: trả về {{true}} nếu tìm thấy bằng tra cứu index (tìm nhị phân), ngược lại {{false}}.`,
+      starter: `class IndexSim {
+    private final int[] keys;
+
+    IndexSim(int[] sortedKeys) {
+        this.keys = sortedKeys == null ? new int[0] : sortedKeys.clone();
+    }
+
+    int sequentialSteps(int target) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int indexSteps(int target) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean contains(int target) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+`,
+      tests: `public class Main {
+    static void check(String name, boolean cond) {
+        if (cond) System.out.println("PASS " + name);
+        else System.out.println("FAIL " + name);
+    }
+    public static void main(String[] args) {
+        int[] keys = new int[16];
+        for (int i = 0; i < 16; i++) keys[i] = (i + 1) * 10; // 10,20,...,160
+        IndexSim sim = new IndexSim(keys);
+
+        int seq = sim.sequentialSteps(140);
+        check("sequential scans in order", seq == 14);
+
+        int idx = sim.indexSteps(140);
+        check("index uses binary search steps", idx >= 1 && idx <= 5);
+
+        check("index far fewer steps than scan", idx < seq);
+
+        check("sequential miss scans all", sim.sequentialSteps(999) == 16);
+
+        check("index miss bounded", sim.indexSteps(999) >= 1 && sim.indexSteps(999) <= 5);
+
+        check("contains found", sim.contains(80));
+        check("contains not found", !sim.contains(85));
+
+        IndexSim empty = new IndexSim(new int[0]);
+        check("empty sequential", empty.sequentialSteps(1) == 0);
+        check("empty index", empty.indexSteps(1) == 0);
+        check("empty contains", !empty.contains(1));
+
+        System.out.println("RESULT " + (countPass()) + "/10");
+    }
+    static int countPass() {
+        // recompute for RESULT line
+        int pass = 0;
+        int[] keys = new int[16];
+        for (int i = 0; i < 16; i++) keys[i] = (i + 1) * 10;
+        IndexSim sim = new IndexSim(keys);
+        if (sim.sequentialSteps(140) == 14) pass++;
+        int idx = sim.indexSteps(140);
+        if (idx >= 1 && idx <= 5) pass++;
+        if (idx < sim.sequentialSteps(140)) pass++;
+        if (sim.sequentialSteps(999) == 16) pass++;
+        int miss = sim.indexSteps(999);
+        if (miss >= 1 && miss <= 5) pass++;
+        if (sim.contains(80)) pass++;
+        if (!sim.contains(85)) pass++;
+        IndexSim empty = new IndexSim(new int[0]);
+        if (empty.sequentialSteps(1) == 0) pass++;
+        if (empty.indexSteps(1) == 0) pass++;
+        if (!empty.contains(1)) pass++;
+        return pass;
+    }
+}
+`,
+      reference: `class IndexSim {
+    private final int[] keys;
+
+    IndexSim(int[] sortedKeys) {
+        this.keys = sortedKeys == null ? new int[0] : sortedKeys.clone();
+    }
+
+    int sequentialSteps(int target) {
+        for (int i = 0; i < keys.length; i++) {
+            if (keys[i] == target) return i + 1; // da so sanh i+1 phan tu
+        }
+        return keys.length; // duyet het
+    }
+
+    int indexSteps(int target) {
+        if (keys.length == 0) return 0;
+        int lo = 0, hi = keys.length - 1;
+        int steps = 0;
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            steps++; // mot lan so sanh voi phan tu giua
+            if (keys[mid] == target) return steps;
+            if (keys[mid] < target) lo = mid + 1;
+            else hi = mid - 1;
+        }
+        return steps;
+    }
+
+    boolean contains(int target) {
+        if (keys.length == 0) return false;
+        int lo = 0, hi = keys.length - 1;
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (keys[mid] == target) return true;
+            if (keys[mid] < target) lo = mid + 1;
+            else hi = mid - 1;
+        }
+        return false;
+    }
+}
+`,
+      hints: [
+        'Quét tuần tự: duyệt từ trái sang phải, tăng bộ đếm mỗi lần so sánh; gặp đúng thì trả ngay, không gặp thì trả keys.length.',
+        'Tìm nhị phân: giữ lo/hi, mỗi vòng lặp lấy mid, tăng bước, rồi thu hẹp nửa trái hoặc nửa phải tùy so sánh.',
+        'Mảng rỗng là trường hợp biên: trả 0 bước và contains false.'
+      ],
+      explain: `Quét tuần tự phải kiểm tra lần lượt nên tệ nhất O(n). Tìm nhị phân trên dữ liệu đã sắp (mô phỏng cách B-tree chọn nhánh/entry) mỗi bước loại bỏ một nửa khoảng, nên chỉ O(log n) bước. Với 16 phần tử, quét tới phần tử thứ 14 mất 14 bước nhưng nhị phân chỉ vài bước.
+
+Đây là mô phỏng ý tưởng "có thứ tự nên nhảy có mục tiêu", không phải mô phỏng đầy đủ B-tree trên đĩa (B-tree có fanout lớn, đọc theo page, leaf chain). Trong PostgreSQL thật, lợi ích còn đến từ việc đọc ít page và tận dụng shared buffers; planner sẽ chọn sequential scan nếu ước lượng phải đọc phần lớn bảng vì sequential I/O rẻ hơn nhiều random heap fetch.`
+    }
+  ],
+  check: [
+    {
+      q: 'Trong B-tree của PostgreSQL, tại sao chiều cao cây thường rất thấp dù bảng có hàng tỷ hàng?',
+      options: [
+        'Vì mỗi node chỉ lưu một khóa như cây nhị phân',
+        'Vì mỗi page 8KB chứa hàng trăm khóa nên fanout lớn',
+        'Vì PostgreSQL nén toàn bộ index vào RAM',
+        'Vì index không lưu TID'
+      ],
+      answer: 1,
+      explain: 'Fanout lớn (nhiều khóa/con trỏ trong một page) làm chiều cao chỉ 3-4 tầng cho dữ liệu rất lớn, giảm số page phải đọc. Node một khóa là cây nhị phân, không phải B-tree trên đĩa.'
+    },
+    {
+      q: 'Index-only scan có thể tránh đọc heap khi nào?',
+      options: [
+        'Luôn luôn, miễn là có index',
+        'Khi index chứa đủ cột cần thiết và visibility map cho biết page all-visible',
+        'Chỉ khi dùng partial index',
+        'Khi bảng không có khóa chính'
+      ],
+      answer: 1,
+      explain: 'Cần đủ cột trong index và trang heap phải all-visible theo visibility map; nếu không PostgreSQL vẫn phải kiểm tra heap để xác nhận tuple nhìn thấy theo MVCC.'
+    },
+    {
+      q: 'Partial index {{CREATE INDEX ... WHERE status = \'PENDING\'}} có đặc điểm nào đúng?',
+      options: [
+        'Chứa mọi hàng của bảng nhưng sắp theo status',
+        'Chỉ chứa hàng thỏa điều kiện, nên nhỏ và chọn lọc cao cho truy vấn có cùng điều kiện',
+        'Tự động áp dụng cho mọi truy vấn bất kể WHERE',
+        'Không bao giờ được planner sử dụng'
+      ],
+      answer: 1,
+      explain: 'Partial index chỉ lập chỉ mục tập con hàng thỏa predicate, giúp index nhỏ và nhanh cho truy vấn có predicate tương thích; planner chỉ dùng khi điều kiện truy vấn bao hàm predicate của index.'
+    },
+    {
+      q: 'Quét tuần tự (sequential scan) so với tra cứu trên cấu trúc có thứ tự thường khác nhau thế nào về số bước?',
+      options: [
+        'Quét tuần tự luôn ít bước hơn',
+        'Tra cứu có thứ tự (như tìm nhị phân/B-tree) giảm số bước theo log n thay vì tuyến tính n',
+        'Hai cách luôn bằng nhau',
+        'Tra cứu có thứ tự phải đọc mọi phần tử'
+      ],
+      answer: 1,
+      explain: 'Quét tuần tự kiểm tra lần lượt O(n); tra cứu trên dữ liệu có thứ tự loại bỏ dần khoảng tìm kiếm nên O(log n) bước. Trên bảng thật planner còn cân nhắc chi phí I/O.'
+    }
+  ],
+  related: ['db-001', 'db-022', 'db-023', 'db-024'],
+  tags: ['B-tree', 'index', 'covering-index', 'partial-index', 'index-only-scan', 'PostgreSQL']
+},
+{
+  id: 'lesson-db-015',
+  track: 'db',
+  order: 15,
+  title: 'Composite index, leftmost prefix và khi nào index không được dùng',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Hiểu composite index sắp theo thứ tự cột và quy tắc cột trái nhất (leftmost prefix)',
+    'Chọn thứ tự cột theo equality, range, ORDER BY và độ chọn lọc',
+    'Nhận biết các trường hợp index không được dùng: hàm trên cột, LIKE bắt đầu bằng ký tự đại diện, kiểu dữ liệu lệch',
+    'Mô phỏng đếm bước tra cứu index theo prefix so với quét tuần tự bằng Java thuần'
+  ],
+  body: `**Tóm tắt:** Composite index (index nhiều cột, ví dụ {{(a, b, c)}}) sắp khóa theo từ điển: so cột {{a}} trước, bằng nhau mới so {{b}}. Quy tắc **leftmost prefix** (tiền tố trái nhất) nói rằng index chỉ hỗ trợ seek/range hiệu quả khi truy vấn lọc từ cột trái sang phải liên tục. Nhiều cách viết truy vấn vô tình phá khả năng dùng index: bọc cột trong hàm, dùng {{LIKE '%x'}} (ký tự đại diện {{%}} ở đầu), hoặc so sánh lệch kiểu dữ liệu khiến database phải ép kiểu ngầm.
+
+### Composite index và leftmost prefix
+Hãy tưởng tượng danh bạ giấy sắp theo (Họ, Tên). Bạn tìm nhanh được mọi người họ "Nguyen" (cột trái), hoặc "Nguyen Van" (hai cột trái). Nhưng bạn không thể lật thẳng tới tất cả người tên "An" nếu không biết họ, vì tên nằm sau họ trong thứ tự sắp.
+
+Index {{(tenant_id, status, created_at)}}:
+- {{WHERE tenant_id = 7}}: dùng được (prefix 1 cột).
+- {{WHERE tenant_id = 7 AND status = 'PENDING'}}: dùng được (2 cột).
+- {{WHERE tenant_id = 7 AND status = 'PENDING' AND created_at >= '2026-01-01'}}: dùng được (3 cột, cột cuối là range).
+- {{WHERE status = 'PENDING'}}: không seek theo index này vì thiếu cột trái {{tenant_id}}.
+- {{WHERE tenant_id = 7 AND created_at >= '2026-01-01'}} (bỏ {{status}}): seek được theo {{tenant_id}} nhưng không thu hẹp tiếp theo {{created_at}} như một khóa liên tục; planner có thể quét mọi entry của tenant 7 rồi lọc {{created_at}}. PostgreSQL B-tree thuần không làm skip scan tổng quát.
+
+~~~text
+Index (tenant_id, status, created_at) — các entry đã sắp:
+(7, DONE,    2026-01-01)
+(7, PENDING, 2026-01-02)  <- seek bat dau khi tenant_id=7,status=PENDING
+(7, PENDING, 2026-01-10)
+(7, PENDING, 2026-02-01)  <- range theo created_at di tiep lien tuc
+(9, PENDING, 2026-01-03)
+~~~
+
+Quy tắc chọn thứ tự cột (thực dụng): (1) cột equality {{=}} đặt trước, (2) cột range/{{BETWEEN}}/{{ORDER BY}} đặt sau trong nhóm dùng được, (3) trong các cột equality, cân nhắc độ chọn lọc (selectivity: tỉ lệ giá trị phân biệt; cột tenant_id 1000 giá trị chọn lọc hơn cột boolean). Luôn đối chiếu với truy vấn thật và {{EXPLAIN (ANALYZE, BUFFERS)}}.
+
+### Khi nào index không được dùng
+Ngay cả khi có index đúng cột, planner có thể không dùng hoặc chỉ dùng kém hiệu quả:
+
+1. **Hàm/biểu thức trên cột được index.** Index lưu giá trị gốc của cột; nếu WHERE biến đổi cột thì không khớp khóa.
+~~~sql
+-- khong dung index tren created_at (neu khong co index bieu thuc)
+WHERE date(created_at) = DATE '2026-01-10'
+-- cach viet giu index: so sanh tren cot goc
+WHERE created_at >= TIMESTAMP '2026-01-10 00:00:00'
+  AND created_at <  TIMESTAMP '2026-01-11 00:00:00'
+-- hoac tao expression index
+CREATE INDEX idx_orders_created_date ON orders ((date(created_at)));
+~~~
+
+2. **{{LIKE '%abc'}} hoặc {{LIKE '%abc%'}}.** B-tree sắp theo tiền tố chuỗi; ký tự đại diện {{%}} ở đầu làm mất điểm bắt đầu cố định nên không seek được. {{LIKE 'abc%'}} (tiền tố cố định) có thể dùng B-tree (với collation/operator class phù hợp, ví dụ {{text_pattern_ops}} trong một số trường hợp). Tìm kiếm chứa chuỗi giữa thường cần GIN/GiST với pg_trgm.
+
+3. **Kiểu dữ liệu lệch (implicit cast).** Ví dụ cột {{user_id}} kiểu {{bigint}} có index, nhưng truy vấn viết {{WHERE user_id = '42'}} (chuỗi) hoặc ngược lại: PostgreSQL có thể ép kiểu một phía; nếu ép kiểu trên **cột** (biến cột thành biểu thức) thì index không dùng. Luôn dùng cùng kiểu với định nghĩa cột (tham số bind đúng kiểu).
+
+4. **Toán tử/điều kiện không hỗ trợ bởi operator class của index.** B-tree mặc định hỗ trợ {{=, <, <=, >, >=}}; các toán tử khác cần operator class phù hợp.
+
+5. **Planner ước lượng trả về quá nhiều hàng.** Khi selectivity thấp (lọc ra phần lớn bảng), sequential scan + đọc tuần tự rẻ hơn index scan + nhiều random heap fetch; đây là lựa chọn có chủ đích.
+
+~~~text
+Bang tom tat nhanh:
+| Tinh huong                     | Index thuong dung duoc? | Cach xu ly                         |
+|--------------------------------|-------------------------|------------------------------------|
+| WHERE col = 1                  | Co                      | giu nguyen                         |
+| WHERE lower(col) = 'a'         | Khong (cot bi boc ham)  | expression index hoac so sanh goc  |
+| WHERE col LIKE 'abc%'          | Co (tien to co dinh)    | giu nguyen                         |
+| WHERE col LIKE '%abc'          | Khong                   | pg_trgm/GIN hoac thiet ke khac     |
+| WHERE col = '1' (col la int)   | Co the mat              | dung dung kieu tham so             |
+~~~
+
+### Liên hệ phỏng vấn
+- "Leftmost prefix là gì?" → composite index {{(a,b,c)}} chỉ hỗ trợ điều kiện bắt đầu từ {{a}} liên tục; thiếu {{a}} thì không seek theo index đó.
+- "Vì sao {{WHERE date(created_at)=...}} không dùng index trên {{created_at}}?" → hàm biến đổi cột thành biểu thức khác khóa index; viết lại thành range trên cột gốc hoặc tạo expression index.
+- "LIKE '%x' vì sao chậm?" → wildcard đầu chuỗi phá tiền tố cố định nên B-tree không seek; cần chiến lược tìm kiếm khác (trigram/full-text) tùy bài toán.
+
+> Senior tip: khi nghi index "không ăn", đọc {{EXPLAIN (ANALYZE, BUFFERS)}} để xem node thực tế (Seq Scan/Index Scan), kiểm tra kiểu tham số ở driver/ORM, và kiểm tra có hàm/cast ngầm trên cột hay không.
+`,
+  exercises: [
+    {
+      title: 'Mô phỏng leftmost prefix: đếm bước tra cứu index và quét tuần tự',
+      prompt: `Mô phỏng bảng {{orders}} có các cột số nguyên {{tenantId}} và {{createdDay}} (ngày dạng số, ví dụ 20260110). Dữ liệu đã được sắp theo (tenantId, createdDay) giống một composite index.
+
+Cho mảng song song {{tenants}} và {{days}} cùng độ dài, đã sắp tăng theo (tenants[i], days[i]). Cài {{PrefixIndexSim}}:
+- Constructor {{PrefixIndexSim(int[] tenants, int[] days)}}.
+- {{int scanAllSteps(int tenantId, int dayFrom, int dayTo)}}: quét tuần tự toàn bộ mảng, mỗi hàng kiểm tra tính là 1 bước; trả về tổng số hàng đã kiểm tra (luôn bằng độ dài mảng, vì phải duyệt hết để chắc chắn).
+- {{int prefixIndexSteps(int tenantId, int dayFrom, int dayTo)}}: mô phỏng tra cứu dùng composite index (tenantId, createdDay). Bước 1: tìm nhị phân vị trí bắt đầu của tenantId (mỗi lần so sánh phần tử giữa với tenantId tính 1 bước). Bước 2: từ vị trí đầu của tenantId, duyệt tuần tự trong phạm vi tenantId và đếm mỗi hàng xét là 1 bước, nhưng **dừng sớm** khi {{days[i] > dayTo}} (vì trong cùng tenant dữ liệu đã sắp theo day). Nếu tenantId không tồn tại, chỉ trả về số bước tìm nhị phân. Trả về tổng bước (bước tìm nhị phân + số hàng đã xét trong phạm vi).
+- {{int countMatches(int tenantId, int dayFrom, int dayTo)}}: trả về số hàng thỏa {{tenantId}} đúng và {{dayFrom <= day <= dayTo}}.
+
+Gợi ý: tìm nhị phân cận dưới (lower bound) của tenantId.`,
+      starter: `class PrefixIndexSim {
+    private final int[] tenants;
+    private final int[] days;
+
+    PrefixIndexSim(int[] tenants, int[] days) {
+        this.tenants = tenants == null ? new int[0] : tenants.clone();
+        this.days = days == null ? new int[0] : days.clone();
+    }
+
+    int scanAllSteps(int tenantId, int dayFrom, int dayTo) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int prefixIndexSteps(int tenantId, int dayFrom, int dayTo) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int countMatches(int tenantId, int dayFrom, int dayTo) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+`,
+      tests: `public class Main {
+    static void check(String name, boolean cond) {
+        if (cond) System.out.println("PASS " + name);
+        else System.out.println("FAIL " + name);
+    }
+    public static void main(String[] args) {
+        int[] t = {1,1,1,1, 2,2,2, 3,3,3,3,3};
+        int[] d = {20260101,20260105,20260110,20260120, 20260102,20260107,20260115, 20260101,20260103,20260105,20260107,20260109};
+        PrefixIndexSim sim = new PrefixIndexSim(t, d);
+
+        check("scan all is full length", sim.scanAllSteps(1, 20260103, 20260112) == 12);
+
+        int idx = sim.prefixIndexSteps(1, 20260103, 20260112);
+        check("prefix index fewer steps than scan", idx < sim.scanAllSteps(1, 20260103, 20260112));
+
+        check("count matches tenant1 range", sim.countMatches(1, 20260103, 20260112) == 2);
+
+        check("count matches tenant3 range", sim.countMatches(3, 20260104, 20260108) == 2);
+
+        check("tenant not found uses only search steps", sim.prefixIndexSteps(5, 20260101, 20260131) <= 4 && sim.countMatches(5, 20260101, 20260131) == 0);
+
+        PrefixIndexSim sim2 = new PrefixIndexSim(new int[]{7,7,7}, new int[]{1,2,3});
+        check("scan all small", sim2.scanAllSteps(7,1,3) == 3);
+        check("count all in range", sim2.countMatches(7,1,3) == 3);
+
+        PrefixIndexSim empty = new PrefixIndexSim(new int[0], new int[0]);
+        check("empty scan", empty.scanAllSteps(1,1,2) == 0);
+        check("empty index", empty.prefixIndexSteps(1,1,2) == 0);
+
+        System.out.println("RESULT " + (countPass()) + "/9");
+    }
+    static int countPass() {
+        int pass = 0;
+        int[] t = {1,1,1,1, 2,2,2, 3,3,3,3,3};
+        int[] d = {20260101,20260105,20260110,20260120, 20260102,20260107,20260115, 20260101,20260103,20260105,20260107,20260109};
+        PrefixIndexSim sim = new PrefixIndexSim(t, d);
+        if (sim.scanAllSteps(1, 20260103, 20260112) == 12) pass++;
+        if (sim.prefixIndexSteps(1, 20260103, 20260112) < sim.scanAllSteps(1, 20260103, 20260112)) pass++;
+        if (sim.countMatches(1, 20260103, 20260112) == 2) pass++;
+        if (sim.countMatches(3, 20260104, 20260108) == 2) pass++;
+        if (sim.prefixIndexSteps(5, 20260101, 20260131) <= 4 && sim.countMatches(5, 20260101, 20260131) == 0) pass++;
+        PrefixIndexSim sim2 = new PrefixIndexSim(new int[]{7,7,7}, new int[]{1,2,3});
+        if (sim2.scanAllSteps(7,1,3) == 3) pass++;
+        if (sim2.countMatches(7,1,3) == 3) pass++;
+        PrefixIndexSim empty = new PrefixIndexSim(new int[0], new int[0]);
+        if (empty.scanAllSteps(1,1,2) == 0) pass++;
+        if (empty.prefixIndexSteps(1,1,2) == 0) pass++;
+        return pass;
+    }
+}
+`,
+      reference: `class PrefixIndexSim {
+    private final int[] tenants;
+    private final int[] days;
+
+    PrefixIndexSim(int[] tenants, int[] days) {
+        this.tenants = tenants == null ? new int[0] : tenants.clone();
+        this.days = days == null ? new int[0] : days.clone();
+    }
+
+    int scanAllSteps(int tenantId, int dayFrom, int dayTo) {
+        // quet tuan tu toan bo: luon kiem tra moi hang
+        return tenants.length;
+    }
+
+    int prefixIndexSteps(int tenantId, int dayFrom, int dayTo) {
+        if (tenants.length == 0) return 0;
+        // buoc 1: tim nhi phan lower bound cua tenantId
+        int lo = 0, hi = tenants.length;
+        int steps = 0;
+        while (lo < hi) {
+            int mid = lo + (hi - lo) / 2;
+            steps++; // so sanh tenants[mid] voi tenantId
+            if (tenants[mid] < tenantId) lo = mid + 1;
+            else hi = mid;
+        }
+        int i = lo;
+        // buoc 2: duyet trong pham vi tenantId, dung som khi day > dayTo
+        while (i < tenants.length && tenants[i] == tenantId) {
+            steps++; // xet mot hang trong pham vi tenant
+            if (days[i] > dayTo) break; // vi da sap theo day trong cung tenant
+            i++;
+        }
+        return steps;
+    }
+
+    int countMatches(int tenantId, int dayFrom, int dayTo) {
+        int count = 0;
+        for (int i = 0; i < tenants.length; i++) {
+            if (tenants[i] == tenantId && days[i] >= dayFrom && days[i] <= dayTo) count++;
+        }
+        return count;
+    }
+}
+`,
+      hints: [
+        'scanAllSteps luôn trả về độ dài mảng vì quét tuần tự phải đi hết bảng để không bỏ sót.',
+        'prefixIndexSteps: dùng tìm nhị phân lower bound để nhảy tới tenantId; mỗi lần so sánh ở giữa tăng 1 bước.',
+        'Sau khi vào đúng tenant, duyệt tăng dần theo day và dừng sớm khi days[i] > dayTo (tận dụng thứ tự cột thứ hai trong prefix).'
+      ],
+      explain: `Composite index (tenantId, createdDay) cho phép "nhảy" tới đúng tenant (nhờ cột trái) rồi đi tuần tự trong khoảng day (nhờ cột phải đã sắp trong cùng tenant). Vì vậy số bước thường nhỏ hơn nhiều so với quét toàn bộ. Nếu thiếu cột trái (ví dụ chỉ lọc theo day), bạn không thể tìm nhị phân theo tenant và phải xét rộng hơn — đây chính là ý nghĩa leftmost prefix.
+
+Mô phỏng này đếm bước logic, không đo I/O thật. Trong PostgreSQL, lợi ích thực tế là đọc ít page index/heap hơn; nhưng nếu range trả về quá nhiều hàng, planner vẫn có thể chọn sequential scan.`
+    }
+  ],
+  check: [
+    {
+      q: 'Với composite index {{(tenant_id, status, created_at)}}, truy vấn nào tận dụng được tốt nhất theo leftmost prefix?',
+      options: [
+        'WHERE status = \'PENDING\'',
+        'WHERE tenant_id = 7 AND status = \'PENDING\' AND created_at >= \'2026-01-01\'',
+        'WHERE created_at >= \'2026-01-01\'',
+        'WHERE status = \'PENDING\' AND created_at >= \'2026-01-01\''
+      ],
+      answer: 1,
+      explain: 'Truy vấn lọc liên tục từ cột trái (tenant_id, status) rồi range ở cột tiếp theo (created_at) nên dùng được prefix. Thiếu tenant_id ở đầu làm mất khả năng seek theo index này.'
+    },
+    {
+      q: 'Vì sao {{WHERE date(created_at) = DATE \'2026-01-10\'}} thường không dùng index B-tree trên cột {{created_at}}?',
+      options: [
+        'Vì PostgreSQL không hỗ trợ so sánh ngày',
+        'Vì hàm bọc lên cột làm giá trị so sánh khác khóa đã lưu trong index',
+        'Vì B-tree chỉ dùng cho số nguyên',
+        'Vì index tự động bị vô hiệu sau một ngày'
+      ],
+      answer: 1,
+      explain: 'Index lưu giá trị gốc của created_at; áp dụng hàm lên cột tạo biểu thức không khớp khóa index (trừ khi có expression index). Viết lại thành range trên cột gốc để dùng index.'
+    },
+    {
+      q: 'Điều kiện {{LIKE \'%abc\'}} khó tận dụng B-tree index thông thường vì sao?',
+      options: [
+        'Vì chuỗi quá dài',
+        'Vì ký tự đại diện % ở đầu làm không có tiền tố cố định để seek trong cây đã sắp theo tiền tố',
+        'Vì LIKE chỉ hoạt động với số',
+        'Vì PostgreSQL cấm LIKE'
+      ],
+      answer: 1,
+      explain: 'B-tree sắp theo thứ tự giá trị/tiền tố; khi mẫu bắt đầu bằng % thì mọi giá trị đều có thể khớp nên không xác định được điểm bắt đầu, thường dẫn tới scan.'
+    },
+    {
+      q: 'So sánh lệch kiểu dữ liệu (ví dụ cột bigint so với tham số chuỗi) có thể khiến index không được dùng khi nào?',
+      options: [
+        'Khi database phải ép kiểu trên chính cột được index, biến điều kiện thành biểu thức trên cột',
+        'Khi bảng có quá ít hàng',
+        'Khi dùng khóa chính',
+        'Khi chạy trong transaction'
+      ],
+      answer: 1,
+      explain: 'Nếu việc ép kiểu ngầm áp dụng lên cột (thay vì lên hằng/tham số), điều kiện trở thành biểu thức trên cột và không khớp khóa index. Cách an toàn là truyền tham số đúng kiểu với cột.'
+    }
+  ],
+  related: ['db-001', 'db-003', 'db-022', 'db-023'],
+  tags: ['composite-index', 'leftmost-prefix', 'B-tree', 'LIKE', 'index', 'PostgreSQL']
+}
+
 );
