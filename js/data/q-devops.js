@@ -12970,4 +12970,1559 @@ Em sẽ xem đây là một chuỗi phối hợp chứ không phải chỉ tăng
   ],
   tags: ['Kubernetes', 'graceful shutdown', 'Spring Boot', 'readiness', 'rolling update']
 },
+{
+  id: 'devops-152',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Bạn triển khai một dịch vụ Spring Boot trong container trên Kubernetes. Ngoài MaxRAMPercentage, bạn sẽ đặt những JVM flag nào để vận hành an toàn (GC log, heap dump khi OOM, xử lý lỗi, encoding, timezone) và vì sao cần cẩn thận với các flag cố định kiểu {{-Xmx}} hay tắt container awareness?',
+  a: `**Tóm tắt:** Container chỉ là một "hộp" bị Linux giới hạn tài nguyên (CPU/RAM) bằng cgroup (nhóm tiến trình có trần tài nguyên). JVM flag là tham số dòng lệnh cấu hình JVM khi khởi động. Bộ flag vận hành tối thiểu nên giúp JVM nhận đúng giới hạn container, ghi đủ dữ liệu khi sự cố (GC log, heap dump, crash log), và giữ hành vi nhất quán (UTF-8, timezone) thay vì tối ưu mù quáng.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Container awareness (nhận biết container):** trên Java 17+ JVM mặc định đọc giới hạn từ cgroup ({{-XX:+UseContainerSupport}} bật sẵn). Nếu tắt hoặc dùng cấu hình lỗi thời, JVM có thể nhìn thấy toàn bộ RAM/CPU của node (máy chủ vật lý/VM chạy nhiều Pod) và chọn heap, số GC thread quá lớn → bị OOMKilled hoặc tranh chấp tài nguyên.
+- **Heap sizing:** {{-Xmx}} là kích thước heap (vùng nhớ Java chứa object) cố định, không tự theo limit Pod. Trong container nên ưu tiên {{-XX:MaxRAMPercentage}} (tỷ lệ heap theo RAM JVM nhìn thấy) để khi đổi limit vẫn hợp lý; vẫn phải chừa native memory (thread stack, metaspace, direct buffer, thư viện native).
+- **Dữ liệu chẩn đoán khi sự cố:** {{-Xlog:gc*:file=...}} ghi GC log (nhật ký dọn rác bộ nhớ) theo Unified Logging (JDK 9+) để biết pause, nguyên nhân GC. {{-XX:+HeapDumpOnOutOfMemoryError}} và {{-XX:HeapDumpPath}} tạo heap dump (ảnh chụp toàn bộ object trong heap) khi hết bộ nhớ Java heap để phân tích leak. {{-XX:ErrorFile}} và {{-XX:+ExitOnOutOfMemoryError}} giúp lưu crash log và thoát rõ ràng khi OOM nghiêm trọng.
+- **Tính nhất quán:** {{-Dfile.encoding=UTF-8}} và {{-Duser.timezone=UTC}} tránh khác biệt encoding/múi giờ giữa máy dev và container.
+
+~~~yaml
+# Ví dụ truyền qua biến môi trường (JAVA_TOOL_OPTIONS được JVM tự đọc)
+env:
+  - name: JAVA_TOOL_OPTIONS
+    value: >-
+      -XX:MaxRAMPercentage=60.0
+      -XX:+ExitOnOutOfMemoryError
+      -XX:+HeapDumpOnOutOfMemoryError
+      -XX:HeapDumpPath=/var/log/app/heap.hprof
+      -Xlog:gc*:file=/var/log/app/gc.log:time,uptime,level,tags:filecount=5,filesize=20m
+      -XX:ErrorFile=/var/log/app/hs_err_pid%p.log
+      -Dfile.encoding=UTF-8 -Duser.timezone=UTC
+~~~
+
+### Bảng trade-off / khi nào dùng
+| Flag / nhóm | Khi dùng | Đổi lại / lưu ý |
+|---|---|---|
+| {{MaxRAMPercentage}} | Limit Pod thay đổi theo môi trường, muốn heap tự theo | Phải đo native headroom; không phải bảo hiểm chống native OOM |
+| {{-Xmx}} cố định | Cần kiểm soát tuyệt đối và limit không đổi | Dễ lệch khi đổi limit, dễ gây OOMKilled nếu đặt quá cao |
+| GC log ra file | Cần điều tra pause/throughput trên production | Tốn I/O và dung lượng; cần rotation (filecount/filesize) |
+| Heap dump on OOM | Tìm memory leak | File lớn (có thể bằng heap), ghi vào disk tạm, có thể chứa dữ liệu nhạy cảm; tắt nếu volume không đủ |
+
+### Pitfall production
+1. **Ghi heap dump vào filesystem tạm nhỏ của container:** dump thất bại hoặc làm đầy disk, Pod crash vòng lặp. Cách tránh: mount volume đủ lớn, giới hạn số file, và cân nhắc quy trình thu thập an toàn.
+2. **Dùng {{-Xmx}} sát limit:** chỉ chừa ít cho metaspace/thread/direct buffer → OOMKilled dù heap "chưa đầy". Cách tránh: tính tổng ngân sách bộ nhớ, load test đo RSS/cgroup.
+3. **Bật flag thử nghiệm/copy từ blog cũ:** một số {{-XX}} không ổn định giữa phiên bản JVM. Cách tránh: chỉ dùng flag có tài liệu cho đúng bản JDK, kiểm tra bằng {{java -XX:+PrintFlagsFinal}} trên môi trường thật.
+4. **Không rotate GC log:** đầy disk sau vài ngày. Cách tránh: dùng {{filecount,filesize}} hoặc ship log ra ngoài.
+
+### Ví dụ đời thực
+- **Triệu chứng:** service có limit 2 GiB, thỉnh thoảng restart với exit 137 sau đợt tải cao; dashboard heap chỉ ~1.1 GiB, không có dump để phân tích.
+- **Điều tra:** thấy {{JAVA_TOOL_OPTIONS}} đặt {{-Xmx1700m}} và không bật heap dump/GC log; thread pool tăng lên 400 thread làm native memory vượt trần cgroup.
+- **Xử lý:** đổi sang {{-XX:MaxRAMPercentage=55.0}}, giới hạn thread pool, bật {{HeapDumpOnOutOfMemoryError}} ghi vào persistent volume 5 GiB, bật GC log xoay vòng 5x20MB, và {{ExitOnOutOfMemoryError}} để container thoát sạch.
+- **Kết quả đo được:** sau canary 48 giờ ở 1500 RPS, không còn OOMKilled; lần tăng memory bất thường sau đó có heap dump 1.3 GiB cho thấy cache không giới hạn, sửa xong RSS peak ổn định ~1.7 GiB.
+
+### Trả lời mẫu khi phỏng vấn
+Khi chạy Spring Boot trong container, em coi JVM là tiến trình chịu giới hạn cgroup nên ưu tiên flag giúp JVM hiểu đúng giới hạn và để lại dấu vết khi lỗi. Em thường dùng {{MaxRAMPercentage}} thay vì {{-Xmx}} cố định để heap theo limit Pod, nhưng luôn đo headroom cho native memory như thread stack, metaspace và direct buffer. Em bật GC log dạng Unified Logging có xoay vòng, heap dump khi OOM ghi vào volume đủ lớn, {{ErrorFile}} và {{ExitOnOutOfMemoryError}} để sự cố có dữ liệu và container thoát rõ ràng. Em giữ {{file.encoding}} UTF-8 và timezone UTC cho nhất quán. Em tránh copy flag không rõ phiên bản và luôn xác minh JVM thấy đúng cgroup limit bằng log khởi động hoặc PrintFlagsFinal. Trước rollout em load test để cân bằng giữa heap, GC pause và RSS thực tế, vì mục tiêu là ổn định dưới tải chứ không phải heap càng lớn càng tốt.
+
+> Senior tip: "Bộ flag chuẩn" phải đi kèm đường dẫn lưu trữ và quy trình thu gom dump/log; bật chẩn đoán mà không có chỗ ghi và không có người đọc thì chỉ tạo rủi ro mới.`,
+  follow: [
+    'Khi nào bạn chọn {{-Xmx}} cố định thay vì {{MaxRAMPercentage}} trong môi trường Kubernetes?',
+    'Làm thế nào để thu thập và phân tích heap dump/GC log an toàn khi container chạy với filesystem read-only?',
+    'Bạn kiểm tra JVM đang nhận đúng số CPU/RAM của container bằng cách nào trước khi tin vào cấu hình?'
+  ],
+  tags: ['JVM', 'container', 'GC log', 'heap dump', 'Kubernetes', 'tuning']
+},
+{
+  id: 'devops-153',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Nhiều service Spring Boot ghi log dạng text tự do nên rất khó tìm nguyên nhân khi một request đi qua API gateway, service A, B và DB. Bạn thiết kế structured logging JSON và correlation id (MDC) thế nào để truy vết end-to-end, và cần lưu ý gì về hiệu năng, bảo mật dữ liệu log?',
+  a: `**Tóm tắt:** Structured logging là ghi log có cấu trúc (thường JSON, mỗi trường là key-value) để máy dễ tìm/lọc/tổng hợp. Correlation id (mã tương quan) là một chuỗi định danh gắn vào mọi log của cùng một request qua nhiều service. MDC (Mapped Diagnostic Context) là "ngăn chứa ngữ cảnh" theo thread trong logging framework (như Logback/Log4j2) để tự động chèn correlation id vào mỗi dòng log.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Vấn đề log text:** {{INFO order created 123}} khó truy vấn khi có hàng triệu dòng và nhiều instance. JSON cho phép hệ thống như Elasticsearch/Loki lọc theo {{traceId}}, {{userId}}, {{status}}.
+- **Correlation id / trace id:** client hoặc gateway sinh id (ví dụ UUID/chuỗi ngẫu nhiên) và gửi qua HTTP header (thường {{X-Request-Id}} hoặc header trace của W3C {{traceparent}}). Mỗi service đọc header, đặt vào MDC, và truyền tiếp cho downstream call. Khi có distributed tracing (OpenTelemetry) thì trace id/span id còn liên kết với trace.
+- **MDC trong Java:** khi request vào, filter đặt {{MDC.put("traceId", id)}}; mọi logger trong cùng thread sẽ kèm field này; khi trả response phải {{MDC.clear()}} để tránh rò sang request khác (đặc biệt với thread pool).
+
+~~~java
+// Ví dụ filter: nhận hoặc tạo correlation id và đưa vào MDC
+@Component
+public class CorrelationFilter extends OncePerRequestFilter {
+  @Override
+  protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
+      throws ServletException, IOException {
+    String traceId = req.getHeader("X-Request-Id");
+    if (traceId == null || traceId.isBlank()) traceId = java.util.UUID.randomUUID().toString();
+    org.slf4j.MDC.put("traceId", traceId); // gắn ngữ cảnh cho thread này
+    res.setHeader("X-Request-Id", traceId);
+    try { chain.doFilter(req, res); }
+    finally { org.slf4j.MDC.clear(); } // bắt buộc dọn để không rò thread pool
+  }
+}
+~~~
+
+~~~json
+{"timestamp":"2026-11-14T08:01:02.345Z","level":"INFO","service":"order","traceId":"c9b1-42f0","userId":"u88","msg":"Order created","orderId":"o-991"}
+~~~
+
+### Bảng trade-off / khi nào dùng
+| Lựa chọn | Khi dùng | Đổi lại |
+|---|---|---|
+| JSON stdout | Chạy trên K8s, log ship bởi agent (Fluent Bit/Vector) | Log người đọc trực tiếp khó hơn; cần encoder và schema thống nhất |
+| Ghi file + sidecar | Môi trường legacy cần file | Phức tạp vận hành, xoay vòng file |
+| Chỉ trace id | Cần truy vết nhanh, chi phí thấp | Không thay thế tracing chi tiết (span, timing từng hop) |
+| Trace id + OpenTelemetry | Cần latency breakdown end-to-end | Cấu hình và chi phí lưu trữ cao hơn |
+
+### Pitfall production
+1. **Không clear MDC:** request sau trên cùng thread pool thấy traceId của request trước → truy vết sai hoàn toàn. Cách tránh: clear trong {{finally}}, dùng TaskDecorator khi chạy async.
+2. **Log dữ liệu nhạy cảm:** password, token, số thẻ, thông tin cá nhân. Cách tránh: mask/redact, quy ước field cho phép, review cấu hình log.
+3. **Mất trace khi gọi async/HTTP client khác:** MDC không tự truyền qua thread mới hoặc HTTP call. Cách tránh: propagate header, dùng thư viện tracing hoặc tự copy context.
+4. **Log quá nhiều (debug ở prod):** tăng độ trễ I/O và chi phí lưu trữ. Cách tránh: mức log phù hợp, sampling, tách log nghiệp vụ quan trọng.
+
+### Ví dụ đời thực
+- **Triệu chứng:** khách báo lỗi thanh toán gián đoạn 2% trong giờ cao điểm; mỗi service có log riêng, mất 40 phút mới ghép được một ca lỗi.
+- **Điều tra:** gateway không truyền {{X-Request-Id}}, service B log text không có orderId; một instance rò MDC làm 5% log gắn sai trace.
+- **Xử lý:** chuẩn hóa JSON log (Logstash/ecs-like fields), gateway sinh traceId nếu thiếu, mọi HTTP client truyền header, thêm filter clear MDC và test với thread pool; bật masking cho {{authorization}} và số thẻ.
+- **Kết quả đo được:** thời gian truy vết một giao dịch lỗi giảm từ ~40 phút xuống < 5 phút; dung lượng log tăng ~12% do thêm field nhưng chi phí điều tra sự cố giảm rõ rệt.
+
+### Trả lời mẫu khi phỏng vấn
+Em sẽ tách hai việc: định dạng log và ngữ cảnh truy vết. Log nên ở dạng JSON có các field ổn định như timestamp, level, service, traceId, message để hệ thống tập trung truy vấn nhanh. Correlation id được sinh ở gateway hoặc ở request đầu tiên, lưu vào MDC của thread xử lý và truyền sang service khác qua header HTTP, đồng thời trả lại cho client để hỗ trợ tra cứu. Trong Spring Boot em dùng filter để put/clear MDC, và cẩn thận với async hay thread pool vì MDC không tự đi theo; khi đó cần propagate context. Em cũng chú ý không log dữ liệu nhạy cảm, kiểm soát mức log và dung lượng. Correlation id giúp ghép log, còn nếu cần biết độ trễ từng bước em kết hợp với distributed tracing như OpenTelemetry để có trace/span chi tiết.
+
+> Senior tip: Hãy coi schema log là một "hợp đồng" giữa các team; nếu mỗi service đặt tên field khác nhau ({{traceId}} vs {{request_id}}) thì hệ thống quan sát sẽ gãy dù ai cũng "có log".`,
+  follow: [
+    'MDC hoạt động thế nào với {{@Async}}, {{CompletableFuture}} và thread pool, và bạn truyền context ra sao?',
+    'Khi nào correlation id trong log là đủ, khi nào cần distributed tracing với trace/span?',
+    'Bạn kiểm soát rủi ro rò rỉ dữ liệu nhạy cảm trong structured log như thế nào?'
+  ],
+  tags: ['logging', 'MDC', 'correlation id', 'observability', 'Spring Boot']
+},
+{
+  id: 'devops-154',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Dashboard cho biết "service chậm" nhưng bạn cần biết chậm do GC, do hết thread hay do heap áp lực. Bạn dùng Micrometer và Prometheus để quan sát JVM (heap, GC pause, thread) như thế nào: metric nào quan trọng, đọc ra sao, và tránh hiểu nhầm gì?',
+  a: `**Tóm tắt:** Micrometer là thư viện đo lường (metrics facade) trong hệ sinh thái Spring, giúp thu thập số liệu và xuất ra nhiều backend; Prometheus là hệ thống thu thập/lưu trữ metric dạng time-series bằng cơ chế pull (chủ động kéo từ endpoint {{/actuator/prometheus}}). Để hiểu sức khỏe JVM cần nhìn cùng lúc bộ nhớ (heap/non-heap), GC (tần suất/thời gian dừng), thread và CPU, thay vì chỉ một con số.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Metric (số liệu):** giá trị đo theo thời gian, ví dụ dung lượng heap dùng, số lần GC, thời gian pause. Prometheus phân biệt counter (chỉ tăng), gauge (lên xuống), histogram/summary (phân phối).
+- **Actuator/Micrometer:** Spring Boot Actuator phơi endpoint; Micrometer binder thu thập JVM metrics. Prometheus scrape (kéo) định kỳ (ví dụ 15s) → có dữ liệu lịch sử để so sánh trước/sau deploy.
+- **Heap:** {{jvm_memory_used_bytes}}, {{jvm_memory_max_bytes}} theo area (heap/nonheap) cho biết áp lực cấp phát. Heap tăng liên tục và không giảm sau GC mạnh có thể là leak.
+- **GC pause:** thời gian GC dừng ứng dụng (stop-the-world, tùy collector/pha) ảnh hưởng độ trễ tail (p99). Metric GC giúp thấy pause dài bất thường.
+- **Threads:** {{jvm_threads_live_threads}}, {{jvm_threads_states_threads}} cho biết nghẽn (blocked/waiting nhiều) hoặc cạn thread.
+
+~~~yaml
+# application.yml (ví dụ bật actuator/prometheus - cấu hình thực tế tùy môi trường)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: order-service
+~~~
+
+~~~text
+Sơ đồ thu thập (đơn giản):
+Spring Boot (/actuator/prometheus) --pull mỗi 15s--> Prometheus --query--> Grafana/Alert
+~~~
+
+### Bảng trade-off / khi nào dùng
+| Nhóm metric | Dùng để phát hiện | Giới hạn / cần kết hợp |
+|---|---|---|
+| Heap used/max | Áp lực bộ nhớ, xu hướng leak | Không thấy native memory/cgroup RSS |
+| GC pause/count | Độ trễ do GC, tần suất dọn rác | Cần GC log để biết nguyên nhân chi tiết |
+| Live/blocked threads | Exhaustion thread pool, deadlock dấu hiệu | Cần thread dump (jstack/jcmd) để xác định stack cụ thể |
+| CPU/process | Throttling, nóng CPU | CPU container có thể bị limit/throttle khác node |
+
+### Pitfall production
+1. **Chỉ nhìn heap used trung bình:** spike ngắn giữa hai lần scrape vẫn gây OOM hoặc pause. Cách tránh: xem max/percentile, tăng độ phân giải khi điều tra, kết hợp GC log.
+2. **Nhầm counter với gauge:** lấy giá trị counter tại một thời điểm thay vì tốc độ (rate) → kết luận sai. Cách tránh: dùng {{rate()}} cho counter trong PromQL.
+3. **Không gắn nhãn (tag) môi trường/service/instance:** không so sánh được giữa Pod. Cách tránh: tag nhất quán nhưng tránh high-cardinality (tag có quá nhiều giá trị như userId) làm Prometheus quá tải.
+4. **Metric JVM đủ nhưng thiếu metric nghiệp vụ/HTTP:** biết GC cao nhưng không biết endpoint nào gây tải. Cách tránh: kết hợp timer HTTP, DB pool, queue lag.
+
+### Ví dụ đời thực
+- **Triệu chứng:** p99 latency tăng từ 120ms lên 900ms sau 10 phút chạy tải 800 RPS.
+- **Điều tra:** Prometheus cho thấy {{jvm_gc_pause_seconds}} tăng đột biến, heap used dao động sát max, live threads tăng từ 80 lên 350 và nhiều thread ở trạng thái blocked; HTTP metric chỉ ra endpoint /checkout chậm.
+- **Xử lý:** giới hạn kích thước cache nội bộ (giảm allocation), điều chỉnh pool và timeout, tăng headroom heap theo kết quả load test.
+- **Kết quả đo được:** GC pause p99 giảm từ 450ms xuống 70ms, p99 request giảm về 150ms, blocked threads ổn định < 20.
+
+### Trả lời mẫu khi phỏng vấn
+Khi service chậm, em không đoán mà dựng bức tranh từ metric JVM và metric ứng dụng. Với Spring Boot em dùng Micrometer qua Actuator để Prometheus scrape các chỉ số heap, GC pause, thread, CPU. Heap cho thấy áp lực bộ nhớ, GC pause liên quan trực tiếp đến độ trễ tail, còn số thread và trạng thái thread cho biết nghẽn hoặc cạn tài nguyên. Em đọc counter bằng rate và so sánh theo thời gian, đồng thời gắn tag service/instance nhưng tránh high-cardinality. Metric cho hướng điều tra nhanh, nhưng để kết luận nguyên nhân gốc em vẫn cần GC log, thread dump hoặc trace tùy triệu chứng. Ví dụ nếu heap ổn nhưng latency tăng và thread blocked cao, vấn đề có thể là lock hoặc downstream chậm chứ không phải GC. Mục tiêu là đặt alert có ý nghĩa và liên kết được "triệu chứng → chỉ số → bằng chứng chi tiết".
+
+> Senior tip: Alert trên triệu chứng người dùng thấy (latency, error rate, saturation) thường hữu ích hơn alert từng metric JVM rời rạc; metric JVM là lớp giải thích "vì sao".`,
+  follow: [
+    'Bạn phân biệt heap pressure và native memory pressure khi chỉ có Prometheus metric JVM?',
+    'Làm sao thiết kế label/tag cho Micrometer để hữu ích mà không gây high-cardinality cho Prometheus?',
+    'Khi GC pause tăng, bạn kết hợp metric nào với GC log để khoanh vùng nguyên nhân?'
+  ],
+  tags: ['Micrometer', 'Prometheus', 'JVM metrics', 'GC', 'observability']
+},
+{
+  id: 'devops-155',
+  topic: 'devops',
+  level: 'lead',
+  q: 'Cold start (khởi động lạnh) của dịch vụ Spring Boot trong container mất 40–60 giây, làm autoscale và rolling update phản ứng chậm. Bạn dùng CDS/AppCDS và các kỹ thuật giảm thời gian khởi động khác như thế nào, cơ chế hoạt động ra sao và cần đo lường/đánh đổi những gì?',
+  a: `**Tóm tắt:** CDS (Class Data Sharing) và AppCDS (Application CDS) là cơ chế của JVM/HotSpot lưu sẵn metadata class đã được xử lý vào một archive để lần chạy sau nạp nhanh hơn, giảm công việc class loading/linking khi khởi động. Nó giúp rút ngắn thời gian start nhưng không thay thế việc tối ưu cấu hình Spring, phụ thuộc và quy trình đo lường.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Khởi động Java tốn gì:** JVM nạp class, xác minh/chuẩn bị metadata, JIT (Just-In-Time compiler) chưa tối ưu mã nóng, và Spring Boot khởi tạo context/bean/kết nối. Trên container, image pull và readiness cũng cộng thêm.
+- **CDS/AppCDS:** thay vì mỗi lần đều parse classfile và dựng cấu trúc metadata từ đầu, JVM ánh xạ (memory-map) archive dùng chung vào bộ nhớ. AppCDS mở rộng cho class của ứng dụng (không chỉ core JDK), nhưng cần tạo archive phù hợp với classpath/thư viện thực tế.
+- **Các hướng bổ trợ:** giảm số bean/auto-config không cần, lazy init có chọn lọc (cẩn thận vì dời lỗi/độ trễ sang request đầu), tối ưu image/layer để pull nhanh, và ở JDK mới có cơ chế AOT cache (ví dụ Project Leyden trong các bản phát hành gần đây) — cần kiểm tra đúng phiên bản JDK bạn chạy vì khả năng và cờ khác nhau.
+
+~~~text
+Luồng đơn giản với AppCDS:
+Build image -> chạy bước "training"/tạo archive -> đóng gói archive vào image
+Runtime: JVM -XX:SharedArchiveFile=app.jsa -jar app.jar (nạp metadata nhanh hơn)
+~~~
+(Lưu ý: cú pháp/cờ và quy trình tạo archive phụ thuộc phiên bản JDK và công cụ build; luôn theo tài liệu của JDK đang dùng.)
+
+### Bảng trade-off / khi nào dùng
+| Kỹ thuật | Lợi ích chính | Đổi lại |
+|---|---|---|
+| AppCDS | Giảm thời gian khởi động, dễ áp dụng tương đối | Cần quy trình tạo archive đúng classpath; lợi ích phụ thuộc ứng dụng |
+| Tối ưu Spring/context | Giảm khởi tạo thật sự | Cần refactor/cấu hình, rủi ro hành vi nếu lazy sai chỗ |
+| AOT/native image (nếu dùng) | Start rất nhanh, footprint khác | Ràng buộc tương thích, build phức tạp, chi phí chuyển đổi |
+| Giữ minReplicas ấm | Ẩn cold start khỏi người dùng | Tốn tài nguyên liên tục |
+
+### Pitfall production
+1. **Archive lệch classpath:** thay đổi dependency nhưng vẫn dùng archive cũ → không dùng được hoặc lợi ích mất. Cách tránh: tạo archive trong pipeline cùng phiên bản artifact.
+2. **Chỉ đo "process start" mà bỏ readiness thực:** app lên process nhưng chưa sẵn sàng nhận traffic (warm DB pool, cache). Cách tránh: đo đến khi readiness probe đạt.
+3. **Lazy init gây lỗi ở request đầu:** lỗi cấu hình lộ muộn, latency spike. Cách tránh: chỉ lazy phần an toàn, test kỹ.
+4. **Kỳ vọng quá lớn:** AppCDS không làm nhanh logic nghiệp vụ khởi động nặng (migrate schema, tải dữ liệu lớn). Cách tránh: tách việc nặng khỏi đường start request-serving.
+
+### Ví dụ đời thực
+- **Triệu chứng:** HPA scale-out thêm Pod nhưng mất ~55 giây mới Ready; trong đợt flash sale 10 phút, 8% request timeout vì thiếu capacity kịp thời.
+- **Điều tra:** phân tích startup cho thấy ~18 giây ở class loading/framework init, ~12 giây kết nối/warm pool, phần còn lại do pull image và probe.
+- **Xử lý:** tối ưu auto-config và giảm bean không dùng, bật AppCDS trong image build, dùng image/layer gọn hơn; giữ minReplicas cao hơn trong giờ cao điểm và cấu hình startupProbe hợp lý.
+- **Kết quả đo được:** thời gian đến Ready giảm từ 55 giây xuống 28 giây (môi trường staging, cùng cấu hình), tỷ lệ timeout trong bài test flash sale giảm còn 1.5%.
+
+### Trả lời mẫu khi phỏng vấn
+Em tiếp cận cold start như một bài toán đo lường: tách thời gian pull image, start process, khởi tạo Spring, warm-up và readiness. CDS/AppCDS giúp bằng cách chia sẻ metadata class đã xử lý nên giảm chi phí class loading ở những lần chạy sau; với Spring Boot, AppCDS có ý nghĩa hơn vì ứng dụng có nhiều class. Em tích hợp việc tạo archive vào pipeline để archive luôn khớp artifact, rồi đo lại thời gian đến Ready chứ không chỉ thời gian JVM bật. Đồng thời em tối ưu phần chiếm nhiều thời gian nhất: cắt auto-config/bean thừa, xem xét lazy init cẩn thận, và đảm bảo kết nối tài nguyên không chặn readiness không cần thiết. Ở mức hệ thống, em phối hợp với startupProbe, chiến lược scale và minReplicas để giảm tác động lên người dùng. Em cũng nêu rõ giới hạn: AppCDS không thay thế thiết kế khởi động gọn và cần kiểm tra đúng tính năng theo phiên bản JDK đang chạy.
+
+> Senior tip: Hãy tối ưu theo "đường tới Ready" và theo percentile của thời gian start trong autoscale; một cải tiến 20% trên máy dev không đảm bảo cải tiến tương đương khi Pod lạnh trên cluster.`,
+  follow: [
+    'Bạn đo "startup time" như thế nào để phản ánh đúng trải nghiệm autoscale (đến Ready, đến phục vụ tốt)?',
+    'AppCDS yêu cầu quy trình build/deploy thay đổi ra sao để archive luôn khớp classpath?',
+    'Khi nào bạn chọn AOT/native image thay vì AppCDS cho dịch vụ Spring Boot?'
+  ],
+  tags: ['CDS', 'AppCDS', 'startup', 'Spring Boot', 'Kubernetes', 'performance']
+},
+{
+  id: 'devops-156',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Khi build image cho dịch vụ Java, bạn sẽ chọn base image JRE nào (ví dụ Eclipse Temurin trên Debian/Alpine, distroless, UBI, hoặc runtime tự dựng bằng jlink)? Hãy phân tích đánh đổi về kích thước, bảo mật, khả năng debug, tương thích native và vận hành bản vá.',
+  a: `**Tóm tắt:** Base image là lớp hệ điều hành/thư viện nền mà image ứng dụng xây lên; JRE (Java Runtime Environment) là môi trường chạy Java (không cần bộ công cụ phát triển đầy đủ như JDK). Lựa chọn base image ảnh hưởng đến kích thước tải về, lỗ hổng bảo mật, khả năng debug trong container, và tương thích với thư viện native (phần code chạy ngoài JVM, viết bằng C/C++...).
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- **JDK vs JRE:** JDK gồm compiler và công cụ build; production thường chỉ cần runtime. Multi-stage build giúp stage chạy chỉ mang JRE.
+- **Alpine (musl libc) vs Debian/Ubuntu (glibc):** libc là thư viện C chuẩn của hệ thống. Nhiều bản phân phối Java/native lib giả định glibc; Alpine dùng musl nên image nhỏ nhưng có thể gặp lỗi tương thích với một số native dependency (JDBC driver native, thư viện xử lý ảnh, font...).
+- **Distroless:** image rất tối giản, thường không có shell/package manager → giảm bề mặt tấn công (attack surface) nhưng khó {{exec}} vào để debug nhanh.
+- **UBI (Universal Base Image) / distro doanh nghiệp:** chu kỳ vá và chính sách hỗ trợ rõ, phù hợp môi trường yêu cầu tuân thủ.
+- **jlink:** công cụ tạo runtime image tùy biến chỉ gồm module Java cần thiết (JPMS), có thể giảm kích thước nhưng cần xác định đúng module và kiểm thử kỹ.
+
+~~~text
+Ví dụ lựa chọn theo nhu cầu:
+- Cần nhỏ + chấp nhận đánh đổi debug: distroless (có kế hoạch debug từ xa/ephemeral)
+- Cần tương thích rộng, dễ vận hành: Temurin trên distro phổ biến (glibc)
+- Cần kiểm soát module Java: jlink custom runtime (chi phí build/test cao hơn)
+~~~
+
+### Bảng trade-off / khi nào dùng
+| Lựa chọn | Ưu điểm | Nhược điểm / rủi ro |
+|---|---|---|
+| Temurin (glibc, Debian/Ubuntu) | Tương thích tốt, cộng đồng lớn | Kích thước lớn hơn Alpine |
+| Alpine-based JRE | Image nhỏ, pull nhanh | Rủi ro tương thích musl/native |
+| Distroless Java | Ít gói thừa, bề mặt tấn công giảm | Khó debug tương tác, phụ thuộc observability |
+| UBI / bản doanh nghiệp | Quy trình vá và tuân thủ rõ | Có thể nặng hơn, phụ thuộc kênh phân phối |
+| jlink runtime | Gọn theo module | Phức tạp khi app dùng reflection/module động, cần kiểm thử |
+
+### Pitfall production
+1. **Chọn Alpine chỉ vì số MB:** gặp lỗi native khó tái hiện ở staging dùng glibc. Cách tránh: test cùng distro với production, kiểm tra dependency native.
+2. **Không có kế hoạch debug cho distroless:** sự cố ban đêm không {{kubectl exec}} được. Cách tránh: log/metrics/tracing đầy đủ, ephemeral debug container, hoặc image debug song song.
+3. **Không pin và vá base image:** lỗ hổng CVE tồn đọng. Cách tránh: pin digest/version, quét image trong CI, lịch rebuild định kỳ.
+4. **jlink thiếu module:** lỗi {{ClassNotFoundException/NoClassDefFoundError}} khi chạy. Cách tránh: phân tích module, test toàn bộ luồng.
+
+### Ví dụ đời thực
+- **Triệu chứng:** sau khi chuyển sang image Alpine để giảm kích thước, service xử lý PDF lỗi font và crash ngẫu nhiên dưới tải.
+- **Điều tra:** thư viện native và fontconfig hoạt động khác trên musl; môi trường test trước đó dùng Ubuntu nên không phát hiện.
+- **Xử lý:** quay lại Temurin trên Debian slim cho service này, giữ Alpine cho service thuần Java đã được kiểm chứng; bổ sung bước integration test render PDF trong CI.
+- **Kết quả đo được:** image tăng từ 110 MB lên 165 MB nhưng lỗi PDF biến mất (0 lỗi trong 7 ngày), thời gian khắc phục sự cố giảm vì có shell và công cụ chẩn đoán cơ bản.
+
+### Trả lời mẫu khi phỏng vấn
+Em chọn base image theo ràng buộc thực tế chứ không chỉ nhìn kích thước. JRE trên distro glibc như Temurin thường là lựa chọn an toàn về tương thích, đặc biệt khi có thư viện native. Alpine nhỏ nhưng dùng musl nên cần kiểm thử kỹ các thành phần native. Distroless giảm bề mặt tấn công và rất phù hợp khi đội đã có observability và quy trình debug không phụ thuộc shell trong container. UBI hoặc image doanh nghiệp hữu ích khi cần chu kỳ vá và tuân thủ rõ ràng. jlink cho runtime gọn nhưng đòi hỏi quản lý module và kiểm thử đầy đủ. Dù chọn gì, em vẫn pin phiên bản/digest, quét lỗ hổng, và có chiến lược vá định kỳ; đồng thời đo thời gian pull, tần suất rebuild và khả năng chẩn đoán sự cố để đánh đổi có cơ sở.
+
+> Senior tip: "Image nhỏ nhất" không phải lúc nào cũng rẻ nhất về tổng chi phí; một đêm sự cố không debug được có thể đắt hơn vài chục MB tải thêm.`,
+  follow: [
+    'Khi nào bạn chấp nhận distroless dù mất khả năng {{kubectl exec}} vào container?',
+    'Quy trình vá base image định kỳ và quét CVE trong CI/CD của bạn trông như thế nào?',
+    'Những trường hợp nào khiến Alpine/musl gây lỗi mà Debian/glibc không gặp?'
+  ],
+  tags: ['Docker', 'base image', 'JRE', 'distroless', 'jlink', 'security']
+},
+{
+  id: 'devops-157',
+  topic: 'devops',
+  level: 'lead',
+  q: 'Một dịch vụ Spring Boot vừa phục vụ HTTP, vừa chạy {{@Scheduled}} job và consume Kafka. Khi Pod nhận SIGTERM trong rolling update, bạn thiết kế graceful shutdown end-to-end thế nào để không nhận request/job mới, hoàn tất hoặc dừng an toàn công việc đang chạy, commit offset đúng, và không bị SIGKILL cắt ngang?',
+  a: `**Tóm tắt:** Graceful shutdown (tắt êm) là quá trình dừng ứng dụng có kiểm soát: ngừng nhận việc mới, hoàn tất việc đang làm trong thời hạn, rồi giải phóng tài nguyên. Với Spring Boot 3.x, {{server.shutdown=graceful}} chủ yếu xử lý request HTTP đang chạy; các luồng nền như scheduler, {{@Async}} và Kafka listener cần được dừng phối hợp thông qua lifecycle, timeout và cấu hình container (preStop, terminationGracePeriodSeconds).
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- **SIGTERM:** tín hiệu báo tiến trình hãy thoát. Kubernetes gửi SIGTERM khi terminate Pod; nếu quá {{terminationGracePeriodSeconds}} (thời gian ân hạn) mà chưa thoát, kubelet gửi SIGKILL (ép chết ngay, không cho dọn dẹp).
+- **Nhiều "nguồn việc":** HTTP request, job định kỳ, consumer Kafka, tác vụ async đều có vòng đời khác nhau. Dừng web server chưa chắc dừng thread đang ghi DB hoặc đang xử lý message.
+- **Spring lifecycle:** các bean có thể tham gia pha shutdown; {{spring.lifecycle.timeout-per-shutdown-phase}} giới hạn thời gian chờ từng pha. Kafka listener container cần dừng nhận record mới và chờ xử lý xong/commit theo cấu hình.
+- **Phối hợp với K8s:** preStop (hook chạy trước SIGTERM hoặc như bước chuẩn bị tùy cách dùng) giúp trì hoãn để endpoint bị gỡ khỏi Service; readiness probe chuyển NotReady để ngừng traffic mới.
+
+~~~text
+Trình tự mong muốn (rút gọn):
+1) Readiness -> NotReady, chờ LB/mesh ngừng gửi request mới
+2) preStop sleep ngắn (nếu cần) để propagation hoàn tất
+3) SIGTERM -> HTTP graceful shutdown + dừng scheduler nhận job mới
+4) Dừng Kafka listener: ngừng poll, xử lý nốt record đang giữ, commit offset theo chính sách
+5) Chờ trong giới hạn thời gian; nếu vượt -> chấp nhận rủi ro và để SIGKILL (nhưng phải thiết kế idempotent)
+~~~
+
+### Bảng trade-off / khi nào dùng
+| Thành phần | Mục tiêu khi shutdown | Đổi lại |
+|---|---|---|
+| HTTP (web server) | Trả xong request đang chạy | Kéo dài thời gian dừng Pod |
+| {{@Scheduled}} / async | Không start job mới, chờ task an toàn | Task dài phải có điểm dừng/timeout |
+| Kafka consumer | Không poll thêm, xử lý/commit rõ ràng | Có thể giảm throughput tạm thời khi rebalance |
+| Grace period dài | Giảm cắt ngang | Rollout/scale-down chậm hơn |
+
+### Pitfall production
+1. **Chỉ bật {{server.shutdown=graceful}}:** job nền và listener vẫn chạy và bị SIGKILL. Cách tránh: cấu hình shutdown cho executor/scheduler và listener container, test từng loại workload.
+2. **Commit offset trước khi xử lý xong hoặc ngược lại không kiểm soát:** mất message hoặc xử lý trùng. Cách tránh: thiết kế idempotent, chọn semantics commit phù hợp, xử lý retry/DLQ.
+3. **Grace period < thời gian task dài:** luôn bị cắt ngang. Cách tránh: đặt timeout nghiệp vụ, chia nhỏ công việc, hoặc chuyển job dài sang cơ chế batch/queue có checkpoint.
+4. **preStop dùng {{/bin/sh}} trong image không có shell:** hook thất bại. Cách tránh: dùng exec phù hợp image hoặc cơ chế khác, kiểm tra manifest thực tế.
+
+### Ví dụ đời thực
+- **Triệu chứng:** mỗi lần deploy, 0.3% request HTTP lỗi 502 và ~50 message Kafka bị xử lý lại gây trùng ghi nhận thanh toán.
+- **Điều tra:** Pod có {{terminationGracePeriodSeconds=30}}; một job đồng bộ chạy tới 45 giây; listener commit sau xử lý nhưng bị SIGKILL giữa chừng; readiness vẫn mở vài giây sau khi nhận SIGTERM.
+- **Xử lý:** tách job dài sang hàng đợi riêng, đặt timeout job còn lại 20 giây, cấu hình dừng listener và chờ xử lý trong 25 giây, tăng grace period lên 70 giây, thêm preStop delay 5 giây và readiness fail-fast khi shutdown; đảm bảo handler idempotent bằng khóa nghiệp vụ.
+- **Kết quả đo được:** lỗi 502 khi rollout giảm về 0%, message trùng do kill giữa chừng giảm từ ~50/triển khai xuống 0 trong 20 lần deploy liên tiếp.
+
+### Trả lời mẫu khi phỏng vấn
+Em xem graceful shutdown là bài toán phối hợp nhiều tầng. Ở Kubernetes, em dùng readiness và preStop để ngừng nhận traffic mới và chờ routing cập nhật, đồng thời đặt terminationGracePeriodSeconds đủ lớn cho tổng thời gian drain và xử lý nốt. Ở Spring Boot, {{server.shutdown=graceful}} giúp HTTP request đang chạy hoàn tất trong timeout, nhưng em không dừng ở đó: scheduler phải ngừng nhận lịch mới, executor cần được chờ, và Kafka listener phải dừng poll rồi hoàn tất hoặc dừng an toàn việc đang xử lý với chiến lược commit/idempotency rõ ràng. Em luôn đặt timeout cho từng loại công việc vì không thể chờ vô hạn, và với nghiệp vụ quan trọng như thanh toán em thiết kế idempotent để retry sau sự cố không gây trùng tác dụng. Cuối cùng em kiểm chứng bằng bài test rollout dưới tải và đo số request lỗi, số lần rebalance/duplicate xử lý. Mục tiêu là deploy dự đoán được, không phụ thuộc may rủi.
+
+> Senior tip: Graceful shutdown không bảo đảm "không mất việc" nếu nghiệp vụ không idempotent; hãy thiết kế đường đi an toàn khi bị cắt ngang làm trường hợp bình thường cần xử lý.`,
+  follow: [
+    'Làm sao để {{@Scheduled}} và {{@Async}} tôn trọng thời gian shutdown và không bị SIGKILL giữa chừng?',
+    'Khi dừng Kafka consumer trong Spring, bạn cân nhắc điều gì giữa at-least-once, commit offset và idempotency?',
+    'Bạn kiểm thử graceful shutdown end-to-end (HTTP + job + consumer) trước khi tin vào cấu hình production như thế nào?'
+  ],
+  tags: ['graceful shutdown', 'Spring Boot', 'Kubernetes', 'Kafka', 'scheduling', 'reliability']
+},
+{
+    id: 'devops-158',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Pod Spring Boot dùng server.shutdown=graceful và preStop hook nhưng consumer Kafka trong @KafkaListener vẫn bị rebalance giữa chừng, gây duplicate processing hoặc mất offset. Bạn thiết kế graceful shutdown cho Kafka consumer thế nào: cấu hình listener container, AckMode, shutdown hook, và thứ tự dừng các bean SmartLifecycle?',
+    a: `**Tóm tắt:** Graceful shutdown cho Kafka consumer yêu cầu: (1) dừng listener container **trước** web server để không còn poll message mới, (2) chờ record đang xử lý xong và commit offset, (3) dùng AckMode.RECORD hoặc MANUAL_IMMEDIATE để commit sau mỗi record, (4) cấu hình phase của SmartLifecycle: listener phase thấp hơn web server, và (5) terminationGracePeriodSeconds đủ lớn bao phủ toàn bộ chuỗi dừng.
+**Tóm tắt:** Graceful shutdown cho Kafka consumer yêu cầu dừng listener container **trước** web server, chờ record đang xử lý xong và commit offset, dùng AckMode.RECORD hoặc MANUAL_IMMEDIATE, cấu hình phase SmartLifecycle thấp hơn web server, và terminationGracePeriodSeconds đủ lớn.
+
+### Hiểu nhanh
+Kafka consumer giống một nhân viên thu ngân đang quét mã vạch. Khi cửa hàng đóng (Pod terminate), bạn không được phép ngắt quãng giữa chừng một hóa đơn — phải quét xong, in receipt (commit offset), rồi mới bỏ về. Nếu nhân viên bỏ đi khi đang quét dở (rebalance giữa chừng), hóa đơn đó hoặc bị mất (offset chưa commit) hoặc bị quét lại bởi nhân viên khác (duplicate processing). Spring Boot graceful shutdown mặc định chỉ lo HTTP, không tự dừng Kafka listener container theo thứ tự bạn mong đợi.
+
+### Thuật ngữ
+- **Listener container**: Spring Kafka component quản lý vòng đời consumer, poll record, invoke @KafkaListener.
+- **AckMode**: chiến lược commit offset — RECORD (commit sau mỗi record), BATCH (commit sau batch), MANUAL (tự commit).
+- **SmartLifecycle**: interface Spring cho bean có start/stop theo phase (số nguyên càng nhỏ càng dừng sớm).
+- **Phase**: thứ tự dừng — bean phase thấp dừng trước bean phase cao.
+- **Consumer group rebalance**: Kafka chia lại partition khi consumer join/leave group.
+
+### Vì sao graceful shutdown mặc định không đủ
+1. **Thứ tự dừng sai**: Tomcat (phase 0) dừng trước Kafka listener (phase mặc định Integer.MAX_VALUE). HTTP request còn đang gọi consumer → consumer bị đóng giữa chừng → rebalance.
+2. **AckMode mặc định**: BATCH hoặc RECORD tùy config, nhưng nếu container bị destroy giữa batch thì offset chưa commit.
+3. **Không chờ record đang xử lý**: container stop ngay lập tức, record đang ở giữa logic nghiệp vụ bị abandon.
+
+### Thiết kế graceful shutdown Kafka
+
+#### 1. Cấu hình AckMode và listener container
+~~~yaml
+spring:
+  kafka:
+    listener:
+      ack-mode: RECORD          # commit offset sau MỖI record xử lý xong
+      missing-topics-fatal: false
+    consumer:
+      enable-auto-commit: false # tắt auto commit, để listener container quản lý
+      isolation-level: read_committed
+~~~
+- **RECORD**: an toàn nhất — mỗi record commit riêng, mất tối đa 1 record khi crash.
+- **MANUAL_IMMEDIATE**: dùng khi cần kiểm soát thủ công trong code (Acknowledgment.acknowledge()).
+
+#### 2. Cấu hình phase SmartLifecycle cho listener container
+Spring Kafka listener container implements SmartLifecycle. Phase mặc định là Integer.MAX_VALUE (dừng sau cùng). Ta cần đặt phase **thấp hơn Tomcat** (Tomcat phase = 0).
+
+~~~java
+@Configuration
+class KafkaGracefulShutdownConfig {
+
+    @Bean
+    public KafkaListenerContainerFactory<ConcurrentMessageListenerContainer<String, String>> 
+            kafkaListenerContainerFactory(ConsumerFactory<String, String> cf) {
+        ConcurrentKafkaListenerContainerFactory<String, String> factory = 
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(cf);
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
+        factory.getContainerProperties().setMissingTopicsFatal(false);
+        // Phase -100: dừng TRƯỚC Tomcat (phase 0) và các bean phase dương
+        factory.setPhase(-100);
+        return factory;
+    }
+}
+~~~
+Phase -100 đảm bảo listener container stop **trước** web server (phase 0) và các bean business (phase thường > 0).
+
+#### 3. Shutdown hook cho record đang xử lý
+Khi container stop, nó set {{running = false}} và chờ {{pause()}} hoàn tất. Nhưng record đang ở giữa method @KafkaListener có thể chưa xong. Cần:
+
+~~~java
+@Component
+class KafkaShutdownHook implements SmartLifecycle {
+
+    private final KafkaListenerEndpointRegistry registry;
+    private volatile boolean stopping = false;
+
+    @Override
+    public void start() { stopping = false; }
+
+    @Override
+    public void stop() {
+        stopping = true;
+        // 1. Dừng accept request mới (đã làm bằng phase listener container)
+        // 2. Chờ record đang xử lý xong — tối đa 30s
+        registry.getListenerContainers().forEach(c -> {
+            if (c instanceof ConcurrentMessageListenerContainer<?, ?> clc) {
+                clc.pause(); // ngừng poll mới
+            }
+        });
+        // Chờ các thread listener idle
+        awaitIdle(30_000);
+    }
+
+    @Override
+    public boolean isRunning() { return !stopping; }
+
+    @Override
+    public int getPhase() { return -50; } // giữa listener container (-100) và Tomcat (0)
+
+    private void awaitIdle(long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            boolean allIdle = registry.getListenerContainers().stream()
+                    .allMatch(c -> c instanceof ConcurrentMessageListenerContainer<?, ?> clc 
+                            && clc.getContainerProperties().getIdleEventInterval() > 0);
+            if (allIdle) return;
+            LockSupport.parkNanos(100_000_000); // 100ms
+        }
+    }
+}
+~~~
+
+#### 4. Cấu hình Kubernetes terminationGracePeriodSeconds
+Tổng thời gian cần = preStop (10s) + listener stop (30s) + Tomcat graceful (20s) + buffer (10s) = 70s.
+
+~~~yaml
+spec:
+  terminationGracePeriodSeconds: 90
+  containers:
+    - name: app
+      lifecycle:
+        preStop:
+          httpGet:
+            path: /internal/drain
+            port: 8081
+      env:
+        - name: JAVA_TOOL_OPTIONS
+          value: "-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
+~~~
+
+#### 5. Idempotent consumer để an toàn khi duplicate
+Dù đã graceful, rebalance vẫn có thể xảy ra (network partition, GC pause dài). Consumer phải idempotent:
+
+~~~java
+@KafkaListener(topics = "payment-events", groupId = "payment-service")
+public void handle(PaymentEvent event, Acknowledgment ack) {
+    // Kiểm tra đã xử lý chưa (Redis SETNX với TTL 24h)
+    String dedupKey = "dedup:payment:" + event.getEventId();
+    Boolean acquired = redisTemplate.opsForValue().setIfAbsent(dedupKey, "1", Duration.ofHours(24));
+    if (!acquired) {
+        log.info("Duplicate event ignored: {}", event.getEventId());
+        ack.acknowledge(); // vẫn commit offset
+        return;
+    }
+    try {
+        paymentService.process(event);
+        ack.acknowledge();
+    } catch (Exception e) {
+        // Không ack để retry (hoặc gửi DLQ)
+        throw e;
+    }
+}
+~~~
+
+### Câu trả lời sai phổ biến
+- "Spring Boot graceful shutdown tự lo Kafka": sai, chỉ lo HTTP.
+- "AckMode BATCH đủ an toàn": batch commit sau 500 record, crash giữa chừng mất 500 record.
+- "Không cần phase, để mặc định": listener dừng sau Tomcat → request HTTP còn gọi consumer khi consumer đã stop.
+
+### Lỗi hay gặp
+1. **Phase listener = 0 (trùng Tomcat)**: race condition, đôi khi Tomcat dừng trước, đôi khi listener dừng trước.
+2. **enable.auto.commit=true**: offset commit trước khi xử lý xong → crash = mất message.
+3. **Không có idempotent**: rebalance gây duplicate processing, tài khoản bị trừ 2 lần.
+
+### Trả lời miệng 1 phút
+"Tôi thiết kế graceful shutdown cho Kafka consumer bằng 4 lớp bảo vệ: (1) AckMode.RECORD commit sau mỗi record, (2) Listener container phase -100 dừng TRƯỚC Tomcat, (3) SmartLifecycle custom phase -50 chờ record đang xử lý xong tối đa 30s, (4) terminationGracePeriodSeconds 90s bao phủ toàn bộ chuỗi. Consumer phải idempotent (Redis dedup) vì rebalance vẫn có thể xảy ra do network partition. Trade-off là shutdown chậm hơn ~30s nhưng an toàn dữ liệu tuyệt đối."
+
+### Ví dụ đời thực
+Triệu chứng: Deploy payment-service rolling update, 20% request bị duplicate charge, log thấy rebalance liên tục lúc Pod terminate.
+
+Điều tra: Listener container phase mặc định Integer.MAX_VALUE, Tomcat phase 0. Khi SIGTERM, Tomcat stop trước, listener vẫn poll record. Record đang xử lý bị abandon, offset chưa commit → rebalance, partition chuyển sang Pod khác → record xử lý lại → duplicate charge.
+
+Nguyên gốc: Thứ tự dừng sai, AckMode BATCH, thiếu idempotent.
+
+Xử lý: Set listener phase -100, AckMode RECORD, thêm SmartLifecycle chờ idle 30s, terminationGracePeriodSeconds 90s, Redis dedup key TTL 24h.
+
+Kết quả: 10 lần rolling update, 0 duplicate charge, rebalance chỉ xảy ra khi Pod thực sự down, offset luôn commit đúng.
+
+> Senior tip: Luôn test graceful shutdown bằng cách {{kubectl delete pod --force --grace-period=0}} trong lúc load test k6 100 RPS, đếm duplicate và mất message. Nếu không test thì không tin cấu hình nào.`,
+    follow: [
+      'Listener container phase mặc định là bao nhiêu, và bạn đặt phase bao nhiêu để dừng trước Tomcat?',
+      'Khi dùng transactional producer (sendOffsetsToTransaction), graceful shutdown cần lưu ý gì thêm?',
+      'Rebalance listener (CooperativeStickyAssignor) thay đổi hành vi shutdown như thế nào?'
+    ],
+    tags: ['Graceful shutdown', 'Kafka', 'Spring Boot', 'SmartLifecycle', 'preStop']
+  },
+  {
+    id: 'devops-159',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Service Java 21 chạy virtual threads trên Kubernetes với CPU limit 2. Bạn đặt JVM flags nào cho: virtual thread scheduler, ZGC/Generational ZGC, JFR continuous profiling, CDS/AppCDS, và heap sizing qua MaxRAMPercentage? Giải thích tại sao flags cũ như -XX:ParallelGCThreads có thể gây hại với virtual threads.',
+    a: `**Tóm tắt:** Với virtual threads (JDK 21+), carrier thread pool (ForkJoinPool common pool) quyết định throughput chứ không phải platform thread count. Flags khuyến nghị: {{-XX:+UseZGC -XX:+ZGenerational}} cho latency thấp, {{-XX:MaxRAMPercentage=75}} cho heap, {{-XX:+FlightRecorder -XX:StartFlightRecording=maxage=1h,maxsize=500m}} cho JFR continuous, {{-XX:SharedArchiveFile=app.jsa}} cho AppCDS. Tránh set {{-XX:ParallelGCThreads}} quá cao vì ZGC tự quản lý worker, và {{-Djdk.virtualThreadScheduler.parallelism}} nên để mặc định (số CPU) trừ khi có lý do đo được.
+**Tóm tắt:** Với virtual threads (JDK 21+), carrier thread pool (ForkJoinPool common pool) quyết định throughput chứ không phải platform thread count. Flags khuyến nghị: {{-XX:+UseZGC -XX:+ZGenerational}} cho latency thấp, {{-XX:MaxRAMPercentage=75}} cho heap, {{-XX:+FlightRecorder -XX:StartFlightRecording=maxage=1h,maxsize=500m}} cho JFR continuous, {{-XX:SharedArchiveFile=app.jsa}} cho AppCDS. Tránh set {{-XX:ParallelGCThreads}} quá cao vì ZGC tự quản lý worker, và {{-Djdk.virtualThreadScheduler.parallelism}} nên để mặc định (số CPU) trừ khi có lý do đo được.
+
+### Hiểu nhanh
+Virtual threads (JDK 21+) tách **virtual thread** (nhiều, nhẹ, do JVM quản lý) khỏi **carrier thread** (platform thread, do OS quản lý). Carrier thread chạy code virtual thread khi cần CPU. Số carrier thread mặc định = số CPU (từ container cgroup). Virtual thread bị pin (không thể unmount) khi: synchronized block, native call, file I/O. Khi pin nhiều, carrier thread pool cạn → throughput sụt.
+
+### Thuật ngữ
+- **Virtual thread**: lightweight thread do JVM quản lý (không 1-1 với OS thread).
+- **Carrier thread**: platform thread chạy virtual thread, thuộc ForkJoinPool common pool.
+- **Pinning**: virtual thread gắn chặt vào carrier thread, không thể unmount.
+- **Generational ZGC**: ZGC có young/old generation, giảm allocation stall.
+- **JFR continuous profiling**: Flight Recorder ghi liên tục event, overhead < 1%.
+
+### JVM Flags khuyến nghị
+
+#### 1. GC: Generational ZGC (JDK 21+)
+~~~bash
+-XX:+UseZGC -XX:+ZGenerational
+~~~
+- ZGC non-generational: single generation, allocation rate cao gây young collection thường, pause 1-5ms.
+- Generational ZGC: tách young/old, young collection nhanh hơn, allocation stall gần 0.
+- **Không set {{-XX:ParallelGCThreads}}**: ZGC tự điều chỉnh worker threads dựa trên CPU cgroup. Set cứng làm ZGC không thể scale worker khi allocation rate thay đổi.
+
+#### 2. Heap sizing
+~~~bash
+-XX:MaxRAMPercentage=75 -XX:InitialRAMPercentage=50
+~~~
+- Container 2 CPU / 4Gi RAM → heap ~3Gi, chừa 1Gi cho metaspace, thread stack, direct buffer, GC metadata.
+- Virtual thread stack mặc định 1MB (có thể giảm bằng {{-XX:VirtualThreadStackSize=512k}}).
+
+#### 3. Virtual thread scheduler
+~~~bash
+# Mặc định: parallelism = availableProcessors (từ cgroup)
+# Chỉ override khi CÓ LÝ DO ĐO ĐƯỢC
+# -Djdk.virtualThreadScheduler.parallelism=4
+~~~
+- Carrier pool size = parallelism. Mặc định = CPU limit (2 trong ví dụ).
+- **Không tăng parallelism > CPU limit**: chỉ làm tăng context switch, không tăng throughput (CPU bound).
+- **Giảm parallelism < CPU limit**: dành cho workload pinning nặng (nhiều synchronized/native call) để tránh carrier starvation.
+
+#### 4. JFR Continuous Profiling
+~~~bash
+-XX:+FlightRecorder \\
+-XX:StartFlightRecording=name=continuous,maxage=1h,maxsize=500m,disk=true,repository=/tmp/jfr \\
+-XX:FlightRecorderOptions=stackdepth=256,threadbuffersize=256k
+~~~
+- Overhead < 1% CPU, < 1% heap.
+- {{maxage=1h}}: xoay file 1h, {{maxsize=500m}}: giới hạn disk.
+- Disk path nên mount emptyDir hoặc PVC để không mất khi Pod restart.
+
+#### 5. CDS/AppCDS
+~~~bash
+# CI build tạo archive
+java -XX:ArchiveClassesAtExit=app-cds.jsa -jar app.jar
+
+# Runtime dùng archive
+-XX:SharedArchiveFile=app-cds.jsa
+~~~
+- CDS giảm ~20-40% startup time (class loading/verification).
+- Archive phải tái tạo mỗi khi dependency/app thay đổi (CI build).
+
+### Flags KHÔNG nên set (gây hại với virtual threads)
+
+| Flag | Tại sao hại |
+|---|---|
+| {{-XX:ParallelGCThreads=N}} | ZGC tự quản lý worker; set cứng làm GC không scale khi allocation burst. |
+| {{-XX:ConcGCThreads=N}} | Tương tự, ZGC concurrent phase tự điều chỉnh. |
+| {{-Djdk.virtualThreadScheduler.parallelism=N}} (quá cao) | Tạo carrier thread > CPU limit → context switch storm, pinning storm. |
+| {{-XX:+UseContainerSupport}} (tắt) | JDK 21+ bật mặc định và đọc cgroup v2 đúng; tắt làm heap tính theo host RAM. |
+| {{-Xmx}} cứng + {{MaxRAMPercentage}} | Xmx thắng, MaxRAMPercentage bị bỏ qua → heap không scale với container limit. |
+
+### Pitfall production
+
+1. **Pinning storm**: Code dùng {{synchronized}} nhiều (legacy library) → virtual thread pin carrier → throughput sụt. Fix: thay {{synchronized}} bằng {{ReentrantLock}} hoặc {{@Transactional}} (Spring quản lý).
+2. **Carrier starvation**: CPU limit 2, parallelism 2, nhưng 1000 virtual thread pin → 2 carrier thread kẹt toàn bộ. Fix: giảm pinning, hoặc tăng CPU limit.
+3. **JFR disk full**: {{maxsize}} không set hoặc mount emptyDir quá nhỏ. Fix: PVC 1Gi + {{maxsize=500m}}.
+
+### Trả lời miệng 1 phút
+"Với Java 21 virtual threads trên K8s CPU limit 2, tôi dùng Generational ZGC ({{-XX:+UseZGC -XX:+ZGenerational}}) vì allocation rate cao, heap 75% RAM qua MaxRAMPercentage, JFR continuous profiling 1h/500MB để debug production, AppCDS archive từ CI. Tôi KHÔNG set ParallelGCThreads hay ConcGCThreads vì ZGC tự quản lý worker. Virtual thread scheduler parallelism để mặc định = CPU limit (2), chỉ override khi đo thấy pinning storm. Flags cũ như ParallelGCThreads gây hại vì nó cứng nhắc worker threads, làm ZGC không thể scale khi allocation burst, và tăng carrier thread không cần thiết gây context switch overhead."
+
+### Ví dụ đời thực
+Triệu chứng: Service Java 21 virtual threads trên K8s 2 CPU, throughput chỉ 500 req/s (dự kiến 2000), CPU 80%, GC pause 50ms.
+
+Điều tra: JFR thấy pinning rate 40% ({{synchronized}} trong legacy HTTP client). Carrier pool 2 thread, 80% virtual thread pin → carrier starvation. {{-XX:ParallelGCThreads=4}} (set mặc định từ template cũ) làm ZGC worker tranh CPU với carrier thread.
+
+Xử lý: (1) Bỏ {{-XX:ParallelGCThreads}}, (2) Thay {{synchronized}} bằng {{ReentrantLock}}, (3) Bật Generational ZGC, (4) JFR continuous profiling.
+
+Kết quả: Throughput 2200 req/s, CPU 55%, GC pause 2ms, pinning rate < 1%.
+
+> Senior tip: Virtual thread throughput = f(carrier threads, pinning rate, CPU). Luôn đo pinning rate (JFR event {{jdk.VirtualThreadPinned}}) trước khi tune carrier pool. Carrier thread starvation là nguyên nhân #1 làm virtual threads chậm hơn platform threads.`,
+    follow: [
+      'Virtual thread carrier pool dùng ForkJoinPool common pool: làm sao quan sát carrier thread starvation?',
+      'Generational ZGC (JDK 21+) so với ZGC truyền thống cải thiện gì cho allocation rate cao?',
+      'Khi bật JFR continuous profiling, overhead dung lượng disk và CPU là bao nhiêu, và bạn xoay file như thế nào?'
+    ],
+    tags: ['JVM flags', 'Virtual threads', 'ZGC', 'JFR', 'CDS', 'Java 21']
+  },
+  {
+    id: 'devops-160',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Hệ thống 20 microservice Spring Boot ghi log JSON có traceId. Chi phí lưu trữ log tăng gấp 3 do: log DEBUG bật ở production, log PII (số thẻ, OTP), và cardinality cao khi gắn userId vào label Loki. Bạn thiết kế chiến lược: log sampling theo mức độ, redaction PII tại Fluent Bit/Grafana Alloy, và label policy cho Loki (chỉ label low-cardinality).',
+    a: `**Tóm tắt:** Ba trụ cột giảm chi phí log: (1) **Sampling**: giữ 100% ERROR/WARN, sampling 10% INFO, 1% DEBUG (tắt DEBUG ở prod). (2) **Redaction**: Fluent Bit/Grafana Alloy dùng regex processor mask PII (credit card, OTP, JWT) trước khi đẩy Loki. (3) **Label policy**: chỉ label {{namespace}}, {{app}}, {{level}}; KHÔNG label {{userId}}, {{traceId}}, {{requestId}} (đưa vào structured metadata). Cardinality Loki giảm 90%, chi phí log giảm 60%.
+
+### Hiểu nhanh
+Log system giống thư viện: **label** là thẻ chủ đề trên lưng sách (dùng để tìm nhanh), **structured metadata** là nội dung trang (dùng để đọc chi tiết). Loki index label, nén nội dung. Label {{userId}} 1 triệu user = 1 triệu series = index nổ, disk nổ, query chậm. PII trong log = vi phạm PCI DSS, GDPR. DEBUG log ở prod = 90% volume nhưng 0% giá trị khi incident.
+
+### Thuật ngữ
+- **Label (Loki)**: key-value index, mỗi tổ hợp = 1 time series. Chỉ dùng cho cardinality thấp (< 1000 giá trị).
+- **Structured metadata (Loki)**: key-value không index, lưu cùng log line, query bằng LogQL {{json}} filter.
+- **Log sampling**: chỉ giữ tỷ lệ % log line, giảm volume.
+- **PII redaction**: mask sensitive data (credit card, OTP, JWT) bằng regex trước khi lưu.
+- **Cardinality**: số tổ hợp label khác nhau.
+
+### Chiến lược 1: Log Sampling theo mức độ
+
+#### Spring Boot logging config
+~~~yaml
+logging:
+  level:
+    root: INFO
+    com.myapp: INFO
+    org.springframework.web: WARN
+  pattern:
+    console: "%clr(%d{ISO8601}){faint} %clr(\${LOG_LEVEL_PATTERN:-%5p}) %clr(\${PID:- }){magenta} %clr(---){faint} %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n\${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}"
+  structured:
+    format:
+      console: ecs
+~~~
+
+#### Fluent Bit sampling filter
+~~~ini
+[FILTER]
+    Name sampler
+    Match *
+    Interval 10        # giữ 1/10 = 10%
+    Preserve_Match_True_Interval 100  # ERROR/WARN (interval 1) luôn giữ
+    # Logic: ERROR/WARN -> interval 1 (100%), INFO -> interval 10 (10%), DEBUG -> interval 100 (1%)
+    # Cần parser để extract log level trước
+~~~
+
+**Bảng sampling khuyến nghị:**
+| Level | Sampling | Ghi chú |
+|---|---|---|
+| ERROR/WARN | 100% | Không bao giờ sampling |
+| INFO | 10% | 1/10 request |
+| DEBUG | 1% hoặc 0% (tắt) | Chỉ bật tạm khi debug incident |
+
+#### Triển khai sampling có điều kiện (Fluent Bit Lua script)
+~~~lua
+function sample_record(tag, timestamp, record)
+    local level = record["level"] or "INFO"
+    if level == "ERROR" or level == "WARN" then
+        return 1, timestamp, record  -- giữ 100%
+    elseif level == "INFO" then
+        if math.random() < 0.1 then return 1, timestamp, record end
+    elseif level == "DEBUG" then
+        if math.random() < 0.01 then return 1, timestamp, record end
+    end
+    return -1, timestamp, record  -- drop
+end
+~~~
+
+### Chiến lược 2: PII Redaction tại Fluent Bit / Grafana Alloy
+
+#### Regex patterns cho PII phổ biến
+| PII | Regex | Replacement |
+|---|---|---|
+| Credit card (Luhn) | \b(?:\d[ -]*?){13,16}\b | {{****-****-****-****}} |
+| OTP (6 digits) | \b\d{6}\b (context: "otp", "code") | {{******}} |
+| JWT | eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+ | {{[JWT_REDACTED]}} |
+| Email | \b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z]{2,}\b | {{***@***.***}} |
+| Phone (VN) | \b(0|\+84)[3|5|7|8|9]\d{8}\b | {{*** *** ***}} |
+
+#### Fluent Bit regex filter
+~~~ini
+[FILTER]
+    Name record_modifier
+    Match *
+    # Mask credit card
+    Regex message ^(?<prefix>.*?)(?<cc>\b(?:\d[ -]*?){13,16}\b)(?<suffix>.*)$ message \${prefix}{{****-****-****-****}}\${suffix}
+    # Mask JWT
+    Regex message ^(?<pre>.*?)(?<jwt>eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)(?<suf>.*)$ message \${pre}{{[JWT_REDACTED]}}\${suf}
+    # Mask OTP (context-aware)
+    Regex message (?i)(otp|code)[:=]\s*(?<otp>\d{6}) \${1}={{******}}
+~~~
+
+#### Grafana Alloy (thay thế Fluent Bit/Promtail)
+~~~alloy
+discovery.kubernetes "pods" {
+  role = "pod"
+}
+
+loki.source.kubernetes "pods" {
+  targets = discovery.kubernetes.pods.targets
+  forward_to = [loki.process.redact.receiver]
+}
+
+loki.process "redact" {
+  stage.regex {
+    expression = '^(?<prefix>.*?)(?<cc>\b(?:\d[ -]*?){13,16}\b)(?<suffix>.*)$'
+    source = "message"
+    target = "message"
+  }
+  stage.regex {
+    expression = 'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'
+    source = "message"
+    target = "message"
+    replace = "{{[JWT_REDACTED]}}"
+  }
+  forward_to = [loki.write.prod.receiver]
+}
+
+loki.write "prod" {
+  endpoint {
+    url = "https://loki.prod:3100/loki/api/v1/push"
+  }
+}
+~~~
+
+### Chiến lược 3: Label Policy cho Loki
+
+#### Label CHO PHÉP (low cardinality)
+| Label | Giá trị mẫu | Cardinality ước lượng |
+|---|---|---|
+| {{namespace}} | {{payments}}, {{orders}} | < 50 |
+| {{app}} | {{payment-api}}, {{order-service}} | < 100 |
+| {{level}} | {{ERROR}}, {{WARN}}, {{INFO}} | 3 |
+| {{environment}} | {{prod}}, {{staging}} | 2 |
+| {{container}} | {{app}}, {{sidecar}} | < 10 |
+
+#### Label CẤM (high cardinality) -> dùng Structured Metadata
+| Label cấm | Structured metadata key | Query LogQL |
+|---|---|---|
+| {{userId}} | {{__meta_userId}} | {app="{{payment"}} | json | __meta_userId = "12345" |
+| {{traceId}} | {{__meta_traceId}} | {app="{{payment"}} | json | __meta_traceId = "abc123" |
+| {{requestId}} | {{__meta_requestId}} | tương tự |
+| {{orderId}} | {{__meta_orderId}} | tương tự |
+| {{sessionId}} | {{__meta_sessionId}} | tương tự |
+| {{ip}} | {{__meta_clientIp}} | tương tự |
+| {{email}} | {{__meta_email}} | tương tự |
+
+#### Fluent Bit label config
+~~~ini
+[FILTER]
+    Name kubernetes
+    Match kube.*
+    Kube_URL https://kubernetes.default.svc:443
+    Kube_CA_File /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    Kube_Token_File /var/run/secrets/kubernetes.io/serviceaccount/token
+    Labels On
+    Labels_Keep namespace,app,level,environment,container
+    Annotations_Off
+~~~
+
+#### Structured metadata injection (Fluent Bit)
+~~~ini
+[FILTER]
+    Name lua
+    Match *
+    script inject_metadata.lua
+    call inject_metadata
+~~~
+~~~lua
+function inject_metadata(tag, timestamp, record)
+    -- Extract from JSON message
+    local msg = record["message"]
+    local ok, parsed = pcall(cjson.decode, msg)
+    if ok and parsed then
+        -- Move high-cardinality fields to structured metadata
+        if parsed.userId then
+            record["__meta_userId"] = parsed.userId
+            parsed.userId = nil
+        end
+        if parsed.traceId then
+            record["__meta_traceId"] = parsed.traceId
+            parsed.traceId = nil
+        end
+        if parsed.requestId then
+            record["__meta_requestId"] = parsed.requestId
+            parsed.requestId = nil
+        end
+        record["message"] = cjson.encode(parsed)
+    end
+    return 1, timestamp, record
+end
+~~~
+
+### Kết quả đo được
+| Metric | Trước | Sau | Cải thiện |
+|---|---|---|---|
+| Log volume/ngày | 500 GB | 80 GB | -84% |
+| Loki cardinality (series) | 2.5M | 15k | -99.4% |
+| Chi phí lưu trữ/tháng | $12,000 | $3,500 | -71% |
+| Query latency p99 | 15s | 2s | -87% |
+| PII leakage incidents | 3/quý | 0 | 100% |
+
+### Lỗi hay gặp
+1. **Sampling DEBUG 1% nhưng quên ERROR**: sampling filter áp dụng sai thứ tự -> ERROR bị drop.
+2. **Redaction regex quá tham**: mask cả number bình thường (orderId 123456 bị mask thành {{******}}).
+3. **Label {{userId}} vẫn lọt**: team thêm label mới mà không review cardinality.
+4. **Structured metadata không query được**: quên bật {{structured_metadata}} trong Loki config.
+
+### Trả lời miệng 1 phút
+"Tôi giảm chi phí log 70% bằng 3 động tác: (1) Sampling: ERROR/WARN 100%, INFO 10%, DEBUG 0% (tắt ở prod), làm ở Fluent Bit Lua filter. (2) Redaction: Fluent Bit regex mask credit card, JWT, OTP trước khi đẩy Loki, đảm bảo PCI DSS compliance. (3) Label policy: chỉ 5 label low-cardinality (namespace, app, level, env, container), mọi high-cardinality field (userId, traceId, requestId) đẩy vào structured metadata — Loki index label, metadata để query. Kết quả: cardinality 2.5M -> 15k, storage 500GB -> 80GB/ngày, query p99 15s -> 2s. PCI auditor pass vì log không chứa PII."
+
+### Ví dụ đời thực
+Triệu chứng: Loki cluster 3 node, chi phí $12k/tháng, query log 30s, auditor phát hiện credit card trong log.
+
+Điều tra: Log volume 500GB/ngày, cardinality 2.5M series (label {{userId}}, {{requestId}}, {{traceId}}). DEBUG log bật ở 5 service. Không có redaction.
+
+Xử lý: (1) Tắt DEBUG, sampling INFO 10%. (2) Fluent Bit regex mask credit card/JWT/OTP. (3) Label policy: chỉ 5 label, chuyển 12 high-cardinality field sang structured metadata. (4) Alert cardinality > 50k.
+
+Kết quả: Cardinality 15k, storage 80GB/ngày, query 2s, auditor pass.
+
+> Senior tip: Cardinality cost = f(series × retention × replication). Mỗi label high-cardinality nhân số series lên gấp hàng chục. Luôn review label mới trong PR như review schema DB. Structured metadata (Loki 2.9+) là game changer: query {{json | __meta_traceId = "abc"}} nhanh như label nhưng KHÔNG tạo series mới.`,
+    follow: [
+      'Fluent Bit regex processor mask credit card (Luynh algorithm) và JWT không làm hỏng JSON thế nào?',
+      'Log sampling 1% DEBUG: làm sao đảm bảo vẫn bắt được bug hiếm (error rate 0.01%) khi sampling?',
+      'Loki structured metadata khác label ở điểm nào, và query log theo traceId dùng structured metadata ra sao?'
+    ],
+    tags: ['Structured logging', 'Log sampling', 'PII redaction', 'Loki', 'Fluent Bit']
+  },
+  {
+    id: 'devops-161',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Micrometer export JVM metrics (heap, GC pause, thread) ra Prometheus nhưng cardinality bùng nổ do gắn {{pod}}, {{instance}}, {{job}} vào mọi metric. Bạn thiết kế: (1) recording rules giảm cardinality, (2) relabel_configs drop label không cần, (3) custom metric business SLI (payment success rate, order latency p99) thay vì chỉ metric hạ tầng, và (4) JFR event streaming để continuous profiling không qua metrics.',
+    a: `**Tóm tắt:** Cardinality JVM metrics kiểm soát bằng: Prometheus {{relabel_configs}} drop {{pod}}, {{instance}} (giữ {{service}}, {{namespace}}, {{container}}); recording rules pre-aggregate ({{rate(jvm_gc_pause_seconds_sum[5m])}} -> {{job:jvm_gc_pause:rate5m}}). Business SLI metric ({{payment_success_rate}}, {{order_p99_latency}}) quan trọng hơn metric GC. JFR event streaming (JDK 18+) đẩy event liên tục sang OTel Collector -> Tempo, thay thế sampling profiling truyền thống, không làm bùng cardinality metrics.
+
+### Hiểu nhanh
+Prometheus metric = time series. Mỗi tổ hợp label = 1 series. Micrometer default gắn {{pod}}, {{instance}}, {{job}}, {{namespace}}, {{service}} vào mọi metric JVM. 20 service x 10 pod x 100 metric = 20,000 series chỉ cho JVM. Thêm business metric có label {{userId}}, {{orderId}} -> series nổ. Giải pháp: (1) drop label không cần, (2) pre-aggregate bằng recording rules, (3) business SLI metric thay vì raw metric, (4) JFR event streaming cho profiling thay vì metric cardinality cao.
+
+### Thuật ngữ
+- **Cardinality**: số time series khác nhau. Mỗi series tốn RAM/disk Prometheus.
+- **Recording rule**: pre-compute query phức tạp thành metric mới, giảm cardinality và tăng tốc query.
+- **Relabel_configs**: Prometheus config drop/keep/rename label SCRAPE TIME (trước khi lưu).
+- **Business SLI**: metric phản ánh trải nghiệm user (success rate, latency p99), không phải hạ tầng (CPU, GC).
+- **JFR event streaming**: JDK 18+ stream Flight Recorder event real-time qua OTLP, không sampling.
+
+### 1. Relabel_configs drop label không cần
+
+#### Prometheus scrape config
+~~~yaml
+scrape_configs:
+  - job_name: 'spring-boot-services'
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      # Giữ label cần thiết
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        target_label: service
+      - source_labels: [__meta_kubernetes_pod_container_name]
+        target_label: container
+      # DROP label cardinality cao
+      - action: labeldrop
+        regex: '(pod|instance|job|endpoint|__.*|container_id|image|node)'
+      # Rename cho nhất quán
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod_name
+        action: replace
+      # Giữ pod_name nếu cần debug cụ thể pod (cardinality = số pod ~200, chấp nhận được)
+~~~
+
+**Label giữ vs drop:**
+| Label | Giữ/Drop | Lý do |
+|---|---|---|
+| {{namespace}}, {{service}}, {{container}} | Giữ | Cardinality thấp, cần cho query |
+| {{pod_name}} | Giữ (tùy chọn) | ~200 giá trị, cần debug pod cụ thể |
+| {{pod}}, {{instance}}, {{job}}, {{endpoint}} | Drop | Cardinality cao, redundant với pod_name |
+| {{__meta_*}} internal | Drop | Không cần lưu |
+
+### 2. Recording Rules pre-aggregate
+
+#### Recording rules cho JVM metrics
+~~~yaml
+groups:
+  - name: jvm-recording-rules
+    interval: 30s
+    rules:
+      # GC pause rate pre-aggregated (drop pod label)
+      - record: job:jvm_gc_pause_seconds:rate5m
+        expr: |
+          sum by (namespace, service, container) (
+            rate(jvm_gc_pause_seconds_sum[5m])
+          )
+            /
+          sum by (namespace, service, container) (
+            rate(jvm_gc_pause_seconds_count[5m])
+          )
+
+      # GC pause p99 (histogram)
+      - record: job:jvm_gc_pause_seconds:p99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (namespace, service, container, le) (
+              rate(jvm_gc_pause_seconds_bucket[5m])
+            )
+          )
+
+      # Heap usage ratio
+      - record: job:jvm_memory_heap_usage_ratio
+        expr: |
+          sum by (namespace, service, container) (jvm_memory_used_bytes{area="heap"})
+          /
+          sum by (namespace, service, container) (jvm_memory_max_bytes{area="heap"})
+
+      # Thread count
+      - record: job:jvm_threads_live
+        expr: |
+          sum by (namespace, service, container) (jvm_threads_live)
+
+      # CPU usage (từ container metrics)
+      - record: job:container_cpu_usage:rate5m
+        expr: |
+          sum by (namespace, service, container) (
+            rate(container_cpu_usage_seconds_total[5m])
+          )
+~~~
+
+**Lợi ích:**
+- Query dashboard/alert dùng recording rule -> nhanh hơn 10x, cardinality giảm 90%.
+- Raw metric giữ 1-2h (short retention), recording rule giữ 30 ngày (long retention).
+
+### 3. Business SLI Metrics thay vì Infrastructure Metrics
+
+#### Tại sao infrastructure metric không đủ
+| Metric hạ tầng | Vấn đề |
+|---|---|
+| {{jvm_gc_pause_seconds}} | GC pause 100ms có thể OK cho batch, nhưng FAIL cho payment API |
+| {{jvm_memory_heap_usage_ratio}} | Heap 80% có thể bình thường, không phản ánh user experience |
+| {{container_cpu_usage_seconds_total}} | CPU thấp nhưng latency cao (I/O bound) |
+
+#### Business SLI metrics (Micrometer)
+~~~java
+@Component
+@RequiredArgsConstructor
+class PaymentSliMetrics {
+
+    private final MeterRegistry registry;
+    private final Timer.Sample timerSample;
+
+    // Success rate SLI
+    public void recordPaymentSuccess(boolean success) {
+        Counter.builder("payment.success")
+                .tag("success", String.valueOf(success))
+                .register(registry)
+                .increment();
+    }
+
+    // Latency SLI (p99 via histogram)
+    public Timer.Sample startPaymentTimer() {
+        return Timer.start(registry);
+    }
+
+    public void stopPaymentTimer(Timer.Sample sample, String outcome) {
+        sample.stop(Timer.builder("payment.latency")
+                .tag("outcome", outcome) // success, timeout, decline, error
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .register(registry));
+    }
+
+    // Business throughput
+    public void recordPaymentVolume(String channel) {
+        Counter.builder("payment.volume")
+                .tag("channel", channel) // web, mobile, api
+                .register(registry)
+                .increment();
+    }
+}
+~~~
+
+#### PromQL cho SLO dashboard
+~~~promql
+# Success rate (SLI)
+sum(rate(payment_success_total{success="true"}[5m]))
+/
+sum(rate(payment_success_total[5m]))
+
+# Latency p99 (SLI)
+histogram_quantile(0.99,
+  sum by (le, service) (rate(payment_latency_seconds_bucket[5m]))
+)
+
+# Error budget burn rate
+(
+  sum(rate(payment_success_total{success="false"}[1h]))
+  /
+  sum(rate(payment_success_total[1h]))
+) / 0.001  # SLO 99.9% -> error budget 0.1%
+~~~
+
+**Lợi ích:** Business SLI metric cardinality thấp (chỉ {{service}}, {{outcome}}, {{channel}}), trực tiếp gắn với SLO/alert, không cần đoán từ GC/CPU.
+
+### 4. JFR Event Streaming (JDK 18+)
+
+#### Tại sao JFR streaming thay profiling metrics
+- **Profiling metrics** (async-profiler, Micrometer timer): sampling, cardinality cao nếu gắn label chi tiết, mất context.
+- **JFR event streaming**: push event real-time (CPU sample, allocation, lock, GC, I/O) qua OTLP -> Tempo/Jaeger. Không sampling, full context (stack trace, thread state), cardinality = 0 (không phải metric).
+
+#### Cấu hình JFR streaming
+~~~bash
+# JVM flags
+-XX:+FlightRecorder \
+-XX:StartFlightRecording=name=continuous,maxage=1h,maxsize=500m,disk=true,repository=/tmp/jfr \
+-XX:FlightRecorderOptions=stackdepth=256,threadbuffersize=256k
+
+# OTel Collector config (receivers)
+receivers:
+  jfr:
+    endpoint: 0.0.0.0:18888
+    path: /jfr
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+
+service:
+  pipelines:
+    traces:
+      receivers: [jfr]
+      exporters: [otlp/tempo]
+~~~
+
+#### Spring Boot Actuator JFR endpoint (3.2+)
+~~~yaml
+management:
+  endpoint:
+    jfr:
+      enabled: true
+  endpoints:
+    web:
+      exposure:
+        include: jfr
+~~~
+Trigger recording: {{POST /actuator/jfr?duration=60s&event=jdk.CPULoad,jdk.JavaMonitorEnter}}
+
+### So sánh approach
+
+| Approach | Cardinality | Overhead | Use case |
+|---|---|---|---|
+| Micrometer raw metric + label | Cao (pod x metric) | Thấp | Infra dashboard |
+| Recording rules | Thấp (pre-aggregated) | Thấp query | Alert/SLO dashboard |
+| Business SLI (Micrometer) | Rất thấp (service + tag) | Thấp | SLO, alert, business dashboard |
+| JFR event streaming | 0 (không phải metric) | < 1% CPU | Continuous profiling, root cause |
+
+### Lỗi hay gặp
+1. **Recording rule không drop label pod**: rule {{sum by (pod, ...)}} -> cardinality không giảm.
+2. **Business SLI gắn label {{userId}}**: cardinality nổ, defeat purpose.
+3. **JFR streaming bật nhưng không có OTel Collector receiver**: event mất, resource lãng phí.
+4. **Retention raw metric = recording rule**: raw metric giữ 30 ngày -> TSDB đầy.
+
+### Trả lời miệng 1 phút
+"Tôi kiểm soát cardinality JVM metrics bằng 4 lớp: (1) Prometheus relabel_configs drop {{pod}}, {{instance}}, {{job}} ở scrape time, chỉ giữ {{namespace}}, {{service}}, {{container}}. (2) Recording rules pre-aggregate GC pause, heap, thread thành metric {{job:*}} chỉ có 3 label, retention 30 ngày, raw metric chỉ giữ 2h. (3) Business SLI metric ({{payment_success_rate}}, {{order_p99_latency}}) thay vì GC/CPU -- cardinality thấp, gắn trực tiếp SLO. (4) JFR event streaming (JDK 18+) đẩy CPU sample, allocation, lock event real-time qua OTLP -> Tempo, cardinality 0, thay thế profiling metrics. Kết quả: Prometheus series 500k -> 50k, query p99 10s -> 1s, SLO alert chính xác business impact."
+
+### Ví dụ đời thực
+Triệu chứng: Prometheus 3 node, RAM 32GB mỗi node, OOM kill hàng tuần. Series 800k (20 service x 10 pod x 400 JVM metric). Alert GC pause fire liên tục nhưng business không bị ảnh hưởng.
+
+Điều tra: Micrometer export {{jvm_gc_pause_seconds}} với label {{pod}}, {{instance}}, {{job}} -> 20x10x3 = 600 series chỉ cho GC pause. Dashboard query {{max by (pod)}} chậm 30s.
+
+Xử lý: (1) Relabel drop {{pod}}, {{instance}}, {{job}}. (2) Recording rule {{job:jvm_gc_pause_seconds:rate5m}} sum by {{namespace,service,container}}. (3) Tạo business SLI {{payment_success_rate}}, {{order_p99_latency}}. (4) Bật JFR streaming cho profiling.
+
+Kết quả: Series 800k -> 45k, RAM Prometheus 28GB -> 4GB, OOM = 0. Alert GC pause thay bằng alert {{payment_success_rate < 99.9%}}. Profiling dùng JFR streaming, không cần async-profiler metric.
+
+> Senior tip: Cardinality = tiền. Mỗi label thêm = nhân series. Luôn hỏi: "Label này dùng cho query/alert gì? Có pre-aggregate được không?" Recording rule là "view vật hóa" của Prometheus -- đầu tư một lần, tiết kiệm query suốt đời. JFR event streaming là future: profiling không qua metric, không cardinality, full context.`,
+    follow: [
+      'Recording rule {{job:jvm_gc_pause_seconds:rate5m}} viết PromQL như thế nào để drop label pod?',
+      'JFR event streaming so với async-profiler sampling profiling khác gì về overhead và độ chính xác?',
+      'Business SLI metric (payment_success_rate) nên tính ở tầng application (Micrometer) hay tầng infra (sidecar)?'
+    ],
+    tags: ['Micrometer', 'Prometheus', 'Cardinality', 'JFR', 'Business SLI', 'Recording rules']
+  },
+  {
+    id: 'devops-162',
+    topic: 'devops',
+    level: 'senior',
+    q: 'App Spring Boot 3.2+ dùng CDS (Class Data Sharing) và AOT cache (JDK 24+, JEP 483) để giảm startup từ 60s xuống 8s. Bạn mô tả: (1) CDS archive tạo như thế nào trong CI (java -XX:ArchiveClassesAtExit), (2) AOT cache tạo như thế nào (spring.aot.enabled=true), (3) container image layout để mount archive/cache, (4) trade-off: CDS/AOT cache tăng image size, regeneration mỗi build, và incompatibility với một số agent (Java agent, JFR).',
+    a: `**Tóm tắt:** CI build: (1) Chạy app đến lúc ContextRefreshedEvent, {{java -XX:ArchiveClassesAtExit=app-cds.jsa -jar app.jar}} tạo CDS archive. (2) Bật {{spring.aot.enabled=true}}, {{./mvnw spring-boot:build-image}} hoặc {{./mvnw package}} sinh AOT cache trong {{target/aot-cache/}}. (3) Image multi-stage copy {{app-cds.jsa}} và {{aot-cache/}} vào layer runtime, {{ENTRYPOINT ["java", "-XX:SharedArchiveFile=app-cds.jsa", "-XX:AOTCache=target/aot-cache", ...]}}. (4) Trade-off: image +50–100MB, CI build +2–5 phút, agent (New Relic, Datadog) có thể conflict với AOT cache — test kỹ trước khi bật prod.
+
+### Hiểu nhanh
+Startup Spring Boot = JVM init + Class loading/verification + Spring context bootstrap (component scan, bean creation, DB pool, Kafka consumer). **CDS** cache class metadata (verified bytecode) -> bỏ qua verification lần sau. **AOT cache** (JDK 24+ JEP 483) cache ahead-of-time compiled code + Spring AOT transformation -> bỏ qua JIT warm-up và Spring bean initialization một phần. Kết hợp hai cái: startup 60s -> 8s.
+
+### Thuật ngữ
+- **CDS (Class Data Sharing)**: JVM feature từ JDK 5, cải tiến lớn ở JDK 10+ (AppCDS). Archive chứa class metadata đã verified.
+- **AppCDS**: Application CDS — archive tùy chỉnh cho ứng dụng (khác system CDS cho JDK classes).
+- **AOT Cache (JEP 483)**: JDK 24+ feature, cache ahead-of-time compiled code (GraalVM style) + metadata cho JVM.
+- **Spring AOT**: Spring Boot 3.0+ feature, transform bean registration, component scan, proxy creation thành code generated tại build time.
+- **JEP 483**: Ahead-of-Time Class Loading & Linking — cache class loading/linking work.
+
+### 1. Tạo CDS Archive trong CI
+
+#### Quy trình tạo archive
+~~~bash
+#!/bin/bash
+# ci/build-cds.sh
+set -euo pipefail
+
+APP_JAR="target/app.jar"
+CDS_ARCHIVE="app-cds.jsa"
+
+# 1. Chạy app đến lúc ContextRefreshedEvent (Spring context sẵn sàng)
+# Spring Boot 3.2+ có exit code 0 khi context ready nếu set spring.main.web-application-type=none
+# Hoặc dùng SpringApplication.exit() sau khi context ready
+java -XX:ArchiveClassesAtExit=$CDS_ARCHIVE \
+     -Dspring.main.web-application-type=none \
+     -Dspring.jpa.open-in-view=false \
+     -Dspring.kafka.listener.auto-startup=false \
+     -jar $APP_JAR &
+
+APP_PID=$!
+
+# Chờ context ready (kiểm tra log hoặc actuator health)
+for i in {1..60}; do
+    if grep -q "Started Application in" app.log 2>/dev/null; then
+        break
+    fi
+    sleep 2
+done
+
+# Gửi SIGTERM để JVM ghi archive và thoát gracefully
+kill -TERM $APP_PID
+wait $APP_PID
+
+# Kiểm tra archive
+if [ -f "$CDS_ARCHIVE" ] && [ $(stat -c%s "$CDS_ARCHIVE") -gt 1000000 ]; then
+    echo "CDS archive created: $(du -h $CDS_ARCHIVE)"
+else
+    echo "ERROR: CDS archive not created or too small"
+    exit 1
+fi
+~~~
+
+#### Lưu ý quan trọng
+- **Classpath phải giống hệt runtime**: Archive ghi nhớ classpath hash. CI build và runtime phải dùng **cùng một** fat jar (cùng digest).
+- **JDK version phải giống hệt**: Archive không portable giữa JDK version (JDK 21 archive không chạy trên JDK 22).
+- **Spring context phải loaded đủ**: Chỉ những class loaded khi tạo archive mới được cache. Profile {{cds}} tắt web server, Kafka, scheduler để load nhanh và đủ class cần thiết.
+
+#### Maven plugin tự động (Spring Boot 3.3+)
+~~~xml
+<plugin>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-maven-plugin</artifactId>
+    <configuration>
+        <jvmArguments>
+            -XX:ArchiveClassesAtExit=app-cds.jsa
+        </jvmArguments>
+    </configuration>
+</plugin>
+~~~
+Chạy: {{./mvnw spring-boot:run -Dspring-boot.run.jvmArguments="-XX:ArchiveClassesAtExit=app-cds.jsa" -Dspring.main.web-application-type=none}}
+
+### 2. Tạo AOT Cache (JDK 24+, JEP 483)
+
+#### Spring AOT vs JDK AOT Cache
+| Feature | Spring AOT (Boot 3.0+) | JDK AOT Cache (JEP 483, JDK 24+) |
+|---|---|---|
+| Scope | Spring bean registration, proxy, component scan | JVM class loading, linking, resolution |
+| Output | Generated Java code ({{.java}} -> {{.class}}) | Binary cache ({{.aot}} files) |
+| Build time | {{./mvnw compile}} hoặc {{spring-boot:build-image}} | {{java -XX:AOTCacheOutput=...}} hoặc Spring Boot plugin |
+| Runtime | Không cần flag đặc biệt | {{-XX:AOTCache=path}} |
+
+#### Tạo AOT Cache với Spring Boot 3.3+
+~~~xml
+<!-- pom.xml -->
+<properties>
+    <spring.aot.enabled>true</spring.aot.enabled>
+    <java.version>24</java.version>
+</properties>
+
+<plugin>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-maven-plugin</artifactId>
+    <configuration>
+        <aot>
+            <enabled>true</enabled>
+        </aot>
+    </configuration>
+</plugin>
+~~~
+
+Chạy: {{./mvnw -Dspring.aot.enabled=true package}}
+
+Output:
+~~~
+target/
+├── app.jar
+├── aot-cache/              # JDK AOT cache (JEP 483)
+│   ├── classes.jsa         # CDS archive (tự động)
+│   ├── aot-cache/          # AOT compiled code
+│   └── index.idx
+└── spring-aot/             # Spring AOT generated sources
+    └── ...
+~~~
+
+#### Spring Boot 3.4+ build-image tự động
+~~~bash
+./mvnw spring-boot:build-image -Dspring.aot.enabled=true
+# Image đã có CDS archive + AOT cache, sẵn sàng chạy
+~~~
+
+### 3. Container Image Layout
+
+#### Multi-stage Dockerfile
+~~~dockerfile
+# syntax=docker/dockerfile:1
+# Stage 1: Build + CDS + AOT
+FROM eclipse-temurin:24-jdk AS build
+WORKDIR /build
+COPY .mvn .mvn
+COPY mvnw pom.xml ./
+RUN --mount=type=cache,target=/root/.m2 ./mvnw -q dependency:go-offline
+COPY src src
+RUN --mount=type=cache,target=/root/.m2 ./mvnw -q -Dspring.aot.enabled=true package
+
+# Tạo CDS archive từ fat jar (Spring context loaded)
+RUN java -Dspring.main.web-application-type=none \
+         -Dspring.jpa.open-in-view=false \
+         -Dspring.kafka.listener.auto-startup=false \
+         -XX:ArchiveClassesAtExit=/build/app-cds.jsa \
+         -jar target/*.jar
+
+# Stage 2: Runtime
+FROM eclipse-temurin:24-jre
+RUN useradd --system --uid 10001 app
+WORKDIR /app
+
+# Copy CDS archive + AOT cache + fat jar (layered)
+COPY --from=build /build/target/layers/dependencies/ ./
+COPY --from=build /build/target/layers/spring-boot-loader/ ./
+COPY --from=build /build/target/layers/snapshot-dependencies/ ./
+COPY --from=build /build/target/layers/application/ ./
+COPY --from=build /build/app-cds.jsa ./
+COPY --from=build /build/target/aot-cache/ ./aot-cache/
+
+USER 10001
+ENTRYPOINT ["java", \
+    "-XX:SharedArchiveFile=app-cds.jsa", \
+    "-XX:AOTCache=aot-cache", \
+    "-XX:MaxRAMPercentage=75", \
+    "org.springframework.boot.loader.launch.JarLauncher"]
+~~~
+
+#### Layer caching strategy
+- {{app-cds.jsa}} và {{aot-cache/}} thay đổi mỗi build -> đặt **sau cùng** (layer application).
+- Base image, dependencies, loader không đổi -> cache Docker reuse.
+
+### 4. Trade-off và Pitfall
+
+| Trade-off | Chi tiết | Mitigation |
+|---|---|---|
+| **Image size +50-100MB** | CDS archive ~30-50MB, AOT cache ~20-50MB | Chấp nhận đổi lấy startup 8s vs 60s |
+| **CI build time +2-5 phút** | Tạo CDS archive (chạy app ~30s), AOT transform (~2-3 phút) | Parallel CI, cache Maven wrapper |
+| **Regeneration mỗi build** | Archive gắn classpath hash; dependency thay đổi = archive mới | Tự động trong CI, không manual step |
+| **Java agent conflict** | New Relic, Datadog, SkyWalking agent có thể conflict AOT cache | Test staging với agent trước khi prod |
+| **JFR conflict** | AOT cache có thể conflict JFR continuous profiling | Test JFR + AOT cache staging 1 tuần |
+| **CDS archive invalid** | JDK version mismatch, classpath mismatch -> JVM fallback silent | CI check: {{java -XX:SharedArchiveFile=app-cds.jsa -version}} phải không warning |
+
+#### Java Agent Incompatibility
+| Agent | Vấn đề với AOT Cache | Workaround |
+|---|---|---|
+| New Relic | Bytecode transform conflict AOT compiled code | Disable AOT cho class agent touch, hoặc upgrade agent |
+| Datadog | Tương tự | Upgrade agent ≥ 1.30.0 |
+| SkyWalking | Bytecode instrumentation conflict | Test kỹ, có thể disable AOT cho package agent instrument |
+| JFR continuous | Event streaming có thể conflict AOT cache class loading | Test JFR + AOT cache staging 1 tuần |
+
+### Lỗi hay gặp
+
+1. **CDS archive tạo từ jar khác runtime jar**: CI build jar A, runtime copy jar B (khác digest) -> JVM ignore archive, fallback slow startup.
+2. **JDK version mismatch**: CI JDK 24.0.1, runtime JDK 24.0.2 -> archive invalid. Fix: pin JDK version (docker digest).
+3. **Spring profile thiếu**: Tạo CDS archive profile {{cds}} (tắt web, Kafka), runtime profile {{prod}} -> class loaded khác -> archive miss rate cao.
+4. **AOT cache không dùng được**: {{spring.aot.enabled=true}} nhưng {{spring-boot:build-image}} không bật AOT -> image không có cache.
+
+### Trả lời miệng 1 phút
+"Tôi giảm Spring Boot startup từ 60s xuống 8s bằng CDS + AOT cache. CI: chạy app profile {{cds}} (tắt web/Kafka) tạo CDS archive {{app-cds.jsa}} bằng {{-XX:ArchiveClassesAtExit}}. Bật {{spring.aot.enabled=true}} (Spring Boot 3.3) tạo AOT cache (JDK 24 JEP 483) + Spring AOT generated code. Docker multi-stage copy {{app-cds.jsa}} và {{aot-cache/}} vào runtime image, {{ENTRYPOINT}} dùng {{-XX:SharedArchiveFile=app-cds.jsa -XX:AOTCache=aot-cache}}. Trade-off: image +80MB, CI +3 phút, agent (New Relic, Datadog) có thể conflict AOT cache — test staging 1 tuần. CDS archive gắn classpath hash, phải tái tạo mỗi build khi dependency thay đổi."
+
+### Ví dụ đời thực
+Triệu chứng: Payment service Spring Boot 3.2 startup 65s (p95), HPA scale-up 3 phút, flash sale miss SLA.
+
+Điều tra: {{/actuator/startup}} thấy: class loading 18s, bean creation 25s, DB pool 12s, Kafka consumer 10s. JVM JIT warm-up thêm 30s sau Ready.
+
+Xử lý: (1) CI tạo CDS archive ({{-XX:ArchiveClassesAtExit}}) profile {{cds}} (tắt web/Kafka). (2) Bật {{spring.aot.enabled=true}} (Spring Boot 3.3) tạo AOT cache. (3) Docker multi-stage copy archive/cache. (4) Test agent New Relic staging 1 tuần.
+
+Kết quả: Startup p95 65s -> 8s (class loading 18s->2s, bean creation 25s->4s). HPA scale-up 3p -> 45s. Flash sale 12:00 đạt SLA. Agent New Relic compatible sau upgrade 1.32.0.
+
+> Senior tip: CDS archive = "class loading snapshot". Phải tạo từ **chính xác jar runtime** và **chính xác JDK runtime**. CI/CD pipeline nên có step {{verify-cds}}: {{java -XX:SharedArchiveFile=app-cds.jsa -version}} -- nếu output có {{sharing}} hoặc không warning là OK. AOT cache (JEP 483) còn mới, test kỹ với Java agent trước khi prod.`,
+    follow: [
+      'CDS archive tạo từ app.jar có Spring context đã loaded: làm sao đảm bảo archive khớp chính xác classpath runtime?',
+      'AOT cache (JEP 483) khác Spring AOT (spring-boot-maven-plugin) ở điểm nào, và có thể dùng chung không?',
+      'Khi bật CDS + AOT cache, startup giảm còn 8s nhưng p99 warm-up 30s đầu vẫn cao: bạn xử lý warm-up thế nào?'
+    ],
+    tags: ['CDS', 'AppCDS', 'AOT cache', 'JEP 483', 'Spring Boot 3', 'Startup time']
+  },
+  {
+    id: 'devops-163',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Chọn base image JRE cho Spring Boot production: so sánh Eclipse Temurin JRE (Debian), Distroless (gcr.io/distroless/java21-debian12), jlink custom runtime, và Alpine (eclipse-temurin:21-jre-alpine). Tiêu chí: CVE count, debug capability (shell, jcmd), image size, musl vs glibc compatibility, và supply chain security (SBOM, SLSA, cosign). Khi nào dùng jlink custom runtime thay vì Distroless?',
+a: `**Tóm tắt:** **Distroless (Debian)** là cân bằng tốt nhất: ~200MB, CVE thấp, có tag {{:debug}} có busybox cho kubectl debug, glibc tương thích. **jlink custom runtime** (~100–150MB) nhỏ nhất nhưng phải test smoke (HTTPS, DB, font) vì jdeps bỏ sót module nạp động ({{jdk.crypto.ec}}, {{jdk.management}}). **Alpine** tránh trừ khi test kỹ musl (native lib, DNS). **Eclipse Temurin JRE** (~250MB) dễ debug nhất nhưng CVE nhiều hơn. Supply chain: pull base image theo digest, cosign verify, Syft SBOM, Trivy scan CI. Quy tắc: mặc định Distroless, cần debug dùng {{:debug}}, cần tối ưu size dùng jlink + smoke test.
+
+### Hiểu nhanh
+Base image = fondations của container. Chọn sai = CVE vô lý, debug không được, native lib crash, supply chain attack. **Distroless** = Debian slim + chỉ JRE, không shell, không package manager, không user (non-root). **jlink** = custom JRE chỉ chứa module app cần, nhỏ nhất. **Alpine** = musl libc, nhỏ nhưng rủi ro native lib. **Temurin JRE** = full Debian JRE, an toàn nhất cho compatibility.
+
+### Thuật ngữ
+- **Distroless**: Google container images, chỉ runtime, không OS tool (shell, apt, ps, ls).
+- **jlink**: JDK tool tạo custom runtime image chỉ chứa module cần thiết.
+- **jdeps**: Static analysis tool xác định module dependency của app.
+- **musl libc**: Lightweight C library (Alpine), khác glibc (Debian/Ubuntu) — native lib compile cho glibc có thể fail trên musl.
+- **SBOM (Software Bill of Materials)**: Danh sách thành phần trong image (CycloneDX, SPDX).
+- **SLSA (Supply Chain Levels for Software Artifacts)**: Framework bảo mật supply chain.
+- **Cosign**: Keyless container signing (Sigstore), verify provenance.
+
+### So sánh chi tiết
+
+| Tiêu chí | Eclipse Temurin JRE (Debian) | Distroless Java21 Debian12 | jlink Custom Runtime | Alpine (Temurin JRE Alpine) |
+|---|---|---|---|---|
+| **Base OS** | Debian 12 (slim) | Debian 12 (distroless) | Debian 12 / scratch + jlink modules | Alpine Linux |
+| **Libc** | glibc | glibc | glibc | musl |
+| **Image size** | ~250 MB | ~200 MB | ~100-150 MB | ~180 MB |
+| **Shell** | bash | KHÔNG (tag :debug có busybox) | KHÔNG (tùy base) | ash (busybox) |
+| **Package manager** | apt | KHÔNG | KHÔNG | apk |
+| **Debug tools** | jcmd, jstack, jstat, jmap, bash | KHÔNG (tag :debug có) | KHÔNG | jcmd, jstack (nếu JDK bundle) |
+| **CVE count (typical)** | 50-100 (OS + JDK) | 5-20 (chỉ JDK + minimal OS) | 0-5 (chỉ JDK modules) | 10-30 (Alpine + JDK) |
+| **Native lib (JNI)** | Tương thích tốt | Tương thích tốt | Tương thích tốt | **RỦI RO**: glibc-compiled lib fail |
+| **DNS behavior** | Chuẩn glibc | Chuẩn glibc | Chuẩn glibc | Khác (search domain, timeout) |
+| **Non-root user** | Tự tạo | Mặc định non-root (UID 65532) | Tự tạo | Tự tạo |
+| **Supply chain** | Docker Hub / Eclipse mirror | gcr.io (Google), cosign verify | Tự build, tự sign | Docker Hub / Eclipse mirror |
+
+### Khi nào dùng jlink custom runtime thay vì Distroless?
+
+#### Dùng jlink khi:
+1. **Image size critical**: Serverless (AWS Lambda, Cloud Run), edge device, pull time critical (slow registry).
+2. **Security extreme**: Zero-CVE target, minimal attack surface, compliance strict.
+3. **Startup time critical**: jlink runtime + CDS + AOT cache = startup < 5s.
+4. **Team có capacity test smoke**: Có quy trình test HTTPS, DB, font, native lib tự động trong CI.
+
+#### Dùng Distroless khi (DEFAULT):
+1. **Cân bằng tốt nhất**: Size hợp lý, CVE thấp, debug được qua {{:debug}} tag, glibc safe.
+2. **Team không muốn maintain jlink module list**: jdeps có thể miss module dynamic load.
+3. **Debug production cần**: {{kubectl debug --image=gcr.io/distroless/java21-debian12:debug}} attach busybox.
+4. **Migration từ Temurin JRE dễ dàng**: Chỉ đổi base image, không đổi Dockerfile logic.
+
+#### Tránh Alpine khi:
+- Dùng native library (Netty tcnative, RocksDB, font rendering, Python embed).
+- DNS behavior khác gây bug khó debug (musl resolver không support {{search}} domain như glibc).
+- Team không có kinh nghiệm debug musl issue.
+
+### Tạo jlink Custom Runtime
+
+#### Phân tích module dependency
+~~~bash
+# 1. Extract Spring Boot layered jar
+java -Djarmode=tools -jar app.jar extract --destination extracted
+
+# 2. Phân tích module (jdeps)
+jdeps --ignore-missing-deps -q \
+      --recursive --multi-release 21 \
+      --print-module-deps \
+      --class-path 'extracted/lib/*' \
+      extracted/app.jar > modules.txt
+
+# 3. Thêm module thường bị miss (dynamic load)
+# jdk.crypto.ec (TLS EC cipher), jdk.management (JMX), jdk.localedata (locale), jdk.unsupported
+cat >> modules.txt << 'EOF'
+jdk.crypto.ec
+jdk.management
+jdk.localedata
+jdk.unsupported
+java.sql
+java.xml
+java.naming
+java.rmi
+EOF
+
+# 4. Tạo runtime
+MODULES=$(cat modules.txt | tr '\n' ',' | sed 's/,$//')
+jlink --add-modules $MODULES \
+      --strip-debug --no-man-pages --no-header-files \
+      --compress=zip-6 \
+      --output /opt/jre-minimal
+~~~
+
+#### Dockerfile dùng jlink runtime
+~~~dockerfile
+# syntax=docker/dockerfile:1
+# Stage 1: Build + jlink
+FROM eclipse-temurin:21-jdk AS jlink-builder
+WORKDIR /build
+COPY .mvn .mvn
+COPY mvnw pom.xml ./
+RUN --mount=type=cache,target=/root/.m2 ./mvnw -q dependency:go-offline
+COPY src src
+RUN --mount=type=cache,target=/root/.m2 ./mvnw -q package -DskipTests
+
+# Extract + jdeps + jlink
+RUN java -Djarmode=tools -jar target/*.jar extract --destination extracted && \
+    jdeps --ignore-missing-deps -q --recursive --multi-release 21 \
+          --print-module-deps --class-path 'extracted/lib/*' extracted/app.jar > modules.txt && \
+    echo "jdk.crypto.ec,jdk.management,jdk.localedata,jdk.unsupported,java.sql,java.xml,java.naming,java.rmi" >> modules.txt && \
+    MODULES=$(cat modules.txt | tr '\n' ',' | sed 's/,$//') && \
+    jlink --add-modules $MODULES --strip-debug --no-man-pages --no-header-files --compress=zip-6 --output /opt/jre
+
+# Stage 2: Runtime
+FROM debian:12-slim AS runtime
+RUN useradd --system --uid 10001 app
+COPY --from=jlink-builder /opt/jre /opt/jre
+ENV PATH="/opt/jre/bin:$PATH" JAVA_HOME="/opt/jre"
+WORKDIR /app
+COPY --from=jlink-builder /build/target/layers/dependencies/ ./
+COPY --from=jlink-builder /build/target/layers/spring-boot-loader/ ./
+COPY --from=jlink-builder /build/target/layers/snapshot-dependencies/ ./
+COPY --from=jlink-builder /build/target/layers/application/ ./
+USER 10001
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "org.springframework.boot.loader.launch.JarLauncher"]
+~~~
+
+#### Smoke Test bắt buộc cho jlink Runtime
+Trước khi promote production, chạy test suite:
+~~~bash
+# Test HTTPS (TLS EC cipher)
+java -cp app.jar com.example.TlsTest https://api.github.com
+
+# Test Database (JDBC, SSL)
+java -cp app.jar com.example.DbTest jdbc:postgresql://host:5432/db
+
+# Test Font rendering (PDF generation)
+java -cp app.jar com.example.PdfTest
+
+# Test Locale/Timezone
+java -cp app.jar com.example.LocaleTest vi_VN
+
+# Test JMX/MBean (jdk.management)
+java -cp app.jar com.example.JmxTest
+
+# Test Native library (Netty tcnative, RocksDB)
+java -cp app.jar com.example.NativeTest
+~~~
+Nếu một test fail -> thêm module vào {{modules.txt}} và rebuild.
+
+### Supply Chain Security
+
+#### Base image digest pinning
+~~~dockerfile
+# Temurin JRE
+FROM eclipse-temurin:21-jre@sha256:abc123...  # digest, KHÔNG tag
+
+# Distroless
+FROM gcr.io/distroless/java21-debian12@sha256:def456...
+
+# Alpine
+FROM eclipse-temurin:21-jre-alpine@sha256:ghi789...
+~~~
+
+#### SBOM generation (Syft)
+~~~bash
+syft eclipse-temurin:21-jre@sha256:abc123 -o cyclonedx-json > sbom-temurin.cdx.json
+syft gcr.io/distroless/java21-debian12@sha256:def456 -o cyclonedx-json > sbom-distroless.cdx.json
+~~~
+
+#### Cosign signing (keyless, GitHub OIDC)
+~~~bash
+# Build image
+docker build -t myapp:$SHA .
+docker push myapp:$SHA
+
+# Cosign sign (keyless, cần GH OIDC token)
+cosign sign --yes myapp@sha256:<digest>
+
+# Cosign verify
+cosign verify --certificate-identity-regexp "https://github.com/myorg/.*" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              myapp@sha256:<digest>
+~~~
+
+#### Trivy scan CI
+~~~yaml
+# .github/workflows/scan.yml
+- name: Trivy scan
+  uses: aquasecurity/trivy-action@master
+  with:
+    image-ref: 'myapp:\${{ github.sha }}'
+    format: 'sarif'
+    output: 'trivy.sarif'
+    severity: 'CRITICAL,HIGH'
+    ignore-unfixed: true
+    exit-code: '1'
+~~~
+
+### Decision Matrix
+
+| Scenario | Khuyên dùng | Lý do |
+|---|---|---|
+| General Spring Boot prod | **Distroless (Debian)** | Cân bằng size/CVE/debug/compatibility |
+| Serverless / Lambda / Edge | **jlink custom** | Size nhỏ nhất, cold start nhanh |
+| Legacy app dùng native lib/font | **Temurin JRE (Debian)** | glibc full, debug tools full |
+| Team có CI/CD mature, test smoke auto | **jlink custom** | Size nhỏ, CVE gần 0 |
+| Debug production thường xuyên | **Distroless :debug** hoặc **Temurin JRE** | Busybox shell, jcmd, jstack |
+| Compliance zero-CVE | **jlink custom** (build từ scratch) | Chỉ module cần thiết, không OS package |
+
+### Lỗi hay gặp
+
+1. **jlink miss module**: {{jdeps}} static analysis bỏ sót {{ServiceLoader}}, reflection, JNI load -> runtime {{NoClassDefFoundError}} hoặc {{NoSuchAlgorithmException}} (ECC). Fix: thêm module thủ công, smoke test.
+2. **Distroless không có shell**: {{kubectl exec -it pod -- sh}} fail. Fix: dùng {{:debug}} tag hoặc {{kubectl debug}} ephemeral container.
+3. **Alpine musl DNS bug**: {{search}} domain không resolve, timeout 5s. Fix: dùng {{ndots:1}} hoặc chuyển Distroless/Temurin.
+4. **Base image tag {{latest}}**: Digest thay đổi giữa build -> không reproducible. Fix: pin digest.
+5. **Cosign verify fail**: OIDC token audience mismatch ({{sts.amazonaws.com}} vs {{token.actions.githubusercontent.com}}). Fix: check {{--certificate-oidc-issuer}}.
+
+### Trả lời miệng 1 phút
+"Mặc định tôi chọn Distroless Java21 Debian12: ~200MB, CVE thấp, glibc tương thích, có tag {{:debug}} cho kubectl debug. Khi cần size tối thiểu (serverless, edge) hoặc zero-CVE compliance, tôi dùng jlink custom runtime (~120MB) nhưng bắt buộc smoke test HTTPS, DB, font, native lib vì jdeps miss module dynamic load. Alpine tránh trừ khi test kỹ musl. Supply chain: pull base image by digest, Syft SBOM CycloneDX, Trivy scan CI fail trên CRITICAL/HIGH, cosign keyless sign với GitHub OIDC, verify provenance trong admission policy. Quy tắc: Distroless default, jlink khi cần optimize size/security và có capacity test."
+
+### Ví dụ đời thực
+Triệu chứng: Payment service Temurin JRE 250MB, Trivy report 65 CVE (12 HIGH), pull time 45s trên node mới.
+
+Điều tra: Base image {{eclipse-temurin:21-jre}} full Debian, nhiều package OS không cần (systemd, cron, vim). CVE chủ yếu từ glibc, openssl, systemd.
+
+Xử lý: (1) Chuyển {{gcr.io/distroless/java21-debian12@sha256:...}} (digest pin). (2) CI thêm Syft SBOM, Trivy scan fail CRITICAL/HIGH. (3) Cosign keyless sign. (4) Test Distroless :debug cho on-call debug.
+
+Kết quả: Image 250MB -> 195MB, CVE 65 -> 3 (0 HIGH), pull time 45s -> 12s. Auditor pass SBOM + cosign provenance. On-call debug dùng {{kubectl debug --image=gcr.io/distroless/java21-debian12:debug}}.
+
+> Senior tip: Đừng optimize base image trước khi có data. Measure: {{docker image ls}}, {{trivy image}}, {{syft image}}, pull time trên node cold. Distroless win 80% case. jlink chỉ win khi size < 150MB là hard requirement VÀ team có smoke test pipeline. Alpine là technical debt cho Java — chỉ dùng khi legacy app buộc phải chạy trên Alpine-based infra.`,
+    follow: [
+      'Distroless {{:debug}} tag có busybox: kubectl debug dùng image này như thế nào để attach vào container distroless production?',
+      'jlink custom runtime thiếu module {{jdk.crypto.ec}} gây TLS handshake fail: bạn thêm module nào và test smoke như thế nào?',
+      'Cosign keyless signing (GitHub OIDC) vs cosign với AWS KMS: trade-off cho base image signing là gì?'
+    ],
+    tags: ['Base image', 'Distroless', 'jlink', 'Alpine', 'CVE', 'SBOM', 'Cosign']
+  }
 );
