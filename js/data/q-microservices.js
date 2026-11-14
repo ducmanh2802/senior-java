@@ -7174,4 +7174,426 @@ Chi phí: hai ngày viết test, tiết kiệm khoảng 40 giờ xử lý sự c
     { type: 'doc', title: 'Testcontainers: Kafka module', url: 'https://java.testcontainers.org/modules/kafka/' }
   ]
 },
+{
+  id: 'microservices-082',
+  topic: 'microservices',
+  level: 'mid',
+  q: 'Consumer Kafka cua ban ghi vao database, nhung pod bi restart giua chuc va cung mot message bi xu ly hai lan. Ban thiet ke bang processed_event va commit offset the nao de khong mat record va khong xu ly lap nghiep vu?',
+  a: `**Tom tat:** Kafka dam bao at-least-once: mot message co the duoc giao lai neu consumer bi gian doan truoc khi danh dau da xu ly. De khong xu ly lap nghiep vu, consumer kiem tra id cua message trong bang processed_event trong **cung mot transaction database** voi viec ghi du lieu nghiep vu, roi moi commit offset. Neu id da co thi bo qua, khong lam gi them.
+
+### Thuat ngu
+- **Consumer group**: nhom consumer cung group.id chia nhau cac partition cua mot topic Kafka.
+- **Offset**: so thu tu cua message trong partition; commit offset nghia la ghi dau "toi da xu ly toi day" de sau restart khong doc lai tu dau.
+- **At-least-once**: message duoc xu ly it nhat mot lan, co the bi trung — day la mo hinh thuc te mac dinh cua Kafka.
+- **Idempotent consumer**: consumer xu ly cung message nhieu lan van cho ket qua nhu xu ly mot lan.
+- **Processed event table**: bang luu id cua moi su kien da xu ly, dung khoa chinh de chan ban trung.
+- **Natural key**: khoa tu nhien cua nghiep vu (vi ma don hang) dung de kiem tra trung thay cho bang rieng.
+- **TTL**: time-to-live, thời gian sống của bản ghi. Hết TTL thì bản ghi bị xoá để bảng không phình; TTL không phải cơ chế chống lặp.
+
+### Co che hoat dong (tung buoc)
+1. Consumer doc message co id M1 tu topic wallet.credit.
+2. Mo transaction database: insert vao processed_event(event_id = M1, processed_at = now()). Neu event_id da co (vi pham UNIQUE) -> bo qua, khong xu ly lai.
+3. Neu insert thanh cong -> ghi nghiep vu (cong so du vi) trong **cung transaction**.
+4. Commit transaction database. Sau do container Kafka moi commit offset cho M1.
+5. Neu pod crash giua buoc 3 va commit offset: sau restart, message M1 duoc doc lai, insert processed_event bi trung -> bo qua. Khong mat record va khong cong tien hai lan.
+
+Vi sao cung transaction: neu tach ra, crash giua hai buoc lai sinh ban trung hoac mat record.
+Vi sao commit offset sau database: commit truoc thi crash giua lam mat message (at-most-once, khong hop voi nghiep vu tien).
+Spring Kafka mac dinh tat auto-commit va commit offset sau khi listener tra ve.
+
+~~~sql
+CREATE TABLE processed_event (
+    event_id VARCHAR(128) PRIMARY KEY,
+    processed_at TIMESTAMP NOT NULL,
+    payload_hash VARCHAR(64)
+);
+CREATE INDEX idx_processed_event_ts ON processed_event(processed_at);
+~~~
+
+~~~java
+@KafkaListener(topics = "wallet.credit")
+@Transactional   // transaction database (JPA/JDBC)
+public void onCredit(WalletEvent evt) {
+    int inserted = processedEventRepo.insert(evt.eventId(), Instant.now());
+    if (inserted == 0) return;            // event_id da co -> bo qua
+    walletRepo.addBalance(evt.accountId(), evt.amount()); // cung transaction
+}   // commit DB xong, container Kafka moi commit offset
+~~~
+
+### Natural key upsert (khong can bang rieng)
+Neu nghiep vu da co khoa tu nhien (ma don hang), dung upsert thay cho bang processed_event:
+
+~~~sql
+INSERT INTO ledger(entry_id, account_id, amount) VALUES (:id, :acct, :amt)
+ON CONFLICT (entry_id) DO NOTHING;   -- MySQL: INSERT IGNORE / ON DUPLICATE KEY UPDATE
+~~~
+
+entry_id la idempotency key cua su kien; trung thi khong ghi them.
+
+### TTL dong bang processed_event
+Bang nay chi tang, can job dinh ky xoa ban ghi cu (giu 7-30 ngay, lon hon thoi gian replay toi da co the).
+
+### Bang tra doi
+| Cach | Uu diem | Nhuan diem |
+|---|---|---|
+| Bang processed_event | Dung duoc moi truong hop, ro rang | Bang moi phai dong theo TTL |
+| Natural key upsert | Khong can bang them | Chi dung khi co khoa tu nhien on dinh |
+| Chi commit offset, khong dedup | Don gian | Xu ly lai khi crash -> can nghiep vu idempotent khac |
+
+### Loi hay gap
+1. Check-then-insert khong co UNIQUE: hai request song cung cung thay "chua co" va cung xu ly -> trung. Dung UNIQUE constraint cua database.
+2. Insert processed_event va ghi nghiep vu o hai transaction khac nhau: crash giua hai transaction van trung. Phai cung @Transactional.
+3. Commit offset truoc khi ghi DB: crash lam mat record. Luon commit sau.
+4. TTL qua ngan: message bi cham lai (retry vait gio) sau khi key/xoa da het han -> xu ly lai. TTL phai lon hon thoi gian tre toi da.
+
+### Vi du doi thuc
+He thong vi dien tu khoang 1.800 su kien wallet.credit moi phut. Sau mot dot deploy lam consumer restart lien trong, dien tai ghi nhan khoang 0,6% don duoc cong tien vao vi hai lan; tien trong vi vuot giao dich ngan hang khoang 11 trieu dong trong 40 phut. Dieu tra: listener cap nhat so du roi moi de container commit offset, va khong co bang kiem tra trung; pod chet giua hai buoc nen message duoc doc lai. Nguyen goc: khong co idempotent consumer. Xu ly: them bang processed_event(event_id PRIMARY KEY), insert event_id va cap nhat so du trong cung @Transactional, event trung thi bo qua. Chi commit offset Kafka sau khi transaction DB commit. Ket qua: sau 48 gio, so dong trung theo event_id = 0; so du vi doi soat voi ngan hang khop 100%.
+
+### Tra loi mau khi phan vien
+Kafka theo at-least-once: neu consumer bi gian doan truoc khi commit offset, message se duoc doc lai, nen phai tu chan xu ly lap. Tao bang processed_event voi event_id lam khoa chinh; cung transaction database, insert event_id roi moi ghi nghiep vu, event trung thi bo qua. Chi commit offset Kafka sau khi transaction DB commit, vi commit truoc ghi DB co the mat record. Neu nghiep vu da co khoa tu nhien nhu ma don hang, dung upsert ON CONFLICT DO NOTHING thay cho bang rieng. Bang processed_event dong theo TTL 7-30 ngay. Kinh nghiem: UNIQUE constraint bat buoc — kiem tra roi insert khong du khi nhieu request cung luc.
+
+> Senior tip: theo doi so ban ghi bi chan bang processed_event moi phut. Con so bang 0 khong co nghia he thong hoan hoa, co the nghia la ban chua bat retry nen chua gian gap ban trung nao.`,
+  follow: [
+    'Lam sao biet bang processed_event da bi qua lon va can job dong?',
+    'Side effect ngoai database (goi API thu ba) khong ho tro idempotency, ban lam gi?',
+    'Offset commit truoc hay sau khi xu ly? Tung lua chon danh doi gi?'
+  ],
+  tags: ['Kafka', 'idempotent consumer', 'processed event', 'offset commit']
+},
+{
+  id: 'microservices-083',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Topic Kafka co nhieu partition, nhung business yeu cau moi event cua cung mot don hang phai duoc xu ly dung thu tu. Ban thiet ke producer va consumer the nao, va thu tu co bi hong o dau?',
+  a: `**Tom tat:** Kafka chi dam bao thu tu trong mot partition. Chon key la id cua aggregate (orderId) de moi event cua cung mot don vao cung partition (hash key chia lay du so partition). Thu tu co the bi hong khi: key null, tang so partition, retry cua producer khong idempotent, hoac event thuoc partition khac nhung nghiep vu can thu tu toan cuc (thi chi co mot partition, trade-off throughput).
+
+### Thuat ngu
+- **Partition**: mot nhanh log co thu tu trong topic Kafka.
+- **Offset**: so thu tu message trong partition, tang dan.
+- **Partition key**: khoa producer dung de chon partition (murmur2 hash cua key chia lay du so partition).
+- **Sticky partitioner**: khi message khong co key, producer gan cac message lien tiep vao cung partition cho den khi batch lai, khong dam bao thu tu theo nghiep vu.
+- **Idempotent producer**: producer gan PID va so thu tu cho moi message de broker loai ban trung do retry (Kafka 3.x bat mac dinh enable.idempotence=true; tu Kafka 0.11 tro len co the bat thu cong).
+- **max.in.flight.requests.per.connection**: so request chua nhan phan hoi toi da tren mot ket noi producer.
+- **Consumer group**: trong mot nhom, moi partition chi thuoc mot consumer, giu thu tu xu ly tren partition do.
+
+### Co che (tung buoc)
+1. Producer gui event voi key = orderId (bytes). Broker tinh hash(key) % numPartitions -> moi event cua cung mot don luon vao cung partition.
+2. Trong partition do, offset tang dan theo thu tu commit; consumer cua nhom lay theo thu tu offset.
+3. Neu producer gui that bai va retry: idempotent producer (PID + sequence number) + acks=all + max.in.flight.requests.per.connection <= 5 giup broker loai ban trung va giu thu tu giua cac lan retry tren cung mot ket noi.
+4. Consumer xu ly message theo thu tu offset cua partition ma no phu trach.
+
+~~~java
+// Producer: cung orderId => cung partition => thu tu duoc giu
+kafkaTemplate.send("order.events", order.getId(), order);   // key = orderId
+
+@KafkaListener(topics = "order.events", groupId = "shipping")
+public void on(OrderEvent evt) {
+    // Moi partition chi thuoc mot consumer trong nhom, xu ly theo thu tu offset
+    shippingService.handle(evt);
+}
+~~~
+
+### Thu tu bi hong (va xu ly)
+| Nguyen nhan | Vi du | Xu ly |
+|---|---|---|
+| Key null | event khong co orderId | Sticky partitioner gan ngau nen -> thu tu mat. Luon co key la id aggregate. |
+| Tang so partition | tu 6 len 12 partition | Hash thay doi, event moi cua cung don co the vao partition khac trong khi event cua chua xu ly xong -> thu tu ly khai. Du partition tu dau; neu phai tang, chuyen dan topic moi hoac doi xu ly xong partition cu. |
+| Producer retry khong idempotent | timeout, gui lai | Co the ban trung hoac thay doi thu tu. Bat enable.idempotence=true, acks=all, max.in.flight <= 5. |
+| Can thu tu toan cuc | tat ca don tren he thong | Phai dung mot partition -> toan bo topic qua mot consumer, throughput bi han che cheo. Tran neu co the. |
+
+### Pattern sequence number + reorder buffer (khi khong the dung mot partition)
+Neu nghiep vu bat buoc thu tu toan cuc nhung can nhieu partition (vi event tu nhieu nguon), producer gan them sequenceNumber vao payload; consumer giu buffer nho, chi xu ly event co so tiep theo, cac event khac cho trong buffer co thoi han. Trade-off: them do tre va bo nho, chi dung khi thuc su can.
+
+### Vi du doi thuc
+He thong van chuyen co topic order.events 6 partition, key = orderId. Nam 2023, team tang partition len 12 de tang throughput. Trieu chung: khach hang nhan email "don hang da huy" truoc email "don hang da tao" (Cancelled truoc Created cho cung mot don). Dieu tra: event Created cua don 9998 vao partition 2 truoc khi tang, event Cancelled sau khi tang roi vao partition 5; hai partition duoc hai consumer khac xu ly song song -> thu tu nghiep vu bi dao. Nguyen goc: doi so partition lam thay doi bam key -> partition. Xu ly: quay ve 6 partition (da du cho throughput 1.200 event/giay) va them kiem thu tu dong: gui hai event cung key lien tiep, assert consumer xu ly dung thu tu. Ket qua: khong con khach hang nhan thong bao sai thu tu.
+
+### Tra loi mau khi phan vien
+Toi chon key la id cua aggregate (vi du orderId) de Kafka gom moi event cua cung mot don vao mot partition, vi thu tu chi duoc dam bao trong mot partition. Trong consumer group moi partition chi thuoc mot consumer, nen xu ly theo thu tu offset la tu nhien. Toi luu note ba cho thu tu de hong: key null, tang so partition lam doi bang bam key->partition, va retry producer khong idempotent; nen bat enable.idempotence, acks=all va max.in.flight <= 5. Neu thuc su can thu tu toan cuc, duy nhat la mot partition, nhung day la nut that throughput, nen tran va dung sequence number trong payload neu business bat buoc. Kinh nghiem: du partition tu dau, khong tang partition cua topic da co thu tu theo key.
+
+> Senior tip: mot partition xu ly duoc khoang chuc ngang den tram nghien event moi giay tuong theo kich thuoc ban; khong tao 100 partition cho topic chi co kiem tram event moi ngay, moi partition la mot tap tin log va nhieu partition lam tang xu ly cua broker va consumer rebalance.`,
+  follow: [
+    'Tai sao tang so partition lai thay doi bam key? Ban xu ly ra sao?',
+    'Producer gui cung key nhung consumer van nhan sai thu tu, co the o dau?',
+    'Khi nao chap nhan dung mot partition de co thu tu toan cuc?'
+  ],
+  tags: ['Kafka', 'partition', 'ordering', 'producer']
+},
+{
+  id: 'microservices-084',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Listener Spring Kafka that bai vi database downstream bi downturn vait phut. Ban thiet ke retry topic va dead letter topic the nao de message khong mat, khong chan partition, va sau khi khoi phuc thi xu ly lai dung?',
+  a: `**Tom tat:** Loi tam thoi (DB down, timeout) thi message duoc day sang retry topic, doi mot khoang thi gui lai topic goc; sau N lan van that bai thi chuyen sang dead letter topic (DLT) kem metadata loi. Nhung vay partition goc khong bi do bo boi mot message loi, va doc ta co the replay DLT sau khi sua loi. Consumer van phai idempotent vi retry topic co the gui cung message nhieu lan.
+
+### Thuat ngu
+- **Retry topic**: topic rieng (<ten goc>.RETRY) chua message that bai, kem header dem so lan thu va ly do loi; listener rieng doc va gui lai sau do tre.
+- **Dead letter topic / DLT**: topic chua message khong xu ly duoc sau het so lan retry, kem header exception, stacktrace, topic/partition/offset goc.
+- **DeadLetterPublishingRecoverer**: thanh phan Spring Kafka publish record loi sang DLT sau het retry.
+- **Fixed-delay listener**: listener doc retry topic voi do tre giua cac lan xu ly.
+- **Header**: metadata kem message Kafka (cap khoa-gia tri), dung de luu so lan retry, ten exception, topic goc.
+- **Idempotent consumer**: xu ly cung message nhieu lan van cho ket qua nhu mot lan (bat buoc trong mo hinh nay).
+
+### Co che (tung buoc)
+1. Listener goc doc message tu order.events, xu ly that bai (vi ném SQLException do DB down).
+2. DefaultErrorHandler retry co han (vi du 3 lan, cach nhau 1s). Van loi -> DeadLetterPublishingRecoverer publish message sang order.events.RETRY kem header x-retry-count, x-exception-class, original-topic, failed-at.
+3. Listener retry doc order.events.RETRY, doi backoff tang dan (2s, 4s, 8s...), roi gui lai ve order.events (hoac xu ly truc tiep).
+4. Neu van that bai sau so lan toi da -> publish sang order.events.DLT kiem toan bo metadata loi, roi commit offset de partition goc tuc tuc.
+5. Sau DB khoi phuc, doc ta doc DLT, sua du lieu/code, roi replay message tu DLT ve topic goc. Consumer idempotent dam bao khong xu ly trung.
+
+~~~java
+// Cau hinh loi tam thoi: retry vait lan roi sang DLT
+var recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate,
+    (rec, ex) -> new TopicPartition(rec.topic() + ".DLT", rec.partition()));
+var handler = new DefaultErrorHandler(recoverer, new FixedBackOff(1_000L, 3L));
+handler.addNotRetryableExceptions(DeserializationException.class); // sai format -> DLT ngay
+factory.setCommonErrorHandler(handler);
+
+// Retry topic pattern (yeu tuong): listener that bai tu dong publish vao retry topic
+@KafkaListener(topics = "order.events", groupId = "shipping")
+public void on(OrderEvent evt, Acknowledgment ack) {
+    try {
+        shippingService.handle(evt);
+        ack.acknowledge();
+    } catch (TransientException e) {
+        // publish sang retry topic kem header dem so retry
+        kafkaTemplate.send("order.events.RETRY", evt.getOrderId(), evt,
+            headers -> headers.header("x-retry-count", ...).header("x-exception", e.getClass().getName()));
+        ack.acknowledge();   // commit offset origin, partition khong bi do bo
+    }
+}
+~~~
+
+Code tren la yeu tuong; production nen dung Spring Retry Topic hoac DeadLetterPublishingRecoverer da co san thay cho viet tay.
+
+### Bang tra doi
+| Cach | Uu diem | Nhuan diem |
+|---|---|---|
+| Blocking retry (DefaultErrorHandler) | Don gian, giu thu tu | Thread listener bi cho, partition do bo khi loi lau |
+| Retry topic + fixed-delay | Partition goc khong bi do bo, retry nhieu tang | Them topic, do tre, consumer phai idempotent |
+| DLT chi, khong retry | Partition khong bi do bo | Message loi bi mat neu khong co quy trinh replay |
+
+### Loi hay gap
+1. Consumer khong idempotent: retry topic gui lai message da xu ly -> tien duoc cong hai luon. Luon dedup theo event_id.
+2. Retry vo cung: khong gioi han so lan -> message loi cuon quay partition khac. Gioi han so lan roi sang DLT.
+3. Loi deserialize (sai schema): retry vo ich, phai DLT ngay qua addNotRetryableExceptions(DeserializationException.class).
+4. DLT khong ai xem: DLT tich tram trieu message, khong ai replay. Dat alert theo so message vao DLT.
+
+### Vi du doi thuc
+He thong don hang topic order.events, listener ghi vao PostgreSQL. Nam 2023, trong khoang 10 phut DB bao tri, listener nem SQLException lien tuc. Neu khong co retry topic, 6 partition cua topic bi do bo, consumer lag tang tu 0 len 800.000 message. Xu ly: listener publish that bai sang order.events.RETRY kem header x-retry-count, listener retry doc sau backoff 2s/4s/8s, sau 3 lan van loi -> order.events.DLT. Ket qua: partition goc tuc tuc xu ly cac event khac, lag chi tang nhe; sau DB tro lai, doc ta replay 12.000 message trong DLT va xu ly xong trong 20 phut. Su kien trong DLT kem header exception giup doc ta biet chinh xac DB down hay du lieu sai.
+
+### Tra loi mau khi phan vien
+Voi loi tam thoi nhu database downtime, toi khong de listener cho nhung day message sang retry topic kem header dem so lan va ly do loi. Sau backoff tang dan, message duoc gui lai; neu het so lan van loi, chuyen sang dead letter topic kem metadata exception, roi commit offset de partition khong bi do bo. Sau khoi phuc, toi replay DLT sau khi sua loi. Mo hinh nay bat buoc consumer idempotent vi retry topic co the gui lai message da xu ly. Loi deserialize (sai schema) toi dua vao DLT ngay, khong retry. Kinh nghiem: luon co alert tren so message vao DLT, DLT khong duoc bo quon.
+
+> Senior tip: DLT khong la thung rac. Dat alarm theo so message vao DLT va co quy trinh replay sau moi lan sua loi, nguoc lai DLT se tro thanh kho luu cua cac loi da quang mat.`,
+  follow: [
+    'Sai phan biet retry topic voi DefaultErrorHandler blocking retry o dau?',
+    'Header x-retry-count luu gi va tai sao can no?',
+    'DeserializationException co the retry duoc khong, tai sao?'
+  ],
+  tags: ['Kafka', 'Spring Kafka', 'retry topic', 'DLT']
+},
+{
+  id: 'microservices-085',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Team ban gui event dang JSON len Kafka khong dung Schema Registry. Mot ngay consumer cu bat dau loi sau khi producer them field moi. Ban thiet ke quy trinh thay doi schema JSON the nao cho an toan, backward compatible, va nhieu team deploy doc lap?',
+  a: `**Tom tat:** Khong co Schema Registry thi contract nam trong chinh payload: moi event mang truong schemaVersion, consumer la "tolerant reader" (bo qua field la), producer chi them field co gia tri mac dinh, khong doi nghia field cu, doi don vi phai tao field moi, va xoa field phai qua giai giai deprecate. Moi thay doi di kem contract test voi mau payload cu va moi, va consumer nan truoc producer.
+
+### Thuat ngu
+- **Schema evolution**: thay doi cau truc su kien theo thoi gian khong lam hong consumer dang chay.
+- **Backward compatible**: consumer cu van doc duoc event do producer moi sinh ra (khong can sua consumer).
+- **Tolerant reader**: consumer chi doc field minh can va bo qua field khong biet, thay loi khi gap field la.
+- **schemaVersion**: truong so trong payload ghi ro ban event tuan theo phien ban cau truc nao.
+- **Breaking change**: doi ten field, doi kieu, doi nghia, bo field, doi dinh dang ngay/so tien — lam consumer cu loi.
+- **Deprecate**: danh dau field cu "khong khuyen dung" truoc khi xoa hoan toan, doi moi consumer ngung dung.
+- **Contract test**: kiem thu tu dong voi mau payload cu va moi de phat hien breaking change truoc deploy.
+
+### Cac qui tac thay doi JSON (tung buoc)
+1. Them truong moi: luon co gia tri mac dinh (null hoac gia tri hop le), consumer cu bo qua vi tolerant reader.
+2. Khong doi ten truong: neu can doi ten, them truong moi, gui cung hai trong thoi gian chuyen tien, roi xoa truong cu.
+3. Khong doi nghia: so tien tu USD sang cent phai la truong moi (amountCents), khong reinterpret truong cu.
+4. Xoa field: danh dau deprecated, doc moi consumer xac nhan khong dung nua, roi moi xoa trong phien ban schema tiep theo.
+5. Moi event co truong schemaVersion de consumer biet ap dung logic doc nao, dac biet khi replay event cu.
+
+~~~java
+// Consumer doc event, bo qua field khong biet (tolerant reader)
+@KafkaListener(topics = "payment.events")
+public void on(PaymentEvent evt) {
+    process(evt.getOrderId(), evt.getAmount());   // chi dung truong minh can
+    // evt.getSchemaVersion() dung de chon logic neu cau truc da thay doi
+}
+~~~
+
+Spring Boot cau hinh Jackson tat FAIL_ON_UNKNOWN_PROPERTIES mac dinh nen them truong la an toan; nhung doi "2024-05-01" sang epoch millis la breaking ngam.
+
+### Khi nao dung Schema Registry/Avro
+JSON khong dung registry phu hop team nho, it thay doi. Nhieu team, consumer strongly-typed (Java/C++), can kiem tra tu dong compatibility truoc producer deploy -> dung Schema Registry + Avro (BACKWARD_TRANSITIVE hoac FULL_TRANSITIVE, xem cau khac). Registry chan dang ky schema breaking tren CI.
+
+### Contract test
+Voi moi thay doi, viet test serialize mau payload cu va moi, deserialize bang consumer cu va moi, assert khong loi va field quan trong giu gia tri. Test chay trong CI cua ca producer va consumer.
+
+### Bang tra doi
+| Cach | Uu diem | Nhuan diem |
+|---|---|---|
+| JSON + schemaVersion + tolerant reader | Don gian, khong can he thong them | Khong chan tu dong breaking change tren CI |
+| Schema Registry + Avro | Kiem tra compatibility tu dong, nhieu team deploy doc lap | Them he thong phai van hanh, consumer phai tai schema |
+
+### Loi hay gap
+1. Consumer deserialize chat (FAIL_ON_UNKNOWN_PROPERTIES bat hoac enum chat): producer them field la consumer loi. Dung tolerant reader, enum co gia tri UNKNOWN.
+2. Doi dinh dang ngay hay so tien: schema "khong doi" kieu nhung consumer parse loi. Contract test phai kiem dinh dang.
+3. Xoa field ma consumer cu con can: break ngay. Xoa phai qua deprecate.
+4. Khong co schemaVersion: consumer khong biet event cu hay moi khi replay, de xu ly sai.
+
+### Vi du doi thuc
+He thong thanh toan gui su kien payment.captured dang JSON. Nam 2023, producer them field discountCode va cung luc doi field amount tu USD sang cent (van kieu so). Consumer cu (team khach hang, deploy doc lap) bat dau hien thi so tien sai 100 lan va mot so truong deserialize loi. Dieu tra: khong co schemaVersion, khong co contract test, consumer cu khong dung tolerant reader. Nguyen goc: doi nghia field khong tao field moi, va khong co co che kiem tra compatibility. Xu ly: rollback field amount, them truong moi amountCents, deprecate amount, them schemaVersion: 2, consumer moi doc amountCents, consumer cu van dung amount trong khoang chuyen tien, contract test cho mau cu va moi trong CI. Ket qua: 0 loi deserialize sau 2 tuan, 2 PR bi CI chan do vi pham qui tac.
+
+### Tra loi mau khi phan vien
+Khong co Schema Registry thi toi tu quyet contract trong payload: moi event co schemaVersion, consumer la tolerant reader chi doc field minh can. Producer chi duoc them field co gia tri mac dinh; doi ten, doi kieu, doi don vi (vi USD sang cent) phai tao field moi, khong reinterpret truong cu; xoa field phai qua deprecate. Moi thay doi di kem contract test voi mau payload cu va moi trong CI. Neu co nhieu team va consumer strongly-typed, toi len Schema Registry + Avro voi che do BACKWARD_TRANSITIVE. Kinh nghiem: phan lon su co schema den tu doi dinh dang ngay/so tien, khong phai them field.
+
+> Senior tip: schemaVersion trong payload giup consumer chon logic doc khi replay event cu hai ba nam sau — them ngay tu ban event dau tien, khong cho den khi can.`,
+  follow: [
+    'Tang schemaVersion co thay doi gi nhan vat neu co Schema Registry?',
+    'Doi don vi tien te nhung giu nguyen kieu so co the loi nhat o dau?',
+    'Consumer cu bi loi voi field moi, sua o consumer hay producer?'
+  ],
+  tags: ['Kafka', 'schema evolution', 'JSON', 'backward compatibility']
+},
+{
+  id: 'microservices-086',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Ban muon service ghi database roi phat event len Kafka khong mat event. So sanh Transactional Outbox chay poll bang outbox va CDC qua Debezium, va chon cai nao?',
+  a: `**Tom tat:** Transactional Outbox ghi business row va dong event vao bang outbox trong cung transaction DB, roi mot trinh gui rieng (polling relay hoac CDC nhu Debezium) day event ra Kafka. Neu khong dung outbox va goi Kafka sau commit DB, crash giua hai buoc se mat event hoac phat event "ao" (du lieu khong ton tai nhung event da co) — day la dual-write problem. CDC doc transaction log cua DB (WAL PostgreSQL / binlog MySQL) nen khong them tai query va khong phai thay doi code domain; polling relay don gian hon nhung query bang lien thuoc. Chon CDC khi khong muon van hanh them job query lien thuoc va co the van hanh Kafka Connect; chon polling khi team nho, khong muon them he thong.
+
+### Thuat ngu
+- **Dual write**: ghi vao hai he thong doc lap (DB va Kafka broker) khong co transaction chung.
+- **Outbox table**: bang trong cung DB nghiep vu chua su kien cho gui.
+- **Polling relay**: job dinh ky doc bang outbox (SELECT ... FOR UPDATE SKIP LOCKED), day len Kafka, roi danh dau da gui. Do tre khoang 100ms-1s.
+- **CDC (Change Data Capture)**: bat thay doi du lieu bang cach doc log cua DB, khong phai query bang.
+- **WAL / binlog**: nhat ky ghi truoc cua PostgreSQL / nhat ky nhi phan cua MySQL, moi thay doi deu duoc ghi vao day truoc.
+- **Debezium**: bo CDC connector chay tren Kafka Connect, doc WAL/binlog va publish thanh message Kafka.
+- **Replication slot**: dau trang cua PostgreSQL ghi nho consumer logical replication da doc toi dau.
+- **Kafka Connect**: framework chay connector (nguon/destination), luu offset cua connector vao topic noi bo.
+- **Outbox Event Router**: SMT cua Debezium bien dong outbox thanh record Kafka, chon topic theo loai aggregate, dat Kafka key = aggregate ID.
+- **Snapshot lan dau**: khi Debezium khoi dau lan dau, no doc toan bo bang hien tai de consumer khong bo lot du lieu da co.
+
+### Co che outbox (tung buoc)
+1. API gui don hang: trong mot transaction, insert bang orders va insert dong outbox (event_id, aggregate_type, aggregate_id, type, payload). Ca hai cung commit hoac cung rollback -> khong con dual write.
+2. Trinh gui doc outbox: (a) Polling: job SELECT ... FROM outbox WHERE sent = false FOR UPDATE SKIP LOCKED LIMIT 100 de nhieu instance khong lay trung dong, day len Kafka, roi cap nhat sent = true (hoac xoa dong). Do tre khoang 100ms-1s. (b) CDC Debezium: doc WAL qua replication slot, khong them tai query, do tre thap, Outbox Event Router chon topic va key = aggregate_id.
+3. Gui xong Kafka moi danh dau da gui (polling) hoac luu offset connector (CDC). Neu crash giua gui va danh dau -> lan sau gui lai, tuc la trung chung khong mat; consumer phai idempotent.
+4. Kafka key = aggregate_id de moi event cua cung mot don vao cung partition, giu thu tu.
+
+~~~java
+@Transactional
+public void placeOrder(OrderCmd cmd) {
+    Order agg = Order.create(cmd);
+    orderRepo.save(agg);
+    outboxRepo.save(OutboxEvent.of("Order", agg.getId(), "order.created", toJson(agg)));
+    // commit: cung don hang va cung dong outbox cung co, hoac khong dong nao
+}
+~~~
+
+~~~sql
+CREATE TABLE outbox (
+    id UUID PRIMARY KEY,
+    aggregate_type VARCHAR(64) NOT NULL,
+    aggregate_id VARCHAR(128) NOT NULL,
+    type VARCHAR(64) NOT NULL,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMP NOT NULL
+);
+-- Outbox Event Router doc cot aggregate_type de chon topic, aggregate_id lam Kafka key
+~~~
+
+### Outbox event la contract on dinh
+Khong nen serialize truc tiep entity/domain class vao payload (thay doi code domain lam hong event cu). Dung DTO event rieng, co truong schemaVersion, va giu field trong thoi gian dai. Consumer khong nen map truc tiep event vao entity cua minh.
+
+### Bang mot ho nhieu bang outbox
+| Cach | Uu diem | Nhuan diem |
+|---|---|---|
+| Mot bang outbox chung | Quan ly don, job dong mot noi | Tat ca event cung luong, cot type phan loai |
+| Bang outbox moi aggregate | Ro rang theo aggregate, dong rieng | Nhieu bang phai quan ly |
+
+### Khi chon polling vs CDC
+- **Polling relay**: team nho, khong muon cai Kafka Connect, chap nhan duoc do tre 100ms-1s va tai query them cho DB.
+- **CDC Debezium**: khong them tai query DB, do tre thap, khong doi code domain, nhung phai van hanh Kafka Connect va theo doi replication slot (slot bi bo roi lau lam WAL phin, dia DB day).
+
+### Loi hay gap
+1. Outbox phin to: hang tram trieu dong, polling chay cham. Dong dong da gui theo TTL 7-30 ngay; voi CDC co the xoa ngay trong cung transaction vi Debezium van doc su kien INSERT tu WAL.
+2. Replication slot bi bo roi: connector dung lau, PostgreSQL giu WAL khong xoa duoc, dia day. Dat alert theo lag cua slot va gioi han max_slot_wal_keep_size.
+3. Consumer khong idempotent: connector restart gui lai event, tien duoc cong hai lan. Consumer dedup theo event_id trong cung transaction DB (xem cau idempotent consumer).
+4. Them cot outbox khong cap nhat router: header/field moi khong xuat hien o Kafka. Viet integration test kiem tra mapping sau moi thay doi.
+5. Payload chua du lieu nhat cam khong can thiet: outbox la contract ra ngoai, khong rot toan bo entity.
+
+### Vi du doi thuc
+He thong thuong mai dien tu 50 dev, Order Service ghi Postgre va phat su kien don hang len Kafka topic order.events. Nam 2023, deploy moi them field discountId vao Order aggregate, lap trinh vien viet orderRepo.save(order); kafkaTemplate.send(...).get();. Ket qua: 1% request crash giua hai buoc, event mat; 0,5% nguoc lai, send thanh cong nhung transaction bao ngoai rollback -> event ao (consumer nhan don khong ton tai trong DB). Trieu chung: dashboard doanh so thieu 1,5% don, customer service khong tim thay don. Dieu tra: log thay KafkaTimeoutException; audit log thay don co nhung event khong co. Nguyen goc: dual-write problem. Xu ly: refactor dung Transactional Outbox, ghi don va dong outbox trong cung @Transactional, Debezium Outbox Event Router doc WAL publish order.events voi key = orderId, consumer idempotent. Ket qua: sau 2 tuan khong con event mat hay event ao; dashboard doanh so chinh xac 99,99%; do tre them khoang 100ms do relay.
+
+### Tra loi mau khi phan vien
+Ghi database va publish Kafka la dual write vi hai he thong khong co transaction chung. Toi dung Transactional Outbox: trong cung transaction, ghi don hang va dong outbox chua su kien. Sau do Debezium doc WAL, Outbox Event Router day event ra topic voi key la aggregateId de giu thu tu. Neu khong muon van hanh Kafka Connect, polling voi SKIP LOCKED cung duoc. Vi Kafka Connect chi luu offset sau khi Kafka xac nhan, restart connector co the gui lai nhung khong mat, nen consumer phai idempotent. Event trong outbox la contract rieng, khong serialize truc tiep entity domain. Theo doi lag connector va kich thuoc WAL bi slot giu, vi connector chet la business cham theo.
+
+> Senior tip: CDC la them mot thanh phan phai van hanh nhu service thich — theo doi trang thai connector, do tre va kich thuoc WAL bi slot giu, khong chi de connector chay yen lang.`,
+  follow: [
+    'Polling relay va CDC chon cai nao khi team it nguoi va khong muon them he thong?',
+    'Replication slot bi bo roi lau dau hieu ra gi, xu ly the nao?',
+    'Event trong outbox co phai serialize truc tiep entity domain duoc khong, tai sao?'
+  ],
+  tags: ['Kafka', 'outbox', 'CDC', 'Debezium', 'dual-write']
+},
+{
+  id: 'microservices-087',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Doi tac hoi: he thong cua ban co dam bao exactly-once khong? Ban tra loi the nao, va trong thuc te Java backend lam gi de dat hieu qua exactly-once?',
+  a: `**Tom tat:** Exactly-once end-to-end qua mang khong the (bien the bai toan Hai Tuong: ben gui khong phan biet duoc "bi mat message" voi "da toi nhung phan hoi bi mat"). Thuc te he thong chon at-least-once (khong mat message, co the trung) cong consumer idempotent = hieu qua exactly-once: message co the den hai lan nhung nghiep vu chi xay ra mot lan. Kafka transaction chi cho exactly-once khi ca dau vao va dau ra deu nam trong Kafka (vi du Kafka Streams), khong bao duoc database hoac API ngoai.
+
+### Thuat ngu
+- **Exactly-once end-to-end**: message duoc xu ly dung mot lan tu dau den cuoi — khong the bao bo chi bang broker khi co mang giua cac he thong.
+- **At-least-once**: message duoc xu ly it nhat mot lan, co the bi xu ly lai — mo hinh mac dinh thuc te cua Kafka/RabbitMQ.
+- **Hieu qua exactly-once (exactly-once effect)**: message co the den nhieu lan nhung he quyet nghiep vu chi xay ra mot lan, nhu consumer idempotent.
+- **Idempotent consumer**: xu ly cung message nhieu lan cho ket qua giong mot lan (dedup theo event_id hoac natural key upsert).
+- **Kafka transaction**: nhom nhieu ghi vao Kafka + commit offset thanh mot don vi nguyen tu, chi trong pham vi Kafka.
+- **read_committed**: che do consumer chi doc message thuoc transaction da commit.
+- **Hai Tuong (Two Generals)**: bai toan phan lan cho thuc hai ben khong the thong nhat boan luon qua mang khong dang tin cay.
+
+### Ba muc do dam bao (bang)
+| Muc | Cach dat | He quyet | Dung khi nao |
+|---|---|---|---|
+| At-most-once | commit offset truoc khi xu ly | co the mat message | metric lay sample, mat duoc |
+| At-least-once | xu ly xong moi commit offset | co the trung | nghiep vu tien, don hang (kem idempotent) |
+| Exactly-once trong Kafka | transaction producer + read_committed | dung mot lan neu dau vao/ra deu la Kafka | Kafka Streams consume-transform-produce |
+| Hieu qua exactly-once | at-least-once + consumer idempotent | trung o cap message, khong trung o nghiep vu | consumer ghi database (thuc te pho bien nhat) |
+
+### Vi sao crash giua chuc van gay trung
+1. Consumer doc message offset 41, ghi database thanh cong.
+2. Pod crash truoc commit offset 42.
+3. Sau restart, consumer doc lai tu offset 41 -> message 41 duoc xu ly lan hai.
+Ghi database va commit offset Kafka la hai he thong khac nhau (giong dual write), nen khong the tranh hoan toan duoc trung o cap message.
+
+### Lam gi trong thuc te (Java backend)
+1. Chon at-least-once: xu ly xong moi commit offset (Spring Kafka mac dinh tat auto-commit).
+2. Consumer idempotent: bang processed_event(event_id PRIMARY KEY) hoac upsert theo natural key, cung transaction database voi business write.
+3. Idempotency key phia client cho lenh ghi tien (UUID gui kem header, database insert UNIQUE, luu response trong cung transaction).
+4. Kafka transaction chi dung khi pipeline toan bo nam trong Kafka (Kafka Streams), consumer dat isolation.level=read_committed.
+5. Lap chung: gan event_id xuat hien log, database va trace; theo doi metric duplicate_suppressed (so ban trung bi chan moi phut); doi soat database voi he thong ngoai dinh ky.
+
+### Loi hay gap
+1. Tin Kafka transaction bao het database: Kafka commit nhung database rollback (hoac nguoc lai) -> du lieu lech. Chon mot nguon su that, dung inbox/outbox.
+2. Commit offset truoc xu ly xong: crash lam mat message, chi dung cho du lieu mat duoc (metric lay sample).
+3. Idempotency key TTL qua ngan: ban trung quay lai sau key het han. TTL phai lon hon thoi gian retry/replay toi da.
+4. Side effect ngoai database (goi API thu ba) chua idempotency key: crash giua hai buoc = thuc hien hai lan thuc. Truyen key sang thu ba hoac ghi trang thai PENDING roi doi soat.
+
+### Vi du doi thuc
+He thong dat phong khach san khoang 2.000 su kien booking.created moi phut. Mot dot scaling lam consumer pod bi kill OOM ngay sau ghi database nhung truoc commit offset. Trieu chung: 0,9% dat phong bi tao hai don cung ma tham chieu, khach phan lan bi tru tien hai lan; khoang 45 trieu dong don hang trung trong 3 gio. Dieu tra: log thay cung eventId duoc xu ly hai lan, offset khong tien dan; khong co bang processed_event. Xu ly: them bang processed_event(event_id PRIMARY KEY) cung transaction voi insert dat phong, commit offset sau DB commit; them metric duplicate_suppressed. Ket qua: don trung xuong 0, metric duplicate_supressed on dinh khoang 0,4%/phut (biet he thong dang retry an toan), doi soat database voi cang thanh toan khop 100%.
+
+### Tra loi mau khi phan vien
+Exactly-once thuc su tu dau den cuoi qua mang khong the: ben gui khong phan biet duoc message bi mat voi da toi nhung phan hoi bi mat. Thuc te toi chon at-least-once: xu ly xong moi commit offset, chap nhan message co the den hai lan. De khong xu ly lap nghiep vu, consumer insert event_id vao bang processed_event cung transaction database voi business write, trung thi bo qua. Kafka transaction chi cho exactly-once neu ca vao va ra deu la Kafka (nhu Kafka Streams), khong bao duoc PostgreSQL hoac API ngoai. Toi lap chung bang event_id xuat hien log, database va trace, theo doi metric duplicate_supressed, va doi soat dinh ky. Neu chi mot ban trung qua cao (vi tien), thiet ke idempotency key tu client va doi soat he thong ngoai. Kinh nghiem: so ban trung bi chan khong 0 la binh thuong, bang 0 co nghia ban chua bat retry.
+
+> Senior tip: hieu qua exactly-once duoc mua bang chi phi consumer idempotent (bang dedup, TTL, doi soat). Tra loi don tac "co/khong" voi doi tac khong co nghia; phai noi ro pham vi va chi phi ho tro.`,
+  follow: [
+    'Tai sao exactly-once end-to-end qua mang khong the?',
+    'Kafka transaction bao duoc database khong, tai sao?',
+    'Metric duplicate_supressed bang 0 co nghia la tot hay xau?'
+  ],
+  tags: ['Kafka', 'exactly once', 'at least once', 'idempotency']
+},
 );
