@@ -3829,4 +3829,570 @@ class MiniContainer implements AutoCloseable {
   ],
   related: ['spring-002', 'spring-039'], tags: ['BeanPostProcessor', 'bean lifecycle', 'BeanFactoryPostProcessor', 'AOP proxy', 'DI']
 },
+{
+  id: 'lesson-spring-016', track: 'spring', order: 16,
+  title: 'Auto-configuration: thứ tự nạp, @Conditional và cách ghi đè bean mặc định', level: 'senior', minutes: 40,
+  goals: ['Mô tả đường đi của một auto-config từ file .imports tới bean definition', 'Giải thích thứ tự giữa các auto-config bằng @AutoConfigureBefore/After', 'Nêu năm cách ghi đè bean mặc định và cái giá của từng cách'],
+  body: `**Tóm tắt:** Spring Boot nạp các lớp auto-configuration (liệt kê trong file .imports), lọc bằng @Conditional, rồi sắp thứ tự bằng @AutoConfigureBefore/After trước khi đăng ký bean. Mỗi bean "mặc định" thường kèm @ConditionalOnMissingBean, nên bean bạn tự khai báo **thắng**: định nghĩa của bạn được đăng ký ở pha "cấu hình người dùng" — sớm hơn pha auto-config — nên điều kiện "missing" đã thấy bạn và bỏ qua bean mặc định.
+
+> Bài lesson-spring-008 đã giới thiệu @ConditionalOnMissingBean và @ConditionalOnProperty. Bài này đi sâu vào hai thứ 008 chỉ chạm: **thứ tự nạp** và **cách ghi đè**.
+
+### Trước hết: ba khái niệm
+- **Starter** là gói dependency gom sẵn cho một tính năng. Ví dụ spring-boot-starter-data-jpa kéo theo Hibernate, HikariCP và spring-jdbc; thêm starter nghĩa là "tôi muốn dùng JPA".
+- **Classpath** là tập jar mà JVM nhìn thấy lúc chạy. Nếu một class không có trên classpath, lệnh nạp nó (Class.forName) ném ClassNotFoundException — và đó đúng là cách Boot "thấy" hay "không thấy" một công nghệ để quyết định có cấu hình nó hay không.
+- **Bean definition** (bản khai bean) là mô tả cách tạo một bean: tên, kiểu, cách khởi tạo. Nó **chưa phải object thật**. Điều kiện @Conditional được đánh giá trên định nghĩa này, không phải trên instance đã tạo — nên nó chạy rất sớm, trước khi có object nào.
+
+### Đường đi của một auto-config lúc khởi động
+Đi từng bước khi app khởi động:
+
+1. @SpringBootApplication chứa @EnableAutoConfiguration.
+2. AutoConfigurationImportSelector đọc file META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports — mỗi dòng là một tên lớp auto-config (ví dụ org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration).
+3. Lọc bỏ lớp bị @Conditional chặn (ví dụ thiếu class trên classpath).
+4. Sắp thứ tự các lớp còn lại: theo @AutoConfigureOrder (số nguyên) rồi theo đồ thị @AutoConfigureBefore/@AutoConfigureAfter.
+5. Đăng ký bean definition của từng lớp; lúc này @ConditionalOnMissingBean trên từng bean method mới chạy, và nó nhìn thấy cả bean bạn đã khai ở bước trước đó.
+
+### @Conditional: điều kiện boolean chạy một lần
+@Conditional nhận một class cài Condition với method matches(context, metadata), trả về true/false kèm lý do ghi vào báo cáo. Bốn điều kiện hay gặp:
+
+| Điều kiện | Đọc từ đâu |
+|---|---|
+| @ConditionalOnClass | classpath (thử nạp class) |
+| @ConditionalOnMissingClass | classpath (chỉ khớp khi KHÔNG có class) |
+| @ConditionalOnProperty | Environment (application.yml, biến môi trường) |
+| @ConditionalOnMissingBean | danh sách bean definition đã đăng ký |
+
+Quy tắc OnProperty: chỉ có name thì khớp khi property tồn tại và giá trị khác "false"; có havingValue thì khớp khi bằng đúng giá trị đó (phân biệt hoa thường); matchIfMissing = true thì property vắng mặt vẫn khớp. Điều kiện chỉ đọc giá trị lúc khởi động — đổi config rồi hot-reload không làm bean xuất hiện hay biến mất.
+
+### Thứ tự: vì sao phải khai báo
+Giữa hai auto-config A và B, nếu A cần tạo bean trước B thì phải khai @AutoConfigureAfter(A.class) trên B, hoặc @AutoConfigureBefore(B.class) trên A. Không khai thì Spring sắp gần theo tên class, và thứ tự đó có thể đổi khi nâng cấp phiên bản. @AutoConfigureOrder là số nguyên, nhỏ chạy trước, nhưng nó chỉ là khe hở khi đồ thị before/after chưa đủ. Đồ thị before/after có thể có chu trình — khi đó Spring báo lỗi cấu hình vòng thay vì đoán.
+
+### Cách ghi đè: năm đường, theo thứ tự nên dùng
+1. **Khai bean cùng kiểu trong @Configuration của bạn** — thắng vì OnMissingBean thấy bạn. Không cần @Primary, không cần bật cờ ghi đè.
+2. **Tắt hẳn auto-config**: spring.autoconfigure.exclude trong yml, hoặc @EnableAutoConfiguration(exclude = XxxAutoConfiguration.class). Bean mặc định không được tạo nữa.
+3. **Bật spring.main.allow-bean-definition-overriding = true rồi khai bean trùng TÊN** với bean auto-config: định nghĩa sau (của bạn) thắng. Đây là con dao hai lưỡi — dễ che lỗi và khó debug, chỉ dùng khi thật sự hiểu hậu quả.
+4. **@Primary**: KHÔNG bỏ bean kia, chỉ nói "khi inject theo kiểu mà có nhiều ứng viên thì chọn tôi". Context vẫn còn hai bean.
+5. **Đổi property để điều kiện tắt**, ví dụ app.cache.type = none làm OnProperty trượt.
+
+### Lỗi hay gặp trên production
+- **Typo property làm bean biến mất trong im lặng**: OnProperty không thấy property vì tên sai, app vẫn khởi động bình thường và lỗi chỉ lộ khi có request gọi tới bean đó.
+- **@ConditionalOnBean đặt trong config của bạn thì mong manh**: nó chỉ thấy định nghĩa đã đăng ký tính tới thời điểm đánh giá; phải dùng kèm @AutoConfigureAfter.
+- **Quên khai báo trong .imports**: lớp auto-config không được nạp, annotation có cũng vô nghĩa.
+- **Trùng TÊN bean mà không bật overriding**: ném BeanDefinitionOverrideException ngay lúc khởi động.
+
+### Liên hệ phỏng vấn
+1. **Auto-config được sắp thứ tự và ghi đè thế nào?** — Liệt kê trong .imports, lọc bằng @Conditional, sắp bằng @AutoConfigureOrder rồi before/after; bean người dùng thắng bean mặc định vì được đăng ký trước và OnMissingBean thấy nó; muốn tắt hẳn thì exclude.
+2. **@ConditionalOnClass đọc từ đâu?** — Từ classpath: thử nạp class, có thì khớp, không thì trượt. Điều kiện chạy trên bean definition lúc khởi động, không cần instance.
+3. **Muốn tắt một auto-config có sẵn thì làm sao?** — spring.autoconfigure.exclude hoặc @EnableAutoConfiguration(exclude = ...). Không dùng @Primary vì nó không bỏ bean kia.
+
+> Senior tip: Coi auto-configuration của starter nội bộ là API công khai. Một lần quên @ConditionalOnMissingBean khiến cả công ty không override được và phải fork starter. Khi tiếp nhận code người khác, đừng đoán "bean X không được tạo" — chạy một lần với --debug hoặc mở /actuator/conditions thường tiết kiệm nửa ngày.`,
+  exercises: [{
+    title: 'Mini auto-config: điều kiện classpath, property và thứ tự before/after',
+    prompt: `Hoàn thiện {{AutoConfigLoader}} — mini auto-configuration mô phỏng {{@ConditionalOnClass}}, {{@ConditionalOnMissingClass}}, {{@ConditionalOnProperty}}, {{@ConditionalOnPropertyValue}} và {{@ConditionalOnMissingBean}}, cộng với thứ tự before/after.
+- {{register(name, before, after, conds...)}}: ghi một spec theo đúng thứ tự khai báo (chưa đánh giá điều kiện nào).
+- {{resolve(classpath, props, userBeans)}}: sắp các spec theo before/after (topo ổn định; chu trình thì ném {{IllegalStateException}}), rồi với từng spec theo thứ tự đó: nếu **mọi** điều kiện thoả thì thêm tên bean vào danh sách; danh sách **bắt đầu bằng userBeans**. Nếu tên bean đã có trong danh sách thì bỏ qua với lý do {{ALREADY_PRESENT}}. Nếu có điều kiện trượt, ghi lý do của điều kiện trượt **đầu tiên**: {{CLASS}}→{{MISSING_CLASS}}, {{MISSING_CLASS}}→{{CLASS_PRESENT}}, {{PROPERTY}}→{{NO_PROPERTY}}/{{PROPERTY_FALSE}}, {{PROPERTY_VALUE}}→{{NO_PROPERTY}}/{{VALUE_MISMATCH}}, {{MISSING_BEAN}}→{{ALREADY_PRESENT}}.
+- {{resolve}} trả về danh sách bean cuối cùng; {{report()}} trả báo cáo của **lần resolve gần nhất** ({{REGISTERED name}} / {{SKIPPED name LY_DO}}), ghi đè mỗi lần resolve.`,
+    starter: `class AutoConfigLoader {
+    static final class Cond {
+        final String kind, a, b;
+        private Cond(String k, String a, String b) { this.kind = k; this.a = a; this.b = b; }
+        static Cond onClass(String c) { return new Cond("CLASS", c, ""); }
+        static Cond onMissingClass(String c) { return new Cond("MISSING_CLASS", c, ""); }
+        static Cond onProperty(String k) { return new Cond("PROPERTY", k, ""); }
+        static Cond onPropertyValue(String k, String v) { return new Cond("PROPERTY_VALUE", k, v); }
+        static Cond onMissingBean(String n) { return new Cond("MISSING_BEAN", n, ""); }
+    }
+    static final class Spec {
+        final String name;
+        final List<Cond> conds;
+        final Set<String> before, after;
+        Spec(String name, List<Cond> conds, Set<String> before, Set<String> after) {
+            this.name = name; this.conds = conds; this.before = before; this.after = after;
+        }
+    }
+    private final List<Spec> specs = new ArrayList<>();
+    private List<String> lastReport = new ArrayList<>();
+
+    void register(String name, Set<String> before, Set<String> after, Cond... conds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<String> resolve(Set<String> classpath, Map<String, String> props, List<String> userBeans) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<String> report() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+ static int passed=0, total=0;
+ interface Body { void run() throws Exception; }
+ static void check(String n, Body b) { total++; try { b.run(); passed++; System.out.println("PASS " + n); } catch(Throwable t) { System.out.println("FAIL " + n + ": " + t); } }
+ static void eq(Object a, Object b) { if(!Objects.equals(a,b)) throw new AssertionError("expected "+b+" got "+a); }
+ static void throwsEx(Body b, Class<? extends Throwable> type) { try { b.run(); } catch(Throwable t) { if(type.isInstance(t)) return; throw new AssertionError("wrong type "+t); } throw new AssertionError("no exception"); }
+ static final String JACKSON = "com.fasterxml.jackson.databind.ObjectMapper";
+ static final String HIKARI = "com.zaxxer.hikari.HikariDataSource";
+ public static void main(String[] a) {
+  check("classpath condition registers the bean", () -> {
+    AutoConfigLoader x = new AutoConfigLoader();
+    x.register("jackson", Set.of(), Set.of(), AutoConfigLoader.Cond.onClass(JACKSON));
+    eq(x.resolve(Set.of(JACKSON), Map.of(), List.of()), List.of("jackson"));
+    eq(x.report(), List.of("REGISTERED jackson"));
+  });
+  check("missing class skips the bean", () -> {
+    AutoConfigLoader x = new AutoConfigLoader();
+    x.register("jackson", Set.of(), Set.of(), AutoConfigLoader.Cond.onClass(JACKSON));
+    eq(x.resolve(Set.of(), Map.of(), List.of()), List.of());
+    eq(x.report(), List.of("SKIPPED jackson MISSING_CLASS"));
+  });
+  check("onMissingClass skips when class present", () -> {
+    AutoConfigLoader x = new AutoConfigLoader();
+    x.register("hikariDs", Set.of(), Set.of(), AutoConfigLoader.Cond.onMissingClass(HIKARI));
+    eq(x.resolve(Set.of(HIKARI), Map.of(), List.of()), List.of());
+    eq(x.report(), List.of("SKIPPED hikariDs CLASS_PRESENT"));
+    AutoConfigLoader y = new AutoConfigLoader();
+    y.register("hikariDs", Set.of(), Set.of(), AutoConfigLoader.Cond.onMissingClass(HIKARI));
+    eq(y.resolve(Set.of(), Map.of(), List.of()), List.of("hikariDs"));
+  });
+  check("onProperty: present/false/absent differ", () -> {
+    AutoConfigLoader x = new AutoConfigLoader();
+    x.register("cache", Set.of(), Set.of(), AutoConfigLoader.Cond.onProperty("app.cache.type"));
+    eq(x.resolve(Set.of(), Map.of("app.cache.type", "redis"), List.of()), List.of("cache"));
+    AutoConfigLoader y = new AutoConfigLoader();
+    y.register("cache", Set.of(), Set.of(), AutoConfigLoader.Cond.onProperty("app.cache.type"));
+    eq(y.resolve(Set.of(), Map.of("app.cache.type", "false"), List.of()), List.of());
+    eq(y.report(), List.of("SKIPPED cache PROPERTY_FALSE"));
+    AutoConfigLoader z = new AutoConfigLoader();
+    z.register("cache", Set.of(), Set.of(), AutoConfigLoader.Cond.onProperty("app.cache.type"));
+    eq(z.resolve(Set.of(), Map.of(), List.of()), List.of());
+    eq(z.report(), List.of("SKIPPED cache NO_PROPERTY"));
+  });
+  check("onPropertyValue is case-sensitive exact match", () -> {
+    AutoConfigLoader x = new AutoConfigLoader();
+    x.register("uuid", Set.of(), Set.of(), AutoConfigLoader.Cond.onPropertyValue("app.id-strategy", "uuid"));
+    eq(x.resolve(Set.of(), Map.of("app.id-strategy", "uuid"), List.of()), List.of("uuid"));
+    AutoConfigLoader y = new AutoConfigLoader();
+    y.register("uuid", Set.of(), Set.of(), AutoConfigLoader.Cond.onPropertyValue("app.id-strategy", "uuid"));
+    eq(y.resolve(Set.of(), Map.of("app.id-strategy", "UUID"), List.of()), List.of());
+    eq(y.report(), List.of("SKIPPED uuid VALUE_MISMATCH"));
+  });
+  check("user bean overrides the default", () -> {
+    AutoConfigLoader x = new AutoConfigLoader();
+    x.register("txManager", Set.of(), Set.of(), AutoConfigLoader.Cond.onMissingBean("txManager"));
+    eq(x.resolve(Set.of(), Map.of(), List.of("txManager")), List.of("txManager"));
+    eq(x.report(), List.of("SKIPPED txManager ALREADY_PRESENT"));
+    AutoConfigLoader y = new AutoConfigLoader();
+    y.register("txManager", Set.of(), Set.of(), AutoConfigLoader.Cond.onMissingBean("txManager"));
+    eq(y.resolve(Set.of(), Map.of(), List.of()), List.of("txManager"));
+  });
+  check("after: orders a spec after the named one regardless of register order", () -> {
+    AutoConfigLoader x = new AutoConfigLoader();
+    x.register("B", Set.of(), Set.of("A"));
+    x.register("A", Set.of(), Set.of());
+    eq(x.resolve(Set.of(), Map.of(), List.of()), List.of("A", "B"));
+    eq(x.report(), List.of("REGISTERED A", "REGISTERED B"));
+  });
+  check("before: orders a spec before the named one", () -> {
+    AutoConfigLoader x = new AutoConfigLoader();
+    x.register("A", Set.of("B"), Set.of());
+    x.register("B", Set.of(), Set.of());
+    eq(x.resolve(Set.of(), Map.of(), List.of()), List.of("A", "B"));
+  });
+  check("cycle in ordering throws", () -> {
+    AutoConfigLoader x = new AutoConfigLoader();
+    x.register("A", Set.of(), Set.of("B"));
+    x.register("B", Set.of(), Set.of("A"));
+    throwsEx(() -> x.resolve(Set.of(), Map.of(), List.of()), IllegalStateException.class);
+  });
+  check("earlier spec wins the bean name over a later default", () -> {
+    AutoConfigLoader x = new AutoConfigLoader();
+    x.register("cacheManager", Set.of(), Set.of(), AutoConfigLoader.Cond.onProperty("app.cache.hazelcast"));
+    x.register("cacheManager", Set.of(), Set.of(), AutoConfigLoader.Cond.onProperty("app.cache.simple"), AutoConfigLoader.Cond.onMissingBean("cacheManager"));
+    eq(x.resolve(Set.of(), Map.of("app.cache.hazelcast", "true", "app.cache.simple", "true"), List.of()), List.of("cacheManager"));
+    eq(x.report(), List.of("REGISTERED cacheManager", "SKIPPED cacheManager ALREADY_PRESENT"));
+  });
+  System.out.println("RESULT " + passed + "/" + total);
+ }
+}`,
+    reference: `class AutoConfigLoader {
+    static final class Cond {
+        final String kind, a, b;
+        private Cond(String k, String a, String b) { this.kind = k; this.a = a; this.b = b; }
+        static Cond onClass(String c) { return new Cond("CLASS", c, ""); }
+        static Cond onMissingClass(String c) { return new Cond("MISSING_CLASS", c, ""); }
+        static Cond onProperty(String k) { return new Cond("PROPERTY", k, ""); }
+        static Cond onPropertyValue(String k, String v) { return new Cond("PROPERTY_VALUE", k, v); }
+        static Cond onMissingBean(String n) { return new Cond("MISSING_BEAN", n, ""); }
+    }
+    static final class Spec {
+        final String name;
+        final List<Cond> conds;
+        final Set<String> before, after;
+        Spec(String name, List<Cond> conds, Set<String> before, Set<String> after) {
+            this.name = name; this.conds = conds; this.before = before; this.after = after;
+        }
+    }
+    private final List<Spec> specs = new ArrayList<>();
+    private List<String> lastReport = new ArrayList<>();
+
+    void register(String name, Set<String> before, Set<String> after, Cond... conds) {
+        specs.add(new Spec(name, Arrays.asList(conds), before, after));
+    }
+
+    List<String> resolve(Set<String> classpath, Map<String, String> props, List<String> userBeans) {
+        List<Spec> ordered = order();
+        List<String> registered = new ArrayList<>(userBeans);
+        List<String> report = new ArrayList<>();
+        for (Spec s : ordered) {
+            String fail = firstFailure(s, classpath, props, registered);
+            if (fail == null) {
+                if (registered.contains(s.name)) report.add("SKIPPED " + s.name + " ALREADY_PRESENT");
+                else { registered.add(s.name); report.add("REGISTERED " + s.name); }
+            } else {
+                report.add("SKIPPED " + s.name + " " + fail);
+            }
+        }
+        lastReport = report;
+        return registered;
+    }
+
+    List<String> report() { return lastReport; }
+
+    private String firstFailure(Spec s, Set<String> cp, Map<String, String> props, List<String> registered) {
+        for (Cond c : s.conds) {
+            if (c.kind.equals("CLASS")) { if (!cp.contains(c.a)) return "MISSING_CLASS"; }
+            else if (c.kind.equals("MISSING_CLASS")) { if (cp.contains(c.a)) return "CLASS_PRESENT"; }
+            else if (c.kind.equals("PROPERTY")) {
+                String v = props.get(c.a);
+                if (v == null) return "NO_PROPERTY";
+                if (v.equalsIgnoreCase("false")) return "PROPERTY_FALSE";
+            } else if (c.kind.equals("PROPERTY_VALUE")) {
+                String v = props.get(c.a);
+                if (v == null) return "NO_PROPERTY";
+                if (!v.equals(c.b)) return "VALUE_MISMATCH";
+            } else if (c.kind.equals("MISSING_BEAN")) {
+                if (registered.contains(c.a)) return "ALREADY_PRESENT";
+            }
+        }
+        return null;
+    }
+
+    private List<Spec> order() {
+        Map<String, Spec> byName = new HashMap<>();
+        for (Spec s : specs) byName.putIfAbsent(s.name, s);
+        Map<Spec, Set<String>> deps = new IdentityHashMap<>();
+        for (Spec s : specs) deps.put(s, new LinkedHashSet<>(s.after));
+        for (Spec s : specs) for (String x : s.before) {
+            Spec t = byName.get(x);
+            if (t != null) deps.get(t).add(s.name);
+        }
+        List<Spec> ordered = new ArrayList<>();
+        Set<String> done = new HashSet<>();
+        List<Spec> pool = new ArrayList<>(specs);
+        while (!pool.isEmpty()) {
+            boolean progress = false;
+            Iterator<Spec> it = pool.iterator();
+            while (it.hasNext()) {
+                Spec s = it.next();
+                boolean ready = true;
+                for (String d : deps.get(s)) {
+                    Spec ds = byName.get(d);
+                    if (ds != null && !done.contains(d)) { ready = false; break; }
+                }
+                if (ready) { ordered.add(s); done.add(s.name); it.remove(); progress = true; }
+            }
+            if (!progress) throw new IllegalStateException("cycle in auto-config ordering");
+        }
+        return ordered;
+    }
+}`,
+    hints: ['register chỉ ghi metadata: nó **không** đánh giá điều kiện nào cả — đây là điểm "điều kiện chạy lúc resolve, không chạy lúc khai báo".', '{{order}} dựng đồ thị: mỗi spec có tập bean phải đến trước (từ {{after}}, cộng thêm suy ra từ {{before}} của spec khác); sắp topo bằng cách lặp "chọn spec mà mọi phụ thuộc đã đặt", hết vòng mà không chọn được là chu trình.', 'Điều kiện là AND và báo lý do của điều kiện trượt **đầu tiên**; {{PROPERTY}} so "false" không phân biệt hoa thường còn {{PROPERTY_VALUE}} so sánh tuyệt đối.'],
+    explain: `Bài tập dựng lại bốn quyết định của Spring Boot.
+
+**Điều kiện đọc classpath.** {{onClass}} mô phỏng "thử nạp class": classpath là một {{Set}} tên class, có tên thì khớp, không thì trượt với {{MISSING_CLASS}}. {{onMissingClass}} thì ngược lại.
+
+**Điều kiện là AND và báo lý do đầu tiên.** {{firstFailure}} trả null khi mọi điều kiện thoả; ngược lại trả đúng một mã lỗi, theo thứ tự khai báo điều kiện.
+
+**Thứ tự không phải thứ tự khai báo.** {{order}} dựng đồ thị before/after rồi sắp topo ổn định; chu trình ném {{IllegalStateException}}. Vì thế test "after" đăng ký B trước A mà kết quả vẫn là A rồi B.
+
+**Bean người dùng thắng.** Danh sách bắt đầu bằng {{userBeans}}, nên {{onMissingBean}} thấy chúng và bean mặc định bị bỏ ({{ALREADY_PRESENT}}). Khi hai spec cùng tên, spec đến trước thắng — đúng tinh thần @ConditionalOnMissingBean trong auto-config thật.
+
+Lỗi hay gặp:
+- Dùng {{Set}} cho danh sách bean đã đăng ký: mất thứ tự, test after/before trượt.
+- Quên append bean được chấp nhận vào danh sách đang duyệt: {{ALREADY_PRESENT}} không bao giờ xuất hiện.
+- So sánh {{equals("false")}} thay vì {{equalsIgnoreCase}}: bỏ sót {{FALSE}} trong yaml thật.
+- Bỏ qua chu trình trong {{order}}: quay vòng vô hạn hoặc treo.
+- {{report}} cộng dồn qua các lần resolve: Spring giữ báo cáo của một lần khởi động.`
+  }],
+  check: [
+    { q: 'Vì sao bean bạn tự khai báo thắng bean mặc định của auto-config?', options: ['Vì auto-config luôn có độ ưu tiên thấp hơn bean người dùng', 'Vì định nghĩa của bạn được đăng ký ở pha cấu hình người dùng trước pha auto-config, nên @ConditionalOnMissingBean thấy bạn và bỏ bean mặc định', 'Vì Spring huỷ mọi bean cùng kiểu do auto-config tạo', 'Vì bạn bắt buộc phải dùng @Primary'], answer: 1, explain: `Thứ tự nạp: user configuration trước, auto-configuration sau; khi OnMissingBean được đánh giá thì bean của bạn đã có trong danh sách định nghĩa, nên bean mặc định bị bỏ — không cần @Primary, không cần bật cờ ghi đè. Auto-config không hề "ưu tiên thấp" một cách mặc định; Spring cũng không huỷ bean cùng kiểu; @Primary chỉ để chọn khi inject theo kiểu có nhiều ứng viên.` },
+    { q: '@ConditionalOnClass đọc thông tin từ đâu?', options: ['Từ danh sách bean đã tạo', 'Từ property trong application.yml', 'Từ classpath: thử nạp class, có thì điều kiện khớp', 'Từ database'], answer: 2, explain: `OnClass thử nạp class bằng classloader; có trên classpath thì khớp, thiếu thì trượt (ClassNotFoundException). Nó không nhìn bean đã tạo, không đọc property (đó là OnProperty), và không liên quan database. Điều kiện chạy trên bean definition lúc khởi động, không cần instance.` },
+    { q: 'Thứ tự giữa hai auto-config được quyết định thế nào?', options: ['Theo thứ tự dòng trong file .imports', 'Ngẫu nhiên lúc runtime', 'Bằng @AutoConfigureBefore/@AutoConfigureAfter và @AutoConfigureOrder, không phải thứ tự khai báo', 'Theo bảng chữ cái tên class'], answer: 2, explain: `Spring dựng đồ thị before/after rồi sắp topo; @AutoConfigureOrder là số nguyên phụ trợ. Thứ tự dòng trong .imports không quyết định; không có chuyện ngẫu nhiên; sắp theo tên class chỉ là hành vi mặc định khi không khai báo, và nó có thể đổi khi nâng cấp.` },
+    { q: 'Muốn tắt hẳn một auto-config có sẵn (ví dụ DataSourceAutoConfiguration), cách đúng?', options: ['Xoá bean đó bằng code sau khi khởi động', 'spring.autoconfigure.exclude hoặc @EnableAutoConfiguration(exclude = DataSourceAutoConfiguration.class)', 'Đổi tên class', 'Đặt @ConditionalOnMissingBean trong config của bạn'], answer: 1, explain: `exclude (trong yml hoặc annotation) khiến auto-config không được nạp, bean mặc định không được tạo. Không có API "xoá bean sau khởi động"; đổi tên class vô nghĩa; @ConditionalOnMissingBean chỉ giúp bạn không tạo trùng, không tắt bean mặc định.` }
+  ],
+  related: ['spring-007', 'spring-002'], tags: ['auto-configuration', '@Conditional', 'ordering', 'starter', 'boot']
+},
+{
+  id: 'lesson-spring-017', track: 'spring', order: 17,
+  title: 'Propagation: REQUIRED, REQUIRES_NEW và NESTED (savepoint)', level: 'senior', minutes: 40,
+  goals: ['Phân biệt REQUIRED, REQUIRES_NEW và NESTED theo connection và savepoint', 'Nêu cái giá connection của REQUIRES_NEW và khi nào cạn pool', 'Giải thích rollback-only và UnexpectedRollbackException', 'Mô phỏng transaction manager giả theo ba propagation'],
+  body: `**Tóm tắt:** Propagation quyết định một transaction lồng bên trong transaction khác cư xử ra sao. {{REQUIRED}} (mặc định) tham gia transaction đang có, không có thì tạo mới. {{REQUIRES_NEW}} tạm treo (suspend) transaction ngoài và mở một transaction **hoàn toàn mới** với connection khác, commit độc lập. {{NESTED}} tạo **savepoint** bên trong transaction hiện tại, chỉ rollback phần của nó chứ không rollback cả transaction ngoài.
+
+> Bài lesson-spring-003 đã nói REQUIRED/REQUIRES_NEW và luật rollback theo exception. Bài này tập trung vào **cơ chế connection và savepoint**, đặc biệt là {{NESTED}} — thứ 003 chưa đi sâu.
+
+### Vì sao cần nhiều propagation
+Một service thường gọi service khác: {{OrderService.placeOrder()}} (transaction ngoài) gọi {{AuditService.log()}}. Nếu log dùng REQUIRED, nó nằm chung transaction — nghiệp vụ chính rollback thì log cũng mất. Nếu log phải **sống sót** dù nghiệp vụ chính rollback (ví dụ ghi lỗi thanh toán), ta cần REQUIRES_NEW. Nếu chỉ muốn "thử một phần, lỗi thì bỏ phần đó, phần còn lại vẫn giữ" thì cần NESTED (savepoint). Propagation chính là câu trả lời cho "transaction con có phụ thuộc transaction cha không?".
+
+### REQUIRED: dùng chung hoặc tạo mới
+- Đã có transaction trên thread: tham gia nó, **không** lấy connection mới. Mọi thay đổi nằm chung một commit/rollback.
+- Chưa có: tạo mới (lấy connection, tắt auto-commit).
+- Bẫy: method inner REQUIRED ném RuntimeException → interceptor inner đánh dấu transaction là **rollback-only**; nếu method outer bắt và nuốt exception đó, đến lúc outer commit Spring phát hiện cờ rollback-only, rollback toàn bộ và ném {{UnexpectedRollbackException}}. Bắt exception không gỡ được cờ.
+
+### REQUIRES_NEW: suspend và connection thứ hai
+- Tạm treo transaction ngoài (giữ nguyên connection của nó), mở transaction mới với **connection khác**.
+- Inner commit độc lập: inner commit xong là dữ liệu xuống DB, outer rollback không quay ngược được.
+- **Cái giá**: trong lúc inner chạy, hai connection bị giữ cùng lúc. Dưới tải cao, nếu nhiều thread cùng giữ 1 connection rồi chờ connection thứ hai mà pool nhỏ (HikariCP mặc định 10) thì cạn pool → "Connection is not available". Nếu gọi REQUIRES_NEW **trong vòng lặp** xử lý 200 giao dịch, mỗi vòng lại treo + xin connection → deadlock pool.
+- REQUIRES_NEW không thấy dữ liệu **chưa commit** của outer (vì khác connection), và nếu cập nhật dòng mà outer đang khoá thì nó tự chờ chính mình tới lock timeout.
+
+### NESTED: savepoint trong cùng connection
+- Tạo **savepoint** (một mốc đánh dấu trong transaction) trên **cùng connection**.
+- Inner rollback chỉ cuộn về savepoint, phần việc trước savepoint của outer vẫn còn; outer commit sau đó vẫn commit phần còn lại.
+- **Không** tốn thêm connection (khác REQUIRES_NEW), và inner **không** commit độc lập — mọi thứ vẫn nằm trong transaction outer.
+- Điều kiện: transaction manager và DB phải hỗ trợ savepoint. JDBC hỗ trợ; trên JPA/Hibernate hỗ trợ hạn chế, nhiều cấu hình không hoạt động như kỳ vọng — phải test trên đúng DB.
+
+### Bảng so sánh
+
+| Propagation | Khi đã có transaction ngoài | Connection | Inner commit độc lập? |
+|---|---|---|---|
+| REQUIRED | Tham gia | Dùng chung | Không |
+| REQUIRES_NEW | Suspend, mở mới | Connection thứ hai | Có |
+| NESTED | Savepoint trong tx hiện tại | Dùng chung | Không |
+
+### Cơ chế từng bước
+Đi từng bước khi một method {{@Transactional}} được gọi qua proxy (xem lesson-spring-002/010 để hiểu vì sao phải qua proxy):
+
+1. TransactionInterceptor đọc propagation từ annotation.
+2. REQUIRED: {{TransactionSynchronizationManager}} có resource đang mở → dùng nó; không thì {{doBegin}} lấy connection, setAutoCommit(false).
+3. REQUIRES_NEW: {{suspend}} resource hiện tại (giữ connection), {{doBegin}} lấy connection mới, setAutoCommit(false).
+4. NESTED: {{doBegin}} tạo savepoint trên connection hiện tại ({{Connection.setSavepoint()}}).
+5. Kết thúc: commit/rollback; NESTED rollback về savepoint; REQUIRES_NEW resume resource đã suspend và trả connection; mọi connection trả về pool.
+
+### Lỗi hay gặp trên production
+- **REQUIRES_NEW lạm dụng gây cạn pool**: mỗi transaction suspended giữ connection; T2 cần connection mới. Triệu chứng: request timeout chờ connection, log "Connection is not available". Cách sửa: chỉ dùng khi bắt buộc (audit/log phải sống sót), boundary ngắn, tránh gọi HTTP trong transaction.
+- **REQUIRES_NEW trong vòng lặp**: mỗi vòng treo + xin connection → deadlock pool. Cách sửa: gom audit ghi một lần sau khi transaction chính kết thúc (@TransactionalEventListener AFTER_COMPLETION hoặc outbox).
+- **NESTED trên JPA không hoạt động như kỳ vọng**: savepoint bị provider bỏ qua; phần rollback không xảy ra. Cách sửa: test trên DB thật; nếu không hỗ trợ, dùng REQUIRES_NEW hoặc tách nghiệp vụ.
+- **Self-invocation phá propagation**: gọi this.inner() không qua proxy, mọi propagation bị bỏ qua (xem lesson-spring-010). Cách sửa: tách bean khác.
+- **Checked exception vẫn commit**: mặc định Spring chỉ rollback RuntimeException/Error; checked exception commit. Cách sửa: rollbackFor.
+
+### Liên hệ phỏng vấn
+1. **NESTED khác REQUIRES_NEW ở điểm nào?** — NESTED dùng savepoint trong cùng transaction/connection, rollback một phần; REQUIRES_NEW suspend transaction ngoài, mở transaction mới với connection khác, commit độc lập. NESTED không tốn thêm connection, REQUIRES_NEW tốn.
+2. **REQUIRES_NEW tốn thêm gì và khi nào nguy hiểm?** — Một connection thứ hai trong lúc transaction ngoài còn mở; nguy hiểm khi pool nhỏ hoặc gọi trong vòng lặp (deadlock pool). Dùng tiết kiệm, chỉ khi inner phải sống sót.
+3. **Inner REQUIRED ném lỗi rồi outer nuốt thì sao?** — Transaction bị đánh dấu rollback-only; outer rollback và ném UnexpectedRollbackException lúc kết thúc. Bắt exception không gỡ cờ.
+
+> Senior tip: Trước khi thêm REQUIRES_NEW, hãy hỏi "transaction con có thật sự cần sống sót khi transaction cha rollback không?". Nếu không, dùng REQUIRED. Khi đã dùng, luôn kiểm tra kích thước connection pool và đặt timeout chờ connection; theo dõi số connection active/pending để phát hiện cạn pool sớm.`,
+  exercises: [{
+    title: 'Mô phỏng propagation: REQUIRED, REQUIRES_NEW, NESTED và connection pool',
+    prompt: `Hoàn thiện {{TxManager}} mô phỏng transaction manager của Spring. Mỗi lần {{run(propagation, name, work)}} giống một lời gọi {{@Transactional}} với propagation cho trước. Manager giữ trạng thái transaction đang mở trên "thread" này: {{active}}, {{rollbackOnly}}, và đếm connection đang giữ ({{used}}) với trần {{poolSize}}.
+- {{REQUIRED}}: nếu {{active}} → {{joins++}}, ghi {{join:name}}, chạy {{work}}; ném RuntimeException/Error thì bật {{rollbackOnly}} rồi ném tiếp. Nếu chưa {{active}} → {{begins++}}, {{acquire}} connection, {{active=true}}, {{rollbackOnly=false}}, ghi {{begin:name}}; work xong bình thường mà {{rollbackOnly}} đang bật thì rollback ({{rollbacks++}}, {{rollback:name}}, ném {{IllegalStateException}}), ngược lại commit ({{commits++}}, {{commit:name}}); ném RuntimeException/Error → rollback; ném checked → commit (mặc định Spring). Luôn trả connection trong {{finally}}.
+- {{REQUIRES_NEW}}: nếu đang {{active}} thì {{suspends++}}, ghi {{suspend:name}}, **giữ nguyên connection ngoài**; luôn {{acquire}} một connection mới rồi {{begins++}}, {{begin:name}}; commit/rollback độc lập như trên; trong {{finally}} trả connection, khôi phục {{active}}/{{rollbackOnly}} của outer và {{resumes++}}, {{resume:name}} nếu outer đang active.
+- {{NESTED}}: nếu chưa {{active}} → chạy như REQUIRED; nếu đang {{active}} → {{savepoints++}}, {{savepoint:name}}; work xong → {{releases++}}, {{release:name}}; ném RuntimeException/Error → {{rollback-to-savepoint:name}} rồi ném tiếp (outer vẫn active, **không** bật rollbackOnly); ném checked → release rồi ném tiếp. NESTED **không** lấy connection mới.
+- {{acquire()}} ném {{IllegalStateException}} khi {{used >= poolSize}}.`,
+    starter: `interface TxWork { void run() throws Exception; }
+
+class TxManager {
+    static final String REQUIRED = "REQUIRED";
+    static final String REQUIRES_NEW = "REQUIRES_NEW";
+    static final String NESTED = "NESTED";
+
+    final int poolSize;
+    int used;
+    int peak;
+    boolean active;
+    boolean rollbackOnly;
+    int begins, commits, rollbacks, joins, savepoints, releases, suspends, resumes;
+    final List<String> events = new ArrayList<>();
+
+    TxManager(int poolSize) { this.poolSize = poolSize; }
+
+    void run(String propagation, String name, TxWork work) throws Exception {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+ static int passed=0, total=0;
+ interface Body { void run() throws Exception; }
+ static void check(String n, Body b) { total++; try { b.run(); passed++; System.out.println("PASS " + n); } catch(Throwable t) { System.out.println("FAIL " + n + ": " + t); } }
+ static void eq(Object a, Object b) { if(!Objects.equals(a,b)) throw new AssertionError("expected "+b+" got "+a); }
+ static void throwsEx(Body b, Class<? extends Throwable> type) { try { b.run(); } catch(Throwable t) { if(type.isInstance(t)) return; throw new AssertionError("wrong type "+t); } throw new AssertionError("no exception"); }
+ public static void main(String[] a) {
+  check("REQUIRED outermost begin+commit", () -> {
+    TxManager m = new TxManager(4);
+    m.run(TxManager.REQUIRED, "a", () -> {});
+    eq(m.events, List.of("begin:a", "commit:a"));
+    eq(m.begins, 1); eq(m.commits, 1); eq(m.peak, 1); eq(m.used, 0);
+  });
+  check("REQUIRED joins outer, one connection", () -> {
+    TxManager m = new TxManager(4);
+    m.run(TxManager.REQUIRED, "outer", () -> m.run(TxManager.REQUIRED, "inner", () -> {}));
+    eq(m.events, List.of("begin:outer", "join:inner", "commit:outer"));
+    eq(m.begins, 1); eq(m.joins, 1); eq(m.commits, 1); eq(m.peak, 1);
+  });
+  check("REQUIRES_NEW suspends and uses a second connection", () -> {
+    TxManager m = new TxManager(4);
+    m.run(TxManager.REQUIRED, "outer", () -> m.run(TxManager.REQUIRES_NEW, "inner", () -> {}));
+    eq(m.events, List.of("begin:outer", "suspend:inner", "begin:inner", "commit:inner", "resume:inner", "commit:outer"));
+    eq(m.suspends, 1); eq(m.resumes, 1); eq(m.begins, 2); eq(m.commits, 2); eq(m.peak, 2); eq(m.used, 0);
+  });
+  check("REQUIRES_NEW needs a second connection (pool exhausted at 1)", () -> {
+    TxManager m = new TxManager(1);
+    throwsEx(() -> m.run(TxManager.REQUIRED, "outer", () -> m.run(TxManager.REQUIRES_NEW, "inner", () -> {})), IllegalStateException.class);
+    eq(m.used, 0); eq(m.peak, 1);
+  });
+  check("NESTED uses savepoint on the same connection", () -> {
+    TxManager m = new TxManager(4);
+    m.run(TxManager.REQUIRED, "outer", () -> {
+      try { m.run(TxManager.NESTED, "inner", () -> { throw new IllegalStateException("part failed"); }); }
+      catch (Exception e) { }
+    });
+    eq(m.events, List.of("begin:outer", "savepoint:inner", "rollback-to-savepoint:inner", "commit:outer"));
+    eq(m.savepoints, 1); eq(m.peak, 1); eq(m.commits, 1); eq(m.rollbacks, 0); eq(m.active, false);
+  });
+  check("swallowed inner REQUIRED marks outer rollback-only", () -> {
+    TxManager m = new TxManager(4);
+    throwsEx(() -> m.run(TxManager.REQUIRED, "outer", () -> {
+      try { m.run(TxManager.REQUIRED, "inner", () -> { throw new IllegalStateException("inner fail"); }); }
+      catch (Exception e) { }
+    }), IllegalStateException.class);
+    eq(m.events, List.of("begin:outer", "join:inner", "rollback:outer"));
+    eq(m.commits, 0); eq(m.rollbacks, 1);
+  });
+  check("REQUIRES_NEW commits even when outer later rolls back", () -> {
+    TxManager m = new TxManager(4);
+    throwsEx(() -> m.run(TxManager.REQUIRED, "outer", () -> {
+      m.run(TxManager.REQUIRES_NEW, "inner", () -> {});
+      throw new IllegalStateException("outer fails");
+    }), IllegalStateException.class);
+    eq(m.events, List.of("begin:outer", "suspend:inner", "begin:inner", "commit:inner", "resume:inner", "rollback:outer"));
+    eq(m.commits, 1); eq(m.rollbacks, 1);
+  });
+  System.out.println("RESULT " + passed + "/" + total);
+ }
+}`,
+    reference: `interface TxWork { void run() throws Exception; }
+
+class TxManager {
+    static final String REQUIRED = "REQUIRED";
+    static final String REQUIRES_NEW = "REQUIRES_NEW";
+    static final String NESTED = "NESTED";
+
+    final int poolSize;
+    int used;
+    int peak;
+    boolean active;
+    boolean rollbackOnly;
+    int begins, commits, rollbacks, joins, savepoints, releases, suspends, resumes;
+    final List<String> events = new ArrayList<>();
+
+    TxManager(int poolSize) { this.poolSize = poolSize; }
+
+    private void acquire() {
+        if (used >= poolSize) throw new IllegalStateException("pool exhausted: " + used + "/" + poolSize);
+        used++;
+        if (used > peak) peak = used;
+    }
+
+    void run(String propagation, String name, TxWork work) throws Exception {
+        if (REQUIRED.equals(propagation)) runRequired(name, work);
+        else if (REQUIRES_NEW.equals(propagation)) runRequiresNew(name, work);
+        else if (NESTED.equals(propagation)) runNested(name, work);
+        else throw new IllegalArgumentException("unknown propagation " + propagation);
+    }
+
+    private void runRequired(String name, TxWork work) throws Exception {
+        if (active) {
+            joins++;
+            events.add("join:" + name);
+            try { work.run(); }
+            catch (RuntimeException | Error e) { rollbackOnly = true; throw e; }
+            return;
+        }
+        begins++;
+        acquire();
+        active = true;
+        rollbackOnly = false;
+        events.add("begin:" + name);
+        try {
+            try { work.run(); }
+            catch (RuntimeException | Error e) { rollbacks++; events.add("rollback:" + name); throw e; }
+            catch (Exception checked) { commits++; events.add("commit:" + name); throw checked; }
+            if (rollbackOnly) {
+                rollbacks++; events.add("rollback:" + name);
+                throw new IllegalStateException("rollback-only: inner marked transaction rollback-only");
+            }
+            commits++; events.add("commit:" + name);
+        } finally {
+            active = false; rollbackOnly = false; used--;
+        }
+    }
+
+    private void runRequiresNew(String name, TxWork work) throws Exception {
+        boolean outerActive = active;
+        boolean outerRollbackOnly = rollbackOnly;
+        if (outerActive) { suspends++; events.add("suspend:" + name); }
+        acquire();
+        begins++;
+        active = true;
+        rollbackOnly = false;
+        events.add("begin:" + name);
+        try {
+            try { work.run(); }
+            catch (RuntimeException | Error e) { rollbacks++; events.add("rollback:" + name); throw e; }
+            catch (Exception checked) { commits++; events.add("commit:" + name); throw checked; }
+            commits++; events.add("commit:" + name);
+        } finally {
+            used--;
+            active = outerActive;
+            rollbackOnly = outerRollbackOnly;
+            if (outerActive) { resumes++; events.add("resume:" + name); }
+        }
+    }
+
+    private void runNested(String name, TxWork work) throws Exception {
+        if (!active) { runRequired(name, work); return; }
+        savepoints++;
+        events.add("savepoint:" + name);
+        try {
+            try { work.run(); }
+            catch (RuntimeException | Error e) { events.add("rollback-to-savepoint:" + name); throw e; }
+            catch (Exception checked) { releases++; events.add("release:" + name); throw checked; }
+            releases++; events.add("release:" + name);
+        } finally {
+        }
+    }
+}`,
+    hints: ['{{run}} chỉ là bộ định tuyến theo propagation: viết ba hàm riêng {{runRequired}}/{{runRequiresNew}}/{{runNested}} cho dễ đọc.', 'REQUIRES_NEW phải **lưu** {{active}} và {{rollbackOnly}} của outer trước khi mở transaction mới, rồi **khôi phục** trong {{finally}}; quên bước này thì sau inner, outer tưởng đã kết thúc.', 'NESTED khi chưa có transaction thì chạy như REQUIRED; khi đã có thì chỉ đặt savepoint (không lấy connection mới) và rollback về savepoint khi inner ném RuntimeException/Error.', 'Luôn trả connection trong {{finally}} ({{used--}}) — kể cả khi work ném lỗi; rò connection sẽ làm cạn pool.'],
+    explain: `Bài tập dựng lại ba hành vi propagation và cách nó dùng connection.
+
+**REQUIRED khi đã có transaction** chỉ {{join}}: không lấy connection mới ({{peak}} = 1). Khi là ngoài cùng thì {{begin}} lấy một connection, commit/rollback rồi trả connection.
+
+**REQUIRES_NEW gọi {{suspend}}** (giữ connection của transaction ngoài) rồi {{acquire}} một connection thứ hai — vì thế {{peak}} = 2 và pool 1 connection là cạn (test 4). Trong {{finally}}, trả connection, khôi phục {{active}}/{{rollbackOnly}} của outer và {{resume}}.
+
+**NESTED không lấy connection mới**: đặt savepoint trên cùng connection; khi inner ném lỗi thì {{rollback-to-savepoint}}, outer vẫn sống và commit tiếp (test 5).
+
+**rollback-only**: inner REQUIRED ném RuntimeException đặt {{rollbackOnly = true}}; outer bắt và nuốt; lúc outer kết thúc, cờ vẫn bật nên outer rollback và ném {{IllegalStateException}} (mô phỏng {{UnexpectedRollbackException}}). REQUIRES_NEW commit độc lập nên dù outer rollback dữ liệu inner vẫn còn (test 7).
+
+Lỗi hay gặp:
+- Không lưu/khôi phục {{active}} và {{rollbackOnly}} khi suspend/resume: sau REQUIRES_NEW, outer tưởng đã kết thúc.
+- Quên {{finally}} để trả connection: rò connection, pool cạn dần.
+- Đặt savepoint rồi quên rollback-to-savepoint khi lỗi: phần lỗi vẫn nằm trong transaction.
+- Coi NESTED như REQUIRES_NEW: NESTED không tách connection và không commit độc lập.`
+  }],
+  check: [
+    { q: 'NESTED khác REQUIRES_NEW ở điểm nào?', options: ['NESTED mở transaction mới hoàn toàn', 'NESTED dùng savepoint trong cùng transaction/connection; REQUIRES_NEW suspend transaction ngoài và mở transaction mới', 'NESTED không cần transaction ngoài', 'NESTED luôn commit độc lập'], answer: 1, explain: `NESTED đặt savepoint trên cùng connection và không tách khỏi transaction outer; REQUIRES_NEW suspend outer rồi mở transaction mới với connection khác. NESTED cần transaction ngoài (nếu chưa có thì nó chạy như REQUIRED), và nó không commit độc lập.` },
+    { q: 'REQUIRES_NEW tốn thêm gì so với REQUIRED?', options: ['Không tốn gì', 'Một connection thứ hai từ pool trong lúc transaction ngoài còn mở', 'Thêm một thread mới', 'Thêm một database'], answer: 1, explain: `REQUIRES_NEW giữ connection của outer (suspend) rồi lấy thêm một connection cho transaction mới. Nó không tạo thread mới và không thêm database; chính connection thứ hai này là nguyên nhân cạn pool khi dùng trong vòng lặp.` },
+    { q: 'Inner REQUIRED ném RuntimeException rồi outer bắt và nuốt. Kết quả?', options: ['Commit bình thường vì outer không thấy lỗi', 'Transaction bị đánh dấu rollback-only, outer rollback và ném UnexpectedRollbackException lúc kết thúc', 'Chỉ inner rollback, outer commit', 'Không ảnh hưởng gì'], answer: 1, explain: `Interceptor của inner đánh dấu transaction là rollback-only; bắt exception không gỡ cờ. Khi outer cố commit, Spring phát hiện cờ và rollback toàn bộ, ném UnexpectedRollbackException. Muốn tránh, đừng nuốt exception hoặc dùng REQUIRES_NEW cho inner.` },
+    { q: 'NESTED chỉ hoạt động khi nào?', options: ['Luôn hoạt động trên mọi DB', 'Khi transaction manager/DB hỗ trợ savepoint (JDBC; trên JPA thường hạn chế)', 'Chỉ với REQUIRES_NEW', 'Chỉ khi không có transaction ngoài'], answer: 1, explain: `NESTED dựa trên savepoint; JDBC hỗ trợ, nhưng JPA/Hibernate hỗ trợ hạn chế và nhiều cấu hình không tạo savepoint thật. Nó không phải REQUIRES_NEW, và khi chưa có transaction ngoài thì NESTED chạy như REQUIRED.` }
+  ],
+  related: ['spring-005', 'spring-003'], tags: ['Transactional', 'propagation', 'REQUIRES_NEW', 'NESTED', 'savepoint']
+},
 );
