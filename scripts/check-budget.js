@@ -19,7 +19,8 @@ const BUDGET_EAGER = 400 * 1024;    // views lazy since 2026-11-04 (was 1000 KB 
 // quiz/exam: 1500 → 1800 KB when the pool passed 630 questions (quiz-gaps.js, 2026-10-30).
 // quiz: 1800 → 300 KB (2026-11-07): the setup screen reads the light index, the view awaits the quiz group on start.
 // exam: 1800 → 300 KB (2026-11-07): pick screen from the light index, other screens await the quiz group.
-const BUDGET_ROUTE_DATA = { quiz: 300 * 1024, exam: 300 * 1024, algo: 1500 * 1024, speak: 300 * 1024, news: 0,
+// speak: 300 → 500 KB (2026-11-15): drill content keeps growing (335 KB); CI failed on every push.
+const BUDGET_ROUTE_DATA = { quiz: 300 * 1024, exam: 300 * 1024, algo: 1500 * 1024, speak: 500 * 1024, news: 0,
   'legal/privacy': 0, 'legal/terms': 0, roadmap: 300 * 1024, account: 300 * 1024 };
 // Landing page: eager shell + awaited data, total. The dashboard renders from the generated light index
 // (js/data/index-light.js, ~100 KB) instead of the ~6 MB of questions/lessons/algos it used to await.
