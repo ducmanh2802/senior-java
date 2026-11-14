@@ -2555,6 +2555,742 @@ Câu {{WHERE contract_ref::bigint = $1}} thì dùng được index này vì bi�
     'Lưu ý IMMUTABLE và không tạo expression index tùy tiện',
   ],
   tags: ['postgresql', 'index', 'implicit-cast', 'sargable', 'expression-index'],
+},
+{
+  id: 'lab-sql-019',
+  category: 'sql',
+  title: 'API danh sách đơn hàng chậm 4 giây vì N+1 query (1 + 200 câu)',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Nền tảng thương mại B2B **OrderHub** chạy {{order-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6, HikariCP 20 connection, {{spring.jpa.open-in-view=true}} mặc định). Màn hình "Danh sách đơn hàng" của khách lẻ gọi {{GET /api/v1/orders?page=0&size=50}} để hiển thị 50 đơn gần nhất. Mỗi đơn (bảng {{orders}}) có trung bình 4 dòng hàng (bảng {{order_items}}); API cần trả về tổng số lượng và tên sản phẩm cho từng đơn.
+
+**Triệu chứng (15/03/2026, 10:15).** p95 của endpoint nhảy từ 320 ms lên **4.120 ms** (hơn 4 giây), Tomcat 200 thread cạn dần, gateway trả 504 cho ~6% request. Điểm lạ: **không có câu SQL nào chậm** — câu nào cũng dưới 25 ms — nhưng {{pg_stat_statements}} cho thấy số lượng câu truy vấn tăng vọt và CPU RDS tăng từ 22% lên 74%.
+
+**Điều đã thử, không ăn.** Tăng pool Hikari từ 20 lên 40 (tệ hơn vì thêm tranh chấp ở DB), bật cache tầng ứng dụng cho tên sản phẩm (chỉ giảm vài câu), tăng timeout gateway (che triệu chứng).
+
+**Việc bạn có.** Ba artifact: log SQL Hibernate khi gọi endpoint một lần, số liệu {{pg_stat_statements}} trong 5 phút cao điểm (đã reset lúc 10:10), và đoạn mã mapping/truy vấn hiện tại. Hãy tìm nguyên nhân gốc và đề xuất cách sửa cụ thể (JOIN FETCH, EntityGraph, batch size, DTO projection) kèm đánh đổi.`,
+  artifacts: [
+    {
+      name: 'app-hibernate-sql.log',
+      lang: 'text',
+      content: `2026-03-15 10:15:12.041 INFO  [http-nio-8080-exec-17] c.o.order.OrderController  : GET /api/v1/orders?page=0&size=50 by customerId=88412
+2026-03-15 10:15:12.048 DEBUG [http-nio-8080-exec-17] org.hibernate.SQL :
+    select o1_0.id,o1_0.created_at,o1_0.customer_id,o1_0.status,o1_0.total_amount
+    from orders o1_0
+    where o1_0.customer_id=?
+    order by o1_0.created_at desc
+    limit ?
+-- (1) 1 câu lấy 50 đơn: trả về 50 dòng, 12 ms
+
+2026-03-15 10:15:12.064 DEBUG [http-nio-8080-exec-17] org.hibernate.SQL :
+    select i1_0.order_id,i1_0.id,i1_0.product_id,i1_0.product_name,i1_0.quantity,i1_0.unit_price
+    from order_items i1_0
+    where i1_0.order_id=?
+-- (2) câu lặp lại cho đơn #1001, trả về 4 dòng, 8 ms
+2026-03-15 10:15:12.076 DEBUG [http-nio-8080-exec-17] org.hibernate.SQL :
+    select i1_0.order_id,i1_0.id,i1_0.product_id,i1_0.product_name,i1_0.quantity,i1_0.unit_price
+    from order_items i1_0
+    where i1_0.order_id=?
+-- (3) câu lặp lại cho đơn #1002, trả về 3 dòng, 7 ms
+2026-03-15 10:15:12.087 DEBUG [http-nio-8080-exec-17] org.hibernate.SQL :
+    select i1_0.order_id,i1_0.id,i1_0.product_id,i1_0.product_name,i1_0.quantity,i1_0.unit_price
+    from order_items i1_0
+    where i1_0.order_id=?
+-- ... (mẫu lặp lại cho từng đơn, từ #1003 đến #1049, mỗi lần chỉ khác tham số order_id)
+2026-03-15 10:15:16.118 DEBUG [http-nio-8080-exec-17] org.hibernate.SQL :
+    select i1_0.order_id,i1_0.id,i1_0.product_id,i1_0.product_name,i1_0.quantity,i1_0.unit_price
+    from order_items i1_0
+    where i1_0.order_id=?
+-- (201) câu lặp lại cho đơn #1050 (đơn thứ 50), trả về 5 dòng, 9 ms
+
+2026-03-15 10:15:16.162 INFO  [http-nio-8080-exec-17] c.o.order.OrderController  : GET /api/v1/orders -> 200 in 4121 ms (201 statements, 50 orders)
+-- Tổng: 1 (orders) + 50 (order_items, mỗi đơn 1 câu) = 201 câu SQL cho 1 request`,
+    },
+    {
+      name: 'pg-stat-statements.txt',
+      lang: 'text',
+      content: `-- 2026-03-15 10:15:00 +07, RDS orderhub-primary (PostgreSQL 15.6)
+-- pg_stat_statements_reset() đã chạy lúc 10:10:00
+orderhub=# SELECT queryid, calls,
+       round(total_exec_time::numeric, 1) AS total_ms,
+       round(mean_exec_time::numeric, 3)  AS mean_ms,
+       rows
+FROM pg_stat_statements
+WHERE query NOT LIKE '%pg_stat_statements%'
+ORDER BY calls DESC
+LIMIT 3;
+
+       queryid       |  calls  | total_ms  | mean_ms |  rows
+---------------------+---------+-----------+---------+---------
+  55219834400112233  |  300000 | 2100450.6 |   7.002 | 1200000
+  44108723399001122  |    6000 |   74400.8 |  12.400 |  300000
+  99887766554433221  |     840 |   15120.0 |  18.000 |    8400
+(3 rows)
+
+-- Giải mã queryid (rút gọn từ pg_stat_statements.query):
+-- 55219834400112233: select i1_0.order_id,i1_0.id,... from order_items i1_0 where i1_0.order_id=$1
+-- 44108723399001122: select o1_0.id,... from orders o1_0 where o1_0.customer_id=$1 order by o1_0.created_at desc limit $2
+-- 6000 request * 50 đơn = 300000 lần gọi order_items. Mỗi câu ~7 ms, tổng 300000 câu = 2100 giây CPU tích lũy trong 5 phút.`,
+    },
+    {
+      name: 'entity-mapping.txt',
+      lang: 'text',
+      content: `// Order.java (rút gọn)
+@Entity
+@Table(name = "orders")
+public class Order {
+    @Id @GeneratedValue
+    private Long id;
+
+    @Column(name = "customer_id")
+    private Long customerId;
+
+    // Mặc định @OneToMany là LAZY; không có fetch join hay EntityGraph
+    @OneToMany(mappedBy = "order", fetch = FetchType.LAZY)
+    private List<OrderItem> items = new ArrayList<>();
+    // getter/setter ...
+}
+
+// OrderItem.java (rút gọn)
+@Entity
+@Table(name = "order_items")
+public class OrderItem {
+    @Id @GeneratedValue
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "order_id")
+    private Order order;
+
+    private Long productId;
+    private String productName;
+    private int quantity;
+    private BigDecimal unitPrice;
+}
+
+// OrderRepository.java
+public interface OrderRepository extends JpaRepository<Order, Long> {
+    Page<Order> findByCustomerIdOrderByCreatedAtDesc(Long customerId, Pageable pageable);
+}
+
+// OrderService.java (rút gọn)
+@Transactional(readOnly = true)
+public Page<OrderDto> listOrders(Long customerId, int page, int size) {
+    Page<Order> orders = orderRepository.findByCustomerIdOrderByCreatedAtDesc(
+        customerId, PageRequest.of(page, size));
+    // Truy cập order.getItems() -> kích hoạt lazy load cho từng đơn
+    return orders.map(o -> new OrderDto(
+        o.getId(), o.getStatus(),
+        o.getItems().stream().mapToInt(OrderItem::getQuantity).sum(),
+        o.getItems().stream().map(OrderItem::getProductName).toList()
+    ));
+}`,
+    },
+  ],
+  questions: [
+    'Nguyên nhân gốc là gì? Giải thích cơ chế N+1 query (1 câu lấy danh sách + N câu lấy con) và vì sao gọi là "N+1".',
+    'Dẫn chứng từ artifact: chỉ ra số câu SQL cho 1 request, queryid nào có calls cao nhất, và vì sao không câu nào chậm nhưng tổng thời gian vẫn ~4 giây.',
+    'Bạn sửa thế nào trong ngắn hạn và dài hạn? So sánh JOIN FETCH, @EntityGraph, @BatchSize và DTO projection; nêu khi nào chọn cách nào và rủi ro (nhân bản dòng/Cartesian product, phân trang trong bộ nhớ, giới hạn IN).',
+  ],
+  hints: [
+    'Đếm trong log Hibernate: 1 câu select orders + 50 câu select order_items (mỗi câu cho một order_id) = 201 câu. Đây là N+1 do truy cập collection LAZY trong vòng lặp.',
+    'Tổng thời gian ≈ thời gian câu gốc + 50 * (độ trễ mạng + parse/plan + thực thi). 50 lần round-trip * ~80 ms ≈ 4 giây dù mỗi câu chỉ 7-12 ms.',
+    'JOIN FETCH gộp thành 1 câu nhưng có thể nhân bản dòng Order và không an toàn với phân trang collection; EntityGraph tương tự; @BatchSize gom N câu thành N/batch câu dùng IN (...); DTO projection chỉ lấy cột cần và tránh load entity graph.',
+  ],
+  answer: `**Tóm tắt:** Endpoint danh sách đơn hàng bị **N+1 query**: Hibernate chạy **1 câu** lấy 50 đơn rồi, khi code truy cập {{order.getItems()}} cho từng đơn, chạy thêm **50 câu** (mỗi câu {{WHERE order_id = ?}}) để nạp {{order_items}} → tổng **201 câu SQL cho 1 request**. Mỗi câu chỉ 7–12 ms nhưng ~50 lần round-trip ứng dụng↔DB cộng dồn thành ~4,1 giây, đồng thời đẩy {{pg_stat_statements}} lên 300.000 calls/5 phút và làm CPU RDS tăng. Sửa ngắn hạn bằng {{@BatchSize}} hoặc {{@EntityGraph/JOIN FETCH}} (chọn theo phân trang); sửa dài hạn bằng **DTO projection** trả đúng dữ liệu hiển thị và giám sát số câu SQL mỗi request.
+
+### N+1 query là gì (giải thích từ gốc)
+**N+1 query** (đọc là "en cộng một") là lỗi hiệu năng hay gặp khi dùng ORM (Object-Relational Mapping - công cụ ánh xạ bảng trong database thành object trong Java, ví dụ Hibernate).
+- Bước 1: ORM chạy **1 câu** để lấy danh sách cha (ví dụ 50 đơn hàng).
+- Bước 2: Khi code duyệt danh sách và truy cập thuộc tính con (ví dụ {{order.getItems()}}), ORM chạy **một câu riêng cho từng phần tử cha** để nạp dữ liệu con (50 câu {{WHERE order_id = ?}}).
+- Tổng cộng: **1 + N câu** (N = số phần tử cha). Tại sao gọi "N+1": vì số câu tăng **tuyến tính** theo số lượng phần tử cha, chứ không hằng số.
+
+### Nguyên nhân gốc, từng bước
+1. Entity {{Order}} có {{@OneToMany(mappedBy = "order", fetch = FetchType.LAZY) private List<OrderItem> items}}. Mặc định @OneToMany là LAZY — Hibernate không nạp items khi load Order.
+2. Repository {{findByCustomerIdOrderByCreatedAtDesc}} chạy 1 câu lấy 50 đơn.
+3. Service {{listOrders}} map sang DTO và truy cập {{o.getItems()}} trong stream: {{o.getItems().stream().mapToInt...}} và {{o.getItems().stream().map...}}.
+4. Mỗi lần truy cập {{getItems()}} trên proxy LAZY, Hibernate chạy câu {{SELECT ... FROM order_items WHERE order_id = ?}}.
+5. 50 đơn → 50 câu SELECT order_items. Log artifact 1 ghi rõ: **201 statements, 50 orders**.
+6. Mỗi câu ~7-12 ms (artifact 1), nhưng 50 lần round-trip + overhead HTTP thread = 4.121 ms tổng thể (artifact 1 dòng cuối).
+7. Artifact 2: queryid order_items có **calls = 300.000** trong 5 phút (6.000 request × 50 đơn), **mean_ms = 7.002**, tổng CPU 2.100 giây. Queryid orders chỉ **6.000 calls**.
+
+### Dẫn chứng
+- Artifact 1: **201 statements, 50 orders** (1 câu orders + 50 câu order_items). Các câu order_items lặp lại với {{WHERE i1_0.order_id=?}} khác nhau.
+- Artifact 2: **calls 300.000 / 5 phút** cho câu order_items (queryid 55219834400112233), mean 7 ms. Câu orders chỉ 6.000 calls. Tỉ lệ calls = 50:1 — đặc trưng N+1.
+- Artifact 3: code {{o.getItems().stream()}} trong {{map}} — lazy load kích hoạt trong vòng lặp. OSIV ({{open-in-view=true}}) giữ session mở cho phép lazy load ở tầng controller.
+
+### Cách sửa
+**Ngắn hạn (hôm nay):**
+1. **@BatchSize(size = 50)** trên trường {{items}} của entity {{Order}} (hoặc trên class {{OrderItem}} cho quan hệ @ManyToOne ngược): Hibernate gom 50 proxy chưa load thành 1 câu {{WHERE order_id IN (...)}}. Từ 201 câu → **2 câu** (1 orders + 1 order_items IN). Cách này ít thay đổi code nhất, giữ entity graph.
+2. **DTO projection** (khuyên dùng): Viết query trực tiếp trả DTO, không load entity {{Order}} và {{OrderItem}}.
+~~~java
+@Query("select new com.orderhub.order.OrderDto(o.id, o.status, " +
+       "  (select sum(oi.quantity) from OrderItem oi where oi.order = o), " +
+       "  (select oi.productName from OrderItem oi where oi.order = o)) " +
+       "from Order o where o.customerId = :customerId order by o.createdAt desc")
+Page<OrderDto> findByCustomerIdDto(Long customerId, Pageable pageable);
+~~~
+→ **1 câu duy nhất**, dùng subquery để gom sum quantity và product names. Không N+1, không load entity, không Cartesian product.
+
+**Dài hạn:**
+- Luôn dùng **DTO projection** cho các API đọc danh sách có quan hệ con.
+- Bật {{spring.jpa.open-in-view=false}} để phát hiện lazy load ngoài transaction (ném {{LazyInitializationException}}).
+- Giám sát: bật {{hibernate.generate_statistics=true}}, alert khi **số câu SQL / request > 5**.
+- Code review: cấm truy cập collection LAZY trong stream/map ngoài @Transactional (hoặc dùng fetch plan tường minh).
+
+### So sánh các phương án
+| Phương án | Số câu SQL | Cartesian product? | An toàn với collection? | Đổi code nhiều? |
+|---|---|---|---|---|
+| JOIN FETCH | 1 | CÓ (nhân Order × OrderItem) | KHÔNG (HHH000104 với phân trang) | Vừa |
+| @EntityGraph | 1 | CÓ | KHÔNG (tương tự JOIN FETCH) | Vừa |
+| @BatchSize(50) | 2 | KHÔNG | CÓ | Ít |
+| DTO projection (subquery) | 1 | KHÔNG | CÓ | Nhiều |
+
+> Senior tip: **JOIN FETCH trên collection @OneToMany là bẫy**: nó nhân bản dòng cha (Cartesian product) và Hibernate 6 vẫn cảnh báo HHH000104 khi dùng với phân trang — planner load tất cả con vào bộ nhớ rồi mới cắt trang. Với API danh sách, **DTO projection với subquery là an toàn nhất**. Nếu không dùng được subquery, @BatchSize là giải pháp "ít code nhất" vẫn đúng ngữ nghĩa. Luôn đo **số câu SQL/request** thay vì đo latency từng câu.
+`,
+  rubric: [
+    'Nhận diện đúng N+1: 1 câu orders + 50 câu order_items = 201 câu cho 1 request',
+    'Dẫn chứng đúng: log 201 statements, pg_stat_statements calls 300.000 vs 6.000 (tỉ lệ 50:1), code o.getItems() trong stream map',
+    'Giải thích rủi ro JOIN FETCH/@EntityGraph: nhân bản dòng Order (Cartesian product), không an toàn với phân trang (HHH000104)',
+    'Đề xuất sửa đúng: @BatchSize (ngắn hạn, 2 câu), DTO projection với subquery (dài hạn, 1 câu, an toàn nhất)',
+    'Có monitoring/guardrail: hibernate.generate_statistics, alert SQL/request > 5, tắt open-in-view, code review fetch plan',
+  ],
+  tags: ['postgresql', 'n-plus-one', 'hibernate', 'lazy-loading', 'batch-size', 'dto-projection'],
+},
+{
+  id: 'lab-sql-020',
+  category: 'sql',
+  title: 'Connection pool cạn vì transaction dài giữ connection trong lúc gọi API ngoài',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Dịch vụ ví điện tử **PayLite** chạy {{payment-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6, HikariCP {{maximumPoolSize=20}}, {{connectionTimeout=3000ms}}). API {{POST /api/v1/payments/checkout}} thực hiện: (1) tạo bản ghi thanh toán, (2) gọi cổng thanh toán bên ngoài (payment gateway - dịch vụ của bên thứ ba, gọi qua HTTP) để trừ tiền, (3) cập nhật trạng thái thanh toán — toàn bộ nằm trong một {{@Transactional}} duy nhất.
+
+**Triệu chứng (15/03/2026, 11:05).** Giờ cao điểm p95 tăng mạnh và gateway trả 504. Log liên tục báo {{HikariPool-1 - Connection is not available, request timed out after 3000ms}} dù DB không quá tải (CPU RDS ~30%). {{pg_stat_activity}} cho thấy nhiều session ở trạng thái **{{idle in transaction}}** giữ connection hàng chục giây ({{wait_event ClientRead}}).
+
+**Điều đã thử, không ăn.** Tăng {{maximumPoolSize}} từ 20 lên 40 (tạm đỡ nhưng vài phút sau lại cạn, tăng áp lực {{max_connections}}), tăng {{connectionTimeout}} (chỉ làm request chờ lâu hơn).
+
+**Việc bạn có.** Ba artifact: log HikariCP + stack trace, ảnh chụp {{pg_stat_activity}}, và đoạn mã Java hiện tại. Hãy tìm nguyên nhân gốc, giải thích vì sao connection bị "treo" dù không chạy SQL, và đề xuất cách sửa (tách transaction, {{idle_in_transaction_session_timeout}}).`,
+  artifacts: [
+    {
+      name: 'hikaricp-error.log',
+      lang: 'text',
+      content: `2026-03-15 11:05:18.442 WARN  [http-nio-8080-exec-31] com.zaxxer.hikari.pool.HikariPool :
+    HikariPool-1 - Connection is not available, request timed out after 3000ms.
+    (total=20, active=20, idle=0, waiting=37)
+
+2026-03-15 11:05:18.443 ERROR [http-nio-8080-exec-31] c.p.payment.PaymentController :
+    Failed to acquire JDBC Connection; nested exception is java.sql.SQLTransientConnectionException:
+    HikariPool-1 - Connection is not available, request timed out after 3000ms.
+        at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:197)
+        at org.springframework.jdbc.datasource.DataSourceUtils.fetchConnection(DataSourceUtils.java:160)
+        at org.springframework.orm.jpa.JpaTransactionManager.doBegin(JpaTransactionManager.java:466)
+        at c.p.payment.PaymentService.checkout(PaymentService.java:54)
+
+2026-03-15 11:05:19.221 INFO  [HikariPool-1 housekeeper] com.zaxxer.hikari.pool.HikariPool :
+    Pool stats (total=20, active=20, idle=0, waiting=45)
+-- Lặp lại 11:05:00-11:08:00. total=20, active=20 = 20 connection đều đang bị "mượn", idle=0, waiting tăng.`,
+    },
+    {
+      name: 'pg-stat-activity.txt',
+      lang: 'text',
+      content: `-- 2026-03-15 11:06:10 +07, RDS paylite-primary (PostgreSQL 15.6)
+paylite=# SELECT pid, usename, application_name, state,
+       now() - xact_start AS xact_age,
+       now() - state_change AS idle_age,
+       wait_event_type, wait_event,
+       left(query, 80) AS last_query
+FROM pg_stat_activity
+WHERE datname = 'paylite'
+ORDER BY xact_start NULLS LAST;
+
+  pid  | usename | application_name |        state        |  xact_age   |  idle_age   | wait_event_type |  wait_event   |                               last_query
+-------+---------+------------------+---------------------+-------------+-------------+-----------------+---------------+------------------------------------------------------------------------
+ 18421 | payapp  | payment-service  | idle in transaction | 00:00:47.812| 00:00:45.103| Client          | ClientRead    | update payments set status=$1, updated_at=now() where id=$2
+ 18422 | payapp  | payment-service  | idle in transaction | 00:00:39.441| 00:00:37.220| Client          | ClientRead    | insert into payments (id, user_id, amount, status) values ($1,$2,$3,$4)
+ 18423 | payapp  | payment-service  | idle in transaction | 00:00:31.008| 00:00:28.774| Client          | ClientRead    | update payments set status=$1, updated_at=now() where id=$2
+ 18424 | payapp  | payment-service  | idle in transaction | 00:00:22.655| 00:00:20.401| Client          | ClientRead    | insert into payments (id, user_id, amount, status) values ($1,$2,$3,$4)
+ 18425 | payapp  | payment-service  | idle in transaction | 00:00:18.112| 00:00:15.900| Client          | ClientRead    | update payments set status=$1, updated_at=now() where id=$2
+ 18426 | payapp  | payment-service  | active              | 00:00:00.014| 00:00:00.000|                 |               | select ... from payments where id=$1
+ 18427 | payapp  | payment-service  | idle                |             | 00:00:00.220| Client          | ClientRead    | <insufficient privilege>
+-- (tổng 20 session của payment-service: 17 "idle in transaction", 2 "active", 1 "idle")
+-- "idle in transaction": session đã BEGIN, chạy xong câu SQL cuối nhưng CHƯA COMMIT/ROLLBACK
+--   và đang chờ client. wait_event ClientRead = DB chờ ứng dụng, không phải ứng dụng chờ DB.
+
+paylite=# SHOW idle_in_transaction_session_timeout;
+ idle_in_transaction_session_timeout
+-------------------------------------
+ 0
+(1 row)
+-- 0 = tắt: PostgreSQL không tự ngắt session "idle in transaction" dù giữ bao lâu.`,
+    },
+    {
+      name: 'PaymentService.java',
+      lang: 'text',
+      content: `@Service
+public class PaymentService {
+    private final PaymentRepository paymentRepository;
+    private final PaymentGatewayClient gatewayClient; // HTTP client gọi cổng thanh toán ngoài
+
+    public PaymentService(PaymentRepository paymentRepository,
+                          PaymentGatewayClient gatewayClient) {
+        this.paymentRepository = paymentRepository;
+        this.gatewayClient = gatewayClient;
+    }
+
+    @Transactional // (1) Mở transaction DB và GIỮ 1 connection từ HikariCP cho đến khi method kết thúc
+    public PaymentResult checkout(CheckoutCommand cmd) {
+        // (2) Ghi DB: INSERT payment (status=PENDING) -> nhanh (~10 ms)
+        Payment payment = new Payment(cmd.getUserId(), cmd.getAmount(), PaymentStatus.PENDING);
+        paymentRepository.save(payment);
+
+        // (3) Gọi API ngoài (payment gateway) để trừ tiền thật
+        //    - Bình thường 300-800 ms, khi gateway chậm/lỗi có thể 30-60 giây (HTTP timeout 60s)
+        //    - Trong suốt thời gian này: KHÔNG có SQL nào chạy, NHƯNG connection DB và transaction vẫn mở
+        GatewayResponse gw = gatewayClient.charge(cmd.getUserId(), cmd.getAmount(), payment.getId());
+
+        // (4) Ghi DB: UPDATE payment status -> nhanh (~5 ms)
+        if (gw.isSuccess()) {
+            payment.setStatus(PaymentStatus.SUCCESS);
+        } else {
+            payment.setStatus(PaymentStatus.FAILED);
+        }
+        paymentRepository.save(payment);
+
+        return PaymentResult.from(payment);
+        // (5) Method kết thúc -> Spring commit transaction -> connection trả về HikariCP
+    }
+}`,
+    },
+  ],
+  questions: [
+    'Nguyên nhân gốc khiến connection pool cạn là gì? Giải thích mối liên hệ giữa {{@Transactional}}, việc giữ connection, và trạng thái {{idle in transaction}} trong {{pg_stat_activity}}.',
+    'Dẫn chứng từ artifact: chỉ ra pool đã cạn (total/active/idle/waiting), các session {{idle in transaction}} (xact_age, wait_event ClientRead), và đoạn code nào giữ transaction trong lúc chờ API ngoài.',
+    'Bạn sửa thế nào để không giữ connection DB khi gọi API ngoài? Trình bày cách tách transaction, xử lý nhất quán dữ liệu (idempotency, đối soát/bù trừ), và các giới hạn an toàn ({{idle_in_transaction_session_timeout}}).',
+  ],
+  hints: [
+    'Trong Spring, {{@Transactional}} giữ một connection JDBC suốt phạm vi method (từ BEGIN đến COMMIT/ROLLBACK). Gọi HTTP ra ngoài 30 giây trong method nghĩa là connection bị "ngồi chờ" 30 giây mà không chạy SQL.',
+    '{{idle in transaction}} + {{wait_event ClientRead}} nghĩa là PostgreSQL đã xong câu SQL cuối và đang chờ client gửi lệnh tiếp/COMMIT — DB rảnh nhưng connection bị chiếm. {{idle_in_transaction_session_timeout = 0}} nên DB không tự cắt.',
+'Tách thành: (a) transaction ngắn 1 ghi payment=PENDING rồi commit, (b) gọi gateway bên ngoài transaction, (c) transaction ngắn 2 cập nhật trạng thái. Cần idempotency key',
+  ],
+  answer: `**Tóm tắt:** Endpoint checkout bị **connection pool cạn** vì toàn bộ logic (ghi DB → gọi payment gateway HTTP 30-60 giây → ghi DB) nằm trong **một @Transactional duy nhất**. Spring giữ 1 connection HikariCP suốt 18-60 giây mà không chạy SQL, chỉ chờ HTTP. {{pg_stat_activity}} cho thấy 17 session ở **idle in transaction** với {{xact_age}} hàng chục giây, {{wait_event ClientRead}} = DB chờ ứng dụng. CPU RDS ~30% (DB rảnh), pool 20 connection toàn bộ bị chiếm. Sửa: tách thành 2 transaction ngắn (trước/sau gọi HTTP) + idempotency key, đặt {{idle_in_transaction_session_timeout}}.
+
+### Nguyên nhân gốc, từng bước
+1. Method {{checkout}} có {{@Transactional}}: Spring mở transaction (BEGIN) và lấy 1 connection từ HikariCP khi method bắt đầu.
+2. Dòng 2-3: {{paymentRepository.save(payment)}} INSERT payment status=PENDING (~10 ms).
+3. Dòng 4-5: {{gatewayClient.charge(...)}} gọi HTTP ra payment gateway — **30-60 giây** (timeout 60s, có retry). Trong suốt thời gian này: **KHÔNG có SQL nào chạy**, NHƯNG connection DB và transaction vẫn mở.
+4. Dòng 6-7: {{paymentRepository.save(payment)}} UPDATE payment status (~5 ms).
+5. Method kết thúc → Spring commit transaction → connection trả về HikariCP. Nhưng method chạy 30-60 giây → connection bị chiếm 30-60 giây!
+6. Giờ cao điểm: 20 request/giây × 30 giây = 600 connection cần thiết, pool chỉ 20 → **pool cạn**, waiting queue tăng, timeout 3 giây → 504.
+
+### Dẫn chứng
+- Artifact 1 (HikariCP log): **total=20, active=20, idle=0, waiting=37** lúc 11:05:18. Pool cạn liên tục 11:05-11:08. **total=20, active=20** = 20 connection đều đang bị "mượn".
+- Artifact 2 (pg_stat_activity): 17 session **idle in transaction** với **xact_age** 18-47 giây, **wait_event = ClientRead** — DB đã xong câu SQL cuối, chờ client gửi lệnh tiếp/COMMIT. **wait_event_type = Client** nghĩa là DB chờ ứng dụng, không phải ứng dụng chờ DB.
+- Artifact 3 (code): {{@Transactional}} trên method {{checkout}}. Dòng {{gatewayClient.charge(...)}} nằm giữa 2 câu save. Toàn bộ 30-60 giây trong 1 transaction.
+- {{idle_in_transaction_session_timeout = 0}} (artifact 2 cuối) → PostgreSQL không tự ngắt session idle in transaction.
+
+### Cách sửa
+**Ngắn hạn (hôm nay):**
+1. **Tách transaction:** (a) Transaction 1: INSERT payment=PENDING → commit. (b) Gọi gateway HTTP (ngoài transaction). (c) Transaction 2: UPDATE payment status theo kết quả → commit. Cần **idempotency key** (paymentId) để retry an toàn.
+2. **Đặt {{idle_in_transaction_session_timeout}}** cho role ứng dụng: {{ALTER ROLE payapp SET idle_in_transaction_session_timeout = '30s';}} → session idle in transaction > 30s bị kill tự động, giải phóng connection.
+
+**Dài hạn:**
+3. **Circuit breaker + timeout ngắn** cho HTTP client (Resilience4j): fail nhanh thay vì chờ 60 giây.
+4. **Tách pool** cho batch/service gọi HTTP chậm, không chia sẻ pool với API nhanh.
+5. **Outbox pattern / Saga** nếu cần nhất quán chặt: ghi event vào bảng outbox trong transaction 1, consumer riêng xử lý gọi gateway + cập nhật trạng thái.
+
+### Lỗi hay gặp
+- Tăng {{maximumPoolSize}}: job vẫn chiếm 1 connection 30-60 giây, pool 40 cũng cạn khi tải cao, chỉ làm tăng áp lực {{max_connections}}.
+- Tăng {{connectionTimeout}}: chỉ làm request chờ lâu hơn, không giải phóng connection.
+- Giữ @Transactional bao trọn HTTP call: anti-pattern số 1 gây cạn pool.
+
+### Trả lời miệng 1 phút
+"Endpoint checkout có @Transactional bao trọn: INSERT payment → gọi payment gateway HTTP 30-60 giây → UPDATE payment. Toàn bộ 30-60 giây connection bị chiếm mà không chạy SQL. pg_stat_activity thấy 17 session idle in transaction, xact_age 18-47 giây, wait_event ClientRead. Pool 20 connection cạn, waiting 37, 504. Sửa: tách 2 transaction ngắn (trước/sau HTTP) + idempotency key, đặt idle_in_transaction_session_timeout = 30s, circuit breaker cho HTTP client."
+
+> Senior tip: **Transaction chỉ nên chứa SQL**. Mọi lời gọi HTTP, message broker, file I/O, sleep đều phải nằm NGOÀI transaction. Đây là anti-pattern số 1 khiến connection pool cạn mà DB rảnh (CPU thấp). Luôn đặt idle_in_transaction_session_timeout — nó biến một bug "quên commit" chạy 60 giây thành sự cố tự giải quyết sau 30 giây.
+`,
+  rubric: [
+    'Chính xác nguyên nhân: @Transactional bao trọn HTTP call payment gateway 30-60 giây, connection bị chiếm không chạy SQL, pool 20 connection cạn',
+    'Dẫn chứng đúng: HikariCP total=20/active=20/idle=0/waiting=37, pg_stat_activity 17 session idle in transaction xact_age 18-47 giây wait_event ClientRead, code gatewayClient.charge() giữa 2 save',
+    'Giải thích đúng idle in transaction + ClientRead = DB chờ ứng dụng (HTTP call), không phải ứng dụng chờ DB',
+    'Đề xuất sửa đầy đủ: tách 2 transaction + idempotency key, idle_in_transaction_session_timeout, circuit breaker, tách pool, outbox/Saga',
+    'Phân biệt rõ: tăng pool size/connectionTimeout chỉ trì hoãn, không giải quyết gốc; anti-pattern @Transactional bao HTTP call',
+  ],
+  tags: ['postgresql', 'connection-pool', 'transaction', 'idle-in-transaction', 'http-client', 'circuit-breaker', 'idempotency'],
+},
+{
+  id: 'lab-sql-021',
+  category: 'sql',
+  title: 'Danh sách sản phẩm chậm 3,5 giây vì N+1 nạp đánh giá (review) cho từng sản phẩm',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn thương mại điện tử **ShopEasy** chạy {{product-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6, HikariCP 25 connection, {{spring.jpa.open-in-view=true}} mặc định). Màn hình trang chủ hiển thị 20 sản phẩm nổi bật gọi {{GET /api/v1/products/featured?limit=20}}. Mỗi sản phẩm (bảng {{products}}) có trung bình 15 đánh giá (bảng {{reviews}}); API cần trả về số sao trung bình và 3 đánh giá mới nhất cho mỗi sản phẩm.
+  **Triệu chứng (16/03/2026, 14:20).** p95 của endpoint nhảy từ 280 ms lên **3.520 ms**, Tomcat 200 thread cạn dần, gateway trả 504 cho ~5% request. Đặc điểm: **không câu SQL nào chậm** — câu nào cũng dưới 15 ms — nhưng {{pg_stat_statements}} cho thấy số lượng câu truy vấn tăng vọt và CPU RDS tăng từ 25% lên 68%.
+  **Điều đã thử, không ăn.** Tăng pool Hikari từ 25 lên 50 (tệ hơn, thêm tranh chấp), bật cache tầng ứng dụng cho số sao trung bình (chỉ giảm vài câu), tăng timeout gateway (che triệu chứng).
+  **Việc bạn có.** Ba artifact: log SQL Hibernate khi gọi endpoint một lần, số liệu {{pg_stat_statements}} trong 5 phút cao điểm (đã reset lúc 14:15), và đoạn mã mapping/truy vấn hiện tại. Hãy tìm nguyên nhân gốc và đề xuất cách sửa cụ thể (JOIN FETCH, EntityGraph, batch size, DTO projection) kèm đánh đổi.`,
+  artifacts: [
+    {
+      name: 'app-hibernate-sql.log',
+      lang: 'text',
+      content: `2026-03-16 14:20:15.041 INFO  [http-nio-8080-exec-9] c.s.product.ProductController : GET /api/v1/products/featured?limit=20
+2026-03-16 14:20:15.048 DEBUG [http-nio-8080-exec-9] org.hibernate.SQL :
+    select p1_0.id,p1_0.name,p1_0.price,p1_0.category_id,p1_0.created_at
+    from products p1_0
+    where p1_0.featured = true
+    order by p1_0.created_at desc
+    limit ?
+-- (1) 1 câu lấy 20 sản phẩm nổi bật: trả về 20 dòng, 8 ms
+
+2026-03-16 14:20:15.062 DEBUG [http-nio-8080-exec-9] org.hibernate.SQL :
+    select r1_0.id,r1_0.product_id,r1_0.user_id,r1_0.rating,r1_0.comment,r1_0.created_at
+    from reviews r1_0
+    where r1_0.product_id=?
+    order by r1_0.created_at desc
+    limit ?
+-- (2) câu lặp lại cho sản phẩm #5001, trả về 3 dòng, 6 ms
+2026-03-16 14:20:15.071 DEBUG [http-nio-8080-exec-9] org.hibernate.SQL :
+    select r1_0.id,r1_0.product_id,r1_0.user_id,r1_0.rating,r1_0.comment,r1_0.created_at
+    from reviews r1_0
+    where r1_0.product_id=?
+    order by r1_0.created_at desc
+    limit ?
+-- (3) câu lặp lại cho sản phẩm #5002, trả về 3 dòng, 5 ms
+-- ... (mẫu lặp lại cho từng sản phẩm, từ #5003 đến #5019, mỗi lần chỉ khác tham số product_id)
+2026-03-16 14:20:18.542 DEBUG [http-nio-8080-exec-9] org.hibernate.SQL :
+    select r1_0.id,r1_0.product_id,r1_0.user_id,r1_0.rating,r1_0.comment,r1_0.created_at
+    from reviews r1_0
+    where r1_0.product_id=?
+    order by r1_0.created_at desc
+    limit ?
+-- (21) câu lặp lại cho sản phẩm #5020 (sản phẩm thứ 20), trả về 3 dòng, 7 ms
+
+2026-03-16 14:20:18.572 INFO  [http-nio-8080-exec-9] c.s.product.ProductController : GET /api/v1/products/featured -> 200 in 3531 ms (21 statements, 20 products)
+-- Tổng: 1 (products) + 20 (reviews, mỗi sản phẩm 1 câu) = 21 câu SQL cho 1 request`,
+    },
+    {
+      name: 'pg-stat-statements.txt',
+      lang: 'text',
+      content: `-- 2026-03-16 14:20:00 +07, RDS shopeasy-primary (PostgreSQL 15.6)
+-- pg_stat_statements_reset() đã chạy lúc 14:15:00
+shopeasy=# SELECT queryid, calls,
+       round(total_exec_time::numeric, 1) AS total_ms,
+       round(mean_exec_time::numeric, 3)  AS mean_ms,
+       rows
+FROM pg_stat_statements
+WHERE query NOT LIKE '%pg_stat_statements%'
+ORDER BY calls DESC
+LIMIT 3;
+
+       queryid       |  calls  | total_ms  | mean_ms |  rows
+---------------------+---------+-----------+---------+--------
+  771122334455667788  |  180000 | 1260450.8 |   7.002 | 540000
+  882233445566778899  |   9000  |   72450.5 |   8.050 | 180000
+  993344556677889900  |   9000  |   16200.0 |   1.800 | 180000
+(3 rows)
+
+-- Giải mã queryid (rút gọn từ pg_stat_statements.query):
+-- 771122334455667788: select r1_0.id,r1_0.product_id,... from reviews r1_0 where r1_0.product_id=$1 order by r1_0.created_at desc limit $2
+-- 882233445566778899: select p1_0.id,p1_0.name,... from products p1_0 where p1_0.featured = true order by p1_0.created_at desc limit $1
+-- 9000 request * 20 sản phẩm = 180.000 lần gọi reviews. Mỗi câu ~7 ms, tổng 180.000 câu = 1.260 giây CPU tích lũy trong 5 phút.`,
+    },
+    {
+      name: 'entity-mapping.txt',
+      lang: 'text',
+      content: `// Product.java (rút gọn)
+@Entity
+@Table(name = "products")
+public class Product {
+    @Id @GeneratedValue
+    private Long id;
+
+    private String name;
+    private BigDecimal price;
+    private boolean featured;
+
+    @OneToMany(mappedBy = "product", fetch = FetchType.LAZY)
+    @OrderBy("createdAt DESC")
+    private List<Review> reviews = new ArrayList<>();
+    // getter/setter ...
+}
+
+// Review.java (rút gọn)
+@Entity
+@Table(name = "reviews")
+public class Review {
+    @Id @GeneratedValue
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "product_id")
+    private Product product;
+
+    private Long userId;
+    private Integer rating;
+    private String comment;
+}
+
+// ProductRepository.java
+public interface ProductRepository extends JpaRepository<Product, Long> {
+    Page<Product> findByFeaturedTrueOrderByCreatedAtDesc(Pageable pageable);
+}
+
+// ProductService.java (rút gọn)
+@Transactional(readOnly = true)
+public Page<ProductDto> listFeatured(int limit) {
+    Page<Product> products = productRepository.findByFeaturedTrueOrderByCreatedAtDesc(
+        PageRequest.of(0, limit));
+    // Truy cập product.getReviews() -> kích hoạt lazy load cho từng sản phẩm
+    return products.map(p -> new ProductDto(
+        p.getId(), p.getName(), p.getPrice(),
+        p.getReviews().stream().limit(3).map(Review::getRating).toList(),
+        p.getReviews().stream().mapToInt(Review::getRating).average().orElse(0.0)
+    ));
+}`,
+    },
+  ],
+  questions: [
+    'Nguyên nhân gốc là gì? Giải thích cơ chế N+1 query (1 câu lấy danh sách + N câu lấy con) và vì sao gọi là "N+1" (so sánh với lab-sql-019 về orders/order_items).',
+    'Dẫn chứng từ artifact: chỉ ra số câu SQL cho 1 request, queryid nào có calls cao nhất, và vì sao không câu nào chậm nhưng tổng thời gian vẫn ~3,5 giây.',
+    'Bạn sửa thế nào trong ngắn hạn và dài hạn? So sánh JOIN FETCH, @EntityGraph, @BatchSize và DTO projection; nêu khi nào chọn cách nào và rủi ro (nhân bản dòng/Cartesian product, giới hạn IN, phân trang trong bộ nhớ khi fetch collection).',
+  ],
+  hints: [
+    'Đếm trong log Hibernate: 1 câu select products + 20 câu select reviews (mỗi câu cho một product_id) = 21 câu. Đây là N+1 do truy cập collection LAZY trong vòng lặp map.',
+    'Tổng thời gian ≈ thời gian câu gốc + N * (độ trễ mạng + parse/plan + thực thi). 20 lần round-trip * ~175 ms ≈ 3,5 giây dù mỗi câu chỉ 5-7 ms (lưu ý: LIMIT 3 trong câu reviews nhưng vẫn phải tìm 3 dòng mới nhất).',
+    'JOIN FETCH gộp thành 1 câu nhưng có thể nhân bản dòng Product (Cartesian product) và KHÔNG an toàn với phân trang collection (Hibernate cảnh báo HHH000104, load tất cả vào bộ nhớ rồi mới cắt trang); @EntityGraph tương tự; @BatchSize(size=20) gom 20 câu thành 1 câu dùng IN (...); DTO projection chỉ lấy cột cần và tránh load entity graph.',
+  ],
+  answer: `**Tóm tắt:** Endpoint danh sách sản phẩm nổi bật bị **N+1 query**: Hibernate chạy **1 câu** lấy 20 sản phẩm rồi, khi code truy cập {{product.getReviews()}} cho từng sản phẩm, chạy thêm **20 câu** (mỗi câu {{WHERE product_id = ? ORDER BY created_at DESC LIMIT 3}}) để nạp {{reviews}} → tổng **21 câu SQL cho 1 request**. Mỗi câu chỉ 5–7 ms nhưng ~20 lần round-trip ứng dụng↔DB cộng dồn thành ~3,5 giây, đồng thời đẩy {{pg_stat_statements}} lên 180.000 calls/5 phút và làm CPU RDS tăng. Khác với lab-sql-019 (orders → order_items, collection @OneToMany), đây là products → reviews cũng là @OneToMany nhưng có ORDER BY + LIMIT trong câu con — JOIN FETCH sẽ **nhân bản dòng Product** và phá vỡ LIMIT 3 (load tất cả review rồi mới lọc 3 ở Java). Sửa ngắn hạn bằng {{@BatchSize}} hoặc **DTO projection**; sửa dài hạn bằng DTO projection + giám sát số câu SQL mỗi request.
+### N+1 query là gì (giải thích từ gốc)
+**N+1 query** là lỗi hiệu năng hay gặp khi dùng ORM (Object-Relational Mapping - công cụ ánh xạ bảng trong database thành object trong Java, ví dụ Hibernate).
+- Bước 1: ORM chạy **1 câu** để lấy danh sách cha (ví dụ 20 sản phẩm).
+- Bước 2: Khi code duyệt danh sách và truy cập thuộc tính con (ví dụ {{product.getReviews()}}), ORM chạy **một câu riêng cho từng phần tử cha** để nạp dữ liệu con (20 câu {{WHERE product_id = ?}}).
+- Tổng cộng: **1 + N câu** (N = số phần tử cha). Tại sao gọi "N+1": vì số câu tăng **tuyến tính** theo số lượng phần tử cha, chứ không hằng số.
+### Nguyên nhân gốc, từng bước
+1. Entity {{Product}} có {{@OneToMany(mappedBy = "product", fetch = FetchType.LAZY) private List<Review> reviews}}. Mặc định @OneToMany là LAZY — Hibernate không nạp reviews khi load Product.
+2. Repository {{findByFeaturedTrueOrderByCreatedAtDesc}} chạy 1 câu lấy 20 sản phẩm.
+3. Service {{listFeatured}} map sang DTO và truy cập {{p.getReviews()}} trong stream: {{p.getReviews().stream().limit(3)...}} và {{p.getReviews().stream().mapToInt...}}.
+4. Mỗi lần truy cập {{getReviews()}} trên proxy LAZY, Hibernate chạy câu {{SELECT ... FROM reviews WHERE product_id = ? ORDER BY created_at DESC LIMIT 3}}.
+5. 20 sản phẩm → 20 câu SELECT reviews. Log artifact 1 ghi rõ: **21 statements, 20 products**.
+6. Mỗi câu ~6 ms (artifact 1), nhưng 20 lần round-trip + overhead HTTP thread = 3.531 ms tổng thể (artifact 1 dòng cuối).
+7. Artifact 2: queryid reviews có **calls = 180.000** trong 5 phút (9.000 request × 20 sản phẩm), **mean_ms = 7.002**, tổng CPU 1.260 giây. Queryid products chỉ **9.000 calls**.
+### Dẫn chứng
+- Artifact 1: **21 statements, 20 products** (1 câu products + 20 câu reviews). Các câu reviews lặp lại với {{WHERE r1_0.product_id=?}} khác nhau.
+- Artifact 2: **calls 180.000 / 5 phút** cho câu reviews (queryid 771122334455667788), mean 7 ms. Câu products chỉ 9.000 calls. Tỉ lệ calls = 20:1 — đặc trưng N+1.
+- Artifact 3: code {{p.getReviews().stream()}} trong {{map}} — lazy load kích hoạt trong vòng lặp. OSIV ({{open-in-view=true}}) giữ session mở cho phép lazy load ở tầng controller.
+### Cách sửa
+**Ngắn hạn (hôm nay):**
+1. **@BatchSize(size = 20)** trên trường {{reviews}} của entity {{Product}} (hoặc trên class {{Review}} cho quan hệ @ManyToOne ngược): Hibernate gom 20 proxy chưa load thành 1 câu {{WHERE product_id IN (...)}}. Từ 21 câu → **2 câu** (1 products + 1 reviews IN). Cách này ít thay đổi code nhất, giữ entity graph, nhưng vẫn 2 round-trip.
+2. **DTO projection** (khuyên dùng): Viết query trực tiếp trả DTO, không load entity {{Product}} và {{Review}}.
+~~~java
+@Query("select new com.shopeasy.product.ProductDto(p.id, p.name, p.price, " +
+       "  (select json_agg(json_build_object('rating', r.rating, 'comment', r.comment) " +
+       "   from (select * from reviews r2 where r2.product_id = p.id order by r2.created_at desc limit 3) r) " +
+       ") as recentReviews, " +
+       "  (select avg(r3.rating) from reviews r3 where r3.product_id = p.id) as avgRating) " +
+       "from Product p where p.featured = true order by p.createdAt desc")
+Page<ProductDto> findFeaturedDto(Pageable pageable);
+~~~
+→ **1 câu duy nhất**, dùng subquery + json_agg (PostgreSQL) để gom 3 review mới nhất và avg rating. Không N+1, không load entity, không Cartesian product.
+
+**Dài hạn:**
+- Luôn dùng **DTO projection** cho các API đọc danh sách có quan hệ con.
+- Bật {{spring.jpa.open-in-view=false}} để phát hiện lazy load ngoài transaction (ném {{LazyInitializationException}}).
+- Giám sát: bật {{hibernate.generate_statistics=true}}, alert khi **số câu SQL / request > 5**.
+- Code review: cấm truy cập collection LAZY trong stream/map ngoài @Transactional (hoặc dùng fetch plan tường minh).
+
+### So sánh các phương án
+| Phương án | Số câu SQL | Cartesian product? | An toàn với LIMIT 3 con? | Đổi code nhiều? |
+|---|---|---|---|---|
+| JOIN FETCH | 1 | CÓ (nhân Product × Review) | KHÔNG (load hết review rồi lọc 3 ở Java, HHH000104) | Vừa |
+| @EntityGraph | 1 | CÓ | KHÔNG (tương tự JOIN FETCH) | Vừa |
+| @BatchSize(20) | 2 | KHÔNG | CÓ (giữ ORDER BY LIMIT ở câu IN) | Ít |
+| DTO projection (subquery/json_agg) | 1 | KHÔNG | CÓ (xử lý ở DB) | Nhiều |
+
+> Senior tip: **JOIN FETCH trên collection @OneToMany là bẫy**: nó nhân bản dòng cha (Cartesian product) và Hibernate 6 vẫn cảnh báo HHH000104 khi dùng với phân trang — planner load tất cả con vào bộ nhớ rồi mới cắt trang. Với API danh sách có LIMIT trên con (như "3 review mới nhất"), **DTO projection với subquery/json_agg là an toàn nhất**. Nếu không dùng được JSON, @BatchSize là giải pháp "ít code nhất" vẫn đúng ngữ nghĩa. Luôn đo **số câu SQL/request** thay vì đo latency từng câu.`,
+  rubric: [
+    'Nhận diện đúng N+1: 1 câu products + 20 câu reviews = 21 câu cho 1 request, khác với lab-sql-019 ở chỗ câu con có ORDER BY + LIMIT',
+    'Dẫn chứng đúng: log 21 statements, pg_stat_statements calls 180.000 vs 9.000 (tỉ lệ 20:1), code p.getReviews() trong stream map',
+    'Giải thích rủi ro JOIN FETCH/@EntityGraph: nhân bản dòng Product (Cartesian product), phá vỡ LIMIT 3 con (HHH000104), không an toàn',
+    'Đề xuất sửa đúng: @BatchSize (ngắn hạn, 2 câu, giữ LIMIT), DTO projection với subquery/json_agg (dài hạn, 1 câu, an toàn nhất)',
+    'Có monitoring/guardrail: hibernate.generate_statistics, alert SQL/request > 5, tắt open-in-view, code review fetch plan',
+  ],
+  tags: ['postgresql', 'n-plus-one', 'hibernate', 'lazy-loading', 'batch-size', 'dto-projection', 'json-agg'],
+},
+{
+  id: 'lab-sql-022',
+  category: 'sql',
+  title: 'Connection pool cạn do @Transactional trên @Scheduled job xử lý file lớn',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Hệ thống ngân hàng số **FinCore** chạy {{batch-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6, HikariCP {{maximumPoolSize=15}}). Mỗi ngày lúc 02:00, job {{@Scheduled(cron = "0 0 2 * * ?")}} đọc file CSV đối soát từ đối tác (khoảng **500.000 dòng**, ~50 MB), parse từng dòng, và upsert vào bảng {{reconciliation}} — toàn bộ logic nằm trong một method có annotation {{@Transactional}}.
+  **Triệu chứng (17/03/2026, 02:05).** Từ lúc job bắt đầu, toàn bộ service khác dùng chung pool (API thanh toán, truy vấn số dư) bị lỗi {{HikariPool-1 - Connection is not available, request timed out after 3000ms}}. CPU RDS chỉ **12%** (DB rảnh), nhưng {{pg_stat_activity}} cho thấy **1 session** của batch-service ở trạng thái **{{idle in transaction}}** giữ connection hàng phút ({{xact_age}} tăng đều). Job xử lý xong sau **18 phút**, lúc đó pool mới giải phóng.
+  **Điều đã thử, không ăn.** Tăng {{maximumPoolSize}} từ 15 lên 30 (job vẫn chiếm 1 connection trong 18 phút, các service khác vẫn chờ khi job chạy), tách Hikari pool riêng cho batch (yêu cầu đổi cấu hình, chưa kịp).
+  **Việc bạn có.** Ba artifact: log HikariCP, ảnh chụp {{pg_stat_activity}} lúc 02:05, và đoạn mã Java hiện tại. Hãy tìm nguyên nhân gốc, giải thích vì sao một connection bị "treo" 18 phút dù chỉ chạy INSERT/UPSERT nhanh, và đề xuất cách sửa (tách transaction theo lô, {{idle_in_transaction_session_timeout}}, tách pool).`,
+  artifacts: [
+    {
+      name: 'hikaricp-batch.log',
+      lang: 'text',
+      content: `2026-03-17 02:00:00.112 INFO  [scheduling-1] c.f.batch.ReconciliationJob      : Start daily reconciliation, file=recon_20260316.csv (500000 lines)
+2026-03-17 02:00:00.115 DEBUG [scheduling-1] org.hibernate.SQL :
+    insert into reconciliation (id, batch_id, partner_id, amount, status, created_at) values (?,?,?,?,?,?)
+    on conflict (batch_id, partner_id) do update set amount=excluded.amount, status=excluded.status
+-- (1) Upsert dòng 1, 2 ms
+2026-03-17 02:00:00.120 DEBUG [scheduling-1] org.hibernate.SQL :
+    insert into reconciliation ... on conflict ...
+-- (2) Upsert dòng 2, 1 ms
+-- ... (mẫu lặp lại cho 500.000 dòng, mỗi upsert ~1-2 ms)
+2026-03-17 02:00:05.432 WARN  [http-nio-8080-exec-3] com.zaxxer.hikari.pool.HikariPool :
+    HikariPool-1 - Connection is not available, request timed out after 3000ms.
+    (total=15, active=15, idle=0, waiting=12)
+2026-03-17 02:00:05.433 ERROR [http-nio-8080-exec-3] c.f.payment.PaymentController :
+    Failed to acquire JDBC Connection; nested exception is java.sql.SQLTransientConnectionException:
+    HikariPool-1 - Connection is not available, request timed out after 3000ms.
+2026-03-17 02:00:10.118 WARN  [http-nio-8080-exec-7] com.zaxxer.hikari.pool.HikariPool :
+    HikariPool-1 - Connection is not available, request timed out after 3000ms.
+    (total=15, active=15, idle=0, waiting=28)
+-- Lặp lại 02:00-02:18: pool cạn liên tục, waiting queue tăng. total=15, active=15 = 1 connection bị job chiếm, 14 connection khác bị các thread HTTP chiếm (nhưng các thread HTTP cũng bị chờ vì pool cạn).
+2026-03-17 02:18:03.211 INFO  [scheduling-1] c.f.batch.ReconciliationJob      : Finished daily reconciliation in 1083 seconds (500000 rows)
+2026-03-17 02:18:03.215 DEBUG [scheduling-1] org.hibernate.SQL :
+    commit
+-- Transaction commit sau 18 phút. Pool hồi phục ngay sau đó.`,
+    },
+    {
+      name: 'pg-stat-activity-batch.txt',
+      lang: 'text',
+      content: `-- 2026-03-17 02:05:00 +07, RDS fincore-primary (PostgreSQL 15.6)
+fincore=# SELECT pid, usename, application_name, state,
+       now() - xact_start AS xact_age,
+       now() - state_change AS idle_age,
+       wait_event_type, wait_event,
+       left(query, 80) AS last_query
+FROM pg_stat_activity
+WHERE datname = 'fincore' AND application_name = 'batch-service'
+ORDER BY xact_start;
+
+   pid  | usename | application_name |        state        |  xact_age   |  idle_age   | wait_event_type |  wait_event   |                     last_query
+--------+---------+------------------+---------------------+-------------+-------------+-----------------+---------------+-------------------------------------------------
+  18421 | batch   | batch-service    | idle in transaction | 00:05:00.112| 00:04:58.200| Client          | ClientRead    | insert into reconciliation ... on conflict ...
+-- (tổng 1 session của batch-service: duy nhất 1 thread scheduling-1 chạy job, giữ 1 connection)
+-- "idle in transaction": session đã BEGIN, chạy xong câu SQL cuối (upsert dòng n) nhưng CHƯA COMMIT
+--   và đang chờ client (Java) gửi dòng tiếp theo. wait_event ClientRead = DB chờ ứng dụng.
+-- xact_age = 5 phút (tăng đều theo thời gian job chạy), idle_age ≈ xact_age - thời gian thực thi SQL.
+-- 14 session khác của payment-service/api-service cũng ở idle in transaction (đang chờ pool có connection).`,
+    },
+    {
+      name: 'ReconciliationJob.java',
+      lang: 'text',
+      content: `@Service
+public class ReconciliationJob {
+    private final ReconciliationRepository repo;
+    private final CsvParser csvParser;
+
+    public ReconciliationJob(ReconciliationRepository repo, CsvParser csvParser) {
+        this.repo = repo;
+        this.csvParser = csvParser;
+    }
+
+    @Scheduled(cron = "0 0 2 * * ?")
+    @Transactional // (1) Mở transaction DB và GIỮ 1 connection từ HikariCP cho TOÀN BỘ job (18 phút)
+    public void runDailyReconciliation() {
+        String batchId = "RECON-" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
+        Path file = Paths.get("/data/inbound/recon_" + LocalDate.now().minusDays(1).format(DateTimeFormatter.BASIC_ISO_DATE) + ".csv");
+
+        // (2) Mở file, đọc streaming (không load hết vào RAM)
+        try (Stream<String> lines = Files.lines(file)) {
+            lines.skip(1) // bỏ header
+                 .forEach(line -> {
+                     // (3) Parse dòng CSV -> object
+                     ReconciliationRecord rec = csvParser.parse(line);
+                     rec.setBatchId(batchId);
+
+                     // (4) Upsert từng dòng: INSERT ... ON CONFLICT DO UPDATE
+                     //     Mỗi upsert ~1-2 ms, NHƯNG nằm trong CÙNG transaction mở ở (1)
+                     repo.upsert(rec);
+                 });
+        } catch (IOException e) {
+            throw new RuntimeException("Read reconciliation file failed", e);
+        }
+        // (5) Method kết thúc -> Spring commit transaction -> connection trả về HikariCP
+        //     Nhưng method chạy 18 phút -> connection bị chiếm 18 phút!
+    }
+}
+
+// ReconciliationRepository.java
+public interface ReconciliationRepository extends JpaRepository<Reconciliation, String> {
+    @Modifying
+    @Query("insert into reconciliation (id, batch_id, partner_id, amount, status, created_at) " +
+           "values (:id, :batchId, :partnerId, :amount, :status, :createdAt) " +
+           "on conflict (batch_id, partner_id) do update set amount = :amount, status = :status")
+    void upsert(ReconciliationRecord rec);
+}`,
+    },
+  ],
+  questions: [
+    'Nguyên nhân gốc khiến connection pool cạn là gì? Giải thích mối liên hệ giữa {{@Transactional}} trên @Scheduled job, việc giữ connection 18 phút, và trạng thái {{idle in transaction}} trong {{pg_stat_activity}}.',
+    'Dẫn chứng từ artifact: chỉ ra pool cạn (total/active/idle/waiting), session batch {{idle in transaction}} (xact_age 5 phút tại thời điểm chụp, tăng đều 18 phút), và đoạn code nào giữ transaction trong lúc đọc file/parse CSV.',
+    'Bạn sửa thế nào để không giữ connection DB khi xử lý file lớn? Trình bày cách: (a) tách transaction theo lô (batch), commit sau mỗi N dòng; (b) dùng Spring Batch chunk-oriented processing; (c) tách Hikari pool riêng cho batch; (d) đặt {{idle_in_transaction_session_timeout}} an toàn.',
+  ],
+  hints: [
+    'Trong Spring, {{@Transactional}} giữ một connection JDBC suốt phạm vi method (từ BEGIN đến COMMIT/ROLLBACK). Job đọc file 500.000 dòng, parse và upsert trong vòng lặp forEach — toàn bộ 18 phút nằm trong CÙNG transaction.',
+    '{{idle in transaction}} + {{wait_event ClientRead}} nghĩa là PostgreSQL đã xong câu SQL cuối (upsert dòng n) và đang chờ client gửi lệnh tiếp/COMMIT — DB rảnh (CPU 12%) nhưng connection bị chiếm. {{idle_in_transaction_session_timeout = 0}} nên DB không tự cắt.',
+    'Tách transaction: commit sau mỗi 1.000 dòng (hoặc dùng Spring Batch chunk size 1.000). Hoặc: đọc file -> biến đổi -> ghi file tạm -> {{COPY}} vào bảng staging (nhanh, không transaction dài) -> transaction ngắn merge staging vào bảng chính. Tách pool: cấu hình DataSource riêng cho batch-service. Guardrail: {{idle_in_transaction_session_timeout = 5min}} cho role ứng dụng (trừ batch role).',
+  ],
+  answer: `**Tóm tắt:** Job {{@Scheduled}} có annotation {{@Transactional}} chạy 18 phút xử lý 500.000 dòng CSV. Toàn bộ vòng lặp upsert nằm trong **một transaction duy nhất** → **1 connection Hikari bị chiếm 18 phút**. Trong lúc đó, pool {{maximumPoolSize=15}} chỉ còn 14 connection cho các service khác (payment, API), nên các request HTTP bị timeout chờ connection. {{pg_stat_activity}} cho thấy session batch ở {{idle in transaction}} với {{xact_age}} tăng đều (5 phút lúc chụp, 18 phút khi xong), {{wait_event ClientRead}} = DB chờ Java đọc file/parse. CPU RDS 12% vì DB gần như không làm gì — connection bị "ngồi chờ" ứng dụng. Sửa: tách transaction theo lô (commit sau 1.000 dòng), hoặc dùng Spring Batch chunk / COPY staging, tách pool riêng cho batch, đặt {{idle_in_transaction_session_timeout}}.
+### Nguyên nhân gốc, từng bước
+1. Method {{runDailyReconciliation}} có {{@Transactional}} + {{@Scheduled}}. Spring mở transaction (BEGIN) và lấy 1 connection từ HikariCP khi method bắt đầu.
+2. Vòng lặp {{lines.forEach(...)}} đọc 500.000 dòng CSV, parse, và gọi {{repo.upsert(rec)}} cho từng dòng. Mỗi upsert ~1-2 ms, **nhưng không commit** — cùng transaction.
+3. Java dành phần lớn thời gian cho **I/O file (Files.lines) + parse CSV**, không phải SQL. Trong lúc này, transaction đã mở, connection bị giữ, PostgreSQL thấy session ở {{idle in transaction}} (đã xong câu SQL, chờ lệnh tiếp).
+4. 18 phút sau, method kết thúc, Spring commit transaction, connection trả về pool.
+5. Trong 18 phút đó: pool 15 connection, 1 bị job chiếm → 14 cho các service khác. Request payment/API vào lúc 02:00-02:18 đều tranh giành 14 connection, waiting queue tăng, timeout 3 giây → 504.
+### Dẫn chứng
+- Artifact 1 (HikariCP log): **total=15, active=15, idle=0, waiting=12** lúc 02:00:05 (chỉ 5 phút sau job bắt đầu). Pool cạn liên tục 02:00-02:18. Job log: **Finished ... in 1083 seconds (18 phút)**. Commit chỉ ở cuối.
+- Artifact 2 (pg_stat_activity): session batch **pid 18421, state = idle in transaction, xact_age = 00:05:00, wait_event = ClientRead**. Chỉ 1 session batch (1 thread scheduling-1). xact_age tăng đều theo thời gian job chạy.
+- Artifact 3 (code): {{@Transactional}} trên method {{runDailyReconciliation}}. Vòng lặp {{forEach}} trong try-with-resources đọc file streaming. {{repo.upsert}} gọi native query upsert. Toàn bộ 18 phút trong 1 transaction.
+### Cách sửa
+**Ngắn hạn (hôm nay):**
+1. **Tách transaction theo lô (batch commit):** Commit sau mỗi N dòng (ví dụ 1.000). Dùng {{PlatformTransactionManager}} thủ công hoặc {{@Transactional(propagation = Propagation.REQUIRES_NEW)}} trên method upsert lô.
+~~~java
+@Transactional(propagation = Propagation.REQUIRES_NEW)
+public void upsertBatch(List<ReconciliationRecord> batch) {
+    batch.forEach(repo::upsert);
+}
+
+// Trong job:
+List<ReconciliationRecord> batch = new ArrayList<>(1000);
+lines.skip(1).forEach(line -> {
+    batch.add(csvParser.parse(line));
+    if (batch.size() >= 1000) {
+        upsertBatch(batch);
+        batch.clear();
+    }
+});
+if (!batch.isEmpty()) upsertBatch(batch);
+~~~
+→ Connection chỉ bị giữ trong vài trăm ms mỗi lô, trả về pool giữa các lô. Pool không cạn.
+
+2. **Đặt {{idle_in_transaction_session_timeout}} cho role ứng dụng (trừ batch role):**
+~~~sql
+ALTER ROLE fincore_app SET idle_in_transaction_session_timeout = '5min';
+-- Cho batch role: ALTER ROLE fincore_batch SET idle_in_transaction_session_timeout = '30min';
+~~~
+→ Nếu code quên commit, DB tự kill session sau 5 phút, giải phóng connection.
+
+**Dài hạn:**
+3. **Spring Batch chunk-oriented processing:** Khai báo {{Step}} với {{chunkSize(1000)}}, {{ItemReader}} đọc CSV, {{ItemProcessor}} parse, {{ItemWriter}} upsert lô. Spring Batch tự quản transaction cho mỗi chunk, có retry/skip/restart, metrics.
+4. **COPY vào bảng staging + merge nhanh:** Đọc CSV -> ghi file tạm (hoặc pipe) -> {{COPY reconciliation_staging FROM STDIN}} (thường < 10 giây cho 500k dòng) -> transaction ngắn {{INSERT ... SELECT ... ON CONFLICT FROM reconciliation_staging}}. {{COPY}} không cần transaction dài, nhanh hơn upsert từng dòng gấp 100 lần.
+5. **Tách Hikari pool riêng cho batch:** Cấu hình {{DataSource}} riêng ({{batch.datasource.*}}) với pool size nhỏ (5-10), không chia sẻ với API service. Batch chạy 18 phút không ảnh hưởng pool chính.
+6. **Guardrail:** Alert khi có session {{idle in transaction}} > 5 phút (trừ batch role). Metric {{hikaricp.connections.active}} không được bằng {{maximumPoolSize}} quá 1 phút.
+
+### Lỗi hay gặp
+- Nghĩ "upsert nhanh 1-2 ms thì transaction cũng nhanh": quên thời gian Java đọc file/parse giữa các upsert.
+- {{@Transactional}} trên @Scheduled method: anti-pattern kinh điển — method chạy lâu (batch, report, sync) **không được** bọc trong @Transactional.
+- Tăng pool size để "chữa": chỉ trì hoãn vấn đề, job vẫn chiếm 1 connection trong 18 phút, tăng pool chỉ làm DB chấp nhận thêm connection khác (có thể vượt {{max_connections}}).
+
+### Trả lời miệng 1 phút
+"Job @Scheduled có @Transactional chạy 18 phút xử lý 500k dòng CSV. Toàn bộ vòng lặp upsert trong 1 transaction → 1 connection Hikari bị chiếm 18 phút. Pool 15 connection, 14 còn lại cho API payment → timeout 3 giây, 504. pg_stat_activity thấy session batch idle in transaction, xact_age tăng đều 18 phút, wait_event ClientRead = DB chờ Java đọc file. CPU 12% vì DB rảnh. Sửa: commit theo lô 1.000 dòng (PlatformTransactionManager hoặc Spring Batch chunk), hoặc COPY vào staging rồi merge nhanh, tách pool riêng cho batch, đặt idle_in_transaction_session_timeout = 5 phút cho role ứng dụng."
+
+> Senior tip: **@Transactional trên method chạy lâu (batch, sync, report) là anti-pattern số 1 gây cạn connection pool**. Nguyên tắc: transaction chỉ bao quanh **ghi DB**, không bao quanh **đọc file, parse, gọi HTTP, sleep**. Nếu phải xử lý 500k dòng: dùng Spring Batch (chunk + transaction per chunk) hoặc COPY staging. Và luôn đặt idle_in_transaction_session_timeout — nó biến một bug "quên commit" chạy 18 phút thành một sự cố tự giải quyết sau 5 phút.`,
+  rubric: [
+    'Chính xác nguyên nhân: @Transactional trên @Scheduled job giữ 1 connection 18 phút (toàn bộ đọc file + parse + upsert trong 1 transaction), pool 15 connection cạn',
+    'Dẫn chứng đúng: HikariCP total=15/active=15/idle=0/waiting>0, pg_stat_activity idle in transaction xact_age tăng đều, code @Transactional trên runDailyReconciliation + forEach trong transaction',
+    'Giải thích đúng idle in transaction + ClientRead = DB chờ ứng dụng (đọc file/parse), không phải ứng dụng chờ DB',
+    'Đề xuất sửa đầy đủ: batch commit (PlatformTransactionManager/REQUIRES_NEW), Spring Batch chunk, COPY staging + merge, tách pool riêng, idle_in_transaction_session_timeout',
+    'Phân biệt rõ: tăng pool size chỉ trì hoãn, không giải quyết gốc; anti-pattern @Transactional trên long-running method',
+  ],
+  tags: ['postgresql', 'connection-pool', 'transaction', 'idle-in-transaction', 'batch', 'spring-batch', 'scheduled', 'copy'],
 }
 );
-
