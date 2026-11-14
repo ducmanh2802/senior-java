@@ -5463,4 +5463,542 @@ for (EventListener l : listeners) l.onEvent(e); // đọc nhiều, an toàn khi 
 
 > Senior tip: trên production, ưu tiên tự tạo {{new ThreadPoolExecutor(core, max, keepAlive, unit, new ArrayBlockingQueue<>(bound), threadFactory, handler)}} với hàng đợi có giới hạn, đặt tên thread (dễ đọc log/thread dump), và giám sát kích thước queue/thread. Với tác vụ I/O chặn trên Java 21+, cân nhắc virtual-thread-per-task executor thay vì pool lớn.`
 },
+{
+  id: 'qz-core-031', topic: 'core',
+  q: `Đoạn code sau in ra gì trên Java 17?
+~~~java
+Integer a = 127;
+Integer b = 127;
+Integer c = 128;
+Integer d = 128;
+System.out.println((a == b) + " " + (c == d) + " " + c.equals(d));
+~~~`,
+  options: [
+    `true true true`,
+    `true false true`,
+    `false false true`,
+    `true false false`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Java có cơ chế **Integer cache** (bộ nhớ đệm Integer, có sẵn từ lâu trong JDK): khi tự động đóng gói (autoboxing) giá trị {{int}} thành {{Integer}} trong khoảng -128..127, JVM tái sử dụng cùng một đối tượng. Ngoài khoảng này, mỗi lần autoboxing tạo đối tượng mới. Toán tử {{==}} so sánh tham chiếu (cùng đối tượng hay không), còn {{equals}} so sánh giá trị bên trong.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Autoboxing** (tự động đóng gói): trình biên dịch tự biến {{int}} (kiểu nguyên thủy, primitive, lưu trực tiếp giá trị) thành {{Integer}} (đối tượng). Ví dụ {{Integer a = 127;}} tương đương gọi {{Integer.valueOf(127)}}.
+- **Vì sao cần cache**: các số nhỏ (-128..127) xuất hiện rất thường xuyên (đếm, chỉ số), tái sử dụng đối tượng giúp giảm cấp phát bộ nhớ và áp lực GC (Garbage Collector, bộ thu gom rác tự động).
+- **Hoạt động**: {{Integer.valueOf}} kiểm tra nếu giá trị nằm trong [-128, 127] thì trả về đối tượng đã tạo sẵn trong cache; nếu ngoài khoảng thì {{new Integer(...)}} (tạo mới). Vì vậy {{a}} và {{b}} trỏ cùng một object ({{==}} là {{true}}), còn {{c}} và {{d}} là hai object khác nhau ({{==}} là {{false}}) dù cùng mang giá trị 128. {{equals}} so sánh giá trị số nên trả {{true}}.
+
+### Ví dụ cụ thể
+~~~java
+Integer x = Integer.valueOf(127); // lấy từ cache
+Integer y = Integer.valueOf(127); // cùng object
+Integer p = Integer.valueOf(128); // object mới
+Integer q = Integer.valueOf(128); // object mới khác
+~~~
+
+### Lỗi hay gặp
+- Dùng {{==}} để so sánh hai {{Integer}}: chạy đúng với số nhỏ (nhờ cache) nhưng sai ngẫu nhiên với số lớn — bug khó tái hiện.
+- Gán {{Integer}} có thể {{null}} rồi dùng trong phép toán số học (ví dụ {{n + 1}}) gây {{NullPointerException}} do unboxing (mở gói, lấy giá trị primitive ra).
+
+### Trả lời phỏng vấn thế nào
+"Integer cache giữ sẵn các đối tượng Integer từ -128 đến 127, nên autoboxing trong khoảng này trả về cùng tham chiếu và {{==}} cho {{true}}. Ngoài khoảng, mỗi lần là object mới nên {{==}} {{false}} dù giá trị bằng nhau. Khi so sánh giá trị wrapper tôi luôn dùng {{equals}} hoặc so sánh primitive, và cẩn thận unboxing khi có thể null."
+
+> Senior tip: có thể mở rộng cận trên cache bằng {{-XX:AutoBoxCacheMax=<size>}} (chỉ tăng phía trên, cận dưới vẫn -128), nhưng đừng dựa vào hành vi này để viết logic {{==}} vì cấu hình khác nhau giữa môi trường.`
+},
+{
+  id: 'qz-core-032', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+String s1 = "java";
+String s2 = "java";
+String s3 = new String("java");
+String s4 = s3.intern();
+System.out.println((s1 == s2) + " " + (s1 == s3) + " " + (s1 == s4));
+~~~`,
+  options: [
+    `true false false`,
+    `true false true`,
+    `false false true`,
+    `true true true`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** String literal (chuỗi viết trực tiếp trong mã nguồn, ví dụ {{"java"}}) được đặt trong **String Pool** (vùng nhớ đặc biệt trong heap từ Java 7+ dùng để lưu các chuỗi duy nhất). Cùng nội dung literal trỏ cùng một đối tượng. {{new String(...)}} luôn tạo đối tượng mới trên heap. {{intern()}} trả về tham chiếu trong pool có cùng nội dung.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- **String Pool**: khi biên dịch/chạy, JVM lưu mỗi literal vào pool; nếu đã có chuỗi giống hệt thì tái sử dụng. Vì sao: chuỗi bất biến (immutable) và lặp lại rất nhiều, dùng chung tiết kiệm bộ nhớ.
+- {{s1}} và {{s2}} cùng literal {{"java"}} → cùng tham chiếu trong pool, {{s1 == s2}} là {{true}}.
+- {{s3 = new String("java")}} ép tạo object mới trên heap (bên ngoài pool) dù nội dung giống → {{s1 == s3}} là {{false}}.
+- {{s4 = s3.intern()}} tìm chuỗi có nội dung "java" trong pool và trả về tham chiếu pool đó (chính là {{s1}}) → {{s1 == s4}} là {{true}}. Nội dung vẫn so sánh bằng {{equals}} cho chắc.
+
+### Ví dụ cụ thể
+~~~java
+String a = "hel" + "lo"; // nối hằng tại compile-time -> literal "hello" trong pool
+String b = "hello";
+System.out.println(a == b); // true
+String x = "hel";
+String c = x + "lo"; // nối runtime -> object mới
+System.out.println(b == c); // false
+System.out.println(b.equals(c)); // true
+~~~
+
+### Lỗi hay gặp
+- Dùng {{==}} để so sánh nội dung chuỗi: đôi khi "đúng" vì cùng pool, đôi khi sai — bug khó tìm. Luôn dùng {{equals}} (hoặc {{Objects.equals}} để an toàn null).
+- Gọi {{intern()}} tràn lan trên chuỗi do người dùng nhập vào có thể làm phình pool và gây áp lực bộ nhớ.
+
+### Trả lời phỏng vấn thế nào
+"String là immutable và literal được lưu trong String Pool nên hai literal giống nhau cùng tham chiếu. {{new String}} tạo object mới ngoài pool. Tôi so sánh nội dung bằng {{equals}}, chỉ dùng {{==}} khi thực sự cần kiểm tra cùng tham chiếu; tránh {{intern}} trên dữ liệu không kiểm soát."
+
+> Senior tip: từ Java 9, chuỗi bên trong dùng mã hóa compact (Latin-1 hoặc UTF-16) tiết kiệm bộ nhớ; nhưng tính bất biến và quy tắc pool/{{==}}/{{equals}} không đổi. Trên production, chuỗi key lặp lại từ DB/cấu hình thường được JVM tự tận dụng tốt, không cần tự {{intern}}.`
+},
+{
+  id: 'qz-core-033', topic: 'core', multi: true,
+  q: `(Chọn 2) Về overload resolution (chọn phương thức nạp chồng, quyết định lúc biên dịch) trong Java, đoạn code dưới in ra {{long,int}}. Phát biểu nào đúng?
+~~~java
+class O {
+    static String pick(long x, int y) { return "long,int"; }
+    static String pick(Integer x, Integer y) { return "Integer,Integer"; }
+    static String pick(int... xs) { return "varargs"; }
+    public static void main(String[] args) {
+        System.out.println(pick(1, 2));
+    }
+}
+~~~`,
+  options: [
+    `Gọi {{pick(1, 2)}} chọn {{pick(long, int)}} vì Java ưu tiên widening (mở rộng kiểu, ví dụ int -> long) cho tham số đầu trước khi xét autoboxing/varargs`,
+    `Gọi {{pick(1, 2)}} chọn {{pick(Integer, Integer)}} vì autoboxing cả hai tham số đơn giản hơn`,
+    `Nếu bỏ {{pick(long, int)}}, gọi {{pick(1, 2)}} sẽ chọn {{pick(Integer, Integer)}} (boxing) thay vì {{pick(int...)}} (varargs) vì boxing được ưu tiên hơn varargs`,
+    `Nếu chỉ còn {{pick(int...)}}, gọi {{pick(1, 2)}} không biên dịch được vì thiếu tham số thứ ba`,
+    `Trình biên dịch không bao giờ chọn phương thức varargs khi có lựa chọn khác`
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** Khi chọn overload, trình biên dịch Java xét theo 3 pha theo thứ tự: (1) khớp chính xác/widening (mở rộng kiểu nguyên thủy), (2) autoboxing/unboxing, (3) varargs (tham số biến thiên). Pha trước thắng pha sau. Quyết định này xảy ra **lúc biên dịch**, dựa trên kiểu khai báo.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Widening**: chuyển kiểu nhỏ sang lớn hơn an toàn ({{int}} → {{long}}), không mất dữ liệu. **Boxing**: {{int}} → {{Integer}}. **Varargs**: gói các đối số còn lại thành mảng.
+- Với {{pick(1, 2)}} (hai {{int}}): pha 1 thử widening — tham số đầu {{int}}→{{long}} khớp {{pick(long,int)}} (tham số hai khớp chính xác). Tìm thấy ở pha 1 nên không xét pha 2,3 → in {{long,int}}.
+- Nếu bỏ {{pick(long,int)}}, pha 1 không còn ứng viên đủ tốt, sang pha 2: boxing cả hai {{int}}→{{Integer}} khớp {{pick(Integer,Integer)}}. Pha 2 thắng pha 3 nên không chọn {{pick(int...)}}.
+- Nếu chỉ còn {{pick(int...)}}, pha 3 nhận hai {{int}} vào mảng {{int[]}} → biên dịch và chạy bình thường.
+
+### Ví dụ cụ thể
+~~~java
+void m(long a) {}    // pha 1
+void m(Integer a) {} // pha 2
+m(5); // chọn m(long) vì widening ưu tiên hơn boxing
+~~~
+
+### Lỗi hay gặp
+- Thêm một overload mới (ví dụ thêm kiểu {{long}}) có thể làm code gọi cũ đổi hướng sang method khác lúc biên dịch mà không báo lỗi — thay đổi hành vi âm thầm.
+- Truyền {{null}} vào overload gây mơ hồ (ambiguous) nếu nhiều overload cùng nhận tham chiếu.
+
+### Trả lời phỏng vấn thế nào
+"Overload được giải quyết lúc biên dịch theo thứ tự: widening trước, rồi boxing, rồi varargs. Vì vậy {{pick(1,2)}} chọn {{(long,int)}} nhờ widening tham số đầu; nếu bỏ nó mới xét boxing {{(Integer,Integer)}} và cuối cùng mới là varargs. Khi thiết kế API tôi tránh overload dễ gây nhầm pha để người gọi không bất ngờ."
+
+> Senior tip: quy tắc 'đừng overload method có số tham số varargs tương tự nhau' (Effective Java) giúp tránh bẫy. Nếu buộc phải có, đặt tên khác nhau rõ nghĩa thay vì trông vào độ ưu tiên pha.`
+},
+{
+  id: 'qz-core-034', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+class P {
+    static { System.out.print("Ps"); }
+    { System.out.print("Pi"); }
+    P() { System.out.print("Pc"); }
+}
+class C extends P {
+    static { System.out.print("Cs"); }
+    { System.out.print("Ci"); }
+    C() { System.out.print("Cc"); }
+}
+public class Main {
+    public static void main(String[] args) {
+        new C();
+    }
+}
+~~~`,
+  options: [
+    `PsCsPiPcCiCc`,
+    `PsPiPcCsCiCc`,
+    `CsPsCiPiCcPc`,
+    `PsCsPcCc`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Thứ tự khởi tạo: (1) static block của lớp cha rồi lớp con (mỗi lớp chỉ một lần, khi lớp được nạp), (2) với mỗi lần {{new}}: instance initializer block (khối khởi tạo thể hiện) của cha → constructor cha → instance block của con → constructor con.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Static block** (khối {{static}}): chạy một lần khi class loader nạp lớp, dùng để khởi tạo trạng thái gắn với lớp (class-level). JVM nạp lớp cha trước lớp con.
+- **Instance initializer block** (khối khởi tạo instance, viết trực tiếp trong thân lớp, không có {{static}}): chạy mỗi lần tạo đối tượng, ngay trước thân constructor (nhưng sau lời gọi {{super()}} ngầm/ tường minh ở mức khái niệm chuỗi khởi tạo). Thực tế trình tự mỗi {{new}}: chạy phần khởi tạo instance của cha (field initializer + instance block theo thứ tự xuất hiện) rồi constructor cha; sau đó mới đến phần instance của con rồi constructor con.
+- Áp vào ví dụ: nạp {{C}} kéo theo nạp {{P}} → in {{Ps}} rồi {{Cs}}. Tạo {{new C()}}: khởi tạo instance phía {{P}} in {{Pi}} rồi constructor {{P}} in {{Pc}}; tiếp tục phía {{C}} in {{Ci}} rồi constructor {{C}} in {{Cc}} → {{PsCsPiPcCiCc}}.
+
+### Ví dụ cụ thể
+~~~java
+class A {
+    int x = pr("fx");
+    { pr("ib"); }
+    A() { pr("ct"); }
+    static int pr(String s){ System.out.print(s); return 0; }
+}
+new A(); // in fxibct (field init và instance block theo thứ tự xuất hiện, trước constructor)
+~~~
+
+### Lỗi hay gặp
+- Gọi method có thể bị override từ constructor lớp cha: lúc đó phần instance của lớp con chưa chạy xong, field con còn giá trị mặc định → hành vi bất ngờ. Tránh gọi method non-final/non-private trong constructor.
+- Nhầm static block chạy mỗi lần {{new}} (thực ra chỉ một lần khi nạp lớp).
+
+### Trả lời phỏng vấn thế nào
+"Khi tạo đối tượng: JVM nạp lớp cha rồi con nên static block cha chạy trước con (một lần). Mỗi lần new, Java chạy instance initializer và constructor của cha xong rồi mới tới con, nên chuỗi là static cha, static con, rồi instance cha, ctor cha, instance con, ctor con. Tôi tránh gọi method override được trong constructor để không thấy trạng thái con chưa khởi tạo."
+
+> Senior tip: trong Spring, constructor chỉ nên gán dependency; logic phụ thuộc bean đã sẵn sàng đặt ở {{@PostConstruct}} hoặc {{InitializingBean}}. Hiểu thứ tự khởi tạo Java thuần giúp giải thích vì sao tiêm field (field injection) chưa có giá trị bên trong constructor.`
+},
+{
+  id: 'qz-core-035', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+static int test() {
+    try {
+        return 1;
+    } catch (Exception e) {
+        return 2;
+    } finally {
+        return 3;
+    }
+}
+// main:
+System.out.println(test());
+~~~`,
+  options: [
+    `1`,
+    `2`,
+    `3`,
+    `Không biên dịch được`
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Khi cả {{try}} và {{finally}} đều có {{return}}, giá trị trả về của {{finally}} sẽ **ghi đè** (override) giá trị đã chuẩn bị trong {{try}} (hoặc {{catch}}). Đây là hành vi theo đặc tả ngôn ngữ nhưng rất nguy hiểm.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- {{finally}} (khối luôn chạy): dùng để dọn tài nguyên (đóng file, kết nối) dù có exception hay {{return}}. JVM bảo đảm {{finally}} chạy trước khi phương thức thực sự trả về cho caller.
+- Luồng thực thi: {{return 1}} trong {{try}} tính giá trị 1 và lưu tạm, chuẩn bị thoát method; trước khi thoát, JVM nhảy vào {{finally}}. {{finally}} gặp {{return 3}} → hoàn tất bất thường (abrupt completion) mới, thay thế hoàn tất trước đó, nên caller nhận 3.
+- Nếu {{finally}} có {{return}} trong khi {{try}} ném exception, exception cũng bị nuốt (mất stack trace gốc).
+
+### Ví dụ cụ thể
+~~~java
+static int demo() {
+    try { throw new RuntimeException("err"); }
+    finally { /* không return */ } // exception "err" vẫn được ném ra
+}
+static int demo2() {
+    try { throw new RuntimeException("err"); }
+    finally { return 9; } // "err" biến mất, trả 9
+}
+~~~
+
+### Lỗi hay gặp
+- Đặt {{return}} trong {{finally}} làm che mất lỗi thật, khiến giao dịch tưởng thành công hoặc bug âm thầm rất khó truy vết.
+- Đặt {{throw}} trong {{finally}} cũng ghi đè exception gốc tương tự.
+
+### Trả lời phỏng vấn thế nào
+"Nếu {{finally}} có {{return}} hoặc {{throw}}, nó sẽ ghi đè kết quả/exception của {{try}} hoặc {{catch}}. Vì vậy tôi không bao giờ {{return}} trong {{finally}}; {{finally}} chỉ dùng để đóng tài nguyên (hoặc dùng try-with-resources). Tôi bật cảnh báo lint ({{-Xlint:finally}}) để CI chặn lỗi này."
+
+> Senior tip: trên production, 'nuốt exception' do {{return}} trong {{finally}} là một trong những bug khó điều tra nhất vì log mất nguyên nhân gốc. Dùng try-with-resources ({{AutoCloseable}}) thay cho tự đóng trong {{finally}} để vừa an toàn vừa không cần {{return}}.`
+},
+{
+  id: 'qz-core-036', topic: 'core',
+  q: `Đoạn code sau in ra gì (Java 17)?
+~~~java
+record Point(int x, int y) {}
+Point p1 = new Point(1, 2);
+Point p2 = new Point(1, 2);
+int r = switch (p1.x() + p1.y()) {
+    case 1, 2 -> 10;
+    case 3 -> {
+        yield 30;
+    }
+    default -> 0;
+};
+System.out.println(p1.equals(p2) + " " + (p1 == p2) + " " + r);
+~~~`,
+  options: [
+    `true true 30`,
+    `true false 30`,
+    `false false 30`,
+    `true false 0`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{record}} (Java 16, chuẩn hóa) là lớp dữ liệu bất biến: trình biên dịch tự sinh {{equals}}, {{hashCode}}, {{toString}} so sánh theo **giá trị các thành phần**. Hai record khác object ({{==}} false) nhưng cùng giá trị thì {{equals}} true. Switch expression (Java 14) dùng {{->}} và {{yield}} để trả về một giá trị.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- **record**: giảm boilerplate cho DTO/value object. {{equals}} được sinh tự động dựa trên từng thành phần ({{x}}, {{y}}), nên {{p1.equals(p2)}} là {{true}} khi cùng (1,2). {{p1 == p2}} so sánh tham chiếu, hai lần {{new}} tạo hai object khác → {{false}}.
+- **switch expression**: cho phép switch trả về giá trị. Cú pháp nhánh có khối dùng {{yield}} để trả giá trị (ví dụ nhánh {{case 3}} viết khối rồi {{yield 30}}). Với nhánh biểu thức đơn dùng {{->}} thì không cần {{yield}}. {{p1.x()+p1.y()}} là 3 nên nhánh {{case 3}} được chọn, {{r}} nhận 30. Switch expression yêu cầu bao phủ hết các khả năng (hoặc có {{default}}).
+
+### Ví dụ cụ thể
+~~~java
+record User(String id) {}
+User a = new User("u1");
+User b = new User("u1");
+System.out.println(a.equals(b)); // true, so sánh theo thành phần
+int v = switch (2) { case 2 -> 20; default -> 0; }; // v = 20
+~~~
+
+### Lỗi hay gặp
+- Nhầm {{==}} với {{equals}} cho record: record không được intern như String literal, hai {{new}} luôn khác tham chiếu.
+- Quên {{default}} hoặc không bao phủ hết trường hợp trong switch expression → lỗi biên dịch (trừ khi dùng enum/sealed đã bao phủ đủ).
+- Dùng {{return}} thay {{yield}} trong khối của nhánh switch expression ({{return}} thoát khỏi method, không phải trả giá trị nhánh).
+
+### Trả lời phỏng vấn thế nào
+"Record tự sinh {{equals/hashCode}} theo thành phần nên so sánh bằng giá trị, còn {{==}} chỉ đúng khi cùng tham chiếu. Switch expression (Java 14+) trả về giá trị, dùng {{yield}} trong khối nhánh; nó buộc bao phủ đầy đủ nên an toàn hơn switch statement cũ. Tôi dùng record cho DTO bất biến và switch expression để gán giá trị rõ ràng."
+
+> Senior tip: record vẫn có thể có thành phần là object mutable (ví dụ mảng, {{List}} thường); {{equals}} so sánh tham chiếu/phần tử theo cách của thành phần đó, nên hãy dùng thành phần bất biến hoặc sao chép phòng thủ để giữ bất biến thực sự.`
+},
+{
+  id: 'qz-core-037', topic: 'core', multi: true,
+  q: `(Chọn 2) Về cách dùng {{Optional}} (Java 8, lớp bọc biểu thị "có thể có hoặc không có giá trị") đúng và sai, phát biểu nào đúng?`,
+  options: [
+    `Gọi {{optional.get()}} mà không kiểm tra trước có thể ném {{NoSuchElementException}}; nên dùng {{orElse}}, {{orElseGet}}, {{orElseThrow}} hoặc {{ifPresent}}`,
+    `Khai báo tham số method hoặc field của class là {{Optional<T>}} là best practice được khuyến nghị rộng rãi`,
+    `Dùng {{optional.orElse(expensive())}} sẽ luôn gọi {{expensive()}} để tính giá trị mặc định, kể cả khi Optional đang có giá trị; nếu việc tính tốn kém nên dùng {{orElseGet(() -> expensive())}}`,
+    `{{Optional.of(value)}} chấp nhận {{value}} là {{null}} và trả về Optional rỗng`,
+    `{{optional.map(f)}} ném {{NullPointerException}} nếu giá trị bên trong tồn tại`
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** {{Optional}} dùng để mô tả giá trị trả về có thể vắng mặt. Tránh {{get()}} không kiểm tra; phân biệt {{orElse}} (luôn tính đối số) với {{orElseGet}} (chỉ tính khi rỗng). Không lạm dụng Optional cho field/tham số.
+
+### Vì sao đúng
+- {{get()}} trên Optional rỗng ném {{NoSuchElementException}} (unchecked) — giống lỗi null mà Optional muốn tránh. Dùng {{orElse(default)}}, {{orElseGet(supplier)}}, {{orElseThrow(...)}} hoặc {{ifPresent/map/flatMap}} để xử lý an toàn.
+- {{orElse(expensive())}}: đối số của method được tính **trước** khi gọi (eager), nên {{expensive()}} chạy dù Optional có giá trị. {{orElseGet(() -> expensive())}} nhận supplier (hàm tạo lười, lazy) và chỉ gọi khi Optional rỗng → tránh chi phí và tránh tác dụng phụ ngoài ý muốn.
+
+### Vì sao các phương án còn lại sai
+- **Field/tham số là Optional**: không được khuyến nghị. Optional không implement {{Serializable}} (gây vấn đề nếu class cần serialize), thêm object bọc không cần thiết cho field, và ép caller tạo Optional. Dùng {{Optional}} chủ yếu cho **kiểu trả về** của method. Tham số nên dùng overload hoặc cho phép null có tài liệu rõ.
+- **{{Optional.of(null)}}**: ném {{NullPointerException}} ngay. Muốn Optional rỗng khi giá trị có thể null thì dùng {{Optional.ofNullable(value)}}.
+- **{{map(f)}} ném NPE nếu có giá trị**: {{map}} áp dụng hàm {{f}} lên giá trị bên trong và bọc kết quả bằng {{Optional.ofNullable}}; nếu {{f}} trả {{null}} thì nhận Optional rỗng, không ném NPE chỉ vì có giá trị.
+
+### Ví dụ cụ thể
+~~~java
+Optional<String> o = Optional.ofNullable(findName());
+String name = o.orElseGet(() -> queryDefaultName()); // chỉ query khi rỗng
+String upper = o.map(String::toUpperCase).orElse("NA");
+~~~
+
+### Trả lời phỏng vấn thế nào
+"Tôi dùng Optional cho giá trị trả về có thể vắng mặt, tránh {{get()}} trần và dùng {{orElseGet}} khi giá trị mặc định tốn kém. Tôi không đặt Optional làm field hay tham số vì không Serializable và không đúng mục đích; với giá trị có thể null tôi dùng {{ofNullable}} và xử lý bằng {{map/flatMap/orElseThrow}}."
+
+> Senior tip: {{Optional}} không thay thế mọi {{null}}. Đừng bọc rồi mở ngay ({{Optional.ofNullable(x).orElse(y)}} dài hơn {{x != null ? x : y}}) và đừng dùng {{Optional}} trong collection/stream theo cách làm phức tạp code; dùng khi API thể hiện rõ 'có thể không có kết quả' (ví dụ {{findById}}).`
+},
+{
+  id: 'qz-core-038', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+Integer a = 1000;
+Integer b = 1000;
+int c = 1000;
+System.out.println((a == b) + " " + (a == c));
+~~~`,
+  options: [
+    `false false`,
+    `true true`,
+    `false true`,
+    `true false`
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** {{a == b}} so sánh hai tham chiếu {{Integer}} ngoài vùng cache (-128..127) nên là {{false}} (hai object khác). {{a == c}} so sánh {{Integer}} với {{int}}: toán tử {{==}} kích hoạt **unboxing** (mở gói) {{a}} thành {{int}} rồi so sánh giá trị số, nên là {{true}}.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Unboxing**: khi một toán hạng là primitive và toán hạng kia là wrapper trong ngữ cảnh số học/so sánh số, trình biên dịch chèn lệnh lấy giá trị primitive (ví dụ {{a.intValue()}}). Vì vậy {{a == c}} trở thành {{a.intValue() == c}} → so sánh 1000 == 1000.
+- **Autoboxing cache**: 1000 nằm ngoài [-128,127] nên {{Integer a = 1000}} và {{Integer b = 1000}} tạo hai đối tượng khác nhau; {{==}} giữa hai tham chiếu cho {{false}} dù giá trị bằng nhau.
+
+### Ví dụ cụ thể
+~~~java
+Integer x = 10;
+Integer y = 10;
+int z = 10;
+System.out.println(x == y); // true (cùng cache)
+System.out.println(x == z); // true (unboxing, so sánh giá trị)
+Integer m = null;
+// if (m == 1) {} // NPE khi unboxing m.intValue()
+~~~
+
+### Lỗi hay gặp
+- So sánh {{Integer}} với {{int}} tưởng là so sánh tham chiếu nhưng thực ra unboxing — nếu wrapper là {{null}} sẽ ném {{NullPointerException}} lúc runtime.
+- Tin rằng {{==}} đúng cho mọi {{Integer}} vì thấy đúng với giá trị nhỏ trong test.
+
+### Trả lời phỏng vấn thế nào
+"{{==}} giữa hai {{Integer}} so sánh tham chiếu, nên ngoài cache -128..127 cho {{false}}. Nhưng {{Integer == int}} ép unboxing wrapper và so sánh giá trị, nên có thể {{true}} — và có thể ném NPE nếu wrapper null. Tôi dùng {{equals}} cho wrapper-với-wrapper và cẩn thận null khi unboxing."
+
+> Senior tip: quy tắc an toàn: so sánh giá trị số thì dùng {{equals}} hoặc đưa về primitive tường minh ({{a.intValue() == b.intValue()}}) sau khi kiểm tra null. Tránh để wrapper {{null}} lọt vào biểu thức số học.`
+},
+{
+  id: 'qz-core-039', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+class A {
+    static void f(Object o) { System.out.println("Object"); }
+    static void f(String s) { System.out.println("String"); }
+    static void f(String s1, String s2) { System.out.println("String,String"); }
+    static void f(Object o1, Object o2) { System.out.println("Object,Object"); }
+    public static void main(String[] args) {
+        f(null);
+        f(null, null);
+    }
+}
+~~~`,
+  options: [
+    `Object rồi Object,Object`,
+    `String rồi String,String`,
+    `Lỗi biên dịch ở cả hai lời gọi vì null mơ hồ`,
+    `String rồi Object,Object`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Khi có nhiều overload cùng áp dụng được, trình biên dịch chọn phương thức **cụ thể nhất** (most specific). {{String}} là kiểu con của {{Object}} nên cụ thể hơn; do đó {{f(null)}} chọn {{f(String)}} và {{f(null, null)}} chọn {{f(String, String)}}.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- {{null}} có thể gán cho bất kỳ kiểu tham chiếu nào, nên nhiều overload đều "áp dụng được". Luật phân giải: trong các ứng viên, nếu kiểu tham số của M1 có thể gán được cho kiểu tham số của M2 (M1 cụ thể hơn), thì chọn M1.
+- Lời gọi 1: {{String}} là subtype của {{Object}} → {{f(String)}} cụ thể hơn {{f(Object)}}.
+- Lời gọi 2: từng cặp tham số {{String}} cụ thể hơn {{Object}} → {{f(String,String)}} thắng {{f(Object,Object)}}.
+- Nếu hai ứng viên không cái nào cụ thể hơn cái kia (ví dụ {{f(String, Object)}} và {{f(Object, String)}}), trình biên dịch báo lỗi "reference to f is ambiguous".
+
+### Ví dụ cụ thể
+~~~java
+class X {
+    void g(Integer i) {}
+    void g(String s) {}
+    // g(null); // lỗi biên dịch: Integer và String không có quan hệ cha-con, mơ hồ
+    void h(CharSequence c) {}
+    void h(String s) {}
+    // h(null) chọn h(String) vì String cụ thể hơn CharSequence
+}
+~~~
+
+### Lỗi hay gặp
+- Truyền {{null}} vào API overload gây lỗi biên dịch khi nâng cấp thư viện (thêm overload mới làm xuất hiện mơ hồ).
+- Dựa vào "null chọn Object" — thực tế chọn kiểu cụ thể nhất trong các kiểu tương thích.
+
+### Trả lời phỏng vấn thế nào
+"Overload resolution với {{null}} chọn phương thức có tham số cụ thể nhất: {{String}} cụ thể hơn {{Object}} nên {{f(null)}} vào {{f(String)}}. Nhưng nếu hai nhánh không so sánh được như {{Integer}} và {{String}} thì gọi {{f(null)}} mơ hồ và không biên dịch. Khi thiết kế API tôi hạn chế overload gây mơ hồ với {{null}}."
+
+> Senior tip: để gọi đúng overload mong muốn khi truyền null, ép kiểu tường minh: {{f((String) null)}}. Điều này cũng là cách an toàn khi API của bên thứ ba có nhiều overload.`
+},
+{
+  id: 'qz-core-040', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+String a = "ja" + "va";
+String b = "java";
+String c = "ja";
+String d = c + "va";
+final String e = "ja";
+String f = e + "va";
+System.out.println((a == b) + " " + (d == b) + " " + (f == b));
+~~~`,
+  options: [
+    `true false false`,
+    `true false true`,
+    `false false true`,
+    `true true true`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Phép nối chuỗi hằng (compile-time constant) được gộp lúc biên dịch thành một literal trong String Pool. Phép nối có biến (không phải hằng compile-time) thực hiện lúc chạy và tạo đối tượng mới. Biến {{final}} được gán hằng literal được coi là compile-time constant.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- {{"ja" + "va"}}: cả hai đều là literal, trình biên dịch gộp thành {{"java"}} → {{a}} và {{b}} cùng tham chiếu pool, {{a == b}} {{true}}.
+- {{c + "va"}}: {{c}} là biến thường (không {{final}} hằng), phép nối xảy ra lúc chạy → tạo String mới trên heap, {{d == b}} {{false}} (nội dung vẫn {{equals}}).
+- {{final String e = "ja"}}: {{e}} là hằng compile-time, nên {{e + "va"}} được gộp lúc biên dịch thành {{"java"}} → {{f}} trỏ pool, {{f == b}} {{true}}.
+
+### Ví dụ cụ thể
+~~~java
+final String x = get(); // giá trị không biết lúc biên dịch
+// String y = x + "va"; // nối runtime, không vào pool tự động
+String y = (x + "va").intern(); // ép vào/tra pool
+~~~
+
+### Lỗi hay gặp
+- Tin rằng mọi phép {{+}} chuỗi đều cho cùng tham chiếu pool — chỉ đúng khi toàn bộ là hằng compile-time.
+- Dùng {{==}} để kiểm tra nội dung sau khi nối chuỗi từ biến/input.
+
+### Trả lời phỏng vấn thế nào
+"Nối literal hằng được fold lúc biên dịch nên kết quả nằm trong String Pool. Nếu có biến không phải compile-time constant tham gia, nối xảy ra lúc runtime và tạo object mới, dù nội dung giống. Tôi không dựa vào {{==}} cho nội dung chuỗi; chỉ {{equals}} mới đúng."
+
+> Senior tip: từ Java 9+, trình biên dịch/JVM tối ưu nối chuỗi runtime bằng {{invokedynamic}} và {{StringConcatFactory}} (thay vì chuỗi {{StringBuilder}} thủ công trong bytecode), nhưng đối tượng kết quả vẫn là object mới, không tự intern.`
+},
+{
+  id: 'qz-core-041', topic: 'core',
+  q: `Đoạn code sau in ra gì (Java 17)?
+~~~java
+int x = 2;
+String r = switch (x) {
+    case 1 -> "one";
+    case 2 -> "two";
+    case 3 -> "three";
+    default -> "other";
+};
+System.out.println(r);
+~~~`,
+  options: [
+    `one`,
+    `two`,
+    `three`,
+    `Lỗi biên dịch vì thiếu break`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Switch expression với cú pháp mũi tên {{->}} (Java 14, chuẩn hóa) chọn đúng một nhánh, không rơi xuống nhánh dưới (no fall-through) và không cần {{break}}. Nó có thể trả về giá trị gán cho biến.
+
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Switch expression**: mở rộng switch thành biểu thức có giá trị, giúp code gọn và an toàn hơn. Cú pháp {{case L -> expr}} thực thi expr khi khớp và dùng giá trị đó làm kết quả; không có fall-through như switch statement kiểu cũ ({{case 1: ...}}) nên tránh bug quên {{break}}.
+- {{x == 2}} khớp {{case 2 -> "two"}} nên {{r}} nhận {{"two"}}. {{default}} bắt buộc khi compiler không chứng minh được đã bao phủ hết (với {{int}} thì phải có {{default}}; với enum/sealed đủ nhánh thì có thể bỏ).
+- Nếu nhánh cần nhiều câu lệnh, dùng khối và {{yield}}, ví dụ nhánh {{case 2}} có thể chứa câu lệnh rồi {{yield "two"}}.
+
+### Ví dụ cụ thể
+~~~java
+int day = 6;
+String kind = switch (day) {
+    case 1,2,3,4,5 -> "weekday"; // gộp nhiều nhãn
+    case 6,7 -> "weekend";
+    default -> "invalid";
+};
+~~~
+
+### Lỗi hay gặp
+- Trộn lẫn cú pháp {{->}} và {{:}} trong cùng một switch gây rối; mỗi nhánh nên nhất quán.
+- Quên {{yield}} trong khối của switch expression (hoặc dùng {{return}} nhầm, khiến thoát method).
+
+### Trả lời phỏng vấn thế nào
+"Switch expression dùng {{->}} không fall-through nên không cần {{break}} và trả về giá trị trực tiếp. Tôi dùng nó khi cần ánh xạ giá trị rõ ràng; với nhánh phức tạp tôi dùng khối và {{yield}}. So với switch statement cũ, nó an toàn hơn vì compiler yêu cầu bao phủ trường hợp."
+
+> Senior tip: kết hợp switch expression với sealed class/interface và pattern matching (Java 17+ preview dần, ổn định hơn ở các bản mới) cho phép compiler kiểm tra bao phủ đầy đủ các kiểu con mà không cần {{default}}, rất hữu ích cho domain model.`
+},
+{
+  id: 'qz-core-042', topic: 'core', multi: true,
+  q: `(Chọn 2) Về {{Optional}} trong Java 8+, phát biểu nào đúng?`,
+  options: [
+    `{{Optional.ofNullable(null).orElse("x")}} trả về {{"x"}}`,
+    `{{Optional.ofNullable(null).map(String::toUpperCase)}} ném {{NullPointerException}}`,
+    `{{Optional.empty().isPresent()}} trả về {{false}} và {{Optional.of("a").filter(s -> s.isEmpty())}} trả về Optional rỗng`,
+    `{{Optional.ofNullable("hi").get()}} ném {{NoSuchElementException}} vì chưa kiểm tra`,
+    `{{Optional.of("a").flatMap(s -> Optional.of(s.toUpperCase()))}} trả về Optional rỗng`
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** {{ofNullable}} tạo Optional rỗng khi đầu vào null; {{orElse}} cung cấp giá trị mặc định khi rỗng; {{map/filter}} hoạt động an toàn trên Optional rỗng (trả rỗng) thay vì ném lỗi; {{get()}} chỉ an toàn khi chắc chắn có giá trị.
+
+### Vì sao đúng
+- {{Optional.ofNullable(null)}} tạo {{Optional.empty()}}. {{orElse("x")}} trả về giá trị mặc định {{"x"}} khi rỗng → kết quả {{"x"}}.
+- {{Optional.empty().isPresent()}} là {{false}}. {{filter}} giữ giá trị chỉ khi predicate trả {{true}}; {{"a".isEmpty()}} là {{false}} nên {{filter}} trả Optional rỗng. Đây là cách lọc có điều kiện an toàn.
+
+### Vì sao các phương án còn lại sai
+- {{map}} trên Optional rỗng (hoặc {{ofNullable(null)}}) **không** gọi hàm và trả về Optional rỗng, không ném {{NullPointerException}}. Đây là điểm mạnh của chuỗi {{map}}.
+- {{Optional.of("hi").get()}} trả về {{"hi"}} vì Optional có giá trị; {{get()}} chỉ ném {{NoSuchElementException}} khi Optional rỗng.
+- {{flatMap}} yêu cầu hàm trả về {{Optional<U>}} và "làm phẳng" một tầng: {{flatMap(s -> Optional.of(s.toUpperCase()))}} trên {{Optional.of("a")}} trả {{Optional.of("A")}}, không rỗng.
+
+### Ví dụ cụ thể
+~~~java
+String v = Optional.<String>ofNullable(null)
+    .map(String::trim)
+    .filter(s -> !s.isEmpty())
+    .orElse("default"); // "default", không NPE
+~~~
+
+### Lỗi hay gặp
+- Gọi {{get()}} sau chuỗi biến đổi mà không đảm bảo có giá trị.
+- Dùng {{map}} với hàm trả {{Optional}} dẫn tới {{Optional<Optional<T>>}} — khi đó phải dùng {{flatMap}}.
+
+### Trả lời phỏng vấn thế nào
+"Tôi dùng {{ofNullable}} để bọc giá trị có thể null, {{map/filter/flatMap}} để biến đổi an toàn, và {{orElse/orElseGet/orElseThrow}} để lấy kết quả cuối. Chuỗi thao tác trên Optional rỗng sẽ ngắn mạch trả rỗng thay vì ném NPE, giúp code rõ ý hơn."
+
+> Senior tip: tránh lồng Optional ({{Optional<Optional<T>>}}) và tránh dùng Optional chỉ để thay {{if (x != null)}} ở mọi nơi; dùng nó khi thể hiện rõ ngữ nghĩa 'có thể vắng mặt' ở biên API, nhất là giá trị trả về của truy vấn.`
+},
 );
