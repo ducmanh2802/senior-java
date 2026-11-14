@@ -2160,6 +2160,8 @@ window.DATA_INDEX = {
     {"id":"lesson-security-009","track":"security","order":9,"title":"SSRF: vì sao để server tự đi gọi một URL theo yêu cầu là nguy hiểm, và kiểm tra URL đúng cách ở tầng ứng dụng","level":"senior","minutes":45},
     {"id":"lesson-security-010","track":"security","order":10,"title":"Tự ký và kiểm JWT HS256","level":"senior","minutes":40},
     {"id":"lesson-security-011","track":"security","order":11,"title":"PKCE S256 cho OAuth public client","level":"senior","minutes":40},
+    {"id":"lesson-security-012","track":"security","order":12,"title":"Lưu mật khẩu đúng cách: salt, BCrypt cost factor và vì sao SHA-256 trần là bẫy","level":"mid","minutes":30},
+    {"id":"lesson-security-013","track":"security","order":13,"title":"JWT: cấu trúc, chữ ký HMAC, kiểm tra exp/iss/aud và lỗi alg=none","level":"senior","minutes":35},
     {"id":"lesson-testing-001","track":"testing","order":1,"title":"Test double: fake, stub và mock — chọn cái nào thay vì mock mọi thứ","level":"mid","minutes":25},
     {"id":"lesson-testing-002","track":"testing","order":2,"title":"Clock injection: test code phụ thuộc thời gian mà không ngủ và không flaky","level":"senior","minutes":20},
     {"id":"lesson-testing-003","track":"testing","order":3,"title":"Property-based testing mini: sinh input bằng seed cố định để tìm bug merge/sort","level":"senior","minutes":30},

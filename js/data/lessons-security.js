@@ -4199,5 +4199,520 @@ class AuthServer {
   related: [],
   tags: ['PKCE', 'OAuth', 'S256'],
 },
-);
+{
+  id: 'lesson-security-012',
+  track: 'security',
+  order: 12,
+  title: 'Lưu mật khẩu đúng cách: salt, BCrypt cost factor và vì sao SHA-256 trần là bẫy',
+  level: 'mid',
+  minutes: 30,
+  goals: [
+    'Giải thích rõ salt là gì, BCrypt cost factor (work factor) điều khiển tốc độ băm thế nào và vì sao cần cố ý làm chậm',
+    'Phân biệt băm mật khẩu (password hashing - hàm một chiều, chậm, có salt) với băm dữ liệu thông thường (SHA-256 nhanh, không salt)',
+    'Viết được kiểm tra mật khẩu bằng so sánh thời gian hằng (constant-time comparison) để tránh timing attack',
+  ],
+  body: `**Tóm tắt:** Lưu mật khẩu an toàn nghĩa là không bao giờ lưu bản rõ (plaintext), không dùng SHA-256 trần (không salt, chạy quá nhanh), mà dùng thuật toán băm mật khẩu có **salt ngẫu nhiên** và **cost factor** (hệ số làm chậm) như BCrypt. Khi đăng nhập, băm lại mật khẩu người dùng nhập rồi so sánh bằng **constant-time** để không rò rỉ thông tin qua thời gian phản hồi.
 
+### Thuật ngữ nền (giải thích từ đầu)
+- **Plaintext (bản rõ)**: mật khẩu gốc người dùng gõ, ví dụ {{MyP@ss1}}. Lưu plaintext trong DB là thảm họa: DB bị rò rỉ là lộ hết.
+- **Hash (hàm băm)**: hàm một chiều biến dữ liệu thành chuỗi cố định; cùng đầu vào cho cùng đầu ra, nhưng không suy ngược được đầu ra thành đầu vào. Ví dụ đời thường: như xay thịt thành giò — nhìn miếng giò không lắp lại được miếng thịt nguyên.
+- **Salt (muối)**: chuỗi ngẫu nhiên **riêng cho mỗi người dùng**, nối vào mật khẩu trước khi băm. Salt không cần bí mật, chỉ cần ngẫu nhiên và khác nhau.
+- **Cost factor / work factor**: tham số điều khiển "băm chậm đến mức nào". BCrypt gọi là cost (thường 10–12), nghĩa là 2^cost vòng lặp nội bộ.
+- **Timing attack (tấn công thời gian)**: kẻ tấn công đo thời gian so sánh để đoán từng ký tự. So sánh thường (thoát sớm khi gặp ký tự khác) rò rỉ thông tin.
+
+### Vì sao không dùng SHA-256 trần?
+SHA-256 (Secure Hash Algorithm 256-bit) là hàm băm mật mã **tốt cho kiểm tra toàn vẹn dữ liệu** (file, chữ ký), nhưng **tệ cho mật khẩu** vì hai lý do:
+
+1. **Quá nhanh, không có cost factor**: GPU hiện đại tính được hàng tỷ SHA-256/giây. Nếu DB lộ bảng {{users(password_hash)}}, attacker thử hết mật khẩu phổ biến (dictionary/brute-force - dò từ điển/vét cạn) trong vài phút tới vài giờ cho mật khẩu yếu. BCrypt cố ý chậm (vài trăm mili-giây mỗi lần) nên attacker chỉ thử được vài nghìn/giây — chênh lệch hàng triệu lần.
+2. **Không salt (băm trần)**: cùng mật khẩu cho cùng hash. Attacker dựng **rainbow table** (bảng tra ngược tính sẵn) hoặc thấy hai user có hash giống nhau là biết họ dùng chung mật khẩu. Salt ngẫu nhiên mỗi user phá cả hai: cùng mật khẩu nhưng hash khác nhau, bảng tra sẵn vô dụng.
+
+~~~text
+SHA-256 trần (SAI):
+  hash = SHA256("123456") -> 8d969eef... (luôn ra cùng một chuỗi)
+  user A: 8d969eef...
+  user B: 8d969eef...   (lộ: cùng mật khẩu, tra bảng là ra ngay)
+
+Có salt + chậm (ĐÚNG, ý tưởng BCrypt):
+  saltA = random 16 bytes, hashA = bcrypt("123456", saltA, cost=12)
+  saltB = random 16 bytes, hashB = bcrypt("123456", saltB, cost=12)
+  user A: $2b$12$saltA...hashA
+  user B: $2b$12$saltB...hashB   (khác nhau, không tra bảng được)
+~~~
+
+### BCrypt: salt + cost factor
+BCrypt là thuật toán băm mật khẩu dựa trên Blowfish cipher. Chuỗi BCrypt lưu trọn **phiên bản, cost, salt và hash** trong một chuỗi, ví dụ: {{$2b$12$R9h/cIPz0gi.URNNX3kh2O...}} ({{$2b$}} phiên bản, {{$12$}} cost = 2^12 vòng). Khi verify, thư viện tự tách salt/cost từ chuỗi đã lưu và băm lại để so.
+
+- **Cost factor**: mỗi tăng 1 thì thời gian băm tăng gấp đôi (2^cost). Cost 10 ~ 100ms, cost 12 ~ 250–400ms trên server thông thường (số liệu tham khảo, đo trên phần cứng thật). Chọn cost sao cho 1 lần verify ~ 250–500ms — đủ chậm với attacker, vẫn chấp nhận được với người dùng đăng nhập.
+- **Nâng cost theo thời gian**: phần cứng nhanh hơn mỗi năm; khi nâng cost, hash cũ vẫn verify được (cost nằm trong chuỗi). Chiến lược: khi user đăng nhập thành công và hash đang dùng cost thấp, **rehash** với cost mới rồi cập nhật DB (migrate dần, không cần ép đổi mật khẩu).
+- **Giới hạn 72 byte**: BCrypt chỉ dùng 72 byte đầu của mật khẩu (UTF-8). Mật khẩu rất dài bị cắt — thường hiếm gặp nhưng cần biết.
+
+Trong Spring Security, dùng {{BCryptPasswordEncoder}}: {{encoder.encode(raw)}} để băm, {{encoder.matches(raw, encoded)}} để kiểm tra (so sánh an toàn). Thư viện ngoài JDK chuẩn nên bài tập dưới đây **mô phỏng cơ chế** (salt + hàm băm + cost giả lập bằng vòng lặp) bằng Java thuần để hiểu bản chất.
+
+### So sánh thời gian hằng (constant-time comparison)
+Khi so sánh hash, dùng {{MessageDigest.isEqual(a, b)}} (JDK chuẩn) thay vì {{Arrays.equals}} hay {{String.equals}}. {{String.equals}} trả về false ngay tại ký tự khác đầu tiên → attacker đo thời gian phản hồi hàng triệu lần có thể suy ra từng byte hash. {{MessageDigest.isEqual}} luôn duyệt hết cả hai mảng rồi mới trả kết quả, nên thời gian không phụ thuộc vị trí khác biệt.
+
+~~~java
+import java.security.MessageDigest;
+import java.nio.charset.StandardCharsets;
+
+// SAI: thoát sớm -> rò rỉ thời gian
+boolean bad = storedHash.equals(computedHash);
+
+// ĐÚNG: so sánh constant-time
+boolean ok = MessageDigest.isEqual(
+    storedHash.getBytes(StandardCharsets.UTF_8),
+    computedHash.getBytes(StandardCharsets.UTF_8));
+~~~
+
+### Ví dụ đời thực: DB lộ hash SHA-256 trần
+- **Bối cảnh**: hệ thống 2 triệu user, bảng {{users}} lưu {{SHA-256(password)}} dạng hex 64 ký tự, không có cột salt.
+- **Triệu chứng**: sau khi DB bị dump, khoảng 90% mật khẩu bị dò ra trong 48 giờ; hai user cùng mật khẩu có hash giống hệt nhau.
+- **Điều tra**: hash của {{123456}} là {{8d969eef...}}; thử chuỗi này khớp hàng chục nghìn bản ghi. GPU tính được hàng tỷ SHA-256 mỗi giây nên từ điển 10 triệu mật khẩu phổ biến chỉ mất vài phút.
+- **Xử lý**: chuyển sang BCrypt cost 12, buộc reset mật khẩu, rehash dần khi user đăng nhập, thêm MFA (xác thực nhiều yếu tố).
+- **Kết quả**: mỗi lần đoán tốn khoảng 250ms thay vì vài nano-giây; với cùng phần cứng, attacker chỉ thử được vài nghìn mật khẩu mỗi giây thay vì hàng tỷ.
+
+### So sánh nhanh các cách lưu mật khẩu
+| Cách lưu | Chi phí mỗi lần đoán | Chống rainbow table | Khi nào dùng |
+|---|---|---|---|
+| SHA-256 trần | ~nano-giây | Không | Không bao giờ dùng cho mật khẩu |
+| PBKDF2-HMAC-SHA256 (600k vòng) | ~trăm mili-giây | Có (salt riêng) | Cần JDK chuẩn, không thêm thư viện |
+| BCrypt cost 12 | ~250ms | Có (salt nhúng trong hash) | Phổ biến, Spring Security có sẵn |
+| Argon2id | ~250ms + bộ nhớ | Có | Ưu tiên cho hệ thống mới, cần thư viện |
+
+> Số liệu chỉ để so sánh bậc độ lớn: phần cứng và tham số khác nhau cho kết quả khác nhau, nhưng thứ tự "SHA-256 nhanh hơn hàng triệu lần" luôn đúng.
+
+### Bẫy production hay gặp
+- **Hash không salt hoặc salt cố định**: vô hiệu rainbow table defense. Mỗi user phải có salt ngẫu nhiên ({{SecureRandom}}).
+- **Dùng SHA-256/SHA-512/MD5 trực tiếp cho mật khẩu**: nhanh, không cost factor. Dùng BCrypt/Argon2id/PBKDF2.
+- **Tự "bịa" thuật toán**: SHA-256(SHA-256(password+salt)) không thay thế cost factor thực sự. Dùng thư viện đã được kiểm chứng.
+- **So sánh bằng {{==}} hoặc {{equals}}**: timing attack. Dùng {{MessageDigest.isEqual}} hoặc API {{matches}} của encoder.
+- **Log mật khẩu plaintext**: tuyệt đối không log request body chứa password.
+
+> Senior tip: Trên production, chọn BCrypt cost sao cho {{encoder.matches}} mất khoảng 250ms trên server thật (đo bằng benchmark), và đặt alert nếu thời gian xác thực tăng đột biến (dấu hiệu ai đó cố tình gửi request nặng). Với hệ thống cần bảo mật rất cao hoặc lo GPU/ASIC, cân nhắc Argon2id (memory-hard - tốn bộ nhớ, chống GPU tốt hơn); Spring Security 5+ hỗ trợ {{Argon2PasswordEncoder}}.
+
+### Liên hệ phỏng vấn
+Khi được hỏi "lưu mật khẩu thế nào cho an toàn", trả lời theo trình tự: (1) không lưu plaintext, không mã hóa hai chiều (encryption) vì key lộ là lộ hết; (2) băm một chiều với **salt ngẫu nhiên mỗi user** + thuật toán chậm có **cost factor** (BCrypt/Argon2id/PBKDF2); (3) verify bằng {{matches}}/so sánh constant-time; (4) có chiến lược nâng cost (rehash khi login). Nhấn mạnh **vì sao SHA-256 trần sai** (nhanh + không salt) — đây là điểm phân biệt ứng viên hiểu bản chất.`,
+  exercises: [
+    {
+      title: 'Mô phỏng băm mật khẩu có salt và kiểm tra bằng so sánh thời gian hằng',
+      prompt: `Hoàn thiện {{PasswordBox}} mô phỏng cơ chế lưu/kiểm mật khẩu bằng Java thuần (không dùng thư viện ngoài).
+- {{hash(password, salt, cost)}}: trả về chuỗi hash dạng hex. Thuật toán mô phỏng: bắt đầu từ {{password + ":" + salt}}, lặp {{cost}} lần, mỗi lần tính SHA-256 ({{MessageDigest}} với thuật toán {{SHA-256}}) trên mảng byte UTF-8 của kết quả hex lần trước (lần đầu trên chuỗi gốc). Trả về hex của lần băm cuối.
+- {{store(password, salt, cost)}}: trả về chuỗi lưu trữ dạng {{cost + ":" + salt + ":" + hash}}.
+- {{verify(password, stored)}}: tách {{stored}} thành cost, salt, hash đã lưu (tách theo dấu {{:}} thành đúng 3 phần); băm lại password với salt/cost đó và so sánh với hash đã lưu bằng **so sánh thời gian hằng** (constant-time: duyệt hết mọi byte, không thoát sớm, dùng biến tích lũy). Trả về {{true}} nếu khớp, {{false}} nếu không.`,
+      starter: `import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+
+class PasswordBox {
+    // Băm password với salt và cost (số vòng lặp), trả về hex
+    static String hash(String password, String salt, int cost) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    // Trả về chuỗi "cost:salt:hash" để lưu vào DB
+    static String store(String password, String salt, int cost) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    // Kiểm tra password với chuỗi đã lưu, so sánh constant-time
+    static boolean verify(String password, String stored) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    // Tiện ích: byte[] -> hex viết thường
+    static String toHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b & 0xff));
+        }
+        return sb.toString();
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean cond) {
+        total++;
+        if (cond) { passed++; System.out.println("PASS " + name); }
+        else { System.out.println("FAIL " + name); }
+    }
+    public static void main(String[] args) {
+        String s1 = PasswordBox.store("secret123", "saltA", 10);
+        String s2 = PasswordBox.store("secret123", "saltB", 10);
+        check("verify dung mat khau", PasswordBox.verify("secret123", s1));
+        check("verify sai mat khau", !PasswordBox.verify("wrong", s1));
+        check("salt khac cho hash khac", !s1.substring(s1.lastIndexOf(':') + 1)
+            .equals(s2.substring(s2.lastIndexOf(':') + 1)));
+        String low = PasswordBox.store("pw", "s", 1);
+        String high = PasswordBox.store("pw", "s", 5);
+        check("cost khac cho hash khac", !low.substring(low.lastIndexOf(':') + 1)
+            .equals(high.substring(high.lastIndexOf(':') + 1)));
+        String h = PasswordBox.hash("abc", "x", 3);
+        check("hash deterministic", h.equals(PasswordBox.hash("abc", "x", 3)));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+
+class PasswordBox {
+    static String hash(String password, String salt, int cost) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            String current = password + ":" + salt;
+            byte[] digest = null;
+            for (int i = 0; i < cost; i++) {
+                digest = md.digest(current.getBytes(StandardCharsets.UTF_8));
+                current = toHex(digest);
+            }
+            return toHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    static String store(String password, String salt, int cost) {
+        return cost + ":" + salt + ":" + hash(password, salt, cost);
+    }
+
+    static boolean verify(String password, String stored) {
+        String[] parts = stored.split(":", 3);
+        if (parts.length != 3) return false;
+        int cost = Integer.parseInt(parts[0]);
+        String salt = parts[1];
+        String expected = parts[2];
+        String actual = hash(password, salt, cost);
+        byte[] a = actual.getBytes(StandardCharsets.UTF_8);
+        byte[] b = expected.getBytes(StandardCharsets.UTF_8);
+        if (a.length != b.length) return false;
+        int diff = 0;
+        for (int i = 0; i < a.length; i++) {
+            diff |= a[i] ^ b[i];
+        }
+        return diff == 0;
+    }
+
+    static String toHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b & 0xff));
+        }
+        return sb.toString();
+    }
+}`,
+      hints: [
+        'Mỗi vòng lặp: {{md.digest(current.getBytes(StandardCharsets.UTF_8))}} rồi {{current = toHex(digest)}}; lặp {{cost}} lần.',
+        'Constant-time: tính {{diff |= a[i] ^ b[i]}} cho mọi i và trả về {{diff == 0}}; không return false ngay khi thấy khác.',
+        'Tách {{stored}} bằng {{stored.split(":", 3)}} để an toàn.',
+      ],
+      explain: `Lời giải mô phỏng đúng hai ý cốt lõi: (1) **salt** làm cùng mật khẩu nhưng salt khác → hash khác, phá rainbow table; **cost** (số vòng) làm băm chậm hơn khi tăng. (2) **Constant-time comparison**: tích lũy {{diff |= a[i] ^ b[i]}} qua toàn bộ mảng thay vì thoát sớm, nên thời gian không phụ thuộc vị trí khác biệt — tránh timing attack. Trong thực tế dùng {{BCryptPasswordEncoder}} (Spring) hoặc {{MessageDigest.isEqual}}; ở đây ta tự cài constant-time để hiểu cơ chế.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao SHA-256 trần (không salt, không cost factor) không phù hợp để lưu mật khẩu?',
+      options: [
+        'Vì SHA-256 tạo ra chuỗi quá dài nên tốn bộ nhớ DB',
+        'Vì SHA-256 quá nhanh và không có salt, nên attacker dò/vét cạn hàng tỷ lần/giây và dùng rainbow table khi hash trùng',
+        'Vì SHA-256 là thuật toán mã hóa hai chiều nên có thể giải ngược dễ dàng',
+        'Vì SHA-256 chỉ dùng được cho file, không dùng được cho chuỗi ký tự',
+      ],
+      answer: 1,
+      explain: 'SHA-256 là hàm băm một chiều (không giải ngược trực tiếp) nhưng **quá nhanh** và khi không salt thì cùng mật khẩu → cùng hash, nên attacker dùng GPU vét cạn cực nhanh và tra rainbow table.',
+    },
+    {
+      q: 'Cost factor (work factor) trong BCrypt có vai trò gì?',
+      options: [
+        'Tăng độ dài chuỗi hash để khó đoán hơn',
+        'Quy định độ dài salt ngẫu nhiên được sinh ra',
+        'Điều khiển số vòng lặp (2^cost) để làm băm cố ý chậm, khiến brute-force tốn thời gian hơn nhiều',
+        'Xác định thuật toán mã hóa hai chiều dùng để bảo vệ hash',
+      ],
+      answer: 2,
+      explain: 'Cost factor làm hàm băm **chậm theo cấp số nhân** (mỗi tăng 1 → gấp đôi thời gian), cân bằng: đủ nhanh cho 1 lần đăng nhập hợp lệ, nhưng cực chậm khi attacker phải thử hàng triệu mật khẩu.',
+    },
+    {
+      q: 'Vì sao khi so sánh hash mật khẩu nên dùng constant-time comparison?',
+      options: [
+        'Vì nó so sánh nhanh hơn {{String.equals}} nên tăng hiệu năng đăng nhập',
+        'Vì {{String.equals}} không hoạt động với mảng byte',
+        'Vì so sánh thoát sớm rò rỉ thời gian phản hồi, attacker có thể khai thác (timing attack) để suy ra thông tin',
+        'Vì constant-time tự động thêm salt vào quá trình so sánh',
+      ],
+      answer: 2,
+      explain: 'So sánh thường thoát sớm tại vị trí khác đầu tiên → thời gian khác nhau tùy dữ liệu, tạo kênh rò rỉ (timing side-channel). Constant-time luôn duyệt hết để thời gian không phụ thuộc dữ liệu.',
+    },
+  ],
+  related: ['security-005', 'security-036'],
+  tags: ['password', 'bcrypt', 'salt', 'hashing', 'timing-attack'],
+},
+{
+  id: 'lesson-security-013',
+  track: 'security',
+  order: 13,
+  title: 'JWT: cấu trúc, chữ ký HMAC, kiểm tra exp/iss/aud và lỗi alg=none',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Mô tả đúng cấu trúc JWT (header.payload.signature), phân biệt mã hóa Base64URL với chữ ký/mã hóa bảo mật',
+    'Hiểu cách ký và verify HMAC bằng {{javax.crypto.Mac}}, và vì sao phải kiểm tra {{exp}}, {{iss}}, {{aud}}',
+    'Nhận diện và phòng lỗi {{alg: none}} cùng việc tin cậy header do client gửi',
+  ],
+  body: `**Tóm tắt:** JWT (JSON Web Token - token web dạng JSON) là chuỗi {{header.payload.signature}} mã hóa Base64URL, dùng để truyền thông tin (claims - các khẳng định như user id, hạn dùng) giữa các bên. JWT **không tự mã hóa bí mật nội dung** (ai cũng decode được payload), an toàn dựa vào **chữ ký** (signature) để phát hiện bị sửa, và server phải kiểm tra chữ ký cùng các claim {{exp}} (hết hạn), {{iss}} (bên phát hành), {{aud}} (đối tượng nhận); tuyệt đối không tin {{alg}} từ header theo cách cho phép {{none}}.
+
+### Thuật ngữ nền
+- **Base64URL**: cách mã hóa nhị phân/chuỗi thành ký tự an toàn trong URL (dùng {{-}} {{_}} thay {{+}} {{/}}, bỏ padding {{=}}). Đây là **mã hóa biểu diễn**, không phải mã hóa bảo mật — decode lại ra nội dung gốc dễ dàng.
+- **Claim**: một cặp key-value trong payload, ví dụ {{sub}} (subject - chủ thể, thường là user id), {{exp}} (expiration time - thời điểm hết hạn, tính bằng giây Unix), {{iss}} (issuer - bên phát hành token), {{aud}} (audience - dịch vụ/đối tượng token dành cho).
+- **HMAC** (Hash-based Message Authentication Code - mã xác thực thông điệp dùng băm): thuật toán tạo chữ ký bằng hàm băm + khóa bí mật chung; bên có cùng khóa mới tạo/kiểm tra được chữ ký. Ví dụ HS256 = HMAC với SHA-256.
+- **Signature (chữ ký)**: phần thứ ba của JWT, tính trên {{base64url(header) + "." + base64url(payload)}} bằng thuật toán và khóa; thay đổi 1 bit trong header/payload làm chữ ký không khớp.
+
+### Cấu trúc JWT: header.payload.signature
+~~~text
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9   <- header (Base64URL JSON)
+.
+eyJzdWIiOiJ1MSIsImV4cCI6MTgwMDAwMDAwMH0 <- payload/claims (Base64URL JSON)
+.
+SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c <- signature (Base64URL)
+~~~
+Giải mã Base64URL (ai cũng làm được): header là JSON có {{alg}} bằng {{HS256}} và {{typ}} bằng {{JWT}}; payload là JSON có {{sub}} bằng {{u1}} và {{exp}} bằng {{1800000000}}. **Vì sao payload đọc được?** Vì JWT chuẩn (JWS - JSON Web Signature) chỉ **ký**, không **mã hóa** nội dung. Đừng bỏ mật khẩu/bí mật vào payload; cần giấu nội dung thì dùng JWE (JSON Web Encryption - mã hóa).
+
+### Ký và verify HMAC bằng {{javax.crypto.Mac}} (JDK chuẩn)
+HMAC cần **khóa bí mật** (secret key) chỉ server biết. Quy trình:
+1. Tạo chuỗi ký: {{signingInput = base64url(headerJson) + "." + base64url(payloadJson)}}.
+2. Tính {{signature = HMAC-SHA256(secret, signingInput)}}.
+3. Token = {{signingInput + "." + base64url(signature)}}.
+4. Verify: tách 3 phần, tính lại HMAC trên {{header.payload}} với cùng secret, so sánh constant-time với chữ ký nhận được; nếu khác → token bị sửa hoặc khóa sai.
+
+~~~java
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.util.Base64;
+import java.nio.charset.StandardCharsets;
+
+// Ky (sign) HMAC-SHA256
+Mac mac = Mac.getInstance("HmacSHA256");
+mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+byte[] sig = mac.doFinal(signingInput.getBytes(StandardCharsets.UTF_8));
+String sigB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(sig);
+~~~
+
+### Phải kiểm tra exp, iss, aud (không chỉ chữ ký đúng)
+- **{{exp}} (expiration)**: thời điểm hết hạn (Unix seconds). Token hết hạn phải bị từ chối; nếu không, token bị đánh cắp dùng được mãi mãi. So sánh: {{nowSeconds < exp}}.
+- **{{iss}} (issuer)**: token do ai phát hành. Server phải kiểm tra {{iss}} đúng bên phát hành mong đợi; nếu không, token do hệ thống khác ký có thể bị chấp nhận.
+- **{{aud}} (audience)**: token dành cho dịch vụ nào. API {{orders}} phải từ chối token có {{aud}} là {{payments}}; ngăn token hợp lệ ở service A bị đem dùng ở service B.
+
+### Lỗi nghiêm trọng: {{alg: none}} và tin header từ client
+Header chứa {{alg}} do **client gửi lên**. Một lỗ hổng kinh điển: thư viện JWT cũ đọc {{alg}} từ header, nếu {{alg}} là {{none}} thì **bỏ qua verify chữ ký** và chấp nhận token. Attacker tự tạo payload có {{sub}} là {{admin}} và {{exp}} rất dài, đặt header có {{alg}} là {{none}}, gửi token không chữ ký → đăng nhập thành admin.
+
+**Cách phòng:**
+- Server phải **cố định thuật toán/khoá mong đợi** (ví dụ chỉ chấp nhận HS256 với secret của mình), không chọn thuật toán theo header client gửi.
+- Từ chối {{alg: none}} tuyệt đối.
+- Với thuật toán bất đối xứng (RS256), cẩn thận tấn công "algorithm confusion" — luôn chỉ định rõ loại key/thuật toán.
+
+### Ví dụ đời thực: API chấp nhận token hết hạn/alg none
+- **Triệu chứng**: user bị logout nhưng token cũ vẫn gọi API được; hoặc audit phát hiện request admin không có trong log đăng nhập.
+- **Điều tra**: server chỉ decode payload lấy {{sub}}, không verify chữ ký; hoặc verify nhưng không kiểm {{exp}}; hoặc thư viện chấp nhận {{alg:none}}.
+- **Xử lý**: dùng thư viện JWT cập nhật, cấu hình verify với thuật toán cố định (HS256/RS256) + secret/key rõ ràng, bật kiểm tra {{exp/iss/aud}}.
+- **Kết quả**: token giả/chỉnh sửa/hết hạn đều bị từ chối (401).
+
+> Senior tip: Trên production, access token nên sống ngắn (5–15 phút) và dùng refresh token (lưu/thu hồi được phía server) để cấp lại; luôn validate {{iss}} và {{aud}} khi hệ thống có nhiều service/issuer. Ghi log (không log token) khi verify thất bại để phát hiện tấn công, và rotate secret/key định kỳ có kế hoạch.
+
+### Liên hệ phỏng vấn
+Trả lời "JWT hoạt động thế nào, cần kiểm tra gì?": mô tả cấu trúc 3 phần, Base64URL chỉ là biểu diễn, chữ ký (HS256/RS256) đảm bảo toàn vẹn; khi verify phải (1) **cố định thuật toán**, từ chối {{none}}, (2) verify chữ ký bằng khóa tin cậy, (3) kiểm tra {{exp}}, {{iss}}, {{aud}}. Nêu được lỗi {{alg:none}} và việc tin header cho thấy bạn hiểu bản chất bảo mật.`,
+  exercises: [
+    {
+      title: 'Verify JWT HMAC (HS256) bằng javax.crypto: chữ ký, exp và alg',
+      prompt: `Hoàn thiện lớp {{JwtVerifier}} chỉ dùng JDK ({{javax.crypto}}, {{java.util.Base64}}, {{java.nio.charset}}).
+- {{verify(token, secret, expectedIss, expectedAud, nowSeconds)}} trả về {{true}} nếu token hợp lệ, ngược lại {{false}}. Quy tắc:
+  1. Token có đúng 3 phần ngăn bởi dấu chấm {{header.payload.signature}}.
+  2. Decode header (Base64URL) và kiểm tra {{alg}} **phải bằng đúng** {{HS256}} (từ chối {{none}} hoặc thuật toán khác).
+  3. Tính HMAC-SHA256 của {{headerB64 + "." + payloadB64}} bằng {{secret}} (UTF-8) và so sánh constant-time với phần signature (decode Base64URL) — chữ ký phải khớp.
+  4. Decode payload JSON (dạng phẳng) và kiểm tra: {{exp}} (số) tồn tại và {{nowSeconds < exp}}; {{iss}} (chuỗi) bằng {{expectedIss}}; {{aud}} (chuỗi) bằng {{expectedAud}}.
+- {{parseJsonField(json, key)}}: hỗ trợ lấy giá trị chuỗi ({{"key":"value"}}) hoặc số ({{"key":123}}) từ JSON phẳng một cấp — trả về giá trị dạng String.`,
+      starter: `import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Base64;
+
+class JwtVerifier {
+    static boolean verify(String token, String secret, String expectedIss, String expectedAud, long nowSeconds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    // Lay gia tri cua key trong JSON phang: ho tro "key":"value" va "key":123
+    static String parseJsonField(String json, String key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static byte[] hmacSha256(String data, String secret) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            return mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    static String b64UrlEncode(byte[] data) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(data);
+    }
+}`,
+      tests: `public class Main {
+    static String makeToken(String headerJson, String payloadJson, String secret) {
+        String h = JwtVerifier.b64UrlEncode(headerJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        String p = JwtVerifier.b64UrlEncode(payloadJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        String signing = h + "." + p;
+        String sig = JwtVerifier.b64UrlEncode(JwtVerifier.hmacSha256(signing, secret));
+        return signing + "." + sig;
+    }
+    static int passed = 0, total = 0;
+    static void check(String name, boolean cond) {
+        total++;
+        if (cond) { passed++; System.out.println("PASS " + name); }
+        else { System.out.println("FAIL " + name); }
+    }
+    public static void main(String[] args) {
+        String secret = "topsecret";
+        String header = "{\\\"alg\\\":\\\"HS256\\\",\\\"typ\\\":\\\"JWT\\\"}";
+        String payload = "{\\\"sub\\\":\\\"u1\\\",\\\"iss\\\":\\\"auth.example\\\",\\\"aud\\\":\\\"orders\\\",\\\"exp\\\":2000000000}";
+        String ok = makeToken(header, payload, secret);
+        check("token hop le", JwtVerifier.verify(ok, secret, "auth.example", "orders", 1700000000L));
+        check("token het han", !JwtVerifier.verify(ok, secret, "auth.example", "orders", 2000000001L));
+        String badIss = makeToken(header,
+            "{\\\"sub\\\":\\\"u1\\\",\\\"iss\\\":\\\"evil\\\",\\\"aud\\\":\\\"orders\\\",\\\"exp\\\":2000000000}", secret);
+        check("sai iss", !JwtVerifier.verify(badIss, secret, "auth.example", "orders", 1700000000L));
+        String noneHeader = "{\\\"alg\\\":\\\"none\\\",\\\"typ\\\":\\\"JWT\\\"}";
+        String noneTok = makeToken(noneHeader, payload, secret);
+        check("tu choi alg none", !JwtVerifier.verify(noneTok, secret, "auth.example", "orders", 1700000000L));
+        check("sai chu ky", !JwtVerifier.verify(ok, "wrongsecret", "auth.example", "orders", 1700000000L));
+        String tampered = ok.substring(0, ok.length() - 2) + "aa";
+        check("chu ky bi sua", !JwtVerifier.verify(tampered, secret, "auth.example", "orders", 1700000000L));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Base64;
+
+class JwtVerifier {
+    static boolean verify(String token, String secret, String expectedIss, String expectedAud, long nowSeconds) {
+        try {
+            if (token == null) return false;
+            String[] parts = token.split("\\\\.", -1);
+            if (parts.length != 3) return false;
+            String headerB64 = parts[0];
+            String payloadB64 = parts[1];
+            String sigB64 = parts[2];
+
+            String headerJson = new String(Base64.getUrlDecoder().decode(headerB64), StandardCharsets.UTF_8);
+            String alg = parseJsonField(headerJson, "alg");
+            if (!"HS256".equals(alg)) return false;
+
+            byte[] expectedSig = hmacSha256(headerB64 + "." + payloadB64, secret);
+            byte[] actualSig = Base64.getUrlDecoder().decode(sigB64);
+            if (!MessageDigest.isEqual(expectedSig, actualSig)) return false;
+
+            String payloadJson = new String(Base64.getUrlDecoder().decode(payloadB64), StandardCharsets.UTF_8);
+            String iss = parseJsonField(payloadJson, "iss");
+            String aud = parseJsonField(payloadJson, "aud");
+            String expStr = parseJsonField(payloadJson, "exp");
+            if (expStr == null || iss == null || aud == null) return false;
+            long exp = Long.parseLong(expStr);
+            if (nowSeconds >= exp) return false;
+            if (!expectedIss.equals(iss)) return false;
+            if (!expectedAud.equals(aud)) return false;
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    static String parseJsonField(String json, String key) {
+        if (json == null) return null;
+        String needle = "\\\"" + key + "\\":";
+        int idx = json.indexOf(needle);
+        if (idx < 0) return null;
+        int start = idx + needle.length();
+        while (start < json.length() && Character.isWhitespace(json.charAt(start))) start++;
+        if (start >= json.length()) return null;
+        char c = json.charAt(start);
+        if (c == '\"') {
+            int end = json.indexOf('\"', start + 1);
+            if (end < 0) return null;
+            return json.substring(start + 1, end);
+        } else {
+            int end = start;
+            while (end < json.length()) {
+                char ch = json.charAt(end);
+                if (ch == ',' || ch == '}' || Character.isWhitespace(ch)) break;
+                end++;
+            }
+            return json.substring(start, end);
+        }
+    }
+
+    static byte[] hmacSha256(String data, String secret) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            return mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    static String b64UrlEncode(byte[] data) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(data);
+    }
+}`,
+      hints: [
+        'Tách token bằng {{token.split("\\.", -1)}} và kiểm tra đủ 3 phần; decode header để lấy {{alg}} và chỉ chấp nhận {{HS256}}.',
+        'Chữ ký verify: {{hmacSha256(headerB64 + "." + payloadB64, secret)}} so với {{Base64.getUrlDecoder().decode(sigB64)}} bằng {{MessageDigest.isEqual}}.',
+        'Parse JSON phẳng: tìm {{"key":}}, nếu ký tự tiếp theo là dấu ngoặc kép thì đọc đến ngoặc kép đóng, nếu không thì đọc dãy số/ký tự đến dấu phẩy hoặc dấu đóng ngoặc.',
+      ],
+      explain: `Lời giải thực hiện đúng quy trình verify an toàn: (1) tách 3 phần và **cố định thuật toán** {{HS256}} từ header — từ chối {{none}}/khác; (2) tính lại HMAC trên {{header.payload}} và so sánh constant-time với signature đã decode; (3) kiểm tra claim {{exp}}, {{iss}}, {{aud}} khớp kỳ vọng. Bắt mọi lỗi và trả {{false}} để token sai định dạng không làm sập server.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Phần payload của JWT (JWS chuẩn) có được bảo mật khỏi việc bị đọc bởi người giữ token không?',
+      options: [
+        'Có, vì payload được mã hóa bằng khóa bí mật của server',
+        'Có, vì Base64URL là thuật toán mã hóa mạnh',
+        'Không, payload chỉ được mã hóa Base64URL (biểu diễn) nên ai có token cũng decode đọc được; chữ ký chỉ chống bị sửa',
+        'Không, nhưng chỉ admin server mới decode được',
+      ],
+      answer: 2,
+      explain: 'Base64URL là **encoding** (biểu diễn), không phải encryption. Chữ ký đảm bảo **tính toàn vẹn**, không đảm bảo **bí mật** nội dung.',
+    },
+    {
+      q: 'Tại sao server không được tin trường {{alg}} trong header JWT do client gửi để quyết định cách verify?',
+      options: [
+        'Vì {{alg}} chỉ dùng để hiển thị, không ảnh hưởng bảo mật',
+        'Vì attacker có thể đặt {{alg: none}} hoặc đổi thuật toán để bypass kiểm tra chữ ký và tự tạo token giả',
+        'Vì {{alg}} luôn phải là RS256 nên đọc header là thừa',
+        'Vì header JWT không bao giờ chứa trường {{alg}}',
+      ],
+      answer: 1,
+      explain: 'Header do client kiểm soát; nếu server làm theo, attacker có thể bypass verify. Server phải **cố định** thuật toán và khóa mong đợi khi verify.',
+    },
+    {
+      q: 'Khi verify JWT cho API {{orders}}, ngoài chữ ký đúng, cần kiểm tra các claim nào?',
+      options: [
+        'Chỉ cần kiểm tra {{sub}} để biết user là ai',
+        'Chỉ cần kiểm tra {{iat}} để biết token mới hay cũ',
+        'Kiểm tra {{exp}} (chưa hết hạn), {{iss}} (đúng bên phát hành), {{aud}} (đúng dành cho dịch vụ/orders)',
+        'Không cần kiểm tra claim nào thêm nếu chữ ký HMAC đã khớp',
+      ],
+      answer: 2,
+      explain: 'Chữ ký đúng chỉ chứng minh token không bị sửa. Cần {{exp}} để từ chối token hết hạn, {{iss}} để đảm bảo đúng issuer, {{aud}} để tránh token dùng nhầm service.',
+    },
+  ],
+  related: ['security-003', 'security-034'],
+  tags: ['JWT', 'HMAC', 'HS256', 'exp', 'iss', 'aud', 'alg-none'],
+},
+);
