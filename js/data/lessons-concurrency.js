@@ -4590,4 +4590,575 @@ Loi hay gap:
   related: ['concurrency-003'],
   tags: ['ExecutorService', 'ThreadPoolExecutor', 'shutdown', 'graceful shutdown'],
 },
+{
+  id: 'lesson-concurrency-016',
+  track: 'concurrency',
+  order: 16,
+  title: 'CompletableFuture từ gốc: hộp kết quả, thenApply/thenCompose/allOf, executor riêng và xử lý lỗi',
+  level: 'mid',
+  minutes: 45,
+  goals: [
+    'Giải thích được {{CompletableFuture}} là "hộp chứa kết quả chưa có", callback chạy trên thread nào và vì sao phải truyền executor riêng cho việc IO',
+    'Phân biệt {{thenApply}} (biến đổi đồng bộ), {{thenCompose}} (nối việc bất đồng bộ) và {{thenCombine}}/{{allOf}} (gộp nhiều việc song song)',
+    'Xử lý lỗi bằng {{exceptionally}}/{{handle}}/{{whenComplete}} và phân biệt {{CompletionException}} với {{ExecutionException}}',
+    'Viết được pipeline gọi 3 "service" song song có timeout, fallback từng nguồn, và không chặn thread gọi',
+  ],
+  body: `### Tóm tắt
+{{CompletableFuture}} (viết tắt CF) là một **cái hộp chứa kết quả sẽ có trong tương lai**. Thay vì bắt một thread đứng chờ kết quả ({{Future.get()}}), bạn khai báo "khi nào có kết quả thì làm tiếp bước này" bằng callback; Java tự gọi callback đó khi hộp được điền. Muốn nhiều việc chạy song song thì mỗi việc phải được **đưa vào một executor riêng** (một pool có giới hạn), vì mặc định chúng chạy trên pool dùng chung của cả JVM. Nếu một bước lỗi, lỗi **chạy theo chuỗi** cho tới khi gặp một chỗ xử lý lỗi. Bài này đi từ từng bước một, không giả định bạn đã dùng CF bao giờ.
+
+### Vì sao cần CF: vấn đề của "chờ cũng tốn thread"
+Hãy hình dung một nhân viên thu ngân (thread) phải gọi điện cho ba nhà cung cấp (ba service) để hỏi giá, mỗi cuộc gọi mất 200 ms. Cách cổ điển: nhấc máy, **đứng chờ** từng cuộc, gác máy rồi gọi cuộc tiếp theo ⇒ 600 ms. Nếu 1.000 khách hàng (request) cùng tới, bạn cần 1.000 nhân viên đang đứng chờ, mỗi nhân viên chiếm một chỗ ngồi và một cái điện thoại — trong Java, mỗi thread là **thread hệ điều hành thật** với stack riêng (mặc định khoảng 1 MB) và việc chuyển qua lại giữa các thread tốn CPU (context switch).
+
+Cách thông minh hơn: gọi cả ba cuộc **cùng lúc**, rồi giao cho người khác "khi nào có kết quả thì gọi tôi". CF chính là tờ giấy hẹn đó.
+
+Ba thuật ngữ cần thuộc trước khi đọc tiếp:
+- **bất đồng bộ (asynchronous)**: phát việc đi rồi đi làm việc khác, không dừng tại chỗ chờ.
+- **callback**: hàm bạn đưa cho người khác; tới lúc có kết quả họ gọi lại hàm đó.
+- **stage**: một bước trong chuỗi việc ("bước 1 gọi API, bước 2 parse JSON, bước 3 tính thuế").
+
+### CF là cái hộp ba trạng thái
+Một CF có đúng ba trạng thái, và chỉ đi một chiều: **chưa có gì** → **đã có giá trị**, hoặc **chưa có gì** → **đã có lỗi**. Sau khi đã điền, mọi lần điền tiếp theo bị bỏ qua im lặng (không ném lỗi).
+
+~~~java
+CompletableFuture<Integer> box = new CompletableFuture<>();   // hộp rỗng
+box.thenApply(v -> System.out.println("nhận " + v));          // đăng ký việc khi hộp đầy
+box.complete(95);                                             // điền 95: in "nhận 95"
+box.complete(99);                                             // hộp đã đầy: BỎ QUA, không lỗi
+~~~
+
+Ai điền hộp thì **chính thread đó** chạy các việc đã đăng ký. Đó là toàn bộ cơ chế bên trong: mỗi CF giữ kết quả (hoặc exception) và danh sách các stage phụ thuộc; khi được điền, nó lần lượt kích hoạt các stage đó. Bạn không cần nhớ cấu trúc Cây/Stack nội bộ — chỉ cần nhớ "hộp + danh sách việc phụ thuộc".
+
+| Việc | API | Kết quả |
+|---|---|---|
+| Điền giá trị | {{complete(v)}} | true nếu đây là lần điền đầu |
+| Điền lỗi | {{completeExceptionally(ex)}} | các stage sau sẽ nhận lỗi |
+| Huỷ | {{cancel(mayInterrupt)}} | tương đương {{completeExceptionally(new CancellationException())}} |
+| Lấy kết quả, chặn | {{get()}} / {{get(t, unit)}} | ném checked {{ExecutionException}} / {{TimeoutException}} |
+| Lấy kết quả, không checked | {{join()}} | ném unchecked {{CompletionException}} |
+
+### thenApply: biến đổi kết quả (map)
+Giống {{Stream.map}}: hàm nhận giá trị, trả về giá trị khác, kết quả lại nằm trong **một** hộp.
+
+~~~java
+CompletableFuture<String> json = CompletableFuture.supplyAsync(() -> httpGet(url), ioPool);
+CompletableFuture<Integer> price = json
+        .thenApply(body -> parsePrice(body))    // String -> Integer
+        .thenApply(p -> p + tax(p));            // Integer -> Integer
+~~~
+
+### thenCompose: nối việc bất đồng bộ (flatMap)
+Nếu hàm của bạn **tự nó** trả về một CF (tức là "bước sau cũng là một lời gọi async"), dùng {{thenCompose}}. Nếu dùng {{thenApply}}, bạn sẽ nhận về {{CompletableFuture<CompletableFuture<T>>}} — hộp lồng hộp, phải mở hai lần mới tới giá trị.
+
+~~~java
+CompletableFuture<User> user = findUser(id);                      // CF<User>
+CompletableFuture<List<Order>> a = user.thenApply(u -> findOrders(u));       // SAI: CF<CF<List<Order>>>
+CompletableFuture<List<Order>> b = user.thenCompose(u -> findOrders(u));     // ĐÚNG: CF<List<Order>>
+~~~
+
+### thenCombine / allOf / anyOf: gộp nhiều việc
+| Method | Dùng khi | Kết quả |
+|---|---|---|
+| {{thenCombine(other, f)}} | hai việc **độc lập**, gộp kết quả khi **cả hai** xong | CF của giá trị gộp |
+| {{allOf(cfs...)}} | chờ **N** việc, không quan tâm giá trị | CF<Void> (phải tự {{join}} từng CF để lấy kết quả) |
+| {{anyOf(cfs...)}} | việc nào xong trước thì lấy (kể cả xong vì lỗi!) | CF<Object> |
+
+~~~java
+CompletableFuture<Double> total = priceOf("A").thenCombine(priceOf("B"), Double::sum);
+CompletableFuture<Void> all = CompletableFuture.allOf(saveUser(), saveOrder(), sendMail());
+all.join();                                  // cả ba đã xong (hoặc một cái lỗi thì join ném lỗi)
+~~~
+
+### Callback chạy trên thread nào?
+Đây là câu hỏi phỏng vấn hay nhất của chủ đề này, và là nguồn của gần hết bug.
+
+- {{supplyAsync(s)}} **không truyền executor** → chạy trên {{ForkJoinPool.commonPool()}}, pool dùng chung của cả JVM (song song với parallel stream). Trên máy 8 core, commonPool có 7 thread. Đặt việc IO chậm (gọi HTTP) vào đó thì vài lời gọi chậm làm nghẽn mọi thứ khác trong JVM.
+- {{thenApply(f)}} **không có hậu tố Async** → chạy trên **thread đã điền hộp trước đó**; nếu hộp đã điền sẵn rồi thì chạy **ngay trên thread gọi**. Nếu thread đó là thread IO của HTTP client, bạn vừa biến thread IO thành thread tính toán.
+- {{thenApplyAsync(f, pool)}} → **luôn** chuyển việc sang {{pool}}.
+
+~~~java
+// SAU: mọi việc IO và callback đều chạy trên pool riêng, có tên để đọc thread dump
+Executor io = Executors.newFixedThreadPool(8, r -> { Thread t = new Thread(r, "price-io"); t.setDaemon(true); return t; });
+CompletableFuture<Integer> best = CompletableFuture
+        .supplyAsync(() -> vendorA.get(), io)        // việc IO trên pool riêng
+        .thenApplyAsync(Integer::normalize, io)      // biến đổi cũng trên pool riêng
+        .orTimeout(500, TimeUnit.MILLISECONDS);      // Java 9+: hết giờ thì hoàn thành với TimeoutException
+~~~
+
+> Vì sao luôn truyền executor: commonPool là tài nguyên **dùng chung cho cả JVM**. Một endpoint "gọi 3 service" chạy trên commonPool có thể làm nghẽn cả parallel stream của module báo cáo. Quy tắc: IO chặn → pool riêng, có giới hạn, có tên thread.
+
+### Lỗi đi theo chuỗi như thế nào
+Nếu một stage ném exception, **mọi stage phụ thuộc bỏ qua hàm của chúng** và hoàn thành với cùng lỗi đó, bọc trong {{CompletionException}}, cho tới khi gặp một handler:
+
+| Method | Khi nào chạy | Trả về |
+|---|---|---|
+| {{exceptionally(ex -> fallback)}} | chỉ khi lỗi | giá trị thay thế |
+| {{handle((v, ex) -> ...)}} | **luôn** chạy, nhận cả giá trị và lỗi | giá trị mới (có thể vẫn ném) |
+| {{whenComplete((v, ex) -> ...)}} | **luôn** chạy | không đổi kết quả (dùng để log/metric) |
+
+~~~java
+CompletableFuture<Integer> safe = best
+        .handle((price, ex) -> ex != null ? DEFAULT_PRICE : price)   // có giá thì giữ, lỗi thì lấy mặc định
+        .whenComplete((price, ex) -> log.info("final price={}", price));  // chỉ để log
+~~~
+
+Ai điền lỗi thì {{ex}} thường đã bị bọc trong {{CompletionException}}. Khi kiểm tra kiểu, hãy xem {{ex.getCause()}} trước:
+
+~~~java
+cf.get();     // ném ExecutionException, getCause() là lỗi gốc
+cf.join();    // ném CompletionException, getCause() là lỗi gốc
+~~~
+
+### Timeout: orTimeout và completeOnTimeout
+Java 9 thêm hai hàm rất tiện, **không chặn ai** (chúng đặt một lịch nội bộ):
+
+- {{orTimeout(t, unit)}}: hết giờ thì hoàn thành CF với {{TimeoutException}}.
+- {{completeOnTimeout(value, t, unit)}}: hết giờ thì hoàn thành CF với một **giá trị mặc định**.
+
+Điều quan trọng phải nhớ: chúng chỉ **điền hộp**, không **dừng công việc bên dưới**. Lời gọi HTTP vẫn chạy tiếp và vẫn chiếm thread cho tới khi xong. {{cancel(true)}} cũng vậy: tham số {{mayInterruptIfRunning}} **không có tác dụng** với CF (nó chỉ có nghĩa với Future của ExecutorService). Vì thế timeout thật sự vẫn phải đặt ở tầng client: connect/read timeout của HTTP client, query timeout của JDBC.
+
+| Tình huống | Cách viết |
+|---|---|
+| Gọi 3 nguồn, cần **đủ cả 3** | {{allOf}} + {{orTimeout}}, một nguồn lỗi thì cả request fail |
+| Gọi 3 nguồn, nguồn nào lỗi thì **bỏ qua** | mỗi nguồn {{exceptionally(ex -> null)}} **trước khi** {{allOf}}, rồi lọc null |
+| Chỉ cần nguồn **nhanh nhất** | {{anyOf}} (cẩn thận: nguồn **lỗi nhanh nhất** cũng thắng) |
+| Nguồn chậm thì dùng **giá trị mặc định** | {{completeOnTimeout(default, t, unit)}} |
+| Nguồn chậm thì **bỏ qua nguồn đó** | {{completeOnTimeout(null, t, unit)}} + {{exceptionally(ex -> null)}} |
+
+### Sơ đồ: 3 nguồn giá, timeout 500 ms
+~~~seq
+title: Gọi 3 nguồn giá song song, mỗi nguồn có timeout và fallback
+actors: Client | Pool | VendorA | VendorC
+Client -> Pool: supplyAsync goi A, B, C (kèm orTimeout 500ms)
+note Client..Pool: Client tra ve CF ngay, khong dung cho
+Pool --> Client: CF dang chua hoan thanh (isDone = false)
+Pool -> VendorA: HTTP GET /price
+Pool -> VendorC: HTTP GET /price
+VendorA --> Pool: 200 OK sau 120ms
+VendorC --> Pool: het 500ms, chua co dap an
+note Pool..Client: orTimeout dien null cho C, A thanh cong
+Client -> Client: loc null, lay min = gia cua A
+~~~
+
+### Lỗi production hay gặp
+- Gọi {{join()}} **bên trong** một callback chạy trên **cùng pool**: các thread chờ nhau, pool cạn, cả hệ thống treo kiểu **starvation deadlock** (pool 4 thread, 4 task cha mỗi task chờ 4 task con đang xếp hàng).
+- Không có handler lỗi và không ai {{join}}: exception biến mất, request "không trả về gì" mà log sạch trơn.
+- Mất {{MDC}}/{{traceId}}, {{SecurityContext}}, transaction: chúng nằm trong {{ThreadLocal}} của thread gốc, còn callback chạy trên thread khác. Cần một executor có **bọc context** (Micrometer Context Propagation, {{TaskDecorator}} của Spring).
+- {{anyOf}} dùng cho "lấy nguồn thành công đầu tiên": nó hoàn thành ngay khi nguồn đầu tiên **lỗi**, nên trả về exception thay vì kết quả.
+- {{allOf}} rồi quên {{join}} từng CF: {{allOf}} trả {{Void}}, bạn tưởng "đã xong" nhưng chưa đọc kết quả nào.
+
+### Liên hệ phỏng vấn
+Câu hỏi kinh điển: "thenApply khác thenCompose ở đâu?", "executor mặc định của {{supplyAsync}} là gì và vì sao nguy hiểm?", "gọi 3 service song song, một cái chậm thì xử lý thế nào?", "{{orTimeout}} có dừng được lời gọi HTTP không?". Câu trả lời senior nêu đủ bốn điểm: (1) executor **riêng** cho IO và cho callback, (2) **timeout hai tầng** (future + client), (3) **fallback theo từng nguồn** bằng {{exceptionally}}/{{completeOnTimeout}}, (4) biết rằng {{orTimeout}} chỉ điền hộp, không dừng việc bên dưới — và Java 21 có hướng khác là virtual thread, viết code chặn tuần tự mà vẫn không tốn thread.`,
+  exercises: [
+    {
+      title: 'Ba nguồn giá song song: timeout, fallback và không chặn thread gọi',
+      prompt: `Viết {{PriceService}} nhận một {{Executor}} trong constructor.
+
+{{CompletableFuture<Integer> bestPrice(List<Supplier<Integer>> sources, long timeoutMs)}}:
+- Gọi **mọi** nguồn giá ({{Supplier<Integer>}}) **song song** trên đúng executor được truyền vào (không dùng commonPool).
+- Trả về **ngay** một {{CompletableFuture<Integer>}}: hàm **không được** chặn thread gọi để chờ kết quả (sẽ có test kiểm tra {{isDone()}} phải là false khi các nguồn còn đang chờ).
+- Kết quả là giá **nhỏ nhất** trong các nguồn thành công.
+- Nguồn nào ném exception, trả về {{null}}, hoặc chưa xong sau {{timeoutMs}} mili giây thì **bỏ qua nguồn đó** (không làm hỏng cả kết quả).
+- Không nguồn nào thành công (kể cả danh sách rỗng): future hoàn thành **với lỗi** {{NoSuchElementException}} — tức {{get()}} ném {{ExecutionException}} có {{getCause()}} là {{NoSuchElementException}}.
+
+Ví dụ: nguồn [120, 95, 110] → 95. Nguồn [120, lỗi, null, 110] → 110. Nguồn [130, chậm 5 giây, 125] với timeout 200 ms → 125 (nguồn 1 bị bỏ vì quá giờ, dù nó rẻ hơn).
+
+Gợi ý: Java 9+ có {{completeOnTimeout}} và {{orTimeout}}; hoặc tự viết bằng {{acceptEither}} nếu muốn.`,
+      starter: `class PriceService {
+    private final Executor executor;
+
+    PriceService(Executor executor) {
+        this.executor = executor;
+    }
+
+    CompletableFuture<Integer> bestPrice(List<Supplier<Integer>> sources, long timeoutMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static ExecutorService newPool() {
+        AtomicInteger n = new AtomicInteger();
+        return Executors.newFixedThreadPool(4, r -> {
+            Thread t = new Thread(r, "price-" + n.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        });
+    }
+    static Integer await(CompletableFuture<Integer> f) {
+        try { return f.get(3, TimeUnit.SECONDS); }
+        catch (TimeoutException e) { throw new AssertionError("future chưa xong sau 3s"); }
+        catch (InterruptedException e) { throw new AssertionError(e); }
+        catch (ExecutionException e) { throw new AssertionError("future lỗi: " + e.getCause()); }
+    }
+    static void expectNoSuchElement(CompletableFuture<Integer> f) {
+        try {
+            Integer v = f.get(3, TimeUnit.SECONDS);
+            throw new AssertionError("phải lỗi NoSuchElementException nhưng trả về " + v);
+        } catch (ExecutionException e) {
+            if (!(e.getCause() instanceof NoSuchElementException))
+                throw new AssertionError("cause phải là NoSuchElementException, đang là " + e.getCause());
+        } catch (TimeoutException e) { throw new AssertionError("future chưa xong sau 3s"); }
+        catch (InterruptedException e) { throw new AssertionError(e); }
+    }
+    static Supplier<Integer> fail(String msg) { return () -> { throw new IllegalStateException(msg); }; }
+    static Supplier<Integer> slow(int price, long ms) {
+        return () -> {
+            try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            return price;
+        };
+    }
+    public static void main(String[] args) {
+        check("3 nguồn thành công: lấy giá nhỏ nhất", () -> {
+            ExecutorService pool = newPool();
+            try { eq(95, await(new PriceService(pool).bestPrice(List.of(() -> 120, () -> 95, () -> 110), 1000))); }
+            finally { pool.shutdownNow(); }
+        });
+        check("nguồn ném lỗi và nguồn trả null bị bỏ qua", () -> {
+            ExecutorService pool = newPool();
+            try { eq(110, await(new PriceService(pool).bestPrice(List.of(() -> 120, fail("vendor B 500"), () -> null, () -> 110), 1000))); }
+            finally { pool.shutdownNow(); }
+        });
+        check("nguồn chậm bị bỏ sau timeout", () -> {
+            ExecutorService pool = newPool();
+            try {
+                long t0 = System.nanoTime();
+                Integer best = await(new PriceService(pool).bestPrice(List.of(() -> 130, slow(1, 5000), () -> 125), 200));
+                eq(125, best);
+                long ms = (System.nanoTime() - t0) / 1_000_000;
+                if (ms > 1500) throw new AssertionError("mất " + ms + "ms, timeout là 200ms");
+            } finally { pool.shutdownNow(); }
+        });
+        check("mọi nguồn lỗi: NoSuchElementException", () -> {
+            ExecutorService pool = newPool();
+            try { expectNoSuchElement(new PriceService(pool).bestPrice(List.of(fail("a"), fail("b"), slow(1, 5000)), 200)); }
+            finally { pool.shutdownNow(); }
+        });
+        check("danh sách rỗng: NoSuchElementException", () -> {
+            ExecutorService pool = newPool();
+            try { expectNoSuchElement(new PriceService(pool).bestPrice(List.of(), 200)); }
+            finally { pool.shutdownNow(); }
+        });
+        check("các nguồn chạy song song trên đúng executor truyền vào", () -> {
+            ExecutorService pool = newPool();
+            CyclicBarrier barrier = new CyclicBarrier(3);      // chỉ qua được khi 3 nguồn chạy CÙNG LÚC
+            Set<String> threads = ConcurrentHashMap.newKeySet();
+            Supplier<Integer> s = () -> {
+                threads.add(Thread.currentThread().getName());
+                try { barrier.await(3, TimeUnit.SECONDS); }
+                catch (Exception e) { throw new IllegalStateException(e); }
+                return 300;
+            };
+            try {
+                eq(300, await(new PriceService(pool).bestPrice(List.of(s, s, s), 3000)));
+                for (String t : threads)
+                    if (!t.startsWith("price-"))
+                        throw new AssertionError("nguồn chạy trên thread " + t + " — không phải executor được truyền vào");
+            } finally { pool.shutdownNow(); }
+        });
+        check("bestPrice trả về ngay, không chặn thread gọi", () -> {
+            ExecutorService pool = newPool();
+            CountDownLatch gate = new CountDownLatch(1);
+            Supplier<Integer> gated = () -> {
+                try { gate.await(3, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return 77;
+            };
+            try {
+                CompletableFuture<Integer> f = new PriceService(pool).bestPrice(List.of(gated, gated), 3000);
+                if (f.isDone()) throw new AssertionError("future đã xong trước khi nguồn trả về — bestPrice đang chặn thread gọi?");
+                gate.countDown();
+                eq(77, await(f));
+            } finally { pool.shutdownNow(); }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class PriceService {
+    private final Executor executor;
+
+    PriceService(Executor executor) {
+        this.executor = executor;
+    }
+
+    CompletableFuture<Integer> bestPrice(List<Supplier<Integer>> sources, long timeoutMs) {
+        List<CompletableFuture<Integer>> calls = new ArrayList<>();
+        for (Supplier<Integer> s : sources) {
+            calls.add(CompletableFuture
+                    .supplyAsync(s, executor)                                    // executor riêng, không commonPool
+                    .orTimeout(timeoutMs, TimeUnit.MILLISECONDS)                 // quá giờ: lỗi TimeoutException
+                    .exceptionally(ex -> null));                                  // lỗi hoặc quá giờ: coi như không có giá
+        }
+        // allOf không chặn thread gọi; thenApply chạy khi MỌI nguồn đã xong (thành công, lỗi hoặc hết giờ)
+        return CompletableFuture.allOf(calls.toArray(new CompletableFuture[0]))
+                .thenApply(v -> calls.stream()
+                        .map(CompletableFuture::join)      // tất cả đã xong nên join không chặn
+                        .filter(Objects::nonNull)
+                        .min(Integer::compare)
+                        .orElseThrow(() -> new NoSuchElementException("không còn nguồn giá nào")));
+    }
+}`,
+      hints: [
+        'Với mỗi nguồn, tạo một CF "đã chuẩn hoá": {{CompletableFuture.supplyAsync(source, executor)}} — nhớ truyền executor.',
+        'Biến "lỗi" và "quá giờ" thành cùng một thứ (null): {{.completeOnTimeout(null, timeoutMs, TimeUnit.MILLISECONDS).exceptionally(ex -> null)}}.',
+        'Gom tất cả bằng {{CompletableFuture.allOf(...)}} rồi {{thenApply}}: bên trong {{join()}} từng CF (lúc này không chặn), lọc null, lấy min; không còn gì thì {{orElseThrow(() -> new NoSuchElementException(...))}}.',
+        'Đừng gọi {{join()}}/{{get()}} ngay trong vòng lặp: như thế là chạy tuần tự và chặn thread gọi.',
+      ],
+      explain: `Ba quyết định làm lời giải đúng:
+
+1. **Không chặn ở đâu cả.** {{bestPrice}} chỉ lắp chuỗi callback rồi trả về; nó không gọi {{get}}/{{join}} nào trên đường đi. Test "trả về ngay" kiểm chứng bằng một {{CountDownLatch}} chưa mở: nếu hàm chặn, {{isDone()}} đã là true hoặc test treo.
+
+2. **Chuẩn hoá lỗi thành null.** Mỗi nguồn trở thành một CF **không bao giờ lỗi**: có giá, hoặc null nếu lỗi/quá giờ. Nhờ vậy {{allOf}} luôn hoàn thành bình thường và toàn bộ quyết định cuối nằm ở một chỗ. Nếu bạn để lỗi nguyên trạng, chỉ một nguồn lỗi là {{allOf}} hoàn thành với lỗi và bạn mất kết quả của các nguồn tốt — đó là bug "một vendor chết làm cả trang giá trắng".
+
+3. **Ném {{NoSuchElementException}} trong {{thenApply}}.** Ném exception bên trong callback làm CF kết quả hoàn thành **với lỗi**; bên trong bị bọc {{CompletionException}}, còn {{get()}} gỡ lớp bọc và ném {{ExecutionException}} có {{getCause()}} là {{NoSuchElementException}} — đúng như test kiểm tra.
+
+Thứ tự quan trọng: {{orTimeout(timeoutMs, ...)}} đứng **trước** {{exceptionally(ex -> null)}}. Khi hết giờ, {{orTimeout}} hoàn thành CF với {{TimeoutException}}, nên {{exceptionally}} phía sau bắt được và đổi thành null. Nếu đặt {{exceptionally}} trước {{orTimeout}}, lỗi thật sẽ được đổi thành null đúng như ý, nhưng timeout phát sinh sau đó sẽ làm CF lỗi và không còn {{exceptionally}} nào bắt — nguồn chậm sẽ làm hỏng cả kết quả. Muốn phân biệt "lỗi" và "quá giờ" trong log, dùng {{handle((v, ex) -> ...)}} (hoặc dùng {{completeOnTimeout(null, ...)}} khi bạn chỉ cần giá trị mặc định mà không cần biết nguyên nhân).
+
+Lỗi hay gặp:
+- {{supplyAsync(s)}} không truyền executor: chạy trên commonPool, test kiểm tra tên thread sẽ FAIL.
+- Dùng {{anyOf}}: trả về nguồn **xong đầu tiên** (kể cả nguồn lỗi), không phải giá nhỏ nhất.
+- Dùng {{orTimeout}} mà không có {{exceptionally}} phía sau: một nguồn chậm làm hỏng cả kết quả.
+- Gọi {{join()}} trên từng nguồn ngay trong vòng lặp: chạy tuần tự, mất hết lợi ích song song.
+- Quên rằng timeout của CF **không dừng** công việc bên dưới: nguồn chậm vẫn chiếm thread của pool tới khi xong — vì vậy vẫn cần timeout ở tầng HTTP client.`,
+    },
+    {
+      title: 'Chuỗi thenApply/thenCompose/allOf: tính tổng đơn hàng có thuế và phí ship',
+      prompt: `Mô phỏng một pipeline tính tiền bằng Java thuần (không có Spring). Bạn được cấp một {{Executor}} trong constructor và ba "service" giả lập chạy trên đó:
+
+- {{CompletableFuture<Integer> findUser(int id)}}: trả về id người dùng sau {{50 ms}} (giả lập IO); id âm thì hoàn thành **với lỗi** {{IllegalArgumentException}}.
+- {{CompletableFuture<List<Integer>> findCart(int userId)}}: trả về danh sách giá sản phẩm sau {{80 ms}}.
+- {{CompletableFuture<Integer> shippingCost(int userId)}}: trả về phí ship {{30}} sau {{120 ms}}.
+
+Hãy viết {{CompletableFuture<Integer> total(int userId, int taxPercent)}}:
+- Gọi tuần tự: tìm user → lấy cart từ userId → tính tạm = tổng giá cart.
+- **Song song** với việc lấy cart, gọi {{shippingCost(userId)}} (hai việc này độc lập nên phải chạy cùng lúc).
+- Kết quả = tạm + phí ship, rồi cộng thuế {{taxPercent}} phần trăm: {{result = subtotal + shipping, rồi + result * taxPercent / 100}}.
+- Cart rỗng: trả về **0** mà không gọi shipping (không tính ship khi không mua gì).
+- Bất kỳ bước nào lỗi (user không tồn tại) thì CF kết quả hoàn thành **với lỗi** {{IllegalArgumentException}}.
+
+Yêu cầu kỹ thuật: dùng {{thenCompose}} cho bước phụ thuộc, {{thenCombine}} cho bước độc lập, **không gọi {{get()}}/{{join()}}** trong pipeline, và mọi việc chạy trên executor được truyền vào.
+
+Ví dụ: cart [100, 200], ship 30, thuế 10% → (300 + 30) = 330, cộng 10% = 363.`,
+      starter: `class OrderPricing {
+    private final Executor executor;
+
+    OrderPricing(Executor executor) {
+        this.executor = executor;
+    }
+
+    CompletableFuture<Integer> findUser(int id) {
+        return CompletableFuture.supplyAsync(() -> {
+            try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            if (id < 0) throw new IllegalArgumentException("user " + id + " không tồn tại");
+            return id;
+        }, executor);
+    }
+
+    CompletableFuture<List<Integer>> findCart(int userId) {
+        return CompletableFuture.supplyAsync(() -> {
+            try { Thread.sleep(80); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            return List.of(100, 200);
+        }, executor);
+    }
+
+    CompletableFuture<Integer> shippingCost(int userId) {
+        return CompletableFuture.supplyAsync(() -> {
+            try { Thread.sleep(120); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            return 30;
+        }, executor);
+    }
+
+    CompletableFuture<Integer> total(int userId, int taxPercent) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static ExecutorService newPool() {
+        AtomicInteger n = new AtomicInteger();
+        return Executors.newFixedThreadPool(4, r -> {
+            Thread t = new Thread(r, "order-" + n.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        });
+    }
+    static Integer await(CompletableFuture<Integer> f) {
+        try { return f.get(5, TimeUnit.SECONDS); }
+        catch (TimeoutException e) { throw new AssertionError("future chưa xong sau 5s"); }
+        catch (InterruptedException e) { throw new AssertionError(e); }
+        catch (ExecutionException e) { throw new AssertionError("future lỗi: " + e.getCause()); }
+    }
+    public static void main(String[] args) {
+        check("tính đúng: (100+200+30) + 10% = 363", () -> {
+            ExecutorService pool = newPool();
+            try { eq(363, await(new OrderPricing(pool).total(7, 10))); }
+            finally { pool.shutdownNow(); }
+        });
+        check("không thuế: 330", () -> {
+            ExecutorService pool = newPool();
+            try { eq(330, await(new OrderPricing(pool).total(7, 0))); }
+            finally { pool.shutdownNow(); }
+        });
+        check("user không tồn tại: lỗi IllegalArgumentException", () -> {
+            ExecutorService pool = newPool();
+            try {
+                CompletableFuture<Integer> f = new OrderPricing(pool).total(-1, 10);
+                try { f.get(5, TimeUnit.SECONDS); throw new AssertionError("phải lỗi"); }
+                catch (ExecutionException e) {
+                    if (!(e.getCause() instanceof IllegalArgumentException))
+                        throw new AssertionError("cause phải là IllegalArgumentException, đang là " + e.getCause());
+                } catch (InterruptedException | java.util.concurrent.TimeoutException e) { throw new AssertionError(e); }
+            } finally { pool.shutdownNow(); }
+        });
+        check("cart và shipping chạy song song (cùng lúc, trên 2 thread khác nhau)", () -> {
+            ExecutorService pool = newPool();
+            try {
+                CyclicBarrier barrier = new CyclicBarrier(2);   // chỉ qua được khi cả 2 việc ĐỒNG THỜI chạy
+                Set<String> threads = ConcurrentHashMap.newKeySet();
+                OrderPricing pricing = new OrderPricing(pool) {
+                    @Override CompletableFuture<List<Integer>> findCart(int userId) {
+                        return CompletableFuture.supplyAsync(() -> {
+                            threads.add(Thread.currentThread().getName());
+                            try { barrier.await(2, TimeUnit.SECONDS); } catch (Exception e) { throw new IllegalStateException(e); }
+                            return List.of(100, 200);
+                        }, pool);
+                    }
+                    @Override CompletableFuture<Integer> shippingCost(int userId) {
+                        return CompletableFuture.supplyAsync(() -> {
+                            threads.add(Thread.currentThread().getName());
+                            try { barrier.await(2, TimeUnit.SECONDS); } catch (Exception e) { throw new IllegalStateException(e); }
+                            return 30;
+                        }, pool);
+                    }
+                };
+                eq(363, await(pricing.total(7, 10)));
+                if (threads.size() != 2) throw new AssertionError("chỉ thấy " + threads.size() + " thread, cần 2 thread khác nhau chạy cart và shipping cùng lúc");
+                for (String t : threads) if (!t.startsWith("order-")) throw new AssertionError("việc chạy trên thread " + t + " — không phải executor");
+            } finally { pool.shutdownNow(); }
+        });
+        check("không có get()/join() chặn: future chưa xong ngay sau khi gọi", () -> {
+            ExecutorService pool = newPool();
+            try {
+                CompletableFuture<Integer> f = new OrderPricing(pool).total(7, 10);
+                if (f.isDone()) throw new AssertionError("future đã xong ngay — pipeline đang chặn thread gọi?");
+                eq(363, await(f));
+            } finally { pool.shutdownNow(); }
+        });
+        check("mọi việc chạy trên executor truyền vào", () -> {
+            ExecutorService pool = newPool();
+            Set<String> threads = ConcurrentHashMap.newKeySet();
+            Executor recording = command -> pool.execute(() -> {
+                threads.add(Thread.currentThread().getName());
+                command.run();
+            });
+            try {
+                eq(363, await(new OrderPricing(recording).total(7, 10)));
+                if (threads.isEmpty()) throw new AssertionError("không có việc nào chạy qua executor được truyền vào");
+                for (String t : threads)
+                    if (!t.startsWith("order-"))
+                        throw new AssertionError("việc chạy trên thread " + t + " — không phải executor được truyền vào");
+            } finally { pool.shutdownNow(); }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class OrderPricing {
+    private final Executor executor;
+
+    OrderPricing(Executor executor) {
+        this.executor = executor;
+    }
+
+    CompletableFuture<Integer> findUser(int id) {
+        return CompletableFuture.supplyAsync(() -> {
+            try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            if (id < 0) throw new IllegalArgumentException("user " + id + " không tồn tại");
+            return id;
+        }, executor);
+    }
+
+    CompletableFuture<List<Integer>> findCart(int userId) {
+        return CompletableFuture.supplyAsync(() -> {
+            try { Thread.sleep(80); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            return List.of(100, 200);
+        }, executor);
+    }
+
+    CompletableFuture<Integer> shippingCost(int userId) {
+        return CompletableFuture.supplyAsync(() -> {
+            try { Thread.sleep(120); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            return 30;
+        }, executor);
+    }
+
+    CompletableFuture<Integer> total(int userId, int taxPercent) {
+        // cart phụ thuộc user -> thenCompose; shipping độc lập -> chạy song song bằng thenCombine
+        CompletableFuture<List<Integer>> cart = findUser(userId).thenCompose(this::findCart);
+        CompletableFuture<Integer> withShipping = cart.thenCombine(shippingCost(userId), (items, ship) -> {
+            int subtotal = items.stream().mapToInt(Integer::intValue).sum();
+            if (subtotal == 0) return 0;                     // cart rỗng: không tính ship
+            return subtotal + ship;
+        });
+        return withShipping.thenApply(v -> v + v * taxPercent / 100);
+    }
+}`,
+      hints: [
+        '{{thenCompose(this::findCart)}} cho bước phụ thuộc: hàm nhận userId, trả về một CF, kết quả được "làm phẳng".',
+        '{{cart.thenCombine(shippingCost(userId), (items, ship) -> ...)}}: hai việc độc lập, chạy song song, gộp khi cả hai xong.',
+        'Nhớ xử lý cart rỗng: nếu tổng bằng 0 thì trả 0, bỏ qua phí ship.',
+        'Thuế cộng ở bước cuối bằng {{thenApply(v -> v + v * taxPercent / 100)}} — không chặn, không get/join.',
+      ],
+      explain: `Lời giải chỉ dùng **toán tử nối**, không có một lời gọi chặn nào:
+- {{findUser(userId).thenCompose(this::findCart)}}: {{thenCompose}} là flatMap. Nếu dùng {{thenApply}}, bạn nhận {{CompletableFuture<CompletableFuture<List<Integer>>>}} và phải mở hai lần.
+- {{cart.thenCombine(shippingCost(userId), ...)}}: {{thenCombine}} chạy **hai việc độc lập cùng lúc**; nó chỉ gọi hàm gộp khi **cả hai** đã xong. Test "song song" kiểm chứng điều này một cách **xác định** bằng {{CyclicBarrier(2)}}: override {{findCart}}/{{shippingCost}} để cả hai cùng chờ một barrier — nếu code chạy tuần tự (cart xong mới chạy shipping) barrier không bao giờ đủ người và test FAIL; nếu hai việc chạy cùng lúc trên hai thread khác nhau barrier đủ người và test PASS. Dùng barrier thay vì đo thời gian thực để kết quả không phụ thuộc tải máy.
+- Thuế đặt ở {{thenApply}} cuối cùng: mỗi bước chỉ nhận giá trị đã tính xong, không cần biết bước trước là gì.
+
+Nếu bước {{findUser}} lỗi (id âm), exception chạy theo chuỗi: {{thenCompose}} và {{thenCombine}} **bỏ qua hàm của chúng**, CF kết quả hoàn thành với {{CompletionException}} bọc {{IllegalArgumentException}}; {{get()}} gỡ lớp bọc và ném {{ExecutionException}} có {{getCause()}} là {{IllegalArgumentException}}. Test kiểm tra đúng {{getCause()}} — đó là lý do phải dùng {{getCause()}} thay vì so sánh trực tiếp exception.
+
+Lỗi hay gặp:
+- {{thenApply(u -> findCart(u))}}: ra CF lồng CF, phải {{join}} hai lần; nếu quên, code không biên dịch hoặc trả sai kiểu.
+- Tính {{shippingCost}} **sau** khi cart xong (đặt trong {{thenApply}} của cart): mất tính song song, thời gian thành 250 ms.
+- Gọi {{get()}} trong pipeline: biến chuỗi callback thành code chặn, mất hết lợi ích.
+- Dùng commonPool (không truyền executor): test "mọi việc chạy trên executor truyền vào" sẽ FAIL vì tên thread không khớp.
+- Quên {{Thread.currentThread().interrupt()}} trong {{catch (InterruptedException)}}: cờ interrupt bị mất, tầng trên không biết mà dừng.`,
+    },
+  ],
+  check: [
+    {
+      q: '{{CompletableFuture.supplyAsync(() -> callApi())}} không truyền executor. Trên máy 8 core, task chạy ở đâu?',
+      options: ['Trên một thread mới tạo riêng cho task', 'Trên {{ForkJoinPool.commonPool()}}', 'Trên thread gọi {{supplyAsync}}', 'Trên thread pool của Tomcat'],
+      answer: 1,
+      explain: `Mặc định là {{ForkJoinPool.commonPool()}} (parallelism = số core − 1 = 7 trên máy 8 core). Chỉ khi parallelism nhỏ hơn 2 (máy 1–2 core) thì mỗi task mới chạy trên một thread riêng. Thread gọi không chạy task — đó là hành vi của {{thenApply}} khi stage trước đã xong. CF không biết gì về Tomcat.`,
+    },
+    {
+      q: '{{findUser(id)}} trả về {{CompletableFuture<User>}}, {{findOrders(user)}} trả về {{CompletableFuture<List<Order>>}}. Nối hai bước thế nào để được {{CompletableFuture<List<Order>>}}?',
+      options: ['{{findUser(id).thenApply(u -> findOrders(u))}}', '{{findUser(id).thenCompose(u -> findOrders(u))}}', '{{findUser(id).thenCombine(findOrders(u), (a, b) -> b)}}', '{{CompletableFuture.allOf(findUser(id), findOrders(u))}}'],
+      answer: 1,
+      explain: `{{thenCompose}} là flatMap: hàm trả về một CF và kết quả được làm phẳng. {{thenApply}} sẽ cho {{CompletableFuture<CompletableFuture<List<Order>>>}}. {{thenCombine}} dành cho hai việc độc lập, còn ở đây bước hai cần {{user}} từ bước một (và {{u}} chưa tồn tại). {{allOf}} trả {{CompletableFuture<Void>}} và cũng cần {{user}} trước.`,
+    },
+    {
+      q: 'CF {{f}} có {{f.orTimeout(1, SECONDS)}}; lời gọi HTTP bên trong mất 10 giây. Sau 1 giây điều gì xảy ra?',
+      options: ['Lời gọi HTTP bị interrupt và dừng', 'CF hoàn thành với {{TimeoutException}}, còn lời gọi HTTP vẫn chạy tiếp tới khi xong', 'Thread chạy HTTP bị huỷ, pool tạo thread mới', 'Không có gì cho tới khi gọi {{get()}}'],
+      answer: 1,
+      explain: `{{orTimeout}} chỉ **điền hộp** bằng {{TimeoutException}}; CF không biết thread nào đang làm việc nên không interrupt được, và pool không huỷ thread. Lịch timeout được đặt ngay khi gọi {{orTimeout}}, không cần ai gọi {{get()}}. Vì thế vẫn phải đặt read timeout ở HTTP client.`,
+    },
+  ],
+  related: ['concurrency-005', 'concurrency-037', 'concurrency-042', 'concurrency-058'],
+  tags: ['CompletableFuture', 'thenApply', 'thenCompose', 'allOf', 'executor', 'timeout', 'fallback', 'async'],
+},
+
 );
