@@ -1,6 +1,6 @@
 # T1050 — Thêm dấu tiếng Việt: labs-gc.js, q-soft.js, projects.js
 
-Status: BLOCKED (legacy, không nằm trong hàng đợi worker; chặn autopilot commit file chung — 2026-11-15)
+Status: CANCELLED
 Agent: kilo
 Owns: `js/data/labs-gc.js`, `js/data/q-soft.js`, `js/data/projects.js`
 

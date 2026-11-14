@@ -1,6 +1,6 @@
 # T1044 — Thêm dấu tiếng Việt: lessons-security.js
 
-Status: BLOCKED (legacy, không nằm trong hàng đợi worker; chặn autopilot commit file chung — 2026-11-15)
+Status: CANCELLED
 Agent: kilo
 Owns: `js/data/lessons-security.js`
 

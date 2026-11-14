@@ -1,6 +1,6 @@
 # T1048 — Thêm dấu tiếng Việt: q-spring-data.js, q-concurrency-jvm.js
 
-Status: BLOCKED (legacy, không nằm trong hàng đợi worker; chặn autopilot commit file chung — 2026-11-15)
+Status: CANCELLED
 Agent: kilo
 Owns: `js/data/q-spring-data.js`, `js/data/q-concurrency-jvm.js`
 

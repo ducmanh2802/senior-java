@@ -1,6 +1,6 @@
 # T1051 — Thêm dấu tiếng Việt: lessons-microservices.js, lessons-ai.js, lessons-concurrency.js, lessons-sql.js, lessons-testing.js, lessons-collections.js, lessons-claude.js, lessons-jpa.js, lessons-db.js, lessons-spring.js, lessons-jvm.js, q-java.js, q-security.js
 
-Status: BLOCKED (legacy, không nằm trong hàng đợi worker; chặn autopilot commit file chung — 2026-11-15)
+Status: CANCELLED
 Agent: kilo
 Owns: `js/data/lessons-microservices.js`, `js/data/lessons-ai.js`, `js/data/lessons-concurrency.js`, `js/data/lessons-sql.js`, `js/data/lessons-testing.js`, `js/data/lessons-collections.js`, `js/data/lessons-claude.js`, `js/data/lessons-jpa.js`, `js/data/lessons-db.js`, `js/data/lessons-spring.js`, `js/data/lessons-jvm.js`, `js/data/q-java.js`, `js/data/q-security.js`
 
