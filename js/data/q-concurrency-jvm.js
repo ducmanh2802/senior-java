@@ -11202,5 +11202,412 @@ Một nền tảng có 40 microservice Spring Boot 3.2: 6 service xử lý webho
     'Vì sao một service CPU-bound chạy 24/7 thường hưởng lợi nhiều hơn từ HotSpot JIT so với native image?'
   ],
   tags: ['GraalVM', 'native image', 'Spring Boot', 'AOT', 'startup', 'trade-off']
+},
+{
+  id: 'concurrency-073',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Bạn tổng hợp hồ sơ khách hàng từ 5 service con bằng {{CompletableFuture.allOf}}, và một service hay lỗi (khoảng 3% request). Làm sao trả về 4 phần thành công kèm danh sách service lỗi thay vì ném một cục {{CompletionException}}? So sánh cách này với {{anyOf}} và với {{allOf(...).join()}} trực tiếp.',
+  a: `**Tóm tắt:** {{allOf}} chờ TẤT CẢ future hoàn tất rồi mới hoàn tất chính nó; nếu một nhánh hoàn tất "thất bại", allOf cũng hoàn tất thất bại, và {{join()}} ném {{CompletionException}} — làm mất kết quả của 4 nhánh đã thành công. Để gom kết quả từng phần, hãy "chuẩn hoá" từng nhánh thành một kiểu kết quả chung bằng {{handle((v, ex) -> ...)}} (thành công → giá trị, lỗi → cờ lỗi + nguyên nhân) TRƯỚC khi đưa vào allOf. Khi đó không nhánh nào còn ở trạng thái lỗi, allOf luôn thành công, và bạn phân loại ok/error sau khi join.
+
+### Vì sao allOf làm mất kết quả khi một nhánh lỗi
+1. Mỗi future có ba trạng thái: chưa xong, đã xong có giá trị, đã xong lỗi (exceptional).
+2. allOf chỉ hoàn tất khi tất cả future con đã xong; nếu bất kỳ nhánh nào ở trạng thái lỗi, allOf hoàn tất ở trạng thái lỗi và mang theo exception đó.
+3. {{join()}} ném ngay, nên code không chạy tiếp tới phần đọc 4 nhánh còn lại — dù chúng đã có giá trị sẵn trong bộ nhớ. Đây là "fail-fast" ở tầng gộp, không phải ở tầng từng nhánh.
+
+### Cách chuẩn hoá từng nhánh (Result pattern)
+~~~java
+record R<T>(boolean ok, T value, Throwable error) {
+  static <T> R<T> ok(T v)         { return new R<>(true, v, null); }
+  static <T> R<T> err(Throwable e) { return new R<>(false, null, e); }
+}
+
+// handle biến MỌI outcome thành R: không nhánh nào còn ở trạng thái lỗi
+CompletableFuture<R<User>>  f1 = userSvc.find(id).handle((u, e) -> e != null ? R.err(e) : R.ok(u));
+CompletableFuture<R<Order>> f2 = orderSvc.find(id).handle((o, e) -> e != null ? R.err(e) : R.ok(o));
+// ... f3, f4, f5 làm tương tự
+
+CompletableFuture.allOf(f1, f2, f3, f4, f5).join();   // không ném: mọi nhánh đã thành giá trị
+List<R<?>> parts = List.of(f1.join(), f2.join(), f3.join(), f4.join(), f5.join());
+
+var good = parts.stream().filter(R::ok).map(R::value).toList();   // 4 phần có dữ liệu
+var bad  = parts.stream().filter(r -> !r.ok()).toList();          // service nào lỗi
+boolean degraded = !bad.isEmpty();                                 // cờ "thiếu dữ liệu"
+~~~
+Điểm mấu chốt: {{handle}} chạy trên cả hai đường (thành công và lỗi) và trả về một giá trị thường, nên future sau handle luôn "thành công" theo nghĩa của CompletableFuture.
+
+### Ba cách gộp, so sánh nhanh
+| Cách | Khi một nhánh lỗi | Giữ kết quả nhánh khác? | Dùng khi |
+|---|---|---|---|
+| {{allOf(...).join()}} trực tiếp | ném CompletionException | Không, mất hết | Mọi nhánh đều bắt buộc phải có |
+| {{handle}} từng nhánh rồi {{allOf}} | biến thành R.err | Có | Cần kết quả từng phần (best-effort) |
+| {{anyOf(...)}} | hoàn tất với nhánh ĐẦU TIÊN xong (kể cả khi lỗi) | Một giá trị duy nhất | Đua nhiều nguồn, lấy cái nhanh nhất |
+
+### Pitfall thực tế trên production
+- Quên rằng allOf chỉ fail khi TẤT CẢ đã xong: nếu một nhánh treo (không timeout), allOf treo theo. Phải đặt {{orTimeout}} cho từng nhánh.
+- {{handle}} trả null khi cần giá trị: caller phải xử lý null, đừng để NPE ở tầng sau.
+- Gộp xong rồi vẫn gọi {{join()}} trên future GỐC (chưa handle) → vẫn ném. Phải join trên future đã handle.
+- Không log service nào lỗi: chỉ biết "thiếu dữ liệu" chung chung, rất khó debug. Hãy log tên service + exception trong nhánh err.
+
+### Ví dụ đời thực
+Endpoint GET /customers/{id}/profile gọi 5 service: user (40 ms), orders (90 ms), loyalty (60 ms), preferences (30 ms), risk (110 ms). Tỉ lệ lỗi của risk khoảng 3% do timeout 500 ms. Trước: allOf(...).join() → khi risk lỗi, cả request trả 500, bốn phần kia (đã tính xong) bị bỏ; 3% traffic trả 500 và p99 bị chính các request lỗi kéo lên 780 ms. Sau: handle từng nhánh → trả 200 với 4/5 phần, cờ degraded=true và danh sách ["risk"]; tỉ lệ 500 về 0, p99 giảm xuống 420 ms, client biết để hiển thị "không có dữ liệu rủi ro". Đo thêm: 3% request có degraded=true, đúng bằng tỉ lệ lỗi risk — hai con số khớp nhau, xác nhận không còn request nào bị mất oan.
+
+### Trả lời mẫu khi phỏng vấn
+"allOf chờ tất cả future hoàn tất rồi mới hoàn tất; nếu một nhánh lỗi thì allOf cũng lỗi và join ném CompletionException, làm mất kết quả các nhánh đã thành công. Để gom kết quả từng phần, tôi bọc mỗi nhánh bằng handle để biến mọi outcome thành một kiểu Result chung (ok/err) trước khi đưa vào allOf; khi đó không nhánh nào còn ở trạng thái lỗi nên allOf luôn thành công, rồi tôi join và phân loại ok/error. Tôi vẫn đặt orTimeout cho từng nhánh để một nhánh treo không kéo cả cụm, và luôn log tên service bị lỗi. anyOf thì ngược lại: nó hoàn tất với nhánh đầu tiên xong, kể cả khi nhánh đó lỗi, nên chỉ hợp khi đua nhiều nguồn lấy kết quả nhanh nhất. Trong ví dụ của tôi, một service lỗi 3% khiến cả request 500; sau khi chuẩn hoá từng nhánh, tỉ lệ 500 về 0 và tôi trả 4/5 phần kèm cờ degraded."
+
+> Senior tip: "best-effort" phải là quyết định có ý thức, không phải mặc định. Hãy cho mỗi nhánh một chính sách lỗi riêng (bắt buộc / có thể thiếu / có giá trị mặc định) và để response nói rõ phần nào thiếu; nếu không, người đọc API sẽ tưởng dữ liệu đầy đủ.`,
+  follow: [
+    'Vì sao allOf không fail-fast ngay khi một nhánh lỗi mà phải chờ tất cả?',
+    '{{handle}} và {{exceptionally}} khác nhau ở điểm nào khi chuẩn hoá lỗi?',
+    'Nếu một nhánh treo (không bao giờ xong), allOf xử lý thế nào và bạn đặt timeout ra sao?'
+  ],
+  tags: ['CompletableFuture', 'allOf', 'partial failure', 'handle', 'resilience']
+},
+{
+  id: 'concurrency-074',
+  topic: 'concurrency',
+  level: 'senior',
+  q: '{{orTimeout}} và {{completeOnTimeout}} (Java 9+) khác nhau thế nào, bên trong chúng chạy trên cái gì, và vì sao đặt timeout KHÔNG dừng công việc đang chạy? Thiết kế timeout cho một chuỗi {{CompletableFuture}} nhiều bước.',
+  a: `**Tóm tắt:** cả hai đăng ký một "nhắc giờ" dùng {{CompletableFuture.Delayer}} — một {{ScheduledThreadPoolExecutor}} daemon chỉ có một thread, dùng chung cho mọi CF; hết giờ thì Delayer gọi {{complete()}} hoặc {{completeExceptionally()}} trên chính CF đó. {{orTimeout(t)}} → CF hoàn tất NGOẠI LỆ bằng {{TimeoutException}}; {{completeOnTimeout(v, t)}} → CF hoàn tất THÀNH CÔNG bằng giá trị mặc định v. Cả hai chỉ "đóng" CF, KHÔNG interrupt/huỷ công việc gốc đang chạy trên executor — nếu không tự huỷ, thread vẫn giữ tới khi I/O xong, gây nghẽn và tốn tài nguyên.
+
+### Delayer hoạt động thế nào
+~~~text
+CompletableFuture.Delayer  (một ScheduledThreadPoolExecutor daemon, 1 thread, dùng chung JVM)
+  orTimeout(t)           -> schedule(completeExceptionally(TimeoutException), t)
+  completeOnTimeout(v,t) -> schedule(complete(v), t)
+  CF hoàn tất trước giờ  -> huỷ (cancel) task đã schedule -> không rò rỉ
+~~~
+- Delayer là daemon nên không cản JVM thoát.
+- Mỗi lần gọi orTimeout/completeOnTimeout đăng ký một task; nếu CF hoàn tất trước, task bị cancel, không giữ tham chiếu CF → không leak.
+- Vì Delayer chỉ có một thread, hàng nghìn CF cùng đặt timeout chỉ là hàng nghìn task nhỏ trong DelayQueue — không tốn thêm thread theo số CF. Đây là lý do orTimeout "rẻ" hơn bạn nghĩ.
+
+### orTimeout so với completeOnTimeout
+| | {{orTimeout}} | {{completeOnTimeout}} |
+|---|---|---|
+| Kết quả khi hết giờ | CF hoàn tất NGOẠI LỆ (TimeoutException) | CF hoàn tất THÀNH CÔNG với giá trị v |
+| Cách nhận biết | phải bắt TimeoutException | không có lỗi, phải tự biết là "fallback" |
+| Dùng khi | thiếu kết quả là lỗi (trả 504) | có giá trị mặc định hợp lệ (cache rỗng, 0) |
+
+### Vì sao timeout KHÔNG dừng việc gốc
+- orTimeout/completeOnTimeout chỉ thao tác trên CF (trạng thái của future), không có tham chiếu tới thread đang chạy supplyAsync.
+- Nếu task đang chặn ở socket hoặc DB, nó vẫn chạy tới khi I/O trả về hoặc socket timeout. Trong lúc đó nó giữ một thread của executor.
+- Muốn dừng thật: giữ tham chiếu tới executor và future gốc rồi gọi {{cancel(true)}}/interrupt; hoặc đặt timeout ngay ở tầng I/O (HTTP client, {{setQueryTimeout}} của JDBC). Với HTTP, timeout của client là cách dừng thật; orTimeout chỉ là "lớp bảo vệ" phía trên.
+
+### Thiết kế timeout nhiều tầng
+~~~java
+ExecutorService io = /* pool có giới hạn */;
+
+// nhánh song song: mỗi nhánh một timeout
+CompletableFuture<A> a = supplyAsync(() -> svcA.call(), io).orTimeout(400, MS);
+CompletableFuture<B> b = supplyAsync(() -> svcB.call(), io).orTimeout(700, MS);
+
+// chuỗi phụ thuộc: đặt orTimeout BÊN TRONG lambda để tính giờ từ lúc bước async bắt đầu
+CompletableFuture<C> c = b.thenCompose(bb ->
+        supplyAsync(() -> svcC.call(bb), io).orTimeout(700, MS));
+
+// tổng cũng có hạn (deadline) — dùng một CF gộp rồi orTimeout
+CompletableFuture<Profile> all = CompletableFuture.allOf(a, b, c)
+        .thenApply(v -> new Profile(a.join(), b.join(), c.join()))
+        .orTimeout(900, MS);
+~~~
+- Với chuỗi phụ thuộc, orTimeout tính từ lúc GỌI, nên nếu đặt trên CF đã khởi tạo từ đầu pipeline thì đồng hồ chạy sớm hơn lúc bước thực sự bắt đầu. Đặt orTimeout bên trong lambda {{thenCompose}} để tính từ lúc bước async đó chạy.
+- Timeout mỗi bước phải lớn hơn p99 thật của bước đó (ví dụ p99 × 1.5), và timeout tổng phải ≥ nhánh chậm nhất.
+
+### Pitfall thực tế trên production
+- Chỉ orTimeout mà không đặt timeout ở I/O client → CF timeout nhưng thread vẫn giữ socket, pool cạn dần.
+- {{completeOnTimeout}} che lỗi: im lặng trả giá trị mặc định, không log → không biết downstream đang chết.
+- Đặt timeout quá ngắn dưới p99 thật → timeout hàng loạt, client retry → retry storm.
+- Đặt orTimeout sai chỗ trong chuỗi phụ thuộc → tính giờ từ lúc khởi tạo, không phải lúc bước chạy, khiến bước bị "ăn gian" thời gian.
+
+### Ví dụ đời thực
+Dịch vụ tổng hợp gọi 3 API, ban đầu chỉ đặt orTimeout(2 s) cho cả cụm. Một API có p99 thật 300 ms nhưng thỉnh thoảng chậm 1.9 s (do GC pause của chính nó). Nhiều request chờ 1.9 s, p99 của ta là 2 s; pool 32 thread cạn, request xếp hàng, p99 vọt lên 6 s. Điều tra: thread dump thấy 32 worker io-pool chờ socket, còn API chậm vẫn chạy (CF đã timeout nhưng socket chưa đóng vì client không có timeout). Sửa: đặt timeout ở HTTP client (connect 300 ms, read 500 ms) để dừng thật, cộng orTimeout(700 ms) từng nhánh và completeOnTimeout(cache rỗng) cho nhánh phụ. Kết quả: p99 từ 6 s xuống 480 ms, pool không cạn, tỉ lệ timeout 1.2% (đúng nhánh phụ).
+
+### Trả lời mẫu khi phỏng vấn
+"orTimeout và completeOnTimeout đều dựa trên một Delayer daemon dùng chung, hết giờ thì hoàn tất chính CF đó; orTimeout ném TimeoutException, completeOnTimeout trả giá trị mặc định. Điều quan trọng là cả hai không dừng công việc gốc: chúng chỉ đóng future, thread đang chạy supplyAsync vẫn giữ tới khi I/O xong. Vì vậy tôi luôn đặt timeout ở tầng I/O (HTTP client, JDBC) để dừng thật, rồi dùng orTimeout như lớp bảo vệ, và với chuỗi phụ thuộc tôi đặt orTimeout bên trong lambda thenCompose để tính giờ từ lúc bước chạy. Tôi đo p99 thật rồi đặt timeout bằng khoảng 1.5 lần p99, và luôn log khi completeOnTimeout kích hoạt để không che lỗi downstream."
+
+> Senior tip: timeout ở tầng I/O mới là timeout thật; orTimeout chỉ là cái "phanh khẩn" phía trên. Nếu chỉ dùng orTimeout mà quên timeout của HTTP client, bạn sẽ thấy CF timeout nhưng pool vẫn cạn vì thread còn kẹt trong socket — đúng kiểu sự cố "CF báo timeout nhưng service vẫn chết".`,
+  follow: [
+    'Vì sao orTimeout dùng Delayer daemon thay vì tạo một thread mỗi lần?',
+    'Đặt orTimeout trên thenCompose ngoài hay trong lambda khác nhau thế nào?',
+    'completeOnTimeout che lỗi thì làm sao phát hiện downstream đang chết?'
+  ],
+  tags: ['CompletableFuture', 'orTimeout', 'completeOnTimeout', 'Delayer', 'timeout']
+},
+{
+  id: 'concurrency-075',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Một pipeline có 3 bước phụ thuộc nhau (A→B→C) và 2 nhánh độc lập (D, E) phải chạy song song với nhau và với chuỗi A→B→C; cuối cùng ghép tất cả. Bạn tổ chức bằng {{thenCompose}}, {{thenCombine}} và {{allOf}} thế nào? Chỉ ra chỗ nào tuần tự, chỗ nào song song, và lỗi hay gặp.',
+  a: `**Tóm tắt:** {{thenCompose}} = flatMap cho bước PHỤ THUỘC (kết quả bước trước là đầu vào bước sau) — các bước này chạy TUẦN TỰ (A xong mới B, B xong mới C). {{thenCombine}} ghép HAI future độc lập; {{allOf}} chờ NHIỀU future độc lập. Với hai nhánh độc lập D, E: chạy bằng {{supplyAsync}} trên cùng executor (song song với nhau và với chuỗi). Cuối cùng dùng allOf (hoặc thenCombine nếu chỉ hai) để ghép kết quả cuối của chuỗi với D và E. Tổng thời gian ≈ max(A+B+C, D, E), không phải tổng của tất cả.
+
+### Sơ đồ
+~~~text
+A -> B -> C    (tuần tự: thenCompose)
+D              (song song: supplyAsync)
+E              (song song: supplyAsync)
+
+C, D, E  ->  allOf  ->  kết quả cuối
+~~~
+Thời gian lý thuyết = max( A+B+C, D, E ). Nếu D = 120 ms, E = 90 ms, chuỗi = 30+50+80 = 160 ms thì tổng ≈ 160 ms.
+
+### Code
+~~~java
+ExecutorService io = /* executor riêng, có giới hạn */;
+
+// chuỗi phụ thuộc: thenCompose (flatMap) — chạy TUẦN TỰ
+CompletableFuture<C> chain = supplyAsync(() -> A.run(), io)
+        .thenCompose(a -> supplyAsync(() -> B.run(a), io))
+        .thenCompose(b -> supplyAsync(() -> C.run(b), io));
+
+// hai nhánh độc lập: supplyAsync — chạy SONG SONG với chain
+CompletableFuture<D> d = supplyAsync(() -> D.run(), io);
+CompletableFuture<E> e = supplyAsync(() -> E.run(), io);
+
+// ghép: allOf chờ cả ba rồi đọc kết quả bằng join (lúc này không block)
+CompletableFuture<Result> all = CompletableFuture.allOf(chain, d, e)
+        .thenApply(v -> new Result(chain.join(), d.join(), e.join()));
+~~~
+Lưu ý: mỗi supplyAsync phải truyền io (executor riêng); nếu không, callback chạy trên commonPool và blocking sẽ làm nghẽn cả JVM.
+
+### thenCompose so với thenCombine và allOf
+| Hàm | Dùng khi | Số nhánh | Trả về |
+|---|---|---|---|
+| {{thenCompose}} | bước sau PHỤ THUỘC kết quả trước, và bước sau tự trả CF | một chuỗi | CF đã gỡ lồng |
+| {{thenCombine}} | ghép HAI future độc lập đã chạy song song | đúng 2 | CF ghép cặp |
+| {{allOf}} | chờ NHIỀU future độc lập | N | CF<Void>, đọc kết quả bằng join từng cái |
+
+### Lỗi hay gặp
+- Dùng thenApply cho bước trả về CF → được CF<CF<T>> lồng, phải join hai lần.
+- Dùng thenCompose cho hai nhánh ĐỘC LẬP → chúng chạy tuần tự, mất lợi ích song song (thời gian = tổng thay vì max).
+- Đặt supplyAsync không executor → chạy commonPool, blocking làm nghẽn toàn JVM.
+- Gọi join() giữa chừng → biến pipeline async thành tuần tự (block thread gọi).
+- Ghép bằng thenCombine cho hơn hai nhánh → lồng thenCombine rất khó đọc; dùng allOf.
+- Đặt timeout tổng nhỏ hơn nhánh chậm nhất → timeout oan.
+
+### Ví dụ đời thực
+Pipeline "tạo hoá đơn": A = validate đơn (30 ms) → B = tính giá (50 ms) → C = ghi hoá đơn (80 ms) = 160 ms tuần tự. D = kiểm tra tín dụng (120 ms), E = chốt khuyến mãi (90 ms) độc lập. Bản đầu viết tất cả bằng thenCompose nối đuôi (kể cả D, E) → 160 + 120 + 90 = 370 ms. Sau khi tách: chuỗi A→B→C bằng thenCompose, D/E bằng supplyAsync song song → max(160, 120, 90) = 160 ms, giảm 57%. Dưới tải 800 rps, throughput tăng 2.1 lần, p99 từ 520 ms xuống 240 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"thenCompose là flatMap, dùng khi bước sau phụ thuộc kết quả bước trước và tự trả về CompletableFuture — các bước đó chạy tuần tự. thenCombine ghép hai future độc lập, allOf chờ nhiều future độc lập. Trong pipeline có chuỗi A→B→C và hai nhánh D, E, tôi viết chuỗi bằng thenCompose, D và E bằng supplyAsync trên executor riêng để chúng song song với chuỗi, rồi dùng allOf để ghép cả ba. Tổng thời gian là max của chuỗi và các nhánh, không phải tổng. Lỗi hay gặp là dùng thenCompose cho nhánh độc lập (biến song song thành tuần tự), hoặc quên executor nên chạy trên commonPool. Tôi cũng chỉ join ở tầng ngoài cùng để giữ lợi ích async."
+
+> Senior tip: trước khi viết code, hãy vẽ đồ thị phụ thuộc: mũi tên là "phải có kết quả trước", không có mũi tên là "độc lập". Mọi nhánh không có mũi tên đều phải là supplyAsync song song; mọi mũi tên là thenCompose. Vẽ xong, thời gian lý thuyết chính là đường đi dài nhất — nếu code chạy chậm hơn con số đó, bạn đã biến cái gì đó thành tuần tự.`,
+  follow: [
+    'Vì sao dùng thenCompose cho nhánh độc lập lại làm mất lợi ích song song?',
+    'thenCombine ghép hai nhánh, còn nếu cần ghép ba nhánh độc lập thì dùng gì?',
+    'join() đặt giữa pipeline ảnh hưởng thế nào tới thời gian thực thi?'
+  ],
+  tags: ['CompletableFuture', 'thenCompose', 'thenCombine', 'allOf', 'pipeline']
+},
+{
+  id: 'concurrency-076',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Service dùng {{CompletableFuture}} để gọi song song nhiều bước, nhưng log trong các bước async mất {{traceId}} (MDC) và trace trên APM bị đứt. Vì sao mất, và bạn truyền context thế nào cho đúng (kể cả khi dùng virtual thread)? So sánh copy MDC thủ công với thư viện context-propagation.',
+  a: `**Tóm tắt:** {{MDC}} của SLF4J (và context của OpenTelemetry/Micrometer) lưu trong {{ThreadLocal}} — mỗi thread một bản. Khi bạn chuyển việc sang thread khác (executor của CompletableFuture), thread đó không có giá trị của thread gốc, nên log mất traceId và span đứt. Cách đúng: chụp (capture) context ở thread gốc, rồi cài lại (restore) trên thread chạy task, và luôn dọn bằng finally. Có thể làm thủ công (copy MDC) hoặc dùng thư viện {{io.micrometer:context-propagation}} (ContextSnapshot + ThreadLocalAccessor) để tự động cho MDC, OTel, security...
+
+### Vì sao mất context
+~~~text
+Thread request (Tomcat)          Thread io-pool-3
+  MDC: traceId=abc                 MDC: (rỗng)
+  -> submit task -------------------> chạy task, log không có traceId
+  -> trả response
+~~~
+- ThreadLocal gắn với thread, không theo task. Đổi thread là mất giá trị.
+- Pool tái sử dụng thread: nếu không dọn, task sau thấy traceId cũ của request trước → log LẪN dữ liệu (nguy hiểm hơn mất).
+- InheritableThreadLocal chỉ copy lúc thread được tạo; với pool, thread được tạo một lần rồi dùng cho nhiều request → mọi task thấy context của request đầu tiên tạo thread. Sai.
+
+### Cách thủ công (đúng nhưng dễ thiếu)
+~~~java
+// bọc executor: chụp MDC ở thread gọi, cài vào task, dọn khi xong
+static ExecutorService traced(ExecutorService pool) {
+  return /* wraps executor: */
+      pool; // minh hoạ: thực tế bọc Runnable/Callable trước khi submit
+}
+
+static Runnable wrap(Runnable task) {
+  Map<String, String> ctx = MDC.getCopyOfContextMap();      // chụp ở thread gọi
+  return () -> {
+    Map<String, String> old = MDC.getCopyOfContextMap();    // context của worker
+    if (ctx != null) MDC.setContextMap(ctx); else MDC.clear();
+    try { task.run(); }
+    finally {                                               // luôn dọn
+      if (old != null) MDC.setContextMap(old); else MDC.clear();
+    }
+  };
+}
+~~~
+- Phải áp cho MỌI executor; quên một chỗ là mất context ở đó.
+- Chỉ che được MDC; OTel context, SecurityContext... phải làm riêng, dễ sót.
+
+### Thư viện context-propagation (khuyến nghị)
+~~~java
+// dependency: io.micrometer:context-propagation
+ContextRegistry registry = ContextRegistry.getInstance();
+registry.registerThreadLocalAccessor("traceId",
+    MDC::get,                              // giá trị hiện tại
+    v -> MDC.put("traceId", v),            // cài
+    v -> MDC.remove("traceId"));           // dọn
+
+ContextSnapshot snapshot = ContextSnapshot.captureAll();   // chụp mọi accessor
+Runnable task = snapshot.wrap(() -> doWork());             // tự cài/dọn, không quên finally
+~~~
+- {{ContextSnapshot.captureAll()}} chụp mọi ThreadLocalAccessor đã đăng ký (MDC, OTel, security...).
+- {{wrap(...)}} trả về task đã tự cài/dọn context.
+- Spring 6 + Micrometer Observation tự tích hợp; với @Async có thể dùng {{TaskDecorator}}.
+
+### Virtual thread và ScopedValue
+- Virtual thread vẫn dùng ThreadLocal được (mỗi VT có ThreadLocal riêng), nhưng {{InheritableThreadLocal}} KHÔNG được kế thừa mặc định cho VT (phải bật).
+- Hướng tương lai: {{ScopedValue}} (chính thức JDK 24, JEP 481) — context bất biến, tự hết hạn theo scope, không leak khi pool tái dùng thread; thay thế ThreadLocal cho trace/auth.
+- Với structured concurrency, subtask fork trong scope kế thừa ScopedValue rẻ (chia sẻ, không copy).
+
+### Bảng so sánh các cách
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Copy MDC thủ công | không thêm thư viện | dễ quên, chỉ che MDC |
+| {{context-propagation}} | tự động mọi accessor | thêm một dependency |
+| {{InheritableThreadLocal}} | code đơn giản | copy lúc tạo thread, sai với pool |
+| {{ScopedValue}} | tự hết hạn, không leak | mới, cần JDK 24 |
+
+### Pitfall thực tế trên production
+- Bọc executor này nhưng quên executor khác → log lẫn hoặc thiếu ở đó.
+- Không dọn trong finally → request sau thấy traceId cũ, log lẫn dữ liệu (khó lần hơn mất).
+- Chỉ copy MDC mà quên OTel context → trace trên APM vẫn đứt.
+- Dùng InheritableThreadLocal cho pool → mọi task thấy context của request đầu tiên tạo thread.
+
+### Ví dụ đời thực
+Order service gọi 3 bước qua CompletableFuture. Log trong bước async không có traceId → khi xem trace trên Tempo/Jaeger, span con đứt, không ghép được với request gốc. Điều tra: thread dump + log cho thấy các bước chạy trên pool-1-thread-*, MDC rỗng. Thêm context-propagation + wrap executor: 100% log async có traceId, tỉ lệ trace đứt giảm từ 18% xuống 0.3%, MTTR của sự cố giảm khoảng 40% vì lần được đúng chuỗi xử lý.
+
+### Trả lời mẫu khi phỏng vấn
+"MDC và context của OpenTelemetry nằm trong ThreadLocal, nên khi CompletableFuture chạy task trên executor khác, thread đó không có giá trị và log mất traceId, trace đứt. Tôi chụp context ở thread gốc rồi cài lại trên thread chạy task, luôn dọn bằng finally; nhưng làm thủ công dễ sót và chỉ che được MDC. Vì vậy tôi dùng io.micrometer:context-propagation: đăng ký ThreadLocalAccessor cho MDC và OTel, rồi ContextSnapshot.captureAll().wrap(task) để tự cài/dọn mọi context. Với virtual thread thì ThreadLocal vẫn chạy nhưng InheritableThreadLocal không kế thừa mặc định, còn ScopedValue là hướng thay thế không leak. Sau khi thêm, trace đứt giảm từ 18% xuống 0.3%."
+
+> Senior tip: context propagation là chuyện "ai dọn". Một wrapper chỉ đúng khi nó dọn trong finally và áp cho mọi executor; nếu không, bạn không mất context — bạn LẪN context giữa các request, và đó là sự cố bảo mật (request A thấy dữ liệu B).`,
+  follow: [
+    'Vì sao InheritableThreadLocal sai với thread pool?',
+    'ScopedValue khác ThreadLocal ở điểm nào khi nói về leak?',
+    'Nếu chỉ copy MDC mà quên OTel context thì trace có đứt không?'
+  ],
+  tags: ['MDC', 'ThreadLocal', 'context-propagation', 'OpenTelemetry', 'virtual thread', 'ScopedValue']
+},
+{
+  id: 'concurrency-077',
+  topic: 'concurrency',
+  level: 'lead',
+  q: 'So sánh {{CompletableFuture}}, {{StructuredTaskScope}} (structured concurrency, preview) và {{virtual thread}} cho bài toán "gọi song song N service con rồi tổng hợp". Khi nào chọn cái nào? Nêu tiêu chí: huỷ dây chuyền, lan truyền lỗi, stack trace, vòng đời tài nguyên, độ chín API.',
+  a: `**Tóm tắt:** cả ba chạy việc đồng thời nhưng khác mô hình: CompletableFuture là ghép nối bất đồng bộ (composition), mạnh về pipeline biến đổi dữ liệu nhưng yếu về huỷ/lan truyền lỗi và dễ có task mồ côi; structured concurrency (StructuredTaskScope) là khối có ranh giới — ra khỏi scope thì mọi subtask phải xong, một subtask lỗi thì huỷ các subtask còn lại, hợp với fan-out; virtual thread là đơn vị thực thi (một thread nhẹ cho mỗi task) giải quyết nghẽn khi nhiều blocking call, thường dùng chung với hai cái trên (mỗi subtask chạy trên một VT).
+
+### Bảng so sánh
+| Tiêu chí | {{CompletableFuture}} | {{StructuredTaskScope}} | {{virtual thread}} |
+|---|---|---|---|
+| Mô hình | composition (ghép callback) | scope có vòng đời | thread nhẹ, 1 VT cho mỗi task |
+| Huỷ dây chuyền | thủ công, dễ sót | tự động (1 lỗi huỷ còn lại) | không tự huỷ nhóm |
+| Lan truyền lỗi | bọc trong CompletionException, dễ mất ngữ cảnh | throwIfFailed ném lỗi gốc | theo cơ chế thường (join/get) |
+| Task mồ côi | dễ có (fire-and-forget) | không (scope chặn) | có, nếu không join |
+| Stack trace | callback trên thread khác, khó đọc | mỗi subtask là VT, stack rõ | stack như thread thường |
+| Độ chín | ổn định lâu | preview (JDK 21→25 đổi API) | chính thức JDK 21 |
+| Hợp khi | pipeline biến đổi nhiều bước | fan-out N call, cần huỷ | nhiều blocking I/O, cần scale thread |
+
+### Khi nào chọn cái nào
+1. Pipeline biến đổi dữ liệu nhiều bước, ít nhánh song song → CompletableFuture (thenCompose/thenCombine). Hệ sinh thái lớn, ổn định.
+2. Fan-out N call độc lập, muốn một lỗi huỷ tất cả, không task mồ côi → structured concurrency. Nhưng là preview: cô lập sau một lớp wrapper, không rải preview khắp code.
+3. Nhiều blocking I/O cần hàng nghìn task đồng thời → virtual thread executor ({{Executors.newVirtualThreadPerTaskExecutor()}}). Kết hợp với CF (mỗi supplyAsync chạy trên VT executor) hoặc structured (mỗi fork là VT).
+4. Production Java 21 không bật preview → virtual thread executor + Future + timeout + tự huỷ; đây là bản thay thế ổn định cho structured concurrency.
+
+### Code minh hoạ (virtual thread executor + CompletableFuture)
+~~~java
+try (var vt = Executors.newVirtualThreadPerTaskExecutor()) {
+    CompletableFuture<A> a = supplyAsync(() -> A.call(), vt).orTimeout(500, MS);
+    CompletableFuture<B> b = supplyAsync(() -> B.call(), vt).orTimeout(500, MS);
+    CompletableFuture.allOf(a, b).join();
+    return new Profile(a.join(), b.join());
+}   // close: chờ mọi task VT xong, không rò rỉ thread
+~~~
+Mỗi supplyAsync chạy trên một VT riêng nên không cạn pool; timeout từng nhánh vẫn cần để một nhánh treo không kéo cả cụm.
+
+### Lưu ý quan trọng
+- Structured concurrency vẫn là preview ở JDK 25 (API đổi: {{StructuredTaskScope.open}} + Joiner). Không ship preview vào production nếu chưa có kế hoạch migration.
+- Virtual thread không làm I/O nhanh hơn; nó chỉ làm blocking RẺ (mỗi task một VT, không bị chặn bởi pool nhỏ). Vẫn phải giới hạn ở tầng downstream (DB pool, HTTP connection pool).
+- CF + VT: mỗi supplyAsync chạy trên VT → không còn cạn commonPool; nhưng vẫn cần timeout và xử lý lỗi từng phần.
+
+### Ví dụ đời thực
+Recommendation service fan-out 6 service. Bản CF trên commonPool: một service chậm 3 s giữ worker, p99 vọt; một lỗi làm cả request 500 dù 5 cái kia đã xong. Thử structured (preview) trên staging: một lỗi huỷ 5 cái còn lại, không task mồ côi, nhưng API preview và chưa có deadline tốt. Chọn production: VT executor (mỗi call một VT, không cạn) + orTimeout từng nhánh + handle per-nhánh (partial). Kết quả: p99 từ 6 s xuống 450 ms, không còn 500 do một nhánh, thread dump không còn worker kẹt. Structured giữ cho một service nội bộ, chờ API ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+"CompletableFuture hợp với pipeline biến đổi dữ liệu nhiều bước, ổn định và hệ sinh thái lớn, nhưng yếu ở huỷ dây chuyền và dễ có task mồ côi. Structured concurrency giải quyết đúng fan-out: ra khỏi scope thì mọi subtask phải xong, một lỗi thì huỷ phần còn lại, không task mồ côi, stack trace rõ vì mỗi subtask là một virtual thread. Virtual thread không phải mô hình lập trình mà là đơn vị thực thi: nó làm blocking rẻ, hợp khi có hàng nghìn I/O, và thường dùng chung với hai cái trên. Tôi chọn theo bài toán: pipeline biến đổi thì CF; fan-out cần huỷ thì structured (nhưng còn preview, phải cô lập); nhiều blocking I/O thì VT executor; production Java 21 không bật preview thì VT executor + Future + timeout + tự huỷ. Trong ví dụ của tôi, VT executor đưa p99 từ 6 s xuống 450 ms và bỏ được lỗi 500 do một nhánh."
+
+> Senior tip: đừng chọn theo "cái nào mới hơn". Hãy chọn theo câu hỏi "tôi cần ghép dữ liệu, cần huỷ nhóm, hay cần nhiều thread rẻ?". Ba nhu cầu đó trỏ tới ba công cụ khác nhau; và virtual thread thường là bạn đồng hành của cả hai mô hình còn lại chứ không thay thế chúng.`,
+  follow: [
+    'Structured concurrency còn preview ở JDK 25 thì production nên dùng gì thay thế?',
+    'Virtual thread có làm I/O nhanh hơn không, hay chỉ làm blocking rẻ?',
+    'CF trên VT executor vẫn cần timeout và xử lý lỗi từng phần không?'
+  ],
+  tags: ['CompletableFuture', 'structured concurrency', 'virtual thread', 'StructuredTaskScope', 'trade-off']
+},
+{
+  id: 'concurrency-078',
+  topic: 'concurrency',
+  level: 'lead',
+  q: '{{anyOf}} khác {{allOf}} thế nào: nó hoàn tất với nhánh nào, kể cả khi nhánh đó lỗi? Dùng {{anyOf}} để đua nhiều nguồn lấy kết quả đầu tiên (failover, nhiều replica) ra sao, và những bẫy gì?',
+  a: `**Tóm tắt:** {{allOf}} hoàn tất khi TẤT CẢ future xong (lỗi nếu bất kỳ cái nào lỗi); {{anyOf}} hoàn tất khi BẤT KỲ future nào hoàn tất ĐẦU TIÊN — kể cả khi cái đó hoàn tất LỖI. Vì vậy anyOf có thể trả về một exception làm "kết quả", và các nhánh khác vẫn chạy (không tự huỷ). Dùng anyOf để đua nhiều nguồn (replica, nhà cung cấp dự phòng) lấy cái nhanh nhất; nhưng phải tự xử lý: nếu nhánh đầu tiên lỗi thì loại nó và chờ nhánh kế tiếp, đặt timeout, và huỷ các nhánh thua.
+
+### anyOf hoạt động thế nào
+~~~text
+f1 (200 ms)   f2 (500 ms)   f3 (lỗi ở 100 ms)
+anyOf -> hoàn tất ngay khi f3 lỗi (100 ms), giá trị = exception của f3
+~~~
+- anyOf trả về {{CompletableFuture<Object>}} (kiểu chung), giá trị là kết quả của nhánh đầu tiên hoàn tất.
+- Nếu nhánh đầu tiên hoàn tất lỗi, anyOf vẫn hoàn tất "thành công" với giá trị là exception đó (không ném) → caller phải kiểm tra.
+- Các nhánh khác KHÔNG bị huỷ; chúng vẫn chạy tới khi xong hoặc timeout.
+
+### Đua nhiều nguồn lấy kết quả đầu tiên THÀNH CÔNG
+~~~java
+static <T> T firstSuccess(List<CompletableFuture<T>> futures) {
+    List<CompletableFuture<T>> pending = new ArrayList<>(futures);
+    while (!pending.isEmpty()) {
+        CompletableFuture<Object> race =
+                CompletableFuture.anyOf(pending.toArray(new CompletableFuture[0]));
+        Object r = race.join();                       // nhánh đầu tiên hoàn tất
+        if (r instanceof Throwable) {                 // nhánh đó lỗi -> loại, thử tiếp
+            pending.removeIf(CompletableFuture::isCompletedExceptionally);
+            continue;
+        }
+        @SuppressWarnings("unchecked") T v = (T) r;
+        pending.forEach(f -> f.cancel(true));         // huỷ các nhánh thua (cố gắng)
+        return v;
+    }
+    throw new RuntimeException("mọi nguồn đều lỗi");
+}
+~~~
+- Mỗi vòng loại các future đã hoàn tất lỗi rồi đua lại phần còn lại.
+- {{cancel(true)}} chỉ cố gắng dừng; nhánh thua có thể vẫn chạy tới khi I/O xong (xem mục bẫy).
+
+### Bảng anyOf so với allOf
+| | {{allOf}} | {{anyOf}} |
+|---|---|---|
+| Hoàn tất khi | tất cả xong | một cái xong đầu tiên |
+| Nhánh lỗi | allOf lỗi | anyOf vẫn hoàn tất (giá trị = exception) |
+| Trả về | CF<Void> | CF<Object> |
+| Huỷ nhánh khác | không | không (phải tự huỷ) |
+| Dùng khi | tổng hợp mọi nhánh | đua tốc độ, failover, first-success |
+
+### Bẫy thực tế
+- anyOf trả exception làm giá trị → quên kiểm tra {{instanceof Throwable}} → coi lỗi là dữ liệu.
+- Không huỷ nhánh thua → tốn tài nguyên, có thể ghi dữ liệu sau khi request đã trả.
+- anyOf với nhiều nhánh cùng lỗi → vẫn hoàn tất với một exception, không biết cái nào; muốn biết hết phải dùng allOf + handle.
+- Không đặt timeout → nếu mọi nhánh treo, anyOf treo theo.
+- {{cancel(true)}} không dừng được I/O đang chặn → nhánh thua vẫn chiếm connection tới khi socket timeout.
+
+### Ví dụ đời thực
+Đọc giá từ 3 nguồn (primary, replica1, replica2). Trước: gọi tuần tự primary → replica1 → replica2 khi lỗi; p99 900 ms. Sau: anyOf 3 nguồn, lấy cái nhanh nhất, huỷ 2 cái kia; p99 220 ms. Nhưng 0.5% request nhận exception của primary (vì primary lỗi nhanh, anyOf trả ngay lỗi) → thêm vòng lặp firstSuccess loại nhánh lỗi. Tỉ lệ lỗi cuối 0.02%. Đo: 99.5% request có giá trị từ nguồn nhanh nhất, 0.5% phải chờ nguồn thứ hai; số connection bị chiếm do nhánh thua giảm 90% sau khi đặt read timeout 300 ms ở client.
+
+### Trả lời mẫu khi phỏng vấn
+"allOf chờ tất cả và fail nếu một nhánh lỗi; anyOf hoàn tất với nhánh đầu tiên xong, kể cả khi nhánh đó lỗi — nên anyOf có thể trả về một exception làm giá trị, và các nhánh khác không tự huỷ. Tôi dùng anyOf để đua nhiều nguồn lấy kết quả nhanh nhất, nhưng phải kiểm tra nếu kết quả là Throwable thì loại nhánh đó và đua lại phần còn lại, đặt timeout cho cả cụm, và chủ động huỷ các nhánh thua. Bẫy lớn nhất là quên kiểm tra exception (coi lỗi là dữ liệu) và không huỷ nhánh thua (tốn tài nguyên, có thể ghi dữ liệu muộn). Trong ví dụ đọc giá 3 nguồn, anyOf đưa p99 từ 900 ms xuống 220 ms; sau khi thêm vòng lặp first-success và read timeout 300 ms, tỉ lệ lỗi còn 0.02%."
+
+> Senior tip: anyOf là "nhanh nhất", không phải "đúng nhất". Nếu các nguồn có thể trả giá trị khác nhau (ví dụ replica cũ), đua tốc độ có thể trả dữ liệu lệch; khi đó hãy gắn version/checksum hoặc chỉ đua trong cùng một nhóm nguồn tương đương.`,
+  follow: [
+    'anyOf trả về exception làm giá trị thì làm sao biết đó là lỗi?',
+    'cancel(true) có dừng được nhánh thua đang chặn ở socket không?',
+    'Nếu cần biết TẤT CẢ nhánh nào lỗi thì dùng anyOf hay allOf + handle?'
+  ],
+  tags: ['CompletableFuture', 'anyOf', 'failover', 'first-success', 'racing']
 }
 );
