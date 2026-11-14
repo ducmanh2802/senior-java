@@ -3539,5 +3539,528 @@ Loại bỏ hoàn toàn contention. Phù hợp metadata thay đổi hiếm.
     'Nêu rủi ro {{HashMap}} dùng chung (mất update, entry biến mất, size sai), phân biệt JDK 7 (vòng lặp vô hạn khi resize) vs JDK 8+ (không vòng lặp nhưng vẫn hỏng). Đề xuất {{ConcurrentHashMap}} hoặc immutable snapshot. Có đề cập không dùng busy-wait thuần, nên dùng park/await/latch.'
   ],
   tags: ['volatile', 'jit-hoisting', 'busy-wait', 'cpu-100', 'jmm', 'hashmap', 'concurrenthashmap', 'jstack', 'top', 'nid', 'java-17']
+},
+{
+  id: 'lab-thread-015',
+  category: 'thread',
+  title: 'Deadlock hai service method khóa account ngược chiều: A→B và B→A cùng lúc',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Ledger** (Spring Boot 3.4, Java 21, PostgreSQL 15, HikariCP) cung cấp API chuyển tiền nội bộ {{POST /api/transfer}}. Service dùng **database row lock** ({{SELECT ... FOR UPDATE}}) để bảo vệ số dư ví thay vì khóa trong bộ nhớ. Mỗi request mở transaction, khóa từng hàng {{wallet}} lần lượt theo thứ tự tham số truyền vào (khóa ví nguồn rồi đến ví đích), cập nhật số dư, rồi commit.
+ 
+**Triệu chứng:** Lúc **14:30 ngày 28/10/2026**, hai batch đối soát chạy song song: batch thu hộ (chuyển W1001 → W2001) và batch hoàn tiền (chuyển W2001 → W1001). Từ **14:30:05** cả hai batch treo: các request {{/api/transfer}} trả **HTTP 504 sau 30 giây** (Tomcat {{connection-timeout}}). CPU pod ~8%, DB CPU ~5%, không deadlock ở tầng ứng dụng (jstack ứng dụng không có thread BLOCKED), nhưng PostgreSQL báo **deadlock detected** trong log: {{ERROR: deadlock detected - Process 12345 waits for ShareLock on transaction 67890; blocked by process 67890}}. Restart pod không giải quyết vì batch tự chạy lại.
+ 
+**Dữ liệu thu thập:** {{jcmd 1 Thread.print -l}} trên pod ứng dụng lúc 14:30:12, log PostgreSQL ({{postgresql-2026-10-28.log}}), và đoạn code {{TransferService}}.`,
+  artifacts: [
+    {
+      name: 'jstack-transfer-deadlock.txt',
+      lang: 'text',
+      content: `2026-10-28 14:30:12
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+ 
+"http-nio-8080-exec-12" #41 [22451] prio=5 os_prio=0 cpu=120.44ms elapsed=412.10s tid=0x00007f8b1c01a000 nid=22451 runnable  [0x00007f8b0c1fd000]
+   java.lang.Thread.State: RUNNABLE
+        at java.net.SocketInputStream.socketRead0(java.base@21.0.4/Native Method)
+        at java.net.SocketInputStream.socketRead(SocketInputStream.java:115)
+        at java.net.SocketInputStream.read(SocketInputStream.java:168)
+        at java.net.SocketInputStream.read(SocketInputStream.java:137)
+        at org.postgresql.core.VisibleBufferedInputStream.readMore(VisibleBufferedInputStream.java:161)
+        at org.postgresql.core.VisibleBufferedInputStream.ensureBytes(VisibleBufferedInputStream.java:128)
+        at org.postgresql.core.VisibleBufferedInputStream.read(VisibleBufferedInputStream.java:73)
+        at org.postgresql.core.PGStream.receiveChar(PGStream.java:467)
+        at org.postgresql.core.v3.QueryExecutorImpl.processResults(QueryExecutorImpl.java:2155)
+        at org.postgresql.core.v3.QueryExecutorImpl.execute(QueryExecutorImpl.java:372)
+        at org.postgresql.jdbc.PgPreparedStatement.executeUpdate(PgPreparedStatement.java:198)
+        at com.zaxxer.hikari.pool.ProxyPreparedStatement.executeUpdate(ProxyPreparedStatement.java:61)
+        at com.zaxxer.hikari.pool.HikariProxyPreparedStatement.executeUpdate(HikariProxyPreparedStatement.java)
+        at vn.pay.ledger.TransferService.doTransfer(TransferService.java:68)
+        - locked <0x00000007a1b2c3d0> (a vn.pay.ledger.TransferService)
+        at vn.pay.ledger.TransferService.transfer(TransferService.java:44)
+        at vn.pay.ledger.TransferController.transfer(TransferController.java:28)
+        at jdk.internal.reflect.DirectMethodHandleAccessor.invoke(java.base@21.0.4/DirectMethodHandleAccessor.java:103)
+        at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1089)
+        at org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:1190)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+ 
+   Locked ownable synchronizers:
+        - <0x00000007a1b2c3d0> (a vn.pay.ledger.TransferService)
+ 
+"http-nio-8080-exec-15" #44 [22454] prio=5 os_prio=0 cpu=118.90ms elapsed=412.08s tid=0x00007f8b1c01c000 nid=22454 runnable  [0x00007f8b0c0fc000]
+   java.lang.Thread.State: RUNNABLE
+        at java.net.SocketInputStream.socketRead0(java.base@21.0.4/Native Method)
+        at java.net.SocketInputStream.socketRead(SocketInputStream.java:115)
+        at java.net.SocketInputStream.read(SocketInputStream.java:168)
+        at java.net.SocketInputStream.read(SocketInputStream.java:137)
+        at org.postgresql.core.VisibleBufferedInputStream.readMore(VisibleBufferedInputStream.java:161)
+        at org.postgresql.core.VisibleBufferedInputStream.ensureBytes(VisibleBufferedInputStream.java:128)
+        at org.postgresql.core.VisibleBufferedInputStream.read(VisibleBufferedInputStream.java:73)
+        at org.postgresql.core.PGStream.receiveChar(PGStream.java:467)
+        at org.postgresql.core.v3.QueryExecutorImpl.processResults(QueryExecutorImpl.java:2155)
+        at org.postgresql.core.v3.QueryExecutorImpl.execute(QueryExecutorImpl.java:372)
+        at org.postgresql.jdbc.PgPreparedStatement.executeUpdate(PgPreparedStatement.java:198)
+        at com.zaxxer.hikari.pool.ProxyPreparedStatement.executeUpdate(ProxyPreparedStatement.java:61)
+        at com.zaxxer.hikari.pool.HikariProxyPreparedStatement.executeUpdate(HikariProxyPreparedStatement.java)
+        at vn.pay.ledger.TransferService.doTransfer(TransferService.java:68)
+        - locked <0x00000007a1b2c3d0> (a vn.pay.ledger.TransferService)
+        at vn.pay.ledger.TransferService.transfer(TransferService.java:44)
+        at vn.pay.ledger.TransferController.transfer(TransferController.java:28)
+        at jdk.internal.reflect.DirectMethodHandleAccessor.invoke(java.base@21.0.4/DirectMethodHandleAccessor.java:103)
+        at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1089)
+        at org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:1190)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+ 
+   Locked ownable synchronizers:
+        - <0x00000007a1b2c3d0> (a vn.pay.ledger.TransferService)
+ 
+# Ghi chú on-call:
+#   - Cả 2 thread http-nio-8080-exec-12 và -15 đều RUNNABLE, đang chờ đọc socket PostgreSQL (socketRead0)
+#   - jstack ứng dụng KHÔNG có thread BLOCKED (on object monitor) - deadlock xảy ra ở tầng DB, không phải JVM monitor
+#   - Hai thread cùng giữ monitor <0x00000007a1b2c3d0> của TransferService (synchronized instance method) nhưng đợi DB trả về (đang chờ lock ví thứ hai trong transaction)`
+    },
+    {
+      name: 'postgresql-deadlock.log',
+      lang: 'text',
+      content: `2026-10-28 14:30:07.123 +07 [12345] ERROR:  deadlock detected
+2026-10-28 14:30:07.123 +07 [12345] DETAIL:  Process 12345 waits for ShareLock on transaction 67890; blocked by process 67890.
+	Process 12345: UPDATE wallet SET balance = balance - 50000 WHERE id = 'W2001' AND version = 3
+	Process 67890: UPDATE wallet SET balance = balance - 30000 WHERE id = 'W1001' AND version = 5
+2026-10-28 14:30:07.123 +07 [12345] HINT:  See server log for query details.
+2026-10-28 14:30:07.123 +07 [12345] CONTEXT:  SQL statement "UPDATE wallet SET balance = balance - 50000 WHERE id = 'W2001' AND version = 3"
+2026-10-28 14:30:07.123 +07 [67890] ERROR:  deadlock detected
+2026-10-28 14:30:07.123 +07 [67890] DETAIL:  Process 67890 waits for ShareLock on transaction 12345; blocked by process 12345.
+	Process 67890: UPDATE wallet SET balance = balance - 30000 WHERE id = 'W1001' AND version = 5
+	Process 12345: UPDATE wallet SET balance = balance - 50000 WHERE id = 'W2001' AND version = 3
+2026-10-28 14:30:07.123 +07 [67890] HINT:  See server log for query details.
+2026-10-28 14:30:07.123 +07 [67890] CONTEXT:  SQL statement "UPDATE wallet SET balance = balance - 30000 WHERE id = 'W1001' AND version = 5"
+2026-10-28 14:30:07.123 +07 [12345] LOG:  process 12345 still waiting for ShareLock on transaction 67890 after 1000.123 ms
+2026-10-28 14:30:07.123 +07 [12345] LOG:  process 67890 still waiting for ShareLock on transaction 12345 after 1000.123 ms
+2026-10-28 14:30:08.123 +07 [12345] LOG:  deadlock detected - process 12345 waits for ShareLock on transaction 67890
+2026-10-28 14:30:08.123 +07 [12345] LOG:  aborting transaction of process 12345 to break deadlock
+2026-10-28 14:30:08.123 +07 [67890] LOG:  deadlock detected - process 67890 waits for ShareLock on transaction 12345
+2026-10-28 14:30:08.123 +07 [67890] LOG:  aborting transaction of process 67890 to break deadlock`
+    },
+    {
+      name: 'TransferService.java',
+      lang: 'java',
+      content: `@Service
+@Transactional
+public class TransferService {
+ 
+    private final JdbcTemplate jdbc;
+ 
+    // Instance method synchronized - chỉ có hiệu lực trong JVM này, không bảo vệ đa pod
+    public synchronized void transfer(String fromWallet, String toWallet, long amount) {
+        doTransfer(fromWallet, toWallet, amount);
+    }
+ 
+    private void doTransfer(String from, String to, long amount) {
+        // Khóa từng ví theo thứ tự tham số: ví nguồn trước, rồi ví đích
+        lockWallet(from);
+        lockWallet(to);
+ 
+        // Cập nhật số dư (giản lược)
+        jdbc.update("UPDATE wallet SET balance = balance - ?, version = version + 1 WHERE id = ? AND version = ?",
+            amount, from, getVersion(from));
+        jdbc.update("UPDATE wallet SET balance = balance + ?, version = version + 1 WHERE id = ? AND version = ?",
+            amount, to, getVersion(to));
+    }
+ 
+    private void lockWallet(String walletId) {
+        jdbc.queryForMap("SELECT id, balance, version FROM wallet WHERE id = ? FOR UPDATE", walletId);
+    }
+ 
+    private int getVersion(String walletId) {
+        return jdbc.queryForObject("SELECT version FROM wallet WHERE id = ?", Integer.class, walletId);
+    }
+}
+`
+    }
+  ],
+  questions: [
+    'Tại sao jstack ứng dụng không có thread BLOCKED mà PostgreSQL lại báo deadlock? Giải thích khác biệt giữa deadlock monitor JVM và deadlock row-level DB.',
+    'Chỉ ra nguyên nhân gốc từ log PostgreSQL: hai process (12345, 67890) đang UPDATE hai wallet (W1001, W2001) theo thứ tự ngược nhau. Mối tương quan giữa thứ tự tham số API và thứ tự khóa từng hàng bằng SELECT FOR UPDATE trong service.',
+    'Đề xuất cách sửa: (1) chuẩn hoá thứ tự khóa theo walletId tăng dần, (2) dùng NOWAIT/SKIP LOCKED với retry có kiểm soát, (3) dùng advisory lock theo thứ tự. So sánh ưu/nhược.'
+  ],
+  hints: [
+    'JVM monitor (synchronized) chỉ bảo vệ trong một process. Khi scale nhiều pod, mỗi pod có instance TransferService riêng → synchronized KHÔNG ngăn deadlock chéo pod. Deadlock xảy ra ở PostgreSQL row lock.',
+    'Log PostgreSQL cho thấy: Process 12345 (batch thu hộ W1001→W2001) đã giữ lock W1001 rồi chờ W2001; Process 67890 (batch hoàn tiền W2001→W1001) đã giữ lock W2001 rồi chờ W1001. Trong TransferService, lockWallet(from) rồi lockWallet(to) nên thứ tự khóa DB phụ thuộc trực tiếp thứ tự tham số API.',
+    'jstack chỉ thấy 2 thread RUNNABLE chờ socket DB (socketRead0) trong lockWallet (executeQuery), không BLOCKED vì chúng không tranh chấp monitor JVM - monitor TransferService được lấy trước khi vào doTransfer và không bị tranh chấp giữa 2 thread này.'
+  ],
+answer: `**Tóm tắt:** Đây là **deadlock row-level ở PostgreSQL**, không phải deadlock monitor JVM. Hai batch chạy ngược chiều (W1001→W2001 và W2001→W1001) khiến service khóa từng hàng {{wallet}} bằng {{SELECT ... FOR UPDATE}} theo thứ tự tham số ({{from}} rồi {{to}}) — tức hai transaction khóa ngược nhau. Process 12345 giữ lock W1001 rồi chờ W2001; Process 67890 giữ W2001 rồi chờ W1001. PostgreSQL phát hiện deadlock sau ~1s và abort một transaction. Jstack ứng dụng chỉ thấy 2 thread http-nio-8080-exec RUNNABLE chờ socket DB (đang {{lockWallet}}) — không thread nào BLOCKED vì {{synchronized}} trên {{TransferService}} không bị tranh chấp. Sửa gốc: **chuẩn hoá thứ tự lock theo walletId tăng dần** trước khi gọi {{SELECT ... FOR UPDATE}}.
+
+### Nguyên nhân gốc
+
+Code {{TransferService.doTransfer}} khóa từng ví theo thứ tự tham số:
+
+~~~java
+lockWallet(from);
+lockWallet(to);
+
+private void lockWallet(String walletId) {
+    jdbc.queryForMap("SELECT id, balance, version FROM wallet WHERE id = ? FOR UPDATE", walletId);
+}
+~~~
+
+Vì mỗi lần chỉ khóa một hàng, **thứ tự khóa DB do ứng dụng quyết định** (thứ tự gọi {{lockWallet}}), và ở đây phụ thuộc trực tiếp vào {{from/to}} của API. Với hai batch ngược chiều:
+
+- Batch thu hộ: {{transfer("W1001", "W2001", 50000)}} → lock W1001 trước, rồi lock W2001
+- Batch hoàn tiền: {{transfer("W2001", "W1001", 30000)}} → lock W2001 trước, rồi lock W1001
+
+Khi cả hai chạy đồng thời:
+
+~~~text
+Process 12345 (thu hộ)                 Process 67890 (hoàn tiền)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LOCK W1001 (thành công)                LOCK W2001 (thành công)
+                                        |
+LOCK W2001 (CHỜ - bị 67890 giữ)         |
+                                        | LOCK W1001 (CHỜ - bị 12345 giữ)
+                                        ▼
+                              DEADLOCK: mỗi process giữ 1 lock, chờ lock của process kia
+~~~
+
+PostgreSQL có cơ chế deadlock detection chạy định kỳ (mặc định {{deadlock_timeout = 1s}}). Khi phát hiện, nó **abort một transaction nạn nhân** (thường là transaction tốn ít công hơn) để giải phóng lock cho bên kia tiến. Log ghi rõ: {{Process 12345 waits for ShareLock on transaction 67890; blocked by process 67890}} và ngược lại.
+
+Lưu ý quan trọng về PostgreSQL: câu {{SELECT ... FOR UPDATE}} trên nhiều hàng (ví dụ {{WHERE id IN (?, ?)}}) **không đảm bảo** khóa theo thứ tự phần tử trong danh sách tham số — thứ tự khóa phụ thuộc kế hoạch thực thi (index scan, thứ tự trả về). Vì vậy, để kiểm soát thứ tự lock an toàn, nên khóa **từng hàng bằng các câu riêng theo thứ tự toàn cục đã sắp xếp** (hoặc đảm bảo planner trả về đúng thứ tự, nhưng cách khóa từng hàng theo thứ tự ứng dụng rõ ràng hơn).
+
+{{@Transactional}} + {{@Service}} tạo ra instance singleton {{TransferService}}. {{public synchronized void transfer}} lấy **monitor instance** này, nhưng chỉ bảo vệ trong **một JVM** (mỗi pod có instance riêng) và deadlock thực sự xảy ra ở **row lock PostgreSQL**.
+
+### Dẫn chứng từ artifact
+
+**1. jstack-transfer-deadlock.txt:**
+- 2 thread {{http-nio-8080-exec-12}} và {{http-nio-8080-exec-15}} đều {{RUNNABLE}}
+- Stack dừng tại {{SocketInputStream.socketRead0}} trong {{executeQuery}} của {{TransferService.lockWallet}} → đang chờ PostgreSQL phản hồi khi cố khóa ví thứ hai
+- Cùng giữ {{- locked <0x00000007a1b2c3d0> (a vn.pay.ledger.TransferService)}} → monitor instance được lấy, nhưng **không có thread nào BLOCKED chờ monitor này**
+- Kết luận: deadlock không ở JVM monitor
+
+**2. postgresql-deadlock.log:**
+- {{Process 12345: UPDATE wallet ... WHERE id = 'W2001'}} chờ {{ShareLock on transaction 67890}}
+- {{Process 67890: UPDATE wallet ... WHERE id = 'W1001'}} chờ {{ShareLock on transaction 12345}}
+- Hai {{UPDATE}} ngược chiều trên cùng 2 wallet {{W1001}} và {{W2001}}; PostgreSQL abort transaction để phá vòng chờ
+
+**3. TransferService.java:**
+- {{lockWallet(from)}} rồi {{lockWallet(to)}} (mỗi lần {{SELECT ... FOR UPDATE}} một hàng) → thứ tự lock DB phụ thuộc thứ tự tham số API
+- {{public synchronized}} chỉ serialize trong JVM, vô hiệu đa pod
+
+### Cách sửa
+
+**Ngắn hạn:** tạm dừng batch đối soát hai chiều, restart pod, đối soát lại thủ công các giao dịch bị ảnh hưởng (aborted/PENDING).
+
+**Sửa gốc (chọn 1):**
+
+**1. Chuẩn hoá thứ tự lock theo walletId tăng dần (khuyên dùng):**
+
+~~~java
+private void doTransfer(String from, String to, long amount) {
+    String first = from.compareTo(to) < 0 ? from : to;
+    String second = from.compareTo(to) < 0 ? to : from;
+
+    lockWallet(first);   // LUÔN lock id nhỏ trước
+    lockWallet(second);
+
+    // Cập nhật theo from/to gốc
+    jdbc.update("UPDATE wallet SET balance = balance - ?, version = version + 1 WHERE id = ? AND version = ?",
+        amount, from, getVersion(from));
+    jdbc.update("UPDATE wallet SET balance = balance + ?, version = version + 1 WHERE id = ? AND version = ?",
+        amount, to, getVersion(to));
+}
+~~~
+
+Điều này biến đồ thị chờ thành **DAG** (không chu trình) vì mọi transaction đều lock theo cùng một thứ tự toàn cục.
+
+**2. SELECT FOR UPDATE NOWAIT / SKIP LOCKED (PostgreSQL 9.5+):**
+
+~~~sql
+SELECT ... FOR UPDATE NOWAIT           -- thất bại ngay nếu lock không lấy được (ERROR 55P03)
+SELECT ... FOR UPDATE SKIP LOCKED      -- bỏ qua hàng đã bị lock (dùng cho queue, không phù hợp transfer)
+~~~
+
+{{NOWAIT}} biến deadlock thành lỗi ngay lập tức → client retry với backoff → giảm thời gian chờ. Nhưng cần xử lý retry idempotent.
+
+**3. Advisory lock (pg_advisory_xact_lock):**
+
+~~~java
+String first = from.compareTo(to) < 0 ? from : to;
+String second = from.compareTo(to) < 0 ? to : from;
+jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtext(?))", Object.class, first);
+jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtext(?))", Object.class, second);
+// advisory lock tự động giải phóng khi transaction kết thúc
+~~~
+
+Advisory lock không gắn liền với hàng dữ liệu, dùng cho điều phối logic ứng dụng. Cũng phải chuẩn hoá thứ tự lock và chú ý va chạm {{hashtext}}.
+
+| Cách | Ưu | Nhược | Khi nào dùng |
+|---|---|---|---|
+| Sắp xếp walletId rồi khóa từng hàng | Đơn giản, đúng chuẩn, kiểm soát thứ tự rõ | Phải nhớ áp dụng mọi nơi | Mặc định cho mọi hệ thống tài chính |
+| FOR UPDATE NOWAIT + retry | Fail fast, không chờ deadlock detection | Cần retry logic, idempotency | Tải cao, va chạm thường |
+| Advisory lock | Nhẹ, không lock hàng dữ liệu | Tự quản lý key, rủi ro va chạm hash | Điều phối logic phức tạp |
+
+### Phòng ngừa
+
+- **Code review rule:** Mọi luồng khóa/nâng cấp lock trên nhiều hàng phải có comment nêu rõ thứ tự lock toàn cục. Không dựa vào thứ tự tham số nghiệp vụ hay thứ tự trong {{IN (...)}}.
+- **Test tải:** k6/JMH mô phỏng 2 batch ngược chiều trên cùng cặp wallet, chạy liên tục - deadlock thường chỉ lộ ở tải thật.
+- **Alert:** Bật {{log_lock_waits = on}}, theo dõi {{deadlock detected}} trong log PostgreSQL.
+- **Tài liệu:** Ghi runbook "deadlock DB != deadlock JVM" - jstack không thấy BLOCKED, phải đọc log PostgreSQL.
+
+> Senior tip: Trong phỏng vấn, nếu hỏi "deadlock DB và deadlock JVM khác nhau thế nào?", hãy trả lời: JVM deadlock là chu trình chờ **monitor/lock object** (synchronized, ReentrantLock) - jstack in {{Found one Java-level deadlock}}. DB deadlock là chu trình chờ **row lock** (SELECT FOR UPDATE, UPDATE) - jstack chỉ thấy thread RUNNABLE chờ socket, log DB mới có {{deadlock detected}}. Hai loại có thể cùng lúc xảy ra (cùng một lỗi thiết kế: thứ tự lock phụ thuộc tham số), không phải hai sự cố riêng.`,
+  rubric: [
+    'Phân biệt đúng deadlock DB row-lock với deadlock JVM monitor: jstack không có BLOCKED, PostgreSQL log có "deadlock detected" với 2 process chờ ShareLock lẫn nhau trên W1001/W2001.',
+    'Chỉ ra nguyên nhân: service khóa từng ví theo thứ tự tham số (lockWallet(from) rồi lockWallet(to)) → batch ngược chiều lock ngược nhau. Trích dẫn log PostgreSQL: Process 12345 lock W1001 chờ W2001, Process 67890 lock W2001 chờ W1001.',
+    'Đề xuất sửa: chuẩn hoá thứ tự lock theo walletId tăng dần rồi khóa từng hàng (chính xác nhất), hoặc NOWAIT/retry, advisory lock. So sánh ưu/nhược. Nhấn mạnh synchronized JVM không bảo vệ đa pod.'
+  ],
+  tags: ['deadlock', 'postgresql', 'select-for-update', 'row-lock', 'database', 'jstack', 'transaction']
+},
+{
+  id: 'lab-thread-016',
+  category: 'thread',
+  title: 'ThreadLocal rò rỉ bộ nhớ trong pool Tomcat: 2.5GB heap sau 3 ngày',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Gateway** (Spring Boot 3.4, Java 21, Tomcat 200 thread, pod 4 vCPU, heap 4GB) dùng {{ThreadLocal}} để lưu ngữ cảnh request (traceId, userId, tenantId) cho logging và metrics. Mỗi request set {{ThreadLocal}} ở filter đầu, xóa ở filter cuối. Sau deploy bản mới thêm feature "async processing", heap tăng dần từ 1.2GB lên **2.5GB trong 3 ngày**, GC G1 Old Gen collection tần suất tăng, pause time lên 800ms. Không OOM nhưng latency p99 từ 50ms lên 300ms. Heap dump cho thấy hàng nghìn instance {{RequestContext}} bị giữ bởi {{ThreadLocalMap}} của các thread trong pool async xử lý nền.
+
+**Triệu chứng:** Heap usage sawtooth: Young GC giảm heap tạm thời nhưng Old Gen không giảm. {{jcmd 1 GC.class_histogram}} cho thấy {{RequestContext}} nằm top theo retained size. Thread pool async cố định 10 thread, nhưng {{ThreadLocalMap}} của các thread này chứa **rất nhiều entry** (mỗi entry gắn với một {{ThreadLocal}} key khác nhau).
+
+**Dữ liệu thu thập:** {{jcmd 1 GC.heap_dump /tmp/heap.hprof}}, phân tích bằng MAT/Eclipse Memory Analyzer, code {{RequestContextFilter}} và {{AsyncProcessingService}}.`,
+  artifacts: [
+    {
+      name: 'heap-histogram.txt',
+      lang: 'text',
+      content: `$ jcmd 1 GC.class_histogram | head -20
+ num     #instances         #bytes  class name
+----------------------------------------------
+   1:        2145320      412314880  [C
+   2:         312450      200458240  java.lang.String
+   3:          45210      180840000  vn.pay.gateway.RequestContext
+   4:          45210      144672000  java.util.concurrent.ConcurrentHashMap$Node
+   5:          45210       72336000  java.util.HashMap$Node
+   6:          45210       72336000  java.lang.ThreadLocal$ThreadLocalMap$Entry
+   7:           5000       48000000  vn.pay.gateway.TenantContext
+   8:           5000       40000000  vn.pay.gateway.UserContext
+   ...
+ 
+$ jcmd 1 GC.class_histogram | grep RequestContext
+   3:          45210      180840000  vn.pay.gateway.RequestContext
+ 
+# MAT retained set: 45,210 RequestContext instance retained ~1.1 GB
+# ThreadLocalMap.Entry (stale) count: 45,210, tập trung trên 10 thread async-pool-*`
+    },
+    {
+      name: 'mat-dominator-tree.txt',
+      lang: 'text',
+      content: `Dominator Tree (retained size descending):
+ 
+| Class Name                                                            | Shallow Heap | Retained Heap | Count |
+|-----------------------------------------------------------------------|--------------|---------------|-------|
+| java.lang.Thread @ 0x00007f8b2c000800 (async-pool-1)                  | 2.5 KB       | 110.5 MB      | 1     |
+|   '- java.lang.ThreadLocal$ThreadLocalMap @ 0x00007f8b2d100000        | 4.0 KB       | 110.5 MB      | 1     |
+|       '- java.lang.ThreadLocal$ThreadLocalMap$Entry @ 0x00007f8b2d100100 | 32 B       | 110.5 MB      | ~4520 |
+|           '- vn.pay.gateway.RequestContext @ 0x00007f8b3c4d5000       | 4 KB         | 24.5 KB       | 4520  |
+|               '- java.util.HashMap (attributes)                       | 1 KB         | 12.0 KB       | 4520  |
+|               '- java.util.concurrent.ConcurrentHashMap (metrics)      | 2 KB         | 8.5 KB        | 4520  |
+ 
+# 10 thread async-pool-* có pattern tương tự. Tổng retained bởi ThreadLocalMap ~1.1 GB.
+# Mỗi thread có hàng nghìn Entry; mỗi Entry gắn với một ThreadLocal key KHÁC NHAU (tạo mới mỗi task) và value là RequestContext lớn.`
+    },
+    {
+      name: 'RequestContextFilter.java',
+      lang: 'java',
+      content: `public class RequestContextFilter implements Filter {
+    private static final ThreadLocal<RequestContext> CTX = new ThreadLocal<>();
+    private static final ThreadLocal<TenantContext> TENANT = new ThreadLocal<>();
+    private static final ThreadLocal<UserContext> USER = new ThreadLocal<>();
+ 
+    @Override
+    public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain) {
+        RequestContext ctx = new RequestContext();
+        ctx.setTraceId(MDC.get("traceId"));
+        ctx.setStartTime(System.nanoTime());
+        CTX.set(ctx);
+ 
+        TenantContext tc = extractTenant(req);
+        TENANT.set(tc);
+ 
+        UserContext uc = extractUser(req);
+        USER.set(uc);
+ 
+        try {
+            chain.doFilter(req, res);
+        } finally {
+            CTX.remove();
+            TENANT.remove();
+            USER.remove();
+        }
+    }
+ 
+    public static RequestContext getContext() { return CTX.get(); }
+    public static TenantContext getTenant() { return TENANT.get(); }
+    public static UserContext getUser() { return USER.get(); }
+}
+`
+    },
+    {
+      name: 'AsyncProcessingService.java',
+      lang: 'java',
+      content: `@Service
+public class AsyncProcessingService {
+    private final ExecutorService asyncPool = Executors.newFixedThreadPool(10);
+ 
+    public CompletableFuture<Result> processAsync(Request req) {
+        // Lấy context từ ThreadLocal của thread HTTP
+        RequestContext ctx = RequestContextFilter.getContext();
+        TenantContext tenant = RequestContextFilter.getTenant();
+        UserContext user = RequestContextFilter.getUser();
+ 
+        return CompletableFuture.supplyAsync(() -> {
+            // BUG: tạo ThreadLocal MỚI trong mỗi task rồi set lên thread pool, KHÔNG remove()
+            ThreadLocal<RequestContext> taskCtx = new ThreadLocal<>();
+            ThreadLocal<TenantContext> taskTenant = new ThreadLocal<>();
+            ThreadLocal<UserContext> taskUser = new ThreadLocal<>();
+ 
+            taskCtx.set(ctx);
+            taskTenant.set(tenant);
+            taskUser.set(user);
+ 
+            try {
+                return doHeavyWork(req, ctx, tenant, user);
+            } finally {
+                // QUÊN remove() - thread pool tái dụng, ThreadLocalMap giữ entry stale (key đã GC, value còn bị giữ)
+                // taskCtx.remove(); taskTenant.remove(); taskUser.remove();
+            }
+        }, asyncPool);
+    }
+ 
+    private Result doHeavyWork(Request req, RequestContext ctx, TenantContext t, UserContext u) {
+        // xử lý nặng ~2-5 giây
+        return new Result();
+    }
+}
+`
+    }
+  ],
+  questions: [
+    'Tại sao ThreadLocal trong thread pool (asyncPool) gây rò rỉ mà ThreadLocal trong thread Tomcat (có remove trong finally) lại không? Giải thích vòng đời thread pool vs thread servlet.',
+    'MAT cho thấy mỗi thread async-pool có hàng nghìn ThreadLocalMap.Entry — tại sao nhiều entry như vậy dù mỗi request chỉ cần 3 giá trị context? Mối liên quan với việc tạo ThreadLocal mới mỗi task và cơ chế dọn entry của ThreadLocalMap.',
+    'Đề xuất 3 cách sửa: (1) remove() trong finally của task async, (2) không dùng ThreadLocal cho async — truyền context qua tham số, (3) dùng Context Propagation (Micrometer Context Propagation / Spring). So sánh.'
+  ],
+  hints: [
+    'Thread Tomcat: request đến -> filter set 3 ThreadLocal static final -> controller -> filter finally remove 3 ThreadLocal. Thread Tomcat trả về pool, entry được dọn. Nhưng task async chạy trên thread pool khác (asyncPool), tạo ThreadLocal mới rồi set mà quên remove -> thread pool tái dụng, entry tích lũy.',
+    'MAT: mỗi task tạo {{new ThreadLocal<>()}} rồi set value (RequestContext chứa HashMap, ConcurrentHashMap). ThreadLocalMap dùng weak reference cho key: khi ThreadLocal cục bộ hết scope, key bị GC nhưng value (RequestContext lớn) vẫn bị entry giữ mạnh cho đến khi bị expunge — trên thread pool sống lâu và không gọi remove, expunge không đáng tin cậy nên entry stale tích lũy.',
+    'Nếu dùng ThreadLocal static final (key cố định) và remove() đúng chỗ thì mỗi thread chỉ có 1 entry/key. Nếu bắt buộc tạo ThreadLocal theo task, phải remove() trong finally; tốt nhất là truyền context qua tham số hoặc dùng Context Propagation.'
+  ],
+answer: `**Tóm tắt:** ThreadLocal {{RequestContext}} bị rò rỉ ở **thread pool async** ({{asyncPool}} 10 thread). Task async tạo {{ThreadLocal}} mới trong mỗi lần chạy rồi {{set}} context lên thread pool, nhưng **quên {{remove()}} trong {{finally}}**. Thread pool tái dụng thread nên {{ThreadLocalMap}} của nó tích lũy rất nhiều entry: key {{ThreadLocal}} (cục bộ) bị GC (weak reference) còn value {{RequestContext}} (chứa {{HashMap}} attributes, {{ConcurrentHashMap}} metrics ~4KB) vẫn bị giữ mạnh tới khi entry được expunge. 45,210 instance {{RequestContext}} retained ~1.1 GB. Sửa: truyền context qua tham số, hoặc dùng Context Propagation, hoặc ít nhất {{remove()}} (và tái sử dụng key) trong finally.
+
+### Nguyên nhân gốc
+
+**1. Vòng đời thread khác nhau:**
+
+| Đặc điểm | Thread Tomcat (servlet) | Thread Pool (asyncPool) |
+|---|---|---|
+| Tạo khi | Request đến | Khởi động ứng dụng (fixed 10) |
+| Sử dụng | Xử lý 1 request rồi trả về pool | Chạy nhiều task liên tục, tái dụng |
+| ThreadLocal cleanup | {{finally remove()}} trong filter | **QUÊN {{remove()}}** |
+| Hậu quả | Entry được dọn sau mỗi request | Entry stale tích lũy, object lớn không GC kịp |
+
+**2. Cơ chế rò rỉ chi tiết (ThreadLocalMap):**
+
+- {{AsyncProcessingService.processAsync}} lấy context từ thread HTTP (Tomcat thread) rồi submit task lên {{asyncPool}} (ExecutorService 10 thread cố định) bằng {{supplyAsync(..., asyncPool)}}.
+- Trong lambda, mỗi task tạo **ThreadLocal mới** ({{new ThreadLocal<>()}}) rồi {{set}} {{RequestContext}}/{{TenantContext}}/{{UserContext}} lên thread pool.
+- Task xong, **không có {{finally remove()}}**. Biến {{ThreadLocal}} cục bộ hết scope → key trong {{ThreadLocalMap}} (weak reference) bị GC, nhưng {{Entry}} (và value {{RequestContext}} lớn) vẫn còn trong map cho tới khi bị **expunge** (dọn slot stale). {{ThreadLocalMap}} chỉ expunge trong một số thao tác {{get/set/remove}}; nếu không {{remove()}} đúng key và thread pool ít chạm map theo cách phù hợp, entry stale có thể tồn tại rất lâu → rò rỉ.
+- Thread pool tái dụng thread cho task sau và lại tạo key mới → số entry stale tăng liên tục. 10 thread × nhiều task/ngày = 45,210 instance retained ~1.1 GB.
+
+Ngược lại, {{RequestContextFilter}} dùng **ThreadLocal static final** và luôn {{remove()}} trong {{finally}}, nên thread Tomcat không tích lũy entry qua các request.
+
+### Dẫn chứng từ artifact
+
+**1. heap-histogram.txt:**
+- {{vn.pay.gateway.RequestContext}}: 45,210 instance, 180 MB shallow, retained ~1.1 GB (MAT)
+- {{ThreadLocal$ThreadLocalMap$Entry}}: 45,210 entry (stale), tập trung trên 10 thread {{async-pool-*}}
+- {{TenantContext}}/{{UserContext}}: 5,000 instance mỗi loại
+
+**2. mat-dominator-tree.txt:**
+- Thread {{async-pool-1}} retained ~110.5 MB chủ yếu do {{ThreadLocalMap}} → ~4520 {{Entry}} stale → ~4520 {{RequestContext}} (mỗi cái kéo theo HashMap + ConcurrentHashMap)
+- Pattern lặp lại cho 10 thread async-pool
+
+**3. RequestContextFilter.java:**
+- 3 {{ThreadLocal}} static final: {{CTX}}, {{TENANT}}, {{USER}}
+- {{doFilter}}: set 3 ThreadLocal, {{finally}} remove 3 ThreadLocal → **thread Tomcat được dọn sạch**
+
+**4. AsyncProcessingService.java:**
+- Trong task chạy trên {{asyncPool}}: tạo {{ThreadLocal}} mới mỗi task, {{set}} context, **KHÔNG CÓ {{finally remove()}}** → thread pool tích lũy entry stale
+
+### Cách sửa
+
+**Cách 1: Truyền context qua tham số (khuyên dùng, đơn giản nhất):**
+
+~~~java
+public CompletableFuture<Result> processAsync(Request req) {
+    RequestContext ctx = RequestContextFilter.getContext();
+    TenantContext tenant = RequestContextFilter.getTenant();
+    UserContext user = RequestContextFilter.getUser();
+
+    return CompletableFuture.supplyAsync(() -> {
+        // KHÔNG dùng ThreadLocal trên thread pool - truyền thẳng vào method
+        return doHeavyWork(req, ctx, tenant, user);
+    }, asyncPool);
+}
+
+private Result doHeavyWork(Request req, RequestContext ctx, TenantContext t, UserContext u) {
+    // dùng ctx, t, u trực tiếp
+}
+~~~
+
+Ưu: loại bỏ ThreadLocal cho async, không rò rỉ, code rõ ràng.
+
+**Cách 2: Context Propagation (Micrometer Context Propagation / Spring):**
+
+~~~java
+// Spring Boot 3.x có hỗ trợ Context Propagation (micrometer-context-propagation)
+// Tự capture ThreadLocal (MDC, OpenTelemetry, custom) từ thread submit và restore ở thread chạy,
+// có cleanup tự động sau task.
+
+ContextSnapshot snapshot = ContextSnapshot.captureAll();
+return CompletableFuture.supplyAsync(snapshot.wrap(() -> {
+    return doHeavyWork(req, RequestContextFilter.getContext(),
+        RequestContextFilter.getTenant(), RequestContextFilter.getUser());
+}), asyncPool);
+~~~
+
+Phù hợp hệ đã có nhiều thư viện dựa trên ThreadLocal (MDC/OTel). Cần dependency {{io.micrometer:context-propagation}}.
+
+**Cách 3: Ít nhất phải {{remove()}} trong finally (nếu bắt buộc dùng ThreadLocal):**
+
+~~~java
+return CompletableFuture.supplyAsync(() -> {
+    ThreadLocal<RequestContext> taskCtx = new ThreadLocal<>();
+    try {
+        taskCtx.set(ctx);
+        return doHeavyWork(req, ctx, tenant, user);
+    } finally {
+        taskCtx.remove();
+    }
+}, asyncPool);
+~~~
+
+Tốt hơn là dùng ThreadLocal static final tái sử dụng key. Cách này vẫn rủi ro quên finally; chỉ dùng khi không thể refactor signature.
+
+| Cách | Rò rỉ? | Độ phức tạp | Phù hợp |
+|---|---|---|---|
+| Truyền tham số | Không | Thấp | Mới viết, context ít, method do team kiểm soát |
+| Context Propagation | Không (tự dọn) | Trung bình | Hệ có sẵn MDC/OTel, nhiều library dùng ThreadLocal |
+| remove() trong finally | Vẫn rủi ro quên | Thấp | Legacy code, không đổi được signature |
+
+### Phòng ngừa
+
+- **Code review rule:** Không tạo {{ThreadLocal}} cục bộ trong task chạy trên thread pool; nếu dùng ThreadLocal, phải {{remove()}} trong {{finally}} cùng block. Tái sử dụng key (static final) khi có thể.
+- **Static analysis:** bật rule phát hiện ThreadLocal không remove (SpotBugs/Error Prone tùy cấu hình dự án).
+- **Test rò rỉ:** chạy test tải async, so sánh heap/instance count {{RequestContext}} trước-sau.
+- **Giám sát:** alert khi Old Gen/heap tăng bất thường kéo dài; heap dump khi nghi ngờ leak.
+- **Thiết kế:** mặc định **không dùng ThreadLocal cho dữ liệu request** khi có async. Truyền tham số hoặc dùng Context Propagation; cân nhắc {{ScopedValue}} (Java 21 preview, ổn định dần ở các bản mới) cho ngữ cảnh bất biến theo phạm vi khi phù hợp.
+
+> Senior tip: ThreadLocal là "biến toàn cục cục bộ theo thread" - nguy hiểm khi thread được tái dụng (pool). ThreadLocalMap dùng weak key: key GC không tự động thu hồi value lớn nếu entry chưa expunge, nên {{remove()}} là bắt buộc. Quy tắc vàng: **ThreadLocal chỉ dùng cho dữ liệu sống chết cùng request trên thread servlet**; với async/handoff sang thread khác, ưu tiên truyền tham số hoặc Context Propagation. 45k RequestContext × ~4KB = 180 MB shallow, nhưng retained ~1.1 GB vì mỗi instance kéo theo HashMap + ConcurrentHashMap.`,
+  rubric: [
+    'Chỉ ra rò rỉ ở asyncPool thread: task tạo ThreadLocal mới mỗi lần, set context nhưng quên remove() trong finally → ThreadLocalMap tích lũy entry stale (key GC, value RequestContext lớn còn giữ), retained ~1.1 GB (45k instance).',
+    'Giải thích khác biệt vòng đời thread Tomcat (filter remove trong finally) vs thread pool tái dụng; nêu cơ chế weak key/expunge của ThreadLocalMap hoặc tương đương.',
+    'Đề xuất 3 cách sửa: (1) truyền context qua tham số + executor rõ ràng (tốt nhất), (2) Context Propagation (Micrometer/Spring), (3) remove() trong finally (và tái sử dụng key). So sánh trade-off.',
+    'Nêu phòng ngừa: code review (không tạo ThreadLocal cục bộ trong task pool / luôn remove), static analysis, test tải, giám sát heap/heap dump, định hướng Context Propagation hoặc ScopedValue khi phù hợp.'
+  ],
+  tags: ['threadlocal', 'memory-leak', 'thread-pool', 'async', 'inheritablethreadlocal', 'heap-dump', 'mat', 'context-propagation', 'scopedvalue']
 }
 );
