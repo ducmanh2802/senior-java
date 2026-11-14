@@ -11029,4 +11029,424 @@ Một service Spring Boot 3.2 trên JDK 21, 8 vCPU, Tomcat 200 thread, peak 900 
   ],
   tags: ['virtual threads', 'Spring Boot 3.2', 'spring.threads.virtual.enabled', 'pinning', 'HikariCP', 'JFR']
 },
+{
+  id: 'core-058',
+  topic: 'core',
+  level: 'senior',
+  q: '{{String.equals}} và {{String.hashCode}} hoạt động thế nào bên trong? Vì sao hashCode được cache, và khi nào việc so sánh chuỗi bằng {{==}} lại ra true?',
+  a: `**Tóm tắt:** {{String.equals}} so sánh từng ký tự (hoặc byte) theo thứ tự; {{String.hashCode}} tính giá trị băm một lần và cache vào field {{hash}}. Hai chuỗi literal giống nhau trỏ cùng object nhờ string pool nên {{==}} ra true; chuỗi tạo lúc runtime (new String, concat) là object riêng nên {{==}} false dù nội dung giống.
+ 
+### Bên trong String.equals
+- Từ Java 9, String lưu dữ liệu trong {{private final byte[] value}} và {{byte coder}} (0 = Latin-1, 1 = UTF-16).
+- {{equals(Object anObject)}} trước kiểm tra {{this == anObject}} (true cho cùng tham chiếu), sau ép kiểu String, so sánh {{coder}}, rồi duyệt mảng byte để so từng giá trị.
+- Java 17+ có tối ưu: nếu độ dài khác nhau thì trả false ngay; vòng lặp so sánh byte được JIT tối ưu (có thể vectorize) khi mảng đủ lớn.
+ 
+~~~java
+// Đơn giản hoá logic equals
+public boolean equals(Object anObject) {
+    if (this == anObject) return true;           // cùng tham chiếu -> true nhanh
+    if (!(anObject instanceof String other)) return false;
+    if (this.coder != other.coder) return false; // khác encoding -> false
+    return Arrays.equals(this.value, other.value); // so byte per byte
+}
+~~~
+ 
+### String.hashCode và cache
+- Công thức: {{h = 31 * h + val[i]}} (dùng {{int}}, tràn được phép).
+- Field {{private int hash = 0}} ban đầu là 0 (giá trị sentinel vì hash của chuỗi rỗng là 0, chuỗi không rỗng không bao giờ hash = 0 trừ collision hiếm).
+- Lần đầu gọi {{hashCode()}}, nếu {{hash == 0}}, tính và gán vào {{hash}}; lần sau trả thẳng {{hash}}.
+- Vì String immutable, hash không bao giờ đổi -> cache an toàn.
+ 
+### Khi nào == ra true
+1. Cùng literal: {{String a = "hello"; String b = "hello";}} -> cùng object trong pool.
+2. Cùng hằng compile-time: {{String c = "hel" + "lo";}} -> pool.
+3. Gọi {{intern()}}: trả về instance pool.
+4. Cùng biến tham chiếu: {{String d = a;}}.
+ 
+Khi {{==}} false dù nội dung giống: {{new String("hello")}}, concat lúc runtime ({{s1 + s2}}), đọc từ file/DB.
+ 
+### Pitfall production
+- Dùng {{==}} để so sánh chuỗi từ request/DB -> logic sai ngẫu nhiên.
+- Chuỗi rất dài (MB) gọi {{hashCode}} lần đầu tốn O(n); nếu lặp nhiều lần nên cache thủ công hoặc dùng {{String.intern()}} (chỉ khi tập giá trị nhỏ).
+- {{equals}} phân biệt chữ hoa/thường; so sánh case-insensitive dùng {{equalsIgnoreCase}} (so sánh từng ký tự theo quy tắc unicode) hoặc tự duyệt.
+ 
+### Ví dụ đời thực
+Một API kiểm tra quyền truy cập so sánh role bằng {{if (userRole == "ADMIN")}}. Dev test với literal "ADMIN" trong code nên pass. Production nhận role từ JWT claim (chuỗi mới) -> {{==}} luôn false -> toàn bộ user bị từ chối quyền admin. Sửa: dùng {{"ADMIN".equals(userRole)}} hoặc {{userRole.equals("ADMIN")}}. Thêm rule Sonar "StringEquality" chặn pattern này.
+ 
+### Trả lời mẫu khi phỏng vấn
+"String.equals so sánh coder và từng byte trong mảng value; String.hashCode tính giá trị băm theo công thức 31*h+val một lần rồi cache vào field hash (do String immutable). Hai chuỗi literal giống nhau trỏ cùng object trong string pool nên == true; chuỗi tạo lúc runtime (new String, concat, đọc file) là object riêng, == false dù nội dung giống. Tôi không bao giờ dùng == để so sánh chuỗi từ input, luôn dùng equals hoặc Objects.equals để an toàn null."
+ 
+> Senior tip: với chuỗi dài (log, JSON, XML) hashCode lần đầu tốn O(n); nếu lặp hash trong cấu trúc dữ liệu (HashMap key) hãy cân nhắc intern() nếu tập giá trị nhỏ, hoặc cache hash thủ công. equalsIgnoreCase so sánh từng ký tự theo quy tắc unicode — dùng khi cần thiết thôi.`,
+  follow: [
+    'Vì sao String.hashCode dùng 31 làm hệ số?',
+    'String.equalsIgnoreCase hoạt động thế nào và tốn chi phí gì?',
+    'Khi nào String.hashCode trả về 0 cho chuỗi không rỗng?'
+  ],
+  tags: ['String', 'equals', 'hashCode', 'string pool', 'intern']
+},
+{
+  id: 'core-059',
+  topic: 'core',
+  level: 'senior',
+  q: 'Compact Strings (Java 9+): Latin-1 vs UTF-16 lưu như thế nào, coder field dùng làm gì, và heap dump cho thấy nhiều byte[] trùng — bạn phân tích ra sao?',
+  a: `**Tóm tắt:** Từ Java 9, String dùng {{byte[] value}} kèm {{byte coder}} (0 = Latin-1/ISO-8859-1: 1 byte/ký tự; 1 = UTF-16: 2 byte/ký tự). Coder cho phép String chuyển đổi encoding linh hoạt mà không cần char[] nữa. Heap dump thấy nhiều byte[] trùng thường do dữ liệu lặp (mã trạng thái, tên quốc gia) -> dùng String.intern(), enum, hoặc bật G1 String Deduplication.
+ 
+### Cấu trúc Compact Strings
+- Trước Java 9: {{private final char[] value}} (UTF-16 cố định, 2 byte/ký tự, kể cả ASCII).
+- Java 9+: {{private final byte[] value}} + {{private final byte coder}}.
+  - {{coder = 0}}: Latin-1, mỗi ký tự 1 byte (phủ ASCII và Latin-1 mở rộng U+0000..U+00FF).
+  - {{coder = 1}}: UTF-16, mỗi ký tự 2 byte (byte[] lưu big-endian: high byte trước, low byte sau).
+- Constructor/{{StringLatin1}}/{{StringUTF16}} tự chọn encoding khi tạo: nếu tất cả ký tự <= U+00FF -> Latin-1, ngược lại UTF-16.
+- Các method ({{charAt}}, {{codePointAt}}, {{getBytes}}, {{equals}}, {{hashCode}}) đọc {{coder}} để biết cách truy cập mảng.
+ 
+~~~java
+// Ví dụ bộ nhớ
+String ascii = "hello";           // coder=0, 5 byte (tất cả ký tự ≤ U+00FF)
+String viet  = "Xin chào";        // coder=0, 8 byte ('à' = U+00E0 vẫn nằm trong Latin-1)
+String vietEmoji = "Xin chào😀";  // coder=1, UTF-16 do emoji > U+00FF
+String emoji = "😀";              // coder=1, surrogate pair (4 byte UTF-16)
+~~~
+ 
+### Lợi ích
+- Chuỗi ASCII/Latin-1 tiết kiệm 50% bộ nhớ so với char[].
+- Không phá vỡ API: {{charAt}} vẫn trả {{char}} (convert từ byte[] khi cần).
+- JIT tối ưu: coder là final, nhánh bị loại bỏ khi compile (constant folding).
+ 
+### Phân tích heap dump (Eclipse MAT / JVisualVM)
+1. Tìm {{java.lang.String}} retained heap lớn.
+2. Nhóm theo {{value}} array ({{byte[]}}) -> thấy các mảng byte[] trùng nội dung.
+3. Xem {{String}} giữ mảng đó: thường là {{status}}, {{currency}}, {{countryCode}} lặp lại.
+4. Đo kích thước: nếu {{byte[]}} trùng chiếm > 10% heap -> hành động.
+ 
+### Cách giảm
+- **Enum**: dùng {{enum Status}} (ACTIVE, INACTIVE, ...) thay String -> 0 byte[] trùng, type-safe.
+- **String.intern()**: cho tập giá trị nhỏ, lặp nhiều (mã tiền tệ, mã lỗi).
+- **G1 String Deduplication**: {{-XX:+UseStringDeduplication}} (G1 và Shenandoah; ZGC hỗ trợ từ JDK 18) -> GC gộp byte[] trùng tự động.
+- **Canonicalize khi parse**: map chuỗi đầu vào về instance chung qua {{Map<String,String>}} cache (nhanh hơn intern, có giới hạn).
+ 
+### Pitfall
+- {{StringBuilder}}/{{StringBuffer}} cũng dùng {{byte[]}} + {{coder}} (Compact Strings) từ Java 9, nên chuỗi Latin-1 cũng tiết kiệm bộ nhớ trong builder.
+- {{getBytes(Charset)}} luôn chuyển đổi, có thể tạo byte[] mới lớn; đừng dùng trong hot path.
+- Latin-1 không chứa được ký tự > U+00FF (tiếng Việt có dấu, emoji) -> tự động lên UTF-16.
+ 
+### Ví dụ đời thực
+Service nạp 5 triệu đơn hàng, mỗi đơn có {{currency}} (VND/USD/EUR), {{status}} (5 giá trị), {{country}} (20 giá trị). Heap dump: 350 MB là byte[] của 3 trường này. Team chuyển {{currency}}, {{status}}, {{country}} sang enum khi parse JSON. Heap giảm 300 MB, Full GC từ 45s/10phút xuống 10s/30phút. Nếu không muốn đổi enum, dùng intern() cho status/currency, country dùng Map cache tự canonicalize.
+ 
+### Trả lời mẫu khi phỏng vấn
+"Từ Java 9, String lưu byte[] kèm coder: coder=0 là Latin-1 (1 byte/ký tự), coder=1 là UTF-16 (2 byte/ký tự). ASCII/Latin-1 tiết kiệm 50% bộ nhớ. Khi thấy heap nhiều byte[] trùng, tôi dùng MAT nhóm theo mảng byte[] để tìm trường lặp (status, currency...). Giải pháp ưu tiên: đổi sang enum khi parse; tập giá trị nhỏ lặp nhiều thì intern(); bật G1 String Deduplication cho phần còn lại. Tôi từng giảm 300 MB heap bằng cách enum hoá 3 trường lặp trên 5 triệu đơn hàng."
+ 
+> Senior tip: bật {{-XX:+UseStringDeduplication}} cùng G1 và theo dõi log {{-Xlog:stringdedup*=info}} để đo byte tiết kiệm thực tế. Không intern chuỗi tự do từ user (request ID, tên) — StringTable là bảng băm kích thước cố định (mặc định 65536 bucket), intern quá nhiều chuỗi duy nhất làm bảng đầy, va chạm nhiều nên mọi tra cứu chậm đi (nguy cơ DoS).`,
+  follow: [
+    'Vì sao char[] cũ bị bỏ thay bằng byte[] + coder?',
+    'StringBuilder có dùng Compact Strings không?',
+    'Làm sao bật String Deduplication trên ZGC (JDK 18+)?'
+  ],
+  tags: ['String', 'Compact Strings', 'Latin-1', 'UTF-16', 'coder', 'heap dump', 'deduplication']
+},
+{
+  id: 'core-060',
+  topic: 'core',
+  level: 'senior',
+  q: 'Nối chuỗi trong vòng lặp: StringConcatFactory (invokedynamic) sau Java 9 so với StringBuilder thủ công — khi nào nhanh hơn, và bytecode sinh ra khác nhau như thế nào?',
+  a: `**Tóm tắt:** Từ Java 9, {{+}} dùng {{invokedynamic}} bootstrap method {{StringConcatFactory.makeConcatWithConstants}}; JIT chọn chiến lược tối ưu lúc runtime (StringBuilder, mảng char, v.v.). Trong vòng lặp, {{+}} tạo lời gọi invokedynamic riêng mỗi vòng -> chậm hơn StringBuilder dùng chung một instance. StringBuilder vẫn cần khi lặp, concat có điều kiện, hoặc cần capacity.
+ 
+### String concat sau Java 9 (JEP 280)
+- Trước Java 9: {{a + b + c}} biên dịch thành {{new StringBuilder().append(a).append(b).append(c).toString()}} — bytecode tĩnh.
+- Java 9+: compiler sinh {{invokedynamic}} gọi {{StringConcatFactory.makeConcatWithConstants(bootstrapMethod, concatType, recipe)}}; recipe mô tả cách ghép (hằng, tham số). Runtime chọn chiến lược: {{StringBuilder}}, {{String.join}}, {{StringConcatHelper}}...
+- Lợi ích: JIT inline được, tối ưu theo profile thực tế, không hard-code StringBuilder trong bytecode.
+ 
+### Dự đoán output: bytecode khác nhau
+~~~java
+// Ngoài vòng lặp: 1 invokedynamic cho cả biểu thức
+String s = "id=" + id + ", name=" + name; // nhanh ngang StringBuilder
+
+// Trong vòng lặp: MỖI VÒNG 1 invokedynamic -> tạo StringBuilder trung gian lặp lại
+String s = "";
+for (String part : parts) s += part; // chậm!
+~~~
+ 
+Vì sao: mỗi {{s += part}} là một lời gọi {{invokedynamic}} riêng, recipe chỉ có 2 operand. JIT không gộp được các vòng lặp vì nó không biết số vòng và parts thay đổi. Kết quả: tạo StringBuilder mới mỗi vòng (tương tự bytecode cũ nhưng qua invokedynamic).
+ 
+### Khi nào vẫn cần StringBuilder
+1. **Vòng lặp**: một {{StringBuilder}} dùng chung, capacity ước lượng -> O(n) tổng.
+2. **Concat có điều kiện/phân nhánh**: logic phức tạp bootstrap method không gộp được.
+3. **Cần kiểm soát capacity**: {{new StringBuilder(estimatedSize)}} tránh resize.
+4. **Thread-local buffer**: tái dùng StringBuilder trong hot path (cẩn thận thread-safety).
+ 
+~~~java
+// Nhanh: 1 StringBuilder, capacity ước lượng
+StringBuilder sb = new StringBuilder(parts.size() * 8);
+for (String part : parts) sb.append(part);
+String s = sb.toString();
+~~~
+ 
+### String.format chậm ra sao
+- Parse format string ({{%d}}, {{%s}}, {{%.2f}}...) mỗi lần.
+- Tạo {{Formatter}} object mới mỗi lần.
+- Boxing/unboxing primitive.
+- Locale handling mặc định.
+- Chậm hơn rất nhiều so với {{+}} hoặc StringBuilder.
+ 
+### Pitfall production
+- Log statement: {{log.info("Processing " + id + " " + user)}} — chuỗi tạo **trước** khi check log level; dùng SLF4J placeholder {{log.info}} với {} cho từng tham số (lazy).
+- {{String.join}} cho collection tiện nhưng tạo mảng trung gian nếu varargs; dùng {{StringJoiner}} cho stream.
+ 
+### Ví dụ đời thực
+Module báo cáo dựng CSV hàng trăm nghìn dòng bằng {{+}} trong vòng lặp chậm rõ rệt; đổi sang {{StringBuilder}} có capacity ước lượng nhanh hơn đáng kể. Module khác ghi log bằng chuỗi ghép tại TPS cao -> sinh nhiều rác, young GC nặng. Dùng placeholder SLF4J -> allocation gần 0 khi log level WARN.
+ 
+### Trả lời mẫu khi phỏng vấn
+"Từ Java 9, {{+}} dùng invokedynamic + StringConcatFactory, runtime sinh bytecode tối ưu. {{a+b+c}} nhanh ngang StringBuilder. Nhưng trong vòng lặp, mỗi nối tạo một invokedynamic riêng -> StringBuilder mới mỗi vòng, chậm. Tôi dùng StringBuilder với capacity ước lượng cho vòng lặp, concat có điều kiện, hoặc cần capacity. String.format chậm hơn rất nhiều vì parse pattern, tạo Formatter, boxing. Log luôn dùng placeholder SLF4J để lazy evaluation. Tôi dùng {{javap -c}} để xem invokedynamic mà javac sinh ra."
+ 
+> Senior tip: mặc định viết {{+}} cho concat đơn giản (Java 9+), chỉ dùng StringBuilder khi vòng lặp hoặc cần capacity. Dùng {{javap -c}} xem invokedynamic javac sinh ra. Log **luôn** placeholder SLF4J — lỗi performance hay gặp nhất production.`,
+  follow: [
+    'Vì sao invokedynamic giúp concat nhanh hơn bytecode tĩnh?',
+    'String.join khác Collectors.joining ở điểm nào?',
+    'Khi nào StringBuilder thread-local là ý tưởng tốt/hay?'
+  ],
+  tags: ['String', 'concat', 'invokedynamic', 'StringBuilder', 'String.format', 'StringConcatFactory']
+},
+{
+  id: 'core-061',
+  topic: 'core',
+  level: 'senior',
+  q: 'Cắt chuỗi tiếng Việt: {{substring}} vs {{codePoints}} — surrogate pair, emoji, và codePointAt làm sao không bị cắt đôi ký tự?',
+  a: `**Tóm tắt:** {{String.substring}} cắt theo **char (UTF-16 code unit)**, không nhận ra surrogate pair (emoji, ký tự > U+FFFF) hay ký tự tổ hợp (tiếng Việt NFD). Dùng {{codePoints()}}, {{substring(int beginIndex, int endIndex)}} trên {{int}} index của code point, hoặc {{Character.toChars}} để thao tác đúng từng ký tự Unicode (grapheme cluster). Java 12+ có {{String.transform}} kết hợp {{Normalizer}}.
+ 
+### Vấn đề substring theo char
+- Java String lưu UTF-16: ký tự <= U+FFFF dùng 1 char, ký tự > U+FFFF (emoji, chữ Hán hiếm) dùng **surrogate pair** = 2 char (high surrogate U+D800..U+DBFF, low surrogate U+DC00..U+DFFF).
+- {{substring(0, 2)}} trên {{"😀A"}} cắt 2 char đầu -> lấy high surrogate của 😀 + 'A' -> chuỗi hỏng (lone surrogate).
+- Tiếng Việt NFD: {{"é"}} = 'e' (U+0065) + combining acute (U+0301) = 2 char, cắt giữa sẽ tách dấu khỏi chữ cái.
+ 
+~~~java
+String s = "😀Chào";  // 😀 = 2 char (surrogate pair)
+s.substring(0, 1);  // "\uD83D" (high surrogate đơn lẻ) -> hỏng!
+s.substring(0, 2);  // "😀" đúng vì lấy đủ pair
+s.codePoints().limit(1).collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append).toString(); // "😀" an toàn
+~~~
+ 
+### Các API làm việc theo code point
+- {{codePointAt(int index)}}: trả code point tại vị trí char index (xử lý surrogate pair).
+- {{codePointCount(int begin, int end)}}: số code point trong khoảng char.
+- {{offsetByCodePoints(int index, int codePointOffset)}}: nhảy theo code point.
+- {{codePoints()}}: {{IntStream}} các code point — dùng {{limit}}, {{skip}}, {{collect}}.
+- {{Character.toChars(int codePoint)}}: chuyển code point thành char[] (1 hoặc 2 char).
+ 
+### Grapheme cluster (ký tự người dùng thấy)
+- Một "ký tự hiển thị" có thể là nhiều code point: base + combining marks (tiếng Việt NFD), emoji sequence (👨‍👩‍👧‍👦 = 7 code point), cờ quốc gia (regional indicator pair).
+- Java chuẩn **không có** API tách grapheme cluster; dùng thư viện ICU4J ({{BreakIterator.getCharacterInstance}}).
+- Thực tế: chuẩn hoá chuỗi về **NFC** ({{Normalizer.normalize(s, Normalizer.Form.NFC)}}) gộp base+combining -> 1 code point cho hầu hết tiếng Việt. Emoji sequence vẫn nhiều code point.
+ 
+### Best practice khi cắt chuỗi
+1. Chuẩn hoá NFC trước: {{Normalizer.normalize(input, Normalizer.Form.NFC)}}.
+2. Dùng {{codePoints()}} + {{limit}}/{{skip}} để lấy N code point đầu/cuối.
+3. Nếu cần chính xác grapheme (UI hiển thị, đếm ký tự cho user), dùng ICU4J {{BreakIterator}}.
+4. {{substring}} chỉ dùng khi chắc chuỗi chỉ có ASCII/Latin-1 (không surrogate, không combining).
+ 
+~~~java
+// Lấy 10 code point đầu an toàn
+String safeFirst10(String s, int n) {
+    return s.codePoints()
+            .limit(n)
+            .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
+            .toString();
+}
+ 
+// Cắt giữa theo code point
+String safeSubstring(String s, int beginCp, int endCp) {
+    return s.codePoints()
+            .skip(beginCp)
+            .limit(endCp - beginCp)
+            .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
+            .toString();
+}
+~~~
+ 
+### Pitfall production
+- Validate độ dài username bằng {{s.length()}} -> emoji đếm 2, tiếng Việt NFD đếm 2 cho 1 ký tự -> user bị từ chối oắt.
+- Cắt chuỗi hiển thị (tooltip, truncate) bằng {{substring}} -> hiển thị � (replacement char) hoặc surrogate đơn lẻ.
+- So sánh chuỗi tiếng Việt NFD vs NFC -> {{equals}} false dù nhìn giống hệt -> trùng user.
+ 
+### Ví dụ đời thực
+Form đăng ký giới hạn tên 30 ký tự dùng {{name.length() <= 30}}. User nhập "Nguyễn Văn An" (NFC: 13 code point, NFD từ macOS: 19 code point vì dấu tách). User macOS bị từ chối dù tên ngắn. Sửa: {{Normalizer.normalize(name, Form.NFC).codePoints().count() <= 30}}. Cắt hiển thị dùng {{codePoints().limit(20)}} -> không bao giờ cắt đôi emoji hay dấu tiếng Việt.
+ 
+### Trả lời mẫu khi phỏng vấn
+"String.substring cắt theo char (UTF-16 code unit), nên cắt giữa surrogate pair (emoji) hoặc giữa base+combining mark (tiếng Việt NFD) tạo chuỗi hỏng. Tôi chuẩn hoá NFC trước, rồi dùng codePoints().limit(n) để lấy N code point an toàn. Nếu cần chính xác grapheme cluster (emoji sequence, cờ), dùng ICU4J BreakIterator. Tôi từng gặp bug user macOS nhập tên tiếng Việt NFD bị từ chối vì length() đếm dấu tách; sửa bằng Normalizer.NFC + codePoints().count()."
+ 
+> Senior tip: luôn {{Normalizer.normalize(s, Form.NFC)}} ở biên nhận dữ liệu (controller/DTO). Tiếng Việt NFC gộp dấu vào chữ -> 1 code point/ký tự, an toàn cho length(), substring(), so sánh. Emoji sequence vẫn nhiều code point, UI hiển thị cần ICU4J.`,
+  follow: [
+    'Surrogate pair là gì, và tại sao char không đủ cho mọi ký tự Unicode?',
+    'NFC vs NFD khác nhau thế nào, Normalizer.normalize dùng khi nào?',
+    'ICU4J BreakIterator tách grapheme cluster như thế nào?'
+  ],
+  tags: ['String', 'Unicode', 'surrogate pair', 'code point', 'Vietnamese', 'NFD', 'NFC', 'grapheme cluster']
+},
+{
+  id: 'core-062',
+  topic: 'core',
+  level: 'lead',
+  q: 'Đọc file CSV/JSON: Charset, BOM, và mojibake trên production — bạn xử lý encoding thế nào từ Java 11+ (Files.readString, StandardCharsets, InputStreamReader)?',
+  a: `**Tóm tắt:** Mặc định platform charset ({{Charset.defaultCharset()}}) phụ thuộc locale/server (container thường UTF-8, Windows thường Cp1252) -> đọc file không chỉ định charset là bug chờ nổ. Luôn dùng {{StandardCharsets.UTF_8}} hoặc {{StandardCharsets.ISO_8859_1}} tường minh. Java 11 {{Files.readString(path, StandardCharsets.UTF_8)}} **không** tự bỏ BOM UTF-8 (chuỗi đầu có U+FEFF) — phải tự cắt. Mojibake xảy ra khi ghi UTF-8 đọc Cp1252 (ký tự lạ), hoặc đọc UTF-16BE không BOM. Luôn ghi nhận encoding trong contract API/file.
+ 
+### Charset và platform default
+- {{Charset.defaultCharset()}}: JVM lấy từ {{file.encoding}} system property hoặc locale OS.
+- Container Linux thường UTF-8; Windows Server thường Cp1252 (ANSI).
+- Code {{Files.readString(path)}} không truyền charset -> dùng default -> chạy dev (UTF-8) pass, production (Cp1252) đọc sai tiếng Việt/emoji.
+ 
+### Luôn chỉ định charset tường minh
+~~~java
+// Java 11+
+String content = Files.readString(path, StandardCharsets.UTF_8);
+List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+
+// Streaming lớn
+try (var reader = new BufferedReader(
+        new InputStreamReader(Files.newInputStream(path), StandardCharsets.UTF_8))) {
+    String line;
+    while ((line = reader.readLine()) != null) { ... }
+}
+
+// Ghi file (luôn UTF-8, không có overload charset)
+Files.writeString(path, content, StandardOpenOption.CREATE);
+~~~
+ 
+### BOM (Byte Order Mark)
+- UTF-8 BOM: {{EF BB BF}} ở đầu file (3 byte). Không bắt buộc, một số tool Windows (Notepad, Excel) ghi thêm.
+- UTF-16LE BOM: {{FF FE}}; UTF-16BE BOM: {{FE FF}}.
+- {{Files.readString}}/{{Files.readAllLines}} (Java 11+) cũng **không** bỏ BOM: chuỗi trả về bắt đầu bằng U+FEFF (ZERO WIDTH NO-BREAK SPACE) nếu file có BOM UTF-8.
+- {{InputStreamReader}} cũng **không** bỏ BOM -> ký tự U+FEFF lọt vào đầu chuỗi -> parse JSON/CSV fail.
+- Xử lý (tự bỏ BOM): đọc 3 byte đầu, nếu là EF BB BF thì skip rồi mới decode; hoặc dùng {{BOMInputStream}} (Apache Commons IO); hoặc sau khi decode thì bỏ ký tự U+FEFF ở đầu chuỗi.
+ 
+### Mojibake phổ biến
+| Ghi (encoding) | Đọc (encoding) | Kết quả |
+|---|---|---|
+| UTF-8 | Cp1252/ISO-8859-1 | "Ti?ng Vi?t" (ký tự lạ) |
+| Cp1252 | UTF-8 | "Ti\u00ebng Vi\u1ec7t" (dấu thành chuỗi mã) |
+| UTF-16LE (không BOM) | UTF-8 | Rác hoàn toàn |
+ 
+Nguyên nhân: byte sequence hợp lệ trong encoding này nhưng decode sai encoding khác.
+ 
+### Phòng thủ
+1. **Contract**: API/file phải ghi rõ encoding (UTF-8 khuyến nghị). CSV xuất cho Excel Việt Nam -> UTF-8 with BOM để Excel nhận diện.
+2. **Validate**: đọc vài KB đầu, kiểm tra ký tự hợp lệ (không quá nhiều replacement char U+FFFD).
+3. **Sniff**: {{CharsetDetector}} (ICU4J, juniversalchardet) để đoán encoding file không rõ nguồn.
+4. **Logging**: log encoding đã dùng khi đọc/ghi để điều tra sau này.
+ 
+### Pitfall production
+- {{new String(bytes)}} không charset -> dùng default -> mojibake khi deploy sang OS khác.
+- {{Files.readString}} **không** bỏ BOM UTF-8 lẫn UTF-16; đọc file UTF-16LE không BOM cần {{StandardCharsets.UTF_16LE}}, có BOM thì bỏ U+FEFF thủ công.
+- Ghi log JSON dùng {{Files.writeString}} không charset -> container UTF-8 OK, Windows server Cp1252 -> log mojibake.
+- {{Scanner}} mặc định dùng default charset; luôn truyền {{StandardCharsets.UTF_8}}.
+ 
+### Ví dụ đời thực
+Hệ thống nhập CSV đơn hàng từ đối tác. Dev test trên macOS (UTF-8) pass. Production chạy trên Windows Server 2019 (default Cp1252) -> đọc file UTF-8 không BOM bằng {{Files.readString(path)}} (không truyền charset) -> tên sản phẩm tiếng Việt thành "S?n ph?m", mã đơn hàng sai checksum. Log chỉ thấy "parse error" không rõ nguyên nhân encoding. Sửa: thêm {{StandardCharsets.UTF_8}} vào mọi đọc/ghi; đối tác yêu cầu CSV UTF-8 with BOM -> đọc bằng readString rồi cắt ký tự U+FEFF ở đầu chuỗi; thêm validation đếm replacement char > 0 thì ném exception. Sau deploy 0 lỗi encoding.
+ 
+### Trả lời mẫu khi phỏng vấn
+"Mặc định platform charset khác nhau giữa môi trường (Linux UTF-8, Windows Cp1252), nên đọc/ghi file **luôn** truyền {{StandardCharsets.UTF_8}} tường minh. Java 11 {{Files.readString}} tiện nhưng **không** tự bỏ BOM UTF-8 nên tôi cắt U+FEFF ở đầu chuỗi. Mojibake xảy ra khi ghi encoding này đọc encoding kia (UTF-8 đọc Cp1252 -> ký tự lạ). Tôi contract encoding UTF-8 cho mọi file/API, xuất CSV cho Excel thêm BOM, validate replacement char khi đọc, và log encoding đã dùng. Tôi từng gặp production Windows đọc UTF-8 thành Cp1252 làm tiếng Việt thành 'S?n ph?m', sửa bằng chỉ định charset và validate."
+ 
+> Senior tip: thiết lập {{-Dfile.encoding=UTF-8}} (JDK 18+ mặc định UTF-8) cho toàn JVM, nhưng **vẫn** truyền charset tường minh ở code để không phụ thuộc config. Với file lớn, dùng {{BufferedReader + InputStreamReader(StandardCharsets.UTF_8)}} streaming thay vì readAllLines load hết heap.`,
+  follow: [
+    'Java 18+ mặc định UTF-8 (JEP 400) có nghĩa gì cho code cũ không truyền charset?',
+    'Làm sao detect encoding file khi không biết trước (ICU4J CharsetDetector)?',
+    'UTF-8 with BOM cho CSV xuất Excel: Java ghi thế nào, Excel đọc thế nào?'
+  ],
+  tags: ['Charset', 'UTF-8', 'BOM', 'mojibake', 'Files.readString', 'StandardCharsets', 'encoding']
+},
+{
+  id: 'core-063',
+  topic: 'core',
+  level: 'senior',
+  q: 'So sánh {{String}}, {{StringBuilder}}, {{StringBuffer}}, {{StringJoiner}}, {{Collectors.joining}} — khi nào dùng cái nào, hiệu năng và thread-safety ra sao?',
+  a: `**Tóm tắt:** {{String}} immutable, an toàn chia sẻ, concat đơn giản dùng {{+}} (Java 9+ invokedynamic). {{StringBuilder}} không thread-safe, nhanh nhất cho xây dựng chuỗi cục bộ (vòng lặp, capacity). {{StringBuffer}} thread-safe (method synchronized), chậm hơn StringBuilder, hiếm dùng hiện nay. {{StringJoiner}} API fluent cho join có prefix/suffix/delimiter, dùng trong collector. {{Collectors.joining}} dùng cho stream, nội bộ dùng StringJoiner.
+ 
+### Bảng so sánh
+| | String | StringBuilder | StringBuffer | StringJoiner | Collectors.joining |
+|---|---|---|---|---|---|
+| Thread-safe | Có (immutable) | Không | Có (synchronized) | Không | Phụ thuộc stream |
+| Mutable | Không | Có | Có | Có | Có (internal) |
+| Hiệu năng build | Thấp (concat) | **Cao nhất** | Thấp (sync) | Trung bình | Trung bình |
+| Capacity control | Không | {{ensureCapacity}} | {{ensureCapacity}} | {{setEmptyValue}} | Không |
+| Delimiter/prefix/suffix | Thủ công | Thủ công | Thủ công | **Có sẵn** | **Có sẵn** |
+| Dùng khi | Dữ liệu cố định, key, DTO | Build cục bộ, vòng lặp, hot path | Legacy API yêu cầu sync | Join có format cố định | Stream collect join |
+ 
+### Chi tiết từng loại
+ 
+**String (Java 9+)**
+- Immutable, hashCode cache, string pool.
+- Concat {{+}} dùng invokedynamic -> nhanh ngang StringBuilder cho biểu thức đơn.
+- An toàn thread, dùng làm key HashMap/HashSet.
+ 
+**StringBuilder**
+- Không synchronized -> nhanh nhất cho single-thread build.
+- Mảng {{byte[]}} + coder (Compact Strings từ Java 9).
+- {{ensureCapacity(n)}} tránh resize; {{trimToSize()}} giải phóng bộ nhớ thừa.
+- {{append}} trả về {{this}} cho chaining.
+ 
+**StringBuffer**
+- Mọi method {{synchronized}} -> thread-safe nhưng chậm (monitor enter/exit).
+- Hiếm dùng code mới; {{StringBuilder}} + thread-local hoặc {{ThreadLocal<StringBuilder}} tốt hơn cho pool buffer.
+- {{toString()}} tạo String mới (copy byte[] từ Java 9).
+ 
+**StringJoiner (Java 8)**
+- Fluent API: {{new StringJoiner(delimiter, prefix, suffix)}}.
+- Dùng cho join có format: {{[a, b, c]}}, {{a;b;c}}.
+- {{merge(StringJoiner other)}} nối 2 joiner.
+- Không thread-safe.
+ 
+**Collectors.joining**
+- {{Collectors.joining()}}, {{joining(delimiter)}}, {{joining(delimiter, prefix, suffix)}}.
+- Nội bộ dùng {{StringJoiner}}.
+- Stream parallel: mỗi thread tạo StringJoiner riêng, combiner {{merge}} -> an toàn.
+ 
+~~~java
+// StringJoiner
+StringJoiner sj = new StringJoiner(", ", "[", "]");
+for (String s : list) sj.add(s);
+String result = sj.toString(); // [a, b, c]
+ 
+// Collectors.joining
+String result = list.stream().collect(Collectors.joining(", ", "[", "]"));
+ 
+// StringBuilder cho performance critical
+StringBuilder sb = new StringBuilder(estimated);
+for (String s : list) { sb.append(s).append(','); }
+if (sb.length() > 0) sb.setLength(sb.length() - 1); // bỏ dấu cuối
+~~~
+ 
+### Hiệu năng (thứ tự ưu tiên, không con số cụ thể)
+| Cách | Ghi chú |
+|---|---|
+| StringBuilder (capacity) | Nhanh nhất |
+| StringJoiner | Có overhead object thêm |
+| Collectors.joining | Có overhead stream |
+| StringBuffer | Có chi phí synchronized |
+| String + (không loop) | invokedynamic tối ưu, nhanh ngang StringBuilder |
+| String + (trong loop) | Chậm: tạo StringBuilder mới mỗi vòng |
+ 
+### Khi nào dùng cái nào
+- **Key Map/Set, DTO field, config**: {{String}} (immutable, hashCode cache).
+- **Build chuỗi trong method cục bộ, vòng lặp, hot path**: {{StringBuilder}} (capacity ước lượng).
+- **Join có delimiter/prefix/suffix cố định (log, CSV, SQL IN)**: {{StringJoiner}} hoặc {{Collectors.joining}}.
+- **Stream pipeline**: {{Collectors.joining}} (parallel an toàn).
+- **Legacy API yêu cầu synchronized buffer**: {{StringBuffer}} (hiếm).
+ 
+### Pitfall
+- Dùng {{StringBuffer}} trong hot path single-thread -> synchronized tốn CPU vô ích.
+- {{StringJoiner}} không có {{ensureCapacity}} -> resize nhiều nếu dữ liệu lớn.
+- {{Collectors.joining}} trên stream parallel: combiner merge StringJoiner, overhead nhẹ.
+- {{StringBuilder}} chia sẻ giữa thread (static field, ThreadLocal không clear) -> race condition, chuỗi hỏng.
+ 
+### Ví dụ đời thực
+Service xây câu SQL IN clause cho 10.000 ID: dùng {{StringBuilder}} capacity 100.000 nhanh nhất; {{StringBuffer}} chậm hơn do synchronized; {{Collectors.joining}} chậm hơn StringBuilder do stream overhead. Module khác ghi log JSON dùng {{StringJoiner}} với delimiter ", " và bao quanh bằng dấu ngoặc nhọn -> code gọn, dễ đọc, hiệu năng chấp nhận được vì không phải hot path.
+ 
+### Trả lời mẫu khi phỏng vấn
+"String immutable, concat {{+}} Java 9+ nhanh nhờ invokedynamic. StringBuilder không sync, nhanh nhất cho build cục bộ, tôi dùng capacity ước lượng. StringBuffer sync mọi method, chậm, hiếm dùng. StringJoiner cho join có delimiter/prefix/suffix, Collectors.joining cho stream. Thread-safety: String có (immutable), StringBuilder không, StringBuffer có, StringJoiner không. Tôi chọn StringBuilder cho hot path, StringJoiner/Collectors.joining cho join có format, String cho key/DTO."
+ 
+> Senior tip: với buffer dùng chung (logging, metrics), dùng {{ThreadLocal<StringBuilder>}} clear sau mỗi dùng thay vì StringBuffer — nhanh hơn và tránh contention. Và nhớ {{StringBuilder.setLength(0)}} để tái dùng buffer không tạo object mới.`,
+  follow: [
+    'Vì sao StringBuilder nhanh hơn StringBuffer, và ThreadLocal<StringBuilder> thay thế StringBuffer như thế nào?',
+    'Collectors.joining trên parallel stream hoạt động thế nào (supplier/accumulator/combiner)?',
+    'StringJoiner.merge có thread-safe không?'
+  ],
+  tags: ['String', 'StringBuilder', 'StringBuffer', 'StringJoiner', 'Collectors.joining', 'thread-safety', 'performance']
+},
 );
