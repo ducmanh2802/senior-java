@@ -5430,4 +5430,313 @@ Sàn TMĐT B 30M user. **Triệu chứng**: CTR trang chủ giảm 15% sau deplo
     "microservices-015"
   ]
 },
+{
+  id: 'sd-041',
+  title: 'Nền tảng đánh giá (eval) LLM cho nhiều team',
+  kind: 'bigtech',
+  level: 'lead',
+  prompt: `Một công ty có 20 team đang xây các tính năng dùng LLM (chatbot CSKH, trích xuất dữ liệu, tóm tắt, gán nhãn). Mỗi team tự viết script eval rời rạc: vài chục test case trong file CSV, gọi model, so bằng mắt. Hệ quả: không so sánh được hai phiên bản prompt/model, không biết một thay đổi prompt có làm tụt chất lượng không, mỗi lần đánh giá tốn tiền và người. Hãy thiết kế một nền tảng đánh giá (eval) dùng chung: quản lý bộ test (golden dataset), chạy job đánh giá song song, chấm tự động bằng LLM-as-judge (LLM đóng vai giám khảo), so sánh nhiều phiên bản prompt/model, theo dõi chi phí và phát hiện regression trước khi phát hành. Giả định: 20 team, mỗi team 300 test case, mỗi ngày chạy 3 lượt (dev, staging, nightly). Bạn có 45 phút.`,
+  phases: [
+    {
+      name: 'Requirements',
+      minutes: 5,
+      guide: `Làm rõ: eval chạy theo yêu cầu (on-demand khi dev bấm) hay theo lịch (CI/nightly)? Có cần chặn phát hành (gating) khi điểm giảm không? Ai được tạo dataset, ai được sửa rubric (tiêu chí chấm)? LLM-as-judge là mặc định hay có cả chấm bằng người? So sánh phiên bản là giữa 2 run hay nhiều run cùng lúc? Non-functional: chi phí mỗi run, thời gian trả kết quả, độ ổn định của điểm (variance), bảo mật dữ liệu test (có chứa PII/khách hàng thật không), audit ai chạy gì. Hỏi: có cần tái lập (reproducibility) cùng một kết quả khi chạy lại không? Ngoài phạm vi: tự động sinh test case bằng AI (có thể nhắc).`,
+    },
+    {
+      name: 'Estimation',
+      minutes: 5,
+      guide: `Ước lượng tải và chi phí. 20 team x 300 case x 3 lượt = 18.000 case/ngày. Mỗi case tốn ít nhất 2 lần gọi LLM: 1 lần sinh câu trả lời của model ứng viên, 1 lần judge chấm => 36.000 lần gọi/ngày. Trung bình 1.500 token input + 400 token output mỗi lần => khoảng 68 triệu token/ngày (chưa tính các lần chấm lại). Storage metadata mỗi case ~5 KB => 90 MB/ngày, ~33 GB/năm. Chốt: cần hàng đợi job + worker pool chạy song song có giới hạn rate tới provider; không gọi tuần tự 18.000 case.`,
+    },
+    {
+      name: 'API & data model',
+      minutes: 5,
+      guide: `API nội bộ: POST /datasets, POST /datasets/{id}/cases (bulk), POST /runs (chọn dataset, model, prompt_version, judge config), GET /runs/{id}, GET /runs/{id}/results, GET /compare?runA=&runB=. Mô hình dữ liệu: dataset(id, owner_team, name, version), test_case(id, dataset_id, input, expected, tags), eval_run(id, dataset_id, model, prompt_version, judge_config, status, cost, created_by), eval_result(id, run_id, case_id, output, score, judge_reason, latency, tokens), judge(id, name, model, rubric, version). Nhấn mạnh: dataset có version, run bất biến (immutable) để so sánh và tái lập.`,
+    },
+    {
+      name: 'High-level design',
+      minutes: 15,
+      guide: `Vẽ: Client (UI/CI) -> Eval API -> Job queue (Kafka/SQS) -> Worker pool (Spring Boot, chạy song song có giới hạn) -> gọi model ứng viên qua gateway, gọi judge, ghi result vào Postgres, cập nhật trạng thái run. So sánh: đọc 2 run, join theo case_id, tính delta điểm, đẩy regression alert. Giải thích vì sao tách job khỏi API (chạy dài, cần retry, cần giới hạn rate). Nêu cách cô lập theo team (namespace/queue riêng) và cách tính chi phí theo run.`,
+    },
+    {
+      name: 'Deep dive',
+      minutes: 15,
+      guide: `Đào sâu các điểm khó: (1) LLM-as-judge đáng tin không — position bias (thiên vị vị trí A/B), self-consistency, rubric rõ ràng, hiệu chỉnh bằng nhãn người (calibration), judge cùng họ model với ứng viên thì thiên vị; (2) variance: temperature > 0 làm điểm dao động, chạy lại nhiều lần lấy trung bình và độ lệch chuẩn (3) song song và rate limit của provider, backpressure, retry có kiểm soát; (4) gating regression trong CI: ngưỡng, ý nghĩa thống kê, tránh chặn nhầm do nhiễu; (5) chi phí và cache kết quả; (6) bảo mật dữ liệu test chứa PII.`,
+    },
+  ],
+  rubric: [
+    'Phân biệt dataset có version và eval_run bất biến để so sánh và tái lập được kết quả',
+    'Kiến trúc job bất đồng bộ: queue + worker pool chạy song song, tách khỏi API đồng bộ',
+    'Ước lượng đúng số lần gọi LLM (sinh + judge) và token/ngày, có cận trên chi phí',
+    'LLM-as-judge: nêu rubric, kiểm soát position bias, hiệu chỉnh bằng nhãn người, cảnh báo judge cùng họ model',
+    'Xử lý variance: chạy lặp, lấy trung bình, báo khoảng tin cậy thay vì một con số',
+    'Giới hạn rate tới provider, backpressure và retry có kiểm soát khi chạy hàng nghìn case',
+    'So sánh phiên bản: join theo case_id, delta điểm, phát hiện regression có ý nghĩa thống kê',
+    'Gating regression trong CI với ngưỡng và tránh chặn nhầm do nhiễu',
+    'Tính chi phí theo run/team và chiến lược cache để không trả tiền hai lần',
+    'Bảo mật dữ liệu test (PII), phân quyền theo team và audit ai chạy gì',
+  ],
+  reference: `**Tóm tắt:** Nền tảng eval LLM là bài toán **chạy job hàng loạt có kiểm soát chi phí và độ tin cậy của phép đo**. Tôi tách phần điều phối (API tạo dataset/run) khỏi phần thực thi (worker pool đọc queue, chạy song song, gọi model ứng viên rồi judge), lưu kết quả bất biến theo dataset version và run để so sánh và tái lập. Điểm khó nhất không phải hạ tầng mà là **LLM-as-judge có đáng tin không**: phải có rubric, kiểm soát position bias, hiệu chỉnh bằng nhãn người và báo cáo phương sai thay vì một con số.
+
+### Yêu cầu
+- Functional: quản lý golden dataset có version; tạo run với model + prompt_version + judge config; chạy song song; chấm tự động bằng LLM-as-judge; so sánh nhiều run; phát hiện regression; theo dõi chi phí theo team.
+- Non-functional: mỗi run trả kết quả trong vài phút (không phải vài giờ); chi phí có trần theo team; điểm ổn định khi chạy lại (variance thấp); dữ liệu test không rò giữa team; audit ai chạy gì, tốn bao nhiêu.
+- Giả định: 20 team, 300 case/team, 3 lượt/ngày; mỗi case cần 2 lần gọi LLM (sinh + judge); dataset có thể chứa dữ liệu khách hàng đã ẩn danh.
+
+### Ước lượng tải và chi phí
+- Số case/ngày: 20 x 300 x 3 = **18.000 case/ngày**.
+- Số lần gọi LLM/ngày: 18.000 x 2 = **36.000 lần gọi/ngày** (mỗi case: 1 lần model ứng viên sinh output, 1 lần judge chấm). Nếu judge chạy lại 2 lần để lấy trung bình thì nhân thêm.
+- Token/ngày: giả định 1.500 token input + 400 token output mỗi lần gọi => 36.000 x 1.900 = **68,4 triệu token/ngày**. Đây là tải để thiết kế rate limit, không phải dự toán tiền; chi phí = token theo bảng giá từng model, tính riêng input/output.
+- Nếu chạy tuần tự mỗi lần gọi mất 3 giây: 36.000 x 3 = 108.000 giây ≈ 30 giờ, không xong trong 1 đêm. Cần song song: ví dụ 50 worker, mỗi worker 1 case/6 giây (2 lần gọi) => 50/6 ≈ 8 case/giây => 18.000/8 ≈ 2.250 giây ≈ 38 phút. Vậy đặt mục tiêu nightly xong dưới 1 giờ.
+- Storage metadata: mỗi case lưu prompt, output, điểm, lý do judge ~5 KB => 18.000 x 5 KB = **90 MB/ngày**, ~33 GB/năm. Không lưu full nếu không cần; nén và đặt retention.
+- Kết luận: bắt buộc có queue + worker pool có giới hạn, không gọi đồng bộ trong request HTTP.
+
+### API và mô hình dữ liệu
+API nội bộ chính:
+~~~text
+POST   /datasets                         {name, owner_team, description}
+POST   /datasets/{id}/cases              bulk insert test case (input, expected, tags)
+POST   /runs                             {dataset_id, model, prompt_version, judge_id, repeat}
+GET    /runs/{id}                        trạng thái, tiến độ, chi phí
+GET    /runs/{id}/results                kết quả từng case
+GET    /compare?run_a=&run_b=            so sánh delta theo case và tổng
+POST   /runs/{id}/cancel                 huỷ job đang chạy
+~~~
+Nguyên tắc: **dataset có version** (đổi test case là tạo version mới), **run bất biến** (không sửa sau khi tạo). Kết quả gắn với (run, case) duy nhất. Mỗi run ghi rõ model, prompt_version, judge_id, judge_version và tham số sinh (temperature) để tái lập.
+
+~~~sql
+dataset(id, owner_team, name, version, created_at)
+test_case(id, dataset_id, input, expected, tags, created_at)
+judge(id, name, model, rubric, version, created_at)
+eval_run(id, dataset_id, model, prompt_version, judge_id,
+         repeat, status, total_cases, done_cases, cost_tokens,
+         created_by, created_at)
+eval_result(id, run_id, case_id, output, score, judge_reason,
+            latency_ms, input_tokens, output_tokens, judge_score_2)
+~~~
+Điểm số nên tách làm hai: điểm do judge cho (0-1 hoặc 1-5) và cờ đạt/không theo ngưỡng của team. Lưu cả {{judge_reason}} để truy vết vì sao bị điểm thấp.
+
+### Kiến trúc và luồng chạy
+~~~seq
+title: Một run eval từ lúc bấm tới lúc có kết quả
+actors: Client | EvalAPI | Kafka | Worker | Provider
+Client -> EvalAPI: tạo run (dataset, model, prompt, judge)
+EvalAPI -> Kafka: đẩy job theo dataset/team
+Kafka --> Worker: worker pool đọc job (giới hạn song song)
+Worker -> Provider: gọi model ứng viên sinh output
+Provider --> Worker: output + usage
+Worker -> Provider: gọi judge chấm theo rubric
+Provider --> Worker: điểm + lý do
+Worker -> EvalAPI: ghi eval_result, cập nhật tiến độ
+EvalAPI --> Client: run xong, mở compare
+~~~
+- API chỉ tạo run và trả id; job chạy nền. Client poll hoặc nhận webhook khi xong.
+- Worker pool có giới hạn concurrency và rate tới provider (token bucket), tránh vượt hạn mức.
+- Kết quả ghi vào Postgres theo lô; cập nhật {{done_cases}} để UI thấy tiến độ.
+- So sánh là thao tác đọc: join hai run theo {{case_id}}, tính delta điểm trung bình và đếm case giảm.
+
+### LLM-as-judge: làm sao cho đáng tin
+Đây là phần dễ bị đánh giá thấp nhất. LLM-as-judge là **dùng một LLM khác đóng vai giám khảo**, đọc câu hỏi, câu trả lời của ứng viên và rubric, rồi cho điểm. Nó rẻ và nhanh hơn người, nhưng có thiên vị hệ thống:
+- **Position bias:** nếu đưa hai câu trả lời A/B theo thứ tự, judge có xu hướng chọn cái đứng trước hoặc sau. Cách giảm: đổi thứ tự ngẫu nhiên nhiều lần rồi lấy kết quả nhất quán, hoặc chấm từng câu độc lập theo rubric thay vì so A/B.
+- **Verbosity bias:** judge thích câu trả lời dài hơn dù không đúng hơn. Rubric phải chấm theo tiêu chí (đúng, đủ ý, định dạng) chứ không phải độ dài.
+- **Self-preference:** judge cùng họ model với ứng viên có xu hướng cho điểm cao hơn. Nếu có thể, dùng judge khác họ; nếu buộc phải cùng họ, hiệu chỉnh bằng nhãn người.
+- **Không xác định (non-determinism):** temperature > 0 làm điểm dao động. Đặt temperature = 0 cho judge, và nếu vẫn dao động thì chạy lặp {{repeat}} lần lấy trung bình, báo kèm khoảng biến thiên.
+- **Hiệu chỉnh (calibration):** định kỳ lấy một mẫu kết quả, nhờ người chấm, so với điểm judge; nếu lệch nhiều thì chỉnh rubric hoặc đổi model judge. Đây là bước bắt buộc trước khi tin điểm để gating.
+
+### Variance và ý nghĩa của điểm
+Một điểm eval đơn lẻ gần như vô nghĩa nếu không biết nó dao động bao nhiêu. Với mỗi case nên chạy {{repeat}} lần (ví dụ 3) ở temperature thấp, rồi:
+- Báo cáo trung bình và độ lệch chuẩn; nếu độ lệch lớn, case đó "nhiễu", không dùng để kết luận.
+- Khi so hai run, chỉ coi là regression nếu delta vượt ngưỡng và vượt biên nhiễu (ví dụ giảm trung bình > 0,1 điểm và p-value nhỏ). Tránh chặn phát hành vì dao động ngẫu nhiên.
+- Dùng cùng {{repeat}} và cùng judge version khi so sánh, nếu không phép so bị lẫn bởi thay đổi judge.
+
+### Song song, rate limit và backpressure
+- Worker đọc job từ queue; mỗi worker xử lý tuần tự từng case (sinh + judge). Concurrency đặt theo trần rate của provider (ví dụ provider cho 100 request/phút/team).
+- Dùng token bucket (bộ đếm nạp lại theo thời gian) để giới hạn; khi chạm trần, worker chờ thay vì ném lỗi 429 ồ ạt.
+- Retry có giới hạn với exponential backoff + jitter cho lỗi tạm thời (429, 5xx, timeout). Không retry lỗi do nội dung (policy từ chối).
+- Ưu tiên theo team: queue riêng cho nightly regression để một team chạy lượng lớn không làm đói các team khác; hoặc dùng weighted fair queue.
+
+### Regression gating trong CI
+- Khi dev mở PR đổi prompt, CI tạo run trên dataset của team, so với run baseline gần nhất trên cùng dataset/judge.
+- Nếu điểm trung bình giảm quá ngưỡng (ví dụ > 2% hoặc vượt biên nhiễu), gắn cờ đỏ, chặn merge hoặc yêu cầu review.
+- Không gating tuyệt đối cho thay đổi nhỏ; đặt ngưỡng theo mức ý nghĩa thống kê và cho phép override có ghi chú để tránh chặn nhầm.
+
+### Ví dụ đời thực
+Một team chatbot CSKH đổi system prompt để trả lời ngắn gọn hơn. Trước khi merge, CI chạy eval 300 case. Điểm trung bình tăng 0,05 nhưng 12 case chuyển từ đúng sang "thiếu bước xác nhận", judge chấm 0. Nếu chỉ nhìn trung bình, thay đổi được duyệt. Nhờ báo cáo delta theo từng case và cờ "case giảm", reviewer phát hiện nhóm câu hỏi về hủy đơn bị trả lời thiếu, yêu cầu sửa prompt. Sau khi sửa, chạy lại: trung bình giữ nguyên, không còn case nào giảm. Bài học: **trung bình che giấu regression cục bộ**, phải xem phân bố delta theo case.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế eval platform theo hướng job bất đồng bộ. API tạo dataset có version và tạo run bất biến; job đẩy vào Kafka, worker pool chạy song song có giới hạn rate tới provider. Mỗi case tốn hai lần gọi LLM: một lần sinh output của model ứng viên, một lần judge chấm theo rubric; 20 team x 300 case x 3 lượt là 18.000 case, tức 36.000 lần gọi, khoảng 68 triệu token mỗi ngày, nên phải có trần token và cost theo team. Điểm khó nhất là LLM-as-judge: tôi kiểm soát position bias bằng cách đổi thứ tự và chấm theo rubric, đặt temperature 0, chạy lặp để lấy trung bình và độ lệch, và hiệu chỉnh judge bằng nhãn người định kỳ. Khi so sánh hai run, tôi join theo case_id, xem delta theo từng case chứ không chỉ trung bình, và chỉ coi là regression khi vượt biên nhiễu. CI dùng kết quả này để gating, nhưng ngưỡng đặt theo ý nghĩa thống kê và cho override có ghi chú. Cuối cùng, mọi run ghi rõ model, prompt_version, judge_version để tái lập, và chi phí được đối soát theo token với bảng giá."
+
+> Senior tip: đừng bao giờ coi một con số eval là sự thật. Tôi luôn hỏi "chạy lại có ra đúng số đó không, và chênh lệch giữa hai lần chạy là bao nhiêu?". Nếu chưa đo được phương sai, mọi so sánh phiên bản chỉ là phỏng đoán. Và trước khi tin LLM-as-judge, hãy bắt nó chấm 50 case đã có nhãn người; nếu lệch quá 10%, rubric hoặc model judge còn vấn đề, đừng dùng để gating.
+`,
+  followups: [
+    'Nếu ngân sách eval quá lớn, bạn cắt giảm thế nào mà không mất khả năng phát hiện regression?',
+    'Judge và ứng viên cùng một model: bạn làm gì để tránh self-preference làm sai lệch kết quả?',
+    'Dataset chứa dữ liệu khách hàng thật: bạn ẩn danh, phân quyền và giới hạn retention ra sao?',
+    'Một case điểm dao động mạnh giữa các lần chạy: bạn kết luận thế nào, có loại khỏi gating không?',
+    'Bạn muốn thêm trường "chấm bằng người" cho một mẫu nhỏ: thiết kế luồng và cách hiệu chỉnh judge thế nào?'
+  ],
+  related: ['ai-006', 'ai-034', 'ai-019', 'ai-013', 'ai-047', 'design-024']
+},
+{
+  id: 'sd-042',
+  title: 'Phát hiện gian lận giao dịch thời gian thực bằng stream processing',
+  kind: 'bank',
+  level: 'lead',
+  prompt: `Một ví điện tử + ngân hàng số xử lý 50 triệu giao dịch/ngày (chuyển tiền, quẹt thẻ, nạp/rút). Yêu cầu: với mỗi giao dịch, trả quyết định allow / review / block trong dưới 100 ms, kết hợp luật (rule) và model ML, đồng thời phát hiện gian lận theo cửa sổ thời gian (ví dụ "quá 5 giao dịch trong 1 phút thì nghi ngờ"). Hệ thống phải cập nhật các đặc trưng đếm theo cửa sổ (velocity) gần thời gian thực, có hàng đợi cho analyst xử lý false positive, và vòng phản hồi để retrain model. Thiết kế pipeline stream processing (Kafka + stream processor), giải thích event time vs processing time, cửa sổ trượt, state, exactly-once, và cách đạt p99 dưới 100 ms. Bạn có 45 phút.`,
+  phases: [
+    {
+      name: 'Requirements',
+      minutes: 5,
+      guide: `Làm rõ loại gian lận (card-not-present, account takeover, money mule, AML), kênh (thẻ, chuyển tiền, login), quyết định đồng bộ (chặn ngay) hay bất đồng bộ (review sau), false positive/negative mục tiêu, có human review queue không. Non-functional: p99 dưới 100 ms, throughput, availability, audit đầy đủ cho compliance, PII masking. Hỏi: fail-open (cho qua khi hệ thống lỗi) hay fail-closed (chặn) cho từng loại giao dịch? Ngoài phạm vi: AML batch reporting (nhắc nhẹ).`,
+    },
+    {
+      name: 'Estimation',
+      minutes: 5,
+      guide: `50 triệu giao dịch/ngày = 578 TPS trung bình, peak 5.000 TPS. Mỗi event ~1 KB => 50 GB/ngày ghi vào Kafka (giữ 7 ngày => 350 GB). Đặc trưng velocity theo cửa sổ 1 phút/giờ/24 giờ/7 ngày theo user/device/merchant/IP/card => hàng trăm triệu key, cần Redis Cluster sharded, TTL theo cửa sổ. Tính latency ngân sách: ingest + feature lookup < 10 ms, model inference < 30 ms, rule engine < 10 ms, còn lại cho network và overhead => tổng dưới 100 ms. Chốt: feature store in-memory, model nhẹ, không gọi DB đồng bộ.`,
+    },
+    {
+      name: 'API & data model',
+      minutes: 5,
+      guide: `API đồng bộ: POST /fraud/score {txn, context} -> {decision, score, reasons, case_id}. Luồng stream: producer đẩy transaction_event vào Kafka; stream processor tính cửa sổ và cập nhật feature. Bảng: transaction_event(id, user_id, amount, merchant, device, ip, ts_event), fraud_case(id, txn_id, decision, score, model_version, reasons, reviewer, resolved_at), rule(id, name, expression, enabled, version), model_version(ver, path, metrics, active). Nhấn mạnh: lưu event time của giao dịch để tính cửa sổ đúng.`,
+    },
+    {
+      name: 'High-level design',
+      minutes: 15,
+      guide: `Vẽ luồng: Transaction service -> Kafka (transaction_event) -> Stream processor (Kafka Streams/Flink) tính velocity windowed -> Feature store (Redis) -> Scoring service (rules engine + ML model) -> Decision. Async: decision + feature snapshot -> case management -> analyst review -> label -> training data -> model registry. Giải thích vì sao tách stream processor khỏi scoring (scoring cần đồng bộ <100ms, stream processor chạy bất đồng bộ). Nêu event time vs processing time, watermark, cửa sổ trượt và state backend.`,
+    },
+    {
+      name: 'Deep dive',
+      minutes: 15,
+      guide: `Đào sâu: (1) event time vs processing time, watermark và cửa sổ trượt (sliding window) cho velocity; (2) state backend lớn (RocksDB) và checkpoint; (3) exactly-once vs at-least-once cho cập nhật feature (idempotent update, key theo txn_id); (4) hot key (một merchant lớn) và cách chia; (5) backpressure khi peak 5.000 TPS; (6) model latency và fallback rules; (7) false positive: analyst queue, SLA, vòng phản hồi label -> retrain; (8) fail-open vs fail-closed theo loại giao dịch.`,
+    },
+  ],
+  rubric: [
+    'Phân biệt luồng đồng bộ scoring (dưới 100 ms) và luồng stream bất đồng bộ cập nhật feature',
+    'Giải thích event time vs processing time, watermark và cửa sổ trượt cho đặc trưng velocity',
+    'State backend (RocksDB) và checkpoint; xử lý state lớn và recovery',
+    'Exactly-once vs at-least-once cho cập nhật feature; idempotent update theo txn_id',
+    'Feature store in-memory với velocity counts theo cửa sổ; ước lượng số key và sharding',
+    'Rules engine + ML model kết hợp, có reason codes giải thích được quyết định',
+    'Xử lý hot key (merchant lớn) và backpressure ở peak 5.000 TPS',
+    'Model latency, fallback rules và circuit breaker khi quá 100 ms',
+    'Vòng phản hồi false positive: analyst review queue, SLA, label -> retrain, chống drift',
+    'Fail-open vs fail-closed có chủ đích theo loại giao dịch; audit đầy đủ và PII masking',
+  ],
+  reference: `**Tóm tắt:** Đây là bài toán **tính đặc trưng theo thời gian trên luồng sự kiện rồi chấm điểm trong ngân sách 100 ms**. Luồng đồng bộ (scoring) phải rất nhanh: feature store in-memory, rules engine và model nhẹ. Luồng bất đồng bộ (stream processor) chạy song song, dùng event time và cửa sổ trượt để cập nhật velocity, ghi idempotent theo txn_id để chịu được at-least-once. Điểm khó là state lớn, hot key, và vòng phản hồi false positive để model không bị lỗi thời.
+
+### Yêu cầu
+- 50 triệu giao dịch/ngày, peak 5.000 TPS; quyết định allow/review/block dưới 100 ms (p99).
+- Kết hợp rule (luật hiển ngôn, giải thích được) và model ML (học từ dữ liệu).
+- Đặc trưng velocity theo cửa sổ thời gian (1 phút, 1 giờ, 24 giờ, 7 ngày) theo user/device/merchant/IP/card.
+- Hàng đợi cho analyst xử lý review; vòng phản hồi label để retrain.
+- Non-functional: audit đầy đủ (quyết định, điểm, phiên bản model, lý do), PII masking, availability cao.
+- Giả định: mỗi event ~1 KB; fail-open hay fail-closed tùy loại giao dịch (thẻ thường fail-open có review, chuyển tiền lớn fail-closed).
+
+### Ước lượng tải và lưu lượng
+- 50 triệu / 86.400 = **578 TPS trung bình**; peak gấp ~8-9 lần => **5.000 TPS**.
+- Mỗi event ~1 KB => 5.000 x 1 KB = 5 MB/giây ghi vào Kafka; một ngày 50 GB; giữ 7 ngày ~350 GB trên cluster (còn nhân bản).
+- Đặc trưng velocity: mỗi giao dịch cập nhật nhiều chiều (user, device, merchant, IP, card) x nhiều cửa sổ. 5 triệu user, mỗi user vài key => hàng trăm triệu key. Redis Cluster chia theo hash slot, mỗi key có TTL bằng cửa sổ dài nhất; tổng bộ nhớ ước tính vài chục GB, nhân bản 2 để chịu lỗi.
+- Ngân sách latency cho một quyết định dưới 100 ms:
+  - Ingest + feature lookup (Redis): dưới 10 ms.
+  - Model inference (model nhỏ, in-process hoặc sidecar): dưới 30 ms.
+  - Rule engine (Drools/JSON logic): dưới 10 ms.
+  - Network + serialize + overhead: phần còn lại, tổng dưới 100 ms.
+- Kết luận: không được gọi DB quan hệ đồng bộ trong đường scoring; feature phải ở in-memory; model phải nhẹ và có timeout + fallback.
+
+### API và mô hình dữ liệu
+API đồng bộ:
+~~~text
+POST /fraud/score
+{ "txn_id": "...", "user_id": "...", "amount": 2500000,
+  "merchant": "...", "channel": "card|transfer",
+  "device": "...", "ip": "...", "ts_event": "2026-01-01T10:00:00Z" }
+-> { "decision": "allow|review|block", "score": 0.87,
+     "reasons": ["velocity_1h_high", "new_device"], "case_id": "..." }
+~~~
+Luồng stream: producer đẩy {{transaction_event}} vào Kafka topic; stream processor đọc, tính cửa sổ, cập nhật Redis; scoring service đọc Redis khi có request đồng bộ.
+
+~~~sql
+transaction_event(id, user_id, amount, merchant, channel, device, ip,
+                  ts_event, ingested_at)
+fraud_case(id, txn_id, decision, score, model_version, reasons,
+           reviewer, resolved_at, label)
+rule(id, name, expression, priority, enabled, version)
+model_version(ver, path, metrics, active, created_at)
+feature_snapshot(txn_id, features_json, model_version, created_at)
+~~~
+{{ts_event}} là thời điểm giao dịch xảy ra (event time), khác {{ingested_at}} (processing time). Cửa sổ tính theo {{ts_event}} để đúng khi sự kiện đến trễ.
+
+### Kiến trúc và luồng chính
+~~~seq
+title: Giao dịch đi qua pipeline phát hiện gian lận
+actors: TxnService | Kafka | StreamProc | Redis | Scoring
+TxnService -> Kafka: đẩy transaction_event (có ts_event)
+Kafka --> StreamProc: đọc theo event time
+StreamProc -> StreamProc: tính velocity cửa sổ trượt
+StreamProc -> Redis: cập nhật feature (idempotent theo txn_id)
+TxnService -> Scoring: gọi đồng bộ /fraud/score
+Scoring -> Redis: đọc feature
+Scoring -> Scoring: rule engine + model -> điểm
+Scoring --> TxnService: allow / review / block + reasons
+Scoring -> Kafka: ghi decision + snapshot (async, qua outbox)
+~~~
+- Đường đồng bộ chỉ đọc Redis và chạy rule/model; không ghi Kafka trực tiếp trong request (dùng outbox để không mất sự kiện).
+- Stream processor chạy độc lập, không chặn quyết định; nếu feature chưa kịp cập nhật, scoring dùng feature gần nhất và ghi nhận "stale".
+
+### Event time, processing time, watermark và cửa sổ trượt
+- **Event time** là thời điểm giao dịch thực sự xảy ra ({{ts_event}}); **processing time** là lúc hệ thống xử lý. Với dữ liệu đến trễ (mạng, retry), phải tính theo event time để không đếm sai.
+- **Watermark** là ranh giới "đến thời điểm T, tôi tin đã nhận hết sự kiện có event time <= T", chấp nhận một ngưỡng trễ (ví dụ 5 giây). Stream processor chờ watermark trước khi đóng cửa sổ và phát kết quả.
+- **Cửa sổ trượt (sliding window):** đếm số giao dịch trong 1 phút cuối, 1 giờ cuối... Cửa sổ trượt nặng hơn cửa sổ nhảy (tumbling) vì mỗi sự kiện thuộc nhiều cửa sổ; đánh đổi độ chính xác và chi phí tính.
+- Ví dụ: "5 giao dịch trong 1 phút" dùng cửa sổ trượt 1 phút bước 10 giây, hoặc dùng bộ đếm xấp xỉ (approximate) để giảm chi phí.
+
+### State backend, exactly-once và idempotent update
+- State của cửa sổ (bộ đếm theo key) lớn, lưu trong **RocksDB** (state backend trên đĩa, nhúng trong process), checkpoint định kỳ để phục hồi sau sự cố. Checkpoint là ảnh chụp state + offset, giúp restart không mất dữ liệu.
+- Kafka cho phép **exactly-once** (với giao dịch và producer idempotent), nhưng cập nhật Redis thường là **at-least-once**. Cách dung hòa: cập nhật feature theo txn_id **idempotent** — nếu đã xử lý txn_id, bỏ qua; hoặc dùng phép cộng có kiểm soát để không cộng hai lần.
+- Nếu chấp nhận at-least-once với cửa sổ xấp xỉ, sai số đếm nhỏ và được bù bằng việc tính lại (recompute) định kỳ từ Kafka.
+
+### Hot key và backpressure
+- Một merchant lớn (ví dụ sàn thương mại điện tử) có thể chiếm phần lớn lưu lượng => hot key trong Redis và trong state. Cách xử lý: chia key theo {{merchant#shard}} (thêm hậu tố shard), hoặc tách luồng riêng cho merchant lớn.
+- Khi peak 5.000 TPS vượt năng lực, dùng **backpressure**: stream processor báo Kafka chậm lại (consumer lag tăng), hoặc scoring trả quyết định tạm dựa trên feature cache + rule an toàn, ghi nhận "degraded". Không được từ chối toàn bộ giao dịch vì một consumer chậm.
+
+### Rules engine + ML và tính giải thích được
+- Rule biểu diễn bằng DSL (Drools/JSON logic), có version, priority, hot-reload; mỗi rule trả {{reason code}} để giải thích (ví dụ {{velocity_1h_high}}, {{new_device}}, {{impossible_travel}}).
+- Model nhẹ (logistic regression / GBM nhỏ / mạng nơ-ron lượng tử hóa) chạy in-process hoặc sidecar, trả score 0-1 kèm top feature đóng góp (SHAP hoặc feature importance).
+- Quyết định: score < 0,3 allow; 0,3-0,7 review; > 0,7 block. Rule có thể override model (blacklist => block ngay). Ngưỡng tinh chỉnh theo chi phí false positive (khách bực, CSKH) và false negative (mất tiền), có thể khác theo phân khúc (VIP ngưỡng cao hơn).
+
+### False positive và vòng phản hồi
+- Analyst xem case trong queue (context, feature, lý do), gán nhãn fraud/legit. SLA review: 15 phút cho giao dịch lớn, 24 giờ cho nhỏ.
+- Label trở thành dữ liệu huấn luyện; định kỳ retrain model, đánh giá trên tập giữ lại, so sánh với model đang chạy (shadow mode rồi A/B).
+- **Drift monitoring:** theo dõi phân bố điểm và tỷ lệ fraud theo tuần; nếu false positive tăng, alert và retrain. Model cũ dần mất tác dụng khi fraudster đổi hành vi.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| Redis down | Không đọc được feature | Dùng cache cục bộ + rule an toàn, ghi degraded |
+| Stream processor trễ (lag tăng) | Feature cũ, quyết định sai | Backpressure, scale consumer, cảnh báo lag |
+| Model timeout | Vượt 100 ms | Timeout ngắn + fallback rule, circuit breaker |
+| Hot key | Một merchant nghẽn | Shard theo merchant, luồng riêng |
+| Review queue tắc | Case tồn đọng | Scale analyst, auto-approve rủi ro thấp |
+| Drift | False positive tăng | Giám sát PSI/độ chính xác, retrain, rollback |
+
+### Fail-open vs fail-closed
+- Thẻ (card-not-present): thường **fail-open** — nếu hệ thống lỗi thì cho giao dịch qua nhưng ghi review bất đồng bộ, vì chặn nhầm gây thiệt hại trải nghiệm lớn.
+- Chuyển tiền lớn: **fail-closed** — chặn khi nghi ngờ hoặc khi hệ thống lỗi, vì mất tiền khó thu hồi.
+- Feature store lỗi: dùng feature cache hoặc chỉ chạy rule; luôn ghi lý do quyết định để audit.
+
+### Ví dụ đời thực
+Một ngày thứ Sáu, một nhóm tài khoản bị chiếm (account takeover) bắt đầu quẹt thẻ ở nước ngoài. Trong 2 phút, stream processor phát hiện velocity 1 giờ vượt ngưỡng và "impossible travel" (hai giao dịch cách nhau 5.000 km trong 10 phút). Scoring trả block kèm reason {{impossible_travel}}; 8 giao dịch bị chặn, khách được gọi xác minh. Điều tra cho thấy model chưa học mẫu này, nhưng rule {{impossible_travel}} bắt được. Sau đó 200 giao dịch tương tự được gán nhãn fraud, retrain model, tuần sau model tự bắt trước rule. Bài học: **rule là lớp bảo vệ cuối cùng giải thích được, model lo phần mẫu phức tạp; cả hai cần vòng phản hồi**.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách làm hai luồng. Luồng đồng bộ scoring phải dưới 100 ms: đọc feature từ Redis in-memory, chạy rule engine và model nhẹ, không gọi DB. Luồng bất đồng bộ là stream processor đọc Kafka theo event time, dùng watermark và cửa sổ trượt để tính velocity, cập nhật Redis idempotent theo txn_id để chịu at-least-once. State lớn lưu trong RocksDB có checkpoint. Với hot key merchant lớn, tôi shard theo merchant; khi quá tải, backpressure và fallback rule an toàn, không từ chối hàng loạt. Quyết định allow/review/block theo điểm và reason code; rule override model cho blacklist. Analyst xử lý review, gán nhãn, retrain model định kỳ; giám sát drift và false positive. Cuối cùng, fail-open cho thẻ, fail-closed cho chuyển tiền lớn, và audit đầy đủ decision, score, model_version, reason để giải thích cho khách và compliance."
+
+> Senior tip: trong phát hiện gian lận, một model 99% chính xác nhưng không giải thích được sẽ bị risk/compliance từ chối. Tôi luôn giữ rule engine làm lớp giải thích được, ưu tiên reason code rõ ràng, và xem false positive là chỉ số kinh doanh (mỗi 1% false positive trên 50 triệu giao dịch là 500.000 khách bị làm phiền). Và đừng quên: feature tính theo event time, không phải processing time, nếu không một đợt retry sẽ làm đếm sai hàng loạt.
+`,
+  followups: [
+    'Nếu stream processor trễ 10 phút vì một consumer lag, bạn giữ quyết định dưới 100 ms thế nào?',
+    'Một merchant lớn chiếm 40% lưu lượng: bạn thiết kế lại hot key và state ra sao?',
+    'Bạn muốn đổi model mới mà không rủi ro chặn nhầm hàng loạt: shadow mode, A/B và rollback thế nào?',
+    'False positive tăng đột ngột sau một chiến dịch marketing: bạn điều tra và xử lý ra sao?',
+    'AML batch reporting khác gì fraud real-time, và bạn ranh giới ở đâu để không trộn hai hệ?'
+  ],
+  related: ['design-005', 'security-001', 'ai-051', 'architecture-012']
+},
 ];

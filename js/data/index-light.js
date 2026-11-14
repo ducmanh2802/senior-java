@@ -2313,6 +2313,8 @@ window.DATA_INDEX = {
     {"id":"sd-038","title":"Ghép chuyến xe công nghệ (vị trí tài xế thời gian thực, geohash/H3, ghép cặp, giá động, trạng thái chuyến)"},
     {"id":"sd-039","title":"Trợ lý AI chăm sóc khách hàng cho ngân hàng"},
     {"id":"sd-040","title":"Hệ thống gợi ý sản phẩm cho thương mại điện tử"},
+    {"id":"sd-041","title":"Nền tảng đánh giá (eval) LLM cho nhiều team"},
+    {"id":"sd-042","title":"Phát hiện gian lận giao dịch thời gian thực bằng stream processing"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},
