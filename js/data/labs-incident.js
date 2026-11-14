@@ -4266,5 +4266,416 @@ return loadWithLockOrWait(day); // chua co gi: khoa va cho ngan
     'Đề xuất: sync=true (khoá trong một JVM), refresh-ahead hoặc stale-while-revalidate kèm khoá phân tán (SET NX), cache 2 tầng (Caffeine refreshAfterWrite), bulkhead và statement_timeout cho DB; alert theo miss rate và hit_ratio.'
   ],
   tags: ['cache-stampede', 'redis', 'hot-key', 'spring-cache', 'postgresql', 'ttl']
+},
+{
+  id: 'lab-incident-033',
+  category: 'incident',
+  title: 'PSP chậm 8 giây: retry 3 tầng không backoff biến 900 request thành 24.300 request mỗi giây',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Sàn **ShopVN** có luồng đặt hàng đi qua ba tầng: app → **api-gateway** (Spring Cloud Gateway, 6 pod) → **order-service** (Spring Boot 3.2, 8 pod, Tomcat 200 thread, Hikari 20 connection mỗi pod) → **payment-service** (Spring Boot 3.2, 6 pod, Tomcat 200 thread, Hikari 20 connection mỗi pod) → **PSP** (cổng thanh toán bên ngoài, tức công ty trung gian xử lý thẻ và chuyển khoản thay cho ShopVN). Cả ba tầng đều bật retry **3 lần** (1 lần gọi + 2 lần thử lại), chờ đúng **200 ms** giữa các lần, **không backoff**, **không jitter**, không retry budget, không circuit breaker. Lý do: "tầng nào cũng nên tự cứu mình". Cả order-service và payment-service đều gọi dependency bên ngoài **bên trong @Transactional**, nên mỗi request giữ một connection DB suốt thời gian chờ.
+
+Retry nghĩa là gửi lại request khi lần đầu thất bại. Backoff là chờ lâu dần trước mỗi lần thử lại (200 ms, 400 ms, 800 ms…). Jitter là cộng thêm một khoảng ngẫu nhiên nhỏ để các request không thử lại cùng một thời điểm.
+
+Ngày **09/11/2026** lúc **10:00**, PSP chậm: p99 của {{POST /v1/charges}} từ 180 ms lên **8,0 giây** (PSP xác nhận do batch job khoá bảng), kéo dài khoảng 4 phút. Traffic thật của ShopVN lúc đó khoảng **900 request/giây** vào gateway. Timeout: gateway response-timeout 10 giây, order → payment read-timeout 8 giây, payment → PSP read-timeout 8 giây.
+
+**Triệu chứng:** Từ 10:00:40, gateway trả **504** cho 31% request đặt hàng, p99 của order-service lên 26 giây, CPU payment-service chỉ 22% nhưng Hikari pending lên 1.180, log tràn ngập {{Connection is not available, request timed out after 30000ms}}. PSP xác nhận nhận khoảng **24.300 request/giây** từ ShopVN trong khi chỉ có 900 đơn thật. Hệ thống chỉ hồi phục lúc 10:11, sau khi SRE tắt retry ở cả ba tầng.
+
+**Dữ liệu thu thập:** log retry của một trace, metric RPS theo tầng, cấu hình Resilience4j của cả ba service, và log phía PSP.`,
+  artifacts: [
+    {
+      name: 'retry-trace-9f2c41ab.json',
+      lang: 'text',
+      content: `{"@timestamp":"2026-11-09T10:02:11.204+07:00","level":"INFO","service":"api-gateway","thread_name":"reactor-http-epoll-3","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"POST /api/orders route=order-service user=U-5512093 gateway_attempt=1/3"}
+{"@timestamp":"2026-11-09T10:02:11.219+07:00","level":"INFO","service":"order-service","thread_name":"http-nio-8080-exec-131","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"create order=ORD-26110901873 amount=1250000 order_attempt=1/3"}
+{"@timestamp":"2026-11-09T10:02:11.241+07:00","level":"INFO","service":"payment-service","thread_name":"http-nio-8080-exec-77","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"charge PAY-9F3A21 order=ORD-26110901873 payment_attempt=1/3"}
+{"@timestamp":"2026-11-09T10:02:19.244+07:00","level":"WARN","service":"payment-service","thread_name":"http-nio-8080-exec-77","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"PSP /v1/charges failed attempt=1/3: Read timed out after 8000 ms"}
+{"@timestamp":"2026-11-09T10:02:19.445+07:00","level":"WARN","service":"payment-service","thread_name":"http-nio-8080-exec-77","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"Retry 'psp', waiting PT0.2S until attempt '2'. Last attempt failed with exception 'org.springframework.web.client.ResourceAccessException: I/O error on POST request for \"https://psp.example/v1/charges\": Read timed out'."}
+{"@timestamp":"2026-11-09T10:02:27.650+07:00","level":"WARN","service":"payment-service","thread_name":"http-nio-8080-exec-77","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"PSP /v1/charges failed attempt=2/3: Read timed out after 8000 ms"}
+{"@timestamp":"2026-11-09T10:02:27.850+07:00","level":"WARN","service":"payment-service","thread_name":"http-nio-8080-exec-77","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"Retry 'psp', waiting PT0.2S until attempt '3'. Last attempt failed with exception 'org.springframework.web.client.ResourceAccessException: I/O error on POST request for \"https://psp.example/v1/charges\": Read timed out'."}
+{"@timestamp":"2026-11-09T10:02:35.858+07:00","level":"WARN","service":"payment-service","thread_name":"http-nio-8080-exec-77","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"PSP /v1/charges failed attempt=3/3: Read timed out after 8000 ms"}
+{"@timestamp":"2026-11-09T10:02:35.859+07:00","level":"ERROR","service":"payment-service","thread_name":"http-nio-8080-exec-77","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"charge PAY-9F3A21 failed after 3 attempts (24.6 s) -> 503 to caller"}
+{"@timestamp":"2026-11-09T10:02:19.244+07:00","level":"WARN","service":"order-service","thread_name":"http-nio-8080-exec-131","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"payment call failed attempt=1/3: Read timed out after 8000 ms (order gave up, payment still running)"}
+{"@timestamp":"2026-11-09T10:02:19.445+07:00","level":"WARN","service":"order-service","thread_name":"http-nio-8080-exec-131","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"Retry 'payment', waiting PT0.2S until attempt '2'."}
+{"@timestamp":"2026-11-09T10:02:27.445+07:00","level":"WARN","service":"order-service","thread_name":"http-nio-8080-exec-131","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"payment call failed attempt=2/3: Read timed out after 8000 ms"}
+{"@timestamp":"2026-11-09T10:02:35.445+07:00","level":"WARN","service":"order-service","thread_name":"http-nio-8080-exec-131","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"payment call failed attempt=3/3: Read timed out after 8000 ms"}
+{"@timestamp":"2026-11-09T10:02:35.845+07:00","level":"ERROR","service":"order-service","thread_name":"http-nio-8080-exec-131","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"create order=ORD-26110901873 failed after 3 attempts (24.6 s) -> 504 to gateway"}
+{"@timestamp":"2026-11-09T10:02:21.204+07:00","level":"WARN","service":"api-gateway","thread_name":"reactor-http-epoll-3","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"response took longer than PT10S, gateway_attempt=2/3: retrying POST /api/orders"}
+{"@timestamp":"2026-11-09T10:02:31.204+07:00","level":"WARN","service":"api-gateway","thread_name":"reactor-http-epoll-3","traceId":"9f2c41ab7d3e4b19a2f05d8e1c6b7a34","message":"response took longer than PT10S, gateway_attempt=3/3: retrying POST /api/orders"}
+# Ghi chu: moi order_attempt tao mot payment request moi; moi payment request tao 3 PSP call.
+# Trace chi ve mot order call (3 payment attempt) va mot payment call (3 PSP attempt).
+# Gateway retry 3 lan => 3 order call; order retry 3 lan => 9 payment request; payment retry 3 lan => 27 PSP call.`
+    },
+    {
+      name: 'metrics-and-config.txt',
+      lang: 'text',
+      content: `# gateway_in  = rate(spring_cloud_gateway_requests_seconds_count{route="order-service"}[10s])
+# order_in    = rate(http_server_requests_seconds_count{service="order-service",uri="/v1/orders"}[10s])
+# payment_in  = rate(http_server_requests_seconds_count{service="payment-service",uri="/v1/payments"}[10s])
+# psp_in      = rate(http_client_requests_seconds_count{service="payment-service",client="psp"}[10s])
+# psp_503/s   = rate(http_client_requests_seconds_count{service="payment-service",client="psp",status="503"}[10s])
+# hikari      = sum(hikaricp_connections_pending) theo service (payment max 120, order max 160)
+
+time      gateway_in  order_in  payment_in  psp_in  psp_503/s  payment_hikari  order_hikari  gateway_504/s
+10:00:00     900        900        900         900        0            12             20             0.0
+10:00:10     900      1,800      2,700       4,100        0           180            260             0.4
+10:00:20     900      2,700      5,400      12,900    2,100           860            980            18.2
+10:00:30     900      2,700      8,100      24,300   24,300         1,180          1,540           279.0
+10:02:00     900      2,700      8,100      24,300   24,300         1,180          1,540           279.0
+10:05:00     900      2,700      8,100      24,300   24,300         1,180          1,540           279.0
+10:08:00     900      2,700      8,100      24,300   24,300         1,180          1,540           279.0
+10:09:00     900      2,700      8,100      24,300   24,300         1,180          1,540           279.0
+10:09:20     900        900        900         900        0             3              4             0.1
+
+# Resilience4j, rate theo giay trong 10:00:30-10:02:30 (120 giay):
+# order-service retry 'payment': moi loi goi deu that bai sau 3 lan
+resilience4j_retry_calls_total{name="payment",kind="failed_with_retry"}     2700/s
+resilience4j_retry_calls_total{name="payment",kind="successful_without_retry"} 0/s
+# payment-service retry 'psp': moi loi goi deu that bai sau 3 lan
+resilience4j_retry_calls_total{name="psp",kind="failed_with_retry"}         8100/s
+resilience4j_retry_calls_total{name="psp",kind="successful_without_retry"}     0/s
+
+# ---------- Cau hinh Resilience4j (order-service, trich) ----------
+resilience4j:
+  retry:
+    instances:
+      payment:
+        max-attempts: 3
+        wait-duration: 200ms          # co dinh, khong jitter
+        retry-exceptions:
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException
+  circuitbreaker:
+    instances:
+      payment:
+        sliding-window-size: 100
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        # KHONG co: retry budget, bulkhead, time-limiter
+
+# ---------- Cau hinh timeout ----------
+# gateway: response-timeout 10s; order -> payment read-timeout 8s; payment -> PSP read-timeout 8s
+# gateway Retry filter: retries=3, statuses=[GATEWAY_TIMEOUT], methods=[POST]
+# order retry 'payment': max-attempts 3; payment retry 'psp': max-attempts 3`
+    },
+    {
+      name: 'psp-gateway.log',
+      lang: 'text',
+      content: `2026-11-09T10:02:11.241+07:00  INFO  psp-gateway-7  - POST /v1/charges from=203.0.113.10 amount=1250000 order=ORD-26110901873
+2026-11-09T10:02:19.244+07:00  WARN  psp-gateway-7  - charge timeout after 8000ms: db lock wait (batch settlement)
+2026-11-09T10:02:19.445+07:00  INFO  psp-gateway-7  - POST /v1/charges from=203.0.113.10 amount=1250000 order=ORD-26110901873 (attempt 2)
+2026-11-09T10:02:27.650+07:00  WARN  psp-gateway-7  - charge timeout after 8000ms: db lock wait (batch settlement)
+2026-11-09T10:02:27.850+07:00  INFO  psp-gateway-7  - POST /v1/charges from=203.0.113.10 amount=1250000 order=ORD-26110901873 (attempt 3)
+2026-11-09T10:02:35.858+07:00  WARN  psp-gateway-7  - charge timeout after 8000ms: db lock wait (batch settlement)
+2026-11-09T10:02:35.859+07:00  ERROR psp-gateway-7  - 503 Service Unavailable: db lock timeout, shedding load
+...
+# PSP metric 10:00:30-10:09:00:
+# requests_in = 24,300/s; 503 = 24,300/s; p99 = 8.0s; db_lock_wait = 7.9s
+# PSP log 10:02:35.859: "too many charge requests, db lock timeout, returning 503"
+# Khi PSP dang tra 503 sau 8s, client (payment) van timeout o 8s va retry; vong phan hoi duong.`
+    }
+  ],
+  questions: [
+    'Dựng lại chuỗi nhân tải từ 900 request/giây ở gateway tới 24.300 request/giây ở PSP. Vì sao cả ba tầng cùng retry 3 lần lại cho hệ số 27?',
+    'Vì sao hệ thống sập vì cạn thread pool chứ không phải CPU, và vì sao PSP bớt chậm lúc 10:04 mà hệ thống vẫn không tự hồi phục? Dùng định luật Little với số liệu của artifact.',
+    'Thiết kế lại retry cho cả ba tầng: retry budget, exponential backoff + jitter, circuit breaker, timeout budget, idempotency key. Xử lý 217 đơn bị ảnh hưởng thế nào?'
+  ],
+  hints: [
+    'Nhân số lần thử từ ngoài vào trong: gateway 3, order 3, payment 3. 3 × 3 × 3 = 27. Đối chiếu cột order_in (900 × 3 = 2.700), payment_in (2.700 × 3 = 8.100), psp_in (8.100 × 3 = 24.300) trong metric.',
+    'Định luật Little: số connection bận = tốc độ request × thời gian giữ. Payment nhận 8.100 request/giây, mỗi request giữ 1 connection DB khoảng 24,6 giây (3 × 8 giây + 2 × 0,2 giây) vì @Transactional bọc lời gọi PSP, cần khoảng 199.000 connection trong khi Hikari chỉ có 6 × 20 = 120 (Tomcat có 6 × 200 = 1.200 thread nhưng Hikari cạn trước). CPU thấp vì thread đang chờ I/O.',
+    'Retry chỉ có ích khi lỗi là tạm thời và request idempotent. Nếu PSP đã xử lý một charge trước khi trả 503/timeout, retry không có idempotency key sẽ tính tiền hai lần. 503 nghĩa là "tôi đang quá tải", retry ngay là khuếch đại tải.'
+  ],
+  answer: `**Tóm tắt:** Cả ba tầng (gateway, order-service, payment-service) đều retry 3 lần với chờ cố định 200 ms, không backoff, không jitter, không circuit breaker, không retry budget và không có idempotency key. Khi PSP chậm 8 giây, một đơn hàng thật đi qua ba tầng có thể tạo tối đa 3 × 3 × 3 = **27 request** ở PSP; thực đo **24.300 request/giây** so với 900 đơn thật, tức đúng 27 lần. Hệ thống sập vì **Hikari pool cạn** (mỗi request giữ một connection DB khoảng 24,6 giây vì @Transactional bọc lời gọi PSP) chứ không phải vì CPU, và không tự hồi phục sau khi PSP bớt chậm vì các request cũ vẫn đang chạy, còn retry thì vẫn tiếp tục sinh request mới.
+
+### Chuỗi nhân tải, từng bước
+
+**Tầng 1 — gateway:** 900 request/giây vào, mỗi request gọi order tối đa 3 lần → **2.700 request/giây** vào order-service. Log trace: gateway_attempt=1/3 lúc 10:02:11.204, 2/3 lúc 10:02:21.204, 3/3 lúc 10:02:31.204 (response-timeout 10 giây).
+
+**Tầng 2 — order-service:** mỗi order call gọi payment tối đa 3 lần → 2.700 × 3 = **8.100 request/giây** vào payment-service. Order có read-timeout 8 giây, nên mỗi payment attempt bị cắt ở 8 giây; payment vẫn tiếp tục chạy và trả 503 sau 24,6 giây.
+
+**Tầng 3 — payment-service:** mỗi payment call gọi PSP tối đa 3 lần → 8.100 × 3 = **24.300 request/giây** vào PSP. Trace: PSP attempt 1/3 lúc 10:02:11.241, timeout 8 giây lúc 10:02:19.244, attempt 2/3 lúc 10:02:19.445, timeout lúc 10:02:27.650, attempt 3/3 lúc 10:02:27.850, timeout lúc 10:02:35.858.
+
+Tổng: 900 × 3 × 3 × 3 = **24.300 request/giây**, đúng bằng cột {{psp_in}} lúc 10:00:30 và log PSP {{requests_in = 24,300/s}}.
+
+### Dẫn chứng
+
+- Metric theo tầng: {{gateway_in 900}}, {{order_in 2.700}}, {{payment_in 8.100}}, {{psp_in 24.300}}; {{psp_503/s 24.300}}. Đây là 27 lần, không phải 3 lần.
+- Trace 9f2c41ab: payment fail sau 3 attempt (24,6 giây) lúc 10:02:35.859; order fail sau 3 attempt (24,6 giây) lúc 10:02:35.845; gateway retry 2/3 và 3/3 lúc 10:02:21 và 10:02:31.
+- Hikari: {{payment_hikari 1.180}} (pool 6 × 20 = 120), {{order_hikari 1.540}} (pool 8 × 20 = 160). CPU payment 22% vì thread đang chờ I/O.
+- Resilience4j: {{failed_with_retry}} 8.100/s ở payment và 2.700/s ở order; không có {{successful_without_retry}}: mọi lời gọi đều thất bại sau 3 lần.
+- PSP: {{requests_in 24.300/s}}, {{503 24.300/s}}, {{p99 8.0s}}, {{db_lock_wait 7.9s}}.
+
+### Vì sao không hồi phục
+
+1. **Hikari cạn trước thread pool:** vì @Transactional bọc lời gọi PSP, mỗi request giữ 1 connection DB suốt 24,6 giây. Theo định luật Little, payment cần 8.100 × 24,6 ≈ **199.260 connection**, Hikari chỉ có 6 × 20 = 120; order cần 2.700 × 24,6 ≈ **66.420 connection**, Hikari chỉ có 8 × 20 = 160. Mọi connection bận, request mới xếp hàng trong Hikari ({{waiting}} lên 1.180), timeout sau 30 giây rồi trả 503. Thread Tomcat (1.200 và 1.600) cũng cạn theo, nhưng Hikari là nút cổ chai đầu tiên.
+2. **Vòng phản hồi dương:** PSP chậm → timeout → retry → tải tăng → PSP chậm hơn. Từ 10:04 PSP đã bớt chậm nhưng các request cũ (mỗi request 24,6 giây) vẫn phải chạy hết, và mỗi request thất bại lại sinh request retry mới. Chỉ khi SRE **tắt retry** ở cả ba tầng lúc 10:09, số request vào PSP mới giảm 24.300 → 900 và hệ thống hồi phục trong khoảng 20 giây ({{payment_hikari}} 1.180 → 3).
+3. **Retry không có idempotency:** một số charge đã được PSP xử lý trước khi trả 503/timeout. Không có idempotency key thì retry tạo charge mới, có thể tính tiền khách hai lần.
+
+### Nguyên nhân gốc: ba lỗi cấu hình
+
+**1. Retry ở cả ba tầng.** Mỗi tầng retry độc lập, không biết tầng khác đã retry. Đây là "retry lồng retry": 3 × 3 × 3 = 27. Nguyên tắc: **chỉ retry ở một tầng**, thường là tầng gần dịch vụ nhất (payment-service), vì tầng đó có đủ ngữ cảnh về timeout và idempotency.
+
+**2. Không backoff, không jitter.** Wait 200 ms cố định nghĩa là tất cả request đến từ cùng một đợt sẽ retry **cùng lúc** sau 200 ms, tạo sóng đồng bộ (thundering herd: cả đàn cùng lao vào một lúc). Với 900 request/giây, cứ 200 ms lại có một đợt 900 request dội vào PSP. Exponential backoff (200 ms × 2^n) cộng jitter (lệch ngẫu nhiên ±50%) làm các đợt retry tách ra theo thời gian.
+
+**3. Retry cho 503 và timeout.** 503 nghĩa là "tôi đang quá tải", retry ngay là **khuếch đại tải đúng lúc PSP đang yếu nhất**. Đúng ra: không retry 503, hoặc chỉ retry khi lỗi xảy ra **trước khi gửi request** (connect fail), và tốt hơn là **fail fast** — trả 503 cho client để client thử lại sau.
+
+### Cách sửa
+
+**Ngay trong sự cố (đã làm):**
+- Tắt retry ở cả ba tầng (max-attempts 1). Đây là cách nhanh nhất phá vòng phản hồi dương.
+- Rate limit ở gateway: giới hạn 1.000 request/giây cho luồng đặt hàng (PSP chỉ chịu 1.000).
+- Bật circuit breaker ở payment-service cho PSP: khi tỷ lệ lỗi vượt 50% trong 20 request gần nhất, mở mạch, fail fast trong 30 giây, không gửi thêm request nào.
+
+**Dài hạn: retry đúng cách**
+
+~~~java
+// Chi retry o MOT tang (payment-service), tat retry o gateway va order-service
+RetryConfig pspRetry = RetryConfig.custom()
+        .maxAttempts(2)                                          // 1 lan goi + 1 lan thu lai
+        .intervalFunction(IntervalFunction.ofExponentialRandomBackoff(
+                Duration.ofMillis(200), 2.0, 0.5))               // 200ms x 2^n, lech ngau nhien +-50%
+        .retryOnException(e -> e instanceof ResourceAccessException)   // chi timeout/connect fail
+        .build();                                                     // 503: khong vao day
+
+// Circuit breaker dat TRUOC retry (thu tu annotation quan trong)
+@CircuitBreaker(name = "psp", fallbackMethod = "pspFallback")
+@Retry(name = "psp")
+public ChargeResult charge(ChargeRequest req) { /* ... */ }
+~~~
+
+- **Retry budget:** giới hạn tổng số retry trong một cửa sổ, ví dụ không quá 10% số request thành công. Resilience4j không có retry budget tích hợp, nhưng có thể tự làm bằng token bucket hoặc dùng cơ chế của service mesh (Istio, Linkerd).
+- **Deadline:** truyền thời điểm hết hạn (deadline) từ gateway xuống các tầng dưới (ví dụ header {{X-Deadline-Ms}}). Mỗi tầng kiểm tra: nếu đã quá deadline thì không retry nữa, trả lỗi ngay.
+- **Idempotency key:** mỗi đơn hàng có một idempotency key duy nhất (ví dụ orderId). PSP dùng key này để phát hiện request trùng: nếu đã xử lý, trả về kết quả cũ thay vì tính tiền lần nữa. Không có idempotency key thì retry có thể làm khách bị tính tiền hai lần.
+- **Timeout budget giảm dần:** gateway 10 giây → order 8 giây → payment 6 giây → PSP 5 giây. Tổng thời gian tối đa của một request (kể cả retry ở payment) phải nhỏ hơn timeout của order.
+
+**Xử lý 503:**
+- Không retry 503. Trả 503 cho client kèm header {{Retry-After}} (ví dụ 2 giây). Client (app hoặc browser) tự thử lại sau 2 giây.
+- Nếu bắt buộc phải retry (ví dụ request quan trọng), tôn trọng Retry-After: đợi ít nhất số giây PSP yêu cầu.
+
+**Dài hạn: giảm phụ thuộc vào retry**
+- **Circuit breaker + fallback:** khi PSP lỗi, trả về "thanh toán đang xử lý" (202 Accepted) và cho đơn hàng vào hàng đợi, xử lý bất đồng bộ. Không chặn luồng đặt hàng.
+- **Bulkhead:** pool riêng cho PSP (ví dụ 50 connection) để PSP chậm không làm cạn pool của các dependency khác (tồn kho, khuyến mãi).
+
+### Phòng ngừa
+
+- **Review cấu hình retry:** mọi PR thay đổi retry phải đính kèm bảng "tầng nào retry, bao nhiêu lần, chờ bao lâu, có jitter không, có retry budget không, có tính 503 là failure không".
+- **Alert hệ số khuếch đại:** {{psp_in / gateway_in}} > 2 trong 2 phút. Đây là chỉ số sớm nhất cho thấy retry đang khuếch đại tải.
+- **Load test với dependency chậm:** inject độ trễ 8 giây vào PSP giả lập trên staging, kiểm tra hệ thống fail fast và không phát sinh quá 1,5 lần số request thật.
+- **Kiểm tra idempotency:** gửi cùng một request 3 lần, xác nhận PSP chỉ tính tiền 1 lần.
+
+> Senior tip: Retry là con dao hai lưỡi. Đúng chỗ, nó cứu hệ thống qua lỗi tạm thời; sai chỗ, nó biến sự cố nhỏ thành thảm họa. Ba câu hỏi tôi luôn đặt ra khi review retry: (1) Tầng này retry có biết tầng khác đã retry chưa? (2) Retry này có tôn trọng 503/Retry-After và có jitter không? (3) Nếu request được xử lý hai lần thì có sao không (idempotency)? Nếu câu trả lời cho bất kỳ câu nào là "không" hoặc "không biết", tôi tắt retry trước, làm đúng sau.`,
+  rubric: [
+    'Dựng đúng chuỗi nhân tải: gateway 900 → order 2.700 (3 lần) → payment 8.100 (3 lần) → PSP 24.300 (3 lần) = 27 lần; dẫn chứng cột order_in/payment_in/psp_in và psp_503 24.300/s.',
+    'Dẫn chứng trace 9f2c41ab: payment 3 attempt cách nhau 8 giây (24,6 giây), order 3 attempt, gateway retry 2/3 và 3/3; Resilience4j failed_with_retry 8.100/s và 2.700/s.',
+    'Giải thích cạn Hikari bằng định luật Little: 8.100 × 24,6 ≈ 199.260 connection cần so với 120 có (Tomcat 1.200 thread cũng cạn); Hikari pending 1.180; CPU 22% vì chờ I/O.',
+    'Giải thích không hồi phục: vòng phản hồi dương chậm → retry → chậm hơn; chỉ tắt retry mới thoát; thiếu idempotency key nên retry có thể tính tiền hai lần.',
+    'Đề xuất: chỉ retry một tầng, exponential backoff + jitter, retry budget, circuit breaker đặt trước retry, deadline truyền từ ngoài vào, timeout budget giảm dần, idempotency key, bulkhead, không retry 503 (tôn trọng Retry-After); alert hệ số khuếch đại.'
+  ],
+  tags: ['retry-storm', 'resilience4j', 'backoff', 'jitter', 'circuit-breaker', 'idempotency', 'thread-pool', 'timeout']
+},
+{
+  id: 'lab-incident-034',
+  category: 'incident',
+  title: 'Một message lỗi làm kẹt partition Kafka: consumer retry vô hạn, 480 nghìn log lỗi và lag 298 nghìn',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **notification-service** (Spring Boot 3.3, spring-kafka 3.2, Kafka 3.6) đọc topic **order-events** để gửi email xác nhận đơn. Topic là kênh message của Kafka; **partition** là đoạn nhỏ của topic để nhiều consumer đọc song song; trong một **consumer group** (nhóm consumer cùng mục đích), mỗi partition chỉ thuộc một consumer tại một thời điểm. Triển khai 6 pod × concurrency 2 (số luồng đọc trên mỗi pod) = 12 consumer, khớp đúng 12 partition. **Offset** là vị trí đọc kế tiếp trong partition; **lag** là số message còn chưa đọc. Bình thường 3.000 message/giây, mỗi message khoảng 80 ms, lag gần bằng 0.
+
+**Sự cố (11/11/2026).** Lúc **11:00:07**, producer gửi một message **thiếu {{orderId}}** vào partition 7. Consumer dùng {{ErrorHandlingDeserializer}} bọc {{JsonDeserializer}}; Jackson ném {{JsonMappingException: Missing required field 'orderId'}}, được bọc thành {{DeserializationException}}. Bean {{DefaultErrorHandler}} được cấu hình bằng {{new FixedBackOff(0, Long.MAX_VALUE)}} — **retry vô hạn, chờ 0 ms** — và **không có** {{DeadLetterPublishingRecoverer}} (thành phần gửi message lỗi sang topic DLQ), không có {{@RetryableTopic}}.
+
+**Triệu chứng:** Consumer vẫn "chạy", consumer group **ổn định, không rebalance**, 11/12 partition có lag bằng 0, nhưng partition 7 lag tăng liên tục, đến 11:20 đạt **298.447 message**. Log của pod tăng khoảng **400 dòng/giây** (480.000 dòng sau 20 phút), luôn cùng một {{offset 5.518.302}} và cùng một lỗi. CPU pod 1,8/4 core, không pod nào restart, liveness probe vẫn xanh. Hệ thống chỉ thoát sau khi SRE tìm đúng message lỗi, chuyển nó sang DLQ và deploy bản sửa.
+
+**Dữ liệu thu thập:** hai lần chạy {{kafka-consumer-groups.sh}} (công cụ kiểm tra nhóm consumer) cách nhau 20 phút, log của pod bị kẹt, metric theo partition và cấu hình consumer/error handler.`,
+  artifacts: [
+    {
+      name: 'kafka-consumer-groups.txt',
+      lang: 'text',
+      content: `$ date; kafka-consumer-groups.sh --bootstrap-server kafka-1:9092 --describe --group notification-service
+Thu Nov 11 11:00:05 +07 2026
+
+GROUP                TOPIC         PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG       CONSUMER-ID                                    HOST            CLIENT-ID
+notification-service order-events  0          8120441         8120441         0         consumer-notification-service-1-0b77e2d4-...  10.42.3.17      consumer-notification-service-1
+notification-service order-events  1          8098320         8098320         0         consumer-notification-service-1-0b77e2d4-...  10.42.3.17      consumer-notification-service-1
+notification-service order-events  2          8110293         8110293         0         consumer-notification-service-2-6e1d9c0a-...  10.42.7.31      consumer-notification-service-2
+notification-service order-events  3          8104411         8104411         0         consumer-notification-service-2-6e1d9c0a-...  10.42.7.31      consumer-notification-service-2
+notification-service order-events  4          8091277         8091277         0         consumer-notification-service-3-91c2f4b1-...  10.42.5.88      consumer-notification-service-3
+notification-service order-events  5          8107745         8107745         0         consumer-notification-service-3-91c2f4b1-...  10.42.5.88      consumer-notification-service-3
+notification-service order-events  6          8123118         8123118         0         consumer-notification-service-4-3a0f7c9f-...  10.42.2.40      consumer-notification-service-4
+notification-service order-events  7          5518302         5816749         298447    consumer-notification-service-2-6e1d9c0a-...  10.42.7.31      consumer-notification-service-2
+notification-service order-events  8          8115520         8115520         0         consumer-notification-service-5-5c2d4f19-...  10.42.6.12      consumer-notification-service-5
+notification-service order-events  9          8109876         8109876         0         consumer-notification-service-5-5c2d4f19-...  10.42.6.12      consumer-notification-service-5
+notification-service order-events  10         8102331         8102331         0         consumer-notification-service-6-a81e4b07-...  10.42.0.19      consumer-notification-service-6
+notification-service order-events  11         8113209         8113209         0         consumer-notification-service-6-a81e4b07-...  10.42.0.19      consumer-notification-service-6
+
+$ date; kafka-consumer-groups.sh --bootstrap-server kafka-1:9092 --describe --group notification-service
+Thu Nov 11 11:20:05 +07 2026
+
+GROUP                TOPIC         PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG       CONSUMER-ID                                    HOST            CLIENT-ID
+notification-service order-events  7          5518302         5816749         298447    consumer-notification-service-2-6e1d9c0a-...  10.42.7.31      consumer-notification-service-2
+# Cac partition khac van co CURRENT-OFFSET = LOG-END-OFFSET (lag 0).
+# CURRENT-OFFSET cua partition 7 KHONG nhich trong 20 phut; LOG-END-OFFSET tang tu 5.518.752 len 5.816.749.
+# Consumer group khong rebalance: khong co dong "Preparing to rebalance" hay "Stabilized".`
+    },
+    {
+      name: 'consumer-pod-notification-2xkqp.log',
+      lang: 'text',
+      content: `2026-11-11T11:00:07.114+07:00  INFO 1 --- [notification-service] [ntainer#0-1-C-1] v.s.notify.OrderEventListener    : new record partition=order-events-7 offset=5518302 key=ORD-26111101873
+2026-11-11T11:00:07.116+07:00  ERROR 1 --- [notification-service] [ntainer#0-1-C-1] o.s.k.l.KafkaMessageListenerContainer : Consumer record failed
+org.springframework.kafka.listener.ListenerExecutionFailedException: Listener method 'onEvent' threw exception
+Caused by: org.apache.kafka.common.errors.SerializationException: Can't deserialize value of type class vn.shop.notify.OrderEvent
+Caused by: com.fasterxml.jackson.databind.JsonMappingException: Missing required field 'orderId'
+  at com.fasterxml.jackson.databind.ObjectMapper._raiseNoRequiredProperty(ObjectMapper.java:...)
+  at com.fasterxml.jackson.databind.des.ObjectMapper._bindAndClose(ObjectMapper.java:...)
+  at org.springframework.kafka.support.serializer.JsonDeserializer.deserialize(JsonDeserializer.java:...)
+  at org.springframework.kafka.support.serializer.ErrorHandlingDeserializer.deserialize(ErrorHandlingDeserializer.java:...)
+2026-11-11T11:00:07.118+07:00  INFO 1 --- [notification-service] [ntainer#0-1-C-1] o.a.k.c.c.i.ConsumerCoordinator     : Resetting offset for partition order-events-7 to offset 5518302
+2026-11-11T11:00:07.121+07:00  ERROR 1 --- [notification-service] [ntainer#0-1-C-1] o.s.k.l.KafkaMessageListenerContainer : Consumer record failed
+org.springframework.kafka.listener.ListenerExecutionFailedException: Listener method 'onEvent' threw exception
+Caused by: org.apache.kafka.common.errors.SerializationException: Can't deserialize value of type class vn.shop.notify.OrderEvent
+Caused by: com.fasterxml.jackson.databind.JsonMappingException: Missing required field 'orderId'
+2026-11-11T11:00:07.123+07:00  INFO 1 --- [notification-service] [ntainer#0-1-C-1] o.a.k.c.c.i.ConsumerCoordinator     : Resetting offset for partition order-events-7 to offset 5518302
+... (lap lai cung offset 5518302, cung loi Missing required field 'orderId', khoang 400 dong moi giay) ...
+2026-11-11T11:20:07.000+07:00  INFO 1 --- [notification-service] [ntainer#0-1-C-1] v.s.notify.OrderEventListener    : new record partition=order-events-7 offset=5518302 key=ORD-26111101873
+2026-11-11T11:20:07.002+07:00  ERROR 1 --- [notification-service] [ntainer#0-1-C-1] o.s.k.l.KafkaMessageListenerContainer : Consumer record failed
+Caused by: com.fasterxml.jackson.databind.JsonMappingException: Missing required field 'orderId'
+2026-11-11T11:20:07.004+07:00  INFO 1 --- [notification-service] [ntainer#0-1-C-1] o.a.k.c.c.i.ConsumerCoordinator     : Resetting offset for partition order-events-7 to offset 5518302
+# 480.000 dong loi trong 20 phut; cung offset 5518302; khong co dong nao cua partition khac.
+# Thread C-1 (consumer-2) cua pod nay chi xu ly partition 7; cac thread khac van doc partition 0-6, 8-11 binh thuong.`
+    },
+    {
+      name: 'metrics-and-config.txt',
+      lang: 'text',
+      content: `# kafka_consumergroup_lag{group="notification-service",partition="7"} = 298.447; partition khac ~0
+# kafka_consumer_fetch_manager_records_consumed_total{partition="7"} rate = 0/s; partition khac 250/s
+# kafka_consumer_coordinator_rebalance_total rate = 0 (group on dinh)
+# process_cpu_seconds_total rate (pod notification-2xkqp) = 1.8 core; log_file_size = 192 MB trong 20 phut
+
+time      produce/s  consume/s  lag_partition_7  lag_others  rebalance/min  pod_cpu  log_lines/s
+11:00:00     3,000      3,000             0            0             0        0.6         10
+11:00:10     3,000      2,750           750            0             0        1.2        400
+11:05:00     3,000      2,750        75,750            0             0        1.8        400
+11:10:00     3,000      2,750       150,750            0             0        1.8        400
+11:20:00     3,000      2,750       298,447            0             0        1.8        400
+
+# ---------- application.yml (notification-service) ----------
+spring:
+  kafka:
+    consumer:
+      group-id: notification-service
+      enable-auto-commit: false
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.value.default.type: vn.shop.notify.OrderEvent
+        spring.json.trusted.packages: vn.shop.notify
+    listener:
+      concurrency: 2
+      ack-mode: record
+
+# ---------- ErrorHandlerConfig.java ----------
+@Bean
+DefaultErrorHandler errorHandler() {
+    // 0 ms giua cac lan thu; so lan thu toi da = Long.MAX_VALUE => retry vo han
+    return new DefaultErrorHandler(new FixedBackOff(0, Long.MAX_VALUE));
+}
+# KHONG co DeadLetterPublishingRecoverer, KHONG co @RetryableTopic, KHONG co addNotRetryableExceptions.
+
+# ---------- Producer (notificationProducer) ----------
+template.send("order-events", key, "{\"email\":\"a@example.com\"}");   // thieu orderId, khong validate
+# JsonDeserializer nem JsonMappingException: Missing required field 'orderId'
+# ErrorHandlingDeserializer boc thanh DeserializationException; DefaultErrorHandler coi la retryable va seek lai cung offset.`
+    }
+  ],
+  questions: [
+    'Vì sao chỉ partition 7 bị kẹt, consumer group vẫn ổn định và không rebalance? Dẫn chứng từ hai lần describe và log.',
+    'Giải thích chuỗi: message lỗi → JsonMappingException → DeserializationException → DefaultErrorHandler seek lại → retry vô hạn. Vì sao log tăng 400 dòng/giây và CPU một core gần 100% mà pod không restart?',
+    'Bạn xử lý ngay thế nào, và thiết kế lại error handler/producer/observability ra sao để một message lỗi không bao giờ làm kẹt cả partition?'
+  ],
+  hints: [
+    'Một partition chỉ thuộc một consumer tại một thời điểm. Message lỗi nằm ở offset 5.518.302 của partition 7; consumer đó seek lại đúng offset cũ sau mỗi lần lỗi, nên CURRENT-OFFSET không nhích. Các partition khác do consumer khác xử lý bình thường.',
+    'DefaultErrorHandler với FixedBackOff(0, Long.MAX_VALUE) retry vô hạn, không có recoverer nên không bao giờ bỏ qua hay gửi DLQ. Mỗi vòng poll + seek + deserialize + log mất khoảng 2,5 ms, tức khoảng 400 lần/giây.',
+    'Liveness probe chỉ kiểm tra process còn sống; consumer group vẫn gửi heartbeat nên không restart. Tổng lag có thể bị các partition khác làm loãng; phải alert theo lag từng partition và số lần lỗi lặp lại cùng offset.'
+  ],
+  answer: `**Tóm tắt:** Một message **thiếu {{orderId}}** ở partition 7 làm {{JsonDeserializer}} ném {{JsonMappingException}}, được {{ErrorHandlingDeserializer}} bọc thành {{DeserializationException}}. Bean {{DefaultErrorHandler}} dùng {{new FixedBackOff(0, Long.MAX_VALUE)}} nên **retry vô hạn, chờ 0 ms**, không có {{DeadLetterPublishingRecoverer}} để chuyển message sang DLQ. Consumer seek lại đúng {{offset 5.518.302}} sau mỗi lần lỗi, nên partition 7 không nhích offset: lag đạt **298.447** sau 20 phút, log tăng **480.000 dòng** (khoảng 400 dòng/giây), CPU một core gần 100%, nhưng consumer group vẫn ổn định và pod không restart. Sửa: finite retry + DLQ, producer validate, alert lag theo từng partition.
+
+### Nguyên nhân gốc: cơ chế bên trong
+
+1. **Message lỗi (poison message):** producer gửi payload thiếu trường bắt buộc {{orderId}}. Đây là message "độc": consumer không bao giờ xử lý được, dù thử lại bao nhiêu lần.
+2. **Chuỗi lỗi:** {{JsonDeserializer}} ném {{JsonMappingException: Missing required field 'orderId'}}; {{ErrorHandlingDeserializer}} bọc thành {{DeserializationException}} và **ném tiếp** cho container; {{DefaultErrorHandler}} bắt lỗi, **seek consumer về đúng offset của record lỗi**, rồi poll lại từ đầu.
+3. **Cấu hình sai:** {{new FixedBackOff(0, Long.MAX_VALUE)}} nghĩa là 0 ms giữa các lần thử và số lần thử tối đa là {{Long.MAX_VALUE}} (9.223.372.036.854.775.807). Không có {{DeadLetterPublishingRecoverer}} nên sau mỗi lần lỗi, handler không có nơi để gửi message; nó chỉ seek và thử lại.
+4. **Hệ quả:** mỗi vòng lặp gồm poll (đi mạng tới broker), deserialize (ném lỗi), seek (đặt lại offset) và log. Vòng lặp khoảng 2,5 ms, tức khoảng **400 lần/giây**; 20 phút = 1.200 giây × 400 = **480.000 dòng log**. Offset không nhích, nên partition 7 lag tăng đúng bằng tốc độ producer vào partition đó: 250 message/giây × 1.200 giây = 300.000, khớp **298.447**.
+5. **Vì sao group không rebalance:** consumer vẫn gọi {{poll()}} đều đặn (mỗi vòng lặp là một lần poll), heartbeat vẫn chạy, session không timeout. Consumer "sống" nhưng không commit được offset nào cho partition 7. 11 partition còn lại vẫn được xử lý bình thường bởi các consumer khác, nên tổng lag và CPU toàn cụm không báo động.
+
+### Dẫn chứng
+
+- {{kafka-consumer-groups}}: partition 7 có {{CURRENT-OFFSET 5518302}} ở cả 11:00 và 11:20, {{LOG-END-OFFSET}} tăng từ 5.518.752 lên 5.816.749, {{LAG 298447}}. 11 partition còn lại có {{CURRENT-OFFSET = LOG-END-OFFSET}} (lag 0).
+- Log: cùng {{offset 5518302}}, cùng {{Missing required field 'orderId'}}, lặp lại khoảng 400 dòng/giây; dòng {{Resetting offset for partition order-events-7 to offset 5518302}} xuất hiện sau mỗi lần lỗi.
+- Metric: {{records_consumed_total}} của partition 7 = 0/s; các partition khác 250/s; {{rebalance_total}} = 0; CPU pod 1,8/4 core; log 192 MB sau 20 phút.
+- Config: {{new DefaultErrorHandler(new FixedBackOff(0, Long.MAX_VALUE))}}; không có {{DeadLetterPublishingRecoverer}}, không có {{@RetryableTopic}}, không có {{addNotRetryableExceptions}}.
+- Nhiễu: liveness/readiness đều xanh; không có {{OutOfMemoryError}}; heap bình thường. Đây không phải lỗi bộ nhớ hay lỗi mạng.
+
+### Vì sao không tự hồi phục
+
+- **Record lỗi mang tính xác định:** cùng một payload sẽ luôn ném cùng một lỗi. Thử lại vô hạn không bao giờ thành công; chỉ có thể **bỏ qua có kiểm soát** (DLQ) hoặc **sửa dữ liệu**.
+- **Offset không tiến:** consumer seek về offset cũ sau mỗi lần lỗi, nên lag partition 7 tăng mãi. Các partition khác không liên quan, nên không có áp lực nào buộc hệ thống phải xử lý partition 7.
+- **Không có tín hiệu:** tổng lag bị 11 partition lag 0 làm loãng; CPU chỉ một core; không restart. Nếu chỉ nhìn dashboard tổng lag và CPU pod, sự cố dễ bị bỏ qua.
+
+### Cách sửa
+
+**Ngay trong sự cố (đã làm):**
+1. Tìm message lỗi: dùng {{kafka-console-consumer --topic order-events --partition 7 --offset 5518302 --max-messages 1}} để xem payload (không in dữ liệu cá nhân).
+2. Chuyển message sang DLQ thủ công hoặc nâng offset lên 5.518.303 **sau khi đã lưu message** ({{kafka-consumer-groups --reset-offsets --group notification-service --topic order-events:7 --to-offset 5518303 --execute}}). Không xoá message nếu chưa có DLQ: cần giữ bằng chứng để sửa producer.
+3. Deploy bản sửa error handler (finite retry + DLQ) rồi cho consumer đọc lại từ DLQ nếu cần.
+
+**Dài hạn: error handler đúng**
+
+~~~java
+@Bean
+DefaultErrorHandler errorHandler(KafkaOperations<String, String> ops) {
+    DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(ops);
+    // 1 giay giua cac lan, toi da 5 lan; sau do gui sang topic DLQ
+    DefaultErrorHandler handler = new DefaultErrorHandler(recoverer, new FixedBackOff(1000, 5));
+    // DeserializationException: khong retry, dua thang sang DLQ
+    handler.addNotRetryableExceptions(DeserializationException.class);
+    return handler;
+}
+~~~
+
+Hoặc dùng {{@RetryableTopic}} (Spring Kafka 3.x):
+
+~~~java
+@RetryableTopic(
+    attempts = "3",
+    backoff = @Backoff(delay = 1000, multiplier = 2.0, random = true),
+    dltStrategy = DltStrategy.FAIL_ON_ERROR)
+@KafkaListener(topics = "order-events")
+public void onEvent(OrderEvent e) { notificationService.send(e); }
+~~~
+
+- **Producer validate:** không gửi payload thiếu {{orderId}}. Kiểm tra ở producer (ví dụ {{Objects.requireNonNull(event.orderId(), "orderId")}}), dùng JSON Schema/Avro + Schema Registry để từ chối payload sai ngay từ đầu.
+- **Idempotency:** nếu listener có side effect (gửi email, ghi DB), dùng idempotency key {{orderId + eventType}} trước khi gửi; message từ DLQ phát lại không được gửi trùng.
+- **DLQ có người canh:** DLQ phải có dashboard, số lượng message, thời điểm lâu nhất, và quy trình phát lại sau khi sửa. DLQ không phải "thùng rác": message trong đó vẫn là dữ liệu cần xử lý.
+
+**Observability:**
+- Alert **lag theo từng partition**, không chỉ tổng lag: {{kafka_consumergroup_lag}} với nhãn partition="7" vượt ngưỡng trong 5 phút.
+- Alert **tốc độ tiêu thụ của một partition = 0** trong khi partition khác vẫn chạy.
+- Alert **số lần lỗi lặp lại cùng offset** (hoặc cùng {{correlation-id}}) vượt 100 trong 1 phút.
+- Cảnh báo **tốc độ ghi log** tăng đột biến; log lỗi lặp lại nên được chống lặp (rate limit) để không làm đầy đĩa.
+- Theo dõi {{kafka_consumer_coordinator_rebalance_total}} để phân biệt kẹt do poison message với kẹt do rebalance.
+
+### Phòng ngừa
+
+- **Test poison message:** đưa một payload thiếu trường vào topic staging, xác nhận consumer chuyển sang DLQ sau số lần thử đã định, không kẹt partition.
+- **Schema ở producer và consumer:** JSON Schema/Avro, trường bắt buộc, giá trị hợp lệ; từ chối ở producer thay vì để consumer phát hiện.
+- **Error handler mặc định an toàn:** finite retry, DLQ, phân loại lỗi không thể retry (deserialization, validation) và lỗi tạm thời (timeout, 5xx) khác nhau.
+- **Runbook:** "consumer kẹt một partition" — cách xem message theo offset, cách chuyển DLQ, cách phát lại.
+
+> Senior tip: Một message lỗi không bao giờ tự khỏi bằng retry. Với Kafka, câu hỏi đầu tiên khi lag tăng là "lag ở partition nào, offset có nhích không". Nếu tổng lag tăng nhưng một partition có {{CURRENT-OFFSET}} đứng yên còn các partition khác vẫn chạy, gần như chắc chắn là poison message hoặc một record bị retry vô hạn. Mặc định của {{DefaultErrorHandler}} là {{FixedBackOff(0, 9)}} (9 lần rồi bỏ qua), nhưng "bỏ qua" không phải "xử lý": hãy dùng DLQ để không mất dữ liệu, và luôn đặt alert theo từng partition.`,
+  rubric: [
+    'Xác định đúng poison message: orderId null → JsonMappingException → ErrorHandlingDeserializer bọc thành DeserializationException; DefaultErrorHandler với FixedBackOff(0, Long.MAX_VALUE) retry vô hạn, seek lại offset 5.518.302.',
+    'Dẫn chứng: CURRENT-OFFSET partition 7 đứng yên 5.518.302 ở cả 11:00 và 11:20, lag 298.447, 11 partition khác lag 0, rebalance = 0; 480.000 dòng log cùng offset, 400 dòng/giây, CPU 1,8/4 core.',
+    'Giải thích vì sao không tự hồi phục: record lỗi mang tính xác định, offset không tiến, consumer group vẫn gửi heartbeat nên không restart, tổng lag bị các partition khác làm loãng.',
+    'Đề xuất sửa ngay: xác định record theo offset/partition, chuyển sang DLQ hoặc nâng offset có kiểm soát sau khi lưu bằng chứng; không xoá message khi chưa có DLQ.',
+    'Đề xuất dài hạn: DefaultErrorHandler finite retry + DeadLetterPublishingRecoverer (hoặc @RetryableTopic với DltStrategy.FAIL_ON_ERROR), addNotRetryableExceptions cho DeserializationException, producer validate/schema, idempotency key, alert lag theo từng partition và tốc độ tiêu thụ từng partition.'
+  ],
+  tags: ['kafka', 'poison-message', 'dead-letter-queue', 'spring-kafka', 'error-handler', 'consumer-lag']
 }
 );
