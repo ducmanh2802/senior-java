@@ -12400,4 +12400,406 @@ readinessProbe:
   ],
   tags: ['Actuator', 'health group', 'readiness', 'liveness', 'Kubernetes']
 },
+{
+  id: 'jpa-058',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Bạn bật second-level cache của Hibernate cho các bảng danh mục (tiền tệ, thuế, danh mục sản phẩm). Một thời gian sau, vài màn hình hiển thị dữ liệu cũ (ví dụ tỷ giá đã đổi) trong khi DB đã cập nhật. Giải thích vì sao dữ liệu bị cũ (stale data), cơ chế invalidation của Hibernate, và bạn phát hiện, phòng ngừa thế nào?',
+  a: `**Tóm tắt:** Second-level cache (L2) là bản sao dữ liệu entity theo ID, dùng chung giữa các Session trong **một JVM**. Hibernate chỉ tự cập nhật hoặc vô hiệu cache khi việc ghi **đi qua chính Hibernate**. Nếu dữ liệu bị sửa ngoài Hibernate (SQL tay, job ETL, service khác), hoặc ở **node khác** trong cụm nhiều JVM, hoặc trong "cửa sổ" mà chiến lược cache cho phép, cache sẽ trả dữ liệu cũ. Muốn dùng L2 an toàn, phải trả lời được ba câu: ai làm cache hết hạn, dữ liệu cũ tối đa bao lâu thì chấp nhận, và đo hit ratio ở đâu.
+
+### L2 cache hoạt động thế nào (nhắc lại ngắn)
+- Khi entity được đánh dấu {{@Cache(usage = ...)}}, Hibernate lưu bản "đã tách rời" (không còn là object managed) theo khóa (class + id) vào một region có tên.
+- Mỗi SessionFactory (mỗi JVM) có region riêng. Khi load theo id, Hibernate kiểm tra L1 (persistence context) trước, rồi L2, cuối cùng mới ra DB.
+- L2 chỉ có lợi khi bạn load **theo id**, hoặc khi query cache trả về danh sách id rồi Hibernate đi lấy entity từ L2.
+
+### Ba nguồn gây stale data
+1. **Ghi ngoài Hibernate**: script SQL, job ETL, service khác cùng DB, admin chạy tay. Hibernate không nhận tín hiệu nào, nên cache giữ bản cũ tới khi entry bị evict (hết TTL) hoặc region bị xóa thủ công.
+2. **Nhiều JVM (multi-instance)**: L2 là per-JVM. Node A ghi và cập nhật cache của A; node B vẫn giữ bản cũ. Nếu provider không phải cache phân tán thì không có gì đồng bộ giữa các node.
+3. **Cửa sổ staleness do chiến lược**: {{NONSTRICT_READ_WRITE}} chấp nhận đọc cũ trong khoảng ngắn; {{READ_WRITE}} dùng "soft lock" nên khi transaction chưa commit, node khác đọc sẽ thấy bản cũ hoặc bị chặn một nhịp.
+
+### Invalidation chi tiết
+- Ghi qua Hibernate (đổi field + flush): Hibernate cập nhật hoặc vô hiệu entry của **entity đó**.
+- Bulk JPQL {{UPDATE}}/{{DELETE}}: Hibernate evict **toàn bộ region** của entity liên quan, vì nó không biết dòng nào bị đổi.
+- Native query: Hibernate không biết bạn đụng bảng nào. Nếu không khai báo {{addSynchronizedEntityClass}} thì L2 có thể cũ, hoặc Hibernate evict cả region cho an toàn.
+- Xóa: evict entry tương ứng.
+- Không có "version check" tự động: L2 không so sánh với DB mỗi lần đọc.
+
+### Chiến lược concurrency (đánh đổi)
+| Chiến lược | Đọc dữ liệu cũ | Ghi đồng thời | Ghi chú |
+|---|---|---|---|
+| READ_ONLY | Không bao giờ (không cho ghi) | Không áp dụng | Dữ liệu tĩnh |
+| NONSTRICT_READ_WRITE | Có, trong cửa sổ ngắn | Khá an toàn | Đơn giản, hay dùng |
+| READ_WRITE | Rất ngắn (soft lock) | An toàn hơn | Tốn hơn, cần provider hỗ trợ |
+| TRANSACTIONAL | Theo isolation của cache | Mạnh nhất | Cần JTA/TransactionManagerLookup, ít dùng với Spring Boot |
+
+### Phát hiện stale data
+- Bật {{hibernate.generate_statistics=true}}; theo dõi {{getSecondLevelCacheHitCount}}, {{getSecondLevelCacheMissCount}}, {{getSecondLevelCachePutCount}}.
+- Một job định kỳ đọc thẳng DB (bypass cache) và so với giá trị cache; hoặc log timestamp của bản ghi và cảnh báo nếu chênh quá ngưỡng.
+- Nếu kiểm soát được các job ghi, ghi log mỗi lần ghi ngoài Hibernate để biết region nào cần evict.
+
+### Phòng ngừa
+- Đặt **TTL ngắn** cho dữ liệu hay đổi (ví dụ 30–60 giây) thay vì cache vô hạn.
+- Dùng **cache phân tán** có invalidation (Infinispan, Hazelcast) hoặc Redis + pub/sub để evict toàn cụm.
+- Sau khi chạy job/ETL, **gọi API nội bộ evict region** (hoặc dùng Spring Cache {{@CacheEvict}}).
+- Màn hình cần **luôn mới**: dùng DTO projection đọc thẳng DB thay vì cache entity.
+- Chỉ cache dữ liệu đủ tĩnh; dữ liệu đổi liên tục thì cache thường lỗ.
+
+### Ví dụ đời thực
+Bảng {{currency_rate}} 40 dòng, đọc 8.000 lần/phút, mỗi ngày cập nhật tỷ giá một lần lúc 8h bằng script SQL. L2 {{READ_WRITE}} giảm 90% query, p99 từ 6 ms xuống 1,5 ms. Sau 3 tuần, khách báo "tỷ giá hiển thị sai": job tỷ giá chạy bằng SQL tay lúc 8h, cache vẫn trả bản hôm trước tới 8h hôm sau vì không có TTL. Thống kê cho thấy hit ratio 99% nhưng không có lần evict nào sau khi job chạy. Sửa: đặt TTL 60 giây cho region, cho job gọi endpoint evict, thêm metric "tuổi entry". Kết quả: sai lệch tối đa 60 giây, p99 vẫn khoảng 2 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"L2 cache lưu bản sao entity theo id, dùng chung giữa các session trong một JVM, và Hibernate chỉ tự cập nhật khi ghi đi qua chính Hibernate. Dữ liệu cũ thường đến từ ba nguồn: ghi ngoài Hibernate như SQL tay hay ETL, chạy nhiều instance mà cache không đồng bộ giữa các node, và cửa sổ staleness của chiến lược concurrency. Tôi phát hiện bằng statistics của Hibernate và một job đối chiếu cache với DB. Để phòng ngừa, tôi đặt TTL ngắn, dùng cache phân tán có invalidation hoặc pub/sub để evict cả cụm, cho job sau khi ghi gọi evict region, và với màn hình cần luôn mới thì dùng projection đọc thẳng DB thay vì cache. Trước khi bật, tôi luôn trả lời được ai làm cache hết hạn và dữ liệu cũ tối đa bao lâu thì chấp nhận."
+
+> Senior tip: L2 cache không phải công tắc "bật là nhanh". Hãy coi mỗi region như một hợp đồng: ai được quyền ghi, dữ liệu cũ tối đa bao lâu, và bạn đo hit ratio ở đâu. Nếu không trả lời được ba câu đó, cache chỉ đang đổi "chậm đều" thành "sai có lúc" — loại lỗi khách hàng khó tha nhất.`,
+  follow: [
+    'Nếu chạy 3 instance Spring Boot và không có cache phân tán, bạn làm gì để tránh trả dữ liệu cũ giữa các node?',
+    'Làm sao biết một entry trong L2 đang cũ: bạn theo dõi metric hay timestamp nào?',
+    'Bulk JPQL UPDATE và ghi bằng native query khác nhau thế nào đối với L2 cache?'
+  ],
+  tags: ['second-level cache', 'stale data', 'Hibernate', 'invalidation', 'multi-node']
+},
+{
+  id: 'jpa-059',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Bạn bật query cache (hibernate.cache.use_query_cache) để giảm tải DB cho các câu truy vấn danh sách hay chạy. Nhưng DB vẫn bị bắn liên tục và p99 không giảm. Giải thích query cache lưu gì, vì sao nó vẫn miss, và những pitfall khiến query cache gần như vô dụng.',
+  a: `**Tóm tắt:** Query cache **không lưu entity**, nó lưu **danh sách ID** (và giá trị scalar) kèm một "timestamp theo bảng". Khi **bất kỳ** bản ghi nào trong bảng bị ghi qua Hibernate, **toàn bộ** kết quả query cache liên quan bảng đó bị vô hiệu (invalidation thô, theo bảng, không theo dòng). Hơn nữa, để query cache có lợi bạn **phải** bật L2 cache cho entity; nếu không, mỗi lần "cache hit" vẫn phải SELECT từng entity theo ID từ DB. Bảng ghi thường xuyên thì query cache gần như luôn miss, chỉ tốn overhead.
+
+### Query cache lưu gì
+- Với entity query, Hibernate lưu **một danh sách các ID** (List of Serializable), không phải object entity.
+- Với scalar/projection, lưu danh sách giá trị scalar.
+- Region chính là {{org.hibernate.cache.internal.StandardQueryCache}}; một region riêng {{org.hibernate.cache.internal.UpdateTimestampsCache}} giữ "lần ghi cuối" của từng bảng (query space).
+- Muốn bật: {{hibernate.cache.use_second_level_cache=true}} (bắt buộc) và {{hibernate.cache.use_query_cache=true}}. Nếu L2 tắt, Hibernate bỏ qua query cache.
+
+### Vì sao nó vẫn miss
+1. **Thiếu L2 cache**: query cache trả về danh sách ID, rồi Hibernate phải nạp từng entity. Nếu L2 tắt, mỗi hit vẫn sinh SELECT (theo id, có thể từng dòng). Tắt L2 thì query cache gần như vô nghĩa.
+2. **Invalidation thô theo bảng**: chỉ cần **một** INSERT/UPDATE/DELETE vào bảng (qua Hibernate) là **mọi** kết quả query cache của bảng đó bị xóa, kể cả câu chỉ đọc 1 dòng không liên quan. Bảng ghi vài trăm lần/phút thì hit ratio ~0.
+3. **Key phụ thuộc tham số và câu lệnh**: cùng một câu nhưng khác tham số, khác phân trang, khác thứ tự là key khác nhau → mỗi biến thể một entry riêng.
+4. **Native query không tự cache**: phải tự khai báo; và không có timestamp tự động.
+
+### Khi nào query cache thực sự có lợi
+| Điều kiện | Vì sao |
+|---|---|
+| Bảng **ghi rất ít** (danh mục, cấu hình, mã vùng) | Invalidation thô ít khi kích hoạt |
+| Entity tương ứng cũng có **L2 cache** | Hit trả ID rồi lấy entity từ L2, không ra DB |
+| Query **nặng** (join, group by, subquery) | Tiết kiệm CPU DB rõ rệt |
+| Chỉ cần **ID hoặc scalar** | Không cần L2 vẫn có lợi |
+
+### Cấu hình đúng và đo lường
+~~~yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        cache:
+          use_second_level_cache: true
+          use_query_cache: true
+          region:
+            factory_class: jcache
+        generate_statistics: true
+~~~
+~~~java
+@Entity
+@Cache(usage = CacheConcurrencyStrategy.READ_WRITE)
+public class Country { ... }   // entity phải cache L2 thì query cache mới có lợi
+
+@QueryHints(@QueryHint(name = "org.hibernate.cacheable", value = "true"))
+List<Country> findByRegion(String region);
+~~~
+Đọc số liệu: {{getQueryCacheHitCount}}, {{getQueryCacheMissCount}}, {{getQueryCachePutCount}}. Hit ratio thấp mà DB vẫn nóng là dấu hiệu invalidation thô đang xóa liên tục.
+
+### Pitfall production
+- Bật query cache cho bảng {{orders}} ghi liên tục: chỉ tốn bộ nhớ, DB không giảm, còn thêm chi phí kiểm tra timestamp mỗi lần query.
+- Bật query cache mà **quên L2**: "hit" vẫn SELECT entity từ DB → tưởng cache nhưng không nhanh.
+- Cùng một câu nhưng khác tham số/thứ tự → bùng nổ entry, tốn heap.
+- Ghi bằng SQL tay/service khác: Hibernate không biết → kết quả cũ cho tới lần ghi kế tiếp qua Hibernate.
+- Dùng query cache để che một câu thiếu index: sai hướng, phải sửa index trước.
+
+### Ví dụ đời thực
+Bảng {{config}} 800 dòng, câu {{select * from config where group = :g}} chạy 20.000 lần/phút, join 2 bảng, mỗi lần 40 ms. Bật L2 {{READ_ONLY}} + query cache: hit ratio 97%, p99 từ 45 ms xuống 3 ms. Cùng đợt, một bạn bật query cache cho bảng {{order_item}} (ghi 5.000 lần/phút) và tưởng sẽ nhanh: hit ratio 2%, p99 còn tăng 4 ms vì overhead kiểm tra timestamp. Tắt query cache cho order_item, thay bằng index phù hợp. Bài học: query cache chỉ đáng bật cho bảng "đọc nhiều, ghi gần như không".
+
+### Trả lời mẫu khi phỏng vấn
+"Query cache không lưu entity mà lưu danh sách id kèm timestamp theo bảng. Khi bất kỳ bản ghi nào trong bảng bị ghi qua Hibernate, mọi kết quả query của bảng đó bị vô hiệu, nên bảng ghi thường xuyên thì query cache gần như luôn miss. Quan trọng hơn, để query cache có lợi thì entity phải được cache L2, vì cache chỉ trả id rồi Hibernate còn phải nạp entity. Tôi chỉ bật cho bảng đọc nhiều ghi rất ít như danh mục, cấu hình, và luôn đo hit ratio bằng statistics. Nếu hit ratio thấp mà DB vẫn nóng, tôi tắt query cache và sửa index hoặc dùng projection; dùng cache để che câu thiếu index là sai hướng."
+
+> Senior tip: query cache là "cache của câu truy vấn", nên nó thừa hưởng nhược điểm lớn nhất của invalidation theo bảng: một dòng thay đổi làm cả bảng mất cache. Chỉ bật khi bảng gần như bất biến; còn lại, tối ưu index và projection sẽ bền hơn.`,
+  follow: [
+    'Vì sao bật query cache mà không bật second-level cache thì gần như không có lợi?',
+    'Một INSERT vào bảng làm ảnh hưởng thế nào tới các entry query cache của bảng đó?',
+    'Làm sao đo biết query cache đang miss nhiều hay đang bị invalidation liên tục?'
+  ],
+  tags: ['query cache', 'Hibernate', 'invalidation', 'statistics', 'pitfall']
+},
+{
+  id: 'jpa-060',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Bạn cần thêm vào entity một giá trị tính sẵn (ví dụ tồn kho = tổng nhập − tổng xuất, hoặc điểm uy tín khách hàng) mà không muốn viết thêm query ở service. @Formula và @Subselect của Hibernate làm được gì, khác nhau thế nào, và những cái bẫy khi dùng?',
+  a: `**Tóm tắt:** Cả hai đều ánh xạ một **giá trị đọc-only** vào entity. {{@Formula}} chèn một **biểu thức SQL** vào câu SELECT của entity (một cột "ảo"), còn {{@Subselect}} ánh xạ cả entity vào **một câu SELECT** (giống view). Cả hai **không ghi được** (Hibernate không sinh INSERT/UPDATE cho chúng) và không có cột thật trong bảng. @Formula tính trên từng dòng entity, @Subselect thay thế toàn bộ nguồn dữ liệu của entity.
+
+### @Formula: cơ chế
+~~~java
+@Entity
+class Product {
+    @Id Long id;
+    String name;
+    // Hibernate chèn biểu thức này vào SELECT của Product, kết quả gán cho field
+    @Formula("(select coalesce(sum(s.quantity), 0) from stock s where s.product_id = id)")
+    long stockQuantity;          // chỉ đọc: không có setter, không nằm trong INSERT/UPDATE
+}
+~~~
+- Thuộc tính {{org.hibernate.annotations.Formula}}.
+- Giá trị là một mảnh SQL, được đặt thẳng vào câu SELECT; alias là tên field.
+- Luôn được nạp **eager** cùng entity, không lazy được.
+- Không có cột thật: không insert/update, không index, không dùng trực tiếp trong WHERE hiệu quả.
+
+### @Subselect: cơ chế
+~~~java
+@Entity
+@Subselect("select p.id, p.name, p.price, "
+         + "(select count(*) from review r where r.product_id = p.id) as review_count "
+         + "from product p")
+@Synchronize({"product", "review"})   // báo cho Hibernate các bảng mà subselect đọc
+class ProductView {
+    @Id Long id;
+    String name;
+    BigDecimal price;
+    long reviewCount;      // chỉ đọc
+}
+~~~
+- Thuộc tính {{org.hibernate.annotations.Subselect}}; entity được "thấy" như một bảng ảo.
+- **Bắt buộc** khai báo {{@Synchronize}} liệt kê các bảng thật mà subselect đọc, để Hibernate biết khi nào cần vô hiệu cache và khi nào flush.
+- Phải tự khai báo {{@Id}} trỏ vào một cột do subselect trả về; không có id sinh tự động.
+- Read-only: {{save}}/{{persist}}/{{merge}} trên nó không hợp lệ.
+
+### So sánh
+| Tiêu chí | @Formula | @Subselect |
+|---|---|---|
+| Phạm vi | Một field của entity | Toàn bộ nguồn dữ liệu của entity |
+| Cú pháp | Mảnh SQL trong SELECT | Cả một câu SELECT |
+| Cần khai báo bảng phụ thuộc | Không (nó nằm trong cùng câu select) | Có, qua @Synchronize |
+| Ghi được | Không | Không |
+| Dùng khi | Một giá trị dẫn xuất đơn giản | Muốn map một view/query phức tạp thành entity, có quan hệ |
+
+### Bẫy hay gặp
+1. **@Formula với subquery tương quan trên danh sách lớn**: load 500 sản phẩm → 500 subquery chạy kèm, DB nóng. Nếu cần tổng, cân nhắc join/group by hoặc view.
+2. **@Formula không index được**: không thể lọc/sắp xếp hiệu quả theo nó; nếu cần lọc, viết điều kiện trong query chính.
+3. **@Subselect thiếu @Synchronize**: L2 và query cache không được vô hiệu khi bảng nền đổi → dữ liệu cũ. Đây là lỗi âm thầm nguy hiểm nhất.
+4. **@Subselect phụ thuộc dialect**: câu SQL có thể không chạy trên DB khác, mất tính di động.
+5. **@Subselect không ghi**: đừng gọi save/persist/remove; và Spring Data derived query có thể không hoạt động như mong đợi trên nó.
+6. **@Formula/@Subselect không thay được index**: chúng chỉ giúp đọc gọn, không tăng tốc truy vấn nặng.
+
+### Ví dụ đời thực
+Bảng {{product}} 200.000 dòng, màn hình quản trị cần hiển thị số lượt đánh giá. Ban đầu dùng {{@Formula}} với subquery đếm review: mỗi lần mở trang 50 sản phẩm sinh 50 subquery, p95 từ 80 ms lên 900 ms. Chuyển sang {{@Subselect}} có {{@Synchronize}} + chỉ mục trên {{review(product_id)}}, và thêm L2 {{READ_ONLY}} cho view: p95 về 120 ms. Một lần khác, một bạn quên @Synchronize nên giá trị điểm uy tín bị cũ 20 phút sau khi chấm review; thêm @Synchronize và test "ghi review → đọc lại view" để chặn hồi quy.
+
+### Trả lời mẫu khi phỏng vấn
+"@Formula chèn một mảnh SQL vào câu SELECT của entity để tạo một cột ảo, luôn nạp kèm entity và chỉ đọc. @Subselect ánh xạ cả entity vào một câu SELECT, giống một view, cũng chỉ đọc, và cần @Synchronize để Hibernate biết các bảng nền mà nó đọc. Tôi dùng @Formula cho giá trị dẫn xuất đơn giản, và @Subselect khi muốn map một query phức tạp thành entity có quan hệ. Bẫy lớn nhất là @Formula với subquery tương quan trên danh sách lớn gây N subquery, và @Subselect quên @Synchronize khiến cache trả dữ liệu cũ. Cả hai đều không thay được index, nên tôi vẫn tối ưu truy vấn và chỉ dùng chúng để gọn code."
+
+> Senior tip: @Formula và @Subselect làm code gọn nhưng đẩy chi phí xuống DB. Trước khi dùng, hãy hỏi: giá trị này có nằm trong đường nóng không, và nếu danh sách lớn thì số lần subquery là bao nhiêu. Có subquery tương quan trong @Formula trên một trang 100 dòng là công thức của một sự cố p95.`,
+  follow: [
+    '@Formula và @Subselect có ghi được không, vì sao, và nếu cần cập nhật giá trị dẫn xuất thì làm thế nào?',
+    'Vì sao @Subselect cần @Synchronize, và quên nó gây hậu quả gì với cache?',
+    'Khi nào bạn chọn @Formula, khi nào chọn @Subselect, và khi nào không dùng cái nào?'
+  ],
+  tags: ['@Formula', '@Subselect', 'Hibernate', 'read-only', 'derived value']
+},
+{
+  id: 'jpa-061',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Màn hình đọc (danh sách đơn hàng, bảng giá, dashboard) cần dữ liệu luôn mới nhất và tải nhanh. Bạn chọn entity hay DTO projection? Giải thích vì sao projection thường nhanh hơn và tránh được stale data so với cache, và những tình huống projection vẫn chậm hoặc sai.',
+  a: `**Tóm tắt:** Projection là "read model": chỉ SELECT đúng cột cần và **không đi qua persistence context**, nên nó luôn đọc thẳng DB (không dùng L1/L2 cache), không dirty checking, không lazy loading, payload nhỏ. Đổi lại bạn mất dirty checking và quan hệ, phải tự viết query. Projection là lựa chọn mặc định cho luồng đọc; entity dành cho luồng ghi và nghiệp vụ.
+
+### Vì sao projection nhanh hơn entity
+- **Ít cột hơn**: entity load mọi field; projection chỉ load cột hiển thị → ít dữ liệu qua mạng, ít hydrate.
+- **Không snapshot/dirty checking**: entity vào persistence context phải lưu ảnh chụp ban đầu và so sánh lúc flush; projection là object thường, không có chi phí này.
+- **Không lazy loading ẩn**: entity có quan hệ lazy dễ sinh N+1 khi serialize; projection viết đúng thì một query ra đủ dữ liệu.
+- **Không phụ thuộc OSIV**: không cần giữ Session mở suốt request.
+
+### Vì sao projection tránh được stale data
+- Entity load theo id có thể đến từ L2 cache; nếu cache cũ, bạn trả dữ liệu cũ.
+- Projection chạy một câu SQL trực tiếp, **bỏ qua cache** → luôn thấy giá trị mới nhất đã commit. Với màn hình giá/tồn kho, đây là tính đúng đắn, không chỉ là hiệu năng.
+
+### Khi projection vẫn chậm hoặc sai
+1. **Join collection to-many**: một dòng cha nhân với mỗi con → LIMIT cắt sai, phải dùng two-query hoặc DTO phẳng.
+2. **Open projection (interface + @Value SpEL)**: Spring phải load cả entity rồi tính → mất lợi ích.
+3. **N+1 trong service**: lặp qua danh sách rồi gọi repository từng dòng; projection không tự cứu.
+4. **Correlated subquery trong constructor expression**: chạy cho từng dòng, danh sách lớn thì chậm.
+5. **Thiếu index** cho điều kiện lọc/sắp xếp: projection không tạo index.
+6. **Không có count** nếu dùng Page: vẫn phát sinh query đếm.
+
+### Đo lường trước khi kết luận
+~~~java
+// Bật thống kê để đếm số câu SQL mỗi request (đơn vị test hoặc dev)
+@Bean
+HibernatePropertiesCustomizer countSql() {
+    return p -> p.put("hibernate.generate_statistics", "true");
+}
+// Trong test: assert Stats.getQueryExecutionCount() == 1 cho endpoint danh sách
+~~~
+Kết hợp {{EXPLAIN ANALYZE}} để biết index nào đang được dùng, và log SQL (không log ở production vì tốn).
+
+### So sánh entity vs projection cho luồng đọc
+| Tiêu chí | Entity | DTO projection |
+|---|---|---|
+| Số cột | Tất cả | Chỉ cột cần |
+| Qua persistence context | Có (snapshot, dirty checking) | Không |
+| Nguồn dữ liệu | L1 → L2 → DB | DB trực tiếp |
+| Rủi ro stale | Có, nếu dùng cache | Không |
+| Quan hệ lazy | Có, dễ N+1 | Không, nếu viết đúng |
+| Dùng cho ghi | Tốt | Không phù hợp |
+
+### Ví dụ đời thực
+Dashboard doanh thu gọi {{findByOrderByTotalDesc}} trả entity {{Order}} (12 field, quan hệ customer lazy). Mỗi request 1 query orders + N query customer, p95 700 ms, và vì bật L2 cho Order nên đôi khi trả tên khách cũ sau khi đổi tên. Đổi sang record projection chỉ 5 cột, một câu join lấy customer name: 1 query, payload giảm 65%, p95 xuống 90 ms, và vì đọc thẳng DB nên không còn cảnh "tên cũ". Đo bằng cách assert số query trong test: từ trung bình 21 xuống 1.
+
+### Trả lời mẫu khi phỏng vấn
+"Với luồng đọc, tôi dùng DTO projection thay vì entity vì projection chỉ select cột cần, không đi qua persistence context nên không có snapshot hay dirty checking, và luôn đọc thẳng DB. Điều này nhanh hơn và quan trọng hơn là tránh được stale data: entity có thể đến từ L2 cache cũ, còn projection thì không. Bù lại tôi mất dirty checking và quan hệ, nên phải tự viết query. Tôi vẫn phải cẩn thận với join collection to-many, open projection và N+1 trong service; tôi đo bằng cách đếm số câu SQL mỗi request trong test và dùng EXPLAIN ANALYZE để kiểm tra index."
+
+> Senior tip: hãy chọn theo "hướng dữ liệu": đọc thì projection, ghi thì entity. Và khi màn hình yêu cầu "luôn mới", projection còn có một lợi ích ít nói tới: nó không đi qua cache, nên không bao giờ trả giá trị cũ — một dạng đúng đắn miễn phí mà cache không có.`,
+  follow: [
+    'Vì sao projection lại không bị stale data trong khi entity có thể bị?',
+    'Projection có nhược điểm gì so với entity trong luồng ghi?',
+    'Làm sao bạn chứng minh một endpoint đọc chỉ chạy đúng một câu SQL?'
+  ],
+  tags: ['DTO projection', 'read model', 'performance', 'stale data', 'Spring Data']
+},
+{
+  id: 'jpa-062',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Một endpoint phân trang dùng JOIN FETCH một collection chậm dần và ăn heap khi trang tăng; log Hibernate in cảnh báo HHH90003004 "firstResult/maxResults specified with collection fetch; applying in memory". Giải thích vì sao Hibernate phân trang trong bộ nhớ, làm sao phát hiện sớm và chặn, và so sánh các cách sửa.',
+  a: `**Tóm tắt:** Khi câu truy vấn có {{join fetch}} một collection (to-many), SQL bị **nhân dòng**: một đơn có 10 sản phẩm thành 10 dòng SQL cho một đơn. {{LIMIT}}/{{OFFSET}} của SQL cắt theo **dòng SQL**, không phải theo số đơn, nên cắt sai. Hibernate không thể uỷ quyền phân trang cho DB, buộc phải tải **toàn bộ** tập kết quả về JVM rồi phân trang trong bộ nhớ (in-memory pagination), và in cảnh báo HHH90003004 (Hibernate 6; HHH000104 ở Hibernate 5). Đây là nguyên nhân OOM và latency tăng theo offset.
+
+### To-one khác to-many ở đâu
+- {{join fetch}} một quan hệ **to-one** (ví dụ Order → Customer): mỗi đơn vẫn **một dòng** SQL, nên LIMIT trên số dòng = LIMIT trên số đơn. An toàn.
+- {{join fetch}} một quan hệ **to-many** (Order → Items): mỗi đơn **nhiều dòng**, nên LIMIT cắt theo dòng con, không phải theo đơn. Không an toàn.
+- Fetch **hai** collection to-many cùng lúc: còn dính {{MultipleBagFetchException}} nếu là List, và tích Đề-các (cartesian) nếu là Set.
+
+### Vì sao phải phân trang trong bộ nhớ
+~~~sql
+-- Hibernate sinh ra (hiểu theo ý nghĩa)
+select o.*, i.* from orders o left join order_item i on i.order_id = o.id
+order by o.created_at desc
+limit 20 offset 1000;
+~~~
+20 dòng SQL ở trang đầu có thể chỉ chứa 2 đơn (mỗi đơn 10 sản phẩm). Muốn đúng 20 **đơn**, Hibernate không thể dùng LIMIT của DB, nên tải hết rồi gom và cắt trong JVM.
+
+### Phát hiện sớm và chặn
+1. **Đọc cảnh báo**: HHH90003004 nghĩa là đang phân trang trong bộ nhớ. Đừng bỏ qua.
+2. **Bật cờ chặn**: {{hibernate.query.fail_on_pagination_over_collection_fetch=true}} để Hibernate ném {{PaginationOverCollectionFetchException}} thay vì âm thầm tải hết. Đặt ở mọi môi trường.
+3. **Giới hạn page size**: chặn pageSize lớn ở tầng API.
+4. **Query timeout** và **statistics** để thấy số dòng trả về.
+5. **Kiểm tra SQL log**: câu có join collection mà thiếu LIMIT/OFFSET là dấu hiệu.
+
+### Các cách sửa
+| Cách | Cơ chế | Khi nào dùng |
+|---|---|---|
+| Two-query (id trang trước, fetch theo IN) | Query 1 lấy id có LIMIT; query 2 fetch collection theo danh sách id | Đa số trường hợp |
+| DTO projection phẳng | Join và trả DTO, không load collection entity | Chỉ cần hiển thị, không cần entity |
+| Subquery lọc theo collection | Lọc root bằng id trong subquery | Khi điều kiện nằm trên collection |
+| Keyset pagination | WHERE (created_at, id) < (?, ?) thay OFFSET | Bảng lớn, chia sẻ link "trang sau" |
+| Bỏ fetch collection ở trang danh sách | Chỉ load collection ở màn chi tiết | Danh sách không cần con |
+
+Điểm chung của two-query: **trang id trước, fetch collection sau**, sắp xếp lại theo thứ tự id, và **count query riêng** không join collection.
+
+### Bẫy về count query
+- {{Page}} của Spring Data sinh thêm query đếm. Nếu query gốc có join collection, query đếm có thể sai hoặc rất nặng.
+- Nếu UI không cần "trang 5/120", dùng {{Slice}} hoặc trả {{hasNext}} để khỏi count.
+- ORDER BY phải ổn định (thêm id làm tie-breaker) để phân trang không trùng/mất dòng.
+
+### Ví dụ đời thực
+API danh sách đơn hàng dùng {{@EntityGraph}} + {{Pageable}}, trang 20, mỗi đơn 15 sản phẩm. Tới trang 10.000, response hơn 30 giây rồi OOM; log có HHH90003004; heap dump cho thấy Order chiếm 4 GB. Chuyển sang two-query: query 1 lấy 20 id (LIMIT, ORDER BY created_at desc, id desc), query 2 fetch items theo IN, query 3 count riêng. Trang 10.000 phản hồi dưới 1 giây, heap ổn định. Bật thêm cờ fail_on_pagination_over_collection_fetch để không tái phạm.
+
+### Trả lời mẫu khi phỏng vấn
+"HHH90003004 nói rằng Hibernate không thể áp LIMIT của SQL khi câu có join fetch collection, vì join nhân số dòng và LIMIT sẽ cắt sai số đơn. Nó chọn tải toàn bộ kết quả về bộ nhớ rồi phân trang, nên trang càng sâu càng chậm và dễ OOM. Tôi phát hiện bằng cảnh báo này, bật hibernate.query.fail_on_pagination_over_collection_fetch để lỗi bị ném sớm, giới hạn page size và đặt query timeout. Cách sửa chuẩn là two-query: query 1 lấy id theo trang với LIMIT và ORDER BY ổn định, query 2 fetch collection theo danh sách id, rồi sắp xếp lại; count query tách riêng. Nếu chỉ cần hiển thị, tôi dùng DTO projection; nếu bảng lớn, tôi dùng keyset thay offset."
+
+> Senior tip: join fetch to-one thì phân trang an toàn; join fetch to-many thì không bao giờ kết hợp với LIMIT/OFFSET. Nhớ điều này để không phải debug OOM lúc 2 giờ sáng.`,
+  follow: [
+    'Vì sao join fetch to-one an toàn khi phân trang còn to-many thì không?',
+    'Cờ hibernate.query.fail_on_pagination_over_collection_fetch giúp gì và nên đặt ở đâu?',
+    'Khi nào nên dùng Slice thay Page để tránh query đếm tổng?'
+  ],
+  tags: ['pagination', 'JOIN FETCH', 'HHH90003004', 'in-memory pagination', 'performance']
+},
+{
+  id: 'jpa-063',
+  topic: 'jpa',
+  level: 'lead',
+  q: 'Bạn dùng @SQLRestriction("deleted = false") cho soft delete trên entity và trên quan hệ @OneToMany. Giải thích @SQLRestriction áp dụng ở đâu (entity, collection, association), khác @Where (đã deprecated từ 6.3) thế nào, và những hành vi ẩn gây bug.',
+  a: `**Tóm tắt:** {{@SQLRestriction}} (Hibernate 6.3+, thay {{@Where}}) thêm một điều kiện SQL vào **mọi câu SELECT** mà Hibernate sinh cho entity đó: {{find}}, join, hay khi nạp collection. Đặt trên entity: mọi truy cập đều lọc dòng đã xoá. Đặt trên collection {{@OneToMany}}: phần tử con bị lọc ngay trong câu join, nên collection chỉ chứa phần tử "còn sống". Khác @Where (cũ) chủ yếu ở tên và phạm vi áp dụng; từ 6.3 @Where bị deprecated.
+
+### Cơ chế: restriction được inject vào WHERE
+~~~java
+@Entity
+@SQLDelete(sql = "UPDATE customer SET deleted = true WHERE id = ?")
+@SQLRestriction("deleted = false")
+@Where(clause = "deleted = false")   // cũ, deprecated từ 6.3 — không dùng nữa
+class Customer {
+    @Id Long id;
+    String email;
+    boolean deleted;
+}
+~~~
+- Thuộc tính {{org.hibernate.annotations.SQLRestriction}}.
+- Mỗi khi Hibernate sinh SELECT cho {{Customer}}, nó tự thêm {{AND deleted = false}}.
+- @SQLDelete biến {{remove()}} thành UPDATE (soft delete); @SQLRestriction lọc khi đọc.
+
+### Đặt ở ba vị trí
+1. **Trên entity**: mọi SELECT entity đó đều lọc. Đây là cách phổ biến nhất.
+2. **Trên collection @OneToMany**: điều kiện áp cho phần tử con trong câu join. Ví dụ đơn hàng chỉ nạp các dòng hàng chưa xoá.
+3. **Trên association @ManyToOne**: điều kiện áp cho entity đích khi nạp qua association đó (ít dùng, dễ gây nhầm lẫn).
+
+### Khác @Where
+- @Where là tên cũ, deprecated từ 6.3; @SQLRestriction là tên mới, khuyên dùng.
+- @SQLRestriction có thể đặt trên entity, collection và association; @Where chủ yếu trên entity/collection.
+- Khi migrate, đổi tên là đủ trong đa số trường hợp, nhưng phải test lại hành vi collection.
+
+### Những hành vi ẩn gây bug
+1. **find() trả null cho dòng đã xoá**: {{em.find(Customer.class, 5)}} không trả entity "deleted" mà trả null. Ai đó kiểm tra {{!= null}} tưởng "không tồn tại" thay vì "đã xoá".
+2. **getReference() trả proxy**: khi truy cập field, nếu dòng bị lọc có thể ném {{EntityNotFoundException}} thay vì trả null.
+3. **Native query và báo cáo không lọc**: restriction chỉ áp cho SELECT do Hibernate sinh. SQL tay, view, ETL phải tự thêm {{deleted = false}}.
+4. **Unique index tính cả dòng đã xoá**: khách đã xoá vẫn chiếm email → partial unique index {{WHERE deleted = false}}.
+5. **Tương tác với orphanRemoval**: nếu dùng @SQLDelete, {{remove()}} thành UPDATE; gỡ phần tử khỏi collection vẫn "xoá mềm" con. Kiểm tra kỹ để không mất dữ liệu.
+6. **Cache**: restriction áp lúc query; nhưng các đường đọc khác (native, cache) có thể thấy dòng đã xoá. Cần nhất quán.
+7. **Không áp cho @Subselect**: nếu entity map bằng @Subselect, restriction trên entity có thể không có tác dụng như mong đợi.
+
+### Test bắt buộc
+~~~java
+@Test
+void findSoftDeletedReturnsNull() {
+    customer.setDeleted(true);
+    em.flush();
+    em.clear();                       // tránh L1 trả entity cũ
+    assertNull(em.find(Customer.class, id));
+}
+
+@Test
+void collectionHidesDeletedChildren() {
+    order.getItems().forEach(i -> i.setDeleted(true));
+    em.flush(); em.clear();
+    assertEquals(0, em.find(Order.class, orderId).getItems().size());
+}
+~~~
+Luôn {{em.clear()}} giữa các bước để không bị L1 che mất hành vi.
+
+### Bảng vị trí và tác dụng
+| Vị trí | Tác dụng | Rủi ro |
+|---|---|---|
+| Entity | Lọc ở mọi SELECT | find trả null, báo cáo phải tự lọc |
+| Collection | Lọc phần tử con khi nạp | unique/FK vẫn tính dòng đã xoá |
+| Association | Lọc entity đích | Dễ hiểu nhầm là null |
+
+### Ví dụ đời thực
+Hệ thống dùng {{@SQLRestriction("deleted = false")}} trên Customer. Ba tuần sau go-live, 2% khách đăng ký lại bằng email cũ bị lỗi "email đã tồn tại" vì unique index vẫn tính dòng đã xoá. Đồng thời, một báo cáo SQL thuần cộng cả đơn của khách đã xoá nên lệch số với màn hình quản trị. Ngoài ra, một endpoint {{findById}} trả 404 cho khách đã xoá, làm CSKH tưởng dữ liệu mất. Sửa: partial unique index, view {{active_customer}} cho báo cáo, và trả mã lỗi riêng "đã xoá" thay vì 404.
+
+### Trả lời mẫu khi phỏng vấn
+"@SQLRestriction thêm điều kiện SQL vào mọi SELECT mà Hibernate sinh cho entity, nên find, join và nạp collection đều lọc dòng đã xoá. Tôi đặt nó trên entity cho soft delete, và trên collection khi cần lọc phần tử con. Nó thay @Where đã deprecated từ 6.3. Hành vi ẩn cần nhớ: find trả null cho dòng đã xoá chứ không phải entity có cờ, getReference có thể ném EntityNotFoundException, native query và báo cáo không tự lọc, unique index vẫn tính dòng đã xoá nên phải dùng partial index, và orphanRemoval vẫn hoạt động trên đường soft delete. Tôi luôn viết test có em.clear để L1 không che hành vi, và thống nhất một view chuẩn cho báo cáo."
+
+> Senior tip: trước khi bật @SQLRestriction cho một bảng, hãy liệt kê mọi nơi đọc bảng đó ngoài Hibernate — báo cáo, ETL, service khác, API nội bộ. Đó mới là nơi sinh bug, không phải code JPA. Và nhớ: soft delete không đáp ứng yêu cầu xoá dữ liệu cá nhân, phải ẩn danh hoặc xoá thật phần PII.`,
+  follow: [
+    'Vì sao find() trả null thay vì entity có cờ deleted khi dùng @SQLRestriction?',
+    'Unique index và @SQLRestriction xung đột nhau thế nào, và xử lý ra sao?',
+    '@SQLRestriction có áp dụng cho native query và báo cáo không, vì sao?'
+  ],
+  tags: ['@SQLRestriction', 'soft delete', 'Hibernate 6.3', 'orphanRemoval', 'partial index']
+},
 );
