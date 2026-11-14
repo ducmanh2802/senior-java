@@ -1676,4 +1676,278 @@ In conclusion, learning a foreign language early can be beneficial because it cr
   ],
   tags: ["hotel", "travel"]
 },
+{
+  id: "toeic-s4-007",
+  part: "s4",
+  info: `Hybrid Work Policy — Employee Guide
+Effective from: Monday, 1 July
+
+Eligibility: employees with at least six months of service
+Office days: minimum two days per week (team decides which days)
+Remote days: up to three days, must be agreed with manager
+Core hours: 10:00 a.m. to 3:00 p.m. (available on chat and email)
+Equipment: company provides one monitor, keyboard, and mouse for home office
+Request form: submit via HR portal at least five working days before change
+
+Please keep your calendar updated so colleagues know where you are.`,
+  questions: [
+    "How many days per week must eligible employees work from the office?",
+    "What equipment does the company provide for the home office?",
+    "Please tell me the core hours, the request process, and who decides the office days."
+  ],
+  samples: [
+    "Eligible employees need to come to the office at least two days each week. The exact days are decided together with the team, so it can be Monday and Wednesday or Tuesday and Thursday depending on what works best.",
+    "The company provides one monitor, a keyboard, and a mouse for your home office. If you need anything else, you should talk to your manager and submit a request through the HR portal.",
+    "Core hours are from ten in the morning to three in the afternoon, when everyone must be reachable on chat and email. The team decides which days are office days, and if you want to change your schedule you need to fill in the request form on the HR portal at least five working days in advance."
+  ],
+  tips: [
+    "Câu trả lời nên dùng các cụm như at least, up to, agreed with để thể hiện sự linh hoạt của chính sách.",
+    "Khi nói về quy trình, hãy dùng must submit, at least five working days before — đây là ngôn ngữ chính sách chuẩn.",
+    "Từ vựng hay gặp: eligibility, core hours, remote work, home office setup, HR portal, calendar sync."
+  ],
+  tags: ["hybrid work", "policy"]
+},
+{
+  id: "toeic-s4-008",
+  part: "s4",
+  info: `IT Helpdesk — Support Request Form
+Service hours: Monday to Friday, 8:00 a.m. to 6:00 p.m.
+Emergency line (system down): 555-0199 (24 hours)
+
+How to submit a ticket
+1. Open the IT Portal at it-support.company.com
+2. Choose category: Hardware, Software, Access, or Network
+3. Fill in: device name, error message, and when it started
+4. Attach a screenshot if possible
+5. Click Submit — you will receive a ticket number by email
+
+Response targets
+- Critical (system down): within 1 hour
+- High (cannot work): within 4 hours
+- Normal (general question): within 1 business day
+
+For password reset, use the self-service link on the login page.`,
+  questions: [
+    "What is the phone number for system emergencies?",
+    "What information must you provide when submitting a ticket?",
+    "Please tell me the three priority levels and their response times."
+  ],
+  samples: [
+    "For system emergencies, you should call 555-0199. This line is available twenty-four hours a day, even outside normal service hours.",
+    "You need to choose a category, write the device name, describe the error message, and say when the problem started. If you can, attach a screenshot so the team can see exactly what is happening.",
+    "There are three levels. Critical issues like a system down get a response within one hour. High priority, when you cannot work, is within four hours. Normal requests such as general questions are answered within one business day."
+  ],
+  tips: [
+    "Luyện đọc số điện thoại theo từng cụm: five five five, zero one nine nine.",
+    "Câu ba cần liệt kê đúng ba mức độ và thời gian; hãy dùng within one hour, within four hours, within one business day.",
+    "Từ vựng: ticket, category, screenshot, priority, response time, self-service, password reset."
+  ],
+  tags: ["IT support", "helpdesk"]
+},
+{
+  id: "toeic-s4-009",
+  part: "s4",
+  info: `Business Travel Expense Reimbursement
+Submit within: 30 calendar days after trip ends
+Required documents: original receipts, boarding passes, and approved travel request form
+
+Daily limits (per person)
+- Meals: breakfast $15, lunch $20, dinner $35
+- Local transport: $25 (taxi, bus, train)
+- Hotel: up to $180 per night (major cities), $130 (other areas)
+
+Non-reimbursable: alcohol, minibar, personal entertainment, traffic fines
+Approval: manager signs, then Finance processes within 10 business days
+Payment: direct deposit to salary account
+
+Contact: Finance team at finance@company.com or extension 224.`,
+  questions: [
+    "What is the deadline for submitting expense claims?",
+    "How much can you claim for dinner per day?",
+    "Please tell me the daily limits for meals and hotel, and what expenses are not reimbursed."
+  ],
+  samples: [
+    "You must submit your claim within thirty calendar days after the trip ends. Make sure you keep all original receipts and boarding passes, plus the approved travel request form.",
+    "The daily limit for dinner is thirty-five dollars. Breakfast is fifteen and lunch is twenty, so the total for meals per day is seventy dollars if you claim all three.",
+    "For meals, breakfast is fifteen dollars, lunch twenty, and dinner thirty-five. Hotel is up to one hundred eighty dollars per night in major cities, or one hundred thirty in other areas. Alcohol, minibar items, personal entertainment, and traffic fines are not reimbursed."
+  ],
+  tips: [
+    "Số tiền đọc rõ từng loại: fifteen dollars, twenty dollars, thirty-five dollars, one hundred eighty dollars.",
+    "Câu ba cần bao gồm cả meals và hotel, đồng thời nêu rõ non-reimbursable items — đây là thông tin quan trọng trong chính sách chi tiêu.",
+    "Từ vựng: reimbursement, calendar days, original receipts, boarding pass, daily limit, non-reimbursable, direct deposit."
+  ],
+  tags: ["expense", "travel"]
+},
+{
+  id: "toeic-s4-010",
+  part: "s4",
+  info: `New Employee Onboarding Schedule — Week One
+Monday, 12 August
+9:00 – 10:00  Welcome and company overview (Main Hall, HR Director)
+10:15 – 11:15  Benefits and payroll (Room 101, Benefits Team)
+11:30 – 12:30  IT setup: laptop, email, VPN (Computer Lab 1)
+1:30 – 2:30 p.m.  Lunch with buddy and team
+2:30 – 3:30 p.m.  Office tour and security badge
+
+Tuesday, 13 August
+9:00 – 11:00  Product training (Session 1)
+11:15 – 12:00  Compliance and data privacy (Room 205)
+1:00 – 3:00 p.m.  Product training (Session 2)
+
+Wednesday to Friday: team-specific training and shadowing.
+All sessions are mandatory. Please arrive five minutes early.`,
+  questions: [
+    "Where does the welcome session take place on Monday?",
+    "What time is the IT setup session on the first day?",
+    "Please tell me the schedule for Monday and Tuesday, including times, topics, and locations."
+  ],
+  samples: [
+    "The welcome session is in the Main Hall, and it is led by the HR Director. It starts at nine and finishes at ten o'clock.",
+    "The IT setup session is from eleven thirty to twelve thirty, in Computer Lab 1. You will get your laptop, set up email, and configure the VPN there.",
+    "On Monday, the day starts at nine with welcome and company overview in the Main Hall. Then benefits and payroll at ten fifteen in Room 101. IT setup is at eleven thirty in Computer Lab 1. After lunch with your buddy, there is an office tour at two thirty. On Tuesday, product training session one is from nine to eleven, compliance at eleven fifteen in Room 205, and product training session two from one to three in the afternoon."
+  ],
+  tips: [
+    "Khi tóm tắt lịch trình nhiều buổi, hãy nhóm theo ngày: On Monday, On Tuesday — sau đó mới kể giờ, chủ đề, phòng.",
+    "Luyện các cụm thời gian: ten fifteen, eleven thirty, one p.m., two thirty; và nối bằng then, after that, followed by.",
+    "Từ vựng: onboarding, mandatory, buddy, shadowing, compliance, data privacy, VPN, session."
+  ],
+  tags: ["onboarding", "training"]
+},
+{
+  id: "toeic-s4-011",
+  part: "s4",
+  info: `Greenfield Bank — Personal Loan Offer
+Loan amount: $5,000 to $50,000
+Interest rate: from 6.9% per year (fixed)
+Term: 12 to 60 months
+No origination fee, no prepayment penalty
+
+Example: $20,000 over 36 months at 7.5% → monthly payment $621.50, total interest $2,374
+
+Eligibility: age 21 to 65, minimum income $30,000 per year, employed at least 6 months
+Documents needed: ID, last 3 pay slips, bank statement (3 months)
+Apply online at greenfieldbank.com/loan or visit any branch
+Decision within 24 hours. Funds transferred next business day after signing.`,
+  questions: [
+    "What is the minimum annual income required to apply?",
+    "How long does it take to get a decision on the application?",
+    "Please tell me the loan amount range, interest rate, and an example of monthly payment."
+  ],
+  samples: [
+    "You need a minimum income of thirty thousand dollars per year. You also have to be between twenty-one and sixty-five, and employed for at least six months.",
+    "The bank gives a decision within twenty-four hours. After you sign the agreement, the money is transferred on the next business day.",
+    "You can borrow from five thousand to fifty thousand dollars. The interest rate starts at six point nine percent per year, fixed. For example, twenty thousand dollars over thirty-six months at seven point five percent gives a monthly payment of six hundred twenty-one dollars fifty cents."
+  ],
+  tips: [
+    "Đọc phần trăm đúng: six point nine percent, seven point five percent — đừng đọc six point nine per cent.",
+    "Câu ba cần bao gồm range, rate, và ví dụ cụ thể; đây là thông tin khách hàng quan tâm nhất khi so sánh vay.",
+    "Từ vựng: origination fee, prepayment penalty, eligibility, pay slip, bank statement, fixed rate, monthly payment."
+  ],
+  tags: ["bank", "loan"]
+},
+{
+  id: "toeic-s4-012",
+  part: "s4",
+  info: `City Hospital — Outpatient Appointment Guide
+Booking: call 555-0133 (7:00 a.m. to 7:00 p.m.) or use the patient portal
+Walk-in hours: Monday to Friday, 8:00 a.m. to 11:00 a.m. (limited slots)
+
+What to bring: health insurance card, photo ID, referral letter (if any), list of current medicines
+Arrival: check in at the kiosk 15 minutes before your appointment
+Cancellation: at least 24 hours notice, otherwise a $25 fee applies
+
+Departments and typical wait times
+- General Practice: 1 to 2 weeks
+- Cardiology: 3 to 4 weeks
+- Dermatology: 4 to 6 weeks
+- Orthopedics: 2 to 3 weeks
+
+Prescription refill: request via portal or call pharmacy at 555-0144 (48 hours notice).`,
+  questions: [
+    "What are the walk-in hours for outpatient visits?",
+    "How much is the fee if you cancel without 24 hours notice?",
+    "Please tell me the typical wait times for Cardiology and Dermatology, and what documents you need to bring."
+  ],
+  samples: [
+    "Walk-in hours are Monday to Friday, from eight to eleven in the morning. However, slots are limited, so it is better to book in advance if you can.",
+    "If you cancel without giving at least twenty-four hours notice, there is a twenty-five dollar fee. You can cancel by calling the booking line or using the patient portal.",
+    "For Cardiology, the typical wait is three to four weeks. For Dermatology, it is four to six weeks. You should bring your health insurance card, a photo ID, a referral letter if you have one, and a list of any medicines you are currently taking."
+  ],
+  tips: [
+    "Câu trả lời nên đọc rõ tuần: one to two weeks, three to four weeks — không đọc one two weeks.",
+    "Khi nói về phí phạt, dùng there is a twenty-five dollar fee hoặc a twenty-five dollar fee applies.",
+    "Từ vựng: outpatient, walk-in, referral letter, prescription refill, kiosk, cancellation fee, patient portal."
+  ],
+  tags: ["hospital", "appointment"]
+},
+{
+  id: "toeic-s4-013",
+  part: "s4",
+  info: `Metro Transit — Monthly Pass Options
+Adult monthly pass: $85 (unlimited rides on bus and subway)
+Student monthly pass: $55 (with valid student ID)
+Senior monthly pass: $40 (age 65+, with ID)
+Single ride: $2.75 (bus), $3.00 (subway)
+Day pass: $12.00 (unlimited rides for one calendar day)
+
+Purchase: ticket machines at stations, mobile app, or customer center at Central Station
+Auto-renew: available on the app, charged on the 1st of each month
+Lost card: $5 replacement fee, balance transferred to new card
+Refund: only for unused full months, $5 processing fee applies`,
+  questions: [
+    "How much does a student monthly pass cost?",
+    "Where can you buy a monthly pass?",
+    "Please tell me the prices of the adult, student, and senior monthly passes, and the single ride fares."
+  ],
+  samples: [
+    "A student monthly pass costs fifty-five dollars. You need to show a valid student ID when you buy it and when you use it.",
+    "You can buy it at ticket machines in any station, on the mobile app, or at the customer center at Central Station.",
+    "The adult monthly pass is eighty-five dollars for unlimited bus and subway rides. The student pass is fifty-five dollars with a student ID. The senior pass is forty dollars for people sixty-five and older. A single bus ride is two dollars seventy-five, and a single subway ride is three dollars."
+  ],
+  tips: [
+    "Đọc giá tiền đúng: eighty-five dollars, fifty-five dollars, forty dollars, two dollars seventy-five, three dollars.",
+    "Câu ba cần so sánh ba loại monthly pass và cả single ride; dùng unlimited rides để nhấn mạnh lợi ích của pass.",
+    "Từ vựng: monthly pass, single ride, day pass, auto-renew, replacement fee, processing fee, valid ID."
+  ],
+  tags: ["transit", "transport"]
+},
+{
+  id: "toeic-s4-014",
+  part: "s4",
+  info: `Sunrise Hotel — Conference Package
+Silver package: $120 per person (full day)
+- Meeting room (up to 20 people), projector, screen, flip chart
+- Morning coffee, lunch buffet, afternoon tea
+- Free Wi-Fi, parking for 10 cars
+
+Gold package: $160 per person (full day)
+- Everything in Silver, plus: dedicated technician, video conferencing kit
+- Upgraded lunch with three main courses, premium coffee break
+- Parking for 20 cars, welcome drink on arrival
+
+Platinum package: $220 per person (full day)
+- Everything in Gold, plus: separate breakout room, live streaming support
+- Customized menu, premium open bar (4:00 to 6:00 p.m.)
+- Parking for 30 cars, VIP lounge access
+
+All packages include: notepads, pens, bottled water
+Booking: contact events@sunrisehotel.com or call 555-0177 (minimum 10 people)
+Cancellation: free up to 14 days before, 50% within 7 days, no refund within 48 hours.`,
+  questions: [
+    "What is included in the Silver package lunch?",
+    "How many cars can park for free with the Gold package?",
+    "Please tell me the price and the main differences between the three conference packages."
+  ],
+  samples: [
+    "The Silver package includes a lunch buffet. It also has morning coffee and afternoon tea, so you get food and drinks throughout the day.",
+    "With the Gold package, parking is free for twenty cars. The Silver package only has ten, and Platinum has thirty.",
+    "The Silver package is one hundred twenty dollars per person and includes a meeting room for up to twenty people, a projector, lunch buffet, and parking for ten cars. The Gold package is one hundred sixty dollars and adds a dedicated technician, video conferencing kit, upgraded lunch, and parking for twenty cars. The Platinum package is two hundred twenty dollars and adds a breakout room, live streaming, customized menu, open bar, and parking for thirty cars."
+  ],
+  tips: [
+    "Khi so sánh các gói, hãy dùng Silver includes ..., Gold adds ..., Platinum adds ... — cấu trúc này giúp người nghe thấy rõ sự nâng cấp.",
+    "Đọc giá: one hundred twenty, one hundred sixty, two hundred twenty dollars per person.",
+    "Từ vựng: conference package, breakout room, video conferencing kit, dedicated technician, open bar, cancellation policy, VIP lounge."
+  ],
+  tags: ["hotel", "conference"]
+},
 );
