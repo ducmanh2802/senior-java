@@ -5542,6 +5542,420 @@ Câu hỏi rất hay gặp ở vòng Senior: "Entity JPA nên viết equals/hash
 > Senior tip: HashSet/HashMap không "kiểm tra" phần tử bị đổi hash — nó im lặng bỏ qua. Vì vậy mọi bug dạng này đều không có stack trace; chỉ có dữ liệu sai và một so sánh đúng/sai ở tầng nghiệp vụ. Khi thấy "thêm vào tập rồi mà contains vẫn false", hãy nghĩ ngay tới mutable field trong hashCode, đừng đi tìm lỗi concurrency.`,
   related: ['core-029', 'core-032', 'jpa-009', 'collections-016', 'collections-027'],
   tags: ['equals', 'hashCode', 'JPA entity', 'HashSet', 'mutable key', 'Lombok @Data']
+},
+{
+  id: 'bug-028',
+  title: 'Tồn kho: xoá cache trước khi ghi DB làm tồn kho cũ "sống lại"',
+  domain: 'Thương mại điện tử / Tồn kho',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 30,
+  story: `**Bối cảnh dự án:** Hệ thống bán lẻ đa kênh (Spring Boot 3, 6 pod). Service {{inventory-service}} tra cứu **tồn kho** (số lượng còn lại của một SKU — đơn vị hàng hoá, ví dụ "áo thun đỏ size L") cho toàn bộ website và app. Mỗi lần đọc tồn kho đi theo mẫu **cache-aside** (còn gọi là lazy loading / đọc-vào-cache): nếu cache có thì trả luôn, nếu không thì đọc DB rồi nạp vào cache. Khi kho nhập thêm hàng, service gọi {{updateStock(sku, newQty)}} để cập nhật số lượng mới.
+
+**Sự cố:** Trong đợt nhập hàng sáng 08/11, nhiều SKU hiển thị **tồn kho = 0** trên website suốt khoảng 30 phút, dù DB đã ghi số lượng mới (ví dụ 120). Hệ quả: **2.907 đơn bị từ chối oan** ("hết hàng"), và đối soát cuối ngày phát hiện **1.482 entry cache có giá trị khác DB** — tất cả đều được tạo **ngay trong cửa sổ cập nhật** (giữa lúc ghi cache và ghi DB).
+
+**Nhiệm vụ của bạn:**
+1. Đọc {{InventoryService.updateStock}} và log bên dưới, tìm vì sao một entry cache cũ lại xuất hiện **sau khi** đã cập nhật.
+2. Sửa thứ tự thao tác để một lần đọc đồng thời không "hồi sinh" giá trị cũ vào cache.
+3. Bấm **Chạy test**: test dùng hai cổng chặn (latch — cơ chế khiến các luồng chờ nhau tại một điểm) để ép một lần đọc xen kẽ đúng vào cửa sổ cập nhật, tái hiện sự cố một cách xác định.`,
+  artifacts: [
+    { name: 'inventory-service.log', lang: 'text', content: `# Hai luồng chạy song song trên hai pod khác nhau, cùng SKU-1024.
+2026-11-08 10:02:11.204 DEBUG [http-nio-8080-exec-31] InventoryService : updateStock sku=SKU-1024 newQty=120 -> evict cache -> write DB
+2026-11-08 10:02:11.207 DEBUG [http-nio-8080-exec-42] InventoryService : getStock sku=SKU-1024 cache MISS -> read DB -> qty=0 -> cache put 0
+2026-11-08 10:02:11.211 DEBUG [http-nio-8080-exec-31] InventoryService : updateStock sku=SKU-1024 DB write done (120)
+2026-11-08 10:02:11.230 DEBUG [http-nio-8080-exec-55] InventoryService : getStock sku=SKU-1024 cache HIT -> qty=0      <- DB=120 nhưng cache trả 0
+2026-11-08 10:02:11.240 WARN  [http-nio-8080-exec-55] OrderService       : SKU-1024 insufficient stock (0) -> reject order ORD-99213
+2026-11-08 10:02:12.880 INFO  [scheduler]               InventoryService : cache entry SKU-1024 expires (TTL 30m)` },
+    { name: 'stale-cache-report.txt', lang: 'text', content: `STALE CACHE AUDIT 2026-11-08 12:00 ICT
+Cache entries whose value != DB            : 1,482
+...of which created inside update window   : 1,482 (100%)
+Distinct SKUs affected                     : 312
+Orders rejected wrongly                    : 2,907
+Oversell incidents                         : 0
+Average staleness (until TTL expiry)       : 29m 41s` },
+  ],
+  starter: `// ===== Hạ tầng (mô phỏng DB + cache, KHÔNG cần sửa) =====
+class FakeStockStore {
+    final Map<String, Integer> db = new ConcurrentHashMap<>();     // "DB": nguồn sự thật
+    final Map<String, Integer> cache = new ConcurrentHashMap<>();  // "cache": bản sao tạm
+    int dbReads = 0;
+
+    // Cổng để test điều khiển thời điểm chạy xen kẽ (xem test "khong_co_du_lieu_cu").
+    volatile CountDownLatch firstMutationDone;   // service báo "đã xong thao tác ghi ĐẦU TIÊN"
+    volatile CountDownLatch writerMayContinue;   // test bật để service làm tiếp thao tác thứ hai
+    private final AtomicBoolean firstMutationPassed = new AtomicBoolean(false);
+
+    // Chỉ thao tác GHI đầu tiên của writer mới dừng ở cổng; thao tác thứ hai và thao tác của reader không bị chặn.
+    private void gateAfterFirstMutation() {
+        if (firstMutationPassed.compareAndSet(false, true)) {
+            CountDownLatch done = firstMutationDone;
+            CountDownLatch go = writerMayContinue;
+            if (done != null) done.countDown();
+            if (go != null) { try { go.await(2, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
+        }
+    }
+
+    Integer readDb(String sku)         { dbReads++; return db.get(sku); }
+    void writeDb(String sku, int qty)  { db.put(sku, qty); gateAfterFirstMutation(); }
+    Integer readCache(String sku)      { return cache.get(sku); }
+    void writeCache(String sku, int qty) { cache.put(sku, qty); }
+    void evictCache(String sku)        { cache.remove(sku); gateAfterFirstMutation(); }
+}
+
+// ===== Code cần sửa =====
+class InventoryService {
+    private final FakeStockStore store;
+    InventoryService(FakeStockStore store) { this.store = store; }
+
+    // Đọc tồn kho theo cache-aside: cache trước, miss thì đọc DB rồi nạp lại cache.
+    int getStock(String sku) {
+        Integer cached = store.readCache(sku);
+        if (cached != null) return cached;
+        int qty = store.readDb(sku);
+        store.writeCache(sku, qty);
+        return qty;
+    }
+
+    // Nhập/xuất kho xong: cập nhật tồn kho mới.
+    void updateStock(String sku, int newQty) {
+        store.evictCache(sku);       // BUG: xoá cache TRƯỚC
+        store.writeDb(sku, newQty);  // rồi mới ghi DB
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) throws Exception {
+        // 1. Cập nhật đơn giản: sau update, đọc phải ra giá trị mới.
+        FakeStockStore s1 = new FakeStockStore();
+        s1.db.put("SKU-A", 0);
+        InventoryService inv1 = new InventoryService(s1);
+        inv1.updateStock("SKU-A", 120);
+        check("cap_nhat_don_gian", inv1.getStock("SKU-A") == 120,
+            "sau update phải đọc được 120, thực tế " + inv1.getStock("SKU-A") + " (db=" + s1.db.get("SKU-A") + ")");
+
+        // 2. Cache-aside: lần đầu đọc DB, lần sau lấy từ cache.
+        FakeStockStore s2 = new FakeStockStore();
+        s2.db.put("SKU-B", 55);
+        InventoryService inv2 = new InventoryService(s2);
+        int v1 = inv2.getStock("SKU-B");
+        int v2 = inv2.getStock("SKU-B");
+        check("cache_aside_doc_mot_lan", v1 == 55 && v2 == 55 && s2.dbReads == 1,
+            "hai lần đọc cùng giá trị và DB chỉ đọc 1 lần, thực tế v1=" + v1 + " v2=" + v2 + " dbReads=" + s2.dbReads);
+
+        // 3. Tái hiện sự cố: đọc xen kẽ đúng cửa sổ cập nhật -> cache không được giữ giá trị cũ.
+        FakeStockStore s3 = new FakeStockStore();
+        s3.db.put("SKU-C", 0);        // DB đang là 0
+        CountDownLatch firstMutationDone = new CountDownLatch(1);
+        CountDownLatch writerMayContinue = new CountDownLatch(1);
+        s3.firstMutationDone = firstMutationDone;
+        s3.writerMayContinue = writerMayContinue;
+        InventoryService inv3 = new InventoryService(s3);
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        // Writer: cập nhật tồn kho 0 -> 120
+        Future<?> wf = pool.submit(() -> { try { inv3.updateStock("SKU-C", 120); } catch (Exception e) { /* bỏ qua */ } });
+        // Chờ writer làm xong thao tác ghi ĐẦU TIÊN (nó dừng ngay trước thao tác thứ hai)
+        boolean writerStarted = firstMutationDone.await(3, TimeUnit.SECONDS);
+        // Reader: đọc tồn kho NGAY trong cửa sổ đó
+        Future<Integer> rf = pool.submit(() -> inv3.getStock("SKU-C"));
+        int readDuringWindow = rf.get(3, TimeUnit.SECONDS);
+        // Cho writer làm tiếp thao tác thứ hai rồi kết thúc
+        writerMayContinue.countDown();
+        wf.get(3, TimeUnit.SECONDS);
+
+        int after = inv3.getStock("SKU-C");
+        check("khong_co_du_lieu_cu",
+            writerStarted && readDuringWindow == 120 && after == 120 && s3.db.get("SKU-C") == 120,
+            "cửa sổ cập nhật không được để lộ/khôi phục tồn kho cũ: đọc-trong-cửa-sổ=" + readDuringWindow
+                + ", đọc-sau-cập-nhật=" + after + ", db=" + s3.db.get("SKU-C"));
+
+        pool.shutdownNow();
+        System.out.println("RESULT " + passed + "/" + total);
+        System.exit(0);
+    }
+}`,
+  reference: `// ===== Hạ tầng (mô phỏng DB + cache, KHÔNG cần sửa) =====
+class FakeStockStore {
+    final Map<String, Integer> db = new ConcurrentHashMap<>();
+    final Map<String, Integer> cache = new ConcurrentHashMap<>();
+    int dbReads = 0;
+    volatile CountDownLatch firstMutationDone;
+    volatile CountDownLatch writerMayContinue;
+    private final AtomicBoolean firstMutationPassed = new AtomicBoolean(false);
+
+    private void gateAfterFirstMutation() {
+        if (firstMutationPassed.compareAndSet(false, true)) {
+            CountDownLatch done = firstMutationDone;
+            CountDownLatch go = writerMayContinue;
+            if (done != null) done.countDown();
+            if (go != null) { try { go.await(2, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
+        }
+    }
+
+    Integer readDb(String sku)         { dbReads++; return db.get(sku); }
+    void writeDb(String sku, int qty)  { db.put(sku, qty); gateAfterFirstMutation(); }
+    Integer readCache(String sku)      { return cache.get(sku); }
+    void writeCache(String sku, int qty) { cache.put(sku, qty); }
+    void evictCache(String sku)        { cache.remove(sku); gateAfterFirstMutation(); }
+}
+
+// ===== Code đã sửa =====
+class InventoryService {
+    private final FakeStockStore store;
+    InventoryService(FakeStockStore store) { this.store = store; }
+
+    int getStock(String sku) {
+        Integer cached = store.readCache(sku);
+        if (cached != null) return cached;
+        int qty = store.readDb(sku);
+        store.writeCache(sku, qty);
+        return qty;
+    }
+
+    void updateStock(String sku, int newQty) {
+        store.writeDb(sku, newQty);  // FIX: ghi DB (nguồn sự thật) TRƯỚC
+        store.evictCache(sku);       // rồi mới xoá cache
+    }
+}`,
+  hints: [
+    'Nhìn vào log: exec-42 đọc DB ra qty=0 rồi cache put 0, và dòng này xảy ra SAU khi exec-31 đã evict cache nhưng TRƯỚC khi exec-31 ghi DB (dòng .204 evict, .207 reader đọc, .211 writer ghi DB). Vậy reader đã đọc giá trị CŨ và nạp nó trở lại cache.',
+    'Bài này là bài toán "thứ tự thao tác" kinh điển của cache-aside: xoá cache trước rồi ghi DB sau tạo ra một cửa sổ mà ở đó một request đọc song song đọc được giá trị cũ và ghi nó ngược vào cache. Hãy đổi thành ghi DB trước, xoá cache sau.',
+    'Tự hỏi: nếu writer ghi DB (qty=120) TRƯỚC, thì một reader chạy trong cửa sổ sẽ đọc DB ra 120 chứ không phải 0. Test ép reader chạy đúng sau thao tác đầu tiên của writer, nên thứ tự đúng sẽ cho reader thấy 120.',
+  ],
+  rootCause: `**Cache-aside đặt sai thứ tự: xoá cache trước, ghi DB sau.** Mẫu cache-aside có một **cửa sổ không nhất quán** giữa hai nguồn dữ liệu: DB (nguồn sự thật) và cache (bản sao tạm). Khi cập nhật, nếu làm {{evictCache}} trước rồi {{writeDb}} sau, thì trong khoảng giữa hai thao tác, cache trống nhưng DB **vẫn còn giá trị cũ**. Một request đọc song song rơi vào đúng khoảng đó sẽ: (1) cache miss, (2) đọc DB ra giá trị cũ, (3) nạp giá trị cũ trở lại cache. Sau khi writer ghi DB xong, **cache đang giữ giá trị cũ** và sẽ phục vụ nó cho tới khi TTL hết hạn (ở đây 30 phút). Đó là lý do 1.482 entry lệch, tất cả tạo trong cửa sổ cập nhật, và 2.907 đơn bị từ chối oan dù DB đã đủ hàng.
+
+Dẫn chứng trong log: dòng {{.204 evict cache}} xảy ra trước {{.211 DB write done}}; xen giữa là {{.207 reader cache MISS -> read DB -> qty=0 -> cache put 0}}. Reader đã đọc 0 và ghi 0 vào cache sau khi cache bị xoá. Kết quả: {{cache HIT -> qty=0}} trong khi {{DB=120}}.
+
+Điểm mấu chốt về mặt lý thuyết: **thứ tự "ghi DB rồi xoá cache" vẫn còn một khe hở nhỏ** (reader đọc DB cũ ngay trước khi writer ghi, rồi nạp cache sau khi writer xoá). Nhưng "xoá cache rồi ghi DB" tệ hơn hẳn: cửa sổ để lộ giá trị cũ **rộng hơn** và luôn kết thúc bằng việc cache giữ giá trị cũ. Vì vậy nguyên tắc bất di bất dịch là: **nguồn sự thật (DB) phải được cập nhật trước, rồi mới làm mất hiệu lực bản sao (cache).**`,
+  fix: `### Nguyên tắc
+Trong cache-aside, **DB là nguồn sự thật**. Khi cập nhật, hãy ghi DB trước, rồi mới **xoá** (invalidate) cache. Không bao giờ "ghi giá trị mới vào cache" thay cho việc xoá: giá trị mới có thể bị ghi đè bởi một lần đọc cũ hơn (race), và việc xoá đơn giản luôn an toàn hơn.
+
+### Cách sửa trong bài
+Chỉ cần đổi thứ tự hai dòng trong {{updateStock}}:
+~~~java
+void updateStock(String sku, int newQty) {
+    store.writeDb(sku, newQty);  // 1) cập nhật DB trước
+    store.evictCache(sku);       // 2) rồi mới xoá cache
+}
+~~~
+Với thứ tự này, một reader chạy trong cửa sổ sẽ đọc DB **đã** ra giá trị mới (120), nên dù nó có nạp cache thì cũng nạp giá trị đúng. Test {{khong_co_du_lieu_cu}} ép đúng khe hở đó và sẽ chuyển từ đỏ sang xanh.
+
+### Vì sao "ghi DB rồi xoá cache" vẫn chưa phải là bất khả xâm phạm
+Vẫn còn một khe hở lý thuyết: reader đọc DB ra giá trị **cũ** (ngay trước khi writer ghi), rồi nạp giá trị cũ vào cache **sau** khi writer đã xoá. Để dập khe hở này, production dùng các lớp phòng thủ:
+
+1. **Delayed double delete (xoá trễ hai lần):** sau khi ghi DB, xoá cache, chờ một khoảng ngắn (lớn hơn độ trễ đọc điển hình, ví dụ 300–500ms), rồi **xoá cache lần nữa**. Lần xoá thứ hai dọn nốt giá trị cũ mà một reader chậm có thể vừa nạp vào.
+~~~java
+void updateStock(String sku, int newQty) {
+    store.writeDb(sku, newQty);
+    cache.evict(sku);                 // xoá lần 1
+    scheduler.schedule(() -> cache.evict(sku), 500, MILLISECONDS);  // xoá lần 2 (dập khe hở)
+}
+~~~
+2. **CDC (Change Data Capture — bắt thay đổi dữ liệu):** dùng Debezium đọc **binlog** (nhật ký thay đổi) của PostgreSQL/MySQL, mỗi khi có row thay đổi thì phát event, consumer xoá cache tương ứng. Ưu điểm: cache luôn được xoá đúng lúc DB đổi, kể cả khi đổi từ nơi khác (job, SQL tay, service khác). Đây là cách mạnh nhất và được các hệ thống lớn dùng.
+3. **TTL như lưới an toàn:** luôn đặt TTL (ví dụ 30 phút hoặc ngắn hơn tuỳ mức chịu cũ). Dù mọi lớp trên thủng, cache cũng tự đổi sau TTL — nghĩa là "cũ có kiểm soát" thay vì "cũ vĩnh viễn".
+4. **Write-through / write-around:** thay vì cache-aside, ghi thẳng vào cả DB và cache (write-through) — đắt hơn nhưng nhất quán hơn; hoặc chỉ đọc DB cho dữ liệu nhạy cảm (giá, tồn kho) và chỉ cache dữ liệu ít đổi.
+
+### Trong Spring Boot / Redis
+- {{@CacheEvict(beforeInvocation = false)}} (mặc định) sẽ xoá cache **sau khi** method chạy; nếu bạn đặt {{beforeInvocation = true}} thì nó xoá **trước** — chính là bẫy trong bài này. Hãy để mặc định, và đảm bảo việc ghi DB nằm trong cùng method được {{@CacheEvict}}.
+- Nếu ghi DB trong {{@Transactional}}, cache phải được xoá **sau khi commit**, không phải sau khi method trả về. Dùng {{TransactionSynchronizationManager.registerSynchronization(...)}} hoặc {{@CacheEvict}} với đúng thứ tự.
+- Đừng dùng {{@CachePut}} để "cập nhật" giá trị mới khi có thể có đọc song song; ưu tiên xoá.
+
+### Phòng ngừa
+- Code review: mọi chỗ cập nhật DB + cache phải hỏi "đọc song song trong cửa sổ này thấy gì?".
+- Test tải có bước đọc xen kẽ (như bài này) trong CI, không chỉ test tuần tự.
+- Cảnh báo số entry cache lệch DB (job đối soát định kỳ) và số đơn bị từ chối do "hết hàng" tăng đột biến.
+
+### Liên hệ phỏng vấn
+Câu kinh điển: "Vì sao cập nhật cache phải **sau** khi cập nhật DB?" Trả lời: cache là bản sao, DB là nguồn sự thật; xoá cache trước tạo cửa sổ để một đọc song song nạp giá trị cũ trở lại. Kèm luôn các lớp phòng thủ: delayed double delete, CDC (Debezium + binlog), TTL, và lưu ý thứ tự với {{@Transactional}}/{{@CacheEvict}}.
+
+> Senior tip: Đừng bao giờ "ghi giá trị mới vào cache" để cập nhật. Xoá (invalidate) luôn an toàn hơn ghi, vì lần đọc sau sẽ nạp lại từ DB. Và nếu dữ liệu cực nhạy cảm (tồn kho, số dư, giá), hãy cân nhắc bỏ cache cho các đường đọc đó — một cache cũ 30 phút trên số dư là thảm hoạ.`,
+  related: ['spring-017', 'spring-068', 'jpa-058', 'api-009'],
+  tags: ['cache-aside', 'cache invalidation', 'stale data', 'delayed double delete', 'CDC', 'Redis']
+},
+{
+  id: 'bug-029',
+  title: 'Xử lý đơn: thread pool dùng queue không giới hạn, hàng nghìn job dồn lại làm pod OOM',
+  domain: 'Thương mại điện tử / Xử lý đơn hàng',
+  level: 'senior',
+  severity: 'P2',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Service {{order-worker}} (Spring Boot 3, 4 pod) xử lý các việc **sau khi khách đặt hàng**: gửi email xác nhận, cộng điểm thành viên, đẩy tồn kho, ghi analytics. Để không chặn request của khách, các việc này được đẩy vào một **thread pool** (bể luồng — một nhóm luồng (thread) được tái sử dụng để chạy nhiều task) rồi gọi {{pool.submit(task)}}.
+
+**Sự cố:** Đợt flash sale 12/11, lượng đơn tăng khoảng 20 lần. Trong 10 phút, **heap của pod tăng đều rồi pod bị OOMKilled**; các pod còn lại cũng lăn ra vì **hàng nghìn task dồn trong queue**. Độ trễ xử lý một đơn tăng từ 200ms lên 40s; khi pod restart thì **mất trắng** hàng nghìn task đang xếp hàng (chưa gửi email, chưa cộng điểm).
+
+**Nhiệm vụ của bạn:**
+1. Chỉ ra vì sao {{Executors.newFixedThreadPool}} có thể làm pod OOM dù số luồng chỉ là 4.
+2. Sửa để pool có **giới hạn hàng đợi** và **chính sách khi đầy** (từ chối có kiểm soát), thay vì dồn vô hạn.
+3. Bấm **Chạy test**: test nhồi 200 task vào một pool đang bận để xem queue có bị phình vô hạn không.`,
+  artifacts: [
+    { name: 'order-worker.log', lang: 'text', content: `2026-11-12 21:00:01 INFO  OrderWorker : pool=pool-1-thread active=4 queue=128 completed=9001
+2026-11-12 21:02:10 INFO  OrderWorker : pool=pool-1-thread active=4 queue=48210 completed=12044
+2026-11-12 21:04:33 WARN  OrderWorker : pool=pool-1-thread active=4 queue=213907 completed=13980  <- queue phình, heap tăng
+2026-11-12 21:05:02 ERROR OrderWorker : task rejected? NO  (LinkedBlockingQueue khong gioi han -> submit khong bao gio nem loi)
+2026-11-12 21:06:11 INFO  OrderWorker : Full GC (G1) 1840ms, heap after=1.9G / max=2.0G
+2026-11-12 21:06:12 ERROR OrderWorker : java.lang.OutOfMemoryError: Java heap space` },
+    { name: 'pod-events.txt', lang: 'text', content: `POD EVENTS 2026-11-12 (namespace=order)
+21:05:40  pod/order-worker-7f9c  OOMKilled   lastState.terminated.reason=OOMKilled exitCode=137
+21:05:41  pod/order-worker-2b1a  OOMKilled   exitCode=137
+21:06:12  pod/order-worker-9d3e  OOMKilled   exitCode=137
+Pending tasks lost on restart (no durable queue): ~41,000
+Email confirmations not sent               : 38,204
+Loyalty points not credited                : 41,000
+Peak queue depth observed                  : 213,907 tasks` },
+  ],
+  starter: `// ===== Hạ tầng / Code cần sửa =====
+class TaskExecutor {
+    private final ThreadPoolExecutor pool;
+
+    // BUG: newFixedThreadPool dùng LinkedBlockingQueue KHÔNG giới hạn.
+    // Tham số queueCapacity bị bỏ qua -> khi task đến nhanh hơn tốc độ xử lý,
+    // task dồn hết vào heap cho tới khi OOM.
+    TaskExecutor(int workers, int queueCapacity) {
+        this.pool = (ThreadPoolExecutor) Executors.newFixedThreadPool(workers);
+    }
+
+    Future<?> submit(Runnable task) { return pool.submit(task); }
+    int queueSize() { return pool.getQueue().size(); }
+    void shutdown() { pool.shutdownNow(); }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    static final int WORKERS = 4;
+    static final int CAPACITY = 8;
+
+    public static void main(String[] args) throws Exception {
+        // 1. Task được chạy: submit rồi hoàn thành.
+        TaskExecutor e1 = new TaskExecutor(WORKERS, CAPACITY);
+        AtomicInteger ran = new AtomicInteger();
+        Future<?> f1 = e1.submit(() -> ran.incrementAndGet());
+        f1.get(3, TimeUnit.SECONDS);
+        check("submit_chay_task", ran.get() == 1, "task phải chạy đúng 1 lần, thực tế " + ran.get());
+        e1.shutdown();
+
+        // 2. Với ít task (dưới sức chứa) thì không bị từ chối.
+        TaskExecutor e2 = new TaskExecutor(WORKERS, CAPACITY);
+        CountDownLatch done2 = new CountDownLatch(3);
+        for (int i = 0; i < 3; i++) e2.submit(done2::countDown);
+        boolean ok2 = done2.await(3, TimeUnit.SECONDS);
+        check("it_task_khong_bi_tu_choi", ok2 && e2.queueSize() == 0,
+            "3 task phải chạy xong và queue rỗng, thực tế done=" + ok2 + " queue=" + e2.queueSize());
+        e2.shutdown();
+
+        // 3. Tái hiện sự cố: task đến ồ ạt -> queue KHÔNG được lớn vô hạn.
+        TaskExecutor e3 = new TaskExecutor(WORKERS, CAPACITY);
+        CountDownLatch block = new CountDownLatch(1);     // giữ 4 worker bận
+        CountDownLatch started = new CountDownLatch(WORKERS);
+        for (int i = 0; i < WORKERS; i++) {
+            e3.submit(() -> { started.countDown(); try { block.await(); } catch (InterruptedException ex) { Thread.currentThread().interrupt(); } });
+        }
+        boolean workersReady = started.await(3, TimeUnit.SECONDS);
+
+        int accepted = 0, rejected = 0;
+        for (int i = 0; i < 200; i++) {
+            try {
+                e3.submit(() -> { try { block.await(); } catch (InterruptedException ex) { Thread.currentThread().interrupt(); } });
+                accepted++;
+            } catch (RejectedExecutionException ex) { rejected++; }
+        }
+        int maxQueue = e3.queueSize();
+
+        check("queue_co_gioi_han",
+            workersReady && rejected > 0 && maxQueue <= CAPACITY,
+            "queue phải có giới hạn " + CAPACITY + " và phải có chính sách từ chối; thực tế accepted=" + accepted
+                + " rejected=" + rejected + " queueSize=" + maxQueue + " workersReady=" + workersReady);
+
+        block.countDown();
+        e3.shutdown();
+        System.out.println("RESULT " + passed + "/" + total);
+        System.exit(0);
+    }
+}`,
+  reference: `// ===== Hạ tầng / Code cần sửa =====
+class TaskExecutor {
+    private final ThreadPoolExecutor pool;
+
+    // FIX: queue CÓ GIỚI HẠN (ArrayBlockingQueue) + chính sách từ chối (AbortPolicy)
+    // -> khi đầy thì submit() ném RejectedExecutionException, tạo backpressure thay vì dồn vào heap.
+    TaskExecutor(int workers, int queueCapacity) {
+        this.pool = new ThreadPoolExecutor(
+            workers, workers,
+            0L, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(queueCapacity),
+            new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    Future<?> submit(Runnable task) { return pool.submit(task); }
+    int queueSize() { return pool.getQueue().size(); }
+    void shutdown() { pool.shutdownNow(); }
+}`,
+  hints: [
+    'Đọc code khởi tạo: newFixedThreadPool(4) tạo pool với 4 luồng nhưng bên trong dùng LinkedBlockingQueue KHÔNG giới hạn. Số luồng ít không giúp gì nếu hàng đợi phình vô hạn: mỗi task đang chờ là một object nằm trên heap.',
+    'Tham số queueCapacity được truyền vào constructor nhưng không hề được dùng — đó là manh mối. Hãy dùng ThreadPoolExecutor trực tiếp với một queue có giới hạn (ArrayBlockingQueue) và một chính sách khi đầy.',
+    'Khi queue đầy, pool cần làm gì đó có kiểm soát: ném RejectedExecutionException (AbortPolicy) để nơi gọi biết mà xử lý, hoặc chạy ngay trên luồng gọi (CallerRunsPolicy) để tạo áp lực ngược (backpressure). Điều cấm kỵ là âm thầm dồn task vào bộ nhớ.',
+  ],
+  rootCause: `**ThreadPoolExecutor dùng queue không giới hạn nên không có backpressure.** {{Executors.newFixedThreadPool(4)}} bên trong là một {{ThreadPoolExecutor}} với **corePoolSize = maximumPoolSize = 4** và một {{LinkedBlockingQueue}} **không giới hạn**. Cơ chế của {{ThreadPoolExecutor}} khi nhận task: nếu chưa đủ core thread thì tạo thread mới; nếu đã đủ thì **đẩy task vào queue**; nếu queue đầy thì mới tạo thêm thread tới max; nếu vẫn đầy thì mới chạy rejection policy. Vì queue ở đây không bao giờ đầy, nên: (1) pool **không bao giờ** tạo thêm thread, (2) **không bao giờ** chạy rejection policy, (3) mọi task dồn hết vào queue nằm trên **heap**.
+
+Khi task đến nhanh hơn tốc độ xử lý (flash sale), queue lớn dần: log cho thấy {{queue=213907}}, heap chạm 1.9G/2.0G, Full GC 1.8s, rồi {{OutOfMemoryError: Java heap space}} và pod bị OOMKilled (exit 137). Đây **không phải** lỗi "quá nhiều thread" — chỉ có 4 thread — mà là lỗi **bộ nhớ do queue vô hạn**. Kèm theo là mất dữ liệu: task đang xếp hàng trong RAM biến mất khi pod restart vì queue không bền (không có durable queue như Kafka/SQS).
+
+Điểm lý thuyết: một hệ thống ổn định cần **backpressure** — khi quá tải, nơi gửi phải bị chặn/từ chối thay vì bộ nhớ cứ phình ra. Queue có giới hạn + rejection policy chính là cách biến "quá tải âm thầm" thành "quá tải nhìn thấy được".`,
+  fix: `### Nguyên tắc
+**Mọi queue trong executor phải có giới hạn.** Queue không giới hạn biến quá tải tạm thời thành sự cố bộ nhớ, và tệ hơn là nó **giấu** quá tải: không có tín hiệu nào cho nơi gọi biết hệ thống đang đuối.
+
+### Cách sửa trong bài
+Dùng {{ThreadPoolExecutor}} trực tiếp với queue có giới hạn và một chính sách từ chối:
+~~~java
+this.pool = new ThreadPoolExecutor(
+    workers, workers,                 // core = max (pool cố định)
+    0L, TimeUnit.MILLISECONDS,
+    new ArrayBlockingQueue<>(queueCapacity),   // queue CÓ GIỚI HẠN
+    new ThreadPoolExecutor.AbortPolicy());     // đầy -> ném RejectedExecutionException
+~~~
+Với cách này, khi 4 worker bận và queue (8) đầy, {{submit}} ném {{RejectedExecutionException}}. Nơi gọi (ví dụ controller hoặc consumer) bắt lỗi và trả 503 / thử lại sau / đẩy sang hàng đợi bền. Test {{queue_co_gioi_han}} kiểm tra đúng điều này.
+
+### Chọn chính sách khi đầy (rejection policy)
+| Chính sách | Hành vi khi đầy | Khi nào dùng |
+|---|---|---|
+| AbortPolicy (mặc định) | Ném RejectedExecutionException | Khi nơi gọi cần biết để trả lỗi / retry |
+| CallerRunsPolicy | Chạy task ngay trên luồng gọi | Khi muốn tạo backpressure tự nhiên (chậm dần) và không được mất task |
+| DiscardPolicy | Âm thầm bỏ task | Gần như không bao giờ cho việc quan trọng (mất email, mất điểm) |
+| DiscardOldestPolicy | Bỏ task cũ nhất, thử lại | Chỉ khi task cũ vô giá trị |
+
+Với việc gửi email/cộng điểm, **không dùng Discard**: mất âm thầm là bug dữ liệu. Ưu tiên AbortPolicy để caller xử lý, hoặc CallerRunsPolicy để throttle toàn hệ thống.
+
+### Sizing pool (cực kỳ quan trọng khi phỏng vấn)
+- **CPU-bound** (m tính, nén, hash): số thread ≈ số core + 1.
+- **IO-bound** (gọi API, DB, email): số thread lớn hơn nhiều, công thức gốc là {{Nthreads = NCPU * UCPU * (1 + W/C)}} với W = thời gian chờ, C = thời gian tính. Với các tác vụ phần lớn là chờ I/O, W/C lớn nên cần nhiều thread hơn.
+- Nhưng đừng đặt quá lớn: mỗi thread tốn ~1MB stack và gây chuyển ngữ cảnh. Và **luôn** ghép với queue có giới hạn.
+
+### Trên production thật
+- **Dùng hàng đợi bền** (Kafka, RabbitMQ, SQS) cho việc quan trọng (gửi email, cộng điểm) thay vì queue trong RAM: task sống sót qua restart, có retry, có DLQ (dead-letter queue).
+- **Tách pool theo loại việc** (bulkhead pattern): pool riêng cho email, riêng cho đẩy kho, để một việc chậm không làm đói việc khác.
+- **Giám sát:** độ sâu queue, số task bị từ chối (rejected count), thời gian một task nằm trong queue. Cảnh báo khi queue vượt ngưỡng.
+- **Spring:** dùng {{ThreadPoolTaskExecutor}} (hoặc {{@Async}} với executor cấu hình sẵn), đặt {{setQueueCapacity}} hữu hạn và {{setRejectedExecutionHandler}} tường minh; đừng dùng executor mặc định của {{@Async}} (SimpleAsyncTaskExecutor — tạo thread mỗi lần, không pool).
+
+### Phòng ngừa
+- Code review: mọi {{Executors.newFixedThreadPool}}/{{newCachedThreadPool}}/{{newSingleThreadExecutor}} đều phải bị chặn; thay bằng {{ThreadPoolExecutor}} có queue giới hạn.
+- Test tải: bắn gấp nhiều lần năng lực xử lý, khẳng định có tín hiệu từ chối thay vì OOM.
+- Đặt ngưỡng heap và cảnh báo queue depth.
+
+### Liên hệ phỏng vấn
+Câu kinh điển: "Vì sao không nên dùng {{Executors.newFixedThreadPool}} trên production?" Trả lời: nó dùng queue không giới hạn → không backpressure → OOM khi quá tải; giải pháp là {{ThreadPoolExecutor}} + queue có giới hạn + rejection policy, và với việc quan trọng thì dùng hàng đợi bền. Nêu luôn cách sizing CPU-bound vs IO-bound và bulkhead.
+
+> Senior tip: Một pool có 4 thread vẫn có thể làm sập pod — thủ phạm là queue vô hạn, không phải số thread. Hãy luôn giới hạn queue và chọn rejection policy có ý thức; "từ chối sớm" tốt hơn "chết muộn vì OOM".`,
+  related: ['concurrency-003', 'concurrency-004', 'concurrency-015', 'concurrency-020'],
+  tags: ['thread pool', 'ThreadPoolExecutor', 'unbounded queue', 'backpressure', 'OOM', 'rejection policy']
 }
 
 );
