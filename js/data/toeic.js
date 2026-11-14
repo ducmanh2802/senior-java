@@ -2191,4 +2191,211 @@ In conclusion, I support a per diem for meals and incidental expenses because it
   ],
   tags: ["business travel", "expenses"]
 },
+{
+  id: "toeic-w2-015",
+  part: "w2",
+  email: `From: Mr. Samuel Price, Property Manager
+To: Residents of Greenview Apartments
+Subject: Elevator Maintenance Notice
+
+Dear Residents,
+
+Please note that the main elevator in Building B will be unavailable for maintenance on Saturday, May 2, from 9:00 a.m. to 1:00 p.m.
+
+If you have any concerns or special needs during this time, please reply to this message by Thursday, April 30.
+
+Sincerely,
+Samuel Price
+Property Manager`,
+  task: "Respond to the email. In your response, describe one concern and ask two questions.",
+  sample: `Dear Mr. Price,
+
+Thank you for informing us about the elevator maintenance in Building B on Saturday, May 2, from 9:00 a.m. to 1:00 p.m.
+
+I am concerned because I live on the fifth floor and I will be receiving a large furniture delivery that morning. It may be difficult to carry the items up the stairs without elevator access.
+
+Could you please let me know if the service elevator will still be available during that time? Also, would it be possible to schedule my delivery after 1:00 p.m. if the maintenance is delayed?
+
+Sincerely,
+Laura Kim`,
+  tips: [
+    "Đề này yêu cầu 'describe one concern and ask two questions' — hãy dành 1-2 câu mô tả lo ngại cụ thể, sau đó đặt 2 câu hỏi riêng biệt.",
+    "Mô tả tình huống đời sống (nhận đồ giao, người lớn tuổi, đi lại khó khăn) giúp câu trả lời phù hợp với bối cảnh thông báo bảo trì chung cư.",
+    "Khi hỏi 2 câu, có thể dùng 'Could you please let me know...?' và 'Also, would it be possible to...?' để tránh lặp cấu trúc và giữ giọng lịch sự."
+  ],
+  tags: ["housing", "maintenance", "notice"]
+},
+{
+  id: "toeic-w2-016",
+  part: "w2",
+  email: `From: Ms. Karen Diaz, Front Desk Supervisor
+To: Hotel Guest
+Subject: Your Upcoming Stay at Lakeside Hotel
+
+Dear Guest,
+
+We are pleased to confirm your reservation at Lakeside Hotel for two nights, arriving on Friday, June 12. We would like to make sure your stay is comfortable.
+
+Please reply if you have any preferences or questions before your arrival.
+
+Best wishes,
+Karen Diaz
+Front Desk Supervisor`,
+  task: "Respond to the email. In your response, state two preferences and make one request.",
+  sample: `Dear Ms. Diaz,
+
+Thank you for confirming my reservation at Lakeside Hotel for two nights, arriving on Friday, June 12.
+
+I would prefer a quiet room on a higher floor, and I would also prefer a room with two single beds instead of one double bed. These options would make my stay more comfortable because I am traveling with a colleague.
+
+Could you please arrange an early check-in at around 11:00 a.m. if a room is available? We plan to arrive in the city before noon.
+
+Best wishes,
+Michael Turner`,
+  tips: [
+    "Trong email khách sạn/du lịch, nêu rõ ngày nhận phòng và số đêm để thể hiện bạn đang trả lời đúng đặt chỗ; điều này cũng giúp thông tin khớp nhau.",
+    "Hai preferences nên cụ thể (tầng cao, yên tĩnh, loại giường, view); tránh viết 'a good room' vì quá chung và không cho thấy khả năng diễn đạt.",
+    "Request khác với question: 'Could you please arrange...' là yêu cầu; nếu đề muốn request, đừng chỉ hỏi 'Is early check-in possible?' mà hãy nhờ sắp xếp rõ ràng."
+  ],
+  tags: ["travel", "hotel", "reservation"]
+},
+{
+  id: "toeic-w2-017",
+  part: "w2",
+  email: `From: Mr. David Lin, Tour Operations Manager
+To: Registered Participants
+Subject: City Walking Tour on Saturday
+
+Dear Participants,
+
+Thank you for registering for the Riverside City Walking Tour on Saturday, May 23, at 9:00 a.m. We will meet at the main entrance of Central Park.
+
+Please reply by Thursday, May 21, if you need any information before the tour.
+
+Best regards,
+David Lin
+Tour Operations Manager`,
+  task: "Respond to the email. In your response, ask two questions and give one piece of information.",
+  sample: `Dear Mr. Lin,
+
+Thank you for the details about the Riverside City Walking Tour on Saturday, May 23, at 9:00 a.m. I am looking forward to joining the group at the main entrance of Central Park.
+
+I will be bringing my ten-year-old son with me on the tour. Could you please let me know whether the route is suitable for children? Also, will the tour still take place if it rains that morning?
+
+Thank you for your time and assistance.
+
+Best regards,
+Sophie Martin`,
+  tips: [
+    "Task này đảo thứ tự quen thuộc: 'ask two questions and give one piece of information'. Hãy kiểm tra lại trước khi gửi để chắc bạn không viết thiếu thông tin.",
+    "Thông tin bạn cung cấp nên liên quan đến tour (mang trẻ em, cần hỗ trợ di chuyển, ăn chay, đến trễ 5 phút...) để email tự nhiên và có mục đích.",
+    "Hai câu hỏi có thể về thời tiết, độ dài quãng đường, trang phục, hoặc điểm kết thúc; dùng 'Also,...?' để thêm câu hỏi thứ hai mạch lạc."
+  ],
+  tags: ["travel", "tour", "event"]
+},
+{
+  id: "toeic-w2-018",
+  part: "w2",
+  email: `From: Ms. Emily Foster, Community Center Coordinator
+To: Local Residents
+Subject: Volunteers Needed for Spring Festival
+
+Dear Residents,
+
+The Riverside Community Center is organizing a Spring Festival on Sunday, April 26, from 10:00 a.m. to 3:00 p.m. We are looking for volunteers to help during the event.
+
+Please reply by Friday, April 17, if you are interested.
+
+Warm regards,
+Emily Foster
+Community Center Coordinator`,
+  task: "Respond to the email. In your response, express interest, give one piece of information, and ask one question.",
+  sample: `Dear Ms. Foster,
+
+Thank you for your email about the Spring Festival at the Riverside Community Center on Sunday, April 26. I am interested in volunteering at the event.
+
+I have experience helping at local events because I assisted with registration at last year's charity run. I am available from 10:00 a.m. to 1:00 p.m. on that day and would be happy to support the team during those hours.
+
+Could you please let me know what tasks volunteers will be responsible for?
+
+Warm regards,
+James Wilson`,
+  tips: [
+    "Đề yêu cầu 'express interest, give one piece of information, and ask one question': mở đầu nên nói rõ bạn quan tâm (I am interested in volunteering) để đáp ứng phần đầu tiên.",
+    "Thông tin đưa ra có thể là kinh nghiệm, thời gian rảnh, hoặc kỹ năng liên quan; nêu cụ thể giúp người tổ chức sắp xếp công việc phù hợp.",
+    "Trong email cộng đồng/sự kiện, giọng điệu thân thiện nhưng vẫn lịch sự là phù hợp; tránh dùng tiếng lóng và nhớ cảm ơn ở đầu hoặc cuối thư."
+  ],
+  tags: ["community", "event", "volunteer"]
+},
+{
+  id: "toeic-w2-019",
+  part: "w2",
+  email: `From: Mr. Brian Taylor, Operations Manager
+To: Office Staff
+Subject: Delivery Schedule Change
+
+Dear Office Staff,
+
+Starting Monday, May 4, all office supply deliveries will arrive between 8:00 a.m. and 10:00 a.m. instead of the afternoon. This change is intended to reduce disruptions during meetings.
+
+Please reply by Wednesday, April 29, if this affects your work.
+
+Best regards,
+Brian Taylor
+Operations Manager`,
+  task: "Respond to the email. In your response, explain one concern and suggest one solution.",
+  sample: `Dear Mr. Taylor,
+
+Thank you for informing us that office supply deliveries will arrive between 8:00 a.m. and 10:00 a.m. starting Monday, May 4.
+
+I am concerned because our reception desk is not always staffed before 9:00 a.m., so there may be no one available to receive and sign for the packages. This could cause delays or missed deliveries.
+
+To solve this problem, I suggest creating a rotating morning schedule so that one staff member is at the reception desk by 8:00 a.m. each day. I believe this simple change would help the new delivery schedule work smoothly.
+
+Best regards,
+Natalie Green
+Administrative Assistant`,
+  tips: [
+    "Task yêu cầu 'explain one concern and suggest one solution': nêu rõ vấn đề (ai, khi nào, vì sao ảnh hưởng) rồi đề xuất giải pháp khả thi.",
+    "Giải pháp nên cụ thể và liên quan trực tiếp đến lo ngại; ví dụ nếu lo không có người nhận hàng, hãy đề xuất lịch trực hoặc điểm nhận hàng thay thế.",
+    "Người Việt hay chỉ nêu vấn đề mà quên đề xuất; hãy dùng 'To solve this problem, I suggest...' để chuyển ý rõ ràng và đáp ứng đủ yêu cầu."
+  ],
+  tags: ["workplace", "delivery", "operations"]
+},
+{
+  id: "toeic-w2-020",
+  part: "w2",
+  email: `From: Ms. Angela Morris, Clinic Administrator
+To: Patients
+Subject: Reminder: Annual Health Check Appointment
+
+Dear Patient,
+
+This is a reminder that our clinic is offering annual health check appointments next month. Appointments are available on weekdays between 9:00 a.m. and 4:00 p.m.
+
+Please reply to this message to schedule your visit or to request more information.
+
+Sincerely,
+Angela Morris
+Clinic Administrator`,
+  task: "Respond to the email. In your response, give two pieces of information and ask one question.",
+  sample: `Dear Ms. Morris,
+
+Thank you for reminding me about the annual health check appointments available next month.
+
+I would like to schedule my visit on Tuesday, May 12, at 10:00 a.m., if that time is available. My full name is Thomas Nguyen, and my date of birth is March 3, 1992, so you can confirm my patient record.
+
+Could you please let me know whether I need to fast before the appointment?
+
+Thank you for your help.
+
+Sincerely,
+Thomas Nguyen`,
+  tips: [
+    "Email đặt lịch hẹn (bệnh viện, sửa chữa, dịch vụ) nên nêu thông tin nhận dạng và thời gian mong muốn rõ ràng để người nhận xử lý nhanh.",
+    "Câu hỏi về chuẩn bị trước hẹn (nhịn ăn, mang giấy tờ, thời gian kiểm tra) là phù hợp và thể hiện bạn hiểu tình huống thực tế.",
+    "Kiểm tra tính nhất quán: nếu bạn chọn 10:00 a.m. thì phải nằm trong khung giờ phòng khám cho phép (9:00 a.m. to 4:00 p.m.) như trong email gốc."
+  ],
+  tags: ["service", "health", "appointment"]
+},
 );
