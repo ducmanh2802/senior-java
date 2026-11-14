@@ -2528,4 +2528,116 @@ Thomas Nguyen`,
   ],
   tags: ["tour", "travel"]
 },
+{
+  id: "toeic-s1-015",
+  part: "s1",
+  text: "Attention all new hires: Welcome to Apex Solutions! Your onboarding session begins at nine a.m. tomorrow in Conference Room B on the third floor. Please bring a government-issued ID and your signed offer letter. Our IT team will help you set up your laptop, email, and access badges during the first hour. Lunch will be provided at twelve thirty in the cafeteria. If you have any questions before tomorrow, contact Sarah in Human Resources at extension 3200.",
+  stress: ["Welcome to Apex Solutions", "nine a.m. tomorrow", "Conference Room B", "third floor", "government-issued ID", "signed offer letter", "twelve thirty", "extension 3200"],
+  tips: ["Thông báo onboarding cần giọng chào đón, nhiệt tình; nhấn các mốc giờ và địa điểm cụ thể.", "Government-issued ID đọc từng từ rõ ràng; extension 3200 phát âm từng số riêng biệt."]
+},
+{
+  id: "toeic-s1-016",
+  part: "s1",
+  text: "This is a reminder for all employees enrolled in the hybrid work program. Starting Monday, June 3, you are required to be in the office at least three days per week. Team leads will collect preferred schedules by this Friday. Desk reservations can be made through the Workspace app up to two weeks in advance. For questions about the new policy, attend the town hall on Thursday at four p.m. or email hybrid@company.com.",
+  stress: ["hybrid work program", "Monday, June 3", "three days per week", "Team leads", "this Friday", "Workspace app", "two weeks in advance", "town hall on Thursday"],
+  tips: ["Nhắc nhở chính sách hybrid giọng trung lập, rõ ràng; nhấn ba ngày mỗi tuần và deadline đăng ký.", "Workspace app đọc như một cụm; up to two weeks in advance nhấn vào two weeks; hybrid@company.com đọc từng ký tự."]
+},
+{
+  id: "toeic-s1-017",
+  part: "s1",
+  text: "Hello, this is Michael from the IT Help Desk regarding ticket number 44872. We have resolved the VPN connection issue you reported yesterday. Please restart your computer and try connecting again. If the problem persists, reply to this voicemail or call us back at 555-0134 before five p.m. today. We will follow up with an email confirmation once you verify the fix. Thank you for your patience.",
+  stress: ["Michael from the IT Help Desk", "ticket number 44872", "VPN connection issue", "restart your computer", "problem persists", "555-0134", "before five p.m. today", "email confirmation"],
+  tips: ["Voicemail kỹ thuật giọng chuyên nghiệp, an ủi; nhấn số ticket và hành động cần làm (restart).", "VPN phát âm là V-P-N; persists phát âm là per-sists; reply to this voicemail đọc liền mạch."]
+},
+{
+  id: "toeic-s1-018",
+  part: "s1",
+  text: "The Finance Department announces updated travel expense guidelines effective July 1. Daily meal allowance is now sixty-five dollars, with receipts required for amounts over twenty-five dollars. Mileage reimbursement increased to sixty-two cents per mile. Hotel bookings must be made through the corporate portal to receive the negotiated rate. Submit expense reports within ten business days of return. Contact the Finance team at finance@corp.com for details.",
+  stress: ["Finance Department", "effective July 1", "sixty-five dollars", "twenty-five dollars", "sixty-two cents per mile", "corporate portal", "ten business days", "finance@corp.com"],
+  tips: ["Quy định chi phí công tác giọng trang trọng; nhấn các con số tiền tệ và ngày hiệu lực.", "Mileage reimbursement phát âm là mile-age re-im-burse-ment; negotiated rate nhấn vào negotiated; business days đọc rõ hai từ."]
+},
+{
+  id: "toeic-s1-019",
+  part: "s1",
+  text: "Good morning, valued customer. Thank you for choosing Summit Bank for your mortgage needs. Your application for the three hundred thousand dollar fixed-rate loan has been pre-approved. The next step is a property appraisal, which we will schedule within five business days. Please have your recent pay stubs and tax returns ready for the underwriter. A loan officer will contact you by Wednesday to discuss closing costs. Congratulations on your new home.",
+  stress: ["Summit Bank", "three hundred thousand dollar", "fixed-rate loan", "pre-approved", "property appraisal", "five business days", "pay stubs and tax returns", "closing costs"],
+  tips: ["Thông báo ngân hàng giọng chuyên nghiệp, tự tin; nhấn số tiền vay và loại lãi suất.", "Fixed-rate phát âm là fixed-rate (ghép); pre-approved nhấn pre-; underwriter là người thẩm định; closing costs nhấn closing."]
+},
+{
+  id: "toeic-s1-020",
+  part: "s1",
+  text: "This is an automated message from Meridian Insurance regarding your claim number CL-2024-0891. An adjuster has been assigned and will contact you by phone within two business days to schedule a vehicle inspection. Please do not repair the vehicle until the inspection is complete. If you have questions, call our claims hotline at 1-800-555-0177 and reference your claim number. Thank you for choosing Meridian Insurance.",
+  stress: ["Meridian Insurance", "claim number CL-2024-0891", "adjuster has been assigned", "two business days", "vehicle inspection", "do not repair", "1-800-555-0177", "reference your claim number"],
+  tips: ["Tin nhắn tự động bảo hiểm giọng trung tính, rõ ràng; nhấn số claim và cảnh báo không sửa xe trước kiểm tra.", "Adjuster phát âm là ad-just-er; reference your claim number nhấn reference; hotline đọc từng cụm số."]
+},
+{
+  id: "toeic-s1-021",
+  part: "s1",
+  text: "Attention patients: Riverside Medical Center is expanding evening hours starting September 15. The walk-in clinic will now be open until eight p.m. on weekdays and until four p.m. on Saturdays. No appointment is needed for minor illnesses such as colds, flu, or minor injuries. Please bring your insurance card and photo ID. For emergencies, always call nine-one-one or go to the nearest emergency room. We are here to serve you.",
+  stress: ["Riverside Medical Center", "expanding evening hours", "September 15", "eight p.m. on weekdays", "four p.m. on Saturdays", "no appointment needed", "insurance card and photo ID", "nine-one-one"],
+  tips: ["Thông báo bệnh viện giọng ấm áp, an tâm; nhấn giờ mở cửa mới và không cần hẹn trước.", "Walk-in clinic phát âm là walk-in; minor illnesses nhấn minor; nine-one-one đọc từng số 9-1-1."]
+},
+{
+  id: "toeic-s1-022",
+  part: "s1",
+  text: "Dear resident, this is a notice from the City Water Department. Scheduled maintenance on the main water line will occur on Tuesday, October 22, from ten p.m. to six a.m. the following morning. Water service may be interrupted or experience low pressure during this time. We recommend storing water for essential use beforehand. Normal service will resume by seven a.m. on Wednesday. For urgent concerns, call 555-0112. Thank you for your understanding.",
+  stress: ["City Water Department", "Tuesday, October 22", "ten p.m. to six a.m.", "main water line", "water service", "low pressure", "storing water", "555-0112"],
+  tips: ["Thông báo cơ sở hạ tầng giọng thông cảm; nhấn khung giờ và ảnh hưởng (giảm áp suất).", "Main water line nhấn main; interrupted phát âm là in-ter-rupt-ed; beforehand đọc be-fore-hand; urgent concerns nhấn urgent."]
+},
+{
+  id: "toeic-s2-015",
+  part: "s2",
+  scene: `Một phòng họp hiện đại vào giữa buổi sáng. Một người phụ nữ đứng ở cuối bàn dài, tay cầm điều khiển slide (clicker), đang thuyết trình trước một màn hình lớn chiếu biểu đồ tăng trưởng. Khoảng mười người ngồi quanh bàn, mỗi người có máy tính xách tay và cốc nước trước mặt. Một vài người đang ghi chép, người khác nghe tập trung. Phía sau là tường kính nhìn ra thành phố, có cửa sổ che bằng rèm cuộn. Trần nhà có đèn LED huỳnh quang và hệ thống âm thanh.`,
+  sample: "This picture shows a modern conference room during a morning meeting. A woman is standing at the end of a long table, holding a clicker and presenting a growth chart on a large screen. About ten people are seated around the table, each with a laptop and a water glass. Some are taking notes while others are listening attentively. Through the glass wall, you can see the city skyline. The room has recessed LED lighting and a sound system.",
+  tips: ["Mô tả người thuyết trình trước, sau đó đến khán giả; dùng presenting a growth chart cho việc trình bày biểu đồ.", "Clicker là điều khiển slide; recessed LED lighting cho đèn LED chìm trần; city skyline cho đường viễn thành phố."]
+},
+{
+  id: "toeic-s2-016",
+  part: "s2",
+  scene: `Một quầy thu ngân (checkout counter) tại siêu thị vào giờ cao điểm. Một nhân viên nữ mặc đồng phục đang quét mã vạch hàng hóa cho một khách hàng. Khách hàng, một người đàn ông cầm giỏ đựng đầy rau củ và hộp sữa, đang nhìn màn hình hiển thị giá. Bên cạnh là băng tải (conveyor belt) đang chuyển thêm hàng hóa. Phía sau quầy có kệ kẹo, kẹo mềm và pin. Một nhân viên khác đang xếp hàng hóa lên kệ ở góc xa. Đèn huỳnh quang sáng rực rỡ.`,
+  sample: "This photo shows a busy supermarket checkout counter. A female cashier in a uniform is scanning items for a male customer. The customer has a basket full of vegetables and milk cartons and is looking at the price display. A conveyor belt is moving more groceries forward. Behind the counter, there are shelves with candy, gum, and batteries. Another employee is restocking shelves in the far corner. The fluorescent lights are very bright.",
+  tips: ["Cashier là thu ngân; scanning items cho quét mã; conveyor belt là băng tải; price display cho màn hình giá.", "Restocking shelves cho việc xếp hàng hóa; fluorescent lights cho đèn huỳnh quang; gum cho kẹo mềm."]
+},
+{
+  id: "toeic-s2-017",
+  part: "s2",
+  scene: `Một phòng khám bệnh viện nhộn nhịp. Ở tiền cảnh, một bác sĩ nữ mặc áo blouse trắng đang nghe tim cho một bệnh nhân nam ngồi trên giường khám. Bác sĩ cầm ống nghe (stethoscope) đặt ngực bệnh nhân. Bên cạnh là một y tá đang ghi chép trên máy tính bảng. Phía sau là bàn khám có đèn kiểm tra, gương khám tai mũi họng và các dụng cụ y tế. Tường có poster giải phẫu cơ thể người. Một bệnh nhân khác đang chờ ở ghế phía xa.`,
+  sample: "This image shows a busy hospital examination room. A female doctor in a white coat is listening to a male patient's heart with a stethoscope while he sits on the exam table. A nurse is standing nearby, taking notes on a tablet. The examination table has an exam light, an otoscope, and medical instruments. There is an anatomy poster on the wall. Another patient is waiting in a chair in the background.",
+  tips: ["Examination room là phòng khám; stethoscope là ống nghe; listening to heart cho nghe tim.", "Otoscope là dụng cụ khám tai mũi họng; anatomy poster cho poster giải phẫu; taking notes on a tablet cho ghi chép trên máy tính bảng."]
+},
+{
+  id: "toeic-s2-018",
+  part: "s2",
+  scene: `Một bến xe buýt hiện đại vào buổi sáng sớm. Nhiều người đang xếp hàng chờ lên xe, một số cầm vali nhỏ, một số đeo balo. Một chiếc xe buýt xanh lá đang dừng ở làn đường dành riêng, cửa xe mở, người đi lên xe thẻ (tap their cards) trên máy đọc. Bàn thông tin điện tử hiển thị giờ'arrivée của các tuyến. Có mái che (shelter) có kính cường lực, ghế ngồi và đèn LED. Phía sau là đường phố đông xe cộ.`,
+  sample: "This picture shows a modern bus terminal early in the morning. Many people are queuing to board, some carrying small suitcases and others wearing backpacks. A green bus is stopped at the dedicated lane with its doors open, and passengers are tapping their cards on the reader. An electronic display shows arrival times for different routes. The shelter has tempered glass, benches, and LED lighting. A busy street with traffic is visible behind it.",
+  tips: ["Bus terminal là bến xe buýt; dedicated lane là làn đường dành riêng; tapping their cards cho thẻ xe.", "Electronic display cho màn hình điện tử; arrival times cho giờ đến; tempered glass cho kính cường lực; queuing to board cho xếp hàng lên xe."]
+},
+{
+  id: "toeic-s2-019",
+  part: "s2",
+  scene: `Một khu vui chơi cộng đồng (community park) vào cuối tuần nắng đẹp. Ở giữa là sân chơi trẻ em với cầu trượt, xích đu và hố cát. Một nhóm trẻ em đang chơi, phụ huynh ngồi trên ghế đá bên cạnh theo dõi. Phía sau là mặt hồ nhỏ có vịt bơi, một cặp đôi đang đi bộ dọc đường đi bộ quanh hồ. Có bàn picnic và nướng (BBQ grill) ở khu vực rợp cây. Trời xanh, mây trắng bay nhẹ.`,
+  sample: "This photo shows a community park on a sunny weekend. In the center, there is a playground with a slide, swings, and a sandbox where children are playing. Parents are sitting on stone benches nearby, watching them. Behind the playground, there is a small pond with ducks, and a couple is walking along the path around it. There are picnic tables and a BBQ grill in the shaded area. The sky is blue with white clouds.",
+  tips: ["Community park là công viên cộng đồng; playground cho sân chơi; sandbox cho hố cát; stone benches cho ghế đá.", "Pond cho hồ; walking along the path cho đi dọc đường đi; BBQ grill cho lò nướng; shaded area cho khu vực rợp cây/mát mẻ."]
+},
+{
+  id: "toeic-s2-020",
+  part: "s2",
+  scene: `Một khách sạn sang trọng (luxury hotel) sảnh chính (lobby). Sàn đá marble sáng bóng, trần nhà cao với đèn chùm pha lê. Quầy lễ tân (reception desk) làm bằng gỗ sồi và đá, một nhân viên nữ đang check-in cho một cặp khách. Hai nhân viên bellboy mặc đồng phục đứng cạnh xe đẩy vali (luggage cart). Khu vực ngồi có sofa da, bàn trà thấp và hoa tươi lớn. Cửa xoay (revolving door) ở phía sau, nhìn ra đường phố.`,
+  sample: "This picture shows the grand lobby of a luxury hotel. The polished marble floor and high ceiling with a crystal chandelier create an elegant atmosphere. At the reception desk made of oak and stone, a female clerk is checking in a couple. Two bellboys in uniforms stand beside a luggage cart. The seating area has leather sofas, low coffee tables, and a large floral arrangement. A revolving door at the back opens to the street.",
+  tips: ["Lobby là sảnh chính; marble floor cho sàn đá marble; crystal chandelier cho đèn chùm pha lê.", "Reception desk cho quầy lễ tân; bellboy cho nhân viên khiêng vali; luggage cart cho xe đẩy vali; revolving door cho cửa xoay; floral arrangement cho bó hoa trang trí."]
+},
+{
+  id: "toeic-s2-021",
+  part: "s2",
+  scene: `Mộtterminal hành khách (airport terminal) tại khu check-in. Nhiều du khách đang xếp hàng với vali và balo. Ba quầy check-in đang mở, nhân viên hàng không đang cân vali và in thẻ lên máy bay (boarding pass). Màn hình thông tin chuyến bay (flight information display) hiển thị giờ khởi hành, cổng (gate) và trạng thái. Dấu hiệu bảo 안 (security checkpoint) ở phía xa với máy quét X-quang và khung khử trộm. Trần nhà cao, đèn tự nhiên từ cửa kính lớn.`,
+  sample: "This image shows an airport terminal check-in area. Many travelers are queuing with suitcases and backpacks. Three check-in counters are open, and airline staff are weighing luggage and printing boarding passes. A flight information display shows departure times, gates, and statuses. In the distance, there is a security checkpoint with X-ray scanners and metal detectors. The high ceiling has natural light from large glass windows.",
+  tips: ["Airport terminal là terminal sân bay; check-in counters cho quầy làm thủ tục; weighing luggage cho cân vali.", "Boarding pass cho thẻ lên máy bay; flight information display cho màn hình thông tin chuyến bay; security checkpoint cho điểm kiểm tra an ninh; metal detectors cho khung khử trộm."]
+},
+{
+  id: "toeic-s2-022",
+  part: "s2",
+  scene: `Một tour du lịch (guided tour) tại một di tích lịch sử cổ kính. Một hướng dẫn viên (tour guide) nữ cầm cờ nhỏ và 마이 (microphone), đang giải thích cho một nhóm mười hai du khách nghe. Nhóm du khách đa dạng độ tuổi, một số chụp ảnh bằng máy ảnh và điện thoại. Di tích là một ngôi đền (temple) đá cổ với cột trụ khắc nổi và mái ngói. Cây cổ thụ lớn che mát khu vực tiền sảnh. Trời nắng, bóng cây đổ l utara trên nền đá.`,
+  sample: "This picture shows a guided tour at a historic temple site. A female tour guide is holding a small flag and a microphone, explaining the history to a group of twelve tourists. The visitors are of various ages, and some are taking photos with cameras and smartphones. The temple is an ancient stone structure with carved pillars and a tiled roof. A large old tree provides shade in the front courtyard. It is a sunny day, and tree shadows fall on the stone pavement.",
+  tips: ["Guided tour là tour có hướng dẫn viên; tour guide cầm flag (cờ) và microphone để nhóm dễ nhận ra.", "Historic temple cho di tích đền cổ; carved pillars cho cột trụ khắc nổi; tiled roof cho mái ngói; front courtyard cho tiền sảnh; stone pavement cho nền đá."]
+},
 );
