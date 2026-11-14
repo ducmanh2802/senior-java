@@ -4583,8 +4583,355 @@ BigDecimal key = amount.setScale(2, RoundingMode.HALF_UP);
 
 ### Liên hệ phỏng vấn
 Câu hỏi "vì sao {{BigDecimal.equals}} và {{compareTo}} khác nhau, khi nào dùng cái nào" rất hay gặp. Trả lời: {{equals}} so cả scale (theo hợp đồng của BigDecimal, nhất quán với {{hashCode}}), {{compareTo}} so giá trị; với tiền luôn dùng {{compareTo}} hoặc chuẩn hoá scale trước; đừng dùng {{double}}; {{new BigDecimal(double)}} là bẫy; {{divide}} phải có scale + RoundingMode; và nhắc tới quy ước scale theo loại tiền.`,
-  related: ['banking-036', 'core-021'],
+related: ['banking-036', 'core-021'],
   tags: ['BigDecimal', 'compareTo', 'scale', 'money', 'reconciliation']
 },
+{
+  id: 'bug-024',
+  title: 'ThreadLocal lưu userId không remove: request sau thấy user của request trước',
+  domain: 'Ngân hàng số / Mobile banking',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 20,
+  story: `**Bối cảnh dự án:** API mobile banking chạy trên Tomcat (thread pool 200 thread). Một filter tự viết đọc token, tra ra userId rồi lưu vào {{UserContext}} (một {{ThreadLocal}}) để các tầng dưới lấy user hiện tại mà không phải truyền tham số. Endpoint {{/history}} trả lịch sử giao dịch của user trong context; nếu không có user thì trả 401.
 
+**Sự cố:** Một khách hàng báo cáo: mở app khi **phiên đăng nhập đã hết hạn**, màn hình vẫn hiện lịch sử giao dịch, nhưng là của **một người khác**. Đội bảo mật tái hiện được khoảng 1 lần mỗi 150 request ẩn danh vào giờ cao điểm. Đây là sự cố lộ dữ liệu cá nhân, phải báo cáo cho bộ phận tuân thủ trong 24 giờ.
+
+**Nhiệm vụ của bạn:** Tìm vì sao user của request trước "chảy" sang request sau và sửa {{AuthFilter}}. Test chạy các request trên **một** worker thread được tái sử dụng, giống Tomcat.`,
+  artifacts: [
+    { name: 'access.log', lang: 'text', content: `09:41:07.212 [http-nio-8080-exec-17] INFO  AuthFilter : token ok user=U-0451907 path=/history
+09:41:07.240 [http-nio-8080-exec-17] INFO  HistoryController : history user=U-0451907 rows=20 status=200
+09:41:09.003 [http-nio-8080-exec-17] WARN  AuthFilter : no/expired token path=/history ip=113.161.x.x
+09:41:09.031 [http-nio-8080-exec-17] INFO  HistoryController : history user=U-0451907 rows=20 status=200
+09:41:11.554 [http-nio-8080-exec-42] INFO  AuthFilter : token ok user=U-0388102 path=/history
+09:41:11.570 [http-nio-8080-exec-42] ERROR HistoryController : history failed user=U-0388102 : QueryTimeoutException
+09:41:12.118 [http-nio-8080-exec-42] WARN  AuthFilter : no/expired token path=/history ip=27.72.x.x
+09:41:12.140 [http-nio-8080-exec-42] INFO  HistoryController : history user=U-0388102 rows=20 status=200` },
+    { name: 'AuthFilter.java (bản chạy trên production)', lang: 'java', content: `@Override
+protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
+        throws ServletException, IOException {
+    String token = req.getHeader("Authorization");
+    if (token != null && tokenService.isValid(token)) {
+        UserContext.set(tokenService.userOf(token));
+    } else {
+        log.warn("no/expired token path={}", req.getRequestURI());
+    }
+    chain.doFilter(req, res);
+}` },
+  ],
+  starter: `// ===== Hạ tầng (KHÔNG cần sửa) =====
+class Request {
+    final String token, path;
+    Request(String token, String path) { this.token = token; this.path = path; }
+}
+
+class UserContext {   // giống SecurityContextHolder / MDC: dữ liệu gắn với THREAD đang chạy
+    private static final ThreadLocal<String> CURRENT = new ThreadLocal<>();
+    static void set(String userId) { CURRENT.set(userId); }
+    static String get() { return CURRENT.get(); }
+    static void clear() { CURRENT.remove(); }
+}
+
+class TokenService {
+    static String userOf(String token) { return "U-" + token.toUpperCase(); }
+}
+
+class HistoryController {
+    String handle(Request req) {
+        String user = UserContext.get();
+        if (user == null) return "401";
+        if (req.path.equals("/history-slow")) throw new IllegalStateException("QueryTimeoutException user=" + user);
+        return "history:" + user;
+    }
+}
+
+// ===== Code cần sửa =====
+class AuthFilter {
+    private final HistoryController controller = new HistoryController();
+
+    String doFilter(Request req) {
+        if (req.token != null) {
+            UserContext.set(TokenService.userOf(req.token));
+        }
+        return controller.handle(req);
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    // Tomcat tái sử dụng thread: mọi request trong test chạy trên CÙNG một worker thread
+    static final ExecutorService worker = Executors.newSingleThreadExecutor();
+    static AuthFilter filter = new AuthFilter();
+
+    static String call(String token, String path) throws Exception {
+        return worker.submit(() -> {
+            try { return filter.doFilter(new Request(token, path)); }
+            catch (RuntimeException e) { return "500"; }
+        }).get(5, TimeUnit.SECONDS);
+    }
+
+    public static void main(String[] args) throws Exception {
+        String a = call("alice", "/history");
+        check("co_token_thay_lich_su_cua_minh", "history:U-ALICE".equals(a), "user có token phải thấy lịch sử của mình, thực tế " + a);
+
+        String anon = call(null, "/history");
+        check("an_danh_khong_thay_du_lieu_nguoi_truoc", "401".equals(anon),
+            "request không token phải nhận 401, thực tế " + anon + " (lộ dữ liệu người trước)");
+
+        String err = call("bob", "/history-slow");
+        String anon2 = call(null, "/history");
+        check("sau_exception_context_van_duoc_don", "500".equals(err) && "401".equals(anon2),
+            "request lỗi của bob không được để lại user cho request sau, thực tế " + err + " rồi " + anon2);
+
+        String left = worker.submit(() -> String.valueOf(UserContext.get())).get(5, TimeUnit.SECONDS);
+        check("thread_tra_ve_pool_sach_se", "null".equals(left), "sau mỗi request ThreadLocal phải trống, thực tế " + left);
+
+        worker.shutdownNow();
+        System.out.println("RESULT " + passed + "/" + total);
+        System.exit(0);
+    }
+}`,
+  reference: `class Request {
+    final String token, path;
+    Request(String token, String path) { this.token = token; this.path = path; }
+}
+
+class UserContext {
+    private static final ThreadLocal<String> CURRENT = new ThreadLocal<>();
+    static void set(String userId) { CURRENT.set(userId); }
+    static String get() { return CURRENT.get(); }
+    static void clear() { CURRENT.remove(); }
+}
+
+class TokenService {
+    static String userOf(String token) { return "U-" + token.toUpperCase(); }
+}
+
+class HistoryController {
+    String handle(Request req) {
+        String user = UserContext.get();
+        if (user == null) return "401";
+        if (req.path.equals("/history-slow")) throw new IllegalStateException("QueryTimeoutException user=" + user);
+        return "history:" + user;
+    }
+}
+
+class AuthFilter {
+    private final HistoryController controller = new HistoryController();
+
+    String doFilter(Request req) {
+        try {
+            if (req.token != null) {
+                UserContext.set(TokenService.userOf(req.token));
+            }
+            return controller.handle(req);
+        } finally {
+            UserContext.clear();   // luôn dọn, kể cả khi controller ném exception: thread sắp quay về pool
+        }
+    }
+}`,
+  hints: [
+    'Log: cùng thread http-nio-8080-exec-17, request không token ngay sau request của U-0451907 lại trả lịch sử của U-0451907. Giá trị trong ThreadLocal sống bao lâu?',
+    'ThreadLocal gắn với thread, không gắn với request. Thread của Tomcat được tái sử dụng, nên nếu không xoá thì giá trị của request trước vẫn còn ở request sau.',
+    'Bọc phần xử lý trong try/finally và gọi UserContext.clear() (ThreadLocal.remove()) trong finally, để cả nhánh exception cũng được dọn.',
+  ],
+  rootCause: `**ThreadLocal không được dọn khi thread quay về pool.** {{UserContext}} lưu user trong {{ThreadLocal}}, tức là gắn với **thread** chứ không phải với request. Tomcat tái sử dụng 200 worker thread cho mọi request. Filter chỉ {{set}} khi có token hợp lệ và **không bao giờ gọi** {{remove()}}, nên:
+- Request ẩn danh rơi vào thread vừa phục vụ U-0451907 vẫn đọc được {{U-0451907}} (log: cùng thread {{exec-17}}, dòng {{no/expired token}} rồi {{history user=U-0451907 status=200}}).
+- Nhánh exception cũng để lại user ({{exec-42}}: request của U-0388102 lỗi {{QueryTimeoutException}}, request ẩn danh sau đó nhận dữ liệu của U-0388102).
+
+Tỉ lệ "khoảng 1/150 request" phản ánh xác suất một request ẩn danh rơi vào thread đã từng phục vụ user khác mà chưa bị ghi đè.`,
+  fix: `### Cách sửa
+Bọc toàn bộ xử lý trong {{try/finally}} và gọi {{UserContext.clear()}} (bên trong là {{ThreadLocal.remove()}}) ở {{finally}}. Quy tắc: **ai set thì người đó remove, trong finally**. Không dùng {{set(null)}}: nó vẫn giữ entry trong map của thread.
+
+### Trên production thật
+- Dùng cơ chế có sẵn của framework thay vì tự viết: Spring Security tự dọn {{SecurityContextHolder}} sau mỗi request (qua {{SecurityContextHolderFilter}}); với log, dùng {{MDC.clear()}} hoặc {{MDC.putCloseable}} trong filter.
+- Thread pool tự quản ({{ExecutorService}}, {{@Async}}) cũng có vấn đề này: context không tự truyền sang thread mới và không tự dọn. Dùng {{TaskDecorator}} để copy context vào và dọn sau khi task chạy xong.
+- Ngoài lộ dữ liệu, ThreadLocal không dọn còn gây **memory leak**: object lớn (hoặc ClassLoader khi redeploy) bị giữ bởi thread sống mãi.
+- Java 21: virtual thread không được pool nên ít gặp lỗi "chảy" context, nhưng hàng triệu virtual thread mỗi cái giữ một bản sao ThreadLocal thì tốn bộ nhớ. {{ScopedValue}} (preview trong 21, final trong 25) là cách thay thế có phạm vi rõ ràng.
+
+### Phòng ngừa
+- Test chạy nhiều request trên **cùng một** thread (single-thread executor) như bài này; test mỗi request một thread mới sẽ không bao giờ thấy lỗi.
+- Review: mỗi {{ThreadLocal.set}} phải có {{remove}} trong {{finally}} tương ứng.
+
+### Liên hệ phỏng vấn
+Câu "ThreadLocal dùng khi nào và rủi ro gì trong thread pool?" rất hay gặp. Trả lời đủ 2 rủi ro: lộ dữ liệu giữa request (bảo mật) và memory leak, kèm cách dọn bằng try/finally và TaskDecorator.
+
+> Senior tip: ThreadLocal là "biến toàn cục theo thread". Trong thread pool, thread sống lâu hơn request rất nhiều. Luôn dùng try/finally để remove. Nếu framework có sẵn (Spring Security, MDC) hãy dùng thay vì tự viết — đã được test kỹ hơn.`,
+  related: ['concurrency-008', 'concurrency-007'],
+  tags: ['ThreadLocal', 'thread pool', 'security', 'data leak', 'context propagation']
+},
+{
+  id: 'bug-025',
+  title: 'Connection leak: mở JDBC Connection thủ công không đóng khi có exception, pool cạn sau vài giờ',
+  domain: 'Fintech / Báo cáo merchant',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 20,
+  story: `**Bối cảnh dự án:** Service báo cáo cho merchant mượn connection từ **pool** (trong dự án thật là HikariCP) để chạy truy vấn báo cáo. Pool có kích thước cố định.
+
+**Sự cố:** Một merchant có dữ liệu lỗi khiến truy vấn báo cáo ném exception. Sau vài lần merchant đó bấm "Tải lại", **toàn bộ** service báo lỗi {{Connection is not available, request timed out after 30000ms}} cho mọi merchant khác. Restart pod thì hết, vài giờ sau lại bị. Pool có 10 connection, nhưng dashboard cho thấy 10/10 đang "active" dù DB không có query nào chạy.
+
+**Nhiệm vụ của bạn:** Tìm vì sao connection không quay về pool và sửa {{ReportService.monthlyReport}}.`,
+  artifacts: [
+    { name: 'report-service.log', lang: 'text', content: `14:02:11.402 ERROR ReportService : report failed merchant=M-0091 : java.lang.IllegalStateException: corrupt row id=88123
+14:02:19.877 ERROR ReportService : report failed merchant=M-0091 : java.lang.IllegalStateException: corrupt row id=88123
+14:02:25.130 ERROR ReportService : report failed merchant=M-0091 : java.lang.IllegalStateException: corrupt row id=88123
+... (7 more)
+14:04:02.611 WARN  HikariPool-1  : Connection leak detection triggered for conn10 on thread http-nio-8080-exec-4, stack trace follows
+        at ReportService.monthlyReport(ReportService.java:21)
+14:05:40.003 ERROR ReportService : report failed merchant=M-0007 : SQLTransientConnectionException: HikariPool-1 - Connection is not available, request timed out after 30000ms (total=10, active=10, idle=0, waiting=37)` },
+  ],
+  starter: `// ===== Hạ tầng (mô phỏng HikariCP, KHÔNG cần sửa) =====
+class PoolExhaustedException extends RuntimeException {
+    PoolExhaustedException(String m) { super(m); }
+}
+
+class ConnectionPool {
+    private final int max;
+    private int inUse = 0;
+    ConnectionPool(int max) { this.max = max; }
+    synchronized Connection borrow() {
+        if (inUse >= max) throw new PoolExhaustedException("Connection is not available (active=" + inUse + "/" + max + ")");
+        inUse++;
+        return new Connection(this);
+    }
+    synchronized void giveBack() { inUse--; }
+    synchronized int active() { return inUse; }
+}
+
+class Connection implements AutoCloseable {
+    private final ConnectionPool pool;
+    private boolean closed = false;
+    Connection(ConnectionPool pool) { this.pool = pool; }
+    String query(String merchantId) {
+        if (merchantId.startsWith("BAD")) throw new IllegalStateException("corrupt row for " + merchantId);
+        return "report:" + merchantId;
+    }
+    @Override public void close() {            // trả connection về pool (gọi nhiều lần cũng an toàn)
+        if (!closed) { closed = true; pool.giveBack(); }
+    }
+}
+
+// ===== Code cần sửa =====
+class ReportService {
+    private final ConnectionPool pool;
+    ReportService(ConnectionPool pool) { this.pool = pool; }
+
+    String monthlyReport(String merchantId) {
+        Connection c = pool.borrow();
+        String data = c.query(merchantId);
+        c.close();
+        return data;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        ConnectionPool pool = new ConnectionPool(3);
+        ReportService s = new ReportService(pool);
+
+        check("bao_cao_binh_thuong", "report:M-1".equals(s.monthlyReport("M-1")) && pool.active() == 0,
+            "báo cáo bình thường phải trả connection, active=" + pool.active());
+
+        int errors = 0;
+        for (int i = 0; i < 10; i++) {
+            try { s.monthlyReport("BAD-91"); } catch (IllegalStateException e) { errors++; } catch (RuntimeException e) { /* pool cạn */ }
+        }
+        check("loi_du_lieu_van_tra_connection", errors == 10 && pool.active() == 0,
+            "sau 10 lần lỗi dữ liệu, pool phải trống (active=0), thực tế active=" + pool.active() + ", lỗi đúng kiểu=" + errors);
+
+        String after = null;
+        try { after = s.monthlyReport("M-7"); } catch (RuntimeException e) { after = "EXC " + e.getMessage(); }
+        check("merchant_khac_khong_bi_anh_huong", "report:M-7".equals(after), "merchant khác phải chạy được, thực tế " + after);
+
+        boolean propagated = false;
+        try { s.monthlyReport("BAD-2"); } catch (IllegalStateException e) { propagated = true; } catch (RuntimeException e) { propagated = false; }
+        check("loi_goc_khong_bi_nuot", propagated, "lỗi dữ liệu phải được ném ra cho controller (không nuốt, không đổi kiểu)");
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `class PoolExhaustedException extends RuntimeException {
+    PoolExhaustedException(String m) { super(m); }
+}
+
+class ConnectionPool {
+    private final int max;
+    private int inUse = 0;
+    ConnectionPool(int max) { this.max = max; }
+    synchronized Connection borrow() {
+        if (inUse >= max) throw new PoolExhaustedException("Connection is not available (active=" + inUse + "/" + max + ")");
+        inUse++;
+        return new Connection(this);
+    }
+    synchronized void giveBack() { inUse--; }
+    synchronized int active() { return inUse; }
+}
+
+class Connection implements AutoCloseable {
+    private final ConnectionPool pool;
+    private boolean closed = false;
+    Connection(ConnectionPool pool) { this.pool = pool; }
+    String query(String merchantId) {
+        if (merchantId.startsWith("BAD")) throw new IllegalStateException("corrupt row for " + merchantId);
+        return "report:" + merchantId;
+    }
+    @Override public void close() {
+        if (!closed) { closed = true; pool.giveBack(); }
+    }
+}
+
+class ReportService {
+    private final ConnectionPool pool;
+    ReportService(ConnectionPool pool) { this.pool = pool; }
+
+    String monthlyReport(String merchantId) {
+        // try-with-resources: close() luôn được gọi, kể cả khi query ném exception
+        try (Connection c = pool.borrow()) {
+            return c.query(merchantId);
+        }
+    }
+}`,
+  hints: [
+    'Đi theo đường chạy khi query ném exception: dòng c.close() có được chạy không?',
+    'Mỗi lần lỗi, một connection bị "mượn" mà không bao giờ trả. Pool có giới hạn nên sau vài lần lỗi thì cạn.',
+    'Connection implements AutoCloseable: dùng try-with-resources để close luôn chạy. Đừng bắt và nuốt exception — controller vẫn cần biết lỗi.',
+  ],
+  rootCause: `**Rò rỉ connection trên nhánh lỗi.** {{c.close()}} chỉ chạy khi {{query}} thành công; khi dữ liệu lỗi làm {{query}} ném exception, method thoát ngay và connection **không bao giờ được trả về pool**. Merchant M-0091 bấm tải lại 10 lần → 10/10 connection bị giữ vĩnh viễn ({{active=10, idle=0}} trong khi DB không chạy query nào) → mọi request khác chờ 30 giây rồi lỗi. Dòng {{Connection leak detection triggered ... at ReportService.monthlyReport}} của HikariCP chỉ thẳng vào chỗ mượn connection mà không trả. Restart pod "chữa" được vì tạo pool mới.`,
+  fix: `### Cách sửa
+Dùng **try-with-resources**: {{close()}} được gọi khi rời khối, kể cả khi có exception; exception gốc vẫn được ném ra cho controller xử lý.
+~~~java
+try (Connection c = pool.borrow()) {
+    return c.query(merchantId);
+}
+~~~
+
+### Trên production thật
+- Trong Spring, hầu như **không tự mượn connection**: dùng {{JdbcTemplate}}, Spring Data, hoặc {{@Transactional}} — framework tự trả connection. Rò rỉ thường xuất hiện khi tự gọi {{dataSource.getConnection()}}, tự mở {{EntityManager}}, hoặc stream kết quả ({{Stream<T>}} từ repository) mà không đóng.
+- Bật **{{leakDetectionThreshold}}** của HikariCP (ví dụ 20000ms) ở môi trường test và staging: Hikari in stack trace nơi mượn connection quá lâu.
+- Theo dõi metric {{hikaricp_connections_active}} và {{hikaricp_connections_pending}}; cảnh báo khi active chạm max kéo dài.
+- Lỗi do **một** merchant không được làm sập **mọi** merchant: cân nhắc bulkhead (pool riêng cho báo cáo nặng) và timeout truy vấn.
+
+### Phòng ngừa
+- Static analysis (SpotBugs OBL_UNSATISFIED_OBLIGATION, Sonar "Resources should be closed").
+- Test nhánh lỗi: sau N lần lỗi, pool phải trống.
+
+### Liên hệ phỏng vấn
+Câu "service báo hết connection nhưng DB rảnh — bạn điều tra thế nào?" rất hay gặp: nêu leak detection của Hikari, metric active/idle/pending, thread dump, và try-with-resources/để framework quản lý connection.
+
+> Senior tip: Connection pool leak là "killer" lặng lẽ: hệ thống chạy ngon vài giờ rồi chết hẳn. Luôn bật leakDetectionThreshold ở staging, và nhớ rằng Spring quản lý connection tốt hơn code thủ công. Nếu buộc phải tự mượn, try-with-resources là bắt buộc.`,
+  related: ['core-015'],
+  tags: ['connection pool', 'HikariCP', 'resource leak', 'try-with-resources']
+},
 );
