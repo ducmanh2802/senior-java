@@ -1,6 +1,6 @@
 {
   "date": "2026-11-14",
-  "intro": "Hôm nay thị trường Hà Nội nghiêng về ngân hàng/chứng khoán (Techcombank, MSB, VPBank Securities, Goline) với vị trí Tech Lead và backend microservices, cùng vài tin yêu cầu dùng thành thạo AI coding agent. Phần lớn tin không công bố lương công khai và đều làm tại văn phòng.",
+  "intro": "Hôm nay thị trường Hà Nội nghiêng về ngân hàng/chứng khoán (Techcombank, MSB, VPBank Securities, Goline) với vị trí Tech Lead và backend microservices, cùng vài tin yêu cầu dùng thành thạo AI coding agent. Phần lớn tin không công bố lương công khai và đều làm tại văn phòng. Bổ sung chiều: VinFast tuyển Senior Java tại Vinhomes Ocean Park (EV, AWS, event-driven), cùng SHS và MB Bank.",
   "editor": "claude",
   "items": [
     {
@@ -11,11 +11,25 @@
       "location": "Hà Nội (onsite)",
       "level": "lead",
       "posted": "2026-11-12",
-      "skills": ["Java", "Spring Boot", "Microservices", "SOLID", "Team Management"],
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "Microservices",
+        "SOLID",
+        "Team Management"
+      ],
       "summary": "Vị trí kỹ thuật kiêm quản lý tại ngân hàng lớn: thiết kế kiến trúc mức thấp, phát triển, dẫn dắt code review, thúc đẩy testing và test automation, đồng thời tuyển dụng và đánh giá thành viên. Yêu cầu khoảng 10 năm kinh nghiệm kỹ sư, ít nhất 2 năm quản lý, Java/Spring Boot/microservices và tiếng Anh tốt. Làm thứ Hai đến thứ Sáu, tin ghi không OT.",
       "prep": "Ôn thiết kế microservices, design patterns và SOLID, concurrency và hiệu năng. Chuẩn bị câu chuyện lãnh đạo: code review, mentoring, xử lý xung đột, ra quyết định kiến trúc có số liệu.",
-      "topics": ["microservices", "architecture", "behavioral", "banking"],
-      "tags": ["banking", "tech-lead"]
+      "topics": [
+        "microservices",
+        "architecture",
+        "behavioral",
+        "banking"
+      ],
+      "tags": [
+        "banking",
+        "tech-lead"
+      ]
     },
     {
       "title": "Chief Developer/Technical Lead - Onsite Hanoi",
@@ -25,11 +39,28 @@
       "location": "Hà Nội (onsite)",
       "level": "lead",
       "posted": "2026-11-10",
-      "skills": ["Java", "Spring", "JPA", "PostgreSQL", "OAuth2", "React", "Next.js"],
+      "skills": [
+        "Java",
+        "Spring",
+        "JPA",
+        "PostgreSQL",
+        "OAuth2",
+        "React",
+        "Next.js"
+      ],
       "summary": "Nhà phát triển phần mềm có trụ sở Singapore, sản phẩm ERP chạy trên web nền J2EE. Vai trò dẫn dắt định hướng kỹ thuật và kiến trúc cho team R&D Hà Nội, kèm theo di chuyển hệ thống monolith cũ sang API cộng giao diện hiện đại. Yêu cầu từ 7 năm Java, 3 năm dẫn dắt team, REST API, OAuth2/OIDC/JWT, multi-tenant và PostgreSQL.",
       "prep": "Ôn chiến lược tách monolith (strangler), thiết kế REST API, bảo mật OAuth2/OIDC/JWT, cách cô lập dữ liệu multi-tenant. Chuẩn bị nói tiếng Anh về vai trò lead và phối hợp với HQ.",
-      "topics": ["architecture", "security", "api", "db"],
-      "tags": ["product", "erp", "tech-lead"]
+      "topics": [
+        "architecture",
+        "security",
+        "api",
+        "db"
+      ],
+      "tags": [
+        "product",
+        "erp",
+        "tech-lead"
+      ]
     },
     {
       "title": "Java Backend Developer (Spring, SQL) - SBSI",
@@ -39,11 +70,27 @@
       "location": "Hà Nội (onsite)",
       "level": "mid",
       "posted": "2026-11-05",
-      "skills": ["Java", "Spring Boot", "Hibernate/JPA", "SQL", "Kafka", "DDD", "CQRS"],
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "Hibernate/JPA",
+        "SQL",
+        "Kafka",
+        "DDD",
+        "CQRS"
+      ],
       "summary": "Ngân hàng tuyển backend xây dựng và vận hành microservices cho sản phẩm số và hệ thống lõi, cung cấp RESTful API và làm việc cùng PO, BA, QA. Yêu cầu từ 3 năm Java và microservices, hiểu DDD, CQRS, event-driven; Docker/Kubernetes và kinh nghiệm ngân hàng, chứng khoán là điểm cộng. Tin nhắc đến gói thu nhập tới 20 tháng lương.",
       "prep": "Ôn Spring Boot, JPA (N+1, transaction), tối ưu SQL, Kafka (delivery semantics, idempotency), DDD và CQRS. Chuẩn bị ví dụ event-driven đã làm.",
-      "topics": ["spring", "jpa", "microservices", "banking"],
-      "tags": ["banking", "microservices"]
+      "topics": [
+        "spring",
+        "jpa",
+        "microservices",
+        "banking"
+      ],
+      "tags": [
+        "banking",
+        "microservices"
+      ]
     },
     {
       "title": "Backend Developer (Java, Spring Boot, PostgreSQL)",
@@ -53,11 +100,27 @@
       "location": "Hà Nội (onsite)",
       "level": "senior",
       "posted": "2026-11-05",
-      "skills": ["Java", "Spring Boot", "PostgreSQL", "Oracle", "Kafka", "Docker", "Kubernetes"],
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "PostgreSQL",
+        "Oracle",
+        "Kafka",
+        "Docker",
+        "Kubernetes"
+      ],
       "summary": "Công ty chứng khoán tuyển backend thiết kế, phát triển, nâng cấp và bảo trì ứng dụng, bảo đảm hiệu năng và chất lượng trước khi chuyển sang test. Bậc senior yêu cầu từ 5 năm Java backend, Spring Boot, PostgreSQL và Oracle, design patterns; CI/CD, Docker, Kubernetes, Kafka là điểm cộng. Cần đọc tài liệu kỹ thuật tiếng Anh.",
       "prep": "Ôn Spring Boot, transaction và isolation level, index và execution plan PostgreSQL, design patterns. Tìm hiểu nghiệp vụ chứng khoán cơ bản (đặt lệnh, khớp lệnh, T+).",
-      "topics": ["spring", "sql", "db", "banking"],
-      "tags": ["securities", "fintech"]
+      "topics": [
+        "spring",
+        "sql",
+        "db",
+        "banking"
+      ],
+      "tags": [
+        "securities",
+        "fintech"
+      ]
     },
     {
       "title": "Java Developer (SpringBoot, Oracle, Kafka, PostgreSQL)",
@@ -67,11 +130,27 @@
       "location": "Hà Nội (onsite)",
       "level": "senior",
       "posted": "2026-11-11",
-      "skills": ["Java", "Spring Boot", "Oracle", "PostgreSQL", "Kafka", "Redis", "Kubernetes"],
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "Oracle",
+        "PostgreSQL",
+        "Kafka",
+        "Redis",
+        "Kubernetes"
+      ],
       "summary": "Công ty giải pháp cho ngân hàng và chứng khoán cần backend xây dựng và tối ưu API, microservices. Yêu cầu từ 4 năm kinh nghiệm, hệ phân tán chú trọng sẵn sàng cao và chịu lỗi, Oracle hoặc PostgreSQL, Kafka, Redis, observability, và dùng AI coding agent trong quy trình làm việc. Có lộ trình lên Tech Lead hoặc Solution Architect.",
       "prep": "Ôn thiết kế hệ phân tán (retry, idempotency, circuit breaker), tuning query và concurrency trong database, Redis caching. Chuẩn bị mô tả cách bạn dùng AI agent và kiểm soát chất lượng code do AI sinh.",
-      "topics": ["microservices", "design", "sql", "ai"],
-      "tags": ["fintech", "ai-tools"]
+      "topics": [
+        "microservices",
+        "design",
+        "sql",
+        "ai"
+      ],
+      "tags": [
+        "fintech",
+        "ai-tools"
+      ]
     },
     {
       "title": "Middle/Senior Fullstack Developer (AI, Java, Python)",
@@ -81,11 +160,145 @@
       "location": "Hà Nội (onsite, WFH 1 ngày/tuần)",
       "level": "senior",
       "posted": "2026-11-04",
-      "skills": ["Java", "Python", "Go", "AWS", "Terraform", "CI/CD"],
+      "skills": [
+        "Java",
+        "Python",
+        "Go",
+        "AWS",
+        "Terraform",
+        "CI/CD"
+      ],
       "summary": "Công ty IT Nhật Bản thuộc hệ sinh thái Septeni, làm việc trực tiếp với khách hàng Nhật. Vai trò full-lifecycle từ yêu cầu đến giám sát, gồm hạ tầng cloud, CI/CD và điều phối AI coding agent. Cần mạnh một ngôn ngữ trong Go/Python/Java/Node.js, kinh nghiệm ít nhất 3 trong 6 mảng (backend, cloud, DevOps, testing, vận hành, bảo mật), tiếng Anh chuyên nghiệp.",
       "prep": "Ôn nền tảng cloud và CI/CD (AWS, Terraform), observability, testing. Luyện trả lời tiếng Anh về dự án và cách bạn dùng công cụ AI có kiểm soát.",
-      "topics": ["aws", "devops", "english", "testing"],
-      "tags": ["outsource", "japan"]
+      "topics": [
+        "aws",
+        "devops",
+        "english",
+        "testing"
+      ],
+      "tags": [
+        "outsource",
+        "japan"
+      ]
+    },
+    {
+      "title": "Senior Java Developer",
+      "company": "VinFast Service (Vingroup)",
+      "url": "https://vn.joboko.com/viec-lam-senior-java-developer-xvi6756957",
+      "source": "Joboko",
+      "location": "Hà Nội (onsite, Technopark Tower, Vinhomes Ocean Park)",
+      "level": "senior",
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "Spring Cloud",
+        "Kafka",
+        "MQTT",
+        "OAuth2/OIDC",
+        "PostgreSQL",
+        "AWS"
+      ],
+      "summary": "Backend cho hệ sinh thái xe điện và di chuyển thông minh: xây và duy trì service Java/Spring Boot, vẽ lại kiến trúc hiện tại, tìm điểm nghẽn rồi đề xuất kiến trúc đích **event-driven**, an toàn, chịu lỗi (gộp, tách hoặc khai tử service). Tích hợp CRM, SAP, cổng thanh toán; dùng nhiều dịch vụ AWS (EKS/ECS, Lambda, DynamoDB, Kinesis, IoT Core). Lương thoả thuận.",
+      "prep": "Ôn microservices và event-driven (Kafka, outbox, idempotency), OAuth2/OIDC với Spring Security, tối ưu index và query PostgreSQL, các dịch vụ AWS chính. Chuẩn bị kể một lần bạn phân tích hệ thống cũ và đề xuất refactor, kèm sơ đồ sequence. Điểm cộng: IoT/MQTT, connected vehicle.",
+      "topics": [
+        "microservices",
+        "spring",
+        "security",
+        "aws",
+        "sql",
+        "architecture"
+      ],
+      "tags": [
+        "vingroup",
+        "ev",
+        "ocean-park"
+      ]
+    },
+    {
+      "title": "Senior Backend Developer (Java, Spring, SQL)",
+      "company": "SHS | Chứng khoán Sài Gòn - Hà Nội",
+      "url": "https://itviec.com/it-jobs/senior-backend-developer-java-spring-sql-shs-chung-khoan-sai-gon-ha-noi-5831",
+      "source": "ITviec",
+      "location": "Hà Nội (onsite, Lý Thường Kiệt)",
+      "level": "senior",
+      "skills": [
+        "Java 11+",
+        "Spring Boot",
+        "Microservices",
+        "Oracle",
+        "Elasticsearch",
+        "Kafka",
+        "Redis"
+      ],
+      "summary": "Công ty chứng khoán tuyển backend từ **5 năm Java**: cùng Tech Lead thiết kế giải pháp (kiến trúc, tích hợp API, lưu trữ), làm tính năng phức tạp, cải tiến hệ thống legacy, xử lý sự cố production, tối ưu hiệu năng và kèm cặp đồng đội. Yêu cầu REST, microservices, giao dịch phân tán, RDBMS + Elasticsearch, tối ưu SQL (PL/SQL là lợi thế). Làm thứ Hai đến thứ Sáu, tin ghi không OT.",
+      "prep": "Ôn giao dịch phân tán (Saga, outbox), tối ưu SQL và execution plan Oracle, Elasticsearch cơ bản, Spring Security, Redis cache. Chuẩn bị câu chuyện xử lý sự cố production và cải tiến hệ thống cũ. Tìm hiểu nghiệp vụ chứng khoán: lệnh, khớp lệnh, T+.",
+      "topics": [
+        "microservices",
+        "sql",
+        "spring",
+        "banking",
+        "scenario"
+      ],
+      "tags": [
+        "securities"
+      ]
+    },
+    {
+      "title": "(Middle, Senior) FullStack Developer (Java, Go)",
+      "company": "MB Bank",
+      "url": "https://itviec.com/it-jobs/middle-senior-fullstack-developer-java-go-mb-bank-0143",
+      "source": "ITviec",
+      "location": "Hà Nội (onsite, 18 Lê Văn Lương)",
+      "level": "senior",
+      "skills": [
+        "Java",
+        "Go",
+        "Spring",
+        "Kafka",
+        "Oracle",
+        "MongoDB",
+        "API Gateway"
+      ],
+      "summary": "Trực tiếp code hệ thống nội bộ và ứng dụng khách hàng cho ngân hàng khoảng 30 triệu khách cá nhân: xây service tích hợp core (T24, WAY4, BPM, CRM, CIC), quản lý API trên API Gateway cho đối tác trong và ngoài nước, thử nghiệm công nghệ mới và dẫn nhóm 3–6 người. Ưu tiên Java hoặc Go; quan tâm Event Sourcing, CQRS, Docker/Kubernetes.",
+      "prep": "Ôn thiết kế API cho đối tác (versioning, bảo mật, rate limit), tích hợp core banking và xử lý lỗi khi gọi hệ thống ngoài (timeout, retry, idempotency), Kafka, CQRS/Event Sourcing ở mức khái niệm. Chuẩn bị câu chuyện dẫn nhóm nhỏ và lập kế hoạch công việc.",
+      "topics": [
+        "banking",
+        "api",
+        "microservices",
+        "spring",
+        "devops"
+      ],
+      "tags": [
+        "bank"
+      ]
+    },
+    {
+      "title": "Fullstack Developer (Java, VueJS, PostgreSQL, SQL)",
+      "company": "Usol Vietnam",
+      "url": "https://itviec.com/it-jobs/fullstack-developer-javascripts-sping-postgresql-usol-vietnam-4634",
+      "source": "ITviec",
+      "location": "Hà Nội (onsite, tối đa 3 ngày WFH/tuần)",
+      "level": "mid",
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "VueJS",
+        "PostgreSQL",
+        "Oracle",
+        "SQL"
+      ],
+      "summary": "Công ty outsource cho khách Nhật lâu năm: phát triển mới, cải tiến và bảo trì hệ thống nghiệp vụ (hàng không, đường sắt, ngân hàng, dịch vụ công), tham gia từ phân tích yêu cầu, thiết kế cơ bản và chi tiết tới code review, unit test. Yêu cầu **từ 2 năm Java**; được khuyến khích dùng AI coding tool. Tiếng Nhật N3 là lợi thế.",
+      "prep": "Ôn Spring Boot + JPA, SQL nghiệp vụ (join, group, window function), unit test với JUnit/Mockito. Chuẩn bị cách làm việc với khách Nhật: tài liệu thiết kế chi tiết, quy trình review, báo cáo lỗi. Nếu có, nêu kinh nghiệm dùng AI tool để viết test hoặc review code.",
+      "topics": [
+        "spring",
+        "jpa",
+        "sql",
+        "testing"
+      ],
+      "tags": [
+        "outsourcing",
+        "japan"
+      ]
     }
   ]
 }
