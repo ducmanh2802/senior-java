@@ -2076,5 +2076,434 @@ Tôi sẽ giải thích rằng Java truyền giá trị tham chiếu, nên truy�
   related: ['core-002'],
   tags: ['immutability', 'defensive-copy', 'List.copyOf', 'aliasing']
 },
-);
+{
+  id: 'lesson-core-012',
+  track: 'core',
+  order: 12,
+  title: 'Exception đúng chuẩn: checked vs unchecked, wrap giữ cause, try-with-resources và suppressed',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Phân biệt checked và unchecked exception dựa trên câu hỏi ai có thể phục hồi lỗi một cách có ý nghĩa',
+    'Bọc (wrap) exception ở ranh giới tầng mà vẫn giữ nguyên cause để truy vết nguyên nhân gốc',
+    'Giải thích cơ chế try-with-resources: đóng ngược thứ tự, lỗi chính và suppressed exception khi nhiều lần close cùng thất bại'
+  ],
+  body: `**Tóm tắt:** Exception (ngoại lệ) là tín hiệu cho biết luồng thực thi bình thường không thể tiếp tục; chọn checked hay unchecked phụ thuộc vào việc caller (bên gọi) có hành động phục hồi thực tế hay không. Khi chuyển lỗi qua ranh giới tầng phải bọc và truyền {{cause}} (nguyên nhân gốc) để không mất dấu vết; {{try-with-resources}} đóng tài nguyên theo thứ tự ngược và giữ các lỗi đóng phụ trong {{getSuppressed()}}.
 
+### Exception là gì và vì sao cần phân loại
+Trong Java, khi gặp tình huống bất thường, chương trình có thể {{throw}} (ném) một object exception. JVM (Java Virtual Machine, máy ảo chạy bytecode Java) dừng thực thi tại điểm đó, tìm khối {{catch}} phù hợp trên call stack (ngăn xếp lời gọi hàm) và tháo dần các frame (khung gọi hàm) ở giữa. Nếu không có nơi nào bắt, thread (luồng thực thi) kết thúc với uncaught exception handler. Vì exception làm luồng đi "đường tắt", ta phải thiết kế để: (1) người có đủ ngữ cảnh mới xử lý, (2) tài nguyên (resource: file, kết nối DB - cơ sở dữ liệu, socket mạng) luôn được giải phóng, (3) thông tin chẩn đoán không bị mất.
+
+Java chia exception thành hai nhóm chính theo cách compiler (trình biên dịch) kiểm tra:
+- **Checked exception**: kế thừa {{Exception}} nhưng không phải {{RuntimeException}}. Compiler bắt buộc caller phải {{catch}} hoặc khai báo {{throws}}. Dùng khi caller thực sự có lựa chọn phục hồi hữu ích (ví dụ: file cấu hình tuỳ chọn thiếu, cho người dùng chọn file khác; endpoint phụ lỗi có thể fallback sang nguồn khác).
+- **Unchecked exception**: kế thừa {{RuntimeException}} (hoặc {{Error}}). Compiler không bắt buộc xử lý. Dùng cho vi phạm hợp đồng/lập trình (null không hợp lệ, index sai), hoặc lỗi hạ tầng mà tầng hiện tại không thể sửa và nên để một bộ xử lý tập trung (boundary - ranh giới) quyết định trả mã lỗi, log, hoặc alert.
+
+| Tiêu chí | Checked | Unchecked (Runtime) |
+|---|---|---|
+| Compiler ép xử lý | Có ({{throws}} hoặc {{catch}}) | Không |
+| Người phục hồi | Caller ngay tại chỗ có hành động cụ thể | Boundary/middleware hoặc không phục hồi được |
+| Ví dụ điển hình | {{IOException}} khi đọc file tuỳ chọn | {{IllegalArgumentException}}, {{IllegalStateException}}, lỗi timeout DB được bọc lại |
+| Rủi ro | Lan {{throws}} khắp chữ ký, code khó đọc | Bị bỏ sót nếu boundary không xử lý thống nhất |
+
+> Lưu ý thực tế với Spring: {{@Transactional}} mặc định rollback (hoàn tác giao dịch) khi gặp {{RuntimeException}} hoặc {{Error}}; checked exception mặc định **không** rollback trừ khi cấu hình {{rollbackFor}}. Vì vậy đừng bọc lỗi ghi DB thành checked chỉ để "đủ khai báo" rồi vô tình commit trạng thái dở dang.
+
+### Bọc exception và giữ nguyên cause
+Ở ranh giới tầng (ví dụ repository → service → controller), ta thường chuyển exception kỹ thuật ({{SQLException}}, {{IOException}}) thành exception mang ngữ cảnh nghiệp vụ. Điều quan trọng: **phải truyền exception gốc làm cause** để stack trace (vết ngăn xếp lỗi) còn giữ nguyên nhân thật.
+
+~~~java
+class PaymentStoreException extends RuntimeException {
+    PaymentStoreException(String message, Throwable cause) {
+        super(message, cause); // giu cause de truy vet
+    }
+}
+
+// Tang repository: chuyen loi ky thuat, giu cause
+try {
+    return jdbc.query(sql, mapper, orderId);
+} catch (RuntimeException e) {
+    throw new PaymentStoreException("Khong tai duoc don hang " + orderId, e);
+}
+~~~
+
+Khi in log, JVM sẽ hiển thị dòng "Caused by: ..." nối chuỗi nguyên nhân. Nếu bạn {{throw new X("msg")}} mà bỏ cause, hoặc bắt lỗi rồi ném lỗi mới không gắn cause, người điều tra production sẽ chỉ thấy triệu chứng ở tầng trên (ví dụ "500 lỗi thanh toán") mà mất manh mối gốc (timeout kết nối, unique constraint - ràng buộc duy nhất vi phạm, sai câu SQL).
+
+Sai lầm hay gặp: bắt {{Exception}} rồi {{return null}} hoặc nuốt lỗi im lặng — caller không phân biệt được "không có dữ liệu" với "hệ thống lỗi". Chỉ catch đúng loại lỗi bạn xử lý được; nếu không xử lý được thì bọc và ném tiếp.
+
+### try-with-resources và suppressed exception
+Tài nguyên như file, stream (luồng dữ liệu), kết nối cần được đóng sau khi dùng. Trước Java 7, phải viết {{finally}} thủ công và rất dễ sai (lỗi trong {{close()}} có thể che mất lỗi trong thân khối). Từ Java 7, {{try-with-resources}} tự động đóng mọi tài nguyên implement {{AutoCloseable}} (giao diện cho phép đóng tự động).
+
+Cơ chế từng bước:
+1. Các tài nguyên trong ngoặc tròn được khởi tạo theo thứ tự khai báo. Nếu tài nguyên thứ hai lỗi khi khởi tạo, tài nguyên thứ nhất đã mở vẫn được đóng.
+2. Chạy thân {{try}}. Nếu thân ném exception A, A được ghi nhớ là **lỗi chính**.
+3. Khi rời khối (dù bình thường, {{return}}, hay do exception), Java gọi {{close()}} theo **thứ tự ngược** khai báo. Lý do: tài nguyên khai báo sau thường phụ thuộc tài nguyên trước (ví dụ {{BufferedReader}} bọc {{InputStream}}), nên phải đóng lớp ngoài trước.
+4. Nếu một {{close()}} ném exception B trong khi đã có lỗi chính A, B **không** thay thế A mà được gắn vào A bằng {{A.addSuppressed(B)}}. Caller nhận A và có thể duyệt {{A.getSuppressed()}} để thấy toàn bộ lỗi đóng.
+5. Nếu thân không lỗi nhưng {{close()}} đầu tiên (theo thứ tự đóng) ném B, B trở thành lỗi chính; các lỗi {{close()}} sau gắn vào suppressed của B.
+
+~~~java
+try (Res outer = new Res("OUT", log, failCloseOut);
+     Res inner = new Res("IN", log, failCloseIn)) {
+    doWork(failWork, log); // neu loi: van dong IN roi OUT
+}
+// khai bao OUT, IN -> dong IN truoc, OUT sau
+~~~
+
+Trong ví dụ trên, nếu {{doWork}} ném "WORK_FAIL", {{inner.close()}} ném "IN_CLOSE_FAIL", {{outer.close()}} ném "OUT_CLOSE_FAIL" thì caller nhận "WORK_FAIL" làm lỗi chính và mảng suppressed chứa ["IN_CLOSE_FAIL", "OUT_CLOSE_FAIL"] theo đúng thứ tự đóng.
+
+### Ví dụ đời thực
+Một batch job (tác vụ chạy nền theo lô) ghi báo cáo: mở kết nối DB, mở file tạm, ghi dữ liệu rồi đóng cả hai. Code cũ dùng {{finally}} lồng nhau: khi ghi lỗi và đồng thời {{close()}} file cũng lỗi (ổ đĩa đầy không flush được buffer - vùng đệm), exception từ {{close()}} ghi đè làm log chỉ thấy "disk full" mà mất lỗi nghiệp vụ gốc "duplicate key" (vi phạm khoá duy nhất). Sau khi chuyển sang try-with-resources, lỗi "duplicate key" là lỗi chính, "disk full" nằm trong suppressed; nhóm vận hành sửa được cả ràng buộc dữ liệu lẫn cấu hình dung lượng. Triệu chứng ban đầu: dữ liệu thiếu nhưng log chỉ báo lỗi hạ tầng. Cách sửa: dùng try-with-resources và khi log luôn duyệt {{getSuppressed()}}.
+
+### Lỗi hay gặp
+- **Nuốt exception**: bắt {{Exception}} rồi bỏ trống (không xử lý, không ném lại) hoặc chỉ log message không log stack/cause → mất dấu vết, bug im lặng.
+- **Mất cause khi wrap**: {{throw new ServiceException(e.getMessage())}} quên truyền {{e}} → mất stack gốc.
+- **Retry sai loại lỗi**: retry cả lỗi validation (sai đầu vào, không bao giờ đúng) hoặc retry ghi không idempotent (không có khóa nhận dạng yêu cầu trùng để chặn ghi lặp) → tạo dữ liệu trùng hoặc quá tải.
+- **Chỉ đọc lỗi chính, bỏ suppressed**: bỏ qua lỗi flush/close → rò rỉ tài nguyên hoặc dữ liệu chưa ghi xuống đĩa mà hệ thống tưởng thành công.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế exception em luôn hỏi: ai có thể phục hồi lỗi này một cách có ý nghĩa? Nếu caller ngay tại chỗ có lựa chọn cụ thể như fallback hay hỏi người dùng, em cân nhắc checked exception; còn lỗi do vi phạm hợp đồng hoặc lỗi hạ tầng không sửa được tại chỗ thì dùng unchecked và để boundary như controller advice xử lý tập trung, đồng thời lưu ý với Spring transaction thì unchecked mới rollback mặc định. Khi chuyển exception qua ranh giới tầng, em luôn bọc thành exception mang ngữ cảnh nghiệp vụ nhưng truyền exception gốc vào {{cause}} để giữ toàn bộ stack trace, và chỉ log full stack một lần ở boundary để tránh trùng log. Với tài nguyên em dùng try-with-resources vì nó đóng theo thứ tự ngược, an toàn khi khởi tạo hoặc thân khối lỗi; nếu thân khối ném lỗi chính thì lỗi từ {{close()}} được đưa vào {{getSuppressed()}} thay vì che mất lỗi gốc, nên khi điều tra em luôn duyệt cả suppressed. Em tránh nuốt exception, tránh retry lỗi không transient và với thao tác ghi sẽ đảm bảo idempotency trước khi retry."
+
+> Senior tip: khi điều tra sự cố production, luôn log cả {{e}} và duyệt {{e.getSuppressed()}} (đặc biệt lỗi IO/DB). Một {{close()}} thất bại âm thầm có thể là nguyên nhân thật của mất dữ liệu dù business logic đã "chạy xong".
+
+### Liên hệ phỏng vấn
+Nắm chắc ba ý: (1) chọn checked/unchecked theo khả năng phục hồi của caller và hành vi rollback của transaction; (2) luôn wrap giữ {{cause}} để truy vết chuỗi lỗi; (3) try-with-resources đóng ngược, lỗi thân là lỗi chính, lỗi close nằm trong {{getSuppressed()}} — biết đọc suppressed là kỹ năng debug quan trọng.`,
+  exercises: [
+    {
+      title: 'Đóng nhiều resource giả và kiểm tra suppressed exception',
+      prompt: 'Cài đặt {{TrackedRes}} (tài nguyên giả, có tên, ghi log và có thể lỗi khi {{close()}}) và hàm {{Runner.run(...)}}. Hàm mở R1 rồi R2 trong cùng một {{try-with-resources}}, ghi "work" và có thể ném "WORK_FAIL". Yêu cầu:\n- Luôn đóng theo thứ tự ngược: R2 trước, R1 sau (ghi log {{close-R2}}, {{close-R1}}).\n- Nếu {{work}} ném lỗi, đó là lỗi chính; mọi lỗi {{close()}} phải nằm trong {{getSuppressed()}} theo thứ tự đóng.\n- Nếu {{work}} thành công nhưng {{close()}} lỗi, lỗi {{close()}} đầu tiên (R2) là lỗi chính, lỗi {{close()}} sau (R1) nằm trong suppressed của nó.\n- Nếu không có lỗi nào, trả về bình thường và log phải có {{work}}, {{close-R2}}, {{close-R1}}.',
+      starter: `class TrackedRes implements AutoCloseable {
+    final String name;
+    final List<String> log;
+    final RuntimeException closeError;
+    TrackedRes(String name, List<String> log, RuntimeException closeError) {
+        this.name = name;
+        this.log = log;
+        this.closeError = closeError;
+    }
+    public void close() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+class Runner {
+    static void run(List<String> log, boolean failWork, boolean failCloseR1, boolean failCloseR2) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static void eq(Object a, Object b) {
+        if (!Objects.equals(a, b)) throw new AssertionError("expected " + a + " but got " + b);
+    }
+    public static void main(String[] args) {
+        List<String> log = new ArrayList<>();
+        Runner.run(log, false, false, false);
+        eq(List.of("work", "close-R2", "close-R1"), log);
+
+        log.clear();
+        try {
+            Runner.run(log, true, true, true);
+            throw new AssertionError("expected work error");
+        } catch (RuntimeException e) {
+            eq("WORK_FAIL", e.getMessage());
+            eq(2, e.getSuppressed().length);
+            eq("R2_CLOSE_FAIL", e.getSuppressed()[0].getMessage());
+            eq("R1_CLOSE_FAIL", e.getSuppressed()[1].getMessage());
+        }
+        eq(List.of("work", "close-R2", "close-R1"), log);
+
+        log.clear();
+        try {
+            Runner.run(log, false, true, true);
+            throw new AssertionError("expected close error");
+        } catch (RuntimeException e) {
+            eq("R2_CLOSE_FAIL", e.getMessage());
+            eq(1, e.getSuppressed().length);
+            eq("R1_CLOSE_FAIL", e.getSuppressed()[0].getMessage());
+        }
+        eq(List.of("work", "close-R2", "close-R1"), log);
+
+        log.clear();
+        try {
+            Runner.run(log, true, false, true);
+            throw new AssertionError("expected work error with one suppressed");
+        } catch (RuntimeException e) {
+            eq("WORK_FAIL", e.getMessage());
+            eq(1, e.getSuppressed().length);
+            eq("R2_CLOSE_FAIL", e.getSuppressed()[0].getMessage());
+        }
+        eq(List.of("work", "close-R2", "close-R1"), log);
+
+        System.out.println("RESULT 4/4");
+    }
+}`,
+      reference: `class TrackedRes implements AutoCloseable {
+    final String name;
+    final List<String> log;
+    final RuntimeException closeError;
+    TrackedRes(String name, List<String> log, RuntimeException closeError) {
+        this.name = name;
+        this.log = log;
+        this.closeError = closeError;
+    }
+    public void close() {
+        log.add("close-" + name);
+        if (closeError != null) throw closeError;
+    }
+}
+class Runner {
+    static void run(List<String> log, boolean failWork, boolean failCloseR1, boolean failCloseR2) {
+        RuntimeException e1 = failCloseR1 ? new RuntimeException("R1_CLOSE_FAIL") : null;
+        RuntimeException e2 = failCloseR2 ? new RuntimeException("R2_CLOSE_FAIL") : null;
+        try (TrackedRes r1 = new TrackedRes("R1", log, e1);
+             TrackedRes r2 = new TrackedRes("R2", log, e2)) {
+            log.add("work");
+            if (failWork) throw new RuntimeException("WORK_FAIL");
+        }
+    }
+}`,
+      hints: [
+        'Khai báo R1 rồi R2 trong cùng try-with-resources; Java tự đóng theo thứ tự ngược (R2 trước R1).',
+        'Trong close(), luôn ghi log trước rồi mới ném closeError để test thấy thứ tự đóng.',
+        'Không cần tự gắn suppressed: cơ chế ngôn ngữ tự xử lý khi dùng try-with-resources.'
+      ],
+      explain: 'Tài nguyên tạo sau thường phụ thuộc tài nguyên tạo trước, nên phải đóng ngược (R2 rồi R1). Khi thân ném "WORK_FAIL", đó là lỗi chính và các lỗi close được gắn vào suppressed theo trình tự xảy ra. Khi thân thành công, close đầu tiên thất bại (R2) là lỗi chính, close sau (R1) bị suppressed vào nó. Đây là lợi thế so với finally thủ công, nơi lỗi close dễ che mất lỗi gốc.'
+    }
+  ],
+  check: [
+    {
+      q: 'Trong try-with-resources mở A rồi B và gọi {{work()}}, nếu {{work()}} ném X, {{b.close()}} ném Y, {{a.close()}} ném Z thì caller nhận được gì?',
+      options: [
+        'Nhận Z vì a.close() chạy cuối cùng',
+        'Nhận Y vì b.close() chạy ngay sau work()',
+        'Nhận X là lỗi chính; Y và Z nằm trong {{getSuppressed()}} của X theo thứ tự đóng (Y rồi Z)',
+        'Nhận một exception tổng hợp ngẫu nhiên tuỳ JVM'
+      ],
+      answer: 2,
+      explain: 'Lỗi từ thân khối (X) là lỗi chính. Tài nguyên đóng ngược thứ tự khai báo nên b.close() chạy trước (ném Y) rồi a.close() (ném Z); Y và Z được addSuppressed vào X. A, B sai vì lỗi close không thay thế lỗi chính khi thân đã ném; D sai vì hành vi được đặc tả rõ.'
+    },
+    {
+      q: 'Khi bọc {{SQLException}} thành exception nghiệp vụ ở tầng repository, cách nào đúng để giữ khả năng điều tra?',
+      options: [
+        'throw new RepoException(sqlEx.getMessage())',
+        'Chỉ log sqlEx rồi throw new RepoException("DB error")',
+        'throw new RepoException("Khong tai duoc don hang", sqlEx) để giữ sqlEx làm cause',
+        'return null để caller tự xử lý'
+      ],
+      answer: 2,
+      explain: 'Phải truyền exception gốc làm cause để stack trace giữ chuỗi "Caused by". A và B mất cause; D nuốt lỗi khiến caller không phân biệt "không có dữ liệu" với "hệ thống lỗi".'
+    },
+    {
+      q: 'Trường hợp nào phù hợp nhất để dùng checked exception?',
+      options: [
+        'Tham số đầu vào null do lỗi lập trình của caller',
+        'Lỗi hết bộ nhớ (OutOfMemoryError)',
+        'Caller ngay tại chỗ có hành động phục hồi thực tế (ví dụ chọn file khác, fallback endpoint)',
+        'Mọi lỗi truy cập cơ sở dữ liệu trong ứng dụng Spring'
+      ],
+      answer: 2,
+      explain: 'Checked exception hợp khi caller thực sự có lựa chọn phục hồi hữu ích. A là vi phạm hợp đồng nên dùng unchecked. B là Error nghiêm trọng. D không phù hợp vì caller tầng trên thường không phục hồi được tại chỗ và trong Spring checked còn không rollback mặc định.'
+    }
+  ],
+  related: ['core-011', 'core-013', 'core-053'],
+  tags: ['exception', 'checked-unchecked', 'try-with-resources', 'suppressed', 'cause']
+},
+{
+  id: 'lesson-core-013',
+  track: 'core',
+  order: 13,
+  title: 'Generics PECS thực chiến: viết copy và max an toàn kiểu',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích vì sao generic trong Java là invariant và wildcard giúp biểu diễn quan hệ producer/consumer an toàn',
+    'Áp dụng đúng quy tắc PECS: Producer Extends, Consumer Super trong chữ ký phương thức',
+    'Viết API generic copy(List<? super T>, List<? extends T>) và max với Comparator<? super T> không cần ép kiểu'
+  ],
+  body: `**Tóm tắt:** Generic (kiểu tham số hoá) trong Java là invariant (không đồng biến): {{List<Integer>}} không phải con của {{List<Number>}}. Để viết API linh hoạt mà vẫn an toàn kiểu tại compile-time, dùng wildcard (ký tự đại diện): {{? extends T}} cho nguồn chỉ đọc (producer - bên cung cấp dữ liệu) và {{? super T}} cho đích chỉ ghi (consumer - bên nhận dữ liệu). Quy tắc nhớ nhanh là PECS: Producer Extends, Consumer Super.
+
+### Vì sao cần generic và vì sao nó invariant
+Trước Java 5, collection (bộ sưu tập) lưu {{Object}} nên phải ép kiểu (cast) khi đọc và lỗi kiểu chỉ lộ ở runtime (lúc chạy, {{ClassCastException}}). Generic cho phép khai báo {{List<String>}} để compiler kiểm tra ngay lúc biên dịch. Nhưng Java chọn **invariant** cho generic: dù {{Integer}} là con của {{Number}}, {{List<Integer>}} **không** gán được cho {{List<Number>}}.
+
+Lý do an toàn: nếu cho phép gán, bạn có thể ghi {{3.14}} (Double) vào một biến kiểu {{List<Number>}} nhưng thực chất đang trỏ tới {{List<Integer>}} — phần tử Double lọt vào danh sách số nguyên và gây lỗi khó truy vết. Mảng Java thì covariant (đồng biến: {{Integer[]}} gán được cho {{Number[]}}) nhưng ghi sai kiểu sẽ ném {{ArrayStoreException}} ngay tại runtime; generic chọn chặn sớm ở compile-time (lúc biên dịch).
+
+~~~java
+List<Integer> ints = new ArrayList<>();
+// List<Number> nums = ints; // KHONG bien dich: invariant
+List<? extends Number> readOnly = ints; // OK: chi doc nhu Number
+Number n = readOnly.get(0);              // doc an toan
+// readOnly.add(1); // KHONG bien dich: khong biet subtype cu the
+~~~
+
+### Wildcard và quy tắc PECS từng bước
+Wildcard {{?}} biểu diễn "một kiểu nào đó chưa xác định". Compiler "capture" (bắt) nó thành một kiểu ẩn trong phạm vi lời gọi:
+
+1. **{{? extends T}} (upper bound - cận trên)** — *Producer*: nguồn sản xuất ra giá trị kiểu T. Có thể là {{List<Integer>}} hay {{List<Double>}} khi T là {{Number}}. Đọc ra thì chắc chắn nhận được ít nhất là {{T}}. Nhưng **không ghi được** (trừ {{null}}) vì compiler không biết danh sách thực sự chấp nhận subtype (kiểu con) nào.
+2. **{{? super T}} (lower bound - cận dưới)** — *Consumer*: đích tiêu thụ giá trị kiểu T. Có thể là {{List<Integer>}}, {{List<Number>}} hay {{List<Object>}}. **Ghi** một phần tử kiểu {{T}} là an toàn vì mọi kiểu đích trong nhóm này đều là cha của T. Nhưng **đọc ra** chỉ chắc chắn là {{Object}}.
+3. **PECS**: nếu tham số chỉ "cho ra" dữ liệu để bạn đọc → {{extends}}; nếu chỉ "nhận vào" dữ liệu bạn ghi → {{super}}. Nếu vừa đọc vừa ghi trên cùng cấu trúc thì dùng {{T}} cụ thể.
+4. **Kết nối hai phía bằng cùng một T**: trong {{copy(List<? super T> dst, List<? extends T> src)}}, cùng biến kiểu {{T}} ràng buộc nguồn và đích, nên phần tử đọc từ {{src}} (ít nhất là T) ghi được vào {{dst}} (chấp nhận T) mà không cần cast.
+
+| Khai báo | Đọc ra kiểu | Ghi vào được | Vai trò |
+|---|---|---|---|
+| {{List<T>}} | {{T}} | {{T}} | Đọc và ghi cùng kiểu |
+| {{List<? extends T>}} | {{T}} | Không (trừ {{null}}) | Producer / nguồn |
+| {{List<? super T>}} | {{Object}} | {{T}} | Consumer / đích |
+
+### Ví dụ: copy và max an toàn kiểu
+Hàm {{copy}} đọc từ nguồn và ghi vào đích: nguồn là producer → {{extends}}, đích là consumer → {{super}}. Hàm {{max}} duyệt collection để đọc phần tử (producer → {{extends}}) và dùng {{Comparator}} (bộ so sánh) để so sánh hai phần tử (comparator "tiêu thụ" hai T để so sánh → {{super}}), nhờ đó {{Comparator<Number>}} hay {{Comparator<Object>}} vẫn dùng được để tìm max trong {{List<Integer>}}.
+
+~~~java
+class Ops {
+    static <T> void copy(List<? super T> dst, List<? extends T> src) {
+        for (T value : src) {
+            dst.add(value);
+        }
+    }
+
+    static <T> Optional<T> max(Collection<? extends T> xs, Comparator<? super T> c) {
+        if (xs.isEmpty()) return Optional.empty();
+        T best = null;
+        for (T v : xs) {
+            if (best == null || c.compare(v, best) > 0) best = v;
+        }
+        return Optional.of(best);
+    }
+}
+~~~
+
+Vì sao {{Comparator<? super T>}} quan trọng? Một comparator viết cho {{Number}} (so sánh theo {{doubleValue}}) hoàn toàn có khả năng so sánh mọi {{Integer}}. Nếu chữ ký yêu cầu {{Comparator<T>}} cứng, bạn không truyền được comparator tổng quát hơn — mất tính tái sử dụng dù an toàn.
+
+### Hạn chế: type erasure
+Java generic dùng **type erasure** (xoá kiểu ở runtime): {{List<String>}} và {{List<Integer>}} đều trở thành {{List}} trong bytecode. Hệ quả: không thể {{new T()}}, không thể {{new T[]}}, không thể {{instanceof List<String>}}. Khi cần tạo mảng generic phải dùng kỹ thuật kiểm soát hoặc nhận {{Class<T>}}; khi cần kiểm tra kiểu phần tử phải kiểm tra từng phần tử.
+
+### Ví dụ đời thực
+Một thư viện báo cáo nội bộ nhận danh sách số liệu từ nhiều nguồn: {{List<Integer>}} (đếm), {{List<Long>}} (thời gian mili-giây), {{List<Double>}} (tỉ lệ). Nếu API khai báo {{List<Number>}}, mọi caller phải copy sang {{List<Number>}} mới gọi được. Sau khi đổi sang {{Collection<? extends Number>}} và comparator {{Comparator<? super Number>}}, caller truyền thẳng collection gốc, không copy, không cast, compiler vẫn bảo vệ kiểu. Với module xử lý hàng trăm nghìn bản ghi, bỏ bước copy trung gian giúp giảm cấp phát tạm (allocation) và đơn giản hoá code gọi.
+
+### Lỗi hay gặp
+- **Dùng raw type** ({{List}} không tham số): tắt kiểm tra kiểu, {{ClassCastException}} nổ ở nơi xa nơi chèn dữ liệu.
+- **Nhầm extends/super**: dùng {{? extends T}} cho tham số cần ghi → không thêm phần tử được; dùng {{? super T}} cho tham số cần đọc kiểu T → chỉ lấy ra {{Object}}.
+- **Wildcard lồng phức tạp**: khó đọc, khó bảo trì — cân nhắc tách generic method hoặc dùng kiểu đặt tên rõ.
+- **Quên {{Comparator<? super T>}}**: API {{max}} kém linh hoạt, buộc caller viết comparator trùng lặp.
+
+### Trả lời mẫu khi phỏng vấn
+"Generic trong Java là invariant để an toàn kiểu: nếu {{List<Integer>}} được coi là {{List<Number>}} thì có thể chèn {{Double}} vào danh sách số nguyên và lỗi chỉ lộ lúc chạy. Vì vậy em dùng wildcard theo quy tắc PECS: tham số đóng vai trò producer, chỉ đọc ra, thì khai báo {{? extends T}}; tham số là consumer, chỉ nhận vào, thì {{? super T}}. Ví dụ hàm copy, nguồn là {{List<? extends T>}} và đích là {{List<? super T>}} nên cùng một biến kiểu T nối được hai phía mà không cần cast. Với hàm max, collection là nguồn nên {{Collection<? extends T>}} còn comparator tiêu thụ hai phần tử để so sánh nên em dùng {{Comparator<? super T>}} để tái sử dụng được comparator tổng quát hơn như comparator của Number cho Integer. Em cũng lưu ý generic bị type erasure ở runtime nên không tạo được {{new T[]}} hay kiểm tra {{instanceof}} với tham số kiểu, và em tránh raw type vì nó làm mất toàn bộ lợi ích kiểm tra tại compile-time."
+
+> Senior tip: khi thiết kế API thư viện, hãy ưu tiên chữ ký "nhận rộng nhất có thể, trả hẹp nhất cần thiết" (PECS cho tham số đầu vào). Đừng lạm dụng wildcard ở kiểu trả về vì nó buộc caller phải đối mặt với {{?}} khó dùng; hãy trả về {{List<T>}} hoặc {{Optional<T>}} cụ thể.
+
+### Liên hệ phỏng vấn
+Nhớ giải thích được: (1) invariant vs covariant của mảng và vì sao generic chọn invariant; (2) PECS — extends để đọc, super để ghi; (3) vì sao {{Comparator<? super T>}} tăng tính tái sử dụng (contravariant - nghịch biến ở tham số); (4) type erasure và hệ quả (không {{new T[]}}, không {{instanceof}} tham số hoá).`,
+  exercises: [
+    {
+      title: 'Viết copy và max theo PECS (không cast)',
+      prompt: 'Hoàn thiện lớp {{Ops}} với hai phương thức generic:\n- {{copy(List<? super T> dst, List<? extends T> src)}}: chép toàn bộ phần tử từ {{src}} sang cuối {{dst}} theo thứ tự, không xoá phần tử cũ của {{dst}}.\n- {{max(Collection<? extends T> xs, Comparator<? super T> c)}}: trả về {{Optional}} chứa phần tử lớn nhất theo {{c}}; nếu {{xs}} rỗng trả {{Optional.empty()}}. Không dùng ép kiểu (cast).\nGợi ý: áp dụng PECS cho cả collection và comparator.',
+      starter: `class Ops {
+    static <T> void copy(List<? super T> dst, List<? extends T> src) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static <T> Optional<T> max(Collection<? extends T> xs, Comparator<? super T> c) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static void eq(Object a, Object b) {
+        if (!Objects.equals(a, b)) throw new AssertionError("expected " + a + " but got " + b);
+    }
+    public static void main(String[] args) {
+        // copy: Integer source -> Number dest
+        List<Integer> src = new ArrayList<>(List.of(1, 2, 3));
+        List<Number> dst = new ArrayList<>(List.of(0));
+        Ops.copy(dst, src);
+        eq(List.of(0, 1, 2, 3), dst);
+        eq(List.of(1, 2, 3), src);
+
+        // copy: empty source keeps dest unchanged
+        List<String> d2 = new ArrayList<>(List.of("a"));
+        Ops.copy(d2, List.of());
+        eq(List.of("a"), d2);
+
+        // max: empty -> Optional.empty()
+        eq(Optional.empty(), Ops.max(List.<Integer>of(), Comparator.naturalOrder()));
+
+        // max: Integer list with Comparator<Number> (contravariant)
+        Comparator<Number> byDouble = Comparator.comparingDouble(Number::doubleValue);
+        List<Integer> nums = List.of(5, 2, 9, 1);
+        eq(Optional.of(9), Ops.max(nums, byDouble));
+
+        // max: String by length
+        List<String> words = List.of("a", "bbb", "cc");
+        eq(Optional.of("bbb"), Ops.max(words, Comparator.comparingInt(String::length)));
+
+        System.out.println("RESULT 5/5");
+    }
+}`,
+      reference: `class Ops {
+    static <T> void copy(List<? super T> dst, List<? extends T> src) {
+        for (T item : src) {
+            dst.add(item);
+        }
+    }
+    static <T> Optional<T> max(Collection<? extends T> xs, Comparator<? super T> c) {
+        Iterator<? extends T> it = xs.iterator();
+        if (!it.hasNext()) return Optional.empty();
+        T best = it.next();
+        while (it.hasNext()) {
+            T cur = it.next();
+            if (c.compare(cur, best) > 0) best = cur;
+        }
+        return Optional.of(best);
+    }
+}`,
+      hints: [
+        'Nguồn chỉ đọc ra (producer) dùng {{? extends T}}; đích chỉ nhận vào (consumer) dùng {{? super T}}.',
+        'Comparator tiêu thụ hai giá trị T để so sánh, nên dùng {{Comparator<? super T>}} để nhận comparator của kiểu cha (ví dụ Comparator<Number> cho Integer).',
+        'Với max, khởi tạo best bằng phần tử đầu tiên để đúng cả khi toàn giá trị âm.'
+      ],
+      explain: 'copy áp dụng PECS: đọc từ producer (extends) và ghi vào consumer (super) với cùng T nên không cần cast. max kết hợp: collection là nguồn (extends T), Comparator là consumer của T (super T) nên truyền {{Comparator<Number>}} cho {{List<Integer>}} vẫn hợp lệ. Khởi tạo best từ phần tử đầu giúp thuật toán đúng với mọi miền giá trị.'
+    }
+  ],
+  check: [
+    {
+      q: 'Vì sao {{List<Integer>}} không thể gán cho biến kiểu {{List<Number>}} trong Java?',
+      options: [
+        'Vì Integer không kế thừa Number',
+        'Vì generic là invariant; nếu cho phép gán, có thể chèn Double vào danh sách thực chất chứa Integer và gây lỗi kiểu',
+        'Vì List là interface nên không hỗ trợ đa hình',
+        'Vì compiler không biết kích thước phần tử'
+      ],
+      answer: 1,
+      explain: 'Generic Java invariant để bảo toàn an toàn kiểu: cho phép gán sẽ mở đường chèn phần tử sai kiểu con vào danh sách thực. A sai vì Integer extends Number; C, D không phải lý do.'
+    },
+    {
+      q: 'Trong {{static <T> void copy(List<? super T> dst, List<? extends T> src)}}, phát biểu nào đúng?',
+      options: [
+        'src là consumer nên dùng super, dst là producer nên dùng extends',
+        'src là producer (đọc ra) nên dùng extends, dst là consumer (ghi vào) nên dùng super',
+        'Cả src và dst đều phải dùng extends T',
+        'Phải dùng List<T> cho cả hai vì wildcard không cho phép đọc và ghi'
+      ],
+      answer: 1,
+      explain: 'Theo PECS: nguồn cung cấp phần tử để đọc là Producer Extends, đích nhận phần tử để ghi là Consumer Super. A đảo vai trò; C sai vì dst cần ghi; D sai vì cùng T vẫn cho phép đọc từ src và ghi vào dst an toàn.'
+    },
+    {
+      q: 'Vì sao {{max}} nên nhận {{Comparator<? super T>}} thay vì {{Comparator<T>}}?',
+      options: [
+        'Vì Comparator luôn phải so sánh Object',
+        'Vì Comparator chỉ đọc T nên phải dùng extends',
+        'Vì Comparator tiêu thụ hai giá trị T; dùng super cho phép truyền comparator của kiểu cha (ví dụ Comparator<Number> cho List<Integer>)',
+        'Vì type erasure bắt buộc phải dùng super'
+      ],
+      answer: 2,
+      explain: 'Comparator nhận vào (tiêu thụ) hai T để so sánh nên theo PECS dùng {{? super T}} (contravariant), cho phép tái sử dụng comparator tổng quát hơn. A, B, D không đúng bản chất.'
+    },
+    {
+      q: 'Với {{List<? extends Number> nums}}, thao tác nào được compiler chấp nhận?',
+      options: [
+        'nums.add(Integer.valueOf(1))',
+        'nums.add(Double.valueOf(1.0))',
+        'Number x = nums.get(0) (nếu list không rỗng)',
+        'Integer x = nums.get(0)'
+      ],
+      answer: 2,
+      explain: 'Với {{? extends Number}}, đọc ra chắc chắn là Number nên gán vào {{Number}} an toàn. Không thể add vì list thực tế có thể là subtype khác; không thể gán trực tiếp vào {{Integer}} không cast.'
+    }
+  ],
+  related: ['core-001', 'core-012', 'core-056'],
+  tags: ['generics', 'PECS', 'wildcard', 'type-safety', 'Comparator']
+}
+
+);
