@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-14",
+  "intro": "Hôm nay bản tin xoay quanh vận hành: RDS Proxy cho PostgreSQL mất lợi ích multiplexing vì pinning (có liên quan trực tiếp tới JDBC driver), lỗi Aurora MySQL 63955 mà snapshot cũng không gỡ được, đánh giá Graviton cho Java, cùng hai bài kiến trúc về AI điều tra database và regression testing bằng replay traffic thật.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "RDS Proxy cho PostgreSQL: vì sao connection pinning làm mất multiplexing và JDBC driver cũ gây ra điều đó",
+      "title": "Improve RDS Proxy multiplexing for PostgreSQL, Part 1: Common causes",
+      "url": "https://aws.amazon.com/blogs/database/improve-rds-proxy-multiplexing-for-postgresql-part-1-common-causes/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "RDS Proxy chỉ chia sẻ kết nối backend khi chắc phiên không giữ trạng thái; nếu không, nó ghim (pin) phiên vào một kết nối. Với PostgreSQL, lệnh {{SET}} gây pinning, và JDBC driver 42.2.x trở xuống tự gửi {{SET extra_float_digits}} và {{SET application_name}} nên kết nối bị ghim ngay từ đầu; driver 42.7.x trở lên đưa tham số vào startup packet nên tránh được. Bài nêu các metric như {{DatabaseConnectionsCurrentlySessionPinned}}; nếu {{DatabaseConnections}} gần bằng {{ClientConnections}} thì multiplexing đang suy giảm.",
+      "why": "Ứng dụng Spring Boot dùng HikariCP phía sau RDS Proxy rất dễ mất lợi ích của proxy chỉ vì phiên bản driver cũ hoặc một lệnh SET search_path. Biết nhìn đúng metric giúp bạn tránh cạn kết nối khi tăng số instance.",
+      "interview_q": "Bạn đặt RDS Proxy trước PostgreSQL nhưng số kết nối backend vẫn gần bằng số kết nối client. Bạn điều tra nguyên nhân thế nào và sửa ở phía ứng dụng Java ra sao?",
+      "related": ["db-001", "aws-001"],
+      "tags": ["rds-proxy", "postgresql", "jdbc"]
+    },
+    {
+      "title_vi": "Chẩn đoán multiplexing của RDS Proxy bằng enhanced logging và CloudWatch Logs Insights",
+      "title": "Improve RDS Proxy multiplexing for PostgreSQL, Part 2: Diagnose and monitor",
+      "url": "https://aws.amazon.com/blogs/database/improve-rds-proxy-multiplexing-for-postgresql-part-2-diagnose-and-monitor/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Phần 2 hướng dẫn bật enhanced logging ({{aws rds modify-db-proxy --debug-logging}}), log ghi ở mức DEBUG vào nhóm {{/aws/rds/proxy/<tên-proxy>}} và tự tắt sau 24 giờ. Bằng truy vấn Logs Insights đếm số lần borrow, release và pin trên từng backend connection, rồi đối chiếu với PostgreSQL log để biết user hoặc {{application_name}} nào gây pinning. Ví dụ trong bài: proxy khỏe dùng 60 kết nối với pin bằng 0, còn proxy bị pin dùng 154 kết nối.",
+      "why": "Log DEBUG có thể chứa nội dung SQL nhạy cảm và tốn chi phí, nên cần biết bật có kiểm soát. Đặt {{application_name}} rõ ràng ở mỗi service Java giúp việc truy vết về đúng ứng dụng dễ hơn nhiều.",
+      "interview_q": "Làm sao bạn truy ngược từ một kết nối backend bị pin về đúng service và câu SQL đã gây ra, và bạn cần lưu ý gì về dữ liệu nhạy cảm khi bật log chi tiết?",
+      "related": ["aws-002", "devops-001"],
+      "tags": ["rds-proxy", "observability", "cloudwatch"]
+    },
+    {
+      "title_vi": "Aurora MySQL lỗi 63955: cạn virtual index ID và vì sao snapshot, clone cũng không cứu được",
+      "title": "Fix Amazon Aurora MySQL error 63955: Virtual index ID overflow",
+      "url": "https://aws.amazon.com/blogs/database/fix-amazon-aurora-mysql-error-63955-virtual-index-id-overflow/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Mỗi index trên Aurora MySQL được cấp một virtual index ID, tiêu thụ dần qua các lệnh DDL và không thể đặt lại tại chỗ; chạm giới hạn 4294967295 thì mọi {{CREATE INDEX}} có chứa virtual column (cột VIRTUAL, functional index, multi-valued index) đều lỗi 63955. Snapshot restore, clone, PITR và Blue/Green đều sao chép vật lý nên không gỡ được; cách được tài liệu hóa là logical dump-and-restore (MyDumper/MyLoader) kèm replication để cutover. Từ bản 3.10.0 có cảnh báo {{VIRTUAL_INDEX_ID_OVERFLOW_WARNING}} trong error log.",
+      "why": "Mô hình schema-per-tenant hoặc migration Flyway/Liquibase chạy DDL liên tục dễ đụng giới hạn kiểu này. Đây là ví dụ cho thấy hạ tầng managed vẫn có giới hạn ẩn cần alarm trên log.",
+      "interview_q": "Hệ thống SaaS multi-tenant của bạn chạy DDL thường xuyên trên Aurora MySQL. Bạn phát hiện sớm và xử lý thế nào khi một giới hạn nội bộ của database bị chạm mà backup không giúp được?",
+      "related": ["db-003", "aws-003"],
+      "tags": ["aurora", "mysql", "ddl"]
+    },
+    {
+      "title_vi": "AWS Transform đánh giá và sửa dự án Java để chạy trên Graviton (Arm64)",
+      "title": "AWS Graviton support for Java in AWS Transform continuous modernization",
+      "url": "https://aws.amazon.com/blogs/devops/aws-graviton-support-for-java-in-aws-transform-continuous-modernization/",
+      "source": "AWS DevOps Blog",
+      "category": "devops",
+      "summary": "AWS Transform có skill {{AWS/graviton-readiness-assessment}} quét repository Java để tìm native library, code phụ thuộc kiến trúc và transitive dependency không có binary Arm64 (kể cả file nằm trong JAR), mỗi finding có mức severity. Skill {{AWS/java-x86-to-graviton}} sửa bằng cách nâng dependency, bổ sung xử lý aarch64, cập nhật Dockerfile đa kiến trúc và JVM flag. Remediation từ xa chạy trên x86 nên bạn vẫn phải build và test trên Arm64 trước khi merge.",
+      "why": "Chuyển sang Graviton thường là cách giảm chi phí compute; rào cản lớn nhất của dự án Java là các thư viện native chỉ có binary x86. Bài cho thấy quy trình kiểm tra trước thay vì đoán.",
+      "interview_q": "Bạn muốn chuyển service Java từ x86 sang Graviton để giảm chi phí. Bạn xác định rủi ro, kiểm tra dependency native và triển khai an toàn như thế nào?",
+      "related": ["aws-004", "devops-002"],
+      "tags": ["graviton", "arm64", "docker"]
+    },
+    {
+      "title_vi": "AI điều tra sự cố database: MCP tools, Agent Skills và AWS DevOps Agent cho RDS SQL Server",
+      "title": "AI-driven database investigation using MCP, Agent Skills, and AWS DevOps Agent",
+      "url": "https://aws.amazon.com/blogs/database/integrate-mcp-tools-agent-skills-and-aws-devops-agent-for-ai-driven-database-investigation/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Cảnh báo CloudWatch kích hoạt Lambda gửi webhook có chữ ký HMAC tới AWS DevOps Agent. Agent nạp một skill dạng Markdown mô tả quy trình điều tra, đọc telemetry bằng IAM role chỉ đọc, rồi gọi 13 MCP tool chẩn đoán SQL Server chạy trong Lambda ở private subnet qua Bedrock AgentCore Gateway (xác thực SigV4, có allowlist tool). Mật khẩu database nằm trong Secrets Manager nên agent không bao giờ thấy.",
+      "why": "Đây là mẫu thiết kế agent có kiểm soát quyền truy cập và audit từng lệnh gọi tool, đáng tham khảo khi bạn tích hợp LLM vào vận hành hệ thống backend.",
+      "interview_q": "Bạn cho một AI agent quyền chẩn đoán database production. Bạn thiết kế phân quyền, quản lý credential và audit như thế nào để agent không gây rủi ro?",
+      "related": ["aws-005"],
+      "tags": ["mcp", "ai-agent", "observability"]
+    },
+    {
+      "title_vi": "Kiểm thử hồi quy bằng cách phát lại traffic production lên phiên bản mới và so sánh kết quả",
+      "title": "Modular regression testing framework built on AWS for large-scale systems",
+      "url": "https://aws.amazon.com/blogs/architecture/modular-regression-testing-framework-built-on-aws-for-large-scale-systems/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Framework lấy mẫu request/response thật (ví dụ từ DynamoDB Streams), phát lại vào môi trường pre-production với cờ {{isSimulation}}, rồi so sánh response đã chuẩn hóa với production và ghi trường {{match}}. Tỷ lệ khớp tính bằng CloudWatch Logs Insights, alarm đặt ngưỡng khoảng 99,9% và được dùng làm cổng chặn trong CodePipeline. Tác giả nói hệ thống stateful cần bước nhận biết request mô phỏng để bỏ qua tác dụng phụ; sau hơn 6 tháng, framework phát hiện 5 hồi quy.",
+      "why": "Kỹ thuật replay traffic hữu ích khi refactor hoặc nâng cấp phiên bản framework trên service nghiệp vụ nặng logic, nơi test tích hợp truyền thống hay flaky.",
+      "interview_q": "Bạn refactor engine tính giá của một service Java mà không được thay đổi kết quả. Bạn chứng minh không có hồi quy bằng traffic thật như thế nào, và xử lý tác dụng phụ ra sao?",
+      "related": ["testing-001", "devops-003"],
+      "tags": ["regression-testing", "traffic-replay", "ci-cd"]
+    }
+  ]
+}
