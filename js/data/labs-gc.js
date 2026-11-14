@@ -2259,7 +2259,7 @@ public class PremiumFormulaService {
   hints: [
     'Nhìn GC log: {{Metadata GC Threshold}}, {{Metaspace ... không giảm}} sau Pause Full/Last Ditch Collection, và {{MaxMetaspaceSize 192M}}. So sánh với heap sau GC (~396M) — vùng nhớ nào hết?',
     'Classloader chỉ được GC thu hồi khi không còn tham chiếu nào đến nó, các class nó nạp, và các instance của class đó. {{VM.classloader_stats}} có 284 loader {{NashornScriptEngine$3}}, mỗi cái 1 class. {{reloadFormulas()}} tạo {{ScriptEngine}} mới mỗi lần và {{compiled}} giữ {{CompiledScript}} — {{CompiledScript}} có giữ tham chiếu ngược tới engine/classloader không?',
-    'Tính tương quan: {{formula_reload_events}} tăng 1→41, {{jvm_classes_loaded_classes}} tăng ~18420→36720 (~18300 class), unloaded luôn 0. Có khớp với ~284 loader × số class/script sinh ra không? Nashorn trên JDK 17 đã ở trạng thái nào (deprecated/removed)?'
+    'Tính tương quan: {{formula_reload_events}} tăng 1→41, {{jvm_classes_loaded_classes}} tăng ~18420→36720 (~18300 class), unloaded luôn 0. Vì sao 284 loader NashornScriptEngine$3 chỉ chiếm ~116 MB Metaspace mà tổng tăng class lại tới ~18300? Nashorn đã bị removed khỏi JDK từ JDK 15 (JEP 372), vậy service đang chạy Nashorn bằng cách nào trên JDK 17?'
   ],
   answer: `**Tóm tắt:** {{OutOfMemoryError: Metaspace}} xảy ra vì service tạo {{ScriptEngine}} (Nashorn) **mới** mỗi lần reload công thức (~6 lần/giờ) nhưng {{CompiledScript}} được cache trong {{compiled}} giữ tham chiếu ngược tới cấu trúc của engine/classloader đã dùng để biên dịch. Kết quả: mỗi đợt reload sinh thêm classloader/script class mới, classloader cũ **không bao giờ đủ điều kiện** để GC unload → Metaspace tăng đều ({{unloaded_classes_total}} luôn 0) cho tới khi chạm {{MaxMetaspaceSize=192m}}. Heap vẫn còn trống (~520 MB) vì đây là lỗi vùng nhớ native Metaspace, không phải heap. Sửa gốc là quản lý vòng đời engine/compiled script đúng (tái sử dụng engine có kiểm soát, hoặc thay Nashorn bằng cơ chế scripting hiện đại), và loại bỏ tham chiếu giữ classloader.
 
@@ -2288,6 +2288,8 @@ public class PremiumFormulaService {
 **Metric tương quan:**
 - {{jvm_classes_loaded_classes}} tăng 18420 → 36720 (+18300) trong khi {{jvm_classes_unloaded_classes_total}} luôn **0**. {{formula_reload_events}} tăng tới 41. Mỗi lần reload compile 42 công thức active (log {{active=42}}) và tạo engine/compiled artifacts mới → sinh thêm nhiều class; không unload đồng nghĩa classloader cũ bị giữ sống.
 - Heap ổn định/vừa phải (~312–520 MB), không tăng kiểu leak heap. Vì vậy {{jmap -histo}} (nhìn heap object) không thấy "class ứng dụng tăng bất thường" — nguyên nhân nằm ở Metaspace/classloader, không phải instance trên heap.
+
+**Lưu ý về số class và số loader:** 284 loader chỉ là **một phần** Metaspace (khoảng 116 MB). Tổng số class tăng thêm 18,300 gồm cả class script Nashorn sinh ra **và** các class phụ trợ khác (lambda, accessor, class do JIT/reflection tạo) — không phải mọi class tăng thêm đều thuộc 284 loader đếm được bằng {{grep NashornScriptEngine}}. Điều quan trọng là **hầu hết** class tăng thêm đến từ hoạt động compile script lặp lại, đúng với stack trace {{ScriptLoader.installClass}}.
 
 ### 3) Nguyên nhân gốc (cơ chế)
 
@@ -2907,6 +2909,867 @@ public class ProductService {
     'Có biện pháp phòng ngừa/quan sát: metric hit/miss/eviction hoặc estimatedSize, cảnh báo Old Gen đáy tăng, quy ước không dùng static cache vô hạn, kiểm thử soak/cardinality cao.'
   ],
   tags: ['memory-leak', 'gc', 'old-gen', 'class-histogram', 'cache', 'static', 'caffeine', 'heap']
-}
+},
+{
+  id: 'lab-gc-015',
+  category: 'gc',
+  title: 'Thêm tính năng "preview email": Metaspace OOM sau 5 giờ do Groovy compile trong vòng lặp',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Nền tảng marketing **MailVN** có service **template-render** (Spring Boot 3.2, JDK 17.0.10, Groovy 4.0) cho phép đội marketing viết template email bằng Groovy. Khi khách bấm "Xem trước email", service biên dịch template, chạy thử với dữ liệu mẫu rồi trả HTML cho trình duyệt. Pod 2 vCPU, memory limit 3Gi. JVM: {{-Xmx1536m -XX:MaxMetaspaceSize=256m -XX:MetaspaceSize=96m -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError}}.
 
+**Thuật ngữ giải thích:**
+- **Metaspace:** vùng nhớ native (ngoài heap) chứa metadata của class. {{-XX:MaxMetaspaceSize}} là trần cứng; khi chạm trần mà không unload được class nào thì ném {{OutOfMemoryError: Metaspace}}, còn heap vẫn có thể trống.
+- **Biên dịch (compile) trong vòng lặp:** cứ mỗi vòng lặp lại gọi {{shell.parse(...)}}, Groovy lại tạo một class mới (kèm classloader con) để chứa bytecode. Nếu class đó bị giữ sống, Metaspace phình lên.
+- **Regex compile mỗi request:** {{Pattern.compile}} với {{Pattern.LITERAL}} không sinh class, nhưng tốn CPU và tạo object rác; nó chỉ là nghi phạm phụ, không phải nguồn Metaspace.
+
+**Triệu chứng:** Bản **5.0** deploy lúc **08:00 ngày 25/10/2026**. Từ **13:10**, cả 3 pod lần lượt trả HTTP 500 với {{java.lang.OutOfMemoryError: Metaspace}}; restart tạm thời được ~6 giờ rồi tái diễn. Heap theo dashboard chỉ ~480 MB / 1536 MB. Dev chạy {{jmap -histo}} không thấy class nào trên heap tăng bất thường, nên đề xuất tăng {{MaxMetaspaceSize}} lên 512 MB. Tính năng "preview email" chỉ chiếm khoảng 3% traffic.
+
+**Dữ liệu thu thập:** {{jcmd VM.classloader_stats}} lúc 13:00, GC log quanh OOM, metric Prometheus theo giờ, đoạn code {{TemplateRenderService}} và kết quả truy vấn bảng {{email_template}}.`,
+  artifacts: [
+    {
+      name: 'classloader-stats-1300.txt',
+      lang: 'text',
+      content: `$ kubectl exec template-render-6b8d9f-n4k2p -- jcmd 1 VM.classloader_stats
+1:
+ClassLoader                                          Parent                     CLD*                 Classes  ChunkSz  BlockSz  Type
+0x0000000800c62a40                                0x0000000800d01f28         0x00007f3a9c4e1d70        0        0        0  groovy.lang.GroovyClassLoader
+0x0000000801f3a5b8                                0x0000000800c62a40         0x00007f3a2c0a8e40        1     5120     4688  groovy.lang.GroovyClassLoader$InnerLoader
+0x0000000801f3a2d0                                0x0000000800c62a40         0x00007f3a2c0a8c90        1     5120     4688  groovy.lang.GroovyClassLoader$InnerLoader
+0x0000000801f39fe8                                0x0000000800c62a40         0x00007f3a2c0a8ae0        1     5120     4688  groovy.lang.GroovyClassLoader$InnerLoader
+0x0000000801f39d00                                0x0000000800c62a40         0x00007f3a2c0a930        1     5120     4688  groovy.lang.GroovyClassLoader$InnerLoader
+0x0000000801f39a18                                0x0000000800c62a40         0x00007f3a2c0a780        1     5120     4688  groovy.lang.GroovyClassLoader$InnerLoader
+... (20,480 dòng GroovyClassLoader$InnerLoader khác, đều Parent 0x0000000800c62a40, Classes 1) ...
+0x0000000800d01f28                                0x0000000800010d48         0x00007f3a9c2b5a10    14871 92274688 89912320  org.springframework.boot.loader.launch.LaunchedClassLoader
+                                                              1544   4194304  3801088   + hidden classes
+0x0000000800010d48                                0x0000000800010a60         0x00007f3a9c1e0c30      102   1048576   940112  jdk.internal.loader.ClassLoaders$AppClassLoader
+0x0000000800010a60                                0x0000000000000000         0x00007f3a9c1e0950      112   786432   701232  jdk.internal.loader.ClassLoaders$PlatformClassLoader
+0x0000000000000000                                0x0000000000000000         0x00007f3a9c0d7b30     3214 20971520 20512488  <boot class loader>
+Total = 40329                                                46757 150817280 141849352
+ChunkSz: Total size of all allocated metaspace chunks
+BlockSz: Total size of all allocated metaspace blocks (each chunk has several blocks)`
+    },
+    {
+      name: 'metrics-hourly.txt',
+      lang: 'text',
+      content: `# Prometheus, pod template-render-6b8d9f-n4k2p (khởi động 08:00:12)
+# metaspace      = jvm_memory_used_bytes{area="nonheap",id="Metaspace"}
+# classes_loaded = jvm_classes_loaded_classes
+# classes_unld   = jvm_classes_unloaded_classes_total
+# heap_after_gc  = jvm_memory_used_bytes{area="heap",id="G1 Old Gen"} ngay sau mixed GC gần nhất
+
+time    metaspace   classes_loaded  classes_unld  heap_after_gc  preview/s  http_5xx/s
+08:05     106.6 MB            20238             0         231 MB       1.02         0
+09:00     130.5 MB            25320             0         236 MB       1.01         0
+10:00     156.5 MB            30864             0         229 MB       1.03         0
+11:00     182.5 MB            36408             0         241 MB       1.04         0
+12:00     208.5 MB            41952             0         238 MB       1.03         0
+13:00     230.8 MB            46757             0         240 MB       1.02         0
+13:41     255.9 MB            52116             0         585 MB       0.00        31.6
+
+# email_template (PostgreSQL)
+template=> SELECT count(*) AS templates, count(DISTINCT md5(body)) AS distinct_bodies, max(updated_at) FROM email_template WHERE active;
+ templates | distinct_bodies |          max
+-----------+-----------------+------------------------
+        48 |              48 | 2026-10-24 17:41:09+07
+(1 row)`
+    },
+    {
+      name: 'gc-and-app-1340.log',
+      lang: 'text',
+      content: `[2026-10-25T13:40:51.114+0700][20231.114s][info][gc] GC(1622) Pause Young (Concurrent Start) (Metadata GC Threshold) 912M->604M(1536M) 18.553ms
+[2026-10-25T13:40:51.114+0700][20231.114s][info][gc,metaspace] GC(1622) Metaspace: 261402K(262144K)->261402K(262144K) NonClass: 229118K(229632K)->229118K(229632K) Class: 32284K(32512K)->32284K(32512K)
+[2026-10-25T13:40:51.114+0700][20231.114s][info][gc] GC(1623) Concurrent Mark Cycle
+[2026-10-25T13:40:52.020+0700][20232.020s][info][gc] GC(1623) Pause Remark 640M->638M(1536M) 31.022ms
+[2026-10-25T13:40:52.020+0700][20232.020s][info][gc,metaspace] GC(1623) Metaspace: 261402K(262144K)->261402K(262144K) NonClass: 229118K(229632K)->229118K(229632K) Class: 32284K(32512K)->32284K(32512K)
+[2026-10-25T13:40:52.114+0700][20232.114s][info][gc] GC(1623) Pause Cleanup 642M->642M(1536M) 0.402ms
+[2026-10-25T13:40:52.130+0700][20232.130s][info][gc] GC(1623) Concurrent Mark Cycle 1016.115ms
+[2026-10-25T13:40:53.311+0700][20233.311s][info][gc] GC(1624) Pause Full (Metadata GC Threshold) 702M->588M(1536M) 1210.774ms
+[2026-10-25T13:40:53.311+0700][20233.311s][info][gc,metaspace] GC(1624) Metaspace: 262101K(262144K)->262101K(262144K) NonClass: 229790K(229824K)->229790K(229824K) Class: 32311K(32320K)->32311K(32320K)
+[2026-10-25T13:40:54.500+0700][20234.500s][info][gc] GC(1625) Pause Full (Metadata GC Clear Soft References) 588M->585M(1536M) 1189.302ms
+[2026-10-25T13:40:54.500+0700][20234.500s][info][gc,metaspace] GC(1625) Metaspace: 262101K(262144K)->262101K(262144K) NonClass: 229790K(229824K)->229790K(229824K) Class: 32311K(32320K)->32311K(32320K)
+
+{"@timestamp":"2026-10-25T13:40:50.877+07:00","level":"INFO","thread_name":"http-nio-8080-exec-12","logger_name":"vn.mailvn.render.PreviewController","message":"preview templateId=TPL-1007 user=u-2231","traceId":"6721f1c5a3e94b0d"}
+{"@timestamp":"2026-10-25T13:40:54.502+07:00","level":"ERROR","thread_name":"http-nio-8080-exec-37","logger_name":"o.a.c.c.C.[.[.[/].[dispatcherServlet]","message":"Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception [Handler dispatch failed: java.lang.OutOfMemoryError: Metaspace] with root cause","traceId":"6721f1c5b81c22aa","stack_trace":"java.lang.OutOfMemoryError: Metaspace
+  at java.base/java.lang.ClassLoader.defineClass1(Native Method)
+  at java.base/java.lang.ClassLoader.defineClass(ClassLoader.java:1012)
+  at java.base/java.security.SecureClassLoader.defineClass(SecureClassLoader.java:150)
+  at groovy.lang.GroovyClassLoader$ClassCollector.createClass(GroovyClassLoader.java:624)
+  at groovy.lang.GroovyClassLoader$ClassCollector.onClassNode(GroovyClassLoader.java:644)
+  at groovy.lang.GroovyClassLoader.doParseClass(GroovyClassLoader.java:351)
+  at groovy.lang.GroovyClassLoader.parseClass(GroovyClassLoader.java:311)
+  at groovy.lang.GroovyShell.parseClass(GroovyShell.java:572)
+  at groovy.lang.GroovyShell.parse(GroovyShell.java:584)
+  at groovy.lang.GroovyShell.parse(GroovyShell.java:620)
+  at vn.mailvn.render.TemplateRenderService.render(TemplateRenderService.java:26)
+  at vn.mailvn.render.PreviewController.preview(PreviewController.java:41)
+  ..."}
+{"@timestamp":"2026-10-25T13:40:54.733+07:00","level":"WARN","thread_name":"HikariPool-1 housekeeper","logger_name":"com.zaxxer.hikari.pool.HikariPool","message":"HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=32s417ms).","traceId":""}`
+    },
+    {
+      name: 'TemplateRenderService.java',
+      lang: 'text',
+      content: `package vn.mailvn.render;
+
+import groovy.lang.Binding;
+import groovy.lang.GroovyShell;
+import groovy.lang.Script;
+import java.util.Map;
+import java.util.regex.Pattern;
+import org.springframework.stereotype.Service;
+import vn.mailvn.template.EmailTemplate;
+
+@Service
+public class TemplateRenderService {
+
+    // Review 5.0: "tạo GroovyShell mỗi lần thì tốn, nên giữ 1 shell dùng chung"
+    private final GroovyShell shell = new GroovyShell(TemplateRenderService.class.getClassLoader());
+
+    // Biến mẫu thay thế bằng regex cho nhanh (mỗi request compile lại)
+    private final Pattern VAR = Pattern.compile("\\\\$\\\\{([a-zA-Z0-9_]+)\\\\}", Pattern.LITERAL);  // dòng 20
+
+    /**
+     * template.getBody() ví dụ:
+     *   Hello \${name}, đơn hàng \${orderId} của bạn trị giá \${amount}.
+     */
+    public String render(EmailTemplate template, Map<String, Object> sample) {
+        // Thay \${...} bằng giá trị mẫu để hiển thị preview
+        String body = VAR.matcher(template.getBody()).replaceAll(m -> String.valueOf(sample.getOrDefault(m.group(1), "")));
+
+        // Bọc body thành script Groovy và chạy thử để kiểm tra lỗi cú pháp
+        String script = "def out = new StringBuilder(); out.append('" + body.replace("'", "\\\\'") + "'); return out.toString();";
+        Script s = shell.parse(script);                     // dòng 26: MỖI request compile một class Groovy mới
+        s.setBinding(new Binding(sample));
+        Object r = s.run();
+        return r == null ? "" : r.toString();
+    }
+}`
+    }
+  ],
+  questions: [
+    'Vì sao heap chỉ khoảng 600 MB mà JVM vẫn OutOfMemoryError? Vì sao jmap -histo không thấy class nào bất thường?',
+    'Từ classloader_stats và metric, hãy chứng minh nguyên nhân gốc: ai tạo ra các class, vì sao chúng không bao giờ được unload? Chỉ có 48 template thì đáng lẽ cần bao nhiêu class?',
+    'Bạn sửa ngắn hạn và dài hạn thế nào? Tăng MaxMetaspaceSize lên 512 MB hoặc bỏ giới hạn có phải ý hay không? Alert gì cần thêm?'
+  ],
+  hints: [
+    'Metaspace chứa metadata của class (bytecode, method, constant pool), không phải object. Hãy xem cột Classes và Parent trong classloader_stats: có bao nhiêu loader, mỗi loader nạp bao nhiêu class, và parent của chúng là ai?',
+    'jvm_classes_unloaded_classes_total luôn bằng 0, còn số class tăng khoảng 1.54 class/giây, bằng đúng preview/s. Hai Full GC cuối cũng không giảm được Metaspace. Điều đó nghĩa là các class vẫn reachable.',
+    'GroovyShell.parse(String) compile ra một class mới mỗi lần gọi (tên script tự sinh), và GroovyClassLoader cha giữ class đã sinh trong cache của nó. Shell lại là field của một singleton bean.'
+  ],
+  answer: `**Tóm tắt:** Đây là **class leak trong Metaspace**. {{TemplateRenderService}} gọi {{shell.parse(script)}} ở **mỗi request preview**, nên Groovy compile ra **một class mới mỗi lần** (mỗi class được định nghĩa bởi một {{GroovyClassLoader$InnerLoader}} riêng). Tất cả đều được {{GroovyClassLoader}} của shell giữ lại, mà shell là field của singleton bean, nên không class nào được unload. Chỉ có 48 template, nhưng 5 giờ đã sinh ra khoảng 20 nghìn class và lấp đầy {{MaxMetaspaceSize=256m}}.
+
+### Vì sao heap trống mà vẫn OOM
+
+- **Metaspace** là vùng native memory, nằm ngoài heap, chứa metadata của class: cấu trúc Klass, method, bytecode, constant pool. Nó bị giới hạn bởi {{-XX:MaxMetaspaceSize}}, không liên quan gì đến {{-Xmx}}.
+- {{jmap -histo}} đếm **object trên heap**. Một class Groovy nhỏ trên heap chỉ là một object {{java.lang.Class}} vài trăm byte cộng một InnerLoader, tức vài MB cho 20 nghìn class, nên lẫn vào nhiễu. Phần nặng (khoảng 4.7 KB mỗi class) nằm trong Metaspace, và histogram không thể hiện phần này.
+- **Class chỉ được unload khi classloader của nó không còn reachable**, và việc này xảy ra trong GC (ở G1 là lúc Remark hoặc Full GC). Không có cơ chế nào unload từng class riêng lẻ.
+
+### Dẫn chứng
+
+- {{classloader_stats}}: tổng **40,329 loader**, trong đó **20,485 loader {{GroovyClassLoader$InnerLoader}}** (20,480 dòng lặp + 5 dòng liệt kê), mỗi loader **Classes 1**, ChunkSz 5120. Tất cả có **cùng Parent 0x0000000800c62a40**, chính là dòng {{groovy.lang.GroovyClassLoader}} duy nhất (Classes 0), loader của shell dùng chung. Chỉ riêng các InnerLoader này chiếm khoảng 100 MB chunk (20,485 × 5,120 byte) trong Metaspace.
+- So sánh: {{LaunchedClassLoader}} (toàn bộ Spring, Hibernate, code ứng dụng) chỉ có 14,871 class và khoảng 88 MB.
+- Metric: {{classes_loaded}} tăng đều khoảng 5,544 class/giờ, tức 1.54 class/giây, **bằng đúng {{preview/s}}**. Một lần render sinh ra một class. {{classes_unld}} bằng 0 suốt gần 6 giờ. Metaspace tăng khoảng 26 MB/giờ, còn heap after GC phẳng ở khoảng 230–240 MB.
+- {{email_template}}: chỉ có **48 body khác nhau**, và lần sửa gần nhất là hôm trước. Lẽ ra chỉ cần 48 class.
+- GC log: {{Pause Young (Concurrent Start) (Metadata GC Threshold)}}, sau đó {{Pause Remark}} (nơi G1 unload class) mà Metaspace vẫn {{261402K->261402K}}. Tiếp theo JVM thử hai Full GC: {{Pause Full (Metadata GC Threshold)}} và {{Pause Full (Metadata GC Clear Soft References)}}, đây là nỗ lực cuối cùng trước khi ném OOM. Metaspace vẫn {{262101K->262101K}}, gần chạm 262144K (256 MB), nghĩa là **không có gì để thu hồi**, tất cả đều reachable.
+- Stack trace: OOM xảy ra trong {{ClassLoader.defineClass1}}, được gọi từ {{GroovyShell.parse}} tại {{TemplateRenderService.render(TemplateRenderService.java:26)}}.
+- Dòng Hikari {{Thread starvation or clock leap detected}} chỉ là hệ quả của hai Full GC dài khoảng 1.2 giây, không phải nguyên nhân.
+
+### Cơ chế bên trong Groovy
+
+1. {{GroovyShell.parse(String)}} tự đặt tên script mới (dạng ScriptNNN) cho mỗi lần gọi, nên không có cache hit: **mỗi lần gọi là một lần compile**, kể cả khi nội dung script giống hệt.
+2. {{GroovyClassLoader.doParseClass}} tạo một {{InnerLoader}} (con của loader của shell) để định nghĩa class mới, sau đó **đưa class vào class cache của GroovyClassLoader cha**.
+3. Chuỗi tham chiếu: bean singleton {{TemplateRenderService}} → {{shell}} → {{GroovyClassLoader}} → class cache → {{Class ScriptNNN}} → InnerLoader của nó. Vì chuỗi này luôn reachable, không GC nào unload được.
+
+Nhận xét "giữ 1 shell dùng chung" trong code review chỉ đúng một nửa: shell dùng chung **cộng với** việc parse mỗi request chính là thứ biến nó thành kho chứa class vô hạn. Nếu tạo shell mới mỗi request thì các class có thể unload khi GC, nhưng vẫn tốn CPU compile (vài ms mỗi lần) và gây áp lực Metaspace và GC liên tục. Cả hai cách đều sai ở chỗ **compile trong hot path**.
+
+### Cách sửa
+
+**Ngắn hạn (hotfix):** compile mỗi template **một lần**, cache Class theo id và phiên bản của template, và tạo instance Script mới cho mỗi request. Script **không thread-safe** vì giữ Binding riêng, nên không được dùng chung một instance Script giữa các thread.
+
+~~~java
+private final GroovyClassLoader gcl = new GroovyClassLoader(getClass().getClassLoader());
+private final Map<String, Class<? extends Script>> compiled = new ConcurrentHashMap<>();
+
+@SuppressWarnings("unchecked")
+public String render(EmailTemplate template, Map<String, Object> sample) {
+    String key = template.getId() + ":" + template.getVersion();   // đổi version thì compile lại
+    Class<? extends Script> cls = compiled.computeIfAbsent(key,
+            k -> (Class<? extends Script>) gcl.parseClass(buildScript(template), "Tpl_" + template.getId() + "_v" + template.getVersion() + ".groovy"));
+    Script script = InvokerHelper.createScript(cls, new Binding(sample));
+    Object r = script.run();
+    return r == null ? "" : r.toString();
+}
+~~~
+
+Khi template đổi phiên bản, class cũ vẫn nằm trong cache của {{gcl}}. Có hai cách xử lý: dùng **một GroovyClassLoader riêng cho mỗi lần reload toàn bộ bộ template** rồi bỏ loader cũ (để cả cây class unload được), hoặc gọi {{gcl.clearCache()}} và xoá map {{compiled}} khi template thay đổi. Số template nhỏ (48) nên chi phí không đáng kể.
+
+**Dài hạn:**
+- Nếu template chỉ là văn bản có biến thay thế, cân nhắc một **expression language không sinh class mỗi lần đánh giá** (SpEL đã parse sẵn, {{String.replace}} của biến, hoặc engine template như Thymeleaf/Handlebars đã được thiết kế cho việc này), dễ kiểm soát và audit hơn.
+- **Bảo mật:** template Groovy do người dùng viết chạy trong JVM gửi email tương đương với remote code execution. Bắt buộc dùng sandbox ({{SecureASTCustomizer}} với whitelist import và receiver, giới hạn thời gian chạy), duyệt template trước khi active, hoặc tách ra một service riêng có quyền tối thiểu.
+- Bỏ {{Pattern.compile}} trong {{render}} (dòng 20) khỏi hot path: compile một lần ở field {{static final}}. Với {{Pattern.LITERAL}}, matcher không tạo class nên đây không phải nguyên nhân Metaspace, nhưng vẫn là CPU và object rác không cần thiết.
+
+**Tăng MaxMetaspaceSize lên 512 MB hay bỏ giới hạn?** Không. Làm vậy chỉ dời sự cố từ khoảng 6 giờ lên khoảng 17 giờ. Nếu bỏ giới hạn (mặc định là không giới hạn), Metaspace sẽ ăn dần vào memory limit của container và pod bị **OOMKilled** mà không có stack trace, khó chẩn đoán hơn nhiều. Giữ giới hạn hợp lý để lỗi lộ ra rõ ràng là đúng.
+
+### Phòng ngừa và alert
+
+- Alert khi {{rate(jvm_classes_loaded_classes)}} còn dương sau 30 phút kể từ khi khởi động. Ứng dụng ổn định thì số class gần như phẳng sau warm-up.
+- Alert khi Metaspace dùng trên 80% {{MaxMetaspaceSize}}, và khi GC log có cause {{Metadata GC Threshold}} lặp lại liên tục.
+- Test tích hợp: chạy 10,000 lần render, assert số class tăng không quá số template.
+- Code review: cấm {{GroovyShell.parse}}, {{GroovyClassLoader.parseClass}}, {{ScriptEngine.eval}} (với script dạng String), {{Proxy.newProxyInstance}} với loader mới, ByteBuddy hoặc CGLIB tạo class trong request path, trừ khi có cache.
+
+> Senior tip: Khi thấy OOM Metaspace, việc đầu tiên là chạy {{jcmd <pid> VM.classloader_stats}} và nhìn **số lượng loader và parent của chúng**. Hàng nghìn loader cùng loại, mỗi loader 1–2 class, gần như luôn là sinh class động trong hot path (Groovy, JSR-223, proxy, bytecode generation). Còn một vài loader khổng lồ không chịu biến mất thường là leak do hot redeploy hoặc ThreadLocal giữ loader cũ. Muốn biết tên class thì bật {{-Xlog:class+load=info}} tạm thời trên một pod, hoặc dùng {{jcmd <pid> VM.metaspace show-loaders}} để xem chi tiết hơn.`,
+  rubric: [
+    'Giải thích Metaspace là native memory chứa metadata của class, tách biệt với heap; histogram heap không thấy được, class chỉ unload khi loader của nó unreachable.',
+    'Dẫn chứng: khoảng 20,485 GroovyClassLoader$InnerLoader mỗi cái 1 class, cùng parent là một GroovyClassLoader; tổng ~40,329 loader và classes_loaded tăng 1.54/s bằng preview/s; unloaded = 0; hai Full GC (Metadata GC Threshold, Clear Soft References) không giảm được Metaspace.',
+    'Chỉ đúng nguyên nhân: shell.parse() mỗi request trên một GroovyShell singleton, mỗi lần sinh class mới và class bị giữ trong cache của GroovyClassLoader; chỉ có 48 template nên chỉ cần 48 class.',
+    'Đề xuất compile một lần và cache Class theo template id và version, tạo Script instance mới mỗi request (Script không thread-safe), có cách giải phóng class khi template đổi.',
+    'Phản biện việc tăng hoặc bỏ MaxMetaspaceSize (chỉ dời sự cố, có thể thành OOMKilled), và có alert theo class loaded rate và Metaspace usage; nhắc rủi ro bảo mật của template do người dùng viết.'
+  ],
+  tags: ['metaspace', 'classloader-leak', 'groovy', 'oom', 'class-unloading', 'template-engine']
+},
+{
+  id: 'lab-gc-016',
+  category: 'gc',
+  title: 'p99 900 ms trên service ví: heap 16 GB và mixed GC 820 ms với G1 mặc định',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Ví điện tử **VietPay** có service **ledger** (Spring Boot 3.2, JDK 17.0.10, G1) ghi và tra soát giao dịch ví. Pod 8 vCPU, memory limit 24Gi. Khi lên production, team đặt {{-Xms16g -Xmx16g}} mà **không đặt {{-XX:MaxGCPauseMillis}}**, cũng không đặt {{-XX:InitiatingHeapOccupancyPercent}} (IHOP). Live set thật (sau mixed GC) chỉ khoảng **5 GB**, nhưng G1 giữ heap 16 GB.
+
+**Thuật ngữ giải thích:**
+- **G1 (Garbage-First):** bộ thu gom rác mặc định của JDK 17, chia heap thành các region bằng nhau và dọn những region nhiều rác nhất trước.
+- **Mixed GC:** lần GC vừa dọn young (Eden + Survivor) vừa dọn một phần old region; là loại pause dài nhất trong vận hành bình thường của G1.
+- **MaxGCPauseMillis:** "khuyến nghị" cho G1 về thời gian pause mong muốn (mặc định 200 ms); G1 dùng nó để quyết định cỡ young và số old region dọn mỗi lần.
+- **ZGC generational:** bộ thu gom rác của JDK 21, pause không phụ thuộc kích thước heap; bật bằng {{-XX:+UseZGC -XX:+ZGenerational}} (mặc định từ JDK 23).
+
+**Triệu chứng:** Tháng này p99 của {{POST /api/wallet/transfer}} tăng từ 45 ms lên **900 ms**, có đợt chạm 1.1 s. CPU pod chỉ 40–55%, không có Full GC, không có lỗi, traffic ổn định ~4,200 request/giây mỗi pod. GC log JDK 17 cho thấy young GC rất thưa (khoảng mỗi 8 giây) nhưng **mixed GC kéo dài 800–900 ms**.
+
+**Dữ liệu thu thập:** GC log JDK 17 (unified logging) của pod,metric Prometheus theo giờ, kết quả {{jcmd VM.flags}} và một đoạn code hot path.`,
+  artifacts: [
+    {
+      name: 'gc-ledger-1024.log',
+      lang: 'text',
+      content: `[2026-10-26T08:00:00.012+0700][0.012s][info][gc,init] Version: 17.0.10+7 (release)
+[2026-10-26T08:00:00.012+0700][0.012s][info][gc,init] CPUs: 8 total, 8 available
+[2026-10-26T08:00:00.012+0700][0.012s][info][gc,init] Memory: 24576M
+[2026-10-26T08:00:00.012+0700][0.012s][info][gc,init] Heap Region Size: 8M
+[2026-10-26T08:00:00.012+0700][0.012s][info][gc,init] Heap Min Capacity: 16G
+[2026-10-26T08:00:00.012+0700][0.012s][info][gc,init] Heap Initial Capacity: 16G
+[2026-10-26T08:00:00.012+0700][0.012s][info][gc,init] Heap Max Capacity: 16G
+[2026-10-26T08:00:00.012+0700][0.012s][info][gc,init] Parallel Workers: 8
+[2026-10-26T08:00:00.012+0700][0.012s][info][gc,init] Concurrent Workers: 3
+[2026-10-26T08:00:00.012+0700][0.012s][info][gc,init] Concurrent Refinement Workers: 8
+[2026-10-26T08:00:00.012+0700][0.012s][info][gc,init] Periodic GC: Disabled
+... (young GC thưa, đã lược bớt) ...
+[2026-10-26T10:14:55.102+0700][8095.102s][info][gc] GC(412) Pause Young (Normal) (G1 Evacuation Pause) 6120M->5120M(16384M) 62.441ms
+[2026-10-26T10:15:03.330+0700][8103.330s][info][gc,start] GC(413) Pause Young (Concurrent Start) (G1 Evacuation Pause)
+[2026-10-26T10:15:03.330+0700][8103.330s][info][gc,task] GC(413) Using 8 workers of 8 for evacuation
+[2026-10-26T10:15:03.392+0700][8103.392s][info][gc,phases] GC(413)   Evacuate Collection Set: 54.1ms
+[2026-10-26T10:15:03.392+0700][8103.392s][info][gc,heap] GC(413) Eden regions: 620->0(620)
+[2026-10-26T10:15:03.392+0700][8103.392s][info][gc,heap] GC(413) Survivor regions: 20->40(200)
+[2026-10-26T10:15:03.392+0700][8103.392s][info][gc,heap] GC(413) Old regions: 640->640
+[2026-10-26T10:15:03.392+0700][8103.392s][info][gc,heap] GC(413) Humongous regions: 0->0
+[2026-10-26T10:15:03.392+0700][8103.392s][info][gc] GC(413) Pause Young (Concurrent Start) (G1 Evacuation Pause) 6150M->5140M(16384M) 68.112ms
+[2026-10-26T10:15:03.393+0700][8103.393s][info][gc] GC(414) Concurrent Mark Cycle
+[2026-10-26T10:15:04.301+0700][8104.301s][info][gc,marking] GC(414) Concurrent Mark (8103.393s, 8104.301s) 908.104ms
+[2026-10-26T10:15:04.312+0700][8104.312s][info][gc] GC(414) Pause Remark 5218M->5204M(16384M) 12.221ms
+[2026-10-26T10:15:04.323+0700][8104.323s][info][gc] GC(414) Pause Cleanup 5204M->5204M(16384M) 0.512ms
+[2026-10-26T10:15:04.330+0700][8104.330s][info][gc] GC(414) Concurrent Mark Cycle 936.221ms
+[2026-10-26T10:15:07.812+0700][8107.812s][info][gc,start] GC(415) Pause Young (Prepare Mixed) (G1 Evacuation Pause)
+[2026-10-26T10:15:07.812+0700][8107.812s][info][gc,task] GC(415) Using 8 workers of 8 for evacuation
+[2026-10-26T10:15:08.512+0700][8108.512s][info][gc,phases] GC(415)   Evacuate Collection Set: 702.4ms
+[2026-10-26T10:15:08.512+0700][8108.512s][info][gc,phases] GC(415)   Post Evacuate Collection Set: 84.2ms
+[2026-10-26T10:15:08.512+0700][8108.512s][info][gc,heap] GC(415) Eden regions: 610->0(120)
+[2026-10-26T10:15:08.512+0700][8108.512s][info][gc,heap] GC(415) Survivor regions: 40->60(200)
+[2026-10-26T10:15:08.512+0700][8108.512s][info][gc,heap] GC(415) Old regions: 640->400
+[2026-10-26T10:15:08.512+0700][8108.512s][info][gc,heap] GC(415) Humongous regions: 0->0
+[2026-10-26T10:15:08.512+0700][8108.512s][info][gc] GC(415) Pause Young (Prepare Mixed) (G1 Evacuation Pause) 6380M->5040M(16384M) 806.441ms
+[2026-10-26T10:15:08.512+0700][8108.512s][info][gc,cpu] GC(415) User=6.41s Sys=0.02s Real=0.81s
+[2026-10-26T10:15:09.330+0700][8109.330s][info][gc] GC(416) Pause Young (Mixed) (G1 Evacuation Pause) 5520M->5080M(16384M) 812.204ms
+[2026-10-26T10:15:10.142+0700][8110.142s][info][gc] GC(417) Pause Young (Mixed) (G1 Evacuation Pause) 5380M->5040M(16384M) 798.512ms
+... (chu kỳ Concurrent Start rồi 2-3 Mixed GC dài 800-900ms lặp lại mỗi 20-40 giây) ...
+[2026-10-26T10:22:48.771+0700][8528.771s][info][gc] GC(438) Pause Young (Mixed) (G1 Evacuation Pause) 5410M->5060M(16384M) 821.334ms`
+    },
+    {
+      name: 'prometheus-and-flags.txt',
+      lang: 'text',
+      content: `# Prometheus, pod ledger-7f9c8d-k2xpl, 10:00-10:20 (8 vCPU)
+# gc_pause_p99       = histogram_quantile(0.99, rate(jvm_gc_pause_seconds_bucket[5m]))
+# gc_time_ratio      = rate(jvm_gc_pause_seconds_sum[5m]) (giây GC mỗi giây)
+# alloc_rate         = rate(jvm_gc_memory_allocated_bytes_total[5m])
+# old_after_mixed    = jvm_memory_used_bytes{area="heap",id="G1 Old Gen"} ngay sau mixed GC
+
+time    gc_young_count  gc_mixed_count  gc_pause_p99  gc_time_ratio  alloc_rate  old_after_mixed  http_p99
+10:00        118              9           0.812 s        0.041          0.42 GB/s      5.04 GB        905 ms
+10:10        121             11           0.798 s        0.043          0.41 GB/s      5.06 GB        887 ms
+10:20        119             10           0.821 s        0.040          0.43 GB/s      5.03 GB        912 ms
+
+# jcmd 1 VM.flags | grep -E 'MaxGCPauseMillis|G1HeapRegionSize|InitiatingHeapOccupancyPercent|UseG1GC|UseZGC|MaxHeapSize'
+-XX:MaxGCPauseMillis=200
+-XX:G1HeapRegionSize=8388608
+-XX:InitiatingHeapOccupancyPercent=45
+-XX:+UseG1GC
+-XX:MaxHeapSize=17179869184
+
+# jcmd 1 GC.heap_info
+ garbage-first heap   total 17179869184K, used 5158993920K
+  region size 8192K, 120 young (983040K), 60 survivors (491520K), 512 old (4194304K)
+# Note: used ≈ 4.8 GB; region size 8M; 2048 regions = 16 GB. Old gen ~4 GB (512 vùng) sau mixed GC, live set ổn định ~5 GB.`
+    },
+    {
+      name: 'TransferService.java',
+      lang: 'text',
+      content: `package vn.vietpay.ledger;
+
+import java.time.Instant;
+import java.util.UUID;
+import org.springframework.stereotype.Service;
+
+@Service
+public class TransferService {
+
+    private final LedgerRepository repo;
+
+    public TransferService(LedgerRepository repo) { this.repo = repo; }
+
+    @Transactional
+    public TransferResult transfer(String from, String to, long amount, String idempotencyKey) {
+        // Mỗi request tạo khá nhiều object tạm (event, DTO, chuỗi JSON audit)
+        TransferEvent event = TransferEvent.of(from, to, amount, UUID.randomUUID().toString());
+        AuditLog log = AuditLog.of(event, Instant.now());     // serialized JSON ~1-2 KB
+        repo.save(event);
+        repo.save(log);
+        return new TransferResult(event.id(), "OK");
+    }
+}`
+    }
+  ],
+  questions: [
+    'Vì sao mixed GC kéo dài 800–900 ms dù CPU còn dư và không có Full GC? Dùng GC log và metric để giải thích cơ chế.',
+    'Heap 16 GB nhưng live set chỉ ~5 GB thì G1 cần dọn bao nhiêu old region mỗi chu kỳ mixed, và vì sao điều đó quyết định độ dài pause? IHOP 45% có liên quan gì?',
+    'Bạn có 3 lựa chọn: (a) đặt MaxGCPauseMillis=50, (b) chuyển ZGC generational trên JDK 21, (c) giảm allocation rate. Phân tích ưu/nhược và đề xuất lộ trình. Alert nào cần thêm?'
+  ],
+  hints: [
+    'Đọc dòng "Heap Region Size: 8M" và "Heap Max Capacity: 16G". Old gen đang giữ 640 region (~5 GB) rác rải rác; G1 chỉ dọn được region nào phần lớn là rác. Nếu region nào cũng có ~45-60% object sống thì phải copy nhiều, pause dài.',
+    'MaxGCPauseMillis mặc định 200 ms chỉ là mục tiêu; khi heap quá lớn so với live set, G1 chọn young rất lớn (Eden 620 region) và gom nhiều old region vào một mixed GC để bù chi phí, nên pause vượt xa mục tiêu. IHOP 45% nghĩa là chu kỳ đánh dấu chỉ bắt đầu khi old vượt ~7.2 GB — old 5 GB vẫn dưới ngưỡng, nhưng vẫn có chu kỳ do "Concurrent Start" ở young GC khi heap gần đầy.',
+    'ZGC generational gần như không có pause theo kích thước heap, nhưng cần JDK 21 và tốn CPU; giảm allocation chỉ giảm tần suất chứ không giảm độ dài mỗi pause; MaxGCPauseMillis=50 buộc G1 chia nhỏ mixed GC (nhiều lần hơn, mỗi lần ngắn hơn) và giảm young, đánh đổi bằng throughput.'
+  ],
+  answer: `**Tóm tắt:** Đây là **mixed GC quá dài do heap quá lớn so với live set**, không phải leak và không phải Full GC. Heap 16 GB với region 8 MB, live set chỉ ~5 GB (khoảng 640 old region rải rác). Mỗi chu kỳ mixed G1 phải copy object sống từ nhiều old region sang region mới; vì mỗi region chứa 45–60% object sống nên chi phí evacuate lớn, pause 800–900 ms. CPU còn dư vì đây là **pause stop-the-world**, không phải thiếu CPU. Ba lựa chọn đều hợp lý ở các mức độ khác nhau: giảm allocation rate và đặt MaxGCPauseMillis là bước đầu; ZGC generational trên JDK 21 là lời giải triệt để cho pause.
+
+### Đọc GC log: chuyện gì đang xảy ra
+
+| Dòng log | Ý nghĩa |
+|---|---|
+| {{Heap Region Size: 8M, Heap Max Capacity: 16G}} | Heap có 2048 region, mỗi region 8 MB |
+| {{GC(412) Pause Young (Normal) 6120M->5120M ... 62.441ms}} | Young GC thưa (khoảng 8 giây một lần), pause 62 ms |
+| {{GC(413) Pause Young (Concurrent Start) ... 68.112ms}}, {{GC(414) Concurrent Mark Cycle}} | Old gen chạm ngưỡng, G1 bắt đầu chu kỳ đánh dấu song song |
+| {{GC(415) Pause Young (Prepare Mixed) ... 806.441ms}}, {{Evacuate Collection Set: 702.4ms}}, {{Old regions: 640->400}} | Lần mixed đầu tiên dọn 240 old region, nhưng copy object sống tốn 702 ms |
+| {{GC(416)/(417) Pause Young (Mixed) ... 812/798 ms}} | Các mixed tiếp theo cũng 800+ ms |
+| {{gc_time_ratio = 0.041}} | 4.1% thời gian là GC; phần lớn là các pause dài 800 ms này |
+
+Vì sao mixed GC phải copy nhiều: old gen có 640 region, mỗi region 8 MB, tổng ~5 GB. G1 chỉ chọn region "nhiều rác nhất" (garbage-first), nhưng nếu object sống phân tán đều (mỗi region 45–60% sống), thì gần như mọi region đều phải dọn, và mỗi region phải copy 4–5 MB object sống sang region mới. 240 region × ~4.5 MB ≈ 1.08 GB object phải copy, với 8 worker mất khoảng 700 ms — khớp {{Evacuate Collection Set: 702.4ms}}.
+
+### Vì sao heap 16 GB là gốc rễ
+
+- **IHOP 45%**: G1 chỉ bắt đầu concurrent mark khi old gen vượt 45% heap (~7.2 GB). Nhưng old chỉ 5 GB, vẫn dưới ngưỡng — chu kỳ ở đây bắt đầu do {{G1 Evacuation Pause}} khi heap gần đầy young + old, chứ không phải do IHOP. Dù vậy, khi chu kỳ đã bắt đầu, G1 sẽ dọn dần old region trong các mixed GC.
+- **Young quá lớn**: với heap 16 GB, G1 chọn Eden khoảng 620 region (~4.8 GB) để giảm tần suất young GC. Young GC thưa (8 giây) nhưng khi nó xảy ra, lượng object sống phải copy lớn, và ngay sau đó là mixed GC với nhiều old region.
+- **Live set nhỏ so với heap**: 5 GB live / 16 GB heap = 31%. Phần 11 GB còn lại là "khoảng trống" G1 phải quản lý, làm mỗi quyết định (chọn region, cỡ young) đều thiên về "gom nhiều để bù".
+
+### Ba lựa chọn
+
+**Option A: {{MaxGCPauseMillis=50}} (hoặc 100)**
+- **Cơ chế:** G1 sẽ giảm cỡ young và số old region dọn mỗi mixed GC để cố gắng đạt mục tiêu pause. Kết quả: mixed GC ngắn hơn (có thể 100–200 ms) nhưng **nhiều lần hơn**, tổng thời gian GC có thể tăng (throughput giảm).
+- **Ưu:** không cần đổi GC, chỉ một cờ, hiệu quả nhanh.
+- **Nhược:** không giải quyết gốc (heap quá lớn); có thể làm tần suất GC tăng, CPU GC tăng; nếu đặt quá thấp (ví dụ 20 ms) G1 sẽ không đạt được mục tiêu và liên tục điều chỉnh, gây pause ngắn nhưng rất thường xuyên.
+- **Khi nào dùng:** bước đầu tiên, kết hợp giảm heap.
+
+**Option B: ZGC generational trên JDK 21 ({{-XX:+UseZGC -XX:+ZGenerational}})**
+- **Cơ chế:** ZGC không có pause theo kích thước heap; pause chỉ là các "load barrier" vài trăm micro giây, không phụ thuộc old gen size. Mixed GC khái niệm không còn; ZGC dọn old region liên tục, song song.
+- **Ưu:** pause gần như phẳng dù heap 16 GB hay 64 GB; phù hợp service latency thấp.
+- **Nhược:** cần **JDK 21** (hiện tại đang JDK 17 — phải nâng cấp runtime); tốn CPU hơn G1 (các thread GC chạy liên tục); dùng nhiều native memory hơn; cần đo throughput và CPU trước khi đổi.
+- **Khi nào dùng:** khi đã có JDK 21 và mục tiêu p99 dưới 50 ms; là lời giải triệt để.
+
+**Option C: Giảm allocation rate**
+- **Cơ chế:** ít object rác → young GC thưa hơn → ít phải evacuate → mixed GC ít áp lực hơn. Nhưng **không giảm độ dài mỗi pause** nếu old gen vẫn giữ nhiều object sống.
+- **Ưu:** giảm CPU GC và tần suất, cải thiện tổng thể.
+- **Nhược:** không phải lời giải cho pause dài; cần code change (giảm object tạm trong hot path).
+- **Khi nào dùng:** luôn nên làm, nhưng không thay thế A hoặc B.
+
+**Đề xuất lộ trình:**
+1. **Ngay:** đặt {{-XX:MaxGCPauseMillis=100}}, giảm {{-Xmx}} xuống 8 GB (vẫn gấp 1.6 lần live set), đo lại. Đây là thay đổi nhỏ, rủi ro thấp.
+2. **Ngắn hạn:** tối ưu hot path để giảm allocation (audit log bất đồng bộ, tái sử dụng object), giảm tần suất mixed GC.
+3. **Dài hạn:** nâng cấp lên **JDK 21**, bật **ZGC generational**, đo p99 và CPU. Nếu CPU tăng quá 10%, cân nhắc giữ G1 với heap 8 GB + MaxGCPauseMillis=100.
+
+### Alert và monitoring
+
+- Alert khi {{gc_pause_p99}} > 200 ms trong 5 phút (hiện tại 800+ ms).
+- Alert khi {{rate(jvm_gc_pause_seconds_sum)}} > 0.1 (10% thời gian là GC).
+- Theo dõi {{jvm_gc_memory_allocated_bytes_total}} trên mỗi request; nếu allocation tăng đột biến sau deploy, kiểm tra code.
+- Theo dõi phân bố pause: nếu mixed GC > 200 ms liên tục, đặt MaxGCPauseMillis hoặc chuyển ZGC.
+
+> Senior tip: Với service latency thấp, **heap lớn không phải lúc nào cũng tốt**. Live set 5 GB thì heap 8 GB là đủ; heap 16 GB làm mỗi mixed GC phải quét nhiều region hơn, pause dài hơn. Khi thấy mixed GC 800 ms mà CPU dư, đừng nghĩ "thiếu CPU" hay "leak" — hãy nhìn **Old regions** trong GC log và tính: số region × % object sống × kích thước region = lượng phải copy. Nếu con số lớn, hoặc giảm heap, hoặc chuyển ZGC.`,
+  rubric: [
+    'Giải thích đúng cơ chế mixed GC dài: heap 16 GB region 8M, old 640 region ~5 GB rải rác, mỗi mixed dọn 240 region và phải copy ~1 GB object sống, Evacuate Collection Set 702 ms → pause 800-900 ms; CPU dư vì là stop-the-world.',
+    'Liên hệ cấu hình: IHOP 45%, MaxGCPauseMillis mặc định 200, live set 5 GB/16 GB = 31%; giải thích vì sao G1 chọn young lớn và gom nhiều old region.',
+    'Phân tích đủ 3 lựa chọn: MaxGCPauseMillis (giảm pause nhưng nhiều GC hơn, throughput giảm), ZGC generational JDK 21 (pause phẳng, cần nâng cấp runtime, tốn CPU), giảm allocation (giảm tần suất, không giảm độ dài pause).',
+    'Đề xuất lộ trình: ngay lập tức MaxGCPauseMillis + giảm heap 8 GB, ngắn hạn tối ưu allocation, dài hạn ZGC trên JDK 21; có alert pause p99 và gc_time_ratio.',
+    'Phân biệt không phải leak (old_after_mixed ổn định ~5 GB) và không phải Full GC (không có Pause Full trong log).'
+  ],
+  tags: ['g1', 'mixed-gc', 'gc-pause', 'heap-size', 'zgc', 'max-gc-pause', 'latency', 'jdk17', 'jdk21']
+},
+{
+  id: 'lab-gc-017',
+  category: 'gc',
+  title: 'Adapter webhook tao Java proxy trong ClassLoader moi request lam day Metaspace',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Công ty **TiniFin** vận hành dịch vụ **webhook-adapter** (Spring Boot 3.2, JDK 17.0.10, G1) nhận thông báo thanh toán từ đối tác. Mỗi đối tác có API khác nhau, nên team xây tính năng "adapter động": mỗi lần nhận webhook, code dùng {{java.lang.reflect.Proxy}} tạo đối tượng đóng gói (wrapper) gọi API đối tác, và tạo **một {{URLClassLoader}} mới** để định nghĩa class proxy của adapter đó (hy vọng tách biệt class giữa các đối tác). Proxy sau đó lưu vào {{webhookAdapterCache}}, một {{ConcurrentHashMap}} static, keyed bởi mã sự kiện webhook, để "xử lý lại nếu cần". JVM: {{-Xmx1g -XX:MaxMetaspaceSize=192m -XX:+UseG1GC}}, pod 2 vCPU, giới hạn bộ nhớ 3Gi.
+
+**Thuật ngữ giải thích:**
+- **Heap:** vùng JVM lưu dữ liệu đối tượng (ví dụ {{String}}, {{byte[]}}, instance tạo bởi {{new}}). Thu gom bởi G1 GC.
+- **Metaspace:** vùng native memory (ngoài heap) lưu *metadata của class*: tên method, field, bytecode, constant pool. Nói dễ hiểu: heap chứa "sản phẩm" đang làm việc, Metaspace chứa "hồ sơ thiết kế" của từng loại sản phẩm. Giới hạn bởi {{-XX:MaxMetaspaceSize}}, tách biệt hoàn toàn với {{-Xmx}}.
+- **Classloader:** thành phần JVM đọc file .class và tạo đối tượng {{Class}} trong Metaspace. Một classloader chỉ được unload (gỡ class, giải phóng Metaspace) khi **không còn đối tượng nào** tham chiếu đến nó và đến các class mà nó nạp.
+- **GC root / reachable:** đối tượng còn "đạt được" nếu có đường đi từ gốc (biến static, stack của thread…). Chỉ đối tượng không đạt được mới bị dọn.
+- **Proxy (java.lang.reflect.Proxy):** tạo tại runtime một class mới implement một số interface, dùng để can thiệp vào lời gọi method (ví dụ ghi log, chuyển tiếp API).
+
+**Triệu chứng:** Tính năng chạy được khoảng 5 giờ, cả 3 pod lần lượt trả HTTP 500 với {{java.lang.OutOfMemoryError: Metaspace}}. Heap dashboard chỉ khoảng 230 MB / 1 GB. {{jmap -histo}} không thấy class ứng dụng nào tăng bất thường. Dev cho "heap còn trống, nên MaxMetaspaceSize quá nhỏ" và đề xuất tăng lên 512 MB.
+
+**Dữ liệu thu thập:** {{jcmd 1 VM.classloader_stats}} lúc 13:00, metric Prometheus theo giờ, đoạn GC log và log ứng dụng lúc OOM, mã nguồn {{WebhookAdapter}}.`,
+  artifacts: [
+    {
+      name: 'classloader-stats-1300.txt',
+      lang: 'text',
+      content: `$ kubectl exec webhook-adapter-7f9c8d-k2xpl -- jcmd 1 VM.classloader_stats
+1:
+ClassLoader                                Parent                     CLD*                Classes   ChunkSz   BlockSz  Type
+0x0000000801f3a5b8                         0x0000000800010d48         0x00007f3a2c0a8e40       1      5120      4608
+0x0000000801f3a2d0                         0x0000000800010d48         0x00007f3a2c0a8c90       1      5120      4608
+0x0000000801f39fe8                         0x0000000800010d48         0x00007f3a2c0a8ae0       1      5120      4608
+0x0000000801f39d00                         0x0000000800010d48         0x00007f3a2c0a9300       1      5120      4608
+0x0000000801f39a18                         0x0000000800010d48         0x00007f3a2c0a7800       1      5120      4608
+... (32728 dòng loader ẩn danh khác, đều Classes 1, ChunkSz 5120, BlockSz 4608, Type trống, cha là 0x0000000800010d48)
+0x0000000800d01f28                         0x0000000800010d48         0x00007f3a9c2b5a10     14871  92274688  89912320  org.springframework.boot.loader.launch.LaunchedClassLoader
+                                                               1544   4194304   3801088   + hidden classes
+0x0000000800010d48                         0x0000000800010a60         0x00007f3a9c1e0c30      102   1048576   940112  jdk.internal.loader.ClassLoaders$AppClassLoader
+0x0000000800010a60                         0x0000000000000000         0x00007f3a9c1e0950      112    786432    701232  jdk.internal.loader.ClassLoaders$PlatformClassLoader
+0x0000000000000000                         0x0000000000000000         0x00007f3a9c0d7b30     3214  20971520  20512488  <boot class loader>
+Total = 32761 loaders                    33102 170584064 160349184
+ChunkSz: tổng kích thước các vùng metaspace đã cấp cho từng loader`
+    },
+    {
+      name: 'metrics-hourly.txt',
+      lang: 'text',
+      content: `# Prometheus, pod webhook-adapter-7f9c8d-k2xpl (khoi dong 08:00:12)
+# metaspace = jvm_memory_used_bytes{area="nonheap",id="Metaspace"}
+# classes_loaded = jvm_classes_loaded_classes
+# classes_unld = jvm_classes_unloaded_classes_total
+# heap_after_gc = heap dung luong sau mixed GC gan nhat
+
+time    metaspace   classes_loaded  classes_unld  heap_after_gc  webhook/s  http_5xx/s
+08:05     106.6 MB            20238             0         231 MB       0.72         0
+09:00     123.4 MB            22730             0         234 MB       0.70         0
+10:00     140.2 MB            25230             0         233 MB       0.69         0
+11:00     157.0 MB            27730             0         235 MB       0.71         0
+12:00     173.8 MB            30230             0         236 MB       0.70         0
+13:00     190.6 MB            32730             0         238 MB       0.71         0
+13:41     192.0 MB            33900             0         238 MB       0.00        31.6
+
+# Webhook dang ky moi cua mot doi tac moi, gui lien tuc tu 08:00`
+    },
+    {
+      name: 'gc-and-app-1342.txt',
+      lang: 'text',
+      content: `[2026-10-27T13:41:51.114+0700][20231.114s][info][gc] GC(1622) Pause Young (Concurrent Start) (Metadata GC Threshold) 402M->238M(1024M) 16.440ms
+[2026-10-27T13:41:51.114+0700][20231.114s][info][gc,metaspace] GC(1622) Metaspace: 190120K(192512K)->190120K(192512K) NonClass: 166512K(167424K)->166512K(167424K) Class: 23608K(25088K)->23608K(25088K)
+[2026-10-27T13:41:52.020+0700][20232.020s][info][gc] GC(1623) Pause Remark 430M->428M(1024M) 28.110ms
+[2026-10-27T13:41:52.020+0700][20232.020s][info][gc,metaspace] GC(1623) Metaspace: 190120K(192512K)->190120K(192512K) NonClass: 166512K(167424K)->166512K(167424K) Class: 23608K(25088K)->23608K(25088K)
+[2026-10-27T13:41:53.311+0700][20233.311s][info][gc] GC(1623) Concurrent Mark Cycle 1016.115ms
+[2026-10-27T13:41:56.410+0700][20235.410s][info][gc] GC(1624) Pause Full (Metadata GC Threshold) 400M->238M(1024M) 1188.602ms
+[2026-10-27T13:41:56.410+0700][20235.410s][info][gc,metaspace] GC(1624) Metaspace: 196410K(196608K)->196410K(196608K) NonClass: 170980K(170752K)->170980K(170752K) Class: 25430K(25856K)->25430K(25856K)
+[2026-10-27T13:41:57.990+0700][20236.990s][info][gc] GC(1625) Pause Full (Metadata GC Clear Soft References) 238M->236M(1024M) 1241.330ms
+[2026-10-27T13:41:57.990+0700][20236.990s][info][gc,metaspace] GC(1625) Metaspace: 196410K(196608K)->196410K(196608K) NonClass: 170980K(170752K)->170980K(170752K) Class: 25430K(25856K)->25430K(25856K)
+
+{"@timestamp":"2026-10-27T13:41:55.102+07:00","level":"INFO","thread_name":"http-nio-8080-exec-3","logger_name":"vn.tinifin.webhook.WebhookController","message":"webhook id=WH-882102 partner=M-2231","traceId":"6721f1c5a3e94b0d"}
+{"@timestamp":"2026-10-27T13:42:01.504+07:00","level":"ERROR","thread_name":"http-nio-8080-exec-37","logger_name":"o.a.c.c.C.[.[.[/].[dispatcherServlet]","message":"Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception [Handler dispatch failed: java.lang.OutOfMemoryError: Metaspace] with root cause","traceId":"6721f1c5b81c22aa","stack_trace":"java.lang.OutOfMemoryError: Metaspace
+    at java.base/java.lang.ClassLoader.defineClass1(Native Method)
+    at java.base/java.lang.ClassLoader.defineClass(ClassLoader.java:1012)
+    at java.base/java.lang.reflect.Proxy$ProxyClassFactory.apply(Proxy.java:643)
+    at java.base/java.lang.reflect.Proxy.getProxyClass0(Proxy.java:439)
+    at java.base/java.lang.reflect.Proxy.newProxyInstance(Proxy.java:745)
+    at vn.tinifin.webhook.WebhookAdapter.adapterFor(WebhookAdapter.java:42)
+    at vn.tinifin.webhook.WebhookController.handle(WebhookController.java:31)
+    ..."}
+{"@timestamp":"2026-10-27T13:42:01.733+07:00","level":"WARN","thread_name":"HikariPool-1 housekeeper","logger_name":"com.zaxxer.hikari.pool.HikariPool","message":"HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=32s417ms).","traceId":""}`,
+    },
+    {
+      name: 'WebhookAdapter.java',
+      lang: 'text',
+      content: `package vn.tinifin.webhook;
+
+import java.lang.reflect.Proxy;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.stereotype.Component;
+
+@Component
+public class WebhookAdapter {
+
+    // Cache adapter theo ma su kien webhook KHONG bao giu xoa
+    private static final Map<String, Object> webhookAdapterCache = new ConcurrentHashMap<>();
+
+    public Object adapterFor(String webhookId, Class<?> markerInterface) {
+        Object cached = webhookAdapterCache.get(webhookId);
+        if (cached != null) {
+            return cached;
+        }
+
+        // TAI SAU: tao ClassLoader MOI moi request de "tach biet doi tac"
+        ClassLoader loader = new URLClassLoader(new URL[0], WebhookAdapter.class.getClassLoader());
+        Object proxy = Proxy.newProxyInstance(loader,
+                new Class<?>[]{markerInterface},
+                (proxyObj, method, args) -> {
+                    // chuyen tiep den API doi tac
+                    return null;
+                });
+
+        webhookAdapterCache.put(webhookId, proxy);  // luu vinh vien, khong co TTL hoac eviction
+        return proxy;
+    }
+}`
+    }
+  ],
+  questions: [
+    'Vì sao heap chỉ khoảng 230 MB trong khi JVM ném OutOfMemoryError: Metaspace? Vì sao jmap -histo không thấy class nào tăng bất thường?',
+    'Dùng classloader_stats và metric, hãy chứng minh nguyên nhân gốc: bao nhiêu loader, mỗi loader nạp bao nhiêu class, cha là ai, class nào bị unload (classes_unloaded_classes_total)? Số class tăng đúng số webhook/giây không?',
+    'Bạn sửa ngắn hạn và dài hạn thế nào? Tăng MaxMetaspaceSize lên 512 MB hoặc bỏ giới hạn có phải ý hay không? Cần alert/monitoring gì?'
+  ],
+  hints: [
+    'Metaspace là vùng native memory (ngoài heap) lưu metadata của class; jmap -histo chỉ đếm object trên heap, không thấy phần này. Xem cột Classes/Parent/Type trong classloader_stats: có bao nhiêu loader, mỗi loader nạp bao nhiêu class, cha là ai?',
+    'jvm_classes_unloaded_classes_total bang 0, classes_loaded tang khoang 2.500/gio, dung voi so webhook/giay. Nghia la class van reachable, GC khong unload duoc.',
+    'Proxy.newProxyInstance(loader, ...) voi loader moi moi request; instance proxy duoc luu trong webhookAdapterCache (static) khong bao giu xoa -> loader khong bao giu du dieu kien GC -> class khong unload -> Metaspace phinh len.'
+  ],
+  answer: `**Tóm tắt:** Đây là **class loader leak làm đầy Metaspace**. Mỗi webhook, {{WebhookAdapter.adapterFor}} tạo một {{URLClassLoader}} mới, dùng {{Proxy.newProxyInstance(loader, ...)}} sinh ra một class proxy mới, rồi gắn proxy vào map static {{webhookAdapterCache}} keyed bởi mã webhook và không bao giờ xóa. Chuỗi tham chiếu: map static (GC root, sống suốt đời ứng dụng) → instance proxy → class proxy → classloader định nghĩa class → metadata class nằm trong Metaspace. Vì loader không bao giờ đủ điều kiện được unload, mỗi webhook vĩnh viễn chiếm khoảng 6–8 KB Metaspace. Lúc 0,72 webhook/giây → khoảng 2.500 class/giờ → khoảng 16–17 MB Metaspace/giờ → chạm {{-XX:MaxMetaspaceSize=192m}} sau khoảng 5,5 giờ. Heap vẫn trống vì lỗi nằm ở vùng native Metaspace, không phải heap. Sửa là ngừng tạo loader mới mỗi request, giới hạn cache (theo partnerId, có TTL/maximumSize), xóa entry không dùng nữa; không nên chỉ tăng MaxMetaspaceSize.
+
+### Metaspace và heap: hai vùng nhớ khác nhau
+
+**Heap** là nơi JVM lưu dữ liệu đối tượng (ví dụ {{String}}, {{byte[]}}, instance tạo bởi {{new}}). Khi bạn viết {{new ProductDetail()}}, object nằm trên heap. G1 GC dọn heap: object không còn ai tham chiếu được thu hồi.
+
+**Metaspace** là vùng native memory (bên ngoài heap, hệ điều hành cấp phát) lưu *metadata của class*: tên class, method, field, bytecode, constant pool, annotation. Dễ hình dung: heap là "bàn làm việc" chứa sản phẩm đang xử lý; Metaspace là "tủ hồ sơ thiết kế" chứa giấy phép chế tạo mỗi loại sản phẩm. Việc tạo class mới (ví dụ Groovy compile, proxy động) ghi hồ sơ mới vào tủ này.
+
+**Classloader** là nhân viên vào kho lấy hồ sơ thiết kế ra. Khi ứng dụng cần class {{vn.tinifin.webhook.Something}}, classloader đọc file .class, tạo đối tượng {{Class}} và lưu metadata vào Metaspace.
+
+**Unload class** chỉ xảy ra khi **toàn bộ** classloader không còn reachable: không còn tham chiếu từ GC root (biến static, stack thread…), không còn instance sống của class do nó nạp, không còn đối tượng {{Class}} được giữ. Lúc đó GC mới gỡ classloader và giải phóng Metaspace tương ứng. G1 chỉ unload class trong các ciclo GC nhất định (ví dụ Remark, Full GC); không có cách unload từng class riêng lẻ.
+
+**Proxy (java.lang.reflect.Proxy)** tạo tại runtime một class mới implement một số interface (ví dụ {{PaymentAdapter}}), dùng để can thiệp vào lời gọi method. Class proxy mới này được định nghĩa bởi một classloader được chọn.
+
+Ví dụ đời thường: một văn phòng có hồ sơ thiết kế cho từng loại máy. Mỗi lần đặt hàng máy mới, nhân viên lấy hồ sơ mới vào tủ. Nếu nhân viên **không bao giờ vứt hồ sơ cũ**, dù máy đã bán hết, tủ hồ sơ vẫn đầy. Metaspace đầy giống như vậy: class đã không dùng nữa nhưng classloader giữ hồ sơ → không unload được.
+
+### Nguyên nhân gốc
+
+Ba yếu tố cùng nhau tạo ra rò rỉ:
+
+1. **Tạo classloader mới mỗi request:** mỗi webhook, code tạo một {{URLClassLoader}} mới (loader L) để định nghĩa class proxy.
+2. **Sinh class proxy mới mỗi lần:** {{Proxy.newProxyInstance(loader, ...)}} với loader L mới sinh ra class {{ $Proxy1 }} riêng trong L. Mỗi class+loader tốn khoảng 6–8 KB Metaspace.
+3. **Cache static không bao giờ xóa:** instance proxy được gắn vào {{webhookAdapterCache}} keyed bởi mã webhook (mỗi webhook một khóa mới), sống trâu qua cả đời ứng dụng.
+
+Chuỗi tham chiếu giữ loader sống:
+
+~~~text
+GC root: bien static webhookAdapterCache
+  -> ConcurrentHashMap -> Node.value (instance proxy)
+     -> Class cua proxy ($Proxy1)
+     -> ClassLoader L (URLClassLoader tao moi request)
+        -> metadata class proxy trong Metaspace (khoang 6-8 KB)
+~~~
+
+Vì map static là GC root và không bao giờ xóa entry, loader L không bao giờ đủ điều kiện unload → mỗi webhook vĩnh viễn chiếm Metaspace.
+
+### Dẫn chứng từ artifact
+
+| Chỉ số | Giá trị | Ý nghĩa |
+|---|---|---|
+| classloader_stats | 32.728 loader ẩn danh, mỗi cái Classes 1, cha là AppClassLoader (0x0000000800010d48), Type trống | Mỗi loader chỉ định nghĩa 1 class proxy; mẫu điển hình của tạo loader lặp lại |
+| classloader_stats | Tổng 32.761 loader; ngay cả LaunchedClassLoader (toàn bộ Spring + ứng dụng) chỉ 14.871 class, khoảng 88 MB | Hầu hết loader là class loader rác từ adapter động |
+| Metric | classes_loaded 20.238 → 32.730 (tăng khoảng 2.500/giờ), classes_unld = 0 suốt 5 giờ | Tốc độ tăng class khớp đúng 0,7 webhook/giây; class không bao giờ được unload |
+| Metric | Metaspace 106,6 → 190,6 MB (tăng khoảng 17 MB/giờ), heap ~231–238 MB phẳng | Lỗi ở Metaspace (native), không phải heap |
+| GC log | Pause Young (Metadata GC Threshold), hai Full GC (Metadata GC Threshold, Clear Soft References) nhưng Metaspace không giảm (196410K→196410K), committed 196608K = 192 MB | GC đã cố hết sức nhưng không unload được classloader nào |
+| Stack trace | OOM tại {{ClassLoader.defineClass1}} → {{Proxy$ProxyClassFactory.apply}} → {{Proxy.newProxyInstance}} → {{WebhookAdapter.adapterFor(WebhookAdapter.java:42)}} | Xảy ra đúng khi tạo class proxy mới cho webhook |
+| jmap -histo | Không thấy class ứng dụng tăng bất thường | Histogram chỉ đếm object heap; metadata class proxy vài KB nằm trong Metaspace, không hiển thị |
+
+2.500 class × khoảng 6,8 KB ≈ 17 MB/giờ; từ 106,6 MB lúc 08:05 đạt gần 192 MB vào 13:00, OOM vào 13:42 — khớp chính xác với timeline sự cố.
+
+### Cách sửa
+
+**Ngắn hạn (mua thời gian):**
+- Rolling restart pod trong khung ít giao dịch để reset Metaspace (chỉ chữa cháy, rò rỉ vẫn lặp lại).
+- Tạm thời giới hạn số webhook xử lý liên tục hoặc tắt tính năng adapter động khi tải cao.
+
+**Dài hạn (sửa gốc):**
+1. Không tạo {{URLClassLoader}} mới mỗi request. Dùng chung class loader của ứng dụng, hoặc hạn chế tạo class động chỉ khi thực sự cần.
+2. Cache theo {{partnerId}} (số đối tác là hữu hạn) thay vì mã webhook (vô hạn); dùng Caffeine có {{maximumSize}} và {{expireAfterWrite}}; xóa entry khi không cần nữa.
+
+~~~java
+@Component
+public class WebhookAdapter {
+
+    private final Cache<String, Object> adapterCache = Caffeine.newBuilder()
+            .maximumSize(10_000)                 // so doi tac co han
+            .expireAfterWrite(Duration.ofMinutes(30))
+            .build();
+
+    public Object adapterFor(String partnerId, Class<?> markerInterface) {
+        return adapterCache.get(partnerId, key -> {
+            ClassLoader loader = WebhookAdapter.class.getClassLoader();   // dung chung loader cua ung dung
+            return Proxy.newProxyInstance(loader,
+                    new Class<?>[]{markerInterface},
+                    (proxyObj, method, args) -> {
+                        // chuyen tiep den API doi tac
+                        return null;
+                    });
+        });
+    }
+}
+~~~
+
+Mỗi {{partnerId}} chỉ tạo một lần, số loader bằng số đối tác (có hạn); entry hết hạn thì Caffeine xoá → loader đủ điều kiện unload → Metaspace được giải phóng.
+
+### Tại sao không chỉ tăng MaxMetaspaceSize
+
+- Chỉ dịch chuyển sự cố: từ khoảng 5,5 giờ lên khoảng 17 giờ, rò rỉ vẫn tiếp tục, OOM lại xảy ra.
+- Nếu bỏ giới hạn (mặc định là không giới hạn), Metaspace sẽ ăn dần vào memory limit của container (3Gi) và pod bị **OOMKilled** mà không có stack trace, chẩn đoán khó hơn nhiều.
+- Giữ giới hạn hợp lý (192m) để lỗi lộ ra rõ ràng là đúng.
+
+### Phòng ngừa và alert
+
+- Theo dõi {{jvm_classes_loaded_classes}} và {{jvm_classes_unloaded_classes_total}}: loaded tăng liên tục trong khi unloaded gần 0 → cảnh báo class loader leak.
+- Cảnh báo Metaspace dùng trên 75–80% {{MaxMetaspaceSize}}.
+- Cảnh báo khi GC log có cause {{Metadata GC Threshold}} lặp lại liên tục.
+- Test soak: gửi webhook liên tục nhiều ngày, quan sát classes unloaded > 0 sau warm-up và Metaspace ổn định.
+- Code review: cấm tạo classloader/class động trong đường đi request nếu không có kế hoạch unload rõ ràng.
+
+> Senior tip: Khi thấy {{OutOfMemoryError: Metaspace}} nhưng heap còn trống, hãy hỏi: "cái gì đang nạp class liên tục?" (script engine, proxy động, Groovy, CGLIB, redeploy…). Ba lệnh cứu cánh: {{jcmd <pid> VM.metaspace}} (Metaspace còn bao nhiêu, ngưỡng GC), {{jcmd <pid> VM.classloader_stats}} (loader nào nhiều bất thường), và metric classes loaded so với unloaded. Nếu unloaded gần bằng 0 trong khi loaded tăng theo một hành động nghiệp vụ (tạo adapter, reload quy tắc…), bạn gần như chắc chắn có class loader leak. Sửa thật sự là cắt đứt mọi tham chiếu để loader trở thành rác, chứ không phải cho Metaspace to hơn.`,
+  rubric: [
+    'Phân biệt đúng Metaspace (vùng native lưu metadata class) với heap (lưu object): OOM Metaspace xảy ra dù heap còn trống; jmap -histo không thấy được.',
+    'Chỉ ra nguyên nhân gốc: tạo URLClassLoader + class proxy mới mỗi webhook; instance bị giữ trong map static keyed mã webhook không xóa → loader không unload.',
+    'Dẫn chứng: khoảng 32.700 loader ẩn danh mỗi cái 1 class, cha là AppClassLoader; classes_loaded tăng khoảng 2.500/giờ khớp webhook/s; classes_unloaded = 0; Metaspace tăng khoảng 17 MB/giờ đến chạm 192 MB; hai Full GC (Metadata GC Threshold, Clear Soft References) không giảm được Metaspace.',
+    'Đề xuất sửa: ngừng tạo loader mỗi request, cache theo partnerId với maximumSize/TTL, xóa entry không dùng; giải thích tăng MaxMetaspaceSize chỉ trì hoãn, bỏ giới hạn gây OOMKilled.',
+    'Giám sát: alert classes_loaded tăng còn unloaded không, Metaspace > 75–80%, Metadata GC Threshold lặp lại; test soak; code review cấm tạo class động trong request path.'
+  ],
+  tags: ['metaspace', 'class-loader', 'proxy', 'oom', 'jdk17']
+},
+{
+  id: 'lab-gc-018',
+  category: 'gc',
+  title: 'Lich su giao dich: heap 12 GB nhung live chi 3 GB, mixed GC 850 ms lam p99 chot 1 giay',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Công ty **VimoPay** vận hành dịch vụ **txn-history** (Spring Boot 3.2, JDK 17.0.10, G1) tra cứu lịch sử giao dịch ví — cần latency thấp (SLA p99 dưới 100 ms). Pod 8 vCPU, giới hạn bộ nhớ 24Gi.
+
+JVM chạy với {{-Xms12g -Xmx12g}}, **không đặt {{-XX:MaxGCPauseMillis}}** (mặc định 200 ms), **không đổi {{-XX:InitiatingHeapOccupancyPercent}} (IHOP, mặc định 45%)**, region size mặc định (4 MB với heap 12 GB → 3072 region). Live set thực sau mixed GC chỉ khoảng **3 GB** (khoảng 750–1152 vùng old chứa dữ liệu sống), trong khi heap là 12 GB.
+
+**Thuật ngữ giải thích:**
+- **G1 (Garbage-First):** bộ thu gom rác mặc định của JDK 17, chia heap thành các vùng (region) bằng nhau và ưu tiên dọn vùng nhiều rác nhất trước.
+- **Region / vùng:** ô nhớ cố định (ở đây 4 MB). Heap 12 GB có 3072 vùng.
+- **Young GC:** dọn Eden + Survivor (vùng chứa object mới), dừng ứng dụng nhưng ngắn (khoảng vài chục ms).
+- **Concurrent Mark:** đánh dấu object sống/chết trong old gen **song song với ứng dụng**, không dừng app.
+- **Mixed GC:** young GC kết hợp dọn một phần vùng old; là loại pause dài nhất trong hoạt động bình thường của G1, và là **stop-the-world** (dừng toàn bộ ứng dụng).
+- **Stop-the-world:** tất cả thread ứng dụng bị tạm dừng khi GC chạy.
+- **Live set:** dữ liệu sống thực tế, tương đương heap ngay sau GC.
+- **IHOP (Initiating Heap Occupancy Percent):** ngưỡng old gen kích hoạt chu kỳ đánh dấu đồng thời (mặc định 45% heap).
+- **MaxGCPauseMillis:** "mục tiêu" thời gian pause mong muốn của G1 (mặc định 200 ms); G1 dùng nó để quyết định kích thước young và số vùng old dọn mỗi lần.
+- **ZGC generational:** bộ thu gom rác của JDK 21+, pause gần như không phụ thuộc kích thước heap (bật bằng {{-XX:+UseZGC -XX:+ZGenerational}}, mặc định từ JDK 23).
+- **Allocation rate:** tốc độ tạo rác (byte/giây).
+
+**Triệu chứng:** Tháng này p99 của GET /api/transactions/{accountId} tăng từ 40 ms lên **900–950 ms**, đợt chạm **1,1 giây**. CPU pod chỉ 40–55% (còn dư), không có Full GC, không có lỗi, traffic ổn định khoảng 4.200 request/giây mỗi pod. GC log cho thấy young GC thưa (khoảng mỗi 8 giây) nhưng **mixed GC kéo dài 850–950 ms** mỗi 20–40 giây.
+
+**Dữ liệu thu thập:** GC log JDK 17 (unified logging) của pod, metric Prometheus theo giờ, kết quả {{jcmd VM.flags}} và đoạn code hot path.`,
+  artifacts: [
+    {
+      name: 'gc-txn-history.log',
+      lang: 'text',
+      content: `[2026-10-28T08:00:00.012+0700][0.012s][info][gc,init] Version: 17.0.10+7 (release)
+[2026-10-28T08:00:00.012+0700][0.012s][info][gc,init] CPUs: 8 total, 8 available
+[2026-10-28T08:00:00.012+0700][0.012s][info][gc,init] Memory: 24576M
+[2026-10-28T08:00:00.012+0700][0.012s][info][gc,init] Heap Region Size: 4M
+[2026-10-28T08:00:00.012+0700][0.012s][info][gc,init] Heap Min Capacity: 12G
+[2026-10-28T08:00:00.012+0700][0.012s][info][gc,init] Heap Initial Capacity: 12G
+[2026-10-28T08:00:00.012+0700][0.012s][info][gc,init] Heap Max Capacity: 12G
+[2026-10-28T08:00:00.012+0700][0.012s][info][gc,init] Parallel Workers: 8
+[2026-10-28T08:00:00.012+0700][0.012s][info][gc,init] Concurrent Workers: 3
+... (young GC thua, da luoc bo) ...
+[2026-10-28T10:14:55.102+0700][8095.102s][info][gc] GC(412) Pause Young (Normal) (G1 Evacuation Pause) 6120M->3120M(12288M) 35.441ms
+[2026-10-28T10:15:03.330+0700][8103.330s][info][gc,start] GC(413) Pause Young (Concurrent Start) (G1 Evacuation Pause)
+[2026-10-28T10:15:03.330+0700][8103.330s][info][gc,task] GC(413) Using 8 workers of 8 for evacuation
+[2026-10-28T10:15:03.392+0700][8103.392s][info][gc,phases] GC(413)   Evacuate Collection Set: 58.1ms
+[2026-10-28T10:15:03.392+0700][8103.392s][info][gc,heap] GC(413) Eden regions: 620->0(620)
+[2026-10-28T10:15:03.392+0700][8103.392s][info][gc,heap] GC(413) Survivor regions: 20->40(200)
+[2026-10-28T10:15:03.392+0700][8103.392s][info][gc,heap] GC(413) Old regions: 640->640
+[2026-10-28T10:15:03.392+0700][8103.392s][info][gc,heap] GC(413) Humongous regions: 0->0
+[2026-10-28T10:15:03.392+0700][8103.392s][info][gc] GC(413) Pause Young (Concurrent Start) (G1 Evacuation Pause) 6150M->3140M(12288M) 38.112ms
+[2026-10-28T10:15:04.330+0700][8104.330s][info][gc] GC(414) Concurrent Mark Cycle
+[2026-10-28T10:15:05.301+0700][8105.301s][info][gc,marking] GC(414) Concurrent Mark (8103.393s, 8104.330s) 908.104ms
+[2026-10-28T10:15:05.312+0700][8105.312s][info][gc] GC(414) Pause Remark 3210M->3204M(12288M) 11.221ms
+[2026-10-28T10:15:05.323+0700][8105.323s][info][gc] GC(414) Pause Cleanup 3204M->3204M(12288M) 0.412ms
+[2026-10-28T10:15:05.330+0700][8105.330s][info][gc] GC(414) Concurrent Mark Cycle 936.221ms
+[2026-10-28T10:15:07.812+0700][8107.812s][info][gc,start] GC(415) Pause Young (Prepare Mixed) (G1 Evacuation Pause)
+[2026-10-28T10:15:07.812+0700][8107.812s][info][gc,task] GC(415) Using 8 workers of 8 for evacuation
+[2026-10-28T10:15:08.512+0700][8108.512s][info][gc,phases] GC(415)   Evacuate Collection Set: 710.4ms
+[2026-10-28T10:15:08.512+0700][8108.512s][info][gc,phases] GC(415)   Post Evacuate Collection Set: 84.2ms
+[2026-10-28T10:15:08.512+0700][8108.512s][info][gc,heap] GC(415) Eden regions: 610->0(120)
+[2026-10-28T10:15:08.512+0700][8108.512s][info][gc,heap] GC(415) Survivor regions: 40->60(200)
+[2026-10-28T10:15:08.512+0700][8108.512s][info][gc,heap] GC(415) Old regions: 768->512
+[2026-10-28T10:15:08.512+0700][8108.512s][info][gc,heap] GC(415) Humongous regions: 0->0
+[2026-10-28T10:15:08.512+0700][8108.512s][info][gc] GC(415) Pause Young (Prepare Mixed) (G1 Evacuation Pause) 6380M->3040M(12288M) 830.441ms
+[2026-10-28T10:15:08.512+0700][8108.512s][info][gc,cpu] GC(415) User=6.41s Sys=0.02s Real=0.83s
+[2026-10-28T10:15:09.330+0700][8109.330s][info][gc] GC(416) Pause Young (Mixed) (G1 Evacuation Pause) 5520M->3080M(12288M) 821.204ms
+[2026-10-28T10:15:10.142+0700][8110.142s][info][gc] GC(417) Pause Young (Mixed) (G1 Evacuation Pause) 5380M->3060M(12288M) 798.512ms
+... (chu ky Concurrent Start roi 2-3 mixed GC dai 800-900 ms lap lai moi 20-40 giay) ...
+[2026-10-28T10:22:48.771+0700][8528.771s][info][gc] GC(438) Pause Young (Mixed) (G1 Evacuation Pause) 5410M->3060M(12288M) 821.334ms]`,
+    },
+    {
+      name: 'prometheus-and-flags.txt',
+      lang: 'text',
+      content: `# Prometheus, pod txn-history-7f9c8d-k2xpl, 10:00-10:20 (8 vCPU)
+# gc_pause_p99 = histogram_quantile(0.99, rate(jvm_gc_pause_seconds_bucket[5m]))
+# gc_time_ratio = rate(jvm_gc_pause_seconds_sum[5m])
+# alloc_rate = rate(jvm_gc_memory_allocated_bytes_total[5m])
+# old_after_mixed = old gen dung luong sau mixed GC gan nhat
+
+time    gc_young_count  gc_mixed_count  gc_pause_p99  gc_time_ratio  alloc_rate  old_after_mixed  http_p99
+10:00        118              9           0.89 s        0.044          0.39 GB/s      3.02 GB        912 ms
+10:10        121             11           0.87 s        0.045          0.40 GB/s      3.04 GB        894 ms
+10:20        119             10           0.91 s        0.043          0.41 GB/s      3.01 GB        931 ms
+
+# jcmd 1 VM.flags | grep -E 'MaxGCPauseMillis|G1HeapRegionSize|InitiatingHeapOccupancyPercent|UseG1GC|MaxHeapSize'
+-XX:MaxGCPauseMillis=200
+-XX:G1HeapRegionSize=4194304
+-XX:InitiatingHeapOccupancyPercent=45
+-XX:+UseG1GC
+-XX:MaxHeapSize=12884901888
+
+# jcmd 1 GC.heap_info
+garbage-first heap   total 12884901888K, used 3145728000K
+  region size 4096K, 120 young (491520K), 60 survivors (245760K), 512 old (2097152K)
+# Note: used ≈ 2.9 GB; region size 4M; tổng 3072 vùng = 12 GB. Sau mixed GC old còn ~512 vùng (~2 GB), live set ổn định ~3 GB.`
+    },
+    {
+      name: 'TransactionHistoryService.java',
+      lang: 'text',
+      content: `package vn.vimopay.history;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
+
+@Service
+public class TransactionHistoryService {
+
+    private final TransactionRepository repo;
+    private final ObjectMapper mapper = new ObjectMapper();   // tao moi moi service instance
+    private final AuditLogger auditLogger;                    // gui log bat dong bo
+
+    public TransactionPage history(String accountId, Pageable page) {
+        TransactionPage page = repo.findByAccount(accountId, page);   // lay theo trang, khong load toan bo
+        // moi request xuat log kiem tra: serialize toan bo trang giao dich ra JSON (tieu tuc bo nho)
+        String audit = mapper.writeValueAsString(page.getContent());
+        auditLogger.log("history", accountId, audit);
+        return page;
+    }
+}`
+    }
+  ],
+  questions: [
+    'Vì sao mixed GC 850–950 ms nhung CPU con du va khong co Full GC? Giai thich tu GC log.',
+    'Heap 12 GB nhung live set khoang 3 GB: G1 phai don bao nhieu vung old moi chu ky mixed, va IHOP 45% lien quan the nao den van de?',
+    'Ba lua chon: (a) dat MaxGCPauseMillis=100, (b) chuyen sang ZGC generational tren JDK 21, (c) giam allocation rate. Phan uu/nhuoc va de xuat lo trinh. Alert nao can them?'
+  ],
+  hints: [
+    'Doc dong "Heap Region Size: 4M" va "Heap Max Capacity: 12G". Old gen chua khoang 768 vung (~3 GB) chua du lieu song thom trong vung 12 GB. Moi mixed GC copy object song sang vung moi, pause ty so voi luong object bi chuyen, khong ty so voi kich thuc heap.',
+    'MaxGCPauseMillis 200 ms chi la muc tieu; heap lon so voi live set lam G1 chon young lon va gom nhieu vung old mot lan -> pause vuot qua muc tieu. IHOP 45%: old phai vuot 45% heap (khoang 5.4 GB) moi bat dau danh dau; tai day old khoang 3 GB duoi ngưỡng nhung chu ky van xay do young gan day.',
+    'ZGC generational JDK 21 pause khong phu thuoc kich thuc heap nhan can nang cap runtime; giam allocation giam tan suat GC khong giam do dai moi pause.'
+  ],
+  answer: `**Tóm tắt:** Đây là **mixed GC quá dài do heap quá lớn so với live set**, không phải rò rỉ bộ nhớ và không phải Full GC. Heap 12 GB, vùng 4 MB → 3072 vùng; live set thực sau mixed GC chỉ khoảng 3 GB (khoảng 750–1152 vùng old chứa dữ liệu sống). Mỗi chu kỳ mixed, G1 phải copy đối tượng sống từ nhiều vùng old sang vùng mới; vì mỗi vùng còn chứa khoảng 40–60% đối tượng sống, chi phí evacuate cao, pause 850–950 ms. CPU còn dư vì đây là pause dừng toàn bộ ứng dụng, không phải thiếu CPU. Lộ trình: ngay lập tức {{-XX:MaxGCPauseMillis=100}} và giảm heap xuống 6–8 GB; ngắn hạn giảm allocation rate; dài hạn nâng JDK 21, dùng ZGC generational.
+
+### Doc GC log buoc buoc
+
+| Dòng log | Ý nghĩa |
+|---|---|
+| {{Heap Region Size: 4M, Heap Max Capacity: 12G}} | Heap có 3072 vùng, mỗi vùng 4 MB |
+| {{GC(412) Pause Young (Normal) 6120M->3120M(12288M) 35.441ms}} | Young GC thưa (khoảng 8 giây một lần), pause ngắn |
+| {{GC(413) Pause Young (Concurrent Start) ... 38.112ms}}, {{GC(414) Concurrent Mark Cycle}} | Old gen gần ngưỡng, G1 bắt đầu chu kỳ đánh dấu song song |
+| {{GC(415) Pause Young (Prepare Mixed) ... 830.441ms}}, {{Evacuate Collection Set: 710.4ms}}, {{Old regions: 768->512}} | Lần mixed đầu dọn 256 vùng old, copy object sống tốn 710 ms |
+| {{GC(416)/(417) Pause Young (Mixed) ... 821/798 ms}} | Các mixed tiếp theo cũng 800+ ms |
+| {{gc_time_ratio = 0.044}} | 4,4% thời gian là GC; phần lớn là các pause dài 800 ms |
+
+Vì sao mixed GC phải copy nhiều: old gen có 768 vùng, mỗi vùng 4 MB, tổng khoảng 3 GB. G1 chỉ chọn vùng "nhiều rác nhất" (garbage-first), nhưng nếu object sống phân tán đều (mỗi vùng 40–60% sống), gần như mọi vùng đều phải dọn, và mỗi vùng phải copy 1,6–2,4 MB object sống sang vùng mới. 256 vùng × khoảng 2 MB ≈ 500 MB object phải copy, với 8 worker mất khoảng 700 ms — khớp {{Evacuate Collection Set: 710.4ms}}. Tổng pause 830 ms, khớp p99 900 ms trên dashboard.
+
+### Tai sao heap 12 GB lam pause dai
+
+- **IHOP 45%:** G1 chỉ bắt đầu concurrent mark khi old gen vượt 45% heap (khoảng 5,4 GB). Ở đây old khoảng 3 GB, dưới ngưỡng, nhưng chu kỳ khởi động vì young gần đầy (dòng {{Concurrent Start}} ở young GC). Khi chu kỳ đã bắt đầu, G1 dọn dần vùng old trong các mixed GC.
+- **Young quá lớn:** với heap 12 GB, G1 chọn Eden khoảng 620 vùng (khoảng 2,4 GB) để young GC ít hơn. Young GC thưa nhưng sau đó là mixed GC với nhiều vùng old.
+- **Live set nhỏ so với heap:** 3 GB live / 12 GB heap = 25%. Phần còn lại là "khoảng trống" G1 phải quản lý, làm mỗi quyết định (chọn vùng, kích thước young) thiên về "gom nhiều để bù".
+
+### Ba lua chon
+
+**Option A: {{-XX:MaxGCPauseMillis=100}} (hoặc 200)**
+- Cơ chế: G1 giảm kích thước young và số vùng old dọn mỗi mixed GC để cố gắng đạt mục tiêu pause. Kết quả: mixed GC ngắn hơn (khoảng 100–200 ms) nhưng **nhiều lần hơn**, tổng thời gian GC có thể tăng (throughput giảm).
+- Ưu: không cần đổi JVM, chỉ một cờ, hiệu quả nhanh, rủi ro thấp.
+- Nhược: không giải quyết gốc (heap quá lớn); có thể làm tần suất GC và CPU GC tăng.
+- Khi nào dùng: bước đầu tiên, kết hợp giảm heap.
+
+**Option B: ZGC generational trên JDK 21 ({{-XX:+UseZGC -XX:+ZGenerational}})**
+- Cơ chế: ZGC pause không phụ thuộc kích thước heap (chỉ vài trăm micro giây, load barrier); không có khái niệm mixed GC, dọn vùng old liên tục, song song.
+- Ưu: pause gần như phẳng dù heap 12 GB hay 64 GB; phù hợp dịch vụ latency thấp.
+- Nhược: cần **nâng JDK 17 lên JDK 21**; tốn CPU hơn G1 (các thread GC chạy liên tục); dùng nhiều native memory hơn; cần đo throughput và CPU trước khi đổi.
+- Khi nào dùng: đã có JDK 21 và mục tiêu p99 dưới 50 ms; là lời giải triệt để.
+
+**Option C: Giảm allocation rate**
+- Cơ chế: ít object rác → young GC ít hơn → ít áp lực mixed. Nhưng **không giảm độ dài mỗi pause** nếu old gen vẫn giữ nhiều object sống.
+- Ưu: giảm CPU GC và tần suất, cải thiện tổng thể.
+- Nhược: không phải lời giải cho pause dài; cần thay đổi code (giảm object tạm trong hot path).
+- Khi nào dùng: luôn nên làm, nhưng không thay thế A hoặc B.
+
+**De xuat lo trinh:**
+1. **Ngay:** đặt {{-XX:MaxGCPauseMillis=100}}, giảm {{-Xmx}} xuống 8 GB (vẫn gấp hơn 2 lần live set 3 GB), đo lại. Thay đổi nhỏ, rủi ro thấp.
+2. **Ngan han:** toi uu hot path de giam allocation (audit log bat dong bo, lay theo trang thay het bo, tai su dung ObjectMapper), giam tan suat young va mixed GC.
+3. **Dai han:** tang len **JDK 21**, bat **ZGC generational**, do p99 va CPU. Neu CPU tang qua 10%, can nhac giu G1 voi heap 8 GB + MaxGCPauseMillis=100.
+
+### Khong phai leak va khong phai Full GC
+
+- old_after_mixed o dinh khoang 3 GB (3.02, 3.04, 3.01 GB) -> live set khong tang theo thoi gian, khong co rò rỉ heap.
+- Khong co {{Pause Full}} trong log -> van de khong o Full GC.
+- CPU 40–55% con du -> khong thieu CPU, van de o do dai pause stop-the-world.
+
+### Cach sua trong code (vi du)
+
+~~~java
+@Service
+public class TransactionHistoryService {
+
+    private final TransactionRepository repo;
+    private final ObjectMapper mapper = new ObjectMapper();   // dung chung, khong tao moi request
+    private final AuditLogger auditLogger;                    // gui log bat dong bo, khong block request
+
+    public TransactionPage history(String accountId, Pageable page) {
+        TransactionPage page = repo.findByAccount(accountId, page);   // lay theo trang, khong load toan bo
+        auditLogger.log("history", accountId, page.getTotalElements()); // khong serialize toan bo trang
+        return page;
+    }
+}
+~~~
+
+### Alert va monitoring
+
+- Canh bao khi {{gc_pause_p99}} > 200 ms trong 5 phút (hiện tại 800+ ms).
+- Canh bao khi {{rate(jvm_gc_pause_seconds_sum)}} > 0.1 (10% thoi gian la GC).
+- Theo doi allocation tren moi request; neu tang dot bien sau deploy, kiem tra code.
+- Neu mixed GC > 200 ms lien tuc, dat MaxGCPauseMillis hoac chuyen ZGC.
+
+> Senior tip: Voi dich vu latency thap, **heap lon khong luon tot**. Live set 3 GB thi heap 6–8 GB la du; heap 12 GB lam moi mixed GC phai quan ly nhieu vung hon, pause dai hon. Khi thay mixed GC 800 ms nhung CPU du, khong nghĩ "thieu CPU" hay "leak" — hãy nhìn **Old regions** trong GC log va tinh: so vung x % object song x kich thuc vung = luong phai copy. Neu con so lon, hoac giam heap, hoac chuyen ZGC.`,
+  rubric: [
+    'Giai thich dung co che mixed GC dai: heap 12 GB vung 4 MB, old khoang 768 vung (~3 GB) thom, moi mixed copy khoang 500 MB object song, Evacuate Collection Set 700+ ms -> pause 800-900 ms; CPU du vi la stop-the-world.',
+    'Lien he cau hinh: IHOP 45%, MaxGCPauseMillis mac dinh 200 ms, live set 3 GB/12 GB = 25%; giai thich vi sao G1 chon young lon va gom nhieu vung old moi mixed.',
+    'Phan tai du ba lua chon: MaxGCPauseMillis (giam pause nhung nhieu GC hon, throughput giam), ZGC generational JDK 21 (pause phang, can nang cap runtime, tieu tuc CPU), giam allocation (giam tan suat, khong giam do dai pause).',
+    'De xuat lo trinh: ngay MaxGCPauseMillis=100 + giam heap 6-8 GB; ngan han toi uu allocation; dai han ZGC tren JDK 21; co canh bao pause p99 va gc_time_ratio.',
+    'Phan biet khong phai leak (old_after_mixed o dinh ~3 GB) va khong phai Full GC (khong co Pause Full trong log).'
+  ],
+  tags: ['g1', 'mixed-gc', 'gc-pause', 'heap-size', 'zgc', 'max-gc-pause', 'latency', 'jdk17', 'jdk21']
+}
 );
