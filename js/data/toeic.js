@@ -2398,4 +2398,134 @@ Thomas Nguyen`,
   ],
   tags: ["service", "health", "appointment"]
 },
+{
+  id: "toeic-s5-017",
+  part: "s5",
+  prompt: "Some companies let employees work from home a few days a week and come to the office on other days. Do you think this hybrid arrangement is a good idea? Give reasons and examples to support your opinion.",
+  sample: "I think a hybrid work arrangement is a good idea for most office employees. First, working from home a few days a week saves time and money. For example, an employee who avoids a one hour commute twice a week can use that time for rest or family, and spends less on transportation and lunch. Second, coming to the office on other days helps teams collaborate. People can meet face to face, brainstorm together, and build stronger relationships than they can through video calls only. Of course, hybrid work requires clear rules, such as fixed office days and good communication tools, so everyone knows when colleagues are available. Overall, when managed well, hybrid work gives employees flexibility while keeping teamwork and company culture strong.",
+  tips: [
+    "Mở bài bằng I think và nêu rõ quan điểm; dùng First, Second để trình bày hai lý do riêng biệt.",
+    "Dùng ví dụ cụ thể có số liệu như one hour commute hoặc twice a week để câu trả lời dễ tin cậy và sinh động.",
+    "Thừa nhận nhược điểm bằng Of course, nhưng nhấn mạnh rằng các quy tắc rõ ràng khắc phục được vấn đề.",
+    "Kết thúc bằng Overall để tổng quan lại quan điểm và tạo kết luận rõ ràng."
+  ],
+  tags: ["workplace", "hybrid work"]
+},
+{
+  id: "toeic-s5-018",
+  part: "s5",
+  prompt: "Some companies require employees to get approval before spending money on business trips, while others give them more freedom. Which approach do you think is better? Use reasons and examples to support your answer.",
+  sample: "I think companies should require approval for major expenses but give employees freedom for small daily costs. First, an approval process prevents waste and fraud. For example, if an employee must get manager approval before booking a four hundred dollar hotel room, the company can check whether a cheaper option is available. This protects the travel budget and keeps spending under control. Second, small expenses such as meals, local transportation, or coffee with a client should not require approval. Requiring approval for every ten dollar lunch slows people down and creates unnecessary paperwork. Employees feel trusted when they can handle small costs themselves. Overall, a balanced policy—approval for large amounts, freedom for small ones—helps companies save money while keeping employees efficient and satisfied.",
+  tips: [
+    "Nêu quan điểm cân bằng: phê duyệt chi lớn, tự do chi nhỏ, thay vì chọn một phía tuyệt đối.",
+    "Dùng số tiền cụ thể như four hundred dollar hoặc ten dollar lunch để minh họa rõ ràng.",
+    "Cụm such as và for example giúp đưa ra ví dụ tự nhiên, không bị cứng nhắc.",
+    "Kết thúc bằng Overall để khẳng định chính sách hai mức mang lại lợi ích cho cả hai bên."
+  ],
+  tags: ["business travel", "expenses"]
+},
+{
+  id: "toeic-s5-019",
+  part: "s5",
+  prompt: "Do you think companies should have a formal onboarding program for new employees? Explain your opinion with reasons and examples.",
+  sample: "I believe every company should have a formal onboarding program for new employees. First, onboarding helps newcomers learn their role quickly. For example, a new marketing assistant who receives a clear schedule for the first two weeks—meetings with the team, training on company tools, and a small project—can start contributing sooner than someone who is left to figure things out alone. Second, a good program makes new employees feel welcome and supported. Meeting the manager, receiving a welcome kit, and having a colleague to answer questions reduce stress in the first days. Without onboarding, new hires may feel lost, make avoidable mistakes, or even decide to leave early. Overall, a structured onboarding program helps employees adapt faster, work better, and stay with the company longer.",
+  tips: [
+    "Mở bằng I believe và nêu lập luận rõ ràng: công ty nên có chương trình onboard chính thức cho nhân viên mới.",
+    "Dùng ví dụ cụ thể như new marketing assistant và first two weeks để người nghe dễ hình dung.",
+    "Từ vựng hữu ích: welcome kit, figure things out, feel lost, onboarding.",
+    "Kết thúc bằng Overall để tóm tắt lợi ích: adapt faster, work better, stay longer."
+  ],
+  tags: ["onboarding", "workplace"]
+},
+{
+  id: "toeic-s5-020",
+  part: "s5",
+  prompt: "Some people think companies should have an internal IT helpdesk to fix computer problems, while others prefer to hire outside support. Which do you think is better? Give reasons and examples to support your opinion.",
+  sample: "I think an internal IT helpdesk is better for most companies. First, internal staff understand the company's systems and can solve problems faster. For example, if an employee cannot access the payroll software on payday, an internal technician who knows the network can fix it within an hour, while an outside vendor may need a day or more to respond. Second, internal support builds trust and saves money over time. Employees feel comfortable asking questions, and the company avoids paying high fees for every small repair. Of course, outside support is useful for specialized projects or very large problems, but daily technical issues are better handled by an in-house team. Overall, an internal IT helpdesk keeps work running smoothly and reduces downtime.",
+  tips: [
+    "Chọn một phía rõ ràng ngay từ đầu: internal IT helpdesk tốt hơn outside support.",
+    "Dùng ví dụ với thời gian cụ thể như within an hour so với a day or more để so sánh thuyết phục.",
+    "Từ vựng hay: downtime, in-house team, access the software, payroll software.",
+    "Thừa nhận ngoại lệ bằng Of course, nhưng kết luận vẫn ưu tiên đội ngũ nội bộ."
+  ],
+  tags: ["IT helpdesk", "workplace"]
+},
+{
+  id: "toeic-s5-021",
+  part: "s5",
+  prompt: "Do you agree or disagree that companies should have fewer and shorter meetings? Support your answer with reasons and examples.",
+  sample: "I agree that companies should have fewer and shorter meetings. First, long meetings waste time and reduce productivity. For example, a weekly status meeting that lasts ninety minutes often includes topics that only two or three people need to discuss. If the meeting were thirty minutes, the other employees could return to their tasks sooner. Second, short meetings help people stay focused. When a meeting has a clear agenda and ends on time, participants are more likely to pay attention and make decisions quickly. Too many meetings leave employees with little time for deep work, which can delay important projects. Of course, some meetings are necessary for team alignment, but they should be planned well and kept brief. Overall, fewer and shorter meetings help employees work more efficiently.",
+  tips: [
+    "Nêu quan điểm đồng ý rõ ràng: fewer and shorter meetings.",
+    "Dùng ví dụ số liệu như ninety minutes và thirty minutes để làm rõ sự khác biệt.",
+    "Cụm deep work, status meeting, clear agenda rất hữu ích cho chủ đề làm việc văn phòng.",
+    "Dùng Of course để thừa nhận một số cuộc họp vẫn cần thiết, giữ bài cân bằng."
+  ],
+  tags: ["meetings", "workplace"]
+},
+{
+  id: "toeic-s5-022",
+  part: "s5",
+  prompt: "Some people prefer to order food delivery, while others prefer to cook at home or eat at a restaurant. Which do you think is better? Use reasons and examples to support your answer.",
+  sample: "I think cooking at home is better for most everyday meals. First, home cooking is cheaper and healthier. For example, a family that cooks dinner at home three times a week can save a significant amount of money compared with ordering delivery every day, and they can control the amount of oil, salt, and sugar in their food. Second, cooking can be relaxing and enjoyable. Many people find that preparing a meal after work helps them unwind, and eating together strengthens family relationships. Of course, food delivery is convenient when someone is very tired or short on time, and restaurants are good for special occasions. But for daily meals, cooking at home saves money, supports better health, and brings families closer.",
+  tips: [
+    "Chọn một phía rõ ràng: cooking at home tốt hơn food delivery cho bữa ăn hàng ngày.",
+    "Dùng ví dụ số tần suất như three times a week và every day để so sánh rõ ràng.",
+    "Từ vựng hay: home cooking, food delivery, unwind, special occasions, strengthen relationships.",
+    "Thừa nhận lợi ích của delivery bằng Of course, nhưng kết luận quay lại cooking at home."
+  ],
+  tags: ["food delivery", "daily life"]
+},
+{
+  id: "toeic-s5-023",
+  part: "s5",
+  prompt: "Do you agree or disagree that companies should provide a gym or fitness classes for employees? Explain your opinion with reasons and examples.",
+  sample: "I agree that companies should provide a gym or fitness classes for employees. First, regular exercise improves health and energy. For example, an employee who uses the office gym for thirty minutes during lunch can return to work feeling refreshed and more focused, which helps prevent tiredness in the afternoon. Second, fitness programs show that the company cares about employee well-being. When workers feel supported, they are usually happier, more motivated, and less likely to take sick leave. This can improve team spirit and reduce turnover over time. Of course, building a gym requires space and budget, so smaller companies can start with low cost options such as online fitness classes or discounts at a local gym. Overall, supporting employee fitness benefits both workers and the company.",
+  tips: [
+    "Nêu quan điểm đồng ý: companies should provide a gym or fitness classes.",
+    "Dùng ví dụ cụ thể như thirty minutes during lunch để minh họa lợi ích của thể dục.",
+    "Từ vựng hữu ích: well-being, sick leave, turnover, low cost options, local gym.",
+    "Thừa nhận khó khăn như space và budget bằng Of course, rồi đưa ra giải pháp linh hoạt hơn."
+  ],
+  tags: ["exercise", "workplace"]
+},
+{
+  id: "toeic-s5-024",
+  part: "s5",
+  prompt: "Some people prefer to use public transportation, while others prefer to drive their own car. Which do you think is better? Use reasons and examples to support your answer.",
+  sample: "I think public transportation is better for most people living in a city. First, it is cheaper than owning a car. For example, a monthly bus or train pass costs much less than car payments, insurance, fuel, and parking fees combined. This can save a commuter hundreds of dollars every month. Second, public transportation is better for the environment. Fewer cars on the road means less traffic and lower air pollution, which benefits everyone in the community. Of course, driving offers more flexibility and privacy, especially for people who live far from bus or train stations. But for daily travel within a city, public transportation saves money, reduces stress, and helps protect the environment.",
+  tips: [
+    "Chọn một phía rõ ràng: public transportation tốt hơn driving cho người sống thành phố.",
+    "Dùng chi phí cụ thể như monthly bus or train pass so với car payments, insurance, fuel.",
+    "Từ vựng hữu ích: commuter, air pollution, traffic, flexibility and privacy.",
+    "Thừa nhận lợi ích của xe hơi bằng Of course, nhưng kết luận ưu tiên giao thông công cộng."
+  ],
+  tags: ["public transportation", "daily life"]
+},
+{
+  id: "toeic-s5-025",
+  part: "s5",
+  prompt: "Some people prefer to stay at a hotel when they travel, while others prefer to rent an apartment or stay with friends. Which do you think is better? Give reasons and examples to support your opinion.",
+  sample: "I think staying at a hotel is better for short trips. First, hotels offer convenience and service. For example, a business traveler who stays at a hotel near the conference center can use room service, daily cleaning, and a front desk that is open twenty four hours a day. This saves time and makes the trip less stressful. Second, hotels are usually located in central areas with easy access to restaurants, shops, and public transportation. A traveler can walk to meetings or attractions without needing a car. Of course, renting an apartment may be cheaper for long stays, and staying with friends is more personal. But for trips of a few days, a hotel provides comfort, safety, and professional service that make travel easier.",
+  tips: [
+    "Chọn một phía rõ ràng: staying at a hotel tốt hơn cho short trips.",
+    "Dùng ví dụ cụ thể như business traveler, conference center, front desk twenty four hours a day.",
+    "Từ vựng hay: room service, daily cleaning, front desk, central area, short trips.",
+    "Thừa nhận apartment và friends bằng Of course, nhưng kết luận lại hotel cho các chuyến đi vài ngày."
+  ],
+  tags: ["hotel", "travel"]
+},
+{
+  id: "toeic-s5-026",
+  part: "s5",
+  prompt: "Do you think guided tours are a good way to visit a new city? Explain your opinion with reasons and examples.",
+  sample: "I think guided tours are a good way to visit a new city, especially for first time visitors. First, a professional guide knows the city well and can share interesting history and facts. For example, a tourist who joins a walking tour of the old district can learn about famous buildings, local food, and cultural traditions that they might miss when exploring alone. Second, guided tours save time and reduce stress. The guide handles transportation, tickets, and the schedule, so visitors do not need to worry about getting lost or missing important sights. This is especially helpful for travelers who have only a few days in the city. Of course, some people prefer to explore independently for more freedom, but a guided tour offers a safe and informative introduction to a new place. Overall, guided tours help visitors see and understand a city more efficiently.",
+  tips: [
+    "Nêu quan điểm đồng ý: guided tours are a good way to visit a new city.",
+    "Dùng ví dụ cụ thể như walking tour of the old district và famous buildings, local food.",
+    "Từ vựng hữu ích: professional guide, cultural traditions, getting lost, informative introduction.",
+    "Thừa nhận explore independently bằng Of course, nhưng kết luận ưu tiên guided tour cho người mới đến thành phố."
+  ],
+  tags: ["tour", "travel"]
+},
 );
