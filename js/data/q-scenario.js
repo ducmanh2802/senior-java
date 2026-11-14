@@ -8917,4 +8917,374 @@ Dich vu thanh toan 10 pod, deploy luc 14:00, khach nhan 200–400 loi 502/504 tr
   ],
   tags: ['502', 'graceful-shutdown', 'deploy', 'Kubernetes', 'keep-alive']
 },
+{
+  id: 'scenario-149',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Bạn được giao refactor một monolith Java 8 năm tuổi, gần như không có test tự động, trong khi deadline rất gấp và PM muốn bỏ qua việc viết test để "ship nhanh". Bạn xử lý thế nào, từng bước ra sao để vừa giảm rủi ro vừa vẫn tôn trọng deadline?',
+  a: `**Tóm tắt:** refactor (tái cấu trúc — thay đổi cấu trúc bên trong mã nguồn nhưng giữ nguyên hành vi bên ngoài) trên hệ thống không có test (kiểm thử tự động — đoạn mã chạy để xác nhận hành vi) là rất rủi ro vì bạn không có lưới an toàn. Không viết full test suite, nhưng cũng không bỏ trống: khoanh vùng thay đổi, thêm characterization test (test mô tả hành vi hiện tại dù nó đúng hay sai) quanh điểm chạm, refactor từng bước nhỏ, và thương lượng phạm vi/deadline với PM bằng dữ liệu rủi ro cụ thể.
+
+### Thuật ngữ và bối cảnh (giải thích cho người mới)
+- **Monolith (khối đơn):** toàn bộ ứng dụng đóng gói và chạy như một khối duy nhất (một file WAR/JAR), các module gọi nhau trực tiếp trong cùng tiến trình, khác với microservice (nhiều dịch vụ nhỏ chạy riêng).
+- **Refactor:** dọn dẹp/cải tổ mã (tách hàm, đổi tên, bỏ trùng lặp) mà không thay đổi chức năng người dùng thấy.
+- **Regression (hồi quy):** lỗi mới xuất hiện ở chỗ vốn đang chạy đúng vì ta sửa mã ở nơi khác.
+- **Characterization test:** test ghi lại "hệ thống hiện tại đang làm gì" (kể cả hành vi lạ) để khi refactor, nếu test đỏ ta biết mình đã vô tình đổi hành vi.
+
+### Từng bước xử lý — cái gì, vì sao, như thế nào
+1. **Khoanh vùng và hiểu rủi ro (ngày 1):** hỏi nghiệp vụ phần nào sắp sửa/ảnh hưởng doanh thu cao nhất (ví dụ luồng thanh toán). Chỉ refactor trong vùng đó, không "đại tu" cả monolith 8 năm. Vì sao: phạm vi càng rộng, rủi ro hồi quy và thời gian càng lớn.
+2. **Thêm lưới an toàn tối thiểu quanh điểm chạm:** trước khi đổi mã, viết vài test bao quanh hàm/class sẽ sửa — có thể là unit test (kiểm tra một đơn vị nhỏ) hoặc integration test (kiểm tra cả luồng với DB giả/thật). Mục tiêu không phải coverage 80% mà là "chạm vào đâu, che ở đó".
+3. **Refactor từng bước nhỏ, có thể quay lui:** mỗi lần chỉ đổi một kiểu (đổi tên, tách phương thức, đưa logic ra service), chạy test sau mỗi bước, commit nhỏ. Tránh trộn refactor với thêm tính năng trong cùng thay đổi.
+4. **Bảo vệ bằng cơ chế runtime:** bật feature flag (cờ bật/tắt tính năng từ cấu hình, không cần deploy lại) hoặc chạy song song đường cũ/mới (strangler fig kiểu nhỏ) để có thể tắt nhanh nếu lỗi.
+5. **Thương lượng với PM bằng dữ liệu:** trình bày "không test gì = xác suất sự cố X trên luồng doanh thu Y; thêm N giờ viết test quanh điểm chạm giảm rủi ro Z". Đề xuất cắt phạm vi refactor hoặc trượt tính năng phụ, thay vì cắt hoàn toàn lưới an toàn.
+
+### Ví dụ mã: thêm characterization test trước khi tách logic (JUnit 5, Java 17)
+~~~java
+// Bước 0: ghi lại hành vi hiện tại của hàm cũ (dù code xấu) trước khi refactor
+class InvoiceServiceCharacterizationTest {
+    private final LegacyInvoiceService svc = new LegacyInvoiceService();
+    @Test
+    void tinhTong_donCoGiamGia_giuDungHanhViHienTai() {
+        // Dữ liệu mẫu cố định: 2 món 100k, giảm 10% -> kỳ vọng theo hành vi hiện tại
+        Order order = new Order(List.of(new Item(100_000), new Item(100_000)), 0.10);
+        long total = svc.calcTotal(order);
+        // Assert giá trị hiện tại; nếu refactor đổi nhầm, test này sẽ đỏ
+        assertEquals(180_000L, total);
+    }
+}
+~~~
+
+### Bảng trade-off / khi nào dùng
+| Lựa chọn | Ưu điểm | Nhược điểm | Khi nào dùng |
+|---|---|---|---|
+| Viết full test suite trước | An toàn nhất | Mất hàng tuần/tháng, không kịp deadline | Hệ thống cực kỳ quan trọng, có thời gian |
+| Characterization test quanh điểm chạm | Nhanh, che đúng chỗ sửa | Không phủ toàn bộ | Deadline gấp, refactor có phạm vi (khuyến nghị) |
+| Bỏ hẳn test, chỉ review | Nhanh nhất lúc code | Rủi ro hồi quy rất cao, sửa cháy tốn gấp nhiều lần | Gần như không nên; chỉ hotfix cực nhỏ có rollback ngay |
+
+### Pitfall thực tế trên production
+- **Refactor "kèm" sửa bug/tính năng:** trộn thay đổi khiến không biết lỗi do đâu, rất khó rollback. Luôn tách commit/PR.
+- **Tin vào "code nhìn đúng":** monolith 8 năm đầy hành vi ngầm (side effect, thứ tự gọi DB). Không có test, chỉ đọc code rất dễ bỏ sót.
+- **PM đồng ý bỏ test nhưng không chấp nhận sự cố:** sau đó đội dev bị quy trách nhiệm. Phải ghi lại bằng văn bản (ticket/comment) rủi ro đã trao đổi và phạm vi đã cắt.
+
+### Ví dụ đời thực
+Monolith thương mại điện tử 8 năm, ~250k dòng Java, 0 test tự động. PM yêu cầu "dọn" module tính phí ship trong 5 ngày để thêm bảng giá mới, đề nghị bỏ test. Team: (1) khoanh vùng chỉ 3 class tính phí (ảnh hưởng ~12.000 đơn/ngày); (2) mất 0,5 ngày viết 18 characterization test chốt các ca: nội thành, liên tỉnh, freeship, mã giảm — chạy 40 giây/lần; (3) refactor 2,5 ngày, mỗi commit chạy test; (4) bật feature flag, canary (triển khai thử cho 5% traffic) 1 ngày. Phát hiện 1 lệch làm tròn 1 đồng ở ca biên, sửa trước khi mở 100%. Không có sự cố doanh thu; tổng 5 ngày, trong đó test chiếm ~10% thời gian nhưng chặn 1 lỗi có thể ảnh hưởng 600 đơn/ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi refactor monolith 8 năm không có test mà deadline gấp, ưu tiên của tôi là kiểm soát rủi ro, không phải coverage. Đầu tiên tôi khoanh vùng: chỉ chạm đúng module cần thay đổi, tránh sửa lan man. Trước khi đổi mã, tôi viết characterization test quanh các hàm sẽ sửa để khóa hành vi hiện tại — vài chục test chạy nhanh cũng đủ làm lưới an toàn. Sau đó tôi refactor từng bước rất nhỏ, mỗi bước chạy test và commit riêng, không trộn với tính năng mới. Tôi dùng feature flag hoặc canary để có thể quay lui nhanh. Với PM, tôi không tranh luận cảm tính mà đưa ra lựa chọn có dữ liệu: bỏ hẳn test nghĩa là chấp nhận rủi ro hồi quy trên luồng nào, tôi đề xuất cắt phạm vi hoặc hoãn phần phụ để giữ vài giờ viết test quanh điểm chạm. Cách này giúp ship đúng hạn mà vẫn có bằng chứng hành vi không đổi."
+
+> Senior tip: trong monolith cũ, "không làm hỏng cái đang chạy" giá trị hơn "code đẹp". Đừng refactor để thỏa mãn thẩm mỹ; chỉ refactor khi nó trực tiếp mở đường cho thay đổi đang cần và luôn có lưới an toàn tối thiểu.`,
+  follow: [
+    'Characterization test khác regression test ở điểm nào và bạn viết nó thế nào khi không có tài liệu yêu cầu?',
+    'Nếu module cần refactor có phụ thuộc chặt (tight coupling) vào DB và dịch vụ ngoài, bạn cô lập để test ra sao trong thời gian ngắn?',
+    'Bạn nói gì với PM khi họ vẫn ép bỏ test sau khi bạn đã trình bày rủi ro?'
+  ],
+  tags: ['refactor', 'legacy', 'testing', 'risk', 'stakeholder']
+},
+{
+  id: 'scenario-150',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'PM muốn bỏ hẳn bước kiểm thử (QA/test) để kịp deadline ra mắt. Với vai trò kỹ sư, bạn phản hồi và hành động thế nào để bảo vệ chất lượng mà vẫn hợp tác được?',
+  a: `**Tóm tắt:** "Bỏ test" không phải quyết định nhị phân đúng/sai mà là đánh đổi rủi ro. Kỹ sư cần làm rõ rủi ro bằng số liệu (tác động nếu lỗi rơi vào luồng quan trọng), đề xuất phương án giảm thiểu (thu hẹp phạm vi, test có trọng tâm, canary, rollback), và ghi nhận quyết định; tuyệt đối không âm thầm đồng ý rồi để sự cố xảy ra.
+
+### Thuật ngữ (giải thích cho người mới)
+- **QA (Quality Assurance — đảm bảo chất lượng):** hoạt động kiểm tra phần mềm trước khi phát hành (thủ công hoặc tự động) để tìm lỗi.
+- **Canary release (phát hành chim mỏ than):** mở tính năng mới cho một phần nhỏ người dùng (ví dụ 5%) trước, quan sát rồi mới mở hết, để giới hạn thiệt hại nếu có lỗi.
+- **Rollback (quay lui):** đưa hệ thống về phiên bản ổn định trước đó khi bản mới có vấn đề.
+- **Blast radius (bán kính ảnh hưởng):** mức độ thiệt hại tối đa nếu một thay đổi gây sự cố (bao nhiêu người dùng, bao nhiêu tiền).
+
+### Cách tiếp cận từng bước
+1. **Hiểu áp lực và ràng buộc:** hỏi deadline gắn với sự kiện gì (hợp đồng, marketing), phần nào bắt buộc có trong ngày đó, phần nào có thể lùi. Mục tiêu là tìm không gian thương lượng, không phải đối đầu.
+2. **Định lượng rủi ro:** liệt kê luồng bị ảnh hưởng (đăng nhập, thanh toán, đặt hàng…), ước lượng blast radius. Ví dụ: "lỗi ở bước thanh toán có thể ảnh hưởng 100% đơn trong 1 giờ".
+3. **Đề xuất phương án thay thế (không phải chỉ nói "không"):** (a) cắt phạm vi, chỉ ship phần lõi; (b) test có trọng tâm vào luồng tiền/luồng chính thay vì test toàn bộ; (c) canary 5% + giám sát chặt + sẵn sàng rollback; (d) tách phát hành sau giờ cao điểm.
+4. **Quyết định và ghi nhận:** nếu sau trao đổi, bên nghiệp vụ vẫn chấp nhận rủi ro, ghi rõ trong ticket: phạm vi đã test/chưa test, rủi ro đã nêu, người chấp nhận. Đây là minh bạch, không phải "đổ lỗi".
+5. **Sau phát hành:** theo dõi metric (tỉ lệ lỗi, thời gian phản hồi) và chuẩn bị vá nhanh.
+
+### Ví dụ minh họa (pseudo kiểm tra điều kiện phát hành trong pipeline ý tưởng)
+~~~java
+// Ví dụ minh họa: cổng phát hành (release gate) đơn giản theo mức rủi ro
+enum Risk { LOW, MEDIUM, HIGH }
+record ReleaseDecision(boolean testedCoreFlow, boolean canRollback, Risk risk) {
+    boolean canShip() {
+        // Luồng rủi ro cao (tiền/bảo mật) bắt buộc đã test lõi và có rollback
+        if (risk == Risk.HIGH) return testedCoreFlow && canRollback;
+        // Rủi ro thấp: cho phép canary nếu có rollback
+        return canRollback;
+    }
+}
+// PM muốn bỏ test: nếu risk HIGH và testedCoreFlow=false -> canShip() = false
+~~~
+
+### Bảng trade-off
+| Phương án | Ưu điểm | Nhược điểm | Khi nào dùng |
+|---|---|---|---|
+| Bỏ hoàn toàn test | Kịp deadline chắc chắn | Rủi ro sự cố cao, chi phí sửa cháy lớn | Hiếm khi chấp nhận được |
+| Test có trọng tâm (smoke test luồng chính) | Nhanh (vài giờ), che rủi ro lớn nhất | Bỏ sót ca phụ | Deadline gấp nhưng còn vài giờ (nên chọn) |
+| Cắt phạm vi, giữ test đầy đủ cho phần ship | Chất lượng phần phát hành tốt | Ít tính năng ra mắt | Khi có thể thương lượng phạm vi |
+
+### Pitfall thực tế trên production
+- **Đồng ý miệng, không ghi nhận:** khi sự cố xảy ra, tranh cãi "ai quyết định". Luôn để lại dấu vết trong ticket/chat dự án.
+- **"Chỉ sửa UI nhỏ" nhưng chạm mã dùng chung:** thay đổi nhỏ ở shared component có thể làm hỏng nhiều trang. Luôn đánh giá blast radius thực, không đánh giá theo cảm giác.
+- **Có rollback nhưng chưa từng thử:** đường quay lui không chạy được khi cần. Kiểm tra rollback trước giờ phát hành.
+
+### Ví dụ đời thực
+PM yêu cầu bỏ QA để kịp ra mắt banner khuyến mãi 8:00 sáng (còn 6 giờ). Thay đổi gồm: banner (UI), và logic tính giảm giá (chạm luồng thanh toán, ~18.000 đơn/ngày, giá trị trung bình 450.000đ). Kỹ sư đề xuất: (1) ship banner ngay (rủi ro thấp, rollback cấu hình); (2) KHÔNG bỏ test logic giảm giá: chạy 12 ca kiểm thử tự động hiện có (15 phút) + 30 phút kiểm tra thủ công 5 ca biên (mã hết hạn, chồng mã, đơn tối thiểu); (3) canary 5% trong 1 giờ đầu. Phát hiện 1 ca chồng mã cho phép giảm 120% (âm tiền) ở bước 2, sửa mất 40 phút. Nếu bỏ test, ước tính ~900 đơn/giờ đầu có thể bị giảm sai, thiệt hại tiềm năng hàng trăm triệu đồng.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi PM muốn bỏ test để kịp deadline, tôi không phản đối theo cảm tính mà chuyển cuộc nói chuyện sang rủi ro và lựa chọn. Tôi hỏi deadline phục vụ mục tiêu gì và phần nào thực sự bắt buộc hôm nay. Sau đó tôi đánh giá blast radius: thay đổi chạm luồng nào, nếu lỗi thì ảnh hưởng bao nhiêu người dùng và doanh thu. Tôi đề xuất phương án khả thi: cắt phạm vi để chỉ ship phần an toàn, hoặc giữ smoke test có trọng tâm vào luồng tiền trong thời gian ngắn, kèm canary và rollback đã kiểm tra. Nếu nghiệp vụ sau khi hiểu rủi ro vẫn chọn chấp nhận, tôi ghi nhận rõ trong ticket những gì đã và chưa được kiểm tra và ai ra quyết định. Trong mọi trường hợp tôi ưu tiên bảo vệ các luồng tiền và dữ liệu, vì chi phí một sự cố production thường lớn hơn vài giờ trễ deadline."
+
+> Senior tip: kỹ sư giỏi không nói "không được" mà nói "được, với điều kiện và rủi ro sau" kèm phương án cụ thể. Quyền quyết định kinh doanh thuộc về sản phẩm, nhưng nghĩa vụ của bạn là làm cho rủi ro nhìn thấy được.`,
+  follow: [
+    'Làm thế nào để thiết kế smoke test 30 phút bao phủ được rủi ro lớn nhất của một bản phát hành?',
+    'Bạn phân biệt thế nào giữa rủi ro chấp nhận được và rủi ro không được phép chấp nhận (ví dụ mất tiền, lộ dữ liệu)?',
+    'Nếu sự cố vẫn xảy ra sau khi đã canary, quy trình rollback và thông báo của bạn gồm những bước nào?'
+  ],
+  tags: ['quality', 'deadline', 'risk', 'communication', 'release']
+},
+{
+  id: 'scenario-151',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Bạn phát hiện một đồng nghiệp đã commit (ghi thay đổi vào lịch sử Git) một secret (bí mật như mật khẩu, khóa truy cập API, token — chuỗi dùng để chứng minh quyền truy cập) lên Git. Bạn xử lý tình huống này thế nào, cả ngay lập tức lẫn về lâu dài?',
+  a: `**Tóm tắt:** bí mật đã lên Git phải coi là đã lộ, dù đã xoá ở commit sau (lịch sử Git vẫn giữ). Ưu tiên số một: thu hồi (revoke) và thay secret ngay, sau đó đánh giá mức lộ, rồi mới dọn lịch sử; song song xử lý với đồng nghiệp một cách xây dựng và bổ sung cơ chế ngăn tái diễn (pre-commit scan, secret manager).
+
+### Thuật ngữ (giải thích cho người mới)
+- **Git:** hệ thống quản lý phiên bản mã nguồn, lưu toàn bộ lịch sử thay đổi. "Commit" là một mốc lưu; xoá dòng chứa secret ở commit mới không xoá nó khỏi lịch sử cũ.
+- **Secret/credential:** thông tin xác thực như mật khẩu DB, AWS access key, API token. Ai có nó có thể truy cập tài nguyên tương ứng.
+- **Revoke/rotate:** thu hồi khóa cũ và phát hành khóa mới, làm khóa cũ vô dụng.
+- **Secret manager:** dịch vụ lưu bí mật an toàn (ví dụ AWS Secrets Manager, HashiCorp Vault) thay vì ghi thẳng trong mã/cấu hình.
+- **Pre-commit hook:** đoạn script tự chạy trước khi cho commit, có thể chặn nếu phát hiện chuỗi giống secret.
+
+### Từng bước xử lý
+1. **Ngăn chặn ngay (phút đầu):** xác định loại secret (DB, cloud key, token bên thứ ba). Thu hồi/rotate secret đó ngay trên hệ thống cấp (AWS IAM, bảng quản lý token…). Đây là bước quan trọng nhất vì lịch sử Git có thể đã bị clone/fork.
+2. **Đánh giá phạm vi lộ:** repo là private hay public? commit đã push chưa, có fork/mirror không? Có dấu hiệu bị dùng trái phép không (CloudTrail, log truy cập, giao dịch lạ)? Thông báo cho bảo mật/lead theo quy trình sự cố.
+3. **Trao đổi với đồng nghiệp riêng tư, không công kích:** mục tiêu là sửa và học, không quy kết. Giải thích vì sao xoá dòng rồi commit lại là chưa đủ.
+4. **Dọn lịch sử (sau khi đã rotate):** dùng công cụ như git filter-repo để loại bỏ secret khỏi lịch sử; lưu ý: rewrite lịch sử ảnh hưởng mọi người đã clone (cần phối hợp force-push có kiểm soát). Nếu repo public/đã fork rộng, coi lịch sử là không cứu được và tập trung vào rotate + giám sát.
+5. **Ngăn tái diễn:** đưa secret vào secret manager/biến môi trường; thêm {{.gitignore}} cho file cấu hình nhạy cảm; bật pre-commit/CI scan (gitleaks, trufflehog); review checklist.
+
+### Ví dụ: cách đọc cấu hình từ biến môi trường thay vì hard-code (Java, Spring Boot 3.x)
+~~~java
+// SAI: hard-code secret trong mã (dễ bị commit)
+String dbPass = "Prod#P@ssw0rd!";
+
+// ĐÚNG: đọc từ biến môi trường hoặc secret manager tại runtime
+// application.yml: spring.datasource.password: \${DB_PASSWORD}
+@Configuration
+class DbConfig {
+    // Giá trị được tiêm từ môi trường/secret manager, không nằm trong source
+    @Value("\${DB_PASSWORD}")
+    private String dbPassword;
+}
+~~~
+
+### Bảng trade-off
+| Hành động | Ưu điểm | Nhược điểm | Khi nào |
+|---|---|---|---|
+| Chỉ xoá dòng + commit mới | Nhanh | Secret vẫn còn trong lịch sử, coi như chưa xử lý | Không bao giờ dùng một mình |
+| Rotate ngay, không rewrite lịch sử | Ngăn khai thác ngay, ít rủi ro phá vỡ | Secret còn trong lịch sử (nhưng đã vô dụng) | Repo nhiều fork, ưu tiên an toàn tức thì |
+| Rotate + rewrite lịch sử (filter-repo) | Dọn sạch lịch sử | Phá vỡ clone hiện có, cần phối hợp | Repo private, kiểm soát được người dùng |
+
+### Pitfall thực tế trên production
+- **"Repo private nên an toàn":** private vẫn có thể bị lộ qua máy nhiễm mã độc, backup, hoặc thành viên rời công ty. Luôn rotate.
+- **Xoá rồi quên rotate:** kẻ tấn công/bot quét GitHub có thể đã lấy trong vài phút với repo public.
+- **Commit thêm file .env chứa secret mới:** vá sai chỗ. Phải chuyển sang cơ chế nạp từ môi trường/secret manager.
+
+### Ví dụ đời thực
+Lúc 16:30, review PR phát hiện AWS access key (chuỗi khóa truy cập tài khoản cloud) nằm trong {{application-prod.yml}} commit lúc 14:10, đã push lên repo private (42 thành viên). Hành động: (1) 16:40 vô hiệu hóa key trên IAM và tạo key mới lưu trong AWS Secrets Manager — mất 12 phút; (2) kiểm tra CloudTrail 2 tiếng qua: không có cuộc gọi bất thường từ key; (3) trao đổi riêng với bạn commit, bạn không biết key sẽ vào lịch sử vĩnh viễn; (4) dùng {{git filter-repo}} xoá file khỏi lịch sử, phối hợp team re-clone trong ngày; (5) bật gitleaks pre-commit và CI, thêm quy tắc cấm commit file {{*prod*.yml}}. Trong 3 tháng sau, hook chặn thêm 4 lần commit nhầm.
+
+### Trả lời mẫu khi phỏng vấn
+"Nếu phát hiện đồng nghiệp commit secret lên Git, tôi xử lý như một sự cố bảo mật nhỏ: ưu tiên hàng đầu là thu hồi và thay secret ngay, vì dù xoá ở commit sau thì lịch sử Git và các bản clone vẫn còn giá trị đó. Tôi xác định loại secret, rotate trên hệ thống cấp, rồi kiểm tra log truy cập để xem có bị lạm dụng không và báo cho người phụ trách bảo mật theo quy trình. Sau khi secret đã vô dụng, tôi mới dọn lịch sử bằng công cụ như git filter-repo và phối hợp team vì việc này ảnh hưởng bản clone. Với đồng nghiệp, tôi trao đổi riêng và mang tính xây dựng, giải thích rằng lịch sử Git là vĩnh viễn. Về lâu dài, tôi đưa bí mật vào secret manager, dùng biến môi trường, và bật quét tự động như gitleaks ở pre-commit và CI để ngăn tái diễn."
+
+> Senior tip: coi mọi secret từng chạm Git là "đã cháy" và rotate không thương lượng. Tốc độ thu hồi trong 15 phút đầu quan trọng hơn việc tranh luận ai sai; văn hóa blameless (không đổ lỗi cá nhân) mới khiến người ta dám báo sớm.`,
+  follow: [
+    'Làm thế nào để phát hiện secret đã bị lộ trước khi có người review PR (tự động hóa ở đâu trong quy trình)?',
+    'Nếu secret đã lộ trên repo public và có thể đã bị bot thu thập, ngoài rotate bạn còn phải làm gì?',
+    'Bạn phân biệt secret cấu hình (DB password) với khóa ký (JWT signing key) khi xử lý sự cố — điểm khác nhau là gì?'
+  ],
+  tags: ['security', 'secrets', 'git', 'incident', 'communication']
+},
+{
+  id: 'scenario-152',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Hệ thống báo cáo (reporting) chạy càng ngày càng chậm, mỗi tháng tệ hơn một chút, dù lượng người dùng không tăng rõ rệt. Bạn điều tra và xử lý vấn đề này như thế nào?',
+  a: `**Tóm tắt:** chậm dần theo tháng thường do dữ liệu tăng tích lũy (bảng phình, index phình, thống kê truy vấn lỗi thời) hoặc truy vấn/thiết kế không scale theo khối lượng. Cách tiếp cận của lead: đo lường xu hướng (metric theo thời gian), tìm nguyên nhân gốc (query plan, kích thước bảng, vacuum), khắc phục ngắn hạn và thiết kế lại đường báo cáo dài hạn (tổng hợp sẵn, tách kho phân tích).
+
+### Thuật ngữ (giải thích cho người mới)
+- **Reporting/báo cáo:** truy vấn tổng hợp dữ liệu lịch sử (tổng doanh thu, số đơn theo tháng…) để ra bảng/biểu đồ, thường đọc rất nhiều dòng.
+- **Query plan (kế hoạch thực thi):** cách cơ sở dữ liệu (DB) quyết định chạy câu SQL (quét hết bảng hay dùng index). Lấy bằng {{EXPLAIN (ANALYZE)}}.
+- **Vacuum (PostgreSQL):** cơ chế dọn "dòng chết" sau UPDATE/DELETE; nếu không chạy kịp, bảng phình và truy vấn chậm dần.
+- **Materialized view:** bảng lưu sẵn kết quả tổng hợp, truy vấn đọc rất nhanh nhưng cần làm mới (refresh) theo lịch.
+- **OLTP vs OLAP:** OLTP (giao dịch, nhiều ghi nhỏ) tối ưu cho đơn hàng; OLAP (phân tích) tối ưu cho quét/tổng hợp lớn — trộn hai loại trên cùng DB dễ tranh chấp.
+
+### Điều tra từng bước
+1. **Chứng minh xu hướng bằng số:** lấy thời gian chạy báo cáo theo tuần/tháng (log, APM). Khẳng định "chậm dần" và mốc bắt đầu.
+2. **Đo tại DB:** {{EXPLAIN (ANALYZE, BUFFERS)}} cho câu báo cáo chậm nhất; xem có chuyển từ Index Scan sang Seq Scan (quét toàn bảng) khi bảng lớn lên không, thống kê ({{ANALYZE}}) có cũ không.
+3. **Kiểm tra sức khỏe bảng:** kích thước bảng/index tăng bao nhiêu mỗi tháng, dead tuples, autovacuum có theo kịp không (PostgreSQL: {{pg_stat_user_tables}}).
+4. **Xem mẫu truy vấn:** báo cáo có quét cả lịch sử mọi lần chạy không (ví dụ {{WHERE created_at > '2020-01-01'}} cố định) thay vì chỉ khoảng cần thiết.
+
+### Giải pháp
+- **Ngắn hạn:** thêm/sửa index phù hợp truy vấn báo cáo; giới hạn khoảng thời gian mặc định; chạy {{ANALYZE}}; dọn dữ liệu cũ theo chính sách lưu trữ (partition theo tháng rồi bỏ partition cũ).
+- **Trung hạn:** tổng hợp tăng dần vào bảng summary/materialized view theo ngày/giờ, báo cáo đọc bảng này thay vì quét bảng giao dịch gốc.
+- **Dài hạn:** tách luồng đọc báo cáo sang replica hoặc kho phân tích (OLAP/warehouse) nạp dữ liệu bằng CDC (Change Data Capture — bắt thay đổi từ DB giao dịch), để báo cáo không tranh tài nguyên với giao dịch.
+
+~~~sql
+-- Ví dụ: kiểm tra kế hoạch và tạo index hỗ trợ báo cáo theo khoảng thời gian
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT date_trunc('day', paid_at) d, sum(amount)
+FROM payments
+WHERE paid_at >= now() - interval '30 days'
+GROUP BY 1;
+
+-- Index theo thời gian giúp tránh quét toàn bộ lịch sử mỗi lần chạy
+CREATE INDEX CONCURRENTLY idx_payments_paid_at ON payments (paid_at);
+~~~
+
+### Bảng trade-off
+| Hướng | Ưu điểm | Nhược điểm | Khi nào |
+|---|---|---|---|
+| Tối ưu index/query | Nhanh, ít thay đổi kiến trúc | Không cứu được khi dữ liệu tăng mãi | Bước đầu, hiệu quả tức thì |
+| Bảng tổng hợp/materialized view | Đọc rất nhanh | Dữ liệu trễ theo chu kỳ refresh, thêm độ phức tạp | Báo cáo chấp nhận trễ phút/giờ |
+| Tách sang kho phân tích (OLAP) | Scale tốt, không ảnh hưởng OLTP | Chi phí hạ tầng và vận hành | Dữ liệu lớn, nhiều báo cáo phức tạp |
+
+### Pitfall thực tế trên production
+- **Chỉ thêm index mà quên autovacuum:** bảng vẫn phình, hiệu quả giảm dần.
+- **Tổng hợp sẵn nhưng quên refresh/lỗi refresh:** số liệu báo cáo sai âm thầm. Cần giám sát thời điểm refresh cuối.
+- **Chạy báo cáo nặng trên DB chính giờ cao điểm:** gây chậm cả giao dịch. Phải tách tải đọc.
+
+### Ví dụ đời thực
+Hệ thống bán lẻ: báo cáo doanh thu ngày từ 12 giây (tháng 1) tăng lên 95 giây (tháng 6), dữ liệu giao dịch từ 20 triệu lên 38 triệu dòng, người dùng ổn định. {{EXPLAIN}} cho thấy Seq Scan trên bảng {{orders}} vì truy vấn lọc {{status}} nhưng thiếu index kết hợp và thống kê cũ; bảng phình 30% dead tuples do autovacuum cấu hình mặc định không theo kịp. Xử lý: (1) {{ANALYZE}} + chỉnh autovacuum tích cực hơn; (2) tạo index {{(created_at, status)}} concurrent; (3) tạo bảng tổng hợp doanh thu theo ngày, job chạy mỗi 15 phút; (4) chuyển báo cáo nặng sang read replica. Kết quả: báo cáo ngày còn 1,8 giây, tải DB chính giờ cao điểm giảm ~25%, và thời gian không còn tăng theo tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi báo cáo chậm dần mỗi tháng, tôi coi đó là vấn đề tăng trưởng dữ liệu chứ không chỉ là một truy vấn chậm. Tôi bắt đầu bằng đo lường xu hướng thời gian chạy và xác định câu SQL nặng nhất. Sau đó tôi dùng EXPLAIN ANALYZE để xem kế hoạch thực thi, kiểm tra bảng có phình, thống kê có cũ, autovacuum có theo kịp không. Ngắn hạn tôi tối ưu index, giới hạn khoảng thời gian và đảm bảo bảo trì bảng. Nhưng để dứt điểm, tôi tách đường đọc báo cáo khỏi giao dịch: tổng hợp tăng dần vào bảng summary hoặc materialized view, và nếu nhu cầu phân tích lớn thì đưa dữ liệu sang replica hoặc kho OLAP qua CDC. Tôi cũng đặt giám sát thời gian chạy và độ trễ dữ liệu tổng hợp để phát hiện sớm khi tăng trưởng tiếp tục."
+
+> Senior tip: báo cáo "chậm đều theo tháng" là tín hiệu kiến trúc: đừng chỉ vá truy vấn, hãy quyết định sớm mốc nào phải tách OLTP/OLAP. Chi phí tách sớm thường rẻ hơn nhiều lần tối ưu lại trên một DB đang kiệt quệ.`,
+  follow: [
+    'Khi nào bạn chọn materialized view và khi nào chọn bảng tổng hợp cập nhật tăng dần bằng job?',
+    'Autovacuum hoạt động thế nào và dấu hiệu nào cho thấy nó không theo kịp?',
+    'Làm sao đảm bảo số liệu trên kho phân tích (OLAP) khớp với DB giao dịch (OLTP)?'
+  ],
+  tags: ['reporting', 'performance', 'postgres', 'architecture', 'capacity']
+},
+{
+  id: 'scenario-153',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Production đang lỗi (sự cố ảnh hưởng người dùng thật). Bạn phải chọn giữa sửa nhanh (hotfix — bản vá gấp, thường vá triệu chứng) và sửa gốc rễ (root cause fix — sửa nguyên nhân sâu). Bạn ra quyết định và hành động thế nào?',
+  a: `**Tóm tắt:** khi production đang cháy, ưu tiên số một là giảm tác động cho người dùng (khôi phục dịch vụ) — thường chọn hotfix/giảm thiểu trước, rồi mới sửa gốc rễ có kiểm soát. Hai việc không loại trừ nhau: tách thành "ổn định ngay" và "không tái diễn", với quyết định dựa trên mức ảnh hưởng, rủi ro của từng phương án và khả năng rollback.
+
+### Thuật ngữ (giải thích cho người mới)
+- **Incident (sự cố):** tình huống hệ thống hoạt động sai hoặc gián đoạn, ảnh hưởng người dùng/kinh doanh.
+- **Mitigation (giảm thiểu):** hành động làm giảm tác động ngay (tắt tính năng, chuyển lưu lượng, tăng tài nguyên) dù chưa sửa nguyên nhân.
+- **Hotfix:** thay đổi nhỏ, triển khai gấp để chặn lỗi; đôi khi chỉ xử lý triệu chứng.
+- **Root cause (nguyên nhân gốc rễ):** lý do sâu khiến lỗi xảy ra; sửa nó mới ngăn tái diễn.
+- **Rollback:** quay về phiên bản ổn định trước.
+
+### Quy trình ra quyết định trong sự cố
+1. **Đánh giá tác động (vài phút đầu):** bao nhiêu người dùng bị ảnh hưởng, luồng tiền/dữ liệu có nguy cơ không, lỗi tăng hay ổn định. Công bố kênh điều phối và người chỉ huy sự cố.
+2. **Ổn định trước (mitigate):** ưu tiên các hành động rủi ro thấp, hiệu quả nhanh: rollback bản deploy gần nhất, tắt feature flag, chuyển traffic, giới hạn tốc độ (rate limit), chuyển sang chế độ suy giảm (degraded mode). Mục tiêu: đưa hệ thống về trạng thái chấp nhận được.
+3. **Quyết định hotfix vs root cause ngay lúc này:**
+   - Chọn hotfix/mitigation khi: ảnh hưởng lớn đang diễn ra, root cause chưa rõ, hoặc sửa gốc rễ phức tạp/rủi ro cao khi đang căng thẳng.
+   - Cân nhắc sửa gốc rễ ngay chỉ khi: nguyên nhân đã rõ, bản sửa nhỏ và an toàn, và hotfix không đủ/còn nguy hiểm hơn.
+4. **Sau khi ổn định:** mở điều tra nguyên nhân gốc, viết bản sửa đúng, có test và review, triển khai có kiểm soát.
+5. **Hậu kiểm (postmortem):** ghi lại dòng thời gian, nguyên nhân, hành động, và việc ngăn tái diễn (không đổ lỗi cá nhân).
+
+~~~java
+// Ví dụ minh họa: chọn chiến lược theo tác động và độ chắc chắn của bản sửa
+enum Impact { LOW, HIGH } enum Confidence { LOW, HIGH }
+record Plan(String action) {}
+Plan decide(Impact impact, boolean canRollback, Confidence rootFixConfidence) {
+    // Ảnh hưởng cao: ưu tiên khôi phục nhanh; chỉ sửa gốc ngay nếu rất chắc và an toàn
+    if (impact == Impact.HIGH) {
+        if (canRollback) return new Plan("ROLLBACK_OR_MITIGATE_NOW");
+        return rootFixConfidence == Confidence.HIGH
+            ? new Plan("TARGETED_SAFE_FIX_NOW") : new Plan("MITIGATE_THEN_INVESTIGATE");
+    }
+    return new Plan("FIX_ROOT_CAUSE_WITH_TEST");
+}
+~~~
+
+### Bảng trade-off
+| Lựa chọn | Ưu điểm | Nhược điểm | Khi nào |
+|---|---|---|---|
+| Rollback/mitigation | Nhanh, rủi ro thấp, thường hiệu quả | Mất tính năng mới tạm thời, chưa hết nguyên nhân | Ảnh hưởng lớn, có bản ổn định trước |
+| Hotfix vá triệu chứng | Chặn lỗi nhanh khi biết điểm chạm | Có thể tái diễn, nợ kỹ thuật | Cần mua thời gian, nguyên nhân chưa rõ |
+| Sửa gốc rễ ngay | Dứt điểm | Mất thời gian, dễ sửa sai khi đang áp lực | Nguyên nhân rõ, bản sửa nhỏ, rủi ro thấp |
+
+### Pitfall thực tế trên production
+- **Vừa chữa cháy vừa refactor lớn:** thay đổi nhiều biến cùng lúc, khó biết cái gì cứu được và dễ gây sự cố thứ hai.
+- **Không rollback được:** không có bản trước, hoặc migration DB không tương thích ngược. Trước khi sửa, luôn tự hỏi "lùi lại có được không?".
+- **Ổn định xong rồi quên sửa gốc:** sự cố lặp lại. Bắt buộc tạo nhiệm vụ theo dõi nguyên nhân gốc với chủ sở hữu và thời hạn.
+
+### Ví dụ đời thực
+19:10, sau deploy, tỉ lệ lỗi 500 của API đặt hàng tăng từ 0,2% lên 18% (khoảng 2.100 request lỗi trong 10 phút), doanh thu tụt rõ. Điều tra nhanh cho thấy truy vấn mới thiếu index gây timeout DB, nhưng tạo index trên bảng 120 triệu dòng mất ~20 phút và cần kiểm soát tải. Quyết định: (1) 19:14 rollback về phiên bản trước — tỉ lệ lỗi về 0,3% sau 3 phút, ảnh hưởng dừng ở ~3.000 request; (2) 19:30 tạo index {{CONCURRENTLY}} trên môi trường và xác minh; (3) 21:00 deploy lại kèm index và test tải. Postmortem: thêm kiểm tra {{EXPLAIN}} trong review và cảnh báo thời gian truy vấn. Nếu cố "sửa gốc" ngay 19:10 (tạo index dưới tải đỉnh mà không giảm thiểu), có thể kéo dài sự cố thêm 20 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi production đang lỗi, tôi ưu tiên khôi phục dịch vụ cho người dùng trước, rồi mới tối ưu độ đẹp của bản sửa. Tôi đánh giá nhanh mức ảnh hưởng và xem có thể rollback, tắt feature flag hay giảm tải để ổn định ngay không — những hành động này rủi ro thường thấp nhất. Tôi chỉ chọn sửa gốc rễ ngay tại thời điểm đó nếu nguyên nhân đã rõ ràng, thay đổi nhỏ, an toàn và có đường quay lui; nếu không, tôi vá triệu chứng hoặc giảm thiểu để mua thời gian. Điểm quan trọng là tách hai mục tiêu: dừng đ bleeding ngay và đảm bảo không tái diễn sau đó. Khi hệ thống ổn, tôi điều tra nguyên nhân gốc, viết bản sửa có test, và làm postmortem không đổ lỗi để bổ sung giám sát, quy trình review và cơ chế rollback cho lần sau."
+
+> Senior tip: trong sự cố, "quyết định rõ ràng và có thể quay lui" thắng "quyết định hoàn hảo nhưng chậm". Một lead giỏi luôn nói được: ta đang giảm thiểu bằng gì, rủi ro của bước này là gì, và ai theo dõi việc sửa gốc sau khi xong.`,
+  follow: [
+    'Bạn thiết lập kênh và vai trò chỉ huy sự cố (incident commander) thế nào để tránh hỗn loạn?',
+    'Một postmortem không đổ lỗi (blameless) nên gồm những nội dung nào để thực sự ngăn tái diễn?',
+    'Khi rollback không khả thi (ví dụ đã ghi dữ liệu mới không tương thích), bạn giảm thiểu thế nào?'
+  ],
+  tags: ['incident', 'hotfix', 'root-cause', 'leadership', 'production']
+},
+{
+  id: 'scenario-154',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Bạn được yêu cầu review (đánh giá mã nguồn) một pull request (PR — yêu cầu gộp thay đổi vào nhánh chính) rất lớn, khoảng 3.000 dòng. Bạn tiếp cận thế nào để review hiệu quả, không bỏ sót lỗi quan trọng và vẫn tôn trọng thời gian của cả nhóm?',
+  a: `**Tóm tắt:** PR 3.000 dòng không thể review kỹ từng dòng như PR nhỏ. Cách hiệu quả: yêu cầu ngữ cảnh và (nếu có thể) tách nhỏ; ưu tiên review theo rủi ro (đúng nghiệp vụ, bảo mật, dữ liệu, hiệu năng, khả năng vận hành) trước phong cách; chạy/đọc test và luồng chính; đưa nhận xét rõ mức độ (chặn gộp hay góp ý).
+
+### Thuật ngữ (giải thích cho người mới)
+- **Pull Request (PR):** yêu cầu gộp một tập thay đổi mã vào nhánh chính, để người khác xem xét trước khi hợp nhất.
+- **Review:** đọc và đánh giá thay đổi về tính đúng, an toàn, dễ bảo trì.
+- **Blocking comment:** nhận xét chỉ ra vấn đề phải sửa trước khi được gộp (ví dụ lỗi logic, lỗ hổng bảo mật). Góp ý không chặn là cải tiến tuỳ chọn.
+- **Blast radius:** phạm vi ảnh hưởng nếu thay đổi sai.
+
+### Cách tiếp cận từng bước
+1. **Hiểu mục tiêu trước khi đọc code:** đọc mô tả PR, ticket, ảnh chụp/giải thích luồng. Nếu thiếu ngữ cảnh, yêu cầu tác giả bổ sung: "thay đổi gì, vì sao, ảnh hưởng module nào, cách kiểm thử".
+2. **Đề xuất tách PR nếu có thể:** 3.000 dòng thường trộn refactor + tính năng + đổi format. Xin tách thành chuỗi PR nhỏ (refactor cơ học riêng, logic riêng) để review được — đây là góp ý quan trọng, không phải từ chối.
+3. **Review theo lớp rủi ro, không đọc tuyến tính từ đầu đến cuối:**
+   - Đúng nghiệp vụ và trường hợp biên (null, rỗng, trùng, quyền truy cập).
+   - An toàn: lộ secret, kiểm soát truy cập, injection (chèn mã độc vào truy vấn), xử lý dữ liệu nhạy cảm.
+   - Dữ liệu và giao dịch: migration, tương thích ngược, tính nhất quán.
+   - Hiệu năng: truy vấn N+1, vòng lặp nặng, thiếu index.
+   - Vận hành: log, xử lý lỗi, timeout, khả năng rollback.
+4. **Dựa vào test và bằng chứng:** chạy test (hoặc xem CI), đọc test mới có bảo vệ hành vi quan trọng không. Với thay đổi rủi ro cao, yêu cầu bằng chứng chạy tay/ảnh chụp.
+5. **Giao tiếp rõ ràng:** phân loại nhận xét (chặn / nên sửa / gợi ý), giải thích "vì sao" và đưa gợi ý cụ thể; ghi nhận điểm tốt. Tránh bình luận mơ hồ.
+
+~~~java
+// Ví dụ checklist hóa trong đầu (minh họa) khi đọc một thay đổi nhạy cảm
+record Finding(String area, String severity, String note) {}
+// Khi thấy truy vấn ghép chuỗi từ input người dùng -> severity "BLOCKER" (nguy cơ SQL injection)
+// Khi thấy tên biến khó hiểu nhưng logic đúng -> severity "NIT" (gợi ý)
+~~~
+
+### Bảng trade-off
+| Cách làm | Ưu điểm | Nhược điểm | Khi nào |
+|---|---|---|---|
+| Review từng dòng toàn bộ 3.000 dòng | Có thể kỹ | Mất nhiều giờ, dễ mỏi và bỏ sót điểm quan trọng | Rất hiếm, chỉ thay đổi cực nhạy cảm và không tách được |
+| Review theo rủi ro + yêu cầu tách PR | Tập trung vào lỗi nghiêm trọng, hiệu quả | Có thể bỏ sót lỗi nhỏ vùng ít rủi ro | Mặc định cho PR lớn (khuyến nghị) |
+| "Approve" nhanh vì ngại | Nhanh | Đẩy rủi ro ra production | Không nên |
+
+### Pitfall thực tế trên production
+- **Sa đà vào style (dấu cách, tên) mà bỏ sót lỗi logic/bảo mật:** style để tool tự kiểm (formatter/linter), người review giữ sức cho rủi ro cao.
+- **PR trộn rename/format với thay đổi logic:** diff phình 3.000 dòng nhưng logic thật chỉ 200 dòng — gần như không review nổi. Luôn yêu cầu tách.
+- **Không xem migration/đổi hợp đồng API:** thay đổi nhỏ ở schema hoặc API có thể làm hỏng client và dữ liệu production.
+
+### Ví dụ đời thực
+PR 3.200 dòng "thêm tính năng hoàn tiền", gồm: 1.100 dòng đổi format tự động, 900 dòng đổi tên, 1.200 dòng logic + migration DB. Reviewer: (1) yêu cầu tách thành 3 PR (format, rename, logic) — tác giả tách trong 2 giờ; (2) review PR logic 1.200 dòng theo rủi ro: phát hiện 1 lỗi không kiểm tra quyền sở hữu đơn (user A có thể hoàn tiền đơn user B), 1 truy vấn N+1 gây ~600 truy vấn/phiếu hoàn tiền lớn, và migration thêm cột {{NOT NULL}} không có default sẽ khóa bảng 8 triệu dòng; (3) đánh dấu 3 mục chặn gộp, 5 góp ý cải tiến. Sau sửa, test bổ sung 7 ca. Thời gian review hiệu quả ~2,5 giờ thay vì ước tính 1 ngày nếu đọc 3.200 dòng trộn lẫn.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nhận PR khoảng 3.000 dòng, tôi không cố đọc tuyến tính mà tiếp cận theo rủi ro và tính khả thi. Trước hết tôi đọc mô tả, ticket và phạm vi ảnh hưởng; nếu PR trộn refactor cơ học với logic, tôi đề nghị tác giả tách để review chính xác hơn. Khi đọc, tôi ưu tiên các vùng rủi ro cao: đúng nghiệp vụ và trường hợp biên, bảo mật và phân quyền, thay đổi dữ liệu/migration, hiệu năng và khả năng vận hành. Tôi xem CI và các test mới có che hành vi quan trọng không. Nhận xét của tôi được phân loại rõ: lỗi chặn gộp kèm lý do và gợi ý sửa, còn cải tiến nhỏ để riêng. Tôi cũng trao đổi trực tiếp khi có điểm phức tạp thay vì viết chuỗi bình luận dài. Mục tiêu là bắt được lỗi nghiêm trọng và giữ nhịp độ nhóm, không phải phê bình hình thức."
+
+> Senior tip: review giỏi là tối ưu "lỗi nghiêm trọng bị chặn trên mỗi giờ review", không phải số dòng đã đọc. Hãy để formatter/CI lo phần cơ học, và đừng ngại yêu cầu PR nhỏ hơn — đó là tôn trọng thời gian của cả đội.`,
+  follow: [
+    'Những dấu hiệu nào cho thấy một PR nên bị yêu cầu tách trước khi review tiếp?',
+    'Bạn xử lý thế nào khi bất đồng với tác giả về một nhận xét blocking (ví dụ bạn cho là lỗi, tác giả cho là chấp nhận được)?',
+    'Bạn dùng công cụ tự động (CI, linter, SAST, test coverage) như thế nào để giảm tải cho review thủ công?'
+  ],
+  tags: ['code-review', 'pull-request', 'quality', 'collaboration', 'process']
+}
 );
