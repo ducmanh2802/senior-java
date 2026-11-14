@@ -5699,4 +5699,621 @@ Khi phỏng vấn, hãy vẽ sơ đồ: "Event A (10:00) → Event B (10:05) →
   ],
   tags: ['DECIMAL', 'NUMERIC', 'money', 'currency', 'TIMESTAMPTZ', 'TIMESTAMP', 'BigDecimal', 'OffsetDateTime', 'Instant', 'rounding', 'precision', 'scale']
 },
+{
+  id: 'sql-069',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Hai request cùng trừ 600 trên kho còn 1.000. Vì sao câu {{UPDATE stock SET qty = qty - 600 WHERE sku = ?}} không bị mất cập nhật, còn đoạn code đọc số dư về Java rồi {{UPDATE stock SET qty = ?}} lại mất 200? Giải thích cơ chế EvalPlanQual của PostgreSQL, và vì sao ở REPEATABLE READ câu UPDATE nhận lỗi 40001 thay vì ghi đè âm thầm.',
+  a: `**Tóm tắt:** Ở READ COMMITTED, khi câu UPDATE gặp một dòng vừa bị transaction khác sửa, PostgreSQL chờ rồi **đọc lại phiên bản mới nhất của dòng và kiểm tra lại điều kiện WHERE** — đó là cơ chế EvalPlanQual (EPQ). Vì phép trừ nằm ngay trong câu UPDATE, nó luôn trừ trên số hiện tại nên không mất cập nhật. Nếu ứng dụng đọc số dư về Java, tính rồi ghi đè bằng giá trị tuyệt đối, database không biết con số đó tính từ bản cũ nên vẫn ghi đè: đó là lost update, xảy ra ở mọi isolation level. Ở REPEATABLE READ, nếu dòng đã bị sửa sau snapshot, câu UPDATE bị hủy với {{could not serialize access due to concurrent update}} ({{40001}}), tức PostgreSQL thà báo lỗi còn hơn âm thầm ghi đè.
+
+### Hiểu đúng mô hình MVCC trước
+**MVCC** (Multi-Version Concurrency Control, kiểm soát đồng thời bằng nhiều phiên bản) là cách PostgreSQL cho phép đọc và ghi song song mà không chặn nhau. Mỗi dòng dữ liệu (gọi là **tuple**) trong bảng có hai cột hệ thống ẩn:
+- {{xmin}}: id của transaction đã tạo ra bản này.
+- {{xmax}}: id của transaction đã xóa bản này hoặc tạo bản kế tiếp; bằng 0 nếu bản này còn "hiện hành".
+
+Câu **UPDATE không ghi đè tại chỗ**: nó chèn một bản mới, rồi đặt {{xmax}} cho bản cũ. Nhờ vậy một transaction đang đọc không phải chờ transaction đang ghi, và ngược lại. Cái giá phải trả là bảng phình ra (bloat) và cần VACUUM dọn — đó là chủ đề của một câu khác.
+
+**Snapshot** (ảnh chụp) là "danh sách những transaction đang chạy" tại thời điểm một câu lệnh bắt đầu. Một bản chỉ **nhìn thấy được** nếu {{xmin}} đã commit trước snapshot, và {{xmax}} chưa commit tại thời điểm đó (hoặc {{xmax}} chính là transaction của mình).
+- **READ COMMITTED**: mỗi câu lệnh chụp một ảnh mới. Câu thứ hai trong cùng transaction thấy dữ liệu đã commit sau câu thứ nhất.
+- **REPEATABLE READ**: chỉ chụp một ảnh ở **câu lệnh đầu tiên** (không phải lúc {{BEGIN}}), các câu sau dùng lại ảnh đó.
+
+### Kịch bản: kho còn 1.000, hai request cùng trừ 600
+~~~text
+Thời điểm  Session A (READ COMMITTED)                 Session B (READ COMMITTED)
+t0         BEGIN; SELECT qty -> 1000
+t1                                             BEGIN; SELECT qty -> 1000
+t2                                             UPDATE ... - 600 -> qty = 400 (chưa commit)
+t3         UPDATE stock SET qty = qty - 600
+           WHERE sku = 'SKU1' AND qty >= 600
+           -> gặp bản mới của B -> chờ
+t4                                             COMMIT
+t5         A đọc lại bản mới (400), chạy lại điều kiện
+           WHERE: 400 >= 600 SAI -> bỏ dòng này, 0 row
+~~~
+
+Với đoạn code đọc-rồi-ghi đè, dòng thời gian là:
+~~~text
+A: SELECT qty -> 1000      B: SELECT qty -> 1000
+A: tính 1000-600 = 400     B: tính 1000-600 = 400
+A: UPDATE qty = 400        B: UPDATE qty = 400
+Kết quả: 400  -> mất một lần trừ 200 (lẽ ra phải là -200 nếu không kiểm tra)
+~~~
+
+### EvalPlanQual chạy từng bước như thế nào
+1. **Tìm dòng**: câu UPDATE dùng index (hoặc seq scan) tìm bản hiện hành của {{sku}}, thấy {{xmax = 0}} nên tưởng có thể ghi ngay.
+2. **Phát hiện xung đột**: nếu dòng đó vừa bị một transaction khác UPDATE nhưng chưa COMMIT, PostgreSQL không được phép ghi đè lên bản chưa commit. Nó đặt hàng chờ trên row lock của dòng đó.
+3. **Chờ và tỉnh dậy**: khi B COMMIT, A được đánh thức. Lúc này bản A định sửa (qty = 1000) đã bị đánh dấu {{xmax}}, tức là đã cũ.
+4. **Đọc lại (recheck)**: thay vì dùng giá trị trong snapshot cũ, EPQ đọc **bản mới nhất** (qty = 400) và **chạy lại điều kiện WHERE của chính câu UPDATE** trên bản đó. Nếu điều kiện không còn đúng thì dòng bị bỏ qua, không báo lỗi. Nếu còn đúng thì phép tính chạy trên 400.
+5. **COMMIT**: A ghi bản mới dựa trên 400.
+
+Vì sao phải làm bước 4? Vì giữa lúc A đọc và lúc A được phép ghi, dữ liệu đã đổi. Nếu vẫn ghi đè, A sẽ "hồi sinh" một giá trị cũ — đúng là lost update. EPQ biến câu UPDATE thành "đọc bản mới nhất rồi mới quyết định", nên phép trừ tương đối luôn đúng.
+
+Điều này áp dụng cho {{UPDATE}}, {{DELETE}}, {{SELECT ... FOR UPDATE}} và {{SELECT ... FOR SHARE}}. Nó **không** áp dụng cho câu đọc thường (không có lock) — câu đọc thường vẫn thấy snapshot cũ theo đúng isolation level.
+
+### Vì sao ở REPEATABLE READ lại là lỗi 40001
+Ở REPEATABLE READ, transaction đã hứa "mọi câu lệnh đều thấy cùng một ảnh". Khi A tỉnh dậy và thấy dòng đã bị B sửa sau snapshot, nếu A âm thầm update thì kết quả không thể giải thích bằng bất kỳ thứ tự tuần tự nào của các transaction — đó là **serialization anomaly**. PostgreSQL chọn cách an toàn: hủy câu lệnh với {{ERROR: could not serialize access due to concurrent update}}, SQLSTATE {{40001}} (serialization_failure). Ứng dụng phải bắt và retry; xem câu về retry để biết đặt retry ở đâu cho đúng.
+
+### Code Java: trừ kho có điều kiện
+~~~java
+// jdbc.update trả về số dòng bị thay đổi; 0 nghĩa là không đủ hàng.
+int updated = jdbc.update("""
+    UPDATE stock SET qty = qty - ?, version = version + 1
+    WHERE sku = ? AND qty >= ?
+    """, qty, sku, qty);
+
+if (updated == 0) {
+    // hoặc không tồn tại, hoặc tồn kho không đủ: cùng một thông điệp để không lộ dữ liệu
+    throw new ResponseStatusException(HttpStatus.CONFLICT, "Không đủ tồn kho: " + sku);
+}
+~~~
+
+Điểm quan trọng: **luôn kiểm tra số dòng bị ảnh hưởng**. Câu UPDATE cú pháp đúng không có nghĩa là nó đã trừ được hàng. Trong ví dụ trên, request thứ hai nhận 0 dòng và phải trả 409 cho khách, chứ không được báo "đặt hàng thành công".
+
+### Bảng so sánh các cách chống lost update
+| Cách | Cơ chế | Khi nào dùng |
+|---|---|---|
+| UPDATE tương đối có điều kiện | DB đọc và ghi trong một câu, EPQ bảo vệ | Mặc định cho số lượng, số dư, lượt dùng |
+| {{SELECT ... FOR UPDATE}} | Khóa dòng tới hết transaction | Cần đọc nhiều trường, tính toán phức tạp rồi ghi |
+| Cột version (optimistic) | {{UPDATE ... WHERE version = ?}}, 0 dòng thì retry | Ít tranh chấp, không muốn giữ lock lâu |
+| SERIALIZABLE | SSI phát hiện cả xung đột đọc–ghi | Có ràng buộc liên nhiều dòng, chấp nhận retry |
+
+### Lỗi hay gặp trên production
+- **Hibernate dirty checking**: {{entity.setQty(entity.getQty() - 600)}} rồi flush sẽ sinh {{UPDATE ... SET qty = 400}}, tức ghi giá trị tuyệt đối. Đây là lost update kinh điển dù bạn đang ở READ COMMITTED. Cách sửa: dùng bulk update {{@Modifying @Query("UPDATE Stock s SET s.qty = s.qty - :n WHERE ...")}} hoặc thêm {{@Version}}.
+- **Code sinh tự động**: MyBatis/JPA repository thường sinh câu update ghi giá trị tuyệt đối (qty bằng đúng giá trị truyền vào) — không có điều kiện {{qty >= n}}.
+- **Kiểm tra ở Java rồi update**: {{if (qty >= n) update}} vẫn có khe hở giữa đọc và ghi; điều kiện phải nằm trong câu UPDATE.
+- **Giữ transaction mở khi gọi HTTP**: row lock bị giữ suốt thời gian gọi mạng, request khác xếp hàng dài.
+- **Quên kiểm tra affected rows**: 0 dòng bị hiểu là thành công, khách nhận xác nhận nhưng kho không trừ.
+
+### Ví dụ đời thực
+Một sàn thương mại điện tử chạy flash sale: SKU hot còn 5.000 sản phẩm, 1.200 request trừ kho trong 8 phút, mỗi request trừ 1. Bản đầu dùng "đọc rồi ghi đè": cuối phiên còn -37, tức oversell 37 đơn, bộ phận chăm sóc phải liên hệ 37 khách để hủy. Chuyển sang UPDATE có điều kiện {{qty >= 1}} và kiểm tra affected rows: sau hai tuần không còn oversell; p95 của câu update là 1,8 ms; số lỗi 40001 bằng 0 vì hệ chạy READ COMMITTED; deadlock còn 3/ngày do hai luồng cập nhật nhiều SKU theo thứ tự khác nhau, xử lý bằng chuẩn hoá thứ tự {{ORDER BY sku}}.
+
+### Trả lời mẫu khi phỏng vấn
+"PostgreSQL ở READ COMMITTED dùng MVCC: mỗi UPDATE tạo một bản mới và bản cũ bị đánh dấu xmax. Khi câu UPDATE gặp dòng vừa bị transaction khác sửa, nó chờ, rồi dùng cơ chế EvalPlanQual đọc lại bản mới nhất và kiểm tra lại điều kiện WHERE, nên phép trừ tương đối luôn trừ trên số hiện tại. Nếu ứng dụng đọc số dư về Java rồi ghi đè bằng giá trị tuyệt đối, database không biết đó là số cũ nên vẫn ghi đè, và hai request cùng trừ sẽ mất một lần trừ. Ở REPEATABLE READ, transaction đã hứa một snapshot cố định, nên khi dòng bị sửa sau snapshot, PostgreSQL không âm thầm ghi đè mà báo lỗi 40001 để ứng dụng retry. Vì vậy tôi luôn viết điều kiện ngay trong câu UPDATE, ví dụ WHERE qty >= n, và kiểm tra số dòng bị ảnh hưởng; nếu bằng 0 thì trả 409 chứ không báo thành công. Tôi tránh ghi giá trị tuyệt đối từ Java, và khi cần tính toán nhiều bước thì dùng SELECT FOR UPDATE để khóa dòng trong suốt transaction."
+
+> Senior tip: hãy coi "số dòng bị ảnh hưởng" là một phần của hợp đồng API. Một câu UPDATE trả về 0 dòng không phải là "không có gì xảy ra" — nó là câu trả lời "điều kiện không còn đúng", và thường đó mới là thông tin nghiệp vụ quan trọng nhất.
+`,
+  follow: [
+    'Ở READ COMMITTED, SELECT ... FOR UPDATE sau khi chờ lock sẽ trả về bản mới nhất hay bản trong snapshot cũ? Vì sao?',
+    'Vì sao REPEATABLE READ không chặn được lost update nếu ứng dụng vẫn ghi giá trị tuyệt đối, và khi đó nó báo lỗi gì?',
+    'Nếu một transaction UPDATE 10 SKU theo thứ tự khác nhau thì có nguy cơ gì, và bạn chuẩn hoá thứ tự bằng cách nào?'
+  ],
+  tags: ['EvalPlanQual', 'EPQ', 'lost update', 'MVCC', 'READ COMMITTED', 'REPEATABLE READ', '40001', 'affected rows']
+},
+{
+  id: 'sql-070',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Kiểm tra hiểu biết row lock của PostgreSQL: {{FOR UPDATE}}, {{FOR NO KEY UPDATE}}, {{FOR SHARE}}, {{FOR KEY SHARE}} khác nhau ở đâu (cho bảng xung đột)? Vì sao INSERT vào bảng con lấy KEY SHARE trên dòng cha, và thiếu index trên cột khóa ngoại thì DELETE cha bị chậm? {{FOR UPDATE}} dùng được với {{GROUP BY}}/{{DISTINCT}} không? Vì sao worker dùng {{SKIP LOCKED}} + {{LIMIT}} có thể nhận ít hơn N job?',
+  a: `**Tóm tắt:** PostgreSQL có bốn mức row lock: {{FOR UPDATE}} mạnh nhất (chặn mọi lock khác), {{FOR NO KEY UPDATE}} (mặc định của câu UPDATE thường), {{FOR SHARE}} (khóa chia sẻ, chặn ghi), {{FOR KEY SHARE}} (yếu nhất, chỉ chặn đổi/xóa khóa). Câu {{INSERT}} vào bảng con phải lấy {{FOR KEY SHARE}} trên dòng cha để khóa cha không bị xóa trong lúc kiểm tra. {{FOR UPDATE}} không dùng được với {{GROUP BY}}, {{DISTINCT}}, aggregate, {{UNION}} hay window function vì kết quả không còn ánh xạ 1-1 với dòng bảng. {{SKIP LOCKED}} bỏ qua dòng đang bị khóa, và vì PostgreSQL chỉ khóa đủ số dòng cần trả về, worker có thể nhận ít hơn {{LIMIT}} nếu row bị sửa/ xóa trong lúc chờ — nên phải lặp cho tới khi hết job.
+
+### Row lock là gì
+Row lock là một dấu đánh dấu trên một bản (tuple) trong bảng: "transaction này đang giữ bản này, transaction khác muốn ghi phải chờ". Nó **không** chặn câu đọc thường ({{SELECT}} không có lock), vì câu đọc chỉ cần snapshot. Lock được nhả khi transaction COMMIT/ROLLBACK hoặc khi rollback tới savepoint.
+
+Có bốn mức, khác nhau ở chỗ **mức nào xung đột với mức nào**:
+
+| Mức | Chặn gì | Ai thường dùng |
+|---|---|---|
+| {{FOR KEY SHARE}} | Chặn {{FOR UPDATE}} và UPDATE/DELETE làm đổi khóa | Trigger khóa ngoại khi INSERT/UPDATE dòng con |
+| {{FOR SHARE}} | Chặn ghi (UPDATE/DELETE) và {{FOR UPDATE}}/{{FOR NO KEY UPDATE}} | Khóa chia sẻ để đọc ổn định trong transaction |
+| {{FOR NO KEY UPDATE}} | Chặn {{FOR UPDATE}}, {{FOR NO KEY UPDATE}}, {{FOR SHARE}}; **không** chặn {{FOR KEY SHARE}} | Mặc định của câu UPDATE không đổi khóa |
+| {{FOR UPDATE}} | Chặn tất cả các mức còn lại | Khi cần độc quyền trên dòng |
+
+Bảng xung đột (X là xung đột, trống là tương thích):
+| Yêu cầu ↓ / Đang giữ → | KEY SHARE | SHARE | NO KEY UPDATE | UPDATE |
+|---|---|---|---|---|
+| {{FOR KEY SHARE}} | | | | X |
+| {{FOR SHARE}} | | | X | X |
+| {{FOR NO KEY UPDATE}} | | X | X | X |
+| {{FOR UPDATE}} | X | X | X | X |
+
+Điểm cần nhớ: câu **UPDATE thường** chỉ lấy {{FOR NO KEY UPDATE}}, nên nó **không** chặn {{FOR KEY SHARE}}. Đây là lý do một luồng INSERT vào bảng con vẫn chạy được khi dòng cha đang bị UPDATE một cột không phải khóa. Ngược lại, nếu câu UPDATE làm đổi chính cột khóa (ví dụ đổi {{id}} hay {{email}} có unique index dùng cho khóa ngoại), nó phải lấy {{FOR UPDATE}}, mạnh hơn, và sẽ chặn INSERT con.
+
+### Vì sao INSERT vào bảng con khoá dòng cha
+PostgreSQL không có "khóa ngoại vật lý" như một con trỏ; nó dùng **trigger** {{RI_FKey_check_ins}}: trước khi chèn dòng con, trigger kiểm tra dòng cha có tồn tại không. Giữa lúc kiểm tra và lúc transaction con COMMIT, dòng cha có thể bị xóa bởi transaction khác. Để chặn khe hở đó, trigger lấy {{FOR KEY SHARE}} trên dòng cha: nếu ai đó muốn xóa hoặc đổi khóa dòng cha, họ phải chờ tới khi transaction con kết thúc. Đây là **khóa chia sẻ**, nên nhiều transaction con có thể cùng chèn vào một dòng cha mà không chặn nhau.
+
+Khi **xóa hoặc đổi khóa** dòng cha, PostgreSQL phải kiểm tra bảng con còn dòng nào tham chiếu không. Câu kiểm tra đó cần index trên cột khóa ngoại của bảng con; nếu không có, nó là **seq scan toàn bảng con** cho mỗi lần xóa/đổi khóa ở cha. Với bảng con 200 triệu dòng, một câu {{DELETE FROM customer WHERE id = ?}} có thể quét hàng trăm nghìn trang chỉ để trả lời "không có đơn nào". Vì vậy quy tắc thực hành: **luôn tạo index cho cột khóa ngoại** (và cho cặp khóa nếu khóa ngoại là composite).
+
+### FOR UPDATE không dùng được với cái gì
+PostgreSQL trả lỗi {{FOR UPDATE is not allowed with ...}} khi câu lệnh có {{GROUP BY}}, {{DISTINCT}}, {{HAVING}}, aggregate, {{UNION}}/{{INTERSECT}}/{{EXCEPT}}, hoặc window function. Lý do: sau các bước đó, một dòng kết quả có thể được tạo từ nhiều dòng bảng, hoặc là một con số tổng hợp — không còn ánh xạ 1-1 để "khóa dòng nguồn". Cách xử lý: khóa trong CTE hoặc subquery rồi mới group ở ngoài.
+
+~~~sql
+WITH picked AS (
+    SELECT id FROM job
+    WHERE status = 'PENDING'
+    ORDER BY priority, id
+    LIMIT 10
+    FOR UPDATE SKIP LOCKED
+)
+SELECT j.*, count(*) OVER () AS total
+FROM job j JOIN picked p ON p.id = j.id;
+~~~
+
+Ngoài ra: {{FOR UPDATE}} chỉ khóa **dòng đang tồn tại**; nó không có "gap lock" như InnoDB của MySQL, nên hai câu {{INSERT ... WHERE NOT EXISTS}} vẫn có thể cùng thành công. Muốn chống kiểu đó phải dùng unique constraint, advisory lock, hoặc SERIALIZABLE. Và {{FOR UPDATE}} trên bảng lớn sẽ khóa toàn bộ số dòng trả về, làm tăng WAL và bloat — đừng dùng nó cho câu báo cáo.
+
+### SKIP LOCKED và cái bẫy LIMIT
+{{SKIP LOCKED}} bỏ qua ngay những dòng đang bị transaction khác giữ, thay vì chờ. PostgreSQL dừng lấy khóa khi đã đủ số dòng cần trả về cho {{LIMIT}}; nếu một dòng thỏa điều kiện tại snapshot nhưng bị sửa/xóa sau khi chờ lock nên không còn thỏa, nó sẽ **không được trả về** dù đã được đếm. Kết quả là một lần claim có thể trả về ít hơn {{LIMIT}}. Vì vậy code phải lặp cho tới khi không còn job, đừng giả định "gọi một lần là đủ N".
+
+~~~java
+// Lặp claim cho tới khi không còn job pending; mỗi vòng là một transaction ngắn.
+int batch = 10;
+List<Long> ids;
+do {
+    ids = jdbc.queryForList("""
+        WITH picked AS (
+            SELECT id FROM job
+            WHERE status = 'PENDING' AND run_after <= now()
+            ORDER BY priority, id
+            LIMIT 10
+            FOR UPDATE SKIP LOCKED
+        )
+        UPDATE job j
+        SET status = 'RUNNING', owner = ?, lease_until = now() + interval '30 seconds'
+        FROM picked WHERE j.id = picked.id
+        RETURNING j.id
+        """, Long.class, workerId);
+
+    process(ids);                 // xử lý NGOÀI transaction, sau khi đã commit
+    batch = ids.size();
+} while (batch == 10 && !Thread.currentThread().isInterrupted());
+~~~
+
+{{NOWAIT}} là lựa chọn khác: nếu không lấy được lock ngay, câu lệnh báo lỗi {{55P03}} (lock_not_available) thay vì chờ. Dùng cho API cần phản hồi ngay, ví dụ nút "Đặt chỗ" không muốn treo 30 giây.
+
+### Lỗi hay gặp trên production
+- **Khóa cả câu báo cáo**: viết {{SELECT ... FOR UPDATE}} cho danh sách 10 triệu dòng chỉ để "cho chắc" — khóa và WAL tăng vọt, autovacuum không theo kịp.
+- **Quên index khóa ngoại**: xóa cha chậm hàng giây, và trong lúc đó giữ lock trên cha, làm nghẽn cả luồng con.
+- **SKIP LOCKED mà không có lease**: worker nhận job rồi crash, job kẹt trạng thái RUNNING mãi.
+- **Dùng {{FOR UPDATE}} để chống INSERT trùng**: nó không khóa dòng chưa tồn tại; phải dùng unique constraint.
+- **{{FOR UPDATE}} + ORDER BY**: thứ tự trả về có thể đổi nếu cột sắp xếp bị cập nhật trong lúc chờ lock. Cách an toàn: khóa trong subquery/CTE rồi {{ORDER BY}} ở truy vấn ngoài.
+
+### Ví dụ đời thực
+Một hệ thống gửi thông báo có 5 worker, mỗi vòng claim 10 job. Bảng job 1,2 triệu bản ghi/ngày. Bản đầu dừng vòng lặp ngay khi nhận được ít hơn 10 job; vì tranh chấp SKIP LOCKED, mỗi worker chỉ nhận 2–3 job rồi dừng, queue depth tăng 20.000 sau một giờ. Chuyển sang vòng lặp {{do-while}} cho tới khi thật sự hết pending, và thêm lease 30 giây + cột owner: queue ổn định ở mức dưới 100, p95 thời gian claim là 12 ms, không có job trùng trong hai tuần.
+
+### Trả lời mẫu khi phỏng vấn
+"PostgreSQL có bốn mức row lock. FOR UPDATE mạnh nhất, chặn mọi mức khác; FOR NO KEY UPDATE là mức mặc định của UPDATE thường, nó không chặn FOR KEY SHARE; FOR SHARE là khóa chia sẻ, chặn ghi; FOR KEY SHARE yếu nhất, chủ yếu do trigger khóa ngoại dùng để giữ khóa cha không bị xóa trong lúc kiểm tra dòng con. Vì vậy INSERT vào bảng con làm cha bị khóa KEY SHARE, và nếu cột khóa ngoại ở con không có index thì câu kiểm tra khi xóa cha phải quét toàn bảng con, rất chậm. Tôi không dùng FOR UPDATE với GROUP BY, DISTINCT hay UNION vì kết quả không còn ánh xạ với dòng nguồn; tôi khóa trong CTE rồi mới group. Với queue tôi dùng SKIP LOCKED để worker không chờ nhau, nhưng luôn chạy vòng lặp vì một lần claim có thể nhận ít hơn LIMIT do row bị sửa khi đang chờ. Tôi cũng luôn có lease và owner để worker crash không làm job kẹt, và theo dõi queue depth cùng oldest pending."
+
+> Senior tip: row lock là công cụ, không phải mục tiêu. Trước khi viết {{FOR UPDATE}}, hãy hỏi "có cách nào để database tự bảo vệ bằng unique constraint hoặc điều kiện UPDATE không?" — thường câu trả lời là có, và nó rẻ hơn khóa rất nhiều.
+`,
+  follow: [
+    'Câu UPDATE của bạn làm đổi một cột có unique index dùng cho khóa ngoại: nó lấy mức lock nào, và điều đó ảnh hưởng gì tới INSERT ở bảng con?',
+    'Vì sao FOR UPDATE không chống được hai request cùng INSERT một bản ghi mới, và ba cách khắc phục là gì?',
+    'SKIP LOCKED ở REPEATABLE READ có an toàn không, và vì sao queue thường chạy READ COMMITTED?'
+  ],
+  tags: ['FOR UPDATE', 'FOR NO KEY UPDATE', 'FOR SHARE', 'FOR KEY SHARE', 'SKIP LOCKED', 'NOWAIT', 'foreign key', 'row lock', 'LIMIT']
+},
+{
+  id: 'sql-071',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Sáu instance cùng chạy cron đối soát ví mỗi phút. Dùng advisory lock của PostgreSQL để chỉ một instance chạy (không thêm Redis hay ZooKeeper) như thế nào cho đúng? So sánh {{pg_try_advisory_lock}} (session) với {{pg_advisory_xact_lock}} (transaction): vì sao lock session trên HikariCP dễ rò rỉ, vì sao rollback không nhả, key bigint và hai int khác nhau ra sao, lock có phạm vi nào, có bị deadlock detection không, và khi nào KHÔNG nên dùng.',
+  a: `**Tóm tắt:** Advisory lock là "ổ khóa do ứng dụng tự đặt tên": database không biết nó bảo vệ dữ liệu nào, chỉ giữ và nhả theo yêu cầu. Có hai mức: **session** (giữ tới khi unlock hoặc hết kết nối) và **transaction** (tự nhả khi COMMIT/ROLLBACK). Cho cron nhiều instance, cách an toàn nhất là {{pg_try_advisory_xact_lock}} trong đúng transaction làm việc, hoặc {{pg_try_advisory_lock}} + {{finally unlock}} trên một connection cố định. Lock có phạm vi **theo database** (không theo schema), nằm trong shared memory nên có giới hạn số lượng, và **có** tham gia deadlock detection như lock thường. Không dùng advisory lock cho bất biến ở mức dòng — hãy dùng unique constraint hoặc row lock.
+
+### Advisory lock là gì
+Hãy tưởng tượng một ổ khóa treo trên cửa: bạn tự đặt tên ổ khóa, database chỉ giữ chìa và trao khi được yêu cầu. Nó **không** gắn với một dòng nào trong bảng, không tạo dead tuple, không cần bảng cờ. Ứng dụng tự quy ước: "ai giữ khóa tên {{recon-2026-11-14}} thì được chạy đối soát ngày đó". Các tình huống hợp:
+- **Leader election cho cron**: nhiều pod cùng chạy, chỉ một pod làm việc.
+- **Khóa migration**: hai lần deploy cùng chạy {{ALTER TABLE}} một lúc.
+- **Khóa nghiệp vụ theo thực thể**: "mỗi hồ sơ chỉ một luồng xử lý", khi không muốn tạo bảng lock riêng.
+
+### Hai mức khóa
+| Hàm | Mức | Chờ nếu bị giữ? | Nhả khi nào |
+|---|---|---|---|
+| {{pg_advisory_lock(key)}} | session | Có, chờ vô hạn | unlock hoặc hết session |
+| {{pg_try_advisory_lock(key)}} | session | Không, trả true/false | unlock hoặc hết session |
+| {{pg_advisory_unlock(key)}} | session | Không | trả true nếu nhả được |
+| {{pg_advisory_unlock_all()}} | session | Không | nhả mọi lock của session |
+| {{pg_advisory_xact_lock(key)}} | transaction | Có | COMMIT hoặc ROLLBACK |
+| {{pg_try_advisory_xact_lock(key)}} | transaction | Không | COMMIT hoặc ROLLBACK |
+
+Ba chi tiết dễ sai:
+1. **Session lock sống qua rollback**: nếu transaction bị rollback, lock session **vẫn còn**. Nó chỉ mất khi hết kết nối hoặc gọi unlock.
+2. **Re-entrant theo session**: một session xin lại khóa nó đang giữ thì **luôn được**, và phải unlock đủ số lần mới thật sự nhả. Điều này làm bug rò rỉ khó thấy: session A giữ khóa, xin lại lần nữa vẫn true, nhưng session B vẫn bị chặn.
+3. **Phạm vi là database**, không phải schema hay bảng. Hai schema khác nhau dùng cùng số key sẽ tranh nhau.
+
+Key có hai dạng: một số {{bigint}} (64 bit) hoặc cặp hai số {{int4}}. Dùng cặp hai số cho gọn và đỡ trùng: số thứ nhất là **namespace** (ví dụ 7001 cho cron đối soát), số thứ hai là **id nghiệp vụ**. Nếu chỉ dùng {{hashtext('recon:' || id)}} thì hai chuỗi khác nhau vẫn có thể cho cùng một hash — hiếm nhưng có thật, và hậu quả là hai công việc không liên quan chặn nhau.
+
+### Code Java: cron nhiều instance
+~~~java
+@Component
+public class ReconciliationScheduler {
+
+    private static final int NS_RECON = 7001;
+
+    private final JdbcTemplate jdbc;
+    private final ReconciliationService service;
+
+    @Scheduled(fixedDelayString = "\${recon.interval-ms:60000}")
+    public void run() {
+        LocalDate day = LocalDate.now();
+        int key = Math.floorMod(day.toEpochDay(), Integer.MAX_VALUE);
+        // try: không chờ; false nghĩa là instance khác đang chạy
+        Boolean got = jdbc.queryForObject(
+            "SELECT pg_try_advisory_lock(?, ?)", Boolean.class, NS_RECON, key);
+        if (!Boolean.TRUE.equals(got)) return;
+
+        try {
+            service.reconcile(day);
+        } finally {
+            // bắt buộc: nếu quên, connection trả về pool vẫn giữ khóa
+            jdbc.queryForObject("SELECT pg_advisory_unlock(?, ?)", Boolean.class, NS_RECON, key);
+        }
+    }
+}
+~~~
+
+Một biến thể tốt hơn cho công việc có transaction: {{pg_try_advisory_xact_lock}} ngay trong transaction. Khi transaction COMMIT hoặc ROLLBACK, lock tự nhả, không thể quên. Nhược điểm: phải giữ transaction mở suốt lúc làm việc, nên chỉ hợp với công việc ngắn.
+
+### Vì sao lock session trên HikariCP dễ rò rỉ
+HikariCP **tái sử dụng connection**: một connection vật lý phục vụ nhiều request. Nếu bạn gọi {{pg_advisory_lock}} trên connection đó rồi trả connection về pool mà không unlock, lock **vẫn còn** và bị gắn với connection. Ba hậu quả:
+1. Instance khác không bao giờ lấy được khóa, cron "chết" âm thầm cho tới khi connection bị đóng.
+2. Nếu sau này connection đó được dùng lại, session **vẫn giữ khóa**, và vì re-entrant nên {{pg_try_advisory_lock}} trả true ngay cả khi thực tế chưa ai được phép chạy.
+3. Rất khó phát hiện: chỉ nhìn vào {{pg_locks}} mới thấy.
+
+Vì vậy: hoặc luôn {{try/finally unlock}} (kể cả khi có exception), hoặc dùng biến thể xact, hoặc dùng một connection riêng không thuộc pool và đóng nó trong {{finally}} (đóng connection sẽ nhả mọi lock session).
+
+### Deadlock và giới hạn
+Advisory lock nằm trong lock manager như lock thường, nên **deadlock detector vẫn hoạt động**: nếu hai transaction giữ chéo hai advisory key, một bên bị hủy với {{40P01}}. Đừng nghĩ "advisory lock nên không bao giờ deadlock".
+
+Lock nằm trong shared memory, kích thước phụ thuộc {{max_locks_per_transaction}} và {{max_connections}}. Hàng nghìn lock là bình thường; hàng triệu lock (ví dụ lock theo từng user) có thể làm cạn bộ nhớ lock và khiến **mọi** lock bị từ chối. Muốn theo dõi: {{SELECT locktype, objid, mode, granted, pid FROM pg_locks WHERE locktype = 'advisory';}}
+
+### Khi nào KHÔNG nên dùng
+- **Bảo vệ bất biến dữ liệu ở mức dòng**: dùng unique constraint hoặc {{SELECT ... FOR UPDATE}}. Advisory lock không ngăn được người khác ghi trực tiếp bằng SQL.
+- **Thay cho hàng đợi job**: không có trạng thái, không có lease, không có retry; dùng bảng job + {{SKIP LOCKED}}.
+- **Khoảng thời gian dài**: nếu công việc chạy 10 phút mà bạn giữ lock session, các instance khác sẽ bỏ qua cron 10 lần liên tiếp. Nên thiết kế để lần chạy sau bỏ qua (idempotent theo mốc thời gian) thay vì chờ.
+- **Khi cần nhiều lock theo từng thực thể với số lượng lớn**: xem xét bảng lock chuyên dụng hoặc Redis, vì shared memory có giới hạn.
+
+### Ví dụ đời thực
+Một hệ thống ví điện tử có 6 instance chạy cron đối soát lúc 00:00. Mỗi lần chạy ghi 1.200 dòng vào bảng đối soát. Khi cả 6 instance cùng chạy, mỗi ngày sinh 7.200 dòng, trong đó 6.000 dòng trùng, khiến báo cáo cuối ngày sai và phải đối soát tay. Thêm {{pg_try_advisory_xact_lock}} với namespace riêng và key là ngày: chỉ một instance chạy, 1.200 dòng/ngày, sai số về 0. Sau đó phát hiện một lần deploy bị crash giữa transaction; nhờ lock xact, lock tự nhả khi connection đóng, cron của ngày hôm sau vẫn chạy đúng.
+
+### Trả lời mẫu khi phỏng vấn
+"Advisory lock là khóa do ứng dụng tự đặt tên, database chỉ giữ và nhả, không gắn với dòng nào. Tôi dùng nó cho leader election của cron nhiều instance và cho khóa migration. Với cron tôi thích biến thể transaction: pg_try_advisory_xact_lock trong đúng transaction làm việc, vì nó tự nhả khi commit hoặc rollback, không thể quên. Nếu buộc phải dùng lock session, tôi luôn try/finally unlock, vì HikariCP tái sử dụng connection: quên unlock thì connection trả về pool vẫn giữ khóa, instance khác bị chặn âm thầm, và vì khóa là re-entrant nên lần sau xin lại vẫn thấy true. Tôi dùng cặp hai int gồm namespace và id để tránh trùng hash, theo dõi bằng pg_locks, và nhớ rằng advisory lock vẫn có thể deadlock nên phải chuẩn hoá thứ tự lấy khóa. Tôi không dùng nó để bảo vệ dữ liệu ở mức dòng; việc đó là của unique constraint hoặc SELECT FOR UPDATE."
+
+> Senior tip: với cron nhiều instance, hãy thiết kế để "chạy hai lần cũng không sao" trước khi nghĩ tới khóa. Khóa chỉ giảm tải; idempotency mới là thứ giữ cho dữ liệu đúng khi lock bị rò rỉ hoặc instance bị kill giữa lúc chạy.
+`,
+  follow: [
+    'pg_advisory_xact_lock và pg_advisory_lock khác nhau ở điểm nào khi transaction bị rollback, và vì sao điều đó quan trọng với connection pool?',
+    'Hai advisory key khác nhau có thể trả về cùng một giá trị không, và bạn thiết kế key thế nào để giảm rủi ro?',
+    'Nếu cron chạy 30 giây nhưng có instance giữ lock 10 phút vì bị treo, hệ thống sẽ hành xử ra sao và bạn đặt timeout ở đâu?'
+  ],
+  tags: ['advisory lock', 'pg_advisory_lock', 'pg_advisory_xact_lock', 'leader election', 'cron', 'HikariCP', 'pg_locks', 'deadlock']
+},
+{
+  id: 'sql-072',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Một transaction REPEATABLE READ mở lúc 9:00 để chạy báo cáo, đến 17:00 vẫn chưa commit vì bug giữ connection; 18:00 bảng 2 tỷ dòng bloat 40 GB và autovacuum không dọn được. Vì sao một transaction CHỈ ĐỌC lại chặn VACUUM (snapshot horizon, {{backend_xmin}}, {{OldestXmin}})? Viết câu SQL phát hiện, và liệt kê các lớp phòng thủ: {{statement_timeout}}, {{idle_in_transaction_session_timeout}}, {{transaction_timeout}} (PostgreSQL 17), isolation cho báo cáo, {{SERIALIZABLE READ ONLY DEFERRABLE}}.',
+  a: `**Tóm tắt:** VACUUM chỉ được xóa một bản (tuple) khi **không còn snapshot nào có thể nhìn thấy nó**. Một transaction REPEATABLE READ giữ snapshot từ câu lệnh đầu tiên tới lúc COMMIT/ROLLBACK; dù nó chỉ đọc và sau đó nằm im, snapshot vẫn còn, nên mọi bản mới hơn đều "có thể còn cần" và VACUUM phải để lại. Đó là **snapshot horizon**, theo dõi qua {{backend_xmin}} trong {{pg_stat_activity}}. Phòng thủ gồm: đặt timeout cho câu lệnh, cho trạng thái idle in transaction, cho cả transaction (PostgreSQL 17), chuyển báo cáo sang read replica, và theo dõi cảnh báo theo tuổi transaction.
+
+### Vì sao VACUUM không xóa được bản cũ
+Nhắc lại MVCC: UPDATE chèn bản mới, đánh dấu {{xmax}} cho bản cũ. Bản cũ thành **dead tuple** khi không còn transaction nào có thể nhìn thấy nó. VACUUM (hoặc autovacuum) đi tìm các dead tuple đó để dọn.
+
+Nhưng "không còn ai nhìn thấy" được xác định bằng một mốc gọi là **OldestXmin**: id transaction nhỏ nhất mà **bất kỳ** snapshot đang hoạt động nào cũng có thể cần. Mọi bản có {{xmin >= OldestXmin}} đều phải giữ lại, vì một snapshot đang mở có thể vẫn nhìn thấy nó. Nguồn của OldestXmin gồm:
+- Transaction đang chạy (kể cả chỉ đọc), theo dõi qua {{backend_xmin}} trong {{pg_stat_activity}}.
+- Transaction prepared hai pha chưa commit ({{pg_prepared_xacts}}).
+- Replication slot trên standby (nếu dùng hot standby feedback).
+- Một số cấu hình khác như {{old_snapshot_threshold}}.
+
+Hệ quả: một transaction mở lúc 9:00 giữ OldestXmin tại thời điểm đó; mọi UPDATE từ 9:00 tới 17:00 tạo ra bản mới, còn bản cũ không xóa được. Tới 18:00, bảng phình 40 GB, index cũng phình theo, autovacuum chạy nhưng "quét mãi không giảm", cache hit ratio giảm, p95 tăng.
+
+### Vì sao chỉ đọc cũng giữ snapshot
+REPEATABLE READ chụp snapshot ở **câu lệnh đầu tiên**, không phải lúc {{BEGIN}}. Nếu code mở transaction lúc 9:00, chạy một câu {{SELECT}} nhỏ, rồi rẽ sang nhánh không dùng database và quên {{commit}}/{{rollback}}, transaction vẫn mở. Trong {{pg_stat_activity}}, trạng thái của nó là {{idle in transaction}} — kết nối vẫn giữ, snapshot vẫn còn, OldestXmin vẫn bị chặn. Đây là bug rất phổ biến trong code dùng {{TransactionTemplate}} hoặc {{EntityManager}} mà quên đóng, hoặc gọi HTTP ở giữa transaction rồi chờ đối tác.
+
+### Câu SQL phát hiện
+~~~sql
+-- 1. Ai đang giữ snapshot lâu nhất?
+SELECT pid, state,
+       now() - xact_start AS tx_age,
+       now() - state_change AS state_age,
+       age(backend_xmin) AS xmin_age,
+       left(query, 80) AS query
+FROM pg_stat_activity
+WHERE backend_xmin IS NOT NULL
+ORDER BY xact_start
+LIMIT 20;
+
+-- 2. Transaction prepared hai pha chưa commit (cũng giữ snapshot)
+SELECT gid, prepared, owner, database FROM pg_prepared_xacts;
+
+-- 3. Bảng nào nhiều dead tuple nhất?
+SELECT relname, n_live_tup, n_dead_tup,
+       last_vacuum, last_autovacuum
+FROM pg_stat_user_tables
+ORDER BY n_dead_tup DESC
+LIMIT 10;
+
+-- 4. Autovacuum đang chạy tới đâu (PostgreSQL 12+)
+SELECT * FROM pg_stat_progress_vacuum;
+~~~
+
+Tuổi {{xmin}} tính bằng số transaction đã chạy từ đó tới nay; ví dụ 380 triệu nghĩa là snapshot đã giữ rất lâu. Với bảng lớn, có thể dùng extension {{pgstattuple}} để đo phần trăm dead tuple chính xác hơn ước lượng trong {{pg_stat_user_tables}}.
+
+### Các lớp phòng thủ
+| Thiết lập | Hủy cái gì | Đặt ở đâu | Dùng khi |
+|---|---|---|---|
+| {{statement_timeout}} | Câu lệnh chạy quá lâu | role/database/session, {{SET LOCAL}} | Truy vấn ad-hoc, báo cáo |
+| {{idle_in_transaction_session_timeout}} | **Session** idle trong transaction | role/database | Sau khi đọc xong mà quên commit |
+| {{transaction_timeout}} (PostgreSQL 17) | Cả transaction chạy quá hạn | role/database | Batch/service có SLA |
+| {{lock_timeout}} | Câu đang chờ lock | session | OLTP ghi cần fail nhanh |
+
+Ba cái đầu khác nhau ở "hủy cái gì": {{statement_timeout}} hủy câu lệnh hiện tại (transaction bị đánh dấu lỗi, phải rollback); {{idle_in_transaction_session_timeout}} hủy **cả session** (HikariCP sẽ loại connection đó); {{transaction_timeout}} hủy cả transaction dù đang chạy hay đang idle. Với bug "quên đóng transaction", chỉ {{idle_in_transaction_session_timeout}} và {{transaction_timeout}} mới thật sự cứu.
+
+### Đọc báo cáo: isolation nào?
+- **READ COMMITTED**: mỗi câu một snapshot, không giữ lâu; báo cáo nhiều câu có thể thấy dữ liệu "không nhất quán" giữa các câu.
+- **REPEATABLE READ**: một snapshot cho cả báo cáo, nhất quán hơn; nhưng giữ snapshot lâu nếu báo cáo chạy chậm.
+- **SERIALIZABLE READ ONLY DEFERRABLE**: PostgreSQL chờ tới một thời điểm mà nó biết chắc có thể chạy tuần tự mà không xung đột, rồi mới bắt đầu. Hợp với báo cáo dài, vì nó không bị hủy do 40001; đổi lại phải chờ và chỉ dùng cho transaction **chỉ đọc**.
+
+Nếu báo cáo chạy trên primary, cân nhắc chuyển sang read replica: snapshot trên replica không ảnh hưởng VACUUM của primary (nếu không bật hot standby feedback).
+
+### Lỗi hay gặp
+- **Gọi HTTP trong transaction**: transaction mở 800 ms chỉ để chờ đối tác, và giữ snapshot suốt thời gian đó.
+- **{{REPEATABLE READ}} cho mọi thứ**: mặc định thành "mặc định an toàn" nhưng vô tình giữ snapshot lâu; hãy đặt theo từng use case.
+- **Chỉ đặt {{statement_timeout}}**: nó không cứu được transaction idle sau khi câu lệnh đã xong.
+- **Không theo dõi {{idle in transaction}}**: tới lúc bảng phình 40 GB mới biết, khi đó {{VACUUM FULL}} phải khóa bảng, còn {{pg_repack}} là lựa chọn online nhưng cần đĩa trống.
+- **Bật hot standby feedback mà không hiểu**: standby báo cáo "tôi vẫn cần bản này" lên primary, khiến primary cũng không VACUUM được.
+
+### Ví dụ đời thực
+Một hệ thống phân phối có bảng {{events}} 2 tỷ dòng, 1,2 TB. Báo cáo doanh thu mở REPEATABLE READ lúc 9:00; do một nhánh code gọi API bên thứ ba và quên đóng transaction, snapshot bị giữ tới 17:00. Tới 18:00, dead tuple chiếm 40 GB (khoảng 3% bảng), index phình 2,1 lần, p95 truy vấn tăng từ 42 ms lên 380 ms, autovacuum chạy 12 giờ mà không giảm. Điều tra bằng câu {{pg_stat_activity}} ở trên thấy {{state = 'idle in transaction'}}, {{tx_age = 8 giờ}}. Sửa: đóng transaction ngay sau khi đọc, đặt {{idle_in_transaction_session_timeout = 60s}} ở role báo cáo, chuyển báo cáo sang replica, và thêm cảnh báo khi có transaction mở quá 5 phút. Sau ba ngày, dead tuple về dưới 1%, p95 về 48 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"VACUUM chỉ xóa được bản khi không còn snapshot nào cần nó, và mốc đó là OldestXmin. Một transaction REPEATABLE READ giữ snapshot từ câu lệnh đầu tiên tới lúc commit, nên nếu nó chỉ đọc rồi nằm im, nó vẫn chặn VACUUM. Tôi phát hiện bằng pg_stat_activity: lọc backend_xmin khác null, xem tuổi transaction và trạng thái; idle in transaction là dấu hiệu rõ nhất. Tôi cũng xem pg_prepared_xacts và replication slot vì chúng cũng giữ snapshot. Phòng thủ của tôi gồm ba tầng: câu lệnh có statement_timeout; session có idle_in_transaction_session_timeout để đóng kết nối treo; và với PostgreSQL 17 tôi đặt transaction_timeout cho batch. Về isolation, báo cáo tôi chuyển sang read replica, hoặc dùng SERIALIZABLE READ ONLY DEFERRABLE nếu cần nhất quán và chỉ đọc. Tôi cũng không gọi HTTP trong transaction, và thêm cảnh báo khi transaction mở quá vài phút thay vì đợi bảng phình rồi mới xử lý."
+
+> Senior tip: hãy coi "tuổi transaction" là một metric hạng nhất, ngang với CPU và số kết nối. Một transaction mở 8 tiếng không làm gì vẫn có thể gây sự cố lớn hơn một câu query chậm, vì nó âm thầm chặn dọn dẹp của cả database.
+`,
+  follow: [
+    'Nếu transaction chỉ đọc ở READ COMMITTED thì có giữ snapshot lâu không, và vì sao khác với REPEATABLE READ?',
+    'Hot standby feedback ảnh hưởng thế nào tới VACUUM trên primary, và bạn bật/tắt nó khi nào?',
+    'VACUUM FULL và pg_repack khác nhau ở đâu, và vì sao không nên dùng VACUUM FULL cho bảng 2 tỷ dòng trên production?'
+  ],
+  tags: ['VACUUM', 'snapshot horizon', 'backend_xmin', 'OldestXmin', 'idle in transaction', 'bloat', 'statement_timeout', 'transaction_timeout', 'read replica']
+},
+{
+  id: 'sql-073',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Hệ thống 8 service gọi nhau, lỗi 40001 xảy ra ở service giữ transaction. Đặt retry ở tầng nào để không bị "nhân đôi" retry (retry amplification)? Spring dịch {{40001}}, {{40P01}}, {{55P03}} thành exception nào? Vì sao retry bên trong {{@Transactional}} là vô ích? Viết code retry có ngân sách, deadline, jitter và idempotency key, và nêu bốn metric cần theo dõi.',
+  a: `**Tóm tắt:** Chỉ nên retry ở **đúng một tầng** — tầng mở transaction. Nếu mỗi service đều retry, một request của khách có thể biến thành hàng chục lần gọi database (retry amplification) và làm sự cố nặng hơn. Spring dịch {{40001}} thành {{CannotSerializeTransactionException}}, {{40P01}} thành {{CannotAcquireLockException}}, {{55P03}} cũng thành {{CannotAcquireLockException}} (đều thuộc nhóm lỗi tạm thời). Retry phải nằm **ngoài** transaction: khi 40001 xảy ra, transaction đã bị đánh dấu lỗi, mọi câu sau sẽ nhận {{25P02}} (current transaction is aborted). Ngoài retry cần ngân sách, deadline, jitter, idempotency key và bốn metric để biết hệ thống đang retry mù hay retry có kiểm soát.
+
+### Ba mã lỗi và exception Spring
+| SQLSTATE | Tên | Nghĩa | Spring dịch thành |
+|---|---|---|---|
+| {{40001}} | serialization_failure | Xung đột serialize, thường ở REPEATABLE READ/SERIALIZABLE | {{CannotSerializeTransactionException}} (TransientDataAccessException) |
+| {{40P01}} | deadlock_detected | Vòng chờ lock, PostgreSQL chọn victim | {{CannotAcquireLockException}} (PessimisticLockingFailureException) |
+| {{55P03}} | lock_not_available | {{NOWAIT}} hoặc {{lock_timeout}} hết hạn | {{CannotAcquireLockException}} |
+
+Ba cái này **tạm thời**: thử lại có thể thành công. Ngược lại, {{23505}} (unique_violation), {{23503}} (foreign_key_violation) là lỗi dữ liệu — retry vô ích và phải báo cho người dùng. Đừng viết {{catch (Exception e)}} rồi retry mọi thứ, vì nó retry cả lỗi vĩnh viễn.
+
+### Vì sao retry trong transaction là vô ích
+Khi PostgreSQL hủy câu lệnh vì 40001, nó **rollback toàn bộ transaction** (hoặc ít nhất đánh dấu transaction ở trạng thái aborted). Từ lúc đó, mọi câu lệnh trên connection đó trả về {{ERROR: current transaction is aborted, commands ignored until end of transaction block}} ({{25P02}}). Nếu bạn viết:
+~~~java
+@Transactional
+public void transfer(TransferCommand cmd) {
+    for (int i = 0; i < 3; i++) {
+        try { doTransfer(cmd); return; }
+        catch (CannotSerializeTransactionException e) { /* retry ngay */ }
+    }
+}
+~~~
+lần thử thứ hai sẽ không chạy được câu SQL nào, vì transaction đã chết. Retry phải bắt đầu bằng một **transaction mới**, tức là ở lớp ngoài proxy {{@Transactional}}, hoặc dùng {{TransactionTemplate}} để mỗi lần thử là một transaction riêng.
+
+### Retry amplification: vì sao chỉ retry một tầng
+~~~text
+Client
+  -> API Gateway (retry 3) 
+       -> Order Service (retry 3) 
+            -> Payment Service (retry 3) 
+                 -> PostgreSQL
+1 request của khách -> tối đa 27 lần chạm database
+~~~
+Nếu mỗi tầng đều retry, một xung đột nhỏ ở database bị nhân lên 27 lần. Khi database đang quá tải, retry làm nó quá tải hơn — hiện tượng **retry storm**. Nguyên tắc:
+- Chỉ tầng **mở transaction** retry; các tầng trên không retry (hoặc chỉ retry lỗi mạng, không retry lỗi nghiệp vụ).
+- **Retry budget**: ví dụ tối đa 10% số request được retry; vượt ngân sách thì fail nhanh.
+- **Deadline**: truyền thời hạn còn lại từ gateway xuống; service chỉ retry nếu còn thời gian.
+- **Jitter**: backoff 50/100/200 ms cộng ngẫu nhiên ±25%, tránh "thundering herd".
+- **Idempotency key**: nếu thao tác có side effect (gửi email, trừ tiền), key duy nhất trong DB để lần retry không làm hai lần.
+
+### Code Java: TransactionTemplate + ngân sách + deadline
+~~~java
+@Service
+public class TransferWriter {
+
+    private final TransactionTemplate tx;
+    private final JdbcTemplate jdbc;
+
+    public void transfer(TransferCommand cmd, long deadlineNanos) {
+        int maxAttempts = 4;
+        for (int attempt = 1; ; attempt++) {
+            try {
+                tx.executeWithoutResult(status -> {
+                    jdbc.update("UPDATE account SET balance = balance - ? WHERE id = ? AND balance >= ?",
+                        cmd.amount(), cmd.fromId(), cmd.amount());
+                    jdbc.update("UPDATE account SET balance = balance + ? WHERE id = ?",
+                        cmd.amount(), cmd.toId());
+                });
+                return;                       // thành công
+            } catch (CannotSerializeTransactionException | CannotAcquireLockException e) {
+                boolean noTime = System.nanoTime() - deadlineNanos > 0;
+                if (attempt >= maxAttempts || noTime) throw e;
+                long backoff = (1L << attempt) * 50;          // 100, 200, 400 ms
+                long jitter = ThreadLocalRandom.current().nextLong(0, backoff / 2 + 1);
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(backoff + jitter));
+            }
+        }
+    }
+}
+~~~
+
+Mỗi vòng {{tx.executeWithoutResult}} là một transaction mới, nên connection luôn sạch. Nếu dùng {{@Retryable}}, phải đặt trên **bean ngoài** gọi vào bean {{@Transactional}} qua proxy; tự gọi {{this.doTransfer()}} sẽ không có proxy và retry vô hiệu.
+
+### Idempotency key và side effect
+Retry chỉ an toàn nếu thao tác **idempotent**. Với chuyển tiền, hãy thêm bảng {{transfer(idempotency_key PRIMARY KEY, ...)}} và insert trước khi làm; nếu trùng key thì trả kết quả cũ. Với gửi email/SMS, đừng gửi trong transaction rồi retry — hãy ghi outbox trong cùng transaction, một worker khác đọc outbox và gửi, có key để không gửi hai lần.
+
+### Bốn metric cần theo dõi
+1. {{db_conflict_total}} (theo nhãn sqlstate): số lỗi 40001/40P01/55P03 theo thời gian; tăng đột biến nghĩa là isolation quá chặt hoặc thứ tự lock sai.
+2. {{db_retry_total}} (theo nhãn attempt): phân bố số lần thử; nếu attempt=4 chiếm tỷ lệ cao, hệ thống đang cố retry quá nhiều.
+3. {{db_retry_exhausted_total}}: số request thất bại sau khi hết retry — đây là con số ảnh hưởng trực tiếp tới người dùng.
+4. {{db_retry_success_ratio}}: tỷ lệ retry thành công; nếu thấp, retry chỉ làm chậm thêm chứ không cứu được.
+
+Bổ sung: p99 latency của API và số kết nối HikariCP đang chờ, vì retry giữ connection lâu hơn.
+
+### Ví dụ đời thực
+Một hệ thống bán vé có 8 service. Khi một cụm database gặp xung đột 40001 ở giờ cao điểm (tỷ lệ 0,4% giao dịch), cả 8 service đều retry 3 lần: số câu lệnh thực tế tăng 6,8 lần, CPU database từ 55% lên 95%, p99 từ 300 ms lên 4,1 giây, và nhiều request bị timeout. Sau khi chỉ retry ở service giữ transaction, thêm retry budget 10% và deadline 800 ms truyền từ gateway: CPU về 62%, p99 về 480 ms, 99,2% xung đột được retry thành công, số request thất bại cuối cùng giảm 70%.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chỉ retry ở tầng mở transaction, vì retry ở nhiều tầng sẽ nhân số lần gọi database và gây retry storm khi database đang yếu. Spring dịch 40001 thành CannotSerializeTransactionException, 40P01 và 55P03 thành CannotAcquireLockException; tôi chỉ retry ba nhóm này, không retry lỗi unique hay foreign key. Retry phải ở ngoài transaction, vì 40001 đã rollback transaction và mọi câu sau sẽ nhận 25P02. Tôi dùng TransactionTemplate để mỗi lần thử là một transaction mới, backoff lũy tiến cộng jitter, tối đa 4 lần, và kiểm tra deadline còn lại trước khi thử tiếp. Tôi thêm retry budget để không quá 10% request bị retry, và idempotency key cho các thao tác có side effect. Tôi theo dõi bốn metric: số xung đột theo sqlstate, số lần retry, số request thất bại sau retry, và tỷ lệ retry thành công. Nếu tỷ lệ retry thành công thấp, tôi không tăng số lần retry mà đi tìm nguyên nhân gốc như thứ tự lock hoặc isolation quá chặt."
+
+> Senior tip: retry là một dạng nợ kỹ thuật nếu không đo. Hãy đặt ngân sách và deadline trước khi tăng số lần thử; nếu không, hệ thống của bạn sẽ tự tạo ra sự cố mà nó đang cố sửa.
+`,
+  follow: [
+    'Vì sao đặt @Retryable trên cùng bean với @Transactional lại không hoạt động, và cách sửa là gì?',
+    'Retry có làm tăng nguy cơ deadlock không, và bạn kết hợp retry với chuẩn hoá thứ tự lock như thế nào?',
+    'Nếu sau khi commit mà client không nhận được response, idempotency key giúp gì và cài đặt nó ở đâu?'
+  ],
+  tags: ['40001', 'serialization_failure', 'CannotSerializeTransactionException', 'retry', 'retry amplification', 'TransactionTemplate', '@Retryable', 'idempotency', 'Spring']
+},
+{
+  id: 'sql-074',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Thiết kế API đặt phòng khách sạn và trừ kho flash sale. Vì sao "SELECT kiểm tra rồi INSERT" cho phép double-booking? Vì sao {{SELECT ... FOR UPDATE}} trên phòng không chặn được khi phòng chưa tồn tại? Ba lớp phòng thủ (unique/exclusion constraint, transaction + row lock, {{SERIALIZABLE}} + retry) hoạt động ra sao? Với SKU hot 100.000 request/phút, xử lý hàng nóng thế nào: chia bucket, reservation TTL, oversell buffer?',
+  a: `**Tóm tắt:** Double-booking xảy ra vì hai request cùng đọc "phòng còn trống" rồi cùng INSERT; không có gì ở database chặn. {{SELECT ... FOR UPDATE}} chỉ khóa **dòng đang tồn tại**, nên khi phòng chưa có bản ghi, nó không khóa gì. Lớp phòng thủ mạnh nhất là **ràng buộc ở database**: unique trên {{ (room_id, stay_date) }} cho từng đêm, hoặc exclusion constraint với {{tstzrange}} cho khoảng ngày; lớp hai là row lock trên phòng khi cần kiểm tra nhiều điều kiện; lớp ba là {{SERIALIZABLE}} + retry cho bất biến liên nhiều dòng. Với SKU nóng, một hàng bị khóa chỉ đạt vài trăm transaction/giây, nên phải chia bucket, dùng reservation có TTL và một buffer oversell nhỏ.
+
+### Double-booking từng bước
+~~~text
+Thời điểm  Request A (khach 1)                 Request B (khach 2)
+t0         SELECT 1 FROM booking
+           WHERE room_id=10 AND stay_date='2026-12-24'
+           -> 0 dong (con trong)
+t1                                            SELECT ... -> 0 dong (con trong)
+t2         INSERT INTO booking(room_id, stay_date, ...)
+t3                                            INSERT INTO booking(...)  -> THANH CONG
+Kết quả: 2 booking cho cùng một phòng, cùng một đêm
+~~~
+Cả hai câu SELECT đều đúng, vì chúng chạy trước khi có ai INSERT. Kiểm tra ở Java không thể đúng khi có đồng thời — đây là bản chất của race condition, không phải bug code.
+
+### Vì sao SELECT FOR UPDATE không cứu được
+{{SELECT ... FOR UPDATE}} chỉ khóa những dòng **đang tồn tại** và thỏa điều kiện. Nếu chưa có dòng nào, nó không khóa gì — PostgreSQL không có "gap lock" như InnoDB của MySQL. Muốn chống INSERT trùng phải dùng:
+- **Unique constraint**: database tự chặn, kể cả khi có hàng chục request cùng lúc, và áp dụng cho mọi đường ghi (API, batch, script).
+- **Exclusion constraint** với {{btree_gist}}: cho khoảng thời gian, ví dụ hai booking không được chồng nhau.
+- **Advisory lock** trên khóa nghiệp vụ: {{pg_advisory_xact_lock(hashtext('room:10'))}}, nhưng đây là lớp hai, không thay thế được ràng buộc.
+
+### Lớp 1: ràng buộc ở database
+Với mô hình "mỗi đêm một bản ghi":
+~~~sql
+CREATE TABLE booking (
+  id BIGSERIAL PRIMARY KEY,
+  room_id BIGINT NOT NULL,
+  stay_date DATE NOT NULL,
+  guest_id BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (room_id, stay_date)            -- chống double-booking từng đêm
+);
+~~~
+Với mô hình "khoảng ngày":
+~~~sql
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+CREATE TABLE booking (
+  id BIGSERIAL PRIMARY KEY,
+  room_id BIGINT NOT NULL,
+  stay_during TSTZRANGE NOT NULL,
+  guest_id BIGINT NOT NULL,
+  EXCLUDE USING gist (room_id WITH =, stay_during WITH &&)
+);
+~~~
+Câu {{INSERT ... ON CONFLICT DO NOTHING}} cho biết có bị trùng hay không qua số dòng bị ảnh hưởng:
+~~~sql
+INSERT INTO booking (room_id, stay_date, guest_id)
+VALUES (10, DATE '2026-12-24', 99)
+ON CONFLICT (room_id, stay_date) DO NOTHING;
+-- 0 dòng: đã có người đặt -> trả 409
+~~~
+
+### Lớp 2: row lock khi cần kiểm tra nhiều điều kiện
+Nếu điều kiện đặt phòng phức tạp (giá theo hạng, số khách tối đa, chính sách hủy), hãy khóa **phòng** rồi kiểm tra trong cùng transaction:
+~~~sql
+BEGIN;
+SELECT id, status FROM room WHERE id = 10 FOR UPDATE;   -- khóa phòng
+-- kiem tra gia, so khach, chinh sach...
+INSERT INTO booking (room_id, stay_date, guest_id) VALUES (10, DATE '2026-12-24', 99);
+COMMIT;
+~~~
+Vì mọi request đều phải lấy lock trên cùng dòng phòng, chúng chạy tuần tự. Đổi lại, phòng hot là điểm nghẽn: nếu 5.000 request/giây cùng đặt một phòng, chúng xếp hàng và p99 tăng. Đây là lý do lớp 1 (ràng buộc) thường tốt hơn: nó không cần giữ lock trong lúc kiểm tra.
+
+### Lớp 3: SERIALIZABLE khi bất biến liên nhiều dòng
+Ví dụ "mỗi khách chỉ được giữ tối đa 2 phòng chưa thanh toán". Hai request cùng lúc có thể cùng đọc "khách đang có 1 phòng" rồi cùng chèn, thành 3. Ở READ COMMITTED và REPEATABLE READ, điều này vẫn xảy ra (write skew). SERIALIZABLE phát hiện phụ thuộc đọc–ghi và hủy một bên với 40001; ứng dụng retry. Đây là lựa chọn khi không thể biểu diễn ràng buộc bằng unique index.
+
+### Trừ kho flash sale: hàng nóng
+Một dòng {{stock}} bị 100.000 request/phút cùng khóa sẽ là bottleneck: mỗi transaction phải chờ row lock, mỗi lần cập nhật sinh WAL và bản mới, index phụ cũng phải cập nhật. Bốn kỹ thuật:
+1. **UPDATE có điều kiện**: {{UPDATE stock SET qty = qty - 1 WHERE sku = ? AND qty >= 1}}; kiểm tra affected rows. Đúng, nhưng vẫn là một hàng nóng.
+2. **Chia bucket**: mỗi SKU có 16 dòng {{stock(sku, bucket, qty)}}, mỗi bucket giữ 1/16 tồn. Request chọn bucket ngẫu nhiên; nếu bucket hết, thử bucket khác tối đa 3 lần. Khóa song song tăng gần 16 lần.
+3. **Reservation có TTL**: cho khách giữ hàng 10 phút. Bảng {{reservation(sku, qty, expires_at)}}; job dọn hạn {{DELETE ... WHERE expires_at < now()}} và cộng trả tồn. Nếu không có TTL, hàng bị giữ đến khi khách thanh toán hoặc bỏ giỏ, và tồn "ảo" chặn người sau.
+4. **Oversell buffer**: cho phép bán vượt 1–2% rồi bù bằng đơn hủy hoặc tồn dự phòng. Chỉ dùng khi phần trăm hủy đủ lớn để bù, và phải có quy trình đối soát.
+
+### Code Java: đặt phòng và trừ kho
+~~~java
+// Lớp 1: ràng buộc lo chống trùng, 0 dòng nghĩa là đã có người đặt
+int inserted = jdbc.update("""
+    INSERT INTO booking (room_id, stay_date, guest_id)
+    VALUES (?, ?, ?)
+    ON CONFLICT (room_id, stay_date) DO NOTHING
+    """, roomId, stayDate, guestId);
+if (inserted == 0) throw new ResponseStatusException(HttpStatus.CONFLICT, "Phòng đã được đặt");
+
+// Lớp 1 cho kho: điều kiện nằm trong câu UPDATE
+int deducted = jdbc.update("UPDATE stock SET qty = qty - ? WHERE sku = ? AND qty >= ?",
+    qty, sku, qty);
+if (deducted == 0) throw new ResponseStatusException(HttpStatus.CONFLICT, "Không đủ hàng");
+~~~
+
+### Bảng so sánh ba lớp
+| Lớp | Chặn được gì | Chi phí | Khi nào dùng |
+|---|---|---|---|
+| Unique/exclusion constraint | INSERT trùng, kể cả nhiều request đồng thời | Rẻ, một index | Mặc định cho booking, username, mã đơn |
+| Row lock {{FOR UPDATE}} | Mọi ghi vào cùng dòng trong lúc kiểm tra | Lock giữ tới hết transaction | Cần kiểm tra nhiều điều kiện trước khi ghi |
+| {{SERIALIZABLE}} + retry | Write skew giữa nhiều dòng | Retry, latency tăng | Bất biến liên nhiều dòng, không biểu diễn được bằng index |
+
+### Lỗi hay gặp
+- **Chỉ kiểm tra ở Java**: race condition, và càng nhiều instance càng dễ.
+- **{{SELECT FOR UPDATE}} trên dòng chưa tồn tại**: không khóa gì, tưởng an toàn.
+- **Không có TTL cho reservation**: tồn bị giữ vô hạn, flash sale "hết hàng" dù kho còn.
+- **Chia bucket không đều**: bucket đầu tiên hết trong khi bucket khác còn; cần thử bucket khác hoặc chọn bucket theo round-robin.
+- **Retry không giới hạn khi bucket hết**: vòng lặp có thể chạy mãi; đặt số lần thử tối đa.
+- **{{SERIALIZABLE}} cho toàn bộ API**: tỷ lệ 40001 tăng, người dùng thấy lỗi; chỉ dùng cho phần thật sự cần.
+
+### Ví dụ đời thực
+Một chuỗi khách sạn có 120 phòng, mở bán đêm 24/12. Hai request cùng đặt phòng cuối: cả hai đều thành công, khách nhận hai xác nhận, phải hoàn tiền và xin lỗi một khách. Chuyển sang unique {{ (room_id, stay_date) }} + {{ON CONFLICT DO NOTHING}}: sau ba tháng không còn double-booking; 0,02% request nhận 409 do trùng, đúng như mong đợi.
+
+Một sàn thương mại điện tử chạy flash sale 5.000 sản phẩm, 100.000 request/phút (~1.667 request/giây). Bản đầu dùng một dòng stock: p99 2,8 giây, oversell 1.800 đơn. Chia thành 16 bucket, cộng reservation TTL 10 phút và buffer 1%: oversell về 0, p99 180 ms, tồn cuối phiên lệch 0,3% do đơn hủy, được đối soát tự động.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không bao giờ dựa vào kiểm tra ở Java cho double-booking, vì hai request có thể cùng đọc thấy phòng trống trước khi ai insert. Lớp mạnh nhất là ràng buộc ở database: unique trên room_id và stay_date cho từng đêm, hoặc exclusion constraint với tstzrange cho khoảng ngày; insert trùng sẽ bị chặn và tôi dùng ON CONFLICT DO NOTHING, kiểm tra số dòng bị ảnh hưởng để trả 409. SELECT FOR UPDATE không giúp khi phòng chưa tồn tại vì PostgreSQL không có gap lock. Khi cần kiểm tra nhiều điều kiện, tôi khóa dòng phòng trong transaction, nhưng chấp nhận nó là điểm nghẽn. Với bất biến liên nhiều dòng như giới hạn số phòng mỗi khách, tôi dùng SERIALIZABLE và retry 40001. Với flash sale, một dòng stock chỉ đạt vài trăm transaction mỗi giây, nên tôi chia 16 bucket, chọn bucket ngẫu nhiên và thử bucket khác khi hết, thêm reservation có TTL để hàng không bị giữ vô hạn, và một buffer oversell nhỏ có đối soát. Tôi theo dõi tỷ lệ 409, oversell và p99 để biết lớp phòng thủ nào đang quá tải."
+
+> Senior tip: ràng buộc ở database là lớp phòng thủ duy nhất không thể bị bỏ qua bởi một lập trình viên mới hay một script vá nóng. Hãy đặt nó trước, rồi mới nghĩ tới khóa và isolation.
+`,
+  follow: [
+    'Vì sao unique (room_id, stay_date) chỉ đúng cho mô hình mỗi đêm một bản ghi, và mô hình khoảng ngày cần ràng buộc nào?',
+    'Chia bucket giúp tăng throughput bao nhiêu, và điều gì xảy ra nếu một bucket hết trong khi các bucket khác còn hàng?',
+    'Reservation TTL và oversell buffer khác nhau ở điểm nào, và bạn theo dõi chỉ số nào để biết buffer có an toàn?'
+  ],
+  tags: ['double booking', 'unique constraint', 'exclusion constraint', 'btree_gist', 'tstzrange', 'FOR UPDATE', 'SERIALIZABLE', 'oversell', 'bucket', 'reservation TTL']
+},
 );
