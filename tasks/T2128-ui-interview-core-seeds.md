@@ -25,3 +25,4 @@ Người học có 6 tháng ôn phỏng vấn Senior Java, ngân hàng ~2000 câ
 
 ## Notes
 - 2026-11-15 Claude: preset chips bank/product (focus text riêng), checkbox ⭐ Bốc từ bộ câu lõi (auto bật khi ≥ 12 câu lõi), pickSeeds(preferCore). Không đổi giao thức AI. File chuẩn hoá CRLF→LF.
+Reviewed-by: verify-only (code/UI task)
