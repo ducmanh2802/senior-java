@@ -22,6 +22,19 @@
 .view-bank .bank-filter-body { display: flex; flex-direction: column; gap: 12px; }
 .view-bank .bank-filter-badge { font-size: .75rem; }
 
+/* Chip "⭐ Câu lõi" — nổi bật hơn chip trạng thái thường */
+.view-bank .chip-core {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.view-bank .chip-core.active {
+  background: var(--accent);
+  color: var(--on-accent, #fff);
+}
+.view-bank .chip-core.active:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* ---------- danh sách ---------- */
 .view-bank .bank-list { display: flex; flex-direction: column; gap: 10px; }
 .view-bank .bank-card { padding: 0; overflow: hidden; }

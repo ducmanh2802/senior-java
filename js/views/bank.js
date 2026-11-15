@@ -35,6 +35,9 @@
       'bank.noMicMsg': 'Không mở được micro.',
       'bank.aiWait': 'AI đang chấm…',
       'bank.hiddenAnswerTitle': 'Ẩn đáp án cho tới khi tự trả lời',
+      'bank.coreFilter': '⭐ Câu lõi',
+      'bank.coreBadge': '⭐ lõi',
+      'bank.coreEmpty': 'Chưa có câu lõi',
     },
     en: {
       'bank.title': 'Question Bank',
@@ -47,6 +50,9 @@
       'bank.topicFilterAria': 'Filter by topic',
       'bank.statusFilterAria': 'Filter by status',
       'bank.all': 'All', 'bank.due': 'Due for review', 'bank.unseen': 'Not studied', 'bank.unknown': 'Don\'t know', 'bank.review': 'Review', 'bank.known': 'Known', 'bank.bookmarked': 'Bookmarked',
+      'bank.coreFilter': '⭐ Core set',
+      'bank.coreBadge': '⭐ core',
+      'bank.coreEmpty': 'No core questions yet',
       'bank.dueLabel': 'review:', 'bank.topicAll': 'All',
       'bank.bookmarkRemoveLabel': 'Remove bookmark', 'bank.bookmarkAddLabel': 'Bookmark question',
       'bank.bookmarkRemoveTitle': 'Unbookmark', 'bank.bookmarkAddTitle': 'Bookmark',
@@ -95,6 +101,7 @@
     topic: 'all',
     level: 'all',
     status: 'all',
+    core: false,  // NEW: core filter enabled/disabled
     q: '',
     shown: PAGE_SIZE,
     expanded: {},     // id -> true (đã mở)
@@ -154,7 +161,17 @@
 
   /** Câu hỏi sau khi áp dụng filter. */
   function filtered() {
-    return App.filterQuestions({ topic: S.topic, level: S.level, status: S.status, q: S.q });
+    const list = App.filterQuestions({ topic: S.topic, level: S.level, status: S.status, q: S.q });
+    if (S.core) return list.filter(q => isCore(q));
+    return list;
+  }
+
+  /** Câu hỏi có tag 'core' (bộ câu lõi cho 6 tháng ôn). */
+  function isCore(q) { return (q.tags || []).indexOf('core') !== -1; }
+
+  /** Số câu lõi trong chủ đề đang chọn (hoặc tổng nếu "Tất cả"). */
+  function coreCount() {
+    return App.filterQuestions({ topic: S.topic, level: 'all', status: 'all', q: '' }).filter(isCore).length;
   }
 
   /** Ngày đến hạn ôn (dd/mm) hoặc null. */
@@ -193,10 +210,11 @@
   /** Thân câu hỏi khi đang đóng (collapsed). */
   function headHtml(q, idx) {
     const due = dueText(q.id);
+    const coreBadge = isCore(q) ? '<span class="badge">' + App.t('bank.coreBadge') + '</span>' : '';
     return '<div class="bank-head">' +
       '<span class="bank-idx">' + idx + '</span>' +
       '<span class="bank-q"' + (q.lang === 'en' ? ' lang="en"' : '') + '>' + App.md(q.q) + '</span>' +
-      '<span class="bank-meta">' + topicBadge(q) + levelBadge(q) + statusDot(q.id) +
+      '<span class="bank-meta">' + topicBadge(q) + levelBadge(q) + statusDot(q.id) + coreBadge +
         (due ? '<span class="small muted bank-due">ôn lại: ' + due + '</span>' : '') +
       '</span>' +
       bookmarkBtn(q.id) +
@@ -309,13 +327,20 @@
       '</div>';
   }
 
-  /** Chips trạng thái. */
+  /** Số câu lõi trong chủ đề đang chọn (hoặc tổng nếu "Tất cả"). */
+  function coreCount() {
+    return App.filterQuestions({ topic: S.topic, level: 'all', status: 'all', q: '' }).filter(isCore).length;
+  }
+
+  /** Chips trạng thái + chip "Câu lõi". */
   function statusChips() {
-    return '<div class="chips bank-status-chips" role="group" aria-label="Lọc theo trạng thái">' +
-      STATUS_CHIPS.map(s => '<button type="button" class="chip' + (S.status === s.id ? ' active' : '') +
-        '" data-status="' + s.id + '" aria-pressed="' + (S.status === s.id ? 'true' : 'false') + '">' +
-        esc(App.t('bank.' + s.label)) + '</button>').join('') +
-      '</div>';
+    const chips = STATUS_CHIPS.map(s => '<button type="button" class="chip' + (S.status === s.id ? ' active' : '') +
+      '" data-status="' + esc(s.id) + '" aria-pressed="' + (S.status === s.id ? 'true' : 'false') + '">' +
+      esc(App.t('bank.' + s.label)) + '</button>').join('');
+    const coreChip = '<button type="button" class="chip chip-core' + (S.core ? ' active' : '') +
+      '" data-core="true" aria-pressed="' + (S.core ? 'true' : 'false') + '">' +
+      esc(App.t('bank.coreFilter')) + ' (' + coreCount() + ')</button>';
+    return '<div class="chips bank-status-chips" role="group" aria-label="Lọc theo trạng thái">' + chips + coreChip + '</div>';
   }
 
   /** Select level. */
@@ -358,6 +383,14 @@
   function listHtml() {
     const all = filtered();
     if (!all.length) {
+      // Khi bật lọc core mà chưa có câu nào gắn tag core -> thông điệp riêng.
+      if (S.core && coreCount() === 0) {
+        return '<div class="empty bank-empty">' +
+          '<p><strong>' + App.t('bank.coreEmpty') + '</strong></p>' +
+          '<p class="small muted">' + App.t('bank.emptyHint') + '</p>' +
+          '<button type="button" class="btn sm" id="bankCoreOff">⭐ ' + App.t('bank.coreFilter') + '</button>' +
+        '</div>';
+      }
       return '<div class="empty bank-empty">' +
         '<p><strong>' + App.t('bank.emptyTitle') + '</strong></p>' +
         '<p class="small muted">' + App.t('bank.emptyHint') + '</p>' +
@@ -407,6 +440,7 @@
   /** Đặt lại toàn bộ bộ lọc về mặc định. */
   function clearFilters() {
     S.topic = 'all'; S.level = 'all'; S.status = 'all'; S.q = '';
+    S.core = false;
     S.shown = PAGE_SIZE;
     // render lại toàn view để đồng bộ input/select/chips
     if (rootEl) {
@@ -556,6 +590,16 @@
         return;
       }
 
+      const coreChip = e.target.closest('[data-core]');
+      if (coreChip) {
+        S.core = !S.core;
+        S.shown = PAGE_SIZE;
+        coreChip.setAttribute('aria-pressed', S.core ? 'true' : 'false');
+        coreChip.classList.toggle('active', S.core);
+        renderList();
+        return;
+      }
+
       const star = e.target.closest('[data-bookmark]');
       if (star) {
         e.stopPropagation();
@@ -606,6 +650,13 @@
 
       if (e.target.closest('#bankClearFilters')) {
         clearFilters();
+        return;
+      }
+
+      if (e.target.closest('#bankCoreOff')) {
+        S.core = false;
+        S.shown = PAGE_SIZE;
+        renderList();
         return;
       }
 
