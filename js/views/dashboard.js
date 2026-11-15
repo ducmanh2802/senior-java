@@ -70,6 +70,21 @@
       'dash.weakTitle': 'Lỗ hổng cần lấp',
       'dash.weakItem': '{known}/{total} đã thuộc',
       'dash.weakNone': 'Chưa có dữ liệu. Tự chấm vài câu trong ngân hàng để thấy điểm yếu.',
+      'dash.itemCore': 'Câu lõi mới hôm nay', 'dash.itemCoreSub': '{n} câu · {topics}',
+      'dash.coreTitle': '⭐ Bộ câu lõi', 'dash.coreProgress': '{known}/{total} đã thuộc',
+      'dash.coreDue': '{n} câu lõi đến hạn ôn hôm nay', 'dash.coreDueNone': 'Không có câu lõi đến hạn',
+      'dash.coreLeft': 'Còn {n} câu lõi chưa học', 'dash.corePerDay': 'Câu mới/ngày',
+      'dash.coreAllSeen': 'Bạn đã học hết bộ câu lõi — giờ tập trung ôn đến hạn và câu "Chưa biết".',
+      'dash.coreOpen': 'Mở bộ câu lõi',
+      'dash.more.week': 'Báo cáo tuần này',
+      'dash.wkDays': 'ngày có học', 'dash.wkReview': 'lượt ôn', 'dash.wkKnown': 'câu mới thuộc', 'dash.wkMinutes': 'phút học',
+      'dash.wkQuiz': 'lượt trắc nghiệm', 'dash.wkMock': 'buổi phỏng vấn thử',
+      'dash.wkWeakTitle': 'Top chủ đề yếu', 'dash.wkWeakItem': '{bad}/{seen} câu chưa vững',
+      'dash.wkMockWeak': 'phỏng vấn thử < 3 điểm', 'dash.wkStudy': 'Ôn chủ đề này',
+      'dash.wkNone': 'Học vài ngày để có báo cáo tuần.',
+      'dash.wkSayGood': 'Tuần này bạn học {d}/7 ngày, tốt lắm! Chủ đề yếu nhất: {t}.',
+      'dash.wkSayLow': 'Tuần này bạn học {d}/7 ngày. Cố giữ ít nhất 5 ngày/tuần. Chủ đề yếu nhất: {t}.',
+      'dash.wkSayNoWeak': 'Tuần này bạn học {d}/7 ngày. Chưa thấy chủ đề yếu rõ rệt.',
       'dash.quotes': [
         'Interviewer không chấm bạn biết bao nhiêu, mà chấm bạn hiểu sâu tới đâu.',
         'Mỗi câu bạn thuộc hôm nay là một câu không ai làm khó được bạn ngày phỏng vấn.',
@@ -149,6 +164,21 @@
       'dash.weakTitle': 'Gaps to close',
       'dash.weakItem': '{known}/{total} known',
       'dash.weakNone': 'No data yet. Self-grade a few questions in the bank to see your gaps.',
+      'dash.itemCore': 'New core questions today', 'dash.itemCoreSub': '{n} questions · {topics}',
+      'dash.coreTitle': '⭐ Core set', 'dash.coreProgress': '{known}/{total} known',
+      'dash.coreDue': '{n} core questions due today', 'dash.coreDueNone': 'No core questions due',
+      'dash.coreLeft': '{n} core questions not studied yet', 'dash.corePerDay': 'New per day',
+      'dash.coreAllSeen': 'You have studied the whole core set — now focus on due reviews and "Don\'t know" questions.',
+      'dash.coreOpen': 'Open the core set',
+      'dash.more.week': 'This week’s report',
+      'dash.wkDays': 'active days', 'dash.wkReview': 'reviews', 'dash.wkKnown': 'newly known', 'dash.wkMinutes': 'minutes',
+      'dash.wkQuiz': 'quiz runs', 'dash.wkMock': 'mock interviews',
+      'dash.wkWeakTitle': 'Weakest topics', 'dash.wkWeakItem': '{bad}/{seen} not solid yet',
+      'dash.wkMockWeak': 'mock score < 3', 'dash.wkStudy': 'Study this topic',
+      'dash.wkNone': 'Study for a few days to get a weekly report.',
+      'dash.wkSayGood': 'You studied {d}/7 days this week — great! Weakest topic: {t}.',
+      'dash.wkSayLow': 'You studied {d}/7 days this week. Aim for at least 5. Weakest topic: {t}.',
+      'dash.wkSayNoWeak': 'You studied {d}/7 days this week. No clearly weak topic yet.',
       'dash.quotes': [
         'Interviewers do not score how much you know, but how deeply you understand it.',
         'Every question you master today is one nobody can trip you up on later.',
@@ -234,18 +264,57 @@
     const q = App.lite('questions').find(x => x.lang === 'en');
     return q ? { kind: 'speak', q: q.id, minutes: 10 } : null;
   }
+  // ---------- core set (~400 questions tagged 'core', ids in the light index) ----------
+  // study order: Java core → concurrency/JVM → Spring/data → API/distributed/design → the rest
+  const CORE_ORDER = ['core', 'collections', 'modern', 'concurrency', 'jvm', 'spring', 'jpa', 'db', 'sql',
+    'api', 'microservices', 'design', 'architecture'];
+  const PLAN_VERSION = 2;   // bump → today's stored plan is rebuilt once (keeps the done ticks)
+  function coreQuestions() {
+    const ids = (window.DATA_INDEX && Array.isArray(window.DATA_INDEX.core)) ? window.DATA_INDEX.core : [];
+    if (!ids.length) return [];
+    const set = new Set(ids);
+    return App.lite('questions').filter(q => set.has(q.id));
+  }
+  function corePerDay() {
+    const n = Number((App.store.data.corePlan || {}).perDay);
+    return n >= 2 && n <= 8 ? Math.round(n) : 4;
+  }
+  function pickCoreNew(n) {
+    const rank = t => { const i = CORE_ORDER.indexOf(t); return i < 0 ? CORE_ORDER.length : i; };
+    return coreQuestions().filter(q => !App.store.getStatus(q.id))
+      .sort((a, b) => rank(a.topic) - rank(b.topic) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .slice(0, n);
+  }
+  function coreStats() {
+    const qs = coreQuestions();
+    let known = 0, unseen = 0, due = 0;
+    qs.forEach(q => {
+      const s = App.store.getStatus(q.id);
+      if (s === 'known') known++;
+      if (!s) unseen++;
+      if (App.store.isDue(q.id)) due++;
+    });
+    return { total: qs.length, known, unseen, due };
+  }
+
   function buildPlan() {
     const items = [];
     const dueQ = App.dueItems().filter(x => String(x.id).indexOf('algo-') !== 0).slice(0, 10);
     if (dueQ.length) items.push({ kind: 'review', ids: dueQ.map(x => x.id), minutes: 15 });
-    const lesson = nextLesson();
-    if (lesson) items.push({ kind: 'lesson', id: lesson.id, minutes: lesson.minutes || 25 });
+    const core = pickCoreNew(corePerDay());
+    if (core.length) items.push({ kind: 'core', ids: core.map(q => q.id), minutes: core.length * 10 });
     if (isWeekend()) {
+      const lesson = nextLesson();
+      if (lesson) items.push({ kind: 'lesson', id: lesson.id, minutes: lesson.minutes || 25 });
       const sd = pickSd();
       items.push(sd ? { kind: 'sd', id: sd.id, minutes: 45 } : { kind: 'mock', minutes: 30 });
     } else {
-      const algo = pickAlgo();
+      // weekdays alternate one side task so the day stays ~1.5–2 h: even day = algorithm, odd day = lesson
+      const algo = dayNumber() % 2 === 0 ? pickAlgo() : null;
+      const lesson = algo ? null : nextLesson();
       if (algo) items.push({ kind: 'algo', id: algo.id, minutes: 30 });
+      else if (lesson) items.push({ kind: 'lesson', id: lesson.id, minutes: lesson.minutes || 25 });
+      else { const a = pickAlgo(); if (a) items.push({ kind: 'algo', id: a.id, minutes: 30 }); }
     }
     const speak = pickSpeak();
     if (speak) items.push(speak);
@@ -253,16 +322,16 @@
   }
   function ensurePlan(force) {
     const data = App.store.data, today = App.dayKey(Date.now()), old = data.todayPlan;
-    if (!force && old && old.day === today && Array.isArray(old.items) && old.items.length) {
+    if (!force && old && old.day === today && old.v === PLAN_VERSION && Array.isArray(old.items) && old.items.length) {
       if (!old.done || typeof old.done !== 'object') old.done = {};
       return old;
     }
-    data.todayPlan = { day: today, items: buildPlan(), done: (old && old.day === today && old.done && typeof old.done === 'object') ? old.done : {} };
+    data.todayPlan = { day: today, v: PLAN_VERSION, items: buildPlan(), done: (old && old.day === today && old.done && typeof old.done === 'object') ? old.done : {} };
     App.store.save();
     return data.todayPlan;
   }
   function itemKey(it) {
-    if (it.kind === 'review') return 'review:' + (it.ids || []).slice().sort().join(',');
+    if (it.kind === 'review' || it.kind === 'core') return it.kind + ':' + (it.ids || []).slice().sort().join(',');
     if (it.kind === 'speak') return 'speak:' + (it.drill || it.q || '');
     return it.kind + ':' + (it.id || '');
   }
@@ -271,6 +340,15 @@
     if (it.kind === 'review') {
       const n = (it.ids || []).filter(id => App.lite('questions').some(q => q.id === id)).length;
       return n ? { icon: '🔁', title: tr('itemReview'), sub: tr('itemReviewSub', { n }), href: '#/flash/due' } : null;
+    }
+    if (it.kind === 'core') {
+      const lite = App.lite('questions');
+      const qs = (it.ids || []).map(id => lite.find(q => q.id === id)).filter(Boolean);
+      if (!qs.length) return null;
+      const counts = {};
+      qs.forEach(q => { counts[q.topic] = (counts[q.topic] || 0) + 1; });
+      const topics = Object.keys(counts).map(t => { const tp = App.topic(t); return (tp && tp.name ? tp.name : t) + (counts[t] > 1 ? ' ×' + counts[t] : ''); }).join(', ');
+      return { icon: '⭐', title: tr('itemCore'), sub: tr('itemCoreSub', { n: qs.length, topics }), href: '#/bank/' + encodeURIComponent(qs[0].topic) };
     }
     if (it.kind === 'lesson') {
       const l = App.lite('lessons').find(x => x.id === it.id);
@@ -529,6 +607,59 @@
     '</section>';
   }
 
+  /** Core-set card: progress over the ~400 core questions + how many new ones the daily plan adds. Hidden until tags exist. */
+  function coreHtml() {
+    const cs = coreStats();
+    if (!cs.total) return '';
+    const per = corePerDay();
+    const opts = [2, 3, 4, 5, 6, 8].map(n => '<option value="' + n + '"' + (n === per ? ' selected' : '') + '>' + n + '</option>').join('');
+    return '<section class="card db-core">' +
+      '<div class="db-core-head"><div><h2>' + tr('coreTitle') + '</h2>' +
+        '<span class="db-dim small">' + tr('coreProgress', { known: cs.known, total: cs.total }) + ' · ' +
+          (cs.due ? tr('coreDue', { n: cs.due }) : tr('coreDueNone')) + '</span></div>' +
+        '<label class="db-core-per small"><span>' + tr('corePerDay') + '</span>' +
+          '<select class="select" data-core-perday aria-label="' + App.esc(tr('corePerDay')) + '">' + opts + '</select></label></div>' +
+      '<div class="progress db-core-bar"><i class="accent" style="width:' + pct(cs.known, cs.total) + '%"></i></div>' +
+      '<p class="db-dim small">' + (cs.unseen ? tr('coreLeft', { n: cs.unseen }) : tr('coreAllSeen')) + '</p>' +
+    '</section>';
+  }
+
+  /** Weekly report: last 7 days of the activity log + the 3 weakest topics (self-grades, low mock scores). */
+  function weekHtml() {
+    const sum = { days: 0, review: 0, known: 0, minutes: 0, quiz: 0, mock: 0 };
+    for (let i = 0; i < 7; i++) {
+      const d = App.store.day(App.dayKey(Date.now() - i * DAY)) || {};
+      const any = (d.review || 0) + (d.known || 0) + (d.quiz || 0) + (d.mock || 0) + (d.algo || 0) + (d.minutes || 0);
+      if (any > 0) sum.days++;
+      ['review', 'known', 'minutes', 'quiz', 'mock'].forEach(k => { sum[k] += d[k] || 0; });
+    }
+    if (!sum.days) return '<p class="db-dim small">' + tr('wkNone') + '</p>';
+    // topics of mock sessions in the last 7 days that scored below 3/5
+    const weekAgo = Date.now() - 7 * DAY, lowMock = {};
+    (App.store.data.mockHistory || []).forEach(r => {
+      if (r && r.at >= weekAgo && typeof r.avg === 'number' && r.avg < 3) (r.topics || []).forEach(t => { lowMock[t] = 1; });
+    });
+    const weak = App.topics().map(t => {
+      const s = App.stats(t.id), seen = s.known + s.review + s.unknown, bad = s.review + s.unknown;
+      return { t, seen, bad, score: (seen ? bad / seen : 0) + (lowMock[t.id] ? 0.25 : 0) };
+    }).filter(x => (x.seen >= 3 && x.bad > 0) || lowMock[x.t.id])
+      .sort((a, b) => b.score - a.score || b.bad - a.bad).slice(0, 3);
+    const stat = (n, lbl) => '<div class="db-wk-stat"><b>' + n + '</b><span class="db-dim small">' + lbl + '</span></div>';
+    const say = weak.length
+      ? tr(sum.days >= 5 ? 'wkSayGood' : 'wkSayLow', { d: sum.days, t: weak[0].t.name })
+      : tr('wkSayNoWeak', { d: sum.days });
+    return '<div class="db-wk">' +
+      '<p class="db-wk-say">' + App.esc(say) + '</p>' +
+      '<div class="db-wk-stats">' + stat(sum.days + '/7', tr('wkDays')) + stat(sum.review, tr('wkReview')) + stat(sum.known, tr('wkKnown')) +
+        stat(sum.minutes, tr('wkMinutes')) + stat(sum.quiz, tr('wkQuiz')) + stat(sum.mock, tr('wkMock')) + '</div>' +
+      (weak.length ? '<h3>' + tr('wkWeakTitle') + '</h3><ul class="db-wk-weak">' + weak.map(x =>
+        '<li><span aria-hidden="true">' + App.esc(x.t.icon || '•') + '</span> <b>' + App.esc(x.t.name) + '</b> ' +
+          '<span class="db-dim small">' + (x.seen ? tr('wkWeakItem', { bad: x.bad, seen: x.seen }) : '') +
+          (lowMock[x.t.id] ? (x.seen ? ' · ' : '') + tr('wkMockWeak') : '') + '</span>' +
+          '<a class="btn sm" href="#/flash/' + encodeURIComponent(x.t.id) + '">' + tr('wkStudy') + '</a></li>').join('') + '</ul>' : '') +
+    '</div>';
+  }
+
   /** Quick-practice tiles — lối vào nhanh các chế độ luyện tập. */
   function quickHtml() {
     const due = App.dueItems().filter(x => String(x.id).indexOf('algo-') !== 0).length;
@@ -557,6 +688,7 @@
         if (id === 'plan') return careerHtml(editingCareer);
         if (id === 'topics') return sectionsHtml();
         if (id === 'history') return bottomHtml();
+        if (id === 'week') return weekHtml();
         return '';
       };
       
@@ -570,6 +702,8 @@
           
           body = '<header class="db-compact-header">' + heroHtml(st, editing) + metricsHtml(st) + '</header>' +
                  missionHtml(pomo) +
+                 coreHtml() +
+                 details('week', tr('more.week'), weekHtml()) +
                  details('plan', tr('more.plan'), careerHtml(editingCareer)) +
                  details('topics', tr('more.topics'), sectionsHtml()) +
                  details('history', tr('more.history'), bottomHtml());
@@ -636,6 +770,16 @@
         refreshHero();
       };
       const onChange = e => {
+        const per = e.target.closest('[data-core-perday]');
+        if (per) {
+          const n = Math.max(2, Math.min(8, Number(per.value) || 4));
+          App.store.data.corePlan = Object.assign({}, App.store.data.corePlan, { perDay: n, updatedAt: Date.now() });
+          App.store.save();
+          // rebuild today's plan with the new count, keeping what is already ticked
+          ensurePlan(true);
+          refreshMission();
+          return;
+        }
         const cb = e.target.closest('[data-plan-done]');
         if (!cb) return;
         const tp = ensurePlan(false), key = cb.getAttribute('data-plan-done');

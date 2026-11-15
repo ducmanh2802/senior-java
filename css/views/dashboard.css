@@ -86,3 +86,22 @@
   .view-dashboard .db-secs { grid-template-columns: 1fr 1fr; }
   .view-dashboard .db-bottom { grid-template-columns: 1fr; }
 }
+
+/* core set card (T2124) */
+.view-dashboard .db-core { padding: 14px 18px; margin-top: 12px; }
+.view-dashboard .db-core-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.view-dashboard .db-core-head h2 { margin: 0 0 2px; font-size: 1.05rem; }
+.view-dashboard .db-core-per { display: flex; align-items: center; gap: 6px; }
+.view-dashboard .db-core-per .select { width: auto; min-width: 64px; }
+.view-dashboard .db-core-bar { margin: 10px 0 6px; height: 6px; }
+.view-dashboard .db-core p { margin: 0; }
+
+/* weekly report (T2126) */
+.view-dashboard .db-wk-say { margin: 4px 0 10px; font-weight: 600; }
+.view-dashboard .db-wk-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+.view-dashboard .db-wk-stat { display: flex; flex-direction: column; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius, 8px); }
+.view-dashboard .db-wk-stat b { font-size: 1.2rem; }
+.view-dashboard .db-wk h3 { margin: 14px 0 6px; font-size: 0.95rem; }
+.view-dashboard .db-wk-weak { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.view-dashboard .db-wk-weak li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.view-dashboard .db-wk-weak li .btn { margin-left: auto; }
