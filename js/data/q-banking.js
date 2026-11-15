@@ -3306,74 +3306,65 @@ Mot ngan hang co 200 chi nhanh. Cuoi ngay, bo kiem toan thong bao so core va so 
   topic: 'banking',
   level: 'senior',
   q: 'Khoan vay tra gop hang thang: lai moi ky lam tron the nao, phan du khi chia cho 12 thang duoc cong vao ky nao, va dung BigDecimal nhu the nao cho dung?',
-  a: `**Tóm tắt:** Khách vay 120 triệu trong 12 tháng, trả mỗi tháng một khoản tiền bằng nhau. Lãi của mỗi tháng được tính và làm tròn đến đơn vị đồng (VND không có phần thập phân). Tổng lãi 12 tháng sau khi làm tròn từng tháng phải bằng chính xác tổng lãi của hợp đồng; phần dư do làm tròn (tiền lẻ đồng) được cộng vào kỳ trả cuối cùng. Tất cả tính toán dùng BigDecimal, không dùng double.
+  a: `**Tóm tắt:** Khoản vay trả góp (installment loan - khách vay một khoản tiền và trả dần theo nhiều kỳ, ví dụ 12 tháng) đòi hỏi tính lãi chính xác từng kỳ và làm tròn về đồng VND (tiền Việt Nam, không có xu/cent). Tiền phải tính bằng {{BigDecimal}} (kiểu số thập phân chính xác của Java, không bị lỗi làm tròn như {{double}}). Mỗi kỳ làm tròn về số nguyên đồng; phần dư do chia không hết (ví dụ 10.000 chia 3) phải được cộng vào một kỳ cố định (thường kỳ cuối) để tổng tiền sau 12 kỳ khớp đúng hợp đồng, không lệch dù chỉ 1 đồng.
 
-### Vay tra gop la gi
-Khach vay mot so tien lon, tra lai theo nhieu ky (vi du 12 thang). Moi thang tra mot khoan gom phan lai va phan goc. Lai thang duoc tinh tren du no con lai. Vi du: vay 120.000.000 VND, lai 6%/nam, tra 12 thang.
+### Thuật ngữ cơ bản
+- **Dư nợ (outstanding balance)**: số tiền gốc khách còn nợ tại đầu kỳ.
+- **Lãi suất năm (annual rate)**: tỷ lệ lãi tính trên một năm (ví dụ 6%/năm = 0.06).
+- **Actual/365**: quy ước đếm ngày lãi lấy số ngày thực tế chia cho 365 (phổ biến cho VND); có thể gặp actual/360 tùy sản phẩm.
+- **Làm tròn (rounding)**: biến số có phần thập phân thành số nguyên theo quy tắc; {{RoundingMode.HALF_UP}} làm tròn 0.5 lên 1, {{RoundingMode.HALF_EVEN}} (banker rounding - làm tròn về số chẵn gần nhất) giảm thiên lệch khi cộng nhiều số.
+- **Phần dư (remainder)**: số tiền lẻ còn lại sau khi chia đều (ví dụ 10.000 / 3 = 3.333 dư 1).
 
-### Lam tro tien voi VND
-VND (dong Viet Nam) khong co phan thap phan trong giao dien dien tu — so tien la so nguyen dong. Phep chia tao ra phan du ("le dong") phai duoc phan bo co muc tieu de tong cac phan bang so tien goc.
-Vi du chia lai 10.000 dong cho 3 thang: 10000/3 = 3333 du 1. Neu moi thang tra 3333, tong 9999 — thieu 1 dong. Cach xu ly: lay thuong va du (divideAndRemainder), cong du 1 dong vao mot thang theo quy tuc co dinh (vi du thang cuoi cung), tong luon bang 10.000.
+### Cơ chế tính từng bước
+1. **Không dùng {{double}}/{{float}}**: các kiểu này lưu số theo chuẩn nhị phân IEEE 754 nên 0.1 + 0.2 có thể ra 0.30000000000000004. Với tiền, sai số cộng dồn qua 12 kỳ và hàng chục nghìn hợp đồng sẽ thành chênh lệch thật. Luôn khởi tạo {{BigDecimal}} từ chuỗi: {{new BigDecimal(\"120000000\")}}, không phải từ {{double}}.
+2. **Tính lãi mỗi kỳ**: lãi kỳ = dư nợ nhân lãi suất năm nhân số ngày kỳ chia 365. Tính trung gian giữ nhiều chữ số thập phân (ví dụ scale 10), chỉ {{setScale(0, RoundingMode.HALF_UP)}} ở bước ra kết quả tiền VND.
+3. **Làm tròn và bù phần dư**: nếu tổng lãi phải khớp một con số hợp đồng đã định trước, chia bằng {{divideAndRemainder}} để lấy phần nguyên và phần dư, gán phần dư vào kỳ cuối (hoặc theo quy ước nghiệp vụ đã thống nhất với kế toán). Nếu tính lãi từng kỳ độc lập rồi cộng, tổng sau làm tròn có thể lệch 1-2 đồng; khi đó điều chỉnh kỳ cuối sao cho tổng các kỳ bằng tổng lãi hợp đồng.
+4. **Nhất quán**: toàn hệ thống phải dùng cùng {{RoundingMode}}, cùng quy ước đếm ngày, cùng quy tắc bù phần dư.
 
-### Cong thuc tinh lai mot ky
-Lai ky = du no ky truoc x lai suat x so ngay / 365 (quy actual/365). Tinh bang BigDecimal, tinh giu khong lam tro trong gian, chi lam tro o buoc cuoi bang setScale(0, RoundingMode.HALF_UP) vi VND la so nguyen.
-
-### Vi du so lieu
-Vay 120.000.000, lai 6%/nam, 12 thang, tra gop goc bang dan.
-- Thang 1: du no 120.000.000, lai = 120.000.000 x 0.06 x 30/365 = 591.780,82... -> lam tro 591.781 (HALF_UP).
-- Tinh 12 thang, tong lai thuc te sau khi lam tro moi thang co the le 1-2 dong so voi tong tinh theo cong thuc toan bo. Phan du nay duoc dieu chinh o ky cuoi de tong hop dong khong bi sai.
-
-### Code Java (yeu tuong)
 ~~~java
-// Tinh lai hang thang tren du no giam dan (declining balance)
-// Tra ve danh sach lai moi ky, da lam tron HALF_UP, tong khop hop dong
-static List<BigDecimal> calculateMonthlyInterest(BigDecimal principal, BigDecimal annualRate, int months, int daysPerMonth) {
-    List<BigDecimal> interestList = new ArrayList<>();
-    BigDecimal remaining = principal;
-    BigDecimal dailyRate = annualRate.divide(BigDecimal.valueOf(365), 10, RoundingMode.HALF_UP);
-    
-    for (int i = 0; i < months; i++) {
-        BigDecimal interest = remaining.multiply(dailyRate).multiply(BigDecimal.valueOf(daysPerMonth));
-        interest = interest.setScale(0, RoundingMode.HALF_UP); // lam tron den dong
-        interestList.add(interest);
-        // Cap nhat du no cho ky sau (chi minh hoa, thuc te goc tra rieng)
-    }
-    return interestList;
-}
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.ArrayList;
+import java.util.List;
 
-// Neu tong lai hop dong da biet truoc va can phan bo (equal principal payment):
-static List<BigDecimal> splitTotalInterest(BigDecimal totalInterest, int months) {
+class LoanInterest {
+  // Phân bổ tổng lãi hợp đồng thành từng tháng, bù phần dư vào kỳ cuối
+  static List<BigDecimal> splitTotalInterest(BigDecimal totalInterest, int months) {
     BigDecimal[] div = totalInterest.divideAndRemainder(BigDecimal.valueOf(months));
-    BigDecimal base = div[0].setScale(0, RoundingMode.DOWN);
-    int remainder = div[1].setScale(0, RoundingMode.DOWN).intValueExact();
+    BigDecimal base = div[0].setScale(0, RoundingMode.DOWN); // phần nguyên mỗi kỳ
+    BigDecimal remainder = div[1].setScale(0, RoundingMode.DOWN); // phần lẻ còn lại
     List<BigDecimal> result = new ArrayList<>();
     for (int i = 0; i < months; i++) {
-        result.add(i == months - 1 ? base.add(BigDecimal.valueOf(remainder)) : base);
+      BigDecimal part = base;
+      if (i == months - 1) part = part.add(remainder); // kỳ cuối nhận phần dư
+      result.add(part);
     }
     return result;
+  }
+
+  // Tính lãi một kỳ trên dư nợ giảm dần (declining balance)
+  static BigDecimal interestForPeriod(BigDecimal outstanding, BigDecimal annualRate, int days) {
+    BigDecimal dailyRate = annualRate.divide(BigDecimal.valueOf(365), 10, RoundingMode.HALF_UP);
+    BigDecimal interest = outstanding.multiply(dailyRate).multiply(BigDecimal.valueOf(days));
+    return interest.setScale(0, RoundingMode.HALF_UP); // VND không có phần thập phân
+  }
 }
 ~~~
 
-### RoundingMode chon cai nao
-- HALF_UP: lam tro theo quy tuc toan hoc (0,5 len 1), phu hop hien thi cho khach.
-- HALF_EVEN (banker's rounding): lam tro ve so chan, giam thien lech khi cong don nhieu dong, phu hop khi tinh tong hoa don nhieu dong.
-Chon mot che do, ghi vao tai lieu, dung nhat thuan toan he thong. Phep divide tren BigDecimal bat buoc phai chi dinh scale va RoundingMode, nguoc lai se nem ArithmeticException neu chia khong het.
+### Lỗi hay gặp
+- Dùng {{double}} hoặc khởi tạo {{BigDecimal}} từ {{double}} -> sai số nhị phân, tổng 12 kỳ không khớp hợp đồng.
+- Gọi {{divide}} không chỉ định {{scale}} và {{RoundingMode}} -> {{ArithmeticException}} khi chia không hết (ví dụ 10/3).
+- Làm tròn mỗi kỳ nhưng không bù phần dư -> lệch 1-3 đồng/hợp đồng, kiểm toán từ chối.
+- Mỗi module tự chọn {{RoundingMode}} hoặc quy ước ngày khác nhau -> hai hệ thống tính ra hai số khác nhau cho cùng khoản vay.
 
-### Loi hay gap
-- Dung double cho tien -> sai so, tong lai 12 thang khop hop dong.
-- Lam tro moi thang nhung khong cong du vao ky cuoi -> tong lai 12 thang thieu 1-2 dong, hop dong khong khop, kiem toan chap thuan khong duoc.
-- Moi module chon RoundingMode khac nhau -> cung mot khoan vay, hai nguoi tinh ra hai ket qua.
-- Tinh lai ngay dung ngay lich, khong quan ly quy actual/365 -> sai so ngay, sai tien lai.
+### Ví dụ đời thực
+Một công ty tài chính có 50.000 hợp đồng vay trả góp 12 tháng. Tháng đầu go-live, bộ phận kế toán đối soát thấy tổng lãi 12 tháng trên sổ cái không khớp tổng lãi chi tiết từng hợp đồng: mỗi hợp đồng lệch 1-3 đồng, cộng dồn cả tháng lệch vài chục nghìn đồng, báo cáo lãi/lỗ không cân. Điều tra cho thấy code dùng {{double}} và làm tròn mỗi kỳ nhưng không bù phần dư. Cách xử lý: đổi toàn bộ tính tiền sang {{BigDecimal}} khởi tạo từ chuỗi, tách hàm chia {{divideAndRemainder}} để bù phần dư vào kỳ cuối, viết unit test cho các biên (chia hết, dư 1, dư 11, khoản lớn). Sau vá, 100% hợp đồng khớp tổng đến từng đồng và báo cáo được kiểm toán chấp nhận.
 
-### Vi du doi thuc
-Mot cong ty tai chinh cho vay tra gop 50.000 hop dong, moi hop dong 12 thang. Thang dau trien khai, bo ke toan bao cao tong lai 12 thang khong khop voi tong tong tien lai tung hop dong, lech tu 1 den 3 dong moi hop dong, tong chung lech hai chuc nghin dong/thang. Nguyen nhan: tinh lai theo double va lam tro moi thang khong cong phan du. Dev sua: dung BigDecimal, tien toan bo gia tri tu String, lam tro mot lan o buoc cuoi, phan bo phan du vao ky cuoi, them unit test cho cac truong hop (chia het, du 1, du 2, so tien lon). Ket qua: tong lai 12 thang luon khop hop dong, bao cao lai lo cuoi thang duoc kiem toan chap nhan.
+### Trả lời mẫu khi phỏng vấn
+"Với khoản vay trả góp 12 tháng, em tính toàn bộ tiền bằng {{BigDecimal}} khởi tạo từ chuỗi, không dùng {{double}} vì {{double}} có sai số nhị phân. Lãi mỗi kỳ tính trên dư nợ: dư nợ nhân lãi suất năm nhân số ngày thực tế chia 365, giữ scale trung gian lớn rồi mới {{setScale(0, RoundingMode.HALF_UP)}} vì VND không có phần thập phân. Nếu hợp đồng quy định tổng lãi cố định, em dùng {{divideAndRemainder}} để chia đều và cộng phần dư vào kỳ cuối theo quy ước đã thống nhất với kế toán, đảm bảo tổng 12 kỳ khớp hợp đồng đến từng đồng. Toàn hệ thống phải thống nhất một {{RoundingMode}} và một quy ước đếm ngày; em sẽ viết unit test cho các trường hợp chia hết và có dư để chặn hồi quy."
 
-### Tra loi muon khi pham van
-"Khoan vay tra gop 12 thang, em tinh lai moi thang bang BigDecimal khoi tao tu String, khong dung double. Lai ky = so du no ky truoc x lai suat x so ngay thuc / 365, lam tro mot lan o buoc cuoi bang setScale(0, HALF_UP) vi VND la so nguyen dong. Tong lai 12 ky sau khi lam tro tung ky phai bang tong lai hop dong; phan du do lam tro (tien le dong) duoc cong vao ky tra cuoi cung theo quy tuc co dinh va ghi ro. Em chon mot che do lam tro (HALF_UP cho hien thi, HALF_EVEN neu can giam thien lech cong don) va ap dung nhat thuan toan he thong, ke unit test cac truong hop chia het va co phan du."
-
-> Senior tip: O phan du (tien le dong) la cau an dat trong kiem toan: 1 dong cung phai duoc bo sinh va co quy tuc co dinh. Hinh dong "cong vao ky cuoi" de tot truoc, nhung quy tuc phai duoc xac dinh voi ke toan truoc khi code.
-
-  `,
+> Senior tip: Lệch 1 đồng là lỗi nghiêm trọng trong kiểm toán ngân hàng. Luôn chốt quy ước "phần dư cộng vào kỳ nào, {{RoundingMode}} nào, actual/365 hay actual/360" bằng văn bản với nghiệp vụ/kế toán trước khi code, và khóa bằng test tự động.
+`,
   follow: [
     'Tai sao VND khong co phan thap phan va dieu do anh huong the nao den code?',
     'Phan du do lam tro duoc cong vao ky tra cuoi hay phan bo deu, chon cai nao va tai sao?',
@@ -3508,7 +3499,7 @@ Mot ngan hang quan ly 2 trieu so tiet kiem. Quy 1/2023 lai ky 12 thang 7.5%/nam.
   topic: 'banking',
   level: 'senior',
   q: 'Tích hợp core banking (T24, Temenos) qua API/ESB diễn ra thế nào: pattern adapter, canonical model, idempotency, và cách xử lý giao dịch phân tán khi core không hỗ trợ transaction 2PC?',
-  a: `**Tóm tắt:** Core banking hiện đại (T24 Transact, Temenos T24) thường không cho phép transaction phân tán 2PC (two-phase commit) từ bên ngoài. Tích hợp an toàn dùng **adapter/anti-corruption layer** với **canonical model** trung gian: hệ thống chuyển đổi lệnh nghiệp vụ sang định dạng core (API REST/JSON hoặc message queue), đảm bảo idempotency bằng khóa duy nhất, và dùng **saga** (bước bù trừ) thay vì 2PC khi luồng đi qua nhiều hệ thống. ESB (Enterprise Service Bus) đóng vai trò điều phối, biến đổi định dạng, và garantie delivery.
+  a: `**Tóm tắt:** Core banking hiện đại (T24 Transact, Temenos T24) thường không cho phép transaction phân tán 2PC (two-phase commit) từ bên ngoài. Tích hợp an toàn dùng **adapter/anti-corruption layer** với **canonical model** trung gian: hệ thống chuyển đổi lệnh nghiệp vụ sang định dạng core (API REST/JSON hoặc message queue), đảm bảo idempotency bằng khóa duy nhất, và dùng **saga** (bước bù trừ) thay vì 2PC khi luồng đi qua nhiều hệ thống. ESB (Enterprise Service Bus - bus dịch vụ doanh nghiệp, thành phần trung gian điều phối và chuyển đổi thông điệp giữa các hệ thống) đóng vai trò điều phối, biến đổi định dạng, và đảm bảo gửi nhận tin cậy (guaranteed delivery - không mất message khi truyền).
  
 ### Tích hợp core banking là gì (giải thích từ đầu)
  Core banking là "trái tim" lưu sổ cái, số dư, sản phẩm. Các hệ thống xung quanh (internet banking, mobile, CRM, thanh toán, cho vay) cần gọi core để: tra số dư, trừ/cộng tiền, mở tài khoản, thay hạn mức... Core thườngExpose API (REST, SOAP) hoặc nhận message qua message queue (IBM MQ, Kafka). Vì core là hệ thống cũ, ổn định, không dễ thay đổi, nên **không được phép** các hệ thống ngoài gọi thẳng vào bảng dữ liệu của core — mọi thứ phải đi qua giao diện chuẩn.
