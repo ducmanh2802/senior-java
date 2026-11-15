@@ -60,7 +60,7 @@ Kết quả sau 2 tuần: giao dịch nhân đôi giảm về 0, khiếu nại h
       'Làm sao để đảm bảo idempotency cho POST /transfers khi client timeout và retry?',
       'Tại sao PUT thay thế toàn bộ resource thay vì merge? Trade-off gì so với PATCH?'
     ],
-    tags: ['HTTP', 'Idempotency', 'Banking']
+    tags: ['HTTP', 'Idempotency', 'Banking', 'core']
   },
   {
     id: 'api-002',
@@ -103,7 +103,7 @@ API thanh toán của một ví trả **200 kèm {{"success": false}}** cho mọ
       'Khi nào trả 202 thay vì 201? Client poll status như thế nào?',
       'Thiết kế response error thống nhất cho toàn hệ thống microservice?'
     ],
-    tags: ['HTTP Status', 'Error Handling', 'RFC 7807']
+    tags: ['HTTP Status', 'Error Handling', 'RFC 7807', 'core']
   },
   {
     id: 'api-003',
@@ -173,7 +173,7 @@ Cursor là base64 của {{(bookedAt, id)}} cuối trang, server giải mã để
       'Làm sao filter theo khoảng ngày hiệu quả trên bảng transaction 100M rows?',
       'Cursor opaque vs transparent: ưu nhược điểm bảo mật?'
     ],
-    tags: ['REST Design', 'Pagination', 'Banking']
+    tags: ['REST Design', 'Pagination', 'Banking', 'core']
   },
   {
     id: 'api-004',
@@ -230,7 +230,7 @@ API trả danh sách sản phẩm có p99 800ms dù truy vấn DB chỉ 40ms. Pr
       'HandlerInterceptor vs Filter: thứ tự chạy, khi nào dùng cái nào?',
       'Cách custom HttpMessageConverter để hỗ trợ format riêng (protobuf, CBOR)?'
     ],
-    tags: ['Spring MVC', 'DispatcherServlet', 'Performance']
+    tags: ['Spring MVC', 'DispatcherServlet', 'Performance', 'core']
   },
   {
     id: 'api-005',
@@ -316,7 +316,7 @@ Kết quả sau 2 tuần: p99 latency giảm từ 2,4s xuống 310ms, throughput
       'Làm sao log request/response body trong Filter mà không làm hỏng stream cho controller?',
       'Spring Security filter chain chạy ở đâu so với Filter/Interceptor tùy chỉnh?'
     ],
-    tags: ['Filter', 'Interceptor', 'AOP', 'Spring Boot', 'MDC']
+    tags: ['Filter', 'Interceptor', 'AOP', 'Spring Boot', 'MDC', 'core']
   },
   {
     id: 'api-006',
@@ -417,7 +417,7 @@ Một công ty fintech cung cấp API cho đối tác tích hợp: API dùng @Re
       'Validate nested object trong @RequestBody (List<@Valid Item>) như thế nào?',
       'Cách custom validator annotation (ví dụ @ValidVietnamPhone) dùng chung cho Param/Body?'
     ],
-    tags: ['Validation', 'RFC 7807', 'Spring MVC', 'ProblemDetail']
+    tags: ['Validation', 'RFC 7807', 'Spring MVC', 'ProblemDetail', 'core']
   },
   {
     id: 'api-007',
@@ -512,7 +512,7 @@ Hệ thống internet banking của một ngân hàng: ban đầu chỉ có orig
       'CORS với WebSocket (STOMP over SockJS) cấu hình khác như thế nào?',
       'Làm sao handle CORS cho API gateway (Spring Cloud Gateway) tập trung?'
     ],
-    tags: ['CORS', 'Spring Security', 'Preflight', 'Banking']
+    tags: ['CORS', 'Spring Security', 'Preflight', 'Banking', 'core']
   },
   {
     id: 'api-008',
@@ -577,7 +577,7 @@ Một app internet banking dùng JWT trong localStorage cho authentication. Mộ
       'Implement refresh token rotation với reuse detection (OAuth 2.0 Security BCP, RFC 9700) như thế nào?',
       'So sánh JWT opaque token vs self-contained JWT cho microservice internal call?'
     ],
-    tags: ['Authentication', 'JWT', 'Cookie', 'Session', 'Security', 'Banking']
+    tags: ['Authentication', 'JWT', 'Cookie', 'Session', 'Security', 'Banking', 'core']
   },
   {
     id: 'api-009',
@@ -667,7 +667,7 @@ Hệ thống quản lý tài khoản của một ngân hàng: khách hàng A và
       'So sánh ETag vs Last-Modified cho cache: ưu nhược điểm?',
       'Làm sao generate ETag cho collection resource (GET /accounts?page=1)?'
     ],
-    tags: ['ETag', 'Conditional Request', 'Optimistic Locking', 'Cache', 'Banking']
+    tags: ['ETag', 'Conditional Request', 'Optimistic Locking', 'Cache', 'Banking', 'core']
   },
   {
     id: 'api-010',
@@ -801,7 +801,7 @@ Hệ thống báo cáo của một ngân hàng: mỗi ngày có 5.000 yêu cầu
       'Thiết kế retry với exponential backoff + jitter cho webhook delivery?',
       'Làm sao cleanup job cũ (TTL) và handle job bị treo (stuck RUNNING)?'
     ],
-    tags: ['Async API', '202 Accepted', 'Polling', 'Webhook', 'Spring Boot']
+    tags: ['Async API', '202 Accepted', 'Polling', 'Webhook', 'Spring Boot', 'core']
   },
   {
     id: 'api-011',
@@ -924,7 +924,7 @@ Một ngân hàng thương mại tích hợp với ví điện tử đối tác 
       'Outbox relay: polling publisher vs CDC (Debezium) khác nhau như thế nào?',
       'Làm sao handle partner down lâu (circuit breaker cho webhook dispatcher)?'
     ],
-    tags: ['Webhook', 'Partner Integration', 'HMAC', 'Retry', 'Outbox', 'Banking'],
+    tags: ['Webhook', 'Partner Integration', 'HMAC', 'Retry', 'Outbox', 'Banking', 'core'],
     refs: [
       { type: 'doc', title: 'RFC 9110: HTTP Semantics', url: 'https://www.rfc-editor.org/rfc/rfc9110' },
       { type: 'doc', title: 'OWASP API Security Project', url: 'https://owasp.org/API-Security/' },
@@ -1262,7 +1262,7 @@ Một ngân hàng phát hành API mở cho 30 đối tác fintech. Ban đầu de
       'Consumer-driven contract (Pact) vs Provider-driven (OpenAPI) khác nhau như thế nào?',
       'Làm sao version API khi có multiple team deploy độc lập (monorepo vs polyrepo)?'
     ],
-    tags: ['OpenAPI', 'API First', 'Contract Test', 'springdoc', 'CI/CD', 'Breaking Change']
+    tags: ['OpenAPI', 'API First', 'Contract Test', 'springdoc', 'CI/CD', 'Breaking Change', 'core']
   },
   {
     id: 'api-015',
@@ -1358,7 +1358,7 @@ Cổng thanh toán của một ngân hàng xử lý 50.000 giao dịch/ngày qua
       'Nếu PSP không hỗ trợ idempotency key thì xử lý thế nào?',
       'Idempotency-Key nên gắn với user session hay với ý định thanh toán? Vì sao?'
     ],
-    tags: ['Idempotency', 'Payment', 'POST', 'Distributed', 'PostgreSQL']
+    tags: ['Idempotency', 'Payment', 'POST', 'Distributed', 'PostgreSQL', 'core']
   },
   {
     id: 'api-016',
@@ -1436,7 +1436,7 @@ Một ngân hàng cung cấp API mở cho 40 đối tác (e-wallet, BNPL, ERP). 
       'Versioning bằng media type có thật sự "sạch" hơn URI khi vận hành không?',
       'Làm sao phát hiện breaking change tự động trong CI?'
     ],
-    tags: ['API Versioning', 'Deprecation', 'Sunset', 'Gateway', 'Compatibility']
+    tags: ['API Versioning', 'Deprecation', 'Sunset', 'Gateway', 'Compatibility', 'core']
   },
   {
     id: 'api-017',
@@ -1525,7 +1525,7 @@ Ngân hàng có bảng transactions 80 triệu dòng, API lịch sử giao dịc
       'Keyset pagination hỗ trợ sắp xếp theo nhiều cột động như thế nào?',
       'Làm sao phân trang ổn định khi sort theo cột có thể NULL?'
     ],
-    tags: ['Pagination', 'Cursor', 'Keyset', 'PostgreSQL', 'Index']
+    tags: ['Pagination', 'Cursor', 'Keyset', 'PostgreSQL', 'Index', 'core']
   },
   {
     id: 'api-018',
@@ -1636,7 +1636,7 @@ API ngân hàng có hai team tự định nghĩa lỗi: team A trả {code: 4001
       'Làm sao để Spring Security cũng trả problem+json thay vì body mặc định?',
       'Có nên đưa danh sách lỗi validation vào type hay vào extension member?'
     ],
-    tags: ['RFC 9457', 'Problem Details', 'Error Handling', 'Spring Boot 3', 'API Design']
+    tags: ['RFC 9457', 'Problem Details', 'Error Handling', 'Spring Boot 3', 'API Design', 'core']
   },
   {
     id: 'api-019',
@@ -1737,7 +1737,7 @@ API công khai chạy 10 pod sau load balancer, giới hạn 100 yêu cầu/phú
       'Rate limit theo user và theo IP nên kết hợp thế nào để chống cả bot lẫn lạm dụng tài khoản?',
       'Có nên đặt rate limit ở gateway hay trong từng service?'
     ],
-    tags: ['Rate Limiting', 'Token Bucket', 'Redis', '429', 'Retry-After']
+    tags: ['Rate Limiting', 'Token Bucket', 'Redis', '429', 'Retry-After', 'core']
   },
   {
     id: 'api-020',
@@ -1837,7 +1837,7 @@ Hai thiết bị cùng sửa hạn mức người hưởng: A lưu trước 20 t
       'Khi nào optimistic locking không đủ và phải dùng pessimistic lock?',
       'Làm sao trả 412 kèm đủ thông tin để client tự merge?'
     ],
-    tags: ['Optimistic Locking', 'ETag', 'If-Match', 'JPA', 'Concurrency']
+    tags: ['Optimistic Locking', 'ETag', 'If-Match', 'JPA', 'Concurrency', 'core']
   },
   {
     id: 'api-021',
@@ -2292,7 +2292,7 @@ Hệ thống mở tài khoản online của một ngân hàng xử lý 5.000 req
       'Làm sao hiển thị lỗi theo field cho front-end highlight đúng ô nhập?',
       'Kiểm tra nghiệp vụ nhiều bước (trùng email, kiểm tra hạn mức) nên đặt ở service hay domain model?'
     ],
-    tags: ['Bean Validation', 'Hibernate Validator', 'Custom Constraint', 'Groups', 'Validation']
+    tags: ['Bean Validation', 'Hibernate Validator', 'Custom Constraint', 'Groups', 'Validation', 'core']
   },
   {
     id: 'api-026',
@@ -2561,7 +2561,7 @@ Hệ thống cập nhật hồ sơ khách hàng ngân hàng cho phép sửa mộ
       'JSON Patch có đảm bảo nguyên tử (toàn bộ mảng thao tác hay không phần nào) không?',
       'PATCH nên trả 200 kèm body mới hay 204? Vì sao?'
     ],
-    tags: ['PATCH', 'JSON Merge Patch', 'JSON Patch', 'RFC 7396', 'Idempotency']
+    tags: ['PATCH', 'JSON Merge Patch', 'JSON Patch', 'RFC 7396', 'Idempotency', 'core']
   },
   {
     id: 'api-029',
@@ -2948,7 +2948,7 @@ Kết quả sau 1 tháng: đơn trùng giảm về < 5/ngày (chỉ còn trườ
       'Idempotency key scope nên global hay per (user, endpoint)?',
       'So sánh idempotency key với natural idempotency qua PUT với resource id.'
     ],
-    tags: ['Idempotency', 'Redis', 'Concurrency', 'API Design']
+    tags: ['Idempotency', 'Redis', 'Concurrency', 'API Design', 'core']
   },
   {
     id: 'api-034',
@@ -3382,7 +3382,7 @@ Một ngân hàng thiết kế API public theo HATEOAS (HAL+JSON) cho 50 đối 
       'Spring HATEOAS sinh link như thế nào cho pagination (first, next, last)?',
       'HAL vs JSON:API vs Siren: format nào phổ biến và tooling thế nào?'
     ],
-    tags: ['HATEOAS', 'Hypermedia', 'REST', 'OpenAPI', 'GraphQL', 'API Design']
+    tags: ['HATEOAS', 'Hypermedia', 'REST', 'OpenAPI', 'GraphQL', 'API Design', 'core']
   },
   {
     id: 'api-040',
@@ -3492,7 +3492,7 @@ Ngân hàng chuyển từ session cookie sang OAuth 2.0 + PKCE cho mobile/web, C
       'Làm sao implement PKCE đúng chuẩn (code_verifier, code_challenge_method=S256)?',
       'mTLS với SPIFFE/SPIRE: sidecar Envoy vs application-native (Netty) trade-off gì?'
     ],
-    tags: ['OAuth 2.0', 'PKCE', 'Client Credentials', 'mTLS', 'Token Exchange', 'Revocation', 'Security']
+    tags: ['OAuth 2.0', 'PKCE', 'Client Credentials', 'mTLS', 'Token Exchange', 'Revocation', 'Security', 'core']
   },
   {
     id: 'api-042',
@@ -4095,7 +4095,7 @@ Một ứng dụng di động tạo yêu cầu upload sao kê, nhưng mạng th�
     'Nếu hai request PUT cùng URI nhưng body khác đến đồng thời, hệ thống cần đảm bảo điều gì?',
     'Khi nào If-None-Match: * hữu ích hơn idempotency key trong POST?'
   ],
-  tags: ['REST', 'PUT', 'POST', 'HTTP Status', 'Idempotency']
+  tags: ['REST', 'PUT', 'POST', 'HTTP Status', 'Idempotency', 'core']
 },
 {
   id: 'api-048',
@@ -4214,7 +4214,7 @@ API lịch sử giao dịch nhận 700 request/giây. Một client gửi {{sort=
     'Khi nào cần snapshot nhất quán thay vì cursor trên dữ liệu đang thay đổi?',
     'Bạn chọn index dựa trên metric và query plan nào trong PostgreSQL?'
   ],
-  tags: ['REST', 'Filtering', 'Sorting', 'Pagination', 'PostgreSQL', 'Performance']
+  tags: ['REST', 'Filtering', 'Sorting', 'Pagination', 'PostgreSQL', 'Performance', 'core']
 },
 {
   id: 'api-050',
