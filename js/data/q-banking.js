@@ -2796,7 +2796,8 @@ Một ví đối soát thủ công bằng Excel với 3 ngân hàng đối tác:
 ### Trả lời mẫu khi phỏng vấn
 "Đối soát tự động của tôi có năm bước. Nhận dữ liệu đối tác và kiểm tra toàn vẹn, file lỗi thì yêu cầu gửi lại chứ không xử lý một phần. Chuẩn hoá về cùng định dạng rồi so khớp theo mã tham chiếu chung, bằng một full outer join, ra bốn nhóm: khớp, chỉ bên mình, chỉ bên đối tác, lệch số tiền hay trạng thái. Tự động xử lý những nhóm có quy tắc rõ, như giao dịch treo đã được đối tác xác nhận thành công hay lệch do ranh giới ngày. Phần còn lại vào hàng chờ theo maker-checker: một người đề xuất điều chỉnh kèm bằng chứng, người khác duyệt, và hệ thống chặn việc tự duyệt. Mọi điều chỉnh là bút toán mới, không sửa giao dịch gốc, có audit đầy đủ. Cuối cùng là báo cáo hằng ngày theo loại lệch, theo đối tác và tuổi của khoản chưa xử lý."
 
-> Senior tip: thống kê nguyên nhân lệch theo tuần. Mỗi nhóm nguyên nhân lặp lại là một cơ hội tự động hoá hoặc sửa gốc ở hệ thống nguồn — mục tiêu là hàng chờ thủ công ngày càng ngắn, không phải thuê thêm người đối soát.`,
+> Senior tip: thống kê nguyên nhân lệch theo tuần. Mỗi nhóm nguyên nhân lặp lại là một cơ hội tự động hoá hoặc sửa gốc ở hệ thống nguồn — mục tiêu là hàng chờ thủ công ngày càng ngắn, không phải thuê thêm người đối soát.
+  `,
   follow: [
     'Nếu file đối tác đến muộn 2 ngày, xử lý thế nào?',
     'Làm sao phân biệt lệch thật và lệch do parse sai?',
@@ -2901,7 +2902,8 @@ Một công ty fintech chuẩn bị đánh giá PCI DSS lần đầu: rà soát 
 ### Trả lời mẫu khi phỏng vấn
 "Với hệ thống thẻ, tôi tuân thủ PCI DSS bằng cách thu hẹp phạm vi càng nhiều càng tốt. Số thẻ đầy đủ chỉ được nhập qua trang hoặc SDK của vault và chỉ lưu trong vault tokenization ở mạng tách biệt; các hệ thống khác như core, CRM, kho dữ liệu chỉ giữ token và bốn số cuối, nên ra khỏi phạm vi đánh giá. Tuyệt đối không lưu CVV, PIN hay dữ liệu dải từ sau khi uỷ quyền. Khoá mã hoá nằm trong HSM hoặc KMS theo mô hình envelope encryption, khoá chủ không bao giờ rời thiết bị, và xoay vòng định kỳ. HSM cũng dùng cho các thao tác như kiểm tra PIN, kiểm tra mã của thẻ chip. Mọi lần detokenize hay xem dữ liệu nhạy cảm đều được ghi vào audit log bất biến, có hash chain và tách quyền. Log ứng dụng được che tập trung, và môi trường test dùng dữ liệu giả."
 
-> Senior tip: vẽ sơ đồ luồng dữ liệu thẻ (cardholder data flow) trước mọi thay đổi kiến trúc liên quan thanh toán. Một service mới vô tình nhận PAN là cả service đó và mọi thứ kết nối tới nó rơi vào phạm vi PCI.`,
+> Senior tip: vẽ sơ đồ luồng dữ liệu thẻ (cardholder data flow) trước mọi thay đổi kiến trúc liên quan thanh toán. Một service mới vô tình nhận PAN là cả service đó và mọi thứ kết nối tới nó rơi vào phạm vi PCI.
+  `,
   follow: [
     'Tại sao HSM an toàn hơn lưu khóa trong file config?',
     'Tokenization khác mã hóa (encryption) ở điểm nào?',
@@ -2954,7 +2956,8 @@ Một ngân hàng số từng xử lý timeout bằng cách báo khách "giao d�
 ### Trả lời mẫu khi phỏng vấn
 "Với NAPAS 24/7, timeout nghĩa là chưa biết kết quả, vì có thể NAPAS chưa nhận lệnh, hoặc đã xử lý thành công nhưng phản hồi bị mất. Nên tôi không coi timeout là thất bại: giao dịch chuyển sang trạng thái chờ tra soát, tiền của người gửi được tạm giữ, app hiển thị đang xử lý và không cho gửi lại lệnh mới. Mỗi lệnh có mã tham chiếu duy nhất; một job hỏi trạng thái theo mã đó với backoff và cập nhật máy trạng thái idempotent: thành công thì ghi nợ chính thức, thất bại thì hoàn tiền tạm giữ. Những giao dịch vẫn chưa rõ sẽ được chốt trong đối soát cuối ngày với file của NAPAS, hoặc đi vào quy trình tra soát chính thức có thời hạn và maker-checker. Không tự động gửi lại lệnh, vì đó là cách nhanh nhất để chuyển tiền hai lần."
 
-> Senior tip: đo tỉ lệ giao dịch rơi vào trạng thái chờ tra soát theo giờ và theo ngân hàng nhận. Tỉ lệ tăng đột biến thường là dấu hiệu sớm nhất của sự cố phía đối tác — trước cả khi họ thông báo.`,
+> Senior tip: đo tỉ lệ giao dịch rơi vào trạng thái chờ tra soát theo giờ và theo ngân hàng nhận. Tỉ lệ tăng đột biến thường là dấu hiệu sớm nhất của sự cố phía đối tác — trước cả khi họ thông báo.
+  `,
   follow: [
     'Tại sao không tự động retry khi timeout?',
     'Transaction ID giúp tra soát thế nào?',
@@ -3009,7 +3012,8 @@ Một ngân hàng số chỉ chống trùng ở gateway bằng Redis TTL 5 phút
 ### Trả lời mẫu khi phỏng vấn
 "Idempotency end-to-end nghĩa là một ý định thanh toán chỉ cho ra một kết quả, dù retry ở bất kỳ tầng nào. Client sinh khoá một lần khi người dùng xác nhận, lưu lại để mọi lần retry dùng cùng khoá, và khoá đi xuyên suốt từ app qua gateway, service tới core và sang đối tác. Server lưu khoá cùng hash nội dung, trạng thái và response trong DB với khoá chính theo người dùng và khoá, ghi trong cùng transaction với bút toán: đã xong thì trả lại response cũ, đang xử lý thì trả 409 hoặc 202, cùng khoá khác nội dung thì từ chối. Redis chỉ là lớp lọc nhanh, nguồn sự thật là DB. TTL phải dài hơn hành vi retry thật của app, với tiền thường là nhiều ngày. Và khi kho lưu khoá lỗi thì fail-closed, từ chối request, vì chậm một chút vẫn tốt hơn trừ tiền hai lần."
 
-> Senior tip: viết một bộ test end-to-end gửi cùng một khoá ở ba thời điểm (ngay lập tức, đồng thời, sau 2 giờ) và kiểm tra số bút toán. Bài test này phát hiện gần như mọi khe hở idempotency trước khi khách hàng phát hiện.`,
+> Senior tip: viết một bộ test end-to-end gửi cùng một khoá ở ba thời điểm (ngay lập tức, đồng thời, sau 2 giờ) và kiểm tra số bút toán. Bài test này phát hiện gần như mọi khe hở idempotency trước khi khách hàng phát hiện.
+  `,
   follow: [
     'TTL của idempotency key nên là bao nhiêu cho giao dịch tiền?',
     'Nếu Redis (cache) lỗi, hệ thống tiền nên fail-closed hay fail-open?',
@@ -3498,5 +3502,1311 @@ Mot ngan hang quan ly 2 trieu so tiet kiem. Quy 1/2023 lai ky 12 thang 7.5%/nam.
     'Nhan vien IT sua truc tiep bang lai suat trong DB, he thong phat hien duoc khong?'
   ],
   tags: ['tham chieu du lieu', 'phien ban', 'lai suat', 'audit trail', 'effective-dated']
+},
+{
+  id: 'banking-045',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Tích hợp core banking (T24, Temenos) qua API/ESB diễn ra thế nào: pattern adapter, canonical model, idempotency, và cách xử lý giao dịch phân tán khi core không hỗ trợ transaction 2PC?',
+  a: `**Tóm tắt:** Core banking hiện đại (T24 Transact, Temenos T24) thường không cho phép transaction phân tán 2PC (two-phase commit) từ bên ngoài. Tích hợp an toàn dùng **adapter/anti-corruption layer** với **canonical model** trung gian: hệ thống chuyển đổi lệnh nghiệp vụ sang định dạng core (API REST/JSON hoặc message queue), đảm bảo idempotency bằng khóa duy nhất, và dùng **saga** (bước bù trừ) thay vì 2PC khi luồng đi qua nhiều hệ thống. ESB (Enterprise Service Bus) đóng vai trò điều phối, biến đổi định dạng, và garantie delivery.
+ 
+### Tích hợp core banking là gì (giải thích từ đầu)
+ Core banking là "trái tim" lưu sổ cái, số dư, sản phẩm. Các hệ thống xung quanh (internet banking, mobile, CRM, thanh toán, cho vay) cần gọi core để: tra số dư, trừ/cộng tiền, mở tài khoản, thay hạn mức... Core thườngExpose API (REST, SOAP) hoặc nhận message qua message queue (IBM MQ, Kafka). Vì core là hệ thống cũ, ổn định, không dễ thay đổi, nên **không được phép** các hệ thống ngoài gọi thẳng vào bảng dữ liệu của core — mọi thứ phải đi qua giao diện chuẩn.
+ 
+### Adapter / Anti-corruption layer (ACL)
+ ACL là lớp trung gian bảo vệ core khỏi sự thay đổi của hệ thống ngoài, và ngược lại. Hệ thống ngoài nói "ngôn ngữ nghiệp vụ của mình" (ví dụ JSON field camelCase), ACL dịch sang "ngôn ngữ của core" (ví dụ XML ISO 20022, hoặc T24 jBASE record format). Lợi ích:
+ - Core thay đổi phiên bản -> chỉ sửa ACL, không sửa 20 hệ thống gọi.
+ - Hệ thống ngoài đổi field -> chỉ sửa ACL, core không biết.
+ - ACL validate, enrich dữ liệu trước khi gửi core (ví dụ thêm ngày nghiệp vụ, mã chi nhánh).
+ 
+### Canonical model (mô hình chuẩn nội bộ)
+ Thay vì map N hệ thống x M hệ thống trực tiếp, dùng một mô hình trung gian (canonical) biểu diễn nghiệp vụ theo ngữ nghĩa chung:
+ ~~~text
+ Hệ thống A --map--> Canonical Model <--map-- Hệ thống B
+ Hệ thống C --map--> Canonical Model <--map-- Core Banking (T24)
+ ~~~
+ Canonical model định nghĩa: Money(amount, currency), Account(id, type, status), Transaction(id, type, amount, accounts[], referenceId, businessDate...). Mỗi adapter chỉ map 1 chiều: hệ thống <-> canonical.
+ 
+### Idempotency xuyên suốt
+ Core banking thường **không** tự nhiên idempotent cho mọi API. Adapter phải tự đảm bảo:
+ 1. Client gửi {{idempotency-key}} (UUID) kèm yêu cầu.
+ 2. Adapter lưu key + hash request + trạng thái trong DB (unique constraint trên key).
+ 3. Gọi core: nếu core thành công -> lưu kết quả, trả về. Nếu core timeout -> giữ trạng thái {{IN_PROGRESS}}, job retry dùng **cùng key** gọi lại core (core phải hỗ trợ idempotent key hoặc adapter tự xử lý duplicate detection).
+ 4. Nếu core trả lỗi {{DUPLICATE}} -> coi như thành công, trả kết quả cũ.
+ 
+### Xử lý giao dịch phân tán không có 2PC: Saga
+ Khi một luồng nghiệp vụ chạm nhiều hệ thống (ví dụ: khách nạp tiền từ thẻ -> ví: payment gateway -> core banking -> ledger), không thể dùng 2PC vì core không tham gia. Dùng **Saga** (choreography hoặc orchestration):
+ - Mỗi bước là một transaction cục bộ, có **bước bù trừ (compensation)**.
+ - Ví dụ nạp tiền: (1) Payment gateway hold thẻ, (2) Gọi core cộng tiền ví, (3) Ghi ledger. Nếu bước (3) thất bại -> compensation: gọi core trừ tiền ví (reversal), payment gateway release hold.
+ - Orchestrator (trong ESB hoặc service điều phối) theo dõi trạng thái, thực hiện compensation tự động khi có lỗi.
+ 
+ ~~~seq
+ title: Saga nap tien tu the vao vi (khong 2PC)
+ actors: Khach | Orchestrator | PaymentGW | CoreBank | Ledger
+ Khach -> Orchestrator: nap 500k tu the
+ Orchestrator -> PaymentGW: authorize 500k (hold)
+ PaymentGW --> Orchestrator: auth_code, hold_ok
+ Orchestrator -> CoreBank: cong tien vi (idem_key=K1)
+ CoreBank --> Orchestrator: success, tx_id=C1
+ Orchestrator -> Ledger: ghi but toan (idem_key=K2)
+ Ledger --> Orchestrator: success
+ Orchestrator -> PaymentGW: capture (hoan tat)
+ PaymentGW --> Orchestrator: captured
+ Orchestrator --> Khach: thanh cong
+ note Orchestrator..Ledger: neu Ledger fail -> CoreBank reversal, PaymentGW release
+ ~~~
+ 
+### ESB (Enterprise Service Bus) làm gì
+ ESB không phải "message queue đơn giản". Nó cung cấp:
+ - **Routing**: gửi message đến đúng service/core theo nội dung.
+ - **Transformation**: XML <-> JSON, ISO 20022 <-> T24 format, field mapping.
+ - **Protocol bridging**: HTTP/REST <-> JMS/MQ <-> SOAP.
+ - **Guaranteed delivery**: persistent queue, retry với backoff, dead letter queue.
+ - **Monitoring**: theo dõi message flow, latency, error rate.
+ 
+### Lỗi hay gặp
+ - Gọi thẳng API core từ frontend/mobile -> core bị quá tải, coupling cứng.
+ - Không có ACL -> core nâng cấp phiên bản làm gãy 15 hệ thống ngoài.
+ - Gửi request không idempotent -> network retry gây trùng giao dịch.
+ - Dùng 2PC giả định core hỗ trợ -> transaction treo, deadlock core.
+ - Không có compensation -> lỗi giữa chừng để dữ liệu không nhất quán.
+ - Mapping field thủ công trong code rải rác -> thay đổi một field mất tuần.
+ 
+### Ví dụ đời thực
+ 
+ Một ngân hàng tích hợp T24 với 12 hệ thống xung quanh (mobile, internet banking, CRM, loan origination, card, payment...). Ban đầu mỗi hệ thống gọi REST T24 trực tiếp, mapping field trong code của riêng họ. Khi T24 nâng cấp từ R18 lên R20, 30+ API thay đổi signature, tất cả hệ thống cùng gãy, triển khai mất 3 tháng. Dev dựng **Integration Layer** (Spring Boot + Kafka + Camel): mọi hệ thống gửi command/event đến Kafka theo canonical model (JSON schema Avro), Integration Layer consume, transform sang T24 format (jBASE/TAFC), gọi T24 qua middleware (TAFJ), xử lý response, publish event kết quả ngược lại Kafka. Idempotency key do client sinh, lưu trong bảng {{integration_idem}} với unique constraint. Saga orchestrator quản lý luồng nạp/rút/chuyển tiền: mỗi bước ghi state machine vào DB, compensation tự động khi lỗi. Kết quả: T24 upgrade R22 chỉ mất 2 tuần sửa Integration Layer, 0 hệ thống ngoài bị ảnh hưởng; throughput tăng 3x nhờ async processing; 0 giao dịch trùng nhờ idempotency end-to-end.
+ 
+### Trả lời mẫu khi phỏng vấn
+ 
+ "Tích hợp core banking (T24/Temenos) tôi luôn dùng adapter/anti-corruption layer với canonical model. Hệ thống ngoài nói JSON/canonical, adapter dịch sang T24 format (TAFC/ISO 20022) và ngược lại — core không bao giờ bị gọi thẳng từ ngoài. Vì core không hỗ trợ 2PC, các luồng đa hệ thống dùng Saga: mỗi bước có compensation, orchestrator theo dõi state machine. Idempotency key do client sinh, đi xuyên suốt từ mobile qua ESB đến core, lưu trong DB với unique constraint. ESB lo routing, transformation, guaranteed delivery, dead letter queue. Thực tế: một ngân hàng 12 hệ thống gọi T24 trực tiếp, upgrade T24 làm gãy hết; sau khi dựng Integration Layer canonical + Kafka + Saga, upgrade sau chỉ sửa adapter, 0 hệ thống ngoài ảnh hưởng, throughput x3."
+ 
+ > Senior tip: Trong phỏng vấn, hãy nhấn mạnh **ba chốt**: (1) Adapter canonical model cô lập core, (2) Saga thay 2PC với compensation rõ ràng, (3) Idempotency key do client sinh đi xuyên suốt. Đừng nói "dùng ESB" chung chung — hãy nói ESB làm gì cụ thể: transform, route, retry, DLQ.
+ 
+ > Cụm từ: Anti-corruption layer (ACL) là lớp dịch thuật bảo vệ domain model của một hệ thống không bị ô nhiễm bởi model của hệ thống khác. Saga là chuỗi transaction cục bộ có bước bù trừ, không phải distributed transaction 2PC.
+ 
+  `,
+  follow: [
+    'Tại sao core banking thường không hỗ trợ 2PC, và Saga giải quyết vấn đề nhất quán như thế nào?',
+    'Canonical model khác DTO thông thường ở đâu, và versioning schema như thế nào?',
+    'Khi core banking timeout giữa chừng một Saga, orchestrator quyết định compensation hay retry dựa trên tiêu chí gì?'
+  ],
+  tags: ['T24', 'Temenos', 'core banking', 'ESB', 'adapter', 'canonical model', 'saga', 'idempotency']
+},
+{
+  id: 'banking-046',
+  topic: 'banking',
+  level: 'lead',
+  q: 'RTGS (Real-Time Gross Settlement) so với Deferred Net Settlement (DNS): khác nhau cơ bản, hệ thống ngân hàng trung ương xử lý như thế nào, và dev cần lưu ý gì khi tích hợp?',
+  a: `**Tóm tắt:** **RTGS** (thanh toán thực thời grosso) xử lý từng giao dịch riêng lẻ, ngay lập tức, không bù trừ — tiền chuyển ngay, kết thúc ngay. **DNS** (thanh toán bù trừ hoãn lại) gom nhiều giao dịch, chờ đến cuối chu kỳ (ví dụ cuối ngày), tính số dư ròng (net) giữa các ngân hàng, rồi chuyển một lần. RTGS dùng cho giao dịch giá trị lớn, khẩn cấp (thường > 500 triệu VND tại Việt Nam); DNS dùng cho thanh toán số lượng lớn, giá trị nhỏ (chuyển khoản nhanh 24/7, thẻ, QR). Dev tích hợp phải hiểu: RTGS = tiền đến ngay, không thể hủy, phí cao; DNS = tiền đến theo lô, có thể pending/reversal trong chu kỳ, phí thấp.
+ 
+### RTGS là gì (giải thích từ đầu)
+ **RTGS** (Real-Time Gross Settlement - thanh toán thực thời grosso): mỗi lệnh chuyển tiền được xử lý **ngay lập tức**, **riêng lẻ** (gross), **không bù trừ** với giao dịch khác. Ngân hàng trung ương (State Bank) giữ tài khoản của từng ngân hàng thương mại (tài khoản ngân hàng tại NHNN). Khi ngân hàng A chuyển 1 tỷ cho ngân hàng B qua RTGS: NHNN trừ 1 tỷ từ tài khoản A, cộng 1 tỷ vào tài khoản B, **trong vài giây**. Giao dịch xong là xong, **không thể hủy** (irrevocable). Đặc điểm: giá trị lớn, ưu tiên cao, phí cao, giờ hoạt động hạn chế (thường giờ hành chính).
+ 
+### DNS là gì
+ **DNS** (Deferred Net Settlement - thanh toán bù trừ hoãn lại): các giao dịch được gom lại, **không xử lý ngay**, chờ đến một **chu kỳ cut-off** (ví dụ 11:00, 14:00, 16:00, 23:00). Tại cut-off, hệ thống tính **số dư ròng (net position)** của mỗi ngân hàng: tổng tiền nhận được - tổng tiền phải gửi đi. Chỉ chuyển **một lần** số dư ròng này giữa các tài khoản tại NHNN. Ví dụ: trong chu kỳ, ngân hàng A gửi cho B 500 triệu, B gửi cho A 300 triệu -> ròng A nợ B 200 triệu -> chỉ chuyển 200 triệu từ A sang B. Giao dịch riêng lẻ trong chu kỳ vẫn ở trạng thái {{PENDING}} cho đến khi settlement xong.
+ 
+### So sánh cốt lõi
+ | Tiêu chí | RTGS | DNS |
+ |---|---|---|
+ | Xử lý | Từng giao dịch, ngay lập tức | Gom lô, chu kỳ cut-off |
+ | Bù trừ | Không (gross) | Có (net position) |
+ | Thời gian hoàn tất | Giây (thực thời) | Tùy chu kỳ (có thể giờ sau, ngày sau) |
+ | Khả năng hủy | Không thể (irrevocable) | Có thể reversal trong chu kỳ |
+ | Phí | Cao (nghìn đồng/giao dịch) | Thấp (đồng/giao dịch) |
+ | Giờ hoạt động | Giờ hành chính NHNN | 24/7 hoặc nhiều chu kỳ/ngày |
+ | Dùng cho | Giá trị lớn (>500tr VND), khẩn | Số lượng lớn, giá trị nhỏ |
+ | Ví dụ VN | Hệ thống RTGS của NHNN | NAPAS 24/7 (chuyển khoản nhanh), Visa/MC settlement |
+ 
+### Hệ thống RTGS tại Việt Nam
+ Ngân hàng Nhà nước vận hành hệ thống RTGS (thường gọi là **HVPS - High Value Payment System**). Ngân hàng thương mại kết nối qua **ESB/Adapter** gửi message ISO 20022 ({{pacs.008}} cho customer credit transfer, {{pacs.009}} cho FI-to-FI). Message phải có {{UETR}} (Unique End-to-End Transaction Reference) để truy vết. NHNN xử lý, trả {{pacs.002}} (status report) với mã {{ACSC}} (accepted settlement completed) hoặc {{RJCT}} (rejected). Tiền chuyển ngay trên tài khoản dự trữ của ngân hàng tại NHNN.
+ 
+### Hệ thống DNS tại Việt Nam (NAPAS 24/7)
+ NAPAS vận hành hệ thống thanh toán nhanh 24/7 (FPS - Fast Payment System) theo mô hình DNS. Các ngân hàng gửi file/batch giao dịch liên tục, NAPAS xử lý theo chu kỳ (ví dụ mỗi 15 phút hoặc 30 phút). Tại cut-off, tính net position, chuyển tiền trên tài khoản ngân hàng tại NHNN (hoặc tài khoản điều tiết). Giao dịch riêng lẻ cập nhật trạng thái sau settlement. Khách hàng thấy tiền "đến ngay" nhưng thực tế là sau chu kỳ settlement gần nhất.
+ 
+### Những gì dev cần lưu ý khi tích hợp
+ 1. **Không nhầm lẫn API**: RTGS thường dùng message ISO 20022 qua message queue (IBM MQ, Kafka) với chứng chỉ số; DNS (NAPAS) có thể dùng API REST hoặc file SFTP.
+ 2. **Idempotency**: RTGS {{UETR}} là khóa duy nhất xuyên suốt; DNS dùng {{RRN}}/{{STAN}} của NAPAS. Luôn lưu khóa này để tra soát.
+ 3. **Trạng thái**: RTGS trả về thành công/thất bại ngay -> cập nhật core ngay. DNS trả {{PENDING}} -> phải có job tra soát/chờ settlement -> cập nhật sau.
+ 4. **Reversal**: RTGS không hủy được; DNS có thể reversal trong chu kỳ (trước cut-off). Code phải xử lý hai luồng khác nhau.
+ 5. **Cut-off & ngày nghiệp vụ**: RTGS thường chỉ giờ hành chính; DNS 24/7 nhưng settlement cuối ngày vẫn đóng ngày nghiệp vụ. Xem banking-006, banking-028.
+ 6. **Phí**: RTGS phí cao, thường trừ riêng (không gộp trong amount); DNS phí thấp, có thể gộp hoặc trừ riêng.
+ 7. **SLA & monitoring**: RTGS SLA tính bằng giây; DNS tính bằng phút/chu kỳ. Alert RTGS phải real-time.
+ 
+ ~~~seq
+ title: RTGS vs DNS luong xu ly
+ actors: NganHangA | RTGS | NganHangB | NganHangA | DNS/NAPAS | NganHangB
+ note right of NganHangA: RTGS: chuyen 1 ty
+ NganHangA -> RTGS: pacs.008 (UETR=abc, 1 ty)
+ RTGS -> RTGS: tru tai khoan A, cong tai khoan B
+ RTGS --> NganHangA: pacs.002 ACSC
+ RTGS --> NganHangB: pacs.002 ACSC (thong bao nhan)
+ note right of NganHangA: DNS: chuyen 50 trieu
+ NganHangA -> DNS: gui giao dich 50 trieu (RRN=xyz)
+ DNS -> DNS: gom vao chu ky, tinh net position
+ DNS -> NHNN: chuyen net position
+ DNS --> NganHangA: settlement completed
+ DNS --> NganHangB: settlement completed + credit
+ ~~~
+ 
+### Lỗi hay gặp
+ - Gửi giao dịch nhỏ qua RTGS -> tốn phí, nghẽn hệ thống giá trị lớn.
+ - Gửi giao dịch lớn, khẩn qua DNS -> tiền đến chậm, khách khiếu nại.
+ - Không lưu {{UETR}}/{{RRN}} -> không tra soát được khi đối soát cuối ngày.
+ - Xử lý DNS như RTGS (cập nhật core ngay khi nhận {{PENDING}}) -> sai số dư khi settlement thất bại.
+ - Quên xử lý reversal DNS trong chu kỳ -> tiền bị khóa sai.
+ 
+### Ví dụ đời thực
+ 
+ Một ngân hàng tích hợp cả RTGS (HVPS) và NAPAS 24/7. Một doanh nghiệp chuyển 2 tỷ VND cho đối tác khẩn (trả tiền nhập khẩu). Dev nhầm gửi qua NAPAS 24/7 thay vì RTGS. Giao dịch vào chu kỳ 14:00, nhưng settlement chỉ xong 14:30, đối tác không nhận tiền kịp để thông quan hàng hóa, gây phạt hợp đồng. Nguyên nhân: dev không phân biệt được "giao dịch giá trị lớn, khẩn cấp -> RTGS" và "giao dịch thông thường -> DNS". Cách xử lý: bổ sung quy tắc routing trong adapter: amount >= 500 triệu VND hoặc flag {{urgent=true}} -> route sang RTGS; còn lại -> NAPAS. Thêm validation UI: nhập >= 500 triệu tự chọn RTGS, hiển thị phí và giờ cut-off. Kết quả: 0 case nhầm luồng, doanh nghiệp hài lòng.
+ 
+### Trả lời mẫu khi phỏng vấn
+ 
+ "RTGS xử lý từng giao dịch grosso, thực thời, không bù trừ, không hủy được — dùng cho tiền lớn, khẩn. DNS gom lô, bù trừ net, có chu kỳ cut-off, có thể reversal — dùng cho tiền nhỏ, số lượng lớn. Tại Việt Nam: RTGS của NHNN (HVPS) cho >500 triệu, ISO 20022 pacs.008/009, UETR truy vết; NAPAS 24/7 cho chuyển khoản nhanh, RRN/STAN tra soát. Dev tích hợp phải: route đúng luồng theo amount/urgency, lưu khóa tra soát (UETR/RRN), xử lý trạng thái khác nhau (RTGS update ngay, DNS chờ settlement), hiểu reversal chỉ có DNS. Phí RTGS cao, DNS thấp. Sai luồng là sai nghiệp vụ: tiền lớn qua DNS đến chậm, tiền nhỏ qua RTGS tốn phí nghẽn hệ thống."
+ 
+ > Senior tip: Hãy nói rõ **routing rule** trong adapter: {{if (amount >= 500_000_000 || urgent) route RTGS else route DNS}}. Nhấn mạnh UETR (RTGS) và RRN (DNS) là hai khóa tra soát hoàn toàn khác nhau, không thể nhầm. Đối soát cuối ngày phải tách hai luồng này.
+ 
+ > Cụm từ: Net position (vị thế ròng) = tổng tiền nhận - tổng tiền gửi của một ngân hàng trong một chu kỳ DNS. UETR (Unique End-to-End Transaction Reference) là mã duy nhất 36 ký tự (UUID) gắn với một giao dịch RTGS xuyên suốt từ người gửi đến người nhận.
+ 
+  `,
+  follow: [
+    'Tại sao RTGS không cho phép reversal mà DNS cho phép, và rủi ro vận hành là gì?',
+    'Khi tích hợp cả hai, bạn thiết kế bảng trạng thái giao dịch như thế nào để tách rõ hai luồng?',
+    'NAPAS 24/7 dùng DNS nhưng khách thấy "tiền đến ngay" — thực tế luồng settlement diễn ra thế nào?'
+  ],
+  tags: ['RTGS', 'DNS', 'NAPAS', 'HVPS', 'settlement', 'ISO 20022', 'UETR', 'RRN']
+},
+{
+  id: 'banking-047',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Nostro và Vostro account trong correspondent banking: là gì, ghi sổ cái thế nào, đối soát như thế nào, và dev xử lý tiền tệ/tỷ giá ra sao?',
+  a: `**Tóm tắt:** **Nostro** = "tài khoản của chúng ta ở ngân hàng bạn" (our account with you). **Vostro** = "tài khoản của bạn ở ngân hàng chúng ta" (your account with us). Correspondent banking là ngân hàng này giữ tài khoản cho ngân hàng kia để thanh toán-cross-border. Dev phải xử lý: sổ cái hai bên (mirror ledger), tỷ giá FX tại thời điểm ghi, phí correspondent, cut-off giờ khác múi giờ, và đối soát định kỳ để phát hiện lệch.
+ 
+### Nostro/Vostro là gì (giải thích từ đầu)
+ Khi ngân hàng A (Việt Nam) muốn chuyển USD cho ngân hàng B (Mỹ) nhưng không có chi nhánh tại Mỹ, A nhờ **ngân hàng đại lý (correspondent bank)** C tại Mỹ. C mở tài khoản cho A: ở góc nhìn A, đó là **Nostro account** ("tài khoản của tôi ở bạn"); ở góc nhìn C, đó là **Vostro account** ("tài khoản của bạn ở tôi").
+ - **Nostro (Our account with you)**: tài khoản ngân hàng mình mở tại ngân hàng đại lý nước ngoài. Dùng để nhận/gửi ngoại tệ (USD, EUR...). Số dư Nostro là **tài sản** của ngân hàng mình.
+ - **Vostro (Your account with us)**: tài khoản ngân hàng đại lý mở tại ngân hàng mình. Dùng khi ngân hàng nước ngoài cần tài khoản VND. Số dư Vostro là **nợ** của ngân hàng mình.
+ 
+ Ví dụ: Vietcombank (VCB) mở tài khoản USD tại JPMorgan (NY). VCB gọi đây là **Nostro USD tại JPM**. JPM gọi đây là **Vostro VCB**. Khi khách VCB gửi 10.000 USD cho người nhận tại Mỹ qua JPM: VCB trừ 10.000 USD từ Nostro JPM, JPM chuyển cho ngân hàng người nhận.
+ 
+### Ghi sổ cái (Mirror Ledger)
+ Mỗi bên giữ một bản sao sổ cái (mirror ledger) của tài khoản đối phương:
+ - VCB ghi sổ Nostro JPM: mọi giao dịch (nhận, gửi, phí, lãi) ghi vào ledger nội bộ {{nostro_jpm_usd}}.
+ - JPM ghi sổ Vostro VCB: cùng những giao dịch đó, nhưng hướng ngược (credit/debit đảo).
+ 
+ **Quy tắc ghi**:
+ | Sự kiện | VCB (Nostro) | JPM (Vostro) |
+ |---|---|---|
+ | Nhận 10k USD từ khách VCB chuyển ra | CREDIT Nostro +10k | DEBIT Vostro +10k |
+ | VCB trả phí JPM 50 USD | DEBIT Nostro -50 | CREDIT Vostro +50 |
+ | JPM trả lãi Nostro 100 USD | CREDIT Nostro +100 | DEBIT Vostro -100 |
+ 
+ Tổng Nostro của VCB phải bằng tổng Vostro của JPM (dù hướng ghi ngược). Sai lệch -> đối soát.
+ 
+### Tỷ giá FX và ngày giá trị (value date)
+ - Giao dịch cross-border thường qua 2 ngày: **trade date** (ngày ký hợp đồng) và **value date** (ngày tiền thực sự chuyển).
+ - Value date thường là **T+2** cho USD (T+1 cho EUR trong SEPA). Ngày nghỉ tại một trong hai quốc gia đẩy value date.
+ - **Tỷ giá áp dụng**: tỷ giá tại **value date** (không phải trade date). Dev phải lưu snapshot tỷ giá (fx_rate, source, quote_id, timestamp) cho mỗi giao dịch.
+ - **Spread**: ngân hàng đại lý thường chênh tỷ giá (bid/ask) hoặc thu phí cố định. Phí này phải tách riêng trong sổ cái, không gộp vào amount chính.
+ 
+### Cut-off và múi giờ
+ Nostro/Vostro hoạt động theo giờ của **ngân hàng đại lý** (ví dụ New York time EST/EDT). Cut-off gửi lệnh SWIFT/ISO 20022 thường là 15:00-16:00 giờ địa phương. Dev phải chuyển đổi múi giờ chính xác: lệnh gửi sau cut-off NY hôm nay sẽ có value date ngày mai (hoặc thứ 2 nếu hôm nay là thứ 6). Hệ thống phải có **business calendar** cho từng cặp Nostro (lịch nghỉ US, VN, múi giờ DST).
+ 
+### Đối soát Nostro/Vostro
+ Đối soát hàng ngày (hoặc nhiều lần/ngày) giữa mirror ledger hai bên:
+ 1. Lấy statement từ ngân hàng đại lý (MT940/MT950 SWIFT hoặc camt.053 ISO 20022).
+ 2. Parse, chuẩn hóa về canonical model.
+ 3. So khớp từng giao dịch theo {{transaction reference}} + {{value date}} + {{amount}}.
+ 4. Phân loại: MATCH, ONLY_OURS (chúng ta có, họ không), ONLY_THEIRS (họ có, chúng ta không), AMOUNT_MISMATCH, DATE_MISMATCH.
+ 5. Tự động xử lý: date mismatch do múi giờ -> điều chỉnh value date; fee/interest đã biết -> ghi bút toán điều chỉnh.
+ 6. Lệch chưa giải thích -> đẩy queue tra soát, liên hệ correspondent.
+ 
+### Code/Java: Nostro entry
+ ~~~java
+ record NostroEntry(String nostroId, String txnRef, LocalDate valueDate,
+                    BigDecimal amount, String currency, String direction, // CREDIT/DEBIT
+                    BigDecimal fxRate, String fxSource, String feeCcy, BigDecimal feeAmt) {}
+ 
+ // Khi nhận MT940 từ correspondent
+ List<NostroEntry> parseMt940(String mt940Content) { ... }
+ 
+ // Đối soát
+ enum MatchResult { MATCH, ONLY_OURS, ONLY_THEIRS, AMOUNT_MISMATCH, DATE_MISMATCH }
+ MatchResult match(NostroEntry ours, NostroEntry theirs) {
+     if (theirs == null) return ONLY_OURS;
+     if (ours == null) return ONLY_THEIRS;
+     if (ours.amount().compareTo(theirs.amount()) != 0) return AMOUNT_MISMATCH;
+     if (!ours.valueDate().equals(theirs.valueDate())) return DATE_MISMATCH;
+     return MATCH;
+ }
+ ~~~
+ 
+### Lỗi hay gặp
+ - Ghi Nostro/Vostro nhầm hướng (credit/debit đảo) -> số dư sai dấu, đối soát không bao giờ khớp.
+ - Dùng tỷ giá hôm nay thay vì tỷ giá value date -> lệch tiền lớn khi FX biến động.
+ - Không tách phí correspondent -> phí lẫn vào amount, sai P&L.
+ - Không có business calendar cho từng correspondent -> gửi lệnh sai ngày, value date sai.
+ - Đối soát chỉ so tổng số dư -> bỏ sót lệch chi tiết bù trừ nhau.
+ 
+### Ví dụ đời thực
+ 
+ Một ngân hàng VN có Nostro USD tại 3 correspondent (JPM, Citi, BofA). Cuối tháng, đối soát Nostro JPM thấy lệch 15.000 USD. Điều tra: 3 giao dịch phí correspondent (monthly maintenance fee 500 USD, wire fee 25 USD, FX spread 200 USD) JPM đã trừ vào ngày 28 nhưng ngân hàng VN chỉ ghi khi nhận statement ngày 30. Business calendar thiếu ngày nghỉ Thanksgiving (thứ 5 tuần 4 tháng 11) khiến value date của 2 giao dịch wire bị đẩy sai. Nguyên nhân: không tách phí riêng trong ledger, calendar không cập nhật ngày nghỉ US. Cách xử lý: bổ sung {{fee_amount}}, {{fee_currency}} trong NostroEntry; cập nhật calendar US (import từ thư viện hoặc feed SWIFT); chạy script backfill 3 giao dịch phí, điều chỉnh value date 2 giao dịch wire. Kết quả: đối soát tháng sau khớp 100%, không còn lệch Nostro.
+ 
+### Trả lời mẫu khi phỏng vấn
+ 
+ "Nostro là tài khoản của chúng ta ở ngân hàng bạn (tài sản), Vostro là tài khoản của bạn ở chúng ta (nợ). Mỗi bên giữ mirror ledger ghi ngược hướng: VCB credit Nostro khi nhận USD, JPM debit Vostro. Tỷ giá áp dụng theo value date (thường T+2 USD), phải lưu snapshot fx_rate, source, quote_id. Cut-off theo giờ correspondent (NY time), cần business calendar từng cặp. Đối soát dùng statement MT940/camt.053, khớp theo txnRef + valueDate + amount, tách phí/interest ra xử lý riêng. Lỗi hay gặp: ghi nhầm hướng, dùng tỷ giá sai ngày, không tách phí, calendar thiếu ngày nghỉ. Thực tế: em từng fix lệch 15k USD do thiếu calendar ngày nghỉ US và không tách phí — sau khi bổ sung, đối soát khớp 100%."
+ 
+ > Senior tip: Nostro/Vostro là **hai góc nhìn của cùng một tiền**. Luôn vẽ bảng hướng ghi (credit/debit) cho từng sự kiện. Value date quyết định tỷ giá — không bao giờ dùng trade date. Business calendar per correspondent là bắt buộc, không dùng chung một calendar.
+ 
+ > Cụm từ: Mirror ledger là bản sao sổ cái mà mỗi bên giữ cho tài khoản của bên kia. Value date là ngày tiền thực sự có hiệu lực (tiền rời tài khoản này, vào tài khoản kia). MT940/MT950 là định dạng statement SWIFT; camt.053 là tương đương ISO 20022.
+ 
+  `,
+  follow: [
+    'Tại sao value date thường là T+2 cho USD, và ngày nghỉ ở một bên ảnh hưởng như thế nào?',
+    'Khi correspondent gửi statement MT940, bạn parse và chuẩn hóa ra canonical model như thế nào?',
+    'Nostro bị âm (overdraft) thì xử lý ra sao, và correspondent thường cho phép không?'
+  ],
+  tags: ['Nostro', 'Vostro', 'correspondent banking', 'cross-border', 'FX', 'MT940', 'camt.053', 'mirror ledger']
+},
+{
+  id: 'banking-048',
+  topic: 'banking',
+  level: 'lead',
+  q: 'IFRS 9 Expected Credit Loss (ECL): staging (Stage 1/2/3), PD/LGD/EAD, tính dự phòng giảm giá cho vay trong code, và điều kiện để chuyển stage.',
+  a: `**Tóm tắt:** **IFRS 9** yêu cầu ngân hàng tính **Expected Credit Loss (ECL)** — dự phòng giảm giá cho vay dựa trên **mất mát kỳ vọng** chứ không phải mất mát đã xảy ra (incurred loss như IAS 39). Ba giai đoạn (Stage): **Stage 1** (rủi ro tín dụng không tăng đáng kể) -> ECL 12 tháng; **Stage 2** (rủi ro tăng đáng kể - SICR) -> ECL cả vòng đời (lifetime); **Stage 3** (giảm giá khách quan - credit-impaired) -> ECL lifetime + xử lý riêng. Công thức: **ECL = PD × LGD × EAD** (điều chỉnh theo thời gian, chiết khấu). Dev phải triển khai: mô hình dữ liệu staging, tính PD/LGD/EAD từ mô hình thống kê, chạy batch hàng tháng, và audit trail đầy đủ.
+ 
+### Ba Stage (Giai đoạn) — cái bẫy lớn nhất
+ | Stage | Điều kiện | ECL horizon | Ví dụ |
+ |---|---|---|---|
+ | **Stage 1** | Khách trả nợ đúng hạn, không dấu hiệu rủi ro tăng | **12-month ECL** (chỉ dự phòng 12 tháng tới) | Vay mới, trả đều, điểm tín dụng tốt |
+ | **Stage 2** | **SICR** (Significant Increase in Credit Risk): rủi ro tăng đáng kể kể từ khi cho vay | **Lifetime ECL** (dự phòng cả vòng đời còn lại) | Trễ nợ 30+ ngày, restructure, điểm tín dụng giảm mạnh, ngành nghề suy thoái |
+ | **Stage 3** | **Credit-impaired**: có bằng chứng khách quan đã giảm giá (default) | **Lifetime ECL** + xử lý riêng (thường PD=100%) | Trễ nợ 90+ ngày, vỡ nợ, phá sản, tòa án, bán nợ cho AMC |
+ 
+ **Quan trọng**: Chuyển stage **không đối xứng**. Stage 1 -> 2 khi SICR; Stage 2 -> 1 khi rủi ro quay về mức ban đầu (curing); Stage 2/3 -> 3 khi default; Stage 3 -> 2 khi cure (thường cần 3-12 tháng trả đều). Không được chuyển Stage 1 -> 3 trực tiếp.
+ 
+### PD, LGD, EAD — ba khối xây dựng ECL
+ - **PD (Probability of Default - xác suất vỡ nợ)**: % khả năng khách vỡ nợ trong một khoảng thời gian. Có PD 12-month (dùng Stage 1) và PD lifetime (dùng Stage 2/3). Mô hình: logistic regression, scorecard, hoặc machine learning trên lịch sử vỡ nợ.
+ - **LGD (Loss Given Default - tổn thất khi vỡ nợ)**: % tiền mất **khi đã vỡ nợ**, sau khi thu hồi tài sản đảm bảo, bán nợ, xử lý pháp lý. LGD = 1 - Recovery Rate. Phụ thuộc loại đảm bảo (bất động sản LGD thấp, không đảm bảo LGD cao).
+ - **EAD (Exposure at Default - mức độ rủi ro tại thời điểm vỡ nợ)**: số tiền đang nợ **khi vỡ nợ xảy ra**. Với vay trả góp: EAD = dư nợ hiện tại + lãi chưa thu + phí. Với hạn mức thẻ/overdraft: EAD = dư nợ hiện tại + CCF (Credit Conversion Factor) × phần chưa dùng.
+ 
+ Công thức ECL cơ bản (mô hình điểm):
+ ~~~text
+ ECL = Σ (PD_t × LGD_t × EAD_t) / (1 + r)^t      cho t = 1..T
+ T = 12 tháng (Stage 1) hoặc vòng đời còn lại (Stage 2/3)
+ r = effective interest rate (chiết khấu)
+ ~~~
+ 
+### Triển khai trong code (Java)
+ Dev không xây dựng mô hình PD/LGD (do team Risk/Data Science làm), nhưng phải **tiếp nhận, lưu, version, và tính toán** đúng.
+ 
+ ~~~java
+ record EclInput(String loanId, LocalDate asOfDate, int stage,
+                 BigDecimal pd, BigDecimal lgd, BigDecimal ead,
+                 BigDecimal eir, LocalDate maturityDate) {}
+ 
+ record EclResult(String loanId, BigDecimal ecl12m, BigDecimal eclLifetime,
+                  BigDecimal stage1Prov, BigDecimal stage2Prov, BigDecimal stage3Prov) {}
+ 
+ BigDecimal calculateEcl(EclInput in) {
+     int months = (in.stage() == 1) ? 12 : monthsBetween(in.asOfDate(), in.maturityDate());
+     BigDecimal sum = BigDecimal.ZERO;
+     BigDecimal onePlusR = BigDecimal.ONE.add(in.eir().divide(BigDecimal.valueOf(12), 10, RoundingMode.HALF_UP));
+     BigDecimal discount = BigDecimal.ONE;
+     for (int m = 1; m <= months; m++) {
+         discount = discount.multiply(onePlusR); // (1+r)^m
+         BigDecimal pdMonth = in.pd(); // giả định PD đều mỗi tháng, thực tế có term structure
+         BigDecimal lgdMonth = in.lgd();
+         BigDecimal eadMonth = in.ead(); // có thể giảm dần theo lịch trả
+         BigDecimal monthLoss = pdMonth.multiply(lgdMonth).multiply(eadMonth);
+         sum = sum.add(monthLoss.divide(discount, 10, RoundingMode.HALF_UP));
+     }
+     return sum.setScale(0, RoundingMode.HALF_UP); // VND
+ }
+ ~~~
+ 
+### Dữ liệu phải lưu (versioning & audit)
+ Mỗi lần chạy batch ECL (hàng tháng) phải lưu snapshot:
+ - {{ecl_run(run_id, as_of_date, model_version_pd, model_version_lgd, model_version_ead, status, created_at)}}
+ - {{ecl_detail(run_id, loan_id, stage, pd, lgd, ead, ecl_amount, stage_before, stage_after, reasons_json)}}
+ - {{loan_staging_history(loan_id, stage, changed_at, changed_by, trigger_reason, sicr_indicators_json)}}
+ 
+ **SICR indicators** (chỉ báo rủi ro tăng) phải ghi rõ: days_past_due, rating_downgrade_notches, sector_deterioration, forbearance_flag, macro_overlay...
+ 
+### Macro-economic overlay (điều chỉnh vĩ mô)
+ Mô hình PD/LGD thường train trên dữ liệu quá khứ. IFRS 9 yêu cầu **forward-looking**: điều chỉnh PD theo kịch bản kinh tế (base, upside, downside) với trọng số xác suất. Ví dụ: GDP tăng trưởng giảm -> PD tăng 10% cho Stage 1, 20% cho Stage 2. Dev phải lưu: scenario_id, weight, pd_adjustment_factor, applied_date.
+ 
+### Batch ECL hàng tháng — quy trình
+ 1. Lấy portfolio vay tại ngày báo cáo (as-of date).
+ 2. Xác định stage cho từng khoản (dùng staging engine: rule-based + model score).
+ 3. Lấy PD/LGD/EAD từ model registry (version cố định cho run này).
+ 4. Áp dụng macro overlay (nếu có).
+ 5. Tính ECL cho từng khoản (song song, chunk).
+ 6. Tổng hợp, đối soát với tổng provision trên GL.
+ 7. Lưu snapshot, xuất báo cáo cho Risk/CFO/Audit.
+ 8. Maker-checker duyệt trước khi ghi sổ cái.
+ 
+### Lỗi hay gặp
+ - Dùng **incurred loss** (IAS 39) thay vì **expected loss** (IFRS 9) -> thiếu provision Stage 1/2.
+ - Stage 1/2/3 logic sai: không kiểm tra SICR, hoặc không cho cure (Stage 2->1).
+ - PD/LGD/EAD không versioning -> chạy lại tháng trước ra số khác, audit không chấp nhận.
+ - Không chiết khấu (discount) về EIR -> provision bị phồng.
+ - Macro overlay hard-code trong code -> thay đổi kịch bản phải deploy.
+ - Không lưu {{reasons_json}} cho việc chuyển stage -> không giải trình được cho audit.
+ - Chạy batch không idempotent -> chạy lại tháng trùng provision.
+ 
+### Ví dụ đời thực
+ 
+ Một ngân hàng triển khai IFRS 9 năm 2018. Ban đầu chỉ có Stage 1/3 (nhị phân: tốt/xấu), thiếu Stage 2 -> provision thiếu lớn, kiểm toán nhượng quyền nhưng yêu cầu bổ sung. Dev thêm: (1) SICR rule engine: DPD>=30, rating downgrade>=2 notch, restructure flag -> Stage 2; (2) Cure rule: Stage 2 trả đều 6 tháng liên tiếp, DPD=0, rating ổn định -> quay về Stage 1; (3) Model registry versioning PD/LGD/EAD; (4) Macro overlay table (scenario, weight, adjustment); (5) Batch idempotent theo (loan_id, as_of_date). Kết quả: provision tăng 18% (phổ biến khi thêm Stage 2), báo cáo IFRS 9 được kiểm toán chấp nhận, audit trail đầy đủ cho phép truy vết mọi khoản chuyển stage.
+ 
+### Trả lời mẫu khi phỏng vấn
+ 
+ "IFRS 9 ECL dựa trên expected loss, không phải incurred loss. Ba stage: Stage 1 (rủi ro bình thường) -> 12-month ECL; Stage 2 (SICR: DPD>=30, rating downgrade, restructure) -> Lifetime ECL; Stage 3 (default: DPD>=90, vỡ nợ) -> Lifetime ECL + PD=100%. Công thức ECL = PD × LGD × EAD chiết khấu theo EIR. PD=probability of default, LGD=loss given default, EAD=exposure at default. Dev triển khai: model registry versioning PD/LGD/EAD, staging engine rule-based (SICR indicators), macro overlay table, batch idempotent theo (loan_id, as_of_date), lưu snapshot ecl_detail + staging_history với reasons_json. Cure: Stage 2->1 cần 6 tháng trả đều. Maker-checker duyệt provision trước khi ghi GL. Thực tế: em từng bổ sung Stage 2 cho ngân hàng chỉ có 1/3, provision tăng 18%, audit chấp nhận nhờ versioning và audit trail đầy đủ."
+ 
+ > Senior tip: Ba chốt ăn điểm: (1) **Stage 2 là chìa khóa** — SICR indicators phải cụ thể, có cure rule, không hard-code. (2) **Versioning** — PD/LGD/EAD/model_version phải gắn với từng run, chạy lại tháng trước ra đúng số cũ. (3) **Forward-looking** — macro overlay không hard-code, lưu scenario/weight/adjustment. Audit sẽ hỏi "khoản này chuyển Stage 1->2 vì đâu, ở đâu có bằng chứng?" — bạn phải trả lời bằng {{reasons_json}}.
+ 
+ > Cụm từ: SICR (Significant Increase in Credit Risk) là rủi ro tín dụng tăng đáng kể. CCF (Credit Conversion Factor) là hệ số chuyển đổi phần hạn mức chưa dùng thành EAD (ví dụ 20-50% cho cam kết cho vay). EIR (Effective Interest Rate) là lãi suất thực tế dùng để chiết khấu dòng tiền.
+ 
+  `,
+  follow: [
+    'SICR (Significant Increase in Credit Risk) dùng những chỉ báo nào, và làm sao tránh chuyển stage nhạy cảm (flip-flop)?',
+    'LGD ước lượng như thế nào cho vay có đảm bảo bất động sản vs vay không đảm bảo?',
+    'Khi mô hình PD mới deploy, bạn backtest và chạy song song như thế nào trước khi cutover?'
+  ],
+  tags: ['IFRS 9', 'ECL', 'provision', 'Stage 1', 'Stage 2', 'Stage 3', 'PD', 'LGD', 'EAD', 'SICR']
+},
+{
+  id: 'banking-049',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Treasury management: Funds Transfer Pricing (FTP), quản trị thanh khoản (liquidity), cash positioning — dev cần biết gì để xây dựng hệ thống hỗ trợ?',
+  a: `**Tóm tắt:** **Treasury** (quản trị kho bạc) là phòng đảm bảo ngân hàng luôn có tiền trả nợ khi đến hạn, và dùng tiền hiệu quả nhất. Ba trụ cột dev cần hỗ trợ: **FTP** (tính giá chuyển nội bộ cho từng sản phẩm), **Liquidity management** (LCR, NSFR, cash flow forecasting), **Cash positioning** (số dư real-time tại các tài khoản Nostro, Vostro, central bank). Hệ thống dev cung cấp: dữ liệu chính xác, đúng thời điểm, granularity đủ, và API cho mô hình treasury tiêu thụ.
+ 
+### FTP (Funds Transfer Pricing) là gì
+ **FTP** là cơ chế gán **giá tiền nội bộ** cho từng khoản vay và tiền gửi, để đo lường lợi nhuận thực của từng sản phẩm/chi nhánh/khách hàng, loại bỏ rủi ro lãi suất và thanh khoản khỏi nghiệp vụ.
+ - Tiền gửi (liability) **nhận** FTP rate (được trả lãi nội bộ).
+ - Khoản vay (asset) **trả** FTP rate (phải trả lãi nội bộ).
+ - FTP rate = **base rate** (thường là swap curve hoặc yield curve chính phủ) + **liquidity premium** + **option cost** (nếu có embedded option như trả trước).
+ 
+ Ví dụ: tiền gửi 12 tháng lãi 5%/năm. Swap curve 12M = 3.5%. Liquidity premium = 0.5%. FTP rate = 4.0%. Margin của sản phẩm = 5% - 4% = 1% (contribution margin). Nếu không có FTP, nhìn vào 5% tưởng lợi nhuận cao nhưng thực tế rủi ro lãi suất chưa trừ.
+ 
+### FTP data flow — dev cung cấp gì
+ Mô hình FTP (do team Treasury/ALM xây dựng) cần dữ liệu thô chính xác:
+ 1. **Contract data**: từng hợp đồng vay/gửi: principal, rate, maturity, payment frequency, amortization type, embedded option (trả trước, gia hạn), currency.
+ 2. **Behavioral data**: lịch sử trả trước, gia hạn, rút trước hạn tiền gửi — để điều chỉnh expected cash flow.
+ 3. **Market data**: yield curve, swap curve, basis spread, FX forward points — snapshot hàng ngày (EOD).
+ 4. **Run result**: FTP rateassigned cho từng hợp đồng, FTP income/expense phân bổ theo tháng.
+ 
+ Dev thiết kế: bảng {{ftp_contract_snapshot(run_date, contract_id, ftp_rate, liquidity_premium, option_cost, assigned_by_model_version)}}, batch EOD tính toán, idempotent theo (run_date, contract_id).
+ 
+### Quản trị thanh khoản: LCR & NSFR
+ Basle III yêu cầu hai chỉ số:
+ - **LCR (Liquidity Coverage Ratio)** = **HQLA** (High Quality Liquid Assets) / **Net Cash Outflow 30 ngày** ≥ 100%. HQLA: tiền mặt, dự trữ trung ương, trái phiếu chính phủ Level 1/2. Cash outflow: rút tiền gửi, trả nợ, cam kết tín dụng, derivative margin.
+ - **NSFR (Net Stable Funding Ratio)** = **Available Stable Funding (ASF)** / **Required Stable Funding (RSF)** ≥ 100%. ASF: vốn, tiền gửi ổn định, nợ dài hạn. RSF: cho vay, tài sản ít thanh khoản.
+ 
+ Dev hỗ trợ: **data pipeline** gom dữ liệu từ core, GL, risk, market -> tính HQLA, outflow, inflow theo mapping quy định (Basel template). Chạy hàng ngày (LCR) và hàng tháng (NSFR). Kết quả phải **drill-down** được tới từng hợp đồng/tài khoản.
+ 
+### Cash Positioning (Định vị tiền mặt real-time)
+ Treasury cần biết **ngay lúc này** số dư tại:
+ - Tài khoản trung ương (central bank reserve account).
+ - Tài khoản Nostro/Vostro (USD, EUR, JPY...).
+ - Tài khoản điều tiết (interbank placement).
+ - Tiền mặt tại kho (vault cash).
+ 
+ Hệ thống dev phải:
+ - Pull real-time (hoặc near real-time 15-30 phút) từ core banking, SWIFT/ISO 20022 (camt.052/053), Nostro statement.
+ - Chuẩn hóa về **single currency view** (VND equivalent theo tỷ giá EOD hoặc intraday).
+ - Hiển thị dashboard: tổng thanh khoản khả dụng, broken down by currency/entity/counterparty.
+ - Alert khi: central bank balance < ngưỡng, Nostro balance < minimum, large outflow sắp đến.
+ 
+### Cash Flow Forecasting (Dự báo dòng tiền)
+ Treasury dự báo dòng tiền 1-30 ngày tới để quyết định: vay mượn interbank, đầu tư ngắn hạn, điều chỉnh FTP.
+ Input: lịch trả nợ vay, lịch đáo hạn tiền gửi, lịch trả lãi, cam kết tín dụng chưa rút, derivative cash flow, lớn/nay dự kiến.
+ Dev xây dựng: **cash flow engine** sinh projection theo kịch án (base, stress). Lưu {{cash_flow_projection(as_of_date, horizon_date, currency, inflow, outflow, net, scenario_id)}}.
+ 
+### Lỗi hay gặp
+ - FTP rate dùng **yield curve cũ** (không update hàng ngày) -> margin sai, quyết định sai.
+ - Không tách **liquidity premium** và **option cost** -> không biết đâu là margin thực, đâu là bù rủi ro.
+ - LCR/NSFR dữ liệu từ GL không khớp core -> chỉ số sai, báo cáo Basel sai.
+ - Cash positioning chỉ cập nhật EOD -> treasury không biết intraday large payment.
+ - Không có **drill-down** từ chỉ số LCR/NSFR xuống hợp đồng -> không giải trình được khi audit.
+ - FTP run không idempotent -> chạy lại tháng trùng dữ liệu.
+ 
+### Ví dụ đời thực
+ 
+ Một ngân hàng có FTP model nhưng chỉ chạy hàng tháng, dùng yield curve đầu tháng. Tháng 6, lãi suất tăng vọt 1.5% trong 2 tuần. Khoản vay 12 tháng lãi cố định 8% được gán FTP rate cũ 4% -> margin báo cáo 4% nhưng thực tế cơ hội đầu tư tiền đó hiện nay là 5.5% -> ngân hàng lỗ cơ hội. Treasury không biết vì cash positioning chỉ cập nhật EOD, hôm đó có 500 tỷ VND large payment ra Nostro vào 14:00 mà dashboard vẫn hiện số dư sáng. Dev fix: (1) FTP batch chạy hàng ngày, pull yield curve real-time từ market data vendor; (2) Tách liquidity premium/option cost ra cột riêng; (3) Cash positioning pull Nostro/central bank qua API real-time (camt.052 intraday), update dashboard 15 phút/lần; (4) Thêm drill-down LCR/NSFR xuống contract_id. Kết quả: FTP margin phản ánh đúng thị trường, treasury phản ứng kịp thời large payment, báo cáo Basel drill-down được audit chấp nhận.
+ 
+### Trả lời mẫu khi phỏng vấn
+ 
+ "Treasury cần ba thứ dev cung cấp: (1) **FTP** — gán giá tiền nội bộ cho từng hợp đồng vay/gửi: FTP rate = base curve + liquidity premium + option cost. Dev chạy batch hàng ngày, lưu snapshot versioned, tách ra ba thành phần. (2) **Liquidity** — LCR hàng ngày, NSFR hàng tháng: pipeline gom dữ liệu core/GL/market, mapping Basel template, có drill-down xuống contract_id. (3) **Cash positioning** — real-time/near real-time số dư central bank, Nostro, interbank, vault cash; pull camt.052 intraday, update dashboard 15 phút, alert ngưỡng. Cash flow forecasting 1-30 ngày cho vay mượn interbank. Lỗi hay gặp: yield curve cũ, không tách premium/option, dữ liệu LCR từ GL không khớp core, cash positioning chỉ EOD. Thực tế: em từng chuyển FTP từ monthly sang daily, tách liquidity premium, thêm real-time Nostro feed — treasury không còn bị bất ngờ large payment, báo cáo Basel drill-down full."
+ 
+ > Senior tip: FTP **không phải** là lãi suất khách hàng thấy — đó là giá nội bộ. Dev phải tách ra: {{customer_rate = FTP_rate + business_margin}}. LCR/NSFR dev không tự tính công thức (do Risk làm), dev chỉ lo **data pipeline đúng, đầy đủ, drill-down**. Cash positioning: intraday > EOD, camt.052 > camt.053.
+ 
+ > Cụm từ: HQLA (High Quality Liquid Assets) là tài sản thanh khoản cao (tiền mặt, dự trữ trung ương, trái phiếu chính phủ). ASF/RSF (Available/Required Stable Funding) là nguồn vốn ổn định và nhu cầu vốn ổn định cho NSFR. Swap curve là đường cong lãi suất hoán đổi, dùng làm base rate cho FTP.
+ 
+  `,
+  follow: [
+    'FTP liquidity premium tính như thế nào cho tiền gửi không kỳ hạn (có thể rút bất kỳ lúc)?',
+    'LCR denominator (net cash outflow 30 ngày) mapping từ dữ liệu core như thế nào?',
+    'Nostro balance real-time và EOD khác nhau, treasury dùng cái nào để ra quyết định?'
+  ],
+  tags: ['Treasury', 'FTP', 'LCR', 'NSFR', 'cash positioning', 'liquidity', 'Basel III', 'ALM']
+},
+{
+  id: 'banking-050',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Standing order / Recurring payment: thiết kế xử lý ngày nghỉ, thay đổi lãi suất/phí, retry khi thiếu tiền, pause/resume, và đối soát với core banking.',
+  a: `**Tóm tắt:** **Standing order** (lệnh thường trực) là lệnh chuyển tiền định kỳ do khách thiết lập một lần (ví dụ: chuyển 5 triệu sang tài khoản tiết kiệm hàng tháng ngày 5). Khác với **Direct Debit** (ủy quyền thu — bên thụ hưởng chủ động thu), standing order do **người gửi chủ động đẩy**. Thiết kế phải xử lý: business date & holiday calendar, rate/fee versioning, retry strategy khi thiếu tiền, pause/resume/cancel, idempotency, và đối soát cuối ngày với core.
+ 
+### Standing order vs Direct Debit
+ | | Standing Order (Lệnh thường trực) | Direct Debit (Ủy quyền thu) |
+ |---|---|---|
+ | Người khởi tạo | Người gửi (payer) | Người nhận (payee/merchant) |
+ | Kiểm soát | Người gửi quyết định số tiền, ngày | Người nhận quyết định (trong hạn mức ủy quyền) |
+ | Linh hoạt | Cố định (số tiền, ngày) | Có thể thay đổi số tiền mỗi kỳ |
+ | Ví dụ | Chuyển tiết kiệm, trả góp tự thiết lập | Hóa đơn điện, bảo hiểm, thuê bao |
+ 
+### Mô hình dữ liệu cốt lõi
+ ~~~text
+ standing_order:
+   id, customer_id, debit_account, credit_account, amount, currency
+   frequency: DAILY | WEEKLY | MONTHLY | QUARTERLY | YEARLY
+   day_of_month (1-28, hoặc LAST_DAY), day_of_week (MON-SUN)
+   start_date, end_date (NULL = vô hạn)
+   status: ACTIVE | PAUSED | CANCELLED | EXPIRED
+   fee_plan_id, rate_plan_id (tham chiếu versioned plan)
+   retry_policy: MAX_ATTEMPTS, INTERVAL_DAYS[], FAIL_ACTION (PAUSE/CANCEL)
+   created_at, updated_at, version
+ 
+ standing_order_run:
+   order_id, business_date, attempt_no, status (PENDING/SUCCESS/FAILED/SKIPPED)
+   amount, fee_amount, rate_snapshot_json, idempotency_key
+   error_code, error_message, created_at
+   PRIMARY KEY (order_id, business_date) -- idempotent theo kỳ
+ ~~~
+ 
+### Xử lý ngày nghỉ & Business Date
+ - **Business date** ≠ calendar date. Xem banking-006, banking-028.
+ - Quy tắc {{day_of_month = 31}} mà tháng chỉ có 30 ngày -> **LAST_DAY** của tháng đó.
+ - Ngày chạy rơi vào **nghỉ (weekend, holiday)**: ba chiến lược cấu hình được:
+   1. **PREVIOUS_WORKING_DAY** (chạy sớm hơn) — phổ biến cho standing order gửi tiết kiệm.
+   2. **NEXT_WORKING_DAY** (chạy muộn hơn) — phổ biến cho trả nợ (tránh trễ hạn).
+   3. **SKIP** (bỏ qua kỳ này, đợi kỳ sau) — ít dùng, phải có sự đồng ý khách.
+ - Calendar phải **per currency/country** (USD holiday khác VND holiday).
+ 
+### Versioning lãi suất/phí (Rate/Fee Plan)
+ Số tiền/phí có thể thay đổi theo thời gian (ví dụ phí chuyển khoản tăng từ 1/1). Standing order phải **snapshot** plan tại kỳ chạy:
+ - {{rate_plan_id}} trỏ đến {{rate_plan(plan_id, version, effective_from, effective_to, fee_structure_json)}}.
+ - Khi chạy kỳ, lấy plan có {{effective_from <= business_date < effective_to}}.
+ - Lưu {{rate_snapshot_json}} trong {{standing_order_run}} để đối soát sau này.
+ 
+### Retry khi thiếu tiền
+ Thiếu tiền là lỗi **nghiệp vụ có thể chờ**, khác lỗi kỹ thuật.
+ ~~~text
+ Attempt 1: ngay ngày chạy (business_date). Thiếu tiền -> PENDING_RETRY.
+ Attempt 2: sau 1 ngày (D+1). Vẫn thiếu -> PENDING_RETRY.
+ Attempt 3: sau 2 ngày nữa (D+3). Vẫn thiếu -> FAILED.
+ Hết attempt: cập nhật order status = PAUSED (hoặc CANCELLED theo config), ghi log, thông báo khách.
+ ~~~
+ **Quan trọng**: Mỗi attempt là một giao dịch riêng (idempotency key riêng), nhưng **cùng một kỳ** ({{business_date}}). Khi attempt nào thành công -> các attempt sau bị SKIPPED, kỳ đó coi là SUCCESS.
+ 
+### Pause / Resume / Cancel
+ - **Pause**: khách tạm dừng (ví dụ đi xa). Order status = PAUSED. Job bỏ qua. Resume -> ACTIVE, tiếp tục từ kỳ tới (không chạy lùi kỳ đã bỏ).
+ - **Cancel**: khách hủy vĩnh viễn. Status = CANCELLED. Không thể resume (phải tạo mới).
+ - **Expire**: {{end_date}} đến. Status = EXPIRED.
+ - Mọi thay đổi status phải **maker-checker** (xem banking-026) và ghi audit trail.
+ 
+### Idempotency & Đối soát với Core
+ - Mỗi kỳ ({{order_id}} + {{business_date}}) chỉ được chạy **một lần** -> PRIMARY KEY trên {{standing_order_run}}.
+ - Job chạy: {{INSERT ... ON CONFLICT DO NOTHING}} -> nếu đã có row -> bỏ qua (idempotent).
+ - Giao dịch thành công -> ghi ledger/core banking trong **cùng transaction** với insert {{standing_order_run}}.
+ - Đối soát EOD: so khớp {{standing_order_run}} (status=SUCCESS) với ledger/core entries theo {{idempotency_key}}. Lệch -> queue tra soát.
+ 
+### Code/Java: Job chạy standing order
+ ~~~java
+ @Scheduled(cron = "0 0 2 * * ?") // chạy 2h sáng hàng ngày
+ void runDailyStandingOrders(LocalDate bizDate) {
+     List<StandingOrder> dueOrders = repo.findDue(bizDate); // đã áp dụng holiday rule
+     for (StandingOrder so : dueOrders) {
+         txTemplate.execute(status -> {
+             // Idempotent: insert run record
+             boolean inserted = runRepo.insertIfNew(so.id(), bizDate, generateIdemKey(so, bizDate));
+             if (!inserted) return; // đã chạy kỳ này
+             
+             // Kiểm tra số dư available balance
+             if (!accountService.hasAvailableBalance(so.debitAccount(), so.amount())) {
+                 runRepo.markPendingRetry(so.id(), bizDate, 1);
+                 return;
+             }
+             
+             // Thực hiện chuyển tiền (core banking)
+             TransferResult tr = transferService.execute(so.debitAccount(), so.creditAccount(),
+                                                         so.amount(), so.currency(),
+                                                         so.idempotencyKey());
+             if (tr.success()) {
+                 runRepo.markSuccess(so.id(), bizDate, tr.txId());
+             } else {
+                 runRepo.markFailed(so.id(), bizDate, tr.errorCode());
+                 scheduleRetry(so, bizDate, 1);
+             }
+         });
+     }
+ }
+ ~~~
+ 
+### Lỗi hay gặp
+ - Chạy theo **calendar date** không phải business date -> sai ngày tháng 2, ngày nghỉ.
+ - Không snapshot fee/rate -> phí thay đổi giữa chừng, đối soát không khớp.
+ - Retry không giới hạn -> hàng nghìn attempt, hệ thống nghẽn, khách bị spam thông báo.
+ - Pause/Resume không audit -> không biết ai pause khi nào,égi.
+ - Không khóa (order_id, business_date) -> job chạy lại tạo giao dịch trùng.
+ - Đối soát chỉ so tổng tiền -> bỏ sót lệch chi tiết.
+ 
+### Ví dụ đời thực
+ 
+ Một ngân hàng có 500.000 standing order chuyển tiết kiệm hàng tháng. Tháng 2, ngày 5 rơi vào thứ 6, nhưng nhiều khách chọn {{day_of_month=31}} -> quy tắc LAST_DAY nên chạy ngày 28/2. Code cũ dùng {{LocalDate.of(year, month, dayOfMonth)}} -> ném exception DateTimeException tháng 2 không có ngày 31, job dừng, 12.000 lệnh không chạy. Khách khiếu nại không thấy tiền chuyển. Dev fix: áp dụng {{YearMonth.lengthOfMonth()}} và holiday calendar {{PREVIOUS_WORKING_DAY}}. Thêm: phí chuyển khoản tăng từ 1/7 nhưng standing order không snapshot -> tháng 7 khách bị trừ phí cũ, ngân hàng lỗ phí. Bổ sung {{rate_plan_id}} versioned, lưu snapshot trong run record. Kết quả: 0 lỗi ngày 31/28/30, phí đúng 100%, đối soát EOD khớp.
+ 
+### Trả lời mẫu khi phỏng vấn
+ 
+ "Standing order do người gửi chủ động đẩy tiền định kỳ, khác Direct Debit (người nhận thu). Thiết kế cốt lõi: (1) **Business date + holiday calendar** — ngày 31 thành LAST_DAY, ngày nghĩ PREV/NEXT/SKIP configurable per currency. (2) **Rate/Fee plan versioning** — snapshot plan tại kỳ chạy, lưu trong run record. (3) **Retry** — D+0, D+1, D+3 tối đa 3 attempt/ kỳ, mỗi attempt idempotency key riêng, thành công thì dừng retry. (4) **Pause/Resume/Cancel** — status machine, maker-checker, audit trail, resume chỉ từ kỳ tới. (5) **Idempotent** — PK (order_id, business_date), insert ON CONFLICT DO NOTHING, cùng transaction với core transfer. Đối soát EOD khớp run record vs ledger theo idempotency key. Thực tế: em từng fix bug tháng 2 ngày 31 ném exception, và phí không snapshot gây lỗ — sau khi bổ sung calendar + versioned plan, 500k lệnh chạy trôi."
+ 
+ > Senior tip: Ba chốt: (1) **Business date ≠ calendar date** — luôn có calendar per currency, rule PREV/NEXT/SKIP. (2) **Snapshot mọi thứ** — amount, fee, rate, FX rate tại kỳ chạy. (3) **Retry có giới hạn & idempotent** — không để attempt tràn, không để retry tạo giao dịch trùng. Hỏi interviewer: "standing order của anh có cho phép thay đổi amount giữa chừng không? Nếu có thì versioning phức tạp hơn."
+ 
+ > Cụm từ: Business date (ngày nghiệp vụ) là ngày sổ sách của ngân hàng, khác ngày dương lịch. LAST_DAY là ngày cuối cùng của tháng (28/29/30/31 tùy tháng). Idempotency key là mã duy nhất cho một lần thử thực hiện một kỳ standing order.
+ 
+  `,
+  follow: [
+    'Standing order và Direct Debit khác nhau ở quyền kiểm soát số tiền/ngày, và rủi ro nào cao hơn?',
+    'Khi rate plan thay đổi giữa kỳ (ví dụ phí tăng 1/7 mà kỳ chạy 28/6), bạn áp dụng rate cũ hay mới?',
+    'Nếu khách pause standing order 3 tháng rồi resume, các kỳ pause có được chạy bù (backfill) không?'
+  ],
+  tags: ['standing order', 'recurring payment', 'direct debit', 'business date', 'holiday calendar', 'retry', 'idempotency']
+},
+{
+  id: 'banking-051',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Thiết kế hệ thống tài khoản kế toán (chart of accounts) cho ngân hàng số: cấu trúc 5 bậc, cách map giao dịch vào tài khoản Nợ/Có, và vì sao phải có sub-ledger riêng cho từng loại sản phẩm (tiền gửi, vay, thẻ...) trước khi tổng hợp lên general ledger?',
+  a: `**Tóm tắt:** Chart of accounts (bảng hệ thống tài khoản kế toán) là danh sách có cấu trúc phân cấp các tài khoản mà ngân hàng dùng để ghi nhận mọi giao dịch. Ngân hàng thường dùng hệ thống 5 bậc: 1xxx = tài sản (tiền mặt, cho vay, đầu tư), 2xxx = nợ phải trả (tiền gửi khách hàng, nợ vay), 3xxx = vốn chủ sở hữu, 4xxx = doanh thu, 5xxx = chi phí. Mỗi giao dịch phải map ít nhất 2 tài khoản: một tài khoản Nợ (debit) và một tài khoản Có (credit), đảm bảo tổng Nợ = tổng Có.
+
+### Cấu trúc 5 bậc
+
+Hệ thống tài khoản kế toán (chart of accounts - bảng hệ thống tài khoản) giống như một cái cây phân cấp, mỗi nhánh là một loại tài khoản:
+
+~~~text
+1xxx - Tài sản (Assets)
+  1010 - Tiền mặt tại quỹ
+  1020 - Tiền gửi tại ngân hàng nhà nước
+  1030 - Tiền gửi tại ngân hàng khác
+  1100 - Cho vay khách hàng
+  1200 - Đầu tư chứng khoán
+  
+2xxx - Nợ phải trả (Liabilities)
+  2010 - Tiền gửi không kỳ hạn
+  2020 - Tiền gửi có kỳ hạn
+  2030 - Tiền gửi tiết kiệm
+  2100 - Nợ vay ngân hàng khác
+  
+3xxx - Vốn chủ sở hữu (Equity)
+  3010 - Vốn điều lệ
+  3020 - Lợi nhuận giữ lại
+  
+4xxx - Doanh thu (Revenue)
+  4010 - Lãi từ cho vay
+  4020 - Lãi từ đầu tư
+  4030 - Phí dịch vụ
+  
+5xxx - Chi phí (Expenses)
+  5010 - Chi phí nhân sự
+  5020 - Chi phí hoạt động
+  5030 - Chi phí dự phòng
+~~~
+
+### Sub-ledger vs General ledger
+
+**Sub-ledger** (sổ cái chi tiết) là sổ ghi chi tiết từng giao dịch của từng khách hàng/sản phẩm. **General ledger** (sổ cái tổng hợp) là sổ tổng hợp, chỉ ghi tổng số tiền của từng tài khoản.
+
+Ví dụ: khi khách A gửi 1 triệu vào tài khoản tiết kiệm:
+- Sub-ledger tiết kiệm: ghi chi tiết "khách A +1.000.000"
+- General ledger: ghi "tài khoản 2030 (tiền gửi tiết kiệm) +1.000.000" (tổng của tất cả khách)
+
+**Vì sao phải có sub-ledger riêng?**
+- **Hiệu năng**: General ledger chỉ lưu tổng, không lưu từng giao dịch. Nếu query "số dư khách A" trên GL sẽ rất chậm. Sub-ledger cho phép query nhanh theo khách hàng.
+- **Audit**: Cần biết chính xác khách nào gửi bao nhiêu vào lúc nào.
+- **Đối soát**: So khớp sub-ledger với GL để phát hiện lỗi (tổng sub-ledger phải = tổng GL).
+
+### Map giao dịch vào Nợ/Có
+
+Ví dụ khách A rút 500.000 từ tài khoản tiết kiệm:
+~~~text
+Ghi Nợ (Debit):  2030 - Tiền gửi tiết kiệm  +500.000 (giảm nợ phải trả)
+Ghi Có (Credit): 1010 - Tiền mặt tại quỹ    +500.000 (tăng tài sản)
+~~~
+
+**Quy tắc**: Tài sản tăng = Nợ, giảm = Có. Nợ phải trả tăng = Có, giảm = Nợ.
+
+### Code/Java: Ghi bút toán kép
+
+~~~java
+@Entity
+@Table(name = "gl_entries")
+class GlEntry {
+    @Id @GeneratedValue
+    Long id;
+    String accountCode;      // ví dụ "2030"
+    BigDecimal amount;
+    String type;             // "DEBIT" hoặc "CREDIT"
+    String txId;             // id giao dịch
+    LocalDateTime createdAt;
+}
+
+@Service
+class LedgerService {
+    @Transactional
+    public void recordTransfer(String fromAccount, String toAccount, BigDecimal amount, String txId) {
+        // Ghi Nợ tài khoản nguồn (giảm số dư)
+        glEntryRepo.save(new GlEntry(fromAccount, amount, "DEBIT", txId));
+        // Ghi Có tài khoản đích (tăng số dư)
+        glEntryRepo.save(new GlEntry(toAccount, amount, "CREDIT", txId));
+        
+        // Cập nhật số dư (trong cùng transaction)
+        accountRepo.decreaseBalance(fromAccount, amount);
+        accountRepo.increaseBalance(toAccount, amount);
+    }
+}
+~~~
+
+### Bảng trade-off: Sub-ledger riêng vs Dùng chung GL
+
+| Tiêu chí | Sub-ledger riêng | Dùng chung GL |
+|---|---|---|
+| Query theo khách hàng | Nhanh (index theo customer_id) | Chậm (phải filter toàn bộ) |
+| Audit chi tiết | Có | Không (chỉ có tổng) |
+| Hiệu năng ghi | Chậm hơn (2 bảng) | Nhanh hơn (1 bảng) |
+| Đối soát | Dễ (so 2 bảng) | Khó (phải tính lại từ đầu) |
+| Chi phí lưu trữ | Cao hơn | Thấp hơn |
+
+### Lỗi hay gặp trên production
+
+- **Không map đủ tài khoản**: Ghi Nợ nhưng quên ghi Có → mất cân bằng. Phải có validation: tổng Nợ = tổng Có.
+- **Dùng số nguyên thay BigDecimal**: Làm tròn sai, mất tiền.
+- **Không có transaction**: Ghi Nợ thành công nhưng ghi Có thất bại → mất tiền.
+- **Sub-ledger và GL không khớp**: Do bug hoặc race condition. Phải có job đối soát định kỳ.
+
+### Ví dụ đời thực
+
+Một ngân hàng số có 2 triệu tài khoản tiết kiệm. Hệ thống cũ dùng chung GL, mỗi lần query "số dư khách A" phải quét toàn bộ bảng → 3-5 giây. Khách phàn nàn app chậm. Dev fix: tách sub-ledger riêng cho tiết kiệm, index theo customer_id. Query giảm còn 50ms. Thêm: đối soát EOD so sub-ledger vs GL, phát hiện 1.2 tỷ lệch do bug ghi thiếu Nợ. Sau fix: 0 lệch, query nhanh 100x.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Chart of accounts là xương sống của hệ thống kế toán ngân hàng. Thiết kế cốt lõi: (1) **Cấu trúc 5 bậc** — 1xxx tài sản, 2xxx nợ phải trả, 3xxx vốn, 4xxx doanh thu, 5xxx chi phí. Mỗi giao dịch map ít nhất 2 tài khoản Nợ/Có, tổng Nợ phải = tổng Có. (2) **Sub-ledger riêng cho từng sản phẩm** — tiết kiệm, vay, thẻ... cho phép query nhanh theo khách hàng, audit chi tiết, đối soát dễ. (3) **General ledger tổng hợp** — chỉ lưu tổng, không lưu chi tiết. (4) **Transaction bắt buộc** — ghi Nợ và Có trong cùng transaction, nếu một cái fail thì rollback cả hai. (5) **Đối soát định kỳ** — so sub-ledger vs GL, phát hiện lệch sớm. Thực tế: em từng fix bug query chậm 5s do dùng chung GL, sau khi tách sub-ledger còn 50ms, và phát hiện 1.2 tỷ lệch do thiếu Nợ — sau fix thì 0 lệch."
+
+> Senior tip: Ba chốt: (1) **Sub-ledger ≠ GL** — sub-ledger cho chi tiết, GL cho tổng hợp. (2) **Nợ/Có phải cân bằng** — validation trước khi commit. (3) **Đối soát định kỳ** — so sub-ledger vs GL hàng ngày, phát hiện lệch sớm. Hỏi interviewer: "Hệ thống của anh dùng chung GL hay sub-ledger riêng? Nếu chung thì query theo khách hàng có chậm không?"
+
+> Cụm từ: Chart of accounts (bảng hệ thống tài khoản kế toán) là danh sách phân cấp các tài khoản. Sub-ledger (sổ cái chi tiết) là sổ ghi chi tiết từng giao dịch. General ledger (sổ cái tổng hợp) là sổ tổng hợp. Debit (Nợ) là ghi tăng tài sản/giảm nợ phải trả. Credit (Có) là ghi giảm tài sản/tăng nợ phải trả.
+
+  `,
+  follow: [
+    'Khi khách có nhiều loại tài khoản (tiết kiệm, vay, thẻ), sub-ledger được thiết kế thế nào để query nhanh?',
+    'Nếu sub-ledger và GL lệch nhau (ví dụ 1 tỷ), bạn điều tra thế nào và fix ra sao?',
+    'Chart of accounts có nên thay đổi theo thời gian không (ví dụ thêm tài khoản mới)? Nếu có thì ảnh hưởng đến báo cáo tài chính thế nào?'
+  ],
+  tags: ['chart of accounts', 'general ledger', 'sub-ledger', 'double-entry', 'accounting', 'banking']
+},
+{
+  id: 'banking-052',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Đối soát trong ngày (intraday reconciliation) khác gì so với đối soát cuối ngày (EOD)? Khi nào cần chạy intraday, kiến trúc thế nào, và các chỉ số quan trọng cần theo dõi (alert, dashboard)?',
+  a: `**Tóm tắt:** Đối soát trong ngày (intraday reconciliation) là quy trình kiểm tra số dư và giao dịch theo thời gian thực hoặc gần thời gian thực, khác với đối soát cuối ngày (EOD) chạy batch một lần. Mục đích: phát hiện lỗi sớm (trước khi tích lũy thành lỗi lớn), giảm thời gian phát hiện (MTTD - Mean Time To Detect), và cho phép can thiệp ngay lập tức thay vì đợi đến cuối ngày.
+
+### EOD vs Intraday
+
+**EOD (End of Day)**: Chạy 1 lần vào cuối ngày (ví dụ 23h hoặc 0h sáng hôm sau), so toàn bộ giao dịch trong ngày với file đối tác, xử lý lệch. Phát hiện lỗi sau 24 giờ.
+
+**Intraday**: Chạy liên tục hoặc theo chu kỳ ngắn (5 phút, 15 phút, 1 giờ). So số dư real-time với expected balance, alert nếu lệch. Phát hiện lỗi trong vài phút.
+
+### Khi nào cần Intraday?
+
+- **Giao dịch lớn, giá trị cao**: Chuyển khoản liên ngân hàng hàng tỷ đồng → cần phát hiện lỗi ngay.
+- **Hệ thống có SLA cao**: Payment gateway, ví điện tử → không thể đợi EOD.
+- **Nhiều đối tác**: NAPAS, ngân hàng khác, tổ chức thẻ → mỗi đối tác có file riêng, cần so liên tục.
+- **Fraud detection**: Phát hiện giao dịch bất thường real-time.
+
+### Kiến trúc Intraday Reconciliation
+
+~~~text
+[Transaction Stream] → [Kafka/Event Bus] → [Reconciliation Engine] → [Alert/ Dashboard]
+                                              ↓
+                                    [Expected Balance Cache]
+                                    (Redis, tính real-time)
+~~~
+
+**Thành phần**:
+1. **Transaction Stream**: Mọi giao dịch (transfer, payment, withdrawal) đều publish event lên Kafka.
+2. **Reconciliation Engine**: Consumer đọc event, so với expected balance (tính từ initial balance + các giao dịch đã xử lý).
+3. **Alert**: Nếu lệch > threshold (ví dụ 1 triệu), gửi alert qua Slack/Email/PagerDuty.
+4. **Dashboard**: Hiển thị real-time số dư, giao dịch, lệch.
+
+### Code/Java: Intraday Reconciliation Service
+
+~~~java
+@Service
+class IntradayReconciliationService {
+    
+    @Autowired
+    private AccountBalanceCache balanceCache; // Redis cache
+    
+    @Autowired
+    private ReconciliationAlertService alertService;
+    
+    @KafkaListener(topics = "transactions")
+    public void reconcileTransaction(TransactionEvent event) {
+        // Lấy số dư expected từ cache (tính real-time)
+        BigDecimal expected = balanceCache.getExpectedBalance(event.accountId());
+        BigDecimal actual = accountRepo.getBalance(event.accountId());
+        
+        // So sánh với tolerance (ví dụ 1.000 VND)
+        BigDecimal diff = actual.subtract(expected).abs();
+        if (diff.compareTo(new BigDecimal("1000")) > 0) {
+            // Lệch quá lớn → alert ngay
+            alertService.sendAlert(Alert.builder()
+                .accountId(event.accountId())
+                .expected(expected)
+                .actual(actual)
+                .diff(diff)
+                .severity(AlertSeverity.HIGH)
+                .build());
+        }
+        
+        // Cập nhật expected balance
+        balanceCache.updateExpectedBalance(event.accountId(), actual);
+    }
+}
+~~~
+
+### Bảng trade-off: EOD vs Intraday
+
+| Tiêu chí | EOD | Intraday |
+|---|---|---|
+| Thời gian phát hiện lỗi | 24h | Vài phút |
+| Chi phí compute | Thấp (batch 1 lần) | Cao (real-time) |
+| Độ phức tạp | Thấp | Cao (streaming, cache) |
+| Khả năng mở rộng | Dễ (batch job) | Khó hơn (stateful) |
+| Phù hợp | Giao dịch nhỏ, batch | Giao dịch lớn, real-time |
+
+### Các chỉ số quan trọng cần theo dõi
+
+- **MTTD (Mean Time To Detect)**: Thời gian trung bình phát hiện lỗi. Mục tiêu: < 5 phút.
+- **MTTR (Mean Time To Recovery)**: Thời gian trung bình khắc phục. Mục tiêu: < 30 phút.
+- **Lệch tích lũy**: Tổng số tiền lệch trong ngày. Nếu > threshold → dừng giao dịch.
+- **Số lượng alert**: Quá nhiều alert → alert fatigue. Cần tune threshold.
+- **False positive rate**: Tỷ lệ alert sai (không phải lỗi thật). Mục tiêu: < 5%.
+
+### Lỗi hay gặp trên production
+
+- **Cache không đồng bộ**: Redis cache và DB không khớp → alert sai.
+- **Event mất**: Kafka consumer lag → không xử lý kịp → lỗi không phát hiện.
+- **Threshold quá thấp**: Alert quá nhiều → bỏ qua alert thật.
+- **Không có dashboard**: Chỉ có alert, không có dashboard → không biết xu hướng.
+
+### Ví dụ đời thực
+
+Một ví điện tử có 5 triệu giao dịch/ngày. Hệ thống cũ chỉ EOD, phát hiện lỗi sau 24h → khách khiếu nại, tiền mất. Dev fix: thêm intraday reconciliation với Kafka + Redis cache. Alert nếu lệch > 10.000 VND. Kết quả: MTTD giảm từ 24h xuống 3 phút, phát hiện 99.9% lỗi trước khi khách khiếu nại. Thêm: dashboard hiển thị real-time 50 chỉ số (số dư, giao dịch, lệch, alert...). Giám đốc điều hành xem dashboard hàng ngày.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Đối soát trong ngày khác EOD ở chỗ chạy real-time thay vì batch. Thiết kế cốt lõi: (1) **Transaction stream qua Kafka** — mọi giao dịch publish event, consumer xử lý real-time. (2) **Expected balance cache (Redis)** — tính số dư expected từ initial balance + các giao dịch đã xử lý, so với actual balance từ DB. (3) **Alert thông minh** — chỉ alert khi lệch > threshold (ví dụ 10.000 VND), tránh alert fatigue. (4) **Dashboard real-time** — hiển thị MTTD, MTTR, số lượng alert, false positive rate. (5) **Tích lũy lệch** — nếu tổng lệch trong ngày > threshold → dừng giao dịch, điều tra. Thực tế: em từng fix MTTD 24h xuống 3 phút với 5 triệu giao dịch/ngày, phát hiện 99.9% lỗi trước khi khách khiếu nại."
+
+> Senior tip: Ba chốt: (1) **MTTD < 5 phút** — nếu > 5 phút thì không còn là intraday. (2) **Alert có threshold** — không alert tất cả, chỉ alert khi lệch > threshold. (3) **Dashboard real-time** — giám đốc điều hành cần xem real-time, không đợi EOD. Hỏi interviewer: "Hệ thống của anh có intraday reconciliation không? Nếu có thì MTTD là bao nhiêu?"
+
+> Cụm từ: Intraday reconciliation (đối soát trong ngày) là quy trình kiểm tra real-time. EOD (End of Day) là đối soát cuối ngày. MTTD (Mean Time To Detect) là thời gian trung bình phát hiện lỗi. MTTR (Mean Time To Recovery) là thời gian trung bình khắc phục. False positive (dương tính giả) là alert sai (không phải lỗi thật).
+
+  `,
+  follow: [
+    'Khi có quá nhiều alert (alert fatigue), bạn tune threshold thế nào để không bỏ lỡ alert thật?',
+    'Intraday reconciliation và EOD reconciliation có thể chạy song song không? Nếu có thì xử lý xung đột thế nào?',
+    'Nếu Kafka consumer lag quá cao (ví dụ 10 phút), bạn xử lý thế nào để không mất giao dịch?'
+  ],
+  tags: ['intraday reconciliation', 'real-time', 'kafka', 'redis', 'monitoring', 'alert']
+},
+{
+  id: 'banking-053',
+  topic: 'banking',
+  level: 'lead',
+  q: 'SWIFT MT103 và MT202 là gì, khác nhau thế nào, và khi nào dùng message nào trong chuyển tiền quốc tế? Flow xử lý từ ngân hàng gửi đến ngân hàng nhận diễn ra thế nào?',
+  a: `**Tóm tắt:** SWIFT (Society for Worldwide Interbank Financial Telecommunication) là mạng lưới liên ngân hàng quốc tế. MT103 là message chuyển tiền khách hàng (customer credit transfer), MT202 là message chuyển tiền giữa các ngân hàng (bank-to-bank). Khác biệt chính: MT103 dùng cho chuyển tiền của khách hàng (có thông tin người gửi/nhận), MT202 dùng cho thanh toán nội bộ ngân hàng (không cần thông tin khách hàng). MT202 COV là phiên bản mở rộng của MT202, có thêm thông tin khách hàng.
+
+### SWIFT là gì?
+
+SWIFT là tổ chức hợp tác của các ngân hàng trên toàn thế giới, cung cấp mạng lưới nhắn tin tài chính an toàn. Mỗi ngân hàng có một mã SWIFT/BIC (ví dụ: CITIUS33 cho Citibank New York). SWIFT không chuyển tiền, chỉ truyền thông điệp giữa các ngân hàng.
+
+### MT103 vs MT202
+
+**MT103 (Customer Credit Transfer)**: Chuyển tiền của khách hàng. Có thông tin người gửi (ordering customer) và người nhận (beneficiary customer). Dùng cho:
+- Chuyển tiền cá nhân/doanh nghiệp ra nước ngoài
+- Thanh toán hóa đơn quốc tế
+- Chuyển tiền kiều hối
+
+**MT202 (Bank-to-Bank Transfer)**: Chuyển tiền giữa các ngân hàng. Không cần thông tin khách hàng. Dùng cho:
+- Thanh toán nội bộ ngân hàng (ví dụ: chi nhánh A gửi tiền cho chi nhánh B)
+- Thanh toán liên ngân hàng (correspondent banking)
+- Thanh toán bù trừ (clearing)
+
+**MT202 COV**: Phiên bản mở rộng của MT202, có thêm thông tin khách hàng (từ MT103). Dùng khi cần gửi cả thông tin ngân hàng và khách hàng trong một message.
+
+### Flow xử lý MT103
+
+~~~text
+[Ngân hàng A] → MT103 → [Ngân hàng B (correspondent)] → MT202 → [Ngân hàng C (beneficiary)]
+     ↓                                    ↓                                    ↓
+  Ghi Nợ tài khoản VNostro            Ghi Nợ VNostro A                Ghi Có tài khoản khách
+  Ghi Có VNostro A                    Ghi Có VNostro C                Thông báo khách nhận
+~~~
+
+**Bước 1**: Ngân hàng A gửi MT103 đến ngân hàng trung gian (correspondent bank).
+**Bước 2**: Ngân hàng trung gian gửi MT202 đến ngân hàng nhận.
+**Bước 3**: Ngân hàng nhận ghi Có tài khoản khách hàng, thông báo khách nhận.
+
+### Các trường quan trọng trong MT103
+
+- **F32A**: Ngày giá trị (value date), tiền tệ, số tiền
+- **F50**: Thông tin người gửi (ordering customer)
+- **F59**: Thông tin người nhận (beneficiary customer)
+- **F70**: Thông tin bổ sung (remittance information)
+- **F71A**: Loại phí (OUR/SHA/BEN)
+
+### Code/Java: Xử lý MT103
+
+~~~java
+@Service
+class SwiftMessageService {
+    
+    @Autowired
+    private SwiftRepository swiftRepo;
+    
+    @Autowired
+    private LedgerService ledgerService;
+    
+    public void processMT103(String message) {
+        // Parse message
+        MT103 mt103 = swiftParser.parseMT103(message);
+        
+        // Validate
+        if (!validator.isValid(mt103)) {
+            throw new InvalidSwiftMessageException("Invalid MT103");
+        }
+        
+        // Ghi Nợ tài khoản Nostro của ngân hàng gửi
+        ledgerService.debit(mt103.getOrderingBank(), mt103.getAmount());
+        
+        // Ghi Có tài khoản Nostro của ngân hàng nhận
+        ledgerService.credit(mt103.getBeneficiaryBank(), mt103.getAmount());
+        
+        // Lưu message
+        swiftRepo.save(mt103);
+        
+        // Gửi MT202 đến ngân hàng nhận
+        String mt202 = swiftParser.createMT202(mt103);
+        swiftGateway.send(mt202);
+    }
+}
+~~~
+
+### Bảng trade-off: MT103 vs MT202 vs MT202 COV
+
+| Tiêu chí | MT103 | MT202 | MT202 COV |
+|---|---|---|---|
+| Thông tin khách hàng | Có | Không | Có |
+| Chi phí | Cao hơn | Thấp hơn | Trung bình |
+| Tốc độ xử lý | Chậm hơn (nhiều bước) | Nhanh hơn | Trung bình |
+| Phù hợp | Chuyển tiền khách hàng | Thanh toán nội bộ ngân hàng | Cần cả hai |
+
+### Lỗi hay gặp trên production
+
+- **Sai value date**: Tính lãi sai → khiếu nại khách hàng.
+- **Thiếu thông tin beneficiary**: Ngân hàng nhận không biết ghi Có cho ai → treo tiền.
+- **Không đối soát với Nostro/Vostro**: Lệch số dư → mất tiền.
+- **Không xử lý reject/cancel**: Message bị từ chối nhưng không rollback.
+
+### Ví dụ đời thực
+
+Một ngân hàng Việt Nam chuyển 1 triệu USD cho khách hàng ở Mỹ qua Citibank. Flow: Vietcombank gửi MT103 → Citibank (correspondent) → Bank of America (beneficiary). Citibank tính phí 15 USD (SHA), Bank of America tính phí 10 USD (SHA). Khách nhận 999.975 USD. Nếu sai value date → tính lãi sai 2 ngày → khiếu nại. Dev fix: validate value date, đối soát Nostro/Vostro hàng ngày. Kết quả: 0 sai value date, đối soát khớp 100%.
+
+### Trả lời mẫu khi phỏng vấn
+
+"SWIFT là mạng lưới liên ngân hàng quốc tế. MT103 dùng cho chuyển tiền khách hàng (có thông tin người gửi/nhận), MT202 dùng cho thanh toán nội bộ ngân hàng (không cần thông tin khách hàng), MT202 COV là phiên bản mở rộng của MT202 có thêm thông tin khách hàng. Flow MT103: ngân hàng gửi gửi MT103 đến correspondent bank, correspondent bank gửi MT202 đến beneficiary bank, beneficiary bank ghi Có tài khoản khách và thông báo khách nhận. Thiết kế cốt lõi: (1) **Validate message** — kiểm tra value date, amount, thông tin bắt buộc. (2) **Ghi Nostro/Vostro** — ghi Nợ tài khoản Nostro ngân hàng gửi, ghi Có Nostro ngân hàng nhận. (3) **Đối soát hàng ngày** — so Nostro/Vostro với SWIFT statement. (4) **Xử lý reject/cancel** — rollback giao dịch nếu message bị từ chối. Thực tế: em từng fix sai value date gây khiếu nại, sau khi validate thì 0 sai."
+
+> Senior tip: Ba chốt: (1) **MT103 ≠ MT202** — MT103 có thông tin khách hàng, MT202 không. (2) **Value date quan trọng** — sai value date = sai lãi. (3) **Đối soát Nostro/Vostro** — so hàng ngày, phát hiện lệch sớm. Hỏi interviewer: "Ngân hàng anh có dùng SWIFT không? Nếu có thì xử lý reject/cancel thế nào?"
+
+> Cụm từ: SWIFT (Society for Worldwide Interbank Financial Telecommunication) là mạng lưới liên ngân hàng quốc tế. MT103 là message chuyển tiền khách hàng. MT202 là message chuyển tiền giữa các ngân hàng. MT202 COV là phiên bản mở rộng của MT202 có thông tin khách hàng. Nostro account (tài khoản Nostro) là tài khoản của ngân hàng A mở tại ngân hàng B ở nước ngoài. Vostro account (tài khoản Vostro) là tài khoản của ngân hàng nước ngoài mở tại ngân hàng A.
+
+  `,
+  follow: [
+    'Khi MT103 bị reject (ví dụ sai thông tin beneficiary), bạn xử lý thế nào để không mất tiền?',
+    'Nostro/Vostro account được ghi sổ thế nào trong hệ thống ledger? Ví dụ cụ thể.',
+    'Nếu ngân hàng trung gian (correspondent bank) bị lỗi hệ thống, bạn có backup route không?'
+  ],
+  tags: ['swift', 'mt103', 'mt202', 'international transfer', 'nostro', 'vostro']
+},
+{
+  id: 'banking-054',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Distributed lock là gì và vì sao cần trong hệ thống banking? So sánh Redlock (Redis) vs ZooKeeper vs Database lock: khi nào dùng cái nào, và các lỗi thường gặp (split-brain, lock timeout, thundering herd)?',
+  a: `**Tóm tắt:** Distributed lock là cơ chế đồng bộ trên nhiều node/process để đảm bảo chỉ một process thực hiện một hành động tại một thời điểm. Trong banking, dùng để chống race condition khi nhiều service cùng xử lý một giao dịch (ví dụ: cùng lúc trừ tiền, cùng lúc cập nhật số dư). Redlock dùng Redis (nhanh, dễ setup), ZooKeeper dùng ZAB protocol (mạnh mẽ, đắt hơn), Database lock dùng SELECT FOR UPDATE (đơn giản, chậm hơn).
+
+### Vì sao cần Distributed Lock?
+
+Ví dụ: khách A có 1 triệu, cùng lúc 2 request rút 1 triệu:
+- Request 1: đọc số dư 1 triệu → trừ 1 triệu → ghi 0
+- Request 2: đọc số dư 1 triệu (trước khi request 1 ghi) → trừ 1 triệu → ghi 0
+
+Kết quả: khách rút 2 triệu nhưng chỉ có 1 triệu → mất tiền. Distributed lock giải quyết: chỉ một request được xử lý tại một thời điểm.
+
+### Redlock (Redis)
+
+**Cách hoạt động**:
+1. Client gửi SET key value NX PX timeout đến N Redis node (thường 5 node).
+2. Nếu majority (> N/2) node trả về OK → lock acquired.
+3. Client giữ lock trong timeout, làm việc.
+4. Khi xong, gửi DEL key đến tất cả node.
+
+**Ưu điểm**: Nhanh (sub-millisecond), dễ setup, phù hợp với high-throughput.
+**Nhược điểm**: Không mạnh mẽ bằng ZooKeeper, có thể có split-brain nếu network partition.
+
+### ZooKeeper
+
+**Cách hoạt động**:
+1. Client tạo ephemeral node (tự động xóa khi session mất).
+2. Node có thứ tự (sequential), client watch node trước đó.
+3. Nếu node trước bị xóa → client acquire lock.
+
+**Ưu điểm**: Mạnh mẽ (ZAB protocol), đảm bảo linearizability, phù hợp với critical operations.
+**Nhược điểm**: Chậm hơn Redis, đắt hơn (phải deploy cluster).
+
+### Database Lock (SELECT FOR UPDATE)
+
+**Cách hoạt động**:
+1. BEGIN TRANSACTION.
+2. SELECT * FROM account WHERE id = ? FOR UPDATE (khóa row).
+3. Cập nhật số dư.
+4. COMMIT (giải phóng lock).
+
+**Ưu điểm**: Đơn giản, không cần thêm hạ tầng, đảm bảo ACID.
+**Nhược điểm**: Chậm hơn (phải lock row), có thể gây deadlock.
+
+### Code/Java: Redlock Implementation
+
+~~~java
+@Service
+class DistributedLockService {
+    
+    @Autowired
+    private StringRedisTemplate redisTemplate;
+    
+    public boolean tryLock(String key, Duration timeout) {
+        String value = UUID.randomUUID().toString();
+        // SET key value NX PX timeout
+        Boolean success = redisTemplate.opsForValue()
+            .setIfAbsent(key, value, timeout);
+        return Boolean.TRUE.equals(success);
+    }
+    
+    public void unlock(String key) {
+        // Chỉ xóa nếu value khớp (tránh xóa lock của process khác)
+        String script = "if redis.call('get', KEYS[1]) == ARGV[1] then " +
+                       "return redis.call('del', KEYS[1]) else return 0 end";
+        redisTemplate.execute(new DefaultRedisScript<>(script, Long.class),
+                            Collections.singletonList(key), value);
+    }
+}
+~~~
+
+### Bảng trade-off: Redlock vs ZooKeeper vs DB Lock
+
+| Tiêu chí | Redlock (Redis) | ZooKeeper | DB Lock |
+|---|---|---|---|
+| Tốc độ | Rất nhanh (sub-ms) | Nhanh (ms) | Chậm (10-100ms) |
+| Chi phí | Thấp (Redis cluster) | Cao (ZooKeeper cluster) | Thấp (dùng DB hiện có) |
+| Độ tin cậy | Trung bình | Cao | Cao |
+| Độ phức tạp | Thấp | Cao | Thấp |
+| Phù hợp | High-throughput, caching | Critical operations | Đơn giản, ít lock |
+
+### Lỗi hay gặp trên production
+
+- **Split-brain**: Network partition → 2 process cùng acquire lock → race condition.
+- **Lock timeout quá ngắn**: Work chưa xong nhưng lock hết hạn → process khác acquire → xung đột.
+- **Thundering herd**: Nhiều process cùng chờ lock → khi lock release, tất cả cùng acquire → quá tải.
+- **Lock leak**: Process crash nhưng không release lock → lock treo vĩnh viễn.
+
+### Ví dụ đời thực
+
+Một ngân hàng số có 10 triệu giao dịch/ngày. Hệ thống cũ dùng DB lock (SELECT FOR UPDATE) → 50ms/giao dịch → throughput chỉ 20k TPS. Dev fix: dùng Redlock → 2ms/giao dịch → throughput 500k TPS. Thêm: lock timeout 30s, auto-renew (watchdog) để tránh lock leak. Kết quả: throughput tăng 25x, 0 race condition.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Distributed lock là cơ chế đồng bộ trên nhiều node để chống race condition. Redlock dùng Redis (nhanh, dễ setup, phù hợp high-throughput), ZooKeeper dùng ZAB protocol (mạnh mẽ, đắt hơn, phù hợp critical operations), DB lock dùng SELECT FOR UPDATE (đơn giản, chậm hơn). Thiết kế cốt lõi: (1) **Chọn lock phù hợp** — Redlock cho high-throughput, ZooKeeper cho critical, DB lock cho đơn giản. (2) **Lock timeout** — đặt timeout đủ dài để work xong nhưng không quá dài để tránh lock leak. (3) **Auto-renew (watchdog)** — tự động gia hạn lock nếu work chưa xong. (4) **Unlock đúng cách** — chỉ xóa lock nếu value khớp (trាន xóa lock của process khác). (5) **Xử lý split-brain** — majority quorum để tránh 2 process cùng acquire. Thực tế: em từng fix throughput 20k → 500k TPS với Redlock, và thêm watchdog để tránh lock leak."
+
+> Senior tip: Ba chốt: (1) **Lock timeout** — đặt đủ dài để work xong, đủ ngắn để tránh lock leak. (2) **Watchdog** — auto-renew lock nếu work chưa xong. (3) **Majority quorum** — tránh split-brain. Hỏi interviewer: "Hệ thống của anh dùng distributed lock không? Nếu có thì dùng Redis hay ZooKeeper?"
+
+> Cụm từ: Distributed lock (khóa phân tán) là cơ chế đồng bộ trên nhiều node. Redlock là thuật toán distributed lock dùng Redis. ZooKeeper là hệ thống điều phối phân tán dùng ZAB protocol. Split-brain (não phân đôi) là tình trạng 2 process cùng acquire lock do network partition. Thundering herd (đàn ngựa phi nước đại) là tình trạng nhiều process cùng chờ lock và cùng acquire khi lock release.
+
+  `,
+  follow: [
+    'Khi lock timeout quá ngắn và work chưa xong, bạn xử lý thế nào để tránh xung đột?',
+    'Redlock có thực sự an toàn trong mọi trường hợp không? Khi nào nên dùng ZooKeeper thay thế?',
+    'Nếu Redis cluster bị network partition, lock bị mất, bạn phát hiện và xử lý thế nào?'
+  ],
+  tags: ['distributed lock', 'redlock', 'zookeeper', 'concurrency', 'race condition']
+},
+{
+  id: 'banking-055',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Transaction date và value date khác nhau thế nào trong banking? Khi nào tiền bắt đầu tính lãi, và ảnh hưởng đến báo cáo tài chính ra sao? Ví dụ cụ thể với cut-off time.',
+  a: `**Tóm tắt:** Transaction date (ngày giao dịch) là ngày thực hiện giao dịch (ngày khách bấm nút "chuyển tiền"). Value date (ngày giá trị) là ngày mà số dư thực sự thay đổi và bắt đầu tính lãi. Khác biệt quan trọng: giao dịch có thể thực hiện hôm nay nhưng value date là ngày mai (ví dụ: chuyển tiền sau cut-off time). Value date ảnh hưởng đến: tính lãi, báo cáo tài chính, đối soát.
+
+### Transaction Date vs Value Date
+
+**Transaction Date (Ngày giao dịch)**: Ngày khách hàng thực hiện giao dịch. Ví dụ: khách bấm "chuyển tiền" vào 15h ngày 15/11.
+
+**Value Date (Ngày giá trị)**: Ngày mà số dư thực sự thay đổi và bắt đầu tính lãi. Ví dụ: chuyển tiền trước cut-off time (16h) → value date = 15/11. Chuyển tiền sau cut-off time → value date = 16/11.
+
+### Cut-off Time ảnh hưởng Value Date
+
+**Cut-off time** là thời điểm cuối cùng trong ngày mà giao dịch được xử lý ngay. Sau cut-off time, giao dịch sẽ được xử lý vào ngày làm việc tiếp theo.
+
+Ví dụ (cut-off time = 16h):
+- Chuyển tiền lúc 15h ngày 15/11 (thứ 2) → value date = 15/11
+- Chuyển tiền lúc 17h ngày 15/11 (thứ 2) → value date = 16/11 (thứ 3)
+- Chuyển tiền lúc 17h ngày 15/11 (thứ 6) → value date = 18/11 (thứ 2, vì thứ 7 và chủ nhật là ngày nghỉ)
+
+### Tính lãi theo Value Date
+
+Lãi tiền gửi = Số dư × Lãi suất × Số ngày / 365
+
+**Ví dụ**: Khách gửi 100 triệu, lãi suất 6%/năm, value date = 15/11, rút ngày 20/11.
+- Số ngày = 20 - 15 = 5 ngày
+- Lãi = 100.000.000 × 6% × 5 / 365 = 82.191 VND
+
+Nếu value date sai (ví dụ 16/11 thay vì 15/11):
+- Số ngày = 4 ngày
+- Lãi = 65.753 VND
+- Khách mất 16.438 VND → khiếu nại.
+
+### Ảnh hưởng đến Báo cáo Tài chính
+
+Báo cáo tài chính (financial statement) ghi nhận theo value date, không phải transaction date. Ví dụ:
+- Ngày 31/12: khách chuyển 1 tỷ vào lúc 23h 31/12, value date = 1/1 năm sau.
+- Báo cáo 31/12: không ghi nhận 1 tỷ này (vì value date = 1/1).
+- Báo cáo 1/1: ghi nhận 1 tỷ này.
+
+Nếu ghi nhận theo transaction date → sai báo cáo → kiểm toán không chấp nhận.
+
+### Code/Java: Xử lý Value Date
+
+~~~java
+@Service
+class ValueDateService {
+    
+    @Autowired
+    private CutOffTimeConfig cutOffConfig;
+    
+    @Autowired
+    private HolidayCalendar holidayCalendar;
+    
+    public LocalDate calculateValueDate(LocalDateTime transactionTime) {
+        // Kiểm tra cut-off time
+        LocalTime cutOff = cutOffConfig.getCutOffTime(); // ví dụ 16:00
+        if (transactionTime.toLocalTime().isAfter(cutOff)) {
+            // Sau cut-off → value date = ngày làm việc tiếp theo
+            return getNextWorkingDay(transactionTime.toLocalDate().plusDays(1));
+        } else {
+            // Trước cut-off → value date = ngày giao dịch
+            return transactionTime.toLocalDate();
+        }
+    }
+    
+    private LocalDate getNextWorkingDay(LocalDate date) {
+        while (holidayCalendar.isHoliday(date)) {
+            date = date.plusDays(1);
+        }
+        return date;
+    }
+}
+~~~
+
+### Bảng trade-off: Transaction Date vs Value Date
+
+| Tiêu chí | Transaction Date | Value Date |
+|---|---|---|
+| Ý nghĩa | Ngày thực hiện giao dịch | Ngày số dư thay đổi |
+| Ảnh hưởng lãi | Không | Có |
+| Ảnh hưởng báo cáo | Không | Có |
+| Cut-off time | Không ảnh hưởng | Ảnh hưởng trực tiếp |
+| Phù hợp | Audit trail | Tính lãi, báo cáo |
+
+### Lỗi hay gặp trên production
+
+- **Nhầm transaction date với value date**: Tính lãi sai → khiếu nại.
+- **Không xử lý holiday calendar**: Thứ 7, chủ nhật, ngày lễ → value date sai.
+- **Không xử lý cut-off time**: Giao dịch sau cut-off nhưng value date = ngày giao dịch → sai.
+- **Báo cáo theo transaction date**: Sai báo cáo tài chính → kiểm toán không chấp nhận.
+
+### Ví dụ đời thực
+
+Một ngân hàng có 10 triệu tài khoản tiết kiệm. Hệ thống cũ dùng transaction date để tính lãi → sai 1-2 ngày cho 30% giao dịch (sau cut-off). Khách khiếu nại: "tôi gửi 100 triệu, lãi chỉ 65k thay vì 82k". Dev fix: thêm value date calculation với cut-off time và holiday calendar. Kết quả: 0 khiếu nại lãi, báo cáo tài chính khớp 100%.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Transaction date là ngày thực hiện giao dịch, value date là ngày số dư thực sự thay đổi và bắt đầu tính lãi. Khác biệt: giao dịch trước cut-off time (ví dụ 16h) → value date = transaction date; sau cut-off → value date = ngày làm việc tiếp theo. Value date ảnh hưởng đến: (1) **Tính lãi** — lãi = số dư × lãi suất × số ngày / 365, số ngày tính từ value date. (2) **Báo cáo tài chính** — ghi nhận theo value date, không phải transaction date. (3) **Đối soát** — so theo value date. Thiết kế cốt lõi: (1) **Cut-off time config** — per currency/country. (2) **Holiday calendar** — per currency/country. (3) **Value date calculation** — trước cut-off = ngày giao dịch, sau cut-off = ngày làm việc tiếp theo. (4) **Lưu cả hai** — transaction date và value date trong DB. Thực tế: em từng fix sai lãi 30% giao dịch do nhầm transaction date, sau khi thêm value date thì 0 khiếu nại."
+
+> Senior tip: Ba chốt: (1) **Value date ≠ transaction date** — value date là ngày số dư thay đổi. (2) **Cut-off time** — trước cut-off = value date hôm nay, sau cut-off = ngày làm việc tiếp theo. (3) **Lưu cả hai** — transaction date và value date trong DB. Hỏi interviewer: "Ngân hàng anh có cut-off time không? Nếu có thì value date được tính thế nào?"
+
+> Cụm từ: Transaction date (ngày giao dịch) là ngày thực hiện giao dịch. Value date (ngày giá trị) là ngày số dư thực sự thay đổi và bắt đầu tính lãi. Cut-off time (thời điểm cắt) là thời điểm cuối cùng trong ngày mà giao dịch được xử lý ngay. Holiday calendar (lịch ngày lễ) là lịch các ngày nghỉ lễ theo quốc gia/khu vực.
+
+  `,
+  follow: [
+    'Khi khách chuyển tiền vào thứ 7, value date được tính thế nào nếu thứ 2 là ngày lễ?',
+    'Nếu cut-off time thay đổi (ví dụ từ 16h xuống 15h), bạn xử lý các giao dịch đang pending thế nào?',
+    'Báo cáo tài chính ghi nhận theo value date hay transaction date? Nếu có sự khác biệt giữa hai ngày thì sao?'
+  ],
+  tags: ['value date', 'transaction date', 'cut-off time', 'interest calculation', 'financial reporting']
+},
+{
+  id: 'banking-056',
+  topic: 'banking',
+  level: 'lead',
+  q: 'ISO 8583 message flow diễn ra thế nào trong giao dịch thẻ? Giải thích các message type chính (0100, 0110, 0200, 0210) và các trường quan trọng (F2, F3, F4, F39) trong mỗi bước.',
+  a: `**Tóm tắt:** ISO 8583 là chuẩn thông điệp cho giao dịch thẻ (credit/debit card). Flow cơ bản: 0100 (authorization request) → 0110 (authorization response) → 0200 (financial transaction request) → 0210 (financial transaction response). Mỗi message có các trường quan trọng: F2 (PAN - Primary Account Number), F3 (Processing Code), F4 (Amount), F39 (Response Code). Hiểu flow giúp debug lỗi, thiết kế hệ thống xử lý thẻ.
+
+### ISO 8583 là gì?
+
+ISO 8583 là chuẩn quốc tế định nghĩa cấu trúc thông điệp cho giao dịch tài chính (chủ yếu là thẻ). Message gồm: Message Type Indicator (MTI) + Bitmap + Data Fields.
+
+### Các Message Type chính
+
+**0100 - Authorization Request**: Ngân hàng phát hành thẻ (issuer) kiểm tra số dư, hạn mức, thẻ có bị khóa không. Dùng cho giao dịch offline (không cần tiền ngay).
+
+**0110 - Authorization Response**: Issuer trả lời approve/decline. Approve = cấp authorization code (ví dụ A1B2C3).
+
+**0200 - Financial Transaction Request**: Thực hiện giao dịch thật (rút tiền, thanh toán). Dùng cho giao dịch online (cần tiền ngay).
+
+**0210 - Financial Transaction Response**: Issuer trả lời approve/decline, cập nhật số dư.
+
+### Flow chi tiết
+
+~~~text
+[Cardholder] → [POS/ATM] → [Acquirer] → [Card Network] → [Issuer]
+     ↓              ↓            ↓              ↓              ↓
+   Quẹt thẻ      0100         Forward 0100     Route 0100      Kiểm tra
+   Nhập PIN      0110         Nhận 0110        Forward 0110    Approve/Decline
+   Rút tiền      0200         Forward 0200     Route 0200      Trừ tiền
+                 0210         Nhận 0210        Forward 0210    Ghi Nợ
+~~~
+
+### Các trường quan trọng
+
+**F2 (PAN - Primary Account Number)**: Số thẻ (ví dụ 4111111111111111 cho Visa test).
+
+**F3 (Processing Code)**: Loại giao dịch. Ví dụ:
+- 000000: Mua hàng
+- 010000: Rút tiền ATM
+- 300000: Nạp tiền
+
+**F4 (Amount)**: Số tiền (12 chữ số, không có dấu phẩy). Ví dụ: 100.000 VND = 000000100000.
+
+**F39 (Response Code)**: Kết quả giao dịch. Ví dụ:
+- 00: Approved
+- 05: Do not honor (decline)
+- 51: Insufficient funds
+- 54: Expired card
+- 57: Transaction not permitted
+
+### Code/Java: Parse ISO 8583 Message
+
+~~~java
+@Service
+class Iso8583Service {
+    
+    public Iso8583Message parseMessage(byte[] rawMessage) {
+        // Parse MTI (4 bytes đầu)
+        String mti = new String(rawMessage, 0, 4);
+        
+        // Parse Bitmap (8 bytes tiếp theo)
+        byte[] bitmapBytes = Arrays.copyOfRange(rawMessage, 4, 12);
+        BitSet bitmap = parseBitmap(bitmapBytes);
+        
+        // Parse các field theo bitmap
+        Map<Integer, String> fields = new HashMap<>();
+        for (int i = 0; i < bitmap.length(); i++) {
+            if (bitmap.get(i)) {
+                fields.put(i + 1, parseField(rawMessage, i + 1));
+            }
+        }
+        
+        return new Iso8583Message(mti, fields);
+    }
+    
+    private BitSet parseBitmap(byte[] bytes) {
+        BitSet bitmap = new BitSet(64);
+        for (int i = 0; i < bytes.length; i++) {
+            for (int j = 0; j < 8; j++) {
+                if ((bytes[i] & (1 << (7 - j))) != 0) {
+                    bitmap.set(i * 8 + j);
+                }
+            }
+        }
+        return bitmap;
+    }
+    
+    private String parseField(byte[] message, int fieldNumber) {
+        // Tùy field mà parse khác nhau
+        // F2: 16 bytes (PAN)
+        // F3: 6 bytes (Processing Code)
+        // F4: 12 bytes (Amount)
+        // F39: 2 bytes (Response Code)
+        // ...
+    }
+}
+~~~
+
+### Bảng trade-off: ISO 8583 vs ISO 20022
+
+| Tiêu chí | ISO 8583 | ISO 20022 |
+|---|---|---|
+| Loại giao dịch | Thẻ (card) | Thanh toán (payment) |
+| Cấu trúc | Binary (bitmap + fields) | XML (human-readable) |
+| Hiệu năng | Nhanh (binary) | Chậm hơn (XML parsing) |
+| Mở rộng | Khó (phải thêm field) | Dễ (thêm tag) |
+| Phù hợp | Giao dịch thẻ real-time | Thanh toán batch, quốc tế |
+
+### Lỗi hay gặp trên production
+
+- **Sai bitmap**: Không parse đúng field → mất thông tin.
+- **Sai amount format**: 100.000 = 000000100000 (không có dấu phẩy) → sai số tiền.
+- **Không xử lý response code**: 05 (decline) nhưng vẫn approve → mất tiền.
+- **Không log message**: Không debug được khi lỗi.
+
+### Ví dụ đời thực
+
+Một ngân hàng phát hành thẻ Visa. Khách rút 1 triệu tại ATM. Flow: ATM gửi 0100 (authorization) → issuer kiểm tra số dư → 0110 approve → ATM gửi 0200 (financial) → issuer trừ tiền → 0210 response. Nếu sai bitmap → không parse được amount → decline sai. Dev fix: thêm validation bitmap, log mọi message. Kết quả: 0 decline sai, debug nhanh hơn 10x.
+
+### Trả lời mẫu khi phỏng vấn
+
+"ISO 8583 là chuẩn thông điệp cho giao dịch thẻ. Flow: 0100 (authorization request) → 0110 (authorization response) → 0200 (financial transaction request) → 0210 (financial transaction response). Mỗi message có MTI + bitmap + data fields. Các trường quan trọng: F2 (PAN), F3 (processing code), F4 (amount), F39 (response code). Thiết kế cốt lõi: (1) **Parse bitmap** — xác định field nào có trong message. (2) **Parse field theo thứ tự** — F2 (16 bytes), F3 (6 bytes), F4 (12 bytes), F39 (2 bytes). (3) **Validate amount** — 12 chữ số, không có dấu phẩy. (4) **Xử lý response code** — 00 = approve, 05 = decline, 51 = insufficient funds. (5) **Log mọi message** — debug khi lỗi. Thực tế: em từng fix decline sai do sai bitmap, sau khi validation thì 0 decline sai."
+
+> Senior tip: Ba chốt: (1) **Bitmap quyết định field** — parse bitmap trước, sau đó parse field theo thứ tự. (2) **Amount không có dấu phẩy** — 100.000 = 000000100000. (3) **Response code phải xử lý đúng** — 00 = approve, 05 = decline. Hỏi interviewer: "Hệ thống thẻ của anh dùng ISO 8583 không? Nếu có thì xử lý decline thế nào?"
+
+> Cụm từ: ISO 8583 là chuẩn thông điệp cho giao dịch thẻ. MTI (Message Type Indicator) là mã loại message (0100, 0110, 0200, 0210). Bitmap là chuỗi bit xác định field nào có trong message. PAN (Primary Account Number) là số thẻ. Response code là mã kết quả giao dịch (00 = approve, 05 = decline).
+
+  `,
+  follow: [
+    'Khi issuer decline giao dịch (response code 05), acquirer xử lý thế nào để không mất tiền?',
+    'ISO 8583 và ISO 20022 khác nhau thế nào về cấu trúc và hiệu năng? Khi nào dùng cái nào?',
+    'Nếu bitmap bị corrupt (ví dụ do network error), bạn phát hiện và xử lý thế nào?'
+  ],
+  tags: ['iso 8583', 'card transaction', 'authorization', 'message flow', 'bitmap', 'payment']
 },
 );
