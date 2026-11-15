@@ -86,7 +86,7 @@ Mỗi module có schema riêng trong chung một instance DB. Sau này tách ser
     'Modular monolith khác gì so với SOA (ESB) về centralization?',
     'Bạn dùng ArchUnit/JPMS để enforce module boundary như thế nào trong CI?'
   ],
-  tags: ['monolith', 'modular monolith', 'architecture decision', 'DDD']
+  tags: ['monolith', 'modular monolith', 'architecture decision', 'DDD', 'core']
 },
 {
   id: 'microservices-002',
@@ -155,7 +155,7 @@ Order Service                   Payment Service
     'API composition và CQRS read model khác nhau khi nào, chi phí nào lớn hơn?',
     'Làm sao phát hiện một service đang âm thầm truy cập DB của service khác trong production?'
   ],
-  tags: ['DDD', 'bounded context', 'database per service', 'API composition'],
+  tags: ['DDD', 'bounded context', 'database per service', 'API composition', 'core'],
   refs: [
     { type: 'article', title: 'Bounded Context (Martin Fowler)', url: 'https://martinfowler.com/bliki/BoundedContext.html' },
     { type: 'doc', title: 'Pattern: Database per service', url: 'https://microservices.io/patterns/data/database-per-service.html' },
@@ -227,7 +227,7 @@ Mỗi service sẵn sàng 99,9%:
     'Khi nào một hệ thống bất đồng bộ vẫn cần trả response đồng bộ cho người dùng?',
     'Bạn set timeout cho chuỗi A gọi B gọi C như thế nào để không nuốt hết thời gian?'
   ],
-  tags: ['REST', 'gRPC', 'messaging', 'coupling']
+  tags: ['REST', 'gRPC', 'messaging', 'coupling', 'core']
 },
 {
   id: 'microservices-004',
@@ -311,7 +311,7 @@ Công nghệ Java: choreography dùng Kafka + Spring Kafka/Spring Cloud Stream; 
     'Khi nào chọn choreography thay vì orchestration dù flow có 4 service?',
     'Temporal/Camunda khác gì so với việc tự viết orchestrator bằng Spring?'
   ],
-  tags: ['2PC', 'Saga', 'compensation', 'distributed transaction']
+  tags: ['2PC', 'Saga', 'compensation', 'distributed transaction', 'core']
 },
 {
   id: 'microservices-005',
@@ -399,7 +399,7 @@ App ─► [orders DB: orders + outbox] ─(WAL / logical replication)─► Deb
     'Debezium publish ra broker mà broker đang sập thì xử lý tiếp ra sao?',
     'Polling outbox với SKIP LOCKED hoạt động thế nào khi có nhiều instance app?'
   ],
-  tags: ['outbox', 'CDC', 'Debezium', 'dual-write'],
+  tags: ['outbox', 'CDC', 'Debezium', 'dual-write', 'core'],
   refs: [
     { type: 'doc', title: 'Pattern: Transactional outbox', url: 'https://microservices.io/patterns/data/transactional-outbox.html' },
     { type: 'doc', title: 'Debezium Outbox Event Router', url: 'https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html' },
@@ -505,7 +505,7 @@ ON CONFLICT (order_id) DO NOTHING;   -- MySQL: INSERT IGNORE / ON DUPLICATE KEY 
     'Nếu side effect là gọi REST phía thứ ba không hỗ trợ idempotency, bạn làm gì?',
     'Offset commit trước hay sau khi xử lý? Chọn từng lựa chọn thì đánh đổi gì?'
   ],
-  tags: ['idempotency', 'delivery semantics', 'exactly-once', 'retry'],
+  tags: ['idempotency', 'delivery semantics', 'exactly-once', 'retry', 'core'],
   refs: [
     { type: 'doc', title: 'Pattern: Idempotent Consumer', url: 'https://microservices.io/patterns/communication-style/idempotent-consumer.html' },
     { type: 'doc', title: 'Kafka design: Message delivery semantics', url: 'https://kafka.apache.org/documentation/#semantics' },
@@ -636,7 +636,7 @@ Tomcat 200 thread, 10 downstream: bulkhead 25/downstream
     'Bulkhead theo semaphore khác thread pool khi nào, và nhược điểm từng loại?',
     'Fallback cache cũ có rủi ro gì với dữ liệu tài chính?'
   ],
-  tags: ['Resilience4j', 'circuit breaker', 'bulkhead', 'timeout'],
+  tags: ['Resilience4j', 'circuit breaker', 'bulkhead', 'timeout', 'core'],
   refs: [
     { type: 'doc', title: 'Resilience4j CircuitBreaker', url: 'https://resilience4j.readme.io/docs/circuitbreaker' },
     { type: 'doc', title: 'Resilience4j Bulkhead', url: 'https://resilience4j.readme.io/docs/bulkhead' },
@@ -733,7 +733,7 @@ Thread A: 200 thread / (90s mỗi request) ≈ 2,2 request/giây → sập ở t
     'Vì sao timeout quá dài còn nguy hiểm hơn timeout quá ngắn?',
     'Làm sao phân biệt retry storm với lưu lượng thật sự tăng trong dashboard?'
   ],
-  tags: ['retry storm', 'cascading failure', 'backpressure', 'thundering herd'],
+  tags: ['retry storm', 'cascading failure', 'backpressure', 'thundering herd', 'core'],
   refs: [
     { type: 'article', title: 'Timeouts, retries, and backoff with jitter (Amazon Builders Library)', url: 'https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/' },
     { type: 'book', title: 'Google SRE Book: Addressing Cascading Failures', url: 'https://sre.google/sre-book/addressing-cascading-failures/' },
@@ -837,7 +837,7 @@ factory.setCommonErrorHandler(handler);
     'Khi nào commit offset trước xử lý lại là lựa chọn đúng?',
     'So sánh eager và cooperative rebalance trong lúc rolling deploy.'
   ],
-  tags: ['Kafka', 'partition', 'consumer group', 'DLQ'],
+  tags: ['Kafka', 'partition', 'consumer group', 'DLQ', 'core'],
   refs: [
     { type: 'doc', title: 'Kafka documentation: Introduction', url: 'https://kafka.apache.org/documentation/#intro' },
     { type: 'doc', title: 'Spring for Apache Kafka: Error Handling', url: 'https://docs.spring.io/spring-kafka/reference/kafka/annotation-error-handling.html' },
@@ -909,7 +909,7 @@ SNS order ──┼──► SQS billing-queue ──► billing worker
     'Visibility timeout của SQS xử lý worker chết giữa chừng như thế nào?',
     'Khi nào nên gộp SNS + EventBridge thay vì chỉ dùng SNS?'
   ],
-  tags: ['Kafka', 'RabbitMQ', 'SQS', 'SNS']
+  tags: ['Kafka', 'RabbitMQ', 'SQS', 'SNS', 'core']
 },
 {
   id: 'microservices-011',
@@ -1011,7 +1011,7 @@ Web ────┘ (TLS, JWT,     └─► BFF-web ────┴─► revie
     'BFF của web và mobile dùng chung token thì rủi ro gì?',
     'Headless service khác gì service thường, khi nào cần?'
   ],
-  tags: ['API Gateway', 'BFF', 'service discovery', 'load balancing'],
+  tags: ['API Gateway', 'BFF', 'service discovery', 'load balancing', 'core'],
   refs: [
     { type: 'doc', title: 'Pattern: API Gateway', url: 'https://microservices.io/patterns/apigateway.html' },
     { type: 'doc', title: 'Spring Cloud Gateway', url: 'https://docs.spring.io/spring-cloud-gateway/reference/' },
@@ -1114,7 +1114,7 @@ thêm label user_id (1 triệu user)  = 1,2 tỉ series             → sập
     'Vì sao tail sampling tốt hơn head sampling cho incident, và chi phí của nó?',
     'Bạn alert theo error budget burn rate cụ thể ra sao?'
   ],
-  tags: ['observability', 'OpenTelemetry', 'RED/USE', 'tracing'],
+  tags: ['observability', 'OpenTelemetry', 'RED/USE', 'tracing', 'core'],
   refs: [
     { type: 'doc', title: 'OpenTelemetry Documentation', url: 'https://opentelemetry.io/docs/' },
     { type: 'doc', title: 'Spring Boot: Observability', url: 'https://docs.spring.io/spring-boot/reference/actuator/observability.html' },
@@ -1314,7 +1314,7 @@ consumer CI: test ─► pact file ─► Pact Broker ◄─ provider CI: verify
     'Pact và Spring Cloud Contract chọn cái nào, vì sao?',
     'Làm sao ngừng hỗ trợ API version cũ mà không làm hỏng client đang ngủ yên?'
   ],
-  tags: ['API versioning', 'backward compatibility', 'contract testing', 'Pact'],
+  tags: ['API versioning', 'backward compatibility', 'contract testing', 'Pact', 'core'],
   refs: [
     { type: 'doc', title: 'Pact Documentation', url: 'https://docs.pact.io/' },
     { type: 'doc', title: 'Spring Cloud Contract', url: 'https://docs.spring.io/spring-cloud-contract/reference/' },
@@ -1489,7 +1489,7 @@ ALTER TABLE orders DROP COLUMN status;
     'Flag bật cho 1% user nhưng migration đã chạy cho 100% data thì vấn đề gì?',
     'Bạn kiểm tra migration backward compatible trong CI bằng cách nào?'
   ],
-  tags: ['blue-green', 'canary', 'feature flag', 'database migration'],
+  tags: ['blue-green', 'canary', 'feature flag', 'database migration', 'core'],
   refs: [
     { type: 'article', title: 'BlueGreenDeployment (Martin Fowler)', url: 'https://martinfowler.com/bliki/BlueGreenDeployment.html' },
     { type: 'article', title: 'CanaryRelease (Martin Fowler)', url: 'https://martinfowler.com/bliki/CanaryRelease.html' },
@@ -1672,7 +1672,7 @@ Pod (ServiceAccount) ─IAM role─► Secrets Manager ─► password (cache 10
     'Dynamic secret của Vault khác gì secret static về mặt rotate?',
     'Bạn phát hiện secret bị commit vào git bằng CI như thế nào?'
   ],
-  tags: ['12-factor', 'configuration', 'secrets management', 'Spring Cloud Config']
+  tags: ['12-factor', 'configuration', 'secrets management', 'Spring Cloud Config', 'core']
 },
 {
   id: 'microservices-019',
@@ -1740,7 +1740,7 @@ spring:
     'Cooperative sticky hoạt động thế nào khi consumer join/leave đồng thời?',
     'Static membership + K8s rolling update: preStop delay nên đặt bao nhiêu so với session.timeout.ms?'
   ],
-  tags: ['Kafka', 'partition', 'rebalance', 'cooperative sticky', 'static membership'],
+  tags: ['Kafka', 'partition', 'rebalance', 'cooperative sticky', 'static membership', 'core'],
   refs: [
     { type: 'doc', title: 'Kafka consumer configuration', url: 'https://kafka.apache.org/documentation/#consumerconfigs' },
   ]
@@ -1832,7 +1832,7 @@ public void dlt(OrderCreatedEvent evt) { /* log + alert */ }
     'Khi nào nên dùng blocking retry thay vì non-blocking?',
     'Consumer làm sao chịu được việc event cùng key đến sai thứ tự sau retry?'
   ],
-  tags: ['Kafka', 'Spring Kafka', '@RetryableTopic', 'DLQ', 'non-blocking retry'],
+  tags: ['Kafka', 'Spring Kafka', '@RetryableTopic', 'DLQ', 'non-blocking retry', 'core'],
   refs: [
     { type: 'doc', title: 'Spring for Apache Kafka: Non-Blocking Retries', url: 'https://docs.spring.io/spring-kafka/reference/retrytopic.html' },
     { type: 'doc', title: 'Spring for Apache Kafka: Error Handling', url: 'https://docs.spring.io/spring-kafka/reference/kafka/annotation-error-handling.html' },
@@ -1918,7 +1918,7 @@ Các mode {{*_TRANSITIVE}} kiểm tra với **mọi** version cũ, không chỉ 
     'Khi nào chọn FORWARD thay vì BACKWARD?',
     'Schema Registry HA thế nào, producer fetch schema ID cache như thế nào?'
   ],
-  tags: ['Schema Registry', 'Avro', 'Protobuf', 'backward compatibility', 'forward compatibility'],
+  tags: ['Schema Registry', 'Avro', 'Protobuf', 'backward compatibility', 'forward compatibility', 'core'],
   refs: [
     { type: 'doc', title: 'Confluent Schema Evolution and Compatibility', url: 'https://docs.confluent.io/platform/current/schema-registry/fundamentals/schema-evolution.html' },
     { type: 'doc', title: 'Apache Avro Specification', url: 'https://avro.apache.org/docs/current/specification/' },
@@ -2227,7 +2227,7 @@ terminationGracePeriodSeconds: 45          # >= 10 (preStop) + 30 (shutdown phas
     'Readiness probe check downstream service có nguy hiểm như thế nào?',
     '{{terminationGracePeriodSeconds}} mặc định 30s, bạn tăng bao nhiêu cho app xử lý request lâu?'
   ],
-  tags: ['Kubernetes', 'Spring Boot 3', 'probe', 'graceful shutdown', 'resource limit'],
+  tags: ['Kubernetes', 'Spring Boot 3', 'probe', 'graceful shutdown', 'resource limit', 'core'],
   refs: [
     { type: 'doc', title: 'Kubernetes: Configure Liveness, Readiness and Startup Probes', url: 'https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/' },
     { type: 'doc', title: 'Spring Boot: Graceful Shutdown', url: 'https://docs.spring.io/spring-boot/reference/web/graceful-shutdown.html' },
@@ -2329,7 +2329,7 @@ note External..Client: hết hạn ở đâu thì dừng ở đó
     'Khi nào nên dùng absolute deadline timestamp thay vì remaining time?',
     'Service leaf (external API) timeout ngắn mà fail nhiều - bạn handle retry ở đâu?'
   ],
-  tags: ['timeout budget', 'deadline propagation', 'tapered timeout', 'distributed systems'],
+  tags: ['timeout budget', 'deadline propagation', 'tapered timeout', 'distributed systems', 'core'],
   refs: [
     { type: 'article', title: 'Timeouts, retries, and backoff with jitter (Amazon Builders Library)', url: 'https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/' },
     { type: 'doc', title: 'gRPC Deadlines', url: 'https://grpc.io/docs/guides/deadlines/' },
@@ -2447,7 +2447,7 @@ Catalog: 500 req/s × 0,05s (p99)            = 25  → đặt 35
     'Semaphore bulkhead reject request khi full - bạn fallback ra sao cho graceful?',
     'Bulkhead kết hợp với Circuit Breaker: breaker mở thì bulkhead permits có bị giải phóng không?'
   ],
-  tags: ['Bulkhead', 'thread pool isolation', 'semaphore isolation', 'Resilience4j', 'concurrency limit'],
+  tags: ['Bulkhead', 'thread pool isolation', 'semaphore isolation', 'Resilience4j', 'concurrency limit', 'core'],
   refs: [
     { type: 'doc', title: 'Resilience4j Bulkhead', url: 'https://resilience4j.readme.io/docs/bulkhead' },
     { type: 'doc', title: 'Bulkhead pattern (Azure)', url: 'https://learn.microsoft.com/en-us/azure/architecture/patterns/bulkhead' },
@@ -2536,7 +2536,7 @@ Kết quả sau 6 tuần: số service phải deploy cho tính năng giảm giá
     'Khi gộp 2 service, migration data như thế nào để zero-downtime?',
     'Cyclic dependency A→B→C→A: bạn cắt đâu trước?'
   ],
-  tags: ['bounded context', 'chatty services', 'distributed monolith', 'service decomposition']
+  tags: ['bounded context', 'chatty services', 'distributed monolith', 'service decomposition', 'core']
 },
 {
   id: 'microservices-028',
@@ -2625,7 +2625,7 @@ Xử lý theo hai giai đoạn: **Giai đoạn 1 (1 tuần, API composition cả
     'CQRS projection lag monitor bằng metric gì, alert threshold thế nào?',
     'Data Lake cho dashboard real-time: feasible không, tại sao?'
   ],
-  tags: ['API Composition', 'CQRS', 'read model', 'data lake', 'query federation'],
+  tags: ['API Composition', 'CQRS', 'read model', 'data lake', 'query federation', 'core'],
   refs: [
     { type: 'doc', title: 'Pattern: API Composition', url: 'https://microservices.io/patterns/data/api-composition.html' },
     { type: 'doc', title: 'Pattern: CQRS', url: 'https://microservices.io/patterns/data/cqrs.html' },
@@ -2856,7 +2856,7 @@ consume input → transform → beginTransaction
 
 > Senior tip: trong production thường chọn at-least-once cộng consumer idempotent. Đặt event id xuyên suốt log, DB và trace để đội trực có thể chứng minh retry nào tạo bản trùng và replay an toàn.`,
   follow: ['Vì sao idempotent producer không chống được lần publish nghiệp vụ trùng?', 'Khi consumer ghi DB, bạn thiết kế inbox table và commit offset ra sao?'],
-  tags: ['Kafka', 'offset', 'exactly once', 'idempotency', 'transactions'],
+  tags: ['Kafka', 'offset', 'exactly once', 'idempotency', 'transactions', 'core'],
   refs: [{ type: 'doc', title: 'Kafka design: Message delivery semantics', url: 'https://kafka.apache.org/documentation/#semantics' }]
 },
 {
@@ -3010,7 +3010,7 @@ kafka-configs.sh --bootstrap-server localhost:9092 --alter --entity-type topics 
 
 > Senior tip: thử dựng lại state store từ topic sau khi cleaner chạy và tombstone đã hết hạn. Nếu việc rebuild vẫn cần biết "bản ghi đã bị xóa" để hiểu nghiệp vụ, phải lưu dấu xóa hoặc lịch sử ở nơi khác.`,
   follow: ['Nếu consumer mới cần khôi phục lịch sử đầy đủ, compaction có đáp ứng không?', 'Tombstone hết hạn trước khi consumer offline quay lại tạo rủi ro nào?'],
-  tags: ['Kafka', 'retention', 'compaction', 'tombstone'],
+  tags: ['Kafka', 'retention', 'compaction', 'tombstone', 'core'],
   refs: [{ type: 'doc', title: 'Kafka log compaction', url: 'https://kafka.apache.org/documentation/#compaction' }]
 },
 {
@@ -3171,7 +3171,7 @@ mỗi record: 6ms, trong đó 5ms là write DB (pool 10 connection, DB đã ch�
 
 > Senior tip: đặt SLO kiểu "99% event được xử lý trong 30 giây" rồi alert theo event age. Một triệu lag trên topic phân tích có thể vô hại; vài nghìn event thanh toán đã già 10 phút thì không.`,
   follow: ['Lag thấp nhưng event age cao có thể do đâu?', 'Làm sao phối hợp autoscaling consumer với giới hạn connection pool DB?'],
-  tags: ['Kafka', 'consumer lag', 'backpressure', 'autoscaling']
+  tags: ['Kafka', 'consumer lag', 'backpressure', 'autoscaling', 'core']
 },
 {
   id: 'microservices-036', topic: 'microservices', level: 'senior',
@@ -3683,7 +3683,7 @@ Kết quả: trường hợp bị trừ tiền hai lần từ 3-4 lần mỗi th
     'Nếu side effect là gọi REST phía thứ ba không hỗ trợ idempotency, bạn làm gì?',
     'Offset commit trước hay sau khi xử lý? Chọn từng lựa chọn thì đánh đổi gì?'
   ],
-  tags: ['idempotency', 'concurrency', 'Redis', 'contract', 'retry']
+  tags: ['idempotency', 'concurrency', 'Redis', 'contract', 'retry', 'core']
 },
 {
   id: 'microservices-042',
@@ -3862,7 +3862,7 @@ Tổng: 207 Multi-Status
     'Saga compensating cho delete: nếu compensate (restore) cũng fail thì sao?',
     'Cron cleanup orphan có nên là chiến lược chính không, vì sao?'
   ],
-  tags: ['partial success', 'delete', 'saga', '207 Multi-Status', 'compensation']
+  tags: ['partial success', 'delete', 'saga', '207 Multi-Status', 'compensation', 'core']
 },
 {
   id: 'microservices-044',
@@ -4206,7 +4206,7 @@ Thêm {{unclean.leader.election.enable=false}} (mặc định): không cho repli
     'ISR co lại còn 1 replica trong giờ cao điểm: producer, consumer và on-call nhìn thấy gì?',
     'Bật TLS làm CPU broker tăng gấp đôi, bạn phân tích và xử lý thế nào?'
   ],
-  tags: ['Kafka', 'log segment', 'page cache', 'zero-copy', 'ISR', 'acks', 'min.insync.replicas', 'replication'],
+  tags: ['Kafka', 'log segment', 'page cache', 'zero-copy', 'ISR', 'acks', 'min.insync.replicas', 'replication', 'core'],
   refs: [
     { type: 'doc', title: 'Kafka design: Persistence and efficiency', url: 'https://kafka.apache.org/documentation/#design' },
     { type: 'doc', title: 'Kafka design: Replication', url: 'https://kafka.apache.org/documentation/#replication' },
@@ -4687,7 +4687,7 @@ Sau một bản deploy, group {{invoice-workers}} có lag tăng đến 1,8 tri�
 
 > Senior tip: khi điều tra rebalance loop, tôi lấy **ba số**: p99 thời gian xử lý một {{poll()}} batch, {{max.poll.interval.ms}}, và {{rebalance-rate-per-hour}}. Nếu p99 > max.poll.interval là nguyên nhân gần như chắc chắn. Đừng vội tăng timeout — hãy giảm {{max.poll.records}} hoặc tối ưu đường nóng trước.`,
   follow: ["Tại sao heartbeat thread sống vẫn không cứu được consumer bị đá vì {{max.poll.interval.ms}}? Hai cơ chế này bảo vệ điều gì khác nhau?", "Cooperative-sticky giúp ích gì khi consumer giữ cache local gắn với partition (stateful processing)?", "Khi số partition tăng (thêm partition vào topic đang có), rebalance xảy ra thế nào và có rủi ro gì với ordering key?"],
-  tags: ["Kafka", "consumer group", "rebalance", "cooperative-sticky", "static membership", "max.poll.interval.ms"],
+  tags: ["Kafka", "consumer group", "rebalance", "cooperative-sticky", "static membership", "max.poll.interval.ms", "core"],
   refs: [{"type": "doc", "title": "Kafka Consumer Configs", "url": "https://kafka.apache.org/documentation/#consumerconfigs"}, {"type": "doc", "title": "KIP-429: Incremental Rebalance Protocol", "url": "https://cwiki.apache.org/confluence/display/KAFKA/KIP-429%3A+Kafka+Consumer+Incremental+Rebalance+Protocol"}, {"type": "doc", "title": "KIP-345: Static Membership", "url": "https://cwiki.apache.org/confluence/display/KAFKA/KIP-345%3A+Introduce+static+membership+protocol+to+reduce+consumer+rebalances"}]
 },
 {
@@ -4773,7 +4773,7 @@ Sau khi bật non-blocking retry cho {{orders}}, hệ thống ghi nhận 240 đ�
 
 > Senior tip: trước khi bật {{@RetryableTopic}} cho luồng order/payment, tôi luôn hỏi: "nếu event B vượt event A của cùng key, state machine có hỏng không?" Nếu có, tôi chọn per-key blocking hoặc retry inline giới hạn — đổi throughput lấy tính đúng, vì sai trạng thái đơn hàng còn đắt hơn lag.`,
   follow: ["Nếu tăng partition từ 6 lên 12 để giảm tải, bạn migrate topic đang dùng key-ordering như thế nào để không vỡ thứ tự?", "Thiết kế state machine cho đơn hàng thế nào để chịu được event đến lệch thứ tự (ví dụ nhận Shipped trước Paid)?", "Khi nào bạn chọn {{null}} key? Ảnh hưởng của default partitioner 'sticky' (Kafka mới) với null key là gì?"],
-  tags: ["Kafka", "ordering", "partition key", "hot partition", "retry topic", "DLQ", "head-of-line blocking"],
+  tags: ["Kafka", "ordering", "partition key", "hot partition", "retry topic", "DLQ", "head-of-line blocking", "core"],
   refs: [{"type": "doc", "title": "Kafka: Producer partitioning", "url": "https://kafka.apache.org/documentation/#producerconfigs_partitioner.class"}]
 },
 {
@@ -5115,7 +5115,7 @@ Sự cố thực tế: dịch vụ "order-notifier" consume topic "orders", tran
 
 > Senior tip: **Kafka transaction chỉ bọc thứ Kafka kiểm soát**. Có bất kỳ {{http.*}}, {{jdbc.*}} tới hệ ngoài, gửi mail, hay SDK cloud nào trong đường đi -> coi toàn bộ là at-least-once và thiết kế idempotency end-to-end. Đừng để "đã bật EOS" là bằng chứng không trùng.`,
   follow: ["Idempotency key nên lấy từ {{(topic,partition,offset)}} hay từ {{eventId}} nghiệp vụ? Ảnh hưởng khi topic bị compact hoặc consumer reset offset?", "Nếu đích (third-party) không hỗ trợ idempotency key, bạn thiết kế lớp chống trùng ở phía bạn thế nào?", "Khi nào bạn chọn bỏ Kafka transaction và chỉ dùng at-least-once + idempotent consumer? Đánh đổi vận hành/độ trễ?"],
-  tags: ["Kafka", "EOS", "transactions", "idempotency", "side effects", "exactly-once", "effectively-once"],
+  tags: ["Kafka", "EOS", "transactions", "idempotency", "side effects", "exactly-once", "effectively-once", "core"],
   refs: [{"type": "doc", "title": "Kafka: Transactions and Exactly-Once Semantics", "url": "https://kafka.apache.org/documentation/#semantics"}, {"type": "doc", "title": "Microservices.io: Idempotent Consumer", "url": "https://microservices.io/patterns/communication-style/idempotent-consumer.html"}]
 },
 {
@@ -5309,7 +5309,7 @@ Trang chi tiết sản phẩm có p99 450 ms, recommendation p99 tăng lên 1,8 
     'Khi dependency phục hồi sau vài phút, làm sao tránh đồng loạt làm nóng lại cache?',
     'Những metric nào cho biết fallback đang bảo vệ UX hay đã che mất lỗi kéo dài?'
   ],
-  tags: ['graceful-degradation', 'cache', 'fallback', 'circuit-breaker']
+  tags: ['graceful-degradation', 'cache', 'fallback', 'circuit-breaker', 'core']
 },
 {
   id: 'microservices-061',
@@ -5373,7 +5373,7 @@ Chiến dịch tăng traffic từ 2.000 lên 8.000 request/giây; inventory DB c
     'Ưu tiên checkout hơn báo cáo có thể gây starvation; bạn đặt quota công bằng thế nào?',
     'Bạn phân biệt lúc nên autoscale với lúc phải shed load hoặc giảm tính năng ra sao?'
   ],
-  tags: ['load-shedding', 'overload', 'queue', 'cascading-failure']
+  tags: ['load-shedding', 'overload', 'queue', 'cascading-failure', 'core']
 },
 {
   id: 'microservices-062',
@@ -5557,7 +5557,7 @@ Một nền tảng thương mại điện tử có 18 service Java trên Kuberne
     'Khi gateway, mesh và thư viện ứng dụng đều cấu hình retry/timeout, bạn thiết lập "retry budget" ra sao để tránh retry storm?',
     'Trong mô hình zero-trust, mTLS của mesh giải quyết định danh workload thế nào và còn thiếu gì so với phân quyền nghiệp vụ?'
   ],
-  tags: ['api gateway', 'service mesh', 'istio', 'envoy', 'mtls']
+  tags: ['api gateway', 'service mesh', 'istio', 'envoy', 'mtls', 'core']
 }
 ,
 {
@@ -5636,7 +5636,7 @@ Hệ thống đặt vé có 6 hop (gateway → order → inventory → payment �
     'Làm sao để trace không bị đứt khi xử lý bất đồng bộ với @Async, thread pool riêng hoặc message consumer?',
     'Bạn liên kết trace với log và metric (three pillars) như thế nào để khoan từ alert xuống nguyên nhân gốc?'
   ],
-  tags: ['distributed tracing', 'opentelemetry', 'trace context', 'sampling', 'observability']
+  tags: ['distributed tracing', 'opentelemetry', 'trace context', 'sampling', 'observability', 'core']
 }
 ,
 {
@@ -5794,7 +5794,7 @@ Hệ thống có 12 service; đội order (consumer) và catalog (provider) depl
     'Khác biệt giữa consumer-driven contract và provider-driven contract là gì, và khi nào chọn Spring Cloud Contract thay vì Pact?',
     'Contract test áp dụng cho giao tiếp bất đồng bộ (Kafka message schema) ra sao so với REST?'
   ],
-  tags: ['contract testing', 'pact', 'spring cloud contract', 'consumer-driven']
+  tags: ['contract testing', 'pact', 'spring cloud contract', 'consumer-driven', 'core']
 }
 ,
 {
@@ -6760,7 +6760,7 @@ Kết quả: sau ba ngày DLT về 0, đối soát khớp 100%, không có sự 
     'Replay nhóm 320.000 payload thiếu field: bạn sửa dữ liệu thế nào mà không phá nghiệp vụ?',
     'Bạn theo dõi sức khoẻ của DLT ra sao để không bao giờ có 1,2 triệu message nằm im?'
   ],
-  tags: ['Kafka', 'DLT', 'replay', 'retry', 'incident'],
+  tags: ['Kafka', 'DLT', 'replay', 'retry', 'incident', 'core'],
   refs: [
     { type: 'doc', title: 'Spring Kafka reference: receiving messages', url: 'https://docs.spring.io/spring-kafka/reference/kafka/receiving-messages.html' },
     { type: 'doc', title: 'Kafka documentation', url: 'https://kafka.apache.org/documentation/' }
@@ -6857,7 +6857,7 @@ GDPR: 1.800 yêu cầu mỗi năm; thêm event {{CustomerDeleted}} cộng job đ
     'Snapshot chứa PII: bạn làm gì để vừa rebuild nhanh vừa xoá được dữ liệu theo GDPR?',
     'Khi schema của bản sao thay đổi, bạn migrate và rebuild ra sao mà không downtime?'
   ],
-  tags: ['event-carried state transfer', 'data consistency', 'GDPR', 'Kafka', 'projection']
+  tags: ['event-carried state transfer', 'data consistency', 'GDPR', 'Kafka', 'projection', 'core']
 },
 {
   id: 'microservices-079',
@@ -7168,7 +7168,7 @@ Chi phí: hai ngày viết test, tiết kiệm khoảng 40 giờ xử lý sự c
     'Reconciliation giữa outbox và ledger: so từng dòng hay tổng hợp theo giờ? Trade-off?',
     'Nếu {{duplicate_blocked_total}} tăng gấp mười lần, bạn nghi ngờ điều gì và kiểm tra ở đâu?'
   ],
-  tags: ['exactly-once', 'testing', 'reconciliation', 'Kafka', 'idempotency'],
+  tags: ['exactly-once', 'testing', 'reconciliation', 'Kafka', 'idempotency', 'core'],
   refs: [
     { type: 'doc', title: 'Spring Kafka reference: testing applications', url: 'https://docs.spring.io/spring-kafka/reference/testing.html' },
     { type: 'doc', title: 'Testcontainers: Kafka module', url: 'https://java.testcontainers.org/modules/kafka/' }
