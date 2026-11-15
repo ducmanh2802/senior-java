@@ -4327,4 +4327,834 @@ Một startup bị đúng tình huống này: key admin của một dev nằm tr
   ],
   tags: ['AWS', 'security', 'incident response', 'IAM', 'GuardDuty', 'case study']
 },
+{
+  id: 'aws-062',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Spring Boot chạy trong container trên EKS hoặc ECS Fargate, pod lại bị OOMKilled và khởi động lại liên tục. JVM có tự nhận giới hạn bộ nhớ của container không, và bạn cấu hình heap cùng HikariCP như thế nào cho phù hợp?',
+  a: `**Tóm tắt:** Java 17 trở lên có thể đọc giới hạn bộ nhớ của container qua cgroup, nhưng mặc định JVM chỉ lấy một phần tư bộ nhớ container làm heap. Bạn cần thiết lập heap khoảng 70-80% giới hạn container, để chỗ cho metaspace, ngăn xếp luồng, code cache và bộ nhớ ngoài heap; HikariCP đặt theo số vCPU, không theo bộ nhớ.
+
+### Thuật ngữ
+- **Container / pod**: đóng gói ứng dụng chạy độc lập; pod là đơn vị nhỏ nhất trên EKS, có một hoặc nhiều container.
+- **cgroup**: cơ chế Linux giới hạn CPU và bộ nhớ của một nhóm quá trình; Fargate và EKS dùng cgroup để đặt hạn mức cho pod.
+- **OOMKilled (mã 137)**: Linux giết quá trình vì vượt giới hạn bộ nhớ; container khởi động lại, ứng dụng bị gián đoạn.
+- **Heap**: vùng bộ nhớ JVM chứa đối tượng Java (instance, mảng…).
+- **Metaspace**: chứa metadata của class (tên class, method…), nằm ngoài heap.
+- **Code cache**: chứa mã máy sau khi JIT biên dịch code nóng.
+- **Thread stack**: mỗi luồng có vùng nhớ riêng gọi hàm và lưu biến cục bộ.
+- **Off-heap**: bộ nhớ JVM dùng bên ngoài heap (direct buffer, thread stack…).
+- **HikariCP**: connection pool chuẩn của Spring Boot quản lý kết nối tới CSDL.
+- **vCPU**: đơn vị xử lý ảo mà AWS gói cho task Fargate.
+- **GC stop-the-world**: JVM tạm dừng toàn bộ ứng dụng để dọn rác, làm response tăng đột ngột.
+
+### Cơ chế từng bước
+1. Pod khởi động với hạn mức bộ nhớ (ví dụ 1 GB), Linux ghi con số này vào cgroup.
+2. JVM khởi động, đọc cgroup để biết hạn mức, rồi tính heap = hạn mức × MaxRAMPercentage. Mặc định MaxRAMPercentage = 25, nên với 1 GB heap chỉ 256 MB.
+3. Ứng dụng chạy: heap chứa đối tượng, metaspace chứa class mà Spring nạp, mỗi luồng có stack riêng, code cache chứa mã đã biên dịch. Những vùng này **không** nằm trong heap.
+4. Nếu heap + metaspace + stack + off-heap vượt 1 GB, Linux phản ứng OOMKilled, container dừng và pod khởi động lại. Triệu chứng: container dừng với mã 137, log có OutOfMemoryError, hoặc container biến mất mà không rõ lý do.
+5. Nếu heap giữ 25% trên container lớn, GC chạy liên tục, ứng dụng đứng lại mỗi lần dọn rác, response p99 xấu dù container không chết.
+
+### Cấu hình Java
+~~~java
+# Truyen vao Dockerfile hoac task definition ECS/EKS
+# Container limit 1 GB => heap khoang 768 MB (75%), con lai cho metaspace, stack, off-heap
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75.0", "-XX:+UseG1GC", "-jar", "app.jar"]
+~~~
+MaxRAMPercentage=75.0 nghia la heap bang 75% bo nho container ma JVM nhin thay. Voi Fargate 1 GB: heap khoang 768 MB, con lai khoang 256 MB cho metaspace (Spring nap hang nghin class), stack cua hang tram luong va code cache. Neu dat 100%, container chap chuan bi OOMKill vi bo nho ngoai heap khong duoc tinh vao heap.
+
+### HikariCP theo vCPU, khong theo bo nho
+Pool ket nen duoc nen khop voi suc xu ly CPU, vi moi ket noi dang hoat dong chiem mot luong xu ly truy van. Quy tac co ban: maximumPoolSize = 2 * vCPU + 1. Fargate task 0,5 vCPU => pool khoang 2-5 ket noi. Dat pool 50 ket noi tren task 0,5 vCPU thi 50 luong tran CPU, chuyen nhieu luong, CSDL cung bi qua tai.
+
+| Cau hinh | Nghia | Khuyen nghich |
+|---|---|---|
+| -XX:MaxRAMPercentage | Ty le bo nho container dung lam heap | 70-75% (Java 17 tro len) |
+| Heap qua nho | GC lien tuc, p99 cao | Tang dan theo CloudWatch |
+| Heap bang 100% gioi han container | OOMKill vi metaspace, stack, off-heap | Khong bao duoc lam |
+| HikariCP maximumPoolSize | So ket noi CSDL dong thoi | 2 * vCPU + 1, giam sat ActiveConnections |
+
+### Loi hay gap
+- **Giu heap mac dinh 25% tren container lon.** Trieu chung: GC chiem 30-40% CPU, response cham. Cach sua: tang MaxRAMPercentage len 70-75%.
+- **Dat heap bang 100% gioi han.** Trieu chung: bi OOMKill ngau rieng, dac biet khi traffic bat phat sinh nhieu luong. Cach sua: de khoang trong 20-25% cho bo nho ngoai heap.
+- **Hikari pool theo "ca nhieu ket noi ca tot".** Trieu chung: CPU module hoa, CSDL cham vi qua nhieu session. Cach sua: gan pool voi vCPU, theo doi ActiveConnections tren CloudWatch.
+
+### Vi du doi thuc
+Mot task Fargate 1 GB chay Spring Boot voi Postgre qua Hikari. Mac dinh heap 256 MB: sau 2 chieu chay, GC lien tuc, p99 response tu 200 ms len 2 giay, CloudWatch memory utilization nhay 90-95%. Doi sua task definition: -XX:MaxRAMPercentage=75.0, heap khoang 768 MB, Hikari pool 5 ket noi (task 0,5 vCPU). Ket qua: memory utilization on dinh 65-75%, GC giam xuong duoi 5% CPU, p99 ve 300 ms, task chay ca tuan khong khoi dong lai.
+
+### Tra loi mau khi pham van
+"Khi Spring Boot chay trong container tren EKS hay Fargate, JVM doc gioi han bo nho qua cgroup, nhung mac dinh chi lay mot phu tu lam heap. Toi thiet lap MaxRAMPercentage 70-75% de heap khoang 768 MB voi container 1 GB, de lai cho cho metaspace, stack luong va off-heap, tranh OOMKilled ma 137. HikariCP tinh theo vCPU, quy tac hai vCPU cong mot ket noi, vi pool lon khong giup neu CPU het. Tu do, toi theo doi memory utilization va thoi gian GC tren CloudWatch, chinh dan thay vi dat theo cam tinh."
+
+> Senior tip: khong bao giu dat heap bang 100% gioi han container. JVM chi dem heap trong MaxRAMPercentage; metaspace, stack, code cache, direct buffer nam ngoai heap, nen gioi han container phai con cho cho chung, neu khong Linux sechet pod ma Java kip bao loi.
+`,
+  follow: [
+    'Vì sao pod bị OOMKilled dù CloudWatch chỉ cho 85% bộ nhớ dùng?',
+    'G1GC hay ZGC phù hợp hơn cho container nhỏ?',
+    'Hibernate cùng Hikari pool nhỏ thì connection chờ thế nào, sửa ra sao?'
+  ],
+  tags: ['JVM', 'container', 'ECS', 'EKS', 'Fargate', 'HikariCP', 'OOM']
+},
+{
+  id: 'aws-063',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Hệ thống Spring Boot cần xử lý sự kiện: đơn hàng, clickstream và log. Khi nào chọn SQS, Kinesis hay MSK, và trade-off chính giữa ba dịch vụ là gì?',
+  a: `**Tóm tắt:** SQS là hàng đợi tin nhắn đơn giản: một tin nhắn được giao cho một consumer, phù hợp tác vụ ngầm như gửi email xác nhận đơn hàng. Kinesis là luồng dữ liệu thời gian thực: dữ liệu chia thành các shard, nhiều nhóm consumer có thể đọc cùng một shard và giữ thứ tự trong mỗi shard, phù hợp clickstream. MSK là Kafka do AWS quản lý: consumer tự quản vị trí đã đọc (offset), hỗ trợ topic lưu trữ lâu và xử lý đúng một lần, phù hợp khi cần replay dữ liệu cũ hoặc hệ sinh thái Kafka. Java gọi qua AWS SDK v2: SQS dùng SendMessage/ReceiveMessage, Kinesis dùng PutRecord, MSK dùng Kafka ProducerRecord.
+
+### Thuật ngữ
+- **Queue (hàng đợi)**: nơi đợi tin nhắn cho đến khi consumer lấy đi xử lý.
+- **Message (tin nhắn)**: đơn vị dữ liệu trong SQS.
+- **At-least-once (ít nhất một lần)**: tin nhắn có thể được xử lý lại nếu consumer chưa xóa nó, nên code phải chịu được xử lý trùng.
+- **Exactly-once (đúng một lần)**: mỗi tin nhắn xử lý đúng một lần, cần transaction và quản offset cẩn thận.
+- **Shard (mảnh luồng)**: đơn vị lưu và đọc/ghi của Kinesis, mỗi shard có giới hạn throughput.
+- **Partition (phân vùng)**: trong Kafka/MSK, dữ liệu chia thành phân vùng, mỗi phân vùng có thứ tự riêng.
+- **Consumer group (nhóm consumer)**: nhóm consumer chia sẻ việc đọc các phân vùng.
+- **Offset (vị trí đọc)**: dấu hiệu biết consumer đã đọc đến đâu trong luồng.
+- **Broker (máy chủ)**: máy chủ Kafka lưu topic và phân vùng.
+- **Topic (chủ đề)**: danh mục tin nhắn trong Kafka/MSK.
+- **Dead letter queue (hàng thư nghĩ)**: nơi đưa tin nhắn xử lý thất bại nhiều lần để kiểm tra sau.
+
+### Cơ chế từng bước
+**SQS:** nhà phát triển gọi SendMessage đẩy tin nhắn vào hàng đợi; consumer gọi ReceiveMessage lấy tin nhắn, xử lý xong rồi gọi DeleteMessage để AWS biết đã xong và không gửi lại. Nếu consumer chết trước khi xóa, tin nhắn về lại hàng đợi sau visibility timeout (thời gian khóa tin nhắn khi đang xử lý).
+**Kinesis:** nhà phát triển gọi PutRecord ghi dữ liệu vào một shard với khóa phân vùng; dữ liệu trong cùng shard giữ thứ tự ghi; các consumer trong cùng group chia shard và theo dõi offset riêng.
+**MSK:** nhà phát triển dùng Kafka client gửi ProducerRecord vào topic/partition; consumer nhóm nhau theo group id, tự lưu offset, có thể đọc lại dữ liệu cũ (replay) trong thời gian lưu trữ của topic.
+
+~~~java
+// SQS qua AWS SDK v2: gui va nhan tin nhan
+SqsClient sqs = SqsClient.create();
+sqs.sendMessage(b -> b.queueUrl(queueUrl).messageBody("{\"orderId\":123,\"action\":\"confirm\"}"));
+List<Message> msgs = sqs.receiveMessage(b -> b.queueUrl(queueUrl).maxNumberOfMessages(10).waitTimeSeconds(20)).messages();
+for (Message m : msgs) {
+    // xu ly m.body()
+    // Quan trong: xoa tin nhah sau khi xu ly xong de khong nhan lai
+    sqs.deleteMessage(b -> b.queueUrl(queueUrl).receiptHandle(m.receiptHandle()));
+}
+~~~
+
+### Bang so sanh thuc duct
+| Tieu chi | SQS | Kinesis | MSK |
+|---|---|---|---|
+| Mo hinh | Hang doi tin nhan | Luong du lieu thoi gian thuc | Kafka quan ly |
+| Thu tu | Khong (trong FIFO co) | Trong moi shard | Trong moi partition |
+| Nguoi dung | Mot consumer xu ly mot tin nhan | Nhieu group doc cung shard | Nhieu group, tu quan ly offset |
+| Giu du lieu | Xoa sau khi xu ly | 1-365 ngay | 1-365 ngay, hoac lau hon |
+| Chi phi | Theo tin nhan | Theo shard thanh thang | Theo broker, storage, giay |
+| Dung khi nao | Tac vu ngam, email, thanh toan | Clickstream, log, IoT | Event sourcing, replay, Kafka |
+
+### Loi hay gap
+- **Visibility timeout SQS ngan hon thoi gian xu ly.** Trieu chung: cung tin nhan duoc xu ly hai lan (trung lap). Cach sua: dat timeout lon hon thoi gian xu ly toi da, hoac xoa tin nhan ngay sau khi xu ly xong, dung DLQ cho tin nhan that bai nhieu lan.
+- **Shard Kinesis qua it.** Trieu chung: ghi bi che chok (ProvisionedThroughputExceededException), can reshard de tang so shard.
+- **MSK consumer reset offset ve dau.** Trieu chung: doc lai du lieu cu, lam sai bao cao. Cach sua: luon luu offset, chi reset khi co y muon.
+
+### Vi du doi thuc
+He thong don hang 200 don/gio => SQS standard, mot consumer xu ly tu dong. Clickstream 5000 su kien/giay => Kinesis 5 shard (moi shard 1 MB/s ghi, 2 MB/s doc), hai group consumer (analytics va luu S3). He thong can replay lich su 7 ngay => MSK, topic giu du lieu 7 ngay, consumer doc lai tu bat dau khi can.
+
+### Tra loi mau khi pham van
+"Toi chon dich vu dua theo mot hang su kien co bao nhieu nguoi doc va can thu tu nhu the nao. SQS la hang doi don gian, mot tin nhan mot nguoi xu ly, phu hop cho tac vu ngam nhan gui email xac nhan don hang; neu thutu don hang quan trong va khong duoc trung lap, toi dung SQS FIFO voi message group id la ma don hang. Kinesis luu du lieu thanh cac shard, nhieu nhom consumer co the doc cung luong va giu thu tu trong moi shard, phu hop clickstream 5000 su kien/giay. MSK la Kafka quan ly, consumer tu quan ly offset, co the replay du lieu cu, toi chon khi can he thong Kafka va kiem soat offset chinh xac. Chi phi cung khac: SQS theo tin nhan, Kinesis theo shard, MSK theo broker va storage."
+
+> Senior tip: voi du lieu clickstream, tinh thu tu thu tu trong shard nen chia shard theo ma nhan hang (userId) de su kien cua cung nguoi dung luu thu tu; chia theo ma ngau nhien se mat thu tu theo nguoi dung.
+`,
+  follow: [
+    'Vì sao SQS standard không đảm bảo thứ tự, và FIFO khắc phục thế nào?',
+    'Kinesis shard quá ít thì thấy biểu hiện gì, và reshard hoạt động như thế nào?',
+    'MSK consumer quên lưu offset thì nguy cơ gì?'
+  ],
+  tags: ['SQS', 'Kinesis', 'MSK', 'event-driven', 'SDK v2', 'thứ tự']
+},
+{
+  id: 'aws-064',
+  topic: 'aws',
+  level: 'senior',
+  q: 'DynamoDB: thiết kế partition key, tránh hot partition, dùng GSI như thế nào, và ứng dụng Java xử lý ProvisionedThroughputExceededException ra sao?',
+  a: `**Tóm tắt:** DynamoDB băm partition key để quyết định dữ liệu nằm phân vùng nào; cùng một partition key bị truy cập nhiều tạo hot partition (phân vùng nóng); GSI tạo chỉ mục theo thuộc tính khác để truy xuất linh hoạt hơn; adaptive capacity tự mở rộng phân vùng nóng nhưng có giới hạn; AWS SDK v2 tự retry với exponential backoff (thời gian chờ tăng dần) và jitter (thêm thành phần ngẫu nhiên) để tránh nhiều client gửi lại cùng lúc sau khi dịch vụ khôi phục.
+
+### Thuật ngữ
+- **Partition key (khoa phan vung)**: thuoc tinh duoc bam de xac dinh phan vung luu du lieu.
+- **Sort key (khoa sap xep)**: thuoc tinh sap xep doi tuong trong cung mot partition key.
+- **Partition (phan vung)**: khoi luu du lieu co dinh trong DynamoDB.
+- **Hot partition (phan vung no)**: mot phan vung duoc truyen xuat qua nhieu so voi cac phan vung khac, lam cham het bang.
+- **GSI (Global Secondary Index)**: chi muc thuoc cap toan cuc theo thuoc tinh khac partition key cua bang goc.
+- **Eventual consistency (doc duoc cuoi cung)**: doc GSI co the chua thay du lieu vua vi, can doi khoang mot giay phut.
+- **ProvisionedThroughputExceededException (vua gioi han throughput)**: ngoai le khi gap gioi han doc/ghi da dat truoc cua bang hoac partition.
+- **Exponential backoff (thoi gian cho tang luay)**: loi thuong lai voi khoang cach thoi gian dan dan.
+- **Jitter (phan tu ngau nhien)**: them so ngau nhien vao thoi gian cho de tranh nhieu client gui lai cung luc.
+- **Provisioned capacity (suc dung da dat)**: doc/ghi bang so luong ban dat truoc.
+- **On-demand (theo su dung)**: tra theo so luong doc/ghi thuc su, khong can dat truoc.
+
+### Co che buoc buoc
+1. Ghi du lieu: DynamoDB băm partition key (vi du ORDER#123) -> chon mot partition -> luu. Cung partition key luu cung phan vung.
+2. Doc qua partition key: nhanh, du lieu chinh xac.
+3. Tao GSI: chon mot thuoc tinh khac (vi du customerId) lam khoa chi muc; DynamoDB sao chep du lieu sang chi muc nay.
+4. Doc qua GSI: chi muc co partition key khac, nhung ket qua chi duoc dong bo cuoi cung (co the chua thay du lieu vua vi).
+5. Gap gioi han: SDK ngoai le ProvisionedThroughputExceededException, tu thu lai voi khoang cho tang dan va ngau nhien.
+
+~~~java
+// DynamoDB qua AWS SDK v2: ghi va truy van GSI
+DynamoDbClient db = DynamoDbClient.create();
+String table = "DonHang";
+// Ghi: partition key = ORDER#<maDon>, sort key = META
+Map<String, AttributeValue> item = new HashMap<>();
+item.put("PK", AttributeValue.fromS("ORDER#123"));
+item.put("SK", AttributeValue.fromS("META"));
+item.put("customerId", AttributeValue.fromS("c42"));
+item.put("amount", AttributeValue.fromN("150000"));
+db.putItem(b -> b.tableName(table).item(item));
+// Truy van don hang cua khach qua GSI (gsi1pk = CUSTOMER#<maKhach>)
+db.query(b -> b.tableName(table)
+    .indexName("GSI1")
+    .keyConditionExpression("gsi1pk = :v")
+    .expressionAttributeValues(Map.of(":v", AttributeValue.fromS("CUSTOMER#c42"))));
+~~~
+
+### Bang so sanh
+| Tham so | Dung khi nao | Luu y |
+|---|---|---|
+| Partition key | Khoa chinh de phan bo du lieu | Phai phan bo dan, tranh mot khoa qua tai |
+| Sort key | Sap xep va lay nhieu dong cung partition | Cho truy van khoang (e.g. theo ngay) |
+| GSI | Tim kiem theo thuoc tinh khac partition key | Doc duoc cuoi cung, them chi phi ghi |
+
+### Loi hay gap
+- **Partition key merchantId mot mot ban chung ban 80% don hang.** Trieu chung: hot partition, ProvisionedThroughputExceededException. Cach sua: them ma vung vao khoa (MERCHANT#m01#VN) hoac them so ngau nhien cuoi de chia tai.
+- **Khong co sort key.** Trieu chung: de lay don hang cua khach phai Scan toan bang, cham va dat. Cach sua: dung SK hoac GSI.
+- **Doc GSI ngay sau khi vi.** Trieu chung: ket qua chua co don hang vua them (doc duoc cuoi cung). Cach sua: doc lai sau khoang khoi, hoac doc bang goc neu can chinh xac.
+
+### Vi du doi thuc
+He thong ghi 10.000 don hang/giay. Partition key orderId ngau nhien => tai phan bo dan, khong co hot partition. Neu partition key merchantId va mot ban chung ban 80% don hang => mot partition qua tai, cac ghi cua ban khac bi cham, SDK ngoai le ProvisionedThroughputExceededException. Sua: PK = MERCHANT#<maBan>#<maVung> (chia tung ban, tung vung) hoac them so ngau nhien 0-9 cuoi khoa; tai bang co the tang mot lan nua va qua khoi khoi.
+
+### Tra loi mau khi pham van
+"Toi thiet lap bang DynamoDB bat dau tu cac truy van thuc te, chon partition key phan bo tai dan de tranh hot partition, va them sort key hoac GSI khi can truy van theo thuoc tinh khac. Neu gap loi vuot gioi han doc/ghi, toi kiem tra xem mot partition key co bi tai qua nhieu khong (hot partition) va chia khoa bang them ma vung hoac so ngau nhien cuoi. GSI minh chua chi muc theo ma khach hang, nhung nho rang doc GSI chi duoc dong bo cuoi cung nen khong doc ngay sau khi vi neu can chinh xac 100%. SDK Java tu thu lai voi khoang cho tang dan va ngau nhien, toi giu mac dinh va giiam suc truyen neu loi van lap lai."
+
+> Senior tip: thiet lap bang quanh truy van thuc te khong phai mo hinh quan he; mot bang duy nhat (single-table) voi nhieu GSI thong thai hon nhieu bang nho, vi DynamoDB khong co join.
+`,
+  follow: [
+    'Hot partition là gì và DynamoDB phản ứng thế nào (adaptive capacity)?',
+    'GSI đọc có thể bị cũ bao lâu, và khi nào đọc bảng gốc thay vì GSI?',
+    'Provisioned vs On-demand: chọn cái nào cho workload đột biến?'
+  ],
+  tags: ['DynamoDB', 'partition key', 'hot partition', 'GSI', 'SDK v2', 'single-table']
+},
+{
+  id: 'aws-065',
+  topic: 'aws',
+  level: 'lead',
+  q: 'Lambda Java cold start hình thành từ đâu, SnapStart khôi phục ra sao, và khi nào chọn Provisioned Concurrency thay vì SnapStart?',
+  a: `**Tóm tắt:** Cold start là chi phí tạo môi trường mới (microVM, máy ảo nhỏ) và khởi chạy code trước lần gọi đầu: tải class, khởi động JVM, chạy đoạn khởi tạo (Spring context, Hibernate, connection pool…). SnapStart chụp trạng thái JVM đã khởi tạo xong khi bạn xuất bản phiên bản, rồi khôi phục từ ảnh đó khi cần môi trường mới, bỏ qua phần khởi tạo. Chỉ có hiệu lực trên phiên bản/alias đã xuất bản, không áp cho $LATEST. Provisioned Concurrency giữ môi trường sẵn sàng trả lời ngay mà không cold start, nhưng bạn trả tiền cả khi không có request.
+
+### Thuật ngữ
+- **Cold start (khoi dong lanh)**: lan dau goi khi chua co moi truong, phai tao moi truong moi, chua.
+- **Warm start (khoi dong am)**: goi vao moi truong dang co, chi chay handler, nhanh.
+- **Init phase (giao do khoi tao)**: chay static initializer, constructor handler, khoi dong framework truoc lan goi handler dau.
+- **MicroVM**: may ao cuc nho chay mot ham Lambda, moi luc chi xu ly mot request.
+- **SnapStart**: tinh nang chup anh JVM sau init khi xuat ban, khoi phuc tu anh khi can moi truong moi.
+- **CRaC (Coordinated Restore at Checkpoint)**: API cho phep code chay hook truoc khi chup anh va sau khi khoi phuc.
+- **Checkpoint / restore**: chup trang thai bo nho / khoi phuc trang thai tu anh.
+- **Provisioned Concurrency (dong thoi du tru)**: so moi luong luon duoc AWS giu san sang, tra phi du khi khong goi.
+- **$LATEST**: phien ban thao tac cua Lambda, SnapStart khong ap dung.
+- **Version / alias**: phien ban da xuat ban va ten tro toi phien ban, SnapStart chi ap dung chung chung.
+- **Connection pool reuse (tai su dung pool)**: giu client/pool giua cac lan goi de khong tao pool moi moi invocation.
+
+### Co che buoc buoc
+**Thuong:**
+1. Request den nhung khong co moi truong trong => Lambda tao microVM moi.
+2. Tai code va khoi dong runtime Java. Chua vi JVM nap, xac minh class va chay thong dich truoc khi JIT toi uu.
+3. Chay init phase: constructor handler, Spring xay context, Hibernate doc metadata. Phan nay thap thu nhat, tinh bang giay.
+4. Goi handler. Cac request sau vao lai moi truong nay la warm start, chi con buoc 4.
+
+**Voi SnapStart:**
+1. Khi ban xuat ban version, Lambda chay init mot lan, goi beforeCheckpoint (CRaC), chup anh bo nho va trang thai microVM, ma hoa va luu cache. Phi init chi tra mot lan thay cho moi cold start.
+2. Can moi truong moi, Lambda khoi phuc tu anh thay cho buoc 2-3, roi goi afterRestore.
+3. Goi handler nhu binh thuong.
+
+~~~java
+// Handler co khoi tao nhe va khoi tao tre de giam cold start
+public class OrderHandler implements RequestHandler<OrderEvent, Response> {
+    // TRANH: khoi tai khoi khoi (Spring context, Hibernate, pool) o day
+    // No chay o moi lan cold start, lam tang init phase
+    private OrderRepository repo;
+
+    @Override
+    public Response handleRequest(OrderEvent event, Context ctx) {
+        if (repo == null) {
+            // Khoi tao lan dau, cac lan goi su dung lai (warm start)
+            repo = new OrderRepository();
+        }
+        return repo.process(event);
+    }
+}
+~~~
+
+### Bang so sanh
+| Tieu chi | Cold start thuong | SnapStart | Provisioned Concurrency |
+|---|---|---|---|
+| Thoi gian | Nhieu giay (Java, Spring) | Duoi mot giay | Khoang 0-200 ms |
+| Chi phi | Chi tien khi goi | Chi tien khi goi | Tra tien ca khi khong goi |
+| Ap dung | Tat ca | Phien ban/alias da xuat ban | Alias chon truoc |
+| Dung khi nao | Tai thap, khong quan tam chua | Init qua 1 giay, dung version | Khong chap nhan duoc giay chua |
+
+### Loi hay gap
+- **Khoi tao Spring context/Hibernate trong constructor.** Trieu chung: moi cold start chay lai toan bo, init 4-5 giay. Cach sua: khoi tao nhe, tai tre (lazy) trong handler nhu code tren.
+- **Mo ket noi CSDL o init.** Trieu chung: init qua thoi gian han cua Lambda. Cach sua: ket noi trong handler, hoac su dung RDS Proxy.
+- **Su dung $LATEST.** Trieu chung: ban bat SnapStart nhung khong co tac dung. Cach sua: goi qua version hoac alias da xuat ban.
+- **Moi invocation tao pool moi.** Trieu chung: het ket noi CSDL, loi too many connections. Cach sua: tao client/pool mot lan va tai su dung giua cac lan goi.
+
+### Vi du doi thuc
+Spring Boot 1 GB: cold start thuong 4-5 giay, SnapStart duoi 1 giay, Provisioned Concurrency khoang 0-200 ms nhung tra tien 24/7. He thong 10.000 goi/ngay, 20% la cold start => 2.000 lan cho giay moi ngay. Doi bat SnapStart va goi qua alias prod, cold start mat duoi 1 giay; chi them cho cac han che khong chap nhan cho.
+
+### Tra loi mau khi pham van
+"Cold start cua Java tren Lambda gom tao microVM, khoi dong JVM, tai class va chay init (Spring context, pool...), neu co Spring co the ranh 4-5 giay. SnapStart chup anh JVM sau init khi xuat ban version, khoi phuc tu anh can moi truong moi, thoi gian duoi mot giay, chi ap dung cho version/alias khong dung $LATEST. Provisioned Concurrency giu moi truong san sang tra loi ngay, nhung tra tien ca khi khong co request. Toi chon SnapStart khi init qua mot giay va da co version/alias; Provisioned Concurrency cho API khong chap nhan duoc giay chua. Ket noi CSDL dung RDS Proxy va tai su dung client giua cac lan goi de tranh het ket noi."
+
+> Senior tip: chi bat SnapStart khi init qua mot giay va dung version/alias; Provisioned Concurrency cho traffic khong chap nhan cho; connection pool phai tai su dung giua cac invocation, khong tao moi moi lan.
+`,
+  follow: [
+    'Vì sao SnapStart không áp dụng cho $LATEST?',
+    'CRaC hook beforeCheckpoint / afterRestore dùng làm gì?',
+    'RDS Proxy giúp gì cho Lambda với lượng invocation bùng phát?'
+  ],
+  tags: ['Lambda', 'SnapStart', 'cold start', 'Provisioned Concurrency', 'CRaC', 'Java', 'RDS Proxy']
+},
+{
+  id: 'aws-066',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Secrets Manager khác Parameter Store thế nào, luồng xoay mật khẩu RDS hoạt động thế nào, và Spring Boot đọc secret an toàn như thế nào?',
+  a: `**Tóm tắt:** Secrets Manager lưu secret (mat khau CSDL, API key), co xoay tu dong qua Lambda, tinh phi theo moi secret va moi lenh goi API; Parameter Store luu tham so cau hinh (SecureString ma hoa boi KMS), rer hon nhung khong xoay tu dong. Spring Boot doc qua AWS SDK v2 SecretsManagerClient, cache secret trong bo nho, khong ghi secret vao log va khong de trong application.properties.
+
+### Thuật ngữ
+- **Secret (bi mat)**: mat khau CSDL, API key, token luu trong Secrets Manager.
+- **Secrets Manager**: dich vu luu va quan ly secret, co xoay tu dong.
+- **Parameter Store**: dich vu luu tham so cau hinh, co SecureString ma hoa boi KMS.
+- **KMS (Key Management Service)**: dich vu quan ly khoa ma hoa AWS.
+- **Rotation (xoay)**: thay mat khau cu bang mat khau moi dinh ky.
+- **Lambda**: ham chay theo su ki, duoc su dung de xoay mat khau RDS.
+- **AWSPENDING / AWSCURRENT**: phien mat chua chua chuan bi va chinh thuc trong rotation.
+- **SDK v2**: bo thu vien AWS moi nhat cho Java.
+- **Cache (bo nho tam)**: luu gia tri da tai de khong goi API lan lan.
+- **TTL (thoi gian chung)**: thoi gian cache duoc phep su dung.
+
+### Co che xoay buoc buoc
+1. Bat rotation cho secret RDS, chon chu ky (vi du 30 ngay).
+2. AWS goi rotation Lambda (mau co san cho RDS): tao mat khau moi, luu vao phien ban AWSPENDING.
+3. Lambda kiem tra ket noi DB voi mat khau moi.
+4. Neu thanh cong, AWS promote AWSPENDING thanh AWSCURRENT; ung dung doc AWSCURRENT va nhan mat khau moi.
+5. Neu ung dung cache secret, no co the dung mat khau cu trong khoang TTL cache (vi du 10 phut), sau do tu tai moi. Vi sao cache phai ngan va ung dung phai xu ly loi dang nhap bang tai lai secret.
+
+~~~java
+// Doc secret voi cache ngan, tranh goi API lan lan
+public class SecretCache {
+    private final SecretsManagerClient client = SecretsManagerClient.create();
+    private String cachedValue;
+    private long cachedAt;
+    private static final long TTL_MS = 10 * 60 * 1000; // 10 phut
+
+    public String get(String secretId) {
+        long now = System.currentTimeMillis();
+        if (cachedValue == null || now - cachedAt > TTL_MS) {
+            GetSecretValueResponse resp = client.getSecretValue(b -> b.secretId(secretId));
+            cachedValue = resp.secretString();
+            cachedAt = now;
+        }
+        return cachedValue;
+    }
+}
+~~~
+
+### Bang so sanh
+| Tieu chi | Secrets Manager | Parameter Store |
+|---|---|---|
+| Noi dung | Secret (mat khau, API key) | Tham so cau hinh (SecureString) |
+| Xoay tu dong | Co (qua Lambda) | Khong |
+| Chi phi | Theo secret + lenh goi API | Rer hon, theo tham so |
+| Ma hoa | KMS tu dong | KMS (SecureString) |
+
+### Loi hay gap
+- **Doc secret moi request.** Trieu chung: tach lenh goi API, cham, de bi throttling va tieu tieu phi. Cach sua: cache ngan (5-10 phut), tai lai khi loi dang nhap.
+- **Luu secret trong bien moi truong.** Trieu chung: nhan vien co the xem qua console, log co the ghi. Cach sua: luu trong Secrets Manager, IAM least privilege chi cho role can thiet.
+- **Rotation khong kiem tra ket noi truoc khi promote.** Trieu chung: ung dung dang nhap sai sau khi xoay. Cach sua: kiem tra ket noi voi mat khau moi o buoc 3, kiem thu rotation tren staging.
+
+### Vi du doi thuc
+Mat khau RDS xoay moi 30 ngay, app cache 10 phut => sau khi xoay, app con dung mat khau cu toi da 10 phut roi tu tai moi. Neu khong cache he thong 1.000 request/giay => 1.000 lenh GetSecretValue/giay, tieu tieu phi va de bi gioi han goi API (throttling).
+
+### Tra loi mau khi pham van
+"Secrets Manager luu bi mat mat khau CSDL, API key, co xoay tu dong qua Lambda va tinh phi theo secret va lenh goi API; Parameter Store luu tham so cau hinh (SecureString ma hoa bang KMS), rer hon nhung khong xoay tu dong. Toi chon Secrets Manager cho mat khau can xoay, Parameter Store cho cau hinh binh thuong. Spring Boot doc qua SecretsManagerClient, cache ngan 5-10 phut, khong ghi log va khong luu trong application.properties. Xoay RDS: Lambda tao mat khau moi, luu AWSPENDING, kiem tra ket noi, sau do promote thanh AWSCURRENT. App doc AWSCURRENT, neu cache thi dung mat khau cu toi da mot khoang TTL roi tai lai. Luon kiem thu rotation tren staging truoc khi bat production."
+
+> Senior tip: xoay mat khau RDS moi 30-90 ngay, nhung rotation Lambda can quyen ket noi DB voi mat khau cu va moi; kiem thu tren staging, va xu ly loi dang nhap bang tai lai secret neu bi thoi gian cache.
+`,
+  follow: [
+    'Secrets Manager và Parameter Store: chọn cái nào cho API key, cái nào cho cấu hình?',
+    'Rotation Lambda cần quyền gì với RDS?',
+    'Ứng dụng cache secret thì sau khi xoay, mất bao lâu ứng dụng dùng mật khẩu mới?'
+  ],
+  tags: ['Secrets Manager', 'Parameter Store', 'rotation', 'RDS', 'SDK v2', 'Spring Boot']
+},
+{
+  id: 'aws-067',
+  topic: 'aws',
+  level: 'lead',
+  q: 'IRSA (IAM Role for Service Accounts) và EKS Pod Identity gán quyền cho pod ra sao mà không cần access key, và khi nào chọn cái nào?',
+  a: `**Tóm tắt:** IRSA lien ket Kubernetes service account voi IAM role qua OIDC provider (OpenID Connect, dich vu xac thuc dua tren token JSON duoc ky so); pod goi STS bang token gắn vao, nhan credentials tam thoi (thuong la 1 gio). EKS Pod Identity AWS quan li lien ket, khong can tao OIDC provider, nhung IRSA linh hoac hon (role chaining, nhieu tai khoan AWS). Ca hai deu thay the access key dai han, tuan thu least privilege (chi cap quyen can thiet).
+
+### Thuật ngữ
+- **IRSA (IAM Role for Service Accounts)**: gán vai trò IAM cho service account Kubernetes, pod do nhan quyen cua vai tro.
+- **Service account**: danh tinh Kubernetes dung pod goi API AWS.
+- **OIDC provider (OpenID Connect)**: dich vu xac thuc dua tren token JSON duoc ky so.
+- **Trust relationship (moi quan tin tuy)**: khai bao trong IAM role cho biet OIDC provider nao duoc tin dang nhap.
+- **STS (Security Token Service)**: dich vu cap tham mat tam thoi.
+- **AssumeRoleWithWebIdentity**: lenh STS nhan token web va tra ve tham mat tam thoi.
+- **Credentials tam thoi (AccessKey/SecretKey/SessionToken)**: het han sau mot thoi gian (mac dinh 1 gio), khong can luu dai han.
+- **EKS Pod Identity**: dich vu AWS quan li lien ket service account voi IAM role, khong can OIDC provider.
+- **Instance profile (hinh thuc instance)**: vai tro IAM gán cho EC2 node, tat ca cung pod tren node nhan chung quyen (qua rong).
+- **Least privilege (quyen it nhat)**: chi cap quyen can thiet cho viec can lam.
+
+### Co che buoc buoc
+1. Tao OIDC provider cho cluster EKS.
+2. Tao IAM role voi trust relationship cho OIDC provider cua cluster va namespace/service account chon.
+3. Gan annotation eks.amazonaws.com/role-arn = arn cua IAM role vao service account.
+4. Pod khoi dong, kubelet gan token vao duong dan /var/run/secrets/eks.amazonaws.com/serviceaccount/token.
+5. SDK goi AssumeRoleWithWebIdentity voi token, nhan AccessKey/SecretKey/SessionToken tam thoi (thoi gian chung 1 gio).
+6. Credentials tu lam moi truoc khi het han; neu ban tu luu, phai cap nhat truoc het han khong loi gap.
+
+~~~java
+// Voi IRSA, SDK v2 tu dong goi AssumeRoleWithWebIdentity thong qua credential provider chain
+// Chi can tao client binh thuong, khong can doc token hay goi STS thu cong
+S3Client s3 = S3Client.create();
+// Hoac voi region tuy chinh
+S3Client s3 = S3Client.builder().region(Region.AP_SOUTHEAST_1).build();
+~~~
+
+### Bang so sanh
+| Tieu chi | EC2 instance profile | IRSA | EKS Pod Identity |
+|---|---|---|---|
+| Cap quyen cho | Toan ca pod tren node | Moi service account | Moi service account |
+| Can OIDC provider | Khong | Co | Khong |
+| Quan ly | AWS (node) | Ban (role, trust) | AWS |
+| Nhieu tai khoan AWS | Khong | Dung (role chaining) | Khong |
+| Dung khi nao | Tat ca cung mot quyen | Nhieu role chi tiet, nhieu tai khoan | Mot tai khoan, don gian |
+
+### Loi hay gap
+- **Pod khong co quyen.** Trieu chung: AccessDenied. Nguyen nhan: quên annotation hoac chua tao OIDC provider. Cach sua: kiem tra annotation service account, xem CloudTrail AccessDenied.
+- **Dung node instance profile cho tat ca pod.** Trieu chung: quyen qua rong, vi pham least privilege (service order doc duoc bucket cua service payment). Cach sua: moi service account mot role rieng biet.
+- **Luu credentials qua lau.** Trieu chung: sau 1 gio het han, loi goi API. Cach sua: de SDK lam moi tu dong, khong tu luu vao bo nho lau dai.
+- **Debug AccessDenied.** Cach sua: chay aws sts get-caller-identity trong pod de biet danh tinh dang su dung.
+
+### Vi du doi thuc
+Ba microservice (don hang, thanh toan, kho) o namespace rieng nhau, moi service account co IAM role rieng (don-hang-role doc queue don hang, thanh-toan-role ghi DB thanh toan). Truoc do tat ca pod dung chung node instance profile => service don hang co the doc bucket thanh toan, nguy co bao mat. Sau IRSA, moi service chi co quyen can thiet, va AccessDenied duoc tra cuu qua CloudTrail.
+
+### Tra loi mau khi pham van
+"IRSA lien ket service account Kubernetes voi IAM role qua OIDC provider; pod nhan token gắn vao, goi STS AssumeRoleWithWebIdentity, nhan tham mat tam thoi (thuong la mot gio). EKS Pod Identity la dich vu AWS quan li lien ket, khong can tao OIDC provider, nhung IRSA linh hoc hon nhieu role va nhieu tai khoan. Toi chon IRSA khi can nhieu role chi tiet hoac nhieu tai khoan AWS; EKS Pod Identity neu chi mot tai khoan va muon don gian. Moi service account nhan role theo least privilege; neu gap AccessDenied, toi kiem tra annotation service account, OIDC provider va truy van CloudTrail."
+
+> Senior tip: uu tien IRSA khi nhieu role chi tiet hoac nhieu tai khoan AWS; EKS Pod Identity don gian hon neu mot tai khoan; luon cap quyen it nhat, va Xem AccessDenied qua CloudTrail truoc khi them quyen them.
+`,
+  follow: [
+    'IRSA và EKS Pod Identity khác nhau ở đâu, chọn cái nào?',
+    'Token của pod được lưu đâu và hết hạn sau bao lâu?',
+    'Làm sao debug AccessDenied của pod EKS?'
+  ],
+  tags: ['IRSA', 'EKS', 'Pod Identity', 'OIDC', 'STS', 'IAM']
+},
+{
+  id: 'aws-068',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Triển khai bản Spring Boot mới lên ECS Fargate sau ALB: rolling update mặc định của ECS không đủ khi bản mới chạy được nhưng tra sai du lieu, va migration database phai chay truoc ban moi. Ban dung CodeDeploy blue/green nhu the no, va rollback tu dong khi xay ra loi 5xx ra sao?',
+  a: `**Tom tat:** CodeDeploy blue/green chay ban moi (green) cung luc voi ban cu (blue), chuyen traffic qua ALB theo ty le (canary 10% roi 100%), va tu quay ve ban cu neu bao cao bao dong CloudWatch (ty le 5xx, do tra p99) vuot ngưỡng. Rolling update thuan cua ECS chi biet da task healthy chua, khong phat hien duoc ban "chay duoc nhung tra sai du lieu".
+
+### Hieu nhanh
+Hay tuong tuong quán co hai hang counter: hang cu van phuc vu khach, hang moi mo ben chanh nhung chua cong nhac. Quan ly (CodeDeploy) moi mot phan nho khach sang hang moi, xem co phan khong, roi moi doi ca quay. Neu khach moi bat dau phan khan (loi 5xx), quan ly kich cua hang moi va quay lai hang cu. Rolling update chi kiem tra "nhan vien moi da den lam viec chua", khong biet nhan vien do co phuc vu sai mon hay khong.
+
+### Thuat ngu
+- Blue/green deployment: ban cu (blue) va ban moi (green) chay cung luc, traffic chuyen qua CodeDeploy thay thay chinh tuc tai.
+- Canary: chuyen mot phan nho traffic sang ban moi truoc khi mo rong toan bo.
+- AppSpec: file YAML khai bao quy trinh trien khai cua CodeDeploy, gom cac hook truoc/trong/sau khi chuyen traffic.
+- AfterAllowTestTraffic: hook chay kiem tra tu dong sau khi mot phan traffic da di sang ban moi.
+- Deployment configuration: quy tuc chuyen traffic, vi du Canary10Percent5Minutes (10% trong 5 phut roi doi) hoac Linear10PercentEvery1Minute.
+- CloudWatch alarm: bo chu tu ALB, vi du HTTPCode_Target_5XX_Count va TargetResponseTime p99, kich hoat rollback.
+- Rollback tu dong: CodeDeploy thao tac ban moi va tra lai ban task revision cu da chay on dinh.
+
+### Co che chung buoc
+1. CI build image, tag theo git SHA, push ECR, dang ky task definition revision moi tro toi image do.
+2. CodeDeploy tao DeploymentGroup cho ECS: nhom blue la task revision cu, nhom green la revision moi, ca hai gan vao listener va target group cua ALB (CodeDeploy dung hai target group rieng cho blue va green).
+3. Theo AppSpec, hook truoc khi chuyen traffic chay migration database (qua task one-off hoac Lambda) de schema moi san sang truoc khi green nhan traffic.
+4. CodeDeploy chuyen traffic theo ty le quy dinh, ALB bat dau gui mot phan request sang task green.
+5. Trong cua so theo doi, neu bao cao bao dong CloudWatch vuot ngưỡng (vi du 5xx qua 1% trong 5 phut), CodeDeploy danh dau deployment that bai, dung chuyen traffic va rollback ve blue.
+6. Neu on dinh, chuyen 100% traffic sang green roi xoa task blue cu.
+
+### Code guard readiness (Spring Boot)
+~~~java
+@RestController
+public class MigrationGuardController {
+    private final MigrationRepository migrationRepository;
+
+    public MigrationGuardController(MigrationRepository migrationRepository) {
+        this.migrationRepository = migrationRepository;
+    }
+
+    @GetMapping("/actuator/health/readiness")
+    public ResponseEntity<Void> readiness() {
+        // Tra 503 khi migration chua chay xong: ALB coi target unhealthy, CodeDeploy khong gui traffic xanh
+        if (!migrationRepository.isMigrationComplete()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+        }
+        return ResponseEntity.ok().build();
+    }
+}
+~~~
+
+### Rolling update vs blue/green
+| Tieu chi | Rolling update (ECS) | Blue/green (CodeDeploy) |
+|---|---|---|
+| Cach thay the | Task cu bi xoa khi task moi healthy | Ban moi chay cung cung, chuyen traffic dan |
+| Phat hien tra sai du lieu | Khong, chi kiem tra task healthy | Co, qua bao 5xx/latency trong cua so theo doi |
+| Rollback | Thao tac task moi, giu lai revision cu (cham) | Tu dong quay ve blue khi bao |
+| Migration DB | Phai chay truoc hoac tuong thich nghich | Chay trong hook truoc khi chuyen traffic |
+| Phu hop | Ban nho, khong thay doi schema | Ban co migration, can rollback nhanh |
+
+### Loi hay gap
+- **Chay migration trong task cung luc nhieu ban.** Trieu chung: hai revision cung chay migration, gay khoa bang hoac loi trung du lieu. Cach tranh: migration buoc rieng, chay mot lan qua task one-off hoac Lambda truoc khi green nhan traffic.
+- **Hook AfterAllowTestTraffic khong chay hoac chay sai.** Trieu chung: traffic da chuyen sang green nhung khong kiem tra, loi moi chi phat hien sau khi khach phan khan. Cach tranh: gan hook kiem tra smoke test (goi /actuator/health, dat don kiem tra) va bao rollback.
+- **Quen cau hinh bao rollback.** Trieu chung: deployment xanh dung ung dung tra 50%, CodeDeploy khong biet. Cach tranh: luon gan bao CloudWatch vao deployment group, cua so theo doi du dai (it it nhat mo phut).
+- **ALB deregistration delay qua ngan khi rollback.** Trieu chung: request con dang tren task blue bi xoa ngay, khach thay 502. Cach tranh: dat deregistration delay 30-60 giay va graceful shutdown trong Spring Boot.
+
+### Tra loi mau khi phan vien
+"Voi Spring Boot tren ECS Fargate, toi dung CodeDeploy blue/green thay vi rolling update thuan khi co migration database. Qua trinh: image build mot lan, tag theo git SHA; CodeDeploy chay revision moi cung cung, thuc hien migration trong hook truoc khi chuyen traffic, roi chuyen traffic qua ALB theo ty le canary. Trong cua so theo doi, bao CloudWatch tren ty le 5xx va do tra p99 cua ALB kich hoat rollback tu dong ve revision cu neu co su co. Toi cung dat readiness endpoint tra 503 trong khi migration chua xong, deregistration delay du dai de khong ro request, va graceful shutdown trong Spring Boot. Rolling update chi dung cho ban nho khong thay doi schema."
+> Senior tip: rollback tot nhat la rollback khong ai cam thay — hay dien thao lap deploy ban loi co y trong staging va chung minh bao 5xx keo CodeDeploy quay ve ban cu trong it nhat mo phut, chu khong doi khach bao loi.
+
+### Vi du doi thuc
+Mot doi van he thong don hang Spring Boot tren ECS Fargate, hai task sau ALB. Lan dau dung rolling update, deploy ban them cot not null vao bang don hang: task moi healthy nhung moi don moi loi "cot not null", hon 200 don bi tu choi trong 10 phut truoc khi doi nhan ra va rollback thu cong. Sau do chuyen sang CodeDeploy blue/green: migration chay qua task one-off truoc khi green nhan traffic, chuyen 10% traffic trong 5 phut, bao CloudWatch theo doi HTTPCode_Target_5XX_Count va TargetResponseTime. Lan deploy sau co loi moi, bao vuot ngưỡng trong 3 phut, CodeDeploy tu rollback ve revision cu, khach gan nhu khong cam thay. Ket qua: thoi gian khoi phuc tu va gio xuong con duoi 5 phut, va moi deployment deu co diem quay ve duoc thu thap truoc.
+  `,
+  follow: [
+    'CodeDeploy blue/green cho ECS dung mot hay hai target group cua ALB?',
+    'Migration database trong hook truoc khi chuyen traffic: neu migration that bai CodeDeploy lam gi?',
+    'Rollback tu dong cua CodeDeploy khac rollback tay trong ECS console o diem nao?'
+  ],
+  tags: ['ECS', 'Fargate', 'CodeDeploy', 'blue-green', 'canary', 'rollback']
+},
+{
+  id: 'aws-069',
+  topic: 'aws',
+  level: 'lead',
+  q: 'He thong event-driven Java xu ly su kien tai chinh: don hang can thu tu theo tung tai khoan, clickstream can xem lai du lieu trong 30 ngay, va nhieu nhom cung dung cung luong su kien. Ban chon Kinesis Data Streams hay Amazon MSK (Kafka managed), va trade-off van hanh ra sao?',
+  a: `**Tom tat:** Kinesis Data Streams la stream managed don gian: du lieu ghi vao shard, gui toi da 365 ngay, moi consumer doc doc lap qua con tro cua minh, integrate san voi Lambda. MSK la Kafka managed day du tinh nang (consumer group, compacted topic, Kafka Connect, MirrorMaker), phuc tap hon ve van hanh nhung linh hoat hon cho nhieu consumer va he sinh tai Kafka. Chon Kinesis khi muon it van hanh va xu ly thoi gian gan thuc tai; chon MSK khi doi da co kinh tien Kafka ho can nhieu consumer phuc tap, compacted topic, ho ket noi he thong ngoai qua Connect.
+
+### Hieu nhanh
+Kinesis giong cuon so yeu khach: moi dong su kien ghi theo thu tu vao mot trang (shard), nhieu nguoi co the doc cung cuon so nhung moi nho minh da doc toi trang nao, va cuon so chi giu 24 den 365 ngay. MSK giong he thong phong thu chuyen nghien: nhieu bo thu (broker), moi kenh (topic) chia thanh nhieu trang (partition), moi nhom nghe (consumer group) theo doi da nghe toi trang nao, co the nghe lai kenh cu (compacted topic), va co cong tu ket noi he thong ngoai (Kafka Connect). Phong thu manh hon nhung can nhan vien van hanh.
+
+### Thuat ngu
+- Shard: don vi ghi va doc song song cua Kinesis, moi ho tro 1 MB/s ghi va 2 MB/s doc, chia su throughput tong cua stream.
+- Sequence number: so thu tu cua moi ban ghi trong shard, dung lam con tro doc.
+- Retention: thoi gian gui du lieu trong stream, mac dinh 24 ngay, toi da 365 ngay.
+- Consumer / checkpoint: ung dung doc stream va luu tien trinh doc (checkpoint) thong qua DynamoDB, de doc tiep tu diem dung.
+- Topic: ten kenh su kien trong Kafka/MSK.
+- Partition: moi topic chia thanh nhieu partition, ghi duoc thu tu chi trong mot partition.
+- Consumer group: nhom ung dung doc cung topic, Kafka quan ly offset cua moi nhom doc lap.
+- Compacted topic: topic chi giu ban ghi moi nhat theo khoa, dung luu trang thai moi nhat (tuong tu bang tra cuu).
+- Kafka Connect: cong tu dua du lieu vao/ra Kafka tu dong (vi du doc tu PostgreSQL ghi vao Kafka).
+- MirrorMaker: cong replicate du lieu giua hai cluster Kafka (vi du giua hai region).
+
+### Co che chung buoc
+**Ghi vao Kinesis:** ung dung goi PutRecord voi partition key (vi du accountId), Kinesis bam partition key de chon shard, gui ban ghi voi sequence number, tra ve ngay. Vi sao: cung accountId luon vao cung shard nen thu tu su kien cua tai khoan do duoc giu.
+**Doc Kinesis:** consumer lay shard iterator, doc ban ghi theo batch, xu ly, luu checkpoint vao DynamoDB. Neu consumer bi xet, doc tiep tu checkpoint cuoi.
+**Ghi vao MSK:** producer gui ban ghi toi broker-leader cua partition, broker replicate sang cac broker theo he so replication (vi du 3), xac nhan khi du replica ghi. Vi sao: du lieu khong mat khi mot broker bi xet.
+**Doc MSK:** consumer group doc partition, luu offset trong Kafka (__consumer_offsets topic), nhieu nhom doc cung topic khong anh nhau.
+
+### Code: producer Kafka voi xac nhan an toan
+~~~java
+Properties props = new Properties();
+props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class.getName());
+props.put(ProducerConfig.ACKS_CONFIG, "all");        // cho tat ca replica dong bo xac nhan
+props.put(ProducerConfig.RETRIES_CONFIG, 3);          // thu lai neu loi tam thoi
+props.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 1); // giu thu tu gui theo khoa
+KafkaProducer<String, OrderEvent> producer = new KafkaProducer<>(props);
+producer.send(new ProducerRecord<>("orders", order.getAccountId(), order), (metadata, exception) -> {
+    if (exception != null) {
+        log.error("Gui su kien that bai", exception);
+        // gui vao hang doi thu lai hoac dead-letter
+    }
+});
+producer.close();
+~~~
+
+### So sanh Kinesis va MSK
+| Tieu chi | Kinesis Data Streams | Amazon MSK |
+|---|---|---|
+| Quan ly | Managed day du, khong quan broker | Managed nhung van quan topic, partition, consumer group |
+| Thu tu | Theo shard (khoa partition) | Theo partition |
+| Gui du lieu | 24 gio-365 ngay | Tuong tu retention cau hinh (co the lau hon) |
+| Nhieu consumer | Moi consumer tu luu checkpoint | Consumer group quan ly offset tap trung |
+| Truy van lai cu | Doc tu sequence number | Doc tu offset, compacted topic gui trang thai moi nhat |
+| Ket noi he thong ngoai | Gui hoac Lambda | Kafka Connect co san |
+| Chi phi van hanh | Thap | Cao (can van hanh cluster, chuyen gia Kafka) |
+| Tich hop Lambda | Event source mapping co san | Co, qua ban sao stream hoac nguoi dung tu tich hop |
+
+### Loi hay gap
+- **Partition key yeu tren Kinesis.** Trieu chung: toan bo su kien don vao mot shard, throughput tran, cac shard khac rong. Cach tranh: dung khoa co gia tri khac nhau (accountId, orderId) chu khong phai ngay thang.
+- **Consumer Kinesis bi lag va chua checkpoint.** Trieu chung: restart consumer thi doc lai tu thoi diem cu, xu ly trung su kien. Cach tranh: checkpoint dinh ki va lam consumer idempotent.
+- **MSK producer khong cho replica.** Trieu chung: broker leader bi xet ngay sau khi gui, du lieu moi nhat bi mat vi chi gui vao leader. Cach tranh: acks=all va replication factor >= 3.
+- **Khong chay nhieu consumer group tren MSK vi chua hieu offset.** Trieu chung: nhom moi doc tu dau topic, dua tram trieu su kien cu vao he thong xuong dong. Cach tranh: cau hinh auto.offset.reset = earliest/latest co y nghia va reset offset thap minh.
+
+### Vi du doi thuc
+He thong thanh toan gui su kien giao dich vao Kinesis voi partition key = accountId, stream 10 shard (10 MB/s gui), gui 7 ngay. Nhom phan gian doc stream qua Lambda de phat hien giao dich la, nhom bao cao doc cung stream de nhap vao kho du lieu, moi nhom luu checkpoint rieng nen khong anh nhau. Trieu chung: khi mo khuyen mai, luong gui nhay len 15 MB/s vuot 10 MB/s cua 10 shard, cac ban ghi bi tu choi (ProvisionedThroughputExceededException). Doi tang stream len 20 shard va chia partition key them ma luot giao dich de tra deu. Ket qua: throughput dam ung 30 MB/s, chi phi Kinesis duong 450 USD/thang. Neu nhom can Kafka Connect de dua du lieu sang ElasticSearch ho can compacted topic, ho se chuyen sang MSK va chap nhan chi phi van hanh cao hon (can nhan vien hieu Kafka).
+
+### Tra loi mau khi phan vien
+"Toi chon Kinesis Data Streams khi muon quan tri toi thieu: du lieu chia theo shard, gui toi da 365 ngay, moi consumer doc doc lap qua checkpoint, va co san event source mapping cho Lambda. Toi chon Amazon MSK khi he thong da dung Kafka, can consumer group quan ly offset tap trung, compacted topic de luu trang thai moi nhat, ho Kafka Connect de noi he thong ngoai. MSK manh hon nhung doi phai van hanh cluster, quan ly partition va replication, nen chi phi con nguoi cao hon. Vo su kien tai chinh can thu tu theo tai khoan, toi dung partition key la accountId; neu can xem lai 30 ngay, toi dat retention 30 ngay ho dung MSK voi retention dai hon. Trade-off chinh la it van hanh so voi he sinh tai Kafka day du."
+> Senior tip: khong chon MSK chi vi "Kafka la tieu chuan nganh". Neu chi can mot ho hai consumer doc su kien gan real-time va tich hop voi Lambda, Kinesis it rui ro van hanh hon nhieu; MSK thuc su xep dang khi doi da co chuyen gia Kafka va can cac cong cu xung quanh Kafka.
+  `,
+  follow: [
+    'Kinesis va MSK khac nhau o diem nao ve ghi va doc du lieu?',
+    'Khi nao nen tang shard cua Kinesis thay doi partition key?',
+    'Consumer group tren MSK quan ly offset nhu the no?'
+  ],
+  tags: ['Kinesis', 'MSK', 'Kafka', 'event-driven', 'consumer group', 'lead']
+},
+{
+  id: 'aws-070',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Ban muon xay dung pipeline nhe tren DynamoDB: khi don hang chuyen sang trang thai giao hang thi gui email thong bao, va tu dong xoa du lieu cu sau 90 ngay. Ban dung DynamoDB Streams + Lambda va TTL nhu the no, gioi han item 400 KB va thay doi schema anh huong gi?',
+  a: `**Tom tat:** DynamoDB Streams chep moi thay doi item (ban moi/cu) theo thu tu trong moi partition, Lambda doc stream va xu ly (gui email, cap nhat chi muc tim kiem); TTL tu dong xoa item sau thoi gian cau hinh khong tốn WCU. Gioi han can biet: item toi da 400 KB, stream gui du lieu 24 gio, thay doi schema (them truong moi) phai cap nhat ca nguoi ghi va nguoi doc.
+
+### Hieu nhanh
+DynamoDB Streams giong cuon ghi lich su: moi lan sua don hang (doi trang thai, cap nhat dia chi) co mot ban ghi trong cuon, Lamda doc cuon do va lam viec tiep theo. TTL giong hen gio xoa tu dong: dat thoi gian het han cho item, DynamoDB xoa mat item do sau khi het han, ban khong can goi lenh xoa va khong tốn WCU.
+
+### Thuat ngu
+- StreamRecord: mot ban ghi su kien trong stream, chua ban ghi moi (NewImage) va ban ghi cu (OldImage) neu co.
+- Event name: INSERT, MODIFY, REMOVE xac dinh loai thay doi.
+- Shard iterator: con tro doc stream, chi duoc su dung trong 24 gio.
+- Checkpoint: vi tri doc cua Lambda, duoc quan ly tu dong boi event source mapping.
+- TTL (Time to Live): truong thoi gian het han cua item, DynamoDB xoa tu dong khi het han.
+- WCU: don vi ghi cua DynamoDB, xoa bang TTL khong tốn WCU.
+- Item size limit: toi da 400 KB cho mot item.
+
+### Co che chung buoc
+**Kich hoat Streams:** bật Streams tren bang don hang, chon NEW_AND_OLD_IMAGES de co hai ban ghi. Moi thay doi duoc chep vao stream trong 24 gio.
+**Lambda doc stream:** event source mapping bat dong bo, Lambda nhan batch su kien (toi da 1000 record hoac 6 MB), xu ly moi record. Neu ham loi, toan bo batch duoc thuc hien lai neu khong co partial batch response.
+**Xuly su kien:** Lambda lay pk tu Keys, lay trang thai tu NewImage, neu trang thai = SHIPPED thi gui email qua SES hoac SNS.
+**TTL xoa du lieu cu:** them truong expireAt (timestamp Unix), bật TTL tren bang, DynamoDB xoa item sau expireAt, thong thoi (den den 48 gio).
+
+### Code: Lambda xu ly DynamoDB Streams
+~~~java
+public class OrderStreamHandler implements RequestHandler<DynamodbEvent, Void> {
+    private final EmailService emailService = new EmailService();
+
+    @Override
+    public Void handleRequest(DynamodbEvent event, Context context) {
+        for (DynamodbStreamRecord record : event.getRecords()) {
+            String eventName = record.getEventName();
+            if (!"INSERT".equals(eventName) && !"MODIFY".equals(eventName)) {
+                continue;
+            }
+            String orderId = record.getDynamodb().getKeys().get("pk").getS();
+            String status = record.getDynamodb().getNewImage().get("status").getS();
+            if ("SHIPPED".equals(status)) {
+                emailService.sendOrderShipped(orderId);
+            }
+        }
+        return null;
+    }
+}
+~~~
+
+### Thay doi schema
+Khi them truong moi (vi du deliveryDate) vao item, can cap nhat code ghi (producer) va code doc (Lambda) cung luc. Neu Lambda doc truong chua co, get tra ve null hoac loi. Vi du voi du lieu cu khong co truong moi, phai xu ly truong hop truong that (null check) de khong lam pipeline xet.
+
+### Gioi han can biet
+- Item toi da 400 KB: neu su kien lon (vi du them danh sach san pham nhieu) co the vuot gioi han, can tach du lieu lon sang S3 va chi luu key trong DynamoDB.
+- Stream gui du lieu 24 gio: neu Lambda bi ngung hoi qua 24 gio se mat su kien, can thiet ke idempotent va co bai toan gui lai (dead-letter queue hoac lam lai tu bang).
+- TTL xoa mu hon: item co the con ton trong it nhat mot it sau khi het han, khong duoc xoa luon giu thoi gian.
+
+### Loi hay gap
+- **Quen OldImage khi can so sanh.** Trieu chung: can biet truoc/sau thay doi (vi du trang thai tu PENDING sang SHIPPED) nhung chi chay NewImage. Cach tranh: bật NEW_AND_OLD_IMAGES va doc OldImage.
+- **Lambda loi nhieu lan lam batch xet.** Trieu chung: mot su kien loi lam toan bo batch lai, email duoc gui nhieu lan. Cach tranh: dung partial batch response hoac xu ly idempotent theo orderId.
+- **TTL xoa du lieu can can quan trong.** Trieu chung: xoa nham item co gia tri kinh doanh vi cau hinh TTL sai. Cach tranh: chi bat TTL cho truong du lieu thoi gian (log, session) khong cho du lieu chinh.
+
+### Vi du doi thuc
+He thong don hang co bang orders (pk = USER#42, sk = ORDER#2026-01-15#ORD123). Bat Streams NEW_AND_OLD_IMAGES, Lambda nhan su kien, khi status doi sang SHIPPED thi gui email qua SES. Them truong expireAt cho don hang cu hon 90 ngay, bat TTL. Ket qua: email duoc gui trong it nhat giay phat su phat hien trang thai, va kho luu it nhat mot it sau 90 ngay khong tốn WCU. Mot ngay Lambda bi xet 10 gio, event source mapping tu dong thu lai tu checkpoint cuoi, khong mat su kien vi stream van con du lieu trong khoang 24 gio.
+
+### Tra loi mau khi phan vien
+"Toi dung DynamoDB Streams voi Lambda de xu ly su kien thay doi don hang: bật Streams NEW_AND_OLD_IMAGES, Lambda doc batch su kien, lay orderId tu Keys va trang thai tu NewImage, neu SHIPPED thi gui email qua SES. De xoa du lieu cu, them truong expireAt va bat TTL, DynamoDB xoa tu dong sau 90 ngay khong tốn WCU. Can biet gioi han: item toi da 400 KB, stream chi gui 24 gio nen Lambda phai idempotent va co xu ly khi bi xet, va thay doi schema phai cap nhat cung luc code ghi va code doc. Pipeline duoc thiet ke idempotent theo orderId de neu batch xu ly lai khong gui email trung."
+> Senior tip: Streams chi du lieu 24 gio, neu can luu tru su kien doi chieu lau dai hien phai day su kien sang Kinesis hoac S3. TTL khong xoa luon giu thoi gian nen khong dung TTL cho du lieu can xoa chinh xac theo gio.
+  `,
+  follow: [
+    'Streams giu du lieu bao lau va neu Lambda bi xet qua gioi han do xay ra gi?',
+    'Partial batch response co ích gi voi DynamoDB Streams?',
+    'TTL xoa du lieu co chinh xac theo giay khong?'
+  ],
+  tags: ['DynamoDB', 'Streams', 'TTL', 'Lambda', 'event-driven']
+},
+{
+  id: 'aws-071',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Lambda Java da bat SnapStart nhung cold start van xay ra mot so lan (invoke qua $LATEST, invoke bat dong bo, event source mapping tu SQS/S3, VPC ENI), va ban doc Init Duration/Restore Duration nhu the no, dung Provisioned Concurrency khi nao?',
+  a: `**Tom tat:** SnapStart giup chi invoke dong bo qua version/alias da publish; invoke qua $LATEST, invoke bat dong bo (su kien tu S3/SNS), va event source mapping tu SQS/Kinesis khong dung snapshot nen van cold start. Init Duration (lan dau) va Restore Duration (SnapStart) o trong dong log REPORT cua Lambda. Provisioned Concurrency giu so luong da duoc init, dung khi khong chap nhan duoc cold start nao va chi phi cho phep.
+
+### Hieu nhanh
+Hay tuong tuong lambda la nhan vien thoi vu: goi lan dau (cold start) nhan vien den, bi ket may, xong viec roi ve. SnapStart nhin anh chup nhan vien da san sang, goi lan sau la khoi phuc tu anh chup. Nhung nhan vien chua duoc chup anh (goi qua $LATEST, su kien bat dong bo, hoac SQS day viec) van phai den tu dau. VPC cung lam cham them vi phai tao the mang ENI cho moi moi truong moi.
+
+### Thuat ngu
+- $LATEST: ban khai ban mac dinh cua Lambda, khong duoc ap dung SnapStart.
+- Version/alias: ban da publish, SnapStart chi ap dung khi goi qua version hoac alias da publish.
+- Init Duration: thoi gian khoi tao moi truong (tai code, khoi JVM, chay init), chi co trong dong REPORT cua lan cold start.
+- Restore Duration: thoi gian khoi phuc tu anh chup SnapStart, thap hon Init Duration nhieu.
+- Provisioned Concurrency: so luong moi truong da duoc khoi tao san sang, tra tien cho thoi gian cung cap.
+- VPC ENI: the mang ao gắn voi Lambda khi goi vao VPC, lam them thoi gian khoi moi truong.
+
+### Co che khi cold start van xay ra
+1. **Goi qua $LATEST:** moi lan co moi truong moi, Lambda chay init tu dau, khong co Restore Duration. Cach tranh: publish version, goi qua alias hoac version da publish.
+2. **Invoke bat dong bo:** su kien tu S3, SNS, EventBridge goi Lambda bat dong bo, khong su dung snapshot. Cach tranh: chap nhan cold start hoac chuyen sang dong bo neu can ket qua ngay lap tuc.
+3. **Event source mapping SQS/Kinesis:** poll duoc goi bat dong bo, cung khong su dung snapshot. Cach tranh: chap nhan cold start, hoac su dung Provisioned Concurrency neu khoi chay chua chap nhan duoc.
+4. **VPC:** Lambda trong VPC can tao ENI cho moi truong moi, lam them thoi gian khoi. Cach tranh: giu Lambda ngoai VPC neu khong can truy cap tai nguyen trong VPC, hoac chap nhan them thoi gian.
+
+### Doc Init Duration va Restore Duration
+Moi lan goi Lambda ghi dong REPORT vao CloudWatch Logs:
+REPORT RequestId: ...	Init Duration: 3214.5 ms		Duration: 3500.0 ms	...
+REPORT RequestId: ...	Restore Duration: 450.0 ms		Duration: 800.0 ms	...
+- Init Duration xuat hien chi o lan cold start (khong co SnapStart hoac khong ap dung).
+- Restore Duration xuat hien o lan co SnapStart duoc ap dung.
+- Tim kiem theo RequestId trong CloudWatch Logs Insights de xem thoi gian khoi cua tung moi truong.
+
+### Provisioned Concurrency
+Giu N moi truong da init san sang, tra tien theo thoi gian cung cap. Dung khi: API giao hang, thanh toan khong chap nhan duoc cold start, va chi phi cho phep. Khong dung neu: viec bat dong bo, thoi gian phan hoi khong nhat thiet, hoac traffic it (tien bo cung tro thanh chi phi bo).
+
+### Loi hay gap
+- **Bao SnapStart nhung goi qua $LATEST.** Trieu chung: dong REPORT van co Init Duration khoi giay, khong co Restore Duration. Cach tranh: publish version, tro API Gateway/nguon su kien toi alias chi den version do.
+- **Thich Restore Duration la thoi gian tong.** Trieu chung: sao chep thoi gian khoi, thuc ra Restore Duration chi la phan khoi phuc, con Init Duration co the lai co neu moi truong chua duoc snapshot. Cach tranh: doc dung cac truong trong dong REPORT.
+- **Provisioned Concurrency qua nhieu.** Trieu chung: tra tien cho nhieu moi truong khong su dung. Cach tranh: bat dau voi so luong nho, tang theo thuc te.
+
+### Vi du doi thuc
+Ham Lambda Java nhan webhook thanh toan, da bat SnapStart, goi qua API Gateway alias. Dong REPORT cho lan dau: Init Duration 4200 ms, Duration 4600 ms. Lan sau qua alias: Restore Duration 480 ms, Duration 900 ms. Mot ngay nguoi dung phan khan thanh toan chua: kiem tra CloudWatch, thay dot goi den ham qua $LATEST (vi cong cu trien khai van tro $LATEST), Init Duration khoi giay tiep tuc. Doi tro API Gateway toi alias da publish va publish version moi moi lan trien khai. Ket qua: cold start xuong con duoi 1 giay, thoi gian phan hoi trung binh tu 4 giay xuong duoi 1 giay, va khong co loi timeout thanh toan nua.
+
+### Tra loi mau khi phan vien
+"SnapStart giup chi invoke dong bo qua version/alias da publish; goi qua $LATEST, invoke bat dong bo tu S3/SNS, va event source mapping tu SQS/Kinesis van cold start vi khong dung snapshot. Init Duration (lan dau) va Restore Duration (SnapStart) o trong dong log REPORT, toi doc qua CloudWatch Logs Insights. Provisioned Concurrency giu moi truong da init san sang, toi dung khi API khong chap nhan cold start nao va chi phi cho phep; neu traffic it hoac viec bat dong bo thi khong nen Provisioned vi bo chi phi. VPC them thoi gian khoi nen toi giu Lambda ngoai VPC neu khong can truy cap tai nguyen trong VPC."
+> Senior tip: luon goi qua version/alias da publish neu muon SnapStart co ích; cong cu trien khai tro $LATEST la nghien cuu cua cold start. Provisioned Concurrency giai quyet cold start nhung tra tien cho thoi gian cung cap, chi dung cho API nhat thiet.
+  `,
+  follow: [
+    'Sua phan biet Init Duration va Restore Duration o dau?',
+    'Provisioned Concurrency co giam cold start den 0 khong?',
+    'Lambda trong VPC them thoi gian bao nhieu va khi nao nen bo VPC?'
+  ],
+  tags: ['Lambda', 'SnapStart', 'cold start', 'Provisioned Concurrency', 'Init Duration']
+},
+{
+  id: 'aws-072',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Ung dung Spring Boot can doc mat khau database tu Secrets Manager va rotation tu dong moi 30 ngay. Ban viet code lay secret va reload trong runtime khong dong vie reset nhu the no, cua so dual-credential la gi, va tai sao khong luu secret trong bien moi truong cua task definition?',
+  a: `**Tom tat:** Dung AWS Secrets Manager caching client (hoac Spring Cloud AWS) de lay secret mot lan va cache trong bo nho co TTL, client tu phat hien ban moi va refresh; rotation RDS tao mat khau moi, cap nhat database, giu cung mat khau cu va moi trong khoang thoi gian chuyen giao (dual-credential) nen ung dung khong gian doan. Khong luu secret trong bien moi truong/task definition vi gia tri bi lut qua CloudFormation, console va dump tien trinh.
+
+### Hieu nhanh
+Hay tuong tuong Secret Manager la tui sat co nguoi quan ly: tu doi mat khau dinh ki, ghi log nguoi mo tui, nhung thue tui dat. Caching client giong ban sao tui mat khau o trong bo nho ung dung, can thoi gian toi cap nhat, ung dung khong can goi AWS moi lan yeu cau. Dual-credential giong khi doi mat khau: mat khau cu van hoat dang trong khoang thoi gian chuyen giao, ung dung co thoi gian de lay mat khau moi khong bi loi dang nhap.
+
+### Thuat ngu
+- Secret: gia tri nhat cam (mat khau, token, khoa).
+- Caching client: client tu dong cache secret, refresh theo TTL hoac khi phat hien ban moi.
+- SecretCache: lop cache cua AWS SDK v2 cho Secrets Manager.
+- Dual-credential: khoang thoi gian cung cap mat khau cu va moi khi rotation.
+- Rotation: quy trinh tu doi secret dinh ki bang Lambda.
+- Bien moi truong/task definition: noi luu cau hinh cua task ECS, de trong CloudFormation va console.
+
+### Co che chung buoc
+**Lay secret:** ung dung khoi dong, goi Secrets Manager (hoac qua caching client), lay gia tri, tao DataSource, khong log gia tri secret.
+**Cache va reload:** caching client co TTL (vi du 5 phut), tu kiem tra ban moi cua secret va tai lai neu co thay doi. Ung dung khong can reset de nhan mat khau moi.
+**Rotation RDS:** Secrets Manager goi Lambda rotation, Lambda sinh mat khau moi, cap nhat RDS, ghim ban AWSCURRENT sang mat khau moi, ban cu thanh AWSPREVIOUS. Trong khoang chuyen giao, ca hai mat khau van chuan chinh.
+**Khong luu trong env:** bien moi truong hien trong AWS console, CloudFormation, va co the bi dump tu tien trinh, rui ro lut mat khau.
+
+### Code: caching client Secrets Manager
+~~~java
+SecretsManagerClient client = SecretsManagerClient.create();
+SecretCache cache = SecretCache.builder()
+    .client(client)
+    .defaultCacheToInMemory(true)
+    .build();
+String secretJson = cache.getSecretString("prod/orders/db");
+// parse JSON bang Jackson, tao DataSource, KHONG log gia tri secret
+~~~
+
+### Dual-credential window
+Khi rotation chay, mat khau moi duoc sinh va cap nhat vao RDS. Ban AWSCURRENT chuyen sang mat khau moi, mat khau cu duoc luu o ban AWSPREVIOUS trong mot khoang thoi gian (vi du 24 gio). Ung dung van dung mat khau cu trong khoang do, co thoi gian de refresh cache. Sau khi khoang du ket thuc, mat khau cu bi xoa. Ung dung phai refresh secret (qua caching client TTL hoac @RefreshScope) de nhan mat khau moi, khong can reset.
+
+### Loi hay gap
+- **Cache secret ma khong bao gio refresh.** Trieu chung: sau lan rotation dau tien, ung dung van dung mat khau cu, RDS tu choi, loi dang nhap hang tram. Cach tranh: dung caching client co TTL, hoac @RefreshScope + actuator /refresh de reload secret trong runtime.
+- **Luu secret trong bien moi truong task definition.** Trieu chung: mat khau hien trong CloudFormation/console, bot quet co the lay. Cach tranh: dung secret reference (ECS/Lambda tu inject tu Secrets Manager/Parameter Store), khong luu plaintext.
+- **Quen exception khi mat khau cu het han.** Trieu chung: sau khoang dual-credential ket thuc, ung dung van dung mat khau cu, loi dang nhap. Cach tranh: neu loi xac thuc, goi lai Secrets Manager de lay mat khau moi va tao lai DataSource.
+
+### Vi du doi thuc
+He thong don hang su dung RDS PostgreSQL, mat khau luu trong Secrets Manager, bat rotation moi 30 ngay. Ban dau doi lay secret mot lan khi khoi dong va luu trong bien moi truong, khong refresh. Sau lan rotation dau tien, ung dung bi loi dang nhap hang tram trong 3-5 phut. Doi them caching client voi TTL 5 phut, va neu loi xac thuc thi goi lai Secrets Manager va tao lai DataSource. Ket qua: lan rotation sau khong gay gian doan, loi dang nhap ve 0, va doi khong can reset ung dung moi moi lan doi mat khau.
+
+### Tra loi mau khi phan vien
+"Toi dung AWS Secrets Manager caching client de lay secret mot lan va cache trong bo nho co TTL, client tu refresh khi co ban moi; ung dung Spring Boot doc secret vao khoi dong, neu loi xac thuc thi goi lai Secrets Manager va tao lai DataSource, khong can reset. Rotation RDS tao mat khau moi, cap nhat database, va giu cung mat khau cu va moi (dual-credential) trong khoang chuyen giao nen ung dung khong gian doan. Khong luu secret trong bien moi truong/task definition vi gia tri bi lut qua CloudFormation, console va dump tien trinh; thay vao do dung secret reference de ECS/Lambda tu inject tu Secrets Manager."
+> Senior tip: secret la du lieu co vong duong, thiet ke nhu du lieu co vong duong: co chu so huu, co lich rotation, co bao dong sau het han, va co duong lui khi rotation loi. Khong bien "lay secret luc khoi dong" thanh "cache den khi reset".
+  `,
+  follow: [
+    'Caching client cua Secrets Manager refresh tu dong nhu the no?',
+    'Ung dung reload secret trong runtime khong reset duoc bang gi?',
+    'Tai sao khong luu secret trong bien moi truong task definition?'
+  ],
+  tags: ['Secrets Manager', 'rotation', 'caching client', 'Spring Boot', 'dual-credential']
+},
+{
+  id: 'aws-073',
+  topic: 'aws',
+  level: 'lead',
+  q: 'Giam dao chi phi AWS cho he Java: ban trien khai showback/chargeback theo doi, tag bat buoc, Cost Anomaly Detection, va quyet dinh cam ket Savings Plans bao nhieu phan tram chi phi on dinh, khi nao khong nen cam ket?',
+  a: `**Tom tat:** Showback bao chi phi theo doi de moi nguoi thay minh dung nhieu; chargeback chinh xac hon bang viec ghi vao loi nhu cua doi. Tag bat buoc (owner, service, env) la tien de, tai nguyen khong tag bi canh bao ho khong duoc cap. Cost Anomaly Detection canh bao trong ngay khi chi phi vuot bo. Savings Plans chi cam ket phan baseline on dinh sau khi right-sizing, thong thuong 60-80% chi phi compute 24/7; khong cam ket phan bien dong va workload chua on dinh.
+
+### Hieu nhanh
+Hay tuong tuong chi phi AWS giong hoa don dien nuoc cua mot toa nha lon: neu khong co dong ho chung chung (tag), khong ai biet phong nao tieu tieu nhieu va khong ai thich thiet kiem. Showback la in hoa don cho tung phong de nguoi dung thay so con so. Chargeback la tien chinh thuc chuyen khoan loi nhu cua phong do. Tag bat buoc la quy tac "khong tag khong duoc may", de biet may nao thuoc phong nao. Cost Anomaly Detection la chuong bao dong khi hoa don tang vuot bo so voi thoi quen. Savings Plans giong dong tien dien tra truoc mot nam de duoc giam gia, chi nen dong tien phan chac chan se dung.
+
+### Thuat ngu
+- Showback: bao chi phi thong bao cho doi (khong chuyen tien chinh thuc).
+- Chargeback: chi phi duoc ghi chuan xac vao loi nhu cua doi, anh huong P&L.
+- Tag: nhan gắn voi tai nguyen AWS (owner, service, env, cost-center).
+- Cost Allocation Tag: tag duoc bat trong Billing de chia chi phi theo nhom.
+- Cost Explorer: cong cu xem va phan tich chi phi AWS theo dich vu, tai khoan, tag.
+- AWS Budgets: dat ngưỡng chi phi va canh bao khi vuot.
+- Cost Anomaly Detection: phat hien chi phi vuot bo so voi lich su va canh bao qua email/SNS.
+- Savings Plans: cam ket chi tieu theo thoi gian (1 hoac 3 nam) de duoc giam gia, linh hoa hon Reserved Instances.
+- Compute Optimizer: phan tich bo nho va goi y kich thuct EC2, ECS, Lambda, EBS phu hop.
+
+### Co che chung buoc
+**Trien khai tag bat buoc:** dung Tag Policy/SCP de bat buoc tag owner, service, env, cost-center. Tai nguyen khong duoc tag bi canh bao ho khong duoc cap cong cu.
+**Showback:** lay du lieu tu Cost Explorer hoac CUR qua Athena, bao cao chi phi theo doi moi thang, gui cho moi doi.
+**Chargeback:** chi phi duoc chuan xac vao loi nhu cua doi, doi phai tra tien cho phan cua minh.
+**Canh bao:** dat AWS Budgets theo doi va Cost Anomaly Detection canh bao trong ngay khi chi phi vuot bo.
+**Cam ket Savings Plans:** sau khi right-sizing (giam instance thua), tinh toan phan baseline on dinh (chay 24/7), cam ket 60-80% chi phi compute do, khong cam ket phan bien dong.
+
+### Code: gan tag qua SDK Java
+~~~java
+CreateTagsRequest yeuCau = CreateTagsRequest.builder()
+    .resources("i-0abc123def456")
+    .tags(Tag.builder().key("owner").value("team-payments").build(),
+        Tag.builder().key("service").value("order-api").build(),
+        Tag.builder().key("env").value("prod").build())
+    .build();
+ec2.createTags(yeuCau);
+~~~
+
+### Quy et cam ket Savings Plans
+1. Right-sizing truoc: dung Compute Optimizer va CloudWatch de tim instance thua, giam xuong muc thuc te + bo dem 20-30%.
+2. Tinh phan baseline: chi phi compute 24/7 sau khi right-sizing, it nhat 2-4 thang du lieu.
+3. Cam ket 60-80% phan baseline bang Compute Savings Plans 1 nam (linh hoa hon EC2 Instance Savings Plans, ap dung ca Fargate, Lambda).
+4. Khong cam ket phan bien dong (tang giam theo thoi gian) va workload chua on dinh.
+5. Kiem tra lai moi quy: neu bo phan baseline thay doi, dieu chinh cam ket.
+
+### Loi hay gap
+- **Cam ket Savings Plans truoc khi right-sizing.** Trieu chung: cam ket chi tieu cho instance thua, bo tien. Cach tranh: giam instance truoc, cam ket sau.
+- **Khong co tag, khong biet ai tieu tieu.** Trieu chung: toan bo chi phi o phan "khong ro chu so huu", khong ai chiu trach nhiem. Cach tranh: tag bat buoc ngay tu dau, tai nguyen khong tag bi canh bao.
+- **Cam ket phan bien dong.** Trieu chung: sau mo thang phai chuyen vung/instance family, tien cam ket tro thanh tien chet. Cach tranh: chi cam ket phan chac chan se dung, ưu tiên Compute Savings Plans.
+- **Khong co bao dong chi phi vuot bo.** Trieu chung: biet hoa don tang khi cuoi thang, muon tai. Cach tranh: Cost Anomaly Detection canh bao trong ngay.
+
+### Vi du doi thuc
+Mot cong ty chay 40 dich vu ECS Fargate, moi dich vu chay 2 task (1 vCPU, 2 GB) 24/7, tong chi phi compute duong 12.000 USD/thang. Ban dau doi chon instance type theo cam giac va khong doc. Sau 6 thang, chi phi tang 40% nhung luong khong tang; doi khong biet dich vu nao thua. Doc: Compute Optimizer va CloudWatch phat hiện 60% task chay CPU trung binh 10-20% va bo nho duoi 30%, nhieu dich vu co the chay 0,5 vCPU/1 GB; ngoai ra 15 dich vu chi chay tu 8h-17h cac thu trong tuan nhung task van chay 24/7. Nguyen nhan: khong right-sizing truoc khi cam ket Savings Plans, va khong tu dong scale theo thoi gian. Xu ly: right-sizing 60% task xuong 0,5 vCPU/1 GB (giam 40% chi phi compute), them Application Auto Scaling theo CPU va schedule-based scaling cho 15 dich vu (tat task ngoai gio lam), sau khi baseline on dinh mua Compute Savings Plans 1 nam cho phan 24/7 (giam them 35%). Ket qua: chi phi compute tu 12.000 USD xuong con 4.800 USD/thang (giam 60%), va khong can chuyen Graviton ngay vi sau right-sizing da dat muc tieu; sau do test Graviton tren 1 dich vu: cung luong thong, CPU giam 25% nen doi quyet dinh chuyen dan trong quy sau.
+
+### Tra loi mau khi phan vien
+"Toi giam dao chi phi AWS theo thu tu: right-sizing truoc (doc va cat thua), sau do Graviton (ARM, thong thuong giam 20% va nhanh hon cho Java), roi Savings Plans cho baseline on dinh, Spot cho worker va batch, cuoi cung la kien truc (caching, serverless). Quan trong la doc truoc khi lam: dung Compute Optimizer va CloudWatch. Showback bao chi phi theo doi, chargeback ghi vao loi nhu cua doi, tag bat buoc (owner, service, env) de biet tai nguyen thuoc doi nao, Cost Anomaly Detection canh bao trong ngay khi chi phi vuot bo. Savings Plans chi cam ket phan baseline on dinh (thong thuong 60-80% chi phi compute 24/7) sau khi right-sizing, khong cam ket phan bien dong hoac workload chua on dinh."
+> Senior tip: khong mua Savings Plans khi chua right-sizing. Nhieu he dang chay instance lon goba hai can than can than; cat truoc co the giam 30-50% khong can cam ket gi.
+  `,
+  follow: [
+    'Savings Plans khac Reserved Instances o diem nao?',
+    'Tag bat buoc tac dong chi phi nhu the no?',
+    'Khi nao Cost Anomaly Detection canh bao sai (false positive)?'
+  ],
+  tags: ['cost', 'Savings Plans', 'tag', 'showback', 'chargeback', 'lead']
+},
 )
