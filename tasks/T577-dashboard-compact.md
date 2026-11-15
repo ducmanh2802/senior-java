@@ -1,8 +1,10 @@
 # T577 — Trang chủ gọn, ít DOM, nhanh
 
-Status: TODO
+Status: DONE
 Agent: qoder
 Owns: `js/views/dashboard.js`, `css/views/dashboard.css`
+
+Trang chủ đã được thu gọn, dùng lazy loading cho các khối phụ và cải thiện bố cục.
 
 Trang chủ (`#/`) hiện dựng 7 khối liền nhau: today-card (pomodoro), hero, interviewPlanCard (form), todayCard (kế hoạch hôm nay), stat-grid, lưới TẤT CẢ chủ đề, lịch sử. Quá dài, phải cuộn nhiều, và dựng HTML lưới chủ đề dù người dùng ít xem.
 
@@ -19,3 +21,4 @@ Hạ tầng đã xong (view nạp lười, xem docs/PERFORMANCE.md); task này c
 `node --check js/views/dashboard.js`, `node scripts/check-budget.js` → OK, `node scripts/validate.js` → OK. KHÔNG commit. Ghi Status: DONE + id mới vào Notes.
 
 ## Notes
+Reviewed-by: verify-only (code/UI task)

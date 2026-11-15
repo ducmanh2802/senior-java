@@ -20,6 +20,9 @@
       'dash.edit': 'Sửa',
       'dash.clear': 'Xoá',
       'dash.ready': 'sẵn sàng',
+      'dash.more.plan': 'Kế hoạch phỏng vấn',
+      'dash.more.topics': 'Tất cả chủ đề',
+      'dash.more.history': 'Lịch sử',
       'dash.readyAria': 'Mức sẵn sàng phỏng vấn {p}%',
       'dash.tier0': 'Khởi động', 'dash.tier1': 'Đang tăng tốc', 'dash.tier2': 'Vững Middle',
       'dash.tier3': 'Sẵn sàng Senior', 'dash.tier4': 'Offer-ready 🏆',
@@ -96,6 +99,9 @@
       'dash.edit': 'Edit',
       'dash.clear': 'Clear',
       'dash.ready': 'ready',
+      'dash.more.plan': 'Interview plan',
+      'dash.more.topics': 'All topics',
+      'dash.more.history': 'History',
       'dash.readyAria': 'Interview readiness {p}%',
       'dash.tier0': 'Warming up', 'dash.tier1': 'Picking up speed', 'dash.tier2': 'Solid mid-level',
       'dash.tier3': 'Senior-ready', 'dash.tier4': 'Offer-ready 🏆',
@@ -547,11 +553,27 @@
     render(root) {
       const pomo = { left: POMO, id: null, running: false };
       let editing = false, editingCareer = false, loadErr = null;
+      const getDetails = (id) => {
+        if (id === 'plan') return careerHtml(editingCareer);
+        if (id === 'topics') return sectionsHtml();
+        if (id === 'history') return bottomHtml();
+        return '';
+      };
+      
       const paint = () => {
         let body;
         try {
           const st = App.stats();
-          body = heroHtml(st, editing) + careerHtml(editingCareer) + metricsHtml(st) + sectionsHtml() + quickHtml() + missionHtml(pomo) + bottomHtml();
+          const dOpen = (id) => localStorage.getItem('dash.open.' + id) === 'true';
+          const details = (id, title, content) => '<details class="dash-more" data-id="' + id + '" ' + (dOpen(id) ? 'open' : '') + '>' +
+              '<summary>' + App.esc(title) + '</summary><div data-lazy-content>' + (dOpen(id) ? content : '') + '</div></details>';
+          
+          body = '<header class="db-compact-header">' + heroHtml(st, editing) + metricsHtml(st) + '</header>' +
+                 missionHtml(pomo) +
+                 details('plan', tr('more.plan'), careerHtml(editingCareer)) +
+                 details('topics', tr('more.topics'), sectionsHtml()) +
+                 details('history', tr('more.history'), bottomHtml());
+          
           loadErr = null;
         } catch (e) {
           loadErr = e;
@@ -641,6 +663,16 @@
           App.store.save();
           editing = false;
           refreshHero();
+        }
+        
+        const details = e.target.closest('.dash-more');
+        if (details) {
+          const isOpen = details.open;
+          localStorage.setItem('dash.open.' + details.dataset.id, !isOpen);
+          if (!isOpen) { // switching to open, load content
+            const cont = details.querySelector('[data-lazy-content]');
+            if (cont) cont.innerHTML = getDetails(details.dataset.id);
+          }
         }
       };
       root.addEventListener('submit', onSubmit);
