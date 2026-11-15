@@ -4355,9 +4355,9 @@ Một startup bị đúng tình huống này: key admin của một dev nằm tr
 5. Nếu heap giữ 25% trên container lớn, GC chạy liên tục, ứng dụng đứng lại mỗi lần dọn rác, response p99 xấu dù container không chết.
 
 ### Cấu hình Java
-~~~java
-# Truyen vao Dockerfile hoac task definition ECS/EKS
-# Container limit 1 GB => heap khoang 768 MB (75%), con lai cho metaspace, stack, off-heap
+~~~bash
+# Truyền vào Dockerfile hoặc task definition ECS/EKS
+# Container limit 1 GB => heap khoảng 768 MB (75%), còn lại cho metaspace, stack, off-heap
 ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75.0", "-XX:+UseG1GC", "-jar", "app.jar"]
 ~~~
 MaxRAMPercentage=75.0 nghia la heap bang 75% bo nho container ma JVM nhin thay. Voi Fargate 1 GB: heap khoang 768 MB, con lai khoang 256 MB cho metaspace (Spring nap hang nghin class), stack cua hang tram luong va code cache. Neu dat 100%, container chap chuan bi OOMKill vi bo nho ngoai heap khong duoc tinh vao heap.
@@ -4996,7 +4996,7 @@ Hay tuong tuong lambda la nhan vien thoi vu: goi lan dau (cold start) nhan vien 
 - Init Duration: thoi gian khoi tao moi truong (tai code, khoi JVM, chay init), chi co trong dong REPORT cua lan cold start.
 - Restore Duration: thoi gian khoi phuc tu anh chup SnapStart, thap hon Init Duration nhieu.
 - Provisioned Concurrency: so luong moi truong da duoc khoi tao san sang, tra tien cho thoi gian cung cap.
-- VPC ENI: the mang ao gắn voi Lambda khi goi vao VPC, lam them thoi gian khoi moi truong.
+- VPC: Lambda khi gọi vào VPC cần kết nối tới các tài nguyên trong VPC (RDS, Redis…). Mỗi môi trường mới phải tạo kết nối mạng (trước đây là ENI, nay là hyperplane ENI), làm thêm thời gian khởi động. Nếu không cần truy cập tài nguyên trong VPC, giữ Lambda ngoài VPC để tránh phần này.
 
 ### Co che khi cold start van xay ra
 1. **Goi qua $LATEST:** moi lan co moi truong moi, Lambda chay init tu dau, khong co Restore Duration. Cach tranh: publish version, goi qua alias hoac version da publish.
