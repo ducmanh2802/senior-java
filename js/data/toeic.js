@@ -2844,4 +2844,340 @@ Thomas Nguyen`,
     "travel"
   ]
 },
+{
+  id: "toeic-s3-015",
+  part: "s3",
+  context: "A property management company is asking people who are looking for a new apartment about their search process. You are answering as someone who is currently searching.",
+  questions: [
+    "What is the most important factor when you choose an apartment?",
+    "How do you usually find apartments that are available for rent?",
+    "Some landlords now offer virtual tours instead of in-person viewings. What is your opinion of this option?"
+  ],
+  samples: [
+    "For me, the location is the most important. I need to be close to a metro station so that my commute to work is under thirty minutes, and I also want a supermarket and a pharmacy within walking distance.",
+    "I usually check two or three rental websites every evening, and I also follow a couple of local Facebook groups where landlords post directly. When I see something that matches my budget, I contact the agent immediately because good apartments go very fast.",
+    "I think virtual tours are useful for a first look, especially if you live in another city and cannot travel easily. However, I would never sign a lease without visiting in person, because photos and videos do not show the real noise level, the water pressure, or the smell of the building. I would use a virtual tour to make a shortlist, and then book real viewings for my top two or three choices."
+  ],
+  tips: [
+    "Câu 1 cần nêu tiêu chí cụ thể: location, budget, layout, natural light, pet-friendly — rồi thêm một lý do thực tế như commute time.",
+    "Câu 2 hỏi cách tìm kiếm: dùng hiện tại đơn I check, I follow, I contact — hành động lặp lại.",
+    "Câu 3 là câu cân bằng: I think it is useful for …, but I would never … without … — cấu trúc này rất an toàn cho phần opinion."
+  ],
+  tags: [
+    "housing",
+    "rental"
+  ]
+},
+{
+  id: "toeic-s3-016",
+  part: "s3",
+  context: "A fitness centre is collecting feedback from people who have recently joined a gym. You are answering as a member who signed up two months ago.",
+  questions: [
+    "What made you decide to join this fitness centre?",
+    "How often do you go to the gym each week?",
+    "The centre is planning to add more group classes in the early morning. What would you suggest to make the classes popular?"
+  ],
+  samples: [
+    "I chose this gym because it is right next to my office, so I can go during my lunch break or straight after work. The membership fee was also reasonable, and they had a free trial week that let me try the equipment before I committed.",
+    "I go three times a week, usually on Monday, Wednesday, and Friday. On the other days I am either too busy or I do some light stretching at home instead.",
+    "I would suggest three things. First, offer a variety of class types, such as yoga, HIIT, and cycling, so people can choose what fits their goal. Second, keep the class size small, around ten to twelve people, so the instructor can correct everyone's form. Finally, make it easy to book through the app and send a reminder fifteen minutes before the class starts, because busy members often forget."
+  ],
+  tips: [
+    "Câu 1 dùng cấu trúc I chose … because …, so I can … — giải thích lý do và lợi ích cụ thể.",
+    "Câu 2 trả lời số lượng và ngày cụ thể: three times a week, usually on Monday, Wednesday, and Friday.",
+    "Câu 3 dùng First, Second, Finally để chia rõ ý; cụm hay dùng: variety of class types, keep the class size small, book through the app, send a reminder."
+  ],
+  tags: [
+    "fitness",
+    "gym"
+  ]
+},
+{
+  id: "toeic-s3-017",
+  part: "s3",
+  context: "A food delivery platform is asking its users about their ordering habits. You are answering as a customer who orders several times a week.",
+  questions: [
+    "How often do you order food for delivery?",
+    "What do you look for when you choose a restaurant on the app?",
+    "The platform is thinking of adding a subscription that gives free delivery for a monthly fee. Would you sign up, and why?"
+  ],
+  samples: [
+    "About four times a week, mostly for dinner on weekdays when I finish work late. On weekends I usually cook at home or go out with friends, so I rarely order then.",
+    "I check the delivery time first — if it says more than forty minutes I usually skip it. Then I look at the rating and the number of recent reviews, and I also check whether they have a minimum order amount for free delivery.",
+    "I would probably sign up, because I order often enough that the monthly fee would pay for itself. For example, if the fee is ten dollars a month and delivery normally costs three dollars, I only need four orders to break even. However, I would want the subscription to work with all restaurants on the app, not just a selected list, and I would want to cancel anytime without a penalty."
+  ],
+  tips: [
+    "Câu 1: dùng tần suất cụ thể about four times a week, kèm bối cảnh mostly for dinner on weekdays.",
+    "Câu 2: liệt kê tiêu chí theo thứ tự quan trọng — delivery time, rating, reviews, minimum order.",
+    "Câu 3: tính toán nhanh break even để trả lời có số liệu; thêm điều kiện I would want … to work with all restaurants, not just a selected list."
+  ],
+  tags: [
+    "food delivery",
+    "app"
+  ]
+},
+{
+  id: "toeic-s3-018",
+  part: "s3",
+  context: "A community centre is asking local residents about events and activities in the neighbourhood. You are answering as someone who has lived in the area for several years.",
+  questions: [
+    "What kind of community events do you usually attend?",
+    "How do you find out about events happening nearby?",
+    "The centre wants to organise more events for young professionals. What would you suggest?"
+  ],
+  samples: [
+    "I usually go to the weekend farmers market and the summer street festival. I also joined a neighbourhood cleanup last spring, which was a good way to meet people who live on my street.",
+    "Mostly through the community Facebook group and the notice board at the library. Sometimes I see posters at the local coffee shop, and a few neighbours share events in our building's chat group.",
+    "I would suggest evening workshops after work hours, such as a cooking class, a basic home repair session, or a wine tasting with a local shop. Young professionals are busy during the day, so a two-hour event starting at seven in the evening works best. I would also keep the price low, around ten to fifteen dollars, and offer a small discount if someone brings a friend, because people are more likely to come when they know someone else there."
+  ],
+  tips: [
+    "Câu 1: nêu sự kiện cụ thể farmers market, street festival, neighbourhood cleanup — tên riêng giúp câu trả lời thật.",
+    "Câu 2: kênh thông tin Facebook group, notice board, posters, chat group — dùng mostly through, sometimes, a few neighbours share.",
+    "Câu 3: đề xuất cụ thể evening workshops, cooking class, home repair session; nêu giờ 7 p.m., giá 10–15 dollars, discount for bringing a friend."
+  ],
+  tags: [
+    "community",
+    "events"
+  ]
+},
+{
+  id: "toeic-s3-019",
+  part: "s3",
+  context: "A home repair service is asking customers about their experience with maintenance and repairs. You are answering as a homeowner who recently had a plumbing issue fixed.",
+  questions: [
+    "What kind of repair do you most often need at home?",
+    "How do you choose a repair person or company?",
+    "Some companies now offer a yearly maintenance plan for a fixed fee. What would you consider before signing up?"
+  ],
+  samples: [
+    "Plumbing problems, mainly. Our building is quite old, so we often have a leaking tap or a blocked drain. Last month the kitchen sink stopped draining completely, and we had to call someone the same day.",
+    "I usually ask a neighbour for a recommendation, because I trust their experience more than online reviews. If nobody knows anyone, I check the ratings on a local services app and look for someone who offers a clear price before they start the work.",
+    "I would look at three things. First, what is actually included — does it cover emergency calls, parts, and labour, or only the annual inspection? Second, how does the fixed fee compare to paying per visit over a normal year? And third, is there a contract lock-in, or can I cancel if the service is not good? I would only sign up if the plan covers emergencies and the price is lower than two normal repair visits."
+  ],
+  tips: [
+    "Câu 1: nêu vấn đề phổ biến plumbing problems, leaking tap, blocked drain; thêm bối cảnh building is quite old.",
+    "Câu 2: cách chọn ask a neighbour for a recommendation, check ratings on a local services app, look for clear price upfront.",
+    "Câu 3: phân tích ba yếu tố what is included, compare to paying per visit, contract lock-in — đây là cách suy nghĩ thực tế khi xem gói dịch vụ."
+  ],
+  tags: [
+    "home repair",
+    "maintenance"
+  ]
+},
+{
+  id: "toeic-s3-020",
+  part: "s3",
+  context: "A courier company is surveying people who send and receive packages regularly. You are answering as someone who shops online frequently and sometimes sends parcels to family.",
+  questions: [
+    "How often do you receive a package at home?",
+    "What do you do when you are not home to accept a delivery?",
+    "The company is testing a locker system where you can pick up parcels at any time. Would you use it, and what would you want to know first?"
+  ],
+  samples: [
+    "Two or three times a week, mostly things I order online. I also send a box to my parents about once a month, usually with books or clothes that do not fit anymore.",
+    "If I know the courier is coming, I ask a neighbour to take it for me. Otherwise, the driver usually leaves a note and I reschedule for the next day or go to the depot myself, which takes about twenty minutes by bus.",
+    "Yes, I would use it, especially for packages that do not fit in the mailbox. Before I decide, I would want to know three things: where the nearest locker is and whether it is on my way home, how many days the package stays in the locker before it is returned, and whether there is a size limit for large boxes. If the locker is convenient and keeps the parcel for at least three days, I would definitely switch to it."
+  ],
+  tips: [
+    "Câu 1: tần suất two or three times a week, phân loại mostly things I order online, also send … once a month.",
+    "Câu 2: giải pháp thực tế ask a neighbour, reschedule, go to the depot — dùng driver usually leaves a note.",
+    "Câu 3: nêu điều kiện trước when I decide, I would want to know three things; liệt kê location, storage days, size limit — rất tự nhiên khi cân nhắc dịch vụ mới."
+  ],
+  tags: [
+    "courier",
+    "delivery"
+  ]
+},
+{
+  id: "toeic-s3-021",
+  part: "s3",
+  context: "An airport is asking travellers about their experience at the terminal. You are answering as someone who flew internationally last month.",
+  questions: [
+    "How early do you usually arrive at the airport before an international flight?",
+    "What do you do while waiting for your flight?",
+    "The airport is planning to add more self-service kiosks for check-in and bag drop. What is your opinion?"
+  ],
+  samples: [
+    "I usually arrive three hours before departure. The airline recommends two hours, but I prefer to have extra time in case the security line is long, and I also like to have a coffee before I board.",
+    "After security, I usually walk around the duty-free shops to see if there is anything interesting, and then I find a seat near my gate and read a book or listen to a podcast until boarding starts.",
+    "I think more kiosks are a good idea because they reduce the queue at the counters. However, the machines must be easy to use for people who are not comfortable with technology, and there should still be staff available to help with special cases, such as oversized luggage or a name mismatch on the ticket. If the kiosk prints the bag tag clearly and tells you exactly where to drop the bag, it saves a lot of time."
+  ],
+  tips: [
+    "Câu 1: three hours before departure, thêm lý do extra time in case the security line is long.",
+    "Câu 2: hoạt động sau security — walk around duty-free shops, find a seat, read a book, listen to a podcast.",
+    "Câu 3: I think … are a good idea because …; however, the machines must be easy to use … and there should still be staff available … — cân bằng lợi ích và rủi ro."
+  ],
+  tags: [
+    "airport",
+    "travel"
+  ]
+},
+{
+  id: "toeic-s3-022",
+  part: "s3",
+  context: "A car-sharing service is asking users about their experience with short-term rentals. You are answering as someone who uses the service for weekend trips.",
+  questions: [
+    "How often do you use a car-sharing service?",
+    "What do you check before you start a trip?",
+    "The company is thinking of offering a monthly subscription with a discount on hourly rates. Would this change how often you use the service?"
+  ],
+  samples: [
+    "About twice a month, usually on weekends when I need to go somewhere that is not convenient by train. Last month I used it to visit a friend in the countryside and to pick up a large piece of furniture.",
+    "I always check the fuel level or battery charge, and I take a quick photo of any scratch or dent on the car before I drive away. I also make sure the insurance details are in the glove compartment, just in case.",
+    "It would not change my frequency much, because I only need a car for specific trips, not on a regular schedule. A subscription makes sense for someone who drives every week, but for me the pay-per-hour model is already cheaper. I would consider it only if the subscription included free cancellation and worked across different cities, so I could use it when I travel for work."
+  ],
+  tips: [
+    "Câu 1: tần suất about twice a month, bối cảnh usually on weekends, ví dụ cụ thể visit a friend, pick up furniture.",
+    "Câu 2: quy trình kiểm tra check the fuel level or battery charge, take a photo of any scratch, insurance details in the glove compartment.",
+    "Câu 3: so sánh pay-per-hour vs subscription, nêu điều kiện would consider it only if … included free cancellation and worked across different cities."
+  ],
+  tags: [
+    "car sharing",
+    "transport"
+  ]
+},
+{
+  id: "toeic-s4-015",
+  part: "s4",
+  info: "Apartment Lease Terms — Oakwood Residences\n\nMonthly rent: $1,450 (one bedroom), $1,850 (two bedrooms)\nSecurity deposit: one month's rent\nLease length: 12 months minimum\n\nIncluded in rent: water, trash collection, building Wi-Fi\nTenant pays: electricity, gas, internet upgrade\n\nMove-in fees: $150 administration fee, $50 key deposit (refundable)\nParking: $75 per month (one assigned space, first come first served)\nPet policy: cats allowed, dogs under 15 kg with $200 pet deposit\n\nMaintenance requests: submit via resident portal, response within 24 hours\nLease renewal: 60 days notice required, rent increase up to 3%\n\nContact: leasing@oakwoodresidences.com or call 555-0188",
+  questions: [
+    "How much is the monthly rent for a two-bedroom apartment?",
+    "What is the pet policy for dogs?",
+    "Please tell me the move-in fees, the parking cost, and what utilities are included in the rent."
+  ],
+  samples: [
+    "A two-bedroom apartment costs one thousand eight hundred fifty dollars per month. The one-bedroom is one thousand four hundred fifty dollars.",
+    "Dogs are allowed if they weigh under fifteen kilograms, and there is a two hundred dollar pet deposit. Cats are allowed with no weight limit and no extra deposit.",
+    "The move-in fees are one hundred fifty dollars for administration and fifty dollars for the key deposit, which is refundable when you return the key. Parking is seventy-five dollars per month for one assigned space. Utilities included in the rent are water, trash collection, and building Wi-Fi. You pay for electricity, gas, and any internet upgrade yourself."
+  ],
+  tips: [
+    "Đọc giá tiền rõ: one thousand four hundred fifty, one thousand eight hundred fifty, seventy-five dollars.",
+    "Câu 3 cần bao gồm move-in fees (admin + key deposit), parking cost, và utilities included — nhóm theo loại chi phí.",
+    "Từ vựng: security deposit, lease length, move-in fees, assigned space, pet deposit, maintenance request, lease renewal."
+  ],
+  tags: [
+    "housing",
+    "lease"
+  ]
+},
+{
+  id: "toeic-s4-016",
+  part: "s4",
+  info: "FitLife Gym — Membership Options\n\nBasic: $35 per month\n- Access to cardio and weight area, 6:00 a.m. to 10:00 p.m.\n- Locker rental: $5 extra per month\n\nStandard: $55 per month\n- Everything in Basic, plus: all group classes, sauna, and steam room\n- One free personal training session per month\n- Locker included\n\nPremium: $85 per month\n- Everything in Standard, plus: 24/7 access, swimming pool, and tennis courts\n- Two free personal training sessions per month\n- Priority booking for popular classes\n- Guest pass: two free guest visits per month\n\nAll plans: $50 joining fee (waived for annual payment)\nAnnual payment: 10% discount\nCorporate discount: 15% off for companies with 5+ employees\n\nSign up at the front desk or fitlifegym.com\nFree trial: one week, no commitment",
+  questions: [
+    "What does the Standard membership include that the Basic does not?",
+    "How much is the joining fee, and when is it waived?",
+    "Please tell me the price and the main differences between the three membership levels."
+  ],
+  samples: [
+    "The Standard membership includes all group classes, the sauna, and the steam room, which the Basic does not have. It also comes with one free personal training session per month and a locker, while the Basic charges five dollars extra for the locker.",
+    "The joining fee is fifty dollars, and it is waived if you pay for the whole year upfront. You also get a ten percent discount with annual payment.",
+    "The Basic plan is thirty-five dollars per month and gives you access to the cardio and weight area from six a.m. to ten p.m. The Standard is fifty-five dollars and adds group classes, sauna, steam room, one free training session, and a locker. The Premium is eighty-five dollars and adds twenty-four-hour access, the swimming pool, tennis courts, two free training sessions, priority booking, and two guest passes per month."
+  ],
+  tips: [
+    "Khi so sánh các gói, dùng Basic gives …, Standard adds …, Premium adds … — cấu trúc này giúp người nghe thấy rõ sự nâng cấp.",
+    "Đọc giá: thirty-five dollars, fifty-five dollars, eighty-five dollars per month; fifty dollars joining fee.",
+    "Từ vựng: group classes, sauna, steam room, personal training session, locker rental, priority booking, guest pass, annual payment, corporate discount."
+  ],
+  tags: [
+    "fitness",
+    "gym membership"
+  ]
+},
+{
+  id: "toeic-s4-017",
+  part: "s4",
+  info: "QuickBite Food Delivery — Monthly Pass\n\nPrice: $9.99 per month (first month free for new users)\nBenefits:\n- Free delivery on orders over $15 from any restaurant\n- Exclusive discounts: 10% off at partner restaurants (marked with a gold badge)\n- Priority support: dedicated chat line, average response under 2 minutes\n- No surge pricing during peak hours (normally +$2 to +$5)\n\nTerms:\n- Auto-renews monthly, cancel anytime in the app\n- One pass per account, not transferable\n- Minimum order $15 for free delivery still applies\n- Partner restaurant list updated weekly\n\nCurrent promotion: sign up by June 30 and get a $10 credit for your next order\nCustomer support: help@quickbite.com or in-app chat",
+  questions: [
+    "How much does the monthly pass cost, and is there a free trial?",
+    "What is the minimum order amount for free delivery with the pass?",
+    "Please tell me the main benefits of the pass, and the current promotion for new users."
+  ],
+  samples: [
+    "The pass costs nine dollars ninety-nine cents per month, and new users get the first month free. After that it auto-renews unless you cancel in the app.",
+    "The minimum order for free delivery is still fifteen dollars, even with the pass. The pass removes the delivery fee, but the restaurant's minimum does not change.",
+    "The main benefits are free delivery on orders over fifteen dollars from any restaurant, ten percent off at partner restaurants with the gold badge, priority support with a dedicated chat line, and no surge pricing during peak hours. The current promotion for new users who sign up by June thirtieth is a ten dollar credit for your next order."
+  ],
+  tips: [
+    "Đọc giá chính xác: nine dollars ninety-nine cents per month, ten dollar credit, fifteen dollars minimum order.",
+    "Câu 3 cần liệt kê đủ bốn lợi ích: free delivery, exclusive discounts, priority support, no surge pricing — và kèm promotion hiện tại.",
+    "Từ vựng: monthly pass, auto-renew, surge pricing, peak hours, partner restaurant, exclusive discount, priority support, credit."
+  ],
+  tags: [
+    "food delivery",
+    "subscription"
+  ]
+},
+{
+  id: "toeic-s4-018",
+  part: "s4",
+  info: "SkyLink Airport Express — Train Schedule\n\nRoute: Airport Terminal 1 <-> City Central Station\nTravel time: 28 minutes\n\nFrequency:\n- Peak hours (6:00–9:00, 17:00–20:00): every 10 minutes\n- Off-peak: every 15 minutes\n- First train from airport: 4:45 a.m.\n- Last train from airport: 12:30 a.m.\n\nFares:\n- One way: $12.00 (adult), $6.00 (child 6–12), free (child under 6)\n- Round trip: $20.00 (adult), $10.00 (child)\n- Monthly pass: $180 (unlimited rides)\n- Group discount: 15% off for 4+ tickets bought together\n\nTickets: mobile app, ticket machines, or contactless card at gates\nFacilities: free Wi-Fi on board, luggage racks, priority seating\n\nService alerts: check skylinkexpress.com/alerts or follow @SkyLinkAlerts",
+  questions: [
+    "How long does the trip from the airport to the city centre take?",
+    "What is the price of a round-trip ticket for an adult?",
+    "Please tell me the train frequency during peak and off-peak hours, and the first and last train times from the airport."
+  ],
+  samples: [
+    "The trip takes twenty-eight minutes from Airport Terminal One to City Central Station. The train is direct, so you do not need to change.",
+    "A round-trip ticket for an adult costs twenty dollars. A one-way ticket is twelve dollars, so the round trip saves you four dollars.",
+    "During peak hours, which are six to nine in the morning and five to eight in the evening, trains run every ten minutes. Off-peak, they run every fifteen minutes. The first train from the airport leaves at four forty-five a.m., and the last one leaves at twelve thirty a.m., so there is service for almost the whole day."
+  ],
+  tips: [
+    "Đọc giờ rõ: four forty-five a.m., twelve thirty a.m., six to nine, five to eight.",
+    "Câu 3 cần bao gồm frequency peak/off-peak, first train, last train — nhóm theo frequency trước, giờ tàu sau.",
+    "Từ vựng: peak hours, off-peak, frequency, round trip, monthly pass, group discount, contactless card, luggage racks, service alerts."
+  ],
+  tags: [
+    "airport",
+    "train schedule"
+  ]
+},
+{
+  id: "toeic-s4-019",
+  part: "s4",
+  info: "HomeFix Appliance Repair — Service Information\n\nService hours: Monday to Saturday, 8:00 a.m. to 6:00 p.m.\nEmergency service: 24/7 for refrigerator, heating, and water heater breakdowns\n\nBooking: call 555-0166 or book online at homefixrepair.com\nOnline booking: choose appliance type, describe the problem, pick a time slot\nConfirmation: SMS and email within 15 minutes\n\nPricing:\n- Diagnostic fee: $49 (waived if you approve the repair)\n- Labour: $89 per hour (minimum one hour)\n- Parts: charged at cost plus 15%\n- Emergency surcharge: +$75 (nights, weekends, holidays)\n\nWarranty: 90 days on labour, 1 year on parts installed by HomeFix\nPayment: cash, card, or bank transfer\n\nWhat to have ready: appliance brand, model number, and a clear description of the issue",
+  questions: [
+    "What is the diagnostic fee, and when is it waived?",
+    "How much is the emergency surcharge, and when does it apply?",
+    "Please tell me the service hours, the pricing structure, and the warranty terms."
+  ],
+  samples: [
+    "The diagnostic fee is forty-nine dollars, and it is waived if you approve the repair. If you decide not to fix it, you only pay the forty-nine dollars for the visit.",
+    "The emergency surcharge is seventy-five dollars, and it applies to nights, weekends, and holidays. Normal service hours are Monday to Saturday, eight a.m. to six p.m., so anything outside that time counts as emergency.",
+    "Service hours are Monday to Saturday, eight a.m. to six p.m., with twenty-four-seven emergency service for refrigerators, heating, and water heaters. The diagnostic fee is forty-nine dollars, waived if you approve the repair. Labour is eighty-nine dollars per hour with a one-hour minimum. Parts are charged at cost plus fifteen percent. Emergency calls have a seventy-five dollar surcharge. The warranty is ninety days on labour and one year on parts installed by HomeFix."
+  ],
+  tips: [
+    "Đọc giá: forty-nine dollars, eighty-nine dollars per hour, fifteen percent, seventy-five dollars.",
+    "Câu 3 cần tổng hợp service hours, pricing (diagnostic, labour, parts, emergency), và warranty — nhóm rõ ràng từng nhóm thông tin.",
+    "Từ vựng: diagnostic fee, waived, labour, minimum one hour, at cost plus, surcharge, warranty, appliance, model number."
+  ],
+  tags: [
+    "home repair",
+    "appliance"
+  ]
+},
+{
+  id: "toeic-s4-020",
+  part: "s4",
+  info: "Riverside Community Centre — Autumn Class Schedule\n\nRegistration opens: Monday, 2 September, 9:00 a.m.\nClasses run: 16 September to 7 December (12 weeks)\n\nWeekly Classes:\n- Monday 7:00–8:30 p.m.  Beginner Yoga (Room A, $120 for 12 sessions)\n- Tuesday 6:30–8:00 p.m.  Cooking Basics (Kitchen Studio, $150 including ingredients)\n- Wednesday 7:00–8:30 p.m.  Digital Photography (Computer Lab, $130)\n- Thursday 7:00–8:30 p.m.  Creative Writing (Room B, $110)\n- Saturday 10:00–11:30 a.m.  Woodworking Basics (Workshop, $180 including materials)\n\nWeekend Workshops (single session, register separately):\n- 5 October, 1:00–4:00 p.m.  Home Repair Essentials ($45)\n- 19 October, 10:00 a.m.–1:00 p.m.  Autumn Baking ($55 including ingredients)\n- 2 November, 1:00–4:00 p.m.  Basic Car Maintenance ($40)\n\nDiscounts: 10% for seniors (65+), 15% for members\nRefund policy: full refund before second class, 50% before fourth class, no refund after\n\nContact: programs@riversidecc.org or 555-0155",
+  questions: [
+    "When does registration open for the autumn classes?",
+    "How much does the Saturday woodworking class cost, and what is included?",
+    "Please tell me the weekly class schedule, the prices, and the refund policy."
+  ],
+  samples: [
+    "Registration opens on Monday, the second of September, at nine a.m. Classes run for twelve weeks, from the sixteenth of September to the seventh of December.",
+    "The Saturday woodworking class costs one hundred eighty dollars for twelve sessions, and the price includes all materials. It runs from ten to eleven thirty in the morning.",
+    "There are five weekly classes. Monday at seven p.m. is Beginner Yoga for one hundred twenty dollars. Tuesday at six thirty is Cooking Basics for one hundred fifty dollars including ingredients. Wednesday at seven is Digital Photography for one hundred thirty dollars. Thursday at seven is Creative Writing for one hundred ten dollars. Saturday at ten is Woodworking Basics for one hundred eighty dollars including materials. The refund policy gives a full refund before the second class, fifty percent before the fourth class, and no refund after that."
+  ],
+  tips: [
+    "Đọc ngày tháng: second of September, sixteenth of September, seventh of December.",
+    "Câu 3 cần liệt kê 5 lớp theo thứ tự ngày, kèm giá và ghi chú included ingredients/materials, sau đó đọc refund policy theo mốc: before second class, before fourth class, after that.",
+    "Từ vựng: registration, weekly classes, weekend workshop, single session, including ingredients/materials, discount, refund policy, senior, member."
+  ],
+  tags: [
+    "community centre",
+    "classes"
+  ]
+},
 );
