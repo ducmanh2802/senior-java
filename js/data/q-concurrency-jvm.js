@@ -77,7 +77,7 @@ Một service Spring Boot xử lý webhook thanh toán. Team dùng cờ {{volati
     'Vì sao double-checked locking bắt buộc dùng {{volatile}}?',
     'Ví dụ một tình huống dùng {{volatile}} mà vẫn có race.'
   ],
-  tags: ['volatile', 'JMM', 'happens-before']
+  tags: ['volatile', 'JMM', 'happens-before', "core"]
 },
 {
   id: 'concurrency-002',
@@ -155,7 +155,7 @@ Một service inventory giữ tồn kho trong ConcurrentHashMap và dùng Reentr
     'StampedLock không reentrant — gây vấn đề gì khi refactor code cũ?',
     'Condition của ReentrantLock khác Object.wait/notify thế nào?'
   ],
-  tags: ['synchronized', 'ReentrantLock', 'ReadWriteLock', 'StampedLock'],
+  tags: ['synchronized', 'ReentrantLock', 'ReadWriteLock', 'StampedLock', "core"],
   refs: [
     { type: 'doc', title: 'ReentrantLock API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/locks/ReentrantLock.html' },
     { type: 'doc', title: 'StampedLock API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/locks/StampedLock.html' },
@@ -251,7 +251,7 @@ API search sản phẩm với core 4, max 8, queue 100. Một chiến dịch fla
     'Vì sao JDK check queue trước khi tạo thread vượt core?',
     'CallerRunsPolicy block Netty event loop — xử lý thế nào?'
   ],
-  tags: ['ThreadPoolExecutor', 'thread pool', 'sizing'],
+  tags: ['ThreadPoolExecutor', 'thread pool', 'sizing', "core"],
   refs: [
     { type: 'doc', title: 'ThreadPoolExecutor API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html' },
     { type: 'book', title: 'Java Concurrency in Practice', url: 'https://jcip.net/' },
@@ -341,7 +341,7 @@ Một batch import CSV dùng Executors.newCachedThreadPool để xử lý từng
     'CallerRunsPolicy dùng cùng Netty event loop — risk thế nào?',
     'Với virtual threads, còn cần giới hạn gì ngoài số thread?'
   ],
-  tags: ['Executors', 'thread pool', 'OOM'],
+  tags: ['Executors', 'thread pool', 'OOM', "core"],
   refs: [
     { type: 'doc', title: 'ThreadPoolExecutor API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html' },
     { type: 'doc', title: 'Executors API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/Executors.html' },
@@ -427,7 +427,7 @@ Endpoint tổng hợp đơn hàng gọi 3 service: price (120 ms), inventory (80
     'thenApply vs thenApplyAsync — callback chạy trên thread nào từng trường hợp?',
     'Đặt timeout cho chuỗi CF nhiều step: làm thế nào?'
   ],
-  tags: ['CompletableFuture', 'async', 'ForkJoinPool'],
+  tags: ['CompletableFuture', 'async', 'ForkJoinPool', "core"],
   refs: [
     { type: 'doc', title: 'CompletableFuture API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CompletableFuture.html' },
     { type: 'doc', title: 'ForkJoinPool API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ForkJoinPool.html' },
@@ -609,7 +609,7 @@ Một service Spring Boot 3.2 xử lý API tìm kiếm sản phẩm gọi 3 serv
     'Phát hiện pinning của một service Java 21 trong production thế nào?',
     'Nên dùng virtual thread cho fan-out 1000 call mỗi request hay reactive stack?'
   ],
-  tags: ['virtual threads', 'Java 21', 'pinning', 'ThreadLocal'],
+  tags: ['virtual threads', 'Java 21', 'pinning', 'ThreadLocal', "core"],
   refs: [
     { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
     { type: 'doc', title: 'JEP 491: Synchronize Virtual Threads without Pinning', url: 'https://openjdk.org/jeps/491' },
@@ -691,7 +691,7 @@ Hệ thống thanh toán Spring Boot dùng filter set MDC userId + requestId. M�
     'ThreadLocalMap dùng WeakReference cho key — vì sao value vẫn leak?',
     'InheritableThreadLocal hành xử thế nào với virtual threads?'
   ],
-  tags: ['ThreadLocal', 'memory leak', 'tomcat']
+  tags: ['ThreadLocal', 'memory leak', 'tomcat', "core"]
 },
 {
   id: 'concurrency-009',
@@ -781,7 +781,7 @@ Service định giá real-time tăng counter lượt xem sản phẩm. Dùng Ato
     'CAS + volatility: vì sao field của {{AtomicInteger}} phải volatile?',
     'ABA trên máy có GC tham chiếu sống: vẫn là vấn đề thật?'
   ],
-  tags: ['CAS', 'AtomicInteger', 'ABA', 'LongAdder'],
+  tags: ['CAS', 'AtomicInteger', 'ABA', 'LongAdder', "core"],
   refs: [
     { type: 'doc', title: 'AtomicInteger API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/atomic/AtomicInteger.html' },
     { type: 'doc', title: 'LongAdder API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/atomic/LongAdder.html' },
@@ -872,7 +872,7 @@ Module cache cấu hình dùng DCL không volatile. Trên CI (x86, JDK 11) test 
     'Ba bước của {{new Foo()}} được JIT xếp lại thế nào?',
     'Holder idiom chạy thế nào khi class được load 2 lần bởi 2 classloader?'
   ],
-  tags: ['singleton', 'double-checked locking', 'volatile']
+  tags: ['singleton', 'double-checked locking', 'volatile', "core"]
 },
 {
   id: 'concurrency-011',
@@ -957,7 +957,7 @@ Batch tính toán rủi ro portfolio: chia 100k vị thế thành 4 stage (load 
     'CyclicBarrier "broken" xảy ra thế nào, xử lý ra sao?',
     'Khi nào CompletableFuture.allOf thay thế được CountDownLatch?'
   ],
-  tags: ['CountDownLatch', 'CyclicBarrier', 'Semaphore', 'Phaser'],
+  tags: ['CountDownLatch', 'CyclicBarrier', 'Semaphore', 'Phaser', "core"],
   refs: [
     { type: 'doc', title: 'CountDownLatch API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CountDownLatch.html' },
     { type: 'doc', title: 'CyclicBarrier API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CyclicBarrier.html' },
@@ -1142,7 +1142,7 @@ Một service Spring Boot 3.2 xử lý API tổng hợp đơn hàng gọi 3 serv
     'Vì sao ScopedValue khó leak hơn ThreadLocal trong thread pool?',
     'StructuredTaskScope trên Java 21 preview: khi nâng JDK 25 cần sửa gì?'
   ],
-  tags: ['structured concurrency', 'ScopedValue', 'Java 21'],
+  tags: ['structured concurrency', 'ScopedValue', 'Java 21', "core"],
   refs: [
     { type: 'doc', title: 'JEP 453: Structured Concurrency (Preview)', url: 'https://openjdk.org/jeps/453' },
     { type: 'doc', title: 'JEP 505: Structured Concurrency (Fifth Preview)', url: 'https://openjdk.org/jeps/505' },
@@ -1243,7 +1243,7 @@ Một service báo cáo tính tổng doanh thu 50 triệu đơn hàng/ngày dùn
     'Bạn chọn ngưỡng tách task (threshold) cho RecursiveTask thế nào?',
     'ForkJoinPool.managedBlock dùng khi nào?'
   ],
-  tags: ['ForkJoinPool', 'work stealing', 'commonPool', 'parallel stream'],
+  tags: ['ForkJoinPool', 'work stealing', 'commonPool', 'parallel stream', "core"],
   refs: [
     { type: 'doc', title: 'ForkJoinPool API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ForkJoinPool.html' },
     { type: 'doc', title: 'ForkJoinTask API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ForkJoinTask.html' },
@@ -1357,7 +1357,7 @@ Hệ thống thanh toán xử lý 50k giao dịch/giây tại giờ cao điểm.
     'CallerRunsPolicy gây vấn đề gì khi caller là thread của Tomcat?',
     'Khi nào dùng SynchronousQueue thay vì queue có dung lượng?'
   ],
-  tags: ['BlockingQueue', 'backpressure', 'bounded queue', 'producer-consumer'],
+  tags: ['BlockingQueue', 'backpressure', 'bounded queue', 'producer-consumer', "core"],
   refs: [
     { type: 'doc', title: 'BlockingQueue API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/BlockingQueue.html' },
     { type: 'doc', title: 'ThreadPoolExecutor API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html' },
@@ -1477,7 +1477,7 @@ Job đối soát hàng ngày đọc 20 triệu bản ghi từ Kafka, so sánh v�
     'Vì sao CompletableFuture.cancel(true) không interrupt được task?',
     'Thread.interrupted() khác isInterrupted() ở điểm nào?'
   ],
-  tags: ['interrupt', 'InterruptedException', 'Future.cancel', 'shutdown'],
+  tags: ['interrupt', 'InterruptedException', 'Future.cancel', 'shutdown', "core"],
   refs: [
     { type: 'doc', title: 'ExecutorService API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ExecutorService.html' },
     { type: 'doc', title: 'Future API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/Future.html' },
@@ -1582,7 +1582,7 @@ Một hệ thống cache tự viết dùng {{ReentrantLock}} + 2 {{Condition}} (
     'Lost wakeup là gì và vì sao trạng thái phải được kiểm tra trong cùng lock?',
     'awaitUninterruptibly() dùng khi nào thay vì await()?'
   ],
-  tags: ['wait', 'notify', 'Condition', 'spurious wakeup', 'ReentrantLock']
+  tags: ['wait', 'notify', 'Condition', 'spurious wakeup', 'ReentrantLock', "core"]
 },
 {
   id: 'concurrency-018',
@@ -1674,7 +1674,7 @@ Service định giá ngoại tệ nạp config tỷ giá từ file JSON mỗi 5 
     'Vì sao lỗi publish không an toàn hiếm gặp trên x86 nhưng xuất hiện trên ARM?',
     'record có thực sự immutable không?'
   ],
-  tags: ['safe publication', 'immutability', 'final', 'JMM'],
+  tags: ['safe publication', 'immutability', 'final', 'JMM', "core"],
   refs: [
     { type: 'doc', title: 'JLS 17.4: Memory Model', url: 'https://docs.oracle.com/javase/specs/jls/se21/html/jls-17.html#jls-17.4' },
     { type: 'doc', title: 'JLS 17.5: final Field Semantics', url: 'https://docs.oracle.com/javase/specs/jls/se21/html/jls-17.html#jls-17.5' },
@@ -1892,7 +1892,7 @@ Một microservice thanh toán có job đồng bộ tỷ giá mỗi phút dùng 
     'Task bỏ qua interrupt khi shutdownNow — bạn làm gì để pod vẫn tắt đúng hạn?',
     'scheduleAtFixedRate và scheduleWithFixedDelay khác nhau thế nào khi một lần chạy bị chậm?'
   ],
-  tags: ['shutdown', 'shutdownNow', 'awaitTermination', 'ScheduledExecutorService'],
+  tags: ['shutdown', 'shutdownNow', 'awaitTermination', 'ScheduledExecutorService', "core"],
   refs: [
     { type: 'doc', title: 'ExecutorService API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ExecutorService.html' },
     { type: 'doc', title: 'ScheduledThreadPoolExecutor API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ScheduledThreadPoolExecutor.html' },
@@ -1993,7 +1993,7 @@ Kết quả diff cho thấy Direct memory tăng 1.3 GB (buffer ngoài heap, ví 
     'Metaspace khác PermGen (trước Java 8) thế nào, vì sao đổi?',
     'RSS lớn hơn Xmx — bạn điều tra bằng tool nào trước?'
   ],
-  tags: ['heap', 'metaspace', 'direct memory', 'code cache'],
+  tags: ['heap', 'metaspace', 'direct memory', 'code cache', "core"],
   refs: [
     { type: 'doc', title: 'Native Memory Tracking (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/vm/native-memory-tracking.html' },
     { type: 'doc', title: 'The java Command (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html' },
@@ -2081,7 +2081,7 @@ Một e-commerce platform heap 16 GB, traffic 3k rps, p99 latency 450 ms do G1 m
     'mixed GC của G1 chọn region thế nào?',
     'Generational ZGC khác ZGC non-generation thế nào?'
   ],
-  tags: ['G1', 'ZGC', 'Shenandoah', 'Parallel GC'],
+  tags: ['G1', 'ZGC', 'Shenandoah', 'Parallel GC', "core"],
   refs: [
     { type: 'doc', title: 'HotSpot Garbage Collection Tuning Guide (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/gctuning/' },
     { type: 'doc', title: 'JEP 439: Generational ZGC', url: 'https://openjdk.org/jeps/439' },
@@ -2172,7 +2172,7 @@ Team deploy Spring Boot service lên K8s pod limit 1 GB, copy Xmx 1g từ VM cũ
     'OOMKilled (exit 137) khác OOM Java heap space thế nào?',
     'MaxRAMPercentage = 25% với pod 1 GB RAM là bao nhiêu MB heap?'
   ],
-  tags: ['Kubernetes', 'MaxRAMPercentage', 'OOMKilled', 'container'],
+  tags: ['Kubernetes', 'MaxRAMPercentage', 'OOMKilled', 'container', "core"],
   refs: [
     { type: 'doc', title: 'The java Command (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html' },
     { type: 'doc', title: 'Kubernetes: Resource Management for Pods and Containers', url: 'https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/' },
@@ -2258,7 +2258,7 @@ Một payment service triển khai dạng WAR trên Tomcat ném {{OutOfMemoryErr
     'OOM "Java heap space" mà dump không thấy object to — bước tiếp theo?',
     'Vì sao JVM có message riêng "GC overhead limit exceeded"?'
   ],
-  tags: ['OutOfMemoryError', 'MAT', 'heap dump'],
+  tags: ['OutOfMemoryError', 'MAT', 'heap dump', "core"],
   refs: [
     { type: 'doc', title: 'Troubleshooting Memory Leaks (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html' },
     { type: 'doc', title: 'Eclipse Memory Analyzer (MAT)', url: 'https://eclipse.dev/mat/' },
@@ -2348,7 +2348,7 @@ Một hệ thống xử lý thanh toán gặp tình trạng Old Gen tăng dần 
     'Path to GC Roots — exclude weak/soft references nghĩa gì, vì sao?',
     'Chụp heap dump trong production có rủi ro gì (pause, disk)?'
   ],
-  tags: ['memory leak', 'MAT', 'heap dump'],
+  tags: ['memory leak', 'MAT', 'heap dump', "core"],
   refs: [
     { type: 'doc', title: 'Troubleshooting Memory Leaks (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html' },
     { type: 'doc', title: 'Eclipse Memory Analyzer (MAT)', url: 'https://eclipse.dev/mat/' },
@@ -2529,7 +2529,7 @@ Một ứng dụng Fintech chạy trên Tomcat gặp lỗi OOM Metaspace sau kho
     'Vì sao một class có thể được load nhiều lần qua classloader khác nhau?',
     'Tomcat warn "appears to have started a thread" nghĩa là gì?'
   ],
-  tags: ['classloader', 'parent delegation', 'tomcat']
+  tags: ['classloader', 'parent delegation', 'tomcat', "core"]
 }
 
 ,
@@ -2632,7 +2632,7 @@ Một microservice xử lý đơn hàng gặp tình trạng "lag" nặng nề tr
     'Object "escaping" nghĩa là gì, điều kiện nào để escape analysis dùng được?',
     'Native image đánh mất gì so với JIT hot path?'
   ],
-  tags: ['JIT', 'C2', 'escape analysis', 'GraalVM'],
+  tags: ['JIT', 'C2', 'escape analysis', 'GraalVM', "core"],
   refs: [
     { type: 'doc', title: 'The java Command (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html' },
     { type: 'doc', title: 'GraalVM Native Image', url: 'https://www.graalvm.org/latest/reference-manual/native-image/' },
@@ -2723,7 +2723,7 @@ Một hệ thống xử lý file Excel lớn gặp tình trạng toàn bộ ứn
     'GC pause ngắn mà app vẫn có spike latency — kiểm chứng thế nào?',
     'Mixed GC và Full GC của G1 khác gì?'
   ],
-  tags: ['GC log', 'safepoint', 'G1']
+  tags: ['GC log', 'safepoint', 'G1', "core"]
 }
 ,
 {
@@ -2800,7 +2800,7 @@ Một dịch vụ cache phân tán dùng HashMap static để lưu session. Sau 
     ,
     'Compact strings (Java 9) đỡ heap bao nhiêu với text ASCII?'
   ],
-  tags: ['compressed oops', 'String', 'JOL', 'object header']
+  tags: ['compressed oops', 'String', 'JOL', 'object header', "core"]
 }
 ,
 {
@@ -2985,7 +2985,7 @@ Một service e-commerce Spring Boot 3.1 trên GKE (Java 17, 4 vCPU, 8 GB) gặp
     'Dùng JFR Event Streaming để đẩy số liệu GC pause sang Prometheus thế nào?',
     'Không có GUI trên server, bạn phân tích file .jfr bằng cách nào?'
   ],
-  tags: ['JFR', 'JMC', 'profiling', 'production'],
+  tags: ['JFR', 'JMC', 'profiling', 'production', "core"],
   refs: [
     { type: 'doc', title: 'JDK Flight Recorder API Programmer Guide (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/jfapi/' },
     { type: 'doc', title: 'Diagnostic Tools (JDK 21 Troubleshooting)', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/diagnostic-tools.html' },
@@ -3073,7 +3073,7 @@ Service Spring Batch 5.0 trên Kubernetes (Java 21, 4 vCPU, 6 GB heap) xử lý 
     'Heap dump 20 GB, bạn phân tích bằng cách nào mà không làm treo máy?',
     'Retained size của các object cộng lại không bằng heap đang dùng — vì sao?'
   ],
-  tags: ['heap dump', 'MAT', 'dominator tree', 'retained size', 'GC roots'],
+  tags: ['heap dump', 'MAT', 'dominator tree', 'retained size', 'GC roots', "core"],
   refs: [
     { type: 'doc', title: 'Eclipse Memory Analyzer (MAT)', url: 'https://eclipse.dev/mat/' },
     { type: 'doc', title: 'Troubleshooting Memory Leaks (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html' },
@@ -3171,7 +3171,7 @@ Pod payment service (Java 21, Spring Boot 3.2, 2 vCPU, limit 3 GB) bị OOMKille
     'NMT summary và detail khác nhau thế nào, khi nào cần detail?',
     'Pod bị OOMKilled nhưng log không có OutOfMemoryError — bạn điều tra thế nào?'
   ],
-  tags: ['NMT', 'native memory', 'RSS', 'metaspace', 'malloc arena'],
+  tags: ['NMT', 'native memory', 'RSS', 'metaspace', 'malloc arena', "core"],
   refs: [
     { type: 'doc', title: 'Native Memory Tracking (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/vm/native-memory-tracking.html' },
     { type: 'doc', title: 'The java Command (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html' },
@@ -3378,7 +3378,7 @@ Service Spring Boot 2.7 (Java 11) dùng Guava Cache backing map với SoftRefere
     'WeakHashMap hoạt động thế nào và khi nào dùng nó an toàn?',
     'Vì sao action của Cleaner không được tham chiếu tới object đang được theo dõi?'
   ],
-  tags: ['SoftReference', 'WeakReference', 'PhantomReference', 'ReferenceQueue', 'cache']
+  tags: ['SoftReference', 'WeakReference', 'PhantomReference', 'ReferenceQueue', 'cache', "core"]
 },
 {
   id: 'jvm-017',
@@ -3470,7 +3470,7 @@ Một service Spring Boot 3.2 xử lý thanh toán triển khai trên EKS (pod 2
     'CRaC snapshot chứa những gì, xử lý connection pool và secret thế nào khi restore?',
     'Spring AOT ràng buộc gì với @Profile và @ConditionalOnProperty?'
   ],
-  tags: ['CDS', 'AppCDS', 'Spring AOT', 'CRaC', 'GraalVM', 'startup'],
+  tags: ['CDS', 'AppCDS', 'Spring AOT', 'CRaC', 'GraalVM', 'startup', "core"],
   refs: [
     { type: 'doc', title: 'Class Data Sharing (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/vm/class-data-sharing.html' },
     { type: 'doc', title: 'JEP 483: Ahead-of-Time Class Loading and Linking', url: 'https://openjdk.org/jeps/483' },
@@ -3571,7 +3571,7 @@ Một service e-commerce Spring Boot 3.1 trên GKE (Java 17, 4 vCPU, 8 GB) gặp
     'Safepoint bias là gì và vì sao nó làm profiler cổ điển chỉ sai chỗ?',
     'Flame graph có nhiều frame màu vàng (C++ của JVM) — bạn hiểu điều đó thế nào?'
   ],
-  tags: ['async-profiler', 'flame graph', 'profiling', 'CPU', 'wall-clock', 'alloc', 'lock'],
+  tags: ['async-profiler', 'flame graph', 'profiling', 'CPU', 'wall-clock', 'alloc', 'lock', "core"],
   refs: [
   ]
 },
@@ -3668,7 +3668,7 @@ Một service đặt đơn Spring Boot MVC (Tomcat, Java 21, 4 vCPU) trên EKS �
     'Thread vừa được notify() chuyển sang trạng thái nào trước khi chạy tiếp?',
     'Vì sao thread đang đọc socket lại hiện RUNNABLE, và nó có tốn CPU không?'
   ],
-  tags: ['thread state', 'thread lifecycle', 'thread dump', 'BLOCKED', 'WAITING']
+  tags: ['thread state', 'thread lifecycle', 'thread dump', 'BLOCKED', 'WAITING', "core"]
 },
 {
   id: 'concurrency-022',
@@ -3772,7 +3772,7 @@ Một service báo cáo Spring Boot 3.2 (Java 21) nhận request tạo báo cáo
     'execute() và submit() khác nhau thế nào khi task ném exception?',
     'Khi nào virtual thread không giúp được gì, thậm chí làm tệ hơn?'
   ],
-  tags: ['Thread', 'Runnable', 'Callable', 'ExecutorService', 'virtual thread', 'start vs run']
+  tags: ['Thread', 'Runnable', 'Callable', 'ExecutorService', 'virtual thread', 'start vs run', "core"]
 },
 {
   id: 'concurrency-023',
@@ -3875,7 +3875,7 @@ Ví dụ khác về sleep: service thanh toán gọi core banking API trong {{sy
     'Lost wakeup là gì và vì sao giữ monitor khi gọi wait() ngăn được nó?',
     'Thread.onSpinWait() khác yield() thế nào?'
   ],
-  tags: ['sleep', 'wait', 'join', 'yield', 'monitor']
+  tags: ['sleep', 'wait', 'join', 'yield', 'monitor', "core"]
 },
 {
   id: 'concurrency-024',
@@ -3986,7 +3986,7 @@ Ví dụ khác: service chuyển tiền dùng {{synchronized (fromAccount)}} {{s
     'Vì sao không nên synchronized trên String literal hoặc Integer?',
     'synchronized có reentrant không, và điều đó quan trọng khi nào?'
   ],
-  tags: ['synchronized', 'class lock', 'object lock', 'monitor'],
+  tags: ['synchronized', 'class lock', 'object lock', 'monitor', "core"],
   refs: [
     { type: 'doc', title: 'JLS 8.4.3.6: synchronized Methods', url: 'https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html#jls-8.4.3.6' },
     { type: 'doc', title: 'JLS 14.19: The synchronized Statement', url: 'https://docs.oracle.com/javase/specs/jls/se21/html/jls-14.html#jls-14.19' },
@@ -4214,7 +4214,7 @@ Hai microservice chuyển tiền ngược chiều dùng {{tryLock}} và nhả lo
     'Vì sao lock non-fair lại cho throughput cao hơn fair lock?',
     'Retry storm có phải livelock không? Bạn thiết kế retry thế nào để tránh?'
   ],
-  tags: ['livelock', 'starvation', 'fair lock', 'ReentrantLock', 'deadlock'],
+  tags: ['livelock', 'starvation', 'fair lock', 'ReentrantLock', 'deadlock', "core"],
   refs: [
     { type: 'doc', title: 'ReentrantLock API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/locks/ReentrantLock.html' },
     { type: 'book', title: 'Java Concurrency in Practice', url: 'https://jcip.net/' },
@@ -4337,7 +4337,7 @@ Bean scope singleton nghĩa là "một instance cho mỗi ApplicationContext", d
     'Constructor của singleton ném exception thì những lần gọi sau chuyện gì xảy ra?',
     'Spring singleton bean khác singleton pattern thế nào?'
   ],
-  tags: ['singleton', 'holder idiom', 'enum', 'reflection', 'serialization', 'class loader'],
+  tags: ['singleton', 'holder idiom', 'enum', 'reflection', 'serialization', 'class loader', "core"],
   refs: [
     { type: 'doc', title: 'JLS 12.4.2: Detailed Initialization Procedure', url: 'https://docs.oracle.com/javase/specs/jls/se21/html/jls-12.html#jls-12.4.2' },
     { type: 'doc', title: 'JLS 8.9: Enum Classes', url: 'https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html#jls-8.9' },
@@ -4434,7 +4434,7 @@ Triệu chứng: image Docker production dùng full JDK khoảng 300 MB; build b
     'ClassNotFoundException và NoClassDefFoundError khác nhau thế nào?',
     'jlink giúp gì khi đóng gói Docker image?'
   ],
-  tags: ['JDK', 'JRE', 'JVM', 'bytecode', 'class loading', 'JIT']
+  tags: ['JDK', 'JRE', 'JVM', 'bytecode', 'class loading', 'JIT', "core"]
 },
 {
   id: 'jvm-020',
@@ -4526,7 +4526,7 @@ Triệu chứng: heap dùng tăng đều mỗi ngày, full GC thường xuyên, 
     'Card table / remembered set giải quyết vấn đề gì khi chỉ dọn young gen?',
     'Vì sao Reference.reachabilityFence tồn tại?'
   ],
-  tags: ['GC roots', 'reachability', 'reference counting', 'memory leak'],
+  tags: ['GC roots', 'reachability', 'reference counting', 'memory leak', "core"],
   refs: [
     { type: 'doc', title: 'HotSpot Garbage Collection Tuning Guide (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/gctuning/' },
     { type: 'doc', title: 'Troubleshooting Memory Leaks (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html' },
@@ -4624,7 +4624,7 @@ full GC 2,4 giây chỉ giải phóng 120 MB, nghĩa là old gen chứa toàn ob
     'Humongous object trong G1 là gì và vì sao nó gây vấn đề?',
     'Full GC xảy ra trong G1 khi nào, và bạn xử lý thế nào?'
   ],
-  tags: ['minor GC', 'major GC', 'full GC', 'promotion', 'tenuring', 'G1'],
+  tags: ['minor GC', 'major GC', 'full GC', 'promotion', 'tenuring', 'G1', "core"],
   refs: [
     { type: 'doc', title: 'HotSpot Garbage Collection Tuning Guide (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/gctuning/' },
     { type: 'doc', title: 'Garbage-First (G1) Garbage Collector (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/gctuning/garbage-first-g1-garbage-collector1.html' },
@@ -4734,7 +4734,7 @@ Kết quả: log đơn hàng in xong, lỗi 500 biến mất; team quy tắc ki�
     'Vì sao thread ném OutOfMemoryError thường không phải thủ phạm?',
     'Tăng -Xss ảnh hưởng gì khi service có 500 thread?'
   ],
-  tags: ['StackOverflowError', 'OutOfMemoryError', 'Xss', 'heap dump']
+  tags: ['StackOverflowError', 'OutOfMemoryError', 'Xss', 'heap dump', "core"]
 },
 {
   id: 'concurrency-028',
@@ -4811,7 +4811,7 @@ Kết quả: sau reload, mọi reader nhìn thấy cấu hình mới cùng lúc;
 
 > Senior tip: khi review concurrent code, hãy chỉ ra cạnh happens-before nối writer với reader. Nếu không chỉ ra được cạnh cụ thể, đừng dựa vào việc "máy x86 chạy ổn".`,
   follow: ['Vì sao volatile không bảo vệ count++?', 'Khi nào cần immutable snapshot thay vì nhiều volatile field?'],
-  tags: ['JMM', 'happens-before', 'volatile']
+  tags: ['JMM', 'happens-before', 'volatile', "core"]
 },
 {
   id: 'concurrency-029',
@@ -4966,7 +4966,7 @@ Kết quả: p99 giờ cao điểm từ khoảng 120 ms xuống 35 ms, p999 gi�
 
 > Senior tip: nếu mục tiêu pause đạt nhưng CPU headroom cạn ở peak, collector đó chưa phù hợp production. Đừng tăng Xmx bằng toàn bộ memory limit của container.`,
   follow: ['Vì sao MaxGCPauseMillis không phải cam kết?', 'Bạn theo dõi gì để biết ZGC đang lấy CPU khỏi ứng dụng?'],
-  tags: ['G1', 'Generational ZGC', 'GC', 'latency'],
+  tags: ['G1', 'Generational ZGC', 'GC', 'latency', "core"],
   refs: [{ type: 'doc', title: 'JEP 439: Generational ZGC', url: 'https://openjdk.org/jeps/439' }]
 },
 {
@@ -5046,7 +5046,7 @@ Kết quả: sau warm-up, allocation rate giảm gần 0, áp lực GC giảm; c
 
 > Senior tip: tối ưu allocation khi allocation flame graph chứng minh nó chiếm đáng kể CPU/GC. Thiết kế code rõ ràng trước, đừng phụ thuộc vào một tối ưu JIT khó tái lập giữa các phiên bản JDK.`,
   follow: ['Escape qua field static tác động phân tích ra sao?', 'Vì sao JMH cần warm-up và fork?'],
-  tags: ['JIT', 'escape analysis', 'scalar replacement']
+  tags: ['JIT', 'escape analysis', 'scalar replacement', "core"]
 },
 {
   id: 'jvm-025',
@@ -5202,7 +5202,7 @@ try (var lines = Files.lines(path, StandardCharsets.UTF_8)) {
     'Spring Data trả về {{Stream<Order>}}: cần những điều kiện gì để thật sự streaming và không giữ hết entity trong persistence context?',
     'Bạn bảo vệ một API cho phép người dùng nhập regex tìm kiếm thế nào?'
   ],
-  tags: ['OutOfMemoryError', 'allocation spike', 'ReDoS', 'regex', 'streaming', 'fetchSize'],
+  tags: ['OutOfMemoryError', 'allocation spike', 'ReDoS', 'regex', 'streaming', 'fetchSize', "core"],
   refs: [
     { type: 'doc', title: 'Troubleshooting Memory Leaks (Java SE 21 Troubleshooting Guide)', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html' },
     { type: 'doc', title: 'java.util.regex.Pattern (Java SE 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/regex/Pattern.html' },
@@ -5367,7 +5367,7 @@ Một service xuất báo cáo (Spring Boot trên Kubernetes, pod Guaranteed: re
     'G1PeriodicGCInterval ảnh hưởng gì tới CPU và latency của một service đang rảnh?',
     'Metric nào giúp phân biệt "heap chưa co lại" với native memory leak?'
   ],
-  tags: ['heap sizing', 'Xms', 'AlwaysPreTouch', 'uncommit', 'G1PeriodicGCInterval', 'RSS', 'Kubernetes'],
+  tags: ['heap sizing', 'Xms', 'AlwaysPreTouch', 'uncommit', 'G1PeriodicGCInterval', 'RSS', 'Kubernetes', "core"],
   refs: [
     { type: 'doc', title: 'JEP 346: Promptly Return Unused Committed Memory from G1', url: 'https://openjdk.org/jeps/346' },
     { type: 'doc', title: 'JEP 351: ZGC: Uncommit Unused Memory', url: 'https://openjdk.org/jeps/351' }
@@ -5448,7 +5448,7 @@ Một service tổng hợp đơn hàng (Java 17, Spring Boot) bắt đầu ghi l
     'Khi nào bạn dùng writableStackTrace = false, khi nào tuyệt đối không?',
     'Bạn đo chi phí tạo exception thế nào cho đáng tin thay vì đoán?'
   ],
-  tags: ['OmitStackTraceInFastThrow', 'exception', 'stack trace', 'JIT', 'C2', 'NullPointerException']
+  tags: ['OmitStackTraceInFastThrow', 'exception', 'stack trace', 'JIT', 'C2', 'NullPointerException', "core"]
 },
 {
   id: 'jvm-030',
@@ -5533,7 +5533,7 @@ Trong một PR "tối ưu hiệu năng", một bạn dev đo hai cách nối chu
     'Khi nào đo throughput (Mode.Throughput) thay vì average time, và đo phân vị latency thế nào?',
     'gc.alloc.rate.norm cho bạn biết điều gì mà ns/op không cho biết?'
   ],
-  tags: ['JMH', 'benchmark', 'JIT', 'dead code elimination', 'warm-up', 'performance'],
+  tags: ['JMH', 'benchmark', 'JIT', 'dead code elimination', 'warm-up', 'performance', "core"],
   refs: [
   ]
 },
@@ -5833,7 +5833,7 @@ Một API báo giá vận chuyển (shipping rate) bị chậm dần vào giờ 
     'Khi nào StampedLock optimistic read thực sự giúp ích, và rủi ro của nó là gì?',
     'Logging đồng bộ trở thành điểm tranh chấp thế nào, và async appender đánh đổi gì?'
   ],
-  tags: ['lock contention', 'thread dump', 'JFR', 'async-profiler', 'synchronized', 'BLOCKED']
+  tags: ['lock contention', 'thread dump', 'JFR', 'async-profiler', 'synchronized', 'BLOCKED', "core"]
 },
 {
   id: 'concurrency-032',
@@ -5908,7 +5908,7 @@ Một service quản lý hạn mức khuyến mãi (promotion quota) có class {
     'jcstress khác test JUnit lặp nhiều lần ở điểm nào?',
     'Làm sao ép một thứ tự xen kẽ cụ thể giữa hai thread để tái hiện một bug đã biết?'
   ],
-  tags: ['testing', 'concurrency test', 'CountDownLatch', 'jcstress', 'Awaitility', 'race condition'],
+  tags: ['testing', 'concurrency test', 'CountDownLatch', 'jcstress', 'Awaitility', 'race condition', "core"],
   refs: [
   ]
 },
@@ -5992,7 +5992,7 @@ Một API gateway nội bộ cần giới hạn mỗi API key ở 100 request/gi
     'Token bucket khác sliding window counter ở điểm nào về burst và bộ nhớ?',
     'Nếu phải giới hạn toàn cục cho 20 instance, bạn chọn Redis hay chia quota tĩnh, vì sao?'
   ],
-  tags: ['rate limiter', 'token bucket', 'CAS', 'AtomicReference', 'ConcurrentHashMap', 'nanoTime']
+  tags: ['rate limiter', 'token bucket', 'CAS', 'AtomicReference', 'ConcurrentHashMap', 'nanoTime', "core"]
 },
 {
   id: 'concurrency-034',
@@ -6036,7 +6036,7 @@ Service gửi thông báo dùng {{Executors.newFixedThreadPool(20)}} để gọi
 > Senior tip: Đừng tối ưu bằng cảm tính. Theo dõi {{queue depth}}, {{activeCount}}, {{completedTaskCount}}, {{rejected count}}, thời gian chờ connection, p95/p99 latency và tỷ lệ lỗi. Với hệ thống nhiều instance, cần tính cả tổng giới hạn tới downstream.`
   ,
   follow: ['Làm sao phát hiện saturation của thread pool?', 'Khi nào nên dùng virtual threads thay vì platform thread pool?', 'Tại sao queue không giới hạn nguy hiểm với I/O-bound?'],
-  tags: ['thread pool', 'I/O-bound', 'Little law', 'backpressure', 'ThreadPoolExecutor']
+  tags: ['thread pool', 'I/O-bound', 'Little law', 'backpressure', 'ThreadPoolExecutor', "core"]
 },
 {
   id: 'concurrency-035',
@@ -9768,7 +9768,7 @@ Mỗi thread Java có một cờ boolean interrupt status. Khi gọi {{thread.in
     'Vì sao ExecutorService.shutdownNow() không dừng task nếu task nuốt InterruptedException?',
     'Khi nào không nên bắt InterruptedException?'
   ],
-  tags: ['InterruptedException', 'thread interrupt', 'interrupt status', 'shutdownNow']
+  tags: ['InterruptedException', 'thread interrupt', 'interrupt status', 'shutdownNow', "core"]
 },
 {
   id: 'jvm-053',
@@ -9856,7 +9856,7 @@ Hệ thống xử lý log, mỗi dòng log chứa user-agent (chuỗi dài, nhi�
     '-XX:+UseStringDeduplication khác intern() ra sao?',
     'Khi nào KHÔNG nên gọi intern()?'
   ],
-  tags: ['String.intern', 'string pool', 'heap', 'G1', 'StringDeduplication', 'memory']
+  tags: ['String.intern', 'string pool', 'heap', 'G1', 'StringDeduplication', 'memory', "core"]
 },
 {
   id: 'jvm-055',
