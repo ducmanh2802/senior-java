@@ -3824,7 +3824,7 @@ Lỗi thường gặp: cập nhật balance trước khi add vào Set (crash gi�
  body: `**Tóm tắt:** Circuit breaker (máy cắt tự động) bảo vệ hệ thống không gọi liên tục vào dependency đang lỗi. Ba trạng thái: {{Closed}} (bình thường, cho gọi qua, đếm lỗi), {{Open}} (quá nhiều lỗi, chặn gọi ngay, trả lỗi nhanh), {{Half-Open}} (sau timeout, cho 1- vài request thử, thành công -> Closed, thất bại -> Open). Bài này tự cài bằng Java thuần, dùng Clock injectable để test không cần sleep thật.
 
 ### Tại sao cần circuit breaker
-Khi downstream service (payment gateway, LLM API, auth service) chậm hoặc down, caller tiếp tục gửi request -> thread pool caller bị chiếm hết (thread starvation) -> cascade failure lan sang service khác. Circuit breaker phát hiện lỗi liên tiếp, nhảy sang Open, fail fast (trả lỗi ngay không gọi downstream) -> giải phóng thread, cho downstream hồi phục.
+Khi downstream service (dịch vụ bên dưới, ví dụ payment gateway, LLM API, auth service) chậm hoặc down, caller tiếp tục gửi request -> thread pool caller bị chiếm hết (thread starvation, nghĩa là mọi luồng xử lý đang bận chờ, không còn luồng rảnh để nhận request mới) -> cascade failure (lỗi lan dần sang service khác) lan sang service khác. Circuit breaker phát hiện lỗi liên tiếp, nhảy sang Open, fail fast (trả lỗi ngay không gọi downstream) -> giải phóng thread, cho downstream hồi phục.
 
 ### State machine
 ~~~text
@@ -3846,7 +3846,7 @@ HALF_OPEN: cho request thử (probe)
 - **Failure threshold (failureThreshold):** Số lỗi liên tiếp trong CLOSED mới bật OPEN. Thường 5-10.
 - **Timeout (resetTimeoutMs):** Thời gian ở OPEN trước khi chuyển HALF_OPEN. Phải > downstream recovery time ước lượng (ví dụ 30-60s).
 - **Success threshold (successThreshold):** Số request thành công liên tiếp trong HALF_OPEN mới về CLOSED. Thường 1-3 (an toàn hơn để 2-3).
-- **Half-Open request limit:** Giới hạn số request đồng thời trong HALF_OPEN (thường 1-3) tránh thundering herd khi vừa hồi phục.
+- **Half-Open request limit:** Giới hạn số request đồng thời trong HALF_OPEN (thường 1-3) tránh thundering herd (đám request dồn vào cùng lúc khiến service vừa hồi phục bị nghẽn lại) khi vừa hồi phục.
 
 ### Clock injectable để test deterministic
 Production dùng {{System.currentTimeMillis()}}. Test inject {{Clock}} (interface có {{millis()}}) -> test tiến thời gian tự do, không sleep.
