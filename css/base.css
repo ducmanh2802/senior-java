@@ -400,3 +400,30 @@ details > summary { transition: color .15s; }
   .card { padding: 16px; }
   .page-head { margin-bottom: 14px; }
 }
+
+/* ---------- visual model answer: App.ui.answer (js/core/answer.js) ---------- */
+.ans { display: flex; flex-direction: column; gap: 10px; }
+.ans-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ans-summary { padding: 12px 14px; border: 1px solid var(--accent); border-left-width: 4px; border-radius: var(--radius-sm); background: var(--accent-soft); }
+.ans-summary-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.ans-summary .md > :last-child { margin-bottom: 0; }
+.ans-sec { border: 1px solid var(--border); border-left: 4px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.ans-sec > summary { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; list-style: none; }
+.ans-sec > summary::-webkit-details-marker { display: none; }
+.ans-sec > summary::after { content: '▾'; margin-left: auto; color: var(--muted); transition: transform .15s; }
+.ans-sec:not([open]) > summary::after { transform: rotate(-90deg); }
+.ans-sec > summary h4 { margin: 0; font-size: 1rem; color: var(--text); }
+.ans-sec > summary .ans-read { margin-left: 4px; }
+.ans-ico { font-size: 1.1rem; line-height: 1; }
+.ans-body { padding: 0 14px 10px; }
+.ans-body > :last-child { margin-bottom: 0; }
+.ans-k-how { border-left-color: var(--info); }
+.ans-k-ex, .ans-k-flow { border-left-color: var(--accent-2); }
+.ans-k-real, .ans-k-ops { border-left-color: var(--ok); }
+.ans-k-cmp, .ans-k-when { border-left-color: var(--link); }
+.ans-k-warn { border-left-color: var(--warn); }
+.ans-k-say { border-left-color: var(--accent); background: var(--surface-2); }
+.ans-steps { display: flex; justify-content: space-between; gap: 8px; }
+.ans-recall { margin: 0; padding: 10px 14px; border-radius: var(--radius-sm); background: var(--surface-2); border: 1px dashed var(--accent); font-weight: 600; }
+.ans.is-step .ans-sec { box-shadow: var(--shadow); }
+@media (max-width: 480px) { .ans-body { padding: 0 10px 8px; } .ans-sec > summary { padding: 8px 10px; } }

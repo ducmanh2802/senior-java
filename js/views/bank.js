@@ -259,7 +259,7 @@
       '<div class="bank-answer-head"><button type="button" class="btn sm" data-toggle-answer="' + esc(q.id) + '">' + (collapsed ? 'Mở rộng đáp án' : 'Thu gọn đáp án') + '</button></div>' +
       toc +
       '<div class="bank-answer-body' + (collapsed ? ' is-collapsed' : '') + '" data-answer-body="' + esc(q.id) + '">' +
-        '<div class="md">' + inner + '</div>' +
+        (App.ui.answer ? App.ui.answer(inner, { lang: q.lang }) : '<div class="md">' + inner + '</div>') +
       '</div>' +
       '<div class="bank-report"><a class="btn sm" target="_blank" rel="noopener noreferrer" href="' +
         App.esc(reportUrl) + '">🚩 Báo sai</a></div>' +

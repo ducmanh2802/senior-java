@@ -241,7 +241,7 @@ App.i18n.add({
         levelBadge(q) +
       '</div>' +
       '<div class="flash-q flash-q-back"' + (q.lang === 'en' ? ' lang="en"' : '') + '>' + App.md(q.q) + '</div>' +
-      '<div class="flash-a md">' + App.md(q.a) + '</div>' +
+      '<div class="flash-a md">' + (App.ui.answer ? App.ui.answer(App.md(q.a), { lang: q.lang }) : App.md(q.a)) + '</div>' +
       (follow ? '<div class="flash-follow"><h4>Câu hỏi đào sâu thường gặp</h4><ul>' + follow + '</ul></div>' : '') +
       '<div class="flash-grade">' +
         '<span class="small muted">' + App.t('flash.gradeTitle') + '</span>' +
