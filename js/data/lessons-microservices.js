@@ -4200,7 +4200,547 @@ Production: Resilience4j, Spring Cloud CircuitBreaker cung cấp sẵn. Hiểu g
      explain: 'Test unit cần kiểm soát thời gian: set clock=0, 500, 1000 ms thay vì Thread.sleep(500). Dùng System.currentTimeMillis() ép test phải sleep thật -> chậm, flaky, khó test edge case (timeout boundary).'
    }
  ],
- related: ['microservices-009', 'microservices-013', 'microservices-025'],
- tags: ['circuit breaker', 'resilience', 'closed', 'open', 'half-open', 'fail fast', 'state machine']
+  related: ['microservices-009', 'microservices-013', 'microservices-025'],
+  tags: ['circuit breaker', 'resilience', 'closed', 'open', 'half-open', 'fail fast', 'state machine']
+},
+{
+  id: 'lesson-microservices-016', track: 'microservices', order: 16,
+  title: 'Circuit breaker nâng cao: cửa sổ trượt, tỉ lệ lỗi và half-open giới hạn', level: 'senior', minutes: 30,
+  goals: [
+    'Phân biệt breaker đếm liên tiếp với breaker đếm tỉ lệ lỗi trên cửa sổ trượt',
+    'Hiểu count-based và time-based window, minimumNumberOfCalls, ngưỡng tỉ lệ lỗi',
+    'Cài breaker tỉ lệ lỗi với Clock giả và test xác định chuyển trạng thái'
+  ],
+  body: `**Tóm tắt:** Circuit breaker theo tỉ lệ (rate-based) mở mạch khi **tỉ lệ lỗi trong một cửa sổ trượt** vượt ngưỡng, thay vì đếm số lỗi liên tiếp. Cửa sổ giữ N kết quả gần nhất (count-based) hoặc T giây gần nhất (time-based); chỉ xét khi đủ {{minimumNumberOfCalls}}. Ở HALF_OPEN chỉ cho một số probe giới hạn; đủ ngưỡng thành công thì về CLOSED, còn một probe lỗi là về OPEN ngay. Bài này tự cài bằng Java thuần, dùng Clock injectable để test không cần ngủ.
+
+### Vì sao đếm tỉ lệ thay vì đếm liên tiếp
+Bài trước (lesson 015) đếm **số lỗi liên tiếp**: cứ đủ ngưỡng thì mở. Cách này dễ bị "pha loãng": chỉ cần một request thành công xen giữa là bộ đếm reset về 0. Một dependency lỗi 40% trong 10 phút nhưng lỗi không nằm liên tiếp (thành công xen kẽ) thì bộ đếm liên tiếp gần như không bao giờ chạm ngưỡng, breaker không mở, latency p99 vẫn tệ mà hệ thống không tự bảo vệ. Đếm **tỉ lệ lỗi trên cửa sổ** phản ánh đúng "sức khỏe" thực: 40 lỗi trên 100 call gần nhất là tín hiệu rõ ràng để fail fast. Đây là cách Resilience4j làm mặc định với {{failureRateThreshold}}.
+
+### Cửa sổ trượt: count-based và time-based
+- **Count-based**: giữ N kết quả gần nhất (ví dụ 100). Đơn giản, bộ nhớ cố định. Nhược điểm: khi traffic thấp, N call có thể trải dài nhiều giờ, phản ánh quá khứ cũ chứ không phải hiện tại.
+- **Time-based**: giữ các call trong T giây gần nhất (ví dụ 10s). Phản ánh "hiện tại" tốt hơn, nhưng tốn bộ nhớ hơn và cần chia bucket theo thời gian.
+
+Resilience4j dùng {{slidingWindowType}} = {{COUNT_BASED}} (mặc định) hoặc {{TIME_BASED}}, {{slidingWindowSize}} = N call hoặc số giây, và {{minimumNumberOfCalls}} là ngưỡng tối thiểu để bắt đầu tính tỉ lệ (tránh mở mạch chỉ sau 1-2 call lúc mới khởi động hoặc traffic thấp).
+
+### Cơ chế từng bước
+1. **CLOSED**: mỗi call ghi kết quả vào cửa sổ. Khi cửa sổ đủ {{minimumNumberOfCalls}} và {{failureRate >= failureRateThreshold}} thì chuyển OPEN, ghi {{openedAt = now}} và xóa cửa sổ để lần sau đo lại từ đầu.
+2. **OPEN**: mọi call bị từ chối (fail fast). Khi {{now - openedAt >= openMs}} thì chuyển HALF_OPEN.
+3. **HALF_OPEN**: chỉ cho tối đa {{permittedNumberOfCallsInHalfOpenState}} probe. Mỗi probe ghi kết quả: đủ {{halfOpenSuccessThreshold}} lần thành công thì về CLOSED và xóa cửa sổ, còn chỉ cần một probe lỗi là về OPEN ngay và ghi {{openedAt = now}}. Lưu ý Resilience4j làm khác ở đúng điểm này: nó chờ đủ {{permittedNumberOfCallsInHalfOpenState}} probe rồi mới so tỉ lệ lỗi với ngưỡng, nên một probe lỗi đơn lẻ chưa mở mạch ngay.
+
+### Tham số thực tế
+| Tham số | Ví dụ | Ý nghĩa |
+|---|---|---|
+| failureRateThreshold | 50 | Tỉ lệ lỗi (phần trăm) để mở mạch (mặc định 50) |
+| slidingWindowSize | 100 | Số call (count) hoặc giây (time) của cửa sổ |
+| minimumNumberOfCalls | 20 | Chưa đủ 20 call thì chưa xét tỉ lệ |
+| waitDurationInOpenState | 30s | Thời gian ở OPEN trước khi thử lại |
+| permittedNumberOfCallsInHalfOpenState | 10 | Số probe tối đa ở HALF_OPEN |
+
+### Cài đặt rút gọn
+~~~java
+// Rate breaker rút gọn: cửa sổ đếm + ngưỡng tỉ lệ + half-open giới hạn probe
+class RateBreaker {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    private final int windowSize;
+    private final double failureRateThreshold;   // 0..1 (ví dụ 0.5 = 50%)
+    private final int minimumCalls;
+    private final long openMs;
+    private final int halfOpenMaxCalls;
+    private final int halfOpenSuccessThreshold;
+    private final Clock clock;
+    private final Deque<Boolean> window = new ArrayDeque<>();
+    private State state = State.CLOSED;
+    private long openedAt = 0;
+    private int halfOpenCalls = 0, halfOpenSuccess = 0;
+
+    synchronized boolean canCall() {
+        long now = clock.millis();
+        if (state == State.OPEN && now - openedAt >= openMs) {
+            state = State.HALF_OPEN; halfOpenCalls = 0; halfOpenSuccess = 0; window.clear();
+        }
+        if (state == State.OPEN) return false;
+        if (state == State.HALF_OPEN && halfOpenCalls++ >= halfOpenMaxCalls) return false;
+        return true;
+    }
+    synchronized void recordSuccess() {
+        if (state == State.HALF_OPEN) {
+            halfOpenSuccess++;
+            if (halfOpenSuccess >= halfOpenSuccessThreshold) { state = State.CLOSED; window.clear(); }
+            return;
+        }
+        window.addLast(true);
+        if (window.size() > windowSize) window.removeFirst();
+    }
+    synchronized void recordFailure() {
+        if (state == State.HALF_OPEN) { state = State.OPEN; openedAt = clock.millis(); return; }
+        window.addLast(false);
+        if (window.size() > windowSize) window.removeFirst();
+        if (window.size() >= minimumCalls && failureRate() >= failureRateThreshold) {
+            state = State.OPEN; openedAt = clock.millis(); window.clear();
+        }
+    }
+    private double failureRate() {
+        int fail = 0;
+        for (boolean ok : window) if (!ok) fail++;
+        return (double) fail / window.size();
+    }
+}
+~~~
+Điểm mấu chốt: cửa sổ bị **xóa khi vào OPEN** để lần đo sau không bị "lẫn" kết quả cũ; HALF_OPEN reset bộ đếm probe; và {{openedAt}} chỉ set khi thực sự vào OPEN.
+
+### Lỗi hay gặp
+- **Quên xóa cửa sổ khi mở mạch**: kết quả cũ còn lại khiến lần đo sau tính cả quá khứ, mở mạch muộn hoặc không mở.
+- **minimumNumberOfCalls quá thấp**: lúc traffic thấp, 1-2 lỗi làm tỉ lệ 100% và mở mạch oan; đặt theo lưu lượng thực (ví dụ 20-50).
+- **Cửa sổ quá lớn so với traffic**: phản ánh quá khứ cũ, không bảo vệ được hiện tại; cân nhắc time-based khi lưu lượng dao động mạnh.
+- **HALF_OPEN không giới hạn probe**: vừa hồi phục đã dồn cả trăm request, dependency sập lại; giới hạn 10-20 probe.
+- **Trộn lẫn tỉ lệ và đếm liên tiếp**: dùng cả hai không nhất quán khiến hành vi khó đoán; chọn một mô hình và ghi rõ cấu hình.
+
+### Ví dụ đời thực
+**Bối cảnh:** service Order gọi Payment qua HTTP. Payment tăng lỗi từ 0,1% lên 60% trong 5 phút do pool kết nối cạn, nhưng lỗi xen kẽ thành công (một số call lọt qua).
+**Triệu chứng:** breaker đếm liên tiếp (threshold 5 liên tiếp) không mở vì cứ vài lỗi lại có một thành công chen vào reset bộ đếm; p99 của Order tăng từ 180ms lên 4,2s, 18% request timeout.
+**Điều tra:** đổi sang rate-based: cửa sổ 100 call, failureRateThreshold 50, minimumNumberOfCalls 20, wait 30s, half-open 10 probe. Sau khi đủ 20 call, tỉ lệ lỗi 60% vượt ngưỡng 50% nên breaker mở mạch ngay cả khi lỗi không liên tiếp.
+**Xử lý:** khi mở, Order trả 503 kèm circuit open metric; 30s sau cho 10 probe; 9/10 thành công (tỉ lệ lỗi 10% < ngưỡng) nên về CLOSED.
+**Kết quả:** p99 của Order về 200ms, timeout giảm từ 18% xuống 0,4%, và không còn "mù" trước dependency lỗi rải rác.
+
+### Trả lời mẫu khi phỏng vấn
+Circuit breaker của tôi đếm tỉ lệ lỗi trên một cửa sổ trượt chứ không đếm lỗi liên tiếp, vì lỗi liên tiếp dễ bị một request thành công xen giữa làm reset. Tôi dùng count-based 100 call, failure rate threshold 50%, minimum 20 call để tránh mở oan lúc traffic thấp, wait 30 giây và half-open giới hạn 10 probe. Khi tỉ lệ vượt ngưỡng tôi mở mạch, fail fast trả 503 và ghi metric; sau 30 giây cho 10 request thử, đủ thành công thì về CLOSED (tỉ lệ lỗi dưới ngưỡng). Tôi theo dõi state, failure rate, số request bị reject và thời gian ở OPEN để chỉnh ngưỡng theo SLA từng dependency.
+
+> Senior tip: đặt failureRateThreshold theo SLA: dependency nội bộ 50% là hợp lý, còn dependency ngoài (thanh toán) nên 30-40% vì mỗi lỗi đều là tiền; luôn đo tỉ lệ reject để biết ngưỡng có quá gắt không.
+
+### Liên hệ phỏng vấn
+- **Hỏi:** Vì sao breaker tỉ lệ lỗi tốt hơn breaker đếm liên tiếp trong thực tế? **Trả lời ngắn:** Lỗi rải rác (thành công xen kẽ) không làm bộ đếm liên tiếp chạm ngưỡng, nên breaker không mở; tỉ lệ lỗi trên cửa sổ phản ánh đúng mức độ suy giảm và mở mạch kịp thời.
+- **Hỏi:** minimumNumberOfCalls dùng để làm gì? **Trả lời ngắn:** Tránh mở mạch oan khi chỉ có 1-2 call (traffic thấp hoặc lúc khởi động), vì 1 lỗi trên 2 call là 50% nhưng không đủ tin cậy; chỉ xét khi đủ mẫu.
+- **Hỏi:** Trong HALF_OPEN, nếu một probe lỗi thì sao? **Trả lời ngắn:** Trong mô hình rút gọn này thì chuyển ngay về OPEN, ghi openedAt = now để đếm lại thời gian chờ. Còn Resilience4j chờ đủ {{permittedNumberOfCallsInHalfOpenState}} probe rồi so tỉ lệ lỗi với failureRateThreshold, nên một probe lỗi chỉ là 1/N của cửa sổ half-open chứ chưa mở mạch ngay.
+- **Hỏi:** Count-based và time-based window khác nhau ở đâu? **Trả lời ngắn:** Count giữ N call gần nhất (đơn giản, bộ nhớ cố định nhưng có thể cũ khi traffic thấp); time giữ các call trong T giây gần nhất (phản ánh hiện tại tốt hơn nhưng tốn bộ nhớ và cần chia bucket).`,
+  exercises: [{
+    title: 'RateBreaker: cửa sổ trượt + ngưỡng tỉ lệ + half-open giới hạn',
+    prompt: `Cài {{RateBreaker}} theo mô hình tỉ lệ lỗi trên cửa sổ trượt (count-based):
+
+- Constructor: {{RateBreaker(int windowSize, double failureRateThreshold, int minimumCalls, long openMs, int halfOpenMaxCalls, int halfOpenSuccessThreshold, Clock clock)}}. Validate: {{windowSize >= 1}}, {{0 < failureRateThreshold <= 1}}, {{1 <= minimumCalls <= windowSize}}, {{openMs > 0}}, {{halfOpenMaxCalls >= 1}}, {{1 <= halfOpenSuccessThreshold <= halfOpenMaxCalls}}, {{clock != null}}; sai thì ném {{IllegalArgumentException}}.
+- {{boolean canCall()}}: nếu OPEN và {{now - openedAt >= openMs}} thì chuyển HALF_OPEN, reset {{halfOpenCalls = 0}}, {{halfOpenSuccess = 0}}, xóa cửa sổ; nếu vẫn OPEN thì {{false}}. Nếu HALF_OPEN: cho tối đa {{halfOpenMaxCalls}} probe (mỗi lần gọi tăng {{halfOpenCalls}}), hết thì {{false}}. CLOSED thì {{true}}.
+- {{void recordSuccess()}}: nếu HALF_OPEN tăng {{halfOpenSuccess}}, đủ {{halfOpenSuccessThreshold}} thì về CLOSED và xóa cửa sổ; nếu CLOSED thì thêm {{true}} vào cửa sổ, xóa phần tử cũ khi vượt {{windowSize}}, và nếu đủ {{minimumCalls}} mà tỉ lệ lỗi < ngưỡng thì giữ CLOSED (không cần làm gì thêm).
+- {{void recordFailure()}}: nếu HALF_OPEN thì về OPEN, {{openedAt = now}}, reset bộ đếm; nếu CLOSED thì thêm {{false}} vào cửa sổ, xóa phần tử cũ khi vượt {{windowSize}}, và nếu đủ {{minimumCalls}} mà {{failureRate >= failureRateThreshold}} thì về OPEN, {{openedAt = now}}, xóa cửa sổ.
+- {{State state()}}, {{int count()}} (số phần tử cửa sổ).
+
+{{Clock}} là interface {{long millis()}}. Tất cả method {{synchronized}}.`,
+    starter: `interface Clock { long millis(); }
+class RateBreaker {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    private final int windowSize;
+    private final double failureRateThreshold;
+    private final int minimumCalls;
+    private final long openMs;
+    private final int halfOpenMaxCalls;
+    private final int halfOpenSuccessThreshold;
+    private final Clock clock;
+    private final java.util.ArrayDeque<Boolean> window = new java.util.ArrayDeque<>();
+    private State state = State.CLOSED;
+    private long openedAt = 0;
+    private int halfOpenCalls = 0;
+    private int halfOpenSuccess = 0;
+    RateBreaker(int windowSize, double failureRateThreshold, int minimumCalls, long openMs, int halfOpenMaxCalls, int halfOpenSuccessThreshold, Clock clock) {
+        this.windowSize = windowSize; this.failureRateThreshold = failureRateThreshold; this.minimumCalls = minimumCalls;
+        this.openMs = openMs; this.halfOpenMaxCalls = halfOpenMaxCalls; this.halfOpenSuccessThreshold = halfOpenSuccessThreshold; this.clock = clock;
+    }
+    synchronized boolean canCall() { throw new UnsupportedOperationException("TODO"); }
+    synchronized void recordSuccess() { throw new UnsupportedOperationException("TODO"); }
+    synchronized void recordFailure() { throw new UnsupportedOperationException("TODO"); }
+    synchronized State state() { return state; }
+    synchronized int count() { return window.size(); }
+}`,
+    tests: `public class Main {
+ static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+ public static void main(String[] x){
+  ck("closed opens at failure rate",()->{
+   AtomicLong clock=new AtomicLong(0);
+   RateBreaker b=new RateBreaker(4,0.5,4,1000,2,2,clock::get);
+   b.recordSuccess(); b.recordSuccess(); b.recordFailure();
+   eq(RateBreaker.State.CLOSED,b.state());
+   b.recordFailure();
+   eq(RateBreaker.State.OPEN,b.state());
+  });
+  ck("sliding window evicts old results",()->{
+   AtomicLong clock=new AtomicLong(0);
+   RateBreaker b=new RateBreaker(4,0.5,4,1000,2,2,clock::get);
+   b.recordSuccess(); b.recordSuccess(); b.recordSuccess(); b.recordSuccess();
+   eq(RateBreaker.State.CLOSED,b.state());
+   b.recordFailure();
+   eq(RateBreaker.State.CLOSED,b.state());
+   b.recordFailure();
+   eq(RateBreaker.State.OPEN,b.state());
+  });
+  ck("open blocks until timeout then half-open",()->{
+   AtomicLong clock=new AtomicLong(0);
+   RateBreaker b=new RateBreaker(2,0.5,2,1000,2,2,clock::get);
+   b.recordFailure(); b.recordFailure();
+   eq(false,b.canCall());
+   clock.set(999); eq(false,b.canCall());
+   clock.set(1000); eq(true,b.canCall());
+   eq(RateBreaker.State.HALF_OPEN,b.state());
+  });
+  ck("half-open success closes after threshold",()->{
+   AtomicLong clock=new AtomicLong(0);
+   RateBreaker b=new RateBreaker(2,0.5,2,1000,2,2,clock::get);
+   b.recordFailure(); b.recordFailure();
+   clock.set(1000); eq(true,b.canCall());
+   b.recordSuccess(); eq(RateBreaker.State.HALF_OPEN,b.state());
+   eq(true,b.canCall());
+   b.recordSuccess(); eq(RateBreaker.State.CLOSED,b.state());
+  });
+  ck("half-open failure reopens",()->{
+   AtomicLong clock=new AtomicLong(0);
+   RateBreaker b=new RateBreaker(2,0.5,2,1000,2,2,clock::get);
+   b.recordFailure(); b.recordFailure();
+   clock.set(1000); eq(true,b.canCall());
+   b.recordFailure();
+   eq(RateBreaker.State.OPEN,b.state());
+   eq(false,b.canCall());
+  });
+  ck("half-open limits probe calls",()->{
+   AtomicLong clock=new AtomicLong(0);
+   RateBreaker b=new RateBreaker(2,0.5,2,1000,2,2,clock::get);
+   b.recordFailure(); b.recordFailure();
+   clock.set(1000);
+   eq(true,b.canCall());
+   eq(true,b.canCall());
+   eq(false,b.canCall());
+  });
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+    reference: `interface Clock { long millis(); }
+class RateBreaker {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    private final int windowSize;
+    private final double failureRateThreshold;
+    private int minimumCalls;
+    private final long openMs;
+    private final int halfOpenMaxCalls;
+    private final int halfOpenSuccessThreshold;
+    private final Clock clock;
+    private final ArrayDeque<Boolean> window = new ArrayDeque<>();
+    private State state = State.CLOSED;
+    private long openedAt = 0;
+    private int halfOpenCalls = 0;
+    private int halfOpenSuccess = 0;
+    RateBreaker(int windowSize, double failureRateThreshold, int minimumCalls, long openMs, int halfOpenMaxCalls, int halfOpenSuccessThreshold, Clock clock) {
+        if (windowSize < 1) throw new IllegalArgumentException("windowSize");
+        if (failureRateThreshold <= 0 || failureRateThreshold > 1) throw new IllegalArgumentException("threshold");
+        if (minimumCalls < 1 || minimumCalls > windowSize) throw new IllegalArgumentException("minimumCalls");
+        if (openMs <= 0) throw new IllegalArgumentException("openMs");
+        if (halfOpenMaxCalls < 1) throw new IllegalArgumentException("halfOpenMaxCalls");
+        if (halfOpenSuccessThreshold < 1 || halfOpenSuccessThreshold > halfOpenMaxCalls) throw new IllegalArgumentException("successThreshold");
+        if (clock == null) throw new IllegalArgumentException("clock");
+        this.windowSize = windowSize; this.failureRateThreshold = failureRateThreshold; this.minimumCalls = minimumCalls;
+        this.openMs = openMs; this.halfOpenMaxCalls = halfOpenMaxCalls; this.halfOpenSuccessThreshold = halfOpenSuccessThreshold; this.clock = clock;
+    }
+    synchronized boolean canCall() {
+        long now = clock.millis();
+        if (state == State.OPEN) {
+            if (now - openedAt >= openMs) {
+                state = State.HALF_OPEN; halfOpenCalls = 0; halfOpenSuccess = 0; window.clear();
+            } else {
+                return false;
+            }
+        }
+        if (state == State.HALF_OPEN) {
+            if (halfOpenCalls >= halfOpenMaxCalls) return false;
+            halfOpenCalls++;
+            return true;
+        }
+        return true;
+    }
+    synchronized void recordSuccess() {
+        if (state == State.HALF_OPEN) {
+            halfOpenSuccess++;
+            if (halfOpenSuccess >= halfOpenSuccessThreshold) { state = State.CLOSED; window.clear(); }
+            return;
+        }
+        if (state == State.CLOSED) record(true);
+    }
+    synchronized void recordFailure() {
+        if (state == State.HALF_OPEN) {
+            state = State.OPEN; openedAt = clock.millis(); halfOpenCalls = 0; halfOpenSuccess = 0; return;
+        }
+        if (state == State.CLOSED) record(false);
+    }
+    private void record(boolean ok) {
+        window.addLast(ok);
+        if (window.size() > windowSize) window.removeFirst();
+        if (window.size() >= minimumCalls && failureRate() >= failureRateThreshold) {
+            state = State.OPEN; openedAt = clock.millis(); window.clear();
+        }
+    }
+    private double failureRate() {
+        int fail = 0;
+        for (boolean ok : window) if (!ok) fail++;
+        return (double) fail / window.size();
+    }
+    synchronized State state() { return state; }
+    synchronized int count() { return window.size(); }
+}`,
+    hints: [
+      'canCall() trong OPEN: nếu now - openedAt >= openMs thì chuyển HALF_OPEN và xóa cửa sổ, ngược lại trả false.',
+      'recordFailure() trong HALF_OPEN phải về OPEN ngay và set openedAt = now, không chờ hết probe.',
+      'Cửa sổ chỉ giữ windowSize phần tử gần nhất; khi đủ minimumCalls mới so failureRate với ngưỡng.',
+      'Nhớ xóa cửa sổ khi vào OPEN và khi về CLOSED để lần đo sau không bị lẫn kết quả cũ.'
+    ],
+    explain: `Bài tập cài breaker tỉ lệ lỗi: cửa sổ đếm (ArrayDeque) giữ tối đa windowSize kết quả, mỗi lần vượt thì removeFirst để "trượt". Chỉ khi cửa sổ đủ minimumCalls mới tính failureRate = số false / kích thước cửa sổ và so với ngưỡng. Khi vượt ngưỡng thì vào OPEN, ghi openedAt và xóa cửa sổ.
+
+canCall() xử lý ba trạng thái: OPEN chỉ chuyển HALF_OPEN khi hết openMs; HALF_OPEN giới hạn số probe bằng halfOpenCalls; CLOSED luôn cho qua. recordSuccess/recordFailure phân nhánh theo trạng thái: ở HALF_OPEN, đủ successThreshold thì về CLOSED, còn một lỗi thì về OPEN ngay.
+
+Lỗi thường gặp: quên xóa cửa sổ khi mở mạch (khiến lần đo sau lẫn quá khứ), không reset bộ đếm probe khi vào HALF_OPEN, hoặc so tỉ lệ khi chưa đủ minimumCalls (mở oan lúc traffic thấp). Trong production, các thông số này ánh xạ sang Resilience4j: slidingWindowType, slidingWindowSize, failureRateThreshold, minimumNumberOfCalls, waitDurationInOpenState, permittedNumberOfCallsInHalfOpenState. Riêng HALF_OPEN thì Resilience4j không đếm số lần thành công: nó chờ đủ permittedNumberOfCallsInHalfOpenState probe rồi so tỉ lệ lỗi với failureRateThreshold (một probe lỗi đơn lẻ chưa mở mạch ngay).`
+  }],
+  check: [
+    { q: 'Điểm khác chính giữa breaker đếm liên tiếp và breaker đếm tỉ lệ lỗi?', options: ['Đếm liên tiếp mở mạch theo tỉ lệ phần trăm', 'Đếm tỉ lệ mở mạch khi tỉ lệ lỗi trên cửa sổ vượt ngưỡng, không bị reset bởi một thành công xen giữa', 'Đếm tỉ lệ không cần cấu hình ngưỡng', 'Chúng giống hệt nhau'], answer: 1, explain: `Đúng (B): đếm tỉ lệ nhìn sức khỏe tổng thể trên cửa sổ nên lỗi rải rác vẫn bị phát hiện; đếm liên tiếp reset khi có một thành công nên dễ bỏ sót. (A) sai vì mô tả ngược. (C) sai vì tỉ lệ vẫn cần failureRateThreshold. (D) sai vì hai mô hình khác nhau về bản chất.` },
+    { q: 'minimumNumberOfCalls (ví dụ 20) dùng để làm gì?', options: ['Giảm bộ nhớ cửa sổ', 'Tránh mở mạch oan khi chỉ có 1-2 call lúc traffic thấp', 'Tăng tốc độ gọi downstream', 'Thay thế waitDurationInOpenState'], answer: 1, explain: `Đúng (B): với 1-2 call, một lỗi cho tỉ lệ 50-100% nhưng không đủ tin cậy; chỉ xét khi đủ mẫu. (A) sai vì kích thước cửa sổ do slidingWindowSize quyết định. (C) sai vì nó không ảnh hưởng tốc độ gọi. (D) sai vì đây là hai tham số khác nhau.` },
+    { q: 'Trong HALF_OPEN của bài này, khi nào về CLOSED và khi nào về OPEN?', options: ['Chờ hết số probe rồi mới quyết định', 'Đủ halfOpenSuccessThreshold probe thành công thì về CLOSED, chỉ cần một probe lỗi là về OPEN', 'Về CLOSED ngay sau probe thành công đầu tiên', 'Không đổi trạng thái'], answer: 1, explain: `Đúng (B): mô hình trong bài đếm số probe thành công, đủ halfOpenSuccessThreshold thì về CLOSED và xóa cửa sổ; mỗi probe lỗi đều chứng minh dependency chưa hồi phục nên về OPEN ngay và ghi openedAt = now. (A) sai vì đó là cách Resilience4j làm: nó chờ đủ permittedNumberOfCallsInHalfOpenState probe rồi mới so tỉ lệ lỗi với ngưỡng. (C) sai vì phải đủ halfOpenSuccessThreshold lần thành công, không phải một. (D) sai vì trạng thái phải cập nhật theo kết quả từng probe.` }
+  ],
+  related: ['microservices-025', 'microservices-060', 'microservices-061'],
+  tags: ['circuit breaker', 'sliding window', 'failure rate', 'half-open', 'resilience4j']
+},
+{
+  id: 'lesson-microservices-017', track: 'microservices', order: 17,
+  title: 'Breaker registry theo dependency: cô lập lỗi, fallback và metrics', level: 'senior', minutes: 30,
+  goals: [
+    'Vì sao mỗi dependency cần một breaker riêng thay vì một breaker chung',
+    'Thiết kế registry map tên -> breaker và execute() có fallback',
+    'Chọn loại fallback và bộ metrics tối thiểu để vận hành breaker'
+  ],
+  body: `**Tóm tắt:** Trong một service gọi nhiều downstream, mỗi dependency phải có **breaker riêng** (registry map tên -> breaker) để lỗi của Payment không làm mở mạch Inventory. {{execute(name, call, fallback)}} kiểm tra breaker của dependency đó: nếu OPEN thì trả fallback (không gọi downstream), nếu cho phép thì gọi và ghi kết quả. Kèm theo là bộ metrics tối thiểu: state, failure rate, số request bị reject và thời gian ở OPEN.
+
+### Vì sao không dùng một breaker chung
+Một breaker chung cho cả 10 downstream là sai lầm phổ biến: khi Payment lỗi và mở mạch, breaker chung cũng chặn luôn Inventory và Auth đang hoàn toàn khỏe, biến sự cố cục bộ thành sự cố toàn cục. Mỗi dependency có SLA, đặc tính lỗi và ngưỡng riêng: Payment nên nhạy (30-40% lỗi), Inventory có thể 50%, một API nội bộ ổn định có thể 70%. Registry cho phép cấu hình và theo dõi độc lập từng cái.
+
+### Registry và cấu hình theo SLA
+Registry giữ một breaker cho mỗi tên dependency, khởi tạo lười (lazy) khi gặp tên mới. Mỗi breaker có trạng thái và bộ đếm riêng, còn failureThreshold/openMs trong bài rút gọn này dùng chung cho mọi tên (Resilience4j thì cho phép cấu hình riêng từng instance). Khi gọi, ta tra breaker theo tên, kiểm tra trạng thái, rồi gọi hoặc trả fallback. Cách này cũng giúp metrics gắn nhãn theo dependency: biểu đồ "reject theo dependency" chỉ ra ngay cái nào đang mở mạch.
+
+### Chọn loại fallback
+| Loại fallback | Khi dùng | Rủi ro |
+|---|---|---|
+| Ném lỗi (fail fast) | Thao tác bắt buộc, không thể đoán bừa | Người dùng thấy lỗi, cần thông báo rõ |
+| Giá trị mặc định | Dữ liệu phụ trợ (số lượng gợi ý) | Có thể hiển thị thiếu, cần ghi nhãn |
+| Cache cũ (stale) | Dữ liệu đọc, chấp nhận cũ vài phút | Ẩn sự cố nếu không ghi tuổi dữ liệu |
+| Đẩy queue / async | Có thể xử lý sau | Trở thành dependency mới, cần giám sát |
+
+Nguyên tắc: fallback **không được giả mạo thành công** cho thao tác quan trọng như thanh toán hay trừ kho. Với dữ liệu đọc, fallback là hợp lệ nhưng phải nói rõ "dữ liệu có thể cũ" thay vì im lặng trả số liệu sai.
+
+### Cơ chế từng bước
+1. **Tra breaker theo tên**: nếu chưa có thì tạo mới (state CLOSED, bộ đếm 0).
+2. **Kiểm tra trạng thái**: nếu OPEN và chưa hết openMs thì tăng bộ đếm reject, trả fallback, **không gọi downstream** (tiết kiệm tài nguyên, tránh dồn lỗi).
+3. **Gọi downstream**: nếu thành công thì reset bộ đếm lỗi, tăng success; nếu ném lỗi thì tăng failure, và khi đủ ngưỡng (hoặc đang HALF_OPEN) thì mở mạch, ghi openedAt.
+4. **Ghi metrics**: mỗi lần gọi cập nhật state gauge, failure rate, reject count, và thời gian ở OPEN.
+
+### Cài đặt rút gọn
+~~~java
+// Registry: mỗi dependency một breaker, execute() có fallback
+class BreakerRegistry {
+    private final Map<String, Cell> cells = new HashMap<>();
+    synchronized <T> T execute(String name, Supplier<T> call, Supplier<T> fallback) {
+        Cell c = cells.computeIfAbsent(name, k -> new Cell());
+        long now = clock.millis();
+        if (c.state == State.OPEN && now - c.openedAt < openMs) {
+            rejected.merge(name, 1, Integer::sum);
+            return fallback.get();
+        }
+        if (c.state == State.OPEN) { c.state = State.HALF_OPEN; c.failures = 0; }
+        try {
+            T r = call.get();               // gọi downstream thật
+            c.state = State.CLOSED; c.failures = 0;
+            return r;
+        } catch (RuntimeException e) {
+            c.failures++;
+            if (c.state == State.HALF_OPEN || c.failures >= threshold) {
+                c.state = State.OPEN; c.openedAt = now;
+            }
+            return fallback.get();
+        }
+    }
+}
+~~~
+Điểm mấu chốt: breaker tra theo tên nên lỗi cô lập; khi OPEN thì **không gọi** downstream mà trả fallback ngay; mọi lần từ chối đều được đếm để quan sát.
+
+### Lỗi hay gặp
+- **Dùng một breaker chung cho mọi dependency**: lỗi một cái mở mạch tất cả, biến sự cố cục bộ thành toàn cục.
+- **Fallback giả mạo thành công**: trả 200 với dữ liệu rỗng cho thao tác thanh toán khiến người dùng tưởng đã xong; phải phân biệt rõ degraded với success.
+- **Không đếm reject**: không biết breaker đang chặn bao nhiêu request, không phát hiện được "mở oan".
+- **Fallback cũng là dependency mới**: fallback gọi một DB/API khác cũng có thể chết; phải có timeout và giám sát riêng.
+- **Không reset khi thành công**: bộ đếm lỗi không về 0 khiến một lỗi cũ làm mở mạch sớm ở lần sau.
+
+### Ví dụ đời thực
+**Bối cảnh:** API trang chủ gọi Recommendation, Inventory, Price. Recommendation chậm (p99 3s), Inventory và Price vẫn khỏe.
+**Triệu chứng:** dùng một breaker chung, Recommendation mở mạch kéo theo Inventory và Price bị chặn, trang không hiển thị giá và tồn kho dù hai cái hoàn toàn bình thường; tỉ lệ lỗi trang tăng 22%.
+**Điều tra:** tách registry theo tên: Recommendation có breaker riêng (ngưỡng 2 lỗi liên tiếp, mở 10s), Inventory và Price breaker riêng. Recommendation mở thì chỉ Recommendation bị chặn, fallback trả danh sách gợi ý rỗng có nhãn "tạm ẩn".
+**Kết quả:** tỉ lệ lỗi trang về 0,8%, giá và tồn kho luôn hiển thị, và metric reject theo dependency chỉ ra đúng Recommendation đang mở mạch.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi dùng registry map tên dependency sang breaker riêng, không dùng một breaker chung, vì lỗi của một downstream không được phép chặn các downstream đang khỏe. Mỗi execute() kiểm tra breaker theo tên: nếu OPEN thì trả fallback và đếm reject, không gọi downstream; nếu cho phép thì gọi và ghi success/failure, đủ ngưỡng thì mở mạch. Tôi chọn fallback theo loại dữ liệu: thao tác bắt buộc thì fail fast rõ ràng, dữ liệu đọc thì dùng cache cũ có ghi tuổi, và không bao giờ giả mạo thành công cho thanh toán hay tồn kho. Metrics tôi theo dõi là state, failure rate, số request bị reject và thời gian ở OPEN theo từng dependency để chỉnh ngưỡng và phát hiện mở oan.
+
+> Senior tip: đặt ngưỡng breaker theo SLA từng dependency (nội bộ 50%, bên thứ ba 30-40%) và luôn đếm reject theo tên; biểu đồ reject tăng đột biến thường là dấu hiệu mở oan hoặc dependency thật sự đang chết.
+
+### Liên hệ phỏng vấn
+- **Hỏi:** Vì sao không dùng một breaker chung cho mọi downstream? **Trả lời ngắn:** Lỗi một dependency sẽ mở mạch chung và chặn cả các dependency khỏe, biến sự cố cục bộ thành toàn cục; mỗi cái cần breaker riêng theo SLA.
+- **Hỏi:** Khi breaker OPEN, execute() nên làm gì? **Trả lời ngắn:** Trả fallback ngay và đếm reject, không gọi downstream; tránh dồn thêm lỗi và tiết kiệm tài nguyên.
+- **Hỏi:** Metrics nào quan trọng nhất để phát hiện breaker mở oan? **Trả lời ngắn:** Số request bị reject theo dependency và failure rate; reject tăng đột biến trong khi downstream vẫn khỏe cho thấy ngưỡng quá gắt.
+- **Hỏi:** Fallback có phải lúc nào cũng an toàn? **Trả lời ngắn:** Không; với thao tác bắt buộc (thanh toán, trừ kho) fallback không được giả mạo thành công, phải fail fast rõ ràng; với dữ liệu đọc thì cache cũ phải ghi tuổi dữ liệu.`,
+  exercises: [{
+    title: 'BreakerRegistry: cô lập theo dependency + fallback + metrics',
+    prompt: `Cài {{BreakerRegistry}} với một breaker độc lập cho mỗi tên dependency (dùng Clock giả):
+
+- Constructor: {{BreakerRegistry(int failureThreshold, long openMs, Clock clock)}}. Validate {{failureThreshold >= 1}}, {{openMs > 0}}, {{clock != null}}; sai thì ném {{IllegalArgumentException}}.
+- {{<T> T execute(String name, java.util.function.Supplier<T> call, java.util.function.Supplier<T> fallback)}}:
+  - Tra cell theo {{name}} (tạo mới nếu chưa có).
+  - Nếu cell đang OPEN và {{now - openedAt < openMs}}: tăng {{rejected}} của tên đó và trả {{fallback.get()}} mà **không gọi** {{call}}.
+  - Nếu cell đang OPEN và đã hết {{openMs}}: chuyển HALF_OPEN, reset {{failures = 0}}.
+  - Gọi {{call.get()}}: thành công thì về CLOSED, {{failures = 0}}, tăng {{success}}; nếu ném {{RuntimeException}} thì tăng {{failures}} và {{failure}}, và nếu đang HALF_OPEN hoặc {{failures >= failureThreshold}} thì về OPEN, {{openedAt = now}}, rồi trả {{fallback.get()}}.
+- {{State state(String name)}} trả CLOSED nếu chưa có cell.
+- {{int rejected(String name)}}, {{int successCount(String name)}}, {{int failureCount(String name)}} đếm theo tên (0 nếu chưa có).
+
+{{Clock}} là interface {{long millis()}}. Tất cả method {{synchronized}}.`,
+    starter: `interface Clock { long millis(); }
+class BreakerRegistry {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    private static class Cell { State state = State.CLOSED; int failures = 0; long openedAt = 0; }
+    private final int failureThreshold;
+    private final long openMs;
+    private final Clock clock;
+    private final Map<String, Cell> cells = new HashMap<>();
+    private final Map<String, Integer> rejected = new HashMap<>();
+    private final Map<String, Integer> success = new HashMap<>();
+    private final Map<String, Integer> failure = new HashMap<>();
+    BreakerRegistry(int failureThreshold, long openMs, Clock clock) {
+        this.failureThreshold = failureThreshold; this.openMs = openMs; this.clock = clock;
+    }
+    synchronized <T> T execute(String name, java.util.function.Supplier<T> call, java.util.function.Supplier<T> fallback) { throw new UnsupportedOperationException("TODO"); }
+    synchronized State state(String name) { Cell c = cells.get(name); return c == null ? State.CLOSED : c.state; }
+    synchronized int rejected(String name) { return rejected.getOrDefault(name, 0); }
+    synchronized int successCount(String name) { return success.getOrDefault(name, 0); }
+    synchronized int failureCount(String name) { return failure.getOrDefault(name, 0); }
+}`,
+    tests: `public class Main {
+ static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+ public static void main(String[] x){
+  ck("success passthrough",()->{
+   AtomicLong clock=new AtomicLong(0);
+   BreakerRegistry r=new BreakerRegistry(2,1000,clock::get);
+   eq("ok",r.execute("pay",()->"ok",()->"fb"));
+   eq(1,r.successCount("pay"));
+   eq(BreakerRegistry.State.CLOSED,r.state("pay"));
+  });
+  ck("exception returns fallback",()->{
+   AtomicLong clock=new AtomicLong(0);
+   BreakerRegistry r=new BreakerRegistry(2,1000,clock::get);
+   eq("fb",r.execute("pay",()->{throw new RuntimeException("down");}, ()->"fb"));
+   eq(1,r.failureCount("pay"));
+  });
+  ck("opens at threshold and rejects",()->{
+   AtomicLong clock=new AtomicLong(0);
+   BreakerRegistry r=new BreakerRegistry(2,1000,clock::get);
+   r.execute("pay",()->{throw new RuntimeException();}, ()->"fb");
+   r.execute("pay",()->{throw new RuntimeException();}, ()->"fb");
+   eq(BreakerRegistry.State.OPEN,r.state("pay"));
+   eq("fb",r.execute("pay",()->{throw new AssertionError("must not call");}, ()->"fb"));
+   eq(1,r.rejected("pay"));
+  });
+  ck("half-open success closes",()->{
+   AtomicLong clock=new AtomicLong(0);
+   BreakerRegistry r=new BreakerRegistry(1,1000,clock::get);
+   r.execute("pay",()->{throw new RuntimeException();}, ()->"fb");
+   clock.set(1000);
+   eq("ok",r.execute("pay",()->"ok", ()->"fb"));
+   eq(BreakerRegistry.State.CLOSED,r.state("pay"));
+   eq("ok2",r.execute("pay",()->"ok2", ()->"fb"));
+  });
+  ck("half-open failure reopens",()->{
+   AtomicLong clock=new AtomicLong(0);
+   BreakerRegistry r=new BreakerRegistry(1,1000,clock::get);
+   r.execute("pay",()->{throw new RuntimeException();}, ()->"fb");
+   clock.set(1000);
+   r.execute("pay",()->{throw new RuntimeException();}, ()->"fb");
+   eq(BreakerRegistry.State.OPEN,r.state("pay"));
+   eq("fb",r.execute("pay",()->{throw new AssertionError("must not call");}, ()->"fb"));
+   eq(1,r.rejected("pay"));
+  });
+  ck("dependencies isolated",()->{
+   AtomicLong clock=new AtomicLong(0);
+   BreakerRegistry r=new BreakerRegistry(1,1000,clock::get);
+   r.execute("a",()->{throw new RuntimeException();}, ()->"fa");
+   eq(BreakerRegistry.State.OPEN,r.state("a"));
+   eq("ok",r.execute("b",()->"ok", ()->"fb"));
+   eq(BreakerRegistry.State.CLOSED,r.state("b"));
+  });
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+    reference: `interface Clock { long millis(); }
+class BreakerRegistry {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    private static class Cell { State state = State.CLOSED; int failures = 0; long openedAt = 0; }
+    private final int failureThreshold;
+    private final long openMs;
+    private final Clock clock;
+    private final Map<String, Cell> cells = new HashMap<>();
+    private final Map<String, Integer> rejected = new HashMap<>();
+    private final Map<String, Integer> success = new HashMap<>();
+    private final Map<String, Integer> failure = new HashMap<>();
+    BreakerRegistry(int failureThreshold, long openMs, Clock clock) {
+        if (failureThreshold < 1) throw new IllegalArgumentException("failureThreshold");
+        if (openMs <= 0) throw new IllegalArgumentException("openMs");
+        if (clock == null) throw new IllegalArgumentException("clock");
+        this.failureThreshold = failureThreshold; this.openMs = openMs; this.clock = clock;
+    }
+    synchronized <T> T execute(String name, java.util.function.Supplier<T> call, java.util.function.Supplier<T> fallback) {
+        Cell c = cells.computeIfAbsent(name, k -> new Cell());
+        long now = clock.millis();
+        if (c.state == State.OPEN) {
+            if (now - c.openedAt < openMs) {
+                rejected.merge(name, 1, Integer::sum);
+                return fallback.get();
+            }
+            c.state = State.HALF_OPEN;
+            c.failures = 0;
+        }
+        try {
+            T r = call.get();
+            c.state = State.CLOSED;
+            c.failures = 0;
+            success.merge(name, 1, Integer::sum);
+            return r;
+        } catch (RuntimeException e) {
+            c.failures++;
+            failure.merge(name, 1, Integer::sum);
+            if (c.state == State.HALF_OPEN || c.failures >= failureThreshold) {
+                c.state = State.OPEN;
+                c.openedAt = now;
+            }
+            return fallback.get();
+        }
+    }
+    synchronized State state(String name) { Cell c = cells.get(name); return c == null ? State.CLOSED : c.state; }
+    synchronized int rejected(String name) { return rejected.getOrDefault(name, 0); }
+    synchronized int successCount(String name) { return success.getOrDefault(name, 0); }
+    synchronized int failureCount(String name) { return failure.getOrDefault(name, 0); }
+}`,
+    hints: [
+      'Tra cell theo name; nếu OPEN và chưa hết openMs thì tăng rejected và trả fallback, không gọi call.get().',
+      'Khi hết openMs thì chuyển HALF_OPEN và reset failures trước khi gọi downstream.',
+      'Bắt RuntimeException: nếu HALF_OPEN hoặc failures >= threshold thì về OPEN và set openedAt = now.',
+      'Mỗi tên có bộ đếm riêng; cell chưa tồn tại thì coi như CLOSED và các metric trả 0.'
+    ],
+    explain: `Registry map mỗi tên dependency sang một Cell (state, failures, openedAt). execute() kiểm tra trạng thái trước: OPEN chưa hết giờ thì reject và trả fallback, hết giờ thì chuyển HALF_OPEN rồi gọi downstream. Thành công reset failures và về CLOSED; lỗi tăng failures, và khi đủ ngưỡng (hoặc đang HALF_OPEN) thì mở mạch, ghi openedAt để đếm thời gian chờ.
+
+Việc tách cell theo tên chính là điểm cô lập: một dependency mở mạch không ảnh hưởng các dependency khác. Các metric rejected/success/failure cũng tách theo tên để quan sát.
+
+Lỗi thường gặp: dùng một breaker chung làm lỗi lan ra mọi dependency; không đếm reject nên không biết mở oan; fallback giả mạo thành công cho thao tác quan trọng; hoặc quên reset failures khi thành công khiến breaker mở sớm. Trong production, Resilience4j cho phép đặt registry + nhiều instance cấu hình riêng, ánh xạ đúng mô hình này.`
+  }],
+  check: [
+    { q: 'Vì sao không nên dùng một breaker chung cho mọi dependency?', options: ['Vì một breaker không đủ nhanh', 'Vì lỗi một dependency sẽ mở mạch chung và chặn cả các dependency đang khỏe', 'Vì mỗi dependency cần một Clock riêng', 'Vì breaker chung không lưu được trạng thái'], answer: 1, explain: `Đúng (B): breaker chung biến sự cố cục bộ thành toàn cục; mỗi dependency có SLA và ngưỡng riêng nên cần breaker riêng. (A) sai vì vấn đề là phạm vi ảnh hưởng, không phải tốc độ. (C) sai vì Clock là tiện ích test, không phải lý do tách breaker. (D) sai vì breaker chung vẫn lưu trạng thái, chỉ là gộp tất cả vào một trạng thái.` },
+    { q: 'Khi breaker của một dependency đang OPEN, execute() nên làm gì?', options: ['Vẫn gọi downstream để kiểm tra', 'Trả fallback và đếm reject, không gọi downstream', 'Ném lỗi xuống người dùng ngay', 'Xóa breaker đó'], answer: 1, explain: `Đúng (B): OPEN nghĩa là fail fast, trả fallback và đếm reject để tiết kiệm tài nguyên và tránh dồn lỗi; chỉ khi hết openMs mới cho probe. (A) sai vì gọi tiếp khi OPEN là nguyên nhân gây quá tải. (C) sai vì đã có fallback, không cần ném lỗi (trừ khi fallback là fail fast có chủ đích). (D) sai vì xóa breaker làm mất khả năng bảo vệ.` },
+    { q: 'Metrics nào quan trọng nhất để phát hiện breaker mở oan?', options: ['Số dòng code', 'Số request bị reject theo dependency và failure rate', 'Tổng dung lượng RAM', 'Số comment trong code'], answer: 1, explain: `Đúng (B): reject tăng đột biến trong khi downstream vẫn khỏe cho thấy ngưỡng quá gắt; failure rate cho biết mức suy giảm thực. (A), (C), (D) đều không phản ánh sức khỏe dependency.` }
+  ],
+  related: ['microservices-060', 'microservices-061', 'microservices-025'],
+  tags: ['circuit breaker', 'registry', 'fallback', 'metrics', 'bulkhead', 'graceful degradation']
 },
 );
