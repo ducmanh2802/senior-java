@@ -6259,8 +6259,518 @@ Chuan hoa scale (2 chu so thap phan cho USD/EUR) ngay khi tao BigDecimal, truoc 
 "BigDecimal.equals khong dung de so tien vi no so ca scale — 10.00 va 10.0 bi coi khac nhau. Em dung compareTo bang 0 de so gia tri, va setScale(2, HALF_UP) de chuan hoa scale truoc khi dung tien lam khoa Set/Map. O DB luu tien bang NUMERIC(19,2) hoac BIGINT cent. Test phai cover ca truong hop gia tri bang nhau nhung format khac."
 
 > Senior tip: equals/hashCode cua BigDecimal thuan toi "gia tri + cach viet", khong phai "gia tri tien te". Nhung code co ten la sameAmount hay dedupe tien phai tu doc quy uoc scale, khong duoc assume toan bo he thystem ghi scale giong nhau.`,
-  related: ['core-021', 'banking-036'],
+related: ['core-021', 'banking-036'],
   tags: ['BigDecimal', 'equals', 'compareTo', 'scale', 'tien', 'doi soat']
+},
+{
+  id: 'bug-032',
+  title: 'API chuyển tiền thiếu idempotency: client retry POST sau timeout làm trừ tiền hai lần',
+  domain: 'Ví điện tử / Fintech',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Ví điện tử 1.5 triệu người dùng. API {{POST /api/v1/transfers}} nhận lệnh chuyển tiền, gọi {{TransferService.execute}} để trừ ví người gửi, cộng ví người nhận, ghi sổ cái. Khách hàng hay bấm nút "Chuyển tiền" nhiều lần khi mạng chậm hoặc app hiển thị "Đang xử lý..." quá lâu. Team FE đã thêm khóa vô hiệu hoá nút sau 1 lần bấm, nhưng client mobile cũ (vẫn 15% người dùng) không có bản cập nhật đó, và trình duyệt tự retry POST khi timeout (mặc định 30s).
+  **Sự cố:** Sáng 20/11, đối soát phát hiện **237 giao dịch** bị trừ tiền 2 lần (cùng số tiền, cùng ví gửi/nhận, cách nhau 10–45 giây). Tổng số tiền trùng lặp khoảng **890 triệu đồng**. Log cho thấy hai request mang **cùng {{requestId}}** (client FE sinh UUID khi mở màn hình chuyển tiền) nhưng server tạo hai bản ghi sổ cái khác nhau. Khách khiếu nại "bị trừ 2 lần mà chỉ bấm 1 lần" — thực tế do client retry sau timeout 30s.
+  **Nhiệm vụ của bạn:**
+  1. Đọc code {{TransferController.execute}} và {{TransferService.execute}}, tìm vì sao cùng {{requestId}} vẫn tạo hai giao dịch.
+  2. Sửa để: (a) lưu {{Idempotency-Key}} (là {{requestId}}) với **ràng buộc duy nhất (unique constraint)** ở DB; (b) nếu key đã xử lý xong thì trả lại kết quả cũ; (c) nếu key đang được xử lý bởi request khác thì chờ request đó xong và trả kết quả đó (single-flight). Test dùng rào chặn để ép hai request cùng key chạy song song.`,
+  artifacts: [
+    { name: 'transfer-service.log', lang: 'text', content: `2026-11-20 09:12:44.118 INFO  [http-nio-8080-exec-17] TransferController : execute requestId=req-7f3a from=W-1001 to=W-2002 amount=500000
+2026-11-20 09:12:44.920 INFO  [http-nio-8080-exec-23] TransferController : execute requestId=req-7f3a from=W-1001 to=W-2002 amount=500000   <- client retry (timeout 30s)
+2026-11-20 09:12:44.355 INFO  [http-nio-8080-exec-17] TransferService    : debit from=W-1001 amount=500000 ok
+2026-11-20 09:12:44.358 INFO  [http-nio-8080-exec-17] TransferService    : credit to=W-2002 amount=500000 ok
+2026-11-20 09:12:44.362 INFO  [http-nio-8080-exec-17] TransferService    : ledger write TR-77120 SUCCESS
+2026-11-20 09:12:45.180 INFO  [http-nio-8080-exec-23] TransferService    : debit from=W-1001 amount=500000 ok
+2026-11-20 09:11:45.183 INFO  [http-nio-8080-exec-23] TransferService    : credit to=W-2002 amount=500000 ok
+2026-11-20 09:12:45.187 INFO  [http-nio-8080-exec-23] TransferService    : ledger write TR-77121 SUCCESS` },
+    { name: 'reconcile-2026-11-20.txt', lang: 'text', content: `RECONCILIATION 2026-11-20 06:00 ICT
+Duplicate transfers (same requestId)           : 237
+Total over-charged (VND)                       : 890,250,000
+Pattern                                        : 2 ledger rows within < 60s, same from/to/amount, same requestId
+Note: table idempotency_keys has NO unique constraint on request_id` },
+  ],
+  starter: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+record TransferCmd(String requestId, String fromWallet, String toWallet, long amount) {}
+record TransferResult(String transferId, String status) {}
+
+class InsufficientFundsException extends RuntimeException {
+    InsufficientFundsException(String m) { super(m); }
 }
 
+// Mô phỏng DB: bảng transfers (ghi sổ cái) + bảng idempotency_keys (chưa có unique constraint)
+class TransferStore {
+    final Map<String, String> transfers = new ConcurrentHashMap<>();       // requestId -> transferId
+    final Map<String, String> idemKeys = new ConcurrentHashMap<>();        // requestId -> transferId (nếu đã xong)
+    final Map<String, Object> inProgress = new ConcurrentHashMap<>();      // requestId -> lock object (nếu đang chạy)
+    final AtomicLong seq = new AtomicLong(77119);
+
+    String nextTransferId() { return "TR-" + seq.incrementAndGet(); }
+    void writeLedger(String transferId, String from, String to, long amount) {
+        transfers.put(transferId, from + "->" + to + ":" + amount);
+    }
+    String findByRequestId(String requestId) { return idemKeys.get(requestId); }
+    void markDone(String requestId, String transferId) { idemKeys.put(requestId, transferId); }
+    Object getOrCreateLock(String requestId) { return inProgress.computeIfAbsent(requestId, k -> new Object()); }
+    void removeLock(String requestId) { inProgress.remove(requestId); }
+}
+
+// ===== Code cần sửa =====
+class TransferService {
+    private final TransferStore store;
+    TransferService(TransferStore store) { this.store = store; }
+
+    TransferResult execute(TransferCmd cmd) {
+        // Kiểm tra đã xử lý chưa
+        String existing = store.findByRequestId(cmd.requestId());
+        if (existing != null) return new TransferResult(existing, "DUPLICATE");
+
+        // Thực hiện chuyển tiền (giả lập: luôn thành công, không check số dư)
+        String transferId = store.nextTransferId();
+        // BUG: không có khoá cho requestId đang chạy -> hai request cùng key cùng lọt qua đây
+        // giả lập độ trễ DB
+        try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        store.writeLedger(transferId, cmd.fromWallet(), cmd.toWallet(), cmd.amount());
+        store.markDone(cmd.requestId(), transferId);
+        return new TransferResult(transferId, "SUCCESS");
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) throws Exception {
+        // 1. Request mới: tạo giao dịch thành công
+        TransferStore s1 = new TransferStore();
+        TransferService svc1 = new TransferService(s1);
+        TransferResult r1 = svc1.execute(new TransferCmd("req-1", "W-1", "W-2", 100000));
+        check("request_moi_tao_giao_dich", "SUCCESS".equals(r1.status()) && s1.transfers.size() == 1,
+            "request mới phải tạo 1 giao dịch, thực tế status=" + r1.status() + " transfers=" + s1.transfers.size());
+
+        // 2. Gọi lại cùng requestId (tuần tự): phải trả lại kết quả cũ, không tạo thêm
+        TransferResult r1b = svc1.execute(new TransferCmd("req-1", "W-1", "W-2", 100000));
+        check("trung_key_tuan_tu", "DUPLICATE".equals(r1b.status()) && r1b.transferId().equals(r1.transferId()) && s1.transfers.size() == 1,
+            "phải trả lại " + r1.transferId() + " và không tạo thêm, thực tế status=" + r1b.status() + " id=" + r1b.transferId() + " transfers=" + s1.transfers.size());
+
+        // 3. Hai request CÙNG requestId chạy ĐỒNG THỜI (đúng như client retry khi timeout)
+        TransferStore s3 = new TransferStore();
+        TransferService svc3 = new TransferService(s3);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch bothIn = new CountDownLatch(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        Future<TransferResult> f1 = pool.submit(() -> { bothIn.countDown(); start.await(); return svc3.execute(new TransferCmd("req-dup", "W-A", "W-B", 500000)); });
+        Future<TransferResult> f2 = pool.submit(() -> { bothIn.countDown(); start.await(); return svc3.execute(new TransferCmd("req-dup", "W-A", "W-B", 500000)); });
+        bothIn.await(3, TimeUnit.SECONDS);
+        start.countDown();
+        TransferResult a = f1.get(5, TimeUnit.SECONDS);
+        TransferResult b = f2.get(5, TimeUnit.SECONDS);
+        pool.shutdownNow();
+        check("trung_key_dong_thoi", s3.transfers.size() == 1 && a.transferId().equals(b.transferId()),
+            "chỉ được 1 giao dịch và cả hai request nhận cùng transferId, thực tế transfers=" + s3.transfers.size() + " a=" + a.transferId() + " b=" + b.transferId());
+
+        // 4. Hai requestId khác nhau: phải tạo hai giao dịch khác nhau
+        TransferStore s4 = new TransferStore();
+        TransferService svc4 = new TransferService(s4);
+        svc4.execute(new TransferCmd("req-A", "W-1", "W-2", 100000));
+        svc4.execute(new TransferCmd("req-B", "W-1", "W-2", 200000));
+        check("hai_key_khac_nhau", s4.transfers.size() == 2,
+            "hai requestId khác nhau phải tạo 2 giao dịch, thực tế " + s4.transfers.size());
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+record TransferCmd(String requestId, String fromWallet, String toWallet, long amount) {}
+record TransferResult(String transferId, String status) {}
+
+class InsufficientFundsException extends RuntimeException {
+    InsufficientFundsException(String m) { super(m); }
+}
+
+class TransferStore {
+    final Map<String, String> transfers = new ConcurrentHashMap<>();
+    final Map<String, String> idemKeys = new ConcurrentHashMap<>();
+    final Map<String, Object> inProgress = new ConcurrentHashMap<>();
+    final AtomicLong seq = new AtomicLong(77119);
+
+    String nextTransferId() { return "TR-" + seq.incrementAndGet(); }
+    void writeLedger(String transferId, String from, String to, long amount) {
+        transfers.put(transferId, from + "->" + to + ":" + amount);
+    }
+    String findByRequestId(String requestId) { return idemKeys.get(requestId); }
+    void markDone(String requestId, String transferId) { idemKeys.put(requestId, transferId); }
+    Object getOrCreateLock(String requestId) { return inProgress.computeIfAbsent(requestId, k -> new Object()); }
+    void removeLock(String requestId) { inProgress.remove(requestId); }
+}
+
+// ===== Code đã sửa =====
+class TransferService {
+    private final TransferStore store;
+    TransferService(TransferStore store) { this.store = store; }
+
+    TransferResult execute(TransferCmd cmd) {
+        // 1) Nhanh: đã có kết quả xong -> trả ngay (idempotent read)
+        String done = store.findByRequestId(cmd.requestId());
+        if (done != null) return new TransferResult(done, "DUPLICATE");
+
+        // 2) Lấy khoá riêng cho requestId này: các request cùng key sẽ xếp hàng, key khác nhau không chặn nhau
+        Object lock = store.getOrCreateLock(cmd.requestId());
+        synchronized (lock) {
+            // Double-check sau khi có khoá: request khác có thể vừa xong
+            String done2 = store.findByRequestId(cmd.requestId());
+            if (done2 != null) return new TransferResult(done2, "DUPLICATE");
+
+            // 3) Thực hiện chuyển tiền
+            String transferId = store.nextTransferId();
+            try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            store.writeLedger(transferId, cmd.fromWallet(), cmd.toWallet(), cmd.amount());
+            store.markDone(cmd.requestId(), transferId);
+            return new TransferResult(transferId, "SUCCESS");
+        }
+    }
+}`,
+  hints: [
+    'Đọc log: hai request cùng {{requestId=req-7f3a}} nhưng server tạo {{TR-77120}} và {{TR-77121}}. Code có kiểm tra {{findByRequestId}} trước khi tạo không? Có, nhưng nó chỉ đọc — nếu hai request cùng lúc đều thấy "chưa có" thì vẫn cùng tạo.',
+    'Đây là check-then-act (kiểm tra rồi hành động) trên idempotency key. Cần biến "kiểm tra → tạo → lưu" thành thao tác nguyên tử cho mỗi key. Cách làm: khoá theo requestId (ConcurrentHashMap.getOrCreateLock) rồi double-check bên trong khoá.',
+    'Trên production thật (nhiều pod), khoá trong JVM không đủ. Phải có **unique constraint** trên cột {{request_id}} của bảng {{idempotency_keys}}: INSERT vào bảng này trong cùng transaction với ghi sổ cái. Nếu vi phạm unique thì SELECT lại kết quả cũ và trả về.',
+  ],
+  rootCause: `**Thiếu cơ chế idempotency (tính bất biến khi lặp lại) đúng mức trên khóa requestId.** Client gửi {{requestId}} như một idempotency key, nhưng {{TransferService.execute}} chỉ làm {{findByRequestId}} (đọc) rồi nếu chưa có thì tạo mới và {{markDone}} (ghi). Hai request cùng {{requestId}} chạy song song đều thấy "chưa có" (vì chưa request nào kịp ghi), nên cùng tạo giao dịch mới — đúng như log: cả hai request cùng gọi {{execute}}, cả hai đều lọt qua kiểm tra, tạo {{TR-77120}} và {{TR-77121}} cách nhau 34 giây (client retry sau timeout 30s). Bảng {{idempotency_keys}} không có unique constraint nên DB không chặn được bản ghi trùng.
+
+  Nguyên nhân sâu hơn: **check-then-act không nguyên tử**. Đoạn {{if (existing != null) return ...; ... create ...; markDone()}} gồm nhiều bước tách rời. Giữa "thấy chưa có" và "ghi đã có", luồng khác xen vào cũng thấy "chưa có". Cần một điểm chốt duy nhất: khoá theo key trong tiến trình (single-flight), và unique constraint ở DB để chốt chéo nhiều pod.`,
+  fix: `### Cách sửa trong bài
+1. **Khoá theo requestId (single-flight):** dùng {{ConcurrentHashMap<requestId, Object>}} + {{synchronized}} để các request cùng key chạy tuần tự, key khác nhau vẫn song song.
+2. **Double-check bên trong khoá:** sau khi có khoá, đọc lại {{findByRequestId}} — request cùng key chạy trước có thể vừa xong.
+3. **Chỉ tạo giao dịch khi thực sự chưa có:** nếu double-check thấy đã có thì trả kết quả cũ.
+
+~~~java
+Object lock = store.getOrCreateLock(cmd.requestId());
+synchronized (lock) {
+    String done2 = store.findByRequestId(cmd.requestId());
+    if (done2 != null) return new TransferResult(done2, "DUPLICATE");
+    String transferId = store.nextTransferId();
+    store.writeLedger(transferId, cmd.fromWallet(), cmd.toWallet(), cmd.amount());
+    store.markDone(cmd.requestId(), transferId);
+    return new TransferResult(transferId, "SUCCESS");
+}
+~~~
+
+### Trên production thật (nhiều pod / nhiều tiến trình)
+Khoá trong JVM chỉ chặn trong **một** tiến trình; hai request cùng key có thể rơi vào hai pod khác nhau. Điểm chốt phải nằm ở **database**:
+~~~sql
+-- Bảng idempotency_keys: request_id là khóa chính / unique
+CREATE TABLE idempotency_keys (
+    request_id VARCHAR(64) PRIMARY KEY,
+    transfer_id VARCHAR(64) NOT NULL,
+    status VARCHAR(16) NOT NULL,          -- 'DONE' | 'IN_PROGRESS'
+    response_json JSONB,                  -- lưu kết quả để trả lại
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+~~~
+- Trong **một transaction**: {{INSERT INTO idempotency_keys (request_id, status) VALUES (:reqId, 'IN_PROGRESS') ON CONFLICT (request_id) DO UPDATE SET status = 'IN_PROGRESS' WHERE idempotency_keys.status != 'DONE' RETURNING transfer_id, status}}.
+  - Nếu trả về status {{'DONE'}}: đã xử lý xong -> đọc {{transfer_id}} (hoặc {{response_json}}) và trả về.
+  - Nếu trả về status {{'IN_PROGRESS'}} (vừa chèn mới): tiến hành xử lý nghiệp vụ, ghi sổ cái, rồi {{UPDATE idempotency_keys SET status='DONE', transfer_id=..., response_json=... WHERE request_id=:reqId}}.
+  - Nếu transaction rollback (lỗi nghiệp vụ): {{status}} vẫn là {{'IN_PROGRESS'}} — cần job dọn dẹp (timeout) hoặc client retry sẽ thấy IN_PROGRESS và chờ/polling.
+- **Cùng key nhưng payload khác:** lưu hash của request body vào cột {{request_hash}}, khi conflict kiểm tra hash khớp không; không khớp -> từ chối (409).
+
+### So sánh
+| Cách | Đúng nhiều pod | Xử lý request đang chạy | Ghi chú |
+|---|---|---|---|
+| Chỉ check-then-act (không khoá, không unique) | **Không** | Không | Bài gốc — sai |
+| Khoá JVM + double-check | Không | **Có** (single-flight) | Chỉ đúng 1 pod |
+| Unique constraint DB + insert-or-return | **Có** | Không (lỗi unique -> SELECT lại) | Chuẩn, đơn giản |
+| Bảng idempotency_keys + status IN_PROGRESS/DONE | **Có** | **Có** (polling hoặc chờ) | Mạnh nhất, hỗ trợ single-flight đa tiến trình |
+
+### Phòng ngừa
+- Quy tắc review: mọi API tạo tài nguyên / trừ tiền / ghi sổ cái **bắt buộc** có idempotency key từ client và unique constraint ở DB.
+- Test: bắn 2 request cùng key đồng thời (CountDownLatch) -> chỉ 1 bản ghi; bắn tuần tự -> trả kết quả cũ.
+- Client FE: sinh requestId khi **mở màn hình** (không phải khi bấm nút), gửi kèm mọi retry.
+- Đối soát hằng ngày: đếm số requestId trùng trong bảng idempotency_keys / sổ cái.
+
+### Liên hệ phỏng vấn
+Khi được hỏi "làm sao tránh trừ tiền 2 lần khi user bấm 2 lần / client retry?", trả lời theo lớp: (1) client gửi idempotency key cho mỗi ý định (sinh khi mở màn hình, không phải lúc bấm), (2) server single-flight bằng khoá theo key (single-flight pattern), (3) unique constraint ở DB là chốt cuối cùng, (4) khi đụng unique constraint thì đọc lại và trả kết quả cũ thay vì báo lỗi. Nhắc thêm: idempotency áp dụng cho mọi thao tác không an toàn khi lặp (POST thanh toán, webhook, job retry, Kafka consumer).
+
+> Senior tip: Idempotency key là "hợp đồng" giữa client và server: client hứa gửi lại cùng key khi retry, server hứa cùng key cho cùng kết quả. Unique constraint ở DB là mạng lưới an toàn rẻ và chắc nhất — đừng tin hoàn toàn vào kiểm tra trong bộ nhớ hay khoá trong một tiến trình khi hệ thống chạy nhiều pod.`,
+  related: ['scenario-119'],
+  tags: ['idempotency', 'duplicate transfer', 'unique constraint', 'single-flight', 'concurrency', 'fintech']
+},
+{
+  id: 'bug-033',
+  title: 'Rate limiter token bucket race condition cho phép burst vượt giới hạn',
+  domain: 'API Gateway / Bảo vệ dịch vụ',
+  level: 'senior',
+  severity: 'P2',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** API Gateway (Spring Cloud Gateway, 6 pod) bảo vệ các dịch vụ backend bằng **rate limiter** kiểu token bucket (xô mã thông báo) trên mỗi client (API key). Cấu hình: mỗi client được **100 request/giây** (refill rate), bucket tối đa **200 token** (burst allowance). Rate limiter được viết tự do trong filter của Gateway, dùng {{ConcurrentHashMap<clientId, TokenBucket>}}.
+  **Sự cố:** Đợt flash sale 15/11, một đối tác lớn gửi traffic 500 req/s (vượt 5 lần quota) nhưng **không bị chặn** — dashboard rate limiter cho thấy "allowed" gần 100% trong 2 phút. Kết quả: service {{order-service}} quá tải, p99 latency từ 120ms lên 4.2s, 3 pod OOMKilled. Sau khi restart, rate limiter trở lại hoạt động bình thường.
+  **Nhiệm vụ của bạn:**
+  1. Đọc code {{TokenBucket.tryConsume}} và log, tìm vì sao burst traffic vượt bucket max mà không bị từ chối.
+  2. Sửa để: (a) token bucket đúng toán học (không bao giờ vượt maxTokens); (b) refill dựa trên thời gian thực (wall-clock), không dựa trên số lần gọi; (c) thread-safe khi nhiều request cùng client chạy song song. Test ép 500 request song song từ cùng client vào bucket 200 token.`,
+  artifacts: [
+    { name: 'gateway-rate-limit.log', lang: 'text', content: `2026-11-15 14:30:11.105 DEBUG RateLimitFilter : client=PARTNER-A tokens=200 -> allow (remaining=199)
+2026-11-15 14:30:11.106 DEBUG RateLimitFilter : client=PARTNER-A tokens=200 -> allow (remaining=198)
+...
+2026-11-15 14:30:11.312 DEBUG RateLimitFilter : client=PARTNER-A tokens=200 -> allow (remaining=199)   <- token KHÔNG GIẢM
+2026-11-15 14:30:11.313 DEBUG RateLimitFilter : client=PARTNER-A tokens=200 -> allow (remaining=198)
+...
+2026-11-15 14:30:13.001 WARN  OrderService       : queue depth 15000, rejecting new requests
+2026-11-15 14:30:13.112 ERROR OrderService       : java.lang.OutOfMemoryError: Java heap space` },
+    { name: 'token-bucket-code-review.txt', lang: 'text', content: `CODE REVIEW FINDINGS (RateLimiter.java):
+- Line 47: refill() called INSIDE tryConsume() -> every call adds tokens based on elapsed time since LAST CALL, not since last refill.
+- Line 52: tokens = Math.min(maxTokens, tokens + added) -> but 'added' computed from (now - lastRefillTime) where lastRefillTime updated AFTER min().
+- Race: two threads read tokens=200, both compute added=0, both allow, both write tokens=199 -> ONE token consumed for TWO requests.
+- lastRefillTime is a plain 'long', not volatile/AtomicLong -> visibility issue across threads.` },
+  ],
+  starter: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+class Clock {
+    private final AtomicLong now = new AtomicLong(System.currentTimeMillis());
+    long millis() { return now.get(); }
+    void advance(long ms) { now.addAndGet(ms); }
+}
+
+class RateLimitExceededException extends RuntimeException {
+    RateLimitExceededException(String m) { super(m); }
+}
+
+// ===== Code cần sửa =====
+class TokenBucket {
+    private final long maxTokens;
+    private final double refillRatePerSec;   // token mỗi giây
+    private double tokens;                   // token hiện có (có phần thập phân do refill rate)
+    private long lastRefillTime;             // ms epoch
+
+    TokenBucket(long maxTokens, double refillRatePerSec, Clock clock) {
+        this.maxTokens = maxTokens;
+        this.refillRatePerSec = refillRatePerSec;
+        this.tokens = maxTokens;
+        this.lastRefillTime = clock.millis();
+    }
+
+    // Gọi mỗi request: nạp token theo thời gian trôi qua, rồi thử trừ 1.
+    // Trả true nếu còn token (cho phép), false nếu hết (từ chối).
+    boolean tryConsume(Clock clock) {
+        refill(clock);
+        if (tokens >= 1.0) {
+            Thread.yield(); // Mở rộng cửa sổ race: thread khác có thể đọc cùng giá trị trước khi ghi
+            tokens -= 1.0;
+            return true;
+        }
+        return false;
+    }
+
+    private void refill(Clock clock) {
+        long now = clock.millis();
+        long elapsed = now - lastRefillTime;
+        double added = elapsed * refillRatePerSec / 1000.0;
+        tokens = Math.min(maxTokens, tokens + added);
+        lastRefillTime = now;
+    }
+
+    double getTokens() { return tokens; }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) throws Exception {
+        Clock clock = new Clock();
+
+        // 1. Bucket đầy: 200 request đầu tiên phải cho phép, request 201 bị từ chối
+        TokenBucket b1 = new TokenBucket(200, 100.0, clock);
+        int allowed = 0;
+        for (int i = 0; i < 250; i++) if (b1.tryConsume(clock)) allowed++;
+        check("bucket_day_cho_phep_200", allowed == 200,
+            "bucket max 200 phải cho 200 request, thực tế " + allowed);
+
+        // 2. Sau 1 giây, refill 100 token: phải cho thêm 100 request
+        clock.advance(1000);
+        allowed = 0;
+        for (int i = 0; i < 150; i++) if (b1.tryConsume(clock)) allowed++;
+        check("refill_sau_1_giay", allowed == 100,
+            "sau 1s refill 100 token phải cho thêm 100, thực tế " + allowed);
+
+        // 3. Không bao giờ vượt maxTokens: nạp 10s rồi thử -> vẫn chỉ max 200
+        clock.advance(10000);
+        TokenBucket b3 = new TokenBucket(200, 100.0, clock);
+        allowed = 0;
+        for (int i = 0; i < 300; i++) if (b3.tryConsume(clock)) allowed++;
+        check("khong_vuot_max_tokens", allowed == 200,
+            "dù nạp lâu, bucket không vượt 200, thực tế " + allowed);
+
+        // 4. TÁI HIỆN SỰ CỐ: 500 request CÙNG LÚC từ cùng client -> không được cho quá 200
+        Clock clock4 = new Clock();
+        TokenBucket b4 = new TokenBucket(200, 100.0, clock4);
+        ExecutorService pool = Executors.newFixedThreadPool(50);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicInteger allowed4 = new AtomicInteger();
+        List<Future<?>> futures = new ArrayList<>();
+        for (int i = 0; i < 500; i++) {
+            futures.add(pool.submit(() -> {
+                try { start.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                if (b4.tryConsume(clock4)) allowed4.incrementAndGet();
+            }));
+        }
+        start.countDown();
+        for (Future<?> f : futures) f.get(5, TimeUnit.SECONDS);
+        pool.shutdownNow();
+        check("dong_thoi_500_request", allowed4.get() == 200,
+            "500 request đồng thời vào bucket 200 token chỉ được cho 200, thực tế " + allowed4.get());
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+class Clock {
+    private final AtomicLong now = new AtomicLong(System.currentTimeMillis());
+    long millis() { return now.get(); }
+    void advance(long ms) { now.addAndGet(ms); }
+}
+
+class RateLimitExceededException extends RuntimeException {
+    RateLimitExceededException(String m) { super(m); }
+}
+
+// ===== Code đã sửa =====
+class TokenBucket {
+    private final long maxTokens;
+    private final double refillRatePerSec;
+    private final AtomicLong tokensNano;           // token * 1_000_000 (tránh double race)
+    private final AtomicLong lastRefillNanos;
+
+    TokenBucket(long maxTokens, double refillRatePerSec, Clock clock) {
+        this.maxTokens = maxTokens;
+        this.refillRatePerSec = refillRatePerSec;
+        this.tokensNano = new AtomicLong((long) (maxTokens * 1_000_000));
+        this.lastRefillNanos = new AtomicLong(clock.millis() * 1_000_000L);
+    }
+
+    boolean tryConsume(Clock clock) {
+        long nowNanos = clock.millis() * 1_000_000L;
+        refill(nowNanos);
+        // CAS loop: chỉ trừ khi còn >= 1 token (1_000_000 nano-tokens)
+        long current, next;
+        do {
+            current = tokensNano.get();
+            if (current < 1_000_000) return false;
+            next = current - 1_000_000;
+        } while (!tokensNano.compareAndSet(current, next));
+        return true;
+    }
+
+    private void refill(long nowNanos) {
+        long last = lastRefillNanos.get();
+        long elapsedNanos = nowNanos - last;
+        if (elapsedNanos <= 0) return;
+        // Tính token cần thêm: elapsedNanos * rate / 1e9 -> nano-tokens
+        long addedNano = (long) (elapsedNanos * refillRatePerSec * 1_000_000.0 / 1_000_000_000.0);
+        if (addedNano <= 0) return;
+        // CAS loop để cộng token và cập nhật lastRefillNanos nguyên tử
+        while (true) {
+            long currentTokens = tokensNano.get();
+            long currentLast = lastRefillNanos.get();
+            if (currentLast != last) {
+                last = currentLast;
+                elapsedNanos = nowNanos - last;
+                if (elapsedNanos <= 0) return;
+                addedNano = (long) (elapsedNanos * refillRatePerSec * 1_000_000.0 / 1_000_000_000.0);
+                if (addedNano <= 0) return;
+                continue;
+            }
+            long newTokens = Math.min(maxTokens * 1_000_000L, currentTokens + addedNano);
+            long newLast = nowNanos;
+            if (tokensNano.compareAndSet(currentTokens, newTokens)
+                    && lastRefillNanos.compareAndSet(currentLast, newLast)) {
+                return;
+            }
+        }
+    }
+
+    double getTokens() { return tokensNano.get() / 1_000_000.0; }
+}`,
+  hints: [
+    'Đọc log: token luôn in ra 200 cho hàng trăm request liên tiếp — refill không hoạt động đúng. Và code review chỉ ra: refill() được gọi BÊN TRONG tryConsume, lastRefillTime cập nhật SAU khi tính added, và tokens là double không thread-safe.',
+    'Ba lỗi cùng lúc: (1) double tokens + plain long lastRefillTime -> race condition: hai thread cùng đọc tokens=200, cùng trừ 1, cùng ghi 199 -> mất 1 token; (2) refill logic sai: lastRefillTime cập nhật sau min() -> thread sau tính elapsed từ thời điểm thread trước đã cập nhật -> refill quá nhiều/quá ít; (3) refill dựa trên "lần gọi gần nhất" chứ không phải thời gian thực -> burst traffic không gọi đều đặn khiến refill lệch.',
+    'Sửa: dùng AtomicLong lưu token * 1_000_000 (nano-tokens) tránh double; refill dựa trên wall-clock (now - lastRefillNanos) và CAS loop để cập nhật cả tokens VÀ lastRefillNanos nguyên tử; tryConsume dùng CAS loop trừ 1 token.',
+  ],
+  rootCause: `**Token bucket implementation có ba lỗi nghiêm trọng khiến rate limiter thất hiệu dưới tải cao:**
+
+  1. **Race condition trên double + plain long:** {{tokens}} là {{double}}, {{lastRefillTime}} là {{long}} không volatile. Hai thread cùng vào {{tryConsume}}: cả hai đọc {{tokens=200.0}}, cả hai gọi {{refill}} (elapsed=0 -> added=0), cả hai {{tokens -= 1.0}} -> cả hai ghi {{199.0}}. **Hai request chỉ tiêu 1 token**. Với 500 request đồng thời, bucket 200 token có thể cho qua gần 500 request.
+
+  2. **Refill logic sai (lastRefillTime cập nhật sau min):** {{refill}} tính {{added}} từ {{now - lastRefillTime}}, sau đó {{tokens = min(max, tokens + added)}}, RỒI mới {{lastRefillTime = now}}. Nếu thread A đang ở giữa refill (đã tính added, chưa cập nhật lastRefillTime), thread B vào sẽ thấy lastRefillTime cũ -> tính elapsed lớn hơn thực tế -> added lớn hơn -> token bị "phình" ảo.
+
+  3. **Refill dựa trên lần gọi chứ không phải wall-clock:** Nếu không có request trong 1 giây, bucket không refill. Khi burst 500 request đến cùng lúc, chỉ request đầu tiên thấy elapsed lớn và refill, các request sau thấy elapsed ≈ 0 (vì lastRefillTime vừa được cập nhật) -> không refill thêm. Kết quả: burst traffic được xử lý bằng **token còn lại tại thời điểm request đầu tiên**, chứ không phải token thực sự khả dụng theo thời gian.
+
+  Kết hợp ba lỗi, rate limiter trở nên **vô hiệu** dưới burst: bucket 200 token cho qua ~500 request trong vài mili giây, khiến backend quá tải và OOM.`,
+  fix: `### Cách sửa trong bài
+1. **Loại bỏ double và plain long**: dùng {{AtomicLong}} lưu **nano-tokens** (token × 1.000.000) để tránh race trên số thực và có CAS (compare-and-set) nguyên tử.
+2. **Refill dựa trên wall-clock**: {{elapsedNanos = nowNanos - lastRefillNanos.get()}} — luôn đo từ thời điểm refill gần nhất thực sự, không phụ thuộc vào thời điểm gọi method.
+3. **CAS loop cho cả refill và consume**:
+   - {{refill}}: CAS loop cập nhật **cả** {{tokensNano}} **và** {{lastRefillNanos}} cùng lúc (nếu thread khác đã refill giữa chừng thì tính lại).
+   - {{tryConsume}}: CAS loop trừ {{1_000_000}} nano-tokens chỉ khi {{current >= 1_000_000}}.
+
+~~~java
+// Refill: cập nhật token VÀ lastRefillNanos nguyên tử
+while (true) {
+    long currentTokens = tokensNano.get();
+    long currentLast = lastRefillNanos.get();
+    if (currentLast != last) {
+        last = currentLast;
+        elapsedNanos = nowNanos - last;
+        if (elapsedNanos <= 0) return;
+        addedNano = (long) (elapsedNanos * refillRatePerSec * 1_000_000.0 / 1_000_000_000.0);
+        if (addedNano <= 0) return;
+        continue;
+    }
+    long newTokens = Math.min(maxTokens * 1_000_000L, currentTokens + addedNano);
+    long newLast = nowNanos;
+    if (tokensNano.compareAndSet(currentTokens, newTokens)
+            && lastRefillNanos.compareAndSet(currentLast, newLast)) {
+        return;
+    }
+}
+
+// Consume: chỉ trừ khi còn token
+long current, next;
+do {
+    current = tokensNano.get();
+    if (current < 1_000_000) return false;
+    next = current - 1_000_000;
+} while (!tokensNano.compareAndSet(current, next));
+return true;
+~~~
+
+### Trên production thật
+- **Đừng tự viết rate limiter** cho production. Dùng thư viện đã chứng thực: **Resilience4j RateLimiter**, **Bucket4j**, hoặc **Spring Cloud Gateway built-in RateLimiter filter** (dùng Redis cho phân tán).
+- **Rate limiter phân tán (distributed):** nhiều pod Gateway cần chia sẻ trạng thái bucket -> lưu bucket trong Redis (Lua script atomic) hoặc dùng **token bucket trên Redis** ({{INCRBY}}, {{GET}}, {{EXPIRE}} trong một script Lua).
+- **Leaky bucket vs Token bucket:** Token bucket cho phép burst (quan trọng cho UX: cho phép 200 request ngay lập tức rồi giới hạn 100/s), leaky bucket làm mượt traffic nhưng chậm phản hồi ban đầu. API Gateway thường dùng token bucket.
+- **Key phân biệt:** client duy nhất bằng API key, IP, hoặc user ID. Cẩn thận với IP chung (NAT, corporate proxy) -> dùng API key / JWT claim.
+- **Metrics:** xuất {{rate_limiter_allowed_total}}, {{rate_limiter_rejected_total}}, {{rate_limiter_bucket_tokens}} cho Prometheus/Grafana; cảnh báo khi rejected rate > 0.
+
+### So sánh cách hiện thực hóa
+| Cách | Thread-safe | Phân tán | Burst support | Ghi chú |
+|---|---|---|---|---|
+| double + plain long (bài gốc) | **Không** | Không | Có (lý thuyết) | Sai về mặt race |
+| AtomicLong nano-tokens + CAS | **Có** | Không | Có | Đúng 1 pod |
+| Bucket4j local | **Có** | Không | Có | Sẵn sàng dùng |
+| Redis + Lua script token bucket | **Có** | **Có** | Có | Chuẩn production |
+
+### Phòng ngừa
+- Test tải: bắn gấp 5–10 lần quota từ nhiều thread, xác minh rejected count = expected.
+- Chaos test: kill pod giữa chừng, bucket Redis phải giữ trạng thái.
+- Code review: mọi {{double}} / {{long}} dùng chung cho stateful component phải bị chặn (SpotBugs/Sonar).
+
+### Liên hệ phỏng vấn
+Khi được hỏi "viết rate limiter token bucket thế nào cho đúng?", nêu: (1) dùng integer (nano-tokens) thay double, (2) refill dựa trên wall-clock (now - lastRefill), (3) CAS loop cho cả refill và consume để tránh race, (4) production dùng Redis + Lua script cho phân tán, (5) metrics rejected/allowed. Thêm: bucket4j/Resilience4j đã làm tốt việc này — đừng tự viết nếu không phải bài tập.
+
+> Senior tip: Rate limiter là "cửa ngõ" bảo vệ hệ thống — nó phải **chắc chắn đúng** dưới mọi tải. Một bug race cho phép 2x traffic là đủ làm sập cả cụm backend. Luôn test đồng thời (CountDownLatch) với traffic gấp 5–10 lần quota, không chỉ test tuần tự.`,
+  related: ['api-009', 'microservices-007', 'concurrency-015'],
+  tags: ['rate limiter', 'token bucket', 'race condition', 'CAS', 'AtomicLong', 'API Gateway', 'burst']
+}
 );
