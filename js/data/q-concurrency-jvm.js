@@ -11609,5 +11609,431 @@ static <T> T firstSuccess(List<CompletableFuture<T>> futures) {
     'Nếu cần biết TẤT CẢ nhánh nào lỗi thì dùng anyOf hay allOf + handle?'
   ],
   tags: ['CompletableFuture', 'anyOf', 'failover', 'first-success', 'racing']
+},
+{
+  id: 'jvm-065',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Service Java trên Kubernetes: p99 tăng gấp đôi dù CPU trung bình chỉ 30–40% và GC pause bình thường. Bạn nghi CPU throttling do CFS quota/period. Giải thích cơ chế, cách đọc số liệu từ cgroup, vì sao JVM không "thấy" đủ, và cách xử lý.',
+  a: `**Tóm tắt:** CFS (Completely Fair Scheduler) chia CPU theo chu kỳ {{period}} (mặc định 100 ms) và hạn mức {{quota}} (ví dụ 200 ms mỗi 100 ms = 2 CPU). Trong một period, nếu tổng thời gian CPU mà pod dùng vượt quota, kernel "đóng băng" toàn bộ tiến trình trong pod đến hết period, dù node còn CPU rảnh. Hiện tượng đó gọi là {{throttling}}, thấy qua bộ đếm {{nr_throttled}} và {{throttled_time}} trong {{cpu.stat}} của cgroup. Vì bị đóng băng từng nhịp ngắn, CPU trung bình cả phút có thể chỉ 30% nhưng p99 vẫn tăng vọt.
+
+### Hiểu nhanh
+Hãy tưởng tượng một nhân viên được cấp "hạn mức 200 phút làm việc mỗi 100 phút" (tương đương 2 nhân sự). Trong 100 phút đầu, nếu có việc gấp, họ làm liền 200 phút rồi phải ngồi chơi phần còn lại của chu kỳ. Trung bình cả ngày họ chỉ làm 40%, nhưng đúng lúc việc dồn vào đầu chu kỳ thì khách phải chờ. Throttling giống hệt: nó không làm CPU% cao, nó biến thành độ trễ đuôi.
+
+### Thuật ngữ
+- **CFS**: bộ lập lịch mặc định của Linux, chia CPU công bằng theo trọng số.
+- **Period**: cửa sổ thời gian CFS dùng để tính hạn mức, mặc định 100 ms.
+- **Quota**: tổng thời gian CPU một cgroup được dùng trong một period, ví dụ 200 ms.
+- **cpu.max**: file cgroup v2 ghi "quota period", ví dụ {{200000 100000}}; cgroup v1 dùng {{cfs_quota_us}} và {{cfs_period_us}}.
+- **cpu.stat**: file thống kê cgroup có {{nr_periods}}, {{nr_throttled}}, {{throttled_usec}} (v2) hoặc {{throttled_time}} (v1, nano giây).
+- **QoS Guaranteed**: pod có requests = limits cho cả CPU và memory.
+- **availableProcessors**: số CPU mà JVM cho là có, quyết định số thread GC, JIT và common pool.
+
+### Vì sao throttling xảy ra (từng bước)
+1. Kubernetes dịch {{limits.cpu}} thành quota CFS. Ví dụ limits.cpu = 2 thì quota 200 ms mỗi period 100 ms.
+2. Mọi thread trong pod cùng chia nhau quota đó; CFS cấp phát theo từng slice.
+3. Khi tổng CPU tiêu thụ trong period chạm quota, kernel đánh dấu cgroup bị throttle và không cho chạy tiếp tới hết period.
+4. Ngay khi period mới bắt đầu, các thread lại tranh nhau chạy để "bù" phần đã mất, nên dồn CPU vào đầu chu kỳ sau.
+5. Kết quả: mỗi chu kỳ có một khoảng đứng im, và request rơi đúng khoảng đó sẽ có latency rất cao.
+
+~~~text
+period 100 ms, quota 200 ms (= 2 CPU)
+|----0----50----100----150----200----|  (mốc trong period)
+chạy hết 200 ms CPU  ->  bị throttle phần còn lại của period
+tải tới   ████████████████████░░░░░░░░░░░░░░░░  (dồn đầu chu kỳ)
+CPU phút  ██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  (trung bình chỉ ~35%)
+~~~
+
+### Đọc số liệu từ cgroup
+~~~bash
+# cgroup v2
+cat /sys/fs/cgroup/cpu.stat
+# usage_usec 3912000
+# nr_periods 3600
+# nr_throttled 2230
+# throttled_usec 1240000
+
+# tỉ lệ bị throttle (cách đọc nhanh)
+awk '/nr_periods/{p=$2} /nr_throttled/{t=$2} END{print t/p}' /sys/fs/cgroup/cpu.stat
+~~~
+
+### JVM thấy gì và không thấy gì
+~~~java
+// In lúc khởi động để biết JVM tự tính bao nhiêu CPU
+System.out.println("availableProcessors = " + Runtime.getRuntime().availableProcessors());
+// GC/JIT/commonPool sizing theo số này, KHÔNG theo quota thực tế
+System.out.println("commonPool parallelism = " +
+    java.util.concurrent.ForkJoinPool.commonPool().getParallelism());
+~~~
+
+{{availableProcessors}} được suy ra từ ceil của (quota / period). Ví dụ quota 150 ms, period 100 ms thì JVM thấy 2 CPU, nên nó tạo thread GC và common pool cho 2 CPU, trong khi thực tế quota chỉ 1,5 CPU và còn bị đóng băng theo period. Đó là lý do "nhìn thì đủ CPU" nhưng vẫn nghẽn.
+
+### Cách xử lý (trade-off)
+| Cách làm | Tác dụng | Giá phải trả |
+|---|---|---|
+| requests = limits (QoS Guaranteed) | Ít bị throttle khi tải biến động, scheduler đặt đúng node | Đặt trước tài nguyên cố định, có thể lãng phí |
+| Giảm số thread (Tomcat, pool, GC) | Ít thread tranh quota, ít bị đóng băng đồng loạt | Throughput tối đa giảm |
+| {{-XX:ActiveProcessorCount}} | Ép JVM tính đúng số CPU thực tế cho GC/JIT | Đặt sai làm pool quá nhỏ hoặc quá lớn |
+| Tăng limits.cpu | Nhiều quota hơn mỗi period | Tốn tiền, không chữa gốc nếu code tạo quá nhiều thread |
+| static CPU manager / CPU pinning | Giảm nhiễu, latency ổn định | Chỉ cho pod Guaranteed số nguyên CPU, phức tạp vận hành |
+
+### Lỗi hay gặp
+- **Chỉ nhìn CPU trung bình**: triệu chứng là dashboard 30% nhưng p99 xấu. Cách tránh: alert theo tỉ lệ {{nr_throttled}} / {{nr_periods}}, không chỉ CPU%.
+- **Nhầm throttling với GC pause**: GC pause là STW do JVM, throttling là do kernel. Cách tránh: đối chiếu thời điểm spike với GC log và {{cpu.stat}}.
+- **Tăng limits.cpu liên tục mà không giảm thread**: quota lớn hơn nhưng vẫn bị đóng băng nếu burst quá gấp. Cách tránh: giới hạn thread và làm phẳng tải.
+- **Đặt ActiveProcessorCount quá cao**: JVM tạo nhiều GC/JIT thread hơn quota cho phép, tự gây throttling. Cách tránh: đặt đúng hoặc để mặc định rồi đo.
+
+### Ví dụ đời thực
+Một service thanh toán chạy 6 pod, limits.cpu = 1 (quota 100 ms mỗi period 100 ms), requests.cpu = 250m. Tomcat 30 thread, GC 4 thread, JIT 2 thread. Trong giờ flash sale, p99 từ 40 ms vọt lên 900 ms, nhưng CPU trung bình chỉ 35% và GC pause vẫn dưới 20 ms. Đọc {{cpu.stat}}: {{nr_throttled}} / {{nr_periods}} = 0,62, {{throttled_usec}} chiếm 38% thời gian. Điều tra: burst 500 request đến trong 80 ms làm 40 thread cùng muốn CPU, vượt quota 100 ms nên bị đóng băng khoảng 30 ms mỗi period. Sửa: đặt requests = limits = 2 (QoS Guaranteed), giảm Tomcat maxThreads xuống 20, giảm GC thread, thêm HPA scale theo RPS. Kết quả: tỉ lệ throttle về dưới 3%, p99 còn 60 ms, CPU trung bình 45%.
+
+### Trả lời mẫu khi phỏng vấn
+"Trên Kubernetes, limits.cpu được dịch thành CFS quota và period, mặc định period 100 ms. Khi tổng CPU của pod vượt quota trong period, kernel đóng băng toàn bộ tiến trình đến hết period, dù node còn CPU. Vì bị đóng băng từng nhịp ngắn, CPU trung bình có thể chỉ 30% nhưng p99 vẫn tăng. Tôi đọc cpu.stat trong cgroup: nr_periods, nr_throttled và throttled_usec, rồi tính tỉ lệ bị throttle; nếu tỉ lệ cao mà GC pause bình thường thì gần như chắc là throttling chứ không phải JVM. JVM chỉ thấy availableProcessors bằng ceil của quota chia period, nên nó tạo số thread GC và common pool theo con số đó, không biết mình sẽ bị đóng băng. Cách xử lý là đặt requests bằng limits để có QoS Guaranteed, giảm số thread để bớt tranh quota, tăng limits.cpu khi cần, và chỉ chỉnh ActiveProcessorCount sau khi đo. Tôi cảnh báo theo tỉ lệ nr_throttled chứ không chỉ theo CPU trung bình, vì đó mới là chỉ số phản ánh đúng hiện tượng."
+
+> Senior tip: "CPU 30% mà p99 xấu" gần như luôn là một trong ba: throttling, lock contention, hoặc GC. Tôi luôn mở cpu.stat của cgroup trước khi mở profiler, vì nó miễn phí, đọc trong một giây và loại trừ được một nửa khả năng. Nếu nr_throttled trên nr_periods cao, mọi tối ưu code đều vô nghĩa cho tới khi sửa quota hoặc số thread.`,
+  follow: [
+    'Vì sao p99 tăng mà CPU trung bình chỉ 30% — throttling khác GC pause ở điểm nào?',
+    'Đặt {{-XX:ActiveProcessorCount}} sai ảnh hưởng thế nào tới GC và ForkJoinPool?',
+    'QoS Guaranteed có đảm bảo hết throttling không?'
+  ],
+  tags: ['Kubernetes', 'cgroup', 'CFS throttling', 'CPU quota', 'p99', 'container'],
+  refs: [
+    { type: 'doc', title: 'Kubernetes: Resource Management for Pods and Containers', url: 'https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/' },
+    { type: 'doc', title: 'Linux kernel: cgroup v2', url: 'https://docs.kernel.org/admin-guide/cgroup-v2.html' },
+    { type: 'doc', title: 'The java Command (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html' }
+  ]
+},
+{
+  id: 'jvm-066',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Pod Java limit 2 GB, heap sau GC chỉ còn 700 MB nhưng thỉnh thoảng bị OOMKilled; working set vượt limit. Ngoài heap và native, những nguồn bộ nhớ nào bị tính vào container? Vì sao ghi file tạm vào emptyDir medium Memory hoặc log nhiều có thể giết pod dù heap nhỏ? Chẩn đoán và giảm thế nào?',
+  a: `**Tóm tắt:** "Bộ nhớ của container" trong cgroup không chỉ là heap. {{memory.current}} gồm bộ nhớ ẩn danh (anonymous: heap, thread stack, native JVM) cộng page cache cho file mà container đọc/ghi, cộng tmpfs (loại emptyDir medium: Memory) và một phần kernel. Page cache của file thường **reclaim được**: khi cgroup chạm ngưỡng, kernel bỏ bớt trang file sạch để lấy lại bộ nhớ. Nhưng tmpfs nằm trong RAM và **không reclaim được** (không có swap), nên ghi một file 1 GB vào tmpfs là chiếm 1 GB RAM thật; cộng với heap, tổng vượt limit là kernel OOMKill pod dù heap vẫn thấp.
+
+### Hiểu nhanh
+Coi limit 2 GB là sức chứa một chiếc vali. Heap 700 MB chỉ là một ngăn; bạn còn nhét một tảng "đá nước" 1,5 GB (tmpfs) vào vali. Đá nước không nén được, nên vali vượt cân và bị loại, dù ngăn quần áo vẫn còn trống.
+
+### Thuật ngữ
+- **Anonymous memory**: bộ nhớ không gắn với file, ví dụ heap, stack, native heap.
+- **Page cache**: vùng RAM chứa nội dung file để đọc/ghi nhanh; kernel có thể bỏ khi cần.
+- **tmpfs**: hệ thống file nằm trong RAM; ghi vào đó là tiêu tốn bộ nhớ thật.
+- **emptyDir**: volume tạm của pod, mặc định nằm trên đĩa node; {{medium: Memory}} biến nó thành tmpfs.
+- **memory.current / memory.max**: bộ nhớ đang dùng và trần của cgroup (v2).
+- **memory.stat**: thống kê chi tiết theo anon, file, shmem (tmpfs), kernel, slab.
+- **working set**: xấp xỉ bộ nhớ "không thể thu hồi nhanh", thường dùng để so với limit.
+
+### Vì sao bị OOMKill dù heap thấp (từng bước)
+1. cgroup tính {{memory.current}} bằng anon + file (page cache) + shmem/tmpfs + kernel + slab.
+2. Khi gần {{memory.max}}, kernel cố reclaim: trang file **sạch** bị bỏ, trang anon và tmpfs thì không (không có swap thì không đẩy ra được).
+3. Nếu sau reclaim vẫn vượt max, OOM killer chọn một process trong cgroup và giết bằng SIGKILL.
+4. Với JVM, cái chết này không có OutOfMemoryError và không có heap dump; chỉ thấy exit 137 trong Kubernetes.
+
+### Đọc bộ nhớ container
+~~~bash
+# cgroup v2: tổng và chi tiết
+cat /sys/fs/cgroup/memory.current
+cat /sys/fs/cgroup/memory.stat        # anon, file, shmem, kernel_stack, slab...
+cat /sys/fs/cgroup/memory.events      # oom, oom_kill, high, max
+
+# metric Kubernetes hay dùng
+# container_memory_working_set_bytes  (xấp xỉ memory.current trừ file inactive)
+# container_memory_rss                (anonymous + swap cache)
+~~~
+Nếu {{memory.stat}} có shmem lớn thì thủ phạm là tmpfs; nếu anon lớn thì là heap/native; nếu file lớn nhưng working set không vượt thì thường là page cache bình thường và kernel sẽ tự reclaim.
+
+### Ví dụ code: file tạm có thể rơi vào tmpfs
+~~~java
+// java.io.tmpdir thường là /tmp; trên nhiều image /tmp là tmpfs
+File tmp = File.createTempFile("upload-", ".pdf");   // nằm trong /tmp
+try (var out = new java.io.BufferedOutputStream(new java.io.FileOutputStream(tmp))) {
+    // ghi khoảng 300 MB dữ liệu
+    byte[] buf = new byte[64 * 1024];
+    for (int i = 0; i < 300 * 1024 * 1024 / buf.length; i++) out.write(buf);
+} // 300 MB này chiếm RAM nếu /tmp là tmpfs
+tmp.delete();
+~~~
+
+### Chọn chỗ chứa file tạm
+| Cách | Tính vào bộ nhớ? | Thu hồi khi thiếu RAM? | Dùng khi |
+|---|---|---|---|
+| emptyDir mặc định (đĩa node) | Page cache, có thể bị reclaim | Có | Ghi file tạm lớn, log tạm |
+| emptyDir medium: Memory (tmpfs) | Đúng bằng kích thước file | Không (không swap) | Cần I/O cực nhanh, file nhỏ |
+| volume ngoài (PVC, S3...) | Không tính vào RAM container | Không liên quan | Dữ liệu lớn, cần bền |
+| Trực tiếp trong RAM (heap/byte[]) | Có, thuộc anon | Không | Xử lý nhỏ, streaming |
+
+{{sizeLimit}} trên emptyDir giúp giới hạn dung lượng; với tmpfs, đặt sizeLimit để pod bị evict trước khi OOMKill cả container.
+
+### Lỗi hay gặp
+- **java.io.tmpdir trỏ vào tmpfs**: triệu chứng là OOMKill khi xử lý file lớn, heap thấp. Cách tránh: trỏ tmpdir sang emptyDir đĩa hoặc volume, hoặc stream.
+- **Log json ghi ra file rồi bị thu vào tmpfs**: triệu chứng là bộ nhớ tăng theo lưu lượng log. Cách tránh: ghi log ra volume, giới hạn size, rotate.
+- **Chỉ alert theo heap**: triệu chứng là không thấy gì bất thường trước khi pod chết. Cách tránh: alert theo working set và theo shmem trong {{memory.stat}}.
+- **Quên sizeLimit cho emptyDir**: tmpfs phình tới khi cgroup OOMKill cả container. Cách tránh: đặt sizeLimit và giám sát.
+
+### Ví dụ đời thực
+Service xuất báo cáo PDF, pod limit 2 GB, Xmx 1 GB. Khi xuất báo cáo 300 MB, JVM ghi tạm vào {{java.io.tmpdir}} trỏ /tmp (tmpfs). Heap chỉ 700 MB nhưng {{memory.current}} vượt 2 GB vì 300 MB PDF nằm trong tmpfs cộng page cache, pod OOMKilled (exit 137), không có OutOfMemoryError. Điều tra: {{memory.stat}} cho thấy shmem 900 MB, anon 1,1 GB. Sửa: mount emptyDir (đĩa) 1 Gi sizeLimit cho /tmp, chuyển sang stream PDF ra response, giới hạn multipart location. Kết quả: shmem về 0, anon 900 MB, working set peak 1,5 GB dưới 2 GB, không còn OOMKilled trong 3 tuần.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong cgroup, bộ nhớ container không chỉ là heap. memory.current gồm anonymous là heap, stack và native JVM, cộng page cache cho file container đọc/ghi, cộng tmpfs như emptyDir medium Memory và một phần kernel. Page cache thường reclaim được nên ít khi gây OOMKill, nhưng tmpfs nằm trong RAM và không reclaim được, nên ghi file lớn vào đó là chiếm RAM thật; cộng với heap có thể vượt limit và kernel giết pod với exit 137, không có OutOfMemoryError hay heap dump. Tôi chẩn đoán bằng memory.stat: shmem tăng nghĩa là tmpfs, anon tăng là heap hoặc native, file tăng nhưng working set không vượt thì là page cache bình thường. Cách giảm là trỏ java.io.tmpdir sang emptyDir đĩa hoặc volume, stream thay vì dựng file lớn, đặt sizeLimit cho emptyDir và giám sát working set cùng shmem, không chỉ giám sát heap."
+
+> Senior tip: trên Kubernetes tôi luôn hỏi "pod này có ghi file tạm không, và /tmp là tmpfs hay đĩa?". Đã gặp nhiều ca OOMKilled exit 137 với heap thấp chỉ vì vài trăm MB file tạm nằm trong tmpfs. Alert theo container_memory_working_set_bytes và theo shmem trong memory.stat sẽ bắt được trước khi kernel ra tay.`,
+  follow: [
+    'Page cache của file có bị OOMKill không, vì sao thường không?',
+    '{{emptyDir}} sizeLimit có thực sự giới hạn tmpfs không?',
+    '{{memory.high}} khác {{memory.max}} thế nào?'
+  ],
+  tags: ['Kubernetes', 'emptyDir', 'tmpfs', 'page cache', 'OOMKilled', 'cgroup v2'],
+  refs: [
+    { type: 'doc', title: 'Kubernetes: Volumes (emptyDir)', url: 'https://kubernetes.io/docs/concepts/storage/volumes/#emptydir' },
+    { type: 'doc', title: 'Linux kernel: cgroup v2', url: 'https://docs.kernel.org/admin-guide/cgroup-v2.html' }
+  ]
+},
+{
+  id: 'jvm-067',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Allocation rate cao và GC chạy nhiều. Bạn bật JFR để xem allocation: event nào chỉ ra code cấp phát ở đâu, TLAB là gì và vì sao allocation thường rất nhanh, khi nào object bị cấp phát ngoài TLAB, và bạn đọc cũng như tune TLAB thế nào?',
+  a: `**Tóm tắt:** Mỗi thread có một {{TLAB}} (Thread Local Allocation Buffer): một vùng nhỏ trong Eden mà thread được cấp riêng để cấp phát object bằng cách **đẩy con trỏ** (bump-the-pointer), không cần khoá. Nhờ vậy allocation thông thường chỉ mất vài chục nano giây. Object quá lớn so với phần còn trống của TLAB, hoặc khi TLAB hết chỗ, phải đi "đường chậm" (slow path) để xin vùng mới hoặc cấp phát trực tiếp. JFR cho biết nơi cấp phát: {{jdk.ObjectAllocationSample}} là event lấy mẫu (bật liên tục được, có throttle), còn {{jdk.ObjectAllocationInNewTLAB}} và {{jdk.ObjectAllocationOutsideTLAB}} chi tiết hơn nhưng tắt mặc định vì tốn. Đọc kết quả giúp tìm "nhà máy sinh rác" và biết tỷ lệ cấp phát ngoài TLAB.
+
+### Hiểu nhanh
+Mỗi nhân viên có một giỏ hàng riêng (TLAB) để bốc đồ nhanh, không phải xếp chung một quầy. Khi giỏ đầy, họ mới ra kho chung lấy giỏ mới (slow path). Nếu món đồ quá to so với giỏ, phải lấy trực tiếp từ kho chung, chậm hơn nhiều.
+
+### Thuật ngữ
+- **Eden**: vùng young gen nơi object mới được cấp phát.
+- **TLAB**: vùng cấp phát riêng của một thread trong Eden.
+- **Bump-the-pointer**: cách cấp phát bằng cách dịch một con trỏ lên, rất nhanh vì không cần tìm chỗ trống.
+- **Fast path / slow path**: đường cấp phát nhanh trong TLAB, đường chậm khi phải xin vùng mới.
+- **Allocation rate**: tốc độ cấp phát object, tính bằng MB/s.
+- **Allocation stall**: thread bị chặn khi cấp phát vì GC không kịp dọn.
+- **JFR**: Java Flight Recorder, ghi sự kiện JVM với chi phí thấp.
+
+### Cơ chế cấp phát (từng bước)
+1. Khi Eden được tạo, JVM chia thành các TLAB cho từng thread đang chạy; kích thước tự điều chỉnh theo tốc độ cấp phát.
+2. Thread cấp một object nhỏ: còn chỗ trong TLAB thì chỉ cần dịch con trỏ tới và trả về địa chỉ, không khoá, không đồng bộ.
+3. TLAB hết chỗ: thread xin một TLAB mới từ Eden. Nếu Eden cũng không đủ, JVM chạy young GC hoặc thread bị allocation stall.
+4. Object lớn hơn phần còn trống của TLAB: cấp phát trực tiếp từ Eden theo slow path; với G1, object từ nửa region trở lên là humongous và được cấp riêng.
+
+~~~text
+Eden (một phần)
+[ TLAB thread1 | TLAB thread2 | TLAB thread3 | ... ]
+thread1 cấp: con trỏ dịch 16 byte -> xong (fast path)
+TLAB đầy -> xin TLAB mới; Eden đầy -> young GC / allocation stall
+object quá to -> cấp thẳng Eden (slow path)
+~~~
+
+### Đọc allocation bằng JFR
+~~~bash
+# bật recording cấu hình profile
+jcmd <pid> JFR.start settings=profile filename=/tmp/alloc.jfr duration=5m
+jcmd <pid> JFR.dump filename=/tmp/alloc.jfr
+jcmd <pid> JFR.stop
+~~~
+- {{jdk.ObjectAllocationSample}}: lấy mẫu nơi cấp phát, có throttle nên bật liên tục được; đủ để tìm hot method sinh rác.
+- {{jdk.ObjectAllocationInNewTLAB}} và {{jdk.ObjectAllocationOutsideTLAB}}: chi tiết từng lần, mặc định tắt vì tốn; chỉ bật khi cần tỷ lệ ngoài TLAB.
+- Đối chiếu với {{jdk.GarbageCollection}} và {{jdk.GCHeapSummary}} để biết allocation rate cao có làm young GC dày không.
+
+### Tune TLAB (chỉ sau khi đo)
+| Flag | Ý nghĩa | Khi cân nhắc |
+|---|---|---|
+| {{-XX:TLABSize}} | Kích thước TLAB ban đầu (mặc định tự chọn) | Set cứng khi đã biết pattern cấp phát |
+| {{-XX:-ResizeTLAB}} | Tắt tự điều chỉnh kích thước | Khi muốn TLAB cố định, tránh dao động |
+| {{-XX:MinTLABSize}} / {{-XX:MaxTLABSize}} | Chặn dưới và trên | Khi có object lớn cố định |
+| {{-XX:TLABWasteTargetPercent}} | Phần trăm lãng phí chấp nhận (mặc định 1) | Giảm slow path khi chấp nhận lãng phí hơn |
+
+Quy tắc: TLAB lớn thì ít slow path nhưng lãng phí Eden; TLAB nhỏ thì tiết kiệm nhưng nhiều slow path. Để auto là mặc định tốt; chỉ chỉnh khi JFR cho thấy outside-TLAB cao hoặc young GC quá dày.
+
+### Code: một vòng lặp sinh rác và một vòng lặp ít rác
+~~~java
+// XẤU: mỗi phần tử tạo HashMap + String tạm -> allocation rate cao
+String bad(java.util.List<Row> rows) {
+    java.util.List<String> out = new java.util.ArrayList<>();
+    for (Row r : rows) {
+        java.util.Map<String, Object> m = new java.util.HashMap<>();
+        m.put("id", r.id()); m.put("sum", r.sum());
+        out.add(m.toString());
+    }
+    return String.join(",", out);
+}
+// TỐT: cộng dồn primitive, gần như không tạo object tạm
+long good(java.util.List<Row> rows) {
+    long total = 0;
+    for (Row r : rows) total += r.sum();
+    return total;
+}
+~~~
+
+### Lỗi hay gặp
+- **Nhiều platform thread, mỗi thread một TLAB**: triệu chứng là Eden đầy nhanh hơn, young GC dày dù mỗi thread cấp ít. Cách tránh: giảm số thread, dùng pool chung.
+- **Tạo object tạm trong vòng lặp nóng**: triệu chứng là allocation rate cao và GC chạy liên tục. Cách tránh: tái sử dụng buffer, tránh boxing, dùng primitive.
+- **Tăng heap để "giảm GC" mà không sửa allocation**: triệu chứng là chỉ hoãn vấn đề, old gen tăng đều. Cách tránh: sửa nguồn rác trước.
+- **Bật cả hai event outside/new TLAB trên production 24/7**: overhead cao. Cách tránh: chỉ bật khi điều tra, dùng ObjectAllocationSample cho giám sát.
+
+### Ví dụ đời thực
+Service tìm kiếm, heap 8 GB, allocation rate 1,8 GB/s, young GC mỗi 400 ms, p99 120 ms. JFR ObjectAllocationSample: 62% mẫu nằm ở {{buildResponse}}, mỗi phần tử tạo một HashMap và vài String. Ngoài ra 12% cấp phát ngoài TLAB vì mỗi request tạo mảng 200 KB. Sửa: dựng response trực tiếp vào buffer dùng lại, bỏ HashMap trung gian, cắt mảng lớn thành chunk. Kết quả: allocation rate còn 0,6 GB/s, young GC thưa còn mỗi 1,1 s, outside-TLAB còn 2%, p99 về 70 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Mỗi thread có một TLAB là vùng riêng trong Eden để cấp phát object bằng cách đẩy con trỏ, nên allocation nhanh vì không cần khoá; chỉ khi TLAB hết chỗ mới đi slow path, và object rất lớn thì cấp trực tiếp, với G1 là humongous. Tôi dùng JFR để tìm nơi cấp phát: ObjectAllocationSample lấy mẫu và bật liên tục được vì có throttle, đủ để thấy hot method sinh rác; khi cần biết tỷ lệ ngoài TLAB thì bật ObjectAllocationOutsideTLAB trong lúc điều tra. Tôi đối chiếu allocation với GC log để biết allocation rate có làm young GC dày không. Tune TLAB chỉ sau khi đo: TLAB lớn giảm slow path nhưng lãng phí Eden, để auto thường là tốt nhất. Trong một ca, allocation 1,8 GB/s giảm còn 0,6 GB/s sau khi bỏ HashMap trung gian và mảng lớn trong vòng lặp, young GC từ 400 ms xuống 1,1 s."
+
+> Senior tip: allocation profiling tìm "nhà máy sinh rác", còn GC chỉ là hệ quả. Trước khi tăng heap hay đổi GC, hãy hỏi: object tạm này có thật sự cần không? Trong thực tế, giảm 60% allocation thường hiệu quả hơn mọi tinh chỉnh GC.`,
+  follow: [
+    '{{jdk.ObjectAllocationSample}} khác {{jdk.ObjectAllocationInNewTLAB}} thế nào về chi phí?',
+    'Nhiều platform thread ảnh hưởng tới TLAB và Eden ra sao?',
+    'Làm sao biết allocation rate cao là nguyên nhân của young GC dày?'
+  ],
+  tags: ['JFR', 'TLAB', 'allocation', 'GC', 'allocation rate', 'profiling'],
+  refs: [
+    { type: 'doc', title: 'The java Command (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html' }
+  ]
+},
+{
+  id: 'jvm-068',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'Bạn chọn G1 hay ZGC cho service heap 32 GB, allocation rate khoảng 1,5 GB/s, SLO p99 dưới 50 ms, pod 4 vCPU. Bạn phân tích log thế nào để biết đây là vấn đề pause hay vấn đề throughput (GC không theo kịp), CPU sát trần ảnh hưởng ra sao, và khi nào ZGC làm mọi thứ tệ hơn?',
+  a: `**Tóm tắt:** Trước khi chọn collector, hãy phân loại sự cố: **pause problem** (GC dừng ứng dụng lâu, p99 spike trùng pause) hay **concurrent throughput problem** (GC chạy liên tục, allocation stall, evacuation failure vì không theo kịp tốc độ cấp phát). G1 tối ưu pause mềm nhưng heap lớn và allocation cao dễ có mixed GC pause và to-space exhausted; ZGC dọn gần như đồng thời nên pause dưới mili giây, nhưng cần **CPU headroom** để chạy concurrent GC và **heap dư** để relocate. Nếu CPU đã sát trần, ZGC có thể rơi vào allocation stall và làm throughput cùng tail latency tệ hơn cả G1. Chọn theo phân loại và headroom, không theo bảng pause suông.
+
+### Hiểu nhanh
+G1 thỉnh thoảng "dừng chợ" vài trăm mili giây để dọn; ZGC vừa bán vừa dọn nên khách không phải dừng, nhưng cần thêm nhân viên dọn (CPU) và kệ trống (heap). Nếu chợ đã chật người và kệ đầy, thuê thêm người dọn chỉ làm loạn.
+
+### Thuật ngữ
+- **Pause**: khoảng GC dừng ứng dụng (stop-the-world).
+- **Concurrent cycle**: chu kỳ GC chạy song song với ứng dụng.
+- **Allocation stall**: thread cấp phát bị chặn vì GC không kịp dọn chỗ.
+- **Evacuation failure / to-space exhausted**: G1 không còn region trống để copy object sống, thường dẫn tới Full GC.
+- **Headroom**: phần CPU hoặc heap còn trống ở đỉnh tải.
+- **SoftMaxHeapSize**: ngưỡng ZGC cố tránh vượt để không OOM.
+- **ConcGCThreads**: số thread ZGC chạy đồng thời.
+
+### Phân biệt qua GC log (từng bước)
+~~~bash
+# JDK 17+: bật log
+-Xlog:gc*,gc+heap=debug:file=/logs/gc.log:time,uptime,level,tags:filecount=5,filesize=20m
+~~~
+1. G1: tìm {{Pause Young}}, {{Pause Mixed}}, {{Concurrent Start}}, {{To-space exhausted}} hoặc {{Evacuation Failure}}, {{Pause Full}}. Nếu p99 spike trùng các dòng pause thì là pause problem.
+2. ZGC: tìm {{Pause Mark Start}}, {{Pause Mark End}}, {{Pause Relocate Start}}; pause thường dưới 1 ms. Nếu thấy {{Allocation Stall}} hoặc concurrent cycle chạy liên tục không kịp thì là concurrent throughput problem.
+3. Nếu CPU tăng vọt đúng lúc GC chạy và allocation rate vượt khả năng dọn thì đó là throughput problem: thêm CPU hoặc giảm allocation, không phải cứ "đổi GC".
+
+~~~text
+G1:   [app........][PAUSE 200ms][app....][PAUSE mixed 150ms][app...]
+ZGC:  [app][tiny][app][tiny][app][tiny][app]  (concurrent, pause <1ms)
+      nhưng nếu thiếu CPU: app bị allocation stall chờ GC dọn
+~~~
+
+### Điều chỉnh theo hướng đã phân loại
+| Tình huống | Việc nên làm | Việc KHÔNG nên |
+|---|---|---|
+| Pause cao (STW) | ZGC generational, đo lại p99 và p999 | Tăng heap vô hạn |
+| Allocation stall, GC không kịp | Thêm CPU hoặc heap, giảm allocation, tăng ConcGCThreads | Ép ZGC khi CPU đã 85% |
+| To-space exhausted (G1) | Tăng heap hoặc giảm allocation, bắt đầu marking sớm | Tăng region size bừa |
+| CPU sát trần | Giữ G1 hoặc giảm allocation, thêm CPU | Nghĩ pause thấp là hết vấn đề |
+
+~~~bash
+# G1
+-XX:+UseG1GC -XX:MaxGCPauseMillis=100
+# ZGC (Java 21+)
+-XX:+UseZGC -XX:+ZGenerational -XX:ConcGCThreads=2 -XX:SoftMaxHeapSize=28g
+~~~
+
+### Lỗi hay gặp
+- **Đổi sang ZGC khi CPU peak đã 85%**: triệu chứng là allocation stall, latency xấu hơn. Cách tránh: đảm bảo headroom CPU trước.
+- **So sánh bằng benchmark 5 phút trên laptop**: chưa thấy chu kỳ old. Cách tránh: chạy vài giờ trong container cùng quota.
+- **Chỉ nhìn pause trung bình**: G1 trung bình đẹp nhưng p999 xấu. Cách tránh: so phân bố p99 và p999.
+- **Tăng Xmx bằng toàn bộ limit để ZGC "có chỗ"**: pod OOMKilled. Cách tránh: chừa phần native.
+
+### Ví dụ đời thực
+Service gợi ý giá, heap 32 GB, allocation 1,5 GB/s, SLO p99 dưới 50 ms, pod 4 vCPU. Với G1: p99 thường 30 ms nhưng mỗi mixed GC 180–350 ms làm p99 vọt lên 400 ms vài lần mỗi giờ, tức là pause problem. Đổi sang ZGC generational: pause dưới 1 ms, nhưng CPU từ 60% lên 92% và thỉnh thoảng allocation stall, p99 còn 120 ms, vẫn trượt SLO. Điều tra log ZGC thấy concurrent cycle không theo kịp allocation 1,5 GB/s khi chỉ có 4 vCPU. Kết luận: không còn là pause problem mà là throughput và headroom. Sửa: tăng pod lên 8 vCPU và giảm allocation bằng cách bỏ object tạm. Khi đó ZGC p99 còn 22 ms, CPU 65%, SLO đạt. Nếu không thể thêm CPU, giữ G1 và giảm allocation là hợp lý hơn.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không chọn collector theo bảng pause. Tôi phân loại sự cố qua GC log: nếu p99 spike trùng Pause Young hoặc Pause Mixed và có To-space exhausted thì là pause problem, G1 phù hợp hơn khi CPU hạn chế; nếu GC chạy liên tục, có allocation stall và CPU tăng vọt thì là throughput problem, cần thêm CPU hoặc giảm allocation chứ không phải đổi GC. ZGC generational cho pause dưới mili giây nhờ dọn đồng thời, nhưng nó cần CPU headroom cho concurrent GC và heap dư để relocate; trên pod 4 vCPU với allocation 1,5 GB/s, ZGC làm CPU lên 92% và vẫn allocation stall, nên tôi tăng lên 8 vCPU và giảm object tạm thì mới đạt SLO p99 dưới 50 ms. Tôi luôn đo nhiều giờ trong container cùng quota, so p99, p999, CPU và RSS, và chỉ canary trên production sau khi có baseline."
+
+> Senior tip: pause thấp không đồng nghĩa với latency thấp. ZGC chỉ thắng khi còn CPU và heap headroom; thiếu một trong hai, nó đổi pause thành allocation stall, và tail latency còn tệ hơn G1. Câu hỏi tôi luôn hỏi trước là: GC đang thiếu CPU hay đang thiếu thời gian dừng?`,
+  follow: [
+    'Làm sao phân biệt allocation stall với Full GC qua log?',
+    '{{ConcGCThreads}} và {{SoftMaxHeapSize}} chỉnh thế nào trên pod 4 vCPU?',
+    'G1 có gặp allocation stall không, trong trường hợp nào?'
+  ],
+  tags: ['G1', 'ZGC', 'allocation stall', 'GC log', 'latency', 'throughput'],
+  refs: [
+    { type: 'doc', title: 'JEP 439: Generational ZGC', url: 'https://openjdk.org/jeps/439' },
+    { type: 'doc', title: 'The java Command (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html' }
+  ]
+},
+{
+  id: 'jvm-069',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Heap sau GC tăng đều khoảng 400 MB mỗi 2 giờ, gần như chắc chắn leak. Bạn mở MAT nhưng Leak Suspects không chỉ ra nghi phạm rõ. Bạn phân tích thế nào: so sánh hai heap dump, Histogram delta, OQL, immediate dominators, và Path to GC Roots loại weak/soft/phantom? Khi nào dùng jcmd GC.class_histogram thay vì dump đầy đủ?',
+  a: `**Tóm tắt:** Leak Suspects là heuristic: nó mạnh với một object khổng lồ giữ mọi thứ, nhưng **yếu với leak phân tán** (hàng trăm nghìn object nhỏ, ví dụ cache từ từ phình) hoặc leak "có chủ đích" (một cache lớn vẫn đang dùng). Khi đó quy trình đúng là: xác nhận leak qua heap sau GC, chụp **hai** dump cách nhau vài giờ, dùng **Histogram Delta** để thấy class nào tăng cả về số instance lẫn byte, dùng **OQL** để lọc instance cụ thể, xem **immediate dominator** và **retained size**, rồi **Path to GC Roots** loại weak/soft/phantom để tìm ai giữ. Nhẹ hơn: {{jcmd GC.class_histogram}} cho bảng đếm theo class mà không cần dump toàn bộ.
+
+### Hiểu nhanh
+Leak Suspects giống một bảo vệ chỉ soi "kẻ to con". Nếu trộm là hàng nghìn người lẻ tẻ cùng lấy đồ, bảo vệ không thấy ai. Khi đó phải chụp ảnh buổi sáng và buổi chiều, so xem ngăn nào vơi thêm, rồi lần theo sợi dây buộc món đồ lên tường.
+
+### Thuật ngữ
+- **Histogram**: bảng đếm số instance và tổng byte theo từng class.
+- **Histogram Delta**: so sánh hai histogram của hai dump để thấy class nào tăng.
+- **Immediate dominator**: object "sòng phẳng" nhất giữ một object; nếu bỏ nó thì object bị thu.
+- **Retained size**: bộ nhớ được giải phóng nếu object bị thu, gồm cả những object chỉ nó giữ.
+- **Path to GC Roots**: chuỗi tham chiếu từ GC root tới object.
+- **Weak/Soft/Phantom reference**: reference không ngăn GC thu, nên thường không phải nguyên nhân leak.
+- **OQL**: ngôn ngữ truy vấn kiểu SQL trên heap dump trong MAT.
+
+### Quy trình khi Leak Suspects trống (từng bước)
+1. Xác nhận leak thật: xem heap used ngay sau Full GC qua GC log hoặc {{jcmd GC.heap_info}}; nếu sau GC vẫn tăng đều thì là leak, không phải "heap chưa kịp dọn".
+2. Chụp dump A lúc tải ổn định, chờ 1–2 giờ, chụp dump B ở cùng mức tải.
+3. Trong MAT: mở Histogram của A, chọn "Compare to another heap dump" trỏ sang B, sắp theo chênh lệch instance hoặc retained size.
+4. Lọc nhiễu: bỏ qua các class chỉ tăng nhẹ; tập trung vào class tăng hàng trăm nghìn instance.
+5. Dùng OQL để xem instance lớn bất thường, ví dụ tìm map có size quá lớn.
+6. Chọn một instance nghi phạm, xem immediate dominator và Path to GC Roots (loại weak/soft/phantom) để biết static field, thread hay listener nào giữ.
+7. Đối chiếu code, sửa, rồi chụp dump C để xác nhận heap ổn định.
+
+### OQL: lọc instance cụ thể
+~~~text
+-- các HashMap có quá nhiều entry (nghi cache phình)
+SELECT s FROM java.util.HashMap s WHERE s.size > 100000
+
+-- tìm Session có quá nhiều thuộc tính
+SELECT s FROM com.app.Session s WHERE s.attrs.size() > 50
+
+-- xem nội dung cache tĩnh
+SELECT * FROM com.app.SESSION_CACHE
+~~~
+
+### Khi nào dùng jcmd GC.class_histogram
+~~~bash
+jcmd <pid> GC.class_histogram            # object live, đếm theo class
+jcmd <pid> GC.class_histogram -all       # gồm cả object chưa thu
+~~~
+- Nhanh, overhead thấp, không cần file dump lớn; tốt để theo dõi class nào tăng giữa hai thời điểm.
+- Không thay được MAT khi cần xem **reference** (ai giữ ai); chỉ dump khi đã khoanh được class nghi phạm.
+
+~~~text
+Class                         A (số)   B (số)   delta
+com.app.Session               210000   620000   +410000
+byte[]                        1800000  2300000  +500000
+java.util.HashMap$Node        5200000  7100000  +1900000
+=> Session phình: cache không giới hạn; byte[] do nội dung session giữ
+~~~
+
+### Lỗi hay gặp
+- **Tin Leak Suspects là kết luận cuối**: nhiều leak phân tán bị bỏ sót. Cách tránh: luôn kết hợp Histogram Delta khi leak chậm.
+- **So sánh hai dump ở hai mức tải khác nhau**: kết quả lệch. Cách tránh: chụp ở cùng điều kiện tải.
+- **Không loại weak/soft/phantom trong Path to GC Roots**: thấy toàn cache yếu, tưởng là thủ phạm. Cách tránh: lọc đúng loại reference.
+- **Dump toàn bộ heap trên production khi đang tải cao**: STW lâu, file lớn. Cách tránh: dùng class_histogram trước, dump trên pod đã rút traffic.
+
+### Ví dụ đời thực
+Service giữ phiên đăng nhập, heap 2,4 GB, sau GC tăng 400 MB mỗi 2 giờ. Leak Suspects trống. Chụp dump A và B cách 2 giờ: heap 2,4 GB lên 2,9 GB. Histogram Delta: {{com.app.Session}} tăng 410 nghìn instance, {{byte[]}} tăng 500 nghìn, retained của Session tăng 480 MB. OQL tìm Session có attrs trên 50 entry. Path to GC Roots (loại weak/soft) chỉ tới static {{ConcurrentHashMap SESSION_CACHE}} không giới hạn. Sửa: đổi sang Caffeine maximumSize 50 nghìn và expireAfterAccess 30 phút. Sau 24 giờ, dump C cho thấy heap ổn định 1,3 GB, không còn tăng.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi Leak Suspects trống, tôi không kết luận là hết leak. Trước hết xác nhận heap sau Full GC có tăng đều không; nếu có, tôi chụp hai dump cách nhau vài giờ ở cùng mức tải và dùng Histogram Delta để thấy class nào tăng cả số instance lẫn byte, vì leak phân tán thường là nhiều object nhỏ chứ không phải một object khổng lồ. Tôi dùng OQL để lọc instance lớn bất thường, xem immediate dominator và retained size, rồi Path to GC Roots loại weak/soft/phantom để tìm static field hoặc thread đang giữ. Nếu chỉ cần theo dõi xu hướng, tôi dùng jcmd GC.class_histogram cho nhanh và nhẹ; chỉ dump đầy đủ khi đã khoanh được class nghi phạm. Trong một ca, delta cho thấy Session tăng 410 nghìn instance do cache tĩnh không giới hạn; sửa bằng Caffeine có maximumSize và expireAfterAccess thì heap ổn định."
+
+> Senior tip: Leak Suspects trả lời "object nào giữ nhiều nhất", không trả lời "cái gì đang mọc". Leak chậm luôn cần hai dump; và jcmd GC.class_histogram rẻ hơn dump rất nhiều, hãy dùng nó để theo dõi trước khi mở MAT.`,
+  follow: [
+    'Vì sao Leak Suspects bỏ sót leak phân tán?',
+    'Histogram delta khác gì so sánh retained size giữa hai dump?',
+    '{{jcmd GC.class_histogram}} có chính xác bằng heap dump không?'
+  ],
+  tags: ['MAT', 'heap dump', 'memory leak', 'OQL', 'class histogram', 'Histogram Delta'],
+  refs: [
+    { type: 'doc', title: 'Eclipse Memory Analyzer (MAT)', url: 'https://eclipse.dev/mat/' },
+    { type: 'doc', title: 'Oracle: Troubleshooting Memory Leaks', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html' }
+  ]
 }
 );
