@@ -176,7 +176,7 @@ Khi vượt 1 tỷ URL: shard theo {{hash(code)}} với consistent hashing, ho�
     'Bạn đảm bảo thống kê click không mất mát khi Kafka down ra sao?',
     'Custom alias có thể bị chiếm dụng; bạn thiết kế quy tắc đặt và thu hồi thế nào?'
   ],
-  tags: ['URL shortener', 'base62', 'cache', 'Kafka']
+  tags: ['URL shortener', 'base62', 'cache', 'Kafka', 'core']
 ,
   refs: [
   ]
@@ -264,7 +264,7 @@ Ngoài 429, nên trả thêm thời gian chờ và hướng dẫn. Client tốt 
     'Nếu cần giới hạn theo cửa sổ trượt chính xác tuyệt đối, bạn chọn cấu trúc dữ liệu gì?',
     'Làm sao test rate limiter dưới tải đồng thời cao mà không bị flaky?'
   ],
-  tags: ['rate limiter', 'token bucket', 'Redis', 'Lua']
+  tags: ['rate limiter', 'token bucket', 'Redis', 'Lua', 'core']
 ,
   refs: [
     { type: 'article', title: 'Scaling your API with rate limiters (Stripe)', url: 'https://stripe.com/blog/rate-limiters' },
@@ -378,7 +378,7 @@ Với 1.000 sản phẩm, sharding theo bucket thường thắng vì tính đún
     'Bạn xử lý trường hợp payment callback đến sau khi reservation đã hết hạn ra sao?',
     'Làm sao đối soát tồn kho giữa Redis và DB mà không chặn traffic đang bán?'
   ],
-  tags: ['flash sale', 'oversell', 'Redis Lua', 'inventory']
+  tags: ['flash sale', 'oversell', 'Redis Lua', 'inventory', 'core']
 },
 {
   id: 'design-005',
@@ -479,7 +479,7 @@ Kết quả reconciliation phải lưu lại và có dashboard; "không có lệ
     'Nếu provider không cung cấp sao kê chi tiết, reconciliation dựa vào gì?',
     'Thiết kế API hoàn tiền một phần (partial refund) trên ledger ra sao?'
   ],
-  tags: ['payment', 'ledger', 'idempotency', 'outbox']
+  tags: ['payment', 'ledger', 'idempotency', 'outbox', 'core']
 },
 {
   id: 'design-006',
@@ -576,7 +576,7 @@ Các chỉ số bắt buộc: queue lag theo priority, tỉ lệ thành công th
     'Nếu provider chính tăng giá gấp ba, kiến trúc giúp bạn chuyển đổi ra sao?',
     'Làm sao đo chất lượng gửi email mà không đọc nội dung người dùng?'
   ],
-  tags: ['notification', 'retry', 'priority queue', 'dedup']
+  tags: ['notification', 'retry', 'priority queue', 'dedup', 'core']
 }
 ,
 {
@@ -674,7 +674,7 @@ Tách ranking khỏi storage; cache kết quả ngắn hạn. Không chạy mode
     'Bạn thiết kế rebuild feed khi Redis mất toàn bộ dữ liệu mà không sập hệ thống?',
     'Làm sao cá nhân hoá feed mà vẫn giữ p99 dưới 300 ms?'
   ],
-  tags: ['news feed', 'fan-out', 'Redis sorted set', 'celebrity']
+  tags: ['news feed', 'fan-out', 'Redis sorted set', 'celebrity', 'core']
 ,
   refs: [
     { type: 'doc', title: 'Redis sorted sets', url: 'https://redis.io/docs/latest/develop/data-types/sorted-sets/' },
@@ -777,7 +777,7 @@ Nhóm 100k thành viên (kênh cộng đồng) không thể fan-out từng ngư�
     'Làm sao đảm bảo thứ tự tin nhắn khi một conversation bị di chuyển giữa các shard?',
     'Nếu cần tìm kiếm toàn văn trong lịch sử chat, bạn tích hợp kho nào và đồng bộ ra sao?'
   ],
-  tags: ['chat', 'WebSocket', 'presence', 'message ordering']
+  tags: ['chat', 'WebSocket', 'presence', 'message ordering', 'core']
 ,
   refs: [
     { type: 'doc', title: 'RFC 6455: The WebSocket Protocol', url: 'https://datatracker.ietf.org/doc/html/rfc6455' },
@@ -877,7 +877,7 @@ Một key được đọc hàng trăm nghìn lần/giây làm một node Redis q
     'Làm sao invalidate cache khi dữ liệu thay đổi từ một service khác không chung codebase?',
     'So sánh Redis và cache local (Caffeine) về nhất quán và độ trễ.'
   ],
-  tags: ['caching', 'cache-aside', 'stampede', 'hot key']
+  tags: ['caching', 'cache-aside', 'stampede', 'hot key', 'core']
 }
 ,
 {
@@ -977,7 +977,7 @@ Một nền tảng thương mại điện tử chạy job tính lại tồn kho 
     'Khi nào DB advisory lock (Postgres) là lựa chọn tốt hơn Redis?',
     'Làm sao giám sát lock bị giữ quá lâu mà không gây false positive?'
   ],
-  tags: ['distributed lock', 'Redlock', 'fencing token', 'etcd']
+  tags: ['distributed lock', 'Redlock', 'fencing token', 'etcd', 'core']
 },
 {
   id: 'design-011',
@@ -1060,7 +1060,7 @@ Một ứng dụng ví điện tử nội bộ (dùng cho nhân viên mua hàng 
     'Nếu cần đổi từ eventual sang strong consistency cho một bảng đang chạy production, lộ trình ra sao?',
     'Giải thích cách DynamoDB đạt được conditional write mạnh dù là hệ AP.'
   ],
-  tags: ['CAP', 'PACELC', 'consistency', 'database selection']
+  tags: ['CAP', 'PACELC', 'consistency', 'database selection', 'core']
 ,
   refs: [
     { type: 'article', title: 'Please stop calling databases CP or AP (Martin Kleppmann)', url: 'https://martin.kleppmann.com/2015/05/11/please-stop-calling-databases-cp-or-ap.html' },
@@ -1168,7 +1168,7 @@ Một sản phẩm SaaS quản lý đơn hàng cho cửa hàng nhỏ đang có k
     'Khi nào nên chọn shard theo tenant thay vì theo user id?',
     'Làm sao di chuyển 100 triệu row sang schema mới mà gần như không downtime?'
   ],
-  tags: ['scaling', 'architecture roadmap', 'sharding', 'multi-region']
+  tags: ['scaling', 'architecture roadmap', 'sharding', 'multi-region', 'core']
 },
 {
   id: 'design-013',
@@ -1307,7 +1307,7 @@ Job có thể chạy lại do retry, lease hết hạn, hoặc chạy tay. Mọi
     'Khi batch làm nghẽn DB production, bạn điều tiết thế nào mà không dừng hẳn?',
     'So sánh scheduler tự xây với Temporal cho quy mô 50.000 job/ngày.'
   ],
-  tags: ['job scheduler', 'batch', 'SKIP LOCKED', 'idempotency']
+  tags: ['job scheduler', 'batch', 'SKIP LOCKED', 'idempotency', 'core']
 ,
   refs: [
     { type: 'doc', title: 'PostgreSQL SELECT: The Locking Clause (SKIP LOCKED)', url: 'https://www.postgresql.org/docs/current/sql-select.html' },
@@ -1426,7 +1426,7 @@ Hàm nào nhận {{List}} và gọi {{add}} sẽ vỡ khi truyền {{ReadOnlyLis
     'Làm sao thuyết phục team không lạm dụng interface cho mọi class?',
     'Cho ví dụ vi phạm ISP trong một repository interface thực tế và cách tách.'
   ],
-  tags: ['SOLID', 'refactoring', 'clean code']
+  tags: ['SOLID', 'refactoring', 'clean code', 'core']
 },
 {
   id: 'architecture-002',
@@ -1640,7 +1640,7 @@ Compiler báo nếu thiếu nhánh, code ngắn, không cần DI. Strategy thắ
     'Nếu mỗi strategy cần thứ tự ưu tiên, bạn thiết kế thế nào?',
     'Khi nào bạn chọn enum + switch thay vì Strategy?'
   ],
-  tags: ['Strategy', 'Spring DI', 'if-else', 'Map injection']
+  tags: ['Strategy', 'Spring DI', 'if-else', 'Map injection', 'core']
 },
 {
   id: 'architecture-004',
@@ -1762,7 +1762,7 @@ Service không biết thanh toán là Stripe hay Momo, không biết lưu bằng
     'Làm sao tránh việc mapping domain/JPA entity trở thành gánh nặng?',
     'ArchUnit nên kiểm tra những quy tắc nào cho cấu trúc này?'
   ],
-  tags: ['clean architecture', 'hexagonal', 'package structure', 'ArchUnit']
+  tags: ['clean architecture', 'hexagonal', 'package structure', 'ArchUnit', 'core']
 ,
   refs: [
     { type: 'article', title: 'Hexagonal Architecture (Alistair Cockburn)', url: 'https://alistair.cockburn.us/hexagonal-architecture/' },
@@ -2345,7 +2345,7 @@ Ngân hàng gửi **không thể tự trừ tiền tài khoản ở ngân hàng 
     'Nếu switch đổi format file đối soát, bạn quản lý version parser ra sao?',
     'Ngân hàng ta là bên nhận: làm sao đảm bảo không cộng tiền hai lần khi switch gửi lại bản tin?'
   ],
-  tags: ['IBFT', 'NAPAS', 'banking', 'reconciliation', 'ledger', 'timeout']
+  tags: ['IBFT', 'NAPAS', 'banking', 'reconciliation', 'ledger', 'timeout', 'core']
 ,
   refs: [
     { type: 'doc', title: 'ISO 20022', url: 'https://www.iso20022.org/' },
@@ -2442,7 +2442,7 @@ ID theo thời gian chỉ là "gần đúng": hai node sinh trong cùng ms có t
     'Khi migrate khoá chính từ bigint auto-increment sang Snowflake hoặc ULID, lộ trình ra sao?',
     'So sánh kích thước index giữa bigint, UUID và chuỗi ULID 26 ký tự trong PostgreSQL.'
   ],
-  tags: ['Snowflake', 'ULID', 'UUIDv7', 'distributed ID', 'clock skew', 'sequence']
+  tags: ['Snowflake', 'ULID', 'UUIDv7', 'distributed ID', 'clock skew', 'sequence', 'core']
 ,
   refs: [
     { type: 'doc', title: 'RFC 9562: Universally Unique IDentifiers (UUIDv7)', url: 'https://www.rfc-editor.org/rfc/rfc9562' },
@@ -2532,7 +2532,7 @@ Phòng chờ ảo là thành phần quan trọng nhất: thay vì để 500.000 
     'Thanh toán thành công nhưng callback đến sau khi hold hết hạn: bạn xử lý theo những bước nào?',
     'Với vé không đánh số ghế (vé đứng, 10.000 vé), thiết kế giữ chỗ thay đổi ra sao?'
   ],
-  tags: ['booking', 'overbooking', 'hold', 'TTL', 'waiting room', 'concurrency']
+  tags: ['booking', 'overbooking', 'hold', 'TTL', 'waiting room', 'concurrency', 'core']
 ,
   refs: [
     { type: 'doc', title: 'Redis SET (NX, PX options)', url: 'https://redis.io/docs/latest/commands/set/' },
@@ -3003,7 +3003,7 @@ Kết quả đo được: Sau 1 tuần, tỉ lệ giao SMS thành công trong 30
     'Một nhà mạng gửi SMS chậm 2 phút trong giờ cao điểm: hệ thống của bạn phát hiện và phản ứng ra sao?',
     'Làm sao chống tấn công dò OTP phân tán từ hàng nghìn IP khác nhau?'
   ],
-  tags: ['OTP', '2FA', 'TOTP', 'SMS', 'brute force', 'Redis', 'security']
+  tags: ['OTP', '2FA', 'TOTP', 'SMS', 'brute force', 'Redis', 'security', 'core']
 ,
   refs: [
     { type: 'doc', title: 'RFC 6238: TOTP', url: 'https://datatracker.ietf.org/doc/html/rfc6238' },
@@ -3105,7 +3105,7 @@ Kết quả đo được: Sau khi chuyển sang bean cấu hình immutable injec
     'Một bean singleton có field SimpleDateFormat gây lỗi ngày tháng ngẫu nhiên trên production. Giải thích và sửa.',
     'Làm sao lấy instance mới của prototype bean mỗi lần gọi từ một singleton bean?'
   ],
-  tags: ['Singleton', 'design pattern', 'volatile', 'Spring scope', 'thread-safety']
+  tags: ['Singleton', 'design pattern', 'volatile', 'Spring scope', 'thread-safety', 'core']
 },
 {
   id: 'architecture-010',
@@ -3206,7 +3206,7 @@ Kết quả: thêm đối tác mới chỉ thêm package mới, không đụng c
     'Inject Map<String, Bean> trong Spring: key lấy từ đâu và xử lý khi key không tồn tại thế nào?',
     'Cho ví dụ FactoryBean trong Spring và khi nào bạn tự viết một FactoryBean.'
   ],
-  tags: ['Factory Method', 'Abstract Factory', 'design pattern', 'Spring', 'payment']
+  tags: ['Factory Method', 'Abstract Factory', 'design pattern', 'Spring', 'payment', 'core']
 },
 {
   id: 'architecture-011',
@@ -3294,7 +3294,7 @@ Kết quả: giảm NPE liên quan status đơn hàng, validation lỗi sớm l�
     'Bạn xử lý field bắt buộc trong builder thế nào để lỗi lộ ra lúc compile thay vì runtime (step builder)?',
     'Vì sao JPA cần constructor không tham số và Hibernate dùng nó vào lúc nào?'
   ],
-  tags: ['Builder', 'Lombok', 'record', 'JPA', 'immutability']
+  tags: ['Builder', 'Lombok', 'record', 'JPA', 'immutability', 'core']
 },
 {
   id: 'architecture-012',
@@ -3392,7 +3392,7 @@ Kết quả: mỗi file có transaction riêng, lỗi một file không ảnh h�
     'Thứ tự áp dụng khi một method có cả @Transactional và @Cacheable: proxy nào bọc ngoài?',
     'Vì sao @Async trên method trả về void làm exception biến mất, và bạn xử lý thế nào?'
   ],
-  tags: ['Proxy', 'Spring AOP', '@Transactional', 'CGLIB', 'self-invocation']
+  tags: ['Proxy', 'Spring AOP', '@Transactional', 'CGLIB', 'self-invocation', 'core']
 ,
   refs: [
     { type: 'doc', title: 'Spring Framework: Understanding AOP Proxies', url: 'https://docs.spring.io/spring-framework/reference/core/aop/proxying.html' },
@@ -3589,7 +3589,7 @@ Kết quả: đổi JDBC sang JPA không đụng domain, test domain không cầ
     'Vì sao field injection khó test và có rủi ro gì với bean bị null?',
     'Trong Hexagonal Architecture, port và adapter liên hệ với DIP thế nào?'
   ],
-  tags: ['IoC', 'Dependency Injection', 'DIP', 'SOLID', 'Spring']
+  tags: ['IoC', 'Dependency Injection', 'DIP', 'SOLID', 'Spring', 'core']
 },
 {
   id: 'architecture-015',
@@ -3685,7 +3685,7 @@ Kết quả: thêm sản phẩm mới phần lớn là cấu hình, policy đư�
     'Bạn refactor một cây kế thừa đang chạy production mà không phá dữ liệu đã lưu bằng JPA inheritance thế nào?',
     'Delegation trong composition có tốn hiệu năng đáng kể không?'
   ],
-  tags: ['composition', 'inheritance', 'fragile base class', 'sealed', 'refactoring']
+  tags: ['composition', 'inheritance', 'fragile base class', 'sealed', 'refactoring', 'core']
 ,
   refs: [
     { type: 'doc', title: 'JEP 409: Sealed Classes', url: 'https://openjdk.org/jeps/409' },
@@ -4103,7 +4103,7 @@ Một hệ thống thanh toán xử lý 500k giao dịch/ngày. **Triệu chứn
     'Template Method và Strategy: bạn chọn cái nào cho bài import file nhiều định dạng, vì sao?',
     'Làm sao trả về tất cả lỗi kiểm tra thay vì dừng ở lỗi đầu tiên trong chuỗi CoR?'
   ],
-  tags: ['Template Method', 'Observer', 'Chain of Responsibility', 'Spring events', 'design pattern']
+  tags: ['Template Method', 'Observer', 'Chain of Responsibility', 'Spring events', 'design pattern', 'core']
 ,
   refs: [
     { type: 'doc', title: 'Refactoring.Guru: Template Method', url: 'https://refactoring.guru/design-patterns/template-method' },
@@ -4761,7 +4761,7 @@ Một nền tảng thương mại điện tử cần gửi email xác nhận, re
     'Redis failover làm mất một ít job đã XADD: bạn phát hiện và bù thế nào?',
     'Khi nào cần priority queue, và mỗi lựa chọn làm priority ra sao?'
   ],
-  tags: ['job queue', 'SKIP LOCKED', 'Redis Streams', 'RabbitMQ', 'SQS', 'Kafka', 'background job', 'trade-off'],
+  tags: ['job queue', 'SKIP LOCKED', 'Redis Streams', 'RabbitMQ', 'SQS', 'Kafka', 'background job', 'trade-off', 'core'],
   refs: [
     { type: 'doc', title: 'Redis Streams', url: 'https://redis.io/docs/latest/develop/data-types/streams/' },
     { type: 'doc', title: 'Amazon SQS visibility timeout', url: 'https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html' },
@@ -4878,7 +4878,7 @@ Một hệ thống thương mại điện tử có 5 service cần phản ứng 
     'ADR khác gì RFC (Request for Comments) và design doc? Khi nào dùng cái nào?',
     'Làm sao để team thực sự duy trì thói quen viết ADR thay vì bỏ sau 2 tháng?'
   ],
-  tags: ['ADR', 'architecture decision', 'Kafka', 'RabbitMQ', 'trade-off', 'documentation'],
+  tags: ['ADR', 'architecture decision', 'Kafka', 'RabbitMQ', 'trade-off', 'documentation', 'core'],
   refs: [
     { type: 'doc', title: 'MADR - Markdown Architectural Decision Records', url: 'https://adr.github.io/madr/' },
     { type: 'article', title: 'Michael Nygard: Documenting Architecture Decisions', url: 'https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions' }
@@ -5234,7 +5234,7 @@ Event sống mãi (append-only), code thì đổi — đây là thách thức l�
     'Bạn thiết kế projection bị lỗi hoặc cần thay đổi — rebuild read model thế nào trên production?',
     'Làm sao đáp ứng yêu cầu "xóa dữ liệu người dùng" (GDPR) khi event store là append-only?'
   ],
-  tags: ['event sourcing', 'CQRS', 'snapshot', 'schema evolution', 'audit', 'append-only'],
+  tags: ['event sourcing', 'CQRS', 'snapshot', 'schema evolution', 'audit', 'append-only', 'core'],
   refs: [
     { type: 'article', title: 'Martin Fowler: Event Sourcing', url: 'https://martinfowler.com/eaaDev/EventSourcing.html' },
     { type: 'doc', title: 'EventStoreDB: Event Sourcing Basics', url: 'https://www.eventstore.com/event-sourcing' }
@@ -7789,7 +7789,7 @@ Một SaaS có 400 triệu đơn, 2.000 tenant. Ban đầu sharding theo {{tenan
     'Thiết kế quy trình chuyển một tenant nóng sang shard riêng mà không dừng ghi ra sao?',
     'Làm thế nào xử lý unique constraint toàn cục khi dữ liệu được chia trên nhiều shard?'
   ],
-  tags: ['sharding', 'shard-key', 'partitioning', 'hotspot']
+  tags: ['sharding', 'shard-key', 'partitioning', 'hotspot', 'core']
 },
 {
   id: 'architecture-041',
@@ -8062,7 +8062,7 @@ Một ứng dụng đặt lịch có 2 triệu người dùng hoạt động/ng�
     'Một API ingress 5.000 QPS gọi trung bình 4 dependency; bạn tính và kiểm soát downstream capacity ra sao?',
     'Bạn đưa replication, backup, WAL và retention vào ước lượng storage thế nào mà không cộng trùng?'
   ],
-  tags: ['capacity-planning', 'QPS', 'storage', 'bandwidth']
+  tags: ['capacity-planning', 'QPS', 'storage', 'bandwidth', 'core']
 },
 {
   id: 'architecture-045',
@@ -8681,7 +8681,7 @@ E-commerce 50 service. **Checkout flow:** API Gateway (REST) → Order Service. 
     'Khi nào dùng gRPC streaming thay vì Kafka cho realtime push?',
     'Làm sao versioning schema cho REST/gRPC/Kafka trong mono-repo vs multi-repo?'
   ],
-  tags: ['microservices', 'REST', 'gRPC', 'Kafka', 'RabbitMQ', 'communication patterns']
+  tags: ['microservices', 'REST', 'gRPC', 'Kafka', 'RabbitMQ', 'communication patterns', 'core']
 ,
   refs: [
     { type: 'doc', title: 'gRPC Concepts', url: 'https://grpc.io/docs/what-is-grpc/core-concepts/' },
