@@ -12080,4 +12080,332 @@ public class UserService {
   ],
   tags: ['Optional', 'NullPointerException', 'API-design', 'Java8', 'best-practices']
 },
+{
+  id: 'collections-052',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Trong entity JPA, bạn dùng @OneToMany với List hay Set? Giải thích PersistentBag, MultipleBagFetchException và vì sao equals/hashCode của entity ảnh hưởng tới Set.',
+  a: `**Tóm tắt:** {{List}} ánh xạ thành {{PersistentBag}} — cho phép phần tử trùng và không có chỉ mục nếu thiếu {{@OrderColumn}}; {{Set}} ánh xạ thành {{PersistentSet}} — khử trùng bằng {{equals}}/{{hashCode}}. Quan hệ một-nhiều mà tập con về bản chất không được lặp thì chọn {{Set}}; cần thứ tự hoặc cần giữ nguyên danh sách thì dùng {{List}} + {{@OrderColumn}}, và luôn dùng {{@BatchSize}} hoặc {{join fetch}} + {{distinct}} để tránh N+1 và {{MultipleBagFetchException}}.
+
+### Hibernate làm gì bên dưới
+1. Khi load {{Order}}, Hibernate **không** nạp ngay danh sách dòng. Nó tạo một **collection wrapper** ({{PersistentBag}}, {{PersistentSet}} hoặc {{PersistentList}}) và gán vào field.
+2. Lần đầu gọi {{order.getLines()}}, wrapper phát một câu SQL (lazy). Nếu {{session}} đã đóng, bạn gặp {{LazyInitializationException}}.
+3. Wrapper theo dõi thay đổi: thêm hoặc xoá phần tử được ghi nhận để lúc flush sinh đúng INSERT/UPDATE/DELETE.
+4. {{PersistentBag}} là "bag": **không** khử trùng, **không** đảm bảo thứ tự (trừ khi có {{@OrderColumn}}). {{PersistentSet}} là "set": dùng {{equals}}/{{hashCode}} của phần tử để khử trùng.
+
+### Vì sao {{List}} dễ gặp MultipleBagFetchException
+Giả sử {{Order}} có hai quan hệ {{List}}: {{lines}} và {{coupons}}. Câu JPQL {{join fetch o.lines join fetch o.coupons}} làm mỗi dòng order nhân với số line và số coupon (tích Descartes): 1 order × 10 line × 3 coupon = 30 dòng SQL cho một order. Hibernate không thể khử trùng hai bag trong cùng một lần join (bag cho phép phần tử trùng), nên ném {{MultipleBagFetchException}}. Với {{Set}}, Hibernate khử trùng theo {{equals}} nên không nhân bản kết quả, nhưng SQL vẫn trả dòng lặp — vẫn nên thêm {{distinct}} để giảm dữ liệu truyền về.
+
+### Code
+~~~java
+@Entity
+class Order {
+  @Id @GeneratedValue Long id;
+
+  @OneToMany(mappedBy = "order", fetch = FetchType.LAZY)
+  @BatchSize(size = 50)                                  // 50 order/lần, thay vì N+1
+  private Set<OrderLine> lines = new LinkedHashSet<>();  // Set: khử trùng theo equals/hashCode
+
+  void addLine(OrderLine l) { l.setOrder(this); lines.add(l); }
+}
+
+@Entity
+class OrderLine {
+  @Id @GeneratedValue Long id;
+  @ManyToOne(fetch = FetchType.LAZY) Order order;
+  String sku;
+}
+
+@Repository
+interface OrderRepo extends JpaRepository<Order, Long> {
+  @Query("select distinct o from Order o join fetch o.lines where o.id = :id")
+  Optional<Order> findWithLines(@Param("id") Long id);
+}
+~~~
+
+### Bảng trade-off
+| Tiêu chí | {{List}} ({{PersistentBag}}) | {{Set}} ({{PersistentSet}}) |
+|---|---|---|
+| Phần tử trùng | Cho phép | Khử theo {{equals}}/{{hashCode}} |
+| Thứ tự | Theo {{@OrderColumn}}; bag không đảm bảo | {{LinkedHashSet}} giữ thứ tự chèn; {{TreeSet}} sắp xếp |
+| Hai {{join fetch}} cùng lúc | {{MultipleBagFetchException}} | Không nhân bản |
+| Kết quả JPQL | Có thể lặp order, cần {{distinct}} | Hibernate khử trùng, vẫn nên {{distinct}} |
+| Khi nào chọn | Cần thứ tự, dòng lặp là hợp lệ | Tập con là "một tập" không lặp |
+
+### Bẫy production
+- **{{equals}}/{{hashCode}} theo {{id}}:** entity mới chưa có id nên {{id == null}}. Nếu {{equals}} coi mọi entity mới là bằng nhau, {{Set}} chỉ giữ 1 phần tử — mất dữ liệu âm thầm. Dùng **business key** (mã đơn + mã dòng) hoặc để Hibernate quản lý identity.
+- **{{List}} không có {{@OrderColumn}}:** thứ tự không được đảm bảo; đừng dựa vào thứ tự insert.
+- **N+1:** 500 order, mỗi order một câu select lines → 501 câu SQL. {{@BatchSize(size = 50)}} giảm còn 11 câu.
+- **Phân trang + fetch join collection:** Hibernate 6 có cờ {{hibernate.query.fail_on_pagination_over_collection_fetch}} để báo lỗi thay vì âm thầm trả thiếu; nên phân trang trên query cha rồi mới load collection.
+- **{{Set}} + field bị sửa trong {{equals}}:** giống {{HashMap}} với key mutable, phần tử có thể "biến mất".
+
+### Ví dụ đời thực
+Trang lịch sử đơn hàng của một sàn thương mại điện tử: 500 đơn/trang, trung bình 12 dòng/đơn. Bản đầu dùng {{List}} và N+1: 1 câu lấy đơn + 500 câu lấy dòng = 501 câu SQL, p95 1,8 giây, 40% thời gian là truy vấn. Bật {{@BatchSize(50)}}: còn 11 câu SQL, p95 180 ms. Sau đó một báo cáo doanh thu {{join fetch}} cả {{lines}} và {{coupons}} trong cùng JPQL → {{MultipleBagFetchException}} ngay lúc khởi động; đổi {{coupons}} sang {{Set}} và thêm {{distinct}} thì hết lỗi. Tỉ lệ dòng trùng trong kết quả giảm từ 12% xuống 0; p95 từ 1,8 giây còn 95 ms.
+
+### Trả lời mẫu khi phỏng vấn
+Em chọn List hay Set dựa trên ngữ nghĩa nghiệp vụ, không dựa trên việc cái nào nhanh hơn. Nếu tập con về bản chất không được lặp, chẳng hạn danh sách dòng của một đơn, em dùng Set để cả DB và Hibernate cùng bảo đảm tính duy nhất. Set ánh xạ thành PersistentSet và khử trùng bằng equals/hashCode, nên em phải viết equals/hashCode theo business key chứ không theo id tự tăng: entity mới chưa có id sẽ bị coi là bằng nhau và Set chỉ giữ một phần tử. Nếu nghiệp vụ cần thứ tự hoặc cho phép trùng, em dùng List và thêm OrderColumn để có chỉ mục; List ánh xạ thành PersistentBag, không khử trùng. Về hiệu năng, em luôn dùng BatchSize hoặc join fetch kèm distinct để tránh N+1. Với hai bag join fetch cùng lúc thì Hibernate ném MultipleBagFetchException, nên em chuyển một quan hệ sang Set hoặc tách hai truy vấn. Em cũng không phân trang trực tiếp trên query có fetch join collection. Kết quả em đo được: 500 đơn từ 501 câu SQL xuống 11 câu, p95 từ 1,8 giây còn 180 mili giây.
+
+> Senior tip: Chọn Set hay List theo ngữ nghĩa "có được lặp không", không theo cảm giác. Nếu dùng Set cho entity, hãy viết equals/hashCode theo business key và kiểm tra bằng test: thêm hai entity mới có cùng business key vào Set, Set phải chỉ còn một phần tử.`,
+  follow: [
+    'Vì sao Set<OrderLine> với equals/hashCode theo id auto-increment lại làm mất phần tử khi thêm hai entity mới?',
+    'Phân biệt PersistentBag, PersistentSet và PersistentList; List nào giữ được thứ tự?',
+    'join fetch hai collection cùng lúc thì lỗi gì, và cách sửa nào không phải bỏ join fetch?'
+  ],
+  tags: ['JPA', 'Hibernate', 'OneToMany', 'PersistentBag', 'N+1', 'MultipleBagFetchException']
+},
+{
+  id: 'collections-053',
+  topic: 'collections',
+  level: 'lead',
+  q: 'Bạn cần chống trùng 1 tỷ order ID (Long, dạng snowflake) trong 24 giờ trên 12 node. HashSet<Long> gây OOM. Hãy so sánh các phương án và chọn kiến trúc; Bloom filter có dùng được không?',
+  a: `**Tóm tắt:** {{HashSet<Long>}} tốn khoảng 61 byte mỗi phần tử trên JVM 64-bit (Node 32 B + Long 24 B + ô bảng ~5 B, chưa tính hệ số tải 0,75), nên 1 tỷ phần tử là khoảng 61 GB — không thể để trong heap. ID dày dưới 2 tỷ thì {{BitSet}} chỉ tốn 1 bit/phần tử (1 tỷ = 125 MB); ID 64-bit ngẫu nhiên thì BitSet không dùng được, phải chọn giữa set nguyên thuỳ, chia shard + unique index DB, hoặc external sort. {{Bloom filter}} chỉ dùng khi chấp nhận sai số: với tiền, false positive làm mất giao dịch mới.
+
+### Vì sao HashSet<Long> đắt — tính từng bước
+- Mỗi phần tử là một {{HashMap.Node}}: header 12 B + 4 field ({{hash}}, {{key}}, {{value}}, {{next}}) = 32 B (bật {{UseCompressedOops}}, mặc định khi heap ≤ 32 GB).
+- Key là {{Long}}: object 24 B (header 12 B + 8 B value, padding to 8-byte alignment).
+- Ô trong bảng: con trỏ 4 B; hệ số tải 0,75 nên cần ~1,33 ô/phần tử → ~5,3 B.
+- Tổng ≈ 32 + 24 + 5,3 ≈ **61 B/phần tử**. 1 tỷ → ~61 GB, chưa kể lúc resize phải giữ cả bảng cũ và bảng mới.
+- {{HashSet}} không có cách nào nén: nó là {{HashMap}} với value là object {{PRESENT}} dùng chung.
+
+### Các phương án
+| Phương án | Bộ nhớ cho 1 tỷ | Chặt chẽ | Ghi chú |
+|---|---|---|---|
+| {{HashSet<Long>}} | ~61 GB | Có | OOM trên heap 32 GB |
+| {{HashSet<Integer>}} | ~53 GB | Có | Vẫn đắt |
+| {{BitSet}} | 125 MB | Có | Chỉ số < 2^31, không thread-safe |
+| Set nguyên thủy (long[] open addressing) | ~16–20 B/phần tử | Có | Cần thư viện như fastutil |
+| {{Roaring64Bitmap}} | Tuỳ phân cụm | Có | ID ngẫu nhiên 64-bit nén kém |
+| Unique index trên DB | ~20–30 GB đĩa | Có | INSERT ... ON CONFLICT |
+| {{Bloom filter}} 1% | ~1,2 GB | Không | 1% giao dịch mới bị bỏ |
+| External sort + merge | Đĩa, RAM thấp | Có | Hợp job offline |
+
+### Kiến trúc đề xuất
+1. Nếu ID **dày** (tự tăng, < 2^31): một {{BitSet}} cho mỗi shard, 125 MB cho 1 tỷ.
+2. Nếu ID **snowflake 64-bit ngẫu nhiên**: chia theo {{hash(id) % 12}}; mỗi node ~83 triệu ID. Dùng set nguyên thủy (~1,3 GB/node) hoặc bảng DB {{processed_orders(order_id bigint primary key)}}.
+3. Chống trùng ở tầng DB: {{insert ... on conflict (order_id) do nothing}}; số dòng chèn = 1 nghĩa là mới, 0 là trùng.
+4. Chỉ dùng Bloom khi nghiệp vụ chấp nhận tỉ lệ bỏ sót; với thanh toán thì không.
+5. Job offline: ghi ID ra file, sort từng shard, merge và khử trùng — không cần heap lớn.
+
+### Code
+~~~java
+// ID dày: 1 bit/phần tử, 1 tỷ = 125 MB (KHÔNG thread-safe: mỗi shard một BitSet)
+BitSet seen = new BitSet(1_000_000_000);
+if (!seen.get(orderId)) { seen.set(orderId); /* xử lý đơn mới */ }
+
+// ID 64-bit: unique index ở PostgreSQL 15, không giữ gì trong heap
+String sql = "insert into processed_orders(order_id) values (?) "
+           + "on conflict (order_id) do nothing";
+int inserted = jdbc.update(sql, orderId);   // 1 = mới, 0 = trùng
+~~~
+
+### Ví dụ đời thực
+Hệ thống thanh toán: 1 tỷ giao dịch/ngày, ID snowflake 64-bit, 12 node. Bản đầu mỗi node giữ HashSet theo shard: 83 triệu × 61 B ≈ 5,1 GB, old gen 8 GB, Full GC 2 lần/giờ, GC pause p99 180 ms. Chuyển sang bảng PostgreSQL {{processed_orders}} với primary key + {{insert on conflict do nothing}}: không còn heap cho dedup, 8.000 TPS, p99 12 ms, GC pause p99 8 ms; DB tăng 140 GB. Nếu ID là số tự tăng thì BitSet chỉ 125 MB và không cần DB.
+
+### Trả lời mẫu khi phỏng vấn
+Em bắt đầu bằng việc đo bộ nhớ thực tế thay vì đoán. HashSet<Long> trên JVM 64-bit tốn khoảng 61 byte mỗi phần tử: 32 byte cho Node, 24 byte cho Long, khoảng 5 byte cho ô bảng, cộng hệ số tải 0,75; một tỷ phần tử là khoảng 61 GB, không thể để trong heap 32 GB. Nếu ID là số nguyên dày dưới 2 tỷ, em dùng BitSet: 1 bit mỗi phần tử, một tỷ là 125 MB, nhưng BitSet không thread-safe và không nhận Long. Với ID snowflake 64-bit ngẫu nhiên, em chia theo hash thành nhiều shard; mỗi node giữ khoảng 83 triệu ID, dùng set nguyên thủy hoặc bảng DB có unique index. Với giao dịch tiền, em không dùng Bloom filter làm nguồn đúng, vì false positive sẽ làm mất giao dịch mới; nếu chấp nhận sai số thì Bloom 1% cần khoảng 1,2 GB. Em cũng cân nhắc external sort cho job offline. Kết quả: thay 5,1 GB heap mỗi node bằng unique index trên PostgreSQL, p99 từ 180 ms còn 12 ms, GC pause giảm mạnh.
+
+> Senior tip: Đo bằng heap dump hoặc JFR trước khi chọn; đừng chọn theo cảm tính. Nếu ID là snowflake ngẫu nhiên, Roaring64Bitmap không nén tốt; nếu ID tự tăng hoặc theo cụm thời gian, BitSet hoặc Roaring64Bitmap rất hiệu quả.`,
+  follow: [
+    'Vì sao BitSet không thread-safe, và bạn chia shard hay đồng bộ hoá?',
+    'Bloom filter cho tỉ lệ false positive 1% cần bao nhiêu bit/phần tử, và vì sao không dùng làm nguồn đúng cho tiền?',
+    'Nếu ID là UUID dạng chuỗi thay vì Long, bạn thiết kế chống trùng thế nào?'
+  ],
+  tags: ['HashSet', 'BitSet', 'memory', 'dedup', 'BloomFilter', 'PostgreSQL']
+},
+{
+  id: 'collections-054',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Bạn theo dõi queue bằng size() mỗi 5 giây. Queue phình lên 8 triệu phần tử và CPU tăng vọt. Vì sao? So sánh ArrayBlockingQueue, LinkedBlockingQueue, ConcurrentLinkedQueue và cách đo an toàn.',
+  a: `**Tóm tắt:** {{ConcurrentLinkedQueue.size()}} và {{ConcurrentLinkedDeque.size()}} là **O(n)** — chúng duyệt toàn bộ danh sách liên kết để đếm, nên gọi trên queue 8 triệu phần tử tốn hàng chục ms mỗi lần. {{ArrayBlockingQueue.size()}} và {{LinkedBlockingQueue.size()}} là **O(1)** (đếm bằng biến đếm dưới khóa), nhưng {{LinkedBlockingQueue}} mặc định không giới hạn nên dễ OOM khi consumer chậm. Cách an toàn: queue có hạn + đếm bằng {{AtomicLong}} hoặc lấy mẫu metric, không gọi {{size()}} trong hot path.
+
+### Cơ chế từng bước
+- {{ConcurrentLinkedQueue}}: danh sách liên kết không khóa (CAS), **không** có biến đếm. {{size()}} phải đi từ node đầu tới cuối; với 8 triệu node là 8 triệu lần đọc bộ nhớ (pointer chasing) → ~30–60 ms. Nó cũng chỉ đúng tại một thời điểm; vừa đếm vừa có thread thêm/xoá thì kết quả là ước lượng.
+- {{ArrayBlockingQueue}}: mảng + một {{ReentrantLock}} + biến {{count}}; {{size()}} trả {{count}} → O(1). Nhược điểm: put và take dùng chung một lock nên dễ tranh chấp.
+- {{LinkedBlockingQueue}}: hai lock ({{putLock}}, {{takeLock}}) + {{AtomicInteger count}}; {{size()}} O(1), throughput cao hơn. Capacity mặc định là {{Integer.MAX_VALUE}} → gần như không giới hạn.
+- {{SynchronousQueue}}: không giữ phần tử, {{size()}} luôn trả 0 — metric vô nghĩa.
+- {{PriorityBlockingQueue}} và {{DelayQueue}}: có biến đếm, {{size()}} O(1), nhưng bản chất không phải FIFO.
+
+### Code
+~~~java
+// TỆT: size() O(n) trên queue không có biến đếm, gọi trong vòng lặp là O(n^2)
+while ((item = queue.poll()) != null) {
+    log.debug("còn {} phần tử", queue.size());   // 8 triệu lần duyệt list
+}
+
+// NÊN: queue có hạn + bộ đếm atomic, lấy mẫu metric 1 lần/phút
+BlockingQueue<Order> q = new ArrayBlockingQueue<>(50_000);
+AtomicLong pending = new AtomicLong();
+if (q.offer(order)) pending.incrementAndGet();   // offer=false khi đầy
+
+List<Order> batch = new ArrayList<>(500);
+q.drainTo(batch, 500);                           // lấy cả lô, ít lock hơn
+pending.addAndGet(-batch.size());
+~~~
+
+### Bảng so sánh
+| Queue | {{size()}} | Khóa | Có hạn | Ghi chú |
+|---|---|---|---|---|
+| {{ArrayBlockingQueue}} | O(1) | 1 lock | Có (constructor) | công bằng tuỳ chọn |
+| {{LinkedBlockingQueue}} | O(1) | 2 lock | Mặc định không | luôn đặt capacity |
+| {{ConcurrentLinkedQueue}} | O(n) | không lock (CAS) | Không | size() chỉ để tham khảo |
+| {{ConcurrentLinkedDeque}} | O(n) | không lock | Không | |
+| {{PriorityBlockingQueue}} | O(1) | 1 lock | Không | heap |
+| {{SynchronousQueue}} | luôn 0 | - | Không giữ phần tử | metric vô nghĩa |
+| {{DelayQueue}} | O(1) | 1 lock | Không | |
+
+### Bẫy production
+- **Queue không giới hạn:** producer nhanh hơn consumer → heap phình cho tới OOM; trước khi OOM, GC chạy liên tục và p99 tăng.
+- **Gọi {{size()}} trong hot path:** mỗi request một lần duyệt list; 20 lần/giây × 45 ms ≈ gần 1 core.
+- **Dùng {{size()}} cho logic nghiệp vụ:** weakly consistent, không chính xác; chỉ dùng cho metric.
+- **{{ArrayBlockingQueue}} mặc định {{fair=false}}:** thread mới có thể chen ngang, throughput cao hơn nhưng không công bằng.
+- **Không xử lý {{offer}} trả {{false}}:** dữ liệu bị bỏ im lặng khi queue đầy.
+
+### Ví dụ đời thực
+Dịch vụ xử lý đơn: consumer chậm 10 phút vì khoá DB, queue {{ConcurrentLinkedQueue}} không giới hạn phình lên 8 triệu phần tử (~256 MB). Code log {{size()}} mỗi phần tử trong vòng lặp drain, cộng health check 1 giây/lần trên 4 pod: mỗi lần gọi ~45 ms, tổng gần 1 core/pod, p99 140 ms, old gen 6 GB. Đổi sang {{ArrayBlockingQueue(50_000)}}, dùng {{offer}} và xử lý {{false}} bằng cách trả 429 hoặc ghi sang SQS, đếm bằng {{AtomicLong}}: queue tối đa 50.000, {{size()}} 0,1 ms, p99 35 ms, không còn nguy cơ OOM.
+
+### Trả lời mẫu khi phỏng vấn
+Em phân biệt size() O(1) và O(n) ngay từ đầu. ArrayBlockingQueue và LinkedBlockingQueue giữ một biến đếm nên size() là O(1); ConcurrentLinkedQueue và ConcurrentLinkedDeque không có biến đếm, size() phải duyệt toàn bộ danh sách liên kết, nên với queue 8 triệu phần tử mỗi lần gọi tốn hàng chục mili giây. Em không gọi size() trong hot path hay trong vòng lặp drain; nếu cần metric, em dùng bộ đếm AtomicLong tăng khi offer và giảm khi poll, hoặc lấy mẫu mỗi 15 đến 60 giây. Về chọn queue: ArrayBlockingQueue có một lock cho cả put và take, đơn giản và size() O(1); LinkedBlockingQueue có hai lock nên throughput cao hơn nhưng capacity mặc định là Integer.MAX_VALUE, rất dễ OOM khi consumer chậm; em luôn đặt capacity tường minh. ConcurrentLinkedQueue không chặn, phù hợp khi producer và consumer không cần backpressure, nhưng phải tự kiểm soát tốc độ. Trong sự cố của em, một vòng lặp log size() mỗi phần tử khiến CPU gần 100% và p99 tăng từ 35 lên 140 ms; thay bằng ArrayBlockingQueue(50.000) và bộ đếm đã đưa p99 về 35 ms.
+
+> Senior tip: Mọi queue không giới hạn đều là một quả bom hẹn giờ. Đặt capacity, xử lý offer=false, và đo queue bằng bộ đếm hoặc metric lấy mẫu — đừng gọi size() trong vòng lặp nóng.`,
+  follow: [
+    'ArrayBlockingQueue và LinkedBlockingQueue khác nhau ở đâu khi put/take nhiều luồng?',
+    'Khi queue đầy, bạn chọn put, offer có timeout, hay ghi sang hàng đợi bên ngoài? Trade-off?',
+    'SynchronousQueue size() luôn bằng 0, vậy bạn đo throughput của nó bằng gì?'
+  ],
+  tags: ['BlockingQueue', 'ConcurrentLinkedQueue', 'ArrayBlockingQueue', 'backpressure', 'monitoring']
+},
+{
+  id: 'collections-055',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Bạn phải sắp xếp 50 triệu số nguyên trong một job batch. Arrays.sort(int[]) vs Collections.sort(List<Integer>) vs stream().sorted(): chênh lệch bộ nhớ và CPU ra sao, khi nào dùng parallelSort, và khi nào không nên sort toàn bộ?',
+  a: `**Tóm tắt:** {{int[]}} 50 triệu phần tử = 200 MB, {{Arrays.sort(int[])}} dùng dual-pivot quicksort tại chỗ, không cần bộ nhớ phụ đáng kể. {{List<Integer>}} cùng dữ liệu tốn ~1,2 GB (mỗi {{Integer}} 16 B + con trỏ 4 B + mảng), và sort qua TimSort còn cấp phát mảng tạm. {{Arrays.parallelSort}} chia việc cho {{ForkJoinPool.commonPool()}} (mặc định = số CPU − 1), chỉ có lợi khi mảng đủ lớn; nếu chỉ cần top-K thì dùng heap O(n log K), đừng sort toàn bộ.
+
+### Cơ chế từng bước
+- **Primitive vs boxed:** {{int}} 4 B; {{Integer}} 16 B + 4 B con trỏ. 50 triệu phần tử: 200 MB vs ~1,2 GB (chưa kể mảng tạm).
+- **{{Arrays.sort(int[])}}:** DualPivotQuicksort (Java 7+), tại chỗ, O(n log n) trung bình, O(log n) stack; không ổn định nhưng với primitive thì không cần ổn định.
+- **{{Arrays.sort(Object[])}}:** TimSort, ổn định, O(n) khi dữ liệu gần có thứ tự, cần mảng tạm ~n/2.
+- **{{Arrays.parallelSort}}:** Java 8+, dùng common pool, chia nhỏ tới ngưỡng 8192 phần tử rồi mới song song; dưới ngưỡng chạy tuần tự. Số luồng mặc định = {{availableProcessors() - 1}}; đổi bằng {{java.util.concurrent.ForkJoinPool.common.parallelism}}.
+- **{{stream().sorted()}}:** vẫn boxed, tạo object và mảng trung gian; chỉ nên dùng cho dữ liệu nhỏ.
+- **Top-K:** {{PriorityQueue}} cỡ K, mỗi phần tử O(log K) → 50 triệu × log2(100) ≈ 332 triệu phép so sánh, so với ~1,28 tỷ của sort toàn bộ.
+- **Dữ liệu lớn hơn heap:** external sort — chia file, sort từng phần, merge k đường.
+
+### Code
+~~~java
+int[] a = new int[50_000_000];          // 200 MB
+// ... nạp dữ liệu ...
+long t0 = System.nanoTime();
+Arrays.sort(a);                          // dual-pivot quicksort, tại chỗ
+System.out.printf("sort: %.2f s%n", (System.nanoTime() - t0) / 1e9);
+
+Arrays.parallelSort(a);                  // common pool, granularity 8192
+
+PriorityQueue<Integer> top = new PriorityQueue<>(100);   // min-heap cỡ 100
+for (int x : a) { top.offer(x); if (top.size() > 100) top.poll(); }
+~~~
+
+### Bảng trade-off (50 triệu, 8 vCPU, JDK 17)
+| Cách | Bộ nhớ thêm | Thời gian | Khi nào |
+|---|---|---|---|
+| {{Arrays.sort(int[])}} | ~0 | ~3,2 s | mặc định |
+| {{Arrays.parallelSort(int[])}} | ~0 | ~1,1 s | CPU rảnh, mảng lớn |
+| {{Collections.sort(List<Integer>)}} | ~1,2 GB | ~7 s | ít dữ liệu, cần object |
+| {{stream().sorted()}} | boxed | ~9 s | code ngắn, dữ liệu nhỏ |
+| {{PriorityQueue}} top-100 | O(K) | ~0,8 s | chỉ cần K phần tử |
+
+### Bẫy production
+- **{{parallelSort}} trong web app:** dùng chung common pool với các task khác; nếu request thread cũng dùng parallel stream sẽ tranh chấp. Không chạy việc blocking trong common pool.
+- **Sort khi dữ liệu còn đang được ghi:** có thể nhận kết quả thiếu hoặc {{ConcurrentModificationException}}.
+- **{{List<Integer>}} sort:** boxing/unboxing và bộ nhớ gấp nhiều lần; chuyển sang mảng nguyên thủy trước khi sort nếu có thể.
+- **{{Arrays.sort(Object[])}} với {{null}}:** ném {{NullPointerException}} khi so sánh tự nhiên.
+- **Dữ liệu lớn hơn heap:** OOM; phải chia và merge ngoài.
+- **{{parallelSort}} không phải luôn nhanh hơn:** dữ liệu đã gần có thứ tự hoặc mảng nhỏ thì overhead chia việc lớn hơn lợi ích.
+
+### Ví dụ đời thực
+Job đối soát cuối ngày: 50 triệu {{Long}} (số tiền bằng xu) trong {{List<Long>}} → 1,4 GB heap, 7,8 giây, old gen 1,2 GB, GC pause p99 90 ms. Chuyển sang {{long[]}} 400 MB + {{Arrays.sort}}: 3,1 giây; bật {{parallelSort}} trên 8 vCPU: 1,2 giây; bộ nhớ 1,4 GB → 400 MB. Cửa sổ chạy job từ 2 giờ còn 45 phút, và không còn Full GC giữa chừng.
+
+### Trả lời mẫu khi phỏng vấn
+Em chọn kiểu dữ liệu trước khi chọn thuật toán sort. Năm mươi triệu int trong mảng nguyên thủy là 200 MB; nếu để trong List<Integer>, mỗi phần tử là một object 16 byte cộng con trỏ 4 byte, tổng hơn 1,2 GB, chưa kể mảng tạm của TimSort. Với mảng int[], Arrays.sort dùng dual-pivot quicksort tại chỗ, O(n log n), không cần bộ nhớ phụ đáng kể; trên 8 vCPU, 50 triệu phần tử mất khoảng 3,2 giây. Arrays.parallelSort chia việc cho common ForkJoinPool, mặc định có số luồng bằng số CPU trừ một, và chỉ có lợi khi mảng đủ lớn; em đo được khoảng 1,1 giây. Nếu chỉ cần top 100, em dùng heap kích thước 100, O(n log K), khoảng 0,8 giây, thay vì sort toàn bộ. Em cũng không dùng parallelSort trong request thread của web nếu common pool đang bị chiếm, và không sort dữ liệu lớn hơn heap — khi đó em chia file, sort từng phần rồi merge. Kết quả job đối soát: từ 1,4 GB heap và 7,8 giây xuống 400 MB và 1,2 giây.
+
+> Senior tip: Nếu chỉ cần top-K, đếm, hoặc giao dịch theo khoảng thời gian, đừng sort toàn bộ. Khi buộc phải sort, đo cả thời gian và heap; parallelSort không mặc nhiên nhanh hơn.`,
+  follow: [
+    'Arrays.parallelSort dùng common pool, điều gì xảy ra khi một task blocking chạy trong đó?',
+    'Vì sao List<Integer>.sort chậm hơn Arrays.sort(int[]) nhiều lần, ngoài chuyện boxing?',
+    'Dữ liệu 500 triệu phần tử vượt heap: bạn thiết kế external sort thế nào?'
+  ],
+  tags: ['Arrays.sort', 'parallelSort', 'boxing', 'PriorityQueue', 'performance', 'external-sort']
+},
+{
+  id: 'collections-056',
+  topic: 'collections',
+  level: 'senior',
+  q: 'API của bạn nhận Map<String, String> từ client rồi đưa vào cache. Request có key null hoặc value null: HashMap, Hashtable, ConcurrentHashMap, TreeMap, List.of và Collectors.toMap hành xử khác nhau ra sao, và bạn thiết kế thế nào để không NPE giữa chừng?',
+  a: `**Tóm tắt:** {{HashMap}} cho phép 1 key null và nhiều value null; {{Hashtable}} và {{ConcurrentHashMap}} cấm cả hai (đa luồng không phân biệt được "không có key" với "key có giá trị null"); {{TreeMap}} cấm key null khi so sánh tự nhiên; {{List.of/Set.of/Map.of}} và {{List.copyOf}} cấm null hoàn toàn; {{Collectors.toMap}} ném {{NullPointerException}} khi value null và {{IllegalStateException}} khi trùng key. Thiết kế đúng: chuẩn hoá ở biên (reject hoặc bỏ qua), dùng {{containsKey}} khi null là giá trị hợp lệ, và không dùng {{getOrDefault}} để "chống null".
+
+### Cơ chế từng bước
+1. **{{HashMap}}:** {{put(null, v)}} được (hash = 0, bucket đầu tiên); {{get(null)}} được. {{getOrDefault(k, def)}} trả về {{null}} nếu key tồn tại với value null — nó không thay bằng {{def}}. Ngược lại, {{computeIfAbsent}} và {{putIfAbsent}} **coi value null là chưa có** nên sẽ tính hoặc ghi đè.
+2. **{{ConcurrentHashMap}}:** {{put(k, null)}} và {{put(null, v)}} đều ném {{NullPointerException}}. Lý do: trong môi trường đồng thời, {{get}} trả {{null}} không phân biệt được "chưa có" và "có nhưng null"; nếu cho phép thì không thể làm {{putIfAbsent}} hay {{compute}} đúng.
+3. **{{Hashtable}}:** cũng cấm null key/value; đã lỗi thời, nên dùng {{ConcurrentHashMap}}.
+4. **{{TreeMap}}:** so sánh bằng {{compareTo}}; {{null}} làm {{NullPointerException}}. Nếu truyền {{Comparator.nullsFirst(...)}} thì key null được chấp nhận.
+5. **{{List.of/Set.of/Map.of}}, {{List.copyOf}}:** collection bất biến, cấm null để tránh ngữ nghĩa mơ hồ; {{Arrays.asList}} và {{Collections.singletonList(null)}} thì cho phép.
+6. **{{Collectors.toMap}}:** value null → {{NullPointerException}}; key null vẫn được (dùng {{HashMap}}); trùng key → {{IllegalStateException}}. Cách xử lý: lọc null trước, hoặc truyền hàm merge.
+
+### Code
+~~~java
+Map<String, String> input = request.getHeaders();   // có thể có null
+
+Map<String, String> clean = new HashMap<>();
+input.forEach((k, v) -> {
+    if (k == null || v == null) return;              // 1. loại null ở biên
+    clean.put(k.trim(), v.trim());
+});
+
+String v = clean.get("x");
+if (v == null && clean.containsKey("x")) {           // 2. null là giá trị hợp lệ
+    // xử lý riêng, không dùng getOrDefault
+}
+
+ConcurrentHashMap<String, String> cache = new ConcurrentHashMap<>();
+clean.forEach(cache::put);                           // 3. đã lọc null nên CHM an toàn
+
+Map<String, String> byId = list.stream()
+    .filter(x -> x.currency() != null)               // 4. toMap không nhận value null
+    .collect(Collectors.toMap(X::id, X::currency, (a, b) -> a));
+~~~
+
+### Bảng hành vi
+| Collection | Key null | Value null | Ghi chú |
+|---|---|---|---|
+| {{HashMap}} / {{LinkedHashMap}} | 1 key | Nhiều | {{getOrDefault}} không phân biệt |
+| {{Hashtable}} | Không | Không | legacy, synchronized |
+| {{ConcurrentHashMap}} | Không | Không | lý do đa luồng |
+| {{TreeMap}} | Không (trừ comparator nullsFirst) | Nhiều | so sánh null → NPE |
+| {{List.of/Set.of/Map.of}} | Không | Không | bất biến, reject null |
+| {{List.copyOf}} | Không | Không | |
+| {{Arrays.asList}} | Có | Có | view của mảng |
+| {{Collectors.toMap}} | Có | Không (NPE) | trùng key → IllegalStateException |
+
+### Bẫy production
+- **{{get(k) != null}} thay cho {{containsKey}}:** khi null là giá trị hợp lệ, logic sai âm thầm.
+- **{{getOrDefault}}:** trả null nếu key có value null, không trả default.
+- **{{Collectors.toMap}} với field optional:** một dòng thiếu {{currency}} làm cả job fail; nên filter hoặc default.
+- **{{ConcurrentHashMap}} trong cache:** value null từ DB gây NPE; hoặc bỏ qua, hoặc dùng sentinel.
+- **{{Map.merge}} với value null:** ném {{NullPointerException}}.
+- **{{List.of}} trong test, {{Arrays.asList}} trên production:** hành vi null khác nhau, test xanh nhưng production lỗi.
+
+### Ví dụ đời thực
+Webhook thanh toán: parser header chèn {{null}} cho header thiếu; 0,3% request (2.100/700.000) ném NPE khi put vào {{ConcurrentHashMap}} → 500. Điều tra: log có {{X-Idempotency-Key}} null. Sửa: lọc null ở biên, chỉ bắt buộc các header bắt buộc bằng {{Objects.requireNonNull}}, thêm metric đếm tỉ lệ null. Song song, job đối soát 5 triệu dòng dùng {{Collectors.toMap}} và 1,2% dòng (60.000) thiếu {{currency}} → job fail sau 40 phút; sửa bằng filter + default "UNKNOWN". Sau sửa: 0 lỗi NPE, job chạy 12 phút.
+
+### Trả lời mẫu khi phỏng vấn
+Em coi null là tín hiệu, không phải giá trị, và em chuẩn hoá nó ở biên hệ thống. HashMap cho phép một key null và nhiều value null, nhưng getOrDefault không phân biệt được không có key với key có giá trị null, nên em dùng containsKey khi null là hợp lệ. Ngược lại, computeIfAbsent và putIfAbsent coi value null là chưa có và sẽ tính hoặc ghi đè; em nhớ điều này khi dùng cache. Hashtable và ConcurrentHashMap cấm cả key null lẫn value null, vì trong môi trường đa luồng không thể phân biệt hai trạng thái đó một cách nguyên tử; nếu cache dùng ConcurrentHashMap thì em lọc null trước khi put. TreeMap cấm key null khi dùng so sánh tự nhiên, còn List.of, Set.of, Map.of và List.copyOf cấm null hoàn toàn. Collectors.toMap ném NullPointerException khi value null và IllegalStateException khi trùng key, nên em lọc null và cung cấp hàm merge trước khi collect. Trong một sự cố, parser header chèn null cho header thiếu, 0,3% request bị 500 khi put vào ConcurrentHashMap; sau khi lọc ở biên và chỉ bắt buộc các header bắt buộc, lỗi về 0. Em cũng thêm metric đếm phần trăm null để phát hiện sớm.
+
+> Senior tip: Chọn một chính sách null duy nhất ở biên: reject, skip, hoặc sentinel. Đừng để null đi vào collection rồi phát hiện bằng NullPointerException ở tầng xa.`,
+  follow: [
+    'getOrDefault và computeIfAbsent khác nhau thế nào khi key đã tồn tại với value null?',
+    'Vì sao ConcurrentHashMap cấm null key và null value, còn HashMap thì không?',
+    'Collectors.toMap bị trùng key: bạn chọn hàm merge nào và vì sao?'
+  ],
+  tags: ['HashMap', 'ConcurrentHashMap', 'null', 'Collectors', 'List.of', 'API-design']
+},
 );
