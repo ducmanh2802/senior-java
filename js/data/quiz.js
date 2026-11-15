@@ -6315,5 +6315,300 @@ pessimistic: SELECT ... FOR UPDATE (khi tranh chấp cao, cần đọc-ghi nhi�
 ~~~
 
 > Senior tip: luôn kiểm tra **số hàng bị ảnh hưởng** sau UPDATE có điều kiện — nhiều lập trình viên quên và tưởng cập nhật thành công. Với Hibernate, bắt {{OptimisticLockException}} và retry có giới hạn (đừng retry vô hạn).`
+},
+{
+  id: 'qz-jvm-046',
+  topic: 'jvm',
+  q: 'Ứng dụng Java 17 chạy heap lớn (vài GB), yêu cầu thời gian ngừng ứng dụng (stop-the-world pause) mỗi lần GC luôn dưới 10 ms. Bộ GC nào phù hợp nhất?',
+  options: [
+    'ZGC — tiến hành hầu hết công việc GC song song với ứng dụng, pause thường dưới 10 ms ngay cả khi heap vài GB đến TB.',
+    'Serial GC — đơn giản, chỉ dùng một luồng GC, phù hợp ứng dụng nhỏ chạy trên một lõi CPU.',
+    'G1GC — có thể đặt mục tiêu pause qua {{-XX:MaxGCPauseMillis}} nhưng đây chỉ là mục tiêu, không cam kết ngừng dưới 10 ms mọi lần.',
+    'Parallel GC — tập trung throughput, ngừng toàn bộ ứng dụng trong khoảng thời gian dài để dọn dẹp heap.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: ZGC.**
+
+### Vì sao đúng
+ZGC (Z Garbage Collector) xuất hiện từ JDK 15 và ổn định cho production từ JDK 17. Thiết kế cốt lõi của ZGC là concurrent: phần lớn công việc đánh dấu và di chuyển đối tượng được thực hiện trong các luồng GC chạy cùng lúc với ứng dụng. Nên ứng dụng chỉ bị ngừng trong các khoảng cực ngắn, thường dưới 10 ms, ngay cả khi heap vài GB hay hàng TB. Đây chính là bộ GC cho yêu cầu latency thấp.
+
+### Vì sao các phương án còn lại sai
+- **Serial GC**: dùng một luồng duy nhất và ngừng toàn bộ ứng dụng trong suốt khi GC, chỉ hợp lý cho heap nhỏ trên máy hạn hẹp, không phải server heap GB.
+- **G1GC**: {{-XX:MaxGCPauseMillis}} là mục tiêu gợi ý, G1 cố gắng đạt nhưng không cam kết cứng; heap lớn và truy cập nhiều có thể khiến pause G1 vượt 10 ms.
+- **Parallel GC**: tối ưu cho throughput (nhiều công việc mỗi đơn vị thời gian), dùng nhiều luồng nhưng vẫn ngừng ứng dụng lâu trong các bước dọn dẹp heap, không phù hợp yêu cầu latency thấp.
+
+> Senior tip: trước khi chọn ZGC, hãy đo pause thực trên staging bằng GC log. Nếu môi trường chưa hỗ trợ ZGC, G1 là thay thế hợp lý; đừng chọn Serial cho ứng dụng server heap lớn.`
+},
+{
+  id: 'qz-jvm-047',
+  topic: 'jvm',
+  q: 'Java 17 bật unified logging bằng {{-Xlog:gc*:file=gc.log}}. Một dòng GC log có dạng sau. Trường nào cho biết thời gian ứng dụng đã bị ngừng để thực hiện GC này? [12.345s][info][gc] GC(7) Pause Young (Normal) (G1 Evacuation Pause) 320M->110M(2G) 45.678ms',
+  options: [
+    '12.345s là thời gian ứng dụng bị ngừng vì GC',
+    '45.678ms là thời gian GC thực thi (pause), tính từ khi bắt đầu đến khi xong',
+    '320M->110M(2G) là số ms GC đã ngừng ứng dụng',
+    'GC(7) là thời gian ngừng ứng dụng, đơn위는 miligiây'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: 45.678ms là thời gian GC thực thi (pause).**
+
+### Vì sao đúng
+Cú pháp unified logging trong JDK 9 trở lên có dạng [<thoi gian>][<muc log>][<tag>] .... Dòng trên tách ra như sau:
+- {{12.345s}}: mốc thời gian kể từ khi JVM khởi động, không phải thời gian ngừng.
+- {{GC(7)}}: số thứ tự sự kiện GC (sự kiện thứ 7), không phải thời gian.
+- {{Pause Young (Normal) (G1 Evacuation Pause)}}: loại GC là Young và lý do ngừng.
+- {{320M->110M(2G)}}: dung lượng heap trước GC, sau GC, và tổng dung lượng heap.
+- {{45.678ms}}: thời gian từ lúc bắt đầu đến khi kết thúc lần GC này — chính là thời gian ứng dụng bị ngừng để thực hiện GC này (stop-the-world pause).
+
+### Vì sao các phương án còn lại sai
+- **12.345s là thời gian ngừng**: sai, đó là mốc thời gian kể từ khởi động JVM.
+- **320M->110M(2G) là ms ngừng**: sai, đó là kích thước heap tính bằng MB, không phải thời gian.
+- **GC(7) là thời gian ngừng**: sai, đó là thứ tự sự kiện GC.
+
+> Senior tip: khi điều tra latency qua GC log, hãy theo cột thời gian cuối cùng (ms) và cộng dồn pause trong một khoảng. Nếu pause Young thường xuyên và dài, heap có thể nhỏ quá hoặc vùng Eden quá nhỏ.`
+},
+{
+  id: 'qz-jvm-048',
+  topic: 'jvm',
+  q: 'Ứng dụng Spring Boot 3 Java 17 triển khai lại nhiều lần trên cùng một container (hot redeploy không khởi động lại container). Sau vài lần triển khai, gặp lỗi sau. Lỗi này liên quan đến vùng nhớ nào của JVM? {{java.lang.OutOfMemoryError: Metaspace}}',
+  options: [
+    'Java heap — đối tượng nghiệp vụ đã đầy heap, cần tăng {{-Xmx}}.',
+    'Direct memory — bộ nhớ trực tiếp của {{ByteBuffer.allocateDirect}} đã vượt quá giới hạn.',
+    'Metaspace — vùng native memory lưu metadata của lớp (class metadata), thường đầy khi nạp nhiều lớp hoặc triển khai nhiều lần không gom classloader cũ.',
+    'Stack — từng luồng đã dùng hết stack, cần giảm số luồng hoặc tăng {{-Xss}}.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Metaspace.**
+
+### Vì sao đúng
+Từ Java 8, JVM dùng Metaspace (thay cho PermGen) để lưu metadata của lớp: tên lớp, phương thức, field, bytecode, constant pool... Metaspace nằm trong native memory (bên ngoài Java heap), không tính vào {{-Xmx}}. Khi triển khai lại nhiều lần mà classloader cũ không bị gom rác (ví dụ driver JDBC, thread-local, listener vẫn giữ tham chiếu đến classloader cũ), các lớp mới bị nạp lại liên tục và Metaspace tăng cho đến hết → lỗi {{java.lang.OutOfMemoryError: Metaspace}}.
+
+### Vì sao các phương án còn lại sai
+- **Java heap / -Xmx**: lỗi heap sẽ báo {{java.lang.OutOfMemoryError: Java heap space}}, do đối tượng nghiệp vụ, không phải metadata lớp.
+- **Direct memory**: lỗi là {{java.lang.OutOfMemoryError: Direct buffer memory}}, do {{ByteBuffer.allocateDirect}} dùng quá nhiều, không liên quan đến redeploy lớp.
+- **Stack**: lỗi stack là {{java.lang.StackOverflowError}} (không phải OutOfMemoryError), do đệ quy quá sâu hoặc stack mỗi luồng quá nhỏ.
+
+> Senior tip: xử lý OOM Metaspace bằng cách tìm nguyên nhân classloader bị rò rỉ (thread-local, JDBC driver, cglib proxy không hủy), không phải chỉ tăng {{-XX:MaxMetaspaceSize}} vì đó chỉ là thuê bao thời gian.`
+},
+{
+  id: 'qz-jvm-049',
+  topic: 'jvm',
+  q: 'Chạy Java 17 trong container có giới hạn memory 2 GiB. Mặc định, Java 17 dùng {{MaxRAMPercentage}} bao nhiêu phần trăm giới hạn container làm {{-Xmx}}, và điều gì cần lưu ý?',
+  options: [
+    '100% của 2 GiB, vì Java 17 tự nhận giới hạn container và dùng hết.',
+    '50%, vì các phiên bản Java mới đều dùng nửa giới hạn container làm heap mặc định.',
+    '25% (khoảng 512 MiB); mặc định này an toàn vì JVM tự dành sẵn chỗ cho metaspace, stack và direct memory.',
+    '25% (khoảng 512 MiB); mặc định chỉ tính heap, nên phải tự trừ đi chỗ cho metaspace, stack, code cache và direct memory để tránh container bị OOMKill.'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: 25% (khoảng 512 MiB); mặc định chỉ tính heap.**
+
+### Vì sao đúng
+Java 17 nhận biết giới hạn memory của container (cgroups) và tính {{-Xmx}} mặc định bằng {{MaxRAMPercentage}} lần giới hạn container. Giá trị mặc định của {{MaxRAMPercentage}} là 25, nên với container 2 GiB, {{-Xmx}} mặc định khoảng 512 MiB. Số này chỉ là heap Java. JVM vẫn cần thêm bộ nhớ ngoài heap: metaspace (metadata lớp), stack của từng luồng, code cache (mã máy JIT), direct memory, thread và bộ nhớ của container. Nếu đặt {{-Xmx}} quá gần 2 GiB, tổng bộ nhớ JVM sẽ vượt giới hạn container và container bị OOMKill (kernel Linux dừng container), không phải lỗi Java heap.
+
+### Vì sao các phương án còn lại sai
+- **100% của 2 GiB**: sai, tổng bộ nhớ JVM sẽ vượt giới hạn và container bị OOMKill.
+- **50%**: sai, mặc định là 25%, không phải 50%.
+- **Mặc định an toàn, tự dành chỗ ngoài heap**: sai, JVM không tự trừ ra chỗ cho metaspace/stack; người cấu hình phải tự tính.
+
+> Senior tip: quy tắc thực tế là xếp {{-Xmx}} bằng khoảng 50–70% giới hạn container, để còn chỗ cho non-heap và buffer an toàn; sau đó theo dõi RSS (dung lượng bộ nhớ thực tế) của container, không chỉ theo heap.`
+},
+{
+  id: 'qz-jvm-050',
+  topic: 'jvm',
+  q: 'Ứng dụng Java 17 vừa khởi động, thời gian phản hồi của API chậm hơn hẳn sau 10–15 phút chạy ổn định. Nguyên nhân chính là gì?',
+  options: [
+    'JIT compiler cần thời gian warm-up: mã bytecode được chạy theo định dạng chưa tối ưu, sau khi đủ lần gọi mới được biên dịch tối ưu.',
+    'Garbage Collector đang chạy liên tục từ lúc khởi động.',
+    'Heap chưa đủ lớn nên JVM phải resize heap liên tục.',
+    'Class metadata bị nạp lại mỗi lần request đầu tiên.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: JIT compiler cần thời gian warm-up.**
+
+### Vì sao đúng
+Mã Java trước khi chạy được dịch thành bytecode. Trong JVM, bytecode ban đầu được trình diễn (interpret) từng dòng, chạy chậm. Để nhanh hơn, JIT compiler (Just-In-Time) biên dịch bytecode thành mã máy gốc tại thời điểm chạy. Java 17 dùng tiered compilation: trình diễn → C1 (biên dịch nhanh, tối ưu ít) → C2 (biên dịch chậm hơn, tối ưu nhiều). Một phương thức mới chỉ được C2 biên dịch tối ưu sau khi được gọi đủ lần để JVM nhận biết là phương thức nóng (hot method). Do đó sau khởi động, thời gian phản hồi cao (giai đoạn warm-up), sau 10–15 phút khi mã đường dẫn nóng đã được C2 tối ưu, phản hồi nhanh hơn.
+
+### Vì sao các phương án còn lại sai
+- **GC chạy liên tục**: GC chạy khi cần, không liên tục, và không phải nguyên nhân chậm liên tục 10–15 phút.
+- **Heap resize liên tục**: heap resize chỉ xảy ra vài lần khi khởi động, không kéo dài 10–15 phút.
+- **Class metadata nạp lại mỗi request**: lớp chỉ được nạp một lần, sau đó dùng lại, không nạp lại mỗi request.
+
+> Senior tip: khi chạy test hiệu năng hoặc benchmark, hãy bỏ qua khoảng warm-up (ví dụ 5–10 phút) trước khi đo, và dùng công cụ như JMH thay vì đo bằng tay ngay lúc khởi động.`
+},
+{
+  id: 'qz-jvm-051',
+  topic: 'jvm',
+  q: 'Ứng dụng bị OutOfMemoryError: Java heap space. Bạn lấy heap dump (.hprof) và mở bằng Eclipse MAT. Chỉ số nào cho biết nếu xóa đối tượng này sẽ giải phóng bao nhiêu bộ nhớ, bao gồm cả các đối tượng nó giữ các tham chiếu tới?',
+  options: [
+    'Shallow heap — kích thước riêng của đối tượng, không tính các đối tượng được tham chiếu.',
+    'Retained heap — tổng bộ nhớ sẽ được giải phóng nếu đối tượng này bị garbage collection, bao gồm các đối tượng chỉ được giữ bởi nó.',
+    'Dominator tree chỉ hiển thị shallow heap, không dùng để tìm nguyên nhân rò rỉ.',
+    'Heap dump không thể phân tích được, chỉ dùng thread dump.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Retained heap.**
+
+### Vì sao đúng
+Heap dump là ảnh chụp toàn bộ heap tại một thời điểm. Khi phân tích, mỗi đối tượng có hai chỉ số:
+- Shallow heap: kích thước của chính đối tượng đó (ví dụ một object chứa 3 field int thì khoảng vài chục byte), không tính những gì nó tham chiếu.
+- Retained heap: số bytes sẽ được giải phóng nếu đối tượng này (và những đối tượng chỉ có thể tiếp cận thông qua nó) bị garbage collection. Đây là con số quan trọng để tìm đối tượng "giữ" nhiều bộ nhớ nhất.
+
+Dominator tree sắp xếp theo mối quan hệ giữ tham chiếu, giúp nhìn thấy đối tượng cao nhất giữ nhiều retained heap nhất — thường là nguyên nhân rò rỉ bộ nhớ (ví dụ danh sách cache không giới hạn, session chưa hết hạn không xóa).
+
+### Vì sao các phương án còn lại sai
+- **Shallow heap**: chỉ là kích thước của đối tượng duy nhất, không cho biết tổng thiệt hại nếu xóa đối tượng đó.
+- **Dominator tree chỉ hiển thị shallow heap**: sai, dominator tree dùng để khẳng định retained heap và là công cụ chính tìm rò rỉ.
+- **Heap dump không thể phân tích**: sai, heap dump chính là tài liệu phân tích rò rỉ bộ nhớ, còn thread dump dùng để phân tích luồng treo.
+
+> Senior tip: lấy heap dump khi xảy ra OOM bằng cờ {{-XX:+HeapDumpOnOutOfMemoryError}} và {{-XX:HeapDumpPath}}. Khi phân tích, hãy dominator tree theo retained heap, không phải shallow heap.`
+},
+{
+  id: 'qz-jvm-052',
+  topic: 'jvm',
+  multi: true,
+  q: 'Bạn muốn dùng G1GC cho ứng dụng Java 17 và mục tiêu pause GC là 200 ms. Chọn 2 thiết lập đúng sau đây (Chọn 2):',
+  options: [
+    '{{-XX:+UseG1GC}}',
+    '{{-XX:MaxGCPauseMillis=200}}',
+    '{{-XX:+UseSerialGC}}',
+    '{{-XX:MaxGCPauseMillis=2000}}',
+    '{{-XX:+UseParallelGC}}'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: {{-XX:+UseG1GC}} và {{-XX:MaxGCPauseMillis=200}}.**
+
+### Vì sao đúng
+- {{-XX:+UseG1GC}} bật G1GC, bộ GC mặc định của Java 17 (từ Java 9).
+- {{-XX:MaxGCPauseMillis=200}} đặt mục tiêu pause GC là 200 ms. G1 cố gắng đạt mục tiêu này bằng cách điều chỉnh kích thước vùng Eden, nhưng đây là mục tiêu gợi ý, không phải cam kết cứng.
+
+### Vì sao các phương án còn lại sai
+- **{{-XX:+UseSerialGC}}**: bật Serial GC, ngừng ứng dụng lâu, không phải G1GC.
+- **{{-XX:MaxGCPauseMillis=2000}}**: mục tiêu 2000 ms, không phải 200 ms như yêu cầu.
+- **{{-XX:+UseParallelGC}}**: bật Parallel GC, tối ưu throughput, không phải G1GC.
+
+> Senior tip: G1GC chia heap thành các vùng (region) bằng nhau thay vì Eden/Survivor/Old cố định. Mục tiêu pause là gợi ý; nếu heap quá nhỏ, G1 không đạt được pause thấp. Hãy heap đủ lớn (vài GB) khi dùng G1.`
+},
+{
+  id: 'qz-jvm-053',
+  topic: 'jvm',
+  q: 'Về ZGC trên Java 17, phát biểu nào là đúng?',
+  options: [
+    'ZGC ngừng toàn bộ ứng dụng trong vài giây mỗi lần GC, giống Serial GC.',
+    'ZGC chỉ hỗ trợ heap nhỏ dưới 256 MB.',
+    'ZGC thực hiện hầu hết công việc GC song song với ứng dụng, pause thường dưới 10 ms.',
+    'ZGC không thể dùng trong production Java 17, chỉ dùng thử.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: ZGC thực hiện hầu hết công việc GC song song với ứng dụng, pause thường dưới 10 ms.**
+
+### Vì sao đúng
+ZGC là bộ GC concurrent: phần lớn công việc (đánh dấu, di chuyển đối tượng) chạy trong các luồng GC cùng lúc với ứng dụng. Các khoảng ngừng toàn bộ ứng dụng (stop-the-world) cực ngắn, thường dưới 10 ms. ZGC hỗ trợ heap từ vài MB cho tới hàng TB, ổn định cho production trên Java 17.
+
+### Vì sao các phương án còn lại sai
+- **Ngừng vài giây mỗi lần**: sai, đó là đặc điểm Serial GC, không phải ZGC.
+- **Chỉ heap dưới 256 MB**: sai, ZGC hỗ trợ heap rất lớn, từ MB tới TB.
+- **Không dùng được production Java 17**: sai, ZGC đã ổn định và dùng được production từ JDK 15, Java 17 hoàn toàn dùng được.
+
+> Senior tip: ZGC dành cho ứng dụng cần latency thấp và heap lớn. Nếu ứng dụng nhỏ và quan tâm throughput hơn, Parallel GC hoặc G1 vẫn là lựa chọn hợp lý.`
+},
+{
+  id: 'qz-jvm-054',
+  topic: 'jvm',
+  multi: true,
+  q: 'Xem ba thông điệp lỗi sau. Chọn 2 phát biểu đúng về vùng nhớ liên quan (Chọn 2): 1. {{java.lang.OutOfMemoryError: Java heap space}} 2. {{java.lang.OutOfMemoryError: Metaspace}} 3. {{java.lang.OutOfMemoryError: Direct buffer memory}}',
+  options: [
+    'Thông điệp 1 liên quan đến heap Java, nơi lưu đối tượng tạo bằng từ khóa new.',
+    'Thông điệp 2 liên quan đến direct memory của {{ByteBuffer.allocateDirect}}.',
+    'Thông điệp 3 liên quan đến bộ nhớ trực tiếp, ngoài heap, thường do {{ByteBuffer.allocateDirect}} dùng quá nhiều.',
+    'Thông điệp 2 là vùng trong Java heap lưu đối tượng nghiệp vụ.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: Thông điệp 1 là heap Java, thông điệp 3 là direct memory.**
+
+### Vì sao đúng
+- {{java.lang.OutOfMemoryError: Java heap space}} nghĩa là heap Java đã đầy, thường do tạo quá nhiều đối tượng hoặc giữ tham chiếu không giải phóng (memory leak).
+- {{java.lang.OutOfMemoryError: Direct buffer memory}} nghĩa là bộ nhớ trực tiếp (direct memory) đã hết, thường do {{ByteBuffer.allocateDirect}} dùng quá nhiều. Direct memory nằm ngoài heap và mặc định bị giới hạn bằng {{-Xmx}}.
+
+### Vì sao các phương án còn lại sai
+- **Thông điệp 2 là direct memory**: sai, direct memory là thông điệp 3. Metaspace lưu metadata lớp (tên lớp, phương thức, bytecode), không phải direct memory.
+- **Thông điệp 2 là vùng trong heap lưu đối tượng nghiệp vụ**: sai, Metaspace nằm ngoài heap và lưu metadata lớp, không phải đối tượng nghiệp vụ.
+
+> Senior tip: khi gặp OOM, hãy đọc chính xác thông điệp sau dấu hai chấm để biết vùng nhớ nào hết, rồi mới quyết định điều trị (tăng heap, sửa leak, hoặc giảm direct buffer).`
+},
+{
+  id: 'qz-jvm-055',
+  topic: 'jvm',
+  q: 'Container có giới hạn 4 GiB. Java 17 mặc định dùng MaxRAMPercentage 25% làm -Xmx. Nếu bạn không đổi MaxRAMPercentage, -Xmx mặc định sẽ là bao nhiêu, và điều gì cần lưu ý?',
+  options: [
+    '4 GiB, vì Java 17 tự dùng hết giới hạn container.',
+    '2 GiB (50%), vì Java mới mặc định dùng nửa giới hạn container.',
+    '1 GiB, và này là heap duy nhất JVM dùng, không cần dè dapp thêm gì.',
+    '1 GiB (25% × 4 GiB) cho heap, còn lại là chỗ cho metaspace, stack, code cache và direct memory; nếu ứng dụng cần heap lớn hơn thì phải tăng MaxRAMPercentage hoặc đặt -Xmx thủ công nhưng không được vượt quá khả năng của container.'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: 1 GiB (25% × 4 GiB) cho heap, cần lưu tâm bộ nhớ ngoài heap.**
+
+### Vì sao đúng
+Java 17 tính {{-Xmx}} mặc định bằng {{MaxRAMPercentage}} lần giới hạn container. Với {{MaxRAMPercentage}} = 25 và container 4 GiB, {{-Xmx}} mặc định là 1 GiB. Số này chỉ là heap Java. JVM vẫn cần bộ nhớ ngoài heap: metaspace (metadata lớp), stack của từng luồng, code cache (mã máy JIT) và direct memory. Nếu tổng kích thước heap cộng các vùng ngoài heap vượt quá 4 GiB, container sẽ bị OOMKill. Nếu ứng dụng cần heap lớn hơn 1 GiB, hãy tăng {{MaxRAMPercentage}} hoặc đặt {{-Xmx}} thủ công, nhưng phải để lại khoảng trống an toàn cho non-heap và container.
+
+### Vì sao các phương án còn lại sai
+- **4 GiB**: sai, dùng hết giới hạn container chắc chắn làm container hết bộ nhớ và bị OOMKill.
+- **2 GiB (50%)**: sai, mặc định là 25%, không phải 50%.
+- **1 GiB là heap duy nhất, không cần dè dapp**: sai, JVM cần thêm bộ nhớ ngoài heap, không thể coi 1 GiB là tất cả.
+
+> Senior tip: quy tắc thực tế là xếp {{-Xmx}} bằng khoảng 50–70% giới hạn container, để còn chỗ cho non-heap và buffer an toàn; theo dõi RSS (dung lượng bộ nhớ thực tế) của container, không chỉ theo heap.`
+},
+{
+  id: 'qz-jvm-056',
+  topic: 'jvm',
+  q: 'Khi nào nên lấy heap dump (.hprof) để phân tích rò rỉ bộ nhớ?',
+  options: [
+    'Khi gặp OutOfMemoryError: Java heap space, hoặc khi nghi ngờ rò rỉ bộ nhớ sau khi theo dõi heap tăng không ngừng.',
+    'Chỉ khi ứng dụng khởi động xong 10 phút, bất kể có lỗi hay không.',
+    'Mỗi ngày nửa đêm lấy một lần, dù ứng dụng chạy bình thường.',
+    'Không bao giờ, vì heap dump làm ứng dụng dừng hoàn toàn và không thể phục hồi.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Khi gặp OutOfMemoryError: Java heap space, hoặc nghi ngờ rò rỉ bộ nhớ.**
+
+### Vì sao đúng
+Heap dump là ảnh chụp toàn bộ heap tại một thời điểm, dùng để xem đối tượng nào chiếm nhiều bộ nhớ nhất và tham chiếu giữ chúng sống như thế nào. Bạn nên lấy heap dump:
+- Khi xảy ra {{OutOfMemoryError: Java heap space}} (bật sẵn cờ {{-XX:+HeapDumpOnOutOfMemoryError}} để JVM tự lấy khi lỗi).
+- Khi theo dõi thấy heap tăng liên tục không giảm lại sau GC, dấu hiệu rò rỉ bộ nhớ (ví dụ danh sách cache không giới hạn, listener không xoá).
+
+Sau khi lấy, mở bằng Eclipse MAT hoặc VisualVM, xem dominator tree theo retained heap để tìm đối tượng giữ nhiều bộ nhớ nhất.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ khi khởi động xong 10 phút**: heap dump lấy theo sự kiện lỗi hoặc nghi ngờ rò rỉ, không theo giờ cố định.
+- **Mỗi ngày nửa đêm dù chạy bình thường**: tạo heap dump tốn thời gian và dung lượng, không cần lấy định kỳ khi không có lỗi.
+- **Không bao giờ**: sai, heap dump là công cụ chính phân tích rò rỉ bộ nhớ. Việc lấy heap dump có thể làm ứng dụng ngừng ngắn ngủi nhưng không làm hỏng hoặc không thể phục hồi.
+
+> Senior tip: kết hợp heap dump với GC log — GC log cho biết khi nào và bao nhiêu bộ nhớ được thu gom, heap dump cho biết đối tượng nào giữ bộ nhớ đó.`
+},
+{
+  id: 'qz-jvm-057',
+  topic: 'jvm',
+  multi: true,
+  q: 'Về JIT compilation và warm-up trên Java 17, chọn 2 phát biểu đúng sau đây (Chọn 2):',
+  options: [
+    'Mã bytecode được trình diễn (interpret) trước khi được JIT biên dịch thành mã máy.',
+    'C1 biên dịch nhanh nhưng tối ưu ít, C2 biên dịch chậm hơn nhưng tối ưu nhiều.',
+    'JIT biên dịch mọi phương thức ngay khi lớp được nạp, không cần warm-up.',
+    'Warm-up không cần thiết vì Java 17 chạy bytecode nhanh như mã máy ngay từ đầu.',
+    'Tiered compilation có nghĩa chỉ dùng C2.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: Mã bytecode được trình diễn trước khi JIT biên dịch; C1 nhanh tối ưu ít, C2 chậm tối ưu nhiều.**
+
+### Vì sao đúng
+Mã Java được dịch thành bytecode, rồi trong JVM bytecode ban đầu được trình diễn từng dòng (chạy chậm). JIT compiler sau đó biên dịch bytecode thành mã máy gốc để chạy nhanh hơn. Java 17 dùng tiered compilation: trình diễn → C1 (biên dịch nhanh, tối ưu ít) → C2 (biên dịch chậm hơn, tối ưu nhiều). Một phương thức chỉ được C2 tối ưu sau khi được gọi đủ lần (hot method), nên cần warm-up.
+
+### Vì sao các phương án còn lại sai
+- **JIT biên dịch mọi phương thức ngay khi lớp nạp**: sai, chỉ biên dịch phương thức nóng sau đủ lần gọi, không phải tất cả ngay từ đầu.
+- **Warm-up không cần thiết**: sai, nếu không warm-up thì phần lớn code còn chạy ở chế độ trình diễn/C1, phản hồi chậm.
+- **Tiered compilation chỉ dùng C2**: sai, tiered nghĩa là dùng cả C1 và C2 theo mức độ nóng của phương thức.
+
+> Senior tip: khi đo hiệu năng, hãy bỏ qua giai đoạn warm-up (ví dụ 5–10 phút) trước khi bắt đầu thu thập kết quả, và dùng JMH thay vì đo bằng tay ngay lúc khởi động.`
 }
 );
