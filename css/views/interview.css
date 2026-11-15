@@ -207,3 +207,7 @@
   .view-interview .iv-state-busy .iv-state-dot,
   .view-interview .iv-state-speak .iv-state-dot { animation: none; }
 }
+
+/* core-set seeds + presets (T2128) */
+.view-interview .iv-presets { margin-bottom: 8px; }
+.view-interview .iv-core { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
