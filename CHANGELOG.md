@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-15
+
+### Nội dung
+
+
+### Ứng dụng
+- refill: keep >= 6 open tasks, check every 5 min
+- Visual model answers: summary card, icon section cards, step-by-step mode, read aloud (bank + flash)
+- Flash/mock/interview: core-set modes and Senior Java presets (T2125, T2127, T2128)
+
+
 ## 2026-11-08
 
 ### Nội dung
