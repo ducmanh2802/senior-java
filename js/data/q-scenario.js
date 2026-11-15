@@ -9286,5 +9286,444 @@ PR 3.200 dòng "thêm tính năng hoàn tiền", gồm: 1.100 dòng đổi forma
     'Bạn dùng công cụ tự động (CI, linter, SAST, test coverage) như thế nào để giảm tải cho review thủ công?'
   ],
   tags: ['code-review', 'pull-request', 'quality', 'collaboration', 'process']
+},
+{
+  id: 'scenario-155',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Sau khi deploy, p99 của API {{GET /api/orders}} nhảy từ 200ms lên 3s, p50 vẫn 210ms, CPU pod 45%, không có 5xx. Bản deploy chỉ gồm một migration thêm cột và một thay đổi nhỏ trong service. Bạn điều tra thế nào?',
+  a: `**Tóm tắt:** p50 không đổi mà p99 tăng 15 lần nghĩa là **một tỷ lệ nhỏ request đi vào một đường chậm hơn**, không phải cả hệ thống chậm đi. Sau một bản deploy có migration, nghi phạm số một là **kế hoạch thực thi (query plan) của một câu SQL bị đổi** vì thống kê của bảng đã cũ, hoặc vì migration làm câu query phải đọc nhiều dữ liệu hơn. Tôi lấy đúng câu SQL từ trace, chạy {{EXPLAIN (ANALYZE, BUFFERS)}} để xem plan thật, so với plan trước, rồi sửa bằng {{ANALYZE}}, index đúng, hoặc viết lại query. Nếu vượt SLA thì rollback trước, điều tra sau.
+
+### Vì sao p50 không đổi mà p99 tăng
+- p50 là trung vị của hàng nghìn request. Nếu chỉ 1% request chậm 3 giây thì trung vị vẫn là 200ms — đây là lý do p99 là chỉ số đáng theo dõi khi điều tra "đuôi dài".
+- Một request chậm vì **một câu SQL chậm**, và câu đó chỉ chạy với một tập dữ liệu nhỏ (khách hàng có nhiều đơn, hoặc trang sâu) → đúng dạng "một nhóm nhỏ request rất chậm".
+- CPU 45% **không** loại trừ DB: thread ứng dụng đang **chờ** DB trả kết quả chứ không tính toán. Đây là điểm khác với sự cố do GC hay do CPU bão hoà.
+
+### Điều tra từng bước
+1. **Khoanh theo endpoint, rồi theo tham số**: tách p99 theo endpoint; nếu vẫn chưa rõ thì tách theo nhóm tham số (theo khách hàng, theo khoảng ngày, theo trang). Nếu p99 cao chỉ ở nhóm tham số lớn, gần như chắc chắn là một câu SQL.
+2. **Lấy 20 trace chậm nhất** trước và sau deploy (Jaeger/Tempo/Datadog). Span nào phình ra? Số span DB mỗi request có tăng không (dấu hiệu N+1 mới)?
+3. **Lấy câu SQL thật**: {{pg_stat_statements}} có sẵn ở hầu hết managed Postgres, sắp theo {{mean_exec_time}} hoặc {{total_exec_time}}, so hai mốc thời gian.
+4. **Xem plan thật, không đoán**:
+~~~text
+EXPLAIN (ANALYZE, BUFFERS) SELECT ...
+~~~
+  Đọc {{actual time}}, {{rows}}, {{loops}}, {{Rows Removed by Filter}} và loại node (Seq Scan / Nested Loop / Hash Join).
+5. **Kiểm tra thống kê**: {{SELECT relname, last_analyze, last_autoanalyze FROM pg_stat_user_tables WHERE relname = 'orders';}} Nếu {{last_analyze}} cũ hơn lần deploy, thống kê đang lỗi thời.
+
+### Plan đổi sau migration: chuyện gì đã xảy ra
+~~~text
+Seq Scan on orders o  (actual time=0.02..0.31 rows=1 loops=1)
+   Filter: (customer_id = 8812)
+   Rows Removed by Filter: 3998213
+Nested Loop  (actual time=2841.2..2841.9 rows=20 loops=1)
+Execution Time: 2843.7 ms
+~~~
+- Bộ hoạch định chọn **Nested Loop** vì nó tin rằng chỉ có vài dòng, nên nó lặp qua từng đơn hàng để tìm item — mỗi vòng lặp đều quét lại bảng.
+- Thực tế câu lọc bỏ 3.998.213 dòng: Seq Scan vẫn chạy, nhưng bị lặp hàng trăm lần → 2,8 giây.
+- **Vì sao dev không bắt được**: dev chỉ có 10 nghìn dòng đơn, Seq Scan 10 nghìn dòng mất 3ms, plan "tệ" vẫn nhanh. Production có 400 triệu dòng. Đây là bài học quan trọng nhất: **kiểm thử hiệu năng phải dùng dữ liệu có kích thước và phân bố giống production**, nếu không plan xấu sẽ luôn lọt qua.
+
+### Sửa thế nào
+| Tình huống | Cách sửa |
+|---|---|
+| Thống kê lỗi thời sau khi nạp/xoá nhiều dữ liệu | {{ANALYZE orders;}} hoặc {{VACUUM (ANALYZE) orders;}} ngay sau migration |
+| Thiếu index cho điều kiện lọc | Thêm index đúng cột {{customer_id}}; kiểm tra index có bị vô dụng do type mismatch hoặc hàm trên cột không |
+| Câu query đọc quá nhiều dòng ({{OFFSET}} lớn, thiếu giới hạn) | Keyset pagination theo id, giới hạn kết quả, hoặc bảng tổng hợp cho báo cáo |
+| Plan xấu cố định, không sửa được bằng index | Viết lại query (tách CTE, tránh hàm trên cột), hoặc dùng {{pg_hint_plan}} nếu bắt buộc |
+
+~~~java
+// Chẩn đoán: lấy plan thật của câu SQL chậm (chỉ chạy ở staging có dữ liệu giống production)
+@Service
+public class PlanInspector {
+    private final JdbcTemplate jdbc;
+    PlanInspector(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    public List<String> plan(String sql) {
+        // EXPLAIN ANALYZE chạy thật câu query: thấy rows, loops, actual time, Rows Removed by Filter
+        return jdbc.queryForList("EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) " + sql, String.class);
+    }
 }
+~~~
+Không mở endpoint này ở production và không cho người dùng nhập SQL tự do.
+
+### Phòng ngừa
+- Mọi migration có DML lớn đều chạy {{ANALYZE}} (hoặc chỉnh {{autovacuum_analyze_scale_factor}}) trước khi mở traffic.
+- CI so {{pg_stat_statements}} của staging trước/sau, cảnh báo khi {{mean_exec_time}} của một câu tăng quá ngưỡng.
+- Staging phải có volume và phân bố dữ liệu giống production (ẩn danh hoá một phần nếu cần).
+- Canary 5% traffic trong 15 phút, so p99 với baseline trước khi mở 100%.
+- Cảnh báo theo **từng endpoint**, không chỉ theo service.
+
+### Ví dụ đời thực
+Một hệ thống bán vé: sau bản release, p99 của {{/api/orders}} từ 210ms lên 3,1s, chỉ ảnh hưởng khách có đơn quá 6 tháng. Trace cho thấy một câu {{select ... from orders o join order_item i}} mất 2,8s; {{EXPLAIN}} cho thấy Seq Scan bỏ 3.998.213 dòng và Nested Loop lặp 400 lần. Nguyên nhân: migration {{truncate}} rồi nạp lại phân vùng mới, {{autovacuum}} chưa kịp {{ANALYZE}} vì bảng quá lớn. {{ANALYZE orders;}} chạy trong 42 giây, plan đổi sang Index Scan, p99 về 240ms. Họ thêm {{ANALYZE}} vào cuối script migration và một alert so p99 từng endpoint với 24 giờ trước.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi khoanh vùng theo endpoint rồi theo tham số, vì p50 không đổi mà p99 tăng mười mấy lần nghĩa là chỉ một nhóm nhỏ request chậm, thường là nhóm có dữ liệu lớn. Sau đó tôi lấy hai mươi trace chậm nhất và xem span nào phình ra; nếu là span DB, tôi lấy câu SQL từ pg_stat_statements và chạy EXPLAIN ANALYZE BUFFERS để xem plan thật, không đoán. Ở đây tôi thấy Seq Scan bỏ gần bốn triệu dòng rồi Nested Loop lặp bốn trăm lần, tức bộ hoạch định đang dùng thống kê cũ và chọn plan sai. Nguyên nhân là migration đã truncate và nạp lại bảng, autovacuum chưa kịp analyze. Tôi chạy ANALYZE, plan đổi sang Index Scan, p99 về 240ms. Bài học tôi rút ra là test hiệu năng phải dùng dữ liệu giống production về kích thước, và mọi migration có DML lớn phải chạy ANALYZE trước khi mở traffic. Nếu sự cố vượt SLA thì tôi rollback trước rồi điều tra sau, vì khôi phục dịch vụ quan trọng hơn tìm nguyên nhân ngay lúc đó."
+
+> Senior tip: khi p99 tăng mà p50 không đổi, đừng đọc biểu đồ CPU — hãy đọc biểu đồ "thời gian chờ DB theo endpoint". Một câu SQL đổi plan có thể làm p99 gấp mười lần trong khi CPU vẫn thảnh thơi, và nó sẽ không tự hết: thống kê chỉ đúng lại khi có ANALYZE.`,
+  follow: [
+    'Bạn phân biệt thế nào giữa "plan xấu do thống kê" và "plan xấu do thiếu index" khi chỉ có EXPLAIN ANALYZE?',
+    'Vì sao tăng work_mem hoặc tăng CPU không sửa được sự cố này, và làm sao chứng minh điều đó với người yêu cầu tăng tài nguyên?',
+    'Bạn thiết kế canary và tiêu chí rollback tự động cho một service có nhiều endpoint với SLO khác nhau thế nào?'
+  ],
+  tags: ['postgresql', 'query-plan', 'explain-analyze', 'deploy', 'p99', 'statistics']
+},
+{
+  id: 'scenario-156',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Container của service cứ tăng dần bộ nhớ theo ngày: ngày đầu 900MB, ngày thứ năm 1,6GB rồi bị OOMKilled, trong khi heap sau mỗi Full GC vẫn chỉ 400MB. Bạn chẩn đoán thế nào?',
+  a: `**Tóm tắt:** heap ổn định mà RSS vẫn tăng nghĩa là rò rỉ **ngoài heap**. Ba nguồn hay gặp: **Metaspace** (metadata class — rò rỉ do tải class liên tục, thường vì classloader mới mỗi request), **thread** (mỗi thread khoảng 1MB stack, tạo thread không giới hạn), và **bộ nhớ native** (direct buffer, thư viện native). Tôi đo hai thời điểm bằng {{jcmd VM.metaspace}}, {{jstat -gcmetacapacity}}, {{jcmd Thread.print}} và heap dump, tìm thứ tăng tuyến tính, rồi chặn nguồn tạo ra nó.
+
+### Vì sao heap ổn mà RSS vẫn tăng
+- JVM dùng bộ nhớ cho: heap, Metaspace, code cache, thread stack, direct byte buffer, GC data, và native của thư viện. Container chỉ thấy **RSS tổng**.
+- Nếu heap sau Full GC không tăng nhưng RSS tăng đều, thủ phạm nằm ngoài heap. Đây là lý do phải xem cả hai, không chỉ xem heap.
+- Metaspace đặc biệt nguy hiểm vì mặc định **không giới hạn** ({{MaxMetaspaceSize}} không đặt) — JVM cứ cấp thêm đến khi kernel hoặc container kill process.
+
+### Điều tra từng bước
+1. **Lấy hai ảnh chụp cách nhau 24 giờ** của bốn số: heap sau Full GC, Metaspace used, số thread, RSS. Cái nào tăng tuyến tính thì đó là đường điều tra.
+2. **Metaspace**: {{jcmd <pid> VM.metaspace}} (JDK 11+) và {{jstat -gcmetacapacity <pid>}}. Nếu {{used}} tăng đều theo số request chứ không theo thời gian, gần như chắc chắn là class được tạo mới liên tục.
+3. **Xem class nào được load**: bật {{-verbose:class}} (hoặc {{-Xlog:class+load=info:file=classes.log}}) rồi đếm số dòng {{[class, load]}} theo giờ. Nếu một package lạ xuất hiện hàng nghìn lần, đó là nguồn.
+4. **Xem có bao nhiêu classloader còn sống**: heap dump rồi mở bằng Eclipse MAT, xem Class Loader Explorer và Duplicate Classes. Classloader cũ không được thu hồi là dấu hiệu điển hình của leak.
+5. **Thread**: {{jcmd <pid> Thread.print}} đếm số thread theo tên. Nếu số thread tăng theo lưu lượng (mỗi request tạo một thread hoặc một pool mới), đó là leak thread.
+
+### Nguyên nhân hay gặp
+| Nguồn | Cơ chế | Cách sửa |
+|---|---|---|
+| Parse biểu thức/script mỗi request (SpEL, Groovy, JS engine, {{ScriptEngine}}) | Mỗi lần parse sinh class mới trong Metaspace | Cache biểu thức đã compile trong map ở phạm vi bean |
+| Tạo {{URLClassLoader}} hoặc {{ClassLoader}} mới (plugin, JSP, template engine) | Classloader không bao giờ được GC vì còn tham chiếu | Dùng chung một classloader, nạp plugin một lần |
+| {{ThreadLocal}} không {{remove()}} trong thread pool | Entry giữ object và cả classloader của nó | {{remove()}} trong {{finally}} |
+| Cache không giới hạn (Guava/Caffeine không có maximumSize) | Đây là heap leak, không phải Metaspace | Đặt {{maximumSize}} và {{expireAfterWrite}} |
+| Tạo {{ExecutorService}} mới mỗi request mà không {{shutdown()}} | Thread không bao giờ chết | Dùng một pool dùng chung, đóng khi dừng |
+
+~~~java
+// LỖI: parse lại biểu thức mỗi request -> mỗi lần sinh class mới, Metaspace phình theo lưu lượng
+@Component
+public class RuleEngine {
+    private final SpelExpressionParser parser = new SpelExpressionParser();
+
+    public boolean eval(String rule, Order o) {
+        Expression e = parser.parseExpression(rule);   // compile lại: tốn CPU và một ít Metaspace
+        return Boolean.TRUE.equals(e.getValue(o, Boolean.class));
+    }
+}
+~~~
+
+~~~java
+// ĐÚNG: compile một lần rồi dùng lại (Expression thread-safe để đánh giá)
+@Component
+public class CachedRuleEngine {
+    private final ConcurrentHashMap<String, Expression> cache = new ConcurrentHashMap<>();
+    private final SpelExpressionParser parser = new SpelExpressionParser();
+
+    public boolean eval(String rule, Order o) {
+        Expression e = cache.computeIfAbsent(rule, parser::parseExpression);
+        return Boolean.TRUE.equals(e.getValue(o, Boolean.class));
+    }
+}
+~~~
+
+~~~java
+// ThreadLocal trong thread pool: phải remove, nếu không entry sống theo vòng đời thread
+private static final ThreadLocal<ZoneId> TZ = new ThreadLocal<>();
+
+public void handle(Order o) {
+    TZ.set(o.zoneId());
+    try {
+        // ... xử lý
+    } finally {
+        TZ.remove();   // thiếu dòng này: entry giữ ZoneId (và classloader) mãi mãi
+    }
+}
+~~~
+
+### Phòng ngừa và giới hạn cứng
+- Đặt {{-XX:MaxMetaspaceSize=256m}} để JVM báo {{OutOfMemoryError: Metaspace}} **rõ ràng** thay vì để container kill im lặng.
+- Đặt {{-XX:MaxRAMPercentage=70}} để chừa chỗ cho Metaspace, thread stack và direct buffer.
+- Cảnh báo theo **xu hướng** (Metaspace used tăng 7 ngày liên tiếp), không theo ngưỡng tuyệt đối.
+- Chạy một smoke test lặp 1.000 lần một request trong CI và so Metaspace trước/sau: nếu tăng quá vài MB, fail build.
+
+### Ví dụ đời thực
+Một hệ thống quản lý luật khuyến mãi: sau mỗi lần deploy, RSS tăng khoảng 140MB/ngày, ngày thứ năm container bị OOMKilled (limit 1,5GB). Heap sau Full GC vẫn 400MB, nên ban đầu đội nghi cache. {{jcmd VM.metaspace}} cho thấy Metaspace tăng từ 85MB lên 610MB sau 5 ngày; {{-verbose:class}} cho thấy số class tăng từ 4.300 lên 61.000, và heap dump có 1.240 instance {{SpelExpressionParser}} còn sống. Nguyên nhân: mỗi request parse lại biểu thức khuyến mãi (khoảng 180 biểu thức khác nhau, mỗi lần parse sinh class mới trong Metaspace). Thêm một chỗ nữa: {{ThreadLocal<SimpleDateFormat>}} trong pool 200 thread không {{remove()}}. Sau khi cache biểu thức bằng {{ConcurrentHashMap}}, {{remove()}} trong {{finally}}, và đặt {{MaxMetaspaceSize=256m}}, Metaspace ổn định ở 120MB, RSS 1,05GB, không cần restart định kỳ.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi bộ nhớ tăng dần, việc đầu tiên tôi làm là phân biệt leak trên heap hay ngoài heap, bằng cách xem lượng heap còn sống sau mỗi Full GC: nếu nó ổn định mà RSS vẫn tăng thì leak nằm ngoài heap. Ở đây heap sau Full GC vẫn 400MB nhưng RSS tăng từ 900MB lên 1,7GB sau năm ngày, nên tôi kiểm tra Metaspace. Tôi dùng jcmd VM.metaspace và jstat để xem lượng class đã load, rồi bật verbose:class để xem class nào được load liên tục. Con số cho thấy số class tăng từ 4.300 lên 61.000 và còn 1.240 classloader sống: mỗi request đang tạo một class mới vì code parse lại biểu thức SpEL, cộng thêm một ThreadLocal không được remove. Tôi sửa bằng cách cache biểu thức đã compile trong một map, remove ThreadLocal trong finally, và đặt MaxMetaspaceSize để JVM báo lỗi rõ ràng thay vì bị container kill. Sau đó Metaspace ổn định ở 120MB và không cần restart định kỳ nữa."
+
+> Senior tip: khi "phải restart định kỳ cho nhẹ máy", hãy đo Metaspace trước khi đo heap. Rất nhiều ca "memory leak" thực chất là rò rỉ class/classloader: heap không đổi nên mọi công cụ phân tích heap đều báo "không tìm thấy leak", trong khi RSS vẫn leo đều đến ngày bị kill.`,
+  follow: [
+    'Bạn phân biệt leak Metaspace, leak thread và leak direct buffer bằng những số liệu cụ thể nào?',
+    'Vì sao một classloader không được thu hồi lại kéo theo cả một vùng Metaspace không giải phóng được?',
+    'Bạn đặt ngưỡng cảnh báo Metaspace thế nào để bắt được xu hướng trước khi container bị OOMKilled?'
+  ],
+  tags: ['memory-leak', 'metaspace', 'classloader', 'jvm', 'oomkilled', 'threadlocal']
+},
+{
+  id: 'scenario-157',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Topic {{payment-events}} có 12 partition và 6 consumer, lag tổng tăng đều 40 nghìn message mỗi phút và không bao giờ giảm. Nhưng lag dồn gần hết vào 2 partition, các consumer khác vẫn commit đều và log không có exception. Bạn điều tra thế nào?',
+  a: `**Tóm tắt:** lag dồn vào vài partition nghĩa là **năng lực tổng vẫn đủ, nhưng một số consumer đang bị kẹt**, không phải thiếu capacity. Hai nguyên nhân khớp với triệu chứng "không có exception": (1) một **record lỗi (poison message) bị retry ngay trong poll thread** khiến cả batch không commit được, exception bị nuốt trong catch rộng; (2) **key partition bị lệch** (một khách hàng lớn chiếm phần lớn traffic của partition đó). Tôi xem lag từng partition, thread dump của consumer, rồi tách retry ra khỏi poll thread, đặt DLQ, và sửa key.
+
+### Toán năng lực: vì sao phải xem từng partition
+- Năng lực group = min(số consumer, số partition) × năng lực một consumer. Mỗi partition trong một group chỉ được gán cho **một** consumer.
+- 6 consumer / 12 partition → mỗi consumer 2 partition. Nếu 2 partition có key nóng thì 2 consumer đó chậm, và lag dồn vào đúng 2 partition đó.
+- Nếu lag tăng đều ở **mọi** partition thì mới là thiếu capacity; dồn cục bộ là dấu hiệu kẹt hoặc lệch tải.
+
+~~~seq
+title: Consumer bị kẹt ở một record lỗi
+actors: App | Kafka | DLQ
+App -> Kafka: poll batch 500 record
+Kafka --> App: gửi batch
+App -> App: xử lý record 1..37 OK
+App -> App: record 38 ném lỗi
+App -> Kafka: seek lại record 38
+Kafka --> App: gửi lại record 38
+note App..Kafka: lặp vô hạn: partition không commit, lag tăng mãi
+App -> DLQ: sau 3 lần thì đẩy sang topic lỗi
+~~~
+
+### Vì sao log không có exception
+- Code thường có một {{try/catch}} rộng quanh cả vòng xử lý, chỉ {{log.warn}} rồi {{continue}}, hoặc retry bằng {{while}} với {{Thread.sleep}}. Không có exception nào nổi lên, nhưng partition cũng không tiến.
+- Nếu dùng Spring Kafka với {{DefaultErrorHandler}} và {{FixedBackOff(0, 9)}} mà không có {{DeadLetterPublishingRecoverer}}, sau 10 lần sẽ log lỗi rồi commit — có exception, khác triệu chứng. Cấu hình gây kẹt thật sự là retry vô hạn **trong poll thread**.
+- Hậu quả phụ: {{max.poll.interval.ms}} mặc định 5 phút; nếu một batch bị retry quá lâu, consumer bị coi là chết và **rebalance** xảy ra → partition bị gán lại, record bị xử lý lại, lag càng tăng. Đây là vòng xoáy rất khó thấy nếu chỉ nhìn dashboard tổng.
+
+### Điều tra từng bước
+1. **Lag từng partition**: {{kafka-consumer-groups.sh --describe --group payment-cg}} cho biết {{CURRENT-OFFSET}}, {{LOG-END-OFFSET}}, {{LAG}} từng partition. Xác định 2 partition nóng.
+2. **Tải từng partition**: so {{records-consumer-rate}} và {{records-lag-max}} theo từng consumer; xem consumer nào có rate thấp bất thường.
+3. **Thread dump consumer**: {{jcmd <pid> Thread.print}}. Nếu thấy thread listener đang {{Thread.sleep}} hoặc đang ở trong {{invokeErrorHandler}}, đó là retry tại chỗ.
+4. **Tìm record lỗi**: xem log ở mức {{DEBUG}} hoặc in {{record.offset}} + {{record.key}} trước khi xử lý; tìm bản ghi có cùng offset lặp lại hàng nghìn lần.
+5. **Kiểm tra rebalance**: metric {{rebalance-rate-per-hour}}, {{rebalance-latency-avg}}, và log {{Revoking previously assigned partitions}}. Rebalance liên tục nghĩa là thời gian xử lý vượt {{max.poll.interval.ms}}.
+
+### Sửa thế nào
+| Nguyên nhân | Cách sửa |
+|---|---|
+| Retry vô hạn trong poll thread | Đưa xử lý sang worker pool có hàng đợi giới hạn, ack sau khi xử lý xong |
+| Record lỗi làm kẹt partition | {{DefaultErrorHandler}} + {{DeadLetterPublishingRecoverer}} sang topic {{payment-events.DLT}}, tối đa 3 lần |
+| Cần retry lâu (gọi API ngoài) | Dùng {{@RetryableTopic}} (retry không chặn poll thread, có topic trung gian), không {{sleep}} trong listener |
+| Key nóng (một khách hàng chiếm 40% traffic) | Thêm salt vào key hoặc đổi cách partition theo {{orderId}}, cân lại 2 partition nóng |
+| Xử lý quá lâu gây rebalance | Giảm {{max.poll.records}}, tăng {{max.poll.interval.ms}}, đẩy I/O nặng ra khỏi listener |
+| Ghi DB từng record | Ghi theo lô {{batchUpdate}} trong một transaction ngắn |
+
+~~~java
+@Configuration
+public class KafkaConfig {
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, String> paymentListenerFactory(
+            ConsumerFactory<String, String> cf, KafkaTemplate<String, String> kafka) {
+        var f = new ConcurrentKafkaListenerContainerFactory<String, String>();
+        f.setConsumerFactory(cf);
+
+        // 3 lần thử lại, mỗi lần cách 1 giây; hết 3 lần thì đẩy sang topic .DLT
+        var recoverer = new DeadLetterPublishingRecoverer(kafka);
+        var handler = new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 3L));
+        handler.setAckAfterHandle(true);   // chỉ commit sau khi recoverer xử lý xong
+
+        f.setCommonErrorHandler(handler);
+        f.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+        return f;
+    }
+}
+~~~
+
+~~~java
+@KafkaListener(topics = "payment-events", groupId = "payment-cg")
+public void onMessage(PaymentEvent e, Acknowledgment ack) {
+    // listener chỉ làm việc nhanh; nếu cần I/O nặng thì đẩy vào executor có hàng đợi giới hạn
+    paymentProcessor.submit(e);   // worker tự ack sau khi xử lý và ghi kết quả
+    ack.acknowledge();
+}
+~~~
+
+### Phòng ngừa
+- Cảnh báo theo **từng partition** ({{records-lag-max}}), không chỉ theo tổng lag: kẹt một partition sẽ bị tổng che mất.
+- Cảnh báo {{rebalance-rate-per-hour}} tăng, và cảnh báo khi số lần retry của một offset vượt 3.
+- Mọi listener phải có đường đi tới DLQ và một quy trình replay (đọc lại từ DLT, sửa dữ liệu, đẩy lại topic chính).
+- Kiểm thử bằng một record độc (record làm deserialize lỗi) trong CI: hệ thống phải đẩy nó sang DLT, không được kẹt.
+
+### Ví dụ đời thực
+Hệ thống thanh toán có 12 partition, 6 consumer, lag tăng 40 nghìn mỗi phút. Lag dồn vào partition 3 và 9: mỗi partition này có một khách hàng doanh nghiệp chiếm 38% traffic (key = {{customerId}}). Đồng thời partition 3 có một record {{payment-events}} với số tiền null khiến {{BigDecimal}} ném {{NullPointerException}}; code bắt lỗi bằng một khối catch rộng, chỉ log rồi thử lại ngay trong vòng {{for(;;)}} → partition 3 không commit suốt 6 giờ. Thread dump cho thấy hai thread listener đang ở {{Thread.sleep}} trong vòng retry. Sửa: cache key theo {{orderId}} để cân tải, {{DefaultErrorHandler}} với 3 lần và DLT, và cảnh báo {{records-lag-max}} theo partition. Sau 20 phút lag về 0; sau 30 ngày không còn record nào bị kẹt quá 5 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Trước hết tôi tách hai câu hỏi: tổng năng lực consume có nhỏ hơn produce không, và lag có dồn vào một phần nhỏ partition không. Vì lag dồn vào hai partition, tôi biết không phải vấn đề năng lực chung. Tôi xem lag từng partition bằng kafka-consumer-groups --describe và so sánh tốc độ consume của hai consumer đó. Log không có exception vì lỗi bị nuốt trong một catch rộng, và code retry ngay tại chỗ trong poll thread, nên partition đó không bao giờ commit được, cả batch năm trăm record bị kẹt lại. Tôi dựng lại luồng: đọc batch, đẩy vào hàng đợi có giới hạn, worker xử lý, ack thủ công sau khi xử lý xong, và sau ba lần thử thì đẩy record lỗi sang topic DLQ thay vì thử vô hạn. Tôi cũng sửa key partition vì một khách hàng lớn chiếm gần một nửa traffic của partition đó. Sau khi sửa, lag giảm đều và về 0 trong hai mươi phút."
+
+> Senior tip: dashboard lag tổng luôn nói dối khi sự cố cục bộ. Tôi đặt cảnh báo trên {{records-lag-max}} theo từng partition và trên tỉ lệ rebalance — hai chỉ số đó bắt được "một record độc làm kẹt cả partition" trong vài phút, trong khi tổng lag vẫn có thể trông "ổn định" thêm nửa giờ.`,
+  follow: [
+    'Bạn thiết kế topic retry và DLQ thế nào để vừa không mất message vừa không kẹt partition?',
+    'Làm sao phát hiện một consumer bị kẹt trước khi lag vượt ngưỡng, thay vì đợi dashboard báo?',
+    'Nếu record lỗi nằm ở partition có thứ tự bắt buộc (ví dụ theo tài khoản), bạn xử lý thế nào để không phá vỡ thứ tự?'
+  ],
+  tags: ['kafka', 'consumer-lag', 'poison-message', 'dlq', 'partition', 'rebalance']
+},
+{
+  id: 'scenario-158',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Cứ khoảng 9h sáng, API đồng loạt trả lỗi {{Connection is not available, request timed out after 30000ms}} trong 6 đến 8 phút rồi tự hết. Ngoài khung giờ đó hệ thống hoàn toàn bình thường. Bạn điều tra và xử lý thế nào?',
+  a: `**Tóm tắt:** Triệu chứng **lặp lại đúng giờ và tự hết** gần như luôn là một **job định kỳ giữ connection quá lâu**, không phải lưu lượng người dùng. Tôi tìm thứ chạy lúc 9h, đọc {{pg_stat_activity}} để xem connection đang ở trạng thái nào, và thread dump để xem ai giữ. Ở đây thường là một job báo cáo chạy trong cùng JVM, dùng chung pool với API, mở một {{@Transactional}} bọc cả vòng lặp và {{parallelStream}} bên trong — mỗi worker cần một connection, pool cạn, API xếp hàng 30 giây rồi timeout.
+
+### Vì sao "đúng giờ, tự hết" là manh mối mạnh
+- Lưu lượng người dùng tăng dần theo giờ, không bật tắt đột ngột và không tắt hẳn sau 8 phút.
+- Một job (báo cáo, đối soát, tổng hợp ngày, gửi thông báo hàng loạt) bắt đầu lúc 8:55 và kết thúc sau vài phút là khớp hoàn toàn.
+- Nếu chỉ một service bị ảnh hưởng và các service khác dùng chung DB vẫn bình thường, vấn đề nằm ở **pool của service đó**, không phải DB quá tải.
+
+### Điều tra từng bước
+1. **Hỏi "9h có gì chạy?"**: cron trong app ({{@Scheduled}}), K8s CronJob, Airflow, Control-M. Đối chiếu log job với mốc thời gian lỗi.
+2. **Metric Hikari lúc 9h**: {{hikaricp_connections_active}} bằng {{maximumPoolSize}}, {{hikaricp_connections_pending}} > 0, {{hikaricp_connections_usage_seconds}} tăng vọt (thời gian giữ connection), {{hikaricp_connections_acquire_seconds}} tăng.
+3. **{{pg_stat_activity}}: đây là bằng chứng quyết định.
+~~~text
+SELECT pid, state, wait_event_type, wait_event,
+       now() - xact_start AS xact_age, now() - state_change AS idle_age,
+       left(query, 80) AS query
+FROM pg_stat_activity
+WHERE datname = current_database() AND pid <> pg_backend_pid()
+ORDER BY xact_start;
+~~~
+  Nếu thấy nhiều dòng {{state = 'idle in transaction'}} với {{xact_age}} vài phút và {{wait_event_type = 'Client'}}, nghĩa là **app đã mở transaction nhưng không gửi câu nào cho DB** — nó đang bận làm việc khác trong Java.
+4. **Thread dump**: {{jcmd <pid> Thread.print}} hoặc {{jstack}}. Tìm thread đang chờ {{HikariPool.getConnection}}, và tìm thread đang chạy job (thường là {{scheduling-1}} hoặc một pool riêng của job).
+5. **Đếm connection theo nguồn**: {{SELECT count(*), application_name, state FROM pg_stat_activity GROUP BY 2,3;}} — nếu job dùng {{application_name}} riêng thì rất dễ tách.
+
+### Nguyên nhân gốc thường gặp
+- Job dùng chung {{DataSource}} với API: 20 connection, job chiếm 20, API không còn cái nào.
+- {{@Transactional}} bọc cả vòng lặp hàng trăm nghìn dòng → một connection bị giữ suốt vài phút.
+- {{parallelStream()}} **bên trong** {{@Transactional}}: mỗi luồng song song cần một connection riêng từ cùng pool, và chúng còn không thấy dữ liệu của nhau vì khác transaction.
+- {{spring.jpa.open-in-view}} mặc định {{true}}: {{EntityManager}} mở suốt request, mọi truy vấn ngoài transaction đều mượn connection ở chế độ auto-commit, và entity bị lazy load khi serialize JSON (sinh thêm query).
+- Thiếu {{leakDetectionThreshold}}: leak không bị phát hiện, chỉ thấy pool cạn dần.
+
+### Sửa theo ba lớp
+| Lớp | Việc cần làm |
+|---|---|
+| Cô lập | Tách {{DataSource}} thứ hai (pool riêng 5 connection) cho job, hoặc chạy job ở một deployment/CronJob riêng để không bao giờ chạm pool của API |
+| Ranh giới transaction | Chia lô 1.000 dòng, mỗi lô một transaction ngắn bằng {{TransactionTemplate}}; không {{@Transactional}} trên cả hàm; không {{parallelStream}} trong transaction |
+| Chặn ở DB | {{idle_in_transaction_session_timeout = 30s}}, {{statement_timeout = 5s}} cho user của API, {{leakDetectionThreshold = 10000}}, {{maxLifetime}} nhỏ hơn {{idle timeout}} của DB |
+
+~~~java
+@Service
+public class DailyReport {
+    private final JdbcTemplate jdbc;
+    private final TransactionTemplate tx;      // kiểm soát ranh giới transaction bằng tay
+    private static final int PAGE = 1000;
+
+    public void run(LocalDate day) {
+        long lastId = 0;
+        while (true) {
+            // keyset pagination: trang sau không đọc lại trang trước
+            List<OrderRow> page = jdbc.query(
+                "select id, customer_id, total from orders where created_day = ? and id > ? order by id limit ?",
+                (ps) -> { ps.setDate(1, Date.valueOf(day)); ps.setLong(2, lastId); ps.setInt(3, PAGE); },
+                (rs, n) -> new OrderRow(rs.getLong("id"), rs.getLong("customer_id"), rs.getBigDecimal("total")));
+            if (page.isEmpty()) break;
+
+            // MỖI TRANG một transaction ngắn: connection được trả về pool ngay sau mỗi trang
+            tx.executeWithoutResult(s -> jdbc.batchUpdate(
+                "insert into report_daily (customer_id, total) values (?, ?)", page, PAGE,
+                (ps, r) -> { ps.setLong(1, r.customerId()); ps.setBigDecimal(2, r.total()); }));
+
+            lastId = page.get(page.size() - 1).id();   // không dùng OFFSET: trang sâu sẽ chậm dần
+        }
+    }
+}
+~~~
+
+### Quyết định kiến trúc: chọn cách cô lập nào
+- **Pool riêng trong cùng service**: nhanh, nhưng job vẫn ăn CPU, heap và DB connection của service API. Chỉ chọn khi job nhẹ và ngắn.
+- **Deployment/CronJob riêng**: cô lập thật (CPU, heap, pool, cả lịch restart). Đây là lựa chọn mặc định cho job nặng; đổi lại phải chia sẻ code và cấu hình.
+- **Tăng pool chung**: không sửa gốc, chỉ đẩy nghẽn sang DB. Với 20 connection, tăng lên 50 làm {{max_connections}} của DB gặp nguy hiểm khi có nhiều instance.
+- **PgBouncer ở chế độ transaction pooling**: ghép nhiều connection ứng dụng vào ít connection DB. Hữu ích khi số instance lớn, nhưng **không** dùng được với prepared statement có tên hoặc {{SET}} theo session.
+
+### Ví dụ đời thực
+Một hệ thống ví điện tử: 20 connection Hikari, mỗi sáng 9h API trả lỗi {{Connection is not available}} trong khoảng 7 phút. {{pg_stat_activity}} lúc 9h05 cho thấy 20 dòng {{idle in transaction}}, {{xact_age}} 4 phút 12 giây, {{wait_event_type = 'Client'}}; thread dump có một thread {{scheduling-1}} đang chạy báo cáo và 32 thread {{ForkJoinPool.commonPool}} đang chờ {{getConnection}}. Nguyên nhân: job báo cáo bọc cả vòng lặp 200 nghìn dòng trong một {{@Transactional}} rồi dùng {{parallelStream}} để tính tổng, mỗi worker cần một connection. Sửa: tách {{DataSource}} thứ hai (pool 5 connection) cho job, chia lô 1.000 dòng với {{TransactionTemplate}}, bỏ {{parallelStream}}, đặt {{idle_in_transaction_session_timeout=30s}} và {{statement_timeout=5s}} cho user API. Sau đó p99 lúc 9h là 220ms, và cảnh báo {{hikaricp_connections_pending > 0}} liên tục 60 giây báo về Slack thay vì để khách hàng phát hiện.
+
+### Trả lời mẫu khi phỏng vấn
+"Điều đầu tiên tôi làm là tìm xem có thứ gì chạy đúng vào 9 giờ không, vì triệu chứng lặp lại theo giờ và tự hết rất giống một job định kỳ. Tôi xem metric Hikari lúc đó: active bằng maximumPoolSize, pending tăng dần; rồi xem pg_stat_activity và thấy hai mươi connection ở trạng thái idle in transaction với xact_start cách đó bốn phút, wait_event là Client, nghĩa là app đang giữ transaction và làm việc khác trong Java. Thread dump cho thấy một thread đang chạy báo cáo và ba mươi hai thread khác xếp hàng chờ connection. Nguyên nhân là job báo cáo dùng parallelStream ngay trong một Transactional, nên mỗi worker cần một connection từ cùng pool hai mươi connection của API. Tôi sửa theo ba lớp: tách pool riêng cho batch, chia transaction theo lô một nghìn dòng, và bỏ parallelStream trong transaction; thêm idle_in_transaction_session_timeout và statement_timeout để sự cố không kéo dài. Sau đó 9h sáng không còn ảnh hưởng tới API."
+
+> Senior tip: "idle in transaction" là chữ ký của một transaction bị bỏ quên ở tầng Java, không phải DB chậm. Tôi luôn bật {{idle_in_transaction_session_timeout}} ở mức 30 giây cho user của API: nó biến một sự cố 8 phút thành một lỗi 30 giây có log rõ ràng, và ngăn một job lỗi làm cạn pool của cả hệ thống.`,
+  follow: [
+    'Bạn tính maximumPoolSize cho một service 4 CPU, DB 8 vCPU, có 6 instance thế nào? Công thức nào bạn dùng và vì sao "càng nhiều connection càng nhanh" là sai?',
+    'Khi nào nên chọn PgBouncer transaction pooling thay vì tách pool, và những giới hạn nào của nó bạn phải kiểm tra trước?',
+    'Bạn thiết kế cảnh báo nào để phát hiện pool cạn trong 60 giây đầu thay vì đợi khách hàng báo?'
+  ],
+  tags: ['hikaricp', 'connection-pool', 'postgresql', 'batch-job', 'idle-in-transaction', 'transaction']
+},
+{
+  id: 'scenario-159',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Đối soát cuối ngày phát hiện 0,1% giao dịch trừ tiền sai: 214 khách bị trừ hai lần cùng một số tiền, 37 tài khoản bị trừ vượt số dư. Bạn điều tra nguyên nhân gốc và sửa thế nào?',
+  a: `**Tóm tắt:** Hai triệu chứng khác nhau, hai cơ chế khác nhau. **Trừ hai lần** là do một request được xử lý hai lần (retry hoặc hai request song song) mà không có chặn ở tầng dữ liệu. **Trừ vượt số dư** là do đọc số dư rồi mới ghi (read-modify-write) không nguyên tử: hai transaction cùng đọc 100 nghìn, cùng kiểm tra, cùng ghi. Tôi đối soát ledger để tìm dấu vết, sửa bằng **một câu UPDATE có điều kiện** cho phần số dư và **unique constraint trên (account_id, request_id)** cho phần trùng, rồi thêm job đối soát để phát hiện sớm lần sau.
+
+### Cơ chế, từng bước
+~~~text
+Cùng một request bị xử lý hai lần (client retry sau timeout 3s, hoặc user bấm hai lần):
+T1: SELECT balance -> 100000        T2: SELECT balance -> 100000
+T1: kiểm tra 100000 >= 50000 -> OK  T2: kiểm tra 100000 >= 50000 -> OK
+T1: UPDATE balance = 50000          T2: UPDATE balance = 50000
+Kết quả: số dư đúng 50000 nhưng ledger ghi hai bút toán nợ 50000 -> trừ hai lần
+~~~
+- Với mức cô lập {{READ COMMITTED}} (mặc định của PostgreSQL), hai transaction đọc cùng một ảnh dữ liệu và không thấy nhau.
+- Nếu code ghi **giá trị tuyệt đối** ({{balance = 50000}}) thay vì **phép trừ tương đối** ({{balance = balance - 50000}}), transaction sau còn ghi đè mất kết quả của transaction trước — đây là lost update kinh điển.
+- Với **trừ vượt số dư**: hai request cùng đọc số dư 100 nghìn, cùng trừ 80 nghìn, cả hai đều "đủ tiền" theo ảnh đã đọc, nhưng tổng bị trừ là 160 nghìn.
+
+### Điều tra: dùng ledger, không dùng log
+1. **Nhóm bản ghi sai theo tài khoản và số tiền**: {{SELECT account_id, amount, count(*), min(created_at), max(created_at) FROM ledger_entry WHERE ... GROUP BY 1,2 HAVING count(*) > 1;}} Nếu các bản ghi trùng cách nhau dưới 500ms, gần như chắc chắn là race chứ không phải retry chậm.
+2. **Kiểm tra idempotency key**: {{SELECT count(*) FROM ledger_request WHERE request_id IS NULL;}} Nếu 100% bản ghi sai không có {{request_id}}, client đã gửi request mới khi retry.
+3. **Kiểm tra version**: nếu entity có {{@Version}} mà {{version}} không tăng giữa hai lần ghi, có thể đối tượng bị {{detach}} rồi {{merge}} nên Hibernate không quản lý version nữa.
+4. **Kiểm tra thứ tự thời gian theo thread**: log có hai dòng "charge ok" cùng {{order_id}}, khác {{thread}}, cách nhau vài trăm ms.
+5. **Tính bất biến**: với mỗi tài khoản, {{sum(credit) - sum(debit)}} phải bằng số dư hiện tại. Chạy câu này trên toàn bộ ledger để biết phạm vi thật (không chỉ 0,1% mà đối soát báo).
+
+### Sửa thế nào
+| Tình huống | Cách sửa |
+|---|---|
+| Retry/two request song song ghi hai bút toán | Unique constraint trên {{ledger_request(account_id, request_id)}}, {{ON CONFLICT DO NOTHING}}; request trùng trả lại kết quả cũ |
+| Đọc rồi mới ghi số dư (lost update) | {{UPDATE wallet SET balance = balance - :amt WHERE id = :id AND balance >= :amt}} — một câu duy nhất, DB khoá dòng và kiểm tra điều kiện |
+| Cần đọc dữ liệu rồi quyết định phức tạp | {{SELECT ... FOR UPDATE}} (khoá bi quan), hoặc {{@Version}} + retry có giới hạn (khoá lạc quan) |
+| Cần nhiều bảng luôn nhất quán | {{REPEATABLE READ}} hoặc {{SERIALIZABLE}} + retry khi bị {{could not serialize access}}; chấp nhận giảm throughput |
+| Không rõ client có gửi idempotency key | Sinh key ở server từ (người dùng, đơn hàng, loại giao dịch) và lưu cùng yêu cầu |
+
+~~~java
+@Transactional
+public DebitResult debit(long accountId, String requestId, BigDecimal amount) {
+    // 1) Chống trùng: unique (account_id, request_id); request thứ hai không insert được
+    int inserted = jdbc.update("""
+        insert into ledger_request (account_id, request_id, status)
+        values (?, ?, 'NEW')
+        on conflict (account_id, request_id) do nothing
+        """, accountId, requestId);
+    if (inserted == 0) return replay(accountId, requestId);   // đã xử lý: trả lại kết quả cũ
+
+    // 2) Trừ tiền bằng MỘT câu UPDATE có điều kiện: không đọc rồi mới ghi, DB đảm bảo không âm
+    int updated = jdbc.update("""
+        update wallet set balance = balance - ?, version = version + 1
+        where id = ? and balance >= ?
+        """, amount, accountId, amount);
+    if (updated == 0) throw new InsufficientFunds(accountId, amount);
+
+    // 3) Bút toán nợ và đóng request trong CÙNG transaction với bước 1 và 2
+    jdbc.update("insert into ledger_entry (account_id, request_id, amount, direction) values (?, ?, ?, 'DEBIT')",
+        accountId, requestId, amount);
+    jdbc.update("update ledger_request set status = 'DONE', response = ? where account_id = ? and request_id = ?",
+        "ok", accountId, requestId);
+    return DebitResult.ok(accountId, amount);
+}
+~~~
+Nếu buộc phải dùng optimistic lock, {{@Version}} chỉ đúng khi entity còn được quản lý (không {{detach}} rồi {{merge}}), và phải có vòng retry 2–3 lần cho {{OptimisticLockException}}.
+
+### Bất biến và phòng ngừa
+- {{CHECK (balance >= 0)}} trên bảng {{wallet}}: DB từ chối số dư âm, biến lỗi im lặng thành lỗi ồn ào.
+- Job đối soát mỗi giờ: so {{sum(debit)}} với {{sum(credit)}} theo tài khoản, và so số dư với ledger; lệch thì alert, không chờ cuối ngày.
+- Ghi audit bất biến (append-only) cho mọi bút toán: sửa sai bằng bút toán đảo, không {{UPDATE}} lịch sử.
+- Test tự động cho race: hai thread gọi {{debit}} cùng lúc, một thread phải nhận {{InsufficientFunds}}, ledger chỉ có một bút toán.
+
+### Ví dụ đời thực
+Ví điện tử 1,2 triệu giao dịch/ngày: đối soát cuối ngày báo 214 khách bị trừ hai lần (tổng 61,4 triệu đồng) và 37 tài khoản âm. Đối soát theo tài khoản cho thấy các bản ghi trùng cách nhau 120–180ms (đúng bằng timeout 3s của client trừ thời gian xử lý), và 100% bản ghi sai có {{request_id}} là null: client retry sau timeout đã gửi một request mới hoàn toàn. Hai request cùng đọc số dư 100 nghìn, cùng qua bước kiểm tra ở tầng service, rồi cùng ghi. Sửa: thêm bảng {{ledger_request}} với unique {{ (account_id, request_id) }}, {{ON CONFLICT DO NOTHING}} để request trùng trả lại kết quả cũ; đổi sang {{update ... set balance = balance - :amt where id = :id and balance >= :amt}}; thêm {{CHECK (balance >= 0)}}; hoàn tiền cho 251 khách bằng bút toán đảo. Sau 30 ngày: 0 giao dịch sai, đối soát lệch dưới 1 đồng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi bắt đầu từ đối soát, vì tiền luôn có ledger: tôi nhóm các bản ghi sai theo tài khoản và số tiền, và thấy các bản ghi trùng nằm cách nhau dưới hai trăm mili giây, còn các bản ghi vượt số dư thì có cùng thời điểm với một bản ghi khác. Đó là dấu hiệu của race, không phải lỗi làm tròn. Tôi kiểm tra cột request_id và thấy một trăm phần trăm bản ghi sai không có idempotency key: client retry sau timeout đã gửi một request mới, và cả hai request đều đọc số dư một trăm nghìn rồi cùng ghi. Tôi sửa bằng hai lớp: một câu UPDATE có điều kiện balance >= amount để DB đảm bảo không âm, và một unique constraint trên cặp tài khoản với request id để retry không ghi hai lần. Tôi cũng thêm job đối soát mỗi giờ so tổng nợ và tổng có của từng tài khoản, và cảnh báo khi lệch. Sau khi deploy, ba mươi ngày không còn giao dịch sai."
+
+> Senior tip: đừng bao giờ viết "đọc số dư, kiểm tra trong Java, rồi ghi" cho tiền. Một câu UPDATE có điều kiện vừa ngắn hơn, vừa nhanh hơn, vừa đúng hơn: DB đã khoá dòng và kiểm tra điều kiện trong cùng một bước. Phần còn lại của bài toán tiền là **idempotency key ở tầng dữ liệu** — không phải ở tầng ứng dụng, vì tầng ứng dụng có thể chạy hai bản trên hai node.`,
+  follow: [
+    'Bạn chọn khoá bi quan (SELECT FOR UPDATE) hay khoá lạc quan (@Version) cho ví điện tử có 5.000 giao dịch mỗi giây trên một tài khoản nóng? Vì sao?',
+    'Bạn thiết kế bút toán đảo và quy trình đối soát để sửa 251 khách bị trừ sai mà không làm sai sổ kế toán thế nào?',
+    'Làm sao kiểm thử tự động một lỗi race trong CI một cách xác định, không phụ thuộc may rủi?'
+  ],
+  tags: ['money', 'race-condition', 'idempotency', 'ledger', 'reconciliation', 'database-constraint']
+},
 );
