@@ -3043,6 +3043,1042 @@ ETag là {{"v" + version}} nên luôn đồng bộ với trạng thái, không t
   ],
   related: ['api-014', 'api-037', 'api-038'],
   tags: ['ETag', 'If-Match', 'If-None-Match', 'optimistic concurrency', '412', '428', '304', 'lost update'],
+},
+{
+  id: 'lesson-api-010',
+  track: 'api',
+  order: 10,
+  title: 'Idempotency từ gốc: vì sao POST phải idempotent và kho ConcurrentHashMap chống request song song',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích được vì sao mạng chỉ bảo đảm "ít nhất một lần" và vì sao retry POST có thể trừ tiền hai lần',
+    'Phân biệt "kiểm tra rồi ghi" (check-then-act) với thao tác nguyên tử, và vì sao ConcurrentHashMap giải quyết được race condition',
+    'Cài được idempotency store có state machine IN_PROGRESS/DONE, TTL và trả 409 khi request trùng đến lúc đang xử lý',
+    'Chọn nơi lưu key cho production (DB unique index vs Redis) và biết giới hạn của bộ nhớ trong một JVM',
+  ],
+  body: `### Tóm tắt
+POST không idempotent: gửi hai lần có thể tạo hai giao dịch. Nhưng timeout là chuyện bình thường, nên client **buộc** phải retry; muốn retry an toàn thì client gửi kèm một **idempotency key** (khoá chống trùng) đại diện cho *một thao tác*, còn server phải nhận ra request trùng bằng một khoá gồm key + phạm vi + fingerprint body, rồi trả lại kết quả cũ. Phần khó không phải là thêm một header, mà là làm thao tác "kiểm tra rồi ghi" **nguyên tử** khi hai request cùng key đến cùng lúc. Bài này đi từ bảo đảm giao delivery, tới race condition, rồi cài một store bằng ConcurrentHashMap có state machine, TTL và cơ chế giành lại entry treo.
+
+### 1. Mạng chỉ hứa "ít nhất một lần"
+**Delivery guarantee (bảo đảm giao delivery)** là mức cam kết của tầng truyền tin: message có thể mất, có thể trùng, hay chắc chắn đến đúng một lần.
+
+- **At-most-once** (nhiều nhất một lần): gửi rồi quên; lỗi thì mất luôn. Ví dụ gửi log qua UDP, mất vài dòng không sao.
+- **At-least-once** (ít nhất một lần): gửi lại đến khi nhận ACK; có thể trùng. Đây là mức thực tế của HTTP khi client có retry.
+- **Exactly-once** (đúng một lần): ở tầng mạng là **không tồn tại** trong hệ phân tán có lỗi, vì bên gửi không thể phân biệt "request đã tới nhưng response mất" với "request chưa tới". Muốn có hiệu ứng đúng một lần, ta phải đẩy bài toán lên **tầng nghiệp vụ**: cho phép trùng (at-least-once) rồi **phát hiện và bỏ qua** cái trùng. Đó là effectively-once, và idempotency key là công cụ phổ biến nhất.
+
+**Vì sao response mất?** Một request đi qua nhiều chặng, mỗi chặng có timeout riêng:
+
+~~~text
+Client --(1)--> Load balancer --(2)--> API gateway --(3)--> Service --(4)--> DB
+   |                 |                  |                 |            |
+ timeout 30s     timeout 10s        timeout 5s       timeout 2s    commit
+~~~
+
+Nếu DB commit ở giây thứ 3 nhưng gateway đã timeout ở giây thứ 2 và đóng kết nối, client nhận lỗi. Dữ liệu **đã** được ghi. Client không có cách nào biết, nên retry là hợp lý — và nếu không có idempotency key, mỗi lần retry là một giao dịch mới.
+
+Ví dụ số: khách bấm "Chuyển 100.000đ". App đặt timeout 30 giây; service mất 31 giây vì DB chậm. App huỷ, hiện "Lỗi, thử lại", người dùng bấm lại 3 lần. Không có key: 4 giao dịch × 100.000đ = 400.000đ bị trừ. Có key: 1 giao dịch, 3 lần còn lại nhận lại đúng kết quả cũ.
+
+### 2. Idempotency key định danh một thao tác, không phải một lần gửi
+Key do **client** sinh, một lần cho mỗi lần người dùng thực hiện hành động (mỗi lần bấm "Thanh toán"), rồi gửi kèm **mọi** lần retry của hành động đó. Nếu client sinh key mới mỗi lần retry, server không có cách nào phân biệt retry với giao dịch mới.
+
+Header thường là {{Idempotency-Key: 9f1c2e7a-...}}; bản nháp IETF {{Idempotency-Key}} chuẩn hoá tên header này. Bốn thành phần của một thiết kế đúng:
+
+| Thành phần | Vì sao cần | Ví dụ |
+|---|---|---|
+| Phạm vi (scope) | Hai tenant hoặc hai endpoint khác nhau không được đụng key | {{tenant=42, POST /payments, key=9f1c...}} |
+| Fingerprint body | Cùng key nhưng body khác là lỗi client, phải từ chối | SHA-256 của raw body |
+| Kết quả đã lưu | Retry phải nhận lại đúng status và body cũ | status 201, body txn_1 |
+| TTL | Key không sống mãi, nhưng phải dài hơn cửa sổ retry | 24 giờ |
+
+Trạng thái server phải xử lý:
+
+| Tình huống | Hành vi |
+|---|---|
+| Key mới | Chạy nghiệp vụ, lưu kết quả, trả về |
+| Key cũ, cùng body, đã xong | Trả lại status + body đã lưu, **không** chạy lại |
+| Key cũ, cùng body, đang xử lý | {{409 REQUEST_IN_PROGRESS}} (hoặc chờ có giới hạn) |
+| Key cũ, body khác | {{422}} (một số API dùng 409 hoặc 400), **không** chạy |
+| Key hết TTL | Coi như key mới |
+
+### 3. "Kiểm tra rồi ghi" là một race condition
+**Race condition (đua dữ liệu)** là khi kết quả phụ thuộc vào thứ tự xen kẽ của các thread. Đoạn code sau đúng khi chỉ một request, sai khi hai request cùng key đến cùng lúc:
+
+~~~java
+if (!store.containsKey(key)) {
+    store.put(key, charge());   // đọc ở dòng trên, ghi ở dòng dưới: hai bước rời nhau
+}
+~~~
+
+Hai thread cùng key:
+
+| Thời điểm | Thread A | Thread B | Map |
+|---|---|---|---|
+| t1 | containsKey trả về false | | trống |
+| t2 | | containsKey trả về false | trống |
+| t3 | charge() trừ 100.000đ | | trống |
+| t4 | put(key, kết quả) | charge() trừ 100.000đ | có key |
+| t5 | | put(key, kết quả) | có key |
+
+Cả hai đều thấy "chưa có" và đều chạy nghiệp vụ. Đây chính xác là lỗi ta muốn tránh.
+
+**Nguyên tử (atomic)** nghĩa là "không thể chen ngang": thao tác diễn ra trọn vẹn. ConcurrentHashMap cung cấp các thao tác nguyên tử:
+
+- {{putIfAbsent(k, v)}}: chỉ ghi nếu chưa có; trả về giá trị cũ, hoặc null nếu bạn là người ghi đầu tiên.
+- {{computeIfAbsent(k, f)}}: tính và ghi trong một thao tác; hàm f chỉ chạy một lần cho mỗi key.
+- {{replace(k, old, new)}} và {{remove(k, v)}}: so sánh-rồi-thay (CAS) trên giá trị.
+
+~~~java
+Stored result = cache.computeIfAbsent(key, k -> charge());   // chỉ một thread chạy charge()
+~~~
+
+Hai lưu ý quan trọng của {{computeIfAbsent}}:
+
+1. Nó **giữ lock của bin** (một ô trong bảng băm) trong lúc chạy hàm. Nếu nghiệp vụ gọi mạng mất 2 giây, các key khác rơi cùng bin cũng bị chặn. Vì vậy với nghiệp vụ dài, hãy đặt vào map một "lời hứa" ({{FutureTask}}) rồi chạy nó **ngoài** lock.
+2. Hàm bên trong **không được** sửa chính map đó; từ Java 9, hành vi này bị chặn và ném {{IllegalStateException: Recursive update}}.
+
+### 4. State machine: IN_PROGRESS, DONE và request đến lúc đang xử lý
+Nếu chỉ dùng {{computeIfAbsent}}, request thứ hai sẽ **chờ** request thứ nhất chạy xong (vì cùng bin lock), kể cả khi client đã timeout từ lâu. Thực tế, client retry sau 30 giây không nên bị block thêm 30 giây. Mô hình tốt hơn là **state machine** (máy trạng thái) với ba trạng thái:
+
+- {{IN_PROGRESS}}: đã nhận request, đang chạy nghiệp vụ.
+- {{DONE}}: đã có kết quả (status + body) để trả lại.
+- Thất bại: **không** lưu vào map; xoá entry để lần retry sau được chạy lại.
+
+Luồng xử lý:
+
+~~~seq
+title: Idempotency key voi hai request cung key
+actors: Client | API | Store | Payment
+Client -> API: POST /payments, key=K (lan 1)
+API -> Store: putIfAbsent(K, IN_PROGRESS)
+note Store: thang: request dau tien chiem quyen
+API -> Payment: charge 100k
+Client -> API: POST /payments, key=K (lan 2, retry)
+API -> Store: thay IN_PROGRESS
+API --> Client: 409 REQUEST_IN_PROGRESS
+Payment --> API: 201 txn_1
+API -> Store: DONE + 201 txn_1
+Client -> API: POST /payments, key=K (lan 3)
+API -> Store: thay DONE
+API --> Client: 201 txn_1 (khong chay lai)
+~~~
+
+**Vì sao trả 409?** Vì request thứ hai là bản sao của một request đang chạy, không phải lỗi client. Client nên đợi một chút theo {{Retry-After}} rồi thử lại; nếu vẫn 409 sau vài lần thì báo "đang xử lý". Nếu trả 200 với body rỗng, client sẽ tưởng giao dịch mới thành công và có thể bỏ qua kết quả thật.
+
+**Entry treo (stale)**: nếu instance chết giữa lúc {{IN_PROGRESS}}, entry nằm lại mãi. Cách xử lý là **stale timeout**: quá {{staleMillis}} mà vẫn {{IN_PROGRESS}} thì cho phép request sau **giành lại** entry bằng {{replace(key, oldEntry, newEntry)}}. Vì {{replace}} là CAS, nếu entry đã bị thread cũ cập nhật thì việc giành lại thất bại và ta thử lại. Thread cũ khi xong vẫn cập nhật entry của nó (đã tách khỏi map) nên không làm hỏng dữ liệu của người mới; nhưng kết quả của nó có thể bị bỏ, vì client đó đã timeout từ lâu. Trong production, các entry {{IN_PROGRESS}} quá hạn còn được một job đối soát rà lại với cổng thanh toán.
+
+### 5. TTL và bộ nhớ
+Mỗi entry giữ: key (ví dụ 40 byte), fingerprint (32 byte nếu là SHA-256), status + body (vài trăm byte), cộng overhead object/entry của ConcurrentHashMap. Với 50.000 key và body 200 byte, tổng khoảng 50.000 × 400 byte ≈ 20 MB — chấp nhận được, nhưng phải có TTL để không phình vô hạn.
+
+Hai mốc thời gian khác nhau:
+
+- **TTL của entry DONE**: tính từ lúc bắt đầu request. Phải dài hơn cửa sổ retry của client (ví dụ 24 giờ); nếu ngắn hơn, retry sau khi hết TTL bị coi là giao dịch mới và có thể trừ tiền lần hai.
+- **Stale timeout của entry IN_PROGRESS**: tính từ lúc bắt đầu, thường ngắn hơn TTL (vài chục giây tới vài phút) để nhận ra instance chết.
+
+Dọn rác: cách đơn giản là một job định kỳ xoá entry quá hạn; cách tốt hơn là dùng cache có TTL sẵn (Caffeine với {{expireAfterWrite}}, hoặc Redis với {{EX}}).
+
+### 6. Production: DB hay Redis?
+Bộ nhớ trong một JVM chỉ đúng khi hệ thống có **một** instance. Khi có 6 instance sau load balancer, mỗi instance có map riêng: request retry có thể rơi vào instance khác và không thấy key. Khi đó:
+
+**Database (cho tiền, cần audit).** Bảng {{idempotency_keys(scope, key, request_hash, status, response_body, created_at, expires_at)}} với unique index trên {{(scope, key)}}. Thứ tự đúng là **insert trước** (hoặc insert cùng transaction với nghiệp vụ) và dựa vào unique constraint để chỉ một request thắng; request thua đọc lại kết quả của request thắng. Ưu điểm: bền qua restart, audit được, có thể cùng transaction với nghiệp vụ. Nhược điểm: thêm một round trip DB mỗi request; cần job dọn.
+
+**Redis (throughput cao).** {{SET key value NX EX 86400}}: {{NX}} chỉ set nếu chưa tồn tại (nguyên tử), {{EX}} đặt TTL. Request thắng chạy nghiệp vụ rồi ghi kết quả. Nhược điểm: Redis có thể mất dữ liệu nếu cấu hình không đúng, nên với tiền thường dùng Redis để chặn tức thời và DB làm nguồn sự thật.
+
+**Hybrid.** Redis chặn trùng trong vài giây đầu; DB giữ kết quả và TTL dài.
+
+Điểm cốt lõi: idempotency key không tạo ra exactly-once. Nó biến "có thể trùng" thành "trùng được phát hiện", với điều kiện key sống đủ lâu, được lưu ở nơi dùng chung, và việc kiểm tra key nằm cùng biên với nghiệp vụ.
+
+### 7. Lỗi hay gặp
+- **Sinh key mỗi lần retry**: key phải sinh ở tầng nghiệp vụ, không phải trong interceptor retry.
+- **Key không có phạm vi**: hai tenant dùng cùng UUID sẽ đọc kết quả của nhau.
+- **Không lưu body**: retry trả 200 rỗng, client tưởng giao dịch mới.
+- **Chỉ lưu key, không kiểm tra body**: dùng lại key cho giao dịch khác, sai tiền.
+- **Kiểm tra rồi ghi tách rời**: race condition ở mục 3.
+- **Chạy nghiệp vụ dài trong {{computeIfAbsent}}**: giữ lock bin, chặn key khác; dùng {{FutureTask}} hoặc lock theo key.
+- **TTL ngắn hơn cửa sổ retry**: trừ tiền hai lần.
+- **Cache cả thất bại**: nếu lưu exception, retry sẽ nhận lại lỗi cũ thay vì được chạy lại.
+- **Log cả body**: body có dữ liệu cá nhân; phải che PII.
+
+> Senior tip: Khi được hỏi "làm sao exactly-once?", đừng trả lời "dùng idempotency key" rồi dừng. Hãy nói: ở tầng mạng chỉ có at-least-once; ta đạt effectively-once bằng cách kết hợp retry có kiểm soát (chỉ retry lỗi tạm thời, backoff cộng jitter), idempotency key có TTL dài hơn cửa sổ retry, và một nguồn sự thật chung (DB unique index hoặc Redis SET NX). Nếu hệ thống chỉ có một instance, ConcurrentHashMap là đủ; nhiều instance thì map trong JVM chỉ là mô phỏng để hiểu, không phải giải pháp.
+
+### Liên hệ phỏng vấn
+Bốn câu hay được hỏi và hướng trả lời:
+
+1. **"POST timeout thì client nên làm gì?"** Trước tiên đọc lỗi: timeout và 5xx là lỗi tạm thời, 4xx là lỗi vĩnh viễn. Với lỗi tạm thời, retry cùng idempotency key và cùng body, backoff cộng jitter. Với 4xx, sửa request, đừng retry mù.
+2. **"Hai request cùng key đến cùng lúc?"** {{putIfAbsent}} hoặc {{computeIfAbsent}} để chỉ một request chạy; request còn lại nhận 409 nếu đang chạy, hoặc kết quả đã lưu nếu đã xong.
+3. **"Key lưu ở đâu?"** Một JVM: ConcurrentHashMap (chỉ để học). Nhiều instance: DB unique index cho tiền, Redis SET NX cho throughput cao, kèm TTL.
+4. **"TTL bao lâu?"** Dài hơn cửa sổ retry tối đa của client (thường 24 giờ) và dài hơn thời gian xử lý tối đa để tránh chạy lại khi request vẫn đang xử lý; entry treo dùng stale timeout riêng.`,
+  exercises: [
+    {
+      title: 'IdempotencyExecutor: state machine, TTL và chống đua',
+      prompt: `Viết {{IdempotencyExecutor}} — tầng chống trùng của một API thanh toán — dùng {{ConcurrentHashMap}} và **đồng hồ truyền vào** (không dùng {{System.currentTimeMillis}}, không {{Thread.sleep}} trong code của bạn).
+
+Constructor: {{IdempotencyExecutor(long ttlMillis, long staleMillis)}}, yêu cầu ttlMillis > 0 và staleMillis > 0 (sai thì ném {{IllegalArgumentException}}).
+
+{{Stored execute(String key, String body, long nowMillis, Supplier<Stored> action)}}:
+
+- {{key}} null hoặc rỗng/toàn khoảng trắng thì ném {{IllegalArgumentException}}.
+- Chưa có entry, hoặc entry đã DONE và {{nowMillis >= startedAtMillis + ttlMillis}}: nhận quyền, gọi {{action}} **đúng một lần**, lưu kết quả (fingerprint là {{body}}, null coi như chuỗi rỗng) và trả về. Nếu {{action}} ném {{RuntimeException}}: **xoá** entry rồi ném lại, không cache thất bại.
+- Có entry nhưng fingerprint khác: trả {{Stored(422, "IDEMPOTENCY_KEY_REUSED")}} và không gọi {{action}}.
+- Cùng fingerprint, đã DONE: trả kết quả đã lưu, không gọi {{action}}.
+- Cùng fingerprint, đang IN_PROGRESS và {{nowMillis < startedAtMillis + staleMillis}}: trả {{Stored(409, "REQUEST_IN_PROGRESS")}}, không gọi {{action}}.
+- Đang IN_PROGRESS nhưng {{nowMillis >= startedAtMillis + staleMillis}} (request trước bị coi là treo): giành lại entry bằng {{replace(key, oldEntry, newEntry)}}; giành được thì chạy {{action}} và lưu kết quả mới.
+
+Yêu cầu: nhiều thread gọi cùng key cùng lúc chỉ được chạy {{action}} một lần; các thread còn lại nhận 409 hoặc kết quả đã lưu. {{Stored}} là record có sẵn với {{status}} và {{body}}.`,
+      starter: `record Stored(int status, String body) {}
+
+class IdempotencyExecutor {
+    private final long ttlMillis;
+    private final long staleMillis;
+
+    IdempotencyExecutor(long ttlMillis, long staleMillis) {
+        this.ttlMillis = ttlMillis;
+        this.staleMillis = staleMillis;
+    }
+
+    Stored execute(String key, String body, long nowMillis, Supplier<Stored> action) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void expectThrows(Class<? extends Throwable> type, Runnable r) {
+        try { r.run(); }
+        catch (Throwable t) {
+            if (type.isInstance(t)) return;
+            throw new AssertionError("wrong exception: " + t);
+        }
+        throw new AssertionError("expected " + type.getSimpleName());
+    }
+    static IdempotencyExecutor ex() { return new IdempotencyExecutor(1000, 500); }
+    public static void main(String[] args) {
+        check("first call runs the action and caches it", () -> {
+            IdempotencyExecutor s = ex();
+            AtomicInteger runs = new AtomicInteger();
+            Stored r = s.execute("k1", "a=1", 0, () -> {
+                runs.incrementAndGet();
+                return new Stored(201, "created");
+            });
+            eq(201, r.status());
+            eq("created", r.body());
+            eq(1, runs.get());
+        });
+        check("replay same key and body returns the cached result", () -> {
+            IdempotencyExecutor s = ex();
+            AtomicInteger runs = new AtomicInteger();
+            Stored first = s.execute("k1", "a=1", 0, () -> {
+                runs.incrementAndGet();
+                return new Stored(201, "first");
+            });
+            Stored second = s.execute("k1", "a=1", 10, () -> {
+                runs.incrementAndGet();
+                return new Stored(500, "must not run");
+            });
+            eq("first", first.body());
+            eq(201, second.status());
+            eq("first", second.body());
+            eq(1, runs.get());
+        });
+        check("same key with a different body is rejected with 422", () -> {
+            IdempotencyExecutor s = ex();
+            AtomicInteger runs = new AtomicInteger();
+            s.execute("k1", "a=1", 0, () -> new Stored(201, "first"));
+            Stored conflict = s.execute("k1", "a=2", 10, () -> {
+                runs.incrementAndGet();
+                return new Stored(201, "wrong");
+            });
+            eq(422, conflict.status());
+            eq(0, runs.get());
+            eq("first", s.execute("k1", "a=1", 20, () -> new Stored(500, "must not run")).body());
+        });
+        check("blank or null key is rejected, invalid ttl is rejected", () -> {
+            IdempotencyExecutor s = ex();
+            expectThrows(IllegalArgumentException.class,
+                () -> s.execute("  ", "a=1", 0, () -> new Stored(201, "x")));
+            expectThrows(IllegalArgumentException.class,
+                () -> s.execute(null, "a=1", 0, () -> new Stored(201, "x")));
+            expectThrows(IllegalArgumentException.class, () -> new IdempotencyExecutor(0, 500));
+        });
+        check("a DONE entry expires after ttl", () -> {
+            IdempotencyExecutor s = ex();
+            AtomicInteger runs = new AtomicInteger();
+            eq("v1", s.execute("k1", "a=1", 0, () -> {
+                runs.incrementAndGet();
+                return new Stored(201, "v1");
+            }).body());
+            eq("v1", s.execute("k1", "a=1", 999, () -> {
+                runs.incrementAndGet();
+                return new Stored(201, "v2");
+            }).body());
+            eq(1, runs.get());
+            eq("v3", s.execute("k1", "a=1", 1000, () -> {
+                runs.incrementAndGet();
+                return new Stored(201, "v3");
+            }).body());
+            eq(2, runs.get());
+        });
+        check("in-progress duplicate gets 409 and runs nothing", () -> {
+            IdempotencyExecutor s = new IdempotencyExecutor(10_000, 5_000);
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicInteger runs = new AtomicInteger();
+            ExecutorService pool = Executors.newSingleThreadExecutor();
+            try {
+                Future<Stored> f = pool.submit(() -> s.execute("k1", "a=1", 0, () -> {
+                    runs.incrementAndGet();
+                    started.countDown();
+                    try { release.await(5, TimeUnit.SECONDS); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                    return new Stored(201, "charged");
+                }));
+                if (!started.await(5, TimeUnit.SECONDS)) throw new AssertionError("action never started");
+                Stored dup = s.execute("k1", "a=1", 100, () -> {
+                    runs.incrementAndGet();
+                    return new Stored(201, "must not run");
+                });
+                eq(409, dup.status());
+                eq("REQUEST_IN_PROGRESS", dup.body());
+                eq(1, runs.get());
+                release.countDown();
+                eq("charged", f.get(5, TimeUnit.SECONDS).body());
+                eq("charged", s.execute("k1", "a=1", 200, () -> new Stored(500, "must not run")).body());
+                eq(1, runs.get());
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            } finally {
+                release.countDown();
+                pool.shutdownNow();
+            }
+        });
+        check("a stale in-progress entry can be taken over", () -> {
+            IdempotencyExecutor s = new IdempotencyExecutor(10_000, 1_000);
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicInteger first = new AtomicInteger();
+            ExecutorService pool = Executors.newSingleThreadExecutor();
+            try {
+                Future<Stored> f = pool.submit(() -> s.execute("k1", "a=1", 0, () -> {
+                    first.incrementAndGet();
+                    started.countDown();
+                    try { release.await(5, TimeUnit.SECONDS); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                    return new Stored(201, "slow");
+                }));
+                if (!started.await(5, TimeUnit.SECONDS)) throw new AssertionError("action never started");
+                eq(409, s.execute("k1", "a=1", 900, () -> new Stored(500, "must not run")).status());
+                AtomicInteger second = new AtomicInteger();
+                Stored takeover = s.execute("k1", "a=1", 1_000, () -> {
+                    second.incrementAndGet();
+                    return new Stored(202, "recovered");
+                });
+                eq(202, takeover.status());
+                eq("recovered", takeover.body());
+                eq(1, second.get());
+                eq(1, first.get());
+                release.countDown();
+                eq("slow", f.get(5, TimeUnit.SECONDS).body());
+                eq("recovered", s.execute("k1", "a=1", 2_000, () -> new Stored(500, "must not run")).body());
+                eq(1, second.get());
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            } finally {
+                release.countDown();
+                pool.shutdownNow();
+            }
+        });
+        check("a failed action is not cached", () -> {
+            IdempotencyExecutor s = ex();
+            AtomicInteger runs = new AtomicInteger();
+            expectThrows(IllegalStateException.class, () -> s.execute("k1", "a=1", 0, () -> {
+                runs.incrementAndGet();
+                throw new IllegalStateException("gateway down");
+            }));
+            eq("ok", s.execute("k1", "a=1", 10, () -> {
+                runs.incrementAndGet();
+                return new Stored(201, "ok");
+            }).body());
+            eq(2, runs.get());
+        });
+        check("concurrent same key: one execution, the others get 409", () -> {
+            IdempotencyExecutor s = new IdempotencyExecutor(10_000, 5_000);
+            int n = 8;
+            ExecutorService pool = Executors.newFixedThreadPool(n);
+            CountDownLatch start = new CountDownLatch(1);
+            CountDownLatch losers = new CountDownLatch(n - 1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicInteger runs = new AtomicInteger();
+            List<Future<Stored>> futures = new ArrayList<>();
+            try {
+                for (int i = 0; i < n; i++) {
+                    futures.add(pool.submit(() -> {
+                        start.await();
+                        Stored r = s.execute("pay-1", "amount=100", 0, () -> {
+                            runs.incrementAndGet();
+                            try { release.await(5, TimeUnit.SECONDS); }
+                            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                            return new Stored(201, "charged");
+                        });
+                        if (r.status() == 409) losers.countDown();
+                        return r;
+                    }));
+                }
+                start.countDown();
+                if (!losers.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("expected 7 duplicates with 409, runs=" + runs.get());
+                }
+                release.countDown();
+                int okCount = 0, dupCount = 0;
+                for (Future<Stored> f : futures) {
+                    Stored r = f.get(5, TimeUnit.SECONDS);
+                    if (r.status() == 201) {
+                        eq("charged", r.body());
+                        okCount++;
+                    } else {
+                        eq(409, r.status());
+                        dupCount++;
+                    }
+                }
+                eq(1, okCount);
+                eq(n - 1, dupCount);
+                eq(1, runs.get());
+                eq("charged", s.execute("pay-1", "amount=100", 100, () -> new Stored(500, "must not run")).body());
+                eq(1, runs.get());
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            } finally {
+                release.countDown();
+                pool.shutdownNow();
+            }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `record Stored(int status, String body) {}
+
+class IdempotencyExecutor {
+    private static final int IN_PROGRESS = 0;
+    private static final int DONE = 1;
+
+    private static final class Entry {
+        final String fingerprint;
+        final long startedAtMillis;
+        final long expiresAtMillis;
+        volatile int state = IN_PROGRESS;
+        volatile Stored result;
+
+        Entry(String fingerprint, long nowMillis, long ttlMillis) {
+            this.fingerprint = fingerprint;
+            this.startedAtMillis = nowMillis;
+            this.expiresAtMillis = nowMillis + ttlMillis;
+        }
+
+        boolean done() { return state == DONE; }
+    }
+
+    private final ConcurrentHashMap<String, Entry> entries = new ConcurrentHashMap<>();
+    private final long ttlMillis;
+    private final long staleMillis;
+
+    IdempotencyExecutor(long ttlMillis, long staleMillis) {
+        if (ttlMillis <= 0) throw new IllegalArgumentException("ttlMillis must be > 0");
+        if (staleMillis <= 0) throw new IllegalArgumentException("staleMillis must be > 0");
+        this.ttlMillis = ttlMillis;
+        this.staleMillis = staleMillis;
+    }
+
+    Stored execute(String key, String body, long nowMillis, Supplier<Stored> action) {
+        if (key == null || key.isBlank()) throw new IllegalArgumentException("idempotency key is required");
+        String fingerprint = body == null ? "" : body;
+        while (true) {
+            Entry entry = entries.get(key);
+            if (entry != null && entry.done() && nowMillis >= entry.expiresAtMillis) {
+                entries.remove(key, entry);   // CAS: chỉ xoá nếu chưa bị thay
+                continue;
+            }
+            if (entry == null) {
+                Entry fresh = new Entry(fingerprint, nowMillis, ttlMillis);
+                if (entries.putIfAbsent(key, fresh) == null) {
+                    return runAndCache(key, fresh, action);
+                }
+                continue;
+            }
+            if (!entry.fingerprint.equals(fingerprint)) {
+                return new Stored(422, "IDEMPOTENCY_KEY_REUSED");
+            }
+            if (entry.done()) return entry.result;
+            if (nowMillis >= entry.startedAtMillis + staleMillis) {
+                // request trước bị coi là treo: giành lại bằng CAS, không ghi đè entry mới
+                Entry fresh = new Entry(fingerprint, nowMillis, ttlMillis);
+                if (entries.replace(key, entry, fresh)) {
+                    return runAndCache(key, fresh, action);
+                }
+                continue;
+            }
+            return new Stored(409, "REQUEST_IN_PROGRESS");
+        }
+    }
+
+    private Stored runAndCache(String key, Entry entry, Supplier<Stored> action) {
+        Stored result;
+        try {
+            result = action.get();
+        } catch (RuntimeException ex) {
+            entries.remove(key, entry);   // không cache thất bại: retry được phép chạy lại
+            throw ex;
+        }
+        entry.result = result;
+        entry.state = DONE;
+        return result;
+    }
+}`,
+      hints: [
+        'Dùng {{putIfAbsent(key, new Entry(...))}}: trả về null nghĩa là bạn giành được quyền; khác null nghĩa là đã có người khác giữ entry đó.',
+        'Entry chỉ cần {{state}} (IN_PROGRESS hay DONE) và {{result}}. Ghi {{result}} trước rồi mới đặt {{state = DONE}}; cả hai nên là volatile để thread khác đọc thấy giá trị mới.',
+        'Khi action ném lỗi, gọi {{entries.remove(key, entry)}} (bản hai tham số chỉ xoá nếu entry chưa bị thay) để retry sau chạy lại. Khi giành lại entry treo, dùng {{entries.replace(key, old, fresh)}}.',
+      ],
+      explain: `### Vì sao không dùng "kiểm tra rồi ghi"
+~~~java
+if (!map.containsKey(key)) { map.put(key, run(action)); }
+~~~
+Hai thread cùng key đều thấy {{containsKey}} là false, cả hai cùng chạy {{action}}: trừ tiền hai lần. {{putIfAbsent}} gộp "kiểm tra" và "ghi" thành một thao tác nguyên tử, nên chỉ một thread thắng.
+
+### Vì sao không chạy action trong computeIfAbsent
+{{computeIfAbsent}} giữ lock của bin trong lúc chạy hàm. Một lệnh gọi cổng thanh toán mất 2 giây sẽ chặn mọi key khác cùng bin. Cách đúng là đặt entry {{IN_PROGRESS}} vào map trước, chạy action **ngoài** lock, rồi cập nhật {{DONE}}. Request trùng trong lúc đó nhận 409 thay vì chờ.
+
+### Vì sao có stale timeout
+Nếu instance chết khi đang {{IN_PROGRESS}}, entry sẽ nằm đó mãi và mọi retry sau nhận 409 vô hạn. Stale timeout cho phép request sau giành lại bằng {{replace}} (CAS). Nếu entry đã đổi, {{replace}} trả về false và vòng lặp thử lại — không ghi đè kết quả của người khác.
+
+### Vì sao không cache thất bại
+Nếu lưu exception, retry sẽ nhận lại đúng lỗi cũ và không bao giờ chạy được. Xoá entry khi action ném lỗi giúp lần retry sau thử lại (và nếu lỗi là vĩnh viễn, client vẫn nhận lỗi qua response của lần gọi đó).
+
+### Bản mô phỏng đơn giản hoá
+Bài này chỉ có một JVM, đồng hồ truyền vào để test xác định, và không có job đối soát. Production cần: key có phạm vi tenant cộng endpoint, fingerprint raw body hoặc JSON đã canonicalize, TTL 24 giờ, lưu ở DB unique index (tiền) hoặc Redis SET NX (throughput), và một job rà các entry {{IN_PROGRESS}} quá hạn.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Client timeout sau POST /payments, retry cùng key và cùng body. Server đã xử lý xong trước đó. Kết quả đúng là gì?',
+      options: [
+        'Trả lại status và body đã lưu, không chạy lại',
+        'Chạy lại nghiệp vụ để chắc chắn',
+        'Trả 500 vì request bị trùng',
+        'Tạo giao dịch mới với ID mới',
+      ],
+      answer: 0,
+      explain: 'Idempotency key đại diện cho một thao tác logic, nên retry phải nhận lại đúng kết quả cũ và không chạy lại nghiệp vụ. Chạy lại là trừ tiền hai lần; 500 khiến client retry tiếp và làm nhiễu alert; tạo ID mới phá vỡ hợp đồng idempotent của key.',
+    },
+    {
+      q: 'Vì sao đoạn {{if (!map.containsKey(k)) map.put(k, charge())}} sai khi hai request cùng key đến cùng lúc?',
+      options: [
+        'Vì HashMap không có containsKey',
+        'Vì hai thread có thể cùng thấy key chưa tồn tại rồi cùng chạy charge()',
+        'Vì containsKey luôn trả về true',
+        'Vì map không dùng được với key là String',
+      ],
+      answer: 1,
+      explain: 'Đó là race condition kiểu check-then-act: đọc và ghi là hai bước rời nhau, hai thread có thể xen kẽ ở giữa. putIfAbsent hoặc computeIfAbsent gộp kiểm tra và ghi thành một thao tác nguyên tử.',
+    },
+    {
+      q: 'Entry đang IN_PROGRESS, bắt đầu 5 giây trước, staleMillis là 30 giây. Request trùng cùng body đến. Server trả gì?',
+      options: [
+        '200 với body rỗng',
+        'Chạy lại action',
+        '409 REQUEST_IN_PROGRESS',
+        '422 IDEMPOTENCY_KEY_REUSED',
+      ],
+      answer: 2,
+      explain: 'Request trùng đến khi request đầu còn đang chạy thì trả 409 để client chờ theo Retry-After. Chạy lại sẽ phá idempotent; 200 rỗng khiến client tưởng giao dịch mới; 422 dành cho trường hợp cùng key nhưng khác body.',
+    },
+    {
+      q: 'Vì sao TTL của entry phải dài hơn cửa sổ retry của client?',
+      options: [
+        'Để tiết kiệm bộ nhớ',
+        'Vì ConcurrentHashMap yêu cầu TTL',
+        'Vì HTTP bắt buộc key sống 24 giờ',
+        'Vì nếu ngắn hơn, retry sau khi hết TTL bị coi là giao dịch mới và có thể trừ tiền lần hai',
+      ],
+      answer: 3,
+      explain: 'Key hết TTL thì server không còn cách nào nhận ra request trùng, nên retry sẽ chạy lại nghiệp vụ. TTL phải dài hơn thời gian client còn có thể retry (ví dụ 24 giờ), và cũng dài hơn thời gian xử lý tối đa của request.',
+    },
+  ],
+  related: ['api-015', 'api-033', 'api-022'],
+  tags: ['idempotency', 'retry', 'ConcurrentHashMap', 'race condition', 'state machine', 'TTL'],
+},
+{
+  id: 'lesson-api-011',
+  track: 'api',
+  order: 11,
+  title: 'Token bucket từ gốc: công thức nạp token, chi phí mỗi request và cài đặt thread-safe',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích token bucket hoạt động thế nào: capacity, tốc độ nạp, burst và vì sao phải giới hạn trần',
+    'Dẫn ra công thức số token tại một thời điểm và công thức Retry-After, rồi cài bằng đồng hồ giả',
+    'Cài token bucket thread-safe khi nhiều thread gọi cùng lúc và hiểu vì sao "đọc rồi ghi" hai biến là race',
+    'Biết cách tính giá của request (cost) và các lỗi vận hành hay gặp: block thread, bộ đếm theo instance, retry storm',
+  ],
+  body: `### Tóm tắt
+**Token bucket (lọ token)** là thuật toán rate limit phổ biến nhất: một lọ chứa tối đa {{capacity}} token, được nạp đều {{refillPerSecond}} token mỗi giây; mỗi request phải lấy {{cost}} token (mặc định 1) thì mới được đi tiếp. Đủ token thì trừ và cho qua; không đủ thì trả {{429 Too Many Requests}} kèm {{Retry-After}} bằng số mili-giây còn thiếu. Chỉ cần hai biến trạng thái, nhưng vì "đọc rồi sửa rồi ghi" hai biến không nguyên tử, phần khó khi cài là **đồng bộ hoá** và **đồng hồ**.
+
+### 1. Rate limit để làm gì
+**Rate limit (giới hạn tốc độ)** là chốt kiểm soát số request mà một client được phép gửi trong một khoảng thời gian. **Quota (hạn mức)** là con số cụ thể, ví dụ 100 request/phút cho mỗi API key. Bốn lý do:
+
+- **Bảo vệ backend**: HikariCP mặc định chỉ có 10 connection; Tomcat nhận tối đa 200 thread. Nếu 200 request cùng mở transaction, pool cạn, các request khác phải chờ, p99 tăng vọt.
+- **Kiểm soát chi phí**: một số API (LLM, tìm kiếm, cổng thanh toán) tính tiền theo lượng dùng; một khách lạm dụng có thể đội bill.
+- **Công bằng**: tránh "hàng xóm ồn ào" (noisy neighbour) chiếm hết tài nguyên của người khác.
+- **Chống lạm dụng**: brute force mật khẩu, credential stuffing, scraping dữ liệu.
+
+Hai thuật ngữ hay gặp: **RPS** là số request mỗi giây; **p99** là ngưỡng 99 phần trăm (nếu p99 = 800ms thì 99% request nhanh hơn 800ms).
+
+### 2. Hình dung token bucket bằng ví dụ đời thường
+Hãy tưởng tượng một cái lọ thuỷ tinh. Mỗi giây có một cái máy nhỏ thả thêm 2 viên bi vào lọ, nhưng lọ chỉ chứa được tối đa 10 viên. Mỗi request phải lấy 1 viên bi mới được đi qua; không còn bi thì phải chờ.
+
+- {{capacity}} là sức chứa của lọ (10 viên).
+- {{refillPerSecond}} là số viên máy thả mỗi giây (2 viên).
+- {{tokens}} là số viên đang có trong lọ (số thực, vì có thể đang "nửa viên" khi thời gian trôi chưa tròn giây).
+
+Vì sao cho phép **burst** (bùng nổ ngắn)? Nếu hệ thống im lặng 30 giây, lọ đầy 10 viên. Khi 10 request ập tới cùng lúc, cả 10 đều được đi ngay — đó là "quota để dành" hợp lệ. Nếu bắt mọi request cách đều nhau, người dùng sẽ bị phạt vì đã dùng ít trước đó. Điểm khác với **leaky bucket** (lọ rò) là: leaky bucket là một hàng đợi giữ nhịp đều, còn token bucket cho phép burst tới {{capacity}}.
+
+### 3. Trạng thái và công thức
+Trạng thái tối thiểu chỉ gồm hai biến:
+
+- {{tokens}}: số token hiện có.
+- {{lastMillis}}: mốc thời gian lần cập nhật gần nhất.
+
+Tại thời điểm {{t}}, số token là:
+
+{{tokens(t) = min(capacity, tokens(t0) + (t - t0) / 1000.0 × refillPerSecond)}}
+
+Trong đó {{t0}} là mốc lần trước, {{t - t0}} tính bằng mili-giây (chia 1000 để ra giây). Hai chi tiết dễ sai:
+
+- **Phải lấy min với capacity**: nếu không, sau một giờ im lặng (3600 giây × 2 token = 7200 token) lọ sẽ "đầy" 7200 token và một burst khổng lồ lọt qua, phá đúng thứ mà rate limit phải bảo vệ.
+- **Không dùng số nguyên cho token**: vì thời gian trôi không tròn giây. Nếu chỉ nạp 1 token mỗi giây, request đến sau 0.5 giây vẫn phải chờ đủ 1 giây — sai và khó chịu. Số thực cho phép "nửa token", và chỉ khi đủ {{cost}} mới cho qua.
+
+Ví dụ số với {{capacity = 10}}, {{refillPerSecond = 2}}, lọ đầy tại {{t = 0}}:
+
+~~~text
+t=0   [oooooooooo] 10 token
+      3 request -> con 7
+t=1   [ooooooo...] 7 + 2 = 9 token
+      1 request -> con 8
+t=3   [oooooooooo] 8 + 4 = 12 -> clamp ve 10
+~~~
+
+### 4. tryAcquire và Retry-After
+Thuật toán mỗi lần có request:
+
+1. Tính số token khả dụng tại {{nowMillis}} theo công thức mục 3.
+2. Nếu {{available >= cost}}: trừ {{cost}}, cập nhật {{lastMillis = nowMillis}}, trả về true.
+3. Nếu không đủ: **không** trừ, nhưng vẫn lưu {{tokens = available}} và cập nhật mốc (để giữ phần token lẻ), trả về false.
+
+Nếu bị từ chối, client cần biết chờ bao lâu. Số token còn thiếu là {{missing = cost - available}}; thời gian chờ là:
+
+{{retryAfterMillis = ceil(missing / refillPerSecond × 1000)}}
+
+Ví dụ: {{capacity = 5}}, {{refillPerSecond = 1}}, đã dùng hết 5 token tại {{t = 0}}. Tại {{t = 0}}, thiếu 1 token nên {{Retry-After}} là 1000ms. Tại {{t = 200}}, đã có 0.2 token, thiếu 0.8 token, thời gian chờ còn 800ms.
+
+Vì sao **làm tròn lên** ({{ceil}})? Nếu cần 500.0001ms mà trả về 500ms, client sẽ thử lại quá sớm và nhận 429 lần nữa. Thà chờ dư một chút còn hơn tạo retry vô ích.
+
+Vì sao {{retryAfterMillis}} **không được thay đổi trạng thái**? Nếu hàm "xem trước" cập nhật {{lastMillis}} mà không cập nhật {{tokens}} đúng, một lần gọi để tính header sẽ làm mất phần token lẻ và các lần sau tính sai. Nó phải là hàm thuần: cùng đầu vào thì cùng kết quả, gọi bao nhiêu lần cũng vậy.
+
+### 5. Thread safety: hai biến, một hành động
+Cập nhật token bucket là "đọc {{tokens}} và {{lastMillis}}, tính, rồi ghi lại". Nếu hai thread cùng làm việc đó mà không đồng bộ hoá:
+
+| Thời điểm | Thread A | Thread B | tokens |
+|---|---|---|---|
+| t1 | đọc tokens = 1.9 | | 1.9 |
+| t2 | | đọc tokens = 1.9 | 1.9 |
+| t3 | tính 1.9 - 1 = 0.9 | | 1.9 |
+| t4 | ghi tokens = 0.9 | tính 1.9 - 1 = 0.9 | 0.9 |
+| t5 | | ghi tokens = 0.9 | 0.9 |
+
+Cả hai request đều được cho qua trong khi thực tế chỉ còn 0.9 token: vượt hạn mức. Đây là **race condition** (đua dữ liệu): kết quả phụ thuộc thứ tự xen kẽ của các thread.
+
+Cách sửa:
+
+- {{synchronized}} trên method: đơn giản, đủ nhanh vì vùng tới hạn chỉ có vài phép số học, không có I/O. Nhược điểm: nếu một thread giữ lock lâu (ví dụ gọi mạng trong lúc giữ lock), các thread khác chờ.
+- Vòng lặp CAS với {{AtomicLong}}: không dùng lock, nhưng phải đóng gói hai giá trị (tokens và lastMillis) vào một số nguyên hoặc dùng hai biến với quy tắc cập nhật cẩn thận; dễ sai hơn.
+- Một thread duy nhất sở hữu bucket (actor model): không cần lock, nhưng phải chấp nhận hàng đợi.
+- Redis Lua script khi hệ thống phân tán: "đọc - tính - ghi" chạy nguyên tử trong Redis. Bài 008 của track này nói kỹ phần phân tán; bài này tập trung vào bản cục bộ.
+
+Với một bucket trong một JVM, {{synchronized}} là lựa chọn hợp lý: vùng tới hạn ngắn, không gọi I/O, và số thread tranh chấp trên cùng một key thường nhỏ.
+
+### 6. Cost: không phải request nào cũng bằng nhau
+Một {{GET /health}} chỉ đọc 1 dòng, nhưng một {{POST /reports}} có thể chạy 3 giây và đọc 50 MB. Nếu mọi request đều tốn 1 token, một client gửi toàn request nặng sẽ làm backend quá tải trong khi vẫn "đúng hạn mức".
+
+Vì vậy token bucket nên nhận {{cost}}:
+
+- {{tryAcquire(now, 1)}} cho request nhẹ.
+- {{tryAcquire(now, 10)}} cho request nặng (ví dụ xuất báo cáo).
+
+Hai quy tắc:
+
+- {{cost > capacity}} thì **không bao giờ** đủ token, vì lọ không thể chứa nhiều hơn {{capacity}}. Trả về false ngay và {{Retry-After}} là {{Long.MAX_VALUE}} (hoặc một thông điệp "request quá lớn").
+- Có hệ thống cho phép token **âm** (mượn trước, trả sau) để request nặng vẫn chạy nhưng các request sau phải chờ. Cách này công bằng hơn về mặt "không từ chối", nhưng dễ làm client nhẹ bị chặn lâu; chỉ dùng khi bạn thực sự muốn đo và giới hạn tổng tải.
+
+### 7. Đồng hồ: đừng dùng currentTimeMillis
+Hai hàm lấy giờ trong Java:
+
+- {{System.currentTimeMillis()}}: giờ tường, có thể bị **nhảy** khi NTP đồng bộ hoặc khi người dùng đổi giờ. Nếu giờ nhảy lùi 1 giờ, token bucket sẽ thấy {{t - t0}} âm và có thể nạp sai; nếu nhảy tới 1 giờ, bucket được nạp một lượng lớn token và burst lọt qua.
+- {{System.nanoTime()}}: đơn điệu (monotonic), chỉ dùng để đo khoảng thời gian. Đây là lựa chọn đúng cho token bucket cục bộ.
+
+Trong test, ta truyền {{nowMillis}} vào để kết quả **xác định** (deterministic): cùng đầu vào thì cùng kết quả, không phụ thuộc tốc độ máy. Khi hệ thống chạy nhiều instance, mỗi instance có đồng hồ riêng; lệch vài mili-giây thường chấp nhận được, nhưng nếu dùng Redis thì nên lấy thời gian từ Redis ({{TIME}}) để mọi instance tính trên cùng một mốc.
+
+### 8. Lỗi hay gặp
+- **Không clamp theo capacity**: sau thời gian im lặng, token tăng vô hạn và burst khổng lồ lọt qua.
+- **Dùng int cho token**: dễ tràn, và mất phần lẻ; dùng double.
+- **Gọi {{Thread.sleep}} trong request thread**: Tomcat chỉ có 200 thread; nếu mỗi request bị chặn 1 giây để chờ token, 200 request là nghẽn toàn bộ. Rate limit đúng là **từ chối ngay** kèm {{Retry-After}}, không phải bắt client chờ trong request.
+- **Bộ đếm trong bộ nhớ từng instance**: 6 instance thì hạn mức thực tế gấp 6 lần. Phải dùng Redis/gateway hoặc chia hạn mức cho từng instance (đơn giản nhưng kém chính xác).
+- **Không trả {{Retry-After}}**: client đoán bừa và retry ngay, tạo **retry storm** (bão retry): hàng nghìn client cùng gửi lại một lúc, làm backend quá tải nặng hơn.
+- **Không có TTL cho key**: map theo key phình vô hạn; cần TTL hoặc job dọn.
+- **Dùng rate limit thay cho xác thực/phân quyền**: rate limit chỉ giảm tần suất, không xác định danh tính; vẫn phải có auth.
+
+> Senior tip: Khi thiết kế rate limit, hãy trả lời được bốn câu: hạn mức tính theo ai (IP, API key, tenant, user), thuật toán nào (token bucket cho burst và Retry-After chính xác; sliding window counter rẻ hơn), trạng thái đặt ở đâu (Redis Lua/gateway cho nhiều instance), và khi chạm hạn mức thì client nhận gì (429 + Retry-After + RateLimit-*). Nếu chỉ trả lời "dùng token bucket" mà không nói được bốn câu này, bạn mới dừng ở mức thuộc công thức.
+
+### Liên hệ phỏng vấn
+Bốn câu hay được hỏi và hướng trả lời:
+
+1. **"Vì sao token bucket được ưa thích hơn fixed window?"** Fixed window đếm theo ô cố định nên 100 request cuối ô này cộng 100 request đầu ô sau tạo burst 200 request quanh ranh giới. Token bucket nạp liên tục nên không có "ranh giới", lại cho burst hợp lệ tới {{capacity}} và tính được {{Retry-After}} chính xác.
+2. **"Cài token bucket thread-safe thế nào?"** {{synchronized}} trên các method cập nhật (vùng tới hạn chỉ vài phép tính), hoặc CAS với {{AtomicLong}}; không gọi I/O trong vùng tới hạn. Nhiều instance thì dùng Redis Lua script để "đọc - tính - ghi" nguyên tử.
+3. **"Request nặng thì tính token ra sao?"** Truyền {{cost}} theo loại request (ví dụ 10 cho export báo cáo); {{cost > capacity}} thì từ chối ngay. Có thể cho token âm nếu muốn request nặng luôn chạy, nhưng phải theo dõi để không chặn request nhẹ.
+4. **"Vì sao không dùng {{System.currentTimeMillis}}?"** Vì giờ tường có thể nhảy khi NTP hoặc chỉnh giờ; dùng {{System.nanoTime}} cho bucket cục bộ, hoặc thời gian của Redis khi phân tán.`,
+  exercises: [
+    {
+      title: 'TokenBucket thread-safe với cost, đồng hồ giả và KeyedRateLimiter',
+      prompt: `Viết hai class dùng **đồng hồ truyền vào** ({{nowMillis}}, mili-giây), không dùng {{System.nanoTime}}/{{System.currentTimeMillis}}, không {{Thread.sleep}}, không I/O. Mọi method public phải an toàn khi nhiều thread gọi cùng lúc.
+
+1) {{class TokenBucket}}
+
+- Constructor {{TokenBucket(double capacity, double refillPerSecond)}}: capacity > 0, refillPerSecond > 0, lọ bắt đầu **đầy**. Lần gọi đầu tiên với {{nowMillis = T0}} lấy mốc T0.
+- {{synchronized boolean tryAcquire(long nowMillis)}}: lấy 1 token.
+- {{synchronized boolean tryAcquire(long nowMillis, double cost)}}: {{cost > 0}} (sai thì ném {{IllegalArgumentException}}); nếu số token khả dụng (nạp bù tới nowMillis, tối đa capacity) >= cost thì trừ cost, cập nhật mốc, trả true; ngược lại không trừ, lưu phần token khả dụng (giữ phần lẻ), trả false.
+- {{synchronized long retryAfterMillis(long nowMillis, double cost)}}: {{cost > 0}} (sai thì ném {{IllegalArgumentException}}); trả 0 nếu đủ token; nếu {{cost > capacity}} trả {{Long.MAX_VALUE}}; ngược lại trả số mili-giây chờ tối thiểu, làm tròn **lên** (ceil). Không được thay đổi trạng thái.
+- {{synchronized double availableTokens(long nowMillis)}}: số token khả dụng tại nowMillis, không thay đổi trạng thái.
+
+2) {{class KeyedRateLimiter}}
+
+- Constructor {{KeyedRateLimiter(double capacity, double refillPerSecond)}}.
+- {{boolean tryAcquire(String key, long nowMillis)}}: key null hoặc rỗng/toàn khoảng trắng thì ném {{IllegalArgumentException}}; mỗi key có một {{TokenBucket}} riêng.
+- {{int size()}}: số key đang được theo dõi.`,
+      starter: `class TokenBucket {
+    private final double capacity;
+    private final double refillPerSecond;
+
+    TokenBucket(double capacity, double refillPerSecond) {
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+    }
+
+    boolean tryAcquire(long nowMillis) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean tryAcquire(long nowMillis, double cost) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long retryAfterMillis(long nowMillis, double cost) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    double availableTokens(long nowMillis) {
+        throw new UnsupportedOperationException("TODO");
+    }
 }
 
+class KeyedRateLimiter {
+    private final double capacity;
+    private final double refillPerSecond;
+
+    KeyedRateLimiter(double capacity, double refillPerSecond) {
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+    }
+
+    boolean tryAcquire(String key, long nowMillis) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int size() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void expectThrows(Class<? extends Throwable> type, Runnable r) {
+        try { r.run(); }
+        catch (Throwable t) {
+            if (type.isInstance(t)) return;
+            throw new AssertionError("wrong exception: " + t);
+        }
+        throw new AssertionError("expected " + type.getSimpleName());
+    }
+    public static void main(String[] args) {
+        check("starts full: burst up to capacity then rejects", () -> {
+            TokenBucket b = new TokenBucket(5, 1.0);
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(false, b.tryAcquire(0));
+            eq(1000L, b.retryAfterMillis(0, 1));
+            eq(true, b.tryAcquire(1000));
+        });
+        check("refill is proportional and clamped to capacity", () -> {
+            TokenBucket b = new TokenBucket(3, 2.0);
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(false, b.tryAcquire(0));
+            eq(500L, b.retryAfterMillis(0, 1));
+            eq(true, b.tryAcquire(500));
+            eq(3.0, b.availableTokens(60_000));
+            eq(true, b.tryAcquire(60_000));
+            eq(true, b.tryAcquire(60_000));
+            eq(true, b.tryAcquire(60_000));
+            eq(false, b.tryAcquire(60_000));
+        });
+        check("fractional tokens are kept across calls", () -> {
+            TokenBucket b = new TokenBucket(2, 1.0);
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(false, b.tryAcquire(0));
+            eq(0.5, b.availableTokens(500));
+            eq(500L, b.retryAfterMillis(500, 1));
+            eq(false, b.tryAcquire(500));
+            eq(true, b.tryAcquire(1000));
+        });
+        check("cost larger than one token", () -> {
+            TokenBucket b = new TokenBucket(5, 1.0);
+            eq(true, b.tryAcquire(0, 4));
+            eq(false, b.tryAcquire(0, 2));
+            eq(1000L, b.retryAfterMillis(0, 2));
+            eq(true, b.tryAcquire(1000, 2));
+            eq(false, b.tryAcquire(1000, 1));
+        });
+        check("cost greater than capacity never succeeds", () -> {
+            TokenBucket b = new TokenBucket(3, 1.0);
+            eq(false, b.tryAcquire(0, 4));
+            eq(Long.MAX_VALUE, b.retryAfterMillis(0, 4));
+            eq(true, b.tryAcquire(0, 3));
+        });
+        check("retryAfterMillis does not change state", () -> {
+            TokenBucket b = new TokenBucket(2, 1.0);
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(500L, b.retryAfterMillis(500, 1));
+            eq(500L, b.retryAfterMillis(500, 1));
+            eq(false, b.tryAcquire(500));
+            eq(true, b.tryAcquire(1000));
+        });
+        check("concurrent calls at the same instant allow exactly capacity", () -> {
+            TokenBucket b = new TokenBucket(6, 1.0);
+            int n = 20;
+            ExecutorService pool = Executors.newFixedThreadPool(n);
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<Boolean>> futures = new ArrayList<>();
+            try {
+                for (int i = 0; i < n; i++) {
+                    futures.add(pool.submit(() -> {
+                        start.await();
+                        return b.tryAcquire(0);
+                    }));
+                }
+                start.countDown();
+                int allowed = 0;
+                for (Future<Boolean> f : futures) if (f.get(5, TimeUnit.SECONDS)) allowed++;
+                eq(6, allowed);
+                eq(false, b.tryAcquire(0));
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            } finally {
+                pool.shutdownNow();
+            }
+        });
+        check("keys are independent and blank keys are rejected", () -> {
+            KeyedRateLimiter rl = new KeyedRateLimiter(2, 1.0);
+            eq(true, rl.tryAcquire("a", 0));
+            eq(true, rl.tryAcquire("a", 0));
+            eq(false, rl.tryAcquire("a", 0));
+            eq(true, rl.tryAcquire("b", 0));
+            eq(true, rl.tryAcquire("b", 0));
+            eq(false, rl.tryAcquire("b", 0));
+            eq(2, rl.size());
+            eq(true, rl.tryAcquire("a", 1000));
+            expectThrows(IllegalArgumentException.class, () -> rl.tryAcquire("  ", 0));
+            expectThrows(IllegalArgumentException.class, () -> rl.tryAcquire(null, 0));
+        });
+        check("invalid arguments are rejected", () -> {
+            expectThrows(IllegalArgumentException.class, () -> new TokenBucket(0, 1.0));
+            expectThrows(IllegalArgumentException.class, () -> new TokenBucket(1, 0));
+            TokenBucket b = new TokenBucket(2, 1.0);
+            expectThrows(IllegalArgumentException.class, () -> b.tryAcquire(0, 0));
+            expectThrows(IllegalArgumentException.class, () -> b.retryAfterMillis(0, -1));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class TokenBucket {
+    private final double capacity;
+    private final double refillPerSecond;
+    private double tokens;
+    private long lastMillis;
+    private boolean anchored;
+
+    TokenBucket(double capacity, double refillPerSecond) {
+        if (capacity <= 0) throw new IllegalArgumentException("capacity must be > 0");
+        if (refillPerSecond <= 0) throw new IllegalArgumentException("refillPerSecond must be > 0");
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+        this.tokens = capacity;
+    }
+
+    private double tokensAt(long nowMillis) {
+        if (!anchored) return tokens;   // chưa có mốc: lọ đang đầy
+        if (nowMillis <= lastMillis) return tokens;
+        double refilled = tokens + (nowMillis - lastMillis) / 1000.0 * refillPerSecond;
+        return refilled > capacity ? capacity : refilled;
+    }
+
+    private void anchor(long nowMillis) {
+        if (!anchored || nowMillis > lastMillis) {
+            lastMillis = nowMillis;
+            anchored = true;
+        }
+    }
+
+    synchronized boolean tryAcquire(long nowMillis) {
+        return tryAcquire(nowMillis, 1.0);
+    }
+
+    synchronized boolean tryAcquire(long nowMillis, double cost) {
+        if (cost <= 0) throw new IllegalArgumentException("cost must be > 0");
+        double available = tokensAt(nowMillis);
+        anchor(nowMillis);
+        tokens = available;
+        if (available >= cost) {
+            tokens = available - cost;
+            return true;
+        }
+        return false;
+    }
+
+    synchronized long retryAfterMillis(long nowMillis, double cost) {
+        if (cost <= 0) throw new IllegalArgumentException("cost must be > 0");
+        double available = tokensAt(nowMillis);
+        if (available >= cost) return 0;
+        if (cost > capacity) return Long.MAX_VALUE;
+        double missing = cost - available;
+        return (long) Math.ceil(missing / refillPerSecond * 1000.0);
+    }
+
+    synchronized double availableTokens(long nowMillis) {
+        return tokensAt(nowMillis);
+    }
+}
+
+class KeyedRateLimiter {
+    private final ConcurrentHashMap<String, TokenBucket> buckets = new ConcurrentHashMap<>();
+    private final double capacity;
+    private final double refillPerSecond;
+
+    KeyedRateLimiter(double capacity, double refillPerSecond) {
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+    }
+
+    boolean tryAcquire(String key, long nowMillis) {
+        if (key == null || key.isBlank()) throw new IllegalArgumentException("key is required");
+        TokenBucket bucket = buckets.computeIfAbsent(key, k -> new TokenBucket(capacity, refillPerSecond));
+        return bucket.tryAcquire(nowMillis);
+    }
+
+    int size() {
+        return buckets.size();
+    }
+}`,
+      hints: [
+        'Tách hàm {{tokensAt(nowMillis)}} (thuần, chỉ tính) khỏi phần ghi trạng thái. {{retryAfterMillis}} và {{availableTokens}} chỉ gọi {{tokensAt}}, còn {{tryAcquire}} mới cập nhật {{tokens}}/{{lastMillis}}.',
+        'Neo mốc ({{anchored}}) ở lần gọi đầu tiên: nếu chưa neo thì coi lọ đầy tại thời điểm đó; sau đó chỉ cập nhật mốc khi {{nowMillis > lastMillis}} để đồng hồ lùi không nạp sai.',
+        'Đặt {{synchronized}} lên các method cập nhật; với {{KeyedRateLimiter}}, dùng {{ConcurrentHashMap.computeIfAbsent}} để mỗi key có đúng một bucket.',
+      ],
+      explain: `### Công thức và hai cái bẫy
+Số token tại một thời điểm là {{min(capacity, tokens + delta giây × rate)}}. Thiếu {{min}} thì sau thời gian im lặng token tăng vô hạn; dùng số nguyên thì mất phần lẻ và request đến giữa giây vẫn bị chờ đủ một giây.
+
+### Vì sao retryAfterMillis phải thuần
+Nếu hàm "xem trước" cập nhật {{lastMillis}} mà không cập nhật đúng {{tokens}}, một lần gọi để tính header sẽ làm mất phần token lẻ; các lần sau tính sai và có thể từ chối oan. Cách đúng là chỉ {{tryAcquire}} ghi trạng thái.
+
+### Vì sao synchronized là đủ
+Vùng tới hạn chỉ có vài phép số học, không có I/O, nên giữ lock rất ngắn. Nếu bạn gọi mạng trong lúc giữ lock, mọi request cùng bucket sẽ chờ theo thời gian mạng — đó là lỗi phải tránh. Khi hệ thống nhiều instance, một bucket cục bộ không đủ: cần Redis Lua script (đọc - tính - ghi nguyên tử) hoặc gateway.
+
+### Test xác định
+Truyền {{nowMillis}} vào cho phép dựng chính xác các mốc 0, 500, 1000ms và kiểm tra phần lẻ 0.5 token. Test đồng thời dùng {{CountDownLatch}} để 20 thread cùng bắt đầu tại cùng một mốc: khi đó số request được cho qua phải đúng bằng {{capacity}}, không phụ thuộc thứ tự lập lịch.`,
+    },
+  ],
+  check: [
+    {
+      q: 'capacity = 10, refill = 2 token/giây, lọ đầy tại t = 0. Có 4 request tại t = 0 và 1 request tại t = 1 giây. Request thứ 5 có được cho qua không?',
+      options: [
+        'Không, vì đã dùng 4 token nên bị 429',
+        'Có, vì lúc đó còn 10 - 4 + 2 = 8 token',
+        'Không, vì lọ chỉ nạp khi có request mới',
+        'Có, nhưng bị tính 2 token',
+      ],
+      answer: 1,
+      explain: 'Lọ bắt đầu đầy 10 token; 4 request tại t=0 để lại 6 token; sau 1 giây nạp thêm 2 token thành 8, đủ cho request thứ 5. Nạp bù được tính theo thời gian trôi, không cần request mới.',
+    },
+    {
+      q: 'Vì sao phải giới hạn số token theo capacity?',
+      options: [
+        'Để lọ không chiếm quá nhiều bộ nhớ',
+        'Vì token phải là số nguyên',
+        'Vì nếu không, sau thời gian im lặng token tăng vô hạn và một burst khổng lồ sẽ lọt qua',
+        'Vì rate limit yêu cầu token giảm dần',
+      ],
+      answer: 2,
+      explain: 'Token bucket cho phép tích trữ quota tối đa capacity. Nếu không clamp, một giờ im lặng tạo ra hàng nghìn token và toàn bộ burst lọt qua, phá mục đích bảo vệ backend.',
+    },
+    {
+      q: 'Vì sao {{retryAfterMillis}} không được cập nhật {{lastMillis}}?',
+      options: [
+        'Vì nó phải là hàm thuần: nếu cập nhật, một lần xem trước làm mất phần token lẻ và các lần gọi sau tính sai',
+        'Vì lastMillis là hằng số',
+        'Vì Java không cho sửa field trong method trả về long',
+        'Vì nó chỉ dùng cho request GET',
+      ],
+      answer: 0,
+      explain: 'retryAfterMillis chỉ để tính header, không được thay đổi trạng thái. Nếu nó ghi lastMillis mà không ghi đúng tokens, phần token lẻ bị mất và các lần tryAcquire sau tính sai. Chỉ tryAcquire được phép ghi.',
+    },
+    {
+      q: 'Hai thread cùng đọc tokens = 1.9 rồi cùng ghi 0.9. Hậu quả là gì?',
+      options: [
+        'Không sao, vì cả hai đều trừ 1 token',
+        'Chương trình ném exception',
+        'Token bị âm vô hạn',
+        'Hai request cùng được cho qua trong khi chỉ còn 0.9 token: vượt hạn mức',
+      ],
+      answer: 3,
+      explain: 'Đó là race condition đọc-ghi: cả hai cùng đọc 1.9, cùng tính 0.9 và cùng ghi 0.9, nên hai request đều đi qua dù chỉ đủ một. Cần synchronized, CAS hoặc Redis Lua để cập nhật nguyên tử.',
+    },
+  ],
+  related: ['api-019', 'api-036', 'api-057'],
+  tags: ['rate limiting', 'token bucket', 'thread-safe', 'Retry-After', 'cost', 'fake clock'],
+},
 );
