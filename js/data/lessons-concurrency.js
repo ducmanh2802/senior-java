@@ -4401,7 +4401,7 @@ Loi hay gap:
     'Dung invokeAll, xu ly exception cua task va shutdown pool dung cach (graceful shutdown)',
   ],
   body: `### Tom tat
-Tao mot luong (thread) cua he dieu hanh ton kem: moi luong co stack rieng (khoang 1 MB vung nho ao), tao va huy can goi he dieu hanh, va chuyen nghia giua cac luong ton CPU. Neu tao mot luong cho moi request, khi tai tang dot bien so luong tang khong gioi han toi khi het bo nho hoac CPU chi con lo chuyen nghia. Thread pool giai quyet hai viec: **tai su dung** luong va **gioi han** so viec chay dong thoi. ExecutorService / ThreadPoolExecutor la cong cu chuan cua Java de lam viec nay.
+Tao mot **luong (thread)** cua he dieu hanh ton kem: moi luong co **stack** rieng (vung nho de luu bien cuc bo va loi goi ham, mac dinh khoang 1 MB), tao va huy phai goi he dieu hanh, va khi may co nhieu luong thi **chuyen nghia (context switch)** — luu trang thai luong nay, nap trang thai luong khac — lai ton CPU. Neu tao mot luong cho moi request, khi tai tang dot bien so luong tang khong gioi han toi khi **het bo nho (OutOfMemoryError)** hoac CPU chi con lo chuyen nghia. Thread pool giai quyet hai viec: **tai su dung** luong va **gioi han** so viec chay dong thoi. ExecutorService / ThreadPoolExecutor la cong cu chuan cua Java de lam viec nay.
 
 ### Vi sao can thread pool
 Hinh dung mot quay giao dich ngan hang. corePoolSize la so giao dich vien chinh thuc, queue la hang ghe cho, maximumPoolSize la tong so giao dich vien khi goi them nguoi lam thoi vu. Dieu bat ngo: ngan hang chi goi nguoi thoi vu khi **hang ghe cho da kin**, khong phai khi khach vua bat dau dong. Neu hang ghe dai vo han thi khong bao gi co nguoi thoi vu va khach cho mai (ban thanh OOM bo nho).
@@ -4413,7 +4413,7 @@ ThreadPoolExecutor pool = new ThreadPoolExecutor(
     8,                                      // maximumPoolSize: tran so luong
     30, TimeUnit.SECONDS,                   // keepAlive: luong vuot core rang qua 30s thi bi huy
     new ArrayBlockingQueue<>(100),          // workQueue: hang doi CO GIOU HAN
-    namedFactory("order-worker"),           // ThreadFactory: dat ten de doc thread dump
+     r -> { Thread t = new Thread(r, "order-worker"); t.setDaemon(true); return t; }, // ThreadFactory: dat ten de doc thread dump
     new ThreadPoolExecutor.CallerRunsPolicy() // khi day het: thread goi tu chay task
 );
 ~~~
@@ -4425,8 +4425,8 @@ ThreadPoolExecutor pool = new ThreadPoolExecutor(
 3. Hang doi day: neu so luong luong **< maximumPoolSize** thi tao luong moi chay **ngay task nay**; neu da du max thi goi **RejectedExecutionHandler**.
 
 He tan quan trong:
-- Thread vuot core **duoc tao chi khi hang doi da day**. Voi hang doi khong gioi han, maximumPoolSize vo nghia: pool khong bao gi vuot core, task chat den trong RAM.
-- Task duoc chay tai buoc 3 duoc chay **trước** cac task dang o trong hang doi, nen thu tu thuc thi khong phai FIFO tuyet doi.
+- Thread vuot core **duoc tao chi khi hang doi da day**. Voi hang doi khong gioi han, maximumPoolSize vo nghia: pool khong bao gi vuot core, task chat den trong RAM (bo nho trong).
+- Task duoc chay tai buoc 3 duoc chay **trước** cac task dang o trong hang doi, nen thu tu thuc thi khong phai FIFO tuyet doi (FIFO = vao truoc, ra truoc).
 - Voi {{SynchronousQueue}} (khong chua phan tu nao), {{offer}} chi thanh cong khi co luong dang cho nhan, nen gan het moi task deu tao luong moi toi max.
 
 | Factory | Cau hinh thuc | Rui ro production |
@@ -4440,14 +4440,14 @@ He tan quan trong:
 | Policy | Hanh vi | Khi nao dung |
 |---|---|---|
 | {{AbortPolicy}} (mac dinh) | Nem {{RejectedExecutionException}} | API tra 503/429 ngay, de client retry |
-| {{CallerRunsPolicy}} | Thread goi {{execute}} tu chay task | Backpressure tu nhien cho producer noi bo |
+| {{CallerRunsPolicy}} | Thread goi {{execute}} tu chay task | Backpressure (ep ben gui cham lai) tu nhien cho producer noi bo |
 | {{DiscardPolicy}} | Bo task, khong bao gi | Nguoc lai khong nen; chi cho du lieu "mat cung duoc" |
 | {{DiscardOldestPolicy}} | Bo task cu nhat trong hang doi roi thu lai | Du lieu chi can ban moi nhat (vi tri GPS, gia) |
 
 ### Duong luong: bao nhieu luong la du
 - **CPU-bound** (tinh toan, nen, ma hoa): khoang so core ({{Runtime.getRuntime().availableProcessors()}}), them nhieu hon chi tang chuyen nghia.
-- **IO-bound**: cong thuc cua Brian Goetz: {{luong = core x (1 + thoi gian cho / thoi gian tinh)}}. Vi du 8 core, moi request cho DB 90 ms va tinh 10 ms: 8 x (1 + 9) = 80 luong.
-- Dinh luat Little: so viec dong thoi = throughput x thoi gian xu ly moi viec. Can 400 request/s, moi request 100 ms thi khoang 40 viec chay song song. Nho gioi han phia sau: pool 80 luong nhung connection pool DB chi co 10 connection thi 70 luong se dung cho connection.
+- **IO-bound** (nhieu thoi gian cho doc/ghi DB, mang, dia): cong thuc cua Brian Goetz: {{luong = core x (1 + thoi gian cho / thoi gian tinh)}}. Vi du 8 core, moi request cho DB 90 ms va tinh 10 ms: 8 x (1 + 9) = 80 luong.
+- Dinh luat Little: so viec dong thoi = throughput (so viec xong moi giay) x thoi gian xu ly moi viec. Can 400 request/s, moi request 100 ms thi khoang 40 viec chay song song. Nho gioi han phia sau: pool 80 luong nhung connection pool (pool ket noi DB) chi co 10 connection thi 70 luong se dung cho connection.
 
 ### Exception: execute, submit, invokeAll
 - {{execute(r)}}: exception chet luong nhan vien (pool tao luong thay the) va duoc in boi uncaught exception handler.
@@ -4478,18 +4478,18 @@ try {
 - Tu **Java 19**, {{ExecutorService}} la {{AutoCloseable}}: {{try (var pool = Executors.newFixedThreadPool(4))}} tu goi shutdown roi cho xong, dung duoc voi try-with-resources.
 
 Loi hay gap:
-- Quen {{shutdown()}}: pool non-daemon giu JVM khong thoat.
+- Quen {{shutdown()}}: pool non-daemon (luong nen khong duoc phep giu JVM song) giu JVM khong thoat.
 - {{shutdownNow()}} ngay khong {{awaitTermination}}: task dang chay bi interrupt dot ngot, co the de lieu khong nhat quan.
 - Bat {{InterruptedException}} ma khong {{Thread.currentThread().interrupt()}}: caller khong biet bi interrupt, logic retry/shutdown bi gaya.
-- Task trong pool cho ket qua cua task khac **cung pool** (pool 4 luong, 4 task cha cung cho 4 task con o trong hang doi): thread starvation deadlock.
+- Task trong pool cho ket qua cua task khac **cung pool** (pool 4 luong, 4 task cha cung cho 4 task con o trong hang doi): thread starvation deadlock (ca 4 luong cha deu dung cho 4 luong con khong bao gio duoc chay vi het luong).
 
 ### Loi production hay gap
-- Spring Boot auto-config task executor mac dinh core 8, **hang doi khong gioi han**, max {{Integer.MAX_VALUE}}: max khong bao gi duoc duoc dung, {{@Async}} chat hang trieu task trong RAM khi downstream cham. Luon dat {{spring.task.execution.pool.queue-capacity}}.
+- Spring Boot auto-config task executor mac dinh core 8, **hang doi khong gioi han**, max {{Integer.MAX_VALUE}}: max khong bao gi duoc dung, {{@Async}} chat hang trieu task trong RAM khi downstream (dich vu phia sau) cham. Luon dat {{spring.task.execution.pool.queue-capacity}}.
 - Tao pool moi **trong moi request** roi quen shutdown: so luong luong tang dan toi khi {{OutOfMemoryError: unable to create native thread}}.
-- Khong dat ten luong: thread dump toan {{pool-7-thread-3}}, khong biet pool nao cua module nao.
+- Khong dat ten luong: thread dump (anh chup trang thai cac luong) toan {{pool-7-thread-3}}, khong biet pool nao cua module nao.
 
 ### Liet he phong van
-Cau hoi kinh dien: "core 4, max 8, queue 100: task thu 5 chay o dau? task thu 105?" (thu 5 vao hang doi; thu 105 tao luong thu 5 vi hang day). Tra loi senior them: luon su dung hang doi co gioi han, chon rejection policy theo nghiep vu, dat ten luong, theo doi {{getActiveCount}}/{{getQueue().size()}} qua Micrometer, va shutdown co timeout khi ung dung tat.`,
+Cau hoi kinh dien: "core 4, max 8, queue 100: task thu 5 chay o dau? task thu 105?" (thu 5 vao hang doi; thu 105 tao luong thu 5 vi hang day). Tra loi senior them: luon su dung hang doi co gioi han, chon rejection policy theo nghiep vu, dat ten luong, theo doi {{getActiveCount}}/{{getQueue().size()}} qua Micrometer (thu vien do metric cua Spring Boot), va shutdown co timeout khi ung dung tat.`,
   exercises: [
     {
       title: 'Chay mot batch nhieu task va shutdown dung cach',
@@ -4500,7 +4500,7 @@ Cau hoi kinh dien: "core 4, max 8, queue 100: task thu 5 chay o dau? task thu 10
 - Truoc khi tra ve, pool phai duoc **shutdown**: goi {{shutdown()}}, sau do {{awaitTermination(timeoutMs)}}.
 - Neu het timeout ma con task dang chay/dang cho: goi {{shutdownNow()}} de interrupt va tra ve {{false}}. Neu tat ca xong: tra ve {{true}}.
 - Neu bi interrupt khi cho: goi {{shutdownNow()}}, khoi phuc co interrupt bang {{Thread.currentThread().interrupt()}}, tra ve {{false}}.
-- Danh sach rong tra ve {{true}}. **Khong shutdown pool cua nguoi goi** ngoai khoi ham (pool duoc tao trong ham).
+- Danh sach rong tra ve {{true}}. Pool duoc tao va shutdown **trong ham**, khong dong den pool cua nguoi goi.
 
 Test chay 10 task ngan (moi task tang bo dem), task cham (dang o {{CountDownLatch.await()}} khong bao gio duoc mo), va danh sach rong.`,
       starter: `class BatchRunner {
@@ -4578,7 +4578,7 @@ Loi hay gap:
       q: 'Vi sao {{Executors.newFixedThreadPool(20)}} nguy hiem khi downstream (DB, API ngoai) cham di?',
       options: ['Vi no tao luong khong gioi han', 'Vi hang doi {{LinkedBlockingQueue}} khong gioi han: task chat trong RAM, do tre tang, co the OOM', 'Vi no dung ForkJoinPool.commonPool', 'Vi luong cua no la daemon nen mat task khi tat'],
       answer: 1,
-      explain: 'Fixed pool co dung 20 luong nhung hang doi khong gioi han, nen khong bao gi tu choi: task chat trong RAM, do tre tang, co the OOM. Luong khong gioi han la van de cua {{newCachedThreadPool}}. Fixed pool dung ThreadPoolExecutor biet, khong dung commonPool. Thread mac dinh cua no la non-daemon.',
+      explain: 'Fixed pool co dung 20 luong nhung hang doi khong gioi han, nen khong bao gi tu choi: task chat trong RAM, do tre tang, co the OOM. Luong khong gioi han la van de cua {{newCachedThreadPool}}. Fixed pool dung ThreadPoolExecutor ben trong, khong dung commonPool. Thread mac dinh cua no la non-daemon.',
     },
     {
       q: 'Ban {{submit()}} mot task nem {{NullPointerException}} va khong bao gi goi {{get()}}. Dieu gi xay ra?',
@@ -4626,7 +4626,7 @@ box.complete(95);                                             // điền 95: in 
 box.complete(99);                                             // hộp đã đầy: BỎ QUA, không lỗi
 ~~~
 
-Ai điền hộp thì **chính thread đó** chạy các việc đã đăng ký. Đó là toàn bộ cơ chế bên trong: mỗi CF giữ kết quả (hoặc exception) và danh sách các stage phụ thuộc; khi được điền, nó lần lượt kích hoạt các stage đó. Bạn không cần nhớ cấu trúc Cây/Stack nội bộ — chỉ cần nhớ "hộp + danh sách việc phụ thuộc".
+Ai điền hộp thì **thread đó** chạy các việc đã đăng ký (trừ khi bạn dùng bản Async có executor riêng — xem mục callback bên dưới). Đó là toàn bộ cơ chế bên trong: mỗi CF giữ kết quả (hoặc exception) và danh sách các stage phụ thuộc; khi được điền, nó lần lượt kích hoạt các stage đó. Bạn không cần nhớ cấu trúc Cây/Stack nội bộ — chỉ cần nhớ "hộp + danh sách việc phụ thuộc".
 
 | Việc | API | Kết quả |
 |---|---|---|
@@ -4671,7 +4671,7 @@ all.join();                                  // cả ba đã xong (hoặc một 
 ### Callback chạy trên thread nào?
 Đây là câu hỏi phỏng vấn hay nhất của chủ đề này, và là nguồn của gần hết bug.
 
-- {{supplyAsync(s)}} **không truyền executor** → chạy trên {{ForkJoinPool.commonPool()}}, pool dùng chung của cả JVM (song song với parallel stream). Trên máy 8 core, commonPool có 7 thread. Đặt việc IO chậm (gọi HTTP) vào đó thì vài lời gọi chậm làm nghẽn mọi thứ khác trong JVM.
+- {{supplyAsync(s)}} **không truyền executor** → chạy trên {{ForkJoinPool.commonPool()}}, pool dùng chung của cả JVM (song song với parallel stream). Trên máy 8 core, commonPool có 7 thread. Đặt việc IO chậm (IO = đọc/ghi dữ liệu với mạng, đĩa, DB; ví dụ gọi HTTP) vào đó thì vài lời gọi chậm làm nghẽn mọi thứ khác trong JVM.
 - {{thenApply(f)}} **không có hậu tố Async** → chạy trên **thread đã điền hộp trước đó**; nếu hộp đã điền sẵn rồi thì chạy **ngay trên thread gọi**. Nếu thread đó là thread IO của HTTP client, bạn vừa biến thread IO thành thread tính toán.
 - {{thenApplyAsync(f, pool)}} → **luôn** chuyển việc sang {{pool}}.
 
@@ -4680,7 +4680,7 @@ all.join();                                  // cả ba đã xong (hoặc một 
 Executor io = Executors.newFixedThreadPool(8, r -> { Thread t = new Thread(r, "price-io"); t.setDaemon(true); return t; });
 CompletableFuture<Integer> best = CompletableFuture
         .supplyAsync(() -> vendorA.get(), io)        // việc IO trên pool riêng
-        .thenApplyAsync(Integer::normalize, io)      // biến đổi cũng trên pool riêng
+        .thenApplyAsync(p -> p + 1, io)              // biến đổi cũng trên pool riêng
         .orTimeout(500, TimeUnit.MILLISECONDS);      // Java 9+: hết giờ thì hoàn thành với TimeoutException
 ~~~
 
@@ -4742,7 +4742,7 @@ Client -> Client: loc null, lay min = gia cua A
 ### Lỗi production hay gặp
 - Gọi {{join()}} **bên trong** một callback chạy trên **cùng pool**: các thread chờ nhau, pool cạn, cả hệ thống treo kiểu **starvation deadlock** (pool 4 thread, 4 task cha mỗi task chờ 4 task con đang xếp hàng).
 - Không có handler lỗi và không ai {{join}}: exception biến mất, request "không trả về gì" mà log sạch trơn.
-- Mất {{MDC}}/{{traceId}}, {{SecurityContext}}, transaction: chúng nằm trong {{ThreadLocal}} của thread gốc, còn callback chạy trên thread khác. Cần một executor có **bọc context** (Micrometer Context Propagation, {{TaskDecorator}} của Spring).
+- Mất {{MDC}}/{{traceId}}, {{SecurityContext}}, transaction: chúng nằm trong {{ThreadLocal}} của thread gốc (ThreadLocal là dữ liệu riêng của từng thread; MDC là nơi giữ traceId để log, SecurityContext giữ thông tin đăng nhập), còn callback chạy trên thread khác. Cần một executor có **bọc context** (Micrometer Context Propagation, {{TaskDecorator}} của Spring — giao diện để bọc task trước khi chạy).
 - {{anyOf}} dùng cho "lấy nguồn thành công đầu tiên": nó hoàn thành ngay khi nguồn đầu tiên **lỗi**, nên trả về exception thay vì kết quả.
 - {{allOf}} rồi quên {{join}} từng CF: {{allOf}} trả {{Void}}, bạn tưởng "đã xong" nhưng chưa đọc kết quả nào.
 
@@ -4760,7 +4760,7 @@ Câu hỏi kinh điển: "thenApply khác thenCompose ở đâu?", "executor m�
 - Nguồn nào ném exception, trả về {{null}}, hoặc chưa xong sau {{timeoutMs}} mili giây thì **bỏ qua nguồn đó** (không làm hỏng cả kết quả).
 - Không nguồn nào thành công (kể cả danh sách rỗng): future hoàn thành **với lỗi** {{NoSuchElementException}} — tức {{get()}} ném {{ExecutionException}} có {{getCause()}} là {{NoSuchElementException}}.
 
-Ví dụ: nguồn [120, 95, 110] → 95. Nguồn [120, lỗi, null, 110] → 110. Nguồn [130, chậm 5 giây, 125] với timeout 200 ms → 125 (nguồn 1 bị bỏ vì quá giờ, dù nó rẻ hơn).
+Ví dụ: nguồn [120, 95, 110] → 95. Nguồn [120, lỗi, null, 110] → 110. Nguồn [130, chậm 5 giây, 125] với timeout 2000 ms → 125 (nguồn 1 bị bỏ vì quá giờ, dù nó rẻ hơn).
 
 Gợi ý: Java 9+ có {{completeOnTimeout}} và {{orTimeout}}; hoặc tự viết bằng {{acceptEither}} nếu muốn.`,
       starter: `class PriceService {
@@ -4793,19 +4793,19 @@ Gợi ý: Java 9+ có {{completeOnTimeout}} và {{orTimeout}}; hoặc tự viế
         });
     }
     static Integer await(CompletableFuture<Integer> f) {
-        try { return f.get(3, TimeUnit.SECONDS); }
+        try { return f.get(5, TimeUnit.SECONDS); }
         catch (TimeoutException e) { throw new AssertionError("future chưa xong sau 3s"); }
         catch (InterruptedException e) { throw new AssertionError(e); }
         catch (ExecutionException e) { throw new AssertionError("future lỗi: " + e.getCause()); }
     }
     static void expectNoSuchElement(CompletableFuture<Integer> f) {
         try {
-            Integer v = f.get(3, TimeUnit.SECONDS);
+            Integer v = f.get(5, TimeUnit.SECONDS);
             throw new AssertionError("phải lỗi NoSuchElementException nhưng trả về " + v);
         } catch (ExecutionException e) {
             if (!(e.getCause() instanceof NoSuchElementException))
                 throw new AssertionError("cause phải là NoSuchElementException, đang là " + e.getCause());
-        } catch (TimeoutException e) { throw new AssertionError("future chưa xong sau 3s"); }
+        } catch (TimeoutException e) { throw new AssertionError("future chưa xong sau 5s"); }
         catch (InterruptedException e) { throw new AssertionError(e); }
     }
     static Supplier<Integer> fail(String msg) { return () -> { throw new IllegalStateException(msg); }; }
@@ -4830,15 +4830,15 @@ Gợi ý: Java 9+ có {{completeOnTimeout}} và {{orTimeout}}; hoặc tự viế
             ExecutorService pool = newPool();
             try {
                 long t0 = System.nanoTime();
-                Integer best = await(new PriceService(pool).bestPrice(List.of(() -> 130, slow(1, 5000), () -> 125), 200));
+                Integer best = await(new PriceService(pool).bestPrice(List.of(() -> 130, slow(1, 5000), () -> 125), 2000));
                 eq(125, best);
                 long ms = (System.nanoTime() - t0) / 1_000_000;
-                if (ms > 1500) throw new AssertionError("mất " + ms + "ms, timeout là 200ms");
+                if (ms > 3500) throw new AssertionError("mất " + ms + "ms, timeout là 2000ms");
             } finally { pool.shutdownNow(); }
         });
         check("mọi nguồn lỗi: NoSuchElementException", () -> {
             ExecutorService pool = newPool();
-            try { expectNoSuchElement(new PriceService(pool).bestPrice(List.of(fail("a"), fail("b"), slow(1, 5000)), 200)); }
+            try { expectNoSuchElement(new PriceService(pool).bestPrice(List.of(fail("a"), fail("b"), slow(1, 5000)), 2000)); }
             finally { pool.shutdownNow(); }
         });
         check("danh sách rỗng: NoSuchElementException", () -> {
@@ -4929,7 +4929,7 @@ Lỗi hay gặp:
     },
     {
       title: 'Chuỗi thenApply/thenCompose/allOf: tính tổng đơn hàng có thuế và phí ship',
-      prompt: `Mô phỏng một pipeline tính tiền bằng Java thuần (không có Spring). Bạn được cấp một {{Executor}} trong constructor và ba "service" giả lập chạy trên đó:
+      prompt: `Mô phỏng một pipeline (chuỗi bước nối tiếp) tính tiền bằng Java thuần (không có Spring). Bạn được cấp một {{Executor}} trong constructor và ba "service" giả lập chạy trên đó:
 
 - {{CompletableFuture<Integer> findUser(int id)}}: trả về id người dùng sau {{50 ms}} (giả lập IO); id âm thì hoàn thành **với lỗi** {{IllegalArgumentException}}.
 - {{CompletableFuture<List<Integer>> findCart(int userId)}}: trả về danh sách giá sản phẩm sau {{80 ms}}.
@@ -4939,7 +4939,7 @@ Hãy viết {{CompletableFuture<Integer> total(int userId, int taxPercent)}}:
 - Gọi tuần tự: tìm user → lấy cart từ userId → tính tạm = tổng giá cart.
 - **Song song** với việc lấy cart, gọi {{shippingCost(userId)}} (hai việc này độc lập nên phải chạy cùng lúc).
 - Kết quả = tạm + phí ship, rồi cộng thuế {{taxPercent}} phần trăm: {{result = subtotal + shipping, rồi + result * taxPercent / 100}}.
-- Cart rỗng: trả về **0** mà không gọi shipping (không tính ship khi không mua gì).
+- Cart rỗng (tổng giá = 0): trả về **0** mà không cộng phí ship (không tính ship khi không mua gì). Phí ship được gọi ngay từ đầu để chạy song song, nhưng khi cart rỗng thì kết quả của nó bị bỏ qua.
 - Bất kỳ bước nào lỗi (user không tồn tại) thì CF kết quả hoàn thành **với lỗi** {{IllegalArgumentException}}.
 
 Yêu cầu kỹ thuật: dùng {{thenCompose}} cho bước phụ thuộc, {{thenCombine}} cho bước độc lập, **không gọi {{get()}}/{{join()}}** trong pipeline, và mọi việc chạy trên executor được truyền vào.
@@ -5124,7 +5124,7 @@ Ví dụ: cart [100, 200], ship 30, thuế 10% → (300 + 30) = 330, cộng 10% 
       ],
       explain: `Lời giải chỉ dùng **toán tử nối**, không có một lời gọi chặn nào:
 - {{findUser(userId).thenCompose(this::findCart)}}: {{thenCompose}} là flatMap. Nếu dùng {{thenApply}}, bạn nhận {{CompletableFuture<CompletableFuture<List<Integer>>>}} và phải mở hai lần.
-- {{cart.thenCombine(shippingCost(userId), ...)}}: {{thenCombine}} chạy **hai việc độc lập cùng lúc**; nó chỉ gọi hàm gộp khi **cả hai** đã xong. Test "song song" kiểm chứng điều này một cách **xác định** bằng {{CyclicBarrier(2)}}: override {{findCart}}/{{shippingCost}} để cả hai cùng chờ một barrier — nếu code chạy tuần tự (cart xong mới chạy shipping) barrier không bao giờ đủ người và test FAIL; nếu hai việc chạy cùng lúc trên hai thread khác nhau barrier đủ người và test PASS. Dùng barrier thay vì đo thời gian thực để kết quả không phụ thuộc tải máy.
+- {{cart.thenCombine(shippingCost(userId), ...)}}: {{thenCombine}} chạy **hai việc độc lập cùng lúc**; nó chỉ gọi hàm gộp khi **cả hai** đã xong. Test "song song" kiểm chứng điều này một cách **xác định** bằng {{CyclicBarrier(2)}} (rào chắn dùng lại được, các luồng phải gặp nhau tại đó mới đi tiếp): override {{findCart}}/{{shippingCost}} để cả hai cùng chờ một barrier — nếu code chạy tuần tự (cart xong mới chạy shipping) barrier không bao giờ đủ người và test FAIL; nếu hai việc chạy cùng lúc trên hai thread khác nhau barrier đủ người và test PASS. Dùng barrier thay vì đo thời gian thực để kết quả không phụ thuộc tải máy.
 - Thuế đặt ở {{thenApply}} cuối cùng: mỗi bước chỉ nhận giá trị đã tính xong, không cần biết bước trước là gì.
 
 Nếu bước {{findUser}} lỗi (id âm), exception chạy theo chuỗi: {{thenCompose}} và {{thenCombine}} **bỏ qua hàm của chúng**, CF kết quả hoàn thành với {{CompletionException}} bọc {{IllegalArgumentException}}; {{get()}} gỡ lớp bọc và ném {{ExecutionException}} có {{getCause()}} là {{IllegalArgumentException}}. Test kiểm tra đúng {{getCause()}} — đó là lý do phải dùng {{getCause()}} thay vì so sánh trực tiếp exception.
@@ -5174,7 +5174,7 @@ Lỗi hay gặp:
     'Quyết định khi nào dùng virtual thread (I/O-bound) và khi nào không (CPU-bound)',
   ],
   body: `### Tóm tắt
-**Platform thread** là thread thật của hệ điều hành: mỗi cái có vùng stack riêng khoảng 1 MB (tham số {{-Xss}}), tạo/huỷ phải gọi hệ điều hành, và chuyển ngữ cảnh giữa các thread tốn CPU. Vì vậy một service chỉ chạy được vài trăm tới vài nghìn thread. Khi phần lớn thời gian của request là **chờ IO** (DB, HTTP, đọc file), thread ngồi chờ mà không làm gì — đó là lúc **virtual thread** (JEP 444, chính thức từ **Java 21**) giúp ích: nó là object Java trên heap, stack co giãn vài trăm byte tới vài KB, nên tạo hàng triệu cái cũng được. Virtual thread chạy trên một số ít **carrier thread**; khi gặp thao tác chặn do JDK hỗ trợ, nó **unmount** (trả carrier cho việc khác) và chỉ mount lại khi có dữ liệu. Điều quan trọng: virtual thread tăng **throughput** cho việc chờ IO, **không** làm CPU-bound nhanh hơn, và **không** nên pool nó — giới hạn tài nguyên phía sau bằng {{Semaphore}} hoặc connection pool.
+**Platform thread** là thread thật của hệ điều hành: mỗi cái có vùng stack riêng khoảng 1 MB (tham số {{-Xss}} điều chỉnh kích thước stack mỗi luồng), tạo/huỷ phải gọi hệ điều hành, và chuyển ngữ cảnh giữa các thread tốn CPU. Vì vậy một service chỉ chạy được vài trăm tới vài nghìn thread. Khi phần lớn thời gian của request là **chờ IO** (DB, HTTP, đọc file), thread ngồi chờ mà không làm gì — đó là lúc **virtual thread** (JEP 444 — JEP là Java Enhancement Proposal, đề xuất thay đổi Java; chính thức từ **Java 21**) giúp ích: nó là object Java trên heap, stack co giãn vài trăm byte tới vài KB, nên tạo hàng triệu cái cũng được. Virtual thread chạy trên một số ít **carrier thread**; khi gặp thao tác chặn do JDK hỗ trợ, nó **unmount** (trả carrier cho việc khác) và chỉ mount lại khi có dữ liệu. Điều quan trọng: virtual thread tăng **throughput** (số việc hoàn thành mỗi giây) cho việc chờ IO, **không** làm CPU-bound nhanh hơn, và **không** nên pool nó — giới hạn tài nguyên phía sau bằng {{Semaphore}} hoặc connection pool.
 
 ### Platform thread: vì sao "mỗi request một thread" bị chặn trần
 Hãy hình dung quán cà phê có 200 nhân viên phục vụ (thread). Mỗi khách gọi đồ uống rồi nhân viên **đứng chờ** máy pha chạy xong mới quay lại nhận khách tiếp theo. Nếu pha mất 100 ms, mỗi nhân viên phục vụ được 10 khách/giây, cả quán được khoảng 2.000 khách/giây — dù nhân viên gần như chỉ đứng nhìn máy.
@@ -5184,7 +5184,7 @@ Hãy hình dung quán cà phê có 200 nhân viên phục vụ (thread). Mỗi k
 Cách cũ để vượt trần này là lập trình bất đồng bộ ({{CompletableFuture}}, reactive): không giữ thread khi chờ, nhưng code bị chia nhỏ thành callback, khó đọc, stack trace khi lỗi gần như vô dụng. Virtual thread giữ nguyên mô hình code chặn tuần tự mà vẫn đạt throughput cao.
 
 ### Virtual thread: thread rẻ của JVM
-Một virtual thread gồm hai phần: một **continuation** (trạng thái thực thi: stack frame, vị trí đang chạy) và phần còn lại là object Java bình thường trên heap. JDK có một scheduler riêng — mặc định là một {{ForkJoinPool}} ở chế độ FIFO — gồm các **carrier thread** (mặc định số carrier bằng {{availableProcessors()}}, trên máy 8 core là 8). Khi virtual thread chạy, nó được **mount** lên một carrier: các frame của nó chạy trên stack của carrier đó.
+Một virtual thread gồm hai phần: một **continuation** (trạng thái thực thi: stack frame, vị trí đang chạy) và phần còn lại là object Java bình thường trên heap (vùng nhớ dùng chung để cấp phát object). JDK có một scheduler riêng — mặc định là một {{ForkJoinPool}} ở chế độ FIFO (vào trước, chạy trước) — gồm các **carrier thread** (mặc định số carrier bằng {{availableProcessors()}}, trên máy 8 core là 8). Khi virtual thread chạy, nó được **mount** lên một carrier: các frame của nó chạy trên stack của carrier đó.
 
 Khi virtual thread gọi một thao tác chặn mà JDK đã viết lại cho virtual thread (đọc/ghi socket, {{Thread.sleep}}, {{BlockingQueue.take}}, {{ReentrantLock.lock}}, {{LockSupport.park}}...), JDK **unmount** nó: copy các frame cần thiết lên heap, trả carrier cho virtual thread khác. Khi dữ liệu về (socket sẵn sàng, timer hết), virtual thread được đưa lại vào hàng đợi scheduler và mount lên **một carrier bất kỳ** — không cần carrier cũ. Đó là lý do 1.000 virtual thread đang chờ chỉ tốn vài MB heap và 8 carrier vẫn rảnh để chạy việc khác.
 
@@ -5204,10 +5204,10 @@ boolean isVirtual = vt.isVirtual();   // true
 
 ### Pinning: khi virtual thread không nhường được carrier
 Virtual thread bị **pin** vào carrier (không unmount được) khi chặn trong lúc:
-- Đang ở trong khối hoặc method {{synchronized}} trên JDK 21, 22, 23. Monitor của synchronized gắn với carrier thread, nên JDK không thể đổi carrier giữa chừng. **JEP 491 (JDK 24)** cho phép unmount ngay cả khi giữ monitor; JDK 25 là bản LTS kế tiếp có thay đổi này.
-- Có frame **native** trên stack (JNI, JNA, hoặc foreign function): JDK không biết cách lưu/khôi phục trạng thái native nên phải giữ carrier.
+- Đang ở trong khối hoặc method {{synchronized}} trên JDK 21, 22, 23. Monitor của synchronized gắn với carrier thread, nên JDK không thể đổi carrier giữa chừng. **JEP 491 (JDK 24)** cho phép unmount ngay cả khi giữ monitor; JDK 25 là bản LTS (bản hỗ trợ dài hạn) kế tiếp có thay đổi này.
+- Có frame **native** trên stack (native = mã đã biên dịch sẵn, thường viết bằng C/C++; JNI, JNA, hoặc foreign function): JDK không biết cách lưu/khôi phục trạng thái native nên phải giữ carrier.
 
-Pin ngắn không sao. Pin lâu mới nguy: 8 carrier, nếu 8 request cùng gọi JDBC bên trong {{synchronized}} thì cả 8 carrier bị giữ, dù có hàng nghìn virtual thread sẵn sàng — ứng dụng đứng. Cách xử lý trên JDK 21–23: thay {{synchronized}} bao quanh IO bằng {{ReentrantLock}}, nâng cấp thư viện (nhiều JDBC driver đã chuyển sang ReentrantLock), và chẩn đoán bằng JFR event {{jdk.VirtualThreadPinned}} hoặc cờ {{-Djdk.tracePinnedThreads=full}}.
+Pin ngắn không sao. Pin lâu mới nguy: 8 carrier, nếu 8 request cùng gọi JDBC (API Java để gọi DB) bên trong {{synchronized}} thì cả 8 carrier bị giữ, dù có hàng nghìn virtual thread sẵn sàng — ứng dụng đứng. Cách xử lý trên JDK 21–23: thay {{synchronized}} bao quanh IO bằng {{ReentrantLock}}, nâng cấp thư viện (nhiều JDBC driver đã chuyển sang ReentrantLock), và chẩn đoán bằng JFR (Java Flight Recorder, công cụ ghi sự kiện JVM) event {{jdk.VirtualThreadPinned}} hoặc cờ {{-Djdk.tracePinnedThreads=full}}.
 
 ### Khi nào nên dùng, khi nào không
 | Tiêu chí | Platform thread | Virtual thread |
@@ -5221,13 +5221,13 @@ Pin ngắn không sao. Pin lâu mới nguy: 8 carrier, nếu 8 request cùng g�
 Virtual thread **không** làm từng request nhanh hơn; nó chỉ cho phép nhiều request chờ cùng lúc với ít thread thật. Việc CPU-bound (nén file, mã hoá, tính toán) chạy trên virtual thread **không nhanh hơn** platform thread vì vẫn chỉ có số carrier bằng số core. Ngoài ra tài nguyên phía sau vẫn có hạn: 10.000 virtual thread cùng gọi một DB có pool 20 connection thì 9.980 cái đứng chờ connection (chờ trong lúc unmount nên không tốn carrier, nhưng timeout lấy connection có thể nổ hàng loạt). Vì vậy phải giới hạn bằng {{Semaphore}} ngay tại chỗ dùng tài nguyên.
 
 ### Ví dụ đời thực
-Một API gateway nhận 8.000 request/s, mỗi request gọi 3 service phía sau và mỗi lời gọi chờ khoảng 60 ms (tổng 180 ms). Với pool 200 platform thread: throughput tối đa khoảng 200 / 0,18 ≈ 1.100 request/s, phần còn lại xếp hàng, p99 vọt lên 4–6 giây.
+Một API gateway nhận 8.000 request/s, mỗi request gọi 3 service phía sau và mỗi lời gọi chờ khoảng 60 ms (tổng 180 ms). Với pool 200 platform thread: throughput tối đa khoảng 200 / 0,18 ≈ 1.100 request/s, phần còn lại xếp hàng, p99 (99% request chậm hơn mức này) vọt lên 4–6 giây.
 
-Nhóm chuyển sang JDK 21 với {{Executors.newVirtualThreadPerTaskExecutor()}} và một {{Semaphore(100)}} giới hạn số lời gọi đồng thời tới đối tác. Kết quả đo trên cùng mức tải: throughput 8.000 request/s, p99 từ 4,2 s xuống 380 ms, heap tăng thêm khoảng 40 MB cho vài chục nghìn virtual thread đang chờ. CPU không tăng vì phần lớn thời gian vẫn là chờ IO. Sau đó họ phát hiện một thư viện cũ gọi HTTP bên trong {{synchronized}}, JFR {{jdk.VirtualThreadPinned}} chỉ ra đúng class đó; thay bằng {{ReentrantLock}} thì p99 ổn định lại.
+Nhóm chuyển sang JDK 21 với {{Executors.newVirtualThreadPerTaskExecutor()}} và một {{Semaphore(1500)}} giới hạn số lời gọi đồng thời tới đối tác (8.000 request/s × 3 lời gọi × 60 ms ≈ 1.440 lời gọi đồng thời, nên trần 1.500 là vừa đủ). Kết quả đo trên cùng mức tải: throughput 8.000 request/s, p99 từ 4,2 s xuống 380 ms, heap tăng thêm khoảng 40 MB cho vài chục nghìn virtual thread đang chờ. CPU không tăng vì phần lớn thời gian vẫn là chờ IO. Sau đó họ phát hiện một thư viện cũ gọi HTTP bên trong {{synchronized}}, JFR {{jdk.VirtualThreadPinned}} chỉ ra đúng class đó; thay bằng {{ReentrantLock}} thì p99 ổn định lại.
 
 ### Cách chẩn đoán trên production
-- {{jcmd <pid> Thread.dump_to_file -format=json /tmp/threads.json}}: liệt kê cả virtual thread và carrier, thấy cái nào đang chờ đâu.
-- JFR: bật {{jdk.VirtualThreadStart}}, {{jdk.VirtualThreadEnd}}, {{jdk.VirtualThreadPinned}} để biết có bao nhiêu virtual thread và chỗ pinning.
+- {{jcmd <pid> Thread.dump_to_file -format=json /tmp/threads.json}} (jcmd là công cụ dòng lệnh của JDK để ra lệnh cho JVM đang chạy): liệt kê cả virtual thread và carrier, thấy cái nào đang chờ đâu.
+- JFR: bật {{jdk.VirtualThreadStart}}, {{jdk.VirtualThreadEnd}}, {{jdk.VirtualThreadPinned}} để biết có bao nhiêu virtual thread và chỗ pinning (trên JDK 24+ event {{jdk.VirtualThreadPinned}} chỉ còn ghi pinning do native/VM, vì {{synchronized}} không còn pin).
 - {{-Djdk.tracePinnedThreads=full}} (JDK 21–23): in stack trace của virtual thread bị pin; cờ này bị gỡ ở JDK 24 vì không còn pinning do synchronized.
 - Đo throughput và p99 ở cùng mức tải với workload thật (IO chiếm phần lớn thời gian), đừng benchmark bằng vòng lặp CPU-bound rồi kết luận virtual thread không nhanh hơn.
 
@@ -5235,7 +5235,7 @@ Nhóm chuyển sang JDK 21 với {{Executors.newVirtualThreadPerTaskExecutor()}}
 - Bật {{spring.threads.virtual.enabled=true}} (Spring Boot 3.2+) trên JDK 21 khi code hoặc thư viện còn {{synchronized}} bao quanh IO: tải cao thì treo vì mọi carrier bị pin.
 - Thay pool 200 thread bằng virtual thread rồi làm "sập" DB vì không còn giới hạn tự nhiên số request đồng thời xuống DB; luôn giữ {{Semaphore}} hoặc connection pool phía trước.
 - Tạo "pool virtual thread" bằng {{Executors.newFixedThreadPool(n, Thread.ofVirtual().factory())}}: vừa mất lợi ích vừa giới hạn sai chỗ.
-- Dùng {{ThreadLocal}} giữ object nặng (formatter, buffer) cho mỗi virtual thread: một triệu thread là một triệu bản sao, rò rỉ bộ nhớ rất nhanh. {{ScopedValue}} (preview ở Java 21) là hướng thay thế khi cần truyền context.
+- Dùng {{ThreadLocal}} giữ object nặng (formatter, buffer) cho mỗi virtual thread: một triệu thread là một triệu bản sao, rò rỉ bộ nhớ rất nhanh. {{ScopedValue}} (preview ở Java 21; cách chia sẻ dữ liệu bất biến trong một phạm vi) là hướng thay thế khi cần truyền context.
 
 > Senior tip: Đừng bao giờ viết {{Executors.newFixedThreadPool(100, Thread.ofVirtual().factory())}} — đó là "pool virtual thread", trái với khuyến nghị của JEP 444. Hãy dùng {{newVirtualThreadPerTaskExecutor()}} và giới hạn tài nguyên phía sau bằng {{Semaphore}}/connection pool. Theo dõi JFR {{jdk.VirtualThreadPinned}} định kỳ; nếu pinning nghiêm trọng trên JDK 21–23, hoặc thay {{synchronized}} quanh IO bằng {{ReentrantLock}}, hoặc nâng cấp JDK 24+.
 
@@ -5252,7 +5252,7 @@ Câu hay gặp: "Virtual thread hoạt động thế nào?", "Pinning là gì, s
       prompt: `Bài tập này mô phỏng cơ chế của virtual thread bằng Java 17 thuần (không dùng API virtual thread, vì Java 17 chưa có). Bạn viết một scheduler nhỏ tên {{MiniLoom}} có số **carrier thread cố định**, nhưng nhận **rất nhiều tác vụ**; tác vụ có thể "treo" (suspend) để nhường carrier, giống virtual thread unmount khi chờ IO.
 
 Cần cài đặt:
-- {{MiniLoom(int carriers)}}: tạo {{carriers}} thread daemon làm carrier. Nếu {{carriers < 1}} ném {{IllegalArgumentException}}.
+- {{MiniLoom(int carriers)}}: tạo {{carriers}} thread daemon (daemon: thread nền, không giữ JVM sống) làm carrier. Nếu {{carriers < 1}} ném {{IllegalArgumentException}}.
 - {{int submit(Task task)}}: đưa tác vụ vào hàng đợi, trả về một id duy nhất (tăng dần). Nếu scheduler đã đóng thì ném {{RejectedExecutionException}}.
 - {{void resume(int id)}}: đánh thức tác vụ đang treo có id đó, đưa lại vào hàng đợi. Nếu id không tồn tại (chưa từng submit hoặc đã xong) thì **bỏ qua im lặng**, không ném lỗi.
 - {{int suspendedCount()}}: số tác vụ đang treo hiện tại.
@@ -5546,7 +5546,7 @@ Vì sao test "carrier được nhả" quan trọng: nếu bạn cài đặt sai 
       q: 'Service gọi API đối tác giới hạn 50 request đồng thời. Chuyển sang virtual thread, bạn giới hạn thế nào?',
       options: ['{{Executors.newFixedThreadPool(50)}} với ThreadFactory tạo virtual thread', '{{Semaphore(50)}} quanh lời gọi API, mỗi task một virtual thread', 'Đặt số carrier thread bằng 50', 'Không cần giới hạn vì virtual thread rẻ'],
       answer: 1,
-      explain: 'Virtual thread không nên pool; giới hạn tài nguyên bằng Semaphore đúng tại chỗ dùng tài nguyên. Pool 50 virtual thread là "pool thứ rẻ" và còn giới hạn cả phần việc không đụng tới API. Số carrier quyết định số virtual thread chạy CPU cùng lúc, không liên quan số request đang chờ IO. Không giới hạn thì đối tác trả 429 hoặc sập.',
+      explain: 'Virtual thread không nên pool; giới hạn tài nguyên bằng Semaphore đúng tại chỗ dùng tài nguyên. Pool 50 virtual thread là "pool ảo" và còn giới hạn cả phần việc không đụng tới API. Số carrier quyết định số virtual thread chạy CPU cùng lúc, không liên quan số request đang chờ IO. Không giới hạn thì đối tác trả 429 hoặc sập.',
     },
     {
       q: 'Workload nào được lợi ít nhất khi chuyển sang virtual thread?',
@@ -5578,17 +5578,17 @@ Vì sao test "carrier được nhả" quan trọng: nếu bạn cài đặt sai 
 Semaphore giữ một số nguyên gọi là số giấy phép còn lại ({{availablePermits()}}). Ban đầu bạn cấp {{new Semaphore(n)}}.
 - {{acquire()}}: nếu còn phép thì lấy và đi tiếp; nếu hết thì **chặn** cho tới khi có người {{release()}}.
 - {{tryAcquire()}}: lấy nếu còn, trả {{true}}/{{false}} ngay, không chờ.
-- {{tryAcquire(timeout, unit)}}: chờ tối đa timeout; hết hạn trả {{false}} — đây là cách **fail fast** thay vì treo vô hạn.
+- {{tryAcquire(timeout, unit)}}: chờ tối đa timeout; hết hạn trả {{false}} — đây là cách **fail fast** (báo lỗi ngay thay vì chờ) thay vì treo vô hạn.
 - {{release()}}: tăng số phép lên (không kiểm tra ai đã lấy), đánh thức một thread đang chờ nếu có.
 
-Bên trong, Semaphore dựa trên AQS (AbstractQueuedSynchronizer): một biến trạng thái đếm số phép và một hàng đợi các thread đang chờ. Nếu bạn tạo {{new Semaphore(n, true)}} (fair), các thread được cấp phép theo thứ tự FIFO; mặc định là không fair, cho throughput cao hơn nhưng có thể có thread chờ lâu (starvation) khi tranh chấp mạnh.
+Bên trong, Semaphore dựa trên AQS (AbstractQueuedSynchronizer): một biến trạng thái đếm số phép và một hàng đợi các thread đang chờ. Nếu bạn tạo {{new Semaphore(n, true)}} (fair), các thread được cấp phép theo thứ tự FIFO; mặc định là không fair, cho throughput (số việc xong mỗi giây) cao hơn nhưng có thể có thread chờ lâu (starvation: một thread chờ mãi không được phục vụ) khi tranh chấp mạnh.
 
 ~~~java
 Semaphore permits = new Semaphore(50);   // tối đa 50 việc đồng thời
 
 boolean entered = permits.tryAcquire(200, TimeUnit.MILLISECONDS);  // chờ tối đa 200 ms
 if (!entered) {
-    // downstream đang bận: trả 429/503 hoặc dùng kết quả cache
+    // downstream đang bận: trả 429 (quá nhiều request) / 503 (dịch vụ không sẵn sàng) hoặc dùng kết quả cache
 } else {
     try {
         callPartnerApi();       // phần cần bảo vệ
@@ -5603,7 +5603,7 @@ if (!entered) {
 |---|---|---|---|
 | {{ThreadPoolExecutor}} | Số thread chạy cùng lúc | Thread | Công việc CPU-bound hoặc số việc cố định cần tái dùng thread |
 | {{Semaphore}} | Số việc đồng thời đang dùng tài nguyên | Giấy phép | Bảo vệ downstream có hạn mức; đặc biệt khi dùng virtual thread |
-| Rate limiter (token bucket) | Số việc trong một đơn vị thời gian | Request/giây | Đối tác giới hạn theo tốc độ, không phải theo số đồng thời |
+| Rate limiter (token bucket: mỗi token là một suất gọi, hết token thì phải chờ) | Số việc trong một đơn vị thời gian | Request/giây | Đối tác giới hạn theo tốc độ, không phải theo số đồng thời |
 
 Ba cái bổ sung nhau, không thay thế nhau. Ví dụ: thread pool 32 thread + Semaphore 10 phép cho API đối tác + rate limiter 100 request/giây. Nếu chỉ có pool, bạn giới hạn cả việc không đụng tới đối tác; nếu chỉ có Semaphore, bạn không giới hạn được tốc độ theo thời gian.
 
@@ -5616,7 +5616,7 @@ Ba cái bổ sung nhau, không thay thế nhau. Ví dụ: thread pool 32 thread 
 > Senior tip: Trên JDK 21 với virtual thread, Semaphore là "cầu dao" đúng chỗ. Nhưng nhớ rằng virtual thread chờ {{acquire()}} sẽ unmount nên không tốn carrier; còn platform thread chờ {{acquire()}} vẫn chiếm một thread. Vì vậy trên Java 17, nếu dùng pool nhỏ thì Semaphore ít tác dụng hơn; trên Java 21, Semaphore + virtual thread là combo chuẩn.
 
 ### Test concurrency tất định: CountDownLatch thay cho sleep
-Test concurrency hay bị "flaky" vì dựa vào {{Thread.sleep}} để chờ thread khác. Cách đúng là dùng công cụ đồng bộ có timeout:
+Test concurrency hay bị "flaky" (lúc pass lúc fail) vì dựa vào {{Thread.sleep}} để chờ thread khác. Cách đúng là dùng công cụ đồng bộ có timeout:
 - {{CountDownLatch(n)}}: một lần đếm về 0, dùng làm **cổng xuất phát** (n thread cùng chờ {{await()}}, test gọi {{countDown()}} để tất cả lao vào cùng lúc) hoặc **cổng về đích** (mỗi thread {{countDown()}} khi xong, test {{await(timeout)}}).
 - {{CyclicBarrier(n)}}: dùng lại được nhiều vòng; phù hợp test "n thread phải gặp nhau ở cuối mỗi vòng".
 - {{Phaser}}: linh hoạt hơn, cho đăng ký/huỷ từng phần.
@@ -5641,7 +5641,7 @@ if (!done.await(5, TimeUnit.SECONDS)) throw new AssertionError("timeout");
 ### Ví dụ đời thực
 Một service tổng hợp gọi API đối tác cho mỗi đơn hàng. Đối tác ghi rõ giới hạn 50 request đồng thời; vượt quá thì trả 429 và có thể khoá tài khoản tạm thời. Trước đây service dùng pool 200 thread, mỗi request gọi thẳng API: lúc cao điểm 300 request/s, số lời gọi đồng thời lên tới 180, đối tác trả 429 hàng loạt, tỉ lệ lỗi 12%.
 
-Nhóm thêm {{Semaphore(50)}} và {{tryAcquire(150, MILLISECONDS)}}: khi hết phép, request trả kết quả cache cũ kèm cảnh báo thay vì gọi API. Kết quả đo: 429 giảm từ 12% xuống 0,3%, p99 từ 3,1 s xuống 420 ms, và số request đồng thời tới đối tác không bao giờ vượt 50. Họ cũng thêm metric {{inFlight}} (số phép đang dùng) để cảnh báo sớm khi bulkhead luôn đầy.
+Nhóm thêm {{Semaphore(50)}} và {{tryAcquire(150, MILLISECONDS)}}: khi hết phép, request trả kết quả cache cũ kèm cảnh báo thay vì gọi API. Kết quả đo: 429 giảm từ 12% xuống 0,3%, p99 (99% request nhanh hơn mức này) từ 3,1 s xuống 420 ms, và số request đồng thời tới đối tác không bao giờ vượt 50. Họ cũng thêm metric {{inFlight}} (số phép đang dùng) để cảnh báo sớm khi bulkhead luôn đầy.
 
 ### Trả lời mẫu khi phỏng vấn
 Semaphore là bộ đếm giấy phép dùng để giới hạn số việc đồng thời. Khác với lock, nó không gắn với thread sở hữu: một thread có thể lấy phép, thread khác trả phép. Tôi dùng nó làm bulkhead bảo vệ downstream có hạn mức, ví dụ API đối tác chỉ cho 50 request đồng thời. Mỗi tác vụ gọi tryAcquire với timeout; nếu không lấy được phép thì trả 429 hoặc fallback cache thay vì chờ vô hạn. Phép luôn được trả trong finally để lỗi không làm rò giấy phép.
