@@ -13734,5 +13734,238 @@ He thong thanh toan 5 service Spring Boot 3. Truoc dung Meter API: metric rieng,
     'Reactor operator chain propagate Observation context tu dong hay can config them?'
   ],
   tags: ['Micrometer', 'Observation', 'exemplar', 'tracing', 'OpenTelemetry', 'observability', 'context propagation']
+},
+{
+  id: 'spring-089',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Trong Spring @Transactional, làm sao để thực hiện một công việc NGAY SAU KHI transaction commit thành công (ví dụ: gửi mail, bắn event)?',
+  a: `**Tóm tắt:** Dùng {{TransactionSynchronizationManager.registerSynchronization}} hoặc {{@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)}}. {{@Transactional}} chỉ đảm bảo dữ liệu được ghi xuống DB khi commit, nhưng không đảm bảo các tác vụ bên ngoài (gửi mail, gọi API) được thực hiện sau đó nếu transaction rollback. {{@TransactionalEventListener}} được thiết kế riêng để lắng nghe trạng thái transaction.
+
+### Cách hoạt động
+- {{@EventListener}} chạy đồng bộ trong cùng thread và cùng transaction với bên gửi (nếu gửi dùng {{@Transactional}}); nếu listener ném exception thì transaction cha sẽ bị rollback.
+- {{@TransactionalEventListener}} tách biệt:
+    - {{AFTER_COMMIT}} (mặc định): chạy sau khi tx commit thành công.
+    - {{AFTER_ROLLBACK}}: chạy sau khi rollback.
+    - {{AFTER_COMPLETION}}: chạy bất kể commit hay rollback.
+
+### Ví dụ
+~~~java
+@Service
+public class OrderService {
+    @Transactional
+    public void placeOrder(Order order) {
+        repository.save(order);
+        eventPublisher.publishEvent(new OrderPlacedEvent(order)); // publish event
+    }
+}
+
+@Component
+public class OrderEmailListener {
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void sendEmail(OrderPlacedEvent event) {
+        // Gửi mail, đã chắc chắn đơn hàng đã commit thành công
+    }
+}
+~~~
+
+### Pitfall production
+- {{@TransactionalEventListener}} (phase {{AFTER_COMMIT}}) chạy đồng bộ trong cùng thread với giao dịch đã commit; vì commit đã xong nên nó không làm chậm commit, nhưng tác vụ nặng (gửi 100 mail) sẽ giữ thread request và làm chậm việc trả response. Dùng {{@Async}} kết hợp với {{@TransactionalEventListener}} để tách biệt hoàn toàn.
+- Nếu listener bị lỗi, transaction cha **đã commit rồi**, nên không rollback được. Phải có cơ chế retry/log lỗi (Outbox pattern).
+- Sự kiện phải được gửi trong một transaction, nếu không, {{@TransactionalEventListener}} mặc định sẽ **không chạy** (thêm {{fallbackExecution = true}} để chạy kể cả không có transaction).
+
+### Ví dụ đời thực
+Hệ thống ví điện tử dùng {{@EventListener}} để gửi notification sau khi chuyển tiền. Khi DB quá tải, transaction commit chậm, notification được gửi xong mới commit DB → người dùng nhận được thông báo tiền đã chuyển trước khi giao dịch commit thật vào DB. Người dùng vào kiểm tra thấy chưa thấy tiền, gọi support. Sửa: chuyển sang {{@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)}}. Giờ thông báo chỉ gửi sau khi DB đã commit thật.
+
+### Trả lời mẫu khi phỏng vấn
+"Để thực hiện tác vụ sau khi commit, tôi dùng {{@TransactionalEventListener}} với phase {{AFTER_COMMIT}}. {{@EventListener}} thường chạy trong transaction, nếu listener lỗi thì transaction gốc rollback. Ngược lại, {{@TransactionalEventListener}} chỉ kích hoạt sau khi transaction commit, tách rời rủi ro. Tôi cũng dùng {{@Async}} kết hợp để tác vụ nặng không kéo dài thời gian commit. Lưu ý rằng listener phải xử lý lỗi độc lập vì transaction cha đã xong rồi, không rollback được nữa. Khi cần đảm bảo giao hàng/email trong hệ thống phân tán, tôi dùng Outbox pattern thay vì listener đơn thuần."
+
+> Senior tip: không bao giờ dùng listener gửi mail/gọi API ngoài mà không bọc {{@Async}} hoặc Outbox. Với phase {{AFTER_COMMIT}}, transaction DB đã commit xong nên lỗi mail không rollback được gì nữa; nhưng mail bị treo sẽ giữ thread request và cạn web thread pool. Khi cần giao hàng/email trong hệ thống phân tán, dùng Outbox pattern thay vì listener đơn thuần.`,
+  follow: [
+    'Tại sao {{@TransactionalEventListener}} mặc định không chạy khi không có transaction?',
+    'Làm sao để listener chạy đúng kể cả khi không có transaction cha?'
+  ],
+  tags: ['Transactional', 'EventListener', 'AFTER_COMMIT', 'transaction synchronization']
+},
+{
+  id: 'spring-090',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Tại sao REQUIRES_NEW trong vòng lặp lại dễ gây Deadlock hoặc Connection Pool Exhaustion?',
+  a: `**Tóm tắt:** REQUIRES_NEW tạo transaction mới hoàn toàn bằng cách **suspend** (treo) transaction hiện tại và mở thêm 1 connection mới từ pool. Nếu dùng trong vòng lặp, mỗi lần lặp giữ connection cha + thêm 1 connection con → mỗi luồng giữ 2 connection. Nếu số thread > pool size / 2, thread mới sẽ chờ connection → deadlock. Nếu lặp cập nhật cùng dòng dữ liệu, transaction cha khoá dòng, transaction con (độc lập) cố khoá dòng đó → chờ chính mình → deadlock tại DB.
+
+### Bản chất của sự cố
+- **Deadlock DB**: Tx cha khoá row, REQUIRES_NEW cố khoá row đó → Tx con chờ cha commit để khoá, cha chờ con xong để commit → Deadlock.
+- **Connection Pool Exhaustion**: Mỗi thread dùng 2 connection cùng lúc. Với HikariCP, thread chờ connection mới sẽ **block** và không bao giờ thả connection cha.
+
+### Cách xử lý
+- Tránh REQUIRES_NEW trong vòng lặp bằng mọi giá.
+- Gom nhóm các tác vụ cần REQUIRES_NEW lại thành một batch, hoặc dùng {{TransactionTemplate}} để điều khiển.
+- Đảm bảo pool size đủ lớn (số luồng * 2) hoặc tốt hơn: dùng async event hoặc hàng đợi ngoài.
+
+### Trả lời mẫu khi phỏng vấn
+"REQUIRES_NEW trong vòng lặp là anti-pattern. Vì nó treo transaction cha và mở connection mới, mỗi luồng lặp tiêu thụ 2 connections. Khi số luồng lặp lớn hơn pool size, pool cạn, dẫn đến deadlock tại application layer. Ngoài ra, nếu cùng cập nhật một row, transaction con mới sẽ chờ transaction cha (đang khoá row) commit, trong khi cha cần con xong để commit -> Deadlock tại DB layer. Tôi giải quyết bằng cách thay REQUIRES_NEW bằng TransactionTemplate, hoặc gom nhóm công việc để giảm số lần chuyển đổi transaction, hoặc đẩy tác vụ REQUIRES_NEW ra hàng đợi."
+
+> Senior tip: trước khi dùng REQUIRES_NEW, luôn hỏi: "tx con có cần tồn tại độc lập khi cha rollback không?". Nếu câu trả lời là không, dùng REQUIRED. Nếu có, hãy dùng Outbox pattern để lưu vào DB rồi xử lý async.`,
+  follow: [
+    'Làm sao để biết transaction con đang giữ row nào?',
+    'HikariCP có cơ chế nào chống lại tình trạng này không?'
+  ],
+  tags: ['Transactional', 'REQUIRES_NEW', 'deadlock', 'connection pool']
+},
+{
+  id: 'spring-091',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Trong {{@Async}}, làm sao truyền các ThreadLocal như MDC (trace ID) hoặc SecurityContext sang thread mới?',
+  a: `**Tóm tắt:** Spring không tự truyền ThreadLocal vì mỗi thread có bộ ThreadLocal riêng. Phải dùng **TaskDecorator** (được Spring hỗ trợ) để copy ThreadLocal từ thread cha vào thread con trước khi task chạy, rồi xoá đi sau khi task xong (để tránh rò rỉ).
+
+### Giải pháp TaskDecorator
+~~~java
+public class MdcTaskDecorator implements TaskDecorator {
+    @Override
+    public Runnable decorate(Runnable runnable) {
+        Map<String, String> contextMap = MDC.getCopyOfContextMap();
+        return () -> {
+            try {
+                if (contextMap != null) MDC.setContextMap(contextMap);
+                runnable.run();
+            } finally {
+                MDC.clear(); // quan trọng: xoá sau khi chạy
+            }
+        };
+    }
+}
+~~~
+
+Đăng ký vào {{ThreadPoolTaskExecutor}}:
+~~~java
+executor.setTaskDecorator(new MdcTaskDecorator());
+~~~
+
+### Pitfall production
+- Không xoá MDC/ThreadLocal sau khi chạy: task dùng thread từ pool, thread sau không được reset sẽ dùng lại MDC của task trước → rò rỉ ngữ cảnh, traceID sai.
+- {{SecurityContextHolder}} mặc định dùng {{MODE_THREADLOCAL}} (ThreadLocal thường); chỉ khi cấu hình {{MODE_INHERITABLETHREADLOCAL}} mới là InheritableThreadLocal. Nhưng {{TaskExecutor}} tái sử dụng thread có sẵn, không tạo thread mới cho mỗi task, nên cơ chế kế thừa **không** hoạt động đúng → vẫn phải copy thủ công.
+
+### Trả lời mẫu khi phỏng vấn
+"ThreadLocal không tự truyền sang thread khác. Với {{@Async}}, tôi dùng {{TaskDecorator}} của Spring: trước khi task chạy, decorator copy MDC hoặc SecurityContext vào thread mới; sau khi xong, nó clear toàn bộ. Quan trọng nhất là clear sau khi xong, vì TaskExecutor dùng thread pool, không clear sẽ làm rò rỉ thông tin từ request trước sang request sau. Với SecurityContext (mặc định là ThreadLocal), vì thread pool tái sử dụng thread nên tôi cũng phải copy thủ công."
+
+> Senior tip: luôn kiểm tra xem context đó có phải InheritableThreadLocal không, nhưng kể cả có, vẫn phải copy vì thread pool tái sử dụng thread, không tạo mới mỗi lần chạy task.`,
+  follow: [
+    'MDC.getCopyOfContextMap() có làm ảnh hưởng hiệu năng không?',
+    'Cách nào để truyền traceID sang thread mới mà không dùng MDC?'
+  ],
+  tags: ['Async', 'TaskDecorator', 'MDC', 'ThreadLocal', 'context propagation']
+},
+{
+  id: 'spring-092',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Cấu hình Graceful Shutdown trong Spring Boot 3 và phối hợp với Kubernetes để đảm bảo không mất request nào?',
+  a: `**Tóm tắt:** Bật {{server.shutdown=graceful}} để Spring Boot ngừng nhận request, chờ request đang chạy xong. Kubernetes cần cấu hình {{terminationGracePeriodSeconds}} lớn hơn tổng thời gian (preStop + shutdown). Thêm {{preStop: sleep}} hook để chờ load balancer gỡ pod khỏi endpoint tránh bị gửi request vào pod đang tắt.
+
+### Các cấu hình
+- {{server.shutdown=graceful}}
+- {{spring.lifecycle.timeout-per-shutdown-phase=30s}}
+
+### Tại sao cần preStop
+Khi Kubernetes gỡ pod, nó gửi SIGTERM cho app và đồng thời xoá pod khỏi Service/Ingress. Quá trình này **song song**. Có thể mất vài giây để load balancer dừng route traffic vào pod, nếu không có {{preStop}}, pod đã nhận lệnh tắt nhưng vẫn nhận request mới.
+
+### Trả lời mẫu khi phỏng vấn
+"Graceful shutdown gồm hai lớp: ứng dụng và platform. Trong ứng dụng, tôi bật {{server.shutdown=graceful}}, Spring sẽ ngừng nhận kết nối mới và chờ request đang xử lý xong trong {{timeout-per-shutdown-phase}}. Trên platform Kubernetes, tôi thêm {{preStop: sleep 10s}} để chờ ingress gỡ pod khỏi endpoint, tránh nhận request mới khi đang shutdown. Quan trọng là {{terminationGracePeriodSeconds}} của pod phải đủ lớn (preStop + timeout shutdown). Tôi kiểm chứng bằng cách vừa load test vừa rolling update pod."
+
+> Senior tip: shutdown chỉ đảm bảo request hiện tại hoàn thành, không đảm bảo việc transaction kịp commit nếu DB chậm. Hãy luôn check log sau khi shutdown: mọi connection cần được đóng đúng cách.`,
+  follow: [
+    'Nếu timeout-per-shutdown-phase không đủ, điều gì sẽ xảy ra?',
+    'Có cách nào để readiness probe thông báo shutdown sớm hơn không?'
+  ],
+  tags: ['graceful shutdown', 'Kubernetes', 'readiness', 'lifecycle']
+},
+{
+  id: 'spring-093',
+  topic: 'spring',
+  level: 'mid',
+  q: 'Sự khác biệt giữa Liveness và Readiness probe trong Kubernetes, và cách cấu hình Actuator để hỗ trợ?',
+  a: `**Tóm tắt:** Liveness: app có đang chạy không (chết thì restart). Readiness: app đã sẵn sàng nhận traffic không (chưa sẵn sàng thì bỏ khỏi endpoint). Actuator tự động cung cấp health indicator; ta chỉ cần map probe vào Actuator.
+
+### Cấu hình
+~~~yaml
+management.endpoint.health.probes.enabled: true
+~~~
+Actuator sẽ expose:
+- {{/actuator/health/liveness}}
+- {{/actuator/health/readiness}}
+
+### Logic probe
+- Liveness: Check app có bị treo (cần restart).
+- Readiness: Check app đã connect DB, đã load xong cache (cần chờ để nhận request).
+
+### Trả lời mẫu khi phỏng vấn
+"Liveness probe xác định app có bị kẹt (chết) không, nếu fail K8s restart pod. Readiness probe xác định app đã sẵn sàng nhận request chưa. Trong Spring Boot, tôi bật probe actuator, dùng /liveness cho liveness, /readiness cho readiness. Readiness check kết nối DB, nếu DB treo, readiness fail, pod bị gỡ khỏi traffic, giúp không bị 500 liên tục. Liveness chỉ nên rất nhẹ (check process) vì nếu DB chậm mà liveness fail → restart liên tục → pod chết luôn → "death spiral"."
+
+> Senior tip: ĐỪNG bao giờ dùng health check DB làm liveness probe. DB chậm -> liveness fail -> K8s restart -> DB tiếp tục chậm -> pod chết tiếp. Liveness chỉ check xem app còn sống không thôi.`,
+  follow: [
+    'Tại sao lại dùng 2 endpoint riêng?',
+    'Có thể custom logic cho readiness probe không?'
+  ],
+  tags: ['Actuator', 'readiness', 'liveness', 'Kubernetes']
+},
+{
+  id: 'spring-094',
+  topic: 'spring',
+  level: 'mid',
+  q: 'Tại sao nên dùng record cho {{@ConfigurationProperties}} thay vì class có setter? Cách validate cấu hình?',
+  a: `**Tóm tắt:** Record làm cấu hình **bất biến (immutable)** ngay từ đầu: không có setter, giá trị set qua constructor, tránh được việc config bị sửa đổi ngoài ý muốn trong code. Validation dùng @Validated + annotation (vd @Min, @NotBlank).
+
+### Tại sao Record là lựa chọn tối ưu cho ConfigurationProperties
+Trong Spring Boot 3, việc sử dụng {{record}} cho {{ConfigurationProperties}} thay cho class truyền thống có setter mang lại sự thay đổi lớn về tư duy lập trình cấu hình.
+1. **Tính bất biến (Immutability):** Class truyền thống với setter cho phép cấu hình bị thay đổi bất cứ lúc nào sau khi bean được tạo. Record thì không, vì tất cả trường đều là {{final}} và được gán qua constructor. Điều này ngăn chặn lỗi logic khi một phần cấu hình bị sửa đổi ngoài ý muốn tại runtime.
+2. **An toàn thread:** Vì không thể thay đổi sau khi tạo, record là mặc định an toàn trong môi trường đa luồng, rất quan trọng cho các cấu hình dùng chung giữa nhiều dịch vụ.
+3. **Ngắn gọn (Boilerplate reduction):** Không cần setter/getter, {{equals}}/{{hashCode}}, hay {{toString}} – record tự sinh hết.
+
+### Cơ chế bên trong hoạt động như thế nào và VÌ SAO lại như vậy
+Khi Spring Boot đọc cấu hình, nó tạo một instance của record thông qua constructor. Việc này ép buộc phải cung cấp đủ cấu hình ngay lúc khởi tạo. Nếu thiếu hoặc sai kiểu, Spring Boot sẽ ném exception ngay khi bắt đầu (fail-fast). Điều này tránh được trạng thái "bean tồn tại nhưng chưa được cấu hình đầy đủ" (nếu setter bị quên hoặc gọi sót). Với các cấu hình phức tạp, Spring sử dụng {{Binder API}} để nạp cấu hình từ nhiều nguồn (YAML, env vars, system props) vào record một cách đồng nhất.
+
+### Ví dụ
+~~~java
+@ConfigurationProperties("payment")
+@Validated
+public record PaymentProperties(
+    @NotBlank String provider,
+    @Min(1) int timeoutSeconds,
+    @NestedConfigurationProperty // Nếu có object cấu hình con
+    RetryConfig retry
+) {}
+
+public record RetryConfig(
+    @Max(5) int maxAttempts
+) {}
+~~~
+
+### Validate cấu hình nâng cao
+Không chỉ {{NotBlank}}, bạn có thể dùng các constraint phức tạp hơn. Ví dụ, validate sự phụ thuộc lẫn nhau:
+~~~java
+@ConfigurationProperties("complex")
+@Validated
+public record ComplexProperties(
+    String type,
+    String url
+) {
+    public ComplexProperties {
+        if ("http".equals(type) && (url == null || !url.startsWith("http"))) {
+            throw new IllegalArgumentException("URL phải bắt đầu bằng http khi type là http");
+        }
+    }
+}
+~~~
+Cách dùng constructor validate trong record này cực kỳ hiệu quả để đảm bảo tính nhất quán của cấu hình ngay khi nó được nạp.
+
+### Ví dụ đời thực: Cấu hình hệ thống thanh toán
+Một hệ thống thanh toán có cấu hình {{payment.timeout-seconds}}. Trong phiên bản cũ, dùng class với setter, một dev vô tình xoá setter khiến Spring không nạp được timeout → dùng giá trị mặc định là 0 → request timeout ngay lập tức → 100% giao dịch lỗi lúc deploy. Khi chuyển sang dùng record, code không biên dịch được nếu không khai báo constructor, và nếu giá trị sai kiểu, Spring Boot 3 ném ra {{BindException}} ngay lập tức lúc khởi động. App không thể khởi động nếu config sai, thay vì lỗi lúc khách đang thanh toán. Kết quả: lỗi config được phát hiện ngay trong CI.
+
+### Trả lời mẫu khi phỏng vấn
+"Record trong {{ConfigurationProperties}} giúp cấu hình đạt tính bất biến hoàn toàn, an toàn thread và không còn boilerplate setter/getter. Nó ép buộc dữ liệu phải đầy đủ và hợp lệ ngay lúc khởi tạo (fail-fast), tránh tình trạng bean có trạng thái nửa vời như khi dùng setter. Tôi kết hợp thêm {{Constructor Validation}} để kiểm tra các ràng buộc phức tạp giữa các thuộc tính, đảm bảo ứng dụng không bao giờ chạy với trạng thái cấu hình không nhất quán. Trong Spring Boot 3, đây là tiêu chuẩn mới giúp code sạch và tin cậy hơn."
+
+> Senior tip: Với Spring Boot 3, record là lựa chọn mặc định. Nếu team chưa dùng record, hãy chuyển dần. Kiểm tra cả các {{NestedConfigurationProperty}} để validate cả cấu hình con.`
 }
 );
