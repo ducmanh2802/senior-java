@@ -964,7 +964,7 @@ Hệ thống thanh toán của một công ty tài chính dùng {{spring.profile
 ### Trả lời mẫu khi phỏng vấn
   "Với cấu hình Spring Boot, tôi coi nó là hợp đồng giữa app và môi trường. Dùng {{@ConfigurationProperties}} để bind type-safe kèm {{@Validated}} – app fail ngay lúc start nếu config sai, thay vì lỗi lúc chạy. Profile dùng để tách theo môi trường, nhưng thứ tự ưu tiên là command line → system properties → biến môi trường → file – nên một biến môi trường cũ trong shell có thể phủ nhận biến mới. Bí mật không bao giờ trong repo hay image: lấy từ secret manager, inject vào runtime, và actuator phải che toàn bộ giá trị ({{show-values=NEVER}}). Trong thực tế, tôi luôn thêm sanity check khi profile active là prod mà deploy env là staging, và không log toàn bộ config object vì toString của record có thể lộ secret. Một mẹo: đặt toàn bộ config vào một package riêng và viết test khẳng định app start được với từng profile – bắt được lỗi config ngay trong CI thay vì lúc deploy."
 
-  > Senior tip: hãy coi cấu hình là **hợp đồng giữa app và môi trường**: mỗi property nên có kiểu rõ ràng, có validation, và mặc định an toàn. Một mẹo hay: đặt toàn bộ config vào một package riêng và viết test khẳng định app **start được** với từng profile – bắt được lỗi config ngay trong CI thay vì lúc deploy.`,
+> Senior tip: hãy coi cấu hình là **hợp đồng giữa app và môi trường**: mỗi property nên có kiểu rõ ràng, có validation, và mặc định an toàn. Một mẹo hay: đặt toàn bộ config vào một package riêng và viết test khẳng định app **start được** với từng profile – bắt được lỗi config ngay trong CI thay vì lúc deploy.`,
   follow: [
     'Relaxed binding quy định việc map từ tên biến môi trường sang property như thế nào?',
     'Vì sao nên dùng record cho {{@ConfigurationProperties}} thay vì class có setter?'
@@ -1035,7 +1035,7 @@ Một công ty vận hành 50 pod service, mỗi pod expose /actuator/prometheus
 ### Trả lời mẫu khi phỏng vấn
   "Ba thành phần vận hành của tôi là Actuator, Micrometer và tracing. Actuator là giao diện vận hành chính: /actuator/health để kiểm tra sống (tách liveness và readiness cho Kubernetes), /actuator/prometheus để scrape số liệu, /actuator/metrics để xem chi tiết khi đang lỗi, /actuator/threaddump khi app bị treo. Micrometer là lớp abstraction: tự động ghi RED metrics (Rate, Error, Duration) cho HTTP, và tôi thêm metric nghiệp vụ như số đơn/ngày, số task thất bại. Distributed tracing dùng Micrometer Tracing + OpenTelemetry: tự động thêm trace id vào log và truyền header traceparent qua HTTP client – chọn sample 10% bình thường, 100% khi có alert. Graceful shutdown: server.shutdown=graceful và timeout-per-shutdown-phase=30s – khi pod nhận SIGTERM, nó ngừng nhận request mới, chờ request đang chạy, rồi đóng pool. Kubernetes phải có terminationGracePeriodSeconds lớn hơn thời gian shutdown và preStop hook sleep 5–10s vì K8s gỡ endpoint song song với việc gửi SIGTERM. Pitfall lớn nhất là metric cardinality cao: gắn userId hoặc path động sẽ làm Prometheus nổ tung – chỉ tag với giá trị có số lượng hữu hạn. Health check sâu (kiểm tra DB) chỉ dùng cho readiness, không dùng cho liveness vì DB chậm sẽ restart toàn bộ pod."
 
-  > Senior tip: hãy coi Actuator là **giao diện vận hành chính thức** của service. Trước khi lên production, kiểm tra danh sách endpoint đang mở, bật authentication cho chúng, và dựng dashboard "vàng": request rate, error rate, p95 latency, độ dài hàng đợi, tỉ lệ lỗi job nền. Khi có sự cố, 5 phút đầu tiên quyết định 80% kết quả, và dashboard quyết định bạn có đủ thông tin để phản ứng hay không.`,
+> Senior tip: hãy coi Actuator là **giao diện vận hành chính thức** của service. Trước khi lên production, kiểm tra danh sách endpoint đang mở, bật authentication cho chúng, và dựng dashboard "vàng": request rate, error rate, p95 latency, độ dài hàng đợi, tỉ lệ lỗi job nền. Khi có sự cố, 5 phút đầu tiên quyết định 80% kết quả, và dashboard quyết định bạn có đủ thông tin để phản ứng hay không.`,
   follow: [
     'Phân biệt liveness probe và readiness probe, gán endpoint nào cho probe nào?',
     'Tại sao metric có cardinality cao lại gây sự cố cho Prometheus?'
@@ -6563,7 +6563,7 @@ spring:
   "Flyway cần một schema lock để đảm bảo chỉ có một instance thực hiện migrate hoặc validate. Khi nhiều instance boot cùng lúc, instance đầu tiên lấy lock, các instance khác phải chờ trong số lần retry cho phép – nếu migration nặng (như CREATE INDEX trên bảng lớn) thì lock được giữ lâu, các instance kia cạn retry và fail boot, làm rollout đứng. Để xử lý, tôi tăng {{lock-retry-count}} để instance khác chờ đủ lâu, và với migration nặng, tôi tách nó ra khỏi app boot: chạy {{CREATE INDEX CONCURRENTLY}} trong một script riêng trước khi deploy, vì Flyway default chạy trong transaction nên không thể dùng CONCURRENTLY. Ngoài ra, tôi luôn đo thời lượng từng migration và alert khi vượt 60 giây, và chạy thử trên staging với dữ liệu thật trước khi release. Nguyên tắc chung: migration nặng không được chạy trong lúc app boot – nó phải là một bước riêng, trước hoặc sau deploy, với cơ chế retry và idempotent.",
 
 
-  > Senior tip: đo thời lượng từng migration qua cột {{installed_on}} của bảng history và alert khi vượt 60 giây; trước release, chạy thử trên dữ liệu staging kích thước thật để biết trước migration nào nặng, đừng để prod là nơi thử lần đầu.`,
+> Senior tip: đo thời lượng từng migration qua cột {{installed_on}} của bảng history và alert khi vượt 60 giây; trước release, chạy thử trên dữ liệu staging kích thước thật để biết trước migration nào nặng, đừng để prod là nơi thử lần đầu.`,
   follow: ['Vì sao CREATE INDEX CONCURRENTLY không chạy được trong transaction mà Flyway mặc định mở?', 'Khi nào baseline-on-migrate hợp lý và rủi ro của nó là gì?'],
   tags: ['Flyway', 'schema lock', 'lockRetryCount', 'deployment', 'migration']
 },
@@ -7089,7 +7089,7 @@ Index GIN tạo trong migration cho những mẫu query thật sự cần; mỗi
 ### Trả lời mẫu khi phỏng vấn
   "Khi cần lưu thuộc tính linh hoạt, tôi dùng @JdbcTypeCode(SqlTypes.JSON) trên PostgreSQL với columnDefinition jsonb – Hibernate sẽ serialize object bằng Jackson trên classpath, và object graph sẽ được snapshot so sánh khi entity dirty-check. So với AttributeConverter cũ, cách mới cho phép query với toán tử jsonb trực tiếp và không cần cast thủ công; nhược điểm là snapshot chi phí theo payload, và update jsonb luôn ghi lại toàn bộ giá trị do MVCC. Với các key cần query, tôi dùng native query với ->> và tạo GIN index theo tần suất thực tế – không tạo index cho mọi key vì mỗi GIN làm insert/update nặng thêm. Khi một key bắt đầu được query nóng hoặc cần ràng buộc, tôi tách ra cột thật hoặc generated column. Trong production, tôi đo pg_stat_user_indexes để loại bỏ index không ai dùng, và giữ payload jsonb nhỏ – dưới 5KB nếu update thường xuyên."
 
-  > Senior tip: jsonb là chỗ cho dữ liệu "hình dạng thay đổi"; khi một key bắt đầu được query nóng hoặc ràng buộc nghiệp vụ chặt dần, hãy tách nó thành cột thật (hoặc generated column) và giữ jsonb cho phần mở thực sự.`,
+> Senior tip: jsonb là chỗ cho dữ liệu "hình dạng thay đổi"; khi một key bắt đầu được query nóng hoặc ràng buộc nghiệp vụ chặt dần, hãy tách nó thành cột thật (hoặc generated column) và giữ jsonb cho phần mở thực sự.`,
   follow: ['Chi phí snapshot của cột JSON tăng ra sao theo payload?', 'Khi nào nên tách key JSON thành cột thật hoặc bảng con?'],
   tags: ['@JdbcTypeCode', 'JSONB', 'Hibernate 6', 'AttributeConverter'],
   refs: [
@@ -7253,7 +7253,7 @@ PostgreSQL lưu bảng dạng heap (dòng không sắp theo PK), nên UUIDv4 ch�
 ### Trả lời mẫu khi phỏng vấn
   "Trong InnoDB, PRIMARY KEY chính là clustered index – dữ liệu nằm trong lá B+tree sắp theo PK. ID tăng dần thì mọi insert dồn vào trang cuối, trang đầy 15/16, và chỉ vài trang nóng cần nằm trong buffer pool; UUIDv4 ngẫu nhiên thì mỗi insert rơi vào một trang bất kỳ, gây page split, trang chỉ đầy 1/2 đến 15/16, và khi index lớn hơn buffer pool thì gần như insert nào cũng phải đọc đĩa. Ngoài ra, mọi secondary index đều chứa PK, nên PK 36 byte làm mọi index phình ra – BIGINT 8 byte, UUID nhị phân 16 byte, CHAR(36) ≥ 36 byte. Tôi chọn UUIDv7 khi cần sinh ID ở client/nhiều service/offline, vì nó tăng theo milliseconds; cần 64 bit và throughput lớn thì Snowflake; một DB thì BIGINT AUTO_INCREMENT là đơn giản nhất, thêm cột public_id nếu không muốn lộ ID. Trên PostgreSQL, UUIDv4 chỉ làm khổ index PK, và từ PG 18 có uuidv7(). Trong production, tôi đo {{Innodb_buffer_pool_reads}} trước sau để chứng minh, và không bao giờ dùng CHAR(36) cho PK."
 
-  > Senior tip: trước khi kết luận "UUID chậm", đo {{Innodb_buffer_pool_reads}} (đọc đĩa vì miss) so với {{Innodb_buffer_pool_read_requests}} trước và sau đợt ghi cao điểm. Tôi từng thấy một bảng log chuyển từ UUIDv4 sang UUIDv7 giảm hơn một nửa dung lượng index chỉ nhờ trang đầy hơn; không cần đổi phần cứng.`,
+> Senior tip: trước khi kết luận "UUID chậm", đo {{Innodb_buffer_pool_reads}} (đọc đĩa vì miss) so với {{Innodb_buffer_pool_read_requests}} trước và sau đợt ghi cao điểm. Tôi từng thấy một bảng log chuyển từ UUIDv4 sang UUIDv7 giảm hơn một nửa dung lượng index chỉ nhờ trang đầy hơn; không cần đổi phần cứng.`,
   follow: ['Vì sao UUIDv7 vẫn có thể gây tranh chấp ở trang cuối khi ghi rất cao, và InnoDB xử lý hotspot đó thế nào?', 'Nếu đã có hàng tỷ dòng UUIDv4, bạn migrate sang khoá mới ra sao mà không downtime?', 'Cột mã công khai (public id) và PK nội bộ nên thiết kế thế nào?'],
   tags: ['UUID', 'UUIDv7', 'Snowflake', 'InnoDB', 'clustered index', 'page split', 'buffer pool'],
   refs: [
@@ -7546,7 +7546,7 @@ ALTER TABLE orders ADD COLUMN note VARCHAR(255), ALGORITHM=INSTANT;
 ### Trả lời mẫu khi phỏng vấn
   "Khi một DDL như ALTER TABLE trên MySQL bị treo, tôi nghĩ ngay đến metadata lock. MDL bảo vệ cấu trúc bảng, và nó được giữ tới khi transaction kết thúc, không phải khi câu lệnh xong. Nếu có một transaction nào đó đang Sleep mà chưa commit, dù là do developer hay code giữ connection lâu, thì DDL—even một lệnh INSTANT—vẫn phải chờ MDL exclusive. Háy là mọi câu lệnh mới trên bảng đều xếp hàng sau yêu cầu exclusive, nên không chỉ DDL bị treo mà toàn bộ API đọc/ghi bảng cũng bị khóa. Tôi cứu bằng cách tìm phiên giữ MDL—in MySQL dùng sys.schema_table_lock_waits, trong PostgreSQL dùng pg_locks—and nếu đó là transaction forgotten, tôi kill connection đó (KILL id trên MySQL, pg_terminate_backend trên PostgreSQL), không kill câu lệnh (KILL QUERY chỉ huỷ lệnh đang chạy, còn phiên đang Sleep thì vô dụng). Phòng ngừa: đặt lock_wait_timeout hoặc lock_timeout vài giây cho phiên DDL để nó thất bại nhanh thay vì chờ 1 năm (mặc định), kiểm tra không có transaction nào mở quá 60 giây trước khi chạy migration, và retry với backoff. Với app, đặt leakDetectionThreshold để bắt connection rò rỉ—the source của nhiều transaction dài."
 
-  > Senior tip: checklist trước mọi DDL trên production của tôi: (1) xem {{information_schema.innodb_trx}} có transaction nào mở quá 60 giây không, (2) đặt {{lock_wait_timeout}}/{{lock_timeout}} vài giây, (3) chạy giờ thấp điểm có người trực. Ba bước này tốn 2 phút và đã tránh cho team tôi nhiều sự cố "DDL 1 giây làm sập API 10 phút".`,
+> Senior tip: checklist trước mọi DDL trên production của tôi: (1) xem {{information_schema.innodb_trx}} có transaction nào mở quá 60 giây không, (2) đặt {{lock_wait_timeout}}/{{lock_timeout}} vài giây, (3) chạy giờ thấp điểm có người trực. Ba bước này tốn 2 phút và đã tránh cho team tôi nhiều sự cố "DDL 1 giây làm sập API 10 phút".`,
   follow: ['gh-ost tránh được vấn đề MDL ở mức nào, và bước cut-over của nó vẫn cần khoá gì?', 'Làm sao phát hiện tự động transaction mở quá lâu và cảnh báo trước khi có sự cố?', 'Trên PostgreSQL, thêm cột có DEFAULT có rewrite bảng không, và khi nào thì có?'],
   tags: ['MySQL', 'metadata lock', 'long transaction', 'online DDL', 'KILL', 'lock_timeout', 'PostgreSQL'],
   refs: [
@@ -7612,7 +7612,7 @@ MySQL: trước có {{Using filesort}} trong cột Extra; sau là {{Backward ind
 ### Trả lời mẫu khi phỏng vấn
   "Với một query có WHERE bằng, WHERE bằng thứ hai, ORDER BY và LIMIT, tôi lập tức nghĩ đến index ghép 3 cột. Nguyên tắc là cột so sánh bằng phải đứng trước cột sắp xếp: {{(customer_id, status, created_at)}}. Với index này, B-tree đã sắp xếp thứ tự trong cùng một customer và một status, nên DB chỉ cần tìm tới dải tương ứng rồi đọc ngược 20 entry—không cần sort. Kiểm chứng bằng EXPLAIN: trước là Bitmap Heap Scan + Sort Method top-N heapsort, sau là Index Scan Backward, không còn node Sort. Nếu có thêm cột range (ví dụ total > 100) thì cột range phải đứng cuối vì nó làm mất thứ tự ở phần sau. Một bẫy hay: query {{WHERE status = 'FRAUD' ORDER BY created_at DESC LIMIT 20}} với index {{(created_at)}}—planner nghĩ đọc ngược thời gian sẽ sớm gặp 20 dòng FRAUD, nhưng FRAUD rất hiếu nên phải quét hàng triệu entry; fix bằng {{(status, created_at)}} hoặc partial index WHERE status = 'FRAUD'. Cuối cùng, nếu index mới là mở rộng của index cũ thì hãy DROP index cũ để không tốn chi phí bảo trì."
 
-  > Senior tip: khi nhận một query chậm, tôi viết ra ba nhóm cột: cột so sánh bằng, cột sắp xếp, cột range, rồi dựng index đúng thứ tự đó, sau đó mới xem EXPLAIN. Với màn hình danh sách có LIMIT, mục tiêu là plan không có node Sort và số dòng đọc xấp xỉ LIMIT.`,
+> Senior tip: khi nhận một query chậm, tôi viết ra ba nhóm cột: cột so sánh bằng, cột sắp xếp, cột range, rồi dựng index đúng thứ tự đó, sau đó mới xem EXPLAIN. Với màn hình danh sách có LIMIT, mục tiêu là plan không có node Sort và số dòng đọc xấp xỉ LIMIT.`,
   follow: ['Phân trang trang thứ 500 của màn hình này thì index trên còn giúp được không?', 'Index Only Scan phụ thuộc visibility map thế nào?', 'Khi nào nên dùng partial index thay vì thêm cột status vào index?'],
   tags: ['index', 'composite index', 'ORDER BY', 'LIMIT', 'EXPLAIN', 'filesort', 'leftmost prefix'],
   refs: [
@@ -7685,7 +7685,7 @@ COPY bỏ qua gần như toàn bộ chi phí từng câu lệnh. MySQL tương �
 ### Trả lời mẫu khi phỏng vấn
   "Khi cần ghi hàng triệu dòng, thời gian chủ yếu mất vào round-trip mạng và commit từng dòng, không phải vào việc ghi. Cách tôi xử lý là gom thành batch—JDBC {{addBatch}} + {{executeBatch}}—và bật driver viết lại thành multi-row insert: {{reWriteBatchedInserts=true}} cho PostgreSQL, {{rewriteBatchedStatements=true}} cho MySQL. Với upsert, tôi dùng {{ON CONFLICT (sku) DO UPDATE SET ... EXCLUDED.col}} trên PostgreSQL—một câu thay cho SELECT rồi INSERT/UPDATE—và {{ON DUPLICATE KEY UPDATE}} trên MySQL. Commit theo lô vài nghìn dòng để transaction vừa phải, không giữ lock lâu. Với nạp thô rất lớn, {{COPY}} (PostgreSQL) hoặc {{LOAD DATA LOCAL INFILE}} (MySQL) là nhanh nhất. Pitfall cần biết: commit cả 2 triệu dòng sẽ làm transaction khổng lồ, upsert song song từ nhiều luồng với thứ tự khóa khác nhau sinh deadlock—và UPDATE dòng không thay đổi vẫn tạo phiên bản dòng mới trong PostgreSQL, nên lọc bằng {{IS DISTINCT FROM}} để bớt bloat và WAL."
 
-  > Senior tip: trước khi tối ưu, tôi in hai con số: số round-trip và số commit cho mỗi 1.000 dòng. Job đồng bộ của một hệ thống bán lẻ tôi từng xử lý giảm từ vài giờ xuống dưới 10 phút chỉ bằng batch + rewrite + upsert, không cần đổi kiến trúc.`,
+> Senior tip: trước khi tối ưu, tôi in hai con số: số round-trip và số commit cho mỗi 1.000 dòng. Job đồng bộ của một hệ thống bán lẻ tôi từng xử lý giảm từ vài giờ xuống dưới 10 phút chỉ bằng batch + rewrite + upsert, không cần đổi kiến trúc.`,
   follow: ['Khi batch thất bại ở giữa, làm sao biết dòng nào lỗi và chạy lại phần còn lại?', 'Bulk upsert từ nhiều worker song song thì chia dữ liệu thế nào để tránh deadlock?', 'Vì sao GenerationType.IDENTITY làm Hibernate tắt batch insert?'],
   tags: ['bulk insert', 'JDBC batch', 'COPY', 'ON CONFLICT', 'ON DUPLICATE KEY UPDATE', 'upsert', 'reWriteBatchedInserts'],
   refs: [
@@ -7765,7 +7765,7 @@ Với đối sát theo ngày, dữ liệu trong khoảng {{[from, to)}} đã "đ
 ### Trả lời mẫu khi phỏng vấn
   "Khi cần export hàng triệu dòng, OFFSET là một bẫy vì DB phải đọc rồi bỏ đi n dòng mỗi trang—tổng chi phí tăng theo bình phương. Thay vào đó, tôi dùng keyset pagination: WHERE (created_at, id) > (?, ?) ORDER BY created_at, id LIMIT 5000, với index (created_at, id). Mỗi trang là một lần nhảy index, chi phí gần như hằng số, và khóa cuối của trang là checkpoint để resume sau crash. Với một query duy nhất, streaming cursor (setFetchSize + autoCommit=false) giúp driver kéo dần từng mẻ mà không nạp hết vào RAM, nhưng giữ transaction mở suốt—heo cả VACUUM và connection—nên chỉ dùng khi không thể chia lô. Đọc từ replica để không ảnh hưởng primary, nhưng lưu ý query dài trên standby có thể bị huỷ khi primary VACUUM—và keyset lô ngắn là giải pháp. Đối chiếu theo ngày, dữ liệu đã đóng nên keyset theo lô vừa nhất quán vừa resume được; đó là lựa chọn mặc định của tôi."
 
-  > Senior tip: tôi đặt mục tiêu "mỗi lô < 1 giây, checkpoint mỗi lô" và đo thời gian từng lô. Nếu thời gian lô tăng dần theo tiến độ, gần như chắc chắn còn OFFSET hoặc thiếu index cho khoá keyset ở đâu đó.`,
+> Senior tip: tôi đặt mục tiêu "mỗi lô < 1 giây, checkpoint mỗi lô" và đo thời gian từng lô. Nếu thời gian lô tăng dần theo tiến độ, gần như chắc chắn còn OFFSET hoặc thiếu index cho khoá keyset ở đâu đó.`,
   follow: ['Nếu export cần một snapshot nhất quán tuyệt đối trên nhiều bảng, bạn dùng REPEATABLE READ hay pg_export_snapshot thế nào?', 'Chia 5 triệu dòng cho 4 worker song song bằng keyset thế nào?', 'Khi nào nên dùng COPY TO STDOUT thay vì đọc qua JDBC ResultSet?'],
   tags: ['export', 'keyset pagination', 'OFFSET', 'fetchSize', 'ScrollableResults', 'checkpoint', 'read replica'],
   refs: [
@@ -12988,12 +12988,14 @@ class PaymentGatewayHealthIndicator implements HealthIndicator {
     PaymentGatewayHealthIndicator(PaymentClient client) { this.client = client; }
     @Override
     public Health health() {
-        try:
-            var ok = client.ping()
+        try {
+            boolean ok = client.ping();
             return ok ? Health.up().withDetail("latencyMs", 12).build()
-                      : Health.down().withDetail("reason", "ping failed").build()
-        except Exception as e:
-            return Health.down(e).build()
+                      : Health.down().withDetail("reason", "ping failed").build();
+        } catch (Exception e) {
+            return Health.down(e).build();
+        }
+    }
 }
 ~~~
 Indicator nay tu duoc gom vao group readiness neu dat ten ket thuc {{HealthIndicator}}.
@@ -13625,36 +13627,6 @@ Mot he thong thanh toan 12 pod PostgreSQL. Luc 10h sang, primary DB gap checkpoi
 ### Tra loi mau khi phong van
 "Toi bat management.endpoint.health.probes.enabled=true de co hai endpoint rieng. Liveness group chi include livenessState -- dai dien cho tien trinh Java con song, khong bao gio dua DB hay dependency ben ngoai vao, vi neu DB cham ma thuoc liveness thi Kubernetes se restart pod hang loat, gay thundering herd khi boot lai. Readiness group include readinessState va cac dependency bat buoc nhu db, redis, custom health indicator cho dich vu quan trong, moi check co timeout ngan 100-500ms. Khi pod shutdown, Spring Boot graceful shutdown chuyen readiness sang REFUSING_TRAFFIC, pod bi go khoi Service endpoints; toi them preStop sleep 5-10 giay de cho ingress ngung gui traffic, va dat terminationGracePeriodSeconds lon hon shutdown timeout de request dang chay ki xong."
 > Senior tip: Hay tu hoi "neu check nay fail, hanh dong dung la restart pod hay ngung gui traffic?" Cau tra loi quyet dinh no thuoc liveness hay readiness. Mot quy tac an toan: liveness gan nhu luon chi nen la livenessState; moi phu thuoc ben ngoai de o readiness va phai co timeout ngan de probe khong treo.
-### Co che
-Spring Boot 2.3+ tach health thanh hai nhom thong qua {{HealthEndpointGroups}}. Mac dinh liveness chi kiem tra {{livenessState}} (luon UP tru khi ung dung chu dong set DOWN), readiness kiem tra {{readinessState}} (mac dinh UP) cong cac component da dang ky. Cau hinh qua properties:
-~~~yaml
-management:
-  endpoint:
-    health:
-      probes:
-        enabled: true
-      group:
-        liveness:
-          include: livenessState
-        readiness:
-          include: readinessState,db,redis,customService
-  health:
-    db:
-      enabled: true
-    redis:
-      enabled: true
-~~~
-Khi Kubernetes goi liveness probe, neu tra DOWN thi pod bi restart ({{restartPolicy}}). Neu DB bi cham nhung khong thuoc liveness, pod khong bi restart -- chi readiness chuyen DOWN, pod bi go khoi Service endpoints, traffic ngung chay den pod do ma tien trinh van song. Day la phan biet quan trong: liveness = "tien trinh co nen restart khong", readiness = "pod co nen nhan traffic khong".
-### Pitfall production
-- Dua {{db}} vao liveness: incident DB cham 30 giay -> ca cum pod bi restart dong loat, thundering herd khi boot lai, downtime keo dai.
-- Readiness check khong co timeout: probe treo > {{periodSeconds}}, pod bi coi la khong ready ma khong ro nguyen nhan.
-- Khong bat {{show-details: when_authorized}} hoac {{never}}: lo chi tiet health (DB version, disk free) ra ngoai internet.
-- Graceful shutdown: thieu {{preStop}} sleep -> ingress van gui request toi pod da ngung nhan; thieu {{terminationGracePeriodSeconds}} du lon -> pod bi SIGKILL giua chung request.
-### Vi du doi thuc
-Mot he thong thanh toan 12 pod PostgreSQL. Luc 10h sang, primary DB gap checkpoint spike 45 giay. Truoc khi tach group, liveness include db -> 12 pod cung liveness DOWN -> kubelet restart tat ca -> boot storm lam DB qua tai hon, downtime 8 phut. Sau khi tach: liveness chi {{livenessState}}, readiness include db. Checkpoint spike xay ra: readiness DOWN, pod bi go khoi Service, traffic chuyen sang pod khac (neu co read replica) hoac queue o gateway; liveness van UP nen pod khong restart. Khi DB hoi phuc, readiness tu UP, traffic tro lai. Downtime thuc te chi 45 giay (thoi gian checkpoint), khong restart pod. Cau hinh them: {{preStop: sleep 10}}, {{terminationGracePeriodSeconds: 60}}, {{spring.lifecycle.timeout-per-shutdown-phase: 30s}}.
-### Tra loi mau khi phong van
-"Toi bat management.endpoint.health.probes.enabled=true de co hai endpoint rieng. Liveness group chi include livenessState -- dai dien cho tien trinh Java con song, khong bao gio dua DB hay dependency ben ngoai vao, vi neu DB cham ma thuoc liveness thi Kubernetes se restart pod hang loat, gay thundering herd khi boot lai. Readiness group include readinessState va cac dependency bat buoc nhu db, redis, custom health indicator cho dich vu quan trong, moi check co timeout ngan 100-500ms. Khi pod shutdown, Spring Boot graceful shutdown chuyen readiness sang REFUSING_TRAFFIC, pod bi go khoi Service endpoints; toi them preStop sleep 5-10 giay de cho ingress ngung gui traffic, va dat terminationGracePeriodSeconds lon hon shutdown timeout de request dang chay ki xong."
-> Senior tip: Hay tu hoi "neu check nay fail, hanh dong dung la restart pod hay ngung gui traffic?" Cau tra loi quyet dinh no thuoc liveness hay readiness. Mot quy tac an toan: liveness gan nhu luon chi nen la livenessState; moi phu thuoc ben ngoai de o readiness va phai co timeout ngan de probe khong treo.
 `,
   follow: [
     'Khi nào bạn dùng cơ chế cache hoặc TTL cho HealthIndicator thay vì kiểm tra thật mỗi lần probe gọi?',
@@ -13949,6 +13921,18 @@ Hệ thống ví điện tử dùng {{@EventListener}} để gửi notification 
 ### Trả lời mẫu khi phỏng vấn
 "REQUIRES_NEW trong vòng lặp là anti-pattern. Vì nó treo transaction cha và mở connection mới, mỗi luồng lặp tiêu thụ 2 connections. Khi số luồng lặp lớn hơn pool size, pool cạn, dẫn đến deadlock tại application layer. Ngoài ra, nếu cùng cập nhật một row, transaction con mới sẽ chờ transaction cha (đang khoá row) commit, trong khi cha cần con xong để commit -> Deadlock tại DB layer. Tôi giải quyết bằng cách thay REQUIRES_NEW bằng TransactionTemplate, hoặc gom nhóm công việc để giảm số lần chuyển đổi transaction, hoặc đẩy tác vụ REQUIRES_NEW ra hàng đợi."
 
+### Ví dụ đời thực
+Hệ thống đơn hàng, một API tạo 100 đơn hàng trong một request. Code lặp qua danh sách và gọi {{this.luuKiemTra(don)}} có {{@Transactional(propagation = REQUIRES_NEW)}} để "mỗi đơn một giao dịch, lỗi một đơn không ảnh hưởng đơn khác".
+
+Triệu chứng: p95 API tăng từ 150ms lên 4 giây, log "{{Connection is not available, request timed out after 3000ms}}", metric {{hikaricp.connections.pending}} ở 25-40 liên tục.
+
+Điều tra: Bật {{leak-detection-threshold=60000}}, stack trace trỏ về phương thức tạo log kiểm tra. Mỗi luồng giữ 2 connection cùng lúc (giao dịch cha đang mở + giao dịch con mỗi lần lặp). Với 50 luồng cần 100 connection, pool chỉ 20 => cạn.
+
+Nguyên nhân gốc: REQUIRES_NEW trong vòng lặp treo giao dịch cha và mở connection mới; nếu cập nhật cùng dòng dữ liệu, giao dịch con chờ giao dịch cha nhả khóa dòng => deadlock ở DB.
+
+Xử lý: Xóa REQUIRES_NEW khỏi vòng lặp. Tạo toàn bộ log kiểm tra và lưu một lần duy nhất trong giao dịch thanh toán, hoặc đẩy log vào bảng outbox duy nhất một giao dịch. Thêm bắt buộc rollback khi lỗi.
+
+Kết quả: pending về 0, p95 về 180ms, số connection tối đa giữ cùng lúc giảm từ 100 còn 22.
 > Senior tip: trước khi dùng REQUIRES_NEW, luôn hỏi: "tx con có cần tồn tại độc lập khi cha rollback không?". Nếu câu trả lời là không, dùng REQUIRED. Nếu có, hãy dùng Outbox pattern để lưu vào DB rồi xử lý async.`,
   follow: [
     'Làm sao để biết transaction con đang giữ row nào?',
@@ -13993,6 +13977,16 @@ executor.setTaskDecorator(new MdcTaskDecorator());
 ### Trả lời mẫu khi phỏng vấn
 "ThreadLocal không tự truyền sang thread khác. Với {{@Async}}, tôi dùng {{TaskDecorator}} của Spring: trước khi task chạy, decorator copy MDC hoặc SecurityContext vào thread mới; sau khi xong, nó clear toàn bộ. Quan trọng nhất là clear sau khi xong, vì TaskExecutor dùng thread pool, không clear sẽ làm rò rỉ thông tin từ request trước sang request sau. Với SecurityContext (mặc định là ThreadLocal), vì thread pool tái sử dụng thread nên tôi cũng phải copy thủ công."
 
+### Ví dụ đời thực
+Một service gọi 3 API bên ngoài song song bằng {{@Async}} để tổng hợp thông tin khách hàng. Sau deploy, log của các task không có traceId, và một số dòng log của request A bị trộn với request B.
+
+Triệu chứng: 40% log error không có traceId, không truy vết được trong Elasticsearch/Loki.
+
+Điều tra: {{@Async}} chạy trên {{ThreadPoolTaskExecutor}}, từng luồng được lấy từ pool và trả lại. ThreadLocal của thread cha (MDC từ filter) không chuyển sang thread worker. Vì pool dùng lại luồng, log của task sau có thể lấy MDC của task trước nếu không clear.
+
+Xử lý: Viết {{TaskDecorator}} copy {{MDC.getCopyOfContextMap()}} vào thread trước khi chạy, xóa {{MDC.clear()}} trong {{finally}}. Đăng ký {{executor.setTaskDecorator(...)}}. Với {{SecurityContext}} (mặc định ThreadLocal) cũng copy thủ công vì thread pool không tạo luồng mới.
+
+Kết quả: 100% log async có traceId, không còn trộn lẫn của 2 request.
 > Senior tip: luôn kiểm tra xem context đó có phải InheritableThreadLocal không, nhưng kể cả có, vẫn phải copy vì thread pool tái sử dụng thread, không tạo mới mỗi lần chạy task.`,
   follow: [
     'MDC.getCopyOfContextMap() có làm ảnh hưởng hiệu năng không?',
@@ -14017,6 +14011,16 @@ Khi Kubernetes gỡ pod, nó gửi SIGTERM cho app và đồng thời xoá pod k
 ### Trả lời mẫu khi phỏng vấn
 "Graceful shutdown gồm hai lớp: ứng dụng và platform. Trong ứng dụng, tôi bật {{server.shutdown=graceful}}, Spring sẽ ngừng nhận kết nối mới và chờ request đang xử lý xong trong {{timeout-per-shutdown-phase}}. Trên platform Kubernetes, tôi thêm {{preStop: sleep 10s}} để chờ ingress gỡ pod khỏi endpoint, tránh nhận request mới khi đang shutdown. Quan trọng là {{terminationGracePeriodSeconds}} của pod phải đủ lớn (preStop + timeout shutdown). Tôi kiểm chứng bằng cách vừa load test vừa rolling update pod."
 
+### Ví dụ đời thực
+Rolling update 12 pod của service thanh toán. Trong quá trình deploy, có 3-5% request bị lỗi 502/504, ít nhất 2 đơn hàng bị lỗi "client aborted" mỗi lần rollout.
+
+Triệu chứng: lỗi 5xx tăng lên 3% trong 10 phút đầu deploy.
+
+Điều tra: Kubernetes gửi SIGTERM và xóa pod khỏi Service/Endpoint song song. Load balancer cần 5-8 giây để dừng route traffic đến pod, nhưng app đã nhận lệnh tắt. Nếu không có preStop, pod vẫn nhận request mới trong khi đang shutdown => lỗi.
+
+Xử lý: Bật {{server.shutdown=graceful}}, đặt {{spring.lifecycle.timeout-per-shutdown-phase=30s}}. Thêm {{preStop: sleep 10s}} trong deployment để cho ingress gỡ pod. Đặt {{terminationGracePeriodSeconds}} >= 40s (preStop 10s + shutdown 30s + bộ đệm).
+
+Kết quả: 0 lỗi 5xx trong 10 lần rollout tiếp theo, readiness probe bỏ pod khỏi traffic trước khi app bắt đầu tắt.
 > Senior tip: shutdown chỉ đảm bảo request hiện tại hoàn thành, không đảm bảo việc transaction kịp commit nếu DB chậm. Hãy luôn check log sau khi shutdown: mọi connection cần được đóng đúng cách.`,
   follow: [
     'Nếu timeout-per-shutdown-phase không đủ, điều gì sẽ xảy ra?',
@@ -14046,6 +14050,16 @@ Actuator sẽ expose:
 ### Trả lời mẫu khi phỏng vấn
 "Liveness probe xác định app có bị kẹt (chết) không, nếu fail K8s restart pod. Readiness probe xác định app đã sẵn sàng nhận request chưa. Trong Spring Boot, tôi bật probe actuator, dùng /liveness cho liveness, /readiness cho readiness. Readiness check kết nối DB, nếu DB treo, readiness fail, pod bị gỡ khỏi traffic, giúp không bị 500 liên tục. Liveness chỉ nên rất nhẹ (check process) vì nếu DB chậm mà liveness fail → restart liên tục → pod chết luôn → "death spiral"."
 
+### Ví dụ đời thực
+Hệ thống 20 pod dùng {{/actuator/health}} (có kiểm tra DB) cho cả liveness và readiness. Khi DB bị chậm do query nặng, liveness fail, K8s restart pod; pod mới restart tiếp tục => "death spiral", hết 3 pod trong 5 phút.
+
+Triệu chứng: 3 pod restart liên tục, traffic lỗi 503, DB CPU tăng do cú restart.
+
+Điều tra: Liveness check DB -> hết hạn khi DB chậm => restart => DB chậm hơn. Readiness cũng check DB nhưng không được cứu vãn.
+
+Xử lý: Tách nhóm: liveness chỉ ping (luôn nhanh), readiness dùng {{/actuator/health/readiness}} kiểm tra DB, cache, broker. Liveness probe timeout ngắn, failureThreshold 3.
+
+Kết quả: không có restart sai lỗi, pod DB-chậm bị gỡ khỏi traffic bằng readiness nhưng không bị kill bằng liveness.
 > Senior tip: ĐỪNG bao giờ dùng health check DB làm liveness probe. DB chậm -> liveness fail -> K8s restart -> DB tiếp tục chậm -> pod chết tiếp. Liveness chỉ check xem app còn sống không thôi.`,
   follow: [
     'Tại sao lại dùng 2 endpoint riêng?',
