@@ -1,7 +1,12 @@
 # T584 — 2 bài học JVM có bài tập tự chấm
 
-Status: TODO
+Status: DONE
 Agent: qoder
+
+Đã thêm 2 bài học JVM mới vào `js/data/lessons-jvm.js`:
+- `lesson-jvm-004`: Memory leak (BoundedCache).
+- `lesson-jvm-005`: Memory in container (MemoryBudget).
+Đã chạy `node scripts/test-lessons.js` và tất cả bài học đều pass.
 Owns: `js/data/lessons-jvm.js`
 
 Track jvm có 3 bài. Thêm 2 bài (order tiếp nối); đọc AGENTS.md mục 12 và bài mẫu `lesson-collections-001` (js/data/lessons-collections.js) trước:
