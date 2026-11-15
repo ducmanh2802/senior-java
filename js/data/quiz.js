@@ -5913,5 +5913,407 @@ Trước: status='PAID' còn 40% → planner có thể dùng index trên status 
 Không viết hàm lên cột đã index trong điều kiện lọc. Nếu cần so sánh theo ngày, dùng khoảng: {{created_at >= :start AND created_at < :end}} (nửa mở để tránh vấn đề biên với timestamp).
 
 > Senior tip: với bảng lớn theo thời gian, cân nhắc **partition theo range created_at** (theo tháng) — planner prune partition theo điều kiện range, chỉ đọc các partition liên quan. Với timezone, chú ý timestamptz vs timestamp: date_trunc trên timestamptz phụ thuộc timezone phiên ({{SET TIME ZONE}}); nếu cần cố định, chuyển sang timestamp hoặc chỉ định rõ.`
+},
+{
+  id: 'qz-microservices-021',
+  topic: 'microservices',
+  q: 'Resilience4j: circuit breaker của lệnh gọi {{payment}} đang OPEN với {{wait-duration-in-open-state: 60s}}. Ngay sau khi hết 60 giây, một loạt request tới payment được xử lý thế nào?',
+  options: [
+    'Mọi request bị từ chối thêm 60 giây nữa, hết chu kỳ mới thử lại từ đầu',
+    'Circuit breaker đóng ngay, mọi request đi thẳng tới payment, request lỗi đầu tiên lại mở breaker',
+    'Circuit breaker chuyển HALF_OPEN, chỉ cho một số request thử (mặc định 10) đi qua; đủ số request thành công thì đóng, còn request lỗi hoặc timeout thì mở lại và chờ thêm 60 giây',
+    'Circuit breaker tự xoá cấu hình và trả request về trạng thái ban đầu'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: chuyển HALF_OPEN, chỉ cho một số request thử đi qua, thành công thì đóng, lỗi thì mở lại.**
+
+### Vì sao đúng
+Resilience4j dùng ba trạng thái. CLOSED cho request đi qua và đếm lỗi trong cửa sổ trượt; khi tỉ lệ lỗi vượt {{failure-rate-threshold}} thì chuyển OPEN. OPEN **từ chối ngay** (fail fast) để không tốn thread và connection cho downstream đã chết. Hết {{wait-duration-in-open-state}} thì chuyển HALF_OPEN — đây là giai đoạn "thăm dò": mặc định chỉ {{permitted-number-of-calls-in-half-open-state}} = 10 request được đi qua; nếu đủ tỉ lệ thành công thì breaker đóng lại, còn nếu vẫn lỗi thì mở lại và chờ thêm một chu kỳ.
+
+Chính cơ chế thăm dò có kiểm soát này giúp downstream đang hồi phục không bị một lượng lớn request thật đổ tới cùng lúc.
+
+### Vì sao các phương án còn lại sai
+- **Đóng ngay, request lỗi đầu tiên mở lại**: khi đóng, breaker dùng ngưỡng tỉ lệ lỗi trong cửa sổ (ví dụ 50% trên 100 request) chứ không phải một lỗi đơn lẻ; và đóng ngay bỏ qua bước thăm dò.
+- **Từ chối thêm 60 giây nữa**: sai hẳn — hết {{waitDurationInOpenState}} là chuyển HALF_OPEN, không lặp lại OPEN vô hạn; nếu không thử thì không bao giờ biết downstream đã hồi phục.
+- **Tự xoá cấu hình**: circuit breaker không xoá cấu hình, chỉ đổi trạng thái.
+
+### Cấu hình liên quan
+~~~yaml
+resilience4j:
+  circuitbreaker:
+    instances:
+      payment:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 100
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 60s
+        permitted-number-of-calls-in-half-open-state: 10
+~~~
+
+> Senior tip: trong HALF_OPEN, nếu downstream vẫn quá tải thì 10 request thăm dò có thể lại đẩy nó lún sâu hơn. Hãy cân nhắc chỉ cho 1–3 request thăm dò và dùng exponential backoff cho {{waitDurationInOpenState}}, thay vì để mặc định 10 nếu downstream rất yếu.`
+},
+{
+  id: 'qz-microservices-022',
+  topic: 'microservices',
+  q: 'Đặt hàng 3 bước: trừ tiền (payment) — giữ vé (ticketing) — gửi email. Mỗi bước ở một service riêng, bước trước đã commit. Khi gửi email thất bại, cách xử lý nào đúng?',
+  options: [
+    'Chạy compensation cho các bước đã thành công: hoàn tiền và nhả vé; compensation phải idempotent và có retry vì lời gọi có thể bị lặp hoặc timeout',
+    'Rollback toàn bộ bằng XA/2PC để cả ba bước cùng bị huỷ',
+    'Bỏ qua lỗi email, xem như đơn hàng đã hoàn tất vì email không quan trọng',
+    'Xoá thẳng bản ghi đơn hàng trong database của ticketing service'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: chạy compensation cho các bước đã thành công; compensation phải idempotent và có retry.**
+
+### Vì sao đúng
+Saga là chuỗi **local transaction**: mỗi bước commit độc lập ở service của nó, không có transaction chung. Vì vậy không có "rollback" theo nghĩa DB — chỉ có hành động nghiệp vụ bù trừ: "hoàn tiền" bù cho "trừ tiền", "nhả vé" bù cho "giữ vé". Hai yêu cầu bắt buộc:
+- **Idempotent**: orchestrator có thể gọi compensation nhiều lần (timeout rồi retry, message trùng), nên lần thứ hai phải thấy "đã hoàn tiền" và trả OK.
+- **Có retry và lưu trạng thái bền**: nếu orchestrator crash giữa chừng, nó phải biết đang ở bước nào để tiếp tục (state machine STARTED → PAID → TICKETED → COMPENSATING → CANCELLED).
+
+### Vì sao các phương án còn lại sai
+- **XA/2PC**: saga tồn tại chính vì 2PC không phù hợp giữa microservice — khoá tài nguyên trong lúc chờ, coordinator là điểm chết, nhiều hệ không hỗ trợ XA; các bước đã commit không còn gì để 2PC rollback.
+- **Bỏ qua lỗi email**: nếu nghiệp vụ coi email là bắt buộc thì bỏ qua là sai; nếu thật sự không quan trọng, phải thiết kế email như một bước **best-effort** riêng (retry nền, outbox) chứ không để nó kéo cả saga đổ.
+- **Xoá thẳng bản ghi**: phá vỡ quyền sở hữu dữ liệu của service khác và bỏ qua logic nghiệp vụ (hoàn tiền, nhả vé) — dữ liệu sẽ mâu thuẫn.
+
+### Thứ tự bước
+~~~text
+1. trừ tiền   -> dễ thất bại nhất, đặt sớm để ít phải compensate
+2. giữ vé     -> chỉ chạy khi tiền đã trừ
+3. gửi email  -> không thể bù trừ, đặt cuối
+~~~
+
+> Senior tip: nguyên tắc xếp bước: đặt bước **dễ thất bại** lên sớm, bước **không thể bù trừ** (gửi email, gửi hàng) xuống cuối. Chỉ riêng thứ tự này đã giảm đáng kể số lần phải chạy compensation.`
+},
+{
+  id: 'qz-microservices-023',
+  topic: 'microservices',
+  multi: true,
+  q: 'Chọn 2 cách đúng để kết thúc một Saga: khi bước thanh toán thất bại và các bước trước đã commit. (Chọn 2)',
+  options: [
+    'Lưu trạng thái saga vào DB và đánh dấu CANCELLED sau khi compensation xong',
+    'Rollback toàn bộ bằng XA/2PC trên tất cả service tham gia',
+    'Chạy compensation cho từng bước đã thành công, theo thứ tự ngược, mỗi compensation idempotent và có retry',
+    'Ghi thẳng UPDATE vào database của service khác để hoàn tiền và nhả vé',
+    'Huỷ saga bằng cách xoá record saga, không cần lưu trạng thái'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: 0 và 2.**
+
+### Vì sao 0 và 2 đúng
+- **0 — compensation theo thứ tự ngược, idempotent, có retry**: đây là bản chất của kết thúc saga. Mỗi bước đã commit phải được bù trừ bằng hành động nghiệp vụ ngược; chạy theo thứ tự ngược để không bù trừ một bước khi bước phụ thuộc chưa được xử lý; idempotent + retry vì orchestrator có thể gọi lặp.
+- **2 — lưu trạng thái bền và đánh dấu CANCELLED**: orchestrator phải lưu state machine vào DB (ví dụ STARTED → PAYMENT_FAILED → COMPENSATING → CANCELLED). Khi crash giữa chừng, nó đọc trạng thái để biết còn bước compensation nào chưa chạy; đánh dấu CANCELLED để không xử lý tiếp và để báo cáo/kế toán biết.
+
+### Vì sao các phương án còn lại sai
+- **1 — XA/2PC**: các bước đã commit, không còn transaction để rollback; 2PC khoá tài nguyên, coordinator là điểm chết, không phù hợp microservice.
+- **3 — UPDATE thẳng vào DB service khác**: phá vỡ quyền sở hữu dữ liệu và bỏ qua logic nghiệp vụ (ví dụ hoàn tiền còn phải ghi giao dịch, gửi sự kiện).
+- **4 — xoá record saga**: mất dấu vết, không có bằng chứng đã bù trừ; khi có tranh chấp (khách nói chưa được hoàn tiền) không biết tra vào đâu.
+
+> Senior tip: saga nên có bảng {{saga_log}} ghi từng bước (step, status, request_id, timestamp) — vừa để resume khi restart, vừa để đối soát với service khác khi có sai lệch.`
+},
+{
+  id: 'qz-microservices-024',
+  topic: 'microservices',
+  q: 'Saga đặt vé: bước giữ chỗ (reserveSeat) đã commit, bước thanh toán thất bại. Cơ chế bù trừ nào đúng?',
+  options: [
+    'Dùng {{DELETE FROM seats WHERE id = seatId}} để xoá chỗ đã giữ',
+    'Gọi lại {{reserveSeat}} với cùng seatId để "reset" trạng thái',
+    'Chạy {{releaseSeat(seatId)}} để nhả chỗ; đây là hành động nghiệp vụ bù trừ, không phải rollback DB',
+    'Không làm gì, hệ thống sẽ tự nhả chỗ sau 24 giờ giữ'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: gọi {{releaseSeat}} — hành động bù trừ, không phải rollback DB.**
+
+### Vì sao đúng
+Bước {{reserveSeat}} đã commit (chỗ bị đánh dấu "đang giữ" cho khách A). Thanh toán thất bại, ta cần đưa hệ thống về trạng thái như chưa giữ — nhưng **không thể rollback DB** vì transaction đó đã kết thúc. Cách đúng là gọi hành động nghiệp vụ ngược: {{releaseSeat}} đánh dấu chỗ về "trống". Đây là **compensating action**, có thể kèm ghi log "seat released do payment failed" để đối soát.
+
+### Vì sao các phương án còn lại sai
+- **DELETE thẳng vào DB**: phá vỡ quyền sở hữu dữ liệu (service khác quản lý chỗ ngồi); có thể xung đột với logic nghiệp vụ (vé đã in, đối soát, báo cáo). Nếu cần, service ghế phải cung cấp API {{releaseSeat}} chứ không cho xoá vật lý.
+- **Gọi lại {{reserveSeat}}**: gọi cùng một API tạo giữ chỗ không "reset" được gì; nó có thể tạo thêm một reservation mới hoặc lỗi vì chỗ đã bị giữ. Đây không phải bù trừ, mà là lặp lại chính hành động cần bù.
+- **Không làm gì, chờ 24 giờ**: trong 24 giờ, chỗ bị khoá oan, khách khác không mua được; và nếu không có job tự nhả thì chỗ treo vĩnh viễn.
+
+### Compensating vs rollback
+~~~text
+rollback DB:     chạy trong 1 transaction, undo bằng log DB (chỉ có ở local tx)
+compensation:   gọi service ngược, undo bằng nghiệp vụ (saga)
+                - idempotent:  gọi 2 lần cũng chỉ nhả 1 lần
+                - retry được: vì lời gọi có thể timeout
+~~~
+
+> Senior tip: compensation phải idempotent vì orchestrator có thể gọi lặp (timeout, message trùng). Hãy lưu {{reservationId}} đã nhả để lần sau thấy "đã nhả" thì trả OK, thay vì nhả hai lần gây lỗi "chỗ không tồn tại".`
+},
+{
+  id: 'qz-microservices-025',
+  topic: 'microservices',
+  q: 'Outbox publisher (mảng 001 đã giới thiệu): sau khi service commit giao dịch nghiệp vụ + ghi event vào bảng {{outbox}}, publisher đọc và gửi lên Kafka. Vì sao consumer vẫn cần idempotent?',
+  options: [
+    'Vì Kafka đảm bảo exactly-once nên consumer không cần làm gì',
+    'Vì publisher gửi theo cơ chế at-least-once: nếu gửi xong mà chưa kịp đánh dấu đã publish rồi crash, lần sau sẽ gửi lại — consumer có thể nhận trùng và phải bỏ qua theo {{eventId}}',
+    'Vì database có thể rollback sau khi publisher đã gửi',
+    'Vì outbox chỉ là bảng tạm, không cần quan tâm trùng lặp'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: publisher gửi at-least-once, nên consumer có thể nhận trùng và phải idempotent theo {{eventId}}.**
+
+### Vì sao đúng
+Outbox giải quyết bài toán "ghi DB và gửi event không atomically cùng nhau", nhưng nó **không** biến việc gửi thành exactly-once. Luồng thực tế của publisher:
+1. Đọc một dòng {{outbox}} chưa gửi.
+2. Gửi lên Kafka.
+3. Đánh dấu dòng đó {{PUBLISHED}}.
+
+Nếu bước 2 thành công mà bước 3 thất bại (crash, lỗi DB), lần khởi động sau publisher đọc lại dòng cũ và **gửi lại** — consumer nhận hai lần cùng một event. Vì vậy consumer phải lưu {{eventId}} (hoặc khoá nghiệp vụ) và bỏ qua nếu đã xử lý. Đây chính là "at-least-once + consumer idempotent = effectively-once".
+
+### Vì sao các phương án còn lại sai
+- **Kafka đảm bảo exactly-once**: exactly-once của Kafka chỉ đúng trong nội bộ pipeline Kafka (producer → topic → consumer cùng Kafka, với transaction). Khi có tác dụng phụ ra ngoài (ghi DB, gọi API), vẫn phải idempotent. Và outbox + publisher thường không bật transactional producer.
+- **DB có thể rollback sau khi đã gửi**: nếu dùng outbox đúng, event chỉ được gửi sau khi transaction commit — không có chuyện "đã gửi rồi rollback".
+- **Outbox chỉ là bảng tạm**: bảng outbox là nguồn sự thật tạm thời cho việc gửi; phải dọn sau khi publish, nhưng nó vẫn cần đúng đắn, không phải "bỏ qua trùng lặp".
+
+### Idempotent ở consumer
+~~~java
+if (processedRepo.existsById(event.getId())) {
+    return;                 // đã xử lý, bỏ qua an toàn
+}
+doBusiness(event);
+processedRepo.save(event.getId());   // cùng transaction với doBusiness
+~~~
+
+> Senior tip: hãy đưa {{eventId}} vào message và ghi bảng {{processed_events(event_id PK)}}. Khi xử lý và ghi processed_events nằm trong **cùng một transaction**, bạn có effectively-once mà không cần exactly-once của Kafka.`
+},
+{
+  id: 'qz-microservices-026',
+  topic: 'microservices',
+  q: 'Consumer nhận message {{OrderPlaced}} của cùng một {{orderId}} hai lần (do producer gửi lại). Cách xử lý đúng để tránh xử lý trùng?',
+  options: [
+    'Dựa vào thứ tự Kafka để không bao giờ nhận trùng',
+    'Đặt {{enable.idempotence=true}} phía producer để consumer không nhận trùng',
+    'Tăng số partition để mỗi message chỉ tới một consumer',
+    'Dùng bảng {{processed_events(event_id PK)}}: kiểm tra event_id đã tồn tại thì bỏ qua, xử lý và ghi event_id trong cùng transaction'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: dùng bảng {{processed_events}} với khoá {{event_id}}, kiểm tra trước và ghi trong cùng transaction với xử lý nghiệp vụ.**
+
+### Vì sao đúng
+Đây là **idempotent consumer**. Điểm mấu chốt: việc "kiểm tra đã xử lý chưa" và "ghi nhận đã xử lý" phải nằm trong **cùng một transaction** với tác dụng phụ nghiệp vụ. Nếu không cùng transaction, hai khoảnh khắc nguy hiểm xuất hiện: xử lý xong nhưng chưa kịp ghi processed_events rồi crash → lần sau xử lý lại; hoặc ghi processed_events trước rồi xử lý lỗi → mất message.
+
+{{event_id}} phải là định danh duy nhất của sự kiện nghiệp vụ (không phải offset, không phải message id ngẫu nhiên của Kafka), vì cùng một sự kiện có thể được publish lại với message id khác.
+
+### Vì sao các phương án còn lại sai
+- **Dựa vào thứ tự Kafka**: Kafka đảm bảo thứ tự trong partition, không đảm bảo "không trùng". Producer retry (do lỗi mạng) hoàn toàn có thể tạo message trùng.
+- **{{enable.idempotence=true}}**: đảm bảo producer không tạo **duplicate do retry của chính nó** và giữ thứ tự ghi, nhưng không ngăn consumer nhận lại message đã commit (ví dụ consumer crash sau xử lý trước khi commit offset). Đây là cấu hình phía producer, không giải quyết idempotency phía consumer.
+- **Tăng số partition**: chỉ thay đổi mức song song, không liên quan gì tới trùng lặp message.
+
+### Khoá idempotency ở DB
+~~~sql
+CREATE TABLE processed_events (
+  event_id     varchar(64) PRIMARY KEY,
+  processed_at timestamptz NOT NULL DEFAULT now()
+);
+~~~
+
+> Senior tip: với nghiệp vụ tài chính, đừng chỉ dựa vào event_id. Hãy đặt khoá nghiệp vụ (ví dụ {{orderId + "PAID"}}) làm unique key, vì có thể có nhiều event khác nhau cùng dẫn tới một tác dụng phụ (chẵng hạn hai lần "capture payment" cho cùng đơn) — chặn ở tầng nghiệp vụ mới chắc.`
+},
+{
+  id: 'qz-microservices-027',
+  topic: 'microservices',
+  q: 'Client gọi API {{/orders}} với header {{Idempotency-Key}}. Lần đầu server xử lý mất 3 giây nhưng client timeout sau 1 giây rồi retry cùng key. Server phải làm gì?',
+  options: [
+    'Xử lý lại request vì client đã timeout, coi như chưa từng xử lý',
+    'Chuyển sang xử lý bất đồng bộ và trả 202 cho mọi request trùng key',
+    'Trả về lỗi 409 Conflict cho request trùng key',
+    'Lưu kết quả theo key trong transaction; nếu key đã tồn tại và đang xử lý thì trả 409/đang xử lý, nếu đã xong thì trả lại đúng kết quả cũ (kèm HTTP status gốc) thay vì xử lý lần hai'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: lưu kết quả theo key; nếu đang xử lý thì báo đang xử lý, nếu đã xong thì trả lại kết quả cũ — không xử lý lần hai.**
+
+### Vì sao đúng
+Đây là **idempotency key** ở tầng API. Client không biết request đã tới server hay chưa, nên nó retry — và server phải bảo đảm retry không tạo tác dụng phụ lần hai. Có hai trạng thái cần phân biệt:
+- **Đã xử lý xong**: trả lại **đúng kết quả cũ** (body + HTTP status gốc, ví dụ 201 Created), không xử lý lại.
+- **Đang xử lý** (request đầu còn chạy, request retry tới): trả 409 hoặc 425/429-style "đang xử lý" để client chờ, hoặc nếu có thể thì chờ kết quả; tránh để hai request cùng chạy.
+
+Bảng {{payment_request(idempotency_key PK, status, response_body, http_status)}} với ràng buộc UNIQUE biến "kiểm tra rồi ghi" thành nguyên tử.
+
+### Vì sao các phương án còn lại sai
+- **Xử lý lại vì client timeout**: đây chính là nguyên nhân trừ tiền hai lần — timeout không có nghĩa là server chưa xử lý.
+- **409 cho request trùng key**: 409 nói chung là "xung đột"; với key **đã hoàn tất**, phải trả lại kết quả cũ (200/201) chứ không phải lỗi — nếu không client tưởng giao dịch thất bại và thử lại tiếp.
+- **202 cho mọi request trùng**: nếu request đầu đã xong mà trả 202 "đang xử lý" là sai thông tin; chỉ nên 202 khi thật sự đang xử lý.
+
+### Lưu ý triển khai
+~~~java
+@Transactional
+public PaymentResult pay(String key, PayRequest req) {
+    paymentRequestRepo.findById(key).ifPresentOrElse(
+        pr -> { throw new InProgressOrDone(pr); },   // đã có: không xử lý lại
+        () -> { /* xử lý và lưu kết quả theo key */ });
+    ...
+}
+~~~
+
+> Senior tip: đặt TTL cho bảng key (vài phút đến vài giờ) và tự dọn; giữ vô thời hạn làm bảng phình to. Và ràng buộc UNIQUE ở DB là bắt buộc — "select rồi insert" không an toàn khi hai request tới song song.`
+},
+{
+  id: 'qz-microservices-028',
+  topic: 'microservices',
+  multi: true,
+  q: 'Phân biệt Saga orchestration (điều phối tập trung) và choreography (điều phối qua sự kiện). Chọn 2 phát biểu đúng. (Chọn 2)',
+  options: [
+    'Choreography có một coordinator trung tâm ra lệnh theo thứ tự, nên luôn dễ debug hơn orchestration',
+    'Orchestration có một coordinator tập trung giữ state machine và ra lệnh từng bước; dễ quan sát và kiểm soát luồng, nhưng coordinator là điểm cần bảo vệ và là nơi dễ nghẽn',
+    'Choreography cho phép mỗi service tự chủ và dễ thêm service mới, nhưng luồng nghiệp vụ nằm rải rác nên khó theo dõi khi có nhiều bước và nhiều sự kiện',
+    'Orchestration và choreography đều yêu cầu một message broker tập trung cho mọi loại saga',
+    'Choreography dùng một chuỗi local transaction và không cần bất kỳ message broker nào'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: 1 và 2.**
+
+### Vì sao 1 và 2 đúng
+- **1 — orchestration**: có một coordinator (orchestrator) giữ state machine, gọi từng service theo thứ tự và xử lý compensation khi lỗi. Ưu điểm: luồng tập trung, dễ đọc, dễ thêm bước mới (chỉ sửa orchestrator); nhược điểm: coordinator là điểm tập trung cần HA và có thể nghẽn khi luồng lớn.
+- **2 — choreography**: mỗi service lắng nghe sự kiện và tự quyết định bước tiếp theo (ví dụ inventory nghe {{OrderPlaced}} rồi phát {{StockReserved}}, payment nghe {{StockReserved}} rồi phát {{PaymentDone}}). Ưu điểm: không có điểm trung tâm, service tự chủ, dễ thêm service mới (chỉ cần subscribe event); nhược điểm: luồng nằm rải rác, khó biết "đơn đang ở bước nào", khó debug, và dễ xuất hiện vòng lặp sự kiện.
+
+### Vì sao các phương án còn lại sai
+- **0 — choreography có coordinator trung tâm**: sai bản chất — choreography **không** có coordinator; đó là orchestration.
+- **3 — cả hai đều cần message broker tập trung cho mọi loại**: orchestration có thể đồng bộ qua HTTP, không bắt buộc broker; choreography cần broker/event bus nhưng "cho mọi loại saga" là nói quá.
+- **4 — choreography không cần message broker**: ngược lại — choreography **dựa vào** event broker (Kafka, RabbitMQ, EventBridge) để các service giao tiếp; không có broker thì không có choreography.
+
+### Khi nào chọn cái nào
+~~~text
+orchestration: luồng dài, nhiều bước, nhiều nhánh lỗi, cần resume/kiểm soát -> chọn
+choreography:  2-3 service, sự kiện đơn giản, muốn giảm coupling -> chọn
+thực tế:        hay dùng orchestration cho luồng nghiệp vụ lõi,
+               choreography cho thông báo/phụ trợ
+~~~
+
+> Senior tip: dù chọn kiểu nào, hãy có một nơi để trả lời "đơn hàng X đang ở bước nào". Với choreography, dựng thêm một read-model (order state projection) từ các sự kiện — vừa để debug, vừa để phục vụ UI.`
+},
+{
+  id: 'qz-microservices-029',
+  topic: 'microservices',
+  q: 'Hệ thống dùng choreography: {{OrderService}} phát {{OrderPlaced}}, {{InventoryService}} nghe và phát {{StockReserved}}, {{PaymentService}} nghe {{StockReserved}} để trừ tiền. Sự cố: khách đặt 100 đơn nhưng chỉ 60 đơn bị trừ tiền. Khả năng cao nhất?',
+  options: [
+    'Kafka không đảm bảo thứ tự nên một số sự kiện bị mất',
+    'Một số consumer bị rebalance/timeout giữa chừng, hoặc lỗi xử lý khiến message không được xử lý và offset không commit — cần idempotent consumer + DLQ và theo dõi lag để không mất sự kiện',
+    'Saga orchestration sẽ tự sửa được lỗi này',
+    'Cần chuyển sang 2PC để đảm bảo trừ tiền đủ 100 đơn'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: một số consumer rebalance/timeout hoặc lỗi xử lý khiến message không được xử lý và offset không commit — cần idempotent consumer + DLQ + theo dõi lag.**
+
+### Vì sao đúng
+Trong choreography, nếu một consumer (ví dụ {{PaymentService}}) bị rebalance (do deploy, do session timeout), hoặc xử lý một message lỗi (exception) và **không commit offset**, thì message đó có thể bị xử lý lại hoặc bỏ lỡ tuỳ cấu hình. Nếu lỗi xử lý mà consumer vẫn commit offset (ví dụ catch rồi continue) thì sự kiện "mất" vĩnh viễn → 40 đơn không bị trừ tiền. Đây là lỗi vận hành, không phải lỗi của Kafka ordering.
+
+Hai biện pháp chuẩn:
+- **Idempotent consumer** (bảng {{processed_events}}): xử lý lại an toàn.
+- **Dead Letter Queue (DLQ)**: message lỗi được đẩy sang topic riêng để điều tra, không chặn pipeline.
+- **Theo dõi consumer lag**: lag tăng dần hoặc message "biến mất" là dấu hiệu.
+
+### Vì sao các phương án còn lại sai
+- **Kafka không đảm bảo thứ tự**: Kafka đảm bảo thứ tự trong partition; mất message ở đây không phải do ordering. Nếu cần, hãy kiểm tra cấu hình {{enable.auto.commit}} và xử lý exception.
+- **Orchestration sẽ tự sửa**: orchestration chỉ thay đổi cách điều phối, không tự khắc phục việc consumer bỏ message; vẫn cần idempotent + DLQ.
+- **Chuyển 2PC**: 2PC không giải quyết mất message ở tầng consumer, và không phù hợp microservice (khoá tài nguyên, coordinator điểm chết).
+
+### Kiểm tra nhanh
+~~~bash
+# xem lag theo partition: nếu một partition lag tăng mãi -> consumer kẹt
+kafka-consumer-groups.sh --bootstrap-server ... --describe --group payment
+~~~
+
+> Senior tip: đừng đặt {{enable.auto.commit=true}} nếu bạn cần xử lý chính xác — auto commit có thể commit trước khi xử lý xong, gây mất message khi crash. Hãy commit thủ công sau khi xử lý thành công, và luôn có DLQ cho message "bị bệnh".`
+},
+{
+  id: 'qz-microservices-030',
+  topic: 'microservices',
+  q: 'Service A gọi service B với read timeout 30s; B gọi C với read timeout 20s và 3 lần retry. Vì sao chuỗi timeout lồng nhau này nguy hiểm khi C chậm?',
+  options: [
+    'Vì tổng thời gian chờ (30s ở A, trong khi B có thể mất 3 x 20s = 60s) khiến request treo rất lâu, giữ thread/connection ở mọi tầng, dễ gây cascading failure và cạn pool',
+    'Vì timeout chỉ có tác dụng với HTTP, không áp dụng cho gRPC',
+    'Vì retry làm giảm tải cho C',
+    'Vì timeout lồng nhau giúp phát hiện lỗi nhanh hơn'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: tổng thời gian chờ vượt timeout cấp trên, request treo lâu, giữ thread và connection ở mọi tầng → cạn pool và cascading failure.**
+
+### Vì sao đúng
+Timeout lồng nhau phải tuân theo quy tắc: **timeout của tầng trên phải lớn hơn tổng thời gian tối đa của tầng dưới** (bao gồm cả retry). Ở đây A chờ 30s, nhưng B có thể mất tới 3 x 20s = 60s (nếu C chậm) — A sẽ timeout trước khi B kịp trả lời, nhưng B vẫn tiếp tục giữ thread và connection tới C, và khi B trả về thì A đã bỏ. Kết quả: tài nguyên bị giữ vô ích, pool cạn dần, và sự cố lan từ C lên A (cascading failure).
+
+Thêm nữa, retry ở B khi C đang chậm làm C nhận gấp 3 lần tải — đúng lúc C yếu nhất.
+
+### Vì sao các phương án còn lại sai
+- **Timeout chỉ áp dụng cho HTTP**: timeout áp dụng cho mọi lời gọi mạng (HTTP, gRPC, DB, message). 
+- **Retry làm giảm tải cho C**: ngược lại, retry làm **tăng** tải khi downstream đang yếu; chỉ nên retry cho lỗi tức thời (reset, 503) và có backoff + jitter + budget.
+- **Timeout lồng nhau giúp phát hiện lỗi nhanh hơn**: nếu cấu hình lỏng lẻo thì ngược lại — làm chậm phát hiện và giữ tài nguyên lâu hơn.
+
+### Thiết kế đúng
+~~~text
+A -> B: 30s (tổng ngân sách)
+B -> C: 3 x 8s + backoff ~ 28s  (<= 30s, có deadline propagation)
+quy tắc: timeout dưới <= timeout trên - chi phí retry/backoff
+~~~
+
+> Senior tip: hãy truyền **deadline** (thời hạn tuyệt đối còn lại) qua header (ví dụ {{grpc-timeout}}, {{X-Request-Deadline}}) thay vì mỗi tầng tự đặt timeout rời rạc. Khi hết deadline, tầng dưới dừng gọi tiếp — đây là cách chống "cộng dồn timeout" phổ biến nhất trên production.`
+},
+{
+  id: 'qz-microservices-031',
+  topic: 'microservices',
+  q: 'Chọn sync (HTTP/gRPC) hay async (Kafka) cho giao tiếp giữa các service? Tình huống nào nên ưu tiên async?',
+  options: [
+    'Luôn dùng async để triệt tiêu mọi coupling',
+    'Ưu tiên async khi tác vụ không cần kết quả ngay, có thể xử lý sau, cần tách rời theo thời gian và chịu được độ trễ; sync khi cần câu trả lời tức thì trong luồng người dùng',
+    'Ưu tiên sync khi hệ thống có nhiều service để dễ debug hơn',
+    'Async luôn nhanh hơn sync trong mọi trường hợp'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: async khi không cần kết quả ngay và chịu được độ trễ; sync khi cần câu trả lời tức thì trong luồng người dùng.**
+
+### Vì sao đúng
+- **Sync (HTTP/gRPC)**: caller chờ kết quả, phù hợp khi nghiệp vụ cần biết ngay (đọc giá, kiểm tra tồn kho để quyết định mua). Nhược điểm: caller phụ thuộc vào độ khả dụng và độ trễ của callee; lỗi lan truyền.
+- **Async (Kafka/broker)**: caller gửi message và đi tiếp, không chờ. Phù hợp khi việc xử lý có thể chậm/trễ (gửi email, đồng bộ tìm kiếm, tính toán báo cáo), cần tách rời thời gian, hoặc cần nhiều consumer xử lý song song. Nhược điểm: độ trễ, cần idempotent + xử lý trùng, khó debug luồng.
+
+### Vì sao các phương án còn lại sai
+- **Luôn async**: async không xoá coupling — nó chỉ đổi kiểu coupling (từ "chờ kết quả" sang "phụ thuộc vào schema event và thứ tự"); và nhiều nghiệp vụ cần kết quả ngay, async không phù hợp.
+- **Sync dễ debug hơn vì nhiều service**: ngược lại — sync tạo chuỗi phụ thuộc, một service chậm làm cả chuỗi chậm; async tách rời nhưng khó lần theo luồng nếu không có trace.
+- **Async luôn nhanh hơn**: async nhanh hơn ở chỗ caller không chờ, nhưng tổng thời gian xử lý có thể lâu hơn; và có thêm chi phí broker, serialization, monitoring lag.
+
+### Bảng chọn nhanh
+~~~text
+cần kết quả ngay, luồng người dùng   -> sync
+best-effort, có thể trễ, fan-out    -> async
+nhiều bước, cần compensation        -> saga (thường async + orchestrator)
+~~~
+
+> Senior tip: một hệ thống trưởng thành thường trộn cả hai: sync cho truy vấn/tác vụ cần ngay, async cho tác dụng phụ (gửi email, cập nhật tìm kiếm, audit). Nguyên tắc: nếu người dùng không cần chờ để thấy kết quả, hãy làm async.`
+},
+{
+  id: 'qz-microservices-032',
+  topic: 'microservices',
+  q: 'Service {{Order}} có bảng {{orders}} 200 triệu dòng, nhiều instance cùng chạy. Cần cập nhật {{status}} của một đơn thỏi điểm, tránh hai instance ghi đè lẫn nhau. Cách đúng?',
+  options: [
+    'Dùng {{SELECT ... FOR UPDATE}} rồi UPDATE trong cùng transaction để khoá đúng một hàng',
+    'Dùng UPDATE ... WHERE id = ? AND status = :expected (optimistic locking / so sánh trạng thái) và kiểm tra số hàng bị ảnh hưởng',
+    'Dùng @Transactional với đọc rồi ghi mà không kiểm tra gì',
+    'Dùng synchronized trên service để chỉ một thread xử lý'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: UPDATE có điều kiện trên giá trị cũ (optimistic locking) và kiểm tra số hàng bị ảnh hưởng.**
+
+### Vì sao đúng
+Đây là **optimistic concurrency control**: không khoá trước, mà khi ghi ta nói "chỉ cập nhật nếu trạng thái hiện tại vẫn là giá trị tôi đã đọc". Câu lệnh:
+
+~~~sql
+UPDATE orders SET status = 'PAID'
+WHERE id = :id AND status = 'PENDING';
+~~~
+
+Nếu số hàng bị ảnh hưởng là 0, nghĩa là trạng thái đã bị instance khác đổi — ta biết ngay và xử lý (báo lỗi, đọc lại, bỏ qua). Cách này nhẹ, không giữ khoá lâu, phù hợp khi tranh chấp không thường xuyên. Đây cũng là cách Hibernate {{@Version}} hoạt động (thêm cột version và kiểm tra WHERE version = :old).
+
+### Vì sao các phương án còn lại sai
+- **SELECT ... FOR UPDATE**: đúng nhưng nặng hơn — giữ khoá hàng tới hết transaction; nếu nhiều instance tranh chấp hoặc transaction dài, dễ nghẽn và deadlock. Chỉ nên dùng khi tranh chấp cao và cần đọc-ghi nhiều bước.
+- **@Transactional đọc rồi ghi, không kiểm tra**: có "lost update" — hai instance cùng đọc PENDING, cùng ghi PAID, kết quả cuối tuỳ thứ tự; không phát hiện được xung đột.
+- **synchronized**: chỉ bảo vệ trong một JVM. Nhiều instance là nhiều JVM, synchronized không liên quan gì.
+
+### Optimistic vs pessimistic
+~~~text
+optimistic:  không khoá, UPDATE ... WHERE version = :old (PREFERRED khi tranh chấp thấp)
+pessimistic: SELECT ... FOR UPDATE (khi tranh chấp cao, cần đọc-ghi nhiều bước)
+~~~
+
+> Senior tip: luôn kiểm tra **số hàng bị ảnh hưởng** sau UPDATE có điều kiện — nhiều lập trình viên quên và tưởng cập nhật thành công. Với Hibernate, bắt {{OptimisticLockException}} và retry có giới hạn (đừng retry vô hạn).`
 }
 );
