@@ -6611,4 +6611,248 @@ Mã Java được dịch thành bytecode, rồi trong JVM bytecode ban đầu đ
 
 > Senior tip: khi đo hiệu năng, hãy bỏ qua giai đoạn warm-up (ví dụ 5–10 phút) trước khi bắt đầu thu thập kết quả, và dùng JMH thay vì đo bằng tay ngay lúc khởi động.`
 }
+,
+{
+  id: 'qz-spring-054',
+  multi: true,
+  topic: 'spring',
+  q: 'Khi gọi một method public được đánh dấu {{@Transactional}} từ một method khác trong cùng class, Spring không tạo transaction mới. Để khắc phục điều này, đâu là các phương án đúng? (Chọn 2)',
+  options: [
+    'Di chuyển method đó sang một bean khác và inject bean đó vào để gọi qua proxy',
+    'Chỉ cần đổi method đó sang public là đủ',
+    'Dùng {{AopContext.currentProxy()}} để gọi method qua proxy (cần cấu hình {{exposeProxy=true}})',
+    'Thêm {{@Transactional}} vào cả hai method',
+    'Chuyển transaction manager sang PROPAGATION_REQUIRED'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: Di chuyển sang bean khác và dùng AopContext.currentProxy().**
+
+### Vì sao đúng
+Spring tạo proxy bao quanh bean, và mọi advice như {{TransactionInterceptor}} chỉ kích hoạt khi lời gọi đi qua proxy. Lời gọi nội bộ (self-invocation) gọi trực tiếp method trên instance thật, bỏ qua proxy, nên không có transaction mới nào được bắt đầu. Việc đưa method sang bean khác hoặc dùng AopContext giúp lời gọi đi qua proxy.
+
+### Vì sao các phương án còn lại sai
+- **Đổi sang public**: không đủ, vì kể cả public thì gọi nội bộ vẫn gọi trực tiếp instance.
+- **Thêm @Transactional vào cả hai**: không giải quyết được vấn đề proxy bỏ qua advice.
+- **Chuyển propagation sang REQUIRED**: không liên quan; propagation cấu hình hành vi **khi** đã ở trong một transaction, không giải quyết việc "không bắt đầu được transaction".
+
+> Senior tip: mỗi ranh giới transaction nên là một public method của một bean riêng — thiết kế này vừa tránh self-invocation, vừa làm service dễ đọc, dễ test độc lập.`
+},
+{
+  id: 'qz-spring-055',
+  topic: 'spring',
+  q: 'Sự khác biệt cơ bản giữa PROPAGATION_REQUIRED và PROPAGATION_REQUIRES_NEW là gì?',
+  options: [
+    'REQUIRED dùng chung transaction hiện tại nếu có, REQUIRES_NEW luôn tạo transaction mới và suspend transaction cũ',
+    'REQUIRED luôn tạo transaction mới, REQUIRES_NEW dùng chung transaction cũ',
+    'REQUIRED chỉ hoạt động với SQL, REQUIRES_NEW hoạt động với mọi datasource',
+    'REQUIRED yêu cầu có transaction sẵn, nếu không sẽ ném Exception, REQUIRES_NEW thì không'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: REQUIRED dùng chung transaction nếu có, REQUIRES_NEW luôn tạo mới và suspend cũ.**
+
+### Vì sao đúng
+{{REQUIRED}} là mặc định: nếu đã có transaction, nó tham gia vào (cùng commit/rollback); nếu chưa có, nó tạo mới. {{REQUIRES_NEW}} luôn tạo transaction mới độc lập hoàn toàn: transaction cũ bị treo (suspended), transaction mới chạy, commit/rollback xong thì transaction cũ tiếp tục. Nó cực kỳ hữu ích cho việc cần commit dữ liệu log/audit **ngay cả khi** transaction nghiệp vụ chính sau đó bị rollback.
+
+### Vì sao các phương án còn lại sai
+- **REQUIRED luôn tạo mới**: đó là hành vi của {{REQUIRES_NEW}}.
+- **REQUIRED yêu cầu có transaction**: đó là hành vi của {{MANDATORY}}.
+
+> Senior tip: {{REQUIRES_NEW}} có cái giá là tốn thêm connection từ pool cho transaction mới, nên đừng lạm dụng nó trong vòng lặp.`
+},
+{
+  id: 'qz-spring-056',
+  topic: 'spring',
+  q: 'Trong method A (REQUIRES_NEW) được gọi từ method B (REQUIRED), nếu method A ném exception, điều gì xảy ra?',
+  options: [
+    'Chỉ A rollback, B vẫn commit thành công (nếu catch exception của A)',
+    'Cả A và B đều bị rollback',
+    'Cả A và B đều commit vì exception không làm transaction rollback tự động',
+    'B rollback, A commit'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Chỉ A rollback, B vẫn commit thành công (nếu catch exception của A).**
+
+### Vì sao đúng
+Vì {{REQUIRES_NEW}} tạo transaction riêng biệt (tách biệt hoàn toàn về tài nguyên và lifecycle). Exception ném ra từ A chỉ ảnh hưởng tới transaction của A. Nếu B catch được exception đó, transaction của B vẫn tiếp tục chạy và commit bình thường.
+
+### Vì sao các phương án còn lại sai
+- **Cả A và B đều rollback**: nếu exception lan truyền ra B (không catch), B cũng sẽ bị rollback theo, nhưng là do exception của B, không phải do A ép rollback.
+- **B rollback, A commit**: không bao giờ xảy ra, vì B là transaction cha, nếu B rollback thì A cũng phải hoàn tất xong rồi (A độc lập).
+
+> Senior tip: đây là kỹ thuật duy nhất để làm audit log hoặc "đảm bảo gửi email" — gói logic đó vào method {{REQUIRES_NEW}} và catch exception bên ngoài.`
+},
+{
+  id: 'qz-spring-057',
+  multi: true,
+  topic: 'spring',
+  q: 'Nguyên nhân nào dẫn đến {{LazyInitializationException}} và cách khắc phục đúng? (Chọn 2)',
+  options: [
+    'Truy cập collection LAZY sau khi session Hibernate đã đóng',
+    'Query dữ liệu bằng JPQL nhưng không fetch collection liên quan',
+    'Sử dụng {{@Transactional}} ở mức service',
+    'Bỏ qua không dùng {{@EntityGraph}} hoặc JOIN FETCH trong truy vấn',
+    'Tăng kích thước HikariCP connection pool'
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: Truy cập collection LAZY sau khi session đóng và bỏ qua JOIN FETCH.**
+
+### Vì sao đúng
+{{LazyInitializationException}} xuất hiện khi Hibernate cố gắng tải dữ liệu (proxy) nhưng transaction (và session) đã đóng. Để sửa: dùng {{JOIN FETCH}} trong JPQL/QueryDSL, hoặc {{EntityGraph}} để chủ động tải dữ liệu ngay từ đầu trong transaction.
+
+### Vì sao các phương án còn lại sai
+- **Sử dụng @Transactional**: đây là cách **ngăn** lỗi, chứ không phải nguyên nhân.
+- **Tăng pool**: không liên quan tới Lazy loading.
+
+> Senior tip: đừng dùng {{OpenSessionInView}} để tránh lỗi này — nó giữ connection tới tận tầng View, cực kỳ lãng phí và dễ gây nghẽn pool.`
+},
+{
+  id: 'qz-spring-058',
+  topic: 'spring',
+  q: 'Bạn cần lấy dữ liệu từ một bean {{@Scope("request")}} bên trong một bean {{@Service}} singleton. Cách làm đúng là gì?',
+  options: [
+    'Inject trực tiếp bean request vào service',
+    'Sử dụng @Lookup để xin instance mới từ container mỗi lần gọi',
+    'Dùng proxyMode = ScopedProxyMode.TARGET_CLASS trong scope request để singleton luôn nhận được instance đúng cho request hiện tại',
+    'Khai báo service cũng là scope request'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Dùng ScopedProxyMode.TARGET_CLASS.**
+
+### Vì sao đúng
+Khi singleton cần bean scope ngắn, Spring inject một proxy. Khi gọi method trên proxy, proxy tự tìm instance thật gắn với request hiện tại (qua {{ThreadLocal}} nội bộ của Spring).
+
+### Vì sao các phương án còn lại sai
+- **Inject trực tiếp**: singleton chỉ lấy instance một lần, trỏ vào một instance request nào đó từ quá khứ, không đổi theo request hiện tại.
+- **@Lookup**: vẫn làm được nhưng rườm rà hơn proxy.
+
+> Senior tip: dùng proxy cho request scope rất tiện nhưng nhớ rằng nó dùng {{ThreadLocal}} nên không truyền được sang thread async.`
+},
+{
+  id: 'qz-spring-059',
+  topic: 'spring',
+  q: 'Một method {{@Async}} kiểu {{void}} ném exception. Điều gì xảy ra?',
+  options: [
+    'Exception được gửi tới AsyncUncaughtExceptionHandler (mặc định là logger), caller không biết gì',
+    'Exception được ném lại cho thread caller',
+    'Exception làm rollback transaction của caller',
+    'Nuốt lỗi hoàn toàn, không có log'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Gửi tới AsyncUncaughtExceptionHandler, caller không biết.**
+
+### Vì sao đúng
+Async chạy trên thread khác, không thuộc transaction của caller, lỗi cũng không truyền ngược.
+
+> Senior tip: dùng {{CompletableFuture}} thay void để caller chủ động bắt lỗi qua {{exceptionally}}.`
+},
+{
+  id: 'qz-spring-060',
+  topic: 'spring',
+  q: 'HikariCP maximum-pool-size được cấu hình quá lớn (ví dụ 1000) trên một database chỉ có 4 core. Hệ quả gì sẽ xảy ra?',
+  options: [
+    'Hiệu năng tăng mạnh do tận dụng được 1000 connection cùng lúc',
+    'Database treo do vượt quá số connection tối đa',
+    'Context switching tăng mạnh, latency tăng vọt do cạnh tranh CPU trên DB, hiệu năng giảm',
+    'Connection pool tự động điều chỉnh về 4 nên không ảnh hưởng'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Context switching tăng, latency tăng, hiệu năng giảm.**
+
+### Vì sao đúng
+CPU chỉ xử lý được vài thread song song. Quá nhiều connection đồng nghĩa quá nhiều thread tranh chấp CPU trên DB để xử lý query, gây nghẽn (congested).
+
+> Senior tip: formula chuẩn: {{connections = ((core_count * 2) + effective_spindle_count)}}.`
+},
+{
+  id: 'qz-spring-061',
+  multi: true,
+  topic: 'spring',
+  q: 'Với {{@Transactional(readOnly = true)}}, phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'Hibernate không kiểm tra thay đổi trên entity (dirty checking)',
+    'Luôn chạy trên transaction isolation READ_UNCOMMITTED',
+    'Có thể dùng để tối ưu hóa truy vấn khi biết chắc không sửa đổi dữ liệu',
+    'Khiến mọi update đều bị chặn ở compiler',
+    'Không có tác dụng gì với Hibernate'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: Hibernate không dirty checking và tối ưu truy vấn.**
+
+### Vì sao đúng
+{{readOnly = true}} giúp Hibernate bỏ qua việc snapshot entity để so sánh dirty checking, tiết kiệm RAM và CPU. Database cũng có thể tối ưu truy vấn (lên slave).
+
+> Senior tip: luôn set readOnly cho các hàm chỉ đọc để tránh vô tình update entity và tăng throughput.`
+},
+{
+  id: 'qz-spring-062',
+  topic: 'spring',
+  q: 'PROPAGATION_NESTED khác REQUIRES_NEW ở đâu?',
+  options: [
+    'NESTED tạo savepoint trong transaction hiện tại, REQUIRES_NEW tạo transaction hoàn toàn mới',
+    'NESTED và REQUIRES_NEW hoàn toàn giống nhau',
+    'NESTED không hỗ trợ rollback, REQUIRES_NEW hỗ trợ',
+    'REQUIRES_NEW yêu cầu database hỗ trợ xa, NESTED không cần'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: NESTED tạo savepoint, REQUIRES_NEW tạo transaction mới.**
+
+### Vì sao đúng
+{{NESTED}} dùng cơ chế {{SAVEPOINT}} của database trong transaction cha: nếu NESTED lỗi, chỉ phần savepoint đó rollback, cha vẫn tiếp tục được. {{REQUIRES_NEW}} là hai transaction độc lập (hai connection), cha rollback không ảnh hưởng con đã commit.
+
+> Senior tip: NESTED chỉ hỗ trợ JDBC và đòi hỏi DB hỗ trợ savepoint (như PostgreSQL).`
+},
+{
+  id: 'qz-spring-063',
+  topic: 'spring',
+  q: 'Dùng FetchType.EAGER cho collection trong JPA có rủi ro gì?',
+  options: [
+    'Luôn gây ra LazyInitializationException',
+    'Dễ gây N+1 query và tải dữ liệu không cần thiết, làm chậm toàn bộ các truy vấn liên quan',
+    'Chỉ được dùng cho @OneToOne, không dùng được cho @OneToMany',
+    'Không có rủi ro gì, đây là cách tốt nhất để tránh lỗi Lazy'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Gây N+1 và tải dư thừa.**
+
+### Vì sao đúng
+EAGER ép buộc Hibernate tải toàn bộ collection mỗi khi fetch entity cha, ngay cả khi bạn không cần tới collection đó, gây performance tệ hại và N+1 query trên danh sách.
+
+> Senior tip: quy tắc là luôn dùng LAZY, cần dữ liệu gì thì dùng JOIN FETCH đúng truy vấn đó.`
+},
+{
+  id: 'qz-spring-064',
+  topic: 'spring',
+  q: 'Nếu 10 task async đều dùng 8 thread core của executor, chuyện gì xảy ra với 2 task còn lại?',
+  options: [
+    'Chúng bị từ chối ngay lập tức (RejectedExecutionException)',
+    'Chúng nằm trong hàng đợi chờ tới lượt',
+    'Hệ thống tự tạo thêm 2 thread mới',
+    'Chúng bị hủy bỏ im lặng'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Nằm trong hàng đợi.**
+
+### Vì sao đúng
+Executor dùng core thread trước, nếu đầy thì đưa vào hàng đợi. Khi hàng đợi đầy mới tới max thread (nếu có).
+
+> Senior tip: luôn cấu hình queue capacity hợp lý để tránh OOM do hàng đợi quá dài.`
+},
+{
+  id: 'qz-spring-065',
+  topic: 'spring',
+  q: 'HikariCP báo lỗi Connection leak. Nguyên nhân thường gặp nhất là gì?',
+  options: [
+    'Không đóng connection trong khối finally khi dùng JDBC thuần',
+    'HikariCP quá chậm',
+    'Số lượng core CPU quá ít',
+    'Không dùng @Transactional'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Không đóng connection.**
+
+### Vì sao đúng
+Connection không đóng được trả về pool thì pool dần cạn kiệt, dẫn đến lỗi timeout.
+
+> Senior tip: dùng try-with-resources là cách duy nhất an toàn.`
+}
 );
