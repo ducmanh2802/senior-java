@@ -97,7 +97,7 @@ Cách xử lý: đổi sang {{DENSE_RANK}}, thêm {{WHERE e.salary IS NOT NULL}}
     'Vì sao {{RANK}} không bao giờ trả về hạng 2 khi hai người cùng lương cao nhất?',
     'Làm thế nào để lấy "người có lương cao thứ 2" mà vẫn giữ đúng 1 người mỗi phòng ban?'
   ],
-  tags: ['window function', 'DENSE_RANK', 'RANK', 'ROW_NUMBER', 'NULL']
+  tags: ['window function', 'DENSE_RANK', 'RANK', 'ROW_NUMBER', 'NULL', 'core']
 },
 {
   id: 'sql-002',
@@ -202,7 +202,7 @@ Cách xử lý: sao lưu các dòng {{rn > 1}} sang bảng {{transaction_import_
     'Vì sao MySQL 8 báo lỗi 1093 khi xoá trên chính bảng đang được đọc trong subquery?',
     'Khi nào nên xoá mềm (soft delete) thay vì xoá thật, và rủi ro của việc đó?'
   ],
-  tags: ['DELETE', 'ROW_NUMBER', 'duplicate', 'unique constraint', 'idempotent']
+  tags: ['DELETE', 'ROW_NUMBER', 'duplicate', 'unique constraint', 'idempotent', 'core']
 },
 {
   id: 'sql-003',
@@ -310,7 +310,7 @@ Cách xử lý: đổi query sang {{NOT EXISTS}} với điều kiện thời gia
     'Giải thích chi tiết ba-valued logic và vì sao NULL trong NOT IN làm cả câu trả về rỗng.',
     'Với một câu anti-join, làm thế nào để biết optimizer chọn Nested Loop Anti Join hay Hash Anti Join?'
   ],
-  tags: ['JOIN', 'NOT EXISTS', 'NOT IN', 'anti-join', 'NULL', 'LEFT JOIN']
+  tags: ['JOIN', 'NOT EXISTS', 'NOT IN', 'anti-join', 'NULL', 'LEFT JOIN', 'core']
 },
 {
   id: 'sql-004',
@@ -408,7 +408,7 @@ Cách xử lý: chuyển điều kiện thời gian sang WHERE dùng khoảng n�
     'Vì sao {{COUNT(*) }} và {{COUNT(o.id)}} cho hai kết quả khác nhau khi dùng LEFT JOIN?',
     'Khi nào GROUP BY là cách sai và phải chuyển sang window function?'
   ],
-  tags: ['WHERE', 'HAVING', 'GROUP BY', 'NULL', 'logical order']
+  tags: ['WHERE', 'HAVING', 'GROUP BY', 'NULL', 'logical order', 'core']
 },
 {
   id: 'sql-005',
@@ -495,7 +495,7 @@ Cách xử lý: đổi sang {{ROW_NUMBER() OVER (PARTITION BY customer_id ORDER 
     'Tại sao không dùng DENSE_RANK cho "top N dòng"?',
     'Làm thế nào để tối ưu query này nếu bảng transaction có 100 triệu dòng?'
   ],
-  tags: ['window function', 'ROW_NUMBER', 'top N per group', 'tie-break'],
+  tags: ['window function', 'ROW_NUMBER', 'top N per group', 'tie-break', 'core'],
 },
 {
   id: 'sql-006',
@@ -610,7 +610,7 @@ Cách xử lý: thêm {{, t.id}} vào ORDER BY và ghi rõ {{ROWS BETWEEN UNBOUN
     'Tại sao phải dùng ROWS UNBOUNDED PRECEDING thay vì RANGE?',
     'Nếu một giao dịch cũ bị sửa (adjustment), bạn sẽ cập nhật running balance thế nào mà không lock toàn bảng?'
   ],
-  tags: ['window function', 'running total', 'running balance', 'SUM OVER', 'ROWS UNBOUNDED PRECEDING'],
+  tags: ['window function', 'running total', 'running balance', 'SUM OVER', 'ROWS UNBOUNDED PRECEDING', 'core'],
 },
 {
   id: 'sql-007',
@@ -1134,7 +1134,7 @@ Cách xử lý: viết native query {{INSERT INTO account_balance ... ON CONFLIC
     'Vì sao ON CONFLICT yêu cầu unique index/constraint mà không chấp nhận chỉ CHECK constraint?',
     'Khi nào nên dùng "INSERT … ON CONFLICT DO NOTHING" thay vì DO UPDATE?'
   ],
-  tags: ['upsert', 'ON CONFLICT', 'MERGE', 'race condition', 'idempotent', 'unique constraint'],
+  tags: ['upsert', 'ON CONFLICT', 'MERGE', 'race condition', 'idempotent', 'unique constraint', 'core'],
 },
 {
   id: 'sql-011',
@@ -1243,7 +1243,7 @@ Cách xử lý: sửa thành {{WHERE warehouse_id IS DISTINCT FROM 0}} (NULL đ�
     'Tại sao SUM của tập rỗng là NULL chứ không phải 0?',
     'Làm thế nào để index cho truy vấn WHERE col IS NULL trên PostgreSQL?'
   ],
-  tags: ['NULL', 'COUNT', 'aggregate', 'ORDER BY', 'three-valued logic'],
+  tags: ['NULL', 'COUNT', 'aggregate', 'ORDER BY', 'three-valued logic', 'core'],
 },
 {
   id: 'sql-012',
@@ -1348,7 +1348,7 @@ Cách xử lý: chuyển {{staging_txn}} sang partition theo ngày ({{PARTITION 
     'TRUNCATE có reset identity/sequence không trên PostgreSQL, MySQL và Oracle?',
     'Làm thế nào để refresh Materialized View tăng dần (incremental) trên PostgreSQL?'
   ],
-  tags: ['DELETE', 'TRUNCATE', 'DROP', 'VIEW', 'MATERIALIZED VIEW', 'REFRESH'],
+  tags: ['DELETE', 'TRUNCATE', 'DROP', 'VIEW', 'MATERIALIZED VIEW', 'REFRESH', 'core'],
 },
 {
   id: 'sql-013',
@@ -1474,7 +1474,7 @@ Cách xử lý: tạo index {{CREATE INDEX CONCURRENTLY idx_txn_cust_created_amt
     'Tại sao dùng RANGE INTERVAL thay vì ROWS 30 PRECEDING?',
     'Làm thế nào để tính z-score thay vì ratio đơn giản?'
   ],
-  tags: ['window function', 'RANGE', 'anomaly detection', 'fraud', 'AVG OVER'],
+  tags: ['window function', 'RANGE', 'anomaly detection', 'fraud', 'AVG OVER', 'core'],
 },
 {
   id: 'sql-014',
@@ -1588,7 +1588,7 @@ Cách xử lý: sửa query thành {{WHERE created_at >= TIMESTAMPTZ '2026-03-01
     "Tại sao BETWEEN '2026-03-01' AND '2026-03-31' lại mất dữ liệu?",
     'Làm thế nào để tạo functional index cho WHERE DATE(created_at) = ? trên PostgreSQL?'
   ],
-  tags: ['half-open interval', 'timezone', 'SARGable', 'index', 'BETWEEN', 'MONTH()'],
+  tags: ['half-open interval', 'timezone', 'SARGable', 'index', 'BETWEEN', 'MONTH()', 'core'],
 },
 {
   id: 'sql-015',
@@ -1679,7 +1679,7 @@ Cách xử lý: tạo index {{CREATE INDEX CONCURRENTLY idx_ord_status_created O
     'Vì sao index-only scan vẫn có thể phải đọc heap ({{Heap Fetches}} > 0)?',
     'Khi nào bạn quyết định **không** thêm index dù plan vẫn là {{Seq Scan}}?'
   ],
-  tags: ['EXPLAIN', 'Seq Scan', 'Index Only Scan', 'execution plan', 'visibility map'],
+  tags: ['EXPLAIN', 'Seq Scan', 'Index Only Scan', 'execution plan', 'visibility map', 'core'],
 },
 {
   id: 'sql-016',
@@ -1951,7 +1951,7 @@ Cách xử lý: tạo partial index {{CREATE INDEX CONCURRENTLY idx_msg_unread O
     '{{INCLUDE}} khác gì cột thường trong composite index, khi nào chọn cái nào?',
     'Khi predicate của partial index là giá trị người dùng chọn (vd theo tenant) thì xử lý ra sao?'
   ],
-  tags: ['partial index', 'covering index', 'INCLUDE', 'index-only scan', 'visibility map'],
+  tags: ['partial index', 'covering index', 'INCLUDE', 'index-only scan', 'visibility map', 'core'],
 },
 {
   id: 'sql-019',
@@ -2425,7 +2425,7 @@ Hệ thống bán lẻ có 1,2 triệu khách, 8 triệu đơn ({{orders}}) và 
     'Khi nào bạn thực sự cần CROSS JOIN trong báo cáo?',
     'Làm sao giả lập FULL OUTER JOIN trên MySQL?'
   ],
-  tags: ['JOIN', 'LEFT JOIN', 'fan-out', 'GROUP BY', 'báo cáo']
+  tags: ['JOIN', 'LEFT JOIN', 'fan-out', 'GROUP BY', 'báo cáo', 'core']
 },
 {
   id: 'sql-024',
@@ -2507,7 +2507,7 @@ Một nền tảng thương mại điện tử chạy 6 pod Spring Boot sau load
     'Khi nào chọn ON DELETE CASCADE, khi nào RESTRICT?',
     'Thêm UNIQUE vào bảng đã có dữ liệu trùng thì bạn làm thế nào?'
   ],
-  tags: ['constraint', 'UNIQUE', 'foreign key', 'CHECK', 'race condition', 'data integrity']
+  tags: ['constraint', 'UNIQUE', 'foreign key', 'CHECK', 'race condition', 'data integrity', 'core']
 },
 {
   id: 'sql-025',
@@ -2593,7 +2593,7 @@ Nhìn thấy số kỳ lạ như 50000.0000000001: FLOAT lưu nhị phân gần 
     'timestamptz có lưu múi giờ gốc của client không? Nếu cần biết giờ địa phương lúc giao dịch thì lưu thêm gì?',
     'Khi nào lưu tiền dạng số nguyên (đơn vị nhỏ nhất) thay vì NUMERIC?'
   ],
-  tags: ['NUMERIC', 'DECIMAL', 'BigDecimal', 'timestamptz', 'time zone', 'kiểu dữ liệu']
+  tags: ['NUMERIC', 'DECIMAL', 'BigDecimal', 'timestamptz', 'time zone', 'kiểu dữ liệu', 'core']
 },
 {
   id: 'sql-026',
@@ -2896,7 +2896,7 @@ Lặp cho tới khi số dòng bị ảnh hưởng bằng 0. Mỗi lô khoá ch�
     'Khi nào nên dùng MERGE (PostgreSQL 15+) thay cho UPDATE ... FROM?',
     'Bạn chọn kích thước lô thế nào và theo dõi replication lag ra sao trong lúc chạy?'
   ],
-  tags: ['UPDATE FROM', 'UPDATE JOIN', 'DELETE USING', 'batch', 'SKIP LOCKED', 'replication lag']
+  tags: ['UPDATE FROM', 'UPDATE JOIN', 'DELETE USING', 'batch', 'SKIP LOCKED', 'replication lag', 'core']
 },
 {
   id: 'sql-029',
@@ -3123,7 +3123,7 @@ Bảng {{orders}} 40 triệu dòng; truy vấn {{WHERE city = 'Hà Nội' AND di
     'Correlation của cột ảnh hưởng thế nào đến chi phí index scan, và REINDEX/CLUSTER làm gì?',
     'Extended statistics supports dependencies, ndistinct, mcv — mỗi loại dùng khi nào?'
   ],
-  tags: ['planner', 'statistics', 'selectivity', 'histogram', 'n_distinct', 'CREATE STATISTICS', 'correlation']
+  tags: ['planner', 'statistics', 'selectivity', 'histogram', 'n_distinct', 'CREATE STATISTICS', 'correlation', 'core']
 },
 {
   id: 'sql-032',
@@ -3180,7 +3180,7 @@ Báo cáo đối soát join {{transactions}} (8 triệu dòng/ngày) với {{set
     'Khi nào planner chọn nested loop dù cả hai bảng lớn?',
     'Parallel hash join trong PostgreSQL hoạt động thế nào?'
   ],
-  tags: ['join', 'nested loop', 'hash join', 'merge join', 'work_mem', 'spill', 'planner']
+  tags: ['join', 'nested loop', 'hash join', 'merge join', 'work_mem', 'spill', 'planner', 'core']
 },
 {
   id: 'sql-033',
@@ -3255,7 +3255,7 @@ Index Scan using idx_tx_account on transactions t
     'Seq Scan không phải lúc nào cũng xấu — khi nào planner chọn đúng?',
     'auto_explain và pg_stat_statements dùng để giám sát query thế nào?'
   ],
-  tags: ['EXPLAIN', 'ANALYZE', 'BUFFERS', 'loops', 'shared hit', 'shared read', 'bottleneck']
+  tags: ['EXPLAIN', 'ANALYZE', 'BUFFERS', 'loops', 'shared hit', 'shared read', 'bottleneck', 'core']
 },
 {
   id: 'sql-034',
@@ -3316,7 +3316,7 @@ Màn hình quản trị cho phép nhảy tới trang bất kỳ của 30 triệu
     'Frame mặc định RANGE vs ROWS khác nhau khi ORDER BY có duplicate?',
     'Làm sao paginate khi sort theo cột không unique mà không có id?'
   ],
-  tags: ['pagination', 'keyset', 'offset', 'window function', 'ROW_NUMBER', 'frame', 'sort']
+  tags: ['pagination', 'keyset', 'offset', 'window function', 'ROW_NUMBER', 'frame', 'sort', 'core']
 },
 {
   id: 'sql-035',
@@ -3373,7 +3373,7 @@ Truy vấn chính của màn hình đơn hàng: {{WHERE merchant_id = ? AND stat
     'Khi nào nên dùng BRIN index thay vì B-tree?',
     'Index trên expression (CREATE INDEX ON t (lower(email))) dùng khi nào?'
   ],
-  tags: ['index', 'composite', 'leftmost prefix', 'partial index', 'covering index', 'INCLUDE', 'ORDER BY']
+  tags: ['index', 'composite', 'leftmost prefix', 'partial index', 'covering index', 'INCLUDE', 'ORDER BY', 'core']
 },
 {
   id: 'sql-036',
@@ -3424,7 +3424,7 @@ Tìm khách hàng theo email chạy 4 giây dù có index {{customers(email)}}. 
     'pg_trgm có thể dùng cho similarity search (similarity()) ra sao?',
     'Bitmap scan và bitmap heap scan khác index scan thường thế nào?'
   ],
-  tags: ['index', 'function on column', 'implicit cast', 'OR', 'LIKE', 'pg_trgm', 'GIN', 'expression index']
+  tags: ['index', 'function on column', 'implicit cast', 'OR', 'LIKE', 'pg_trgm', 'GIN', 'expression index', 'core']
 },
 {
   id: 'sql-037',
@@ -4239,7 +4239,7 @@ Hệ thống thanh toán 20.000 giao dịch/giờ trên PostgreSQL 15. Ba tuần
     'Write skew khác serialization anomaly ở điểm nào, và SERIALIZABLE phát hiện nó bằng cơ chế gì?',
     'Nếu đặt @Retryable sai chỗ hoặc tự gọi method trong cùng bean thì hậu quả là gì?'
   ],
-  tags: ['isolation level', 'READ COMMITTED', 'REPEATABLE READ', 'SERIALIZABLE', 'MVCC', '40001']
+  tags: ['isolation level', 'READ COMMITTED', 'REPEATABLE READ', 'SERIALIZABLE', 'MVCC', '40001', 'core']
 },
 {
   id: 'sql-048',
@@ -4353,7 +4353,7 @@ Job định giá chạy mỗi đêm cập nhật 10.000 SKU theo thứ tự nh�
     '{{FOR UPDATE SKIP LOCKED}} giúp gì cho worker queue, và có nguy cơ bỏ sót task không?',
     'Vì sao retry phải đặt ở lớp ngoài transaction, và tự gọi method trong cùng bean thì sao?'
   ],
-  tags: ['deadlock', 'lock', 'FOR UPDATE', 'SKIP LOCKED', '40P01', 'Spring']
+  tags: ['deadlock', 'lock', 'FOR UPDATE', 'SKIP LOCKED', '40P01', 'Spring', 'core']
 },
 {
   id: 'sql-049',
