@@ -5154,4 +5154,531 @@ Tốt hơn: đổi tên file thành UUID ngay khi upload, lưu {{originalName}} 
   ],
   tags: ['Path Traversal', 'File Upload', 'File Download', 'Directory Traversal', 'UUID', 'IDOR'],
 },
+{
+  id: 'security-061',
+  topic: 'security',
+  level: 'senior',
+  q: 'JWT "quá to" trong header Authorization: vì sao request bị 400/431, giới hạn nằm ở đâu (Tomcat, Nginx, ALB), và làm sao chẩn đoán + giảm kích thước token?',
+  a: `**Tóm tắt:** JWT là token **self-contained** — mọi thông tin phân quyền nằm trong payload và được gửi kèm **mỗi request**. Khi token nhồi nhiều claim (thường là danh sách group/role từ AD/Keycloak) thì header {{Authorization}} vượt giới hạn kích thước header của web server hoặc proxy (Tomcat mặc định 8 KB), khiến request bị từ chối 400/431 **trước khi** vào tới code Java. Cách sửa đúng là **thu gọn token**, không phải tăng giới hạn một cách mù quáng.
+
+### Vì sao token lại to
+- Các IdP (Keycloak, Azure AD, Auth0) thường nhồi vào access token: {{realm_access.roles}}, {{groups}} (có thể hàng trăm nhóm), {{resource_access}}, {{scope}}, thông tin tenant.
+- Mỗi claim là một cặp key-value; một user thuộc 200 nhóm AD thì payload phình lên vài KB là bình thường.
+- Token càng to thì mỗi request càng tốn băng thông và dễ chạm giới hạn hạ tầng.
+
+### Giới hạn nằm ở đâu (theo thứ tự request đi qua)
+| Thành phần | Giới hạn mặc định | Khi vượt |
+|---|---|---|
+| Tomcat (Spring Boot nhúng) | {{server.max-http-request-header-size}} mặc định 8 KB | 400 "Request header is too large" |
+| Nginx | {{large_client_header_buffers 4 8k}} | 400/414 |
+| AWS ALB | Tổng header request tối đa ~16 KB | 400/431 |
+| CloudFront | Header request đơn tối đa ~20 KB (tổng header ~20 KB) | 400 |
+
+> Đây là lỗi **trước khi** vào Java: log ứng dụng không có gì, chỉ thấy 400 ở access log của web server/LB. Vì vậy phải biết đọc log tầng dưới thay vì debug code.
+
+### Cơ chế bên trong: vì sao header bị chặn
+- HTTP/1.1 server đọc request line + toàn bộ header vào một buffer có kích thước cố định.
+- Nếu vượt buffer → server đóng kết nối và trả 400/431, không chuyển request cho ứng dụng.
+- Mặc định Tomcat tính **tổng** request line + headers (không chỉ riêng Authorization), nên token 8 KB đã gần chạm trần.
+
+### Cách chẩn đoán
+1. Decode token ({{jwt.io}} hoặc dùng {{Base64}}) xem payload dài bao nhiêu byte.
+2. Đếm claim "nặng": {{groups}}, {{roles}}, {{realm_access}}, {{resource_access}}.
+3. So sánh kích thước token với giới hạn từng tầng (Tomcat 8 KB, Nginx, LB).
+4. Nhìn access log: nếu 400 xuất hiện ở LB/Nginx mà app không có log → đúng là header quá to.
+
+### Cách sửa (ưu tiên giảm token, không tăng giới hạn)
+1. **Thu gọn claim**: bỏ {{groups}}/{{realm_access}} khỏi access token; chỉ giữ role gọn (3–5 role) thay vì hàng trăm group. Spring Authorization Server dùng {{OAuth2TokenCustomizer}} để lọc claim khi cấp token.
+2. **Reference token (opaque) + introspection**: access token chỉ là chuỗi ngắn; resource server gọi {{/oauth2/introspect}} để lấy quyền. Token nhỏ, thu hồi tức thì, đổi lại thêm 1 network hop mỗi lần (cache được).
+3. **Tra quyền từ endpoint riêng**: resource server cache quyền theo {{sub}} từ API "permissions" thay vì nhồi vào token.
+4. **Tăng giới hạn có kiểm soát** (biện pháp cuối): {{server.max-http-request-header-size=16KB}} và tăng tương ứng Nginx/LB — nhưng phải đồng bộ tất cả tầng và vẫn nên giảm token.
+
+~~~java
+// 1) Đo kích thước token để chẩn đoán (JWT = 3 phần cách nhau bởi dấu chấm)
+String[] parts = token.split("[.]");
+byte[] payload = Base64.getUrlDecoder().decode(parts[1]);
+System.out.println("JWT payload bytes = " + payload.length); // > 8192 la dang cap toc do
+
+// 2) Spring Authorization Server: lọc claim khi cấp access token (giữ token gọn)
+@Bean
+OAuth2TokenCustomizer<JwtEncodingContext> slimClaims() {
+    return context -> {
+        if (OAuth2TokenType.ACCESS_TOKEN.equals(context.getTokenType())) {
+            context.getClaims().remove("realm_access");   // bo danh sach group/role dai
+            context.getClaims().remove("groups");
+            context.getClaims().put("roles", List.of("user")); // chi giu vai tro thiet yeu
+        }
+    };
+}
+// 3) application.properties (chi tang khi da co the, khong thay the giam token)
+// server.max-http-request-header-size=16KB
+~~~
+
+### Bảng trade-off
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Giảm claim trong token | Token nhỏ, nhanh, vẫn stateless | Phải thiết kế lại phân quyền; cần tra cứu nếu thiếu claim |
+| Reference token + introspection | Token rất nhỏ, thu hồi ngay | Thêm latency mỗi request (phải cache) |
+| Tăng giới hạn header | Ít thay đổi code | Che giấu vấn đề, dễ vỡ ở tầng LB/proxy, vẫn tốn băng thông |
+
+### Pitfall production
+- Tăng {{server.max-http-request-header-size}} trong app nhưng quên Nginx/ALB → app vẫn nhận 400 từ tầng trước.
+- Đặt token vào **cookie** thay vì header không giải quyết vấn đề (cookie cũng bị tính vào header size).
+- Log full token ở mức DEBUG làm log phình to và lộ token.
+- Token chứa cả access + id + refresh gộp một chỗ.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Cổng nhân viên (Spring Boot 3, Keycloak, 12.000 user) sau khi tích hợp AD: khoảng 5% request POST trả 400 ngay tại ALB, app không có log; user báo "bấm gửi nhưng lỗi".
+- **Điều tra**: Decode token mẫu thấy {{realm_access.roles}} + {{groups}} chiếm ~9,2 KB (một user thuộc ~230 nhóm AD). Access log ALB ghi 400 "request header too large"; Tomcat chưa kịp nhận request.
+- **Nguyên nhân gốc**: Keycloak cấu hình "add groups to token"; mỗi nhóm là một claim, tổng header vượt 8 KB của Tomcat/ALB.
+- **Cách xử lý**: (1) Cấu hình Keycloak bỏ {{groups}} khỏi access token, chỉ giữ 4 role; (2) service tra quyền chi tiết từ endpoint nội bộ + cache Redis 5 phút; (3) tăng {{server.max-http-request-header-size=16KB}} cho các service còn nhận token hệ cũ trong giai đoạn chuyển tiếp; (4) thêm test kích thước token vào CI.
+- **Kết quả đo được**: Token giảm từ ~9,2 KB còn ~0,6 KB; tỉ lệ 400 về 0; p99 latency không đổi (không còn xử lý header khổng lồ).
+
+### Trả lời mẫu khi phỏng vấn
+"JWT self-contained nên mọi claim đều nằm trong token và gửi kèm mỗi request. Khi token nhồi nhiều group/role từ AD hay Keycloak, header Authorization vượt giới hạn của web server hoặc proxy — Tomcat mặc định 8 KB, Nginx và ALB cũng có mức riêng — và request bị 400/431 ngay tại tầng đó, ứng dụng không hề log. Em chẩn đoán bằng cách decode token xem claim nào nặng, đối chiếu access log của LB/Nginx, rồi sửa theo hướng giảm token: bỏ group khỏi access token, chỉ giữ role cần thiết, hoặc chuyển sang reference token cộng introspection, hoặc tra quyền từ endpoint riêng có cache. Tăng giới hạn header chỉ là biện pháp cuối và phải đồng bộ mọi tầng. Trong dự án thật, token 9 KB do 230 nhóm AD khiến 5% request POST lỗi ở ALB; sau khi lọc còn 0,6 KB thì hết lỗi."
+
+> Senior tip: **Token là dữ liệu gửi mỗi request — coi nó như payload, không phải kho chứa quyền.** Mặc định Tomcat 8 KB; token doanh nghiệp hay phình vì {{groups}}/{{realm_access}}. Ưu tiên giảm claim, dùng reference token khi cần thu hồi tức thì, và chỉ tăng giới hạn sau khi đã đồng bộ Nginx/ALB. Thêm kiểm tra kích thước token vào CI để chặn tái diễn.
+
+`,
+  follow: [
+    'Reference token + introspection khác JWT self-contained như thế nào về hiệu năng và khả năng thu hồi?',
+    '{{groups}} nên để trong access token hay tra từ endpoint riêng? Khi nào đánh đổi là hợp lý?',
+    'Tăng {{server.max-http-request-header-size}} có tác dụng phụ bảo mật nào không?'
+  ],
+  tags: ['JWT', 'Header Size', 'Token Too Large', 'Tomcat', 'Nginx', 'ALB', 'OAuth2', 'Keycloak']
+},
+{
+  id: 'security-062',
+  topic: 'security',
+  level: 'senior',
+  q: 'Resource server thỉnh thoảng trả 401 dù token còn hạn: lệch đồng hồ (clock skew) giữa authorization server và resource server là gì, chẩn đoán và cấu hình clock skew trong Spring Security 6 thế nào?',
+  a: `**Tóm tắt:** JWT có {{exp}} (hết hạn) và {{nbf}} (chưa dùng trước thời điểm này). Nếu đồng hồ giữa máy cấp token và máy kiểm tra token lệch nhau, token bị coi là "chưa hợp lệ" hoặc "đã hết hạn" → 401 ngắt quãng, không cố định theo logic nghiệp vụ. Spring Security dùng {{JwtTimestampValidator}} với **clock skew mặc định 60 giây**; sửa gốc bằng đồng bộ NTP, còn clock skew chỉ là lớp đệm.
+
+### Cơ chế validate thời gian
+Khi resource server nhận JWT, nó kiểm tra (theo giờ hệ thống của chính nó):
+- {{exp}}: {{now < exp + skew}}? Quá hạn → {{JwtException}} → 401.
+- {{nbf}}: {{now + skew > nbf}}? Token dùng trước thời điểm hợp lệ → 401.
+- Nimbus/Spring so sánh theo **Unix timestamp** (giây), lấy từ đồng hồ máy đang chạy resource server.
+
+### Vì sao lệch đồng hồ xảy ra
+- Các node (auth server, resource server) chạy trên container/VM khác nhau, không bật NTP/chrony.
+- VM bị suspend/resume, hoặc base image container thiếu cấu hình đồng bộ giờ.
+- Multi-region: đồng hồ giữa region A (cấp token) và region B (kiểm token) lệch nhau.
+
+### Triệu chứng và chẩn đoán
+- Một tỉ lệ nhỏ request 401, thường theo cụm theo node; token mới vẫn lỗi trên một số pod.
+- Decode token lấy {{exp}}/{{nbf}}/{{iat}}, so với {{date +%s}} trên từng node:
+
+~~~bash
+# trên node resource server
+date +%s
+# decode payload JWT roi xem exp/nbf/iat (gia tri Unix)
+# lech > 60s giua cac node la dau hieu
+chronyc tracking   # xem offset dong ho (chrony)
+timedatectl        # xem NTP synchronized: yes/no
+~~~
+
+- Nếu {{timedatectl}} báo {{NTP synchronized: no}}, hoặc offset lớn → gốc rễ là đồng hồ chứ không phải token.
+
+### Cấu hình Spring Security 6
+- Mặc định {{JwtValidators.createDefault()}} đã có {{JwtTimestampValidator}} với 60s skew.
+- Muốn tăng/giảm skew, tự tạo validator và kết hợp với issuer:
+
+~~~java
+@Bean
+NimbusJwtDecoder jwtDecoder() {
+    NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+    OAuth2TokenValidator<Jwt> withIssuer = JwtValidators.createDefaultWithIssuer(issuer);
+    // doi stamp: constructor nhan Duration (Spring Security 6)
+    OAuth2TokenValidator<Jwt> timestamp = new JwtTimestampValidator(Duration.ofSeconds(90));
+    decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(withIssuer, timestamp));
+    return decoder;
+}
+~~~
+
+> {{JwtTimestampValidator(Duration)}} là constructor theo Duration; bản cũ dùng {{new JwtTimestampValidator(60)}} (giây). Clock skew nên giữ nhỏ (60–120s): đặt quá lớn sẽ kéo dài cửa sổ "token hết hạn vẫn dùng được", tăng rủi ro replay.
+
+### Bảng trade-off
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Đồng bộ NTP (chrony) mọi node | Sửa gốc, skew giữ nhỏ | Cần vận hành hạ tầng |
+| Tăng clock skew | Nhanh, giảm 401 | Kéo dài thời gian token hết hạn dùng được, tăng rủi ro replay |
+| Rút TTL access token | Giảm cửa sổ lạm dụng | Thêm request refresh |
+
+### Pitfall production
+- Đặt clock skew = 10 phút cho "hết lỗi" → token hết hạn vẫn hợp lệ 10 phút, kẻ trộm token có thêm thời gian.
+- Chỉ sửa một region, region khác vẫn lệch.
+- So sánh bằng giờ local timezone thay vì UTC (luôn dùng UTC/Instant).
+- {{iat}} không được kiểm tra mặc định, đừng dựa vào nó để chặn.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Hệ thống 6 microservice (Spring Boot 3, Keycloak) scale lên 20 pod, ~0,5% request trả 401 "Jwt expired" dù user vừa login; lỗi tập trung ở 3 node.
+- **Điều tra**: {{timedatectl}} trên node lỗi báo {{NTP synchronized: no}}, offset ~95 giây so với auth server. Token có {{exp}} còn hạn 60s trên auth server nhưng "hết hạn" trên node lệch.
+- **Nguyên nhân gốc**: Node container không đồng bộ NTP (base image thiếu chrony), đồng hồ trôi; clock skew 60s không đủ bù 95s.
+- **Cách xử lý**: (1) Bật chrony/đồng bộ NTP trên mọi node (hoặc đồng bộ tại hypervisor); (2) đặt {{JwtTimestampValidator}} 90s cho vùng chuyển tiếp; (3) cảnh báo khi {{timedatectl}} báo unsynchronized; (4) giữ TTL access token 10 phút.
+- **Kết quả đo được**: Sau đồng bộ, offset < 5s trên mọi node; 401 do hết hạn về 0; không cần tăng skew.
+
+### Trả lời mẫu khi phỏng vấn
+"Resource server kiểm tra exp và nbf theo đồng hồ của chính nó. Nếu đồng hồ giữa auth server và resource server lệch nhau, token sẽ bị coi là hết hạn hoặc chưa hợp lệ, gây 401 ngắt quãng theo từng node — đúng kiểu lỗi khó tái hiện trên máy dev. Em chẩn đoán bằng cách decode token, so exp/nbf với giờ hệ thống trên từng node, và kiểm tra NTP bằng timedatectl hoặc chronyc. Gốc rễ thường là container không đồng bộ giờ; em bật chrony cho mọi node và giữ clock skew mặc định khoảng 60 giây, chỉ tăng lên 90–120 giây trong lúc chuyển tiếp. Em không đặt skew quá lớn vì như thế token hết hạn vẫn dùng được lâu hơn, tăng rủi ro replay. Trong một hệ thống 20 pod, ba node lệch 95 giây gây 0,5% lỗi 401; sau khi đồng bộ NTP thì hết lỗi mà không phải nới skew."
+
+> Senior tip: **Lệch đồng hồ là lỗi hạ tầng, không phải lỗi code.** Trước khi tăng clock skew, hãy kiểm tra NTP trên mọi node ({{timedatectl}}, {{chronyc tracking}}) và cảnh báo khi unsynchronized. Mặc định Spring là 60s; chỉ nâng lên 90–120s tạm thời. Skew lớn = token hết hạn dùng được lâu hơn = cửa sổ replay rộng hơn.
+
+`,
+  follow: [
+    'Vì sao {{iat}} không được kiểm tra mặc định, và có nên tự thêm validator cho nó không?',
+    'Clock skew nên đặt bao nhiêu trong hệ thống multi-region, và đánh đổi với bảo mật ra sao?',
+    'Làm sao phát hiện sớm lệch đồng hồ giữa các node trong Kubernetes?'
+  ],
+  tags: ['Clock Skew', 'JWT', 'exp', 'nbf', 'JwtTimestampValidator', 'NTP', 'Spring Security 6', '401']
+},
+{
+  id: 'security-063',
+  topic: 'security',
+  level: 'senior',
+  q: 'Trong Spring Security 6 resource server, scope khác role như thế nào? Làm sao map scope và role trong JWT thành authority, dùng hasAuthority vs hasRole, và thiết kế phân quyền thế nào cho đúng?',
+  a: `**Tóm tắt:** **Scope** là quyền **cấp cho client** (ví dụ {{orders:read}}), nằm trong claim {{scope}} (hoặc {{scp}}), được Spring map thành authority {{SCOPE_orders:read}}. **Role** là thuộc tính **của user** ({{admin}}, {{user}}), thường nằm trong claim {{roles}} hoặc {{realm_access.roles}}, map thành {{ROLE_ADMIN}}. Dùng {{hasAuthority('SCOPE_...')}} cho scope, {{hasRole('ADMIN')}} cho role; nhầm prefix là lỗi 403 kinh điển.
+
+### Phân biệt scope và role
+| | Scope | Role |
+|---|---|---|
+| Chủ thể | Client/app được uỷ quyền | User |
+| Nguồn | Do client xin khi authorize | Do IdP gán cho user |
+| Claim | {{scope}} / {{scp}} (chuỗi cách nhau bởi dấu cách) | {{roles}}, {{realm_access.roles}}, {{authorities}} |
+| Prefix Spring | {{SCOPE_}} | {{ROLE_}} |
+| Ví dụ | {{orders:read orders:write}} | {{ADMIN}}, {{USER}} |
+
+### Spring map authority thế nào
+- Mặc định {{JwtAuthenticationConverter}} dùng {{JwtGrantedAuthoritiesConverter}}: claim {{scope}} (và {{scp}}), prefix {{SCOPE_}}.
+- {{scope="orders:read profile"}} → authorities {{SCOPE_orders:read}}, {{SCOPE_profile}}.
+- Muốn đọc role từ claim khác thì cấu hình converter (Keycloak để role trong {{realm_access.roles}} — là object lồng nhau nên cần converter riêng hoặc mapper phẳng hoá):
+
+~~~java
+@Bean
+SecurityFilterChain api(HttpSecurity http) throws Exception {
+    http.oauth2ResourceServer(o -> o.jwt(jwt -> jwt
+        .jwtAuthenticationConverter(jwtAuthenticationConverter())));
+    return http.build();
+}
+
+Converter<Jwt, AbstractAuthenticationToken> jwtAuthenticationConverter() {
+    JwtGrantedAuthoritiesConverter roles = new JwtGrantedAuthoritiesConverter();
+    roles.setAuthoritiesClaimName("roles");      // neu claim la list phang
+    roles.setAuthorityPrefix("ROLE_");           // -> ROLE_ADMIN
+    JwtGrantedAuthoritiesConverter scopes = new JwtGrantedAuthoritiesConverter(); // mac dinh scope -> SCOPE_
+    JwtAuthenticationConverter conv = new JwtAuthenticationConverter();
+    conv.setJwtGrantedAuthoritiesConverter(jwt -> {
+        Set<GrantedAuthority> all = new HashSet<>();
+        all.addAll(roles.convert(jwt));
+        all.addAll(scopes.convert(jwt));
+        return new ArrayList<>(all);
+    });
+    return conv;
+}
+~~~
+
+### Dùng hasAuthority vs hasRole
+- {{hasRole('ADMIN')}} tự thêm {{ROLE_}} → yêu cầu authority {{ROLE_ADMIN}}.
+- {{hasAuthority('SCOPE_orders:read')}} so khớp trực tiếp chuỗi authority.
+- Method security:
+
+~~~java
+@PreAuthorize("hasAuthority('SCOPE_orders:write')")  // can quyen write cua client
+public void createOrder(Order o) { /* ... */ }
+
+@PreAuthorize("hasRole('ADMIN')")                    // can user la admin
+public void deleteOrder(Long id) { /* ... */ }
+~~~
+
+### Thiết kế phân quyền đúng
+- **Scope** cho API coarse-grained: {{orders:read}}, {{orders:write}}, {{transfer:execute}}.
+- **Role** cho loại user: {{CUSTOMER}}, {{TELLER}}, {{ADMIN}}.
+- Kết hợp: endpoint chuyển tiền yêu cầu {{hasAuthority('SCOPE_transfer:execute')}} **và** {{hasRole('TELLER')}} (hoặc quyền chi tiết theo account).
+- Nguyên tắc least privilege: mỗi client chỉ xin scope tối thiểu; không nhồi hết scope vào mọi token.
+- Không dùng scope để biểu diễn quyền theo object (phải check ownership riêng — IDOR).
+
+### Pitfall production
+- Gọi {{hasRole('ADMIN')}} nhưng token không có prefix {{ROLE_}} → luôn 403.
+- Keycloak để role trong {{realm_access.roles}}, quên cấu hình converter → {{hasRole}} thất bại.
+- Trộn scope và role trong cùng một claim.
+- Đặt quá nhiều scope vào token → token to (liên quan token header size).
+- Quên rằng resource server **không cấp** scope/role, chỉ đọc claim; quyền phải do authorization server gán.
+
+### Ví dụ đời thực
+- **Triệu chứng**: API đơn hàng (Spring Boot 3, Keycloak) trả 403 cho user admin khi gọi {{DELETE /orders/:id}}; user thường vẫn xem được đơn.
+- **Điều tra**: Code dùng {{@PreAuthorize("hasRole('ADMIN')")}}; token Keycloak có claim {{realm_access.roles=["admin"]}} chứ không có claim {{roles}}. Mặc định converter không đọc {{realm_access}} → không có {{ROLE_ADMIN}}.
+- **Nguyên nhân gốc**: Không cấu hình {{JwtGrantedAuthoritiesConverter}} để đọc đúng tên claim role, và nhầm lẫn giữa scope ({{SCOPE_}}) và role ({{ROLE_}}).
+- **Cách xử lý**: (1) Cấu hình converter đọc đúng claim role (Keycloak: mapper thêm claim {{roles}} phẳng hoặc converter đọc {{realm_access.roles}}); (2) chuẩn hoá quy ước scope {{orders:read}}/{{orders:write}} cho client; (3) method security kết hợp scope + role; (4) thêm test phân quyền theo ma trận role × scope.
+- **Kết quả đo được**: 100% ca admin được phép sau cấu hình; 0 ca 403 sai do prefix; ma trận 24 ca phân quyền tự động chặn tái diễn.
+
+### Trả lời mẫu khi phỏng vấn
+"Scope và role khác nhau về chủ thể: scope là quyền cấp cho client, nằm trong claim scope và Spring map thành SCOPE_..., còn role là thuộc tính của user, map thành ROLE_.... Em dùng hasAuthority cho scope và hasRole cho role, và luôn nhớ hasRole tự thêm tiền tố ROLE_, nên nếu token không có prefix đó thì sẽ 403 dù user đúng là admin. Khi làm với Keycloak, em phải cấu hình converter để đọc đúng claim role — mặc định converter chỉ đọc scope, còn role của Keycloak nằm trong realm_access.roles là object lồng nhau nên cần mapper hoặc converter riêng. Về thiết kế, em để scope mô tả quyền ở mức API, role mô tả loại người dùng, và endpoint nhạy cảm thì yêu cầu cả hai; đồng thời áp dụng least privilege để token không phình to. Em luôn có ma trận test phân quyền role nhân scope để chặn lỗi prefix."
+
+> Senior tip: **Scope = client được làm gì, role = user là ai.** Nhớ prefix: {{hasRole('X')}} cần {{ROLE_X}}, {{hasAuthority('SCOPE_x')}} cần đúng {{SCOPE_x}}. Keycloak để role trong {{realm_access.roles}} — cấu hình converter hoặc mapper phẳng hoá. Đừng trộn scope và role trong một claim, và đừng dùng scope thay cho kiểm tra ownership (vẫn phải chống IDOR).
+
+`,
+  follow: [
+    'Keycloak {{realm_access.roles}} là object lồng nhau — viết converter đọc role lồng nhau thế nào?',
+    '{{hasAuthority}} và {{hasRole}} khác nhau ra sao khi authority không có prefix?',
+    'Nên đặt role trong access token hay tra từ server? Đánh đổi thế nào?'
+  ],
+  tags: ['Scope', 'Role', 'Spring Security 6', 'hasAuthority', 'hasRole', 'JwtGrantedAuthoritiesConverter', 'Keycloak']
+},
+{
+  id: 'security-064',
+  topic: 'security',
+  level: 'lead',
+  q: 'Bạn dùng Spring Authorization Server làm authorization server nội bộ. Đăng ký một client OAuth2 thế nào cho đúng: redirect_uri, PKCE, scope, thời gian sống token, phương thức xác thực client (none/secret/private_key_jwt)?',
+  a: `**Tóm tắt:** Trong Spring Authorization Server, mỗi client là một {{RegisteredClient}} khai báo: {{clientId}}, các {{AuthorizationGrantType}}, {{redirectUri}} khớp tuyệt đối, {{scope}}, {{ClientAuthenticationMethod}} ({{none}} cho public client như SPA/mobile; {{client_secret_basic}} hoặc {{private_key_jwt}} cho confidential), và {{ClientSettings}} ({{requireProofKey=true}} để bắt buộc PKCE). Lưu trữ bằng {{JdbcRegisteredClientRepository}} hoặc repository tự quản lý.
+
+### Các thành phần của RegisteredClient
+| Thành phần | Ý nghĩa | Gợi ý |
+|---|---|---|
+| {{clientId}} | Định danh client | Hậu tố theo môi trường |
+| {{authorizationGrantTypes}} | Cho phép flow nào | {{authorization_code}}, {{client_credentials}}, {{refresh_token}} |
+| {{redirectUris}} | URL callback | **Khớp tuyệt đối**, không wildcard |
+| {{scopes}} | Quyền client xin | Tối thiểu ({{openid}}, {{orders:read}}...) |
+| {{clientAuthenticationMethod}} | Cách xác thực client | {{none}} (public), {{client_secret_basic}}, {{private_key_jwt}}, {{tls_client_auth}} |
+| {{requireProofKey}} | Bắt buộc PKCE | {{true}} cho mọi client (OAuth 2.1) |
+| {{accessTokenTtl}}/{{refreshTokenTtl}} | Thời gian sống | Access 5–15 phút; refresh 7–30 ngày |
+| {{reuseRefreshTokens}} | Cho dùng lại refresh token | {{false}} (bắt buộc rotation) |
+
+~~~java
+@Bean
+RegisteredClientRepository registeredClientRepository(JdbcTemplate jdbc) {
+    // Client 1: SPA public, Authorization Code + PKCE, khong secret
+    RegisteredClient spa = RegisteredClient.withId(UUID.randomUUID().toString())
+        .clientId("spa-web")
+        .clientAuthenticationMethod(ClientAuthenticationMethod.NONE) // public
+        .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
+        .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
+        .redirectUri("https://app.bank.com/callback")   // khop tuyet doi
+        .scope("openid")
+        .scope("orders:read")
+        .clientSettings(ClientSettings.builder()
+            .requireProofKey(true)        // BAT BUOC PKCE (S256)
+            .requireAuthorizationConsent(false)
+            .build())
+        .tokenSettings(TokenSettings.builder()
+            .accessTokenTimeToLive(Duration.ofMinutes(10))
+            .refreshTokenTimeToLive(Duration.ofDays(7))
+            .reuseRefreshTokens(false)    // rotation + phat hien reuse
+            .build())
+        .build();
+
+    // Client 2: service-to-service confidential, private_key_jwt (khong secret chia se)
+    RegisteredClient svc = RegisteredClient.withId(UUID.randomUUID().toString())
+        .clientId("order-service")
+        .clientAuthenticationMethod(ClientAuthenticationMethod.PRIVATE_KEY_JWT)
+        .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS)
+        .scope("inventory:read")
+        .build();
+
+    return new JdbcRegisteredClientRepository(jdbc); // luu DB, khong hardcode
+}
+~~~
+
+### Bảng trade-off: phương thức xác thực client
+| Phương thức | Dùng cho | Ưu | Nhược |
+|---|---|---|---|
+| {{none}} | SPA, mobile (public) | Không giữ secret | Cần PKCE + redirect_uri chính xác |
+| {{client_secret_basic}} | Web backend, service | Đơn giản | Secret có thể rò rỉ, cần rotation |
+| {{private_key_jwt}} | Service-to-service | Không gửi secret qua mạng, chống replay | Cần quản lý key pair + JWKS |
+| {{tls_client_auth}} (mTLS) | Đối tác, zero-trust | Mạnh | Hạ tầng cert phức tạp |
+
+### Pitfall production
+- {{redirectUri}} đặt wildcard hoặc so khớp prefix → lỗ hổng chuyển hướng mã độc.
+- Bật {{requireProofKey=false}} cho SPA → PKCE không được kiểm soát.
+- {{reuseRefreshTokens=true}} → refresh token bị đánh cắp dùng lại vô thời hạn.
+- Hardcode {{RegisteredClient}} trong code thay vì DB → không quản lý được nhiều môi trường.
+- Lưu secret plaintext: nên băm bằng {{BCryptPasswordEncoder}} trước khi lưu (Spring Authorization Server lưu đúng chuỗi bạn đưa vào).
+- Quên {{scope}} → token không có quyền cần thiết, resource server 403.
+- Đặt access token TTL quá dài → cửa sổ lạm dụng lớn nếu token rò rỉ.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Hệ thống mở API cho đối tác (Spring Authorization Server, 40 client). Một đối tác báo thỉnh thoảng bị 401 khi gọi API; audit cho thấy có client vẫn dùng {{client_secret}} cũ sau khi "đã xoay key".
+- **Điều tra**: {{JdbcRegisteredClientRepository}} lưu secret dạng plaintext trong bảng {{oauth2_registered_client}}; nhiều client copy secret vào file cấu hình; không có quy trình rotation. Một SPA dùng {{requireProofKey=false}} và redirect_uri khớp prefix.
+- **Nguyên nhân gốc**: Quản lý client thủ công, secret lưu plaintext, thiếu PKCE bắt buộc và redirect_uri lỏng.
+- **Cách xử lý**: (1) Băm secret bằng {{BCryptPasswordEncoder}} trước khi lưu; (2) chuyển SPA sang public + PKCE bắt buộc; (3) redirect_uri khớp tuyệt đối; (4) tắt {{reuseRefreshTokens}}; (5) quy trình cấp/thu hồi client qua 4 mắt.
+- **Kết quả đo được**: 0 secret plaintext trong DB; 100% client mới bật PKCE; rotation secret không downtime (2 key song song).
+
+### Trả lời mẫu khi phỏng vấn
+"Em coi mỗi client là một RegisteredClient khai báo rõ: grant type nào, redirect_uri khớp tuyệt đối, scope tối thiểu, cách xác thực client, và các tham số token. Với SPA hay mobile là public client, em dùng Authorization Code cộng PKCE bắt buộc, xác thực client kiểu none, tuyệt đối không giữ secret; với service-to-service em ưu tiên private_key_jwt hoặc mTLS thay vì secret chia sẻ, còn web backend confidential thì dùng client_secret_basic và băm secret khi lưu. Em đặt access token ngắn 5–15 phút, refresh token dài hơn nhưng tắt reuseRefreshTokens để rotation và phát hiện reuse. Redirect_uri phải khớp tuyệt đối, không wildcard, vì đó là lỗ hổng chuyển hướng mã độc hay gặp. Em lưu client trong DB qua JdbcRegisteredClientRepository để quản lý nhiều môi trường và có quy trình cấp/thu hồi. Trong một hệ thống mở API 40 client, em từng xử lý việc secret lưu plaintext và SPA thiếu PKCE bằng cách chuyển sang public client, băm secret và bắt buộc PKCE cho mọi client mới."
+
+> Senior tip: **Chọn phương thức xác thực client theo loại client, không theo thói quen.** Public (SPA/mobile): {{none}} + PKCE bắt buộc. Confidential web backend: {{client_secret_basic}} + secret băm. Service-to-service: {{private_key_jwt}} hoặc mTLS. Luôn {{redirect_uri}} khớp tuyệt đối, {{reuseRefreshTokens=false}}, access token ngắn, và lưu client trong DB (không hardcode) để xoay vòng và thu hồi được.
+
+`,
+  follow: [
+    'Khi nào dùng {{private_key_jwt}} thay cho {{client_secret_basic}}? Cách xoay key không downtime?',
+    'DCR (Dynamic Client Registration RFC 7591) khác đăng ký tĩnh ở điểm nào, rủi ro gì?',
+    'Rotation refresh token khi {{reuseRefreshTokens=false}}: phát hiện reuse thì làm gì?'
+  ],
+  tags: ['Spring Authorization Server', 'RegisteredClient', 'PKCE', 'Client Authentication', 'private_key_jwt', 'redirect_uri', 'OAuth2']
+},
+{
+  id: 'security-065',
+  topic: 'security',
+  level: 'senior',
+  q: 'Trong OIDC, {{id_token}} và {{access_token}} khác nhau thế nào? Khi nào dùng cái nào, {{nonce}} để làm gì, và vì sao không được dùng {{id_token}} để gọi API? Mô hình BFF giải quyết ra sao?',
+  a: `**Tóm tắt:** {{id_token}} là JWT chứa **danh tính user** ({{sub}}, {{name}}, {{email}}), do client (app) xác thực để biết "đây là ai"; {{access_token}} là **vé gọi API** do resource server kiểm tra để cho phép thao tác "được làm gì". {{nonce}} gắn id_token với request đăng nhập để chống replay. Tuyệt đối **không** dùng {{id_token}} làm Bearer gọi API (audience sai, không có quyền resource). Mô hình BFF giữ token ở backend, SPA chỉ giữ session cookie.
+
+### Phân biệt id_token và access_token
+| | {{id_token}} | {{access_token}} |
+|---|---|---|
+| Mục đích | Xác thực danh tính user | Uỷ quyền gọi API |
+| Ai kiểm tra | Client (app) | Resource server |
+| Audience ({{aud}}) | {{client_id}} của app | API/resource server |
+| Nội dung | {{sub}}, {{name}}, {{email}}, {{nonce}} | {{sub}}, {{scope}}, {{exp}}... (hoặc opaque) |
+| Gửi cho ai | Chỉ client | Đi kèm request tới API |
+
+### Vòng đời và vai trò của nonce
+1. Client chuyển hướng tới {{/authorize}} với {{scope=openid profile email}}, {{state}}, {{nonce}}.
+2. User đăng nhập → auth server trả {{code}}.
+3. Client đổi {{code}} lấy token → nhận {{id_token}}, {{access_token}}, ({{refresh_token}}).
+4. Client **xác thực {{id_token}}**: chữ ký (JWKS), {{iss}}, {{aud=client_id}}, {{exp}}, và {{nonce}} khớp giá trị đã gửi → chống replay/token injection.
+5. Client dùng {{access_token}} gọi API; resource server xác thực chữ ký + {{exp}} + {{aud}} + {{scope}}.
+
+### Vì sao không dùng id_token gọi API
+- {{aud}} của id_token là {{client_id}} của app, **không phải** API → resource server từ chối (sai audience).
+- id_token không có {{scope}} → không diễn đạt quyền gọi API.
+- id_token dùng cho client xác thực user, không phải "vé" cho resource server.
+
+### BFF (Backend-for-Frontend)
+- SPA không giữ token; backend (confidential client) giữ {{access_token}}/{{refresh_token}}, tạo session cookie {{HttpOnly; Secure; SameSite}}.
+- SPA gọi backend bằng cookie; backend đính {{access_token}} khi gọi API.
+- Lợi ích: token không nằm trong JS → XSS khó lấy; thu hồi qua session; CSRF bảo vệ bằng token (vì dùng cookie).
+
+~~~java
+// Resource server doi audience cua API, khong phai client_id
+@Bean
+SecurityFilterChain api(HttpSecurity http) throws Exception {
+    http.oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()));
+    return http.build();
+}
+
+// Nimbus mac dinh (duong jwk-set-uri) KHONG kiem audience -> phai tu them validator
+NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
+    JwtValidators.createDefaultWithIssuer(issuer),
+    jwt -> jwt.getAudience().contains("bank-api")
+        ? OAuth2TokenValidatorResult.success()
+        : OAuth2TokenValidatorResult.failure(
+              new OAuth2Error("invalid_token", "Audience khong hop le", null))));
+~~~
+
+### Bảng trade-off
+| Cách | Ưu | Nhược |
+|---|---|---|
+| SPA giữ token (localStorage) | Đơn giản | XSS đọc được token |
+| BFF (session cookie) | An toàn hơn, token ẩn | Cần backend phụ, thêm hop |
+| Reference token + introspection | Thu hồi ngay | Thêm latency |
+
+### Pitfall production
+- Lưu {{access_token}} trong {{localStorage}} → XSS đọc được.
+- Dùng {{id_token}} gọi API → 401 do sai {{aud}}.
+- Không kiểm tra {{nonce}} trong id_token → replay.
+- Resource server quên validator {{aud}} (mặc định đường jwk-set-uri không kiểm) → token của hệ khác được chấp nhận nếu cùng issuer/key.
+- Đặt {{access_token}} vào URL → rò rỉ qua log.
+
+### Ví dụ đời thực
+- **Triệu chứng**: SPA gọi API nội bộ lúc được lúc không, một số 401 "invalid audience". Khi debug, thấy request gửi {{id_token}} thay vì {{access_token}}.
+- **Điều tra**: SPA dùng chung biến {{token}} cho cả id và access; sau khi thêm OIDC, code chọn nhầm id_token; API cấu hình {{aud=bank-api}}, id_token có {{aud=spa-client}}.
+- **Nguyên nhân gốc**: Không phân biệt vai trò hai loại token; thiếu kiểm tra audience ở resource server.
+- **Cách xử lý**: (1) Tách biến {{idToken}}/{{accessToken}}; (2) chỉ dùng access_token gọi API; (3) resource server thêm validator {{aud}}; (4) chuyển sang BFF để token không nằm trong JS; (5) test tự động xác nhận id_token bị từ chối ở API.
+- **Kết quả đo được**: 0 lỗi audience sau tách biến; pentest XSS không lấy được token (BFF); 100% request gọi API dùng access_token hợp lệ.
+
+### Trả lời mẫu khi phỏng vấn
+"Em phân biệt rõ id_token và access_token theo mục đích: id_token chứa danh tính user, audience là client_id của app, client dùng nó để biết người dùng là ai; còn access_token là vé gọi API, audience là resource server và mang scope. Vì vậy em không bao giờ dùng id_token để gọi API — resource server sẽ từ chối do sai audience, và id_token cũng không có scope để diễn đạt quyền. Với OIDC em luôn kiểm tra id_token gồm chữ ký, issuer, audience, exp và nonce để chống replay. Về lưu trữ, em ưu tiên mô hình BFF: SPA chỉ giữ session cookie HttpOnly, còn access token và refresh token nằm ở backend, nên XSS khó lấy token và việc thu hồi dễ hơn. Em cũng luôn thêm validator audience ở resource server vì cấu hình jwk-set-uri mặc định không kiểm audience. Trong một dự án, lỗi một số request 401 là do SPA gửi nhầm id_token; sau khi tách biến và thêm validator thì hết."
+
+> Senior tip: **id_token để biết "ai", access_token để "làm gì".** Không bao giờ dùng id_token gọi API (sai audience). Luôn kiểm {{nonce}} khi xác thực id_token. Resource server phải tự thêm validator {{aud}} nếu dùng {{jwk-set-uri}}. Lưu trữ token: ưu tiên BFF + session cookie hơn {{localStorage}}.
+
+`,
+  follow: [
+    '{{nonce}} khác {{state}} như thế nào? Mỗi cái chống tấn công gì?',
+    'Resource server nên kiểm những claim nào của access token, và vì sao không kiểm {{aud}} mặc định là rủi ro?',
+    'BFF khác gì với SPA giữ token trong bộ nhớ (memory) rồi xoá khi tắt tab?'
+  ],
+  tags: ['OIDC', 'id_token', 'access_token', 'nonce', 'audience', 'BFF', 'Spring Security 6']
+},
+{
+  id: 'security-066',
+  topic: 'security',
+  level: 'lead',
+  q: 'Service A đã có token của user và cần gọi service B thay mặt user: dùng thẳng token của user hay token exchange (RFC 8693)? Phân biệt delegation (on-behalf-of) và impersonation, vai trò của claim {{act}}/{{may_act}}?',
+  a: `**Tóm tắt:** Khi service A cần gọi service B **thay mặt user**, cách an toàn là **token exchange (RFC 8693)**: A dùng token của user (subject token) cộng xác thực client của chính A (actor token) để đổi lấy một token mới có {{aud=B}}, chứng minh "A đang hành động thay cho user". Có hai kiểu: **delegation (on-behalf-of)** — token có claim {{act}} ghi ai là actor, user vẫn là subject; **impersonation** — token mang danh tính user thuần, không ghi actor (rủi ro mất dấu vết). Không chuyển thẳng token của user cho B vì token đó có audience của A, B sẽ từ chối hoặc sinh lỗ hổng confused deputy.
+
+### Vì sao không chuyển thẳng token của user
+- Token của user thường có {{aud=A}} → B từ chối (sai audience) hoặc nếu B không kiểm audience → B tưởng token là của chính B (confused deputy).
+- A chỉ forward token thì không có bằng chứng "được uỷ quyền thay mặt user" — thiếu ngữ nghĩa delegation.
+
+### Token Exchange (RFC 8693) hoạt động thế nào
+1. A có {{subject_token}} (token của user, audience A).
+2. A gọi endpoint {{/token}} của authorization server với:
+   - {{grant_type=urn:ietf:params:oauth:grant-type:token-exchange}}
+   - {{subject_token}}, {{subject_token_type=urn:ietf:params:oauth:token-type:access_token}}
+   - {{actor_token}} (token client_credentials của A), {{actor_token_type=...}}
+   - {{audience=B}} (hoặc {{resource=B}})
+   - {{scope=orders:read}}
+3. Authorization server xác thực A, kiểm tra quyền, cấp {{access_token}} mới: {{sub=user}}, {{aud=B}}, và claim {{act}} có {{sub=service-a}}.
+4. A gọi B với token mới; B kiểm tra chữ ký + {{aud=B}} + {{act}} và biết "service-a thay mặt user".
+
+### Delegation vs Impersonation
+| | Delegation (on-behalf-of) | Impersonation |
+|---|---|---|
+| Claim | {{act}} (actor) | Không có {{act}} |
+| Ý nghĩa | A hành động thay user | Hệ thống thực thi như chính user |
+| Audit | Rõ ai làm gì | Mất dấu vết actor |
+| Rủi ro | Thấp hơn | Cao (không truy được nguồn) |
+| Khi nào | Service chain gọi nhau | Chỉ nội bộ tin cậy tuyệt đối (hạn chế) |
+
+### Code (nguyên lý, tuỳ authorization server)
+~~~java
+// A goi authorization server de doi token thay mat user (RFC 8693)
+MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+form.add("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange");
+form.add("subject_token", userAccessToken);        // token cua user (aud = A)
+form.add("subject_token_type", "urn:ietf:params:oauth:token-type:access_token");
+form.add("actor_token", serviceAClientAssertion);  // chung to A la client hop le
+form.add("actor_token_type", "urn:ietf:params:oauth:token-type:jwt");
+form.add("audience", "service-b");                 // token moi se co aud = B
+form.add("scope", "orders:read");
+
+// gui toi /token cua authorization server (Keycloak ho tro; Spring Authorization Server tuy phien ban)
+// -> nhan access_token moi: sub=user, aud=B, act={sub: service-a}
+
+// B kiem tra: chu ky + aud=B + scope + act.sub
+~~~
+
+### Bảng trade-off
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Forward token user | Đơn giản | Sai audience / confused deputy, khó audit |
+| Token exchange (delegation) | Đúng audience, có audit actor | Cần authorization server hỗ trợ, thêm 1 round-trip |
+| Client credentials thay user | Đơn giản | Mất danh tính user, sai ngữ nghĩa |
+
+### Pitfall production
+- Bỏ qua {{act}} → mất dấu vết ai thực sự khởi xướng (audit không đạt).
+- Không kiểm {{aud}} ở B → token của dịch vụ khác được chấp nhận.
+- Đặt {{may_act}} quá rộng → client khác mạo danh actor.
+- Cache token exchange quá lâu → token hết hạn/không thu hồi được.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Luồng "nhân viên CSKH xem đơn hàng của khách" qua 3 service (API Gateway → Order Service → Payment Service). Payment Service thỉnh thoảng trả 401 do token có {{aud=order-service}}; đồng thời audit không biết nhân viên nào khởi xướng.
+- **Điều tra**: Order Service chuyển thẳng token của user cho Payment Service. Token ban đầu có {{aud=api-gateway}}; Payment kiểm audience nghiêm → từ chối. Khi nới lỏng để "hết lỗi", mọi service đều tin token → nguy cơ confused deputy.
+- **Nguyên nhân gốc**: Dùng forward token thay vì token exchange; không có claim actor để audit.
+- **Cách xử lý**: (1) Bật token exchange (RFC 8693) ở authorization server; (2) Order Service đổi token user + client assertion của mình lấy token {{aud=payment}}; (3) Payment kiểm {{aud}} + {{act.sub=order-service}}; (4) dùng delegation, không impersonation; (5) audit log ghi {{sub}} + {{act}} + {{traceId}} để truy vết.
+- **Kết quả đo được**: 0 lỗi audience giữa các service; 100% giao dịch truy được actor; audit đạt yêu cầu kiểm toán (ai thay mặt ai).
+
+### Trả lời mẫu khi phỏng vấn
+"Khi service A đã có token của user nhưng cần gọi service B thay mặt user, em không chuyển thẳng token đó cho B, vì token có audience của A nên B sẽ từ chối, hoặc nếu B không kiểm audience thì sinh lỗ hổng confused deputy. Cách đúng là token exchange theo RFC 8693: A dùng token của user làm subject token cộng client assertion của chính A làm actor token, gọi endpoint token để đổi lấy một token mới có audience là B và claim act ghi A là actor. Như vậy B vẫn biết user là ai nhưng đồng thời biết A đang hành động thay mặt user. Em phân biệt delegation và impersonation: delegation giữ claim act để audit được ai khởi xướng, còn impersonation làm mất dấu vết nên chỉ dùng trong nội bộ tin cậy tuyệt đối. Em luôn kiểm audience ở B và giới hạn may_act để tránh mạo danh. Trong một luồng CSKH gọi qua ba service, forward token gây 401 và mất audit; sau khi chuyển sang token exchange thì hết lỗi audience và truy được actor."
+
+> Senior tip: **Không forward token của user giữa các service — dùng token exchange (RFC 8693).** Delegation giữ {{act}} để audit ai thay mặt ai; impersonation làm mất dấu vết nên hạn chế. B luôn kiểm {{aud}} và {{act}} (và {{may_act}} nếu dùng). Mỗi bước ghi {{sub}} + {{act}} + {{traceId}} vào audit log. Keycloak hỗ trợ token exchange; với Spring Authorization Server hãy kiểm tra phiên bản.
+
+`,
+  follow: [
+    '{{act}} và {{may_act}} khác nhau thế nào? Khi nào cần {{may_act}}?',
+    'Token exchange thêm một round-trip tới authorization server — làm sao giảm độ trễ (cache)?',
+    'Nếu authorization server không hỗ trợ RFC 8693 thì có cách nào thay thế an toàn không?'
+  ],
+  tags: ['Token Exchange', 'RFC 8693', 'Delegation', 'Impersonation', 'act', 'may_act', 'OAuth2', 'Audit']
+},
 );
