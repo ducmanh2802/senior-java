@@ -61,7 +61,7 @@ Một service có class {{OrderService}} với 14 field {{@Autowired}}. Unit tes
     'Tại sao Spring Framework 4.3 bỏ yêu cầu {{@Autowired}} khi class chỉ có một constructor?',
     'Constructor injection có làm app khởi động chậm hơn không, vì sao?'
   ],
-  tags: ['IoC', 'DI', 'constructor injection', 'field injection']
+  tags: ['core', 'IoC', 'DI', 'constructor injection', 'field injection']
 },
 {
   id: 'spring-002',
@@ -150,7 +150,7 @@ Khi shutdown:
     'Sự khác biệt giữa {{BeanFactoryPostProcessor}} và {{BeanPostProcessor}} về thời điểm và phạm vi?',
     'Tại sao {{@PostConstruct}} không chạy trên bean tạo bằng {{new}} thủ công?'
   ],
-  tags: ['bean lifecycle', 'BeanPostProcessor', 'PostConstruct', 'SmartLifecycle']
+  tags: ['core', 'bean lifecycle', 'BeanPostProcessor', 'PostConstruct', 'SmartLifecycle']
 },
 {
   id: 'spring-003',
@@ -211,7 +211,7 @@ Một bean {{PriceCalculator}} giữ trạng thái tạm (danh sách khuyến m�
     'Tại sao Spring không gọi {{@PreDestroy}} cho bean prototype? Làm sao xử lý tài nguyên trong trường hợp đó?',
     'Sự khác biệt giữa {{ObjectProvider}} và {{@Lookup}} khi nào nên dùng cái nào?'
   ],
-  tags: ['bean scope', 'prototype', 'singleton', 'ObjectProvider']
+  tags: ['core', 'bean scope', 'prototype', 'singleton', 'ObjectProvider']
 },
 {
   id: 'spring-004',
@@ -274,7 +274,7 @@ Service đặt vé có method {{public void bookAll(List<Seat> seats)}} lặp v�
     'Tại sao {{@Transactional}} trên method {{private}} bị bỏ qua một cách âm thầm?',
     'Khi nào nên dùng {{TransactionTemplate}} thay vì {{@Transactional}}?'
   ],
-  tags: ['Transactional', 'proxy', 'self-invocation', 'rollback', 'transaction']
+  tags: ['core', 'Transactional', 'proxy', 'self-invocation', 'rollback', 'transaction']
 },
 {
   id: 'spring-005',
@@ -326,7 +326,7 @@ Service thanh toán ghi audit log bằng {{REQUIRES_NEW}} để audit vẫn còn
     'Transaction con dùng {{REQUIRES_NEW}} commit thành công nhưng transaction cha rollback – dữ liệu sẽ ra sao?',
     'Tại sao {{NESTED}} không hoạt động trên mọi database?'
   ],
-  tags: ['Transactional', 'propagation', 'REQUIRES_NEW', 'NESTED']
+  tags: ['core', 'Transactional', 'propagation', 'REQUIRES_NEW', 'NESTED']
 },
 {
   id: 'spring-006',
@@ -385,7 +385,7 @@ Team viết aspect {{@Timed}} tự chế để đo thời gian các method repos
     'Khi nào nên chọn JDK proxy thay vì CGLIB trong dự án Spring Boot?',
     'Tại sao {{@Async}} và {{@Cacheable}} cũng chịu cùng hạn chế self-invocation với AOP?'
   ],
-  tags: ['AOP', 'CGLIB', 'JDK proxy', 'aspect']
+  tags: ['core', 'AOP', 'CGLIB', 'JDK proxy', 'aspect']
 },
 {
   id: 'spring-007',
@@ -466,7 +466,7 @@ Một team viết auto-config {{DbMetricsAutoConfiguration}} để expose metric
     'Sự khác biệt giữa {{@ConditionalOnMissingBean}} và {{@ConditionalOnMissingClass}} là gì?',
     'Làm sao biết auto-config nào đã được nạp mà không cần bật {{--debug}}?'
   ],
-  tags: ['auto-configuration', 'Conditional', 'actuator', 'debug']
+  tags: ['core', 'auto-configuration', 'Conditional', 'actuator', 'debug']
 },
 {
   id: 'spring-008',
@@ -887,7 +887,7 @@ Một hệ thống đặt hàng có API GET /api/orders/{id} trả về HTTP 500
     'Sự khác biệt giữa {{@ExceptionHandler}} và {{@ResponseStatus}} là gì?',
     'Tại sao lỗi phát sinh trong filter không được xử lý bởi {{@ControllerAdvice}}?'
   ],
-  tags: ['ControllerAdvice', 'ProblemDetail', 'RFC 7807', 'exception handling'],
+  tags: ['core', 'ControllerAdvice', 'ProblemDetail', 'RFC 7807', 'exception handling'],
   refs: [
     { type: 'doc', title: 'Spring Framework REST Exceptions', url: 'https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-rest-exceptions.html' },
     { type: 'doc', title: 'RFC 9457 Problem Details', url: 'https://www.rfc-editor.org/rfc/rfc9457.html' }
@@ -957,7 +957,7 @@ Hệ thống thanh toán của một công ty tài chính dùng {{spring.profile
     'Relaxed binding quy định việc map từ tên biến môi trường sang property như thế nào?',
     'Vì sao nên dùng record cho {{@ConfigurationProperties}} thay vì class có setter?'
   ],
-  tags: ['ConfigurationProperties', 'profile', 'secrets', 'externalized config']
+  tags: ['core', 'ConfigurationProperties', 'profile', 'secrets', 'externalized config']
 },
 {
   id: 'spring-015',
@@ -1094,7 +1094,7 @@ Một màn hình danh sách đơn hàng hiển thị 50 đơn/trang, mỗi đơn
     'Vì sao {{join fetch}} kết hợp {{Pageable}} lại gây cảnh báo {{HHH000104}}?',
     'Sự khác biệt giữa {{@BatchSize}} và {{default_batch_fetch_size}} là gì?'
   ],
-  tags: ['N+1', 'fetch join', 'EntityGraph', 'lazy loading', 'DTO projection']
+  tags: ['core', 'N+1', 'fetch join', 'EntityGraph', 'lazy loading', 'DTO projection']
 },
 {
   id: 'jpa-002',
@@ -1153,7 +1153,7 @@ Một job cập nhật giá cho 300.000 sản phẩm trong **một** transaction
     'Vì sao {{merge}} trên entity detached có thể tạo ra bản sao và gây hiểu lầm?',
     'Auto-flush xảy ra trong những trường hợp nào và ảnh hưởng thế nào tới kết quả truy vấn?'
   ],
-  tags: ['persistence context', 'dirty checking', 'flush', 'entity states']
+  tags: ['core', 'persistence context', 'dirty checking', 'flush', 'entity states']
 },
 {
   id: 'jpa-003',
@@ -1212,7 +1212,7 @@ Một API trả danh sách đơn hàng chạy tốt khi Open Session In View đa
     'Vì sao {{@Transactional}} ở tầng service đôi khi không đủ để tránh {{LazyInitializationException}}?',
     'Tắt OSIV ảnh hưởng thế nào tới các template Thymeleaf?'
   ],
-  tags: ['lazy loading', 'LazyInitializationException', 'open-in-view', 'OSIV']
+  tags: ['core', 'lazy loading', 'LazyInitializationException', 'open-in-view', 'OSIV']
 },
 {
   id: 'jpa-004',
@@ -1281,7 +1281,7 @@ Màn hình quản lý tồn kho cho phép nhiều nhân viên sửa cùng một 
     'Tại sao retry {{OptimisticLockException}} phải dùng transaction mới?',
     'Làm thế nào để tránh deadlock khi dùng pessimistic lock trên nhiều bảng?'
   ],
-  tags: ['optimistic locking', 'pessimistic locking', 'Version', 'OptimisticLockException']
+  tags: ['core', 'optimistic locking', 'pessimistic locking', 'Version', 'OptimisticLockException']
 },
 {
   id: 'jpa-005',
@@ -1345,7 +1345,7 @@ Một job import đơn hàng hàng ngày đọc file CSV 150.000 dòng, map thà
     'Tại sao {{@GeneratedValue(strategy = GenerationType.AUTO)}} có thể tạo hành vi khác nhau giữa PostgreSQL và MySQL?',
     'Vì sao cần {{flush}} và {{clear}} định kỳ khi batch insert với số lượng lớn?'
   ],
-  tags: ['batch insert', 'IDENTITY', 'SEQUENCE', 'pooled optimizer', 'Hibernate']
+  tags: ['core', 'batch insert', 'IDENTITY', 'SEQUENCE', 'pooled optimizer', 'Hibernate']
 },
 {
   id: 'jpa-006',
@@ -1410,7 +1410,7 @@ Màn hình sửa đơn hàng gửi lên danh sách dòng hàng mới; code viế
     'Khi nào nên dùng {{orphanRemoval}} thay vì {{cascade = REMOVE}}?',
     'Vì sao nên dùng join entity thay vì {{@ManyToMany}} thuần?'
   ],
-  tags: ['owning side', 'mappedBy', 'orphanRemoval', 'cascade', 'mapping']
+  tags: ['core', 'owning side', 'mappedBy', 'orphanRemoval', 'cascade', 'mapping']
 },
 {
   id: 'jpa-007',
@@ -1492,7 +1492,7 @@ Hệ thống thương mại điện tử có bảng {{Category}} (1.200 bản gh
     'L2 cache được invalidate như thế nào khi entity được update?',
     'Khi nào nên dùng Spring Cache thay vì Hibernate second-level cache?'
   ],
-  tags: ['first-level cache', 'second-level cache', 'Caffeine', 'Spring Cache']
+  tags: ['core', 'first-level cache', 'second-level cache', 'Caffeine', 'Spring Cache']
 },
 {
   id: 'jpa-008',
@@ -1556,7 +1556,7 @@ Báo cáo "doanh thu theo kênh theo ngày, có tỉ lệ so với cùng kỳ" v
     'Vì sao Hibernate không tự flush trước khi chạy native query?',
     'jOOQ khác JPA Criteria API ở điểm nào về an toàn compile-time?'
   ],
-  tags: ['jOOQ', 'JdbcTemplate', 'native query', 'flush', 'performance']
+  tags: ['core', 'jOOQ', 'JdbcTemplate', 'native query', 'flush', 'performance']
 },
 {
   id: 'jpa-009',
@@ -1619,7 +1619,7 @@ Entity {{Customer}} dùng Lombok {{@Data}} có quan hệ hai chiều với {{Add
     'Vì sao Hibernate khuyến nghị không override {{equals}}/{{hashCode}} theo quan hệ?',
     'Lombok {{@Data}} sinh những gì có thể gây lỗi cho JPA entity?'
   ],
-  tags: ['equals', 'hashCode', 'Lombok', 'entity', 'Data']
+  tags: ['core', 'equals', 'hashCode', 'Lombok', 'entity', 'Data']
 },
 {
   id: 'db-001',
@@ -1713,7 +1713,7 @@ Một bảng {{orders}} 80 triệu dòng (PostgreSQL 15) có index {{idx_orders_
     'Vì sao index trên cột {{status}} (chỉ vài giá trị) thường không được optimizer dùng?',
     'Covering index hoạt động thế nào ở MySQL/InnoDB so với PostgreSQL?'
   ],
-  tags: ['index', 'B-tree', 'composite index', 'covering index', 'EXPLAIN']
+  tags: ['core', 'index', 'B-tree', 'composite index', 'covering index', 'EXPLAIN']
 },
 {
   id: 'db-002',
@@ -1803,7 +1803,7 @@ Thay vì khoá cả bảng khi đọc, MVCC giữ **nhiều phiên bản** của
     'Vì sao REPEATABLE READ của PostgreSQL không có phantom nhưng vẫn có write skew?',
     'Write skew xảy ra như thế nào và cách xử lý ra sao?'
   ],
-  tags: ['isolation level', 'MVCC', 'dirty read', 'phantom', 'snapshot']
+  tags: ['core', 'isolation level', 'MVCC', 'dirty read', 'phantom', 'snapshot']
 },
 {
   id: 'db-003',
@@ -1900,7 +1900,7 @@ EXPLAIN FORMAT=JSON SELECT ...;
     'Sự khác biệt giữa plan dự kiến và plan thực tế nói lên điều gì?',
     'Tại sao {{EXPLAIN ANALYZE}} trên câu {{UPDATE}} rất nguy hiểm?'
   ],
-  tags: ['EXPLAIN', 'query optimization', 'execution plan', 'index', 'statistics']
+  tags: ['core', 'EXPLAIN', 'query optimization', 'execution plan', 'index', 'statistics']
 },
 {
   id: 'db-004',
@@ -2001,7 +2001,7 @@ public void transfer(Long from, Long to, BigDecimal amount) {
     'Vì sao phải retry bằng transaction mới sau khi gặp deadlock?',
     'Làm thế nào để tránh deadlock khi cập nhật nhiều bảng liên quan?'
   ],
-  tags: ['deadlock', 'lock', 'retry', 'transaction', '40001']
+  tags: ['core', 'deadlock', 'lock', 'retry', 'transaction', '40001']
 },
 {
   id: 'db-005',
@@ -2096,7 +2096,7 @@ List<Order> findNext(@Param("t") Instant lastCreatedAt,
     'Tại sao cần cột tie-breaker như {{id}} khi phân trang bằng keyset?',
     'Làm thế nào lưu cursor an toàn khi client có thể sửa/thao túng giá trị?'
   ],
-  tags: ['pagination', 'offset', 'keyset', 'cursor', 'performance']
+  tags: ['core', 'pagination', 'offset', 'keyset', 'cursor', 'performance']
 },
 {
   id: 'db-006',
@@ -2192,7 +2192,7 @@ Ví dụ thực tế: sharding theo {{tenant_id}} hoặc {{customer_id}} cho h�
     'Vì sao replication lag gây vấn đề "đọc không thấy dữ liệu vừa ghi"?',
     'So sánh Saga và 2PC khi thiết kế transaction xuyên nhiều shard?'
   ],
-  tags: ['replication', 'partitioning', 'sharding', 'shard key', 'scalability']
+  tags: ['core', 'replication', 'partitioning', 'sharding', 'shard key', 'scalability']
 },
 {
   id: 'db-007',
@@ -2287,7 +2287,7 @@ spring:
     'Làm thế nào phát hiện connection bị rò rỉ trong production?',
     'Tại sao virtual threads không nên đi kèm connection pool lớn?'
   ],
-  tags: ['HikariCP', 'connection pool', 'timeout', 'leak detection']
+  tags: ['core', 'HikariCP', 'connection pool', 'timeout', 'leak detection']
 },
 {
   id: 'db-008',
@@ -2378,7 +2378,7 @@ Hệ thống đơn hàng của sàn thương mại điện tử có bảng {{ord
     'Tại sao thêm cột NOT NULL DEFAULT có thể khóa bảng lâu trên MySQL?',
     'Khi nào cần dùng {{CREATE INDEX CONCURRENTLY}} và rủi ro của nó là gì?'
   ],
-  tags: ['schema migration', 'zero downtime', 'expand contract', 'Flyway', 'Liquibase']
+  tags: ['core', 'schema migration', 'zero downtime', 'expand contract', 'Flyway', 'Liquibase']
 },
 {
   id: 'db-009',
@@ -2463,7 +2463,7 @@ Hệ thống bán lẻ có 5000 đơn/giờ, khách thường tìm sản phẩm 
     'Vì sao Elasticsearch không nên là nguồn dữ liệu chuẩn?',
     'Khi nào NoSQL "ngon hơn" SQL cho hệ thống multi-tenant?'
   ],
-  tags: ['NoSQL', 'Redis', 'MongoDB', 'Cassandra', 'Elasticsearch']
+  tags: ['core', 'NoSQL', 'Redis', 'MongoDB', 'Cassandra', 'Elasticsearch']
 },
 {
   id: 'db-010',
@@ -2560,7 +2560,7 @@ Hệ thống gửi email xác nhận đơn hàng ở mức 300 email/giây, bả
     'Tại sao phải commit ngay sau khi lấy job thay vì xử lý job trong cùng transaction?',
     'Làm thế nào thu hồi job bị kẹt do worker chết?'
   ],
-  tags: ['SKIP LOCKED', 'job queue', 'FOR UPDATE', 'concurrency', 'PostgreSQL']
+  tags: ['core', 'SKIP LOCKED', 'job queue', 'FOR UPDATE', 'concurrency', 'PostgreSQL']
 },
 {
   id: 'db-011',
@@ -2945,7 +2945,7 @@ Kết quả: API trả 400 ngay khi dữ liệu sai, job đêm không tạo tài
     'Vì sao {{@Valid}} trên {{@RequestBody}} không tự động validate các object con?',
     'Khi nào nên dùng validation group thay vì tạo hai DTO khác nhau?'
   ],
-  tags: ['Bean Validation', 'Valid', 'Validated', 'groups', 'constraint']
+  tags: ['core', 'Bean Validation', 'Valid', 'Validated', 'groups', 'constraint']
 },
 {
   id: 'spring-020',
@@ -3203,7 +3203,7 @@ Kết quả: API chi tiết đơn ổn định, không còn 500, thời gian ph�
     'Vì sao Hibernate không thể gộp kết quả join của hai collection {{List}} cùng lúc?',
     'Khi nào chọn {{@BatchSize}} thay vì {{@EntityGraph}} cho một API lấy danh sách?'
   ],
-  tags: ['fetch plan', 'EntityGraph', 'BatchSize', 'MultipleBagFetchException', 'fetch join']
+  tags: ['core', 'fetch plan', 'EntityGraph', 'BatchSize', 'MultipleBagFetchException', 'fetch join']
 },
 {
   id: 'jpa-011',
@@ -3451,7 +3451,7 @@ Kết quả đo được: thời gian nạp giảm còn ~3 phút, heap ổn đ�
     'Vì sao {{@GeneratedValue(strategy = GenerationType.IDENTITY)}} làm mất hiệu quả của JDBC batching?',
     '{{StatelessSession}} khác {{EntityManager}} thông thường ở những điểm nào và hậu quả ra sao?'
   ],
-  tags: ['batch insert', 'StatelessSession', 'jdbc.batch_size', 'order_inserts', 'flush clear']
+  tags: ['core', 'batch insert', 'StatelessSession', 'jdbc.batch_size', 'order_inserts', 'flush clear']
 },
 {
   id: 'jpa-014',
@@ -3688,7 +3688,7 @@ Kết quả đo được: p95 API lịch sử giảm còn ~220 ms, CPU primary x
     'Vì sao {{@Transactional(readOnly = true)}} có thể làm mất thay đổi dữ liệu mà không báo lỗi?',
     'Bạn xử lý việc đọc từ replica ngay sau khi ghi như thế nào để bảo đảm read-your-writes?'
   ],
-  tags: ['readOnly', 'FlushMode', 'routing datasource', 'read replica', 'lazy connection']
+  tags: ['core', 'readOnly', 'FlushMode', 'routing datasource', 'read replica', 'lazy connection']
 },
 {
   id: 'jpa-017',
@@ -3830,7 +3830,7 @@ Một dev mới viết {{interface OrderRepository extends JpaRepository<Order, 
     'Có thể dùng Spring Data JPA với provider khác Hibernate không (ví dụ EclipseLink)?',
     'Tại sao Spring Data JPA gọi là "abstraction" chứ không phải "implementation"?'
   ],
-  tags: ['JPA', 'Hibernate', 'Spring Data JPA', 'spec', 'provider', 'abstraction']
+  tags: ['core', 'JPA', 'Hibernate', 'Spring Data JPA', 'spec', 'provider', 'abstraction']
 },
 {
   id: 'jpa-019',
@@ -3875,7 +3875,7 @@ Một API tạo bình luận cần gắn với bài viết: code gọi {{postRep
     'Vì sao {{merge}} trả về bản sao mà không cập nhật entity gốc?',
     'Khi nào {{getReferenceById}} ném exception, và exception đó là loại gì?'
   ],
-  tags: ['save', 'saveAndFlush', 'persist', 'merge', 'findById', 'getReferenceById']
+  tags: ['core', 'save', 'saveAndFlush', 'persist', 'merge', 'findById', 'getReferenceById']
 },
 {
   id: 'jpa-020',
@@ -3940,7 +3940,7 @@ Khi xoá một {{Student}}, Hibernate sẽ **cố xoá luôn các {{Course}}** t
     'Vì sao @OneToOne mặc định EAGER lại gây N+1 nhiều hơn @ManyToOne?',
     'Khi nào nên dùng CascadeType.DETACH?'
   ],
-  tags: ['CascadeType', 'FetchType', 'EAGER', 'LAZY', 'orphanRemoval', 'ManyToMany']
+  tags: ['core', 'CascadeType', 'FetchType', 'EAGER', 'LAZY', 'orphanRemoval', 'ManyToMany']
 },
 {
   id: 'jpa-021',
@@ -4002,7 +4002,7 @@ Khi gọi {{repo.findByCustomerId(1L, PageRequest.of(0, 20))}}, Spring Data sinh
     'Vì sao count query không có ORDER BY?',
     'Khi nào nên viết countQuery tùy chỉnh cho @Query?'
   ],
-  tags: ['derived query', 'Query', 'JPQL', 'native SQL', 'Pageable', 'count query']
+  tags: ['core', 'derived query', 'Query', 'JPQL', 'native SQL', 'Pageable', 'count query']
 },
 {
   id: 'db-012',
@@ -4126,7 +4126,7 @@ SET lock_timeout = '5s';
     'Vì sao {{VACUUM}} không giải phóng dung lượng đĩa cho hệ điều hành?',
     'Một transaction đang chạy 3 tiếng có thể gây ra những hậu quả nào cho cả hệ thống?'
   ],
-  tags: ['MVCC', 'VACUUM', 'bloat', 'wraparound', 'autovacuum']
+  tags: ['core', 'MVCC', 'VACUUM', 'bloat', 'wraparound', 'autovacuum']
 },
 {
   id: 'db-013',
@@ -4242,7 +4242,7 @@ CREATE INDEX idx_log_created_brin ON transaction_log USING brin (created_at)
     'Vì sao partial index thường không được dùng khi câu query dùng tham số thay vì giá trị cụ thể?',
     'Khi nào BRIN là lựa chọn tốt hơn B-tree cho bảng giao dịch?'
   ],
-  tags: ['index', 'partial index', 'expression index', 'GIN', 'BRIN']
+  tags: ['core', 'index', 'partial index', 'expression index', 'GIN', 'BRIN']
 },
 {
   id: 'db-014',
@@ -4455,7 +4455,7 @@ Các dấu hiệu đáng chú ý:
     'Hash join spill xuống đĩa xảy ra khi nào và ảnh hưởng thế nào tới hiệu năng?',
     'Extended statistics giải quyết vấn đề gì mà thống kê cột đơn lẻ không giải quyết được?'
   ],
-  tags: ['join', 'nested loop', 'hash join', 'merge join', 'execution plan']
+  tags: ['core', 'join', 'nested loop', 'hash join', 'merge join', 'execution plan']
 },
 {
   id: 'db-016',
@@ -4556,7 +4556,7 @@ Hệ thống ví điện tử xử lý 5.000 giao dịch/giây giờ cao điểm
     'Vì sao replay WAL trên replica có thể bị chặn bởi một câu SELECT dài?',
     'Làm sao đo replication lag một cách đáng tin cậy khi đồng hồ hai máy lệch nhau?'
   ],
-  tags: ['read replica', 'replication lag', 'read-your-writes', 'routing', 'WAL']
+  tags: ['core', 'read replica', 'replication lag', 'read-your-writes', 'routing', 'WAL']
 },
 {
   id: 'db-017',
@@ -4960,7 +4960,7 @@ API đăng ký tài khoản bắt {{catch (SQLException e)}} rồi kiểm tra {{
     'Tại sao Spring không gộp {{@Service}} và {{@Repository}} thành một annotation duy nhất?',
     'Làm sao bật exception translation cho bean không dùng {{@Repository}}?'
   ],
-  tags: ['Component', 'Service', 'Repository', 'Controller', 'exception translation']
+  tags: ['core', 'Component', 'Service', 'Repository', 'Controller', 'exception translation']
 },
 {
   id: 'spring-023',
@@ -5023,7 +5023,7 @@ Một lớp cấu hình viết {{@Configuration(proxyBeanMethods = false)}} (cop
     'Vì sao Spring Boot 3 khuyến khích {{proxyBeanMethods = false}}?',
     'Nếu một class có {{@Configuration(proxyBeanMethods = false)}} mà vẫn gọi method {{@Bean}} khác thì hành vi là gì?'
   ],
-  tags: ['Bean', 'Component', 'Configuration', 'proxyBeanMethods', 'lite mode']
+  tags: ['core', 'Bean', 'Component', 'Configuration', 'proxyBeanMethods', 'lite mode']
 },
 {
   id: 'spring-024',
@@ -5128,7 +5128,7 @@ Hệ thống thanh toán tích hợp 4 cổng: VNPAY (mặc định), MoMo, Zalo
     'Tại sao Spring không tự chọn bean đầu tiên theo alphabet thay vì ném lỗi ambiguity?',
     'Khi inject {{Map<String, T>}}, bean nào có {{@Primary}} có key là gì?'
   ],
-  tags: ['Autowired', 'Qualifier', 'Primary', 'List injection', 'Map injection']
+  tags: ['core', 'Autowired', 'Qualifier', 'Primary', 'List injection', 'Map injection']
 },
 {
   id: 'spring-025',
@@ -5201,7 +5201,7 @@ Team mới chuyển từ Spring thuần (WAR deploy lên Tomcat 9) sang Spring B
     'Vì sao Spring Boot dùng fat JAR thay vì WAR deploy lên server ngoài?',
     'Làm sao biết starter nào đang kéo dependency nào, và version là bao nhiêu?'
   ],
-  tags: ['SpringBootApplication', 'EnableAutoConfiguration', 'ComponentScan', 'starter', 'fat jar']
+  tags: ['core', 'SpringBootApplication', 'EnableAutoConfiguration', 'ComponentScan', 'starter', 'fat jar']
 },
 {
   id: 'spring-026',
@@ -5276,7 +5276,7 @@ Kết quả: tiền đã trừ ở tài khoản nguồn **được commit**, tà
     'Tại sao Spring mặc định không rollback cho checked exception?',
     'Làm sao phát hiện method {{@Transactional}} bị nuốt exception trong code review?'
   ],
-  tags: ['Transactional', 'rollback', 'rollbackFor', 'checked exception', 'try-catch']
+  tags: ['core', 'Transactional', 'rollback', 'rollbackFor', 'checked exception', 'try-catch']
 },
 {
   id: 'spring-027',
@@ -5344,7 +5344,7 @@ Trên hệ thống đặt hàng, màn hình chi tiết đơn hàng đôi khi loa
     'Vì sao trả entity JPA trực tiếp cho REST API là anti-pattern?',
     'Jackson xử lý {{LocalDateTime}} như thế nào khi không cấu hình {{WRITE_DATES_AS_TIMESTAMPS}}?'
   ],
-  tags: ['RestController', 'Controller', 'ResponseEntity', 'Jackson', 'JSON']
+  tags: ['core', 'RestController', 'Controller', 'ResponseEntity', 'Jackson', 'JSON']
 },
 {
   id: 'db-020',
@@ -5424,7 +5424,7 @@ Trên ứng dụng ví điện tử, khách hàng báo trường hợp trừ ti�
     'Vì sao WAL gọi là "Write-Ahead" – ý nghĩa của việc ghi log trước khi sửa data?',
     'Isolation level READ COMMITTED có đảm bảo Atomicity không?'
   ],
-  tags: ['ACID', 'transaction', 'WAL', 'undo log', 'MVCC', 'lock', 'constraint']
+  tags: ['core', 'ACID', 'transaction', 'WAL', 'undo log', 'MVCC', 'lock', 'constraint']
 },
 {
   id: 'db-021',
@@ -5505,7 +5505,7 @@ Trên hệ thống bán hàng, bảng {{orders}} chứa cột {{customer_name}} 
     'Sự khác biệt giữa 2NF và 3NF là gì? Cho ví dụ vi phạm 3NF nhưng đạt 2NF.',
     'Làm sao giữ dữ liệu denormalized nhất quán khi bảng gốc thay đổi?'
   ],
-  tags: ['normalization', '1NF', '2NF', '3NF', 'denormalize', 'anomaly']
+  tags: ['core', 'normalization', '1NF', '2NF', '3NF', 'denormalize', 'anomaly']
 },
 {
   id: 'db-022',
@@ -5588,7 +5588,7 @@ Trên hệ thống đơn hàng MySQL InnoDB, bảng {{orders}} dùng cột {{id}
     'Vì sao InnoDB secondary index lưu PK value thay vì con trỏ vật lý?',
     'PostgreSQL có hỗ trợ clustered index thật sự không?'
   ],
-  tags: ['clustered index', 'non-clustered index', 'InnoDB', 'PostgreSQL', 'heap table', 'B-tree']
+  tags: ['core', 'clustered index', 'non-clustered index', 'InnoDB', 'PostgreSQL', 'heap table', 'B-tree']
 },
 {
   id: 'db-023',
@@ -5714,7 +5714,7 @@ Trên hệ thống đơn hàng có bảng {{orders}} hơn 1 triệu dòng, màn 
     'Vì sao LIKE "%abc" không dùng được B-tree nhưng "abc%" được?',
     'Partial index giúp gì cho cột selectivity thấp?'
   ],
-  tags: ['index', 'B-tree', 'LIKE', 'wildcard', 'OR', 'implicit cast', 'selectivity', 'partial index']
+  tags: ['core', 'index', 'B-tree', 'LIKE', 'wildcard', 'OR', 'implicit cast', 'selectivity', 'partial index']
 },
 {
   id: 'db-024',
@@ -6290,7 +6290,7 @@ Self-invocation không chỉ ảnh hưởng {{@Transactional}}. Một service ca
 
 > Senior tip: coi transaction boundary là ranh giới use case công khai. Một service method ngắn, được gọi qua bean proxy, thường an toàn hơn việc rải annotation lên helper nội bộ.`,
   follow: ['Vì sao {{@Transactional}} trên method private không có tác dụng với proxy?', 'Nếu tách bean không phù hợp, bạn kiểm chứng proxy thực tế của bean bằng cách nào?'],
-  tags: ['@Transactional', 'AOP', 'JDK proxy', 'CGLIB', 'self-invocation']
+  tags: ['core', '@Transactional', 'AOP', 'JDK proxy', 'CGLIB', 'self-invocation']
 },
 {
   id: 'spring-029', topic: 'spring', level: 'senior',
@@ -6322,7 +6322,7 @@ Hệ thống đơn hàng ghi audit bằng REQUIRES_NEW, pool 20, Tomcat 200 thre
 
 > Senior tip: dùng metric pending borrowers, acquisition latency và transaction duration để phát hiện trước khi timeout. Nếu pool cỡ N và mọi request có thể nested một tầng, kiểm tra kịch bản đồng thời gần N; headroom phải được thiết kế và thử tải, không đoán theo traffic trung bình.`,
   follow: ['Khi nào audit nên cùng transaction với dữ liệu nghiệp vụ?', 'Outbox giải quyết bài toán ghi event sau commit thế nào?'],
-  tags: ['transaction propagation', 'REQUIRES_NEW', 'connection pool', 'HikariCP']
+  tags: ['core', 'transaction propagation', 'REQUIRES_NEW', 'connection pool', 'HikariCP']
 },
 {
   id: 'spring-030', topic: 'spring', level: 'senior',
@@ -6354,7 +6354,7 @@ Sau khi thêm một thư viện nội bộ, service bỗng dùng {{ObjectMapper}
 
 > Senior tip: khi bean thiếu, tìm negative match đầu tiên trong report thay vì thêm một {{@Bean}} nữa. Với starter dùng chung, viết context test cho cả trường hợp dependency có/không và bean ứng dụng override để hợp đồng auto-config được kiểm tra rõ.`,
   follow: ['Vì sao Boot 3 starter không nên đăng ký auto-configuration bằng component scan?', 'Bạn thiết kế điều kiện để app override bean mặc định ra sao?'],
-  tags: ['Spring Boot 3', 'AutoConfiguration.imports', 'ConditionalOn', 'starter']
+  tags: ['core', 'Spring Boot 3', 'AutoConfiguration.imports', 'ConditionalOn', 'starter']
 },
 {
   id: 'spring-031', topic: 'spring', level: 'senior',
@@ -6704,7 +6704,7 @@ Một transaction vừa **xoá** bản ghi cấu hình cũ rồi **thêm** bản
 
 > Senior tip: với batch lớn, flush rồi clear theo chunk để giới hạn persistence context; kiểm tra SQL thực phát và transaction log thay vì suy ra từ số lần gọi {{save}}.`,
   follow: ['Query auto-flush xảy ra khi nào và có thể gây bất ngờ gì?', 'Bulk update ảnh hưởng entity đang managed ra sao?'],
-  tags: ['persistence context', 'dirty checking', 'flush', 'Hibernate']
+  tags: ['core', 'persistence context', 'dirty checking', 'flush', 'Hibernate']
 },
 {
   id: 'jpa-023', topic: 'jpa', level: 'senior',
@@ -6736,7 +6736,7 @@ Tôi gặp LIE khi service trả entity detached rồi serializer đọc associa
 
 > Senior tip: API service nên trả DTO với fetch plan được review. Bật thống kê SQL hoặc datasource proxy trong test để phát hiện N+1; việc hết exception chưa chứng minh endpoint hiệu quả.`,
   follow: ['OSIV có giữ transaction DB mở suốt HTTP request không?', 'Bạn phát hiện N+1 phát sinh trong quá trình JSON serialization thế nào?'],
-  tags: ['LazyInitializationException', 'Open Session in View', 'N+1', 'DTO']
+  tags: ['core', 'LazyInitializationException', 'Open Session in View', 'N+1', 'DTO']
 },
 {
   id: 'jpa-024', topic: 'jpa', level: 'senior',
@@ -6768,7 +6768,7 @@ Optimistic locking dùng cột version trong UPDATE với điều kiện where v
 
 > Senior tip: dùng optimistic lock khi conflict tương đối hiếm; nếu một row nóng bị tranh chấp liên tục, đo tỷ lệ conflict và cân nhắc serialize theo key hoặc atomic update có điều kiện thay vì retry vô hạn.`,
   follow: ['Vì sao retry cần transaction mới?', 'Khi nào pessimistic lock hợp lý hơn optimistic locking?'],
-  tags: ['@Version', 'optimistic locking', 'retry', 'concurrency']
+  tags: ['core', '@Version', 'optimistic locking', 'retry', 'concurrency']
 },
 {
   id: 'jpa-025', topic: 'jpa', level: 'senior',
@@ -6805,7 +6805,7 @@ Hibernate batching gom statement cùng dạng qua JDBC executeBatch; cấu hình
 
 > Senior tip: đo batch execution count, heap, transaction time và DB write latency; so với insert thường ở cùng dữ liệu. Luôn thử trên đúng JDBC driver/version và xác nhận generated IDs đúng.`,
   follow: ['Tại sao phải clear persistence context khi import hàng triệu dòng?', 'Sequence allocation ảnh hưởng round trip và khoảng trống ID ra sao?'],
-  tags: ['hibernate.jdbc.batch_size', 'JDBC batching', 'IDENTITY', 'sequence']
+  tags: ['core', 'hibernate.jdbc.batch_size', 'JDBC batching', 'IDENTITY', 'sequence']
 },
 {
   id: 'jpa-026', topic: 'jpa', level: 'senior',
@@ -6838,7 +6838,7 @@ EntityGraph khai báo fetch plan theo use case và giữ repository dễ đọc;
 
 > Senior tip: test với volume và fan-out gần production, assert query count lẫn SQL có LIMIT/OFFSET ở DB. Khi thấy HHH000104, xử lý fetch plan trước khi tăng heap hoặc tắt cảnh báo.`,
   follow: ['Vì sao fetch join một collection vẫn có thể làm page sai?', 'Bạn thiết kế count query cho trang dữ liệu có quan hệ to-many thế nào?'],
-  tags: ['@EntityGraph', 'JOIN FETCH', 'pagination', 'HHH000104']
+  tags: ['core', '@EntityGraph', 'JOIN FETCH', 'pagination', 'HHH000104']
 },
 {
   id: 'jpa-027', topic: 'jpa', level: 'lead',
@@ -7697,7 +7697,7 @@ Job import 100.000 khách hàng chạy 52 giây và heap tăng dần tới gần
 
 > Senior tip: đừng tin cấu hình, hãy đo: bật {{hibernate.generate_statistics}} hoặc datasource-proxy trong test và assert số statement. Lỗi hay gặp nhất là batch "đã bật" nhưng vẫn một statement mỗi entity vì một entity cha dùng IDENTITY, hoặc vì code gọi query giữa vòng lặp làm Hibernate flush sớm.`,
   follow: ['Vì sao phải flush và clear persistence context khi import hàng triệu dòng?', 'Bạn kiểm chứng batching thật sự hoạt động bằng cách nào?', 'allocationSize lệch với increment của sequence trong DB thì chuyện gì xảy ra?'],
-  tags: ['jpa', 'batch', 'hibernate', 'IDENTITY', 'sequence', 'pooled optimizer'],
+  tags: ['core', 'jpa', 'batch', 'hibernate', 'IDENTITY', 'sequence', 'pooled optimizer'],
 },
 {
   id: 'jpa-031',
@@ -7748,7 +7748,7 @@ Bảng Country 250 dòng, đọc 50.000 lần/phút, sửa một lần mỗi tu�
 
 > Senior tip: mỗi region cache phải trả lời được ba câu: ai làm nó hết hạn, dữ liệu cũ tối đa bao lâu thì chấp nhận được, và hit ratio đo ở đâu. Không trả lời được thì chưa nên bật. Và đừng dùng cache để che một query thiếu index.`,
   follow: ['Bulk HQL và native SQL ảnh hưởng second-level cache thế nào?', 'Cache local (Caffeine) và cache phân tán khác nhau ra sao khi chạy nhiều node?', 'Vì sao query cache gần như vô dụng với bảng ghi thường xuyên?'],
-  tags: ['jpa', 'second-level cache', 'query cache', 'invalidation', 'Hibernate 6'],
+  tags: ['core', 'jpa', 'second-level cache', 'query cache', 'invalidation', 'Hibernate 6'],
 },
 {
   id: 'jpa-032',
@@ -7795,7 +7795,7 @@ Job hết hạn đơn chờ thanh toán dùng {{@Modifying}} bulk update sang EX
 
 > Senior tip: coi bulk JPQL như SQL thuần có kiểm tra kiểu. Quy tắc review của tôi: mọi {{@Modifying}} phải có {{clearAutomatically = true}} trừ khi có lý do ghi rõ trong comment, và phải có test đọc lại entity sau bulk trong cùng transaction.`,
   follow: ['Vì sao nên dùng @Modifying(clearAutomatically = true) trong Spring Data?', 'Làm sao kết hợp bulk update với optimistic lock?', 'Bulk delete không cascade thì bạn xử lý bảng con thế nào?'],
-  tags: ['jpa', 'bulk update', 'bulk delete', 'persistence context', 'stale', 'Hibernate 6'],
+  tags: ['core', 'jpa', 'bulk update', 'bulk delete', 'persistence context', 'stale', 'Hibernate 6'],
 },
 {
   id: 'jpa-033',
@@ -7904,7 +7904,7 @@ Màn hình xử lý đơn: hai nhân viên cùng mở đơn và bấm "Xác nh�
 
 > Senior tip: theo dõi số lần {{ObjectOptimisticLockingFailureException}} theo entity và theo endpoint. Tỉ lệ dưới 1% là optimistic lock đang làm đúng việc; tỉ lệ tăng dần theo tải là dấu hiệu có dòng nóng, cần đổi thiết kế chứ không phải tăng số lần retry.`,
   follow: ['Vì sao retry phải nằm ngoài transaction?', 'Khi nào nên trả 409 cho người dùng thay vì tự retry?', 'Dòng bị tranh chấp liên tục thì bạn đổi thiết kế thế nào?'],
-  tags: ['jpa', 'optimistic lock', '@Version', 'retry', 'idempotency'],
+  tags: ['core', 'jpa', 'optimistic lock', '@Version', 'retry', 'idempotency'],
 },
 {
   id: 'jpa-035',
@@ -8086,7 +8086,7 @@ Một team viết bean {{CacheWarmer}}, trong @PostConstruct gọi {{orderServic
     'Sự khác biệt giữa BeanFactoryPostProcessor và BeanPostProcessor về thời điểm và phạm vi tác động?',
     'Tại sao proxy AOP phải được tạo ở afterInitialization chứ không phải before?'
   ],
-  tags: ['bean lifecycle', 'BeanDefinition', 'BeanPostProcessor', 'SmartInitializingSingleton', 'internals']
+  tags: ['core', 'bean lifecycle', 'BeanDefinition', 'BeanPostProcessor', 'SmartInitializingSingleton', 'internals']
 },
 {
   id: 'spring-040',
@@ -8151,7 +8151,7 @@ Một team viết auto-config {{PaymentClientAutoConfiguration}} để tạo bea
     'Sự khác biệt giữa @ConditionalOnMissingBean và @ConditionalOnMissingClass là gì?',
     'Làm sao biết auto-config nào đã được nạp mà không cần bật --debug?'
   ],
-  tags: ['auto-configuration', 'Conditional', 'actuator', 'debug', 'internals']
+  tags: ['core', 'auto-configuration', 'Conditional', 'actuator', 'debug', 'internals']
 },
 {
   id: 'spring-041',
@@ -8204,7 +8204,7 @@ Job đối soát cuối ngày xử lý 10.000 giao dịch trong **một** transa
     'Transaction con dùng REQUIRES_NEW commit thành công nhưng transaction cha rollback – dữ liệu sẽ ra sao?',
     'Tại sao NESTED không hoạt động trên mọi database?'
   ],
-  tags: ['Transactional', 'propagation', 'REQUIRES_NEW', 'UnexpectedRollbackException', 'connection pool']
+  tags: ['core', 'Transactional', 'propagation', 'REQUIRES_NEW', 'UnexpectedRollbackException', 'connection pool']
 },
 {
   id: 'spring-042',
@@ -8556,7 +8556,7 @@ Job closing ngày đọc 50.000 đơn hàng, cập nhật trạng thái thành "
     'Nếu bạn gọi {{em.detach(entity)}} hoặc {{em.clear()}} giữa chừng, dirty checking với entity đó thay đổi thế nào?',
     'Bytecode enhancement có rủi ro gì khi deploy nhiều môi trường (dev/staging/prod) với cấu hình build khác nhau?'
   ],
-  tags: ['dirty checking', 'persistence context', 'snapshot', 'bytecode enhancement', 'readOnly', 'internals'],
+  tags: ['core', 'dirty checking', 'persistence context', 'snapshot', 'bytecode enhancement', 'readOnly', 'internals'],
   refs: [
     { type: 'doc', title: 'Hibernate ORM User Guide: Bytecode Enhancement', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#BytecodeEnhancement' },
     { type: 'doc', title: 'Hibernate ORM User Guide: Fetching (read-only)', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#fetching-strategies-dynamic-fetching' }
@@ -8640,7 +8640,7 @@ Chức năng đổi email khách hàng: code xóa hàng cũ (remove) rồi lưu 
     'Constraint {{DEFERRABLE}} của PostgreSQL giúp gì trong ca này và đánh đổi là gì?',
     'Tại sao {{hibernate.order_inserts=true}} không giải quyết được lỗi unique khi delete+insert cùng key?'
   ],
-  tags: ['flush', 'FlushMode', 'ActionQueue', 'unique constraint', 'internals'],
+  tags: ['core', 'flush', 'FlushMode', 'ActionQueue', 'unique constraint', 'internals'],
   refs: [
     { type: 'doc', title: 'Hibernate ORM User Guide: Flushing', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#flushing' }
   ]
@@ -9334,7 +9334,7 @@ Xử lý: thiết kế lại khóa chính dùng {{BIGINT GENERATED BY DEFAULT AS
     'Visibility map bị cũ thì index-only scan bị ảnh hưởng như thế nào, và VACUUM vai trò gì?',
     'UUID v7 khác UUID v1 ở điểm nào, và tại sao UUID v7 phù hợp làm khóa chính hơn UUID v4?'
   ],
-  tags: ['B-tree', 'index-only scan', 'visibility map', 'UUID', 'page split', 'fan-out'],
+  tags: ['core', 'B-tree', 'index-only scan', 'visibility map', 'UUID', 'page split', 'fan-out'],
   refs: [
     { type: 'doc', title: 'PostgreSQL: Indexes', url: 'https://www.postgresql.org/docs/current/indexes.html' },
     { type: 'doc', title: 'MySQL: InnoDB Index Types', url: 'https://dev.mysql.com/doc/refman/8.0/en/innodb-index-types.html' },
@@ -9523,7 +9523,7 @@ Xử lý: tắt {{spring.jpa.open-in-view}}, load dữ liệu trong service bằ
     'Tại sao maxLifetime phải ngắn hơn wait_timeout của DB và idle timeout của cân bằng tải?',
     'Virtual threads có nên dẫn đến pool kết nối lớn hơn không?'
   ],
-  tags: ['HikariCP', 'connection pool', 'sizing', 'Quy tac Little', 'maxLifetime', 'leak detection'],
+  tags: ['core', 'HikariCP', 'connection pool', 'sizing', 'Quy tac Little', 'maxLifetime', 'leak detection'],
   refs: [
     { type: 'doc', title: 'HikariCP: About Pool Sizing', url: 'https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing' },
     { type: 'doc', title: 'PostgreSQL: max_connections', url: 'https://www.postgresql.org/docs/current/runtime-config-connection.html#GUC-MAX-CONNECTIONS' },
@@ -9797,7 +9797,7 @@ DB của một sàn thương mại điện tử chạy CPU 85% giờ cao điểm
     'auto_explain với log_analyze bật có ảnh hưởng hiệu năng thế nào?',
     'Performance Insights trên RDS cho bạn thêm thông tin gì?'
   ],
-  tags: ['performance', 'pg_stat_statements', 'auto_explain', 'observability', 'PostgreSQL']
+  tags: ['core', 'performance', 'pg_stat_statements', 'auto_explain', 'observability', 'PostgreSQL']
 },
 {
   id: 'db-049',
@@ -9839,7 +9839,7 @@ Sau khi scale lên 60 pod cho đợt khuyến mãi, PostgreSQL báo "too many co
     'RDS Proxy pinning là gì và bạn giảm nó thế nào?',
     'Tính kích thước pool HikariCP khi đã có PgBouncer phía sau ra sao?'
   ],
-  tags: ['PgBouncer', 'RDS Proxy', 'connection pooling', 'PostgreSQL', 'scalability']
+  tags: ['core', 'PgBouncer', 'RDS Proxy', 'connection pooling', 'PostgreSQL', 'scalability']
 },
 {
   id: 'db-050',
@@ -11997,7 +11997,7 @@ Job báo cáo doanh thu ban đêm chạy một câu {{UPDATE accounts SET ...}} 
     'READ COMMITTED và REPEATABLE READ khác nhau ở PostgreSQL như thế nào khi hai transaction cùng cập nhật một dòng?',
     'Timeout của @Transactional có bảo vệ được một lời gọi HTTP chậm không?'
   ],
-  tags: ['Transactional', 'isolation', 'timeout', 'JDBC', 'PostgreSQL']
+  tags: ['core', 'Transactional', 'isolation', 'timeout', 'JDBC', 'PostgreSQL']
 },
 {
   id: 'spring-072',
@@ -13139,7 +13139,7 @@ He thong microservice 15 service, moi service 3 profile (dev, staging, prod). Tr
     "Khi env variable va CLI args cung set mot property, cai nao thang?",
     "Profile \"default\" (khong active profile nao) nap file nao?"
   ],
-  tags: ["profile", "externalized config", "Spring Cloud Config", "@Profile", "@ConditionalOnProperty", "precedence", "secret"]
+  tags: ['core', "profile", "externalized config", "Spring Cloud Config", "@Profile", "@ConditionalOnProperty", "precedence", "secret"]
 },
 {
   id: 'spring-086',
@@ -13634,7 +13634,7 @@ Team cau hinh cong thanh toan qua {{@Value}} rai rac 15 field. Mot lan deploy th
     'Khi nao ban dung @ConfigurationProperties tren @Bean method thay vi tren class?',
     'Relaxed binding co gioi han nao voi ky tu dac biet trong env variable khong?'
   ],
-  tags: ['ConfigurationProperties', 'validation', 'JSR-380', 'record', 'relaxed binding', 'nested']
+  tags: ['core', 'ConfigurationProperties', 'validation', 'JSR-380', 'record', 'relaxed binding', 'nested']
 },
 {
   id: 'spring-051', topic: 'spring', level: 'senior',
@@ -13678,7 +13678,7 @@ He thong microservice 15 service, deploy ArgoCD len K8s dev/staging/prod. Moi se
     'Spring Boot 3.1+ {{spring.config.import}} ho tro {{optional:classpath:}} -- khac {{optional:file:}} o diem nao?',
     'Lam sao dam bao pod tu restart khi ConfigMap/Secret thay doi ma khong can ArgoCD wave?'
   ],
-  tags: ['ConfigurationProperties', 'profile', 'ConfigMap', 'Secret', 'Kubernetes', 'externalized config', 'precedence']
+  tags: ['core', 'ConfigurationProperties', 'profile', 'ConfigMap', 'Secret', 'Kubernetes', 'externalized config', 'precedence']
 },
 {
   id: 'spring-052', topic: 'spring', level: 'lead',
@@ -13966,7 +13966,8 @@ Một hệ thống thanh toán có cấu hình {{payment.timeout-seconds}}. Tron
 ### Trả lời mẫu khi phỏng vấn
 "Record trong {{ConfigurationProperties}} giúp cấu hình đạt tính bất biến hoàn toàn, an toàn thread và không còn boilerplate setter/getter. Nó ép buộc dữ liệu phải đầy đủ và hợp lệ ngay lúc khởi tạo (fail-fast), tránh tình trạng bean có trạng thái nửa vời như khi dùng setter. Tôi kết hợp thêm {{Constructor Validation}} để kiểm tra các ràng buộc phức tạp giữa các thuộc tính, đảm bảo ứng dụng không bao giờ chạy với trạng thái cấu hình không nhất quán. Trong Spring Boot 3, đây là tiêu chuẩn mới giúp code sạch và tin cậy hơn."
 
-> Senior tip: Với Spring Boot 3, record là lựa chọn mặc định. Nếu team chưa dùng record, hãy chuyển dần. Kiểm tra cả các {{NestedConfigurationProperty}} để validate cả cấu hình con.`
+> Senior tip: Với Spring Boot 3, record là lựa chọn mặc định. Nếu team chưa dùng record, hãy chuyển dần. Kiểm tra cả các {{NestedConfigurationProperty}} để validate cả cấu hình con.`,
+  tags: ['core']
 }
 ,
 {
@@ -14033,7 +14034,7 @@ SELECT * FROM order_items WHERE order_id=?
     'Làm sao cấu hình datasource-proxy sampling 1% trong production để không ảnh hưởng hiệu năng?',
     'Batch size (hibernate.default_batch_fetch_size) giải quyết N+1 như thế nào và trade-off là gì?'
   ],
-  tags: ['N+1', 'datasource-proxy', 'Hibernate statistics', 'query count', 'performance'],
+  tags: ['core', 'N+1', 'datasource-proxy', 'Hibernate statistics', 'query count', 'performance'],
   refs: [
     { type: 'doc', title: 'datasource-proxy GitHub', url: 'https://github.com/gavlyukovskiy/spring-boot-data-source-decorator' },
     { type: 'doc', title: 'Hibernate ORM User Guide: Statistics', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#statistics' }
@@ -14102,7 +14103,7 @@ E-commerce API list đơn hàng 50/trang: fetch join {{customer}} (to-one) + {{d
     'default_batch_fetch_size và @BatchSize trên collection ưu tiên như thế nào khi cả hai đều đặt?',
     'Làm sao xử lý khi collection items có 1000 phần tử/đơn (batch size 25 → 40 query items)?'
   ],
-  tags: ['fetch join', 'EntityGraph', 'BatchSize', 'default_batch_fetch_size', 'N+1', 'pagination'],
+  tags: ['core', 'fetch join', 'EntityGraph', 'BatchSize', 'default_batch_fetch_size', 'N+1', 'pagination'],
   refs: [
     { type: 'doc', title: 'Hibernate ORM User Guide: Fetching', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#fetching' },
     { type: 'doc', title: 'Hibernate: Batch fetching', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#fetching-batch' }
@@ -14181,7 +14182,7 @@ Hệ thống phê duyệt hợp đồng 3 bước (tạo → review → ký). M�
     'Làm sao xử lý khi collision xảy ra ở bước cuối của wizard (bước ký) — có thể tự động merge không?',
     'Nếu dùng @Version trên DTO projection (không phải entity), Hibernate hỗ trợ không?'
   ],
-  tags: ['@Version', 'optimistic lock', 'retry', 'exponential backoff', 'long-running conversation', 'wizard'],
+  tags: ['core', '@Version', 'optimistic lock', 'retry', 'exponential backoff', 'long-running conversation', 'wizard'],
   refs: [
     { type: 'doc', title: 'Hibernate ORM User Guide: Optimistic Locking', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#locking-optimistic' },
     { type: 'doc', title: 'Spring Retry Reference', url: 'https://docs.spring.io/spring-retry/reference/' }
