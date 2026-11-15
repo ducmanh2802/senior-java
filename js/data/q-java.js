@@ -11717,4 +11717,367 @@ User user = objectMapper.readValue(jsonBytes, User.class);
   ],
   tags: ['Serialization', 'Security', 'RCE', 'Protobuf', 'JSON']
 },
+{
+  id: 'modern-064',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Dùng sealed interface và switch pattern matching (Java 17–21) để mô hình hoá trạng thái (state) của đơn hàng/thanh toán trong dự án thật như thế nào? Vì sao cách này tốt hơn chuỗi {{if (status == ...)}} rải rác?',
+  a: `**Tóm tắt:** {{sealed interface}} (niêm phong interface: chỉ cho phép một danh sách class/record cố định được implements/extends) kết hợp {{record}} (class dữ liệu bất biến, tự sinh constructor/getter/equals/hashCode) và {{switch}} có pattern matching cho phép mô hình hoá mỗi trạng thái thành một kiểu riêng, mang đúng dữ liệu của trạng thái đó. Compiler (trình biên dịch) kiểm tra tính đầy đủ (exhaustive): quên xử lý một trạng thái sẽ không biên dịch được, nên bớt bug rò rỉ trạng thái so với {{enum}} + {{if/else}} rải rác.
+
+### Thuật ngữ (giải thích lần đầu)
+- **State (trạng thái):** tình trạng hiện tại của một đối tượng, ví dụ đơn hàng đang "chờ thanh toán", "đã trả tiền", "đã huỷ".
+- **Algebraic Data Type (kiểu dữ liệu đại số, ADT):** cách mô hình hoá "một trong các lựa chọn cố định" bằng kiểu; mỗi lựa chọn có thể mang dữ liệu riêng. {{sealed interface}} + {{record}} là cách Java biểu đạt ADT.
+- **Pattern matching:** cú pháp cho phép "khớp mẫu": vừa kiểm tra kiểu/vị trí vừa gán biến trong một bước.
+- **Exhaustive (đầy đủ):** {{switch}} buộc phải xử lý hết mọi nhánh có thể.
+
+### Cơ chế bên trong từng bước và VÌ SAO
+1. **Khai báo {{sealed interface}}:** {{sealed interface PaymentState permits Pending, Paid, Failed}}. Chỉ 3 kiểu kia được phép implements. Vì sao cần: compiler biết toàn bộ không gian trạng thái tại compile-time, không ai "lén" thêm trạng thái từ module khác.
+2. **Mỗi trạng thái là một {{record}} mang dữ liệu riêng:** {{Pending}} có thể không cần gì, {{Paid}} có {{transactionId}}, {{amount}}, {{paidAt}}, {{Failed}} có {{reason}}. Vì sao tốt hơn {{enum}}: {{enum}} mọi giá trị dùng chung cùng bộ field, nên {{PAID}} cũng phải có field {{failReason}} (vô nghĩa) hoặc phải để {{null}}. Record cho phép "make illegal states unrepresentable" (trạng thái sai không biểu diễn được).
+3. **{{switch}} pattern matching (Java 21):** dùng {{switch (state)}} với các nhánh như {{case Paid(var tx, var amount, var at) -> ...}}, {{case Failed(var reason) -> ...}}, {{case Pending p -> ...}}. Compiler yêu cầu đủ 3 nhánh (hoặc có {{default}}). Vì sao: khi thêm {{Refunded}}, mọi {{switch}} không có {{default}} sẽ báo lỗi biên dịch, buộc bạn cập nhật đúng chỗ.
+4. **Kết hợp với domain logic:** thay vì chuỗi kiểm tra {{order.getStatus() == PAID}} bằng nhiều nhánh {{if/else}} rải rác ở nhiều service, gom hành vi vào một nơi (method {{handle}} hoặc {{switch}} tập trung). Vì sao: giảm "shotgun surgery" (sửa một thay đổi trạng thái phải lục nhiều file).
+
+~~~java
+// Mô hình hoá trạng thái thanh toán: mỗi trạng thái mang đúng dữ liệu của nó
+public sealed interface PaymentState permits Pending, Paid, Failed {}
+public record Pending(String orderId) implements PaymentState {}
+public record Paid(String orderId, String txId, long amountVnd) implements PaymentState {}
+public record Failed(String orderId, String reason) implements PaymentState {}
+
+public class PaymentHandler {
+  // switch exhaustive: quên 1 nhánh -> lỗi biên dịch
+  public String describe(PaymentState state) {
+    return switch (state) {
+      case Pending(var orderId) -> "Don " + orderId + " dang cho thanh toan";
+      case Paid(var orderId, var txId, var amount) ->
+          "Don " + orderId + " da tra " + amount + " VND, ma GD=" + txId;
+      case Failed(var orderId, var reason) ->
+          "Don " + orderId + " that bai: " + reason;
+    };
+  }
+}
+~~~
+
+### So sánh / khi nào dùng
+
+| Cách | Ưu điểm | Nhược điểm | Khi dùng |
+|---|---|---|---|
+| {{enum}} + {{if/switch}} | Đơn giản, quen thuộc | Mọi trạng thái chung field; quên nhánh không bị bắt (nếu có {{default}}) | Trạng thái thuần tuý, không mang dữ liệu khác nhau |
+| {{sealed}} + {{record}} + pattern {{switch}} | Exhaustive, mỗi trạng thái có dữ liệu riêng, an toàn kiểu | Cần Java 17+ (sealed) / 21 (pattern switch ổn định), nhiều class nhỏ | State machine có dữ liệu khác nhau theo trạng thái |
+| Thư viện State Machine (Spring Statemachine) | Guard, action, transition phức tạp, persist | Nặng, learning curve | Quy trình rất nhiều transition, cần audit/persist transition |
+
+### Pitfall production
+- **Thêm {{default}} cho tiện:** {{default -> ...}} làm {{switch}} không còn exhaustive, nên thêm trạng thái mới sẽ không bị compiler nhắc. Hãy tránh {{default}} trừ khi có lý do rõ ràng (ví dụ phòng tương lai từ lib ngoài tầm kiểm soát).
+- **{{sealed}} và module/classpath:** các {{permits}} phải cùng module (hoặc cùng package nếu unnamed module). Đặt lung tung package sẽ lỗi biên dịch.
+- **Nhầm lẫn với JPA entity:** {{record}} là bất biến, không có no-arg constructor — không dùng trực tiếp làm JPA entity. Dùng {{sealed}} hierarchy cho domain/state object trong bộ nhớ, map sang entity/DTO khi lưu hoặc trả API.
+- **Serialization/JSON:** Jackson cần cấu hình ({{@JsonTypeInfo}}, {{@JsonSubTypes}} hoặc module hỗ trợ sealed) để serialize/deserialize hierarchy; quên cấu hình sẽ lỗi ở runtime.
+
+### Ví dụ đời thực
+Hệ thống ví điện tử xử lý ~2 triệu giao dịch/ngày. Trước đây dùng {{enum Status}} với các giá trị {{PENDING, PAID, FAILED, REFUNDED}} và một class {{Payment}} có đủ field ({{txId}}, {{failReason}}, {{refundId}} đều {{nullable}}). Bug thực tế: code hiển thị "hoàn tiền" nhưng {{refundId}} null vì nhánh {{REFUNDED}} quên set field (không ai bắt được ở compile-time). Sau khi refactor sang {{sealed interface PaymentState}} với {{record Refunded(String orderId, String refundId, long amount)}}, khi thêm trạng thái {{Chargeback}} compiler báo lỗi tại 7 {{switch}} chưa xử lý; đội sửa hết trong 1 PR, số bug null-field liên quan trạng thái giảm từ ~3–4 incident/tháng xuống 0 trong 3 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng sealed interface để liệt kê cố định các trạng thái, mỗi trạng thái là một record mang đúng dữ liệu của nó, ví dụ Paid có transactionId và amount còn Failed có reason. Khi xử lý, em dùng switch pattern matching của Java 21 để deconstruct record và compiler bắt buộc xử lý đủ mọi nhánh. Điểm lợi lớn nhất là correctness: nếu thêm trạng thái mới như Refunded, mọi switch thiếu nhánh sẽ lỗi biên dịch thay vì fail ngầm ở runtime. Cách này cũng tránh 'illegal state' kiểu status là PAID nhưng txId lại null. Trong dự án thật em tách domain state dùng sealed hierarchy trong memory, còn JPA entity và JSON DTO map riêng vì record bất biến không phù hợp làm entity. Em tránh dùng default trong switch để giữ được exhaustive checking."
+
+> Senior tip: Dùng {{sealed}} + pattern {{switch}} cho state có dữ liệu khác nhau; giữ {{switch}} exhaustive (không {{default}}) để compiler trở thành "lưới an toàn" khi domain tiến hoá. Map sang entity/DTO ở biên hệ thống, đừng ép record làm entity.`,
+  follow: [
+    'Khi nào bạn vẫn chọn {{enum}} thay vì {{sealed interface}} cho trạng thái?',
+    'Làm sao serialize/deserialize một {{sealed}} hierarchy sang JSON một cách an toàn?',
+    'So sánh cách này với việc dùng Visitor pattern hoặc State pattern truyền thống?'
+  ],
+  tags: ['sealed', 'pattern-matching', 'switch', 'record', 'state-machine', 'Java21']
+},
+{
+  id: 'modern-065',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Record pattern (Java 21) hoạt động như thế nào? Bạn dùng nó trong {{instanceof}}, {{switch}} và vòng lặp để "tháo" (deconstruct) dữ liệu ra sao trong code thực tế?',
+  a: `**Tóm tắt:** Record pattern (mẫu bản ghi, Java 21) cho phép deconstruct (tháo) một {{record}} thành các thành phần ngay trong {{instanceof}} và {{switch}}: vừa kiểm tra kiểu/cấu trúc vừa gán biến thành phần trong một bước. Nó loại bỏ boilerplate (code lặp lại) kiểu ép kiểu rồi gọi getter, và hỗ trợ lồng nhau (nested) để duyệt cấu trúc dữ liệu phức tạp gọn, an toàn kiểu.
+
+### Thuật ngữ
+- **{{record}}:** kiểu dữ liệu bất biến (immutable, không đổi sau khi tạo) trong Java (từ 16), tự sinh constructor, accessor, {{equals}}, {{hashCode}}, {{toString}}.
+- **Deconstruction pattern:** thao tác "mở" một giá trị ra thành các phần tử cấu thành nó (ngược với constructor "gộp" lại).
+- **Component (thành phần):** từng trường khai báo trong header của record, ví dụ {{record Point(int x, int y)}} có 2 component {{x}}, {{y}}.
+- **Guarded pattern ({{when}}):** điều kiện bổ sung trong nhánh {{switch}} ({{case Point(var x, var y) when x == y -> ...}}).
+
+### Cơ chế bên trong từng bước và VÌ SAO
+1. **Kiểm tra kiểu và hình dạng:** dùng {{instanceof Point(var x, var y)}} trong {{if}} để vừa kiểm tra {{obj}} có phải {{Point}} không, vừa lấy component. Nếu đúng, compiler gọi các accessor component ({{x()}}, {{y()}}) và gán vào biến cục bộ {{x}}, {{y}}. Vì sao: gộp 3 bước ({{instanceof}}, cast, gọi getter) thành 1, giảm lỗi quên cast hoặc gọi nhầm getter.
+2. **Trong {{switch}}:** dùng các nhánh như {{case Circle(var r) -> ...}} hay {{case Rect(var w, var h) -> ...}}. Compiler biết các component từ khai báo record nên kiểm tra tính đầy đủ và kiểu tĩnh. Vì sao: an toàn hơn chuỗi {{if-else instanceof}} vì compiler hỗ trợ exhaustive khi kết hợp {{sealed}}.
+3. **Nested pattern (lồng nhau):** {{case Line(Point(var x1, var y1), Point(var x2, var y2)) -> ...}}. Compiler tự "mở" từng tầng. Vì sao: dữ liệu domain thường lồng nhau (Order có Address có City); nested pattern tránh biến tạm và null-check rải rác (nhưng vẫn phải cẩn thận null của component).
+4. **Generic record và inference:** compiler suy luận kiểu component từ ngữ cảnh generic, nên {{Box<String>(var s)}} biết {{s}} là {{String}}. Vì sao: giữ type-safety xuyên suốt mà không cần cast tay.
+5. **{{null}}:** pattern matching trong {{switch}} có thể có {{case null}} riêng; {{instanceof}} với pattern trả về {{false}} nếu đối tượng là {{null}}.
+
+~~~java
+public record Point(int x, int y) {}
+public record Line(Point start, Point end) {}
+
+public class Geometry {
+  // Nested record pattern + guarded pattern trong switch
+  public static String classify(Object obj) {
+    return switch (obj) {
+      case null -> "null";
+      case Point(var x, var y) when x == 0 && y == 0 -> "origin";
+      case Point(var x, var y) -> "point(" + x + "," + y + ")";
+      // Deconstruct 2 tang: Line chua 2 Point
+      case Line(Point(var x1, var y1), Point(var x2, var y2)) when x1 == x2 ->
+          "vertical line at x=" + x1;
+      case Line(var s, var e) -> "line " + s + "->" + e;
+      default -> "unknown";
+    };
+  }
+}
+~~~
+
+### Khi nào dùng / không dùng
+
+| Tình huống | Nên dùng | Ghi chú |
+|---|---|---|
+| DTO/Value object bất biến | {{record}} + record pattern | Rõ ràng, gọn |
+| Cây biểu thức, AST, event hierarchy | Rất hợp (kết hợp {{sealed}}) | Exhaustive switch mạnh |
+| Entity JPA cần mutable/proxy | Không | Record bất biến, không có no-arg ctor |
+| Dữ liệu có thể {{null}} component | Cẩn thận | Pattern không tự null-safe cho component bên trong |
+
+### Pitfall production
+- **{{null}} component:** {{case Line(var s, var e)}} thành công dù {{s}} hoặc {{e}} là {{null}}; truy cập {{s.x()}} sau đó sẽ {{NullPointerException}}. Phải kiểm tra component null hoặc thiết kế để không cho null.
+- **Deconstruction gọi accessor:** với record chuẩn, accessor trả field; nhưng nếu ai đó override accessor để có side-effect (hiếm, nhưng có thể), pattern matching sẽ kích hoạt nó. Đừng override accessor của record.
+- **Nhầm với "destructuring" của ngôn ngữ khác:** Java record pattern là pattern matching (có kiểm tra), không phải gán vị trí tuỳ ý như JavaScript; tên biến không cần trùng tên component nhưng thứ tự component là cố định.
+- **Phiên bản JDK:** record pattern là tính năng chuẩn từ Java 21 (JEP 440). Code dùng nó không chạy trên JDK 17; build pipeline/production runtime phải là 21+.
+
+### Ví dụ đời thực
+Service định tuyến thông báo (notification router) nhận ~500k event/giờ với các loại {{sealed interface Event permits Email, Sms, Push}} (mỗi loại là record mang field riêng). Trước đây dùng chuỗi {{if (e instanceof Email)}} rồi ép kiểu thủ công và xử lý từng nhánh dài ~120 dòng, khó đọc và dễ quên nhánh. Sau khi dùng record pattern trong {{switch}}, logic rút còn ~55 dòng, thêm loại {{Webhook}} mới compiler báo thiếu 3 chỗ xử lý; thời gian review PR giảm vì reviewer thấy rõ exhaustive. Không có thay đổi throughput đo được (khác biệt < 1%) vì accessor của record rất rẻ.
+
+### Trả lời mẫu khi phỏng vấn
+"Record pattern trong Java 21 cho phép em deconstruct một record ngay trong instanceof hoặc switch, ví dụ {{case Paid(var orderId, var txId, var amount)}} vừa kiểm tra kiểu vừa lấy ra các component. Về cơ chế, compiler biết danh sách component từ khai báo record nên nó sinh mã gọi accessor và gán vào biến cục bộ, đồng thời kiểm tra kiểu tĩnh. Em hay dùng kết hợp sealed interface và record pattern để viết switch exhaustive cho domain event hoặc state, vì khi thêm loại mới compiler buộc cập nhật mọi nơi xử lý. Nested pattern cũng hữu ích khi dữ liệu lồng nhau, như Line chứa hai Point. Điểm cần cẩn thận là component bên trong vẫn có thể null nên pattern không thay thế null-check, và tính năng này yêu cầu runtime Java 21 trở lên. Với JPA entity em không dùng record vì cần mutability và no-arg constructor."
+
+> Senior tip: Kết hợp {{sealed interface}} + {{record}} + record pattern trong {{switch}} để được exhaustive checking end-to-end; coi đây là "state machine an toàn kiểu" mặc định cho domain model mới trên Java 21.`,
+  follow: [
+    'Record pattern khác gì "destructuring" trong các ngôn ngữ như JavaScript hay Kotlin?',
+    'Khi component của record là {{null}}, record pattern xử lý thế nào và bạn phòng tránh ra sao?',
+    'Vì sao record không phù hợp làm JPA entity và bạn thiết kế DTO/entity thế nào thay thế?'
+  ],
+  tags: ['record-pattern', 'deconstruction', 'pattern-matching', 'Java21', 'switch']
+},
+{
+  id: 'modern-066',
+  topic: 'modern',
+  level: 'lead',
+  q: '(Lead) Khi migrate một ứng dụng Spring Boot từ thread pool truyền thống sang virtual threads (Java 21, Project Loom), bạn đánh giá và thực hiện như thế nào? Những chỗ nào vẫn phải dùng thread pool/platform thread?',
+  a: `**Tóm tắt:** Virtual thread (luồng ảo, Java 21) là luồng nhẹ do JVM quản lý, gắn (mount) lên một platform thread (luồng OS thật) khi chạy và tháo (unmount) khi bị chặn (blocking I/O). Mục tiêu là viết code blocking kiểu "một request một thread" nhưng scale được như async. Khi migrate, cần đo đặc tính workload (I/O-bound hay CPU-bound), bật {{spring.threads.virtual.enabled=true}} (Boot 3.2+), loại bỏ các điểm nghẽn như {{synchronized}} pinning, giới hạn tài nguyên hạ tầng bằng {{Semaphore}}/bulkhead thay vì giới hạn số thread, và giữ platform thread pool cho tác vụ CPU-bound hoặc native/library không tương thích.
+
+### Thuật ngữ
+- **Platform thread:** luồng do hệ điều hành cấp phát, nặng (stack ~1 MB mặc định), số lượng bị giới hạn.
+- **Virtual thread:** luồng do JDK tạo/định thời, rất nhẹ (stack tăng co giãn), có thể tạo hàng trăm nghìn.
+- **Mount/Unmount:** JVM gắn virtual thread lên carrier (platform) thread để chạy; khi gặp blocking operation hỗ trợ ({{java.*}} I/O, {{LockSupport.park}}, {{ReentrantLock}}), virtual thread unmount để nhường carrier cho thread khác.
+- **Pinning (ghim):** tình huống virtual thread không unmount được khi block (ví dụ đang ở trong {{synchronized}} hoặc native call), khiến carrier thread bị chiếm giữ.
+- **I/O-bound vs CPU-bound:** I/O-bound chờ mạng/đĩa/DB nhiều; CPU-bound dùng CPU tính toán liên tục.
+
+### Cơ chế bên trong từng bước và VÌ SAO
+1. **Đánh giá workload:** profile xem thời gian request dành cho chờ I/O (DB, HTTP, Redis) hay tính toán. Virtual thread chỉ giúp khi có nhiều thời gian chờ I/O; với CPU-bound, thêm thread ảo không tăng throughput vì carrier thread (thường bằng số core) vẫn bão hoà.
+2. **Bật virtual thread trong Spring Boot 3.2+:** {{spring.threads.virtual.enabled=true}} để Tomcat dùng virtual thread per request và các executor mặc định chuyển sang virtual. Vì sao: thay đổi ít code nhất, giữ mô hình lập trình blocking quen thuộc.
+3. **Kiểm soát đồng thời (concurrency limit):** trước đây giới hạn bằng kích thước thread pool (ví dụ 200). Với virtual thread, tạo 50k thread là bình thường nên thread pool không còn là "van" giới hạn; phải giới hạn ở tầng tài nguyên: {{Semaphore}}/bulkhead cho số kết nối DB, HTTP client connection pool, rate limit. Vì sao: nếu không, 10k request đồng thời sẽ mở 10k kết nối DB và làm sập DB (DB chỉ chịu được vài trăm connection).
+4. **Xử lý pinning:** thay {{synchronized}} bao quanh blocking call bằng {{ReentrantLock}} (Java 21 đã cải thiện pinning trong {{synchronized}} ở một số trường hợp, nhưng {{ReentrantLock}} vẫn an toàn và rõ ràng). Audit thư viện native/JNI. Vì sao: pinning làm carrier thread bị giữ, mất lợi ích virtual thread và có thể gây starvation.
+5. **ThreadLocal và scoped value:** {{ThreadLocal}} vẫn hoạt động nhưng nếu mỗi request một virtual thread và lưu object lớn thì tốn bộ nhớ (nhiều instance). Cân nhắc {{ScopedValue}} (preview/final tuỳ phiên bản) hoặc truyền context tường minh. Vì sao: scale lên hàng chục nghìn virtual thread làm phình bộ nhớ nếu lạm dụng ThreadLocal.
+6. **Quan sát và đo:** bật metrics (Micrometer), theo dõi số virtual thread, carrier thread, thời gian pinning (JFR event {{jdk.VirtualThreadPinned}}), và latency/throughput trước-sau.
+
+~~~java
+// Gioi han dong thoi truy cap DB bang Semaphore thay vi gioi han thread pool
+public class OrderService {
+  // Cho phep toi da 50 request truy cap DB cung luc (khop connection pool)
+  private final Semaphore dbPermits = new Semaphore(50);
+  private final OrderRepository repo;
+
+  public OrderService(OrderRepository repo) { this.repo = repo; }
+
+  public Order find(long id) throws InterruptedException {
+    dbPermits.acquire(); // block o day: virtual thread se unmount (khong chiem carrier)
+    try {
+      return repo.findById(id).orElseThrow();
+    } finally {
+      dbPermits.release();
+    }
+  }
+}
+~~~
+
+### So sánh / khi nào dùng
+
+| Tiêu chí | Platform thread pool | Virtual threads |
+|---|---|---|
+| Mô hình | Blocking, giới hạn bởi pool size | Blocking, gần như không giới hạn thread |
+| Phù hợp | CPU-bound, số tác vụ vừa phải | I/O-bound, rất nhiều tác vụ chờ I/O |
+| Giới hạn tài nguyên | Pool size là van tự nhiên | Phải tự giới hạn (Semaphore, pool kết nối) |
+| Debug/stack trace | Ít thread, dễ nhìn | Rất nhiều thread, cần tooling/JFR |
+
+### Pitfall production
+- **Sập DB/Downstream:** bỏ giới hạn thread pool nhưng quên giới hạn connection pool/HTTP pool → 20k virtual thread đồng loạt gọi DB → DB từ chối kết nối, lỗi dây chuyền. Luôn đặt bulkhead theo tài nguyên hạ tầng.
+- **Pinning trong {{synchronized}} + blocking:** carrier bị giữ, throughput giảm mạnh; khó phát hiện nếu không bật JFR {{jdk.VirtualThreadPinned}}. Kiểm tra bằng JFR trước khi tin rằng đã "migrate xong".
+- **CPU-bound trong virtual thread:** nén ảnh, mã hoá, tính toán nặng chiếm carrier thread lâu, cản các virtual thread khác. Chuyển tác vụ CPU-bound sang {{Executors.newFixedThreadPool(nCPU)}} (platform thread).
+- **Thư viện không tương thích:** một số driver/client cũ dùng native blocking hoặc {{synchronized}} nội bộ gây pinning; cần kiểm tra phiên bản tương thích (ví dụ JDBC driver, HTTP client hiện đại).
+
+### Ví dụ đời thực
+API gateway nội bộ (Spring Boot 3.2, Java 21) phục vụ ~1.200 req/s giờ cao điểm, mỗi request gọi 2 downstream HTTP (tổng chờ I/O ~120 ms). Trước migrate: Tomcat 200 thread, p95 latency 350 ms, khi spike 1.800 req/s bắt đầu timeout vì cạn thread. Sau khi bật {{spring.threads.virtual.enabled=true}}, giới hạn downstream bằng {{Semaphore(300)}} và HTTP connection pool 300, thay 2 chỗ {{synchronized}} quanh blocking call bằng {{ReentrantLock}}: p95 giảm còn ~140 ms ở 1.200 req/s, chịu được spike 3.000 req/s không timeout. Kết nối DB giới hạn 60 (HikariCP) giữ nguyên nên DB CPU không đổi (~45%). Tác vụ render PDF (CPU-bound) được tách sang fixed pool 8 platform threads.
+
+### Trả lời mẫu khi phỏng vấn
+"Em tiếp cận migrate virtual thread theo bước đo lường và kiểm soát. Trước hết em xác định workload là I/O-bound hay CPU-bound bằng profiling; virtual thread chỉ có lợi khi phần lớn thời gian là chờ I/O. Với Spring Boot 3.2+ em bật {{spring.threads.virtual.enabled=true}} để dùng mô hình một request một virtual thread. Điểm quan trọng nhất là giới hạn đồng thời theo tài nguyên hạ tầng: thread pool không còn là van, nên em dùng Semaphore hoặc bulkhead tương ứng với connection pool DB và HTTP, tránh việc hàng chục nghìn virtual thread dội xuống DB. Em rà soát pinning bằng JFR event VirtualThreadPinned, thay synchronized quanh blocking call bằng ReentrantLock, và giữ platform thread pool cho tác vụ CPU-bound như xử lý ảnh. Em cũng theo dõi ThreadLocal vì số lượng virtual thread lớn có thể phình bộ nhớ. Kết quả em kỳ vọng là cải thiện throughput và latency tail khi I/O-bound, nhưng luôn xác nhận bằng số liệu trước-sau."
+
+> Senior tip: Virtual thread không phải "bùa tăng tốc": nó giải bài toán I/O-bound scale; phải thay "giới hạn bằng thread pool" bằng "giới hạn bằng bulkhead tài nguyên" và đo pinning bằng JFR, nếu không rất dễ đổi bottleneck từ Tomcat sang DB.`,
+  follow: [
+    'Làm sao phát hiện và sửa pinning khi chạy virtual thread trong production?',
+    'Vì sao không nên dùng virtual thread cho tác vụ CPU-bound và bạn tách chúng thế nào?',
+    'Khi nào bạn chọn reactive (WebFlux) thay vì virtual thread cho hệ thống mới?'
+  ],
+  tags: ['virtual-thread', 'Project-Loom', 'Java21', 'Spring-Boot', 'concurrency', 'migration']
+},
+{
+  id: 'modern-067',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Stream API trong Java gây bẫy hiệu năng ở những chỗ nào trong dự án thật? Khi nào nên dùng Stream, khi nào nên quay lại vòng lặp thường?',
+  a: `**Tóm tắt:** Stream API (API xử lý luồng dữ liệu theo kiểu khai báo: {{filter/map/collect}}) giúp code ngắn và rõ ý, nhưng có chi phí: tạo object pipeline, lambda (hàm ẩn danh), boxing/unboxing (chuyển giữa {{int}} và {{Integer}}), và khó tối ưu một số mẫu lặp. Bẫy thường gặp là stream trên collection nhỏ trong hot path, dùng {{parallelStream}} sai ngữ cảnh, boxing do dùng {{Stream<Integer>}} thay vì {{IntStream}}, và thao tác có side-effect hoặc tạo nhiều object trung gian. Chọn Stream khi tăng tính đọc và không nằm trên đường nóng hiệu năng; chọn vòng lặp khi cần tốc độ tối đa, thao tác index, hoặc logic stateful phức tạp.
+
+### Thuật ngữ
+- **Stream pipeline:** chuỗi thao tác trung gian ({{filter}}, {{map}}) + thao tác kết thúc ({{collect}}, {{reduce}}) thực thi theo kiểu lười (lazy) khi có terminal operation.
+- **Boxing/Unboxing:** chuyển {{int}} (kiểu nguyên thủy, primitive) ↔ {{Integer}} (object). Boxing tạo/đọc object, tốn CPU và gây áp lực GC (garbage collector, bộ dọn rác).
+- **Hot path:** đoạn code chạy rất thường xuyên (mỗi request, mỗi phần tử), chi phí nhỏ nhân lên thành lớn.
+- **{{parallelStream}}:** chia dữ liệu chạy song song trên {{ForkJoinPool.commonPool()}} (pool dùng chung).
+
+### Cơ chế bên trong từng bước và VÌ SAO
+1. **Chi phí khởi tạo pipeline:** mỗi stream tạo một chuỗi object {{Stage}} và lambda object (trừ trường hợp được JVM tối ưu). Với collection 5–20 phần tử gọi hàng triệu lần/giây, overhead này đáng kể so với {{for}} đơn giản. Vì sao: {{for}} chỉ là nhảy lệnh (jump), gần như không cấp phát.
+2. **Boxing:** {{list.stream().map(x -> x * 2).sum()}} trên {{List<Integer>}} phải unbox khi đọc và có thể box lại tuỳ bước; đúng ra dùng {{list.stream().mapToInt(Integer::intValue).map(x -> x * 2).sum()}} với {{IntStream}} để làm việc trên {{int}} nguyên thủy. Vì sao: tránh cấp phát {{Integer}} tạm và giảm áp lực GC.
+3. **{{parallelStream}} dùng common pool:** mặc định chạy trên {{ForkJoinPool.commonPool()}} dùng chung toàn JVM. Nếu bên trong gọi blocking I/O (DB, HTTP), nó chặn thread của common pool và ảnh hưởng các tác vụ parallel khác (kể cả {{CompletableFuture}} mặc định). Vì sao: pool dùng chung không cô lập.
+4. **Kích thước và tính chia tách (spliterator):** {{ArrayList}} chia tốt nên parallel có lợi khi dữ liệu rất lớn và CPU-bound; {{LinkedList}} hoặc {{Stream.iterate}} chia kém, overhead song song có thể làm chậm hơn tuần tự.
+5. **Tính đọc vs hiệu năng:** {{stream().filter(...).map(...).collect(...)}} diễn đạt "làm gì" rõ ràng; nhưng logic nhiều bước phụ thuộc index, break sớm phức tạp, hoặc stateful đôi khi {{for}} dễ hiểu và nhanh hơn.
+
+~~~java
+import java.util.*;
+
+public class StreamPitfalls {
+  // BAD: boxing/unboxing tren hot path (List<Integer> -> Stream<Integer>)
+  static long sumBad(List<Integer> nums) {
+    return nums.stream().filter(n -> n % 2 == 0).mapToLong(n -> n).sum();
+  }
+
+  // GOOD: dung primitive stream, tranh box khi co the
+  static long sumGood(int[] nums) {
+    long sum = 0;
+    for (int n : nums) {          // for don gian, khong cap phat object pipeline
+      if ((n & 1) == 0) sum += n; // thao tac tren primitive
+    }
+    return sum;
+  }
+
+  // GOOD: Stream van hop khi tang tinh doc va KHONG nam trong hot path
+  static List<String> topEmails(List<User> users) {
+    return users.stream()
+        .filter(User::active)
+        .map(User::email)
+        .sorted()
+        .limit(10)                // limit giup short-circuit
+        .toList();                // Java 16+: danh sach khong thay doi (unmodifiable)
+  }
+}
+~~~
+
+### So sánh
+
+| Tiêu chí | Stream API | Vòng lặp {{for}} |
+|---|---|---|
+| Tính đọc (transform đơn giản) | Cao, khai báo | Trung bình |
+| Overhead cấp phát | Có (pipeline, lambda, có thể boxing) | Rất thấp |
+| Kiểm soát index/break phức tạp | Khó/không tự nhiên | Dễ |
+| Song song hoá | {{parallelStream}} (dễ nhưng cần cẩn thận) | Tự quản lý (phức tạp hơn) |
+| Primitive chuyên biệt | {{IntStream/LongStream/DoubleStream}} | Tự nhiên với {{int/long/double}} |
+
+### Pitfall production
+- **{{parallelStream}} trong request web:** chạy trên common pool, nếu pipeline có blocking I/O sẽ làm nghẽn pool dùng chung và tăng latency toàn hệ thống. Dùng {{parallelStream}} chỉ cho tác vụ CPU-bound, dữ liệu lớn, chia tách tốt; còn blocking I/O hãy dùng executor riêng.
+- **Stream reuse:** stream dùng một lần; gọi lại terminal operation trên cùng instance ném {{IllegalStateException}}.
+- **Side-effect trong {{map/filter}}:** sửa biến ngoài (mutable state) làm code khó đoán, và sai hoàn toàn khi chuyển sang parallel. Hãy giữ lambda thuần (pure function, không hiệu ứng phụ).
+- **Tối ưu sớm bằng trực giác:** đừng né Stream mọi nơi; hãy đo (benchmark bằng JMH - Java Microbenchmark Harness) trước khi kết luận. Với collection vài trăm phần tử và không phải hot path, khác biệt thường không đáng kể.
+
+### Ví dụ đời thực
+Service tính phí giao dịch xử lý ~15.000 giao dịch/giây. Đoạn tính tổng dùng {{List<Long>.stream().filter(...).map(...).reduce(...)}} tạo nhiều {{Long}} tạm (boxing). Profiler (công cụ đo hiệu năng) cho thấy ~12% thời gian CPU nằm ở boxing và áp lực GC tăng (young GC ~40 ms mỗi 2 giây). Sau khi đổi sang mảng {{long[]}} + {{for}} ở đúng đoạn hot path, CPU của đoạn này giảm ~9%, young GC còn ~25 ms. Các chỗ khác (lọc danh sách 50–200 phần tử cho response API, chạy vài trăm lần/giây) giữ nguyên Stream vì lợi ích đọc code lớn hơn và khác biệt hiệu năng < 1%.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng Stream API để code biến đổi dữ liệu rõ ý, nhưng em luôn ý thức chi phí của nó. Stream tạo pipeline object và lambda, và dễ phát sinh boxing nếu dùng Stream<Integer> thay vì IntStream, nên trong hot path xử lý hàng chục nghìn phần tử mỗi request em ưu tiên vòng lặp trên primitive. Với parallelStream, em chỉ dùng cho tác vụ CPU-bound trên dữ liệu lớn và chia tách tốt, tuyệt đối không gọi blocking I/O vì nó dùng chung ForkJoinPool.commonPool và có thể kéo chậm cả hệ thống. Em cũng tránh side-effect trong lambda để code đúng khi song song và dễ hiểu. Quan điểm của em là ưu tiên tính đọc với Stream ở code không nóng, còn hot path thì đo bằng profiler hoặc JMH rồi mới quyết định đổi sang for."
+
+> Senior tip: Đừng chọn Stream hay {{for}} theo cảm tính: dùng Stream cho tính đọc ở đường thường, dùng {{for}}/primitive stream ở hot path sau khi có số liệu đo (JMH/profiler). Tránh {{parallelStream}} cho I/O-bound vì nó chia sẻ common pool.`,
+  follow: [
+    'Vì sao {{parallelStream}} lại nguy hiểm khi dùng trong ứng dụng web có blocking I/O?',
+    'Khi nào {{IntStream}}/primitive stream mang lại lợi ích rõ rệt so với {{Stream<Integer>}}?',
+    'Bạn dùng công cụ gì (JMH, profiler) để quyết định thay Stream bằng vòng lặp?'
+  ],
+  tags: ['Stream-API', 'performance', 'boxing', 'parallelStream', 'Java8']
+},
+{
+  id: 'modern-068',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Sử dụng {{Optional}} (Java 8+) đúng và sai như thế nào? Khi nào nên dùng {{Optional}}, khi nào nên trả về {{null}} hoặc dùng cách khác?',
+  a: `**Tóm tắt:** {{Optional<T>}} là một container (hộp) có thể chứa một giá trị hoặc rỗng, dùng để biểu đạt rõ "giá trị có thể vắng mặt" trong kiểu trả về của method. Dùng đúng giúp API tự diễn giải và giảm {{NullPointerException}} (NPE - lỗi truy cập vào tham chiếu rỗng). Dùng sai (làm field, tham số, gọi {{get()}} không kiểm tra, bọc collection) làm code phức tạp hơn mà không an toàn hơn.
+
+### Thuật ngữ
+- **{{Optional<T>}}:** class trong {{java.util}} (Java 8) đại diện "có thể có 0 hoặc 1 giá trị".
+- **{{NullPointerException}} (NPE):** lỗi runtime khi gọi method/truy cập field trên tham chiếu {{null}}.
+- **Sentinel value:** giá trị đặc biệt (như {{-1}}, {{""}}) dùng để biểu thị "không có" — dễ bị quên kiểm tra.
+
+### Cơ chế bên trong và VÌ SAO dùng đúng/sai
+1. **Mục đích thiết kế:** {{Optional}} chủ yếu dành cho **kiểu trả về** (return type) để người gọi buộc phải nghĩ tới trường hợp rỗng. {{map/flatMap/filter/ifPresent/orElse/orElseGet/orElseThrow}} cho phép xử lý theo chuỗi rõ ràng.
+2. **Đúng:** trả {{Optional}} từ method tìm kiếm có thể không thấy ({{findById}}). Dùng {{orElseThrow}} để fail-fast với thông điệp rõ, {{orElseGet}} để tính giá trị mặc định lười (lazy). Dùng {{map/flatMap}} để biến đổi chuỗi mà không cần {{if (x != null)}} lồng nhau.
+3. **Sai - làm field:** {{Optional}} không implements {{Serializable}} trong thiết kế gốc và thêm một lớp bọc/chi phí; field "có thể vắng mặt" nên dùng {{null}} và getter trả {{Optional}} nếu muốn.
+4. **Sai - làm tham số method:** buộc người gọi viết {{Optional.ofNullable(...)}}, rườm rà; nên dùng overload hoặc chấp nhận {{null}} có tài liệu rõ.
+5. **Sai - {{get()}} không kiểm tra:** {{optional.get()}} khi rỗng ném {{NoSuchElementException}} — không hơn gì NPE. Luôn dùng {{orElseThrow(() -> new X(...))}} hoặc {{ifPresent/orElse}}.
+6. **Sai - bọc collection:** {{Optional<List<T>>}} mơ hồ giữa "rỗng" và "danh sách rỗng"; hãy trả {{List}} rỗng thay vì {{Optional}}.
+
+~~~java
+import java.util.Optional;
+
+public class UserService {
+  // DUNG: tra ve Optional cho method tim kiem co the khong thay
+  public Optional<User> findByEmail(String email) {
+    return userRepo.findByEmail(email); // repo tra Optional
+  }
+
+  public User getActiveUser(String email) {
+    return findByEmail(email)
+        .filter(User::isActive)                 // giu neu active
+        .map(this::toDomain)                     // bien doi neu co
+        .orElseThrow(() -> new NotFoundException("User not found: " + email));
+  }
+
+  // SAI: Optional lam tham so -> ruom ra cho nguoi goi
+  // void notify(Optional<String> email) { ... }
+
+  // SAI: Optional.get() khong kiem tra
+  // User u = findByEmail(e).get(); // NoSuchElementException neu rong
+}
+~~~
+
+### So sánh / khi nào dùng
+
+| Trường hợp | Nên dùng | Vì sao |
+|---|---|---|
+| Kiểu trả về có thể không có giá trị | {{Optional<T>}} | API tự mô tả, buộc xử lý |
+| Field của entity/DTO | {{T}} (có thể {{null}}) + getter trả {{Optional}} nếu cần | Tránh bọc/serializable issue |
+| Tham số method | Kiểu thường / overload | Tránh ép người gọi tạo Optional |
+| Collection trả về | Trả collection rỗng | {{Optional<List>}} dư thừa, mơ hồ |
+| Kiểu nguyên thủy hiệu năng cao | {{OptionalInt/Long/Double}} | Tránh boxing |
+
+### Pitfall production
+- **{{orElse}} vs {{orElseGet}}:** {{orElse(createDefault())}} luôn gọi {{createDefault()}} dù có giá trị hay không; nếu hàm mặc định tốn kém (gọi DB, tạo object nặng), dùng {{orElseGet(this::createDefault)}} để chỉ gọi khi rỗng.
+- **{{Optional}} trong JSON serialization:** Jackson cần module {{jackson-datatype-jdk8}} để serialize đúng (ra giá trị hoặc {{null}}); nếu không cấu hình có thể ra cấu trúc lạ. Nhiều team quy ước không dùng {{Optional}} làm field DTO.
+- **{{==}} so sánh Optional:** so sánh hai {{Optional}} bằng {{==}} so tham chiếu, không so giá trị; dùng {{equals}} (hoặc so giá trị bên trong).
+- **Lồng {{Optional<Optional<T>>}}:** thường do dùng {{map}} thay vì {{flatMap}} khi hàm trả {{Optional}}; kết quả khó dùng. Nhớ: hàm trả {{Optional}} thì dùng {{flatMap}}.
+
+### Ví dụ đời thực
+Ứng dụng thương mại điện tử ~300 req/s có method {{findDiscount(code)}}. Trước đây trả {{null}} khi không có mã; một nhánh mới quên kiểm tra {{null}} và gọi {{discount.percent()}} gây {{NullPointerException}} trong giờ cao điểm, lỗi ~2% request áp mã trong 15 phút. Sau khi đổi chữ ký sang {{Optional<Discount>}} và buộc dùng {{orElseThrow(() -> new InvalidCodeException(code))}}, compiler/IDE và code review dễ thấy điểm phải xử lý; các chỗ hiển thị tuỳ chọn dùng {{map(...).orElse("Không có")}}. Trong 2 tháng sau không ghi nhận NPE liên quan discount. Nhóm cũng phát hiện 1 chỗ dùng {{orElse(repo.createDefault())}} gây insert thừa ~500 bản ghi/ngày dù mã hợp lệ, sửa thành {{orElseGet}} là hết.
+
+### Trả lời mẫu khi phỏng vấn
+"Em xem Optional là cách thể hiện ở kiểu trả về rằng giá trị có thể vắng mặt, để người gọi buộc phải xử lý. Em dùng nó cho các method tìm kiếm như findById, và xử lý bằng map, flatMap, filter hoặc orElseThrow với exception rõ nghĩa thay vì gọi get trần. Em tránh dùng Optional làm field hoặc tham số vì nó không phải mục đích thiết kế và gây rườm rà; field có thể null thì getter trả Optional nếu cần, còn collection thì trả danh sách rỗng thay vì Optional của list. Một bẫy hay gặp là orElse luôn đánh giá đối số nên nếu tạo mặc định tốn kém phải dùng orElseGet. Em cũng chú ý không bọc Optional lồng nhau bằng cách dùng flatMap khi hàm đã trả Optional. Mục tiêu là giảm NullPointerException và làm API tự diễn giải, không phải dùng Optional ở mọi nơi."
+
+> Senior tip: Dùng {{Optional}} cho **return type** của method có thể không có kết quả; tránh dùng làm field/parameter. Nhớ {{orElseGet}} cho giá trị mặc định tốn kém và {{flatMap}} khi hàm trả {{Optional}}.`,
+  follow: [
+    'Phân biệt {{orElse}} và {{orElseGet}} — khi nào chọn cái nào trong code có gọi DB?',
+    'Vì sao không nên dùng {{Optional}} làm field trong entity/DTO và cách thay thế?',
+    'Khi nào bạn dùng {{OptionalInt/OptionalLong}} thay vì {{Optional<Integer>}}?'
+  ],
+  tags: ['Optional', 'NullPointerException', 'API-design', 'Java8', 'best-practices']
+},
 );
