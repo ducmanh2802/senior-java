@@ -6856,4 +6856,461 @@ Một tổ chức 6 squad (tổng ~40 dev, monorepo dịch vụ Java, 4.200 test
   ],
   tags: ['flaky-test', 'quality-gate', 'CI', 'engineering-leadership', 'quarantine']
 },
+{
+  id: 'testing-057',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Trong unit test, bạn quyết định mock cái gì và tuyệt đối không mock cái gì? Giải thích nguyên tắc "không mock thứ bạn không sở hữu" (don’t mock what you don’t own), vì sao mock {{RestTemplate}}/{{KafkaTemplate}} khiến test xanh nhưng bug vẫn lọt, và bạn tổ chức adapter + fake + integration test như thế nào?',
+  a: `**Tóm tắt:** Chỉ mock những **interface do chính bạn sở hữu** (thường là một adapter mỏng bọc thư viện bên ngoài); **không mock class của thư viện/framework** như {{RestTemplate}}, {{KafkaTemplate}}, {{JdbcTemplate}}, vì mock chỉ chứng minh "bạn gọi mock theo đúng kịch bản bạn tự viết", không chứng minh hành vi thật khi có HTTP, serialization hay SQL thật. Thực tế: unit test dùng **fake in-memory** cho repository của mình, integration test dùng **WireMock/MockRestServiceServer** cho HTTP và **Testcontainers** cho DB/Kafka.
+
+### 1) Vì sao mock thư viện là "test tự nói chuyện với chính mình"
+- **Test double (đối tượng giả):** bản thay thế collaborator (đối tượng cộng tác) để test không phải chạm I/O thật. Có 5 loại thường gặp: dummy, stub, spy, fake, mock (xem testing-003).
+- **Collaborator (đối tượng cộng tác):** thứ mà class đang test gọi tới: repository, HTTP client, message broker, clock.
+- Khi bạn mock {{RestTemplate}}: test chỉ kiểm tra {{restTemplate.exchange(url, ...)}} có được gọi với tham số bạn mong đợi hay không. Nếu bạn truyền sai URL, quên header {{Idempotency-Key}}, không xử lý HTTP 429/503, không đặt timeout, hoặc map JSON sai tên field — test vẫn xanh, vì **không có request HTTP thật nào được gửi**.
+- Ngược lại, nếu bạn bọc {{RestTemplate}} trong adapter {{PaymentClient}} của chính mình, service chỉ biết interface đó. Unit test service dùng **fake adapter** (trả kết quả theo kịch bản) — hợp đồng của fake do bạn định nghĩa, nên bạn biết chắc nó đúng.
+- Đây cũng là lý do kiến trúc lục giác (hexagonal architecture — chia code thành lõi nghiệp vụ và các adapter ngoài) khuyên: **mọi phụ thuộc bên ngoài chỉ đi qua một lớp adapter mỏng**. Khi đó bạn test ở hai đầu: unit test lõi với fake, integration test adapter với hạ tầng thật (HTTP giả hoặc DB thật).
+
+### 2) Bảng "mock hay không mock"
+| Thành phần | Cách test | Vì sao |
+|---|---|---|
+| {{RestTemplate}} / {{WebClient}} của Spring | Bọc trong adapter; test adapter bằng {{MockRestServiceServer}} hoặc WireMock; unit test logic dùng fake adapter | Kiểm chứng URL, header, timeout, mã lỗi, retry, parse JSON thật |
+| {{KafkaTemplate}} / {{KafkaListener}} | Fake interface {{EventPublisher}} cho unit test logic; Testcontainers Kafka cho integration | Message phải ghi đúng topic/key và consumer đọc được thật |
+| Repository JPA của bạn | Testcontainers PostgreSQL; fake in-memory chỉ khi test logic thuần | SQL, entity mapping, unique constraint, khóa hàng chỉ DB thật mới chứng minh |
+| {{Clock}} / {{Instant.now}} | Truyền {{Clock}} cố định vào service (không mock static) | Test theo thời gian ổn định, không phụ thuộc giờ hệ thống |
+| Security filter / {{@ControllerAdvice}} | {{@WebMvcTest}} + {{spring-security-test}} hoặc {{@SpringBootTest}} + MockMvc | Filter, validation, exception handler là code của framework, phải chạy thật |
+| {{@Async}} / {{@Scheduled}} | Truyền {{Executor}} đồng bộ trong test; hoặc Awaitility chờ điều kiện | Không phụ thuộc lịch thread và thời gian thực |
+
+### 3) Code: adapter + fake + integration test
+~~~java
+// 1) Interface của MÌNH: service không biết RestTemplate tồn tại
+public interface PaymentClient {
+    PaymentResult charge(String orderId, long amountVnd);
+}
+
+// 2) Unit test logic: fake đơn giản, không mock RestTemplate
+class CheckoutServiceTest {
+    @Test
+    void charge_declined_marks_order_failed() {
+        var client = new FakePaymentClient(PaymentResult.declined("insufficient_funds"));
+        var service = new CheckoutService(client, new InMemoryOrderRepository());
+        var view = service.checkout(new Order("OD-1", 1_000_000L));
+        assertThat(view.status()).isEqualTo("PAYMENT_FAILED");
+        assertThat(service.find("OD-1").attempts()).isEqualTo(1);
+    }
+}
+
+// 3) Integration test adapter: RestTemplate THẬT + server giả, không mock
+class HttpPaymentClientIT {
+    RestTemplate rest = new RestTemplateBuilder().build();
+    MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+    HttpPaymentClient client = new HttpPaymentClient(rest);
+
+    @Test
+    void sends_idempotency_key_and_parses_201() {
+        server.expect(requestTo("https://pay.example.com/charge"))
+              .andExpect(header("Idempotency-Key", "OD-1"))
+              .andRespond(withSuccess("{\\"id\\":\\"PAY-9\\",\\"status\\":\\"PAID\\"}",
+                                      MediaType.APPLICATION_JSON));
+        var r = client.charge("OD-1", 1_000_000L);
+        assertThat(r.status()).isEqualTo("PAID");
+        server.verify();
+    }
+}
+~~~
+
+### 4) Fake / mock / WireMock / Testcontainers: chọn cái nào
+| Công cụ | Bản chất | Dùng khi | Bẫy |
+|---|---|---|---|
+| Fake in-memory (tự viết) | Implement interface bằng HashMap/list | Unit test logic nghiệp vụ | Phải cập nhật khi hợp đồng đổi; không enforce constraint thật |
+| Mockito mock | Proxy sinh runtime, verify tương tác | Test một class với nhiều nhánh, cần mô phỏng lỗi | Dễ verify quá chi tiết → test giòn |
+| WireMock | HTTP server giả chạy socket thật | Test client HTTP, timeout, 4xx/5xx, retry | Cần quản lý port và lifecycle |
+| Testcontainers | Container Docker thật (Postgres, Kafka) | Test SQL, migration, consumer thật | Chậm hơn, cần Docker |
+
+### 5) Pitfall thực tế trên production
+- **Mock static** ({{Mockito.mockStatic}}; Mockito 5 mặc định đã dùng inline mock maker, không cần thêm {{mockito-inline}}) để thay {{Instant.now}} hoặc {{RestTemplate}}: code trong test chạy theo kịch bản khác hẳn production, và nếu không đóng mock bằng try-with-resources thì stub còn rò sang test khác.
+- **Verify quá chi tiết** ({{verify(client, times(1)).charge(any(), eq(1_000_000L))}}): mỗi lần refactor chữ ký là test vỡ, dev mất niềm tin.
+- **Fake repository không enforce unique constraint**: test xanh, production insert trùng.
+- **Chỉ verify "đã gọi"** mà không assert kết quả: lỗi nghiệp vụ vẫn lọt.
+- **Dùng @MockBean (deprecated từ Spring Boot 3.4, forRemoval, sẽ bị xoá ở Spring Boot 4.0)**: nên dùng {{@MockitoBean}}.
+
+### Ví dụ đời thực
+Một service thanh toán (Spring Boot 3.3, 10 dev) có 180 unit test, hầu hết mock {{RestTemplate}} và {{verify(...)}}. Triệu chứng: trong 2 tháng lọt 4 sự cố, trong đó 1 sự cố nghiêm trọng: khi cổng thanh toán trả HTTP 429, code retry nhưng **không gửi lại {{Idempotency-Key}}** → 37 khách bị trừ tiền hai lần, phải hoàn 12 giao dịch. Điều tra: đọc log production cho thấy 37 request trùng order_id; kiểm tra thì không có test adapter nào — mọi test đều mock thẳng RestTemplate nên không ai kiểm tra header. Xử lý: (1) bọc cổng thanh toán trong adapter {{PaymentClient}}; (2) viết 12 integration test cho adapter bằng {{MockRestServiceServer}} (header, timeout, 429, 5xx, parse lỗi); (3) chuyển 150 test service sang fake adapter; (4) thêm quy tắc review: cấm mock class của Spring/thư viện. Kết quả đo được sau 1 sprint: 6 lỗi tích hợp được phát hiện trước merge (thiếu header, timeout 30s thay vì 3s, không xử lý 429, parse null body, sai tên field JSON, thiếu Content-Type), số test tăng 40 (tổng 220) nhưng thời gian unit test chỉ tăng 3 giây, và không còn sự cố duplicate charge trong 6 tháng sau đó.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi phân biệt rõ hai loại phụ thuộc: phụ thuộc do tôi sở hữu và phụ thuộc của thư viện. Tôi chỉ mock interface của mình, ví dụ một adapter PaymentClient bọc RestTemplate, còn RestTemplate thật thì tôi test bằng MockRestServiceServer hoặc WireMock trong integration test. Lý do là mock RestTemplate chỉ chứng minh tôi gọi nó theo kịch bản tôi tự viết; nếu sai URL, thiếu header idempotency hay không xử lý 429 thì test vẫn xanh. Trong unit test, tôi dùng fake in-memory cho repository của mình vì nó nhanh và dễ đọc, còn hành vi SQL, unique constraint thì để Testcontainers PostgreSQL kiểm chứng. Tôi tránh mock static và tránh verify quá chi tiết vì chúng làm test giòn. Ở dự án trước, cách này giúp phát hiện 6 lỗi tích hợp trong một sprint, gồm một lỗi retry thiếu idempotency key từng gây trừ tiền hai lần cho 37 khách, trong khi thời gian test gần như không đổi."
+
+> Senior tip: hãy tự hỏi "nếu tôi thay thư viện này bằng một thư viện khác, test của tôi có còn bảo vệ được hành vi không?". Nếu câu trả lời là không, bạn đang test chi tiết triển khai của thư viện, không phải hành vi hệ thống.`,
+  follow: [
+    'Bạn tách adapter như thế nào khi service gọi 5 API bên ngoài khác nhau, và adapter có nên biết về domain không?',
+    'Khi nào fake in-memory là đủ, khi nào bắt buộc phải dùng Testcontainers để tránh test xanh giả?',
+    'Bạn review một PR có 20 test mới và coverage tăng 3%: bạn kiểm tra điều gì để biết test đó có giá trị?'
+  ],
+  tags: ['mocking', 'test-double', 'hexagonal', 'unit-test', 'integration-test']
+},
+{
+  id: 'testing-058',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Bạn dùng Testcontainers với PostgreSQL để kiểm chứng những hành vi mà H2/embedded không kiểm chứng được (upsert ON CONFLICT, FOR UPDATE SKIP LOCKED, advisory lock, jsonb, timestamptz, collation, sequence)? Bạn tổ chức container, migration và dữ liệu thế nào để test vừa đúng vừa không flaky khi chạy song song?',
+  a: `**Tóm tắt:** PostgreSQL trong container là "một chương trình khác" so với H2 (một CSDL viết bằng Java, chạy nhúng trong JVM và chỉ mô phỏng một phần SQL): chỉ DB thật mới chứng minh đúng cú pháp dialect, ngữ nghĩa khóa hàng, transaction isolation và kiểu dữ liệu. Nguyên tắc vận hành: **một container dùng chung** cho cả suite, migration chạy một lần, và dữ liệu được cô lập bằng transaction rollback hoặc truncate/dữ liệu duy nhất để test không phụ thuộc thứ tự.
+
+### 1) Vì sao H2 không thay thế được PostgreSQL
+- **H2** là database nhúng viết bằng Java, chạy trong cùng JVM, thường được Spring Boot tự chọn khi có trên classpath. Nó nhanh nhưng chỉ "mô phỏng" một phần PostgreSQL (kể cả {{MODE=PostgreSQL}}).
+- **Testcontainers** khởi động một container Docker chạy PostgreSQL thật (cùng engine, cùng version với production), test kết nối vào đó qua TCP như một client bình thường.
+
+| Hành vi | H2 | PostgreSQL thật | Hậu quả nếu test trên H2 |
+|---|---|---|---|
+| {{INSERT ... ON CONFLICT DO UPDATE}} | Hỗ trợ hạn chế/khác cú pháp, hay phải dùng {{MERGE}} | Upsert chuẩn, có {{EXCLUDED}} | Code upsert chạy trên H2 nhưng lỗi cú pháp trên production |
+| {{SELECT ... FOR UPDATE SKIP LOCKED}} | Ngữ nghĩa khóa khác, không bảo đảm như PostgreSQL | Khóa hàng, bỏ qua hàng đang bị khóa | Test queue xanh, 2 worker xử lý cùng 1 job |
+| {{pg_advisory_xact_lock}} | Không có | Lock theo khóa số, tự nhả khi commit | Không test được chống chạy trùng job |
+| {{jsonb}} + toán tử {{@>}} | Kiểu {{JSON}} khác, không có GIN index | {{jsonb}} nén, có index GIN | Query theo field JSON chậm hoặc sai kết quả |
+| {{timestamptz}} | Có kiểu tương ứng nhưng chuẩn hóa khác | Lưu UTC, hiển thị theo session | Lệch 7 tiếng khi so sánh ngày |
+| collation | Mặc định, ít phụ thuộc locale | Phụ thuộc locale (en_US, vi_VN) | Unique/ORDER BY khác thứ tự |
+| sequence | Thường {{IDENTITY}}, hành vi sequence khác | {{CREATE SEQUENCE}}, có gap khi rollback | Test không thấy id nhảy có chủ đích |
+
+### 2) Kiến trúc: một container dùng chung, migration một lần
+- **Singleton container:** khởi động một container PostgreSQL cho cả suite test (một JVM), mọi class test dùng chung. Nhờ vậy chỉ tốn một lần pull image + start + Flyway.
+- **@ServiceConnection** (Spring Boot 3.1+): tự động lấy URL/user/password từ container và đăng ký DataSource, không cần lặp {{@DynamicPropertySource}} ở mọi class.
+- **Migration:** để Flyway chạy một lần khi context đầu tiên khởi tạo. Nếu mỗi class có cấu hình context khác nhau, Spring tạo nhiều context và Flyway chạy lại — giữ cấu hình test thống nhất để tận dụng context cache.
+- **Test migration riêng:** khi kiểm tra chính migration, dùng một container mới (hoặc schema mới) để chạy dữ liệu cũ → mới, không dùng chung schema với test nghiệp vụ.
+
+### 3) Code: container dùng chung + test hành vi DB thật
+~~~java
+// Container dùng chung cho cả suite (khởi động 1 lần, Ryuk dọn khi JVM thoát)
+abstract class AbstractPostgresIT {
+    static final PostgreSQLContainer<?> DB =
+        new PostgreSQLContainer<>("postgres:16-alpine")
+            .withCommand("postgres", "-c", "max_connections=200"); // pool + chạy song song
+    static { DB.start(); }
+
+    @DynamicPropertySource
+    static void props(DynamicPropertyRegistry r) {
+        r.add("spring.datasource.url", DB::getJdbcUrl);
+        r.add("spring.datasource.username", DB::getUsername);
+        r.add("spring.datasource.password", DB::getPassword);
+    }
+}
+
+@DataJpaTest
+@AutoConfigureTestDatabase(replace = Replace.NONE) // dùng Postgres thật, không thay bằng H2
+class OrderRepositoryIT extends AbstractPostgresIT {
+    @Autowired JdbcTemplate jdbc;
+
+    @Test
+    void upsert_is_idempotent() {
+        jdbc.update("INSERT INTO orders(id,status) VALUES(?,?)", "OD-1", "NEW");
+        jdbc.update("INSERT INTO orders(id,status) VALUES(?,?) "
+                  + "ON CONFLICT(id) DO UPDATE SET status = EXCLUDED.status", "OD-1", "PAID");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM orders", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT status FROM orders WHERE id=?",
+                String.class, "OD-1")).isEqualTo("PAID");
+    }
+}
+~~~
+
+### 4) Cô lập dữ liệu: chống phụ thuộc thứ tự
+- **{{@DataJpaTest}}:** mặc định rollback transaction sau mỗi test → dữ liệu tự sạch, không cần truncate.
+- **{{@SpringBootTest}}:** không rollback → dùng {{@BeforeEach}} truncate các bảng liên quan, hoặc {{@Sql(executionPhase = AFTER_TEST_METHOD)}}; tuyệt đối không để test sau đọc dữ liệu test trước.
+- **Sinh dữ liệu có prefix duy nhất:** {{UUID}} + tên test (ví dụ OD-IT-01-...) để nhiều test dùng chung bảng vẫn không đụng nhau.
+- **Nếu bật parallel execution của JUnit 5:** mặc định các class chạy tuần tự nên container dùng chung là đủ. Khi bật song song, mỗi class nên có schema riêng ({{currentSchema}}) và migration tương ứng, hoặc chỉ truncate đúng bảng của mình — không truncate toàn DB khi có class khác đang chạy.
+- **Không dựa vào id tăng dần:** sequence có thể nhảy sau rollback; hãy assert theo khóa nghiệp vụ.
+
+### 5) Bảng hành vi nên test và cách assert
+| Hành vi | Vì sao cần DB thật | Cách assert |
+|---|---|---|
+| Upsert | Idempotency, một bản ghi duy nhất | Insert 2 lần cùng id → count = 1, status mới |
+| {{FOR UPDATE SKIP LOCKED}} | Hai worker không xử lý trùng | 2 thread + latch, mỗi bên lấy 1 hàng khác nhau, không chờ |
+| {{pg_advisory_xact_lock}} | Chống chạy trùng job | 2 transaction, một bên phải chờ, timeout đo được |
+| {{jsonb @>}} | Query theo field JSON | Insert 2 row, query chứa field → đúng 1 row; kiểm tra EXPLAIN dùng GIN |
+| {{timestamptz}} | Múi giờ | Lưu 2026-01-01T00:00:00Z, đọc Asia/Ho_Chi_Minh → 07:00 |
+| collation | Unique/ORDER BY | So sánh 'a' và 'A' theo locale của DB |
+| sequence | Gap sau rollback | Insert, rollback, insert → id nhảy nhưng không trùng |
+
+### 6) Pitfall thực tế trên production
+- **Test trên H2 pass, production lỗi cú pháp**: đây là lý do phổ biến nhất khiến Testcontainers trở thành bắt buộc với service dùng SQL đặc thù.
+- **Image {{latest}} thay đổi theo thời gian**: pin version (ví dụ {{postgres:16-alpine}}) để kết quả ổn định.
+- **{{max_connections}} mặc định 100**: chạy song song nhiều container/pool lớn dễ gặp "too many clients" — tăng bằng {{withCommand}} hoặc giảm pool.
+- **CI runner không có Docker daemon**: Testcontainers fail ngay; cần kiểm tra môi trường và thông báo lỗi rõ ràng.
+- **Flyway chạy lại mỗi context**: làm CI chậm; giữ cấu hình context thống nhất.
+- **{{@DataJpaTest}} rollback khiến thread khác không thấy dữ liệu chưa commit**: khi test hành vi đa transaction, cần {{REQUIRES_NEW}} hoặc bỏ transaction của test (xem testing-059).
+
+### Ví dụ đời thực
+Một hệ thống gửi email theo hàng đợi dùng {{SELECT ... FOR UPDATE SKIP LOCKED}} trên PostgreSQL (Spring Boot 3.2, 2 instance). Test hiện tại chạy trên H2: vì H2 không có ngữ nghĩa này, test được viết lại bằng {{Thread.sleep}} và chỉ chạy tuần tự nên luôn xanh. Triệu chứng production: mỗi đêm có khoảng 40–60 email bị gửi hai lần; log cho thấy 2 instance cùng lấy một job với cùng id. Điều tra: đối chiếu DB log cho thấy hai transaction cùng đọc hàng ở trạng thái PENDING trước khi một bên commit; kiểm tra test không hề chạy hai worker thật. Xử lý: (1) chuyển test sang Testcontainers PostgreSQL 16; (2) viết test hai thread dùng {{CyclicBarrier}} để cả hai đọc xong rồi cùng cập nhật; (3) phát hiện thiếu index {{idx_jobs_status_run_at}} nên query quét toàn bảng và giữ khóa lâu; thêm index, đặt {{FOR UPDATE SKIP LOCKED}}; (4) thêm unique constraint {{jobs(idempotency_key)}} để chặn insert trùng. Kết quả đo được sau 3 tuần: số email gửi trùng còn 0, p95 thời gian xử lý job giảm từ 380 ms xuống 120 ms, CI tăng 50 giây mỗi lần chạy nhưng số sự cố do hàng đợi giảm từ 4/tháng xuống 0.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng Testcontainers PostgreSQL khi cần kiểm chứng hành vi phụ thuộc DB thật, vì H2 chỉ mô phỏng một phần: nó không có advisory lock, ngữ nghĩa FOR UPDATE SKIP LOCKED khác, jsonb và timestamptz không giống, nên test có thể xanh mà production lỗi. Tôi khởi động một container dùng chung cho cả suite để chỉ tốn một lần pull, start và chạy Flyway; với Spring Boot 3.1 trở lên tôi dùng @ServiceConnection để tự lấy DataSource. Dữ liệu được cô lập bằng rollback của @DataJpaTest, hoặc truncate và dữ liệu có prefix duy nhất khi dùng full context; nếu bật chạy song song thì mỗi class dùng schema riêng. Tôi chỉ test những hành vi thật sự phụ thuộc DB: upsert, khóa hàng, lock, kiểu dữ liệu, collation, và assert bằng SQL trực tiếp thay vì chỉ qua repository. Ở dự án trước, chuyển từ H2 sang container giúp phát hiện thiếu index và một lỗi gửi trùng email, đưa số sự cố từ 4 xuống 0 trong một tháng, đổi lại CI chậm thêm khoảng 50 giây."
+
+> Senior tip: hãy coi mỗi test hành vi DB là "một câu SQL chạy thật trên engine thật". Nếu bạn không thể viết được câu SQL đó trên H2, test của bạn chưa chứng minh điều gì về production.`,
+  follow: [
+    'Bạn làm gì khi CI runner không có Docker daemon để chạy Testcontainers, và những test nào có thể chạy thay thế?',
+    'Giữa một container dùng chung cho cả suite và một container cho mỗi class, bạn đánh đổi thế nào giữa tốc độ và cô lập?',
+    'Bạn kiểm tra migration trong CI ra sao để chắc nó chạy được trên bản PostgreSQL của production và trên dữ liệu cũ?'
+  ],
+  tags: ['testcontainers', 'postgres', 'integration-test', 'test-isolation', 'spring-boot']
+},
+{
+  id: 'testing-059',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Bạn viết test cho tình huống hai request cùng lúc (mua sản phẩm cuối cùng, tăng version optimistic lock, unique constraint email) như thế nào để test deterministic và chứng minh race condition? Vì sao chạy tuần tự hoặc dùng {{Thread.sleep}} không chứng minh được gì, và làm sao tránh test flaky?',
+  a: `**Tóm tắt:** Race condition chỉ xảy ra khi hai thread cùng nằm trong "vùng nguy hiểm" trước khi một trong hai commit. Test phải **buộc hai thread gặp nhau tại một điểm** bằng {{CountDownLatch}}/{{CyclicBarrier}}, chạy trong {{ExecutorService}} có timeout, rồi assert kết quả cuối (số bản ghi, ngoại lệ, version) — chạy tuần tự luôn xanh, còn {{Thread.sleep}} chỉ là may rủi.
+
+### 1) Ba chuyện hay bị nhầm là một
+- **Race condition (đua tranh):** hai luồng đọc–ghi xen kẽ, kết quả phụ thuộc thời điểm chạy.
+- **Visibility (tính nhìn thấy):** thread khác không thấy thay đổi vì transaction chưa commit hoặc do cache.
+- **Ordering (thứ tự):** commit/flush theo thứ tự không mong muốn.
+
+Ví dụ mất cập nhật (lost update) khi cả hai cùng trừ tồn kho:
+
+~~~text
+Thời điểm   Thread 1                     Thread 2
+t1          đọc tồn kho = 1
+t2                                       đọc tồn kho = 1
+t3          trừ còn 0, commit
+t4                                       trừ còn 0, commit   <-- cả hai thành công, kho âm
+~~~
+
+### 2) Vì sao chạy tuần tự và sleep không chứng minh được gì
+- **Chạy tuần tự:** thread 1 commit xong thread 2 mới đọc → hai bên không bao giờ gặp nhau, lỗi không lộ.
+- **{{Thread.sleep(100)}}:** may rủi, phụ thuộc máy và tải CI. Máy chậm thì hai thread không trùng; CI tải cao thì trùng → test lúc xanh lúc đỏ, đúng định nghĩa flaky.
+- **Chỉ assert "không ném lỗi":** bỏ sót trường hợp cả hai cùng thành công (double-spend) — đây mới là bug thật.
+
+### 3) Công thức test deterministic
+1. **Dữ liệu:** một item tồn kho 1.
+2. **Hai thread, mỗi thread một transaction riêng** ({{TransactionTemplate}} hoặc {{REQUIRES_NEW}}).
+3. **Barrier 2 đặt SAU khi đọc, TRƯỚC khi ghi:** cả hai chắc chắn đã đọc giá trị cũ trước khi bất kỳ ai commit.
+4. **awaitTermination có timeout** (10 giây) để test không treo cả CI.
+5. **Assert kết quả cuối:** đúng 1 thành công, 1 thất bại ({{OptimisticLockingFailureException}} hoặc {{DataIntegrityViolationException}}), và số bản ghi còn lại đúng.
+
+### 4) Code
+~~~java
+@Test
+void only_one_thread_can_reserve_last_item() throws Exception {
+    repo.save(new Item("SKU-1", 1));
+    var bothRead = new CyclicBarrier(2);             // cả hai gặp nhau sau khi đọc
+    var results = new CopyOnWriteArrayList<Boolean>();
+    Runnable job = () -> {
+        try {
+            txTemplate.execute(status -> {
+                Item it = repo.findByCode("SKU-1").orElseThrow();
+                try { bothRead.await(5, TimeUnit.SECONDS); }
+                catch (Exception e) { throw new IllegalStateException(e); }
+                it.decrease();                       // @Version tăng
+                repo.saveAndFlush(it);               // flush ngay để lộ lỗi
+                return null;
+            });
+            results.add(true);
+        } catch (Exception e) {                      // OptimisticLock / DataIntegrity
+            results.add(false);
+        }
+    };
+    var pool = Executors.newFixedThreadPool(2);      // pool phải >= 2 connection
+    try {
+        pool.submit(job);
+        pool.submit(job);
+        pool.shutdown();
+        assertThat(pool.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+    } finally { pool.shutdownNow(); }
+    assertThat(results).containsExactlyInAnyOrder(true, false);
+    assertThat(repo.findAvailable("SKU-1")).isZero();
+}
+~~~
+
+(Ghi chú: class test phải tắt transaction mặc định bằng {{@Transactional(propagation = Propagation.NOT_SUPPORTED)}} để thread khác thấy dữ liệu đã commit.)
+
+### 5) Bảng kỹ thuật đồng bộ trong test
+| Kỹ thuật | Dùng khi | Bẫy |
+|---|---|---|
+| {{CountDownLatch}} | Chờ một sự kiện xảy ra (ví dụ consumer đã kết nối) | Không có timeout → treo |
+| {{CyclicBarrier}} | N thread phải gặp nhau trước khi đi tiếp | Thiếu người tới barrier thì treo; phải có timeout |
+| {{Phaser}} | Nhiều vòng gặp nhau | Phức tạp, dễ sai phase |
+| {{ExecutorService}} + {{awaitTermination}} | Chạy song song có kiểm soát | Không shutdownNow → rò thread |
+| Awaitility | Chờ điều kiện bất đồng bộ (message, cache) | Dùng để chờ điều kiện, không phải chờ cố định |
+
+### 6) Bảng lỗi race và cách chốt
+| Lỗi | Triệu chứng | Cách chặn ở code | Assert trong test |
+|---|---|---|---|
+| Lost update | Hai lần đọc cùng version, ghi đè nhau | {{@Version}} (optimistic lock) | Version tăng đúng 1, một bên lỗi |
+| Duplicate insert | Hai bản ghi cùng email | Unique constraint | Bắt {{DataIntegrityViolationException}} |
+| Double spend | Tồn kho âm, hai đơn cùng trừ | {{SELECT ... FOR UPDATE}} hoặc advisory lock | Số bản ghi tồn đúng |
+| Double email | Gửi hai lần cùng nội dung | Idempotency key + unique | {{count(email)}} = 1 |
+
+### 7) Pitfall thực tế trên production
+- **Test có {{@Transactional}} mặc định:** dữ liệu chưa commit nên thread khác không thấy, test dễ "xanh giả" hoặc timeout vô nghĩa.
+- **Pool 1 connection:** hai thread tranh nhau một connection, một bên chờ tới timeout.
+- **Dùng sleep thay barrier:** test flaky, dần dần bị bỏ qua.
+- **Có {{@Version}} nhưng chỉ {{save()}} không flush:** version chỉ tăng lúc flush, nên assert ngay sau save() sẽ thấy version cũ và kết luận sai; hãy {{saveAndFlush}} trong transaction.
+- **Mock repository:** race biến mất hoàn toàn vì fake không có transaction hay constraint thật.
+
+### Ví dụ đời thực
+Một chiến dịch flash sale 10:00 (Spring Boot 3.3, PostgreSQL 15, 2 instance): sản phẩm tồn 1 nhưng bán được 2 đơn, tổng cộng oversell 38 đơn trong 5 phút đầu. Điều tra: log cho thấy hai request cùng đọc tồn kho 1 và cùng trừ; test hiện tại chỉ chạy tuần tự nên luôn xanh. Thêm test barrier theo cách trên: tái hiện 100% trên môi trường test (một bên OptimisticLockingFailureException, một bên thành công), xác định nguyên nhân gốc: entity thiếu {{@Version}}, bảng {{order_item}} thiếu unique constraint {{order_id, sku}}, và không có idempotency key. Xử lý: thêm {{@Version}} + {{SELECT ... FOR UPDATE}} cho hàng tồn kho + unique constraint + idempotency key ở tầng API. Kết quả đo được sau 4 tuần: oversell còn 0, p99 thời gian đặt hàng tăng 18 ms (do khóa hàng), test race chạy 1,2 giây và ổn định 100 lần liên tiếp, không còn flaky.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không cố 'chạy nhiều lần cho may'. Tôi tạo hai thread, cho cả hai đọc dữ liệu rồi dùng một CyclicBarrier để chúng gặp nhau trước khi ghi, mỗi thread chạy trong transaction riêng qua TransactionTemplate. Sau đó tôi chờ có timeout và assert kết quả cuối: đúng một thread thành công, một thread nhận OptimisticLockingFailureException hoặc DataIntegrityViolationException, và số bản ghi còn lại đúng như mong đợi. Tôi luôn tắt transaction mặc định của test, vì nếu dữ liệu chưa commit thì thread khác không thấy và test sẽ xanh giả. Tôi không dùng Thread.sleep vì nó phụ thuộc tải máy và tạo flaky. Ở dự án flash sale, test kiểu này tái hiện được lỗi oversell ngay lần đầu, giúp chúng tôi phát hiện thiếu @Version và unique constraint; sau khi sửa, oversell về 0 và p99 chỉ tăng 18 ms."
+
+> Senior tip: nếu bạn không viết được một test race ổn định, đừng tin rằng code của mình thread-safe. Hãy để DB bảo vệ bằng constraint (unique, version) và test bằng barrier — đó là cách duy nhất biến "tôi nghĩ nó an toàn" thành "tôi đã chứng minh nó an toàn".`,
+  follow: [
+    'Giữa {{@Version}} (optimistic lock) và {{SELECT ... FOR UPDATE}} (pessimistic lock), bạn chọn cái nào cho tồn kho và vì sao?',
+    'Làm sao test được tình huống hai instance khác process (không chỉ hai thread trong một JVM) cùng xử lý một job?',
+    'Nếu race chỉ xảy ra 1/1000 lần trên production, bạn thiết kế test và telemetry thế nào để bắt được trước khách hàng?'
+  ],
+  tags: ['concurrency', 'race-condition', 'optimistic-lock', 'flaky-test', 'junit5']
+},
+{
+  id: 'testing-060',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Bạn test một REST API Spring Boot ở mức nào là đủ: {{MockMvc}}, {{TestRestTemplate}} hay {{WebTestClient}}? Làm sao kiểm tra "hợp đồng HTTP" (status code, cấu trúc JSON, lỗi validation, header) mà không viết test vừa chậm vừa dễ vỡ?',
+  a: `**Tóm tắt:** Chọn theo câu hỏi "tôi đang kiểm chứng cái gì": {{MockMvc}} cho mapping/validation/JSON trong JVM (nhanh, không mở port); {{TestRestTemplate}} khi cần đi qua filter, serialization và server thật; {{WebTestClient}} cho API reactive hoặc khi muốn gọi bằng client thật. Test hợp đồng bằng **assert tối thiểu những gì client phụ thuộc**, không so sánh cả JSON bằng chuỗi.
+
+### 1) Ba công cụ, ba cơ chế
+- **{{MockMvc}}:** gọi {{DispatcherServlet}} trực tiếp trong JVM, không mở socket. Có ba kiểu: {{MockMvcBuilders.standaloneSetup(controller)}} (chỉ controller), {{@WebMvcTest}} (slice MVC), {{@SpringBootTest}} + {{@AutoConfigureMockMvc}} (full context + MockMvc).
+- **{{TestRestTemplate}}:** cần {{webEnvironment = RANDOM_PORT}}; gọi HTTP thật tới localhost trên port ngẫu nhiên, nên có serialization, filter, exception handler thật.
+- **{{WebTestClient}}:** client của Spring WebFlux; với ứng dụng MVC dùng {{@AutoConfigureWebTestClient}} (gọi qua server thật đang chạy). Phù hợp khi team đã dùng WebFlux hoặc muốn API duyệt stream.
+
+### 2) Bảng chọn công cụ
+| Công cụ | Nạp gì | Mở port | Tốc độ | Dùng khi |
+|---|---|---|---|---|
+| standaloneSetup + MockMvc | Chỉ controller + advice | Không | 10–50 ms | Kiểm tra validation, JSON, status cơ bản |
+| {{@WebMvcTest}} | Slice MVC, service là mock | Không | 1–3 s | Hợp đồng controller, validation, advice |
+| {{@SpringBootTest}} + RANDOM_PORT + TestRestTemplate | Gần như toàn bộ app | Có (ngẫu nhiên) | 3–10 s | Filter, security, serialization, exception handler thật |
+| WebTestClient | Reactive stack hoặc MVC qua server | Có | 3–10 s | API reactive, client thật |
+
+### 3) Hợp đồng HTTP: assert gì và KHÔNG assert gì
+- **Nên assert:** status code (201 + {{Location}}), field bắt buộc và kiểu (JsonPath), cấu trúc lỗi validation (field + mã lỗi), header quan trọng ({{Content-Type}}, {{Idempotency-Key}}), phân trang (page/size/total), định dạng thời gian ISO-8601.
+- **Không nên assert:** toàn bộ JSON bằng {{isEqualTo(jsonString)}} (thứ tự field và khoảng trắng làm test vỡ), thông điệp lỗi tiếng Việt theo từng chữ (i18n đổi là vỡ), id cụ thể do DB sinh ra.
+- **Nếu cần:** dùng {{JSONAssert}} với mode {{NON_EXTENSIVE}} để bỏ qua field thừa, hoặc JSON Schema cho hợp đồng công khai; kết hợp với contract test (Pact) khi có nhiều team tiêu thụ API.
+
+### 4) Code: hai mức test
+~~~java
+@WebMvcTest(OrderController.class)
+class OrderControllerTest {
+    @Autowired MockMvc mvc;
+    @MockitoBean OrderService service;              // Boot 3.4+; bản cũ dùng @MockBean
+
+    @Test
+    void create_returns_201_with_location() throws Exception {
+        given(service.create(any())).willReturn(new OrderView("OD-1", "PAID"));
+        mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON)
+                .content("{\\"sku\\":\\"SKU-1\\",\\"qty\\":2}"))
+           .andExpect(status().isCreated())
+           .andExpect(header().string("Location", "/api/orders/OD-1"))
+           .andExpect(jsonPath("$.id").value("OD-1"))
+           .andExpect(jsonPath("$.status").value("PAID"));
+    }
+
+    @Test
+    void invalid_qty_returns_400_with_field() throws Exception {
+        mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON)
+                .content("{\\"sku\\":\\"SKU-1\\",\\"qty\\":0}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.field").value("qty"));
+    }
+}
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+class OrderApiContractIT {
+    @Autowired TestRestTemplate http;
+
+    @Test
+    void contract_survives_extra_fields() {
+        var res = http.postForEntity("/api/orders",
+                Map.of("sku", "SKU-1", "qty", 2), String.class);
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(res.getHeaders().getLocation()).hasPath("/api/orders/OD-1");
+        assertThat(res.getBody()).contains("\\"id\\":\\"OD-1\\"");
+    }
+}
+~~~
+
+### 5) Pitfall thực tế trên production
+- **{{@WebMvcTest}} quên {{@MockitoBean}} service:** context fail vì thiếu bean, lỗi khó đọc.
+- **Mock service trả null:** controller NPE → HTTP 500; test chỉ assert "không ném ngoại lệ" vẫn xanh nhưng client thật nhận 500.
+- **So sánh JSON bằng equals chuỗi:** thêm một field là vỡ 20 test.
+- **standaloneSetup quên đăng ký {{@ControllerAdvice}}:** test nhận {{MethodArgumentNotValidException}} thay vì kiểm tra response 400, dễ tưởng là lỗi controller.
+- **{{@SpringBootTest}} không có RANDOM_PORT mà dùng TestRestTemplate:** không có server để gọi.
+- **Test E2E mọi API:** mỗi test dựng context + DB, CI phình to mà lỗi vẫn lọt ở tầng dưới.
+
+### Ví dụ đời thực
+Một API {{/api/orders}} có 220 test {{@WebMvcTest}} đều xanh, nhưng production trả HTTP 500 khi client gửi đơn có {{qty = 0}}. Điều tra: controller ném {{IllegalArgumentException}} cho input biên đó, nhưng không test nào phủ case biên; đồng thời một {{FilterRegistrationBean}} chuyển ngoại lệ thành 400 kèm mã lỗi {{ORDER_QTY_INVALID}} không chạy trong {{@WebMvcTest}} (MockMvc chỉ tự thêm bean kiểu {{Filter}}, không đọc {{FilterRegistrationBean}}), nên test không thấy hợp đồng lỗi thật. Xử lý: thêm 6 integration test {{@SpringBootTest(RANDOM_PORT)}} với TestRestTemplate cho các API công khai, phủ case biên, assert status, mã lỗi và header {{X-Request-Id}}; đồng thời thêm quy tắc: mỗi controller phải có ít nhất một test đi qua server thật. Kết quả đo được: 3 lỗi lọt trước đây bị chặn ngay trong PR (trả 500 thay vì 400, thiếu mã lỗi, thiếu header), CI tăng 28 giây, số sự cố do API giảm từ 5 xuống 1 mỗi tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn theo câu hỏi tôi đang kiểm chứng điều gì. Nếu là validation, status code và JSON của controller thì tôi dùng @WebMvcTest với MockMvc, mock service, vì nó nhanh và không cần mở port. Nếu cần kiểm tra filter, security, serialization hay exception handler thật thì tôi dùng @SpringBootTest với RANDOM_PORT và TestRestTemplate, vì lúc đó request đi qua HTTP thật trong JVM. Với API reactive tôi dùng WebTestClient. Về hợp đồng, tôi chỉ assert những gì client phụ thuộc: status, Location, các field bắt buộc, cấu trúc lỗi validation; tôi không so sánh toàn bộ JSON vì thêm field là vỡ. Ở dự án trước, 220 test MockMvc vẫn lọt một lỗi 500 ở case biên vì test không đi qua filter và server thật; thêm 6 integration test qua HTTP thật đã bắt được lỗi đó và hai lỗi tương tự, đổi lại CI chậm thêm 28 giây."
+
+> Senior tip: hãy phân loại test API theo "ai sẽ vỡ nếu hợp đồng đổi": client nội bộ thì contract test là đủ; API công khai thì cần ít nhất một test đi qua serialization và filter thật, vì đó là nơi lỗi 500 hay ẩn.`,
+  follow: [
+    'Bạn xử lý thế nào khi cùng một API có cả client nội bộ và client đối tác, mỗi bên cần mức đảm bảo khác nhau?',
+    'Khi nào nên dùng JSON Schema hoặc Pact thay cho assert bằng JsonPath?',
+    'Làm sao phát hiện sớm một thay đổi response làm vỡ client cũ nhưng test hiện tại vẫn xanh?'
+  ],
+  tags: ['MockMvc', 'TestRestTemplate', 'WebTestClient', 'api-contract', 'spring-boot-test']
+},
+{
+  id: 'testing-061',
+  topic: 'testing',
+  level: 'lead',
+  q: 'Ở vai trò lead: coverage dòng lệnh đạt 85% nhưng bug lọt production vẫn tăng, CI mất 22 phút và tỷ lệ flaky 12%. Bạn có một quý và ngân sách hạn chế: bạn đo gì, ưu tiên đầu tư vào đâu (coverage, mutation, flaky, contract test, tốc độ CI) và chứng minh với quản lý bằng con số nào?',
+  a: `**Tóm tắt:** Coverage chỉ đo "code đã chạy qua", không đo "hành vi đã được kiểm tra": 85% mà bug vẫn tăng nghĩa là test đang chạy nhưng **assert sai chỗ** hoặc thiếu ở module rủi ro. Tôi đo bằng **escaped defects theo module**, **mutation score của module lõi**, **diff coverage của PR**, **flake rate**, **thời gian CI**, rồi ưu tiên theo "thiệt hại do lỗi × xác suất" thay vì một con số coverage toàn cục.
+
+### 1) Vì sao coverage cao vẫn lọt bug
+1. **Test chỉ assert "không ném exception" (smoke):** code chạy qua, tăng coverage, nhưng không kiểm tra kết quả.
+2. **Mock mọi thứ:** unit test xanh nhưng ranh giới SQL/HTTP/serialization chưa từng chạy.
+3. **Coverage trải đều nhưng không phủ module rủi ro:** 85% gồm DTO/config, còn payment/auth chỉ 40–50%.
+4. **Coverage không đo chất lượng assert:** một test đi qua nhiều nhánh if làm tăng % nhưng không kiểm nhánh lỗi.
+5. **Test không cập nhật theo yêu cầu:** code mới nằm ngoài test, hoặc test cũ assert hành vi cũ.
+6. **Loại trừ quá nhiều** ({{@Generated}}, DTO, config) làm số đẹp nhưng rủi ro không đổi.
+
+### 2) Bộ chỉ số nên theo dõi
+| Chỉ số | Đo gì | Vì sao quan trọng | Hướng dẫn thực tế |
+|---|---|---|---|
+| Escaped defects/tháng theo module | Bug production do thiếu test | Đo kết quả thật, không đo nỗ lực | Phân loại theo module, theo dõi xu hướng |
+| Mutation score (PIT) | Test có bắt được lỗi đã cố ý cấy vào code | Đo chất lượng assert | Chỉ chạy cho module lõi (payment, auth) vì chậm |
+| Diff coverage PR | % dòng thay đổi được test | Gắn test với thay đổi, khó "gaming" | Ngưỡng 80–90% cho PR, không phải 100% |
+| Flake rate blocking | Tỷ lệ đỏ giả | Mất tín hiệu CI, mất thời gian dev | Mục tiêu dưới 1% |
+| Thời gian CI p50/p95 | Dev chờ bao lâu | Ảnh hưởng trực tiếp năng suất | Ngân sách dưới 10 phút cho PR |
+| Change failure rate, MTTR | Tỷ lệ deploy gây sự cố, thời gian khắc phục | Chỉ số DORA, phản ánh chất lượng giao hàng | Theo dõi theo quý |
+
+### 3) Thứ tự ưu tiên trong một quý
+- **Tuần 1–2 — Đo và phân loại:** lấy 8 tuần bug production, phân loại theo module và theo "thiếu test / sai yêu cầu / lỗi hạ tầng"; xác định 3 module chiếm phần lớn (thường theo Pareto 70–80%).
+- **Tuần 1–3 — Chặn chảy máu:** quarantine + sửa top 20 test flaky; vì flaky làm dev mất niềm tin vào CI và che mất lỗi thật.
+- **Tuần 3–8 — Test ranh giới cho module rủi ro:** integration test với Testcontainers, contract test với API công khai, mutation test cho module lõi; sửa thiết kế nếu cần (idempotency, unique constraint, optimistic lock).
+- **Tuần 6–10 — Tăng tốc CI:** tách slice test, chạy song song, cache dependency, chia pipeline theo tầng để dev nhận phản hồi nhanh.
+- **Tuần 8–12 — Gate PR đúng chỗ:** diff coverage + mutation threshold cho module lõi; bỏ gate coverage toàn cục vì nó khuyến khích test rỗng.
+
+### 4) Bảng trade-off các cách đo
+| Cách đo | Ưu | Nhược | Dùng khi |
+|---|---|---|---|
+| Coverage toàn cục | Dễ báo cáo, một con số | Che giấu rủi ro, dễ đạt bằng test rỗng | Chỉ để theo dõi xu hướng, không làm KPI |
+| Diff coverage | Gắn với thay đổi, khó gian lận | Bỏ qua code cũ chưa test | Gate PR hằng ngày |
+| Mutation score | Đo chất lượng assert, bắt test vô dụng | Chậm (chạy nhiều vòng), cần cấu hình | Module lõi, chạy nightly |
+| Flake rate | Đo độ tin cậy CI | Không đo bug nghiệp vụ | Theo dõi hằng tuần |
+| Escaped defects | Đo kết quả thật | Trễ (sau production), cần phân loại nguyên nhân | Báo cáo lãnh đạo theo tháng |
+
+### 5) Báo cáo với quản lý bằng con số nào
+- **Ngôn ngữ của quản lý là rủi ro và chi phí**, không phải phần trăm coverage: "6 sự cố/tháng, mỗi sự cố 4 giờ, ảnh hưởng 3 người, tổng 72 giờ/tháng" dễ hiểu hơn "coverage 85%".
+- **Công thức ROI đơn giản:** (số sự cố tránh được × chi phí mỗi sự cố + giờ dev tiết kiệm do CI nhanh hơn) chia cho chi phí đầu tư (giờ người + hạ tầng). Trình bày theo tháng, kèm giả định rõ ràng.
+- **Dashboard tối giản:** escaped defects, change failure rate, MTTR, thời gian CI, flake rate. Năm con số này đủ cho một cuộc họp 15 phút.
+- **Cam kết đúng:** không hứa "coverage 90% là hết bug"; hứa giảm escaped defects và rút ngắn thời gian phản hồi, đo sau mỗi quý.
+
+### 6) Pitfall thực tế trên production
+- **Đặt KPI coverage cho cá nhân:** dev viết test rỗng, loại trừ code, chạy test không assert. Đây là cách nhanh nhất để có coverage đẹp và chất lượng đi xuống.
+- **Chạy mutation trên toàn repo:** mất hàng giờ, dev tắt; chỉ áp dụng cho module lõi, chạy nightly.
+- **Dùng rerun để che flaky:** CI xanh nhưng không ai biết test nào không đáng tin.
+- **Đếm số test:** 3000 test không có nghĩa 3000 hành vi được kiểm tra.
+- **Gộp mọi bug vào "thiếu test":** có bug do yêu cầu sai hoặc do hạ tầng; phân loại sai sẽ dẫn tới đầu tư sai.
+
+### Ví dụ đời thực
+Một team 15 dev (Spring Boot 3.3, PostgreSQL 15, Kafka) có coverage 85%, CI 22 phút, flaky 12%, 9 escaped defects/tháng. Điều tra 8 tuần bug: 15/18 sự cố tập trung ở 3 module (payment 7, inventory 5, auth 3); 60% test là smoke không assert kết quả; coverage module payment chỉ 52%, mutation score 41%, diff coverage toàn repo 62%. Nguyên nhân gốc: gate chỉ dựa vào coverage toàn cục, không ai sở hữu flaky, và test ranh giới bị thiếu vì dev mock mọi thứ cho nhanh. Kế hoạch một quý (chi phí khoảng 2 dev × 2 tuần cộng 10% thời gian team trong 4 tuần): (1) quarantine và sửa top 20 flaky, đưa flake rate blocking từ 12% xuống 0,9%; (2) thêm 45 integration/contract test cho 3 module rủi ro, nâng coverage payment lên 81%, mutation score lên 74%, diff coverage lên 85%; (3) tách slice test và chia pipeline, giảm CI từ 22 phút xuống 9 phút; (4) gate PR bằng diff coverage 85% và mutation 70% cho module lõi. Kết quả sau một quý: escaped defects giảm từ 9 xuống 3 mỗi tháng, change failure rate từ 18% xuống 7%, MTTR giảm 30%, dev tiết kiệm khoảng 5,5 giờ/tuần, tức 82,5 giờ/tuần cho cả team (khoảng 330 giờ/tháng); so với chi phí đầu tư khoảng 400 giờ (160 giờ cho 2 dev × 2 tuần cộng 240 giờ là 10% thời gian của 15 dev trong 4 tuần), thời gian hoàn vốn ước tính khoảng một tháng, chưa tính 4 sự cố đã không xảy ra.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không tối ưu coverage toàn cục, vì nó chỉ nói code đã chạy qua chứ không nói hành vi đã được kiểm tra. Tôi bắt đầu bằng dữ liệu: phân loại bug production theo module trong 8 tuần, xem mutation score và diff coverage của từng module, đo flake rate và thời gian CI. Sau đó tôi ưu tiên theo thiệt hại: module nào gây nhiều sự cố nhất và có test yếu nhất thì làm trước. Trong một quý, tôi sẽ chặn flaky trước để lấy lại niềm tin vào CI, rồi thêm integration và contract test cho vài module rủi ro nhất, sau đó giảm thời gian CI và đặt gate diff coverage cho PR. Với quản lý, tôi báo cáo bằng escaped defects, change failure rate, MTTR và số giờ dev tiết kiệm, kèm ROI ước tính, chứ không báo cáo phần trăm coverage. Ở team trước, cách này giảm sự cố từ 9 xuống 3 mỗi tháng và giảm thời gian CI từ 22 xuống 9 phút trong một quý."
+
+> Senior tip: coverage là **đèn báo**, không phải **hiệu suất**. Hãy theo dõi bug lọt và mutation score theo module rủi ro; khi hai chỉ số đó cải thiện, coverage sẽ tự cải thiện theo.`,
+  follow: [
+    'Bạn thuyết phục quản lý cấp thêm thời gian cho test khi deadline tính năng đang gấp như thế nào, bằng lập luận và số liệu gì?',
+    'Nếu mutation score của module lõi chỉ tăng từ 41% lên 55% sau một quý, bạn có coi đó là thành công không, và vì sao?',
+    'Bạn thiết kế dashboard chất lượng cho 5 team như thế nào để so sánh được mà không khuyến khích gian lận chỉ số?'
+  ],
+  tags: ['coverage', 'mutation-testing', 'quality-metrics', 'CI', 'engineering-leadership']
+},
 );
