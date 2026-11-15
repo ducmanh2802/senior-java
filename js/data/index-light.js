@@ -2279,6 +2279,8 @@ window.DATA_INDEX = {
     {"id":"lesson-jpa-011","track":"jpa","order":11,"title":"Optimistic locking voi @Version: chan lost update va retry","level":"senior","minutes":25},
     {"id":"lesson-jpa-012","track":"jpa","order":12,"title":"N+1 query: phat hien, do luong va khac phuc bang fetch plan","level":"senior","minutes":30},
     {"id":"lesson-jpa-013","track":"jpa","order":13,"title":"Vong doi entity: transient, managed, detached, removed va merge vs persist","level":"senior","minutes":30},
+    {"id":"lesson-jpa-014","track":"jpa","order":14,"title":"Xây dựng persistence context mini: identity map, snapshot, dirty checking và flush từ con số 0","level":"senior","minutes":35},
+    {"id":"lesson-jpa-015","track":"jpa","order":15,"title":"Phat hien va khac phuc N+1 bang mo phong repository dem query","level":"senior","minutes":35},
     {"id":"lesson-design-001","track":"design","order":1,"title":"Rate limiter: token bucket và sliding window log","level":"mid","minutes":30},
     {"id":"lesson-design-002","track":"design","order":2,"title":"Cache eviction: LRU và LFU","level":"mid","minutes":30},
     {"id":"lesson-design-003","track":"design","order":3,"title":"Consistent hashing và virtual nodes","level":"senior","minutes":30},
