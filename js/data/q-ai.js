@@ -8234,4 +8234,309 @@ Một nền tảng nội bộ có 12 agent dùng MCP tool {{searchDocs}} (v1) tr
     "engineering management"
   ]
 },
+  {
+    id: 'ai-121',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Tìm kiếm vectơ (semantic search) đôi khi bỏ lỡ mã đơn hàng, ngày tháng hoặc mã SKU vì chúng không mang ý nghĩa ngữ nghĩa. Bạn kết hợp tìm kiếm từ khóa (keyword/BM25) với vectơ trong RAG như thế nào, và hợp nhất kết quả ra sao?',
+    a: `**Tóm tắt:** Hybrid search kết hợp tìm kiếm từ khóa (chính xác, phù hợp mã số/ngày) với tìm kiếm vectơ (hiểu ý nghĩa, đồng nghĩa) để không bỏ lỡ thông tin quan trọng và vẫn trả lời được câu hỏi mang tính mô tả. Kết hợp kết quả bằng reciprocal rank fusion (RRF) hoặc tổng điểm có trọng số, rồi lấy top-k đưa vào ngữ cảnh LLM.
+
+### Hai cách truy xuất bổ sung nhau
+
+Tìm kiếm từ khóa (ví dụ BM25 trong OpenSearch/Elasticsearch, hoặc extension pg_search cho PostgreSQL) tính điểm dựa trên tần suất từ và nghịch đảo tần suất tài liệu; tốt cho mã số, ngày, tên riêng. Tìm kiếm vectơ (embedding + pgvector/OpenSearch) tính độ gần ngữ nghĩa; tốt cho ý nghĩa, đồng nghĩa, câu hỏi tự nhiên. Cả hai đều có điểm số nhưng thang đo khác nhau, không thể so sánh trực tiếp.
+
+| Cách | Điểm mạnh | Điểm yếu | Phù hợp |
+|---|---|---|---|
+| Từ khóa (BM25) | Chính xác mã số, ngày, tên riêng | Bỏ lỡ đồng nghĩa, không hiểu ý nghĩa | Mã đơn hàng, SKU, ngày tháng |
+| Vectơ (semantic) | Hiểu ý nghĩa, đồng nghĩa, ngữ cảnh | Bỏ lỡ từ khóa cụ thể, tốn tài nguyên embedding | Câu hỏi mô tả, ý nghĩa |
+| Hybrid | Kết hợp cả hai | Hai truy xuất, kết hợp thêm latency | RAG production đa dạng |
+
+### Kết hợp bằng Reciprocal Rank Fusion (RRF)
+
+RRF không cần cùng thang điểm: lấy hạng từ từng phương pháp, cộng {{1 / (k + hạng)}} với k là hằng số nhỏ (ví dụ 60). Bản ghi hạng cao ở bất kỳ phương pháp nào cũng nhận điểm cao.
+
+Ví dụ: đơn hàng "DH-100" hạng 1 từ keyword (điểm 1/(60+1) ≈ 0.0164), hạng 20 từ vector (điểm 1/(60+20) = 0.0125), tổng ≈ 0.0289. Bản ghi khác hạng 5 từ cả hai: 2×1/(60+5) ≈ 0.0308, cao hơn do được cả hai nguồn đồng ý.
+
+~~~java
+double rrf(List<Integer> ranks, int k) {
+    return ranks.stream().mapToDouble(r -> 1.0 / (k + r)).sum();
+}
+// ví dụ: rrf(List.of(1, 20), 60) ≈ 0.0289
+~~~
+
+Luồng thực tế:
+~~~text
+câu hỏi -> keyword search (top 50) + vector search (top 50)
+      -> RRF hợp nhất -> top 10 -> rerank (tùy chọn) -> LLM
+~~~
+
+### Pitfall production
+
+- Điểm số thang khác nhau (BM25 không có trần trên, cosine từ -1 đến 1) không cộng trực tiếp; dùng hạng (RRF) hoặc chuẩn hóa trước.
+- Truy xuất hai lần tăng latency và chi phí; chạy song song và giới hạn top-k.
+- Từ khóa dừng (stopword) như "của", "là" làm nhiễu BM25; cần loại bỏ hoặc dùng analyzer phù hợp.
+- Bản ghi chỉ xuất hiện ở một phương pháp có thể bị bỏ nếu yêu cầu phải có ở cả hai (giao quá chặt).
+
+### Ví dụ đời thực
+
+Hệ thống tra cứu đơn hàng có 2 triệu bản ghi, mỗi ngày 50.000 câu hỏi. Chỉ dùng vectơ: 12% câu hỏi về mã đơn hàng không tìm thấy vì mã là chuỗi ngẫu nhiên không có ý nghĩa ngữ nghĩa. Thêm hybrid: keyword tìm mã đơn hàng chính xác, vectơ tìm mô tả vấn đề ("giao hàng chậm", "Thanh toán"). Sau RRF, tỷ lệ tìm thấy đơn hàng tăng từ 88% lên 98%, latency p95 tăng 120 ms (chạy song song hai truy xuất). Đây là số liệu minh hoạ, cần đo trên dữ liệu thật.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi sẽ không chỉ dùng vectơ vì mã số và ngày tháng không có ý nghĩa ngữ nghĩa. Hybrid search chạy song song BM25 (từ khóa) và tìm vectơ, rồi hợp nhất bằng RRF để không cần cùng thang điểm. Bản ghi hạng cao ở một bên cũng nhận điểm cao, giúp mã đơn hàng không bị bỏ lỡ. Giới hạn top-k cho mỗi bên, chạy song song để kiểm latency, rồi lấy top-k cuối cùng đưa vào ngữ cảnh LLM. Nếu cần chính xác hơn nữa, thêm cross-encoder rerank sau hybrid. Rủi ro chính là latency đôi lần và điểm số thang khác nhau, nên dùng hạng không dùng điểm thô.
+
+> Senior tip: RRF tốt khi bạn không muốn can thiệp vào thang điểm của từng engine; chỉ cần chọn hằng số k phù hợp (thường 60) và theo dõi recall@k trên tập truy vấn thật.`,
+    follow: [
+      'RRF khác tổng điểm có trọng số ra sao, và khi nào chọn cái nào?',
+      'Bạn xử lý từ khóa dừng và Analyzer cho tiếng Việt trong BM25 ra sao?',
+      'Hai truy xuất song song làm tăng latency p95 như thế nào, và bạn giảm ra sao?'
+    ],
+    tags: ['RAG', 'hybrid search', 'BM25', 'vector search', 'RRF']
+  },
+  {
+    id: 'ai-122',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Tìm kiếm vectơ trả về top-100 nhưng thứ tự chưa chính xác: tài liệu quan trọng nằm ngoài top-5. Bạn dùng cross-encoder reranker như thế nào để sắp xếp lại, và khi nào nên dùng so với bi-encoder?',
+    a: `**Tóm tắt:** Bi-encoder (encode truy vấn và tài liệu riêng biệt rồi so sánh vector) nhanh nhưng kém chính xác; cross-encoder (đưa cặp truy vấn-tài liệu cùng vào model để chấm điểm) chính xác hơn nhưng chậm và tốn tài nguyên. Mô hình hai giai đoạn: vectơ lấy top-N (ví dụ 100), cross-encoder sắp xếp lại top-k (ví dụ 10) đưa vào ngữ cảnh LLM.
+
+### Bi-encoder versus Cross-encoder
+
+Bi-encoder mã hóa truy vấn thành vector A và mỗi tài liệu thành vector B, rồi tính độ cosin. Khả năng tính trước (precompute) vector tài liệu nên nhanh, nhưng truy vấn và tài liệu không tương tác trực tiếp, dễ bỏ ngữ cảnh chi tiết.
+
+Cross-encoder nối chuỗi truy vấn và tài liệu lại (ví dụ "[CLS] truy vấn [SEP] tài liệu") rồi qua một transformer để xuất điểm liên quan. Mỗi cặp phải chạy model nên chậm, không thể precompute hết, nhưng nắm bắt tương tác chi tiết.
+
+| Tiêu chí | Bi-encoder | Cross-encoder |
+|---|---|---|
+| Tốc độ | Nhanh (vector đã sẵn sàng) | Chậm (mỗi cặp chạy model) |
+| Chính xác | Trung bình | Cao |
+| Tài nguyên | Ít | Nhiều |
+| Tính trước được | Có | Không |
+| Đánh giá | Retrieval ban đầu | Rerank top-N |
+
+### Luồng hai giai đoạn
+
+1. Truy vấn → embedding → tìm top-N trong vector store (N = 50-100).
+2. Tạo cặp (truy vấn, tài liệu) cho top-N, chạy cross-encoder, lấy điểm.
+3. Sắp xếp giảm dần theo điểm, lấy top-k (k = 5-10) đưa vào ngữ cảnh LLM.
+
+~~~java
+// Minh hoá: gọi cross-encoder qua API/service, không phải thư viện Java chuẩn
+List<ScoredDoc> rerank(String query, List<Doc> candidates, int topK) {
+    return candidates.stream()
+        .map(doc -> new ScoredDoc(doc, crossEncoder.score(query, doc.content())))
+        .sorted((a, b) -> Double.compare(b.score(), a.score()))
+        .limit(topK)
+        .toList();
+}
+~~~
+
+### Pitfall production
+
+- Chạy cross-encoder cho toàn bộ top-N làm tăng latency theo tuyến tính N; chỉ rerank một tập ứng viên nhỏ (ví dụ top-50 đến top-100).
+- Cross-encoder có thể overfit dữ liệu huấn luyện, không khai thác được ngoài phân phối đó.
+- Điểm cross-encoder không có ý nghĩa tuyệt đối, chỉ dùng để so sánh trong cùng một truy vấn.
+- Chi phí chạy model lớn hơn vectơ; cần cân bằng chất lượng và chi phí.
+
+### Ví dụ đời thực
+
+Hệ thống hỗ trợ sản phẩm có 500.000 tài liệu. Vector search lấy top-100 trong 80 ms. Thêm cross-encoder rerank top-100 trong 1.200 ms, lấy top-5. Trên 1.000 câu hỏi thử nghiệm, tỷ lệ tài liệu đúng nằm trong top-5 tăng từ 74% (chỉ vectơ) lên 89% (vectơ + rerank), nhưng tổng latency từ 80 ms lên 1.300 ms. Đội chỉ rerank khi câu hỏi phức tạp (nhiều từ khóa, so sánh), giữ vectơ đơn cho câu hỏi đơn giản. Đây là số liệu minh hoạ.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi dùng mô hình hai giai đoạn: bi-encoder (vectơ) lấy ứng viên nhanh trong hàng chục, cross-encoder sắp xếp lại top-N nhỏ để lấy bài tốt nhất. Bi-encoder nhanh và precompute được vector tài liệu, nhưng truy vấn và tài liệu không tương tác nên kém chính xác chi tiết. Cross-encoder xử lý cặp truy vấn-tài liệu cùng lúc, chính xác hơn nhưng chậm, không thể precompute. Tôi chỉ rerank top-10 đến top-50 sau vectơ, không chạy toàn bộ corpus. Rủi ro là latency và chi phí model, nên cân nhắc: rerank chỉ cho câu hỏi phức tạp, giữ vectơ đơn cho câu hỏi đơn giản, và theo dõi recall@k trước và sau rerank.
+
+> Senior tip: Cross-encoder không thay thế vectơ, mà là lớp tinh chỉnh sau khi vectơ đã lọc xuống một tập nhỏ. Chạy cross-encoder cho hàng trăm tài liệu sẽ chậm và đắt; hãy rerank top-10 đến top-50, không phải toàn bộ kết quả truy xuất.`,
+    follow: [
+      'Bạn chọn N (số ứng viên từ vectơ) và k (số sau rerank) dựa trên tiêu chí nào?',
+      'Cross-encoder có thể đưa tài liệu không liên quan lên trên nếu bị overfit dữ liệu huấn luyện, bạn phát hiện ra sao?',
+      'Latency p95 tăng nhiều khi thêm rerank, bạn chỉ rerank khi nào và bỏ qua khi nào?'
+    ],
+    tags: ['RAG', 'reranking', 'cross-encoder', 'bi-encoder', 'retrieval']
+  },
+  {
+    id: 'ai-123',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Bạn muốn đánh giá chất lượng câu trả lời LLM hàng ngàn lượt mỗi ngày mà không đủ nhân viên chấm thủ công. LLM-as-judge là gì, thiết kế như thế nào, và rủi ro là gì?',
+    a: `**Tóm tắt:** LLM-as-judge dùng một LLM (thường mạnh hơn model được đánh giá) để chấm điểm hoặc phân loại output của một LLM khác theo rubric (tiêu chí chấm rõ ràng). Nhanh, mở rộng được, rẻ so với con người, nhưng có Bias (độ lệch) và cần calibrate (đo lường chuẩn) với đánh giá con người định kỳ.
+
+### Cách hoạt động
+
+1. Tạo prompt chấm điểm: đưa câu hỏi, câu trả lời cần chấm, đáp án tham khảo (nếu có), và rubric (ví dụ: 1-5, tiêu chí đúng đắn, trích dẫn, không hư cấu).
+2. Gửi cho LLM judge, nhận điểm + lý do ngắn.
+3. Tổng hợp điểm theo thời gian, theo nhóm câu hỏi, theo phiên bản model/prompt.
+4. Calibrate: so sánh điểm LLM judge với đánh giá con người trên mẫu ngẫu nhiên, điều chỉnh rubric hoặc prompt judge nếu lệch.
+
+~~~java
+// Minh hoá cấu trúc gửi cho judge (không phải API cụ thể)
+record JudgeInput(String question, String answer, String reference, String rubric) {}
+record JudgeResult(int score, String reason) {}
+~~~
+
+### Rubric ví dụ (chấm 1-5)
+
+- 5: Đúng hoàn toàn, trích dẫn chính xác, không thêm thông tin không có trong nguồn.
+- 4: Đúng chủ yếu, có sai sót nhỏ hoặc trích dẫn gần đúng.
+- 3: Đúng một phần, thiếu thông tin quan trọng hoặc có hiểu nhầm nhỏ.
+- 2: Sai nhiều, chỉ một phần nhỏ đúng.
+- 1: Hoàn toàn sai hoặc hư cấu (hallucination).
+
+### Lợi ích và giới hạn
+
+| Tiêu chí | Đánh giá con người | LLM-as-judge |
+|---|---|---|
+| Chi phí | Cao | Thấp |
+| Tốc độ | Chậm | Nhanh |
+| Mở rộng | Hạn chế | Rất tốt |
+| Tính nhất quán | Khó (mỗi người chấm khác) | Cao (cùng prompt) |
+| Trường hợp phức tạp | Tốt | Trung bình, có thể bỏ lỡ |
+
+### Rủi ro và cách giảm thiểu
+
+- **Self-preference bias**: LLM judge hay cho điểm cao cho output trông giống phong cách nó. Giảm bằng dùng model mạnh hơn làm judge, và calibrate với con người.
+- **Position bias**: Đáp án ở vị trí đầu/cuối được ưu tiên. Giảm bằng hoán vị vị trí câu trả lời khi gửi judge.
+- **Length bias**: Câu trả lời dài được cho điểm cao hơn. Giới hạn độ dài hoặc rubric nêu rõ không thưởng độ dài.
+- **Không khai thác được lỗi mới**: Judge có cùng mù điểm với model được đánh giá. Calibrate định kỳ với con người trên mẫu mới.
+
+### Ví dụ đời thực
+
+Hệ thống chatbot có 10.000 cuộc hội thoại mỗi tuần. Chấm thủ công 50 cuộc/tuần không đủ đại diện. Thêm LLM-as-judge chấm 1.000 cuộc ngẫu nhiên mỗi tuần theo rubric 1-5. So sánh với 50 cuộc do chuyên viên chấm: hệ số tương quan 0,82 (đủ mức để dùng làm tín hiệu sớm). Khi thay đổi prompt, chấm lại 1.000 cuộc, nếu điểm trung bình giảm > 0,2 thì hoãn triển khai. Chi phí judge ước tính 5% so với chi phí model chính. Đây là số liệu minh hoạ.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi dùng LLM-as-judge khi cần đánh giá hàng ngàn câu trả lời mỗi ngày mà chấm thủ công không mở rộng được. Thiết kế: prompt judge chứa câu hỏi, câu trả lời, đáp án tham khảo (nếu có), và rubric rõ ràng (ví dụ 1-5 với tiêu chí chính xác, trích dẫn, không hư cấu). LLM judge trả điểm và lý do ngắn. Tôi calibrate định kỳ bằng cách so sánh điểm judge với đánh giá con người trên mẫu ngẫu nhiên, điều chỉnh rubric nếu lệch. Rủi ro chính là self-preference bias (judge hay cho điểm cao với phong cách giống nó), position bias, length bias; tôi giảm bằng dùng model mạnh hơn làm judge, hoán vị vị trí câu trả lời, và giới hạn độ dài. LLM-as-judge là tín hiệu sớm, không thay hoàn toàn đánh giá con người.
+
+> Senior tip: LLM-as-judge tốt cho phát hiện suy giảm chất lượng sớm sau khi thay đổi prompt/model, nhưng phải calibrate với con người định kỳ. Nếu judge và model bịa cùng kiểu lỗi, judge sẽ không bao giờ phát hiện.`,
+    follow: [
+      'Bạn chọn model nào làm judge, và tại sao thường chọn model mạnh hơn model được đánh giá?',
+      'Calibrate LLM-as-judge với con người nghĩa là gì, và bạn làm theo tần suất nào?',
+      'Self-preference bias là gì, và bạn giảm thiểu ra sao?'
+    ],
+    tags: ['LLM eval', 'LLM-as-judge', 'rubric', 'automated evaluation', 'calibration']
+  },
+  {
+    id: 'ai-124',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Câu hỏi phức tạp như "So sánh chính sách bảo hành của sản phẩm A và B" không trả lời đúng bằng tìm vectơ một lần. Bạn tách thành truy vấn con (query decomposition) và viết lại truy vấn (query expansion) như thế nào, rồi kết hợp kết quả ra sao?',
+    a: `**Tóm tắt:** Query decomposition tách câu hỏi nhiều bước thành các truy vấn con độc lập, tìm kiếm mỗi con rồi tổng hợp. Query expansion viết lại câu hỏi bằng nhiều cách diễn đạt để tìm thêm tài liệu liên quan. Cả hai giúp RAG trả lời câu hỏi phức tạp (multi-hop) mà vectơ đơn lần thường bỏ lỡ.
+
+### Hai kỹ thuật và khi dùng
+
+Query decomposition: tách "So sánh bảo hành A và B" thành "Bảo hành sản phẩm A là gì?" và "Bảo hành sản phẩm B là gì?"; tìm từng câu, sau đó so sánh.
+
+Query expansion: viết "Làm thế nào reset mật khẩu?" thành "Hướng dẫn khôi phục mật khẩu", "Quên mật khẩu làm gì", "Đổi mật khẩu tài khoản"; tìm mỗi biến thể rồi hợp nhất.
+
+| Kỹ thuật | Dùng khi | Cách kết hợp |
+|---|---|---|
+| Decomposition | Câu hỏi nhiều bước, so sánh, nguyên nhân-ảnh hưởng | Tìm từng sub-query, tổng hợp câu trả lời |
+| Expansion | Câu hỏi ngắn, có nhiều cách diễn đạt | Tìm mỗi biến thể, hợp nhất kết quả, lấy top-k unique |
+
+### Luồng triển khai
+
+1. LLM nhận câu hỏi gốc, phân loại đơn hay phức tạp.
+2. Nếu phức tạp: tách thành 2-4 sub-query, mỗi sub-query có mục tiêu rõ.
+3. Nếu đơn: viết ra 2-3 biến thể (expansion).
+4. Chạy tìm kiếm vectơ cho mỗi sub-query/biến thể (song song, giới hạn top-k mỗi con).
+5. Hợp nhất kết quả: loại trùng (dùng documentId), xếp hạng lại (cross-encoder tùy chọn), lấy top-k cuối.
+6. LLM tổng hợp câu trả lời từ các đoạn tài liệu đã lấy, trích dẫn nguồn.
+
+~~~java
+// Minh hoá: cấu trúc kết quả hợp nhất
+record RetrievalResult(String docId, String content, double score, String sourceQuery) {}
+List<RetrievalResult> merge(List<List<RetrievalResult>> results, int topK) {
+    return results.stream()
+        .flatMap(List::stream)
+        .collect(Collectors.groupingBy(RetrievalResult::docId))
+        .entrySet().stream()
+        .map(e -> e.getValue().stream().max(Comparator.comparingDouble(RetrievalResult::score)).get())
+        .sorted((a, b) -> Double.compare(b.score(), a.score()))
+        .limit(topK)
+        .toList();
+}
+~~~
+
+### Pitfall production
+
+- Quá nhiều sub-query làm tăng latency và chi phí vectơ; giới hạn 2-4 sub-query và top-k nhỏ mỗi con.
+- Sub-query không độc lập (cần kết quả của sub-query trước) thì không thể chạy song song; cần vòng lặp (multi-hop lặp lại).
+- Kết quả expansion bị nhiễu nếu biến thể thay đổi ý nghĩa; cần validate hoặc hạn chế số biến thể.
+- Hợp nhất thiếu loại trùng gây trùng lặp trong ngữ cảnh LLM, tốn token và làm phân tâm.
+
+### Ví dụ đời thực
+
+Hệ thống tư vấn sản phẩm có 100.000 tài liệu. Câu hỏi "So sánh bảo hành laptop A và B" chỉ dùng vectơ một lần lấy tài liệu chung chung, recall@5 là 45%. Thêm decomposition thành 2 sub-query, tìm từng con, hợp nhất: recall@5 tăng lên 82%. Latency từ 300 ms lên 700 ms (hai truy xuất song song). Chỉ áp decomposition cho câu hỏi có từ "so sánh", "khác nhau", "tại sao", giữ vectơ đơn cho câu hỏi đơn giản. Đây là số liệu minh hoạ.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi phân loại câu hỏi đơn hay phức tạp trước. Câu hỏi đơn dùng query expansion (viết lại 2-3 cách) để tìm thêm tài liệu; câu hỏi phức tạp (so sánh, nguyên nhân-ảnh hưởng) dùng query decomposition (tách thành 2-4 sub-query) và tìm mỗi sub-query song song. Sau đó hợp nhất kết quả, loại trùng theo documentId, lấy top-k cuối cùng đưa vào ngữ cảnh LLM với trích dẫn nguồn. Giới hạn số sub-query và top-k mỗi con để kiểm latency và chi phí. Nếu sub-query phụ thuộc lẫn nhau (cần kết quả trước để hỏi tiếp), tôi dùng vòng lặp multi-hop thay vì chạy song song một lần.
+
+> Senior tip: Decomposition và expansion không phải lúc nào cũng cần. Chỉ áp khi câu hỏi thực sự đa bước hoặc có nhiều cách diễn đạt; nếu không, vectơ đơn lần đã đủ và rẻ hơn. Theo dõi recall@k trước và sau khi thêm để biết nếu tiếp tục dùng.`,
+    follow: [
+      'Bạn phân loại câu hỏi đơn hay phức tạp bằng cách nào, và có dùng LLM để phân loại không?',
+      'Khi sub-query phụ thuộc lẫn nhau (cần kết quả trước mới hỏi tiếp), bạn thiết kế vòng lặp multi-hop ra sao?',
+      'Hợp nhất kết quả từ nhiều sub-query, bạn loại trùng và xếp hạng lại như thế nào?'
+    ],
+    tags: ['RAG', 'query decomposition', 'query expansion', 'multi-hop', 'retrieval']
+  },
+  {
+    id: 'ai-125',
+    topic: 'ai',
+    level: 'lead',
+    q: 'Khi nào nên fine-tune model (huấn luyện lại) thay vì RAG, và khi nào kết hợp cả hai? Bạn đưa ra quyết định dựa trên tiêu chí nào?',
+    a: `**Tóm tắt:** RAG đưa tài liệu bên ngoài vào ngữ cảnh prompt (phù hợp kiến thức mới, thay đổi liên tục, cần trích dẫn nguồn); fine-tuning thay đổi hành vi/model (phù hợp định dạng đầu ra, giọng điệp, tác vụ lặp lại, reasoning đặc thù). Không phải chọn một lần: có thể kết hợp (RAG cung cấp facts, fine-tuning định dạng câu trả lời). Quyết định dựa trên độ bền vững của kiến thức, yêu cầu định dạng, chi phí, latency và nhu cầu trích dẫn.
+
+### So sánh RAG và fine-tuning
+
+| Tiêu chí | RAG | Fine-tuning | Kết hợp |
+|---|---|---|---|
+| Kiến thức mới | Dễ cập nhật (thêm tài liệu) | Khó (phải huấn luyện lại) | RAG cung cấp facts |
+| Thay đổi liên tục | Tốt | Kém | RAG cho kiến thức, FT cho định dạng |
+| Trích dẫn nguồn | Có (từ tài liệu) | Không | RAG trích dẫn |
+| Định dạng đầu ra | Trung bình | Tốt (huấn luyện mẫu) | FT định dạng, RAG nội dung |
+| Reasoning đặc thù | Trung bình | Tốt | FT reasoning, RAG facts |
+| Chi phí chạy | Thấp (truy xuất + LLM) | Trung bình (huấn luyện một lần) | Cao nhất |
+| Latency | Trung bình (truy xuất thêm) | Thấp (không truy xuất) | Trung bình |
+
+### Quy trình quyết định (từng bước)
+
+1. Kiến thức có thay đổi liên tục không? → Có: ưu tiên RAG.
+2. Cần trích dẫn nguồn không? → Có: ưu tiên RAG.
+3. Cần định dạng đầu ra cụ thể (JSON, mẫu báo cáo) không? → Có: cân nhắc fine-tuning.
+4. Cần reasoning đặc thù domain không? → Có: cân nhắc fine-tuning hoặc prompt engineering kỹ hơn.
+5. Kiến thức ổn định, ít thay đổi, cần tốc độ cao? → Fine-tuning có thể phù hợp.
+6. Không chắc: bắt đầu bằng RAG (rẻ, dễ thay đổi), sau đó fine-tune nếu RAG không đạt yêu cầu định dạng/hành vi.
+
+~~~text
+Quyết định:
+Kiến thức thay đổi liên tục? -> Có: RAG
+                            -> Không: cần định dạng đặc thù? -> Có: Fine-tuning (hoặc kết hợp)
+                                                             -> Không: Prompt engineering/RAG
+~~~
+
+### Pitfall production
+
+- Fine-tuning không cung cấp kiến thức mới (facts), chỉ thay đổi cách model nói; nếu cần fact mới, vẫn phải RAG.
+- Catastrophic forgetting: fine-tune quá nhiều làm model bỏ kiến thức cũ.
+- Dữ liệu fine-tuning không đủ chất (100-1000 mẫu đạt chuẩn) thì kém hơn prompt engineering tốt.
+- Kết hợp RAG + fine-tuning tăng độ phức tạp vận hành (hai hệ thống cần duy trì).
+- Fine-tuning khó rollback; RAG có thể quay lại version tài liệu cũ ngay lập tức.
+
+### Ví dụ đời thực
+
+Công ty có chatbot hỗ trợ khách hàng với chính sách đổi trả thay đổi hàng tuần. RAG là lựa chọn rõ ràng: cập nhật tài liệu trong knowledge base, chatbot luôn trả lời theo chính sách mới, kèm trích dẫn điều khoản. Sau 6 tháng, đội nhận thấy câu trả lời thường sai định dạng JSON cần cho hệ thống backend. Thêm fine-tuning một model nhỏ để định dạng JSON, giữ RAG cung cấp nội dung chính sách. Kết quả: tỷ lệ JSON hợp lệ từ 70% lên 98%, nội dung luôn mới nhờ RAG. Chi phí training một lần, sau đó chỉ cập nhật knowledge base. Đây là số liệu minh hoạ.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi quyết định dựa trên đặc tính kiến thức và yêu cầu hệ thống. Nếu kiến thức thay đổi liên tục (chính sách, giá, thủ tục), RAG là lựa chọn vì cập nhật tài liệu ngay lập tức và có trích dẫn nguồn. Nếu cần định dạng đầu ra nhất định (JSON, mẫu báo cáo), reasoning domain đặc thù, hoặc giọng điệp nhất quán, fine-tuning phù hợp hơn. Nếu không chắc, tôi bắt đầu bằng RAG vì rẻ và dễ thay đổi, sau đó xem xét fine-tuning nếu RAG không đáp ứng yêu cầu định dạng hoặc hành vi. Có thể kết hợp: RAG cung cấp facts mới nhất, fine-tuning định dạng cách trình bày. Rủi ro fine-tuning là không cung cấp kiến thức mới, dễ quên kiến thức cũ (catastrophic forgetting), và khó rollback so với RAG.
+
+> Senior tip: Bắt đầu bằng RAG (rẻ, linh hoạt, dễ thay đổi) trước khi cân nhắc fine-tuning. Fine-tuning chỉ đáng khi RAG + prompt engineering đã đạt giới hạn về định dạng đầu ra hoặc hành vi model, không phải vì kiến thức mới — kiến thức mới dùng RAG.`,
+    follow: [
+      'Fine-tuning không cung cấp kiến thức mới, bạn vẫn cần RAG cho facts, vậy khi nào kết hợp cả hai?',
+      'Dữ liệu fine-tuning cần ít nhất bao nhiêu mẫu đạt chuẩn mới đáng training?',
+      'Rollback fine-tuning khó hơn RAG như thế nào, và bạn lên kế hoạch như vậy?'
+    ],
+    tags: ['fine-tuning', 'RAG', 'decision framework', 'LLM', 'architecture']
+  },
 );
