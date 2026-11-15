@@ -3292,5 +3292,372 @@ ALTER ROLE fincore_app SET idle_in_transaction_session_timeout = '5min';
     'Phân biệt rõ: tăng pool size chỉ trì hoãn, không giải quyết gốc; anti-pattern @Transactional trên long-running method',
   ],
   tags: ['postgresql', 'connection-pool', 'transaction', 'idle-in-transaction', 'batch', 'spring-batch', 'scheduled', 'copy'],
-}
+},
+{
+  id: 'lab-sql-023',
+  category: 'sql',
+  title: 'Báo cáo đơn hàng sau khi bảng lên 50 triệu dòng: index (status, created_at) bị bỏ qua vì lower() và ép kiểu',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn thương mại điện tử **MegaMarket** vận hành service {{order-analytics}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM, storage gp3 1 TB). Bảng {{orders}} lưu đơn hàng của toàn bộ seller: sau 4 năm đã có **50.318.904 dòng** (~11 GB heap + 9,2 GB index). Giờ cao điểm 09:00–11:00 hệ thống xử lý 3.000 giao dịch/giây; bảng nhận thêm ~2.500 dòng/giây.
+
+**Triệu chứng (14/03/2026, 09:25).** Màn hình "Báo cáo đơn hàng theo trạng thái" gọi {{GET /api/v1/reports/orders?date=2026-03-14}}. p95 từ 220 ms nhảy lên **41 giây**, gateway trả 504, CPU RDS chạm 99%. DBA chạy EXPLAIN ANALYZE và thấy **Seq Scan toàn bảng 50,3 triệu dòng** dù index {{idx_orders_status_created}} (btree trên (status, created_at)) đã tồn tại từ tháng trước. Sau khi dev "vá" một lỗi cú pháp bằng cách thêm lower() vào điều kiện, query không dùng index nữa. Một endpoint khác (tra cứu theo mã đơn) cũng bị chậm vì ép kiểu cột.
+
+**Việc bạn có.** Ba artifact dưới đây lấy từ production lúc 09:26–09:31. Hãy tìm nguyên nhân gốc, chứng minh bằng dòng lệnh trong artifact, và đề xuất cách sửa (index phù hợp, sửa điều kiện, ANALYZE, keyset pagination).`,
+  artifacts: [
+    {
+      name: 'explain-orders-report.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 09:26:05 +07, psql trên RDS megamarket-primary (PostgreSQL 15.6)
+      megamarket=# EXPLAIN (ANALYZE, BUFFERS)
+      SELECT status, count(*), sum(total_amount) AS total
+      FROM orders
+      WHERE lower(status) = lower('Shipped')
+        AND created_at >= '2026-03-14 00:00:00+07'::timestamptz
+      GROUP BY status;
+                                                                           QUERY PLAN
+      -------------------------------------------------------------------------------------------------------------------------------------------------
+       HashAggregate  (cost=2841521.44..2841521.48 rows=1 width=40) (actual time=40118.331..40118.336 rows=1 loops=1)
+         Group Key: status
+         Batches: 1  Memory Usage: 24kB
+         Buffers: shared hit=631204 read=38912
+         ->  Seq Scan on orders  (cost=0.00..2839895.61 rows=501802 width=40) (actual time=39872.114..40115.902 rows=10234 loops=1)
+               Filter: ((lower(status) = lower('Shipped'::text)) AND (created_at >= '2026-03-14 00:00:00+07'::timestamp with time zone))
+               Rows Removed by Filter: 50308670
+               Buffers: shared hit=631204 read=38912
+         Planning Time: 0.312 ms
+         Execution Time: 40122.419 ms
+      (9 rows)
+      
+      Time: 40122.801 ms
+      
+      -- So sánh: cùng câu, bỏ lower() trên cột, bind tham số đã lower ở ứng dụng:
+      megamarket=# EXPLAIN (ANALYZE, BUFFERS)
+      SELECT status, count(*), sum(total_amount) AS total
+      FROM orders
+      WHERE status = 'shipped'
+        AND created_at >= '2026-03-14 00:00:00+07'::timestamptz
+      GROUP BY status;
+                                                                           QUERY PLAN
+      -------------------------------------------------------------------------------------------------------------------------------------------------
+       HashAggregate  (cost=1482.31..1482.35 rows=1 width=40) (actual time=28.441..31.208 rows=1 loops=1)
+         Group Key: status
+         Batches: 1  Memory Usage: 24kB
+         Buffers: shared hit=184 read=14
+         ->  Index Scan using idx_orders_status_created on orders  (cost=0.57..1479.54 rows=10240 width=40) (actual time=0.041..27.811 rows=10234 loops=1)
+               Index Cond: ((status = 'shipped'::character varying) AND (created_at >= '2026-03-14 00:00:00+07'::timestamp with time zone))
+               Buffers: shared hit=184 read=14
+         Planning Time: 0.241 ms
+         Execution Time: 31.519 ms
+      (8 rows)
+      
+      Time: 31.902 ms`,
+    },
+    {
+      name: 'explain-order-detail.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 09:28:12 +07, endpoint GET /api/v1/orders/{orderId} — tra cứu theo mã đơn (order_code)
+      -- Java nhận path variable là Long; cột order_code kiểu varchar(20) chứa mã đơn chỉ gồm chữ số
+      megamarket=# EXPLAIN (ANALYZE, BUFFERS)
+      SELECT id, order_code, customer_id, status, total_amount
+      FROM orders
+      WHERE order_code::bigint = 20260314004281;
+                                                                              QUERY PLAN
+      -----------------------------------------------------------------------------------------------------------------------------------------------------
+       Seq Scan on orders  (cost=0.00..2839895.61 rows=501802 width=56) (actual time=0.027..39981.221 rows=1 loops=1)
+         Filter: ((order_code)::bigint = 20260314004281::bigint)
+         Rows Removed by Filter: 50318902
+         Buffers: shared hit=631204 read=38912
+         Planning Time: 0.298 ms
+         Execution Time: 39982.104 ms
+      (6 rows)
+      
+      Time: 39982.501 ms
+      
+      -- Trích app.log ngày 13/03 (trước khi dev "vá", lúc 07:14:08):
+      --   ERROR:  operator does not exist: character varying = bigint
+      --   LINE 1: where order_code = ?
+      --                      ^
+      --   HINT:  No operator matches the given name and argument type. You might need to add explicit type casts.
+      -- Sau khi vá: HTTP 200 trả về đúng đơn, nhưng mỗi request vẫn tiêu ~40 giây CPU của RDS.`,
+    },
+    {
+      name: 'schema-orders.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 09:29:40 +07, RDS megamarket-primary
+      megamarket=# \\d+ orders
+                                             Table "public.orders"
+         Column         |           Type           | Collation | Nullable |      Default      | Storage  | Stats target |                Description
+      --------------+--------------------------+-----------+----------+-------------------+----------+--------------+-----------------------------------------
+       id            | bigint                   |           | not null |                   | plain    |              |
+       order_code    | character varying(20)    |           | not null |                   | extended |              | mã đơn chỉ gồm chữ số
+       customer_id   | bigint                   |           | not null |                   | plain    |              |
+       status        | character varying(16)    |           | not null |                   | extended |              |
+       total_amount  | numeric(14,2)           |           | not null |                   | main     |              |
+       created_at    | timestamp with time zone |           | not null | now()             | plain    |              |
+      Indexes:
+         "idx_orders_status_created" btree (status, created_at DESC)
+         "orders_pkey" PRIMARY KEY, btree (id)
+      
+      megamarket=# SELECT reltuples::bigint AS est_rows,
+                     pg_size_pretty(pg_total_relation_size('orders')) AS total_size,
+                     pg_size_pretty(pg_relation_size('orders')) AS heap_only
+      FROM pg_class WHERE relname = 'orders';
+         est_rows | total_size | heap_only
+      -----------+------------+-----------
+      50318904  | 13420 MB   | 11003 MB
+      
+      megamarket=# SELECT indexrelname, idx_scan, idx_tup_read
+      FROM pg_stat_user_indexes WHERE relname = 'orders';
+            indexrelname             | idx_scan | idx_tup_read
+      -----------------------------+----------+-------------
+       idx_orders_status_created      |   88412  |   3120455
+       orders_pkey                    | 42110088 |  42110088`,
+    },
+  ],
+  questions: [
+    'Vì sao câu báo cáo phải quét 50 triệu dòng dù index idx_orders_status_created (status, created_at) đã tồn tại? Chỉ ra bằng dòng nào trong plan.',
+    'Câu tra cứu order_code gặp lỗi gì trước đây và vì sao cách "vá" bằng cast lại khiến plan tệ hơn? So sánh với câu báo cáo: đây là hai hiện tượng một nguyên nhân.',
+    'Bạn xử lý tình huống này thế nào trong ngày 14/03 (giảm thiểu ngay), và thiết kế lại thế nào để không tái diễn (index, chuẩn hóa dữ liệu, keyset pagination, monitoring)?',
+  ],
+  hints: [
+    'Đọc dòng "Filter:" của cả hai EXPLAIN: filter nào là hằng số thuần, filter nào bọc hàm lower() hoặc ép kiểu quanh cột?',
+    'So sánh "Execution Time" của câu (1) với câu (2): cùng bảng, cùng index, chỉ khác cách viết điều kiện — chênh lệch bao nhiêu lần?',
+    'Nguyên tắc "sargable": index chỉ dùng được khi vế so sánh là cột trần với hằng số. lower() là IMMUTABLE (có thể dùng trong expression index) nhưng bọc hàm quanh cột vẫn làm mất khả năng dùng index btree thô; cast ::bigint trên varchar cũng làm mất index.',
+  ],
+  answer: `**Tóm tắt:** Cả hai endpoint đều vi phạm nguyên tắc "sargable" — cột trong điều kiện bị bọc hàm ({{lower(status)}}) hoặc bị ép kiểu ({{order_code::bigint}}) — nên PostgreSQL không dùng index {{idx_orders_status_created}} mà quét tuần tự toàn bộ 50.318.904 dòng. Mỗi lần gọi báo cáo tốn ~40 giây CPU; hàng chục lần gọi song song (cộng retry khi timeout) đốt cạn 8 vCPU của RDS. Sửa ngay bằng cách viết điều kiện cột trần với tham số đã chuẩn hóa, bỏ cast trên cột, ANALYZE; sửa lâu dài bằng chuẩn hóa kiểu dữ liệu, keyset pagination và monitoring theo rows examined/returned.
+
+### Nguyên nhân gốc
+1. **Câu báo cáo.** Điều kiện {{lower(status) = lower('Shipped')}} bọc hàm quanh cột. Planner chỉ dùng được index khi vế phải là hằng số và vế trái là cột trần; bọc hàm là biểu thức, không tương đương với {{status}}, nên index không dùng được → Seq Scan toàn bảng.
+2. **Câu tra cứu mã đơn.** Cột {{order_code}} kiểu {{varchar(20)}} nhưng Java truyền tham số {{Long}}. Ban đầu PostgreSQL báo lỗi "operator does not exist: character varying = bigint"; dev "vá" bằng cách ép kiểu ở **vế cột**: {{order_code::bigint = 20260314004281}}. Cast đặt ở vế cột lại phá index (index được build trên giá trị varchar của {{order_code}}, không phải trên {{order_code::bigint}}), nên thành Seq Scan — trước đó câu lỗi ngay lập tức, nay "chạy được" nhưng quét cả bảng (40 giây) cho một phép tìm điểm.
+3. **Hệ số khuếch đại.** Endpoint báo cáo không có cache, không rate-limit; client timeout 30 giây rồi retry trong khi câu cũ vẫn chạy tiếp trên DB, nên số câu chạy song song cứ tăng. CPU 99% là hệ quả của việc quét lãng phí, không phải của tải thật.
+
+### Dẫn chứng
+- Artifact 1, câu (1): dòng **"Filter: ((lower(status) = lower('Shipped'::text)) AND ...)"** cho thấy điều kiện là biểu thức, không phải cột trần; dòng **"Seq Scan on orders"** xác nhận index không được dùng; **"Rows Removed by Filter: 50308670"** nghĩa là 50.308.670 dòng bị đọc rồi loại bỏ (tổng 50.318.904 − 10.233 dòng khớp); **"Buffers: shared hit=631204 read=38912"** — đọc toàn bộ ~670 nghìn page của heap; **"Execution Time: 40122.419 ms"**.
+- Artifact 1, câu (2): cùng bảng, cùng câu hỏi, chỉ đổi điều kiện sang so sánh cột thô → **"Index Scan using idx_orders_status_created"**, **"Buffers: shared hit=184 read=14"**, **"Execution Time: 31.519 ms"**. Chênh lệch 40122/31,5 ≈ **1.270 lần** chỉ vì cách viết điều kiện. Index đã có sẵn và hoạt động tốt — vấn đề không phải "thiếu index".
+- Artifact 2: **"Filter: ((order_code)::bigint = ...)"**, **"Rows Removed by Filter: 50318902"**, kết quả **rows=1** — 39,98 giây CPU để trả về một đơn hàng.
+- Artifact 3: index {{idx_orders_status_created}} (btree trên (status, created_at DESC)) **đã tồn tại** và có idx_scan = 88.412 lần (các câu viết đúng); thống kê cho thấy bảng có 50.318.904 dòng, heap ~11 GB.
+
+### Cách sửa ngắn hạn (trong ngày 14/03)
+- Sửa query báo cáo: viết {{WHERE status = :status}} với tham số đã chuẩn hóa ở ứng dụng (Java: {{status.toLowerCase()}} trước khi bind), dùng khoảng thời gian nửa mở trên cột thô, luôn bind parameter, chốt múi giờ nghiệp vụ một lần ở tầng ứng dụng.
+- Sửa câu tra cứu mã đơn: truyền tham số dạng String ({{String.valueOf(orderCode)}}) để so sánh thẳng với cột {{varchar}} — hoặc nếu giữ Long thì ép kiểu ở **vế tham số**: {{WHERE order_code = CAST(:ref AS varchar)}}; index được dùng lại ngay.
+- Dừng bão hoà: tắt tạm endpoint báo cáo, đặt rate-limit hoặc cache 5 phút; đặt {{statement_timeout}} cho role báo cáo (ví dụ 30 giây) để câu bị bỏ rơi không chạy tiếp trên DB.
+- Dọn query đang chạy: dùng {{pg_cancel_backend}} cho các pid đang quét bảng.
+
+### Cách sửa dài hạn
+- **Chuẩn hóa kiểu dữ liệu:** đổi {{order_code}} sang {{bigint}} (chỉ chứa chữ số) và code truyền Long. Với bảng 50 triệu dòng phải theo mô hình expand/contract: thêm cột mới, backfill theo lô, dual-write, đổi index rồi mới drop cột tuyệt đối không {{ALTER TABLE ... TYPE}} trực tiếp.
+- **Index phù hợp:** {{idx_orders_status_created}} đã đúng cho truy vấn theo status + created_at; chỉ cần query viết đúng. Nếu cần tìm không phân biệt hoa thường mà không thể sửa query: tạo **expression index** {{CREATE INDEX idx_orders_lower_status_created ON orders (lower(status), created_at)}} — {{lower()}} là IMMUTABLE với collation C (default PostgreSQL), có thể dùng; sau đó {{ANALYZE orders}}.
+- **Keyset pagination:** thay vì {{OFFSET}} (phải đọc rồi vứt các dòng bị skip), dùng {{WHERE (created_at, id) < (:lastCreatedAt, :lastId) ORDER BY created_at DESC, id DESC LIMIT 50}} — chỉ đọc đúng 50 dòng mỗi trang, dù ở trang sâu.
+
+### Phòng ngừa và monitoring
+- Bật {{pg_stat_statements}} và dashboard theo dõi {{total_exec_time}} theo queryid; cảnh báo khi {{mean_exec_time}} > 1 giây hoặc {{calls}} tăng đột biến.
+- Bật {{auto_explain}} với {{auto_explain.log_min_duration = 500}} để log lại plan của câu chậm; cảnh báo khi plan đổi từ "Index Scan" sang "Seq Scan" trên bảng lớn.
+- Theo dõi chỉ số **rows examined / rows returned** (PostgreSQL: {{Rows Removed by Filter}}); đây là KPI phát hiện "query quét cả bảng nhưng trả về vài chục dòng".
+- Theo dõi {{pg_stat_user_indexes.idx_scan = 0}} — index không được dùng là tín hiệu truy vấn đã đi lệch khỏi khuôn mẫu.
+- Quy tắc review bắt buộc: trong {{WHERE}} không bọc hàm/cast lên cột; mọi query report phải kèm {{EXPLAIN (ANALYZE, BUFFERS)}} trong PR; thêm bài test hiệu năng với dữ liệu tỉ lệ production trong CI.
+
+> Senior tip: dấu hiệu "query nhanh trên staging, chậm trên production" gần như luôn là **sai lệch tuyến tính theo số dòng**, tức plan đã đổi từ Index Scan sang Seq Scan. Ở đây index đã có sẵn và hoạt động tốt (31 ms) — vấn đề hoàn toàn nằm ở cách viết điều kiện. Nếu đo bằng {{EXPLAIN}} trên dữ liệu thật (không dùng {{LIMIT 100}} để "giả" plan), sẽ thấy ngay chỗ xấu. Kinh nghiệm ăn vào: đừng bao giờ để một dashboard quét bảng giao dịch gốc — tách bảng tổng hợp ra ngay từ đầu, chi phí nhỏ hơn nhiều so với cứu hỏa dữ liệu.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân gốc: điều kiện WHERE bọc hàm lower(status) hoặc cast order_code::bigint quanh cột làm mất khả năng dùng index (non-sargable), PostgreSQL chuyển sang Seq Scan toàn bảng 50,3 triệu dòng',
+    'Dẫn chứng đúng các dòng số liệu trong artifact: Seq Scan + lower(status) trong Filter + Rows Removed by Filter 50.308.670 + Execution Time 40122 ms, và so sánh với câu dùng Index Scan 31 ms',
+    'Giải thích đúng vì sao câu order_code bị mất index (cast đặt ở vế cột, index build trên order_code varchar) và vì sao đây là hậu quả của câu lỗi operator does not exist',
+    'Đề xuất sửa đúng: điều kiện cột trần + tham số đã chuẩn hóa, bỏ cast ở vế cột / chuẩn hóa kiểu dữ liệu order_code, expression index lower(status) + ANALYZE, keyset pagination',
+    'Có chiến lược dài hạn và monitoring cụ thể: bảng tổng hợp cho báo cáo, pg_stat_statements + auto_explain + alert theo rows examined, quy tắc review EXPLAIN trong PR',
+  ],
+  tags: ['postgresql', 'explain', 'index', 'sargable', 'seq-scan', 'lower', 'implicit-cast'],
+},
+{
+  id: 'lab-sql-024',
+  category: 'sql',
+  title: 'Tìm kiếm tên sản phẩm dùng LIKE %abc% quét 12,4 triệu dòng: pg_trgm và cách làm việc với full-text search',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sách trực tuyến **BookHub** chạy {{catalog-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{books}} lưu danh mục sách của 3.000 nhà xuất bản: sau 6 năm đã có **12.418.550 dòng** (~5,2 GB heap + 2,8 GB index). Mỗi phút có khoảng 8.000 lần tìm kiếm qua endpoint {{GET /api/v1/books/search?q=java}}; ứng dụng chạy câu:
+  ~~~sql
+  SELECT id, title, price, author FROM books
+  WHERE title ILIKE '%java%' OR description ILIKE '%java%'
+  ORDER BY published_at DESC LIMIT 40;
+  ~~~
+  Index hiện có: {{idx_books_title}} btree trên {{title}}, {{idx_books_published}} btree trên {{published_at}}.
+
+  **Triệu chứng (14/03/2026, 10:15).** p95 của endpoint search nhảy từ 340 ms lên **8,2 giây**, CPU RDS từ 20% lên 91%. DBA chạy EXPLAIN ANALYZE trên production và thấy **Seq Scan toàn bảng 12,4 triệu dòng** dù {{idx_books_title}} đã tồn tại. Một dev đề xuất "tạo thêm index trên description" — không ăn.
+
+  **Việc bạn có.** Ba artifact: EXPLAIN ANALYZE của câu tìm kiếm, schema + danh sách index, và log ứng dụng. Hãy chỉ ra vì sao index không được dùng và cách sửa đúng (pg_trgm GIN/GiST, tsvector, hoặc làm sạch dữ liệu).`,
+  artifacts: [
+    {
+      name: 'explain-book-search.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 10:16:02 +07, psql trên RDS bookhub-primary (PostgreSQL 15.6)
+      bookhub=# EXPLAIN (ANALYZE, BUFFERS)
+      SELECT id, title, price, author FROM books
+      WHERE title ILIKE '%java%' OR description ILIKE '%java%'
+      ORDER BY published_at DESC LIMIT 40;
+                                                                                      QUERY PLAN
+      --------------------------------------------------------------------------------------------------------------------------------------------------------
+       Limit  (cost=0.00..2841521.44 rows=40 width=64) (actual time=0.021..8231.444 rows=40 loops=1)
+         ->  Seq Scan on books  (cost=0.00..2839895.61 rows=12418550 width=64) (actual time=0.019..8228.902 rows=12418550 loops=1)
+               Filter: ((title ILIKE '%java%'::text) OR (description ILIKE '%java%'::text))
+               Rows Removed by Filter: 12418510
+               Buffers: shared hit=1582040 read=120440
+         Planning Time: 0.312 ms
+         Execution Time: 8232.104 ms
+      (7 rows)
+      
+      Time: 8232.520 ms
+      
+      -- So sánh: cùng câu, sau khi tạo pg_trgm index:
+      bookhub=# EXPLAIN (ANALYZE, BUFFERS)
+      SELECT id, title, price, author FROM books
+      WHERE title ILIKE '%java%' OR description ILIKE '%java%'
+      ORDER BY published_at DESC LIMIT 40;
+                                                                                      QUERY PLAN
+      --------------------------------------------------------------------------------------------------------------------------------------------------------
+       Limit  (cost=28.45..312.44 rows=40 width=64) (actual time=0.041..78.912 rows=40 loops=1)
+         ->  Bitmap Heap Scan on books  (cost=28.45..312.44 rows=40 width=64) (actual time=0.039..78.812 rows=40 loops=1)
+               Recheck Cond: ((title ILIKE '%java%'::text) OR (description ILIKE '%java%'::text))
+               Buffers: shared hit=184 read=12
+               ->  BitmapOr  (cost=28.45..312.44 rows=40 width=0) (actual time=0.021..0.041 rows=40 loops=1)
+                     ->  Bitmap Index Scan on idx_books_trgm  (cost=28.45..312.44 rows=40 width=0) (actual time=0.019..0.039 rows=40 loops=1)
+                           Index Cond: (title ILIKE '%java%'::text)
+                     ->  Bitmap Index Scan on idx_books_trgm  (cost=28.45..312.44 rows=40 width=0) (actual time=0.019..0.039 rows=40 loops=1)
+                           Index Cond: (description ILIKE '%java%'::text)
+         Planning Time: 0.412 ms
+         Execution Time: 79.204 ms
+      (9 rows)
+      
+      Time: 79.620 ms`,
+    },
+    {
+      name: 'schema-and-index.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 10:17:05 +07
+      bookhub=# \\d books
+                                         Table "public.books"
+       Column       |           Type           | Collation | Nullable |      Default      
+      --------------+--------------------------+-----------+----------+-------------------
+       id           | bigint                   |           | not null |                    
+       title        | character varying(256)   |           | not null |                    
+       author       | character varying(128)   |           | not null |                    
+       description | text                     |           |          |                    
+       price        | numeric(10,2)           |           | not null |                    
+       published_at | timestamp with time zone |           | not null | now()             
+      Indexes:
+         "idx_books_title" btree (title)
+         "idx_books_published" btree (published_at DESC)
+         "books_pkey" PRIMARY KEY, btree (id)
+      
+      -- Danh sách index:
+      bookhub=# SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'books';
+            indexname          |                                   indexdef
+      -------------------------+----------------------------------------------------------------
+       idx_books_title         | CREATE INDEX idx_books_title ON public.books USING btree (title)
+       idx_books_published     | CREATE INDEX idx_books_published ON public.books USING btree (published_at DESC)
+       books_pkey              | CREATE UNIQUE INDEX books_pkey ON public.books USING btree (id)
+      
+      -- Kích thước bảng:
+      bookhub=# SELECT reltuples::bigint AS est_rows,
+                     pg_size_pretty(pg_relation_size('books')) AS heap,
+                     pg_size_pretty(pg_total_index_size('books')) AS idx
+      FROM pg_class WHERE relname = 'books';
+         est_rows | heap    | idx
+      -----------+---------+--------
+      12418550  | 5182 MB | 2784 MB`,
+    },
+    {
+      name: 'app-search-slow.log',
+      lang: 'text',
+      content: `2026-03-14 10:16:10.101 DEBUG [http-nio-8080-exec-22] o.h.SQL : select b1_0.id,b1_0.title,b1_0.price,b1_0.author from books b1_0 where b1_0.title ILIKE ? or b1_0.description ILIKE ? order by b1_0.published_at desc limit ?
+2026-03-14 10:16:18.333 INFO  [http-nio-8080-exec-22] c.b.book.BookController : GET /api/v1/books/search?q=java -> 200 in 8234 ms
+2026-03-14 10:16:19.440 DEBUG [http-nio-8080-exec-5] o.h.SQL : select b1_0.id,b1_0.title,b1_0.price,b1_0.author from books b1_0 where b1_0.title ILIKE ? or b1_0.description ILIKE ? order by b1_0.published_at desc limit ?
+2026-03-14 10:16:27.681 INFO  [http-nio-8080-exec-5] c.b.book.BookController : GET /api/v1/books/search?q=java -> 200 in 8241 ms
+-- pattern: mỗi request tìm kiếm mất khoảng 8,2 giây, không có request nào dưới 1 giây`,
+    },
+  ],
+  questions: [
+    'Vì sao index idx_books_title (đã tồn tại) không được dùng cho câu WHERE title ILIKE %java%? Chỉ ra bằng dòng trong EXPLAIN.',
+    'So sánh với câu dùng pg_trgm (79 ms): đây là minh chứng gì cho nguyên tắc "sargable" và giới hạn của btree index với tìm kiếm tiền tố ẩn?',
+    'Bạn sửa câu query và index thế nào để search về dưới 100 ms? Khi nào nên dùng pg_trgm (GIN/GiST), khi nào dùng tsvector (full-text search), và cần lưu ý gì về kích thước index và hiệu năng ghi?'],
+  hints: [
+    'Đọc dòng "Filter: ((title ILIKE %java%) OR (description ILIKE %java%))" trong EXPLAIN: ILIKE với tiền tố ẩn (%) ở đầu là "non-sargable" — btree chỉ hỗ trợ tiền tố cố định (LIKE abc%), không hỗ trợ %abc% hay ILIKE.',
+    'Index chỉ được dùng khi điều kiện là cột so sánh với hằng số. Với LIKE %abc%, planner không thể dùng btree vì không biết đoạn abc nằm ở vị trí nào trong giá trị.',
+    'pg_trgm: CREATE EXTENSION pg_trgm; CREATE INDEX ... USING gin (title gin_trgm_ops). GIN index lưu các tam ký (trigram) của từng từ, hỗ trợ ILIKE/LIKE cả hai phía. Tsvector dùng cho tìm kiếm từ khóa chính thống (tách từ, ranking).',
+  ],
+  answer: `**Tóm tắt:** Câu tìm kiếm viết {{WHERE title ILIKE '%java%' OR description ILIKE '%java%'}} — **tiền tố ẩn (%) ở đầu** — làm mất khả năng dùng index btree: planner không thể dùng {{idx_books_title}} (btree trên title) vì btree chỉ hỗ trợ tiền tố cố định (LIKE abc%), không hỗ trợ {{%abc%}} hay ILIKE → chọn **Seq Scan toàn bảng 12.418.550 dòng** (8,2 giây). Sửa: tạo **pg_trgm GIN index** {{CREATE INDEX idx_books_trgm ON books USING gin (title gin_trgm_ops, description gin_trgm_ops)}} — index này lưu các tam ký (trigram) của từng giá trị, hỗ trợ ILIKE/LIKE cả hai phía → Bitmap Index Scan, **79 ms** (khoảng 100 lần nhanh hơn). Với tìm kiếm từ khóa chính thống, dùng tsvector + GIN.
+
+### Kiến thức nền: sargable và giới hạn của btree
+Nguyên tắc **sargable** (SARG = Search ARGment): index chỉ được dùng khi điều kiện WHERE có dạng **cột_so_sánh_toán_tử_hằng_số**, tức vế trái là cột thuần, vế phải là hằng số hoặc tham số đã bind.
+
+| Viết | Có dùng btree không? | Vì sao |
+|---|---|---|
+| {{WHERE title = 'Java'}} | Có | cột_so_sánh_hằng_số |
+| {{WHERE title LIKE 'Java%'}} | Có | tiền tố cố định — btree có thể "nhảy" tới phần bắt đầu bằng Java |
+| {{WHERE title ILIKE '%java%'}} | Không | tiền tố ẩn — không biết java nằm ở vị trí nào, phải quét toàn bộ |
+| {{WHERE title LIKE '%java'}} | Không | tiền tố ẩn, tương tự |
+
+Btree lưu các giá trị theo thứ tự bảng chữ cái; nó chỉ có thể narrow lại khi điều kiện xác định **đầu** hoặc **đầu + cuối** giá trị (LIKE abc%, hoặc = abc). Tiền tố ẩn (%) ở đầu làm mất khả năng narrow → Seq Scan.
+
+### Nguyên gốc, từng bước
+1. Query search: {{WHERE title ILIKE '%java%' OR description ILIKE '%java%' ORDER BY published_at DESC LIMIT 40}}. Cả hai điều kiện đều là ILIKE với tiền tố ẩn.
+2. Planner không dùng {{idx_books_title}} (btree trên title) vì ILIKE '%java%' không sargable; cũng không dùng {{idx_books_published}} vì điều kiện không liên quan.
+3. Planner không có index nào hỗ trợ ILIKE hai phía → Seq Scan đọc toàn bộ 12.418.550 dòng, lọc bỏ 12.418.510, giữ 40 dòng: {{Rows Removed by Filter: 12418510}}, {{Buffers: shared hit=1582040 read=120440}} (~1,7 GB page), {{Execution Time: 8232.104 ms}}.
+4. Sau khi tạo pg_trgm GIN: planner dùng Bitmap Index Scan trên {{idx_books_trgm}}, chỉ đọc {{Buffers: shared hit=184 read=12}} (196 page), {{Execution Time: 79.204 ms}}.
+
+### Dẫn chứng
+- Artifact 1: {{Seq Scan on books ... Filter: ((title ILIKE '%java%'::text) OR (description ILIKE '%java%'::text))}}, {{Rows Removed by Filter: 12418510}}, {{Execution Time: 8232.104 ms}}. Câu thứ hai {{Bitmap Index Scan on idx_books_trgm ... Execution Time: 79.204 ms}} — cùng câu, chỉ khác index.
+- Artifact 2: {{idx_books_title}} btree trên {{title}} — không hỗ trợ ILIKE hai phía.
+- Artifact 3: log ứng dụng mỗi request search mất ~8,2 giây.
+
+### Cách sửa
+**Ngắn hạn (hôm nay):**
+- Tạo pg_trgm index (cần {{CREATE EXTENSION pg_trgm}} trước):
+~~~sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX CONCURRENTLY idx_books_trgm ON books USING gin (title gin_trgm_ops, description gin_trgm_ops);
+ANALYZE books;
+~~~
+- Câu query giữ nguyên {{ILIKE '%java%'}} — planner tự động dùng index này. Kết quả: từ 8,2 giây xuống ~80 ms.
+
+**Dài hạn:**
+- Nếu tìm kiếm là **từ khóa chính thống** (không cần tìm một phần từ): dùng **tsvector** + GIN:
+~~~sql
+ALTER TABLE books ADD COLUMN search_vector tsvector
+  GENERATED ALWAYS AS (to_tsvector('simple', coalesce(title,'') || ' ' || coalesce(description,''))) STORED;
+CREATE INDEX idx_books_search ON books USING gin (search_vector);
+-- Query: WHERE search_vector @@ to_tsquery('java')
+~~~
+- Chuẩn hóa dữ liệu: lưu {{title_lower}} (lower(title)) và dùng LIKE với tiền tố cố định khi tìm chính xác; hoặc lưu từ đã tách (token) trong một cột riêng.
+- Nếu chỉ cần tìm theo tiền tố người dùng gõ ( autocomplete ): dùng LIKE 'java%' với btree (sargable) — nhưng chỉ khi tiền tố là hằng số từ client.
+
+### pg_trgm vs tsvector — khi nào dùng cái nào
+| Tiêu chí | pg_trgm (GIN/GiST) | tsvector (GIN) |
+|---|---|---|
+| Hỗ trợ | ILIKE/LIKE cả hai phía, =(phân biệt hoa) | @@ to_tsquery (từ khóa, AND/OR, NOT, ranking) |
+| Chi phí index | Lớn (~3-4 lần cột varchar) | Vừa (~1-2 lần cột text) |
+| Tốc độ truy vấn | Nhanh (~80 ms) | Rất nhanh (~10-30 ms) |
+| Chi phí ghi | Cao (cập nhật trigram cho mỗi ghi) | Vừa |
+| Phù hợp | Tìm một phần từ, misspelling, search "đề xuất" | Tìm kiếm nội dung bài viết, sản phẩm theo từ khóa |
+
+### Lưu ý khi dùng pg_trgm
+- Kích thước index: với cột {{title}} varchar(256), index GIN có thể ~1-2 GB với 12,4 triệu dòng — cần đo trên staging trước khi áp dụng production.
+- Ghi nặng: mỗi INSERT/UPDATE phải tính lại trigram → với bảng nhận 2.500 dòng/giây, chi phí ghi tăng; nếu bảng **append-only** (chỉ INSERT) thì không vấn đề.
+- GIN không hỗ trợ ORDER BY trực tiếp: planner dùng Bitmap Index Scan + Bitmap Heap Scan rồi sort; với LIMIT 40 thì sort chỉ trên 40 dòng → không đáng kể.
+- Dùng {{CREATE INDEX CONCURRENTLY}} để không chắn ghi; sau đó {{ANALYZE}}.
+- Không dùng GiST nếu không cần ranking (GiST hỗ trợ ranking nhưng chậm hơn GIN).
+
+### Lỗi hay gặp
+- "Tạo index trên title rồi mà vẫn Seq Scan": vì btree không hỗ trợ {{%abc%}} — cần pg_trgm.
+- Quên {{CREATE EXTENSION pg_trgm}}: lỗi "operator class gin_trgm_ops does not exist".
+- Tạo GIN trên bảng nóng mà không CONCURRENTLY: bị AccessExclusiveLock, chờ ghi.
+
+### Trả lời miệng 1 phút
+"Tìm kiếm dùng ILIKE '%java%' — tiền tố ẩn làm mất index btree, planner chọn Seq Scan 12,4 triệu dòng, 8,2 giây. Btree chỉ hỗ trợ tiền tố cố định (LIKE abc%), không hỗ trợ %abc%. Sửa: tạo pg_trgm GIN index CREATE INDEX ... USING gin (title gin_trgm_ops, description gin_trgm_ops) kèm CREATE EXTENSION pg_trgm và ANALYZE → Bitmap Index Scan, 79 ms. Nếu tìm kiếm từ khóa chính thống, dùng tsvector + GIN. Lưu ý: pg_trgm index lớn (~1-2 GB), ghi nặng, dùng CONCURRENTLY khi tạo."
+
+> Senior tip: **Btree không bao giờ hỗ trợ tìm kiếm tiền tố ẩn (%abc%)**. Khi cần tìm một phần từ trong một cột văn bản, pg_trgm là giải pháp chuẩn của PostgreSQL; còn nếu cần tìm kiếm nội dung theo từ khóa (phân biệt từ, ranking, synonym), mới dùng tsvector. Luôn đo kích thước index trên staging trước khi tạo trên bảng 12 triệu dòng, và dùng CREATE INDEX CONCURRENTLY để không chắn ghi.`,
+  rubric: [
+    'Chính xác nguyên nhân: ILIKE/LIKE với tiền tố ẩn (%) ở đầu không sargable với btree → Seq Scan 12,4 triệu dòng',
+    'D dẫn chứng đúng: Seq Scan + Filter ILIKE %java% + Rows Removed 12.418.510 + Execution Time 8232 ms, so sánh với Bitmap Index Scan 79 ms',
+    'Giải thích đúng nguyên tắc sargable và giới hạn của btree (tiền tố cố định vs tiền tố ẩn)',
+    'Đề xuất sửa đúng: pg_trgm GIN index (CREATE EXTENSION + CREATE INDEX CONCURRENTLY + ANALYZE), so sánh với tsvector cho tìm kiếm từ khóa',
+    'Nêu lưu ý: kích thước index, chi phí ghi, không hỗ trợ ORDER BY trực tiếp, dùng CONCURRENTLY',
+  ],
+  tags: ['postgresql', 'index', 'pg_trgm', 'ilike', 'full-text-search', 'gin', 'sargable'],
+},
 );
