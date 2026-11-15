@@ -6276,13 +6276,13 @@ related: ['core-021', 'banking-036'],
   2. Sửa để: (a) lưu {{Idempotency-Key}} (là {{requestId}}) với **ràng buộc duy nhất (unique constraint)** ở DB; (b) nếu key đã xử lý xong thì trả lại kết quả cũ; (c) nếu key đang được xử lý bởi request khác thì chờ request đó xong và trả kết quả đó (single-flight). Test dùng rào chặn để ép hai request cùng key chạy song song.`,
   artifacts: [
     { name: 'transfer-service.log', lang: 'text', content: `2026-11-20 09:12:44.118 INFO  [http-nio-8080-exec-17] TransferController : execute requestId=req-7f3a from=W-1001 to=W-2002 amount=500000
-2026-11-20 09:12:44.920 INFO  [http-nio-8080-exec-23] TransferController : execute requestId=req-7f3a from=W-1001 to=W-2002 amount=500000   <- client retry (timeout 30s)
+2026-11-20 09:13:18.118 INFO  [http-nio-8080-exec-23] TransferController : execute requestId=req-7f3a from=W-1001 to=W-2002 amount=500000   <- client retry (timeout 30s, cách request đầu 34s)
 2026-11-20 09:12:44.355 INFO  [http-nio-8080-exec-17] TransferService    : debit from=W-1001 amount=500000 ok
 2026-11-20 09:12:44.358 INFO  [http-nio-8080-exec-17] TransferService    : credit to=W-2002 amount=500000 ok
 2026-11-20 09:12:44.362 INFO  [http-nio-8080-exec-17] TransferService    : ledger write TR-77120 SUCCESS
-2026-11-20 09:12:45.180 INFO  [http-nio-8080-exec-23] TransferService    : debit from=W-1001 amount=500000 ok
-2026-11-20 09:11:45.183 INFO  [http-nio-8080-exec-23] TransferService    : credit to=W-2002 amount=500000 ok
-2026-11-20 09:12:45.187 INFO  [http-nio-8080-exec-23] TransferService    : ledger write TR-77121 SUCCESS` },
+2026-11-20 09:13:18.355 INFO  [http-nio-8080-exec-23] TransferService    : debit from=W-1001 amount=500000 ok
+2026-11-20 09:13:18.358 INFO  [http-nio-8080-exec-23] TransferService    : credit to=W-2002 amount=500000 ok
+2026-11-20 09:13:18.362 INFO  [http-nio-8080-exec-23] TransferService    : ledger write TR-77121 SUCCESS` },
     { name: 'reconcile-2026-11-20.txt', lang: 'text', content: `RECONCILIATION 2026-11-20 06:00 ICT
 Duplicate transfers (same requestId)           : 237
 Total over-charged (VND)                       : 890,250,000
@@ -6782,7 +6782,7 @@ Khi được hỏi "viết rate limiter token bucket thế nào cho đúng?", n�
   minutes: 20,
   story: `**Bối cảnh dự án:** Hệ thống ví điện tử có tính năng "chia phí dịch vụ" — tổng phí thu từ khách hàng được chia cho các đối tác (ví dụ Shopee, Lazada, Tiki) để đối soát tiền cho mỗi đối tác mỗi ngày. Tiền là VND (số nguyên đồng, không có phần lẻ), nhưng code tính bằng {{double}} và làm tròn từng phần bằng {{Math.round}}.
 
-**Sự cố:** Đối soát cuối tháng báo tổng các phần **không bằng tổng phí**, lệch vài đồng trên từng hóa đơn. Trên 180.000 lần chia tiền, sai số tích lũy hơn hai triệu đồng. Một số đối tác bị thu ít, một số bị thu nhiều, báo cáo doanh thu của phòng tài chính sai, kế toán phải điều tra thủ công từng hóa đơn.
+**Sự cố:** Đối soát cuối tháng báo tổng các phần **không bằng tổng phí**, lệch từ vài đồng đến 2.000 đồng trên từng hóa đơn (ví dụ: 10.000 chia 4 đối tác lại bị làm tròn lên thành 3.000 × 4 = 12.000). Trên 180.000 lần chia tiền, sai số tích lũy hơn hai triệu đồng. Một số đối tác bị thu ít, một số bị thu nhiều, báo cáo doanh thu của phòng tài chính sai, kế toán phải điều tra thủ công từng hóa đơn.
 
 **Nhiệm vụ của bạn:** Sửa {{RevenueShareService.split}} để **tổng các phần luôn đúng bằng tổng phí**, và các phần chênh nhau **không quá 1 đồng**.`,
   artifacts: [
