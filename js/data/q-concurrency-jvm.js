@@ -382,6 +382,16 @@ CompletableFuture<Detail> d = resp.thenCompose(r -> fetchAsync(r.id));
 
 Quy tắc nhớ: lambda trả về giá trị thường thì dùng thenApply; lambda trả về CompletableFuture thì dùng thenCompose.
 
+Bảng dưới so sánh ba hàm hay bị dùng lẫn nhau: chúng khác nhau ở **kiểu giá trị mà lambda phải trả về**, không phải ở tên hàm.
+
+| Tiêu chí | thenApply | thenCompose | thenCombine |
+|---|---|---|---|
+| Lambda nhận | 1 giá trị | 1 giá trị | 2 giá trị |
+| Lambda phải trả về | giá trị thường | CompletableFuture | giá trị thường |
+| Kết quả | CF của giá trị mới | CF của giá trị mới, không lồng | CF của giá trị gộp, chỉ xong khi cả hai nhánh xong |
+| Dùng khi | bước sau tính tiếp trên kết quả | bước sau lại gọi async (DB, HTTP) | cần hai kết quả độc lập mới tính tiếp |
+| Nếu chọn sai | CF lồng hai lớp, phải join hai lần | lỗi biên dịch ngay | phải chờ nhánh chậm nhất, mất hết lợi ích song song |
+
 ### allOf + gom kết quả
 ~~~java
 CompletableFuture<List<Price>> all = CompletableFuture
@@ -1617,6 +1627,26 @@ if (r != null) System.out.println(r.bps);     // JMM cho phép in ra 0
 ~~~
 - {{new Rate(150)}} gồm: cấp phát (field = 0), chạy constructor (bps = 150), gán reference vào current. Không có happens-before, JIT và CPU được phép làm cho thread B thấy lệnh gán reference trước lệnh ghi bps.
 - Trên x86 hiện tượng này hiếm vì phần cứng gần như không đảo thứ tự các lệnh store, nhưng JIT vẫn có quyền sắp xếp lại. ARM (Graviton, Apple M) thì đảo thật, nên code "chạy ổn trên máy dev" có thể hỏng khi chuyển sang Graviton.
+
+Hình dưới cho thấy cùng một câu lệnh {{current = new Rate(150)}} có hai kết cục: phần trên không có happens-before nên thread đọc thấy reference khác null nhưng field bên trong vẫn là 0; phần dưới volatile tạo quan hệ happens-before nên reader thấy đúng giá trị.
+
+~~~text
+KHÔNG an toàn: current là field thường -> không có happens-before
+ Thread A (ghi)                          Thread B (đọc)
+ 1) new Rate(150): @1.bps = 0
+ 2) @1.bps = 150   --+
+ 3) current = @1    --+--> JIT/CPU cho B thấy (3) trước (2) được
+ 4) r = current ---------> @1 (khác null)
+ 5) in r.bps ----------> 0        <- object "nửa vời"
+
+AN TOÀN: current là volatile -> (2) happens-before (3)
+ Thread A (ghi)                          Thread B (đọc)
+ 1) new Rate(150): @1.bps = 0
+ 2) @1.bps = 150
+ 3) current = @1    ==hb===> B thấy (3) thì chắc chắn đã thấy (2)
+ 4) r = current ---------> @1
+ 5) in r.bps ----------> 150      <- thấy đúng giá trị
+~~~
 
 ### Các cách publish an toàn
 1. Khởi tạo trong static initializer, ví dụ {{static final Rate DEFAULT = new Rate(150);}}: JVM khoá trong lúc khởi tạo class.
@@ -5402,6 +5432,21 @@ So với một lệnh {{if}} cỡ nano giây, tạo exception có stack đắt h
     at com.shop.Report.sum(Report.java:42) ...       <- những lần đầu: đủ stack
 10:07:45 ERROR java.lang.NullPointerException        <- sau khi C2 tối ưu: trống trơn
 ~~~
+Hình dưới tóm tắt vì sao log đổi dạng: chỉ khi cùng một điểm ném lỗi ngầm lặp lại nhiều lần trong code đã compile nóng, C2 mới thay bằng một instance dựng sẵn.
+
+~~~text
+   code đã compile nóng (C2)
+              |
+              v
+   cùng một điểm ném NPE ngầm, lặp lại >= ngưỡng
+              |
+   +----< chưa đạt: tạo NPE + fillInStackTrace
+   |       -> stack 100-200 frame, log có "at ..."   (đắt)
+   |
+   +----< đã đạt: ném 1 instance dựng sẵn, KHÔNG fillInStackTrace
+          -> log chỉ còn "java.lang.NullPointerException" (rẻ)
+~~~
+
 Chỉ áp dụng cho exception JVM ném ngầm. {{throw new IllegalArgumentException(...)}} do bạn viết thì không bị cắt.
 
 ### Xử lý khi gặp
@@ -5467,6 +5512,19 @@ Một service tổng hợp đơn hàng (Java 17, Spring Boot) bắt đầu ghi l
 | Đo A rồi B trong cùng JVM | Profile của A ảnh hưởng cách compile B (call site đa hình, trạng thái GC) | Đảo thứ tự là đảo kết quả |
 
 Ví dụ thật: "B nhanh gấp 10 lần" vì B tính xong không trả kết quả ra ngoài, C2 xoá gần hết thân method.
+
+Hình dưới cho thấy một trong năm cái bẫy: khi kết quả không ai dùng, C2 xoá gần hết thân vòng lặp, nên vòng for tự viết đo được "0,9 ns/op" — nhanh ảo.
+
+~~~text
+for (i = 0; i < n; i++) { sum += f(i); } // sum là local, không ai đọc
+                  |
+                  v   C2 thấy kết quả vô dụng
+for (i = 0; i < n; i++) { }            // thân vòng lặp bị xoá (DCE)
+                  |
+                  v
+nanoTime: 0.9 ns/op  ->  "B nhanh gấp 10 lần" (ảo)
+JMH (trả kết quả, warm-up, fork): chênh 15-25%, sai số chồng nhau
+~~~
 
 ### Viết lại bằng JMH
 ~~~java
@@ -5767,6 +5825,18 @@ Caffeine với {{refreshAfterWrite}} trả giá trị cũ trong lúc tải giá 
 
 ### Vì sao lock làm "chậm mà không tốn CPU"
 Lock chỉ cho một thread vào vùng găng. Vùng găng mất 2 ms thì dù có 200 thread, lock đó phục vụ tối đa 500 lượt mỗi giây. Các thread còn lại không chạy mà xếp hàng, nên CPU thấp. Theo định luật Little, thời gian chờ bằng độ dài hàng đợi chia tốc độ phục vụ: càng nhiều request đang chờ, latency càng tăng tuyến tính.
+
+Hình dưới cho thấy vì sao thêm thread không làm tăng thông lượng: chỉ một thread vào được vùng găng, các thread còn lại xếp hàng nên CPU vẫn rảnh.
+
+~~~text
+Giả sử vùng găng giữ lock 2 ms, 200 thread cùng gọi:
+ lock     : [== 2 ms ==][== 2 ms ==][== 2 ms ==][== 2 ms ==] ...
+ Thread-1 :  chạy 2 ms -> chờ HTTP 1500 ms (vẫn giữ lock) -> 2 ms
+ Thread-2..200 : [BLOCKED]---[BLOCKED]---[BLOCKED] ... xếp một hàng
+ CPU      : #####...................  chỉ 1 thread chạy, còn lại chờ
+ Thông lượng = 1 / 0.002 s = 500 req/s, dù có 200 thread
+ Thêm thread -> hàng chờ dài hơn (định luật Little), CPU không tăng
+~~~
 
 ### Thu thập bằng chứng
 ~~~text
