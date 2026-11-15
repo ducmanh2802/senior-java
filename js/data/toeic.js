@@ -2640,4 +2640,208 @@ Thomas Nguyen`,
   sample: "This picture shows a guided tour at a historic temple site. A female tour guide is holding a small flag and a microphone, explaining the history to a group of twelve tourists. The visitors are of various ages, and some are taking photos with cameras and smartphones. The temple is an ancient stone structure with carved pillars and a tiled roof. A large old tree provides shade in the front courtyard. It is a sunny day, and tree shadows fall on the stone pavement.",
   tips: ["Guided tour là tour có hướng dẫn viên; tour guide cầm flag (cờ) và microphone để nhóm dễ nhận ra.", "Historic temple cho di tích đền cổ; carved pillars cho cột trụ khắc nổi; tiled roof cho mái ngói; front courtyard cho tiền sảnh; stone pavement cho nền đá."]
 },
+{
+  id: "toeic-w1-031",
+  part: "w1",
+  scene: `Trong văn phòng mở hiện đại, một nhân viên mới đang ngồi nghe hướng dẫn onboarding từ quản lý. Trên màn hình máy tính hiển thị tài liệu chính sách công ty, và nhân viên đang ghi chép vào sổ tay.`,
+  words: [
+    "take",
+    "notes"
+  ],
+  sample: "A new employee is taking notes during the onboarding session.",
+  tips: [
+    "Take notes (ghi chép) là cụm cố định; ở đây dùng is taking notes vì hành động đang xảy ra.",
+    "During the onboarding session (trong buổi onboarding) chỉ khung thời gian; onboarding là quá trình hòa nhập nhân viên mới."
+  ],
+  tags: [
+    "workplace"
+  ]
+},
+{
+  id: "toeic-w1-032",
+  part: "w1",
+  scene: `Tại quầy hỗ trợ IT, một kỹ sư đang cầm tay cầm điện thoại và nhập thông tin vào hệ thống ticket. Màn hình hiển thị biểu mẫu lỗi phần mềm, và nhân viên văn phòng đứng cạnh đang chờ trợ giúp.`,
+  words: [
+    "fix",
+    "issue"
+  ],
+  sample: "The IT specialist is fixing the software issue for the office worker.",
+  tips: [
+    "Fix an issue (khắc phục sự cố) là cụm thường dùng trong IT; dùng is fixing cho hành động đang thực hiện.",
+    "Software issue (lỗi phần mềm) tự nhiên hơn software problem trong bối cảnh helpdesk."
+  ],
+  tags: [
+    "workplace"
+  ]
+},
+{
+  id: "toeic-w1-033",
+  part: "w1",
+  scene: `Một nhóm nhân viên đang tham gia cuộc họp trực tuyến hybrid: một số ngồi trong phòng họp, một số xuất hiện trên màn hình lớn qua video call. Người chủ trì đang chỉ vào biểu đồ trên màn hình chia sẻ.`,
+  words: [
+    "join",
+    "meeting"
+  ],
+  sample: "Several remote employees are joining the meeting via video conference.",
+  tips: [
+    "Join a meeting (tham gia cuộc họp) — dùng are joining vì nhiều người đang vào cuộc họp.",
+    "Via video conference (qua hội nghị video) chỉ phương tiện; hybrid meeting là họp kết hợp trực tiếp và trực tuyến."
+  ],
+  tags: [
+    "workplace"
+  ]
+},
+{
+  id: "toeic-w1-034",
+  part: "w1",
+  scene: `Một nhân viên đang điền báo cáo chi phí công tác trên máy tính tại quán cà phê. Màn hình hiển thị bảng tính có các mục: vé máy bay, khách sạn, ăn uống, taxi. Anh ấy đang gắn hóa đơn điện tử vào hệ thống.`,
+  words: [
+    "submit",
+    "expense"
+  ],
+  sample: "The business traveler is submitting his travel expenses with digital receipts.",
+  tips: [
+    "Submit an expense (nộp chi phí) — is submitting cho hành động đang làm; expense thường dùng số nhiều expenses khi nói chung.",
+    "Digital receipts (hóa đơn điện tử) phổ biến trong quy trình báo chi phí hiện nay; travel expenses là chi phí đi công tác."
+  ],
+  tags: [
+    "workplace"
+  ]
+},
+{
+  id: "toeic-w1-035",
+  part: "w1",
+  scene: `Tại ngân hàng, một khách hàng đang ngồi đối diện viên tư vấn, ký tên trên bản hợp đồng vay mua nhà. Trên bàn có máy tính, thiết bị quét vân tay và tệp hồ sơ vay.`,
+  words: [
+    "sign",
+    "contract"
+  ],
+  sample: "The customer is signing the mortgage contract with the loan officer.",
+  tips: [
+    "Sign a contract (ký hợp đồng) — is signing cho hành động diễn ra; mortgage contract là hợp đồng vay thế chấp (mua nhà).",
+    "Loan officer (viên tín dụng) là nhân viên ngân hàng phụ trách hồ sơ vay; with chỉ người cùng thực hiện."
+  ],
+  tags: [
+    "services"
+  ]
+},
+{
+  id: "toeic-w1-036",
+  part: "w1",
+  scene: `Trong phòng khám bệnh viện, một bác sĩ đang nghe tim cho bệnh nhân nhi khoa bằng ống nghe. Mẹ ngồi cạnh an ủi con, và trên bàn khám có sổ bệnh án cùng thiết bị đo huyết áp.`,
+  words: [
+    "check",
+    "heart"
+  ],
+  sample: "The pediatrician is checking the child's heart with a stethoscope.",
+  tips: [
+    "Check the heart (khám tim) — is checking; stethoscope (ống nghe) là dụng cụ bắt buộc khi khám tim.",
+    "Pediatrician (bác sĩ nhi khoa) chuyên khám cho trẻ em; child's heart dùng tính từ sở hữu cho cơ quan của trẻ."
+  ],
+  tags: [
+    "services"
+  ]
+},
+{
+  id: "toeic-w1-037",
+  part: "w1",
+  scene: `Một thợ sửa chữa đang thay lốp xe cho khách tại gara. Xe được nâng lên bằng cريك thủy lực, thợ đang vặn bu lông bằngレンチ khô. Bên cạnh có lốp mới đã sẵn sàng lắp.`,
+  words: [
+    "replace",
+    "tire"
+  ],
+  sample: "The mechanic is replacing a flat tire with a new one at the garage.",
+  tips: [
+    "Replace A with B (thay A bằng B) — is replacing; flat tire là lốp bị xịt, new one thay thế cho tire để tránh lặp từ.",
+    "At the garage (tại gara) chỉ địa điểm; mechanic (thợ sửa xe) là người làm việc này."
+  ],
+  tags: [
+    "services"
+  ]
+},
+{
+  id: "toeic-w1-038",
+  part: "w1",
+  scene: `Một nhân viên giao hàng mặc đồng phục đang bật hộp đồ điện tử trước cửa căn hộ. Khách hàng đang kiểm tra sản phẩm và ký xác nhận trên thiết bị cầm tay của shipper.`,
+  words: [
+    "deliver",
+    "package"
+  ],
+  sample: "The courier is delivering the package and asking for a signature.",
+  tips: [
+    "Deliver a package (giao hàng) — is delivering; courier (nhân viên giao hàng) chuyên nghiệp hơn delivery man.",
+    "Ask for a signature (yêu cầu chữ ký) là bước xác nhận đã nhận hàng; package (bưu kiện) dùng cho cả hộp lớn và nhỏ."
+  ],
+  tags: [
+    "services"
+  ]
+},
+{
+  id: "toeic-w1-039",
+  part: "w1",
+  scene: `Trong căn hộ chung cư, một người đang lau cửa sổ bằng khăn và bình xịt. Bàn chải lau kính đặt trên thảm, và qua cửa sổ nhìn thấy tòa nhà lân cận và cây xanh.`,
+  words: [
+    "clean",
+    "window"
+  ],
+  sample: "The resident is cleaning the apartment windows with a spray bottle.",
+  tips: [
+    "Clean the window (lau cửa sổ) — is cleaning; apartment windows (cửa sổ chung cư) thường dùng số nhiều vì một căn có nhiều cửa.",
+    "With a spray bottle (với bình xịt) chỉ dụng cụ; resident (cư dân) là người ở trong căn hộ."
+  ],
+  tags: [
+    "daily life"
+  ]
+},
+{
+  id: "toeic-w1-040",
+  part: "w1",
+  scene: `Tại công viên thành phố, một nhóm người đang tập thể dục buổi sáng. Một người đang chạy bộ trên đường đi, hai người làm căng cơ ở bãi cỏ, và một huấn luyện viên đang hướng dẫn động tác yoga.`,
+  words: [
+    "exercise",
+    "park"
+  ],
+  sample: "Several people are exercising in the city park early in the morning.",
+  tips: [
+    "Exercise (tập thể dục) là động từ không tách; are exercising cho nhiều người đang tập; in the park chỉ địa điểm.",
+    "Early in the morning (sáng sớm) là khung giờ phổ biến cho tập thể dục; city park (công viên thành phố) phân biệt với national park."
+  ],
+  tags: [
+    "daily life"
+  ]
+},
+{
+  id: "toeic-w1-041",
+  part: "w1",
+  scene: `Một du khách đang nhận chìa khóa phòng từ lễ tân tại quầy check-in khách sạn. Hành lý được đặt cạnh bàn, và trên màn hình hiển thị số phòng 502 cùng thông tin khách sạn.`,
+  words: [
+    "check",
+    "in"
+  ],
+  sample: "The guest is checking in at the hotel reception desk.",
+  tips: [
+    "Check in (nhận phòng) là động từ frasal; is checking in — tách in ra sau chủ ngữ khi chia thì tiếp diễn.",
+    "At the hotel reception desk (tại quầy lễ tân khách sạn) chỉ địa điểm chính xác; guest (khách) dùng trong ngành khách sạn."
+  ],
+  tags: [
+    "travel"
+  ]
+},
+{
+  id: "toeic-w1-042",
+  part: "w1",
+  scene: `Tại sân bay, một hành khách đang đặt vali lên dây chuyền X-quang để kiểm tra an ninh. Nhân viên an ninh đang nhìn màn hình hiển thị hình ảnh bên trong vali, và người khác đang xếp khay đồ cá nhân.`,
+  words: [
+    "pass",
+    "security"
+  ],
+  sample: "The passenger is passing his luggage through the security scanner.",
+  tips: [
+    "Pass through (qua, đi qua) — is passing through; security scanner (máy quét an ninh) là thiết bị X-quang tại sân bay.",
+    "Luggage (hành lý) là danh từ không đếm được, dùng his luggage thay vì his luggages; passenger (hành khách) là từ chuẩn hàng không."
+  ],
+  tags: [
+    "travel"
+  ]
+},
 );
