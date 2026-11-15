@@ -27,3 +27,4 @@ Người học có 6 tháng ôn phỏng vấn Senior Java, ngân hàng ~2000 câ
 
 ## Notes
 - 2026-11-15 Claude: preset bank/product có slots (6 kỹ thuật + banking + behavioral, coding medium), checkbox ⭐ Chỉ câu lõi; pickQuestions ưu tiên core rồi bù câu thường + ghi chú khi thiếu.
+Reviewed-by: verify-only (code/UI task)

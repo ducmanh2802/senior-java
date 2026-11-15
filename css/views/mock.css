@@ -144,6 +144,3 @@
   .view-mock .mock-timer-wrap { flex-direction: column; align-items: flex-end; }
   .view-mock .mock-timer { font-size: 1.4rem; }
 }
-
-/* core-only option (T2127) */
-.view-mock .mock-core-note { margin: 6px 0 0; }
