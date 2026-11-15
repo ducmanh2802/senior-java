@@ -4879,6 +4879,276 @@ Không đợi TTL hết. Khi TTL còn ít (ví dụ dưới 10% hoặc dưới 3
 
 > Senior tip: Cache stampede không phải do Redis chậm, mà do Redis để trống ở thời điểm sai và hàng nghìn request cùng tìm thay. Bảo vệ điểm yếu nhất là DB, không phải Redis. Luôn giữ DB an toàn bằng single-flight, jitter TTL và refresh-ahead; coi connection pool như một van an toàn, không để một khóa cache het hấp dẫn toàn hệ thống vào DB.`,
   rubric: [ 'Giải thích cache stampede: khóa hot hết hạn → hàng nghìn request cùng miss cache → đồng loạt truy vấn DB → quá tải kết nối, CPU 100%.', 'Dẫn chứng artifact: 14.200 kết nối PostgreSQL active cùng truy vấn id=9987, CPU 100%, Redis SLOWLOG GET/SET bị chậm, log hàng nghìn cache MISS trong một giây, sau đó connection timeout.', 'Sửa ngắn hạn: single-flight/khóa mỗi cache key (chỉ 1 request truy vấn DB, các request khác chờ), pre-warm cache, rate limiter.', 'Sửa dài hạn: jitter TTL (không hết hạn đồng loạt), refresh-ahead (làm mới trước khi hết hạn), connection pool giới hạn, circuit breaker, stale cache làm fallback.', 'Giám sát: Redis misses/giây, PostgreSQL active connections, test staging mô phỏng cao điểm.' ],
-  tags: ['redis', 'cache-stampede', 'ttl', 'single-flight', 'jitter', 'postgresql', 'connection-pool']
+  tags: ['redis', 'cache-stampede', 'ttl', 'single-flight', 'jitter', 'postgresql', 'connection-pool'],
+},
+{
+  id: 'lab-incident-037',
+  category: 'incident',
+  title: 'Thanh toán chậm làm cả hệ thống trả 503: thread pool Tomcat cạn, gateway chặn toàn bộ luồng đặt hàng',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Sàn **ShopVN** có luồng đặt hàng: app → **api-gateway** (Spring Cloud Gateway, cổng vào nhận request từ khách) → **order-service** (Spring Boot 3.2, Tomcat 200 luồng) → **payment-service** → adapter của ngân hàng đối tác. **Thread pool** (hồ nhóm luồng) là số luồng tối đa Tomcat dùng để xử lý request, giống như một quầy có 200 nhân viên: mỗi request đến gán một nhân viên, và nhân viên đó đứng đợi xong việc mới tiếp khách tiếp theo. Khi order-service gọi payment-service, luồng Tomcat của order-service **đang chờ** payment trả kết quả — nếu payment chậm, luồng đó bị treo trong thời gian chờ mà không làm gì khác.
+
+**Triệu chứng:** Ngày 11/11/2026 lúc **14:10**, adapter ngân hàng chậm (trả lời sau hơn 30 giây, đối tác xác nhận lỗi DB phía họ). Cấu hình order-service: read-timeout tới payment là **30 giây**; gateway read-timeout chỉ **10 giây**. Người dùng nhận 504 ở giây thứ 10, nhưng order-service vẫn giữ luồng chờ đến hết 30 giây. Với khoảng 180 request đặt hàng/giây, 200 luồng Tomcat cạn trong vòng 1 giây; gateway trả **503/504 hàng loạt cho toàn hệ thống**, kể cả khách chỉ xem số dư ví (không gọi thanh toán). Hệ thống chỉ hoàn toàn hồi phục lúc 14:22, 5 phút sau khi adapter khỏe lại lúc 14:17, vì hàng request cũ vẫn phải chạy hết.
+
+**Dữ liệu thu thập:** log JSON của order-service theo một traceId, chuồng thread (jstack) của order-service lúc 14:11, metric Prometheus 14:05–14:22, và cấu hình timeout của từng thành phần.`,
+  artifacts: [
+    {
+      name: 'trace-ORD-88214.json',
+      lang: 'json',
+      content: `{"@timestamp":"2026-11-11T14:10:02.110+07:00","level":"INFO","service":"api-gateway","traceId":"3f4a11e2c8d9b071","message":"POST /api/orders/ORD-88214/pay route=order-service user=U-5512093"}
+{"@timestamp":"2026-11-11T14:10:02.125+07:00","level":"INFO","service":"order-service","thread_name":"http-nio-8080-exec-94","traceId":"3f4a11e2c8d9b071","message":"pay order=ORD-88214 amount=1250000 method=VBK_DEBIT call=payment-service/v1/payments"}
+{"@timestamp":"2026-11-11T14:10:12.110+07:00","level":"WARN","service":"api-gateway","traceId":"3f4a11e2c8d9b071","message":"504 GATEWAY_TIMEOUT \"Response took longer than timeout: PT10S\" for POST \"/api/orders/ORD-88214/pay\""}
+{"@timestamp":"2026-11-11T14:10:32.150+07:00","level":"WARN","service":"order-service","thread_name":"http-nio-8080-exec-94","traceId":"3f4a11e2c8d9b071","message":"payment call failed: Read timed out after 30000 ms; mark order=ORD-88214 FAILED"}
+{"@timestamp":"2026-11-11T14:10:45.003+07:00","level":"WARN","service":"order-service","thread_name":"http-nio-8080-exec-12","traceId":"8e1b7c4f2a9d3365","message":"GET /v1/wallets/balance user=U-7781020 took 11800 ms (no thread available, queued)"}
+{"@timestamp":"2026-11-11T14:10:46.002+07:00","level":"ERROR","service":"order-service","thread_name":"http-nio-8080-exec-12","traceId":"8e1b7c4f2a9d3365","message":"GET /v1/wallets/balance failed: Read timed out after 30000 ms"}`
+    },
+    {
+      name: 'jstack-order-14h11.txt',
+      lang: 'text',
+      content: `2026-11-11 14:11:03
+Full thread dump OpenJDK 64-Bit Server VM (17.0.12+7 mixed mode):
+
+"http-nio-8080-exec-94" #94 daemon prio=5 os_prio=0 cpu=120.50ms elapsed=29.10s tid=0x00007f3a2c0d9000 nid=0x1a3 runnable  [0x00007f39d6ffd000]
+   java.lang.Thread.State: RUNNABLE
+	at sun.nio.ch.SocketChannel.read(java.base@17.0.12/Native Method)
+	at sun.nio.ch.NioSocketImpl.park(java.base@17.0.12/NioSocketImpl.java:186)
+	at sun.nio.ch.NioSocketImpl.read(java.base@17.0.12/NioSocketImpl.java:304)
+	at vn.shopvn.payment.PaymentClient.execute(PaymentClient.java:41)
+	at vn.shopvn.order.OrderController.pay(OrderController.java:73)
+
+-- Thống kê toàn bộ dump: 200/200 thread http-nio-8080-exec-* có cùng stack, đang chờ đọc socket từ payment-service
+-- elapsed của các thread này: từ 9.2s đến 29.4s ; không thread nào đang phục vụ /actuator/health (liveness/readiness cũng kẹt)`
+    },
+    {
+      name: 'prometheus-14h05-14h22.txt',
+      lang: 'text',
+      content: `# req_order = rate(http_server_requests_seconds_count{service="order-service",uri="/v1/orders/pay"}[1m])
+# tomcat_busy = tomcat_threads_busy_threads{service="order-service"} (max 200)
+# gw_504 = rate(spring_cloud_gateway_requests_seconds_count{status="GATEWAY_TIMEOUT"}[1m])
+# pay_p99 = p99 của HTTP client gọi payment-service
+# balance_p99 = p99 GET /v1/wallets/balance (dùng chung Tomcat pool của order-service)
+
+time     req_order/s  tomcat_busy  gw_504/s  pay_p99   balance_p99
+14:05         180          40        0.0    1.2 s      60 ms
+14:10         182         200       45.0   31.0 s     12.0 s
+14:12         181         200      120.0   32.5 s     28.0 s
+14:15         179         200      115.0   31.8 s     25.0 s
+14:18         180         195       90.0    5.0 s      4.0 s    <- adapter khôi phục 14:17, request cũ vẫn chạy
+14:20         180          60        5.0    1.5 s      80 ms
+14:22         180          35        0.0    1.1 s      65 ms`
+    },
+    {
+      name: 'timeout-config.yml',
+      lang: 'yaml',
+      content: `# ---------- api-gateway (application.yml) ----------
+spring:
+  cloud:
+    gateway:
+      httpclient:
+        response-timeout: 10s
+
+# ---------- order-service ----------
+clients:
+  payment:
+    base-url: http://payment-service
+    read-timeout: 30s          # "để chắc chắn adapter chậm vẫn đợi được"
+server:
+  tomcat:
+    threads:
+      max: 200                 # dùng chung cho /v1/orders/pay và GET /v1/wallets/balance
+
+# Chưa có: circuit breaker, bulkhead, fallback cho payment`
+    }
+  ],
+  questions: [
+    'Dựng lại dòng thời gian của trace ORD-88214. Tại sao gateway trả 504 ở giây thứ 10 trong khi order-service chỉ nhận timeout ở giây thứ 30?',
+    'Tính bằng định luật Little: sao 200 luồng Tomcat cạn, và tại sao GET /v1/wallets/balance (không gọi thanh toán) cũng nhận 503?',
+    'Thiết kế lại timeout, circuit breaker, bulkhead và fallback cho luồng này. Đơn bị ảnh hưởng xử lý thế nào?'
+  ],
+  hints: [
+    'Liệt kê timeout từ ngoài vào trong: gateway 10 s, order→payment 30 s. Lớp ngoài bỏ cuộc ở giây 10, nhưng lớp trong vẫn giữ Tomcat thread đến giây 30 — công việc vô ích nhưng chiếm luồng.',
+    'Định luật Little: số luồng bận = tốc độ request × thời gian giữ. 180 request/giây × 30 giây ≈ 5.400 luồng cần, pool chỉ 200. Cùng pool phục vụ xem số dư ví nên khách dùng ví cũng chết theo (thiếu bulkhead).',
+    'Khi payment rõ ràng không hồi đáp, circuit breaker nên mở mạch và trả kết quả ngay (fallback) thay vì giữ 200 luồng chờ hết 30 giây.'
+  ],
+  answer: `**Tóm tắt:** Timeout được cấu hình **ngược chiều**: gateway cam kết 10 giây với app, nhưng order-service chờ payment 30 giây. Sau giây thứ 10, khách đã nhận 504 và bỏ cuộc, nhưng order-service vẫn giữ mỗi luồng Tomcat trong 30 giây chờ một kết quả không ai cần nữa. Với 180 request đặt hàng/giây, theo định luật Little (số luồng bận = tốc độ request × thời gian giữ) cần khoảng 5.400 luồng, pool chỉ 200 → Tomcat cạn ngay giây đầu. GET /v1/wallets/balance dùng chung pool nên khách thanh toán bằng ví cũng nhận 503. Thiếu circuit breaker và fallback làm mọi request cứ giữ luồng đến hết 30 giây dù payment đã rõ ràng không hồi đáp.
+
+### Nguyên nhân gốc
+
+**1. Timeout ngược chiều (lớp ngoài nhỏ hơn lớp trong).** Ngân sách thời gian của gateway là 10 giây, nhưng order-service chờ payment 30 giây. Sau giây thứ 10, mọi xử lý ở order-service là **công việc vô ích** (khách đã nhận 504, app đã hủy kết nối) nhưng vẫn chiếm một luồng Tomcat. Quy tắc đúng: timeout phải giảm dần từ ngoài vào trong, và tổng thời gian kể cả retry của lớp trong phải nhỏ hơn timeout của lớp ngoài.
+
+**2. Thread pool cạn và lan rộng.** Theo định luật Little: 180 request/giây × 30 giây ≈ 5.400 luồng cần, trong khi pool Tomcat chỉ 200. Tất cả 200 luồng bận chờ payment, request mới xếp hàng rồi bị từ chối. Vì GET /v1/wallets/balance dùng chung Tomcat pool của order-service, nó cũng phải chờ luồng: {{balance_p99}} từ 60 ms lên 28 giây. Khách thanh toán bằng ví (không liên quan adapter) cũng nhận 503. Đây là lỗi thiếu **bulkhead** (cô intercept tài nguyên theo từng luồng nghiệp vụ).
+
+**3. Không có circuit breaker và fallback.** Mọi request cứ giữ luồng đến hết 30 giây dù payment đã rõ ràng không hồi đáp. Circuit breaker sẽ mở mạch khi tỷ lệ lỗi vượt ngưỡng, fail fast, và fallback trả "thanh toán đang xử lý, vui lòng quay lại sau" ngay.
+
+### Dẫn chứng (trích dòng cụ thể)
+
+- trace-ORD-88214: gateway trả **504 "Response took longer than timeout: PT10S"** lúc **14:10:12.110**; order-service mới ném **Read timed out after 30000 ms** lúc **14:10:32.150** — 20 giây sau khi gateway đã bỏ cuộc, thread vẫn đang giữ kết nối.
+- jstack-order-14h11: **200/200** thread {{http-nio-8080-exec-*}} cùng stack: SocketChannel.read → PaymentClient.execute → RestTemplate → OrderController.pay; **không thread nào** phục vụ /actuator/health.
+- Prometheus: {{tomcat_busy}} = 200/200 từ 14:10; {{gw_504/s}} từ 0 lên 120; {{balance_p99}} từ 60 ms lên 28 giây. Sau adapter khỏe lại 14:17, hệ thống mới vỡ nốt 14:22 vì request cũ trong hàng vẫn phải chạy hết ({{tomcat_busy}} vẫn 195 lúc 14:18).
+
+### Cách sửa
+
+**Ngay trong sự cố:** giảm read-timeout order→payment xuống 3 giây, tắt retry, để cả hai fail fast nhanh; hệ thống thở được trong vài phút khi hàng cũ chạy cạn.
+
+**Dài hạn:**
+
+| Thành phần | Timeout | Ghi chú |
+|---|---|---|
+| gateway | 8 s | cam kết với app |
+| order → payment | 5 s, không retry | nhỏ hơn gateway; chỉ retry lỗi xảy ra trước khi gửi request |
+| payment → adapter | 4 s | connect timeout 1 s |
+
+- **Circuit breaker** ở order-service cho payment (Resilience4j): mở khi tỷ lệ lỗi/timeout vượt 50% trong 20 request gần nhất, fail fast trong 30 giây, hiện "đang xử lý thanh toán, vui lòng quay lại sau".
+- **Bulkhead:** luồng/semaphore riêng cho caller payment (ví dụ 60 luồng), và tách GET /v1/wallets/balance ra pool Tomcat riêng hoặc service riêng để xem số dư ví không bị lệch theo thanh toán.
+- **Fallback:** khi circuit mở hoặc timeout, trả **202 kèm orderId**, để khách tra trạng thái sau; không để người dùng nhấn lại tạo đơn trùng.
+- **Idempotency:** idempotency key theo orderId để retry an toàn nếu cần.
+
+### Phòng ngừa và alert
+
+- Alert khi {{tomcat_threads_busy_threads/max}} > 80% trong 2 phút, khi p99 gọi đối tác > 3 giây, và tỷ lệ 504 ở gateway.
+- Review cấu hình: kiểm tra tự động rằng timeout của lớp trong (kể cả retry) nhỏ hơn timeout của lớp gọi nó.
+- Chaos test: inject độ trễ 30 giây vào payment giả lập trên staging, xác nhận hệ thống fail fast và không tạo đơn trùng.
+
+> Senior tip: Khi review một chuỗi gọi đồng bộ, vẽ bảng "ai chờ ai, chờ bao lâu" từ ngoài vào trong. Timeout không phải là thất bại: với thanh toán, khi timeout hãy đánh trạng thái UNKNOWN và có cơ chế hỏi lại, chứ không bao giờ giữ luồng chờ vô hạn.`,
+
+  rubric: [
+    'Chỉ ra timeout ngược chiều: gateway 10 s < order→payment 30 s; sau giây 10 mọi xử lý bên trong là công việc vô ích nhưng vẫn giữ thread Tomcat.',
+    'Áp dụng định luật Little: 180 req/s × 30 s ≈ 5.400 luồng cần so với pool 200; giải thích API xem số dư ví cũng 503 vì dùng chung pool (thiếu bulkhead).',
+    'Dẫn chứng từ artifact: gateway 504 ở giây 10, order-service timeout ở giây 30, jstack 200/200 thread chờ PaymentClient, balance_p99 tăng theo, hệ thống chịu ảnh hưởng thêm 5 phút sau khi adapter khôi phục.',
+    'Đề xuất timeout ngắn giảm dần từ ngoài vào trong (gateway 8 s → order 5 s → adapter 4 s), circuit breaker + bulkhead cho payment, fallback trả 202/UNKNOWN, idempotency key theo orderId.',
+    'Nêu alert (thread busy > 80%, p99 gọi đối tác > 3 s, tỷ lệ 504) và chaos test để phát hiện sớm sự cố dây chuyền.'
+  ],
+  tags: ['timeout', 'cascading-failure', 'thread-pool', 'circuit-breaker', 'bulkhead', 'fallback', 'tomcat']
+},
+{
+  id: 'lab-incident-038',
+  category: 'incident',
+  title: 'Hai đơn mua cùng một sản phẩm cuối cùng: bán quá phép và OptimisticLockException của Hibernate',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Flash sale, sản phẩm SKU-7712 còn đúng **1 chiếc**. Lúc 10:00 ngày 11/11/2026, khách hàng A và B nhấn "Mua" cùng một giây. order-service (Spring Boot 3.3, Hibernate 6, PostgreSQL 15) xử lý mỗi đơn trong một **transaction** (giao dịch: nhóm các thao tác DB thành một đơn vị, hoặc toàn bộ thành công hoặc toàn bộ hủy): đọc sản phẩm, kiểm tra tồn kho lớn hơn 0, giảm tồn kho, lưu đơn hàng. Phiên bản ban đầu của sản phẩm là **version=4** (@Version là trường Hibernate tự tăng mỗi lần cập nhật, dùng để biết bản ghi đã bị ai đó đổi chưa).
+
+**Triệu chứng:** Hai request cùng đọc version=4 và tồn kho=1. Nếu code **không dùng @Version**, Hibernate cập nhật theo id mà không kiểm tra version: giao dịch thứ hai ghi đè giao dịch đầu, tồn kho thành **-1**, hai đơn đều trả 200 OK — **bán quá phép**, công ty phải hoàn tiền và chịu khiếu nại. Nếu đã dùng @Version: Hibernate sinh câu UPDATE kèm điều kiện version; giao dịch thứ hai khớp 0 hàng (version đã thành 5) và ném **org.hibernate.StaleObjectStateException**, khách B thấy "đơn hàng không thể xử lý" dù chỉ có 1 chiếc hàng — đúng kết quả nhưng trải nghiệm khách kém, gọi hỗ trợ tăng vọt.
+
+**Dữ liệu thu thập:** log ứng dụng của hai request cùng lúc, pg_stat_activity lúc 10:00, đoạn mã Product.java, và metric thất bại/tồn kho theo phút.`,
+  artifacts: [
+    {
+      name: 'app-lost-update.log',
+      lang: 'text',
+      content: `2026-11-11T10:00:01.004+07:00  INFO 1 --- [order-service] [http-nio-8080-exec-17] v.s.order.OrderService : read product sku=SKU-7712 stock=1 request=ORD-A user=U-102
+2026-11-11T10:00:01.005+07:00  INFO 1 --- [order-service] [http-nio-8080-exec-42] v.s.order.OrderService : read product sku=SKU-7712 stock=1 request=ORD-B user=U-205
+2026-11-11T10:00:01.210+07:00  INFO 1 --- [order-service] [http-nio-8080-exec-17] v.s.order.OrderService : UPDATE products SET stock = stock - 1 WHERE id = 7712 -> 1 row (ORD-A, stock 1→0)
+2026-11-11T10:00:01.213+07:00  INFO 1 --- [order-service] [http-nio-8080-exec-42] v.s.order.OrderService : UPDATE products SET stock = stock - 1 WHERE id = 7712 -> 1 row (ORD-B, stock 0→-1, GHI ĐỀ ORD-A)
+2026-11-11T10:00:01.215+07:00  INFO 1 --- [order-service] [http-nio-8080-exec-17] v.s.order.OrderService : order ORD-A created 200 OK
+2026-11-11T10:00:01.216+07:00  INFO 1 --- [order-service] [http-nio-8080-exec-42] v.s.order.OrderService : order ORD-B created 200 OK`
+    },
+    {
+      name: 'pg-stat-activity-10h00.txt',
+      lang: 'text',
+      content: `-- 2026-11-11 10:00:01 +07
+shop=> SELECT state, coalesce(wait_event_type,'CPU') AS wait, count(*), left(query, 70) AS q
+shop=> FROM pg_stat_activity WHERE datname = 'shop' GROUP BY 1, 2, 4 ORDER BY 3 DESC LIMIT 4;
+ state  | wait   | count |                              q
+--------+--------+-------+----------------------------------------------------------------------
+ active | CPU    |     1 | update products set stock = stock - 1 where id = 7712
+ active | Lock   |     1 | update products set stock = stock - 1 where id = 7712
+ idle   | Client |     1 | commit
+(3 rows)`
+    },
+    {
+      name: 'Product.java',
+      lang: 'java',
+      content: `@Entity
+@Table(name = "products")
+public class Product {
+    @Id
+    private Long id;
+    private String sku;
+    private Integer stock;
+    // THẤU: không có @Version, Hibernate không kiểm tra phiên bản khi cập nhật
+    public Integer getStock() { return stock; }
+    public void setStock(Integer stock) { this.stock = stock; }
+}`
+    },
+    {
+      name: 'metric-10h.txt',
+      lang: 'text',
+      content: `# theo phút, order-service
+
+time     req_buy/s  order_ok/s  order_fail/s  stock  oversell_count
+09:55        10         9.8        0.2          1      0
+10:00        10         2.0        0.0         -1      1   <- hai đơn 200 OK cho 1 chiếc hàng
+10:05        10         9.5        0.5         -1      1`
+    }
+  ],
+  questions: [
+    'Dựng lại hai request ORD-A và ORD-B: tại sao cả hai đều đọc tồn kho=1 và cả hai ghi thành công?',
+    'Giải thích mất cập nhật (lost update) và tại sao tồn kho bị xuống -1. Nếu dùng @Version thì sao?',
+    'Sửa ngắn hạn và dài hạn: @Version kèm retry, hay khóa tiêu cực (pessimistic lock, SELECT ... FOR UPDATE)? Lựa chọn nào cho flash sale?'
+  ],
+  hints: [
+    'Hai transaction đọc cùng trạng thái ban đầu (stock=1), không có khóa hay version, nên cả hai đều cho phép mua.',
+    'Mỗi UPDATE stock = stock - 1 ghi đè kết quả của kia: 1 → 0 → -1. Hai đơn ORD-A và ORD-B đều nhận 200 OK, tức bán 2 chiếc khi chỉ có 1.',
+    '@Version khiến Hibernate thêm AND version=? vào UPDATE; giao dịch thứ hai khớp 0 hàng và ném StaleObjectStateException, ứng dụng bắt lỗi, đọc lại và thông báo hết hàng. SELECT FOR UPDATE khóa hàng sớm hơn nhưng giữ kết nối DB lâu hơn.'
+  ],
+  answer: `**Tóm tắt:** Đây là **mất cập nhật (lost update)**: hai transaction đọc cùng tồn kho (1 chiếc), cả hai đều trừ 1 và ghi lại, kết quả tồn kho -1 và hai đơn đều thành công cho một chiếc hàng. Gốc rễ là code kiểm tra tồn kho trong Java nhưng **không dùng @Version hay khóa hàng**, nên PostgreSQL cho phép hai giao dịch cập nhật cùng một hàng theo thứ tự chồng lên nhau. Sửa: thêm @Version (optimistic lock) với retry khi StaleObjectStateException, hoặc SELECT FOR UPDATE (pessimistic lock) khi xung đột nhiều; giữ transaction ngắn và không gọi HTTP trong transaction.
+
+### Nguyên nhân gốc
+
+**1. Mất cập nhật (lost update).** Giao dịch A đọc stock=1, giao dịch B cũng đọc stock=1. A ghi stock=0, B ghi stock=0 (hoặc stock = stock - 1 → -1 nếu dùng SQL trực tiếp). Ghi lần sau ghi đè ghi lần trước, DB không biết hai giao dịch đã đọc trạng thái khác nhau. Kết quả: hai đơn ORD-A và ORD-B đều 200 OK, nhưng chỉ có 1 chiếc hàng; tồn kho làm tròn xuống -1.
+
+**2. Không có phiên bản (version) và không khóa hàng.** Mặc định isolation Read Committed chỉ ngăn chặn đọc dữ liệu chưa commit, **không ngăn hai giao dịch cập nhật cùng một hàng cùng lúc**. Nếu không dùng @Version hay SELECT FOR UPDATE, hai transaction cứ advance độc lập.
+
+**3. Kiểm tra tồn kho trong ứng dụng rồi mới ghi** ("check-then-act" không nguyên tử): code kiểm tra {{stock > 0}} rồi mới giảm và lưu, giữa lần đọc và lần ghi, giao dịch khác đã thay đổi tồn kho.
+
+### Dẫn chứng (trích dòng cụ thể)
+
+- app-lost-update.log: exec-17 đọc **stock=1** lúc 10:00:01.004 (ORD-A), exec-42 đọc **stock=1** lúc 10:00:01.005 (ORD-B); sau đó cả hai {{UPDATE products SET stock = stock - 1 WHERE id = 7712}} đều thành công (1 row), tồn kho từ 1 về 0 rồi **-1**; hai đơn đều trả 200 OK.
+- pg-stat-activity-10h00: hai session đang chạy cùng câu {{update products set stock = stock - 1 where id = 7712}}, một trong hai ở trạng thái **Lock** (đang chờ khóa hàng của session kia) — dấu hiệu hai transaction va chạm trên cùng một hàng.
+- Metric: lúc 10:00, {{order_ok/s}} nhảy lên 2.0 trong khi tồn kho chỉ còn 1, {{oversell_count}} = 1.
+
+### Cách sửa
+
+**Cách 1 (khuyên dùng khi xung đột ít): @Version + retry.**
+
+~~~java
+@Entity
+public class Product {
+    @Id private Long id;
+    private String sku;
+    private Integer stock;
+    @Version          // Hibernate tự tăng version mỗi lần cập nhật
+    private Long version;
+}
+~~~
+
+Khi lưu, Hibernate thực thi {{UPDATE products SET stock=?, version=? WHERE id=? AND version=?}}. Giao dịch thứ hai (version=4) khớp 0 hàng vì version đã là 5 → Hibernate ném **StaleObjectStateException**. Ứng dụng bắt lỗi, đọc lại sản phẩm mới, kiểm tra tồn kho, và thông báo "đã hết hàng" hoặc thử lại 1–2 lần với khoảng chờ ngắn.
+
+**Cách 2 (xung đột nhiều): khóa tiêu cực (pessimistic lock) SELECT FOR UPDATE.**
+
+~~~java
+@Lock(LockModeType.PESSIMISTIC_WRITE)
+Product findById(Long id);   // sinh SELECT ... FOR UPDATE, khóa hàng ngay khi đọc
+~~~
+
+Giao dịch sau đọc cùng hàng sẽ **chờ** đến khi giao dịch đầu commit/rollback, sau đó nhìn thấy stock=0 và từ chối. Trade-off: giữ kết nối DB lâu hơn, nếu xử lý chậm có thể cạn Hikari pool.
+
+**Ngoại lệ:** không gọi HTTP hay xử lý nặng giữa BEGIN và COMMIT; giữ transaction ngắn nhất có thể.
+
+### Phòng ngừa
+
+- Viết integration test: hai thread gọi "mua" cùng một sản phẩm cùng lúc, xác nhận chỉ một đơn thành công và tồn kho không xuống dưới 0.
+- Giám sát {{pg_stat_database.deadlocks}} và tỷ lệ {{StaleObjectStateException}}; cảnh báo khi tăng đột biến.
+- Quy tắc code review: mọi transaction ghi nhiều bản ghi phải có chiến lược khóa (version hoặc pessimistic lock), không để kiểm tra {{"if stock > 0"}} một mình quyết định.
+
+> Senior tip: Optimistic lock (@Version) rất rẻ và phù hợp flash sale khi ít khách va chạm; pessimistic lock an toàn hơn khi xung đột nhiều nhưng tốn kết nối. Cả hai đều phải đi kèm với việc bắt lỗi và retry/thông báo đúng — không bao giờ để giao dịch thất bại lặng lẽ.`,
+
+  rubric: [
+    'Xác định đúng mất cập nhật: hai transaction đọc stock=1, cả hai ghi stock-1, tồn kho xuống -1, hai đơn đều 200; đây là read-modify-write không nguyên tử, không phải do DB hỏng.',
+    'Dẫn chứng từ artifact: hai log đọc stock=1 cùng lúc, cả hai UPDATE thành công 1 row, pg_stat_activity có session ở trạng thái Lock trên cùng một hàng, oversell_count = 1.',
+    'Giải thích @Version: Hibernate thêm AND version=? vào UPDATE, giao dịch cũ khớp 0 hàng ném StaleObjectStateException; ứng dụng phải bắt lỗi, đọc lại và xử lý (thông báo hết hàng hoặc retry).',
+    'Phân biệt @Version (optimistic, ít va chạm, không giữ khóa lâu) và SELECT FOR UPDATE (pessimistic, nhiều va chạm, giữ kết nối lâu hơn); kèm trade-off về Hikari pool.',
+    'Đề xuất phòng ngừa: test song song hai giao dịch, giám sát deadlock/StaleObjectStateException, quy tắc review transaction ghi nhiều bản ghi.'
+  ],
+  tags: ['hibernate', 'jpa', 'optimistic-lock', 'lost-update', 'postgresql', 'concurrency', 'version']
 }
 );
