@@ -14525,4 +14525,463 @@ Kết quả: Image 250MB -> 195MB, CVE 65 -> 3 (0 HIGH), pull time 45s -> 12s. A
     ],
     tags: ['Base image', 'Distroless', 'jlink', 'Alpine', 'CVE', 'SBOM', 'Cosign']
   }
+  ,{
+    id: 'devops-164',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Bạn viết Dockerfile cho Spring Boot 3 dùng Gradle chạy production như thế nào, từ stage build đến stage runtime, để image nhỏ, build nhanh và an toàn?',
+    a: `**Tóm tắt:** Dùng multi-stage Dockerfile: stage build (JDK + Gradle compile/package), stage runtime (JRE distroless chỉ chứa ứng dụng). Tối ưu layer cache bằng cách copy Gradle wrapper và tệp cấu hình trước, tải dependency trước, dùng {{--no-daemon}}, tách layered jar. Stage runtime chạy user non-root, entrypoint dạng exec (PID 1 nhận trực tiếp {{SIGTERM}}), có HEALTHCHECK và {{-XX:MaxRAMPercentage}}. Không lưu secret vào {{ENV}}/{{ARG}} vì chúng bị ghi vào layer image và {{docker history}} thấy được.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Multi-stage Dockerfile**: nhiều {{FROM}} trong một Dockerfile, stage sau copy artifact từ stage trước, image cuối chỉ chứa gì cần thiết.
+- **Layer cache**: Docker tái sử dụng layer đã build nếu các lệnh trước không đổi, giúp build lần sau nhanh hơn.
+- **Distroless**: image chỉ chứa runtime, không shell, không trình quản lý gói, ít CVE và ít bề mặt tấn công.
+- **Layered jar**: tách jar Spring Boot thành các layer (thư viện, loader, mã ứng dụng) để chỉ layer mã mới build lại khi sửa code.
+- **Entrypoint exec**: {{ENTRYPOINT ["java","-jar","app.jar"]}} để Java là PID 1, nhận tín hiệu {{SIGTERM}} từ {{docker stop}}.
+- **HEALTHCHECK**: Docker/Kubernetes định kỳ gọi endpoint để biết container còn sống hay không.
+
+### Dockerfile multi-stage Gradle
+~~~dockerfile
+# Stage 1: Build với Gradle
+FROM eclipse-temurin:21-jdk AS build
+WORKDIR /build
+COPY gradlew gradlew
+COPY gradle gradle
+COPY build.gradle settings.gradle ./
+# Tải dependency trước (layer cache, chỉ miss khi dependency đổi)
+RUN --mount=type=cache,target=/root/.gradle ./gradlew dependencies --no-daemon
+COPY src src
+RUN --mount=type=cache,target=/root/.gradle ./gradlew bootJar -x test --no-daemon
+
+# Tách layered jar
+RUN java -Djarmode=tools -jar build/libs/*.jar extract --layers --launcher --destination extracted
+
+# Stage 2: Runtime distroless, non-root
+FROM gcr.io/distroless/java21-debian12@sha256:...
+WORKDIR /app
+COPY --from=build /build/extracted/dependencies/ ./
+COPY --from=build /build/extracted/spring-boot-loader/ ./
+COPY --from=build /build/extracted/snapshot-dependencies/ ./
+COPY --from=build /build/extracted/application/ ./
+USER 10001:10001
+EXPOSE 8080
+# Distroless không có curl/wget, HEALTHCHECK NONE giao việc kiểm tra cho Kubernetes probe
+HEALTHCHECK NONE
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "org.springframework.boot.loader.launch.JarLauncher"]
+~~~
+
+### Cơ chế layer cache Gradle
+1. Copy {{gradlew}}, {{gradle/}}, {{build.gradle}}, {{settings.gradle}} — ít thay đổi, layer được tái dùng.
+2. {{gradlew dependencies --no-daemon}} tải toàn bộ dependency vào {{/root/.gradle}}; BuildKit cache mount giữ thư mục này giữa các build.
+3. Chỉ khi dependency thay đổi layer này mới rebuild.
+4. Copy {{src/}} sau cùng (thay đổi thường xuyên) và {{bootJar}}.
+5. Tách layered jar: chỉ layer {{application/}} (mã của bạn, vài trăm KB) rebuild lại khi sửa code, tiết kiệm bandwidth push/pull.
+
+### Vì sao entrypoint exec và non-root
+- Shell entrypoint ({{ENTRYPOINT sh -c "java ..."}}) tạo {{sh}} làm PID 1, Java là tiến trình con; {{sh}} không truyền {{SIGTERM}} từ {{docker stop}} sang Java → Spring Boot không graceful shutdown, Docker chờ 10 giây rồi gửi {{SIGKILL}}, cắt request đang xử lý.
+- Dùng {{ENTRYPOINT ["java", ...]}} (dạng exec, không shell) để Java là PID 1, nhận {{SIGTERM}} trực tiếp.
+- Chạy {{USER 10001:10001}} non-root để nếu có lỗ hổng RCE, kẻ tấn công khó ghi file hệ thống.
+
+### Vì sao không để secret trong ENV/ARG
+- {{ENV}} và {{ARG}} được c vào image layer; bất kỳ ai xem {{docker history}} hoặc {{docker inspect}} có thể đọc mã-token. Build-time secret dùng BuildKit {{--mount=type=secret}} (mất sau khi build xong), runtime secret lấy từ Kubernetes Secret/External Secrets Operator.
+
+### Lỗi hay gặp
+1. **Copy toàn bộ source trước Gradle dependency**: mỗi commit sửa mã làm layer dependency miss cache, build chậm hơn nhiều.
+2. **Shell entrypoint**: {{docker stop}} chờ full grace period rồi {{SIGKILL}}, mất request in-flight.
+3. **Chạy root**: image chạy root mặc định, RCE ảnh hưởng toàn bộ filesystem container.
+4. **Secret trong {{ENV}}/{{ARG}}**: rò rỉ qua layer image.
+5. **Không pin base image digest**: {{latest}} hoặc tag thay đổi giữa các build, không tái lập được.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi viết multi-stage Dockerfile Gradle: stage build tải dependency trước (cache layer), compile với {{--no-daemon}}, tách layered jar; stage runtime dùng distroless JRE, user non-root, entrypoint exec để Java là PID 1 và nhận {{SIGTERM}}, có HEALTHCHECK, pin base image theo digest. Không để secret trong ENV/ARG; dùng BuildKit secret cho build-time và K8s Secret cho runtime. Thực tế image Gradle Spring Boot giảm từ 300MB xuống khoảng 120MB, build lần tiếp theo chỉ rebuild layer mã ứng dụng vài trăm KB."
+
+> Senior tip: Pin base image theo digest ({{@sha256:...}}) để build tái lập 1:1 với commit; dùng {{--no-daemon}} trong Docker vì Gradle daemon không thoát đúng cách trong container.
+`,
+    follow: [
+      'Layered jar giúp gì so với fat jar khi build Docker image liên tục?',
+      'HEALTHCHECK trên distroless không có curl thì làm sao kiểm tra sức khỏe container?',
+      'BuildKit --mount=type=secret dùng để làm gì và secret mất đi khi nào?'
+    ],
+    tags: ['Docker', 'Gradle', 'Multi-stage', 'Layered jar', 'Distroless', 'CI']
+  }
+  ,{
+    id: 'devops-165',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Service Spring Boot khởi động khoảng 90 giây (Flyway migrate, warm cache), bạn cấu hình startup, readiness và liveness probe trong Kubernetes thế nào để không gây CrashLoopBackOff oan và không nhận traffic trước khi sẵn sàng?',
+    a: `**Tóm tắt:** Ba probe khác mục đích: **startup probe** cho container thời gian khởi động (mặc định liveness/readiness chưa "thắt"), **readiness probe** báo Pod đã sẵn sàng nhận traffic (chỉ kiểm tra dependency thực sự cần; không tự động cho DB nếu cache/outbox vẫn phục vụ được một phần), **liveness probe** chỉ kiểm tra trạng thái nội tại của chính process (không kiểm tra DB/dependency ngoài, tránh restart toàn bộ Pod khi DB failover). Timing startup probe phải dài đủ thời gian khởi động thực tế (ví dụ {{5s × 30 = 150s}} cho app khởi động 90 giây).
+
+### Thuật ngữ (giải thích lần đầu)
+- **Startup probe**: cho app thời gian khởi động trước khi liveness/readiness bắt đầu kiểm tra.
+- **Readiness probe**: Pod vào EndpointSlice và nhận traffic chỉ khi probe này pass.
+- **Liveness probe**: kubelet restart container khi probe này fail liên tục.
+- **CrashLoopBackOff**: container crash/khởi động lỗi liên tục, Kubernetes tăng dần thời gian chờ giữa các lần khởi động lại.
+- **Health group (Spring Boot)**: nhóm các health indicator riêng cho liveness và readiness.
+- **Warm-up**: quy trình làm nóng cache/connection pool trước khi nhận traffic.
+
+### Cấu hình probe (ví dụ)
+~~~yaml
+startupProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8080 }
+  periodSeconds: 5
+  failureThreshold: 30        # 5 × 30 = 150s, đủ cho app khởi động 90s
+readinessProbe:
+  httpGet: { path: /actuator/health/readiness, port: 8080 }
+  periodSeconds: 5
+  failureThreshold: 3
+livenessProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8080 }
+  periodSeconds: 10
+  failureThreshold: 3
+~~~
+
+Spring Boot health group:
+~~~yaml
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  health:
+    group:
+      readiness:
+        include: db,customPing   # chỉ dependency cần thiết
+      liveness:
+        include: ping            # chỉ trạng thái nội tại
+~~~
+
+### Quy tắc chọn dependency vào readiness
+- **Có DB**: service không phục vụ được gì nếu DB chết (ví dụ tạo đơn hàng thanh toán) → đánh DB vào readiness.
+- **Không DB**: chỉ đọc cache hoặc ghi outbox → không đánh DB vào readiness, tránh DB giật làm Pod ngừng nhận traffic.
+- **Liveness**: không bao giờ gọi DB/Redis/Kafka ngoài. Liveness chỉ internal state (deadlock, hết thread). Nếu DB failover, liveness không restart Pod.
+
+### Ví dụ đời thực
+**Triệu chứng:** Service order deploy, DB failover sang standby. Liveness probe kiểm tra /actuator/health tổng hợp (chứa db) fail trên tất cả Pod → kubelet restart toàn bộ deployment, sự cố lan rộng.
+**Nguyên nhân gốc:** Liveness kiểm tra dependency ngoài; DB giật thì toàn bộ Pod bị đánh chết thay vì chỉ chờ DB hồi phục.
+**Cách xử lý:** Chia health group: liveness chỉ {{ping}} (internal state), readiness có {{db}} cho service không đọc cache được. Thời gian restart dây chuyền từ 4 phút xuống 0, service tự phục hồi sau DB hồi 30 giây.
+
+### Lỗi hay gặp
+1. **Cả ba probe trỏ /actuator/health tổng hợp**: DB chậm → liveness restart toàn bộ Pod.
+2. **Startup probe quá ngắn**: app khởi động 90s nhưng startup chỉ 15s → CrashLoopBackOff oan.
+3. **Readiness báo Ready trước khi warm-up xong**: Pod mới nhận traffic, p99 spike ngay sau rollout.
+
+### Trả lời mẫu khi phỏng vấn
+"Ba probe khác mục đích: startup cho thời gian khởi động (mặc định 5s×30=150s cho app 90s), readiness báo sẵn sàng nhận traffic (chỉ đánh DB nếu service không phục vụ được gì khi DB chết), liveness chỉ trạng thái nội tại, không kiểm tra DB ngoài để tránh restart storm khi failover. Tôi chia health group Spring Boot riêng cho liveness và readiness. Lần gần nhất, DB failover gây restart toàn bộ deployment vì liveness kiểm tra /actuator/health tổng hợp; sau khi chia nhóm, service tự phục hồi trong 30 giây mà không restart Pod."
+
+> Senior tip: Tính toán startup periodSeconds × failureThreshold phải ≥ thời gian khởi động thực tế trên node lạnh (pull image); nếu không, CrashLoopBackOff oan là điều bắt buộc gặp.
+`,
+    follow: [
+      'Khi nào bạn đánh DB vào readiness, và khi nào không?',
+      'Liveness probe restart container thì kubelet restart Pod hay chỉ container?',
+      'Readiness probe fail thì Pod ra sao trong EndpointSlice?'
+    ],
+    tags: ['Kubernetes', 'Probe', 'Liveness', 'Readiness', 'Startup', 'Spring Boot']
+  }
+  ,{
+    id: 'devops-166',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Container Java bị OOMKilled (exit 137) dù Grafana chỉ ra heap sử dụng 60%; bạn điều tra và khắc phục thế nào?',
+    a: `**Tóm tắt:** OOMKilled là kernel Linux giết process vì cgroup vượt {{memory.max}} (exit code 137), khác {{OutOfMemoryError}} của JVM. Heap thấp mà vẫn OOMKilled thường do **non-heap**: thread stack (~1MB/thread), metaspace, code cache, direct buffer (Netty) đẩy tổng RSS vượt limit. {{-XX:MaxRAMPercentage}} chỉ gán phần trăm limit cho **heap**, không bao trùm non-heap. Cách xử lý: xem {{container_memory_working_set_bytes}}, bật {{JVM Native Memory Tracking (NMT)}}, đếm thread, kiểm tra pool (Tomcat/Hikari/Netty), rồi giảm {{-XX:MaxRAMPercentage}} xuống 70-75% và giới hạn thread theo tải thực.
+
+### Thuật ngữ (giải thích lần đầu)
+- **OOMKilled**: kernel Linux giết process vì cgroup vượt giới hạn bộ nhớ (exit 137).
+- **OutOfMemoryError**: JVM ném khi heap/metaspace cạn (khác OOMKilled, thường có heap dump).
+- **cgroup v2 / {{memory.max}}**: giới hạn bộ nhớ trần cứng cho container.
+- **RSS**: tổng bộ nhớ thường trú (resident) của process (heap + non-heap).
+- **Non-heap**: bộ nhớ JVM ngoài heap (thread stack, metaspace, code cache, direct buffer).
+- **NMT**: JVM Native Memory Tracking, xem chi tiết bộ nhớ native JVM đang dùng.
+- **Metaspace**: vùng lưu metadata lớp (class) của JVM, nằm ngoài heap.
+
+### Số liệu minh họa
+~~~text
+Pod limit memory.max = 2Gi
+-XX:MaxRAMPercentage = 80  -> heap ~1.6Gi
+400 thread × stack ~1MB    -> ~400MB
+Metaspace + code cache     -> ~200MB
+Tổng RSS                   -> ~2.2Gi > 2Gi
+=> kernel SIGKILL, pod OOMKilled (exit 137)
+~~~
+
+### Cách điều tra từng bước
+1. {{kubectl describe pod}} xác nhận Last State: OOMKilled, Exit Code: 137.
+2. Xem metric {{container_memory_working_set_bytes}} tiến gần limit trước khi chết.
+3. Bật NMT: {{jcmd <pid> VM.native_memory summary}} và diff ({{baseline}}/{{summary.diff}}) xem vùng nào tăng (Thread, Internal, Code).
+4. {{jstack}} đếm thread; metric Tomcat {{maxThreads}}/Hikari pool/Netty channel.
+5. So sánh heap dùng (Grafana) vs RSS: heap 60% nhưng RSS chạm limit → non-heap là thủ phạm.
+
+### Cách xử lý
+- Giảm {{-XX:MaxRAMPercentage}} (ví dụ 80% → 70-75%) để để lại chỗ cho non-heap.
+- Giới hạn thread pool (Tomcat {{maxThreads}}, Hikari {{maximumPoolSize}}, Netty event loop) theo tải thực, không để 400 thread khi cần 100.
+- {{-Xss512k}} giảm thread stack sau khi đã load test (cẩn thận, chỉ sau khi đo).
+- Giữ {{-XX:+ExitOnOutOfMemoryError}} và alert khi working set > 85% limit.
+- Không vội tăng limit gấp đôi: chỉ mua thời gian cho leak native/thread pool phình.
+
+### Lỗi hay gặp
+1. **Chỉ xem heap dashboard**, bỏ sót container working set.
+2. **Tăng limit gấp đôi** mà không giảm thread → OOMKilled quay lại sau khi pool phình thêm.
+3. **Nhầm OOMKilled** (kernel, exit 137) với {{OutOfMemoryError}} (JVM ném, có heap dump).
+4. **Đặt {{memory.request}} quá thấp so với thực tế**: pod thuộc lớp Burstable, dễ bị evict sớm khi node thiếu bộ nhớ.
+
+### Ví dụ đời thực
+**Triệu chứng:** Pod {{order-api}} (limit 2Gi) restart với {{Reason: OOMKilled, Exit Code: 137}} 3-4 lần/ngày, nhưng Grafana heap used chỉ ~55% và không có {{OutOfMemoryError}} hay heap dump.
+**Điều tra:** {{kubectl describe pod}} xác nhận Last State OOMKilled. Metric {{container_memory_working_set_bytes}} tiến sát 2Gi trước khi chết. Bật NMT ({{jcmd 1 VM.native_memory summary}}) thấy Thread arena ~420Mi; {{jstack}} và metric cho thấy Tomcat {{maxThreads}} = 400 và Hikari pool = 80, mỗi thread stack mặc định ~1MB.
+**Nguyên nhân gốc:** {{-XX:MaxRAMPercentage=80}} cấp heap ~1.6Gi, phần còn lại không đủ cho ~480 thread stack cộng metaspace/code cache; tổng RSS vượt {{memory.max}} nên kernel SIGKILL, không phải leak heap.
+**Cách xử lý:** Hạ {{-XX:MaxRAMPercentage}} xuống 70%, giảm {{maxThreads}} còn 200 và Hikari pool còn 30 theo tải thực, đặt {{-Xss512k}} sau load test, giữ {{-XX:+ExitOnOutOfMemoryError}} và alert khi working set > 85% limit.
+**Kết quả đo được:** OOMKilled giảm về 0 trong 14 ngày, working set ổn định ~1.45Gi ở peak, p99 latency không đổi và không phát sinh timeout kết nối DB.
+
+### Trả lời mẫu khi phỏng vấn
+"OOMKilled là kernel giết container vì vượt memory.max (exit 137), khác OutOfMemoryError của JVM. Heap thấp mà vẫn OOMKilled thường do non-heap: thread stack, metaspace, direct buffer đẩy RSS vượt limit. MaxRAMPercentage chỉ đặt heap, không bao trùm non-heap. Tôi điều tra bằng kubectl describe (OOMKilled 137), container_memory_working_set_bytes, jcmd NMT và jstack đếm thread, rồi giảm MaxRAMPercentage xuống 70-75% và giới hạn thread pool. Trường hợp gần đây: Tomcat 400 thread + stack 420Mi làm RSS 2.2Gi vượt limit 2Gi; giảm thread xuống 200 và MaxRAMPercentage 70% giúp OOMKilled về 0 trong 2 tuần."
+
+> Senior tip: Heap thấp mà OOMKilled: (1) xác nhận working set chạm limit, (2) NMT summary, (3) đếm thread và kiểm tra pool. Đừng vội tăng limit gấp đôi — có thể chỉ mua thời gian cho leak native hoặc thread pool phình.
+`,
+    follow: [
+      'NativeMemoryTracking (NMT) cho bạn thấy những vùng nào và dùng diff thế nào để tìm leak?',
+      'Giới hạn bộ nhớ chia cho nhiều container trong cùng Pod ra sao và bẫy thường gặp?',
+      'Khi nào dùng -XX:MaxDirectMemorySize và làm sao phát hiện direct buffer leak với Netty?'
+    ],
+    tags: ['Kubernetes', 'OOMKilled', 'JVM', 'cgroup v2', 'MaxRAMPercentage', 'Memory']
+  }
+  ,{
+    id: 'devops-167',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Rolling update trong Kubernetes có thực sự zero-downtime không? Bạn thiết kế chiến lược deploy cho service thanh toán sao cho không mất request trong khi hai phiên bản chạy song song?',
+    a: `**Tóm tắt:** Rolling update thay Pod dần theo {{maxSurge}} (tạo thêm) và {{maxUnavailable}} (cho phép thiếu), nhưng **không tự động zero-downtime**. Zero-downtime cần: Pod mới chỉ nhận traffic khi readiness thật sự sẵn sàng (sau startup/warm-up); Pod cũ rời traffic êm trước khi tắt (preStop + graceful shutdown) và không bị {{SIGKILL}} giữa chừng ({{terminationGracePeriodSeconds}} đủ); hai phiên bản chạy song song nên schema DB phải backward-compatible (expand-contract). Guardrail ở quy mô lớn: PDB, {{minReadySeconds}}, {{progressDeadlineSeconds}}, rollback/canary tự động.
+
+### Thuật ngữ (giải thích lần đầu)
+- **maxSurge / maxUnavailable**: surge là số Pod vượt desired; unavailable là số Pod được phép không sẵn sàng khi cập nhật.
+- **preStop hook**: chạy trước SIGTERM, hay dùng để chờ proxy gỡ endpoint.
+- **Graceful shutdown**: ứng dụng ngừng nhận request mới, chờ xử lý xong in-flight rồi thoát.
+- **terminationGracePeriodSeconds**: thời gian tối đa trước SIGKILL; phải đủ cho preStop + graceful shutdown.
+- **PDB (PodDisruptionBudget)**: giới hạn gián đoạn tự nguyện (drain/upgrade) cùng lúc.
+- **Expand-contract**: thay đổi schema DB bằng cách thêm cột mới, chạy hai cột song song, rồi xóa cột cũ — để hai phiên bản app cùng chạy được.
+
+### Timeline race condition khi Pod cũ bị xóa
+~~~text
+Pod cũ Terminating                         Proxy/EndpointSlice
+t0: gỡ endpoint (lan truyền dần)  ----->  có thể vẫn route tới Pod cũ
+t1: preStop (sleep 10s) vẫn phục vụ   ----->
+t10: SIGTERM -> graceful drain in-flight -->
+t40: xong xử lý in-flight
+t60: terminationGracePeriod hết -> SIGKILL cắt request còn lại
+~~~
+
+Nếu không preStop: endpoint bị gỡ, app đóng socket ngay, proxy còn route → 502/503 khi deploy.
+
+### Ví dụ manifest (thanh toán)
+~~~yaml
+strategy:
+  type: RollingUpdate
+  rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+minReadySeconds: 15
+template:
+  spec:
+    terminationGracePeriodSeconds: 60
+    containers:
+    - name: payment
+      lifecycle:
+        preStop: { exec: { command: ["sh","-c","sleep 10"] } }
+      readinessProbe:
+        httpGet: { path: /actuator/health/readiness, port: 8080 }
+      startupProbe:
+        httpGet: { path: /actuator/health/liveness, port: 8080 }
+        failureThreshold: 30
+~~~
+Spring: {{server.shutdown=graceful}}, {{spring.lifecycle.timeout-per-shutdown-phase=30s}}.
+
+### Vai trò probe trong rolling update
+- **Startup**: che thời gian khởi động chậm (Flyway, JIT), tránh liveness kill oan.
+- **Readiness**: Pod mới vào EndpointSlice và nhận traffic chỉ khi thật sự phục vụ.
+- **Liveness**: chỉ internal state, không kiểm tra DB (tránh restart storm khi DB failover giữa rollout).
+
+### Guardrail lead (quy mô lớn)
+- **PDB**: luôn còn tối thiểu Pod khi drain/nâng cấp node.
+- **minReadySeconds**: Pod Ready ổn định trước khi tiến bước rolling.
+- **progressDeadlineSeconds** + rollback/canary tự động (Argo Rollouts/Flagger/CI) khi error rate vượt ngưỡng.
+- **Schema backward-compatible**: expand-contract vì hai version chạy song song.
+
+### Lỗi hay gặp
+1. **Không preStop**: endpoint gỡ trước khi proxy cập nhật → 502/503 khi deploy.
+2. **Grace period ngắn hơn thời gian xử lý request dài**: {{SIGKILL}} cắt ngang (thanh toán bị gián đoạn, Kafka commit trùng nếu xử lý chưa xong).
+3. **Schema breaking khi hai version chạy**: ví dụ cột NOT NULL không có default → lỗi nghiệp vụ.
+4. **maxUnavailable 0 luôn tốt**: tốn surge; cluster nhỏ có thể không đủ chỗ.
+
+### Ví dụ đời thực
+**Triệu chứng:** Mỗi lần deploy {{checkout}} (30 replica, ~800 RPS) gateway ghi nhận 0,6-1% lỗi 502 trong 2 phút đầu rolling update, dù {{maxUnavailable: 0}}.
+**Điều tra:** Xem event rollout và log ingress cho thấy Pod cũ bị terminate ngay sau khi endpoint cập nhật; log app cho thấy request in-flight vẫn bị ngắt. Manifest: không có {{preStop}}, {{terminationGracePeriodSeconds}} là 30s trong khi xử lý thanh toán P99 ~20s và Spring chưa bật graceful shutdown.
+**Nguyên nhân gốc:** Race condition khi endpoint bị gỡ nhưng proxy chưa kịp cập nhật, cộng với app nhận SIGTERM và đóng kết nối ngay, grace period không đủ để drain nên một phần request đang xử lý bị cắt.
+**Cách xử lý:** Thêm {{preStop}} {{sleep 10}}, bật {{server.shutdown=graceful}} với timeout 30s, tăng {{terminationGracePeriodSeconds}} lên 60, đặt {{minReadySeconds: 15}} và PDB {{minAvailable: 80%}}; chạy load test liên tục trong deploy trên staging làm gate.
+**Kết quả đo được:** 5 lần deploy tiếp theo với lưu lượng tương đương ghi nhận 0 lỗi 502 (error rate < 0,01%), thời gian drain Pod cũ trung bình 18s và rollout hoàn tất trong 6 phút.
+
+### Trả lời phỏng vấn (lead)
+"Zero-downtime là phối hợp: rolling update kiểm soát tốc độ (thường maxUnavailable 0, surge vừa phải), startup/readiness đảm bảo Pod mới sẵn sàng, preStop + SIGTERM graceful + terminationGracePeriod đủ để Pod cũ rời êm và xử lý hết in-flight. Quy mô lớn tôi thêm PDB, minReadySeconds, progressDeadline, rollback/canary tự động và tương thích ngược schema. Tôi không tin cấu hình bằng cảm giác: load test liên tục trong deploy trên staging với ngưỡng error rate/latency làm gate."
+
+> Senior tip: Coi deploy là thí nghiệm có kiểm soát: đo error rate per-version, rollback tự động khi vượt ngưỡng, rehearsal runbook. Nhiều thất bại "zero-downtime" đến từ DB migration hoặc dependency chậm, không chỉ từ YAML — guardrail phải bao cả tầng dữ liệu.
+`,
+    follow: [
+      'Làm sao thiết kế deploy khi request chạy tới 2-5 phút (long-running) mà vẫn không bị cắt?',
+      'PDB tương tác với node drain và rolling update thế nào, và khi nào PDB chặn cả hai?',
+      'Khi nào bạn chọn canary/blue-green thay vì rolling update thuần cho service thanh toán?'
+    ],
+    tags: ['Kubernetes', 'RollingUpdate', 'Probes', 'GracefulShutdown', 'PDB', 'ZeroDowntime', 'Leadership']
+  }
+  ,{
+    id: 'devops-168',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Bạn thiết kế pipeline CI/CD cho Spring Boot (test, quét bảo mật, build image, deploy) như thế nào để phát hiện lỗi sớm và không đem lỗ hổng lên production?',
+    a: `**Tóm tắt:** Pipeline theo stage: build (compile + test unit) → test (integration + phân tích mã tĩnh) → security (quét secret, dependency, SAST) → build image (multi-stage, tag theo commit SHA) → staging (smoke test) → production (cần manual approval/gate, môi trường regulated). Nguyên lý **build once promote many**: cùng artifact (image tag SHA) promoted qua staging và production, không rebuild lại ở mỗi môi trường. Mỗi quét phải **chặn pipeline** (allow_failure: false), không chỉ báo cáo; quét sớm trong pull request (shift-left).
+
+### Thuật ngữ (giải thích lần đầu)
+- **Stage / job**: stage chạy tuần tự, job trong cùng stage chạy song song.
+- **Artifact**: file đầu ra (jar, image) truyền giữa stage.
+- **Static analysis / SAST**: phân tích mã nguồn không chạy app (SQL injection, deserialization không an toàn).
+- **Secret scanning**: quét mã-token, API key trong lịch sử commit.
+- **SBOM (Software Bill of Materials)**: danh sách thành phần trong image/artifact.
+- **Shift-left**: quét bảo mật sớm trong pull request, không chỉ khi merge main.
+- **Build once promote many**: xây artifact một lần, dùng cùng artifact qua mọi môi trường.
+
+### Ví dụ .gitlab-ci.yml
+~~~yaml
+stages: [build, test, security, image, staging, production]
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+cache:
+  key: "\${CI_COMMIT_REF_SLUG}"
+  paths: [.m2/repository]
+build:
+  stage: build
+  image: maven:3.9-eclipse-temurin-17
+  script: mvn -B compile
+  artifacts:
+    paths: [target/classes]
+test:
+  stage: test
+  script: mvn -B verify
+security:
+  stage: security
+  script:
+    - gitleaks detect --source . --exit-code 1
+    - trivy fs --severity HIGH,CRITICAL --exit-code 1 .
+    - semgrep ci --config auto
+  allow_failure: false
+image:
+  stage: image
+  script:
+    - docker build -t app:\${CI_COMMIT_SHA} .
+    - docker push app:\${CI_COMMIT_SHA}
+staging:
+  stage: staging
+  script: kubectl set image deployment/app app=app:\${CI_COMMIT_SHA} -n staging
+  needs: [image]
+production:
+  stage: production
+  when: manual
+  script: kubectl set image deployment/app app=app:\${CI_COMMIT_SHA} -n prod
+  needs: [staging]
+~~~
+
+### Cơ chế bảo mật
+- **Secret scanning**: gitleaks/trufflehog chặn commit chứa AWS key/token; pre-commit hook chặn trước khi push. Nếu đã rò rỉ: thu hồi key, rotate, scrub history (git filter-repo).
+- **Dependency scan**: Trivy fs/Snyk so với NVD CVE; fail critical/high; xuất SBOM (CycloneDX) kèm artifact để biết image nào bị ảnh hưởng khi CVE mới công bố.
+- **SAST**: SonarQube/Semgrep tìm SQL injection, deserialization không an toàn mà không cần chạy app.
+- **Image scan**: Trivy image fail HIGH/CRITICAL có fix; exception có expiry + lý do.
+
+### Cơ chế build once promote many
+- Tag image theo commit SHA (không dùng latest production).
+- Cùng image digest được deploy staging rồi production; chọn revision cũ để rollback trong vài phút.
+
+### Lỗi hay gặp
+1. **Quét chỉ báo cáo, không chặn pipeline** (allow_failure: true) → lỗ hổng lên production.
+2. **Secret hard-code trong Dockerfile ENV/ARG** → thấy được qua docker history.
+3. **Cache chứa target/ hoặc secret** → build chậm và rò rỉ.
+4. **Production deploy tự động không có approval** trong môi trường regulated (ngân hàng, y tế).
+5. **Không test rollback trong staging** → không biết rollback thế nào khi incident thật.
+
+### Ví dụ đời thực
+Developer nhầm commit AWS access key vào nhánh feature; pipeline gitleaks {{--exit-code 1}} thất bại ngay, chặn code vào main. Đội ngũ bảo mật thu hồi key, rotate, scrub history. Cùng tuần, trivy fs phát hiện thư viện logging có CVE critical trong bản build order-service; đội ngũ nâng thư viện, rebuild image, quét lại xanh mới promote lên production. Kết quả: số lỗ hổng phát hiện trong pipeline giảm từ khoảng 12 bản/tháng xuống 1 bản/tháng sau hai tháng áp dụng quét trong pull request; không còn sự cố key rò rỉ vào mã nguồn trong 6 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Pipeline của tôi theo stage: build → test (integration + phân tích mã tĩnh) → security (gitleaks secret, trivy fs dependency, semgrep SAST) → build image multi-stage tag theo commit SHA → staging smoke test → production cần manual approval. Nguyên lý build once promote many: cùng image digest qua staging và production, rollback bằng revision cũ trong vài phút. Mỗi quét phải chặn pipeline, không chỉ báo cáo; quét sớm trong pull request (shift-left). Trường hợp gần đây: gitleaks chặn AWS key nhầm commit ngay từ pull request; trivy fs phát hiện CVE critical trong thư viện logging, nâng thư viện và quét lại xanh mới promote. Số lỗ hổng trong pipeline giảm từ ~12/tháng xuống 1/tháng."
+
+> Senior tip: Quét bảo mật phải chặn pipeline (allow_failure: false), không chỉ báo cáo; xuất SBOM kèm artifact để khi CVE mới công bố bạn biết chính xác image nào chứa thư viện bị lỗi.
+`,
+    follow: [
+      'Build once promote many có lợi ích gì và làm sao thực hiện?',
+      'Exception cho CVE nên có hạn bao lâu và ai phê duyệt?',
+      'Manual approval production triển khai ra sao trong GitLab/GitHub?'
+    ],
+    tags: ['CI/CD', 'GitLabCI', 'Security', 'SAST', 'SBOM', 'Trivy']
+  }
+  ,{
+    id: 'devops-169',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Rollback khi deploy lỗi là gì, và khi nào bạn rollback image, khi nào fix-forward, và migration CSDL phải thiết kế thế nào để rollback an toàn?',
+    a: `**Tóm tắt:** Rollback ứng dụng = quay lại image tag/digest trước đó bằng {{kubectl rollout undo}}, {{helm rollback}} hoặc ArgoCD sync về revision trước, thường hoàn thành trong vài phút (MTTR mục tiêu < 5 phút). Rollback CSDL **không thể đơn giản "undo"** migration đã chạy (dữ liệu đã ghi, cột đã thay đổi) → thiết kế **expand-contract** (thêm cột nullable, deploy code đọc/ghi cả hai cột, backfill, rồi mới NOT NULL/xóa cũ) để code cũ và mới cùng chạy trong khoảng chuyển đổi. Nếu dữ liệu đã hỏng, phải **fix-forward** (commit sửa lỗi mới) thay vì rollback code. Feature flag tắt tính năng nhanh hơn rollback image; canary/blue-green giảm blast radius.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Rollback**: quay lại phiên bản trước đó của ứng dụng.
+- **Revision**: số lần chỉnh sửa của release (Helm/Kubernetes rollout history).
+- **Image digest**: mã băm duy nhất xác định một image (không bị thay đổi như tag).
+- **MTTR**: Mean Time To Recover, thời gian trung bình khôi phục dịch vụ.
+- **Expand-contract**: thay đổi schema DB bằng cách thêm cột mới, chạy hai cột song song, rồi xóa cột cũ.
+- **Fix-forward**: commit sửa lỗi mới và deploy, thay vì quay về phiên bản cũ.
+- **Feature flag**: cờ bật/tắt tính năng mà không cần deploy lại.
+- **Blast radius**: phạm vi ảnh hưởng của một sự cố hoặc thay đổi.
+
+### Rollback ứng dụng (ví dụ)
+~~~bash
+# Kubernetes
+kubectl rollout undo deployment/order-api -n prod
+kubectl rollout status deployment/order-api -n prod
+
+# Helm
+helm history order-api -n prod
+helm rollback order-api 42 -n prod
+
+# ArgoCD
+argocd app rollback order-api
+~~~
+
+### Expand-contract cho migration CSDL (4 bước)
+1. Thêm cột mới cho phép NULL, có giá trị mặc định cho dòng cũ.
+2. Deploy code đọc và ghi cả hai cột (cũ và mới).
+3. Backfill dữ liệu từ cột cũ sang cột mới.
+4. Thêm ràng buộc NOT NULL, rồi xóa cột cũ sau khi chắc toàn bộ traffic dùng code mới.
+
+Với expand-contract, rollback image về version cũ không phá schema vì version cũ vẫn đọc/ghi cột cũ.
+
+### Khi nào rollback, khi nào fix-forward
+- **Rollback image**: lỗi mới trong code (sai logic, regression), chưa thay đổi schema làm hỏng dữ liệu.
+- **Fix-forward**: schema đã thay đổi không thể ngược lại, hoặc dữ liệu đã bị ghi sai theo schema mới → commit sửa lỗi mới, deploy ngay.
+- **Feature flag**: tính năng mới gây lỗi → tắt flag, không cần rollback image.
+
+### Lỗi hay gặp
+1. **Không có runbook rollback**, team không biết rollback thế nào khi incident thật.
+2. **Migration CSDL không backward-compatible** (thêm NOT NULL không có default) → rollback code lỗi insert cũ.
+3. **Xóa cột cũ ngay sau deploy** → không thể rollback.
+4. **Không test rollback trong staging** → rollback cũng bị lỗi.
+5. **Rollback image nhưng dữ liệu đã ghi theo schema mới** → dữ liệu phân kỳ, phải fix-forward + dọn dữ liệu.
+
+### Ví dụ đời thực
+**Triệu chứng:** order-api deploy 1.4.2, p99 latency nhảy từ 200ms lên 2 giây, error rate 5xx tăng từ 0,1% lên 2%.
+**Điều tra:** {{kubectl rollout history deployment/order-api -n prod}} thấy revision mới là 2; log báo {{org.postgresql.util.PSQLException: ERROR: null value in column "status" violates not-null constraint}}. Lập trình viên mới thêm cột {{status NOT NULL}} mà không có giá trị mặc định, nên các insert cũ bị lỗi.
+**Xử lý:** ngay lập tức {{kubectl rollout undo deployment/order-api -n prod}} quay về image 1.4.1. Sau 3 phút p99 quay lại 200ms, error rate dưới 0,1%.
+**Sau incident:** migration được viết lại theo expand-contract: thêm cột {{status}} cho phép null, deploy code đọc/ghi cả hai cột, backfill dữ liệu, rồi mới thêm NOT NULL và xóa cột cũ. Lần sau deploy {{order-api:1.4.3}} diễn ra suôn sẻ.
+**Kết quả:** MTTR là 3 phút, dưới mục tiêu 5 phút; không dữ liệu bị mất vì không xóa cột ngay lập tức.
+
+### Trả lời phỏng vấn (lead)
+"Rollback ứng dụng là quay lại image tag/digest trước bằng kubectl rollout undo, helm rollback hoặc ArgoCD sync revision trước, thường trong vài phút (MTTR < 5 phút). Rollback CSDL không thể undo migration đã chạy, nên tôi dùng expand-contract: thêm cột nullable, chạy hai cột song song, backfill, rồi mới NOT NULL/xóa cũ — như vậy code cũ và mới cùng chạy, rollback image không phá schema. Nếu dữ liệu đã hỏng theo schema mới, tôi fix-forward thay vì rollback code. Feature flag tắt tính năng nhanh hơn rollback image; canary/blue-green giảm blast radius. Tôi luôn giữ image tag trước, đo thời gian rollback và luyện rollback trong staging."
+
+> Senior tip: Luôn giữ image tag trước đó và test rollback trong staging trước khi deploy production; nếu rollback cũng bị lỗi, incident sẽ kéo dài gấp bội.
+`,
+    follow: [
+      'Database migration rollback strategy khi schema đã thay đổi không thể ngược lại?',
+      'Feature flag vs deploy rollback: chọn cái nào khi nào?',
+      'Canary vs blue-green: blast radius và độ phức tạp khác nhau thế nào?'
+    ],
+    tags: ['CD', 'Rollback', 'Deployment', 'ExpandContract', 'FixForward', 'Leadership']
+  }
 );
