@@ -4703,7 +4703,7 @@ Process 8945: UPDATE wallets SET balance = balance + 500000 WHERE id = 55;
   answer: `**Tóm tắt:** Deadlock PostgreSQL xảy ra khi hai giao dịch khóa các tài nguyên theo thứ tự ngược nhau và mỗi giao dịch chờ kia mở khóa. Trong sự cố, order-service khóa products rồi wallets, còn refund-service khóa wallets rồi products; hai giao dịch chạy song song trên cùng một sản phẩm → chéo chờ → PostgreSQL hủy một giao dịch và báo lỗi deadlock. Sửa ngắn hạn: retry giao dịch khi nhận lỗi deadlock (mã 40P01). Sửa dài hạn: bắt buộc tất cả service khóa hàng theo thứ tự nhất quán (luôn products trước wallets), hoặc dùng advisory lock để tuần tự hóa truy cập cùng một sản phẩm.
 
 ### Khái niệm cần biết trước
-- **Transaction (giao dịch):** đơn vị làm việc nguyên tử trong DB; các thay đổi trong transaction chỉ lưu vĩnh viễn khi COMMIT, nếu lỗi thì ROLLBACK zurück toàn bộ.
+- **Transaction (giao dịch):** đơn vị làm việc nguyên tử trong DB; các thay đổi trong transaction chỉ lưu vĩnh viễn khi COMMIT, nếu lỗi thì ROLLBACK hoàn toàn.
 - **Row-level lock (khóa cấp hàng):** PostgreSQL khóa từng hàng khi UPDATE/DELETE; các transaction khác muốn cập nhật cùng hàng phải chờ đến khi transaction đầu COMMIT hoặc ROLLBACK.
 - **Deadlock (khóa chết):** tình huống giao dịch A giữ khóa X và chờ khóa Y, giao dịch B giữ khóa Y và chờ khóa X. Hai bên chờ mãi không bao giờ xong. PostgreSQL phát hiện deadlock bằng đồ thị chờ (wait-for graph) và hủy một bên (chọn transaction có chi phí làm lại thấp hơn) rồi báo lỗi 40P01.
 - **Isolation level Read Committed:** mỗi câu lệnh nhìn thấy dữ liệu đã commit trước lúc câu lệnh bắt đầu; khóa hàng được giữ đến hết transaction, không phải đến hết câu lệnh.
@@ -4732,7 +4732,7 @@ STATEMENT: UPDATE products SET stock = stock - 1 WHERE id = 101;
 ### Dẫn chứng
 
 - Artifact pg-deadlock.txt: Process 8912 chạy {{UPDATE products SET stock = stock - 1 WHERE id = 101}}, chờ lock do Process 8945 giữ; Process 8945 chạy {{UPDATE wallets SET balance = balance + 500000 WHERE id = 55}}, chờ lock do Process 8912 giữ. Đây là mẫu chéo chờ đặc trưng của deadlock.
-- Lỗi deadlock được ghi kèm mã 40P01 (không phải timeout 57014 hay treo network).
+- Lỗi được ghi là {{deadlock detected}} (SQLSTATE 40P01 — mã chuẩn của PostgreSQL cho deadlock, không phải timeout 57014 hay treo network).
 - Cả hai transaction cập nhật cùng cặp hàng (products#101, wallets#55) nhưng theo thứ tự ngược nhau.
 - Sau khi PostgreSQL hủy một transaction, transaction kia hoàn thành bình thường, chứng minh không phải lỗi dữ liệu hay treo vĩnh viễn.
 
@@ -4791,8 +4791,8 @@ Khi khóa Redis hết hạn (TTL = 0), hàng ngàn request cùng lúc miss cache
 Dữ liệu Redis, PostgreSQL và log xem trong artifact redis-stampede.txt.`,
   artifacts: [ { name: 'redis-stampede.txt', lang: 'text', content: `2026-10-26 19:15:00 Redis INFO keyspace:
 db0:keys=124503,expires=124490,avg_ttl=245
-2026-10-26 19:15:01 Redis SLOWLOG entry 1: GET product:detail:9987, duration=12450ms
-2026-10-26 19:15:01 Redis SLOWLOG entry 2: SET product:detail:9987 ..., duration=890ms
+2026-10-26 19:15:01 Redis SLOWLOG entry 1: GET product:detail:9987, duration=4200us
+2026-10-26 19:15:01 Redis SLOWLOG entry 2: SET product:detail:9987, duration=3800us
 2026-10-26 19:15:00 PostgreSQL pg_stat_activity:
   14200 connections active, 13800 in state 'active' running SELECT * FROM products WHERE id = 9987
   CPU: 100% (all 16 cores)
@@ -4829,7 +4829,7 @@ Connection pool cạn kiệt ảnh hưởng không chỉ chi tiết sản phẩm
 
 ### Dẫn chứng
 
-- Artifact redis-stampede.txt: Redis SLOWLOG ghi {{GET product:detail:9987}} mất 12.450 ms (bình thường < 1 ms), {{SET}} mất 890 ms — Redis bị kẹt do áp lực ghi từ hàng nghìn request đồng thời.
+- Artifact redis-stampede.txt: Redis SLOWLOG ghi {{GET product:detail:9987}} mất 4.200 us, {{SET}} mất 3.800 us (bình thường < 1 ms, nhưng vẫn chậm hơn nhiều so với bình thường) — Redis vẫn phản hồi nhanh, chứng minh đây không phải do Redis chậm.
 - PostgreSQL: 14.200 kết nối active, cùng truy vấn {{SELECT * FROM products WHERE id = 9987}}, CPU 100% — dấu hiệu cache stampede chứ không phải truy vấn chậm do thiếu index (index thì chỉ một vài kết nối chậm, không phải 14.200 kết nối cùng truy vấn).
 - Log ứng dụng: hàng nghìn {{cache MISS for product:detail:9987, querying DB...}} trong cùng một giây, sau đó {{DB connection timeout after 5000ms}}.
 - Trước khi sự cố: avg_ttl 245 giây, keys 124.503 (bình thường); sau sự cố: connection timeout, phản hồi 8 giây.
