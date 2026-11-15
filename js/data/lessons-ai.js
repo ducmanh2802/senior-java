@@ -4134,5 +4134,658 @@ Bài tập cố ý kiểm tra type string và required để giữ phạm vi nh�
     "evaluation",
     "Java"
   ]
-},
+}
+,
+{
+  id: 'lesson-ai-015',
+  track: 'ai', order: 15,
+  title: 'Dự án RAG bằng Spring Boot (1/2): kiến trúc tổng thể và gọi LLM an toàn',
+  level: 'senior', minutes: 45,
+  goals: [
+    'Vẽ được luồng RAG end-to-end: ingest → chunk → embedding → lưu pgvector → truy vấn → ghép prompt → gọi LLM, và nói được vai trò từng bước.',
+    'Gọi API LLM từ Spring Boot bằng {{java.net.http.HttpClient}} với timeout, retry chỉ lỗi tạm thời, và giới hạn số token đầu ra để kiểm soát chi phí.',
+    'Cấu hình endpoint, model, key, ngân sách token bằng {{@ConfigurationProperties}} thay vì hard-code.',
+    'Ước lượng được chi phí của một lượt hỏi (input + output token × đơn giá) và biết tại sao tiếng Việt tốn nhiều token hơn tiếng Anh.',
+    'Trả lời câu hỏi phỏng vấn về việc tích hợp LLM vào dịch vụ Java cho ổn định.',
+  ],
+  body: `**Tóm tắt:** RAG (Retrieval-Augmented Generation — sinh câu trả lời có tăng cường bằng tìm kiếm) cho phép LLM trả lời dựa trên tài liệu riêng của doanh nghiệp thay vì chỉ dựa vào kiến thức cũ đã học trong quá trình huấn luyện. Bài học này đi qua toàn bộ luồng RAG như một dự án thật: thu thập tài liệu (ingest), cắt thành đoạn (chunk), biến mỗi đoạn thành danh sách số gọi là embedding, lưu vào bảng vector pgvector của PostgreSQL, khi người dùng hỏi thì tìm đoạn gần nhất, ghép vào prompt và gọi mô hình LLM. Bạn cũng học cách gọi LLM API từ Spring Boot một cách an toàn: timeout, retry, giới hạn chi phí token, và cấu hình tập trung bằng {{@ConfigurationProperties}}.
+
+### 1. Luồng RAG end-to-end: ingest, chunk, embedding, pgvector, truy vấn, prompt, LLM
+
+Một dự án RAG chạy qua hai giai đoạn: **ingest** (chuẩn bị một lần, chạy ngầm) và **query** (chạy mỗi lần người dùng hỏi). Hãy tưởng ingest giống việc lập chỉ mục sách vào thư viện, còn query giống việc độc giả hỏi thủ thư.
+
+**Bước 1: Ingest — thu thập tài liệu.** Lấy tài liệu nguồn (hướng dẫn thẻ tín dụng, quy trình phê duyệt vay, câu hỏi thường gặp) từ cơ sở dữ liệu, file PDF hoặc wiki nội bộ. Mỗi tài liệu gắn metadata: mã tài liệu (docId), chủ đề, trang, thời gian cập nhật và vai trò được phép xem (allowedRoles). Ví dụ tài liệu "Biểu phí thẻ 2024" (docId = TARIFF-2024, trang 12, allowedRoles = ["khach-hang", "nhan-vien"]).
+
+**Bước 2: Chunking — cắt tài liệu thành đoạn.** LLM chỉ nhúng được một lượng văn bản giới hạn mỗi lần, và đoạn quá dài sẽ làm vector "loãng" (nhiều chủ đề trộn lẫn nên không gần với câu hỏi cụ thể nào). Cắt mỗi tài liệu thành các đoạn nhỏ (chunk), mỗi chunk khoảng 200–500 từ, có chồng lấp (overlap) 10–20% để ý không bị cắt đôi ở ranh giới. Mỗi chunk giữ mã tài liệu gốc và số trang để trích nguồn sau này (chi tiết ở bài 2).
+
+**Bước 3: Embedding — biến văn bản thành danh sách số.** Gọi embedding model (dịch vụ của nhà cung cấp hoặc model chạy cục bộ) để biến mỗi chunk thành vector, ví dụ 384 số thực. Hai đoạn gần nghĩa thì vector gần hướng, dù không trùng từ nào. Ví dụ: "phí năm của thẻ tín dụng" và "chi phí thường niên thẻ" vector gần nhau.
+
+**Bước 4: Lưu vào pgvector.** pgvector là extension của PostgreSQL cho phép cột có kiểu vector và tìm các vector gần nhất nhanh (cột {{embedding vector(384)}} cộng index HNSW — xem bài 2).
+
+**Bước 5: Query — người dùng hỏi.** Câu hỏi "Thẻ Platinum mất phí bao nhiêu một năm?" cũng được biến thành vector bằng cùng embedding model đã dùng cho chunk.
+
+**Bước 6: Truy vấn vector (retrieve).** Tính cosine similarity giữa vector câu hỏi và vector của từng chunk; cosine = 1 nghĩa là cùng hướng (gần nghĩa nhất), 0 nghĩa là không liên quan. Lấy top-k (3–5) chunk cao nhất, nhưng **lọc quyền trước** (chỉ chunk có vai trò trong {{allowedRoles}} của người dùng), sau đó sắp xếp theo điểm và break tie theo id để kết quả ổn định.
+
+**Bước 7: Ghép prompt (augment).** Top-k chunk được ghi vào prompt kèm nhãn [1], [2]… System prompt bắt buộc LLM chỉ trả lời dựa trên ngữ cảnh đã đưa và trích số tương ứng sau mỗi nhận định.
+
+**Bước 8: Gọi LLM và trả lời.** Gọi API LLM, nhận câu trả lời kèm trích dẫn; server kiểm tra mọi số trích phải nằm trong danh sách id đã gửi (id lạ = bịa, không hiển thị link).
+
+Ví dụ số liệu: 10.000 tài liệu × 5 chunk = 50.000 chunk vector. Mỗi lượt hỏi đọc 5 chunk × khoảng 300 token = 1.500 token ngữ cảnh, chi phí nhân theo số lượt và số khách hàng — chính lý do phải theo dõi chi phí (xem mục 4).
+
+### 2. Gọi LLM API từ Spring Boot: timeout, retry, giới hạn token
+
+Gọi LLM là một cuộc gọi mạng **chậm** (một giây đến hàng chục giây), **không tất định** (cùng câu hỏi có thể trả về kết quả khác nhau), và **tính tiền theo token**. Spring Boot không có sẵn client LLM trong JDK, nên ta viết dịch vụ wrapper bằng {{java.net.http.HttpClient}} (có sẵn từ Java 11).
+
+**Timeout phải có hai tầng** (connect timeout đặt trên {{HttpClient}}, timeout đọc đặt trên {{HttpRequest}}):
+- Kết nối TCP/TLS: 3 giây (nhanh).
+- Đọc phản hồi: 20 giây (LLM sinh chậm). Không đặt timeout thì một cuộc gọi treo có thể chiếm luồng của Tomcat; 200 luồng cùng treo 10 phút là toàn bộ service không còn trả lời được API khác (sự cố này là nội dung câu hỏi ai-021).
+
+**Retry chỉ cho lỗi tạm thời:** 429 (quá giới hạn yêu cầu), 529/500/502/503/504 (quá tải phía nhà cung cấp). Không retry 400/401/403/404/422 (lỗi của request, gửi lại vẫn sai). Mỗi lần thử chờ theo backoff {{min(cap, base × 2^attempt)}} cộng jitter (số ngẫu nhiên nhỏ) để hàng trăm instance không retry cùng một lúc (thundering herd). Giới hạn tổng số lần thử và tổng thời gian retry theo deadline của cuộc gọi gốc.
+
+**Giới hạn token đầu ra:** đặt {{max_tokens}} (hoặc {{max_completion_tokens}}) theo loại công việc: phân loại 64–128, tóm tắt 256–512, sinh nội dung 1024+. Nếu không đặt, mô hình có thể trả lời dài theo ý thích và chi phí output thường đắt gấp 4–5 lần input.
+
+**Ước lượng chi phí trước khi gọi:** token xấp xỉ ký tự chia 4 (tiếng Anh); tiếng Việt tốn hơn (khoảng 2–3 ký tự/token do dấu). Chi phí = inputToken/1M × đơn giá input + outputToken/1M × đơn giá output. Ví dụ đơn giá giả định (không phải bảng giá thật): 3 USD cho 1 triệu token input, 15 USD cho 1 triệu output; 10.000 lượt × (5.000 input + 500 output) = khoảng 225 USD/tháng. Gấp đôi lượt hoặc thêm 2.000 token ngữ cảnh vào mỗi lượt là hóa đơn tăng ngay — lý do phải log số token của từng request (không log nội dung prompt hay dữ liệu khách hàng/PII).
+
+Code mẫu:
+
+~~~java
+public String ask(String prompt) {
+    String body = "{\\"model\\": \\"" + cfg.getModel() +
+        "\\", \\"messages\\": [{\\"role\\": \\"user\\", \\"content\\": \\"" + prompt + "\\"}], " +
+        "\\"max_tokens\\": " + cfg.getMaxOutputTokens() + "}";
+    HttpRequest req = HttpRequest.newBuilder(URI.create(cfg.getEndpoint()))
+            .timeout(Duration.ofSeconds(cfg.getReadTimeoutSeconds()))
+            .header("x-api-key", cfg.getApiKey())                      // key tu Secret Manager/bien moi truong, khong ghi vao code
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+    int attempt = 0;
+    while (true) {
+        attempt++;
+        HttpResponse<String> res = client.send(req, HttpResponse.BodyHandlers.ofString());
+        if (res.statusCode() == 200) return parseText(res.body());
+        if (!retryable(res.statusCode()) || attempt > cfg.getMaxAttempts()) {
+            throw new LlmException("LLM loi status " + res.statusCode());
+        }
+        try { Thread.sleep(delayMillis(attempt)); } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new LlmException(e);
+        }
+    }
+}
+~~~
+
+> {{Thread.sleep}} o tren chi de viet du lieu ngan gon; o production hay dung {{RateLimiter}}/{{Resilience4j}} va khong goi {{sleep}} tren luong xu ly request cua Tomcat.
+
+### 3. Cau hinh bang {{@ConfigurationProperties}}
+
+Khong hard-code endpoint, model, API key, ngan sach token trong code. Tao class cau hinh voi prefix {{rag.llm}}, Spring Boot tu ket noi cac key trong {{application.yml}}:
+
+~~~java
+@ConfigurationProperties(prefix = "rag.llm")
+public class RagLlmProperties {
+    private String endpoint;
+    private String model = "claude-3-5-sonnet-20241022";
+    private String apiKey;                 // tiep tu \${RAG_LLM_API_KEY} hoac Secret Manager
+    private int connectTimeoutSeconds = 3;
+    private int readTimeoutSeconds = 20;
+    private int maxAttempts = 3;
+    private int maxOutputTokens = 512;
+    private long dailyTokenBudget = 200_000;
+    // getters/setters
+}
+~~~
+
+~~~yaml
+# application.yml
+rag:
+  llm:
+    endpoint: https://api.anthropic.com/v1/messages
+    model: claude-3-5-sonnet-20241022
+    apiKey: \${RAG_LLM_API_KEY:}
+    connect-timeout-seconds: 3
+    read-timeout-seconds: 20
+    max-attempts: 3
+    max-output-tokens: 512
+    daily-token-budget: 200000
+~~~
+
+\${RAG_LLM_API_KEY:} la Spring placeholder: lay tu bien moi truong, neu khong co thi chuoi rong (dau ':' la gia tri mac dinh). {{@ConfigurationProperties}} can {{@EnableConfigurationProperties(RagLlmProperties.class)}} tren mot configuration class, hoac {{@ConfigurationPropertiesScan}} (Spring Boot 2.2+). API key **khong duoc hard-code** va **khong duoc ghi vao log** — log chi giu requestId, model, so token, latency, ma loi.
+
+### 4. Vi du dich vu thuc that: chat tu van the tin dung
+
+Cong ty co 50.000 khach hang, trung binh 200 luot hoi moi gio. Moi luot hoi: nguc canh RAG 5 chunk (1.500 token) + cau hoi (200 token) + cau tra loi (300 token) ≈ 2.000 token. So luot/thang = 200 × 24 × 30 = 144.000; tong khoang 288 trieu token/thang. Don gia trung ban gia dinh 5 USD cho 1 trieu token (chi de quy doi, khong phai bang gia thuc) → khoang 1.440 USD/thang. Neu mot developer nhom toan bo sach huong dan 200.000 token vao moi luot, chi phí tang gap 100 lan ma khong ai nhan ra neu khong co dashboard chi phí theo tinh nang.
+
+### 5. Loi hay gap tren production
+
+| Trieu chung | Nguyen nhan | Cach sua |
+|---|---|---|
+| Mot cuoc goi LLM treo keo sap ca service | Khong co read timeout; luong Tomcat bi chap het | Dat connectTimeout va timeout doc, dung luong rieng cho goi AI |
+| Retry 400/401 vo han | Retry moi status code | Chi retry 429/5xx/529, co so lan toi da va thoi gian cho tong |
+| Hoa don tang gap bop dot ngot | Khong gioi han max_tokens; loi client gui prompt dai lap lai | Dat max_tokens theo loai cong viec, ngan sach token/ngay, alert |
+| LLM bia trich dan [9] khi chi gui [1]..[5] | Khong validate trich dan | Server kiem tra so trich nam trong danh sach id da gui |
+
+### Lien he phong van
+
+Cau hoi dien hinh: "Ban tich hop LLM vao dich vu Java Spring Boot nhu the nao cho on dinh va kiem soat chi phí?". Tra loi mau (khoang 60–90 giay): "Em xay mot wrapper xung quanh nha cung cap LLM bang {{java.net.http.HttpClient}}: dat timeout ket noi 3 giay va timeout doc 20 giay de mot cuoc goi cham khong chap het luong Tomcat. Chi retry loi tam thoi (429, 5xx, 529) voi backoff co tran va jitter, gioi han so lan thu va thoi gian cho tong. Gioi han {{max_tokens}} theo loai cong viec va uoc luong chi phí truoc khi goi: token xap xis ky tu chia 4, tieng Viet ton hon. Tat cau hinh — endpoint, model, key, ngan sach token — dung {{@ConfigurationProperties}} va bien moi truong, khong hard-code. Moi request log requestId, model, token, latency, ma loi; khong log prompt hay du lieu khach hang. Neu nha cung cap loi lien tuc, dung circuit breaker va fallback sang model du phong vao thong bao dang bao tri.",
+`,
+  exercises: [
+    {
+      title: 'RagTokenClient: gọi LLM giả lập có retry và đếm token',
+      prompt: `Viết class RagTokenClient (mô phỏng client gọi LLM, không gọi API thật) với các phần sau:
+
+- {{class LlmResponse}}: có {{int status}} và {{String text}} (text chỉ có ý nghĩa khi status = 200).
+- {{class ScriptedLlmClient}}: nhận danh sách {{List<LlmResponse>}} làm kịch bản. Mỗi lần {{call(String model, String prompt)}} trả về phần tử kế tiếp trong danh sách. Nếu phần tử có {{status == -1}} thì coi là timeout và ném {{RuntimeException}} có message chứa "timeout". Nếu danh sách hết thì ném {{RuntimeException("exhausted")}}.
+- {{class LlmResult}}: có {{String text}} và {{int tokens}}.
+- {{class RagTokenClient}}: constructor {{(int maxRetries, int failureThreshold, long baseDelayMs, long capMs, int dailyTokenBudget, String primaryModel, String fallbackModel)}}; có field công khai {{long totalDelayMs}} và {{int tokensSpent}}. Method {{LlmResult ask(ScriptedLlmClient primary, ScriptedLlmClient fallback, String prompt)}}:
+  - Ước lượng token prompt = (độ dài + 3) / 4. Nếu {{tokensSpent + ước lượng > dailyTokenBudget}} thì trả về {{new LlmResult("BUDGET_EXCEEDED", 0)}} mà không gọi client nào.
+  - Thử primary: tối đa {{maxRetries + 1}} lần gọi (lần đầu + các lần retry). Nhận {{status == 200}} → trả kết quả, cộng {{promptTokens + (output.length() + 3) / 4}} vào {{tokensSpent}}. Lỗi không retryable (400, 401, hoặc exception không chứa "timeout") → dừng thử primary ngay. Lỗi retryable (429, 529, >= 500, hoặc exception chứa "timeout") → nếu còn lượt thử thì cộng delay {{min(capMs, baseDelayMs × 2^attempt) + (attempt + 1) × 10 ms}} vào {{totalDelayMs}} (attempt bắt đầu từ 0 cho lần retry đầu tiên) và thử lại; không sleep thật.
+  - Circuit breaker đơn giản: đếm {{consecutiveFailures}} = số lần ask mà primary thất bại hoàn toàn (sau hết retry). Mỗi thành công reset về 0. Khi {{consecutiveFailures >= failureThreshold}} thì circuit OPEN: các ask sau bỏ qua primary hoàn toàn (không gọi, không retry) và dùng fallback; fallback thành công reset {{consecutiveFailures}} về 0 và đóng circuit.
+  - Nếu primary không trả kết quả thành công (hết retry hoặc circuit OPEN) thì gọi fallback một lần (không retry); nếu fallback cũng thất bại trả {{new LlmResult("FALLBACK_FAILED", tokensSpent)}}.`,
+      starter: `class LlmResponse {
+    final int status;
+    final String text;
+    LlmResponse(int status, String text) { this.status = status; this.text = text; }
+}
+
+class ScriptedLlmClient {
+    private final java.util.List<LlmResponse> script;
+    private int index = 0;
+    ScriptedLlmClient(java.util.List<LlmResponse> script) { this.script = script; }
+    int calls() { return index; }
+    LlmResponse call(String model, String prompt) { throw new UnsupportedOperationException("TODO"); }
+}
+
+class LlmResult {
+    final String text;
+    final int tokens;
+    LlmResult(String text, int tokens) { this.text = text; this.tokens = tokens; }
+}
+
+class RagTokenClient {
+    final int maxRetries;
+    final int failureThreshold;
+    final long baseDelayMs;
+    final long capMs;
+    final int dailyTokenBudget;
+    final String primaryModel;
+    final String fallbackModel;
+    long totalDelayMs = 0;
+    int tokensSpent = 0;
+
+    RagTokenClient(int maxRetries, int failureThreshold, long baseDelayMs, long capMs,
+                   int dailyTokenBudget, String primaryModel, String fallbackModel) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    LlmResult ask(ScriptedLlmClient primary, ScriptedLlmClient fallback, String prompt) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object exp, Object act) {
+        if (!java.util.Objects.equals(exp, act)) throw new AssertionError("expected " + exp + " got " + act);
+    }
+    public static void main(String[] args) {
+        check("retry 429/529 rồi thành công, delay 330", () -> {
+            RagTokenClient c = new RagTokenClient(3, 5, 100, 2000, 10000, "sonnet", "haiku");
+            ScriptedLlmClient p = new ScriptedLlmClient(java.util.Arrays.asList(
+                new LlmResponse(429, ""), new LlmResponse(529, ""), new LlmResponse(200, "OK1")));
+            ScriptedLlmClient s = new ScriptedLlmClient(java.util.Arrays.asList(new LlmResponse(200, "S1")));
+            LlmResult r = c.ask(p, s, "hi");
+            eq("OK1", r.text);
+            eq(3, p.calls());
+            eq(0, s.calls());
+            eq(330L, c.totalDelayMs);
+            eq(2, r.tokens);
+        });
+        check("timeout -1 được retry như lỗi tạm thời", () -> {
+            RagTokenClient c = new RagTokenClient(2, 5, 100, 2000, 10000, "sonnet", "haiku");
+            ScriptedLlmClient p = new ScriptedLlmClient(java.util.Arrays.asList(
+                new LlmResponse(-1, ""), new LlmResponse(200, "OK2")));
+            ScriptedLlmClient s = new ScriptedLlmClient(java.util.Arrays.asList(new LlmResponse(200, "S2")));
+            eq("OK2", c.ask(p, s, "hi").text);
+            eq(2, p.calls());
+        });
+        check("400 không retry, chuyển sang fallback", () -> {
+            RagTokenClient c = new RagTokenClient(3, 5, 100, 2000, 10000, "sonnet", "haiku");
+            ScriptedLlmClient p = new ScriptedLlmClient(java.util.Arrays.asList(new LlmResponse(400, "bad")));
+            ScriptedLlmClient s = new ScriptedLlmClient(java.util.Arrays.asList(new LlmResponse(200, "S")));
+            eq("S", c.ask(p, s, "x").text);
+            eq(1, p.calls());
+            eq(1, s.calls());
+        });
+        check("ngân sách token không đủ -> BUDGET_EXCEEDED, không gọi primary", () -> {
+            RagTokenClient c = new RagTokenClient(3, 5, 100, 2000, 1, "sonnet", "haiku");
+            ScriptedLlmClient p = new ScriptedLlmClient(java.util.Arrays.asList(new LlmResponse(200, "A")));
+            ScriptedLlmClient s = new ScriptedLlmClient(java.util.Arrays.asList(new LlmResponse(200, "S")));
+            eq("A", c.ask(p, s, "hi").text);
+            eq(2, c.tokensSpent);
+            eq("BUDGET_EXCEEDED", c.ask(p, s, "hi").text);
+            eq(1, p.calls());
+        });
+        check("circuit mở sau hai lần thất bại, bỏ qua primary lần thứ ba", () -> {
+            RagTokenClient c = new RagTokenClient(0, 2, 100, 2000, 10000, "sonnet", "haiku");
+            ScriptedLlmClient p = new ScriptedLlmClient(java.util.Arrays.asList(
+                new LlmResponse(400, ""), new LlmResponse(400, "")));
+            ScriptedLlmClient s = new ScriptedLlmClient(java.util.Arrays.asList(
+                new LlmResponse(400, ""), new LlmResponse(200, "S2")));
+            eq("FALLBACK_FAILED", c.ask(p, s, "x").text);
+            eq("S2", c.ask(p, s, "x").text);
+            eq(2, p.calls());
+            eq(2, s.calls());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class LlmResponse {
+    final int status;
+    final String text;
+    LlmResponse(int status, String text) { this.status = status; this.text = text; }
+}
+
+class ScriptedLlmClient {
+    private final java.util.List<LlmResponse> script;
+    private int index = 0;
+    ScriptedLlmClient(java.util.List<LlmResponse> script) { this.script = new java.util.ArrayList<>(script); }
+    int calls() { return index; }
+    LlmResponse call(String model, String prompt) {
+        if (index >= script.size()) throw new RuntimeException("exhausted");
+        LlmResponse r = script.get(index++);
+        if (r.status == -1) throw new RuntimeException("timeout");
+        return r;
+    }
+}
+
+class LlmResult {
+    final String text;
+    final int tokens;
+    LlmResult(String text, int tokens) { this.text = text; this.tokens = tokens; }
+}
+
+class RagTokenClient {
+    static final int DELAY_STEP = 10;
+    final int maxRetries;
+    final int failureThreshold;
+    final long baseDelayMs;
+    final long capMs;
+    final int dailyTokenBudget;
+    final String primaryModel;
+    final String fallbackModel;
+    long totalDelayMs = 0;
+    int tokensSpent = 0;
+    int consecutiveFailures = 0;
+    boolean circuitOpen = false;
+
+    RagTokenClient(int maxRetries, int failureThreshold, long baseDelayMs, long capMs,
+                   int dailyTokenBudget, String primaryModel, String fallbackModel) {
+        this.maxRetries = maxRetries;
+        this.failureThreshold = failureThreshold;
+        this.baseDelayMs = baseDelayMs;
+        this.capMs = capMs;
+        this.dailyTokenBudget = dailyTokenBudget;
+        this.primaryModel = primaryModel;
+        this.fallbackModel = fallbackModel;
+    }
+
+    static int estimate(String s) { return (s.length() + 3) / 4; }
+
+    static boolean retryable(int status) {
+        return status == 429 || status == 529 || status >= 500;
+    }
+
+    static long backoff(long base, long cap, int attempt) {
+        long d = base;
+        for (int i = 0; i < attempt && d < cap; i++) d *= 2;
+        return d > cap ? cap : d;
+    }
+
+    LlmResult tryOnce(ScriptedLlmClient client, String model, String prompt, int promptTokens) {
+        try {
+            LlmResponse resp = client.call(model, prompt);
+            if (resp.status == 200) return new LlmResult(resp.text, promptTokens + estimate(resp.text));
+            return null;
+        } catch (RuntimeException e) { return null; }
+    }
+
+    LlmResult tryClient(ScriptedLlmClient client, String model, String prompt, int promptTokens, boolean canRetry) {
+        int attempts = 0;
+        while (true) {
+            attempts++;
+            try {
+                LlmResponse resp = client.call(model, prompt);
+                if (resp.status == 200) { tokensSpent += promptTokens + estimate(resp.text); return new LlmResult(resp.text, promptTokens + estimate(resp.text)); }
+                if (!retryable(resp.status) || !canRetry || attempts > maxRetries) return null;
+            } catch (RuntimeException e) {
+                String msg = e.getMessage();
+                boolean isTimeout = msg != null && msg.contains("timeout");
+                if (!isTimeout || !canRetry || attempts > maxRetries) return null;
+            }
+            totalDelayMs += Math.min(capMs, backoff(baseDelayMs, capMs, attempts - 1)) + attempts * DELAY_STEP;
+        }
+    }
+
+    LlmResult ask(ScriptedLlmClient primary, ScriptedLlmClient fallback, String prompt) {
+        int promptTokens = estimate(prompt);
+        if (tokensSpent + promptTokens > dailyTokenBudget) return new LlmResult("BUDGET_EXCEEDED", 0);
+        if (circuitOpen) {
+            LlmResult f = tryOnce(fallback, fallbackModel, prompt, promptTokens);
+            if (f != null) { consecutiveFailures = 0; circuitOpen = false; return f; }
+            return new LlmResult("FALLBACK_FAILED", tokensSpent);
+        }
+        LlmResult p = tryClient(primary, primaryModel, prompt, promptTokens, true);
+        if (p != null) { consecutiveFailures = 0; return p; }
+        consecutiveFailures++;
+        if (consecutiveFailures >= failureThreshold) circuitOpen = true;
+        LlmResult f = tryOnce(fallback, fallbackModel, prompt, promptTokens);
+        if (f != null) { consecutiveFailures = 0; return f; }
+        return new LlmResult("FALLBACK_FAILED", tokensSpent);
+    }
+}`,
+      hints: [
+        'Lỗi retryable: 429, 529, status >= 500, và ném exception có message chứa "timeout".',
+        'Delay của lần retry thứ n (tính từ 0): min(capMs, baseDelayMs × 2^n) + (n+1)×10 ms; cộng vào totalDelayMs, không sleep thật.',
+        'Kiểm tra ngân sách trước khi gọi; chỉ cộng tokensSpent khi nhận status 200.',
+      ],
+      explain: `### Lời giải
+
+- tryClient gom vòng retry: status 200 → trả kết quả; lỗi không retryable hoặc hết lượt → null; lỗi retryable và còn lượt → cộng delay xác định vào totalDelayMs rồi thử lại.
+- Delay dùng vòng lặp nhân đôi và dừng sớm khi đã chạm cap, tránh tràn số khi attempt lớn. Jitter (attempt + 1) × 10 ms làm cho kết quả deterministic và mô phỏng ý tưởng rải thời điểm retry giữa các instance.
+- Ngân sách kiểm tra bằng ước lượng trước khi gọi; chỉ cộng tokensSpent khi status 200 (prompt + output).
+- Circuit breaker: consecutiveFailures đếm lần ask mà primary thất bại hoàn toàn; đạt ngưỡng thì OPEN → bỏ qua primary, dùng fallback; fallback thành công reset và đóng lại.
+
+> Senior tip: ở production hãy thêm metric số lần retry, tỷ lệ circuit-open và fallback degraded để vận hành phát hiện sớm nhà cung cấp LLM đang yếu.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Gọi LLM API nhận status 429 Too Many Requests. Hành vi đúng là gì?',
+      options: ['Retry ngay lập tức mà không chờ', 'Không bao giờ retry vì 4xx là lỗi của client', 'Chờ theo header retry-after (hoặc backoff có trần và jitter), giới hạn số lần thử, rồi fallback nếu vẫn lỗi', 'Bỏ qua lỗi và trả lời ngay bằng câu trả lời mặc định'],
+      answer: 2,
+      explain: `429 là lỗi tạm thời (quá giới hạn yêu cầu): chờ rồi retry có thể thành công. "Retry ngay lập tức mà không chờ" tiếp tục quá tải; "Không bao giờ retry" bỏ lỡ cơ hội phục hồi sau một khoảng nghỉ; "Bỏ qua lỗi" không giải quyết được việc nhà cung cấp đang quá tải.`,
+    },
+    {
+      q: 'Jitter trong exponential backoff dùng để làm gì?',
+      options: ['Giảm thời gian chờ xuống 0', 'Tránh nhiều instance retry cùng một thời điểm (thundering herd)', 'Chỉ retry lỗi 401', 'Tăng số lần retry vô hạn'],
+      answer: 1,
+      explain: `Jitter là số ngẫu nhiên nhỏ cộng vào thời gian chờ, giúp các instance rải thời điểm retry thay vì đồng loạt. Jitter không làm chờ bằng 0, không liên quan đến 401 (401 không retry), và không tăng số lần retry.`,
+    },
+    {
+      q: 'Ngân sách token/ngày nên được kiểm tra lúc nào?',
+      options: ['Sau khi nhận phản hồi từ LLM', 'Trước khi gọi model, bằng ước lượng token của prompt', 'Chỉ khi hóa đơn tháng đã đến', 'Không cần kiểm tra vì nhà cung cấp tự chặn'],
+      answer: 1,
+      explain: `Kiểm tra trước khi gọi model (tokensSpent + ước lượng prompt > ngân sách → BUDGET_EXCEEDED) để tránh một request dài đốt hết ngân sách cả ngày. Kiểm tra sau thì đã tốn tiền; nhà cung cấp chặn chỉ khi vượt quota của họ, không thay thế ngân sách của chính bạn.`,
+    },
+  ],
+  related: ['ai-001', 'ai-002', 'ai-021'],
+  tags: ['ai', 'rag', 'spring-boot', 'llm-client', 'timeout', 'retry', 'backoff', 'configuration-properties', 'token-budget'],
+}
+,
+{
+  id: 'lesson-ai-016',
+  track: 'ai', order: 16,
+  title: 'Dự án RAG bằng Spring Boot (2/2): chunking, embedding, pgvector và HNSW',
+  level: 'senior', minutes: 50,
+  goals: [
+    'Cắt tài liệu thành chunk có kích thước, overlap và giữ tiêu đề; nói được trade-off của cỡ chunk.',
+    'Hiểu embedding là gì, sinh vector cho từng chunk, và thiết kế bảng pgvector (cột vector, index HNSW).',
+    'Truy vấn cosine khoảng cách với lọc quyền và break tie ổn định; lấy đúng top-k.',
+    'Trả lời câu hỏi phỏng vấn về pgvector, HNSW và chunking trong RAG thực tế.',
+  ],
+  body: `**Tóm tắt:** Nếu bài 1 nói "RAG đi qua những đâu", bài 2 chi tiết hai bước quyết định chất lượng: **chunking** (cắt tài liệu thành đoạn: kích thước, chồng lấp overlap, giữ tiêu đề) và **lưu/truy vấn vector** (embedding, bảng pgvector, index HNSW). Chunk sai thì retrieve bỏ sót, mô hình bịa; lưu sai thì truy vấn chậm không scale. Bài học đi từng bước như dự án thật: cắt chunk theo từ với overlap và tiêu đề, sinh embedding, thiết kế bảng PostgreSQL với pgvector, index HNSW, truy vấn top-k có lọc quyền, kèm ví dụ số liệu khớp nhau.
+
+### 1. Chunking: kích thước, overlap, giữ tiêu đề
+
+Mỗi embedding model nhận tối đa một lượng token mỗi lần nhúng (ví dụ 512–8192 token tuỳ model). Đoạn quá dài làm vector "nồi lẩu": nhiều chủ đề trộn lẫn, không gần với câu hỏi cụ thể nào. Cắt quá nhỏ thì một ý rơi vào hai đoạn, không đoạn nào trả lời đủ.
+
+**Kích thước chunk (đo bằng từ hoặc token):**
+- Dưới 50 token: quá nhỏ, mất ngữ cảnh; chỉ dùng cho FAQ một câu một đáp.
+- 200–500 token theo đoạn: ổn định cho đa số tài liệu doanh nghiệp.
+- Trên 1000 token: embedding loãng, điểm similarity với mọi câu hỏi na ná, top-k rác, và "lost in the middle" (mô hình chú ý đầu/cuối context hơn phần giữa).
+
+**Overlap:** chunk kế tiếp bắt đầu trước vài từ cuối của chunk trước (ví dụ overlap 10–20% kích thước). Tài liệu viết: "Điều 12. Hồ sơ vay gồm CCCD, sổ hộ khẩu, sao kê 6 tháng. Thời hạn giải ngân tối đa 15 ngày làm việc." Nếu ranh giới chunk nằm ngay sau câu đầu, chunk A có hồ sơ nhưng không có thời hạn, chunk B có thời gian nhưng không biết là của việc gì. Câu hỏi "vay cần giấy gì, bao lâu có tiền?" khớp mờ cả hai, rớt top-k. Overlap 1 câu đảm bảo ít nhất một đoạn chứa trọn ý.
+
+Sơ đồ (12 từ, size = 4, overlap = 1):
+~~~text
+tài liệu : w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11
+chunk 0  : [w0 w1 w2 w3]
+chunk 1  :        [w3 w4 w5 w6]    <- w3 lặp lại (overlap)
+chunk 2  :               [w6 w7 w8 w9]
+chunk 3  :                      [w9 w10 w11]   <- cụt, chạm cuối tài liệu
+~~~
+
+Overlap càng lớn thì số chunk càng nhiều và chi phí embedding càng cao (overlap 50% gần gấp đôi số token nhúng), nhưng ranh giới an toàn hơn.
+
+**Giữ tiêu đề:** Mỗi chunk kèm metadata: docId, section (tiêu đề cha), page, thời gian cập nhật, allowedRoles. Nếu chunk nằm dưới heading "Biểu phí > Thẻ tín dụng > Phí thường niên", hãy đưa chuỗi heading đó vào metadata — khi câu hỏi chỉ khớp một dòng số, headingChain giúp đoạn đó mang đủ ý nghĩa. Ví dụ chunk: "[Biểu phí > Thẻ tín dụng] Phí thường niên thẻ Platinum: 300.000đ/năm (TARIFF-2024, trang 12)".
+
+### 2. Sinh embedding
+
+Embedding là ánh xạ văn bản sang vector số (ví dụ 384 số với all-MiniLM-L6-v2, 1536 với text-embedding-3-small). Hai đoạn gần nghĩa thì vector gần hướng. Gọi API embedding cho từng chunk (gộp nhiều đoạn trong một request để rẻ, nhanh) hoặc chạy model ONNX cục bộ khi cần data residency (dữ liệu không được rời khỏi hệ thống của mình).
+
+Quan trọng: vector chỉ so sánh được với vector do cùng model, cùng version sinh. Đổi embedding model phải tính lại toàn bộ index; thường chạy song song hai cột vector trong thời gian chuyển đổi.
+
+Mỗi chunk lưu: id (D0_C0: tài liệu thứ mấy, đoạn thứ mấy), nội dung, vector, metadata.
+
+### 3. Schema bảng pgvector và index HNSW
+
+pgvector là extension của PostgreSQL (PostgreSQL 13+), thêm kiểu dữ liệu vector và toán tử tìm khoảng cách. Ví dụ schema:
+
+~~~sql
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE rag_chunk (
+    id            text PRIMARY KEY,          -- D0_C0
+    doc_id        text NOT NULL,
+    section       text,                      -- headingChain
+    page          int,
+    content       text NOT NULL,
+    allowed_roles text[],                    -- mảng vai trò được xem
+    updated_at    timestamptz,
+    embedding     vector(384)                -- chiều tuỳ embedding model
+);
+
+-- <=> là khoảng cách cosine (1 - cosine similarity)
+-- ORDER BY distance ASC = lấy đoạn gần nghĩa nhất trước
+-- Lọc quyền TRƯỚC khi ORDER BY và LIMIT
+SELECT id, content, 1 - (embedding <=> $1::vector) AS score
+FROM rag_chunk
+WHERE allowed_roles && $2::text[]            -- mảng quyền có phần tử chung
+ORDER BY embedding <=> $1::vector
+LIMIT 5;
+~~~
+
+$1::vector là vector nhúng của câu hỏi (384 số). allowed_roles && $2::text[] dùng toán tử ghép mảng (overlap) của PostgreSQL: chỉ giữ đoạn mà người dùng có quyền xem. Lọc trong WHERE trước khi sắp xếp và LIMIT — nếu lọc sau, top-k có thể toàn tài liệu không được phép xem.
+
+**Index HNSW:** HNSW (Hierarchical Navigable Small World) là cấu trúc đồ thị tìm hàng xóm gần đúng (approximate nearest neighbor): không quét hết hàng triệu vector mà vẫn trả kết quả nhanh (vài ms), đánh đổi một ít chính xác lấy tốc độ.
+
+~~~sql
+CREATE INDEX ON rag_chunk USING hnsw (embedding vector_cosine_ops);
+~~~
+
+vector_cosine_ops chọn khoảng cách cosine. Có thể thêm index B-tree trên doc_id, updated_at để lọc/sắp xếp metadata.
+
+### 4. Truy vấn và top-k ổn định
+
+Luồng một lượt hỏi:
+1. Nhúng câu hỏi thành vector q bằng cùng model đã dùng cho chunk.
+2. Truy vấn pgvector như mục 3, lọc allowed_roles của người dùng, LIMIT k (3–5).
+3. Nhiều đoạn cùng điểm (số float bằng nhau): break tie theo id tăng dần (hoặc updated_at mới nhất) → kết quả không phụ thuộc thứ tự lưu/quét.
+4. Ghép top-k vào prompt kèm nhãn [1]…[k], gọi LLM, validate mỗi số trích phải nằm trong danh sách id đã gửi.
+
+Ngưỡng: bỏ đoạn có cosine quá thấp (dưới 0.25–0.3 với vector đã chuẩn hóa). Thà trả "không tìm thấy tài liệu" còn để mô hình trả lời từ rác.
+
+Số liệu: 50.000 chunk vector 384 chiều ≈ 50.000 × 384 × 4 byte ≈ 76 MB vector (chưa tính overhead); truy vấn HNSW trả kết quả trong milliseconds. Trên hàng triệu vector cần HNSW; dưới đó quét đầy đủ (exact) vẫn nhanh.
+
+### 5. Lỗi hay gặp trên production
+
+| Triệu chứng | Nguyên nhân | Cách sửa |
+|---|---|---|
+| Đoạn đúng không nằm trong top-k | Cắt sai (quá nhỏ hoặc quá lớn), embedding kém, thiếu từ khóa | Sửa chunking/overlap, thêm hybrid search (BM25 cho mã CCCD, viết tắt), đo recall@k |
+| Mô hình bịa số tiền | Ngưỡng similarity quá thấp, rác vào prompt | Tăng ngưỡng (0.25–0.3), bắt buộc trích xuất, validate id trích |
+| Người dùng thấy tài liệu của phòng khác | Không lọc quyền trong truy vấn SQL | Lọc allowed_roles ngay trong WHERE, trước ORDER BY/LIMIT |
+| Kết quả đổi lung tung | Thiếu break tie, điểm float bằng nhau | Tie-break theo id hoặc updated_at |
+| Đổi embedding model mà không tính lại index | Vector mới so với vector cũ không tương thích | Chạy song song hai cột vector trong thời gian chuyển đổi |
+
+### Liên hệ phỏng vấn
+
+Câu hỏi: "PostgreSQL với pgvector lưu và tìm embedding như thế nào, và khi nào cần HNSW?". Trả lời mẫu (khoảng 60–90 giây): "Mỗi chunk được nhúng thành vector (ví dụ 384 số) và lưu vào cột kiểu vector của pgvector. Khi tìm, nhúng câu hỏi bằng cùng model, rồi dùng toán tử khoảng cách cosine để sắp xếp và LIMIT top-k, kèm lọc quyền mảng allowed_roles trong chính câu SQL trước khi sắp xếp. Dưới vài trăm nghìn vector quét đầy đủ vẫn nhanh; trên hàng triệu vector dùng index HNSW — cấu trúc đồ thị tìm hàng xóm gần đúng, trả kết quả trong vài ms, trade-off nhỏ về chính xác. Lưu ý quan trọng: vector chỉ so sánh được khi từ cùng model và cùng version, nên đổi model phải tính lại index, thường chạy song song hai cột trong thời gian chuyển đổi.",
+`,
+  exercises: [
+    {
+      title: 'DocumentChunker: cắt tài liệu thành chunk có overlap và giữ tiêu đề',
+      prompt: `Viết class DocumentChunker:
+
+- static List<String> words(String text): ĐÃ VIẾT SẴN trong starter, tách văn bản thành từ theo mọi khoảng trắng (space, tab, xuống dòng), null → danh sách rỗng.
+- static List<String> chunk(String document, String title, int size, int overlap):
+  - size <= 0 → ném IllegalArgumentException("size must be positive"); overlap < 0 → ném IllegalArgumentException("overlap must not be negative").
+  - document null hoặc chỉ toàn khoảng trắng → trả danh sách rỗng.
+  - Nếu overlap >= size thì ép overlap về size - 1 (bước nhảy luôn >= 1, không lặp vô hạn).
+  - Tách document thành từ (dùng words). Mỗi chunk là cửa sổ size từ liên tiếp, nối bằng một dấu cách; chunk kế tiếp dịch bước step = size - overlap.
+  - Dừng ngay khi một chunk đã chạm từ cuối tài liệu (end bằng số từ): không tạo chunk thừa trùng nội dung đã có.
+  - Nếu title khác null và không rỗng, mỗi chunk bắt đầu bằng title + ": " + cửa sổ từ.
+
+Ví dụ "alpha beta gamma delta epsilon zeta eta theta iota kappa", size = 4, overlap = 1, title = "HD" → 3 chunk: "HD: alpha beta gamma delta", "HD: delta epsilon zeta eta", "HD: eta theta iota kappa".`,
+      starter: `class DocumentChunker {
+    // ĐÃ VIẾT SẴN: tách mọi khoảng trắng (space/tab/xuống dòng) thành từ, bỏ chuỗi rỗng, text null -> rỗng.
+    static List<String> words(String text) {
+        List<String> out = new ArrayList<>();
+        if (text == null) return out;
+        StringBuilder cur = new StringBuilder();
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (Character.isWhitespace(ch)) {
+                if (cur.length() > 0) { out.add(cur.toString()); cur.setLength(0); }
+            } else cur.append(ch);
+        }
+        if (cur.length() > 0) out.add(cur.toString());
+        return out;
+    }
+
+    static List<String> chunk(String document, String title, int size, int overlap) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object exp, Object act) {
+        if (!java.util.Objects.equals(exp, act)) throw new AssertionError("expected " + exp + " got " + act);
+    }
+    static final String TEN = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
+    public static void main(String[] args) {
+        check("size 4 overlap 1 co tieu de -> 3 chunk", () -> {
+            eq(java.util.Arrays.asList("HD: alpha beta gamma delta", "HD: delta epsilon zeta eta", "HD: eta theta iota kappa"),
+                DocumentChunker.chunk(TEN, "HD", 4, 1));
+        });
+        check("overlap 2 dich buoc nhay 2", () -> {
+            eq(java.util.Arrays.asList("alpha beta gamma delta", "gamma delta epsilon zeta", "epsilon zeta eta theta", "eta theta iota kappa"),
+                DocumentChunker.chunk(TEN, null, 4, 2));
+        });
+        check("overlap 0 cho chunk cuoi ngan", () -> {
+            eq(java.util.Arrays.asList("alpha beta gamma", "delta epsilon zeta", "eta theta iota", "kappa"),
+                DocumentChunker.chunk(TEN, null, 3, 0));
+        });
+        check("khong tao chunk thua khi da cham cuoi", () -> {
+            eq(java.util.Arrays.asList("alpha beta gamma delta epsilon", "delta epsilon zeta eta theta", "eta theta iota kappa"),
+                DocumentChunker.chunk(TEN, null, 5, 2));
+        });
+        check("null va blank tra danh sach rong", () -> {
+            eq(0, DocumentChunker.chunk(null, "HD", 4, 1).size());
+            eq(0, DocumentChunker.chunk("   \\t\\n ", "HD", 4, 1).size());
+        });
+        check("tham so sai ngoai IllegalArgumentException", () -> {
+            try { DocumentChunker.chunk(TEN, null, 0, 0); throw new AssertionError("size 0 phai bi tu choi"); }
+            catch (IllegalArgumentException expected) { }
+            try { DocumentChunker.chunk(TEN, null, 4, -1); throw new AssertionError("overlap am phai bi tu choi"); }
+            catch (IllegalArgumentException expected) { }
+        });
+        check("overlap >= size duoc ep, khong vong lap vo han", () -> {
+            eq(java.util.Arrays.asList("a b c", "b c d", "c d e", "d e f"),
+                DocumentChunker.chunk("a b c d e f", null, 3, 9));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class DocumentChunker {
+    // ĐÃ VIẾT SẴN
+    static List<String> words(String text) {
+        List<String> out = new ArrayList<>();
+        if (text == null) return out;
+        StringBuilder cur = new StringBuilder();
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (Character.isWhitespace(ch)) {
+                if (cur.length() > 0) { out.add(cur.toString()); cur.setLength(0); }
+            } else cur.append(ch);
+        }
+        if (cur.length() > 0) out.add(cur.toString());
+        return out;
+    }
+
+    static List<String> chunk(String document, String title, int size, int overlap) {
+        if (size <= 0) throw new IllegalArgumentException("size must be positive");
+        if (overlap < 0) throw new IllegalArgumentException("overlap must not be negative");
+        if (document == null || document.isBlank()) return List.of();
+        int step = size - Math.min(overlap, size - 1);
+        List<String> ws = words(document);
+        List<String> out = new ArrayList<>();
+        boolean hasTitle = title != null && !title.isBlank();
+        for (int start = 0; start < ws.size(); start += step) {
+            int end = Math.min(start + size, ws.size());
+            String window = String.join(" ", ws.subList(start, end));
+            out.add(hasTitle ? title + ": " + window : window);
+            if (end == ws.size()) break;
+        }
+        return out;
+    }
+}`,
+      hints: [
+        'Kiểm tra size và overlap trước, rồi tính step = size - min(overlap, size - 1) (luôn >= 1).',
+        'Nếu có tiêu đề, mỗi chunk = title + ": " + cửa sổ từ.',
+        'Dừng khi end bằng số từ để không tạo chunk thừa.',
+      ],
+      explain: `### Lời giải
+
+- Cửa sổ trượt trên mảng từ: cửa sổ đầu bắt đầu ở từ 0, cửa sổ sau dịch bước step = size - overlap, nên overlap từ ở cuối chunk trước xuất hiện lại ở đầu chunk sau.
+- Nếu có tiêu đề, gắn vào đầu mỗi chunk để đoạn tách khỏi heading cha vẫn mang ngữ cảnh.
+- Vòng lặp dừng khi end == ws.size(): loại vét edge case chunk đuôi trùng hoặc rỗng.
+- size <= 0 và overlap < 0 ném IllegalArgumentException; overlap >= size bị ép về size - 1 để bước nhảy luôn >= 1.
+
+> Senior tip: chunk quá nhỏ làm vector loãng (một ý vỡ hai đoạn), chunk quá lớn thì điểm similarity với mọi câu hỏi na ná. Bắt đầu 200–500 token, overlap 10–20%, rồi điều chỉnh bằng recall@k trên bộ câu hỏi chuẩn thật.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao chunk trong RAG cần overlap (chồng lấp) với chunk kế tiếp?',
+      options: ['Để index lớn hơn và tra cứu nhanh hơn', 'Để tăng cosine similarity của mọi câu hỏi', 'Để bất kỳ ý nào cũng nằm trọn trong ít nhất một chunk, không bị cắt đôi ở ranh giới', 'Vì embedding model yêu cầu mỗi vector trùng một phần vector trước'],
+      answer: 2,
+      explain: `Overlap 10–20% kích thước đảm bảo đoạn thông tin nằm vắt ngang ranh giới hai chunk vẫn xuất hiện trọn trong một chunk. Không có nó, cả hai chunk chỉ chứa một nửa ý nên câu hỏi khớp mờ và rớt top-k. Các đáp án sai: overlap làm index lớn hơn/chậm hơn chứ không nhanh hơn; nó không làm similarity tăng hệ thống; embedding model không yêu cầu quan hệ giữa các vector.`,
+    },
+    {
+      q: 'Trong PostgreSQL với pgvector, cột lưu embedding khai báo kiểu gì?',
+      options: ['vector(384)', 'int[]', 'text', 'BLOB'],
+      answer: 0,
+      explain: `pgvector thêm kiểu dữ liệu vector cho cột, ví dụ embedding vector(384) với 384 là chiều của model nhúng. int[] là mảng số nguyên, text là văn bản, BLOB là nhị thô — không phải kiểu vector có toán tử khoảng cách của pgvector.`,
+    },
+    {
+      q: 'Index HNSW trong pgvector dùng để làm gì?',
+      options: ['Lưu văn bản gốc của chunk', 'Tìm hàng xóm gần đúng (approximate nearest neighbor) nhanh mà không quét hết toàn bộ vector', 'Mã hóa vector trước khi lưu', 'Giới hạn số lượng chunk trong bảng'],
+      answer: 1,
+      explain: `HNSW là cấu trúc đồ thị tìm hàng xóm gần đúng: trên hàng triệu vector trả kết quả trong vài ms, đánh đổi một ít chính xác lấy tốc độ. Nó không lưu văn bản, không mã hóa, và không giới hạn số chunk.`,
+    },
+  ],
+  related: ['ai-003', 'ai-005', 'ai-023'],
+  tags: ['ai', 'rag', 'chunking', 'embedding', 'pgvector', 'hnsw', 'postgresql'],
+}
 );
