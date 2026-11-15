@@ -4677,5 +4677,208 @@ public void onEvent(OrderEvent e) { notificationService.send(e); }
     'Đề xuất dài hạn: DefaultErrorHandler finite retry + DeadLetterPublishingRecoverer (hoặc @RetryableTopic với DltStrategy.FAIL_ON_ERROR), addNotRetryableExceptions cho DeserializationException, producer validate/schema, idempotency key, alert lag theo từng partition và tốc độ tiêu thụ từng partition.'
   ],
   tags: ['kafka', 'poison-message', 'dead-letter-queue', 'spring-kafka', 'error-handler', 'consumer-lag']
+},
+{
+  id: 'lab-incident-035',
+  category: 'incident',
+  title: 'Hai giao dịch PostgreSQL khóa hàng ngược thứ tự gây deadlock',
+  level: 'senior',
+  scenario: `Hệ thống bán hàng có hai service chạy riêng nhưng dùng chung cơ sở dữ liệu PostgreSQL:
+1. order-service: khi khách hàng đặt hàng, service khóa hàng trong bảng products (giảm tồn kho) rồi khóa hàng trong bảng wallets (trừ tiền ví).
+2. refund-service: khi hoàn tiền, service khóa hàng trong bảng wallets (cộng tiền lại) rồi khóa hàng trong bảng products (hoàn tồn kho).
+
+Cả hai service dùng transaction với isolation level Read Committed. Trong ca Rush Hour, khách hàng đặt hàng và hoàn tiền cùng lúc đối với cùng một sản phẩm. PostgreSQL báo lỗi deadlock cho một trong hai giao dịch.
+
+Log lỗi và pg_stat_activity xem trong artifact pg-deadlock.txt.`,
+  artifacts: [ { name: 'pg-deadlock.txt', lang: 'text', content: `2026-10-25 14:02:15.123 [pid 8912] ERROR: deadlock detected
+2026-10-25 14:02:15.123 [pid 8912] DETAIL: Process 8912 waits for ShareLock on transaction 0x1A4B; blocked by process 8945.
+Process 8912: UPDATE products SET stock = stock - 1 WHERE id = 101;
+Process 8945 waits for ShareLock on transaction 0x1A4C; blocked by process 8912.
+Process 8945: UPDATE wallets SET balance = balance + 500000 WHERE id = 55;
+2026-10-25 14:02:15.123 [pid 8912] HINT: See server log for query details.
+2026-10-25 14:02:15.123 [pid 8912] STATEMENT: UPDATE products SET stock = stock - 1 WHERE id = 101;
+2026-10-25 14:02:15.123 [pid 8945] STATEMENT: UPDATE wallets SET balance = balance + 500000 WHERE id = 55;` } ],
+  questions: [ 'Vì sao hai giao dịch đơn giản như cập nhật hai bảng lại bị deadlock?', 'Dẫn chứng từ artifact nào cho thấy đây là deadlock chứ không phải treo do khác lý?', 'Sửa thế nào để không deadlock lại, ngắn hạn và dài hạn?' ],
+  hints: [ 'Deadlock xảy ra khi giao dịch A khóa tài nguyên 1 rồi chờ tài nguyên 2, đồng thời giao dịch B khóa tài nguyên 2 rồi chờ tài nguyên 1. Xem thứ tự khóa hàng trong order-service và refund-service.', 'Artifact ghi Process 8912 chờ lock mà bị block bởi Process 8945, và ngược lại — đây là dấu hiệu chéo chờ của deadlock, không phải timeout hay treo do network.', 'Đặt quy tắc khóa hàng theo thứ tự cố định toàn hệ thống (ví dụ luôn products trước wallets), hoặc dùng advisory lock / retry giao dịch khi nhận deadlock.' ],
+  answer: `**Tóm tắt:** Deadlock PostgreSQL xảy ra khi hai giao dịch khóa các tài nguyên theo thứ tự ngược nhau và mỗi giao dịch chờ kia mở khóa. Trong sự cố, order-service khóa products rồi wallets, còn refund-service khóa wallets rồi products; hai giao dịch chạy song song trên cùng một sản phẩm → chéo chờ → PostgreSQL hủy một giao dịch và báo lỗi deadlock. Sửa ngắn hạn: retry giao dịch khi nhận lỗi deadlock (mã 40P01). Sửa dài hạn: bắt buộc tất cả service khóa hàng theo thứ tự nhất quán (luôn products trước wallets), hoặc dùng advisory lock để tuần tự hóa truy cập cùng một sản phẩm.
+
+### Khái niệm cần biết trước
+- **Transaction (giao dịch):** đơn vị làm việc nguyên tử trong DB; các thay đổi trong transaction chỉ lưu vĩnh viễn khi COMMIT, nếu lỗi thì ROLLBACK zurück toàn bộ.
+- **Row-level lock (khóa cấp hàng):** PostgreSQL khóa từng hàng khi UPDATE/DELETE; các transaction khác muốn cập nhật cùng hàng phải chờ đến khi transaction đầu COMMIT hoặc ROLLBACK.
+- **Deadlock (khóa chết):** tình huống giao dịch A giữ khóa X và chờ khóa Y, giao dịch B giữ khóa Y và chờ khóa X. Hai bên chờ mãi không bao giờ xong. PostgreSQL phát hiện deadlock bằng đồ thị chờ (wait-for graph) và hủy một bên (chọn transaction có chi phí làm lại thấp hơn) rồi báo lỗi 40P01.
+- **Isolation level Read Committed:** mỗi câu lệnh nhìn thấy dữ liệu đã commit trước lúc câu lệnh bắt đầu; khóa hàng được giữ đến hết transaction, không phải đến hết câu lệnh.
+- **Mã lỗi 40P01:** mã SQL chuẩn của PostgreSQL cho deadlock; ứng dụng cần bắt lỗi này và retry toàn bộ transaction.
+- **Advisory lock:** khóa do ứng dụng tự đặt tên (ví dụ lock theo productId), không liên quan đến dữ liệu trong bảng; dùng để tuần tự hóa tác vụ business.
+
+### Nguyên nhân gốc
+
+**1. Thứ tự khóa ngược nhau giữa hai service.**
+order-service làm: BEGIN → UPDATE products (khóa hàng product 101) → UPDATE wallets (khóa hàng wallet 55) → COMMIT.
+refund-service làm: BEGIN → UPDATE wallets (khóa hàng wallet 55) → UPDATE products (khóa hàng product 101) → COMMIT.
+
+Khi cả hai chạy cùng lúc:
+- order-service bắt đầu, khóa products#101, rồi đi đến wallets#55.
+- refund-service bắt đầu, khóa wallets#55, rồi đi đến products#101.
+- order-service chờ wallets#55 (được giữ bởi refund-service).
+- refund-service chờ products#101 (được giữ bởi order-service).
+→ Hai giao dịch chéo chờ, không ai buông khóa → deadlock.
+
+**2. PostgreSQL phát hiện và hủy một bên.**
+PostgreSQL duy trì wait-for graph. Khi phát hiện chu trình chờ (8912 chờ 8945, 8945 chờ 8912), nó chọn một transaction để hủy, báo lỗi:
+ERROR: deadlock detected
+DETAIL: Process 8912 waits for ShareLock on transaction 0x1A4B; blocked by process 8945.
+STATEMENT: UPDATE products SET stock = stock - 1 WHERE id = 101;
+
+### Dẫn chứng
+
+- Artifact pg-deadlock.txt: Process 8912 chạy {{UPDATE products SET stock = stock - 1 WHERE id = 101}}, chờ lock do Process 8945 giữ; Process 8945 chạy {{UPDATE wallets SET balance = balance + 500000 WHERE id = 55}}, chờ lock do Process 8912 giữ. Đây là mẫu chéo chờ đặc trưng của deadlock.
+- Lỗi deadlock được ghi kèm mã 40P01 (không phải timeout 57014 hay treo network).
+- Cả hai transaction cập nhật cùng cặp hàng (products#101, wallets#55) nhưng theo thứ tự ngược nhau.
+- Sau khi PostgreSQL hủy một transaction, transaction kia hoàn thành bình thường, chứng minh không phải lỗi dữ liệu hay treo vĩnh viễn.
+
+### Cách sửa
+
+**Ngay trong sự cố (đã làm):**
+- Giao dịch bị hủy (process 8912) nhận lỗi 40P01; ứng dụng bắt lỗi và retry toàn bộ transaction từ đầu. Lần retry thứ hai, transaction kia đã commit và khóa được giải phóng, nên retry thành công.
+- Không can thiệp thủ công vào pg_locks hay kill backend trừ khi deadlock lặp lại nhiều lần gây kẹt hàng chờ lớn.
+
+**Dài hạn: ngăn deadlock từ gốc**
+
+**Cách 1: Khóa hàng theo thứ tự cố định (khuyên dùng).**
+Đặt quy tắc toàn hệ thống: khi cần cập nhật nhiều bảng, luôn khóa theo thứ tự bảng đã quy định, ví dụ products trước wallets, wallets trước users. Sửa refund-service thành:
+~~~java
+BEGIN;
+UPDATE products SET stock = stock + 1 WHERE id = 101;  -- khóa products trước
+UPDATE wallets SET balance = balance + 500000 WHERE id = 55;  -- sau đó wallets
+COMMIT;
+~~~
+Với thứ tự nhất quán, không thể xuất hiện chéo chờ: nếu hai transaction cùng muốn products#101 và wallets#55, transaction bắt đầu trước sẽ giữ products#101, transaction sau chờ products#101 (không giữ wallets#55 cả), không tạo chu trình chờ.
+
+**Cách 2: Advisory lock tuần tự hóa theo sản phẩm.**
+Trước khi cập nhật, đặt advisory lock theo productId; chỉ một transaction xử lý cùng một sản phẩm tại một thời điểm:
+~~~java
+SELECT pg_advisory_xact_lock(hashtext('product:' || 101));
+UPDATE products SET stock = stock - 1 WHERE id = 101;
+UPDATE wallets SET balance = balance - 500000 WHERE id = 55;
+COMMIT;
+~~~
+Advisory lock tự giải phóng khi transaction kết thúc (COMMIT/ROLLBACK), không rò rỉ khóa.
+
+**Cách 3: Retry giao dịch khi deadlock.**
+Bắt SQLException với SQLState 40P01, retry toàn bộ transaction 3–5 lần với backoff ngắn. Đây là lớp bảo vệ cuối, không thay thế cho cách 1 hoặc 2.
+
+### Phòng ngừa
+
+- Code review bắt buộc kiểm tra thứ tự khóa hàng khi một transaction viết nhiều bảng/hàng.
+- Thêm integration test mô phỏng hai service chạy song song trên cùng dữ liệu, xác nhận không deadlock.
+- Giám sát số lượng lỗi deadlock (pg_stat_database.deadlocks); cảnh báo khi tăng đột biến.
+- Giữ transaction ngắn: lấy dữ liệu cần thiết trước BEGIN, chỉ viết DB trong transaction, tránh gọi HTTP hoặc xử lý nặng giữa BEGIN và COMMIT.
+- Nếu có nhiều service viết cùng bảng, tập trung logic ghi vào một service duy nhất để dễ quản lý thứ tự khóa.
+
+> Senior tip: Deadlock không phải do "lỗi SQL" hay "DB chậm", mà do thứ tự khóa không nhất quán giữa các thành phần. Quy tắc vàng: khóa tài nguyên theo thứ tự cố định trên toàn hệ thống; nếu không thể, dùng advisory lock tuần tự hóa; luôn catch lỗi 40P01 và retry toàn bộ transaction. Tránh giữ khóa DB khi gọi service ngoài hay xử lý lâu trong transaction.`,
+  rubric: [ 'Giải thích deadlock là giao dịch A giữ X chờ Y, giao dịch B giữ Y chờ X, tạo chu trình chéo chờ PostgreSQL hủy một bên (mã 40P01).', 'Dẫn chứng artifact: Process 8912 chờ lock do 8945 giữ và ngược lại, cùng cập nhật products#101 và wallets#55 theo thứ tự ngược nhau, không phải timeout hay treo mạng.', 'Sửa ngắn hạn: bắt lỗi 40P01 và retry toàn bộ transaction.', 'Sửa dài hạn: khóa hàng theo thứ tự nhất quán (products trước wallets) toàn hệ thống, hoặc advisory lock theo productId, giữ transaction ngắn, hạn chế gọi service ngoài giữa BEGIN và COMMIT.', 'Giám sát: pg_stat_database.deadlocks, test hai transaction song song trên cùng dữ liệu.' ],
+  tags: ['postgresql', 'deadlock', 'transaction', 'row-lock', 'advisory-lock', 'retry']
+},
+{
+  id: 'lab-incident-036',
+  category: 'incident',
+  title: 'Cache stampede khi khóa Redis TTL hết hạn ở sản phẩm hot trong ca livestream',
+  level: 'senior',
+  scenario: `Hệ thống bán hàng dùng Redis làm cache cho chi tiết sản phẩm. Sản phẩm đang được livestream (ví dụ smartphone giảm giá 50%) có khóa cache {{product:detail:9987}} với TTL 300 giây. Lúc cao điểm có khoảng 50.000 request/giây truy cập chi tiết sản phẩm này.
+
+Khi khóa Redis hết hạn (TTL = 0), hàng ngàn request cùng lúc miss cache và truy vấn PostgreSQL để lấy thông tin sản phẩm, rồi ghi lại vào Redis. PostgreSQL nhận mở tens of thousands kết nối đồng thời, CPU 100%, connection pool cạn kiệt, thời gian phản hồi tăng từ 20 ms lên 8 giây. Nhiều request bị timeout và khách hàng không thấy trang sản phẩm.
+
+Dữ liệu Redis, PostgreSQL và log xem trong artifact redis-stampede.txt.`,
+  artifacts: [ { name: 'redis-stampede.txt', lang: 'text', content: `2026-10-26 19:15:00 Redis INFO keyspace:
+db0:keys=124503,expires=124490,avg_ttl=245
+2026-10-26 19:15:01 Redis SLOWLOG entry 1: GET product:detail:9987, duration=12450ms
+2026-10-26 19:15:01 Redis SLOWLOG entry 2: SET product:detail:9987 ..., duration=890ms
+2026-10-26 19:15:00 PostgreSQL pg_stat_activity:
+  14200 connections active, 13800 in state 'active' running SELECT * FROM products WHERE id = 9987
+  CPU: 100% (all 16 cores)
+2026-10-26 19:15:00 Application log:
+  Request-12345: cache MISS for product:detail:9987, querying DB...
+  Request-12346: cache MISS for product:detail:9987, querying DB...
+  Request-12347: cache MISS for product:detail:9987, querying DB...
+  (lặp lại hàng nghìn lần trong 1 giây)
+  Request-12400: DB connection timeout after 5000ms
+  Request-12401: DB connection timeout after 5000ms` } ],
+  questions: [ 'Vì sao khóa cache hết hạn ở một sản phẩm đơn lẻ lại làm downtime toàn hệ thống?', 'Dẫn chứng từ artifact nào cho thấy đây là cache stampede chứ không phải lỗi khác?', 'Sửa thế nào để ngăn cache stampede, ngắn hạn và dài hạn?' ],
+  hints: [ 'Cache stampede (thủng đổ bộ cache) xảy ra khi khóa hot hết hạn và hàng trăm nghìn request cùng miss cache, đồng loạt đổ vào DB.', 'Artifact ghi 14.200 kết nối PostgreSQL đang active, cùng truy vấn SELECT * FROM products WHERE id = 9987, CPU 100% — đây là dấu hiệu điển hình của cache stampede.', 'Dùng single-flight (chỉ một request truy vấn DB, các request khác chờ kết quả), thêm độ tin cậy cho TTL (jitter), hoặc làm mới cache trước khi hết hạn (refresh-ahead).' ],
+  answer: `**Tóm tắt:** Cache stampede (còn gọi thundering herd) xảy ra khi một khóa cache hot hết hạn và số lượng lớn request cùng lúc miss cache, đồng loạt truy vấn cơ sở dữ liệu. Trong sự cố, khóa {{product:detail:9987}} (TTL 300 giây) được truy cập 50.000 lần/giây; khi hết hạn, hàng nghìn request cùng query PostgreSQL, làm CPU 100%, connection pool cạn kiệt, phản hồi từ 20 ms lên 8 giây. Sửa ngắn hạn: dùng single-flight/khóa mỗi cache key để chỉ một request truy vấn DB, các request khác chờ và reuse kết quả. Sửa dài hạn: thêm jitter vào TTL để các khóa không hết hạn cùng lúc, dùng refresh-ahead (làm mới cache trước khi hết hạn), và giới hạn số kết nối DB.
+
+### Khái niệm cần biết trước
+- **Cache (bộ nhớ đệm):** lưu sao chép dữ liệu thường truy cập ở nơi nhanh (Redis) để tránh truy vấn DB chậm mỗi lần.
+- **Cache key (khóa cache):** tên dùng để lưu và lấy dữ liệu trong Redis, ví dụ {{product:detail:9987}}.
+- **TTL (Time To Live):** thời gian tự động xóa khóa cache sau khi thiết lập, ví dụ 300 giây; sau TTL khóa bị xóa và request lần tới phải miss cache.
+- **Cache miss (lỗi tìm cache):** request tìm khóa trong Redis nhưng không tìm thấy (khóa hết hạn hoặc chưa tồn tại), phải truy vấn DB lấy dữ liệu.
+- **Cache stampede / thundering herd:** khi khóa hot hết hạn, hàng trăm nghìn request cùng miss cache và đồng loạt truy vấn DB, làm quá tải DB.
+- **Single-flight:** kỹ thuật chỉ cho một request thực hiện truy vấn DB cho một khóa cache cụ thể; các request khác cùng khóa chờ và nhận kết quả giống hệt nhau.
+- **Connection pool (hòm kết nối):** số lượng kết nối DB tối đa ứng dụng có thể mở đồng thời; cạn kiệt, request mới không thể kết nối DB.
+
+### Nguyên nhân gốc
+
+**1. Một khóa hot hết hạn gây tác động lan rộng.**
+Khóa {{product:detail:9987}} có TTL 300 giây, được truy cập 50.000 lần/giây trong ca livestream. Vào thời điểm TTL hết (ví dụ 19:15:00), khóa bị xóa khỏi Redis. Request tiếp theo tìm không thấy → cache miss → truy vấn PostgreSQL. Nhưng không chỉ một request miss: vì 50.000 request/giây cùng đến, hàng nghìn request trong cùng một giây đều miss cache và cùng truy vấn {{SELECT * FROM products WHERE id = 9987}}.
+
+**2. PostgreSQL quá tải do cùng truy vấn.**
+Artifact cho thấy 14.200 kết nối active, hầu hết chạy cùng truy vấn {{SELECT * FROM products WHERE id = 9987}}. CPU 100% trên 16 lõi. Connection pool của ứng dụng cạn kiệt (mỗi kết nối đang chờ query xong), nên request mới không thể lấy kết nối → timeout sau 5 giây.
+
+**3. Ảnh hưởng lan sang toàn hệ thống.**
+Connection pool cạn kiệt ảnh hưởng không chỉ chi tiết sản phẩm 9987 mà cả các chức năng khác dùng cùng pool. Thời gian phản hồi tăng từ 20 ms lên 8 giây, nhiều request timeout, khách hàng không truy cập được trang sản phẩm trong ca livestream quan trọng.
+
+### Dẫn chứng
+
+- Artifact redis-stampede.txt: Redis SLOWLOG ghi {{GET product:detail:9987}} mất 12.450 ms (bình thường < 1 ms), {{SET}} mất 890 ms — Redis bị kẹt do áp lực ghi từ hàng nghìn request đồng thời.
+- PostgreSQL: 14.200 kết nối active, cùng truy vấn {{SELECT * FROM products WHERE id = 9987}}, CPU 100% — dấu hiệu cache stampede chứ không phải truy vấn chậm do thiếu index (index thì chỉ một vài kết nối chậm, không phải 14.200 kết nối cùng truy vấn).
+- Log ứng dụng: hàng nghìn {{cache MISS for product:detail:9987, querying DB...}} trong cùng một giây, sau đó {{DB connection timeout after 5000ms}}.
+- Trước khi sự cố: avg_ttl 245 giây, keys 124.503 (bình thường); sau sự cố: connection timeout, phản hồi 8 giây.
+
+### Cách sửa
+
+**Ngay trong sự cố (đã làm):**
+- Tăng kích thước connection pool PostgreSQL tạm thời và khôi phục lại sau, nhưng đây là giảm biểu tượng, không trị gốc.
+- Phân phối lại traffic qua CDN hoặc giới hạn tốc độ request cho trang sản phẩm hot (rate limiter) để giảm tải DB.
+- Khôi phục khóa cache {{product:detail:9987}} bằng cách ghi giá trị mới vào Redis (pre-warm), giảm số request miss cache.
+
+**Dài hạn: ngăn cache stampede từ gốc**
+
+**Cách 1: Single-flight (khóa mỗi cache key) — khuyên dùng.**
+Trước khi đọc cache, đặt một khóa ngắn hạn trong Redis cho cache key đó (ví dụ {{lock:product:detail:9987}} với TTL 5 giây). Chỉ request đầu tiên thành công đặt khóa, truy vấn DB và ghi cache chính; các request khác thấy khóa đã tồn tại thì chờ và đọc lại cache chính khi đã có.
+~~~java
+String value = redis.get("product:detail:9987");
+if (value == null) {
+    boolean acquired = redis.setnx("lock:product:detail:9987", "1", 5000);
+    if (acquired) {
+        value = db.queryProduct(9987);
+        redis.set("product:detail:9987", value, 300);
+        redis.del("lock:product:detail:9987");
+    } else {
+        Thread.sleep(100);
+        value = redis.get("product:detail:9987"); // đọc lại sau khi request đầu ghi xong
+    }
+}
+~~~
+
+**Cách 2: Jitter TTL (độ ngẫu nhiên thời gian hết hạn).**
+Không đặt TTL cố định 300 giây cho tất cả khóa. Mỗi khóa được TTL ngẫu nhiên trong khoảng 270–330 giây (300 ± 10%). Như vậy các khóa hot không cùng hết hạn vào cùng một thời điểm, tránh tình huống hàng nghìn request cùng miss.
+
+**Cách 3: Refresh-ahead (làm mới cache trước khi hết hạn).**
+Không đợi TTL hết. Khi TTL còn ít (ví dụ dưới 10% hoặc dưới 30 giây), kích hoạt làm mới cache trong nền (asynchronous). Request vẫn đọc giá trị cũ trong khi cache mới được chuẩn bị, không có miss cache và không storm DB.
+
+**Cách 4: Giới hạn kết nối DB và circuit breaker.**
+Đặt max connection pool phù hợp (ví dụ 50 kết nối) và dùng circuit breaker: khi DB phản hồi chậm hoặc lỗi, application trả về giá trị cache cũ (stale cache) hoặc thông báo tạm thời thay vì để hàng request cùng đổ vào DB.
+
+### Phòng ngừa
+
+- Không đặt TTL giống hệt nhau cho nhiều cache key hot; dùng jitter TTL.
+- Áp dụng single-flight cho tất cả cache key có xác suất cao được truy cập đồng thời.
+- Giám sát Redis misses/giây và PostgreSQL active connections; cảnh báo khi misses tăng đột biến hoặc active connections gần mức pool max.
+- Test trường hợp TTL hết hạn ở môi trường staging với traffic mô phỏng cao điểm trước khi triển khai production.
+- Ưu tiên stale cache (giá trị cũ) hơn lỗi DB: khi DB chậm, trả dữ liệu cache cũ nếu có.
+
+> Senior tip: Cache stampede không phải do Redis chậm, mà do Redis để trống ở thời điểm sai và hàng nghìn request cùng tìm thay. Bảo vệ điểm yếu nhất là DB, không phải Redis. Luôn giữ DB an toàn bằng single-flight, jitter TTL và refresh-ahead; coi connection pool như một van an toàn, không để một khóa cache het hấp dẫn toàn hệ thống vào DB.`,
+  rubric: [ 'Giải thích cache stampede: khóa hot hết hạn → hàng nghìn request cùng miss cache → đồng loạt truy vấn DB → quá tải kết nối, CPU 100%.', 'Dẫn chứng artifact: 14.200 kết nối PostgreSQL active cùng truy vấn id=9987, CPU 100%, Redis SLOWLOG GET/SET bị chậm, log hàng nghìn cache MISS trong một giây, sau đó connection timeout.', 'Sửa ngắn hạn: single-flight/khóa mỗi cache key (chỉ 1 request truy vấn DB, các request khác chờ), pre-warm cache, rate limiter.', 'Sửa dài hạn: jitter TTL (không hết hạn đồng loạt), refresh-ahead (làm mới trước khi hết hạn), connection pool giới hạn, circuit breaker, stale cache làm fallback.', 'Giám sát: Redis misses/giây, PostgreSQL active connections, test staging mô phỏng cao điểm.' ],
+  tags: ['redis', 'cache-stampede', 'ttl', 'single-flight', 'jitter', 'postgresql', 'connection-pool']
 }
 );
