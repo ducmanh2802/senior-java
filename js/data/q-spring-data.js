@@ -13968,4 +13968,501 @@ Một hệ thống thanh toán có cấu hình {{payment.timeout-seconds}}. Tron
 
 > Senior tip: Với Spring Boot 3, record là lựa chọn mặc định. Nếu team chưa dùng record, hãy chuyển dần. Kiểm tra cả các {{NestedConfigurationProperty}} để validate cả cấu hình con.`
 }
+,
+{
+  id: 'jpa-064',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'N+1 query là gì, cách đo chính xác bằng datasource-proxy và Hibernate statistics, và khi nào bạn chấp nhận N+1 vì chi phí fix cao hơn lợi ích?',
+  a: `**Tóm tắt:** N+1 là hiện tượng một truy vấn gốc (cha) lấy N bản ghi, sau đó mỗi bản ghi lại sinh thêm một truy vấn con (con) khi truy cập quan hệ lazy → tổng N+1 câu truy vấn. Để đo chính xác trong production, dùng **datasource-proxy** (gọi statement thực tế từ JDBC) hoặc **Hibernate statistics** ({{PrepareStatementCount}}, {{EntityLoadCount}}). Có trường hợp chấp nhận N+1: màn hình chi tiết chỉ load 1 bản ghi (N=1), collection rất nhỏ và không thay đổi (cache L2), hoặc việc fix (EntityGraph/batch size) làm phức tạp code quá mức so với rủi ro thực tế. Nguyên tắc: đo trước, quyết định sau.
+### Bước 1: Thuật ngữ
+- **N+1**: 1 query cha + N query con. Ví dụ: {{select * from orders}} (1 query) → vòng lặp {{order.getItems()}} → 50 query {{select * from order_items where order_id=?}}.
+- **datasource-proxy**: thư viện chặn {{PreparedStatement.execute()}}/{{executeQuery()}} để đếm và log SQL thật đang chạy, không lệch như log Hibernate (Hibernate có thể log trùng do cache plan).
+- **Hibernate statistics**: {{generate_statistics=true}} bật MBean/JMX, metric {{PrepareStatementCount}} (số statement chuẩn bị), {{EntityLoadCount}} (số entity nạp). So sánh metric trước/sau code.
+- **Collection nhỏ ổn định**: danh sách tiền tệ, trạng thái đơn hàng — ít khi đổi, kích thước < 20, phù hợp L2 cache.
+### Bước 2: Cách đo trong test và production
+**Test (datasource-proxy + datasource-assert):**
+~~~java
+@SpringBootTest
+@AutoConfigureDataSourceProxy
+class OrderN1Test {
+    @Autowired ProxyDataSource proxy; // hoặc ProxyTestDataSource từ datasource-assert
+
+    @Test void countQueries() {
+        List<Order> orders = repo.findAll();
+        orders.forEach(o -> o.getItems().size()); // kích hoạt N+1
+
+        // Cách 1: dùng ProxyTestDataSource (khuyến nghị cho test)
+        // ProxyTestDataSource testDs = new ProxyTestDataSource(proxy);
+        // assertEquals(51, testDs.getQueryExecutions().size());
+
+        // Cách 2: dùng listener đếm (ProxyDataSource không có getQueryCount())
+        long selectCount = proxy.getQueryExecutions().stream()
+            .filter(e -> e.getQueryInfo().getType() == net.ttddyy.dsproxy.ExecutionInfo.QueryType.SELECT)
+            .count();
+        assertEquals(51, selectCount); // 1 + 50
+    }
+}
+~~~
+**Production (APM + datasource-proxy sampling):**
+- Bật {{decorator.datasource.datasource-proxy.count-query=true}}, log định kỳ (1 phút/lần) số lượng statement theo pattern SQL.
+- So sánh {{PrepareStatementCount}} / request giữa các deploy.
+- Nếu endpoint list đơn hàng 50 item/request tạo > 60 statement → có N+1.
+### Bước 3: Khi nào chấp nhận N+1
+| Trường hợp | Lý do | Giám sát |
+|---|---|---|
+| Chi tiết 1 bản ghi (N=1) | Chỉ 2 query, chi phí fix > lợi ích | Không cần |
+| Collection tiny, cached L2 | Query con đọc từ cache, không chạm DB | Theo dõi L2 hit rate |
+| Admin/internal tool traffic thấp | Không ảnh hưởng SLA user | Log cảnh báo nếu vượt ngưỡng |
+| Legacy code rủi ro cao sửa | Regression risk, thiếu test | Chạy song song version mới/ cũ |
+### Bước 4: Ví dụ đời thực
+Hệ thống admin quản lý đơn hàng, endpoint {{GET /admin/orders?page=0&size=50}} trả 50 đơn kèm {{items}} (collection). Code dùng {{@EntityGraph(attributePaths = "items")}} nhưng developer vô tình quên {{@EntityGraph}} ở repository method override. Kết quả: 50 đơn → 51 query (1 orders + 50 items). Datasource-proxy log: câu SQL
+~~~sql
+SELECT * FROM order_items WHERE order_id IN (?, ?, ...)
+~~~
+không xuất hiện, thay vào đó 50 câu
+~~~sql
+SELECT * FROM order_items WHERE order_id=?
+~~~
+. APM p95 1.2s. Sau khi thêm {{@EntityGraph}} đúng chỗ, p95 giảm xuống 180ms, statement count/request từ 51 xuống 2.
+### Trả lời mẫu khi phỏng vấn
+"N+1 là 1 query cha + N query con khi duyệt collection lazy. Em đo bằng datasource-proxy trong test (đếm statement thực tế) và Hibernate statistics trong production ({{PrepareStatementCount}}/request). Em từng có case admin list 50 đơn tạo 51 query do quên EntityGraph, p95 1.2s. Fix bằng EntityGraph/batch size → p95 180ms. Em chấp nhận N+1 khi: màn hình chi tiết N=1, collection cached L2 ổn định, hoặc legacy rủi ro cao. Nguyên tắc: đo trước, quyết định sau — không fix mù."
+> Senior tip: Đừng tin log Hibernate (có thể trùng do cache plan). Datasource-proxy đếm statement JDBC thực tế mới chính xác. Em luôn có test {{assertQueryCount}} cho endpoint list quan trọng.`,
+  follow: [
+    'Tại sao log Hibernate đôi khi đếm trùng statement so với datasource-proxy?',
+    'Làm sao cấu hình datasource-proxy sampling 1% trong production để không ảnh hưởng hiệu năng?',
+    'Batch size (hibernate.default_batch_fetch_size) giải quyết N+1 như thế nào và trade-off là gì?'
+  ],
+  tags: ['N+1', 'datasource-proxy', 'Hibernate statistics', 'query count', 'performance'],
+  refs: [
+    { type: 'doc', title: 'datasource-proxy GitHub', url: 'https://github.com/gavlyukovskiy/spring-boot-data-source-decorator' },
+    { type: 'doc', title: 'Hibernate ORM User Guide: Statistics', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#statistics' }
+  ]
+}
+,
+{
+  id: 'jpa-065',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Fetch join, @EntityGraph, @BatchSize và hibernate.default_batch_fetch_size: so sánh số query, bộ nhớ, và khả năng kết hợp trong một use case thực tế (danh sách đơn hàng kèm items, payments, customer).',
+  a: `**Tóm tắt:** Fetch join (JPQL {{join fetch}}), @EntityGraph (khai báo thuộc tính cần nạp), @BatchSize (trên entity/collection) và {{hibernate.default_batch_fetch_size}} (cấu hình toàn cục) đều giải quyết N+1 nhưng khác nhau về số query, row explosion, phân trang, và khả năng kết hợp. Use case thực tế: danh sách 50 đơn hàng, mỗi đơn có items (10-20), payments (1-3), customer (1). Chiến lược tối ưu: **fetch join to-one (customer) + batch size cho to-many (items, payments)** → 1 query đơn hàng+customer + ceil(50/25)=3 query items + ceil(50/25)=3 query payments = **7 query**, an toàn phân trang, không row explosion.
+### So sánh chi tiết
+| Chiến lược | Số query (50 đơn, items 20, payments 2) | Row explosion | Phân trang an toàn? | Kết hợp được? |
+|---|---|---|---|---|
+| Fetch join to-one (customer) | 1 (join) | Không | Có | ✓ Với batch size to-many |
+| Fetch join to-many (items) | 1 (join) | **Có** (50*20=1000 dòng) | **Không** (HHH90003004) | ✗ Với to-many khác |
+| @EntityGraph (to-one + to-many) | 1 (join) | **Có** | **Không** | Giống fetch join |
+| @BatchSize(size=25) trên collection | 1 + ceil(50/25)=3 | Không | Có | ✓ Với fetch join to-one |
+| default_batch_fetch_size=25 | Tự động cho mọi collection | Không | Có | ✓ Với tất cả |
+### Cơ chế batch size
+- Khi truy cập {{order.getItems()}} lần đầu, Hibernate gom id của 50 đơn → chia thành batch 25 → chạy {{SELECT * FROM items WHERE order_id IN (?, ..., ?)}} 2 lần.
+- Collection được điền dần, identity map đảm bảo entity không bị trùng.
+- {{@BatchSize(size=25)}} trên entity/collection ưu tiên hơn {{default_batch_fetch_size}}.
+### Kết hợp thực tế (code)
+~~~java
+@Entity
+@BatchSize(size = 25)
+class Order {
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "customer_id")
+    private Customer customer; // to-one: dùng fetch join
+
+    @OneToMany(mappedBy = "order")
+    @BatchSize(size = 25)
+    private List<OrderItem> items; // to-many: batch size
+
+    @OneToMany(mappedBy = "order")
+    private List<Payment> payments; // dùng default_batch_fetch_size
+}
+
+// Repository
+@Query("select distinct o from Order o join fetch o.customer where o.status = :status")
+Page<Order> findByStatus(@Param("status") String status, Pageable pageable);
+
+// application.yml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        default_batch_fetch_size: 25
+~~~
+Kết quả: 1 query join customer + 3 query items (batch 25) + 3 query payments (batch 25) = **7 query**, phân trang an toàn, không row explosion.
+### Pitfall production
+- Fetch join 2 collection to-many → {{MultipleBagFetchException}} hoặc row explosion.
+- EntityGraph + Pageable trên to-many → in-memory pagination (HHH90003004), OOM trang sâu.
+- {{default_batch_fetch_size}} quá lớn (500+) → câu IN quá dài, vượt giới hạn DB (Oracle 1000, SQL Server 2100 tham số).
+- Quên {{distinct}} trong JPQL fetch join to-one → duplicate entity cha.
+### Ví dụ đời thực
+E-commerce API list đơn hàng 50/trang: fetch join {{customer}} (to-one) + {{default_batch_fetch_size=25}} cho {{items}} và {{payments}}. Trước fix: 50 đơn → 1 + 50 + 50 = 101 query, p95 2.1s. Sau fix: 7 query, p95 180ms. Test datasource-proxy assert statement count = 7. Bật thêm {{hibernate.query.fail_on_pagination_over_collection_fetch=true}} để chặn dev vô tình thêm fetch join to-many vào Pageable.
+### Trả lời mẫu khi phỏng vấn
+"Fetch join to-one (customer) an toàn cho phân trang, không row explosion. To-many (items, payments) dùng batch size (@BatchSize hoặc default_batch_fetch_size) để gom IN clause, tránh N+1 mà không join. Em kết hợp: fetch join customer + batch size items/payments → 7 query cho 50 đơn, phân trang đúng DB, không OOM. EntityGraph tiện nhưng dễ lạm dụng join to-many gây HHH90003004. Em luôn bật fail_on_pagination_over_collection_fetch và test assert statement count."
+> Senior tip: Fetch join to-one + batch size to-many là "cặp đôi vàng" cho API list. EntityGraph chỉ dùng khi cần override fetch plan theo use case, không dùng mặc định cho mọi query.`,
+  follow: [
+    'Vì sao fetch join to-one an toàn khi phân trang còn to-many thì không?',
+    'default_batch_fetch_size và @BatchSize trên collection ưu tiên như thế nào khi cả hai đều đặt?',
+    'Làm sao xử lý khi collection items có 1000 phần tử/đơn (batch size 25 → 40 query items)?'
+  ],
+  tags: ['fetch join', 'EntityGraph', 'BatchSize', 'default_batch_fetch_size', 'N+1', 'pagination'],
+  refs: [
+    { type: 'doc', title: 'Hibernate ORM User Guide: Fetching', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#fetching' },
+    { type: 'doc', title: 'Hibernate: Batch fetching', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#fetching-batch' }
+  ]
+}
+,
+{
+  id: 'jpa-066',
+  topic: 'jpa',
+  level: 'lead',
+  q: '@Version (optimistic lock): loại cột (integer, short, long, timestamp, Instant), chiến lược retry an toàn (exponential backoff, max attempt), và xử lý khi collision xảy ra trong long-running conversation (wizard multi-bước).',
+  a: `**Tóm tắt:** {{@Version}} hỗ trợ kiểu {{int}}, {{short}}, {{long}}, {{java.sql.Timestamp}}, {{java.time.Instant}} (từ Hibernate 5.5+). Integer/long là phổ biến nhất (tăng 1 mỗi update), timestamp/Instant dùng khi cần audit thời gian sửa đổi. Retry an toàn: **exponential backoff + jitter**, max 3-5 lần, chỉ retry khi {{OptimisticLockException}} (không retry exception khác). Long-running conversation (wizard): giữ version ở client (hidden field/DOM), mỗi bước submit gửi kèm version → server kiểm tra {{WHERE id=? AND version=?}} → nếu 0 row affected ném {{OptimisticLockException}} → client hiển thị Conflict UI, cho người dùng merge/resubmit.
+### Loại cột @Version
+| Kiểu | Cơ chế | Ưu điểm | Nhược điểm |
+|---|---|---|---|
+| {{int}}/{{short}}/{{long}} | Tăng 1 (sequence/identity) | Nhỏ gọn, nhanh, portable | Không biết *khi nào* sửa |
+| {{Timestamp}} | DB set {{CURRENT_TIMESTAMP}} | Có thông tin thời gian | Precision giây/ms, clock skew DB |
+| {{Instant}} (Hibernate 5.5+) | Giống Timestamp, zone UTC | Chuẩn Java time, UTC | Cần DB hỗ trợ timestamp with time zone |
+**Khuyến nghị**: {{long}} cho throughput cao (counter), {{Instant}} cho audit trail.
+### Retry an toàn (code)
+~~~java
+@Service
+@RequiredArgsConstructor
+class OrderService {
+    private final OrderRepository repo;
+    private final RetryTemplate retry = RetryTemplate.builder()
+        .maxAttempts(3)
+        .exponentialBackoff(50, 2, 500, true) // initial 50ms, multiplier 2, max 500ms, jitter
+        .retryOn(OptimisticLockException.class)
+        .build();
+
+    public Order updateStatus(Long id, String status, Long expectedVersion) {
+        return retry.execute(ctx -> {
+            Order o = repo.findById(id).orElseThrow();
+            if (!o.getVersion().equals(expectedVersion)) {
+                throw new OptimisticLockException("Version mismatch");
+            }
+            o.setStatus(status);
+            return repo.save(o); // version tự tăng
+        });
+    }
+}
+~~~
+- Chỉ retry {{OptimisticLockException}} (và subclass {{ObjectOptimisticLockingFailureException}}).
+- Jitter ({{random=true}}) tránh thundering herd khi nhiều request cùng retry.
+- Không retry trong {{@Transactional}} (sẽ rollback toàn bộ) — retry ở service layer **ngoài** transaction hoặc dùng {{TransactionTemplate}} trong retry callback.
+### Long-running conversation (wizard)
+**Client (React/Vue)**: Giữ {{version}} trong state/form hidden.
+**Server**: Mỗi bước wizard là request riêng, transaction ngắn.
+~~~java
+@PostMapping("/wizard/step1")
+public Step1Response step1(@RequestBody Step1Request req) {
+    Order o = repo.findById(req.orderId()).orElseThrow();
+    // kiểm tra version từ client
+    if (!o.getVersion().equals(req.version())) {
+        throw new OptimisticLockException("Conflict");
+    }
+    o.setStep1Data(req.data());
+    repo.save(o); // version tăng
+    return new Step1Response(o.getId(), o.getVersion(), o.getStep1Data());
+}
+~~~
+Nếu collision: client bắt 409 Conflict → hiển thị diff hoặc form merge → người dùng chọn giữ field nào → resubmit với version mới.
+### Pitfall production
+- {{@Version}} trên {{Timestamp}} mà DB clock không đồng bộ (multi-node) → version sai lệch.
+- Retry trong {{@Transactional}} → transaction rollback, retry lại từ đầu nhưng version đã cũ → loop vô tận.
+- Không set {{lock_mode_type}} cho query đọc ({{PESSIMISTIC_READ}} không liên quan optimistic).
+- {{Instant}} cần column {{TIMESTAMP WITH TIME ZONE}} (PostgreSQL) hoặc {{DATETIME(6)}} (MySQL 8+).
+### Ví dụ đời thực
+Hệ thống phê duyệt hợp đồng 3 bước (tạo → review → ký). Mỗi bước là request riêng, giữ {{version}} trong form. Người dùng A mở bước 1, người dùng B mở cùng hợp đồng, B submit bước 1 trước (version 1→2). A submit bước 1 sau → server kiểm tra {{WHERE id=? AND version=1}} → 0 row → ném {{OptimisticLockException}}. Frontend bắt 409, hiển thị "Dữ liệu đã thay đổi bởi người khác, xem diff?" → A xem diff, merge thay đổi, resubmit với version 2 → thành công. Retry config: 3 lần, backoff 50ms/100ms/200ms + jitter. Thống kê 6 tháng: 0.3% request collision, 99% tự merge thành công, 0% lost update.
+### Trả lời mẫu khi phỏng vấn
+"@Version hỗ trợ int/long (counter) và Timestamp/Instant (thời gian). Em dùng long cho throughput cao, Instant cho audit. Retry an toàn: exponential backoff + jitter, max 3-5 lần, chỉ retry OptimisticLockException, KHÔNG retry trong @Transactional (dùng TransactionTemplate hoặc service layer ngoài transaction). Long-running conversation: client giữ version, mỗi bước submit kèm version, server WHERE id=? AND version=?, collision trả 409 Conflict, UI cho merge/resubmit. Em từng triển khai wizard 3 bước, collision 0.3%, 99% tự merge ok."
+> Senior tip: Đừng bao giờ retry trong @Transactional — transaction sẽ rollback, version client cũ, retry mãi không thoát. Tách retry ra ngoài transaction boundary. Với wizard, version là "vé" đảm bảo tính nhất quán, không phải số tăng đơn thuần.`,
+  follow: [
+    'Tại sao Instant tốt hơn Timestamp cho @Version trong môi trường multi-region?',
+    'Làm sao xử lý khi collision xảy ra ở bước cuối của wizard (bước ký) — có thể tự động merge không?',
+    'Nếu dùng @Version trên DTO projection (không phải entity), Hibernate hỗ trợ không?'
+  ],
+  tags: ['@Version', 'optimistic lock', 'retry', 'exponential backoff', 'long-running conversation', 'wizard'],
+  refs: [
+    { type: 'doc', title: 'Hibernate ORM User Guide: Optimistic Locking', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#locking-optimistic' },
+    { type: 'doc', title: 'Spring Retry Reference', url: 'https://docs.spring.io/spring-retry/reference/' }
+  ]
+}
+,
+{
+  id: 'jpa-067',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Bulk update/delete bằng @Modifying JPQL bỏ qua persistence context: rủi ro dữ liệu stale (dirty entity trong context), chiến lược flush/clear, và khi nào nên dùng native query hoặc @QueryHints flush mode để an toàn.',
+  a: `**Tóm tắt:** {{@Modifying}} JPQL/SQL chạy thẳng xuống DB, **không** tải entity vào persistence context, **không** chạy dirty checking, **không** cập nhật L1 cache, **không** trigger lifecycle callback ({{@PreUpdate}}, {{@PostUpdate}}). Rủi ro: entity đã load trong context (dirty hoặc clean) giữ giá trị cũ → đọc sau bulk update thấy dữ liệu stale. Chiến lược an toàn: (1) {{flush()}} + {{clear()}} trước bulk để đẩy thay đổi pending và xóa context, (2) {{clear()}} sau bulk để buộc reload, (3) dùng native query khi cần lock/returning, (4) {{@QueryHints(@QueryHint(name = "org.hibernate.flushMode", value = "MANUAL"))}} để tắt auto-flush quanh bulk.
+### Rủi ro chi tiết
+1. **Stale L1 cache**: Entity managed trong context giữ giá trị cũ → {{em.find()}} trả entity cũ.
+2. **Stale L2 cache**: Nếu bật L2 cache, region không tự invalidate → các session khác đọc stale.
+3. **Missing lifecycle**: {{@PreUpdate}}/{{@PostUpdate}}/{{@EntityListeners}} không chạy → audit log, search index không cập nhật.
+4. **Version không tăng**: {{@Version}} không tự tăng → optimistic lock vỡ cho entity đã load.
+5. **FK/Cascade**: DB constraint có thể fail nếu bulk delete vi phạm FK (không có cascade ứng dụng).
+### Chiến lược an toàn (thứ tự)
+~~~java
+@Transactional
+public int bulkCloseExpiredOrders(Instant cutoff) {
+    // 1. Flush pending changes TRƯỚC bulk
+    em.flush();
+    // 2. Clear context để tránh stale read sau bulk
+    em.clear();
+
+    // 3. Chạy bulk update
+    int updated = repo.bulkCloseExpired(cutoff); // @Modifying @Query("update Order o set o.status='CLOSED' where o.updatedAt < :cutoff")
+
+    // 4. Clear lại để L1 cache không giữ entity stale (nếu context tái dùng)
+    em.clear();
+    return updated;
+}
+~~~
+### Native query khi cần trả về dữ liệu
+PostgreSQL {{UPDATE ... SET ... WHERE ... RETURNING id, status}} cho phép bulk update + lấy kết quả một lần:
+~~~java
+@Modifying
+@Query(value = "UPDATE orders SET status='CLOSED', closed_at=now() WHERE updated_at < :cutoff RETURNING id, status", nativeQuery = true)
+List<OrderSummaryProjection> bulkCloseWithResult(@Param("cutoff") Instant cutoff);
+~~~
+### @QueryHints flush mode
+Tắt auto-flush quanh bulk để tránh flush ngầm giữa chừng:
+~~~java
+@QueryHints(@QueryHint(name = "org.hibernate.flushMode", value = "MANUAL"))
+@Modifying
+@Query("update Order o set o.status='CLOSED' where o.updatedAt < :cutoff")
+int bulkClose(@Param("cutoff") Instant cutoff);
+~~~
+### So sánh
+| Cách | L1 cache | L2 cache | Lifecycle | Version | Phù hợp |
+|---|---|---|---|---|---|
+| JPQL @Modifying + flush/clear | Clear thủ công | Cần {{sessionFactory.getCache().evictEntityRegion("Order")}} | Không chạy | Không tăng | Hầu hết case |
+| Native + RETURNING | Clear thủ công | Cần evict region | Không chạy | Không tăng | Cần kết quả ngay |
+| JPA {{em.createQuery().executeUpdate()}} | Tự flush trước | Không auto evict | Không chạy | Không tăng | Tương tự JPQL |
+| Spring Data {{deleteAllById}} | Load entity → remove | Entity evict khi remove | Chạy | Tăng | Cần lifecycle/audit |
+### Pitfall production
+- Bulk update trong transaction dài, sau đó đọc entity trong cùng transaction → thấy stale vì L1 chưa clear.
+- L2 cache bật cho entity → bulk update không invalidate → session khác đọc stale. Dùng {{sessionFactory.getCache().evictEntityRegion("Order")}} hoặc evict region thủ công qua JMX/Management.
+- Bulk delete vi phạm FK → {{ConstraintViolationException}}, transaction rollback, nhưng L1 đã clear → mất thay đổi pending trước đó.
+### Ví dụ đời thực
+Job hàng ngày đóng 500k đơn hàng quá hạn 90 ngày. Code cũ: {{@Modifying}} JPQL không {{flush}}/{{clear}}. Kết quả: sau job, màn hình admin vẫn thấy đơn "OPEN" (stale L1 cache), audit log không ghi (missing @PreUpdate), version không tăng → collision sau khi user mở đơn. Sửa: thêm {{em.flush()}}; {{em.clear()}} trước và sau bulk. Thêm evict L2 cache region {{Order}} qua {{sessionFactory.getCache().evictEntityRegion("Order")}}. Sau job, admin reload thấy "CLOSED", audit log đầy đủ. Thời gian job: 45s (flush/clear thêm < 1s).
+### Trả lời mẫu khi phỏng vấn
+"Bulk @Modifying chạy thẳng DB, bỏ qua persistence context → L1/L2 cache stale, lifecycle callback không chạy, version không tăng. Em xử lý: flush + clear TRƯỚC bulk (đẩy thay đổi pending, xóa context), clear SAU bulk (buộc reload), native query RETURNING nếu cần kết quả, @QueryHints MANUAL flush mode để tránh auto-flush ngầm. L2 cache bật thì phải evict region thủ công qua {{sessionFactory.getCache().evictEntityRegion()}}. Em từng fix job 500k đơn: thiếu flush/clear → stale UI, mất audit. Thêm flush/clear + evict L2 → ok."
+> Senior tip: Bulk update là "vũ khí hạt nhân" — mạnh nhưng phá vỡ mọi giả định JPA. Luôn có test integration: bulk update → em.find() trong transaction mới → assert giá trị mới. Và nhớ: nếu cần audit/lifecycle, đừng dùng bulk — dùng chunk + entity save.`,
+  follow: [
+    'Làm sao invalidate L2 cache region sau bulk update trong cluster?',
+    'Nếu bulk update 1 triệu dòng, flush/clear trước có tốn bao nhiêu thời gian và có nên chunk không?',
+    'Tại sao @Modifying không tự động evict L2 cache giống như em.remove()?'
+  ],
+  tags: ['@Modifying', 'bulk update', 'persistence context', 'L1 cache', 'L2 cache', 'flush', 'clear', 'native query'],
+  refs: [
+    { type: 'doc', title: 'Hibernate ORM User Guide: Bulk HQL', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#hql-bulk' },
+    { type: 'doc', title: 'Spring Data JPA: Modifying Queries', url: 'https://docs.spring.io/spring-data/jpa/reference/jpa/modifying-queries.html' }
+  ]
+}
+,
+{
+  id: 'jpa-068',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Open Session In View (OSIV - spring.jpa.open-in-view): chiến lược tắt an toàn từ bật mặc định, đo lường impact (connection pool, query count), và migration dần cho codebase lớn (feature flag, vertical slice).',
+  a: `**Tóm tắt:** OSIV giữ {{EntityManager}}/{{Session}} mở từ đầu request đến sau khi view/JSON render. Lợi ích: tránh {{LazyInitializationException}}. Hại: kéo dài giữ connection pool, che N+1, mờ transaction boundary. Tắt an toàn: (1) đo baseline (connection pool usage, query count/request, p95), (2) bật {{spring.jpa.open-in-view=false}}, (3) fix {{LazyInitializationException}} bằng DTO + fetch trong service ({{@Transactional(readOnly=true)}} + EntityGraph/batch size), (4) migration dần theo vertical slice (một nhóm API) với feature flag.
+### Cơ chế OSIV và chi phí
+- **OSIV bật**: Request → {{OpenEntityManagerInViewFilter}} bind EM → Controller → Service {{@Transactional}} (commit, nhưng EM vẫn mở) → Serializer/Template chạm LAZY → query thêm (nắm connection) → Response → Filter close EM.
+- **Connection pool**: Connection bị giữ suốt render JSON (có thể 50-200ms) thay vì chỉ trong service (5-20ms). Dưới tải, pool cạn → timeout.
+- **N+1 ẩn**: Loop serialize list entity → hàng trăm query ngoài transaction.
+- **Transaction boundary mờ**: Query chạy sau commit → isolation/locking không rõ ràng.
+### Đo baseline trước khi tắt
+| Metric | Cách đo | Ngưỡng cảnh báo |
+|---|---|---|
+| {{hikaricp.connections.active/pending}} | Micrometer/Prometheus | pending > 0 thường xuyên |
+| Query count / request | datasource-proxy / {{generate_statistics}} | > 20 query cho API list |
+| DB time % ở controller/view | APM (distributed trace) | > 30% tổng DB time |
+| {{LazyInitializationException}} rate | Log aggregation | 0 sau khi tắt |
+### Migration dần (vertical slice + feature flag)
+~~~java
+@Configuration
+class OsivMigrationConfig {
+    @Bean
+    @ConditionalOnProperty(name = "app.osiv.disabled", havingValue = "true", matchIfMissing = false)
+    public OpenEntityManagerInViewFilter disableOsivFilter() {
+        return new OpenEntityManagerInViewFilter() {
+            @Override protected boolean shouldNotFilter(HttpServletRequest request) {
+                // Tắt OSIV cho các path đã migrate
+                return request.getRequestURI().startsWith("/api/v2/orders");
+            }
+        };
+    }
+}
+~~~
+**Quy trình từng slice:**
+1. Chọn một nhóm API liên quan (ví dụ {{/api/v2/orders/**}}).
+2. Viết DTO projection cho response, fetch đầy đủ trong service.
+3. Test: assert query count, không {{LazyInitializationException}}.
+4. Bật feature flag {{app.osiv.disabled=true}} cho path đó.
+5. Theo dõi metric 1 tuần → xác nhận không regression → mở rộng slice tiếp theo.
+### So sánh trước/sau (số liệu thực)
+| Metric | OSIV Bật | OSIV Tắt (sau migrate) |
+|---|---|---|
+| Connection hold time trung bình | 85ms | 18ms |
+| Pool pending (giờ cao) | 12 | 0 |
+| Query/request (list 50 đơn) | 101 (N+1) | 7 (fetch join + batch) |
+| p95 API list | 2.1s | 180ms |
+| {{LazyInitializationException}} | 0 | 0 (đã fix gốc) |
+### Pitfall production
+- Tắt OSIV toàn bộ một lúc cho monolith lớn → bùng nổ {{LazyInitializationException}}, rollback khó.
+- Quên {{@Transactional(readOnly=true)}} cho service đọc → transaction không mở, query không chạy.
+- DTO projection thiếu field → frontend lỗi, phải rush fix.
+- {{hibernate.enable_lazy_load_no_trans=true}} — **không khuyến nghị**: mở session ngầm, hành vi khó đoán, che lỗi thiết kế.
+### Ví dụ đời thực
+Monolith 200 endpoint, OSIV bật mặc định. Giờ cao điểm pool 50/instance (4 instance) → pending 20, p95 3s. Team migrate 4 tuần: Tuần 1-2: {{/api/v2/orders/**}} (30 endpoint) → DTO + fetch join + batch size, test assert query count. Tuần 3: {{/api/v2/customers/**}}. Tuần 4: {{/api/v2/products/**}}. Sau migrate: pool 15/instance, pending 0, p95 220ms. Feature flag cho phép rollback tức thì nếu bug. Không dùng {{enable_lazy_load_no_trans}}.
+### Trả lời mẫu khi phỏng vấn
+"OSIV giữ EntityManager mở suốt request, giúp tránh LazyInitializationException nhưng kéo dài connection pool, che N+1, mờ transaction boundary. Em tắt an toàn bằng: đo baseline (pool usage, query count), bật open-in-view=false, fix gốc bằng DTO + fetch trong service (@Transactional readOnly + EntityGraph/batch size), migrate dần vertical slice với feature flag. Em từng migrate monolith 200 endpoint trong 4 tuần: pool 50→15, p95 3s→220ms, query count 101→7. Không dùng enable_lazy_load_no_trans."
+> Senior tip: OSIV là "nợ kỹ thuật có phí lãi". Service mới: tắt ngay từ ngày 1. Hệ cũ: đo trước, migrate vertical slice, feature flag rollback. Đừng bao giờ tắt toàn bộ một lúc nếu không có test assert query count cho mọi endpoint.`,
+  follow: [
+    'Vì sao không khuyến nghị hibernate.enable_lazy_load_no_trans=true?',
+    'Làm sao xử lý endpoint trả entity JPA trực tiếp cho third-party client (không kiểm soát DTO)?',
+    'Khi migrate vertical slice, làm sao đảm bảo OSIV bật cho slice cũ không gây connection leak cho slice mới đã tắt?'
+  ],
+  tags: ['OSIV', 'open-in-view', 'LazyInitializationException', 'connection pool', 'migration', 'feature flag'],
+  refs: [
+    { type: 'doc', title: 'Spring Boot Reference: Open EntityManager in View', url: 'https://docs.spring.io/spring-boot/reference/data/sql.html#data.sql.jpa-and-spring-data.open-entity-manager-in-view' },
+    { type: 'doc', title: 'Hibernate ORM User Guide: Fetching', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#fetching' }
+  ]
+}
+,
+{
+  id: 'jpa-069',
+  topic: 'jpa',
+  level: 'lead',
+  q: 'Lưu batch 100k bản ghi: so sánh Hibernate batch insert (persist + flush/clear), StatelessSession, Spring Batch chunk, và parallel processing (@Async + CompletableFuture) — khi nào chọn cách nào, và cấu hình tối ưu cho throughput.',
+  a: `**Tóm tắt:** 100k bản ghi có 4 chiến lược chính: (1) **Hibernate batch insert** ({{persist}} + {{flush}}/{{clear}} chunk 100-500, {{SEQUENCE}} + {{pooled}} optimizer, {{hibernate.jdbc.batch_size=50}}, {{order_inserts=true}}) — đơn giản, phù hợp job đơn lẻ. (2) **StatelessSession** (no persistence context, no dirty check, no L1 cache) — nhanh nhất cho pure insert, nhưng không cascade, không lifecycle callback. (3) **Spring Batch chunk** ({{ItemReader}} → {{ItemProcessor}} → {{ItemWriter}} chunk 100-500, transaction per chunk, restartability, scaling) — chuẩn enterprise, có checkpoint/retry. (4) **Parallel** ({{@Async}} + {{CompletableFuture}}, chia id range, mỗi thread chunk riêng, kết hợp với (1) hoặc (2)) — tận dụng multi-core, cần idempotent, DB connection pool đủ lớn. Throughput mục tiêu: 5k-20k rows/s tùy DB/hardware.
+### So sánh chi tiết
+| Tiêu chí | Hibernate batch | StatelessSession | Spring Batch | Parallel (@Async) |
+|---|---|---|---|---|
+| Throughput (rows/s) | 5k-10k | 15k-30k | 5k-15k | 20k-50k (tùy core) |
+| Memory | Chunk × entity size | Rất thấp (stream) | Chunk × entity size | Threads × chunk |
+| Lifecycle callback | Có ({{@PrePersist}}) | **Không** | Tuỳ {{ItemWriter}} | Tuỳ implementation |
+| Cascade/Relation | Có | **Không** (manual) | Manual | Manual |
+| Restartability | Khó (custom) | Khó | **Có (step execution context)** | Khó |
+| Transaction boundary | Chunk (flush/clear) | Tự quản lý | Chunk (configurable) | Mỗi task 1 transaction |
+| Complexity | Thấp | Trung bình | Cao | Cao |
+| Phù hợp | Job đơn giản, có relation | Pure insert, CSV import lớn | Enterprise, cần audit/retry | Import song song, multi-file |
+### Cấu hình tối ưu Hibernate batch (job đơn lẻ)
+~~~java
+@Transactional
+public void importOrders(List<OrderCsvRow> rows) {
+    int chunkSize = 200;
+    for (int i = 0; i < rows.size(); i += chunkSize) {
+        List<OrderCsvRow> chunk = rows.subList(i, Math.min(i + chunkSize, rows.size()));
+        for (OrderCsvRow row : chunk) {
+            Order o = mapper.toEntity(row);
+            em.persist(o); // SEQUENCE + pooled → id gán trước, gom batch
+        }
+        em.flush();
+        em.clear(); // giải phóng L1 cache, snapshot
+    }
+}
+~~~
+**application.yml:**
+~~~yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 50
+          batch_versioned_data: true
+        order_inserts: true
+        order_updates: true
+~~~
+**Entity id SEQUENCE pooled:**
+~~~java
+@Id
+@GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "order_seq")
+@SequenceGenerator(name = "order_seq", sequenceName = "order_id_seq", allocationSize = 50)
+private Long id;
+~~~
+### StatelessSession (pure insert nhanh nhất)
+~~~java
+StatelessSession session = entityManager.unwrap(Session.class).getSessionFactory().openStatelessSession();
+Transaction tx = session.beginTransaction();
+try {
+    for (OrderCsvRow row : rows) {
+        session.insert(mapper.toEntity(row));
+        if (count++ % 500 == 0) { tx.commit(); tx = session.beginTransaction(); }
+    }
+    tx.commit();
+} finally { session.close(); }
+~~~
+- Không L1 cache, không dirty check, không cascade → insert thẳng, memory ổn định.
+- Không {{@PrePersist}}, {{@PostPersist}} → tự set {{createdAt}}, {{version}}.
+### Spring Batch (chuẩn enterprise)
+~~~java
+@Bean
+Step importStep(StepBuilderFactory s, ItemReader<OrderCsvRow> reader,
+                ItemProcessor<OrderCsvRow, Order> processor,
+                ItemWriter<Order> writer) {
+    return s.get("importStep")
+        .<OrderCsvRow, Order>chunk(200)
+        .reader(reader)
+        .processor(processor)
+        .writer(writer) // writer.saveAll(chunk) → Hibernate batch
+        .faultTolerant()
+        .skipLimit(100)
+        .skip(ConstraintViolationException.class)
+        .build();
+}
+~~~
+- Chunk transactional, checkpoint tự động, restart từ dòng lỗi.
+- {{JdbcBatchItemWriter}} hoặc {{HibernateItemWriter}} (batch insert).
+### Parallel processing (@Async)
+~~~java
+@Async("importExecutor")
+public CompletableFuture<Integer> importPartition(List<OrderCsvRow> partition) {
+    return CompletableFuture.supplyAsync(() -> {
+        // Hibernate batch hoặc StatelessSession trong partition
+        return importOrders(partition);
+    }, importExecutor);
+}
+
+// Gọi
+List<CompletableFuture<Integer>> futures = partitions.stream()
+    .map(this::importPartition)
+    .toList();
+int total = futures.stream().mapToInt(CompletableFuture::join).sum();
+~~~
+**Cấu hình executor:**
+~~~yaml
+spring:
+  task:
+    execution:
+      pool:
+        core-size: 8
+        max-size: 16
+        queue-capacity: 100
+~~~
+**Lưu ý:** Tổng connection pool = executor threads × chunk connection. Với 8 thread, pool DB cần ≥ 50. Dùng {{PgBouncer}}/{{RDS Proxy}} nếu pool hạn chế.
+### Pitfall production
+- {{GenerationType.IDENTITY}} phá batch → dùng {{SEQUENCE}} + {{pooled}}.
+- {{flush}}/{{clear}} quá hiếm → L1 cache phình, OOM.
+- Parallel không idempotent → chạy lại bị duplicate.
+- Spring Batch {{JpaItemWriter}} không batch mặc định → dùng {{HibernateItemWriter}} hoặc custom writer {{em.flush()}}/{{clear()}}.
+- {{@Async}} task thất bại không rollback task khác → cần logic bù trừ (compensation logic) hoặc checkpoint.
+### Ví dụ đời thực
+Import 100k đơn hàng từ CSV hàng ngày. V1: Hibernate {{persist}} từng dòng + {{IDENTITY}} → 25 phút, OOM lúc 80k. V2: {{SEQUENCE}} pooled + {{batch_size=50}} + {{flush}}/{{clear}} 200 → 6 phút. V3: {{StatelessSession}} + {{COPY}} (PostgreSQL) → 45 giây. V4: Spring Batch chunk 200 + {{HibernateItemWriter}} + restartability → 3 phút, có checkpoint, retry lỗi dòng lẻ. V5: Parallel 8 thread × Spring Batch partition → 55 giây (disk I/O bound). Team chọn V4 cho production (cân bằng throughput, vận hành, restartability).
+### Trả lời mẫu khi phỏng vấn
+"100k bản ghi: 4 lựa chọn. (1) Hibernate batch: SEQUENCE pooled, batch_size=50, flush/clear chunk 200 — đơn giản, 5-10k rows/s. (2) StatelessSession: no context, no dirty check, COPY/stream — nhanh nhất 15-30k rows/s, nhưng mất lifecycle/cascade. (3) Spring Batch chunk: transactional checkpoint, restartability, audit — chuẩn enterprise, 5-15k rows/s. (4) Parallel @Async: chia partition, multi-thread — throughput cao nhất nhưng phức tạp, cần idempotent, pool DB lớn. Em chọn Spring Batch cho production (có checkpoint/retry), Parallel cho migration one-time. Cấu hình then chốt: SEQUENCE pooled, batch_size, order_inserts, flush/clear chunk."
+> Senior tip: Đừng đo throughput trên 1k dòng staging. Chạy 100k thật, đo p95, memory, CPU DB. Với PostgreSQL, {{COPY}} (StatelessSession/JDBC) nhanh hơn hẳn batch insert — cân nhắc nếu pure insert. Spring Batch tốn setup nhưng đỡ đau đầu khi incident (restart từ checkpoint).`,
+  follow: [
+    'Tại sao GenerationType.IDENTITY phá batch insert và PostgreSQL 10+ INSERT RETURNING giải quyết được bao nhiêu?',
+    'Spring Batch JpaItemWriter mặc định không batch — làm sao bật batch thật?',
+    'Parallel import: làm sao đảm bảo idempotent khi chạy lại partition thất bại?'
+  ],
+  tags: ['batch insert', '100k', 'StatelessSession', 'Spring Batch', 'parallel', '@Async', 'SEQUENCE pooled', 'flush/clear'],
+  refs: [
+    { type: 'doc', title: 'Hibernate ORM User Guide: Batch processing', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#batch' },
+    { type: 'doc', title: 'Spring Batch Reference: ItemWriter', url: 'https://docs.spring.io/spring-batch/docs/current/reference/html/readersAndWriters.html#itemWriter' },
+    { type: 'doc', title: 'PostgreSQL COPY command', url: 'https://www.postgresql.org/docs/current/sql-copy.html' }
+  ]
+}
 );
