@@ -5681,4 +5681,503 @@ form.add("scope", "orders:read");
   ],
   tags: ['Token Exchange', 'RFC 8693', 'Delegation', 'Impersonation', 'act', 'may_act', 'OAuth2', 'Audit']
 },
+
+{
+  id: "security-072",
+  topic: "security",
+  level: "senior",
+  q: "Khi frontend SPA (React/Vue) gọi Spring Boot API bằng cookie phiên, bạn chống CSRF như thế nào? So sánh SameSite cookie, synchronizer token và double-submit cookie; khi nào dùng BFF?",
+  a: `**Tóm tắt:** CSRF (Cross-Site Request Forgery - giả mạo yêu cầu chéo trang) là lỗi khiến trình duyệt của nạn nhân tự động gửi cookie đăng nhập tới API của bạn từ một trang độc hại. Với SPA dùng cookie, không thể chỉ dựa vào CORS (CORS chỉ kiểm soát việc script đọc response, không ngăn request được gửi). Giải pháp thực tế: đặt cookie {{SameSite=Lax/Strict}} làm lớp đầu, kết hợp synchronizer token (token lưu ở server, gửi kèm header) hoặc double-submit cookie; nếu muốn bỏ hẳn gánh nặng token khỏi trình duyệt thì dùng mẫu BFF (Backend for Frontend) giữ token ở server.
+
+### 1. Vì sao SPA dùng cookie vẫn dính CSRF
+- **Cookie phiên** (session cookie - mẩu dữ liệu trình duyệt tự gắn vào mỗi request tới domain) được gửi tự động kể cả khi request xuất phát từ trang khác, miễn là domain/path khớp.
+- **CORS** (Cross-Origin Resource Sharing) chỉ quyết định JavaScript ở origin A có được đọc response từ origin B hay không; trình duyệt vẫn có thể gửi request "simple" hoặc preflight rồi POST, và cookie vẫn đi kèm. Vì vậy CORS đúng cũng không tự chặn CSRF.
+- Nếu SPA gửi {{Authorization: Bearer <token>}} trong header (token lưu trong memory, không phải cookie) thì trình duyệt không tự gắn header này từ trang khác, nên thường không cần CSRF token; đánh đổi là phải tự quản lý lưu token an toàn.
+
+### 2. Cơ chế từng lớp phòng thủ (từng bước)
+1. **SameSite cookie** (thuộc tính báo trình duyệt khi nào được gửi kèm request cross-site):
+   - {{Strict}}: không gửi cookie trong bất kỳ điều hướng cross-site nào (an toàn nhất nhưng ảnh hưởng UX, ví dụ click link từ email không đăng nhập sẵn).
+   - {{Lax}} (mặc định trình duyệt hiện đại): gửi cookie với top-level navigation GET (click link) nhưng không gửi với POST cross-site hay iframe — chặn phần lớn CSRF form POST.
+   - {{None; Secure}}: gửi mọi nơi (cần khi nhúng cross-site), phải đi kèm {{Secure}} (chỉ HTTPS).
+   - Hạn chế: trình duyệt cũ, một số luồng phức tạp, và không thay thế kiểm soát phía server.
+2. **Synchronizer token** (mẫu token đồng bộ): server sinh token ngẫu nhiên gắn với session, lưu ở server; SPA lấy token (qua cookie không HttpOnly hoặc endpoint riêng) và gửi lại trong header (ví dụ {{X-XSRF-TOKEN}}) với mỗi request thay đổi trạng thái. Server so sánh với token trong session. Trang độc hại không đọc được token do Same-Origin Policy.
+3. **Double-submit cookie**: server đặt token ngẫu nhiên vào một cookie không HttpOnly để JS đọc, SPA gửi lại giá trị đó trong header; server so sánh cookie và header (không cần lưu state ở server). Yếu hơn synchronizer nếu kẻ tấn công kiểm soát được subdomain và ghi đè cookie; phải gắn cookie chặt ({{Secure}}, {{SameSite}}, đúng path/domain).
+4. **BFF (Backend for Frontend)**: backend nhẹ cùng origin với SPA giữ access/refresh token phía server (SPA chỉ có session cookie HttpOnly). Gom bề mặt tấn công vào một chỗ, nhưng endpoint BFF dùng cookie vẫn cần CSRF protection.
+
+~~~java
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+    @Bean
+    SecurityFilterChain api(HttpSecurity http) throws Exception {
+        // SPA đọc cookie XSRF-TOKEN và gửi lại header X-XSRF-TOKEN
+        CookieCsrfTokenRepository csrfRepo = CookieCsrfTokenRepository.withHttpOnlyFalse();
+        csrfRepo.setCookieCustomizer(c -> c
+            .sameSite("Lax")   // lớp đầu: hạn chế gửi cross-site
+            .secure(true)      // chỉ qua HTTPS
+            .path("/"));
+        http
+            .csrf(csrf -> csrf
+                .csrfTokenRepository(csrfRepo)
+                .csrfTokenRequestHandler(new SpaCsrfTokenRequestHandler()))
+            .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers(HttpMethod.GET, "/api/**").permitAll()
+                .anyRequest().authenticated());
+        return http.build();
+    }
+}
+
+// Handler SPA (Spring Security 6): mã hoá token trong response và buộc set cookie
+final class SpaCsrfTokenRequestHandler extends CsrfTokenRequestAttributeHandler {
+    private final CsrfTokenRequestHandler delegate = new XorCsrfTokenRequestAttributeHandler();
+    @Override
+    public void handle(HttpServletRequest req, HttpServletResponse res,
+                       Supplier<CsrfToken> token) {
+        this.delegate.handle(req, res, token);
+        token.get(); // buộc load để cookie XSRF-TOKEN được phát
+    }
+}
+~~~
+
+### 3. So sánh nhanh
+| Cơ chế | Chống CSRF tốt khi | Nhược điểm / lưu ý |
+|---|---|---|
+| {{SameSite=Lax/Strict}} | Trình duyệt hiện đại, luồng đơn giản | Không đủ một mình; trình duyệt cũ, GET có side-effect |
+| Synchronizer token | Session server-side, cần bảo vệ chắc | SPA phải lấy và gắn header; cần lưu/so sánh token |
+| Double-submit cookie | Muốn stateless hơn | Yếu nếu attacker ghi được cookie (subdomain) |
+| BFF giữ token ở server | Muốn tránh lộ token ở JS | Thêm thành phần; endpoint BFF vẫn cần CSRF |
+
+### 4. Pitfall production
+- **Tắt CSRF toàn cục** "vì dùng SPA": nếu API dùng cookie phiên thì tắt CSRF là mở lỗ hổng.
+- **GET có tác dụng phụ** (chuyển tiền, đổi trạng thái): {{SameSite=Lax}} vẫn gửi cookie cho top-level GET, nên bắt buộc dùng POST/PUT/DELETE cho thao tác thay đổi trạng thái.
+- **CORS reflect origin** thiếu kiểm soát (trả {{Allow-Origin}} theo {{Origin}} bất kỳ kèm {{Allow-Credentials}}) tạo rủi ro; luôn whitelist origin rõ ràng.
+- **Cookie không {{Secure}}/{{SameSite}}** hoặc domain quá rộng ({{.example.com}}) → dễ bị ghi đè trong double-submit.
+- **Không xoay CSRF token sau đăng nhập**: có thể bị lợi dụng trong kịch bản session fixation kết hợp.
+
+### 5. Ví dụ đời thực
+- **Triệu chứng**: SPA (React) + Spring Boot 3, đăng nhập bằng cookie {{JSESSIONID}}. Một số lệnh đổi email xuất hiện dù user không thao tác; log cho thấy {{POST /api/account/email}} trả 200 từ IP lạ nhưng phiên thuộc user thật.
+- **Điều tra**: Cấu hình có {{http.csrf().disable()}} thêm "tạm" khi tích hợp SPA; cookie phiên đặt {{SameSite=None}} cho môi trường dev và không siết lại. PoC: trang độc hại auto-submit form tới {{/api/account/email}}, trình duyệt tự gắn cookie, server chấp nhận.
+- **Nguyên nhân gốc**: CSRF do tắt bảo vệ và cookie không hạn chế cross-site; thao tác nhạy cảm không có bằng chứng chủ ý (token).
+- **Cách xử lý**: (1) Bật lại CSRF với {{CookieCsrfTokenRepository.withHttpOnlyFalse()}} và handler SPA; (2) Đặt {{JSESSIONID}} {{HttpOnly; Secure; SameSite=Lax}}; (3) Whitelist origin CORS cụ thể; (4) Thêm test: POST thiếu {{X-XSRF-TOKEN}} phải trả 403; (5) Rà soát không có GET gây side-effect.
+- **Kết quả đo được**: PoC CSRF thất bại (403) trên staging; sau 30 ngày production không còn thay đổi email trái phép, 100% request thay đổi trạng thái thiếu token bị từ chối.
+
+### 6. Trả lời mẫu khi phỏng vấn
+"Khi SPA dùng cookie phiên để gọi Spring Boot API, em coi CSRF là rủi ro thật vì trình duyệt tự gắn cookie dù request đến từ trang khác, còn CORS chỉ kiểm soát việc đọc response chứ không chặn request. Em phòng thủ nhiều lớp: cookie phiên đặt {{HttpOnly; Secure; SameSite=Lax}} để giảm request cross-site, và bật CSRF của Spring Security với synchronizer token — server phát token, SPA đọc cookie {{XSRF-TOKEN}} rồi gửi lại trong header {{X-XSRF-TOKEN}} cho các request đổi trạng thái. Double-submit cookie có thể dùng khi muốn bớt phụ thuộc lưu server nhưng phải cấu hình cookie rất chặt và cẩn thận với subdomain. Nếu kiến trúc cho phép, em cân nhắc BFF để giữ token ở server và thu hẹp bề mặt lộ token trên trình duyệt, nhưng endpoint BFF dùng cookie vẫn cần CSRF. Em từng xử lý ca đổi email trái phép do tắt CSRF tạm và để {{SameSite=None}}; sau khi bật lại token, siết SameSite và thêm test 403 cho request thiếu token thì chặn được hoàn toàn."
+
+> Senior tip: Chỉ tắt CSRF khi API hoàn toàn stateless dùng {{Authorization: Bearer}} (không cookie). Với cookie phiên, coi {{SameSite}} là lớp giảm thiểu, **token CSRF phía server** mới là lớp xác thực chủ ý; và tuyệt đối không để thao tác thay đổi trạng thái trên GET.`,
+  follow: [
+    "Vì sao CORS cấu hình đúng vẫn không ngăn được CSRF, và CORS reflect origin nguy hiểm thế nào?",
+    "Double-submit cookie kém an toàn hơn synchronizer token trong trường hợp nào, đặc biệt với subdomain?",
+    "Khi nào nên chọn mẫu BFF thay vì để SPA giữ access token trong memory và gọi API bằng Bearer header?"
+  ],
+  tags: ["CSRF", "SPA", "SameSite", "Synchronizer Token", "BFF", "Spring Security", "CORS"]
+},
+{
+  id: "security-073",
+  topic: "security",
+  level: "lead",
+  q: "Lỗ hổng IDOR/Broken Object Level Authorization (BOLA) khác gì với lỗi thiếu xác thực? Bạn thiết kế kiểm soát quyền theo từng đối tượng trong Spring Boot như thế nào để không sót endpoint và dễ audit?",
+  a: `**Tóm tắt:** IDOR (Insecure Direct Object Reference) hay BOLA (Broken Object Level Authorization - lỗi phân quyền ở mức đối tượng) xảy ra khi người dùng đã đăng nhập (xác thực - authentication - đúng) nhưng truy cập được tài nguyên của người khác vì server không kiểm tra "đối tượng này có thuộc về người dùng này không" (ủy quyền - authorization). Đây là lỗi số 1 của OWASP API Security. Cách phòng thủ bền vững: kiểm tra ownership ở tầng service/domain cho mọi truy cập theo id, dùng mẫu nhất quán (helper, {{@PreAuthorize}}, PermissionEvaluator), và có test âm tính tự động cho từng endpoint.
+
+### 1. Phân biệt rõ: xác thực vs phân quyền đối tượng
+- **Xác thực (authentication)**: "bạn là ai?" — kiểm tra danh tính (JWT hợp lệ, session hợp lệ).
+- **Phân quyền (authorization)**: "bạn được làm gì?" — gồm:
+  - **Chức năng (function-level)**: user thường không được gọi {{DELETE /admin/users}}.
+  - **Đối tượng (object-level/BOLA)**: user A không được đọc {{GET /orders/123}} nếu đơn 123 của user B.
+- IDOR = có session hợp lệ nhưng đổi id trên URL/body là đọc/sửa được dữ liệu người khác. Lỗi nằm ở **thiếu kiểm tra sở hữu**, không phải thiếu đăng nhập.
+
+### 2. Cơ chế tấn công điển hình (từng bước)
+1. User A đăng nhập, lấy đơn của mình: {{GET /api/orders/1001}} (A sở hữu 1001) → 200.
+2. A đổi id: {{GET /api/orders/1002}} → nếu server chỉ kiểm tra "đã đăng nhập" mà không kiểm tra chủ sở hữu, trả 200 với dữ liệu của B.
+3. Mở rộng: đoán tuần tự (id tăng dần), hoặc thử trên PUT/DELETE để sửa/xoá tài nguyên người khác.
+
+### 3. Thiết kế kiểm soát nhất quán trong Spring Boot
+1. **Nguyên tắc deny-by-default ở tầng service**: mọi truy vấn theo id phải kèm điều kiện sở hữu ({{findByIdAndOwnerId}}), không để controller tự tin vào id từ client.
+2. **Không lộ sự tồn tại**: khi không có quyền, trả {{404 Not Found}} (hoặc {{403}} nhất quán) thay vì phân biệt "tồn tại nhưng cấm" để tránh dò id.
+3. **Tránh id đoán được khi có thể**: dùng UUID/ULID thay id tuần tự cho tài nguyên nhạy cảm (giảm khả năng liệt kê, nhưng **không thay thế** kiểm tra quyền).
+4. **Tập trung hóa**: helper {{OwnershipGuard}}, hoặc {{@PreAuthorize}} + {{PermissionEvaluator}}/method security để policy ở một chỗ, dễ audit.
+5. **Bảo vệ mọi kênh**: REST, GraphQL, WebSocket, export file, batch — bất kỳ nơi nào nhận id đối tượng.
+
+~~~java
+@Service
+@RequiredArgsConstructor
+public class OrderService {
+    private final OrderRepository orderRepo;
+
+    // Cách 1: truy vấn kèm chủ sở hữu (an toàn, rõ ràng)
+    public OrderView getOrder(long orderId, long currentUserId) {
+        Order order = orderRepo.findByIdAndOwnerId(orderId, currentUserId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        return OrderView.from(order);
+    }
+
+    // Cách 2: guard tập trung, tái dùng cho sửa/xoá
+    public void cancel(long orderId, long currentUserId) {
+        Order order = orderRepo.findById(orderId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        if (order.getOwnerId() != currentUserId) {
+            // trả 404 để không lộ sự tồn tại
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+        order.cancel();
+        orderRepo.save(order);
+    }
+}
+
+// Cách 3: method security với PermissionEvaluator (policy tập trung)
+@Component
+@RequiredArgsConstructor
+class OrderPermission implements PermissionEvaluator {
+    private final OrderRepository repo;
+    @Override
+    public boolean hasPermission(Authentication auth, Object targetId, Object perm) {
+        Long uid = ((AppPrincipal) auth.getPrincipal()).id();
+        return repo.existsByIdAndOwnerId((Long) targetId, uid);
+    }
+    // ... overload Serializable targetId, targetDomainObject
+}
+
+@Service
+class SecureOrderApi {
+    @PreAuthorize("hasPermission(#id, 'Order', 'read')")
+    public OrderView read(Long id) { /* ... */ return null; }
+}
+~~~
+
+### 4. Ma trận kiểm soát (mẫu để audit)
+| Lớp | Cơ chế | Mục tiêu |
+|---|---|---|
+| Controller | Nhận id, chuyển {{currentUserId}} từ principal (không tin id user từ body) | Không tin client |
+| Service/Domain | {{findByIdAndOwnerId}} hoặc guard | Chặn BOLA tại nguồn |
+| Repository | Query kèm điều kiện sở hữu/tenant | Phòng sót ở service |
+| Test | Mỗi endpoint có ca "user A truy cập tài nguyên user B" → 404/403 | Ngăn hồi quy |
+
+### 5. Pitfall production
+- **Kiểm tra ở controller nhưng quên ở job/batch/GraphQL resolver**: cùng logic nghiệp vụ, kênh khác không được bảo vệ.
+- **Tin {{userId}} từ request body/path** thay vì từ {{SecurityContext}}: attacker tự đặt {{userId}} của mình? hoặc của người khác.
+- **Chỉ kiểm tra đọc, quên ghi/xoá/export**: PUT/DELETE/PATCH và endpoint tải file thường bị bỏ sót.
+- **Multi-tenant**: quên lọc {{tenantId}} ngoài {{ownerId}} → rò rỉ chéo tenant.
+- **Mass assignment** (gán hàng loạt) đổi {{ownerId}} của đối tượng: phải dùng DTO, không bind trực tiếp entity.
+
+### 6. Ví dụ đời thực
+- **Triệu chứng**: Hệ thống đặt vé (Spring Boot 3, PostgreSQL, ~80k user/ngày) bị khách hàng báo thấy thông tin đơn của người khác khi đổi số trên URL; trong 3 giờ có ~2.400 request {{GET /api/orders/ID}} trả 200 với {{ownerId}} khác {{principal}}.
+- **Điều tra**: Log truy cập cho thấy một tài khoản tuần tự hóa {{id}}. Mã nguồn: {{OrderController}} lấy {{orderRepo.findById(id)}} rồi trả về; không có kiểm tra sở hữu. Kiểm thử tự động không có ca âm tính "user khác".
+- **Nguyên nhân gốc**: BOLA/IDOR — thiếu kiểm tra quyền ở mức đối tượng; chỉ dựa vào việc đã đăng nhập.
+- **Cách xử lý**: (1) Đổi truy vấn thành {{findByIdAndOwnerId(id, currentUserId)}} và trả 404 nếu rỗng; (2) Thêm guard tập trung cho sửa/xoá/tải hóa đơn; (3) Rà soát toàn bộ endpoint có {{ID}} (phát hiện thêm 5 endpoint: export PDF, hủy vé, đổi ghế); (4) Viết test ma trận 40 endpoint × (chủ sở hữu / người lạ / chưa đăng nhập); (5) Thêm rule review bắt {{findById(}} trên tài nguyên có chủ sở hữu mà không kèm kiểm tra.
+- **Kết quả đo được**: 40 × 3 ca test đều đúng kỳ vọng; pentest thử 500 request chéo chủ sở hữu đều 404; 0 sự cố rò rỉ đơn hàng trong 60 ngày tiếp theo.
+
+### 7. Trả lời mẫu khi phỏng vấn
+"Em phân biệt rõ xác thực và phân quyền: đăng nhập đúng chỉ trả lời 'bạn là ai', còn BOLA/IDOR xảy ra khi 'bạn là ai' đúng nhưng server không kiểm tra 'đối tượng này có thuộc về bạn không'. Vì vậy với mọi tài nguyên truy cập theo id, em buộc kiểm tra ownership ở tầng service hoặc ngay trong truy vấn như {{findByIdAndOwnerId(id, currentUserId)}}, và lấy {{currentUserId}} từ {{SecurityContext}} thay vì tin dữ liệu client. Khi không khớp, em trả 404 để không lộ sự tồn tại. Ở quy mô lớn, em tập trung policy bằng {{@PreAuthorize}} với {{PermissionEvaluator}} để dễ audit, và áp dụng cho cả REST, export, batch. Quan trọng nhất là mỗi endpoint phải có test âm tính 'user A truy cập tài nguyên user B' để chặn hồi quy. Em từng xử lý sự cố lộ đơn hàng do chỉ gọi {{findById}}; sau khi chuyển sang truy vấn kèm owner, rà soát các kênh khác và thêm ma trận test thì chặn được hoàn toàn."
+
+> Senior tip: Hãy coi BOLA là **bug mặc định** cho mọi endpoint nhận id. Quy ước đội: không được merge endpoint mới có tham số id tài nguyên nếu thiếu (1) truy vấn/guard kèm principal và (2) test âm tính chéo chủ sở hữu; UUID giảm dò đoán nhưng **không** thay được kiểm tra quyền.`,
+  follow: [
+    "Vì sao nên trả 404 thay vì 403 khi user truy cập tài nguyên không thuộc về mình, và khi nào nên dùng 403?",
+    "Kiểm tra ownership ở tầng repository (query kèm ownerId) và ở tầng service/PermissionEvaluator khác nhau thế nào về tính dễ sót và dễ audit?",
+    "Trong hệ multi-tenant, ngoài ownerId bạn còn phải kiểm tra gì để tránh rò rỉ chéo tenant, và làm sao tránh quên?"
+  ],
+  tags: ["IDOR", "BOLA", "Broken Access Control", "Authorization", "OWASP API", "Spring Security"]
+},
+{
+  id: "security-074",
+  topic: "security",
+  level: "senior",
+  q: "SSRF trong backend Java: cơ chế khai thác, vì sao chỉ chặn {{localhost}} và {{127.0.0.1}} là không đủ, và cách phòng thủ theo chiều sâu (allowlist, resolve DNS an toàn, chặn IP private/metadata) như thế nào?",
+  a: `**Tóm tắt:** SSRF (Server-Side Request Forgery - giả mạo yêu cầu phía server) xảy ra khi ứng dụng lấy URL do người dùng cung cấp rồi để server gọi đi, khiến attacker điều khiển server truy cập tài nguyên nội bộ (metadata cloud, dịch vụ trong mạng, localhost). Chặn bằng blacklist chuỗi như {{localhost}} là không đủ vì có nhiều cách biểu diễn IP và kẻ tấn công có thể dùng DNS trỏ về địa chỉ private (DNS rebinding). Phòng thủ đúng: allowlist đích, resolve DNS rồi kiểm tra IP đã resolve thuộc dải private/link-local/loopback hay không, chặn redirect tự động ra ngoài allowlist, và giới hạn giao thức/cổng/timeout.
+
+### 1. Thuật ngữ và cơ chế (từng bước)
+- **SSRF**: attacker đưa URL (ví dụ trong tính năng "tải ảnh từ URL", webhook, preview link). Server — vốn nằm trong mạng nội bộ và có quyền truy cập — thực hiện request HTTP tới URL đó thay cho attacker.
+- **Metadata service** (dịch vụ metadata đám mây): endpoint nội bộ như {{http://169.254.169.254/}} (AWS/GCP/Azure) trả thông tin instance và có thể trả credential tạm thời nếu được phép; SSRF chạm được endpoint này có thể dẫn tới chiếm tài khoản cloud.
+- **DNS rebinding** (gắn lại DNS): tên miền lúc kiểm tra resolve ra IP công cộng (hợp lệ), nhưng lúc thực sự kết nối resolve ra IP private ({{10.x}}, {{127.0.0.1}}) do TTL ngắn hoặc hai bản ghi — vượt qua kiểm tra chuỗi/kiểm tra trước kết nối không an toàn.
+
+### 2. Vì sao blacklist chuỗi không đủ
+- Biểu diễn tương đương của loopback/private: {{127.0.0.1}}, {{127.1}}, {{0x7f000001}}, {{2130706433}} (số nguyên), {{[::1]}}, {{localhost.}} (dấu chấm cuối), tên miền tự trỏ về {{127.0.0.1}}.
+- Redirect: URL ban đầu trỏ tới host "an toàn" nhưng trả {{302}} sang {{http://169.254.169.254/...}}.
+- IPv6-mapped IPv4: {{::ffff:127.0.0.1}}.
+- DNS rebinding: kiểm tra hostname lúc này, kết nối lúc khác — hai lần resolve cho kết quả khác.
+- Giao thức khác: {{file://}}, {{gopher://}} (tuỳ client HTTP) nếu không giới hạn scheme.
+
+### 3. Phòng thủ theo chiều sâu
+1. **Allowlist đích** (danh sách cho phép): chỉ cho gọi các domain/host nghiệp vụ cần thiết; từ chối mặc định. Đây là biện pháp mạnh nhất.
+2. **Resolve và kiểm tra IP**: resolve hostname ra tất cả địa chỉ, từ chối nếu **bất kỳ** địa chỉ nào thuộc loopback ({{127.0.0.0/8}}, {{::1}}), private ({{10/8}}, {{172.16/12}}, {{192.168/16}}), link-local ({{169.254/16}}, {{fe80::/10}}), multicast, hoặc dải đặc biệt. Kết nối tới chính IP đã kiểm tra (tránh resolve lần hai).
+3. **Giới hạn scheme/cổng**: chỉ {{https}} (hoặc {{http}} nếu bắt buộc) tới cổng 80/443; chặn {{file}}, {{gopher}}, {{ftp}}.
+4. **Chặn/tái kiểm tra redirect**: tắt tự động follow redirect, hoặc mỗi lần redirect phải chạy lại toàn bộ kiểm tra allowlist/IP trên URL mới.
+5. **Giới hạn tài nguyên**: timeout kết nối/đọc ngắn, giới hạn kích thước phản hồi, không trả raw response nội bộ cho client.
+6. **Hạ tầng**: trên AWS bật IMDSv2 (yêu cầu token PUT, hop limit 1) để giảm tác động nếu SSRF xảy ra; egress firewall/proxy chỉ cho phép ra các đích cần thiết.
+
+~~~java
+// Ý tưởng: allowlist host + resolve DNS + chặn IP private, tắt redirect
+static final Set<String> ALLOWED_HOSTS = Set.of("api.partner.example", "cdn.partner.example");
+
+static URI validateAndResolve(String raw) throws Exception {
+    URI uri = new URI(raw);
+    String scheme = uri.getScheme();
+    if (scheme == null || !(scheme.equals("https") || scheme.equals("http"))) {
+        throw new IllegalArgumentException("scheme not allowed");
+    }
+    String host = uri.getHost();
+    if (host == null || !ALLOWED_HOSTS.contains(host.toLowerCase())) {
+        throw new IllegalArgumentException("host not in allowlist");
+    }
+    int port = uri.getPort() == -1 ? ("https".equals(scheme) ? 443 : 80) : uri.getPort();
+    if (port != 80 && port != 443) throw new IllegalArgumentException("port not allowed");
+    for (InetAddress addr : InetAddress.getAllByName(host)) {
+        if (addr.isAnyLocalAddress() || addr.isLoopbackAddress()
+                || addr.isLinkLocalAddress() || addr.isSiteLocalAddress()) {
+            throw new IllegalArgumentException("private/loopback address blocked");
+        }
+        // chặn 169.254.0.0/16 (link-local/metadata) và các dải đặc biệt khác nếu cần
+        byte[] b = addr.getAddress();
+        if (b.length == 4 && (b[0] & 0xff) == 169 && (b[1] & 0xff) == 254) {
+            throw new IllegalArgumentException("link-local blocked");
+        }
+    }
+    return uri;
+}
+
+// HttpClient (Java 11+): không tự follow redirect, timeout ngắn
+HttpClient client = HttpClient.newBuilder()
+    .connectTimeout(Duration.ofSeconds(3))
+    .followRedirects(HttpClient.Redirect.NEVER)
+    .build();
+~~~
+> Lưu ý: đoạn kiểm tra trên là ý tưởng tối thiểu (chưa bao phủ hết IPv6-mapped IPv4, dải CGNAT {{100.64/10}}, hay kịch bản DNS rebinding giữa lúc kiểm tra và lúc kết nối). Với production, dùng thư viện/hạ tầng đã được kiểm chứng (egress proxy cho phép allowlist) và kết nối tới IP đã pin sau khi resolve.
+
+### 4. Bảng kịch bản
+| Kịch bản | Vì sao bypass blacklist | Phòng thủ |
+|---|---|---|
+| {{http://127.1}} / {{0x7f000001}} | Biểu diễn IP khác | Resolve DNS → kiểm tra dải IP |
+| Hostname trỏ {{127.0.0.1}} | Không chứa chuỗi "localhost" | Resolve + kiểm tra IP kết quả |
+| Redirect sang metadata | URL đầu hợp lệ | Tắt follow redirect hoặc kiểm tra lại mỗi hop |
+| DNS rebinding | Hai lần resolve khác nhau | Pin IP đã kiểm tra khi kết nối, TTL-aware |
+| {{169.254.169.254}} | IP metadata hợp lệ về cú pháp | Chặn link-local; IMDSv2 |
+
+### 5. Pitfall production
+- **Chỉ so sánh chuỗi hostname**: bỏ sót mọi biến thể biểu diễn và DNS.
+- **Kiểm tra rồi resolve lại lúc kết nối**: hở DNS rebinding (time-of-check/time-of-use).
+- **Cho phép redirect tự động**: kẻ tấn công nhảy từ host an toàn sang nội bộ.
+- **Client HTTP mặc định** (ví dụ một số cấu hình) hỗ trợ {{file://}}/{{gopher://}}: phải giới hạn scheme.
+- **Chỉ chặn {{127.0.0.1}}** mà quên {{169.254.169.254}}, dải private {{10/8, 172.16/12, 192.168/16}} và IPv6.
+
+### 6. Ví dụ đời thực
+- **Triệu chứng**: Tính năng "nhập URL ảnh đại diện" (Spring Boot 3, chạy trên AWS EC2). Đội bảo mật phát hiện có thể đọc được thông tin nhạy cảm từ hạ tầng; log ứng dụng ghi vài request fetch URL lạ kéo dài ~2 giây rồi trả lỗi cho client nhưng server đã thực hiện kết nối ra ngoài.
+- **Điều tra**: Mã nguồn kiểm tra {{!url.contains("localhost") && !url.contains("127.0.0.1")}} rồi dùng {{HttpClient}} tải ảnh. PoC: gửi {{http://169.254.169.254/latest/meta-data/iam/security-credentials/}} → server truy cập metadata; gửi hostname do attacker kiểm soát trỏ về {{10.0.1.15}} (dịch vụ nội bộ) → truy cập được.
+- **Nguyên nhân gốc**: SSRF do dùng blacklist chuỗi, không kiểm tra IP sau resolve, cho phép truy cập link-local/private, và không giới hạn redirect/scheme.
+- **Cách xử lý**: (1) Đổi sang allowlist domain ảnh (CDN đối tác) — từ chối mặc định; (2) Với luồng buộc nhận URL tự do, resolve DNS và chặn mọi IP loopback/private/link-local, tắt follow redirect, chỉ cho {{https}} cổng 443, timeout 3 giây, giới hạn 2 MB; (3) Bật IMDSv2 và chặn egress bằng security group; (4) Thêm test với các biến thể {{127.1}}, {{169.254.169.254}}, redirect, hostname trỏ private.
+- **Kết quả đo được**: Tất cả PoC SSRF bị chặn (400) trên staging; sau bật IMDSv2 và egress allowlist, không còn request ứng dụng chạm metadata trong 30 ngày; review bảo mật xác nhận không truy cập được dải private từ tính năng này.
+
+### 7. Trả lời mẫu khi phỏng vấn
+"SSRF xảy ra khi server thay người dùng gọi tới URL do họ cung cấp, nên attacker lợi dụng đặc quyền mạng của server để chạm metadata cloud hoặc dịch vụ nội bộ. Em không bao giờ chặn bằng blacklist chuỗi như {{localhost}} hay {{127.0.0.1}} vì có rất nhiều biến thể biểu diễn, redirect, và DNS có thể trỏ về IP private. Cách làm đúng là allowlist đích theo nghiệp vụ và từ chối mặc định; nếu buộc nhận URL tự do thì em resolve hostname, kiểm tra mọi IP trả về không thuộc loopback, private, link-local như {{169.254.169.254}}, chỉ cho phép {{https}} cổng cần thiết, tắt follow redirect hoặc kiểm tra lại mỗi hop, và đặt timeout cùng giới hạn kích thước. Em cũng ghim kết nối tới IP đã kiểm tra để giảm nguy cơ DNS rebinding. Ở tầng hạ tầng, em bật IMDSv2 và egress firewall để kể cả khi lọt lỗ hổng thì tác động vẫn bị giới hạn. Em từng xử lý ca fetch ảnh bị lợi dụng chạm metadata do chỉ so sánh chuỗi; sau khi chuyển sang allowlist, kiểm tra IP sau resolve và siết hạ tầng thì chặn được các biến thể tấn công."
+
+> Senior tip: **Allowlist + egress control** mới là phòng thủ thực sự; bộ lọc trong code chỉ là một lớp. Hãy giả định attacker đổi được DNS/redirect: luôn kiểm tra IP sau resolve, chặn link-local/metadata, và bật IMDSv2 — đừng tin vào việc "chỉ chặn localhost".`,
+  follow: [
+    "DNS rebinding khai thác khoảng cách giữa lúc kiểm tra và lúc kết nối như thế nào, và làm sao giảm rủi ro time-of-check/time-of-use này?",
+    "Vì sao bật IMDSv2 trên AWS giảm tác động của SSRF, và nó có thay thế được việc lọc URL trong ứng dụng không?",
+    "Khi nghiệp vụ bắt buộc gọi URL bất kỳ (ví dụ webhook khách hàng cấu hình), bạn thiết kế allowlist/egress proxy và kiểm tra ra sao?"
+  ],
+  tags: ["SSRF", "DNS Rebinding", "Allowlist", "IMDSv2", "Egress Control", "Spring Boot"]
+},
+{
+  id: "security-075",
+  topic: "security",
+  level: "lead",
+  q: "Quản lý secret (mật khẩu DB, API key, khóa mã hóa) trong hệ thống Spring Boot trên production: vì sao không để trong code/config repo, dùng AWS Secrets Manager/Vault thế nào, và thiết kế xoay vòng (rotation) không downtime ra sao?",
+  a: `**Tóm tắt:** Secret (bí mật - giá trị nhạy cảm như mật khẩu DB, API key, khóa mã hóa) nếu nằm trong source code, file cấu hình commit lên Git, hay biến môi trường ghi lộ trong log/CI sẽ bị rò rỉ rất lâu và khó thu hồi. Cách đúng: lưu secret trong hệ quản lý chuyên dụng (AWS Secrets Manager, HashiCorp Vault, AWS SSM Parameter Store) với mã hóa, kiểm soát truy cập và audit; ứng dụng lấy secret lúc chạy (runtime) qua IAM/role, không qua người; thiết kế xoay vòng (rotation - đổi secret định kỳ hoặc khi nghi ngờ lộ) theo quy trình hai giai đoạn để không downtime.
+
+### 1. Vì sao không để secret trong code/config repo
+- **Git lưu vĩnh viễn lịch sử**: xóa khỏi commit mới không xóa khỏi lịch sử; fork/clone/mirror vẫn còn. Một lần lộ là lộ mãi trừ khi rotate.
+- **Lan truyền rộng**: repo được chia sẻ cho CI, artifact, máy dev, backup; ai cũng đọc được.
+- **Khó audit và khó thu hồi**: không biết secret đã đi đâu, không có dấu vết truy cập.
+- **Biến môi trường/log**: {{env}} in trong log khởi động, crash dump, {{/actuator/env}} (nếu lộ) cũng làm rò rỉ.
+
+### 2. Nguyên tắc quản lý secret
+1. **Không hardcode, không commit**: secret không nằm trong {{application.yml}}, mã nguồn, image layer. Dùng {{.gitignore}}, pre-commit/secret scanning (gitleaks, trufflehog) để chặn.
+2. **Lưu tập trung, mã hóa, kiểm soát truy cập**: secret manager mã hóa at rest, cấp quyền theo danh tính máy (IAM role/instance profile), không gắn secret dài hạn vào người.
+3. **Cấp quyền tối thiểu**: mỗi service chỉ đọc secret nó cần (theo path/ARN), tách biệt môi trường (dev/staging/prod).
+4. **Audit**: mọi lần đọc/đổi secret được ghi log (CloudTrail cho Secrets Manager) để điều tra.
+5. **Runtime injection**: ứng dụng nhận secret lúc chạy (SDK gọi Secrets Manager, Vault agent/sidecar, hoặc Spring Cloud AWS) thay vì bake vào image.
+
+### 3. Tích hợp Spring Boot với AWS Secrets Manager (ý tưởng)
+- Spring Cloud AWS có thể nạp secret vào {{Environment}} khi khởi động: giá trị tham chiếu trong cấu hình trỏ tới tên secret, thay vì chứa giá trị thật.
+- Ứng dụng chạy với IAM role được phép {{secretsmanager:GetSecretValue}} đúng ARN; không có access key dài hạn trong code.
+
+~~~yaml
+# application.yml - chỉ tham chiếu, KHÔNG chứa giá trị thật
+spring:
+  config:
+    import: aws-secretsmanager:prod/myapp/db?prefix=db.
+  datasource:
+    url: jdbc:postgresql://db.prod.internal:5432/app
+    username: \${db.username}
+    password: \${db.password}
+~~~
+
+~~~java
+// Cấu hình DataSource đọc từ Environment đã được nạp secret
+@Configuration
+public class DbConfig {
+    @Bean
+    DataSource dataSource(@Value("\${db.url}") String url,
+                          @Value("\${db.username}") String user,
+                          @Value("\${db.password}") String pass) {
+        HikariDataSource ds = new HikariDataSource();
+        ds.setJdbcUrl(url);
+        ds.setUsername(user);
+        ds.setPassword(pass); // giá trị lấy từ secret manager lúc chạy
+        return ds;
+    }
+}
+~~~
+> Ghi chú: cách import cụ thể phụ thuộc phiên bản Spring Cloud AWS; mục tiêu là "tham chiếu theo tên, lấy giá trị lúc chạy bằng IAM role". Luôn tắt/khóa endpoint như {{/actuator/env}} để không lộ giá trị.
+
+### 4. Xoay vòng (rotation) không downtime (từng bước)
+Vấn đề: nếu đổi mật khẩu DB ngay lập tức, các instance đang giữ kết nối/mật khẩu cũ sẽ lỗi.
+- **Chiến lược hai giai đoạn (dual credential)** cho DB:
+  1. Tạo credential mới (user/pass mới hoặc phiên bản secret mới) **còn hiệu lực song song** với credential cũ.
+  2. Cập nhật secret trong secret manager trỏ sang credential mới.
+  3. Cho ứng dụng nạp lại secret và tạo kết nối mới (refresh cấu hình, hoặc rolling restart có kiểm soát); kết nối cũ thoát dần.
+  4. Xác nhận không còn kết nối dùng credential cũ, rồi thu hồi/xoá credential cũ.
+- **Secrets Manager rotation** (Lambda rotation) tự động hóa các bước trên cho RDS; ứng dụng cần chịu được việc mật khẩu đổi (refresh pool) hoặc dùng RDS IAM auth.
+- **Khi nghi ngờ lộ (incident)**: rotate ngay, thu hồi phiên bản cũ, kiểm tra audit log truy cập secret, rà soát nơi secret có thể đã lan truyền (log, artifact).
+
+### 5. Bảng so sánh lựa chọn
+| Giải pháp | Điểm mạnh | Lưu ý |
+|---|---|---|
+| AWS Secrets Manager | Tích hợp IAM, rotation tự động (RDS), audit CloudTrail | Chi phí theo secret/lượt gọi; cần cache phía client |
+| HashiCorp Vault | Đa nền tảng, dynamic secret (cấp credential ngắn hạn) | Tự vận hành HA, phức tạp hơn |
+| AWS SSM Parameter Store | Rẻ/miễn phí (standard), đơn giản | Rotation không tích hợp sẵn như Secrets Manager |
+| K8s Secret | Gần workload | Mặc định chỉ base64, không mã hóa mạnh nếu không cấu hình; RBAC chặt |
+
+### 6. Pitfall production
+- **"Xoá khỏi Git là xong"**: secret vẫn còn trong lịch sử → bắt buộc rotate, coi như đã lộ.
+- **Log/exception in secret**: log URL kết nối, header {{Authorization}}, hoặc dump {{Environment}}; cần filter/mask.
+- **Secret dài hạn gắn vào người/CI**: access key tĩnh trong CI; dùng OIDC/role tạm thời thay thế.
+- **Rotation không phối hợp với connection pool**: đổi mật khẩu nhưng HikariCP giữ kết nối cũ đến khi lỗi → cần refresh/evict hoặc rolling.
+- **Một secret dùng chung nhiều service/môi trường**: bán kính ảnh hưởng lớn, khó rotate; tách theo service và môi trường.
+
+### 7. Ví dụ đời thực
+- **Triệu chứng**: Quét bảo mật phát hiện chuỗi kết nối DB (gồm mật khẩu) nằm trong {{application-prod.yml}} đã commit 8 tháng trước; repo từng được chia sẻ cho nhà thầu. Không có bằng chứng khai thác, nhưng secret được coi là lộ.
+- **Điều tra**: Tìm trong lịch sử Git và artifact build: mật khẩu xuất hiện ở 3 repo mirror và 2 image cũ; không có audit truy cập vì secret là chuỗi tĩnh trong file.
+- **Nguyên nhân gốc**: Secret hardcode trong config, không có secret manager, không có cơ chế rotate; vòng đời secret gắn với vòng đời repo.
+- **Cách xử lý**: (1) Tạo credential DB mới, lưu vào AWS Secrets Manager, cấp quyền đọc cho IAM role của service; (2) Cấu hình Spring Boot đọc secret lúc chạy (bỏ hẳn giá trị khỏi repo); (3) Rolling deploy để nạp credential mới, xác nhận kết nối ổn định rồi thu hồi credential cũ; (4) Thêm pre-commit {{gitleaks}} và quét CI chặn secret mới; (5) Khóa {{/actuator/env}}, rà soát log không in secret.
+- **Kết quả đo được**: Credential cũ bị thu hồi trong 2 giờ sau khi phát hiện; 0 secret dạng plaintext trong 60 ngày quét liên tiếp; thời gian rotate định kỳ giảm từ "không làm được" xuống quy trình tự động < 15 phút, không downtime nhờ dual credential.
+
+### 8. Trả lời mẫu khi phỏng vấn
+"Em coi secret như thứ có vòng đời và phải thu hồi được, nên không bao giờ để trong code hay config commit lên Git — xóa khỏi commit không xóa lịch sử. Trên production em dùng secret manager như AWS Secrets Manager hoặc Vault: secret được mã hóa, cấp quyền theo IAM role của service, và ứng dụng lấy giá trị lúc chạy thay vì giữ access key dài hạn. Trong Spring Boot, cấu hình chỉ tham chiếu tên secret (ví dụ qua Spring Cloud AWS import) và nạp vào {{Environment}}; em khóa các endpoint như {{/actuator/env}} để tránh lộ. Với xoay vòng không downtime, em dùng chiến lược hai giai đoạn: tạo credential mới song song, cập nhật secret manager, cho ứng dụng refresh/rolling để dùng credential mới, xác nhận hết kết nối cũ rồi mới thu hồi credential cũ. Em từng xử lý mật khẩu DB lộ trong repo: phải rotate ngay, chuyển sang Secrets Manager và thêm gitleaks chặn tái diễn, sau đó mới có thể audit và rotate định kỳ an toàn."
+
+> Senior tip: Hãy giả định **mọi secret từng nằm trong Git đều đã lộ** — ưu tiên rotate trước, dọn lịch sử sau. Thiết kế rotation (dual credential + refresh) từ đầu; nếu ứng dụng không chịu được đổi secret lúc chạy thì bạn không có đường thoát khi sự cố.`,
+  follow: [
+    "Chiến lược dual credential để rotate mật khẩu DB không downtime hoạt động từng bước ra sao, và connection pool (HikariCP) cần xử lý thế nào?",
+    "Vì sao xóa secret khỏi commit mới không đủ, và quy trình ứng phó khi phát hiện secret đã lộ trong lịch sử Git gồm những bước nào?",
+    "So sánh dynamic secret của Vault với secret tĩnh xoay vòng định kỳ: khi nào mỗi cách phù hợp?"
+  ],
+  tags: ["Secret Management", "AWS Secrets Manager", "Vault", "Rotation", "Spring Boot", "IAM"]
+},
+{
+  id: "security-076",
+  topic: "security",
+  level: "senior",
+  q: "Thiết kế audit log cho ứng dụng Java trong hệ thống tài chính: cần ghi những gì, làm sao đảm bảo tính toàn vẹn/chống sửa (tamper-evident), và triển khai trong Spring Boot thế nào để không ảnh hưởng giao dịch nghiệp vụ?",
+  a: `**Tóm tắt:** Audit log (nhật ký kiểm toán) là bản ghi bất biến trả lời "ai, làm gì, lên đối tượng nào, khi nào, từ đâu, kết quả ra sao" — dùng cho điều tra, tuân thủ (compliance), không phải log debug. Yêu cầu cốt lõi: đầy đủ, không sửa/xoá được (tamper-evident - phát hiện được nếu bị can thiệp), và lưu tách biệt với dữ liệu nghiệp vụ. Trong Spring Boot, ghi audit đáng tin cậy bằng cách gắn việc ghi với giao dịch (outbox) hoặc luồng bất đồng bộ bền vững, kèm chuỗi băm (hash chain) hoặc lưu trữ chỉ ghi thêm (append-only/WORM) để chứng minh toàn vẹn.
+
+### 1. Audit log khác log ứng dụng thế nào
+- **Log ứng dụng**: phục vụ debug/vận hành (stack trace, timing), có thể xoay vòng, có thể tắt bớt.
+- **Audit log**: phục vụ truy vết trách nhiệm và tuân thủ; phải giữ đủ lâu, chính xác, không được "tắt cho đỡ ồn".
+- **Không ghi dữ liệu nhạy cảm** vào audit: không mật khẩu, không mã PIN/CVV, không token, không toàn bộ số thẻ/CCCD (chỉ định danh cần thiết, che bớt - masking).
+
+### 2. Cần ghi những trường gì (tối thiểu)
+- **Ai**: định danh người dùng/service (subject id), vai trò tại thời điểm đó.
+- **Làm gì**: hành động (CREATE/UPDATE/DELETE/APPROVE/LOGIN_FAIL), loại tài nguyên.
+- **Trên đối tượng nào**: resource id (orderId, accountId) — không nhầm với id người dùng.
+- **Khi nào**: thời điểm theo đồng hồ tin cậy (UTC, {{Instant}}), đồng bộ NTP.
+- **Từ đâu**: nguồn gọi (IP, device id, service gọi, correlation/trace id).
+- **Kết quả**: thành công/thất bại và lý do (ví dụ từ chối do không đủ quyền).
+- **Trước/sau (khi phù hợp)**: giá trị thay đổi ở mức cần thiết, đã che dữ liệu nhạy cảm.
+
+### 3. Đảm bảo toàn vẹn / chống sửa (từng lớp)
+1. **Append-only** (chỉ ghi thêm): tài khoản ghi audit không có quyền UPDATE/DELETE trên bảng/kho audit; tách schema/DB với dữ liệu nghiệp vụ.
+2. **Hash chain** (chuỗi băm): mỗi bản ghi lưu {{hash = H(record + prevHash)}}; sửa một bản ghi làm đứt chuỗi và bị phát hiện khi kiểm tra. Neo (anchor) định kỳ hash gốc lên kho bất biến ngoài (ví dụ S3 Object Lock/WORM) để chống sửa cả chuỗi.
+3. **Lưu trữ bất biến (WORM)**: ghi vào kho không cho sửa/xoá trong kỳ lưu trữ (retention) theo yêu cầu tuân thủ.
+4. **Phân quyền và audit-the-auditor**: quyền truy cập/đọc audit bị kiểm soát và chính việc truy cập đó cũng được ghi nhận.
+
+~~~java
+// Sự kiện audit gắn với ngữ cảnh nghiệp vụ
+public record AuditEvent(
+    String actorId, String action, String resourceType, String resourceId,
+    String outcome, String sourceIp, String traceId,
+    Instant atUtc, Map<String, Object> details // đã che/mask dữ liệu nhạy cảm
+) {}
+
+// Ghi audit đáng tin cậy: lưu vào bảng outbox trong CÙNG transaction nghiệp vụ
+@Service
+@RequiredArgsConstructor
+public class PaymentService {
+    private final PaymentRepository payments;
+    private final AuditOutboxRepository outbox;
+
+    @Transactional
+    public void approve(long paymentId, String actorId, String ip, String traceId) {
+        Payment p = payments.findById(paymentId).orElseThrow();
+        p.approve(actorId);
+        payments.save(p);
+        // nếu transaction rollback, bản ghi audit cũng rollback -> không có audit "ảo"
+        outbox.save(AuditOutbox.of(new AuditEvent(
+            actorId, "APPROVE", "PAYMENT", String.valueOf(paymentId),
+            "SUCCESS", ip, traceId, Instant.now(), Map.of("amount", p.getAmount())
+        )));
+    }
+}
+~~~
+
+~~~sql
+-- Bảng audit: append-only ở mức quyền (không GRANT UPDATE/DELETE cho app user)
+CREATE TABLE audit_log (
+  id BIGSERIAL PRIMARY KEY,
+  at_utc TIMESTAMPTZ NOT NULL,
+  actor_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  resource_type TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  source_ip TEXT,
+  trace_id TEXT,
+  details JSONB,
+  prev_hash CHAR(64),
+  record_hash CHAR(64) NOT NULL
+);
+-- Ví dụ: GRANT INSERT, SELECT ON audit_log TO app_writer; (không có UPDATE/DELETE)
+~~~
+
+### 4. Triển khai không ảnh hưởng giao dịch nghiệp vụ
+- **Outbox pattern**: ghi sự kiện audit vào bảng outbox trong cùng transaction với nghiệp vụ → nhất quán (thành công thì có audit, thất bại thì không). Một tiến trình nền đọc outbox và đẩy sang kho audit bất biến; có retry và dead-letter để không mất.
+- **Không ghi trực tiếp sang hệ ngoài trong transaction**: gọi HTTP/Kafka đồng bộ bên trong transaction làm tăng độ trễ và rủi ro mất audit khi gửi thất bại sau commit.
+- **Bất đồng bộ nhưng bền vững**: sau khi outbox commit, worker đẩy đi; chấp nhận độ trễ nhỏ (giây) nhưng đổi lấy độ tin cậy.
+- **Partition theo thời gian** (theo tháng) để truy vấn/đối soát và lưu trữ dài hạn hiệu quả.
+
+### 5. Pitfall production
+- **Ghi audit sau commit bằng lời gọi mạng không đảm bảo**: commit thành công nhưng gửi audit thất bại → mất bằng chứng.
+- **Cho phép UPDATE/DELETE** trên bảng audit: phá tính bất biến.
+- **Ghi dữ liệu nhạy cảm** (mật khẩu, token, PAN đầy đủ) vào audit → chính audit trở thành nguồn rò rỉ.
+- **Dùng giờ máy lệch/NTP sai**: mốc thời gian không tin cậy khi đối soát.
+- **Thiếu correlation/trace id**: không nối được audit với request và log hệ thống khi điều tra.
+- **Không kiểm tra toàn vẹn**: có hash chain nhưng không job verify định kỳ → phát hiện muộn.
+
+### 6. Ví dụ đời thực
+- **Triệu chứng**: Đợt kiểm toán nội bộ yêu cầu truy vết ai phê duyệt 120 giao dịch hoàn tiền bất thường trong tháng 8. Bảng log hiện có bị xoay vòng sau 14 ngày và vài bản ghi nghi bị chỉnh sửa thủ công (không có bằng chứng).
+- **Điều tra**: Audit được ghi bằng {{log.info}} và một bảng chung cho phép UPDATE; không có hash chain, không có kho bất biến, thời gian lấy từ giờ từng server lệch nhau vài phút.
+- **Nguyên nhân gốc**: Nhầm audit log với log ứng dụng; không có cơ chế append-only, không đảm bảo toàn vẹn và thời gian.
+- **Cách xử lý**: (1) Tạo bảng {{audit_log}} append-only (không quyền UPDATE/DELETE) với trường ai/làm gì/đối tượng/thời điểm/kết quả/nguồn/trace; (2) Ghi qua outbox trong cùng transaction nghiệp vụ, worker đẩy sang kho lưu trữ WORM; (3) Thêm {{prev_hash/record_hash}} và job verify hàng giờ; (4) Mask dữ liệu nhạy cảm, chuẩn hóa thời gian UTC/NTP; (5) Phân quyền truy cập audit và ghi nhận truy cập.
+- **Kết quả đo được**: 100% thao tác phê duyệt/hoàn tiền có bản ghi audit khớp transaction (đối soát 10.000 giao dịch mẫu); job verify phát hiện 0 đứt chuỗi trong 60 ngày; thời gian truy vết một giao dịch giảm từ nhiều giờ (không đủ dữ liệu) xuống < 5 phút.
+
+### 7. Trả lời mẫu khi phỏng vấn
+"Em coi audit log là bằng chứng, không phải log debug. Mỗi bản ghi phải trả lời ai, làm gì, trên đối tượng nào, khi nào (UTC), từ đâu, kết quả ra sao và có trace id để đối soát, đồng thời không chứa dữ liệu nhạy cảm như mật khẩu hay PAN đầy đủ. Để đảm bảo toàn vẹn, em ghi append-only: tách kho audit, không cấp quyền sửa/xoá, dùng hash chain {{H(record + prevHash)}} và neo định kỳ lên lưu trữ bất biến, kèm job verify. Trong Spring Boot, em dùng outbox pattern: lưu sự kiện audit trong cùng transaction với nghiệp vụ để không có audit ảo và không mất audit khi nghiệp vụ thành công, rồi worker đẩy bất đồng bộ sang kho audit với retry. Cách này không kéo độ trễ của transaction bằng lời gọi mạng. Em từng gặp hệ thống chỉ dùng {{log.info}} và bảng cho phép UPDATE nên không truy vết được khi kiểm toán; sau khi chuyển sang outbox + append-only + hash chain thì truy vết nhanh và chứng minh được tính toàn vẹn."
+
+> Senior tip: Đừng gọi hệ audit bên ngoài **bên trong** transaction nghiệp vụ và đừng tin log file xoay vòng. Quy tắc vàng: **cùng commit với nghiệp vụ (outbox), append-only + hash chain/WORM, verify định kỳ**, và luôn mask dữ liệu nhạy cảm — audit log cũng có thể trở thành điểm rò rỉ.`,
+  follow: [
+    "Outbox pattern đảm bảo audit log không bị mất và không bị \"ảo\" như thế nào so với ghi log trực tiếp sau khi commit?",
+    "Hash chain giúp phát hiện sửa đổi ra sao, và vì sao cần neo (anchor) hash định kỳ lên kho bất biến?",
+    "Những dữ liệu nào tuyệt đối không được ghi vào audit log trong hệ thống tài chính, và bạn che/mask thế nào mà vẫn truy vết được?"
+  ],
+  tags: ["Audit Log", "Tamper-evident", "Hash Chain", "Outbox", "Compliance", "Spring Boot"]
+},
 );
