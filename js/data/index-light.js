@@ -2209,6 +2209,9 @@ window.DATA_INDEX = {
     {"id":"algo-144","title":"Word Break","difficulty":"medium","pattern":"Dynamic Programming"},
     {"id":"algo-145","title":"Validate Binary Search Tree","difficulty":"medium","pattern":"Tree / Recursion"},
     {"id":"algo-146","title":"Generate Parentheses","difficulty":"medium","pattern":"Backtracking"},
+    {"id":"algo-147","title":"Parallel Courses","difficulty":"hard","pattern":"Topological Sort"},
+    {"id":"algo-148","title":"Max Area of Island","difficulty":"medium","pattern":"Graph (DFS/BFS)"},
+    {"id":"algo-149","title":"Permutation in String","difficulty":"medium","pattern":"Sliding Window"},
   ],
   lessons: [
     {"id":"lesson-collections-001","track":"collections","order":1,"title":"HashMap từ bên trong: hash, bucket, resize và hợp đồng equals/hashCode","level":"mid","minutes":25},

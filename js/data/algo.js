@@ -16476,5 +16476,329 @@ So chuoi hop le la so Catalan {{C_n = (1/(n+1)) * binom(2n, n)}}. Moi chuoi dai 
   follow: ['Neu can sinh theo thu tu lexicographic thi sua ra sao?', 'Mo rong: sinh cac chuoi co k loai ngoac khac nhau ((), [], {}) hop le?']
 }
 );
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-147',
+  title: 'Parallel Courses',
+  difficulty: 'hard',
+  pattern: 'Topological Sort',
+  tags: ['graph', 'topological-sort', 'dp', 'longest-path'],
+  prompt: `Co {{n}} mon hoc danh so {{1..n}}. Mot so mon co dieu kien tien quyet: {{relations[i] = [prev, next]}} nghia la mon {{prev}} phai hoan thanh **truoc** mon {{next}}. Moi hoc ky ban co the dang ky **bat ky so mon nao** miễn là cac mon do deu da du dieu kien tien quyet (tuc la cac mon tien quyet da duoc hoc o cac hoc ky truoc). Tra ve so hoc ky **it nhat** de hoan thanh tat ca cac mon. Neu khong the (co vong phu thuoc) tra ve {{-1}}.
 
+### Vi du
+~~~text
+Input:  n = 3, relations = [[1,3],[2,3]]
+Output: 2
+Giai thich: Hoc ky 1: mon 1, 2. Hoc ky 2: mon 3.
+
+Input:  n = 3, relations = [[1,2],[2,3],[3,1]]
+Output: -1   (vong 1->2->3->1)
+
+Input:  n = 3, relations = []
+Output: 1   (hoc het 3 mon o 1 hoc ky)
+~~~
+
+### Rang buoc
+- {{1 <= n <= 5000}}
+- {{0 <= relations.length <= min(5000, n * (n - 1) / 2)}}
+- Cac cap {{[prev, next]}} khac nhau, {{prev != next}}.`,
+  hints: [
+    'Xay do thi: canh {{prev -> next}}. So hoc ky it nhat bang **do dai duong di dai nhat** trong DAG (day chu trinh thi tra -1).',
+    'Dung Kahn (topological sort) nhung thay vi chi dem so node da xoa, ta tinh {{dp[v]}} = so hoc ky som nhat de hoc mon {{v}}. Khi pop {{u}} tu hang doi, voi moi {{v}} ke: {{dp[v] = max(dp[v], dp[u] + 1)}}.',
+    'Khoi tao {{dp[v] = 1}} (neu khong co tien quyet thi hoc ky 1). Dau ra la max {{dp}}. Neu so node da xoa < n thi co vong -> -1.'
+  ],
+  solution: `### Y tuong
+Day la bai "longest path in DAG" goi la topological sort. So hoc ky it nhat = do dai duong di dai nhat (so node) tren do thi phu thuoc.
+
+1. Xay {{adj}} va {{indeg}} nhu Kahn.
+2. Hang doi khoi tao: tat ca mon co {{indeg == 0}} vao hang doi, {{dp[v] = 1}}.
+3. Lay {{u}} ra, voi moi ke {{v}}: {{dp[v] = max(dp[v], dp[u] + 1)}}, giam {{indeg[v]}}, neu ve 0 thi vao hang doi.
+4. Neu dem node da xoa {{< n}} -> co vong -> -1. Nguoc lai tra {{max(dp)}}.
+
+Tinh dung dan: khi xu ly {{u}}, tat ca tien quyet cua {{u}} da duoc xet xong, nen {{dp[u]}} chinh xac.
+
+~~~java
+class Solution {
+    public int minimumSemesters(int n, int[][] relations) {
+        List<List<Integer>> adj = new ArrayList<>();
+        for (int i = 0; i <= n; i++) adj.add(new ArrayList<>());
+        int[] indeg = new int[n + 1];
+        for (int[] r : relations) {
+            adj.get(r[0]).add(r[1]);
+            indeg[r[1]]++;
+        }
+        Deque<Integer> q = new ArrayDeque<>();
+        int[] dp = new int[n + 1];
+        for (int i = 1; i <= n; i++) {
+            if (indeg[i] == 0) {
+                q.add(i);
+                dp[i] = 1;
+            }
+        }
+        int taken = 0, ans = 0;
+        while (!q.isEmpty()) {
+            int u = q.poll();
+            taken++;
+            ans = Math.max(ans, dp[u]);
+            for (int v : adj.get(u)) {
+                dp[v] = Math.max(dp[v], dp[u] + 1);
+                if (--indeg[v] == 0) q.add(v);
+            }
+        }
+        return taken == n ? ans : -1;
+    }
+}
+~~~`,
+  complexity: 'Time O(V + E), Space O(V + E)',
+  starter: 'class Solution {\n    public int minimumSemesters(int n, int[][] relations) {\n        // TODO\n        return -1;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("example", 2, () -> new Solution().minimumSemesters(3, new int[][]{{1, 3}, {2, 3}}));
+        run("cycle", -1, () -> new Solution().minimumSemesters(3, new int[][]{{1, 2}, {2, 3}, {3, 1}}));
+        run("no relations", 1, () -> new Solution().minimumSemesters(3, new int[0][]));
+        run("chain", 4, () -> new Solution().minimumSemesters(4, new int[][]{{1, 2}, {2, 3}, {3, 4}}));
+        run("diamond", 3, () -> new Solution().minimumSemesters(4, new int[][]{{1, 2}, {1, 3}, {2, 4}, {3, 4}}));
+        run("two chains", 3, () -> new Solution().minimumSemesters(5, new int[][]{{1, 2}, {2, 3}, {4, 5}}));
+        run("single", 1, () -> new Solution().minimumSemesters(1, new int[0][]));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Neu moi hoc ky chi duoc dang ky toi da k mon thi xep lich the nao?', 'Neu cac mon co so tin chi khac nhau va can can bang tai moi hoc ky thi la bai gi?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-148',
+  title: 'Max Area of Island',
+  difficulty: 'medium',
+  pattern: 'Graph (DFS/BFS)',
+  tags: ['matrix', 'dfs', 'bfs', 'connected-components'],
+  prompt: `Cho ma tran nhi phan {{grid}} kich thuoc {{m x n}} ({{0}} la nuoc, {{1}} la dat). Mot "dao" la nhom cac o {{1}} lien thong **4 huong** (tren/duoi/trai/phai). Dien tich dao = so o thuoc dao do. Tim dien tich lon nhat cua mot dao. Neu khong co dao tra ve {{0}}.
+
+### Vi du
+~~~text
+Input:  grid = [[0,0,1,0,0,0,0,1,0,0,0,0,0],
+                [0,0,0,0,0,0,0,1,1,1,0,0,0],
+                [0,1,1,0,1,0,0,0,0,0,0,0,0],
+                [0,1,0,0,1,1,0,0,1,0,1,0,0],
+                [0,1,0,0,1,1,0,0,1,1,1,0,0],
+                [0,0,0,0,0,0,0,0,0,0,1,0,0],
+                [0,0,0,0,0,0,0,1,1,1,0,0,0],
+                [0,0,0,0,0,0,0,1,1,0,0,0,0]]
+Output: 6
+Giai thich: Dao lon nhat co 6 o (goc duoi ben phai).
+
+Input:  grid = [[0,0,0,0,0,0,0,0]]
+Output: 0
+~~~
+
+### Rang buoc
+- {{m == grid.length}}, {{n == grid[0].length}}
+- {{1 <= m, n <= 50}}
+- {{grid[i][j]}} la {{0}} hoac {{1}}.`,
+  hints: [
+    'Duyet tung o. Khi gap {{1}} chua tham, chay DFS/BFS tu do de dem kich thuoc toan bo thanh phan lien thong, danh dau da tham (doi {{1}} thanh {{0}} hoac dung mang {{visited}}).',
+    'DFS de quy ngan gon nhat: tra ve 1 + tong 4 huong. Luu y kiem tra bien va gia tri {{1}} truoc khi goi de quy.',
+    'Neu lo StackOverflowError voi luoi lon (2500 o), dung BFS voi hang doi hoac DFS lap (stack tay).'
+  ],
+  solution: `### Y tuong
+Duyet toan bo luoi. Moi khi gap mot o dat ({{1}}) chua tham, lam mot lan DFS/BFS de "nuoc man" toan bo dao do: dem so o, va danh dau chung thanh {{0}} de khong duyet lai. Cap nhat max dien tich.
+
+DFS de quy (ngan gon):
+~~~java
+class Solution {
+    private static final int[][] DIRS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+
+    public int maxAreaOfIsland(int[][] grid) {
+        int m = grid.length, n = grid[0].length;
+        int best = 0;
+        for (int r = 0; r < m; r++) {
+            for (int c = 0; c < n; c++) {
+                if (grid[r][c] == 1) {
+                    best = Math.max(best, dfs(grid, r, c, m, n));
+                }
+            }
+        }
+        return best;
+    }
+
+    private int dfs(int[][] g, int r, int c, int m, int n) {
+        if (r < 0 || r >= m || c < 0 || c >= n || g[r][c] != 1) return 0;
+        g[r][c] = 0;                    // danh dau da tham
+        int area = 1;
+        for (int[] d : DIRS) area += dfs(g, r + d[0], c + d[1], m, n);
+        return area;
+    }
+}
+~~~
+
+BFS tuong tu, dung {{ArrayDeque<int[]>}} de tranh de quy.
+
+### Do phuc tap
+Moi o duoc tham dung 1 lan -> O(m * n) thoi gian. DFS de quy O(m * n) bo nho stack (cao nhat kich thuoc dao), BFS O(m * n) hang doi.
+
+### Luu ý khi pham van
+- Viec doi {{grid[r][c] = 0}} la kieu "visited in-place", tiet kiem mang {{visited}} rieng. Hoi interviewer neu duoc phep thay doi input.
+- 4 huong: tren/duoi/trai/phai. KHONG co duong cheo.
+- Ran canh: luoi 1x1, toan {{0}}, toan {{1}}.
+- Neu de quy qua sau (dao lon ~2500 o), co the thay the bang BFS hoac tang stack size.
+
+> Senior tip: Bai "Number of Islands" (algo-028/077) chi dem SO dao. Bai nay dem KICH THUOC. Cung DFS/BFS, chi them bien dem. Pattern "connected components on grid" xuat hien o: tinh vung mau (flood fill), tim vung trong anh, lan truyen nang luong...`,
+  complexity: 'Time O(m * n), Space O(m * n) (de quy/stack)',
+  starter: 'class Solution {\n    public int maxAreaOfIsland(int[][] grid) {\n        // TODO\n        return 0;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("example", 6, () -> new Solution().maxAreaOfIsland(new int[][]{
+            {0,0,1,0,0,0,0,1,0,0,0,0,0},
+            {0,0,0,0,0,0,0,1,1,1,0,0,0},
+            {0,1,1,0,1,0,0,0,0,0,0,0,0},
+            {0,1,0,0,1,1,0,0,1,0,1,0,0},
+            {0,1,0,0,1,1,0,0,1,1,1,0,0},
+            {0,0,0,0,0,0,0,0,0,0,1,0,0},
+            {0,0,0,0,0,0,0,1,1,1,0,0,0},
+            {0,0,0,0,0,0,0,1,1,0,0,0,0}
+        }));
+        run("all water", 0, () -> new Solution().maxAreaOfIsland(new int[][]{{0,0,0,0,0,0,0,0}}));
+        run("single land", 1, () -> new Solution().maxAreaOfIsland(new int[][]{{1}}));
+        run("all land 2x2", 4, () -> new Solution().maxAreaOfIsland(new int[][]{{1,1},{1,1}}));
+        run("two separate", 3, () -> new Solution().maxAreaOfIsland(new int[][]{{1,0,1,1,1}}));
+        run("L shape", 3, () -> new Solution().maxAreaOfIsland(new int[][]{{1,1},{1,0}}));
+        run("50x50 all land", 2500, () -> {
+            int[][] g = new int[50][50];
+            for (int[] r : g) Arrays.fill(r, 1);
+            return new Solution().maxAreaOfIsland(g);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Neu khong duoc phep thay doi grid, su dung visited array nhu the nao?', 'Neu can tra ve toa do cac o cua dao lon nhat thi luu them gi?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-149',
+  title: 'Permutation in String',
+  difficulty: 'medium',
+  pattern: 'Sliding Window',
+  tags: ['string', 'sliding-window', 'hashmap', 'anagram'],
+  prompt: `Cho hai chuoi {{s1}} va {{s2}}. Tra ve {{true}} neu {{s2}} chua mot **hoan vi** (permutation) cua {{s1}} lam chuoi con. Chuoi con = cac ky tu lien tiep. Tuc la: co ton tai mot cua so dai {{s1.length()}} trong {{s2}} ma tan so cac ky tu trong cua so do giong het tan so trong {{s1}}.
+
+### Vi du
+~~~text
+Input:  s1 = "ab", s2 = "eidbaooo"
+Output: true
+Giai thich: "ba" la hoan vi cua "ab".
+
+Input:  s1 = "ab", s2 = "eidboaoo"
+Output: false
+~~~
+
+### Rang buoc
+- {{1 <= s1.length, s2.length <= 10^4}}
+- {{s1}} va {{s2}} chi chua chu cai thuong.`,
+  hints: [
+    'Kich thuoc cua so co dinh = {{s1.length()}}. Can kiem tra tung cua so co tan so ky tu trung voi {{s1}} khong.',
+    'Dung mang 26 de dem tan so {{s1}} ({{need}}). Duyet {{s2}} voi cua so kich thuoc co dinh: them ky tu moi, bo ky tu cu. Khi hai mang tan so giong nhau -> tim thay.',
+    'Toi uu: thay vi so sanh 26 phan tu moi lan, dung bien {{matches}} dem so ky tu ma {{window[c] == need[c]}}. Khi {{matches == 26}} -> tan so het giong nhau.'
+  ],
+  solution: `### Y tuong
+Cua so truot kich thuoc co dinh {{L = s1.length()}}. Luu tan so cua {{s1}} vao {{need[26]}}. Duy tri {{window[26]}} cho cua so hien tai.
+
+De kiem tra O(1) thay vi O(26): khoi tao {{matches}} = so chu cai ma {{need[c] == window[c]}} (dau bang 26 neu hai mang giong het). Moi khi cap nhat {{window[c]}}, kiem tra trang thai truoc/sau de cap nhat {{matches}}.
+
+Khi {{matches == 26}} -> cua so la hoan vi -> tra {{true}}.
+
+~~~java
+class Solution {
+    public boolean checkInclusion(String s1, String s2) {
+        int L1 = s1.length(), L2 = s2.length();
+        if (L1 > L2) return false;
+        int[] need = new int[26], window = new int[26];
+        for (char c : s1.toCharArray()) need[c - 'a']++;
+        int matches = 0;
+        for (int i = 0; i < 26; i++) if (need[i] == window[i]) matches++;
+        // Khoi tao cua so dau tien
+        for (int i = 0; i < L1; i++) {
+            int c = s2.charAt(i) - 'a';
+            if (window[c] == need[c]) matches--;
+            window[c]++;
+            if (window[c] == need[c]) matches++;
+        }
+        if (matches == 26) return true;
+        // Truot cua so
+        for (int i = L1; i < L2; i++) {
+            int add = s2.charAt(i) - 'a';
+            int remove = s2.charAt(i - L1) - 'a';
+            if (window[add] == need[add]) matches--;
+            window[add]++;
+            if (window[add] == need[add]) matches++;
+            if (window[remove] == need[remove]) matches--;
+            window[remove]--;
+            if (window[remove] == need[remove]) matches++;
+            if (matches == 26) return true;
+        }
+        return false;
+    }
+}
+~~~
+
+### Do phuc tap
+O(L1 + L2) thoi gian, O(1) bo nho (26 so nguyen).
+
+### Luu ý khi pham van
+- {{matches}} khoi tao bang 26 neu {{need}} va {{window}} deu toan 0 (khi {{s1}} rong, nhung rang buoc {{L1 >= 1}} nen khong xay ra).
+- Neu {{L1 > L2}} tra {{false}} ngay.
+- Cach de hieu hon: so sanh truc tiep {{Arrays.equals(need, window)}} moi lan (O(26) = hang so) cung duoc chap nhan va rat kho sai.
+
+> Senior tip: Bai nay la "Fixed-size sliding window + frequency match". Cung pattern dung cho: kiem tra anagram trong luong log, tim chuoi con co tan so ky tu trung voi pattern. Neu interviewer hoi "neu chuoi co Unicode" -> chuyen sang HashMap, matches khong dung duoc (khong biet tong so ky tu), phai so sanh map truc tiep hoac dung bien "validCount".`,
+  complexity: 'Time O(n), Space O(1)',
+  starter: 'class Solution {\n    public boolean checkInclusion(String s1, String s2) {\n        // TODO\n        return false;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("example", true, () -> new Solution().checkInclusion("ab", "eidbaooo"));
+        run("example2", false, () -> new Solution().checkInclusion("ab", "eidboaoo"));
+        run("exact match", true, () -> new Solution().checkInclusion("abc", "abc"));
+        run("s1 longer", false, () -> new Solution().checkInclusion("abcd", "abc"));
+        run("single char", true, () -> new Solution().checkInclusion("a", "a"));
+        run("single char no", false, () -> new Solution().checkInclusion("a", "b"));
+        run("duplicate chars", true, () -> new Solution().checkInclusion("aa", "baa"));
+        run("at end", true, () -> new Solution().checkInclusion("abc", "xyzabc"));
+        run("multiple matches", true, () -> new Solution().checkInclusion("ab", "abab"));
+        run("long s2", true, () -> new Solution().checkInclusion("ab", "a".repeat(5000) + "ba"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Neu can tra ve TAT CA vi tri bat dau cua cac hoan vi thi sua ra sao?', 'Neu s1, s2 chua ky tu Unicode thi doi cau truc du lieu nhu the nao?']
+}
+);
 })();
