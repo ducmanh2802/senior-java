@@ -71,7 +71,7 @@ Một service đặt hàng và thanh toán (Spring Boot 3.2, Postgres 15) có 62
     'Context cache của Spring hoạt động thế nào, và làm sao để tận dụng nó trong CI?',
     'Với một microservice có Kafka, bạn kiểm thử consumer như thế nào mà vẫn giữ được tốc độ?'
   ],
-  tags: ['testing', 'SpringBootTest', 'WebMvcTest', 'DataJpaTest', 'test-pyramid']
+  tags: ['testing', 'SpringBootTest', 'WebMvcTest', 'DataJpaTest', 'test-pyramid', 'core']
 },
 {
   id: 'testing-002',
@@ -135,7 +135,7 @@ Một đội dùng {{@DataJpaTest}} với H2 (chế độ tương thích Postgre
     'Bạn có nên bật {{@ServiceConnection}} cho cả Redis và Kafka không, hay chỉ Postgres?',
     'Nếu CI runner không có Docker thì bạn giải quyết bài toán "test trên DB thật" bằng cách nào?'
   ],
-  tags: ['Testcontainers', 'integration-test', 'PostgreSQL', 'CI']
+  tags: ['Testcontainers', 'integration-test', 'PostgreSQL', 'CI', 'core']
 },
 {
   id: 'testing-003',
@@ -194,7 +194,7 @@ Module đặt hàng có 420 unit test, 80% dùng Mockito với trung bình 6 moc
     'Fluent assertion library (AssertJ) giúp gì so với JUnit {{assertEquals}} thuần?',
     'Khi nào nên dùng {{@Spy}} thay vì {{@Mock}}?'
   ],
-  tags: ['mockito', 'unit-test', 'test-double', 'code-smell']
+  tags: ['mockito', 'unit-test', 'test-double', 'code-smell', 'core']
 },
 {
   id: 'testing-004',
@@ -260,7 +260,7 @@ Hai service order-service và payment-service gọi nhau qua REST. Triệu chứ
     'Bạn có nên dùng OpenAPI + request/response validator thay vì Pact khi hệ thống không quá lớn?',
     'Làm sao bảo đảm contract test bắt được lỗi **semantic** (khác kiểu dữ liệu) chứ không chỉ khác shape?'
   ],
-  tags: ['contract-testing', 'Pact', 'SpringCloudContract', 'microservices']
+  tags: ['contract-testing', 'Pact', 'SpringCloudContract', 'microservices', 'core']
 },
 {
   id: 'testing-005',
@@ -341,7 +341,7 @@ await().atMost(Duration.ofSeconds(3))
     'Làm sao test được logic "retry với backoff" mà không phải chờ thật?',
     'Với hệ thống event-driven, bạn kiểm soát thời gian bằng cách nào ngoài việc dùng {{Clock}}?'
   ],
-  tags: ['Awaitility', 'Clock', 'concurrency-testing', 'flaky-test']
+  tags: ['Awaitility', 'Clock', 'concurrency-testing', 'flaky-test', 'core']
 },
 {
   id: 'testing-006',
@@ -409,7 +409,7 @@ Service tính phí vận chuyển có 92% line coverage, CI xanh, nhưng một b
     'Mutation testing có tốn nhiều thời gian không, và bạn ước lượng ra sao khi thêm vào CI?',
     'Bạn có dùng công cụ nào để loại bỏ test bị trùng lặp (duplicate test) không?'
   ],
-  tags: ['coverage', 'PIT', 'mutation-testing', 'JaCoCo']
+  tags: ['coverage', 'PIT', 'mutation-testing', 'JaCoCo', 'core']
 },
 {
   id: 'testing-007',
@@ -595,7 +595,7 @@ Dự án có hơn 2000 test trên CI, trong đó khoảng 19% test đỏ ngẫu 
     'Làm sao đảm bảo test chạy trên CI giống hệt môi trường local mà không tạo thêm một bài toán cấu hình?',
     'Khi nào một test flaky nên bị xoá thay vì sửa?'
   ],
-  tags: ['CI/CD', 'quality-gate', 'flaky-test', 'leadership']
+  tags: ['CI/CD', 'quality-gate', 'flaky-test', 'leadership', 'core']
 },
 {
   id: 'testing-010',
@@ -657,7 +657,7 @@ Bộ integration test 600 case chạy 18 phút và khoảng 1/5 số lần chạ
     'Có nên dùng công cụ sinh dữ liệu ngẫu nhiên như Java Faker trong test không?',
     'Làm sao giữ test nhanh khi bài toán cần dữ liệu lịch sử lớn (ví dụ dữ liệu 1 năm)?'
   ],
-  tags: ['test-data', 'fixture', 'determinism', 'best-practice']
+  tags: ['test-data', 'fixture', 'determinism', 'best-practice', 'core']
 },
 {
   id: 'behavioral-001',
@@ -704,7 +704,7 @@ Một dịch vụ đặt hàng (Spring Boot 3.1, Postgres 15) gặp sự cố P1
     'Bạn có bao giờ phải quyết định rollback khi đang mất tiền thật không? Tiêu chí quyết định của bạn là gì?',
     'Sau sự cố, bạn làm gì để bảo đảm quy trình postmortem không biến thành nghi thức tìm thủ phạm?'
   ],
-  tags: ['incident', 'postmortem', 'leadership', 'STAR']
+  tags: ['incident', 'postmortem', 'leadership', 'STAR', 'core']
 },
 {
   id: 'behavioral-002',
@@ -754,7 +754,7 @@ Một dự án thanh toán (Spring Boot 3.0, PostgreSQL 14, Redis 7) đang chị
     'Với PM, khác biệt giữa "phản đối giải pháp" và "phản đối mục tiêu" là gì?',
     'Nếu quyết định cuối cùng đi ngược ý bạn và sau đó có sự cố, bạn xử lý thế nào?'
   ],
-  tags: ['conflict', 'communication', 'influence', 'STAR']
+  tags: ['conflict', 'communication', 'influence', 'STAR', 'core']
 },
 {
   id: 'behavioral-003',
@@ -801,7 +801,7 @@ Một kỹ sư mới (8 tháng kinh nghiệm) được giao module thanh toán V
     'Làm sao mentoring một người có tính cách khác bạn (ví dụ hướng nội, thích làm một mình)?',
     'Bạn có bao giờ phải nói với một người rằng họ chưa phù hợp với vị trí không? Bạn xử lý ra sao?'
   ],
-  tags: ['mentoring', 'leadership', 'onboarding', 'STAR']
+  tags: ['mentoring', 'leadership', 'onboarding', 'STAR', 'core']
 },
 {
   id: 'behavioral-004',
@@ -848,7 +848,7 @@ Một dịch vụ sàn TMĐT (Spring Boot 2.7, PostgreSQL 13) quyết định đ
     'Bạn có dùng tài liệu quyết định kiến trúc (ADR) không? Nó giúp ích gì trong chuyện này?',
     'Sau bao lâu thì bạn coi một quyết định đã sai là "chấp nhận được"?'
   ],
-  tags: ['self-reflection', 'postmortem', 'architecture-decision', 'STAR']
+  tags: ['self-reflection', 'postmortem', 'architecture-decision', 'STAR', 'core']
 },
 {
   id: 'behavioral-005',
@@ -896,7 +896,7 @@ PM cam kết khách hàng có tính năng 'xuất báo cáo tổng hợp' trong 
     'Khi PM không đồng ý cắt scope, bạn còn lựa chọn nào ngoài việc làm quá sức?',
     'Có bao giờ ước lượng của bạn sai lệch lớn không? Bạn đã hiệu chỉnh cách ước lượng ra sao?'
   ],
-  tags: ['estimation', 'scope-negotiation', 'PM', 'STAR']
+  tags: ['estimation', 'scope-negotiation', 'PM', 'STAR', 'core']
 },
 {
   id: 'behavioral-006',
@@ -945,7 +945,7 @@ Một service thanh toán 3 năm tuổi (Java 11, Spring Boot 2.5, PostgreSQL 12
     'Nếu business liên tục phá vỡ cam kết 20%, bạn làm gì?',
     'Bạn có bao giờ phải chấp nhận nợ kỹ thuật và ghi nhận nó thay vì sửa không?'
   ],
-  tags: ['technical-debt', 'leadership', 'stakeholder', 'STAR']
+  tags: ['technical-debt', 'leadership', 'stakeholder', 'STAR', 'core']
 },
 {
   id: 'behavioral-007',
@@ -995,7 +995,7 @@ Nguyên nhân gốc: tác vụ backfill ghi mỗi lần 10.000 dòng trong một
     'Nếu một thành viên team phản đối kế hoạch của bạn, bạn xử lý thế nào?',
     'Bạn có bao giờ phải dừng dự án giữa chừng không, và quyết định đó dựa trên căn cứ gì?'
   ],
-  tags: ['project-leadership', 'migration', 'planning', 'STAR']
+  tags: ['project-leadership', 'migration', 'planning', 'STAR', 'core']
 },
 {
   id: 'behavioral-008',
@@ -1040,7 +1040,7 @@ Bộ phận kinh doanh yêu cầu xây dựng báo cáo doanh thu theo thời gi
     'Làm sao bạn biết mức độ ưu tiên thật sự của một yêu cầu khi mọi người đều nói "gấp"?',
     'Bạn dùng công cụ hay nghi thức nào để theo dõi việc yêu cầu của stakeholder được xử lý không?'
   ],
-  tags: ['stakeholder', 'communication', 'business-value', 'STAR']
+  tags: ['stakeholder', 'communication', 'business-value', 'STAR', 'core']
 },
 {
   id: 'behavioral-009',
@@ -1088,7 +1088,7 @@ Trong một sprint trước, tôi cam kết giao tính năng xuất file Excel v
     'Nếu sau 6 tháng tôi đánh giá bạn chưa đạt kỳ vọng, bạn muốn tôi nói gì?',
     'Bạn đã từng bị từ chối một vị trí không? Bạn đã làm gì khác biệt sau đó?'
   ],
-  tags: ['motivation', 'self-awareness', 'growth', 'STAR']
+  tags: ['motivation', 'self-awareness', 'growth', 'STAR', 'core']
 },
 {
   id: 'behavioral-010',
@@ -1137,7 +1137,7 @@ Vào tuần thứ ba tại công ty mới, tôi nhận phản hồi từ bộ ph
     'Bạn sẽ phản ứng thế nào nếu sau 30 ngày bạn nhận ra kiến trúc hiện tại có vấn đề nghiêm trọng?',
     'Khi nào bạn biết đã đến lúc đóng góp thay vì chỉ học?'
   ],
-  tags: ['onboarding', 'planning', 'adaptability', 'STAR']
+  tags: ['onboarding', 'planning', 'adaptability', 'STAR', 'core']
 },
 {
   id: 'behavioral-011',
@@ -1193,7 +1193,7 @@ Vào tuần thứ ba tại công ty mới, tôi nhận phản hồi từ bộ ph
     'Bạn có thể hỏi về mức lương mà không làm mất thiện cảm không?',
     'Bạn cần biết điều gì về đội ngũ để đánh giá xem mình có hợp không?'
   ],
-  tags: ['interview', 'questions', 'preparation', 'STAR']
+  tags: ['interview', 'questions', 'preparation', 'STAR', 'core']
 },
 {
   id: 'behavioral-012',
@@ -1240,7 +1240,7 @@ Vào tuần thứ ba tại công ty mới, tôi nhận phản hồi từ bộ ph
     'Nếu công ty nói "chúng tôi không thể tăng thêm", bạn trả lời thế nào?',
     'Với công việc remote cho khách hàng nước ngoài, những điều khoản nào trong hợp đồng bạn sẽ đặc biệt để ý?'
   ],
-  tags: ['negotiation', 'compensation', 'career', 'STAR']
+  tags: ['negotiation', 'compensation', 'career', 'STAR', 'core']
 },
 {
   id: 'testing-011',
@@ -1459,7 +1459,7 @@ Một hệ thống fintech (Spring Boot 3.0, PostgreSQL 15, JWT) gặp sự cố
     'Làm sao test trường hợp token còn hiệu lực nhưng tài khoản đã bị disable hoặc đổi role?',
     'Bạn có dùng công cụ quét bảo mật tự động (OWASP ZAP, dependency-check) trong pipeline không?'
   ],
-  tags: ['security', 'IDOR', 'WithMockUser', 'JWT', 'authorization']
+  tags: ['security', 'IDOR', 'WithMockUser', 'JWT', 'authorization', 'core']
 },
 {
   id: 'testing-014',
@@ -1541,7 +1541,7 @@ Một hệ thống thanh toán (PostgreSQL 14, Flyway 9, 3 triệu đơn/ngày) 
     'Bạn có dùng công cụ nào để so sánh schema giữa các môi trường và phát hiện lệch không?',
     'Khi nào bạn chấp nhận downtime để đổi schema thay vì làm expand–contract?'
   ],
-  tags: ['Flyway', 'Liquibase', 'migration', 'zero-downtime', 'database']
+  tags: ['Flyway', 'Liquibase', 'migration', 'zero-downtime', 'database', 'core']
 },
 {
   id: 'testing-015',
@@ -6385,7 +6385,7 @@ Một service thanh toán (Spring Boot 3.3, 18 dev) có 700 test: 520 test dùng
     'Khi nào bạn vẫn cần {{@SpringBootTest(webEnvironment = RANDOM_PORT)}} thay vì {{@WebMvcTest}} + {{MockMvc}}?',
     'Bạn xử lý thế nào khi một tính năng cần cả tầng web và security filter — dùng slice nào hay buộc phải full context?'
   ],
-  tags: ['SpringBootTest', 'WebMvcTest', 'DataJpaTest', 'slice-test', 'Spring Boot 3']
+  tags: ['SpringBootTest', 'WebMvcTest', 'DataJpaTest', 'slice-test', 'Spring Boot 3', 'core']
 },
 {
   id: 'testing-051',
@@ -6551,7 +6551,7 @@ Một service cấp mã OTP và token đặt lại mật khẩu (Spring Boot 3.2
     'Bạn xử lý thế nào với code dùng {{LocalDate.now()}} theo múi giờ người dùng (không phải UTC) nhưng vẫn muốn test xác định?',
     'Làm sao để phát hiện và ngăn chặn việc ai đó thêm {{Instant.now()}} trực tiếp mới vào codebase (review, ArchUnit, lint)?'
   ],
-  tags: ['Clock', 'java.time', 'time-testing', 'flaky-test', 'deterministic']
+  tags: ['Clock', 'java.time', 'time-testing', 'flaky-test', 'deterministic', 'core']
 },
 {
   id: 'testing-053',
@@ -6945,7 +6945,7 @@ Một service thanh toán (Spring Boot 3.3, 10 dev) có 180 unit test, hầu h�
     'Khi nào fake in-memory là đủ, khi nào bắt buộc phải dùng Testcontainers để tránh test xanh giả?',
     'Bạn review một PR có 20 test mới và coverage tăng 3%: bạn kiểm tra điều gì để biết test đó có giá trị?'
   ],
-  tags: ['mocking', 'test-double', 'hexagonal', 'unit-test', 'integration-test']
+  tags: ['mocking', 'test-double', 'hexagonal', 'unit-test', 'integration-test', 'core']
 },
 {
   id: 'testing-058',
