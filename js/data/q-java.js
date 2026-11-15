@@ -11449,4 +11449,272 @@ Service xây câu SQL IN clause cho 10.000 ID: dùng {{StringBuilder}} capacity 
   ],
   tags: ['String', 'StringBuilder', 'StringBuffer', 'StringJoiner', 'Collectors.joining', 'thread-safety', 'performance']
 },
+{
+  id: 'core-064',
+  topic: 'core',
+  level: 'senior',
+  q: 'Viết {{equals()}} và {{hashCode()}} cho JPA entity có ID sinh tự động ({{@GeneratedValue}}). Vì sao không nên dùng ID, và khi entity có thể là proxy của Hibernate thì nên dùng {{getClass()}} hay {{instanceof}}?',
+  a: `**Tóm tắt:** Với entity JPA, ID thường là {{null}} trước khi flush vào DB. Nếu dùng ID trong {{equals}}/{{hashCode}}, entity sẽ "đổi danh tính" (hashcode đổi) sau khi lưu vào DB, làm nó bị "mất tích" khỏi {{Set}}/{{HashMap}}. Nên dùng business key — field định danh nghiệp vụ, bất biến và duy nhất (ví dụ {{orderNumber}}, {{username}}). Hiện proxy của Hibernate là **subclass** của entity: {{getClass()}} của proxy khác entity nên {{equals}} trả {{false}}; {{instanceof}} nhận cả proxy, đổi lại phải cẩn thận với kế thừa (tính đối xứng).
+
+### Cái gì - vì sao cần - cơ chế bên trong
+- **Tại sao ID không ổn?** Entity JPA có trạng thái transient (mới tạo, chưa lưu) và managed (đã lưu). Trước khi persist, ID là {{null}} (hoặc giá trị mặc định). Nếu {{hashCode}} dùng ID, giá trị này sẽ thay đổi ngay sau khi lưu → vi phạm nguyên tắc "nhất quán" của {{hashCode}}.
+- **Proxy của Hibernate là gì?** Khi gọi {{getReferenceById()}} (JPA) hoặc {{getReference()}} (Hibernate 6), Hibernate trả về một proxy — class con do Hibernate sinh lúc runtime, chưa chạy câu SQL nào. Mọi field vẫn là giá trị mặc định cho tới lần gọi getter đầu tiên (lúc đó proxy mới tải bản thật). Vì proxy là subclass của entity, {{proxy.getClass()}} trả về tên kiểu {{Order$HibernateProxy$...}}, không phải {{Order}}.
+- **{{getClass()}} hay {{instanceof}}?** {{getClass()}} yêu cầu hai object cùng class chính xác, nên entity thật và proxy của nó bị coi là khác nhau → {{order.equals(proxy)}} trả {{false}} và {{Set}}/{{Map}} "mất" phần tử. {{instanceof Order}} đúng cho cả proxy (proxy cũng là Order). Nhược điểm của {{instanceof}}: nếu {{class Admin extends User}} và chỉ {{User}} override {{equals}}, thì {{user.equals(admin)}} có thể {{true}} còn {{admin.equals(user)}} {{false}} — phá đối xứng; khi đó phải override ở lớp con hoặc dùng mẫu {{canEqual}}. Nếu vẫn muốn dùng {{getClass()}}, phải giải proxy trước bằng {{Hibernate.getClass(o)}}.
+- **Business Key:** Là tập các field nghiệp vụ, ví dụ {{username}} trong {{User}}, {{orderNumber}} trong {{Order}}. Chúng phải bất biến và duy nhất sau khi tạo. Dùng business key làm {{hashCode}} đảm bảo danh tính entity không đổi từ lúc khởi tạo đến lúc delete.
+
+### Ví dụ đời thực (production)
+Hệ thống Thương mại điện tử có entity {{Order}}. Dev dùng {{equals}} dựa trên {{id}} ({{Long}}). Khi tạo đơn (transaction 1), dev add {{Order}} vào {{Set<Order>}} trong service để gom đơn batch. Đơn chưa có ID → ID là {{null}} → {{hashCode}} trả về giá trị dựa trên ID {{null}}. Sau transaction 1, Hibernate flush → ID được sinh (ví dụ 101). Khi gọi transaction tiếp theo để gửi mail (dùng lại {{Set}} cũ), {{Order}} đã có ID → {{hashCode}} thay đổi → {{Set}} không tìm thấy order (vì order đang ở bucket ứng với ID 101, nhưng Set vẫn tìm ở bucket của ID {{null}}). Triệu chứng: đơn hàng vẫn lưu DB nhưng service không xử lý gửi mail. Cách sửa: dùng business key {{orderNumber}} làm {{hashCode}}.
+
+~~~java
+@Entity
+class Order {
+    @Id @GeneratedValue Long id;
+    @Column(unique = true) String orderNumber; // Business Key
+
+    @Override public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof Order)) return false;   // proxy của Hibernate vẫn là Order
+        Order other = (Order) o;
+        return Objects.equals(orderNumber, other.orderNumber);
+    }
+    @Override public int hashCode() {
+        return Objects.hash(orderNumber);
+    }
+}
+~~~
+
+### Pitfall production
+- **Lạm dụng {{@EqualsAndHashCode}} của Lombok:** Nó mặc định dùng mọi field, có thể kéo theo cả collection (gây {{LazyInitializationException}}) và cả field ID (gây lỗi trên). Cần dùng {{of}} để chỉ chọn business key.
+- **Business key không duy nhất:** Nếu business key trùng nhau, {{Set}} sẽ không chứa được các entity thực sự khác nhau → mất dữ liệu.
+- **Business key còn {{null}} ở entity transient:** hai đơn chưa lưu đều có {{orderNumber}} là {{null}} → {{equals}} coi chúng bằng nhau và {{hashCode}} bằng nhau, {{Set}} chỉ giữ một phần tử. Khi đó hãy sinh business key ngay trong constructor (hoặc dùng UUID), đừng để {{null}}.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không dùng ID cho {{equals}}/{{hashCode}} của JPA entity vì ID là {{null}} trước flush, hash đổi sau khi lưu làm mất phần tử khỏi {{HashSet}}. Tôi dùng business key bất biến và duy nhất. Về {{getClass()}} và {{instanceof}}: proxy của Hibernate là subclass của entity, nên {{getClass()}} của proxy khác entity, {{equals}} sẽ trả {{false}} và làm mất phần tử khỏi {{Set}}/{{Map}}; {{instanceof}} nhận cả proxy, nhưng phải cẩn thận khi có kế thừa vì có thể phá đối xứng. Nếu buộc dùng {{getClass()}} thì giải proxy bằng {{Hibernate.getClass()}}. Tôi cũng không dùng cấu hình mặc định của Lombok mà chỉ định đúng field business key, và luôn override cùng lúc cả hai."
+
+> Senior tip: nếu entity không có business key, dùng một field {{UUID}} được khởi tạo ngay trong constructor (bất biến) để làm danh tính, đó là cách an toàn nhất.`,
+  follow: [
+    'Tại sao Hibernate Proxy lại làm phiền phức việc equals/hashCode?',
+    'Cách dùng Lombok {{@EqualsAndHashCode(of = "...")}} cho entity thế nào là chuẩn?',
+    'Nếu entity có quan hệ 1-N (ví dụ Order có List<Item>), có nên đưa Item vào equals của Order không?'
+  ],
+  tags: ['JPA', 'Hibernate', 'equals', 'hashCode', 'Proxy', 'BusinessKey']
+},
+{
+  id: 'core-065',
+  topic: 'core',
+  level: 'senior',
+  q: 'Thế nào là một class "bất biến thực sự" (deeply immutable)? Tại sao chỉ khai báo {{final}} field là chưa đủ?',
+  a: `**Tóm tắt:** Bất biến (immutable) nghĩa là sau khi khởi tạo, trạng thái object không thể thay đổi. Khai báo field {{final}} chỉ đảm bảo reference không đổi, nhưng object mà reference trỏ đến (ví dụ {{List}}, {{Date}}) vẫn có thể bị sửa đổi (mutable). Class "bất biến thực sự" phải đảm bảo mọi field là {{final}} VÀ các object mà chúng trỏ đến cũng phải là bất biến hoặc được defensive copy.
+
+### Cái gì - vì sao cần - cơ chế bên trong
+- **Bất biến nông (shallow immutability):** Chỉ field là {{final}}. Nếu field là {{List}}, người ta vẫn gọi {{list.add()}} để thay đổi nội dung bên trong {{List}}.
+- **Bất biến sâu (deep immutability):** Mọi field {{final}} AND (field là kiểu nguyên thuỷ/immutable như {{String}}, {{Integer}}) OR (field là mutable thì phải defensive copy).
+- **Defensive Copy:** Khi constructor nhận vào một {{List}}, thay vì gán trực tiếp, hãy tạo một bản copy mới: {{this.list = List.copyOf(list)}}. Khi getter trả về, cũng trả về bản copy hoặc unmodifiable view: {{return List.copyOf(this.list)}}.
+
+### Ví dụ đời thực (production)
+Hệ thống cấu hình hệ thống dùng class {{SystemConfig}} có {{List<String> allowedIps}}. Dev làm class này {{final}}, các field {{final}}, nhưng constructor gán trực tiếp {{this.allowedIps = allowedIps}}. Một module khác lấy {{allowedIps}} ra và gọi {{allowedIps.clear()}}. Kết quả: {{SystemConfig}} trong bộ nhớ vẫn trỏ vào list cũ, nhưng list đã rỗng → toàn bộ request bị chặn (403 Forbidden). Triệu chứng: dịch vụ không thể nhận request dù cấu hình vẫn "như cũ". Cách sửa: dùng {{List.copyOf()}} trong constructor và getter.
+
+~~~java
+public final class SystemConfig {
+    private final List<String> allowedIps;
+
+    public SystemConfig(List<String> ips) {
+        // Defensive copy để tránh caller thay đổi nội dung list sau khi tạo
+        this.allowedIps = List.copyOf(ips); 
+    }
+    public List<String> getAllowedIps() {
+        return allowedIps; // List.copyOf trả về unmodifiable, an toàn
+    }
+}
+~~~
+
+### Pitfall production
+- **Copy nông (shallow copy):** {{new ArrayList<>(list)}} đúng là bản copy — sửa list gốc không ảnh hưởng tới nó — nhưng bản copy vẫn mutable, nếu getter trả về chính nó thì caller vẫn sửa được. {{List.copyOf(list)}} vừa copy vừa trả về list unmodifiable; đổi lại nó ném {{NullPointerException}} nếu list có phần tử {{null}}.
+- **Object chứa mutable object:** ví dụ {{Date}} (mutable). Hãy dùng {{java.time.LocalDateTime}} (immutable) thay thế.
+
+### Trả lời mẫu khi phỏng vấn
+"Bất biến thực sự cần field {{final}} và đảm bảo nội dung các object tham chiếu tới không thể sửa. Tôi dùng 'defensive copy' trong constructor và getter để cô lập nội dung, dùng {{List.copyOf}} (Java 10+) hoặc {{Collections.unmodifiableList}} để đóng gói. Với các class bất biến, tôi ưu tiên dùng {{record}} (Java 16+) nếu có thể, vì nó tự khai báo field {{final}} và getter, nhưng record không tự copy collection nên vẫn phải copy thủ công."
+
+> Senior tip: Với các cấu trúc dữ liệu phức tạp (vd: Map<String, List<Object>>), bạn cần làm đệ quy defensive copy để đảm bảo bất biến. Dùng {{record}} giúp code sạch hơn rất nhiều.`,
+  follow: [
+    'Tại sao không nên dùng {{java.util.Date}} trong class immutable?',
+    'Java 16+ {{record}} có giải quyết được vấn đề defensive copy cho field collection không?',
+    'Có cách nào khác để tạo deep immutable object ngoài defensive copy không?'
+  ],
+  tags: ['Immutable', 'Final', 'DefensiveCopy', 'Java16', 'Record']
+},
+{
+  id: 'core-066',
+  topic: 'core',
+  level: 'senior',
+  q: 'String pool, {{String.intern()}} và cơ chế "String Deduplication" của G1 GC khác nhau thế nào?',
+  a: `**Tóm tắt:** String pool (StringTable trong HotSpot) là bảng băm nằm trên heap chứa các chuỗi đã intern; literal và {{intern()}} trả về cùng một instance cho chuỗi cùng nội dung. G1 String Deduplication không dùng bảng này: trong lúc GC, G1 tìm các String có mảng backing ({{byte[]}}) trùng nội dung rồi cho chúng trỏ chung một mảng, giảm heap mà không phải sửa code. Khác biệt cốt lõi: pool làm các String trùng nhau **thành một object**, dedup chỉ làm chúng **dùng chung mảng ký tự**; vì vậy dedup không thay được {{intern()}} khi bạn cần so sánh {{==}}.
+
+### String pool hoạt động thế nào
+- Vị trí: từ Java 7 pool nằm trên heap (trước đó ở PermGen), nên intern nhiều chuỗi không còn gây {{OutOfMemoryError: PermGen space}} mà làm phình heap. Kích thước bảng do {{-XX:StringTableSize}} quyết định (JDK 17 mặc định 65.536 bucket, phải là lũy thừa của 2); bảng đầy thì phải rehash toàn bộ entry.
+- Literal: khi một class được nạp, hằng chuỗi ({{CONSTANT_String}}) được resolve — JVM tra StringTable, chưa có thì tạo rồi đưa vào bảng. Nhờ vậy hai class cùng viết {{String S = "xin chào";}} dùng chung một object.
+- {{new String("xin chào")}} luôn tạo object mới trên heap (dù tham số đã intern), nên {{==}} là {{false}}, còn {{equals}} là {{true}}. Muốn lấy instance chuẩn: {{s.intern()}}.
+- StringTable giữ reference mạnh tới các String đã intern, nên chúng sống suốt vòng đời JVM và không được GC thu hồi — intern dữ liệu không giới hạn là rò rỉ bộ nhớ.
+
+### G1 String Deduplication hoạt động thế nào
+- Bật bằng {{-XX:+UseG1GC -XX:+UseStringDeduplication}} (hoặc chỉ {{-XX:+UseStringDeduplication}} nếu đã dùng G1). Ở JDK 17 chỉ G1 (và Shenandoah) hỗ trợ; JDK 18 trở lên thêm Serial, Parallel, ZGC.
+- G1 chỉ xét các String đã sống qua {{-XX:StringDeduplicationAgeThreshold}} (mặc định 3) lần young GC — chuỗi sắp chết thì không đáng xử lý. Khi đủ tuổi, G1 băm nội dung mảng backing của chúng; hai String khác object nhưng mảng giống hệt nhau thì một String được trỏ sang mảng của String kia, mảng còn lại thành rác và được thu ở GC sau.
+- Nó không tạo String mới, không dùng StringTable, không làm {{==}} đúng hơn; nó chỉ giảm bộ nhớ mảng ký tự. Literal đã intern nên đã dùng chung mảng, không cần dedup.
+
+### So sánh nhanh
+| Tiêu chí | String pool / intern() | G1 String Deduplication |
+|---|---|---|
+| Mục đích | Dùng chung **object** String, {{==}} đúng | Dùng chung **mảng backing**, giảm heap |
+| Can thiệp code | Phải gọi {{intern()}} (hoặc dùng literal) | Không cần sửa code, chỉ bật cờ GC |
+| Phạm vi | Chuỗi hằng, tập giá trị hữu hạn | Mọi String đủ tuổi trên heap |
+| Rủi ro | Pool phình vĩnh viễn nếu intern dữ liệu vô hạn | Tốn CPU GC, không giảm số object String |
+
+### Ví dụ đời thực (production)
+Một service hồ sơ người dùng giữ cache 5 GB trên heap 8 GB; khoảng 1,5 GB trong đó là các chuỗi lặp lại ({{locale}}, {{role}}, URL avatar mặc định, tên tỉnh thành). Mỗi bản sao của một chuỗi 60 byte chiếm 76 byte (60 byte dữ liệu + 16 byte header mảng). Sau khi bật dedup, 1,5 GB chuỗi lặp chỉ còn khoảng 0,6 GB vì mỗi nhóm giữ một mảng; old gen giảm 0,9 GB, full GC từ 6 lần/ngày xuống 2 lần/ngày, young GC pause tăng khoảng 4% do GC phải băm và so sánh thêm. Không cần sửa một dòng code nào, nhưng cũng không giảm được số object String.
+
+### Trả lời mẫu khi phỏng vấn
+"String pool là bảng băm trên heap; literal được đưa vào pool khi class load, còn {{intern()}} trả về instance chuẩn của chuỗi. Nó giúp {{==}} đúng và tiết kiệm bộ nhớ cho tập hằng, nhưng entry không bao giờ được thu hồi nên intern dữ liệu người dùng là rò rỉ bộ nhớ. G1 string deduplication làm việc khác: trong young GC, G1 so sánh nội dung mảng backing của các String đã sống qua ngưỡng tuổi (mặc định 3) rồi cho chúng dùng chung mảng, giảm heap mà không cần sửa code; nó không làm hai String bằng {{==}}. Tôi bật dedup cho service có nhiều chuỗi lặp, giữ {{intern()}} cho tập giá trị nhỏ, và đo lại heap trong GC log trước/sau."
+
+> Senior tip: dedup không thay được việc bỏ chuỗi trùng từ thiết kế: nếu một giá trị lặp hàng triệu lần, hãy dùng hằng số/enum hoặc cache một instance duy nhất — vừa nhanh hơn, vừa không phụ thuộc GC. Khi bật dedup, đo bằng heap sau GC và tần suất full GC trong GC log trước/sau, đừng chỉ nhìn tổng CPU.`,
+  follow: [
+    'StringTable là gì và tại sao {{intern()}} có thể làm chậm app?',
+    'Deduplication có hoạt động trên String Pool không?',
+    'Tại sao không dùng {{intern()}} cho URL/tên người dùng?'
+  ],
+  tags: ['StringPool', 'intern', 'G1GC', 'StringDeduplication', 'performance']
+},
+{
+  id: 'core-067',
+  topic: 'core',
+  level: 'senior',
+  q: 'Xử lý exception trong {{CompletableFuture}} (pipeline bất đồng bộ) khác với {{@RestControllerAdvice}} của Spring MVC như thế nào?',
+  a: `**Tóm tắt:** {{CompletableFuture}} chạy trên thread khác nên exception không "bay" lên call stack của request; nó được lưu trong chính CF và chỉ lộ ra khi bạn gọi {{join()}}/{{get()}} (bọc trong {{CompletionException}}) hoặc khi bạn gắn {{exceptionally()}}/{{handle()}}. {{@RestControllerAdvice}} + {{@ExceptionHandler}} là cơ chế của Spring MVC: {{DispatcherServlet}} bắt exception trong luồng xử lý request rồi chuyển cho handler tập trung để tạo response — nó không phải AOP.
+
+### Cái gì - vì sao cần - cơ chế bên trong
+- **CompletableFuture:** CF giữ trạng thái của stage. Nếu một stage lỗi, các stage sau bị bỏ qua (skip) và CF hoàn tất ở trạng thái exceptional. Lỗi không "biến mất", nhưng cũng không tự nhảy sang thread khác: muốn có giá trị thay thế thì dùng {{exceptionally()}}; muốn xử lý cả hai nhánh (thành công và lỗi) thì dùng {{handle()}}; muốn chỉ quan sát mà không "ăn" lỗi thì dùng {{whenComplete()}}.
+- **{{@RestControllerAdvice}}:** Spring MVC có một chuỗi {{HandlerExceptionResolver}}; {{ExceptionHandlerExceptionResolver}} tìm method {{@ExceptionHandler}} phù hợp trong các class có {{@ControllerAdvice}}. Nếu không resolver nào xử lý được, {{DispatcherServlet}} mới forward sang {{/error}} của container và trả về response 500 mặc định.
+
+### Ví dụ đời thực (production)
+Một request API:
+1. Gọi DB (thread chính).
+2. Gọi API đối tác (bất đồng bộ qua {{CompletableFuture}}).
+3. Combine kết quả.
+Nếu API đối tác lỗi và code không xử lý, {{join()}} sẽ ném {{CompletionException}}; nếu không bắt, client nhận 500 chứ không phải 200 với body {{null}}. Chỉ khi code tự bắt lỗi rồi {{return null}} thì mới có 200 với body rỗng — đó là lỗi "nuốt exception". Cách sửa: xử lý ngay trong pipeline ({{exceptionally}}/{{handle}}), hoặc trả CF cho Spring MVC để DispatcherServlet dispatch lại và {{@RestControllerAdvice}} xử lý.
+
+~~~java
+// Bất đồng bộ: lỗi bị "đóng băng" trong CF, phải xử lý tại đây
+CompletableFuture<PartnerResult> partner = partnerClient.call(userId)
+    .exceptionally(ex -> { throw new PartnerApiException("partner down", ex); });
+
+// Trả CF cho Spring MVC: khi CF hoàn tất lỗi, DispatcherServlet dispatch lại
+// và @ExceptionHandler bên dưới tạo response
+return partner.thenApply(this::toDto);
+
+@RestControllerAdvice
+class GlobalExceptionHandler {
+    @ExceptionHandler(PartnerApiException.class)
+    ResponseEntity<Map<String, String>> onPartnerDown(PartnerApiException e) {
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+            .body(Map.of("error", "partner_unavailable"));
+    }
+}
+~~~
+
+### Pitfall production
+- **Lỗi async bị nuốt:** {{exceptionally()}} trả về giá trị mặc định mà không log thì request vẫn "thành công" với dữ liệu rỗng. Hãy log, hoặc ném exception nghiệp vụ để advice xử lý.
+- **Advice không thấy CF chạy độc lập:** nếu CF được tạo rồi chạy nền (fire-and-forget) và không trả về cho Spring MVC, lỗi của nó không bao giờ tới advice. Khi đó phải tự xử lý, hoặc cấu hình {{AsyncUncaughtExceptionHandler}} cho method {{@Async}} trả về {{void}}.
+- **{{join()}} bọc lỗi:** {{join()}} ném {{CompletionException}} chứ không phải exception gốc, nên {{@ExceptionHandler}} phải bắt đúng lớp đó rồi {{getCause()}}; đồng thời nó block thread request (Tomcat mặc định 200 thread) nên giảm throughput.
+
+### Trả lời mẫu khi phỏng vấn
+"Với CompletableFuture, lỗi không lan lên thread request; nó nằm trong CF và chỉ lộ ra khi join/get, bọc trong CompletionException. Tôi xử lý ngay trong pipeline bằng handle hoặc exceptionally, rồi ném một exception nghiệp vụ để Spring MVC xử lý tập trung. Advice không phải AOP: DispatcherServlet bắt exception rồi chuyển cho HandlerExceptionResolver. Nếu trả CF cho Spring MVC thì lỗi từ CF cũng tới được advice mà không cần block thread; nếu chạy CF nền thì phải tự log và xử lý."
+
+> Senior tip: chỉ dùng {{join()}} khi thật cần, vì nó vừa bọc lỗi trong {{CompletionException}} vừa block thread request. Với endpoint cần bất đồng bộ, hãy trả {{CompletableFuture}}/{{DeferredResult}} cho Spring MVC để vừa không block vừa cho advice xử lý lỗi; còn với task nền thì gắn {{whenComplete}} để log và metric.`,
+  follow: [
+    'Tại sao CompletableFuture không tự lan lỗi lên luồng Servlet chính?',
+    'Phân biệt {{handle()}} và {{exceptionally()}} trong CompletableFuture.',
+    'Có cách nào khác để cấu hình lỗi async tập trung trong Spring không?'
+  ],
+  tags: ['CompletableFuture', 'ExceptionHandling', 'SpringAdvice', 'Async', 'ErrorHandling']
+},
+{
+  id: 'core-068',
+  topic: 'core',
+  level: 'senior',
+  q: 'Refactor những chữ ký method chứa quá nhiều Generics phức tạp (ví dụ {{Map<String, List<? extends AbstractService<?>>>}}) thế nào cho sạch?',
+  a: `**Tóm tắt:** Chữ ký method quá phức tạp là dấu hiệu của "đang làm quá nhiều việc" (vi phạm Single Responsibility) hoặc domain model chưa chuẩn. Cách tốt nhất là tạo class wrapper (ví dụ {{ServiceRegistry}}) để đóng gói logic, hoặc dùng {{TypeToken}} (nếu cần xử lý type-safe mạnh mẽ), hoặc đơn giản hoá bằng cách sử dụng interface trung gian.
+
+### Cái gì - vì sao cần - cơ chế bên trong
+- **Tại sao phức tạp?** Thường là do truyền qua nhiều layer mà không có domain object đại diện. Ví dụ service A cần Map này, service B cũng cần.
+- **Refactor:** Tạo một class (ví dụ {{ServiceRegistry}}) có method chuyên biệt thay vì để lộ cấu trúc Map đó ra ngoài. Giấu generic đi bên trong lớp wrapper.
+
+### Ví dụ đời thực (production)
+Service Spring cần xử lý nhiều loại validator cho các entity khác nhau. Chữ ký method: {{validate(Map<Class<?>, List<Validator<?>>>)}}. Rất khó đọc và dễ sai. Refactor: tạo {{ValidationRegistry}} với method {{add(Class<?>, Validator<?>)}} và {{getValidators(Class<?>)}}. Giấu map đi.
+
+~~~java
+// BAD: Chữ ký kinh hoàng
+void process(Map<String, List<? extends AbstractService<?>>> registry) { ... }
+
+// GOOD: Đóng gói
+class ServiceRegistry {
+    private final Map<String, List<AbstractService<?>>> registry = new HashMap<>();
+    public void register(String key, AbstractService<?> service) { ... }
+    public List<AbstractService<?>> get(String key) { ... }
+}
+// Chữ ký mới: process(ServiceRegistry registry)
+~~~
+
+### Pitfall production
+- **Type erasure:** Generics bị xoá khi runtime nên {{List<String>}} và {{List<Integer>}} là cùng một kiểu với JVM. Compiler tự chèn cast tại nơi đọc phần tử; nếu một collection sai kiểu đi qua tham số {{List<?>}} hoặc raw type, cast được chèn ở nơi đọc sẽ ném {{ClassCastException}} ở một chỗ rất xa bug thật. Khi chỉ cần đọc, {{List<? extends T>}} giúp tránh phải cast; khi cần ghi, dùng {{List<? super T>}} (nguyên tắc PECS).
+- **TypeToken (không phải class của JDK):** nếu cần giữ type generic đã bị erasure, dùng {{TypeToken}} của thư viện — {{com.fasterxml.jackson.core.type.TypeReference}} (Jackson), {{com.google.common.reflect.TypeToken}} (Guava) hay {{com.google.gson.reflect.TypeToken}} (Gson). Nó khai báo một class con vô danh để "mang" thông tin generic, ví dụ: ~~~java new TypeReference<List<Service>>(){}.getType() ~~~.
+
+### Trả lời mẫu khi phỏng vấn
+"Chữ ký phức tạp là 'code smell'. Tôi thường tạo wrapper class để đóng gói Map đó, expose method nghiệp vụ thay vì để lộ cấu trúc collection. Nếu cần type-safe phức tạp, tôi dùng {{TypeToken}} hoặc design lại interface để không cần generic bậc cao."
+
+> Senior tip: Nếu bạn thấy mình viết Generic bậc 3-4 ({{Map<..., List<Map<...>>>}}), hãy dừng lại và suy nghĩ về Domain Model. Đó là dấu hiệu chắc chắn của thiếu Domain Object.`,
+  follow: [
+    'Thế nào là TypeToken và tại sao nó cần thiết cho Generic?',
+    'Tại sao Generics bị xoá (erasure) gây khó khăn khi debug?',
+    'Khi nào thì thực sự cần dùng {{? extends T}} hay {{? super T}}?'
+  ],
+  tags: ['Generics', 'Refactoring', 'CleanCode', 'TypeSafety', 'TypeToken']
+},
+{
+  id: 'core-069',
+  topic: 'core',
+  level: 'lead',
+  q: 'Java Serialization có những lỗ hổng bảo mật nào? Tại sao nên thay thế bằng JSON/Protobuf/Avro?',
+  a: `**Tóm tắt:** Java Serialization biến object thành byte stream để lưu/truyền; stream có kèm metadata class (tên class, danh sách field, serialVersionUID) nên bên đọc phải nạp đúng class đó. Khi {{readObject()}}, JVM gọi các callback như {{readObject}}/{{readResolve}}/{{validateObject}} của class nằm trong stream; nếu classpath có sẵn các class "gadget" (ví dụ Commons Collections, Spring Beans), kẻ tấn công có thể xếp một chuỗi callback (gadget chain) để thực thi lệnh (RCE - Remote Code Execution). JSON/Protobuf/Avro chỉ truyền dữ liệu, không kèm code và không có cơ chế tự gọi hàm khi đọc, nên an toàn hơn nhiều.
+
+### Cái gì - vì sao cần - cơ chế bên trong
+- **Lỗ hổng:** mặc định JVM không kiểm tra class nào được phép xuất hiện trong stream (JEP 290 mới thêm {{ObjectInputFilter}}, nhưng phải tự cấu hình). Deserialization không chỉ "tạo object rồi gán field": nó còn chạy callback của các class liên quan, nên một chuỗi gadget có sẵn trong classpath là đủ để thực thi lệnh. Các class đó không cần do bạn viết — chỉ cần chúng có trong dependency.
+- **JSON/Protobuf/Avro:** chỉ truyền dữ liệu theo một schema; bên nhận tự ánh xạ dữ liệu vào class của nó, không có bước "gọi hàm theo tên class trong payload". Nếu payload chứa tên class lạ thì nó vẫn chỉ là chuỗi dữ liệu và bị bỏ qua (hoặc lỗi parse).
+
+### Ví dụ đời thực (production)
+Một dịch vụ cũ dùng Java Serialization để gửi thông điệp qua Kafka. Kẻ tấn công ghi đè message vào Kafka bằng một payload chứa gadget chain (dùng library cũ có trong classpath). Khi consumer đọc và {{readObject()}}, chuỗi callback chạy tới lệnh {{Runtime.getRuntime().exec(...)}} với quyền của process. Triệu chứng: consumer sập hoặc bị chiếm quyền, có cảnh báo bảo mật. Cách sửa: đổi sang JSON hoặc Protobuf.
+
+~~~java
+// Nguy hiểm - Java Serialization
+ObjectInputStream ois = new ObjectInputStream(inputStream);
+Object obj = ois.readObject(); // RCE tiềm ẩn!
+
+// An toàn - JSON/Protobuf (data-only)
+User user = objectMapper.readValue(jsonBytes, User.class);
+~~~
+
+### Pitfall production
+- **Classpath Gadgets:** ngay cả khi bạn không dùng Serialization, các library lỗi thời trong classpath (Spring cũ, library log) vẫn là gadget nếu app vô tình đọc serialized data từ bên ngoài (Redis, MQ, cookie, session...).
+- **JSON không miễn nhiễm:** nếu bật polymorphism của Jackson ({{activateDefaultTyping}}/{{enableDefaultTyping}}) thì payload JSON lại chỉ định được class cần tạo, và gadget cũ có thể bị lợi dụng y như Serialization.
+- **Migration:** Protobuf/Avro cần schema (file {{.proto}}/{{.avsc}}) và phải quản lý version; JSON không bắt buộc schema nhưng cũng không kiểm tra kiểu chặt, đổi field dễ làm vỡ client cũ. Cần chiến lược tương thích (chỉ thêm field, không đổi số/kiểu field đã dùng).
+
+### Trả lời mẫu khi phỏng vấn
+"Java Serialization nguy hiểm vì stream mang theo metadata class và khi đọc, JVM chạy các callback của class trong stream. Nếu classpath có gadget chain (ví dụ Commons Collections), kẻ tấn công chỉ cần gửi một payload là thực thi được lệnh — RCE. Từ Java 8u121 trở lên có {{ObjectInputFilter}} (JEP 290) để whitelist class, nhưng mặc định không bật. JSON/Protobuf/Avro chỉ truyền dữ liệu, bên nhận tự map vào class của nó nên không có cơ chế tự gọi hàm; tôi luôn dùng data-only format cho inter-service communication và không bật default typing của Jackson."
+
+> Senior tip: Nếu bắt buộc phải dùng Serialization (cũ), hãy cấu hình {{ObjectInputFilter}} để whitelist các class được phép deserialize.`,
+  follow: [
+    'Tại sao Spring Boot 3+ không khuyến khích dùng Java Serialization?',
+    'ObjectInputFilter hoạt động thế nào để chặn Gadget Chain?',
+    'Protobuf so với JSON ở khía cạnh hiệu năng và schema?'
+  ],
+  tags: ['Serialization', 'Security', 'RCE', 'Protobuf', 'JSON']
+},
 );
