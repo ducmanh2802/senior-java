@@ -16158,4 +16158,323 @@ public class Main {
   follow: ['Nếu cây bị chèn/xoá liên tục và rank được hỏi rất nhiều thì thiết kế lại cấu trúc thế nào?', 'Nếu BST cho phép giá trị trùng thì định nghĩa "nhỏ thứ k" ra sao?']
 }
 );
+
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-144',
+  title: 'Word Break',
+  difficulty: 'medium',
+  pattern: 'Dynamic Programming',
+  tags: ['dp', 'string', 'word-break', 'hashset'],
+  prompt: `Cho chuoi {{s}} va danh sach tu {{wordDict}}. Kiem tra xem {{s}} co the duoc cat thanh mot hoac nhieu tu trong {{wordDict}} hay khong. Cac tu co the duoc tai su dung nhieu lan.
+
+### Vi du
+~~~text
+Input:  s = "leetcode", wordDict = ["leet", "code"]
+Output: true
+Giai thich: cat thanh "leet" | "code".
+
+Input:  s = "applepenapple", wordDict = ["apple", "pen"]
+Output: true
+
+Input:  s = "catsandog", wordDict = ["cats", "dog", "sand", "and", "cat"]
+Output: false
+~~~
+
+### Rang buoc
+- {{1 <= s.length <= 300}}
+- {{1 <= wordDict.length <= 1000}}
+- {{1 <= wordDict[i].length <= 20}}
+- {{s}} va {{wordDict[i]}} chi gom chu cai thuong tieng Anh.`,
+  hints: [
+    'Goi {{dp[i]}} = tien to {{s[0..i-1]}} co the cat duoc hay khong. {{dp[0] = true}} (chuoi rong luon cat duoc).',
+    'Voi moi vi tri {{i}}, thu moi tu {{w}} trong tu dien: neu {{dp[i - w.length()]}} dung va doan {{s[i-w.length()..i]}} bang {{w}} thi {{dp[i] = true}}.',
+    'Toi uu: chi duyet cac do dai tu co trong tu dien thay thu thu moi tu moi lan.'
+  ],
+  solution: `### Y tuong
+Quy hoach dong tren tien to. {{dp[i]}} nghia la tien to dai {{i}} ky tu cua {{s}} co the duoc cat thanh cac tu trong tu dien hay khong.
+
+Cong thuc: {{dp[i]}} la true neu ton tai mot tu {{w}} trong tu dien sao cho:
+- {{dp[i - len(w)]}} la true (phan truoc da cat duoc), va
+- doan {{s[i-len(w)..i-1]}} bang {{w}}.
+
+Base case: {{dp[0] = true}}.
+
+~~~java
+class Solution {
+    public boolean wordBreak(String s, List<String> wordDict) {
+        Set<String> dict = new HashSet<>(wordDict);
+        int n = s.length();
+        boolean[] dp = new boolean[n + 1];
+        dp[0] = true; // chuoi rong luon cat duoc
+        for (int i = 1; i <= n; i++) {
+            for (int j = 0; j < i; j++) {
+                if (dp[j] && dict.contains(s.substring(j, i))) {
+                    dp[i] = true;
+                    break;
+                }
+            }
+        }
+        return dp[n];
+    }
+}
+~~~
+
+### Do phuc tap
+O(n^2 * L) voi n = do dai {{s}}, L = do dai trung binh cua tu (do substring). Bo nho O(n) cho mang dp. Voi n <= 300 thi chay cuc nhanh.
+
+### Luu ý khi pham van
+- Khong lap lai tu hay khong? Tu co the tai su dung, vi sao khong can danh dau tu da su dung.
+- Neu can tra ve chinh cac cach cat (Word Break II) thi dung backtracking + memo, ket qua co the tang theo ham mu.
+- Tu dien lon? Tien po cay (trie) giup cat nhanh hon khi kiem tra nhieu do dai tu.
+
+> Senior tip: Word Break la bai mau cua "DP tren chuoi + tra cuu O(1)". Trong production, pattern nay xuat hien khi phan doan cau tieng Viet/Anh thanh cac tu co trong tu dien (word segmentation), hay khi kiem tra mot chuoi ma co the tach thanh cac ma hieu hop le hay khong.`,
+  complexity: 'Time O(n^2 * L), Space O(n) voi n = s.length(), L = do dai tu trung binh',
+  starter: 'class Solution {\n    public boolean wordBreak(String s, List<String> wordDict) {\n        // TODO\n        return false;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("leetcode", true, () -> new Solution().wordBreak("leetcode", Arrays.asList("leet", "code")));
+        run("applepenapple", true, () -> new Solution().wordBreak("applepenapple", Arrays.asList("apple", "pen")));
+        run("catsandog", false, () -> new Solution().wordBreak("catsandog", Arrays.asList("cats", "dog", "sand", "and", "cat")));
+        run("single char yes", true, () -> new Solution().wordBreak("a", Arrays.asList("a")));
+        run("single char no", false, () -> new Solution().wordBreak("a", Arrays.asList("b")));
+        run("aaaaaaa", true, () -> new Solution().wordBreak("aaaaaaa", Arrays.asList("aaaa", "aaa")));
+        run("long no match", false, () -> new Solution().wordBreak("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab", Arrays.asList("a","aa","aaa","aaaa","aaaaa","aaaaaa","aaaaaaa","aaaaaaaa","aaaaaaaaa","aaaaaaaaaa")));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Neu can tra ve chinh cac cach cat (Word Break II) thi sua code ra sao?', 'Tu dien lon: cay tien po (trie) co the tot hon HashSet o dau?']
+}
+);
+
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-145',
+  title: 'Validate Binary Search Tree',
+  difficulty: 'medium',
+  pattern: 'Tree / Recursion',
+  tags: ['bst', 'tree', 'recursion', 'validation'],
+  prompt: `Cho goc {{root}} cua mot cay nhi phan. Kiem tra co phai la mot **cay tim kiem nhi phan hop le (BST)** hay khong. BST: voi moi dinh, moi gia tri trong cay con trai deu **khong lon hon** dinh, moi gia tri trong cay con phai deu **khong nho hon** dinh (gia tri khong trung nhau trong de nay).
+
+### Vi du
+~~~text
+Input:  root = [2,1,3]
+Output: true
+Giai thich: 1 < 2 < 3, hop le.
+
+Input:  root = [5,1,4,null,null,3,6]
+        5
+       / \\
+      1   4
+         / \\
+        3   6
+Output: false
+Giai thich: goc la 5, nhang phai cua 5 la 4, nhung 4 < 5 -> khong hop le.
+~~~
+
+### Rang buoc
+- {{So dinh trong khoang [1, 10^4]}}
+- {{-2^31 <= Node.val <= 2^31 - 1}}
+
+{{TreeNode}} da duoc dinh nghia sn trong harness.`,
+  hints: [
+    'Bat thue pho bien: chi so sanh node voi con truc tiep la khong du. Phai dam bao toan bo cay con trai nho hon node va toan bo cay con phai lon hon node.',
+    'Dung khoang gia tri hop le {{(min, max)}} truyen xuong tung cap de quy. Nut goc co khoang {{(-oo, +oo)}}.',
+    'Nut ben trai co max = gia tri nut cha; nut ben phai co min = gia tri nut cha.'
+  ],
+  solution: `### Y tuong
+Mot BST hop le can thoa man **rang buoc khoang gia tri** cho moi nut, khong chi so sanh voi cua truc tiep.
+
+Goi ham kiem tra {{isValid(node, low, high)}}: gia tri cua {{node}} phai nam trong khoang {{(low, high)}} (khong gom bien). Voi nut goc, khoang la {{(-oo, +oo)}}.
+- Cay con trai: khoang moi {{(low, node.val)}}.
+- Cay con phai: khoang moi {{(node.val, high)}}.
+
+Dung {{Long}} cho low/high xu ly truong hop gia tri bang {{Integer.MIN_VALUE}} hoac {{Integer.MAX_VALUE}}.
+
+~~~java
+class Solution {
+    public boolean isValidBST(TreeNode root) {
+        return isValid(root, null, null);
+    }
+
+    private boolean isValid(TreeNode node, Long low, Long high) {
+        if (node == null) return true;
+        long val = node.val;
+        if (low != null && val <= low) return false;
+        if (high != null && val >= high) return false;
+        return isValid(node.left, low, val) && isValid(node.right, val, high);
+    }
+}
+~~~
+
+### Do phuc tap
+Tham moi nut dung mot lan -> O(n) thoi gian, O(h) bo nho de quy voi h la chieu cao cay (te nhat O(n) voi cay lech).
+
+### Luu ý khi pham van
+- Khong dung {{Integer.MIN_VALUE}}/{{Integer.MAX_VALUE}} truc tiep lam bien vi gia tri node co the bang cac gia tri do. Dung {{Long}} hoac {{null}} de bieu dien "vo cung".
+- Gia tri trung nhau: de quy uoc khong trung. Neu cho phep trung, can xac dinh Convention (trai <= cha hay < cha).
+- Cay lech 10^4 nut co the tran stack de quy; ban lap bang stack tu minh an toan hon.
+
+> Senior tip: BST validation la bai kiem tra su hieu ro "rang buoc truyen xuong cay con", khong chi so sanh cu loc bo. Cung tu duy ap dung khi kiem tra tinh dung dan cu cay chi muc (B-tree) hay khi validate gia tri trong mot cau truc phan co rang buoc khoang gia.`,
+  complexity: 'Time O(n), Space O(h) voi h = chieu cao cay',
+  starter: 'class Solution {\n    public boolean isValidBST(TreeNode root) {\n        // TODO\n        return false;\n    }\n}',
+  tests: `class TreeNode {
+    int val;
+    TreeNode left, right;
+    TreeNode(int v) { val = v; }
+}
+public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static TreeNode build(Integer[] vals) {
+        if (vals == null || vals.length == 0 || vals[0] == null) return null;
+        TreeNode root = new TreeNode(vals[0]);
+        Deque<TreeNode> q = new ArrayDeque<>();
+        q.add(root);
+        int i = 1;
+        while (!q.isEmpty() && i < vals.length) {
+            TreeNode cur = q.poll();
+            if (i < vals.length) {
+                if (vals[i] != null) { cur.left = new TreeNode(vals[i]); q.add(cur.left); }
+                i++;
+            }
+            if (i < vals.length) {
+                if (vals[i] != null) { cur.right = new TreeNode(vals[i]); q.add(cur.right); }
+                i++;
+            }
+        }
+        return root;
+    }
+    public static void main(String[] args) {
+        run("example 1", true, () -> new Solution().isValidBST(build(new Integer[]{2,1,3})));
+        run("example 2", false, () -> new Solution().isValidBST(build(new Integer[]{5,1,4,null,null,3,6})));
+        run("single node", true, () -> new Solution().isValidBST(build(new Integer[]{1})));
+        run("valid chain left", true, () -> new Solution().isValidBST(build(new Integer[]{3,2,null,1})));
+        run("invalid equal", false, () -> new Solution().isValidBST(build(new Integer[]{2,2,2})));
+        run("int min", true, () -> new Solution().isValidBST(build(new Integer[]{-2147483648})));
+        run("int max", true, () -> new Solution().isValidBST(build(new Integer[]{2147483647})));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Neu cho phep gia tri trung lap thi quan cay con trai <= cha hay < thay the nhu the nao?', 'Lap bang stack tu minh de tranh tran stack voi cay lech 10^4 nut?']
+}
+);
+
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-146',
+  title: 'Generate Parentheses',
+  difficulty: 'medium',
+  pattern: 'Backtracking',
+  tags: ['backtracking', 'string', 'parentheses', 'recursion'],
+  prompt: `Cho so nguyen {{n}}. Sinh ra **moi** chuoi ngoac don do dai {{2n}} hop le (moi cap mo {{"("}} luon co cap dong {{")"}} tuong ung va dung thu tu).
+
+### Vi du
+~~~text
+Input:  n = 3
+Output: ["((()))","(()())","(())()","()(())","()()()"]
+
+Input:  n = 1
+Output: ["()"]
+~~~
+
+### Rang buoc
+- {{1 <= n <= 8}}`,
+  hints: [
+    'Dung backtracking: tai moi buoc, co the them {{"("}} neu con ngoac mo chua su dung, va them {{")"}} neu so ngoac dong hien it hon so {{"("}} (dam bao khong dong nhieu hon mo).',
+    'Giu hai bo dem: {{open}} (so "(" da them) va {{close}} (so ")" da them).',
+    'Khi {{open == n}} va {{close == n}} thi da sinh xong mot chuoi hop le.'
+  ],
+  solution: `### Y tuong
+Backtracking sinh moi chuoi hop le bang cach quyet dinh ky tu tiep theo:
+- Them {{"("}} neu so luong {{"("}} chua dat {{n}}.
+- Them {{")"}} chi neu so {{")"}} hien it hon so {{"("}} (de chuoi luon can bang, khong bao giog dong nhieu hon mo).
+
+Khi ca hai bo dem dat {{n}} thi them chuoi hien tai vao ket qua.
+
+~~~java
+class Solution {
+    public List<String> generateParenthesis(int n) {
+        List<String> result = new ArrayList<>();
+        backtrack(result, new StringBuilder(), 0, 0, n);
+        return result;
+    }
+
+    private void backtrack(List<String> result, StringBuilder current, int open, int close, int n) {
+        if (current.length() == 2 * n) {
+            result.add(current.toString());
+            return;
+        }
+        if (open < n) {                         // con them duoc mo ngoac
+            current.append('(');
+            backtrack(result, current, open + 1, close, n);
+            current.deleteCharAt(current.length() - 1); // bo chon
+        }
+        if (close < open) {                     // con them duoc dong ngoac
+            current.append(')');
+            backtrack(result, current, open, close + 1, n);
+            current.deleteCharAt(current.length() - 1);
+        }
+    }
+}
+~~~
+
+### Do phuc tap
+So chuoi hop le la so Catalan {{C_n = (1/(n+1)) * binom(2n, n)}}. Moi chuoi dai {{2n}} -> O(4^n / sqrt(n) * n) thoi gian, O(n) bo nho de quy (khong tinh ket qua).
+
+### Luu ý khi pham van
+- Dieu kien {{close < open}} la chia khoa: neu khong co no, chuoi nhu ")(" se duoc sinh ra.
+- Dung {{StringBuilder}} va xoa ky tu cuoi khi quay lui de tan dung bo nho, khong tao chuoi moi moi nhanh.
+- Voi {{n <= 8}} thi so luong ket qua it (Catalan C_8 = 1430), chay cuc nhanh.
+
+> Senior tip: Backtracking voi "rang buoc cuc bo" (khong dong qua mo) sinh ra toan bo khoang hop le khong can sinh roi loc. Pattern nay dung cho: sinh moi cai dat cap dau ngoac, sinh bieu thuc so hoc hop le, hay sinh moi lich thi het hop voi rang buoc "mot mon thi mot luc".`,
+  complexity: 'Time O(4^n / sqrt(n) * n), Space O(n) bo nho de quy',
+  starter: 'class Solution {\n    public List<String> generateParenthesis(int n) {\n        // TODO\n        return new ArrayList<>();\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("n=1", Arrays.asList("()"), () -> new Solution().generateParenthesis(1));
+        run("n=2", Arrays.asList("(())", "()()"), () -> new Solution().generateParenthesis(2));
+        run("n=3 count", 5, () -> new Solution().generateParenthesis(3).size());
+        run("n=3 valid", true, () -> {
+            List<String> r = new Solution().generateParenthesis(3);
+            return r.contains("((()))") && r.contains("(()())") && r.contains("(())()")
+                && r.contains("()(())") && r.contains("()()()") && r.size() == 5;
+        });
+        run("n=4 count", 14, () -> new Solution().generateParenthesis(4).size());
+        run("n=8 count", 1430, () -> new Solution().generateParenthesis(8).size());
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Neu can sinh theo thu tu lexicographic thi sua ra sao?', 'Mo rong: sinh cac chuoi co k loai ngoac khac nhau ((), [], {}) hop le?']
+}
+);
+
 })();

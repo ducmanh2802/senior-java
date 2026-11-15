@@ -2173,6 +2173,9 @@ window.DATA_INDEX = {
     {"id":"algo-141","title":"01 Matrix","difficulty":"medium","pattern":"Graph / Multi-source BFS"},
     {"id":"algo-142","title":"Minimum Height Trees","difficulty":"medium","pattern":"Topological Sort (Leaf Peeling)"},
     {"id":"algo-143","title":"Kth Smallest Element in a BST","difficulty":"medium","pattern":"Tree / Inorder + Stack"},
+    {"id":"algo-144","title":"Word Break","difficulty":"medium","pattern":"Dynamic Programming"},
+    {"id":"algo-145","title":"Validate Binary Search Tree","difficulty":"medium","pattern":"Tree / Recursion"},
+    {"id":"algo-146","title":"Generate Parentheses","difficulty":"medium","pattern":"Backtracking"},
   ],
   lessons: [
     {"id":"lesson-collections-001","track":"collections","order":1,"title":"HashMap từ bên trong: hash, bucket, resize và hợp đồng equals/hashCode","level":"mid","minutes":25},
