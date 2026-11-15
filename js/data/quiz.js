@@ -6854,5 +6854,224 @@ Executor dùng core thread trước, nếu đầy thì đưa vào hàng đợi. 
 Connection không đóng được trả về pool thì pool dần cạn kiệt, dẫn đến lỗi timeout.
 
 > Senior tip: dùng try-with-resources là cách duy nhất an toàn.`
+},
+{
+  id: 'qz-core-043',
+  topic: 'core',
+  q: 'Bạn override {{equals()}} nhưng quên override {{hashCode()}}. Điều gì xảy ra khi dùng object làm key trong {{HashMap}}?',
+  options: [
+    'Không vấn đề gì, HashMap dùng equals() làm tiêu chí chính để định vị bucket',
+    'Object vẫn được tìm thấy nếu hashCode mặc định của Object.hashCode() được gọi',
+    'Vi phạm hợp đồng: hai object bằng nhau phải có hashCode bằng nhau, dẫn đến không thể tìm thấy value dù key bằng nhau',
+    'HashMap ném lỗi ngay khi put'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Vi phạm hợp đồng: hai object bằng nhau phải có hashCode bằng nhau, dẫn đến không thể tìm thấy value dù key bằng nhau.**
+
+### Vì sao đúng
+{{HashMap}} dựa vào {{hashCode()}} để chọn bucket, sau đó mới dùng {{equals()}} để so sánh trong bucket. Nếu chỉ override {{equals()}}, hai object bằng nhau lại có hashCode khác nhau nên rơi vào hai bucket khác nhau: {{put}} lưu ở bucket này, còn {{get}} truyền vào object bằng nó lại đi tìm ở bucket kia nên nhận {{null}}.
+
+> Senior tip: luôn dùng IDE tự động sinh equals/hashCode hoặc dùng Lombok {{@EqualsAndHashCode}}.`
+},
+{
+  id: 'qz-core-044',
+  topic: 'core',
+  q: 'Sự khác biệt giữa {{String s = "a";}} và {{String s = new String("a");}} là gì?',
+  options: [
+    'Giống hệt nhau trong mọi trường hợp',
+    'Cái đầu nằm trong String Pool, cái sau luôn tạo object mới trên Heap',
+    'Cái sau nhanh hơn vì không phải tìm trong Pool',
+    'String Pool chỉ dùng cho String không chứa ký tự đặc biệt'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Cái đầu nằm trong String Pool, cái sau luôn tạo object mới trên Heap.**
+
+### Vì sao đúng
+{{String s = "a";}} dùng String pool để tái sử dụng instance. {{new String("a");}} ép JVM tạo instance mới trên heap, không dùng pool.
+
+> Senior tip: không bao giờ dùng {{new String()}} trừ khi có lý do đặc biệt về memory profiling.`
+},
+{
+  id: 'qz-core-045',
+  topic: 'core',
+  multi: true,
+  q: 'Những trường hợp nào sau đây dễ gây ra {{NullPointerException}} do autoboxing? (Chọn 3)',
+  options: [
+    'So sánh trực tiếp Integer với int bằng toán tử ==',
+    'Gán một Integer null cho một biến int',
+    'Dùng Integer làm key trong Map',
+    'Trả về Integer null từ một method trả về int'
+  ],
+  answer: [0, 1, 3],
+  explain: `**Đáp án đúng: Gán Integer null cho biến int, trả về Integer null từ method trả về int, và so sánh trực tiếp Integer với int khi Integer là null.**
+
+### Vì sao đúng
+Khi unboxing {{Integer}} thành {{int}}, JVM gọi {{intValue()}}. Nếu {{Integer}} là {{null}}, việc gọi method sẽ gây {{NullPointerException}}.
+
+> Senior tip: dùng primitive type khi không cần null.`
+},
+{
+  id: 'qz-core-046',
+  topic: 'core',
+  q: 'Trong khối finally, bạn ném ra một exception khác. Exception của khối try bị làm gì?',
+  options: [
+    'Vẫn được ném ra bình thường',
+    'Bị nuốt chửng (swallowed), và exception của finally được ném ra thay thế',
+    'Không có gì xảy ra',
+    'Cả hai được ném ra cùng lúc'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Bị nuốt chửng (swallowed), và exception của finally được ném ra thay thế.**
+
+### Vì sao đúng
+Exception trong {{finally}} sẽ ghi đè exception trong {{try}}. Đây là bug cực kỳ khó tìm.
+
+> Senior tip: Luôn kiểm tra/catch exception bên trong finally hoặc dùng try-with-resources.`
+},
+{
+  id: 'qz-core-047',
+  topic: 'core',
+  multi: true,
+  q: 'Trong Generics, sự khác biệt giữa {{? extends T}} và {{? super T}} là gì? (Chọn 2)',
+  options: [
+    '{{? extends T}} dùng để đọc dữ liệu (Producer), chỉ lấy được T',
+    '{{? super T}} dùng để ghi dữ liệu (Consumer), cho phép thêm T',
+    '{{? extends T}} cho phép add T',
+    '{{? super T}} chỉ cho phép đọc T'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: ? extends T là Producer (đọc), ? super T là Consumer (ghi).**
+
+### Vì sao đúng
+PECS: Producer Extends, Consumer Super.
+
+> Senior tip: Luôn nhớ PECS khi thiết kế generic API.`
+},
+{
+  id: 'qz-core-048',
+  topic: 'core',
+  q: '{{HashMap}} load factor mặc định là 0.75. Ý nghĩa là gì?',
+  options: [
+    'Khi map chứa quá 75% phần tử so với capacity, map sẽ resize',
+    'Khi map chứa quá 75% capacity, hiệu năng tăng gấp đôi',
+    'Đây là tỉ lệ lỗi tra cứu',
+    'Không có ý nghĩa gì'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Khi map chứa quá 75% phần tử so với capacity, map sẽ resize.**
+
+### Vì sao đúng
+Tỉ lệ này cân bằng giữa không gian (memory) và thời gian tra cứu.
+
+> Senior tip: Resize HashMap là thao tác đắt, hãy khởi tạo capacity nếu biết trước số lượng phần tử.`
+},
+{
+  id: 'qz-core-049',
+  topic: 'core',
+  q: 'Tại sao {{String}} trong Java là immutable?',
+  options: [
+    'Để bảo mật, caching (String Pool), và thread-safety',
+    'Để tăng tốc độ ghi',
+    'Vì dễ implement hơn',
+    'Vì String Pool bắt buộc String phải mutable'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Để bảo mật, caching (String Pool), và thread-safety.**
+
+### Vì sao đúng
+String pool không thể hoạt động nếu String mutable.
+
+> Senior tip: String immutable giúp tránh lỗi dữ liệu khi chia sẻ giữa các thread.`
+},
+{
+  id: 'qz-core-050',
+  topic: 'core',
+  multi: true,
+  q: 'Cách nào sau đây đảm bảo tính thread-safe cho một counter? (Chọn 2)',
+  options: [
+    'Dùng {{volatile int}}',
+    'Dùng {{AtomicInteger}}',
+    'Dùng {{int}} với khối {{synchronized}}',
+    'Dùng {{int}} không cần đồng bộ'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: AtomicInteger và synchronized.**
+
+### Vì sao đúng
+{{volatile}} không đảm bảo tính nguyên tử (atomic) cho thao tác ++.
+
+> Senior tip: Dùng AtomicInteger cho counter đơn giản.`
+},
+{
+  id: 'qz-core-051',
+  topic: 'core',
+  q: 'Tại sao {{ThreadLocal}} dễ gây memory leak trong web server?',
+  options: [
+    'Vì ThreadLocal giữ reference tới object dù thread đã trả về pool',
+    'Vì ThreadLocal tiêu thụ quá nhiều CPU',
+    'Vì ThreadLocal không dùng được trong web server',
+    'Vì ThreadLocal mặc định cache dữ liệu trên disk'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Giữ reference tới object dù thread đã trả về pool.**
+
+### Vì sao đúng
+Trong thread pool, thread không chết. Nếu không gọi {{remove()}}, giá trị {{ThreadLocal}} vẫn tồn tại.
+
+> Senior tip: Luôn gọi {{remove()}} trong finally block.`
+},
+{
+  id: 'qz-core-052',
+  topic: 'core',
+  q: 'Phát biểu nào sau đây về override phương thức là ĐÚNG?',
+  options: [
+    'Phương thức {{private}} không thể override',
+    'Phương thức {{static}} có thể override',
+    'Phương thức {{final}} có thể override',
+    'Phương thức {{public}} có thể bị override thành {{private}}'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Private không thể override.**
+
+### Vì sao đúng
+{{private}} chặn việc override. Static phương thức bị "hiding", không phải override. {{final}} chặn override.
+
+> Senior tip: Override luôn phải giữ mức truy cập bằng hoặc rộng hơn.`
+},
+{
+  id: 'qz-core-053',
+  topic: 'core',
+  q: '{{String.intern()}} hoạt động thế nào?',
+  options: [
+    'Đưa String vào String Pool và trả về instance trong pool',
+    'Tạo một String mới trên Heap',
+    'Xoá String khỏi Pool',
+    'Chuyển String sang StringBuilder'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Đưa String vào String Pool và trả về instance trong pool.**
+
+### Vì sao đúng
+Giúp tiết kiệm bộ nhớ khi có nhiều String trùng lặp.
+
+> Senior tip: Dùng cẩn thận vì pool có thể hết bộ nhớ.`
+},
+{
+  id: 'qz-core-054',
+  topic: 'core',
+  q: 'Tại sao dùng {{BigDecimal.equals()}} để so sánh giá trị có thể sai?',
+  options: [
+    'Vì nó so sánh cả giá trị và scale (ví dụ 1.0 không bằng 1.00)',
+    'Vì BigDecimal là mutable',
+    'Vì equals() luôn trả về false',
+    'Vì BigDecimal không có hàm equals()'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: So sánh cả giá trị và scale.**
+
+### Vì sao đúng
+1.0 có scale là 1, 1.00 có scale là 2. Dùng {{compareTo()}} để so sánh giá trị toán học.
+
+> Senior tip: Luôn dùng {{compareTo()}} cho tiền tệ.`
 }
 );
