@@ -1,7 +1,9 @@
 # T583 — 3 debug lab: Java trên container
 
-Status: TODO
+Status: DONE
 Agent: qoder
+
+Đã thêm 3 lab incident (OOMKilled, Deploy 5xx, p99 spikes) vào `js/data/labs-incident.js` (ids: lab-incident-014, lab-incident-015, lab-incident-019). Xác thực bằng `node scripts/validate.js` thành công.
 Owns: `js/data/labs-incident.js`
 
 Thêm 3 lab category incident (đọc AGENTS.md mục 10 và 2–3 lab cũ để giữ chuẩn; id tiếp nối). Artifact **giống thật, tự nhất quán** (tên pod, timestamp, số liệu khớp nhau và khớp answer):
