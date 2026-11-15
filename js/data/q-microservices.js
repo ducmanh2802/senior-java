@@ -7596,4 +7596,336 @@ Exactly-once thuc su tu dau den cuoi qua mang khong the: ben gui khong phan biet
   ],
   tags: ['Kafka', 'exactly once', 'at least once', 'idempotency']
 },
+{
+  id: 'microservices-088',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Monolith 500k dòng có bảng users, products dùng chung bởi 3 module (đơn hàng, catalog, marketing). Khi tách sang microservices, làm sao chia bảng dùng chung mà không tạo distributed monolith, và bạn hiệu chuẩn ranh giới bounded context nào đủ lớn, không tách quá mảnh ra sao?',
+  a: `**Tóm tắt:** mỗi bảng phải có **đúng một chủ sở hữu** (service ghi dữ liệu đó); service khác đọc qua API hoặc nhận bản sao qua event. Bảng dùng chung chia thành hai loại: **dữ liệu tham chiếu** (quốc gia, danh mục sản phẩm) có thể replicate bản sang mỗi service; **dữ liệu giao dịch** (đơn hàng của khách) chỉ sở hữu bởi service đơn hàng. Ranh giới bounded context đủ lớn khi module có thể thay đổi và deploy độc lập, ít join với phần còn lại; quá nhỏ thì tạo distributed monolith, quá lớn thì khó scale.
+
+### Thuật ngữ
+- **Bounded context**: vùng nghiệp vụ mà mỗi thuật ngữ có đúng một nghĩa (khái niệm DDD).
+- **Chủ sở hữu bảng (table ownership)**: chỉ một service kết nối trực tiếp vào bảng đó.
+- **Dữ liệu tham chiếu (reference data)**: dữ liệu ít đổi, dùng đọc nhiều (mã tỉnh, loại sản phẩm).
+- **Replicate**: sao chép dữ liệu từ bảng chủ sở hữu sang bảng đọc của service khác qua event.
+- **Anti-corruption layer (ACL)**: lớp dịch model của service kia sang model của mình, ngăn model cũ lây sang service mới.
+- **Distributed monolith**: nhiều service nhưng luôn phải deploy cùng nhau vì join chung bảng hoặc gọi lẫn nhau chặt.
+- **Join xuyên service**: query SQL đọc hai bảng nằm ở hai database khác nhau — không thể làm được trực tiếp.
+
+### Cách chia bảng dùng chung (từng bước)
+1. **Liệt kê** mỗi bảng được module nào đọc/ghi (quét code, FK, query log).
+2. **Xác định chủ sở hữu duy nhất**: module nào viết nghiệp vụ của bảng đó, module đó sở hữu. Ví dụ bảng orders → Order Service; bảng products → Catalog Service.
+3. **Dữ liệu tham chiếu dùng bởi nhiều service** (quốc gia, loại hàng): Catalog Service sở hữu bảng master, publish event {{ProductUpdated}}; các service khác lưu bản sao read-only của chính mình. Không ai viết vào bảng master ngoài Catalog.
+4. **Dữ liệu giao dịch dùng chung** (ví dụ customers: đơn hàng cần customer, marketing cũng cần): tách theo ngữ cảnh. Order Service lưu {{customer_id}} + tên hiển thị (snapshot lúc đặt đơn) để không join bảng customers của một service khác. Marketing nhận event {{CustomerRegistered}} để build danh sách của mình.
+5. **Không bao giờ để hai service ghi cùng một bảng** (đó là dual write, dữ liệu sẽ lệch). Một thời điểm chỉ có một nguồn ghi duy nhất.
+
+### Java: service chỉ truy cập bảng của mình
+~~~java
+public class OrderRepository {
+    private final JdbcTemplate jdbc;
+    // Chỉ được query bảng thuộc Order Service, KHÔNG join bảng customer-service
+    public Order findById(String orderId) {
+        return jdbc.queryForObject(
+            "SELECT id, customer_id, total FROM orders WHERE id = ?",
+            (rs, rowNum) -> new Order(rs.getString("id"), rs.getString("customer_id"), rs.getBigDecimal("total")),
+            orderId);
+    }
+}
+~~~
+Tên khách hàng ở đây là **snapshot** lưu trong đơn hàng lúc đặt, không join bảng customers khác service.
+
+### Hiệu chuẩn ranh giới: đủ lớn hay quá nhỏ?
+| Dấu hiệu | Bounded context quá nhỏ (tách quá mảnh) | Bounded context đủ lớn | Bounded context quá lớn |
+|---|---|---|---|
+| Deploy | hai service luôn đổi cùng lúc | thay đổi độc lập được | toàn bộ module lại quay lại deploy cùng |
+| Join | nhiều query phải gọi 3–4 service để trả một màn hình | ít query xuyên service | module quá lớn, khó hiểu, team cùng tranh sửa |
+| Team | 1–2 người chăm 10 service | một team sở hữu 1–2 context | một team sở hữu cả monolith |
+| Thời gian | chi phí infra vượt lợi ích | cân bằng giữa độc lập và vận hành | chưa thấy đau đủ để tách |
+
+Quy tắc vàng: bắt đầu tách ở context có **ranh giới rõ, ít join, thay đổi độc lập** (ví dụ Catalog, Notification). **Không bắt đầu bằng Thanh toán hoặc Đơn hàng** vì chúng join với nhiều bảng và yêu cầu transaction chặt.
+
+### Lỗi hay gặp
+1. **Hai service join chung bảng để đọc nhanh**. Triệu chứng: đổi cột của service này làm service kia lỗi, hai service phải deploy cùng. Cách tránh: mỗi bảng một chủ, đọc qua API hoặc bản sao read-only.
+2. **Service mới copy nguyên entity của monolith**. Triệu chứng: đổi bảng cũ là service mới vỡ. Cách tránh: ACL dịch sang model riêng của service mới.
+3. **Tách quá sớm, chưa có CI/CD và tracing**. Triệu chứng: downtime tăng, debug khổ. Cách tránh: tách khi đã có pipeline deploy/rollback và distributed tracing.
+4. **Không bao giờ xóa code cũ**. Triệu chứng: sau hai năm vẫn bảo trì cả hai. Cách tránh: đưa bước xóa module/bảng cũ vào định nghĩa hoàn thành của mỗi lát cắt.
+
+### Trả lời mẫu khi phỏng vấn
+"Mỗi bảng phải có đúng một service chủ sở hữu; service khác đọc qua API hoặc nhận bản sao qua event, không bao giờ join bảng của người khác. Bảng tham chiếu như quốc gia, loại hàng có thể replicate bản sang mỗi service qua event; dữ liệu giao dịch như đơn hàng chỉ thuộc Order Service, và tên khách hàng tôi lưu snapshot trong đơn hàng thay vì join bảng khách của service khác. Về ranh giới, tôi bắt đầu tách ở context có ranh giới rõ, ít join, thay đổi độc lập như Catalog, không bắt đầu bằng Thanh toán. Dấu hiệu tách quá mảnh là hai service luôn deploy cùng nhau hoặc phải gọi 3–4 service cho một màn hình; điều đó là distributed monolith, hãy gộp lại. Trade-off của việc tách là thêm network call và eventual consistency, nên tôi chỉ tách khi có bằng chứng đau thật: module cần scale độc lập hoặc team chặn release của nhau. Tôi cũng luôn để bước xóa code cũ vào định nghĩa hoàn thành, để không chạy song song vĩnh viễn."
+
+### Ví dụ đời thực
+  Một hệ thống bán lẻ 15 dev, monolith 500k dòng, 120 bảng. Năm 2023, Catalog và Marketing đều đọc bảng {{products}} và bảng {{customers}}. Khi tách Catalog Service, team muốn cả hai service cùng query bảng products — sau đó đổi cột {{price_type}} làm Catalog lỗi và Marketing cũng bị lũy theo. Điều tra: query log thấy 6 service join bảng products; schema migration của Catalog đổi kiểu cột từ INTEGER sang VARCHAR, Marketing query bị sai. Nguyên gốc: không có chủ sở hữu duy nhất, dữ liệu tham chiếu dùng chung gây coupled. Xử lý: (1) Catalog sở hữu bảng products, publish event {{ProductUpdated}} mỗi khi đổi, (2) Marketing lưu bảng {{product_read}} của riêng mình, cập nhật từ event, chỉ đọc local, (3) đơn hàng lưu snapshot tên sản phẩm tại thời điểm đặt, không join bảng products của Catalog. Kết quả: hai service deploy độc lập, schema products đổi 5 lần trong quý sau không làm lỗi Marketing; nhưng thêm 1 mạng hop khi Marketing cần sản phẩm mới nhất, độ trễ tăng 30ms. Đây là minh chứng: chia bảng theo chủ sở hữu + replicate dữ liệu tham chiếu giải quyết coupled, trade-off là eventual consistency.
+
+  > Senior tip: quan trọng nhất khi tách monolith không phải công nghệ, mà là ranh giới sở hữu dữ liệu. Nếu hai service vẫn phải đồng bộ bảng chung, bạn chưa tách được, chỉ chuyển monolith qua mạng.`,
+  follow: [
+    'Nếu hai bounded context cần cùng dữ liệu khách hàng, bạn chọn shared kernel hay anti-corruption layer? Vì sao?',
+    'Bản sao read-only của dữ liệu tham chiếu bị lệch bao lâu là chấp nhận được, và bạn đối soát thế nào?',
+    'Khi nào bạn quyết định GỘP hai service vừa tách vì chúng quá mảnh?'
+  ],
+  tags: ['bounded context', 'table ownership', 'strangler fig', 'anti-corruption layer'],
+},
+{
+  id: 'microservices-089',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Màn hình home của app mobile cần dữ liệu từ 5 service (đơn hàng, sản phẩm, khuyến mãi, khách hàng, thông báo). Bạn thiết kế BFF tổng hợp thành 1 API thế nào, sao cho khi promotion-service lỗi thì toàn bộ màn hình không bị hỏng, và payload nhỏ dành cho mobile?',
+  a: `**Tóm tắt:** **BFF (Backend For Frontend)** là backend riêng cho một loại giao diện (mobile, web), gộp nhiều API backend thành 1 response có đúng hình dạng màn hình cần. Mỗi cuộc gọi downstream của BFF phải có **timeout riêng**, **circuit breaker riêng** và **fallback riêng**: promotion-service lỗi thì màn hình vẫn hiện, chỉ mất khuyến mãi; không phải cả màn hình trắng. Payload chỉ lấy trường mobile cần, không trả toàn bộ đối tượng backend.
+
+### Thuật ngữ
+- **BFF**: backend riêng cho một loại client, gộp và cắt gọt dữ liệu theo màn hình.
+- **Fan-out**: BFF gọi nhiều service cùng lúc để thu thập dữ liệu cho một màn hình.
+- **Fan-in**: BFF gộp kết quả từ nhiều service thành 1 response trả về client.
+- **Partial degradation**: khi một thành phần lỗi, hệ thống vẫn chạy với chức năng bị hạn chế thay vì hỏng toàn bộ.
+- **Fallback**: giá trị thay thế (danh sách rỗng, cache cũ, thông báo "tạm không hiển thị") khi downstream lỗi.
+- **Payload kèm theo**: dữ liệu dính kèm trong response, mobile chỉ muốn những trường cần hiển thị.
+- **Circuit breaker**: ngắt gọi luôn khi downstream đã yếu, thay vì chờ timeout mỗi lần.
+
+### Thiết kế BFF cho mobile (từng bước)
+1. **Một endpoint cho màn hình**: {{GET /api/v1/mobile/home}} trả về tất cả dữ liệu màn hình home, mobile chỉ gọi 1 lần thay vì 5 lần.
+2. **Gọi song song (fan-out)**: BFF gọi order-service, product-service, promotion-service, customer-service, notification-service cùng lúc bằng {{CompletableFuture.allOf()}}, không gọi tuần tự (tổng latency là chậm nhất, không cộng dồn).
+3. **Timeout + circuit breaker riêng cho mỗi downstream**: mỗi service có cấu hình riêng (ví dụ promotion timeout 300ms, circuit breaker mở khi 50% lỗi). Không dùng chung cấu hình cho cả 5 service.
+4. **Fallback riêng theo từng trường**: promotion lỗi → trả mảng khuyến mãi rỗng + gắn cờ {{promotionUnavailable: true}}; khách hàng lỗi → hiển thị "Khách hàng" trắng, không crash màn hình.
+5. **Cắt gọt payload**: chỉ trả trường mobile hiển thị (id, tên, giá, ảnh nhỏ), không trả toàn bộ đối tượng JSON của backend (giảm dung lượng).
+6. **Không chứa logic nghiệp vụ**: BFF chỉ aggregate, map, filter; giảm giá, tính điểm stays trong backend service.
+
+### Java: fan-out với fallback riêng từng service
+~~~java
+public class HomeBff {
+    private final OrderClient orders;   // mỗi client có Resilience4j riêng
+    private final PromotionClient promos;
+    public HomeDto load(String customerId) {
+        var orderFuture = CompletableFuture.supplyAsync(() -> orders.recent(customerId));
+        var promoFuture = CompletableFuture.supplyAsync(() -> promos.forCustomer(customerId)
+                .exceptionally(ex -> List.of())); // fallback: không khuyến mãi
+        CompletableFuture.allOf(orderFuture, promoFuture).join(); // chờ xong mới gộp
+        return new HomeDto(orderFuture.join(), promoFuture.join());
+    }
+}
+~~~
+Lưu ý: {{join()}} ném lại exception của order-service nếu có; nên bọc từng future với try-catch hoặc dùng fallback riêng cho từng cái, không để một service làm hỏng toàn bộ.
+
+### So sánh
+| Cách làm | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Mobile gọi 5 service trực tiếp | đơn giản, không cần BFF | 5 round-trip, payload lớn, mobile khó chịu khi 1 service lỗi |
+| Một BFF chung cho web và mobile | chỉ 1 service cần bảo trì | web và mobile cần payload khác nhau, BFF phức tạp hơn |
+| BFF riêng cho mobile (khuyên dùng) | payload gọn, mỗi màn hình 1 API, degrade riêng biệt | thêm 1 service phải vận hành, team frontend phải sở hữu |
+
+### Lỗi hay gặp
+1. **Gọi tuần tự thay vì song song**. Triệu chứng: 5 service mỗi cái 200ms → màn hình chờ 1s. Cách tránh: {{CompletableFuture.allOf()}} gọi song song, tổng latency chờ chậm nhất.
+2. **Một downstream lỗi làm hỏng toàn bộ màn hình**. Triệu chứng: promotion-service chậm, trang home trắng. Cách tránh: timeout + fallback riêng cho từng trường, degrade có kiểm soát.
+3. **BFF trả toàn bộ đối tượng backend**. Triệu chứng: payload 80KB, mobile tốn quota. Cách tránh: DTO chỉ chứa trường cần hiển thị.
+4. **BFF chứa logic nghiệp vụ** (giảm giá khuyến mãi). Triệu chứng: BFF trở thành monolith thứ hai, khó bảo trì. Cách tránh: BFF chỉ aggregate/map/filter, business logic ở backend.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế BFF riêng cho mobile: một endpoint {{GET /api/v1/mobile/home}} gộp dữ liệu từ 5 service bằng fan-out song song với {{CompletableFuture.allOf()}}, mỗi downstream có timeout và circuit breaker riêng, và mỗi trường có fallback riêng — promotion-service lỗi thì màn hình vẫn hiện, chỉ mất phần khuyến mãi. Payload tôi cắt gọt lại chỉ chứa trường mobile hiển thị, giảm dung lượng xuống còn một phần so với trả toàn bộ đối tượng backend. BFF tôi chỉ làm aggregate, map, filter, không chứa logic nghiệp vụ như giảm giá hay tính điểm, để không trở thành monolith thứ hai. Trade-off là thêm một service phải vận hành và team frontend cần sở hữu BFF để deploy độc lập. Kinh nghiệm của tôi là luôn đo p99 của từng downstream trong BFF, vì một service chậm sẽ làm chậm toàn bộ màn hình nếu không có timeout riêng."
+
+### Ví dụ đời thực
+  Một công ty thương mại điện tử có app mobile, màn hình home gọi trực tiếp 5 API backend: đơn hàng, sản phẩm, khuyến mãi, khách hàng, thông báo. Năm 2023, mỗi lần reload màn hình là 5 round-trip, payload khoảng 80KB, thời gian load 2,5s; khi promotion-service chậm, toàn bộ trang home trắng vì code chờ hết 5 API rồi mới render. Điều tra: Jaeger trace thấy 5 span con gọi tuần tự, tổng 2,5s; metric promotion-service p99 1,2s. Nguyên gốc: không có BFF, gọi tuần tự, không có fallback, trả toàn bộ đối tượng backend. Xử lý: (1) xây BFF-mobile với endpoint {{/api/v1/mobile/home}}, (2) gọi 5 service song song, timeout 400ms cho mỗi service, (3) fallback: promotion lỗi trả mảng rỗng, khách hàng lỗi hiển thị mặc định, (4) DTO chỉ trả trường cần hiển thị. Kết quả: thời gian load giảm từ 2,5s xuống 700ms, payload từ 80KB xuống 12KB (giảm 85%), và khi promotion-service lỗi thì màn hình vẫn hiển thị đơn hàng và sản phẩm, chỉ phần khuyến mãi là trống. Đây là minh chứng: BFF với fan-out song song + fallback riêng biệt giảm latency và tách biệt lỗi giữa các phần màn hình.
+
+  > Senior tip: BFF do team frontend sở hữu, deploy độc lập với backend. Nếu BFF có mã giảm giá hay tính điểm, thì nó đã trở thành monolith thứ hai — hãy dọn sạch ngay.`,
+  follow: [
+    'BFF-mobile và BFF-web dùng chung source code hay tách riêng, vì sao?',
+    'Timeout của từng downstream trong BFF nên nhỏ hơn tổng thời gian chờ của mobile bao nhiêu?',
+    'Fallback trả cache cũ có rủi ro gì với dữ liệu tài chính, bạn xử lý ra sao?'
+  ],
+  tags: ['BFF', 'fan-out fan-in', 'partial degradation', 'mobile payload'],
+},
+{
+  id: 'microservices-090',
+  topic: 'microservices',
+  level: 'mid',
+  q: 'Bạn chưa từng vận hành service mesh. Giải thích khái niệm sidecar proxy, data plane versus control plane, tại sao ứng dụng Java không cần code mTLS hay retry, và trade-off khi quyết định dùng hay không dùng mesh.',
+  a: `**Tóm tắt:** **Service mesh** là lớp hạ tầng chạy cùng ứng dụng (thường là proxy sidecar bên cạnh mỗi pod) lo mọi chuyện mạng: mTLS giữa các service, retry, timeout, cân bằng tải, theo dõi. **Data plane** là các proxy thực hiện forwarding; **control plane** là thành phần cấu hình và điều khiển các proxy. Ứng dụng Java không cần thêm thư viện hay code mTLS/retry vì proxy làm hết trong suốt, nhưng mesh trả giá bằng thêm một mạng nhảy, tốn RAM/CPU mỗi pod và phức tạp vận hành.
+
+### Thuật ngữ
+- **Sidecar proxy**: container chạy cùng pod ứng dụng, nhận toàn bộ traffic vào/ra pod.
+- **Data plane**: tập các proxy thực hiện chuyển tiếp và bảo mật traffic (Envoy, ztunnel…).
+- **Control plane**: thành phần quản lý, cấu hình các proxy (cài luật, cấp chứng chỉ, xem trạng thái).
+- **mTLS (mutual TLS)**: cả hai bên kết nối đều trình chứng chỉ, xác thực lẫn nhau mà không cần mã trong ứng dụng.
+- **Transparent (trong suốt)**: ứng dụng không biết proxy tồn tại, gọi như bình thường.
+- **Cloud-native**: ứng dụng chạy trên điện toán đám mây/Kubernetes, tận dụng khả năng mở rộng của nền tảng.
+- **Over-engineering**: thiết kế phức tạp hơn mức cần thiết, chi phí vận hành vượt lợi ích.
+
+### Hoạt động từng bước
+1. **Triển khai mesh**: cài control plane trên cluster; mỗi pod ứng dụng được thêm container sidecar (proxy).
+2. **Chặn traffic**: mạng của pod được định hướng để tất cả kết nối vào/ra đều đi qua sidecar (qua iptables hay eBPF), ứng dụng không biết điều này.
+3. **Gọi service khác**: app Java gọi address của service đích, gói tin đi vào sidecar của chính nó, sidecar thực hiện mTLS handshake với sidecar của service đích, rồi chuyển tiếp.
+4. **Control plane điều khiển**: cài luật "ai được gọi ai", cấp chứng chỉ ngắn hạn cho mỗi sidecar, thu thập số liệu RED (tỷ lệ lỗi, độ trễ) từ proxy.
+5. **Ứng dụng Java**: chỉ cần gọi REST/gRPC bình thường; retry, timeout, circuit breaker được cấu hình ở mesh, không cần Resilience4j hay code thêm.
+
+### Sơ đồ sidecar
+~~~seq
+title: Service mesh sidecar trong suốt
+actors: App A | Sidecar A | Sidecar B | App B
+App A -> Sidecar A: gọi order-service (biết không)
+Sidecar A -> Sidecar B: mTLS handshake + chuyển tiếp
+Sidecar B --> Sidecar A: phản hồi
+Sidecar A --> App A: trả kết quả
+note Sidecar A..Sidecar B: retry, timeout, mTLS do proxy làm
+~~~
+
+### Trade-off dùng hay không dùng mesh
+| Tiêu chí | Dùng service mesh | Không dùng mesh (Spring Cloud + K8s native) |
+|---|---|---|
+| mTLS giữa service | tự động, không code | tự cấu hình chứng chỉ hoặc dùng TLS thông thường |
+| Retry/timeout/circuit breaker | cấu hình ở mesh, chung cho mọi ngôn ngữ | code trong Java (Resilience4j) hoặc Spring Cloud |
+| Quản lý | thêm control plane, phải vận hành | ít thành phần hơn |
+| Tài nguyên | mỗi pod + proxy (RAM, CPU) | không có proxy thêm |
+| Phù hợp | nhiều service, đa ngôn ngữ, yêu cầu bảo mật cao | ít service (dưới 10–15), một ngôn ngữ, team nhỏ |
+
+### Lỗi hay gặp
+1. **Cài mesh vì "sẽ cần sau"**. Triệu chứng: team dành hai tháng config mesh mà chưa giải quyết business. Cách tránh: chỉ cài khi có nhu cầu thực (mTLS tất cả service, nhiều ngôn ngữ, nhiều team).
+2. **Mesh rồi vẫn viết retry trong code**. Triệu chứng: gấp lớp bảo vệ, khó debug khi lỗi. Cách tránh: chọn một nơi quản lý khả năng khôi phục (mesh hoặc code), không làm cả hai.
+3. **Bỏ qua chi phí vận hành**. Triệu chứng: nâng cấp mesh làm restart hàng trăm pod, team không kịp theo. Cách tránh: thử trên một namespace nhỏ trước, huấn luyện team vận hành.
+
+### Trả lời mẫu khi phỏng vấn
+"Service mesh là lớp proxy chạy cùng ứng dụng (sidecar bên cạnh mỗi pod): data plane là các proxy chuyển tiếp traffic, control plane cấu hình và cấp chứng chỉ. Khi bật mesh, gọi từ app A đến app B đi qua sidecar của A, thực hiện mTLS với sidecar của B, rồi mới chuyển tiếp — ứng dụng Java không cần code mTLS, retry, hay circuit breaker vì toàn bộ là trong suốt. Trade-off là thêm một mạng nhảy, tốn RAM/CPU cho mỗi pod, và phải vận hành control plane. Tôi chỉ dùng mesh khi hệ thống có nhiều service (trên 10–15), đa ngôn ngữ, hoặc yêu cầu mTLS khắp nơi; với ít service và chỉ Java, Spring Cloud Resilience4j kết hợp K8s NetworkPolicy là đủ và đơn giản hơn. Kinh nghiệm của tôi là chọn một nơi duy nhất quản lý khả năng khôi phục (mesh hoặc code), không làm vừa và vừa để tránh gộp lớp bảo vệ."
+
+### Ví dụ đời thực
+  Một công ty logistic có 8 service viết bằng Java chạy trên Kubernetes. Năm 2023, team platform muốn cài Istio để có mTLS và observability tự động. Sau hai tháng cài đặt, hệ thống chỉ chạy 8 service, mỗi pod tốn thêm 150MB RAM cho sidecar, và nâng cấp Istio lần đầu làm restart 40 pod trong 20 phút. Quý sau, team bỏ mesh, quay lại Spring Cloud Gateway + Resilience4j cho retry/timeout và K8s NetworkPolicy cho giới hạn gọi service. Kết quả: giảm 12GB RAM cluster, thời gian deploy từ 20 phút xuống 5 phút, và các sự cố mạng vẫn được xử lý bằng circuit breaker trong code. Đây là minh chứng: mesh mang lại sức mạnh nhưng chi phí vận hành cao; với ít service và một ngôn ngữ, mesh là over-engineering.
+
+  > Senior tip: trước khi cài mesh, hãy hỏi "nếu không có mesh, tôi phải tự code gì?". Nếu câu trả lời là Resilience4j + NetworkPolicy làm được 80% nhu cầu, hãy giữ thư viện thay vì mesh. Mesh xứng đáng khi đội lớn, nhiều ngôn ngữ, và cần mTLS + chính sách truy cập tập trung.`,
+  follow: [
+    'Sidecar proxy nằm ở đâu trong pod, và ứng dụng gọi service khác như thế nào không biết proxy tồn tại?',
+    'Data plane và control plane khác nhau ra sao, thành phần nào nếu chết thì service ảnh hưởng ngay?',
+    'Khi nào bạn chấp nhận chi phí của mesh (tiêm RAM, vận hành phức tạp)?'
+  ],
+  tags: ['service mesh', 'sidecar', 'data plane', 'control plane', 'mTLS'],
+},
+{
+  id: 'microservices-091',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Một request từ client đi qua gateway → order-service → Kafka → payment-service, tất cả dùng 1 trace id. Giải thích trace id truyền qua HTTP và Kafka như thế nào, tại sao vẫn cần business correlation id (orderId), và on-call tra lỗi theo trace id ra sao?',
+  a: `**Tóm tắt:** **Trace id** là mã kỹ thuật gắn vào mọi thành phần xử lý một request, dùng để nối log và trace giữa các service. Trace id truyền qua header HTTP {{traceparent}} (chuẩn W3C) và qua header của message Kafka. Vẫn cần **business correlation id** (ví dụ {{orderId}}) vì trace id là kỹ thuật, support và business tìm đơn hàng theo mã đơn, còn engineer tra lỗi theo trace id. Nếu header traceparent bị mất ở một chỗ (ví dụ consumer Kafka không đọc header), trace bị ngắt, trace mới sinh ra, mất toàn cảnh.
+
+### Thuật ngữ
+- **Trace id**: mã định danh toàn bộ hành trình của một request qua nhiều service.
+- **Span id**: mã định danh một đoạn công việc trong đó (một HTTP call, một consumer Kafka).
+- **W3C TraceContext**: chuẩn header {{traceparent}} chứa trace id, span id, cờ mẫu.
+- **Correlation id / business id**: mã nghiệp vụ (orderId, mã đơn) dùng để tìm dữ liệu nghiệp vụ, khác với trace id kỹ thuật.
+- **MDC (Mapped Diagnostic Context)**: "túi" giá trị gắn với thread, log in ra bằng pattern %X{traceId}.
+- **Trace discontinuity**: trace bị chia thành hai phần vì một thành phần không truyền header, trace id thay đổi giữa chừng.
+- **OpenTelemetry**: chuẩn mở thu thập trace, metric, log; Spring Boot 3 hỗ trợ qua Micrometer Tracing.
+
+### Truyền trace id qua HTTP và Kafka (từng bước)
+1. **Gateway sinh trace id**: request từ client vào gateway, gateway sinh trace id mới (nếu client chưa có) và gắn vào header {{traceparent}} của request gửi sang order-service.
+2. **Mọi service gọi HTTP đều truyền header**: order-service đọc {{traceparent}} từ request đến, gắn vào request gửi sang payment-service hoặc bất kỳ service nào gọi.
+3. **Kafka producer gắn header**: khi publish event lên Kafka, producer gắn {{traceparent}} (và {{tracestate}}) vào header của message, không phải vào payload JSON.
+4. **Kafka consumer đọc header**: consumer lấy {{traceparent}} từ header message, dùng làm parent của span consumer, nên span consume nối với span produce.
+5. **Log in trace id**: mỗi service in {{traceId}} và {{spanId}} vào mỗi dòng log qua MDC; on-call copy trace id từ giao diện trace (Tempo/Jaeger) tìm toàn bộ log của request đó.
+
+### Trace id versus business correlation id
+| | Trace id | Business correlation id |
+|---|---|---|
+| Ai dùng | Engineer, on-call | Support, khách hàng, business |
+| Tìm gì | toàn bộ log/trace của một request | đơn hàng, thanh toán của một khách |
+| Gắn ở đâu | header traceparent, log MDC | payload event, URL, mã đơn hiển thị |
+| Ví dụ | 4bf92f35… | ĐH-2023-0881 |
+
+Khi khách hàng khiếu nại "đơn ĐH-2023-0881 bị lỗi", support tra đơn hàng lấy orderId; engineer dùng orderId tìm trong log, hoặc dùng trace id nếu đã biết. Hai mã hoàn toàn khác nhau và cần cùng có.
+
+### Java: in trace id vào log qua MDC
+~~~xml
+<pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} traceId=%X{traceId} spanId=%X{spanId} - %msg%n</pattern>
+~~~
+Spring Boot 3.2+ + Micrometer Tracing tự đưa traceId/spanId vào MDC, logback in ra như trên. Trong code Java không cần lấy traceId thủ công; chỉ cần mọi service truyền header {{traceparent}} qua HTTP và Kafka.
+
+### Sơ đồ truyền trace id
+~~~seq
+title: Trace id qua HTTP và Kafka
+actors: Gateway | OrderSvc | Kafka | PaymentSvc
+Gateway -> OrderSvc: HTTP header traceparent
+OrderSvc -> Kafka: message + header traceparent
+Kafka -> PaymentSvc: consumer đọc header traceparent
+note Gateway..PaymentSvc: cùng trace id, log liên qua MDC
+~~~
+
+### Lỗi hay gặp
+1. **Không truyền header ở một chỗ**. Triệu chứng: trace bị chia hai, transaction Kafka thành trace riêng, mất toàn cảnh. Cách tra: kiểm tra instrumentation Kafka (bật observation) và header được ghi/đọc.
+2. **Header traceparent bị dịch sai tên**. Triệu chứng: service tạo trace id mới thay vì dùng trace cũ. Cách tránh: dùng tên chuẩn {{traceparent}} và {{tracestate}}, không tự đặt tên.
+3. **Code async mất MDC**. Triệu chứng: @Async, CompletableFuture log không có traceId. Cách tránh: Spring Boot 3.2+ tự truyền MDC qua context, kiểm tra khi dùng Reactive hoặc luồng tùy chỉnh.
+4. **Chỉ trace, không có business id**. Triệu chứng: support không tìm được đơn vì chỉ có trace id kỹ thuật. Cách tránh: luôn có orderId trong event payload và log.
+
+### Trả lời mẫu khi phỏng vấn
+"Mỗi request từ client nhận một trace id từ gateway theo chuẩn W3C traceparent, truyền qua header HTTP giữa các service, và khi publish Kafka producer gắn traceparent vào header message, consumer đọc header đó khôi phục ngữ cảnh nên span produce và consume nối thành một trace duy nhất. Mỗi service in traceId và spanId vào log qua MDC, nên on-call copy trace id từ giao diện trace tìm toàn bộ log liên quan. Vẫn cần business correlation id như orderId vì trace id là kỹ thuật: support và khách hàng tìm đơn hàng theo mã đơn, không theo trace id. Nếu một thành phần không truyền header (ví dụ consumer Kafka cũ không đọc header), trace bị ngắt và sinh trace mới, mất toàn cảnh. Trade-off là mỗi service phải chuyển header và lưu log có trace id, nhưng đổi lấy khả năng tra lỗi xuyên nhiều service."
+
+### Ví dụ đời thực
+  Hệ thống thanh toán 20 service. Năm 2023, khách hàng khiếu nại đơn ĐH-2023-0881 bị trừ tiền nhưng không thấy đơn. Support tìm đơn bằng mã đơn, thấy đơn có trạng thái PENDING. Engineer lấy trace id từ log thanh toán, mở giao diện trace, thấy trace đi qua gateway → order-service → Kafka → payment-service; span Kafka producer thành công, nhưng span consumer payment-service không có (consumer cũ không đọc header traceparent, sinh trace mới). Điều tra: log payment-service có trace id khác, không thể nối với trace đơn hàng. Nguyên gốc: consumer Kafka không propagate trace context, trace discontinuity. Xử lý: (1) nâng cấp consumer Kafka, bật spring.kafka.observation.enabled=true để đọc header traceparent, (2) tất cả event Kafka có trường orderId trong payload để support tìm đơn, (3) logback thêm %X{traceId} %X{spanId} cho mọi service. Kết quả: sau đó, mọi sự cố thanh toán đều có trace nối liền, thời gian tra lỗi giảm từ 45 phút xuống 12 phút, và support có thể tra đơn bằng mã đơn mà không cần hỏi engineer. Đây là minh chứng: trace id kết hợp business correlation id là cần thiết để tra lỗi hệ thống phân tán.
+
+  > Senior tip: trace id là của engineer, orderId là của support — cần cả hai. Không truyền trace id qua Kafka là lỗi phổ biến nhất làm trace bị chia đôi, hãy kiểm tra instrumentation consumer ngay khi thiết kế event-driven.`,
+  follow: [
+    'Nếu consumer Kafka cũ không đọc header traceparent, trace bị ngắt ra sao và bạn khắc phục ra sao?',
+    'Vì sao không dùng orderId làm trace id thay vì sinh trace id riêng?',
+    'Log correlation qua MDC hoạt động ra sao trong code async (CompletableFuture)?'
+  ],
+  tags: ['distributed tracing', 'OpenTelemetry', 'traceId', 'Kafka', 'correlation id'],
+},
+{
+  id: 'microservices-092',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Một topic Kafka có 10 consumer dùng các phiên bản khác nhau. Producer thêm field mới vào schema Avro. Giải thích backward/forward compatibility, thứ tự deploy consumer trước hay producer trước, và gì xảy ra nếu Schema Registry gián đoạn?',
+  a: `**Tóm tắt:** **Schema Registry** lưu schema theo phiên bản và kiểm tra compatibility khi đăng ký schema mới. **Backward compatibility** (schema mới đọc được dữ liệu cũ) ⇒ deploy consumer mới trước. **Forward compatibility** (schema cũ đọc được dữ liệu mới) ⇒ deploy producer mới trước. Nếu hai bên deploy độc lập, chọn **FULL**. Schema Registry gián đoạn: producer vẫn gửi được nếu đã cache schema ID, nhưng consumer cần schema để deserialize → có thể lỗi nếu không cache schema.
+
+### Thuật ngữ
+- **Schema Registry**: server lưu schema (Avro/Protobuf/JSON Schema) theo phiên bản, kiểm tra tính tương thích trước khi chấp nhận schema mới.
+- **Schema ID**: số định danh schema trong Registry; message Kafka chỉ mang schema ID (magic byte + 4 bytes ID), không mang toàn bộ schema.
+- **Backward compatibility**: consumer dùng schema mới vẫn đọc được dữ liệu ghi bằng schema cũ (thêm field có default, xoá field).
+- **Forward compatibility**: consumer dùng schema cũ vẫn đọc được dữ liệu ghi bằng schema mới (bỏ qua field lạ).
+- **FULL compatibility**: cả backward và forward, deploy thứ tự nào cũng được.
+- **Transitive mode**: kiểm tra tương thích với mọi phiên bản cũ, không chỉ phiên bản ngay trước.
+- **Deserialize**: giải mã message nhị phân thành đối tượng bằng schema.
+
+### Hai chế độ compatibility quan trọng
+| Chế độ | Ai deploy trước | Ý nghĩa thực tế |
+|---|---|---|
+| BACKWARD (mặc định) | **Consumer mới** trước | Consumer mới đọc được dữ liệu cũ còn trong topic; field mới lấy giá trị mặc định |
+| FORWARD | **Producer mới** trước | Consumer cũ vẫn đọc được dữ liệu mới (bỏ qua field mới, field bị xoá lấy mặc định) |
+| FULL | Thứ tự nào cũng được | Cả hai đều đọc được dữ liệu của nhau |
+
+Quy tắc vàng: **chỉ thêm field có giá trị mặc định**, không đổi kiểu, không đổi tên field; muốn xoá thì đánh dấu deprecated và xoá sau vài release.
+
+### Thứ tự deploy khi thêm field mới (chế độ BACKWARD)
+1. Consumer v2 (schema mới, code đã xử lý field mới có giá trị mặc định) deploy trước.
+2. Chờ tất cả instance consumer cũ hết, consumer v2 ổn định.
+3. Producer v2 deploy sau, bắt đầu ghi schema mới.
+Vì sao: trong thời gian chuyển đổi, topic có cả dữ liệu schema cũ và mới; consumer v2 phải đọc được cả hai.
+
+### Schema Registry gián đoạn ra sao
+- **Producer**: serializer đã cache schema ID trong bộ nhớ, còn tiếp tục publish message với schema ID cũ. Nếu producer khởi động lại khi RegistryDown, không thể đăng ký schema mới, có thể lỗi tuỳ cấu hình.
+- **Consumer**: cần schema để deserialize message. Nếu không cache schema locally và RegistryDown, consumer không thể deserialize → lỗi, message bị lặp/lag.
+- **Giải pháp**: client cache schema (schema ID và schema nội dung), tắt {{auto.register.schemas}} ở production (chỉ CI được đăng ký schema), và giám sát Registry như một service thật.
+
+### Java: cấu hình producer không tự đăng ký schema ở production
+~~~java
+Properties props = new Properties();
+props.put("bootstrap.servers", "kafka:9092");
+props.put("schema.registry.url", "http://schema-registry:8081");
+props.put("auto.register.schemas", "false"); // chi tiết: chỉ CI đăng ký, production không tự đăng ký
+props.put("value.serializer", "io.confluent.kafka.serializers.KafkaAvroSerializer.class");
+// producer dùng schema ID đã cache, không gọi Registry mỗi message
+~~~
+
+### Lỗi hay gặp
+1. **Thêm field không có default với chế độ BACKWARD**. Triệu chứng: Registry từ chối đăng ký schema mới (hoặc nếu đặt NONE thì consumer mới không đọc được dữ liệu cũ). Cách tránh: mọi field mới đều có giá trị mặc định.
+2. **Producer ghi schema mới trước khi consumer v2 sẵn sàng**. Triệu chứng: consumer cũ deserialize schema mới không được, lỗi. Cách tránh: consumer v2 deploy xong và ổn định mới deploy producer v2.
+3. **Bật auto-register schema ở production**. Triệu chứng: một bản build lỗi đăng ký schema lạ, làm vỡ consumer. Cách tránh: tắt auto-register, chỉ CI qua compatibility check mới đăng ký.
+4. **RegistryDown làm consumer dừng**. Triệu chứng: consumer không deserialize, lag tăng. Cách tránh: client cache schema, có cảnh báo khi RegistryDown.
+
+### Trả lời mẫu khi phỏng vấn
+"Schema Registry lưu schema theo phiên bản và kiểm tra compatibility khi đăng ký. Với chế độ BACKWARD (mặc định), schema mới đọc được dữ liệu cũ nên tôi deploy consumer mới trước, chờ ổn định, mới deploy producer ghi schema mới; chế độ FORWARD ngược lại, và hai bên deploy độc lập thì chọn FULL. Quy tắc của tôi là chỉ thêm field có default, không đổi kiểu hay tên, muốn xoá thì deprecated rồi xoá sau vài release. Nếu Schema Registry gián đoạn, producer đã cache schema ID vẫn gửi được, nhưng consumer cần schema để deserialize nên phải cache schema locally và giám sát Registry. Tôi cũng tắt auto-register schema ở production, chỉ cho phép CI đăng ký sau khi qua compatibility check, để tránh schema lạ làm vỡ hệ thống."
+
+### Ví dụ đời thực
+  Hệ thống thương mại điện tử 20 service dùng Avro + Schema Registry cho sự kiện {{OrderCreated}}. Năm 2023, team pricing thêm field {{discountStrategy}} (enum {"NONE", "PERCENT"}, mặc định "NONE") vào schema, sau đó bổ sung giá trị "LOYALTY". Chế độ Registry là BACKWARD. Triệu chứng: rolling deploy consumer mới trước producer, nhưng các instance consumer cũ chưa cập nhật code nhận event mới có {{discountStrategy=LOYALTY}} và ném lỗi deserialization, consumer crash. Điều tra: consumer dùng class mã hóa cũ không có symbol LOYALTY; Avro không ánh xạ symbol mới ⇒ deserialize thất bại. Registry chấp nhận schema vì BACKWARD chỉ yêu cầu schema mới đọc dữ liệu cũ, không có nghĩa consumer cũ đọc được dữ liệu mới (đó là FORWARD). Nguyên gốc: producer ghi schema mới trước khi tất cả consumer đã regenerate code và deploy xong. Xử lý: (1) thêm bước CI: consumer phải compile thành công với schema mới trước khi producer deploy, (2) quy tắc rolling: chờ toàn bộ consumer instance mới chạy ổn định rồi mới deploy producer, (3) cấu hình Avro {{specific.avro.reader=true}}. Kết quả: 6 tháng sau, 15 lần tiến hóa schema không còn làm crash consumer, thời gian thêm trường từ 2 ngày xuống 2 giờ. Đây là minh chứng: compatibility check ở Registry phải đi kèm thứ tự deploy consumer-trước-producer và codegen consumer phải kịp schema mới.
+
+  > Senior tip: compatibility check trong CI là cổng hàng đầu — PR thay đổi schema mà fail check thì không merge, không có ngoại lệ; production không phải nơi thử schema.`,
+  follow: [
+    'BACKWARD và FORWARD khác nhau ra sao, và khi nào chọn FULL?',
+    'Nếu Schema Registry gián đoạn, producer và consumer bị ảnh hưởng khác nhau thế nào?',
+    'Vì sao consumer cũ crash khi producer thêm enum value mới, mặc dù schema tương thích backward?'
+  ],
+  tags: ['Schema Registry', 'Avro', 'backward compatibility', 'forward compatibility', 'event schema'],
+},
 );
