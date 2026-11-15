@@ -4498,7 +4498,7 @@ public class Main {
             new Pair("TXN-004", new BigDecimal("-25.50"), new BigDecimal("-25.5")),
             new Pair("TXN-005", new BigDecimal("1000000.00"), new BigDecimal("1000000.00")),
             new Pair("TXN-006", new BigDecimal("1000000.00"), new BigDecimal("1000000.01"))
-        );
+);
         long bad = s.mismatches(pairs);
         check("khong_bao_lech_oan", bad == 1, "chỉ TXN-006 được lệch, thực tế " + bad + " cặp lệch");
         System.out.println("RESULT " + passed + "/" + total);
