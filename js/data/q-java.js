@@ -56,7 +56,7 @@ record UserKey(String id) {}
     'Vì sao {{hashCode}} trả về hằng số vẫn đúng contract nhưng là ý tưởng tồi?',
     'Implement {{equals}} cho class có kế thừa thế nào để không phá tính đối xứng?'
   ],
-  tags: ['equals', 'hashCode', 'HashMap']
+  tags: ['core', 'equals', 'hashCode', 'HashMap']
 },
 {
   id: 'core-002',
@@ -112,7 +112,7 @@ Service tổng hợp giao dịch nạp 8 triệu bản ghi vào cache, mỗi b�
     'Nếu {{String}} cho phép kế thừa thì những bất biến nào bị phá?',
     '{{substring()}} từ Java 7 trở đi có còn giữ mảng gốc không, vì sao thay đổi đó quan trọng?'
   ],
-  tags: ['String', 'immutability', 'String pool', 'intern']
+  tags: ['core', 'String', 'immutability', 'String pool', 'intern']
 },
 {
   id: 'core-003',
@@ -171,7 +171,7 @@ Một service tính khuyến mãi có hàm {{applyRules(List<Item> items)}} — 
     'Truyền {{List}} vào method rồi {{list = new ArrayList<>()}} có ảnh hưởng caller không?',
     'Defensive copy nên đặt ở constructor hay getter, hay cả hai?'
   ],
-  tags: ['pass-by-value', 'reference', 'method']
+  tags: ['core', 'pass-by-value', 'reference', 'method']
 },
 {
   id: 'core-004',
@@ -234,7 +234,7 @@ Một service đặt lịch trả về lỗi 500 "Internal Server Error" cho m�
     '{{@Transactional}} rollback mặc định với checked và unchecked khác nhau thế nào?',
     'Làm sao giữ {{cause}} mà không lộ thông tin nội bộ ra response?'
   ],
-  tags: ['exception', 'checked', 'RuntimeException', 'error handling'],
+  tags: ['core', 'exception', 'checked', 'RuntimeException', 'error handling'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
@@ -293,7 +293,7 @@ Một service xử lý ảnh dùng thư viện cũ bọc bộ nhớ native, gi�
     '{{final}} field giúp gì cho việc publish object an toàn giữa các thread?',
     '{{Cleaner}} khác {{finalize}} ở điểm nào và vẫn còn hạn chế gì?'
   ],
-  tags: ['final', 'finally', 'finalize', 'Cleaner', 'try-with-resources'],
+  tags: ['core', 'final', 'finally', 'finalize', 'Cleaner', 'try-with-resources'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
@@ -358,7 +358,7 @@ Một client HTTP nội bộ có hàm {{<T> T get(String url, Class<T> type)}}. 
     'Bridge method sinh ra để làm gì và ảnh hưởng reflection thế nào?',
     'Khi nào dùng {{List<?>}} thay vì {{List<Object>}}?'
   ],
-  tags: ['generics', 'type erasure', 'wildcard', 'PECS'],
+  tags: ['core', 'generics', 'type erasure', 'wildcard', 'PECS'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
@@ -422,7 +422,7 @@ Một service cấu hình phí giữ object {{FeeSchedule}} trong cache dùng ch
     'Record có tự bảo vệ khỏi component mutable không?',
     'Leaking {{this}} trong constructor gây ra vấn đề gì với đa hình?'
   ],
-  tags: ['immutable', 'defensive copy', 'List.copyOf']
+  tags: ['core', 'immutable', 'defensive copy', 'List.copyOf']
 },
 {
   id: 'core-008',
@@ -704,7 +704,7 @@ Một service đối soát nạp 2 triệu giao dịch vào {{HashMap<TxKey, Tx>
     'Treeify threshold 8 và untreeify 6 — vì sao không dùng cùng một ngưỡng?',
     'HashMap thay đổi thế nào từ Java 7 sang Java 8 về xử lý collision?'
   ],
-  tags: ['HashMap', 'resize', 'treeify', 'hash flooding'],
+  tags: ['core', 'HashMap', 'resize', 'treeify', 'hash flooding'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
     { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
@@ -768,7 +768,7 @@ Một service cấu hình feature flag dùng {{ConcurrentHashMap}} làm registry
     '{{ConcurrentHashMap}} đảm bảo gì cho iterator và {{size()}}?',
     'Khi nào nên dùng {{Collections.synchronizedMap}} thay vì CHM?'
   ],
-  tags: ['ConcurrentHashMap', 'CAS', 'size', 'null']
+  tags: ['core', 'ConcurrentHashMap', 'CAS', 'size', 'null']
 },
 {
   id: 'collections-003',
@@ -808,7 +808,7 @@ Một service xếp hạng sản phẩm giữ danh sách 300.000 ứng viên tro
     'Tăng capacity 1.5 lần của ArrayList có ảnh hưởng gì tới bộ nhớ?',
     'Khi nào nên khởi tạo {{ArrayList}} với capacity cho trước?'
   ],
-  tags: ['ArrayList', 'LinkedList', 'cache locality', 'ArrayDeque']
+  tags: ['core', 'ArrayList', 'LinkedList', 'cache locality', 'ArrayDeque']
 },
 {
   id: 'collections-004',
@@ -870,7 +870,7 @@ Một scheduler giữ {{ArrayList<Job>}} dùng chung giữa thread lập lịch 
     '{{CopyOnWriteArrayList}} iterator có hỗ trợ {{remove}} không, vì sao?',
     'CME trong ứng dụng đa luồng có phải lúc nào cũng do đa luồng không?'
   ],
-  tags: ['iterator', 'fail-fast', 'ConcurrentModificationException', 'fail-safe'],
+  tags: ['core', 'iterator', 'fail-fast', 'ConcurrentModificationException', 'fail-safe'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
@@ -1301,7 +1301,7 @@ Một service quyền truy cập trả {{Collections.unmodifiableList(roles)}} c
     '{{List.copyOf}} có tối ưu khi list gốc đã immutable không?',
     'Làm sao tạo immutable list có null được (nếu thực sự cần)?'
   ],
-  tags: ['List.of', 'unmodifiableList', 'immutable', 'defensive copy'],
+  tags: ['core', 'List.of', 'unmodifiableList', 'immutable', 'defensive copy'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
@@ -1638,7 +1638,7 @@ Một service tính khuyến mãi viết {{repo.findById(id).orElse(loadDefaultP
     '{{Optional.stream()}} dùng để làm gì?',
     'Khi nào trả null tốt hơn trả {{Optional}}?'
   ],
-  tags: ['Optional', 'orElse', 'ofNullable', 'API design']
+  tags: ['core', 'Optional', 'orElse', 'ofNullable', 'API design']
 },
 {
   id: 'modern-003',
@@ -2036,7 +2036,7 @@ Batch kết xuất báo cáo doanh thu theo khách hàng, nhóm đơn hàng bằ
     'Làm sao group theo nhiều tiêu chí lồng nhau?',
     '{{teeing}} dùng trong tình huống nào?'
   ],
-  tags: ['Collectors', 'groupingBy', 'toMap', 'Stream'],
+  tags: ['core', 'Collectors', 'groupingBy', 'toMap', 'Stream'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
@@ -2338,7 +2338,7 @@ Một ngân hàng chạy job "chốt giao dịch trong ngày" lúc 23:59 theo gi
     'Làm sao migrate cột {{TIMESTAMP}} cũ sang {{TIMESTAMP WITH TIME ZONE}} không mất dữ liệu?',
     'Khi nào dùng {{LocalDate}} thay vì {{LocalDateTime}} cho ngày sinh/ngày hết hạn?'
   ],
-  tags: ['Date/Time', 'Instant', 'ZonedDateTime', 'timezone', 'cut-off'],
+  tags: ['core', 'Date/Time', 'Instant', 'ZonedDateTime', 'timezone', 'cut-off'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
@@ -2396,7 +2396,7 @@ Một service phân quyền so sánh {{if (user.getTenantId() == resource.getTen
     'Ternary operator {{flag ? 1 : null}} ném NPE khi gán cho {{int}} — tại sao?',
     'Khi nào nên dùng {{OptionalInt}} thay vì {{Optional<Integer>}}?'
   ],
-  tags: ['autoboxing', 'Integer cache', 'NPE', 'performance']
+  tags: ['core', 'autoboxing', 'Integer cache', 'NPE', 'performance']
 },
 {
   id: 'core-015',
@@ -2478,7 +2478,7 @@ Một job xuất file dùng {{try/finally}} tự viết: trong finally gọi {{w
     'Resource khai báo trong try-with-resources có thể là null không?',
     'Làm sao viết AutoCloseable cho resource cần flush trước khi đóng (ví dụ BufferedWriter)?'
   ],
-  tags: ['try-with-resources', 'AutoCloseable', 'suppressed exception', 'resource management'],
+  tags: ['core', 'try-with-resources', 'AutoCloseable', 'suppressed exception', 'resource management'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
@@ -2626,7 +2626,7 @@ Một thư viện nội bộ có interface {{PaymentGateway}} dùng ở 14 servi
     'Static method trong interface có được kế thừa không?',
     'Vì sao Java không cho phép interface có instance field non-final?'
   ],
-  tags: ['interface', 'default method', 'diamond problem', 'abstract class'],
+  tags: ['core', 'interface', 'default method', 'diamond problem', 'abstract class'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
@@ -2701,7 +2701,7 @@ Hệ thống lưu file log ứng dụng dạng text, mỗi ngày khoảng 8GB, c
     'Khi nào dùng {{ByteBuffer.allocateDirect}} thay vì {{allocate}}?',
     '{{MappedByteBuffer}} có nhược điểm gì và làm sao unmap an toàn?'
   ],
-  tags: ['NIO', 'Buffer', 'Channel', 'Files', 'transferTo', 'zero-copy'],
+  tags: ['core', 'NIO', 'Buffer', 'Channel', 'Files', 'transferTo', 'zero-copy'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
@@ -3017,7 +3017,7 @@ Một dịch vụ phân quyền kiểm tra quyền sở hữu đơn hàng bằng
     'Vì sao enum so sánh bằng {{==}} lại an toàn, kể cả khi deserialize?',
     '{{switch}} trên String hoạt động thế nào bên trong ({{hashCode}} rồi {{equals}})?'
   ],
-  tags: ['equals', 'String pool', 'Integer cache', 'predict output', 'wrapper']
+  tags: ['core', 'equals', 'String pool', 'Integer cache', 'predict output', 'wrapper']
 },
 {
   id: 'core-023',
@@ -3292,7 +3292,7 @@ Khi khách hàng import danh mục 2.000 cấp (dữ liệu bất thường), re
     'Metaspace khác PermGen ở đâu? Khi nào gặp {{OutOfMemoryError: Metaspace}}?',
     'Vì sao virtual thread vẫn có thể bị pin vào carrier thread trong Java 21?'
   ],
-  tags: ['stack', 'heap', 'StackOverflowError', 'JVM memory', 'String pool'],
+  tags: ['core', 'stack', 'heap', 'StackOverflowError', 'JVM memory', 'String pool'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
@@ -3431,7 +3431,7 @@ Service đếm lượt xem sản phẩm dùng {{Map<String, Long>}} khởi tạo
     'Khi nào {{ConcurrentHashMap}} vẫn chưa đủ và bạn cần lock bên ngoài hoặc cache như Caffeine?',
     'Đếm số request theo user ở throughput cao: {{merge}} hay {{LongAdder}} trong map?'
   ],
-  tags: ['HashMap', 'Hashtable', 'ConcurrentHashMap', 'synchronizedMap', 'thread-safety'],
+  tags: ['core', 'HashMap', 'Hashtable', 'ConcurrentHashMap', 'synchronizedMap', 'thread-safety'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
     { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
@@ -3654,7 +3654,7 @@ API nội bộ trả về {{Arrays.asList(danhSach)}} kiểu {{List}}, module kh
     'Vì sao {{Arrays.asList(1, 2, 3).contains(1L)}} trả về false?',
     'Làm sao chuyển {{int[]}} sang {{List<Integer>}} hiệu quả với mảng vài triệu phần tử?'
   ],
-  tags: ['Arrays.asList', 'UnsupportedOperationException', 'immutable', 'List.of', 'predict output'],
+  tags: ['core', 'Arrays.asList', 'UnsupportedOperationException', 'immutable', 'List.of', 'predict output'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
@@ -3729,7 +3729,7 @@ Dự án dùng Java 17, IDE gợi ý thay toàn bộ collect(Collectors.toList()
     '{{Collectors.toMap}} và {{Collectors.toUnmodifiableMap}} xử lý duplicate key và null thế nào?',
     'Khi nào bạn chủ động muốn list chứa null bị chặn sớm thay vì cho qua?'
   ],
-  tags: ['Stream.toList', 'Collectors', 'immutable', 'Java 16', 'migration'],
+  tags: ['core', 'Stream.toList', 'Collectors', 'immutable', 'Java 16', 'migration'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
@@ -3893,7 +3893,7 @@ Service hồ sơ khách hàng trên Java 17 gặp lỗi NullPointerException lú
     'Pattern variable trong {{instanceof}} có thể là {{final}} không? Gán lại được không?',
     '{{Collectors.teeing}} giải quyết bài toán gì? Cho ví dụ tính min và max cùng lúc.'
   ],
-  tags: ['helpful NPE', 'instanceof', 'pattern matching', 'Java 11', 'Java 17']
+  tags: ['core', 'helpful NPE', 'instanceof', 'pattern matching', 'Java 11', 'Java 17']
 },
 {
   id: 'modern-014',
@@ -4057,7 +4057,7 @@ Hệ thống xử lý đơn hàng dùng pipeline Stream để đánh dấu các 
     'Khi nào nên dùng {{mapMulti}} thay vì {{flatMap}}?',
     'Vì sao lambda trong stream nên stateless? Cho ví dụ stateful lambda gây sai kết quả khi parallel.'
   ],
-  tags: ['Stream', 'flatMap', 'reduce', 'collect', 'peek'],
+  tags: ['core', 'Stream', 'flatMap', 'reduce', 'collect', 'peek'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
@@ -4269,7 +4269,7 @@ Một đơn hàng có {{Set<OrderLine>}}; {{OrderLine}} dùng Lombok {{@Data}} (
 
 > Senior tip: chọn quy tắc một lần cho toàn hệ thống và kiểm tra bằng test với HashSet trước/sau persist; equality của entity là quyết định identity, không chỉ là boilerplate.`,
   follow: ['Vì sao association lazy không nên nằm trong hashCode?', 'HashCode theo class ổn định có trade-off gì?'],
-  tags: ['JPA', 'Hibernate', 'equals', 'hashCode', 'entity']
+  tags: ['core', 'JPA', 'Hibernate', 'equals', 'hashCode', 'entity']
 },
 {
   id: 'core-030',
@@ -4733,7 +4733,7 @@ Case khác: đồng nghiệp dùng {{map.entrySet().removeIf(e -> e.getValue() =
 
 > Senior tip: một sự cố tôi từng gặp là heap dump cho thấy hàng nghìn {{ArrayList}} 200.000 phần tử bị giữ bởi {{ArrayList$SubList}} trong cache "top 20". Trong MAT, xem dominator tree, nếu thấy {{SubList}} hay {{KeySet}} giữ retained size lớn bất thường thì gần như chắc chắn ai đó cache view thay vì copy.`,
   follow: ['Vì sao keySet().add() bị cấm nhưng keySet().remove() lại được?', 'List.copyOf có copy lại nếu list đầu vào đã immutable không?', 'Làm sao phát hiện subList giữ bộ nhớ trong heap dump?'],
-  tags: ['view', 'subList', 'keySet', 'entrySet', 'memory leak']
+  tags: ['core', 'view', 'subList', 'keySet', 'entrySet', 'memory leak']
 },
 {
   id: 'collections-025',
@@ -5135,7 +5135,7 @@ new DueService(fixed).isOverdue(LocalDate.of(2024, 12, 31)); // true: ở VN đ�
 
 > Senior tip: bug {{YYYY}} thường chỉ lộ đúng tuần cuối tháng 12, khi cả team nghỉ lễ; thêm unit test với ngày 29-31/12 cho mọi pattern ngày tháng. Với Spring, khai báo một bean {{Clock}} ({{Clock.systemUTC()}}) và cho mọi service nhận qua constructor; test chỉ việc thay bằng {{Clock.fixed}}.`,
   follow: ['Lịch trả góp ngày 31 hàng tháng bạn tính thế nào cho đúng?', 'Instant, LocalDateTime và ZonedDateTime nên dùng ở tầng nào?', 'Khi một giờ địa phương không tồn tại do DST (2:30 sáng), ZonedDateTime xử lý ra sao?'],
-  tags: ['java.time', 'Period', 'Duration', 'DST', 'Clock']
+  tags: ['core', 'java.time', 'Period', 'Duration', 'DST', 'Clock']
 },
 {
   id: 'modern-021',
@@ -5611,7 +5611,7 @@ Một team chuyển toàn bộ DTO sang record — tốt — nhưng cũng dùng 
 
 > Senior tip: "Entity là về vòng đời và identity; DTO/ValueObject là về dữ liệu bất biến". Đừng ép record vào vai trò entity chỉ vì ngắn gọn - bạn sẽ đánh đổi khả năng lazy loading, proxy và dirty tracking.`,
   follow: ['Tại sao JPA cần no-arg constructor?', 'Record dùng làm projection được không?', 'Tại sao record tốt làm Map key?'],
-  tags: ['record', 'JPA', 'DTO', 'projection']
+  tags: ['core', 'record', 'JPA', 'DTO', 'projection']
 },
 {
   id: 'modern-027',
@@ -5730,7 +5730,7 @@ Hệ thống bảo hiểm có {{Policy}} và lớp con {{LifePolicy extends Poli
 
 > Senior tip: chọn một quy tắc cho toàn hệ thống và kiểm tra bằng test với HashSet trước/sau persist. Equality của entity là quyết định identity, không chỉ là boilerplate.`,
   follow: ['Tại sao Hibernate khuyên dùng business key thay vì id trong equals/hashCode?', 'Dùng getClass() vs instanceof ảnh hưởng thế nào đến tính đối xứng của equals?', 'Nếu entity đã nằm trong HashSet trước khi persist và hashCode đổi, làm sao khắc phục?'],
-  tags: ['equals', 'hashCode', 'JPA', 'entity', 'HashSet']
+  tags: ['core', 'equals', 'hashCode', 'JPA', 'entity', 'HashSet']
 },
 {
   id: 'core-033',
@@ -6010,7 +6010,7 @@ Service tổng hợp báo giá vận chuyển gọi 6 hãng (200–800 ms mỗi 
 
 > Senior tip: lợi ích của virtual thread là **throughput khi nhiều request cùng chờ I/O**, không phải làm một request nhanh hơn. Trước khi bật, tôi đo ba thứ: số request đồng thời lúc peak, số thread OS và JFR pinning; sau khi bật, việc đầu tiên là đặt semaphore cho từng downstream, vì sự cố hay gặp nhất là chính service của mình dội sập DB hoặc đối tác bằng lượng đồng thời mà trước đây thread pool đã vô tình giới hạn.`,
   follow: ['Pinning là gì, khi nào xảy ra trên JDK 21 và JEP 491 ở JDK 24 thay đổi gì?', 'Vì sao vẫn phải giới hạn đồng thời bằng Semaphore dù virtual thread gần như miễn phí?', 'ThreadLocal dùng để cache object đắt có vấn đề gì khi chuyển sang virtual thread?'],
-  tags: ['virtual thread', 'pinning', 'ThreadLocal', 'ScopedValue', 'Semaphore']
+  tags: ['core', 'virtual thread', 'pinning', 'ThreadLocal', 'ScopedValue', 'Semaphore']
 },
 {
   id: 'modern-029',
@@ -6084,7 +6084,7 @@ Một service dashboard hiển thị danh sách đơn hàng gần đây dùng st
 
 > Senior tip: dùng {{Optional}} ở tầng service/repository, còn ở tầng controller/DTO hãy chuyển về giá trị hoặc lỗi rõ ràng. Đừng bọc Optional quanh collection — trả {{List.of()}} rỗng để caller không phải xử lý hai tầng "không có". Khi stream, ưu tiên {{toList()}} cho kết quả bất biến, {{toCollection(ArrayList::new)}} khi cần sửa. Với toMap, luôn giả định key có thể trùng và value có thể null; viết merge function rõ ràng (ví dụ giữ bản mới nhất theo timestamp) thay vì để exception nổ ở production. Với báo cáo, dùng {{LinkedHashMap}}/{{TreeMap}} để thứ tự ổn định giữa các lần chạy.`,
   follow: ['Tại sao không nên dùng Optional làm field?', 'peek() có nên dùng để sửa object không, tại sao?', 'Collectors.toMap ném IllegalStateException khi nào và giải quyết thế nào?'],
-  tags: ['Optional', 'Stream', 'peek', 'toMap', 'anti-pattern']
+  tags: ['core', 'Optional', 'Stream', 'peek', 'toMap', 'anti-pattern']
 },
 {
   id: 'modern-030',
@@ -6202,7 +6202,7 @@ Một service xử lý hàng đợi đơn hàng cần lấy đơn mới nhất v
 
 > Senior tip: dùng SequencedCollection trong API nội bộ thay vì List khi cần first/last; reversed() là view nên nếu trả ra ngoài, copy để tránh caller mutate gốc. Trong code review, tìm get(size()-1) và thay bằng getLast().`,
   follow: ['reversed() có phải copy không, và rủi ro gì khi trả nó ra ngoài?', 'SequencedMap thêm những thao tác nào cho LinkedHashMap và TreeMap?'],
-  tags: ['Java 21', 'SequencedCollection', 'collections']
+  tags: ['core', 'Java 21', 'SequencedCollection', 'collections']
 },
 {
   id: 'modern-032',
@@ -6839,7 +6839,7 @@ Service giỏ hàng nạp 180.000 sản phẩm vào {{HashMap<String, Product>}}
     'Untreeify diễn ra khi nào trong resize, và vì sao không diễn ra khi remove thông thường?',
     'Bạn đặt initial capacity cho map 5 triệu entry thế nào và ảnh hưởng tới GC ra sao?'
   ],
-  tags: ['HashMap', 'resize', 'power of two', 'load factor', 'treeify', 'JMH'],
+  tags: ['core', 'HashMap', 'resize', 'power of two', 'load factor', 'treeify', 'JMH'],
   refs: [
     { type: 'doc', title: 'HashMap (Java SE 21 API Specification)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/HashMap.html' }
   ]
@@ -6982,7 +6982,7 @@ Một API công khai cho partner truyền {{filterKey}} (chuỗi tự do) để 
     'TreeNode mang theo các con trỏ danh sách prev/next để làm gì?',
     'Bạn thiết kế key composite cho map 10 triệu entry để vừa nhanh vừa không treeify?'
   ],
-  tags: ['HashMap', 'TreeNode', 'treeify', 'hash collision', 'HashDoS', 'Comparable'],
+  tags: ['core', 'HashMap', 'TreeNode', 'treeify', 'hash collision', 'HashDoS', 'Comparable'],
   refs: [
     { type: 'doc', title: 'HashMap (Java SE 21 API Specification)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/HashMap.html' }
   ]
@@ -7142,7 +7142,7 @@ Service giỏ hàng dùng {{List<OrderItem>}} để lưu 5.000 item/ngày, hàm 
     '{{@Setup(Level.Invocation)}} làm benchmark sai theo hướng nào, và thay thế bằng gì?',
     'Bạn viết thêm benchmark nào để chứng minh ArrayDeque thắng LinkedList khi làm queue?'
   ],
-  tags: ['JMH', 'microbenchmark', 'cache locality', 'ArrayList', 'LinkedList', 'Blackhole'],
+  tags: ['core', 'JMH', 'microbenchmark', 'cache locality', 'ArrayList', 'LinkedList', 'Blackhole'],
   refs: [
     { type: 'doc', title: 'JMH README (OpenJDK)', url: 'https://github.com/openjdk/jmh' }
   ]
@@ -7227,7 +7227,7 @@ Hệ thống thanh toán migrate sang virtual thread (Java 21) để xử lý 2.
     'Pinning xảy ra khi nào, ảnh hưởng ra sao, và làm sao phát hiện trên production?',
     'Khi nào KHÔNG nên dùng virtual thread?'
   ],
-  tags: ['virtual threads', 'ThreadLocal', 'JDBC', 'semaphore', 'pinning'],
+  tags: ['core', 'virtual threads', 'ThreadLocal', 'JDBC', 'semaphore', 'pinning'],
   refs: [{ type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' }]
 },
 {
@@ -7361,7 +7361,7 @@ Giả định job tổng hợp log giao dịch: 2 triệu bản ghi, mỗi bản
 
 > Senior tip: test {{Collector}} tự viết với cả {{stream()}} và {{parallelStream()}} - combiner sai là loại bug "âm thầm". Với gatherers, kiểm tra phiên bản JDK (cần 24+). Trước khi dùng {{parallel()}}, đo bằng JMH; đừng tin cảm giác. (Tham khảo: JEP 485 - Stream Gatherers.)`,
   follow: ['Combiner của Collector cần làm gì, và vì sao bug ở combiner chỉ lộ khi chạy parallel?', 'Gatherers.mapConcurrent khác parallel stream thế nào?', 'Bạn đo hiệu năng parallel stream thế nào cho đáng tin?'],
-  tags: ['Stream', 'Collector', 'gatherers', 'parallel', 'JDK 24'],
+  tags: ['core', 'Stream', 'Collector', 'gatherers', 'parallel', 'JDK 24'],
   refs: [{ type: 'doc', title: 'JEP 485: Stream Gatherers', url: 'https://openjdk.org/jeps/485' }]
 },
 {
@@ -7508,7 +7508,7 @@ API đặt hàng nhận {{OrderRequest}} record có {{List<String> items}}. Dev 
     'Compact constructor khác canonical constructor ở điểm nào, khi nào nên dùng compact?',
     'Record pattern (Java 21, khử cấu trúc) giúp gì khi xử lý dữ liệu lồng nhau?'
   ],
-  tags: ['record', 'compact constructor', 'DTO', 'JPA', 'shallow immutability']
+  tags: ['core', 'record', 'compact constructor', 'DTO', 'JPA', 'shallow immutability']
 },
 {
   id: 'modern-044',
@@ -7572,7 +7572,7 @@ Hệ thống xử lý đơn hàng dùng {{sealed interface OrderEvent permits Cr
     '{{non-sealed}} ảnh hưởng thế nào đến khả năng kiểm tra exhaustive của compiler?',
     'Switch pattern xử lý {{null}} khác switch truyền thống trên {{String/enum}} ra sao?'
   ],
-  tags: ['sealed', 'pattern matching', 'switch', 'exhaustiveness', 'Java 21']
+  tags: ['core', 'sealed', 'pattern matching', 'switch', 'exhaustiveness', 'Java 21']
 },
 {
   id: 'modern-045',
@@ -7640,7 +7640,7 @@ Một dịch vụ tính phí giao dịch của ví điện tử (khoảng 2 tri�
     'Khi nào KHÔNG nên dùng {{sealed}} cho một hierarchy?',
     'Record pattern lồng nhau (deconstruction pattern, Java 21) hỗ trợ gì khi khử cấu trúc dữ liệu?'
   ],
-  tags: ['sealed', 'pattern matching', 'switch', 'visitor', 'Java 21']
+  tags: ['core', 'sealed', 'pattern matching', 'switch', 'visitor', 'Java 21']
 },
 {
   id: 'modern-046',
@@ -8034,7 +8034,7 @@ Hệ thống tính tổng giá trị đơn hàng dùng {{int}} theo đơn vị �
     'Vì sao {{long total = intA * intB}} vẫn có thể chứa kết quả đã overflow?',
     'Khi nào bạn chọn {{Math.multiplyExact}} thay vì chỉ chuyển toàn bộ phép tính sang {{long}}?'
   ],
-  tags: ['integer', 'overflow', 'long', 'Math']
+  tags: ['core', 'integer', 'overflow', 'long', 'Math']
 },
 {
   id: 'core-042',
@@ -8561,7 +8561,7 @@ Một API tổng hợp gọi 3 dịch vụ downstream (dưới luồng) tuần t
     'Vì sao tạo nhiều virtual thread không đồng nghĩa có thể bỏ qua giới hạn connection pool của cơ sở dữ liệu?',
     'Bạn sẽ dùng công cụ/metric nào để xác nhận virtual thread thực sự cải thiện p95 thay vì chỉ tăng số luồng?'
   ],
-  tags: [
+  tags: ['core', 
     'virtual thread',
     'platform thread',
     'Project Loom',
@@ -9264,7 +9264,7 @@ frontend parse lỗi. Sửa field thành {{String note}} cho phép {{null}}, đ�
     '{{Stream<Optional<T>>}} biến thành {{Stream<T>}} như thế nào, và từ Java bao nhiêu?',
     'Optional field trong JPA entity gây vấn đề cụ thể nào với lazy loading và proxy?'
   ],
-  tags: [
+  tags: ['core', 
     'Optional',
     'Java 8',
     'orElse',
@@ -9596,7 +9596,7 @@ Gateway API mapping 200 field request dùng reflection {{Method.invoke}}: p99 12
     'Annotation processor có thể đọc annotation {{RetentionPolicy.SOURCE}} không? Vì sao?',
     'Khi migration từ Spring (runtime reflection) sang Micronaut/Quarkus (compile-time), những thay đổi lớn nào?'
   ],
-  tags: [
+  tags: ['core', 
     'reflection',
     'annotation processing',
     'MethodHandle',
@@ -10260,7 +10260,7 @@ Hệ thống thanh toán tính thuế 8% trên đơn 100.000 đồng: tax = 8.00
     '{{BigDecimal("2.0").equals(BigDecimal("2.00"))}} là gì, còn compareTo() thì ra sao?',
     'Khi chia BigDecimal có thể ném exception nào, và bạn xử lý thế nào?'
   ],
-  tags: ['BigDecimal', 'money', 'scale', 'RoundingMode', 'equals', 'compareTo', 'double']
+  tags: ['core', 'BigDecimal', 'money', 'scale', 'RoundingMode', 'equals', 'compareTo', 'double']
 },
 {
   id: 'modern-055',
@@ -10586,7 +10586,7 @@ Một màn hình danh sách đơn hàng trả 50 dòng. Code cũ load entity r�
     'Thêm một component vào record DTO có thể làm hỏng những chỗ nào, và bạn kiểm tra bằng cách nào trước khi deploy?',
     'Giữa interface projection và constructor expression, bạn chọn theo tiêu chí nào khi hiệu năng và khả năng bảo trì xung đột?'
   ],
-  tags: ['record', 'DTO', 'JPA projection', 'Hibernate 6.2', 'Spring Data JPA']
+  tags: ['core', 'record', 'DTO', 'JPA projection', 'Hibernate 6.2', 'Spring Data JPA']
 },
 {
   id: 'modern-059',
@@ -11082,7 +11082,7 @@ Một API kiểm tra quyền truy cập so sánh role bằng {{if (userRole == "
     'String.equalsIgnoreCase hoạt động thế nào và tốn chi phí gì?',
     'Khi nào String.hashCode trả về 0 cho chuỗi không rỗng?'
   ],
-  tags: ['String', 'equals', 'hashCode', 'string pool', 'intern']
+  tags: ['core', 'String', 'equals', 'hashCode', 'string pool', 'intern']
 },
 {
   id: 'core-059',
@@ -11141,7 +11141,7 @@ Service nạp 5 triệu đơn hàng, mỗi đơn có {{currency}} (VND/USD/EUR),
     'StringBuilder có dùng Compact Strings không?',
     'Làm sao bật String Deduplication trên ZGC (JDK 18+)?'
   ],
-  tags: ['String', 'Compact Strings', 'Latin-1', 'UTF-16', 'coder', 'heap dump', 'deduplication']
+  tags: ['core', 'String', 'Compact Strings', 'Latin-1', 'UTF-16', 'coder', 'heap dump', 'deduplication']
 },
 {
   id: 'core-060',
@@ -11203,7 +11203,7 @@ Module báo cáo dựng CSV hàng trăm nghìn dòng bằng {{+}} trong vòng l�
     'String.join khác Collectors.joining ở điểm nào?',
     'Khi nào StringBuilder thread-local là ý tưởng tốt/hay?'
   ],
-  tags: ['String', 'concat', 'invokedynamic', 'StringBuilder', 'String.format', 'StringConcatFactory']
+  tags: ['core', 'String', 'concat', 'invokedynamic', 'StringBuilder', 'String.format', 'StringConcatFactory']
 },
 {
   id: 'core-061',
@@ -11447,7 +11447,7 @@ Service xây câu SQL IN clause cho 10.000 ID: dùng {{StringBuilder}} capacity 
     'Collectors.joining trên parallel stream hoạt động thế nào (supplier/accumulator/combiner)?',
     'StringJoiner.merge có thread-safe không?'
   ],
-  tags: ['String', 'StringBuilder', 'StringBuffer', 'StringJoiner', 'Collectors.joining', 'thread-safety', 'performance']
+  tags: ['core', 'String', 'StringBuilder', 'StringBuffer', 'StringJoiner', 'Collectors.joining', 'thread-safety', 'performance']
 },
 {
   id: 'core-064',
@@ -11497,7 +11497,7 @@ class Order {
     'Cách dùng Lombok {{@EqualsAndHashCode(of = "...")}} cho entity thế nào là chuẩn?',
     'Nếu entity có quan hệ 1-N (ví dụ Order có List<Item>), có nên đưa Item vào equals của Order không?'
   ],
-  tags: ['JPA', 'Hibernate', 'equals', 'hashCode', 'Proxy', 'BusinessKey']
+  tags: ['core', 'JPA', 'Hibernate', 'equals', 'hashCode', 'Proxy', 'BusinessKey']
 },
 {
   id: 'core-065',
@@ -11541,7 +11541,7 @@ public final class SystemConfig {
     'Java 16+ {{record}} có giải quyết được vấn đề defensive copy cho field collection không?',
     'Có cách nào khác để tạo deep immutable object ngoài defensive copy không?'
   ],
-  tags: ['Immutable', 'Final', 'DefensiveCopy', 'Java16', 'Record']
+  tags: ['core', 'Immutable', 'Final', 'DefensiveCopy', 'Java16', 'Record']
 },
 {
   id: 'core-066',
@@ -11581,7 +11581,7 @@ Một service hồ sơ người dùng giữ cache 5 GB trên heap 8 GB; khoảng
     'Deduplication có hoạt động trên String Pool không?',
     'Tại sao không dùng {{intern()}} cho URL/tên người dùng?'
   ],
-  tags: ['StringPool', 'intern', 'G1GC', 'StringDeduplication', 'performance']
+  tags: ['core', 'StringPool', 'intern', 'G1GC', 'StringDeduplication', 'performance']
 },
 {
   id: 'core-067',
@@ -11634,7 +11634,7 @@ class GlobalExceptionHandler {
     'Phân biệt {{handle()}} và {{exceptionally()}} trong CompletableFuture.',
     'Có cách nào khác để cấu hình lỗi async tập trung trong Spring không?'
   ],
-  tags: ['CompletableFuture', 'ExceptionHandling', 'SpringAdvice', 'Async', 'ErrorHandling']
+  tags: ['core', 'CompletableFuture', 'ExceptionHandling', 'SpringAdvice', 'Async', 'ErrorHandling']
 },
 {
   id: 'core-068',
@@ -11676,7 +11676,7 @@ class ServiceRegistry {
     'Tại sao Generics bị xoá (erasure) gây khó khăn khi debug?',
     'Khi nào thì thực sự cần dùng {{? extends T}} hay {{? super T}}?'
   ],
-  tags: ['Generics', 'Refactoring', 'CleanCode', 'TypeSafety', 'TypeToken']
+  tags: ['core', 'Generics', 'Refactoring', 'CleanCode', 'TypeSafety', 'TypeToken']
 },
 {
   id: 'core-069',
@@ -11783,7 +11783,7 @@ Hệ thống ví điện tử xử lý ~2 triệu giao dịch/ngày. Trước đ
     'Làm sao serialize/deserialize một {{sealed}} hierarchy sang JSON một cách an toàn?',
     'So sánh cách này với việc dùng Visitor pattern hoặc State pattern truyền thống?'
   ],
-  tags: ['sealed', 'pattern-matching', 'switch', 'record', 'state-machine', 'Java21']
+  tags: ['core', 'sealed', 'pattern-matching', 'switch', 'record', 'state-machine', 'Java21']
 },
 {
   id: 'modern-065',
@@ -11853,7 +11853,7 @@ Service định tuyến thông báo (notification router) nhận ~500k event/gi�
     'Khi component của record là {{null}}, record pattern xử lý thế nào và bạn phòng tránh ra sao?',
     'Vì sao record không phù hợp làm JPA entity và bạn thiết kế DTO/entity thế nào thay thế?'
   ],
-  tags: ['record-pattern', 'deconstruction', 'pattern-matching', 'Java21', 'switch']
+  tags: ['core', 'record-pattern', 'deconstruction', 'pattern-matching', 'Java21', 'switch']
 },
 {
   id: 'modern-066',
@@ -12004,7 +12004,7 @@ Service tính phí giao dịch xử lý ~15.000 giao dịch/giây. Đoạn tính
     'Khi nào {{IntStream}}/primitive stream mang lại lợi ích rõ rệt so với {{Stream<Integer>}}?',
     'Bạn dùng công cụ gì (JMH, profiler) để quyết định thay Stream bằng vòng lặp?'
   ],
-  tags: ['Stream-API', 'performance', 'boxing', 'parallelStream', 'Java8']
+  tags: ['core', 'Stream-API', 'performance', 'boxing', 'parallelStream', 'Java8']
 },
 {
   id: 'modern-068',
