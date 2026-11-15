@@ -5160,5 +5160,746 @@ Lỗi hay gặp:
   related: ['concurrency-005', 'concurrency-037', 'concurrency-042', 'concurrency-058'],
   tags: ['CompletableFuture', 'thenApply', 'thenCompose', 'allOf', 'executor', 'timeout', 'fallback', 'async'],
 },
+{
+  id: 'lesson-concurrency-017',
+  track: 'concurrency',
+  order: 17,
+  title: 'Virtual threads từ gốc: platform thread, carrier thread, pinning và khi nào nên dùng',
+  level: 'mid',
+  minutes: 40,
+  goals: [
+    'Giải thích được platform thread là gì (thread của hệ điều hành) và vì sao nó đắt',
+    'Hiểu virtual thread chạy trên carrier thread như thế nào, mount/unmount là gì và vì sao nó rẻ',
+    'Nhận ra pinning (synchronized, native call) và biết cách chẩn đoán trên JDK 21',
+    'Quyết định khi nào dùng virtual thread (I/O-bound) và khi nào không (CPU-bound)',
+  ],
+  body: `### Tóm tắt
+**Platform thread** là thread thật của hệ điều hành: mỗi cái có vùng stack riêng khoảng 1 MB (tham số {{-Xss}}), tạo/huỷ phải gọi hệ điều hành, và chuyển ngữ cảnh giữa các thread tốn CPU. Vì vậy một service chỉ chạy được vài trăm tới vài nghìn thread. Khi phần lớn thời gian của request là **chờ IO** (DB, HTTP, đọc file), thread ngồi chờ mà không làm gì — đó là lúc **virtual thread** (JEP 444, chính thức từ **Java 21**) giúp ích: nó là object Java trên heap, stack co giãn vài trăm byte tới vài KB, nên tạo hàng triệu cái cũng được. Virtual thread chạy trên một số ít **carrier thread**; khi gặp thao tác chặn do JDK hỗ trợ, nó **unmount** (trả carrier cho việc khác) và chỉ mount lại khi có dữ liệu. Điều quan trọng: virtual thread tăng **throughput** cho việc chờ IO, **không** làm CPU-bound nhanh hơn, và **không** nên pool nó — giới hạn tài nguyên phía sau bằng {{Semaphore}} hoặc connection pool.
 
+### Platform thread: vì sao "mỗi request một thread" bị chặn trần
+Hãy hình dung quán cà phê có 200 nhân viên phục vụ (thread). Mỗi khách gọi đồ uống rồi nhân viên **đứng chờ** máy pha chạy xong mới quay lại nhận khách tiếp theo. Nếu pha mất 100 ms, mỗi nhân viên phục vụ được 10 khách/giây, cả quán được khoảng 2.000 khách/giây — dù nhân viên gần như chỉ đứng nhìn máy.
+
+Định luật Little cho ta con số này: số việc đang xử lý đồng thời = throughput × thời gian xử lý mỗi việc. Muốn 10.000 request/s với mỗi request chờ 100 ms thì cần 1.000 việc chạy song song. Với platform thread, 1.000 thread nghĩa là khoảng 1 GB stack được cấp phát (dù phần lớn chỉ chờ), cộng chi phí context switch. Tăng lên 10.000 thread thì gần như chắc chắn gặp {{OutOfMemoryError: unable to create native thread}} hoặc CPU dành hết cho việc chuyển thread.
+
+Cách cũ để vượt trần này là lập trình bất đồng bộ ({{CompletableFuture}}, reactive): không giữ thread khi chờ, nhưng code bị chia nhỏ thành callback, khó đọc, stack trace khi lỗi gần như vô dụng. Virtual thread giữ nguyên mô hình code chặn tuần tự mà vẫn đạt throughput cao.
+
+### Virtual thread: thread rẻ của JVM
+Một virtual thread gồm hai phần: một **continuation** (trạng thái thực thi: stack frame, vị trí đang chạy) và phần còn lại là object Java bình thường trên heap. JDK có một scheduler riêng — mặc định là một {{ForkJoinPool}} ở chế độ FIFO — gồm các **carrier thread** (mặc định số carrier bằng {{availableProcessors()}}, trên máy 8 core là 8). Khi virtual thread chạy, nó được **mount** lên một carrier: các frame của nó chạy trên stack của carrier đó.
+
+Khi virtual thread gọi một thao tác chặn mà JDK đã viết lại cho virtual thread (đọc/ghi socket, {{Thread.sleep}}, {{BlockingQueue.take}}, {{ReentrantLock.lock}}, {{LockSupport.park}}...), JDK **unmount** nó: copy các frame cần thiết lên heap, trả carrier cho virtual thread khác. Khi dữ liệu về (socket sẵn sàng, timer hết), virtual thread được đưa lại vào hàng đợi scheduler và mount lên **một carrier bất kỳ** — không cần carrier cũ. Đó là lý do 1.000 virtual thread đang chờ chỉ tốn vài MB heap và 8 carrier vẫn rảnh để chạy việc khác.
+
+~~~java
+// Java 21: mỗi task một virtual thread, không cần nghĩ tới kích thước pool
+try (ExecutorService ex = Executors.newVirtualThreadPerTaskExecutor()) {
+    for (int i = 0; i < 10_000; i++) {
+        int id = i;
+        ex.submit(() -> httpClient.send(request(id), BodyHandlers.ofString()));  // code chặn bình thường
+    }
+}   // close() chờ mọi task xong
+
+// Tạo trực tiếp một virtual thread
+Thread vt = Thread.ofVirtual().name("vt-").start(() -> doWork());
+boolean isVirtual = vt.isVirtual();   // true
+~~~
+
+### Pinning: khi virtual thread không nhường được carrier
+Virtual thread bị **pin** vào carrier (không unmount được) khi chặn trong lúc:
+- Đang ở trong khối hoặc method {{synchronized}} trên JDK 21, 22, 23. Monitor của synchronized gắn với carrier thread, nên JDK không thể đổi carrier giữa chừng. **JEP 491 (JDK 24)** cho phép unmount ngay cả khi giữ monitor; JDK 25 là bản LTS kế tiếp có thay đổi này.
+- Có frame **native** trên stack (JNI, JNA, hoặc foreign function): JDK không biết cách lưu/khôi phục trạng thái native nên phải giữ carrier.
+
+Pin ngắn không sao. Pin lâu mới nguy: 8 carrier, nếu 8 request cùng gọi JDBC bên trong {{synchronized}} thì cả 8 carrier bị giữ, dù có hàng nghìn virtual thread sẵn sàng — ứng dụng đứng. Cách xử lý trên JDK 21–23: thay {{synchronized}} bao quanh IO bằng {{ReentrantLock}}, nâng cấp thư viện (nhiều JDBC driver đã chuyển sang ReentrantLock), và chẩn đoán bằng JFR event {{jdk.VirtualThreadPinned}} hoặc cờ {{-Djdk.tracePinnedThreads=full}}.
+
+### Khi nào nên dùng, khi nào không
+| Tiêu chí | Platform thread | Virtual thread |
+|---|---|---|
+| Ánh xạ | 1-1 với thread hệ điều hành | Nhiều virtual thread trên ít carrier |
+| Chi phí tạo và bộ nhớ khi chờ | Cao (stack cố định ~1 MB) | Rất thấp (object trên heap) |
+| Có nên pool không | Có | **Không**: tạo mới cho mỗi task |
+| Phù hợp | CPU-bound, số thread ít | IO-bound, rất nhiều việc đồng thời phần lớn thời gian là chờ |
+| Giới hạn đồng thời | Bằng kích thước pool | Bằng {{Semaphore}}, rate limiter, connection pool |
+
+Virtual thread **không** làm từng request nhanh hơn; nó chỉ cho phép nhiều request chờ cùng lúc với ít thread thật. Việc CPU-bound (nén file, mã hoá, tính toán) chạy trên virtual thread **không nhanh hơn** platform thread vì vẫn chỉ có số carrier bằng số core. Ngoài ra tài nguyên phía sau vẫn có hạn: 10.000 virtual thread cùng gọi một DB có pool 20 connection thì 9.980 cái đứng chờ connection (chờ trong lúc unmount nên không tốn carrier, nhưng timeout lấy connection có thể nổ hàng loạt). Vì vậy phải giới hạn bằng {{Semaphore}} ngay tại chỗ dùng tài nguyên.
+
+### Ví dụ đời thực
+Một API gateway nhận 8.000 request/s, mỗi request gọi 3 service phía sau và mỗi lời gọi chờ khoảng 60 ms (tổng 180 ms). Với pool 200 platform thread: throughput tối đa khoảng 200 / 0,18 ≈ 1.100 request/s, phần còn lại xếp hàng, p99 vọt lên 4–6 giây.
+
+Nhóm chuyển sang JDK 21 với {{Executors.newVirtualThreadPerTaskExecutor()}} và một {{Semaphore(100)}} giới hạn số lời gọi đồng thời tới đối tác. Kết quả đo trên cùng mức tải: throughput 8.000 request/s, p99 từ 4,2 s xuống 380 ms, heap tăng thêm khoảng 40 MB cho vài chục nghìn virtual thread đang chờ. CPU không tăng vì phần lớn thời gian vẫn là chờ IO. Sau đó họ phát hiện một thư viện cũ gọi HTTP bên trong {{synchronized}}, JFR {{jdk.VirtualThreadPinned}} chỉ ra đúng class đó; thay bằng {{ReentrantLock}} thì p99 ổn định lại.
+
+### Cách chẩn đoán trên production
+- {{jcmd <pid> Thread.dump_to_file -format=json /tmp/threads.json}}: liệt kê cả virtual thread và carrier, thấy cái nào đang chờ đâu.
+- JFR: bật {{jdk.VirtualThreadStart}}, {{jdk.VirtualThreadEnd}}, {{jdk.VirtualThreadPinned}} để biết có bao nhiêu virtual thread và chỗ pinning.
+- {{-Djdk.tracePinnedThreads=full}} (JDK 21–23): in stack trace của virtual thread bị pin; cờ này bị gỡ ở JDK 24 vì không còn pinning do synchronized.
+- Đo throughput và p99 ở cùng mức tải với workload thật (IO chiếm phần lớn thời gian), đừng benchmark bằng vòng lặp CPU-bound rồi kết luận virtual thread không nhanh hơn.
+
+### Lỗi production hay gặp
+- Bật {{spring.threads.virtual.enabled=true}} (Spring Boot 3.2+) trên JDK 21 khi code hoặc thư viện còn {{synchronized}} bao quanh IO: tải cao thì treo vì mọi carrier bị pin.
+- Thay pool 200 thread bằng virtual thread rồi làm "sập" DB vì không còn giới hạn tự nhiên số request đồng thời xuống DB; luôn giữ {{Semaphore}} hoặc connection pool phía trước.
+- Tạo "pool virtual thread" bằng {{Executors.newFixedThreadPool(n, Thread.ofVirtual().factory())}}: vừa mất lợi ích vừa giới hạn sai chỗ.
+- Dùng {{ThreadLocal}} giữ object nặng (formatter, buffer) cho mỗi virtual thread: một triệu thread là một triệu bản sao, rò rỉ bộ nhớ rất nhanh. {{ScopedValue}} (preview ở Java 21) là hướng thay thế khi cần truyền context.
+
+> Senior tip: Đừng bao giờ viết {{Executors.newFixedThreadPool(100, Thread.ofVirtual().factory())}} — đó là "pool virtual thread", trái với khuyến nghị của JEP 444. Hãy dùng {{newVirtualThreadPerTaskExecutor()}} và giới hạn tài nguyên phía sau bằng {{Semaphore}}/connection pool. Theo dõi JFR {{jdk.VirtualThreadPinned}} định kỳ; nếu pinning nghiêm trọng trên JDK 21–23, hoặc thay {{synchronized}} quanh IO bằng {{ReentrantLock}}, hoặc nâng cấp JDK 24+.
+
+### Trả lời mẫu khi phỏng vấn
+Virtual thread là thread do JVM quản lý thay vì hệ điều hành. Nó giữ nguyên mô hình code chặn nhưng rất rẻ: stack nằm trên heap và co giãn, nên tạo hàng triệu cái chỉ tốn vài MB. Virtual thread chạy trên một pool carrier thread nhỏ, mặc định bằng số core. Khi gặp thao tác chờ IO mà JDK hỗ trợ, nó unmount khỏi carrier, trả carrier cho virtual thread khác, và mount lại khi có dữ liệu. Nhờ vậy throughput tăng mạnh cho workload IO-bound mà code vẫn dễ đọc.
+
+Điểm phải nói rõ: virtual thread không làm CPU-bound nhanh hơn, vì số carrier vẫn bằng số core. Nó cũng không thay thế việc giới hạn tài nguyên: nếu 10.000 request cùng đập vào một DB pool 20 connection thì vẫn sập. Vì vậy tôi giới hạn bằng Semaphore hoặc connection pool, không pool virtual thread. Trên JDK 21–23, chặn trong synchronized hoặc native call làm pin carrier; tôi chẩn đoán bằng JFR jdk.VirtualThreadPinned và thay synchronized quanh IO bằng ReentrantLock. Từ JDK 24, JEP 491 xử lý được pinning do synchronized.
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "Virtual thread hoạt động thế nào?", "Pinning là gì, sửa ra sao?", "Có nên chuyển toàn bộ sang virtual thread không?". Câu trả lời senior nêu được mount/unmount trên carrier, pinning do synchronized (JDK 21–23) và JEP 491 (JDK 24), nút thắt chuyển từ số thread sang tài nguyên phía sau (connection pool, rate limit), và không pool virtual thread mà giới hạn bằng Semaphore.`,
+  exercises: [
+    {
+      title: 'MiniLoom: mô phỏng carrier thread và suspend/resume',
+      prompt: `Bài tập này mô phỏng cơ chế của virtual thread bằng Java 17 thuần (không dùng API virtual thread, vì Java 17 chưa có). Bạn viết một scheduler nhỏ tên {{MiniLoom}} có số **carrier thread cố định**, nhưng nhận **rất nhiều tác vụ**; tác vụ có thể "treo" (suspend) để nhường carrier, giống virtual thread unmount khi chờ IO.
+
+Cần cài đặt:
+- {{MiniLoom(int carriers)}}: tạo {{carriers}} thread daemon làm carrier. Nếu {{carriers < 1}} ném {{IllegalArgumentException}}.
+- {{int submit(Task task)}}: đưa tác vụ vào hàng đợi, trả về một id duy nhất (tăng dần). Nếu scheduler đã đóng thì ném {{RejectedExecutionException}}.
+- {{void resume(int id)}}: đánh thức tác vụ đang treo có id đó, đưa lại vào hàng đợi. Nếu id không tồn tại (chưa từng submit hoặc đã xong) thì **bỏ qua im lặng**, không ném lỗi.
+- {{int suspendedCount()}}: số tác vụ đang treo hiện tại.
+- {{void shutdown()}}: dừng scheduler, chờ tối đa 2 giây, gọi lại nhiều lần phải an toàn (idempotent).
+
+Hai interface có sẵn trong khung code:
+- {{Task.step(Suspender s)}} trả về {{true}} khi tác vụ đã xong. Tác vụ gọi {{s.suspend()}} khi cần nhường carrier và chờ được resume.
+- {{Suspender.suspend()}} thực chất ném ra {{Suspended}} (một {{RuntimeException}}). Scheduler bắt {{Suspended}} để biết tác vụ đang treo, lưu vào map theo id và trả carrier về vòng lặp.
+
+Cách scheduler chạy (đã có trong khung): mỗi carrier lặp lấy tác vụ từ hàng đợi, gọi {{step}}. Nếu {{step}} trả {{false}} thì đưa tác vụ về cuối hàng đợi (yield); nếu ném {{Suspended}} thì đưa vào map treo; nếu trả {{true}} thì xong. Bắt mọi {{RuntimeException}} khác để carrier không chết.
+
+Yêu cầu: {{submit}}, {{resume}}, {{suspendedCount}}, {{shutdown}} đang là {{throw new UnsupportedOperationException("TODO")}} — bạn thay bằng code đúng. Test dùng {{CountDownLatch}}/vòng chờ có timeout để kiểm tra xác định, không dựa vào thời gian thực.`,
+      starter: `import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class MiniLoom {
+    private final BlockingQueue<Slot> ready;
+    private final ConcurrentHashMap<Integer, Slot> suspended;
+    private final AtomicInteger nextId;
+    private final ExecutorService workers;
+    private volatile boolean closed;
+
+    static final class Slot {
+        final int id;
+        final Task task;
+        Slot(int id, Task task) { this.id = id; this.task = task; }
+    }
+
+    interface Task { boolean step(Suspender suspender); }
+
+    interface Suspender { void suspend(); }
+
+    static final class Suspended extends RuntimeException {
+        Suspended() { super("suspended"); }
+    }
+
+    private static final Suspender THROWER = () -> { throw new Suspended(); };
+
+    MiniLoom(int carriers) {
+        if (carriers < 1) throw new IllegalArgumentException("carriers must be >= 1");
+        this.ready = new LinkedBlockingQueue<>();
+        this.suspended = new ConcurrentHashMap<>();
+        this.nextId = new AtomicInteger(0);
+        this.workers = Executors.newFixedThreadPool(carriers, r -> {
+            Thread t = new Thread(r, "carrier");
+            t.setDaemon(true);
+            return t;
+        });
+        for (int i = 0; i < carriers; i++) {
+            workers.execute(() -> {
+                while (!closed) {
+                    Slot slot;
+                    try { slot = ready.poll(200, TimeUnit.MILLISECONDS); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                    if (slot == null) continue;
+                    try {
+                        if (slot.task.step(THROWER)) {
+                            // tác vụ xong
+                        } else {
+                            ready.add(slot);   // yield: nhường carrier, xếp lại cuối hàng
+                        }
+                    } catch (Suspended s) {
+                        suspended.put(slot.id, slot);   // treo: nhường carrier
+                    } catch (RuntimeException e) {
+                        // tác vụ lỗi: coi như xong, không giết carrier
+                    }
+                }
+            });
+        }
+    }
+
+    int submit(Task task) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void resume(int id) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int suspendedCount() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void shutdown() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void awaitTrue(java.util.function.BooleanSupplier cond, long ms, String what) {
+        long end = System.nanoTime() + ms * 1_000_000L;
+        while (!cond.getAsBoolean()) {
+            if (System.nanoTime() > end) throw new AssertionError("timeout " + ms + "ms: " + what);
+            Thread.onSpinWait();
+        }
+    }
+    public static void main(String[] args) {
+        check("200 tác vụ treo, 4 carrier, tất cả xong sau resume", () -> {
+            MiniLoom loom = new MiniLoom(4);
+            try {
+                AtomicInteger running = new AtomicInteger(), maxRunning = new AtomicInteger(), finished = new AtomicInteger();
+                List<Integer> ids = new ArrayList<>();
+                for (int i = 0; i < 200; i++) {
+                    ids.add(loom.submit(new MiniLoom.Task() {
+                        boolean ran = false;
+                        public boolean step(MiniLoom.Suspender s) {
+                            if (!ran) {
+                                ran = true;
+                                running.incrementAndGet();
+                                maxRunning.accumulateAndGet(running.get(), Math::max);
+                                running.decrementAndGet();
+                                s.suspend();
+                            }
+                            finished.incrementAndGet();
+                            return true;
+                        }
+                    }));
+                }
+                awaitTrue(() -> loom.suspendedCount() == 200, 5000, "200 tác vụ phải treo");
+                eq(200, loom.suspendedCount());
+                for (int id : ids) loom.resume(id);
+                awaitTrue(() -> finished.get() == 200, 5000, "200 tác vụ phải xong");
+                if (maxRunning.get() > 4) throw new AssertionError("chạy song song " + maxRunning.get() + " > 4 carrier");
+            } finally { loom.shutdown(); }
+        });
+
+        check("carrier được nhả khi tác vụ treo: probe chạy được", () -> {
+            MiniLoom loom = new MiniLoom(2);
+            try {
+                for (int i = 0; i < 50; i++) {
+                    loom.submit(new MiniLoom.Task() {
+                        boolean ran = false;
+                        public boolean step(MiniLoom.Suspender s) {
+                            if (!ran) { ran = true; s.suspend(); }
+                            return true;
+                        }
+                    });
+                }
+                awaitTrue(() -> loom.suspendedCount() == 50, 5000, "50 tác vụ phải treo");
+                java.util.concurrent.atomic.AtomicBoolean probe = new java.util.concurrent.atomic.AtomicBoolean();
+                loom.submit(new MiniLoom.Task() {
+                    public boolean step(MiniLoom.Suspender s) { probe.set(true); return true; }
+                });
+                awaitTrue(probe::get, 2000, "probe phải chạy khi tác vụ khác đang treo");
+            } finally { loom.shutdown(); }
+        });
+
+        check("carriers < 1 ném IllegalArgumentException", () -> {
+            try { new MiniLoom(0); throw new AssertionError("phải ném IllegalArgumentException"); }
+            catch (IllegalArgumentException expected) { }
+        });
+
+        check("resume id không tồn tại: bỏ qua im lặng", () -> {
+            MiniLoom loom = new MiniLoom(2);
+            try { loom.resume(999999); }
+            finally { loom.shutdown(); }
+        });
+
+        check("shutdown gọi lại nhiều lần an toàn", () -> {
+            MiniLoom loom = new MiniLoom(2);
+            loom.shutdown();
+            loom.shutdown();
+        });
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class MiniLoom {
+    private final BlockingQueue<Slot> ready;
+    private final ConcurrentHashMap<Integer, Slot> suspended;
+    private final AtomicInteger nextId;
+    private final ExecutorService workers;
+    private volatile boolean closed;
+
+    static final class Slot {
+        final int id;
+        final Task task;
+        Slot(int id, Task task) { this.id = id; this.task = task; }
+    }
+
+    interface Task { boolean step(Suspender suspender); }
+
+    interface Suspender { void suspend(); }
+
+    static final class Suspended extends RuntimeException {
+        Suspended() { super("suspended"); }
+    }
+
+    private static final Suspender THROWER = () -> { throw new Suspended(); };
+
+    MiniLoom(int carriers) {
+        if (carriers < 1) throw new IllegalArgumentException("carriers must be >= 1");
+        this.ready = new LinkedBlockingQueue<>();
+        this.suspended = new ConcurrentHashMap<>();
+        this.nextId = new AtomicInteger(0);
+        this.workers = Executors.newFixedThreadPool(carriers, r -> {
+            Thread t = new Thread(r, "carrier");
+            t.setDaemon(true);
+            return t;
+        });
+        for (int i = 0; i < carriers; i++) {
+            workers.execute(() -> {
+                while (!closed) {
+                    Slot slot;
+                    try { slot = ready.poll(200, TimeUnit.MILLISECONDS); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                    if (slot == null) continue;
+                    try {
+                        if (slot.task.step(THROWER)) {
+                            // tác vụ xong
+                        } else {
+                            ready.add(slot);   // yield: nhường carrier, xếp lại cuối hàng
+                        }
+                    } catch (Suspended s) {
+                        suspended.put(slot.id, slot);   // treo: nhường carrier
+                    } catch (RuntimeException e) {
+                        // tác vụ lỗi: coi như xong, không giết carrier
+                    }
+                }
+            });
+        }
+    }
+
+        int submit(Task task) {
+        if (closed) throw new RejectedExecutionException("MiniLoom already closed");
+        int id = nextId.incrementAndGet();
+        Slot slot = new Slot(id, task);
+        ready.add(slot);
+        return id;
+    }
+
+    void resume(int id) {
+        Slot slot = suspended.remove(id);
+        if (slot != null) ready.add(slot);
+    }
+
+    int suspendedCount() {
+        return suspended.size();
+    }
+
+    void shutdown() {
+        if (closed) return;
+        closed = true;
+        workers.shutdownNow();
+        try { workers.awaitTermination(2, TimeUnit.SECONDS); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+}`,
+      hints: [
+        '{{submit}}: tạo id bằng {{nextId.incrementAndGet()}}, bọc vào {{Slot}} rồi {{ready.add(slot)}}, trả về id.',
+        '{{resume(id)}}: {{suspended.remove(id)}}; nếu khác null thì {{ready.add(slot)}} — nhờ vậy id lạ tự động bị bỏ qua.',
+        '{{suspendedCount()}} chỉ là {{suspended.size()}}; hai lời gọi suspend cùng lúc vẫn an toàn vì dùng {{ConcurrentHashMap}}.',
+        '{{shutdown()}} phải idempotent: kiểm tra cờ {{closed}}, gọi {{workers.shutdownNow()}} và {{awaitTermination(2, SECONDS)}}.',
+      ],
+      explain: `Lời giải thêm đúng bốn mẩu:
+- {{submit}} cấp id tăng dần và xếp tác vụ vào hàng đợi sẵn chạy.
+- Scheduler (đã có trong khung) bắt {{Suspended}} và bỏ tác vụ vào map treo; vì vậy carrier được trả lại ngay khi tác vụ gọi {{s.suspend()}} — đây chính là mô phỏng unmount.
+- {{resume}} lấy tác vụ khỏi map treo và xếp lại hàng đợi; id không có trong map thì không làm gì.
+- {{suspendedCount}} đọc kích thước map treo, còn {{shutdown}} dừng executor và chờ có giới hạn.
+
+Vì sao test "carrier được nhả" quan trọng: nếu bạn cài đặt sai bằng cách để tác vụ chờ trên chính carrier (ví dụ dùng {{Thread.sleep}} hoặc latch bên trong {{step}}), thì với 2 carrier và 50 tác vụ, probe không bao giờ chạy và test FAIL sau 2 giây. Cài đặt đúng cho tác vụ nhường carrier ngay khi suspend, nên probe chạy trên carrier rảnh.
+
+Đây là mô hình thu nhỏ của virtual thread: số carrier cố định, nhiều tác vụ có thể treo cùng lúc, và tác vụ đang treo không chiếm carrier. Trên Java 21 bạn không phải tự viết MiniLoom — JDK làm mount/unmount khi bạn gọi {{Executors.newVirtualThreadPerTaskExecutor()}}.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Mỗi platform thread (mặc định) chiếm khoảng bao nhiêu bộ nhớ cho stack?',
+      options: ['Vài trăm byte', 'Khoảng 1 MB', 'Khoảng 100 MB', 'Không cấp phát gì cho tới khi chạy'],
+      answer: 1,
+      explain: 'Stack của platform thread mặc định khoảng 1 MB (tham số {{-Xss}}). Đó là lý do tạo hàng nghìn platform thread rất tốn bộ nhớ, còn virtual thread có stack trên heap co giãn vài trăm byte tới vài KB. Virtual thread không cấp phát stack cố định 1 MB.',
+    },
+    {
+      q: 'Trên JDK 21, một virtual thread gọi JDBC (chặn chờ socket) bên trong method {{synchronized}}. Điều gì xảy ra?',
+      options: ['Virtual thread unmount bình thường, carrier được giải phóng', 'Virtual thread bị pin: carrier bị giữ trong suốt thời gian chờ', 'JVM ném IllegalStateException', 'synchronized tự động chuyển thành ReentrantLock'],
+      answer: 1,
+      explain: 'Ở JDK 21–23, chặn trong synchronized làm virtual thread bị pin, carrier không phục vụ được việc khác. Chỉ từ JDK 24 (JEP 491) nó mới unmount được trong trường hợp này. JVM không ném exception và không tự đổi synchronized thành ReentrantLock: bạn phải sửa code hoặc nâng cấp driver/JDK.',
+    },
+    {
+      q: 'Service gọi API đối tác giới hạn 50 request đồng thời. Chuyển sang virtual thread, bạn giới hạn thế nào?',
+      options: ['{{Executors.newFixedThreadPool(50)}} với ThreadFactory tạo virtual thread', '{{Semaphore(50)}} quanh lời gọi API, mỗi task một virtual thread', 'Đặt số carrier thread bằng 50', 'Không cần giới hạn vì virtual thread rẻ'],
+      answer: 1,
+      explain: 'Virtual thread không nên pool; giới hạn tài nguyên bằng Semaphore đúng tại chỗ dùng tài nguyên. Pool 50 virtual thread là "pool thứ rẻ" và còn giới hạn cả phần việc không đụng tới API. Số carrier quyết định số virtual thread chạy CPU cùng lúc, không liên quan số request đang chờ IO. Không giới hạn thì đối tác trả 429 hoặc sập.',
+    },
+    {
+      q: 'Workload nào được lợi ít nhất khi chuyển sang virtual thread?',
+      options: ['API gateway gọi 3 service phía sau cho mỗi request', 'Batch nén và mã hoá file, CPU luôn 100%', 'Consumer xử lý message rồi ghi DB', 'Service đọc S3 rồi trả về cho client'],
+      answer: 1,
+      explain: 'Việc CPU-bound không có thời gian chờ để nhường carrier, và số carrier bằng số core, nên throughput không tăng. Ba lựa chọn còn lại phần lớn thời gian là chờ IO (HTTP, DB, S3) — đó là chỗ virtual thread giúp chạy nhiều việc đồng thời với code chặn đơn giản.',
+    },
+  ],
+  related: ['concurrency-007', 'concurrency-013', 'concurrency-008'],
+  tags: ['virtual threads', 'platform thread', 'carrier thread', 'pinning', 'JEP 444', 'JEP 491', 'Semaphore'],
+},
+{
+  id: 'lesson-concurrency-018',
+  track: 'concurrency',
+  order: 18,
+  title: 'Giới hạn đồng thời bằng Semaphore: bulkhead, tryAcquire có timeout và test tất định với CountDownLatch',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích được Semaphore là gì (giấy phép đếm), acquire/release hoạt động thế nào và vì sao không gắn với chủ sở hữu',
+    'Phân biệt Semaphore, ThreadPoolExecutor và rate limiter, chọn đúng công cụ để bảo vệ downstream (bulkhead)',
+    'Viết được bulkhead có {{tryAcquire(timeout)}} để fail fast thay vì chờ vô hạn',
+    'Viết test concurrency tất định bằng {{CountDownLatch}} và timeout, không dựa vào {{Thread.sleep}} may rủi',
+  ],
+  body: `### Tóm tắt
+{{Semaphore}} là một bộ đếm giấy phép: mỗi lần {{acquire()}} lấy một giấy phép (không còn thì chờ), mỗi lần {{release()}} trả lại. Nó không gắn với thread nào sở hữu, nên thread A có thể lấy phép và thread B trả phép. Dùng Semaphore để làm **bulkhead** (khoang tàu): giới hạn số việc đồng thời đập vào một tài nguyên có hạn — API đối tác, connection pool, một job nặng. Khác với thread pool, Semaphore không tạo thread; nó chỉ chặn công việc khi hết phép. Với virtual thread, Semaphore là cách chuẩn để giới hạn tài nguyên vì không nên pool virtual thread. Bài này đi từ cơ chế, các lỗi hay gặp, tới cách viết test concurrency **tất định** bằng {{CountDownLatch}} thay vì {{Thread.sleep}}.
+
+### Semaphore hoạt động thế nào
+Semaphore giữ một số nguyên gọi là số giấy phép còn lại ({{availablePermits()}}). Ban đầu bạn cấp {{new Semaphore(n)}}.
+- {{acquire()}}: nếu còn phép thì lấy và đi tiếp; nếu hết thì **chặn** cho tới khi có người {{release()}}.
+- {{tryAcquire()}}: lấy nếu còn, trả {{true}}/{{false}} ngay, không chờ.
+- {{tryAcquire(timeout, unit)}}: chờ tối đa timeout; hết hạn trả {{false}} — đây là cách **fail fast** thay vì treo vô hạn.
+- {{release()}}: tăng số phép lên (không kiểm tra ai đã lấy), đánh thức một thread đang chờ nếu có.
+
+Bên trong, Semaphore dựa trên AQS (AbstractQueuedSynchronizer): một biến trạng thái đếm số phép và một hàng đợi các thread đang chờ. Nếu bạn tạo {{new Semaphore(n, true)}} (fair), các thread được cấp phép theo thứ tự FIFO; mặc định là không fair, cho throughput cao hơn nhưng có thể có thread chờ lâu (starvation) khi tranh chấp mạnh.
+
+~~~java
+Semaphore permits = new Semaphore(50);   // tối đa 50 việc đồng thời
+
+boolean entered = permits.tryAcquire(200, TimeUnit.MILLISECONDS);  // chờ tối đa 200 ms
+if (!entered) {
+    // downstream đang bận: trả 429/503 hoặc dùng kết quả cache
+} else {
+    try {
+        callPartnerApi();       // phần cần bảo vệ
+    } finally {
+        permits.release();      // LUÔN trả phép, kể cả khi lỗi
+    }
+}
+~~~
+
+### Semaphore khác gì thread pool và rate limiter
+| Công cụ | Giới hạn cái gì | Đơn vị | Dùng khi |
+|---|---|---|---|
+| {{ThreadPoolExecutor}} | Số thread chạy cùng lúc | Thread | Công việc CPU-bound hoặc số việc cố định cần tái dùng thread |
+| {{Semaphore}} | Số việc đồng thời đang dùng tài nguyên | Giấy phép | Bảo vệ downstream có hạn mức; đặc biệt khi dùng virtual thread |
+| Rate limiter (token bucket) | Số việc trong một đơn vị thời gian | Request/giây | Đối tác giới hạn theo tốc độ, không phải theo số đồng thời |
+
+Ba cái bổ sung nhau, không thay thế nhau. Ví dụ: thread pool 32 thread + Semaphore 10 phép cho API đối tác + rate limiter 100 request/giây. Nếu chỉ có pool, bạn giới hạn cả việc không đụng tới đối tác; nếu chỉ có Semaphore, bạn không giới hạn được tốc độ theo thời gian.
+
+### Bốn lỗi làm Semaphore sai
+1. **Quên {{release()}} trong {{finally}}**: mỗi lần lỗi làm mất một phép vĩnh viễn; sau n lần lỗi, mọi việc còn lại chờ mãi. Luôn đặt {{release()}} trong {{finally}} ngay sau khi {{acquire()}} thành công.
+2. **{{acquire()}} không timeout**: khi downstream chết, hàng chờ phình to, request treo tới khi client timeout, thread bị giữ. Dùng {{tryAcquire(timeout)}} và có hành vi rõ ràng khi hết hạn (429, fallback, cache).
+3. **{{release()}} không cân với {{acquire()}}**: {{release()}} không kiểm tra chủ sở hữu, nên gọi thừa sẽ làm số phép tăng vượt ban đầu và bulkhead mất tác dụng. Đếm cẩn thận, đặc biệt trong code có nhiều nhánh return.
+4. **Lấy nhiều phép không nguyên tử**: một tác vụ cần 2 phép mà {{tryAcquire(2)}} từng cái một có thể deadlock khi nhiều tác vụ giữ 1 phép và cùng chờ phép thứ hai. Dùng {{tryAcquire(2)}} một lần (Semaphore hỗ trợ lấy nhiều phép trong một lời gọi).
+
+> Senior tip: Trên JDK 21 với virtual thread, Semaphore là "cầu dao" đúng chỗ. Nhưng nhớ rằng virtual thread chờ {{acquire()}} sẽ unmount nên không tốn carrier; còn platform thread chờ {{acquire()}} vẫn chiếm một thread. Vì vậy trên Java 17, nếu dùng pool nhỏ thì Semaphore ít tác dụng hơn; trên Java 21, Semaphore + virtual thread là combo chuẩn.
+
+### Test concurrency tất định: CountDownLatch thay cho sleep
+Test concurrency hay bị "flaky" vì dựa vào {{Thread.sleep}} để chờ thread khác. Cách đúng là dùng công cụ đồng bộ có timeout:
+- {{CountDownLatch(n)}}: một lần đếm về 0, dùng làm **cổng xuất phát** (n thread cùng chờ {{await()}}, test gọi {{countDown()}} để tất cả lao vào cùng lúc) hoặc **cổng về đích** (mỗi thread {{countDown()}} khi xong, test {{await(timeout)}}).
+- {{CyclicBarrier(n)}}: dùng lại được nhiều vòng; phù hợp test "n thread phải gặp nhau ở cuối mỗi vòng".
+- {{Phaser}}: linh hoạt hơn, cho đăng ký/huỷ từng phần.
+
+Nguyên tắc: mỗi lần chờ đều có **timeout**; mỗi lần kiểm tra đều là điều kiện xác định (số đếm, cờ), không phải "chờ 100 ms rồi hy vọng". Một test tốt cho bulkhead phải chứng minh được **chính xác** số việc đồng thời tối đa, và phải FAIL ổn định với code thiếu giới hạn — chứ không phải pass may rủi.
+
+~~~java
+// Cổng xuất phát: 8 thread cùng chờ, rồi lao vào cùng lúc
+CountDownLatch start = new CountDownLatch(1);
+CountDownLatch done = new CountDownLatch(8);
+for (int i = 0; i < 8; i++) {
+    new Thread(() -> {
+        try { start.await(); work(); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        finally { done.countDown(); }
+    }).start();
+}
+start.countDown();                  // mở cổng
+if (!done.await(5, TimeUnit.SECONDS)) throw new AssertionError("timeout");
+~~~
+
+### Ví dụ đời thực
+Một service tổng hợp gọi API đối tác cho mỗi đơn hàng. Đối tác ghi rõ giới hạn 50 request đồng thời; vượt quá thì trả 429 và có thể khoá tài khoản tạm thời. Trước đây service dùng pool 200 thread, mỗi request gọi thẳng API: lúc cao điểm 300 request/s, số lời gọi đồng thời lên tới 180, đối tác trả 429 hàng loạt, tỉ lệ lỗi 12%.
+
+Nhóm thêm {{Semaphore(50)}} và {{tryAcquire(150, MILLISECONDS)}}: khi hết phép, request trả kết quả cache cũ kèm cảnh báo thay vì gọi API. Kết quả đo: 429 giảm từ 12% xuống 0,3%, p99 từ 3,1 s xuống 420 ms, và số request đồng thời tới đối tác không bao giờ vượt 50. Họ cũng thêm metric {{inFlight}} (số phép đang dùng) để cảnh báo sớm khi bulkhead luôn đầy.
+
+### Trả lời mẫu khi phỏng vấn
+Semaphore là bộ đếm giấy phép dùng để giới hạn số việc đồng thời. Khác với lock, nó không gắn với thread sở hữu: một thread có thể lấy phép, thread khác trả phép. Tôi dùng nó làm bulkhead bảo vệ downstream có hạn mức, ví dụ API đối tác chỉ cho 50 request đồng thời. Mỗi tác vụ gọi tryAcquire với timeout; nếu không lấy được phép thì trả 429 hoặc fallback cache thay vì chờ vô hạn. Phép luôn được trả trong finally để lỗi không làm rò giấy phép.
+
+Semaphore không thay thế thread pool hay rate limiter: pool giới hạn số thread, Semaphore giới hạn số việc đang dùng tài nguyên, rate limiter giới hạn số việc theo thời gian. Với virtual thread trên Java 21, Semaphore là cách đúng để giới hạn tài nguyên vì không nên pool virtual thread. Khi viết test, tôi dùng CountDownLatch làm cổng xuất phát và cổng kết thúc, luôn có timeout, để test tất định và bắt được code thiếu giới hạn một cách ổn định.
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "Semaphore khác lock thế nào?", "Làm sao giới hạn 50 request đồng thời tới đối tác?", "Vì sao test concurrency hay flaky và sửa thế nào?". Câu trả lời senior nêu được Semaphore đếm giấy phép không gắn chủ sở hữu, dùng tryAcquire có timeout để fail fast, release trong finally, phân biệt bulkhead với pool và rate limiter, và dùng CountDownLatch/CyclicBarrier có timeout để test tất định.`,
+  exercises: [
+    {
+      title: 'Bulkhead: giới hạn đồng thời có tryAcquire timeout và thống kê',
+      prompt: `Viết class {{Bulkhead}} bảo vệ một downstream có hạn mức, dùng {{Semaphore}}:
+
+- {{Bulkhead(int permits)}}: nếu {{permits < 1}} ném {{IllegalArgumentException}}.
+- {{boolean tryEnter(long timeoutMs) throws InterruptedException}}: thử lấy một giấy phép trong tối đa {{timeoutMs}} mili giây. Lấy được thì tăng bộ đếm đang chạy và cập nhật mức cao nhất, trả {{true}}. Hết thời gian thì trả {{false}}, không thay đổi bộ đếm.
+- {{void exit()}}: trả giấy phép và giảm bộ đếm đang chạy.
+- {{int inFlight()}}: số việc đang giữ giấy phép.
+- {{int maxInFlight()}}: mức cao nhất từng đạt tới (dùng để chứng minh bulkhead không bao giờ vượt hạn mức).
+- {{int available()}}: số giấy phép còn trống (lấy từ Semaphore).
+
+Gợi ý: dùng {{Semaphore.tryAcquire(timeout, unit)}} để không chờ vô hạn; dùng {{AtomicInteger}} cho hai bộ đếm. Test sẽ chạy nhiều thread, giữ giấy phép bằng {{CountDownLatch}} rồi kiểm tra {{maxInFlight}} — nên mọi phép phải được trả trong {{finally}}.`,
+      starter: `import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class Bulkhead {
+    private final Semaphore semaphore;
+    private final AtomicInteger inFlight = new AtomicInteger();
+    private final AtomicInteger maxInFlight = new AtomicInteger();
+
+    Bulkhead(int permits) {
+        if (permits < 1) throw new IllegalArgumentException("permits must be >= 1");
+        this.semaphore = new Semaphore(permits);
+    }
+
+    boolean tryEnter(long timeoutMs) throws InterruptedException {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void exit() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int inFlight() {
+        return inFlight.get();
+    }
+
+    int maxInFlight() {
+        return maxInFlight.get();
+    }
+
+    int available() {
+        return semaphore.availablePermits();
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void awaitTrue(java.util.function.BooleanSupplier cond, long ms, String what) {
+        long end = System.nanoTime() + ms * 1_000_000L;
+        while (!cond.getAsBoolean()) {
+            if (System.nanoTime() > end) throw new AssertionError("timeout " + ms + "ms: " + what);
+            Thread.onSpinWait();
+        }
+    }
+    public static void main(String[] args) throws Exception {
+        check("permits < 1 ném IllegalArgumentException", () -> {
+            try { new Bulkhead(0); throw new AssertionError("phải ném IllegalArgumentException"); }
+            catch (IllegalArgumentException expected) { }
+        });
+
+        check("hết phép: tryEnter hết timeout trả false", () -> {
+            Bulkhead b = new Bulkhead(2);
+            try {
+                if (!b.tryEnter(1000)) throw new AssertionError("phải vào được");
+                if (!b.tryEnter(1000)) throw new AssertionError("phải vào được");
+                eq(0, b.available());
+                long t0 = System.nanoTime();
+                boolean third = b.tryEnter(150);
+                long ms = (System.nanoTime() - t0) / 1_000_000L;
+                if (third) throw new AssertionError("không còn phép mà vẫn vào được");
+                if (ms < 100) throw new AssertionError("phải chờ gần hết timeout, thực tế " + ms + " ms");
+                eq(0, b.available());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            } finally {
+                b.exit(); b.exit();
+            }
+        });
+
+        check("exit trả phép; dùng cân bằng thì available về ban đầu", () -> {
+            Bulkhead b = new Bulkhead(1);
+            try {
+                if (!b.tryEnter(0)) throw new AssertionError("phải vào được ngay");
+                eq(1, b.inFlight());
+                eq(0, b.available());
+                b.exit();
+                eq(0, b.inFlight());
+                eq(1, b.available());
+                if (!b.tryEnter(0)) throw new AssertionError("sau exit phải vào lại được");
+                b.exit();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+        });
+
+        check("30 task, 3 phép: maxInFlight không vượt 3, tất cả xong", () -> {
+            Bulkhead b = new Bulkhead(3);
+            ExecutorService ex = Executors.newFixedThreadPool(30);
+            CountDownLatch gate = new CountDownLatch(1);
+            try {
+                List<Future<Boolean>> fs = new ArrayList<>();
+                for (int i = 0; i < 30; i++) {
+                    fs.add(ex.submit(() -> {
+                        try {
+                            if (!b.tryEnter(5000)) return false;
+                            try {
+                                gate.await();
+                                return true;
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                return false;
+                            } finally {
+                                b.exit();
+                            }
+                        } catch (InterruptedException e) {
+                            return false;
+                        }
+                    }));
+                }
+                awaitTrue(() -> b.inFlight() == 3, 3000, "3 task phải giữ phép");
+                if (b.maxInFlight() > 3) throw new AssertionError("maxInFlight=" + b.maxInFlight());
+                gate.countDown();
+                int ok = 0;
+                for (Future<Boolean> f : fs) {
+                    try { if (f.get(10, TimeUnit.SECONDS)) ok++; }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
+                    catch (ExecutionException e) { throw new AssertionError(e.getCause()); }
+                    catch (TimeoutException e) { throw new AssertionError("task chưa xong sau 10 giây"); }
+                }
+                eq(30, ok);
+                eq(0, b.inFlight());
+                eq(3, b.available());
+                if (b.maxInFlight() > 3) throw new AssertionError("cuối cùng maxInFlight=" + b.maxInFlight());
+            } finally {
+                gate.countDown();
+                ex.shutdownNow();
+            }
+        });
+
+        check("tryEnter(0) trên phép còn trống trả true ngay", () -> {
+            Bulkhead b = new Bulkhead(1);
+            try {
+                long t0 = System.nanoTime();
+                if (!b.tryEnter(0)) throw new AssertionError("phải vào ngay");
+                long ms = (System.nanoTime() - t0) / 1_000_000L;
+                if (ms > 500) throw new AssertionError("tryEnter(0) không được chờ: " + ms + " ms");
+                b.exit();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+        });
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class Bulkhead {
+    private final Semaphore semaphore;
+    private final AtomicInteger inFlight = new AtomicInteger();
+    private final AtomicInteger maxInFlight = new AtomicInteger();
+
+    Bulkhead(int permits) {
+        if (permits < 1) throw new IllegalArgumentException("permits must be >= 1");
+        this.semaphore = new Semaphore(permits);
+    }
+
+    boolean tryEnter(long timeoutMs) throws InterruptedException {
+        if (!semaphore.tryAcquire(timeoutMs, TimeUnit.MILLISECONDS)) return false;
+        int now = inFlight.incrementAndGet();
+        maxInFlight.accumulateAndGet(now, Math::max);
+        return true;
+    }
+
+    void exit() {
+        inFlight.decrementAndGet();
+        semaphore.release();
+    }
+
+    int inFlight() {
+        return inFlight.get();
+    }
+
+    int maxInFlight() {
+        return maxInFlight.get();
+    }
+
+    int available() {
+        return semaphore.availablePermits();
+    }
+}`,
+      hints: [
+        'Bên trong {{tryEnter}}: {{if (!semaphore.tryAcquire(timeoutMs, TimeUnit.MILLISECONDS)) return false;}} rồi tăng {{inFlight}} và cập nhật {{maxInFlight}}.',
+        'Cập nhật mức cao nhất bằng {{maxInFlight.accumulateAndGet(now, Math::max)}} để không bị mất cập nhật khi nhiều thread cùng vào.',
+        '{{exit()}} giảm {{inFlight}} rồi {{semaphore.release()}} — đúng thứ tự này để metric không báo âm tạm thời.',
+        'Trong test nhiều thread, luôn gọi {{exit()}} trong {{finally}} để phép không bị rò khi task lỗi hoặc bị interrupt.',
+      ],
+      explain: `Lời giải chỉ thêm hai phương thức:
+- {{tryEnter}} dùng {{Semaphore.tryAcquire(timeout, MILLISECONDS)}} để chờ có giới hạn. Khi lấy được phép mới tăng {{inFlight}} và cập nhật {{maxInFlight}}; nếu hết thời gian thì trả {{false}} mà không đụng bộ đếm — nhờ vậy metric không bị lệch khi bị từ chối.
+- {{exit}} giảm {{inFlight}} rồi trả phép.
+
+Vì sao test dùng {{CountDownLatch}} thay vì sleep: với 3 phép và 30 task, test chờ tới khi {{inFlight() == 3}} rồi mới mở cổng. Nếu ai đó cài đặt sai (không giới hạn, hoặc quên {{tryAcquire}}), {{inFlight}} sẽ vượt 3 và test FAIL ổn định; nếu cài đặt đúng, kết quả luôn xác định bất kể máy nhanh chậm. Latch có timeout nên test không bao giờ treo vô hạn.
+
+Lỗi hay gặp khi tự viết bulkhead:
+- Dùng {{acquire()}} không timeout: khi downstream chết, request treo theo client timeout và thread bị giữ.
+- Quên {{release()}} trong {{finally}}: sau vài lần lỗi, số phép giảm vĩnh viễn, bulkhead tự khoá.
+- Cập nhật {{maxInFlight}} bằng {{set(max)}} thay vì {{accumulateAndGet(..., Math::max)}}: hai thread cùng đọc/ghi có thể làm mất giá trị lớn hơn.
+- Gọi {{release()}} nhiều hơn {{acquire()}}: Semaphore không kiểm tra chủ sở hữu, số phép tăng vượt ban đầu và giới hạn mất tác dụng.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Semaphore khác {{ReentrantLock}} ở điểm nào?',
+      options: ['Semaphore nhanh hơn lock trong mọi trường hợp', 'Semaphore đếm giấy phép và không gắn với thread sở hữu, nên thread khác có thể release', 'Semaphore chỉ dùng được cho một thread', 'ReentrantLock cho phép lấy nhiều phép hơn Semaphore'],
+      answer: 1,
+      explain: 'Semaphore là bộ đếm giấy phép, không có khái niệm chủ sở hữu: thread A lấy phép thì thread B có thể trả. ReentrantLock gắn với thread đang giữ khoá và chỉ thread đó mới unlock được. Semaphore không nhanh hơn mọi trường hợp; cả hai đều dựa trên AQS.',
+    },
+    {
+      q: 'Downstream chỉ cho 50 request đồng thời. Cách nào đúng nhất khi dùng virtual thread?',
+      options: ['Pool 50 virtual thread', '{{Semaphore(50)}} với {{tryAcquire(timeout)}} và release trong finally', 'Đặt số carrier bằng 50', 'Dùng rate limiter 50 request/giây'],
+      answer: 1,
+      explain: 'Virtual thread không nên pool; Semaphore giới hạn đúng số việc đang dùng tài nguyên và tryAcquire có timeout cho phép fail fast. Số carrier chỉ quyết định số virtual thread chạy CPU cùng lúc. Rate limiter giới hạn theo thời gian, không phải số đồng thời, nên không thay thế bulkhead trong trường hợp này.',
+    },
+    {
+      q: 'Vì sao {{release()}} phải nằm trong {{finally}}?',
+      options: ['Để Semaphore chạy nhanh hơn', 'Để giấy phép luôn được trả kể cả khi lời gọi downstream ném exception', 'Để tránh deadlock của ThreadPoolExecutor', 'Vì {{release()}} chỉ gọi được một lần'],
+      answer: 1,
+      explain: 'Nếu lời gọi downstream ném exception mà không release, mỗi lỗi làm mất một giấy phép vĩnh viễn; sau n lỗi thì mọi việc còn lại chờ mãi. finally bảo đảm trả phép trên mọi nhánh, kể cả return sớm hay exception. Điều này không liên quan tốc độ hay deadlock của pool.',
+    },
+    {
+      q: 'Test concurrency nên chờ bằng gì để không flaky?',
+      options: ['{{Thread.sleep(100)}} trước khi kiểm tra', '{{CountDownLatch}}/{{CyclicBarrier}} cùng timeout và điều kiện đếm xác định', 'Tăng số vòng lặp tới khi pass', 'Chạy test một mình trên máy mạnh'],
+      answer: 1,
+      explain: 'Latch/barrier có timeout cho phép test chờ đúng sự kiện thay vì đoán thời gian, nên kết quả xác định trên mọi máy. sleep chỉ là "hy vọng" thread khác kịp chạy; tăng vòng lặp che bug chứ không chứng minh đúng; chạy một mình trên máy mạnh vẫn flaky khi CI chậm.',
+    },
+  ],
+  related: ['concurrency-008', 'concurrency-003', 'concurrency-013'],
+  tags: ['Semaphore', 'bulkhead', 'tryAcquire', 'CountDownLatch', 'CyclicBarrier', 'concurrency test', 'virtual threads'],
+},
 );

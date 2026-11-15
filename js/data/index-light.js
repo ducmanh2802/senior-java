@@ -2229,6 +2229,8 @@ window.DATA_INDEX = {
     {"id":"lesson-concurrency-014","track":"concurrency","order":14,"title":"Java Memory Model: visibility, volatile va happens-before","level":"mid","minutes":35},
     {"id":"lesson-concurrency-015","track":"concurrency","order":15,"title":"ExecutorService va graceful shutdown","level":"senior","minutes":35},
     {"id":"lesson-concurrency-016","track":"concurrency","order":16,"title":"CompletableFuture từ gốc: hộp kết quả, thenApply/thenCompose/allOf, executor riêng và xử lý lỗi","level":"mid","minutes":45},
+    {"id":"lesson-concurrency-017","track":"concurrency","order":17,"title":"Virtual threads từ gốc: platform thread, carrier thread, pinning và khi nào nên dùng","level":"mid","minutes":40},
+    {"id":"lesson-concurrency-018","track":"concurrency","order":18,"title":"Giới hạn đồng thời bằng Semaphore: bulkhead, tryAcquire có timeout và test tất định với CountDownLatch","level":"senior","minutes":35},
     {"id":"lesson-spring-001","track":"spring","order":1,"title":"IoC và DI: container quản lý object","level":"mid","minutes":30},
     {"id":"lesson-spring-002","track":"spring","order":2,"title":"AOP và proxy: lời gọi nội bộ bỏ qua advice","level":"senior","minutes":30},
     {"id":"lesson-spring-003","track":"spring","order":3,"title":"@Transactional: propagation và rollback","level":"senior","minutes":35},
