@@ -849,6 +849,18 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 }
 ~~~
 
+Hình dưới cho thấy luồng xử lý lỗi tập trung qua @ControllerAdvice.
+
+~~~seq
+title: Luồng xử lý lỗi tập trung bằng @ControllerAdvice
+actors: Client | Controller | @ControllerAdvice | Client
+Client -> Controller: Gọi API lấy đơn hàng
+Controller -> @ControllerAdvice: Ném OrderNotFoundException
+@ControllerAdvice -> @ControllerAdvice: Dựng ProblemDetail 404 + mã lỗi
+@ControllerAdvice --> Client: Trả application/problem+json
+Client -> Client: Hiển thị theo mã lỗi code
+~~~
+
 ### Khi nào kế thừa ResponseEntityExceptionHandler
 Lớp này xử lý nhiều lỗi do Spring MVC sinh ra như 400, 405 và 415. Nếu kế thừa, hãy override các hook tương ứng (ví dụ {{handleMethodArgumentNotValid}}) thay vì khai báo một {{@ExceptionHandler}} trùng với exception đã được lớp cha ánh xạ. Với 404: từ Spring Framework 6.1 (Boot 3.2), URL không khớp handler nào rơi vào static resource handler và ném {{NoResourceFoundException}}, lớp cha đã map nó thành ProblemDetail 404 nên advice của bạn xử lý được (override {{handleNoResourceFoundException}} nếu cần format riêng). Ở bản cũ hơn, 404 mặc định đi thẳng tới error page của Boot ({{/error}}) chứ không qua advice.
 
@@ -3680,6 +3692,17 @@ Nguyên nhân gốc: nhầm lẫn hai mục tiêu: read-only giúp Hibernate/JDB
 Cách xử lý: tách rõ service chỉ đọc (read-only, route replica) và service đọc-ghi (primary). Với luồng "read-your-writes" (số dư, trạng thái giao dịch ngay sau ghi) ép đọc từ primary hoặc chờ lag; bỏ read-only ở method có ghi.
 Kết quả đo được: p95 API lịch sử giảm còn ~220 ms, CPU primary xuống ~55%, không còn bug "save nhưng không lưu", và luồng số dư luôn đọc đúng từ primary.
 
+Hình dưới cho thấy routing datasource chọn primary/replica dựa trên cờ read-only của transaction.
+
+~~~seq
+title: Định tuyến primary/replica qua AbstractRoutingDataSource
+actors: Service | RoutingDataSource | Primary | Replica
+Service -> RoutingDataSource: Lấy connection trong transaction
+RoutingDataSource -> RoutingDataSource: Kiểm tra cờ read-only của tx
+RoutingDataSource -> Replica: Trả connection replica (tx chỉ đọc)
+RoutingDataSource -> Primary: Trả connection primary (tx ghi)
+~~~
+
 ### Trả lời mẫu khi phỏng vấn
 "Tôi xem {{@Transactional(readOnly = true)}} là gợi ý cho hai lớp. Với Hibernate nó đặt {{FlushMode.MANUAL}}, tắt dirty checking và bỏ snapshot nên tiết kiệm CPU, tránh {{UPDATE}} ngầm. Với JDBC nó gọi {{Connection.setReadOnly(true)}}, tuỳ driver/DB có enforce hay không nên tôi coi đó là lưới an toàn chứ không phải tối ưu chắc chắn. Điều nó không làm là tự route sang read replica: để đọc replica tôi dùng {{AbstractRoutingDataSource}} dựa trên {{TransactionSynchronizationManager.isCurrentTransactionReadOnly()}} và bọc {{LazyConnectionDataSourceProxy}} để quyết định sau khi có transaction. Tôi cũng tách hai câu hỏi: query này có cần ghi không, và dữ liệu này có chấp nhận đọc trễ không. Với số dư hay trạng thái giao dịch ngân hàng tôi luôn đọc từ primary để đảm bảo read-your-writes, còn báo cáo/lịch sử mới cho đi replica."
 
@@ -5085,6 +5108,15 @@ public class NotificationDispatcher {
 - Bean {{@Primary}} **vẫn nằm trong List/Map** – không bị loại.
 - Cách này dùng cho **strategy pattern** hoặc **chain of responsibility** (ví dụ: danh sách validator, processor).
 
+Hình dưới tóm tắt cách Spring chọn bean khi nhiều bean cùng kiểu.
+
+| Cách | Khi dùng | Bean được chọn |
+|---|---|---|
+| {{@Primary}} | Không có qualifier | Bean gắn @Primary |
+| {{@Qualifier}} | Cần chỉ định rõ bean | Bean khớp tên qualifier |
+| {{List}}/{{Map}} | Nhận tất cả bean cùng kiểu | Tất cả bean (bao gồm @Primary) |
+| Tên tham số/field | Fallback cuối cùng | Bean tên trùng tham số |
+
 ### Pitfall production
 - Dùng {{@Qualifier}} chuỗi string cứng dễ typo – nên định nghĩa hằng số hoặc dùng {{@Qualifier}} trên bean definition.
 - Quên {{@Primary}} khi thêm implementation thứ hai cho interface cũ ⇒ tất cả chỗ inject interface đó bị lỗi {{NoUniqueBeanDefinitionException}} lúc khởi động (không phải lỗi compile).
@@ -5687,6 +5719,15 @@ Cách hoạt động:
 3. Vì vậy optimizer bỏ qua index trên cột này.
 
 **Partial index** giải quyết: chỉ index một tập con cần truy vấn. {{CREATE INDEX ON orders (created_at) WHERE status = 'PENDING'}}.
+
+Hình dưới tóm tắt các trường hợp phổ biến khiến B-tree bị bỏ qua.
+
+| Điều kiện WHERE | Dùng index? | Lý do |
+|---|---|---|
+| cột = ? | Có | Tra trực tiếp giá trị trong index |
+| DATE(cột) = ? | Không | Hàm bao bọc cột, giá trị index không khớp |
+| cột LIKE 'abc%' | Có | Prefix khớp thứ tự của B-tree |
+| cột LIKE '%abc' | Không | Không biết điểm bắt đầu trong index |
 
 ### Kiểm tra index có được dùng không
 Dùng EXPLAIN (ANALYZE, BUFFERS) để xem access path thực tế.
@@ -6317,6 +6358,17 @@ Mỗi request dùng REQUIRES_NEW cần **2 connection cùng lúc** (một bị t
 ### Ví dụ đời thực
 Hệ thống đơn hàng ghi audit bằng REQUIRES_NEW, pool 20, Tomcat 200 thread. Bình thường chỉ khoảng 10 request đồng thời nên ổn; ngày khuyến mãi lên 60 request đồng thời → 20 transaction ngoài giữ hết 20 connection và cùng chờ connection thứ hai → service đứng 30 giây (timeout của Hikari) rồi lỗi hàng loạt, lặp lại theo từng đợt. Thay audit REQUIRES_NEW bằng ghi audit vào bảng **outbox trong cùng transaction** (audit chỉ cần khi nghiệp vụ thành công), còn audit cho trường hợp thất bại ghi bằng {{@TransactionalEventListener(phase = AFTER_ROLLBACK)}} chạy sau khi đã trả connection. Đồng thời giới hạn số request đồng thời vào luồng đặt hàng. Không còn đứng hệ thống.
 
+Hình dưới cho thấy tại sao REQUIRES_NEW trong nhiều request đồng thời làm cạn connection pool.
+
+~~~seq
+title: REQUIRES_NEW giữ 2 connection cùng lúc
+actors: Thread | Pool | Tx ngoài | Tx trong
+Thread -> Pool: Lấy conn #1 cho tx ngoài (suspend giữ conn)
+Thread -> Pool: Yêu cầu conn #2 cho tx trong (REQUIRES_NEW)
+Pool --> Thread: Không còn conn → chờ đến timeout
+Thread -> Tx ngoài: Không thể giải phóng conn #1 cho đến khi tx trong xong
+~~~
+
 ### Trả lời mẫu khi phỏng vấn
 "REQUIRES_NEW tạm treo transaction ngoài nhưng connection của transaction ngoài vẫn bị giữ, và transaction mới cần thêm một connection nữa, nên mỗi request đi qua nhánh này cần hai connection cùng lúc. Khi số thread đồng thời bằng hoặc vượt kích thước pool, có thể xảy ra tình huống mọi connection bị transaction ngoài giữ và không ai lấy được connection thứ hai, cả service đứng tới khi timeout. Tôi định lượng bằng công thức kích thước pool tối thiểu bằng số thread nhân với số connection mỗi luồng cần trừ một, cộng một, rồi so với giới hạn connection DB cho phép. Thường kết quả cho thấy nên đổi thiết kế: ghi audit vào outbox trong cùng transaction, hoặc dùng sự kiện sau commit hay sau rollback, và giới hạn đồng thời ở tầng vào thay vì chỉ tăng pool."
 
@@ -6331,6 +6383,20 @@ Hệ thống đơn hàng ghi audit bằng REQUIRES_NEW, pool 20, Tomcat 200 thre
 
 ### Cơ chế
 {{@SpringBootApplication}} bao gồm component scan, auto-configuration enablement và configuration. Auto-configuration không phải magic quét mọi class: danh sách ứng viên được import, sau đó các condition đánh giá môi trường lúc tạo context. Ví dụ cấu hình datasource chỉ phù hợp khi có class JDBC cần thiết, cấu hình property hợp lệ và ứng dụng chưa cung cấp bean thay thế. Thứ tự/quan hệ {{before}} và {{after}} giúp các cấu hình phối hợp.
+
+Hình dưới tóm tắt luồng đánh giá điều kiện của một lớp auto-configuration.
+
+~~~text
+AutoConfiguration.imports (từng jar trên classpath)
+        ↓
+[ @ConditionalOnClass ] → class có sẵn? không → bỏ qua
+        ↓
+[ @ConditionalOnMissingBean ] → app đã khai báo bean? có → lùi lại
+        ↓
+[ @ConditionalOnProperty ] → property khớp? không → bỏ qua
+        ↓
+→ Đăng ký bean vào ApplicationContext
+~~~
 
 ### Debug có hệ thống
 1. Xác nhận dependency thực sự nằm trên runtime classpath, không chỉ compile scope.
@@ -6699,6 +6765,24 @@ Bulk JPQL update/delete chạy trực tiếp ở DB và bỏ qua dirty checking 
 ### Ví dụ đời thực
 Một transaction vừa **xoá** bản ghi cấu hình cũ rồi **thêm** bản ghi mới cùng khoá duy nhất ({{tenant_id, key}}). Code: {{repo.delete(old); repo.save(newOne);}} → lỗi {{duplicate key value violates unique constraint}}. Nguyên nhân: Hibernate flush theo **thứ tự loại thao tác** cố định — INSERT trước, rồi UPDATE, rồi xoá phần tử collection, rồi DELETE — không theo thứ tự bạn gọi. Nên câu INSERT bản mới chạy khi bản cũ chưa bị xoá. Cách sửa: gọi {{flush()}} ngay sau {{delete}} (ép DELETE chạy trước), hoặc **cập nhật** bản ghi cũ thay vì xoá rồi thêm. Một lỗi tương tự: {{@Transactional(readOnly = true)}} ở service đọc rồi gọi setter để "chuẩn hoá hiển thị" — với readOnly, Spring đặt flush mode MANUAL cho Hibernate nên không ghi; nhưng khi ai đó bỏ readOnly, thay đổi "chỉ để hiển thị" bị ghi xuống DB.
 
+Hình dưới minh họa persistence context lưu snapshot và hoạt động của dirty checking khi flush.
+
+~~~text
+EntityManager
+        │
+        ▼
+Persistence context (identity map)
+┌─────────────────────────────────┐
+│ EntityEntry                     │
+│ - entity: Order(id=42)          │
+│ - snapshot: [42, "NEW", 100k]   │
+│ - trạng thái: managed           │
+└─────────────────────────────────┘
+        │ dirty checking khi flush
+        ▼
+DB: UPDATE orders SET ... WHERE id = 42
+~~~
+
 ### Trả lời mẫu khi phỏng vấn
 "Persistence context giữ mỗi entity managed kèm một snapshot giá trị lúc nạp. Dirty checking diễn ra khi flush: Hibernate so từng entity với snapshot và sinh UPDATE cho phần thay đổi; flush xảy ra trước commit, trước một query có thể bị ảnh hưởng nếu flush mode là AUTO, hoặc khi gọi flush tường minh. Flush order là điểm hay bị bỏ qua: Hibernate thực thi theo loại thao tác, INSERT trước, UPDATE, rồi DELETE, chứ không theo thứ tự tôi gọi trong code. Hệ quả kinh điển là xoá rồi thêm bản ghi cùng khoá duy nhất trong một transaction sẽ lỗi duplicate key, vì INSERT chạy trước DELETE. Tôi xử lý bằng cách flush sau khi xoá, hoặc tốt hơn là cập nhật bản ghi hiện có thay vì xoá rồi thêm."
 
@@ -6734,6 +6818,18 @@ Spring Boot **bật OSIV mặc định** ({{spring.jpa.open-in-view=true}}) và 
 ### Trả lời mẫu khi phỏng vấn
 Tôi gặp LIE khi service trả entity detached rồi serializer đọc association lazy. Nguyên nhân là fetch plan không khớp nơi tiêu thụ dữ liệu. OSIV giữ session mở suốt request nên proxy vẫn query được, nhưng đó là vá triệu chứng: SQL phát sinh trong view, N+1 khó thấy, transaction không còn bao phủ. Với REST API tôi tắt OSIV, trả DTO projection với fetch plan rõ ràng, và bật SQL statistics trong test để bắt N+1. Hết exception chưa chứng minh endpoint hiệu quả; phải đo query count và latency.
 
+Hình dưới cho thấy luồng gây LazyInitializationException khi serializer đọc quan hệ lazy sau khi transaction kết thúc.
+
+~~~seq
+title: LazyInitializationException khi đọc association lazy
+actors: Service | Persistence context | Jackson | DB
+Service -> Persistence context: Load Order (items lazy, chưa query)
+Persistence context --> Service: Trả Order (detached sau commit)
+Service -> Jackson: Trả Order detached
+Jackson -> DB: Yêu cầu query items (lazy proxy)
+DB --> Jackson: Lỗi: session đã đóng (LazyInitializationException)
+~~~
+
 > Senior tip: API service nên trả DTO với fetch plan được review. Bật thống kê SQL hoặc datasource proxy trong test để phát hiện N+1; việc hết exception chưa chứng minh endpoint hiệu quả.`,
   follow: ['OSIV có giữ transaction DB mở suốt HTTP request không?', 'Bạn phát hiện N+1 phát sinh trong quá trình JSON serialization thế nào?'],
   tags: ['core', 'LazyInitializationException', 'Open Session in View', 'N+1', 'DTO']
@@ -6766,6 +6862,19 @@ Retry bên trong cùng transaction đã marked rollback-only thường không c�
 ### Trả lời mẫu khi phỏng vấn
 Optimistic locking dùng cột version trong UPDATE với điều kiện where version bằng giá trị đã đọc. Transaction commit sau sẽ thất bại với OptimisticLockException thay vì ghi đè. Retry phải ở ngoài transaction, mở transaction mới, đọc lại state mới và áp dụng lại logic; với thao tác không idempotent cần idempotency key. Tôi giới hạn số lần retry có backoff, và trả conflict cho caller khi không hòa giải được. Optimistic lock phù hợp conflict hiếm; row nóng liên tục thì cân nhắc pessimistic lock hoặc atomic update có điều kiện.
 
+Hình dưới cho thấy hai request đọc cùng version và transaction thứ bị từ chối vì version đã đổi.
+
+~~~seq
+title: Optimistic lock với @Version
+actors: Client A | DB | Client B
+Client A -> DB: Đọc đơn hàng, version = 7
+Client B -> DB: Đọc đơn hàng, version = 7
+Client A -> DB: UPDATE ... WHERE version = 7 (thành công → version 8)
+Client B -> DB: UPDATE ... WHERE version = 7 (0 dòng, ném exception)
+DB --> Client B: OptimisticLockException
+Client B -> Client B: Đọc lại version 8 và thử lại
+~~~
+
 > Senior tip: dùng optimistic lock khi conflict tương đối hiếm; nếu một row nóng bị tranh chấp liên tục, đo tỷ lệ conflict và cân nhắc serialize theo key hoặc atomic update có điều kiện thay vì retry vô hạn.`,
   follow: ['Vì sao retry cần transaction mới?', 'Khi nào pessimistic lock hợp lý hơn optimistic locking?'],
   tags: ['core', '@Version', 'optimistic locking', 'retry', 'concurrency']
@@ -6788,6 +6897,14 @@ Sequence cho phép lấy ID trước insert, nên Hibernate có thể gom insert
 
 ### Ví dụ đời thực
 Import 100k user với batch_size=50, order_inserts=true, sequence allocationSize=50: 2000 batch, thời gian 4.2s thay vì 48s (mỗi insert round-trip 0.5ms). Heap ổn định ~120MB nhờ flush/clear mỗi 1000. Với IDENTITY: 100k round-trip, 52s, heap tăng dần.
+
+Hình dưới so sánh ba chiến lược sinh ID đối với khả năng gom batch insert.
+
+| Chiến lược | ID sinh trước insert? | Gom được batch? | Ghi chú |
+|---|---|---|---|
+| {{IDENTITY}} | Không (DB sinh sau insert) | Không / rất khó | Mỗi row phải insert để lấy generated key |
+| {{SEQUENCE}} + allocationSize | Có (Hibernate gọi sequence trước) | Có | allocationSize phải khớp INCREMENT BY |
+| Pooled optimizer | Có (lấy khối id trước) | Có | Giảm round-trip gọi sequence |
 
 ### Pitfall production
 Batching giảm network round trip nhưng không giảm số index update, WAL hay constraint check. Batch quá lớn tăng transaction duration, lock và khả năng rollback tốn kém. Mixed inserts cho nhiều entity type có thể chia nhỏ batch. Batching không hoạt động như mong đợi nếu code gọi query giữa chừng gây flush hoặc cấu hình driver không hỗ trợ.
@@ -6835,6 +6952,17 @@ Một trang 20 root có thể thành hàng nghìn SQL rows nếu mỗi root có 
 
 ### Trả lời mẫu khi phỏng vấn
 EntityGraph khai báo fetch plan theo use case và giữ repository dễ đọc; JOIN FETCH đặt join trực tiếp trong JPQL, hữu ích khi cần điều kiện/sort theo association. Cả hai giảm N+1 nhưng collection fetch join nhân row SQL và pagination có thể thành HHH000104: Hibernate load toàn bộ result vào memory. Tôi dùng two-query pagination: page ID root trước, sau đó fetch association cho tập ID bằng IN, giữ thứ tự và count query riêng. Bật fail_on_pagination_over_collection_fetch để fail sớm thay vì âm thầm.
+
+Hình dưới cho thấy sao fetch join collection kết hợp LIMIT/OFFSET gây HHH000104.
+
+~~~text
+JOIN FETCH đơn hàng + items (mỗi đơn 15 items)
+DB trả về: 1 đơn × 15 items = 15 dòng SQL
+20 đơn trên trang      → 300 dòng SQL
+LIMIT 20 cắt theo dòng SQL → chỉ ~1 đơn trên trang
+Hibernate phải load hết 300 dòng vào memory
+để phân trang → HHH000104, heap lớn, chậm
+~~~
 
 > Senior tip: test với volume và fan-out gần production, assert query count lẫn SQL có LIMIT/OFFSET ở DB. Khi thấy HHH000104, xử lý fetch plan trước khi tăng heap hoặc tắt cảnh báo.`,
   follow: ['Vì sao fetch join một collection vẫn có thể làm page sai?', 'Bạn thiết kế count query cho trang dữ liệu có quan hệ to-many thế nào?'],
@@ -8080,6 +8208,21 @@ Một team viết bean {{CacheWarmer}}, trong @PostConstruct gọi {{orderServic
 
 ### Trả lời mẫu khi phỏng vấn
 "Vòng đời bean trong Spring là một pipeline cố định: container đọc {{BeanDefinition}}, qua {{BeanFactoryPostProcessor}} để chỉnh sửa định nghĩa, rồi instantiate (gọi constructor), populate (tiêm dependency), gọi các callback {{Aware}}, chạy {{BeanPostProcessor}} trước init, rồi đến init (@PostConstruct, afterPropertiesSet, init-method). Sau init, {{BeanPostProcessor}} sau init tạo proxy AOP — đây lúc {{@Transactional}}, {{@Async}} được áp dụng — rồi bean đăng ký vào singleton pool. Cuối cùng {{SmartInitializingSingleton}} chạy sau khi mọi singleton xong. Tôi nhớ rằng proxy chỉ tồn tại sau bước init, nên không gọi method có {{@Transactional}} từ @PostConstruct vì lúc đó bean chưa được bọc proxy, transaction sẽ không chạy. Nếu cần warm-up sau khi app sẵn sàng, tôi dùng {{SmartInitializingSingleton}} hoặc {{ApplicationReadyEvent}}. Tôi cũng tránh gọi {{getBean}} trong @PostConstruct vì có thể tạo bean khác sớm, làm thay đổi thứ tự khởi tạo không như mong đợi. Trong review, tôi luôn hỏi đoạn gọi có đang dùng AOP ngay trong giai đoạn khởi tạo không, vì đó là nơi proxy chưa sẵn sàng."
+
+Hình dưới tóm tắt pipeline tạo bean từ BeanDefinition đến bean sẵn sàng.
+
+~~~seq
+title: Vòng đời bean trong Spring container
+actors: Container | BeanDefinition | Bean | Proxy | SingletonPool
+Container -> BeanDefinition: Đọc metadata (class, scope, init method)
+BeanDefinition -> Container: BFPP sửa định nghĩa trước khi tạo bean
+Container -> Bean: Instantiate (gọi constructor)
+Bean -> Container: Populate dependency (DI)
+Container -> Bean: Aware callback + init (@PostConstruct)
+Bean -> Proxy: BeanPostProcessor.after tạo proxy AOP
+Proxy -> SingletonPool: Đăng ký bean vào singleton pool
+SingletonPool --> Container: Trả bean (proxy) khi getBean
+~~~
 
 > Senior tip: khi debug "bean không được tạo / proxy không chạy", hãy in beanDefinitionNames và kiểm tra xem class có bị final, method private, hay lời gọi self-invocation không. Hiểu pipeline này là nền tảng để debug mọi "ma thuật" Spring.`,
   follow: [
