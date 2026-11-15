@@ -4701,7 +4701,7 @@ Giải thích từng dòng quan trọng:
 
 ### Mass assignment là gì
 
-Mass assignment là lỗ hổng attacker gửi thêm trường dữ liệu vào request, ứng dụng tự gán vào entity qua công cụ sao chép (ví dụ {{BeanUtils.copyProperties}}, {{@RequestBody}} trực tiếp vào entity) và lưu vào database. Hình tượng thường dùng: nhân viên lễ Rezeption nhận form cập nhật số điện thoại khách, nhưng attacker thêm dòng "chức vụ = quản lý" vào form, và nhân viên không kiểm tra mà ghi vào hồ sơ.
+Mass assignment là lỗ hổng attacker gửi thêm trường dữ liệu vào request, ứng dụng tự gán vào entity qua công cụ sao chép (ví dụ {{BeanUtils.copyProperties}}, {{@RequestBody}} trực tiếp vào entity) và lưu vào database. Hình tượng thường dùng: nhân viên lễ tân nhận form cập nhật số điện thoại khách, nhưng attacker thêm dòng "chức vụ = quản lý" vào form, và nhân viên không kiểm tra mà ghi vào hồ sơ.
 
 Trong Spring Boot, Jackson định mặc định bỏ qua trường lạ ({{FAIL_ON_UNKNOWN_PROPERTIES=false}}), nhưng nếu trường có thật trên entity và có setter public, Jackson vẫn gán giá trị đó.
 
@@ -4742,7 +4742,7 @@ public UserResponse update(@PathVariable Long id,
     String currentUserId = jwt.getSubject(); // danh tính lấy từ token, không tin body
     User user = userRepo.findByIdAndOwnerId(id, Long.valueOf(currentUserId))
         .orElseThrow(() -> new NotFoundException("Không tìm thấy hoặc không quyền truy cập"));
-    // Ánh xạ tường chỉ các trường business cho phép
+    // Ánh xạ tường minh các trường business cho phép
     user.setFullName(req.fullName());
     user.setPhone(req.phone());
     // role, isAdmin, balance, ownerId KHÔNG có trong DTO và không được gán
@@ -4845,8 +4845,8 @@ server.error.include-stacktrace=never
 server.error.include-message=never
 server.error.include-binding-errors=never
 server.error.whitelabel.enabled=false
-# Nếu muốn prometheus chỉ cho mạng nội bộ
-management.endpoints.web.exposure.include=health,info,prometheus
+# Nếu muốn prometheus chỉ cho mạng nội bộ, thêm vào include (tuỳ chọn, không để trùng key):
+# management.endpoints.web.exposure.include=health,info,prometheus
 ~~~
 
 Giải thích:
@@ -4913,7 +4913,7 @@ public class GlobalExceptionHandler {
 
 `,
   follow: [
-    'Tại sao {{/health}} với {{show-details=always}} vẫn rủi ro dù chỉ trả UP/DOWN?',
+    'Tại sao {{/health}} với {{show-details=always}} vẫn rủi ro, và {{show-details=when-authorized}} khác gì?',
     'Làm sao cho Prometheus scrape {{/actuator/prometheus}} mà không expose internet?',
     'Correlation ID giúp điều tra lỗi production thế nào khi client không thấy stack trace?'
   ],
@@ -4928,7 +4928,7 @@ public class GlobalExceptionHandler {
 
 ### Insecure deserialization qua Jackson là gì
 
-Deserialization là quá trình chuyển dữ liệu đãserialize (ví dụ JSON) trở lại đối tượng Java. Insecure deserialization là khi ứng dụng deserialize dữ liệu attacker cung cấp và attacker kiểm soát được loại class được tạo ra. Trong Java native serialization ({{ObjectInputStream}}), lỗ hổng này dẫn đến RCE qua "gadget chain" (ví dụ thư viện Apache Commons Collections). Hình tượng: dịch vụ nhận một gói hàng đóng gói lại theo đúng hình mẫu, nhưng bên trong có bẫy — khi nhân viên unpack theo quy trình thường ngày thì bẫy kích hoạt.
+Deserialization là quá trình chuyển dữ liệu đã serialize (ví dụ JSON) trở lại đối tượng Java. Insecure deserialization là khi ứng dụng deserialize dữ liệu attacker cung cấp và attacker kiểm soát được loại class được tạo ra. Trong Java native serialization ({{ObjectInputStream}}), lỗ hổng này dẫn đến RCE qua "gadget chain" (ví dụ thư viện Apache Commons Collections). Hình tượng: dịch vụ nhận một gói hàng đóng gói lại theo đúng hình mẫu, nhưng bên trong có bẫy — khi nhân viên unpack theo quy trình thường ngày thì bẫy kích hoạt.
 
 Jackson cũng có thể rơi vào cùng bẫy nếu bật default typing: serializer ghi trường {{@class}} chứa tên class Java, deserialize lại tạo instance class đó. Attacker gửi {{@class}} trỏ tới class trong thư viện thứ ba, Jackson tạo instance, gọi setter/getter theo chain, cuối cùng gọi {{Runtime.getRuntime().exec(...)}}.
 
@@ -5040,7 +5040,7 @@ mapper.activateDefaultTyping(ptv, ObjectMapper.DefaultTyping.NON_FINAL);
   id: 'security-060',
   topic: 'security',
   level: 'senior',
-  q: 'Tính năng tải file đã upload lets người dùng truyền tên file — lỗ hổng path traversal là gì, và bạn phục vụ file an toàn như thế nào?',
+  q: 'Tính năng tải file đã upload cho phép người dùng truyền tên file — lỗ hổng path traversal là gì, và bạn phục vụ file an toàn như thế nào?',
   a: `**Tóm tắt:** Path traversal (đi qua thư mục) là lỗ hổng attacker dùng chuỗi {{../}} trong tên file để đọc file ngoài thư mục lưu upload, ví dụ {{/etc/passwd}} hoặc file cấu hình chứa mật khẩu. Cách sửa: không bao giờ dùng tên file client gửi để truy cập filesystem, lưu file bằng tên ngẫu nhiên (UUID) và ánh xạ tên gốc trong database, phục vụ file theo id; nếu phải dùng tên file, phải chuẩn hóa đường dẫn, kiểm tra đường dẫn thực ({{toRealPath}}) nằm trong thư mục upload, và không cho phép ký tự {{../}}.
 
 ### Path traversal là gì
@@ -5171,8 +5171,8 @@ Tốt hơn: đổi tên file thành UUID ngay khi upload, lưu {{originalName}} 
 |---|---|---|
 | Tomcat (Spring Boot nhúng) | {{server.max-http-request-header-size}} mặc định 8 KB | 400 "Request header is too large" |
 | Nginx | {{large_client_header_buffers 4 8k}} | 400/414 |
-| AWS ALB | Tổng header request tối đa ~16 KB | 400/431 |
-| CloudFront | Header request đơn tối đa ~20 KB (tổng header ~20 KB) | 400 |
+| AWS ALB | Mỗi header ≤ 16 KB; tổng request header ≤ 64 KB (hard limit) | 400 (đôi khi 502) |
+| CloudFront | Tổng request gồm header + query string ≤ 32 KB (32.768 byte) | 400 |
 
 > Đây là lỗi **trước khi** vào Java: log ứng dụng không có gì, chỉ thấy 400 ở access log của web server/LB. Vì vậy phải biết đọc log tầng dưới thay vì debug code.
 
@@ -5257,7 +5257,7 @@ OAuth2TokenCustomizer<JwtEncodingContext> slimClaims() {
 ### Cơ chế validate thời gian
 Khi resource server nhận JWT, nó kiểm tra (theo giờ hệ thống của chính nó):
 - {{exp}}: {{now < exp + skew}}? Quá hạn → {{JwtException}} → 401.
-- {{nbf}}: {{now + skew > nbf}}? Token dùng trước thời điểm hợp lệ → 401.
+- {{nbf}}: {{now + skew < nbf}} (tức {{now < nbf - skew}})? Token đến trước thời điểm hợp lệ → 401.
 - Nimbus/Spring so sánh theo **Unix timestamp** (giây), lấy từ đồng hồ máy đang chạy resource server.
 
 ### Vì sao lệch đồng hồ xảy ra
@@ -5445,6 +5445,7 @@ public void deleteOrder(Long id) { /* ... */ }
 ~~~java
 @Bean
 RegisteredClientRepository registeredClientRepository(JdbcTemplate jdbc) {
+    JdbcRegisteredClientRepository repo = new JdbcRegisteredClientRepository(jdbc);
     // Client 1: SPA public, Authorization Code + PKCE, khong secret
     RegisteredClient spa = RegisteredClient.withId(UUID.randomUUID().toString())
         .clientId("spa-web")
@@ -5464,6 +5465,7 @@ RegisteredClientRepository registeredClientRepository(JdbcTemplate jdbc) {
             .reuseRefreshTokens(false)    // rotation + phat hien reuse
             .build())
         .build();
+    repo.save(spa); // ghi client vao DB
 
     // Client 2: service-to-service confidential, private_key_jwt (khong secret chia se)
     RegisteredClient svc = RegisteredClient.withId(UUID.randomUUID().toString())
@@ -5472,8 +5474,9 @@ RegisteredClientRepository registeredClientRepository(JdbcTemplate jdbc) {
         .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS)
         .scope("inventory:read")
         .build();
+    repo.save(svc); // ghi client vao DB
 
-    return new JdbcRegisteredClientRepository(jdbc); // luu DB, khong hardcode
+    return repo; // luu DB, khong hardcode
 }
 ~~~
 
