@@ -7404,6 +7404,258 @@ Triệu chứng: hệ thống ví điện tử có {{WalletManager}} 3.200 dòng
   tags: ["anti-pattern", "God class", "anemic domain", "refactoring", "DDD"]
 },
 {
+  id: 'design-049',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế hệ thống thông báo đa kênh (push/SMS/email): cùng nội dung có thể đi qua nhiều kênh, cần dedupe (không gửi trùng) và retry (kênh lỗi thì thử kênh khác/sau), đồng thời giữ thứ tự và không làm mất tin nhắn. Giải thích luồng dữ liệu, khóa idempotency, outbox và cách worker xử lý lỗi từng kênh.',
+  a: `**Tóm tắt:** Mỗi thông báo có một idempotency key do client tạo. Trong một transaction DB, ghi bản ghi idempotency (unique constraint), tạo notification và ghi sự kiện vào bảng outbox cùng lúc. Worker đọc outbox, gửi qua kênh ưu tiên; nếu kênh lỗi thì retry với backoff hoặc chuyển kênh phụ, và đánh dấu tin nhắn đã gửi. Dedupe dùng khóa xử lý đã hoàn thành để cùng tin nhắn không được gửi hai lần ngay cả khi worker xử lý lại.
+
+### Luồng dữ liệu từng bước
+1. Client gọi API gửi thông báo, kèm idempotency key (ví dụ đơn hàng + loại thông báo).
+2. API mở transaction, chèn IdempotencyRecord với unique theo (user_id, operation, key). Nếu trùng -> trả kết quả cũ, không xử lý lại.
+3. Tạo bản ghi Notification (trạng thái PENDING) và ghi sự kiện vào Outbox trong cùng transaction, rồi commit.
+4. Worker đọc Outbox (at-least-once), lấy nội dung và danh sách kênh ưu tiên.
+5. Gửi qua kênh đầu tiên. Thành công -> đánh dấu Outbox đã xử lý. Thất bại tạm thời -> retry sau backoff; nếu hết lượt -> chuyển kênh phụ hoặc đánh dấu FAILED để can thiệp thủ công.
+6. Dedupe: cùng idempotency key hoặc cùng message ID đã gửi thì bỏ qua lần sau.
+
+~~~java
+public class NotificationService {
+    public Result send(String userId, String key, List<String> channels, String content) {
+        String hash = stableHash(content); // dấu vân tay nội dung
+        return tx.execute(() -> {
+            IdempotencyRecord prior = idempotencyRepo.find(userId, key);
+            if (prior != null) { return prior.result(); } // dedupe
+            idempotencyRepo.insertUnique(userId, key, hash, "PENDING");
+            Notification n = notificationRepo.save(PENDING, userId, content);
+            outboxRepo.save(NotificationEvent.of(n.id(), key, channels, content));
+            return Result.pending(n.id());
+        });
+    }
+
+    public void processOutbox(OutboxEvent event) {
+        if (processedRepo.exists(event.messageId())) { return; } // dedupe đã xử lý
+        for (String ch : event.channels()) {
+            try {
+                gateway(ch).send(event.content());
+                processedRepo.insert(event.messageId()); // đánh dấu đã gửi
+                break; // thành công, không thử kênh khác
+            } catch (TransientException e) {
+                continue; // thử kênh tiếp theo
+            }
+        }
+    }
+}
+~~~
+
+### Trade-off khi chọn kênh và gửi
+| Cách làm | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Gửi đồng bộ trong API | Nhận kết quả ngay | Gây chậm request, thread bị giữ khi kênh chậm |
+| Outbox + worker bất đồng bộ | API nhanh, hấp thụ tải đỉnh, retry dễ kiểm soát | Phải chạy worker, có độ trễ ít giây đến ít phút |
+| Một kênh duy nhất | Đơn giản, không lo trùng | Kênh down thì tin nhắn không đi |
+| Nhiều kênh fallback | Tin nhắn đi được dù một kênh lỗi | Phải tránh gửi hai kênh cho cùng khách |
+
+### Pitfall trên production
+- Retry không giới hạn và không backoff biến lỗi tạm thời thành gửi trùng hoặc tấn công tự gây quá tải kênh.
+- Chỉ dedupe trong cache; cache mất thì cùng tin nhắn được xử lý lại.
+- Kênh SMS/provider không hỗ trợ idempotency: cùng nội dung gửi lại có thể làm khách nhận hai tin nhắn. Cần merchant reference hoặc kiểm tra trạng thái trước khi gửi lại.
+- Outbox ghi thành công nhưng worker crash trước khi đánh dấu xử lý -> sự kiện được giao lại, worker phải idempotent.
+- Gửi qua hai kênh cùng lúc không kiểm tra đã gửi -> khách nhận trùng push và SMS.
+
+### Ví dụ đời thực
+Hệ thống thông báo bán lẻ (2 triệu đơn/tháng) gửi xác nhận đơn qua push trước, SMS nếu push thất bại. Ban đầu worker không có dedupe: crash sau khi gửi push nhưng trước khi đánh dấu Outbox -> sự kiện được giao lại -> khách nhận hai tin push trong 5 phút. Metric duplicate_notification tăng từ 0,1% lên 2%. Xử lý: thêm processedRepo với message ID duy nhất, cùng transaction đánh dấu đã gửi; thêm merchant reference để SMS provider không gửi trùng; giới hạn retry 3 lần với backoff + jitter. Kết quả: duplicate_notification về 0,4% trong hai tuần, không còn khiếu nại nhận tin trùng, p95 API gửi thông báo giảm từ 2,4 giây xuống 300 ms (vì chuyển sang outbox bất đồng bộ).
+
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế gửi thông báo thành hai lớp: API nhận yêu cầu và worker thực sự gửi. API tạo idempotency key, lưu trong cùng transaction với notification và outbox, nên cùng thao tác không được xử lý hai lần ngay khi client retry. Worker đọc outbox, gửi qua kênh ưu tiên; lỗi thì retry hoặc chuyển kênh phụ, và đánh dấu đã gửi để cùng tin nhắn không đi hai lần. Để tránh trùng, tôi dùng message ID đã xử lý và merchant reference cho kênh provider không hỗ trợ idempotency. Chuyển sang outbox bất đồng bộ làm API nhanh hơn và hấp thụ tải đỉnh, đổi lại phải vận hành worker và chấp nhận độ trễ ngắn. Tôi giới hạn số lần retry, dùng backoff cộng jitter, và không gửi lại mù khi không biết tin nhắn đã đi chưa. Với thông báo tiền hoặc bán lẻ, trạng thái chưa biết đã gửi hay chưa cần được theo dõi, không phải lý do để gửi lại vô hạn.
+
+> Senior tip: Idempotency phải đặt ở từng ranh giới có thể retry (client->API, API->outbox, worker->provider). Với tin nhắn tiền/bán lẻ, "không biết đã gửi chưa" là trạng thái cần theo dõi, không phải lý do để gửi lại vô hạn.`,
+  follow: ['Khi worker gui xong SMS nhung crash truoc khi danh dau Outbox da xu ly, cung su kien duoc giao lai - ban nan tin nhan trung ra sao?', 'Hai kenh push va SMS cung duoc chon cho mot thong bao, lam sao dam bao khach nhan hai tin cho cung su kien?', 'Provider SMS khong ho tro idempotency va phan hoi Timeout sau khi co the da gui; ban xu ly trang thai mo ho toi sao?'],
+  tags: ['notification', 'outbox', 'idempotency', 'dedupe', 'retry']
+},
+{
+  id: 'design-050',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiet ke rate limiter phan tan: gioi han so request moi client/IP trong khung thoi gian, dung trang thai chung (Redis) cho nhieu instance, chuan thuat toan va xu ly khi Redis het capacity hoac down.',
+  a: `**Tóm tắt:** Rate limiter phân tán đếm số request của mỗi khóa (user_id, IP, API key) trong một khung thời gian và từ chối request vượt ngưỡng bằng 429. Vì nhiều instance API cùng chạy, trạng thái đếm phải ở Redis hoặc cơ sở dữ liệu chung thay vì bộ nhớ local. Tôi chọn token bucket hoặc sliding window tùy yêu cầu độ mượt và độ chính xác, dùng Lua script để đếm nguyên tử, và có đường giảm tải khi Redis không phản hồi.
+
+### Cơ chế từng bước
+1. Client gửi request kèm khóa định danh (user_id hoặc IP).
+2. API gọi Redis với Lua script: tăng bộ đếm của khóa trong cửa sổ thời gian, thiết lập TTL để key tự xóa.
+3. Nếu bộ đếm vượt ngưỡng -> trả 429 kèm Retry-After; nếu dưới ngưỡng -> cho phép và cộng 1.
+4. Dùng sliding window log (lưu timestamp mỗi request) hoặc sliding window counter (kết hợp cửa sổ hiện tại và trước) để giới hạn mượt hơn fixed window.
+5. Khi Redis không phản hồi, chọn fail-open (cho phép, log cảnh báo) hoặc fail-close (từ chối) tùy mức nhạy cảm; kèm bộ đếm local làm lưu an toàn ngắn hạn.
+
+~~~java
+public class RateLimiter {
+    private final RedisTemplate<String, String> redis;
+    public boolean allow(String key, int limit, long windowSeconds) {
+        String window = String.valueOf(System.currentTimeMillis() / 1000 / windowSeconds);
+        String redisKey = "rl:" + key + ":" + window;
+        Long count = redis.execute(redisScript, Collections.singletonList(redisKey), String.valueOf(windowSeconds));
+        if (count == null) return true; // Redis lỗi, fail-open
+        return count <= limit;
+    }
+}
+~~~
+
+### So sánh thuật toán
+| Thuật toán | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Fixed window | Đơn giản, rẻ | Bật nổ ở ranh giới cửa sổ (2 lần ngưỡng trong khoảng khác) |
+| Sliding window log | Chính xác, mượt | Lưu nhiều timestamp, tốn RAM Redis |
+| Sliding window counter | Cân bằng chính xác và chi phí | Gần chính xác, có sai số nhỏ ở ranh giới |
+| Token bucket | Cho phép bursts nhỏ, mượt | Cần tính toán thời gian còn lại của token |
+
+### Pitfall trên production
+- Race condition khi nhiều instance cùng INCR: phải dùng Lua script hoặc transaction Redis để đánh giá và tăng nguyên tử.
+- Clock skew giữa instance nếu dùng thời gian local để chia cửa sổ; dùng thời gian server Redis hoặc UTC rõ ràng.
+- Redis down: nếu fail-open bỏ qua giới hạn; nếu fail-close toàn bộ API bị khóa. Cần chọn theo mức nhạy cảm và có local fallback ngắn hạn.
+- Thundering herd khi nhiều client cùng hết hạn cửa sổ và cùng gửi lại; thêm jitter hoặc giới hạn retry.
+- Khóa quá dài hoặc quá nhiều cardinality (mỗi IP một key) làm RAM Redis tăng; đặt TTL và giới hạn số key.
+
+### Ví dụ đời thực
+API công khai nhận 50.000 request/giây, giới hạn 100 request/phút mỗi API key. Ban đầu dùng fixed window trong bộ nhớ local mỗi instance: 20 instance, mỗi instance cho 100 -> thực tế cho phép 2.000 request/phút/key, gấp 20 lần ngưỡng, và bị bật nổ ở ranh giới phút. Chuyển sang Redis sliding window counter với Lua script, giới hạn chính xác 100/phút/key toàn cụm. Metric rate_limited_total tăng từ 0,2% lên 4% (vì chạy đúng ngưỡng), không còn quota bị vượt. Khi Redis một lần đọc chậm, fail-open với bộ đếm local 1 giây cho phép lọt qua ít request thay vì khóa toàn bộ API. p99 latency API tăng từ 40 ms lên 55 ms do gọi Redis, trong ngưỡng chấp nhận được.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi đặt trạng thái đếm rate limiter ở Redis để mọi instance API cùng nhìn thấy một con số, dùng Lua script để tăng và so sánh ngưỡng nguyên tử tránh race condition. Chọn sliding window counter cho cân bằng giữa chính xác và chi phí Redis, với TTL tự động xóa key cũ. Khi Redis không phản hồi, tùy mức nhạy cảm tôi chọn fail-open với local fallback ngắn hạn hoặc fail-close; thêm Retry-After và giới hạn retry phía client để tránh gửi lại đồng loạt. So sánh fixed window đơn giản nhưng bị bật nổ ở ranh giới, sliding window log chính xác nhưng tốn RAM, token bucket hợp cho bursts nhỏ. Trên production tôi đã chuyển fixed window local sang Redis sliding window counter, quota chạy đúng ngưỡng và không còn bị vượt do mỗi instance tính riêng.
+
+> Senior tip: Rate limiter không chỉ bảo vệ server, còn là hợp đồng với client. Giới hạn phải rõ ràng (ngưỡng, cửa sổ, khóa), thông báo bằng 429 kèm Retry-After, và client phải lùi lại với jitter để không biến giới hạn thành bão retry.`,
+  follow: ['Fixed window bi bat no o ranh gioi cua so; sliding window counter khac phuc nhu the nhat co sai so o dau?', 'Neu Redis lam trang thai chung bi nhay hoac down, ban quyet dinh fail-open hay fail-close va co luu an toan local ra sao?', 'Rate limiter theo IP hay theo user_id/API key tuong ung truong hop nao, va lam gi khi nhieu user chia cung mot IP (NAT)?'],
+  tags: ['rate-limiter', 'distributed', 'Redis', 'token-bucket', 'sliding-window']
+},
+{
+  id: 'design-051',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiet ke he thong dat ve (concert/su kien) chong overselling: nhieu nguoi cung mua ve cung mot suat, ton kho phai chinh xac, khong ban qua so cho co san, dong thoi ho tro dat tam va huy tu dong.',
+  a: `**Tóm tắt:** Hệ thống đặt vé phải đảm bảo không bán vượt tồn kho ngay khi hàng nghìn request cùng chạm một suất. Tôi dùng câu lệnh cập nhật có điều kiện (UPDATE ... WHERE available >= quantity) trong transaction để trừ kho nguyên tử, kết hợp đặt chỗ tạm với TTL và idempotency key, rồi ghi sự kiện vào outbox để xác nhận và hủy tự động sau hết hạn.
+
+### Cơ chế từng bước
+1. Client chọn suất và số lượng vé, gửi kèm idempotency key.
+2. API mở transaction, chèn IdempotencyRecord unique theo (user_id, sự kiện, key); nếu trùng -> trả kết quả cũ.
+3. Thực hiện UPDATE seat SET available = available - quantity WHERE suat_id = ? AND available >= quantity. Nếu số dòng bị ảnh hưởng là 0 -> hết hàng, từ chối.
+4. Nếu trừ kho thành công, tạo bản ghi đặt chỗ (trạng thái HOLD) với TTL (ví dụ 10 phút) và ghi sự kiện vào outbox, cùng commit.
+5. Sau commit, outbox consumer gửi email xác nhận và lên lịch job hủy tự động nếu khách chưa thanh toán trước TTL; khi thanh toán, chuyển đặt chỗ thành ĐÃ MUA và trừ tồn kho chính thức.
+6. Nếu hết TTL mà chưa thanh toán, job hủy giải phóng các chỗ đã giữ, cộng lại available.
+
+~~~java
+public class TicketBookingService {
+    public BookingResult book(String userId, String eventId, String key, int quantity) {
+        return tx.execute(() -> {
+            IdempotencyRecord prior = idempotencyRepo.find(userId, eventId, key);
+            if (prior != null) return prior.result();
+            int updated = seatRepo.decrementAvailable(eventId, quantity);
+            if (updated == 0) throw new SoldOutException("hết vé");
+            Booking b = bookingRepo.save(HOLD, userId, eventId, quantity, now().plusMinutes(10));
+            outboxRepo.save(BookingEvent.of(b.id(), key, quantity));
+            idempotencyRepo.insertUnique(userId, eventId, key, "PENDING");
+            return BookingResult.hold(b.id());
+        });
+    }
+
+    public void releaseExpired() {
+        List<Booking> expired = bookingRepo.findExpiredHold(now());
+        for (Booking b : expired) {
+            tx.execute(() -> {
+                seatRepo.incrementAvailable(b.getEventId(), b.getQuantity());
+                bookingRepo.markReleased(b.getId());
+                outboxRepo.save(ReleaseEvent.of(b.getId()));
+                return null;
+            });
+        }
+    }
+}
+~~~
+
+### So sánh cách bảo vệ tồn kho
+| Cách làm | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Pessimistic lock (SELECT FOR UPDATE) | Đơn giản, chính xác | Giữ khóa lâu, chậm, dễ deadlock khi nhiều cột |
+| Optimistic (version) | Không giữ khóa dài | Phải retry khi xung đột, phức tạp hơn |
+| UPDATE WHERE available >= quantity | Nguyên tử, không giữ khóa lâu | Chỉ bảo vệ một bước, cần reconciliation |
+| Đặt chỗ tạm + TTL | Tạo trải nghiệm giữ chỗ, hủy tự động | Cần job hủy và theo dõi TTL chính xác |
+
+### Pitfall trên production
+- Trừ kho trong transaction nhưng giữ transaction mở trong khi gọi cổng thanh toán qua mạng -> transaction dài, kết nối DB bị tắc.
+- Đặt chỗ tạm TTL quá ngắn hoặc job hủy không chạy -> chỗ bị mắc kẹt, tồn kho hiển thị sai.
+- Hai request cùng giảm available nhưng chỉ kiểm tra sau commit -> cần unique constraint hoặc UPDATE có điều kiện, không phải đọc rồi ghi.
+- Không có reconciliation định kỳ giữa available trong DB và số đặt chỗ thực -> sai số dồn dần.
+- Idempotency key tạo mới mỗi lần retry -> server không nhận ra cùng đơn, tạo đơn trùng.
+
+### Ví dụ đời thực
+Sự kiện concert 50.000 vé, đỉnh 8.000 request/giây khi mở bán. Ban đầu team đọc available rồi mới ghi đơn: hai request cùng thấy available = 1, cùng ghi đơn được -> oversell 1 vé; metric oversell_total có 12 vụ trong 10 phút. Chuyển sang UPDATE ... WHERE available >= quantity trong transaction, kết hợp idempotency key và đặt chỗ tạm 10 phút. Sau thay đổi, oversell bằng 0 trong hai tuần, nhưng có khoảng 3% đặt chỗ bị hủy do hết TTL (khách thanh toán không kịp). Thêm job hủy giải phóng chạy mỗi 30 giây và reconciliation mỗi đêm so sánh available và tổng đặt chỗ. Kết quả: tồn kho hiển thị chính xác, không còn oversell, p95 API đặt vé giảm từ 1,2 giây xuống 350 ms vì không giữ transaction lâu.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi bảo vệ tồn kho bằng câu lệnh UPDATE có điều kiện (WHERE available >= quantity) trong một DB transaction, nên chỉ một request có thể trừ được vé cuối cùng; nếu số dòng cập nhật là 0 nghĩa là hết hàng. Mỗi đơn có idempotency key để client retry không tạo đơn trùng. Sau khi trừ kho, tôi tạo đặt chỗ tạm với TTL (ví dụ 10 phút) và ghi sự kiện vào outbox cùng transaction; consumer xác nhận đơn và lên lịch job hủy tự động nếu khách chưa thanh toán. Nếu hết TTL, job cộng lại available và giải phóng chỗ. Tôi tránh giữ transaction DB mở trong khi gọi cổng thanh toán, và chạy reconciliation định kỳ giữa available trong DB và tổng đặt chỗ thực để phát hiện sai số sớm. Hạn chế của cách này là cần job hủy và theo dõi TTL chính xác, nhưng đơn giản và không cần khóa dài như SELECT FOR UPDATE.
+
+> Senior tip: Không bao giờ đọc available rồi mới ghi đơn - đó là cửa sổ để hai request cùng mua vé cuối cùng. Luôn để cơ sở dữ liệu quyết định trừ kho trong một lệnh nguyên tử, và dùng idempotency key để retry an toàn.`,
+  follow: ['Hai request cung thay available = 1 va cung ghi don, ban nan oversell nay bang co che nao?', 'Dat cho tam TTL qua dai lam ton kho bi khoa, qua ngan lam khach ket; ban chon TTL duoc du lieu nao?', 'Khi job huyRelease chay nhung mot so cho da thanh toan song song, ban tran cong sai available toi sao?'],
+  tags: ['ticket-booking', 'overselling', 'inventory', 'transaction', 'idempotency']
+},
+{
+  id: 'design-052',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiet ke URL shortener nhan 10.000 request/giay: tao ma ngan tu URL dai, redirect nhanh, dem so click, va xu ly truong hop read-heavy voi cache.',
+  a: `**Tóm tắt:** URL shortener chuyển URL dài thành mã ngắn (ví dụ abc123), khi người dùng truy cập mã ngắn thì redirect đến URL gốc. Với 10.000 request/giây và tỉ lệ đọc/ghi cao (nhiều người nhấn link, ít ai tạo mới), tôi dùng mã ngắn có độ dài cố định, mã hóa base62, cache các mã hot trong Redis, và đếm click bất đồng bộ để không làm chậm redirect.
+
+### Cơ chế từng bước
+1. Tạo mã ngắn: lấy URL dài, tính hash hoặc dùng counter tăng, mã hóa base62 thành chuỗi 6-7 ký tự, kiểm tra va chạm (collision) trong DB; nếu trùng thì tạo mã mới.
+2. Lưu bản ghi mapping (mã ngắn -> URL gốc, ngày tạo, số click) vào PostgreSQL.
+3. Redirect: khi request đến /<ma>, trước đọc Redis cache; nếu có thì redirect ngay, nếu không thì đọc PostgreSQL, ghi vào Redis với TTL.
+4. Đếm click: không tăng trực tiếp trong đường redirect (làm chậm và gây tải DB); thay vào đó ghi sự kiện click vào Kafka/outbox, worker nhóm và cập nhật số click theo batch.
+5. Xử lý mã hết hạn hoặc không tồn tại: trả 404 hoặc trang thông báo.
+
+~~~java
+public class UrlShortener {
+    public String shorten(String longUrl) {
+        String code = generateUniqueCode(longUrl); // base62, kiểm tra va chạm
+        urlRepo.save(code, longUrl);
+        return code;
+    }
+
+    public String resolve(String code) {
+        String cached = cache.get("url:" + code);
+        if (cached != null) return cached;
+        String url = urlRepo.findByCode(code);
+        if (url == null) throw new NotFoundException();
+        cache.put("url:" + code, url, ttl);
+        return url;
+    }
+
+    public void recordClick(String code) {
+        clickEventProducer.send(ClickEvent.of(code, now())); // bất đồng bộ, không làm chậm redirect
+    }
+}
+~~~
+
+### So sánh cách tạo mã ngắn
+| Cách làm | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Hash (MD5/SHA) lấy prefix | Cố định, không cần counter | Có thể va chạm, cần kiểm tra và tạo lại |
+| Counter tăng + base62 | Không va chạm, ngắn gọn | Counter là điểm tập trung, cần đồng bộ nếu nhiều DB |
+| Random base62 | Không cần điều phối, dễ scale | Có thể va chạm khi nhiều mã, phải kiểm tra DB |
+| Vanity code người dùng chọn | Dễ nhớ, marketing | Có thể trùng, cần kiểm tra sử dụng |
+
+### Pitfall trên production
+- Redirect đường nóng mà không cache: mỗi lần nhấn link đều đọc PostgreSQL, gây tải DB khi 10.000 request/giây.
+- Đếm click trực tiếp trong đường redirect: mỗi redirect phải UPDATE DB, làm tăng latency và tạo contention trên hàng click.
+- Va chạm mã ngắn: hai URL khác sinh cùng mã, bản ghi thứ hai ghi đè hoặc lỗi unique; cần kiểm tra và tạo mã mới.
+- Cache không có TTL hoặc TTL quá dài: URL thay đổi nhưng mã cũ vẫn trỏ đến URL cũ.
+- Hot key (mã viral) nhận quá tải một key Redis; có thể shard cache hoặc thêm lớp local cache.
+
+### Ví dụ đời thực
+Dịch vụ shortening nhận 10.000 redirect/giây, 99% là đọc, 1% tạo mới. Ban đầu mỗi redirect đều đọc PostgreSQL và tăng số click bằng UPDATE trong cùng đường dẫn: p99 redirect 180 ms, CPU DB 85%. Chuyển sang cache Redis cho mã hot (TTL 1 giờ) và đếm click bất đồng bộ qua Kafka. p99 redirect giảm xuống 12 ms, CPU DB xuống 25%. Mã viral (một mã nhận 50.000 click/giây) gây nóng một key Redis; thêm local cache trong mỗi instance và shard cache theo mã. Số click được cập nhật batch mỗi 10 giây, có sai số nhỏ (click trong cửa sổ chưa flush) nhưng chấp nhận được cho thống kê. Sau rollout, p99 redirect 12 ms, DB chỉ chịu 1% luồng redirect.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế URL shortener tập trung vào đường redirect vì đây là nơi tải cao nhất (99% request). Mã ngắn được sinh bằng base62 từ hash hoặc counter, kiểm tra va chạm trước khi lưu vào PostgreSQL. Redirect trước đọc Redis cache, miss thì đọc PostgreSQL và ghi cache với TTL, nên p99 redirect thấp. Số click không được tăng trực tiếp trong đường redirect - thay vào đó ghi sự kiện vào Kafka, worker nhóm cập nhật batch, chấp nhận sai số nhỏ để không làm chậm redirect và tránh contention DB. Mã ngắn có độ dài cố định, base62, và kiểm tra unique để tránh va chạm. Với mã viral nhận rất nhiều click, tôi thêm local cache và shard cache để tránh nóng một key Redis.
+
+> Senior tip: Đường redirect phải nhanh nhất có thể - không được làm việc nặng (ghi DB, gọi API ngoài) trên đường đó. Đếm click, phân tích, và gửi thông báo nên được tách ra xử lý bất đồng bộ sau khi redirect đã xảy ra.`,
+  follow: ['Ma ngan bi va cham (hai URL sinh cung ma) ban xu ly nhu the nao khong lam chamm duong tao?', 'So click duoc cap nhat batch co sai so; khi nhat sai so do khong chap nhan duoc va ban xu ly ra sao?', 'Cache ma short URL co TTL; neu URL goc thay doi, ma cu van tro den URL cu - ban xu ly invalidate nhu the nao?'],
+  tags: ['url-shortener', 'cache', 'redirect', 'click-count', 'base62']
+},
+{
   id: 'architecture-039',
   topic: 'architecture',
   level: 'senior',
