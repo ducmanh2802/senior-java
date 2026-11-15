@@ -6772,5 +6772,233 @@ Khi được hỏi "viết rate limiter token bucket thế nào cho đúng?", n�
 > Senior tip: Rate limiter là "cửa ngõ" bảo vệ hệ thống — nó phải **chắc chắn đúng** dưới mọi tải. Một bug race cho phép 2x traffic là đủ làm sập cả cụm backend. Luôn test đồng thời (CountDownLatch) với traffic gấp 5–10 lần quota, không chỉ test tuần tự.`,
   related: ['api-009', 'microservices-007', 'concurrency-015'],
   tags: ['rate limiter', 'token bucket', 'race condition', 'CAS', 'AtomicLong', 'API Gateway', 'burst']
+},
+{
+  id: 'bug-034',
+  title: 'Báo cáo doanh thu sai vì dùng double và làm tròn khi chia phí cho nhiều đối tác',
+  domain: 'Ví điện tử / Báo cáo doanh thu',
+  level: 'mid',
+  severity: 'P2',
+  minutes: 20,
+  story: `**Bối cảnh dự án:** Hệ thống ví điện tử có tính năng "chia phí dịch vụ" — tổng phí thu từ khách hàng được chia cho các đối tác (ví dụ Shopee, Lazada, Tiki) để đối soát tiền cho mỗi đối tác mỗi ngày. Tiền là VND (số nguyên đồng, không có phần lẻ), nhưng code tính bằng {{double}} và làm tròn từng phần bằng {{Math.round}}.
+
+**Sự cố:** Đối soát cuối tháng báo tổng các phần **không bằng tổng phí**, lệch vài đồng trên từng hóa đơn. Trên 180.000 lần chia tiền, sai số tích lũy hơn hai triệu đồng. Một số đối tác bị thu ít, một số bị thu nhiều, báo cáo doanh thu của phòng tài chính sai, kế toán phải điều tra thủ công từng hóa đơn.
+
+**Nhiệm vụ của bạn:** Sửa {{RevenueShareService.split}} để **tổng các phần luôn đúng bằng tổng phí**, và các phần chênh nhau **không quá 1 đồng**.`,
+  artifacts: [
+    { name: 'revenue-audit.csv', lang: 'text', content: `split_id,total,partners,shares,sum_shares,diff
+RV-100231,100000,3,"33333|33333|33333",99999,-1
+RV-100244,10000,4,"3000|3000|3000|3000",12000,+2000
+RV-100259,250000,6,"41667|41667|41667|41667|41667|41667",250002,+2
+RV-100260,7,3,"2|2|2",6,-1
+-- month total diff: -1,184,312 VND (under-collected) / +944,207 VND (over-collected)` },
+  ],
+  starter: `// ===== Code cần sửa =====
+class RevenueShareService {
+    /** Chia total (VND, số nguyên đồng) cho n đối tác. Trả về mảng n phần. */
+    long[] split(long total, int n) {
+        if (n <= 0) throw new IllegalArgumentException("n phải > 0");
+        double share = (double) total / n;   // BUG: double sai số + làm tròn từng phần độc lập
+        long[] shares = new long[n];
+        for (int i = 0; i < n; i++) {
+            shares[i] = Math.round(share);
+        }
+        return shares;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static long sum(long[] xs) { long s = 0; for (long x : xs) s += x; return s; }
+    static long spread(long[] xs) { long max = xs[0], min = xs[0]; for (long x : xs) { if (x > max) max = x; if (x < min) min = x; } return max - min; }
+
+    public static void main(String[] args) {
+        RevenueShareService s = new RevenueShareService();
+        long[][] cases = { {100_000, 3}, {10_000, 4}, {250_000, 6}, {7, 3}, {1_000_000_007L, 10} };
+        for (long[] c : cases) {
+            long[] r = s.split(c[0], (int) c[1]);
+            boolean ok = r.length == c[1] && sum(r) == c[0] && spread(r) <= 1;
+            check("chia_" + c[0] + "_cho_" + c[1], ok, "các phần " + java.util.Arrays.toString(r) + " có tổng " + sum(r) + " (kỳ vọng " + c[0] + ", chênh tối đa 1 đồng)");
+        }
+        long[] one = s.split(55_555, 1);
+        check("mot_nguoi", one.length == 1 && one[0] == 55_555, "một đối tác phải nhận đủ, thực tế " + java.util.Arrays.toString(one));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `class RevenueShareService {
+    long[] split(long total, int n) {
+        if (n <= 0) throw new IllegalArgumentException("n phải > 0");
+        long base = total / n;          // phần nguyên chia đều (số học nguyên, không qua double)
+        long remainder = total % n;     // số đồng còn dư, luôn < n
+        long[] shares = new long[n];
+        for (int i = 0; i < n; i++) {
+            shares[i] = base + (i < remainder ? 1 : 0);   // phân phát từng đồng dư cho các đối tác đầu (largest remainder)
+        }
+        return shares;                  // tổng = base*n + remainder = total
+    }
+}`,
+  hints: [
+    'Làm tròn từng phần một cách độc lập thì sai số cộng dồn lại: 3 * 33.333 = 99.999.',
+    'Dùng số học nguyên: total / n cho phần chung, total % n cho số đồng còn dư.',
+    'Phát từng đồng dư cho vài đối tác đầu (mỗi người thêm 1 đồng). Tổng sẽ luôn đúng và chênh lệch tối đa 1 đồng.',
+  ],
+  rootCause: `**Làm tròn từng phần một cách độc lập** (và còn qua {{double}}). Khi chia không hết, mỗi phần bị làm tròn lên hoặc xuống cùng một hướng, sai số nhân lên theo số người: 100.000/3 → 3 * 33.333 = 99.999 (thiếu 1 đồng); 10.000/4 = 2.500 vẫn đúng, nhưng file audit cho thấy {{3000}} — vì phiên bản trước đó còn làm tròn lên hàng nghìn ở tầng hiển thị. Với số rất lớn, {{double}} còn mất chính xác (chỉ khoảng 15–16 chữ số có nghĩa). Nguyên tắc vi phạm: **tổng các phần phải bằng tổng gốc** — một ràng buộc nghiệp vụ mà code không hề kiểm tra.`,
+  fix: `### Cách sửa
+Dùng **số học nguyên**: phần chung {{total / n}}, số dư {{total % n}} được phát thêm 1 đồng cho {{remainder}} đối tác đầu. Tổng luôn đúng, chênh lệch tối đa 1 đồng, không có {{double}} nào.
+
+### Với tiền có phần thập phân (USD, EUR)
+Đổi về **đơn vị nhỏ nhất** (cent) dạng {{long}}, chia như trên, rồi đổi lại; hoặc dùng {{BigDecimal}} với {{divide(n, 2, RoundingMode.DOWN)}} cho n−1 phần đầu và **phần cuối = tổng − tổng các phần trước**.
+~~~java
+BigDecimal part = total.divide(BigDecimal.valueOf(n), 2, RoundingMode.DOWN);
+BigDecimal last = total.subtract(part.multiply(BigDecimal.valueOf(n - 1)));   // gánh phần lẻ
+~~~
+
+### Phòng ngừa
+- Viết **property test**: với mọi total và n ngẫu nhiên, tổng các phần == total (jqwik hoặc vòng lặp ngẫu nhiên).
+- Assert bất biến ngay trong code nghiệp vụ trước khi lưu: tổng phải khớp, nếu không thì từ chối.
+- Không bao giờ dùng {{float}}/{{double}} cho tiền.
+
+### Liên hệ phỏng vấn
+Câu "chia 100 nghìn cho 3 người thế nào" kiểm tra bạn có nghĩ tới **bảo toàn tổng** (allocation) chứ không chỉ "làm tròn". Nêu được cách phân phát phần dư và lý do không dùng double là điểm cộng rõ.`,
+  related: ['core-012'],
+  tags: ['money', 'rounding', 'BigDecimal', 'allocation', 'revenue']
+},
+{
+  id: 'bug-035',
+  title: 'Tính đơn giá hóa đơn: BigDecimal.divide thiếu làm tròn ném ArithmeticException',
+  domain: 'Thương mại điện tử / Hóa đơn',
+  level: 'mid',
+  severity: 'P2',
+  minutes: 20,
+  story: `**Bối cảnh dự án:** Hệ thống hóa đơn tính **đơn giá** và **giá trị giao dịch trung bình** cho báo cáo. Code dùng {{BigDecimal}} (đúng tiền, không dùng {{double}}) nhưng gọi {{divide(divisor)}} **không truyền scale và {{RoundingMode}}}**. Khi tổng tiền không chia hết cho số lượng (ví dụ 100.000 đồng chia cho 3 sản phẩm), Java ném {{ArithmeticException: Non-terminating decimal expansion; no exact representable decimal record}}.
+
+**Sự cố:** Khách đặt đơn 3 sản phẩm tổng 100.000 đồng. Service tính đơn giá = 100.000 / 3 → ném exception, đơn không thể checkout. Ở thời gian cao điểm, hàng chục đơn bị từ chối oan vì số tiền không chia hết. Log in lỗi ArithmeticException và hệ thống trả 500 cho khách.
+
+**Nhiệm vụ của bạn:** Sửa {{InvoiceService.unitPrice}} và {{average}} để chia luôn kèm scale (2 chữ số thập phân) và {{RoundingMode.HALF_UP}}, không bao giờ ném exception vì số lẻ.`,
+  artifacts: [
+    { name: 'invoice-service.log', lang: 'text', content: `2026-11-20 09:12:44.118 ERROR InvoiceService : unitPrice failed order=ORD-99213
+java.lang.ArithmeticException: Non-terminating decimal expansion; no exact representable decimal record.
+    at com.shop.invoice.InvoiceService.unitPrice(InvoiceService.java:24)
+2026-11-20 09:12:44.355 ERROR InvoiceService : average failed report=DAILY
+java.lang.ArithmeticException: Non-terminating decimal expansion; no exact representable decimal record.
+    at com.shop.invoice.InvoiceService.average(InvoiceService.java:38)` },
+  ],
+  starter: `// ===== Code cần sửa =====
+import java.math.BigDecimal;
+
+class InvoiceService {
+    /** Đơn giá = tổng tiền / số lượng, làm tròn 2 chữ số thập phân. */
+    BigDecimal unitPrice(BigDecimal total, int quantity) {
+        if (quantity <= 0) throw new IllegalArgumentException("số lượng phải > 0");
+        return total.divide(BigDecimal.valueOf(quantity));   // BUG: thiếu scale + RoundingMode
+    }
+
+    /** Giá trị giao dịch trung bình = tổng / số giao dịch. */
+    BigDecimal average(BigDecimal total, int count) {
+        if (count <= 0) throw new IllegalArgumentException("số giao dịch phải > 0");
+        return total.divide(BigDecimal.valueOf(count));   // BUG: thiếu scale + RoundingMode
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        InvoiceService s = new InvoiceService();
+
+        // 1. Chia hết: không exception, kết quả đúng
+        boolean ok1 = true; String d1 = "";
+        try {
+            java.math.BigDecimal r1 = s.unitPrice(new java.math.BigDecimal("100.00"), 2);
+            if (!"50.00".equals(r1.toPlainString())) { ok1 = false; d1 = "kỳ vọng 50.00, thực tế " + r1; }
+        } catch (Throwable t) { ok1 = false; d1 = "ném " + t.getClass().getSimpleName(); }
+        check("chia_het", ok1, d1);
+
+        // 2. Không chia hết: không được ném ArithmeticException
+        boolean ok2 = true; String d2 = "";
+        try {
+            s.unitPrice(new java.math.BigDecimal("100.00"), 3);
+        } catch (ArithmeticException e) { ok2 = false; d2 = "ném ArithmeticException khi không chia hết"; }
+        check("khong_chia_het_khong_nem_loi", ok2, d2);
+
+        // 3. Số lẻ khác 0: 10.00 / 3 làm tròn HALF_UP -> 3.33
+        boolean ok3 = true; String d3 = "";
+        try {
+            java.math.BigDecimal r3 = s.unitPrice(new java.math.BigDecimal("10.00"), 3);
+            if (!"3.33".equals(r3.toPlainString())) { ok3 = false; d3 = "kỳ vọng 3.33, thực tế " + r3; }
+        } catch (Throwable t) { ok3 = false; d3 = "ném " + t.getClass().getSimpleName(); }
+        check("lam_tron_3_33", ok3, d3);
+
+        // 4. Trung bình 1000 / 3 = 333.33
+        boolean ok4 = true; String d4 = "";
+        try {
+            java.math.BigDecimal r4 = s.average(new java.math.BigDecimal("1000"), 3);
+            if (!"333.33".equals(r4.toPlainString())) { ok4 = false; d4 = "kỳ vọng 333.33, thực tế " + r4; }
+        } catch (Throwable t) { ok4 = false; d4 = "ném " + t.getClass().getSimpleName(); }
+        check("trung_binh_333_33", ok4, d4);
+
+        // 5. Số lượng <= 0 vẫn ném IllegalArgumentException
+        boolean ok5 = true; String d5 = "";
+        try {
+            s.unitPrice(new java.math.BigDecimal("100"), 0);
+            ok5 = false; d5 = "không ném IllegalArgumentException khi quantity <= 0";
+        } catch (IllegalArgumentException e) { /* đúng */ }
+        check("so_luong_duong", ok5, d5);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `import java.math.BigDecimal;
+import java.math.RoundingMode;
+
+class InvoiceService {
+    private static final int MONEY_SCALE = 2;
+
+    BigDecimal unitPrice(BigDecimal total, int quantity) {
+        if (quantity <= 0) throw new IllegalArgumentException("số lượng phải > 0");
+        return total.divide(BigDecimal.valueOf(quantity), MONEY_SCALE, RoundingMode.HALF_UP);
+    }
+
+    BigDecimal average(BigDecimal total, int count) {
+        if (count <= 0) throw new IllegalArgumentException("số giao dịch phải > 0");
+        return total.divide(BigDecimal.valueOf(count), MONEY_SCALE, RoundingMode.HALF_UP);
+    }
+}`,
+  hints: [
+    '{{BigDecimal.divide(divisor)}} không có scale: nếu kết quả có phần thập phân vô hạn (100/3) Java ném {{ArithmeticException}}.',
+    'Luôn chia tiền với scale và làm tròn: {{divide(divisor, scale, RoundingMode)}}.',
+    'Tiền tệ thường dùng {{RoundingMode.HALF_UP}} (làm tròn theo thường quy), không dùng {{HALF_EVEN}} trừ khi có yêu cầu.',
+  ],
+  rootCause: `**Gọi {{BigDecimal.divide(divisor)}} không truyền scale và làm tròn.** Phép chia này yêu cầu kết quả **chính xác tuyệt đối**; nếu phần thập phân vô hạn (ví dụ 100.00 / 3 = 33.333...) Java ném {{ArithmeticException}} thay vì làm tròn im lặng. Đây là thiết kế ý định của {{BigDecimal}}: buộc lập trình viên quyết định sai số cho phép, không cho phép sai số nhị phân trôi trôi.
+
+**Sai số đôi khi ẩn:** 100.00 / 2 = 50.00 chia hết nên không exception, nhưng 100.00 / 3 lại lỗi — vậy nên lỗi chỉ lộ lúc có đơn hàng số lượng lẻ, đúng như sự cố "hàng chục đơn bị từ chối oan".`,
+  fix: `### Cách sửa
+Luôn gọi {{divide(divisor, scale, RoundingMode)}} với scale phù hợp (2 chữ số thập phân cho tiền tệ) và {{RoundingMode.HALF_UP}} (quy ước làm tròn tiền phổ biến).
+~~~java
+return total.divide(BigDecimal.valueOf(quantity), 2, RoundingMode.HALF_UP);
+~~~
+
+### Lưu ý làm tròn
+- {{RoundingMode.HALF_UP}}: 33.335 → 33.34 (làm tròn lên nếu phần lẻ ≥ 0.5). Phù hợp nghiệp vụ tiền tệ phổ biến.
+- {{RoundingMode.HALF_EVEN}} (banker's rounding): 33.335 → 33.34, 33.325 → 33.32 (làm tròn về số chẵn), dùng khi cần giảm sai số tích lũy trên rất nhiều giao dịch.
+- Không bao giờ tạo {{BigDecimal}} từ {{double}} ({{new BigDecimal(0.1)}} mang sai số nhị phân); dùng constructor chuỗi {{new BigDecimal("0.1")}} hoặc {{BigDecimal.valueOf}}.
+
+### Phòng ngừa
+- Quy tắc review: mọi {{BigDecimal.divide}} phải có scale + {{RoundingMode}}.
+- Test với số không chia hết (1/3, 10/3, 1000/3) trong CI.
+- Luôn quy ước scale cố định theo loại tiền (USD/EUR = 2, VND = 0).
+
+### Liên hệ phỏng vấn
+"Vì sao {{BigDecimal.divide}} đôi khi ném {{ArithmeticException}}" là câu hỏi Java core phổ biến. Trả lời: divide không tham số yêu cầu kết quả kết thúc (terminating decimal), phần thập phân vô hạn ném exception; sửa bằng divide(divisor, scale, RoundingMode); kèm lưu ý không tạo BigDecimal từ double.`,
+  related: ['core-021'],
+  tags: ['BigDecimal', 'divide', 'ArithmeticException', 'RoundingMode', 'money']
 }
 );
