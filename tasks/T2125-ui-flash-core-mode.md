@@ -25,3 +25,4 @@ Người học có 6 tháng ôn phỏng vấn Senior Java, ngân hàng ~2000 câ
 
 ## Notes
 - 2026-11-15 Claude: chip ⭐ Chỉ câu lõi (phím C, S.core), chế độ 'quick' (10 thẻ lõi; route #/flash/core). File chuẩn hoá CRLF→LF.
+Reviewed-by: verify-only (code/UI task)
