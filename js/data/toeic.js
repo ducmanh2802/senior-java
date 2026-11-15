@@ -3180,4 +3180,260 @@ Thomas Nguyen`,
     "classes"
   ]
 },
+{
+  id: "toeic-w3-015",
+  part: "w3",
+  prompt: "Some companies require employees to attend regular team-building activities outside of work hours. Do you think this is a good policy? Give reasons and examples to support your answer.",
+  outline: [
+    "Hoạt động ngoài giờ có thể tăng gắn kết nhưng xâm phạm thời gian cá nhân",
+    "Nhân viên có trách nhiệm gia đình khó tham gia đều đặn",
+    "Nên tổ chức trong giờ làm hoặc tự nguyện, không bắt buộc",
+    "Kết luận: tốt khi tự nguyện và trong giờ làm, xấu khi ép buộc ngoài giờ"
+  ],
+  sample: "I do not think it is a good policy to require employees to attend team-building activities outside of regular work hours. While building strong relationships among colleagues is valuable, mandatory events after hours can create resentment and exclude people with personal commitments.\n\nFirst, employees have lives beyond the office. Many have childcare responsibilities, elderly relatives to care for, or second jobs that make evening or weekend events impossible to attend. A single parent, for example, may need to pick up a child from daycare by six o'clock and cannot stay for a three-hour workshop or dinner. When attendance is required, that person faces an unfair choice between work and family. This pressure disproportionately affects women and caregivers, who already carry a heavier domestic burden in many societies.\n\nSecond, mandatory participation often backfires. People who feel pressured to attend are less likely to engage genuinely. They may show up physically but remain disengaged, which defeats the purpose of team building. Voluntary activities, by contrast, attract those who are genuinely interested and willing to contribute, leading to more authentic connections. Research on workplace motivation consistently shows that autonomy drives engagement; compulsory fun is an oxymoron.\n\nA better approach is to schedule team-building during work hours. A two-hour session on a Friday afternoon, a shared lunch, or a short workshop between meetings can achieve the same goal without intruding on personal time. Companies can also offer a variety of optional activities — such as a walking group, a book club, or a skill-sharing session — so employees can choose what fits their interests. When participation is a choice, the energy in the room is fundamentally different.\n\nIn conclusion, team cohesion matters, but it should not come at the cost of work-life balance. Voluntary, in-hours activities respect employees' boundaries and often produce better results than compulsory after-hours events. A culture that values rest as much as collaboration will ultimately build stronger teams.",
+  tips: [
+    "Mở bài nêu quan điểm rõ: I do not think it is a good policy…; tránh lẳng lóng.",
+    "Dùng First, Second, A better approach, In conclusion để chia cấu trúc; mỗi đoạn một ý.",
+    "Đưa ví dụ cụ thể: single parent, childcare, elderly care — giúp người chấm thấy bạn hiểu bối cảnh thực tế.",
+    "Từ vựng hay dùng: work-life balance, mandatory vs. voluntary, backfire, resent, engage genuinely, intrude on personal time."
+  ],
+  tags: ["workplace", "team building", "work-life balance"]
+},
+{
+  id: "toeic-w3-016",
+  part: "w3",
+  prompt: "In many cities, public transportation is becoming more expensive while service quality remains the same. Some people argue that the government should subsidize fares to keep them affordable. What is your opinion?",
+  outline: [
+    "Giá vé đắt khiến người nghèo khó tiếp cận, tăng xe cá nhân và ùn tắc",
+    "Trợ cấp giúp công bằng xã hội và khuyến khích dùng xe buýt/tàu",
+    "Nhưng ngân sách nhà nước có hạn, cần hiệu quả chi tiêu",
+    "Kết luận: nên trợ cấp có mục tiêu (sinh viên, người cao tuổi, thu nhập thấp) thay vì giảm giá cho tất cả"
+  ],
+  sample: "I believe the government should provide targeted subsidies to keep public transportation affordable for those who need it most, rather than lowering fares for everyone. Affordable transit is essential for equity and for reducing traffic congestion, but blanked fare cuts can strain public budgets without solving the root problems.\n\nTo begin with, rising fares disproportionately affect low-income commuters, students, and seniors. When bus or train tickets become too expensive, people may switch to motorbikes or cars, which worsens traffic and air pollution. A student who commutes daily from the suburbs may spend a large share of a part-time income on transport. Subsidized passes for these groups ensure they can reach school, work, and medical appointments without hardship. In many European cities, youth and senior discounts are standard, and ridership among these groups remains high as a result.\n\nHowever, across-the-board fare reductions are costly and may not improve service quality. If the transit agency loses revenue, it might cut routes or delay maintenance, making the system less reliable for everyone. A better use of public funds is to invest in frequency, punctuality, and capacity — so that people choose transit because it is convenient, not just because it is cheap. Cities like Zurich and Singapore demonstrate that reliable service attracts riders even at higher prices.\n\nSome cities have adopted means-tested fare programs. In one example, residents earning below a certain threshold receive a fifty-percent discount on monthly passes, funded by a small congestion charge on private vehicles entering the city center. This approach supports equity while encouraging a shift away from cars. London's congestion charge, for instance, generates revenue that directly funds bus improvements.\n\nIn conclusion, I support government action to keep transit affordable, but the help should be focused on vulnerable groups. Combined with service improvements, targeted subsidies can make public transportation a realistic choice for more people without overburdening the budget. The goal is a system that works for everyone, not just those who can afford to drive.",
+  tips: [
+    "Chọn lập trường cân bằng: I believe the government should provide targeted subsidies… rather than lowering fares for everyone.",
+    "Dùng To begin with, However, Some cities have adopted, In conclusion.",
+    "Từ vựng chủ đề: subsidize, fare, means-tested, congestion charge, low-income commuters, equity, strain public budgets.",
+    "Tránh nói government should pay for everything; hãy nêu giải pháp cụ thể (targeted subsidies, congestion charge)."
+  ],
+  tags: ["public transport", "government policy", "urban life"]
+},
+{
+  id: "toeic-w3-017",
+  part: "w3",
+  prompt: "Some people think that hotels should allow guests to check in early or check out late without extra charge. Others believe these services should be paid. What is your opinion?",
+  outline: [
+    "Khách du lịch thường đến sớm/về muộn do giờ bay, thêm phí gây bất mãn",
+    "Nhà khách cần thời gian dọn phòng, nhân viên làm thêm giờ — chi phí thực",
+    "Có thể miễn phí trong khoảng giới hạn (ví dụ 1-2 giờ) hoặc tùy tình trạng phòng",
+    "Kết luận: linh hoạt hợp lý hơn cứng nhắc; miễn phí một chút xây dựng thiện cảm"
+  ],
+  sample: "I think hotels should offer a reasonable grace period for early check-in and late check-out at no extra charge, rather than applying a strict fee for every minute. Flexibility in these situations costs the hotel little when rooms are available and builds significant goodwill with guests.\n\nFirst, travelers often have no control over flight or train schedules. A guest arriving on a 6 a.m. flight may reach the hotel by 7:30 a.m., hours before the standard 3 p.m. check-in. Charging a full night's rate for a few hours of rest feels punitive, especially when the room sat empty the previous night. Similarly, a late departure at 2 p.m. instead of 11 a.m. may not conflict with the next guest's arrival. A family with a late flight, for instance, would gladly pay for a day-use room if the price were reasonable, but a full-night charge is excessive.\n\nSecond, housekeeping schedules do require planning. If a room must be turned over quickly for the next guest, the hotel incurs real costs — overtime for staff or a delayed check-in for the incoming traveler. However, many days have gaps between departures and arrivals. A simple policy could allow free late check-out until 2 p.m. when the room is not needed immediately, and charge only when a conflict exists. Smart hotels use property management systems to track real-time occupancy and offer flexibility automatically.\n\nSome hotel chains already do this. One major brand offers complimentary late check-out to loyalty members and extends it to all guests when occupancy is below eighty percent. This approach rewards frequent customers and fills otherwise empty time without revenue loss. Another chain provides a courtesy hold on luggage and access to lobby amenities for early arrivals, which costs almost nothing but dramatically improves the guest experience.\n\nIn conclusion, a rigid fee for every early arrival or late departure ignores the reality of travel and the variability of hotel occupancy. A flexible, conditions-based policy — free within a reasonable window when operationally feasible — costs little and differentiates a hotel in a competitive market. Guests remember how they were treated when their plans didn't fit the standard schedule.",
+  tips: [
+    "Lập trường: I think hotels should offer a reasonable grace period… rather than applying a strict fee.",
+    "Dùng First, Second, Some hotel chains already do this, In conclusion.",
+    "Từ vựng: grace period, check-in/check-out, housekeeping, turnover, occupancy rate, loyalty members, punitive, goodwill.",
+    "Ví dụ thực tế: loyalty program, occupancy below 80% — làm bài luận cụ thể và thuyết phục."
+  ],
+  tags: ["travel", "hotel", "customer service"]
+},
+{
+  id: "toeic-w3-018",
+  part: "w3",
+  prompt: "Many banks now charge fees for basic services that used to be free, such as paper statements or in-branch withdrawals. Some argue this is fair because digital alternatives exist. Others say it penalizes people who cannot use digital banking. What is your view?",
+  outline: [
+    "Dịch vụ kỹ thuật số rẻ hơn cho ngân hàng, chuyển dịch hợp lý",
+    "Nhưng người cao tuổi, vùng nông thôn, người khuyết tật khó dùng app/web",
+    "Phí dịch vụ cơ bản là gánh nặng cho nhóm yếu thế tài chính",
+    "Kết luận: nên giữ miễn phí cho nhóm yếu thế, hoặc cung cấp hỗ trợ chuyển đổi kỹ thuật số"
+  ],
+  sample: "I believe banks should not charge fees for basic services like paper statements or in-branch withdrawals without providing free alternatives for customers who cannot use digital channels. While digital banking reduces costs, penalizing vulnerable groups for the bank's efficiency gains is unfair and may violate principles of financial inclusion.\n\nTo begin with, many customers rely on traditional services out of necessity, not preference. An elderly person with limited vision may struggle to navigate a smartphone app. A rural resident may have unreliable internet. A low-income worker may not own a smartphone at all. For these individuals, a paper statement or a teller visit is not a luxury — it is the only way to manage their money. In the United Kingdom, the Financial Conduct Authority has warned that branch closures and digital-only services risk leaving vulnerable consumers behind.\n\nSecond, fees for basic services disproportionately affect those least able to pay. A five-dollar monthly charge for a paper statement may seem small to a bank, but it represents a meaningful share of a fixed pension or minimum wage. When banks remove free access to essential services, they effectively push the unbanked further from the financial system. Studies show that unbanked households pay significantly more for basic financial transactions like check cashing and money orders.\n\nSome banks have addressed this by waiving fees for seniors, students, or customers who receive government benefits. Others offer free digital literacy workshops at branches. A major Australian bank, for example, employs \"digital champions\" in branches to help older customers learn mobile banking at their own pace. These approaches reduce digital exclusion without forcing every customer onto a platform they cannot use.\n\nIn conclusion, the shift to digital should not come at the expense of those who cannot follow. Banks can maintain free basic services for vulnerable groups while encouraging digital adoption through incentives — not penalties — for those who are able to switch. Financial inclusion means meeting customers where they are, not where the bank wishes they were.",
+  tips: [
+    "Lập trường rõ ràng: I believe banks should not charge fees… without providing free alternatives.",
+    "Dùng To begin with, Second, Some banks have addressed this, In conclusion.",
+    "Từ vựng: financial inclusion, digital literacy, vulnerable groups, unbanked, waive fees, disproportionately affect, fixed income.",
+    "Đừng quên nêu giải pháp cân bằng: waive fees for seniors/students, digital literacy workshops."
+  ],
+  tags: ["banking", "digital divide", "financial inclusion"]
+},
+{
+  id: "toeic-w3-019",
+  part: "w3",
+  prompt: "Some companies provide free meals and snacks in the office. Do you think this is a good use of company resources? Give reasons and examples.",
+  outline: [
+    "Ăn uống miễn phí tiết kiệm thời gian, tăng năng suất, giữ chân nhân tài",
+    "Chi phí thấp so với lương/thưởng, tạo văn hóa tích cực",
+    "Nhưng cần quản lý rác thải thực phẩm, đáp ứng chế độ ăn đặc biệt",
+    "Kết luận: đầu tư xứng đáng nếu làm đúng cách, không phải lãng phí"
+  ],
+  sample: "I believe providing free meals and snacks in the office is a good use of company resources when managed well. The cost is modest compared to salaries and recruitment expenses, yet the benefits for productivity, retention, and culture can be significant.\n\nFirst, free food saves employees time. Without an on-site option, a worker may spend forty-five minutes leaving the building, queuing, eating, and returning. Over a year, that adds up to hundreds of lost hours. A catered lunch or a stocked pantry lets people eat quickly and return to focused work. One tech company estimated that its free lunch program saved each engineer about ninety minutes per week, which translated into an extra project completed per quarter. Even at a conservative valuation, the return on investment far exceeds the per-meal cost.\n\nSecond, meals create informal collaboration. When people from different teams sit together, they exchange ideas that would not arise in scheduled meetings. A designer might overhear a developer discussing a constraint and suggest a simpler approach. These spontaneous interactions are hard to engineer but easy to enable with a shared dining space. Google's famous cafeterias were designed specifically to maximize cross-team encounters, and many startups now copy this model on a smaller scale.\n\nHowever, companies must address food waste and dietary needs. Ordering too much leads to waste; offering only standard options excludes vegetarians, halal, or gluten-free employees. A survey beforehand and a feedback loop can keep the program efficient and inclusive. Some firms partner with apps that let employees pre-order meals, reducing waste to near zero while accommodating every dietary requirement.\n\nIn conclusion, free office meals are not a perk for its own sake — they are a practical investment in time, collaboration, and employee satisfaction. With thoughtful planning, the return far exceeds the cost. The best programs treat food as infrastructure, not indulgence, and measure their impact on the metrics that matter: retention, engagement, and output.",
+  tips: [
+    "Lập trường: I believe providing free meals… is a good use of company resources when managed well.",
+    "Dùng First, Second, However, In conclusion; dẫn số liệu cụ thể (ninety minutes per week, extra project per quarter).",
+    "Từ vựng: productivity, retention, catered, pantry, spontaneous interactions, dietary needs, food waste, inclusive.",
+    "Tránh nói free food solves everything; thừa nhận cần quản lý rác thải và chế độ ăn đặc biệt."
+  ],
+  tags: ["workplace", "perks", "productivity"]
+},
+{
+  id: "toeic-w3-020",
+  part: "w3",
+  prompt: "Some people prefer to shop at large supermarkets, while others prefer small local shops. Which do you prefer, and why?",
+  outline: [
+    "Siêu thị lớn: giá rẻ, đa dạng, tiện lợi một chỗ, nhưng xa, đông đúc",
+    "Cửa hàng nhỏ: gần nhà, thân thiện, hỗ trợ kinh tế địa phương, nhưng ít loại, giá cao hơn",
+    "Tùy nhu cầu: mua hàng tuần thì siêu thị, mua gấp/đời sống thì cửa hàng nhỏ",
+    "Kết luận: kết hợp cả hai tùy mục đích, không chỉ chọn một"
+  ],
+  sample: "I prefer to use both large supermarkets and small local shops depending on what I need, because each serves a different purpose. For a weekly stock-up, the supermarket is more practical; for daily essentials or last-minute items, the corner store is more convenient.\n\nLarge supermarkets offer lower prices, a wider selection, and the ability to buy everything in one trip. A family doing a weekly grocery run can get fresh produce, household cleaners, and pantry staples without visiting multiple stores. Loyalty programs and bulk discounts add further savings. However, supermarkets are often located farther from residential areas, require a car or a long bus ride, and can be crowded on weekends. The sheer size can also be overwhelming — finding a single item may take ten minutes in a warehouse-style layout.\n\nSmall local shops, on the other hand, are within walking distance for most residents. They open early and close late, and the staff often know regular customers by name. Buying from them keeps money in the neighborhood and supports local jobs. The trade-off is higher prices and limited variety — you may not find specialized ingredients or large pack sizes. But for a loaf of fresh bread, a carton of milk, or a quick snack, the convenience of a two-minute walk outweighs the price difference.\n\nMy own routine reflects this balance. I go to the supermarket every Saturday for the heavy weekly shop, but I stop at the bakery and the convenience store near my apartment during the week for bread, milk, or a quick snack. This combination gives me the best of both worlds. On weekends when I have time, I also visit the farmers' market for seasonal produce, which supports local agriculture directly.\n\nIn conclusion, neither option is universally better. The smart approach is to match the store to the task: supermarkets for planned, high-volume trips; local shops for speed, proximity, and community connection. A vibrant retail ecosystem needs both, and consumers benefit most when they use each for what it does best.",
+  tips: [
+    "Lập trường cân bằng: I prefer to use both… depending on what I need.",
+    "Dùng Large supermarkets offer…, Small local shops…, on the other hand, My own routine…, In conclusion.",
+    "Từ vựng: stock-up, loyalty programs, bulk discounts, walking distance, specialized ingredients, support local jobs, best of both worlds.",
+    "Cá nhân hóa ví dụ (My own routine…) giúp bài luận tự nhiên và dễ tin."
+  ],
+  tags: ["shopping", "daily life", "local economy"]
+},
+{
+  id: "toeic-w3-021",
+  part: "w3",
+  prompt: "Many employees now work in hybrid arrangements, splitting time between the office and home. Some managers worry this reduces team cohesion. Do you think hybrid work harms teamwork? Give reasons.",
+  outline: [
+    "Làm việc lai có thể giảm tương tác ngẫu nhiên, khó xây dựng niềm tin",
+    "Nhưng công cụ số (video call, chat, shared docs) bù đắp được nếu dùng tốt",
+    "Cần thiết kế: ngày ở văn phòng cho họp nhóm, ngày tại nhà cho tập trung",
+    "Kết luận: không tự hại đội nhóm nếu quản trị có chủ đích; quan trọng là cách tổ chức, không phải địa điểm"
+  ],
+  sample: "I do not think hybrid work inherently harms teamwork. The quality of collaboration depends on how the arrangement is designed, not on whether people share a physical space every day. With intentional practices, hybrid teams can be just as cohesive — sometimes more so — than fully in-office teams.\n\nThe concern about lost spontaneous interaction is real. In a traditional office, a quick hallway conversation or a shared lunch can resolve a misunderstanding or spark an idea. When half the team is remote, those moments disappear unless they are recreated deliberately. A team that relies only on scheduled meetings may become transactional and lose the social glue that builds trust. Research from Microsoft's Work Trend Index found that remote workers often report fewer serendipitous connections, which can weaken innovation over time.\n\nHowever, digital tools can bridge the gap when used with purpose. A daily fifteen-minute stand-up on video, a persistent chat channel for informal updates, and a shared document for meeting notes keep everyone aligned. One team I know reserves Tuesdays and Thursdays as in-office days for collaborative work — whiteboarding, pair programming, retrospectives — while Mondays and Fridays are focus-from-home days. This rhythm preserves both deep work and human connection. The key is making office days intentional, not mandatory for the sake of visibility.\n\nManagers also play a critical role. They must ensure remote members are not excluded from decisions made in the room, and that career opportunities are not tied to physical presence. When hybrid is treated as a first-class model rather than an exception, cohesion follows. Companies like GitLab and Automattic have built entirely remote cultures with strong cohesion by investing heavily in documentation, async communication, and regular virtual social events.\n\nIn conclusion, hybrid work does not harm teamwork by default. Poorly managed hybrid work does. With structured overlap days, inclusive communication norms, and leadership that values outcomes over visibility, teams can thrive across locations. The future of work is not about where we sit, but how we connect.",
+  tips: [
+    "Lập trường: I do not think hybrid work inherently harms teamwork.",
+    "Dùng The concern… is real, However, Managers also play a critical role, In conclusion.",
+    "Từ vựng: hybrid arrangement, spontaneous interaction, transactional, social glue, stand-up, persistent chat channel, focus-from-home, inclusive communication norms, outcomes over visibility.",
+    "Ví dụ cụ thể: Tuesdays/Thursdays in-office, Mondays/Fridays remote — mô hình thực tế dễ hình dung."
+  ],
+  tags: ["workplace", "hybrid work", "teamwork"]
+},
+{
+  id: "toeic-w3-022",
+  part: "w3",
+  prompt: "Some cities have introduced congestion charges for drivers entering the city center during peak hours. Do you think this is an effective way to reduce traffic? Give reasons and examples.",
+  outline: [
+    "Phí ùn tắc giảm xe cá nhân, khuyến khích dùng xe buýt/tàu, giảm ô nhiễm",
+    "Doanh thu có thể tái đầu tư cho giao thông công cộng",
+    "Nhưng ảnh hưởng người nghèo phải lái xe do không có lựa chọn khác",
+    "Kết luận: hiệu quả nếu kèm cải thiện giao thông công cộng và miễn giảm cho nhóm yếu thế"
+  ],
+  sample: "I believe congestion charges can be effective at reducing traffic, but only when paired with reliable public transit alternatives and protections for low-income drivers. A fee alone pushes some cars off the road, but without better options, it simply penalizes people who have no choice but to drive.\n\nEvidence from cities that have implemented such charges supports this view. After London introduced its congestion charge in 2003, traffic entering the zone fell by about fifteen percent, and bus ridership rose. The revenue — hundreds of millions of pounds per year — was reinvested in bus services, cycling lanes, and road maintenance. Stockholm saw a similar drop in vehicles and a measurable improvement in air quality after its trial became permanent. In Milan, the Area C charge reduced traffic by nearly thirty percent and cut particulate matter concentrations significantly.\n\nHowever, the burden falls unevenly. A nurse working a night shift may have no transit option at 5 a.m. and must drive. A small business owner delivering goods cannot easily switch to a cargo bike. If the charge applies equally to all, it becomes a regressive tax. Exemptions or discounts for essential workers, residents within the zone, and low-income households are necessary for fairness. London, for instance, offers a ninety-percent discount for residents and exemptions for disabled drivers.\n\nThe most successful schemes use a holistic approach: charge the fee, improve the alternatives, and protect the vulnerable. When people can choose a fast, frequent bus or train instead of driving, the charge becomes a nudge rather than a penalty. Singapore's Electronic Road Pricing system adjusts rates in real time based on actual traffic speeds, ensuring the price matches the congestion level.\n\nIn conclusion, congestion pricing works as part of a system, not as a standalone tool. Reduce traffic by making the better choice — public transit — genuinely attractive, and ensure the cost does not fall hardest on those with the least flexibility. Cities that treat the revenue as a transit fund, not a general budget supplement, see the most lasting benefits.",
+  tips: [
+    "Lập trường: I believe congestion charges can be effective… but only when paired with reliable public transit alternatives.",
+    "Dùng Evidence from cities…, However, The most successful schemes…, In conclusion.",
+    "Từ vựng: congestion charge, congestion pricing, zone, ridership, reinvest, air quality, regressive tax, essential workers, holistic approach, nudge vs. penalty.",
+    "Dẫn số liệu thực tế (London 15%, Stockholm air quality) làm bài luận uy tín."
+  ],
+  tags: ["urban planning", "traffic", "environment"]
+},
+{
+  id: "toeic-w2-021",
+  part: "w2",
+  email: "From: Ms. Aisha Rahman, IT Helpdesk\nTo: All Employees\nSubject: Scheduled Network Maintenance This Weekend\n\nDear Team,\n\nPlease be advised that the company network will undergo scheduled maintenance this Saturday, March 15, from 8:00 a.m. to 2:00 p.m. During this window, VPN access, internal file shares, and the intranet portal will be unavailable.\n\nIf you need to access any critical systems during this time, please contact the IT helpdesk by Friday at noon so we can arrange temporary alternatives.\n\nThank you for your cooperation.\n\nBest regards,\nAisha Rahman\nIT Helpdesk Manager",
+  task: "Respond to the email. In your response, describe one concern and ask two questions.",
+  sample: "Dear Ms. Rahman,\n\nThank you for the advance notice about the network maintenance on Saturday, March 15, from 8:00 a.m. to 2:00 p.m.\n\nI am concerned because I have a client deliverable due on Monday morning, and I was planning to work on the shared project files this weekend. Without VPN access, I will not be able to reach the files I need to complete the final review.\n\nCould you please let me know if there is a way to download the necessary files to my laptop before the maintenance window begins? Also, would it be possible to extend VPN access for a few hours on Sunday if the maintenance finishes ahead of schedule?\n\nI appreciate your help in finding a solution.\n\nBest regards,\nDavid Park\nSenior Analyst",
+  tips: [
+    "Đề yêu cầu 'describe one concern and ask two questions' — hãy nêu lo ngại cụ thể (deadline, file cần thiết) trước khi đặt câu hỏi.",
+    "Hai câu hỏi nên khác mục đích: một hỏi về giải pháp trước (download file), một hỏi về giải pháp sau (extend access).",
+    "Dùng Could you please let me know if… và Also, would it be possible to… để giữ giọng lịch sự, chuyên nghiệp."
+  ],
+  tags: ["IT", "maintenance", "workplace"]
+},
+{
+  id: "toeic-w2-022",
+  part: "w2",
+  email: "From: Mr. Carlos Mendez, Branch Manager\nTo: Loan Applicants\nSubject: Additional Documents Required for Your Application\n\nDear Applicant,\n\nThank you for submitting your personal loan application. After an initial review, we require the following additional documents to proceed:\n\n1. Your most recent two months of bank statements (all pages).\n2. A letter from your employer confirming your position and monthly salary, dated within the last 30 days.\n\nPlease provide these by Friday, April 18. You may upload them through our secure portal or bring originals to any branch.\n\nIf you have questions, reply to this email or call 555-0199.\n\nSincerely,\nCarlos Mendez\nBranch Manager\nSummit Bank",
+  task: "Respond to the email. In your response, provide the requested information and ask one question.",
+  sample: "Dear Mr. Mendez,\n\nThank you for your email. I am writing to provide the additional documents for my loan application.\n\nI have uploaded my bank statements for February and March (all pages) to the secure portal today. Regarding the employer verification letter, I have requested it from my HR department, and they have confirmed it will be ready by Wednesday, April 16. I will upload it as soon as I receive it, well before the Friday deadline.\n\nCould you please confirm whether a digital copy of the employer letter is acceptable, or do you require the original with a wet signature?\n\nPlease let me know if anything else is needed.\n\nSincerely,\nElena Rodriguez",
+  tips: [
+    "Đề yêu cầu 'provide the requested information and ask one question' — hãy xác nhận từng mục tài liệu (đã nộp, sẽ nộp khi nào).",
+    "Câu hỏi nên tập trung vào yêu cầu kỹ thuật (digital copy vs. original) để thể hiện sự chú ý chi tiết.",
+    "Dùng I have uploaded…, I have requested…, Could you please confirm whether… — cấu trúc rõ ràng, chuyên nghiệp."
+  ],
+  tags: ["banking", "loan", "documents"]
+},
+{
+  id: "toeic-w2-023",
+  part: "w2",
+  email: "From: Dr. Patricia Liu, Clinic Director\nTo: Patients of Greenfield Family Clinic\nSubject: New Online Appointment System Launching May 1\n\nDear Patients,\n\nStarting May 1, Greenfield Family Clinic will launch a new online appointment system. You will be able to book, reschedule, or cancel appointments through our website or mobile app. The current phone line for appointments will remain open but with reduced hours.\n\nTo use the new system, you must create an account using your patient ID and date of birth. A step-by-step guide is available at greenfieldclinic dot com slash guide.\n\nWe welcome your feedback during the transition.\n\nBest regards,\nDr. Patricia Liu\nClinic Director",
+  task: "Respond to the email. In your response, give two pieces of information and ask one question.",
+  sample: "Dear Dr. Liu,\n\nThank you for informing us about the new online appointment system launching on May 1.\n\nI would like to share two points. First, my elderly mother is a patient at your clinic, and she is not comfortable using a website or mobile app. Second, I have been a patient for over five years, and I would like to know if my past medical records will be accessible in the new system.\n\nCould you please let me know if the phone line will still be available for patients who prefer to book by phone after May 1, and what the new hours will be?\n\nI look forward to your reply.\n\nBest regards,\nMichael Chen",
+  tips: [
+    "Đề yêu cầu 'give two pieces of information and ask one question' — hai thông tin có thể là: một chia sẻ cá nhân (người thân không dùng được app), một thông tin về bản thân (lịch sử bệnh án).",
+    "Câu hỏi tập trung vào lộ trình chuyển đổi (phone line hours) — thực tế và hữu ích.",
+    "Dùng I would like to share two points. First…, Second… Could you please let me know if… để cấu trúc rõ ràng."
+  ],
+  tags: ["healthcare", "technology", "appointment"]
+},
+{
+  id: "toeic-w2-024",
+  part: "w2",
+  email: "From: Ms. Keiko Tanaka, HR Coordinator\nTo: New Hires Starting June 2\nSubject: Onboarding Schedule and Required Items\n\nDear New Team Members,\n\nWelcome to Meridian Solutions! Your first day is Monday, June 2. Please arrive at the main reception by 8:30 a.m. with the following:\n\n- A government-issued photo ID\n- Your signed offer letter\n- Bank account details for payroll setup\n\nThe morning will include orientation, IT setup, and a team lunch. The afternoon is reserved for department introductions. A detailed schedule is attached.\n\nIf you have any questions before your start date, please reply to this email.\n\nWe look forward to meeting you!\n\nBest regards,\nKeiko Tanaka\nHR Coordinator",
+  task: "Respond to the email. In your response, confirm two details and ask one question.",
+  sample: "Dear Ms. Tanaka,\n\nThank you for the warm welcome and the detailed onboarding information.\n\nI would like to confirm two details. First, I will arrive at the main reception by 8:30 a.m. on Monday, June 2, with my passport, signed offer letter, and bank account details as requested. Second, I have a dietary restriction — I do not eat shellfish — and I wanted to let the team know in advance for the team lunch.\n\nCould you please let me know if there is a dress code for the first day, or is business casual acceptable?\n\nI am excited to join the team and look forward to Monday.\n\nBest regards,\nJames Wilson",
+  tips: [
+    "Đề yêu cầu 'confirm two details and ask one question' — xác nhận giờ đến/mang gì, và thêm một chi tiết cá nhân (dị ứng, chế độ ăn).",
+    "Câu hỏi về dress code thực tế và phổ biến cho ngày đầu tiên.",
+    "Dùng I would like to confirm two details. First…, Second… Could you please let me know if…; giọng nhiệt huyết, chuyên nghiệp."
+  ],
+  tags: ["workplace", "onboarding", "HR"]
+},
+{
+  id: "toeic-w2-025",
+  part: "w2",
+  email: "From: Mr. Robert Clarke, Claims Department\nTo: Policyholder\nSubject: Claim Reference CL-2026-04451 — Additional Information Needed\n\nDear Policyholder,\n\nWe have received your claim for water damage to your apartment following the pipe burst on March 10. To process your claim, we need the following:\n\n1. A written estimate from a licensed contractor for the repair costs.\n2. Photographs of the damage taken before any cleanup began.\n3. A copy of the plumber's invoice showing the emergency repair.\n\nPlease submit these documents by May 5. You may email them to claims at summitinsure dot com or upload them to your online account.\n\nIf you have questions, call our claims hotline at 555-0177.\n\nSincerely,\nRobert Clarke\nSenior Claims Adjuster\nSummit Insurance",
+  task: "Respond to the email. In your response, provide one piece of information, explain one difficulty, and ask one question.",
+  sample: "Dear Mr. Clarke,\n\nThank you for your email regarding claim CL-2026-04451.\n\nI have attached the plumber's invoice for the emergency repair completed on March 10. However, I am unable to provide photographs taken before cleanup began, as the water had already spread to the hallway and posed a safety risk, so I had to start removing water immediately. I do have photos taken within two hours of the incident, which I can share.\n\nCould you please confirm if photos taken within two hours will be acceptable, or do you strictly require images from before any cleanup?\n\nI will obtain the contractor's written estimate this week and submit it before the May 5 deadline.\n\nSincerely,\nSarah Mitchell",
+  tips: [
+    "Đề yêu cầu 'provide one piece of information, explain one difficulty, and ask one question' — ba phần rõ rệt.",
+    "Thông tin: đã có hóa đơn thợ ống nước. Khó khăn: không chụp được trước khi dọn do an toàn. Câu hỏi: hỏi về chấp nhận ảnh sau 2 giờ.",
+    "Dùng I have attached…, However, I am unable to…, Could you please confirm if… — giọng hợp tác, không đối đầu."
+  ],
+  tags: ["insurance", "claim", "documents"]
+},
+{
+  id: "toeic-w2-026",
+  part: "w2",
+  email: "From: Ms. Fatima Al-Sayed, Event Coordinator\nTo: Registered Attendees\nSubject: Tech Innovators Conference — Schedule Change\n\nDear Attendees,\n\nDue to a speaker cancellation, the keynote on \"AI in Healthcare\" scheduled for June 12 at 10:00 a.m. has been replaced with a panel discussion on \"Ethical AI Development\" at the same time. The original speaker's workshop on Friday afternoon has also been cancelled.\n\nYour registration remains valid for all other sessions. A revised agenda is attached.\n\nIf this change affects your travel plans, please let us know by May 20 so we can discuss options.\n\nBest regards,\nFatima Al-Sayed\nEvent Coordinator\nTech Innovators Conference",
+  task: "Respond to the email. In your response, express one concern, provide one piece of information, and ask one question.",
+  sample: "Dear Ms. Al-Sayed,\n\nThank you for the update on the schedule change for the Tech Innovators Conference.\n\nI am concerned because I specifically registered for the conference to attend the \"AI in Healthcare\" keynote, as it is directly relevant to my current research project. The replacement panel on \"Ethical AI Development\" is interesting but does not cover the clinical applications I was hoping to learn about.\n\nFor your information, I have already booked a non-refundable flight arriving on June 11 and departing on June 13.\n\nCould you please let me know if the original keynote materials or a recording will be made available to registered attendees after the conference?\n\nI appreciate your assistance.\n\nBest regards,\nDr. Priya Sharma",
+  tips: [
+    "Đề yêu cầu 'express one concern, provide one piece of information, and ask one question' — lo ngại: keynote bị hủy liên quan đến nghiên cứu; thông tin: đã book vé máy bay không hoàn tiền; câu hỏi: xin tài liệu/recording.",
+    "Dùng I am concerned because…, For your information…, Could you please let me know if… — cấu trúc ba phần rõ ràng.",
+    "Giọng chuyên nghiệp, nhẹ nhàng; không phàn nàn mà nêu lý do cụ thể."
+  ],
+  tags: ["event", "conference", "schedule change"]
+},
+{
+  id: "toeic-w2-027",
+  part: "w2",
+  email: "From: Mr. David Ortiz, Building Management\nTo: Tenants of Riverside Tower\nSubject: Package Delivery Policy Update\n\nDear Residents,\n\nEffective June 1, the front desk will no longer accept package deliveries on behalf of residents. All packages must be delivered directly to your unit. If you are not home, the courier will leave a notice and attempt re-delivery the next business day.\n\nThis change is due to the high volume of packages and limited storage space at the front desk.\n\nIf you have concerns, please contact the management office at 555-0133.\n\nSincerely,\nDavid Ortiz\nBuilding Manager",
+  task: "Respond to the email. In your response, describe one concern and ask two questions.",
+  sample: "Dear Mr. Ortiz,\n\nThank you for notifying us about the package delivery policy change effective June 1.\n\nI am concerned because I work long hours and am rarely home during business hours when couriers typically attempt delivery. With the front desk no longer accepting packages, I risk missing multiple delivery attempts, which could result in packages being returned to the sender.\n\nCould you please let me know if there is a secure package locker system planned for the building? Also, would it be possible to authorize a specific neighbor or the concierge to sign for packages on my behalf?\n\nI would appreciate your guidance on this matter.\n\nSincerely,\nLisa Nguyen",
+  tips: [
+    "Đề yêu cầu 'describe one concern and ask two questions' — lo ngại: làm việc lâu, không ở nhà nhận hàng; hai câu hỏi: có locker không, có ủy quyền người khác ký hộ không.",
+    "Dùng I am concerned because…, Could you please let me know if…, Also, would it be possible to… — giọng hợp tác, tìm giải pháp.",
+    "Đề xuất giải pháp (locker, authorize neighbor) thể hiện tư duy chủ động."
+  ],
+  tags: ["housing", "delivery", "policy"]
+},
+{
+  id: "toeic-w2-028",
+  part: "w2",
+  email: "From: Ms. Chloe Bennett, Training Department\nTo: All Staff\nSubject: Mandatory Data Privacy Training — Deadline June 30\n\nDear Colleagues,\n\nAs part of our annual compliance program, all employees must complete the Data Privacy Training module by June 30. The course takes approximately 90 minutes and is available on the learning portal. You may complete it in multiple sessions; your progress is saved automatically.\n\nUpon completion, you will receive a certificate. Managers will receive weekly completion reports for their teams.\n\nIf you experience technical issues, contact the training helpdesk at training at company dot com.\n\nThank you for your attention to this important requirement.\n\nBest regards,\nChloe Bennett\nTraining Manager",
+  task: "Respond to the email. In your response, confirm one detail, describe one concern, and ask one question.",
+  sample: "Dear Ms. Bennett,\n\nThank you for the reminder about the mandatory Data Privacy Training due by June 30.\n\nI confirm that I have accessed the learning portal and started the module today. However, I am concerned because the training videos do not have closed captions, and I have a hearing impairment that makes it difficult to follow audio-only content.\n\nCould you please let me know if a transcript or captioned version of the training is available, or if there is an alternative format I can use to meet the requirement?\n\nI want to complete this on time and appreciate your help.\n\nBest regards,\nMark Thompson",
+  tips: [
+    "Đề yêu cầu 'confirm one detail, describe one concern, and ask one question' — xác nhận: đã bắt đầu học; lo ngại: không có phụ đề, khuyết tật thính giác; câu hỏi: xin bản transcript hoặc phiên bản có caption.",
+    "Dùng I confirm that…, However, I am concerned because…, Could you please let me know if… — chuyên nghiệp, nêu rõ nhu cầu hỗ trợ.",
+    "Văn hóa inclusivity: hỏi về alternative format thể hiện ý thức quyền lợi ngang bằng."
+  ],
+  tags: ["workplace", "training", "accessibility"]
+},
 );
