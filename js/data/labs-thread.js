@@ -4062,5 +4062,385 @@ Tốt hơn là dùng ThreadLocal static final tái sử dụng key. Cách này v
     'Nêu phòng ngừa: code review (không tạo ThreadLocal cục bộ trong task pool / luôn remove), static analysis, test tải, giám sát heap/heap dump, định hướng Context Propagation hoặc ScopedValue khi phù hợp.'
   ],
   tags: ['threadlocal', 'memory-leak', 'thread-pool', 'async', 'inheritablethreadlocal', 'heap-dump', 'mat', 'context-propagation', 'scopedvalue']
+},
+{
+  id: 'lab-thread-017',
+  category: 'thread',
+  title: 'Job hàng đêm không dừng được: InterruptedException bị nuốt trong worker',
+  level: 'senior',
+  scenario: `**Bối cảnh:** PayVN Batch (Java 21, Spring Boot 3.4) chạy tổng hợp báo cáo cuối ngày. Job nộp nhiều task vào ExecutorService cố định 8 thread. Khi cần dừng job, code gọi executor.shutdown() và interrupt các worker, hoặc đặt cờ volatile. Mỗi worker chạy trong vòng lặp, lấy task từ hàng đợi rồi xử lý; bên trong có Thread.sleep hoặc future.get() để chờ, và bắt InterruptedException nhưng **không gọi lại Thread.currentThread().interrupt()** — cờ interrupt bị xóa.
+
+**Triệu chứng:** Gửi yêu cầu dừng job lúc **02:10:00 ngày 06/11/2026**, executor.shutdown() đã được gọi, nhưng các worker vẫn tiếp tục xử lý task, executor.awaitTermination(60, SECONDS) trả về false, JVM không thoát (pod không terminate). CPU thấp, không exception, không deadlock, heap ổn định. Job "đang dừng" mãi mà không bao giờ xong.
+
+**Dữ liệu thu thập:** jstack lúc 02:15:30 (job vẫn đang dừng), log ứng dụng, và code BatchWorker.`,
+  artifacts: [
+    {
+      name: 'jstack-batch-stop-02-15.txt',
+      lang: 'text',
+      content: `2026-11-06 02:15:30
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"batch-worker-1" #41 [4112] prio=5 os_prio=0 cpu=1204.33ms elapsed=205.10s tid=0x00007f58ac11a000 nid=4112 runnable  [0x00007f5865bfd000]
+   java.lang.Thread.State: RUNNABLE
+        at vn.pay.batch.BatchWorker.process(BatchWorker.java:68)
+        at vn.pay.batch.BatchWorker.run(BatchWorker.java:52)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1144)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642)
+        at java.lang.Thread.runWith(java.base@21.0.4/Thread.java:1596)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+"batch-worker-2" #42 [4113] prio=5 os_prio=0 cpu=298.10ms elapsed=205.10s tid=0x00007f58ac11c000 nid=4113 waiting on condition  [0x00007f5865afc000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x0000000714a10028> (a java.util.concurrent.LinkedBlockingQueue)
+        at java.util.concurrent.LinkedBlockingQueue.take(LinkedBlockingQueue.java:443)
+        at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:1070)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1144)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642)
+        at java.lang.Thread.runWith(java.base@21.0.4/Thread.java:1596)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+"main" #1 [4097] prio=5 os_prio=0 cpu=1880.11ms elapsed=212.40s tid=0x00007f58ac028000 nid=4097 waiting on condition  [0x00007f58b33fe000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x0000000714a0f010> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:221)
+        at java.util.concurrent.AbstractQueuedSynchronizer.awaitNanos(AbstractQueuedSynchronizer.java:2153)
+        at java.util.concurrent.ThreadPoolExecutor.awaitTermination(ThreadPoolExecutor.java:1462)
+        at vn.pay.batch.BatchJob.stop(BatchJob.java:44)
+
+# Ghi chú on-call:
+#   executor.shutdown() va interrupt tat ca worker luc 02:10:00
+#   3 dump cach nhau 30 giay: batch-worker-1 RUNNABLE o process() lien tuc, khong thoat
+#   awaitTermination(60s) tra ve false, JVM khong thoat, pod bi treo`
+    },
+    {
+      name: 'batch-stop-metrics.txt',
+      lang: 'text',
+      content: `executor.shutdownCalled=true
+executor.awaitTerminationResult=false
+batch.stopRequested=true
+batch.workerInterruptedCount=8
+batch.activeTaskCount=3
+batch.completedTaskCount=1208344  (khong tang sau yeu cau dung)
+batch.queueSize=0
+batch.threadNames=batch-worker-1..batch-worker-8
+# 3 dump cach nhau 30 giay: batch-worker-1 RUNNABLE o process() lien tuc
+# awaitTermination(60s) tra ve false, JVM khong thoat, pod bi treo`
+    },
+    {
+      name: 'BatchWorker.java',
+      lang: 'java',
+      content: `public class BatchWorker implements Runnable {
+    private final BlockingQueue<Task> queue;
+    private volatile boolean stopRequested = false;
+
+    public void run() {
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+                Task t = queue.take();
+                process(t);
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                // BUG: bi trung, khong goi lai interrupt, khong break
+                log.warn("Worker bi gian doan, bo qua");
+            }
+        }
+    }
+
+    public void process(Task t) {
+        // xu ly nhieu giay
+    }
+}
+
+// BatchJob.stop
+public void stop() {
+    executor.shutdown();
+    for (Thread t : workers) t.interrupt();
+    boolean ok = executor.awaitTermination(60, TimeUnit.SECONDS);
+    // ok luon false
+}`
+    }
+  ],
+  questions: [
+    'Tai sao goi shutdown + interrupt nhung worker van khong dung? Co nghia cờ interrupt bi xoa o dau.',
+    'Phan biet Thread.interrupted() va Thread.currentThread().isInterrupted(); tai sao viec bat InterruptedException khong xu ly la bat nguy hiem.',
+    'Cach sua: giai thich re-interrupt (Thread.currentThread().interrupt()), hoac break / ngoai lai ngoai exception; quy tuc khi bat InterruptedException.'
+  ],
+  hints: [
+    'Nhìn stack worker: batch-worker-1 o process() (dang lam viec), khong o chỗ cho. Nghia la interrupt da bi mat truoc do.',
+    'Khi mot phuong thuc chan (Thread.sleep, Future.get, Object.wait) nhan interrupt, JVM xóa cờ interrupt va nem InterruptedException. Neu bat exception khong goi lai interrupt, nguoi goi sau nay khong biet thread da bi yeu cau dung.',
+    'BatchWorker.run dung while (!Thread.currentThread().isInterrupted()) va bat InterruptedException ben trong → cờ bi xoa, dieu kien vong lap con lai true.'
+  ],
+  answer: `**Tóm tắt:** Worker bat InterruptedException nhung khong xu ly → cờ interrupt bi xoa → yeu cau dung khong duoc tien thong → executor.awaitTermination tra ve false, JVM khong thoat. Sua: neu bat InterruptedException phai goi lai Thread.currentThread().interrupt() hoac thoat vong lap; khong bao giu nuot thong bao ngat.
+
+### Nguyên nhân gốc
+
+Ngat (interrupt) la man hanh cua Java de yeu cau mot thread dung lam gi do. Mỗi thread co mot boolean cờ interrupt. Goi thread.interrupt() dat cờ=true. Cac phuong thuc chan (Thread.sleep, Object.wait, Future.get, ...) kiem tra cờ: neu cờ=true, chung xóa cờ ve false va nem InterruptedException. Sau khi nem, cờ=false.
+
+Vong lap cua worker:
+~~~java
+while (!Thread.currentThread().isInterrupted()) {
+    try {
+        Task t = queue.take();
+        process(t);
+        Thread.sleep(100);
+    } catch (InterruptedException e) {
+        log.warn("Worker bi gian doan, bo qua");  // BUG: swallow, khong re-interrupt
+    }
+}
+~~~
+
+Khi BatchJob.stop goi worker.interrupt():
+- Neu worker dang o queue.take() hoac Thread.sleep -> bi nem InterruptedException, cờ xóa ve false.
+- Catch block swallow (khong goi interrupt lai, khong break).
+- Vong lap kiem tra isInterrupted() → false → tiep tuc lam viec vinh vien.
+- Neu worker dang o process() (khong chan), interrupt chi dat cờ=true; nhung process() khong kiem tra cờ, va neu sau do vao catch hoac sleep, cờ bi xoa. Ket qua cung la worker khong dung.
+
+Dung sai thuong gap: nhung InterruptedException de "bo qua" thi nhu xoa lan cuoi cua tien trinh tat — nguoi goi sau nay (BatchJob.stop) khong co biet thread da bi yeu cau dung, nen awaitTermination khoi bao timeout nhung worker con lai lam viec.
+
+### Dẫn chứng
+
+- batch-worker-1 RUNNABLE o BatchWorker.process(BatchWorker.java:68) qua 3 dump — dang lam viec sau khi yeu dung.
+- main WAITING o ThreadPoolExecutor.awaitTermination <- BatchJob.stop(BatchJob.java:44) — chua worker bao gio thoat.
+- Metrics: awaitTerminationResult=false, activeTaskCount=3 sau 60 giay yeu cau dung, workerInterruptedCount=8 (da goi interrupt nhung khong co tac dung).
+- Khong co thread BLOCKED, khong deadlock, CPU thap (worker dang lam viec binh thuong) — loi o logic dung, khong o tai nguyen.
+
+### Cách sửa
+
+**Cach 1 (khuyen nghich): Re-interrupt va thoat vong lap**
+~~~java
+public void run() {
+    while (!Thread.currentThread().isInterrupted()) {
+        try {
+            Task t = queue.take();
+            if (t == null) break;
+            process(t);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt(); // phuc hoi cờ de nguoi goi sau biet
+            break;                              // thoat vong lap ngay
+        }
+    }
+}
+~~~
+
+**Cach 2: Neu muon tiep tuc lam viec hien tai xong moi dung**
+~~~java
+} catch (InterruptedException e) {
+    Thread.currentThread().interrupt();
+    // khong break, nhung process() va queue.take() can kiem tra isInterrupted() hoac bi ngat
+}
+~~~
+
+**Cach 3: Khong bat InterruptedException o khoang khong can thiet; de no lan toi cao cap hoac su dung CompletableFuture / phuong thuc khong chan.**
+
+Quy tuc: bat InterruptedException phai co mot trong hai hanh dong — goi lai Thread.currentThread().interrupt() hoac ngoai lai / thoat vong lap. Khong bao giu nuot mat.
+
+### Phòng ngừa
+
+- Checkstyle / SpotBugs rule bao loi bat InterruptedException bo trong.
+- Code review: moi khoi catch (InterruptedException) phai co comment giai ly va hanh dong re-interrupt/break.
+- Uu tien CompletableFuture / StructuredTaskScope (Java 21) de quan ly tuong hop, tranh vuot qua interrupt.
+- Giám sát: alert khi executor.awaitTermination tra ve false hoac activeTaskCount khong giam sau yeu cau dung.
+
+> Senior tip: InterruptedException khong la "loi can bo qua" — no la yeu cau dung cua he thong. Luat vang: neu ban bat phai xu ly (re-interrupt hoac thoat); neu khong muon xu ly, khong bat. Khi review code thread pool, luon hoi "no dung ung duoc ngat nhat the nao?" — khoong co cau tra loi la loi thiet ke.
+
+  `,
+  rubric: [
+    'Giai thích dung: InterruptedException bi swallow xoa cờ interrupt, worker khong dung, awaitTermination tra false, JVM khong thoat.',
+    'Trich duong artifact: batch-worker-1 RUNNABLE o process() qua 3 dump, main WAITING o awaitTermination, metrics awaitTerminationResult=false/activeTaskCount=3.',
+    'Phan biet Thread.interrupted() (xóa cờ) vs isInterrupted() (không xóa); quy tuc bat InterruptedException phai re-interrupt hoac break/throw.',
+    'De xac sua: re-interrupt + break, hoac kiem tra isInterrupted() o process/take; checkstyle rule va monitoring awaitTermination.'
+  ],
+  tags: ['interruptedexception', 'interrupt-flag', 'thread-shutdown', 'jstack', 'executor-service', 'java-concurrency']
+},
+{
+  id: 'lab-thread-018',
+  category: 'thread',
+  title: 'Tat ca tac vu dinh ky treo vi mot task chao dai tren ScheduledThreadPoolExecutor (1 thread)',
+  level: 'senior',
+  scenario: `**Bối cảnh:** PayVN Scheduler (Java 21, Spring Boot 3.4) dung @Scheduled cho nhieu tac vu: health check moi 10 giay, flush metrics moi 30 giay, cleanup session moi 5 phan, gui bao cao hang ngay. Cau hinh spring.task.scheduling.pool.size=1 (mac dinh cua Spring Boot cho scheduler — chi co 1 thread scheduling-1). Mot tac vu (flush metrics goi API chua) chay dai hon khoang cach lan chay, chap duy nhat 1 thread scheduler.
+
+**Triệu chứng:** Tu luc tac vu dai bat dau chay (10:15), tat ca cac tac vu dinh ky khac khong con chay: health check khong gui, metrics khong flush, cleanup khong xay ra. CPU thap, khong exception, thread scheduler RUNNABLE o tac vu dai. Cac tac vu bi chua schedule (chua chay luc phut ke).
+
+**Dữ liệu thu thập:** jstack luc 10:18:00, log ung dung, metric lan chay cuoi cung cua tung tac vu.`,
+  artifacts: [
+    {
+      name: 'jstack-scheduler-10-18.txt',
+      lang: 'text',
+      content: `2026-11-06 10:18:00
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"scheduling-1" #21 [4211] prio=5 os_prio=0 cpu=45120.33ms elapsed=2000.10s tid=0x00007f58ac21a000 nid=4211 runnable  [0x00007f5865cfd000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+        at sun.nio.ch.NioSocketImpl.park(java.base@21.0.4/NioSocketImpl.java:191)
+        at sun.nio.ch.NioSocketImpl.timedRead(java.base@21.0.4/NioSocketImpl.java:280)
+        at sun.nio.ch.NioSocketImpl.implRead(java.base@21.0.4/NioSocketImpl.java:304)
+        at sun.nio.ch.NioSocketImpl.read(java.base@21.0.4/NioSocketImpl.java:346)
+        at java.net.Socket$SocketInputStream.read(java.base@21.0.4/Socket.java:1099)
+        at sun.security.ssl.SSLSocketInputRecord.read(java.base@21.0.4/SSLSocketInputRecord.java:489)
+        at sun.security.ssl.SSLSocketImpl.readApplicationRecord(java.base@21.0.4/SSLSocketImpl.java:1461)
+        at sun.security.ssl.SSLSocketImpl$AppInputStream.read(java.base@21.0.4/SSLSocketImpl.java:1066)
+        at org.apache.hc.core5.http.impl.io.SessionInputBufferImpl.fillBuffer(SessionInputBufferImpl.java:149)
+        at org.apache.hc.core5.http.impl.io.SessionInputBufferImpl.readLine(SessionInputBufferImpl.java:280)
+        at org.apache.hc.core5.http.impl.io.AbstractMessageParser.parse(AbstractMessageParser.java:247)
+        at org.apache.hc.core5.http.impl.io.DefaultBHttpClientConnection.receiveResponseHeader(DefaultBHttpClientConnection.java:333)
+        at org.apache.hc.client5.http.impl.classic.InternalHttpClient.doExecute(InternalHttpClient.java:174)
+        at org.apache.hc.client5.http.impl.classic.CloseableHttpClient.execute(CloseableHttpClient.java:87)
+        at vn.pay.scheduler.MetricsFlushTask.flush(MetricsFlushTask.java:44)
+        at vn.pay.scheduler.SchedulerConfig$$SpringCGLIB$$0.flush(<generated>)
+        at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:572)
+        at java.util.concurrent.FutureTask.runAndReset(FutureTask.java:358)
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:305)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1144)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642)
+        at java.lang.Thread.runWith(java.base@21.0.4/Thread.java:1596)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+"main" #1 [4097] prio=5 os_prio=0 cpu=1880.11ms elapsed=212.40s tid=0x00007f58ac028000 nid=4097 waiting on condition  [0x00007f58b33fe000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x0000000714a0f010> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:221)
+        at java.util.concurrent.AbstractQueuedSynchronizer.awaitNanos(AbstractQueuedSynchronizer.java:2153)
+        at java.util.concurrent.ThreadPoolExecutor.awaitTermination(ThreadPoolExecutor.java:1462)
+        at vn.pay.scheduler.SchedulerApp.stop(SchedulerApp.java:30)
+
+# Ghi chu on-call:
+#   Chi co 1 thread scheduling-1 (Spring mac dinh pool.size=1)
+#   scheduling-1 RUNNABLE o MetricsFlushTask.flush (doc socket HTTP) — chua chay 18 giay va con dau
+#   Khong thread nao dang chay HealthCheckTask/MetricsFlushTask/SessionCleanupTask (chua duoc loi goi)`
+    },
+    {
+      name: 'scheduler-metrics.txt',
+      lang: 'text',
+      content: `# spring.task.scheduling.pool.size=1 (mac dinh Spring Boot)
+# Tac vu: healthCheck (fixedRate 10s), metricsFlush (fixedRate 30s), sessionCleanup (fixedRate 300s)
+
+2026-11-06 10:15:00 INFO  HealthCheckTask.run -> start
+2026-11-06 10:15:02 INFO  MetricsFlushTask.flush -> start (goi API bao cao, du kien 30s)
+2026-11-06 10:15:10 ... (HealthCheckTask lan ke KHONG chay)
+2026-11-06 10:15:30 ... (MetricsFlushTask lan ke KHONG chay)
+2026-11-06 10:16:00 ... MetricsFlushTask van dang chay (HTTP doi phan hoi)
+2026-11-06 10:20:00 INFO  MetricsFlushTask.flush -> done (108s)
+2026-11-06 10:20:02 INFO  HealthCheckTask.run -> start (chay lai sau khi slot rong)
+
+# scheduler.lastRun.healthCheck = 10:15:00, tiep theo thuc te = 10:20:02 (qua 5 phut)
+# scheduler.lastRun.metricsFlush = 10:15:02, tiep theo thuc te = 10:20:00
+# CPU 6%, khong exception, heap on dinh`
+    },
+    {
+      name: 'SchedulerConfig.java',
+      lang: 'java',
+      content: `@Configuration
+public class SchedulerConfig {
+    @Bean
+    public TaskScheduler taskScheduler() {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(1);  // mac dinh Spring Boot
+        scheduler.setThreadNamePrefix("scheduling-");
+        return scheduler;
+    }
+}
+
+@Component
+public class MetricsFlushTask {
+    @Scheduled(fixedRate = 30000)
+    public void flush() {
+        metricsClient.pushAll();  // goi HTTP, co the chay dai
+    }
+}
+
+@Component
+public class HealthCheckTask {
+    @Scheduled(fixedRate = 10000)
+    public void run() {
+        healthClient.ping();
+    }
+}`
+    }
+  ],
+  questions: [
+    'Tai sao tat ca @Scheduled (health check, metrics, cleanup) dung chung viec ngay cung luc, nhung chi 1 chay? Goi thich ScheduledThreadPoolExecutor co 1 thread.',
+    'Tai sao jstack chi thay scheduling-1 RUNNABLE, khong thay cac tac vu khong? Chung o dau?',
+    'Cach sua: tang pool size, tach tac vu dai ra executor rieng, khong chan thread scheduler; fixedDelay vs fixedRate; thoi gian han cho tac vu.'
+  ],
+  hints: [
+    'Spring Boot mac dinh scheduler pool size = 1 (scheduling-1). Tat ca @Scheduled chia sote thread nay.',
+    'ScheduledThreadPoolExecutor chi khoi chay tac vu ke tiep khi thread rinh lay tu DelayedWorkQueue; tac vu dang chay chap thread => cac tac vu sau xep hang, tri hoan (khong bi bo).',
+    'Nhìn log: metrics flush bat dau 10:15:02, health check lan ke (10:15:10) khong xuat hien => chua duoc chay.'
+  ],
+  answer: `**Tóm tắt:** Mọi @Scheduled chay tren duy nhat 1 thread scheduling-1 (Spring mac dinh pool.size=1). Mot tac vu chay dai chap het thread, cac tac vu dinh ky khac bi tri hoan cho toi khi slot trong.
+
+### Nguyên nhân gốc
+
+Spring Boot tao TaskScheduler bang ThreadPoolTaskScheduler voi pool size mac dinh = 1. Doi voi @Scheduled, spring dua vao ScheduledThreadPoolExecutor: co 1 worker thread scheduling-1 va mot DelayedWorkQueue luu cac tac vu sap den thoi gian chay.
+
+Khi den luc chay mot tac vu, worker lay no tu hang doi va chay den khi xong. Trong thoi gian do, cac tac vu khac da den thoi gian chay cung xuong hang doi nhung **khong co thread rinh de lay**, nen bi tri hoan. Khi tac vu dai xong, worker quay lai lay tac vu ke tiep tu hang doi.
+
+Vong lap chinh:
+~~~java
+// ScheduledThreadPoolExecutor.getTask (tuong tu)
+Runnable r = workQueue.take();  // chi lay duoc khi co thread rinh
+r.run();                        // chay tac vu, bi chap neu dai
+~~~
+
+Tac vu metricsFlush goi API chua chay 108s, chap scheduling-1. Health check lan 10:15:10, 10:15:20 ... khong duoc goi den 10:20:02. Cleanup cung tuong tu.
+
+### Dẫn chứng
+
+- Chi co 1 thread scheduling-1 trong dump (mac dinh Spring pool.size=1).
+- scheduling-1 RUNNABLE o MetricsFlushTask.flush(MetricsFlushTask.java:44) -> doc socket HTTP (Net.poll/read), chua chay 18 giay va con dau.
+- Khong thread nao dang chay HealthCheckTask/SessionCleanupTask (chua duoc loi goi).
+- Log: metricsFlush bat dau 10:15:02, healthCheck lan ke (10:15:10) khong xuat hien; chung thuc te chay lai 10:20:02 sau khi metricsFlush xong 10:20:00.
+- CPU thap, khong exception — loi o cau hinh pool, khong tai nguyen.
+
+### Cách sửa
+
+**Cach 1: Tang pool size scheduling**
+~~~properties
+spring.task.scheduling.pool.size=8
+~~~
+Mỗi @Scheduled co the chay song song tren thread rieng. Phu hop khi so tac vu it va muc do chong chiet thap.
+
+**Cach 2: Tach tac vu dai ra @Async voi executor rieng (khuyen nghich)**
+~~~java
+@Async("metricsExecutor")
+@Scheduled(fixedRate = 30000)
+public void flush() { ... }
+
+@Bean(name = "metricsExecutor")
+public ThreadPoolTaskExecutor metricsExecutor() {
+    ThreadPoolTaskExecutor ex = new ThreadPoolTaskExecutor();
+    ex.setCorePoolSize(4);
+    ex.setMaxPoolSize(8);
+    ex.setQueueCapacity(100);
+    return ex;
+}
+~~~
+Scheduler chi dieu khien thoi gian, nhan viec chuan thuc thi ra executor rieng. Thread scheduling-1 khong bao gi bi chap.
+
+**Cach 3: Dung fixedDelay neu muon khoang cach thuc te giua 2 lan chay. Luon dat timeout cho goi HTTP trong tac vu (metricsClient.pushAll co connect/read timeout) de tac vu khong chay voi dinh.**
+
+**Cach 4: Khong goi code chan (DB, HTTP, file) truc tiep tren thread @Scheduled; dua vao executor co gioi han concurrency (Semaphore/bulkhead) de tranh bão saturation dich vu xa.**
+
+### Phòng ngừa
+
+- Code review rule: khong duoc chặn thread @Scheduled (moi @Scheduled phai nhanh hoac chuyen sang executor rieng).
+- Giám sát scheduler.lastRun cua moi tac vu; alert neu tac vu khong chay qua 2 chu ky.
+- Dat timeout tat ca goi HTTP/DB trong tac vu dinh ky.
+- Tham khao lab thread-010/012: chung tap chung co the gay doi khi mot tac vu chap nguyen tai nguyen.
+
+> Senior tip: @Scheduled khong la "chay nen" tu dong an toan — chung chia sote mot pool co kich thuoc. Neu mot tac vu chay dai, toan bo he thiet lap dinh ky bi dom. Nguyen tac: thread @Scheduled chi duoc phep lam viec CPU it, nhan nhat, khong chan; muc nao can I/O thi chuyen sang executor rieng co gioi han va theo doi metric lan chay cuoi cung.
+
+  `,
+  rubric: [
+    'Giai thích dung: Spring @Scheduled dung ThreadPoolTaskScheduler mac dinh pool.size=1 (1 thread scheduling-1); mot tac vu dai chap thread, cac tac vu khac bi tri hoan trong DelayedWorkQueue khong co thread lay.',
+    'Trich duong artifact: chi co scheduling-1 RUNNABLE o MetricsFlushTask.flush doc socket; log healthCheck lan ke khong chay; thuc te chay lai 10:20:02.',
+    'De xac sua: tang spring.task.scheduling.pool.size, hoac tach tac vu dai sang @Async/executor rieng, dat timeout goi I/O, khong chan thread scheduler.',
+    'Phan biet fixedRate vs fixedDelay va canh bao chung tap nguyen tai nguyen (giong lab thread-010/012).'
+  ],
+  tags: ['scheduled', 'scheduledthreadpoolexecutor', 'thread-pool', 'spring-boot', 'task-scheduler', 'starvation', 'jstack']
 }
 );
