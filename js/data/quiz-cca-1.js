@@ -554,15 +554,15 @@
 {
   id: 'qz-cca-043',
   topic: 'claude',
-  q: '[Agentic Architecture] Which Claude API feature allows the model to "think" before generating a response?',
-  options: ['The thinking block, enabled via thinking: { type: "enabled" }', 'The system prompt only', 'The max_tokens parameter', 'The temperature setting'],
+  q: '[Agentic Architecture] Which Claude API feature allows the model to "think" step by step before generating a final response?',
+  options: ['Extended thinking (enabled via the {{code}}thinking{{code}} parameter)', 'The system prompt only', 'The max_tokens parameter', 'The temperature setting'],
   answer: 0,
-  explain: `**Đáp án đúng: A.** Claude API hỗ trợ thinking blocks (Extended Thinking) được bật qua tham số thinking: { type: "enabled" }. Model sẽ tạo một block nội suy trước khi trả lời, giúp suy nghĩ từng bước cho các bài toán phức tạp.
+  explain: `**Đáp án đúng: A.** Claude API hỗ trợ extended thinking (suy nghĩ mở rộng): bạn bật bằng tham số {{code}}thinking{{code}} trong request. Khi bật, model tạo các khối suy nghĩ nội bộ trước khi trả lời cuối cùng, giúp xử lý tốt hơn các bài toán phức tạp cần lập luận nhiều bước.
 
 ### Vì sao các phương án còn lại sai
-- **B:** system prompt định hướng nhưng không tạo thinking block riêng.
-- **C:** max_tokens giới hạn độ dài output, không liên quan đến suy nghĩ trước.
-- **D:** temperature kiểm soát độ ngẫu nhiên, không phải cơ chế think before answer.`
+- **B:** system prompt định hướng hành vi nhưng không phải cơ chế tạo khối suy nghĩ riêng trước câu trả lời.
+- **C:** {{code}}max_tokens{{code}} giới hạn độ dài output, không liên quan đến việc model suy nghĩ trước.
+- **D:** {{code}}temperature{{code}} kiểm soát độ ngẫu nhiên của output, không phải cơ chế "think before answer".`
 },
 {
   id: 'qz-cca-044',
@@ -645,15 +645,15 @@
 {
   id: 'qz-cca-050',
   topic: 'claude',
-  q: '[Agentic Architecture] Which MCP component allows a server to push updates to the client without being asked?',
+  q: '[Agentic Architecture] In MCP (Model Context Protocol), which feature allows a server to request an LLM completion from the client?',
   options: ['Tools', 'Resources', 'Prompts', 'Sampling'],
   answer: 3,
-  explain: `**Đáp án đúng: D.** Sampling (trong MCP) cho phép server gửi yêu cầu sampling (tạo LLM response) về client mà không cần client chủ động yêu cầu. Đây là cơ chế "push" duy nhất trong MCP spec.
+  explain: `**Đáp án đúng: D.** Sampling trong MCP cho phép server gửi yêu cầu tạo phản hồi từ LLM (LLM completion) về phía client. Client có quyền xem xét và chấp thuận yêu cầu này trước khi gọi model, giúp server tận dụng năng lực LLM của client khi cần.
 
 ### Vì sao các phương án còn lại sai
-- **A:** Tools là remote procedure calls do client gọi.
-- **B:** Resources do client request, không push.
-- **C:** Prompts do client request.`
+- **A:** Tools là các hàm/chức năng mà server cung cấp để client (ứng dụng) gọi thực thi.
+- **B:** Resources là dữ liệu hoặc nội dung mà server cung cấp để client đọc theo yêu cầu.
+- **C:** Prompts là các mẫu prompt (prompt template) mà server cung cấp để client sử dụng.`
 },
 {
   id: 'qz-cca-051',
