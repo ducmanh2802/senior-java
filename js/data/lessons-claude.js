@@ -1489,4 +1489,527 @@ Không dùng kết quả schema như quyết định truy cập. Sau khi input h
   related: ['claude-026', 'claude-001'],
   tags: ['tool description', 'JSON Schema', 'input validation', 'authorization'],
 },
+{
+  id: 'lesson-claude-006',
+  track: 'claude',
+  order: 6,
+  title: 'Agent đa phụ trách: chia công việc, giao cho subagent và tổng hợp',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Hiểu được khi nào nên chia một tác vụ lớn thành nhiều công việc con thay vì dùng một agent duy nhất',
+    'Làm được vòng lặp "giao công việc → chờ kết quả → tổng hợp" mà không làm mess ngữ cảnh',
+    'Biết khi nào kết thúc vòng lặp: hàng đợi công việc trống, model báo xong, hoặc đạt số bước tối đa'
+  ],
+  body: `### Vì sao một agent nên chia công việc
+Một agent là chương trình dùng model ngôn ngữ để lập kế hoạch, chọn tool và gọi tool liên tiếp cho đến khi xong. Với tác vụ ngắn (tra một đơn hàng, tính phí giao) một agent gọi 1–2 tool là xong. Nhưng tác vụ lớn (kiểm tra 50 đơn giao chậm, gửi thông báo cho từng khách, báo cáo sai sót) thì một agent duy nhất gọi nhiều tool liên tiếp: dễ rơi vào vòng lặp, ngữ cảnh phình to, và khó theo dõi từng bước.
+
+**Phân chia công việc (task decomposition)** là chia tác vụ lớn thành nhiều công việc con nhỏ, mỗi công việc có một mục tiêu duy nhất. Ví dụ kiểm tra đơn giao chậm:
+- Công việc 1: lấy danh sách đơn giao chậm hôm nay (dùng tool {{orders_list}}).
+- Công việc 2: kiểm tra lý do chậm của mỗi đơn (dùng tool {{shipping_get_delay}}).
+- Công việc 3: gửi email thông báo khách hàng (dùng tool {{notify_send}}).
+
+Mỗi công việc có thể được giao cho một **subagent** — agent nhỏ chạy độc lập với ngữ cảnh của chính nó, thường ít lịch sử hơn, hoàn thành một mục tiêu duy nhất rồi trả tóm tắt về agent cha. Agent cha không cần xem chi tiết từng lệnh tool của subagent, chỉ cần tóm tắt kết quả.
+
+### Giao công việc qua tool
+Delegation cũng là một tool trong Messages API. Agent cha gọi tool {{delegate_task}} với input gồm tên subagent, nhiệm vụ và dữ liệu cần thiết. Tool này chạy subagent bên trong (có thể là một cuộc gọi Claude riêng) và trả về kết quả ngắn gọn.
+
+~~~json
+{ "type": "tool_use", "id": "toolu_D1", "name": "delegate_task",
+  "input": { "agent": "shipping_checker", "task": "Lý do đơn ORD-42 bị chậm giao?", "input": { "order_id": "ORD-42" } } }
+~~~
+
+Trường {{id}} của {{tool_use}} gắn liền với {{tool_use_id}} trong {{tool_result}} trả về, giống mã vận đơn và kiện hàng: nội dung có thể giống nhau, nhưng nhầm mã thì không biết kết quả thuộc yêu cầu nào.
+
+### Vòng lặp plan-delegate-aggregate
+Agent cha giữ hàng đợi công việc chưa làm. Mỗi bước:
+
+1. Nếu còn công việc chưa làm, chọn một công việc → gọi {{delegate_task}} (hoặc tool nghiệp vụ trực tiếp nếu đơn giản).
+2. Nhận {{tool_result}} của công việc con: thành công kèm tóm tắt, hoặc lỖ ({{is_error = true}}).
+3. Ghi kết quả vào ngữ cảnh, xóa công việc khỏi hàng đợi.
+4. Nếu hàng đợi còn công việc → lặp lại. Nếu hết → gọi model một lần cuối để tổng hợp câu trả lời cho người dùng.
+
+~~~text
+agent cha                      subagent A (shipping)
+   |                             |
+   |-- delegate_task ----------->|
+   |                             |-- gọi tool shipping_get_delay
+   |<-- tool_result (lý do chậm) --|
+   |-- delegate_task (ORD-99) ---->|
+   |                             |-- ...
+   |<-- tool_result ---------------|
+   |-- end_turn: tổng hợp cho user |
+~~~
+
+### Khi nào dùng delegation và khi nào không
+Dùng khi: tác vụ có nhiều bước độc lập, cần gọi cùng tool nhiều lần với input khác, hoặc muốn tách ngữ cảnh để mỗi subagent tập trung một việc. Không dùng khi: tác vụ ngắn gọn, tool chỉ gọi một lần, hoặc chi phí gọi subagent cao hơn lợi ích. Mỗi lần gọi subagent cũng tốn token và tiền, giống một cuộc gọi model bình thường.
+
+### Lỗi hay gặp
+- **Gộp quá nhiều nhiệm vụ vào một subagent**: subagent quá tải ngữ cảnh, trả kết quả sai hoặc bỏ sót bước. Chia nhỏ hơn nữa.
+- **Không xử lý lỗi của subagent**: một công việc con lỗi làm agent cha cứ chờ mãi hoặc crash. Luôn có {{tool_result}} với {{is_error}} và kế hoạch dự phòng (thử tool khác, hỏi người dùng, hoặc báo thất bại phần nào).
+- **Quên dừng vòng lặp**: agent tạo công việc con mới từ kết quả công việc cũ → lặp vô hạn. Đặt số bước tối đa (maxSteps) và số công việc con tối đa (maxTasks).
+- **Truyền quá nhiều ngữ cảnh xuống subagent**: làm phình token, chậm, và rủi ro rò rỉ dữ liệu không liên quan. Chỉ truyền tối thiểu dữ liệu cần thiết.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi tác vụ lớn, tôi chia thành các công việc con độc lập và dùng agent con (subagent) qua một tool delegation, mỗi agent con chỉ nhận tối thiểu dữ liệu cần thiết và hoàn thành một mục tiêu duy nhất. Agent cha giữ hàng đợi công việc, gọi delegation theo thứ tự, thu thập tool_result (bao gồm cả is_error khi subagent lỗi), rồi khi hàng đợi trống tổng hợp câu trả lời cuối. Tôi đặt ngân sách bước và số công việc tối đa để tránh lặp vô hạn, và không bao giờ để một lỗi của subagent làm crash toàn bộ phiên."
+
+### Liên hệ phỏng vấn
+Interviewer có thể hỏi: "subagent khác agent chính thế nào?" (ngữ cảnh nhỏ hơn, mục tiêu duy nhất, chạy độc lập), "làm sao biết khi nào dừng delegation?" (hàng đợi trống, maxSteps, hoặc model báo end_turn), và "lỗi subagent xử lý thế nào?" (tool_result is_error, kế hoạch dự phòng, báo người dùng thay vì crash).
+`,
+  exercises: [
+    {
+      title: 'TaskDelegator: hàng đợi công việc, gọi delegation và tổng hợp',
+      prompt: `Các kiểu Block, Message, ModelReply, FakeModel, AgentResult và TaskResult mô phỏng Messages API với delegation (không cần sửa). Hãy viết TaskDelegator.run(history, model, delegate, maxSteps):
+
+1. Lịch sử ban đầu đã có sẵn (ví dụ message user chứa kế hoạch). Không được sửa list gốc.
+2. Mỗi bước: gọi model.next(truyền bản sao của lịch sử), tăng số bước, rồi nối nguyên văn reply.content() vào lịch sử dưới role assistant.
+3. Nếu stopReason là "task_use": với mỗi block task_use theo thứ tự, gọi delegate(name, input) nhận TaskResult{ok, summary}. Nếu delegate ném RuntimeException → tạo task_result với is_error = true và nội dung "Error: " + thông điệp exception. Gom tất cả kết quả trong một message user, mỗi block task_result có task_useId khớp id của task_use tương ứng.
+4. Nếu stopReason là "end_turn": trả về AgentResult(text, steps, "end_turn") với text là nối các block text của reply cuối.
+5. Các stopReason khác (max_tokens, refusal…): trả về AgentResult(text, steps, stopReason).
+6. Đã gọi model đủ maxSteps mà chưa end_turn → trả về AgentResult(text của reply cuối, maxSteps, "max_steps").`,
+      starter: `// ====== Có sẵn (không cần sửa) ======
+record Block(String type, String text, String id, String name, Map<String, Object> input,
+             String toolUseId, String content, boolean isError) {
+    static Block text(String text) { return new Block("text", text, null, null, null, null, null, false); }
+    static Block taskUse(String id, String name, Map<String, Object> input) {
+        return new Block("task_use", null, id, name, input, null, null, false);
+    }
+    static Block taskResult(String taskUseId, String content, boolean isError) {
+        return new Block("task_result", null, null, null, null, taskUseId, content, isError);
+    }
+}
+record Message(String role, List<Block> content) {}           // role: "user" | "assistant"
+record ModelReply(String stopReason, List<Block> content) {}
+interface FakeModel { ModelReply next(List<Message> conversation); }
+record AgentResult(String answer, int steps, String stopReason) {}
+record TaskResult(boolean ok, String summary) {}
+
+// ====== Bài của bạn ======
+class TaskDelegator {
+    static AgentResult run(List<Message> history, FakeModel model,
+                           BiFunction<String, Map<String, Object>, TaskResult> delegate, int maxSteps) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void ok(boolean cond, String msg) { if (!cond) throw new AssertionError(msg); }
+    static Map<String, Object> in(String k, Object v) { Map<String, Object> m = new HashMap<>(); m.put(k, v); return m; }
+
+    static class ScriptedModel implements FakeModel {
+        final List<ModelReply> script;
+        final List<List<Message>> seen = new ArrayList<>();
+        ScriptedModel(ModelReply... replies) { script = List.of(replies); }
+        public ModelReply next(List<Message> conversation) {
+            seen.add(new ArrayList<>(conversation));
+            return script.get(Math.min(seen.size() - 1, script.size() - 1));
+        }
+    }
+    static ModelReply reply(String stop, Block... blocks) { return new ModelReply(stop, List.of(blocks)); }
+
+    public static void main(String[] args) {
+        check("gọi delegation một lần và kết thúc khi end_turn", () -> {
+            List<Map<String, Object>> calls = new ArrayList<>();
+            BiFunction<String, Map<String, Object>, TaskResult> delegate =
+                (name, input) -> { calls.add(input); return new TaskResult(true, "Đã giao hàng hôm qua"); };
+            ScriptedModel m = new ScriptedModel(
+                reply("task_use", Block.taskUse("D1", "ship_check", in("order_id", "ORD-42"))),
+                reply("end_turn", Block.text("Đã kiểm tra xong.")));
+            AgentResult r = TaskDelegator.run(List.of(new Message("user", List.of(Block.text("Kiểm tra đơn.")))), m, delegate, 5);
+            eq(1, calls.size()); eq("ORD-42", calls.get(0).get("order_id"));
+            eq("Đã kiểm tra xong.", r.answer()); eq(2, r.steps()); eq("end_turn", r.stopReason());
+        });
+        check("task_result khớp task_use_id và vào một message user", () -> {
+            BiFunction<String, Map<String, Object>, TaskResult> delegate =
+                (name, input) -> new TaskResult(true, "delay 2 ngày");
+            ScriptedModel m = new ScriptedModel(
+                reply("task_use", Block.taskUse("D1", "ship_check", in("order_id", "ORD-42"))),
+                reply("end_turn", Block.text("xong")));
+            TaskDelegator.run(List.of(new Message("user", List.of(Block.text("Kiểm tra.")))), m, delegate, 5);
+            List<Message> second = m.seen.get(1);
+            eq(3, second.size());
+            eq("assistant", second.get(1).role());
+            List<Block> c = second.get(2).content();
+            eq(1, c.size());
+            Block b = c.get(0);
+            eq("task_result", b.type()); eq("D1", b.toolUseId()); eq("delay 2 ngày", b.content()); eq(false, b.isError());
+        });
+        check("hai delegation song song: cả hai gọi, thứ tự giữ, một message user", () -> {
+            List<Map<String, Object>> inputs = new ArrayList<>();
+            BiFunction<String, Map<String, Object>, TaskResult> delegate =
+                (name, input) -> { inputs.add(input); return new TaskResult(true, "ok " + name); };
+            ScriptedModel m = new ScriptedModel(
+                reply("task_use", Block.taskUse("D1", "ship_check", in("a", 1)), Block.taskUse("D2", "ship_check", in("a", 2))),
+                reply("end_turn", Block.text("ok")));
+            TaskDelegator.run(List.of(new Message("user", List.of(Block.text("x")))), m, delegate, 5);
+            eq(2, inputs.size()); eq(1, inputs.get(0).get("a")); eq(2, inputs.get(1).get("a"));
+            List<Block> c = m.seen.get(1).get(2).content();
+            eq(2, c.size());
+            eq("D1", c.get(0).toolUseId()); eq("ok ship_check", c.get(0).content());
+            eq("D2", c.get(1).toolUseId()); eq("ok ship_check", c.get(1).content());
+        });
+        check("delegate ném lỗi → is_error và vòng lặp tiếp tục", () -> {
+            BiFunction<String, Map<String, Object>, TaskResult> delegate =
+                (name, input) -> { throw new IllegalStateException("API ship lỗi"); };
+            ScriptedModel m = new ScriptedModel(
+                reply("task_use", Block.taskUse("D1", "ship_check", in("order_id", "ORD-42"))),
+                reply("end_turn", Block.text("Có lỗi, hỏi lại sau.")));
+            AgentResult r = TaskDelegator.run(List.of(new Message("user", List.of(Block.text("Kiểm tra.")))), m, delegate, 5);
+            eq("end_turn", r.stopReason()); eq(2, r.steps());
+            Block b = m.seen.get(1).get(2).content().get(0);
+            eq("D1", b.toolUseId()); ok(b.isError(), "lỗi subagent phải is_error = true");
+            ok(b.content() != null && b.content().contains("API ship lỗi"), "nội dung lỗi: " + b.content());
+        });
+        check("end_turn ngay lập tức", () -> {
+            BiFunction<String, Map<String, Object>, TaskResult> delegate = (n, i) -> new TaskResult(true, "x");
+            ScriptedModel m = new ScriptedModel(reply("end_turn", Block.text("Không cần công việc nào.")));
+            AgentResult r = TaskDelegator.run(List.of(new Message("user", List.of(Block.text("Hello")))), m, delegate, 5);
+            eq("end_turn", r.stopReason()); eq(1, r.steps()); eq("Không cần công việc nào.", r.answer());
+        });
+        check("dừng sau maxSteps", () -> {
+            BiFunction<String, Map<String, Object>, TaskResult> delegate = (n, i) -> new TaskResult(true, "ok");
+            ScriptedModel m = new ScriptedModel(reply("task_use", Block.taskUse("D1", "ship_check", in("x", 1))));
+            AgentResult r = TaskDelegator.run(List.of(new Message("user", List.of(Block.text("Làm mãi.")))), m, delegate, 3);
+            eq(3, r.steps()); eq("max_steps", r.stopReason()); eq(3, m.seen.size());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `// ====== Có sẵn (không cần sửa) ======
+record Block(String type, String text, String id, String name, Map<String, Object> input,
+             String toolUseId, String content, boolean isError) {
+    static Block text(String text) { return new Block("text", text, null, null, null, null, null, false); }
+    static Block taskUse(String id, String name, Map<String, Object> input) {
+        return new Block("task_use", null, id, name, input, null, null, false);
+    }
+    static Block taskResult(String taskUseId, String content, boolean isError) {
+        return new Block("task_result", null, null, null, null, taskUseId, content, isError);
+    }
+}
+record Message(String role, List<Block> content) {}           // role: "user" | "assistant"
+record ModelReply(String stopReason, List<Block> content) {}
+interface FakeModel { ModelReply next(List<Message> conversation); }
+record AgentResult(String answer, int steps, String stopReason) {}
+record TaskResult(boolean ok, String summary) {}
+
+// ====== Lời giải ======
+class TaskDelegator {
+    static AgentResult run(List<Message> history, FakeModel model,
+                           BiFunction<String, Map<String, Object>, TaskResult> delegate, int maxSteps) {
+        List<Message> conv = new ArrayList<>(history);
+        String lastText = "";
+        int steps = 0;
+        while (steps < maxSteps) {
+            ModelReply reply = model.next(new ArrayList<>(conv));  // API stateless: gửi toàn bộ lịch sử
+            steps++;
+            conv.add(new Message("assistant", reply.content()));   // giữ nguyên mọi block
+            lastText = textOf(reply.content());
+            switch (reply.stopReason()) {
+                case "task_use" -> {
+                    List<Block> results = new ArrayList<>();
+                    for (Block b : reply.content())
+                        if ("task_use".equals(b.type())) results.add(execute(b, delegate));
+                    conv.add(new Message("user", results));          // mọi kết quả trong một message user
+                }
+                default -> { return new AgentResult(lastText, steps, reply.stopReason()); }
+            }
+        }
+        return new AgentResult(lastText, steps, "max_steps");        // trần số bước: không lặp vô hạn
+    }
+
+    private static Block execute(Block call, BiFunction<String, Map<String, Object>, TaskResult> delegate) {
+        try {
+            TaskResult r = delegate.apply(call.name(), call.input());
+            return Block.taskResult(call.id(), r.summary(), !r.ok());
+        } catch (RuntimeException e) {                               // subagent lỗi → báo cho model, không sập
+            return Block.taskResult(call.id(), "Error: " + e.getMessage(), true);
+        }
+    }
+
+    private static String textOf(List<Block> blocks) {
+        StringBuilder sb = new StringBuilder();
+        for (Block b : blocks) if ("text".equals(b.type())) sb.append(b.text());
+        return sb.toString();
+    }
+}`,
+      hints: [
+        'Giữ một {{List<Message>}} làm lịch sử. Mỗi bước: gọi model với bản sao, tăng {{steps}}, rồi luôn nối reply vào lịch sử dưới role {{assistant}} trước khi xét {{stopReason}}.',
+        'Nhánh {{task_use}} gom mọi {{task_result}} vào một list rồi thêm đúng một message {{user}}; mỗi block có {{taskUseId}} khớp {{id}} của task_use.',
+        'Bọc lời gọi delegate trong {{try/catch (RuntimeException e)}} và trả task_result với {{is_error = true}} khi subagent ném lỗi.'
+      ],
+      explain: `Vòng delegation khác vòng tool_use thường ở điểm mỗi block task_use đại diện cho một công việc con chạy độc lập (subagent), nên agent cha không cần biết chi tiết tool nội bộ của subagent, chỉ cần tóm tắt kết quả (summary) hay lỗi (is_error).
+
+Ba lỗi hay gặp:
+- **Quên giữ nguyên message assistant** trước khi thêm message user chứa task_result. API thật trả 400 vì task_result không có task_use ngay trước nó.
+- **Gom tất cả kết quả trong một message user** khi model gọi nhiều task_use cùng lúc; tách thành nhiều message user là sai cấu trúc.
+- **Không xử lý lỗi subagent**: một công việc con lỗi không được để làm crash phiên. Trả task_result is_error với thông điệp rõ để model quyết định bước tiếp (thử lại, hỏi người dùng, hoặc báo thất bại).
+
+Vì sao cần maxSteps: agent có thể tạo công việc con mới từ kết quả công việc cũ dẫn lặp vô hạn. Trả về stopReason "max_steps" để tầng trên hiển thị "không hoàn thành được" thay vì treo.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Khi agent dùng delegation để giao công việc cho subagent qua Messages API, điều kiện bắt buộc để request không bị lỗi là gì?',
+      options: [
+        'Mỗi block tool_use phải có block tool_result với tool_use_id khớp id',
+        'Chỉ cần gửi kết quả của công việc đầu tiên, model sẽ tự hỏi lại công việc còn lại',
+        'tool_result phải nằm trong message assistant cùng với tool_use',
+        'Mỗi công việc con phải chạy trên một agent vật lý khác nhau'
+      ],
+      answer: 0,
+      explain: `Mỗi tool_use phải có đúng một tool_result với tool_use_id khớp id, tất cả nằm trong một message user ngay sau message assistant. Gửi thiếu một kết quả làm API báo lỗi; tool_result không bao giờ nằm trong message assistant; không yêu cầu agent chạy trên máy vật lý khác.`,
+    },
+    {
+      q: 'Khi nào nên dùng delegation (giao cho subagent) thay để agent duy nhất gọi tool trực tiếp?',
+      options: [
+        'Tác vụ ngắn gọn chỉ gọi một tool',
+        'Tác vụ lớn có nhiều bước độc lập, cần gọi cùng tool nhiều lần với input khác',
+        'Luôn dùng delegation vì delegation miễn phí',
+        'Chỉ dùng khi muốn gọi tool song song'
+      ],
+      answer: 1,
+      explain: `Delegation tốn token và tiền như một cuộc gọi model bình thường, nên chỉ đáng giá khi tác vụ lớn, nhiều bước độc lập, hoặc cần tách ngữ cảnh để mỗi subagent tập trung một việc. Tác vụ ngắn gọi một tool thì agent duy nhất gọi trực tiếp là đủ. Delegation không miễn phí và không bắt buộc gọi song song.`,
+    },
+    {
+      q: 'Vòng lặp delegation phải dừng khi nào để tránh lỗi trên production?',
+      options: [
+        'Chạy mãi cho đến khi model trả lời xong',
+        'Khi hàng đợi công việc trống, model báo end_turn, hoặc đạt số bước tối đa (maxSteps)',
+        'Chỉ khi đạt maxSteps',
+        'Không bao giờ dừng, agent phải hoàn thành mọi công việc con'
+      ],
+      answer: 1,
+      explain: `Dừng khi hàng đợi trống (hoàn tất), model báo end_turn (không cần công việc thêm), hoặc đạt maxSteps (tránh lặp vô hạn và chi phí tăng theo từng request). Chỉ dừng khi maxSteps có thể bỏ sót công việc còn lại; chạy mãi là nguy hiểm nhất.`,
+    },
+  ],
+  related: ['claude-001', 'claude-013'],
+  tags: ['subagent', 'delegation', 'task decomposition', 'agent loop'],
+},
+{
+  id: 'lesson-claude-007',
+  track: 'claude',
+  order: 7,
+  title: 'Bảo vệ agent loop: xác nhận trước side effect và idempotency key',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Phân loại được tool chỉ đọc và tool có side effect (ghi dữ liệu, gửi tiền, gửi mail)',
+    'Viết gate xác nhận: chạy ngay, từ chối, hoặc chờ người dùng xác nhận',
+    'Hiểu idempotency key: cùng yêu cầu nghiệp vụ chỉ được thực hiện một lần ngay cả khi retry'
+  ],
+  body: `### Tool chỉ đọc và tool có side effect
+Tool chỉ đọc (tra đơn hàng, kiểm tra tồn kho) có thể gọi nhiều lần mà không thay đổi trạng thái hệ thống. Tool có **side effect** thay đổi trạng thái: chuyển tiền, gửi email, xóa tài khoản, triển khai code. Gọi lại tool có side effect hai lần có thể tạo hai giao dịch, gửi hai email — tai nạn thực tế trên production.
+
+### Gate xác nhận trước khi chạy
+Trước khi thực thi tool có side effect, agent nên hỏi người dùng: "Bạn đồng ý chuyển 5 triệu VND cho người A không?" Ba nhánh:
+- **RUN**: tool chỉ đọc, hoặc tool có side effect nằm trong danh sách cho phép tự chạy (allowlist).
+- **WAIT**: tool có side effect, không trong allowlist, chưa xác nhận → dừng vòng lặp, hỏi người dùng.
+- **DENY**: tool bị cấm (ví dụ xóa toàn bộ database), hoặc cùng idempotency key đã chạy rồi.
+
+Với Messages API, khi WAIT agent dừng vòng lặp (không gửi tool_result), UI hiện nút xác nhận. Khi người dùng bấm đồng ý, gửi lại cùng lịch sử kèm thông tin xác nhận và chạy tool.
+
+### Idempotency key
+Idempotency key là mã nhận dạng duy nhất của một yêu cầu nghiệp vụ (ví dụ mã đơn hàng, mã chuyển khoản). Server lưu key đã xử lý; yêu cầu cùng key lần nữa → trả kết quả cũ, không thực hiện lại. Điều này rất quan trọng khi agent retry sau lỗi mạng: không biết lần trước đã thành công hay chưa, gửi lại cùng key đảm bảo không tạo giao dịch trùng.
+
+~~~text
+agent                            server
+   |                             |
+   |-- transfer(key=TX-100, 5tr) -->|
+   |                             |-- lưu key TX-100, trừ tiền
+   |<-- thành công ----------------|
+   |                             |
+   |-- transfer(key=TX-100, 5tr) -->|  retry sau lỗi mạng
+   |                             |-- key TX-100 đã tồn tại → trả kết quả cũ
+   |<-- thành công (không trừ lại) --|
+~~~
+
+### Lỗi hay gặp
+- **Xác nhận sau khi đã chạy**: nếu agent chạy tool rồi mới hỏi người dùng, đã muộn. Xác nhận phải xảy ra **trước** thực thi.
+- **Dùng tool_use_id làm idempotency key**: tool_use_id chỉ nhận diện một lần gọi model, có thể thay đổi khi retry. Idempotency key phải là mã nghiệp vụ (mã đơn, mã giao dịch).
+- **Không phân biệt tool đọc/ghi**: gọi tool xóa hay gửi mail mà không hỏi là nguy hiểm trên production.
+- **Retry vô hạn tool lỗi**: lỗi tạm thời (mạng) thì retry có ý nghĩa, lỗi logic (sai input, thiếu quyền) thì retry cũng lỗi. Phân loại lỗi trước khi retry.
+
+### Trả lời mẫu khi phỏng vấn
+"Tool chỉ đọc có thể gọi tự do, nhưng tool có side effect (chuyển tiền, gửi email, xóa dữ liệu) phải qua gate xác nhận trước khi chạy: nếu trong danh sách cho phép thì chạy ngay, nếu không thì dừng và hỏi người dùng. Mọi lệnh ghi dữ liệu đều kèm idempotency key lấy từ mã nghiệp vụ (mã đơn hàng, mã giao dịch) để retry sau lỗi mạng không tạo giao dịch trùng. Tôi cũng phân loại lỗi: lỗi mạng/tạm thời thì retry với backoff, lỗi input hay quyền thì báo người dùng thay vì retry vô hạn."
+
+### Liên hệ phỏng vấn
+Interviewer có thể hỏi: "idempotency key khác tool_use_id thế nào?" (key là mã nghiệp vụ, tool_use_id chỉ là mã lần gọi model), "khi nào chờ xác nhận trước khi gọi tool?" (side effect và không trong allowlist), và "lỗi nào nên retry, lỗi nào không?" (mạng/tạm thời retry, sai input hay quyền không retry).
+`,
+  exercises: [
+    {
+      title: 'SafetyGuard: xác nhận trước side effect và idempotency key',
+      prompt: `Các kiểu ToolCall và GuardDecision mô phỏng gate bảo vệ agent loop (không cần sửa). Hãy viết class SafetyGuard:
+
+- Constructor SafetyGuard(Set<String> autoRun): danh sách tool có side effect nhưng được phép chạy tự động (không cần xác nhận).
+- GuardDecision guard(ToolCall call, boolean confirmedByUser):
+  + Tool chỉ đọc (sideEffect = false) → RUN.
+  + Tool có side effect và tên nằm trong autoRun → RUN.
+  + Tool có side effect, không trong autoRun, chưa xác nhận → WAIT (dừng và hỏi người dùng).
+  + Tool có side effect, không trong autoRun, đã xác nhận → RUN.
+  + Nếu input chứa idempotencyKey đã dùng trước đó → DENY (không chạy lại yêu cầu đã xử lý).
+- boolean recordKey(String key): đánh dấu idempotency key đã dùng. Trả true nếu key mới (chưa từng dùng), false nếu key đã được dùng trước đó.
+
+action của GuardDecision là một trong "RUN", "WAIT", "DENY".`,
+      starter: `// ====== Có sẵn (không cần sửa) ======
+record ToolCall(String id, String name, Map<String, Object> input, boolean sideEffect) {}
+record GuardDecision(String action, String reason) {}
+
+// ====== Bài của bạn ======
+class SafetyGuard {
+    final Set<String> autoRun;
+    final Set<String> usedKeys;
+
+    SafetyGuard(Set<String> autoRun) {
+        this.autoRun = new HashSet<>(autoRun);
+        this.usedKeys = new HashSet<>();
+    }
+
+    GuardDecision guard(ToolCall call, boolean confirmedByUser) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean recordKey(String key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void ok(boolean cond, String msg) { if (!cond) throw new AssertionError(msg); }
+    static Map<String, Object> in(String k, Object v) { Map<String, Object> m = new HashMap<>(); m.put(k, v); return m; }
+    static ToolCall readOnly() { return new ToolCall("T1", "get_order", in("order_id", "ORD-1"), false); }
+    static ToolCall autoRun() { return new ToolCall("T2", "send_receipt", in("order_id", "ORD-1"), true); }
+    static ToolCall dangerous() { return new ToolCall("T3", "delete_account", in("user_id", "U1"), true); }
+
+    public static void main(String[] args) {
+        check("tool chỉ đọc chạy ngay không cần xác nhận", () -> {
+            SafetyGuard g = new SafetyGuard(Set.of());
+            eq("RUN", g.guard(readOnly(), false).action());
+        });
+        check("tool trong allowlist chạy ngay", () -> {
+            SafetyGuard g = new SafetyGuard(Set.of("send_receipt"));
+            eq("RUN", g.guard(autoRun(), false).action());
+        });
+        check("tool nguy hiểm chờ xác nhận", () -> {
+            SafetyGuard g = new SafetyGuard(Set.of());
+            eq("WAIT", g.guard(dangerous(), false).action());
+        });
+        check("tool nguy hiểm chạy sau khi xác nhận", () -> {
+            SafetyGuard g = new SafetyGuard(Set.of());
+            eq("RUN", g.guard(dangerous(), true).action());
+        });
+        check("idempotency key chỉ nhận một lần", () -> {
+            SafetyGuard g = new SafetyGuard(Set.of());
+            ok(g.recordKey("TX-1"), "lần đầu nhận key");
+            ok(!g.recordKey("TX-1"), "key trùng phải bị từ chối");
+        });
+        check("key khác nhau độc lập nhau", () -> {
+            SafetyGuard g = new SafetyGuard(Set.of());
+            ok(g.recordKey("TX-1"), "lần đầu nhận TX-1");
+            ok(g.recordKey("TX-2"), "lần đầu nhận TX-2");
+            ok(!g.recordKey("TX-1"), "key trùng phải bị từ chối");
+        });
+        check("guard từ chối khi idempotency key đã dùng", () -> {
+            SafetyGuard g = new SafetyGuard(Set.of());
+            g.recordKey("TX-100");
+            ToolCall call = new ToolCall("T4", "transfer", in("idempotencyKey", "TX-100"), true);
+            eq("DENY", g.guard(call, true).action());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `// ====== Có sẵn (không cần sửa) ======
+record ToolCall(String id, String name, Map<String, Object> input, boolean sideEffect) {}
+record GuardDecision(String action, String reason) {}
+
+// ====== Lời giải ======
+class SafetyGuard {
+    final Set<String> autoRun;
+    final Set<String> usedKeys;
+
+    SafetyGuard(Set<String> autoRun) {
+        this.autoRun = new HashSet<>(autoRun);
+        this.usedKeys = new HashSet<>();
+    }
+
+    GuardDecision guard(ToolCall call, boolean confirmedByUser) {
+        String key = (String) call.input().getOrDefault("idempotencyKey", null);
+        if (key != null && usedKeys.contains(key)) return new GuardDecision("DENY", "đã xử lý yêu cầu này");
+        if (!call.sideEffect()) return new GuardDecision("RUN", "tool chỉ đọc");
+        if (autoRun.contains(call.name())) return new GuardDecision("RUN", "trong allowlist");
+        if (!confirmedByUser) return new GuardDecision("WAIT", "chưa xác nhận");
+        return new GuardDecision("RUN", "đã xác nhận");
+    }
+
+    boolean recordKey(String key) {
+        if (usedKeys.contains(key)) return false;
+        usedKeys.add(key);
+        return true;
+    }
+}`,
+      hints: [
+        'Xét idempotency key trước: nếu key đã nằm trong {{usedKeys}} thì trả {{DENY}}.',
+        'Dùng {{getOrDefault("idempotencyKey", null)}} để lấy key từ input một cách an toàn.',
+        'Dùng {{usedKeys.contains(key)}} trong {{recordKey}} để phát hiện key trùng và {{usedKeys.add(key)}} để ghi nhớ key mới.'
+      ],
+      explain: `Gate bảo vệ agent loop chạy **trước** khi thực thi tool: tool chỉ đọc và tool trong allowlist chạy ngay; tool có side effect chưa xác nhận thì WAIT để dừng vòng lặp và hỏi người dùng; tool đã có idempotency key thì DENY để không chạy lại yêu cầu đã xử lý.
+
+Idempotency key khác tool_use_id: tool_use_id chỉ nhận diện một lần gọi model (có thể thay đổi khi retry), còn idempotency key là mã nghiệp vụ (mã đơn hàng, mã giao dịch) — gửi lại cùng key đảm bảo không tạo giao dịch trùng khi agent retry sau lỗi mạng. recordKey đánh dấu key đã dùng; gọi lại cùng key trả false để guard biết từ chối.
+
+Lỗi hay gặp là xác nhận sau khi đã chạy (đã muộn), dùng tool_use_id làm idempotency key, và retry vô hạn lỗi logic (sai input, thiếu quyền). Chỉ retry lỗi tạm thời (mạng, quá tải).`,
+    },
+  ],
+  check: [
+    {
+      q: 'Tool nào phải qua gate xác nhận trước khi chạy?',
+      options: [
+        'Tra đơn hàng (chỉ đọc)',
+        'Xóa toàn bộ database (có side effect, không trong allowlist)',
+        'Gửi thông báo lại cho chính khách hàng đã hỏi (có side effect nhưng trong allowlist)',
+        'Tính tổng doanh thu (chỉ đọc)'
+      ],
+      answer: 1,
+      explain: `Chỉ tool có side effect và **không** trong allowlist mới cần xác nhận trước khi chạy. Tra đơn và tính doanh thu là chỉ đọc, chạy ngay. Gửi thông báo lại khách hàng nằm trong allowlist nên chạy ngay, không chờ xác nhận.`,
+    },
+    {
+      q: 'Idempotency key dùng để làm gì?',
+      options: [
+        'Nhận diện từng lần gọi model (giống tool_use_id)',
+        'Đảm bảo cùng yêu cầu nghiệp vụ chỉ được thực hiện một lần ngay cả khi retry',
+        'Mã hóa dữ liệu gửi sang server',
+        'Giới hạn số bước của vòng lặp agent'
+      ],
+      answer: 1,
+      explain: `Idempotency key là mã nghiệp vụ (mã đơn hàng, mã giao dịch). Server lưu key đã xử lý; yêu cầu cùng key lần nữa trả kết quả cũ, không thực hiện lại. Nó khác tool_use_id (chỉ nhận diện một lần gọi model) và không dùng để mã hóa hay giới hạn bước.`,
+    },
+    {
+      q: 'Lỗi nào nên retry, lỗi nào không?',
+      options: [
+        'Retry mọi lỗi cho đến khi thành công',
+        'Không bao giờ retry',
+        'Retry lỗi tạm thời (mạng, quá tải), không retry lỗi input hay quyền',
+        'Chỉ retry lỗi 400'
+      ],
+      answer: 2,
+      explain: `Lỗi tạm thời (mạng, quá tải) có thể retry có ý nghĩa; lỗi input sai hoặc thiếu quyền thì retry cũng lỗi, nên báo người dùng thay vì retry vô hạn. Lỗi 400 (yêu cầu sai) không nên retry.`,
+    },
+  ],
+  related: ['claude-026', 'claude-014'],
+  tags: ['side effect', 'confirmation', 'idempotency', 'safety'],
+},
 );

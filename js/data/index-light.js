@@ -2476,6 +2476,8 @@ window.DATA_INDEX = {
     {"id":"lesson-claude-003","track":"claude","order":3,"title":"Ngân sách context và prompt caching: cắt lịch sử an toàn, đặt cache_control và đọc usage","level":"senior","minutes":35},
     {"id":"lesson-claude-004","track":"claude","order":4,"title":"Agent loop có kiểm soát: ghép tool_result, xử lý lỗi và dừng đúng","level":"senior","minutes":40},
     {"id":"lesson-claude-005","track":"claude","order":5,"title":"Thiết kế tool description và JSON Schema: rõ mục đích, validate ở server","level":"mid","minutes":35},
+    {"id":"lesson-claude-006","track":"claude","order":6,"title":"Agent đa phụ trách: chia công việc, giao cho subagent và tổng hợp","level":"senior","minutes":45},
+    {"id":"lesson-claude-007","track":"claude","order":7,"title":"Bảo vệ agent loop: xác nhận trước side effect và idempotency key","level":"senior","minutes":40},
     {"id":"lesson-aws-001","track":"aws","order":1,"title":"IAM và credentials cho ứng dụng Java: principal, policy, role và credentials provider chain","level":"mid","minutes":40},
     {"id":"lesson-aws-002","track":"aws","order":2,"title":"S3 cho backend dev: consistency, multipart upload, presigned URL, storage class và mã hoá","level":"mid","minutes":40},
     {"id":"lesson-aws-003","track":"aws","order":3,"title":"SQS, SNS và EventBridge: visibility timeout, DLQ, FIFO và consumer idempotent","level":"senior","minutes":45},
