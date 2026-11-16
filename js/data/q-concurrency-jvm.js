@@ -9778,13 +9778,13 @@ LongAdder giải quyết bằng cách tạo mảng các "cell" (ô), mỗi cell 
 | Hiệu năng dưới tải cao | Giảm do tranh chấp CAS | Tốt hơn, ít tranh chấp |
 | Chi phí đọc | Rẻ (đọc 1 biến) | Đắt hơn (cộng nhiều cell) |
 | Bộ nhớ | Ít (1 biến) | Nhiều (mảng cell) |
-| Tính chính xác | Chính xác từng lần | Chính xác khi đọc (sum) |
+| Tính chính xác | Chính xác tại thời điểm đọc | Gần đúng khi đọc (sum), không phải ảnh chụp nguyên tử |
 
 ### Pitfall production
 - Dùng LongAdder khi đọc thường xuyên: {{sum()}} phải duyệt tất cả cell, chậm hơn {{AtomicLong.get()}}.
 - Dùng LongAdder khi ít thread: overhead tạo cell không đáng, AtomicLong tốt hơn.
 - Gọi {{sum()}} khi có thread đang ghi: kết quả có thể không chính xác 100% (có thể thiếu vài đơn vị) vì các cell đang được cập nhật song song.
-- Không {{reset()}} LongAdder định kỳ: các cell tích lũy vô hạn, bộ nhớ không giải phóng.
+- Gọi {{reset()}} / {{sumThenReset()}} khi thread khác vẫn đang {{increment()}}: reset không nguyên tử với phép tăng, nên một phần số đếm bị mất. Và đừng kỳ vọng reset "giải phóng bộ nhớ": nó chỉ đưa giá trị về 0, các ô (cell) đã cấp vẫn được giữ.
 
 ### Ví dụ đời thực
 Hệ thống ghi log sự kiện, đếm tổng số request lỗi mỗi giây. Ban đầu dùng {{AtomicLong.incrementAndGet()}}. Khi đạt 10.000 request/giây trên 32 core, CPU dành 40% thời gian vào vòng lặp CAS thất bại. Sửa: đổi sang {{LongAdder.increment()}}. Kết quả: CPU do CAS giảm xuống dưới 5%, throughput đếm tăng khoảng 8x. Nhưng khi hiển thị dashboard đọc tổng mỗi 5 giây, {{sum()}} của LongAdder tốn thêm khoảng 2ms so với {{AtomicLong.get()}} — chấp nhận được vì đọc ít so với ghi.
@@ -10069,7 +10069,7 @@ Thread consumer = new Thread(() -> {
 - Dùng {{ArrayBlockingQueue}} với capacity rất nhỏ (vài trăm) trong khi consumer thỉnh thoảng chậm 2 giây: producer là thread HTTP bị chặn, số request đang xử lý tăng, pool cạn, cả service đứng.
 - Không có poison pill hoặc cờ dừng: {{shutdown()}} của executor chỉ đánh dấu, các thread vẫn chờ {{take()}} mãi; tiến trình không thoát.
 - Đọc {{size()}} rồi mới quyết định: giữa hai lệnh, thread khác đã thêm/bớt phần tử. Hãy để {{offer(e, timeout)}} quyết định.
-- Bật fair = true cho {{ArrayBlockingQueue}} mà không cần: đánh thức theo FIFO làm throughput giảm khoảng 10–30% trong khi chỉ cần "tương đối công bằng".
+- Bật fair = true cho {{ArrayBlockingQueue}} mà không cần: đánh thức theo FIFO làm giảm throughput trong khi chỉ cần "tương đối công bằng".
 - Coi hàng đợi là nơi lưu trữ lâu dài: restart là mất hết. Hàng đợi chỉ là bộ đệm; nguồn sự thật phải là DB/Kafka.
 - Không đo độ dài hàng đợi: khi queue đầy, hệ thống vẫn "chạy" nhưng độ trễ tăng gấp nhiều lần mà không có log nào báo.
 
@@ -10134,7 +10134,7 @@ Ba cái bẫy:
 - {{parties = 1}}: {{await()}} trả về ngay lập tức, không chờ ai. Nếu bạn vô tình đặt 1, vòng lặp sẽ chạy không đồng bộ mà không báo lỗi.
 
 ### Phaser: nhiều pha, số thành viên thay đổi
-{{Phaser}} dùng một số nguyên {{state}} đóng gói nhiều thông tin (pha hiện tại, số party, số đã tới, cờ kết thúc) và một cây (treap) các node chờ. Điểm mạnh: số thành viên có thể tăng/giảm giữa các pha bằng {{register()}} và {{arriveAndDeregister()}}. Pha kết thúc khi {{onAdvance(phase, parties)}} trả về {{true}} — mặc định là khi số party còn 0.
+{{Phaser}} dùng một số nguyên {{state}} đóng gói nhiều thông tin (pha hiện tại, số party, số đã tới, cờ kết thúc) và hai hàng đợi (even/odd) chứa các node đang chờ, để đánh thức theo đúng pha. Điểm mạnh: số thành viên có thể tăng/giảm giữa các pha bằng {{register()}} và {{arriveAndDeregister()}}. Pha kết thúc khi {{onAdvance(phase, parties)}} trả về {{true}} — mặc định là khi số party còn 0.
 
 Ví dụ hay dùng: xử lý lô theo tầng, mỗi tầng có số worker khác nhau (tầng 1 có 4 worker, tầng 2 có 8 worker), các worker phải đồng bộ sau mỗi tầng.
 
@@ -10348,7 +10348,8 @@ Quy tắc thực hành: nếu bạn bắt {{InterruptedException}} mà **không*
 ### Bảng "interrupt có tác dụng không"
 | Điểm chờ | Interrupt có dừng được? | Cách dừng đúng |
 |---|---|---|
-| {{Thread.sleep}}, {{Object.wait}}, {{Thread.join}}, {{LockSupport.park}} | Có, ném InterruptedException | Bắt, khôi phục cờ, thoát |
+| {{Thread.sleep}}, {{Object.wait}}, {{Thread.join}} | Có, ném InterruptedException | Bắt, khôi phục cờ, thoát |
+| {{LockSupport.park}} | Không ném; park trả về sớm và cờ vẫn true | Kiểm tra {{isInterrupted()}} sau khi park trả về |
 | {{BlockingQueue.take}}, {{Semaphore.acquire}} | Có | Như trên |
 | Vào {{synchronized}} (chưa lấy được monitor) | Không, thread vẫn BLOCKED | Không có cách nào ngoài việc nhả lock sớm hoặc {{tryLock(timeout)}} |
 | Đọc {{Socket}} / {{InputStream}} của socket | Không | {{setSoTimeout}}, hoặc đóng socket từ thread khác |
@@ -11527,7 +11528,7 @@ Runnable task = snapshot.wrap(() -> doWork());             // tự cài/dọn, k
 
 ### Virtual thread và ScopedValue
 - Virtual thread vẫn dùng ThreadLocal được (mỗi VT có ThreadLocal riêng), nhưng {{InheritableThreadLocal}} KHÔNG được kế thừa mặc định cho VT (phải bật).
-- Hướng tương lai: {{ScopedValue}} (chính thức JDK 24, JEP 481) — context bất biến, tự hết hạn theo scope, không leak khi pool tái dùng thread; thay thế ThreadLocal cho trace/auth.
+- {{ScopedValue}} (preview từ Java 21–24, chính thức từ JDK 25 qua JEP 506) là giá trị bất biến gắn với một phạm vi (scope), tự hết hạn khi ra khỏi scope và không bị "quên xoá" như ThreadLocal — phù hợp hơn để truyền context (trace, auth) khi dùng virtual thread và structured concurrency.
 - Với structured concurrency, subtask fork trong scope kế thừa ScopedValue rẻ (chia sẻ, không copy).
 
 ### Bảng so sánh các cách
@@ -11536,7 +11537,7 @@ Runnable task = snapshot.wrap(() -> doWork());             // tự cài/dọn, k
 | Copy MDC thủ công | không thêm thư viện | dễ quên, chỉ che MDC |
 | {{context-propagation}} | tự động mọi accessor | thêm một dependency |
 | {{InheritableThreadLocal}} | code đơn giản | copy lúc tạo thread, sai với pool |
-| {{ScopedValue}} | tự hết hạn, không leak | mới, cần JDK 24 |
+| {{ScopedValue}} | tự hết hạn, không leak | mới, chính thức từ JDK 25 (JEP 506) |
 
 ### Pitfall thực tế trên production
 - Bọc executor này nhưng quên executor khác → log lẫn hoặc thiếu ở đó.
