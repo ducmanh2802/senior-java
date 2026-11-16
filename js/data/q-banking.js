@@ -5,7 +5,7 @@
   topic: 'banking',
   level: 'mid',
   q: 'Core banking là gì, và các hệ thống xung quanh như kênh số, thẻ, thanh toán, CRM nói chuyện với core thế nào? Tại sao core thường phải chạy batch cuối ngày (EOD)?',
-  a: `**Tóm tắt:** Core banking là hệ thống lõi của ngân hàng, nơi lưu sổ cái tài khoản của mọi khách hàng (số dư, lịch sử giao dịch) và là nơi duy nhất quyết định "tài khoản này còn bao nhiêu tiền". Kênh số (app, internet banking), hệ thống thẻ, hệ thống thanh toán và CRM gọi vào core để tra số dư, trừ hoặc cộng tiền. Core thường chạy một vòng batch cuối ngày (End of Day) để đối sàng, tính lãi và đóng sổ cái, vì cập nhật hàng nghìn giao dịch theo thời gian thực đồng loạt sẽ quá nặng và dễ sai.
+  a: `**Tóm tắt:** Core banking là hệ thống lõi của ngân hàng, nơi lưu sổ cái tài khoản của mọi khách hàng (số dư, lịch sử giao dịch) và là nơi duy nhất quyết định "tài khoản này còn bao nhiêu tiền". Kênh số (app, internet banking), hệ thống thẻ, hệ thống thanh toán và CRM gọi vào core để tra số dư, trừ hoặc cộng tiền. Core thường chạy một vòng batch cuối ngày (End of Day) để đối soát, tính lãi và đóng sổ cái, vì cập nhật hàng nghìn giao dịch theo thời gian thực đồng loạt sẽ quá nặng và dễ sai.
 
 ### Core banking là gì (giải thích từ đầu)
 Hãy tưởng tượng sổ cái tay của một cửa hàng tạp hóa: mỗi khi bán hàng, chủ hàng ghi một dòng "nhận 50.000 đồng". Core banking chính là sổ cái điện tử của toàn ngân hàng, phục vụ hàng triệu khách hàng và phải chính xác từng đồng. Mỗi khách hàng có một hoặc nhiều tài khoản (tiết kiệm, chèque, tiền gửi...), mỗi tài khoản có số dư và danh sách giao dịch.
@@ -127,7 +127,7 @@ Ví dụ số liệu: khách gửi 5 triệu lúc 20 giờ, hệ thống timeout
 
 ### Lỗi hay gặp
 - Tự động retry khi timeout -> tiền bị trừ/cộng nhiều lần, sai số tài khoản.
-- Quên lưu mã tham chiếu duy tiên (transaction ID) không thể tra soát -> giao dịch bị mất trong hệ thống, không tìm lại được.
+- Quên lưu mã tham chiếu duy nhất (transaction ID) không thể tra soát -> giao dịch bị mất trong hệ thống, không tìm lại được.
 - Thông báo thất bại cho khách ngay khi timeout, chưa tra soát xong -> khách hoang mang, gọi điện bàn chuyển.
 - Không có giới hạn số lần tra soát -> giao dịch treo float trong hệ thống tháng năm, không bao giờ kết thúc.
 
@@ -193,7 +193,7 @@ Tổng của dòng 3 và 4 cũng bằng 0. Số dư A và B quay lại như ban 
 
 Lý do append-only quan trọng:
 1. Lịch sử kiểm tra (audit trail): có thể biết ai, lúc nào, thay đổi gì, quan trọng cho kiểm toán và pháp lý.
-2. Phục hồi lỗi: nếu code có bug ghi sai số dư, bạn có thể lại lại toàn bộ lịch sử để tìm lỗi, không cần khôi phục từ sao lưu.
+2. Phục hồi lỗi: nếu code có bug ghi sai số dư, bạn có thể dò lại toàn bộ lịch sử để tìm lỗi, không cần khôi phục từ sao lưu.
 3. Không mất dữ liệu: nếu một tài khoản bị xóa nhầm, vẫn có lịch sử giao dịch để khôi phục.
 
 ### Cách làm trong code (Java 17)
@@ -330,10 +330,10 @@ Mỗi ngày, ngân hàng có hàng trăm/hàng nghìn giao dịch trong và ngo�
 Đối soát không chỉ kiểm tra số tiền, còn kiểm tra chi tiết từng giao dịch: mã giao dịch, số tiền, thời gian, tài khoản gửi, tài khoản nhận. Nếu hai bên có số liệu khác nhau -> có "lech" (discrepancy), cần xử lý.
 
 Nguồn lệch thường gặp:
-- Giao dịch timeout: ngân hàng gửi đã trừ tiền nhưng thông báo bị mất, ngân hàng nhận chưa biết -> tiền bị "mat" giữa hai ben.
-- Lỗi hệ thống: mạng mất, server chậm, code bug ghi sai so tien.
+- Giao dịch timeout: ngân hàng gửi đã trừ tiền nhưng thông báo bị mất, ngân hàng nhận chưa biết -> tiền bị "mất" giữa hai bên.
+- Lỗi hệ thống: mạng mất, server chậm, code bug ghi sai số tiền.
 - Giao dịch chưa khớp: một bên ghi giao dịch, bên kia chưa ghi (ví dụ nhân viên nhập sai mã tài khoản).
-- Ngay le/gio bao tri: he thong nghi, giao dich bi tre, den ngay moi moi khop.
+- Ngày lễ/giờ bảo trì: hệ thống ngừng, giao dịch bị trễ, đến ngày mới thì khớp.
 
 ### Quy trình xử lý khi phát hiện lệch
 1. Tạo báo cáo lệch: hệ thống tự động sinh ra danh sách các giao dịch không khớp giữa hai bên, với số tiền và mã giao dịch.
@@ -950,7 +950,7 @@ Khách gọi issuer khiếu nại: không nhận được hàng, hàng không nh
 
 ### Luồng đầy đủ
 ~~~seq
-title: The quet - auth, capture, settlement
+title: Thẻ quẹt - auth, capture, settlement
 actors: Chu the | Merchant | Acquirer | Network | Issuer
 Chu the -> Merchant: quet the 2.000.000 dong
 Merchant -> Acquirer: tao yeu cau authorization
