@@ -85,40 +85,44 @@
   topic: 'claude',
   q: '[Tool Design & MCP] A chat assistant has search and calculator tools. Some requests need a tool, while simple greetings should receive normal text. Which tool_choice behavior best fits this workflow?',
   options: [
-    'Use auto so Claude may answer directly or choose a tool based on the request',
-    'Use any so every message must invoke at least one tool',
-    'Use none so the assistant can choose a tool only when necessary',
+    'Use tool_choice auto (the model decides) together with a strict input schema, so greetings get plain text and real requests can still call a tool',
+    'Use a forced tool choice such as any, so every message must invoke at least one tool',
+    'Use tool_choice none, so no tool can be called even when the request would benefit from one',
     'Remove all tools and encode their behavior in the system prompt'
   ],
   answer: 0,
-  explain: `**Đáp án đúng: auto cho phép model tự quyết định.** tool_choice là cấu hình điều khiển việc model có thể gọi tool nào. Với auto, model có thể trả lời bằng văn bản hoặc phát sinh một lời gọi tool nếu thấy phù hợp; đây là lựa chọn hợp với hội thoại có cả câu hỏi đơn giản lẫn phép tính/tìm kiếm.
+  explain: `**Đáp án đúng: auto — model tự quyết định, còn độ chính xác do strict schema giữ.** tool_choice là cấu hình điều khiển việc model được phép gọi tool nào ở lượt đó. Với auto, model có thể trả lời bằng văn bản (lời chào) hoặc phát sinh một lời gọi tool khi yêu cầu cần dữ liệu hay phép tính. Đây là lựa chọn hợp với hội thoại có cả câu hỏi đơn giản lẫn việc cần tra cứu.
+
+Lưu ý về model hiện hành (Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.2): các kiểu ép gọi như any hoặc tool (ép một tool có tên) đều bị từ chối với lỗi 400. Vì vậy auto là cấu hình khả dụng; muốn chắc chắn đầu vào đúng hình dạng thì khai báo strict: true cho schema của tool hoặc dùng structured outputs.
 
 ### Vì sao các phương án khác sai
-- **any:** bắt buộc phải gọi ít nhất một tool, nên lời chào cũng bị chuyển thành hành động tool không cần thiết.
-- **none:** cấm mọi lời gọi tool trong lượt đó, không phải tùy chọn tự quyết định.
+- **any (ép gọi):** hiện bị model từ chối 400; kể cả khi model cũ còn hỗ trợ, nó vẫn biến lời chào thành một hành động tool không cần thiết.
+- **none:** cấm mọi lời gọi tool trong lượt đó, không phải "tự quyết định khi cần".
 - **Xóa tool:** prompt không thể thay thế việc thực thi phép tính hay truy vấn dữ liệu đáng tin cậy.
 
-> Chỉ buộc gọi tool khi luồng nghiệp vụ thực sự yêu cầu hành động, không phải để thay thế hướng dẫn rõ ràng.`
+> Chỉ buộc gọi tool khi luồng nghiệp vụ thực sự yêu cầu hành động; trên model hiện hành, việc "buộc" phải làm ở executor (kiểm tra response có tool_use) chứ không phải bằng any/tool.`
 },
 {
   id: 'qz-ccat-006',
   topic: 'claude',
-  q: '[Tool Design & MCP] A compliance workflow must always produce a structured verification request before a human reviewer can approve it. The model may not skip verification. Which tool_choice setting most directly enforces that a tool call occurs?',
+  q: '[Tool Design & MCP] A compliance workflow must always produce a structured verification request before a human reviewer can approve it. The model must not skip verification, and the models in use reject forced tool choices. What most reliably enforces the call?',
   options: [
-    'auto, because it always selects the first available tool',
-    'any, because it requires at least one tool call but does not by itself choose which tool',
-    'none, because it disables only optional tools',
-    'Omit tool_choice, because that is equivalent to requiring a tool'
+    'Use a forced tool choice such as any or a named tool, which is the standard way to guarantee a tool call',
+    'Expose only the verification tool with a strict schema, then have the executor reject or retry any response that does not contain the required tool_use',
+    'Set temperature to 0 so the model always follows the procedure',
+    'Omit tool_choice, because the default behavior already requires a tool'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: any buộc có ít nhất một tool call.** Trong Messages API, tool call là block yêu cầu ứng dụng chạy một tool. any không có nghĩa là gọi một tool cụ thể; nếu có nhiều tool cần giới hạn lựa chọn bằng thiết kế danh sách tool cho lượt đó hoặc luồng điều phối thích hợp. Ứng dụng vẫn phải kiểm tra kết quả trước khi cho reviewer duyệt.
+  explain: `**Đáp án đúng: bảo đảm ở lớp executor, không ở tham số sampling.** Trên Opus 5.5/Sonnet 5.5/Fable 5.1+, tool_choice any và tool (ép gọi) đều bị từ chối với lỗi 400; auto không bảo đảm response có tool_use. Cách chắc chắn là: chỉ khai báo đúng tool verification cho lượt đó, dùng strict input schema, rồi kiểm tra response — thiếu tool_use thì coi như chưa hoàn tất, yêu cầu model thử lại hoặc chặn không cho reviewer duyệt. Nếu dùng structured outputs thì response phải khớp schema mới đi tiếp.
+
+Model và version khác nhau có thể hỗ trợ ép gọi khác nhau, nên phải đối chiếu tài liệu của đúng model đang chạy trước khi triển khai.
 
 ### Vì sao các phương án khác sai
-- **auto:** model có quyền trả lời bằng text mà không gọi tool, nên không bảo đảm bước xác minh.
-- **none:** cấm tool call hoàn toàn, ngược với yêu cầu.
-- **Bỏ cấu hình:** không tương đương với bắt buộc gọi; hành vi mặc định cho phép model quyết định.
+- **Ép gọi any/tool:** bị từ chối 400 trên model hiện hành, không phải cách bảo đảm.
+- **temperature 0:** sampling bị từ chối, và dù có dùng được cũng không tạo ra tool_use.
+- **Bỏ cấu hình:** mặc định là auto, model có thể trả lời bằng text mà không gọi tool.
 
-> Ép gọi tool chỉ bảo đảm có yêu cầu hành động, không bảo đảm backend đã thực thi thành công hay người dùng có quyền.`
+> Bảo đảm "bắt buộc gọi" bằng executor + schema; và vẫn kiểm tra quyền cùng kết quả tool trước khi cho reviewer duyệt.`
 },
 {
   id: 'qz-ccat-007',
@@ -126,39 +130,41 @@
   q: '[Tool Design & MCP] During a policy-only turn, an agent must answer from a supplied document and must not query customer systems. How should the application configure tool use for that turn?',
   options: [
     'Use auto and assume the model will always avoid customer tools',
-    'Use any and provide a harmless tool for the model to call',
-    'Use none so no tool can be called during this turn',
+    'Declare only a harmless tool and use a forced tool choice so the model must call it',
+    'Do not include the customer tools in this request (and set tool_choice none when the model supports it), so no tool can be called',
     'Remove the policy document and ask the model to rely on memory'
   ],
   answer: 2,
-  explain: `**Đáp án đúng: none vô hiệu hóa việc gọi tool ở lượt này.** Đây là ranh giới thực thi rõ hơn việc chỉ dặn model không truy vấn hệ thống khách hàng. Tài liệu chính sách đã nằm trong context nên có thể trả lời mà không cần gọi tool.
+  explain: `**Đáp án đúng: không đưa tool vào request — đó là ranh giới thực thi thật.** Một lượt chỉ có thể gọi những tool được khai báo trong chính request đó; nếu không khai báo tool customer thì model không có cách nào gọi, bất kể prompt nói gì. Cấu hình per-turn (ví dụ tool_choice none khi model hỗ trợ) là lớp bổ sung, không thay thế việc kiểm soát tập tool. Tài liệu chính sách đã nằm trong context nên có thể trả lời mà không cần gọi tool.
 
 ### Vì sao các phương án khác sai
 - **auto:** model vẫn có thể chọn tool nếu cho rằng cần thiết.
-- **any:** buộc gọi tool, trực tiếp trái với chính sách của lượt này.
+- **Ép gọi tool vô hại:** any/tool là kiểu ép gọi bị model hiện hành từ chối (400); ngoài ra nếu vẫn khai báo tool customer thì việc gọi nhầm vẫn có thể xảy ra.
 - **Dựa vào trí nhớ:** có thể dùng thông tin cũ hoặc sai; tài liệu được cung cấp là nguồn cần ưu tiên.
 
-> Nếu cần cấm tool trên toàn hệ thống, hãy không cung cấp quyền thực thi tương ứng; cấu hình từng lượt không thay thế kiểm soát backend.`
+> Nếu cần cấm tool trên toàn hệ thống, hãy không cấp quyền thực thi tương ứng; cấu hình từng lượt không thay thế kiểm soát backend.`
 },
 {
   id: 'qz-ccat-008',
   topic: 'claude',
-  q: '[Tool Design & MCP] A workflow must call lookup_refund_policy, not another available tool. The selected model supports forced tool use. Which tool_choice most directly enforces the named choice?',
+  q: '[Tool Design & MCP] A workflow must ensure lookup_refund_policy is called, not another available tool. The models in use reject forced tool choices. What is the most reliable design?',
   options: [
-    'Use {type: "auto"} so Claude may answer directly or choose a tool',
-    'Use {type: "any"} so Claude must call a tool but can choose which one',
-    'Use {type: "tool", name: "lookup_refund_policy"} to force that named tool',
-    'Use {type: "none"} so lookup_refund_policy is the only permitted tool'
+    'Set tool_choice to a forced type such as any or {type: "tool", name: "lookup_refund_policy"}, which is the standard way to pin a tool',
+    'Expose only lookup_refund_policy in that turn with a strict schema, then have the executor reject or retry any response that calls something else',
+    'Set temperature to 0 so the model follows the schema',
+    'Use tool_choice {type: "none"} so lookup_refund_policy is the only permitted tool'
   ],
-  answer: 2,
-  explain: `**Đáp án đúng: type "tool" cùng name để ép một tool cụ thể**, với model có hỗ trợ forced tool use. Đây là chế độ hẹp hơn any: nó chỉ định tên tool cần gọi. Khả năng forced tool use phụ thuộc model/version; trước khi triển khai phải đối chiếu tài liệu model đang dùng, vì một số model mới từ chối cấu hình ép gọi bằng lỗi request.
+  answer: 1,
+  explain: `**Đáp án đúng: thu hẹp tập tool và kiểm tra ở executor.** Trên Opus 5.5/Sonnet 5.5/Fable 5.1+, tool_choice any và tool (ép một tool có tên) đều bị từ chối với lỗi 400, nên không còn cách khóa cứng một tool bằng tham số. Thay vào đó: chỉ khai báo lookup_refund_policy cho lượt đó (model không thấy tool khác nên không thể chọn nhầm), dùng strict input schema, rồi executor kiểm tra tên tool trong response — sai thì trả lỗi hoặc yêu cầu thử lại thay vì thực thi. Nếu cần model suy luận nhiều bước, có thể dùng structured outputs để ép response đúng schema.
+
+Khả năng ép gọi phụ thuộc model/version, nên phải đối chiếu tài liệu của đúng model đang chạy trước khi triển khai.
 
 ### Vì sao các phương án khác sai
-- **auto:** model có thể trả lời bằng text hoặc chọn tool khác.
-- **any:** buộc gọi ít nhất một tool, nhưng không chọn riêng lookup_refund_policy.
+- **Ép gọi any/tool:** bị từ chối 400 trên model hiện hành.
+- **temperature 0:** tham số sampling bị từ chối, và cũng không liên quan tới việc chọn tool nào.
 - **none:** cấm mọi tool trong lượt đó, ngược với yêu cầu.
 
-> Gắn capability kiểm tra với đúng model/version; không mặc định cấu hình ép tool dùng được trên mọi model.`
+> "Chỉ còn một tool" thường là cách ép đơn giản và hiệu quả nhất; vẫn nên kết hợp kiểm tra tên tool ở executor.`
 },
 {
   id: 'qz-ccat-009',
@@ -175,7 +181,7 @@
 
 ### Vì sao các phương án khác sai
 - **Thêm từ secure:** mô tả chỉ hướng dẫn model, không ngăn người gọi trái phép.
-- **temperature bằng 0:** giảm biến thiên sinh nội dung, không cấp hay thu hồi quyền.
+- **temperature bằng 0:** không cấp hay thu hồi quyền; trên model hiện hành (Opus 5.5/Sonnet 5.5/Fable 5.2) tham số sampling như temperature còn bị từ chối hẳn với lỗi 400.
 - **Field tùy chọn:** làm đầu vào mơ hồ hơn và không xác định danh tính đáng tin cậy.
 
 > Không dùng model-provided identity làm nguồn xác thực; danh tính phải đến từ context đáng tin của server.`
@@ -628,7 +634,7 @@
   explain: `**Đáp án đúng: lấy dữ liệu mới từ nguồn có thẩm quyền khi câu trả lời phụ thuộc thời gian.** Context là nội dung hội thoại model đang thấy; nó có thể chứa thông tin cũ nhưng không tự cập nhật khi carrier đổi lịch. Tool tracking nên truy vấn hệ thống chính thức, trả thời điểm kiểm tra và trạng thái mới nhất. Ví dụ: “Carrier báo giao ngày 14/11; kiểm tra lúc 09:20.” Cách này phân biệt rõ dữ liệu vừa tra với lời người dùng kể trước đó.
 
 ### Vì sao các phương án khác sai
-- **Tăng temperature:** chỉ làm thay đổi tính ngẫu nhiên của văn bản; không truy cập trạng thái mới.
+- **Tăng temperature:** chỉ đổi độ ngẫu nhiên khi sinh văn bản, không truy cập trạng thái mới; trên model hiện hành tham số sampling này còn bị từ chối (400).
 - **Nhắc model ghi nhớ:** lời nhắc không biến dữ liệu hôm qua thành dữ liệu thời gian thực.
 - **Chờ người dùng phản bác:** người dùng có thể không biết lịch đã đổi; câu trả lời sai vẫn được đưa ra.
 
@@ -1061,14 +1067,16 @@ Ví dụ: security team deploy managed-mcp.json chỉ chứa github và sentry; 
     'Set temperature to 0 and keep the default parallel behavior'
   ],
   answer: 0,
-  explain: `**Đáp án đúng: đặt disable_parallel_tool_use trong tool_choice auto (cấu hình chọn tool).** Mặc định Claude có thể trả nhiều tool_use trong một lượt. Khi các bước có phụ thuộc (update rồi audit), bạn muốn model yêu cầu từng tool một, chờ kết quả, rồi mới yêu cầu tool tiếp theo. Với tool_choice type auto và disable_parallel_tool_use: true, model gọi tối đa một tool trong mỗi response; vẫn có thể trả lời bằng text khi không cần tool.
+  explain: `**Đáp án đúng: tool_choice auto kèm disable_parallel_tool_use để giảm song song.** Mặc định model có thể trả nhiều tool_use trong một lượt. Khi các bước có phụ thuộc (update rồi audit), bạn muốn model yêu cầu từng tool một, chờ kết quả, rồi mới yêu cầu tool tiếp theo. Với tool_choice type auto và disable_parallel_tool_use: true, model gọi tối đa một tool trong mỗi response; vẫn có thể trả lời bằng text khi không cần tool.
+
+Khả năng này phụ thuộc model/version nên phải kiểm tra trước; nếu model không hỗ trợ, hãy tuần tự hóa ở executor. Lưu ý các kiểu ép gọi any/tool hiện bị model từ chối (400), nên auto + cờ này là cấu hình tool_choice khả dụng để giảm song song.
 
 Ví dụ: update_customer thành công, trả tool_result, sau đó model mới gọi write_audit với dữ liệu đã cập nhật. Nếu để song song, audit có thể chạy trước khi update commit và ghi trạng thái cũ.
 
 ### Vì sao các phương án khác sai
 - **none:** cấm mọi tool, trái yêu cầu.
 - **Bỏ tool audit:** mất bước kiểm toán, không giải quyết thứ tự.
-- **temperature 0:** không kiểm soát số tool gọi trong một lượt.
+- **temperature 0:** không kiểm soát số tool gọi trong một lượt; tham số sampling này còn bị model hiện hành từ chối (400).
 
 > Nếu executor vẫn muốn tự tuần tự hóa, hãy kiểm tra dependency trong code; cấu hình tool_choice chỉ giảm khả năng model phát song song, không thay thế kiểm soát ở executor.`
 },
