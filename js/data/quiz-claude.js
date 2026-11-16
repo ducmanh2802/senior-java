@@ -1565,20 +1565,20 @@ Nguyên nhân hợp lý nhất?`,
 {
   id: 'qz-claude-091',
   topic: 'claude',
-  q: '[Model Selection] Opus 5.5 ở effort xhigh vẫn làm sai khoảng 10% bài phân tích rất khó. Quản lý muốn chuyển toàn bộ traffic sang Fable 5.1. Nhận định nào đúng nhất về chi phí và cách làm?',
+  q: '[Model Selection] Opus 5.5 ở effort xhigh vẫn làm sai khoảng 10% bài phân tích rất khó. Quản lý muốn chuyển toàn bộ traffic sang Fable 5.2. Nhận định nào đúng nhất về chi phí và cách làm?',
   options: [
-    'Fable 5.1 cùng giá với Opus 5.5 nên chuyển hết là hợp lý',
-    'Fable 5.1 rẻ hơn vì nhanh hơn',
-    'Fable 5.1 chỉ có context 200K nên không thể dùng cho bài dài',
-    'Fable 5.1 đắt khoảng 2,5 lần Opus 5.5 ($10/$50 so với $4/$20 mỗi MTok); chỉ route nhóm bài khó đã chứng minh có lợi bằng eval, phần còn lại giữ Opus'
+    'Fable 5.2 cùng giá với Opus 5.5 nên chuyển hết là hợp lý',
+    'Fable 5.2 rẻ hơn vì nhanh hơn',
+    'Fable 5.2 chỉ có context 200K nên không thể dùng cho bài dài',
+    'Fable 5.2 đắt gấp 2 lần Opus 5.5 ($8/$40 so với $4/$20 mỗi MTok); chỉ route nhóm bài khó đã chứng minh có lợi bằng eval, phần còn lại giữ Opus'
   ],
   answer: 3,
-  explain: `**Đúng: route có chọn lọc.** Fable 5.1 là model mạnh nhất cho suy luận rất khó và tác vụ agent dài, giá $10 input / $50 output mỗi MTok, gấp 2,5 lần Opus 5.5 ($4/$20), và thường chậm hơn. Chuyển cả traffic để sửa 10% bài khó là trả gấp 2,5 cho 90% bài vốn đã ổn. Cách đúng: xác định đặc điểm nhóm bài khó, chạy eval Fable trên nhóm đó, và chỉ route nhóm này sang Fable nếu cải thiện đo được.
+  explain: `**Đúng: route có chọn lọc.** Fable 5.2 là model mạnh nhất đang phát hành rộng rãi (kế nhiệm Fable 5.1, rẻ hơn 5.1), cho suy luận rất khó và tác vụ agent dài, giá $8 input / $40 output mỗi MTok, gấp 2 lần Opus 5.5 ($4/$20), và một lượt trên bài khó thường chạy lâu hơn. Chuyển cả traffic để sửa 10% bài khó là trả gấp đôi cho 90% bài vốn đã ổn. Cách đúng: xác định đặc điểm nhóm bài khó, chạy eval Fable trên nhóm đó, và chỉ route nhóm này sang Fable nếu cải thiện đo được.
 
 ### Vì sao các phương án khác sai
 - **Cùng giá:** sai, Fable đắt hơn đáng kể.
 - **Rẻ hơn vì nhanh:** Fable không phải model nhanh hay rẻ; giá tính theo token.
-- **Context 200K:** các model hiện hành, gồm Fable 5.1, có context 1M.`
+- **Context 200K:** các model hiện hành, gồm Fable 5.2, có context 1M.`
 },
 {
   id: 'qz-claude-092',
