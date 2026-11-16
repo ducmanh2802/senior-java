@@ -241,7 +241,7 @@ Trên hệ thống ví điện tử, một ngày đội dev phát hiện sổ c�
     'Một giao dịch chuyển tiền ít nhất ghi bao nhiêu dòng vào sổ cái?',
     'Nếu phát hiện ghi sai số tiền 3 ngày trôi qua, bạn sửa thế nào mà không mất lịch sử?'
   ],
-  tags: ['double-entry ledger', 'append-only', 'BigDecimal', 'accounting']
+  tags: ['core', 'double-entry ledger', 'append-only', 'BigDecimal', 'accounting']
 },
 {
   id: 'banking-004',
@@ -295,7 +295,7 @@ Ví dụ: NAPAS gửi callback "giao dịch G123 đã thành công, cộng 2 tri
 - Lưu key nhưng không kiểm tra trước khi xử lý -> vẫn bị trùng.
 - Callback không kiểm tra mã giao dịch, cộng tiền khi nhận lần thứ hai -> tài khoản nhận được thêm tiền.
 - Idempotency key hết hạn quá nhanh (ví dụ sau 1 phút) nhưng client retry sau 2 phút -> bị trùng lại.
-- Hai giao dịch khác nhau dùng cùng idempotency key -> giao dịch sau bị từ chối sai sai.
+- Hai giao dịch khác nhau dùng cùng idempotency key -> giao dịch sau bị từ chối sai.
 
 ### Ví dụ đời thực
 
@@ -315,7 +315,7 @@ Một khách gọi API chuyển 2 triệu VND với idempotency key "abc-123", r
     'Callback từ đối tác phải kiểm tra gì trước khi cập nhật số dư?',
     'Nếu idempotency key hết hạn nhưng client retry, xử lý thế nào?'
   ],
-  tags: ['idempotency', 'API chuyen tien', 'callback', 'doi tac']
+  tags: ['core', 'idempotency', 'API chuyen tien', 'callback', 'doi tac']
 },
 {
   id: 'banking-005',
@@ -385,7 +385,7 @@ Ngân hàng A gửi 100 giao dịch tổng cộng 500 triệu VND sang ngân hà
     'Giao dịch timeout là nguồn lệch thường nhất, xử lý thế nào?',
     'Điều chỉnh sổ cái cần phán duyệt thế nào để tránh gian lận?'
   ],
-  tags: ['doi soat', 'lech cuoi ngay', 'tra sot', 'NAPAS']
+  tags: ['core', 'doi soat', 'lech cuoi ngay', 'tra sot', 'NAPAS']
 },
 {
   id: 'banking-006',
@@ -1998,7 +1998,7 @@ PaymentService --> App: thanh cong, co tx_id de truy vet
     'Nếu chỉ được dùng bảng ledger append-only, bạn tính và cache số dư hiện tại ra sao mà vẫn đảm bảo đúng?',
     'Một bút toán điều chỉnh (adjustment/reversal) được ghi thế nào để không phá tính bất biến của sổ cái?'
   ],
-  tags: ['double-entry', 'ledger', 'race condition', 'balance', 'transaction']
+  tags: ['core', 'double-entry', 'ledger', 'race condition', 'balance', 'transaction']
 },
 {
   id: 'banking-024',
@@ -2082,7 +2082,7 @@ Kết quả: TX001 MATCH; TX002 lệch trạng thái -> inquiry/confirm rồi c�
     'Nếu file đối tác đến trễ 2 ngày hoặc bị gửi trùng, job đối soát cần xử lý thế nào để idempotent?',
     'Khi nào bạn tự động điều chỉnh trạng thái (auto-resolve) và khi nào bắt buộc người duyệt?'
   ],
-  tags: ['reconciliation', 'Napas', 'EOD', 'break', 'settlement']
+  tags: ['core', 'reconciliation', 'Napas', 'EOD', 'break', 'settlement']
 },
 {
   id: 'banking-025',
@@ -2177,7 +2177,7 @@ Một ngân hàng số xử lý chuyển khoản liên ngân hàng qua Napas. V�
     'Bạn thiết kế job tra soát định kỳ cho các giao dịch PENDING_UNKNOWN như thế nào (tần suất, backoff, giới hạn, leo thang thủ công)?',
     'Khi đối tác xác nhận FAILED nhưng bạn đã trừ tiền/hold, luồng đảo bút (reversal) cần đảm bảo những gì?'
   ],
-  tags: ['timeout', 'pending', 'tra soát', 'interbank', 'idempotency']
+  tags: ['core', 'timeout', 'pending', 'tra soát', 'interbank', 'idempotency']
 },
 {
   id: 'banking-026',
@@ -2690,7 +2690,7 @@ Acquirer --> Merchant: thành công, in hóa đơn
     'Tại sao available balance quan trọng hơn ledger balance khi cho phép chi tiêu?',
     'Nếu hold và capture cùng lúc, làm sao tránh chi tiêu hai lần?'
   ],
-  tags: ['available balance', 'ledger balance', 'hold', 'authorization']
+  tags: ['core', 'available balance', 'ledger balance', 'hold', 'authorization']
 },
 {
   id: 'banking-032',
@@ -2749,7 +2749,7 @@ Ví dụ số liệu: khách chuyển 5.000.000 VND, khóa K = "a1b2-c3d4". Mấ
     'Gateway cache hết hạn trước core xử lý xong, xử lý thế nào?',
     'Core banking dùng unique constraint ở cột nào?'
   ],
-  tags: ['idempotency', 'end-to-end', 'mobile', 'gateway', 'core banking']
+  tags: ['core', 'idempotency', 'end-to-end', 'mobile', 'gateway', 'core banking']
 },
 {
   id: 'banking-033',
@@ -2803,7 +2803,7 @@ Một ví đối soát thủ công bằng Excel với 3 ngân hàng đối tác:
     'Làm sao phân biệt lệch thật và lệch do parse sai?',
     'Ai có quyền duyệt điều chỉnh số dư?'
   ],
-  tags: ['reconciliation', 'file matching', 'discrepancy', 'maker-checker']
+  tags: ['core', 'reconciliation', 'file matching', 'discrepancy', 'maker-checker']
 },
 {
   id: 'banking-034',
@@ -2963,7 +2963,7 @@ Một ngân hàng số từng xử lý timeout bằng cách báo khách "giao d�
     'Transaction ID giúp tra soát thế nào?',
     'Giao dịch treo quá một tháng xử lý ra sao?'
   ],
-  tags: ['NAPAS', 'timeout', 'tra sot', 'doi soat']
+  tags: ['core', 'NAPAS', 'timeout', 'tra sot', 'doi soat']
 },
 {
   id: 'banking-037',
@@ -3019,7 +3019,7 @@ Một ngân hàng số chỉ chống trùng ở gateway bằng Redis TTL 5 phút
     'Nếu Redis (cache) lỗi, hệ thống tiền nên fail-closed hay fail-open?',
     'Làm sao xử lý request trùng key đang in-flight?'
   ],
-  tags: ['idempotency', 'end-to-end', 'TTL', 'fail-closed', 'lead']
+  tags: ['core', 'idempotency', 'end-to-end', 'TTL', 'fail-closed', 'lead']
 },
 {
   id: 'banking-038',
@@ -3153,10 +3153,10 @@ public void transfer(String from, String to, BigDecimal amount) {
 - Tinh so du bang SUM toan bo ledger moi lan doc -> cham khi bang lon, khong thoa man thuc thoi.
 - Dung double cho tien -> sai so lam tron, so du le mot dong.
 
-### Vi du doi thuc
+### Ví dụ đời thực
 Mot ngan hang xu ly 300.000 chuyen tien/ngay. Buoi chieu, he thong tre nhien nhieu giao dich loi deadlock. Dieu tra thay hai luong chuyen tien nguoc chieu (A->B va B->A) khong sap xep thu tu khoa tai khoan: G1 khoa A xong cho B, G2 khoa B xong cho A. Postgres huy mot giao dich, luong loi deadlock tang len 40 ca/ngay. Cach xu ly: sua code de luon khoa tai khoan co id nho hon truoc, them monitoring lock_wait. Ket qua: deadlock giam ve duoi 5 ca/ngay, giao dich chay lien lap trong gio cao diem.
 
-### Tra loi muon khi pham van
+### Trả lời mẫu khi phỏng vấn
 "Em thiet ke chuyen tien theo so cai kep: moi giao dich ghi hai but toan, No o tai khoan gui va Co o tai khoan nhan, tong No bang tong Co, chi INSERT chu khong sua dong cu. De tranh deadlock khi nhieu giao dich dung cung hai tai khoan, em luon khoa hai hang tai khoan theo thu tu ma tang dan (id nho truoc) trong mot giao dich DB, nen hai giao dich chuyen nguoc chieu khong bao gi cho vong tron. So du hien thi cho khach em lay tu bang so du snapshot, duoc cap nhat trong cung giao dich voi but toan ledger; hang ngay em doc soat tong bang snapshot voi tong ledger de phat hien sai som. Tat ca tien tien dung BigDecimal chu khong phai double."
 
 > Senior tip: Trong pham van, hinh dung so du la mot con so duoc phep (derived) tu so cai, khong nguyen nguyen. Nguyen nguyen la cac but toan khong bao nhi sua. Khi khoa nhieu tai khoan, luot dat quy tuc khoa theo thu tu id tang dan cho he thong toan bo, khong de moi nguoi tu quy et.
@@ -3167,7 +3167,7 @@ Mot ngan hang xu ly 300.000 chuyen tien/ngay. Buoi chieu, he thong tre nhien nhi
     'So du snapshot bi lech so voi ledger thi xu ly ra sao khong dung dung he thong?',
     'Mot but toan dieu chinh (reversal) khi ghi sai so tien duoc viet nhu the nao tren so cai append-only?'
   ],
-  tags: ['double-entry', 'ledger', 'deadlock', 'balance snapshot', 'transaction']
+  tags: ['core', 'double-entry', 'ledger', 'deadlock', 'balance snapshot', 'transaction']
 },
 {
   id: 'banking-040',
@@ -3223,10 +3223,10 @@ WHERE status = 'CHO_DOI_FILE' AND created_at < now() - interval '48 hours';
 - Hold khong co thoi gian het han -> tien khach bi khoa vinh vien.
 - Tu y hoan tien sau N phut timeout chua xac dinh -> co the hoan nham khi doi tac da xu ly thanh cong.
 
-### Vi du doi thuc
+### Ví dụ đời thực
 Mot van phong giao dich xu ly tien cho doanh nghiep. Mot ngay, 200 giao dich bi timeout vi he thong doi tac bi tre. Dev sai lam tu dong hoan tien cho het sau 30 phut, ket qua 15 giao dich thuc da thanh cong o doi tac, tien duoc hoan ve nguoi gui nhung nguoi nhan van du tien -> ngan hang mat 450 trieu, phai goi dien loi moi khach. Cach xu ly: dung hoan tu dong, chuyen sang trang thai cho, kiem file doi soat hom sau, chi hoan khi co xac nhan that bai hoac qua 7 ngay voi phe duyet nhan vien. Ket qua: thang sau khong con tru tien hai lam, khieu nai giam 90%.
 
-### Tra loi muon khi pham van
+### Trả lời mẫu khi phỏng vấn
 "Khi giao dich sang doi tac bi timeout, em khong coi do la that bai — chi la chua biet ket qua. Giao dich chuyen sang trang thai cho, tien nguoi gui duoc giu tam (hold), ung dung thong bao khach "dang xu ly" va khong cho gui lai lenh moi. Vi doi tac chi gui file doi soat hang ngay, khong co API hoi trang thai, he thong cho file hom sau: giao dich trong file va thanh cong thi ghi no chinh thuc, trong file va that bai thi hoan tien tam giu, khong co trong file thi chuyen cho nhan vien lien he doi tac. Moi giao dich chi hoan tien khi co xac nhan that bai hoac sau thoi gian TTL (vi du 7 ngay) ke phe duyet nhan vien. Ma tham chieu duy tien duoc luu de doc soat chinh xac khi file den."
 
 > Senior tip: Tham lam hoan tien ngay khi timeout la sai nghia trong thanh toan. Tien an toan hon trinh tu nhanh: thà ba khach cho it nhat co het hon hoan/ghi trung sai. Luon co mot gioi han thoi gian cho hold va mot nguoi chi tra khi hold qua han.
@@ -3237,7 +3237,7 @@ Mot van phong giao dich xu ly tien cho doanh nghiep. Mot ngay, 200 giao dich bi 
     'File doi tac gui tre 2 ngay, he thong xu ly giao dich cho nhu the nao?',
     'Nhan vien duoc phep hoan tien giao dich cho khi nao, can phan duyen khong?'
   ],
-  tags: ['timeout', 'hold', 'doi tac', 'file doi soat', 'tra sot']
+  tags: ['core', 'timeout', 'hold', 'doi tac', 'file doi soat', 'tra sot']
 },
 {
   id: 'banking-041',
@@ -3285,10 +3285,10 @@ CREATE TABLE suspense (
 - Khong quan ly thoi gian cua tien trong suspense -> tien o tai khoan suspense thang nam khong ai xu ly.
 - Dieu chinh khong qua nguoi duyet -> nhan vien co the sua so tien theo muon, nguy ro gian lan.
 
-### Vi du doi thuc
+### Ví dụ đời thực
 Mot ngan hang co 200 chi nhanh. Cuoi ngay, bo kiem toan thong bao so core va so GL lech 120.000.000 VND. Dieu tra thay mot giao dich chuyen 120 trieu giua hai chi nhanh ma nhan vien nhap sai ma tai khoan nhan, tien duoc dua vao tai khoan suspense ma khong ai kiem tra trong 3 ngay. Cach xu ly: sua ma tai khoan, tao but toan chuyen tien tu suspense ve tai khoan chinh, nhan vien kiem toan duyet, ghi lich su. Bo sung bo canh bao khi tien trong suspense qua 24 gio chua duoc giai quyet. Ket qua: lech cuoi ngay giam ve 0, tien trong suspense xu ly duoi 24 gio.
 
-### Tra loi muon khi pham van
+### Trả lời mẫu khi phỏng vấn
 "Core banking luu so du tung khach hang, con so cai ke toan (GL) luu tong hop theo tai khoan ke toan. Cuoi ngay em doc soat tong core voi tong GL; neu khac, em xem xet tung giao dich de tim khoan chua khop. Tien chua ro so ke toan nao duoc dat vao tai khoan suspense (tai khoan cho doi soat) thay de de so sai lorspr. Moi khoan chua khop duoc dieu chinh bang but toan moi (append-only), khong sua dong cu, va phai co nguoi khac duyet (maker-checker) truoc khi ghi so. Em cung theo doi tai khoan suspense de tien khong bi treo ma."
 
 > Senior tip: Trong pham van, hinh thanh toan "so cua chung ta phai bang so cua ke toan" la cau chot. Nhat dinh phai xem xet tung giao dich khong chi so tong, vi tong khop van co the che duoc sai lech buo tro nhau. Co loi hay gap la chua quan ly thoi gian cua tien trong tai khoan suspense.
@@ -3299,7 +3299,7 @@ Mot ngan hang co 200 chi nhanh. Cuoi ngay, bo kiem toan thong bao so core va so 
     'Tai khoan suspense dung cho truong hop nao, va tien trong suspense qua han xu ly ra sao?',
     'Dieu chinh so cai sau doi soat phai co nguoi duyet khong, tai sao?'
   ],
-  tags: ['doi soat', 'core banking', 'GL', 'suspense', 'maker-checker']
+  tags: ['core', 'doi soat', 'core banking', 'GL', 'suspense', 'maker-checker']
 },
 {
   id: 'banking-042',
@@ -4319,7 +4319,7 @@ Một ví điện tử có 5 triệu giao dịch/ngày. Hệ thống cũ chỉ E
     'Intraday reconciliation và EOD reconciliation có thể chạy song song không? Nếu có thì xử lý xung đột thế nào?',
     'Nếu Kafka consumer lag quá cao (ví dụ 10 phút), bạn xử lý thế nào để không mất giao dịch?'
   ],
-  tags: ['intraday reconciliation', 'real-time', 'kafka', 'redis', 'monitoring', 'alert']
+  tags: ['core', 'intraday reconciliation', 'real-time', 'kafka', 'redis', 'monitoring', 'alert']
 },
 {
   id: 'banking-053',
