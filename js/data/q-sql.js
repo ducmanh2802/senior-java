@@ -5588,17 +5588,17 @@ ORDER BY f.user_id, f.session_id;
 
 ### Lỗi hay gặp
 1. **Dùng RANGE cho FIRST_VALUE/LAST_VALUE khi timestamp có thể trùng**. Triệu chứng: kết quả funnel không ổn định, đôi khi chuyển đổi ra 0 dù session có add_to_cart. Cách tránh: luôn ghi rõ {{ROWS}}.
-2. **Quên xử lý NULL từ LAG dòng đầu**. Triệu chứng: gap = NULL, new_session_flag = 1 (vì NULL > 30 phút là UNKNOWN, CASE WHEN NULL THEN 1 ELSE 0 END ra 0? – thực ra NULL so sánh ra UNKNOWN, CASE WHEN UNKNOWN THEN ... nhảy nhánh ELSE). Cách tránh: {{CASE WHEN prev_ts IS NULL OR gap > '30 min' THEN 1 ELSE 0 END}}.
+2. **Quên xử lý NULL ở dòng đầu mỗi user**. Với dòng đầu, {{prev_ts = NULL}} nên {{gap = NULL}}; so sánh {{NULL > INTERVAL '30 minutes'}} cho {{UNKNOWN}}, và {{CASE WHEN UNKNOWN THEN 1 ELSE 0 END}} rơi vào nhánh ELSE bằng 0. Khi đó {{session_id}} của session đầu tiên là 0 thay vì 1 — không sai về mặt gom nhóm, nhưng dễ gây hiểu nhầm khi ghép với bảng khác (id 0 trông như "chưa gán"). Cách tránh: viết rõ {{CASE WHEN prev_ts IS NULL OR gap > INTERVAL '30 minutes' THEN 1 ELSE 0 END}}.
 3. **Session gap threshold hard-code**. Triệu chứng: đổi quy tắc từ 30p sang 15p phải sửa code SQL. Cách tránh: dùng parameter hoặc config table.
 4. **FIRST_VALUE không có frame clause**. Triệu chứng: frame mặc định là {{RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}} ⇒ FIRST_VALUE chỉ nhìn từ đầu đến dòng hiện tại, không thấy add_to_cart ở dòng sau. Cách tránh: luôn ghi frame toàn partition.
 
 ### Ví dụ đời thực
-Triệu chứng: hệ thống e-commerce (PostgreSQL 15, bảng {{events}} 2,4 tỷ dòng/tháng) dùng query funnel để báo cáo chuyển đổi "view → add_to_cart → purchase" theo session 30 phút. Sau khi thêm tính năng "quick view" (popup xem chi tiết không load trang mới), team data thấy tỷ lệ add_to_cart báo cáo giảm từ 18% xuống 12% dù business metric thực tế không đổi. Điều tra: query funnel dùng {{FIRST_VALUE(...) OVER (PARTITION BY user_id, session_id ORDER BY event_ts RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)}}. "quick view" sinh event {{view_quick}} cùng timestamp với {{view_product}} (cùng {{event_ts}} do client gửi batch). Với RANGE, cả hai là peer rows, FIRST_VALUE có thể lấy {{view_quick}} (flag = 0) thay vì {{view_product}} (flag = 0) – nhưng quan trọng hơn là {{add_to_cart}} ở dòng sau cũng là peer nếu cùng giây ⇒ FIRST_VALUE thấy flag 0. Nguyên nhân gốc: dùng RANGE frame cho FIRST_VALUE khi timestamp có thể trùng. Cách xử lý: đổi sang {{ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING}}, thêm {{event_seq}} (sequence number client) vào ORDER BY để tie-break. Kết quả: tỷ lệ funnel khớp lại 18%, query p95 không đổi.
+Triệu chứng: hệ thống e-commerce (PostgreSQL 15, bảng {{events}} 2,4 tỷ dòng mỗi tháng) dùng query funnel để báo cáo chuyển đổi "view → add_to_cart → purchase" theo session 30 phút. Sau khi thêm tính năng "quick view" (popup xem chi tiết không load trang mới), team data thấy tỷ lệ add_to_cart báo cáo dao động 12–18% giữa các lần chạy dù business metric thực tế không đổi. Điều tra: query funnel dùng {{FIRST_VALUE(...) OVER (PARTITION BY user_id, session_id ORDER BY event_ts RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)}}. Client gửi event theo batch nên {{view_product}} và {{add_to_cart}} có thể cùng một {{event_ts}}; với RANGE, các dòng cùng timestamp là peer rows, và FIRST_VALUE có thể trả về dòng {{view_product}} (flag = 0) hoặc {{add_to_cart}} (flag = 1) tuỳ thứ tự vật lý ⇒ kết quả không xác định. Nguyên nhân gốc: dùng RANGE cho FIRST_VALUE khi timestamp có thể trùng. Cách xử lý: đổi sang {{ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING}}, thêm {{event_seq}} (sequence number client) vào ORDER BY để tie-break. Kết quả: tỷ lệ funnel ổn định ở 18%, query p95 không đổi.
 
 ### Trả lời mẫu khi phỏng vấn
 "Để phân tích funnel theo session, tôi dùng LAG lấy timestamp sự kiện trước, tính gap, nếu gap > 30 phút thì đánh dấu session mới bằng running SUM. Trong mỗi session, tôi dùng FIRST_VALUE trên cột flag 'có add_to_cart không' với frame ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING để biết session đó có chuyển đổi không. Tôi chọn ROWS thay vì RANGE vì RANGE gom peer rows (cùng timestamp), khiến FIRST_VALUE không xác định khi có sự kiện cùng giây – một bug thực tế tôi từng gặp khi client gửi batch event. Về hiệu năng, index (user_id, event_ts) là bắt buộc để tránh sort lớn."
 
-### Senior tip
+> Senior tip:
 Khi phỏng vấn, hãy vẽ sơ đồ: "Event A (10:00) → Event B (10:05) → Gap 40p → Event C (10:45)". Giải thích: "LAG cho gap, SUM flag cho session_id, FIRST_VALUE cho funnel". Nêu rõ: "Tôi luôn dùng ROWS frame, không bao giờ RANGE cho FIRST_VALUE/LAST_VALUE, vì timestamp trùng là bug yên lặng". Đó là dấu hiệu bạn đã debug production thực sự.
 
 `,
@@ -5613,8 +5613,85 @@ Khi phỏng vấn, hãy vẽ sơ đồ: "Event A (10:00) → Event B (10:05) →
   topic: 'sql',
   level: 'senior',
   q: 'Giải thích CTE (WITH) trong PostgreSQL: nó là "optimization fence" (rào cản tối ưu) như thế nào? Khi nào CTE tốt hơn subquery, khi nào lại tệ hơn? Viết recursive CTE duyệt đồ thị có hướng (không phải cây) để tìm tất cả đường đi từ node A đến node B, phòng vòng lặp bằng path array.',
-  a: `**Tóm tắt:** PostgreSQL 11 trở về trước **luôn materialize** CTE (chạy CTE thành bảng tạm riêng, không merge vào query ngoài) ⇒ CTE là "optimization fence": optimizer không push predicate vào CTE, không reorder join giữa CTE và query cha. PostgreSQL 12+ **inline** CTE nếu CTE không có side-effect (không VOLATILE function, không recursive, không DISTINCT/GROUP BY/LIMIT/OFFSET, không window function) ⇒ CTE trong 12+ thường **không** còn là fence. Recursive CTE **luôn** materialize. Subquery trong FROM thường được inline sớm hơn CTE. **Khi nào CTE tốt**: chia query phức tạp thành bước dễ đọc, tái sử dụng kết quả trung gian nhiều lần (materialize một lần dùng nhiều lần), đệ quy. **Khi nào CTE tệ**: CTE lớn không được filter sớm, optimizer không push predicate xuống ⇒ quét toàn bộ dữ liệu trung gian. Recursive CTE cho đồ thị có hướng: anchor chọn node xuất phát A, recursive term join edges table {{ON edges.from_node = cte.to_node}}, dùng path array {{ARRAY[...]}} để detect cycle ({{next_node <> ALL(path)}}) và tránh lặp vô hạn, dừng khi đến node B hoặc path quá dài.
-  `,
+  a: `**Tóm tắt:** Trong PostgreSQL, CTE (WITH) là một câu SELECT con có tên. Từ phiên bản 12, nếu CTE không đệ quy, không có side-effect và chỉ được tham chiếu **một lần**, planner **inline** nó vào truy vấn ngoài; ngược lại nó được **materialize** (chạy thành bảng tạm riêng). "Optimization fence" (rào cản tối ưu) là chuyện của PostgreSQL 11 trở về trước: khi đó mọi CTE đều materialize, predicate từ truy vấn cha không thể đẩy vào trong. Recursive CTE thì luôn materialize. Với đồ thị có hướng, dùng recursive CTE cộng mảng {{path}} để loại vòng lặp.
+
+### CTE thực chất là gì
+Hãy hình dung CTE như một "biến tạm" trong SQL: bạn đặt tên cho một câu SELECT rồi dùng lại tên đó ở câu chính. Nó giúp câu lệnh dài chia thành các bước có tên, dễ đọc và dễ kiểm thử. Ví dụ:
+
+~~~sql
+WITH active_users AS (
+    SELECT id FROM users WHERE deleted_at IS NULL
+)
+SELECT count(*) FROM active_users WHERE created_at > '2026-01-01';
+~~~
+
+Điểm quan trọng: CTE không phải là biến được tính sẵn như biến trong lập trình. Việc nó được tính một lần rồi dùng lại hay được "trộn" vào truy vấn cha là do planner quyết định — và đó là lý do có khái niệm fence.
+
+### Materialize và inline là gì
+- **Materialize** (chất liệu hoá): PostgreSQL chạy CTE thành một bảng tạm riêng, ghi kết quả ra, rồi truy vấn cha đọc từ bảng tạm đó. Ưu điểm: tính một lần dùng nhiều lần; nhược điểm: planner không thấy bên trong nên không tối ưu xuyên qua được.
+- **Inline** (nội tuyến): planner thay tham chiếu CTE bằng chính câu SELECT con, rồi tối ưu cả cây. Ưu điểm: predicate và join được đẩy xuống, chỉ đọc đúng phần cần; nhược điểm: nếu CTE được dùng nhiều lần thì câu con bị chạy lặp lại.
+
+### Khi nào PostgreSQL 12+ inline
+Một CTE được inline khi **cả ba** điều kiện sau đúng:
+1. Không phải CTE đệ quy (không {{WITH RECURSIVE}}).
+2. Không có side-effect: không gọi hàm {{VOLATILE}} (ví dụ {{random()}}, {{nextval()}}), không có {{INSERT/UPDATE/DELETE}} trong data-modifying CTE.
+3. Được tham chiếu **đúng một lần**.
+
+Nếu CTE được tham chiếu từ hai chỗ trở lên, PostgreSQL materialize để không phải chạy lại. Bạn có thể ghi đè bằng từ khoá {{MATERIALIZED}} (ép materialize) hoặc {{NOT MATERIALIZED}} (ép inline):
+
+~~~sql
+WITH exp AS MATERIALIZED (
+    SELECT * FROM orders WHERE total > 1000
+)
+SELECT * FROM exp;
+~~~
+
+Lưu ý: các mệnh đề như {{DISTINCT}}, {{GROUP BY}}, {{LIMIT}} hay window function **không** tự động chặn inline; quy tắc thật là ba điều kiện ở trên. Khi nghi ngờ, hãy đọc {{EXPLAIN (ANALYZE, BUFFERS)}} để biết CTE có bị scan nhiều lần hay không.
+
+### Khi nào CTE tốt, khi nào tệ hơn subquery
+- **CTE tốt hơn**: khi bạn cần chia bài toán lớn thành các bước có tên (báo cáo nhiều tầng), khi CTE được dùng lại nhiều lần (materialize một lần), hoặc khi cần đệ quy.
+- **CTE tệ hơn**: khi CTE trả về rất nhiều dòng nhưng truy vấn cha chỉ cần vài dòng, và planner không đẩy được filter xuống vì đã materialize. Khi đó nó quét toàn bộ kết quả trung gian rồi mới lọc.
+- **Subquery trong FROM (derived table)**: thường được planner "pull up" (gộp) vào truy vấn ngoài nếu không có {{LIMIT}}/{{OFFSET}}, {{DISTINCT}}, {{GROUP BY}}, aggregate hay window function. Nếu có các mệnh đề đó, nó cũng bị materialize như một bước trung gian.
+
+Vì vậy lựa chọn thực dụng: viết CTE cho dễ đọc trước, đọc {{EXPLAIN}}; nếu thấy một nhánh quét thừa, thử {{NOT MATERIALIZED}} hoặc chuyển sang subquery có predicate đẩy xuống.
+
+### Recursive CTE duyệt đồ thị có hướng
+Bảng cạnh: {{edges(from_node, to_node)}}. Mục tiêu: liệt kê mọi đường đi từ {{A}} đến {{B}}, không lặp vô hạn trong đồ thị có vòng.
+
+~~~sql
+WITH RECURSIVE paths AS (
+    -- neo (anchor): bắt đầu từ A, đường đi hiện có [A]
+    SELECT ARRAY['A']::text[] AS path,
+           'A'::text AS node
+  UNION ALL
+    -- đệ quy: nối thêm một cạnh, loại nếu node đã có trong path
+    SELECT p.path || e.to_node,
+           e.to_node
+    FROM paths p
+    JOIN edges e ON e.from_node = p.node
+    WHERE NOT (e.to_node = ANY (p.path))
+      AND array_length(p.path, 1) < 10   -- chặn đường quá dài
+)
+SELECT path
+FROM paths
+WHERE node = 'B';
+~~~
+
+Cách đọc:
+- {{ARRAY['A']}} là mảng khởi tạo chứa node xuất phát.
+- {{p.path || e.to_node}} nối thêm node mới vào cuối mảng.
+- {{NOT (e.to_node = ANY (p.path))}} kiểm tra node đích đã xuất hiện trong đường đi chưa; nếu có thì bỏ qua để không tạo vòng.
+- {{array_length(p.path, 1) < 10}} là chốt an toàn thứ hai, tránh đệ quy vô hạn nếu đồ thị có lỗi dữ liệu hoặc quá sâu.
+
+Điểm yếu: recursive CTE kiểu này duyệt **mọi** đường đi, nên với đồ thị nhiều cạnh nó có thể bùng nổ theo hàm mũ. Nếu chỉ cần đường đi ngắn nhất, thêm cột {{depth}} rồi {{ORDER BY depth}} {{LIMIT 1}}, hoặc dùng BFS/Dijkstra ở tầng ứng dụng, hoặc một graph database.
+
+### Ví dụ đời thực
+Một hệ thống quản lý cấu hình có bảng {{service_dep(service_id, depends_on)}} 40.000 cạnh, dùng để trả lời "nếu restart service X thì những service nào bị ảnh hưởng". Câu đầu viết bằng recursive CTE nhưng thiếu điều kiện {{NOT (e.to_node = ANY (p.path))}}; khi đồ thị có một chu trình {{A → B → A}}, query chạy 3 phút, chiếm 90% CPU database và trả về hàng triệu dòng trùng. Sau khi thêm mảng path và giới hạn độ sâu 10, query còn 180 ms, kết quả khớp với sơ đồ phụ thuộc. Bài học: recursive CTE bắt buộc phải có cơ chế chống lặp khi đồ thị không phải cây.
+
+### Trả lời mẫu khi phỏng vấn
+"CTE là câu SELECT con có tên. Từ PostgreSQL 12, planner inline CTE nếu nó không đệ quy, không có side-effect và chỉ được tham chiếu một lần; nếu tham chiếu nhiều lần thì materialize để không chạy lại. Vì vậy optimization fence — việc predicate không đẩy được vào trong — là đặc tính của bản 11 trở về trước, khi mọi CTE đều materialize. Tôi viết CTE để chia nhỏ và đặt tên cho các bước, nhưng luôn kiểm tra EXPLAIN: nếu planner materialize một CTE lớn rồi mới lọc, tôi thử NOT MATERIALIZED hoặc chuyển sang subquery để đẩy predicate xuống. Với đồ thị có hướng, tôi dùng recursive CTE với mảng path để loại vòng lặp, thêm giới hạn độ sâu, và nhớ rằng nó duyệt mọi đường đi nên có thể bùng nổ; nếu cần đường ngắn nhất thì dùng BFS hoặc graph database."
+
+> Senior tip: đừng nhớ "CTE luôn materialize" như một chân lý. Hãy nhớ điều kiện inline của PostgreSQL 12+ và luôn xác nhận bằng EXPLAIN; một chữ MATERIALIZED hay NOT MATERIALIZED đúng chỗ có thể đổi thời gian chạy từ vài giây xuống vài chục ms.`,
   follow: [
     'PostgreSQL 12+ inline CTE khi nào, và làm sao để ép buộc materialize (hint)?',
     'Recursive CTE tìm "đường đi ngắn nhất" (shortest path) giữa hai node: tại sao CTE đệ quy thông thường không tối ưu, và giải pháp thực tế là gì?'
@@ -5626,8 +5703,78 @@ Khi phỏng vấn, hãy vẽ sơ đồ: "Event A (10:00) → Event B (10:05) →
   topic: 'sql',
   level: 'lead',
   q: 'Hệ thống tài chính cập nhật số dư nhiều tài khoản trong một transaction. Giải thích deadlock xảy ra ra sao (wait-for graph), và triển khai 3 lớp phòng thủ: (1) DB: khóa hàng theo thứ tự cố định (ORDER BY id) + SELECT FOR UPDATE SKIP LOCKED/NOWAIT, (2) Application: retry với exponential backoff + jitter, (3) Schema: advisory lock cho logic nghiệp vụ phức tạp. Code Java minh hoạ retry pattern.',
-  a: `**Tóm tắt:** Deadlock = chu trình chờ khóa (wait-for cycle) trong wait-for graph: T1 giữ khóa hàng A chờ khóa B, T2 giữ B chờ A. PostgreSQL detect bằng deadlock detector (chạy mỗi {{deadlock_timeout}}, mặc định 1s) và abort victim (thường là transaction tốn ít công việc hơn). **Phòng thủ 3 lớp**: (1) **DB level**: mọi UPDATE/DELETE/SELECT FOR UPDATE **luôn** ORDER BY khóa chính (id) nhất quán trong toàn ứng dụng ⇒ tránh cycle; dùng {{FOR UPDATE SKIP LOCKED}} (bỏ qua hàng đang bị khóa, không chờ) cho job worker xử lý batch, {{FOR UPDATE NOWAIT}} (trả lỗi {{55P03}} ngay lập tức) cho API real-time cần phản hồi nhanh; (2) **Application level**: bắt {{SQLState 40P01}} (deadlock_detected) hoặc {{55P03}} (lock_not_available từ NOWAIT/SKIP LOCKED), retry với exponential backoff (base 50ms, max 2s, multiplier 2) + jitter ±25% để tránh thundering herd; log retry count để alert; (3) **Schema level**: {{pg_advisory_xact_lock(hash(key))}} khoá logic ở mức ứng dụng (ví dụ khoá theo user_id khi chuyển tiền giữa 2 tài khoản), không chạm row lock, tự giải phóng khi transaction kết thúc. **Java retry pattern**: wrapper method nhận {{Callable}}, try-catch {{SQLException}}, kiểm tra {{sql.getSQLState()}}, sleep với {{ThreadLocalRandom}} jitter, retry tối đa 3 lần.
-  `,
+  a: `**Tóm tắt:** Deadlock là tình huống hai (hoặc nhiều) transaction mỗi bên giữ một khóa mà bên kia cần, tạo thành một vòng chờ (wait-for cycle). PostgreSQL phát hiện vòng này và hủy một transaction làm victim với lỗi {{40P01}} (deadlock_detected); ứng dụng phải retry. Phòng thủ gồm ba lớp: (1) database — luôn lấy khóa theo cùng một thứ tự, dùng {{NOWAIT}}/{{SKIP LOCKED}} khi hợp lý; (2) ứng dụng — retry có backoff cộng jitter, đặt **ngoài** transaction; (3) nghiệp vụ — advisory lock cho các bất biến phức tạp không biểu diễn được bằng unique constraint.
+
+### Deadlock và wait-for graph
+Hãy tưởng tượng hai người cùng đi qua một hành lang hẹp, mỗi người đứng ở một đầu và không chịu lùi. Transaction A giữ khóa hàng 1, chờ khóa hàng 2; transaction B giữ khóa hàng 2, chờ khóa hàng 1. Không ai nhả, không ai đi tiếp được. Vẽ thành đồ thị chờ (wait-for graph), mỗi mũi tên là "đang chờ ai", ta có một chu trình: A → B → A. Đó chính là deadlock.
+
+~~~text
+T1: giữ lock(A), muốn lock(B)
+T2: giữ lock(B), muốn lock(A)
+Wait-for: T1 → T2 → T1  (vòng kín)
+~~~
+
+### PostgreSQL phát hiện thế nào
+PostgreSQL không chờ vô hạn. Mỗi khi một transaction phải chờ khóa quá {{deadlock_timeout}} (mặc định 1 giây), nó chạy bộ phát hiện deadlock: kiểm tra đồ thị chờ; nếu có chu trình, chọn một transaction làm victim và hủy nó. Victim nhận {{ERROR: deadlock detected}}, SQLSTATE {{40P01}}. Transaction bị hủy được rollback toàn bộ, mọi khóa của nó được nhả, nhờ đó vòng chờ bị phá vỡ và transaction còn lại chạy tiếp.
+
+Lưu ý: victim thường là transaction vừa gửi yêu cầu khóa làm khép kín chu trình, không có gì đảm bảo đó là transaction "ít việc hơn". Vì vậy đừng dựa vào việc "transaction của tôi nhỏ nên không bị hủy".
+
+### Lớp 1 — database: thứ tự khóa nhất quán
+Cách rẻ nhất để không tạo vòng là **không bao giờ** lấy nhiều khóa theo thứ tự khác nhau. Nếu mọi transaction đều khóa theo {{ORDER BY id}} (hoặc theo một thứ tự toàn cục cố định), vòng chờ không thể hình thành.
+
+~~~sql
+-- Luôn sắp xếp theo id trước khi khóa
+SELECT id, qty FROM stock
+WHERE sku = ANY (ARRAY['A','B','C'])
+ORDER BY id
+FOR UPDATE;
+~~~
+
+Hai biến thể hữu ích:
+- {{FOR UPDATE NOWAIT}}: nếu không lấy được khóa ngay, trả lỗi {{55P03}} (lock_not_available) thay vì chờ. Dùng cho API cần phản hồi nhanh.
+- {{FOR UPDATE SKIP LOCKED}}: bỏ qua dòng đang bị khóa, lấy dòng khác. Dùng cho worker queue nhiều consumer.
+
+### Lớp 2 — ứng dụng: retry đúng chỗ
+Retry phải nằm **ngoài** transaction. Khi 40P01 xảy ra, transaction đã bị rollback; nếu bạn catch rồi retry bên trong {{@Transactional}}, các câu sau nhận {{25P02}} (current transaction is aborted). Mỗi lần thử phải là một transaction mới.
+
+~~~java
+// Bắt đúng lỗi tạm thời; KHÔNG bắt mọi Exception rồi retry.
+static void retry(Runnable tx, int maxAttempts) {
+    for (int attempt = 1; ; attempt++) {
+        try {
+            tx.run();
+            return;
+        } catch (RuntimeException e) {
+            boolean retryable = e instanceof org.springframework.dao.CannotAcquireLockException
+                    || e instanceof org.springframework.dao.CannotSerializeTransactionException;
+            if (!retryable || attempt >= maxAttempts) throw e;
+            long base = 50L * (1L << (attempt - 1));          // 50, 100, 200 ms
+            long jitter = ThreadLocalRandom.current().nextLong(0, base / 2 + 1);
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(base + jitter));
+        }
+    }
+}
+~~~
+
+Nếu dùng JDBC thuần, kiểm tra {{SQLException.getSQLState()}}: {{40P01}} là deadlock, {{55P03}} là không lấy được khóa. Backoff lũy tiến cộng jitter giúp tránh "thundering herd" (mọi client thử lại cùng lúc).
+
+### Lớp 3 — advisory lock cho logic nghiệp vụ
+Khi bất biến không thể biểu diễn bằng unique constraint (ví dụ "mỗi khách chỉ một giao dịch đang mở"), có thể dùng advisory lock theo khóa nghiệp vụ:
+
+~~~sql
+SELECT pg_try_advisory_xact_lock(hashtext('user:' || 42));
+-- false: instance khác đang xử lý user này -> bỏ qua
+~~~
+
+{{pg_advisory_xact_lock}} tự nhả khi COMMIT/ROLLBACK, không lo rò rỉ. Nhược điểm: phải chọn khóa đủ mịn để không chặn oan, và vẫn phải giữ thứ tự lấy khóa nhất quán, nếu không advisory lock cũng deadlock được.
+
+### Ví dụ đời thực
+Một hệ thống chuyển tiền giữa hai tài khoản. Transaction A chuyển từ T1 sang T2, transaction B chuyển từ T2 sang T1, mỗi transaction chạy {{SELECT ... FOR UPDATE}} hai dòng theo thứ tự khác nhau. Hai bên khóa chéo, PostgreSQL hủy một bên với 40P01, tỷ lệ 0,8% giao dịch lỗi. Sửa bằng cách chuẩn hoá thứ tự: luôn {{ORDER BY account_id}} trước khi {{FOR UPDATE}}; thêm retry 3 lần với jitter ở tầng service. Sau một tuần, lỗi 40P01 về 0,02%, p99 giảm 40 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Deadlock là vòng chờ khóa giữa các transaction. PostgreSQL phát hiện bằng wait-for graph và hủy một victim với 40P01, nên ứng dụng phải retry. Tôi phòng thủ ba lớp: thứ nhất, database luôn lấy khóa theo cùng một thứ tự, ví dụ ORDER BY id, để vòng chờ không hình thành; khi cần phản hồi nhanh tôi dùng NOWAIT, khi cần bỏ qua dòng đang khóa thì SKIP LOCKED. Thứ hai, ứng dụng retry có backoff lũy tiến và jitter, đặt ngoài transaction vì mỗi lần thử phải là một transaction mới. Thứ ba, với bất biến phức tạp tôi dùng advisory lock theo khóa nghiệp vụ, nhưng vẫn giữ thứ tự lấy khóa nhất quán. Tôi theo dõi tỷ lệ 40P01 và số lần retry để biết hệ thống đang retry mù hay có kiểm soát."
+
+> Senior tip: retry chỉ là băng gạc. Nếu tỷ lệ 40P01 tăng, hãy tìm thứ tự khóa bị vi phạm trước khi tăng số lần retry; retry nhiều chỉ làm database quá tải nhanh hơn.`,
   follow: [
     'Vì sao ORDER BY id trong SELECT FOR UPDATE không đủ nếu transaction còn UPDATE bảng khác theo thứ tự khác?',
     'FOR UPDATE SKIP LOCKED vs NOWAIT: khi nào dùng cái nào, và rủi ro của SKIP LOCKED là gì?'
@@ -5639,8 +5786,58 @@ Khi phỏng vấn, hãy vẽ sơ đồ: "Event A (10:00) → Event B (10:05) →
   topic: 'sql',
   level: 'senior',
   q: 'Thiết kế soft delete cho bảng orders(id, user_id, status, deleted_at): unique constraint trên (user_id, order_code) chỉ áp dụng cho bản ghi **chưa xoá** (deleted_at IS NULL). PostgreSQL dùng partial unique index. MySQL không có partial index → cách thay thế. Query performance: index partial giúp SELECT WHERE deleted_at IS NULL nhanh hơn, nhưng JOIN cần chú ý. Migration từ hard delete sang soft delete an toàn như thế nào?',
-  a: `**Tóm tắt:** Soft delete = thêm cột {{deleted_at TIMESTAMPTZ DEFAULT NULL}}, xoá = {{UPDATE ... SET deleted_at = NOW()}}. **Partial unique index (PostgreSQL)**: {{CREATE UNIQUE INDEX uk_orders_user_code_active ON orders (user_id, order_code) WHERE deleted_at IS NULL;}} – chỉ enforce unique trên bản ghi active, cho phép nhiều bản ghi xoá trùng (user_id, order_code). **MySQL**: không có partial index → dùng generated column {{active_code}} = {{CASE WHEN deleted_at IS NULL THEN order_code ELSE NULL END}}, unique index trên {{(user_id, active_code)}} (MySQL cho phép nhiều NULL trong unique index). **Performance**: partial index nhỏ hơn, SELECT {{WHERE deleted_at IS NULL}} dùng index tốt; nhưng JOIN bảng khác trên orders phải thêm {{AND o.deleted_at IS NULL}} vào ON clause, nếu không planner không dùng được partial index. **Migration**: thêm cột deleted_at DEFAULT NULL, backfill NULL cho dữ liệu cũ, tạo partial index CONCURRENTLY, đổi code SELECT thêm {{WHERE deleted_at IS NULL}}, đổi DELETE thành UPDATE, thêm CHECK constraint {{CHECK (deleted_at IS NULL OR status IN ('CANCELLED','REFUNDED'))}}.
-  `,
+  a: `**Tóm tắt:** Soft delete là "đánh dấu đã xoá" thay vì xoá thật: thêm cột {{deleted_at}}, khi xoá chỉ {{UPDATE ... SET deleted_at = now()}}. Vấn đề khó nhất là unique constraint: {{UNIQUE (user_id, order_code)}} sẽ không cho tạo lại mã đã xoá. PostgreSQL giải quyết bằng **partial unique index** với {{WHERE deleted_at IS NULL}}. MySQL không có partial index nên dùng **generated column** trả về NULL khi đã xoá, kết hợp unique index (MySQL cho phép nhiều NULL). Khi JOIN phải nhớ predicate {{deleted_at IS NULL}} để planner dùng được index.
+
+### Vì sao cần soft delete
+Xoá thật thì mất dữ liệu: không thể khôi phục, không truy vết, và các bảng khác tham chiếu tới sẽ bị ảnh hưởng. Soft delete giữ lại bản ghi để audit, cho phép hoàn tác, và tránh phải xử lý khóa ngoại phức tạp. Cái giá là mọi truy vấn phải nhớ lọc bản ghi đã xoá, nếu không người dùng sẽ thấy đơn "ma".
+
+### Partial unique index trong PostgreSQL
+Partial index (index một phần) chỉ đánh index trên những dòng thỏa một điều kiện:
+
+~~~sql
+CREATE UNIQUE INDEX uk_orders_user_code_active
+    ON orders (user_id, order_code)
+    WHERE deleted_at IS NULL;
+~~~
+
+Ý nghĩa: chỉ những đơn **đang active** mới phải là duy nhất theo (user_id, order_code). Các đơn đã xoá không nằm trong index, nên có thể tạo lại mã {{HD-001}} nhiều lần — mỗi lần là một bản ghi đã xoá khác nhau. Đây là cách gọn nhất, không cần cột phụ.
+
+Nếu muốn enforce unique kể cả bản ghi đã xoá thì dùng unique thường; nhưng thường nghiệp vụ không yêu cầu điều đó.
+
+### MySQL: không có partial index
+MySQL (InnoDB) không hỗ trợ index có điều kiện. Cách thay thế là thêm một cột generated (sinh tự động) chỉ chứa mã khi còn active:
+
+~~~sql
+ALTER TABLE orders
+    ADD COLUMN active_code VARCHAR(64)
+        GENERATED ALWAYS AS (
+            CASE WHEN deleted_at IS NULL THEN order_code END
+        ) STORED,
+    ADD UNIQUE KEY uk_orders_user_code_active (user_id, active_code);
+~~~
+
+Vì MySQL unique index cho phép **nhiều giá trị NULL**, mọi bản ghi đã xoá có {{active_code = NULL}} và không đụng nhau. Cột {{STORED}} được lưu thật; {{VIRTUAL}} cũng tạo được index unique nhưng {{STORED}} dễ dự đoán hơn về hiệu năng.
+
+### Hiệu năng: partial index và JOIN
+Partial index nhỏ hơn index thường vì chỉ chứa dòng active — với bảng có nhiều đơn đã đóng, đây là khác biệt lớn về dung lượng và tốc độ. Nhưng có một cái bẫy: planner chỉ dùng partial index khi nó **chứng minh được** điều kiện {{deleted_at IS NULL}} đúng cho dòng đang xét. Vì vậy:
+- Câu SELECT phải có {{WHERE deleted_at IS NULL}} (hoặc điều kiện tương đương suy ra được).
+- Câu JOIN phải đặt điều kiện trong {{ON}} hoặc {{WHERE}} một cách tường minh, ví dụ {{JOIN orders o ON o.id = i.order_id AND o.deleted_at IS NULL}}. Nếu bạn lọc {{deleted_at}} ở tầng ứng dụng sau khi join, index partial sẽ không được dùng.
+
+### Migration từ hard delete sang soft delete
+1. Thêm cột {{deleted_at TIMESTAMPTZ NULL}}. Trong PostgreSQL 11+, thêm cột với NULL (không default) là thao tác metadata, gần như tức thì; tránh {{DEFAULT now()}} vì sẽ viết lại toàn bảng.
+2. Backfill: bản ghi đang "đã xoá" trước đó không cần xử lý; bản ghi active để NULL.
+3. Tạo partial unique index bằng {{CREATE INDEX CONCURRENTLY}} để không khóa bảng ghi.
+4. Trước khi tạo index, kiểm tra dữ liệu trùng: {{SELECT user_id, order_code, count(*) FROM orders WHERE deleted_at IS NULL GROUP BY 1,2 HAVING count(*) > 1}}.
+5. Đổi code: mọi SELECT thêm {{deleted_at IS NULL}}, đổi {{DELETE}} thành {{UPDATE ... SET deleted_at = now()}}, thêm {{CHECK}} nếu cần ràng buộc trạng thái.
+6. Theo dõi: số bản ghi deleted_at khác NULL tăng; nếu bảng phình, cân nhắc job dọn bản ghi cũ sau N tháng.
+
+### Ví dụ đời thực
+Một hệ thống bán hàng có bảng {{orders}} 80 triệu dòng. Trước đây dùng hard delete, mỗi lần huỷ đơn là mất luôn lịch sử; khi đối soát với cổng thanh toán, không tìm được đơn đã huỷ để hoàn tiền. Chuyển sang soft delete: thêm {{deleted_at}}, tạo partial unique index CONCURRENTLY trong 6 phút, sửa 40 câu query thêm filter. Sau ba tháng, tỷ lệ query chậm tăng nhẹ 1–2% do mỗi câu phải kiểm tra {{deleted_at}}, nhưng bù lại hoàn toàn truy vết được. Một bug phát sinh: báo cáo doanh thu quên filter {{deleted_at}} nên tính cả đơn đã huỷ, lệch 3,7%; thêm một view {{orders_active}} và bắt buộc mọi báo cáo đọc từ view đó.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng soft delete khi cần truy vết và hoàn tác: thêm cột deleted_at, xoá chỉ là update. Vấn đề lớn nhất là unique constraint, vì bản ghi đã xoá vẫn chiếm (user_id, order_code). Trong PostgreSQL tôi dùng partial unique index với WHERE deleted_at IS NULL, nên chỉ bản ghi active mới bị ràng buộc; MySQL không có partial index nên tôi dùng generated column trả về NULL khi đã xoá, rồi unique index trên cặp đó, vì MySQL cho phép nhiều NULL. Về hiệu năng, partial index nhỏ hơn nhưng chỉ dùng được khi câu query có điều kiện deleted_at IS NULL; khi JOIN tôi đặt điều kiện trong ON chứ không lọc ở Java. Khi migrate, tôi thêm cột NULL, kiểm tra trùng trước, tạo index CONCURRENTLY, rồi sửa code theo từng bước."
+
+> Senior tip: soft delete là một quyết định thiết kế, không phải một dòng code. Hãy quyết định trước: bản ghi đã xoá có cần unique không, cần giữ bao lâu, và mọi báo cáo có được sửa để lọc deleted_at không — nếu không, bạn sẽ có một bảng "ma" làm sai số liệu.`,
   follow: [
     'Tại sao partial unique index cho phép nhiều bản ghi xoá có cùng (user_id, order_code)?',
     'Khi JOIN bảng orders (soft delete) với order_items, làm sao để planner dùng được partial index trên orders?'
@@ -5652,8 +5849,71 @@ Khi phỏng vấn, hãy vẽ sơ đồ: "Event A (10:00) → Event B (10:05) →
   topic: 'sql',
   level: 'senior',
   q: 'Bảng events 500 triệu dòng: cần COUNT(*) real-time cho dashboard. Giải thích vì sao COUNT(*) chậm (MVCC, visibility check), và triển khai 3 giải pháp: (1) {{pg_class.reltuples}} ước lượng nhanh (không chính xác), (2) trigger duy trì counter chính xác trong bảng stats (write amplification), (3) HyperLogLog (extension {{hll}}) cho distinct count xấp xỉ. So sánh trade-off: độ chính xác, latency ghi/đọc, dung lượng, phức tạp vận hành.',
-  a: `**Tóm tắt:** {{COUNT(*)}} trên bảng lớn chậm vì PostgreSQL **MVCC** phải quét toàn bộ bảng (Seq Scan hoặc Index Only Scan) và kiểm tra visibility của **mỗi dòng** đối với snapshot hiện tại – không có metadata "số dòng" toàn cục. **Giải pháp 1**: {{SELECT reltuples FROM pg_class WHERE relname = 'events'}} – ước lượng từ thống kế planner, nhanh (< 1ms) nhưng sai lệch 10–20% sau VACUUM/ANALYZE. **Giải pháp 2**: bảng {{table_counts(table_name, row_count)}}, trigger {{AFTER INSERT/DELETE ON events}} {{UPDATE table_counts SET row_count = row_count + 1/-1}} – chính xác 100%, nhưng mỗi ghi tăng {{row lock}} trên counter (hotspot), throughput giảm ~15–30%. **Giải pháp 3**: extension {{hll}} – {{hll_add_agg}} cho distinct count (ví dụ unique user/ngày), dung lượng nhỏ (KB), merge được, sai số ~1–2%; không cho exact COUNT(*). **Production**: thường kết hợp – dashboard dùng reltuples cho "tổng sự kiện", hll cho "unique user", exact count chỉ cho báo cáo đối soát hàng ngày (materialized view refresh đêm).
-  `,
+  a: `**Tóm tắt:** {{COUNT(*)}} trên bảng 500 triệu dòng chậm vì PostgreSQL không lưu sẵn "số dòng hiện tại": nó phải quét và kiểm tra visibility của từng dòng theo MVCC. Ba cách: (1) {{pg_class.reltuples}} — ước lượng cực nhanh nhưng không chính xác; (2) trigger duy trì bảng đếm — chính xác nhưng mỗi lần ghi phải cập nhật cùng một hàng, gây tranh chấp; (3) HyperLogLog — đếm distinct xấp xỉ với sai số nhỏ và bộ nhớ cố định, nhưng không thay thế được COUNT(*). Trên production thường kết hợp: số tổng dùng ước lượng, số unique dùng HLL, số chính xác chỉ chạy khi đối soát.
+
+### Vì sao COUNT(*) chậm
+PostgreSQL dùng MVCC: mỗi dòng có {{xmin}} (transaction tạo ra) và {{xmax}} (transaction xoá/sửa). Một dòng chỉ "nhìn thấy được" với snapshot hiện tại nếu {{xmin}} đã commit trước snapshot và {{xmax}} chưa. Vì vậy để đếm chính xác, PostgreSQL phải đi qua **mọi** dòng của bảng (seq scan, hoặc index-only scan nếu có index phù hợp) và với mỗi dòng kiểm tra visibility. Trên bảng 500 triệu dòng, đây là hàng chục GB I/O, mất hàng chục giây. Đây không phải "bug" mà là hệ quả của việc không có metadata đếm dòng toàn cục.
+
+### Cách 1: pg_class.reltuples
+~~~sql
+SELECT reltuples::bigint AS approx_rows
+FROM pg_class
+WHERE oid = 'events'::regclass;
+~~~
+
+{{reltuples}} là ước lượng do ANALYZE/VACUUM cập nhật, planner dùng nó để chọn plan. Ưu điểm: không đọc dữ liệu, trả về dưới 1 ms. Nhược điểm: có thể sai hàng chục phần trăm nếu bảng thay đổi nhanh và chưa ANALYZE; với bảng chưa từng ANALYZE, giá trị là -1. Dùng cho dashboard "khoảng bao nhiêu dòng", không dùng cho hoá đơn hay đối soát.
+
+### Cách 2: trigger đếm
+Tạo bảng {{table_counts(table_name, row_count)}} và trigger {{AFTER INSERT OR DELETE}} để cập nhật:
+
+~~~sql
+CREATE TABLE table_counts (table_name text PRIMARY KEY, row_count bigint NOT NULL);
+
+CREATE FUNCTION bump_count() RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        UPDATE table_counts SET row_count = row_count + 1 WHERE table_name = TG_TABLE_NAME;
+    ELSE
+        UPDATE table_counts SET row_count = row_count - 1 WHERE table_name = TG_TABLE_NAME;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_events_count
+AFTER INSERT OR DELETE ON events
+FOR EACH ROW EXECUTE FUNCTION bump_count();
+~~~
+
+Ưu điểm: chính xác tuyệt đối. Nhược điểm: mọi INSERT/DELETE phải cập nhật cùng một hàng counter → hàng đó là điểm nóng (hotspot), các transaction xếp hàng, throughput giảm (tùy tải, có thể 10–30%). Giảm nhẹ bằng cách chia counter theo ngày/bucket rồi cộng lại khi đọc.
+
+### Cách 3: HyperLogLog
+HyperLogLog (HLL) là thuật toán đếm số phần tử phân biệt (distinct) bằng hàm băm và một cấu trúc cố định vài KB. Extension {{hll}} của Citus cung cấp các hàm:
+
+~~~sql
+CREATE EXTENSION IF NOT EXISTS hll;
+
+SELECT hll_cardinality(hll_add_agg(hll_hash_bigint(user_id))) AS approx_users
+FROM events
+WHERE event_date = DATE '2026-03-15';
+~~~
+
+Ưu điểm: bộ nhớ nhỏ, merge được (tổng hợp nhiều shard/ngày), sai số thường khoảng 1–2% (có thể cấu hình). Nhược điểm: **không** cho COUNT(*) chính xác, và không phải số đếm dòng. Nó chỉ dùng cho "có bao nhiêu user/session khác nhau".
+
+### Bảng so sánh
+| Cách | Độ chính xác | Độ trễ đọc | Chi phí ghi | Dùng cho |
+|---|---|---|---|---|
+| reltuples | xấp xỉ (sai số lớn) | < 1 ms | không | dashboard tổng quan |
+| trigger counter | chính xác | < 1 ms | cao (hotspot) | số liệu cần chính xác, ghi không quá nhiều |
+| HyperLogLog | xấp xỉ 1–2% | vài ms | không | đếm distinct (user, session) |
+
+### Ví dụ đời thực
+Một dashboard hiển thị "tổng số event hôm nay" và "số user hoạt động". Bản đầu gọi {{SELECT count(*)}} mỗi lần mở dashboard: 8–12 giây, dashboard gần như không dùng được. Chuyển sang: tổng event đọc từ {{table_counts}} (trigger, chính xác), user hoạt động dùng HLL theo ngày. Sau khi đổi, dashboard tải 300 ms; trigger thêm 4% thời gian ghi, chấp nhận được. Khi cần đối soát cuối tháng, một job đêm chạy COUNT(*) chính xác và so với counter, phát hiện lệch 0 vì không có xoá dòng nào ngoài trigger.
+
+### Trả lời mẫu khi phỏng vấn
+"COUNT(*) chậm vì PostgreSQL phải kiểm tra visibility từng dòng theo MVCC, không có sẵn số đếm. Tôi dùng ba cách tùy nhu cầu: reltuples cho ước lượng nhanh nhưng không chính xác; trigger duy trì bảng đếm cho số chính xác, đổi lại mọi lần ghi cập nhật cùng một hàng nên có hotspot, tôi chia counter theo ngày để giảm tranh chấp; HyperLogLog cho distinct count với sai số 1–2%, nhưng không dùng cho COUNT(*). Trên production tôi kết hợp: dashboard đọc số từ counter hoặc reltuples, số distinct dùng HLL, và chỉ chạy COUNT(*) trong job đối soát đêm."
+
+> Senior tip: trước khi tối ưu COUNT(*), hãy hỏi "con số này dùng để làm gì". Nếu chỉ để hiển thị tương đối, reltuples là đủ và gần như miễn phí; nếu dùng để ra quyết định tài chính, đừng dùng trigger counter một hàng cho bảng ghi hàng nghìn dòng mỗi giây — hãy chia nhỏ.`,
   follow: [
     'Trigger counter gây hotspot row lock: làm thế nào để sharding counter (ví dụ counter per ngày) rồi cộng lại khi đọc?',
     'HyperLogLog không cho exact count: tại sao không dùng hll cho COUNT(*) mà chỉ dùng cho COUNT(DISTINCT)?'
@@ -5665,8 +5925,75 @@ Khi phỏng vấn, hãy vẽ sơ đồ: "Event A (10:00) → Event B (10:05) →
   topic: 'sql',
   level: 'senior',
   q: 'Phân trang keyset (cursor-based) trên bảng orders(customer_id, created_at, id) với sort nhiều cột: {{ORDER BY created_at DESC, id DESC}}. Client gửi cursor là base64 của {{created_at|id}}. Viết query next page và previous page. Giải thích tại sao cursor phải chứa **đầy đủ** các cột sort + tie-break PK, và làm sao để page trước/ sau ổn định khi có INSERT song song vào giữa cursor.',
-  a: `**Tóm tắt:** Keyset pagination dùng composite key so sánh: next page {{WHERE (created_at, id) < (cursor_created_at, cursor_id) ORDER BY created_at DESC, id DESC LIMIT 21}} (lấy 21 để biết có trang sau, trả 20). Cursor = base64(JSON {{ts, id}}). Previous page: {{WHERE (created_at, id) > (cursor_created_at, cursor_id) ORDER BY created_at ASC, id ASC LIMIT 21}} rồi reverse ở app. **Cursor phải đủ cột sort + PK** vì {{(created_at, id)}} là composite key duy nhất (tie-break); thiếu id thì các dòng cùng created_at bị gom chung, next page bị bỏ sót hoặc trùng lặp. **INSERT song song**: keyset pagination **không ổn định** khi có INSERT vào giữa cursor – trang sau có thể thiếu dòng mới insert (vì cursor đã qua vị trí đó) hoặc trang trước xuất hiện dòng mới (nếu INSERT created_at > cursor_created_at). Giải pháp thực tế: (a) thêm anchor timestamp {{WHERE created_at <= :anchor_ts}} (anchor tại load trang đầu tiên) để freeze upper bound, (b) dùng MVCC snapshot isolation {{SET TRANSACTION ISOLATION LEVEL REPEATABLE READ}} cho session đọc danh sách (PostgreSQL freeze snapshot tại BEGIN đầu tiên), (c) hoặc dùng system column {{xmin}} làm cursor phụ để detect dòng mới insert sau snapshot. Trade-off: REPEATABLE READ giữ snapshot lâu làm tăng bloat nếu transaction dài; anchor timestamp đơn giản nhưng không cover được INSERT có created_at trong quá khứ (backfill).
-  `,
+  a: `**Tóm tắt:** Keyset pagination (phân trang theo con trỏ) dùng điều kiện so sánh trên chính các cột sắp xếp thay vì {{OFFSET}}. Trang tiếp theo: {{WHERE (created_at, id) < (:cursor_ts, :cursor_id) ORDER BY created_at DESC, id DESC LIMIT 21}} (lấy 21 để biết còn trang sau, trả 20). Trang trước: đảo chiều so sánh và {{ORDER BY}} rồi reverse ở ứng dụng. Cursor phải chứa **đủ** mọi cột trong {{ORDER BY}} cộng khóa chính, vì thiếu tie-break sẽ bỏ sót hoặc lặp dòng khi có giá trị trùng. Keyset không ổn định tuyệt đối khi có INSERT song song; muốn "đóng băng" thì thêm mốc thời gian {{anchor_ts}} hoặc dùng snapshot REPEATABLE READ.
+
+### Vì sao OFFSET chậm
+{{OFFSET 200000}} không phải "đọc 20 dòng rồi bắt đầu": database phải sắp xếp toàn bộ tập kết quả và bỏ qua 200.000 dòng đầu để trả 20 dòng kế tiếp. Chi phí tăng tuyến tính theo độ sâu trang. Với bảng 50 triệu dòng và trang 50, đây là hàng triệu dòng bị quét mỗi request. Ngoài ra OFFSET không ổn định: nếu có dòng mới chèn vào trước vị trí hiện tại, các dòng bị đẩy xuống và trang sau bị lặp; nếu có dòng bị xoá, trang sau bị nhảy.
+
+### Keyset hoạt động thế nào
+Ý tưởng: nhớ "vị trí" cuối cùng đã xem, rồi lần sau bắt đầu từ sau vị trí đó. Với {{ORDER BY created_at DESC, id DESC}}, vị trí là cặp (created_at, id) của dòng cuối. So sánh tuple {{(created_at, id) < (:ts, :id)}} chính là "nằm sau vị trí này" theo đúng thứ tự sắp xếp.
+
+~~~sql
+-- Trang tiếp theo (sau dòng cuối của trang trước)
+SELECT id, created_at, customer_id
+FROM orders
+WHERE customer_id = :customer_id
+  AND (created_at, id) < (:cursor_ts, :cursor_id)
+ORDER BY created_at DESC, id DESC
+LIMIT 21;   -- 21 để phát hiện còn trang sau
+
+-- Trang trước (trước dòng đầu của trang hiện tại)
+SELECT id, created_at, customer_id
+FROM orders
+WHERE customer_id = :customer_id
+  AND (created_at, id) > (:cursor_ts, :cursor_id)
+ORDER BY created_at ASC, id ASC
+LIMIT 21;
+-- ứng dụng reverse danh sách để trả về thứ tự DESC
+~~~
+
+Toán tử so sánh tuple của PostgreSQL có đúng ngữ nghĩa từ điển: nó so sánh phần tử đầu, nếu bằng thì so phần tử kế tiếp. Nhờ đó chỉ cần một điều kiện duy nhất và index {{(customer_id, created_at, id)}} dùng được cho cả {{ORDER BY}} lẫn {{WHERE}}.
+
+### Cursor phải đủ cột sort cộng tie-break
+Nếu {{created_at}} trùng nhau (rất hay xảy ra: cùng một mili-giây, batch import), thiếu {{id}} trong cursor thì:
+- Trang sau có thể **lặp** các dòng cùng created_at (vì điều kiện chỉ là {{created_at < :ts}} loại luôn cả nhóm).
+- Hoặc **bỏ sót** nếu dùng {{<=}} mà không tie-break.
+
+Vì vậy cursor phải chứa đúng các cột trong {{ORDER BY}} theo đúng thứ tự, và phải có khóa chính (hoặc một cột duy nhất) làm tie-break cuối. Đây là lý do cursor nên là một cấu trúc có phiên bản, không phải chỉ một số nguyên.
+
+### Ổn định khi có INSERT song song
+Keyset không tự "đóng băng" thế giới. Nếu giữa hai lần gọi, một đơn mới được chèn với {{created_at}} lớn hơn cursor (thuộc về trang đầu), trang tiếp theo vẫn đúng vì điều kiện {{< cursor}} loại nó ra. Nhưng nếu đơn mới có {{created_at}} **nằm giữa** hai trang, nó sẽ xuất hiện ở trang sau — điều này thường chấp nhận được (người dùng thấy dữ liệu mới). Nếu đơn bị xoá ở giữa, trang sau không bị lặp.
+
+Trường hợp cần nhất quán tuyệt đối (ví dụ xuất báo cáo): thêm mốc {{anchor_ts}} khi mở phiên và luôn lọc {{created_at <= :anchor_ts}}; hoặc mở transaction {{REPEATABLE READ}} và giữ snapshot suốt phiên đọc (đánh đổi: giữ snapshot lâu làm tăng bloat). Ngoài ra có thể dùng {{xmin}} làm cursor phụ để phát hiện dòng mới, nhưng phức tạp và ít khi cần.
+
+### Code Java: mã hoá cursor
+~~~java
+record Cursor(Instant ts, long id) {}
+
+static String encode(Cursor c) {
+    String json = """
+        {"ts":"%s","id":%d}
+        """.formatted(c.ts(), c.id());
+    return Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(json.getBytes(StandardCharsets.UTF_8));
+}
+
+static Cursor decode(String raw) {
+    String json = new String(Base64.getUrlDecoder().decode(raw), StandardCharsets.UTF_8);
+    // dùng Jackson để parse; luôn kiểm tra null và định dạng
+    ...
+}
+~~~
+
+Vì base64 không mã hoá (chỉ chuyển biểu diễn), client có thể sửa cursor. Nếu cursor ảnh hưởng tới bảo mật hoặc giá tiền, hãy ký bằng HMAC và kiểm tra chữ ký ở server; hoặc coi cursor là opaque và chỉ validate cấu trúc.
+
+### Ví dụ đời thực
+API danh sách đơn hàng dùng {{OFFSET}} với pageSize 20. Khi người dùng kéo tới trang 200, response time tăng từ 80 ms lên 2,4 giây; CPU database tăng vì mỗi request sắp xếp 4.000 dòng. Đổi sang keyset với cursor {{(created_at, id)}} và index {{(customer_id, created_at, id)}}: mọi trang đều 60–90 ms bất kể độ sâu, CPU giảm 60%. Một bug phát sinh: cursor cũ chỉ chứa created_at, khách có hai đơn cùng mili-giây bị mất một đơn giữa hai trang; thêm id vào cursor và tăng version cursor từ 1 lên 2, vấn đề hết.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng keyset pagination thay OFFSET vì OFFSET phải sắp xếp và bỏ qua toàn bộ các dòng phía trước, càng sâu càng chậm. Tôi so sánh tuple: WHERE (created_at, id) < (:ts, :id) ORDER BY created_at DESC, id DESC LIMIT 21, lấy 21 để biết còn trang sau. Cursor phải chứa đủ các cột ORDER BY cộng khóa chính làm tie-break, nếu không khi giá trị trùng sẽ bỏ sót hoặc lặp. Trang trước thì đảo chiều so sánh và ORDER BY rồi reverse ở app. Keyset không đóng băng dữ liệu: dòng chèn giữa hai trang sẽ xuất hiện ở trang sau, thường chấp nhận được; nếu cần nhất quán tuyệt đối thì thêm mốc anchor_ts hoặc dùng REPEATABLE READ. Cuối cùng, base64 chỉ là biểu diễn nên tôi coi cursor là opaque và ký HMAC nếu nó ảnh hưởng tới bảo mật."
+
+> Senior tip: nếu bạn thấy mình đang viết OFFSET với số trang lớn, đó là tín hiệu cần đổi thiết kế, không phải cần tăng index. Keyset nhanh gấp nhiều lần ở trang sâu, nhưng đổi lại không nhảy ngẫu nhiên tới trang bất kỳ — hãy chọn theo nhu cầu UI.`,
   follow: [
     'Tại sao keyset pagination không hỗ trợ "nhảy tới trang 50" (random access) như OFFSET?',
     'Cursor encoding base64 có gì rủi ro (tampering, versioning), và cách chống lại?'
@@ -5678,8 +6005,73 @@ Khi phỏng vấn, hãy vẽ sơ đồ: "Event A (10:00) → Event B (10:05) →
   topic: 'sql',
   level: 'senior',
   q: 'So sánh ba loại timeout trong PostgreSQL/Java: {{statement_timeout}} (hủy câu lệnh chạy quá lâu), {{lock_timeout}} (hủy khi chờ khóa quá lâu), {{idle_in_transaction_session_timeout}} (hủy session nhàn rỗi trong transaction). Cấu hình ở đâu (postgresql.conf, ALTER ROLE, SET LOCAL, HikariCP)? Khi nào dùng cái nào? Ví dụ: API đọc báo cáo đặt statement_timeout 30s, job ghi đặt lock_timeout 5s, connection pool đặt idle_in_transaction 60s. Java code set timeout per-request.',
-  a: `**Tóm tắt:** Ba timeout phục vụ mục đích khác nhau: **statement_timeout** – giới hạn thời gian **chạy câu lệnh** (CPU + I/O), vượt quá → {{ERROR 57014}} hủy statement, rollback transaction hiện tại; dùng cho báo cáo, query ad-hoc, migration. **lock_timeout** – giới hạn thời gian **chờ khóa** (row lock, table lock), vượt quá → {{ERROR 55P03}} hủy statement; dùng cho OLTP ghi (UPDATE/DELETE/SELECT FOR UPDATE) để tránh giữ connection chờ deadlock victim. **idle_in_transaction_session_timeout** – giới hạn thời gian session ở trạng thái **idle in transaction** (đã BEGIN/START TRANSACTION nhưng chưa COMMIT/ROLLBACK), vượt quá → hủy session, rollback; dùng cho connection pool phòng leak transaction. **Cấu hình**: postgresql.conf (mặc định toàn cluster), ALTER ROLE/DATABASE (mặc định per user/db), {{SET LOCAL}} (chỉ transaction hiện tại – **khuyên dùng** cho per-request), HikariCP {{connectionInitSql}} hoặc {{SET statement_timeout = ...}} khi borrow connection. **Java pattern**: wrapper method {{withStatementTimeout(30_000, () -> jdbc.query(...))}} dùng {{SET LOCAL}} rồi {{RESET}} trong finally.
-  `,
+  a: `**Tóm tắt:** Ba timeout giải quyết ba vấn đề khác nhau. {{statement_timeout}} giới hạn thời gian **một câu lệnh** chạy, vượt quá thì PostgreSQL hủy câu đó ({{57014}}). {{lock_timeout}} giới hạn thời gian **chờ khóa**, vượt quá thì hủy câu lệnh ({{55P03}}). {{idle_in_transaction_session_timeout}} giới hạn thời gian session **nhàn rỗi trong transaction** (đã BEGIN nhưng chưa COMMIT), vượt quá thì đóng session. Chúng đặt ở postgresql.conf, {{ALTER ROLE/DATABASE}}, hoặc {{SET LOCAL}} cho từng request. Không có cái nào thay được cái nào.
+
+### Ba timeout khác nhau ở đâu
+Hãy tưởng tượng một nhà hàng:
+- {{statement_timeout}} là "món ăn quá 30 phút chưa ra thì huỷ món đó". Câu lệnh bị hủy, transaction chuyển sang trạng thái lỗi và phải rollback.
+- {{lock_timeout}} là "chờ bàn quá 5 phút thì bỏ, không đứng chờ nữa". Chỉ áp dụng khi câu lệnh đang chờ một khóa.
+- {{idle_in_transaction_session_timeout}} là "khách đã gọi món nhưng ngồi im 60 phút không ăn, nhân viên dọn bàn". Session bị đóng, transaction bị rollback.
+
+Ba cái độc lập: một câu lệnh có thể chạy 10 ms nhưng chờ khóa 10 phút (lock_timeout cứu), hoặc chạy 5 phút (statement_timeout cứu), hoặc chạy xong rồi ngồi im 1 giờ (idle_in_transaction cứu).
+
+### statement_timeout
+~~~sql
+SET statement_timeout = '30s';
+-- hoặc per role/database:
+ALTER ROLE reporting SET statement_timeout = '30s';
+~~~
+
+Mặc định là 0 (không giới hạn). Khi vượt, PostgreSQL hủy **câu lệnh hiện tại** với {{ERROR: canceling statement due to statement timeout}} ({{57014}}). Lưu ý: transaction không tự động commit; nó ở trạng thái aborted ({{25P02}}) và bạn phải {{ROLLBACK}}. Với một câu SELECT đơn lẻ (autocommit) thì thực tế không còn gì để rollback.
+
+Dùng cho: báo cáo, query ad-hoc, migration, các endpoint có SLA rõ ràng. Đặt quá thấp sẽ giết cả query hợp lệ chạy 45 giây.
+
+### lock_timeout
+~~~sql
+SET lock_timeout = '5s';
+~~~
+
+Chỉ tính thời gian **chờ khóa**. Nếu câu lệnh chạy 100 ms nhưng phải chờ row lock 10 giây, {{lock_timeout = 5s}} sẽ hủy ở giây thứ 5. Mã lỗi {{55P03}} (lock_not_available). Dùng cho OLTP ghi (UPDATE/DELETE/SELECT FOR UPDATE): thà báo lỗi cho người dùng còn hơn giữ connection và transaction mở.
+
+Điểm hay bị nhầm: {{lock_timeout}} **không** giới hạn tổng thời gian câu lệnh, chỉ giới hạn thời gian chờ khóa. Một câu lệnh không gặp tranh chấp có thể chạy 10 phút mà không bị lock_timeout chạm tới.
+
+### idle_in_transaction_session_timeout
+~~~sql
+ALTER ROLE app_user SET idle_in_transaction_session_timeout = '60s';
+~~~
+
+Đo thời gian session ở trạng thái {{idle in transaction}}: đã {{BEGIN}} nhưng chưa {{COMMIT/ROLLBACK}}. Khi vượt, PostgreSQL đóng session với mã {{25P03}}. Đây là lưới an toàn cho bug "mở transaction rồi quên đóng" — lỗi rất phổ biến khi gọi HTTP ở giữa transaction. Đặt ở mức role/database, không đặt ở session nếu bạn không kiểm soát được code.
+
+### Cấu hình ở đâu
+| Cách | Phạm vi | Khi nào dùng |
+|---|---|---|
+| postgresql.conf | toàn cluster | mặc định chung, cần reload |
+| {{ALTER ROLE}} / {{ALTER DATABASE}} | user / database | mặc định theo loại tải (reporting, app) |
+| {{SET LOCAL}} | chỉ transaction hiện tại | per-request, an toàn nhất |
+| HikariCP {{connectionInitSql}} | connection mới | đặt timeout mặc định cho pool |
+
+{{SET LOCAL}} chỉ có hiệu lực trong transaction; nếu dùng autocommit thì hãy dùng {{SET}} cho session. Với HikariCP, {{connectionInitSql}} chạy mỗi khi tạo connection mới, phù hợp đặt {{idle_in_transaction_session_timeout}}; đừng đặt {{statement_timeout}} cố định ở pool nếu một số request cần chạy lâu.
+
+### Java: đặt timeout theo request
+~~~java
+int timeoutMs = 30_000;
+transactionTemplate.executeWithoutResult(status -> {
+    // SET không nhận tham số bind, nên ghép số nguyên đã validate
+    jdbc.execute("SET LOCAL statement_timeout = " + timeoutMs);
+    jdbc.query("SELECT id, created_at FROM orders WHERE customer_id = ?",
+            (rs, i) -> new Order(rs.getLong("id"), rs.getTimestamp("created_at")), customerId);
+});
+~~~
+
+Nếu cần per-request động, {{SET LOCAL}} trong cùng transaction là cách gọn nhất. Với Spring, {{TransactionTemplate}} cho phép đặt {{timeout}} theo từng lần gọi; với {{@Transactional(timeout = 30)}} timeout tính bằng giây cho cả transaction.
+
+### Ví dụ đời thực
+Một API báo cáo chạy trên primary. Một ngày, một query join thiếu index chạy 6 phút; nó giữ connection và không bị ai giới hạn. Trong 6 phút đó, HikariCP cạn connection, các request khác xếp hàng, p99 tăng từ 300 ms lên 15 giây. Bật {{statement_timeout = 30s}} cho role reporting và {{idle_in_transaction_session_timeout = 60s}}: query xấu bị hủy ở giây 30, pool không còn bị chiếm. Sau một tháng, một bug gọi HTTP trong transaction bị idle timeout đóng session, giúp phát hiện leak sớm thay vì để bảng phình.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi phân biệt ba timeout: statement_timeout giới hạn thời gian một câu lệnh chạy, lock_timeout giới hạn thời gian chờ khóa, còn idle_in_transaction_session_timeout giới hạn thời gian session ngồi im trong transaction. Chúng không thay thế nhau: một câu có thể chạy nhanh nhưng chờ khóa lâu, hoặc chạy xong rồi quên commit. Tôi đặt mặc định ở role/database (ví dụ reporting có statement_timeout 30s, app có idle_in_transaction 60s), và dùng SET LOCAL cho những request đặc biệt. HikariCP thì dùng connectionInitSql để đặt idle timeout cho connection mới. Tôi tránh đặt statement_timeout quá thấp vì sẽ giết cả query hợp lệ, và luôn theo dõi số câu bị hủy để biết ngưỡng có phù hợp không."
+
+> Senior tip: timeout là một dạng hợp đồng với người dùng. Hãy đặt theo từng loại tải (OLTP, reporting, batch) thay vì một con số chung; và nhớ rằng timeout chỉ phát huy khi có người đo — hãy alert khi số câu bị hủy tăng.`,
   follow: [
     'statement_timeout có hủy cả transaction hay chỉ statement hiện tại?lock_timeout thì sao?',
     'HikariCP maximumPoolSize và idle_in_transaction_session_timeout có quan hệ gì? Khi pool đầy do leak transaction, timeout nào kích hoạt trước?'
@@ -5691,8 +6083,39 @@ Khi phỏng vấn, hãy vẽ sơ đồ: "Event A (10:00) → Event B (10:05) →
   topic: 'sql',
   level: 'senior',
   q: 'Chọn kiểu dữ liệu cho tiền tệ và thời gian: tiền dùng DECIMAL/NUMERIC(precision, scale) – precision bao nhiêu, scale bao nhiêu cho VND/USD/crypto? Thời gian dùng TIMESTAMPTZ (timestamp with time zone) – tại sao KHÔNG dùng TIMESTAMP (without time zone) và KHÔNG lưu epoch long trong BIGINT? Java: BigDecimal cho tiền, OffsetDateTime/Instant cho thời điểm, ZoneId cho múi giờ. Pitfall: {{NUMERIC(19,4)}} vs {{NUMERIC(38,18)}} cho crypto, rounding mode HALF_EVEN vs HALF_UP, timezone conversion ở DB vs Java.',
-  a: `**Tóm tắt:** **Tiền tệ**: **luôn** {{DECIMAL}}/{{NUMERIC}}, không bao giờ {{FLOAT}}/{{DOUBLE}}/{{REAL}} (binary floating-point không biểu diễn chính xác 0.1). **Precision/scale**: VND (không lẻ) → {{NUMERIC(19,0)}} hoặc {{NUMERIC(19,2)}} nếu lưu phân tiền; USD/major currency → {{NUMERIC(19,4)}} (4 chữ số thập phân đủ cho tỷ giá, fee); Crypto (BTC 8dp, ETH 18dp, token tùy ý) → {{NUMERIC(38,18)}} an toàn cho mọi token hiện nay. **Rounding**: tài chính dùng {{HALF_UP}} (5 lên), thống kê/bao cáo dùng {{HALF_EVEN}} (banker's rounding, giảm bias tích lũy) – Java {{BigDecimal.setScale(scale, RoundingMode.HALF_UP)}}. **Thời gian**: **luôn** {{TIMESTAMPTZ}} (lưu UTC nội bộ, hiển thị theo session TimeZone), **không** {{TIMESTAMP}} (không biết múi giờ, convert sai khi server đổi TZ), **không** epoch BIGINT (mất timezone, khó debug, không dùng được date function). Java: {{Instant}} (thời điểm tuyệt đối, UTC), {{OffsetDateTime}} (thời điểm + offset, tốt cho serialize JSON), {{ZonedDateTime}} (có quy tắc DST, tốt cho hiển thị user) – **không** dùng {{LocalDateTime}} cho timestamp DB. **Pitfall**: DB {{TIMESTAMPTZ}} nhập {{'2026-03-01 00:00+07'}} → lưu UTC {{2026-02-28 17:00Z}}; select trong session TZ=UTC hiện {{2026-02-28 17:00}} – phải set session TZ hoặc convert tại Java. Index {{(created_at)}} trên TIMESTAMPTZ dùng được cho range query half-open.
-  `,
+  a: `**Tóm tắt:** Tiền dùng {{NUMERIC}}/{{DECIMAL}} (số thập phân chính xác), không bao giờ {{FLOAT}}/{{DOUBLE}} vì float nhị phân không biểu diễn chính xác 0.1. Precision/scale chọn theo đơn vị: VND không lẻ dùng {{NUMERIC(19,0)}}, USD dùng {{NUMERIC(19,4)}}, crypto dùng {{NUMERIC(38,18)}} nếu lưu số token (nếu lưu đơn vị nhỏ nhất như wei thì cần precision lớn hơn nhiều). Làm tròn: tài chính thường {{HALF_UP}}, thống kê dùng {{HALF_EVEN}}. Thời gian dùng {{TIMESTAMPTZ}} (lưu UTC, hiển thị theo timezone), không dùng {{TIMESTAMP}} hay epoch BIGINT. Java: {{BigDecimal}} cho tiền, {{Instant}}/{{OffsetDateTime}} cho thời điểm.
+
+### Tiền tệ: vì sao không dùng float
+{{FLOAT}}/{{DOUBLE}}/{{REAL}} lưu số theo dấu phẩy động nhị phân (giống {{double}} trong Java). Hệ thập phân 0.1 không có biểu diễn nhị phân hữu hạn, nên 0.1 cộng 0.2 trong double ra 0.30000000000000004. Với tiền, sai số này tích luỹ qua hàng triệu giao dịch và làm báo cáo lệch. {{NUMERIC}} lưu theo hệ thập phân với precision/scale cố định nên chính xác tuyệt đối trong phạm vi cho phép.
+
+### Precision và scale
+{{NUMERIC(p, s)}}: {{p}} là tổng số chữ số, {{s}} là số chữ số sau dấu phẩy. Ví dụ {{NUMERIC(19,4)}} chứa tối đa 19 chữ số, trong đó 4 chữ số thập phân, tức 15 chữ số nguyên (tối đa 999.999.999.999.999,9999). Chọn:
+- **VND** (không có đơn vị nhỏ): {{NUMERIC(19,0)}}.
+- **USD/EUR** (2 chữ số lẻ, tỷ giá 4 chữ số): {{NUMERIC(19,4)}} là mức thực dụng; nhiều hệ thống tách cột {{amount}} và {{currency}} thay vì nhân cứng.
+- **Crypto**: nếu lưu số token (ví dụ 1.5 ETH), {{NUMERIC(38,18)}} đủ cho 20 chữ số nguyên; nếu lưu đơn vị nhỏ nhất (wei, 10 mũ 18), tổng cung ETH khoảng 1.2 nhân 10 mũ 26 wei cần khoảng 27 chữ số nguyên, nên {{NUMERIC(38,18)}} **không** đủ — phải dùng {{NUMERIC(60,0)}} hoặc lưu amount dạng token.
+- **Tỷ giá**: nên dùng scale cao hơn (6–10) để không mất chính xác khi quy đổi nhiều bước.
+
+### Rounding
+- {{HALF_UP}}: 0.5 làm tròn lên (2.5 thành 3). Phù hợp hoá đơn, thuế, tiền mặt.
+- {{HALF_EVEN}} (banker's rounding): 2.5 thành 2, 3.5 thành 4; giảm thiên lệch tích luỹ khi làm tròn nhiều giá trị.
+- {{BigDecimal}} mặc định ném {{ArithmeticException}} nếu phép chia cho kết quả không dừng và không có scale/rounding. Luôn truyền {{RoundingMode}}: {{a.divide(b, 2, RoundingMode.HALF_UP)}}.
+
+### Thời gian: TIMESTAMPTZ
+PostgreSQL có hai kiểu:
+- {{TIMESTAMP}} (without time zone): lưu "2026-03-01 10:00:00" mà không biết múi giờ.
+- {{TIMESTAMPTZ}} (timestamp with time zone): lưu một thời điểm tuyệt đối (UTC), khi hiển thị thì đổi theo {{TimeZone}} của session.
+
+Luôn dùng {{TIMESTAMPTZ}} cho thời điểm thực (created_at, event_ts). Nếu dùng {{TIMESTAMP}}, khi server đổi timezone hoặc client ở múi giờ khác, dữ liệu bị hiểu sai mà không có lỗi nào báo. Không lưu epoch trong {{BIGINT}}: mất khả năng dùng date function, khó debug, và dễ nhầm giây với mili-giây.
+
+Java: {{Instant}} là thời điểm tuyệt đối (UTC), {{OffsetDateTime}} là thời điểm kèm offset (tốt cho JSON), {{ZonedDateTime}} có quy tắc DST (tốt cho hiển thị theo vùng). Với cột {{TIMESTAMPTZ}}, Hibernate 6 map sang {{OffsetDateTime}} hoặc {{Instant}}; tránh {{LocalDateTime}} vì nó không có timezone.
+
+### Ví dụ đời thực
+Một hệ thống ví lưu số dư bằng {{DOUBLE}}: sau 3 tháng, đối soát với sổ cái lệch 0.03 VND trên 1,2 triệu giao dịch. Nguyên nhân: float không biểu diễn chính xác, và mỗi lần cộng dồn sai số. Chuyển sang {{NUMERIC(19,2)}} cộng {{BigDecimal}}: lệch về 0, migration chạy 40 phút, không downtime. Một hệ thống khác lưu thời gian bằng {{TIMESTAMP}}: khi chuyển server từ UTC sang Asia/Ho_Chi_Minh, mọi báo cáo lệch 7 tiếng; sửa sang {{TIMESTAMPTZ}} và set session timezone theo người dùng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tiền tôi luôn dùng NUMERIC/DECIMAL, không bao giờ float, vì float nhị phân không biểu diễn chính xác 0.1 và sai số tích luỹ. Precision/scale chọn theo đơn vị: VND không lẻ thì NUMERIC(19,0), USD dùng NUMERIC(19,4), crypto nếu lưu số token thì NUMERIC(38,18), còn nếu lưu wei thì phải precision lớn hơn. Rounding tôi chọn HALF_UP cho tiền, HALF_EVEN cho thống kê, và luôn truyền RoundingMode cho BigDecimal.divide để tránh ArithmeticException. Thời gian tôi dùng TIMESTAMPTZ vì nó lưu thời điểm tuyệt đối và đổi theo timezone khi hiển thị; TIMESTAMP không có timezone dễ sai khi server đổi vùng. Java dùng BigDecimal cho tiền, Instant hoặc OffsetDateTime cho thời điểm."
+
+> Senior tip: chọn kiểu dữ liệu là quyết định khó sửa nhất trong schema — đổi cột tiền từ double sang numeric trên bảng lớn là một dự án migration. Hãy quyết định đúng từ đầu và luôn kèm currency/scale vào thiết kế.`,
   follow: [
     'Tại sao NUMERIC(19,4) đủ cho USD nhưng không đủ cho tỷ giá chuyển đổi nội bộ (ví dụ 1 USD = 23.456789 VND)?',
     'Java BigDecimal.divide() không có scale và rounding mode ném ArithmeticException: ví dụ thực tế và cách sửa?'
@@ -5703,7 +6126,7 @@ Khi phỏng vấn, hãy vẽ sơ đồ: "Event A (10:00) → Event B (10:05) →
   id: 'sql-069',
   topic: 'sql',
   level: 'senior',
-  q: 'Hai request cùng trừ 600 trên kho còn 1.000. Vì sao câu {{UPDATE stock SET qty = qty - 600 WHERE sku = ?}} không bị mất cập nhật, còn đoạn code đọc số dư về Java rồi {{UPDATE stock SET qty = ?}} lại mất 200? Giải thích cơ chế EvalPlanQual của PostgreSQL, và vì sao ở REPEATABLE READ câu UPDATE nhận lỗi 40001 thay vì ghi đè âm thầm.',
+  q: 'Hai request cùng trừ 600 trên kho còn 1.000. Vì sao câu {{UPDATE stock SET qty = qty - 600 WHERE sku = ?}} không bị mất cập nhật, còn đoạn code đọc số dư về Java rồi {{UPDATE stock SET qty = ?}} lại mất 600? Giải thích cơ chế EvalPlanQual của PostgreSQL, và vì sao ở REPEATABLE READ câu UPDATE nhận lỗi 40001 thay vì ghi đè âm thầm.',
   a: `**Tóm tắt:** Ở READ COMMITTED, khi câu UPDATE gặp một dòng vừa bị transaction khác sửa, PostgreSQL chờ rồi **đọc lại phiên bản mới nhất của dòng và kiểm tra lại điều kiện WHERE** — đó là cơ chế EvalPlanQual (EPQ). Vì phép trừ nằm ngay trong câu UPDATE, nó luôn trừ trên số hiện tại nên không mất cập nhật. Nếu ứng dụng đọc số dư về Java, tính rồi ghi đè bằng giá trị tuyệt đối, database không biết con số đó tính từ bản cũ nên vẫn ghi đè: đó là lost update, xảy ra ở mọi isolation level. Ở REPEATABLE READ, nếu dòng đã bị sửa sau snapshot, câu UPDATE bị hủy với {{could not serialize access due to concurrent update}} ({{40001}}), tức PostgreSQL thà báo lỗi còn hơn âm thầm ghi đè.
 
 ### Hiểu đúng mô hình MVCC trước
@@ -5736,7 +6159,7 @@ Với đoạn code đọc-rồi-ghi đè, dòng thời gian là:
 A: SELECT qty -> 1000      B: SELECT qty -> 1000
 A: tính 1000-600 = 400     B: tính 1000-600 = 400
 A: UPDATE qty = 400        B: UPDATE qty = 400
-Kết quả: 400  -> mất một lần trừ 200 (lẽ ra phải là -200 nếu không kiểm tra)
+Kết quả: 400  -> mất một lần trừ 600 (kết quả lẽ ra là -200, còn nhận được 400)
 ~~~
 
 ### EvalPlanQual chạy từng bước như thế nào
