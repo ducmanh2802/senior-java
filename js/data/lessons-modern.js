@@ -736,7 +736,7 @@ Chuỗi {{s}} không chứa thông tin múi giờ, nên phải gắn múi giờ 
 Quy tắc ví dụ: giao dịch sau 16:00 **giờ Việt Nam** được ghi nhận vào ngày làm việc tiếp theo; thứ Bảy, Chủ Nhật không phải ngày làm việc. Luôn quy đổi về múi giờ của nghiệp vụ trước khi so sánh với giờ cut-off. Server thường chạy giờ UTC: 16:30 giờ VN là 09:30 UTC, nếu so sánh giờ UTC với 16:00 bạn sẽ kết luận sai là "trước cut-off". Thực tế còn phải trừ ngày lễ (Tết, 30/4…), thường lưu trong một bảng lịch nghỉ.
 
 ### Đừng gọi now() trực tiếp trong logic nghiệp vụ
-{{Instant.now()}}, {{LocalDate.now()}} dùng đồng hồ hệ thống và múi giờ mặc định của máy chủ ({{ZoneId.systemDefault()}}), có thể khác giữa máy dev và production. Hai cách làm đúng:
+{{Instant.now()}} dùng đồng hồ hệ thống và **luôn trả UTC** (không phụ thuộc múi giờ máy chủ); {{LocalDate.now()}}/{{LocalDateTime.now()}} mới dùng múi giờ mặc định của máy chủ ({{ZoneId.systemDefault()}}), và múi giờ này có thể khác giữa máy dev và production. Hai cách làm đúng:
 - Nhận thời điểm làm tham số (như bài tập dưới đây nhận {{Instant}}), hoặc
 - Inject một {{java.time.Clock}} và gọi {{Instant.now(clock)}}; trong test dùng {{Clock.fixed(...)}} để "đóng băng" thời gian, test chạy lúc nào cũng ra cùng kết quả.
 
@@ -943,7 +943,7 @@ Map<String, List<Order>> theoKhach = orders.stream()
     .collect(Collectors.groupingBy(Order::customerId));
 ~~~
 
-Bẫy thứ hai của {{toMap}}: nó ném {{NullPointerException}} khi **value null** (không phải key). Lý do: bên trong nó gọi {{Map.merge}}, mà merge không nhận giá trị null. Xử lý: lọc trước {{.filter(o -> o.note() != null)}}, hoặc dùng {{groupingBy}} + {{toList}}, hoặc {{map.keySet().removeIf(k -> map.get(k) == null)}} sau khi gom.
+Bẫy thứ hai của {{toMap}}: nó ném {{NullPointerException}} khi **value null** (không phải key). Lý do: bên trong nó gọi {{Map.merge}}, mà merge không nhận giá trị null. Xử lý: lọc trước {{.filter(o -> o.note() != null)}}, hoặc biến null thành giá trị mặc định ngay khi map value, hoặc dùng {{groupingBy}} + {{toList}} (groupingBy không gọi merge nên chấp nhận value null). Lưu ý: không thể "gom xong rồi xoá null" bằng {{keySet().removeIf}} — {{toMap}} đã ném lỗi **ngay trong lúc gom**, chưa kịp trả về map.
 
 ### partitioningBy: hai nhóm luôn tồn tại
 {{partitioningBy(predicate)}} giống {{groupingBy}} nhưng key là {{Boolean}} và **cả hai key luôn có mặt** trong map (nhóm không có phần tử nào thì value là list rỗng). {{groupingBy}} thuần predicate thì key thiếu hoàn toàn, hay phải viết {{getOrDefault}}.
@@ -977,7 +977,7 @@ double tiLeHoanHuy = orders.stream().collect(Collectors.teeing(
 | Muốn | Dùng |
 |---|---|
 | gom phần tử thành list | {{toList()}}/{{toUnmodifiableList()}} |
-| đếm / tổng / trung bình theo nhóm | {{groupingBy(key, counting()}} / {{summingLong}} / {{averagingDouble}} |
+| đếm / tổng / trung bình theo nhóm | {{groupingBy(key, counting())}} / {{summingLong}} / {{averagingDouble}} |
 | giá trị lớn nhất mỗi nhóm | {{groupingBy(key, maxBy(comparator))}} (value là {{Optional}}) |
 | key duy nhất, dữ liệu có thể trùng key | {{toMap(k, v, mergeFn)}} |
 | đúng 2 nhóm, luôn có cả 2 | {{partitioningBy(pred)}} |
@@ -1356,7 +1356,7 @@ g.completeOnTimeout("N/A", 200, TimeUnit.MILLISECONDS);
 ~~~
 
 Hai điểm hay bị hiểu sai:
-- Timeout **không dừng** công việc bên dưới. Nó chỉ hoàn thành future bằng {{TimeoutException}}; thread đang gọi HTTP vẫn gọi tiếp cho tới khi xong. Muốn thật sự dừng phải có **read timeout ở HTTP client** ({{RestClient}}, {{HttpClient.newBuilder().connectTimeout/connectTimeout}}) hoặc {{Future.cancel(true)}} trên {{submit}}.
+- Timeout **không dừng** công việc bên dưới. Nó chỉ hoàn thành future bằng {{TimeoutException}}; thread đang gọi HTTP vẫn gọi tiếp cho tới khi xong. Muốn thật sự dừng phải có **timeout ở tầng HTTP client**: đặt connect/socket timeout ({{RestClient}} qua request factory, Apache HttpClient đặt socket timeout), hoặc dùng {{Future.cancel(true)}} trên task đã {{submit}}. Lưu ý {{java.net.http.HttpClient}} chỉ có {{connectTimeout}} (không có read timeout sẵn), nên phải tự bọc thêm timeout ở tầng trên.
 - {{orTimeout}} làm hỏng cả chuỗi nếu bạn không xử lý lỗi phía sau; {{completeOnTimeout}} tiện cho fallback nhưng che mất thông tin "nguồn này chậm".
 
 {{join()}} ném {{CompletionException}} (unchecked) còn {{get()}} ném {{ExecutionException}} (checked); cả hai **bọc** lỗi gốc, nên muốn biết lỗi gì thật thì xem {{getCause()}}.
@@ -1384,7 +1384,7 @@ try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
     return new Page(p.get(200, TimeUnit.MILLISECONDS),
                     o.get(200, TimeUnit.MILLISECONDS),
                     s.get(200, TimeUnit.MILLISECONDS));
-}   // close() dung cho toi khi het task; close() co the bi interrupt -> bat IOException
+}   // close() doi moi task con hoan tat (neu bi interrupt khi doi, co interrupt duoc khoi phuc)
 ~~~
 
 Không phải silver bullet: nó không làm tăng tốc việc CPU-bound, vẫn cần **giới hạn đồng thời** xuống DB (Semaphore hoặc pool DB), và ở Java 21 code trong {{synchronized}} dài hạn có thể bị **pinning** carrier thread (JDK 24 đã cải thiện, {{-Djdk.tracePinnedThreads=full}} để soi). Với Spring Boot 3.2+ chỉ cần {{spring.threads.virtual.enabled=true}} cho MVC.
@@ -1704,7 +1704,8 @@ class PageBuilder {
                 Page p = await(new PageBuilder(pool).page(
                     List.of(src("fast", "F?", () -> "ok"), src("slow", "S?", hanging)), 250));
                 eq("ok", p.values().get("fast"));
-                eq("S?", p.values().get("slow"));            } finally { pool.shutdownNow(); }
+                eq("S?", p.values().get("slow"));
+            } finally { pool.shutdownNow(); }
         });
         check("fan-out that: 3 nguon dung chung mot barrier", () -> {
             ExecutorService pool = newPool();
