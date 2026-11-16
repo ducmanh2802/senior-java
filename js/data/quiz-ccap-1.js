@@ -1756,6 +1756,486 @@ Lập bộ eval gồm câu hỏi thật từ khách hàng, chấm cả độ đ�
 Đo recall của bước truy xuất trên bộ câu hỏi có mã định danh; so sánh recall khi chỉ dùng vector và khi dùng hybrid.
 
 > Khi câu hỏi chứa mã định danh, hãy đảm bảo bước truy xuất khớp chính xác được chuỗi đó trước khi kết luận model yếu.`
+},
+{
+  id: 'qz-ccap-146',
+  topic: 'claude',
+  q: '[Operational Enablement] A company runs one Claude integration shared by five product teams. Finance wants to know how much each team spends on Claude, but the team only has the total monthly bill from the provider. Which change best supports per-team cost tracking?',
+  options: [
+    'Ask each team to estimate its own token usage from memory',
+    'Route all calls through one internal gateway that records caller, model, tokens in and out, and cost per caller, then match with provider usage reports',
+    'Switch every team to a different model so bills are easier to split',
+    'Create one provider account per team so no tracking is needed'
+  ],
+  answer: 1,
+  explain: `**Đúng: lớp gateway trung gian ghi nhận chi phí theo từng người gọi, rồi đối chiếu với báo cáo sử dụng của nhà cung cấp.** Mọi request đi qua gateway nên lớp này biết mỗi team gọi model nào, tốn bao nhiêu token vào và ra, mất bao lâu, và bị lỗi gì. Từ đó tính được chi phí theo từng team và có số liệu để cảnh báo khi chi phí vượt ngưỡng. Báo cáo chi phí của nhà cung cấp chỉ cho thấy tổng số tiền của toàn tài khoản, không biết đoạn nào thuộc team nào nếu bạn không gắn nhãn ở lớp của riêng mình.
+
+### Vì sao các phương án khác sai
+- **Yêu cầu mỗi team tự ước lượng token từ nhớ:** số liệu không chính xác, mỗi team đếm theo cách riêng, khó đối chiếu và không có nguồn sự thật.
+- **Đổi model khác nhau cho mỗi team:** không giúp tách chi phí theo team trên một hóa đơn, và làm thay đổi hành vi của assistant giữa các team.
+- **Tạo một tài khoản nhà cung cấp cho mỗi team:** quá phức tạp vận hành, và không thay thế được khả năng xem chi phí và lỗi theo từng endpoint trong hệ thống của bạn.
+
+### Khái niệm cần nhớ
+**Gateway (cổng trung gian)** là một thành phần đặt giữa ứng dụng của bạn và API của Anthropic; mọi lời gọi đều đi qua nó trước, giống như một bưu cục thu phí trước khi cho hàng vào đường cao tốc. Gateway nên ghi lại: request id, team gọi, model, số token vào và ra, cache hit, độ trễ, mã lỗi.
+**Token** là đơn vị văn bản mà model dùng để tính phí — có thể là một từ, một phần từ, hoặc một dấu câu. Ví dụ câu "Xin chào" có thể tách thành hai hay ba token.
+**Báo cáo sử dụng của nhà cung cấp** cho thấy tổng chi phí của toàn tài khoản, không biết đoạn nào thuộc team nào nếu bạn không gắn nhãn ở gateway.
+
+### Ví dụ cụ thể
+Giả sử mỗi tháng hóa đơn là hai trăm USD, nhưng bạn không biết team A chi một trăm năm mươi USD còn team B chi năm mươi USD. Sau khi đặt gateway, bạn thấy team A gọi model lớn nhất cho các câu hỏi đơn giản, còn team B gọi model nhỏ. Bạn đặt cảnh báo khi chi phí của một team vượt một trăm USD một tuần, và nhóm A chuyển phần traffic đơn giản qua model nhỏ hơn, chi phí giảm hơn một nửa mà chất lượng câu trả lời không đổi.
+
+### Lỗi hay gặp
+Ghi log toàn bộ nội dung request vào gateway làm log lớn, tốn lưu trữ, và có nguy cơ lộ dữ liệu nhạy cảm. Hãy chỉ ghi số liệu đếm (token, độ trễ, mã lỗi), không ghi nội dung tin nhắn của khách hàng.
+
+> Mẹo phỏng vấn: khi được hỏi về chi phí, hãy nói "chi phí theo từng người gọi" và "cảnh báo chi phí vượt ngưỡng" — đây là những điều nhà tuyển dụng mong một kiến trúc sư có thể thiết kế.`,
+},
+{
+  id: 'qz-ccap-147',
+  topic: 'claude',
+  q: '[Operational Enablement] A document platform must label three million support tickets by next morning. The work is not needed in real time. The current design sends one synchronous Messages API call per ticket from a pool of web servers and keeps hitting rate limits. Which change best fits this workload?',
+  options: [
+    'Submit the work to the Message Batches API as an asynchronous batch for the lower-cost non-urgent path',
+    'Keep the real-time loop and add more web servers to raise throughput',
+    'Merge all tickets into one giant prompt with a very large max_tokens',
+    'Run the job from a developer laptop using Claude Code in headless mode'
+  ],
+  answer: 0,
+  explain: `**Đúng: Message Batches API dành cho khối lượng lớn, không cần kết quả ngay.** Bạn gửi hàng loạt yêu cầu một lần, API xử lý bất đồng bộ, có thể mất mười hai đến hai mươi bốn giờ, và chi phí thấp hơn so với gọi đồng bộ. Việc gán nhãn ba triệu tickets mỗi đêm đúng hình thức này: chênh lệch vài giờ không ảnh hưởng, và bạn không phải giữ hàng nghìn kết nối đồng thời.
+
+### Vì sao các phương án khác sai
+- **Giữ vòng lặp đồng bộ và thêm web server:** vẫn là gọi theo thời gian thực; giới hạn gọi đồng bộ không được nới, chi phí không giảm, chỉ dời điểm nghẽn sang chỗ khác.
+- **Gộp ba triệu tickets vào một prompt lớn:** mỗi ticket là một yêu cầu độc lập; nhồi vào một prompt làm ngữ cảnh dài, khó parse, và vẫn vượt giới hạn kích thước.
+- **Chạy từ laptop bằng Claude Code:** công cụ dòng lệnh cho lập trình, không phải hệ thống xử lý dữ liệu hàng loạt có kiểm soát, không có SLA, không có audit.
+
+### Khái niệm cần nhớ
+**Messages API (gọi đồng bộ):** ứng dụng gửi yêu cầu và chờ API trả lời ngay trước khi làm bước tiếp theo, như gọi điện và đón máy.
+**Message Batches API (gọi bất đồng bộ):** bạn nộp một lô yêu cầu, API nhận và xử lý sau, bạn lấy kết quả khi xong, như gửi bưu kiện qua dịch vụ nhanh thay vì đứng chờ tại quầy.
+**Rate limit (giới hạn tần suất):** số lượng tối đa request được phép trong một khoảng thời gian; vượt ngưỡng API sẽ từ chối, thường là lỗi bốn hai chín.
+**Bất đồng bộ:** không chờ kết quả ngay; xử lý sau và thông báo khi hoàn tất.
+
+### Ví dụ cụ thể
+Ba triệu tickets, mỗi ticket trung bình một nghìn token, cộng khoảng ba tỷ token phải xử lý trong một đêm. Gọi đồng bộ từ nhóm web server rất dễ chạm ngưỡng gọi mỗi phút và làm chậm ứng dụng chính. Batch cho phép chia nhỏ thành nhiều lô, gửi một lần, rồi thu thập kết quả vào sáng hôm sau. Nếu một lô bị lỗi, bạn chỉ thử lại lô đó thay vì toàn bộ ba triệu ticket.
+
+### Lỗi hay gặp
+Batch vẫn cần xử lý idempotency (không xử lý trùng khi gửi lại một lô đã nộp), lưu mapping giữa kết quả và dữ liệu gốc, và chia nhỏ lô để dễ dàng thử lại khi có lỗi.
+
+> Mẹo phỏng vấn: với khối lượng lớn và không gấp, batch gần như luôn là lựa chọn mặc định trước khi nghĩ tới tối ưu lệnh gọi đồng bộ.`,
+},
+{
+  id: 'qz-ccap-148',
+  topic: 'claude',
+  q: '[Operational Enablement] A customer-facing assistant answers simple FAQ questions twenty-four hours a day. Cost and speed matter more than deep reasoning. Which model class is the best fit?',
+  options: [
+    'The most capable model for every request, regardless of cost',
+    'A model that requires fine-tuning before it can answer FAQs',
+    'The smallest, fastest, and cheapest model that still handles the task well',
+    'A different model for every single question to spread cost'
+  ],
+  answer: 2,
+  explain: `**Đúng: chọn model nhỏ nhất, nhanh nhất, rẻ nhất vẫn xử lý tốt công việc.** Đa số câu hỏi thường gặp là đơn giản (giờ mở cửa, cách đặt lại mật khẩu) không cần suy luận sâu. Model nhỏ tốn ít hơn, độ trễ thấp, đáp ứng được với chi phí thấp hơn nhiều so với model mạnh nhất, phù hợp với lưu lượng lớn và nhạy cảm về chi phí.
+
+### Vì sao các phương án khác sai
+- **Model mạnh nhất cho mọi yêu cầu:** chất lượng cao nhưng chi phí và độ trễ không cần thiết cho câu đơn giản.
+- **Cần fine-tuning trước khi trả lời câu hỏi thường gặp:** Claude đã có khả năng trả lời dựa trên tài liệu bạn cung cấp trong prompt, không cần huấn luyện lại cho câu hỏi cơ bản.
+- **Dùng model khác cho mỗi câu hỏi:** làm tăng độ phức tạp vận hành và khó quản lý chi phí.
+
+### Khái niệm cần nhớ
+**Model class (lớp model):** nhóm các model theo khả năng và kích thước, ví dụ nhóm nhỏ nhanh rẻ và nhóm lớn mạnh chậm đắt.
+**Fine-tuning (huấn luyện chỉnh):** quá trình dạy thêm model bằng dữ liệu của bạn — cần công sức và thường không bắt buộc cho câu hỏi thường gặp.
+**Capability (khả năng suy luận):** mức độ mô hình có thể phân tích và kết luận về vấn đề phức tạp.
+
+### Ví dụ cụ thể
+Trung bình mỗi câu trả lời FAQ tốn năm nghìn token. Nếu dùng model lớn nhất, chi phí mỗi câu trả lời có thể gấp ba hoặc bốn lần so với model nhỏ, trong khi khách hàng không nhận thấy sự khác biệt về chất lượng đối với câu "làm thế nào để đặt lại mật khẩu". Lần tháng với một triệu câu hỏi, sự chênh lệch này là hàng trăm triệu token.
+
+### Lỗi hay gặp
+Chọn model lớn cho mọi tác vụ vì "an toàn hơn" là cách đắt đỏ nhất để giảm chi phí. Hãy đo tỉ lệ câu trả lời thỏa mãn của model nhỏ; nếu quá nhiều câu bị bỏ lỡ, hãy nâng cấp có chọn lọc cho nhóm câu đó, chứ không phải toàn bộ.
+
+> Mẹo phỏng vấn: hãy chọn model theo mức độ khó của tác vụ, không theo danh vọng của model.`,
+},
+{
+  id: 'qz-ccap-149',
+  topic: 'claude',
+  q: '[Operational Enablement] A summarisation service calls a large Claude model for every request. At peak time the API returns 529 overloaded for a growing share of calls, and the business still needs a summary. What is the best design?',
+  options: [
+    'Retry with backoff, then fall back to a smaller model in the same family, and degrade to a shorter summary rather than fail',
+    'Retry the same model forever until one call succeeds',
+    'Return the raw document to the user without any summary',
+    'Disable streaming so the client stops noticing the delay'
+  ],
+  answer: 0,
+  explain: `**Đúng: có đường lui và chấp nhận giảm chất lượng có kiểm soát.** 529 là quá tải tạm thời. Sau vài lần thử lại có backoff, chuyển sang model nhỏ hơn cùng họ thường vẫn cho bản tóm tắt đủ dùng, nhanh và rẻ hơn. Quan trọng: người dùng nhận được kết quả ngắn thay vì một lỗi.
+
+### Vì sao các phương án khác sai
+- **Thử lại model lớn mãi mãi:** nếu quá tải kéo dài, request treo vô hạn; người dùng chờ rồi bỏ.
+- **Trả nguyên văn tài liệu:** đẩy việc đọc hàng chục trang sang người dùng, đúng thứ họ muốn tránh.
+- **Tắt streaming:** không giải quyết quá tải, chỉ làm trải nghiệm tệ hơn khi phải chờ.
+
+### Khái niệm cần nhớ
+**529 overloaded (quá tải tạm thời):** mã lỗi từ API báo hệ thống đang quá tải, không phải lỗi của mã code bạn.
+**Backoff (thời gian chờ tăng dần):** giữa các lần thử lại, bạn chờ lâu hơn và lâu hơn, ví dụ một giây, hai giây, bốn giây, để không làm nặng thêm hệ thống.
+**Fallback (dự phòng):** chuyển sang thành phần khác khi thành phần chính không sẵn sàng.
+**Degrade (giảm chất lượng có kiểm soát):** trả về kết quả ngắn hơn hoặc ít chi tiết thay vì hoàn toàn không trả lời.
+**Streaming (phát dòng):** API trả lời từng phần theo thời gian thực thay vì chờ toàn bộ câu trả lời xong mới gửi.
+
+### Ví dụ cụ thể
+Ở giờ cao điểm, mười phần trăm cuộc gọi nhận lỗi 529. Sau ba lần thử lại với backoff, dịch vụ chuyển sang model nhỏ hơn; ba phần trăm trong số đó kịp đọc toàn bộ tài liệu, phần còn lại chỉ nhận bản tóm tắt ngắn. Tổng thể, chín mươi lăm phần trăm khách hàng vẫn có câu trả lời thay vì toàn bộ gặp lỗi.
+
+### Lỗi hay gặp
+Thử lại ngay lập tức trong vòng lặp chặt chẽ sẽ làm tràn ngập hệ thống khi nó đang quá tải, gọi là hiện tượng thundering herd (đám đông oanh tống).
+
+> Mẹo phỏng vấn: một hệ thống tốt không phải không bao giờ lỗi, mà là hệ thống vẫn trả lời được khi thành phần chính chậm hoặc gặp sự cố.`,
+},
+{
+  id: 'qz-ccap-150',
+  topic: 'claude',
+  q: '[Operational Enablement] A team is about to launch a Claude feature that writes policy summaries, and they have no measurements yet. What should they build first?',
+  options: [
+    'A dashboard of token usage and latency',
+    'A fixed evaluation set with expected answers or a scoring rubric, run before launch and on every change',
+    'A bigger prompt with more examples of good summaries',
+    'A weekly meeting to read user complaints'
+  ],
+  answer: 1,
+  explain: `**Đúng: không thể cải thiện thứ chưa đo được.** Với tác vụ tóm tắt chính sách, chất lượng phải được định nghĩa thành tiêu chí: có giữ đủ điều khoản quan trọng không, có bịa nội dung không, có đúng giọng văn không. Một tập đánh giá cố định gồm đầu vào thật, đáp án kỳ vọng hoặc thang chấm cho phép so sánh các phiên bản và phát hiện sự thoái hoá.
+
+### Vì sao các phương án khác sai
+- **Bảng điều khiển token và độ trễ:** cần thiết cho vận hành nhưng không nói gì về chất lượng nội dung.
+- **Prompt dài hơn với nhiều ví dụ tốt:** có thể giúp, nhưng nếu không đo thì không biết giúp hay làm hại.
+- **Họp hàng tuần để đọc phàn nàn của người dùng:** tín hiệu quý nhưng đến trễ, không đại diện, và không so sánh được giữa hai phiên bản.
+
+### Khái niệm cần nhớ
+**Evaluation set (bộ đánh giá):** bộ câu hỏi và đáp án kỳ vọng (hoặc thang chấm) dùng để kiểm tra chất lượng model sau mỗi thay đổi, giống bài kiểm tra định kỳ cho học sinh.
+**Rubric (thang chấm điểm):** danh sách tiêu chí chấm câu trả lời, ví dụ "đúng ý", "bịa nội dung", "thiếu điều khoản", biến cảm nhận thành số liệu.
+**Regression (sự thoái hoá chất lượng):** khi thay đổi prompt hay model khiến kết quả kém hơn phiên bản trước mà không ai nhận ra ngay.
+
+### Ví dụ cụ thể
+Tập đánh giá có mười câu hỏi mẫu từ tài liệu chính sách thật. Sau mỗi lần sửa prompt, bạn chạy lại toàn bộ mười câu và chấm theo rubric. Nếu điểm từ bốn point xuống hai point, bạn biết ngay phiên bản mới kém hơn và không đưa nó lên production.
+
+### Lỗi hay gặp
+Chỉ theo dõi điểm trung bình che giấu việc chất lượng kém ở một nhóm câu hỏi nhỏ, ví dụ câu hỏi về chính sách hoàn trả luôn sai còn các câu khác đúng.
+
+> Mẹo phỏng vấn: với nội dung ảnh hưởng đến quyết định, tập đánh giá nên có cả câu không được bịa — câu trả lời thiếu còn sửa được, câu bịa thì có thể gây hại thật.`,
+},
+{
+  id: 'qz-ccap-151',
+  topic: 'claude',
+  q: '[Operational Enablement] A Claude-powered support assistant has run in pilot with one customer segment for six weeks. Quality metrics are stable. The product team wants to expand to all segments immediately. What is the safest next step?',
+  options: [
+    'Enable the assistant for all customers tomorrow since pilot metrics look good',
+    'Run the pilot for another six months before any change',
+    'Expand to one more segment at a time, monitor quality and cost per segment, then decide',
+    'Ask Claude to write the rollout plan and follow it without human review'
+  ],
+  answer: 2,
+  explain: `**Đúng: mở rộng từng đợt, không xả cả hệ thống cùng lúc.** Pilot chỉ xác minh công việc với một phân đoạn khách hàng nhỏ. Khi sang phân đoạn khác, ngữ cảnh, loại câu hỏi và mức độ phức tạp có thể khác, dẫn đến chất lượng giảm hoặc chi phí tăng. Mở rộng từng nhóm giúp phát hiện vấn đề sớm, chỉnh sửa prompt hoặc quy trình mà không ảnh hưởng toàn bộ khách hàng.
+
+### Vì sao các phương án khác sai
+- **Bật cho tất cả ngay:** nếu có lỗi chỉ xuất hiện ở một phân đoạn nhất định, toàn bộ khách hàng sẽ bị ảnh hưởng cùng lúc.
+- **Chạy pilot thêm sáu tháng:** bỏ qua cơ hội từ giá trị đã chứng minh được, làm chậm việc đem công cụ đến nhiều người hơn.
+- **Yêu cầu Claude viết kế hoạch mở rộng:** Claude có thể đề xuất nhưng không thay thế quyết định của con người dựa trên số liệu thực tế.
+
+### Khái niệm cần nhớ
+**Pilot (chương trình thử nghiệm nhỏ):** chạy tính năng với một nhóm người dùng nhỏ trong thời gian giới hạn để kiểm tra trước khi mở rộng.
+**Segment (phân đoạn khách hàng):** nhóm khách hàng có đặc điểm giống nhau, ví dụ doanh nghiệp nhỏ hay doanh nghiệp lớn.
+**Mở rộng từng đợt:** giống như thả một con thuyền thử trước, xem nước phải chồng chảy, rồi mới thả toàn bộ hạm đội.
+
+### Ví dụ cụ thể
+Pilot chạy sáu tuần với một phân đoạn doanh nghiệp vừa và nhỏ; chỉ số chất lượng ổn định và số ticket được assistant xử lý giảm hai mươi phần trăm. Thay vì bật cho cả mười phân đoạn ngay lập tức, đội mở rộng sang phân đoạn tiếp theo, theo dõi chất lượng và chi phí mỗi phân đoạn trong hai tuần, rồi mới quyết định tiếp tục.
+
+### Lỗi hay gặp
+Không thiết lập ngưỡng dừng cho mỗi đợt: nếu tỉ lệ câu trả lời bị ý hoặc chi phí vượt ngưỡng, cần dừng lại và xem xét lại trước khi tiếp tục.
+
+> Mẹo phỏng vấn: mỗi đợt mở rộng nên có ngưỡng dừng rõ ràng trước khi bắt đầu.`,
+},
+{
+  id: 'qz-ccap-152',
+  topic: 'claude',
+  q: '[Operational Enablement] A Claude assistant has been live for three months. Support agents report that some answers are outdated compared to the latest policy documents. How should the team establish a feedback loop?',
+  options: [
+    'Wait for customers to complain before making any changes',
+    'Ask agents to manually correct every wrong answer in a spreadsheet',
+    'Add a thumbs-up or thumbs-down rating on each answer, review low-rated answers weekly, and update the knowledge source',
+    'Replace the assistant with a static FAQ page'
+  ],
+  answer: 2,
+  explain: `**Đúng: thu thập phản hồi có cấu trúc và xử lý định kỳ.** Nút thích hoặc không thích trên mỗi câu trả lời cho thấy câu nào cần xem xét. Đội vận hành xem xét từng tuần, nhóm các lỗi giống nhau, rồi cập nhật nguồn kiến thức (tài liệu, đoạn trong RAG) để khắc phục. Cách này biến trải nghiệm của nhân viên đầu tiên vào bước cải thiện hệ thống.
+
+### Vì sao các phương án khác sai
+- **Chờ khách hàng phàn nàn:** thì hệ thống đã gây thiệt hại và mất uy tín.
+- **Nhân viên sửa tay mỗi câu sai trong bảng tính:** không mở rộng được, và không cải thiện được mô hình hay nguồn dữ liệu cho các câu hỏi tương tự sau này.
+- **Thay assistant bằng trang câu hỏi thường gặp tĩnh:** mất đi khả năng tự động trả lời và tra cứu mà công cụ mang lại.
+
+### Khái niệm cần nhớ
+**Feedback loop (vòng phản hồi):** thu thập ý kiến của người dùng, phân tích, cải thiện hệ thống, rồi thu lại ý kiến mới, lặp đi lặp lại.
+**Knowledge source (nguồn kiến thức):** bộ tài liệu mà assistant dựa vào để trả lời, ví dụ FAQ, tài liệu chính sách, hoặc đoạn trong hệ thống RAG.
+**RAG (tìm kiếm bổ sung tạo ra):** kỹ thuật lấy đoạn tài liệu liên quan và gửi kèm câu hỏi cho model, thay vì nhồi toàn bộ kho tài liệu vào một lần.
+
+### Ví dụ cụ thể
+Nhân viên hỗ trợ báo một câu trả lời về chính sách hoàn trả đã cũ. Đội xem xét nút không thích tuần sau, thấy ba câu trả lời liên quan đến cùng một đoạn tài liệu cũ, cập nhật đoạn đó trong nguồn kiến thức, và các câu trả lời sau đó đúng theo chính sách mới.
+
+### Lỗi hay gặp
+Chỉ thu thập phản hồi mà không ai xem xét định kỳ thì nút thích/không thích trở thành trang trí, không cải thiện được gì.
+
+> Mẹo phỏng vấn: phản hồi từ người dùng cuối là tín hiệu sớm nhất về chất lượng giảm; hãy thiết kế cách thu thập ngay từ ngày đầu.`,
+},
+{
+  id: 'qz-ccap-153',
+  topic: 'claude',
+  q: '[Operational Enablement] A financial regulation requires that all Claude interactions be auditable. Which single approach is sufficient?',
+  options: [
+    'Add a system prompt saying "be audit-friendly"',
+    'Implement centralized logging with caller identity, timestamp, request purpose, and output hash',
+    'Disable all tool use to prevent unauthorized actions',
+    'Use a single shared API key for all interactions'
+  ],
+  answer: 1,
+  explain: `**Đúng: nhật ký tập trung với caller identity, timestamp, request purpose và output hash tạo ra bản ghi kiểm toán có cấu trúc và truy vết được.** System prompt chỉ là chỉ dẫn mềm, không tạo ra bản ghi. Vô hiệu hoá tool use làm giảm chức năng, và dùng chung một API key khiến không thể kiểm toán riêng lẻ mỗi tương tác.
+
+### Vì sao các phương án khác sai
+- **Thêm câu "be audit-friendly" vào system prompt:** chỉ là chỉ dẫn, không ghi lại ai gọi, khi nào, vì lý do gì.
+- **Vô hiệu hoá tất cả tool use:** làm giảm chức năng, và không giải quyết yêu cầu kiểm tra lại.
+- **Dùng một API key chung cho mọi tương tác:** không biết tương tác nào thuộc về ai, không thể kiểm toán theo người dùng.
+
+### Khái niệm cần nhớ
+**Auditable (có thể kiểm toán):** có bản ghi đủ chi tiết để sau này xem lại ai đã làm gì.
+**Caller identity (danh tính người gọi):** ai thực hiện yêu cầu, ví dụ mã nhân viên hoặc mã khách hàng.
+**Output hash (mã băm của đầu ra):** mã ngắn duy nhất tạo từ nội dung câu trả lời, dùng để chứng minh câu trả lời sau này không bị thay đổi.
+**Nhật ký tập trung:** tất cả các team ghi nhật ký vào một nơi duy nhất thay vì mỗi team một nơi.
+
+### Ví dụ cụ thể
+Giá trị kiểm tra: một chủ tịch khoa tài chính yêu cầu xem lại mọi tương tác liên quan đến dữ liệu thẻ tín dụng trong tháng. Với nhật ký có caller, timestamp, mục đích và mã băm, đội bảo mật tìm được ba cuộc gọi của một nhân viên, xác minh nội dung và gửi báo cáo cho nhà quản lý. Nếu chỉ có tổng số cuộc gọi, họ không thể trả lời được câu hỏi này.
+
+### Lỗi hay gặp
+Chỉ ghi lại model name và độ dài output: hữu ích cho hiệu năng, nhưng không biết ai chịu trách nhiệm về từng câu trả lời.
+
+> Mẹo phỏng vấn: với hệ thống ảnh hưởng quyết định, hãy thiết kế để câu trả lời kiểm chứng được, thay vì cố làm model tự tin hơn.`,
+},
+{
+  id: 'qz-ccap-154',
+  topic: 'claude',
+  q: '[Operational Enablement] The system prompt of a support bot is edited almost weekly, and quality has been quietly degrading. Which practice best prevents silent regressions?',
+  options: [
+    'Keep prompts in version control, run a fixed evaluation set on every change, and promote only when quality metrics hold',
+    'Let each engineer edit the production prompt directly from the dashboard',
+    'Remove the system prompt so behaviour cannot change',
+    'Increase max_tokens after every prompt edit'
+  ],
+  answer: 0,
+  explain: `**Đúng: prompt là code, phải có review và test.** Khi prompt nằm trong kiểm soát phiên bản, mọi thay đổi đều truy vết được. Một tập đánh giá cố định chạy trên mỗi thay đổi cho biết chất lượng tăng hay giảm; chỉ kích hoạt phiên bản mới khi các chỉ số đạt ngưỡng. Đây là cách duy nhất để thấy sự thoái hoá nhỏ mà người dùng chưa kịp báo.
+
+### Vì sao các phương án khác sai
+- **Sửa trực tiếp trên production từ bảng điều khiển:** không có lịch sử, không thể so sánh, không thể quay lại phiên bản trước; một lỗi nhỏ có thể tồn tại hàng tuần.
+- **Bỏ system prompt:** lấy đi phần định hướng hành vi, không phải giải pháp cho việc thiếu kiểm soát.
+- **Tăng max_tokens sau mỗi lần sửa prompt:** chỉ đổi độ dài đầu ra, không liên quan đến chất lượng prompt.
+
+### Khái niệm cần nhớ
+**Version control (kiểm soát phiên bản):** hệ thống lưu lại mọi thay đổi của tệp, ví dụ git, cho phép xem lại và quay lại phiên bản cũ.
+**Silent regression (sự thoái hoá không ai nhận ra):** chất lượng giảm dần mà người dùng chưa phàn nàn, chỉ phát hiện được qua đánh giá định kỳ.
+**Promote (kích hoạt phiên bản mới):** đưa phiên bản mới của prompt lên production thay cho phiên bản cũ.
+
+### Ví dụ cụ thể
+Mỗi prompt có phiên bản, mô tả thay đổi, tập đánh giá, ngưỡng đậu, người đánh giá. Khi đổi model hoặc cấu hình công cụ, chạy lại cùng tập đánh giá để so sánh công bằng. Nếu điểm giảm, giữ phiên bản cũ và không promote.
+
+### Lỗi hay gặp
+Prompt không có đánh giá giống như code không có test: bạn chỉ biết nó hỏng khi có người phàn nàn.
+
+> Mẹo phỏng vấn: prompt không có đánh giá giống như code không có test.`,
+},
+{
+  id: 'qz-ccap-155',
+  topic: 'claude',
+  q: '[Operational Enablement] A SaaS provider hosts two hundred customer tenants on one Claude integration. One heavy tenant sends ten times the average traffic and slows down everyone else. Which measure best protects the other tenants?',
+  options: [
+    'Use one API key for all tenants and add the tenant name to each prompt',
+    'Give each tenant a separate browser session on the same account',
+    'Apply per-tenant rate limits or quotas in front of the shared integration',
+    'Rely on prompt caching to keep tenant data apart'
+  ],
+  answer: 2,
+  explain: `**Đúng: áp dụng hạn mức hoặc giới hạn tần suất theo mỗi khách hàng thuê trước lớp tích hợp chung.** Dùng chung một credential không sai, miễn là ứng dụng luôn lọc theo tenant_id ở mọi truy vấn và không bao giờ để dữ liệu của khách hàng này lẫn sang khách hàng khác. Nhưng chia sẻ tài nguyên thì phải có hạn mức: một khách hàng gửi gấp trăm lần lưu lượng trung bình sẽ làm chậm tất cả.
+
+### Vì sao các phương án khác sai
+- **Dùng một API key chung cho tất cả khách hàng và thêm tên khách hàng vào mỗi prompt:** tên trong prompt không phải cơ chế kiểm soát; nếu truy xuất hay log sai, dữ liệu vẫn lẫn.
+- **Cho mỗi khách hàng một phiên bản trình duyệt trên cùng một tài khoản:** phiên trình duyệt không tạo ranh giới dữ liệu ở phía máy chủ.
+- **Dựa vào prompt caching để tách biệt dữ liệu khách hàng:** cache là cơ chế tối ưu chi phí, không phải cơ chế phân quyền; không được dùng làm ranh giới an toàn.
+
+### Khái niệm cần nhớ
+**Tenant (khách hàng thuê):** một khách hàng trong hệ thống đa khách hàng, nơi nhiều khách hàng dùng chung một hệ thống nhưng dữ liệu mỗi người phải riêng biệt.
+**Rate limit (giới hạn tần suất):** số lượng tối đa request được phép trong một khoảng thời gian.
+**Quota (hạn mức):** mức sử dụng tối đa cho phép, ví dụ số token mỗi ngày cho mỗi khách hàng.
+
+### Ví dụ cụ thể
+Một trong hai trăm khách hàng gửi gấp mười lần lưu lượng trung bình và làm chậm hệ thống. Sau khi đặt hạn mức theo mỗi khách hàng, khách hàng đó bị giới hạn khi vượt ngưỡng, còn một trăm chín mươi chín khách hàng khác vẫn nhận câu trả lời bình thường.
+
+### Lỗi hay gặp
+Không kiểm tra cách ly dữ liệu: mỗi khách hàng truy cập chéo phải bị từ chối, và kiểm tra tải: một khách hàng bão hòa không được làm sập khách hàng khác.
+
+> Mẹo phỏng vấn: ranh giới an toàn luôn nằm ở lớp máy chủ của bạn, không phải trong prompt.`,
+},
+{
+  id: 'qz-ccap-156',
+  topic: 'claude',
+  q: '[Operational Enablement] A project team built a Claude integration and is handing it over to the operations team. Which information is most important to transfer?',
+  options: [
+    'Only the source code and API key',
+    'How the system is monitored, who to contact during incidents, rollback steps, and prompt versions',
+    'A recording of the project kickoff meeting',
+    'The list of prompts used during development'
+  ],
+  answer: 1,
+  explain: `**Đúng: chuyển giao thông tin vận hành, không chỉ code.** Đội vận hành cần biết cách theo dõi hệ thống (chỉ số, cảnh báo), ai liên hệ khi có sự cố, cách quay lại phiên bản trước và phiên bản prompt hiện đang dùng. Nếu không có thông tin này, một sự cố nhỏ có thể kéo dài vì không biết phải sửa ở đâu hay ai chịu trách nhiệm.
+
+### Vì sao các phương án khác sai
+- **Chỉ mã nguồn và API key:** thiếu bối cảnh vận hành, làm khó khôi phục khi có sự cố.
+- **Bản ghi hình cuộc họp khởi động dự án:** không chứa thông tin hành động cần thiết cho vận hành hàng ngày.
+- **Danh sách prompt dùng trong quá trình phát triển:** không đủ; cần biết prompt nào đang chạy production và cách thay đổi an toàn.
+
+### Khái niệm cần nhớ
+**Runbook (sổ thao tác vận hành):** tài liệu hướng dẫn vận hành hàng ngày: theo dõi sao, xử lý sự cố, và cách cập nhật prompt an toàn.
+**Rollback (quay lại phiên bản trước):** đưa hệ thống về trạng thái trước khi có sự cố hoặc thay đổi xấu.
+**On-call (nhân viên trực):** người chịu trách nhiệm xử lý sự cố ngoài giờ làm việc.
+
+### Ví dụ cụ thể
+Sau khi bàn giao, một sự cố xảy ra lúc ba giờ sáng. Đội trực mở runbook, thấy cách xem chỉ số độ trễ qua gateway, biết gọi người trực của nhóm phát triển, và có bước quay lại phiên bản prompt trước đó trong năm phút. Sự cố được khôi phục nhanh thay vì tìm kiếm mã nguồn suốt buổi sáng.
+
+### Lỗi hay gặp
+Chỉ chuyển giao mã nguồn mà không có runbook là giữ bí mật vận hành ở đầu phát triển; khi người đó nghỉ việc, đội không biết làm gì khi hệ thống hỏng.
+
+> Mẹo phỏng vấn: handoff tốt bao gồm runbook: cấu trúc hệ thống, quy trình xử lý sự cố, và cách cập nhật prompt mà không gây gián đoạn.`,
+},
+{
+  id: 'qz-ccap-157',
+  topic: 'claude',
+  multi: true,
+  q: '[Operational Enablement] A platform team operates one Claude integration for thirty product teams. Finance wants to cut token spend, and SRE wants to stop one team from exhausting the shared quota. Which two measures help most? (Choose 2)',
+  options: [
+    'Route every request through a gateway that enforces per-team token quotas and records cost per caller',
+    'Put all teams on one shared API key and add the team name to each prompt',
+    'Enable prompt caching for stable system-prompt prefixes so repeated prefixes are served from cache',
+    'Ask every team to self-report token counts from their own logs',
+    'Send all requests to the largest model so fewer calls are needed'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: giới hạn theo team ở lớp gateway và bỏ qua phần tính toán lại cho tiền tố ổn định.** Giới hạn token theo team là ranh giới cưỡng chế, không chỉ báo cáo: một team gửi quá nhiều sẽ bị chặn, bảo vệ các team còn lại. Prompt caching lưu kết quả của phần prompt không đổi (ví dụ hướng dẫn hệ thống dài) và đọc từ cache ở các lần sau, chi phí đọc cache thấp hơn nhiều so với tính toán lại mỗi lần. Cả hai cùng hoạt động: gateway kiểm soát số lượng, caching giảm chi phí mỗi cuộc gọi.
+
+### Vì sao các phương án còn lại sai
+- **Một API key chung và thêm tên team vào prompt:** tên trong prompt không phải cơ chế kiểm soát; nếu truy xuất hay log sai, chi phí vẫn bị attribution sai, và không có gì chặn team nào dùng quá nhiều.
+- **Mỗi team tự báo số token từ log của mình:** số liệu phân tán, mỗi nơi đếm một kiểu, không có nguồn sự thật, và khó đối chiếu với hóa đơn.
+- **Gửi tất cả request cho model lớn nhất:** chi phí tăng, không giảm; model lớn đắt hơn mỗi token và không làm giảm số cuộc gọi một cách đáng kể.
+
+### Khái niệm cần nhớ
+**Gateway (cổng trung gian):** thành phần giữa ứng dụng và API, áp dụng giới hạn theo người gọi.
+**Quota (hạn mức):** mức sử dụng tối đa cho phép, ví dụ số token mỗi ngày cho mỗi team.
+**Prompt caching (bộ nhớ đệm prompt):** lưu phần đầu prompt không thay đổi để các lần sau đọc từ cache thay vì tính toán lại.
+**Prefix (tiền tố):** phần đầu prompt, ví dụ hướng dẫn hệ thống, phải giống hệt nhau từng ký tự giữa các request để khớp cache.
+
+### Ví dụ cụ thể
+Ba mươi team dùng chung một hợp đồng. Sau khi đặt giới hạn năm nghìn token mỗi ngày cho mỗi team và bật caching cho hướng dẫn hệ thống dài, team nào gửi quá nhiều bị chặn trong ngày, còn các yêu cầu lặp lại của các team khác đọc từ cache và chi phí token giảm đáng kể mà câu trả lời không đổi.
+
+### Lỗi hay gặp
+Tên team trong prompt không ngăn chặn việc dùng quá mức; chỉ có giới hạn được thực thi ở gateway mới là ranh giới cưỡng chế.
+
+> Mẹo phỏng vấn: hãy đo theo caller: vừa phục vụ phân bổ chi phí, vừa phát hiện team nào dùng bất thường.`,
+},
+{
+  id: 'qz-ccap-158',
+  topic: 'claude',
+  multi: true,
+  q: '[Operational Enablement] A Claude feature in production starts giving wrong answers that customers act on, right after a prompt change. Which two actions are most appropriate right away? (Choose 2)',
+  options: [
+    'Roll the prompt back to the previous version and re-enable only after eval passes',
+    'Keep the new prompt running while writing a longer warning in the system prompt',
+    'Route affected requests to a human fallback or show a safe message instead of the model answer',
+    'Increase max_tokens so answers are longer and more careful',
+    'Ask customers to confirm each answer before acting'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: quay lại phiên bản trước và chặn câu trả lời tự động cho đến khi đánh giá qua.** Khi prompt mới đã được lưu phiên bản trước trong hệ thống kiểm soát phiên bản, bạn có thể quay về ngay lập tức, dừng tổn hại. Đồng thời, chuyển các yêu cầu bị ảnh hưởng sang người xử lý thủ công hoặc thông báo an toàn thay vì để model tiếp tục trả lời sai. Chỉ kích hoạt lại phiên bản mới sau khi tập đánh giá đạt ngưỡng.
+
+### Vì sao các phương án còn lại sai
+- **Giữ prompt mới chạy và viết cảnh báo dài hơn trong system prompt:** cảnh báo chỉ là lời nhắc, không ngăn model trả lời sai; khách hàng vẫn hành động theo kết quả sai.
+- **Tăng max_tokens:** chỉ làm câu trả lời dài hơn, không làm nó đúng hơn.
+- **Yêu cầu khách hàng xác nhận mỗi câu trả lời:** giảm chút rủi ro nhưng không ngăn câu trả lời sai đi đến người dùng; trải nghiệm tệ và không thể mở rộng.
+
+### Khái niệm cần nhớ
+**Rollback (quay lại phiên bản trước):** đưa hệ thống về trạng thái trước khi có sự cố, giống bấm nút undo cho bản thiết kế.
+**Eval pass (đánh giá đạt ngưỡng):** chạy tập câu hỏi mẫu trước khi đưa prompt mới lên production.
+**Human fallback (dự phòng con người):** yêu cầu người thực thi thay vì để model tự động xử lý.
+**Safe message (thông báo an toàn):** thông báo cho người dùng biết hệ thống tạm thời không xử lý yêu cầu đó, thay vì trả lời sai.
+
+### Ví dụ cụ thể
+Sau khi thay đổi prompt buổi sáng, tỉ lệ câu trả lời sai tăng từ một phần trăm lên mười phần trăm. Đội quay về phiên bản hôm qua trong năm phút, chuyển các yêu cầu về chính sách hoàn trả sang nhân viên hỗ trợ, và chạy đánh giá trên tập mười câu hỏi mẫu. Chỉ khi điểm đánh giá khôi phục lại, prompt mới mới được đưa lại.
+
+### Lỗi hay gặp
+Không giữ phiên bản prompt trước đó thì không thể quay lại nhanh; mỗi lần sửa prompt nên lưu phiên bản trước.
+
+> Mẹo phỏng vấn: khi có sự cố chất lượng, hành động đầu tiên là dừng tổn hại, sau đó mới điều tra nguyên nhân.`,
+},
+{
+  id: 'qz-ccap-159',
+  topic: 'claude',
+  multi: true,
+  q: '[Operational Enablement] A Claude feature’s p95 latency jumps from two seconds to twelve seconds after a traffic increase, while most requests are still fast. Which two first actions are most useful? (Choose 2)',
+  options: [
+    'Check per-endpoint latency and error rate in the gateway logs to find where the delay happens',
+    'Check whether one caller or tenant is driving a traffic spike',
+    'Immediately switch all traffic to the largest model',
+    'Disable all logging to make the system faster',
+    'Ask users to retry their requests until latency improves'
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: đo trước khi sửa.** Độ trễ cao ở phần đuôi có thể do một điểm cuối cụ thể chậm, hoặc do một khách hàng thuê gửi quá nhiều request gây nghẽn. Ghi nhật ký cổng trung gian cho phép bạn thấy từng điểm cuối và từng người gọi có độ trễ cao, lỗi gì, từ đó biết cần giảm tải hay tối ưu điểm cuối nào.
+
+### Vì sao các phương án còn lại sai
+- **Chuyển ngay toàn bộ traffic sang model lớn nhất:** model lớn thường chậm hơn và đắt hơn, không giải quyết điểm nghẽn, và làm tăng chi phí.
+- **Tắt tất cả nhật ký:** làm bạn mù khi đang điều tra sự cố, không làm hệ thống nhanh hơn đáng kể.
+- **Yêu cầu người dùng thử lại cho đến khi nhanh:** đẩy gánh nặng sang người dùng, có thể làm tràn ngập hệ thống hơn.
+
+### Khái niệm cần nhớ
+**p95 (ngưỡng chín mươi lăm phần trăm):** chín mươi lăm phần trăm yêu cầu nhanh hơn con số này, năm phần trăm còn lại chậm hơn. Nếu phần lớn yêu cầu nhanh nhưng p95 cao, có nhóm nhỏ yêu cầu bị chậm nghiêm trọng.
+**Traffic spike (đột biến lưu lượng):** lưu lượng yêu cầu tăng đột ngột trong thời gian ngắn, ví dụ một người gọi gửi rất nhiều request cùng lúc.
+**Per-endpoint (theo mỗi điểm cuối):** theo từng chức năng hoặc đường dẫn API, ví dụ "tóm tắt tài liệu" và "trả lời FAQ" là hai điểm cuối khác nhau.
+
+### Ví dụ cụ thể
+p95 tăng từ hai giây lên mười hai giây sau khi lưu lượng tăng. Đội xem nhật ký gateway: điểm cuối "tóm tắt tài liệu" có độ trễ chín giây, và một khách hàng thuê đơn lẻ tạo ra sáu mươi phần trăm traffic. Họ đặt giới hạn cho khách hàng đó và tối ưu điểm cuối tóm tắt, p95 giảm về dưới ba giây mà không ảnh hưởng các khách hàng khác.
+
+### Lỗi hay gặp
+Chỉ xem trung bình toàn hệ thống che giấu việc một nhóm nhỏ yêu cầu bị chậm rất lâu, vì trung bình có thể vẫn thấp.
+
+> Mẹo phỏng vấn: khi độ trễ tăng, hãy xem theo từng điểm cuối và từng người gọi, không chỉ nhìn con số trung bình.`,
+},
+{
+  id: 'qz-ccap-160',
+  topic: 'claude',
+  multi: true,
+  q: '[Operational Enablement] A Claude agent can update customer records. A test showed it once attempted a write that needed a human decision. Which two changes most directly reduce the risk? (Choose 2)',
+  options: [
+    'Lengthen the system prompt with more warnings about careful behaviour',
+    'Require an explicit human approval step before the write executes',
+    'Set temperature to zero so the model becomes deterministic',
+    'Enforce the write limit and allowed actions in the backend, not only in the prompt',
+    'Notify the manager by email after the write has already been issued'
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: chặn ở lớp thực thi, không chỉ ở lớp lời nhắc.** System prompt là chỉ dẫn, model có thể hiểu sai hoặc bị thuyết phục bởi dữ liệu độc hại. Với hành động có hậu quả như cập nhật hồ sơ khách hàng, phải có bước phê duyệt của người và kiểm soát ở backend: kiểm tra hạn mức, quyền, trạng thái đơn hàng ngay trước khi thực thi.
+
+### Vì sao các phương án còn lại sai
+- **Viết prompt dài hơn:** tăng khả năng model hiểu nhưng không tạo ra ranh giới cưỡng chế.
+- **Đặt temperature bằng không:** giảm ngẫu nhiên, không loại bỏ sai sót logic; model vẫn có thể chọn sai hành động.
+- **Email báo sau khi đã cập nhật:** hậu quả đã xảy ra; thông báo không phải kiểm soát.
+
+### Khái niệm cần nhớ
+**Human approval (phê duyệt của con người):** bước yêu cầu người xác nhận trước khi thực hiện hành động quan trọng.
+**Backend enforcement (kiểm soát ở phía hệ thống):** kiểm tra quyền và giới hạn trên máy chủ trước khi thực thi, không tin vào model.
+**Least privilege (quyền tối thiểu):** chỉ cấp quyền đủ để hoàn thành việc, không hơn.
+**Temperature (mức độ ngẫu nhiên):** điều khiển độ ngẫu nhiên của câu trả lời model, không phải cơ chế bảo mật.
+
+### Ví dụ cụ thể
+Nhân viên hỗ trợ yêu cầu agent cập nhật địa chỉ giao hàng. Agent muốn gọi API cập nhật ngay, nhưng hệ thống yêu cầu một quản lý nhấn nút phê duyệt, và backend kiểm tra nhân viên đó có quyền sửa đơn hàng đó không. Nếu không có bước này, một sai sót của model có thể thay đổi địa chỉ hàng ngàn đơn hàng.
+
+### Lỗi hay gặp
+Tin vào system prompt để ngăn chặn hành động nguy hiểm là hiểu lầm phổ biến; prompt là lời nhắc, không phải tường lửa.
+
+> Mẹo phỏng vấn: hành động nguy hiểm thì thêm một bước người, và luôn kiểm tra lại ở phía hệ thống.`,
 }
 // qtool append point
 );
