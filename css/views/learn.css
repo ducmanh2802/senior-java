@@ -104,3 +104,36 @@
 .view-learn .ln-eb .ln-h { margin-top: 0; }
 .view-learn .ln-eb-text { width: 100%; min-height: 120px; }
 .view-learn .ln-eb-actions { margin: 10px 0; gap: 8px; flex-wrap: wrap; }
+
+/* ---------- visual model answer (App.ui.answer) — scoped to this view ---------- */
+.view-learn .ans { display: flex; flex-direction: column; gap: 10px; }
+.view-learn .ans-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.view-learn .ans-summary { padding: 12px 14px; border: 1px solid var(--accent); border-left-width: 4px; border-radius: var(--radius-sm); background: var(--accent-soft); }
+.view-learn .ans-summary-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.view-learn .ans-summary .md > :last-child { margin-bottom: 0; }
+.view-learn .ans-sec { border: 1px solid var(--border); border-left: 4px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.view-learn .ans-sec > summary { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; list-style: none; }
+.view-learn .ans-sec > summary::-webkit-details-marker { display: none; }
+.view-learn .ans-sec > summary::after { content: '▾'; margin-left: auto; color: var(--muted); transition: transform .15s; }
+.view-learn .ans-sec:not([open]) > summary::after { transform: rotate(-90deg); }
+.view-learn .ans-sec > summary h4 { margin: 0; font-size: 1rem; color: var(--text); }
+.view-learn .ans-sec > summary .ans-read { margin-left: 4px; }
+.view-learn .ans-ico { font-size: 1.1rem; line-height: 1; }
+.view-learn .ans-body { padding: 0 14px 10px; }
+.view-learn .ans-body > :last-child { margin-bottom: 0; }
+.view-learn .ans-k-how { border-left-color: var(--info); }
+.view-learn .ans-k-ex, .view-learn .ans-k-flow { border-left-color: var(--accent-2); }
+.view-learn .ans-k-real, .view-learn .ans-k-ops { border-left-color: var(--ok); }
+.view-learn .ans-k-cmp, .view-learn .ans-k-when { border-left-color: var(--link); }
+.view-learn .ans-k-warn { border-left-color: var(--warn); }
+.view-learn .ans-k-say { border-left-color: var(--accent); background: var(--surface-2); }
+.view-learn .ans-steps { display: flex; justify-content: space-between; gap: 8px; }
+.view-learn .ans-recall { margin: 0; padding: 10px 14px; border-radius: var(--radius-sm); background: var(--surface-2); border: 1px dashed var(--accent); font-weight: 600; }
+.view-learn .ans.is-step .ans-sec { box-shadow: var(--shadow); }
+.view-learn .ans-intro { margin: 0 0 4px; }
+.view-learn .ans-progress { margin: 0 8px; }
+.view-learn .ans-read { min-height: 32px; }
+@media (max-width: 480px) {
+  .view-learn .ans-body { padding: 0 10px 8px; }
+  .view-learn .ans-sec > summary { padding: 8px 10px; }
+}

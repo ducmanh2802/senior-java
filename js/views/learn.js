@@ -246,7 +246,7 @@
       </div>
       ${tocHtml}
       <div class="card ln-goals"><b>${App.t('learn.goalsTitle')}</b><ul>${(l.goals || []).map(g => '<li>' + App.md(g).replace(/^<p>|<\/p>$/g, '') + '</li>').join('')}</ul></div>
-      <article class="card md ln-body" id="ln-theory">${addHeadingIds(App.md(l.body))}</article>
+      <article class="card md ln-body" id="ln-theory">${(App.ui.answer ? App.ui.answer(addHeadingIds(App.md(l.body)), { lang: 'vi' }) : addHeadingIds(App.md(l.body)))}</article>
       <section class="card ln-eb"><h2 class="ln-h">${App.t('learn.ebTitle')}</h2><p class="muted">${App.t('learn.ebDesc')}</p>
         <textarea class="textarea ln-eb-text" rows="6" aria-label="${App.t('learn.ebTitle')}" placeholder="${esc(App.t('learn.ebPh'))}">${esc(loadEb(l.id))}</textarea>
         <div class="row ln-eb-actions"><button type="button" class="btn primary" data-act="eb-grade">${App.t('learn.ebGrade')}</button>${App.speech && App.speech.supported ? `<button type="button" class="btn mic-btn" data-act="eb-mic">🎤 ${App.t('learn.ebMic')}</button>` : ''}</div>
@@ -460,7 +460,10 @@
           case 'solution': {
             const i = Number(c.dataset.ex), x = ex(c);
             if (!runs[i] && !confirm(App.t('learn.solutionConfirm'))) return;
-            c.querySelector('.ln-solution').innerHTML = `<h4>${App.t('learn.solutionTitle')}</h4><pre class="code" data-lang="java"><code>${App.highlight(x.reference, 'java')}</code></pre><div class="md">${App.md(x.explain)}</div>`;
+            const exHtml = App.md(x.explain);
+            const exLong = (String(x.explain).match(/^### /gm) || []).length >= 2;
+            const exBody = exLong && App.ui.answer ? App.ui.answer(exHtml, { lang: 'vi' }) : '<div class="md">' + exHtml + '</div>';
+            c.querySelector('.ln-solution').innerHTML = `<h4>${App.t('learn.solutionTitle')}</h4><pre class="code" data-lang="java"><code>${App.highlight(x.reference, 'java')}</code></pre>` + exBody;
             break;
           }
           case 'reset':
