@@ -604,7 +604,7 @@ String url = req.url().toString();
 - Update metadata hoặc copy object là thao tác mới, không atomic với người đọc đang tải.
 
 ### Multipart
-- Bắt buộc dùng cho file lớn hơn 100 MB theo khuyến nghị; giới hạn một object 5 TB (cuối 2025 AWS đã nâng lên 50 TB), tối đa 10.000 part, mỗi part 5 MB–5 GB (part cuối có thể nhỏ hơn).
+- Bắt buộc dùng cho file lớn hơn 100 MB theo khuyến nghị; giới hạn một object 5 TB, tối đa 10.000 part, mỗi part 5 MB–5 GB (part cuối có thể nhỏ hơn).
 - Upload song song nhiều part tăng tốc đáng kể.
 - Nếu một part lỗi, chỉ cần retry part đó. Phải gọi CompleteMultipartUpload; nếu bỏ dở, dùng lifecycle {{AbortIncompleteMultipartUpload}}.
 - Kiểm tra checksum (CRC32C/SHA256) để phát hiện hỏng dữ liệu.
@@ -616,7 +616,7 @@ String url = req.url().toString();
 - **Dùng S3 làm filesystem.** Triệu chứng: sửa file nhỏ liên tục, mỗi PUT là một object mới, tốn tiền request và chậm. Cách tránh: cần filesystem chia sẻ thì dùng EFS.
 - **Không đặt Content-Type khi presign PUT.** Triệu chứng: file tải về bị trình duyệt hiểu sai (tải xuống thay vì hiển thị, hoặc ngược lại). Cách tránh: đặt Content-Type khi ký và kiểm tra lại sau upload.
 
-### Trả lời miệng 1 phút
+### Trả lời mẫu khi phỏng vấn
 "S3 là object storage: dữ liệu lưu dư nhiều AZ, và từ cuối 2020 đã nhất quán mạnh, ghi xong là đọc và list thấy ngay. Tôi chọn storage class theo tần suất đọc: Standard cho dữ liệu nóng, Intelligent-Tiering khi không đoán được, IA và Glacier cho dữ liệu ít đọc, nhớ rằng chúng có phí lấy ra và thời gian lưu tối thiểu. Với upload từ client, backend ký presigned URL ngắn hạn cho đúng một key, client đẩy thẳng lên S3 nên backend không gánh băng thông; ai có URL là có quyền, nên TTL phải ngắn. File lớn thì dùng multipart: chia part, upload song song, part lỗi chỉ retry part đó. Mặc định mọi bucket tôi bật Block Public Access, versioning kèm lifecycle và rule huỷ multipart dở dang."
 
 ### Ví dụ đời thực
@@ -702,7 +702,7 @@ EventBridge hợp khi cần lọc theo nội dung sự kiện ({{source}}, {{det
 - **Dùng SQS như event log cần replay.** Triệu chứng: muốn xử lý lại dữ liệu tuần trước nhưng message đã bị xoá sau khi ack. Cách tránh: chọn Kinesis, Kafka/MSK hoặc EventBridge archive.
 - **FIFO với một message group duy nhất.** Triệu chứng: throughput tụt về một consumer, mất song song hoàn toàn. Cách tránh: chia group theo aggregate id, ví dụ {{MessageGroupId = orderId}}.
 
-### Trả lời miệng 1 phút
+### Trả lời mẫu khi phỏng vấn
 "Tôi phân biệt theo mô hình: SQS là hàng đợi cho worker, mỗi message một consumer; SNS là pub/sub fan-out, thường kết hợp SNS tới nhiều SQS để mỗi service có hàng đợi và DLQ riêng; EventBridge là bus có routing theo nội dung sự kiện; Kinesis và MSK là log có thứ tự theo shard, giữ lại để replay. Với SQS, khi nhận message nó bị ẩn trong visibility timeout; xoá kịp thì xong, không thì message hiện lại và được giao lần nữa, quá maxReceiveCount thì vào DLQ. Vì vậy hệ thống là at-least-once, consumer bắt buộc idempotent bằng khoá nghiệp vụ hoặc bảng dedup. Cần thứ tự theo đơn hàng thì tôi dùng FIFO với message group theo orderId. Mọi consumer của tôi đều có DLQ, alarm theo tuổi message cũ nhất, và idempotency key."
 
 ### Ví dụ đời thực
@@ -788,7 +788,7 @@ t=23'    traffic về region phụ   => RTO thực tế ~23 phút
 - **Cấu hình region phụ lệch.** Triệu chứng: khi failover mới phát hiện thiếu IAM role, secret, security group, hoặc quota/service limit chưa xin tăng. Cách tránh: dựng region phụ hoàn toàn bằng IaC, kiểm tra quota định kỳ, diễn tập thật.
 - **Active-active mà dữ liệu không partition theo region.** Triệu chứng: xung đột ghi, dữ liệu bị ghi đè theo last-writer-wins, chi phí cross-region tăng vọt. Cách tránh: chia dữ liệu theo region "chủ" (ví dụ theo khách hàng), hoặc chọn warm standby.
 
-### Trả lời miệng 1 phút
+### Trả lời mẫu khi phỏng vấn
 "Multi-AZ bảo vệ khỏi mất một datacenter trong region, thường tự động và RTO tính bằng phút; multi-region bảo vệ khỏi mất cả region nhưng đắt và phức tạp hơn nhiều. Tôi luôn bắt đầu từ hai con số do business ký: RTO là thời gian được phép ngừng dịch vụ, RPO là lượng dữ liệu được phép mất. Từ đó chọn chiến lược rẻ nhất đáp ứng: backup and restore tính bằng giờ, pilot light giữ dữ liệu nóng ở region phụ, warm standby chạy bản thu nhỏ đầy đủ, active-active gần như không gián đoạn nhưng phải xử lý xung đột ghi. Về công cụ tôi dùng Aurora Global Database với RPO khoảng một giây, Route 53 failover, IaC để dựng region phụ. Kinh nghiệm của tôi là DR chỉ tồn tại khi đã diễn tập và đo RTO thật."
 
 ### Ví dụ đời thực
@@ -867,7 +867,7 @@ UnhealthyThresholdCount: 3
 
 ### Graceful shutdown
 - Khi scale-in, ECS/K8s gửi tín hiệu dừng; app phải ngừng nhận request mới, hoàn thành request đang chạy, đóng pool, rồi thoát.
-- Spring Boot: bật {{server.shutdown=graceful}} (mặc định từ Boot 3.4) và {{spring.lifecycle.timeout-per-shutdown-phase=30s}}.
+- Spring Boot: bật {{server.shutdown=graceful}} (phải khai báo, có từ Spring Boot 2.3) và {{spring.lifecycle.timeout-per-shutdown-phase=30s}}.
 - Với ECS, đặt {{stopTimeout}} đủ lớn; với Kubernetes, {{terminationGracePeriodSeconds}} và {{preStop}} sleep để LB kịp deregister.
 - **Deregistration delay** của target group (mặc định 300 giây) là thời gian draining cho request đang chạy. Với ECS, task được deregister và chờ hết delay rồi mới nhận SIGTERM, nên delay 300 giây chỉ làm deploy/scale-in chậm. Với Kubernetes, pod nhận SIGTERM song song với việc bị gỡ khỏi LB, nên cần {{preStop}} sleep vài giây để không nhận request mới khi đang tắt. Thực tế hay đặt 20–60 giây và tăng nếu request dài.
 
@@ -883,7 +883,7 @@ UnhealthyThresholdCount: 3
 - **Chỉ scale app mà không scale downstream.** Triệu chứng: SQS consumer tăng gấp 10 nhưng DB bị khoá, mọi thứ chậm hơn trước. Cách tránh: giới hạn concurrency của consumer, scale theo năng lực của tầng chậm nhất.
 - **Quên connection draining và graceful shutdown khi deploy.** Triệu chứng: user thấy lỗi 502 lẻ tẻ mỗi lần deploy hoặc scale-in. Cách tránh: bật {{server.shutdown=graceful}}, deregistration delay 20–60 giây, stopTimeout lớn hơn timeout của Spring.
 
-### Trả lời miệng 1 phút
+### Trả lời mẫu khi phỏng vấn
 "ALB là load balancer tầng 7, hiểu HTTP nên route theo path, host, header, hợp cho API Spring Boot; NLB là tầng 4, độ trễ rất thấp, có IP tĩnh, hợp khi đối tác cần whitelist IP hoặc giao thức không phải HTTP. Auto Scaling tôi dùng target tracking theo CPU hoặc request mỗi target, scale-out nhanh, scale-in chậm. Để scale-in không rơi request, ba thứ phải khớp nhau: target group deregistration delay để LB ngừng gửi request mới và chờ request cũ, graceful shutdown trong Spring Boot để app xử lý nốt khi nhận SIGTERM, và stopTimeout của ECS hoặc terminationGracePeriod của Kubernetes đủ dài trước khi bị SIGKILL; trên Kubernetes thêm preStop sleep vài giây. Health check thì nhẹ và không phụ thuộc cứng vào DB. Tôi luôn kiểm chứng bằng cách giảm desired count trong lúc bắn tải và xem có 5xx không."
 
 ### Ví dụ đời thực
@@ -965,7 +965,7 @@ Với cache thuần, {{allkeys-lru}} hoặc {{allkeys-lfu}} thường hợp. N�
 - **Không đặt TTL.** Triệu chứng: bộ nhớ đầy dần, eviction bắt đầu xoá cả dữ liệu quan trọng. Cách tránh: mọi key cache đều có TTL, theo dõi metric bộ nhớ và Evictions.
 - **Coi Redis là database bền vững.** Triệu chứng: mất node làm mất dữ liệu chưa persist. Cách tránh: backup/AOF không thay thế DB giao dịch; dữ liệu gốc phải nằm ở DB.
 
-### Trả lời miệng 1 phút
+### Trả lời mẫu khi phỏng vấn
 "Redis là kho dữ liệu trong RAM, tôi dùng cho cache, session, rate limit, distributed lock và leaderboard; trên AWS tôi dùng ElastiCache với engine Redis OSS hoặc Valkey. Mẫu phổ biến nhất là cache-aside: đọc cache, miss thì đọc DB rồi ghi lại với TTL có jitter, cập nhật thì ghi DB rồi xoá key. Khi dữ liệu hoặc throughput vượt một node, tôi bật cluster mode: key được băm vào 16.384 hash slot chia trên nhiều shard, đổi lại lệnh nhiều key phải cùng slot nhờ hash tag. Khi đầy bộ nhớ, eviction policy quyết định: cache thuần thì allkeys-lru hoặc allkeys-lfu, còn dữ liệu không được mất thì nên tách cluster riêng. Kinh nghiệm của tôi là phải trả lời trước ba câu: TTL bao lâu, khi nào invalidate, và app sống ra sao khi Redis chết."
 
 ### Ví dụ đời thực
@@ -1059,7 +1059,7 @@ OTEL_TRACES_SAMPLER_ARG: "0.1"
 - **Log thiếu timestamp chuẩn, trace ID, service name.** Triệu chứng: lúc sự cố không ghép được log giữa các service. Cách tránh: log JSON có trường cố định, trace ID qua MDC.
 - **Dashboard quá nhiều biểu đồ và log debug ở production.** Triệu chứng: không ai nhìn dashboard, còn hoá đơn log là khoản lớn nhất. Cách tránh: 5–8 chỉ số sức khoẻ; retention theo log group, chỉ gửi WARN/ERROR hoặc sample DEBUG, dùng log class Infrequent Access cho log ít truy vấn.
 
-### Trả lời miệng 1 phút
+### Trả lời mẫu khi phỏng vấn
 "Observability có ba trụ cột: metrics để biết có vấn đề, logs để biết chi tiết, traces để biết vấn đề nằm ở service nào. Trên AWS, CloudWatch lo log, metric và alarm; với hệ microservices tôi thêm tracing bằng OpenTelemetry, trace ID truyền qua header traceparent và được đặt vào MDC để mọi dòng log nối được với trace, rồi xuất sang X-Ray hoặc backend khác. CloudWatch một mình đủ cho hệ nhỏ, nhưng thiếu trace thì debug microservices rất chậm. Về chi phí, log ingestion tính theo GB nên tôi đặt retention cho từng log group, không log payload, chỉ gửi WARN và ERROR ở production, và sample trace thay vì giữ 100%. Alarm tôi đặt theo SLO người dùng như p99 và tỉ lệ 5xx, không theo CPU."
 
 ### Ví dụ đời thực
@@ -1750,7 +1750,7 @@ RDS Proxy giữ kết nối phía client và tự chuyển sang writer mới, gi
 - **Retry vô hạn với backoff nhỏ.** Triệu chứng: bão connection dồn vào writer mới đúng lúc nó vừa lên. Cách tránh: retry 1–2 lần có backoff và jitter, connection-timeout ngắn.
 - **Retry transaction không idempotent.** Triệu chứng: lỗi lúc commit, chạy lại làm trừ tiền hai lần. Cách tránh: kiểm tra lại bằng idempotency key trước khi chạy lại.
 
-### Trả lời miệng 1 phút
+### Trả lời mẫu khi phỏng vấn
 "Failover của Aurora chỉ đổi DNS của cluster endpoint sang writer mới, nhưng ứng dụng Java có ba lớp làm chậm: JVM cache địa chỉ IP cũ, HikariCP vẫn giữ connection tới instance cũ nay đã thành reader nên mọi lệnh ghi bị lỗi read-only, và TCP có thể treo khi instance cũ chết mà không gửi RST. Tôi xử lý từng lớp: đặt networkaddress.cache.ttl khoảng 5 giây, max-lifetime vài phút, connection-timeout và socketTimeout ngắn để fail nhanh. Tốt nhất là dùng AWS Advanced JDBC Wrapper với plugin failover và efm, nó đọc topology từ chính database và nối thẳng tới writer mới mà không chờ DNS. Dù vậy transaction đang chạy luôn mất, nên ứng dụng phải retry có giới hạn và idempotent. Mục tiêu tôi đo là thời gian không ghi được từ phía ứng dụng, và diễn tập hằng quý."
 
 ### Ví dụ đời thực
@@ -2354,7 +2354,7 @@ Phía service, phần deploy an toàn nằm trong {{deploymentConfiguration}}: {
 - **Health check grace period quá ngắn.** Triệu chứng: Spring Boot cần 60 giây để lên, ALB đánh dấu unhealthy ở giây 30, ECS giết task, vòng lặp vô tận. Cách tránh: grace period lớn hơn thời gian khởi động thật, health check trỏ readiness.
 - **Deploy bằng tag {{latest}}.** Triệu chứng: "deploy lại" không đổi gì, hoặc task mới scale ra kéo bản khác task cũ. Cách tránh: tag bằng git SHA, bật tag immutability trên ECR.
 
-### Trả lời miệng 1 phút
+### Trả lời mẫu khi phỏng vấn
 "Tôi đẩy image lên ECR với tag là git SHA. Task definition khai báo image đó, CPU/RAM theo cặp hợp lệ của Fargate, cổng 8080, log driver awslogs và hai role: execution role cho ECS kéo image, đọc secret, ghi log; task role cho code gọi AWS. ECS service chạy ít nhất hai task trên hai private subnet ở hai AZ, gắn vào target group kiểu ip của ALB, health check trỏ readiness của Actuator và có grace period đủ dài cho Spring Boot khởi động. Deploy là tạo revision mới; rolling update với minimumHealthyPercent 100 nên không giảm năng lực phục vụ, và tôi bật deployment circuit breaker kèm rollback để bản lỗi tự quay về revision cũ."
 
 ### Ví dụ đời thực
@@ -2426,7 +2426,7 @@ Trình duyệt ─ TLS (SNI: api.shop.vn) ─► ALB :443  cert ACM CN=api.shop.
 - **Quên redirect 80 → 443** hoặc app tự sinh link {{http://}} vì không đọc header {{X-Forwarded-Proto}}. Cách tránh: listener 80 redirect; trong Spring Boot đặt {{server.forward-headers-strategy=native}} (hoặc framework) để app biết request gốc là HTTPS.
 - **Đổi NS ở nhà đăng ký trước khi zone mới có đủ bản ghi.** Triệu chứng: email và website cũ chết. Cách tránh: chép đủ mọi bản ghi (MX, TXT…) sang Route 53 trước rồi mới đổi NS.
 
-### Trả lời miệng 1 phút
+### Trả lời mẫu khi phỏng vấn
 "Tôi tạo hosted zone shop.vn trên Route 53 và trỏ NS ở nhà đăng ký về đó sau khi đã chép đủ bản ghi cũ. Cert xin bằng ACM ở đúng region của ALB, xác thực bằng DNS — một bản ghi CNAME, và chừng nào bản ghi đó còn và cert còn được dùng thì ACM tự gia hạn. ALB có listener 443 gắn cert với TLS policy hiện đại, listener 80 chỉ redirect sang HTTPS. Cuối cùng là bản ghi alias A trỏ tới ALB: alias dùng được ở zone apex, tự theo IP của ALB và không tính phí truy vấn, còn CNAME thì không đặt được ở apex. Trước khi chuyển đổi hạ TTL sớm, và trong app bật forward headers để Spring biết request gốc là HTTPS."
 
 ### Ví dụ đời thực
@@ -2492,7 +2492,7 @@ PITR = snapshot 00:30 + tua log tới 14:05:00
 - **Restore đè rồi chuyển app sang instance mới** chỉ vì một bảng. Triệu chứng: mất mọi đơn hàng, thanh toán ghi sau 14:05. Cách tránh: chỉ chép phần bị mất.
 - **Dev có quyền ghi trực tiếp trên production.** Cách tránh: tài khoản read-only cho truy vấn tay, thay đổi dữ liệu qua script được review, chạy trong transaction kèm kiểm tra số dòng bị ảnh hưởng trước khi COMMIT.
 
-### Trả lời miệng 1 phút
+### Trả lời mẫu khi phỏng vấn
 "RDS không quay ngược instance đang chạy; mọi restore đều tạo instance mới. Vì các bảng khác vẫn nhận ghi sau 14:05, tôi không restore đè cả DB. Tôi xác định chính xác thời điểm lệnh xoá từ log, dùng point-in-time recovery tạo instance tạm ở thời điểm ngay trước đó, đặt nó trong private subnet với security group và parameter group chỉ định rõ. Khi instance tạm sẵn sàng, tôi dump riêng bảng orders, hoặc dùng postgres_fdw chèn lại những dòng không còn trên production theo khoá chính, rồi đối soát số dòng và tổng tiền, cuối cùng xoá instance tạm. Bài học đi kèm: Multi-AZ và read replica không phải backup, retention phải đủ dài, và dev không được có quyền ghi trực tiếp production."
 
 ### Ví dụ đời thực
@@ -2583,7 +2583,7 @@ Code trên chỉ có tác dụng khi ESM có {{FunctionResponseTypes = ReportBat
 - **FIFO mà vẫn xử lý tiếp sau message lỗi.** Triệu chứng: sai thứ tự. Cách tránh: với FIFO, gặp message lỗi thì dừng và trả cả message đó lẫn các message phía sau trong batch.
 - **Không có alarm trên DLQ.** Message nằm trong DLQ 14 ngày rồi bị xoá mà không ai biết. Cách tránh: alarm {{ApproximateNumberOfMessagesVisible}} > 0 trên DLQ.
 
-### Trả lời miệng 1 phút
+### Trả lời mẫu khi phỏng vấn
 "Với nguồn SQS, Lambda dùng event source mapping để poll và gọi function theo batch; mặc định một exception làm cả batch quay lại queue, nên 9 message đã xử lý bị làm lại. Tôi bật ReportBatchItemFailures và trả về id của từng message lỗi, để ESM xoá phần thành công. Visibility timeout của queue tôi đặt ít nhất 6 lần timeout function để message không hiện lại khi đang xử lý. Redrive policy với maxReceiveCount khoảng 5 đưa message độc sang DLQ, có alarm khi DLQ khác 0 và quy trình redrive sau khi sửa lỗi. Vì SQS là at-least-once, handler luôn idempotent theo orderId, và tôi giới hạn maximum concurrency để không đè sập dịch vụ phía sau."
 
 ### Ví dụ đời thực
@@ -2669,7 +2669,7 @@ void reconcile() {
 - **Chạy job nặng trong task API.** Triệu chứng: 23:30 p99 API tăng vọt, health check fail, ECS giết task đang chạy job. Cách tránh: tách task riêng.
 - **Job dùng Lambda nhưng chạy quá 15 phút.** Lambda bị cắt giữa chừng. Cách tránh: ECS task, hoặc chia nhỏ qua Step Functions.
 
-### Trả lời miệng 1 phút
+### Trả lời mẫu khi phỏng vấn
 "@Scheduled chạy trong mọi instance nên 4 task là 4 lần chạy. Nếu job nhẹ và gắn với service, tôi thêm ShedLock: một bảng khoá trong DB, chỉ instance giành được khoá mới chạy, đặt lockAtMostFor lớn hơn thời gian chạy dài nhất. Với job đối soát tài chính, tôi tách hẳn ra: EventBridge Scheduler với cron và múi giờ Asia/Ho_Chi_Minh, target là ECS RunTask chạy cùng image ở chế độ không web, có retry policy và DLQ, nên job không ăn tài nguyên của API và không bị rolling update giết. Trong cả hai cách, job idempotent theo ngày nghiệp vụ bằng bảng trạng thái, vì scheduler chỉ đảm bảo ít nhất một lần, và có alarm nếu tới hạn mà chưa thấy trạng thái DONE."
 
 ### Ví dụ đời thực
@@ -2739,7 +2739,7 @@ DB:   Oracle on-prem ══ DMS full load ══ CDC liên tục ═════
 - **Sequence và trigger ở đích.** Sau cutover, sequence chưa được nâng → lỗi trùng khoá chính. Cách tránh: bước cutover có mục "đặt lại sequence", tắt trigger ở đích trong lúc CDC rồi bật lại.
 - **Không có đường rollback.** Triệu chứng: phát hiện lỗi sau 6 giờ, dữ liệu mới chỉ có trên AWS, không quay về được. Cách tránh: CDC ngược và tiêu chí rollback có thời hạn.
 
-### Trả lời miệng 1 phút
+### Trả lời mẫu khi phỏng vấn
 "Tôi bắt đầu bằng khảo sát phụ thuộc và đo tải, rồi xếp từng thành phần vào 7 R: phần lớn service Spring Boot replatform sang ECS vì đã có jar, thành phần ít giá trị thì retire, phần còn phụ thuộc on-prem thì retain tạm. Nền tảng gồm landing zone và kết nối Direct Connect hoặc VPN đủ băng thông. Database tôi không đổi engine cùng lúc với đổi hạ tầng: Oracle sang RDS for Oracle trước, dùng DMS full load cộng CDC để dữ liệu đồng bộ liên tục, có data validation và diễn tập cutover ít nhất hai lần để đo thời gian. Cửa sổ một giờ chỉ gồm dừng ghi, chờ CDC lag về 0, kiểm tra checksum, đổi DNS nội bộ và smoke test. Sau cutover tôi bật CDC ngược về on-prem và giữ tiêu chí rollback 72 giờ."
 
 ### Ví dụ đời thực
