@@ -8243,7 +8243,7 @@ Một nền tảng nội bộ có 12 agent dùng MCP tool {{searchDocs}} (v1) tr
 
 ### Hai cách truy xuất bổ sung nhau
 
-Tìm kiếm từ khóa (ví dụ BM25 trong OpenSearch/Elasticsearch, hoặc extension pg_search cho PostgreSQL) tính điểm dựa trên tần suất từ và nghịch đảo tần suất tài liệu; tốt cho mã số, ngày, tên riêng. Tìm kiếm vectơ (embedding + pgvector/OpenSearch) tính độ gần ngữ nghĩa; tốt cho ý nghĩa, đồng nghĩa, câu hỏi tự nhiên. Cả hai đều có điểm số nhưng thang đo khác nhau, không thể so sánh trực tiếp.
+Tìm kiếm từ khóa (ví dụ BM25 trong OpenSearch/Elasticsearch, hoặc full-text search tích hợp của PostgreSQL với {{tsvector}}/{{ts_rank}} — lưu ý {{ts_rank}} không phải BM25 thật) tính điểm dựa trên tần suất từ và nghịch đảo tần suất tài liệu; tốt cho mã số, ngày, tên riêng. Tìm kiếm vectơ (embedding + pgvector/OpenSearch) tính độ gần ngữ nghĩa; tốt cho ý nghĩa, đồng nghĩa, câu hỏi tự nhiên. Cả hai đều có điểm số nhưng thang đo khác nhau, không thể so sánh trực tiếp.
 
 | Cách | Điểm mạnh | Điểm yếu | Phù hợp |
 |---|---|---|---|
