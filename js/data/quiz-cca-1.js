@@ -554,15 +554,20 @@
 {
   id: 'qz-cca-043',
   topic: 'claude',
-  q: '[Agentic Architecture] Which Claude API feature allows the model to "think" step by step before generating a final response?',
-  options: ['Extended thinking (enabled via the {{code}}thinking{{code}} parameter)', 'The system prompt only', 'The max_tokens parameter', 'The temperature setting'],
+  q: '[Agentic Architecture] Which Claude API feature lets the model reason step by step before its final answer, and how is its depth controlled on current models such as Claude Opus 5.5?',
+  options: [
+    'Adaptive thinking (the thinking parameter, on by default on current models), with depth controlled by output_config.effort',
+    'The system prompt alone',
+    'A larger max_tokens value, which makes the model think longer',
+    'A higher temperature setting'
+  ],
   answer: 0,
-  explain: `**Đáp án đúng: A.** Claude API hỗ trợ extended thinking (suy nghĩ mở rộng): bạn bật bằng tham số {{code}}thinking{{code}} trong request. Khi bật, model tạo các khối suy nghĩ nội bộ trước khi trả lời cuối cùng, giúp xử lý tốt hơn các bài toán phức tạp cần lập luận nhiều bước.
+  explain: `**Đúng: adaptive thinking + effort.** Trên các model hiện hành (Opus 5.5, Sonnet 5.5, Fable 5.x), thinking là **adaptive**: model tự quyết suy nghĩ bao nhiêu, và trên Opus 5.5 thinking luôn bật. Độ sâu điều khiển bằng {{output_config.effort}} (low → max). Kiểu cũ {{thinking}} dạng enabled kèm {{budget_tokens}} bị từ chối (400) trên các model này.
 
-### Vì sao các phương án còn lại sai
-- **B:** system prompt định hướng hành vi nhưng không phải cơ chế tạo khối suy nghĩ riêng trước câu trả lời.
-- **C:** {{code}}max_tokens{{code}} giới hạn độ dài output, không liên quan đến việc model suy nghĩ trước.
-- **D:** {{code}}temperature{{code}} kiểm soát độ ngẫu nhiên của output, không phải cơ chế "think before answer".`
+### Vì sao các phương án khác sai
+- **System prompt:** định hướng hành vi, nhưng không phải cơ chế suy nghĩ trước khi trả lời.
+- **max_tokens:** là trần cứng của output (gồm cả thinking), không làm model nghĩ lâu hơn.
+- **temperature:** điều khiển độ ngẫu nhiên ở model cũ; trên các model hiện hành tham số sampling còn bị từ chối (400).`
 },
 {
   id: 'qz-cca-044',
@@ -580,28 +585,38 @@
 {
   id: 'qz-cca-045',
   topic: 'claude',
-  q: '[Agentic Architecture] What is the primary purpose of the tool_choice parameter in the Claude API?',
-  options: ['To force the model to use a specific tool', 'To let the model decide which tool to use, or force no tool', 'To limit the number of tools available', 'To disable all tool definitions'],
+  q: '[Agentic Architecture] What is the purpose of the tool_choice parameter, and what changed on the newest models such as Claude Opus 5.5 and Sonnet 5.5?',
+  options: [
+    'It registers new tool definitions at runtime',
+    'It controls whether and how the model uses tools (auto, none, and any/tool to force a call); on the newest models forcing with any/tool returns 400, so use auto plus prompt guidance or strict tools',
+    'It sets the maximum number of tools allowed per request',
+    'It disables all tool definitions for the rest of the session'
+  ],
   answer: 1,
-  explain: `**Đáp án đúng: B.** tool_choice cho phép bạn: auto (model tự quyết), any (bắt buộc gọi tool), hoặc none (không gọi tool). Dùng để kiểm soát hành vi model khi cần.
+  explain: `**Đúng: điều khiển cách dùng tool.** {{tool_choice}} có các kiểu {{auto}} (model tự quyết), {{none}} (không gọi tool), {{any}} (bắt buộc gọi một tool nào đó) và {{tool}} (bắt buộc gọi đúng tool được nêu tên). Trên các model mới nhất (Opus 5.5, Sonnet 5.5, Fable 5.1/5.2), {{any}} và {{tool}} trả lỗi 400: thay bằng {{auto}} + hướng dẫn rõ trong prompt + {{strict: true}} trên tool, hoặc dùng structured outputs nếu chỉ cần JSON.
 
-### Vì sao các phương án còn lại sai
-- **A:** không thể force một tool cụ thể; chỉ có thể bắt buộc gọi tool (any) hoặc không gọi (none).
-- **C:** giới hạn tool dùng tool_definition, không phải tool_choice.
-- **D:** tool_choice không disable definitions; để làm điều đó không truyền tool trong request.`
+### Vì sao các phương án khác sai
+- **Đăng ký tool:** tool được khai báo trong mảng {{tools}}, không phải tool_choice.
+- **Giới hạn số tool:** tool_choice không đặt số lượng tool.
+- **Tắt định nghĩa tool:** muốn không có tool thì không gửi {{tools}}, hoặc dùng {{none}} cho request đó; không có khái niệm tắt cho cả phiên.`
 },
 {
   id: 'qz-cca-046',
   topic: 'claude',
-  q: '[Agentic Architecture] In an agent loop, the model returns stop_reason "max_tokens" with an incomplete tool_use block. What should the harness do?',
-  options: ['Execute the incomplete tool_use with the partial input', 'Return the partial output as tool_result with is_error: true, letting the model decide', 'Ignore the incomplete tool_use and continue', 'Restart the entire request with higher max_tokens'],
-  answer: 1,
-  explain: `**Đáp án đúng: B.** Khi input bị cắt do max_tokens, tool không có đủ dữ liệu đầu vào. Harness nên báo lỗi qua tool_result để model biết và có thể yêu cầu lại hoặc thử cách khác.
+  q: '[Agentic Architecture] In an agent loop, the model returns stop_reason "max_tokens" and the last tool_use block has an incomplete input. What should the harness do?',
+  options: [
+    'Execute the tool_use with the partial input',
+    'Ignore the incomplete block and continue the conversation as if the tool ran',
+    'Send an empty tool_result and continue',
+    'Do not execute it; re-issue the request with a higher max_tokens (or use streaming) so the model can produce the complete tool call'
+  ],
+  answer: 3,
+  explain: `**Đúng: không chạy, gửi lại với max_tokens lớn hơn.** stop_reason {{max_tokens}} nghĩa là output bị cắt giữa chừng, nên input của tool_use cuối có thể thiếu hoặc JSON không hợp lệ. Harness phải kiểm tra stop_reason **trước khi** chạy tool: không chạy block bị cắt, và gửi lại request với {{max_tokens}} cao hơn (output lớn thì dùng streaming để tránh timeout).
 
-### Vì sao các phương án còn lại sai
-- **A:** chạy tool với input thiếu có thể gây lỗi hoặc kết quả sai.
-- **C:** bỏ qua khiến model thiếu phản hồi và có thể tiếp tục sai.
-- **D:** restart với max_tokens cao hơn là một chiến lược hợp lý nhưng không phải câu trả lời "phải làm gì" với incomplete tool_use hiện tại.`
+### Vì sao các phương án khác sai
+- **Chạy với input thiếu:** có thể ghi sai dữ liệu hoặc gây tác dụng phụ không lường trước.
+- **Bỏ qua như đã chạy:** model sẽ tin tool đã thành công, các bước sau sai theo.
+- **tool_result rỗng:** không nói cho model biết chuyện gì xảy ra; vấn đề gốc (output bị cắt) vẫn còn.`
 },
 {
   id: 'qz-cca-047',
@@ -710,15 +725,20 @@
 {
   id: 'qz-cca-055',
   topic: 'claude',
-  q: '[Agentic Architecture] What is the purpose of temperature in Claude API, and when would you set it low?',
-  options: ['Controls response length; set low for short answers', 'Controls randomness; set low for consistent, deterministic outputs', 'Controls speed; set low for faster responses', 'Controls context window; set low for more memory'],
+  q: '[Agentic Architecture] On current Claude models (Opus 5.5, Sonnet 5.5) you want a simple classification subagent to be cheaper, faster and more consistent. Which setting is the right lever?',
+  options: [
+    'Set temperature to 0',
+    'Lower output_config.effort (for example low) and keep the instructions and output format tight',
+    'Increase max_tokens',
+    'Send thinking type "disabled"'
+  ],
   answer: 1,
-  explain: `**Đáp án đúng: B.** Temperature kiểm soát độ ngẫu nhiên của output (0 = gần như deterministic, 1 = nhiều variation). Set thấp khi bạn cần output nhất quán, ví dụ: classification, extraction, hay agent cần reproducible behavior.
+  explain: `**Đúng: hạ effort.** Trên các model hiện hành, {{output_config.effort}} là đòn bẩy chính để đổi độ kỹ lấy chi phí và độ trễ: tác vụ đơn giản như phân loại thường chạy tốt ở {{low}}. Độ nhất quán đến từ hướng dẫn rõ, ví dụ mẫu và định dạng output chặt (structured outputs với enum).
 
-### Vì sao các phương án còn lại sai
-- **A:** length không phải temperature; dùng max_tokens cho length.
-- **C:** temperature không ảnh hưởng đến speed.
-- **D:** context window là tham số riêng.`
+### Vì sao các phương án khác sai
+- **temperature 0:** các tham số sampling bị từ chối (400) trên Opus 5.5 và Sonnet 5.5.
+- **Tăng max_tokens:** chỉ nâng trần độ dài, không làm rẻ hay nhanh hơn.
+- **thinking disabled:** trả lỗi 400 trên Opus 5.5 và Sonnet 5.5 (Sonnet 5.5 muốn tắt thì dùng {{between_tools}}); docs khuyên hạ effort trước.`
 },
 {
   id: 'qz-cca-056',
@@ -775,15 +795,20 @@
 {
   id: 'qz-cca-060',
   topic: 'claude',
-  q: '[Agentic Architecture] What happens if you set top_p very low (e.g., 0.1) in the Claude API?',
-  options: ['The model becomes more creative', 'The model only considers the most probable tokens, making output more deterministic', 'The model ignores the temperature setting', 'The response becomes longer'],
+  q: '[Agentic Architecture] Code migrated from an older model sends temperature: 0.2 and top_p: 0.9 to Claude Opus 5.5 and now fails with HTTP 400. What is the correct fix?',
+  options: [
+    'Lower top_p to 0.1',
+    'Remove the sampling parameters and control behavior with prompt instructions, structured outputs and output_config.effort',
+    'Move temperature into output_config',
+    'Switch to the Message Batches API, which still accepts sampling parameters'
+  ],
   answer: 1,
-  explain: `**Đáp án đúng: B.** top_p (nucleus sampling) kiểm soát token pool: chỉ consider tokens có cumulative probability ≤ top_p. Set thấp = chọn từ nhóm nhỏ nhất → output deterministic hơn, ít creative.
+  explain: `**Đúng: bỏ tham số sampling.** Trên Opus 5.5 (và các model hiện hành khác), {{temperature}}, {{top_p}}, {{top_k}} bị từ chối (400). Muốn output ổn định: viết hướng dẫn rõ, dùng structured outputs, và chỉnh {{output_config.effort}}.
 
-### Vì sao các phương án còn lại sai
-- **A:** ngược lại: low top_p = ít creative.
-- **C:** temperature và top_p là separate parameters, không ignore nhau.
-- **D:** length không bị ảnh hưởng bởi top_p.`
+### Vì sao các phương án khác sai
+- **Hạ top_p:** vẫn là tham số bị từ chối, giá trị nào cũng 400.
+- **Đưa vào output_config:** không có trường temperature trong output_config.
+- **Batches API:** dùng cùng tham số với Messages API nên cũng bị từ chối; Batches chỉ đổi cách xử lý (bất đồng bộ, rẻ hơn), không đổi luật tham số.`
 },
 {
   id: 'qz-cca-061',
