@@ -896,41 +896,73 @@ Kèm beta header {{mcp-client-2025-11-20}}.
 {
   id: 'qz-claude-058',
   topic: 'claude',
-  q: '[Claude Code] Trong Claude Code, file CLAUDE.md dùng để làm gì?',
+  q: '[Claude Code] Repo đã có README.md và AGENTS.md. Bạn muốn Claude Code tự nạp quy tắc "luôn chạy mvn verify trước khi commit" ở mọi phiên. Đặt ở đâu?',
   options: [
-    'Lưu API key',
-    'Cung cấp hướng dẫn/ngữ cảnh dự án cho agent',
-    'Định nghĩa database schema bắt buộc',
-    'Thay thế git'
+    'Trong CLAUDE.md ở gốc project (hoặc .claude/CLAUDE.md); Claude Code cũng đọc AGENTS.md thay cho CLAUDE.md nếu repo dùng file đó',
+    'Trong README.md, vì Claude Code luôn đọc README khi khởi động',
+    'Trong .env, vì đó là nơi cấu hình dự án',
+    'Trong nội dung commit message gần nhất'
   ],
-  answer: 1,
-  explain: `**Đáp án đúng: CLAUDE.md cung cấp context/hướng dẫn dự án** cho Claude Code.`
+  answer: 0,
+  explain: `**Đúng: CLAUDE.md (hoặc AGENTS.md) — hướng dẫn bền vững, tự nạp đầu mỗi phiên.**
+
+### Cơ chế bên trong
+Claude Code khởi động mỗi phiên với context trống. Nó tự đọc các file {{CLAUDE.md}} từ thư mục làm việc và mọi thư mục cha, rồi **nối tất cả vào context** (không ghi đè nhau), theo thứ tự từ phạm vi rộng đến hẹp: managed policy → user ({{~/.claude/CLAUDE.md}}) → project ({{./CLAUDE.md}} hoặc {{./.claude/CLAUDE.md}}) → local ({{./CLAUDE.local.md}}). Nếu repo dùng {{AGENTS.md}}, Claude Code đọc file đó thay cho CLAUDE.md.
+
+### Vì sao các phương án khác sai
+- **README.md:** không được tự động nạp. Claude chỉ đọc khi thật sự cần (ví dụ bạn bảo nó xem README), nên quy tắc đặt ở đó có thể bị bỏ qua.
+- **.env:** chứa biến môi trường/secret, không phải hướng dẫn hành vi; đưa quy tắc vào đây vừa vô nghĩa vừa dễ lộ bí mật.
+- **commit message:** chỉ là lịch sử, không tham gia vào context phiên làm việc.
+
+> CLAUDE.md là **context, không phải lớp cưỡng chế**: nó định hướng model, không chặn được hành động. Muốn chặn cứng (ví dụ cấm sửa {{production/**}}) phải dùng {{permissions.deny}} hoặc hook {{PreToolUse}} trả {{deny}}.`
 },
 {
   id: 'qz-claude-059',
   topic: 'claude',
-  q: '[Claude Code] Claude Code thực thi lệnh shell/file. Best practice về quyền là gì?',
+  q: '[Claude Code] Claude Code có thể chạy lệnh shell và sửa file. Theo docs, cấu hình quyền theo hướng nào là an toàn cho production?',
   options: [
-    'Cho phép mọi lệnh tự động',
-    'Tắt sandbox',
-    'Review/approve các hành động nguy hiểm, giới hạn quyền và audit',
-    'Chia sẻ session công khai'
+    'Least privilege: chỉ allow đúng tool/lệnh cần, deny lệnh nguy hiểm, chọn permission mode phù hợp (plan/acceptEdits/dontAsk) và ghi audit qua hook',
+    'Bật --dangerously-skip-permissions cho mọi phiên để không bị hỏi',
+    'Tắt sandbox và chạy bằng root cho nhanh',
+    'Chia sẻ session cho cả team để tiện'
   ],
-  answer: 2,
-  explain: `**Đáp án đúng: giới hạn quyền, review hành động nguy hiểm và audit.**`
+  answer: 0,
+  explain: `**Đúng: least privilege + deny trước allow + audit.**
+
+### Cơ chế và các lớp bảo vệ
+Claude Code kiểm tra quyền theo thứ tự **deny → ask → allow**: deny thắng trước, và deny có hiệu lực ở **mọi** permission mode, kể cả {{bypassPermissions}}. Các mode dùng đúng chỗ: {{default}} (Manual: hỏi trước mỗi thao tác ghi/sửa; đọc file được phép ngay), {{acceptEdits}} (tự duyệt edit và lệnh filesystem phổ biến trong thư mục làm việc, Bash khác vẫn hỏi), {{plan}} (chỉ nghiên cứu, không sửa file), {{dontAsk}} (CI: cái gì cần hỏi thì **deny thẳng** thay vì chờ), {{bypassPermissions}} (chỉ container/VM cô lập).
+
+Muốn audit, dùng hook (ví dụ {{PostToolUse}}) để ghi lại mọi tool call; muốn script/CI không bị ảnh hưởng bởi cấu hình repo, dùng {{--bare}} (bỏ hooks/MCP/CLAUDE.md tự nạp).
+
+### Vì sao các phương án khác sai
+- **--dangerously-skip-permissions cho mọi phiên:** bỏ toàn bộ kiểm tra; chỉ chấp nhận được trong container/VM dùng-một-lần, chạy bằng user không phải root (trên Linux/macOS nó từ chối chạy bằng root ngoài sandbox).
+- **Tắt sandbox + chạy root:** vi phạm least privilege, một lỗi là mất cả máy.
+- **Chia sẻ session:** lộ lịch sử, secret và quyền của người khác.
+
+> Nguyên tắc: mặc định deny, chỉ mở đúng thứ cần; CLAUDE.md không thay được lớp cưỡng chế này.`
 },
 {
   id: 'qz-claude-060',
   topic: 'claude',
-  q: '[Eval] Để đánh giá chất lượng ứng dụng LLM, phương pháp nào phù hợp?',
+  q: '[Eval] Bạn đổi model cho tính năng tóm tắt tài liệu và muốn biết "tốt hơn hay không" một cách khách quan. Cách làm nào đúng?',
   options: [
-    'Chỉ đọc vài câu trả lời',
-    'Tăng temperature để đa dạng',
-    'Xóa log',
-    'Bộ eval có test case, expected behavior, chấm tự động/model grader, theo dõi regression'
+    'Đọc thử 5 output thấy ổn là ship',
+    'Tăng temperature cho output đa dạng hơn',
+    'Xoá log cũ để đỡ rối',
+    'Xây bộ eval: success criteria đo được + test case phản ánh phân phối thật + chấm tự động (exact match/LLM judge) + chạy lại sau mỗi thay đổi để bắt regression'
   ],
   answer: 3,
-  explain: `**Đáp án đúng: eval có test case và regression tracking** để đo chất lượng khách quan.`
+  explain: `**Đúng: eval có success criteria đo được + chấm tự động + regression tracking.**
+
+### Vì sao cần eval
+"Đọc vài output thấy ổn" là cảm tính, không so sánh được hai phiên bản và không phát hiện regression (bản mới làm hỏng nhóm input mà bản cũ làm đúng). Một bộ eval tốt gồm: **success criteria** cụ thể/đo được (specific, measurable, achievable, relevant), **test case phản ánh phân phối thật** kèm edge case (input rỗng, quá dài, mơ hồ), **chấm tự động** (exact match, string match, code-graded, LLM-graded), và **chạy lại sau mỗi thay đổi prompt/model** để bắt regression.
+
+### Vì sao các phương án khác sai
+- **Đọc thử 5 output:** mẫu quá nhỏ, không đại diện, không phát hiện được hồi quy.
+- **Tăng temperature:** chỉ làm output đa dạng hơn, không đo chất lượng.
+- **Xoá log:** mất dữ liệu để điều tra và để tạo case eval từ lỗi thật.
+
+> Với agentic task, chạy mỗi task nhiều lần rồi báo cáo pass@k (có ít nhất 1 lần đúng) hoặc pass^k (mọi lần đều đúng) để thấy độ ổn định.`
 },
 {
   id: 'qz-claude-061',
@@ -3754,4 +3786,468 @@ Chuỗi base64 dạng text chỉ là một dãy ký tự với model, vừa tố
 - **Phân loại tốt:** đúng là ví dụ "Bad" trong docs.
 - **Hài lòng hơn bản cũ:** có hướng so sánh nhưng thiếu chỉ số, cách đo và ngưỡng (ví dụ tỉ lệ hoàn thành tác vụ tăng 5% trong A/B test).`
 },
+{
+  id: 'qz-claude-201',
+  topic: 'claude',
+  multi: true,
+  q: '[Claude Code] Bạn viết CLAUDE.md cho team. Những phát biểu nào đúng về cách file này được nạp? (Chọn 2)',
+  options: [
+    'Các cấp CLAUDE.md (managed policy → user ~/.claude/CLAUDE.md → project ./CLAUDE.md → local ./CLAUDE.local.md) được nối vào context theo thứ tự từ phạm vi rộng đến hẹp, không ghi đè nhau',
+    'Dùng cú pháp @path/to/file để import file khác; import lồng tối đa 4 cấp, đường dẫn tương đối tính theo file chứa import',
+    'CLAUDE.md là lớp cưỡng chế: chỉ cần viết "không bao giờ xoá file" là Claude Code tự chặn tool',
+    'Muốn cả team dùng chung thì đặt ở ~/.claude/CLAUDE.md vì file này được commit lên git'
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: các cấp CLAUDE.md được nối (concatenate) theo thứ tự, và @import hoạt động như mô tả.**
+
+### Thứ tự nạp và import
+Claude Code nạp CLAUDE.md từ thư mục làm việc và mọi thư mục cha, theo thứ tự **rộng → hẹp**: managed policy ({{C:\\Program Files\\ClaudeCode\\CLAUDE.md}} trên Windows), user ({{~/.claude/CLAUDE.md}}), project ({{./CLAUDE.md}} hoặc {{./.claude/CLAUDE.md}}), local ({{./CLAUDE.local.md}}). Tất cả được **nối vào context**, không ghi đè; vì file càng cụ thể xuất hiện càng sau, chỉ dẫn gần nơi làm việc có xu hướng được đọc sau cùng.
+Cú pháp {{@path/to/file}} (import) cho phép tách file; import lồng tối đa **4 cấp**, đường dẫn tương đối tính theo **file chứa import** chứ không phải thư mục làm việc.
+
+### Vì sao hai phương án còn lại sai
+- **CLAUDE.md là cưỡng chế:** sai. Docs nói rõ CLAUDE.md chỉ là **context**, không phải cấu hình cưỡng chế. Muốn chặn hành động bất kể model quyết định gì thì dùng {{permissions.deny}} hoặc hook {{PreToolUse}} trả {{permissionDecision: "deny"}} (deny của hook có hiệu lực ở mọi permission mode).
+- **Đặt ở ~/.claude/CLAUDE.md để chia sẻ:** file ở {{~}} là **cấu hình cá nhân**, không commit; team chia sẻ bằng {{./CLAUDE.md}} trong git.
+
+> Mẹo: giữ CLAUDE.md ngắn và cụ thể; chỉ dẫn càng rõ thì model tuân thủ càng nhất quán.`
+},
+{
+  id: 'qz-claude-202',
+  topic: 'claude',
+  q: '[Claude Code] Bạn muốn Claude Code tự áp dụng file edit trong thư mục làm việc nhưng vẫn hỏi khi chạy lệnh shell lạ. Chọn permission mode nào?',
+  options: [
+    'default (Manual) — chỉ đọc, mọi edit đều hỏi',
+    'plan — chỉ nghiên cứu, không sửa file',
+    'acceptEdits — tự duyệt file edit và lệnh filesystem phổ biến (mkdir, touch, mv, cp, sed) trong thư mục làm việc, còn Bash khác vẫn hỏi',
+    'bypassPermissions — tự duyệt mọi thứ'
+  ],
+  answer: 2,
+  explain: `**Đúng: acceptEdits.**
+
+### Cơ chế
+{{acceptEdits}} tự động duyệt các thao tác file (Edit/Write/NotebookEdit) và các lệnh filesystem phổ biến ({{mkdir}}, {{touch}}, {{mv}}, {{cp}}, {{rm}}, {{rmdir}}, {{sed}}) **trong thư mục làm việc hoặc additionalDirectories**. Các lệnh Bash khác (không phải filesystem) vẫn đi qua luồng xin quyền bình thường, nên bạn vẫn được hỏi khi nó muốn chạy lệnh lạ.
+
+### Vì sao các phương án khác sai
+- **default (Manual):** chỉ đọc được, mọi edit đều hỏi — đúng ý bạn nhưng bất tiện.
+- **plan:** Claude chỉ đọc và lập kế hoạch, **không** sửa file nguồn.
+- **bypassPermissions:** bỏ mọi kiểm tra, chỉ dùng trong container/VM cô lập; deny rule vẫn áp dụng nhưng rủi ro rất cao.
+
+> Deny rule luôn thắng trong mọi mode; nếu cần chặn cứng một đường dẫn, dùng {{permissions.deny}} thay vì dựa vào mode.`
+},
+{
+  id: 'qz-claude-203',
+  topic: 'claude',
+  q: '[Claude Code] Bạn muốn Claude đọc và phân tích codebase rồi trình bày kế hoạch trước khi sửa, chưa động vào file nguồn. Dùng cách nào?',
+  options: [
+    '--dangerously-skip-permissions để nó tự do làm mọi thứ',
+    'Bật plan mode (Shift+Tab, hoặc claude --permission-mode plan): Claude đọc file, chạy lệnh khám phá, viết plan, không sửa file nguồn',
+    'claude -p "..." --output-format json',
+    'Đổi quyền ghi của user thành read-only'
+  ],
+  answer: 1,
+  explain: `**Đúng: plan mode.**
+
+### Cơ chế
+Plan mode yêu cầu Claude **nghiên cứu và đề xuất trước, chưa sửa**: nó vẫn đọc file, chạy lệnh shell để khám phá và viết kế hoạch, nhưng các edit vào file nguồn bị chặn cho tới khi bạn duyệt plan. Đây là chế độ phù hợp để khảo sát codebase hoặc review trước một thay đổi lớn.
+
+### Vì sao các phương án khác sai
+- **--dangerously-skip-permissions:** ngược mục đích — nó bỏ chặn để Claude tự do sửa file.
+- **--output-format json:** chỉ đổi định dạng in kết quả của chế độ {{--print}}, không liên quan tới việc chặn sửa file.
+- **Đổi quyền ghi của user:** ảnh hưởng cả hệ thống, không phải cách làm đúng; plan mode là cơ chế của Claude Code.
+
+> Lưu ý: trong một số phiên interactive có bật bypass, edit thực hiện lúc đang lập plan có thể chạy mà không hỏi; ở chế độ {{--print}}/SDK/VS Code thì plan mode vẫn chặn.`
+},
+{
+  id: 'qz-claude-204',
+  topic: 'claude',
+  q: '[Claude Code] Khi nào nên giao việc cho subagent thay vì tự làm trong context chính?',
+  options: [
+    'Khi task phụ sinh ra rất nhiều log/kết quả tìm kiếm/đọc file mà bạn không cần đọc lại — subagent chạy trong context riêng và chỉ trả về tóm tắt',
+    'Khi muốn tăng context window của phiên chính',
+    'Khi cần model trả lời nhanh hơn',
+    'Khi cần sửa cùng một file ở hai chỗ'
+  ],
+  answer: 0,
+  explain: `**Đúng: giao việc sinh nhiều "rác" context cho subagent.**
+
+### Cơ chế
+Mỗi subagent chạy trong **context window riêng**, với system prompt riêng, tập tool riêng và quyền riêng; nó làm xong rồi **chỉ trả về tóm tắt** cho hội thoại chính. Nhờ vậy các file lớn, log dài, kết quả grep… nằm trong context của subagent chứ không làm đầy context chính. Context window của subagent do **model của nó** quyết định, không phải của phiên cha.
+
+### Vì sao các phương án khác sai
+- **Tăng context window của phiên chính:** subagent không làm điều đó; nó chỉ dời việc sang cửa sổ khác.
+- **Mong trả lời nhanh hơn:** subagent chạy thêm một model nữa, không đảm bảo nhanh hơn; lợi ích là **tiết kiệm context**, không phải tốc độ.
+- **Sửa cùng một file ở hai chỗ:** dễ xung đột; không phải lý do dùng subagent.
+
+> Subagent vẫn tính vào hạn mức usage như hội thoại chính; đừng tạo subagent cho việc nhỏ.`
+},
+{
+  id: 'qz-claude-205',
+  topic: 'claude',
+  q: '[Claude Code] Bạn muốn đóng gói quy trình "review PR theo checklist" để gọi lại bằng /review-pr và Claude tự kích hoạt khi phù hợp. Nên tạo gì?',
+  options: [
+    'Một file .env',
+    'Một MCP server',
+    'Một hook PreToolUse',
+    'Một skill trong .claude/skills/review-pr/SKILL.md với YAML frontmatter (name, description) + hướng dẫn Markdown'
+  ],
+  answer: 3,
+  explain: `**Đúng: một skill (SKILL.md).**
+
+### Cơ chế
+Skill là file {{SKILL.md}} có YAML frontmatter ({{name}}, {{description}}) rồi tới hướng dẫn Markdown. {{description}} là phần Claude dùng để **tự quyết định khi nào kích hoạt** skill; khi chưa kích hoạt, chỉ name+description chiếm context (progressive disclosure), nội dung đầy đủ chỉ nạp khi cần. Skill cũng gọi được bằng {{/review-pr}}. Các field khác như {{allowed-tools}}, {{disable-model-invocation}} là tuỳ chọn.
+
+### Vì sao các phương án khác sai
+- **.env:** chứa biến môi trường, không phải quy trình.
+- **MCP server:** để nối công cụ/dịch vụ ngoài (database, API…), không phải đóng gói prompt/quy trình.
+- **Hook PreToolUse:** script chạy theo sự kiện vòng đời (trước/sau tool call), không phải thứ Claude chủ động gọi lại như một quy trình.
+
+> Cần một subagent với system prompt + tool riêng thì dùng {{.claude/agents/*.md}}; skill thiên về "cách làm", subagent thiên về "ai làm".`
+},
+{
+  id: 'qz-claude-206',
+  topic: 'claude',
+  q: '[Claude Code] Team muốn chia sẻ một MCP server (ví dụ kết nối database nội bộ) cho mọi thành viên qua git. Đặt cấu hình ở đâu?',
+  options: [
+    '.mcp.json ở gốc project (project scope, commit lên git)',
+    '~/.claude/CLAUDE.md',
+    '.claude/settings.local.json',
+    'Trong từng câu prompt'
+  ],
+  answer: 0,
+  explain: `**Đúng: .mcp.json ở gốc project.**
+
+### Cơ chế
+{{.mcp.json}} là cấu hình MCP ở **project scope**, commit lên git nên cả team dùng chung. Lần đầu chạy, Claude Code sẽ hỏi phê duyệt các server trong file này trước khi kết nối. Nếu là MCP cá nhân (chỉ mình bạn, mọi project) thì để trong {{~/.claude.json}}.
+
+### Vì sao các phương án khác sai
+- **~/.claude/CLAUDE.md:** là hướng dẫn hành vi, không phải nơi khai báo MCP server.
+- **.claude/settings.local.json:** là **override cá nhân**, thường bị gitignore, không chia sẻ cho team.
+- **Trong từng câu prompt:** không phải cơ chế cấu hình; mỗi phiên phải nhắc lại và không có approval/quản lý tập trung.
+
+> MCP = Model Context Protocol, chuẩn để Claude Code gọi công cụ bên ngoài qua server; tool của server hiện ra dưới dạng {{mcp__server__tool}}.`
+},
+{
+  id: 'qz-claude-207',
+  topic: 'claude',
+  q: '[Claude Code] Trong CI, bạn cần đọc từng sự kiện ngay khi Claude đang chạy (không chờ đến cuối). Lệnh nào đúng?',
+  options: [
+    'claude -p "..." --output-format text',
+    'claude -p "..." --output-format stream-json --verbose',
+    'claude -p "..." --output-format json',
+    'claude -p "..."'
+  ],
+  answer: 1,
+  explain: `**Đúng: stream-json + --verbose.**
+
+### Cơ chế
+{{--output-format stream-json}} in ra **newline-delimited JSON**: mỗi dòng là một sự kiện (message, tool use, partial…), đọc được ngay khi chạy. Chế độ này **yêu cầu {{--verbose}}**; muốn cả các mẩu text trung gian thì thêm {{--include-partial-messages}} (cũng cần {{--print}} + stream-json + verbose).
+
+### Vì sao các phương án khác sai
+- **text:** chỉ in text cuối cùng, không có cấu trúc sự kiện.
+- **json:** trả về **một object duy nhất** khi kết thúc (result, session ID, usage…), không stream.
+- **claude -p "..." không cờ:** mặc định output là text.
+
+> Nếu chỉ cần một kết quả có cấu trúc để parse, dùng {{--output-format json}} (kèm {{--json-schema}} nếu cần đúng schema).`
+},
+{
+  id: 'qz-claude-208',
+  topic: 'claude',
+  q: '[Claude Code] Bạn đóng terminal giữa lúc Claude đang sửa code và muốn nối lại đúng phiên đó. Dùng cờ nào?',
+  options: [
+    '--bare',
+    '--safe-mode',
+    '--continue (-c) nối phiên gần nhất; --resume (-r) chọn phiên theo ID/tên',
+    '--init'
+  ],
+  answer: 2,
+  explain: `**Đúng: --continue / --resume.**
+
+### Cơ chế
+{{--continue}} ({{ -c}}) nối lại **phiên gần nhất**; {{--resume}} ({{ -r}}) cho chọn phiên theo ID hoặc tên (hoặc mở picker). Muốn nối nhưng tạo ID mới thì thêm {{--fork-session}}.
+
+### Vì sao các phương án khác sai
+- **--bare:** chế độ tối giản, bỏ hooks/MCP/CLAUDE.md… để script chạy nhanh; không liên quan nối phiên.
+- **--safe-mode:** tắt mọi tuỳ biến để dò lỗi cấu hình, không phải nối phiên.
+- **--init:** chạy Setup hooks rồi thoát (print mode), không nối hội thoại.
+
+> Phiên chỉ lưu nếu session persistence còn bật; {{--no-session-persistence}} (hoặc biến môi trường tương ứng) sẽ tắt việc lưu.`
+},
+{
+  id: 'qz-claude-209',
+  topic: 'claude',
+  q: '[Claude Code] Bạn mở Claude Code ở repo A nhưng cần nó đọc và sửa cả file trong repo B lân cận. Cách đúng?',
+  options: [
+    'Copy repo B vào repo A',
+    'Đặt CLAUDE.md trong repo B',
+    'Dùng --bare',
+    'Dùng --add-dir /đường/dẫn/repo-B (hoặc /add-dir trong phiên) để thêm working directory; có thể lưu trong permissions.additionalDirectories'
+  ],
+  answer: 3,
+  explain: `**Đúng: --add-dir / /add-dir.**
+
+### Cơ chế
+{{--add-dir}} thêm một thư mục vào phạm vi làm việc, cho Claude đọc và sửa file trong đó; trong phiên có thể gõ {{/add-dir}}. Để cố định, lưu vào {{permissions.additionalDirectories}} trong settings.
+
+### Vì sao các phương án khác sai
+- **Copy repo B vào repo A:** nhân bản code, dễ lệch; không phải cơ chế của Claude Code.
+- **Đặt CLAUDE.md trong repo B:** chỉ là hướng dẫn, **không** cấp quyền đọc/ghi; Claude vẫn không được phép chạm vào repo B.
+- **--bare:** bỏ bớt cấu hình, không mở rộng phạm vi thư mục.
+
+> Ngoài working directory, Claude Code còn chặn ghi ra ngoài phạm vi nếu bật {{permissions.blockWritesOutsideWorkingDirectories}}.`
+},
+{
+  id: 'qz-claude-210',
+  topic: 'claude',
+  q: '[Claude Code] Bạn cần một quy tắc CỨNG: không bao giờ cho sửa file trong thư mục production/, bất kể model quyết định gì. Dùng cơ chế nào?',
+  options: [
+    'Viết vào CLAUDE.md',
+    'PreToolUse hook trả deny (hoặc permissions.deny "Edit(production/**)") — lớp cưỡng chế của client; CLAUDE.md chỉ là context, không chặn được',
+    'Đặt trong README',
+    'Nhắc model trong prompt'
+  ],
+  answer: 1,
+  explain: `**Đúng: lớp cưỡng chế (hook deny hoặc permissions.deny).**
+
+### Cơ chế
+CLAUDE.md, README và prompt chỉ là **context** — chúng định hướng model nhưng **không chặn** được hành động. Claude Code đánh giá deny rule trước permission mode, và deny có hiệu lực ở **mọi** mode (kể cả {{bypassPermissions}}); hook {{PreToolUse}} trả {{permissionDecision: "deny"}} cũng chặn ở mọi mode và chạy **trước** bước kiểm tra permission mode. Vì vậy đây mới là nơi đặt quy tắc cứng.
+
+### Vì sao các phương án khác sai
+- **CLAUDE.md / README / prompt:** chỉ là chỉ dẫn; model vẫn có thể (vô tình hoặc bị prompt injection) yêu cầu sửa file, và không có gì cưỡng chế.
+- Với ràng buộc "không sửa production", deny rule hoặc hook là cách duy nhất đảm bảo.
+
+> Nếu cần cho phép có điều kiện (ví dụ chỉ cho đọc), kết hợp {{permissions.allow}} cho read và {{permissions.deny}} cho {{Edit(production/**)}}.`
+},
+{
+  id: 'qz-claude-211',
+  topic: 'claude',
+  q: '[Eval] Bạn cần chấm một bộ eval gồm cả bài "JSON đúng schema" và bài "giọng văn có thân thiện không". Chọn grader thế nào theo docs?',
+  options: [
+    'Dùng người chấm cho tất cả vì chính xác nhất',
+    'Dùng LLM judge cho tất cả vì rẻ nhất',
+    'Code-based cho phần kiểm tra được bằng máy (exact match, JSON schema, unit test); LLM judge cho phần mở; người chấm để hiệu chỉnh judge và ca rủi ro',
+    'Chỉ cần một điểm trung bình'
+  ],
+  answer: 2,
+  explain: `**Đúng: code grader trước, LLM judge cho phần mở, người chấm để hiệu chỉnh.**
+
+### Cơ chế
+- **Code-based** (exact match, regex, JSON schema, unit test): nhanh, rẻ, khách quan, lặp lại được; nhưng "giòn" trước các biến thể hợp lệ và không đo được sắc thái.
+- **LLM judge**: linh hoạt, mở rộng được, chấm được tiêu chí mở như giọng văn/độ đầy đủ; nhưng **không tất định** và tốn token.
+- **Người chấm**: linh hoạt và chất lượng cao nhất nhưng chậm/đắt; docs khuyên **tránh nếu có thể**, chỉ dùng để hiệu chỉnh judge và kiểm tra ca rủi ro.
+
+Nguyên tắc: cái gì kiểm tra được bằng code thì kiểm tra bằng code, phần còn lại mới đưa cho LLM judge.
+
+### Vì sao các phương án khác sai
+- **Người chấm cho tất cả:** không mở rộng được, đắt, chậm.
+- **LLM judge cho tất cả:** tốn kém và thiếu ổn định cho những bài đã có thể chấm bằng code.
+- **Chỉ một điểm trung bình:** bỏ mất thông tin per-case, không biết case nào hỏng.
+
+> Nên dùng model khác với model sinh output làm judge để tránh self-preference.`
+},
+{
+  id: 'qz-claude-212',
+  topic: 'claude',
+  q: '[Eval] Agent sửa bug có thể chạy nhiều lần. Bạn cần biết "xác suất MỌI lần chạy đều thành công" để đánh giá độ tin cậy. Chỉ số nào?',
+  options: [
+    'pass@k',
+    'pass^k',
+    'BLEU',
+    'Perplexity'
+  ],
+  answer: 1,
+  explain: `**Đúng: pass^k.**
+
+### Cơ chế
+- **pass@k**: xác suất **có ít nhất một** lần đúng trong k lần thử (best-of-k) — phù hợp khi có người chọn ra bản tốt nhất.
+- **pass^k**: xác suất **tất cả k lần đều đúng** — đo độ tin cậy, phù hợp khi người dùng cần agent thành công mọi lần.
+
+### Vì sao các phương án khác sai
+- **pass@k:** đo "có ít nhất một lần đúng", không phản ánh sự ổn định.
+- **BLEU / Perplexity:** là metric cho sinh văn bản (dịch, mô hình ngôn ngữ), không dùng cho độ tin cậy của agent.
+
+> Với agentic task, chạy mỗi task nhiều lần là bắt buộc vì kết quả thay đổi giữa các lần chạy; đừng kết luận từ một lần.`
+},
+{
+  id: 'qz-claude-213',
+  topic: 'claude',
+  q: '[Eval] Agent hoàn thành task theo cách khác với "đường đi chuẩn" bạn dự đoán. Chấm thế nào theo docs?',
+  options: [
+    'Bắt buộc đúng từng bước mới cho điểm',
+    'Chấm theo output/kết quả cuối (outcome), không chấm theo đúng đường đi đã định',
+    'Loại task đó khỏi eval',
+    'Cho 0 điểm vì khác dự đoán'
+  ],
+  answer: 1,
+  explain: `**Đúng: chấm outcome (kết quả cuối), không chấm đường đi.**
+
+### Cơ chế
+Docs nhấn mạnh "grade what the agent produced, not the path it took": nếu agent sửa được bug bằng một cách bạn không lường trước thì vẫn phải **pass**. Chấm theo đúng từng bước sẽ phạt oan những cách làm hợp lệ và làm eval "giòn".
+
+### Vì sao các phương án khác sai
+- **Bắt buộc đúng từng bước:** loại nhầm các lời giải đúng nhưng khác đường đi.
+- **Loại task / cho 0 điểm:** làm mất tín hiệu và khiến eval thiên vị một cách làm duy nhất.
+
+> Nếu đường đi có **tác dụng phụ bị cấm** (ví dụ sửa cả file trong production), hãy kiểm tra ràng buộc đó **riêng** (deny rule, kiểm tra file thay đổi), đừng trộn vào điểm chất lượng.`
+},
+{
+  id: 'qz-claude-214',
+  topic: 'claude',
+  multi: true,
+  q: '[Eval] Khi báo cáo kết quả eval, những thực hành nào được docs khuyến nghị? (Chọn 2)',
+  options: [
+    'Chạy mỗi task nhiều lần rồi báo cáo pass@k hoặc pass^k thay vì một lần',
+    'Chỉ nhìn điểm trung bình, bỏ qua các case cá biệt bị hỏng',
+    'Xem cả danh sách case thất bại kèm output, không chỉ con số phần trăm',
+    'Báo cáo trên chính tập case đã dùng để tinh chỉnh prompt, không cần tập held-out'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: chạy nhiều lần và xem danh sách case lỗi.**
+
+### Cơ chế
+Kết quả LLM thay đổi giữa các lần chạy, nên chạy mỗi task nhiều lần rồi báo cáo **pass@k** (có ít nhất 1 lần đúng) hoặc **pass^k** (mọi lần đều đúng) cho thấy độ ổn định. Điểm trung bình che mất per-case regression: dù trung bình tăng, một case hỏng vẫn có thể là lỗi người dùng thật gặp. Danh sách case thất bại kèm output chính là phần **hành động được** của báo cáo.
+
+### Vì sao hai phương án còn lại sai
+- **Chỉ nhìn trung bình:** bỏ qua case cá biệt; "average up but a case broke" vẫn lọt.
+- **Báo cáo trên tập đã tinh chỉnh:** đó là overfitting — điểm sẽ lạc quan giả; phải giữ một tập **held-out** không dùng khi tinh chỉnh.
+
+> Với agentic task, báo cáo cả pass@k và pass^k: một cái cho "khả năng làm được", một cái cho "độ tin cậy".`
+},
+{
+  id: 'qz-claude-215',
+  topic: 'claude',
+  q: '[Eval] Bạn viết success criteria cho chatbot hỗ trợ khách hàng. Bộ tiêu chí nào đạt chuẩn theo docs?',
+  options: [
+    'Nhiều chiều, mỗi chiều có ngưỡng đo được: ví dụ F1 ≥ 0.85 trên tập held-out 10.000 bài, 99.5% output không độc hại, 95% request < 200ms, chi phí ≤ ngân sách',
+    'Chỉ cần "trả lời hữu ích"',
+    'Chỉ cần độ trễ < 200ms',
+    'Chỉ cần chi phí mỗi request thấp'
+  ],
+  answer: 0,
+  explain: `**Đúng: bộ tiêu chí đa chiều, mỗi chiều có ngưỡng đo được.**
+
+### Cơ chế
+Tiêu chí tốt phải **Specific, Measurable, Achievable, Relevant**. Hầu hết use case cần đánh giá **đa chiều**: task fidelity, consistency, relevance/coherence, tone/style, privacy, context utilization, latency, price — mỗi chiều một ngưỡng. Chỉ một con số (ví dụ độ chính xác) che mất các chiều khác mà người dùng thật sự cảm nhận: một model chính xác nhưng quá chậm/đắt vẫn là thất bại.
+
+### Vì sao các phương án khác sai
+- **"Trả lời hữu ích":** mơ hồ, không đo được, không biết khi nào đạt.
+- **Chỉ độ trễ / chỉ chi phí:** đúng một chiều nhưng bỏ chất lượng — chatbot nhanh và rẻ mà trả lời sai vẫn vô dụng.
+
+> Ngay cả chủ đề "mơ hồ" như an toàn cũng định lượng được: ví dụ "dưới 0,1% output trong 10.000 lần bị content filter gắn cờ".`
+},
+{
+  id: 'qz-claude-216',
+  topic: 'claude',
+  multi: true,
+  q: '[Eval] Bạn thiết kế bộ eval cho chatbot. Những loại input "biên" nào nên đưa vào theo docs? (Chọn 2)',
+  options: [
+    'Chỉ input "đẹp" để điểm cao',
+    'Input rỗng, quá dài, không liên quan hoặc mơ hồ (ngay cả người cũng khó thống nhất)',
+    'Chỉ input giống hệt 5 câu mẫu đầu tiên',
+    'Input độc hại/thử tấn công (với use case chat)'
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: input rỗng/quá dài/mơ hồ và input độc hại.**
+
+### Cơ chế
+Docs liệt kê các edge case nên có trong eval: **input không liên quan/không tồn tại**, **input quá dài**, **input nghèo nàn/độc hại/không liên quan** (với chat), và **case mơ hồ mà cả người cũng khó thống nhất**. Những case này quyết định độ bền thật của sản phẩm, không phải các câu "đẹp".
+
+### Vì sao hai phương án còn lại sai
+- **Chỉ input đẹp:** eval sẽ pass mãi mà không bắt được lỗi thực tế.
+- **Chỉ input giống 5 câu mẫu:** trùng lặp, không đại diện phân phối thật.
+
+> Tỉ lệ gợi ý: phần lớn case typical, một phần edge case, một phần nhỏ adversarial — đừng dồn hết vào typical.`
+},
+{
+  id: 'qz-claude-217',
+  topic: 'claude',
+  q: '[Eval] Team chưa có bộ eval và nghĩ "phải có hàng trăm task mới bắt đầu". Theo Anthropic, nên bắt đầu thế nào?',
+  options: [
+    'Chờ đủ 1.000 task rồi mới làm',
+    'Không cần eval, cứ deploy rồi xem phản hồi',
+    'Dùng bộ benchmark công khai là đủ, không cần task riêng',
+    '20–50 task đơn giản lấy từ lỗi thật (real failures) là khởi đầu tốt; mỗi lỗi production mới thành một case, bổ sung dần'
+  ],
+  answer: 3,
+  explain: `**Đúng: bắt đầu với 20–50 task lấy từ lỗi thật.**
+
+### Cơ chế
+Theo Anthropic, "20–50 simple tasks drawn from real failures is a great start". Giai đoạn đầu mỗi thay đổi có tác động lớn nên bộ nhỏ đã đủ thấy tín hiệu; sau đó **mỗi lỗi production mới** được thêm thành một case. Task phải **task-specific**: phản ánh phân phối thật của bạn, không phải benchmark công khai chung.
+
+### Vì sao các phương án khác sai
+- **Chờ đủ 1.000 task:** trì hoãn vô thời hạn; nguyên tắc là "prioritize volume over quality", nhưng bắt đầu nhỏ vẫn tốt hơn không bắt đầu.
+- **Không cần eval:** lỗi chỉ phát hiện sau khi người dùng đã gặp, không so sánh được hai phiên bản.
+- **Chỉ dùng benchmark công khai:** không phản ánh task và edge case của chính bạn.
+
+> Kèm mỗi case nên có reference answer/golden output; nếu không viết nổi một output đúng thì task đó còn mơ hồ.`
+},
+{
+  id: 'qz-claude-218',
+  topic: 'claude',
+  q: '[Eval] Bạn dùng LLM judge để chấm. Làm gì để judge đáng tin trước khi scale?',
+  options: [
+    'Tin ngay judge rồi scale',
+    'Dùng chính model sinh output làm judge',
+    'Chấm một mẫu bằng tay, so với judge, sửa rubric chỗ lệch; dùng model khác model sinh output; bật thinking cho judge',
+    'Chỉ cần một rubric chung chung'
+  ],
+  answer: 2,
+  explain: `**Đúng: kiểm tra độ tin cậy trước, rồi mới scale.**
+
+### Cơ chế
+Docs khuyên "test to ensure reliability first, then scale": đọc transcript và điểm của nhiều lần chạy, so với người chấm trên một mẫu, rồi sửa rubric ở những chỗ lệch. Dùng **model khác** với model sinh output để tránh self-preference (model chấm chính nó thường có xu hướng ưu ái). Bật **thinking** cho judge giúp phán đoán các case phức tạp chính xác hơn.
+
+### Vì sao các phương án khác sai
+- **Tin ngay rồi scale:** judge sai sẽ dẫn sai cả hướng tối ưu, với quy mô lớn thì hậu quả lớn.
+- **Dùng chính model sinh output:** self-preference, điểm bị thổi phồng.
+- **Rubric chung chung:** không đủ để kết luận đúng/sai nhất quán giữa các lần chấm.
+
+> LLM judge có bias (position bias, verbosity bias); có thể đổi thứ tự hai lựa chọn hoặc yêu cầu judge nêu bằng chứng trước khi chấm.`
+},
+{
+  id: 'qz-claude-219',
+  topic: 'claude',
+  multi: true,
+  q: '[Eval] Viết prompt cho LLM judge theo docs. Những thực hành nào đúng? (Chọn 2)',
+  options: [
+    'Rubric chi tiết, rõ ràng: nêu rõ điều kiện pass/fail (ví dụ "thiếu nêu thời hạn 30 ngày → incorrect")',
+    'Yêu cầu judge trả essay dài để giữ sắc thái',
+    'Yêu cầu output cụ thể (correct/incorrect hoặc 1–5) và cho judge suy luận trước khi chấm',
+    'Không cần rubric, cứ hỏi "câu này tốt không?"'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: rubric chi tiết và output cụ thể + cho judge suy luận.**
+
+### Cơ chế
+- **Rubric chi tiết, rõ ràng:** nêu rõ điều kiện pass/fail tới mức có thể tự động kết luận (ví dụ thiếu mốc 30 ngày thì incorrect).
+- **Empirical hoặc specific:** chỉ yêu cầu kết quả dạng correct/incorrect hoặc thang 1–5, đừng bắt viết đoạn văn tự do (khó tổng hợp ở quy mô lớn).
+- **Encourage reasoning:** cho judge bật thinking để suy luận trước khi chấm, tăng độ chính xác với phán đoán phức tạp.
+
+### Vì sao hai phương án còn lại sai
+- **Essay dài:** khó tổng hợp, khó so sánh giữa các phiên bản.
+- **Không rubric, hỏi "tốt không":** mỗi lần chấm một kiểu, không nhất quán.
+
+> Một judge cho mỗi tiêu chí thường dễ hiệu chỉnh hơn một judge chấm 5 tiêu chí cùng lúc.`
+},
+{
+  id: 'qz-claude-220',
+  topic: 'claude',
+  q: '[Eval] Vì sao cần tách một tập held-out không dùng khi tinh chỉnh prompt?',
+  options: [
+    'Vì tập held-out chạy nhanh hơn',
+    'Để điểm phản ánh đúng năng lực thật, tránh "học vẹt" bộ case; tinh chỉnh trên chính tập đó sẽ cho điểm lạc quan giả',
+    'Vì tập held-out không cần chấm',
+    'Vì docs bắt buộc dùng đúng 10.000 case'
+  ],
+  answer: 1,
+  explain: `**Đúng: tránh overfitting, điểm held-out gần với thực tế hơn.**
+
+### Cơ chế
+Nếu bạn tinh chỉnh prompt trên một tập case rồi lại báo cáo điểm trên chính tập đó, điểm sẽ **lạc quan giả** vì prompt đã "nhìn thấy" các case này (overfitting). Tập held-out không dùng khi tinh chỉnh cho biết năng lực thật trên input mới, gần với hành vi production hơn.
+
+### Vì sao các phương án khác sai
+- **Chạy nhanh hơn:** không phải lý do; kích thước hai tập có thể như nhau.
+- **Không cần chấm:** ngược lại — held-out vẫn phải được chấm để có điểm.
+- **Buộc dùng 10.000 case:** docs không quy định con số cứng; "10.000" chỉ là ví dụ minh hoạ.
+
+> Thực hành tốt: tách train/dev (dùng để tinh chỉnh) và held-out (chỉ chấm cuối), và thêm mỗi lỗi production mới vào tập test.`
+}
 );
