@@ -36,7 +36,7 @@
 - **Giảm temperature:** temperature không quyết định độ dài. Trên API version mới, gửi temperature cho các model hiện hành còn bị lỗi 400.
 - **Coi như xong:** câu trả lời đang dở dang. Nếu là JSON hay code thì còn không parse được.
 
-> Lưu ý: các model hiện hành (Opus 5.5, Sonnet 5.5, Fable 5.1…) **không còn hỗ trợ prefill** (gửi sẵn đoạn đầu của câu trả lời assistant), nên không "nối tiếp" bằng cách prefill được. Nếu output thật sự dài (tới 128K token), SDK yêu cầu dùng streaming để không bị timeout HTTP.`
+> Lưu ý: các model hiện hành (Opus 5.5, Sonnet 5.5, Fable 5.2…) **không còn hỗ trợ prefill** (gửi sẵn đoạn đầu của câu trả lời assistant), nên không "nối tiếp" bằng cách prefill được. Nếu output thật sự dài (tới 128K token), SDK yêu cầu dùng streaming để không bị timeout HTTP.`
 },
 {
   id: 'qz-claude-003',
@@ -287,7 +287,7 @@
     'tool_choice auto, system prompt nói rõ phải gọi extract_invoice, và đặt strict: true trên tool (hoặc dùng structured outputs nếu chỉ cần JSON)'
   ],
   answer: 3,
-  explain: `**Đúng: phương án 4.** Trên Claude Opus 5.5, Sonnet 5.5 và Fable 5.1, **forced tool use** ({{tool_choice}} {{any}} hoặc {{tool}}) trả lỗi 400. Cách thay thế:
+  explain: `**Đúng: phương án 4.** Trên Claude Opus 5.5, Sonnet 5.5 và Fable 5.2, **forced tool use** ({{tool_choice}} {{any}} hoặc {{tool}}) trả lỗi 400. Cách thay thế:
 1. {{tool_choice}} kiểu {{auto}} kèm hướng dẫn rõ trong prompt (ví dụ "luôn gọi extract_invoice với dữ liệu hoá đơn").
 2. {{strict: true}} trên định nghĩa tool (schema có {{additionalProperties: false}} và {{required}}). API đảm bảo {{tool_use.input}} hợp lệ theo schema.
 3. Nếu mục đích chỉ là lấy JSON, dùng **structured outputs** ({{output_config.format}}), không cần tool.
@@ -379,7 +379,7 @@ Các header {{api-version}}, {{x-api-version}}, {{version}} không tồn tại t
   q: '[Model Selection] Ứng dụng phân loại email khối lượng lớn, độ trễ thấp. Nên chọn model nào?',
   options: [
     'Claude Haiku 5.5',
-    'Claude Fable 5.1',
+    'Claude Fable 5.2',
     'Claude Opus 5.5',
     'Claude Sonnet 5.5'
   ],
@@ -394,7 +394,7 @@ Các header {{api-version}}, {{x-api-version}}, {{version}} không tồn tại t
     'Claude Haiku 5.5',
     'Claude Opus 5.5',
     'Claude Sonnet 5.5',
-    'Claude Fable 5.1'
+    'Claude Fable 5.2'
   ],
   answer: 1,
   explain: `**Đáp án đúng: Opus 5.5 dành cho long-running agentic coding và knowledge work.** Fable dành cho reasoning rất nặng/long-horizon; Sonnet cân bằng tốc độ/trí tuệ; Haiku cho tác vụ nhẹ.`
@@ -407,7 +407,7 @@ Các header {{api-version}}, {{x-api-version}}, {{version}} không tồn tại t
     'Claude Opus 5.5',
     'Claude Haiku 5.5',
     'Claude Sonnet 5.5',
-    'Claude Fable 5.1'
+    'Claude Fable 5.2'
   ],
   answer: 2,
   explain: `**Đáp án đúng: Sonnet 5.5** là best combination of speed and intelligence.`
@@ -420,10 +420,10 @@ Các header {{api-version}}, {{x-api-version}}, {{version}} không tồn tại t
     'Claude Opus 5.5',
     'Claude Sonnet 5.5',
     'Claude Haiku 5.5',
-    'Claude Fable 5.1'
+    'Claude Fable 5.2'
   ],
   answer: 3,
-  explain: `**Đáp án đúng: Fable 5.1** cho demanding reasoning và long-horizon agentic work, hoặc khi eval trên Opus ở effort cao vẫn thiếu.`
+  explain: `**Đáp án đúng: Fable 5.2** cho demanding reasoning và long-horizon agentic work, hoặc khi eval trên Opus ở effort cao vẫn thiếu.`
 },
 {
   id: 'qz-claude-025',
@@ -449,12 +449,12 @@ Các header {{api-version}}, {{x-api-version}}, {{version}} không tồn tại t
     '200K tokens'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: 1M tokens.** 1M là context window của các model hiện hành (Opus/Sonnet/Haiku 5.5, Fable 5.1), tính cả input lẫn output. 128K là trần **output** (max_tokens); 200K là context của một số model đời trước như Haiku 4.5; 32K là của các thế hệ rất cũ.`
+  explain: `**Đáp án đúng: 1M tokens.** 1M là context window của các model hiện hành (Opus/Sonnet/Haiku 5.5, Fable 5.2), tính cả input lẫn output. 128K là trần **output** (max_tokens); 200K là context của một số model đời trước như Haiku 4.5; 32K là của các thế hệ rất cũ.`
 },
 {
   id: 'qz-claude-027',
   topic: 'claude',
-  q: '[Model Selection] max_tokens tối đa của các model hiện hành (Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1) là bao nhiêu, và cần lưu ý gì?',
+  q: '[Model Selection] max_tokens tối đa của các model hiện hành (Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.2) là bao nhiêu, và cần lưu ý gì?',
   options: [
     '4K token, không lưu ý gì',
     '128K token; với giá trị lớn như vậy, SDK yêu cầu dùng streaming để tránh timeout HTTP',
@@ -502,7 +502,7 @@ Mỗi kết quả có {{result.type}} là một trong {{succeeded}}, {{errored}}
   answer: 0,
   explain: `**Đúng: phương án 1.** Prompt caching có 2 loại chi phí:
 - **Cache write** (lần đầu ghi prefix vào cache): **đắt hơn** input thường, khoảng 1.25x với TTL 5 phút, cao hơn nữa với TTL 1 giờ.
-- **Cache read** (các lần sau dùng lại prefix): **rẻ hơn rất nhiều**, thường khoảng 0.1x. Một số model có giá riêng: Opus 5.5 và Sonnet 5.5 đọc cache với giá $0.20/MTok (tương ứng 0.05x và 0.1x giá input), Fable 5.1 là $0.25/MTok.
+- **Cache read** (các lần sau dùng lại prefix): **rẻ hơn rất nhiều**, thường khoảng 0.1x. Một số model có giá riêng: Opus 5.5 và Sonnet 5.5 đọc cache với giá $0.20/MTok (tương ứng 0.05x và 0.1x giá input), Fable 5.2 là $0.25/MTok.
 
 Vì vậy cache chỉ có lợi khi prefix **được dùng lại nhiều lần** trong thời gian TTL.
 
@@ -1475,7 +1475,7 @@ Nguyên nhân hợp lý nhất?`,
     'Sonnet 5.5 không hỗ trợ tool use'
   ],
   answer: 2,
-  explain: `**Đúng: khác biệt hỗ trợ forced tool use giữa các model.** Theo docs, Opus 5.5, Sonnet 5.5, Fable 5.1 (và Mythos 5.1) trả **400** với {{tool_choice}} {{any}} hoặc {{tool}}. Một số model khác như Haiku 5.5 vẫn chấp nhận, nhưng lời gọi ép **bỏ qua thinking** (response bắt đầu ngay bằng tool_use). Cách sửa cho Sonnet 5.5:
+  explain: `**Đúng: khác biệt hỗ trợ forced tool use giữa các model.** Theo docs, Opus 5.5, Sonnet 5.5, Fable 5.2 (và Mythos 5.1) trả **400** với {{tool_choice}} {{any}} hoặc {{tool}}. Một số model khác như Haiku 5.5 vẫn chấp nhận, nhưng lời gọi ép **bỏ qua thinking** (response bắt đầu ngay bằng tool_use). Cách sửa cho Sonnet 5.5:
 - Mục đích chỉ là lấy JSON: dùng **structured outputs** ({{output_config.format}}).
 - Cần model hành động qua tool: {{tool_choice}} {{auto}}, {{strict: true}} trên tool, và hướng dẫn rõ trong prompt.
 
@@ -1551,11 +1551,11 @@ Nguyên nhân hợp lý nhất?`,
   options: [
     'Phải bật beta header context-awareness trên Sonnet 5.5',
     'Tự chèn thẻ token budget giống API vào system prompt là đủ để khôi phục tính năng',
-    'Sonnet 5.5 (cùng Opus 5.5, Haiku 5.5, Fable 5.1) không nhận các thẻ ngân sách token do API tự chèn; cho model ngân sách tường minh bằng task budgets (beta) và để harness tự theo dõi usage',
+    'Sonnet 5.5 (cùng Opus 5.5, Haiku 5.5, Fable 5.2) không nhận các thẻ ngân sách token do API tự chèn; cho model ngân sách tường minh bằng task budgets (beta) và để harness tự theo dõi usage',
     'Context awareness chỉ bị tắt khi effort là low'
   ],
   answer: 2,
-  explain: `**Đúng: các model mới không có context awareness tự động.** Sonnet 4.6, Sonnet 5 (và một số model khác) có **context awareness**: API tự chèn tổng ngân sách và cập nhật số token còn lại sau mỗi lần gọi tool. Opus 4.7 trở đi, Sonnet 5.5, Haiku 5.5, Fable 5.1 **không** nhận các thẻ này. Trên các model đó, dùng **task budgets** (beta) để cho model biết ngân sách, còn harness tự đếm {{usage}} và chủ động lưu trạng thái, compaction hoặc mở context mới.
+  explain: `**Đúng: các model mới không có context awareness tự động.** Sonnet 4.6, Sonnet 5 (và một số model khác) có **context awareness**: API tự chèn tổng ngân sách và cập nhật số token còn lại sau mỗi lần gọi tool. Opus 4.7 trở đi, Sonnet 5.5, Haiku 5.5, Fable 5.2 **không** nhận các thẻ này. Trên các model đó, dùng **task budgets** (beta) để cho model biết ngân sách, còn harness tự đếm {{usage}} và chủ động lưu trạng thái, compaction hoặc mở context mới.
 
 ### Vì sao các phương án khác sai
 - **Beta header context-awareness:** không có header như vậy; tính năng phụ thuộc model.
@@ -1573,7 +1573,7 @@ Nguyên nhân hợp lý nhất?`,
     'Fable 5.2 đắt gấp 2 lần Opus 5.5 ($8/$40 so với $4/$20 mỗi MTok); chỉ route nhóm bài khó đã chứng minh có lợi bằng eval, phần còn lại giữ Opus'
   ],
   answer: 3,
-  explain: `**Đúng: route có chọn lọc.** Fable 5.2 là model mạnh nhất đang phát hành rộng rãi (kế nhiệm Fable 5.1, rẻ hơn 5.1), cho suy luận rất khó và tác vụ agent dài, giá $8 input / $40 output mỗi MTok, gấp 2 lần Opus 5.5 ($4/$20), và một lượt trên bài khó thường chạy lâu hơn. Chuyển cả traffic để sửa 10% bài khó là trả gấp đôi cho 90% bài vốn đã ổn. Cách đúng: xác định đặc điểm nhóm bài khó, chạy eval Fable trên nhóm đó, và chỉ route nhóm này sang Fable nếu cải thiện đo được.
+  explain: `**Đúng: route có chọn lọc.** Fable 5.2 là model mạnh nhất đang phát hành rộng rãi (kế nhiệm Fable 5.2, rẻ hơn 5.1), cho suy luận rất khó và tác vụ agent dài, giá $8 input / $40 output mỗi MTok, gấp 2 lần Opus 5.5 ($4/$20), và một lượt trên bài khó thường chạy lâu hơn. Chuyển cả traffic để sửa 10% bài khó là trả gấp đôi cho 90% bài vốn đã ổn. Cách đúng: xác định đặc điểm nhóm bài khó, chạy eval Fable trên nhóm đó, và chỉ route nhóm này sang Fable nếu cải thiện đo được.
 
 ### Vì sao các phương án khác sai
 - **Cùng giá:** sai, Fable đắt hơn đáng kể.
@@ -1608,7 +1608,7 @@ Nguyên nhân hợp lý nhất?`,
     'Sonnet 5.5 đọc cache với giá $0.20/MTok, khoảng 0.1x giá input của nó ($2/MTok)',
     'Cache read có giá bằng cache write',
     'Ghi cache với TTL 5 phút rẻ hơn input thường',
-    'Fable 5.1 không hỗ trợ prompt caching'
+    'Fable 5.2 không hỗ trợ prompt caching'
   ],
   answer: [0, 1],
   explain: `**Đúng: hai model có cùng giá cache read $0.20/MTok.** Vì Opus 5.5 có giá input cao gấp đôi Sonnet 5.5 nhưng giá đọc cache bằng nhau, phần prefix được cache trên Opus chỉ còn khoảng 0.05x giá input. Với route mà phần lớn input là cache read, khoảng cách chi phí input giữa Opus và Sonnet thu hẹp đáng kể; chênh lệch chủ yếu còn lại ở phần không cache và output.
@@ -1616,7 +1616,7 @@ Nguyên nhân hợp lý nhất?`,
 ### Vì sao các phương án còn lại sai
 - **Read bằng write:** write đắt hơn input thường (khoảng 1.25x với TTL 5 phút, khoảng 2x với 1 giờ), read rẻ hơn rất nhiều.
 - **Write TTL 5 phút rẻ hơn input:** ngược lại, write đắt hơn input khoảng 25%.
-- **Fable không hỗ trợ caching:** sai, Fable 5.1 có giá cache read riêng ($0.25/MTok).`
+- **Fable không hỗ trợ caching:** sai, Fable 5.2 có giá cache read riêng ($0.25/MTok).`
 },
 {
   id: 'qz-claude-094',
@@ -1647,7 +1647,7 @@ Nguyên nhân hợp lý nhất?`,
     'Phải dùng Batch API cho mọi prompt trên 200K'
   ],
   answer: 2,
-  explain: `**Đúng: 1M là mặc định, giá chuẩn.** Theo docs Context windows, với mọi model có context 1M token (Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1…), 1M là mặc định: không cần beta header, prompt dài tính giá chuẩn, **ngoại trừ Haiku 5.5** (prompt trên 100.000 token có giá cao hơn).
+  explain: `**Đúng: 1M là mặc định, giá chuẩn.** Theo docs Context windows, với mọi model có context 1M token (Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.2…), 1M là mặc định: không cần beta header, prompt dài tính giá chuẩn, **ngoại trừ Haiku 5.5** (prompt trên 100.000 token có giá cao hơn).
 
 ### Vì sao các phương án khác sai
 - **Beta header và giá gấp đôi:** không áp dụng cho Sonnet 5.5; docs ghi rõ không cần beta header và tính giá chuẩn.
@@ -2024,7 +2024,7 @@ Những phát biểu nào đúng? (Chọn 3)`,
 
 ### Vì sao các phương án còn lại sai
 - **Thêm chữ in hoa:** làm vấn đề tệ hơn; model mới bám hướng dẫn rất sát.
-- **tool_choice any:** ép **phải** gọi tool (càng nhiều hơn), và còn trả 400 trên Opus 5.5, Sonnet 5.5, Fable 5.1.
+- **tool_choice any:** ép **phải** gọi tool (càng nhiều hơn), và còn trả 400 trên Opus 5.5, Sonnet 5.5, Fable 5.2.
 - **Xoá description:** model mất thông tin để chọn đúng lúc dùng tool; description là yếu tố quan trọng nhất của chất lượng gọi tool.`
 },
 {
@@ -2422,14 +2422,14 @@ if ("refusal".equals(stopReason) && stopDetails != null) {
 Docs nói rõ ghép header của dạng này với dạng kia trả 400. Sửa: đổi header sang {{2026-07-01}} hoặc dùng dạng mảng.
 
 ### Vì sao các phương án còn lại sai
-- **"default" không tồn tại:** có tồn tại, là dạng được khuyến nghị cho Fable 5.1/Opus 5.5.
+- **"default" không tồn tại:** có tồn tại, là dạng được khuyến nghị cho Fable 5.2/Opus 5.5.
 - **Chỉ có trên Batch:** ngược lại, tham số fallbacks **bị từ chối** trên Batches API.
 - **Bỏ header vì đã GA:** tính năng vẫn là beta, thiếu header cũng lỗi.`
 },
 {
   id: 'qz-claude-133',
   topic: 'claude',
-  q: '[Applications] Công ty chạy Claude Fable 5.1 qua Amazon Bedrock và muốn khi bị refusal thì tự chạy lại trên model khác. Cách làm phù hợp là gì?',
+  q: '[Applications] Công ty chạy Claude Fable 5.2 qua Amazon Bedrock và muốn khi bị refusal thì tự chạy lại trên model khác. Cách làm phù hợp là gì?',
   options: [
     'Thêm tham số fallbacks vào request giống Claude API; Bedrock hỗ trợ đầy đủ',
     'Không làm được; refusal trên Bedrock luôn là kết quả cuối cùng',
@@ -2642,7 +2642,7 @@ Chọn TTL theo khoảng cách từ đầu request này tới đầu request sau
     'Append một message {"role": "system", ...} vào messages (ngay sau một message user): giữ nguyên prefix đã cache và mang thẩm quyền operator'
   ],
   answer: 3,
-  explain: `**Đúng: mid-conversation system message.** Sửa system top-level làm đổi phần đầu prefix nên mọi thứ phía sau mất cache. Trên các model hỗ trợ (Opus 5.5, Opus 5, Fable 5.1, Sonnet 5.5, Haiku 5.5…, không cần beta header), bạn append một message có {{role: "system"}} (ví dụ nội dung "Chế độ ngắn gọn: trả lời dưới 40 từ.") vào {{messages}}. Prefix đã cache giữ nguyên, và model coi đây là chỉ dẫn của operator chứ không phải lời người dùng. Quy tắc vị trí: phải đứng sau một message user (hoặc assistant kết thúc bằng server tool), là phần tử cuối hoặc theo sau là assistant, không được là {{messages[0]}}.
+  explain: `**Đúng: mid-conversation system message.** Sửa system top-level làm đổi phần đầu prefix nên mọi thứ phía sau mất cache. Trên các model hỗ trợ (Opus 5.5, Opus 5, Fable 5.2, Sonnet 5.5, Haiku 5.5…, không cần beta header), bạn append một message có {{role: "system"}} (ví dụ nội dung "Chế độ ngắn gọn: trả lời dưới 40 từ.") vào {{messages}}. Prefix đã cache giữ nguyên, và model coi đây là chỉ dẫn của operator chứ không phải lời người dùng. Quy tắc vị trí: phải đứng sau một message user (hoặc assistant kết thúc bằng server tool), là phần tử cuối hoặc theo sau là assistant, không được là {{messages[0]}}.
 
 ### Vì sao các phương án còn lại sai
 - **Đặt trong tool_result:** nội dung tool_result được coi là dữ liệu không tin cậy; hướng dẫn ở đó có thể bị bỏ qua hoặc bị coi là injection.
@@ -2669,7 +2669,7 @@ messages.append({"role": "assistant", "content": response.content})  # đúng: g
 ### Vì sao các phương án còn lại sai
 - **Chỉ khi streaming:** compaction chạy với cả request thường.
 - **Endpoint /v1/compact:** không có; cấu hình qua {{context_management.edits}} với {{compact_20260112}}.
-- **Chỉ trên Haiku:** compaction (beta) có trên Opus 5.5, Sonnet 5.5, Fable 5.1, Haiku 5.5 và các model 4.6 trở lên.`
+- **Chỉ trên Haiku:** compaction (beta) có trên Opus 5.5, Sonnet 5.5, Fable 5.2, Haiku 5.5 và các model 4.6 trở lên.`
 },
 {
   id: 'qz-claude-145',
@@ -2767,7 +2767,7 @@ SDK Python/TS tự gỡ các ràng buộc không hỗ trợ khỏi schema gửi 
     'Thêm beta header sampling-params để mở lại tham số'
   ],
   answer: 0,
-  explain: `**Đúng: bỏ tham số sampling.** Với API version {{2026-10-21}}, một request Messages gửi {{temperature}}, {{top_p}} hoặc {{top_k}} trả 400 trên **mọi model**. (Trên các model hiện hành như Opus 5.5/Fable 5.1, sampling đã bị bỏ từ trước.) Muốn ổn định đầu ra thì dùng prompt rõ ràng, few-shot, structured outputs; muốn đổi độ kỹ thì dùng {{output_config.effort}}.
+  explain: `**Đúng: bỏ tham số sampling.** Với API version {{2026-10-21}}, một request Messages gửi {{temperature}}, {{top_p}} hoặc {{top_k}} trả 400 trên **mọi model**. (Trên các model hiện hành như Opus 5.5/Fable 5.2, sampling đã bị bỏ từ trước.) Muốn ổn định đầu ra thì dùng prompt rõ ràng, few-shot, structured outputs; muốn đổi độ kỹ thì dùng {{output_config.effort}}.
 
 ### Vì sao các phương án còn lại sai
 - **Đặt về 0:** gửi tham số là lỗi, bất kể giá trị.
@@ -2823,7 +2823,7 @@ SDK Python/TS tự gỡ các ràng buộc không hỗ trợ khỏi schema gửi 
     'Bật prompt caching cho prefix: trên Claude API, token đọc từ cache không tính vào ITPM với hầu hết model, nên vừa rẻ hơn vừa ít chạm hạn mức'
   ],
   answer: 3,
-  explain: `**Đúng: prompt caching.** Trên Claude API, {{cache_read_input_tokens}} **không tính vào hạn mức input token/phút** với hầu hết model (docs nêu Haiku 3.5 là ngoại lệ). Với prefix lặp lại 80%, bật cache giúp: giá phần đọc chỉ khoảng 0.1x input (thấp hơn nữa trên Opus 5.5 và Fable 5.1), và phần lớn input không còn đếm vào ITPM, nên throughput hiệu dụng tăng mà không cần nâng tier.
+  explain: `**Đúng: prompt caching.** Trên Claude API, {{cache_read_input_tokens}} **không tính vào hạn mức input token/phút** với hầu hết model (docs nêu Haiku 3.5 là ngoại lệ). Với prefix lặp lại 80%, bật cache giúp: giá phần đọc chỉ khoảng 0.1x input (thấp hơn nữa trên Opus 5.5 và Fable 5.2), và phần lớn input không còn đếm vào ITPM, nên throughput hiệu dụng tăng mà không cần nâng tier.
 
 ### Vì sao các phương án còn lại sai
 - **Tăng max_tokens:** đó là trần output, không giảm input; mỗi request vẫn gửi đủ prefix.
@@ -2861,7 +2861,7 @@ SDK Python/TS tự gỡ các ràng buộc không hỗ trợ khỏi schema gửi 
     'Mọi model đều tính giá gấp đôi khi prompt vượt 200K token'
   ],
   answer: 0,
-  explain: `**Đúng: Haiku 5.5 có giá long-context riêng.** Giá $0.10 input / $0.50 output mỗi MTok của Haiku 5.5 áp dụng cho prompt **đến 100K token**; vượt mức đó giá là $0.50 / $2.50, tức gấp 5 lần. Route 150K token/request rơi hẳn vào mức cao. Đây là ngoại lệ: với các model 1M khác (Opus 5.5, Sonnet 5.5, Fable 5.1), long context tính theo giá chuẩn, không cần beta header.
+  explain: `**Đúng: Haiku 5.5 có giá long-context riêng.** Giá $0.10 input / $0.50 output mỗi MTok của Haiku 5.5 áp dụng cho prompt **đến 100K token**; vượt mức đó giá là $0.50 / $2.50, tức gấp 5 lần. Route 150K token/request rơi hẳn vào mức cao. Đây là ngoại lệ: với các model 1M khác (Opus 5.5, Sonnet 5.5, Fable 5.2), long context tính theo giá chuẩn, không cần beta header.
 
 Bài học: dự toán bằng phân bố kích thước prompt thật; với Haiku, giữ prompt dưới 100K (lọc retrieval, cache, tóm tắt) hoặc so với Sonnet 5.5 bằng chi phí trên mỗi tác vụ hoàn thành.
 
@@ -2909,38 +2909,38 @@ Bài học: dự toán bằng phân bố kích thước prompt thật; với Hai
 {
   id: 'qz-claude-157',
   topic: 'claude',
-  q: '[Model Selection] Team chuyển một route từ Sonnet 4.6 sang Fable 5.1 và dự toán chi phí bằng số token đo trên Sonnet 4.6 nhân với giá Fable. Rủi ro lớn nhất của cách dự toán này là gì?',
+  q: '[Model Selection] Team chuyển một route từ Sonnet 4.6 sang Fable 5.2 và dự toán chi phí bằng số token đo trên Sonnet 4.6 nhân với giá Fable. Rủi ro lớn nhất của cách dự toán này là gì?',
   options: [
-    'Fable 5.1 không tính phí input token',
-    'Fable 5.1 không hỗ trợ count_tokens',
-    'Fable 5.1 tính phí theo số ký tự thay vì token',
-    'Fable 5.1 dùng tokenizer khác (tokenizer ra mắt từ Opus 4.7), cùng văn bản có thể ra khoảng 1x–1.35x số token; cần đo lại bằng count_tokens trên model mới'
+    'Fable 5.2 không tính phí input token',
+    'Fable 5.2 không hỗ trợ count_tokens',
+    'Fable 5.2 tính phí theo số ký tự thay vì token',
+    'Fable 5.2 dùng tokenizer khác (tokenizer ra mắt từ Opus 4.7), cùng văn bản có thể ra khoảng 1x–1.35x số token; cần đo lại bằng count_tokens trên model mới'
   ],
   answer: 3,
-  explain: `**Đúng: tokenizer khác nên số token khác.** Fable 5.1 dùng cùng tokenizer với Opus 4.8 (tokenizer ra mắt cùng Opus 4.7). Khi chuyển từ Opus 4.6, Sonnet, Haiku hoặc cũ hơn, docs khuyên đo lại bằng {{count_tokens}} vì tokenizer mới dùng khoảng 1x–1.35x số token cho cùng văn bản. Dự toán bằng token của Sonnet 4.6 có thể thấp tới hơn 30%, cộng thêm chênh giá ($10/$50 so với $3/$15).
+  explain: `**Đúng: tokenizer khác nên số token khác.** Fable 5.2 dùng cùng tokenizer với Opus 4.8 (tokenizer ra mắt cùng Opus 4.7). Khi chuyển từ Opus 4.6, Sonnet, Haiku hoặc cũ hơn, docs khuyên đo lại bằng {{count_tokens}} vì tokenizer mới dùng khoảng 1x–1.35x số token cho cùng văn bản. Dự toán bằng token của Sonnet 4.6 có thể thấp tới hơn 30%, cộng thêm chênh giá ($8/$40 so với $3/$15).
 
 ### Vì sao các phương án còn lại sai
-- **Không tính phí input:** Fable 5.1 tính $10/MTok input.
+- **Không tính phí input:** Fable 5.2 tính $8/MTok input.
 - **Không hỗ trợ count_tokens:** count_tokens dùng được cho các model hiện hành; đó chính là công cụ nên dùng.
 - **Tính theo ký tự:** mọi model Claude tính theo token.`
 },
 {
   id: 'qz-claude-158',
   topic: 'claude',
-  q: '[Model Selection] Một ngân hàng có thoả thuận zero data retention (ZDR) với Anthropic muốn thử Fable 5.1. Mọi request trả 400 invalid_request_error. Giải thích đúng là gì?',
+  q: '[Model Selection] Một ngân hàng có thoả thuận zero data retention (ZDR) với Anthropic muốn thử Fable 5.2. Mọi request trả 400 invalid_request_error. Giải thích đúng là gì?',
   options: [
-    'Fable 5.1 yêu cầu lưu dữ liệu 30 ngày; tổ chức ZDR bị từ chối trừ khi được Anthropic cho phép rõ ràng, nên phải xin phép hoặc dùng model không có yêu cầu này',
-    'Fable 5.1 chỉ dành cho thành viên Project Glasswing',
+    'Fable 5.2 yêu cầu lưu dữ liệu 30 ngày; tổ chức ZDR bị từ chối trừ khi được Anthropic cho phép rõ ràng, nên phải xin phép hoặc dùng model không có yêu cầu này',
+    'Fable 5.2 chỉ dành cho thành viên Project Glasswing',
     'Ngân hàng phải gửi thêm header zdr: true',
-    'Fable 5.1 chỉ chạy qua Batch API'
+    'Fable 5.2 chỉ chạy qua Batch API'
   ],
   answer: 0,
-  explain: `**Đúng: Fable 5.1 cần 30 ngày lưu dữ liệu.** Docs ghi Fable 5.1 không khả dụng dưới zero data retention trừ khi Anthropic cho phép rõ ràng; request từ tổ chức có cấu hình lưu trữ không đáp ứng yêu cầu sẽ nhận {{400 invalid_request_error}}. Đây là ràng buộc cần kiểm tra **trước** khi chọn model cho khách hàng có yêu cầu tuân thủ.
+  explain: `**Đúng: Fable 5.2 cần 30 ngày lưu dữ liệu.** Docs ghi Fable 5.2 không khả dụng dưới zero data retention trừ khi Anthropic cho phép rõ ràng; request từ tổ chức có cấu hình lưu trữ không đáp ứng yêu cầu sẽ nhận {{400 invalid_request_error}}. Đây là ràng buộc cần kiểm tra **trước** khi chọn model cho khách hàng có yêu cầu tuân thủ.
 
 ### Vì sao các phương án còn lại sai
-- **Project Glasswing:** đó là điều kiện của Claude Mythos 5.1, không phải Fable 5.1 (được phát hành rộng rãi).
+- **Project Glasswing:** đó là điều kiện của Claude Mythos 5.1, không phải Fable 5.2 (được phát hành rộng rãi).
 - **Header zdr:** không có header này; cấu hình retention nằm ở cấp tổ chức.
-- **Chỉ qua Batch:** Fable 5.1 dùng trên Messages API bình thường.`
+- **Chỉ qua Batch:** Fable 5.2 dùng trên Messages API bình thường.`
 },
 {
   id: 'qz-claude-159',
@@ -2948,12 +2948,12 @@ Bài học: dự toán bằng phân bố kích thước prompt thật; với Hai
   q: '[Model Selection] Doanh nghiệp đã mua Priority Tier và muốn áp dụng cho route mới chạy Opus 5.5. Request bị lỗi validation. Giải thích đúng là gì?',
   options: [
     'Priority Tier chỉ áp dụng cho các model Haiku',
-    'Priority Tier không hỗ trợ Opus 5.5 (cũng như Sonnet 5.5, Fable 5.1…); route cần Priority Tier phải chạy model được hỗ trợ như Fable 5 hoặc Opus 4.8, hoặc bỏ Priority Tier',
+    'Priority Tier không hỗ trợ Opus 5.5 (cũng như Sonnet 5.5, Fable 5.2…); route cần Priority Tier phải chạy model được hỗ trợ như Fable 5 hoặc Opus 4.8, hoặc bỏ Priority Tier',
     'Phải bật fast mode cùng lúc với Priority Tier',
     'Priority Tier yêu cầu anthropic-version cũ hơn'
   ],
   answer: 1,
-  explain: `**Đúng: Opus 5.5 nằm ngoài Priority Tier.** Docs liệt kê Priority Tier hỗ trợ Fable 5, Opus 4.8 và các model hiện hành cũ hơn, nhưng **loại trừ** Opus 5.5, Opus 5, Sonnet 5, Sonnet 5.5, Fable 5.1, Mythos 5.1, Mythos 5 và Mythos Preview; request Priority Tier với các model này lỗi validation. Khi chọn model cho route cần cam kết dịch vụ, phải đối chiếu danh sách hỗ trợ chứ không mặc định "model mới nhất".
+  explain: `**Đúng: Opus 5.5 nằm ngoài Priority Tier.** Docs liệt kê Priority Tier hỗ trợ Fable 5, Opus 4.8 và các model hiện hành cũ hơn, nhưng **loại trừ** Opus 5.5, Opus 5, Sonnet 5, Sonnet 5.5, Fable 5.2, Mythos 5.1, Mythos 5 và Mythos Preview; request Priority Tier với các model này lỗi validation. Khi chọn model cho route cần cam kết dịch vụ, phải đối chiếu danh sách hỗ trợ chứ không mặc định "model mới nhất".
 
 ### Vì sao các phương án còn lại sai
 - **Chỉ Haiku:** sai; Fable 5 và Opus 4.8 cũng được hỗ trợ.
@@ -3019,7 +3019,7 @@ Bài học: dự toán bằng phân bố kích thước prompt thật; với Hai
   topic: 'claude',
   q: '[Model Selection] Bạn dùng advisor tool: executor là Sonnet 5.5, và để tiết kiệm bạn cấu hình advisor là Haiku 5.5. Request bị 400. Vì sao?',
   options: [
-    'Advisor tool chỉ chạy với Fable 5.1',
+    'Advisor tool chỉ chạy với Fable 5.2',
     'Model advisor phải ít nhất mạnh bằng model executor (ví dụ executor Sonnet 5.5 thì advisor là Opus 5.5); cặp không hợp lệ trả 400',
     'Advisor phải cùng model với executor',
     'Advisor tool cần tool_choice any mới chạy'
@@ -3028,7 +3028,7 @@ Bài học: dự toán bằng phân bố kích thước prompt thật; với Hai
   explain: `**Đúng: advisor phải mạnh ít nhất bằng executor.** Ý tưởng của advisor tool là model executor (chạy chính) xin lời khuyên từ một model **mạnh hơn hoặc bằng**. Cặp như executor {{claude-sonnet-5-5}} → advisor {{claude-opus-5-5}} hợp lệ; advisor yếu hơn (Haiku) trả 400. Riêng executor Sonnet 5.5 chỉ nhận các advisor trong bảng ghép cặp của nó (không nhận Opus 4.8/4.7/4.6, Sonnet 5, Sonnet 4.6).
 
 ### Vì sao các phương án còn lại sai
-- **Chỉ Fable 5.1:** advisor tool dùng với nhiều cặp model.
+- **Chỉ Fable 5.2:** advisor tool dùng với nhiều cặp model.
 - **Cùng model:** không bắt buộc; mục đích là xin ý kiến model mạnh hơn.
 - **tool_choice any:** forced tool_choice còn bị 400 trên Sonnet 5.5; không liên quan.`
 },
@@ -3047,7 +3047,7 @@ Bài học: dự toán bằng phân bố kích thước prompt thật; với Hai
   answer: [0, 2],
   explain: `**Đúng: chạy lại effort sweep, và bỏ forced tool use.**
 - Sonnet 5.5 vẫn mặc định effort {{high}} nhưng các mức đã **hiệu chỉnh lại** so với Sonnet 5; docs gợi ý bắt đầu ở {{medium}} cho agentic coding/multi-step tool, {{low}} cho chat, rồi đo.
-- {{tool_choice}} {{any}}/{{tool}} trả 400 trên Sonnet 5.5 (cũng như Opus 5.5, Fable 5.1). Thay bằng {{auto}} + nói rõ trong prompt, {{strict: true}} để giữ đảm bảo schema, hoặc structured outputs nếu chỉ cần JSON.
+- {{tool_choice}} {{any}}/{{tool}} trả 400 trên Sonnet 5.5 (cũng như Opus 5.5, Fable 5.2). Thay bằng {{auto}} + nói rõ trong prompt, {{strict: true}} để giữ đảm bảo schema, hoặc structured outputs nếu chỉ cần JSON.
 
 ### Vì sao các phương án còn lại sai
 - **Giữ nguyên effort:** cùng tên mức nhưng hiệu chỉnh khác; giữ nguyên là nguồn phổ biến của "model mới chậm/tốn hơn".
@@ -3058,7 +3058,7 @@ Bài học: dự toán bằng phân bố kích thước prompt thật; với Hai
   id: 'qz-claude-165',
   topic: 'claude',
   multi: true,
-  q: '[Model Selection] Bạn đưa Fable 5.1 vào một agent phân tích chạy dài. Những điều nào cần chuẩn bị? (Chọn 2)',
+  q: '[Model Selection] Bạn đưa Fable 5.2 vào một agent phân tích chạy dài. Những điều nào cần chuẩn bị? (Chọn 2)',
   options: [
     'Một request trên tác vụ khó có thể chạy nhiều phút: dùng streaming, timeout dài và UI báo tiến độ',
     'Prompt viết cho model cũ thường quá chi tiết, áp đặt và có thể làm giảm chất lượng; nên rà lại cho gọn',
@@ -3067,14 +3067,14 @@ Bài học: dự toán bằng phân bố kích thước prompt thật; với Hai
     'Đặt budget_tokens nhỏ để giới hạn thời gian suy nghĩ'
   ],
   answer: [0, 1],
-  explain: `**Đúng: chuẩn bị cho lượt dài, và rà lại prompt.** Theo hướng dẫn migration của Fable 5.1:
+  explain: `**Đúng: chuẩn bị cho lượt dài, và rà lại prompt.** Theo hướng dẫn migration của Fable 5.2:
 - Một request trên tác vụ khó có thể chạy **nhiều phút**: cần streaming (tránh timeout HTTP), timeout phù hợp và trải nghiệm báo tiến độ.
 - Prompt viết cho model trước thường **quá áp đặt** và làm giảm chất lượng đầu ra; nên rút gọn. Effort sweep nên gồm cả low/medium cho việc thường ngày.
 
 ### Vì sao các phương án còn lại sai
-- **thinking disabled:** trên Fable 5.1 thinking luôn bật; gửi disabled là 400. Điều khiển bằng effort.
-- **Priority Tier:** Fable 5.1 không có Priority Tier.
-- **budget_tokens:** bị bỏ trên Fable 5.1 (400).`
+- **thinking disabled:** trên Fable 5.2 thinking luôn bật; gửi disabled là 400. Điều khiển bằng effort.
+- **Priority Tier:** Fable 5.2 không có Priority Tier.
+- **budget_tokens:** bị bỏ trên Fable 5.2 (400).`
 },
 {
   id: 'qz-claude-166',
@@ -3302,7 +3302,7 @@ Managed Agents là lựa chọn duy nhất cung cấp cả hai, kèm scheduled d
 
 ### Vì sao các phương án còn lại sai
 - **Tăng effort:** làm model nghĩ kỹ hơn, không đổi cách hiểu yêu cầu "gợi ý".
-- **tool_choice any:** trả 400 trên Opus 5.5/Sonnet 5.5/Fable 5.1; và ép gọi tool cả khi người dùng chỉ muốn hỏi.
+- **tool_choice any:** trả 400 trên Opus 5.5/Sonnet 5.5/Fable 5.2; và ép gọi tool cả khi người dùng chỉ muốn hỏi.
 - **CRITICAL/MUST:** docs khuyên làm mềm ngôn ngữ kiểu này; với model mới, giọng gắt dễ gây gọi tool quá đà.`
 },
 {
@@ -3601,7 +3601,7 @@ Chuỗi base64 dạng text chỉ là một dãy ký tự với model, vừa tố
 ### Vì sao các phương án còn lại sai
 - **strict trong tool_choice:** sai vị trí; tool_choice chỉ điều khiển việc chọn tool.
 - **Bỏ required:** đi ngược yêu cầu của strict mode.
-- **Chỉ với tool_choice any:** strict dùng với {{auto}}; trên Opus 5.5/Sonnet 5.5/Fable 5.1, any còn bị 400 và {{auto}} + strict chính là cách thay thế được khuyến nghị.`
+- **Chỉ với tool_choice any:** strict dùng với {{auto}}; trên Opus 5.5/Sonnet 5.5/Fable 5.2, any còn bị 400 và {{auto}} + strict chính là cách thay thế được khuyến nghị.`
 },
 {
   id: 'qz-claude-192',
@@ -3716,7 +3716,7 @@ Chuỗi base64 dạng text chỉ là một dãy ký tự với model, vừa tố
     'Không cần gì; Claude tự biết khi nào không nên hoàn tiền'
   ],
   answer: 0,
-  explain: `**Đúng: mid-conversation system message.** Chỉ dẫn của operator nên đi qua kênh operator. Trên các model hỗ trợ (Opus 5.5, Opus 5, Fable 5.1, Sonnet 5.5…, không cần beta header), append message {{role: "system"}} vào {{messages}}: model coi đây là chỉ dẫn có thẩm quyền operator, docs mô tả đây là kênh operator an toàn trước prompt injection, và prefix đã cache được giữ nguyên. Đặt chỉ dẫn trong text của user làm lẫn thẩm quyền: người dùng (hoặc nội dung do họ dán vào) có thể giả câu tương tự để vượt quyền.
+  explain: `**Đúng: mid-conversation system message.** Chỉ dẫn của operator nên đi qua kênh operator. Trên các model hỗ trợ (Opus 5.5, Opus 5, Fable 5.2, Sonnet 5.5…, không cần beta header), append message {{role: "system"}} vào {{messages}}: model coi đây là chỉ dẫn có thẩm quyền operator, docs mô tả đây là kênh operator an toàn trước prompt injection, và prefix đã cache được giữ nguyên. Đặt chỉ dẫn trong text của user làm lẫn thẩm quyền: người dùng (hoặc nội dung do họ dán vào) có thể giả câu tương tự để vượt quyền.
 
 > Với ràng buộc cứng như "không hoàn tiền", vẫn nên cưỡng chế ở harness: gỡ tool (ví dụ tool_removal, beta) hoặc từ chối thực thi.
 
