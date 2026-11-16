@@ -29,7 +29,7 @@
     'Treat the confident tone as a warning sign and verify the deadline in the original document',
     'Accept it because Claude only states facts it is certain about',
     'Delete the deadline and ship the rest of the summary without checking',
-    'Ask Claude to make the statement even more confident so it reads better'
+    'Ask Claude to repeat the deadline with no surrounding context to double-check it'
   ],
   answer: 0,
   explain: `**Đúng: giọng chắc chắn không đồng nghĩa đúng, hãy kiểm tra lại trong tài liệu gốc.** Claude có thể tạo ra một chi tiết nghe rất thuyết phục nhưng không có trong nguồn (hiện tượng “hallucination”, tức bịa thông tin). Khi output ảnh hưởng tới quyết định của khách, bước đúng là mở chính văn bản gốc và xác nhận mốc thời hạn đó có thật và đúng như đã nêu.
@@ -685,7 +685,7 @@ Ghi log tối thiểu: prompt/template, nguồn dữ liệu, phiên bản, ngư�
   q: '[Workflow Integration] A single power user got great results with Claude and now the whole department is adopting it. What is the biggest integration risk to manage?',
   options: [
     'That Claude will suddenly stop being useful for everyone at once',
-    'That the department will forget how to type',
+    'That the detailed notes and shortcuts one expert developed will not transfer to other people without training and a shared reference',
     'That there will be too few people wanting to use it',
     'That practices which worked for one expert are copied without documentation, training, and consistent review'
   ],
@@ -1134,7 +1134,7 @@ Viết một prompt mẫu gồm: vai trò, mục tiêu, đầu vào, ràng buộ
     'Ask in a different language',
     'Specify the format: a bulleted list only, with no introduction or conclusion',
     'Ask for a long and detailed answer',
-    'Say "please" twice so the answer feels more polite'
+    'Mention the deadline by which the list is needed, so Claude can prioritise and keep it short'
   ],
   answer: 1,
   explain: `**Đúng: nói rõ định dạng đầu ra: chỉ danh sách gạch đầu dòng, không mở đầu, không kết luận.** "Output format" là cách bạn muốn kết quả được trình bày. Khi bạn không nói, Claude sẽ chọn một định dạng hợp lý theo nó, thường là thêm câu dẫn và câu chốt. Nêu rõ định dạng giúp bạn dán thẳng kết quả vào ticket mà không phải xoá từng dòng.
@@ -1142,7 +1142,7 @@ Viết một prompt mẫu gồm: vai trò, mục tiêu, đầu vào, ràng buộ
 ### Vì sao các lựa chọn khác sai
 - **Đổi ngôn ngữ:** không liên quan tới cấu trúc đầu ra.
 - **Yêu cầu trả lời dài và chi tiết:** ngược với mục tiêu là danh sách ngắn gọn.
-- **Nói "please" hai lần:** lịch sự không thay thế cho hướng dẫn định dạng.
+- **Mention the deadline by which the list is needed:** deadline giúp Claude ưu tiên thứ tự, nhưng không thay thế hướng dẫn định dạng rõ ràng.
 
 ### Cách làm
 Mô tả khuôn đầu ra bằng một ví dụ ngắn, ví dụ "- việc cần làm | người phụ trách | hạn". Claude sẽ bám theo khuôn đó.
@@ -1554,14 +1554,14 @@ Một thói quen tốt: mỗi chủ đề lớn một chat. Khi chuyển hẳn s
   options: [
     'Repeated client work that uses the same reference material → a Project with shared knowledge',
     'Making code changes and running tests in a local repository → Claude Code',
-    'Any task at all → the mobile voice assistant and nothing else',
+    'Any task at all → a single shared chat that everyone writes into, regardless of data sensitivity',
     'Uploading a client’s confidential contract to a public, unauthenticated demo page → the safest choice'
   ],
   answer: [0, 1],
   explain: `**Đúng: ghép đúng bề mặt với đúng việc.** Việc lặp lại, cùng tài liệu nền thì dùng Project có knowledge; việc sửa code và chạy test thì dùng Claude Code. Đây là hai cách ghép hợp lý.
 
 ### Vì sao các lựa chọn khác sai
-- **Mọi việc thì chỉ dùng app giọng nói:** app giọng nói không thay được các bề mặt khác; nó chỉ phù hợp một số tình huống.
+- **Bất kỳ việc nào cũng dùng một chat dùng chung cho mọi người, bất kể tính nhạy cảm của dữ liệu:** chia sẻ dữ liệu nhạy cảm qua chat dùng chung làm tăng rủi ro lộ thông tin; cần chọn bề mặt phù hợp với mức bảo mật.
 - **Đưa hợp đồng bảo mật lên trang demo công khai:** đây là rủi ro bảo mật, không phải lựa chọn sản phẩm; tuyệt đối không làm.
 
 ### Cách trình bày
@@ -1600,7 +1600,7 @@ Khi trả lời câu ghép nối, nêu rõ việc gì, bề mặt nào, vì sao.
     'Buy the largest enterprise contract immediately, to be safe',
     'Start with a free or low-tier personal plan, then upgrade if real usage and needs grow',
     'Avoid Claude entirely until they can afford the top plan',
-    'Share a single paid login across the whole neighbourhood to split the cost'
+    'Share a single paid login across several family members to split the cost'
   ],
   answer: 1,
   explain: `**Đúng: bắt đầu nhỏ, nâng cấp khi nhu cầu thực sự tăng.** Với người dùng ít, ngân sách hạn chế, gói miễn phí hoặc gói thấp là đủ để thử. Khi tần suất và nhu cầu tăng, lúc đó nâng cấp dựa trên dữ liệu sử dụng thật, không phải cảm giác.
@@ -1608,7 +1608,7 @@ Khi trả lời câu ghép nối, nêu rõ việc gì, bề mặt nào, vì sao.
 ### Vì sao các lựa chọn khác sai
 - **Mua gói doanh nghiệp lớn ngay:** trả nhiều cho năng lực chưa dùng tới, lãng phí.
 - **Tránh Claude đến khi đủ tiền mua gói cao nhất:** trì hoãn giá trị; gói thấp hoặc miễn phí đã dùng được cho việc nhỏ.
-- **Share một login cho cả khu:** vi phạm điều khoản, mất kiểm soát và không an toàn.
+- **Share một login cho cả gia đình:** vi phạm điều khoản, mất kiểm soát và không an toàn.
 
 ### Cách tư vấn
 Hỏi: dùng bao nhiêu người, tần suất, dữ liệu có nhạy cảm không, cần chia sẻ hoặc quản trị không. Từ đó chọn gói tối thiểu đủ dùng rồi mở rộng.
@@ -1646,7 +1646,7 @@ Không khẳng định chi tiết tính năng nếu không chắc; điều cần
   options: [
     'Whether the product name is long enough to sound serious',
     'What permissions and data access the agent will have, and whether a human reviews its actions',
-    'Whether the interface offers a dark theme',
+    'Whether the agent can be tested in a sandbox or staging environment before it is allowed to act on real data',
     'That the work is logged and can be audited later'
   ],
   answer: [1, 3],
@@ -1654,7 +1654,7 @@ Không khẳng định chi tiết tính năng nếu không chắc; điều cần
 
 ### Vì sao các lựa chọn khác sai
 - **Tên sản phẩm dài hay không:** không liên quan đến an toàn hay chất lượng.
-- **Giao diện có dark mode hay không:** là sở thích giao diện, không phải tiêu chí quản trị.
+- **Được thử nghiệm trong môi trường an toàn trước khi làm việc trên dữ liệu thật:** đây mới là tiêu chí quản trị khi trao quyền hành động cho agent.
 
 ### Cách trả lời
 Khi được hỏi về bề mặt agentic, hãy nói về phạm vi quyền, sự giám sát của con người, khả năng kiểm toán, và xử lý dữ liệu nhạy cảm. Đó là các tiêu chí quản trị cốt lõi.
@@ -2243,7 +2243,7 @@ Ghi lại đề bài và ngữ cảnh khi gặp lỗi, thử lại với brief r
   options: [
     'Keep re-uploading the same file until it works',
     'Reduce the file to the relevant pages, split it into smaller parts, or paste the key text instead',
-    'Convert the PDF into a video so it becomes smaller',
+    'Convert the PDF to a plain-text file with only the pages that matter, or copy the key text into the chat',
     'Assume PDFs are not supported at all and give up'
   ],
   answer: 1,
@@ -2251,7 +2251,7 @@ Ghi lại đề bài và ngữ cảnh khi gặp lỗi, thử lại với brief r
 
 ### Vì sao các lựa chọn khác sai
 - **Tải lại y nguyên tệp lớn:** nếu nguyên nhân là dung lượng thì lặp lại không giải quyết.
-- **Đổi PDF thành video:** vô nghĩa; video không phải định dạng tài liệu để phân tích.
+- **Chuyển PDF sang tệp text nhưng giữ nguyên toàn bộ:** nếu giữ nguyên toàn bộ 200 trang thì vẫn có thể vượt giới hạn; cần cắt bớt phần không cần.
 - **Cho rằng PDF không được hỗ trợ:** PDF vẫn được hỗ trợ trong giới hạn; vấn đề là kích thước/độ phức tạp của tệp cụ thể.
 
 ### Cách làm
