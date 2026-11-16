@@ -1734,9 +1734,9 @@ Hãy tưởng tượng nhiều khách hàng cùng có đơn hàng số {{42}}. C
 {{equals}} là phép hỏi “cùng một giá trị nghiệp vụ không?”. {{hashCode}} cho {{HashMap}} một số để chọn bucket (ngăn chứa); nó là bước định vị nhanh, chưa phải câu trả lời cuối. {{compareTo}} định nghĩa thứ tự tự nhiên, như xếp từ điển theo tenant rồi theo mã đơn. {{TreeMap}} giữ khóa trong cây tìm kiếm có thứ tự và xem kết quả so sánh bằng 0 là “khóa này đã có”.
 
 ### Vì sao ba method phải thống nhất
-Với {{HashMap}}, đường đi khi {{put}} hoặc {{get}} là: gọi {{hashCode}} → chọn bucket → so {{equals}} với các khóa trong bucket. Do đó nếu {{a.equals(b)}} là true thì hash bắt buộc bằng nhau; nếu không, {{HashMap}} có thể tìm ở bucket khác và không bao giờ gọi {{equals}} để phát hiện khóa tương đương. Chiều ngược lại không bắt buộc: hai khóa khác nhau được phép trùng hash, chỉ làm tăng va chạm và giảm tốc độ.
+Với {{HashMap}}, đường đi khi {{put}} hoặc {{get}} là: gọi {{hashCode}} → chọn bucket → so {{equals}} với các khóa trong bucket. Do đó nếu {{a.equals(b)}} là true thì hash bắt buộc bằng nhau; nếu không, {{HashMap}} có thể tìm ở bucket khác và không bao giờ gọi {{equals}} để phát hiện khóa tương đương. Chiều ngược lại không bắt buộc: hai khóa khác nhau được phép trùng hash — gọi là **va chạm** (collision: hai khóa rơi vào cùng một bucket) — chỉ làm tăng số khóa phải so sánh trong bucket và giảm tốc độ, không làm sai kết quả.
 
-{{TreeMap}} lại không dùng {{hashCode}} hoặc {{equals}} để quyết định vị trí. Nó gọi {{compareTo}} (hoặc {{Comparator}} được truyền vào). So sánh trả 0 nghĩa là cùng một khóa đối với map; lệnh put tiếp theo thay giá trị cũ, không tạo entry thứ hai. Vì thế điều kiện thực dụng là {{compareTo(a, b) == 0}} khi và chỉ khi {{a.equals(b)}}. Java cho phép thứ tự không nhất quán với equals, nhưng tài liệu {{Comparable}} khuyến nghị nhất quán; với map/set có thứ tự, không nhất quán thường tạo hành vi gây ngạc nhiên.
+{{TreeMap}} lại không dùng {{hashCode}} hoặc {{equals}} để quyết định vị trí. Nó gọi {{compareTo}} (hoặc {{Comparator}} được truyền vào). So sánh trả 0 nghĩa là cùng một khóa đối với map; lệnh put tiếp theo thay giá trị cũ, không tạo entry (một cặp key–value) thứ hai. Vì thế điều kiện thực dụng là {{compareTo(a, b) == 0}} khi và chỉ khi {{a.equals(b)}}. Java cho phép thứ tự không nhất quán với equals, nhưng tài liệu {{Comparable}} khuyến nghị nhất quán; với map/set có thứ tự, không nhất quán thường tạo hành vi gây ngạc nhiên.
 
 ~~~java
 final class OrderKey implements Comparable<OrderKey> {
@@ -1750,9 +1750,13 @@ final class OrderKey implements Comparable<OrderKey> {
         if (!(o instanceof OrderKey k)) return false;
         return tenant.equals(k.tenant) && order.equals(k.order);
     }
-    @Override public int hashCode() { return Objects.hash(tenant, order); }
+    @Override public int hashCode() {
+        // phai dung CUNG cac field nhu equals, neu khong HashMap se tim o bucket khac
+        return Objects.hash(tenant, order);
+    }
     @Override public int compareTo(OrderKey k) {
         int first = tenant.compareTo(k.tenant);
+        // so theo thu tu nhieu truong: chi khi field dau bang nhau moi sang field sau
         return first != 0 ? first : order.compareTo(k.order);
     }
 }
@@ -1772,7 +1776,7 @@ Key cũng phải bất biến trong khi nằm trong collection. {{final}} trên 
 | {{List.contains}} | {{equals}} | kết quả tìm kiếm không đồng nhất với collection khác |
 
 ### Ví dụ đời thực
-Một dịch vụ nhận sự kiện từ nhiều tenant, với mỗi tenant có mã đơn hàng riêng. Trong một đợt replay, 120 nghìn sự kiện được gom tạm theo {{OrderKey}} trước khi ghi database. Phiên bản lỗi chỉ so {{order}} trong {{compareTo}}, còn {{equals}} so cả tenant và order. Hai tenant có cùng 7.531 mã đơn bị TreeMap coi là cùng khóa; giá trị put sau ghi đè giá trị trước. Log đầu vào vẫn có đủ sự kiện nên lỗi trông giống thiếu dữ liệu ở database. Test tái hiện tạo hai tenant cùng order ID và kiểm tra kích thước map: trước sửa kích thước là 1, sau sửa là 2; replay mẫu giữ đủ 120 nghìn sự kiện. Đây là minh họa kiểm thử, khi điều tra thật cần đối chiếu metric, log và số liệu lưu trữ thay vì mặc định kết quả này.
+Một dịch vụ nhận sự kiện từ nhiều tenant, với mỗi tenant có mã đơn hàng riêng. Trong một đợt replay (phát lại một loạt sự kiện/dữ liệu cũ để xử lý lại), 120 nghìn sự kiện được gom tạm theo {{OrderKey}} trước khi ghi database. Phiên bản lỗi chỉ so {{order}} trong {{compareTo}}, còn {{equals}} so cả tenant và order. Hai tenant có cùng 7.531 mã đơn bị TreeMap coi là cùng khóa; giá trị put sau ghi đè giá trị trước. Log đầu vào vẫn có đủ sự kiện nên lỗi trông giống thiếu dữ liệu ở database. Test tái hiện tạo hai tenant cùng order ID và kiểm tra kích thước map: trước sửa kích thước là 1, sau sửa là 2; replay mẫu giữ đủ 120 nghìn sự kiện. Đây là minh họa kiểm thử, khi điều tra thật cần đối chiếu metric, log và số liệu lưu trữ thay vì mặc định kết quả này.
 
 ### Các lỗi thường gặp
 - Quên một field ở {{hashCode}} hoặc chỉ dùng một field ở {{equals}}: các collection hash không còn theo cùng định nghĩa khóa.
@@ -1886,12 +1890,12 @@ Khi được hỏi cách thiết kế khóa ghép, hãy nêu định nghĩa giá
       q: 'Hai khóa ghép bằng nhau theo tenant và order. Cách chọn field nào cho ba method là hợp lý nhất?',
       options: [
         'equals dùng tenant; hashCode dùng order; compareTo trả 0 cho mọi khóa',
-        'equals và hashCode dùng cả hai field; compareTo lần lượt so tenant rồi order',
+        'equals và hashCode dùng cả hai field; compareTo chỉ so mã đơn, nên hai tenant cùng mã đơn bị TreeMap gộp thành một khóa',
         'equals dùng cả hai field; hashCode chỉ dùng order; compareTo bỏ qua tenant',
         'Dùng cùng các field trong equals và hashCode; để compareTo trả 0 đúng khi hai key bằng nhau'
       ],
       answer: 3,
-      explain: 'D đúng: hashCode phải nhất quán với equals, còn compareTo bằng 0 nên tương ứng với bằng nhau để TreeMap không gộp nhầm. B gần đúng nhưng chưa nêu điều kiện quan trọng compareTo phải so các cặp thành phần sao cho zero tương đương equals; nếu compareTo không phân biệt một khác biệt trong equals thì vẫn lỗi. A và C dùng tập field/thứ tự không nhất quán, khiến map hoặc set có hành vi sai.'
+      explain: 'D đúng: hashCode phải nhất quán với equals, còn compareTo bằng 0 phải tương ứng với bằng nhau để TreeMap không gộp nhầm. B sai vì compareTo bỏ qua tenant nên TreeMap coi hai khóa khác tenant là cùng một khóa và gộp entry, trong khi equals/hashCode vẫn phân biệt — hai hợp đồng lệch nhau, đúng kiểu lỗi làm mất dữ liệu. A và C dùng tập field hoặc thứ tự không nhất quán, khiến HashMap hoặc TreeMap có hành vi sai.'
     }
   ],
   related: ['core-001'],
@@ -1905,7 +1909,7 @@ Khi được hỏi cách thiết kế khóa ghép, hãy nêu định nghĩa giá
     'Tạo class immutable bằng private final field, kiểm tra đầu vào và defensive copy',
     'Phân biệt snapshot bất biến với unmodifiable view và nhận biết giới hạn shallow copy'
   ],
-  body: `**Tóm tắt:** Object bất biến là object không thể đổi trạng thái quan sát được sau khi tạo. Nếu constructor nhận một list mutable (có thể sửa) rồi giữ nguyên tham chiếu, caller vẫn có thể thay đổi nội dung bên trong; muốn tạo snapshot an toàn, phải tách dữ liệu khi nhận vào và không cho caller sửa trạng thái nội bộ qua accessor.
+  body: `**Tóm tắt:** Object bất biến là object không thể đổi trạng thái quan sát được sau khi tạo. Snapshot (ảnh chụp dữ liệu tại một thời điểm) là bản sao cố định của dữ liệu nhận vào: sau khi tạo, không còn đường nào sửa được nó. Nếu constructor nhận một list mutable (có thể sửa) rồi giữ nguyên tham chiếu, caller vẫn có thể thay đổi nội dung bên trong; muốn tạo snapshot an toàn, phải tách dữ liệu khi nhận vào và không cho caller sửa trạng thái nội bộ qua accessor.
 
 ### Tham chiếu giống như chìa khóa cùng mở một ngăn kéo
 Trong Java, biến kiểu object lưu tham chiếu tới object, không chứa một bản sao của toàn bộ object. Nếu biến {{input}} và field {{tags}} cùng trỏ tới một {{ArrayList}}, gọi {{input.add("urgent")}} làm nội dung mà request nhìn thấy cũng đổi. Việc nhiều đường truy cập cùng trỏ tới một object gọi là aliasing (bí danh/tham chiếu dùng chung).
@@ -1921,6 +1925,7 @@ final class RequestSnapshot {
     private final List<String> tags;
     RequestSnapshot(String requestId, List<String> tags) {
         this.requestId = Objects.requireNonNull(requestId);
+        // copy list nguon: caller sua list cu khong anh huong; copyOf cung tu choi phan tu null
         this.tags = List.copyOf(Objects.requireNonNull(tags));
     }
     String requestId() { return requestId; }
@@ -1947,7 +1952,7 @@ Accessor trả thẳng {{tags}} ở ví dụ này an toàn vì field trỏ tới
 Immutability rất hữu ích cho cấu hình, request snapshot, message đã xác thực và value object: nhiều thread có thể đọc cùng trạng thái mà không cần khóa bảo vệ các field đó. Nó không làm các object khác mà class gọi tới trở thread-safe, không bảo vệ mutable item bên trong, và không thay thế transaction khi nhiều thao tác cần cập nhật nguyên tử. ORM entity thường có lifecycle mutable riêng; thường chuyển entity thành DTO/snapshot bất biến ở ranh giới thay vì cố biến entity đang được quản lý thành final class.
 
 ### Ví dụ đời thực
-Một API nhận request tạo báo cáo với 12 filter và chuyển nó cho một tác vụ chạy nền. Bản lỗi giữ nguyên list filter do controller sở hữu. Controller tái sử dụng list cho request kế tiếp và xóa filter cũ; tác vụ nền đôi khi chạy sau đó với chỉ 3 filter, khiến báo cáo thiếu dữ liệu dù log nhận đầu vào ghi đủ 12. Cách điều tra là so snapshot request tại lúc enqueue với tham số lúc worker chạy và tái hiện bằng cách sửa list ngay sau khi tạo request. Cách sửa là copy tại constructor, xác thực phần tử, rồi chỉ trả list bất biến. Trong một test tải lặp lại, dữ liệu đầu vào 12 filter vẫn giữ nguyên qua toàn bộ khoảng chờ; con số này mô tả kịch bản minh họa, không phải cam kết đo hiệu năng. Bản copy có chi phí O(n) thời gian và bộ nhớ, nên với danh sách rất lớn phải đo và thiết kế ownership rõ, không bỏ copy một cách âm thầm.
+Một API nhận request tạo báo cáo với 12 filter và chuyển nó cho một tác vụ chạy nền. Bản lỗi giữ nguyên list filter do controller sở hữu. Controller tái sử dụng list cho request kế tiếp và xóa filter cũ; tác vụ nền đôi khi chạy sau đó với chỉ 3 filter, khiến báo cáo thiếu dữ liệu dù log nhận đầu vào ghi đủ 12. Cách điều tra là so snapshot request tại lúc enqueue với tham số lúc worker chạy và tái hiện bằng cách sửa list ngay sau khi tạo request. Cách sửa là copy tại constructor, xác thực phần tử, rồi chỉ trả list bất biến. Trong một test tải lặp lại, dữ liệu đầu vào 12 filter vẫn giữ nguyên qua toàn bộ khoảng chờ; con số này mô tả kịch bản minh họa, không phải cam kết đo hiệu năng. Bản copy có chi phí O(n) (tỉ lệ thuận với số phần tử n) về thời gian và bộ nhớ, nên với danh sách rất lớn phải đo và thiết kế ownership rõ, không bỏ copy một cách âm thầm.
 
 ### Lỗi thường gặp
 - Chỉ đánh dấu field {{final}} rồi nghĩ object đã bất biến: final bảo vệ tham chiếu, không bảo vệ phần tử mutable.
@@ -1957,13 +1962,13 @@ Một API nhận request tạo báo cáo với 12 filter và chuyển nó cho m�
 - Dùng {{List.copyOf}} mà không biết nó từ chối list null hoặc phần tử null: hãy xác định contract đầu vào và kiểm tra tại biên.
 - Copy mọi thứ nhiều lần trong đường xử lý nóng: mỗi bản sao O(n); ưu tiên một snapshot ở ranh giới rõ ràng rồi truyền object bất biến.
 
-> Senior tip: với request async, ghi nhận thời điểm snapshot được tạo và chỉ truyền snapshot qua hàng đợi; tránh để thread worker đọc một DTO/list mà request thread còn giữ quyền sửa. Nếu phần tử collection mutable, làm test sửa cả list gốc lẫn từng phần tử để chứng minh bạn đã copy đúng độ sâu.
+> Senior tip: với request async (bất đồng bộ: việc xử lý xảy ra ở thời điểm khác với lúc nhận yêu cầu), ghi nhận thời điểm snapshot được tạo và chỉ truyền snapshot qua hàng đợi; tránh để thread worker đọc một DTO/list mà request thread còn giữ quyền sửa. Nếu phần tử collection mutable, làm test sửa cả list gốc lẫn từng phần tử để chứng minh bạn đã copy đúng độ sâu.
 
 ### Liên hệ phỏng vấn
 Tôi sẽ giải thích rằng Java truyền giá trị tham chiếu, nên truyền List vào constructor không tự copy dữ liệu. Trường final chỉ ngăn đổi tham chiếu, không ngăn ArrayList đổi nội dung. Vì vậy tôi tạo snapshot tại ranh giới nhận dữ liệu bằng List.copyOf, validate null ngay lúc tạo, và chỉ trả ra list bất biến. Với phần tử String, copy nông đủ vì String immutable; với phần tử mutable, phải copy từng phần tử hoặc chuyển chúng thành value object bất biến. Tôi cũng phân biệt unmodifiableList là view: caller không sửa qua view nhưng nguồn gốc có thể đổi và view nhìn thấy đổi đó. Trong production, snapshot đặc biệt quan trọng khi đưa request sang executor hoặc queue vì thời điểm xử lý tách khỏi thời điểm nhận. Cuối cùng, tôi cân nhắc chi phí O(n) và đo với payload thực, nhưng không hy sinh tính đúng đắn chỉ để tránh một bản sao chưa được chứng minh là đắt.`,
   exercises: [{
     title: 'Tạo RequestSnapshot không để lộ list mutable',
-    prompt: `Hoàn thiện {{RequestSnapshot}} để nó giữ mã request và tag. Mã request không null; list tag và mọi phần tử phải không null. Sau khi tạo, sửa list nguồn không được đổi snapshot, và gọi {{add}} qua accessor phải bị từ chối. Các phần tử là {{String}} immutable nên {{List.copyOf}} là đủ; không cần tự viết deep copy.`,
+    prompt: `Hoàn thiện {{RequestSnapshot}} để nó giữ mã request và tag. Mã request không null; list tag và mọi phần tử phải không null. Sau khi tạo, sửa list nguồn không được đổi snapshot, và gọi {{add}} qua accessor phải bị từ chối. Các phần tử là {{String}} immutable nên {{List.copyOf}} là đủ; không cần tự viết deep copy (sao chép sâu tới từng phần tử bên trong).`,
     starter: `final class RequestSnapshot {
     private final String requestId;
     private final List<String> tags;
@@ -2100,7 +2105,7 @@ Java chia exception thành hai nhóm chính theo cách compiler (trình biên d�
 | Tiêu chí | Checked | Unchecked (Runtime) |
 |---|---|---|
 | Compiler ép xử lý | Có ({{throws}} hoặc {{catch}}) | Không |
-| Người phục hồi | Caller ngay tại chỗ có hành động cụ thể | Boundary/middleware hoặc không phục hồi được |
+| Người phục hồi | Caller ngay tại chỗ có hành động cụ thể | Boundary/middleware (lớp xử lý ở rìa hệ thống) hoặc không phục hồi được |
 | Ví dụ điển hình | {{IOException}} khi đọc file tuỳ chọn | {{IllegalArgumentException}}, {{IllegalStateException}}, lỗi timeout DB được bọc lại |
 | Rủi ro | Lan {{throws}} khắp chữ ký, code khó đọc | Bị bỏ sót nếu boundary không xử lý thống nhất |
 
@@ -2149,7 +2154,7 @@ try (Res outer = new Res("OUT", log, failCloseOut);
 Trong ví dụ trên, nếu {{doWork}} ném "WORK_FAIL", {{inner.close()}} ném "IN_CLOSE_FAIL", {{outer.close()}} ném "OUT_CLOSE_FAIL" thì caller nhận "WORK_FAIL" làm lỗi chính và mảng suppressed chứa ["IN_CLOSE_FAIL", "OUT_CLOSE_FAIL"] theo đúng thứ tự đóng.
 
 ### Ví dụ đời thực
-Một batch job (tác vụ chạy nền theo lô) ghi báo cáo: mở kết nối DB, mở file tạm, ghi dữ liệu rồi đóng cả hai. Code cũ dùng {{finally}} lồng nhau: khi ghi lỗi và đồng thời {{close()}} file cũng lỗi (ổ đĩa đầy không flush được buffer - vùng đệm), exception từ {{close()}} ghi đè làm log chỉ thấy "disk full" mà mất lỗi nghiệp vụ gốc "duplicate key" (vi phạm khoá duy nhất). Sau khi chuyển sang try-with-resources, lỗi "duplicate key" là lỗi chính, "disk full" nằm trong suppressed; nhóm vận hành sửa được cả ràng buộc dữ liệu lẫn cấu hình dung lượng. Triệu chứng ban đầu: dữ liệu thiếu nhưng log chỉ báo lỗi hạ tầng. Cách sửa: dùng try-with-resources và khi log luôn duyệt {{getSuppressed()}}.
+Một batch job (tác vụ chạy nền theo lô) ghi báo cáo: mở kết nối DB, mở file tạm, ghi dữ liệu rồi đóng cả hai. Code cũ dùng {{finally}} lồng nhau: khi ghi lỗi và đồng thời {{close()}} file cũng lỗi (ổ đĩa đầy, không flush được buffer — vùng đệm tạm trong RAM; flush là đẩy dữ liệu trong vùng đệm đó xuống đĩa), exception từ {{close()}} ghi đè làm log chỉ thấy "disk full" mà mất lỗi nghiệp vụ gốc "duplicate key" (vi phạm khoá duy nhất). Sau khi chuyển sang try-with-resources, lỗi "duplicate key" là lỗi chính, "disk full" nằm trong suppressed; nhóm vận hành sửa được cả ràng buộc dữ liệu lẫn cấu hình dung lượng. Triệu chứng ban đầu: dữ liệu thiếu nhưng log chỉ báo lỗi hạ tầng. Cách sửa: dùng try-with-resources và khi log luôn duyệt {{getSuppressed()}}.
 
 ### Lỗi hay gặp
 - **Nuốt exception**: bắt {{Exception}} rồi bỏ trống (không xử lý, không ném lại) hoặc chỉ log message không log stack/cause → mất dấu vết, bug im lặng.
@@ -2333,10 +2338,10 @@ Number n = readOnly.get(0);              // doc an toan
 ### Wildcard và quy tắc PECS từng bước
 Wildcard {{?}} biểu diễn "một kiểu nào đó chưa xác định". Compiler "capture" (bắt) nó thành một kiểu ẩn trong phạm vi lời gọi:
 
-1. **{{? extends T}} (upper bound - cận trên)** — *Producer*: nguồn sản xuất ra giá trị kiểu T. Có thể là {{List<Integer>}} hay {{List<Double>}} khi T là {{Number}}. Đọc ra thì chắc chắn nhận được ít nhất là {{T}}. Nhưng **không ghi được** (trừ {{null}}) vì compiler không biết danh sách thực sự chấp nhận subtype (kiểu con) nào.
+1. **{{? extends T}} (upper bound - cận trên)** — *Producer*: nguồn sản xuất ra giá trị kiểu T. Có thể là {{List<Integer>}} hay {{List<Double>}} khi T là {{Number}}. Đọc ra thì phần tử luôn là {{T}} hoặc một kiểu con của {{T}}, nên gán vào biến kiểu {{T}} là an toàn. Nhưng **không ghi được** (trừ {{null}}) vì compiler không biết danh sách thực sự chấp nhận subtype (kiểu con) nào.
 2. **{{? super T}} (lower bound - cận dưới)** — *Consumer*: đích tiêu thụ giá trị kiểu T. Có thể là {{List<Integer>}}, {{List<Number>}} hay {{List<Object>}}. **Ghi** một phần tử kiểu {{T}} là an toàn vì mọi kiểu đích trong nhóm này đều là cha của T. Nhưng **đọc ra** chỉ chắc chắn là {{Object}}.
 3. **PECS**: nếu tham số chỉ "cho ra" dữ liệu để bạn đọc → {{extends}}; nếu chỉ "nhận vào" dữ liệu bạn ghi → {{super}}. Nếu vừa đọc vừa ghi trên cùng cấu trúc thì dùng {{T}} cụ thể.
-4. **Kết nối hai phía bằng cùng một T**: trong {{copy(List<? super T> dst, List<? extends T> src)}}, cùng biến kiểu {{T}} ràng buộc nguồn và đích, nên phần tử đọc từ {{src}} (ít nhất là T) ghi được vào {{dst}} (chấp nhận T) mà không cần cast.
+4. **Kết nối hai phía bằng cùng một T**: trong {{copy(List<? super T> dst, List<? extends T> src)}}, cùng biến kiểu {{T}} ràng buộc nguồn và đích, nên phần tử đọc từ {{src}} luôn là {{T}} hoặc kiểu con của {{T}}, ghi được vào {{dst}} (chấp nhận {{T}}) mà không cần cast.
 
 | Khai báo | Đọc ra kiểu | Ghi vào được | Vai trò |
 |---|---|---|---|
@@ -2372,7 +2377,7 @@ Vì sao {{Comparator<? super T>}} quan trọng? Một comparator viết cho {{Nu
 Java generic dùng **type erasure** (xoá kiểu ở runtime): {{List<String>}} và {{List<Integer>}} đều trở thành {{List}} trong bytecode. Hệ quả: không thể {{new T()}}, không thể {{new T[]}}, không thể {{instanceof List<String>}}. Khi cần tạo mảng generic phải dùng kỹ thuật kiểm soát hoặc nhận {{Class<T>}}; khi cần kiểm tra kiểu phần tử phải kiểm tra từng phần tử.
 
 ### Ví dụ đời thực
-Một thư viện báo cáo nội bộ nhận danh sách số liệu từ nhiều nguồn: {{List<Integer>}} (đếm), {{List<Long>}} (thời gian mili-giây), {{List<Double>}} (tỉ lệ). Nếu API khai báo {{List<Number>}}, mọi caller phải copy sang {{List<Number>}} mới gọi được. Sau khi đổi sang {{Collection<? extends Number>}} và comparator {{Comparator<? super Number>}}, caller truyền thẳng collection gốc, không copy, không cast, compiler vẫn bảo vệ kiểu. Với module xử lý hàng trăm nghìn bản ghi, bỏ bước copy trung gian giúp giảm cấp phát tạm (allocation) và đơn giản hoá code gọi.
+Một thư viện báo cáo nội bộ nhận danh sách số liệu từ nhiều nguồn: {{List<Integer>}} (đếm), {{List<Long>}} (thời gian mili-giây), {{List<Double>}} (tỉ lệ). Nếu API khai báo {{List<Number>}}, mọi caller phải copy sang {{List<Number>}} mới gọi được. Sau khi đổi sang {{Collection<? extends Number>}} và comparator {{Comparator<? super Number>}}, caller truyền thẳng collection gốc, không copy, không cast, compiler vẫn bảo vệ kiểu. Với module xử lý hàng trăm nghìn bản ghi, bỏ bước copy trung gian giúp giảm cấp phát tạm (allocation: tạo object mới trong bộ nhớ) và đơn giản hoá code gọi.
 
 ### Lỗi hay gặp
 - **Dùng raw type** ({{List}} không tham số): tắt kiểm tra kiểu, {{ClassCastException}} nổ ở nơi xa nơi chèn dữ liệu.
