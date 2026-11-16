@@ -2661,19 +2661,19 @@ class Editor {
     'Mô tả consistent hashing: vòng băm, ánh xạ key/node, và vì sao thêm/bớt node chỉ di chuyển khoảng 1/N key',
     'Hiểu virtual node (vnode) cân bằng tải và tự mô phỏng HashRing bằng Java thuần với TreeMap',
   ],
-  body: `**Tóm tắt:** Consistent hashing đặt node và key lên cùng một "vòng" băm; mỗi key thuộc về node kế tiếp trên vòng. Khi thêm hoặc bớt một node, chỉ các key nằm trên cung ảnh hưởng bị di chuyển (kỳ vọng ~1/N), thay vì phải xáo trộn gần như toàn bộ như cách chia {{hash(key) % N}}. Virtual node (vnode) gán nhiều vị trí cho mỗi node vật lý để phân bố đều hơn.
+  body: `**Tóm tắt:** Consistent hashing đặt node và key lên cùng một "vòng" băm; mỗi key thuộc về node kế tiếp trên vòng. Khi thêm hoặc bớt một node, chỉ các key nằm trên cung ảnh hưởng bị di chuyển (kỳ vọng ~1/N), thay vì phải xáo trộn phần lớn dữ liệu như cách chia {{hash(key) % N}}. Virtual node (vnode) gán nhiều vị trí cho mỗi node vật lý để phân bố đều hơn.
 
 ### Vấn đề: chia dữ liệu/cache vào nhiều máy
 Giả sử bạn có một hệ thống cache (giống Redis dùng làm cache, nhưng ở đây ta nói về nguyên lý phân tán) gồm N máy. Mỗi key (ví dụ mã người dùng) cần được đặt trên đúng một máy để tra cứu nhanh. **Thuật ngữ:** **node** là một máy/chủ thể lưu dữ liệu trong cụm (như một server cache). **Shard/partition** là phần dữ liệu mà một node chịu trách nhiệm.
 
-Cách ngây thơ: {{nodeIndex = hash(key) % N}}. Ví dụ 3 node, key "user42" có hash 125 thì {{125 % 3 = 2}} → node 2. Cách này nhanh và đều nếu hash tốt. Nhưng khi cluster thay đổi thì sao?
+**Băm (hash)** là hàm biến một chuỗi bất kỳ thành một số, cùng đầu vào luôn cho cùng đầu ra (ví dụ {{hash("user42") = 125}}). Cách ngây thơ: {{nodeIndex = hash(key) % N}}. Ví dụ 3 node, key "user42" có hash 125 thì {{125 % 3 = 2}} → node 2. Cách này nhanh và đều nếu hash tốt. Nhưng khi cluster thay đổi thì sao?
 
 ### Vì sao modulo % N vỡ khi thêm/bớt node
-Khi N đổi (thêm 1 máy mới: N=3→4, hoặc 1 máy hỏng: N=3→2), mẫu số của phép chia dư đổi, nên **gần như mọi key** ra chỉ số khác. Kết quả: cache miss hàng loạt, tất cả request đổ về database gốc cùng lúc — hiện tượng gọi là *cache stampede* (bầy đàn đập vào DB). Với dữ liệu có trạng thái (sharded database), bạn phải di chuyển gần như toàn bộ dữ liệu.
+Khi N đổi (thêm 1 máy mới: N=3→4, hoặc 1 máy hỏng: N=3→2), mẫu số của phép chia dư đổi, nên **phần lớn key** ra chỉ số khác (tỉ lệ đổi khi thêm máy là N/(N+1): 3→4 là 75%, 6→7 là ~86%). Kết quả: cache miss hàng loạt, tất cả request đổ về database gốc cùng lúc — hiện tượng gọi là *cache stampede* (bầy đàn đập vào DB). Với dữ liệu có trạng thái (sharded database), bạn phải di chuyển phần lớn dữ liệu.
 
 ~~~text
 3 node (mod 3):  hash 5->2, hash 7->1, hash 8->2
-4 node (mod 4):  hash 5->1, hash 7->3, hash 8->0   (gần hết đổi chỗ)
+4 node (mod 4):  hash 5->1, hash 7->3, hash 8->0   (phần lớn đổi chỗ)
 ~~~
 
 Ta cần một cách ánh xạ mà khi N thay đổi, chỉ một phần nhỏ key phải di chuyển.
@@ -2687,19 +2687,18 @@ Consistent hashing (Karger và cộng sự, 1997; nổi tiếng qua Amazon Dynam
 4. **Quy tắc ánh xạ:** đi theo chiều kim đồng hồ từ vị trí của key, gặp **node đầu tiên** thì key thuộc node đó. (Nếu vượt quá điểm lớn nhất trên vòng thì quay về node nhỏ nhất — vòng "cuốn".)
 
 ~~~text
-            0
-        N_C(20)
-     k1(15)   k2(30)
-   N_A(350)       N_B(90)
-            200
+Các vị trí trên vòng, xếp theo chiều kim đồng hồ (từ nhỏ đến lớn, rồi cuốn về 0):
 
-k1(15) đi xuôi gặp N_C(20)  -> N_C
-k2(30) đi xuôi gặp N_B(90)  -> N_B
-k3(100) đi xuôi gặp N_A(350)-> N_A (quấn vòng qua 0)
+0 ── k1(15) ── N_C(20) ── k2(30) ── N_B(90) ── k3(100) ── N_A(350) ── (quay về 0)
+
+k1(15)  -> gặp N_C(20)   => N_C
+k2(30)  -> gặp N_B(90)   => N_B
+k3(100) -> gặp N_A(350)  => N_A
+k4(400) -> vượt 350, đi tiếp qua 0 -> gặp N_C(20) => N_C   (cuốn vòng)
 ~~~
 
 ### Vì sao thêm/bớt node chỉ di chuyển ~1/N key
-- **Thêm node D** vào giữa B và A: chỉ những key trước đây đi từ B tới A mà nay gặp D trước — tức các key trên **cung B→D** — chuyển sang D. Các key khác giữ nguyên. Trung bình cung đó dài 1/N vòng.
+- **Thêm node D** vào giữa B và A: chỉ những key trước đây đi từ B tới A mà nay gặp D trước — tức các key trên **cung B→D** — chuyển sang D. Các key khác giữ nguyên. Khi thêm node thứ N+1, cung đó dài khoảng 1/(N+1) vòng (thường nói gọn là ~1/N).
 - **Bớt node B**: chỉ các key đang thuộc B chuyển sang node kế tiếp (A). Các key của node khác không đổi.
 
 Đây là điểm mấu chốt: thay đổi cục bộ (1 node) chỉ gây di chuyển cục bộ (~1/N dữ liệu). So với modulo, đây là khác biệt giữa "đổ lại cả kho" và "chuyển một ngăn".
@@ -2709,7 +2708,7 @@ Với ít node vật lý, vài điểm băm ngẫu nhiên có thể dồn về m
 
 ### Cơ chế thật trong các hệ thống (tên thật)
 - **Amazon Dynamo** (bài báo 2007) dùng consistent hashing + vnode để phân vùng dữ liệu; đây là nguồn gốc làm kỹ thuật này phổ biến.
-- **Apache Cassandra**: mỗi node sở hữu các *token* (vị trí vnode) trên vòng; cấu hình {{num_tokens}} (vnode). Partitioner (ví dụ {{Murmur3Partitioner}}) băm partition key thành token.
+- **Apache Cassandra**: mỗi node sở hữu các *token* (mỗi token là một vị trí trên vòng, tương ứng một vnode); cấu hình {{num_tokens}} (vnode). Partitioner (ví dụ {{Murmur3Partitioner}}) băm khóa phân vùng ({{partition key}} — khóa dùng để xác định dữ liệu) thành token.
 - **Riak** và **Akka Cluster** ({{ConsistentHashingRouter}} / {{ConsistentHash}} trong thư viện) cũng dùng vòng băm + vnode.
 - **Ketama** là thuật toán consistent hashing dùng trong các client memcached.
 - **Redis Cluster** thì **không** dùng vòng consistent hashing kiểu này: nó dùng 16384 *hash slot*, gán dải slot cố định cho mỗi master ({{CRC16(key) mod 16384}}). Mục tiêu tương tự (di chuyển ít khi thay đổi), cơ chế khác — phỏng vấn senior hay phân biệt hai cách.
@@ -2717,8 +2716,17 @@ Với ít node vật lý, vài điểm băm ngẫu nhiên có thể dồn về m
 ### Bản mô phỏng trong bài tập (đơn giản hoá)
 Bài tập tự viết {{HashRing}} bằng JDK thuần:
 - Dùng {{TreeMap<Integer, String>}} (cây đỏ-đen có thứ tự) để lưu {{vị trí vnode → tên node vật lý}}. Tra "node kế tiếp theo chiều kim đồng hồ" chính là {{ceilingEntry(hash)}}; nếu null thì cuốn vòng bằng {{firstEntry()}}. Đây đúng vai trò của vòng.
-- **Hàm băm xác định**: dùng {{key.hashCode() & 0x7fffffff}} (xóa bit dấu) để kết quả ổn định, không phụ thuộc thời gian hay random — test mới deterministic. (Hệ thống thật dùng Murmur3/xxHash phân tán tốt hơn; {{String.hashCode()}} đủ cho mô phỏng.)
-- Không có mạng, không có replication, không có health-check. Mục tiêu: hiểu cơ chế ánh xạ và tỉ lệ di chuyển.
+- **Hàm băm xác định**: dùng {{s.hashCode()}} rồi **trộn 32-bit** (xor-shift + nhân) trước khi lấy {{% ringSize}}. Vì sao phải trộn? {{String.hashCode()}} của các chuỗi liên tiếp như {{nodeA#0}}, {{nodeA#1}}… cũng liên tiếp nhau, nên 500 vnode của một node sẽ dồn thành một cụm trên vòng — node đó ôm một cung khổng lồ. Trộn làm các vị trí rải đều (giống Murmur3/xxHash mà hệ thống thật dùng). Kết quả vẫn là hàm thuần, không random/thời gian nên test deterministic:
+
+~~~java
+int h = s.hashCode();
+h ^= h >>> 16; h *= 0x7feb352d;   // xor-shift + nhân: đảo bit, phá cụm
+h ^= h >>> 15; h *= 0x846ca68b;
+h ^= h >>> 16;
+return (h & 0x7fffffff) % ringSize; // & 0x7fffffff: xóa bit dấu, không âm
+~~~
+
+- Không có mạng, không có replication (nhân bản dữ liệu sang máy khác), không có health-check (kiểm tra máy còn sống). Mục tiêu: hiểu cơ chế ánh xạ và tỉ lệ di chuyển.
 
 ~~~java
 // Ý tưởng tra cứu trên vòng bằng TreeMap (O(log V*N))
@@ -2728,24 +2736,27 @@ if (e == null) e = ring.firstEntry();                // cuốn vòng
 return e.getValue();                                  // tên node vật lý
 ~~~
 
+### Ví dụ đời thực
+Một hệ thống cache phân tán dùng 6 máy, mỗi máy 150 vnode (tổng 900 vnode). Lúc 2h sáng thiếu tài nguyên nên team thêm máy thứ 7. Trước khi thêm, họ băm 10 triệu key và đếm chủ sở hữu; sau khi thêm, chỉ **1/7 ≈ 14%** key đổi máy (khoảng 1,4 triệu key), đúng bằng phần dữ liệu của máy mới. Vì client chỉ cache theo key, 14% request bị miss và phải đọc DB; tỷ lệ hit giảm từ 96% xuống khoảng 83% trong khoảng 2 phút rồi tăng lại khi cache được làm nóng. Nếu dùng {{hash(key) % N}} (N từ 6 lên 7), khoảng **86%** key đổi máy: DB nhận đột biến gấp nhiều lần và có thể quá tải. Điểm cần nhớ: consistent hashing chỉ giảm *lượng* key phải chuyển; hệ thống vẫn phải theo dõi hit ratio và có kế hoạch làm nóng cache.
+
 ### Lỗi hay gặp
 - **Quên cuốn vòng:** key có hash lớn hơn mọi vnode → {{ceilingEntry}} trả null. Phải lấy {{firstEntry()}}.
 - **Quá ít vnode:** 1 vnode mỗi node → phân bố lệch, một node có thể nhận gấp đôi node khác.
-- **Hàm băm không ổn định/ngẫu nhiên:** mỗi lần chạy ra mapping khác, cache không tìm lại được dữ liệu. Hash phải là hàm thuần (pure function) của đầu vào.
+- **Hàm băm không ổn định/ngẫu nhiên:** mỗi lần chạy ra mapping khác, cache không tìm lại được dữ liệu. Hash phải là hàm thuần (pure function — cùng đầu vào luôn cho cùng đầu ra).
 - **Nhầm "di chuyển 1/N" là tuyệt đối:** đó là kỳ vọng khi hash đều và vnode đủ nhiều; thực tế dao động, vnode giúp giảm phương sai.
 
 ### Liên hệ phỏng vấn
-Trả lời gọn: "Hash thường {{mod N}} phải remap gần hết khi đổi N. Consistent hashing đặt key và node trên vòng băm, key đi xuôi gặp node đầu tiên; thêm/bớt một node chỉ ảnh hưởng key trên cung kề, kỳ vọng ~1/N key di chuyển. Dùng virtual node để cân bằng tải. Cassandra dùng vnode/token trên vòng; Redis Cluster dùng 16384 hash slot — cùng mục tiêu giảm di chuyển, cơ chế khác." Có thể vẽ nhanh vòng và chỉ cung di chuyển.
+Trả lời mẫu: "Nếu chia cache bằng {{hash(key) % N}}, mỗi lần thêm hoặc bớt một máy thì mẫu số đổi và phần lớn key bị ánh xạ sang máy khác — cache miss hàng loạt, DB có thể quá tải. Consistent hashing đặt cả key và máy lên một vòng băm; key thuộc về máy đầu tiên gặp theo chiều kim đồng hồ. Khi thêm một máy, chỉ các key trên cung kề máy mới bị chuyển, kỳ vọng khoảng 1/(N+1); khi bớt máy, key của máy đó chuyển sang máy kế tiếp. Với ít máy, vài vị trí băm có thể dồn cục bộ, nên thực tế dùng virtual node: mỗi máy có hàng trăm vnode rải khắp vòng để tải đều hơn. Cassandra dùng token/vnode trên vòng; Redis Cluster thì dùng 16384 hash slot với CRC16 — cùng mục tiêu giảm di chuyển nhưng cơ chế khác. Khi trả lời, nên nói rõ 'giảm lượng dữ liệu phải chuyển' chứ không phải 'không bao giờ phải chuyển'." Có thể vẽ nhanh vòng và chỉ cung di chuyển.
 
-> Senior tip: Trong production, "di chuyển key" với cache chỉ nghĩa là cache miss tạm thời (chấp nhận được, có thể *warm up* dần). Nhưng với dữ liệu lưu bền (sharded DB), di chuyển 1/N dữ liệu khi thêm node vẫn là hàng chục GB và cần cơ chế *rebalancing* an toàn, giới hạn băng thông, và không làm gián đoạn đọc/ghi. Consistent hashing giảm *lượng* phải chuyển, chứ không tự làm việc chuyển đó.
+> Senior tip: Trong production, "di chuyển key" với cache chỉ nghĩa là cache miss tạm thời (chấp nhận được, có thể *warm up* — làm nóng cache bằng cách tải sẵn dữ liệu — dần). Nhưng với dữ liệu lưu bền (sharded DB), di chuyển 1/N dữ liệu khi thêm node vẫn là hàng chục GB và cần cơ chế *rebalancing* (cân bằng lại dữ liệu giữa các máy) an toàn, giới hạn băng thông, và không làm gián đoạn đọc/ghi. Consistent hashing giảm *lượng* phải chuyển, chứ không tự làm việc chuyển đó.
 `,
   exercises: [
     {
       title: 'Cài HashRing consistent hashing với virtual node',
       prompt: `Hoàn thiện {{HashRing}} mô phỏng consistent hashing:
 
-- {{HashRing(int ringSize, int virtualNodesPerNode)}}: {{ringSize}} là kích thước không gian băm (dùng {{hash % ringSize}} để đưa vị trí vào [0, ringSize-1]); {{virtualNodesPerNode}} là số vnode cho mỗi node vật lý.
-- {{int hash(String s)}}: trả về {{(s.hashCode() & 0x7fffffff) % ringSize}} (xác định, không âm).
+- {{HashRing(int ringSize, int virtualNodesPerNode)}}: {{ringSize}} là kích thước không gian băm (mọi vị trí vnode nằm trong [0, ringSize-1]); {{virtualNodesPerNode}} là số vnode cho mỗi node vật lý.
+- {{int hash(String s)}}: băm xác định, không âm. Lấy {{s.hashCode()}} rồi **trộn 32-bit** bằng các phép xor-shift và nhân (xem đoạn code ở phần Body), sau đó lấy {{% ringSize}}. Phải trộn vì hashCode của {{nodeId#0}}, {{nodeId#1}}… là các số liên tiếp; nếu không trộn, các vnode của một node sẽ dồn thành một cụm và tải lệch nặng.
 - {{void addNode(String nodeId)}}: thêm {{virtualNodesPerNode}} vnode. Vị trí vnode thứ {{i}} (i từ 0) là {{hash(nodeId + "#" + i)}}. Ghi nhận {{nodeId}} là một node vật lý. (Nếu hash trùng vị trí đã có, ghi đè cũng chấp nhận được với dữ liệu bài này.)
 - {{void removeNode(String nodeId)}}: xóa toàn bộ vnode của {{nodeId}} khỏi vòng và khỏi tập node vật lý.
 - {{String getNode(String key)}}: trả về node vật lý sở hữu {{key}} (node kế tiếp theo chiều kim đồng hồ: {{ceilingEntry}} theo hash của key, null thì {{firstEntry}}). Vòng rỗng trả về {{null}}.
@@ -2800,7 +2811,8 @@ public class Main {
         HashRing r = new HashRing(1_000_000, 500);
         r.addNode("A"); r.addNode("B"); r.addNode("C");
         check("3 physical nodes", r.nodeCount() == 3);
-        check("vnodes created", r.vnodeCount() == 1500);
+        // 3 node x 500 vnode = 1500; neu hash trung vi tri thi so vnode thuc te co the nho hon mot chut
+        check("vnodes created", r.vnodeCount() > 1400 && r.vnodeCount() <= 1500);
 
         check("same key same node", Objects.equals(r.getNode("user42"), r.getNode("user42")));
         check("mapping not null", r.getNode("order-99") != null);
@@ -2812,7 +2824,9 @@ public class Main {
             for (int j = 0; j < 3; j++) if (nodes[j].equals(owner)) counts[j]++;
         }
         for (int j = 0; j < 3; j++) {
-            check(nodes[j] + " roughly balanced got=" + counts[j], counts[j] >= 1000 && counts[j] <= 5000);
+            // 9000 key / 3 node = 3000 moi node; bien 2000..4000 du rong cho dao dong
+            // nhung van bat duoc loi "khong tron hash" (khi do mot node co the > 4000)
+            check(nodes[j] + " roughly balanced got=" + counts[j], counts[j] >= 2000 && counts[j] <= 4000);
         }
 
         String[] before = new String[6000];
@@ -2830,10 +2844,11 @@ public class Main {
         check("D receives keys", after.getOrDefault("D", 0) > 300);
 
         r.removeNode("B");
-        check("2 physical left? no 3", r.nodeCount() == 3);
-        check("vnodes after remove", r.vnodeCount() == 1500);
-        check("removed node never returned", !"B".equals(r.getNode("user42")) && !"B".equals(r.getNode("order-99")));
-        for (int i = 0; i < 2000; i++) check("no B for k" + i, !"B".equals(r.getNode("k-" + i)));
+        check("3 physical after remove", r.nodeCount() == 3);
+        check("vnodes after remove", r.vnodeCount() > 1400 && r.vnodeCount() <= 1500);
+        boolean bLeaked = "B".equals(r.getNode("user42")) || "B".equals(r.getNode("order-99"));
+        for (int i = 0; i < 2000 && !bLeaked; i++) if ("B".equals(r.getNode("k-" + i))) bLeaked = true;
+        check("removed node never returned", !bLeaked);
 
         HashRing empty = new HashRing(1000, 10);
         check("empty ring null", empty.getNode("x") == null);
@@ -2857,8 +2872,13 @@ class HashRing {
     }
 
     int hash(String s) {
-        // xoa bit dau de khong am, dua vao [0, ringSize)
-        return (s.hashCode() & 0x7fffffff) % ringSize;
+        // hashCode cua "A#0", "A#1"... cung lien tiep; phai tron 32-bit
+        // de 500 vnode cua mot node rai deu tren vong, khong don thanh cum
+        int h = s.hashCode();
+        h ^= h >>> 16; h *= 0x7feb352d;
+        h ^= h >>> 15; h *= 0x846ca68b;
+        h ^= h >>> 16;
+        return (h & 0x7fffffff) % ringSize; // xoa bit dau de khong am
     }
 
     void addNode(String nodeId) {
@@ -2897,9 +2917,9 @@ class HashRing {
       hints: [
         'TreeMap có {{ceilingEntry(key)}} trả về entry có khóa nhỏ nhất >= key (node kế tiếp trên vòng). Nếu null, dùng {{firstEntry()}} để cuốn vòng.',
         'Mỗi vnode: {{ring.put(hash(nodeId + "#" + i), nodeId)}} với i từ 0 đến virtualNodesPerNode-1. Nhớ thêm/xóa {{physical}}.',
-        'Hash xác định: {{(s.hashCode() & 0x7fffffff) % ringSize}}. {{& 0x7fffffff}} xóa bit dấu của {{hashCode()}} (có thể âm).',
+        'Hash xác định: {{h = s.hashCode()}} rồi trộn 32-bit ({{h ^= h >>> 16; h *= 0x7feb352d; h ^= h >>> 15; h *= 0x846ca68b; h ^= h >>> 16;}}), cuối cùng {{(h & 0x7fffffff) % ringSize}}. {{& 0x7fffffff}} xóa bit dấu; bước trộn giúp các vnode rải đều thay vì dồn cục.',
       ],
-      explain: `TreeMap giữ các vị trí vnode đã sắp xếp, nên {{ceilingEntry}} tìm node kế tiếp trong O(log M) với M là tổng vnode — đúng thao tác "đi xuôi trên vòng". Phép {{& 0x7fffffff}} biến hash âm thành dương (giữ 31 bit thấp) để phép {{% ringSize}} cho chỉ số hợp lệ.
+      explain: `TreeMap giữ các vị trí vnode đã sắp xếp, nên {{ceilingEntry}} tìm node kế tiếp trong O(log M) với M là tổng vnode — đúng thao tác "đi xuôi trên vòng". Phép {{& 0x7fffffff}} biến hash âm thành dương (giữ 31 bit thấp) để phép {{% ringSize}} cho chỉ số hợp lệ. Bước trộn 32-bit là bắt buộc: {{String.hashCode()}} của {{nodeA#0}}, {{nodeA#1}}… là các số liên tiếp, nên nếu không trộn thì vnode của mỗi node dồn thành một cung lớn và một node có thể ôm phần lớn key (bài test sẽ bắt được lỗi này). Hệ thống thật dùng Murmur3/xxHash; hàm trộn nhỏ ở đây cùng mục đích, đủ cho mô phỏng.
 
 Lỗi hay gặp:
 - Quên cuốn vòng: key có hash lớn hơn mọi vnode → {{ceilingEntry}} null → NullPointerException; phải lấy {{firstEntry()}}.
@@ -2907,7 +2927,7 @@ Lỗi hay gặp:
 - Vnode quá ít (1–2): tải lệch rõ. Vnode nhiều (100–200) cho phân bố xấp xỉ đều nhưng tốn bộ nhớ và làm {{add/removeNode}} chậm hơn (vẫn chấp nhận được vì thay đổi topology hiếm).
 - Khi xóa node, nếu có va chạm hash vnode hiếm, xóa theo vị trí cần kiểm tra chủ sở hữu để không xóa nhầm vnode của node khác.
 
-Về tỉ lệ di chuyển: thêm node thứ N+1 (từ N lên N+1) thì kỳ vọng 1/(N+1) key chuyển sang node mới; test chấp nhận biên rộng vì hash của {{String.hashCode()}} không hoàn hảo, nhưng xu hướng phải đúng.`
+Về tỉ lệ di chuyển: thêm node thứ N+1 (từ N lên N+1) thì kỳ vọng 1/(N+1) key chuyển sang node mới; test chấp nhận biên rộng (0,10–0,45) vì phân bố vnode không đều tuyệt đối, nhưng xu hướng phải đúng.`
     },
   ],
   check: [
@@ -2915,12 +2935,12 @@ Về tỉ lệ di chuyển: thêm node thứ N+1 (từ N lên N+1) thì kỳ v�
       q: 'So với {{hash(key) % N}}, lợi ích cốt lõi của consistent hashing khi thêm 1 node vào cụm N node là gì?',
       options: [
         'Tính hash nhanh hơn',
-        'Chỉ khoảng 1/N key phải di chuyển thay vì gần như toàn bộ',
+        'Chỉ khoảng 1/N key phải di chuyển thay vì phần lớn',
         'Không bao giờ có cache miss',
         'Không cần hàm băm nữa',
       ],
       answer: 1,
-      explain: `Thêm một node chỉ chia nhỏ cung kề trên vòng nên chỉ các key trên cung đó đổi chủ (~1/N). Modulo đổi mẫu số làm gần hết key đổi chỉ số. Hash vẫn cần và cache miss tạm thời khi key di chuyển vẫn có thể xảy ra.`
+      explain: `Thêm một node chỉ chia nhỏ cung kề trên vòng nên chỉ các key trên cung đó đổi chủ (~1/N). Modulo đổi mẫu số làm phần lớn key đổi chỉ số. Hash vẫn cần và cache miss tạm thời khi key di chuyển vẫn có thể xảy ra.`
     },
     {
       q: 'Virtual node (vnode) giải quyết vấn đề gì trong consistent hashing?',
@@ -2964,16 +2984,16 @@ Về tỉ lệ di chuyển: thêm node thứ N+1 (từ N lên N+1) thì kỳ v�
 
 ### Thuật ngữ (giải thích lần đầu)
 - **Distributed lock (khóa phân tán):** cơ chế "chỉ một người được làm" nhưng các bên chạy trên **nhiều máy khác nhau** (không chia sẻ bộ nhớ). Ví dụ: chỉ một worker được xử lý đơn hàng #123. (Khác lock trong 1 tiến trình Java như {{synchronized}}.)
-- **TTL (time to live, thời gian sống):** lock tự hết hạn sau X giây nếu không gia hạn, để client bị crash không giữ lock mãi mãi.
+- **TTL (time to live, thời gian sống):** lock tự hết hạn sau X giây nếu không gia hạn, để client bị crash không giữ lock mãi mãi (tránh deadlock — kẹt, hai bên chờ nhau mãi).
 - **Lease (hợp đồng thuê):** quyền giữ lock có thời hạn, giống TTL.
-- **GC pause / stop-the-world:** bộ dọn rác (Garbage Collector) của JVM tạm dừng mọi thread ứng dụng để dọn bộ nhớ. Có thể kéo dài từ mili-giây tới vài giây (hoặc hơn với heap lớn/cấu hình tệ). Trong lúc đó client "đóng băng", không gửi được heartbeat gia hạn lock.
+- **GC pause / stop-the-world:** bộ dọn rác (Garbage Collector) của JVM tạm dừng mọi thread ứng dụng để dọn bộ nhớ. Có thể kéo dài từ mili-giây tới vài giây (hoặc hơn với heap lớn/cấu hình tệ). Trong lúc đó client "đóng băng", không gửi được heartbeat (gói tin "tôi vẫn còn sống" gửi định kỳ) để gia hạn lock.
 - **Fencing token:** một con số tăng dần (1, 2, 3, ...) được cấp mỗi lần ai đó nhận lock; dùng như "số thứ tự lượt", bên nhận ghi chỉ chấp nhận lượt mới hơn.
 
 ### Cơ chế khóa phân tán thật (tên thật, để hình dung)
-- **Redis {{SET resource value NX PX 30000}}**: ghi key chỉ khi chưa tồn tại (NX) với TTL 30s (PX). Mở rộng: *Redlock* (thuật toán của Redis) lấy lock trên nhiều instance. Cần cẩn trọng: gia hạn, clock drift, và vẫn có tranh cãi về độ an toàn tuyệt đối.
+- **Redis {{SET resource value NX PX 30000}}**: ghi key chỉ khi chưa tồn tại (NX) với TTL 30s (PX). Mở rộng: *Redlock* (thuật toán của Redis) lấy lock trên nhiều instance. Cần cẩn trọng: gia hạn, clock drift (đồng hồ các máy lệch nhau), và vẫn có tranh cãi về độ an toàn tuyệt đối.
 - **ZooKeeper**: tạo *ephemeral sequential node* (node tạm, có số thứ tự tăng). Client giữ lock khi node của nó có số nhỏ nhất; số thứ tự đó tự nhiên là một fencing token tăng. Session hết hạn thì node tạm biến mất.
 - **etcd**: cung cấp {{Lease}} (có TTL, cần {{KeepAlive}}) và giao dịch so sánh-sửa (compare-and-swap) để cầm lock an toàn hơn.
-- Thư viện Java: **Redisson** (Redis lock, có watchdog gia hạn) hay **Curator** (ZooKeeper recipes).
+- Thư viện Java: **Redisson** (Redis lock, có watchdog — cơ chế tự động gia hạn) hay **Curator** (ZooKeeper recipes).
 
 Bài tập mô phỏng bản chất tối thiểu bằng Java thuần (một tiến trình), đủ để thấy **vì sao TTL một mình chưa đủ**.
 
@@ -3021,8 +3041,23 @@ Storage -> A: TU CHOI vi 1 < 2
 
 ### Bản mô phỏng (đơn giản hoá)
 - {{LockService.acquire(resource)}} luôn cấp token tăng dần ({{++counter}}) và ghi nhận người giữ. {{simulateExpiry(resource)}} mô phỏng TTL hết hạn (xóa người giữ) mà **không** cần ngủ/chờ — deterministic.
-- {{Storage.write(resource, token, value)}} chấp nhận nếu {{token >= token lớn nhất đã thấy}} cho resource đó, cập nhật max và lưu giá trị; ngược lại trả về {{false}} (từ chối token lạc hậu). Dùng {{>=}} hay {{>}}: token lặp lại cùng giá trị hiếm khi hợp lệ trong luồng đúng, nhưng để an toàn tuyệt đối có thể dùng {{>}}; bài này quy ước **từ chối khi token < maxSeen** (token cũ), token mới hơn hoặc bằng max hiện tại sau ghi đầu được chấp nhận theo luật tăng — xem đề bài tập cho quy tắc chính xác.
-- **Không** mô phỏng: mạng, clock, nhiều instance lock, gia hạn lease, Redlock quorum. Mục tiêu: thấy rõ "pause → mất lock → ghi trễ" và "token cũ bị chặn".
+- {{Storage.write(resource, token, value)}} từ chối khi {{token < maxSeen}} (token cũ hơn token lớn nhất đã chấp nhận) và trả về {{false}}; ngược lại cập nhật maxSeen, lưu giá trị rồi trả về {{true}}. Quy ước này chấp nhận cả {{token == maxSeen}} (chỉ xảy ra khi có retry cùng một token); nếu muốn chặt hơn thì dùng {{token <= maxSeen}}. Điểm quan trọng: maxSeen là **của từng resource**, nên lock ở resource khác không ảnh hưởng.
+
+~~~java
+// Storage la noi ghi thuc su: no tu thuc thi fencing, khong tin client
+boolean write(String resource, long token, String value) {
+    Long max = maxSeen.get(resource);
+    if (max != null && token < max) return false; // token cu (lac hau) -> tu choi
+    maxSeen.put(resource, token);                 // nho token lon nhat da chap nhan
+    data.put(resource, value);
+    return true;
+}
+~~~
+
+- **Không** mô phỏng: mạng, clock, nhiều instance lock, gia hạn lease, Redlock quorum (đa số node đồng ý). Mục tiêu: thấy rõ "pause → mất lock → ghi trễ" và "token cũ bị chặn".
+
+### Ví dụ đời thực
+Một hệ thống ví điện tử chạy job đối soát cuối ngày trên 4 node, dùng lock Redis {{SET lock:reconcile <node> NX PX 5000}} (client gia hạn tự động mỗi 2–3 giây). Một node có heap 8 GB và đang chạy G1; trong lúc dọn rác (GC pause) 6,2 giây, nó không gia hạn được lock. Hết 5 giây, lock hết hạn và node khác nhận việc, chạy xong rồi ghi kết quả vào bảng đối soát. Node cũ tỉnh dậy, vẫn tin mình giữ lock, ghi tiếp kết quả tính trước đó — hai bộ số đối soát khác nhau cùng tồn tại. Điều tra: log GC cho thấy một lần pause 6,2 s do "allocation failure"; vì không có fencing token nên DB không phân biệt được ghi nào mới hơn. Xử lý: thêm cột {{version}} (token tăng đơn điệu) và điều kiện {{UPDATE ... SET ... WHERE version < :token}} (token mới phải lớn hơn version đã lưu); ghi của node cũ không khớp điều kiện nên không cập nhật dòng nào và bị coi là lỗi để bỏ. Sau khi sửa, 30 ngày không còn ghi trùng; các lần pause dài được cảnh báo qua metric.
 
 ### Lỗi hay gặp
 - **Chỉ dựa TTL mà không fencing:** đủ cho tối ưu hóa (tránh 2 worker làm trùng việc tốn kém) nhưng **không đủ** nếu ghi sai sẽ hỏng dữ liệu tiền/bất biến.
@@ -3031,9 +3066,9 @@ Storage -> A: TU CHOI vi 1 < 2
 - **Gia hạn lock (watchdog) không thay thế fencing:** giảm xác suất hết hạn, nhưng không loại trừ pause dài hơn mọi ngưỡng hoặc phân mảnh mạng.
 
 ### Liên hệ phỏng vấn
-Trả lời mẫu (ý chính): "Distributed lock thường có TTL để tránh deadlock khi client chết. Nhưng client có thể bị GC pause dài hơn TTL: lock hết hạn, client khác lấy lock và ghi; client cũ tỉnh dậy vẫn ghi → mất dữ liệu. TTL/lease chỉ giảm rủi ro, không đảm bảo correctness. Cần fencing token: lock service cấp số tăng đơn điệu mỗi lần acquire, client gửi token khi ghi, storage chỉ nhận token >= max đã thấy nên ghi trễ (token cũ) bị từ chối. ZooKeeper có sequential node làm token tự nhiên; với Redis thì phải tự thiết kế fencing ở storage. Phân biệt: lock cho efficiency (đỡ trùng việc) có thể chỉ TTL; lock bảo vệ correctness dữ liệu phải có fencing."
+Trả lời mẫu: "Distributed lock thường được dùng để chỉ một worker xử lý một đơn hàng. Lock hầu như luôn có TTL, vì nếu client chết mà không nhả lock thì cả hệ thống kẹt. Vấn đề là TTL không đồng bộ với client: một lần GC pause dài hơn TTL, hoặc mất mạng tạm thời, khiến lock hết hạn và client khác được cấp. Client cũ tỉnh dậy vẫn nghĩ mình giữ lock và ghi dữ liệu, dẫn đến ghi đè. TTL chỉ giảm rủi ro kẹt, không đảm bảo correctness. Cách xử lý là fencing token: mỗi lần cấp lock, lock service trả về một số tăng đơn điệu; client gửi số này khi ghi; storage nhớ token lớn nhất đã nhận cho từng resource và từ chối token nhỏ hơn. ZooKeeper có sequential node làm token tự nhiên; với Redis thì phải tự thiết kế ở tầng lưu trữ. Vì vậy tôi phân biệt hai loại lock: lock để tiết kiệm (tránh hai worker làm trùng việc, chịu được) thì TTL là đủ; lock bảo vệ correctness (trừ tiền, đổi trạng thái đơn hàng) thì bắt buộc có fencing hoặc điều kiện ghi ở DB."
 
-> Senior tip: Trước khi chọn distributed lock, hỏi: "Nếu hai thằng cùng chạy một lúc, hậu quả là gì?" Nếu chỉ là gửi email trùng hay tính lại cache (idempotent/chịu được) thì lock + TTL đơn giản là đủ. Nếu là trừ tiền, ghi đè trạng thái đơn hàng, cấp quyền — hãy thiết kế **fencing/điều kiện ghi** ở tầng dữ liệu (so sánh version/token, {{UPDATE ... WHERE version = ?}} / optimistic lock, hoặc storage tự kiểm tra token). Đừng biến lock phân tán thành "bùa hộ mệnh" cho correctness.
+> Senior tip: Trước khi chọn distributed lock, hỏi: "Nếu hai thằng cùng chạy một lúc, hậu quả là gì?" Nếu chỉ là gửi email trùng hay tính lại cache (idempotent — làm lại vẫn cùng kết quả / chịu được) thì lock + TTL đơn giản là đủ. Nếu là trừ tiền, ghi đè trạng thái đơn hàng, cấp quyền — hãy thiết kế **fencing/điều kiện ghi** ở tầng dữ liệu (so sánh version/token, {{UPDATE ... WHERE version = ?}} / optimistic lock — kiểm tra version khi ghi, hoặc storage tự kiểm tra token). Đừng biến lock phân tán thành "bùa hộ mệnh" cho correctness.
 `,
   exercises: [
     {
@@ -3046,7 +3081,7 @@ Trả lời mẫu (ý chính): "Distributed lock thường có TTL để tránh 
 - {{Long currentToken(String resource)}}: token đang giữ {{resource}}, hoặc {{null}} nếu đang trống (tuỳ chọn kiểm tra).
 
 {{class Storage}}
-- {{boolean write(String resource, long token, String value)}}: nếu {{token}} **nhỏ hơn** token lớn nhất đã từng chấp nhận cho {{resource}} thì từ chối, trả về {{false}}. Ngược lại chấp nhận: cập nhật max token của resource, lưu {{value}}, trả về {{true}}. (Resource chưa từng ghi thì chấp nhận token hợp lệ đầu tiên.)
+- {{boolean write(String resource, long token, String value)}}: nếu {{token}} **nhỏ hơn** token lớn nhất đã từng chấp nhận cho {{resource}} thì từ chối, trả về {{false}}. Ngược lại chấp nhận: cập nhật max token của resource, lưu {{value}}, trả về {{true}}. (Resource chưa từng ghi thì chấp nhận token hợp lệ đầu tiên.) Quy ước của bài: **từ chối khi {{token < maxSeen}}**, tức chấp nhận {{token >= maxSeen}}. Vì token tăng đơn điệu nên hai lần ghi cùng một token gần như không xảy ra; nếu muốn chặt hơn, có thể từ chối cả {{token == maxSeen}} (dùng {{<=}}).
 - {{String read(String resource)}}: giá trị hiện tại, hoặc {{null}}.
 
 Kịch bản cần dựng được (xác định): A acquire → token t1; simulateExpiry; B acquire → token t2 > t1; B write(t2) OK; A write(t1) bị từ chối; giá trị vẫn là của B; A write(t1) lần nữa vẫn bị từ chối.`,
@@ -3258,7 +3293,7 @@ Giới hạn mô phỏng: hệ thống thật cần storage hỗ trợ kiểm tr
 ### Thuật ngữ (giải thích lần đầu)
 - **CQRS (Command Query Responsibility Segregation):** tách luồng ghi (Command — lệnh thay đổi trạng thái, ví dụ "Tạo đơn") và luồng đọc (Query — truy vấn, ví dụ "Lấy danh sách đơn"). Hai bên có thể dùng cấu trúc dữ liệu/kho lưu trữ khác nhau.
 - **Read model (mô hình đọc):** bảng hoặc view được thiết kế riêng cho truy vấn (ví dụ bảng đơn hàng đã gộp sẵn tên khách, tổng tiền) để đọc nhanh, không cần join phức tạp. Nó là bản "chiếu" từ các event, giống như bảng điểm tổng hợp được cập nhật từ sổ điểm chi tiết.
-- **Event (sự kiện):** thông điệp bất biến mô tả việc đã xảy ra trong quá khứ, ví dụ {{OrderCreated}}, {{ItemAdded}}. Thường có {{eventId}} (định danh duy nhất), {{aggregateId}} (định danh đối tượng nghiệp vụ, ví dụ mã đơn), {{version}} (thứ tự tăng 1,2,3… trên cùng aggregate).
+- **Event (sự kiện):** thông điệp bất biến mô tả việc đã xảy ra trong quá khứ, ví dụ {{OrderCreated}}, {{ItemAdded}}. Thường có {{eventId}} (định danh duy nhất), {{aggregateId}} (định danh đối tượng nghiệp vụ, ví dụ mã đơn), {{version}} (thứ tự tăng 1,2,3… trên cùng aggregate), {{payload}} (dữ liệu chi tiết của sự kiện, ví dụ {{user=A}}).
 - **Projector (bộ chiếu/projection handler):** mã nhận event và cập nhật read model. Giống người ghi chép: nghe thông báo rồi sửa bảng hiển thị cho mọi người xem.
 - **Aggregate (tập hợp gốc):** cụm đối tượng được xem như một đơn vị nhất quán (ví dụ một Đơn hàng và các dòng hàng của nó), có định danh riêng.
 - **Idempotent (lũy đẳng):** thao tác thực hiện nhiều lần cho kết quả giống thực hiện một lần. Quan trọng vì mạng có thể gửi trùng.
@@ -3287,7 +3322,7 @@ ReadDB -> Client: Tra read model
 ### Vấn đề thực tế: trùng và sai thứ tự
 Trong hệ thống có hàng đợi/broker (message broker — phần mềm trung gian truyền thông điệp, ví dụ Kafka, RabbitMQ), consumer (bên nhận) có thể gặp:
 1. **Event trùng (duplicate):** broker gửi lại vì chưa nhận ack (acknowledgement — xác nhận đã xử lý), hoặc producer (bên gửi) retry (thử lại). Nếu projector cộng tiền hai lần thì read model sai.
-2. **Sai thứ tự (out-of-order):** trên nhiều partition (phân vùng)/luồng hoặc do retry, event version 3 có thể đến trước version 2.
+2. **Sai thứ tự (out-of-order):** nếu event của cùng một đơn không được đưa vào cùng một partition (phân vùng)/luồng, hoặc do retry, event version 3 có thể đến trước version 2. (Kafka bảo đảm thứ tự *trong một partition*; nhiều hệ thống lấy {{aggregateId}} làm khóa partition để một đơn luôn đi cùng luồng — nhưng projector vẫn nên phòng thủ.)
 
 ~~~text
 Thu tu phat ra:  v1 (Created) -> v2 (ItemAdded) -> v3 (Paid)
@@ -3303,6 +3338,7 @@ Ket qua dung:    ap dung v1, v2, v3 dung mot lan
 ### Ví dụ mô phỏng (Java thuần, không broker thật)
 ~~~java
 // Event: (eventId, aggregateId, version, type, payload)
+// Event/Projector duoi day la ban rut gon (xem bai tap); version 1,2,3 tren cung aggregate
 Event e1 = new Event("e1", "order-1", 1, "OrderCreated", "user=A");
 Event e2 = new Event("e2", "order-1", 2, "ItemAdded", "item=Book");
 Event e3 = new Event("e3", "order-1", 3, "Paid", "amount=100");
@@ -3320,10 +3356,10 @@ Một hệ thống thương mại điện tử tách ghi đơn (write DB, kiểm
 - **Áp dụng ngay khi sai thứ tự:** nhận v3 trước v2 mà gán trạng thái Paid khi chưa có item → read model sai hoặc lỗi.
 - **Không buffer mà bỏ event tương lai:** nếu bỏ v3 (vì chưa tới v2) và không lưu lại, khi v2 đến sẽ thiếu v3 mãi. Nên đệm.
 - **Dùng thời gian (timestamp) để sắp xếp:** đồng hồ các máy lệch (clock skew) nên dễ sai; version theo aggregate đáng tin hơn.
-- **Nhầm CQRS = bắt buộc event sourcing:** CQRS chỉ là tách đọc/ghi; có thể dùng DB thường và vẫn đồng bộ read model, không nhất thiết lưu toàn bộ event làm nguồn sự thật.
+- **Nhầm CQRS = bắt buộc event sourcing:** CQRS chỉ là tách đọc/ghi; có thể dùng DB thường và vẫn đồng bộ read model, không nhất thiết lưu toàn bộ event làm nguồn sự thật (event sourcing — lưu toàn bộ event làm nguồn sự thật thay vì chỉ lưu trạng thái hiện tại).
 
 ### Liên hệ phỏng vấn
-Khi trả lời: nêu rõ CQRS tách read/write để tối ưu từng bên; read model được projector cập nhật từ event; vì at-least-once/out-of-order nên projector phải idempotent (theo eventId hoặc version) và xử lý thứ tự (lastAppliedVersion + buffer). Nhấn mạnh **eventual consistency** (đọc có thể trễ) và đánh đổi: hệ thống phức tạp hơn, cần giám sát độ trễ projector (projection lag). Biết tên thật: Kafka (log phân vùng, giữ thứ tự trong partition theo key), Debezium (CDC — change data capture, bắt thay đổi DB thành event), nhưng nguyên lý projector giống nhau.
+Trả lời mẫu: "CQRS tách mô hình ghi và mô hình đọc. Bên ghi giữ luật nghiệp vụ và chỉ phát ra event khi có thay đổi; một projector đọc event và cập nhật read model — thường là bảng đã gộp sẵn để truy vấn nhanh. Vì broker thường là at-least-once, projector có thể nhận trùng event; và nếu event của cùng một đơn không nằm cùng một partition thì chúng có thể đến sai thứ tự. Nếu cộng tiền hai lần hoặc đánh dấu đã thanh toán khi chưa thêm sản phẩm thì read model sai. Tôi xử lý bằng hai lớp: idempotent theo version — mỗi aggregate có lastAppliedVersion, event có version nhỏ hơn hoặc bằng last thì bỏ qua; và đệm event đến sớm — nếu version lớn hơn last cộng một thì lưu vào buffer, khi nhận đủ version kế tiếp thì áp dụng và xả buffer theo chuỗi. Kết quả là read model đúng dù event lộn xộn, đổi lại đọc có thể trễ một chút (eventual consistency), nên tôi theo dõi projection lag và cảnh báo khi lag tăng. Tôi cũng phân biệt CQRS với event sourcing: CQRS chỉ tách đọc/ghi, không bắt buộc lưu event làm nguồn sự thật."
 
 > Senior tip: Thiết kế projector như một hàm thuần trên (state, event) → state mới và luôn nghĩ "event này đến lại lần nữa thì sao?". Log/metric độ trễ giữa version mới nhất đã ghi và version projector đã áp dụng; nếu lag tăng là read model đang "tụt hậu" và người dùng sẽ thấy dữ liệu cũ.
 `,
@@ -3331,7 +3367,7 @@ Khi trả lời: nêu rõ CQRS tách read/write để tối ưu từng bên; rea
       {
         title: 'Projector: cập nhật read model, bỏ qua trùng và áp dụng đúng thứ tự version',
         prompt: `Hiện thực {{Event}}, {{OrderView}} và {{Projector}}.
-- {{Event}} có: {{eventId}}, {{aggregateId}} (mã đơn), {{version}} (1,2,3 tăng dần trên mỗi đơn), {{type}}, {{payload}}.
+- {{Event}} có: {{eventId}}, {{aggregateId}} (mã đơn), {{version}} (bắt đầu từ 1, tăng liên tục 1,2,3 trên mỗi đơn), {{type}}, {{payload}}.
 - {{OrderView}} (read model một đơn): {{orderId}}, {{user}} (từ OrderCreated), {{items}} (danh sách chuỗi, từ ItemAdded), {{paidAmount}} (số nguyên, từ Paid), {{status}}.
 - {{Projector.project(Event e)}} nhận event (có thể trùng, có thể sai thứ tự) và cập nhật read model nội bộ. Yêu cầu:
   1. Bỏ qua event trùng/cũ: nếu {{version <= lastAppliedVersion}} của aggregate đó thì không làm gì.
@@ -3625,9 +3661,9 @@ Một nền tảng đặt đồ ăn: 1) giữ suất nhà hàng (2s), 2) trừ v
 - **Nghĩ bù trừ = rollback ACID:** dữ liệu đã thấy bởi bên khác (ví dụ khách nhận thông báo trừ tiền tạm thời) — cần thiết kế nghiệp vụ chấp nhận.
 
 ### Liên hệ phỏng vấn
-Nêu: saga giải quyết nghiệp vụ xuyên dịch vụ bằng chuỗi bước cục bộ + compensation, chấp nhận eventual consistency thay cho 2PC. Orchestration có điều phối viên trung tâm (dễ quan sát, luồng rõ) — ví dụ công cụ thực tế: **Temporal**, **Camunda/Zeebe**, **AWS Step Functions** (tên thật để tham chiếu khái niệm). Trình bày rõ quy tắc: bù các bước đã thành công, theo thứ tự ngược, bù trừ/idempotent và cần xử lý lỗi khi bù. So sánh nhanh với choreography khi được hỏi.
+Trả lời mẫu: "Trong microservices, một nghiệp vụ như đặt hàng chạm nhiều dịch vụ, mỗi dịch vụ có DB riêng, nên không thể dùng một transaction xuyên suốt. Saga chia nghiệp vụ thành chuỗi bước cục bộ; mỗi bước có một hành động bù trừ để hoàn tác về mặt nghiệp vụ nếu bước sau lỗi. Tôi thường dùng orchestration: một orchestrator trung tâm gọi từng bước, giữ danh sách bước đã thành công, và khi một bước thất bại thì bù trừ theo thứ tự ngược, bỏ qua bước vừa thất bại. So với choreography, orchestration dễ quan sát luồng và dễ thêm nhánh, đổi lại orchestrator là điểm cần quản trị. Bù trừ không phải rollback DB: hoàn tiền hay nhả kho là hành động nghiệp vụ, phải idempotent và có thể thất bại tạm thời, nên cần retry và lưu trạng thái saga để tiếp tục sau crash. Tôi cũng thiết kế để bước khó hoàn tác nằm sau cùng, và gắn correlation id để lần vết đơn hàng đang kẹt ở bước nào." Khi được hỏi tên công cụ, có thể nêu **Temporal**, **Camunda/Zeebe**, **AWS Step Functions** — đây là các workflow engine (phần mềm chạy và theo dõi luồng nghiệp vụ) thường dùng để triển khai saga orchestration.
 
-> Senior tip: Khi thiết kế saga, viết ra bảng cho từng bước: hành động, bù trừ tương ứng, và trường hợp "không bù được" (pivot/irreversible). Một saga tốt thu hẹp cửa sổ rủi ro bằng cách đặt bước khó hoàn tác về cuối (hoặc dùng trạng thái chờ) và luôn có cơ chế theo dõi/truy vết (correlation id) để biết đơn hàng đang kẹt ở bước nào.
+> Senior tip: Khi thiết kế saga, viết ra bảng cho từng bước: hành động, bù trừ tương ứng, và trường hợp "không bù được" (pivot — bước không thể hoàn tác; sau bước này saga không quay lại trạng thái trước được nữa). Một saga tốt thu hẹp cửa sổ rủi ro bằng cách đặt bước khó hoàn tác về cuối (hoặc dùng trạng thái chờ) và luôn có cơ chế theo dõi/truy vết (correlation id — một mã duy nhất gắn theo đơn hàng để lần vết nó qua mọi dịch vụ) để biết đơn hàng đang kẹt ở bước nào.
 `,
     exercises: [
       {
