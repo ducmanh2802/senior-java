@@ -5092,7 +5092,7 @@ Ngân hàng A triển khai chatbot AI cho 3 triệu khách. **Triệu chứng**:
     {
       name: 'Estimation',
       minutes: 8,
-      guide: 'User: 50M, Item: 10M, Event: 1B/ngày. Embedding 64-dim float32: user 50M x 64 x 4B = 12.8 GB, item 10M x 64 x 4B = 2.56 GB. Retrieval: ANN index (HNSW/IVF-PQ) item embedding ~5–10 GB. Ranking model: GBDT+LR ~200MB, Two-Tower ~500MB. Feature store: 500 feature, user 50M x 500 x 8B ≈ 200 GB (chỉ lưu feature active), item 10M x 200 x 8B ≈ 16 GB. Online serving: 100k RPS x (retrieval 200 candidate + ranking 50) = 20M scoring/giây, cần GPU/CPU cluster. Training: 1B event x 100 feature = 100B record, Spark/Flink 4 tiếng => cluster 500 node. Cache: L1 (Caffeine) 10k hot user, L2 (Redis Cluster) 1M user, CDN trang chủ 100k item. Chi phí: training $1.000/ngày, serving $384–1.440/ngày, feature store $1.000/ngày, pipeline $500/ngày (tổng ~$3.000–4.000/ngày).'
+      guide: 'User: 50M, Item: 10M, Event: 1B/ngày. Embedding 64-dim float32: user 50M x 64 x 4B = 12.8 GB, item 10M x 64 x 4B = 2.56 GB. Retrieval: ANN index (HNSW/IVF-PQ) item embedding ~4–10 GB. Ranking model: GBDT+LR ~200MB, Two-Tower ~500MB. Feature store: 500 feature, user active 1M x 500 x 8B ≈ 4 GB (chỉ lưu feature active), item 10M x 200 x 8B ≈ 16 GB. Online serving: 100k RPS x (retrieval 200 candidate + ranking 50) = 20M scoring/giây, cần ~200 CPU core hoặc 20 GPU A100. Training: 1B event x 100 feature = 100B record, Spark/Flink 4 tiếng => cluster 500 node. Cache: L1 (Caffeine) 10k hot user, L2 (Redis Cluster) 1M user, CDN trang chủ 100k item. Chi phí: training $1.000/ngày (spot), serving $384–1.440/ngày, feature store ~$50/ngày (20 node r6g.xlarge on-demand), pipeline $500/ngày (tổng ~$1.900–3.000/ngày).'
     },
     {
       name: 'API & data model',
@@ -5154,9 +5154,9 @@ Ngân hàng A triển khai chatbot AI cho 3 triệu khách. **Triệu chứng**:
 Chi phí ước tính (AWS us-east-1):
 - Training: 500 executor x 4 tiếng x $0.50/spot = $1.000/ngày (spot instance)
 - Serving: 200 CPU core x 24h x $0.08 = $384/ngày; hoặc 20 GPU A100 x $3.00 = $1.440/ngày
-- Feature store: Redis Cluster 20 node r6g.xlarge = $1.000/ngày
+- Feature store: Redis Cluster 20 node r6g.xlarge (on-demand ~$0,10/giờ) = ~$50/ngày
 - Kafka/Flink event pipeline: $500/ngày
-- **Tổng: ~$3.000–4.000/ngày ($90.000–120.000/tháng)**
+- **Tổng: ~$1.900–3.000/ngày (~$57.000–90.000/tháng)**
 
 ### 3. Feature Store (Trái tim tránh Training-Serving Skew)
 Feature store không chỉ là cache — là **hệ thống quản lý feature tập trung**.
