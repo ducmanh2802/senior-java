@@ -2005,7 +2005,7 @@ page.getByLabel("Email").fill("a@b.test");
 // Web-first: tự retry đến khi text đúng (mặc định ~5s cho assertion)
 assertThat(page.getByTestId("status")).hasText("Đã thanh toán");
 assertThat(page.getByRole(AriaRole.HEADING,
-    new Page.GetByRoleOptions().setName("Giỏ hàng"))).isVisible();
+    new Page.GetByRoleOptions().setName("Giỏ hàng")).isVisible();
 
 // Cấu hình timeout assertion riêng (ms)
 assertThat(page.getByTestId("slow-banner"))
@@ -2935,13 +2935,16 @@ Login lặp lại tốn thời gian (hash mật khẩu, gọi IdP). Cách tối 
 // Ý tưởng: lấy token một lần, tái dùng cho các request trong cùng phạm vi an toàn
 static String token;
 @BeforeAll
-static void authOnce(com.microsoft.playwright.APIRequestContext api) {
-  // Gọi /login một lần, lưu token
-  var res = api.post("https://api.test/login",
-      com.microsoft.playwright.options.RequestOptions.create()
-          .setData(java.util.Map.of("u","test","p", System.getenv("TEST_PASS"))));
-  token = res.json().get("token").asText();
-}
+  static void authOnce(Playwright pw) {
+    // Tạo một APIRequestContext riêng (không chia sẻ cookie với browser)
+    com.microsoft.playwright.APIRequestContext api = pw.request().newContext();
+    // Gọi /login một lần, lưu token
+    var res = api.post("https://api.test/login",
+        com.microsoft.playwright.options.RequestOptions.create()
+            .setData(java.util.Map.of("u","test","p", System.getenv("TEST_PASS"))));
+    token = res.json().get("token").asText();
+    api.dispose(); // giải phóng context API
+  }
 ~~~
 
 Lưu ý bảo mật: token là secret trong runtime – không ghi log (liên hệ {{autotest-037}}). Nếu hệ thống có token ngắn hạn, cân nhắc refresh hoặc phạm vi BeforeAll đủ ngắn.
