@@ -3878,20 +3878,22 @@ JWT (JSON Web Token) là chuỗi 3 phần cách nhau bởi dấu chấm: header.
 HMAC-SHA256 đảm bảo payload không bị sửa; secret chia sẻ giữa issuer và verifier. HMAC là MAC (Message Authentication Code) dựa trên hàm băm: chỉ ai có secret mới tạo ra được MAC đúng, và thay đổi một bit nào của dữ liệu làm MAC sai hoàn toàn.
 
 ### Base64url trong Java
-Base64url (biến thể Base64 an toàn cho URL: thay {{+}} thành {{-}}, {{/}} thành {{_}}, bỏ padding {{=}}) dùng để mỗi phần JWT đi được trong URL/header mà không bị encode hỏng. Dùng {{Base64.getUrlEncoder().withoutPadding()}} và {{getUrlDecoder()}}. **Không dùng** Base64 chuẩn vì {{+}}/{{/}}/{{=}} sẽ bị percent-encode khi ở query string hoặc header.
+Base64url là **mã hoá biểu diễn** (encoding), không phải mã hoá bảo mật (encryption): nó chỉ biến byte thành ký tự in được, ai cũng decode lại được. Nó thay {{+}} thành {{-}}, {{/}} thành {{_}} và **bỏ padding** {{=}}. Dùng {{Base64.getUrlEncoder().withoutPadding()}} để tạo và {{Base64.getUrlDecoder()}} để đọc. **Không dùng** Base64 chuẩn cho JWT: {{+}}, {{/}} và {{=}} là ký tự đặc biệt trong URL/query string (dấu {{+}} còn bị hiểu thành dấu cách), nên token có thể bị biến đổi khi đi qua proxy, log hoặc client. Base64url thì chỉ dùng chữ, số, {{-}} và {{_}}, luôn an toàn ở mọi kênh.
 
 ### Cơ chế từng bước (ký và xác minh)
 1. **Chuẩn bị header**: JSON tối thiểu:
    ~~~json
    {"alg":"HS256","typ":"JWT"}
    ~~~
-   **Vì sao phải có {{alg}}?** Để verifier biết thuật toán kỳ vọng; nếu không kiểm, attacker có thể đổi {{alg}} và lách chữ ký. **Vì sao {{typ}}?** Xác định đây là JWT, tránh nhầm lẫn với các định dạng khác.
+   **Vì sao phải có {{alg}}?** Để bên verify biết token được ký bằng thuật toán nào — nhưng đây **không** phải chỗ để bên verify "làm theo": bên verify phải có danh sách thuật toán cho phép **của riêng nó** và chỉ chấp nhận {{HS256}} (xem mục chống alg confusion bên dưới). **Vì sao {{typ}}?** Khai báo đây là JWT, tránh nhầm với định dạng khác; {{typ}} không phải bằng chứng bảo mật.
 2. **Chuẩn bị payload (claims)**: chứa dữ liệu như {{sub}} (subject - định danh người dùng), {{exp}} (expiration - thời điểm hết hạn, tính bằng epoch seconds, tức số giây từ 1970-01-01), {{nbf}} (not before - chưa có hiệu lực trước thời điểm này), {{iss}} (issuer - bên phát hành), {{aud}} (audience - bên nhận), {{iat}} (issued at - lúc cấp), {{jti}} (JWT ID - định danh duy nhất cho token, dùng cho denylist). **Vì sao dùng epoch seconds?** So sánh số nguyên nhanh, không phụ thuộc múi giờ, không parse phức tạp.
-3. **Mã hóa 2 phần**: {{headerB64 = base64url(headerJson)}}, {{payloadB64 = base64url(payloadJson)}}. **Vì sao base64url mà không phải JSON thô?** JSON có dấu ngoặc/khoảng trắng/ký tự đặc biệt dễ hỏng khi đi qua HTTP header {{Authorization: Bearer ...}}.
+3. **Đóng gói bằng base64url**: {{headerB64 = base64url(headerJson)}}, {{payloadB64 = base64url(payloadJson)}}. **Vì sao base64url mà không phải JSON thô?** JSON có dấu ngoặc/khoảng trắng/ký tự đặc biệt dễ hỏng khi đi qua HTTP header {{Authorization: Bearer ...}} hoặc query string.
 4. **Tạo dữ liệu ký**: {{signingInput = headerB64 + "." + payloadB64}}. Chữ ký bao phủ cả header lẫn payload, nên sửa bất kỳ byte nào (kể cả đổi {{alg}}) cũng làm chữ ký sai.
-5. **Tính HMAC-SHA256**: {{HMAC(secret, signingInput)}} dùng {{javax.crypto.Mac}}. HMAC cho ra chuỗi byte chứng minh: ai có {{secret}} mới tạo ra được chữ ký này, và dữ liệu không bị đổi. **HMAC không mã hóa** payload: ai cũng decode base64url được.
+5. **Tính HMAC-SHA256**: {{HMAC(secret, signingInput)}} dùng {{javax.crypto.Mac}}. HMAC (Hash-based Message Authentication Code) là **băm có khoá**: nó trộn secret vào dữ liệu theo một cấu trúc cố định (rút gọn: {{H((K ⊕ opad) || H((K ⊕ ipad) || dữ liệu))}}). Vì attacker không có {{secret}} nên không tạo được chữ ký hợp lệ; nếu chỉ băm SHA-256 dữ liệu thì ai cũng băm lại được. **HMAC không mã hoá** payload: ai cũng decode base64url được. Secret nên dài **≥ 32 byte (256 bit)** — khoá ngắn hơn làm HMAC yếu đi và dễ bị dò.
 6. **Ghép token**: {{token = headerB64 + "." + payloadB64 + "." + base64url(signature)}}.
-7. **Xác minh (verify)**: tách 3 phần → decode header, **kiểm {{alg}} trước** (chỉ chấp nhận {{HS256}}) → parse payload lấy {{exp}}/{{nbf}} → tính lại HMAC từ {{headerB64.payloadB64}} bằng cùng {{secret}} → so sánh chữ ký bằng {{MessageDigest.isEqual}} (constant-time) → kiểm tra thời gian ({{now < exp}}, {{now >= nbf}}, cho phép sai lệch đồng hồ nhỏ, clock skew, ví dụ 30-60 giây) → kiểm {{iss}}/{{aud}} nếu có.
+7. **Xác minh (verify), đúng thứ tự**: tách 3 phần → decode header → **kiểm {{alg}} trước** (chỉ chấp nhận {{HS256}}) → tính lại HMAC từ {{headerB64 + "." + payloadB64}} bằng cùng {{secret}} → so sánh chữ ký bằng {{MessageDigest.isEqual}} (constant-time) → **chỉ sau khi chữ ký hợp lệ mới tin claim** → kiểm {{now >= exp}} (đúng thời điểm {{exp}} là hết hạn), {{now < nbf}}, cho phép sai lệch đồng hồ nhỏ (clock skew, ví dụ 30–60 giây) → kiểm {{iss}}/{{aud}} nếu có.
+
+> **Vì sao kiểm chữ ký trước rồi mới kiểm claim?** Claim nằm trong phần attacker có thể sửa tự do. Nếu bạn đọc {{sub}} hay {{iss}} trước khi xác thực chữ ký, bạn đang ra quyết định trên dữ liệu chưa được chứng nhận — kể cả khi sau đó chữ ký sai, code đã kịp ghi log, phân quyền hay gọi service khác. Trật tự đúng: **chứng thực trước, rồi mới tin nội dung**.
 
 ~~~java
 import javax.crypto.Mac;
@@ -3963,7 +3965,11 @@ Nếu attacker đổi header thành:
    ~~~json
    {"alg":"none"}
    ~~~
-   và xóa signature, server "linh hoạt" có thể chấp nhận token không chữ ký. Hoặc attacker đổi {{HS256}} sang {{RS256}} (bất đối xứng - dùng public key để verify) và ký bằng HMAC dùng **public key** của server (public key thường công khai) — nếu server lại verify RSA bằng khóa đó như HMAC, token giả lọt qua. Đây gọi là **algorithm confusion**. **Cách chặn**: danh sách trắng thuật toán cố định (chỉ {{HS256}} cho luồng này), kiểm tra {{alg}} **trước** khi tính HMAC; không tin {{alg}} từ token để chọn thuật toán.
+   và xoá signature, server "linh hoạt" có thể chấp nhận token không chữ ký. Đây là lỗi kinh điển, nhưng còn một biến thể khó hơn: **algorithm confusion** (nhầm thuật toán) giữa HS256 và RS256.
+
+Kịch bản thật: server cấu hình một **public key RSA** để verify RS256, nhưng code verify lại đọc {{alg}} từ token. Attacker lấy public key đó (public key vốn công khai, có thể lấy từ JWKS hoặc certificate), đặt header thành {{alg: "HS256"}}, rồi ký bằng **HMAC-SHA256 với chính public key làm khoá bí mật**. Nếu server tin header và verify bằng HMAC với public key, chữ ký do attacker tạo khớp hoàn toàn → token giả lọt qua, dù server chưa bao giờ dùng HMAC cho token thật.
+
+**Cách chặn**: danh sách trắng thuật toán cố định ({{HS256}} cho luồng này), kiểm {{alg}} **trước** khi tính HMAC và **trước khi chọn khoá**; không để giá trị {{alg}} trong token quyết định thuật toán hay loại khoá. Thư viện hiện đại làm đúng bằng cách tách rõ "verify bằng khoá đối xứng" và "verify bằng khoá bất đối xứng", nhưng khi tự viết thì đây là chỗ sai phổ biến nhất.
 
 ### Xoay khóa (key rotation) và kid
 - **kid (Key ID)**: trường trong header chỉ định secret nào dùng để verify, hữu ích khi xoay khóa.
@@ -3991,9 +3997,9 @@ Nếu attacker đổi header thành:
    - Nguyên nhân: code chỉ decode payload mà bỏ qua/ tin header.
    - Cách sửa: whitelist {{alg == "HS256"}} trước khi verify; từ chối mọi giá trị khác ({{none}}, {{RS256}}, {{HS512}}...).
 3. **Không kiểm {{exp}}/{{nbf}} hoặc dùng đồng hồ hệ thống lung tung**
-   - Triệu chứng: token hết hạn vẫn truy cập được; token bị từ chối sớm trên máy lệch giờ.
-   - Nguyên nhân: quên parse claim; so sánh với {{System.currentTimeMillis()}} khiến test khó.
-   - Cách sửa: kiểm {{exp}}/{{nbf}} bắt buộc; truyền {{Clock}}/thời điểm hiện tại vào hàm verify (dễ test); cho phép clock skew nhỏ (30-60s).
+    - Triệu chứng: token hết hạn vẫn truy cập được; token bị từ chối sớm trên máy lệch giờ.
+    - Nguyên nhân: quên parse claim; so sánh với {{System.currentTimeMillis()}} khiến test khó.
+    - Cách sửa: kiểm {{exp}}/{{nbf}} bắt buộc; theo RFC 7519, **đúng thời điểm {{now == exp}} là đã hết hạn** (viết {{now >= exp}}), còn {{now < nbf}} là chưa có hiệu lực; truyền {{Clock}}/thời điểm hiện tại vào hàm verify (dễ test); cho phép clock skew nhỏ (30–60s).
 4. **Dùng Base64 thường hoặc secret yếu**
    - Triệu chứng: verify thất bại ngẫu nhiên với token đi qua URL/header; token dễ bị brute-force.
    - Nguyên nhân: Base64 chuẩn dùng {{+}}/{{/}}/{{=}} gây lỗi khi encode URL; secret ngắn/dễ đoán.
@@ -4008,19 +4014,200 @@ Nếu attacker đổi header thành:
    - Cách sửa: Dùng {{@Value}} từ env/Secret Manager; mask secret trong log; quét secret trong CI.
 
 ### Liên hệ phỏng vấn
+**Trả lời mẫu (60–90 giây):** "JWT là token ba phần {{header.payload.signature}}; hai phần đầu chỉ là base64url nên ai có token cũng đọc được, nó **không mã hoá nội dung**, chỉ ký để chống sửa. Em ký bằng HMAC-SHA256 với secret 256 bit, verify bằng cách tính lại HMAC trên {{header.payload}} rồi so sánh constant-time. Khi verify, em cố định thuật toán cho phép là HS256, từ chối {{none}} và mọi thuật toán khác, kiểm chữ ký trước rồi mới tin claim, sau đó kiểm {{exp}}, {{nbf}}, {{iss}}, {{aud}}. Hệ nhiều service thì em dùng RS256 và JWKS để không phải chia sẻ secret. Em cũng rút access token xuống 5–15 phút và dùng refresh token thu hồi được, vì JWT tự chứa nên thu hồi ngay là khó; cần hiệu lực tức thì thì thêm denylist theo {{jti}} trong Redis."
+
 - **Hỏi: "JWT có mã hóa dữ liệu không? HS256 hoạt động ra sao?"** — Trả lời: JWT chỉ ký (đảm bảo tính toàn vẹn - integrity, biết dữ liệu có bị sửa không), không mã hóa, nên ai có token cũng đọc được payload; HS256 dùng HMAC-SHA256 với một secret chia sẻ: tính {{base64url(header).base64url(payload)}}, ký bằng HMAC, verify bằng cách tính lại và so sánh constant-time. Muốn giấu nội dung phải dùng JWE.
 - **Hỏi: "Làm sao ngăn tấn công {{alg=none}} và timing attack khi verify JWT?"** — Trả lời: whitelist thuật toán (chỉ chấp nhận {{HS256}}) và kiểm tra {{alg}} trước khi tin chữ ký; so sánh chữ ký bằng {{MessageDigest.isEqual}} để tránh timing leak; luôn kiểm {{exp}}/{{nbf}}/{{iss}}/{{aud}} phù hợp.
 - **Hỏi: "Làm sao thu hồi JWT và xoay secret an toàn?"** — Trả lời: JWT tự chứa (stateless) nên khó thu hồi ngay; dùng access token ngắn hạn (5-15 phút) + refresh token có thể thu hồi, hoặc denylist theo {{jti}}; xoay key bằng {{kid}} và giữ secret cũ trong grace period đến khi token cũ hết hạn.
 - **Hỏi: "HS256 hay RS256, khi nào chọn cái nào?"** — Trả lời: HS256 cho hệ thống đơn giản, issuer=verifier, hiệu năng cao; RS256 cho kiến trúc phân tán, nhiều resource server verify, IdP trung tâm cấp token, public key phân phối qua JWKS.`,
   exercises: [
     {
-      title: 'JWT sign/verify',
-      prompt: `Implement Jwt.sign(payloadJson, secret, nowEpochSec) và Jwt.verify(token, secret, nowEpochSec) trả boolean. Từ chối alg khác HS256, exp hết hạn, nbf chưa hiệu lực, chữ ký sai.`,
-      starter: `import java.util.*;\nimport java.nio.charset.StandardCharsets;\nimport javax.crypto.Mac;\nimport javax.crypto.spec.SecretKeySpec;\nimport java.security.MessageDigest;\nimport java.util.Base64;\n\nclass Jwt {\n  static String sign(String payloadJson, byte[] secret, long now) {\n    throw new UnsupportedOperationException("TODO");\n  }\n  static boolean verify(String token, byte[] secret, long now) {\n    throw new UnsupportedOperationException("TODO");\n  }\n}\n`,
-      tests: `public class Main {\n  static void eq(String a,String b){if(!a.equals(b))throw new AssertionError(a+" != "+b);}\n  static void t(boolean c,String m){if(!c)throw new AssertionError(m);}\n  public static void main(String[] a){\n    byte[] s="secretsecretsecretsecret".getBytes();\n    String tok=Jwt.sign("{\\"sub\\":\\"u1\\",\\"exp\\":200}",s,100);\n    t(Jwt.verify(tok,s,150),"valid");\n    t(!Jwt.verify(tok,s,250),"expired");\n    String bad=tok.substring(0,tok.lastIndexOf('.')+1)+"AAAA";\n    t(!Jwt.verify(bad,s,150),"bad sig");\n    String h=Base64.getUrlEncoder().withoutPadding().encodeToString("{\\"alg\\":\\"none\\",\\"typ\\":\\"JWT\\"}".getBytes());\n    String p=Base64.getUrlEncoder().withoutPadding().encodeToString("{\\"sub\\":\\"u1\\",\\"exp\\":200}".getBytes());\n    t(!Jwt.verify(h+"."+p+".",s,150),"alg none");\n    System.out.println("RESULT 4/4");\n  }\n}`,
-      reference: `import java.util.*;\nimport java.nio.charset.StandardCharsets;\nimport javax.crypto.Mac;\nimport javax.crypto.spec.SecretKeySpec;\nimport java.security.MessageDigest;\nimport java.util.Base64;\n\nclass Jwt {\n  static String b64e(byte[] b){return Base64.getUrlEncoder().withoutPadding().encodeToString(b);}\n  static byte[] b64d(String s){return Base64.getUrlDecoder().decode(s);}\n  static String sign(String payloadJson, byte[] secret, long now){\n    String h=b64e("{\\"alg\\":\\"HS256\\",\\"typ\\":\\"JWT\\"}".getBytes(StandardCharsets.UTF_8));\n    String p=b64e(payloadJson.getBytes(StandardCharsets.UTF_8));\n    String data=h+"."+p;\n    try{Mac mac=Mac.getInstance("HmacSHA256");mac.init(new SecretKeySpec(secret,"HmacSHA256"));return data+"."+b64e(mac.doFinal(data.getBytes(StandardCharsets.UTF_8)));}\n    catch(Exception e){throw new RuntimeException(e);}\n  }\n  static boolean verify(String token, byte[] secret, long now){\n    String[] parts=token.split("\\\\.",-1);\n    if(parts.length!=3) return false;\n    try{\n      String hs=new String(b64d(parts[0]),StandardCharsets.UTF_8);\n      if(!hs.contains("\\"alg\\":\\"HS256\\"")) return false;\n      String ps=new String(b64d(parts[1]),StandardCharsets.UTF_8);\n      long exp=Long.MAX_VALUE,nbf=Long.MIN_VALUE;\n      int i=ps.indexOf("\\"exp\\""); if(i>=0){int c=ps.indexOf(':',i);int e=ps.indexOf(',',c); if(e<0)e=ps.indexOf('}',c); exp=Long.parseLong(ps.substring(c+1,e).trim());}\n      i=ps.indexOf("\\"nbf\\""); if(i>=0){int c=ps.indexOf(':',i);int e=ps.indexOf(',',c); if(e<0)e=ps.indexOf('}',c); nbf=Long.parseLong(ps.substring(c+1,e).trim());}\n      if(now>exp) return false;\n      if(now<nbf) return false;\n      Mac mac=Mac.getInstance("HmacSHA256");mac.init(new SecretKeySpec(secret,"HmacSHA256"));\n      byte[] calc=mac.doFinal((parts[0]+"."+parts[1]).getBytes(StandardCharsets.UTF_8));\n      byte[] given=b64d(parts[2]);\n      return MessageDigest.isEqual(calc,given);\n    }catch(Exception e){return false;}\n  }\n}\n`,
-      hints: ['Dùng MessageDigest.isEqual', 'Kiểm alg trước khi tính HMAC'],
-      explain: 'Lời giải ký bằng HMAC và verify với so sánh thời gian hằng; parse exp/nbf đơn giản.',
+      title: 'JWT sign/verify: cố định HS256, verify chữ ký trước, exp đúng biên',
+      prompt: `Hoàn thiện {{Jwt}} (chỉ dùng JDK 17):
+- {{sign(payloadJson, secret, nowEpochSec)}}: tạo token {{base64url(header).base64url(payload).base64url(HMAC-SHA256)}}, header là JSON có field alg (thuật toán ký) và typ (loại token). {{nowEpochSec}} hiện chưa cần dùng (để dành cho bài sau thêm {{iat}}), nhưng chữ ký phải tính trên đúng chuỗi {{header.payload}}.
+- {{verify(token, secret, nowEpochSec)}} trả {{true}} chỉ khi **tất cả** điều kiện sau đúng:
+  1. Token có đúng 3 phần, ngăn bằng dấu chấm.
+  2. Header decode được và **trường {{alg}} có giá trị đúng bằng {{HS256}}** (đọc theo field, không so chuỗi con; từ chối {{none}}, {{HS512}}, {{RS256}}...).
+  3. Chữ ký hợp lệ: tính HMAC-SHA256 trên {{headerB64 + "." + payloadB64}} với {{secret}}, so sánh **constant-time** với phần chữ ký đã decode Base64URL.
+  4. **Chỉ sau khi chữ ký hợp lệ** mới đọc claim: {{exp}} (nếu có) phải thoả {{nowEpochSec < exp}} — đúng thời điểm {{nowEpochSec == exp}} là hết hạn; {{nbf}} (nếu có) phải thoả {{nowEpochSec >= nbf}}.
+  5. Mọi lỗi (Base64 sai, JSON rác, thiếu phần, chữ ký sai) → {{false}}, không ném exception ra ngoài.
+
+Gợi ý: tách hàm nhỏ {{field(json, key)}} để lấy một giá trị trong JSON phẳng, và {{hmac(data, secret)}} để tính chữ ký.`,
+      starter: `import java.nio.charset.StandardCharsets;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.security.MessageDigest;
+import java.util.Base64;
+
+class Jwt {
+    static String b64e(byte[] b) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
+    }
+
+    static String sign(String payloadJson, byte[] secret, long nowEpochSec) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static boolean verify(String token, byte[] secret, long nowEpochSec) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static byte[] hmac(String data, byte[] secret) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+
+public class Main {
+    static int passed = 0, total = 0;
+
+    static void check(String name, boolean cond) {
+        total++;
+        if (cond) { passed++; System.out.println("PASS " + name); }
+        else { System.out.println("FAIL " + name); }
+    }
+
+    static String b64(String s) {
+        return Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(s.getBytes(StandardCharsets.UTF_8));
+    }
+
+    static String hmac(String data, byte[] secret) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secret, "HmacSHA256"));
+            return Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(mac.doFinal(data.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    static String token(String headerJson, String payloadJson, byte[] secret) {
+        String data = b64(headerJson) + "." + b64(payloadJson);
+        return data + "." + hmac(data, secret);
+    }
+
+    public static void main(String[] args) {
+        byte[] secret = "secretsecretsecretsecret".getBytes(StandardCharsets.UTF_8);
+        String tok = Jwt.sign("{\\"sub\\":\\"u1\\",\\"exp\\":200}", secret, 100);
+
+        check("token hop le", Jwt.verify(tok, secret, 150));
+        check("dung thoi diem exp la het han", !Jwt.verify(tok, secret, 200));
+        check("qua thoi han", !Jwt.verify(tok, secret, 250));
+        check("sai secret", !Jwt.verify(tok, "wrongsecretwrongsecret".getBytes(StandardCharsets.UTF_8), 150));
+
+        String nbfTok = Jwt.sign("{\\"sub\\":\\"u1\\",\\"exp\\":400,\\"nbf\\":300}", secret, 100);
+        check("nbf chua toi", !Jwt.verify(nbfTok, secret, 150));
+        check("nbf da toi", Jwt.verify(nbfTok, secret, 350));
+
+        String bad = tok.substring(0, tok.lastIndexOf('.') + 1) + "AAAA";
+        check("chu ky sai", !Jwt.verify(bad, secret, 150));
+
+        String none = token("{\\"alg\\":\\"none\\",\\"typ\\":\\"JWT\\"}", "{\\"sub\\":\\"u1\\",\\"exp\\":200}", secret);
+        check("alg none", !Jwt.verify(none, secret, 150));
+
+        String hs512 = token("{\\"alg\\":\\"HS512\\"}", "{\\"sub\\":\\"u1\\",\\"exp\\":200}", secret);
+        check("alg HS512 bi tu choi", !Jwt.verify(hs512, secret, 150));
+
+        String reordered = token("{\\"typ\\":\\"JWT\\",\\"alg\\": \\"HS256\\"}", "{\\"sub\\":\\"u2\\",\\"exp\\":200}", secret);
+        check("alg HS256 parse theo field", Jwt.verify(reordered, secret, 150));
+
+        check("token thieu phan", !Jwt.verify(tok.substring(0, tok.lastIndexOf('.')), secret, 150));
+        check("payload rac", !Jwt.verify(b64("{\\"alg\\":\\"HS256\\"}") + "." + b64("not-json") + ".AAAA", secret, 150));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.nio.charset.StandardCharsets;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.security.MessageDigest;
+import java.util.Base64;
+
+class Jwt {
+    static String b64e(byte[] b) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
+    }
+
+    static byte[] b64d(String s) {
+        return Base64.getUrlDecoder().decode(s);
+    }
+
+    static String sign(String payloadJson, byte[] secret, long nowEpochSec) {
+        String h = b64e("{\\"alg\\":\\"HS256\\",\\"typ\\":\\"JWT\\"}".getBytes(StandardCharsets.UTF_8));
+        String p = b64e(payloadJson.getBytes(StandardCharsets.UTF_8));
+        String data = h + "." + p;
+        return data + "." + b64e(hmac(data, secret));
+    }
+
+    static boolean verify(String token, byte[] secret, long nowEpochSec) {
+        if (token == null) return false;
+        String[] parts = token.split("\\\\.", -1);
+        if (parts.length != 3) return false;
+        try {
+            // 1) thuật toán cố định, đọc theo field chứ không dò chuỗi con
+            String header = new String(b64d(parts[0]), StandardCharsets.UTF_8);
+            if (!"HS256".equals(field(header, "alg"))) return false;
+
+            // 2) chữ ký trước, claim sau
+            byte[] expected = hmac(parts[0] + "." + parts[1], secret);
+            byte[] given = b64d(parts[2]);
+            if (!MessageDigest.isEqual(expected, given)) return false;
+
+            // 3) chỉ khi chữ ký hợp lệ mới tin claim
+            String payload = new String(b64d(parts[1]), StandardCharsets.UTF_8);
+            String exp = field(payload, "exp");
+            String nbf = field(payload, "nbf");
+            if (exp != null && nowEpochSec >= Long.parseLong(exp.trim())) return false;
+            if (nbf != null && nowEpochSec < Long.parseLong(nbf.trim())) return false;
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // đọc một field trong JSON phẳng một cấp: "key":"value" hoặc "key":123
+    static String field(String json, String key) {
+        String needle = "\\\"" + key + "\\\":";
+        int i = json.indexOf(needle);
+        if (i < 0) return null;
+        int p = i + needle.length();
+        while (p < json.length() && Character.isWhitespace(json.charAt(p))) p++;
+        if (p >= json.length()) return null;
+        if (json.charAt(p) == '"') {
+            int end = json.indexOf('"', p + 1);
+            return end < 0 ? null : json.substring(p + 1, end);
+        }
+        int end = p;
+        while (end < json.length()) {
+            char c = json.charAt(end);
+            if (c == ',' || c == '}' || Character.isWhitespace(c)) break;
+            end++;
+        }
+        return json.substring(p, end);
+    }
+
+    static byte[] hmac(String data, byte[] secret) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secret, "HmacSHA256"));
+            return mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+}`,
+      hints: [
+        'Đọc {{alg}} bằng {{field(header, "alg")}} rồi so bằng {{equals}}; đừng dùng {{contains}} vì header có thể đổi thứ tự hoặc thêm khoảng trắng, và {{contains}} cũng không phân biệt được giá trị thật.',
+        'Kiểm chữ ký **trước** khi đọc {{exp}}/{{nbf}}: nếu chữ ký sai thì mọi claim đều vô nghĩa, đọc trước chỉ tạo thói quen tin dữ liệu chưa xác thực.',
+        'Theo RFC 7519, {{now == exp}} là hết hạn: viết {{now >= exp}}, không viết {{now > exp}}.',
+        'Dùng {{MessageDigest.isEqual(expected, given)}} để so sánh chữ ký; bọc toàn bộ verify trong try/catch và trả {{false}} khi dữ liệu rác (Base64 sai, JSON rác, thiếu phần).',
+      ],
+      explain: `Lời giải đi đúng thứ tự an toàn: (1) {{alg}} đọc bằng hàm {{field}} và phải đúng {{HS256}} — {{none}}/{{HS512}} bị từ chối **trước** khi tính HMAC; (2) chữ ký tính trên đúng {{header.payload}} và so bằng {{MessageDigest.isEqual}}; (3) chỉ sau đó mới đọc {{exp}}/{{nbf}}, với {{now == exp}} tính là hết hạn. Mọi dữ liệu rác bị bắt và trả {{false}} thay vì làm sập request.`,
     },
   ],
   check: [
@@ -4029,7 +4216,7 @@ Nếu attacker đổi header thành:
     { q: 'Payload JWT HS256 có được xem là bí mật không? Vì sao?', options: ['Không, vì payload chỉ base64url-encode chứ không mã hóa; HMAC chỉ đảm bảo tính toàn vẹn', 'Có, vì chỉ ai có secret mới đọc được', 'Có, nếu dùng Base64url.withoutPadding thì payload được che giấu', 'Không, nhưng chỉ vì exp đã hết hạn'], answer: 0, explain: 'Base64url là mã hóa biểu diễn (encoding), decode được bởi bất kỳ ai. HS256 là chữ ký (MAC) chứng minh dữ liệu không bị sửa, không phải mã hóa (encryption). Muốn giấu nội dung phải dùng JWE (JSON Web Encryption). Secret dùng để ký/verify, không dùng để đọc payload.' },
     { q: 'Khi xoay secret HS256 bằng kid, cách nào giúp token cũ chưa hết hạn vẫn verify được?', options: ['Đặt alg=none cho token cũ', 'Tăng exp của token cũ lên thêm 30 ngày', 'Xóa luôn secret cũ ngay khi phát hành secret mới', 'Giữ secret cũ trong grace period và chọn secret theo kid trong header'], answer: 3, explain: 'kid chỉ định khóa dùng để verify; server tra cứu secret theo kid. Giữ secret cũ trong grace period (đến khi token cũ hết exp) cho phép verify token cũ mà không chấp nhận token giả. Đặt alg=none, tự ý gia hạn exp, hay xóa secret cũ ngay đều sai/không an toàn.' },
   ],
-  related: [],
+  related: ['security-003', 'security-034'],
   tags: ['JWT', 'HMAC', 'base64url'],
 },
 {
@@ -4051,17 +4238,17 @@ Nếu attacker đổi header thành:
 1. **Client sinh {{code_verifier}}**: chuỗi ngẫu nhiên, dài 43-128 ký tự, chỉ dùng các ký tự an toàn URL (unreserved): {{[A-Z a-z 0-9 - . _ ~]}}. **Vì sao phải ngẫu nhiên và đủ dài?** Để attacker không đoán được (entropy - độ ngẫu nhiên cao). Dùng {{SecureRandom}} (bộ sinh số ngẫu nhiên an toàn mật mã), không dùng {{Random}} thường. 32 byte ngẫu nhiên → 43 ký tự base64url là độ dài tối thiểu phổ biến.
 2. **Client tính {{code_challenge}} (phương thức S256)**: {{code_challenge = BASE64URL(SHA-256(ASCII(code_verifier)))}}, không padding. **Vì sao băm SHA-256?** Challenge đi qua trình duyệt/redirect (có thể lộ), nhưng từ hash một chiều không suy ngược ra verifier.
 3. **Authorize request**: client chuyển hướng người dùng đến Authorization Server kèm {{response_type=code}}, {{client_id}}, {{redirect_uri}}, {{state}} (chống CSRF - Cross-Site Request Forgery, giả mạo yêu cầu từ site khác), {{code_challenge}}, {{code_challenge_method=S256}}. **Vì sao cần {{state}}?** State là giá trị ngẫu nhiên client sinh, lưu trong session, đối chiếu khi nhận callback — ngăn attacker gắn code của họ vào phiên nạn nhân (login CSRF).
-4. **Server xác thực người dùng và phát {{code}}**: server lưu cặp {{(code -> code_challenge, method, client_id, redirect_uri)}} với thời gian sống ngắn (thường 1-10 phút). **Vì sao lưu theo code?** Để đối chiếu ở bước đổi token; code là khóa tra cứu duy nhất.
+4. **Server xác thực người dùng và phát {{code}}**: server lưu cặp {{(code -> code_challenge, method, client_id, redirect_uri)}} với thời gian sống ngắn (thường 1-10 phút). **Vì sao lưu theo code?** Để đối chiếu ở bước đổi token; code là khóa tra cứu duy nhất. Challenge cũng phải **hết hạn cùng code**: code chỉ sống vài phút, giữ challenge lâu hơn vừa tốn bộ nhớ vừa cho attacker thời gian thử verifier.
 5. **Token request**: client gửi {{grant_type=authorization_code}}, {{code}}, {{redirect_uri}}, **và {{code_verifier}}** (lúc này verifier mới rời client, đi qua kênh back-channel HTTPS tới token endpoint). **Lưu ý:** {{code_verifier}} không bao giờ đi qua trình duyệt/URL.
-6. **Server kiểm tra**: tìm challenge theo {{code}} → tính {{BASE64URL(SHA-256(code_verifier))}} → so sánh **constant-time** ({{MessageDigest.isEqual}}) với challenge đã lưu → kiểm tra {{redirect_uri}} khớp chính xác → kiểm tra {{code}} chưa dùng (một lần). **Vì sao constant-time?** Tránh timing attack khi so sánh chuỗi bí mật.
-7. **Cấp token và vô hiệu hóa {{code}}**: nếu hợp lệ, trả {{access_token}} (và có thể {{refresh_token}}), đánh dấu {{code}} đã dùng để chống replay (phát lại mã cũ).
+6. **Server kiểm tra**: tìm challenge theo {{code}} → tính {{BASE64URL(SHA-256(code_verifier))}} → so sánh **constant-time** ({{MessageDigest.isEqual}}) với challenge đã lưu (cả hai đều là chuỗi base64url 43 ký tự, nên độ dài luôn bằng nhau) → kiểm tra {{redirect_uri}} khớp **chính xác** → kiểm tra {{code}} chưa dùng (một lần). **Vì sao constant-time?** Tránh timing attack khi so sánh chuỗi bí mật.
+7. **Cấp token và vô hiệu hóa {{code}}**: nếu hợp lệ, trả {{access_token}} (và có thể {{refresh_token}}), đánh dấu {{code}} đã dùng để chống replay (phát lại mã cũ), rồi **xoá challenge khỏi store** để giải phóng bộ nhớ và không cho thử lại verifier.
 
 ~~~seq
 title: PKCE S256
-actors: Client | AuthServer | Resource
+actors: Client | AuthServer
 Client -> AuthServer: authorize + code_challenge(S256) + state
 AuthServer -> Client: redirect ?code=... & state
-Client -> AuthServer: token + code + code_verifier
+Client -> AuthServer: token + code + code_verifier (back-channel)
 AuthServer -> Client: access_token (nếu verifier khớp)
 ~~~
 
@@ -4095,6 +4282,7 @@ class Pkce {
 ~~~java
 import java.util.*;
 import java.security.MessageDigest;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
 class AuthServer {
@@ -4104,7 +4292,7 @@ class AuthServer {
 
   String authorize(String clientId, String challenge) {
     String code = "code" + (++counter);
-    challenges.put(code, challenge);
+    challenges.put(code, challenge);              // clientId không dùng trong bản mô phỏng
     return code;
   }
 
@@ -4112,15 +4300,18 @@ class AuthServer {
     String ch = challenges.get(code);
     if (ch == null) return null;                    // code không tồn tại
     if (usedCodes.contains(code)) return null;      // code đã dùng (replay)
-    if (!MessageDigest.isEqual(ch.getBytes(), challengeOf(verifier).getBytes())) return null;
+    if (!MessageDigest.isEqual(ch.getBytes(StandardCharsets.US_ASCII),
+                               challengeOf(verifier).getBytes(StandardCharsets.US_ASCII))) return null;
     usedCodes.add(code);                            // đánh dấu đã dùng
+    challenges.remove(code);                        // xoá challenge sau khi exchange
     return "token-" + code;
   }
 
   static String challengeOf(String verifier) {
     try {
       MessageDigest md = MessageDigest.getInstance("SHA-256");
-      byte[] d = md.digest(verifier.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      // verifier chỉ gồm ký tự ASCII (unreserved), nên US_ASCII đúng theo RFC 7636
+      byte[] d = md.digest(verifier.getBytes(StandardCharsets.US_ASCII));
       return Base64.getUrlEncoder().withoutPadding().encodeToString(d);
     } catch (Exception e) { throw new RuntimeException(e); }
   }
@@ -4137,8 +4328,10 @@ class AuthServer {
 |---|---|---|
 | Chạy ở đâu | Server của bạn (backend) | Máy của người dùng (browser/app) |
 | Giữ được secret? | Có (env, vault) | **Không bao giờ** |
-| PKCE bắt buộc? | Khuyến nghị (OAuth 2.1) | **Bắt buộc** |
+| PKCE bắt buộc? | **Bắt buộc** theo OAuth 2.1 (nhiều hệ cũ vẫn chỉ dựa vào client_secret) | **Bắt buộc** |
 | Client auth ở /token | {{client_id}} + {{client_secret}} (Basic auth) | Chỉ {{client_id}} (no secret) |
+
+> PKCE **không thay thế** {{client_secret}}: với confidential client, server vẫn xác thực client bằng secret ở token endpoint, PKCE là lớp thêm để chặn replay code. Với public client thì không có secret để dùng, nên PKCE là lớp bảo vệ chính.
 
 ### PKCE và state bổ sung cho nhau
 - **PKCE**: chứng minh "đúng client đã bắt đầu flow mới đổi được code lấy token" (chống code interception).
@@ -4168,26 +4361,141 @@ class AuthServer {
 5. **Code TTL quá dài hoặc không xoá challenge sau khi dùng**
    - Triệu chứng: Code cũ (ngày hôm qua) vẫn đổi được token; bộ nhớ server phình do challenge tích lũy.
    - Nguyên nhân: Không đặt TTL cho code (hoặc TTL hàng giờ); không xoá entry sau khi exchange thành công.
-   - Cách sửa: TTL 1-10 phút; xoá challenge khỏi store ngay sau exchange (thành công hoặc thất bại do verifier sai).
+   - Cách sửa: TTL 1-10 phút; xoá challenge khỏi store ngay sau exchange. Nếu verify thất bại, coi như code đã bị lộ và vô hiệu hoá nó (không cho thử lại verifier nhiều lần) — đánh đổi là client chính chủ cũng phải bắt đầu lại, nhưng an toàn hơn.
 6. **Chấp nhận {{code_challenge_method}} không hợp lệ hoặc thiếu**
    - Triệu chứng: Client gửi {{method=S256}} nhưng server không validate; hoặc client không gửi method mà server vẫn xử lý.
    - Nguyên nhân: Server không whitelist method; chỉ đọc challenge mà không kiểm tra method.
    - Cách sửa: Whitelist chỉ {{S256}}; từ chối request thiếu {{code_challenge_method}} hoặc method lạ.
 
 ### Liên hệ phỏng vấn
+**Trả lời mẫu (60–90 giây):** "PKCE sinh ra cho public client — SPA và mobile — vì chúng không giữ được {{client_secret}}. Client sinh một {{code_verifier}} ngẫu nhiên 43–128 ký tự, băm SHA-256 rồi base64url thành {{code_challenge}}, gửi kèm {{code_challenge_method=S256}} khi xin code. Server lưu challenge theo code; lúc đổi token, client gửi lại verifier, server băm lại và so sánh constant-time. Kẻ chặn được code ở custom URL scheme vẫn không đổi được token vì không có verifier. PKCE không thay {{state}}: state chống CSRF, PKCE chống đánh cắp code, nên dùng cả hai; với confidential client vẫn giữ {{client_secret}} để xác thực client ở token endpoint."
+
 - **Hỏi: "PKCE giải quyết vấn đề gì và {{S256}} hoạt động ra sao?"** — Trả lời: PKCE chống đánh cắp authorization code ở public client (SPA/mobile) không giữ được secret. Client sinh {{code_verifier}} ngẫu nhiên, gửi {{code_challenge = BASE64URL(SHA-256(verifier))}} khi authorize; khi đổi token gửi kèm verifier, server băm lại và so khớp, nên kẻ chỉ có {{code}} mà không có verifier không đổi được token.
 - **Hỏi: "Vì sao không dùng {{plain}} và cần so sánh challenge thế nào?"** — Trả lời: {{plain}} đặt verifier ngay trong challenge, nếu challenge lộ thì vô nghĩa; {{S256}} dùng hash một chiều. Server phải so sánh bằng constant-time ({{MessageDigest.isEqual}}) để tránh timing attack, và {{code}} phải dùng một lần.
-- **Hỏi: "PKCE có thay thế {{state}} hay {{client_secret}} không?"** — Trả lời: không. PKCE chống code interception; {{state}} chống CSRF — hai cơ chế bổ sung. Với confidential client (server-side, giữ được secret) vẫn nên dùng PKCE thêm (OAuth 2.1 khuyến nghị), còn {{client_secret}} vẫn dùng để xác thực client nếu có.
-- **Hỏi: "Public client và confidential client khác nhau thế nào về OAuth flow?"** — Trả lời: Public client chạy trên máy user (browser/app) → không giữ được secret → bắt buộc PKCE, không gửi client_secret; Confidential client chạy trên server của bạn → giữ được secret → dùng client_secret xác thực ở /token, PKCE khuyến nghị thêm. Cả hai đều dùng authorization code flow.`,
+- **Hỏi: "PKCE có thay thế {{state}} hay {{client_secret}} không?"** — Trả lời: không. PKCE chống code interception; {{state}} chống CSRF — hai cơ chế bổ sung. Với confidential client (server-side, giữ được secret) vẫn nên dùng PKCE thêm (OAuth 2.1 yêu cầu), còn {{client_secret}} vẫn dùng để xác thực client nếu có.
+- **Hỏi: "Public client và confidential client khác nhau thế nào về OAuth flow?"** — Trả lời: Public client chạy trên máy user (browser/app) → không giữ được secret → bắt buộc PKCE, không gửi client_secret; Confidential client chạy trên server của bạn → giữ được secret → dùng client_secret xác thực ở /token, PKCE cũng bắt buộc theo OAuth 2.1. Cả hai đều dùng authorization code flow.`,
   exercises: [
     {
-      title: 'AuthServer PKCE',
-      prompt: `Implement AuthServer với authorize(clientId, challenge) trả code, và token(code, verifier) trả token hoặc null nếu verifier sai.`,
-      starter: `import java.util.*;\nimport java.security.MessageDigest;\nimport java.util.Base64;\n\nclass AuthServer {\n  private final Map<String,String> challenges=new HashMap<>();\n  private int counter=0;\n  String authorize(String clientId, String challenge){ throw new UnsupportedOperationException("TODO"); }\n  String token(String code, String verifier){ throw new UnsupportedOperationException("TODO"); }\n  static String challengeOf(String verifier){ throw new UnsupportedOperationException("TODO"); }\n}\n`,
-      tests: `public class Main {\n  static void t(boolean c,String m){if(!c)throw new AssertionError(m);}\n  public static void main(String[] a){\n    AuthServer s=new AuthServer();\n    String v="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~";\n    String ch=AuthServer.challengeOf(v);\n    String code=s.authorize("c1",ch);\n    t(s.token(code,v)!=null,"valid verifier");\n    t(s.token(code,"wrongverifier")==null,"wrong verifier");\n    t(s.token(code,"")==null,"empty verifier");\n    t(s.token(code,v)==null,"replay rejected");\n    System.out.println("RESULT 4/4");\n  }\n}`,
-      reference: `import java.util.*;\nimport java.security.MessageDigest;\nimport java.util.Base64;\n\nclass AuthServer {\n  private final Map<String,String> challenges=new HashMap<>();\n  private final Set<String> used=new HashSet<>();\n  private int counter=0;\n  String authorize(String clientId, String challenge){ String code="code"+(++counter); challenges.put(code,challenge); return code; }\n  String token(String code, String verifier){\n    String ch=challenges.get(code);\n    if(ch==null) return null;\n    if(used.contains(code)) return null;\n    if(!MessageDigest.isEqual(ch.getBytes(), challengeOf(verifier).getBytes())) return null;\n    used.add(code);\n    return "token-"+code;\n  }\n  static String challengeOf(String verifier){\n    try{MessageDigest md=MessageDigest.getInstance("SHA-256");byte[] d=md.digest(verifier.getBytes(java.nio.charset.StandardCharsets.UTF_8));return Base64.getUrlEncoder().withoutPadding().encodeToString(d);}\n    catch(Exception e){throw new RuntimeException(e);}\n  }\n}\n`,
-      hints: ['challenge = base64url(SHA256(verifier))', 'So sánh thời gian hằng'],
-      explain: 'Lời giải lưu challenge theo code, kiểm verifier và chống replay.',
+      title: 'AuthServer PKCE: challenge S256, verifier đúng, code dùng một lần',
+      prompt: `Hoàn thiện {{AuthServer}} (chỉ dùng JDK 17):
+- {{authorize(clientId, challenge)}}: tạo code mới, lưu challenge theo code, trả code. {{clientId}} nhận nhưng bản mô phỏng không dùng (code đã gắn với challenge).
+- {{token(code, verifier)}}: trả token nếu code tồn tại, **chưa dùng**, và {{S256(verifier)}} khớp challenge đã lưu; ngược lại trả {{null}} (verifier {{null}} hay rỗng cũng trả {{null}}, không ném exception). Sau khi đổi thành công phải đánh dấu code đã dùng để {{token}} lần hai trả {{null}} (chống replay).
+- {{challengeOf(verifier)}}: {{BASE64URL(SHA-256(ASCII(verifier)))}}, không padding.
+- So sánh challenge bằng {{MessageDigest.isEqual}} (constant-time), không dùng {{equals}}.`,
+      starter: `import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+
+class AuthServer {
+    private final Map<String, String> challenges = new HashMap<>();
+    private final Set<String> used = new HashSet<>();
+    private int counter = 0;
+
+    String authorize(String clientId, String challenge) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String token(String code, String verifier) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static String challengeOf(String verifier) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.nio.charset.StandardCharsets;
+
+public class Main {
+    static int passed = 0, total = 0;
+
+    static void check(String name, boolean cond) {
+        total++;
+        if (cond) { passed++; System.out.println("PASS " + name); }
+        else { System.out.println("FAIL " + name); }
+    }
+
+    public static void main(String[] args) {
+        AuthServer s = new AuthServer();
+        String v = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~";
+        String ch = AuthServer.challengeOf(v);
+
+        String code = s.authorize("c1", ch);
+        check("verifier dung", s.token(code, v) != null);
+        check("replay bi tu choi", s.token(code, v) == null);
+
+        String code2 = s.authorize("c1", ch);
+        check("verifier sai", s.token(code2, "wrongverifier") == null);
+        check("verifier rong", s.token(code2, "") == null);
+        String codeNull = s.authorize("c1", ch);
+        check("verifier null", s.token(codeNull, null) == null);
+
+        String code3 = s.authorize("c1", ch);
+        String code4 = s.authorize("c2", ch);
+        check("hai code khac nhau deu doi duoc", s.token(code3, v) != null && s.token(code4, v) != null);
+        check("code3 da dung", s.token(code3, v) == null);
+        check("code khong ton tai", s.token("code-khong-co", v) == null);
+
+        String code5 = s.authorize("c1", ch);
+        String other = "bcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~";
+        check("verifier khac cung do dai", s.token(code5, other) == null);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+
+class AuthServer {
+    private final Map<String, String> challenges = new HashMap<>();
+    private final Set<String> used = new HashSet<>();
+    private int counter = 0;
+
+    String authorize(String clientId, String challenge) {
+        String code = "code" + (++counter);
+        challenges.put(code, challenge);            // clientId không dùng trong bản mô phỏng
+        return code;
+    }
+
+    String token(String code, String verifier) {
+        String ch = challenges.get(code);
+        if (ch == null) return null;                // code không tồn tại
+        if (used.contains(code)) return null;       // code đã dùng (replay)
+        if (verifier == null || verifier.isEmpty()) return null;  // thiếu verifier: không có gì để so
+        boolean ok = MessageDigest.isEqual(
+            ch.getBytes(StandardCharsets.US_ASCII),
+            challengeOf(verifier).getBytes(StandardCharsets.US_ASCII));
+        if (!ok) return null;
+        used.add(code);
+        challenges.remove(code);                    // xoá challenge sau khi exchange
+        return "token-" + code;
+    }
+
+    static String challengeOf(String verifier) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            // verifier chỉ gồm ký tự ASCII (unreserved), nên US_ASCII đúng theo RFC 7636
+            byte[] d = md.digest(verifier.getBytes(StandardCharsets.US_ASCII));
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(d);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+}`,
+      hints: [
+        'challenge = base64url(SHA-256(verifier)); verifier là chuỗi ASCII nên dùng {{StandardCharsets.US_ASCII}}.',
+        'So sánh challenge bằng {{MessageDigest.isEqual}}, không dùng {{equals}}.',
+        'Đánh dấu code đã dùng và xoá challenge sau khi exchange thành công; code không tồn tại, verifier {{null}}/rỗng hoặc sai đều trả {{null}}.',
+      ],
+      explain: `Lời giải lưu challenge theo code, tính lại S256 của verifier và so sánh constant-time; chỉ khi khớp mới đánh dấu code đã dùng và trả token. Nhờ vậy: verifier đúng → token; verifier sai/rỗng → null; gọi lại cùng code → null (replay); hai code khác nhau có cùng challenge vẫn đổi độc lập.`,
     },
   ],
   check: [
@@ -4196,7 +4504,7 @@ class AuthServer {
     { q: 'Token endpoint nhận đúng code và code_verifier khớp, nhưng code này đã dùng để đổi token trước đó. Server nên làm gì?', options: ['Từ chối vì authorization code phải dùng một lần (chống replay)', 'Vẫn cấp token mới vì verifier khớp là đủ', 'Chỉ cấp token nếu client gửi thêm client_secret', 'Chuyển sang method plain để kiểm tra lại'], answer: 0, explain: 'Authorization code là one-time-use: tái sử dụng là dấu hiệu code bị đánh cắp/replay. Server phải từ chối và có thể thu hồi token đã cấp từ code đó. Verifier khớp không đủ nếu code đã tiêu thụ; client_secret hay chuyển plain đều sai.' },
     { q: 'Trong luồng PKCE, state và PKCE khác nhau thế nào?', options: ['Giống nhau, chỉ cần dùng một trong hai', 'state chống CSRF (đảm bảo redirect thuộc request của mình), PKCE chống đánh cắp code; hai cơ chế bổ sung', 'PKCE thay thế state vì cả hai đều dùng giá trị ngẫu nhiên', 'state dùng để băm verifier, PKCE dùng để xác thực người dùng'], answer: 1, explain: 'state là giá trị ngẫu nhiên đối chiếu khi nhận callback để chống CSRF/login CSRF. PKCE chứng minh bên đổi token chính là bên bắt đầu flow. Chúng giải quyết hai lớp tấn công khác nhau nên dùng cùng nhau; không thay thế nhau.' },
   ],
-  related: [],
+  related: ['security-004', 'security-035'],
   tags: ['PKCE', 'OAuth', 'S256'],
 },
 {
@@ -4244,12 +4552,13 @@ BCrypt là thuật toán băm mật khẩu dựa trên Blowfish cipher. Chuỗi 
 
 - **Cost factor**: mỗi tăng 1 thì thời gian băm tăng gấp đôi (2^cost). Cost 10 ~ 100ms, cost 12 ~ 250–400ms trên server thông thường (số liệu tham khảo, đo trên phần cứng thật). Chọn cost sao cho 1 lần verify ~ 250–500ms — đủ chậm với attacker, vẫn chấp nhận được với người dùng đăng nhập.
 - **Nâng cost theo thời gian**: phần cứng nhanh hơn mỗi năm; khi nâng cost, hash cũ vẫn verify được (cost nằm trong chuỗi). Chiến lược: khi user đăng nhập thành công và hash đang dùng cost thấp, **rehash** với cost mới rồi cập nhật DB (migrate dần, không cần ép đổi mật khẩu).
-- **Giới hạn 72 byte**: BCrypt chỉ dùng 72 byte đầu của mật khẩu (UTF-8). Mật khẩu rất dài bị cắt — thường hiếm gặp nhưng cần biết.
+- **Giới hạn 72 byte**: BCrypt chỉ dùng 72 byte đầu của mật khẩu (UTF-8), kể cả bản {{$2b$}} mới. Hệ quả: hai mật khẩu dài khác nhau nhưng **giống nhau ở 72 byte đầu** sẽ cho cùng hash và cùng đăng nhập được. Ví dụ mật khẩu {{72 ký tự A}} và {{72 ký tự A + 27 ký tự khác}} (đúng 72 byte đầu giống nhau, khác phần sau) là như nhau với BCrypt. Hiếm gặp, nhưng nếu hệ thống cho đặt mật khẩu rất dài thì phải biết; Argon2id không có giới hạn này.
+- **Muốn dùng pepper (giá trị bí mật chung) thì trộn vào trước khi băm**: pepper khác salt ở chỗ nó **phải bí mật** và giống nhau cho mọi user (thường nằm trong secret manager). Pepper không thay được salt, chỉ là lớp thêm khi DB lộ nhưng secret manager chưa lộ.
 
 Trong Spring Security, dùng {{BCryptPasswordEncoder}}: {{encoder.encode(raw)}} để băm, {{encoder.matches(raw, encoded)}} để kiểm tra (so sánh an toàn). Thư viện ngoài JDK chuẩn nên bài tập dưới đây **mô phỏng cơ chế** (salt + hàm băm + cost giả lập bằng vòng lặp) bằng Java thuần để hiểu bản chất.
 
 ### So sánh thời gian hằng (constant-time comparison)
-Khi so sánh hash, dùng {{MessageDigest.isEqual(a, b)}} (JDK chuẩn) thay vì {{Arrays.equals}} hay {{String.equals}}. {{String.equals}} trả về false ngay tại ký tự khác đầu tiên → attacker đo thời gian phản hồi hàng triệu lần có thể suy ra từng byte hash. {{MessageDigest.isEqual}} luôn duyệt hết cả hai mảng rồi mới trả kết quả, nên thời gian không phụ thuộc vị trí khác biệt.
+Khi so sánh hash, dùng {{MessageDigest.isEqual(a, b)}} (JDK chuẩn) thay vì {{Arrays.equals}} hay {{String.equals}}. {{String.equals}} trả về false ngay tại ký tự khác đầu tiên → attacker đo thời gian phản hồi hàng triệu lần có thể suy ra từng byte hash. {{MessageDigest.isEqual}} duyệt hết cả hai mảng rồi mới trả kết quả **khi hai mảng cùng độ dài**, nên thời gian không phụ thuộc vị trí khác biệt. Hash mật khẩu luôn có độ dài cố định (ví dụ BCrypt 60 ký tự, SHA-256 hex 64 ký tự), nên trường hợp độ dài khác nhau chỉ xảy ra khi dữ liệu lưu bị hỏng — lúc đó trả {{false}} ngay là đủ.
 
 ~~~java
 import java.security.MessageDigest;
@@ -4291,6 +4600,8 @@ boolean ok = MessageDigest.isEqual(
 > Senior tip: Trên production, chọn BCrypt cost sao cho {{encoder.matches}} mất khoảng 250ms trên server thật (đo bằng benchmark), và đặt alert nếu thời gian xác thực tăng đột biến (dấu hiệu ai đó cố tình gửi request nặng). Với hệ thống cần bảo mật rất cao hoặc lo GPU/ASIC, cân nhắc Argon2id (memory-hard - tốn bộ nhớ, chống GPU tốt hơn); Spring Security 5+ hỗ trợ {{Argon2PasswordEncoder}}.
 
 ### Liên hệ phỏng vấn
+**Trả lời mẫu (60–90 giây):** "Em không bao giờ lưu mật khẩu dạng rõ hay mã hoá hai chiều. Em băm một chiều bằng thuật toán chuyên cho mật khẩu — BCrypt hoặc Argon2id — với salt ngẫu nhiên riêng từng user; salt không cần bí mật, chỉ cần khác nhau để hai người cùng mật khẩu không ra cùng hash. BCrypt có cost factor: tăng 1 là gấp đôi thời gian, nên em chỉnh sao cho một lần verify khoảng 250ms — đủ chậm để brute-force tốn kém nhưng người dùng không thấy khó chịu. Khi so sánh em dùng constant-time, và có chiến lược nâng cost bằng cách rehash lúc user đăng nhập thành công. Em cũng biết BCrypt cắt ở 72 byte, nên hệ thống cho mật khẩu rất dài thì cân nhắc Argon2id."
+
 Khi được hỏi "lưu mật khẩu thế nào cho an toàn", trả lời theo trình tự: (1) không lưu plaintext, không mã hóa hai chiều (encryption) vì key lộ là lộ hết; (2) băm một chiều với **salt ngẫu nhiên mỗi user** + thuật toán chậm có **cost factor** (BCrypt/Argon2id/PBKDF2); (3) verify bằng {{matches}}/so sánh constant-time; (4) có chiến lược nâng cost (rehash khi login). Nhấn mạnh **vì sao SHA-256 trần sai** (nhanh + không salt) — đây là điểm phân biệt ứng viên hiểu bản chất.`,
   exercises: [
     {
