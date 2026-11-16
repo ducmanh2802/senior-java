@@ -357,6 +357,20 @@ Phía Spring Boot: {{server.shutdown=graceful}} (mặc định từ Boot 3.4) v�
 - "Rolling update tự động zero-downtime": chỉ đúng khi probe và shutdown được cấu hình đúng.
 - "Tăng terminationGracePeriodSeconds là đủ": không có preStop thì vẫn lỗi trong vài giây đầu.
 
+### Luồng deploy zero-downtime (multi-side)
+~~~seq
+title: Rolling update: Pod mới vào, Pod cũ ra, không request bị rớt
+actors: Control Plane | Pod Mới | Pod Cũ | Proxy/Ingress | Spring Boot
+Control Plane -> Pod Mới:tạo Pod mới (maxSurge 1)
+Control Plane -> Pod Cũ:đánh dấu Terminating
+Control Plane -> Proxy/Ingress:gỡ Pod cũ khỏi EndpointSlice (lan truyền dần)
+Pod Mới -> Spring Boot:startup + readiness → nhận traffic
+Pod Cũ -> Spring Boot:preStop sleep 10 → SIGTERM
+Spring Boot -> Spring Boot:graceful: dừng nhận request mới, chờ in-flight
+Spring Boot --> Pod Cũ:ContextClosedEvent, đóng pool, commit Kafka
+Pod Cũ --> Control Plane:thoát → kubelet SIGKILL nếu vượt grace period
+~~~
+
 ### Rollback
 {{kubectl rollout status deploy/payment}} chờ kết quả; {{kubectl rollout undo deploy/payment}} quay về revision trước (giữ {{revisionHistoryLimit}}, mặc định 10). Nếu Pod mới không Ready, rollout dừng lại và báo lỗi sau {{progressDeadlineSeconds}} (mặc định 600s) nhưng **không tự rollback**; pipeline phải tự gọi undo hoặc dùng Argo Rollouts.
 
@@ -415,6 +429,19 @@ kubectl describe pod payment-7d9f-abcde -n payment # Events cuối output, Last 
 kubectl logs payment-7d9f-abcde -n payment --previous   # log của container đã chết
 kubectl get events -n payment --sort-by=.lastTimestamp
 kubectl top pod -n payment                          # cần metrics-server
+~~~
+
+### Luồng chẩn đoán từng trạng thái
+~~~seq
+title: Chẩn đoán Pod từ trạng thái tới nguyên nhân
+actors: SRE | Pod | Kubelet | Node | Registry
+SRE -> SRE:kubectl get pod → đọc STATUS, RESTARTS
+SRE -> Pod:kubectl describe → Events, Last State, Exit Code
+SRE -> Pod:kubectl logs --previous → log lần chạy vừa chết
+Pod -> Kubelet:chạy lại nếu CrashLoopBackOff (10s → 20s → 40s…)
+SRE -> Node:kubectl top pod → CPU/RAM thực tế
+SRE -> Registry:kiểm tra tag/imagePullSecrets khi ImagePullBackOff
+Kubelet --> SRE:trả Exit Code (1 = app, 137 = OOMKilled, 143 = SIGTERM)
 ~~~
 
 ### Từng trạng thái
@@ -930,6 +957,18 @@ merge main
 ~~~
 
 ### Vì sao "build once, promote many"
+~~~seq
+title: CI/CD: commit tới production theo đúng digest
+actors: Dev | CI Pipeline | UAT | Argo CD | PROD
+Dev -> CI Pipeline:push commit → build + unit + integration + scan
+CI Pipeline -> CI Pipeline:build image tag = version + git SHA, SBOM, ký cosign
+CI Pipeline -> CI Pipeline:đẩy image (digest bất biến), quét image
+CI Pipeline -> UAT:deploy cùng digest → regression + performance
+UAT -> CI Pipeline:pass
+CI Pipeline -> Argo CD:chờ gate phê duyệt CAB
+Argo CD -> PROD:promote đúng digest → canary/rolling
+PROD --> Argo CD:tự rollback nếu error rate vượt ngưỡng
+~~~
 Nếu mỗi môi trường build lại từ source, dependency có thể đã đổi (SNAPSHOT, version range, base image cập nhật), nên thứ chạy ở prod **không phải** thứ đã được test ở UAT. Vì vậy chỉ build một lần, promote bằng **digest** (sha256), không bằng tag (tag có thể bị ghi đè). Cấu hình khác nhau giữa môi trường đi qua ConfigMap/Secret/values, không qua profile được nướng sẵn trong image.
 
 ### Gate và mục đích
@@ -1468,7 +1507,7 @@ Kết quả đo được: throttling giảm từ 18% xuống 3%; p99 latency 850
     topic: 'devops',
     level: 'mid',
     q: 'Thiết kế liveness, readiness và startup probe cho service Spring Boot khởi động 90 giây, phụ thuộc PostgreSQL và Kafka. Vì sao không nên trỏ cả ba vào /actuator/health? Cấu hình health group của Actuator thế nào để sự cố DB không gây restart dây chuyền?',
-    a: `**Tóm tắt:** Ba probe có ba nhiệm vụ khác nhau: startup bảo vệ quá trình khởi động chậm, liveness restart khi process treo, readiness gỡ Pod khỏi traffic khi chưa phục vụ được. Dùng health group của Actuator để tách tuyệt đối: liveness chỉ kiểm tra trạng thái nội tại, readiness mới được phép kiểm tra dependency. Trỏ liveness vào {{/actuator/health}} tổng hợp là cách nhanh nhất để biến một sự cố DB thành chuỗi restart toàn hệ thống.
+    a: `**Tóm tắt:** Ba probe có ba nhiệm vụ khác nhau: startup bảo vệ quá trình khởi động chậm, liveness restart khi process treo, readiness gỡ Pod khỏi traffic khi chưa phục vụ được. Dùng health group của Actuator để tách tuyệt đối: liveness chỉ kiểm tra trạng thái nội tại, readiness mới được phép kiểm tra dependency. Trỏ liveness vào {{/actuator/health}} tổng hợp (kể cả {{db}}) là **sai**: một sự cố DB sẽ làm liveness fail ở mọi Pod, tất cả restart cùng lúc, mất cache và dồn tải lên DB — tự tạo sự cố dây chuyền.
 
 ### Hiểu nhanh
 Ba probe giống ba câu hỏi khác nhau của quản lý ca. Startup hỏi "nhân viên đã vào ca xong chưa?" và cho đủ thời gian chuẩn bị; trong lúc đó không hỏi hai câu còn lại. Readiness hỏi "bây giờ có nhận khách được không?"; nếu không thì tạm thời không dẫn khách tới, nhưng không thay người. Liveness hỏi "nhân viên còn tỉnh táo không hay đã ngất?"; ngất thì thay người (restart). Nếu bạn hỏi liveness bằng câu "kho hàng (DB) có mở cửa không?", kho đóng 30 giây là mọi nhân viên bị thay cùng lúc, dù lỗi chẳng nằm ở họ.
@@ -1509,6 +1548,22 @@ management:
 - {{readinessState}} là {{ACCEPTING_TRAFFIC}} sau {{ApplicationReadyEvent}} và {{REFUSING_TRAFFIC}} khi bắt đầu shutdown.
 - Nếu tự đặt {{include}}, phải liệt kê cả {{readinessState}}, nếu không nó bị thay thế và probe chỉ còn dependency.
 - {{db}} là DataSourceHealthIndicator có sẵn. Kafka không có indicator mặc định trong Boot; nếu cần, viết {{HealthIndicator}} riêng có timeout ngắn và cache kết quả.
+
+### Chu kỳ probe khi khởi động chậm (multi-side)
+~~~seq
+title: Startup → readiness → liveness: ba câu hỏi khác nhau
+actors: Kubelet | Pod | EndpointSlice | App
+Kubelet -> Pod:startupProbe (period 5s, failThreshold 30)
+Pod -> App:chờ context + pool + warm-up
+App --> Pod:startup thành công (≤150s)
+Kubelet -> Pod:readinessProbe (period 5s)
+Pod -> App:kiểm tra readinessState + db
+App --> Pod:ACCEPTING_TRAFFIC
+Pod -> EndpointSlice:được thêm vào → nhận traffic
+Kubelet -> Pod:livenessProbe (period 10s)
+Pod -> App:kiểm tra livenessState (chỉ nội tại)
+App --> Pod:UP → không restart
+~~~
 
 ### Chọn dependency nào cho readiness
 Câu hỏi không phải "có kiểm tra DB không" mà là "khi DB chậm, gỡ toàn bộ Pod khỏi traffic có giúp gì không".
@@ -1593,6 +1648,21 @@ t=30   hết timeout-per-shutdown-phase (20 s), đóng context
 t=60   hết terminationGracePeriodSeconds, SIGKILL nếu JVM còn sống
 ~~~
 Hai nhánh gỡ endpoint và gửi SIGTERM **không đồng bộ**. Vì vậy luôn cần preStop sleep vài giây để kube-proxy/Ingress kịp quên Pod trước khi cổng đóng.
+
+### Luồng tắt Pod từng bước (multi-side)
+~~~seq
+title: Trình tự tắt Pod trên Kubernetes
+actors: API Server | Ingress/Proxy | Kubelet | Pod | Spring Boot
+API Server -> Ingress/Proxy:gỡ Pod khỏi EndpointSlice
+Ingress/Proxy --> API Server:cập nhật proxy (có độ trễ)
+Kubelet -> Pod:chạy preStop (sleep 10) — app vẫn phục vụ
+Pod -> Spring Boot:nhận SIGTERM
+Spring Boot -> Spring Boot:đóng cổng nhận request mới
+Spring Boot -> Spring Boot:chờ request in-flight (graceful)
+Spring Boot --> Pod:ContextClosedEvent, các bean SmartLifecycle dừng
+Pod --> Kubelet:thoát khi context đóng
+Kubelet -> Pod:SIGKILL nếu chưa xong sau grace period
+~~~
 
 ### Spring graceful shutdown làm gì
 - Tomcat/Jetty/Undertow ngừng nhận connection mới, đóng keep-alive, chờ request đang xử lý tối đa {{spring.lifecycle.timeout-per-shutdown-phase}} (mặc định 30 giây; Boot 3.4 bật graceful mặc định nhưng vẫn nên khai báo rõ).
@@ -1877,6 +1947,21 @@ Pipeline giống quy trình soi chiếu hành lý ở sân bay: các bước r�
 | E2E/smoke | — | Có trước PROD | Chạy trên môi trường giống prod |
 | Deploy PROD | — | Có phê duyệt | Promote đúng digest |
 
+### Luồng pipeline CI/CD từ push tới prod
+~~~seq
+title: CI/CD pipeline: build một lần, promote nhiều lần
+actors: Developer | CI Pipeline | Registry | DEV/SIT | Argo CD | PROD
+Developer -> CI Pipeline:push commit abc123
+CI Pipeline -> CI Pipeline:compile + unit + integration + scan
+CI Pipeline -> CI Pipeline:build image tag abc123
+CI Pipeline -> Registry:đẩy image digest sha256:...
+CI Pipeline -> DEV/SIT:deploy cùng digest (tự động)
+DEV/SIT -> CI Pipeline:smoke test pass
+CI Pipeline -> Argo CD:chờ gate phê duyệt
+Argo CD -> PROD:promote đúng digest abc123
+PROD --> Argo CD:deploy xong, rollback bằng digest cũ nếu lỗi
+~~~
+
 ### Build một lần, promote nhiều lần
 ~~~text
 commit abc123
@@ -1983,6 +2068,19 @@ Kết quả đo được: auditor duyệt ngay vì digest UAT = digest PROD, SBO
 | Backfill | Job nền copy dữ liệu cũ sang mới theo lô | App mới |
 | Switch | App đọc cột mới; giữ ghi cả hai | App mới |
 | Contract | Xoá cột cũ sau khi không còn version nào đọc | Sau 1–2 release |
+
+### Trình tự expand-contract qua các deploy
+~~~seq
+title: Expand-contract: 4 pha qua 2 version app
+actors: AppV1 | AppV2 | Flyway | Backfill | DB
+Flyway -> DB:V10 — thêm status_new (nullable)
+Flyway -> DB:V11 — thêm index (concurrent)
+AppV1 -> DB:đọc status (cũ), ghi status (cũ)
+AppV2 -> DB:đọc status, ghi cả status và status_new
+Backfill -> DB:UPDATE theo lô, copy status → status_new
+AppV2 -> DB:đọc status_new, vẫn ghi cả hai
+AppV2 -> DB:V12 — NOT NULL status_new, xoá cột status
+~~~
 
 ~~~sql
 -- V10: expand, chỉ thêm, không đổi cột cũ
@@ -4139,6 +4237,19 @@ Spring context         ~60s: autoconfig + quét package, tạo beans,
                        entity scan JPA, xác thực + migrate DB, mở pool,
                        đăng ký Kafka listener, warm cache
 JIT warm-up            p99 cao thêm 30–60s **sau** khi đã Ready
+~~~
+
+### Luồng khởi động Pod trên node lạnh
+~~~seq
+title: Khởi động Pod 90 giây: pull → JVM → context → warm-up
+actors: Node | Docker/Kubelet | JVM | Spring Context | readiness
+Docker/Kubelet -> Node:kéo image 210 MB (20–40s nếu node mới)
+Docker/Kubelet -> JVM:khởi động JVM (~1s)
+JVM -> Spring Context:tải class, verify (AppCDS giảm phase này)
+Spring Context -> Spring Context:autoconfig, tạo beans, migrate DB, mở pool
+Spring Context -> readiness:chạy warm-up cache/Kafka listener
+readiness --> Node:Pod Ready — nhận traffic
+JVM -> JIT:biên dịch hot path (p99 cao thêm 30–60s sau Ready)
 ~~~
 
 ### Vì sao chậm là vấn đề **vận hành**, không phải vấn đề lịch sự
@@ -6879,6 +6990,19 @@ Truyền artifact/version đúng cách: build ra image đẩy lên registry vớ
 | GitHub {{workflow_call}} | có | inputs/secrets có kiểu | tái dùng logic chuẩn (build/deploy) |
 | GitHub {{repository_dispatch}} | không (fire event) | {{client_payload}} | upstream báo "có bản mới", repo đích tự quyết |
 | Jenkins upstream/downstream | có | artifact/Nexus | hệ Jenkins sẵn có (cần chuẩn hóa) |
+
+### Luồng deploy đa repo (multi-side)
+~~~seq
+title: CI/CD đa repo: build → deploy qua registry
+actors: Upstream Repo | CI | Registry | Downstream Repo | Cluster
+Upstream Repo -> CI:push → build image, tag = git SHA
+CI -> Registry:đẩy image (digest bất biến)
+CI -> Downstream Repo:repository_dispatch (image_published, tag, sha)
+Downstream Repo -> CI:chạy deploy, helm set image.tag=$TAG
+CI -> Cluster:deploy đúng digest → smoke test
+Cluster --> CI:pass / fail
+CI -> Downstream Repo:fail → alert, tự rollback revision trước
+~~~
 
 ### Ví dụ đời thực
 Tình huống (giả định): 9 repo service Java + 1 repo {{platform-deploy}} giữ Helm chart, 2–5 deploy/ngày. Luồng cũ: Jenkins upstream build service, copy JAR sang job downstream bằng plugin — 2 lần copy nhầm artifact cũ gây deploy sai version, mất 40 phút rollback. Luồng mới (GitHub Actions): repo service build image, tag {{app:<sha>}} + {{app:<semver>}}, push registry; gửi {{repository_dispatch}} (event {{image_published}}, payload {{service, tag, sha}}) sang {{platform-deploy}}; workflow deploy dùng đúng {{tag}} để {{helm upgrade}} và chạy smoke test. Downstream fail (smoke test lỗi) → workflow tự {{helm rollback}} về revision trước, gửi Slack, đánh dấu run fail (không auto-retry mù). 4 tháng, 180 deploy: 0 nhầm version, 3 rollback tự động trung bình 90 giây, thời gian truy vết "đang chạy version nào" = tra tag trên registry/pod (vài giây).
