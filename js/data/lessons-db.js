@@ -24,6 +24,33 @@ stored = t2;            // T2 ghi 11: lost update
 
 Đoạn mô phỏng không phải database thật; nó làm rõ lịch và điểm xung đột. Cách sửa phụ thuộc nghiệp vụ: cập nhật nguyên tử {{SET value = value + 1}}, khóa hàng, hoặc optimistic version check. Chỉ nâng isolation không thay thế việc xác định invariant cần bảo vệ.
 
+### SQL và EXPLAIN PostgreSQL
+
+~~~sql
+-- Đặt isolation level cho transaction (thuộc tính của transaction, không phải của câu lệnh)
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+
+-- UPDATE nguyên tử tránh lost update: database tự tính, không cần đọc trước
+UPDATE accounts SET balance = balance + 100 WHERE id = 42;
+
+-- SELECT FOR UPDATE: khóa hàng khi cần read-modify-write trong cùng transaction
+BEGIN;
+SELECT balance FROM accounts WHERE id = 42 FOR UPDATE;
+-- ... tính toán dựa trên giá trị đã đọc ...
+UPDATE accounts SET balance = 100 WHERE id = 42;
+COMMIT;
+
+-- Kiểm tra planner chọn plan bằng EXPLAIN (ANALYZE, BUFFERS)
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT balance FROM accounts WHERE id = 42;
+~~~
+
+EXPLAIN (ANALYZE, BUFFERS) cho câu SELECT ở trên cho thấy:
+- **Seq Scan**: planner quét toàn bộ bảng khi bảng nhỏ hoặc selectivity cao (trả về nhiều hàng).
+- **Index Scan**: dùng index để tìm nhanh nhưng vẫn phải đọc heap theo TID (heap fetch).
+- **Index Only Scan**: chỉ xảy ra khi index chứa đủ cột và visibility map đánh dấu page all-visible — không cần đọc heap.
+- **Buffers**: số page read từ disk vs hit từ cache, giúp thấy I/O thực tế và so sánh chi phí.
+
 ### PostgreSQL 15 và MVCC
 PostgreSQL lưu phiên bản hàng (tuple) cùng thông tin transaction tạo/xóa. Một snapshot quyết định transaction nào đã commit và được phép nhìn thấy. Ở {{READ COMMITTED}} (mức mặc định), mỗi câu SQL lấy snapshot mới; hai SELECT trong cùng transaction có thể thấy hai trạng thái khác nhau. PostgreSQL không cho dirty read: yêu cầu {{READ UNCOMMITTED}} được xử lý như {{READ COMMITTED}}.
 
@@ -190,9 +217,70 @@ return false; // caller must reload and decide whether to retry
 
 Trong SQL tương ứng: {{UPDATE account SET balance=?, version=version+1 WHERE id=? AND version=?}}. Không kiểm tra row count là lỗi nghiêm trọng: request có thể báo thành công dù update không xảy ra. ORM như Hibernate hỗ trợ {{@Version}} và thường ném optimistic lock exception khi update không khớp.
 
+### SQL và EXPLAIN PostgreSQL
+
+~~~sql
+-- UPDATE với version predicate: compare-and-set ở tầng database
+UPDATE accounts
+SET balance = ?, version = version + 1
+WHERE id = ? AND version = ?;
+-- Kiểm tra số dòng: bằng 0 thì conflict (dữ liệu đã đổi), không được coi là thành công.
+
+-- Dùng RETURNING để lấy version mới sau khi update thành công
+UPDATE accounts
+SET balance = balance - 100
+WHERE id = 42 AND version = 5
+RETURNING balance, version;
+
+-- EXPLAIN (ANALYZE, BUFFERS): xem plan thực tế và số page read/heap fetch
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT balance, version FROM accounts WHERE id = 42;
+~~~
+
+EXPLAIN (ANALYZE, BUFFERS) cho câu truy vấn ở trên:
+- **Index Scan**: tìm entry bằng index theo {{id}}, sau đó read heap theo TID để lấy {{balance}} và {{version}}.
+- **Index Only Scan**: chỉ xảy ra khi index {{(id, version)}} chứa đủ cột cần và page all-visible — không cần heap fetch.
+- **Buffers**: {{shared hit}} (đã có trong RAM) và {{read}} (phải đọc từ disk), giúp đo chi phí I/O thực tế.
+- **Actual Rows**: so sánh với Estimated Rows để thấy thống kê có lệch (cần ANALYZE sau bulk load).
+
+### Bảng so sánh locking strategies
+
+| Chiến lược | Cách hoạt động | Ưu điểm | Nhược điểm | Phù hợp |
+|---|---|---|---|---|
+| **Optimistic locking (version check)** | Không lock khi đọc, chỉ check version khi ghi; conflict thì retry | Reader không blocked, throughput cao khi contention thấp | Cần retry, side effect phải idempotent | Xung đột ít, read-heavy |
+| **Pessimistic locking (SELECT FOR UPDATE)** | Lock hàng từ đầu transaction, giữ đến commit/rollback | Đảm bảo atomicity, không cần retry | Reader bị blocked, deadlock, throughput giảm | Contention cao, cần tuần tự hóa |
+| **Atomic SQL update** | UPDATE với biểu thức số học (SET balance = balance + ?) | Database tự tính, không cần read trước | Logic phải biểu diễn được trong SQL | Cộng/trừ đơn giản |
+| **SERIALIZABLE + retry** | SSI phát hiện write skew và abort với 40001 | Chained invariant nhiều hàng | Abort thường xuyên, phải retry | Invariant nhiều hàng, write skew |
+
 Khi Hibernate dùng {{@Version}}, nó tự thêm điều kiện version vào câu UPDATE và ném {{OptimisticLockException}} nếu row count bằng 0. Đây là cơ chế chuẩn của JPA, bản chất vẫn là compare-and-set ở tầng database. Version nên là kiểu số nguyên (Long/Integer) và tăng thêm 1 mỗi lần cập nhật. Không nên dùng timestamp làm version vì độ phân giải thấp có thể khiến hai cập nhật cùng giây được coi là cùng version.
 
 Một điểm quan trọng là version chỉ bảo vệ một hàng. Nếu nghiệp vụ cần cập nhật nhiều hàng nguyên tử (ví dụ trừ tiền từ tài khoản A và cộng vào tài khoản B), version một hàng không đủ; cần transaction, khóa hàng, hoặc SERIALIZABLE.
+
+### SQL và EXPLAIN PostgreSQL
+
+~~~sql
+-- UPDATE với version predicate: compare-and-set ở tầng database
+UPDATE accounts
+SET balance = ?, version = version + 1
+WHERE id = ? AND version = ?;
+-- Kiểm tra số dòng: bằng 0 thì conflict (dữ liệu đã đổi), không được coi là thành công.
+
+-- Dùng RETURNING để lấy version mới sau khi update thành công
+UPDATE accounts
+SET balance = balance - 100
+WHERE id = 42 AND version = 5
+RETURNING balance, version;
+
+-- EXPLAIN (ANALYZE, BUFFERS): xem plan thực tế và số page read/heap fetch
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT balance, version FROM accounts WHERE id = 42;
+~~~
+
+EXPLAIN (ANALYZE, BUFFERS) cho câu truy vấn ở trên:
+- **Index Scan**: tìm entry bằng index theo {{id}}, sau đó read heap theo TID để lấy {{balance}} và {{version}}.
+- **Index Only Scan**: chỉ xảy ra khi index {{(id, version)}} chứa đủ cột cần và page all-visible — không cần heap fetch.
+- **Buffers**: {{shared hit}} (đã có trong RAM) và {{read}} (phải đọc từ disk), giúp đo chi phí I/O thực tế.
+- **Actual Rows**: so sánh với Estimated Rows để thấy thống kê có lệch (cần ANALYZE sau bulk load).
 
 ### Retry phải tính lại
 Retry đúng nghĩa là bắt đầu transaction mới, đọc trạng thái mới, tính lại thay đổi dựa trên input nghiệp vụ rồi thử lại. Không nên chỉ gửi lại cùng SQL với giá trị tuyệt đối cũ; như vậy có thể lặp lại stale write — ghi đè lên kết quả mới nhất, lại thành lost update.
@@ -346,6 +434,43 @@ Planner ước lượng cost từ thống kê và chọn sequential scan nếu p
 | trả tỷ lệ lớn số hàng | Sequential scan có thể rẻ hơn |
 | range có thứ tự | B-tree có thể tránh sort |
 | cột ghi liên tục | cân nhắc chi phí duy trì index |
+
+### SQL và EXPLAIN PostgreSQL
+
+~~~sql
+-- Tạo index B-tree trên cột email (equality lookup)
+CREATE INDEX idx_users_email ON users (email);
+
+-- Composite index: equality filter trước, range/order sau
+CREATE INDEX idx_orders_tenant_created
+  ON orders (tenant_id, created_at);
+
+-- Partial index: chỉ index tập con hàng thỏa predicate
+CREATE INDEX idx_orders_pending_created
+  ON orders (created_at)
+  WHERE status = 'PENDING';
+
+-- Covering index với INCLUDE: các cột trong SELECT không cần vào khóa
+CREATE INDEX idx_orders_cov
+  ON orders (tenant_id, created_at)
+  INCLUDE (status, total);
+
+-- Kiểm tra planner chọn plan bằng EXPLAIN (ANALYZE, BUFFERS)
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, created_at, status, total
+FROM orders
+WHERE tenant_id = 7
+  AND created_at >= '2026-01-01'
+ORDER BY created_at, id
+LIMIT 50;
+~~~
+
+EXPLAIN (ANALYZE, BUFFERS) cho câu truy vấn ở trên cho thấy:
+- **Seq Scan**: planner quét toàn bộ bảng khi selectivity cao (trả về quá nhiều hàng) hoặc bảng nhỏ fit trong shared buffers.
+- **Index Scan**: dùng B-tree tìm entry theo {{(tenant_id, created_at)}}, sau đó read heap theo TID để lấy {{status}} và {{total}}.
+- **Index Only Scan**: chỉ xảy ra khi {{(tenant_id, created_at)}} + {{INCLUDE (status, total)}} chứa đủ cột và visibility map cho phép — không cần heap fetch.
+- **Buffers**: {{shared hit}} (đã có trong RAM) vs {{read}} (phải đọc từ disk), giúp thấy I/O thực tế.
+- **Actual Rows vs Estimated Rows**: lệch lớn → cần ANALYZE để cập nhật thống kê.
 
 ### Cơ chế từng bước: B-tree lookup trong PostgreSQL
 Khi một câu SQL có điều kiện WHERE trên cột có B-tree index, PostgreSQL thực hiện tra cứu theo các bước:
@@ -532,6 +657,47 @@ class TinyPoolSim {
 | {{idle_in_transaction_session_timeout}} | PostgreSQL | 0 (tắt) | mở transaction rồi ngồi im |
 
 Mặc định các timeout phía database đều tắt, nên một query xấu có thể treo vô hạn và chiếm một slot mãi. Đó là lý do production nên đặt {{statement_timeout}} theo tầng (ví dụ 5 giây cho OLTP).
+
+### SQL và EXPLAIN PostgreSQL
+
+~~~sql
+-- Đặt statement_timeout cho session hoặc role (ví dụ 5 giây cho OLTP)
+SET statement_timeout = '5s';
+SET lock_timeout = '1s';
+SET idle_in_transaction_session_timeout = '300s';
+
+-- Kiểm tra các connection đang chạy và thời gian đã giữ
+SELECT pid, state, now() - xact_start AS xact_age,
+       now() - query_start AS query_age,
+       wait_event_type, wait_event,
+       left(query, 80) AS query_snippet
+FROM pg_stat_activity
+WHERE state != 'idle'
+ORDER BY xact_age DESC;
+
+-- Xem lock đang chờ và ai đang giữ
+SELECT blocked.pid AS blocked_pid, blocked.wait_event_type,
+       blocked.left(query, 60) AS blocked_query,
+       holding.pid AS holder_pid,
+       holding.left(query, 60) AS holder_query
+FROM pg_stat_activity blocked
+JOIN pg_locks bl ON blocked.pid = bl.pid
+JOIN pg_locks hl ON bl.locktype = hl.locktype
+  AND bl.relation IS NOT DISTINCT FROM hl.relation
+  AND hl.pid != blocked.pid
+JOIN pg_stat_activity holding ON hl.pid = holding.pid
+WHERE blocked.wait_event_type = 'Lock';
+
+-- EXPLAIN (ANALYZE, BUFFERS): xem plan và số page read/heap fetch
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, balance FROM accounts WHERE id = 42;
+~~~
+
+EXPLAIN (ANALYZE, BUFFERS) cho câu truy vấn ở trên:
+- **Seq Scan**: planner quét toàn bộ bảng khi bảng nhỏ hoặc selectivity cao.
+- **Index Scan**: dùng index tìm entry theo {{id}}, sau đó read heap theo TID.
+- **Buffers**: {{shared hit}} (đã có trong RAM) vs {{read}} (phải đọc từ disk) — giúp thấy I/O thực tế.
+- **Actual Rows vs Estimated Rows**: lệch lớn → cần ANALYZE để cập nhật thống kê.
 
 ### Lỗi hay gặp trên production
 1. **Transaction boundary quá rộng (gọi HTTP/Redis/Kafka bên trong transaction).** Triệu chứng: pool cạn nhanh, {{connectionTimeout}} liên tục, DB vẫn rảnh. Nguyên nhân: connection được giữ suốt transaction, remote call kéo dài từ ms lên giây, slot không được trả kịp. Cách sửa: thu hẹp transaction chỉ quanh phần DB; dùng outbox pattern ghi event rồi commit, relay gửi sau.
@@ -1010,6 +1176,43 @@ Transaction bị hủy phải được ứng dụng chạy lại **toàn bộ** 
 - Hai code path cùng một tính năng nhưng thứ tự ngược nhau — một bên thêm tính năng mà quên luật khoá.
 - Log không in lock stack trace nên không tái hiện được: cần giữ input và hai id liên quan trong log có kiểm soát.
 
+### SQL và EXPLAIN PostgreSQL
+
+~~~sql
+-- Kiểm tra lock đang chờ và ai đang giữ (PostgreSQL)
+SELECT blocked.pid AS blocked_pid, blocked.wait_event_type,
+       blocked.left(query, 60) AS blocked_query,
+       holding.pid AS holder_pid,
+       holding.left(query, 60) AS holder_query
+FROM pg_stat_activity blocked
+JOIN pg_locks bl ON blocked.pid = bl.pid
+JOIN pg_locks hl ON bl.locktype = hl.locktype
+  AND bl.relation IS NOT DISTINCT FROM hl.relation
+  AND hl.pid != blocked.pid
+JOIN pg_stat_activity holding ON hl.pid = holding.pid
+WHERE blocked.wait_event_type = 'Lock';
+
+-- Lock theo thứ tự cố định: SELECT FOR UPDATE với ORDER BY
+BEGIN;
+SELECT * FROM accounts WHERE id IN (?, ?) ORDER BY id FOR UPDATE;
+UPDATE accounts SET balance = balance - 100 WHERE id = ?;
+UPDATE accounts SET balance = balance + 100 WHERE id = ?;
+COMMIT;
+
+-- Kiểm tra deadlock và lock wait
+SELECT pid, state, wait_event_type, wait_event,
+       left(query, 80) AS query_snippet,
+       now() - query_start AS query_age
+FROM pg_stat_activity
+WHERE wait_event_type = 'Lock'
+ORDER BY query_age DESC;
+~~~
+
+EXPLAIN (ANALYZE, BUFFERS) cho SELECT FOR UPDATE ở trên:
+- **Index Scan**: dùng index trên {{id}} để tìm entry, sau đó lock từng row theo TID.
+- **Seq Scan**: nếu không có index trên cột điều kiện WHERE, planner quét toàn bộ bảng và lock nhiều hàng hơn — tăng khả năng deadlock.
+- **Buffers**: {{shared hit}} vs {{read}} — giúp thấy chi phí I/O của việc lock và quét.
+
 ### Liên hệ phỏng vấn
 Mô tả đúng vòng: T1 khoá A chờ B, T2 khoá B chờ A; giải thích wait-for graph và chu trình; nói DB phát hiện (PostgreSQL sau {{deadlock_timeout}}, MySQL gần như ngay) và tự hủy một transaction với SQLSTATE {{40P01}}; rồi nêu ba lớp phòng vệ theo thứ tự ưu tiên: thống nhất thứ tự khoá ở tầng service, transaction ngắn, retry cả transaction có giới hạn. Nói thêm cách đo: số deadlock mỗi phút, thời gian chờ khoá, danh sách cặp id hay va chạm.
 
@@ -1201,6 +1404,43 @@ Gộp lại thành quy tắc nhìn thấy — và cũng là hàm {{visible(row, 
 > Một tuple nhìn thấy được **khi và chỉ khi**: xmin được coi là đã commit theo snapshot, **và** xmax KHÔNG được coi là đã commit theo snapshot (xmax = 0 luôn thoả vế sau).
 
 Vế đầu trả lời "phiên bản này đã tồn tại chưa", vế sau trả lời "đã bị thay thế chưa". Một transaction abort thì mọi phiên bản nó sinh ra vĩnh viễn vô hình với tất cả mọi người.
+
+### SQL và EXPLAIN PostgreSQL
+
+~~~sql
+-- Xem snapshot hiện tại (xmin:xmax:[xip])
+SELECT txid_current_snapshot();
+
+-- Xem tuple đang sống/chết trên một bảng (xmin, xmax, cột dữ liệu)
+SELECT xmin, xmax, balance, ctid FROM accounts WHERE id = 42;
+
+-- Kiểm tra visibility theo snapshot cụ thể
+SELECT pg_visible_in_snapshot(100, '(101:105:[103,104])');
+
+-- Xem số tuple dead/live và lần vacuum cuối
+SELECT relname, n_live_tup, n_dead_tup, last_autovacuum, last_vacuum
+FROM pg_stat_user_tables
+ORDER BY n_dead_tup DESC
+LIMIT 10;
+
+-- Kiểm tra ai đang giữ snapshot cũ (xmin horizon)
+SELECT pid, state, now() - xact_start AS xact_age,
+       now() - query_start AS query_age,
+       left(query, 80) AS query_snippet
+FROM pg_stat_activity
+WHERE xact_start IS NOT NULL
+ORDER BY xact_start;
+
+-- EXPLAIN (ANALYZE, BUFFERS): xem plan và heap fetch
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT balance FROM accounts WHERE id = 42;
+~~~
+
+EXPLAIN (ANALYZE, BUFFERS) cho câu truy vấn ở trên:
+- **Index Scan**: tìm entry theo {{id}}, sau đó read heap theo TID và kiểm tra visibility theo snapshot.
+- **Index Only Scan**: chỉ xảy ra khi index chứa đủ cột và visibility map cho page all-visible — không cần heap fetch.
+- **Buffers**: {{shared hit}} vs {{read}} — giúp thấy I/O thực tế.
+- **Heap Fetches**: số lần phải đọc heap; nếu cao dù index đủ cột, có thể visibility map chưa set (cần VACUUM).
 
 ### Cùng một lịch, hai kết quả
 ~~~seq
@@ -1493,6 +1733,39 @@ Nếu lúc nào cũng phải phát lại toàn bộ log từ thuở khai thiên 
 ### Vì sao pg_wal đầy đĩa
 Log chỉ được tái sử dụng khi không còn ai cần nó. Ba kẻ giữ log phổ biến: **replication slot** chưa được tiêu thụ (standby chết nhưng slot còn nguyên), {{archive_command}} thất bại liên tục, và một transaction dài khiến điểm cần giữ (xmin horizon) lùi lại — chủ đề của bài học trước. Đây là sự cố rất thật: thư mục pg_wal 400 GB trong khi dữ liệu không tăng, thủ phạm thường là một slot cô đơn chứ không phải workload.
 
+### SQL và EXPLAIN PostgreSQL
+
+~~~sql
+-- Kiểm tra WAL và checkpoint
+SELECT name, setting, unit FROM pg_settings
+WHERE name IN ('wal_level', 'max_wal_size', 'checkpoint_timeout',
+               'synchronous_commit', 'archive_mode');
+
+-- Xem WAL files đang dùng và số lượng
+SELECT count(*) AS wal_files, pg_size_pretty(sum(size)) AS total_size
+FROM pg_ls_dir('pg_wal') f(file)
+WHERE file ~ '^[0-9A-F]{24}$';
+
+-- Kiểm tra replication slot và LSN cần giữ
+SELECT slot_name, slot_type, active, restart_lsn,
+       pg_size_pretty(pg_wal_lsn_diff(restart_lsn, flush_lsn)) AS wal_to_keep
+FROM pg_replication_slots;
+
+-- Xem tiến độ checkpoint gần nhất
+SELECT * FROM pg_stat_bgwriter
+WHERE checkpoints_timed > 0
+ORDER BY check_time DESC LIMIT 5;
+
+-- Xem WAL archive status
+SELECT * FROM pg_stat_archiver
+ORDER BY last_archived_time DESC LIMIT 5;
+~~~
+
+EXPLAIN (ANALYZE, BUFFERS) cho một UPDATE đơn giản:
+- **Update**: tìm row theo index/key, ghi tuple mới (xmin = xid), đặt xmax lên tuple cũ, ghi WAL record.
+- **Buffers**: {{shared hit}} vs {{read}} — page đã có trong RAM hay phải đọc từ disk.
+- **WAL**: mỗi UPDATE sinh WAL record; số WAL sinh ra phụ thuộc số cột index phải cập nhật (HOT update chỉ xảy ra khi không đổi cột được index và page còn chỗ).
+
 ### Java: commit là một record, không phải dữ liệu đã ghi
 ~~~java
 long lsn = 0;
@@ -1721,6 +1994,37 @@ PostgreSQL dùng B-tree (biến thể Lehman & Yao) làm index mặc định, pa
 - Nhầm copy lên (leaf split) với promote (internal split): leaf phải giữ khóa vì dữ liệu nằm ở lá.
 - Quên nối {{next}} khi split lá: range scan đứt chuỗi.
 - Nghĩ B+ tree xoay như AVL: nó cân bằng bằng split/merge, mọi lá luôn cùng độ sâu.
+
+### SQL và EXPLAIN PostgreSQL
+
+~~~sql
+-- Tạo B-tree index trên cột đơn
+CREATE INDEX idx_orders_created ON orders (created_at);
+
+-- Composite index: equality filter trước, range/order sau
+CREATE INDEX idx_orders_tenant_created ON orders (tenant_id, created_at);
+
+-- Covering index với INCLUDE (cột payload không vào khóa)
+CREATE INDEX idx_orders_cov ON orders (tenant_id, created_at) INCLUDE (status, total);
+
+-- Partial index: chỉ index tập con hàng thỏa predicate
+CREATE INDEX idx_orders_pending_created ON orders (created_at) WHERE status = 'PENDING';
+
+-- Kiểm tra planner chọn plan bằng EXPLAIN (ANALYZE, BUFFERS)
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, created_at, status, total
+FROM orders
+WHERE tenant_id = 7 AND created_at >= '2026-01-01'
+ORDER BY created_at, id
+LIMIT 50;
+~~~
+
+EXPLAIN (ANALYZE, BUFFERS) cho câu truy vấn ở trên:
+- **Index Only Scan**: chỉ xảy ra khi index {{(tenant_id, created_at) INCLUDE (status, total)}} chứa đủ cột và visibility map cho page all-visible — không cần heap fetch.
+- **Index Scan**: dùng B-tree tìm entry theo {{(tenant_id, created_at)}}, sau đó read heap theo TID để lấy {{status}} và {{total}}.
+- **Seq Scan**: planner quét toàn bộ bảng khi selectivity cao (trả về quá nhiều hàng) hoặc bảng nhỏ.
+- **Buffers**: {{shared hit}} (đã có trong RAM) vs {{read}} (phải đọc từ disk) — giúp thấy I/O thực tế.
+- **Heap Fetches**: số lần phải đọc heap; nếu cao dù index đủ cột, có thể visibility map chưa set (cần VACUUM).
 
 ### Liên hệ phỏng vấn
 (1) Fan-out lớn -> cây thấp -> ít page read. (2) Dữ liệu ở lá + lá nối chuỗi -> range scan/ORDER BY tốt. (3) Insert có thể gây split và write amplification; random insert (UUID v4) gây split nhiều hơn insert tuần tự. Nhắc {{EXPLAIN (ANALYZE, BUFFERS)}} để xem index scan thực tế.
