@@ -1784,6 +1784,8 @@ Dieu tra: bat log SQL, thay hang loat {{SELECT * FROM order_line WHERE order_id 
 
 ### Lien he pham van
 Cau hay gap: "Ban phat hien va sua N+1 the nao?" Neu dau hieu (so query tang theo so parent), cach do (SQL log, statistics, APM), roi chon giai phap theo use case: fetch join hoac EntityGraph cho trang chi tiet, batch fetching hoac hai query cho danh sach, DTO projection cho man hinh chi doc. Giai thich them bat phan trang voi collection fetch. Dung tra loi "doi sang EAGER".
+
+> Senior tip: N+1 không phải lúc nào cũng là 81 query. Với 1 parent (trang chi tiết) chỉ là 2 query — test đơn giản sẽ bỏ qua. Luôn dùng proxy DataSource hoặc hibernate.generate_statistics để đếm số query thực tế, và assert số query không tăng theo số parent. Khi chọn giải pháp, ưu tiên DTO projection cho màn hình danh sách lớn: nó nhẹ nhất (chỉ chọn cột cần), không tạo entity, không có lazy loading, và dễ thêm caching ở tầng service. Fetch join/EntityGraph phù hợp trang chi tiết có ít parent; batch fetching hoặc 2 query IN phù hợp danh sách lớn khi không muốn nhân dòng. Đừng bao giờ dùng EAGER để "giải quyết" N+1 — nó không sinh JOIN và còn áp dụng everywhere, làm query chậm ở cả những nơi không cần association.
   `,exercises:[{title:'Giam N+1 xuong hai query voi repo dem luot goi',prompt:`{{Repo}} dem so lan goi: {{a}} cho {{orders()}}, {{b}} cho {{lines(ids)}}. Cai {{Service.load()}} tra ve map orderId -> danh sach sku, theo thu tu order:
 - Chi goi {{orders()}} **mot** lan va {{lines(ids)}} **mot** lan voi tap id cua moi order (khong goi trong vong lap).
 - Order khong co line van co mat trong map voi danh sach rong.
@@ -1948,6 +1950,8 @@ Khach hang goi {{PUT /orders/1}} voi JSON {{"total": 500}}. Controller deseriali
 
 ### Lien he pham van
 Cau hay gap: "persist va merge khac nhau the nao? Khi nao dung cai nao?" Persist cho entity moi chua co trong DB; merge cho entity da co trong DB (detached) — merge tra ve instance managed MOI, object truyen vao van detached. Neu them: detach sau commit, setter bi bo qua, cascade MERGE vs PERSIST, va bat Spring Data save() quen dung ket qua.
+
+> Senior tip: Trong production, sai lầm thường gặp là controller nhận entity từ service, transaction đã commit (entity detached), rồi sửa field và hy vong tự lưu — log SQL rỗng, response 200. Debug bằng cách thêm {{hibernate.show_sql}} và kiểm tra xem entity có trong managed map không. Luôn dùng {{return repo.save(entity);}} và dùng instance trả về. Với form web nhận JSON, entity deserialize luôn là detached — merge là đúng, nhưng phải dùng instance trả về. Khi cần update một field cụ thể mà không muốn load toàn bộ entity, dùng {{@Modifying @Query}} hoặc DTO projection thay vì merge toàn object.
   `,exercises:[{title:'Mo phong persistence context: trang thai va flush',prompt:`Cai {{PersistenceContextSimulator}} quan ly entity {{Item}} (co {{id}} va {{name}}):
 - {{load(id, name)}}: neu id da co trong identity map thi tra **cung object** cu (bo qua name); neu chua thi tao {{Item}}, dua vao managed map va luu snapshot (ban sao name).
 - {{persist(item)}}: item phai o trang thai **transient** (chua co trong managed map, khong co trong snapshot). Them vao managed map, luu snapshot.
@@ -2242,6 +2246,8 @@ Khách hàng gọi PUT /orders/1 với JSON {"total": 500}. Controller deseriali
 3. **"em.merge(detached) trả về gì? Object đầu vào có thành managed không?"** — Trả về instance managed mới (hoặc có sẵn trong context). Object đầu vào KHÔNG thành managed, vẫn detached. Phải dùng instance trả về.
 4. **"Import 500.000 sản phẩm trong một transaction bị OOM, sửa thế nào?"** — Chia chunk (500 entity), mỗi chunk flush() rồi clear(). Phải flush trước clear. Dùng @Transactional(readOnly = true) cho phần chỉ đọc.
 5. **"Xóa rồi thêm cùng unique key trong một transaction vẫn lỗi, tại sao?"** — Hibernate flush insert trước delete. INSERT chạy khi bản ghi cũ chưa bị xóa → vi phạm unique. Sửa: flush giữa chừng hoặc dùng UPDATE.
+
+> Senior tip: Khi debug "sửa xong mà không thấy UPDATE", đầu tiên hãy kiểm tra entity có đang managed không — sau commit hoặc clear(), nó đã detached và setter bị bỏ qua. Dùng {{em.getReference()}} hoặc reload entity nếu cần update chỉ một field. Khi cần kiểm soát chính xác các query (ví dụ list 10.000 dòng), ưu tiên DTO projection hoặc hai query IN thay vì fetch join — fetch join dễ gây OOM khi có Pageable. Luôn đo thực tế: số query, số dòng, heap, thời gian DB, không chỉ số query.
 
 ---
 
