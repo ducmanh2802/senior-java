@@ -11,7 +11,7 @@
 { id: 'qz-ccafive-002', topic: 'claude', q: '[Context Management] A retrieval system puts 40 similarly sized policy documents into one prompt. Evaluation shows that relevant evidence near the middle is cited less often than evidence near the start or end. Which change is the best first experiment?', options: [ 'Retrieve and rerank a small set of relevant passages, then test their order and coverage against a fixed evaluation set', 'Increase temperature so the model explores more of the middle documents', 'Pad every document with repeated text so the middle receives more tokens', 'Move all evidence to the middle and remove the question from the prompt' ], answer: 0, explain: `**Đáp án đúng: phương án 1.** Hiện tượng lost-in-the-middle là xu hướng model sử dụng thông tin nằm giữa một ngữ cảnh dài kém ổn định hơn thông tin ở đầu/cuối; mức độ thay đổi theo tác vụ và model, nên không nên coi vị trí là quy luật tuyệt đối. Rerank (xếp hạng lại) là bước chọn và sắp thứ tự các đoạn dựa trên mức liên quan đến câu hỏi. Trước hết giảm 40 tài liệu xuống một tập nhỏ có bằng chứng tốt, rồi đo độ đúng trên bộ câu hỏi kiểm thử cố định. Có thể thử đặt bằng chứng quan trọng ở đầu/cuối, nhưng cần đo thay vì dựa vào mẹo vị trí duy nhất.
 
 ### Vì sao các phương án khác sai
-- **Tăng temperature:** temperature điều chỉnh độ ngẫu nhiên khi sinh câu trả lời, không tăng khả năng truy xuất bằng chứng.
+- **Tăng temperature:** trên các model hiện hành (Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.2), tham số sampling như {{temperature}} bị từ chối với lỗi 400; ngoài ra, đổi độ ngẫu nhiên cũng không giúp model tìm được bằng chứng nằm giữa ngữ cảnh.
 - **Lặp văn bản để padding:** làm prompt dài và tăng nhiễu; nội dung lặp không tạo bằng chứng mới.
 - **Dồn tất cả vào giữa:** làm trầm trọng vấn đề và bỏ mất câu hỏi khỏi vị trí cần thiết.
 
@@ -155,7 +155,7 @@
 { id: 'qz-ccafive-020', topic: 'claude', q: '[Context Management] A team uses the Messages API and assumes it remembers the prior turns because prompt caching is enabled. The next request contains only the latest user message, and the answer loses the conversation state. What should the team do?', options: [ 'Turn up temperature so the model can reconstruct the conversation', 'Persist the conversation state in the application and send the relevant history or a maintained summary with each request', 'Put the previous user messages in a cache and omit them from future requests', 'Increase max_tokens to make the API retain conversation history' ], answer: 1, explain: `**Đáp án đúng: phương án 2.** Messages API hoạt động theo request: ứng dụng gửi các message cần thiết cho lượt hiện tại. Prompt caching chỉ tái sử dụng phần prompt, không tạo kho hội thoại bền vững và không tự thêm lượt trước vào request mới. Vì thế backend phải lưu trạng thái phiên và gửi lại phần lịch sử hữu ích; khi dài, có thể thay phần cũ bằng summary đã kiểm chứng, đồng thời giữ yêu cầu chưa giải quyết và dữ kiện quan trọng.
 
 ### Vì sao các phương án khác sai
-- **Tăng temperature:** làm kết quả ngẫu nhiên hơn, không khôi phục dữ kiện không được gửi.
+- **Tăng temperature:** tham số sampling như {{temperature}} bị từ chối với lỗi 400 trên model hiện hành; dù có chỉnh được thì cũng không khôi phục dữ kiện không được gửi trong request.
 - **Chỉ cache message cũ:** cache không thay đổi nội dung request thành một lịch sử hội thoại tự động.
 - **Tăng max_tokens:** chỉ liên quan giới hạn output, không làm API lưu history.
 
@@ -188,7 +188,7 @@
 
 ### Vì sao các phương án khác sai
 - **Làm lớn context window:** context window kiểm soát đầu vào plus lịch sử, không kiểm soát độ dài một câu trả lời duy nhất.
-- **Gửi lại toàn bộ hội thoại với temperature bằng không:** temperature điều chỉnh độ ngẫu nhiên, không nâng ngân sách đầu ra; chỉ làm tốn thêm token đầu vào.
+- **Gửi lại toàn bộ hội thoại với temperature bằng không:** {{temperature}} là tham số sampling bị từ chối với lỗi 400 trên model hiện hành; nó cũng không liên quan đến ngân sách output {{max_tokens}}, nên chỉ làm tốn thêm token đầu vào mà không sửa được việc bị cắt.
 - **Nhắn model tiếp tục từ chỗ dừng:** chỉ là biện pháp tạm thời, model có thể không quay lại đúng chỗ và sẽ lại đạt ngân sách cũ.
 
 > Senior tip: theo dõi số token đầu ra so với max_tokens; nếu câu trả lời thường bị cắt, hãy tăng ngân sách hoặc yêu cầu model trả lời theo các phần.` },
@@ -236,7 +236,7 @@
 
 ### Vì sao các phương án khác sai
 - **Thử lại mãi mãi:** kích thước request không thay đổi nên lỗi sẽ lặp lại vô tận, tốn tiền và thời gian.
-- **Tăng temperature:** temperature kiểm soát độ ngẫu nhiên, không làm request nhỏ hơn.
+- **Tăng temperature:** tham số sampling như {{temperature}} bị từ chối với lỗi 400 trên model hiện hành; request vẫn bị từ chối vì tổng token đầu vào vượt giới hạn, không phải vì độ ngẫu nhiên.
 - **Bỏ qua lỗi:** gửi tin nhắn tiếp theo khi ngữ cảnh không đủ không giải quyết được nguyên nhân và có thể gây trả lời sai.
 
 > Senior tip: bắt lỗi vượt giới hạn context ở ứng dụng, rồi tự động compact phần lịch sử cũ nhất trước khi thử lại.` },
