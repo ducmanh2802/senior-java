@@ -3518,11 +3518,11 @@ Mục tiêu: tạo cạnh **happens-before** từ "ghi xong object" đến "thre
 | Cách | Code ví dụ | Happens-before nào |
 |---|---|---|
 | **volatile field** | {{volatile Holder holder;}} / {{holder = new Holder(42);}} | Volatile write hb volatile read |
-| **final field** | ~~~java\\nfinal int x;\\nHolder(int v) { x = v; }\\nholder = new Holder(42);\\n~~~ | Final field semantics (JLS 17.5) |
-| **synchronized block** | ~~~java\\nsynchronized (lock) {\\n    holder = new Holder(42);\\n}\\nsynchronized (lock) {\\n    h = holder;\\n}\\n~~~ | Unlock hb lock |
-| **Thread start** | ~~~java\\nThread t = new Thread(() -> holder = new Holder(42));\\nt.start();\\nt.join();\\n~~~ | Start hb thread body; thread body hb join |
-| **BlockingQueue / ConcurrentMap** | ~~~java\\nqueue.put(new Holder(42));\\nHolder h = queue.take();\\n~~~ | Put hb take (implementation dùng volatile/CAS) |
-| **AtomicReference** | ~~~java\\nref.set(new Holder(42));\\nHolder h = ref.get();\\n~~~ | set hb get (volatile/CAS semantics) |
+| **final field** | {{final int x; Holder(int v) -> x = v; holder = new Holder(42);}} | Final field semantics (JLS 17.5) |
+| **synchronized block** | {{synchronized (lock) -> holder = new Holder(42); synchronized (lock) -> h = holder;}} | Unlock hb lock |
+| **Thread start** | {{Thread t = new Thread(() -> holder = new Holder(42)); t.start(); t.join();}} | Start hb thread body; thread body hb join |
+| **BlockingQueue / ConcurrentMap** | {{queue.put(new Holder(42)); Holder h = queue.take();}} | Put hb take (implementation dùng volatile/CAS) |
+| **AtomicReference** | {{ref.set(new Holder(42)); Holder h = ref.get();}} | set hb get (volatile/CAS semantics) |
 
 > **Quy tắc vàng**: đừng tự nghĩ ra cách publish mới. Dùng một trong sáu cách trên. Viết {{static Holder holder = new Holder(42);}} ở static initializer **cũng an toàn** vì class initialization có lock nội bộ của JVM.
 
