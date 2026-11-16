@@ -335,6 +335,12 @@ await().atMost(Duration.ofSeconds(3))
 - **Locale/TZ khác giữa máy dev và CI**: format ngày theo locale mặc định là nguồn bug "chạy ở máy tôi thì đúng".
 - **Test async không chờ**: kết quả được assert trước khi tác vụ nền kịp chạy.
 
+### Ví dụ đời thực
+Một dịch vụ giảm giá (Spring Boot 3.1) có test concurrency kiểm tra trừ tiền trong tài khoản khi nhiều người mua cùng lúc. Triệu chứng: test xanh trên CI nhưng trên production xảy ra lost update — 1.200 tài khoản bị trừ âm do race condition. Điều tra: test của đội chỉ chạy 8 thread với {{CyclicBarrier}}, nhưng trên production có 200 request cùng lúc truy cập một tài khoản; ngoài ra test không dùng {{@RepeatedTest}} nên race hiếm khi xảy ra. Nguyên nhân gốc: test không đủ nặng để lộ race, và không lặp lại nhiều lần. Xử lý: (1) tăng số thread lên 50 và lặp lại test 50 lần bằng {{@RepeatedTest(50)}}; (2) dùng {{ExecutorService}} + {{CountDownLatch}} để đồng bộ điểm bắt đầu; (3) thêm {{await().atMost(5, SECONDS)}} để chờ kết quả thay vì {{Thread.sleep}}. Kết quả đo được: test bắt đầu fail ngay khi code sai (không dùng atomic operation), và sau khi fix bằng {{AtomicInteger}} hoặc {{SELECT ... FOR UPDATE}}, test xanh ổn định 50/50 lần. Trong 3 tháng sau không còn lost update nào.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi test code phụ thuộc thời gian và concurrency, nguyên tắc số một là đẩy mọi phụ thuộc thời gian ra khỏi code bằng một {{Clock}} tiêm vào, và dùng {{Awaitility}} thay vì {{Thread.sleep}} để chờ điều kiện. Với concurrency, tôi dùng {{CyclicBarrier}} hoặc {{CountDownLatch}} để tạo race thật — nếu không đồng bộ điểm bắt đầu, race hiếu xảy ra và test xanh giả. Mỗi test concurrency đều có timeout, và tôi lặp lại test nhiều lần bằng {{@RepeatedTest}} để chắc chắn error rate = 0. Ví dụ thực tế: một test chỉ chạy 8 thread nên không lộ lost update còn production chạy 200 request cùng lúc; tôi tăng lên 50 thread và lặp 50 lần, test fail ngay khi code thiếu atomic operation. Bài học: test phải xác định và phải nặng đủ để lộ lỗi — nếu test không bao giờ fail, hỏi xem nó có đang kiểm tra gì không."
+
 > Senior tip: nếu một test fail khoảng 1/20 lần, đừng "chạy lại cho tới khi xanh" — hãy tìm tầng không xác định (thời gian, thứ tự, dữ liệu dùng chung, race). Nguyên tắc: **test phải xác định**, cùng một commit phải cho cùng một kết quả.`,
   follow: [
     'Bạn có dùng {{@RepeatedTest}} hoặc công cụ nào để săn race condition không?',
