@@ -706,5 +706,430 @@ Chuẩn tích hợp: credential, retry, log, metrics, versioning prompt. Phần 
 
 > Nguyên tắc: thống nhất phần dùng chung, cho phép khác biệt phần tuân thủ; đừng đồng nhất hoá những gì bản chất khác nhau.`
 },
+// qz-ccap-086: [Eval & Optimization], answer 1
+{
+  id: 'qz-ccap-086',
+  topic: 'claude',
+  q: '[Eval & Optimization] A support team needs to reduce customer wait times. They analyze call logs and discover that 80% of queries are about password resets and order status. Which approach best optimizes resource allocation?',
+  options: [
+    'Hire more support staff to handle all queries 24/7',
+    'Implement a self-service portal for password resets and order tracking, redirecting complex cases to agents',
+    'Reduce the number of support channels to focus on phone only',
+    'Ignore the data and distribute staff evenly across all channels'
+  ],
+  answer: 1,
+  explain: `**Đúng: cổng self-service tự phục vụ các câu hỏi thường gặp, giảm áp lực cho nhân viên tư vấn.** 80% câu hỏi về reset mật khẩu và trạng thái đơn hàng là tác vụ lặp đi lặp lại, phù hợp để khách tự xử lý qua cổng tự phục vụ. Nhân viên tư vấn tập trung vào các ca phức tạp cần can thiệp con người, cải thiện chất lượng dịch vụ. Tiết kiệm chi phí nhân sự và tăng tốc độ phản hồi. Các phương án khác sai: nhân thêm nhân viên tăng chi phí không cần thiết cho công việc lặp lại, giảm kênh làm giảm khả năng tiếp cận, phân phối đều nhân viên không hiệu quả khi dữ liệu cho thấy 80% câu hỏi tập trung vào một vài vấn đề.`,
+},
+// qz-ccap-087: [Eval & Optimization], answer 1
+{
+  id: 'qz-ccap-087',
+  topic: 'claude',
+  q: '[Eval & Optimization] A company wants to measure Claude usage efficiency per department. The management team requests a dashboard showing cost per ticket resolved and average latency. Which metrics should be prioritized?',
+  options: [
+    'Total token count per month only',
+    'Cost per resolved ticket and p95 latency',
+    'Number of API calls per developer',
+    'Peak concurrent users only'
+  ],
+  answer: 1,
+  explain: `**Đúng: cost per ticket và p95 latency đo lường hiệu quả thực tế.** Tổng token chỉ là một phần của chi phí và không phản ánh kết quả. Số API call bị chi phối bởi thói quen cá nhân, không phản ánh throughput. Concurrent users là chỉ số hiện trạng, không đo lường hiệu quả xử lý.`,
+},
+// qz-ccap-088: [Eval & Optimization], answer 1
+{
+  id: 'qz-ccap-088',
+  topic: 'claude',
+  q: '[Eval & Optimization] A support bot using Claude handles 10,000 monthly requests. After implementing prompt caching, the cost per request dropped from $0.50 to $0.20. What is the most likely reason?',
+  options: [
+    'The model was switched to a cheaper version',
+    'The static prompt prefix was reused across many requests',
+    'The context window was reduced by 50%',
+    'The API rate limit was lowered'
+  ],
+  answer: 1,
+  explain: `**Đúng: prompt caching giảm chi phí bằng cách tái sử dụng prefix.** Khi prefix (phần tĩnh) giống nhau giữa các request, API đọc từ cache thay vì xử lý lại, nên chi phí giảm mạnh. Việc chuyển model hoặc giảm context window không phải nguyên nhân chính của mức giảm 60% chi phí. Giảm rate limit không liên quan đến cost per request.`,
+},
+// qz-ccap-089: [Eval & Optimization], answer 1
+{
+  id: 'qz-ccap-089',
+  topic: 'claude',
+  q: '[Eval & Optimization] A team observes that 70% of Claude requests exceed 5 seconds latency. They suspect the system prompt is too long. Which action is most likely to reduce latency?',
+  options: [
+    'Increase max_tokens',
+    'Trim the system prompt to essential instructions only',
+    'Add more few-shot examples',
+    'Switch to a larger model'
+  ],
+  answer: 1,
+  explain: `**Đúng: giảm system prompt giảm input tokens, giảm latency.** Độ trễ chủ yếu do input tokens quyết định. System prompt dài làm tăng input tokens, khiến mỗi request lâu hơn. Cắt bớt xuống những phần cần thiết giúp latency giảm nhanh. Tăng max_tokens không làm ngắn input, thêm examples làm tăng context, chuyển model lớn hơn làm chậm hơn.`,
+},
+// qz-ccap-090: [Eval & Optimization], answer 1
+{
+  id: 'qz-ccap-090',
+  topic: 'claude',
+  q: '[Eval & Optimization] A company plans to migrate from on-premise document storage to Claude. They need to ensure the migration plan includes cost estimation for the first year. Which factor has the BIGGEST impact on cost?',
+  options: [
+    'Number of documents in the repository',
+    'Average tokens per document for retrieval',
+    'Number of concurrent users',
+    'Frequency of model version updates'
+  ],
+  answer: 1,
+  explain: `**Đúng: tokens per document cho retrieval quyết định số lượng input token mỗi request.** Số lượng document tổng thể ít quan trọng nếu mỗi document được chunk nhỏ và chỉ retrieval các đoạn liên quan. Concurrent users và frequency update không ảnh hưởng trực tiếp đến cost tính theo token/request.`,
+},
+// qz-ccap-091: [Eval & Optimization], answer 1
+{
+  id: 'qz-ccap-091',
+  topic: 'claude',
+  q: '[Eval & Optimization] A Claude-powered assistant has a 40% failure rate when users ask for information not in the knowledge base. The team wants to improve this without expanding the document store. Which approach is most effective?',
+  options: [
+    'Lower the temperature to make the model more conservative',
+    'Add a "no information found" instruction and retrieve closest matches, then honestly state limitations',
+    'Increase max_tokens to allow longer answers',
+    'Switch to a model with a larger context window'
+  ],
+  answer: 1,
+  explain: `**Đúng: rõ ràng về hạn chế và retrieve closest matches** giúp giảm tỉ lệ trả lời sai. Giảm temperature làm model cẩn thận nhưng vẫn có thể bịa. Tăng max_tokens không giải quyết vấn đề thiếu thông tin. Chuyển model không thêm dữ liệu mới. Cách tốt nhất là quản lý kỳ vọng và truy xuất đúng đoạn liên quan.`,
+},
+// qz-ccap-092: [Eval & Optimization], answer 1
+{
+  id: 'qz-ccap-092',
+  topic: 'claude',
+  q: '[Eval & Optimization] A team measures that Claude returns correct answers with citations 60% of the time. They want to improve to 80%+. Which single change would most help?',
+  options: [
+    'Remove all citations from the system prompt',
+    'Use structured output with json_schema and require citations in the output',
+    'Lower the temperature to 0',
+    'Increase the number of few-shot examples'
+  ],
+  answer: 1,
+  explain: `**Đúng: structured output với json_schema và bắt citations trong output** đảm bảo model tuân theo cấu trúc. Khi có schema bắt buộc citations, model buộc phải trả nguồn. Temperature = 0 chỉ làm giảm ngẫu nhiên, không đảm bảo citations. Thêm few-shot có thể giúp nhưng không có cơ chế enforcement.`,
+},
+// qz-ccap-093: [Governance & Risk], answer 1
+{
+  id: 'qz-ccap-093',
+  topic: 'claude',
+  q: '[Governance & Risk] A financial services company must ensure Claude does not expose sensitive data like account numbers in responses. Which is the BEST technical control?',
+  options: [
+    'Add a system prompt warning never to expose numbers',
+    'Redact or tokenize sensitive fields before sending to Claude and maintain internal mapping',
+    'Run all responses through a regex filter after the fact',
+    'Disable tool use entirely'
+  ],
+  answer: 1,
+  explain: `**Đúng: redact/tokenize trước khi gửi là phòng ngừa thực tế.** System prompt cảnh báo là chỉ dẫn mềm, không thể đảm bảo. Regex filter sau có thể bỏ sót và không phủ hết các kiểu dữ liệu nhạy cảm. Vô hiệu hóa tool use làm giảm giá trị. Cách tốt nhất là tiền xử lý dữ liệu trước khi gửi đến Claude.`,
+},
+// qz-ccap-094: [Governance & Risk], answer 1
+{
+  id: 'qz-ccap-094',
+  topic: 'claude',
+  q: '[Governance & Risk] An healthcare provider wants to use Claude for summarizing patient records. Data must remain within compliant regions. Which integration approach satisfies this requirement?',
+  options: [
+    'Call Anthropic API directly from any region',
+    'Use Amazon Bedrock or Google Vertex AI with EU region selection and keep storage in that region',
+    'Strip patient identifiers and send anywhere',
+    'Run Claude Code on developer laptops'
+  ],
+  answer: 1,
+  explain: `**Đúng: dùng nền tảng cloud có region EU, dữ liệu xử lý trong vùng đã chọn.** Amazon Bedrock và Google Vertex AI cung cấp region EU, phù hợp với yêu cầu lưu trữ dữ liệu y tế. Chỉ xóa tên vẫn có thể bị định danh nhờ dữ liệu khác, và laptop không phải kênh xử lý tập trung.`,
+},
+// qz-ccap-095: [Governance & Risk], answer 1
+{
+  id: 'qz-ccap-095',
+  topic: 'claude',
+  q: '[Governance & Risk] Which information is most essential to log so that Claude interactions can be audited?',
+  options: [
+    'The model name and output length',
+    'The caller identity and request purpose',
+    'The API key and request timestamp',
+    'The conversation ID and user feedback'
+  ],
+  answer: 1,
+  explain: `**Đúng: caller identity và request purpose tạo ra nguồn sự thật cho audit.** Ai gọi và với mục đích gì giúp đội kiểm soát và truy vết. Model name và output length có ích nhưng không đủ để biết ai chịu trách nhiệm. API key không nên log vì có thể bị dùng chung giữa nhiều project, còn conversation ID chỉ là định danh nội bộ.`,
+},
+// qz-ccap-096: [Governance & Risk], answer 1
+{
+  id: 'qz-ccap-096',
+  topic: 'claude',
+  q: '[Governance & Risk] Which practice most directly reduces the risk of prompt injection affecting tool use?',
+  options: [
+    'Lengthen the system prompt with warnings',
+    'Use tool schema with strict: true and enforce policy checks in backend',
+    'Set temperature to 0',
+    'Disable all user-facing features'
+  ],
+  answer: 1,
+  explain: `**Đúng: tool schema chặt (strict: true) cộng kiểm tra chính sách ở backend là ràng buộc kỹ thuật.** Temperature chỉ điều chỉnh mức ngẫu nhiên, không tạo ra ranh giới cưỡng chế; prompt injection là mối đe dọa an toàn, không phải vấn đề temperature. Kéo dài system prompt hay tắt hết tính năng đều không chặn được chỉ dẫn độc hại trong dữ liệu bên ngoài.`,
+},
+// qz-ccap-097: [Eval & Optimization], answer 1
+{
+  id: 'qz-ccap-097',
+  topic: 'claude',
+  q: '[Eval & Optimization] A team wants to evaluate whether switching from Claude Opus to Sonnet reduces cost without quality loss. Which evaluation approach is most defensible?',
+  options: [
+    'Ask the vendor which model is best and adopt it',
+    'Run both models on a labelled set of documents, compare defect detection and cost per document, then pilot the winner on small traffic slice before full rollout',
+    'Switch entirely and rely on user feedback after launch',
+    'Pick the model with the lowest token price and assume quality is equal'
+  ],
+  answer: 1,
+  explain: `**Đúng: eval trên tập gán nhãn có thật, rồi pilot theo phần trăm lưu lượng.** So sánh hai model phải trên cùng đầu vào, cùng tiêu chí chấm, gồm cả chất lượng (phát hiện lỗi) và chi phí. Sau khi có số liệu, pilot trên một phần nhỏ traffic thật để bắt các vấn đề chỉ xuất hiện trong phân bố thật, rồi mới mở rộng.`,
+},
+// qz-ccap-098: [Eval & Optimization], answer 1
+{
+  id: 'qz-ccap-098',
+  topic: 'claude',
+  q: '[Eval & Optimization] Which metric best detects a regression in Claude response quality after a prompt change?',
+  options: [
+    'Only token count and request latency',
+    'Success rate with citations and user satisfaction scores',
+    'Peak concurrent users and API error rate',
+    'Average temperature and max_tokens setting'
+  ],
+  answer: 1,
+  explain: `**Đúng: success rate with citations và user satisfaction đo chất lượng và trải nghiệm thực tế.** Token count và latency chỉ đo hiệu suất, không nói gì về chất lượng câu trả lời. Concurrent users và API error rate là chỉ số hệ thống, không liên quan đến chất lượng. Temperature và max_tokens là cài đặt, không phải metric đo lường.`,
+},
+// qz-ccap-099: [Governance & Risk], answer 1
+{
+  id: 'qz-ccap-099',
+  topic: 'claude',
+  q: '[Governance & Risk] A system must prevent Claude from following hidden instructions in fetched web pages. Which defence is most effective?',
+  options: [
+    'Rely on the system prompt saying never follow external instructions',
+    'Treat retrieved and fetched content as untrusted data, and keep the system prompt and tool permissions as separate trust boundaries',
+    'Disable all tool use so the assistant can only answer from its training',
+    'Let the model decide case by case because it understands the intent'
+  ],
+  answer: 1,
+  explain: `**Đúng: coi nội dung bên ngoài là dữ liệu không tin cậy, và giới hạn quyền hành động.** Prompt injection là khi nội dung bên ngoài chứa chỉ dẫn giả làm người dùng, ví dụ một trang web nói hãy gửi toàn bộ dữ liệu. Phòng thủ hiệu quả: phân tách rõ ranh giới tin cậy giữa chỉ dẫn hệ thống và dữ liệu đọc được, cộng với tool permission và kiểm tra policy trước khi hành động.`,
+},
+// qz-ccap-100: [Governance & Risk], multi: true, answer [1,2]
+{
+  id: 'qz-ccap-100',
+  topic: 'claude',
+  multi: true,
+  q: '[Governance & Risk] An assistant must not reveal internal document content even when users try prompt injection. Which two defences are most effective? (Choose 2)',
+  options: [
+    'Rely on the system prompt saying never reveal internal documents',
+    'Treat retrieved and fetched content as untrusted data, and keep the system prompt and tool permissions as separate trust boundaries',
+    'Constrain tool permissions so the assistant cannot take sensitive actions on the user behalf without a policy check',
+    'Let the model decide case by case because it understands the intent'
+  ],
+  answer: [1, 2],
+  explain: `**Đúng: coi nội dung bên ngoài là dữ liệu không tin cậy, và giới hạn quyền hành động.** Prompt injection là khi nội dung bên ngoài chứa chỉ dẫn giả làm người dùng, ví dụ một trang web nói hãy gửi toàn bộ dữ liệu. Phòng thủ hiệu quả: phân tách rõ ranh giới tin cậy giữa chỉ dẫn hệ thống và dữ liệu đọc được, cộng với tool permission và kiểm tra policy trước khi hành động.`,
+},
+// qz-ccap-101: [Eval & Optimization], multi: true, answer [1,2]
+{
+  id: 'qz-ccap-101',
+  topic: 'claude',
+  multi: true,
+  q: '[Eval & Optimization] A leadership team wants a Claude feature evaluated before launch and after each change. Which two practices give the most trustworthy signal? (Choose 2)',
+  options: [
+    'Judge quality by how confident the output sounds',
+    'Build a representative evaluation set from real traffic and score it against a rubric',
+    'Run a blind side-by-side comparison with humans on a sample of outputs',
+    'Use one example that the team likes as the regression test'
+  ],
+  answer: [1, 2],
+  explain: `**Đúng: eval có đại diện cộng so sánh mù với người.** Tập eval lấy từ traffic thật phản ánh phân bố đầu vào thật; rubric biến “hay” thành tiêu chí chấm được. So sánh mù, tức không biết đâu là bản A và bản B, loại thiên kiến thấy bản mới là tốt hơn.`,
+},
+// qz-ccap-102: [Eval & Optimization], answer 3
+{
+  id: 'qz-ccap-102',
+  topic: 'claude',
+  q: '[Eval & Optimization] A company plans to implement prompt caching for frequently used system prompts. Approximately how much cost reduction can be expected on subsequent requests with identical prefixes?',
+  options: [
+    'Up to 10%',
+    'Up to 50%',
+    'Up to 75%',
+    'Up to 90%'
+  ],
+  answer: 3,
+  explain: `**Đúng: prompt caching có thể giảm chi phí đáng kể, thường khoảng 90% cho cache read khi prefix giống hệt.** Chi tiết phụ thuộc vào model: Opus 5.5 và Sonnet 5.5 cache read khoảng 0.1x giá input, nghĩa là chi phí giảm tới 90%. Cache write (lần đầu ghi) lại đắt hơn. Việc tái sử dụng prefix là chìa khóa để đạt được tiết kiệm lớn.`,
+},
+// qz-ccap-103: [Governance & Risk], answer 1
+{
+  id: 'qz-ccap-103',
+  topic: 'claude',
+  q: '[Governance & Risk] Which practice most directly reduces the risk of prompt injection affecting tool use?',
+  options: [
+    'Lengthen the system prompt with warnings',
+    'Use tool schema with strict: true and enforce policy checks in backend',
+    'Set temperature to 0',
+    'Disable all user-facing features'
+  ],
+  answer: 1,
+  explain: `**Đúng: tool schema chặt (strict: true) cộng kiểm tra chính sách ở backend là ràng buộc kỹ thuật.** Temperature chỉ điều chỉnh mức ngẫu nhiên, không tạo ra ranh giới cưỡng chế; prompt injection là mối đe dọa an toàn, không phải vấn đề temperature. Kéo dài system prompt hay tắt hết tính năng đều không chặn được chỉ dẫn độc hại trong dữ liệu bên ngoài.`,
+},
+// qz-ccap-104: [Governance & Risk], multi: true, answer [1,3]
+{
+  id: 'qz-ccap-104',
+  topic: 'claude',
+  multi: true,
+  q: '[Governance & Risk] A healthcare AI assistant must prevent PHI (Protected Health Information) from being logged. Which two approaches best protect privacy? (Choose 2)',
+  options: [
+    'Rely on the model to never log sensitive data',
+    'Redact PHI before sending to Claude and maintain internal mapping',
+    'Enable automatic logging of all requests for audit purposes',
+    'Use tokenization for identifiers and store mapping securely off-platform'
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: redact trước khi gửi và tokenization identifiers** là phòng ngừa thực tế. Model không thể đảm bảo không log PHI, nó là stateless và có thể rò rỉ qua nhiều channel. Auto logging làm tệ hơn bằng cách tạo ra thêm dữ liệu nhạy cảm. Tokenization tách identity ra khỏi platform giúp audit mà không lộ dữ liệu nhạy cảm.`,
+},
+// qz-ccap-105: [Eval & Optimization], answer 1
+{
+  id: 'qz-ccap-105',
+  topic: 'claude',
+  q: '[Eval & Optimization] A team observes that 80% of Claude requests complete in under 2 seconds, but the p95 latency is 8 seconds. What does this indicate?',
+  options: [
+    'The system is functioning normally, p95 is always higher than median',
+    'There are occasional heavy requests or queue buildup causing delays',
+    'The model is underutilized and should be scaled down',
+    'The API key has been compromised and is being misused'
+  ],
+  answer: 1,
+  explain: `**Đúng: p95 (ngưỡng 95) cao hơn nhiều so với phần lớn request cho thấy có nhóm request nặng hoặc hàng đợi tạm thời.** 80% request hoàn tất dưới 2 giây, nhưng 20% còn lại rất chậm nên đẩy p95 lên 8 giây. p95 cao hơn median là chuyện bình thường, nhưng chênh lệch lớn như vậy là dấu hiệu cần điều tra. Không nhất thiết là API key bị lộ; có thể do truy vấn phức tạp, retriever chậm hoặc quá nhiều request đồng thời. Nên theo dõi xu hướng và giới hạn số request đồng thời.`,
+},
+// qz-ccap-106: [Governance & Risk], answer 1
+{
+  id: 'qz-ccap-106',
+  topic: 'claude',
+  q: '[Governance & Risk] A financial regulation requires that all Claude interactions be auditable. Which single approach is sufficient?',
+  options: [
+    'Add a system prompt saying "be audit-friendly"',
+    'Implement centralized logging with caller, timestamp, purpose, and output hash',
+    'Disable all tool use to prevent unauthorized actions',
+    'Use a single shared API key for all interactions'
+  ],
+  answer: 1,
+  explain: `**Đúng: centralized logging với caller, timestamp, purpose và output hash** tạo ra bản ghi audit có cấu trúc và truy vết được. System prompt chỉ là chỉ dẫn mềm, không tạo ra bản ghi. Vô hiệu hoá tool use làm giảm chức năng, và dùng chung một API key khiến không thể audit riêng lẻ.`,
+},
+// qz-ccap-107: [Governance & Risk], answer 1
+{
+  id: 'qz-ccap-107',
+  topic: 'claude',
+  q: '[Governance & Risk] Which practice best ensures data minimisation when using Claude for document analysis?',
+  options: [
+    'Send all documents and let the model determine what is relevant',
+    'Redact or tokenise sensitive fields before the request and keep mapping only in systems of the company',
+    'Disable all logging so data is not retained',
+    'Ask customers to remove sensitive data before writing'
+  ],
+  answer: 1,
+  explain: `**Đúng: redact hoặc tokenise trường nhạy cảm trước khi gửi, và chỉ giữ mapping trong hệ thống của công ty.** Gửi toàn bộ dữ liệu và tin model tự bỏ qua là nguy hiểm — dữ liệu đã rời khỏi hệ thống. Tắt log không làm dữ liệu an toàn hơn, chỉ làm mù khi có sự cố. Bảo khách tự xoá là đẩy nghĩa vụ sang người dùng.`,
+},
+// qz-ccap-108: [Eval & Optimization], answer 1
+{
+  id: 'qz-ccap-108',
+  topic: 'claude',
+  q: '[Eval & Optimization] Which metric best shows whether Claude usage is efficient?',
+  options: [
+    'Only total token count',
+    'Cost per resolved ticket and p95 latency',
+    'Number of API calls per developer',
+    'Peak concurrent users only'
+  ],
+  answer: 1,
+  explain: `**Đúng: cost per resolved ticket và p95 latency đo hiệu quả thực tế.** Tổng token chỉ là một phần của chi phí và không phản ánh kết quả. Số API call bị chi phối bởi thói quen cá nhân, không phản ánh throughput. Concurrent users là chỉ số hiện trạng.`,
+},
+// qz-ccap-109: [Governance & Risk], answer 1
+{
+  id: 'qz-ccap-109',
+  topic: 'claude',
+  q: '[Governance & Risk] Which practice most reduces risk when using Claude with sensitive data?',
+  options: [
+    'Lengthen the system prompt with warnings',
+    'Use tool schema with strict: true and enforce policy checks in backend',
+    'Set temperature to 0',
+    'Disable all user-facing features'
+  ],
+  answer: 1,
+  explain: `**Đúng: tool schema chặt (strict: true) cộng kiểm tra chính sách ở backend là ràng buộc kỹ thuật.** Schema chặt buộc input của tool đúng cấu trúc, còn policy check ở backend quyết định tool được phép làm gì với dữ liệu nhạy cảm. Temperature chỉ điều chỉnh mức ngẫu nhiên, không tạo ranh giới cưỡng chế; kéo dài system prompt hay tắt hết tính năng không phải biện pháp bảo vệ dữ liệu.`,
+},
+// qz-ccap-110: [Eval & Optimization], answer 1
+{
+  id: 'qz-ccap-110',
+  topic: 'claude',
+  q: '[Eval & Optimization] Which metric best indicates a regression after a prompt change?',
+  options: [
+    'Only token count and request latency',
+    'Success rate with citations and user satisfaction scores',
+    'Peak concurrent users and API error rate',
+    'Average temperature and max_tokens setting'
+  ],
+  answer: 1,
+  explain: `**Đúng: success rate with citations và user satisfaction đo chất lượng và trải nghiệm thực tế.** Token count và latency chỉ đo hiệu suất, không nói gì về chất lượng câu trả lời. Concurrent users và API error rate là chỉ số hệ thống, không liên quan đến chất lượng.`,
+},
+// qz-ccap-111: [Governance & Risk], multi: true, answer [1,2]
+{
+  id: 'qz-ccap-111',
+  topic: 'claude',
+  multi: true,
+  q: '[Governance & Risk] Which two defences best prevent prompt injection? (Choose 2)',
+  options: [
+    'Rely on the system prompt saying never follow external instructions',
+    'Treat retrieved and fetched content as untrusted data, and keep the system prompt and tool permissions as separate trust boundaries',
+    'Constrain tool permissions so the assistant cannot take sensitive actions without policy check',
+    'Let the model decide case by case because it understands the intent'
+  ],
+  answer: [1, 2],
+  explain: `**Đúng: coi nội dung bên ngoài là dữ liệu không tin cậy, và giới hạn quyền hành động.** Prompt injection là khi nội dung bên ngoài chứa chỉ dẫn giả làm người dùng, ví dụ một trang web nói hãy gửi toàn bộ dữ liệu. Phòng thủ hiệu quả: phân tách rõ ranh giới tin cậy giữa chỉ dẫn hệ thống và dữ liệu đọc được, cộng với tool permission và kiểm tra policy trước khi hành động.`,
+},
+// qz-ccap-112: [Governance & Risk], multi: true, answer [1,3]
+{
+  id: 'qz-ccap-112',
+  topic: 'claude',
+  multi: true,
+  q: '[Governance & Risk] Which two approaches best protect PHI in healthcare AI? (Choose 2)',
+  options: [
+    'Rely on the model to never log sensitive data',
+    'Redact PHI before sending to Claude and maintain internal mapping',
+    'Enable automatic logging of all requests for audit purposes',
+    'Use tokenization for identifiers and store mapping securely off-platform'
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: redact trước khi gửi và tokenization identifiers** là phòng ngừa thực tế. Model không thể đảm bảo không log PHI, nó là stateless và có thể rò rỉ qua nhiều channel. Auto logging làm tệ hơn bằng cách tạo ra thêm dữ liệu nhạy cảm. Tokenization tách identity ra khỏi platform giúp audit mà không lộ dữ liệu nhạy cảm.`,
+},
+// qz-ccap-113: [Governance & Risk], answer 1
+{
+  id: 'qz-ccap-113',
+  topic: 'claude',
+  q: '[Governance & Risk] Which approach best ensures Claude interactions are auditable?',
+  options: [
+    'Add system prompt saying "be audit-friendly"',
+    'Implement centralized logging with caller, timestamp, purpose, and output hash',
+    'Disable all tool use to prevent unauthorized actions',
+    'Use a single shared API key for all interactions'
+  ],
+  answer: 1,
+  explain: `**Đúng: centralized logging với caller, timestamp, purpose và output hash tạo ra bản ghi audit có cấu trúc, truy vết được.** System prompt chỉ là chỉ dẫn mềm, không tạo ra bản ghi. Vô hiệu hoá tool use làm giảm chức năng, và dùng chung một API key khiến không thể audit riêng lẻ.`,
+},
+// qz-ccap-114: [Eval & Optimization], answer 1
+{
+  id: 'qz-ccap-114',
+  topic: 'claude',
+  q: '[Eval & Optimization] Which metric best indicates system performance under load?',
+  options: [
+    'Only total token count',
+    'Cost per request and p95 latency',
+    'Number of API calls per developer',
+    'Peak concurrent users only'
+  ],
+  answer: 1,
+  explain: `**Đúng: cost per request và p95 latency đo hiệu suất và trải nghiệm người dùng.** Tổng token chỉ là một phần của chi phí, số API call bị chi phối bởi thói quen. Concurrent users là chỉ số hiện trạng.`,
+},
+// qz-ccap-115: [Governance & Risk], answer 1
+{
+  id: 'qz-ccap-115',
+  topic: 'claude',
+  q: '[Governance & Risk] Which practice best ensures data minimisation when using Claude?',
+  options: [
+    'Send all documents and let model determine relevance',
+    'Redact or tokenise sensitive fields before request, keep company mapping',
+    'Disable all logging so data is not retained',
+    'Ask customers to remove sensitive data before writing'
+  ],
+  answer: 1,
+  explain: `**Đúng: redact hoặc tokenise trường nhạy cảm trước khi gửi, và chỉ giữ mapping trong hệ thống của công ty.** Gửi toàn bộ dữ liệu và tin model tự bỏ qua là nguy hiểm. Tắt log không làm dữ liệu an toàn hơn, chỉ làm mù khi có sự cố. Bảo khách tự xoá là đẩy nghĩa vụ sang người dùng.`,
+}
 // qtool append point
 );
