@@ -1408,4 +1408,694 @@ Thêm vào prompt: "Nếu thiếu thông tin, hãy liệt kê các câu hỏi tr
 
 > Mẹo thực tế: phản hồi tốt có ba phần: chỉ ra chỗ sai, nói rõ muốn gì, đưa ví dụ. Thiếu phần nào thì vòng sửa thường lâu hơn.`
 },
+{
+  id: 'qz-ccao-061',
+  topic: 'claude',
+  q: '[Product Selection] A sales team must produce a tailored proposal for each of 200 clients. Every proposal uses the same company brochure and the same pricing rules, and the team wants the work to be repeatable and consistent. Which Claude setup fits this job best?',
+  options: [
+    'Open a brand-new ad-hoc chat for every client and paste the brochure and pricing rules in from scratch each time',
+    'Ask Claude to memorise the brochure once and then rely on that memory in unrelated chats',
+    'Create a Project that holds the shared brochure, pricing rules and instructions, then do each client proposal inside that Project',
+    'Finish all proposals in chat first, and only then call the API to review them one by one'
+  ],
+  answer: 2,
+  explain: `**Đúng: gom tài liệu và hướng dẫn dùng chung vào một Project rồi làm việc bên trong đó.** Project (dự án) là một không gian làm việc của Claude cho phép bạn tải lên tài liệu tham chiếu, đặt hướng dẫn riêng và giữ ngữ cảnh đó cho nhiều cuộc trò chuyện. Khi cả 200 đề xuất đều dựa trên cùng một brochure và cùng bộ quy tắc giá, việc đặt chúng ở Project giúp mọi lần làm đều xuất phát từ cùng một nguồn, không phải dán lại thủ công và không sợ thiếu file.
+
+### Vì sao các lựa chọn khác sai
+- **Chat ad-hoc mỗi lần, dán lại từ đầu:** tốn thời gian, dễ quên tài liệu hoặc dán thiếu phiên bản, và mỗi chat lại là một điểm khởi đầu khác nhau nên chất lượng không đồng đều.
+- **Nhờ Claude ghi nhớ sau một lần upload rồi dùng ở chat khác:** trí nhớ giữa các chat không được bảo đảm; một chat không liên quan không tự động biết brochure đó.
+- **Làm xong mới gọi API để soát:** đó là kiểm tra sau, không giải quyết việc tạo ra đề xuất nhất quán ngay từ đầu.
+
+### Cách làm thực tế
+Tạo một Project cho dòng công việc đề xuất cho khách, đưa vào brochure, bảng giá, mẫu và hướng dẫn tông giọng. Mỗi khách là một chat mới trong Project đó; Claude luôn thấy cùng một nền kiến thức. Khi tài liệu đổi, chỉ cần cập nhật một chỗ.
+
+> Nguyên tắc chọn bề mặt: công việc lặp lại cộng với cùng tài liệu nền thì dùng Project; việc một lần, không lặp thì chat là đủ.`
+},
+{
+  id: 'qz-ccao-062',
+  topic: 'claude',
+  multi: true,
+  q: '[Product Selection] An employee splits their day between many short, low-stakes rewrites of routine emails and occasional deep analysis of complex contracts. Which two statements about choosing a Claude model are most accurate? (Choose 2)',
+  options: [
+    'A faster, lighter model is often a sensible default for simple, high-volume tasks',
+    'The most powerful model should be used for every task, because quality is the only thing that matters',
+    'A more capable model tends to be worth it for harder reasoning tasks, so the choice is a trade-off between capability, speed and cost',
+    'Once a model is picked for a chat, it can never be changed for that chat'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: chọn model theo trade-off giữa năng lực, tốc độ và chi phí cho từng loại việc.** Với các email ngắn, lặp lại nhiều lần trong ngày, một model nhanh và nhẹ thường đủ tốt và tiết kiệm thời gian; với phân tích hợp đồng phức tạp, một model mạnh hơn về suy luận thường đáng giá hơn. Điểm mấu chốt là không có một model tốt nhất cho mọi việc, mà là model phù hợp nhất cho từng việc.
+
+### Vì sao các lựa chọn khác sai
+- **Luôn dùng model mạnh nhất:** đúng là chất lượng có thể cao hơn, nhưng chậm hơn và tốn hơn; với việc đơn giản thì lợi ích nhỏ mà chi phí lớn, chưa kể nói chất lượng là điều duy nhất là bỏ qua tốc độ và giá.
+- **Chọn xong là không đổi được:** trong thực tế bạn chọn model hoặc bề mặt phù hợp cho từng phiên; không có luật một lần chọn là cố định.
+
+### Cách nghĩ khi phỏng vấn
+Nói rõ tiêu chí: độ khó của việc, tần suất, yêu cầu độ trễ, ngân sách. Việc đơn giản mà lặp nhiều thì ưu tiên model nhanh; việc khó, ít, giá trị cao thì ưu tiên model mạnh.
+
+> Mẹo: đừng chọn theo càng mạnh càng tốt; hãy chọn theo đủ tốt cho việc này với chi phí và tốc độ chấp nhận được.`
+},
+{
+  id: 'qz-ccao-063',
+  topic: 'claude',
+  q: '[Product Selection] A developer wants Claude to make changes across several files in a local code repository, run the tests, and iterate on failures. Which Claude offering is designed for this kind of work?',
+  options: [
+    'The standard browser chat window, used only for copy-pasting code snippets back and forth',
+    'Claude Code, which works in the terminal and can read and edit files and run commands in a codebase',
+    'A Project knowledge folder, because it can store files but cannot touch the code',
+    'The mobile app in voice mode, which cannot access a repository'
+  ],
+  answer: 1,
+  explain: `**Đúng: Claude Code là công cụ dành cho công việc với codebase.** Claude Code chạy trong terminal, đọc và sửa được nhiều tệp, chạy lệnh và lặp qua lỗi test ngay trong repo. Đây đúng là loại việc sửa nhiều file, chạy test, sửa tiếp mà đề bài mô tả.
+
+### Vì sao các lựa chọn khác sai
+- **Chat trên trình duyệt chỉ để copy-paste:** không thao tác trực tiếp trên repo, mỗi bước phải làm tay, dễ lệch phiên bản và không chạy được lệnh.
+- **Project chỉ chứa tài liệu:** Project giữ kiến thức nền, không phải công cụ chỉnh sửa code hay chạy lệnh.
+- **App di động giọng nói:** không truy cập repo, không chạy lệnh; không phù hợp.
+
+### Liên hệ
+Khi chọn bề mặt, hãy hỏi việc này cần chạm vào đâu. Nếu cần sửa file và chạy lệnh trong repo thì dùng Claude Code; nếu chỉ cần trò chuyện hoặc soạn thảo thì chat là đủ; nếu cần lặp lại với tài liệu nền thì dùng Project.
+
+> Đừng chọn bề mặt theo thói quen; chọn theo nơi công việc thực sự diễn ra.`
+},
+{
+  id: 'qz-ccao-064',
+  topic: 'claude',
+  q: '[Product Selection] A consulting firm uses Claude heavily for client work. They need higher usage limits, shared workspaces for project teams, and administrative controls over who can access what. Which direction is most appropriate?',
+  options: [
+    'Stay on a free personal plan, because plan features rarely matter in practice',
+    'Buy a separate personal subscription for each consultant and share logins informally',
+    'Avoid any paid plan and rely on public demo pages for client work',
+    'Evaluate a paid team or enterprise plan that provides shared workspaces and admin controls for the organisation'
+  ],
+  answer: 3,
+  explain: `**Đúng: nhu cầu dùng nhiều, chia sẻ theo nhóm và cần kiểm soát truy cập thì hướng tới gói team hoặc enterprise.** Khi nhiều người cùng làm, bạn cần không gian dùng chung, giới hạn sử dụng cao hơn và quyền quản trị để kiểm soát ai xem hoặc gửi gì. Đó là lý do gói cá nhân miễn phí không đáp ứng được.
+
+### Vì sao các lựa chọn khác sai
+- **Ở gói miễn phí vì tính năng không quan trọng:** với công việc nhóm và dữ liệu khách, giới hạn dùng và thiếu quản trị truy cập là rủi ro thật.
+- **Mua gói cá nhân cho từng người rồi share login:** chia sẻ tài khoản vi phạm điều khoản, khó thu hồi quyền khi người rời đi, và không có quản trị tập trung.
+- **Dùng trang demo công khai:** không phù hợp cho dữ liệu khách và không có kiểm soát.
+
+### Lưu ý
+Đừng khẳng định con số giới hạn cụ thể nếu không chắc; điều cần nhớ là nguyên tắc: nhu cầu chia sẻ cộng với kiểm soát thì dùng gói nhóm hoặc doanh nghiệp.
+
+> Khi được hỏi nên mua gói nào, hãy trả lời theo nhu cầu như số người, chia sẻ, kiểm soát chứ không theo giá.`
+},
+{
+  id: 'qz-ccao-065',
+  topic: 'claude',
+  q: '[Product Selection] A company wants to generate the same kind of weekly summary for 50 internal teams automatically, without a person typing the same prompt 50 times. Which approach fits best?',
+  options: [
+    'Have one employee paste the same prompt into the chat window 50 times every week',
+    'Ask Claude in a chat to remember to run the job every week on its own',
+    'Use the Claude API to call Claude programmatically from their own system and automate the workflow',
+    'Put the prompt in a Project and wait for it to run by itself'
+  ],
+  answer: 2,
+  explain: `**Đúng: khi cần lặp lại tự động, hãy dùng API để hệ thống của bạn gọi Claude.** API (Application Programming Interface) cho phép chương trình của bạn gửi yêu cầu tới Claude và nhận kết quả, nên bạn viết một lần rồi chạy định kỳ cho cả 50 nhóm. Đây là tự động hoá, không phải làm tay.
+
+### Vì sao các lựa chọn khác sai
+- **Một người dán prompt 50 lần mỗi tuần:** làm tay, tốn thời gian, dễ sai sót và không mở rộng được.
+- **Nhờ Claude tự nhớ chạy hằng tuần:** chat không phải bộ lập lịch; nó không tự chạy khi bạn không mở.
+- **Bỏ prompt vào Project rồi chờ tự chạy:** Project tổ chức ngữ cảnh, không phải cơ chế chạy tự động.
+
+### Khi nào dùng API
+Khi công việc lặp đi lặp lại, cần tích hợp vào hệ thống sẵn có, hoặc cần kiểm soát phiên bản prompt. Nếu chỉ làm vài lần, chat hoặc Project là đủ.
+
+> Nguyên tắc: làm một lần thì dùng chat; làm lặp lại có hệ thống thì dùng API hoặc công cụ tự động.`
+},
+{
+  id: 'qz-ccao-066',
+  topic: 'claude',
+  q: '[Product Selection] A user has a long chat about last quarter’s hiring plan. Today they need help with a completely different task: writing a supplier contract summary. What is the best choice, and why?',
+  options: [
+    'Start a new chat, so the unrelated hiring discussion does not distract or bias the new task',
+    'Continue the old chat, because a longer context is always better',
+    'Delete every old chat before starting anything new',
+    'Keep the old chat open but never send a message in either chat'
+  ],
+  answer: 0,
+  explain: `**Đúng: mở chat mới để việc không liên quan không làm nhiễu việc đang cần.** Chat mới bắt đầu với ngữ cảnh sạch, nên câu trả lời tập trung vào hợp đồng nhà cung cấp. Chat cũ chứa thông tin về tuyển dụng; nếu tiếp tục ở đó, Claude có thể kéo tông và từ ngữ của chủ đề cũ vào, làm câu trả lời lệch.
+
+### Vì sao các lựa chọn khác sai
+- **Tiếp tục chat cũ vì context càng dài càng tốt:** dài không đồng nghĩa tốt; ngữ cảnh không liên quan gây nhiễu, và cửa sổ ngữ cảnh có giới hạn.
+- **Xoá mọi chat cũ:** không cần thiết; giữ lại để tra cứu, chỉ cần mở chat mới.
+- **Mở cả hai nhưng không nhắn gì:** không giải quyết việc cần làm.
+
+### Liên hệ
+Một thói quen tốt: mỗi chủ đề lớn một chat. Khi chuyển hẳn sang việc khác, mở chat mới. Khi quay lại việc cũ, mở lại chat cũ.
+
+> Ngữ cảnh là con dao hai lưỡi: đúng ngữ cảnh giúp chính xác, thừa ngữ cảnh gây nhiễu.`
+},
+{
+  id: 'qz-ccao-067',
+  topic: 'claude',
+  multi: true,
+  q: '[Product Selection] A team is mapping different needs to different Claude surfaces. Which two pairings are appropriate? (Choose 2)',
+  options: [
+    'Repeated client work that uses the same reference material → a Project with shared knowledge',
+    'Making code changes and running tests in a local repository → Claude Code',
+    'Any task at all → the mobile voice assistant and nothing else',
+    'Uploading a client’s confidential contract to a public, unauthenticated demo page → the safest choice'
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: ghép đúng bề mặt với đúng việc.** Việc lặp lại, cùng tài liệu nền thì dùng Project có knowledge; việc sửa code và chạy test thì dùng Claude Code. Đây là hai cách ghép hợp lý.
+
+### Vì sao các lựa chọn khác sai
+- **Mọi việc thì chỉ dùng app giọng nói:** app giọng nói không thay được các bề mặt khác; nó chỉ phù hợp một số tình huống.
+- **Đưa hợp đồng bảo mật lên trang demo công khai:** đây là rủi ro bảo mật, không phải lựa chọn sản phẩm; tuyệt đối không làm.
+
+### Cách trình bày
+Khi trả lời câu ghép nối, nêu rõ việc gì, bề mặt nào, vì sao. Ví dụ: cùng tài liệu, lặp lại thì dùng Project vì giữ ngữ cảnh dùng chung.
+
+> Chọn bề mặt theo đặc điểm việc, không theo việc mình đang quen dùng.`
+},
+{
+  id: 'qz-ccao-068',
+  topic: 'claude',
+  q: '[Product Selection] A manager says, Claude can do everything, so we can replace all our other tools with a single chat window. What is the most accurate response?',
+  options: [
+    'Correct, one chat window can replace every specialised tool the team uses',
+    'Wrong, Claude cannot write or summarise text at all',
+    'Partly right: Claude is a general assistant, but specialised systems and tools still matter, so choose the surface that fits each task',
+    'Only the API can produce text, so the chat window is useless for writing'
+  ],
+  answer: 2,
+  explain: `**Đúng một phần: Claude là trợ lý tổng quát, nhưng công cụ và hệ thống chuyên biệt vẫn cần thiết.** Nói Claude làm được mọi thứ là quá lời; nó mạnh về ngôn ngữ, tổng hợp, suy luận, nhưng không thay thế hệ thống chấm công, máy tính, cơ sở dữ liệu. Việc chọn đúng là chọn bề mặt phù hợp cho từng việc.
+
+### Vì sao các lựa chọn khác sai
+- **Đúng, một chat thay mọi công cụ:** các hệ thống chuyên biệt có dữ liệu và chức năng riêng; chat không thay được.
+- **Claude không viết hay tóm tắt được:** sai hẳn; đó là thế mạnh cốt lõi.
+- **Chỉ API mới tạo được văn bản:** sai; chat cũng tạo văn bản, API chỉ là cách gọi bằng chương trình.
+
+### Thông điệp
+Đừng rơi vào hai thái cực Claude làm hết hoặc Claude vô dụng. Hãy đặt câu hỏi: việc này cần năng lực gì, và bề mặt nào cung cấp năng lực đó.
+
+> Câu trả lời cân bằng luôn ghi điểm: công cụ phù hợp cộng với con người kiểm soát.`
+},
+{
+  id: 'qz-ccao-069',
+  topic: 'claude',
+  q: '[Product Selection] A small business owner expects only occasional help with writing and light analysis, has a limited budget, and is unsure how much they will use it. What is the most sensible starting point?',
+  options: [
+    'Buy the largest enterprise contract immediately, to be safe',
+    'Start with a free or low-tier personal plan, then upgrade if real usage and needs grow',
+    'Avoid Claude entirely until they can afford the top plan',
+    'Share a single paid login across the whole neighbourhood to split the cost'
+  ],
+  answer: 1,
+  explain: `**Đúng: bắt đầu nhỏ, nâng cấp khi nhu cầu thực sự tăng.** Với người dùng ít, ngân sách hạn chế, gói miễn phí hoặc gói thấp là đủ để thử. Khi tần suất và nhu cầu tăng, lúc đó nâng cấp dựa trên dữ liệu sử dụng thật, không phải cảm giác.
+
+### Vì sao các lựa chọn khác sai
+- **Mua gói doanh nghiệp lớn ngay:** trả nhiều cho năng lực chưa dùng tới, lãng phí.
+- **Tránh Claude đến khi đủ tiền mua gói cao nhất:** trì hoãn giá trị; gói thấp hoặc miễn phí đã dùng được cho việc nhỏ.
+- **Share một login cho cả khu:** vi phạm điều khoản, mất kiểm soát và không an toàn.
+
+### Cách tư vấn
+Hỏi: dùng bao nhiêu người, tần suất, dữ liệu có nhạy cảm không, cần chia sẻ hoặc quản trị không. Từ đó chọn gói tối thiểu đủ dùng rồi mở rộng.
+
+> Nguyên tắc chi tiêu: trả theo nhu cầu thực, nâng cấp theo bằng chứng sử dụng.`
+},
+{
+  id: 'qz-ccao-070',
+  topic: 'claude',
+  q: '[Product Selection] An employee reads a lot of web pages during the day and wants Claude to summarise the page they are on and help draft replies without leaving the browser. Which offering is most relevant?',
+  options: [
+    'The command-line tool built for code repositories',
+    'A spreadsheet formula that calls a model',
+    'The mobile app used completely offline',
+    'The Claude browser extension (Claude for Chrome), which brings Claude into the browser'
+  ],
+  answer: 3,
+  explain: `**Đúng: tiện ích mở rộng trình duyệt của Claude (Claude for Chrome) đưa Claude vào ngay trang đang đọc.** Nó phù hợp khi bạn muốn tóm tắt trang, soạn trả lời ngay trong ngữ cảnh trình duyệt, không phải copy qua lại.
+
+### Vì sao các lựa chọn khác sai
+- **Công cụ dòng lệnh cho repo:** dành cho code, không phải đọc web.
+- **Công thức bảng tính gọi model:** không phải cách làm; bảng tính không thay được việc đọc trang.
+- **App di động offline:** không có ngữ cảnh trang web đang mở.
+
+### Lưu ý
+Không khẳng định chi tiết tính năng nếu không chắc; điều cần nhớ là nguyên tắc: muốn Claude can thiệp ngay tại bối cảnh đang xem thì chọn bề mặt tích hợp với bối cảnh đó.
+
+> Khi chọn bề mặt, hãy hỏi tôi đang ở đâu khi làm việc này; câu trả lời quyết định công cụ.`
+},
+{
+  id: 'qz-ccao-071',
+  topic: 'claude',
+  multi: true,
+  q: '[Product Selection] A team is considering a Claude surface that can take actions across their tools in a shared agentic workspace, not just chat. Which two considerations matter most before adopting it? (Choose 2)',
+  options: [
+    'Whether the product name is long enough to sound serious',
+    'What permissions and data access the agent will have, and whether a human reviews its actions',
+    'Whether the interface offers a dark theme',
+    'That the work is logged and can be audited later'
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: với bề mặt có thể hành động thay bạn, hai điều quan trọng nhất là quyền và khả năng kiểm toán.** Quyền quyết định agent được chạm vào dữ liệu hoặc hành động nào; cần giới hạn đúng và có người duyệt các hành động quan trọng. Nhật ký (log) giúp sau này giải trình được đã làm gì, khi nào, trên dữ liệu nào.
+
+### Vì sao các lựa chọn khác sai
+- **Tên sản phẩm dài hay không:** không liên quan đến an toàn hay chất lượng.
+- **Giao diện có dark mode hay không:** là sở thích giao diện, không phải tiêu chí quản trị.
+
+### Cách trả lời
+Khi được hỏi về bề mặt agentic, hãy nói về phạm vi quyền, sự giám sát của con người, khả năng kiểm toán, và xử lý dữ liệu nhạy cảm. Đó là các tiêu chí quản trị cốt lõi.
+
+> Trao quyền cho agent là trao quyền hạn; hãy giới hạn và ghi log.`
+},
+{
+  id: 'qz-ccao-072',
+  topic: 'claude',
+  q: '[Product Selection] A user wants a one-line answer to a simple factual question and does not need files, connectors or deep reasoning. What is the most appropriate choice?',
+  options: [
+    'Use a lightweight, fast chat interaction for the simple question, and still verify anything important',
+    'Set up a full Project with connectors for every single question',
+    'Write and run a custom program just to ask one question',
+    'Avoid asking, because the question is too simple to be worth it'
+  ],
+  answer: 0,
+  explain: `**Đúng: việc đơn giản, một lần thì tương tác nhẹ và nhanh; vẫn kiểm chứng phần quan trọng.** Dùng bề mặt chat thông thường là đủ; không cần dựng Project hay connector cho một câu hỏi. Nhưng nếu câu trả lời dùng cho quyết định, vẫn phải kiểm chứng dữ kiện.
+
+### Vì sao các lựa chọn khác sai
+- **Dựng Project cộng connector cho mọi câu hỏi:** quá mức, tốn công, không cần thiết.
+- **Viết hẳn chương trình gọi API cho một câu:** phức tạp hoá việc đơn giản.
+- **Không hỏi vì câu hỏi quá đơn giản:** không có lý do; câu hỏi nhỏ vẫn có giá trị.
+
+### Nguyên tắc
+Chọn mức đầu tư tương xứng với giá trị và độ lặp lại của việc. Việc nhỏ, một lần thì nhẹ. Việc lớn, lặp lại, giá trị cao thì đầu tư quy trình, Project hoặc API.
+
+> Đừng dùng đại bác bắn ruồi; cũng đừng dùng súng nước chữa cháy.`
+},
+{
+  id: 'qz-ccao-073',
+  topic: 'claude',
+  multi: true,
+  q: '[Product Selection] A company is planning how to roll Claude out to staff. Which two statements about choosing surfaces are most accurate? (Choose 2)',
+  options: [
+    'Match the surface to the task: chat for quick work, Projects for repeated work with shared knowledge, API for automation, Claude Code for code',
+    'Everyone must be forced to use exactly one surface for every task',
+    'The choice of surface is independent of security and data-handling needs',
+    'Different teams may legitimately need different surfaces, and training should cover the ones they actually use'
+  ],
+  answer: [0, 3],
+  explain: `**Đúng: chọn bề mặt theo việc, và cho phép các nhóm dùng bề mặt khác nhau.** Chat cho việc nhanh, Project cho việc lặp lại với kiến thức nền, API cho tự động hoá, Claude Code cho code. Huấn luyện nên tập trung vào bề mặt mà từng nhóm thực sự dùng.
+
+### Vì sao các lựa chọn khác sai
+- **Ép mọi người dùng đúng một bề mặt:** nhiều việc khác nhau cần bề mặt khác nhau; ép một loại làm giảm hiệu quả.
+- **Chọn bề mặt độc lập với an toàn dữ liệu:** sai; dữ liệu nhạy cảm ảnh hưởng trực tiếp đến bề mặt được phép dùng.
+
+### Cách làm
+Lập bảng việc sang bề mặt, kèm lưu ý dữ liệu. Đào tạo theo nhóm. Cho phép ngoại lệ có kiểm soát.
+
+> Một chính sách tốt là đúng việc, đúng bề mặt, đúng quyền.`
+},
+{
+  id: 'qz-ccao-074',
+  topic: 'claude',
+  q: '[Product Selection] A consultant produced a great client document with Claude last week but cannot find the chat again. What is the most reliable way to make good work reusable next time?',
+  options: [
+    'Rely on the chat reappearing in the history search by luck',
+    'Recreate the result randomly from scratch each time',
+    'Save the prompt, context and setup in a reusable template or Project so the same approach can be repeated',
+    'Switch to a completely different tool and start over'
+  ],
+  answer: 2,
+  explain: `**Đúng: biến kết quả tốt thành tài sản tái sử dụng bằng template hoặc Project.** Lưu lại prompt, ngữ cảnh, cấu trúc đã hiệu quả để lần sau lặp lại nhanh. Đây là cách biến may mắn thành quy trình.
+
+### Vì sao các lựa chọn khác sai
+- **Chờ chat cũ tự hiện lại:** không đảm bảo; tìm lại mất thời gian.
+- **Làm lại ngẫu nhiên mỗi lần:** không tận dụng thành công trước đó.
+- **Đổi hẳn công cụ khác:** không cần thiết nếu vấn đề chỉ là lưu lại cách làm.
+
+### Cách làm
+Lưu prompt mẫu, tài liệu nền và ví dụ đầu ra tốt vào một nơi chung. Khi có việc tương tự, mở lại và điều chỉnh.
+
+> Thành công lặp lại được là tài sản; hãy lưu quy trình, không chỉ lưu kết quả.`
+},
+{
+  id: 'qz-ccao-075',
+  topic: 'claude',
+  q: '[Product Selection] A team needs a fixed calculation that must return exactly the same result every single time, and it involves money. Which guidance is best?',
+  options: [
+    'Use Claude, because a general assistant can be trusted with exact arithmetic',
+    'Never let Claude near any task that contains numbers',
+    'Run the calculation in both Claude and a calculator and average the two answers',
+    'Use a deterministic tool or script for the exact calculation, and use Claude for language, synthesis and judgement around it'
+  ],
+  answer: 3,
+  explain: `**Đúng: tính toán chính xác, lặp lại thì dùng công cụ tất định (deterministic); dùng Claude cho ngôn ngữ, tổng hợp, phán đoán.** Tính toán tiền tệ phải cho kết quả giống nhau mỗi lần, nên dùng script hoặc công cụ chuyên dụng. Claude mạnh ở diễn đạt, tóm tắt, đánh giá, nhưng không phải máy tính chính xác tuyệt đối.
+
+### Vì sao các lựa chọn khác sai
+- **Tin Claude làm số học chính xác tuyệt đối:** rủi ro sai số; không nên dùng cho tính tiền.
+- **Cấm Claude mọi việc có số:** quá cực đoan; Claude vẫn giúp giải thích, kiểm tra logic, soạn báo cáo.
+- **Chạy cả hai rồi lấy trung bình:** vô nghĩa về nghiệp vụ; hai nguồn sai khác nhau không bù trừ được.
+
+### Cách làm
+Tách phần tính toán (deterministic) khỏi phần diễn giải (Claude). Kết quả số từ công cụ, Claude viết giải thích và kiểm tra hợp lý.
+
+> Nguyên tắc: chính xác tuyệt đối thì dùng máy tính; ngôn ngữ và phán đoán thì dùng Claude.`
+},
+{
+  id: 'qz-ccao-076',
+  topic: 'claude',
+  q: '[Knowledge Config] A team keeps the same 40-page brand guideline and product catalogue in every chat, pasting the files in again and again. They want Claude to use this material consistently across many conversations. What is the best configuration?',
+  options: [
+    'Keep pasting the documents into each new chat manually every time',
+    'Put the reference material and instructions in a Project so they are available across chats in that Project',
+    'Upload the files once and assume Claude will remember them permanently in every unrelated chat',
+    'Email the documents to Claude before each task'
+  ],
+  answer: 1,
+  explain: `**Đúng: đưa tài liệu nền và hướng dẫn vào Project để dùng chung qua nhiều chat.** Project giữ tài liệu tham chiếu và chỉ dẫn, nên mọi chat trong Project đều xuất phát từ cùng nền. Không phải dán lại, không sợ thiếu phiên bản.
+
+### Vì sao các lựa chọn khác sai
+- **Dán tay mỗi lần:** tốn thời gian, dễ dán thiếu hoặc dán bản cũ.
+- **Upload một lần rồi trông vào trí nhớ vĩnh viễn ở chat khác:** không đảm bảo; một chat không liên quan không tự có tài liệu đó.
+- **Gửi email cho Claude trước mỗi việc:** không phải cơ chế cấu hình; rườm rà và không nhất quán.
+
+### Cách làm
+Tạo Project cho dòng việc, đưa tài liệu cộng hướng dẫn cộng ví dụ mẫu. Cập nhật tài liệu một chỗ khi có thay đổi.
+
+> Kiến thức nền nên nằm ở nơi cả nhóm dùng lại, không nằm rải rác trong từng chat.`
+},
+{
+  id: 'qz-ccao-077',
+  topic: 'claude',
+  q: '[Knowledge Config] A user uploads a contract and asks Claude to answer questions using only that contract. A colleague asks why this is better than relying on Claude’s general knowledge. What is the best explanation?',
+  options: [
+    'It makes Claude’s general knowledge disappear forever',
+    'It guarantees every answer is correct, so no checking is needed',
+    'It is simply a slower way to ask the same question',
+    'It grounds the answer in the provided document, which reduces made-up details and lets each claim be checked against the source'
+  ],
+  answer: 3,
+  explain: `**Đúng: trả lời dựa trên tài liệu được cung cấp (grounding) giúp giảm bịa và cho phép kiểm chứng.** Khi Claude chỉ dùng hợp đồng đã tải lên, mỗi khẳng định đều có thể đối chiếu với văn bản gốc. Đây là cách tăng độ tin cậy.
+
+### Vì sao các lựa chọn khác sai
+- **Làm mất trí nhớ tổng quát vĩnh viễn:** không đúng; chỉ là giới hạn phạm vi cho câu hỏi này.
+- **Đảm bảo luôn đúng, không cần kiểm tra:** không có gì đảm bảo tuyệt đối; vẫn cần đối chiếu.
+- **Chỉ là cách hỏi chậm hơn:** bỏ qua lợi ích cốt lõi là kiểm chứng được.
+
+### Liên hệ
+Grounding nghĩa là neo câu trả lời vào nguồn. Khi nguồn hẹp, rủi ro bịa giảm, nhưng vẫn phải kiểm tra trích dẫn.
+
+> Hỏi nguồn ở đâu là thói quen tốt: nếu chỉ ra được đoạn văn bản, đó là grounding.`
+},
+{
+  id: 'qz-ccao-078',
+  topic: 'claude',
+  q: '[Knowledge Config] A Project’s knowledge is out of date: the pricing sheet inside it was updated last week, but Claude keeps quoting the old prices. What is the most likely fix?',
+  options: [
+    'Update or replace the reference material in the Project so Claude works from the current version',
+    'Ask Claude to be more confident about the old prices',
+    'Open a new chat each time and hope it notices the change',
+    'Delete all knowledge from the Project so it cannot be wrong'
+  ],
+  answer: 0,
+  explain: `**Đúng: cập nhật hoặc thay tài liệu trong Project để Claude làm việc trên bản mới nhất.** Kiến thức trong Project là bản chụp tại thời điểm tải lên; khi tài liệu đổi mà không cập nhật, Claude vẫn dùng bản cũ.
+
+### Vì sao các lựa chọn khác sai
+- **Nhờ Claude tự tin hơn về giá cũ:** làm tăng rủi ro truyền sai thông tin.
+- **Mở chat mới rồi hy vọng:** chat mới vẫn đọc Project với tài liệu cũ.
+- **Xoá hết knowledge:** mất luôn thông tin đúng, không phải cách sửa.
+
+### Cách làm
+Khi tài liệu nguồn thay đổi, cập nhật Project; nếu cần, ghi rõ phiên bản hoặc ngày trong tài liệu. Kiểm tra lại vài câu mẫu để chắc chắn.
+
+> Outdated knowledge là lỗi cấu hình phổ biến; hãy coi tài liệu như dữ liệu cần bảo trì.`
+},
+{
+  id: 'qz-ccao-079',
+  topic: 'claude',
+  multi: true,
+  q: '[Knowledge Config] Which two practices help keep Claude’s configured knowledge useful and trustworthy? (Choose 2)',
+  options: [
+    'Keep the reference material current and remove outdated files',
+    'Upload everything ever created, even if it is irrelevant, so nothing is ever missing',
+    'Label clearly what each piece of material is for and how it should be used',
+    'Hide the sources of facts so the final answer looks cleaner'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: giữ tài liệu cập nhật và gắn nhãn rõ mục đích sử dụng.** Knowledge tốt là knowledge đúng, mới, có tổ chức. Nhãn giúp Claude và người đọc biết tài liệu dùng cho việc gì, tránh dùng nhầm.
+
+### Vì sao các lựa chọn khác sai
+- **Upload mọi thứ kể cả không liên quan:** gây nhiễu, loãng ngữ cảnh, tăng nguy cơ dùng sai tài liệu.
+- **Giấu nguồn để câu trả lời trông sạch:** mất khả năng kiểm chứng; người đọc không biết tin vào đâu.
+
+### Cách làm
+Mỗi tài liệu: tên rõ ràng, ghi phạm vi, ngày cập nhật. Định kỳ rà soát, bỏ tài liệu lỗi thời.
+
+> Knowledge không phải càng nhiều càng tốt mà đúng và mới thì tốt.`
+},
+{
+  id: 'qz-ccao-080',
+  topic: 'claude',
+  q: '[Knowledge Config] A user set a custom instruction: Always answer in French, whatever language the question is in. In a new chat, Claude replies in English. What is the most likely reason?',
+  options: [
+    'Claude is broken and can no longer follow any instruction',
+    'Custom instructions only ever work once and then expire',
+    'The instruction was probably not applied to that chat or surface, so check that the setting is enabled where the work is happening',
+    'The user must repeat the instruction in every single message, and settings never have any effect'
+  ],
+  answer: 2,
+  explain: `**Đúng: kiểm tra xem hướng dẫn có thực sự áp dụng cho bề mặt hoặc chat đang dùng hay không.** Custom instruction (hướng dẫn tuỳ biến) chỉ có tác dụng khi được bật và áp dụng đúng nơi. Nếu chat mới trả lời tiếng Anh, khả năng cao là thiết lập chưa áp dụng cho bối cảnh đó.
+
+### Vì sao các lựa chọn khác sai
+- **Claude hỏng, không tuân theo gì:** kết luận quá vội; thường là vấn đề cấu hình phạm vi.
+- **Hướng dẫn chỉ dùng một lần rồi hết hạn:** không đúng bản chất.
+- **Phải nhắc mỗi tin nhắn, setting không bao giờ có tác dụng:** cực đoan; setting là cơ chế chuẩn để áp dụng lâu dài.
+
+### Cách kiểm tra
+Xác nhận hướng dẫn đã bật, áp dụng cho đúng bề mặt, và không bị hướng dẫn khác ghi đè. Thử lại trong chat mới.
+
+> Khi model không nghe lời, hãy kiểm tra cấu hình trước khi kết luận model yếu.`
+},
+{
+  id: 'qz-ccao-081',
+  topic: 'claude',
+  q: '[Knowledge Config] A consultant wants Claude to follow the firm’s report structure and tone for every client document. Which approach best supports that?',
+  options: [
+    'Change the instructions every day so Claude stays alert',
+    'Put the required structure and tone guidance in a Project’s instructions, and include a short example of a good report',
+    'Give no examples and hope Claude guesses the house style',
+    'Keep the guidance in one old chat that will be deleted soon'
+  ],
+  answer: 1,
+  explain: `**Đúng: đưa cấu trúc và tông giọng vào hướng dẫn, kèm ví dụ mẫu.** Hướng dẫn cho biết phải làm gì; ví dụ cho thấy như thế nào là đạt. Kết hợp cả hai giúp Claude bám sát phong cách của firm.
+
+### Vì sao các lựa chọn khác sai
+- **Đổi hướng dẫn mỗi ngày:** gây bất ổn, Claude khó bám theo.
+- **Không cho ví dụ, trông chờ may mắn:** mô tả trừu tượng dễ bị hiểu lệch.
+- **Để trong chat cũ sắp xoá:** hướng dẫn biến mất, không áp dụng cho việc mới.
+
+### Cách làm
+Viết 3 đến 5 gạch đầu dòng về cấu trúc và tông giọng, kèm một đoạn mẫu ngắn. Đặt ở Project hoặc instructions dùng chung.
+
+> Mô tả cộng ví dụ luôn tốt hơn chỉ mô tả.`
+},
+{
+  id: 'qz-ccao-082',
+  topic: 'claude',
+  q: '[Knowledge Config] A user connects Claude to their cloud drive so it can read files without re-uploading them. What should they verify before relying on this?',
+  options: [
+    'Nothing, connectors are always safe to enable on any account',
+    'That the connector removes the need for any human review of the output',
+    'That the connection is approved by their organisation, only reaches the intended files, and respects existing permissions',
+    'That all connected files become public'
+  ],
+  answer: 2,
+  explain: `**Đúng: xác minh kết nối được tổ chức phê duyệt, chỉ chạm đúng tệp, và tôn trọng quyền hiện có.** Connector mở rộng phạm vi dữ liệu Claude thấy được; vì vậy phải kiểm soát quyền và phạm vi trước khi tin dùng.
+
+### Vì sao các lựa chọn khác sai
+- **Connector luôn an toàn, cứ bật:** sai; kết nối mở rộng quyền truy cập dữ liệu.
+- **Connector thay cho review của người:** không; nó chỉ thay đổi nơi lấy dữ liệu.
+- **Mọi tệp thành public:** hoàn toàn sai; kết nối không đồng nghĩa công khai.
+
+### Cách làm
+Trước khi bật: hỏi tổ chức có cho phép không, phạm vi tệp nào, ai được duyệt, có log không. Sau đó kiểm tra vài truy vấn mẫu.
+
+> Kết nối là mở rộng phạm vi dữ liệu; hãy kiểm soát như khi cấp quyền truy cập.`
+},
+{
+  id: 'qz-ccao-083',
+  topic: 'claude',
+  q: '[Knowledge Config] An analyst needs Claude to use an internal knowledge source through a standard protocol that connects Claude to external tools and data. What is that protocol commonly called, and why does it help?',
+  options: [
+    'MCP (Model Context Protocol), a standard way to connect Claude to tools and data sources without custom code for each one',
+    'HTML, because it formats documents for display',
+    'SQL, because it can only query relational databases',
+    'A password manager, because it stores secrets for the model'
+  ],
+  answer: 0,
+  explain: `**Đúng: đó là MCP (Model Context Protocol), chuẩn kết nối Claude với tool và nguồn dữ liệu.** MCP giúp không phải viết code riêng cho từng nguồn; client như Claude kết nối tới server cung cấp tool hoặc resource.
+
+### Vì sao các lựa chọn khác sai
+- **HTML:** là ngôn ngữ đánh dấu để trình bày trang, không phải giao thức kết nối tool.
+- **SQL:** ngôn ngữ truy vấn cơ sở dữ liệu, không phải giao thức kết nối trợ lý với tool.
+- **Trình quản lý mật khẩu:** lưu secret, không kết nối tool.
+
+### Lưu ý
+Khi nói về MCP, nhấn mạnh: chuẩn mở, client-server, server cung cấp tool hoặc resource. Không cần đi sâu tham số nếu không chắc.
+
+> Ghi nhớ: MCP là chuẩn kết nối, không thay thế API key và không tự cấp quyền.`
+},
+{
+  id: 'qz-ccao-084',
+  topic: 'claude',
+  q: '[Knowledge Config] A team uploads a mix of relevant and irrelevant files into a Project, and Claude’s answers become unfocused. What is the most likely improvement?',
+  options: [
+    'Add even more unrelated files to increase coverage',
+    'Remove all instructions and keep only the files',
+    'Ask Claude to ignore its own context',
+    'Curate the knowledge: keep only material relevant to the task and organise it clearly'
+  ],
+  answer: 3,
+  explain: `**Đúng: chọn lọc (curate) knowledge, chỉ giữ tài liệu liên quan và sắp xếp rõ ràng.** Nhiều tài liệu không liên quan làm loãng ngữ cảnh, khiến Claude khó tập trung. Ít mà đúng thường tốt hơn nhiều mà rối.
+
+### Vì sao các lựa chọn khác sai
+- **Thêm nhiều tệp không liên quan:** làm tăng nhiễu, không cải thiện độ tập trung.
+- **Bỏ hết hướng dẫn, chỉ giữ tệp:** mất phần định hướng cách dùng tài liệu.
+- **Nhờ Claude bỏ qua ngữ cảnh:** mâu thuẫn với mục tiêu dùng tài liệu.
+
+### Cách làm
+Mỗi Project chỉ giữ tài liệu phục vụ đúng mục đích; chia nhóm, đặt tên rõ, loại bỏ bản trùng hoặc lỗi thời.
+
+> Knowledge là bộ lọc, không phải kho chứa tất cả.`
+},
+{
+  id: 'qz-ccao-085',
+  topic: 'claude',
+  multi: true,
+  q: '[Knowledge Config] A user asks a question that could be answered from a document they uploaded, but Claude answers from general knowledge instead. Which two checks are most useful? (Choose 2)',
+  options: [
+    'Confirm the document was actually attached and accessible in that chat',
+    'Assume Claude read a file it never received',
+    'Make the request explicit, for example by asking Claude to use the attached document and to point to where it found the answer',
+    'Delete the question and never try again'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: kiểm tra tài liệu có thực sự được đính kèm, và yêu cầu rõ ràng dùng tài liệu này, chỉ rõ chỗ lấy.** Hai việc này xử lý đúng nguyên nhân: có thể file chưa vào chat, hoặc yêu cầu chưa đủ rõ nên Claude dùng kiến thức chung.
+
+### Vì sao các lựa chọn khác sai
+- **Giả định Claude đã đọc file chưa gửi:** sai; không có file thì không thể dùng.
+- **Xoá câu hỏi, không thử lại:** bỏ mất cơ hội sửa dễ dàng.
+
+### Cách làm
+Xác nhận file xuất hiện trong chat, nhắc rõ nguồn, yêu cầu trích dẫn vị trí. Nếu vẫn lệch, thử chat mới với file đính kèm lại.
+
+> Khi Claude không dùng file của tôi, hãy kiểm tra file trước, câu lệnh sau.`
+},
+{
+  id: 'qz-ccao-086',
+  topic: 'claude',
+  q: '[Knowledge Config] A manager wants everyone on the team to give Claude the same background context for a recurring task. What is the most maintainable approach?',
+  options: [
+    'Let each person retype the context differently every time',
+    'Share the context only verbally in meetings',
+    'Store the shared context and instructions once in a Project or template that the team reuses',
+    'Rely on Claude remembering the context across unrelated accounts'
+  ],
+  answer: 2,
+  explain: `**Đúng: lưu context và hướng dẫn dùng chung một lần ở Project hoặc template để cả nhóm tái sử dụng.** Đây là cách giữ nhất quán và dễ bảo trì; sửa một chỗ, cả nhóm hưởng lợi.
+
+### Vì sao các lựa chọn khác sai
+- **Mỗi người gõ lại khác nhau:** dễ lệch, tốn thời gian.
+- **Chỉ chia sẻ bằng miệng trong họp:** không lưu lại được, người vắng họp mất thông tin.
+- **Trông Claude nhớ qua các tài khoản không liên quan:** không có cơ chế đó.
+
+### Cách làm
+Tạo Project hoặc template chuẩn, ai cũng dùng chung. Khi quy trình đổi, cập nhật một nơi và thông báo.
+
+> Nhất quán đến từ nguồn dùng chung, không từ việc mỗi người tự nhớ.`
+},
+{
+  id: 'qz-ccao-087',
+  topic: 'claude',
+  q: '[Knowledge Config] A user pastes a long document but asks only about one section. Claude answers with details from a different section. What is the best fix?',
+  options: [
+    'Paste the entire document again in a brand-new chat',
+    'Point to the specific section or page and ask Claude to focus only on that part',
+    'Ask Claude to guess which section matters most',
+    'Give up on using documents with Claude'
+  ],
+  answer: 1,
+  explain: `**Đúng: chỉ đúng phần hoặc trang cần hỏi và yêu cầu tập trung vào đó.** Khi tài liệu dài, Claude có thể lấy nhầm phần; chỉ định rõ giúp thu hẹp phạm vi.
+
+### Vì sao các lựa chọn khác sai
+- **Dán lại toàn bộ vào chat mới:** không giải quyết việc chỉ rõ phần cần.
+- **Nhờ Claude đoán phần quan trọng:** đoán có thể sai.
+- **Bỏ luôn việc dùng tài liệu:** phản ứng cực đoan.
+
+### Cách làm
+Nêu số trang hoặc tên mục, hoặc dán riêng đoạn đó, rồi hỏi. Nếu cần, yêu cầu Claude trích dẫn vị trí.
+
+> Tài liệu dài thì thu hẹp phạm vi trước khi hỏi.`
+},
+{
+  id: 'qz-ccao-088',
+  topic: 'claude',
+  multi: true,
+  q: '[Knowledge Config] Which two statements about giving Claude knowledge are accurate? (Choose 2)',
+  options: [
+    'Claude can only use information that is actually provided or accessible; it does not automatically know your private files',
+    'Adding more context is always better, even when it is contradictory or irrelevant',
+    'Clear, well-organised context usually produces better answers than one huge, messy dump of files',
+    'Claude automatically has access to your company’s internal databases without any setup'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: Claude chỉ dùng thông tin được cung cấp hoặc truy cập được, và ngữ cảnh rõ ràng, có tổ chức thường tốt hơn một mớ hỗn độn.** Đây là hai hiểu biết nền tảng về cách Claude hoạt động.
+
+### Vì sao các lựa chọn khác sai
+- **Thêm context luôn tốt, kể cả mâu thuẫn hoặc thừa:** sai; thông tin rác hoặc mâu thuẫn gây nhiễu.
+- **Claude tự có cơ sở dữ liệu nội bộ của công ty nếu không setup:** hoàn toàn sai; không có kết nối thì không có dữ liệu.
+
+### Liên hệ
+Context window có giới hạn; chọn lọc quan trọng hơn nhồi nhét.
+
+> Chất lượng ngữ cảnh quan trọng hơn số lượng.`
+},
+{
+  id: 'qz-ccao-089',
+  topic: 'claude',
+  q: '[Knowledge Config] A user wants Claude to follow a house style guide for all the team’s writing. Where is the most appropriate place to put it?',
+  options: [
+    'In a random chat that will be deleted tomorrow',
+    'Nowhere, because Claude already knows every company’s style',
+    'In a password field so it stays private',
+    'In the relevant Project’s instructions or custom instructions, so it applies to the work instead of being buried in one old chat'
+  ],
+  answer: 3,
+  explain: `**Đúng: đặt style guide ở Project hoặc instructions để áp dụng cho công việc, không chôn trong một chat cũ.** Hướng dẫn dùng chung phải nằm ở nơi có thể tái sử dụng và áp dụng lâu dài.
+
+### Vì sao các lựa chọn khác sai
+- **Chat ngẫu nhiên rồi xoá:** hướng dẫn mất, không áp dụng cho việc sau.
+- **Không đặt ở đâu, trông Claude tự biết:** mỗi công ty một phong cách; Claude không tự biết.
+- **Nhét vào ô mật khẩu:** không phải nơi chứa hướng dẫn; vô nghĩa.
+
+### Cách làm
+Đưa style guide vào Project dùng chung hoặc custom instructions; kèm ví dụ. Cập nhật khi guideline đổi.
+
+> Hướng dẫn dùng chung nên sống ở nơi dùng lại, không ở nơi dùng một lần.`
+},
+{
+  id: 'qz-ccao-090',
+  topic: 'claude',
+  multi: true,
+  q: '[Knowledge Config] A team’s Claude answers vary a lot because each member supplies different context. Which two changes most improve consistency? (Choose 2)',
+  options: [
+    'Agree on a shared set of reference material and instructions for the task',
+    'Include the key facts and constraints that every answer must respect',
+    'Let each person improvise with no shared context at all',
+    'Randomise the instructions each time to test the model'
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: thống nhất tài liệu và hướng dẫn dùng chung, và nêu rõ ràng buộc mà câu trả lời phải tôn trọng.** Nhất quán đến từ nguồn dùng chung và yêu cầu rõ ràng, không từ may mắn.
+
+### Vì sao các lựa chọn khác sai
+- **Mỗi người tự ứng biến, không context chung:** kết quả tất yếu lệch nhau.
+- **Ngẫu nhiên hoá hướng dẫn để test model:** không phải cách tạo nhất quán; chỉ gây hỗn loạn.
+
+### Cách làm
+Xây một Project hoặc template chuẩn: tài liệu, cấu trúc, ràng buộc, ví dụ. Mọi người dùng chung.
+
+> Muốn nhất quán thì chuẩn hoá đầu vào, không trông vào may rủi.`
+},
 );
