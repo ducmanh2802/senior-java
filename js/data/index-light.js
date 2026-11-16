@@ -2465,7 +2465,7 @@ window.DATA_INDEX = {
     {"id":"lesson-ai-010","track":"ai","order":10,"title":"Đánh giá AI agent bằng eval set: pass rate, so sánh prompt và bắt regression","level":"mid","minutes":35},
     {"id":"lesson-ai-011","track":"ai","order":11,"title":"Memory cho AI agent: cửa sổ token, cắt lượt và tóm tắt phần cũ","level":"senior","minutes":45},
     {"id":"lesson-ai-012","track":"ai","order":12,"title":"MCP-style tool server bằng Java: registry, schema và lỗi có cấu trúc","level":"senior","minutes":45},
-    {"id":"lesson-ai-013","track":"ai","order":13,"title":"Gọi LLM API tin cậy: retry, timeout, circuit breaker và fallback","level":"senior","minutes":45},
+    {"id":"lesson-ai-013","track":"ai","order":13,"title":"Client LLM tin cậy: fake client, deterministic test và pattern retry/breaker/fallback","level":"senior","minutes":45},
     {"id":"lesson-ai-014","track":"ai","order":14,"title":"Đánh giá RAG: đo recall@k, precision và so sánh cách chunking","level":"senior","minutes":45},
     {"id":"lesson-ai-015","track":"ai","order":15,"title":"Dự án RAG bằng Spring Boot (1/2): kiến trúc tổng thể và gọi LLM an toàn","level":"senior","minutes":45},
     {"id":"lesson-ai-016","track":"ai","order":16,"title":"Dự án RAG bằng Spring Boot (2/2): chunking, embedding, pgvector và HNSW","level":"senior","minutes":50},
