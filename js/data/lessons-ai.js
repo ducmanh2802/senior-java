@@ -4251,24 +4251,26 @@ rag:
     daily-token-budget: 200000
 ~~~
 
-\${RAG_LLM_API_KEY:} la Spring placeholder: lay tu bien moi truong, neu khong co thi chuoi rong (dau ':' la gia tri mac dinh). {{@ConfigurationProperties}} can {{@EnableConfigurationProperties(RagLlmProperties.class)}} tren mot configuration class, hoac {{@ConfigurationPropertiesScan}} (Spring Boot 2.2+). API key **khong duoc hard-code** va **khong duoc ghi vao log** — log chi giu requestId, model, so token, latency, ma loi.
+\${RAG_LLM_API_KEY:} là Spring placeholder (chỗ giữ chỗ được thay giá trị khi chạy): lấy từ biến môi trường, nếu không có thì chuỗi rỗng (dấu ':' là giá trị mặc định). {{@ConfigurationProperties}} cần {{@EnableConfigurationProperties(RagLlmProperties.class)}} trên một configuration class, hoặc {{@ConfigurationPropertiesScan}} (Spring Boot 2.2+). API key **không được hard-code** và **không được ghi vào log** — log chỉ giữ requestId, model, số token, latency (độ trễ), mã lỗi.
 
-### 4. Vi du dich vu thuc that: chat tu van the tin dung
+### 4. Ví dụ dịch vụ thực tế: chat tư vấn thẻ tín dụng
 
-Cong ty co 50.000 khach hang, trung binh 200 luot hoi moi gio. Moi luot hoi: nguc canh RAG 5 chunk (1.500 token) + cau hoi (200 token) + cau tra loi (300 token) ≈ 2.000 token. So luot/thang = 200 × 24 × 30 = 144.000; tong khoang 288 trieu token/thang. Don gia trung ban gia dinh 5 USD cho 1 trieu token (chi de quy doi, khong phai bang gia thuc) → khoang 1.440 USD/thang. Neu mot developer nhom toan bo sach huong dan 200.000 token vao moi luot, chi phí tang gap 100 lan ma khong ai nhan ra neu khong co dashboard chi phí theo tinh nang.
+Công ty có 50.000 khách hàng, trung bình 200 lượt hỏi mỗi giờ. Mỗi lượt hỏi: ngữ cảnh RAG 5 chunk (1.500 token) + câu hỏi (200 token) + câu trả lời (300 token) ≈ 2.000 token. Số lượt/tháng = 200 × 24 × 30 = 144.000; tổng khoảng 288 triệu token/tháng. Đơn giá trung bình giả định 5 USD cho 1 triệu token (chỉ để quy đổi, không phải bảng giá thực) → khoảng 1.440 USD/tháng. Nếu một developer nhầm nhồi toàn bộ sách hướng dẫn 200.000 token vào mỗi lượt, chi phí tăng gấp 100 lần mà không ai nhận ra nếu không có dashboard (bảng theo dõi) chi phí theo tính năng.
 
-### 5. Loi hay gap tren production
+### 5. Lỗi hay gặp trên production
 
-| Trieu chung | Nguyen nhan | Cach sua |
+| Triệu chứng | Nguyên nhân | Cách sửa |
 |---|---|---|
-| Mot cuoc goi LLM treo keo sap ca service | Khong co read timeout; luong Tomcat bi chap het | Dat connectTimeout va timeout doc, dung luong rieng cho goi AI |
-| Retry 400/401 vo han | Retry moi status code | Chi retry 429/5xx/529, co so lan toi da va thoi gian cho tong |
-| Hoa don tang gap bop dot ngot | Khong gioi han max_tokens; loi client gui prompt dai lap lai | Dat max_tokens theo loai cong viec, ngan sach token/ngay, alert |
-| LLM bia trich dan [9] khi chi gui [1]..[5] | Khong validate trich dan | Server kiem tra so trich nam trong danh sach id da gui |
+| Một cuộc gọi LLM treo kéo sập cả service | Không có read timeout; luồng Tomcat bị chiếm hết | Đặt connectTimeout và timeout đọc, dùng luồng/nhóm luồng riêng cho gọi AI |
+| Retry 400/401 vô hạn | Retry mọi status code | Chỉ retry 429/5xx/529, có số lần tối đa và thời gian chờ tổng |
+| Hóa đơn tăng đột ngột | Không giới hạn max_tokens; client gửi prompt dài lặp lại | Đặt max_tokens theo loại công việc, ngân sách token/ngày, cảnh báo |
+| LLM bịa trích dẫn [9] khi chỉ gửi [1]..[5] | Không validate trích dẫn | Server kiểm tra số trích nằm trong danh sách id đã gửi |
 
-### Lien he phong van
+### Liên hệ phỏng vấn
 
-Cau hoi dien hinh: "Ban tich hop LLM vao dich vu Java Spring Boot nhu the nao cho on dinh va kiem soat chi phí?". Tra loi mau (khoang 60–90 giay): "Em xay mot wrapper xung quanh nha cung cap LLM bang {{java.net.http.HttpClient}}: dat timeout ket noi 3 giay va timeout doc 20 giay de mot cuoc goi cham khong chap het luong Tomcat. Chi retry loi tam thoi (429, 5xx, 529) voi backoff co tran va jitter, gioi han so lan thu va thoi gian cho tong. Gioi han {{max_tokens}} theo loai cong viec va uoc luong chi phí truoc khi goi: token xap xis ky tu chia 4, tieng Viet ton hon. Tat cau hinh — endpoint, model, key, ngan sach token — dung {{@ConfigurationProperties}} va bien moi truong, khong hard-code. Moi request log requestId, model, token, latency, ma loi; khong log prompt hay du lieu khach hang. Neu nha cung cap loi lien tuc, dung circuit breaker va fallback sang model du phong vao thong bao dang bao tri.",
+Câu hỏi điển hình: "Bạn tích hợp LLM vào dịch vụ Java Spring Boot như thế nào cho ổn định và kiểm soát chi phí?". Trả lời mẫu (khoảng 60–90 giây): "Em xây một wrapper (lớp bọc) quanh nhà cung cấp LLM bằng {{java.net.http.HttpClient}}: đặt timeout kết nối 3 giây và timeout đọc 20 giây để một cuộc gọi chậm không chiếm hết luồng Tomcat. Chỉ retry lỗi tạm thời (429, 5xx, 529) với backoff (tăng dần thời gian chờ) có trần và jitter (độ nhiễu ngẫu nhiên), giới hạn số lần thử và thời gian chờ tổng. Giới hạn {{max_tokens}} theo loại công việc và ước lượng chi phí trước khi gọi: token xấp xỉ ký tự chia 4 với tiếng Anh, tiếng Việt tốn hơn. Toàn bộ cấu hình — endpoint, model, key, ngân sách token — dùng {{@ConfigurationProperties}} và biến môi trường, không hard-code. Mỗi request log requestId, model, token, latency, mã lỗi; không log prompt hay dữ liệu khách hàng. Nếu nhà cung cấp lỗi liên tục, dùng circuit breaker (cầu dao ngắt mạch) và fallback (phương án dự phòng) sang model dự phòng hoặc thông báo đang bảo trì."
+
+> Senior tip: gọi LLM là phụ thuộc bên ngoài chậm và tính tiền — luôn có timeout, giới hạn retry theo tổng thời gian, circuit breaker và ngân sách token; coi mọi output của LLM là không tin cậy cho tới khi được validate.
 `,
   exercises: [
     {
