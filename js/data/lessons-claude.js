@@ -2641,5 +2641,241 @@ Loi hay gap: ep kieu dau vao sai (vd so thanh chuoi), tin customer_id tu model t
   ],
   related: ['claude-026', 'claude-001'],
   tags: ['mcp', 'tool design', 'json schema', 'idempotent'],
+},
+{
+  id: 'lesson-claude-010',
+  track: 'claude',
+  order: 10,
+  title: 'Claude Code cho team: CLAUDE.md, settings.json va permissions',
+  level: 'mid',
+  minutes: 30,
+  goals: ['Phan biet 3 cap CLAUDE.md', 'Cau hinh settings.json theo cap', 'Thiet ke allow/deny theo pattern'],
+  body: `**Tóm tắt:** Claude Code đọc CLAUDE.md ở ba cấp (user, project, local) và settings.json ở ba cấp tương ứng. Quyền tool được kiểm soát bằng danh sách allow/deny theo pattern. Mục tiêu là chia sẻ quy ước team ở cấp project, giữ bí mật ở cấp local, và khóa các lệnh nguy hiểm ở cấp user.
+
+### CLAUDE.md: ba cấp và ai đọc
+
+CLAUDE.md là file hướng dẫn cho agent. Ba cấp: User ~/.claude/CLAUDE.md áp dụng mọi repo; Project ./CLAUDE.md commit vào repo cả team đọc; Local ./.claude/CLAUDE.local.md không commit chứa thông tin cá nhân. Khi chạy, Claude Code gộp cả ba theo thứ tự user rồi project rồi local, cấp sau ghi đè cấp trước khi xung đột. Đặt quy ước code style, lệnh build/test ở project; đặt bí mật và ghi chú cá nhân ở local.
+
+### settings.json: ba cấp tương ứng
+
+~/.claude/settings.json (user); ./.claude/settings.json (project, commit); ./.claude/settings.local.json (local, không commit). Thuộc tính chính: permissions.allow, permissions.deny, hooks, env. Khi deny và allow cùng khớp một lệnh, deny thắng.
+
+### Quyền tool: pattern allow/deny
+
+Mỗi tool có tên (Bash, Read, Edit, Write). Với Bash có thể lọc theo lệnh: "Bash(git status)" cho phép chính xác; "Bash(git *)" cho phép mọi lệnh git; "Bash(rm -rf *)" bị deny.
+
+Ví dụ settings an toàn:
+~~~json
+{
+  "permissions": {
+    "allow": ["Bash(git status)", "Bash(git diff *)", "Read", "Edit"],
+    "deny": ["Bash(rm -rf *)", "Bash(curl * | bash)", "Bash(sudo *)"]
+  }
 }
+~~~
+
+### Nguyên tắc thiết kế
+
+1. Mặc định deny các lệnh phá hủy và tải code từ mạng rồi chạy.
+2. Cho phép đọc/ghi trong repo, deny ghi ngoài repo.
+3. Đặt deny ở cấp user để bảo vệ mọi repo; đặt allow ở cấp project để team cùng dùng.
+4. Kiểm tra bằng lệnh thật: chạy /permissions trong Claude Code để xem effective rules.
+
+### Vi du doi thuc
+
+Team 6 dev dùng Claude Code. Trước đây mỗi người tự cấu hình, có người cho phép "Bash(*)" và vô tình xóa thư mục build. Sau khi chuyển sang settings.json ở cấp project với allow git/npm/test và deny rm/sudo/curl-pipe-bash, số lần lệnh nguy hiểm bị chặn là 14 lần trong 2 tuần, không còn sự cố mất dữ liệu. Thời gian onboarding dev mới giảm từ 1 ngày xuống 30 phút vì CLAUDE.md đã có sẵn lệnh build/test.
+
+### Tra loi mau khi phong vien
+
+"Toi quan ly Claude Code cho team bang ba cap cau hinh. CLAUDE.md project commit chung, chua quy uoc code style, lenh build va test. CLAUDE.local.md khong commit, chua duong dan va tai khoan test ca nhan. settings.json project chua allow/deny cho tool va Bash theo pattern; deny thang allow khi trung. Toi deny rm -rf, sudo, curl pipe bash o cap user de bao ve moi repo, va allow git/npm/test o cap project de team cung dung. Moi dev co the mo rong allow o local nhung khong the bo deny o user. Toi kiem tra effective rules bang /permissions va co smoke test chay Claude Code headless trong CI."`,
+  exercises: [
+    {
+      title: 'PermissionEvaluator: danh gia allow/deny theo pattern',
+      prompt: `Hoan thien PermissionEvaluator danh gia mot lenh shell theo danh sach allow va deny. match(pattern, command): pattern co the la "Bash" khop moi lenh Bash; hoac "Bash(git status)" khop chinh xac; hoac "Bash(git *)" khop bat dau voi "git ". evaluate(command): tra ve "DENY" neu co bat ky deny pattern khop; "ALLOW" neu co allow pattern khop va khong deny; "ASK" neu khong khop gi. deny luon uu tien allow.`,
+      starter: `class PermissionEvaluator {
+    private final List<String> allow = new ArrayList<>();
+    private final List<String> deny = new ArrayList<>();
+
+    void addAllow(String pattern) { allow.add(pattern); }
+    void addDeny(String pattern) { deny.add(pattern); }
+
+    static boolean match(String pattern, String command) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String evaluate(String command) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name); } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); } }
+    static void eq(Object expected, Object actual) { if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual); }
+
+    public static void main(String[] args) {
+        check("allow chinh xac", () -> { PermissionEvaluator pe = new PermissionEvaluator(); pe.addAllow("Bash(git status)"); eq("ALLOW", pe.evaluate("git status")); });
+        check("deny thang allow", () -> { PermissionEvaluator pe = new PermissionEvaluator(); pe.addAllow("Bash(git *)"); pe.addDeny("Bash(git push *)"); eq("DENY", pe.evaluate("git push origin main")); });
+        check("wildcard cuoi", () -> { PermissionEvaluator pe = new PermissionEvaluator(); pe.addAllow("Bash(git *)"); eq("ALLOW", pe.evaluate("git diff --cached")); });
+        check("khong khop tra ASK", () -> { PermissionEvaluator pe = new PermissionEvaluator(); pe.addAllow("Bash(git status)"); eq("ASK", pe.evaluate("npm test")); });
+        check("Bash khong ngoac khop moi lenh", () -> { PermissionEvaluator pe = new PermissionEvaluator(); pe.addAllow("Bash"); eq("ALLOW", pe.evaluate("rm -rf /tmp/x")); pe.addDeny("Bash(rm *)"); eq("DENY", pe.evaluate("rm -rf /tmp/x")); });
+        check("pattern khong khop lenh khac", () -> { PermissionEvaluator pe = new PermissionEvaluator(); pe.addAllow("Bash(git status)"); eq("ASK", pe.evaluate("git status --short")); });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class PermissionEvaluator {
+    private final List<String> allow = new ArrayList<>();
+    private final List<String> deny = new ArrayList<>();
+
+    void addAllow(String pattern) { allow.add(pattern); }
+    void addDeny(String pattern) { deny.add(pattern); }
+
+    static boolean match(String pattern, String command) {
+        String p = pattern.trim();
+        if (p.equals("Bash")) return true;
+        if (!p.startsWith("Bash(") || !p.endsWith(")")) return false;
+        String inner = p.substring(5, p.length() - 1).trim();
+        if (inner.endsWith("*")) {
+            String prefix = inner.substring(0, inner.length() - 1).trim();
+            return command.startsWith(prefix);
+        }
+        return command.equals(inner);
+    }
+
+    String evaluate(String command) {
+        for (String d : deny) if (match(d, command)) return "DENY";
+        for (String a : allow) if (match(a, command)) return "ALLOW";
+        return "ASK";
+    }
+}`,
+      hints: ['Xu ly deny truoc allow.', 'Wildcard "*" chi nam cuoi pattern.', 'Bash khong co ngoac la quyen rong cho moi lenh Bash.'],
+      explain: `PermissionEvaluator mo phong logic danh gia quyen: deny uu tien, allow chi khi khong deny, con lai hoi nguoi dung. Pattern don gian ho tro khop chinh xac va wildcard cuoi. Loi hay gap la cho phep wildcard qua rong o dau pattern lam deny vo hieu, hoac quen deny thang allow.`
+    }
+  ],
+  check: [
+    { q: 'Khi deny va allow cung khop mot lenh, ket qua la gi?', options: ['ALLOW', 'DENY', 'ASK', 'Loi'], answer: 1, explain: 'deny luon thang allow. Day la nguyen tac an toan.' },
+    { q: 'File nao khong nen commit vao repo?', options: ['CLAUDE.md', '.claude/settings.json', '.claude/CLAUDE.local.md', 'README.md'], answer: 2, explain: 'CLAUDE.local.md va settings.local.json chua thong tin ca nhan va khong commit.' },
+    { q: 'Pattern nao cho phep moi lenh git?', options: ['Bash(git)', 'Bash(git *)', 'Bash(*git*)', 'Bash(git all)'], answer: 1, explain: 'Bash(git *) khop moi lenh bat dau bang "git ".' }
+  ],
+  related: ['claude-001', 'claude-002'],
+  tags: ['claude code', 'permissions', 'settings', 'CLAUDE.md']
+}
+,
+{
+  id: 'lesson-claude-011',
+  track: 'claude',
+  order: 11,
+  title: 'Hooks, slash command, subagents, skills va chay headless trong CI',
+  level: 'senior',
+  minutes: 35,
+  goals: ['Biet cac hook PreToolUse/PostToolUse', 'Tao slash command va subagent', 'Chay Claude Code headless trong CI'],
+  body: `**Tóm tắt:** Hooks cho phép chạy script trước/sau tool call để chặn hoặc ghi log. Slash command đóng gói tác vụ lặp lại. Subagent và skill mở rộng khả năng với ngữ cảnh riêng. Chạy headless trong CI giúp tự động hóa review/test mà vẫn kiểm soát quyền.
+
+### Hooks: PreToolUse va PostToolUse
+
+Hook là lệnh shell chạy khi một sự kiện xảy ra. Sự kiện phổ biến: PreToolUse trước khi tool chạy, có thể trả về quyết định block để ngăn tool. PostToolUse sau khi tool chạy, dùng để log, format code, chạy test.
+
+Cấu hình trong settings.json:
+~~~json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "node check-dangerous.js" }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Edit", "hooks": [{ "type": "command", "command": "npm run lint" }] }
+    ]
+  }
+}
+~~~
+
+Script hook đọc JSON từ stdin (tool name, input) và trả exit code 0 (cho phép) hoặc 2 (chặn, in lý do ra stderr).
+
+### Chan lenh nguy hiem bang hook
+
+Một hook PreToolUse cho Bash có thể kiểm tra lệnh có chứa rm -rf, sudo, curl ... | bash. Nếu có, exit 2 và in "Blocked: dangerous command". Đây là lớp bảo vệ thứ hai sau permissions, hữu ích khi pattern allow quá rộng.
+
+### Slash command
+
+Slash command là file markdown trong .claude/commands/ (project) hoặc ~/.claude/commands/ (user). Tên file thành tên lệnh: review.md → /review. Nội dung là prompt mẫu, có thể dùng $ARGUMENTS. Ví dụ /review đọc diff và trả nhận xét theo checklist.
+
+### Subagent va skill
+
+- Subagent: agent con với system prompt và tool riêng, được gọi qua Task tool. Phù hợp tác vụ lớn cần ngữ cảnh riêng (explore codebase, review).
+- Skill: thư mục chứa SKILL.md mô tả khi nào dùng và tài nguyên kèm. Agent tự load khi task khớp. Giữ SKILL.md ngắn, tài nguyên chi tiết trong file riêng.
+
+Nguyên tắc: subagent cho tác vụ có phạm vi rõ và trả kết quả tóm tắt; skill cho kiến thức tái sử dụng.
+
+### Chay headless trong CI
+
+Claude Code hỗ trợ chế độ không tương tác:
+~~~bash
+claude -p "Review PR diff va tra JSON" --output-format json
+~~~
+CI có thể gọi lệnh này với prompt từ file, thu output JSON và fail pipeline nếu kết quả không đạt. Cần đặt ANTHROPIC_API_KEY trong secret và giới hạn quyền bằng settings deny.
+
+### Vi du doi thuc
+
+Pipeline GitHub Actions chạy /review trên mỗi PR: Claude Code headless đọc diff, kiểm tra checklist bảo mật (SQL injection, secret leak) và trả JSON {issues:[...]}. Nếu có issue mức cao, pipeline fail. Trong 1 tháng, hook PreToolUse chặn 9 lệnh rm -rf nhầm, PostToolUse lint bắt 23 lỗi format trước commit. Subagent explore giảm 40% thời gian agent chính phải đọc file.
+
+### Tra loi mau khi phong vien
+
+"Toi mo rong Claude Code bang hooks va command. PreToolUse chan lenh nguy hiem bang script doc JSON tu stdin va exit 2; PostToolUse chay lint/test sau edit. Slash command trong .claude/commands dong goi tac vu lap lai nhu review va release. Subagent dung cho tac vu lon can ngu canh rieng, skill cho kien thuc tai su dung. Trong CI toi chay claude -p voi output JSON, dat API key trong secret va gioi han quyen bang settings deny. Toi do ti le block hook va so issue review tim duoc de cai tien prompt va rule."`,
+  exercises: [
+    {
+      title: 'HookChecker: chan lenh nguy hiem',
+      prompt: `Hoan thien HookChecker quyet dinh co chan lenh shell hay khong. isDangerous(command): true neu command chua mot trong cac mau nguy hiem: "rm -rf", "sudo ", "curl" ket hop "| bash" hoac "| sh", "> /dev/". decide(command): tra ve "BLOCK" neu nguy hiem, nguoc lai "ALLOW". normalize: cat khoang trang du, chuyen ve chu thuong truoc khi kiem tra.`,
+      starter: `class HookChecker {
+    static boolean isDangerous(String command) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static String decide(String command) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name); } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); } }
+    static void eq(Object expected, Object actual) { if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual); }
+
+    public static void main(String[] args) {
+        check("chan rm -rf", () -> eq("BLOCK", HookChecker.decide("rm -rf /")));
+        check("chan sudo", () -> eq("BLOCK", HookChecker.decide("sudo apt install x")));
+        check("chan curl pipe bash", () -> eq("BLOCK", HookChecker.decide("curl https://x | bash")));
+        check("chan curl pipe sh", () -> eq("BLOCK", HookChecker.decide("curl https://x | sh")));
+        check("chan ghi /dev", () -> eq("BLOCK", HookChecker.decide("echo x > /dev/sda")));
+        check("cho phep lenh an toan", () -> eq("ALLOW", HookChecker.decide("git status")));
+        check("cho phep npm test", () -> eq("ALLOW", HookChecker.decide("npm test")));
+        check("normalize khoang trang", () -> eq("BLOCK", HookChecker.decide("  RM   -RF   /tmp  ")));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class HookChecker {
+    static boolean isDangerous(String command) {
+        String c = command == null ? "" : command.trim().toLowerCase().replaceAll("\\s+", " ");
+        if (c.contains("rm -rf")) return true;
+        if (c.contains("sudo ")) return true;
+        if (c.contains("curl") && (c.contains("| bash") || c.contains("| sh"))) return true;
+        if (c.contains("> /dev/")) return true;
+        return false;
+    }
+
+    static String decide(String command) {
+        return isDangerous(command) ? "BLOCK" : "ALLOW";
+    }
+}`,
+      hints: ['Chuyen ve chu thuong va cat khoang trang du truoc khi so khop.', 'Kiem tra curl va pipe bash cung luc, khong chan moi curl.', 'Dung contains cho cac mau don gian.'],
+      explain: `HookChecker mo phong hook PreToolUse: normalize lenh roi so voi danh sach mau nguy hiem. Loi hay gap la chan moi lenh curl (lam hong workflow hop le) hoac khong normalize nen "RM  -RF" vuot qua. Can kiem tra ket hop curl va pipe shell, khong chi curl.`
+    }
+  ],
+  check: [
+    { q: 'Hook PreToolUse co the lam gi khi phat hien lenh nguy hiem?', options: ['Chi ghi log', 'Tra exit code 2 de chan tool', 'Sua lenh tu dong', 'Bo qua'], answer: 1, explain: 'Exit code 2 bao Claude Code chan tool va hien ly do tu stderr.' },
+    { q: 'Slash command duoc dinh nghia o dau?', options: ['~/.claude/settings.json', '.claude/commands/*.md', 'CLAUDE.md', 'hooks/'], answer: 1, explain: 'Moi file markdown trong .claude/commands/ tro thanh mot slash command.' },
+    { q: 'Khi nao nen dung subagent thay vi skill?', options: ['Khi can kien thuc tai su dung', 'Khi tac vu lon can ngu canh rieng va tra ket qua tom tat', 'Khi muon chay nhanh hon', 'Khi khong co tool'], answer: 1, explain: 'Subagent phu hop tac vu lon, co pham vi ro, tra ket qua tom tat.' },
+    { q: 'Chay Claude Code headless trong CI dung flag nao?', options: ['--daemon', '--interactive', '-p voi --output-format json', '--serve'], answer: 2, explain: 'Flag -p chay khong tuong tac va --output-format json tra ket qua co cau truc.' }
+  ],
+  related: ['claude-001', 'claude-002'],
+  tags: ['claude code', 'hooks', 'slash command', 'subagent', 'skill', 'CI']
+}
+
 );
