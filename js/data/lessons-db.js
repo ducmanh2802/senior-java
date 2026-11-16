@@ -2271,7 +2271,7 @@ class WalStore {
   body: `**Tóm tắt:** Index composite (index nhiều cột) là một B-tree được sắp theo thứ tự cột bạn khai báo, giống danh bạ sắp theo (họ, tên) chứ không phải theo tên. Nó chỉ phục vụ tốt những truy vấn lọc theo **tiền tố bên trái** (leftmost prefix) của thứ tự đó, nên thứ tự cột quyết định query nào nhanh, index có chọn lọc hay không, và mỗi lần ghi phải trả bao nhiêu.
 
 ### Vì sao cần index nhiều cột
-Một index một cột chỉ sắp theo đúng một cột. Khi truy vấn lọc đồng thời {{WHERE tenant_id = 42 AND created_at >= '2026-01-01'}}, index trên tenant_id trả về toàn bộ đơn của tenant đó (hàng nghìn entry), database phải đọc heap rồi lọc created_at trên từng dòng. Index (tenant_id, created_at) sắp theo cả hai, nên nó seek thẳng tới vùng cần.
+Một index một cột chỉ sắp theo đúng một cột. Khi truy vấn lọc đồng thời {{WHERE tenant_id = 42 AND created_at >= '2026-01-01'}}, index trên tenant_id trả về toàn bộ đơn của tenant đó (hàng nghìn entry), database phải đọc **heap** (bảng dữ liệu gốc: nơi từng hàng được lưu, đọc theo địa chỉ TID) rồi lọc created_at trên từng dòng. Index (tenant_id, created_at) sắp theo cả hai, nên nó seek thẳng tới vùng cần.
 
 ### Index composite lưu gì trong lá
 Mỗi entry ở lá gồm các giá trị cột theo thứ tự khai báo, rồi tới con trỏ TID (địa chỉ vật lý của hàng trong heap). Các entry được sắp theo thứ tự từ điển: so cột 1 trước; nếu bằng thì so cột 2; nếu bằng nữa thì so cột 3.
@@ -2286,39 +2286,39 @@ entry (tenant_id, created_at)      -> TID
 
 ### Leftmost prefix: quy tắc vàng
 - {{WHERE tenant_id = 42}}: dùng được, vì tenant_id là cột đầu tiên.
-- {{WHERE created_at >= ...}}: không dùng được index này để seek, vì created_at không phải cột đầu; database phải quét toàn bộ entry của index (hoặc chuyển sang seq scan).
+- {{WHERE created_at >= ...}}: theo quy tắc cổ điển thì không seek được, vì created_at không phải cột đầu; database phải quét toàn bộ entry của index (hoặc chuyển sang seq scan). Từ PostgreSQL 18, planner có **skip scan** (nhảy cóc: khi thiếu cột đầu, nó lần lượt giả sử từng giá trị của cột đầu rồi seek tiếp như thể có điều kiện equality) nên vẫn dùng được index này nếu {{tenant_id}} có ít giá trị phân biệt và điều kiện trên {{created_at}} đủ chọn lọc.
 - {{WHERE tenant_id = 42 AND created_at >= ...}}: dùng được cả hai — seek tới (42, ...) rồi đi tiếp theo created_at.
 - {{WHERE tenant_id = 42 ORDER BY created_at}}: không cần sort, vì trong cùng một tenant, các entry đã có thứ tự theo created_at.
 
-Nói ngắn: index (a, b, c) phục vụ các tiền tố (a), (a, b), (a, b, c). Nó không phục vụ (b), (c), (b, c).
+Nói ngắn: theo quy tắc cổ điển, index (a, b, c) phục vụ các tiền tố (a), (a, b), (a, b, c), không phục vụ (b), (c), (b, c). Từ PostgreSQL 18, skip scan có thể dùng được một phần các trường hợp thiếu cột đầu nếu cột đầu ít giá trị phân biệt.
 
 ### Thứ tự cột: equality trước, range sau
 Quy tắc thực dụng:
 1. Cột dùng dấu {{=}} (equality) đặt trước.
 2. Cột dùng range ({{>}}, {{<}}, {{BETWEEN}}) hoặc ORDER BY đặt sau trong nhóm đó.
-3. Giữa nhiều cột equality, nếu có cột selectivity cao (ít giá trị trùng) thì đặt trước để index nhỏ hơn khi truy vấn chỉ lọc một phần.
+3. Giữa nhiều cột equality, thứ tự không làm index to hay nhỏ khác đi (index vẫn chứa đủ các cột đó). Nó quyết định truy vấn nào **chỉ lọc một phần** index thì còn seek được: nếu có truy vấn quan trọng chỉ {{WHERE tenant_id = ?}}, hãy để {{tenant_id}} đứng đầu; nếu truy vấn nào cũng lọc đủ các cột thì thứ tự giữa chúng ít quan trọng.
 
-Ví dụ truy vấn {{WHERE tenant_id = ? AND status = ? AND created_at BETWEEN ? AND ?}} nên có index {{(tenant_id, status, created_at)}}. Nếu đảo thành {{(created_at, tenant_id, status)}} thì điều kiện tenant_id và status không còn là tiền tố, index mất tác dụng seek.
+Ví dụ truy vấn {{WHERE tenant_id = ? AND status = ? AND created_at BETWEEN ? AND ?}} nên có index {{(tenant_id, status, created_at)}}. Nếu đảo thành {{(created_at, tenant_id, status)}}, seek chỉ còn dựa vào {{created_at}} (range), còn {{tenant_id}} và {{status}} trở thành điều kiện lọc trên từng entry; PostgreSQL 18+ có thể skip scan nếu hai cột này ít giá trị phân biệt, nhưng vẫn phải duyệt nhiều entry hơn.
 
-Selectivity (độ chọn lọc) = số giá trị khác nhau chia cho số hàng. Cột boolean chỉ có 2 giá trị nên selectivity rất thấp; đặt nó đầu index gần như vô dụng. Index composite (tenant_id, created_at) có selectivity cao hơn hẳn từng cột riêng.
+Selectivity (độ chọn lọc) = số giá trị khác nhau chia cho số hàng: cột boolean chỉ có 2 giá trị nên selectivity rất thấp, đặt nó đầu chỉ giúp khi truy vấn lọc thêm cột phía sau; nếu chỉ lọc riêng {{is_active}} thì index phải đọc rất nhiều entry. Tổ hợp (tenant_id, created_at) thường trỏ tới ít hàng hơn từng cột riêng (mỗi tenant có nhiều đơn, nhưng mỗi cặp tenant + thời điểm thì gần như một đơn), nên số entry phải đọc ít hơn.
 
 ### Ví dụ số liệu cụ thể
 Bảng {{orders}} 10 triệu dòng, 1000 tenant, mỗi tenant 10 nghìn đơn.
 - Index (tenant_id): mỗi tenant 10 nghìn entry.
 - Index (tenant_id, created_at): truy vấn "đơn của tenant 7 trong tháng 1" seek tới (7, 2026-01-01) rồi quét khoảng 1 nghìn entry, thay vì 10 nghìn.
-- Truy vấn "mọi đơn có created_at trong ngày" không dùng được index trên (vì cột đầu là tenant_id); nếu truy vấn này phổ biến, cần index riêng trên created_at.
+- Truy vấn "mọi đơn có created_at trong ngày" theo quy tắc cổ điển không dùng được index trên (vì cột đầu là tenant_id); từ PostgreSQL 18, skip scan có thể dùng được nếu tenant_id ít giá trị phân biệt, nhưng nếu truy vấn này phổ biến thì vẫn nên có index riêng trên created_at.
 
 ### Covering index và INCLUDE
-Nếu index đã chứa mọi cột mà SELECT cần, PostgreSQL có thể trả kết quả bằng index-only scan, không phải đọc heap. {{CREATE INDEX ON orders (tenant_id, created_at) INCLUDE (status, total)}}. Giá phải trả: index rộng hơn, ghi chậm hơn, tốn WAL hơn.
+Nếu index đã chứa mọi cột mà SELECT cần, PostgreSQL có thể trả kết quả bằng index-only scan, không phải đọc heap. {{CREATE INDEX idx_orders_cov ON orders (tenant_id, created_at) INCLUDE (status, total)}}. Giá phải trả: index rộng hơn, ghi chậm hơn, tốn WAL hơn.
 
 ### Chi phí ghi
 Mỗi index là một B-tree riêng. INSERT phải chèn entry vào mọi index; UPDATE một cột nằm trong index phải đánh dấu entry cũ và chèn entry mới; mỗi thay đổi sinh WAL. Index càng nhiều cột hoặc cột càng dài thì WAL và bloat càng tăng. Thống kê {{pg_stat_user_indexes.idx_scan}} giúp tìm index không ai dùng.
 
 ### Cơ chế từng bước khi PostgreSQL dùng index
-1. Planner đọc thống kê (pg_statistic) và ước lượng số hàng mỗi điều kiện trả về.
-2. Nếu điều kiện khớp tiền tố trái, nó đi xuống B-tree: so sánh cột đầu ở internal page, rồi cột thứ hai ở lá.
+1. Planner (bộ lập kế hoạch truy vấn: thành phần quyết định đọc bảng/index theo cách nào) đọc thống kê (pg_statistic: bảng chứa số giá trị phân biệt, histogram...) và ước lượng số hàng mỗi điều kiện trả về.
+2. Nếu điều kiện khớp tiền tố trái, nó đi xuống B-tree: so sánh khóa (gồm các cột trong index) ở internal page để chọn con, rồi so tiếp ở lá.
 3. Lấy TID của các entry khớp, đọc heap (trừ khi index-only scan).
-4. Kiểm tra visibility theo MVCC.
+4. Kiểm tra visibility theo MVCC (đa phiên bản: mỗi transaction thấy một phiên bản dữ liệu riêng thay vì ghi đè lẫn nhau).
 5. Nếu số hàng lớn, planner có thể chọn bitmap heap scan hoặc seq scan.
 
 ### Mô phỏng trong Java
@@ -2333,7 +2333,7 @@ int examined = hi - lo;           // chi cac entry cua a=7, b trong [5, 15]
 
 ### Lỗi hay gặp trên production
 1. Thứ tự cột ngược: index (created_at, tenant_id) không phục vụ {{WHERE tenant_id = ?}}.
-2. Cột selectivity thấp đứng đầu: index (is_active, tenant_id) gần như vô dụng khi is_active chỉ có 2 giá trị.
+2. Cột selectivity thấp đứng đầu: index (is_active, tenant_id) gần như vô dụng khi is_active chỉ có 2 giá trị và truy vấn chỉ lọc is_active; PostgreSQL 18+ có thể skip scan khi truy vấn lọc tenant_id.
 3. Index thừa trùng tiền tố: đã có (a, b) thì index (a) thường bỏ được.
 4. Hàm trên cột: {{WHERE date(created_at) = ...}} không dùng được index; viết thành range {{created_at >= ... AND created_at < ...}}.
 5. Quên ANALYZE sau bulk load: planner dùng thống kê cũ và chọn sai plan.
@@ -2454,7 +2454,7 @@ Tự sắp mảng và dùng binary search; không dùng TreeMap.`,
       ],
       explain: `Bài tập tách hai đại lượng: **examined** (số entry index phải liếc qua) và **matched** (số entry thực sự khớp). Với index (a, b) và truy vấn a = 7, b trong [5, 15], hai biên seek được là (7, 5) và (7, 16), nên chỉ có 11 entry của đúng a = 7 bị xét. Với index (b, a), cột đầu là b nên seek được tới b = 5 nhưng trong mỗi b vẫn phải duyệt mọi a; vì a = 7 nằm rải rác, examined bằng 50 nhân 11 bằng 550. Đó là nội dung của leftmost prefix: chỉ tiền tố bên trái mới dùng được để thu hẹp.
 
-Lỗi hay gặp khi cài: dùng == cho chuỗi order (phải dùng equals); quên xử lý bLo > bHi (khoảng rỗng); tính biên trên bằng bHi thay vì bHi + 1 làm mất entry ở đúng biên trên. Trong PostgreSQL, cùng ý này thể hiện ở thứ tự cột của index và ở việc planner chọn index scan hay seq scan; hãy kiểm chứng bằng {{EXPLAIN (ANALYZE, BUFFERS)}} thay vì suy đoán.`
+Lỗi hay gặp khi cài: dùng == cho chuỗi order (phải dùng equals); quên xử lý bLo > bHi (khoảng rỗng); tính biên trên bằng bHi thay vì bHi + 1 làm mất entry ở đúng biên trên. Trong PostgreSQL, cùng ý này thể hiện ở thứ tự cột của index và ở việc planner chọn index scan hay seq scan; hãy kiểm chứng bằng {{EXPLAIN (ANALYZE, BUFFERS)}} thay vì suy đoán. Từ PostgreSQL 18, skip scan có thể giúp trường hợp index {{(b, a)}} khi {{a}} ít giá trị phân biệt; mô phỏng này cố tình dùng hành vi cổ điển để thấy rõ leftmost prefix.`
     }
   ],
   check: [
@@ -2489,7 +2489,7 @@ Lỗi hay gặp khi cài: dùng == cho chuỗi order (phải dùng equals); quê
         'created_at không được đứng sau'
       ],
       answer: 1,
-      explain: 'is_active chỉ có 2 giá trị, mỗi giá trị trỏ tới khoảng nửa bảng; đặt nó đầu khiến index scan phải đọc rất nhiều entry.'
+      explain: 'is_active chỉ có 2 giá trị, mỗi giá trị trỏ tới khoảng nửa bảng; nếu truy vấn chỉ lọc is_active thì index scan phải đọc rất nhiều entry. PostgreSQL 18+ có thể skip scan khi truy vấn lọc cột phía sau, nhưng khi đó cột đầu ít giá trị phân biệt chính là điều kiện để việc bỏ qua có lợi.'
     },
     {
       q: 'Vì sao thêm một index làm INSERT chậm đi?',
@@ -2570,12 +2570,39 @@ PostgreSQL không cho dirty read ở bất kỳ mức nào: {{READ UNCOMMITTED}}
 
 MySQL InnoDB khác về cơ chế: ở REPEATABLE READ, đọc thường dùng snapshot (chặn non-repeatable và phantom), còn locking read ({{SELECT ... FOR UPDATE}}) dùng next-key lock để chặn phantom, nhưng chính gap lock lại có thể gây deadlock khi INSERT (xem bài về deadlock).
 
+Ba hiện tượng hay bị nhầm:
+- **Lost update (mất cập nhật):** hai transaction cùng đọc x = 100, mỗi bên cộng 10 rồi ghi 110; một trong hai phép cộng biến mất.
+- **Write skew (lệch ghi):** hai transaction đọc cùng dữ liệu, mỗi bên ghi vào hàng khác nhau dựa trên một ràng buộc chung (ví dụ tổng số dư không âm); không ai ghi đè hàng của ai nhưng ràng buộc chung bị vi phạm.
+- **OLTP (xử lý giao dịch trực tuyến):** hệ thống nhiều người dùng đọc/ghi từng dòng, như app ngân hàng hay đặt hàng; khác OLAP (phân tích, quét lượng lớn dữ liệu).
+
+**Gap lock** là khóa một khoảng giá trị giữa hai khóa để chặn INSERT lọt vào; **next-key lock** là khóa bản ghi cộng khoảng ngay trước nó. PostgreSQL không dùng hai loại khóa này; nó dựa vào snapshot và kiểm tra xung đột khi ghi.
+
 ### Cơ chế từng bước
 1. Transaction BEGIN.
 2. Ở REPEATABLE READ, câu lệnh đầu tiên lấy snapshot (danh sách transaction đã commit tại thời điểm đó). Ở READ COMMITTED, mỗi câu lệnh lấy snapshot riêng.
 3. Transaction khác ghi và commit.
 4. Transaction của bạn đọc lại: REPEATABLE READ dùng snapshot cũ nên thấy dữ liệu cũ; READ COMMITTED dùng snapshot mới nên thấy dữ liệu mới.
 5. Kết thúc: ở REPEATABLE READ, nếu bạn cố ghi đè một hàng đã đổi sau snapshot, PostgreSQL báo 40001.
+
+### Đọc và ghi trong code
+~~~java
+// Isolation là thuộc tính của transaction, không đặt ở từng câu SELECT
+conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+try {
+    // ... đọc dữ liệu, tính toán, kiểm tra điều kiện nghiệp vụ
+    // ... ghi (UPDATE/INSERT) trong cùng transaction
+    conn.commit();
+} catch (SQLException e) {
+    // 40001 = serialization_failure: transaction khác đã commit trước
+    // Khi dùng SERIALIZABLE (và cả REPEATABLE READ khi ghi đè), phải retry cả transaction
+    if ("40001".equals(e.getSQLState())) {
+        conn.rollback();
+        // TODO: thử lại tối đa 2-3 lần, sau đó báo lỗi cho người gọi
+    }
+    throw e;
+}
+~~~
+Điểm quan trọng: không đặt isolation ở từng câu lệnh rồi mong cả transaction nhất quán; isolation là thuộc tính của **transaction**. Và mọi mức isolation mạnh hơn READ COMMITTED đều phải đi kèm chính sách retry ở tầng ứng dụng, vì lỗi 40001 là tín hiệu bình thường khi có xung đột, không phải bug.
 
 ### Ví dụ đời thực
 Một báo cáo doanh thu chạy trong transaction 30 giây ở READ COMMITTED: câu SELECT đầu đếm 10 nghìn đơn, câu SELECT thứ hai đếm 10 nghìn 5 trăm đơn vì đơn mới commit ở giữa. Con số tổng không khớp với bất kỳ thời điểm nào. Cách sửa: chạy ở REPEATABLE READ, hoặc gộp thành một câu SQL, hoặc ghi kết quả ra bảng snapshot theo ngày.
@@ -2766,7 +2793,7 @@ class IsolationSim {
 **Page (trang)** là đơn vị đọc/ghi cơ bản của PostgreSQL, mặc định 8KB. Mỗi node của B-tree là một page: internal page lưu các khóa ngăn cách và con trỏ tới page con; leaf page (lá) lưu cặp (khóa index, TID). **TID (tuple identifier)** là địa chỉ vật lý của một hàng trong heap, gồm số block và offset trong block.
 
 Cơ chế tra cứu từng bước (ví dụ {{WHERE email = 'a@x.com'}} trên index {{(email)}}):
-1. Đọc **root page** (gốc). Root nằm trong metadata của index; nếu chưa có trong shared buffers (bộ nhớ đệm dùng chung của PostgreSQL) thì đọc từ đĩa.
+1. Đọc **root page** (gốc). Số page của root được lưu trong **metapage** (page 0 của index, nơi chứa siêu dữ liệu); nếu chưa có trong shared buffers (bộ nhớ đệm dùng chung của PostgreSQL) thì đọc từ đĩa.
 2. **Binary search** (tìm nhị phân: vì khóa trong page đã sắp thứ tự) trong page để chọn con trỏ con phù hợp. Lặp xuống internal page tiếp theo.
 3. Tới **leaf page**: tìm khóa khớp. Leaf pages được nối ngang bằng **sibling pointers** (con trỏ anh em) nên range scan (quét khoảng, ví dụ {{>=}}) đi tuần tự sang lá kế tiếp mà không phải leo lại từ gốc.
 4. **Heap fetch**: dùng TID đọc heap page để lấy các cột còn thiếu và kiểm tra **visibility** (tính nhìn thấy theo MVCC: một hàng chỉ hiện với transaction nếu phiên bản đó hợp lệ với snapshot của transaction). Nếu hàng đã bị UPDATE/DELETE, index entry cũ vẫn có thể còn đó cho tới khi VACUUM dọn.
@@ -2800,7 +2827,7 @@ CREATE INDEX idx_orders_cov
 | Index-only scan | Không (thường) | Đủ cột + page all-visible |
 | Bitmap index scan | Có, gom theo block | Nhiều TID rải rác, giảm random I/O |
 
-Trade-off: index rộng hơn, tốn dung lượng, mọi INSERT/UPDATE phải cập nhật index (ghi chậm hơn, WAL nhiều hơn). Chỉ thêm INCLUDE cho truy vấn thực sự nóng và ổn định.
+Trade-off: index rộng hơn, tốn dung lượng; mọi INSERT và UPDATE có cột nằm trong index đều phải cập nhật index (ghi chậm hơn, WAL nhiều hơn). Chỉ thêm INCLUDE cho truy vấn thực sự nóng và ổn định.
 
 ### Partial index
 Partial index có mệnh đề {{WHERE}}: chỉ những hàng thỏa điều kiện mới được đưa vào index. Lợi ích: index nhỏ, ít tốn ghi, chọn lọc rất cao cho đúng truy vấn mục tiêu.
@@ -2813,7 +2840,21 @@ CREATE INDEX idx_orders_pending_created
 -- planner dùng index này khi truy vấn cũng có WHERE status = 'PENDING'
 ~~~
 
-Quy tắc: predicate trong truy vấn phải **bao hàm** (imply) predicate của index thì planner mới dùng. {{WHERE status = 'PENDING' AND tenant_id = 7}} dùng được index trên; {{WHERE status = 'FAILED'}} thì không. Partial index cũng hữu ích cho unique có điều kiện, ví dụ {{CREATE UNIQUE INDEX ... ON users(email) WHERE deleted_at IS NULL}} (chỉ email của user chưa xóa phải duy nhất).
+Quy tắc: predicate trong truy vấn phải **bao hàm** (imply) predicate của index thì planner (bộ lập kế hoạch truy vấn) mới dùng. {{WHERE status = 'PENDING' AND tenant_id = 7}} dùng được index trên; {{WHERE status = 'FAILED'}} thì không. Partial index cũng hữu ích cho unique có điều kiện, ví dụ {{CREATE UNIQUE INDEX ... ON users(email) WHERE deleted_at IS NULL}} (chỉ email của user chưa xóa phải duy nhất).
+
+### Ví dụ đời thực
+Giả sử bảng {{orders}} có 200 triệu dòng, mỗi ngày thêm 180 nghìn đơn. Truy vấn nóng của dashboard: {{SELECT status, total FROM orders WHERE tenant_id = 7 AND created_at >= now() - interval '30 days'}} — chiếm 80% traffic. Tenant 7 là khách lớn: 1,2 triệu đơn tích lũy trong 3 năm (khoảng 1.100 đơn/ngày), nên 30 ngày chỉ khoảng 33 nghìn đơn. Index cũ {{(tenant_id)}} phải đọc 1,2 triệu entry của tenant 7 rồi heap fetch từng dòng để lọc 30 ngày.
+
+Đổi sang index {{(tenant_id, created_at) INCLUDE (status, total)}}: planner seek tới (7, biên dưới) rồi quét đúng khoảng 33 nghìn entry, và vì đủ cột nên có thể index-only scan. Trong ví dụ giả định này, sau khi autovacuum chạy, {{EXPLAIN (ANALYZE, BUFFERS)}} cho thấy số block đọc giảm từ khoảng 45 nghìn xuống 6 nghìn, {{Heap Fetches}} từ khoảng 1,2 triệu xuống 0, p95 truy vấn từ 850 ms xuống 120 ms.
+
+> Các con số trên là ví dụ minh hoạ, không phải benchmark của bạn; phải đo bằng {{EXPLAIN (ANALYZE, BUFFERS)}} trên dữ liệu thật.
+
+### Lỗi hay gặp trên production
+1. **Thêm {{INCLUDE}} cho mọi index “cho chắc”.** Index phình, mỗi INSERT/UPDATE tốn thêm WAL và có thể gây page split; index-only scan chỉ có lợi khi truy vấn thật sự nóng và ổn định.
+2. **Partial index nhưng predicate truy vấn không khớp.** Planner không dùng; nếu điều kiện thay đổi thường xuyên, hãy tạo index phù hợp hoặc bỏ partial.
+3. **Index-only scan vẫn có {{Heap Fetches}} cao.** Visibility map chưa đánh dấu all-visible vì autovacuum chưa chạy hoặc transaction dài giữ snapshot; kiểm tra {{pg_stat_user_tables.n_dead_tup}} và chạy {{VACUUM}} có kiểm soát.
+4. **Tắt autovacuum hoặc để bloat lớn.** Entry chết nhiều làm index to, index-only scan phải đọc heap, truy vấn chậm dần; theo dõi {{pg_stat_user_indexes}} và lịch vacuum.
+5. **Đưa cột rất lớn ({{text}}, {{jsonb}}) vào {{INCLUDE}}.** Index cồng kềnh, tốn I/O; chỉ đưa cột nhỏ, đủ để trả về.
 
 ### Liên hệ phỏng vấn
 - "B-tree của PostgreSQL khác cây nhị phân thế nào?" → fanout lớn, mỗi node là page 8KB, chiều cao 3-4 tầng cho dữ liệu rất lớn, leaf có sibling chain cho range scan; tối ưu cho I/O trang trên đĩa.
@@ -3022,14 +3063,16 @@ Quy tắc: predicate trong truy vấn phải **bao hàm** (imply) predicate củ
   body: `**Tóm tắt:** Composite index (index nhiều cột, ví dụ {{(a, b, c)}}) sắp khóa theo từ điển: so cột {{a}} trước, bằng nhau mới so {{b}}. Quy tắc **leftmost prefix** (tiền tố trái nhất) nói rằng index chỉ hỗ trợ seek/range hiệu quả khi truy vấn lọc từ cột trái sang phải liên tục. Nhiều cách viết truy vấn vô tình phá khả năng dùng index: bọc cột trong hàm, dùng {{LIKE '%x'}} (ký tự đại diện {{%}} ở đầu), hoặc so sánh lệch kiểu dữ liệu khiến database phải ép kiểu ngầm.
 
 ### Composite index và leftmost prefix
+Bài 12 đã đi sâu vào thiết kế composite index và chi phí ghi; bài này chỉ nhắc lại leftmost prefix ngắn gọn rồi tập trung vào **chẩn đoán khi index không được dùng**.
+
 Hãy tưởng tượng danh bạ giấy sắp theo (Họ, Tên). Bạn tìm nhanh được mọi người họ "Nguyen" (cột trái), hoặc "Nguyen Van" (hai cột trái). Nhưng bạn không thể lật thẳng tới tất cả người tên "An" nếu không biết họ, vì tên nằm sau họ trong thứ tự sắp.
 
 Index {{(tenant_id, status, created_at)}}:
 - {{WHERE tenant_id = 7}}: dùng được (prefix 1 cột).
 - {{WHERE tenant_id = 7 AND status = 'PENDING'}}: dùng được (2 cột).
 - {{WHERE tenant_id = 7 AND status = 'PENDING' AND created_at >= '2026-01-01'}}: dùng được (3 cột, cột cuối là range).
-- {{WHERE status = 'PENDING'}}: không seek theo index này vì thiếu cột trái {{tenant_id}}.
-- {{WHERE tenant_id = 7 AND created_at >= '2026-01-01'}} (bỏ {{status}}): seek được theo {{tenant_id}} nhưng không thu hẹp tiếp theo {{created_at}} như một khóa liên tục; planner có thể quét mọi entry của tenant 7 rồi lọc {{created_at}}. PostgreSQL B-tree thuần không làm skip scan tổng quát.
+- {{WHERE status = 'PENDING'}}: theo quy tắc cổ điển thì không seek theo index này vì thiếu cột trái {{tenant_id}}; PostgreSQL 18+ có thể skip scan nếu {{tenant_id}} ít giá trị phân biệt và điều kiện ngày đủ chọn lọc.
+- {{WHERE tenant_id = 7 AND created_at >= '2026-01-01'}} (bỏ {{status}}): seek được theo {{tenant_id}} nhưng không thu hẹp tiếp theo {{created_at}} như một khóa liên tục; planner có thể quét mọi entry của tenant 7 rồi lọc {{created_at}}. Từ PostgreSQL 18, **skip scan** (nhảy cóc) có thể lặp qua từng giá trị phân biệt của {{status}} trong tenant 7 rồi seek theo {{created_at}}, nếu {{status}} ít giá trị phân biệt và điều kiện ngày đủ chọn lọc; trước đó thì không.
 
 ~~~text
 Index (tenant_id, status, created_at) — các entry đã sắp:
@@ -3040,10 +3083,10 @@ Index (tenant_id, status, created_at) — các entry đã sắp:
 (9, PENDING, 2026-01-03)
 ~~~
 
-Quy tắc chọn thứ tự cột (thực dụng): (1) cột equality {{=}} đặt trước, (2) cột range/{{BETWEEN}}/{{ORDER BY}} đặt sau trong nhóm dùng được, (3) trong các cột equality, cân nhắc độ chọn lọc (selectivity: tỉ lệ giá trị phân biệt; cột tenant_id 1000 giá trị chọn lọc hơn cột boolean). Luôn đối chiếu với truy vấn thật và {{EXPLAIN (ANALYZE, BUFFERS)}}.
+Quy tắc chọn thứ tự cột (thực dụng): (1) cột equality {{=}} đặt trước, (2) cột range/{{BETWEEN}}/{{ORDER BY}} đặt sau trong nhóm dùng được, (3) giữa các cột equality, thứ tự không làm index to hơn, nhưng quyết định truy vấn nào chỉ lọc một cột thì còn seek được; nếu có truy vấn chỉ {{WHERE tenant_id = ?}}, đặt cột selectivity cao (nhiều giá trị phân biệt) lên đầu để đọc ít entry hơn. Luôn đối chiếu với truy vấn thật và {{EXPLAIN (ANALYZE, BUFFERS)}}.
 
 ### Khi nào index không được dùng
-Ngay cả khi có index đúng cột, planner có thể không dùng hoặc chỉ dùng kém hiệu quả:
+Ngay cả khi có index đúng cột, planner (bộ lập kế hoạch truy vấn: thành phần quyết định đọc bảng/index theo cách nào) có thể không dùng hoặc chỉ dùng kém hiệu quả:
 
 1. **Hàm/biểu thức trên cột được index.** Index lưu giá trị gốc của cột; nếu WHERE biến đổi cột thì không khớp khóa.
 ~~~sql
@@ -3058,9 +3101,9 @@ CREATE INDEX idx_orders_created_date ON orders ((date(created_at)));
 
 2. **{{LIKE '%abc'}} hoặc {{LIKE '%abc%'}}.** B-tree sắp theo tiền tố chuỗi; ký tự đại diện {{%}} ở đầu làm mất điểm bắt đầu cố định nên không seek được. {{LIKE 'abc%'}} (tiền tố cố định) có thể dùng B-tree (với collation/operator class phù hợp, ví dụ {{text_pattern_ops}} trong một số trường hợp). Tìm kiếm chứa chuỗi giữa thường cần GIN/GiST với pg_trgm.
 
-3. **Kiểu dữ liệu lệch (implicit cast).** Ví dụ cột {{user_id}} kiểu {{bigint}} có index, nhưng truy vấn viết {{WHERE user_id = '42'}} (chuỗi) hoặc ngược lại: PostgreSQL có thể ép kiểu một phía; nếu ép kiểu trên **cột** (biến cột thành biểu thức) thì index không dùng. Luôn dùng cùng kiểu với định nghĩa cột (tham số bind đúng kiểu).
+3. **Kiểu dữ liệu lệch (implicit cast).** Ví dụ cột {{user_id}} kiểu {{bigint}} có index. Nếu viết {{WHERE user_id = '42'}} với một literal, PostgreSQL coi literal là kiểu chưa xác định và ép về {{bigint}}, index vẫn dùng được. Nhưng nếu tham số bind bị khai báo là {{text}} (ví dụ JDBC {{setString}}, hoặc {{WHERE user_id = $1}} với {{$1}} kiểu {{text}}), hoặc so sánh với {{numeric}}, PostgreSQL có thể phải ép kiểu **cột** thành {{user_id::text}} hoặc {{user_id::numeric}}; khi đó điều kiện là biểu thức trên cột và index không dùng. Cách an toàn: bind đúng kiểu cột ({{setLong}}), hoặc viết {{user_id = 42}}.
 
-4. **Toán tử/điều kiện không hỗ trợ bởi operator class của index.** B-tree mặc định hỗ trợ {{=, <, <=, >, >=}}; các toán tử khác cần operator class phù hợp.
+4. **Toán tử/điều kiện không hỗ trợ bởi operator class của index.** Operator class (bộ toán tử của một kiểu dữ liệu cho index, ví dụ cách so sánh {{text}}) quyết định toán tử nào dùng được; B-tree mặc định hỗ trợ {{=, <, <=, >, >=}}, các toán tử khác cần operator class phù hợp.
 
 5. **Planner ước lượng trả về quá nhiều hàng.** Khi selectivity thấp (lọc ra phần lớn bảng), sequential scan + đọc tuần tự rẻ hơn index scan + nhiều random heap fetch; đây là lựa chọn có chủ đích.
 
@@ -3072,7 +3115,7 @@ Bang tom tat nhanh:
 | WHERE lower(col) = 'a'         | Khong (cot bi boc ham)  | expression index hoac so sanh goc  |
 | WHERE col LIKE 'abc%'          | Co (tien to co dinh)    | giu nguyen                         |
 | WHERE col LIKE '%abc'          | Khong                   | pg_trgm/GIN hoac thiet ke khac     |
-| WHERE col = '1' (col la int)   | Co the mat              | dung dung kieu tham so             |
+| WHERE col = $1, $1 la text     | Co the mat              | bind setLong hoac viet col = 1     |
 ~~~
 
 ### Liên hệ phỏng vấn
@@ -3256,7 +3299,7 @@ Mô phỏng này đếm bước logic, không đo I/O thật. Trong PostgreSQL, 
       explain: 'B-tree sắp theo thứ tự giá trị/tiền tố; khi mẫu bắt đầu bằng % thì mọi giá trị đều có thể khớp nên không xác định được điểm bắt đầu, thường dẫn tới scan.'
     },
     {
-      q: 'So sánh lệch kiểu dữ liệu (ví dụ cột bigint so với tham số chuỗi) có thể khiến index không được dùng khi nào?',
+      q: 'So sánh lệch kiểu dữ liệu (ví dụ cột bigint với tham số bind kiểu text) có thể khiến index không được dùng khi nào?',
       options: [
         'Khi database phải ép kiểu trên chính cột được index, biến điều kiện thành biểu thức trên cột',
         'Khi bảng có quá ít hàng',
@@ -3264,7 +3307,7 @@ Mô phỏng này đếm bước logic, không đo I/O thật. Trong PostgreSQL, 
         'Khi chạy trong transaction'
       ],
       answer: 1,
-      explain: 'Nếu việc ép kiểu ngầm áp dụng lên cột (thay vì lên hằng/tham số), điều kiện trở thành biểu thức trên cột và không khớp khóa index. Cách an toàn là truyền tham số đúng kiểu với cột.'
+      explain: 'Literal chuỗi thường được PostgreSQL ép về kiểu cột nên index vẫn dùng; nhưng nếu tham số bind được khai báo là text (hoặc so sánh với numeric), việc ép kiểu có thể áp dụng lên cột và điều kiện thành biểu thức trên cột, không khớp khóa index. Cách an toàn là truyền tham số đúng kiểu với cột.'
     }
   ],
   related: ['db-001', 'db-003', 'db-022', 'db-023'],
