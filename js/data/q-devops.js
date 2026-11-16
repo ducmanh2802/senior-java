@@ -683,15 +683,20 @@ journalctl -u payment.service --since '10 min ago' -f
 Tôi đi theo thứ tự tài nguyên để không đoán mò. Đầu tiên uptime và top để xem load và CPU, chú ý %wa là chờ disk và %st là bị hypervisor lấy CPU. Nếu một process java ăn CPU, tôi dùng top -H tìm thread nóng, đổi thread id sang dạng nid trong thread dump rồi xem nó đang chạy gì; nếu đó là thread GC thì vấn đề là bộ nhớ. Tiếp theo free -m xem cột available và swap, dmesg để biết OOM killer đã ra tay chưa. Sau đó df -h và df -i cho dung lượng và inode, lsof +L1 cho file đã xoá mà còn giữ. Rồi ss để đếm kết nối, đặc biệt CLOSE_WAIT. Cuối cùng là log ứng dụng và journalctl. Quan trọng nhất: thu bằng chứng như thread dump, class histogram trước khi restart, vì restart xoá sạch dấu vết.
 
 ### Ví dụ đời thực
-Triệu chứng: dịch vụ thanh toán Spring Boot 3 đóng gói thành fat jar khoảng 120 MB. Mỗi lần lập trình viên sửa một dòng code và deploy, pipeline build lại và đẩy image lên registry mất 6–8 phút, pod khởi động chậm, ổ đĩa registry đầy nhanh.
+Triệu chứng: cuối tháng, dịch vụ thanh toán Spring Boot trên server Linux vật lý (16 core, 64 GB RAM) bị báo chậm, p99 latency tăng từ 80 ms lên 2.5 giây, CPU trung bình dashboard chỉ 35% nhưng trên server có lúc load average nhảy lên 25.
 
-Điều tra: chạy {{docker history payment:latest}} thấy một layer duy nhất khoảng 110 MB, vì toàn bộ jar được COPY thành một lớp. Docker tính digest theo layer: layer nào đổi thì mọi layer phía sau cũng phải build lại và push lại.
+Điều tra: SSH vào server, chạy {{uptime}} thấy load average 22.4, 18.1, 12.3 (16 core). {{top -c}} cho thấy process java (PID 12450) chiếm 350% CPU, %wa 5%, %st 0%. {{top -H -p 12450}} phát hiện thread 12498 (nid=0x30d2) dùng 98% CPU. {{jstack 12450 | grep -A 10 'nid=0x30d2'}} cho thấy thread "http-nio-8080-exec-45" đang trong {{java.util.regex.Pattern$Curly.match0}} — regex catastrophic backtracking khi validate số tài khoản đầu vào.
+~~~text
+Regex cũ: ^\d{10,19}$
+Regex mới (gây lỗi): ^(\d{10,19}|[\d\s-]{10,30})$
+~~~
+{{free -m}} cho available 28 GB, swap 0. {{df -h}} ổ root dùng 68%, {{df -i}} inode 45%. {{ss -tan state close-wait | wc -l}} trả về 12 (bình thường). Log ứng dụng không có ERROR, chỉ nhiều WARN validate thất bại.
 
-Nguyên nhân gốc: COPY cả fat jar thành một layer, nên code thay đổi hằng ngày làm đổi layer lớn nhất; registry phải lưu trữ và node phải pull lại toàn bộ 120 MB mỗi deployment.
+Nguyên nhân gốc: một thay đổi regex validation số tài khoản gây catastrophic backtracking khi input có nhiều dấu cách/gạch ngang, mỗi request tiêu tốn một core hoàn toàn trong 2–5 giây.
 
-Cách xử lý: chuyển sang multi-stage build: stage build có JDK, dùng {{-Djarmode=tools}} tách layered jar thành dependencies, spring-boot-loader, snapshot-dependencies, application; stage cuối chỉ có JRE, copy các layer theo thứ tự ít thay đổi nhất trước.
+Cách xử lý: revert regex về pattern an toàn, thêm giới hạn độ dài input trước khi validate, dùng {{Pattern.compile(regex).matcher(input).region(0, 100).matches()}} hoặc thư viện validation có timeout. Sau fix, CPU java giảm xuống 45%, p99 latency về 85 ms.
 
-Kết quả đo được: image giảm từ 120 MB xuống khoảng 45 MB. Sửa code chỉ thay đổi layer application vài trăm KB, thời gian push từ 6–8 phút xuống dưới 1 phút, ổ đĩa registry tiết kiệm rõ rệt với 50 service.
+Kết quả đo được: sự cố kéo dài 45 phút trước khi tìm ra nguyên nhân; nếu có sẵn script thu thập (top -H, 3 thread dump cách nhau 5 giây, jstat -gcutil) thì khoanh vùng được trong 5 phút.
 
 > Senior tip: Chuẩn bị sẵn một script thu thập (top, ss, df, 3 thread dump cách nhau 5 giây, jstat) và chạy ngay khi có sự cố; ở ngân hàng việc được SSH vào prod thường phải xin quyền theo phiên, nên mỗi phút trên server phải thu được tối đa bằng chứng. Nếu chạy trên Kubernetes, các lệnh tương đương là kubectl top, kubectl exec, và jcmd bên trong container.`,
     follow: [
