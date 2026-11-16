@@ -1880,26 +1880,27 @@ Khi nói về index, hãy nhấn mạnh: "đo bằng EXPLAIN (ANALYZE, BUFFERS) 
     body: `### EXPLAIN ANALYZE là gì và vì sao quan trọng
 EXPLAIN (kèm ANALYZE) là câu lệnh cho phép bạn xem bộ tối ưu (optimizer) của PostgreSQL đang kế hoạch thực thi như thế nào. Đây là công cụ quan trọng nhất để debug query chậm: bạn sẽ biết DB chọn thuật toán join nào, quét bảng như thế nào, và có cần index không.
 
-### Seq Scan (Seqential Scan)
-Seq scan là DB đọc từng dòng trong bảng từ đầu đến hết, kiểm tra từng dòng có thỏa mãn điều kiện WHERE không.
+### Seq Scan (Sequential Scan — quét tuần tự)
+**Bảng (table)** là nơi chứa dữ liệu thật, gồm nhiều **trang dữ liệu** (data page, mặc định 8 KB trong PostgreSQL). Seq scan đọc lần lượt từng trang theo thứ tự trên đĩa và kiểm tra mỗi dòng với điều kiện WHERE.
 - **Chi phí**: O(n) với n là số dòng trong bảng. Phải đọc toàn bộ bảng.
+- **Index** (chỉ mục) là cấu trúc phụ giúp tra cứu nhanh; thường là **B-tree** (cây cân bằng giữ dữ liệu có thứ tự, nên tìm theo giá trị hoặc khoảng rất nhanh, khoảng log n bước). **Heap** là tên gọi khác của bảng dữ liệu gốc, nên "fetch heap" nghĩa là dùng index tìm thấy entry rồi còn phải nhảy về bảng lấy các cột còn lại.
 - Khi nào DB chọn seq scan:
-  - Bảng **rất nhỏ** (ví dụ fewer than 50-100 dòng): đọc thẳng qua nhanh hơn go xuống index rồi fetch heap.
-  - **Selectivity thấp**: cột WHERE có ít giá trị khác nhau (ví dụ cột boolean, trạng thái 'active/inactive'), index không loại bỏ nhiều dòng nên planner vẫn chọn seq scan.
+  - Bảng **rất nhỏ** (dưới 50–100 dòng): đọc thẳng qua nhanh hơn đi xuống index rồi quay lại bảng.
+  - **Selectivity thấp**: selectivity (độ chọn lọc) là khả năng điều kiện lọc loại bớt dòng; cột WHERE có ít giá trị khác nhau (ví dụ cột boolean, trạng thái 'active/inactive') thì index không loại bỏ được nhiều dòng nên planner vẫn chọn seq scan.
   - **Không có index phù hợp** trên cột WHERE.
   - Phân bố dữ liệu skew (một giá trị chiếm tỷ lệ lớn) khiến index không hiệu quả.
 - Trong EXPLAIN: node {{Seq Scan on table}} (loops=1) nghĩa là DB quét toàn bộ bảng 1 lần.
 
 ### Index Scan
-Index scan là DB dùng index (thường là B-tree) để tìm trực tiếp các dòng thỏa mãn điều kiện, tránh đọc toàn bảng.
-- **Chi phí**: O(log n) để tìm điểm bắt đầu, rồi duyệt tuần tự các entry phù hợp. Phải thêm chi phí fetch heap (random I/O) để lấy các cột không có trong index.
+Index scan là DB dùng index B-tree để tìm trực tiếp các dòng thỏa mãn điều kiện, tránh đọc toàn bảng.
+- **Chi phí**: O(log n) để tìm điểm bắt đầu, rồi duyệt tuần tự các entry phù hợp. Phải thêm chi phí fetch heap (random I/O — đọc ngẫu nhiên, nhảy tới các trang dữ liệu nằm rải rác) để lấy các cột không có trong index.
 - Khi nào DB chọn index scan:
   - **Selectivity cao**: cột WHERE có nhiều giá trị khác nhau (ví dụ primary key, email), index có thể loại bỏ hầu hết các dòng.
   - **Equality query**: WHERE col = giá trị nhất định → B-tree có thể đi thẳng tới lá chính xác.
-  - **Range query**: WHERE col > giá trị AND col < giá trị → B-tree có thể duyệt từ điểm bắt đầu till điểm kết thúc.
+  - **Range query**: WHERE col > giá trị AND col < giá trị → B-tree có thể duyệt từ điểm bắt đầu tới điểm kết thúc.
   - Cột thường xuyên tham gia JOIN hoặc ORDER BY.
-- Trong EXPLAIN: node {{Index Scan on table}} (loops=n) kèm {{Index Cond: col = giá trị}}. Nodes {{Bitmap Heap Scan}} cho thấy DB dùng index tạo bitmap rồi quét theo bitmap.
-- **Covering index**: nếu SELECT chỉ lấy các cột có trong index, DB có thể dùng index-only scan (không cần fetch heap), chi phí thấp hơn đáng kể.
+- Trong EXPLAIN: node {{Index Scan on table}} (loops=n) kèm {{Index Cond: col = giá trị}}. Nodes {{Bitmap Heap Scan}} cho thấy DB dùng index tạo bitmap (bản đồ bit đánh dấu trang dữ liệu nào chứa dòng khớp) rồi quét theo bitmap.
+- **Covering index** (index phủ): nếu SELECT chỉ lấy các cột có trong index, DB có thể dùng index-only scan (không cần fetch heap), chi phí thấp hơn đáng kể.
 
 ### Nested Loop Join
 Nested loop join là thuật toán join đơn giản nhất: với mỗi dòng outer, tìm các dòng khớp trong inner.
@@ -1907,7 +1908,7 @@ Nested loop join là thuật toán join đơn giản nhất: với mỗi dòng o
   - Inner **không có index** trên khóa join: **n × m** (n = dòng outer, m = dòng inner). Ví dụ: 10.000 × 10.000 = 100 triệu phép so sánh.
   - Inner **có index** (B-tree) trên khóa join: **n × log m**. Ví dụ: 100 × log₂(10.000.000) ≈ 100 × 24 ≈ 2.400 bước.
 - DB chọn nested loop khi:
-  - Outer **rất ít dòng** sau khi lọc WHERE (ví dụ 10-100 dòng).
+  - Outer **rất ít dòng** sau khi lọc WHERE (ví dụ 10–100 dòng).
   - Inner **có index** trên khóa join (khóa chính hoặc index thứ tự).
   - Join **không phải đẳng thức** (BETWEEN, >, <) — hash join và merge join chỉ hỗ trợ equi-join (so sánh bằng {{=}}).
 - Trong EXPLAIN: node {{Nested Loop}} kèm {{loops=m}} (inner được quét m lần) và {{actual rows}} thể hiện sai ước lượng nếu lệch nhiều.
@@ -1917,19 +1918,19 @@ Hash join chạy hai pha, chỉ dùng cho **equi-join** (so sánh bằng {{=}}).
 - **Pha Build**: Đọc bên **nhỏ hơn** (theo ước lượng), đưa từng dòng vào bảng băm (hash table) trong RAM theo khóa join.
 - **Pha Probe**: Đọc bên lớn hơn từng dòng, tính hash khóa rồi tra bảng băm: trung bình **O(1)** mỗi lần tra.
 - **Chi phí**: **O(n + m)**: đọc mỗi bên đúng một lần.
-- Điều kiện: join bằng {{=}}, bảng băm vừa bộ nhớ (PostgreSQL giới hạn {{work_mem}}). Vượt giới hạn → PG chia thành nhiều **batch** và ghi tạm ra đĩa (chậm hơn nhiều). Trong EXPLAIN: node {{Hash}} kèm {{Batches: 1}} (tắm vừa RAM) hoặc {{Batches: 8}} (tràn đĩa).
+- Điều kiện: join bằng {{=}}, bảng băm vừa bộ nhớ. PostgreSQL giới hạn bộ nhớ cho node hash bằng {{work_mem}} × {{hash_mem_multiplier}} (mặc định 2.0 từ PG 15). Vượt giới hạn → PG chia dữ liệu thành nhiều **batch** (lô) và ghi tạm ra đĩa (chậm hơn nhiều). Trong EXPLAIN: node {{Hash}} kèm {{Batches: 1}} (vừa RAM) hoặc {{Batches: 8}} (tràn đĩa, phải đọc/ghi file tạm nhiều lần).
 - DB chọn hash join khi:
-  - Cả hai bên **đều lớn** (qua lớn nested loop bị chậm, qua lớn merge join thiếu index).
+  - Cả hai bên **đều lớn** (nested loop sẽ quá chậm, merge join thiếu index/thứ tự).
   - Join bằng dấu {{=}} (equi-join).
-  - Bảng băm có thể vừa vào {{work_mem}}.
-- **Pitfall**: nếu optimizer Ước lượng sai (tưởng bên lớn là bên nhỏ), bảng băm phình ra, tràn đĩa → nhiều batches → query chậm hơn nested loop. Bước đầu khi query chậm: chạy {{EXPLAIN (ANALYZE, BUFFERS)}} so s_rows ước lượng vs actual rows.
+  - Bảng băm có thể vừa vào bộ nhớ theo {{work_mem}} × {{hash_mem_multiplier}}.
+- **Pitfall**: nếu optimizer ước lượng sai (tưởng bên lớn là bên nhỏ), bảng băm phình ra, tràn đĩa → nhiều batches → query chậm hơn nested loop. Bước đầu khi query chậm: chạy {{EXPLAIN (ANALYZE, BUFFERS)}} so {{rows}} ước lượng với {{actual rows}}.
 
 ### Merge Join
 Merge join cần cả hai bên **đã sắp xếp** theo khóa join (theo index hoặc do sort).
 - **Cơ chế**: Dùng hai con trỏ đi song song như khi trộn hai danh sách đã sắp xếp trong merge sort: khoá bên nào nhỏ hơn thì tiến con trỏ bên đó. Khi khóa bằng nhau → phát hết cặp khớp.
 - **Chi phí**: **O(n + m)** nếu đã có thứ tự sẵn, cộng O(n log n) nếu phải sort.
 - DB chọn merge join khi:
-  - Cả hai bên **đã sắp theo khóa join** (kéo theo index B-tree phù hợp).
+  - Cả hai bên **đã sắp xếp theo khóa join** (nhờ index B-tree phù hợp).
   - Join bằng dấu {{=}}.
   - Không muốn tốn bộ nhớ tạo bảng băm (hash join cần work_mem).
 - **Pitfall**: nếu cần sort ban đầu, chi phí O(n log n) có thể làm merge join chậm hơn hash join hoặc nested loop có index.
@@ -1942,7 +1943,7 @@ Merge join cần cả hai bên **đã sắp xếp** theo khóa join (theo index 
 | Index Scan | O(log n) + fetch heap | Có index WHERE | Selectivity cao, equality/range query |
 | Nested Loop (no index) | n × m | Bất kỳ | Outer rất nhỏ, inner không index |
 | Nested Loop (with index) | n × log m | Inner có index | Outer nhỏ, inner lớn có index (OLTP) |
-| Hash Join | n + m | Chỉ equi-join (=), đủ work_mem | Hai bên đều lớn, đủ RAM |
+| Hash Join | n + m | Chỉ equi-join (=), đủ work_mem × hash_mem_multiplier | Hai bên đều lớn, đủ RAM |
 | Merge Join | n + m (+ sort) | Cả hai bên đã sắp hoặc equi-join | Đã có index thứ tự, ít RAM |
 
 ### Vì sao thiếu index làm JOIN chậm
@@ -1965,8 +1966,8 @@ Trong SQL, {{NULL = NULL}} cho kết quả **UNKNOWN** (không phải TRUE), nê
 
 Nhận biết:
 - {{Seq Scan}} không xấu tuyệt đối; xấu khi lặp lại nhiều loops hoặc trên bảng rất lớn mà chỉ cần ít dòng có index phù hợp.
-- {{Batches > 1}} trên node Hash → tăng {{work_mem}} cho session/query đó (SET LOCAL work_mem = '256MB'), đừng tăng toàn cục.
-- So s_rows ước lượng với actual rows: lệch > 10 lần là manh mạch nhất cho thấy planner hiểu sai dữ liệu.
+- {{Batches > 1}} trên node Hash → tăng {{work_mem}} cho session/query đó (SET LOCAL work_mem = '256MB'), đừng tăng toàn cục; có thể dùng {{hash_mem_multiplier}} nếu chỉ node hash thiếu trước.
+- So {{rows}} ước lượng với {{actual rows}}: lệch > 10 lần là manh mối mạnh nhất cho thấy planner hiểu sai dữ liệu.
 
 ### Liên hệ phỏng vấn
 Câu hay gặp: "DB join hai bảng thế nào?", "Query join chậm, bạn làm gì?", "Khác nhau hash join và nested loop". Trả lời tốt: nêu ba thuật toán + chi phí (n×m, n×log m, n+m) + điều kiện ({{=}} cho hash/merge), nói optimizer chọn theo ước lượng/kích thước/index, và đưa quy trình: EXPLAIN ANALYZE → nhận thuật toán/loops/rows lệch → kiểm tra index khóa join → ANALYZE thống kê. Nhắc null key không khớp là điểm cộng thể hiện hiểu ngữ nghĩa SQL.
@@ -1978,7 +1979,7 @@ Câu hay gặp: "DB join hai bảng thế nào?", "Query join chậm, bạn làm
 
 - {{seqScanCost(int n)}}: ước lượng chi phí quét tuần tự bảng n dòng. Công thức đơn giản: trả về n (mỗi dòng đều kiểm tra 1 lần). Nếu n <= 0 trả 0.
 - {{indexScanCost(int n, int indexedRows)}}: ước lượng chi phí scan theo index. Giả lập: chi phí tìm điểm đầu là ~4 bước (O(log n) với fanout lớn), rồi duyệt indexedRows entry. Trả về 4 + indexedRows. Nếu indexedRows <= 0 trả 4.
-- {{nestedLoopCost(int leftSize, int rightSize, boolean rightHasIndex)}}: chi phí nested loop. Nếu rightHasIndex là false: trả leftSize * rightSize. Nếu rightHasIndex là true: trả leftSize * (int)Math.ceil(Math.log(rightSize) / Math.log(100) + 1) (ước lượng bước đi xuống B-tree).
+- {{nestedLoopCost(int leftSize, int rightSize, boolean rightHasIndex)}}: chi phí nested loop. Nếu rightHasIndex là false: trả leftSize * rightSize. Nếu rightHasIndex là true: trả leftSize * số bước đi xuống B-tree, với số bước = floor(log100(rightSize)) + 1 (tức đổi cơ số bằng Math.log(rightSize) / Math.log(100), làm tròn xuống rồi cộng 1; nếu rightSize <= 0 thì coi là 1 bước).
 - {{hashJoinCost(int leftSize, int rightSize)}}: chi phí hash join. Trả về leftSize + rightSize (đọc mỗi bên một lần).
 
 Mục tiêu: làm quen với việc ước lượng chi phí và biết thuật toán nào được ưu tiên khi.
@@ -2042,20 +2043,20 @@ Starter biên dịch được; điền TODO.
         hints: [
           '{{seqScanCost}}: đơn giản trả n (hoặc 0 nếu n <= 0).',
           '{{indexScanCost}}: 4 bước để đi xuống gốc B-tree (fanout lớn) + số entry phải duyệt.',
-          '{{nestedLoopCost}}: nếu rightHasIndex=false → n×m; nếu true → n × (bước đi xuống B-tree). Dùng Math.log(n)/Math.log(base) cho log cơ số 100.',
+          '{{nestedLoopCost}}: nếu rightHasIndex=false → n×m; nếu true → n × (bước đi xuống B-tree). Dùng Math.log(n)/Math.log(base) cho log cơ số 100, làm tròn xuống rồi cộng 1.',
           '{{hashJoinCost}}: luôn left + right vì đọc mỗi bên đúng một lần.',
         ],
         explain: `### Về mô phỏng này
-Mục đích là làm quen với các công thức chi phí cơ bản mà optimizer tham chiếu. Trong thực tế planner PostgreSQL dùng thống kê phức tạp ({{pg_stats}}, correlation, random page cost, page io cost)}, nhưng các công thức sai số này đủ để hiểu **tư thế**: nested loop thua khi hai bên lớn, hash join khi đủ RAM, index scan khi selectividad cao.
+Mục đích là làm quen với các công thức chi phí cơ bản mà optimizer tham chiếu. Trong thực tế planner PostgreSQL dùng thống kê phức tạp ({{pg_stats}}, correlation — độ tương quan giữa các cột, random page cost — chi phí đọc một trang ngẫu nhiên), nhưng các công thức sai số này đủ để hiểu **tư thế**: nested loop thua khi hai bên lớn, hash join khi đủ RAM, index scan khi selectivity cao.
 
 ### Lỗi hay gặp
 - {{nestedLoopCost}} quên trường hợp rightHasIndex=true và trả n×m luôn → test sẽ fail.
 - {{indexScanCost}} quên thêm 4 bước cho gốc cây hoặc quên xử lý indexedRows <= 0.
-- {{Math.log}} với cơ số sai: phải dùng Math.log(n)/Math.log(base) để đổi cơ số, nhớ thêm 1e-12 tránh lỗi làm tròn.
+- {{Math.log}} với cơ số sai: phải dùng Math.log(n)/Math.log(base) để đổi cơ số; làm tròn xuống rồi cộng 1.
 - {{hashJoinCost}} trả cost phức tạp hơn left+right khi chưa cần (test bắt lỗi này).
 
 ### Liên hệ EXPLAIN
-- Nested loop 1200 so sánh ở bài tập tương tự {{Nested Loop}} với {{loops}} lớn và inner scan lặp lại. Hash join "đọc mỗi bên một lần" tương tự node {{Hash Join}} ({{Hash}} build một lần, probe scan một lần). Seq scan tương đương {{Seq Scan}} loops=1.
+- Chi phí nested loop n×m giống node {{Nested Loop}} với {{loops}} lớn và inner scan lặp lại. Hash join "đọc mỗi bên một lần" giống node {{Hash Join}} ({{Hash}} build một lần, probe scan một lần). Seq scan giống {{Seq Scan}} loops=1.
 `,
       },
     ],
@@ -2064,7 +2065,7 @@ Mục đích là làm quen với các công thức chi phí cơ bản mà optimi
         q: 'Trong EXPLAIN ANALYZE, node {{Nested Loop}} có {{loops=50000}} cho inner nghĩa là gì?',
         options: [
           'Hash join bị tắt, cần bật lại',
-          'Inner bị quét toàn bộ 50.000 lần, thường do thiếu index trên khóa join hoặc optimizer Ước lượng sai',
+          'Inner bị quét toàn bộ 50.000 lần, thường do thiếu index trên khóa join hoặc optimizer ước lượng sai',
           'Bảng inner quá nhỏ nên Seq Scan là tối ưu',
           'Merge join sẽ tự thay thế ở lần chạy sau'
         ],
@@ -2138,7 +2139,7 @@ LIMIT 20;
 ~~~
 
 Với index B-tree (cây cân bằng, cấu trúc index phổ biến giúp tìm theo thứ tự) trên {{(created_at, id)}}, DB đi xuống cây tới đúng vị trí cursor (O(log n) — logarit, rất nhanh) rồi đọc tiếp 20 dòng. **Trang 1 hay trang 5000 tốn gần như nhau**. Vì:
-- B-tree tìm đúng vị trí cursor tốn O(log n) (vài comparisons trên cây, không phụ thuộc n).
+- B-tree tìm đúng vị trí cursor tốn O(log n) (vài phép so sánh trên cây, không phụ thuộc n).
 - Sau khi tìm vị trí, DB đọc tiếp 20 entry tuần tự (sequential read, rẻ).
 
 **Ba chi tiết quyết định đúng sai**:
@@ -2168,7 +2169,7 @@ Giả sử bảng có 1.000.000 dòng, index trên {{(created_at, id)}}, mỗi t
 - **Offset**: Trang 1: đọc 20. Trang 100: đọc 100×20 = 2.000. Trang 5.001: đọc 5.001×20 = 100.020. Trang 50.001: đọc 1.000.020 (quá đắt).
 - **Keyset**: Trang 1: tìm cursor vị trí O(log n) ≈ 20 bước, đọc 20. Trang 100: tìm cursor O(log n) ≈ 20 bước, đọc 20. Trang 5.001: tìm cursor O(log n) ≈ 20 bước, đọc 20. Trang 50.001: tìm cursor O(log n) ≈ 20 bước, đọc 20.
 
-Con số nói lên tất cả: chỉ riêng trang cuối bằng offset ({{offset = 950}}) đã phải đọc 1.000 entry. Còn chỉ riêng trang sau bằng keyset ({{lastId là trang 99}}) chỉ phải đọc **20** entry. Nếu đi 20 trang bằng offset, tổng số entry phải đọc là 20 + 40 + ... + 1.000 = **10.500**: chi phí bậc hai theo số trang. Còn 20 trang bằng keyset: 20 × (log n + 20) ≈ 420 entry: chênh lệch gấp 25 lần.
+Con số nói lên tất cả: chỉ riêng trang 5.001 bằng offset ({{offset = 100.000}}) đã phải đọc **100.020** entry, trong khi trang đó bằng keyset chỉ phải đọc **20** entry (cộng ~20 bước tìm mốc trong cây). Đi hết 50 trang (tới entry thứ 1.000) bằng offset thì tổng số entry phải đọc là 20 + 40 + ... + 1.000 = **25.500**: chi phí tăng bậc hai theo số trang. Cũng 50 trang đó bằng keyset chỉ tốn 50 × (20 bước tìm mốc + 20 dòng) = **2.000** entry — chênh lệch hơn 12 lần, và khoảng cách còn giãn ra khi đi sâu hơn.
 
 ### Liên hệ phỏng vấn
 Câu hay gặp: "Bảng giao dịch 80 triệu dòng, API lịch sử bị chậm ở trang sâu, sửa thế nào?". Trả lời tốt: giải thích offset phải đọc rồi bỏ offset dòng; chuyển sang keyset với index {{(account_id, created_at, id)}} khớp đúng WHERE và ORDER BY; xử lý tie-breaker (id); nêu trade-off là mất khả năng nhảy trang và cách giảm nhẹ (giới hạn số trang tối đa cho offset ở màn hình admin, hoặc cho lọc theo khoảng ngày để nhảy gần tới vị trí cần xem).`,
@@ -2322,7 +2323,7 @@ Tương đương {{WHERE (created_at, id) < (afterCreatedAt, afterId) ORDER BY c
           "Offset không cần index, Keyset cần index duy nhất"
         ],
         answer: 0,
-        explain: "**Phương án 0 đúng**: Offset phải bỏ qua offset×limit dòng để về trang sâu (100.020 cho trang 5.001). Keyset tìm vị trí qua B-tree O(log n) ≈ vài chục bước rồi chỉ đọc limit (20) dòng, không phụ thuộc offset value. (A) là so sánh đúng. (B) đảo ngược hai trường hợp. (C) sai: offset không phải 20 dòng ở trang sâu. (D) chưa giải thích được chênh lệch chi phí.",
+        explain: "**Phương án 1 đúng**: Offset phải bỏ qua {{offset}} dòng đầu rồi mới đọc {{limit}} dòng, nên trang 5.001 đọc 100.000 + 20 = 100.020 dòng. Keyset tìm vị trí qua B-tree O(log n) ≈ vài chục bước rồi chỉ đọc limit (20) dòng, không phụ thuộc offset. **Phương án 2** đảo ngược hai trường hợp. **Phương án 3** sai: offset không phải 20 dòng ở trang sâu. **Phương án 4** chưa giải thích được chênh lệch chi phí (cả hai cách đều hưởng lợi từ index).",
       },
     ],
     related: ['sql-002', 'sql-009', 'db-005'],
@@ -2390,7 +2391,7 @@ Khi điều kiện khớp lượng dòng *trung bình* hoặc có nhiều điề
 
 ### Nested Loop và Hash Join nhìn trong plan
 - **Nested Loop**: {{loops=N}} trên inner nghĩa là inner chạy N lần. Inner là {{Index Scan}} và outer ít dòng → tốt. Inner là {{Seq Scan}} và {{loops}} lớn → rất tệ (n × m).
-- **Hash Join**: có node {{Hash}} (pha build) và probe. {{Batches: 4}} (lớn hơn 1) nghĩa là bảng băm tràn {{work_mem}} (bộ nhớ làm việc cho sort/hash) và phải ghi xuống đĩa → chậm.
+- **Hash Join**: có node {{Hash}} (pha build) và probe. {{Batches: 4}} (lớn hơn 1) nghĩa là bảng băm tràn ngân sách bộ nhớ {{work_mem}} × {{hash_mem_multiplier}} (mặc định 2.0 từ PG 15; {{work_mem}} là bộ nhớ làm việc tối đa cho mỗi phép sort/hash) và phải ghi tạm xuống đĩa → chậm.
 
 | Thuật toán | Khi planner hay chọn | Dấu hiệu trong plan |
 |---|---|---|
@@ -2415,9 +2416,9 @@ Trả lời "query chậm bạn xử lý thế nào?": (1) chạy {{EXPLAIN (ANA
 - {{chooseScan(totalRows, matchingRows)}}: trả về {{SEQ_SCAN}} nếu {{seqScanCost <= indexScanCost}}, ngược lại {{INDEX_SCAN}}.
 
 **Chi phí join (equi-join):**
-- {{nestedLoopJoinCost(outerRows, innerRows)}}: {{outerRows * innerRows}}.
+- {{nestedLoopJoinCost(outerRows, innerRows)}}: {{outerRows * innerRows}} (kết quả kiểu {{long}} để không tràn {{int}}).
 - {{hashJoinCost(outerRows, innerRows)}}: {{outerRows + innerRows}}.
-- {{chooseJoin(outerRows, innerRows)}}: trả về {{NESTED_LOOP}} nếu nested loop rẻ hơn hoặc bằng, ngược lại {{HASH_JOIN}}.`,
+- {{chooseJoin(outerRows, innerRows)}}: trả về {{NESTED_LOOP}} nếu nested loop rẻ hơn hoặc bằng, ngược lại {{HASH_JOIN}}. **Ngoại lệ**: khi {{outerRows <= 2}} (outer chỉ 1–2 dòng) luôn trả {{NESTED_LOOP}}, vì vòng ngoài quá nhỏ nên quét lại inner chỉ 1–2 lần là đủ — đây là mô phỏng cho trường hợp inner có index mà mô hình n×m / n+m chưa tính tới.`,
         starter: `class PlanChooser {
 
     long seqScanCost(int totalRows) {
@@ -2527,10 +2528,11 @@ Trả lời "query chậm bạn xử lý thế nào?": (1) chạy {{EXPLAIN (ANA
           'Dùng {{ceilLog2}} có sẵn; khi {{totalRows <= 0}} phần log coi như 0. Nhớ ép kiểu {{long}} khi nhân.',
           '{{chooseScan}}: bằng nhau thì chọn {{SEQ_SCAN}}.',
           'Join: nested loop là tích {{n*m}}, hash join là tổng {{n+m}}. Bảng lớn nghiêng về hash join.',
+          '{{chooseJoin}}: nhớ ngoại lệ {{outerRows <= 2}} luôn chọn {{NESTED_LOOP}} (đã nêu ở đề).',
         ],
         explain: `### Ý tưởng
 - **Chọn scan**: index tìm nhanh (log n) nhưng mỗi dòng khớp tốn truy cập heap ngẫu nhiên. Khi {{matchingRows}} lớn (selectivity thấp), {{indexScanCost}} vượt {{seqScanCost}} → chọn Seq Scan.
-- **Chọn join**: nested loop là n × m (rẻ khi một bên rất nhỏ), hash join là n + m (thắng khi hai bên lớn, equi-join).
+- **Chọn join**: nested loop là n × m (rẻ khi một bên rất nhỏ), hash join là n + m (thắng khi hai bên lớn, equi-join). Với {{outerRows}} rất nhỏ, inner có index nên mỗi dòng outer chỉ tốn log(inner) bước chứ không phải quét hết inner; mô hình đơn giản này xấp xỉ bằng luật "outer ≤ 2 dòng thì chọn nested loop".
 
 ### Lỗi hay gặp
 - Quên {{ceilLog2}} hoặc quên {{totalRows <= 0}} / {{matchingRows < 0}}.
@@ -2604,7 +2606,7 @@ LIMIT 20 OFFSET 9980;  -- trang 500, mỗi trang 20
 
 **OFFSET N** nghĩa là "bỏ qua N dòng đầu". DB phải đi qua 9.980 dòng đầu theo đúng thứ tự rồi mới trả 20 dòng. Trang 1 đọc 20 dòng, trang 500 đọc 10.000 dòng. Chi phí tăng **tuyến tính** theo offset.
 
-Còn một lỗi đúng/sai: nếu có đơn mới chèn vào đầu trong lúc chuyển trang, mọi dòng bị đẩy xuống — trang sau có thể lặp lại một đơn đã thấy; nếu xóa dòng thì có thể bỏ sót. OFFSET neo theo *vị trí đếm*, không neo theo *nội dung*.
+Còn một vấn đề về **tính đúng đắn** (không chỉ chậm): nếu có đơn mới chèn vào đầu trong lúc chuyển trang, mọi dòng bị đẩy xuống — trang sau có thể lặp lại một đơn đã thấy; nếu xóa dòng thì có thể bỏ sót. OFFSET neo theo *vị trí đếm* ("dòng thứ 9.981"), không neo theo *nội dung*, nên nội dung thay đổi là vị trí lệch.
 
 > Pitfall thực tế: {{Page<T>}} của Spring Data JPA mặc định chạy thêm {{SELECT COUNT(*)}} để tính tổng số trang; trên bảng chục triệu dòng câu đếm này rất đắt. Nếu không cần tổng trang, hãy dùng {{Slice<T>}}.
 
@@ -2620,7 +2622,7 @@ ORDER BY created_at DESC, id DESC
 LIMIT 20;
 ~~~
 
-Với index B-tree trên {{(account_id, created_at DESC, id DESC)}}, DB đi xuống cây tới vị trí mốc (O(log n)) rồi đọc tiếp 20 dòng. Trang 1 hay trang 5000 đều tốn gần như nhau: **log n + limit**.
+Với index B-tree (cây cân bằng — cấu trúc index mặc định, giữ dữ liệu có thứ tự nên tìm theo khoảng rất nhanh) trên {{(account_id, created_at DESC, id DESC)}}, DB đi xuống cây tới vị trí mốc (O(log n), logarit — tăng rất chậm: 1 triệu dòng chỉ khoảng 20 bước) rồi đọc tiếp 20 dòng. Trang 1 hay trang 5000 đều tốn gần như nhau: **log n + limit**.
 
 So sánh bộ {{(a, b) < (x, y)}} theo thứ tự từ điển: nhỏ hơn khi {{a < x}} hoặc {{a == x và b < y}}.
 
