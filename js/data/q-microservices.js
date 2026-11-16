@@ -1705,7 +1705,15 @@ Hãy tưởng tượng Kafka như một kho hàng có nhiều lô hàng (partiti
 - **Eager (cũ)**: consumer join/leave ⇒ **nhả HẾT partition** → chia lại → dừng xử lý vài giây. Deploy rolling = lag dồn.
 - **Cooperative Sticky** ({{partition.assignment.strategy=CooperativeStickyAssignor}}): chỉ **revoke** partition thực sự cần chuyển, các partition còn lại **giữ nguyên** ⇒ downtime gần 0. Yêu cầu Kafka 2.4+, client 2.4+.
 - **Static membership**: set {{group.instance.id}} duy nhất cho mỗi pod. Consumer restart trong {{session.timeout.ms}} (mặc định 45s) thì **không coi là leave** ⇒ không rebalance. Hợp với StatefulSet (tên pod ổn định); thường tăng {{session.timeout.ms}} cho đủ thời gian restart.
-- **{{max.poll.interval.ms}}** (mặc định 5 phút): nếu xử lý một batch lâu hơn ngưỡng này ⇒ consumer bị coi là **treo** ⇒ coordinator đá ra khỏi group ⇒ rebalance oan. Tăng lên (VD 15–30 phút) cho batch nặng, **song song set {{max.poll.records}}** nhỏ hơn để poll thường xuyên hơn.
+- **{{max.poll.interval.ms}}** (mặc định 5 phút): nếu xử lý một batch lâu hơn ngưỡng này ⇒ consumer bị coi là **treo** ⇒ coordinator đã ra khỏi group ⇒ rebalance oan. Tăng lên (VD 15–30 phút) cho batch nặng, **song song, set {{max.poll.records}}** nhỏ hơn để poll thường xuyên hơn.
+
+Hình dưới so sánh ba cơ chế rebalance:
+
+| Cơ chế | Khi partition được chia lại | Ảnh hưởng xử lý |
+|---|---|---|
+| Eager (cũ) | Mọi consumer nhả HẾT partition, rồi chia lại | Dừng toàn bộ group vài giây |
+| Cooperative Sticky | Chỉ thu hồi partition thực sự cần chuyển | Gần như không gián đoạn |
+| Static membership | Restart ngắn không coi là rời group | Không rebalance khi pod restart |
 
 ~~~yaml
 spring:
@@ -1810,6 +1818,15 @@ public void dlt(OrderCreatedEvent evt) { /* log + alert */ }
 - **Non-blocking retry phá ordering**: A (key=order-1) lỗi và sang topic retry, B (cùng key, đến sau) vẫn được xử lý ngay trên topic gốc ⇒ B chạy **trước** A.
 - Cần giữ thứ tự theo key ⇒ dùng **blocking retry**, hoặc thiết kế consumer chịu được đảo thứ tự (kiểm tra version/state, bỏ qua event cũ hơn state hiện tại).
 - Blocking retry giữ thứ tự nhưng mọi key khác cùng partition cũng phải chờ ⇒ chỉ chấp nhận được khi retry ngắn.
+
+Hình dưới so sánh hai chế độ retry:
+
+| | Blocking retry | Non-blocking retry |
+|---|---|---|
+| Giữ thứ tự theo key | có | **không** |
+| Kẹt partition khi retry | có | **không** |
+| Thứ tự event cùng key | giữ | có thể đảo |
+| Dùng khi | retry ngắn, cần thứ tự | throughput cao, retry lâu |
 
 ### Lỗi hay gặp
 1. **Retry mọi exception**. Triệu chứng: lỗi validation retry 4 lần, tốn thời gian, rồi vẫn vào DLT. Cách tránh: addNotRetryableExceptions / exclude cho lỗi nghiệp vụ và lỗi deserialize.
