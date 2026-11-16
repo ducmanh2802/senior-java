@@ -2412,7 +2412,7 @@ window.DATA_INDEX = {
     {"id":"lesson-api-001","track":"api","order":1,"title":"HTTP từ bên trong: method an toàn, status code và header","level":"mid","minutes":25},
     {"id":"lesson-api-002","track":"api","order":2,"title":"Thiết kế REST resource, validation và lỗi chuẩn Problem Details","level":"mid","minutes":30},
     {"id":"lesson-api-003","track":"api","order":3,"title":"Idempotency key cho POST: chống trừ tiền hai lần","level":"senior","minutes":35},
-    {"id":"lesson-api-004","track":"api","order":4,"title":"Idempotency-Key: chống trừ tiền 2 lần khi client retry POST","level":"senior","minutes":35},
+    {"id":"lesson-api-004","track":"api","order":4,"title":"Idempotency-Key ở phía client: khi nào retry và giải mã 422/409","level":"senior","minutes":35},
     {"id":"lesson-api-005","track":"api","order":5,"title":"Phân trang API: cursor (keyset) vs offset/limit","level":"senior","minutes":35},
     {"id":"lesson-api-006","track":"api","order":6,"title":"429 Too Many Requests: Retry-After, RateLimit-* và client tôn trọng giới hạn","level":"senior","minutes":40},
     {"id":"lesson-api-007","track":"api","order":7,"title":"Tiến hoá API mà không làm hỏng client: breaking change, tolerant reader, versioning, Sunset","level":"senior","minutes":40},

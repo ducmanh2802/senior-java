@@ -799,117 +799,72 @@ Khác biệt với production: {{computeIfAbsent}} giữ lock bin trong suốt t
   id: 'lesson-api-004',
   track: 'api',
   order: 4,
-  title: 'Idempotency-Key: chống trừ tiền 2 lần khi client retry POST',
+  title: 'Idempotency-Key ở phía client: khi nào retry và giải mã 422/409',
   level: 'senior',
   minutes: 35,
   goals: [
-    'Giải thích được vì sao POST không idempotent gây trừ tiền/đặt hàng 2 lần khi mạng lỗi và client retry',
-    'Thiết kế được luồng Idempotency-Key: lưu key + hash request + trạng thái + response; xử lý key trùng, body khác (422), và request đang xử lý (409)',
-    'Viết được IdempotencyStore trong Java thuần, an toàn với 2 thread cùng key (chỉ chạy nghiệp vụ 1 lần)',
+    'Sinh Idempotency-Key một lần cho một thao tác logic và giữ nguyên key trên mọi lần retry',
+    'Giải thích được phản hồi từ server: kết quả cũ (200/201), 422 (key dùng sai), 409 (đang xử lý), client làm gì ở mỗi trường hợp',
+    'Không tự sinh key mới trong interceptor retry; không retry POST nếu thiếu Idempotency-Key',
+    'Kết hợp Idempotency-Key với Retry-After + backoff + jitter, chỉ retry lỗi tạm thời (429, 503, timeout)',
   ],
-  body: `### Cái gì: POST không tự an toàn khi retry
-**Tóm tắt:** {{Idempotency-Key}} là một chuỗi do client sinh (thường UUID) gửi kèm header mỗi request tạo tài nguyên/thanh toán. Server dùng key đó để nhận ra "request này đã xử lý rồi" và trả lại đúng response cũ thay vì chạy nghiệp vụ lần hai.
+  body: `### Cái gì: Idempotency-Key là "tên thao tác", không phải "tên lần gửi"
+**Tóm tắt:** {{Idempotency-Key}} là một chuỗi do **client** sinh (thường là UUID), gắn vào header của mỗi request POST tạo tài nguyên/thanh toán. Server dùng key đó để nhận ra "thao tác này đã chạy rồi" và trả lại kết quả cũ thay vì chạy nghiệp vụ lần hai.
 
 **Thuật ngữ lần đầu gặp:**
-- **Idempotent (bất biến theo lần lặp)**: gọi 1 lần hay 10 lần với cùng đầu vào thì kết quả cuối trên server giống nhau. Ví dụ đời thường: bấm nút tầng 5 trong thang máy nhiều lần vẫn chỉ tới tầng 5.
-- **Retry (thử lại)**: client tự gửi lại request khi nghi ngờ lỗi (timeout, mất mạng). Mobile app, API gateway, SDK đều hay retry.
-- **Race condition (đua nhau)**: 2 thread/request cùng chạy và cùng đọc/ghi một trạng thái, dẫn đến kết quả sai (ở đây: chạy nghiệp vụ 2 lần).
-- **TTL (Time To Live)**: thời gian sống của một bản ghi; hết TTL thì xoá để bảng không phình vô hạn.
+- **Thao tác logic**: công việc người dùng thực hiện một lần, ví dụ bấm nút "Thanh toán 500.000đ". Một thao tác = **một key**, sinh ra **một lần**.
+- **Lần gửi (attempt)**: mỗi lần client gửi một request qua mạng. Một thao tác có thể gây ra nhiều lần gửi do retry.
+- **Idempotent (bất biến theo lần lặp)**: gọi một hay nhiều lần với cùng đầu vào, kết quả cuối trên server giống nhau. {{GET}}, {{PUT}}, {{DELETE}} idempotent; {{POST}} (tạo mới/thanh toán) **không**.
+- **Retry (thử lại)**: client gửi lại request khi nghi ngờ thất bại (timeout, mất mạng, phản hồi không về).
+- **Idempotency-Key**: header client gửi để server nhận request trùng.
 
-HTTP định nghĩa {{GET}}, {{PUT}}, {{DELETE}} là idempotent, còn {{POST}} (tạo mới/thanh toán) thì **không**. Vì vậy {{POST /payments}} retry có thể tạo 2 giao dịch.
+### Tại sao cần: hai lần gửi, không nhất định là hai lần thất bại
+Khách bấm "Thanh toán 500.000đ":
+1. Client sinh key {{K1}}, gửi {{POST /payments}} kèm {{Idempotency-Key: K1}} và body {{"amount":500000}}.
+2. Server đã trừ tiền và ghi DB, nhưng response bị mất trên đường về (mạng di động chập chờn, gateway khởi động lại).
+3. Client thấy timeout, không biết tiền đã bị trừ hay chưa. SDK tự động retry: gửi **lại** request.
+4. Nếu client sinh key **mới** ({{K2}}) cho lần gửi thứ hai → server không nhận ra đây là cùng một thao tác → trừ tiền lần 2. Khách mất 1.000.000đ.
+5. Nếu client gửi lại **cùng K1 và cùng body** → server nhận ra trùng, trả lại kết quả cũ, không trừ thêm.
 
-### Vì sao cần: câu chuyện trừ tiền 2 lần
-Giả sử người dùng bấm "Thanh toán 500.000đ":
-1. Client gửi {{POST /payments}} kèm {{Idempotency-Key: 7f3a-...}}.
-2. Server trừ tiền, ghi DB, nhưng response bị mất trên đường về (mạng chập chờn).
-3. Client thấy timeout, SDK tự retry cùng request, **cùng key**.
-4. Nếu server không nhớ key: trừ tiền lần 2. Khách mất 1.000.000đ.
+Idempotency-Key biến một lần retry thành câu hỏi: "hãy cho tôi kết quả của lần đầu".
 
-Idempotency-Key biến retry thành "hãy cho tôi kết quả của lần đầu".
+### Luồng đúng ở phía client (ví dụ số)
+1. Người dùng bấm "Thanh toán 500.000đ" → client sinh UUID {{K1}} một lần, lưu tạm trên màn hình.
+2. Gửi {{POST /payments}} + header {{Idempotency-Key: K1}} + body {{"amount":500000}}.
+3. Mạng timeout → client không biết server đã xử lý chưa.
+4. Retry: gửi **lại cùng K1 và cùng body**. Không được sinh key mới.
+5. Server phản hồi:
+   - {{200}}/{{201}} kèm kết quả cũ → hiển thị kết quả, **không bấm lại**.
+   - {{409}} REQUEST_IN_PROGRESS → lần trước vẫn đang chạy, client đợi theo header {{Retry-After}} rồi gửi lại cùng key.
+   - {{422}} IDEMPOTENCY_KEY_REUSED → cùng key nhưng body khác (ví dụ số tiền bị đổi giữa các lần retry) → từ chối, báo lỗi rõ ràng cho người dùng, không tự reset key.
 
-### Hoạt động thế nào: luồng nhiều bên
-~~~seq
-title: POST thanh toán với Idempotency-Key (retry an toàn)
-actors: Client | Payment API | Idempotency Store | Core Banking
-Client -> Payment API: POST /payments, Idempotency-Key=K1, body={500k}
-Payment API -> Idempotency Store: lookup(K1, hash(body))
-Idempotency Store --> Payment API: MISS (chưa có)
-Payment API -> Idempotency Store: claim(K1, IN_PROGRESS)
-Payment API -> Core Banking: debit(500k)
-Core Banking --> Payment API: OK, txn=TX99
-Payment API -> Idempotency Store: save(K1, hash, 201, response)
-Payment API --> Client: 201 Created (bị mất do mạng)
-Client -> Payment API: RETRY POST, cùng K1, cùng body
-Payment API -> Idempotency Store: lookup(K1, hash(body))
-Idempotency Store --> Payment API: HIT (201, response cũ)
-Payment API --> Client: 201 Created (response cũ, KHÔNG trừ tiền lại)
-~~~
+### Bảng phản hồi và cách client xử lý
 
-Các tình huống server phải xử lý:
-
-| Tình huống | Cách xử lý | HTTP gợi ý |
+| Phản hồi | Nghĩa | Client làm gì |
 |---|---|---|
-| Key mới | Claim {{IN_PROGRESS}}, chạy nghiệp vụ, lưu response | 201/200 như bình thường |
-| Key trùng, **cùng** hash body, đã có response | Trả lại response cũ, **không** chạy nghiệp vụ | Trả lại đúng status/body cũ |
-| Key trùng, **khác** hash body | Từ chối (client dùng lại key cho request khác là bug) | 422 Unprocessable Entity |
-| Key trùng, đang {{IN_PROGRESS}} | Request đầu chưa xong; tránh chạy song song | 409 Conflict (+ Retry-After) |
+| 200/201 + body đã lưu | Lần trước đã xử lý xong | Hiển thị kết quả, không bấm lại |
+| 409 REQUEST_IN_PROGRESS | Lần trước vẫn đang chạy | Đợi theo {{Retry-After}}, gửi lại cùng key |
+| 422 IDEMPOTENCY_KEY_REUSED | Key dùng lại cho request khác (bug phía client) | Báo lỗi, yêu cầu xem lại, không tự reset key |
+| 429 + {{Retry-After}} | Gửi quá nhanh | Chờ theo {{Retry-After}} rồi retry nếu request idempotent |
 
-**Vì sao phải lưu hash của body?** Nếu client vô tình dùng lại cùng key cho một đơn hàng khác (body khác), trả response cũ sẽ sai nghiệp vụ (trả kết quả đơn A cho đơn B). So hash giúp phát hiện lỗi này.
+### Những điều client KHÔNG được làm
 
-**Vì sao cần "claim" IN_PROGRESS?** Hai retry đến gần như cùng lúc: cả hai cùng thấy MISS rồi cùng gọi Core Banking → trừ tiền 2 lần. Claim phải là thao tác **atomic** (nguyên tử: chỉ một bên thắng).
+- **Sinh key mới mỗi lần retry**: lỗi phổ biến nhất, đặc biệt khi HTTP client tự retry trong interceptor. Key phải được tạo ở tầng nghiệp vụ, gắn liền với thao tác, không phải ở tầng gửi request.
+- **Giữ key nhưng đổi body giữa các lần retry**: cùng key với body khác là key bị dùng nhầm → 422, từ chối. Không được tự ý sửa số tiền rồi gửi lại cùng key.
+- **Retry POST không có Idempotency-Key**: POST không idempotent, retry mù có thể tạo giao dịch thứ hai. GET là idempotent và safe nên không cần key.
+- **Nhận 409 rồi bấm lại ngay lập tức liên tục**: tạo **retry storm** (hàng nghìn client cùng gửi lại một lúc, làm quá tải nặng hơn). Phải chờ theo {{Retry-After}} và có giới hạn số lần thử.
 
-### Ví dụ cụ thể (Java thuần, mô phỏng cơ chế)
-~~~java
-import java.util.*; import java.util.concurrent.*; import java.util.function.*;
-
-class Response { final int status; final String body;
-    Response(int status, String body){ this.status=status; this.body=body; } }
-
-class IdempotencyStore {
-    enum State { IN_PROGRESS, DONE }
-    static final class Entry {
-        final State state; final String hash; final Response resp;
-        Entry(State s, String h, Response r){ state=s; hash=h; resp=r; }
-    }
-    // ConcurrentHashMap: ghi/đọc an toàn giữa nhiều thread
-    private final ConcurrentHashMap<String, Entry> map = new ConcurrentHashMap<>();
-
-    Response execute(String key, String requestHash, Supplier<Response> work) {
-        // putIfAbsent là atomic: chỉ thread đầu tiên đặt IN_PROGRESS
-        Entry first = map.putIfAbsent(key, new Entry(State.IN_PROGRESS, requestHash, null));
-        if (first == null) {
-            try {
-                Response r = work.get();                 // chỉ thread thắng mới chạy
-                map.put(key, new Entry(State.DONE, requestHash, r));
-                return r;
-            } catch (RuntimeException e) {
-                map.remove(key);                         // lỗi: cho phép retry thật sự
-                throw e;
-            }
-        }
-        // đã có entry từ trước
-        if (!Objects.equals(first.hash, requestHash)) {
-            return new Response(422, "key reused with different body");
-        }
-        if (first.state == State.IN_PROGRESS) {
-            return new Response(409, "request in progress");
-        }
-        return first.resp;                               // HIT: trả response cũ
-    }
-}
-~~~
-
-### Lỗi hay gặp
-- **Chỉ lưu key, không lưu hash body**: dùng lại key cho request khác → trả nhầm response. Luôn so hash.
-- **Không atomic khi claim**: check-then-act ({{if (!map.containsKey(k)) map.put(...)}}) không an toàn đa luồng. Dùng {{putIfAbsent}}/ràng buộc unique ở DB ({{INSERT ... ON CONFLICT}}).
-- **TTL quá ngắn**: ngắn hơn cửa sổ retry của client → retry muộn bị coi là request mới, trừ tiền 2 lần. TTL thường 24 giờ; webhook retry dài thì dài hơn.
-- **Không lưu response, chỉ lưu "đã xử lý"**: retry thành công phía server nhưng client không nhận lại được body (mã giao dịch) để hiển thị/đối soát.
-- **Áp dụng cho GET**: GET vốn idempotent, không cần key; thêm key gây phức tạp vô ích.
+### Về phía server (tóm tắt, chi tiết xem bài 3 và bài 10 của track này)
+Server lưu bộ ba (phạm vi, key, vân tay body) kèm trạng thái và kết quả. Khi key trùng:
+- Cùng body + đã có kết quả → trả lại kết quả cũ, không chạy lại.
+- Cùng body + đang xử lý → 409.
+- Khác body → 422, không chạy.
+Phạm vi key phải chứa **tenant/endpoint** để hai khách hàng tình cờ UUID trùng key không đụng nhau.
 
 ### Liên hệ phỏng vấn
-Câu hay hỏi: "Làm sao chống double charge khi retry?" Trả lời theo khung: (1) client sinh {{Idempotency-Key}} per thao tác, (2) server lưu (key, hash body, trạng thái, response) với unique constraint, (3) claim IN_PROGRESS atomic để tránh race, (4) hit thì trả response cũ, body khác thì 422, đang xử lý thì 409, (5) TTL ≥ cửa sổ retry. Nhấn mạnh: **atomic claim** là điểm quyết định; chỉ "check rồi insert" sẽ hỏng dưới concurrency. Nêu ví dụ thanh toán/đặt hàng để chứng minh bạn từng gặp bài toán thật.
+Câu hay hỏi: "Mạng timeout sau POST thanh toán, client làm sao biết tiền đã trừ hay chưa?" Trả lời: không dựa vào "có lỗi" hay "không có lỗi", mà dùng {{Idempotency-Key}} và giải mã phản hồi: {{201}} = đã xử lý xong, hiển thị mã giao dịch; {{409}} = vẫn đang xử lý, đợi theo {{Retry-After}} rồi hỏi lại; {{422}} = key bị dùng nhầm, báo lỗi. Nhấn mạnh: key đại diện cho **một thao tác người dùng**, sinh một lần, giữ nguyên trên mọi lần retry; retry chỉ áp dụng cho lỗi tạm thời (429, 503, timeout) kèm backoff + jitter.
 
-> **Senior tip:** Trong production, key sống ở DB (Postgres unique index) hoặc Redis, không chỉ in-memory; response lưu đủ để tái lập chính xác. Với luồng "chạy lâu" (phê duyệt, chuyển tiền xuyên ngân hàng), tách {{IN_PROGRESS}} có timeout/heartbeat để tránh kẹt vĩnh viễn khi process chết giữa chừng.`,
+> **Senior tip:** Interceptor retry tự động của HTTP client là kẻ thù của idempotency nếu nó tự sinh key mới hoặc thay đổi body. Hãy tắt retry tự động ở tầng mạng, xử lý retry ở tầng nghiệp vụ với key cố định, và ghi log mỗi key kèm traceId để đối soát khi khách hàng phàn nàn bị trừ hai lần.`,
   exercises: [
     {
       title: 'IdempotencyStore: execute chỉ chạy nghiệp vụ 1 lần kể cả khi 2 thread cùng key',
@@ -1055,48 +1010,48 @@ Khi {{work}} ném lỗi, ta {{remove(key)}} để lần retry sau có thể th�
   ],
   check: [
     {
-      q: 'Client gửi lại POST thanh toán với CÙNG Idempotency-Key nhưng body KHÁC (số tiền khác). Server nên làm gì?',
+      q: 'Khách bấm "Thanh toán", mạng timeout, client muốn retry. Điều kiện **bắt buộc** để không trừ tiền hai lần?',
       options: [
-        'Chạy nghiệp vụ với body mới vì đó là ý định mới nhất',
-        'Trả response cũ của lần đầu',
-        'Từ chối với lỗi 422 vì key bị dùng lại cho request khác',
-        'Xoá key cũ rồi xử lý như request mới',
-      ],
-      answer: 2,
-      explain: `Đáp án đúng là 422. Cùng key nhưng hash body khác cho thấy client dùng lại key sai (bug phía client) hoặc cố gửi request khác; trả response cũ sẽ trả kết quả của giao dịch A cho giao dịch B (sai nghiệp vụ), còn chạy body mới sẽ phá cam kết idempotency của key. So hash body và từ chối rõ ràng là an toàn nhất.`,
-    },
-    {
-      q: 'Vì sao bước "claim" key IN_PROGRESS phải là thao tác atomic (như putIfAbsent hoặc unique constraint ở DB)?',
-      options: [
-        'Để tiết kiệm bộ nhớ',
-        'Để hai request retry đến cùng lúc không cùng chạy nghiệp vụ, tránh trừ tiền 2 lần',
-        'Để response trả về nhanh hơn',
-        'Vì HTTP bắt buộc mọi header phải xử lý atomic',
+        'Sinh Idempotency-Key mới cho lần gửi mới',
+        'Gửi lại cùng Idempotency-Key và cùng body',
+        'Thay POST bằng PUT',
+        'Không retry, báo lỗi ngay',
       ],
       answer: 1,
-      explain: `Nếu check và ghi tách rời, hai thread/request có thể cùng thấy "chưa có key" rồi cùng chạy nghiệp vụ: race condition gây double charge. Thao tác atomic đảm bảo chỉ một bên thắng quyền chạy; bên còn lại nhận biết request đang xử lý (409) hoặc đã xong (trả response cũ).`,
+      explain: `**Cùng key và cùng body đúng**: key đại diện cho một thao tác logic, không phải một lần gửi; gửi lại cùng key+body cho server nhận ra trùng và trả kết quả cũ. **Sinh key mới** làm server hiểu đây là giao dịch mới → trừ tiền lần hai. **Thay POST bằng PUT** không hợp: PUT ghi đè tại URI cố định, không dùng để tạo thanh toán. **Không retry** có thể để khách đã bị trừ mà đơn hàng không ghi nhận.`,
     },
     {
-      q: 'Retry cùng key đến khi request đầu tiên VẪN đang xử lý (chưa có response). Phản hồi phù hợp nhất là gì?',
+      q: 'Server trả 422 khi client retry cùng Idempotency-Key. Nguyên nhân phổ biến nhất?',
       options: [
-        '200 OK với body rỗng',
-        '409 Conflict (đang xử lý), kèm gợi ý thử lại sau',
-        '500 Internal Server Error',
-        'Chạy một bản sao nghiệp vụ thứ hai cho chắc',
+        'Mất mạng nên phải gửi lại',
+        'Body thay đổi giữa các lần retry (ví dụ số tiền khác)',
+        'Quên gửi header Accept',
+        'Server quá tải',
       ],
       answer: 1,
-      explain: `409 báo request trùng đang được xử lý; client nên chờ rồi hỏi lại (hoặc server hỗ trợ long-poll). Chạy bản sao thứ hai phá idempotency (trừ tiền 2 lần). 200 rỗng nói dối rằng đã xong. 500 ám chỉ lỗi server trong khi thực ra chỉ là đang bận xử lý.`,
+      explain: `**Body thay đổi đúng**: cùng key nhưng body khác nghĩa là key được dùng nhầm cho một thao tác khác (ví dụ đổi số tiền giữa các lần retry) → server từ chối 422, không chạy. **Mất mạng** là lý do retry, không phải lý do nhận 422. **Quên Accept** không liên quan đến idempotency key. **Server quá tải** trả 429/503, không phải 422.`,
     },
     {
-      q: 'TTL (thời gian sống) của bản ghi idempotency nên chọn thế nào?',
+      q: 'Server trả 409 REQUEST_IN_PROGRESS khi client retry. Client nên làm gì?',
       options: [
-        'Càng ngắn càng tốt, ví dụ 30 giây, để tiết kiệm bộ nhớ',
-        'Dài hơn cửa sổ retry của client (thường ≥ 24 giờ); quá ngắn thì retry muộn bị coi là request mới',
-        'Không bao giờ hết hạn để an toàn tuyệt đối',
-        'Bằng đúng thời gian xử lý trung bình của request',
+        'Bấm lại ngay lập tức liên tục',
+        'Đợi theo header Retry-After, rồi gửi lại cùng key',
+        'Trả lỗi cho người dùng ngay',
+        'Tăng số lần retry trong SDK',
       ],
       answer: 1,
-      explain: `Key phải sống ít nhất bằng khoảng thời gian client còn có thể retry; nếu ngắn hơn, retry muộn sẽ tạo giao dịch mới. 24 giờ là mức phổ biến. Không hết hạn thì bảng phình vô hạn. 30 giây hoặc bằng thời gian xử lý đều quá ngắn so với retry thực tế (client có thể retry sau phút, giờ khi mạng hồi phục).`,
+      explain: `**Đợi theo Retry-After rồi gửi lại cùng key đúng**: 409 cho biết lần trước vẫn đang chạy, client không được bỏ qua hay bấm lại liên tục (tạo retry storm). **Trả lỗi ngay** bỏ lỡ giao dịch đang xử lý thành công. **Tăng số lần retry** không giải quyết được yêu cầu chờ.`,
+    },
+    {
+      q: 'GET /accounts/42 có cần gửi Idempotency-Key không?',
+      options: [
+        'Cần, mọi request đều phải có key',
+        'Không cần — GET đã idempotent và safe',
+        'Chỉ cần khi dữ liệu lớn',
+        'Cần chỉ khi gọi qua gateway',
+      ],
+      answer: 1,
+      explain: `**Không cần đúng**: GET chỉ đọc, không thay đổi trạng thái server (safe) và gọi lại nhiều lần kết quả giống nhau (idempotent), nên không cần key. Key chỉ cần cho POST (tạo/thanh toán) — method không idempotent mà client có thể retry. Kích thước dữ liệu hay có gateway hay không không thay đổi quy tắc này.`,
     },
   ],
   related: ['api-015', 'api-011', 'api-002'],
