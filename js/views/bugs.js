@@ -59,6 +59,13 @@
 
   const t = (k, p) => App.t(k, p);
   const all = () => (window.BUGS || []);
+  // Nội dung dài (rootCause, fix): dùng App.ui.answer để có thẻ gập được theo từng mục ###,
+  // nút "📖 Học từng bước" và 🔊 đọc to. answer.js tự giữ nguyên .md khi không có mục ###.
+  // Fallback khi core chưa nạp answer.js: render markdown như cũ.
+  const longAnswer = (text, lang) => {
+    const html = App.md(text);
+    return App.ui && App.ui.answer ? App.ui.answer(html, { lang: lang || 'vi' }) : '<div class="md">' + html + '</div>';
+  };
   const solved = b => App.store.getStatus(b.id) === 'known';
   const store = {
     get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -132,8 +139,8 @@
       </section>
       <div class="row"><button type="button" class="btn" data-act="answer">${esc(t('bugs.answer'))}</button></div>
       <section class="bg-answer" hidden>
-        <div class="card"><h2 class="bg-h">${esc(t('bugs.rootCause'))}</h2><div class="md">${App.md(b.rootCause)}</div></div>
-        <div class="card"><h2 class="bg-h">${esc(t('bugs.fix'))}</h2><div class="md">${App.md(b.fix)}</div></div>
+        <div class="card"><h2 class="bg-h">${esc(t('bugs.rootCause'))}</h2>${longAnswer(b.rootCause)}</div>
+        <div class="card"><h2 class="bg-h">${esc(t('bugs.fix'))}</h2>${longAnswer(b.fix)}</div>
         <div class="card"><h2 class="bg-h">${esc(t('bugs.refCode'))}</h2><div class="md">${App.md('~~~java\n' + b.reference + '\n~~~')}</div></div>
       </section>
       ${App.ui.relatedQuestions ? App.ui.relatedQuestions({ ids: b.related || [], tags: b.tags, limit: 4 }) : ''}`;

@@ -23,7 +23,42 @@
 .view-bugs .bg-rca .row { margin-top: 8px; }
 .view-bugs .bg-rca-result { margin-top: 10px; }
 .view-bugs .bg-answer { margin-top: 14px; }
+
+/* ---------- visual model answer (App.ui.answer) cho rootCause / fix ---------- */
+.view-bugs .ans { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.view-bugs .ans-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.view-bugs .ans-summary { padding: 12px 14px; border: 1px solid var(--accent); border-left-width: 4px; border-radius: var(--radius-sm); background: var(--accent-soft); }
+.view-bugs .ans-summary-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.view-bugs .ans-summary .md > :last-child { margin-bottom: 0; }
+.view-bugs .ans-sec { border: 1px solid var(--border); border-left: 4px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.view-bugs .ans-sec > summary { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; list-style: none; }
+.view-bugs .ans-sec > summary::-webkit-details-marker { display: none; }
+.view-bugs .ans-sec > summary::after { content: '▾'; margin-left: auto; color: var(--muted); transition: transform .15s; }
+.view-bugs .ans-sec:not([open]) > summary::after { transform: rotate(-90deg); }
+.view-bugs .ans-sec > summary h4 { margin: 0; font-size: 1rem; color: var(--text); }
+.view-bugs .ans-sec > summary .ans-read { margin-left: 4px; }
+.view-bugs .ans-ico { font-size: 1.1rem; line-height: 1; }
+.view-bugs .ans-body { padding: 0 14px 10px; min-width: 0; }
+.view-bugs .ans-body > :last-child { margin-bottom: 0; }
+.view-bugs .ans-k-how { border-left-color: var(--info); }
+.view-bugs .ans-k-ex, .view-bugs .ans-k-flow { border-left-color: var(--accent-2); }
+.view-bugs .ans-k-real, .view-bugs .ans-k-ops { border-left-color: var(--ok); }
+.view-bugs .ans-k-cmp, .view-bugs .ans-k-when { border-left-color: var(--link); }
+.view-bugs .ans-k-warn { border-left-color: var(--warn); }
+.view-bugs .ans-k-say { border-left-color: var(--accent); background: var(--surface-2); }
+.view-bugs .ans-steps { display: flex; justify-content: space-between; gap: 8px; }
+.view-bugs .ans-recall { margin: 0; padding: 10px 14px; border-radius: var(--radius-sm); background: var(--surface-2); border: 1px dashed var(--accent); font-weight: 600; }
+.view-bugs .ans.is-step .ans-sec { box-shadow: var(--shadow); }
+.view-bugs .ans-intro { margin: 0 0 4px; }
+.view-bugs .ans-progress { margin: 0 8px; }
+.view-bugs .ans-read { min-height: 32px; }
+.view-bugs .ans-body .md pre,
+.view-bugs .ans-body .md .table-wrap { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.view-bugs .ans-body .md pre { white-space: pre; }
+
 @media (max-width: 600px) {
   .view-bugs .bg-editor { min-height: 320px; font-size: .78rem; }
   .view-bugs .bg-grid { grid-template-columns: 1fr; }
+  .view-bugs .ans-body { padding: 0 10px 8px; }
+  .view-bugs .ans-sec > summary { padding: 8px 10px; }
 }
