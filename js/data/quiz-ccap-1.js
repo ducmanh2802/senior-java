@@ -1130,6 +1130,632 @@ Chuẩn tích hợp: credential, retry, log, metrics, versioning prompt. Phần 
   ],
   answer: 1,
   explain: `**Đúng: redact hoặc tokenise trường nhạy cảm trước khi gửi, và chỉ giữ mapping trong hệ thống của công ty.** Gửi toàn bộ dữ liệu và tin model tự bỏ qua là nguy hiểm. Tắt log không làm dữ liệu an toàn hơn, chỉ làm mù khi có sự cố. Bảo khách tự xoá là đẩy nghĩa vụ sang người dùng.`,
+},
+{
+  id: 'qz-ccap-116',
+  topic: 'claude',
+  q: '[Stakeholder & Lifecycle] A bank is building a Claude-powered assistant for loan officers. The credit team wants strict, rule-based answers, while relationship managers want conversational, flexible responses. The launch keeps slipping because the two groups cannot agree on the product requirements. What should the architect do first?',
+  options: [
+    'Run a requirements workshop with both stakeholders, document agreed success criteria, and phase the rollout',
+    'Build two separate assistants so each team gets exactly what it wants',
+    'Let the credit team decide because regulatory risk is higher',
+    'Start with the relationship managers version and add strict rules later'
+  ],
+  answer: 0,
+  explain: `**Đúng: xếp hàng nhu cầu stakeholder trước khi code.** Hai nhóm có mục tiêu khác nhau: credit-team quan trọng là tuân thủ và giảm sai sót; relationship-manager quan trọng là trải nghiệm khách hàng. Nếu chỉ chọn một bên, nhóm còn lại sẽ bỏ dùng hoặc dùng sai công cụ. Kiến trúc sư nên gọi họp phân tích yêu cầu, ghi nhận ưu tiên của mỗi bên, định nghĩa tiêu chí thành công (ví dụ tỉ lệ câu trả lời đúng theo quy định, thời gian xử lý đơn), rồi chạy thử trên một nhóm nhỏ trước khi mở rộng.
+
+### Vì sao các phương án khác sai
+- **Hai trợ lý riêng:** tạo hai hệ thống dự trù, khó bảo trì, dữ liệu và quy tắc sẽ lệch nhau theo thời gian.
+- **Credit-team quyết một bên:** relationship-manager không nhận được công cụ phù hợp với công việc, trợ lý bị bó hoặc bỏ qua.
+- **Bắt đầu bằng phiên linh hoạt rồi bổ sung quy tắc:** khó thêm ràng buộc vào sau này, và ca thử ban đầu có thể cho kết quả không tuân thủ mà đã ảnh hưởng khách hàng.
+
+> Khi stakeholder bất đồng, hãy làm rõ ai chịu trách nhiệm kết quả và tiêu chí nào dùng để chấp nhận trước khi viết prompt.`
+},
+{
+  id: 'qz-ccap-117',
+  topic: 'claude',
+  q: '[Stakeholder & Lifecycle] A Claude-powered support assistant has been running in pilot with one customer segment for six weeks. Quality metrics are stable and support tickets handled by the assistant have dropped 20 percent. The product team wants to expand to all segments immediately. What is the safest next step?',
+  options: [
+    'Enable the assistant for all customers tomorrow since pilot metrics look good',
+    'Run the pilot for another six months before any change',
+    'Expand to one more segment at a time, monitor quality and cost per segment, then decide',
+    'Ask Claude to write the rollout plan and follow it without human review'
+  ],
+  answer: 2,
+  explain: `**Đúng: mở rộng từng đợt, không xả cả hệ thống cùng lúc.** Pilot chỉ xác minh công việc với một phân đoạn khách hàng nhỏ. Khi sang phân đoạn khác, ngữ cảnh, loại câu hỏi và mức độ phức tạp có thể khác, dẫn đến chất lượng giảm hoặc chi phí tăng. Mở rộng từng nhóm giúp phát hiện vấn đề sớm, chỉnh sửa prompt hoặc quy trình mà không ảnh hưởng toàn bộ khách hàng.
+
+### Vì sao các phương án khác sai
+- **Bật cho tất cả ngay:** nếu có lỗi chỉ xuất hiện ở một phân đoạn nhất định, toàn bộ khách hàng sẽ bị ảnh hưởng cùng lúc.
+- **Chờ thêm sáu tháng:** bỏ qua cơ hội từ giá trị đã chứng minh được, làm chậm việc đem công cụ đến nhiều người hơn.
+- **Yêu cầu Claude viết kế hoạch rollout:** Claude có thể đề xuất nhưng không thay thế quyết định của con người dựa trên số liệu thực tế.
+
+> Mỗi đợt mở rộng nên có ngưỡng dừng: nếu tỉ lệ câu trả lời bị ý hoặc chi phí vượt ngưỡng, dừng lại và xem xét lại trước khi tiếp tục.`
+},
+{
+  id: 'qz-ccap-118',
+  topic: 'claude',
+  multi: true,
+  q: '[Stakeholder & Lifecycle] A company is rolling out a Claude-powered coding assistant to 200 developers. Some teams are excited, while others worry the tool will replace their jobs or leak code. Which two actions best support adoption? (Choose 2)',
+  options: [
+    'Publish clear usage guidelines and explain what data is sent to Claude',
+    'Tell developers the assistant is mandatory and disable opt-out',
+    'Appoint champions in each team to collect feedback and share best practices',
+    'Hide the data-handling details so developers are not worried',
+    'Install the assistant silently on every machine without announcement'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: minh bạch thông tin và người dẫn dắt nội bộ.** Hướng dẫn sử dụng minh bạch (dữ liệu nào được gửi, cách lưu trữ, ai xem được) giảm lo ngại về bảo mật. Người dẫn dắt trong từng nhóm thu thập phản hồi thực tế, chia sẻ mẹo sử dụng và giúp đồng nghiệp tự tin dùng công cụ, thay vì để mọi người tự mò mẫm.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Bắt buộc dùng và tắt tùy chọn:** gây phản kháng, người dùng sẽ tìm cách tránh công cụ hoặc dùng ngoài kiểm soát.
+- **Ẩn chi tiết xử lý dữ liệu:** không giải quyết được lo ngại, ngược lại làm giảm niềm tin khi sau này bị phát hiện.
+- **Cài đặt lặng lẽ không thông báo:** vi phạm niềm tin và có thể vi phạm chính sách bảo mật nội bộ.
+
+> Thay đổi thành công bắt đầu từ tin tưởng, không phải từ lệnh ngang hàng. Hãy cho phép người dùng thử và đóng góp ý kiến.`
+},
+{
+  id: 'qz-ccap-119',
+  topic: 'claude',
+  q: '[Stakeholder & Lifecycle] An architect must explain to non-technical executives why a Claude feature sometimes answers slowly and costs more than expected. Which explanation is most effective?',
+  options: [
+    'Show the raw API latency logs and token counts for every request',
+    'Use analogies and simple metrics: compare cost per resolved ticket and typical response time, with examples',
+    'Tell them the model is slow because it is thinking hard',
+    'Say that speed and cost cannot be predicted and ask them to accept it'
+  ],
+  answer: 1,
+  explain: `**Đúng: dịch chỉ số kỹ thuật thành ngôn ngữ kinh doanh.** Ban lãnh đạo không cần xem log từng request; họ cần biết ảnh hưởng gì đối với chi phí và trải nghiệm khách hàng. So sánh chi phí cho mỗi ticket đã giải quyết và thời gian phản hồi điển hình, kèm ví dụ thực tế (ví dụ: câu trả lời đơn giản mất hai giây và tốn một số đồng, câu phức tạp mất mười giây và tốn nhiều hơn), giúp họ ra quyết định dựa trên giá trị.
+
+### Vì sao các phương án khác sai
+- **Hiển thị log thô và số token:** quá chi tiết, khó hiểu, và không cho thấy tác động kinh doanh.
+- **Nói model đang nghĩ sâu:** là gán đẳng tính con người cho mô hình, không giải thích được nguyên nhân kỹ thuật thực sự (dài độ dài context, model lớn, hàng đợi).
+- **Không thể dự báo và chấp nhận:** làm tổ chức mất sự tin tưởng vào khả năng quản lý chi phí và hiệu suất.
+
+> Luôn đính kèm một mục tiêu đo được (ví dụ: p95 dưới năm giây, chi phí dưới X đồng mỗi ticket) để ban lãnh đạo có thể theo dõi.`
+},
+{
+  id: 'qz-ccap-120',
+  topic: 'claude',
+  q: '[Stakeholder & Lifecycle] A Claude-powered assistant has been live for three months. Support agents report that some answers are outdated compared to the latest policy documents. How should the team establish a feedback loop?',
+  options: [
+    'Wait for customers to complain before making any changes',
+    'Ask agents to manually correct every wrong answer in a spreadsheet',
+    'Add a thumbs-up or thumbs-down rating on each answer, review low-rated answers weekly, and update the knowledge source',
+    'Replace the assistant with a static FAQ page'
+  ],
+  answer: 3,
+  explain: `**Đúng: thu thập phản hồi có cấu trúc và xử lý định kỳ.** Nút tốt hoặc xấu trên mỗi câu trả lời cho thấy câu nào cần xem xét. Nhóm vận hành xem xét từng tuần, nhóm các lỗi giống nhau, rồi cập nhật nguồn kiến thức (tài liệu, đoạn trong RAG) để khắc phục. Cách này biến trải nghiệm của nhân viên đầu tiên vào bước cải thiện hệ thống.
+
+### Vì sao các phương án khác sai
+- **Chờ khách phàn nàn:** thì hệ thống đã gây thiệt hại và mất uy tín.
+- **Sửa tay trong bảng tính:** không mở rộng được, không cải thiện được mô hình hay nguồn dữ liệu cho các câu hỏi tương tự sau này.
+- **Thay bằng trang FAQ tĩnh:** mất đi khả năng tự động trả lời và tra cứu mà công cụ mang lại.
+
+> Phản hồi từ người dùng cuối là tín hiệu sớm nhất về chất lượng giảm; hãy thiết kế cách thu thập ngay từ ngày đầu.`
+},
+{
+  id: 'qz-ccap-121',
+  topic: 'claude',
+  q: '[Stakeholder & Lifecycle] Before building a Claude feature for expense approval, a product team asks what success looks like. Which approach best defines success upfront?',
+  options: [
+    'Agree on measurable goals with stakeholders, such as approval time and error rate, before writing any code',
+    'Build the feature first, then decide what to measure based on what is easy to track',
+    'Measure only the number of requests sent to Claude',
+    'Ask Claude to define success and use its answer'
+  ],
+  answer: 0,
+  explain: `**Đúng: định nghĩa mục tiêu đo được trước khi xây dựng.** Với duyệt chi phí, mục tiêu có thể là thời gian duyệt trung bình giảm từ hai ngày xuống bốn giờ, tỉ lệ sai sót dưới một phần trăm, và sự hài lòng của người dùng. Khi có mục tiêu rõ ràng, nhóm có thể thiết kế công cụ, chọn model và biết khi nào dừng lại hoặc điều chỉnh. Mục tiêu cũng giúp tránh xây dựng tính năng mà không mang giá trị thực.
+
+### Vì sao các phương án khác sai
+- **Xây dựng trước, đo sau:** dễ dẫn đến xây dựng những thứ không cần thiết và khó biết có thành công hay không.
+- **Chỉ đo số request gửi Claude:** số lượng gọi API không cho biết kết quả có đúng hay khách hàng hài lòng.
+- **Nhờ Claude định nghĩa thành công:** mô hình không biết mục tiêu kinh doanh và ràng buộc thực tế của công ty.
+
+> Mục tiêu thành công phải được đồng ý bởi cả bên kỹ thuật và bên kinh doanh, và ghi lại để tham khảo sau khi triển khai.`
+},
+{
+  id: 'qz-ccap-122',
+  topic: 'claude',
+  multi: true,
+  q: '[Stakeholder & Lifecycle] A company wants to retire an older Claude-powered feature that few customers use, but some enterprise customers still depend on it. Which two steps should the team take? (Choose 2)',
+  options: [
+    'Turn off the feature immediately without notice to save costs',
+    'Notify affected customers in advance, give a timeline, and offer migration support',
+    'Keep the feature running forever because a few customers use it',
+    'Document the retirement decision, including the replacement path and end-of-support date',
+    'Tell customers to find their own alternative without help'
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: thông báo trước và ghi lại quyết định ngừng chạy.** Khách hàng doanh nghiệp thường xây dựng quy trình xung quanh tính năng; ngừng đột ngột sẽ ảnh hưởng hoạt động của họ. Thông báo sớm, cung cấp lộ trình và hỗ trợ di chuyển giúp họ chuẩn bị. Ghi lại quyết định (li do, thay thế, ngày ngừng hỗ trợ) tạo cơ sở để kiểm tra và tránh tranh luận sau này.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Ngừng ngay không thông báo:** gây gián đoạn nghiệp vụ và làm mất niềm tin.
+- **Giữ vĩnh viễn:** chi phí vận hành còn và nhóm phải bảo trì một thứ ít dùng.
+- **Để khách hàng tự tìm cách thay thế:** không chịu trách nhiệm đối với khách hàng đã sử dụng dịch vụ của công ty.
+
+> Ngừng một tính năng AI cũng cần quy trình như ngừng dịch vụ thường: thông báo, hỗ trợ chuyển đổi và ngày chấm dứt rõ ràng.`
+},
+{
+  id: 'qz-ccap-123',
+  topic: 'claude',
+  q: '[Stakeholder & Lifecycle] An architect needs to convince leadership to fund a Claude-powered document-review feature. Which pitch is most persuasive?',
+  options: [
+    'Focus only on how advanced Claude is and list all its capabilities',
+    'Say that competitors use Claude, so the company must use it too',
+    'Ask for unlimited budget because AI projects are unpredictable',
+    'Show the current manual cost per review, the estimated automated cost, and the expected quality level with a pilot plan'
+  ],
+  answer: 3,
+  explain: `**Đúng: trình bày giá trị kinh tế và kế hoạch thử nghiệm.** Ban lãnh đạo quan tâm chi phí hiện tại (nhân sự review tài liệu theo tay), chi phí dự kiến khi tự động hóa, và mức chất lượng mong đợi. Kế hoạch pilot trên một phần nhỏ lưu lượng cho thấy rủi ro kiểm soát được và có con số để đánh giá trước khi đầu tư lớn.
+
+### Vì sao các phương án khác sai
+- **Chỉ nói về khả năng của Claude:** không giải thích vì công ty nên trả tiền và lợi ích gì.
+- **Đối thủ dùng nên phải dùng:** lý do theo xu hướng không liên quan đến tình huống của chính công ty.
+- **Yêu cầu ngân sách không giới hạn:** không thể phê duyệt và không phản ánh sự cẩn thận trong tài chính.
+
+> Kết quả pilot nên có cả chi phí và chất lượng, chứ không chỉ số token hay thời gian phản hồi.`
+},
+{
+  id: 'qz-ccap-124',
+  topic: 'claude',
+  q: '[Stakeholder & Lifecycle] A Claude feature must satisfy legal, security, product, and engineering stakeholders with different concerns. Which approach best aligns them?',
+  options: [
+    'Let engineering decide everything because they build the system',
+    'Create a shared requirements document that captures each stakeholder concerns and review it together',
+    'Ask each stakeholder to send separate emails and hope they agree',
+    'Implement what legal asks first, then fix issues later'
+  ],
+  answer: 1,
+  explain: `**Đúng: tài liệu yêu cầu chung và xem xét cùng nhau.** Mỗi bên quan tâm một khía cạnh khác nhau: legal (tuân thủ, dữ liệu nhạy cảm), security (kiểm soát truy cập), product (trải nghiệm người dùng), engineering (độ trễ, chi phí, bảo trì). Một tài liệu chung giúp mọi người thấy được ràng buộc của nhau và tìm cách thỏa hiệp trước khi code, tránh làm lại sau khi phát hiện xung đột.
+
+### Vì sao các phương án khác sai
+- **Engineering quyết tất cả:** bỏ qua ràng buộc pháp lý và bảo mật, có thể dẫn đến vi phạm.
+- **Gửi email riêng rãnh rành:** khó tổng hợp, dễ xảy ra hiểu lầm và không có bản ghi chung.
+- **Triển khai theo legal trước rồi sửa sau:** chi phí cao và có thể phải thay đổi toàn bộ kiến trúc khi các bên khác phản hồi.
+
+> Tài liệu này nên được xem xét lại khi có thay đổi lớn về model, quy trình hoặc quy định pháp lý.`
+},
+{
+  id: 'qz-ccap-125',
+  topic: 'claude',
+  q: '[Stakeholder & Lifecycle] A Claude-powered assistant is launched, but end users keep asking basic questions the assistant should answer. What is the most likely missing piece?',
+  options: [
+    'The model is not smart enough and should be replaced',
+    'Disable the assistant and return to email support',
+    'Users were not trained on how to write effective prompts and what the assistant can do',
+    'Add more documents to the knowledge base without telling users'
+  ],
+  answer: 2,
+  explain: `**Đúng: người dùng cần được hướng dẫn cách sử dụng.** Nhiều người chưa quen với trợ lý AI: họ có thể hỏi quá ngắn, không cung cấp đủ bối cảnh, hoặc không biết công cụ có thể tra cứu đơn hàng hay chính sách. Đào tạo ngắn (cách viết câu hỏi, ví dụ câu hỏi tốt, giới hạn của công cụ) giúp người dùng tận dụng được năng lực của trợ lý.
+
+### Vì sao các phương án khác sai
+- **Thay model khác:** vấn đề thường nằm ở cách dùng, không phải độ thông minh của model.
+- **Tắt trợ lý và quay lại email:** mất giá trị tự động hóa đã xây dựng.
+- **Thêm tài liệu mà không thông báo:** người dùng vẫn không biết có thể hỏi về những tài liệu đó.
+
+> Hướng dẫn người dùng là phần không thể thiếu của mọi sản phẩm AI, chứ không phải chỉ là phụ lục.`
+},
+{
+  id: 'qz-ccap-126',
+  topic: 'claude',
+  multi: true,
+  q: '[Stakeholder & Lifecycle] Two departments want different behaviors from the same Claude assistant: finance wants cautious, policy-heavy answers, while sales wants quick, flexible answers. Which two approaches best handle this conflict? (Choose 2)',
+  options: [
+    'Build one assistant and force both departments to accept the same behavior',
+    'Use separate system prompts or configurations for each department, routed by user or context',
+    'Let sales override finance answers whenever they disagree',
+    'Document the conflict, agree on which use case takes priority, and review periodically',
+    'Ask the model to guess the department and change behavior automatically'
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: phân tách cấu hình theo nhóm và ghi nhận sự bất đồng.** Nếu ngữ cảnh khác nhau (ví dụ: user thuộc phòng tài chính hay phòng doanh số), có thể dùng system prompt hoặc cấu hình riêng cho từng nhóm, và định tuyến phù hợp. Đồng thời, cần ghi lại sự xung đột, đồng ý ưu tiên use case nào khi có mâu thuẫn, và xem xét lại định kỳ để điều chỉnh.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Một trợ lý, một hành động cho tất cả:** một bên sẽ hài lòng, bên kia sẽ không sử dụng hoặc sử dụng sai.
+- **Sales ghi đè finance:** làm mất tính nhất quán và có thể vi phạm quy định tài chính.
+- **Nhờ model đoán phòng ban:** model không tin cậy phân loại này, đặc biệt khi ngữ cảnh không rõ ràng.
+
+> Khi không thể thỏa mãn tất cả, hãy chọn hành động an toàn hơn (ít rủi ro nhất) làm mặc định và cho phép chọn thay đổi theo ý định.`
+},
+{
+  id: 'qz-ccap-127',
+  topic: 'claude',
+  q: '[Stakeholder & Lifecycle] A Claude feature has been running in production for a year. How often should stakeholders review whether it still meets business needs?',
+  options: [
+    'Only when something breaks',
+    'Never, because the model does not change',
+    'Whenever a new Claude model is released, regardless of business impact',
+    'On a regular cadence, such as quarterly, with metrics and user feedback'
+  ],
+  answer: 3,
+  explain: `**Đúng: xem xét định kỳ dựa trên số liệu và phản hồi.** Ngay cả khi model không đổi, nhu cầu kinh doanh, quy trình và dữ liệu đầu vào sẽ thay đổi. Xem xét theo quý (hoặc định kỳ phù hợp) với các chỉ số như tỉ lệ câu trả lời đúng, chi phí, độ trễ và phản hồi người dùng giúp phát hiện sớm sự suy giảm chất lượng hoặc cơ hội cải thiện.
+
+### Vì sao các phương án khác sai
+- **Chỉ xem xét khi hỏng:** thì ảnh hưởng đến người dùng đã xảy ra.
+- **Không bao giờ xem xét:** model không đổi không có nghĩa hệ thống vẫn phù hợp; quy trình nghiệp vụ có thể đã thay đổi.
+- **Xem xét mỗi khi có model mới:** không phải mọi phiên bản model mới đều mang lại lợi ích cho trường hợp sử dụng cụ thể, và việc thay đổi liên tục gây rủi ro vận hành.
+
+> Lên lịch xem xét theo định kỳ như một kiểm tra sức khỏe hệ thống, chứ không chỉ khẩn cấp khi có sự cố.`
+},
+{
+  id: 'qz-ccap-128',
+  topic: 'claude',
+  q: '[Stakeholder & Lifecycle] A project team built a Claude integration and is handing it over to the operations team. Which information is most important to transfer?',
+  options: [
+    'Only the source code and API key',
+    'How the system is monitored, who to contact during incidents, rollback steps, and prompt versions',
+    'A recording of the project kickoff meeting',
+    'The list of prompts used during development'
+  ],
+  answer: 1,
+  explain: `**Đúng: chuyển giao thông tin vận hành, không chỉ code.** Đội vận hành cần biết cách theo dõi hệ thống (metrics, cảnh báo), ai liên hệ khi có sự cố, cách quay lại phiên bản trước (rollback) và phiên bản prompt hiện đang dùng. Nếu không có thông tin này, một sự cố nhỏ có thể kéo dài vì không biết phải sửa ở đâu hoặc ai chịu trách nhiệm.
+
+### Vì sao các phương án khác sai
+- **Chỉ code và API key:** thiếu bối cảnh vận hành, làm khó khôi phục khi có sự cố.
+- **Bản ghi cuộc họp khởi động:** không chứa thông tin hành động cần thiết cho vận hành hàng ngày.
+- **Danh sách prompt phát triển:** không đủ; cần biết prompt nào đang chạy production và cách thay đổi an toàn.
+
+> Handoff tốt bao gồm runbook: cấu trúc hệ thống, quy trình xử lý sự cố, và cách cập nhật prompt mà không gây gián đoạn.`
+},
+{
+  id: 'qz-ccap-129',
+  topic: 'claude',
+  q: '[Stakeholder & Lifecycle] An enterprise has an account relationship with Anthropic and wants to optimize its Claude usage. Which stakeholder should lead the conversation about pricing, quotas, and support?',
+  options: [
+    'The individual developer who writes the most prompts',
+    'The procurement or vendor-management stakeholder with the account contract',
+    'The security team alone, without involving finance',
+    'The end users who interact with Claude daily'
+  ],
+  answer: 1,
+  explain: `**Đúng: bên quản lý nhà cung cấp hoặc mua sắm đứng đầu.** Họ nắm hợp đồng, hạn mức sử dụng, giá cả và mức hỗ trợ với Anthropic. Các bên khác (kỹ thuật, bảo mật, tài chính) cung cấp đầu vào, nhưng việc đàm phán và quản lý quan hệ nhà cung cấp nên tập trung tại một người để tránh thông tin bị phân mảnh hoặc lời hứa mâu thuẫn.
+
+### Vì sao các phương án khác sai
+- **Lập trình viên viết nhiều prompt nhất:** biết kỹ thuật nhưng không có thẩm quyền hoặc thông tin hợp đồng.
+- **Bảo mật một mình:** bảo mật quan trọng nhưng không đủ để đàm phán giá cả và hạn mức.
+- **Người dùng cuối:** có ý kiến về trải nghiệm nhưng không tham gia quản lý hợp đồng.
+
+> Giữ một điểm liên hệ duy nhất với nhà cung cấp giúp quản lý chi phí, hạn mức và hỗ trợ một cách nhất quán.`
+},
+{
+  id: 'qz-ccap-130',
+  topic: 'claude',
+  multi: true,
+  q: '[Stakeholder & Lifecycle] A team is documenting a Claude feature for future stakeholders. Which two items should be included? (Choose 2)',
+  options: [
+    'Only the final prompts, without any explanation',
+    'Architecture decision records explaining why key choices were made',
+    'Operational runbooks for monitoring, incident response, and prompt updates',
+    'A list of every internal email about the project',
+    'The model weights used by Claude'
+  ],
+  answer: [1, 2],
+  explain: `**Đúng: ghi nhận quyết định kiến trúc và sổ thao tác vận hành.** ADR giải thích tại sao chọn một model, một cách định tuyến, hoặc một thiết kế bảo mật — điều này rất quan trọng khi thành viên mới vào dự án hoặc cần xem xét lại sau nhiều năm. Runbook hướng dẫn vận hành hàng ngày: theo dõi sao, xử lý sự cố, và cách cập nhật prompt an toàn.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Chỉ prompt cuối cùng mà không giải thích:** người sau không biết lý do và dễ thay đổi sai chỗ.
+- **Tập hợp email nội bộ:** khó tìm, không có cấu trúc, và không phải tài liệu thiết kế.
+- **Trọng số model:** Claude là model bên ngoài, trọng số không được công bố và không cần lưu trong tài liệu nội bộ.
+
+> Tài liệu tốt trả lời ba câu hỏi: hệ thống làm gì, tại sao được thiết kế như vậy, và vận hành như thế nào khi có sự cố.`
+},
+{
+  id: 'qz-ccap-131',
+  topic: 'claude',
+  q: '[Models & Context] A team needs to choose a Claude model for a customer-facing assistant that answers simple FAQ questions 24/7. Cost and speed matter more than deep reasoning. Which model class is the best fit?',
+  options: [
+    'The most capable model for every request, regardless of cost',
+    'A model that requires fine-tuning before it can answer FAQs',
+    'The smallest, fastest, and cheapest model that handles the task well',
+    'A different model for every single question to spread cost'
+  ],
+  answer: 2,
+  explain: `**Đúng: chọn model nhỏ nhất, nhanh nhất và rẻ nhất vẫn xử lý tốt công việc.** Đa số câu hỏi thường gặp là đơn giản (giờ mở cửa, cách reset mật khẩu) không cần suy luận sâu. Model nhỏ (tốn ít hơn, độ trễ thấp) đáp ứng được với chi phí thấp hơn nhiều so với model mạnh nhất. Điều này phù hợp với lưu lượng lớn và nhạy cảm về chi phí.
+
+### Vì sao các phương án khác sai
+- **Model mạnh nhất cho mọi yêu cầu:** chất lượng cao nhưng chi phí và độ trễ không cần thiết cho câu đơn giản.
+- **Cần fine-tuning trước khi trả câu hỏi thường hỏi:** Claude đã có khả năng trả lời dựa trên tài liệu cung cấp, không cần huấn luyện lại cho câu hỏi cơ bản.
+- **Dùng model khác cho mỗi câu hỏi:** làm tăng độ phức tạp vận hành và khó quản lý chi phí.
+
+> Theo dõi tỉ lệ câu trả lời thỏa mãn của model nhỏ; nếu quá nhiều câu bị bỏ lỡ, hãy nâng cấp có chọn lọc cho nhóm câu đó, chứ không phải toàn bộ.`
+},
+{
+  id: 'qz-ccap-132',
+  topic: 'claude',
+  q: '[Models & Context] A legal assistant must answer questions across 5000-page case files that do not fit in one Claude prompt. Which design fits best?',
+  options: [
+    'Retrieve only the relevant passages for each question and send those plus the question to Claude',
+    'Paste all case files into every prompt and hope the context window is large enough',
+    'Fine-tune Claude to memorize all case files',
+    'Ask users to read the files themselves and use Claude only for formatting'
+  ],
+  answer: 0,
+  explain: `**Đúng: truy xuất đoạn liên quan và chỉ gửi những đoạn đó kèm câu hỏi.** 5000 trang vượt nhiều lần ngoài cửa sổ ngữ cảnh (context window) của Claude. Kiến trúc chuẩn là chia tài liệu thành đoạn, lập chỉ mục, rồi khi có câu hỏi, truy xuất các đoạn liên quan nhất và gửi kèm câu hỏi. Cách này giữ chi phí thấp và câu trả lời tập trung vào bằng chứng thực tế.
+
+### Vì sao các phương án khác sai
+- **Dán toàn bộ hồ sơ vào mỗi prompt:** vượt ngoài cửa sổ ngữ cảnh, chi phí cao, và chất lượng giảm khi ngữ cảnh quá dài.
+- **Fine-tune Claude để ghi nhớ tất cả hồ sơ:** không phù hợp cho tri thức thay đổi liên tục, khó cập nhật, và khó trích dẫn nguồn.
+- **Yêu cầu người dùng đọc và chỉ dùng Claude để định dạng:** mất đi giá trị chính của trợ lý là trả lời câu hỏi.
+
+> Mỗi đoạn được truy xuất nên kèm thông tin nguồn (trang, đoạn) để người dùng có thể kiểm chứng câu trả lời.`
+},
+{
+  id: 'qz-ccap-133',
+  topic: 'claude',
+  multi: true,
+  q: '[Models & Context] A team wants Claude to return answers in a consistent format across many requests. Which two approaches reliably improve format consistency? (Choose 2)',
+  options: [
+    'Describe the desired format in the system prompt and include a few example input-output pairs',
+    'Ask the model to try its best and hope it stays consistent',
+    'Change the requested format in every request to keep the model alert',
+    'Use tool use with a JSON Schema that defines the exact output shape',
+    'Rely on the model default format without any instruction'
+  ],
+  answer: [0, 3],
+  explain: `**Đúng: định dạng rõ trong system prompt kèm ví dụ, và dùng tool với JSON Schema.** Mô tả định dạng mong muốn (ví dụ: JSON, danh sách gạch đầu dòng) trong system prompt giúp model biết cách cấu trúc câu trả lời. Thêm ít ví dụ đầu vào-đầu ra làm rõ mong muốn. Tool use với JSON Schema bắt buộc đầu ra tuân thủ đúng hình dạng đã khai báo, giúp nhất quán giữa các request.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Hy vọng model giữ nhất quán:** không có cơ chế cưỡng chế, chất lượng sẽ dao động giữa các request.
+- **Thay đổi định dạng mỗi request:** làm model khó học và kết quả không thể dự báo.
+- **Dựa vào định dạng mặc định:** không đảm bảo đáp ứng yêu cầu nghiệp vụ cụ thể của tổ chức.
+
+> Mô tả format bằng cấu trúc (ví dụ JSON Schema) thì model bám theo khuôn tốt hơn là chỉ nhờ bằng lời; luôn kiểm thử trên bộ câu hỏi thật.`
+},
+{
+  id: 'qz-ccap-134',
+  topic: 'claude',
+  q: '[Models & Context] A team upgrades to a new Claude model version and sees different output format for the same prompts. What should they do before adopting the new version?',
+  options: [
+    'Run an evaluation comparing old and new versions on the same inputs, then roll out gradually',
+    'Switch all traffic to the new version immediately to get the latest improvements',
+    'Assume the new version is always better and skip testing',
+    'Keep the old version forever because it already works'
+  ],
+  answer: 0,
+  explain: `**Đúng: đánh giá trên cùng đầu vào trước khi mở rộng.** Mỗi phiên bản model có thể tạo ra định dạng, độ dài và chất lượng khác nhau. Nhóm nên chạy tập đánh giá (eval) với cùng các câu hỏi trên cả hai phiên bản, so sánh chất lượng và chi phí, sau đó thử nghiệm trên một phần nhỏ lưu lượng trước khi triển khai toàn bộ.
+
+### Vì sao các phương án khác sai
+- **Chuyển tất cả lưu lượng ngay:** nếu phiên bản mới có vấn đề với trường hợp sử dụng cụ thể, toàn bộ khách hàng bị ảnh hưởng.
+- **Giả định phiên bản mới luôn tốt hơn:** không nhất định phù hợp với nhu cầu của công ty, và có thể gây hồi quy chất lượng.
+- **Giữ phiên bản cũ vĩnh viễn:** bỏ lỡ cải tiến và có thể mất hỗ trợ cho phiên bản cũ sau này.
+
+> Thử nghiệm trên một phần nhỏ lưu lượng (canary) giúp phát hiện vấn đề trước khi ảnh hưởng toàn bộ người dùng.`
+},
+{
+  id: 'qz-ccap-135',
+  topic: 'claude',
+  q: '[Models & Context] A team wants Claude to follow a specific tone and structure in every answer. Which approach is most reliable?',
+  options: [
+    'Ask the model to remember the tone in every conversation',
+    'Include clear tone and formatting instructions in the system prompt, with examples',
+    'Hope the model figures out the tone from the user questions',
+    'Use a different model for each answer to vary the tone'
+  ],
+  answer: 1,
+  explain: `**Đúng: ghi hướng dẫn tone và định dạng vào system prompt kèm ví dụ.** System prompt là phần định hướng hành vi của Claude trong toàn bộ phiên. Việc nêu rõ giọng văn (ví dụ: lịch sự, chuyên nghiệp) và cấu trúc câu trả lời (ví dụ: tóm tắt trước, chi tiết sau) kèm ví dụ giúp mô hình tạo ra kết quả nhất quán hơn so với dựa vào việc mô hình tự nhận diện từ câu hỏi của người dùng.
+
+### Vì sao các phương án khác sai
+- **Nhờ model ghi nhớ trong mọi cuộc trò chuyện:** model không đảm bảo giữ nhất quán giữa các phiên, và không có cơ chế cưỡng chế.
+- **Hy vọng model tự đoán:** dẫn đến chất lượng dao động, không thể dự báo.
+- **Dùng model khác cho mỗi câu trả lời:** làm chất lượng dao động và khó quản lý.
+
+> System prompt nêu rõ tone và cấu trúc, kèm vài ví dụ mẫu (few-shot) để model bắt chước; đây là cách rẻ nhất để giữ nhất quán.`
+},
+{
+  id: 'qz-ccap-136',
+  topic: 'claude',
+  q: '[Models & Context] A Claude assistant needs to analyze images of receipts along with text questions. Which capability should the team use?',
+  options: [
+    'Ask users to type the receipt contents manually',
+    'Convert every image to text with a separate tool before sending to Claude',
+    'Send the image as part of the multimodal input together with the text question',
+    'Only answer text questions and ignore images'
+  ],
+  answer: 2,
+  explain: `**Đúng: gửi ảnh như một phần đầu vào đa phương tiện (multimodal) cùng với câu hỏi văn bản.** Claude có khả năng xử lý hình ảnh và văn bản cùng nhau, nên đội có thể gửi ảnh hóa đơn kèm câu hỏi (ví dụ: tong số tiền trên hóa đơn này là bao nhiêu?) và nhận câu trả lời dựa trên cả hai loại nội dung. Cách này đơn giản và giữ được ngữ cảnh giữa ảnh và câu hỏi.
+
+### Vì sao các phương án khác sai
+- **Yêu cầu người dùng nhập tay:** tốn thời gian, dễ sai, và giảm trải nghiệm người dùng.
+- **Chuyển đổi ảnh thành văn bản bằng công cụ riêng trước:** thêm bước xử lý, có thể mất thông tin bố cục hoặc số liệu quan trọng trong ảnh.
+- **Chỉ trả lời văn bản và bỏ qua ảnh:** không đáp ứng được yêu cầu phân tích hóa đơn từ hình ảnh.
+
+> Kiểm tra chất lượng ảnh (độ phân giải, độ sáng) trước khi gửi; ảnh mờ có thể khiến model đọc sai số liệu.`
+},
+{
+  id: 'qz-ccap-137',
+  topic: 'claude',
+  multi: true,
+  q: '[Models & Context] A market-research team must produce one report from 200 interview transcripts that together far exceed any single context window. Which two statements describe a sound approach? (Choose 2)',
+  options: [
+    'Summarize each transcript on its own first, then feed the per-transcript summaries into a final summarization pass',
+    'In the final pass, ask Claude to group findings into themes and note which interviews support each theme',
+    'Paste as many transcripts as possible into one request and raise max_tokens until they all fit',
+    'Summarize only the five longest transcripts and assume the rest say the same things',
+    'Pick one transcript at random as representative and summarize only that one'
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: chia nhỏ rồi tổng hợp (map-reduce), và giữ dấu vết từng nguồn.** 200 transcript không vừa một cửa sổ ngữ cảnh, nên chiến lược chuẩn là hai tầng: tầng map tóm tắt từng transcript thành một bản ngắn (giữ số liệu và trích dẫn quan trọng), tầng reduce đưa các bản tóm tắt đó vào một request cuối để Claude tổng hợp thành báo cáo chung. Ở request cuối, yêu cầu nhóm phát hiện theo chủ đề kèm nguồn phỏng vấn giúp báo cáo kiểm chứng được và tránh gán sai ý cho người trả lời.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Nhồi càng nhiều transcript càng tốt rồi tăng max_tokens:** tổng kích thước vượt mọi cửa sổ ngữ cảnh; max_tokens chỉ nâng trần đầu ra, không mở rộng đầu vào.
+- **Chỉ tóm tắt năm transcript dài nhất:** giả định vô căn cứ rằng các transcript còn lại nói cùng nội dung; báo cáo sẽ thiếu góc nhìn.
+- **Chọn ngẫu nhiên một transcript làm đại diện:** một mẫu không đại diện cho tập phỏng vấn; kết luận sẽ phiến diện.
+
+### Lưu ý triển khai
+Tầng map nên chạy song song và lưu lại từng bản tóm tắt kèm mã transcript, để tầng reduce hoặc người đọc truy vết ngược khi cần. Nếu tầng reduce vẫn quá dài, chia theo chủ đề rồi tổng hợp tiếp một tầng nữa.
+
+> Với văn bản dài, tóm tắt phân cấp luôn khả thi hơn nhồi một lần; hãy thiết kế pipeline nhiều bước thay vì một prompt khổng lồ.`
+},
+{
+  id: 'qz-ccap-138',
+  topic: 'claude',
+  q: '[Models & Context] A payments company calls Claude through a model identifier that always resolves to the newest release. After the provider quietly rolled out a new release, response formats shifted and two downstream parsers broke. What is the most appropriate fix?',
+  options: [
+    'Pin production traffic to a specific dated model version, and evaluate new releases in staging before switching',
+    'Switch to the smallest model so the provider changes it less often',
+    'Remove the parsers and show raw model output to users',
+    'Ask the provider to freeze the newest release until the company is ready'
+  ],
+  answer: 0,
+  explain: `**Đúng: ghim (pin) một phiên bản model xác định cho production, nâng cấp có kiểm soát.** Một model identifier luôn trỏ tới bản mới nhất nghĩa là hành vi hệ thống có thể đổi mà không ai deploy gì — đúng loại thay đổi ngầm khó truy vết nhất. Khi ghim vào một phiên bản xác định, hành vi ổn định giữa các lần gọi; muốn dùng bản mới, chạy eval trên tập đầu vào thật, kiểm tra các consumer như parser, prompt và schema, rồi chuyển dần từng phần lưu lượng. Cách này biến nâng cấp model thành một quyết định kỹ thuật có kế hoạch thay vì một sự cố.
+
+### Vì sao các phương án khác sai
+- **Đổi sang model nhỏ nhất:** provider vẫn phát hành bản mới cho model nhỏ; vấn đề không nằm ở việc chọn model nào mà ở việc trỏ vào một mục tiêu di động.
+- **Bỏ parser, hiện output thô:** đẩy chi phí xử lý sang người dùng và không sửa được nguyên nhân.
+- **Xin provider đóng băng bản mới:** provider không thể đóng băng theo yêu cầu riêng của từng khách hàng; quyền kiểm soát nằm ở phía bạn chọn phiên bản nào để gọi.
+
+### Cách làm
+Ghi rõ phiên bản model trong cấu hình có review, thêm kiểm tra định dạng đầu ra vào CI, và lập lịch đánh giá phiên bản mới định kỳ thay vì để hệ thống tự trôi theo.
+
+> Production cần hành vi có thể lặp lại: ghim phiên bản model giống như ghim phiên bản thư viện, không dùng alias trôi nổi.`
+},
+{
+  id: 'qz-ccap-139',
+  topic: 'claude',
+  q: '[Models & Context] A creative writing assistant needs varied, imaginative responses, while a data extraction assistant needs consistent, predictable output. Which setting helps differentiate them?',
+  options: [
+    'Use the same temperature for both assistants',
+    'Disable temperature entirely for both',
+    'Change the model for every request',
+    'Set higher temperature for creative writing and lower temperature for data extraction'
+  ],
+  answer: 3,
+  explain: `**Đúng: điều chỉnh temperature theo mục đích.** Temperature điều khiển mức độ ngẫu nhiên của đầu ra. Viết sáng tạo cần temperature cao hơn để tạo ra nhiều ý tưởng khác nhau, trong khi trích xuất dữ liệu cần temperature thấp (gần 0) để đầu ra nhất quán và có thể dự báo. Cùng một thiết lập không phù hợp cho cả hai loại tác vụ.
+
+### Vì sao các phương án khác sai
+- **Cùng temperature cho cả hai:** bản sáng tạo sẽ kém ý tưởng, bản trích xuất sẽ dễ bị thay đổi cấu trúc.
+- **Tắt hoàn toàn temperature:** không phải cách khuyên dùng và không giải quyết được sự khác biệt giữa hai loại tác vụ.
+- **Thay model cho mỗi yêu cầu:** làm tăng chi phí và độ phức tạp vận hành mà không cần thiết.
+
+> Mức temperature phù hợp phải được xác định bằng kiểm thử trên tập dữ liệu thực tế của từng tác vụ.`
+},
+{
+  id: 'qz-ccap-140',
+  topic: 'claude',
+  q: '[Models & Context] A team observes that most of their Claude cost comes from repeating the same long instructions in every request. Which change reduces cost most directly?',
+  options: [
+    'Switch to a cheaper model for every request',
+    'Use prompt caching so repeated stable prefixes are not recomputed',
+    'Send shorter user questions without context',
+    'Disable all system prompts'
+  ],
+  answer: 1,
+  explain: `**Đúng: dùng prompt caching cho tiền tố ổn định lặp lại.** Nếu những hướng dẫn dài giống nhau được gửi lại mỗi lần, prompt caching cho phép phần đó được tính một lần và đọc từ cache ở các lần sau, chi phí đọc cache thấp hơn nhiều so với tính toán lại mỗi lần. Cách này giảm trực tiếp chi phí nhập liệu mà không thay đổi câu trả lời.
+
+### Vì sao các phương án khác sai
+- **Chuyển sang model rẻ hơn cho mọi yêu cầu:** có thể làm giảm chất lượng cho các tác vụ phức tạp; chỉ là một phần của giải pháp.
+- **Gửi câu hỏi người dùng ngắn hơn bù bỏ ngữ cảnh:** làm giảm chất lượng câu trả lời vì model thiếu thông tin cần thiết.
+- **Tắt hết system prompt:** mất phần định hướng hành vi của mô hình, chất lượng sẽ giảm.
+
+> Tiền tố được cache phải giống hệt nhau từng ký tự giữa các request, kể cả khoảng trắng và thứ tự mục.`
+},
+{
+  id: 'qz-ccap-141',
+  topic: 'claude',
+  multi: true,
+  q: '[Models & Context] A team must decide between fine-tuning a Claude model, using retrieval-augmented generation (RAG), or putting documents in the context window for a question-answering feature over internal documents. Which two statements are sound? (Choose 2)',
+  options: [
+    'Fine-tuning is the only way to make Claude know internal documents',
+    'RAG retrieves relevant passages per question and sends them with the question to Claude',
+    'Putting all documents in the context window is always the cheapest option',
+    'Context window size limits how much can be sent at once, so very large corpora need retrieval'
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: RAG truy xuất đoạn liên quan theo câu hỏi, và cửa sổ ngữ cảnh có giới hạn kích thước.** RAG chỉ gửi phần tài liệu liên quan đến câu hỏi kèm theo câu hỏi, phù hợp với kho tài liệu lớn và thay đổi liên tục. Cửa sổ ngữ cảnh của Claude có giới hạn cố định, nên với kho tài liệu rất lớn, không thể gửi tất cả cùng một lúc mà cần truy xuất.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Fine-tuning là cách duy nhất:** sai; Claude có thể trả lời dựa trên tài liệu cung cấp trong prompt hoặc qua RAG mà không cần huấn luyện lại.
+- **Đưa tất cả tài liệu vào cửa sổ ngữ cảnh luôn là rẻ nhất:** sai; vượt quá giới hạn ngữ cảnh sẽ không hoạt động, và chi phí nhập liệu cao khi gửi toàn bộ kho tài liệu mỗi lần.
+
+> Với tài liệu nội bộ thay đổi thường xuyên, RAG thường là lựa chọn thực tế hơn vì cập nhật chỉ cần thay đổi chỉ mục, không cần huấn luyện lại mô hình.`
+},
+{
+  id: 'qz-ccap-142',
+  topic: 'claude',
+  q: '[Models & Context] A Claude agent needs to call internal APIs to look up customer orders. Which capability should be configured?',
+  options: [
+    'Ask users to call the API themselves and paste the result',
+    'Give Claude direct access to the production database without restrictions',
+    'Configure tool use with a clear input schema so Claude can call the order-lookup API',
+    'Only allow Claude to answer from its training data'
+  ],
+  answer: 2,
+  explain: `**Đúng: cấu hình tool use với schema đầu vào rõ ràng.** Tool use cho phép Claude gọi các hàm hoặc API bên trong (ví dụ: tra cứu đơn hàng) với đối số được xác định bởi JSON Schema. Claude quyết định khi nào gọi công cụ và hệ thống thực hiện gọi, rồi trả kết quả lại cho mô hình. Cách này an toàn hơn cho phép truy cập cơ sở dữ liệu không giới hạn và cho phép kiểm soát chính xác công cụ nào được dùng.
+
+### Vì sao các phương án khác sai
+- **Yêu cầu người dùng gọi API và dán kết quả:** không tận dụng được năng lực tự động hóa của agent.
+- **Cho Claude truy cập trực tiếp cơ sở dữ liệu sản xuất không giới hạn:** nguy cơ bảo mật cao, có thể sửa hoặc xóa dữ liệu không mong muốn.
+- **Chỉ cho phép trả lời từ dữ liệu huấn luyện:** Claude không biết thông tin đơn hàng thực tế của công ty nếu không được cung cấp.
+
+> Mỗi công cụ nên có mô tả rõ ràng về mục đích và dữ liệu đầu vào, và các tác vụ nhạy cảm nên có bước phê duyệt của con người.`
+},
+{
+  id: 'qz-ccap-143',
+  topic: 'claude',
+  multi: true,
+  q: '[Models & Context] A company launches a Claude support assistant for Vietnamese customers, but the knowledge base is in English. Vietnamese answers read unnaturally and sometimes mistranslate product terms. Which two changes most improve answer quality? (Choose 2)',
+  options: [
+    'Add a glossary of key product terms and a few example question-answer pairs written naturally in Vietnamese to the prompt',
+    'Instruct the assistant to answer in Vietnamese while keeping product names, SKUs and codes untranslated',
+    'Switch to the largest model and keep everything else unchanged',
+    'Translate the entire knowledge base into Vietnamese with a separate tool and never use the English source again',
+    'Ask customers to write in English so the assistant performs better'
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: cho model mẫu tiếng Việt tự nhiên, cộng glossary thuật ngữ và luật giữ nguyên tên riêng.** Chất lượng ngôn ngữ phụ thuộc nhiều vào ngữ cảnh được cung cấp: vài cặp hỏi–đáp viết bởi người bản ngữ giúp model bắt đúng văn phong; glossary giúp dịch nhất quán thuật ngữ sản phẩm; còn quy tắc giữ nguyên SKU và tên sản phẩm tránh việc model "dịch" cả mã định danh. Đây là các biện pháp ở lớp prompt và dữ liệu, áp dụng được ngay mà không cần huấn luyện lại.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Đổi sang model lớn nhất:** model lớn hơn không tự biết thuật ngữ sản phẩm của công ty; văn phong kiểu dịch máy vẫn còn.
+- **Dịch toàn bộ knowledge base rồi bỏ bản gốc:** tốn kém, dễ sai lệch thuật ngữ, và tạo ra hai nguồn sự thật phải đồng bộ; bản gốc vẫn nên là nguồn chuẩn.
+- **Bảo khách viết tiếng Anh:** đẩy rào cản sang người dùng, giảm trải nghiệm và không sửa được chất lượng câu trả lời tiếng Việt.
+
+### Cách kiểm tra
+Lập bộ eval gồm câu hỏi thật từ khách hàng, chấm cả độ đúng nội dung và độ tự nhiên của tiếng Việt; so sánh trước và sau khi thêm glossary và ví dụ.
+
+> Chất lượng đa ngôn ngữ đến từ ngữ cảnh và ví dụ đúng ngôn ngữ, không từ việc chọn model đắt hơn.`
+},
+{
+  id: 'qz-ccap-144',
+  topic: 'claude',
+  q: '[Models & Context] A SaaS platform serves many tenants through one Claude integration. One tenant must not see another tenants documents in answers. Which design enforces this?',
+  options: [
+    'Send all tenants documents in one prompt and trust Claude to separate them',
+    'Retrieve and send only the requesting tenants documents, with tenant isolation in the application layer',
+    'Use one system prompt telling Claude not to mix tenant data',
+    'Give every tenant the same API key and rely on prompt instructions'
+  ],
+  answer: 1,
+  explain: `**Đúng: cách ly ở lớp ứng dụng, chỉ gửi tài liệu của tenant yêu cầu.** Hệ thống chỉ nên truy xuất và gửi đến Claude những tài liệu thuộc về tenant đang thực hiện yêu cầu, và lớp ứng dụng phải đảm bảo không bao giờ trộn dữ liệu giữa các tenant. Lời nhắc trong prompt không phải là cơ chế bảo mật; mô hình có thể bị thuyết phục hoặc hiểu nhầm, dẫn đến rò rỉ dữ liệu giữa các tenant.
+
+### Vì sao các phương án khác sai
+- **Gửi tài liệu của tất cả tenant và tin Claude tách biệt:** dữ liệu đã rời khỏi hệ thống kiểm soát và có thể bị lộ giữa các tenant.
+- **Chỉ dùng system prompt:** là chỉ dẫn mềm, không phải ranh giới cưỡng chế, không đủ bảo vệ dữ liệu nhạy cảm.
+- **Cùng một API key và tin vào hướng dẫn prompt:** khóa dùng chung không tạo ranh giới dữ liệu, và hướng dẫn không thể đảm bảo cách ly.
+
+> Cách ly dữ liệu phải được thực thi ở nơi xử lý yêu cầu (lớp ứng dụng), không phải dựa vào mô hình hoặc prompt.`
+},
+{
+  id: 'qz-ccap-145',
+  topic: 'claude',
+  q: '[Models & Context] A RAG assistant over a product catalogue answers "What is the price of SKU-12345?" incorrectly. Vector search returns similar but wrong products, even though the exact SKU exists in the documents. Which improvement best addresses this?',
+  options: [
+    'Combine keyword search for exact identifiers with vector search, then merge the results (hybrid retrieval)',
+    'Increase temperature so the model reasons more creatively about the SKU',
+    'Switch to the largest available model so it memorises the catalogue',
+    'Send the entire catalogue in every request to guarantee the SKU is present'
+  ],
+  answer: 0,
+  explain: `**Đúng: hybrid retrieval — kết hợp tìm kiếm từ khoá (khớp chính xác mã) với tìm kiếm vector (khớp ngữ nghĩa).** Vector search giỏi tìm nội dung gần nghĩa, nhưng mã sản phẩm như SKU-12345 là chuỗi định danh có thể bị xem là gần với nhiều mã khác. Tìm kiếm từ khoá (exact match kiểu BM25 hoặc chỉ mục inverted) đảm bảo chunk chứa đúng mã được lấy về; sau đó hợp nhất hai danh sách và xếp hạng lại. Đây là khiếm khuyết kinh điển của RAG thuần vector.
+
+### Vì sao các phương án khác sai
+- **Tăng temperature:** chỉ làm đầu ra ngẫu nhiên hơn; lỗi nằm ở bước truy xuất, không phải ở độ sáng tạo.
+- **Chuyển sang model lớn nhất:** model không thấy chunk đúng thì model nào cũng trả lời sai; chi phí tăng mà không sửa nguyên nhân.
+- **Gửi cả catalogue mỗi request:** vượt cửa sổ ngữ cảnh, chi phí mỗi câu hỏi tăng vọt, và tỉ lệ chú ý giảm khi ngữ cảnh quá dài.
+
+### Cách kiểm tra
+Đo recall của bước truy xuất trên bộ câu hỏi có mã định danh; so sánh recall khi chỉ dùng vector và khi dùng hybrid.
+
+> Khi câu hỏi chứa mã định danh, hãy đảm bảo bước truy xuất khớp chính xác được chuỗi đó trước khi kết luận model yếu.`
 }
 // qtool append point
 );
