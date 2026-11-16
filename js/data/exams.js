@@ -30,6 +30,26 @@ window.EXAMS = [
     count: 53, minutes: 120, passScore: 720,
   },
   {
+    id: 'ccao-f',
+    title: 'Claude Certified Associate – Foundations (CCAO-F)',
+    icon: '🎓',
+    desc: 'Mô phỏng đề Associate: dùng Claude hiệu quả trong công việc (không cần code). 120 phút, đậu từ 720/1000.',
+    topics: { claude: 1 },
+    // 7 domain theo exam guide (Anthropic chưa công bố trọng số → chia đều, 2026-11-16); câu gắn tag "[Domain]" đầu q
+    domains: { 'Output Evaluation': 15, 'Workflow Integration': 15, 'Responsible Use': 14, 'Prompting Basics': 14, 'Product Selection': 14, 'Knowledge Config': 14, 'Troubleshooting': 14 },
+    count: 60, minutes: 120, passScore: 720,
+  },
+  {
+    id: 'ccar-p',
+    title: 'Claude Certified Architect – Professional (CCAR-P)',
+    icon: '🏆',
+    desc: 'Mô phỏng đề Architect Professional: thiết kế giải pháp Claude end-to-end cho doanh nghiệp. 120 phút, đậu từ 720/1000.',
+    topics: { claude: 1 },
+    // 7 domain theo exam guide (trọng số chưa công bố → chia đều, 2026-11-16)
+    domains: { 'Enterprise Integration': 15, 'Solution Design': 15, 'Eval & Optimization': 14, 'Governance & Risk': 14, 'Stakeholder & Lifecycle': 14, 'Models & Context': 14, 'Operational Enablement': 14 },
+    count: 60, minutes: 120, passScore: 720,
+  },
+  {
     id: 'java-core',
     title: 'Java Core',
     icon: '☕',
