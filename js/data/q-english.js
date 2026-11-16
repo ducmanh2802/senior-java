@@ -10740,15 +10740,15 @@ The turning point was month 6 when he caught a race condition in the refund idem
   a: `**Tóm tắt:** Interviewer muốn xem bạn có **dịch** (translate) một khái niệm kỹ thuật sang ngôn ngữ của người không làm kỹ thuật, đúng và ngắn. **RAG** (Retrieval-Augmented Generation: máy vừa tra cứu tài liệu vừa viết câu trả lời) không phải là "AI thông minh hơn", mà là cách bắt buộc câu trả lời phải dựa trên tài liệu thật của khách hàng. Hãy nói theo mạch: **vấn đề của khách → ý tưởng theo cách đời thường → luồng 3 bước → giới hạn và rủi ro → cách bạn chứng minh nó chạy đúng**.
 
 ### Sample answer
-I would start with the problem, not the technology. I would say: today our assistant answers from its general knowledge, so it can sound confident and still be wrong about your own policies.
+I would start with the problem, not the technology. Today our assistant answers from its general knowledge, so it can sound confident and still be wrong about your own policies.
 
-RAG means we make the assistant look things up before it answers. Think of a good new employee: before replying to a customer, they open your policy folder, find the right page, and then write the reply based on that page.
+RAG means we make the assistant look things up before it answers. Think of a new employee: before replying, they open your policy folder, find the right page, and write the reply based on it.
 
 The flow has three steps. First, we take your approved documents and split them into small sections. Second, when a question comes in, the system finds the few sections that are probably relevant. Third, it gives those sections to the model and asks it to answer using only that text, and to show which document it used.
 
-The benefit is that answers follow your documents, not the model's memory. When a price or a policy changes, we update the document instead of retraining anything.
+Answers follow your documents, not the model's memory. When a price or policy changes, we update the document instead of retraining.
 
-The risks are also simple to state. Retrieval can miss the right section, and a badly scanned document can lead to a wrong answer. That is why we show sources, we keep a person in the loop for sensitive cases, and we measure the percentage of answers that a reviewer marks as supported by the source. In a pilot on 300 real questions, that number went from 61 percent to 93 percent.
+Risks are simple to state. Retrieval can miss the right section, and a badly scanned document can lead to wrong answers. That is why we show sources, keep a person in the loop for sensitive cases, and measure the percentage of answers a reviewer marks as source-supported. In a pilot on 300 real questions, that number went from 61 percent to 93 percent.
 
 ### Useful phrases
 - **I would start with the problem, not the technology** — tôi bắt đầu từ vấn đề, không phải từ công nghệ
@@ -10782,15 +10782,15 @@ The risks are also simple to state. Retrieval can miss the right section, and a 
   a: `**Tóm tắt:** Câu này kiểm tra bạn có **cách làm việc async** (async: không họp trực tiếp mà trao đổi qua văn bản, mỗi người làm theo giờ của mình) và có kỷ luật giao tiếp khi bị deadline ép hay không. Đừng kể "chúng tôi họp nhiều hơn". Hãy kể một tình huống cụ thể: quy mô team, số múi giờ, deadline, **cái gì bị tắc vì lệch giờ**, bạn đổi cách làm gì, và kết quả đo được (thời gian chờ review, số lần phải họp lại, ngày giao hàng).
 
 ### Sample answer
-Last year I worked on a payment reporting module with a team of nine: five engineers in Vietnam, three in Germany, one in Brazil. We had six weeks to deliver before a client audit, so the deadline was fixed.
+Last year I worked on a payment reporting module with nine engineers across Vietnam, Germany, and Brazil. We had six weeks before a client audit, so the deadline was fixed.
 
-The first week was painful. A pull request opened at 9 AM in Vietnam would wait twenty hours for a German review, and then the reviewer's question arrived when our team was offline. We measured an average wait of 18 hours per review, and we were losing about two days per feature.
+The first week was painful. A pull request opened at 9 AM in Vietnam waited twenty hours for a German review, and the reviewer's question arrived when our team was offline. We measured an 18-hour average wait per review, losing about two days per feature.
 
-We changed three things. First, we made every pull request small — under 200 lines — so a review took fifteen minutes, not an hour. Second, we agreed on a written rule: each pull request description must contain the context, the risk, and the exact question for the reviewer, and the author must record a two-minute video walkthrough for anything non-obvious. Third, we protected a four-hour overlap window from 2 PM to 6 PM for live discussion only, and we moved everything else to comments.
+We changed three things. First, we made every pull request small — under 200 lines — so reviews took fifteen minutes, not an hour. Second, we agreed on a written rule: each pull request must include context, risk, and the exact question for the reviewer, plus a two-minute video walkthrough for non-obvious changes. Third, we protected a four-hour overlap window (2–6 PM) for live discussion only, moving everything else to comments.
 
-We also split the work by ownership instead of by task, so one person owned one module end to end and nobody waited for a handover.
+We also split work by ownership instead of task, so one person owned a module end-to-end with no handover wait.
 
-After two weeks, the average review wait dropped to five hours, and we delivered four days before the deadline with only one late-night call per person for the whole project.
+After two weeks, average review wait dropped to five hours, and we delivered four days early with only one late-night call per person.
 
 ### Useful phrases
 - **the deadline was fixed** — deadline đã được ấn định, không thể dời
@@ -10824,15 +10824,15 @@ After two weeks, the average review wait dropped to five hours, and we delivered
   a: `**Tóm tắt:** Interviewer muốn thấy bạn **không đoán** rồi hứa bừa. **Uncertain scope** (phạm vi chưa rõ) là chuyện bình thường với AI, vì chất lượng chỉ biết sau khi chạy thử. Hãy trả lời theo mạch: **tách phần chắc và phần chưa chắc → timebox spike (thử nghiệm có giới hạn thời gian) → ước lượng theo khoảng (range) → chia giai đoạn có điểm dừng → cam kết theo cột mốc, không cam kết một ngày duy nhất**.
 
 ### Sample answer
-I split the work into two parts: the part I can estimate normally, and the part that depends on model quality.
+I split the work into two parts: what I can estimate normally, and what depends on model quality.
 
-For a support-answering feature, the normal part was clear: ingestion, storage, the API, logging, and the admin screen. I estimated that from past work, about three weeks for two engineers.
+For a support-answering feature, the normal part was clear: ingestion, storage, API, logging, and admin screen. I estimated three weeks for two engineers from past work.
 
-The uncertain part was answer quality. I did not guess. I asked for one week with a fixed goal: a corpus of 300 real questions with reference answers, and a rule that we would proceed only if at least 85 percent of answers were factually supported. I called this a time-boxed spike. If the number was too low, we would stop and change approach instead of burning the whole budget.
+The uncertain part was answer quality; I did not guess. I asked for one week with a fixed goal: a corpus of 300 real questions with reference answers, proceeding only if 85 percent of answers were factually supported. I called this a time-boxed spike; if the number was too low, we would stop and change approach instead of burning the budget.
 
-After that week we had real data, so I could give the client a range instead of a single date: the first working version in six weeks, and a production version in ten if quality passed. I also wrote down what would change the estimate — for example, scanned PDFs that need OCR, or a policy that requires human review of every answer.
+After that week we had real data, so I gave the client a range: first working version in six weeks, production version in ten if quality passed. I also wrote down what would change the estimate — for example, scanned PDFs needing OCR, or a policy requiring human review of every answer.
 
-We reviewed the estimate every Friday against the measured numbers, and we moved the release by one week when the review requirement was added. The client was fine with that, because the range and the assumptions were written down from day one.
+We reviewed the estimate every Friday against measured numbers, moving the release by one week when the review requirement was added. The client accepted this because the range and assumptions were documented from day one.
 
 ### Useful phrases
 - **I split the work into two parts** — tôi chia việc thành hai phần
