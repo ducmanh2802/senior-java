@@ -12,7 +12,9 @@
     'Tự viết được một fake repository và một spy đếm lời gọi bằng Java thuần, không cần Mockito',
     'Nhận ra mùi over-mocking và biết khi nào nên thay mock bằng fake hoặc test tích hợp',
   ],
-  body: `### Vì sao cần test double
+  body: `**Tóm tắt:** Test double gồm năm loại — dummy, stub, spy, mock, fake — khác nhau ở mục đích: stub trả lời câu hỏi, mock kiểm tra hành vi, fake thay cả một cài đặt. Có hai cách khẳng định một test: state verification (kiểm tra trạng thái cuối) và interaction verification (kiểm tra service đã gọi collaborator đúng cách). Bài học này giúp bạn chọn đúng loại double để test không cản trở refactor.
+
+### Vì sao cần test double
 Một unit test tốt chỉ muốn kiểm tra **một** đơn vị logic. Nhưng đơn vị đó thường gọi ra ngoài: database, HTTP, hàng đợi, đồng hồ hệ thống. Nếu test thật sự gọi Postgres hay API ngân hàng thì test sẽ chậm, flaky và không chạy được trên máy không có hạ tầng. **Test double** là object thay thế cho collaborator thật, được tạo riêng cho mục đích kiểm thử.
 
 Gerard Meszaros và Martin Fowler phân biệt năm loại, khác nhau ở **mục đích** chứ không phải ở cách viết:
@@ -112,6 +114,12 @@ Một quy tắc thực dụng: **mock ở biên của hệ thống, fake ở bi�
 - **Mock value object và kiểu JDK**: đừng mock {{List}}, {{BigDecimal}}, {{LocalDate}} hay DTO của bạn — tạo object thật vừa rẻ vừa đúng hơn. Tương tự nguyên tắc "don't mock what you don't own": thay vì mock trực tiếp client của thư viện bên thứ ba (AWS SDK, RestTemplate), hãy bọc nó sau một interface của mình rồi mock/fake interface đó, còn client thật thì test tích hợp (WireMock, Testcontainers).
 
 > Senior tip: khi review test, hãy hỏi "nếu ngày mai tôi đổi cách cài đặt bên trong service, test này có đỏ không?". Nếu có mà hành vi nghiệp vụ không đổi, test đang kiểm tra implementation chứ không kiểm tra hợp đồng. Đội trưởng giỏi thường giữ tỉ lệ verify interaction rất thấp, chỉ ở những biên như thanh toán, thông báo và event.
+
+### Ví dụ đời thực: service chuyển tiền và 23 test đỏ
+Một team đang maintain {{TransferService}}. Ban đầu mọi test đều dùng Mockito: mock repository, mock notifier. Khi team refactor bên trong service — đổi từ hai lần {{save}} thành một lần {{saveAll}} để giảm round-trip database — **23 test đỏ** dù hành vi nghiệp vụ không đổi: số dư cuối cùng hai tài khoản vẫn đúng 800 và 700. Đội mất hai ngày phân loại: test nào kiểm tra kết quả (dùng fake), test nào kiểm tra số lần gọi (over-specification). Sau khi thay {{FakeAccountRepository}}, 23 test đỏ giảm còn 3 — chỉ những test kiểm tra interaction thực sự (gửi đúng một thông báo cho người nhận) còn đỏ. Kết quả: CI từ 12 phút xuống 4 phút và refactor không còn bị test cản trở.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi interviewer hỏi 'phân biệt stub và mock', tôi sẽ nói: stub là người trả lời câu hỏi, mock là người kiểm tra hành vi. Stub chỉ cung cấp dữ liệu định trước — ví dụ repository luôn trả tài khoản có số dư 1.000 — mà không quan tâm nó được gọi thế nào. Mock đặt kỳ vọng về tương tác: {{verify(notifier).transferCompleted('ACC-2', 200)}} khẳng định đúng một lần gọi với đúng tham số. Fake là thứ thay cả một cài đặt: implement cùng interface bằng cấu trúc dữ liệu đơn giản, ví dụ HashMap, và giữ đúng ngữ nghĩa đọc-sau-ghi. Tôi chọn fake cho repository vì nó cho phép test cả chuỗi đọc-sửa-ghi mà không khóa vào số lần gọi method, nên refactor bên trong service không làm test đỏ. Mock chỉ dùng cho tác dụng phụ không quan sát được qua state, như gửi email hoặc publish event. Quy tắc thực dụng: mock ở biên của hệ thống, fake ở biên của tầng, logic thuần thì không cần double nào."
 
 ### Liên hệ phỏng vấn
 Interviewer hay hỏi: "Phân biệt stub và mock", "fake khác mock ở đâu", "vì sao mock quá nhiều là code smell", và đưa một class có 5 dependency rồi hỏi bạn test thế nào. Câu trả lời tốt không phải là liệt kê định nghĩa mà là nói rõ **bạn đang kiểm chứng state hay interaction**, và vì sao chọn cách đó. Bài tập dưới đây bắt bạn tự viết fake và spy để thấy rõ khác biệt thay vì học thuộc.`,
@@ -404,7 +412,9 @@ Khi dùng Mockito, bài này tương đương {{when(repo.find("ACC-1")).thenRet
     'Inject {{java.time.Clock}} và dùng {{Clock.fixed}}/{{Clock.offset}} để test đúng biên hạn dùng',
     'Tránh được bẫy timezone, DST và chia sẻ clock mutable giữa các test',
   ],
-  body: `### Thời gian là một dependency, không phải hằng số
+  body: `**Tóm tắt:** Thời gian là một dependency ẩn: {{Instant.now()}} gọi đồng hồ thật nên test không thể kiểm soát được các biên (trước expiry, đúng expiry, sau expiry). Giải pháp là tiêm {{java.time.Clock}} vào service, dùng {{Clock.fixed()}} để đóng băng và {{Clock.offset()}} để dịch chuyển, từ đó test được mọi mốc trong vài mili giây mà không cần ngủ.
+
+### Thời gian là một dependency, không phải hằng số
 Đoạn code sau trông vô hại nhưng là một trong những nguyên nhân flaky test phổ biến nhất:
 
 ~~~java
@@ -443,7 +453,7 @@ Production truyền {{Clock.systemUTC()}} (hoặc bean tương ứng timezone ng
 | {{Clock.systemDefaultZone()}} | Đồng hồ thật theo timezone JVM | Hiếm khi nên dùng trong server |
 | {{Clock.fixed(instant, zone)}} | Luôn trả cùng một instant | Test một mốc cố định |
 | {{Clock.offset(base, duration)}} | Dịch đồng hồ nền thêm một khoảng | Test "sau 23 giờ", "sau 7 ngày" |
-| {{Clock.tick(base, duration)}} | Đồng hồ nhích từng bước cố định | Test logic cần thời gian trôi theo nhịp |
+| {{Clock.tick(base, duration)}} | Làm tròn **xuống** theo bước {{duration}} (ví dụ bỏ hết mili giây) | Test code nhạy với độ phân giải thời gian, như cache đếm theo giây |
 
 ~~~java
 Instant base = Instant.parse("2026-03-01T00:00:00Z");
@@ -490,6 +500,12 @@ Unit test thì tạo service trực tiếp với clock giả, không cần Sprin
 - **Test quá phụ thuộc đồng hồ thật ở tầng tích hợp**: với schedule, hãy tách phần "quyết định có chạy không" thành hàm nhận {{clock}}, còn phần trigger framework để integration test riêng.
 
 > Senior tip: khi hệ thống có bug "chỉ lỗi sau 23h" hoặc "chỉ lỗi ngày cuối tháng", gần như luôn là do timezone hoặc do tính ngày bằng {{LocalDate.now()}} không có clock. Một đội trưởng tốt đặt quy ước: **không có {{now()}} không tham số trong domain code**, chỉ có {{clock.instant()}}; review có thể grep là thấy ngay chỗ vi phạm.
+
+### Ví dụ đời thực: trial 7 ngày chỉ lỗi sau 23h
+Một product trial: người dùng đăng ký, sau 7 ngày trial hết hạn. Đội backend viết test bằng {{LocalDate.now()}} và deploy lên staging. Khi test chạy trên CI (múi giờ UTC) thì mọi thứ xanh, nhưng production ở múi giờ Việt Nam (UTC+7) lại **bắt đầu một ngày sớm hơn** — một số user thấy trial "hết hạn" ở ngày thứ 6 thay vì thứ 7. Đội điều tra: test ở staging không phát hiện vì nó cũng chạy theo múi giờ CI, còn production dùng {{LocalDate.now()}} theo timezone JVM. Sau khi đổi sang {{Instant}} + {{Clock}} injection, test được viết lại với ba biên (trước expiry, đúng expiry, sau expiry) và chạy dưới 50 mili giây. Vấn đề không bao giờ tái hiện ở staging nữa.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi hỏi 'test code phụ thuộc thời gian thế nào?', tôi sẽ nói: đầu tiên nhận ra {{Instant.now()}} là một dependency ẩn — test không thể kiểm soát được nó. Giải pháp là tiêm {{Clock}} vào service: production truyền {{Clock.systemUTC()}}, test truyền {{Clock.fixed()}} để đóng băng thời gian tại một mốc cố định hoặc {{Clock.offset()}} để dịch chuyển tương đối. Với trial expiry, tôi test ba điểm: một giây trước expiry (vẫn active), đúng expiry (hết hạn), một giây sau (hết hạn). Dùng {{Instant}} cho mốc tuyệt đối vì nó không phụ thuộc timezone. Không bao giờ dùng {{Thread.sleep}} trong unit test — nó làm suite chậm và vẫn flaky dưới tải CI. Trong Spring Boot, khai báo {{@Bean Clock clock()}} là bean và inject; nếu code legacy chưa thể inject, dùng {{Mockito.mockStatic}} trong {{try-with-resources}} nhưng đó là giải pháp tạm thời."
 
 ### Liên hệ phỏng vấn
 Interviewer hay hỏi: "Làm sao test code phụ thuộc thời gian?", "{{Clock.fixed}} khác {{Clock.offset}} thế nào?", "Xử lý expiry qua DST ra sao?", và đưa một test đang {{Thread.sleep(2000)}} để hỏi cách sửa. Câu trả lời tốt là: inject {{Clock}}, test bằng fixed/offset, phủ ba điểm biên, và dùng Instant cho mốc tuyệt đối. Bài tập dưới đây mô phỏng đúng bài toán trial expiry với clock injection.`,
@@ -667,7 +683,9 @@ Trong Spring Boot, hãy khai báo {{Clock}} là bean và inject; đừng gọi {
     'Tự viết harness sinh input ngẫu nhiên có seed, báo counterexample và tái hiện lỗi',
     'Biết giới hạn của PBT: property sai, generator thiên lệch, chi phí chạy và vai trò của shrinking',
   ],
-  body: `### Example-based test chỉ kiểm tra những gì bạn nghĩ tới
+  body: `**Tóm tắt:** Example-based test chỉ kiểm tra những trường hợp bạn nghĩ ra, bỏ sót bug ở mảng rỗng, phần tử trùng hay biên giá trị. Property-based testing (PBT) mô tả một tính chất phải đúng với mọi input, rồi để máy sinh hàng trăm input ngẫu nhiên để cố bác bỏ tính chất đó. Bài học này giúp bạn viết harness PBT với seed cố định để tái hiện lỗi và các property mạnh nhất cho merge/sort.
+
+### Example-based test chỉ kiểm tra những gì bạn nghĩ tới
 Một test thường có dạng: đưa vào ba mảng mẫu, so với kết quả mong đợi. Nó tốt để tài liệu hoá ví dụ và bắt regression, nhưng có một điểm yếu cố hữu: **bạn chỉ kiểm tra những trường hợp bạn nghĩ ra**. Bug trong hàm merge thường nằm ở mảng rỗng, mảng một phần tử, phần tử trùng nhau, số âm, hoặc phần tử cuối của một bên — những tổ hợp dễ bị bỏ sót khi viết tay.
 
 **Property-based testing (PBT)** đảo ngược cách làm: bạn mô tả một **tính chất** phải đúng với **mọi** input hợp lệ, rồi để máy sinh hàng trăm input ngẫu nhiên để cố bác bỏ tính chất đó. Nếu tìm được input làm sai, nó báo **counterexample** — ví dụ cụ thể để bạn debug và thêm thành regression test.
@@ -734,6 +752,12 @@ Harness tự viết trong bài này không có shrinking; đó là lý do trong 
 - **Property đúng nhưng không đủ**: merge đúng thứ tự và đủ phần tử nhưng làm mất tính ổn định (stability) thì ba property trên không bắt được. Phải thêm property riêng nếu hợp đồng yêu cầu.
 
 > Senior tip: PBT hiệu quả nhất với **hàm thuần** và **serialize/parse**, ít hiệu quả với workflow nhiều I/O. Một pattern thực tế: dùng example test cho luồng nghiệp vụ chính, dùng PBT cho các hàm lõi như tính phí, chia tiền, merge khoảng thời gian, parse cấu hình. Khi PBT tìm ra bug, luôn biến counterexample thành một example test cố định — vì PBT có thể không chạy trong mọi pipeline, còn regression test thì phải luôn chạy.
+
+### Ví dụ đời thực: merge bị mất phần tử cuối khi mảng bên rỗng
+Một team viết merge cho hai mảng đã sắp xếp. Example test của họ: merge [1, 3, 5] với [2, 3, 4, 8] → xanh. Khi production, một service merge hai danh sách category: [1, 2] với [] → kết quả chỉ [1], mất phần tử 2. Bug nằm ở nhánh "bên rỗng" mà example test không bao giờ chạm tới. Sau khi thêm PBT với 300 trial seed 42, property "đã sắp xếp và giữ đúng đa tập phần tử" tìm ra counterexample: a = [], b = [0]. Sau khi shrink về [0], dev nhìn ra ngay: vòng while chép phần còn lại của b bị bỏ sót. Thêm example test merge([], [2]) và bug được fix trong 5 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi hỏi 'property-based testing khác unit test thường thế nào?', tôi sẽ nói: unit test kiểm tra những trường hợp bạn nghĩ ra — bạn chỉ kiểm tra đúng những gì bạn đã viết. PBT đảo ngược: bạn mô tả một tính chất phải đúng với mọi input (ví dụ: kết quả merge luôn được sắp xếp và giữ đúng đa tập phần tử), rồi để máy sinh hàng trăm input ngẫu nhiên để cố bác bỏ tính chất đó. Nếu tìm được input làm sai, nó báo counterexample kèm seed và trial để bạn chạy lại đúng case. Ví dụ merge: chỉ cần ba property — đã sắp xếp, đúng độ dài, giữ đa tập — là bắt được gần như mọi bug: quên chép phần còn lại, dùng < làm mất phần tử trùng, cấp phát thiếu ô. Seed quan trọng vì Random cho cùng chuỗi số trên mọi machine, nên error có thể tái hiện. Shrinking thu nhỏ counterexample từ mảng 20 phần tử xuống [3, 4, 5] để bạn debug nhanh hơn."
 
 ### Liên hệ phỏng vấn
 Interviewer hay hỏi: "Property-based testing khác unit test thường thế nào?", "Bạn kiểm tra hàm sort bằng property gì?", "Seed và shrinking để làm gì?", "Khi nào KHÔNG nên dùng PBT?". Trả lời tốt là nêu property cụ thể (sorted, cùng đa tập, độ dài), nói rõ seed giúp tái hiện, shrinking giúp thu nhỏ counterexample, và PBT không thay thế example test cho hợp đồng nghiệp vụ. Bài tập dưới đây bắt bạn tự viết merge và harness PBT tối giản.`,
@@ -1050,6 +1074,12 @@ Trong hệ sinh thái Java, Surefire/Failsafe in ra dòng {{Tests run: X, Failur
 - **Skip im lặng**: {{@Disabled}} hoặc {{assumeTrue}} không ai theo dõi sẽ khiến coverage tụt dần mà không có cảnh báo.
 
 > Senior tip: mình từng thấy pipeline xanh suốt ba tuần vì một test class bị đánh dấu disabled khi resolve merge conflict; Surefire in "Tests run: 0" nhưng build vẫn success. Từ đó đội đặt gate: tổng số test không được giảm quá 5% so với baseline, not_run phải bằng 0, và mọi skip mới phải có ticket trong comment. Một harness trung thực quan trọng hơn một harness nhanh.
+
+### Ví dụ đời thực: pipeline xanh 3 tuần vì một test class bị disable
+Một đội có 400 test, CI chạy mỗi PR. Một lần resolve merge conflict, một test class bị đánh dấu @Disabled do conflict. Surefire in "Tests run: 0" nhưng build vẫn success, và team không ai để ý. Pipeline xanh suốt 3 tuần, trong khi 12 case không bao giờ chạy. Đội đặt gate: tổng số test không được giảm quá 5% so với baseline, not_run == 0 trên nhánh chính, và mọi skip mới phải có ticket trong comment. Sau khi gate có mặt, lần đầu tiên CI đỏ và họ phát hiện ra ngay.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi hỏi 'vì sao không nên fail-fast trong test suite?', tôi sẽ nói: fail-fast dừng ngay khi case đầu tiên ném lỗi. Khi một refactor làm hỏng 12 case, bạn chỉ thấy case số 3, sửa rồi chạy lại, thấy case số 7 — mỗi vòng CI mất vài phút và bạn không biết còn cách xanh bao xa. Tệ hơn, một số lỗi chỉ xuất hiện khi các case chạy cùng nhau, nên fail-fast che mất tương tác giữa chúng. VerifyAll chạy từng case, ghi kết quả, rồi mới tổng hợp. Ba case quan trọng: total phải lấy từ danh sách đăng ký (không phải số case đã chạy), bất biến passed + failed + skipped + not_run == total, và không bao giờ đánh đồng case chưa chạy với case đã qua. NOT RUN là sự cố vận hành (runner bị kill, barrier đóng), trong khi SKIP là quyết định có chủ đích (feature flag, ngày release)."
 
 ### Liên hệ phỏng vấn
 Interviewer hay hỏi: "Vì sao không nên fail-fast trong test suite?", "Skipped khác not run thế nào?", "Làm sao biết pipeline xanh thật hay chỉ là không có test nào chạy?", và "Bạn thiết kế quality gate ra sao?". Câu trả lời tốt nên nêu rõ bốn trạng thái, mẫu số lấy từ danh sách đăng ký, bất biến tổng số, và cách phân biệt skip có chủ đích với not run do hạ tầng. Bài tập dưới đây bắt bạn tự viết runner như vậy, gồm cả barrier abort và skipIf theo ngày được truyền vào.`,
@@ -1607,7 +1637,7 @@ Chạy code cũ trên bộ input bao quát: happy path, edge case (rỗng, null,
 Với mỗi input, gọi code cũ và serialize output (JSON, protobuf, text) vào file dưới {{name}}. Tên file thường theo pattern {{pattern}}. **VÌ SAO:** Lưu file thay vì hardcode trong test giúp: (a) diff dễ dàng bằng công cụ CLI, (b) review thay đổi golden master trong PR như review code, (c) golden master độc lập với framework test.
 
 **Bước 4: Viết bản mới (refactored) với cùng interface**
-Tái cấu trúc code: tách hàm lớn, đổi tên biến, thay thuật toán,.extract class… — nhưng **không đổi signature public** và **không sửa logic nghiệp vụ**. Mục tiêu là code dễ đọc, dễ mở rộng, có unit test riêng cho các helper mới. **VÌ SAO:** Nếu đổi signature, golden master không còn so sánh được. Nếu sửa logic cùng lúc, bạn không biết test đỏ do refactor hay do bug mới.
+Tái cấu trúc code: tách hàm lớn, đổi tên biến, thay thuật toán, extract class… — nhưng **không đổi signature public** và **không sửa logic nghiệp vụ**. Mục tiêu là code dễ đọc, dễ mở rộng, có unit test riêng cho các helper mới. **VÌ SAO:** Nếu đổi signature, golden master không còn so sánh được. Nếu sửa logic cùng lúc, bạn không biết test đỏ do refactor hay do bug mới.
 
 **Bước 5: So sánh và triết (triage) sự khác biệt**
 Chạy test: với mỗi input, so sánh output mới với golden master. Có 3 kết quả:
@@ -1645,7 +1675,6 @@ class GoldenMasterTest {
     @ParameterizedTest
     @MethodSource("goldenCases")
     void goldenMaster(String input, Path goldenFile) throws IOException {
-        String legacyOut = toJson(legacy.parse(input));
         String refactoredOut = toJson(refactored.parse(input));
         String golden = Files.readString(goldenFile);
 
@@ -1665,7 +1694,7 @@ class GoldenMasterTest {
     String toJson(List<Map<String, String>> rows) { /* ... */ }
 }
 ~~~
-Trong thực tế, bạn có thể lưu output vào file và dùng thư viện snapshot (Instancio, Snapshot Testing, hoặc tự viết normalizer).
+Trong thực tế, bạn có thể lưu output vào file theo hướng approval testing (ví dụ ApprovalTests), hoặc tự viết normalizer rồi so sánh bằng thư viện JSON như JsonAssert.
 
 ### Pitfall
 Golden master cũng chụp cả bug, nên phải theo dõi và sửa dần. Khi phát hiện bug, cập nhật golden master có chủ đích và ghi lý do. Không nên để golden master phình to quá lớn; chọn input đại diện. Nếu output có timestamp hoặc random, cần chuẩn hoá trước khi so sánh. Tránh so sánh object có thứ tự không ổn định.
@@ -1682,6 +1711,12 @@ Spec test kiểm tra hành vi mong đợi theo yêu cầu. Characterization test
 - **Không ghi lý do khi cập nhật golden master**: 6 tháng sau ai cũng không biết tại sao golden master đổi. *Nguyên nhân:* cập nhật golden master như file tự động. *Cách sửa:* bắt buộc PR description giải thích "cập nhật golden master vì sửa bug X" hoặc "refactor Y không đổi hành vi", reviewer check diff golden master như check code.
 - **So sánh object có thứ tự không ổn định**: {{HashSet}} iteration order khác giữa JDK version → golden master mismatch. *Nguyên nhân:* dùng collection không đảm bảo thứ tự. *Cách sửa:* dùng {{LinkedHashMap}}/{{TreeMap}} khi serialize, hoặc sort key trước khi so sánh.
 - **Quên golden master cho error path**: legacy ném {{Exception}} cho input hỏng, refactored trả về empty list → test pass vì không so sánh exception. *Nguyên nhân:* chỉ golden master cho success case. *Cách sửa:* golden master phải chứa cả loại exception và message lỗi; test so sánh type exception + message.
+
+### Ví dụ đời thực: refactor 5.000 dòng legacy không có test
+Một team phải maintain một module parse CSV 5.000 dòng, không có test nào. Khi cần thay đổi, dev không biết sẽ phá gì. Cách làm: chọn seam (output của parse), thu 100 input đại diện từ production log và edge case (rỗng, null, giá trị cực đại), chạy legacy lưu golden master, rồi refactor từng bước nhỏ — đổi tên biến, tách hàm, thay thuật toán — và chạy golden master sau mỗi bước. Khi refactor xong, test xanh. Sau đó phát hiện một bug: legacy bỏ sót cột rỗng cuối. Giữ golden master (vẫn chụp hành vi cũ), viết spec test cho hành vi đúng (test đỏ), sửa code, cập nhật golden master có chủ đích kèm commit message "fix bug X". Sau 6 tháng, golden master vẫn là lưới an toàn khi thêm tính năng mới.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi hỏi 'characterization test kiểm tra điều gì?', tôi sẽ nói: nó kiểm tra **hành vi thực tế hiện có** của code, kể cả bug, để làm lưới an toàn trước khi refactor. Khác với spec test — kiểm tra hành vi mong đợi theo yêu cầu. Quy trình: xác định ranh vực quan sát được (output, record ghi DB, message push Kafka) → thu input đại diện (happy path, edge case, production data) → chạy legacy serialize output làm golden master → refactor nhỏ, không đổi signature → so sánh output mới với golden master → triết diff: khác do chuẩn hóa (timestamp, UUID) thì sửa normalizer; khác thật thì quyết định là bug fix hay regression. Khi golden master chứa bug: không sửa ngay, giữ nó, viết spec test cho hành vi đúng (red), sửa code (green), sau đó cập nhật golden master kèm lý do trong commit."
 
 ### Tóm tắt cho phỏng vấn
 Characterization test giúp bạn refactor legacy an toàn bằng cách chụp và so sánh hành vi thực tế, kể cả bug, rồi theo dõi thay đổi có chủ đích.
@@ -1842,9 +1877,15 @@ Quy tắc vàng: **mọi biến thể đưa ra thử phải còn hợp lệ theo
 - **Chỉ nhìn phản ví dụ, không lưu nó**: sau khi sửa bug, nếu không thêm chính case tối giản đó vào bộ example test, lần refactor sau bug quay lại và PBT (vốn không chạy ở mọi pipeline) sẽ không bắt được.
 
 ### PBT thật (jqwik) báo cáo ra sao
-Một output jqwik thất bại thường có hai dòng: dòng "falsified sample" (mẫu gốc làm sai) và dòng "shrunken sample" (đã tối giản), kèm seed để chạy lại đúng phiên đó. Đọc báo cáo theo thứ tự: **shrunken sample để hiểu bug, falsified sample + seed để tái hiện và để kiểm tra xem generator có phủ đủ miền hay không** — nếu hàng trăm trial đều chỉ sinh mảng tăng dần thì property "đã sắp xếp" của bạn đang được kiểm tra trên dữ liệu quá dễ.
+Một output jqwik thất bại thường có hai phần: mẫu bị bác bỏ (falsified sample) và mẫu sau khi thu gọn, kèm giá trị seed để chạy lại đúng phiên đó. Tên dòng log đổi theo phiên bản jqwik, nhưng ba thứ cần tìm luôn là: mẫu gốc, mẫu đã thu gọn, và seed. Đọc báo cáo theo thứ tự: **shrunken sample để hiểu bug, falsified sample + seed để tái hiện và để kiểm tra xem generator có phủ đủ miền hay không** — nếu hàng trăm trial đều chỉ sinh mảng tăng dần thì property "đã sắp xếp" của bạn đang được kiểm tra trên dữ liệu quá dễ.
 
 > Senior tip: coi shrinking là **bộ lọc debug**, không phải máy chứng minh. Sau khi PBT báo {{[3, 4, 5]}}, việc của bạn là viết lại ba dòng đó thành một example test có tên mô tả bug ("merge that drops tail when left side is empty") rồi mới sửa code. Quy trình gọn: chạy PBT bằng seed cố định → lấy phản ví dụ tối giản → thêm example test đỏ → sửa → chạy PBT với 5 seed khác nhau để chắc bạn không chỉ vá đúng một điểm. Chi phí: đặt số trial sao cho một run chưa tới ~1 giây (vài trăm trial), còn shrinking đặt trần số bước (ví dụ 500) để một con bug nghiêm trọng không làm CI treo.
+
+### Ví dụ đời thực: counterexample 200 phần tử thành 3
+Một team dùng PBT test merge. Lần đầu fail: falsified sample là hai mảng 19 và 22 phần tử random — 41 con số, không ai kết luận được gì. Sau khi enable shrinking, shrunken sample là a = [], b = [0]. Nhìn hai dòng đó, dev lập tức đoán ra: vòng while chép phần còn lại của b khi a rỗng bị bỏ sót. Fix trong 5 phút. Nếu không có shrinking, team có thể mất vài giờ để đi tìm bug trong 41 số.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi hỏi 'shrinking trong PBT là gì?', tôi sẽ nói: shrinking là bước tự động thu nhỏ phản ví dụ — bỏ bớt phần tử, giảm giá trị — miễn tính chất vẫn bị vi phạm, để bạn nhận được case nhỏ nhất có thể mà vẫn tái hiện bug. Không có shrinking, PBT cho bạn một mảng 200 phần tử random và bắt bạn tự đi tìm chỗ hỏng; có shrinking, nó đưa bạn đúng [3, 4, 5]. Thuật toán tham lam: lặp cho tới khi không bỏ thêm được phần tử nào. Mỗi lượt, thử danh sách bỏ đúng một phần tử ở vị trí i; nếu bản đó vẫn vi phạm property thì chấp nhận và quay lại duyệt từ đầu. Lỗi ném ra cũng được coi là vi phạm — bug thật thường biểu hiện bằng NullPointerException. Kết quả xác định nhưng không đảm bảo tối ưu toàn cục — đó cũng là lý do thư viện thật cho phép nhiều hướng shrink rồi chọn cái nhỏ nhất theo một thước đo."
 
 ### Liên hệ phỏng vấn
 Câu hỏi phổ biến: "Property-based testing có gì hay, bạn đã dùng chưa, dùng cho cái gì?" — câu trả lời mạnh nhất thường là "dùng cho hàm thuần và tầng serialize/parse, và tôi hiểu shrinking vì chính nó mới làm báo cáo debug được". Ứng viên senior còn phải nói được: seed để tái hiện, generator phải phủ biên, property phải phát biểu hợp đồng chứ không phát biểu cài đặt, và phản ví dụ phải được đóng băng thành regression test. Bài tập dưới đây bắt bạn tự viết {{forAll}} và {{shrink}} để sau này đọc báo cáo của jqwik bạn biết chính xác ba dòng kia nghĩa là gì.`,
@@ -2173,6 +2214,12 @@ Trong CI, người ta đặt gate **per-module** và **on new code** (chỉ đo 
 
 > Senior tip: coi mutation score là công cụ **chẩn đoán thiết kế test**, không phải chỉ số KPI để thi đua. Ba chỗ tôi luôn soi mutant còn sống: điều kiện biên ({{<=}}/{{>=}}), giá trị trả về mặc định, và lời gọi bị xoá. Nếu mutant survive ở đúng chỗ bạn vừa có incident production, đó là bằng chứng cụ thể nhất để thuyết phục team thêm test và đặt gate — nó thuyết phục hơn nhiều so với "coverage của mình mới 60%". Và đừng bao giờ báo cáo mutation score mà không kèm số mutant còn sống thuộc nhóm tương đương, vì con số trần 100% là lời hứa giả.
 
+### Ví dụ đời thực: fee tính tiền hở một đơn vị ở biên
+Một service tính phí vận chuyển có điều kiện {{kg <= 5}} thì phí cố định 20.000, từ kg thứ 6 cộng thêm 3.000 mỗi kg. Mutation testing sinh mutant {{kg <= 6}} và **không test nào diệt được nó**: suite không có case nào ở {{kg = 6}}. Điều đó không có nghĩa production đang sai, mà nghĩa là nếu ngày mai ai đó sửa điều kiện thành {{kg <= 6}} (hoặc copy nhầm logic sang service khác), CI vẫn xanh và hệ thống sẽ thu 20.000 thay vì 23.000 cho đơn 6 kg — mỗi đơn hụt 3.000, nhân vài nghìn đơn mỗi ngày. Team thêm đúng một case {{fee(6) == 23}}; mutant bị diệt và mutation score của module phí từ 60% lên 90%. Bài học: mutant còn sống là **lỗ hổng của suite**, không phải bằng chứng code sai — nhưng nó chỉ đúng chỗ code dễ bị người khác làm sai nhất, tức là biên.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi hỏi 'coverage 100% nhưng vẫn có bug?', tôi sẽ nói: coverage chỉ đo code đã chạy, không đo kết quả có được kiểm tra. Ví dụ: test đi qua dòng if (kg <= 5) base = 20 nhưng chỉ assert một trường hợp duy nhất — coverage vẫn 100%. Mutation testing lấp khoảng trống này: tạo ra các bản copy của code với đúng một chỗ bị phá (mutant), chạy suite trên từng bản, đếm tỉ lệ bị test bắt được. Mutant kg <= 5 → kg <= 6 survive nghĩa là suite không phân biệt được hai hành vi — cần thêm test ở kg = 6. Score dưới 50%: suite chủ yếu chạy code. 50–75%: luồng chính được kiểm tra. 75–90%: khá tốt. Trên 90% cho module lõi: đáng để đặt gate. Mutant tương đương (ví dụ kg <= 5 ↔ kg < 6 với số nguyên) không thể diệt được — đó là giới hạn lý thuyết, không ai đặt gate 100%."
+
 ### Liên hệ phỏng vấn
 Câu kinh điển: "Bao nhiêu coverage là đủ? Vì sao coverage cao vẫn còn bug?" — ứng viên tốt sẽ nói ngay: coverage đo **code có chạy**, không đo **kết quả có được kiểm tra**, rồi đưa ví dụ mutant off-by-one mà suite vẫn xanh, và nhắc mutation testing như câu trả lời. Câu thứ hai: "Bạn đưa mutation testing vào team thế nào?" — trả lời: bắt đầu ở module tính tiền/phí, chạy theo diff trên PR hoặc chạy đêm, đặt threshold vừa phải (70–80%), xử lý mutant còn sống bằng cách thêm test biên, và chấp nhận một tỉ lệ mutant tương đương. Bài tập dưới đây cho bạn tự viết bộ tính score để sau này bạn đọc báo cáo PIT mà không cần ai giải thích.`,
   exercises: [
@@ -2473,7 +2520,9 @@ Một case diệt được nhiều mutant, và ngược lại nhiều case cùng
     'Biet khi nao chon fake in-memory thay vi Testcontainers, va nguoc lai',
     'Viet fake repository ho tro query linh hoat, stub HTTP tra ve kich ban loi, mock publisher verify payload',
   ],
-  body: `### Tom tat
+  body: `**Tom tắt:** Ba phu thuoc pho bien trong microservice — repository (co trang thai), REST gateway (stateless) va event publisher (tac dung phu khong quan sat duoc) — can ba loai test double khac nhau: fake in-memory cho repository de test ca chuoi doc-ghi, stub cho gateway de cung cap du lieu dau vao theo scenario, va mock cho publisher de verify topic, key va payload. Chon dung loai de test khong gan chat vao chi tiet cai dat.
+
+### Tom tat
 Bai hoc 001 da gioi thieu khai niem test double. Bai nay di sau vao {{ba phu thuoc pho bien nhat trong microservice Java}}: database (repository), REST client (gateway), va message queue (event publisher). Moi loai co dac thau rieng khien lua chon test double khac nhau: repository co trang thai phuc tap -> fake; gateway chi can tra du lieu -> stub; publisher co tac dung phu khong quan sat duoc qua state -> mock.
 
 ### Repository: fake in-memory vs Testcontainers
@@ -2619,6 +2668,12 @@ Day la {{state verification cho repo}} (xem ket qua luu), {{stub cho gateway}} (
 - {{Chia se fake co trang thai giua cac test}}: test A tao order, test B doc order do -> flaky. Moi test tu tao fake moi hoac co {{clear()}}.
 
 > Senior tip: trong codebase that, hay tao abstract base test class cung cap {{FakeOrderRepository}}, {{StubPaymentGateway}}, {{MockEventPublisher}} da cau hinh san cac kich ban pho bien. Dev moi chi can extend va override kich ban can thiet. Dieu nay thong nhat cach test, giam boilerplate, va khi review de dang hon vi pattern test double ro rang.
+
+### Vi du doi thuc: service dat hang voi 3 dependency
+Mot OrderService can ba doi tuong: OrderRepository, PaymentGateway va EventPublisher. Team dau tien mock ca ba bang Mockito: {{when(repo.findById(...))}}, {{when(gateway.charge(...))}}, {{verify(publisher)}}. Khi refactor service — doi tu {{save}} sang {{saveAll}} cho gon, them cache o gateway — hang chuc test do du hanh vi nghiep vu khong doi. Sau khi thay the: FakeOrderRepository (in-memory, test duoc ca luong tao-cap-nhat-tim-kiem-theo-khach-hang-phan-trang), StubPaymentGateway (route theo orderId: success, timeout, declined), MockEventPublisher (verify topic order.created, key va payload). Test khong con gan chat vao so lan goi method, va CI tu 15 phut xuong 5 phut.
+
+### Tra loi mau khi phong van
+"Khi hoi 'test service co 3 dependency the nao?', toi se noi: phan loai tung phu thuoc theo tinh chat. OrderRepository co trang thai doc-ghi — dung fake in-memory de test ca chuoi tao-cap-nhat-tim-kiem ma khong can verify so lan goi method. PaymentGateway la stateless, chi can cung cap du lieu dau vao theo scenario — dung stub: success, timeout, declined. EventPublisher publish event, tac dung phu khong quan sat duoc qua state — dung mock verify topic, key va field bat buoc trong payload. Tranh over-mocking: neu mot class can mock 6 dependency, van de khong nam o test ma o thiet ke class dang om qua nhieu trach nhiem."
 
 ### Lien he phong van
 Interviewer dua mot service co 3 dependency: {{UserRepository}}, {{EmailClient}}, {{NotificationPublisher}}. Hoi: "Ban test service nay the nao? Tai sao chon fake/stub/mock cho moi cai?".
@@ -3029,7 +3084,7 @@ class PaymentFailedException extends RuntimeException {
         'Vi verify lam test chay cham',
       ],
       answer: 1,
-      explain: `Gateway chi cung cap du lieu dau vao (stateless). So lan goi la chi tiet cai dat — service co the cache, retry, batch request. Verify so lan goi khoa test vao implementation, lam refactor (vi du them cache) khien test do. Stub chi nen cau hinh tra ve gi cho tung kich ban.`,
+      explain: `Gateway chi cung cap du lieu dau vao (stateless). So lan goi la chi tiet cai dat — service co the cache, retry, batch request. Verify so lan goi khoa test vao implementation, lam refactor (vi du them cache) khien test do. (A) va (C) sai vi Mockito verify duoc tren moi mock, ke ca mock dang dong vai tro stub — khong he co luat nao cam. (D) sai vi do tre cua verify khong dang ke so voi viec test bua vao chi tiet loi goi: cai gia phai tra la moi lan refactor deu lam test do.`,
     },
     {
       q: 'Mock event publisher nen verify dieu gi?',
@@ -3058,7 +3113,9 @@ class PaymentFailedException extends RuntimeException {
     'Test het han token JWT, cua so khuyen mai, sliding window rate limiter bang {{Clock.fixed}}/{{Clock.offset}}',
     'Mo phong thoi gian troi trong mot test (advance clock) de test scheduled cleanup va retry backoff',
   ],
-  body: `### Tom tat
+  body: `**Tom tắt:** Ba bai toan nghiep vu thuc te deu can kiem soat thoi gian trong test: token JWT voi sliding refresh window, khuyen mai gioi han theo mui gio, rate limiter sliding window va job don token dinh ky. Giai phap chung la tiem {{Clock}} vao service, dung {{Clock.fixed}}/{{Clock.offset}} de kiem soat moc, va {{MutableClock}} de advance thoi gian trong test scheduled job — khong bao gio dung {{Thread.sleep}}.
+
+### Tom tat
 Bai hoc 002 da gioi thieu {{Clock}} injection co ban. Bai nay ap dung vao {{ba bai toan nghiep vu thuc te}} ma dev Senior hay gap: {{token JWT/refresh token}} (het han tuyet doi, sliding expiry), {{khuyen mai/flash sale}} (cua so thoi gian, mui gio, DST), {{rate limiter sliding window}} va {{scheduled cleanup job}} (xoa token het han, don dep session). Muc tieu: test duoc moi moc bien ma khong bao gio {{Thread.sleep}}.
 
 ### Token JWT: access token + refresh token voi sliding expiry
@@ -3195,12 +3252,12 @@ class TokenCleanupJob {
 ~~~
 
 Test:
-1. Seed repo voi 3 token: 2 het han (issuedAt truoc {{now - 30 ngay}}), 1 con han.
+1. Seed repo voi 3 token: A het han (expiresAt = ngay -1), B con han (expiresAt = ngay +5), C con han (expiresAt = ngay +25).
 2. {{MutableClock}} start tai {{day 0}}.
-3. Goi {{cleanup()}} -> deleted = 0 (chua ai het han).
-4. {{clock.advance(Duration.ofDays(31))}}.
-5. Goi {{cleanup()}} -> deleted = 2.
-6. Token con han van ton tai.
+3. Goi {{cleanup()}} -> deleted = 1 (chi A co expiresAt truoc day 0).
+4. {{clock.advance(Duration.ofDays(10))}} -> now = day 10.
+5. Goi {{cleanup()}} -> deleted = 1 (B het han o day 5, C van con han).
+6. Token C van ton tai.
 
 Dieu nay cho phep test {{toan bo vong doi scheduled job}} trong vai mili giay.
 
@@ -3213,9 +3270,15 @@ Dieu nay cho phep test {{toan bo vong doi scheduled job}} trong vai mili giay.
 
 > Senior tip: hay dat {{ArchUnit rule}} hoac checkstyle custom cam {{Instant.now()}}, {{LocalDateTime.now()}}, {{LocalDate.now()}}, {{System.currentTimeMillis()}} trong package domain/service. Chi cho phep trong configuration bean tao {{Clock.systemUTC()}}. Khi review PR, grep {{\\.now\\(\\)}} la thay ngay vi pham. Mot doi truong gioi coi {{Clock}} injection la {{yeu cau bat buoc}} cho moi code lien quan thoi gian, khong phai "nice to have".
 
+### Vi du doi thuc: flash sale 12h trua theo mui gio Paris, server chay UTC
+Mot flash sale bat dau luc 12:00 trua theo mui gio Paris ({{Europe/Paris}}, co DST). Server backend chay UTC. Ban dau code so sanh {{LocalDate.now()}} theo timezone JVM — tren staging (UTC) test xanh, len production (Europe/Paris) lai do vi lech mui gio: cung mot thoi diem, {{LocalDate.now()}} o hai noi cho hai ngay khac nhau quanh dem. Sau khi doi sang {{ZonedDateTime}} voi {{ZoneId.of("Europe/Paris")}} va tiem {{Clock}}, test duoc viet lai: {{Clock.fixed(startAt.minusMinutes(1))}} -> inactive; {{Clock.fixed(startAt)}} -> active; {{Clock.fixed(endAt)}} -> inactive (end exclusive). Cover ca DST gap: ngay 29/3/2026, 02:30 khong ton tai (dong ho nhay tu 02:00 sang 03:00) — JDK tu adjust thanh 03:30+02:00, test verify {{isActive}} tai 03:29 inactive va 03:31 active.
+
+### Tra loi mau khi phong van
+"Khi hoi 'test logic nghiep vu theo thoi gian the nao?', toi noi: gom moi moc thoi gian vao mot dependency duy nhat la {{Clock}} roi tiem vao service — production dung {{Clock.systemUTC()}}, test dung {{Clock.fixed}} hoac {{Clock.offset}}. Voi token JWT toi kiem tra ca ba diem: truoc het han, dung het han, sau het han; voi sliding refresh toi kiem tra ca cua so 7 ngay lan max age 30 ngay. Voi khuyen mai theo mui gio, toi dung {{ZonedDateTime}} voi {{ZoneId}} co dinh chu khong dung timezone JVM, va test ca ngay DST gap. Voi scheduled job, toi dung {{MutableClock}} de advance thoi gian trong vai mili giay thay vi {{Thread.sleep}}. Va toi khong bao gio de cac test dung chung mot clock mutable."
+
 ### Lien he phong van
 Interviewer hoi: "He thong co flash sale 12h trua ngay 29/3 theo mui gio Paris (ngay tuan chau Au chuyen DST). Server chay UTC. Ban test logic {{isActive}} the nao?"
-Tra loi: "Dung {{ZonedDateTime}} voi {{ZoneId.of('Asia/Ho_Chi_Minh')}} cho startAt/endAt. Inject {{Clock}} vao service. Test: {{Clock.fixed(startAt.minusMinutes(1), UTC)}} -> inactive; {{Clock.fixed(startAt, UTC)}} -> active; {{Clock.fixed(endAt, UTC)}} -> inactive (end exclusive). Cover DST gap: tao promotion startAt = 02:30 (khong ton tai), JDK adjust sang 03:30, test verify {{isActive}} tai 03:29 inactive, 03:31 active. Khong dung {{Thread.sleep}}, khong phu thuoc mui gio JVM."`,
+Tra loi: "Dung {{ZonedDateTime}} voi {{ZoneId.of('Europe/Paris')}} cho startAt/endAt. Inject {{Clock}} vao service. Test: {{Clock.fixed(startAt.minusMinutes(1), UTC)}} -> inactive; {{Clock.fixed(startAt, UTC)}} -> active; {{Clock.fixed(endAt, UTC)}} -> inactive (end exclusive). Cover DST gap: tao promotion startAt = 02:30 (khong ton tai), JDK adjust sang 03:30, test verify {{isActive}} tai 03:29 inactive, 03:31 active. Khong dung {{Thread.sleep}}, khong phu thuoc mui gio JVM."`,
   exercises: [
     {
       title: 'TokenService, PromotionService, SlidingWindowRateLimiter voi Clock',
@@ -3576,7 +3639,7 @@ class TokenCleanupJob {
       q: 'Refresh token co sliding window 7 ngay va max age 30 ngay. IssuedAt = day 0, lastUsedAt = day 25. Hom nay day 28. Token con valid khong?',
       options: ['Valid', 'Invalid vi vuot sliding window', 'Invalid vi vuot max age', 'Invalid vi ca hai'],
       answer: 0,
-      explain: `Day 28: lastUsedAt + 7 = day 32 (chua toi) -> chua vuot sliding window. issuedAt + 30 = day 30 (chua toi) -> chua vuot max age. Ca hai dieu kien deu thoa -> valid.`,
+      explain: `Day 28: lastUsedAt + 7 = day 32 (chua toi) -> chua vuot sliding window. issuedAt + 30 = day 30 (chua toi) -> chua vuot max age. Ca hai dieu kien deu thoa -> valid. (B) va (D) sai vi chung cho rang sliding window da bi vuot, nhung 32 > 28; (C) sai vi max age la 30 ngay tinh tu issuedAt, con 28 < 30.`,
     },
     {
       q: 'Promotion startAt = 12:00, endAt = 14:00 (mui gio Viet Nam). {{isActive}} tra true cho thoi diem nao?',
@@ -3617,7 +3680,9 @@ class TokenCleanupJob {
     'Dùng {{java.time.Clock}} (Clock — đồng hồ trừu tượng do JDK cung cấp, có thể thay thế trong test) để tiêm thời gian vào service và kiểm soát mốc hiện tại',
     'Viết test xác định (deterministic — kết quả giống nhau mỗi lần chạy) cho dịch vụ hết hạn token bằng {{Clock.fixed()}} và {{Clock.offset()}}',
   ],
-  body: `### Vấn đề: code phụ thuộc thời gian thật khó kiểm thử
+  body: `**Tóm tắt:** Thời gian là một dependency ẩn: {{Instant.now()}} đọc đồng hồ thật nên test không kiểm soát được các biên (trước expiry, đúng expiry, sau expiry). Giải pháp là tiêm {{java.time.Clock}} vào service, dùng {{Clock.fixed()}} để đóng băng và {{Clock.offset()}} để dịch chuyển; nhờ vậy test được mọi mốc trong vài mili giây mà không cần ngủ.
+
+### Vấn đề: code phụ thuộc thời gian thật khó kiểm thử
 Khi kiểm tra "token đã hết hạn chưa", cách viết tự nhiên là so sánh thời điểm hết hạn với thời gian hiện tại:
 
 ~~~java
@@ -3711,6 +3776,12 @@ Nếu dùng {{isAfter}} thay vì {{!isBefore}} (tương đương {{>=}}), bạn 
 - **So sánh lỏng lẻo**: dùng {{equals}} cho thời điểm hết hạn thay vì {{!isBefore}} khi nghiệp vụ cho phép biên.
 
 > Senior tip: Mọi logic so sánh "bây giờ" với một mốc (hết hạn token, TTL cache, cửa sổ retry, rate limit) đều nên nhận {{Clock}} thay vì gọi {{Instant.now()}} trực tiếp. Đó là khoản đầu tư nhỏ giúp test nhanh, ổn định và kiểm soát được mọi biên thời gian.
+
+### Ví dụ đời thực: mốc thời gian bị cắt lẻ sau khi lưu database
+Một service lưu {{createdAt}} bằng {{LocalDateTime}} vào MySQL. Test dùng {{Clock.fixed}} nên luôn xanh. Trên production, cột {{DATETIME}} chỉ lưu tới giây, còn {{LocalDateTime}} trên JVM có nano giây: sau khi lưu rồi đọc lại, phần lẻ bị cắt nên so sánh {{equals}} giữa giá trị trước và sau khi đọc trả về {{false}}. Không test nào bắt được lỗi vì unit test không đọc database thật. Sau khi đổi sang {{Instant}}/{{OffsetDateTime}} với cột {{timestamptz}} và truncate micro giây trước khi so sánh, lỗi không tái hiện; so sánh cũng rẻ hơn vì chỉ còn xét tới mili giây.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi được hỏi 'làm sao test code phụ thuộc thời gian?', tôi nói: trước hết nhận ra {{Instant.now()}} là dependency ẩn — test không điều khiển được nó. Giải pháp là tiêm {{java.time.Clock}} vào service: production truyền {{Clock.systemUTC()}}, test truyền {{Clock.fixed()}} để đóng băng tại một mốc hoặc {{Clock.offset()}} để dịch tương đối. Với token expiry tôi test ba điểm: một giây trước expiry (còn hiệu lực), đúng expiry (hết hạn), một giây sau (hết hạn). Tôi dùng {{Instant}} cho mốc tuyệt đối vì nó không phụ thuộc timezone, và không bao giờ dùng {{Thread.sleep}} trong unit test vì nó làm suite chậm mà vẫn flaky khi CI tải cao. Trong Spring Boot 3, khai báo {{@Bean Clock clock()}} rồi tiêm vào service; trong test thay bằng clock cố định."
 
 ### Liên hệ phỏng vấn
 Interviewer hay hỏi: "Làm sao test code phụ thuộc thời gian?", "Tại sao không dùng {{Thread.sleep}} trong unit test?", "Clock injection là gì?". Câu trả lời tốt: trích xuất thời gian thành dependency ({{Clock}}), tiêm {{Clock.fixed/offset}} trong test để kiểm soát mốc thời gian, bao phủ các biên (trước/đúng/sau hết hạn). Nêu thêm: trong Spring Boot 3 có thể khai báo {{@Bean Clock clock()}} và tiêm vào service; trong test thay bằng clock cố định.`,
@@ -3888,7 +3959,9 @@ Lỗi hay gặp: dùng {{now.isAfter(expiresAt)}} (bỏ sót biên bằng nhau),
     'Hiểu N+1 query (vấn đề hiệu năng: 1 truy vấn lấy danh sách + N truy vấn phụ theo từng phần tử) và vì sao cần phát hiện sớm bằng test',
     'Viết fake repository đếm số lần gọi (call count) để test tự phát hiện hành vi N+1 trong service',
   ],
-  body: `### Test double là gì?
+  body: `**Tóm tắt:** Ba loại test double — stub, mock, fake — khác nhau ở mục đích: stub cung cấp dữ liệu đầu vào cố định, mock kiểm tra tương tác (method nào được gọi, bao nhiêu lần, tham số gì), còn fake là cài đặt đơn giản nhưng chạy đúng logic (lưu trong {{HashMap}}) và có thể gắn thêm bộ đếm để quan sát. Bài này giúp bạn chọn đúng loại, rồi dùng fake repository đếm truy vấn để tự phát hiện N+1 — 1 truy vấn lấy danh sách cộng N truy vấn phụ theo từng phần tử.
+
+### Test double là gì?
 **Test double** (đối tượng thay thế trong kiểm thử — thuật ngữ mượn từ "stunt double", diễn viên đóng thế) là một đối tượng giả lập thay cho phụ thuộc thật (database, API, hàng đợi...) để cô lập đơn vị cần test. Có nhiều loại, mỗi loại phục vụ mục đích khác nhau:
 
 | Loại | Mục đích | Đặc điểm |
@@ -3999,6 +4072,12 @@ class CountingFakeOrderRepository implements OrderRepository {
 - **Nhầm stub với fake**: stub chỉ trả giá trị cố định cho một lời gọi cụ thể; fake có trạng thái và logic, phục vụ nhiều tương tác.
 
 > Senior tip: Hãy đặt "query budget" trong test cho các service đọc danh sách: assert số lần gọi repository không vượt ngưỡng (ví dụ {{totalCalls <= 2}}). Khi ai đó vô tình đưa lại vòng lặp gọi DB, test sẽ fail ngay trên CI trước khi lên production.
+
+### Ví dụ đời thực: report service timeout vì N+1
+Một service tạo báo cáo: lấy danh sách 5.000 đơn hàng rồi với mỗi đơn lại lấy tên khách hàng. Code naive chạy 1 truy vấn + 5.000 truy vấn = 5.001 query, mất khoảng 3 giây và thường timeout trên production vào giờ cao điểm. Team thêm fake repository đếm call rồi assert {{totalCalls <= 2}}; test đỏ ngay ở lần chạy đầu. Sau khi refactor sang batch fetch: 1 + 1 = 2 query, thời gian xuống còn khoảng 50 mili giây. Từ đó mỗi lần ai đó vô tình đưa lại vòng lặp gọi DB, test fail ngay trên CI.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi được hỏi 'stub, mock, fake khác nhau thế nào?', tôi nói: stub là người trả lời câu hỏi — chỉ cung cấp giá trị định trước cho một lời gọi cụ thể, không kiểm tra cách được gọi. Mock là người kiểm tra hành vi — đặt kỳ vọng method nào được gọi, bao nhiêu lần, với tham số gì. Fake là cài đặt đơn giản nhưng chạy đúng logic — ví dụ repository lưu trong {{HashMap}}, giữ đúng ngữ nghĩa upsert và tìm kiếm; fake bền hơn mock vì không gắn chặt vào chi tiết lời gọi. Với N+1: 1 truy vấn lấy danh sách N phần tử, rồi N truy vấn phụ cho từng phần tử — 100 đơn là 101 query. Tôi phát hiện bằng fake repository đếm call với ngân sách {{totalCalls <= 2}}, và khắc phục bằng batch fetch hoặc {{@EntityGraph}}."
 
 ### Liên hệ phỏng vấn
 Câu hỏi hay gặp: "Stub, mock, fake khác nhau thế nào?", "N+1 query là gì, phát hiện và xử lý ra sao?". Trả lời tốt: nêu rõ định nghĩa từng loại test double và mục đích; giải thích N+1 (1 + N truy vấn do lặp), cách phát hiện (log SQL, metric, hoặc fake đếm call trong test), cách khắc phục (batch fetch/join fetch/{{@EntityGraph}} trong JPA, hoặc API batch). Nêu ví dụ đo được: "với 100 bản ghi, naive 101 query, batch 2 query".`,
@@ -4218,7 +4297,7 @@ Test assert {{findByIdCalls == 0}} và {{totalCalls == 2}} đóng vai trò "quer
         'Không có khác biệt, hai tên gọi cùng một thứ',
       ],
       answer: 1,
-      explain: `Fake có hành vi hoạt động (ví dụ in-memory repository lưu/đọc được) nên test dựa trên kết quả và trạng thái; mock đặt kỳ vọng về lời gọi (verify interaction). Fake thường ít gãy khi refactor chi tiết nội bộ, trong khi mock gắn chặt hơn với cách service tương tác với phụ thuộc.`,
+      explain: `Fake có hành vi hoạt động (ví dụ in-memory repository lưu/đọc được) nên test dựa trên kết quả và trạng thái; mock đặt kỳ vọng về lời gọi (verify interaction). Fake thường ít gãy khi refactor chi tiết nội bộ, trong khi mock gắn chặt hơn với cách service tương tác với phụ thuộc. (A) sai vì cả fake và mock đều dùng được ở unit test, không có luật nào chia đôi theo cặp test. (C) sai vì fake không kết nối database thật — đó là Testcontainers. (D) sai vì hai tên gọi khác nhau ở mục đích, không phải đồng nghĩa.`,
     },
     {
       q: 'N+1 query xảy ra khi nào?',
@@ -4229,7 +4308,7 @@ Test assert {{findByIdCalls == 0}} và {{totalCalls == 2}} đóng vai trò "quer
         'Khi có N+1 người dùng truy cập cùng lúc',
       ],
       answer: 1,
-      explain: `N+1 nghĩa là 1 truy vấn ban đầu cộng N truy vấn phụ (thường trong vòng lặp). Ví dụ: lấy 100 đơn hàng (1) rồi với mỗi đơn lấy khách hàng (100) = 101 truy vấn. Cách khắc phục: dùng batch fetch/join để lấy dữ liệu liên quan trong 1-2 truy vấn.`,
+      explain: `N+1 nghĩa là 1 truy vấn ban đầu cộng N truy vấn phụ (thường trong vòng lặp). Ví dụ: lấy 100 đơn hàng (1) rồi với mỗi đơn lấy khách hàng (100) = 101 truy vấn. Cách khắc phục: dùng batch fetch/join để lấy dữ liệu liên quan trong 1-2 truy vấn. (A) chỉ là một truy vấn trả N bản ghi — không có vòng lặp gọi DB nên không phải N+1. (C) số bảng trong schema không liên quan gì tới số truy vấn. (D) N là số phần tử của danh sách, không phải số người dùng đồng thời.`,
     },
     {
       q: 'Vì sao nên assert số lần gọi repository (query budget) trong test khi đọc danh sách?',
@@ -4258,7 +4337,9 @@ Test assert {{findByIdCalls == 0}} và {{totalCalls == 2}} đóng vai trò "quer
     'Phân biệt @SpringBootTest với @WebMvcTest/@DataJpaTest và biết vì sao slice test nhanh hơn',
     'Dùng Testcontainers với @ServiceConnection để test trên PostgreSQL thật, và dọn dữ liệu giữa các test để diệt flaky',
   ],
-  body: `### Vì sao phải chọn đúng tầng test
+  body: `**Tóm tắt:** Test pyramid (tháp kiểm thử) nói rằng càng lên cao càng ít test: rất nhiều unit test nhanh ở đáy, vừa phải slice/integration test ở giữa, rất ít end-to-end test ở đỉnh. Mỗi annotation của Spring Boot nạp một phần context khác nhau — {{@WebMvcTest}} chỉ nạp tầng web, {{@DataJpaTest}} chỉ nạp JPA, {{@SpringBootTest}} nạp tất cả — nên chọn đúng slice giúp test nhanh gấp nhiều lần. Với database thật, Testcontainers cộng {{@ServiceConnection}} cho bạn PostgreSQL trong container; dữ liệu phải được dọn sau mỗi test (transaction rollback, {{@Sql}} hoặc truncate), nếu không test sẽ flaky.
+
+### Vì sao phải chọn đúng tầng test
 Một hệ thống có nhiều tầng: controller (nhận HTTP), service (logic nghiệp vụ), repository (truy vấn SQL), database thật. Nếu test nào cũng dựng cả hệ thống (mở Spring context, kết nối database, gọi HTTP), test sẽ chạy rất chậm và dễ vỡ. **Test pyramid** (tháp kiểm thử — hình tháp chia theo số lượng và tốc độ) trả lời câu hỏi "nên viết bao nhiêu test ở mỗi tầng".
 
 | Tầng | Tên tiếng Anh | Đặc điểm | Số lượng | Tốc độ |
@@ -4319,7 +4400,7 @@ class OrderRepositoryIT {
     @Autowired OrderRepository repository;
 
     @Test
-    void lockRow_blocksConcurrentReaders() { /* dùng DB thật, SELECT FOR UPDATE */ }
+    void lockRow_blocksConcurrentUpdate() { /* dùng DB thật, SELECT FOR UPDATE */ }
 }
 ~~~
 
@@ -4370,6 +4451,12 @@ class OrderServiceIT {
 - **Test phụ thuộc thứ tự ngầm định**: đặt tên test {{test01_...}}, {{test02_...}} rồi dựa vào thứ tự đó — JUnit không đảm bảo thứ tự, và chạy song song sẽ vỡ. Mỗi test phải tự tạo dữ liệu của nó.
 
 > Senior tip: mình từng điều tra một suite flaky 1/20 lần đỏ. Nguyên nhân: một test @SpringBootTest dùng chung database, chạy song song với test khác, cả hai cùng insert id=1. Cách sửa không phải tăng timeout mà là thêm {{RESTART IDENTITY}} vào truncate trong {{@BeforeEach}} và tách riêng nhóm test có DB thật. Sau đó flaky về 0. Nguyên tắc: nếu một test đỏ không tái hiện được khi chạy một mình, gần như chắc chắn là shared state.
+
+### Ví dụ đời thực: suite 480 test mất 38 phút vì lạm dụng @SpringBootTest
+Một team có 480 test, trong đó 430 test dùng {{@SpringBootTest}} đầy đủ context: mỗi test phải khởi tạo context (3–8 giây) rồi mới chạy được một assertion. CI mất 38 phút, dev ngại chạy nên cứ đẩy code rồi chờ pipeline. Đội đo lại và thấy 300 test trong số đó chỉ kiểm tra HTTP (status, JSON) hoặc truy vấn repository đơn giản — không cần cả app. Sau khi chuyển 300 test sang {{@WebMvcTest}} (300–600 ms) và {{@DataJpaTest}}, chỉ giữ {{@SpringBootTest}} cho 12 test cần nhiều bean thật phối hợp, thời gian còn khoảng 6 phút. Phần Testcontainers chỉ dành cho các test SQL đặc thù ({{SELECT FOR UPDATE}}, {{jsonb}}, isolation level) mà H2 không mô phỏng được.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi được hỏi 'test tích hợp thế nào cho đúng?', tôi nói: chọn tầng test theo câu hỏi cần trả lời. Test controller bằng {{@WebMvcTest}} — chỉ nạp web layer, service mock bằng {{@MockitoBean}}, chạy vài trăm mili giây. Test truy vấn bằng {{@DataJpaTest}} — có transaction rollback nên DB tự sạch. Chỉ dùng {{@SpringBootTest}} khi cần nhiều bean thật phối hợp, vì mỗi context tốn vài giây. Với SQL đặc thù của PostgreSQL ({{SELECT FOR UPDATE}}, {{jsonb}}, isolation level) thì H2 không đủ, tôi dùng Testcontainers với {{@ServiceConnection}} để trỏ datasource vào container thật, khai báo container {{static}} để chỉ khởi động một lần cho cả class. Dữ liệu phải được dọn sau mỗi test bằng truncate {{RESTART IDENTITY CASCADE}} hoặc {{@Sql}}, nếu không test sẽ flaky vì phụ thuộc thứ tự. Cuối cùng tôi theo dõi thời gian suite như một chỉ số: một PR làm CI chậm thêm 30% là tín hiệu có test vừa được viết sai tầng."
 
 ### Liên hệ phỏng vấn
 Interviewer hay hỏi: "{{@SpringBootTest}} khác {{@WebMvcTest}} ở đâu?", "Testcontainers với @ServiceConnection hoạt động thế nào?", "Bạn dọn dữ liệu giữa các test ra sao?", "Test pyramid là gì và bạn phân bổ test thế nào?". Trả lời tốt: nói rõ slice test nạp một phần context nên nhanh; Testcontainers chạy container thật và {{@ServiceConnection}} tự nối datasource; dọn dữ liệu bằng transaction rollback cho slice, bằng {{@Sql}}/truncate cho full context; và nhấn mạnh "càng lên cao càng ít test". Bài tập dưới đây mô phỏng cơ chế "quét annotation + đếm truy vấn + dọn dữ liệu" bằng Java thuần để bạn thấy vì sao slice test nhanh và vì sao phải dọn.`,
@@ -4605,7 +4692,9 @@ Lỗi hay gặp: quên ưu tiên @SpringBootTest khiến test web bị nhận nh
     'Viết fake repository có đếm truy vấn và tiêm java.time.Clock cố định để test service không cần DB, không ngủ',
     'Bảo đảm test độc lập: mỗi test tự tạo dữ liệu, không chia sẻ state, và có thể chạy lại cho cùng kết quả',
   ],
-  body: `### Flaky là gì và vì sao nó nguy hiểm
+  body: `**Tóm tắt:** Test xác định (deterministic) là test cùng input, cùng code thì luôn cho cùng kết quả. Ba nguồn làm test flaky (lúc xanh lúc đỏ) ở tầng service là: đọc đồng hồ thật ({{Instant.now()}}), chia sẻ state giữa các test (static, DB dùng chung), và phụ thuộc thứ tự chạy. Cách diệt: tiêm {{Clock}} cố định, mỗi test tự tạo fake repository mới, và không giả định thứ tự chạy.
+
+### Flaky là gì và vì sao nó nguy hiểm
 Một test **xác định** (deterministic — cùng input, cùng code thì luôn cho cùng kết quả) là điều kiện tối thiểu để test có giá trị. Test **flaky** (chập chờn) là test có lúc xanh lúc đỏ dù bạn không đổi một dòng code nào. Nó nguy hiểm vì khi team thấy "suite đỏ", phản xạ đầu tiên là chạy lại — nếu xanh thì bỏ qua. Dần dần mọi người mất niềm tin vào CI, và bug thật cũng bị coi là "chắc lại flaky".
 
 Ba nguồn flaky phổ biến nhất ở tầng service:
@@ -4714,6 +4803,12 @@ Bốn test này dùng cùng một fake repository mới ở mỗi test, và mộ
 - **So sánh thời gian bằng {{equals}}**: {{Instant.now()}} trên JDK 17 có độ phân giải nano giây, còn database thường lưu micro giây. Lưu rồi đọc lại, giá trị bị cắt nên {{equals}} false. Dùng clock cố định, hoặc so sánh bằng {{isBefore}}/{{isAfter}} trên biên đã thống nhất.
 
 > Senior tip: quy ước của mình là "không có {{now()}} không tham số trong domain code". Mọi chỗ cần thời gian đều nhận {{Clock}} từ ngoài; chỉ bean cấu hình mới gọi {{Clock.systemUTC()}}. Khi review, {{grep -n '\\.now()' js/ src/}} là ra ngay vi phạm. Một test flaky không phải "xui rủi" — nó là bằng chứng thiết kế đang giấu một dependency ẩn (thời gian, thứ tự, hoặc state dùng chung).
+
+### Ví dụ đời thực: test hết hạn token đỏ 1 trong 20 lần
+Một suite có hai test dùng chung một {{MutableClock}} {{static}}: test A "advance 31 ngày rồi kiểm tra token hết hạn" chạy trước, test B "token còn hạn tại ngày 0" chạy sau và thấy đồng hồ đã bị advance nên đỏ. Chạy riêng từng test thì cả hai đều xanh, nên cả team tưởng là "CI bị xui" và cứ chạy lại cho tới khi xanh. Thực tế còn một test thứ ba dùng fake repository {{static}}, nên dữ liệu cũng rò rỉ giữa các test. Cách sửa: mỗi test tự tạo {{Clock.fixed}} và fake repository mới (hoặc reset trong {{@BeforeEach}}), bỏ mọi {{Thread.sleep}}. Sau đó suite chạy 200 lần liên tiếp không đỏ lần nào, và tổng thời gian giảm vì không còn đoạn nào phải ngủ.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi được hỏi 'làm sao đảm bảo test không flaky?', tôi nói: trước hết định nghĩa test xác định — cùng input, cùng code thì luôn cho cùng kết quả. Ba nguồn flaky tôi luôn soi là thời gian thật, state dùng chung và thứ tự chạy. Với thời gian, tôi tiêm {{java.time.Clock}} vào service rồi dùng {{Clock.fixed}} hoặc {{Clock.offset}} trong test, không bao giờ {{Thread.sleep}}. Với state, mỗi test tự tạo dữ liệu của nó, không dùng field {{static}} hay database dùng chung không dọn. Với thứ tự, tôi không đặt tên {{test01}}, {{test02}} rồi dựa vào thứ tự đó — JUnit không đảm bảo thứ tự, chạy song song sẽ vỡ. Và khi một test đỏ mà chạy một mình lại xanh, tôi không chạy lại cho qua: đó gần như luôn là shared state, phải tìm cho ra chỗ dữ liệu bị để lại."
 
 ### Liên hệ phỏng vấn
 Interviewer hay hỏi: "Làm sao test một service phụ thuộc thời gian?", "Fake repository khác mock ở điểm nào khi test service?", "Bạn đảm bảo các test độc lập thế nào?", "Thế nào là test xác định?". Trả lời tốt: tiêm {{Clock}} và dùng {{Clock.fixed/offset}} để kiểm soát biên thời gian; dùng fake repository để test state thay vì số lời gọi; mỗi test tự tạo dữ liệu của nó, không chia sẻ state, không giả định thứ tự; và kết luận "test flaky là lỗi thiết kế, không phải may rủi". Bài tập dưới đây bắt bạn viết đúng một service như vậy: fake repository + clock cố định + các test độc lập.`,
