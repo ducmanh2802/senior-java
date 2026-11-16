@@ -152,6 +152,7 @@ class AgentLoop {
         if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
     }
     static void ok(boolean cond, String msg) { if (!cond) throw new AssertionError(msg); }
+    static void ok(boolean cond) { if (!cond) throw new AssertionError("check failed"); }
 
     // Model giả: trả lần lượt các reply định sẵn, ghi lại hội thoại nhận được ở mỗi lần gọi
     static class ScriptedModel implements FakeModel {
@@ -1602,6 +1603,7 @@ class TaskDelegator {
         if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
     }
     static void ok(boolean cond, String msg) { if (!cond) throw new AssertionError(msg); }
+    static void ok(boolean cond) { if (!cond) throw new AssertionError("check failed"); }
     static Map<String, Object> in(String k, Object v) { Map<String, Object> m = new HashMap<>(); m.put(k, v); return m; }
 
     static class ScriptedModel implements FakeModel {
@@ -1891,6 +1893,7 @@ class SafetyGuard {
         if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
     }
     static void ok(boolean cond, String msg) { if (!cond) throw new AssertionError(msg); }
+    static void ok(boolean cond) { if (!cond) throw new AssertionError("check failed"); }
     static Map<String, Object> in(String k, Object v) { Map<String, Object> m = new HashMap<>(); m.put(k, v); return m; }
     static ToolCall readOnly() { return new ToolCall("T1", "get_order", in("order_id", "ORD-1"), false); }
     static ToolCall autoRun() { return new ToolCall("T2", "send_receipt", in("order_id", "ORD-1"), true); }
@@ -2012,4 +2015,631 @@ Lỗi hay gặp là xác nhận sau khi đã chạy (đã muộn), dùng tool_us
   related: ['claude-026', 'claude-014'],
   tags: ['side effect', 'confirmation', 'idempotency', 'safety'],
 },
+{
+  id: 'lesson-claude-008',
+  track: 'claude',
+  order: 8,
+  title: 'MCP: mô hình host-client-server, tools/resources/prompts, transport stdio và streamable HTTP',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Phân biệt được ba vai trò trong MCP: host, client và server',
+    'Hiểu ba nguyên ngữ: tool (hành động), resource (dữ liệu chỉ đọc) và prompt (mẫu câu), khi nào dùng cái nào',
+    'So sánh transport stdio (process cục bộ) và streamable HTTP (server từ xa), biết trade-off của từng cái'
+  ],
+  body: `**Tóm tắt:** MCP (Model Context Protocol) là giao thức mở chuẩn hóa cách ứng dụng AI kết nối với công cụ và dữ liệu bên ngoài. Ba vai trò: host là ứng dụng người dùng dùng (ví dụ Claude Desktop hoặc trình chỉnh sửa mã), client là thư viện MCP nằm trong host giữ phiên làm việc với server, server là chương trình độc lập cung cấp khả năng. Ba nguyên ngữ: tool là hành động model có thể gọi, resource là dữ liệu chỉ đọc, prompt là mẫu câu tái dùng. Truyền tin qua stdio cho process cục bộ hoặc streamable HTTP cho server từ xa.
+
+### Các khái niệm cơ bản
+
+**MCP (Model Context Protocol):** giao thức mở (Anthropic công bố năm 2024) để các ứng dụng AI kết nối với dịch vụ bên ngoài theo một chuẩn duy nhất, thay vì mỗi dịch vụ phải viết adapter riêng cho từng model.
+
+**Host:** ứng dụng cuối cùng mà người dùng sử dụng (trình desktop, trình chỉnh sửa mã, ứng dụng chăm sóc khách hàng). Một host có thể chứa nhiều client MCP.
+
+**Client MCP:** thư viện nằm trong host, giữ một phiên làm việc 1-1 với một server MCP: gửi yêu cầu, nhận phản hồi, chuyển kết quả về cho model.
+
+**Server MCP:** chương trình nhỏ, chạy độc lập, cung cấp khả năng cho model (tra đơn hàng, đọc file log, gửi email). Server có thể là process cục bộ hoặc dịch vụ chạy trên máy khác.
+
+**JSON-RPC 2.0:** định dạng tin nhắn của MCP. Mỗi yêu cầu có một mã số, phản hồi mang cùng mã số để host biết yêu cầu nào được trả lời. Lỗi được mã hóa bằng số (ví dụ -32601 là phương thức không tìm thấy, -32603 là lỗi nội bộ).
+
+### Ba nguyên ngữ: tools, resources, prompts
+
+**Tool** là hàm có thể model gọi thông qua host (ví dụ {{orders_get_status}} tra đơn hàng, {{send_email}} gửi email). Tool có thể có side effect (thay đổi dữ liệu), nên host phải kiểm tra quyền trước khi chạy. Model chỉ đề nghị gọi và cung cấp input; host thực thi rồi gửi kết quả về.
+
+**Resource** là dữ liệu chỉ đọc server làm cho sẵn (ví dụ file log, bảng giá), địa chỉ bởi URI ({{file:///var/log/app.log}} hoặc {{postgresql://db/customers}}). Model đọc resource để bổ ngữ cảnh, không sửa dữ liệu. Resource phù hợp với dữ liệu lớn, thay đổi ít, dùng lại nhiều lần.
+
+**Prompt** là mẫu câu viết sẵn (ví dụ "tóm tắt cuộc khiếu nại" với tham số khách hàng). Host gợi ý prompt, người dùng chọn, model điền tham số. Prompt giúp kết quả ổn định hơn so với để model tự viết câu lệnh.
+
+Quy tắc chọn: cần thực hiện hành động → tool; cần đọc dữ liệu làm ngữ cảnh → resource; cần mẫu câu tái dùng → prompt.
+
+### Hai cách truyền tin: stdio và streamable HTTP
+
+**Stdio (standard input/output):** host khởi động server như một process con, gửi yêu cầu vào stdin của server và đọc phản hồi từ stdout. Mỗi tin nhắn là một dòng. Ưu điểm: đơn giản, không cần mạng, thích hợp cho tool chạy cục bộ (tra file trên máy, gọi database cục bộ). Nhược điểm: mỗi server là một process riêng, khó mở rộng, không phù hợp khi server ở máy khác.
+
+**Streamable HTTP:** server mở endpoint HTTP, client gọi qua HTTP (thường dùng streaming để nhận phản hồi liên tục). Ưu điểm: server có thể nằm ở đâu, nhiều client chia sẻ, dễ đặt sau cân bằng tải. Nhược điểm: cần bảo mật HTTP (mã thông báo, TLS), quản lý session và kết nối riêng.
+
+Ví dụ: công ty có tool kiểm tra tồn kho chạy trên máy kho hàng → stdio. Cùng công ty có API tra cứu đơn hàng để nhiều chi nhánh gọi → streamable HTTP.
+
+### Ví dụ đời thực
+
+Trung tâm chăm sóc khách hàng muốn agent tra đơn hàng và gửi email xác nhận. Lập trình viên dựng hai server MCP: server {{orders}} (stdio, chạy cục bộ) cung cấp tool {{orders_get_status}} đọc cơ sở dữ liệu cục bộ, và server {{notify}} (streamable HTTP, chạy trên máy chủ trung tâm) cung cấp tool {{notify_send_email}}. Host (ứng dụng chăm sóc khách hàng) khởi động cả hai và khai báo tool vào model. Khách hỏi "Đơn ORD-42 giao chưa?" → model gọi {{orders_get_status}} → host chạy tool, nhận "đang giao", trả lời. Khách tiếp tục "Gửi email nhắc nhở" → model gọi {{notify_send_email}} → host gọi HTTP đến server notify. Số liệu: sau khi dùng MCP, thời gian tích hợp một tool mới giảm từ hai ngày xuống bốn giờ vì cả đội dùng chung chuẩn thay vì viết adapter riêng cho từng tool.
+
+### Trả lời mẫu khi phỏng vấn
+
+"MCP là giao thức chuẩn nối ứng dụng AI với công cụ và dữ liệu bên ngoài, do Anthropic công bố vào năm 2024. Trong mô hình này, host (ví dụ ứng dụng máy tính để bàn hoặc trình chỉnh sửa mã) chứa client MCP; client giữ phiên làm việc 1-1 với server MCP, chương trình độc lập cung cấp khả năng cho model. Ba loại khả năng: tool để model thực hiện hành động (có thể có side effect), resource để đọc dữ liệu chỉ đọc theo URI, và prompt là mẫu câu tái dùng giúp kết quả ổn định. Tin nhắn dùng JSON-RPC 2.0: mỗi yêu cầu kèm mã số, phản hồi mang cùng mã số để host biết yêu cầu nào được trả lời, lỗi được mã hóa bằng số. Giao tiếp qua stdio cho process cục bộ, hoặc streamable HTTP cho server từ xa dùng bởi nhiều client. Về bảo mật, host không cho model tự chạy tool: host kiểm tra quyền, quản lý khóa idempotency, và cho phép người dùng xác nhận trước khi thực thi hành động ghi dữ liệu."`,
+  exercises: [
+    {
+      title: 'McpServer: đăng ký khả năng, đáp yêu cầu initialize/tools/list/tools/call',
+      prompt: `Hoàn thiện McpServer mô phỏng một server MCP (các kiểu McpRequest, McpResponse, McpError, ToolHandler đã có sẵn, không cần sửa):
+
+- registerTool(name, handler): đăng ký hàm xử lý cho một tool.
+- registerResource(uri, nhan): đăng ký một tài nguyên chỉ đọc với URI.
+- registerPrompt(name, nhan): đăng ký một mẫu câu.
+- handle(request): trả về McpResponse mang cùng id của yêu cầu:
+  + initialize → kết quả có protocolVersion, serverInfo (tên và phiên bản) và capabilities
+  + tools/list → danh sách tên tool đã đăng ký
+  + resources/list → danh sách URI tài nguyên
+  + prompts/list → danh sách tên mẫu câu
+  + tools/call → lấy tên tool và đối số từ params, gọi handler, trả kết quả; tool không tồn tại → lỗi mã -32601 "Tool không tồn tại"; handler ném RuntimeException → lỗi mã -32603 với thông điệp của exception; phương thức khác → lỗi mã -32601 "Phương thức không tìm thấy"
+Mỗi phản hồi phải mang id trùng với yêu cầu, cho dù là lỗi. Server phải hoạt động liên tục: sau lỗi vẫn đáp yêu cầu tiếp theo.`,
+      starter: `// ====== Có sẵn (không cần sửa) ======
+record McpRequest(String method, Map<String, Object> params, String id) {}
+record McpResponse(String id, Object result, McpError error) {}
+record McpError(int code, String message) {}
+interface ToolHandler { Object handle(Map<String, Object> input); }
+
+// ====== Bài của bạn ======
+class McpServer {
+    private final String serverName;
+    private final String serverVersion;
+    private final Map<String, ToolHandler> tools = new HashMap<>();
+    private final Map<String, String> resources = new HashMap<>();
+    private final Map<String, String> prompts = new HashMap<>();
+
+    McpServer(String name, String version) {
+        this.serverName = name;
+        this.serverVersion = version;
+    }
+
+    void registerTool(String name, ToolHandler handler) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void registerResource(String uri, String label) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void registerPrompt(String name, String label) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    McpResponse handle(McpRequest request) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void ok(boolean cond, String msg) { if (!cond) throw new AssertionError(msg); }
+    static void ok(boolean cond) { if (!cond) throw new AssertionError("check failed"); }
+    static Map<String, Object> in(String k, Object v) { Map<String, Object> m = new HashMap<>(); m.put(k, v); return m; }
+
+    public static void main(String[] args) {
+        check("initialize tra id trung va thong tin server", () -> {
+            McpServer server = new McpServer("test-server", "1.0");
+            McpResponse r = server.handle(new McpRequest("initialize", null, "req-1"));
+            eq("req-1", r.id());
+            ok(r.error() == null);
+            Map<?, ?> result = (Map<?, ?>) r.result();
+            eq("2025-06-18", result.get("protocolVersion"));
+            Map<?, ?> info = (Map<?, ?>) result.get("serverInfo");
+            eq("test-server", info.get("name"));
+            eq("1.0", info.get("version"));
+        });
+        check("tools/list tra ten tool da dang ky", () -> {
+            McpServer server = new McpServer("s", "1");
+            server.registerTool("orders_get_status", in -> "x");
+            server.registerTool("inventory_check_stock", in -> "x");
+            McpResponse r = server.handle(new McpRequest("tools/list", null, "req-2"));
+            ok(r.error() == null);
+            List<?> names = (List<?>) r.result();
+            eq(2, names.size());
+            ok(names.contains("orders_get_status") && names.contains("inventory_check_stock"));
+        });
+        check("tools/call goi handler voi doi soa va tra ket qua", () -> {
+            McpServer server = new McpServer("s", "1");
+            server.registerTool("orders_get_status", input -> "SHIPPED for " + input.get("order_id"));
+            Map<String, Object> params = new HashMap<>();
+            params.put("name", "orders_get_status");
+            params.put("arguments", Map.of("order_id", "ORD-42"));
+            McpResponse r = server.handle(new McpRequest("tools/call", params, "req-3"));
+            ok(r.error() == null);
+            Map<?, ?> result = (Map<?, ?>) r.result();
+            eq("SHIPPED for ORD-42", result.get("output"));
+        });
+        check("tool khong ton tai tra loi -32601 va giu id", () -> {
+            McpServer server = new McpServer("s", "1");
+            McpResponse r = server.handle(new McpRequest("tools/call", Map.of("name", "missing"), "req-4"));
+            eq("req-4", r.id());
+            McpError err = r.error();
+            eq(-32601, err.code());
+            ok(err.message().contains("khong ton tai"));
+        });
+        check("handler nem exception tra loi -32603 khong chua stack trace", () -> {
+            McpServer server = new McpServer("s", "1");
+            server.registerTool("broken", input -> { throw new IllegalStateException("db down after 5s"); });
+            McpResponse r = server.handle(new McpRequest("tools/call", Map.of("name", "broken", "arguments", Map.of()), "req-5"));
+            McpError err = r.error();
+            eq(-32603, err.code());
+            ok(err.message().contains("db down after 5s"));
+            ok(!err.message().contains("StackTrace"));
+        });
+        check("phuong thuc khong xac dinh tra loi -32601", () -> {
+            McpServer server = new McpServer("s", "1");
+            McpResponse r = server.handle(new McpRequest("unknown_method", null, "req-6"));
+            McpError err = r.error();
+            eq(-32601, err.code());
+            ok(err.message().contains("unknown_method"));
+        });
+        check("resources/list va prompts/list", () -> {
+            McpServer server = new McpServer("s", "1");
+            server.registerResource("file:///var/log/app.log", "nhat ky");
+            server.registerPrompt("tom_tat_khieu_nai", "tom tat");
+            McpResponse r1 = server.handle(new McpRequest("resources/list", null, "req-7"));
+            McpResponse r2 = server.handle(new McpRequest("prompts/list", null, "req-8"));
+            eq("req-7", r1.id()); eq("req-8", r2.id());
+            List<?> uris = (List<?>) r1.result();
+            List<?> names = (List<?>) r2.result();
+            ok(uris.contains("file:///var/log/app.log"));
+            ok(names.contains("tom_tat_khieu_nai"));
+        });
+        check("server van hoat dong sau loi", () -> {
+            McpServer server = new McpServer("s", "1");
+            McpResponse bad = server.handle(new McpRequest("x", null, "req-9"));
+            ok(bad.error() != null);
+            McpResponse good = server.handle(new McpRequest("initialize", null, "req-10"));
+            eq("req-10", good.id()); ok(good.error() == null);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `// ====== Có sẵn (không cần sửa) ======
+record McpRequest(String method, Map<String, Object> params, String id) {}
+record McpResponse(String id, Object result, McpError error) {}
+record McpError(int code, String message) {}
+interface ToolHandler { Object handle(Map<String, Object> input); }
+
+// ====== Lời giải ======
+class McpServer {
+    private final String serverName;
+    private final String serverVersion;
+    private final Map<String, ToolHandler> tools = new HashMap<>();
+    private final Map<String, String> resources = new HashMap<>();
+    private final Map<String, String> prompts = new HashMap<>();
+
+    McpServer(String name, String version) {
+        this.serverName = name;
+        this.serverVersion = version;
+    }
+
+    void registerTool(String name, ToolHandler handler) {
+        tools.put(name, handler);
+    }
+
+    void registerResource(String uri, String label) {
+        resources.put(uri, label);
+    }
+
+    void registerPrompt(String name, String label) {
+        prompts.put(name, label);
+    }
+
+    McpResponse handle(McpRequest request) {
+        String id = request.id();
+        switch (request.method()) {
+            case "initialize":
+                return new McpResponse(id, Map.of(
+                    "protocolVersion", "2025-06-18",
+                    "serverInfo", Map.of("name", serverName, "version", serverVersion),
+                    "capabilities", Map.of("tools", Map.of(), "resources", Map.of(), "prompts", Map.of())
+                ), null);
+            case "tools/list":
+                return new McpResponse(id, new ArrayList<>(tools.keySet()), null);
+            case "resources/list":
+                return new McpResponse(id, new ArrayList<>(resources.keySet()), null);
+            case "prompts/list":
+                return new McpResponse(id, new ArrayList<>(prompts.keySet()), null);
+            case "tools/call": {
+                Map<String, Object> p = request.params() == null ? Map.of() : request.params();
+                String name = (String) p.get("name");
+                ToolHandler handler = tools.get(name);
+                if (handler == null) {
+                    return new McpResponse(id, null, new McpError(-32601, "Tool khong ton tai: " + name));
+                }
+                try {
+                    Object args = p.get("arguments");
+                    Map<String, Object> input = args instanceof Map ? (Map<String, Object>) args : Map.of();
+                    Object result = handler.handle(input);
+                    return new McpResponse(id, Map.of("output", result), null);
+                } catch (RuntimeException e) {
+                    return new McpResponse(id, null, new McpError(-32603, "Loi thuc thi tool: " + e.getMessage()));
+                }
+            }
+            default:
+                return new McpResponse(id, null, new McpError(-32601, "Phuong thuc khong tim thay: " + request.method()));
+        }
+    }
+}`,
+      hints: [
+        'Dung switch theo method cua request; tat ca nhanh phai tra McpResponse cung id voi yeu cau.',
+        'Trong nhanh tools/call, lay ten tool tu params.get("name"), doi so tu params.get("arguments") neu la Map.',
+        'Bat RuntimeException chung quanh handler.handle va tra McpError -32603 thong diep loi, de server khong sap.'
+      ],
+      explain: `McpServer lap trinh giao thuc MCP o muc yeu cau: id doi phap voi moi yeu cau (JSON-RPC 2.0), mot cach danh ung nhung cac method ho tro (initialize, tools/list, resources/list, prompts/list, tools/call), va ma loi cho tool khong ton tai (-32601) hoac loi thuc thi (-32603).
+
+Loi hay gap: quench tra cung id khi loi (host khong biet yeu cau nao bi loi), bo qua ngoai le cua handler (làm server sap), va cho phep tool chay vinh vien sau khi gap loi (server phu luon hoat dong de nhan yeu cau tiep theo).`,
+    },
+  ],
+  check: [
+    {
+      q: 'Trong MCP, host, client va server o vai tro nao?',
+      options: [
+        'Host chua client va noi voi nhieu server; client giu phien lam viec 1-1 voi mot server; server cung khang nang cho model',
+        'Host chay tool, client dien gia tri vao template, server luu bo nho dem',
+        'Client giao tiep thuan model, host dieu chinh trong luong, server chuan bi du lieu',
+        'Ba vai tro giong nhau, deu co the thay the nhau'
+      ],
+      answer: 0,
+      explain: 'Host la ung dung cuoi cung (vd desktop app, IDE) va co the chua nhieu client. Moi client MCP giu mot phien lam viec 1-1 voi mot server. Server cung cap tool, resource hoac prompt. Khong the doi thay vai tro vi moi tro tham gia khau truc khac nhau trong giao thuc.'
+    },
+    {
+      q: 'Khi client yeu cau server doc mot resource, dinh dang nao chi duong dan den du lieu chi doc?',
+      options: [
+        'SQL query',
+        'URI (vd file:///var/log/app.log, postgresql://db/customers)',
+        'Duong dan tuyet doi tren o cung cua client',
+        'Ma so tool_use_id'
+      ],
+      answer: 1,
+      explain: 'Resource duoc dia chi bang URI. Model chi doc du lieu tu resource, khong sua. tool_use_id la ma cua tool goi, khong lien quan den resource.'
+    },
+    {
+      q: 'Phan biet stdio va streamable HTTP trong MCP: khi nao nen chon stdio?',
+      options: [
+        'Luon chon stdio vi no nhanh hon HTTP',
+        'Server co the o may khac va nhieu client chia se',
+        'Tool chay cuc bo mot process, can don gian va khong mang',
+        'Can ho tro nhieu thiet luong cao tai dong'
+      ],
+      answer: 2,
+      explain: 'Stdio phu hop voi process cuc bo (mot server = mot process), cai dat don gian khong can mang. Streamable HTTP phu hop voi server xa nhieu client. Stdio khong tinh toan duoc "luon nhanh hon" va khong xay dung duoc nhieu thiet luong tai dong nhu HTTP.'
+    },
+  ],
+  related: ['claude-001', 'claude-026'],
+  tags: ['mcp', 'protocol', 'stdio', 'streamable-http'],
+},
+{
+  id: 'lesson-claude-009',
+  track: 'claude',
+  order: 9,
+  title: 'Thiet ke tool cho MCP: ten, mo ta, schema, loi co ich, idempotent',
+  level: 'mid',
+  minutes: 35,
+  goals: [
+    'Dat ten tool theo domain-hanh dong va viet mo ta rang buoc khi su dung',
+    'Hieu JSON Schema co ban (type, required, enum, additionalProperties) va rang buoc dau vao o server',
+    'Xay dung loi tra ve co ich, khong ro noi bo, va biet idempotency key khac tool_use_id'
+  ],
+  body: `**Tóm tắt:** Tool tot cho MCP phai dat ten theo domain-hanh dong, co mo ta noi rang khi su dung, khi khong su dung, dau vao lay tu dau va ket qua/loi nhu the nao. Input schema phai rang rang (trung bat buoc, kieu, gia tri cho phep, tu choi truong la). Server phai validate dau tien, sau moi kiem tra quyen va nghiep vu. Loi tra ve model phai de hieu, khong ro noi bo. Moi tool ghi du lieu phai idempotent: cung khoa idempotency (ma nghiep vu) chi thuc hien mot lan, ngay khi agent retry sau loi mang.
+
+### Ten tool: nhu dat ten API cho dong nghiep moi
+
+Model khong doc code Java o server. No quyet dinh goi tool nao dua tren ten va mo ta ban khai bao. Ten hay: {{orders_get_status}}, {{payments_refund}}, {{inventory_check_stock}}. Ten khong hay: {{get_data}}, {{run_action}}, {{do_thing}}, {{run_sql}} — model khong biet su dung khi nao, de goi nham. Dung chu thuong, dau gach duong, viet domain truoc roi hanh dong. Neu hai tool de nham (tra don hang so voi tra thanh toan), hua dat ten khac biet ro va ghi ranh gioi trong mo ta ("khong dung de tra thanh toan").
+
+### Mo ta tool: bon cau tra loi
+
+Mo ta tot phai tra loi: (1) tool lam cong viec gi, (2) su dung khi nao, (3) KHONG su dung khi nao, (4) dau vao lay tu dau, ket qua va loi nhu the nao. Mo ta doc nhu huong dan cho nhan vien moi, khong chi ghi "Tra don hang". Vi mo la phan model nhin thang tiep tuc, no tac tiep den ti le goi nham tool.
+
+### Schema: hinh dang dau vao
+
+JSON Schema don gian: {{type}} (string, integer, boolean), {{required}} (truong bat buoc), {{enum}} (tap gia tri cho phep), {{additionalProperties: false}} (tu choi truong khong khai bao). Schema giup model sinh dau vao dung hinh dang, nhung schema KHONG thay the kiem tra o server: schema co the dam bao {{order_id}} la chuoi, chung khong chung minh don ton tai hoac nguoi dung hien tai duoc xem don do.
+
+Vi du dinh nghia tool:
+
+~~~json
+{
+  "name": "orders_get_status",
+  "description": "Tra trang thai don ORD. Su dung khi khach hoi don dang giao ho da giao. Khong dung cho thanh toan hoan toan. Tra trang thai va ngay giao du kien; neu khong tim thay thi tra NOT_FOUND.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "order_id": { "type": "string", "description": "Ma don ORD-123, lay tu khach hang" },
+      "view": { "type": "string", "enum": ["status", "delivery_date"] }
+    },
+    "required": ["order_id"],
+    "additionalProperties": false
+  }
+}
+~~~
+
+### Ba lop bao ve o server
+
+1. Schema: kiem tra hinh dang (kieu, truong bat buoc, enum, truong la). Khong ep kieu va khong "sua" dau vao sai.
+2. Quyen: lay nguoi dung tu boi contexts da xac thuc (security context). KHONG tin {{customer_id}} do model gui. Kiem tra nguoi dung duoc xem ho sua doi tuong nao.
+3. Nghiep vu: trang thai doi tuong co cho phep hanh dong khong (vd don da giao thi khong the huy).
+
+### Loi tra ve model: co ich va an toan
+
+Khi tool that bai, tra ve loi co ma va thong diep bang ngon ngua thuong (vd "Ma don khong dung dinh dang ORD-XXX" hoac "Ban khong co quyen xem don nay"). KHONG tra stack trace, cau SQL, ma thong bao ho chi tiet noi bo. Model chi can du thong de quyet dinh buoc tiep (thu lai voi dau vao khac, goi tool khac, hoac xin loi khach hang).
+
+### Idempotent: cung yeu cau chi chay mot lan
+
+Agent co the retry tool sau loi mang ma khong biet lan truoc da thanh chua. Khoa idempotency la ma nghiep vu (ma don hang, ma chuyen khoan). Server luu khoa da xu ly; yeu cau cung khoa lan nua tra ket qua cu, khong thuc hien lai. {{tool_use_id}} KHONG phai khoa idempotency: no chi danh ung mot lan goi model, co the thay doi khi retry.
+
+Vi du: chuyen tien khoa {{TX-100}} -> luu khoa, tru tien, tra thanh cong. Lan goi lai cung khoa {{TX-100}} -> tra ket qua cu, khong tru lai.
+
+### Vi du doi thuc
+
+Trung tâm chăm sóc khach hang co 18 nhan vien dung agent. Ti le goi nham tool trang thai don so voi tool thanh toan la 11% tren 900 cau kiem tra, vi hai mo ta deu ghi "Tra don hang". Doi ten thanh {{orders_get_status}} va {{payments_get_summary}}, mo ta ro ranh gioi, them enum cho truong chon, dat {{additionalProperties: false}}. Backend Java validate kieu, kiem tra chu so huu don qua nguoi dung dang nhap roi moi goi service. Chay lai 900 cau: ti le nham giam con 1,4%; khong con dau vao sai schema nao den service. Day la phep do chat luong tool routing, khong la bang chung model luon dung.
+
+### Tra loi mau khi phong vien
+
+"Toi thiet ke tool nhu API noi bo cho mot dong nghiep moi: ten theo domain-hanh dong, mo ta rang khi su dung, khi khong su dung, dau vao lay tu dau va ket qua hoac loi nao co the nhan. JSON Schema mo ta object, truong bat buoc, kieu, enum va tu choi truong la. Schema chi kiem tra hinh dang, nen Java van phai validate cau truc, lay nguoi dung tu security context, kiem tra quyen va quy tach nghiep vu truoc khi goi service. Loi tra ve model co ma va thong diep de hieu, khong ro stack trace hay SQL. Moi tool ghi du lieu dung khoa idempotency lay tu ma nghiep vu de retry sau loi mang khong tao giao dich tram. tool_use_id chi danh ung lan goi model, khong the thay khoa idempotency. Toi co bo kiem tra cau dung, cau mo ho va cau thieu dau de do ti le goi nham tool."`,
+  exercises: [
+    {
+      title: 'ToolRegistry: dang ky, validate dau vao, goi tool va idempotency',
+      prompt: `Hoàn thiện ToolRegistry de dang ky, validate va chay tool kieu MCP:
+
+1. register(def): dang ky ToolDef (ten, mo ta, schema, ham xu ly). Ten tool khong duoc trung.
+2. call(name, input, idempotencyKey):
+   - Tool khong ton tai → ToolResult(ok=false, errors=["Tool khong ton tai: ten"])
+   - Dau vao khong khop schema (thieu truong bat buoc, sai kieu, gia tri ngoai enum, truong la khi additionalProperties=false) → errors liet ke van de
+   - Neu idempotencyKey khac null va da dung truoc do → tra ToolResult da luu, khong chay lai handler
+   - Nguoc lai chay handler, luu ket qua neu co khoa; handler nem RuntimeException → errors=["Loi thuc thi tool: ..."], khong ro stack trace
+3. validate(input, schema): kiem tra required, type (string, integer la Integer hoac Long, boolean; khong ep kieu), enum, additionalProperties. Thu tu loi theo ten truong alphabet.`,
+      starter: `// ====== Có sẵn (không cần sửa) ======
+record Rule(String type, boolean required, Set<?> enumValues) {}
+record SimpleSchema(Map<String, Rule> properties, boolean additionalProperties) {}
+record ToolDef(String name, String description, SimpleSchema schema, Function<Map<String, Object>, Object> handler) {}
+record ToolResult(boolean ok, Object result, List<String> errors) {}
+
+// ====== Bài của bạn ======
+class ToolRegistry {
+    private final Map<String, ToolDef> tools = new HashMap<>();
+    private final Set<String> usedKeys = new HashSet<>();
+    private final Map<String, ToolResult> cached = new HashMap<>();
+
+    void register(ToolDef def) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    ToolResult call(String name, Map<String, Object> input, String idempotencyKey) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static List<String> validate(Map<String, Object> input, SimpleSchema schema) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void ok(boolean cond, String msg) { if (!cond) throw new AssertionError(msg); }
+    static void ok(boolean cond) { if (!cond) throw new AssertionError("check failed"); }
+    static Map<String, Object> in(String k, Object v) { Map<String, Object> m = new HashMap<>(); m.put(k, v); return m; }
+    static SimpleSchema schema(boolean extra) {
+        Map<String, Rule> p = new HashMap<>();
+        p.put("order_id", new Rule("string", true, Set.of()));
+        p.put("view", new Rule("string", false, Set.of("status", "delivery_date")));
+        p.put("priority", new Rule("integer", false, Set.of()));
+        return new SimpleSchema(p, extra);
+    }
+
+    public static void main(String[] args) {
+        check("goi hop le tra ket qua cua handler", () -> {
+            ToolRegistry reg = new ToolRegistry();
+            reg.register(new ToolDef("orders_get_status", "x", schema(false), in -> "SHIPPED"));
+            ToolResult r = reg.call("orders_get_status", in("order_id", "ORD-1"), null);
+            eq(true, r.ok()); eq("SHIPPED", r.result()); ok(r.errors().isEmpty());
+        });
+        check("tool khong ton tai bao loi", () -> {
+            ToolRegistry reg = new ToolRegistry();
+            ToolResult r = reg.call("orders_get_status", Map.of(), null);
+            eq(false, r.ok()); ok(r.errors().get(0).contains("Tool khong ton tai"));
+        });
+        check("thieu truong bat buoc", () -> {
+            ToolRegistry reg = new ToolRegistry();
+            reg.register(new ToolDef("orders_get_status", "x", schema(false), in -> "x"));
+            ToolResult r = reg.call("orders_get_status", Map.of(), null);
+            ok(r.errors().stream().anyMatch(e -> e.contains("order_id")), "thieu order_id chua bao: " + r.errors());
+        });
+        check("sai kieu khong duoc ep kieu", () -> {
+            ToolRegistry reg = new ToolRegistry();
+            reg.register(new ToolDef("t", "x", schema(false), in -> "x"));
+            Map<String, Object> input = new HashMap<>(); input.put("order_id", 17);
+            ToolResult r = reg.call("t", input, null);
+            ok(r.errors().stream().anyMatch(e -> e.contains("order_id")), "sai kieu chap nhan: " + r.errors());
+        });
+        check("gia tri ngoai enum", () -> {
+            ToolRegistry reg = new ToolRegistry();
+            reg.register(new ToolDef("t", "x", schema(false), in -> "x"));
+            Map<String, Object> input = new HashMap<>(); input.put("order_id", "ORD-1"); input.put("view", "refund");
+            ToolResult r = reg.call("t", input, null);
+            ok(r.errors().stream().anyMatch(e -> e.contains("view")), "enum chap nhan: " + r.errors());
+        });
+        check("additionalProperties false tu choi truong la", () -> {
+            ToolRegistry reg = new ToolRegistry();
+            reg.register(new ToolDef("t", "x", schema(false), in -> "x"));
+            Map<String, Object> input = new HashMap<>(); input.put("order_id", "ORD-1"); input.put("trace", "t-1");
+            ToolResult r = reg.call("t", input, null);
+            ok(r.errors().stream().anyMatch(e -> e.contains("trace")), "truong la chap nhan: " + r.errors());
+        });
+        check("additionalProperties true cho phep truong la", () -> {
+            ToolRegistry reg = new ToolRegistry();
+            reg.register(new ToolDef("t", "x", schema(true), in -> "x"));
+            Map<String, Object> input = new HashMap<>(); input.put("order_id", "ORD-1"); input.put("trace", "t-1");
+            ToolResult r = reg.call("t", input, null);
+            eq(true, r.ok()); ok(r.errors().isEmpty(), "truong duoc phep bi tu choi: " + r.errors());
+        });
+        check("khoa idempotency cung nhat chay handler mot lan", () -> {
+            int[] calls = {0};
+            ToolRegistry reg = new ToolRegistry();
+            reg.register(new ToolDef("t", "x", schema(false), in -> { calls[0]++; return "done"; }));
+            ToolResult r1 = reg.call("t", in("order_id", "ORD-1"), "TX-100");
+            ToolResult r2 = reg.call("t", in("order_id", "ORD-1"), "TX-100");
+            eq(true, r1.ok()); eq(true, r2.ok()); eq(1, calls[0]); eq(r1.result(), r2.result());
+        });
+        check("khoa khac nhau chay handler hai lan", () -> {
+            int[] calls = {0};
+            ToolRegistry reg = new ToolRegistry();
+            reg.register(new ToolDef("t", "x", schema(false), in -> { calls[0]++; return "done"; }));
+            reg.call("t", in("order_id", "ORD-1"), "TX-1");
+            reg.call("t", in("order_id", "ORD-2"), "TX-2");
+            eq(2, calls[0]);
+        });
+        check("handler nem exception tra loi an toan va server con hoat dong", () -> {
+            ToolRegistry reg = new ToolRegistry();
+            reg.register(new ToolDef("t", "x", schema(false), in -> { if ("ORD-1".equals(in.get("order_id"))) throw new IllegalStateException("db down"); return "done " + in.get("order_id"); }));
+            ToolResult r = reg.call("t", in("order_id", "ORD-1"), null);
+            eq(false, r.ok()); ok(r.errors().get(0).contains("Loi thuc thi tool"), "thong diep an toan: " + r.errors());
+            ok(!r.errors().get(0).contains("StackTrace"), "lot stack trace: " + r.errors());
+            ToolResult r2 = reg.call("t", in("order_id", "ORD-2"), null);
+            eq(true, r2.ok()); eq("done ORD-2", r2.result());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `// ====== Có sẵn (không cần sửa) ======
+record Rule(String type, boolean required, Set<?> enumValues) {}
+record SimpleSchema(Map<String, Rule> properties, boolean additionalProperties) {}
+record ToolDef(String name, String description, SimpleSchema schema, Function<Map<String, Object>, Object> handler) {}
+record ToolResult(boolean ok, Object result, List<String> errors) {}
+
+// ====== Lời giải ======
+class ToolRegistry {
+    private final Map<String, ToolDef> tools = new HashMap<>();
+    private final Set<String> usedKeys = new HashSet<>();
+    private final Map<String, ToolResult> cached = new HashMap<>();
+
+    void register(ToolDef def) {
+        if (tools.containsKey(def.name())) throw new IllegalArgumentException("Tool da dang ky: " + def.name());
+        tools.put(def.name(), def);
+    }
+
+    ToolResult call(String name, Map<String, Object> input, String idempotencyKey) {
+        ToolDef def = tools.get(name);
+        if (def == null) return new ToolResult(false, null, List.of("Tool khong ton tai: " + name));
+        Map<String, Object> safeInput = input == null ? Map.of() : input;
+        List<String> errors = validate(safeInput, def.schema());
+        if (!errors.isEmpty()) return new ToolResult(false, null, errors);
+        if (idempotencyKey != null) {
+            if (usedKeys.contains(idempotencyKey)) return cached.get(idempotencyKey);
+            usedKeys.add(idempotencyKey);
+        }
+        try {
+            Object result = def.handler().apply(safeInput);
+            ToolResult out = new ToolResult(true, result, List.of());
+            if (idempotencyKey != null) cached.put(idempotencyKey, out);
+            return out;
+        } catch (RuntimeException e) {
+            return new ToolResult(false, null, List.of("Loi thuc thi tool: " + e.getMessage()));
+        }
+    }
+
+    static List<String> validate(Map<String, Object> input, SimpleSchema schema) {
+        List<String> errors = new ArrayList<>();
+        if (input == null) {
+            errors.add("Input must be an object");
+            return errors;
+        }
+        for (String name : new TreeSet<>(schema.properties().keySet())) {
+            Rule rule = schema.properties().get(name);
+            if (rule.required() && !input.containsKey(name)) errors.add("Missing required property: " + name);
+        }
+        for (String name : new TreeSet<>(input.keySet())) {
+            Rule rule = schema.properties().get(name);
+            if (rule == null) {
+                if (!schema.additionalProperties()) errors.add("Unknown property: " + name);
+                continue;
+            }
+            Object value = input.get(name);
+            if (!matches(rule.type(), value)) {
+                errors.add("Invalid type for property: " + name);
+            } else if (!rule.enumValues().isEmpty() && !rule.enumValues().contains(value)) {
+                errors.add("Value is not allowed for property: " + name);
+            }
+        }
+        return errors;
+    }
+
+    private static boolean matches(String type, Object value) {
+        return switch (type) {
+            case "string" -> value instanceof String;
+            case "integer" -> value instanceof Integer || value instanceof Long;
+            case "boolean" -> value instanceof Boolean;
+            default -> throw new IllegalArgumentException("Unsupported schema type: " + type);
+        };
+    }
+}`,
+      hints: [
+        'Dung TreeSet duyet ten truong theo thu tu alphabet de loi co dinh.',
+        'Kiem tra required bang containsKey: truong co gia tri null van da co, duoc xem nhu co truong.',
+        'Kiem tra type truoc enum de khong so sanh gia tri sai kieu nhung no o tap gia tri.'
+      ],
+      explain: `ToolRegistry thuc hien ba lop bao ve: schema xac nhan hinh dang dau vao, call bo qua tool khong ton tai va du lieu sai schema, handler duoc goi chi sau khi du lieu hop. Khoa idempotency duoc luu truoc khi chay handler: cung khoa goi lai tra ket qua cu, khong chay lai xu ly nghiep vu.
+
+Loi hay gap: ep kieu dau vao sai (vd so thanh chuoi), tin customer_id tu model thay ve security context, va loi thuc thi tu bot stack trace den model. tool_use_id khong the thay the khoa idempotency vi no chi danh ung mot lan goi model, co the doi khi retry.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Mo ta tot cua tool orders_get_status phai noi gi?',
+      options: [
+        "Chi ghi 'Tra don' de model su ly",
+        'Cong viec tool, khi su dung, khi KHONG su dung, dau vao lay tu dau, ket qua/loi',
+        'Chuan toan bo code Java cua service',
+        'Khong can mo ta input vi schema da co ten truong'
+      ],
+      answer: 1,
+      explain: 'Ten va mo la thong tin chinh model co ve tool. Ranh gioi, nguon dau vao va ket qua phan biet tool trang thai don voi tool thanh toan. Mo ta chung tang mo ho; model khong doc code backend; ten truong schema mot minh khong giai thuc nghiep vu.'
+    },
+    {
+      q: 'Schema KHONG chung minh gi?',
+      options: [
+        'order_id la chuoi',
+        'Nguoi dung dang nhap duoc xem don nay',
+        'Gia tri view o trong tap cho phep',
+        'Khong co truong la khi additionalProperties false'
+      ],
+      answer: 1,
+      explain: 'Schema chi kiem tra hinh dang. Quyen xem don lay tu bối contexts xac thuc, khong tu customer_id model gui; schema chung chung minh don ton tai, trang thai co cho phep hay khong, hay nguoi dung co quyen.'
+    },
+    {
+      q: 'Tool_use_id va khoa idempotency khac nhau nhu the nao?',
+      options: [
+        'Giong nhau, danh ung mot yeu cau nghiep vu',
+        'tool_use_id danh ung mot lan goi model; khoa idempotency la ma nghiep vu dam bao cung yeu cau chi chay mot lan',
+        'Khoa idempotency ma hoa du lieu, tool_use_id gioi han so buoc',
+        'Chi dung tool_use_id o server, khoa idempotency chi o client'
+      ],
+      answer: 1,
+      explain: 'tool_use_id danh ung mot lan goi model, co the thay doi khi retry. Khoa idempotency la ma nghiep vu (ma don, ma chuyen khoan); server luu khoa da xu ly, yeu cung khoa tra ket qua cu, khong tao giao dich tram. Cung hai khong ma hoa du lieu va khong gioi han buoc.'
+    },
+  ],
+  related: ['claude-026', 'claude-001'],
+  tags: ['mcp', 'tool design', 'json schema', 'idempotent'],
+}
 );
