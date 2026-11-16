@@ -3055,7 +3055,7 @@ public class TemplateRenderService {
     'jvm_classes_unloaded_classes_total luôn bằng 0, còn số class tăng khoảng 1.54 class/giây, bằng đúng preview/s. Hai Full GC cuối cũng không giảm được Metaspace. Điều đó nghĩa là các class vẫn reachable.',
     'GroovyShell.parse(String) compile ra một class mới mỗi lần gọi (tên script tự sinh), và GroovyClassLoader cha giữ class đã sinh trong cache của nó. Shell lại là field của một singleton bean.'
   ],
-  answer: `**Tóm tắt:** Đây là **class leak trong Metaspace**. {{TemplateRenderService}} gọi {{shell.parse(script)}} ở **mỗi request preview**, nên Groovy compile ra **một class mới mỗi lần** (mỗi class được định nghĩa bởi một {{GroovyClassLoader$InnerLoader}} riêng). Tất cả đều được {{GroovyClassLoader}} của shell giữ lại, mà shell là field của singleton bean, nên không class nào được unload. Chỉ có 48 template, nhưng 5 giờ đã sinh ra khoảng 20 nghìn class và lấp đầy {{MaxMetaspaceSize=256m}}.
+  answer: `**Tóm tắt:** Đây là **class leak trong Metaspace**. {{TemplateRenderService}} gọi {{shell.parse(script)}} ở **mỗi request preview**, nên Groovy compile ra **một class mới mỗi lần** (mỗi class được định nghĩa bởi một {{GroovyClassLoader$InnerLoader}} riêng). Tất cả đều được {{GroovyClassLoader}} của shell giữ lại, mà shell là field của singleton bean, nên không class nào được unload. Chỉ có 48 template, nhưng 5 giờ đã sinh ra khoảng 32 nghìn class ({{classes_loaded}} tăng 20.238 → 52.116) và lấp đầy {{MaxMetaspaceSize=256m}}.
 
 ### Vì sao heap trống mà vẫn OOM
 
@@ -3067,7 +3067,7 @@ public class TemplateRenderService {
 
 - {{classloader_stats}}: tổng **40,329 loader**, trong đó **20,485 loader {{GroovyClassLoader$InnerLoader}}** (20,480 dòng lặp + 5 dòng liệt kê), mỗi loader **Classes 1**, ChunkSz 5120. Tất cả có **cùng Parent 0x0000000800c62a40**, chính là dòng {{groovy.lang.GroovyClassLoader}} duy nhất (Classes 0), loader của shell dùng chung. Chỉ riêng các InnerLoader này chiếm khoảng 100 MB chunk (20,485 × 5,120 byte) trong Metaspace.
 - So sánh: {{LaunchedClassLoader}} (toàn bộ Spring, Hibernate, code ứng dụng) chỉ có 14,871 class và khoảng 88 MB.
-- Metric: {{classes_loaded}} tăng đều khoảng 5,544 class/giờ, tức 1.54 class/giây, **bằng đúng {{preview/s}}**. Một lần render sinh ra một class. {{classes_unld}} bằng 0 suốt gần 6 giờ. Metaspace tăng khoảng 26 MB/giờ, còn heap after GC phẳng ở khoảng 230–240 MB.
+- Metric: {{classes_loaded}} tăng đều khoảng 5,544 class/giờ, tức 1.54 class/giây (mỗi preview request trung bình sinh ~1.5 class). {{classes_unld}} bằng 0 suốt gần 6 giờ. Metaspace tăng khoảng 26 MB/giờ, còn heap after GC phẳng ở khoảng 230–240 MB.
 - {{email_template}}: chỉ có **48 body khác nhau**, và lần sửa gần nhất là hôm trước. Lẽ ra chỉ cần 48 class.
 - GC log: {{Pause Young (Concurrent Start) (Metadata GC Threshold)}}, sau đó {{Pause Remark}} (nơi G1 unload class) mà Metaspace vẫn {{261402K->261402K}}. Tiếp theo JVM thử hai Full GC: {{Pause Full (Metadata GC Threshold)}} và {{Pause Full (Metadata GC Clear Soft References)}}, đây là nỗ lực cuối cùng trước khi ném OOM. Metaspace vẫn {{262101K->262101K}}, gần chạm 262144K (256 MB), nghĩa là **không có gì để thu hồi**, tất cả đều reachable.
 - Stack trace: OOM xảy ra trong {{ClassLoader.defineClass1}}, được gọi từ {{GroovyShell.parse}} tại {{TemplateRenderService.render(TemplateRenderService.java:26)}}.
