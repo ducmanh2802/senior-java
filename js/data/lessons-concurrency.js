@@ -4337,6 +4337,42 @@ Test lap nhieu lan: 100 round, moi round publish mot gia tri, mot luong viet, mo
             }
             if (failures > 0) throw new AssertionError("co " + failures + "/100 round sai gia tri (ready thieu volatile?)");
         });
+        check("nhieu reader cung luc: tat ca thay gia tri vua publish", () -> {
+            VisibilityPair p = new VisibilityPair();
+            final int v = 12345;
+            final int readerCount = 5;
+            final int[] results = new int[readerCount];
+            final java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
+            final java.util.concurrent.CountDownLatch doneLatch = new java.util.concurrent.CountDownLatch(readerCount);
+            for (int i = 0; i < readerCount; i++) {
+                final int idx = i;
+                new Thread(() -> {
+                    try { startLatch.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                    results[idx] = p.read();
+                    doneLatch.countDown();
+                }).start();
+            }
+            startLatch.countDown(); // phat tin hieu cho tat ca reader
+            p.publish(v);
+            try {
+                if (!doneLatch.await(2, java.util.concurrent.TimeUnit.SECONDS))
+                    throw new AssertionError("reader khong doc kip");
+            } catch (InterruptedException e) {
+                throw new AssertionError(e);
+            }
+            for (int i = 0; i < readerCount; i++) {
+                if (results[i] != v) throw new AssertionError("reader " + i + " nhan " + results[i] + " khac " + v);
+            }
+        });
+        check("publish lan luot: read nhan gia tri gan nhat", () -> {
+            VisibilityPair p = new VisibilityPair();
+            p.publish(10);
+            eq(10, p.read());
+            p.publish(20);
+            eq(20, p.read());
+            p.publish(30);
+            eq(30, p.read());
+        });
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
