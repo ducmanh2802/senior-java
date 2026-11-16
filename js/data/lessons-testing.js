@@ -4383,7 +4383,7 @@ Interviewer hay hỏi: "{{@SpringBootTest}} khác {{@WebMvcTest}} ở đâu?", "
   - {{dataJpaSlice}} nếu có {{@DataJpaTest}} (và không có @SpringBootTest).
   - {{fullContext}} nếu có {{@SpringBootTest}} (ưu tiên cao nhất).
   - {{unitTest}} nếu không có annotation nào trong ba cái trên.
-  - Bỏ qua annotation lạ ({{@WebMvcTest}}, {{@DataJpaTest}}, {{@SpringBootTest}}, {{@SomethingElse}}).
+  - Các annotation không phải ba cái trên (ví dụ {{@SomethingElse}}) được bỏ qua, không ảnh hưởng kết quả.
 - {{ totalQueries(TestCase tc) }}: giả lập số truy vấn database. Mỗi vòng lặp của {{for}} trong {{exercises}} được mô phỏng bằng một lần gọi {{String exercise}} có chứa ký tự ký tự L in hoa (viết tắt "loop"); mỗi lần như vậy là 1 truy vấn. Cộng thêm 1 nếu exercise gọi {{findById}}. Cộng thêm 2 nếu exercise gọi {{findAll}}.
 - {{ runIsolated(TestCase tc) }}: nếu {{tc.transactional()}} là true → trả về {{true}} (transaction rollback tự dọn). Nếu không, chạy dọn dữ liệu: đặt {{rows.clear()}}, tăng {{truncateCount}}, rồi trả về {{rows.isEmpty()}}.
 
