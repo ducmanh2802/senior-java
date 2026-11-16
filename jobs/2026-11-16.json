@@ -1,0 +1,77 @@
+{
+  "date": "2026-11-16",
+  "intro": "Hôm nay ITviec vẫn nhiều vị trí Java ở TP.HCM, nổi bật là các vai trò lead/architect và yêu cầu tích hợp AI (LLM, agent) đi kèm Spring Boot, microservices. Phần lớn tin ngân hàng và chứng khoán ở Hà Nội đã đăng ở các ngày trước nên hôm nay tập trung vào TP.HCM.",
+  "editor": "claude",
+  "items": [
+    {
+      "title": "Lead Java Engineer (Spring Boot, Microservices, AWS)",
+      "company": "NAB Innovation Centre Vietnam",
+      "url": "https://itviec.com/viec-lam-it/lead-java-engineer-nab-innovation-centre-vietnam-3220",
+      "source": "ITviec",
+      "location": "TP.HCM (onsite; tin ghi cả hybrid)",
+      "level": "lead",
+      "posted": "2026-11-11",
+      "skills": ["Java", "Spring Boot", "Spring Cloud", "Microservices", "AWS", "CI/CD"],
+      "summary": "Trung tâm công nghệ của ngân hàng National Australia Bank tìm lead dẫn dắt thiết kế và triển khai microservices, API Java trên AWS hoặc Azure, đồng thời mentor kỹ sư và làm việc với đội Agile quốc tế. Yêu cầu từ 10 năm kinh nghiệm ở vai trò lead hoặc architect, Java 11+, Spring Boot và Spring Cloud, DDD, secure coding và tiếng Anh tốt. Kinh nghiệm ngân hàng là điểm cộng.",
+      "prep": "Ôn thiết kế microservices và DDD, Spring Cloud, bảo mật ứng dụng (OWASP, secure coding), CI/CD và vận hành production trên AWS. Chuẩn bị câu chuyện mentoring và dẫn dắt kỹ thuật bằng tiếng Anh.",
+      "topics": ["microservices", "spring", "aws", "architecture", "english"],
+      "tags": ["banking", "lead"]
+    },
+    {
+      "title": "Senior Fullstack Engineer (Java, AI-native)",
+      "company": "HRS Group",
+      "url": "https://itviec.com/viec-lam-it/senior-fullstack-engineer-java-ai-native-hrs-group-0858",
+      "source": "ITviec",
+      "location": "TP.HCM (hybrid)",
+      "level": "senior",
+      "posted": "2026-11-11",
+      "skills": ["Java", "Microservices", "LLM", "Generative AI", "Agentic AI"],
+      "summary": "Vị trí xây dựng backend Java có khả năng mở rộng và tích hợp API GenAI, LLM vào luồng sản phẩm, gồm cả luồng agent dùng công cụ. Yêu cầu từ 6 năm kinh nghiệm fullstack trên hệ thống production, mạnh Java hoặc Python, đã đưa tính năng LLM lên production, quen làm việc với công cụ AI hỗ trợ lập trình và có tiếng Anh tốt. Người trúng tuyển cũng tham gia quyết định kỹ thuật và mentor.",
+      "prep": "Ôn Java backend và microservices, cách gọi LLM API ổn định (timeout, retry, chi phí, đánh giá chất lượng), mẫu agent và tool calling. Chuẩn bị ví dụ dùng AI an toàn trong quy trình phát triển.",
+      "topics": ["ai", "microservices", "api", "english"],
+      "tags": ["ai", "product"]
+    },
+    {
+      "title": "Engineering Team Lead (Java, AI-native)",
+      "company": "HRS Group",
+      "url": "https://itviec.com/viec-lam-it/engineering-team-lead-java-ai-native-hrs-group-1400",
+      "source": "ITviec",
+      "location": "TP.HCM (hybrid)",
+      "level": "lead",
+      "posted": "2026-11-11",
+      "skills": ["Java", "Python", "Microservices", "LLM", "Agentic AI", "AWS"],
+      "summary": "Dẫn dắt một Scrum team xây nền tảng ví do AI agent điều khiển cho quản lý du lịch và chi phí doanh nghiệp. Yêu cầu từ 5 năm Java và kiến trúc cloud-native, từ 3 năm dẫn dắt kỹ thuật, hiểu hệ thống thanh toán, tuân thủ và bảo mật, từng chạy container trên Azure hoặc AWS và có kinh nghiệm xây AI agent hoặc workflow orchestration. Làm việc với đội quốc tế nên cần tiếng Anh lưu loát.",
+      "prep": "Ôn thiết kế API và microservices cho thanh toán (idempotency, bảo mật, compliance), chạy container trên cloud, và các câu hỏi lãnh đạo như coaching, code review, ra quyết định kỹ thuật. Chuẩn bị trả lời bằng tiếng Anh.",
+      "topics": ["microservices", "security", "design", "behavioral", "english"],
+      "tags": ["fintech", "lead"]
+    },
+    {
+      "title": "Technical Architect (Kotlin, Java, Spring Boot, AI)",
+      "company": "TMA Solutions",
+      "url": "https://itviec.com/viec-lam-it/technical-architect-kotlin-java-spring-boot-ai-tma-solutions-4634",
+      "source": "ITviec",
+      "location": "TP.HCM (onsite)",
+      "level": "lead",
+      "posted": "2026-11-12",
+      "skills": ["Java", "Kotlin", "Spring Boot", "DDD", "Kafka", "PostgreSQL"],
+      "summary": "Vai trò architect cho nền tảng nhiều sản phẩm: xác định ranh giới service, quyền sở hữu dữ liệu, thiết kế API, sự kiện và tích hợp, viết đặc tả để developer và AI coding agent triển khai nhất quán. Yêu cầu từ 7 năm phát triển phần mềm, trong đó 2 năm làm architect, hiểu DDD, event-driven, contract-first, multi-tenant và high availability. Kafka, PostgreSQL, Kubernetes là điểm cộng.",
+      "prep": "Ôn cách vẽ ranh giới service, data ownership, event-driven và contract-first API, multi-tenancy, HA và disaster recovery. Chuẩn bị giải thích trade-off kiến trúc bằng ví dụ thật.",
+      "topics": ["architecture", "design", "microservices", "api"],
+      "tags": ["outsource", "architect"]
+    },
+    {
+      "title": "Senior Backend Developer (Golang, Java, NodeJS)",
+      "company": "Công ty Cổ phần Chứng khoán KAFI",
+      "url": "https://itviec.com/viec-lam-it/senior-backend-developer-golang-java-nodejs-cong-ty-co-phan-chung-khoan-kafi-3836",
+      "source": "ITviec",
+      "location": "TP.HCM (onsite)",
+      "level": "senior",
+      "posted": "2026-11-07",
+      "skills": ["Java", "Spring Boot", "Golang", "Kafka", "PostgreSQL", "Redis", "gRPC"],
+      "summary": "Công ty chứng khoán tìm backend senior xây microservices giao tiếp qua API và Kafka, xử lý nghiệp vụ theo luật và điều phối quy trình, tối ưu các luồng tải cao và thiết kế mô hình dữ liệu PostgreSQL, Redis. Có thể dùng Go, Java (Spring Boot) hoặc Node.js. Yêu cầu từ 3 năm backend, kinh nghiệm event-driven với Kafka, REST, gRPC, Docker; nghiệp vụ chứng khoán là điểm cộng.",
+      "prep": "Ôn Kafka (partition, ordering, idempotency), tối ưu PostgreSQL và cache Redis, thiết kế workflow và rule engine, gRPC so với REST. Tìm hiểu cơ bản nghiệp vụ giao dịch chứng khoán.",
+      "topics": ["microservices", "db", "sql", "banking", "api"],
+      "tags": ["securities", "kafka"]
+    }
+  ]
+}

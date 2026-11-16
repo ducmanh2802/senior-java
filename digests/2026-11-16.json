@@ -1,0 +1,67 @@
+{
+  "date": "2026-11-16",
+  "intro": "Đầu tuần này nguồn tin khá yên ắng sau loạt RC của Spring: đáng chú ý nhất là Kafka 4.4.0 với nhiều thay đổi cho Streams và share group, lộ trình bỏ cgroup v1 trên Kubernetes (ảnh hưởng trực tiếp tới pod chạy JVM), và bản tin Inside Java về ZGC thích ứng heap trong JDK 28.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Apache Kafka 4.4.0: transactional state store cho Streams và dead-letter queue cho share group",
+      "title": "Apache Kafka 4.4.0 Release Announcement",
+      "url": "https://kafka.apache.org/blog/2026/10/22/apache-kafka-4.4.0-release-announcement/",
+      "source": "Apache Kafka",
+      "category": "tech",
+      "summary": "Kafka 4.4.0 thêm transactional state store cho Kafka Streams (KIP-892, bật bằng {{enable.transactional.statestores}}, mặc định tắt), dead-letter queue cho share group (KIP-1191, cần nâng {{share.version}} lên 2) và {{bootstrap.resolve.timeout.ms}} cho việc phân giải DNS bootstrap bất đồng bộ (KIP-909). Đồng thời deprecate cấu hình {{broker.id}} (KIP-1232) và các overload KStream-GlobalKTable dùng ValueJoinerWithKey (KIP-1340). Thư mục lưu trữ do {{kafka-storage}} format không còn tương thích ngược (KIP-1170).",
+      "why": "Team Java dùng Spring Kafka hoặc Kafka Streams cần biết các API sẽ bị deprecate và thay đổi vận hành khi nâng broker. Transactional state store liên quan trực tiếp tới exactly-once trong Streams.",
+      "interview_q": "Bạn có ứng dụng Kafka Streams dùng state store và exactly-once. Khi app crash giữa chừng, state store và changelog có thể lệch nhau ra sao, và bạn kiểm soát điều đó thế nào?",
+      "related": ["microservices-029", "microservices-032"],
+      "tags": ["kafka", "streams", "release"]
+    },
+    {
+      "title_vi": "Inside Java Newscast #117: ZGC thích ứng heap trong JDK 28, primitive patterns bị rút lại",
+      "title": "Adaptive Heap Sizing + Numeric Conversion + Primitive Patterns - Inside Java Newscast #117",
+      "url": "https://inside.java/newscast/117/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Tập mới nhất nói ba chủ đề. JEP 546 thêm adaptive heap sizing cho ZGC trong JDK 28, cân bằng giữa CPU và bộ nhớ với gần như không cần cấu hình. Value class đặt ra thách thức cho chuyển đổi kiểu số tự định nghĩa; type class (từ một bài nói của Brian Goetz) có thể giải quyết về lâu dài. Primitive patterns sẽ không quay lại ở JDK 28 mà bị rút khỏi preview vì còn câu hỏi chưa giải quyết về tương tác với các tính năng khác.",
+      "why": "Heap tự co giãn giúp giảm việc tinh chỉnh {{-Xmx}} thủ công cho service Java trên container. Biết tính năng nào bị rút lại cũng tránh đầu tư vào preview feature sẽ không ra mắt.",
+      "interview_q": "Bạn chọn G1 hay ZGC cho service có heap lớn và yêu cầu p99 thấp, và bạn sẽ đo những chỉ số nào trước khi quyết định?",
+      "related": [],
+      "tags": ["jdk", "zgc", "valhalla"]
+    },
+    {
+      "title_vi": "Kubernetes: cgroup v1 sắp bị loại bỏ, cần kiểm tra node và workload Java",
+      "title": "The Shift to cgroup v2 in Kubernetes: What You Need to Know",
+      "url": "https://kubernetes.io/blog/2026/10/06/kubernetes-cgroups-v2-shift/",
+      "source": "Kubernetes Blog",
+      "category": "devops",
+      "summary": "cgroup v2 đã stable từ Kubernetes 1.25, còn cgroup v1 vào chế độ maintenance từ 1.31. Từ 1.35, {{failCgroupV1}} mặc định là true nên kubelet không khởi động trên node cgroup v1 nếu không đặt lại; bản fallback v1 dự kiến bị gỡ ở 1.38. Bài hướng dẫn kiểm tra node bằng {{stat -fc %T /sys/fs/cgroup/}}, yêu cầu kernel 5.8 trở lên, và lưu ý trên cgroup v2 khi OOM thì cả process trong container bị kill cùng nhau (mặc định {{singleProcessOOMKill=false}}).",
+      "why": "JVM đọc giới hạn CPU và RAM từ cgroup để chọn heap và số thread. Nâng cấp cluster mà quên kiểm tra phiên bản JDK và cgroup có thể làm đổi hành vi OOM hoặc sizing của pod.",
+      "interview_q": "Sau khi cluster chuyển từ cgroup v1 sang v2, pod Java đôi khi bị OOMKilled dù heap còn trống. Bạn điều tra thế nào và cấu hình {{MaxRAMPercentage}} ra sao?",
+      "related": [],
+      "tags": ["kubernetes", "cgroup", "jvm"]
+    },
+    {
+      "title_vi": "Kubernetes node swap đã GA: nhồi nhiều pod hơn bằng swap trên NVMe",
+      "title": "Scaling Kubernetes Workloads with Node Swap",
+      "url": "https://kubernetes.io/blog/2026/10/05/scaling-kubernetes-workloads-with-node-swap/",
+      "source": "Kubernetes Blog",
+      "category": "devops",
+      "summary": "Bài cho biết hỗ trợ chạy node có bật swap đã đạt General Availability từ Kubernetes v1.34. Ý tưởng của các tác giả là dùng SSD NVMe nhanh làm swap để node đẩy bộ nhớ nhàn rỗi ra ngoài và chứa được nhiều pod hơn. Động lực là bộ nhớ thường là giới hạn đầu tiên của cluster, và các workload AI dạng agent càng làm nặng thêm vì cần nhiều RAM lúc khởi động rồi nằm không nhưng vẫn giữ bộ nhớ.",
+      "why": "Dev Java quen đặt memory request bằng limit để tránh eviction; swap thay đổi cách nghĩ này và có thể ảnh hưởng độ trễ GC nếu heap bị đẩy ra đĩa. Nên đo kỹ trước khi bật.",
+      "interview_q": "Cluster hết RAM trước khi hết CPU vì pod Java đặt request cao. Bạn sẽ cân nhắc những phương án nào (right-sizing, swap, đổi QoS) và rủi ro của từng phương án là gì?",
+      "related": [],
+      "tags": ["kubernetes", "memory", "swap"]
+    },
+    {
+      "title_vi": "Thermo Fisher xây khớp bệnh nhân bằng AI trên AWS: tách DocumentDB và Iceberg/Athena",
+      "title": "How Thermo Fisher Scientific built AI-powered patient matching on AWS",
+      "url": "https://aws.amazon.com/blogs/architecture/how-thermo-fisher-scientific-built-ai-powered-patient-matching-on-aws/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Hơn 20 triệu hồ sơ bệnh nhân (khoảng 1,6 TB) được hợp nhất qua bước identity resolution. Dữ liệu vận hành nằm ở Amazon DocumentDB, còn dữ liệu phân tích nằm ở S3 dạng Apache Iceberg và truy vấn bằng Athena, để các truy vấn cohort nặng không đè lên database giao dịch. Step Functions điều phối nhiều giai đoạn với mẫu wait-for-callback, ECS phục vụ API, Lambda chấm điểm khớp. Truy vấn mẫu trả về dưới 6 giây và phân tích cohort rút từ vài ngày xuống vài phút.",
+      "why": "Là ví dụ thực tế của việc tách OLTP khỏi analytics, một quyết định thiết kế mà người phỏng vấn Senior hay hỏi, và liên quan tới cách backend Java gọi dữ liệu qua nhiều store.",
+      "interview_q": "Truy vấn báo cáo nặng làm chậm database giao dịch của bạn. Bạn tách workload phân tích ra sao và đồng bộ dữ liệu giữa hai phía thế nào?",
+      "related": [],
+      "tags": ["architecture", "iceberg", "step-functions"]
+    }
+  ]
+}
