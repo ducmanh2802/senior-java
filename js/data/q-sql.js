@@ -1067,7 +1067,7 @@ WHEN NOT MATCHED THEN
     VALUES (src.account_id, src.currency, src.balance, src.updated_at);
 ~~~
 - {{USING}} có thể là subquery, bảng tạm, hoặc {{dual}} cho single row.
-- MERGE có từ Oracle 9i; 10g cho phép chỉ một nhánh WHEN và thêm {{DELETE WHERE}}. Oracle **không** có cú pháp ON CONFLICT.
+- MERGE có từ Oracle 9i, lúc đó **chỉ có** nhánh {{WHEN MATCHED THEN UPDATE}}; từ 10g mới có thêm nhánh {{WHEN NOT MATCHED THEN INSERT}} và mệnh đề {{DELETE WHERE}}, và từ đó có thể viết đủ hai nhánh (hoặc chỉ một nhánh). Oracle **không** có cú pháp ON CONFLICT.
 - **Lưu ý concurrency**: MERGE không "khoá trước" dòng chưa tồn tại. Hai session cùng MERGE một khóa mới có thể cùng rơi vào nhánh NOT MATCHED ⇒ session sau dính {{ORA-00001}} (unique violation) ⇒ phải bắt lỗi và retry. PostgreSQL {{ON CONFLICT}} thì đảm bảo atomic insert-or-update ngay cả khi chạy song song (PostgreSQL 15 cũng có MERGE, nhưng MERGE của PG cũng có thể ném unique violation khi chạy đồng thời).
 
 ### Race condition của pattern SELECT-then-INSERT/UPDATE (anti-pattern)
@@ -1466,7 +1466,7 @@ Phương pháp "3 lần trung bình" đơn giản nhưng hay false positive (gia
 Triệu chứng: hệ thống thanh toán (PostgreSQL 15, bảng {{transaction}} 85 triệu dòng) có job phát hiện gian lận chạy mỗi 15 phút; sau đợt Black Friday, đội risk nhận 1.200 cảnh báo/ngày (tăng từ 180/ngày), trong đó 85% là false positive – khách mua sắm cuối tuần bình thường bị gắn cờ. Metric Grafana cho thấy p95 query job tăng từ 4,2 giây lên 38 giây, và CPU DB trung bình 65% trong khung giờ chạy.
 Điều tra: chạy {{EXPLAIN (ANALYZE, BUFFERS)}} của query phát hiện trên production thấy Seq Scan trên toàn bảng 85 triệu dòng (cost 1.2M, actual time 35 giây) vì không có index phù hợp: window function {{AVG ... OVER (... RANGE ...)}} cần dữ liệu sắp theo {{(customer_id, created_at)}} nhưng index hiện có lại là {{(customer_id, amount)}}, nên planner phải sort cả bảng. Kiểm tra thêm phát hiện cửa sổ kết thúc ở {{CURRENT ROW}} thay vì {{1 day PRECEDING}}, khiến giao dịch lớn tự kéo trung bình của chính nó lên nên không bị cảnh báo (mất 12% true positive).
 Nguyên nhân gốc: (1) thiếu index {{(customer_id, created_at, amount)}}, (2) frame RANGE kết thúc sai chỗ, (3) quy tắc cứng "3× trung bình" không có ngưỡng số mẫu tối thiểu.
-Cách xử lý: tạo index {{CREATE INDEX CONCURRENTLY idx_txn_cust_created_amt ON transaction (customer_id, created_at) INCLUDE (amount)}}, sửa frame thành {{RANGE BETWEEN INTERVAL '30 days' PRECEDING AND INTERVAL '1 day' PRECEDING}}, thêm điều kiện {{COUNT(*) OVER (PARTITION BY customer_id) >= 5}} vào CTE. Kết quả: false positive giảm từ 85% xuống 12%, true positive tăng từ 88% lên 96%, p95 job giảm 38s → 2,1s, CPU DB giờ chạy giảm 65% → 18%.
+Cách xử lý: tạo index {{CREATE INDEX CONCURRENTLY idx_txn_cust_created_amt ON transaction (customer_id, created_at) INCLUDE (amount)}}, sửa frame thành {{RANGE BETWEEN INTERVAL '30 days' PRECEDING AND INTERVAL '1 day' PRECEDING}}, và thêm {{COUNT(*) OVER (PARTITION BY customer_id ORDER BY created_at RANGE BETWEEN INTERVAL '30 days' PRECEDING AND INTERVAL '1 day' PRECEDING)}} vào CTE rồi lọc {{>= 5}} ở lớp ngoài (không lọc được trên kết quả window function trong cùng câu). Kết quả: false positive giảm từ 85% xuống 12%, true positive tăng từ 88% lên 96%, p95 job giảm 38s → 2,1s, CPU DB giờ chạy giảm 65% → 18%.
 
 > Senior tip: "Tôi dùng window AVG với RANGE INTERVAL '30 days' PRECEDING vì nó tính trung bình theo thời gian thực chứ không phải theo số dòng. Index (customer_id, created_at) là bắt buộc. Trên production tôi sẽ không chạy query này per-request – tôi sẽ pre-compute vào bảng anomaly_score refresh 5 phút một lần, hoặc đẩy sang Flink stream processing".
 `,
@@ -1907,7 +1907,7 @@ CREATE INDEX CONCURRENTLY idx_msg_thread_cover
 ~~~
 
 ### Partial index hoạt động thế nào
-- Index chỉ chứa những dòng thoả predicate. Mỗi {{INSERT}}/{{UPDATE}} đều được kiểm tra predicate: dòng mới có {{is_read = false}} được thêm vào index; khi tin được đánh dấu đã đọc, phiên bản dòng mới không còn thoả nên không được đưa vào index (entry cũ trỏ tới phiên bản chết sẽ bị {{VACUUM}} dọn). Nếu 98% tin đã đọc thì index chỉ cỡ 2–5% bảng ⇒ tốn ít RAM, ít lần đọc trang, và ghi cũng rẻ hơn index full.
+- Index chỉ chứa những dòng thoả predicate. Mỗi {{INSERT}}/{{UPDATE}} đều được kiểm tra predicate: dòng mới có {{is_read = false}} được thêm vào index; khi tin được đánh dấu đã đọc, phiên bản dòng mới không còn thoả nên không được đưa vào index (entry cũ trỏ tới phiên bản chết sẽ bị {{VACUUM}} dọn). Nếu 98% tin đã đọc thì index chỉ chứa 2% số dòng, tức cỡ 1–2% dung lượng index full ⇒ tốn ít RAM, ít lần đọc trang, và ghi cũng rẻ hơn index full.
 - Planner dùng được chỉ khi **WHERE của query bao hàm được predicate của index**:
   - {{WHERE recipient_id = $1 AND is_read = false}} → đúng, dùng được.
   - {{WHERE recipient_id = $1 AND is_read = $2}} với {{is_read = false}}: ở **generic plan** planner không biết giá trị của {{is_read}} ⇒ không chứng minh được ⇒ **bỏ qua index**; custom plan (vài lần chạy đầu với giá trị cụ thể) thì có thể dùng.
@@ -1942,9 +1942,9 @@ WHERE thread_id = 42 ORDER BY created_at DESC LIMIT 50;
 
 ### Ví dụ đời thực
 Triệu chứng: hệ thống tin nhắn nội bộ (PostgreSQL 15, bảng {{message}} 280 triệu dòng, 1,2 TB) có API inbox "tin chưa đọc" bị chậm dần: p95 từ 45 ms (tháng 1) tăng lên 8,2 giây (tháng 6), CPU DB 85% lúc cao điểm, autovacuum không kịp dọn dead tuple. Query: {{SELECT * FROM message WHERE recipient_id = $1 AND is_read = false ORDER BY created_at DESC LIMIT 50}}. Index hiện có: {{(recipient_id, created_at DESC)}} full (không partial).
-Điều tra: {{EXPLAIN (ANALYZE, BUFFERS)}} cho thấy Index Scan trên index full quét 2,8 triệu entry cho một user (1% chưa đọc nhưng index chứa 100% dòng) – {{Buffers: shared hit=185000 read=42000}}. Spring Data method {{findByRecipientIdAndIsRead(id, false)}} sinh SQL {{WHERE recipient_id = ? AND is_read = ?}} – ở generic plan planner không dùng partial index được vì không biết giá trị {{is_read}}. Bảng ghi 12.000 INSERT/giây, index full 42 GB khiến ghi chậm và vacuum nặng.
+Điều tra: {{EXPLAIN (ANALYZE, BUFFERS)}} cho thấy Index Scan trên index full quét 2,8 triệu entry cho một user (1% chưa đọc nhưng index chứa 100% dòng) – {{Buffers: shared hit=185000 read=42000}}. Spring Data method {{findByRecipientIdAndIsRead(id, false)}} sinh SQL {{WHERE recipient_id = ? AND is_read = ?}} – ở generic plan planner không dùng partial index được vì không biết giá trị {{is_read}}. Bảng ghi 12.000 INSERT/giây, index full 9 GB khiến ghi chậm và vacuum nặng.
 Nguyên nhân gốc: (1) dùng index full thay vì partial index cho {{is_read = false}}, (2) bind parameter cho cột predicate làm planner bỏ qua partial index ở generic plan, (3) thiếu covering index cho query báo cáo thread.
-Cách xử lý: tạo partial index {{CREATE INDEX CONCURRENTLY idx_msg_unread ON message (recipient_id, created_at DESC) WHERE is_read = false;}} (chỉ 420 MB, nhỏ 100 lần), đổi Spring Data method thành {{@Query("SELECT ... WHERE recipient_id = :id AND is_read = false")}} để predicate là hằng số, thêm covering index {{CREATE INDEX CONCURRENTLY idx_msg_thread_cover ON message (thread_id) INCLUDE (created_at);}}. Chạy {{ANALYZE message}}. Kết quả: inbox p95 8,2s → 12 ms, Index Only Scan cho báo cáo thread Heap Fetches = 0, index size giảm 42 GB → 420 MB + 180 MB, CPU DB giờ cao điểm 85% → 28%, autovacuum **đủ kịp** dead tuple.
+Cách xử lý: tạo partial index {{CREATE INDEX CONCURRENTLY idx_msg_unread ON message (recipient_id, created_at DESC) WHERE is_read = false;}} (chỉ 90 MB, nhỏ 100 lần), đổi Spring Data method thành {{@Query("SELECT ... WHERE recipient_id = :id AND is_read = false")}} để predicate là hằng số, thêm covering index {{CREATE INDEX CONCURRENTLY idx_msg_thread_cover ON message (thread_id) INCLUDE (created_at);}}. Chạy {{ANALYZE message}}. Kết quả: inbox p95 8,2s → 12 ms, Index Only Scan cho báo cáo thread Heap Fetches = 0, index inbox giảm 9 GB → 90 MB (nhỏ 100 lần), cộng thêm index covering ~9 GB cho báo cáo thread, CPU DB giờ cao điểm 85% → 28%, autovacuum **đủ kịp** dead tuple.
 
 > Senior tip: "inbox chưa đọc của một user chậm" là câu kinh điển. Câu trả lời mạnh gồm hai phần: partial index trên {{(recipient_id, created_at)}} {{WHERE is_read = false}} – nhỏ gấp vài chục lần; và giải thích được **vì sao query bind parameter lại không dùng được partial index**. Chi tiết thứ hai mới là thứ tách người từng dùng index khỏi người từng debug plan.`,
   follow: [
@@ -4117,7 +4117,7 @@ Bảng {{message}} 400 triệu dòng, màn hình danh sách hội thoại: {{SEL
 | Dirty read | không (PG không bao giờ) | không | không |
 | Non-repeatable read (đọc lại khác) | có thể | không | không |
 | Phantom read (đếm lại khác) | có thể | không (MVCC snapshot) | không |
-| Lost update (đọc–sửa–ghi tuyệt đối) | có thể | **có thể** | bị chặn |
+| Lost update (đọc–sửa–ghi tuyệt đối) | có thể | **bị chặn** (PG abort 40001) | bị chặn |
 | Write skew | có thể | có thể | bị chặn |
 | Serialization anomaly | có thể | có thể | bị chặn |
 
@@ -4137,7 +4137,7 @@ COMMIT;
 Kết quả: balance = 900  -> mất 100 (lẽ ra 800)
 ~~~
 
-Ở REPEATABLE READ, nếu cả hai cùng đọc 1000 rồi update tuyệt đối, **vẫn mất 100**: snapshot không bảo vệ giá trị bạn ghi đè. Cách đúng:
+Ở REPEATABLE READ thì **không âm thầm mất 100**: khi B chạy {{UPDATE}}, B phải chờ A; A commit xong, PostgreSQL thấy dòng đã bị sửa **sau** snapshot của B nên **abort B** với {{could not serialize access due to concurrent update}} ({{40001}}) — không ghi đè, nhưng B phải retry cả transaction (đọc lại 800 rồi trừ 100). Ở READ COMMITTED thì đúng là **mất 100**, vì câu {{UPDATE}} của B áp lên phiên bản mới nhất của dòng và ghi đè kết quả của A. Cách đúng:
 
 ~~~sql
 -- cách 1: update tương đối (DB đọc và ghi trong cùng một câu, atomic)
@@ -4230,12 +4230,12 @@ Hệ thống thanh toán 20.000 giao dịch/giờ trên PostgreSQL 15. Ba tuần
 > Senior tip: isolation level cao không tự động làm code đúng. SERIALIZABLE chỉ phát hiện xung đột và ném lỗi; nếu không có retry đúng chỗ, bạn chỉ đổi "sai số dư" thành "giao dịch thất bại". Hãy đo tỷ lệ 40001 trước khi tăng mức.
 
 ### follow
-- Vì sao REPEATABLE READ không chặn được lost update khi ứng dụng ghi giá trị tuyệt đối?
+- Vì sao ở REPEATABLE READ, câu {{UPDATE}} ghi giá trị tuyệt đối vẫn có thể phải retry ({{40001}}) thay vì âm thầm ghi đè?
 - Write skew khác serialization anomaly thế nào, và SERIALIZABLE phát hiện nó bằng cách nào?
 - Retry @Retryable đặt sai chỗ thì chuyện gì xảy ra với transaction?
 `,
   follow: [
-    'Vì sao REPEATABLE READ vẫn không chặn được lost update khi ứng dụng ghi giá trị tuyệt đối?',
+    'Vì sao ở REPEATABLE READ, câu UPDATE ghi giá trị tuyệt đối vẫn có thể phải retry (40001) thay vì âm thầm ghi đè?',
     'Write skew khác serialization anomaly ở điểm nào, và SERIALIZABLE phát hiện nó bằng cơ chế gì?',
     'Nếu đặt @Retryable sai chỗ hoặc tự gọi method trong cùng bean thì hậu quả là gì?'
   ],
@@ -4302,10 +4302,18 @@ Bật thêm {{log_lock_waits = on}} (và giữ {{deadlock_timeout}} ở mức m�
 2. **Thứ tự lock từ tập hợp không xác định**: {{items.stream()}} hoặc {{HashSet}} cho thứ tự khác nhau giữa các request → hai request cùng cập nhật hai tài khoản theo chiều ngược.
 3. **Unique index**: hai transaction cùng insert cùng khóa (ví dụ mã đơn) — mỗi bên giữ một phần của unique index rồi chờ bên kia.
 4. **JPA flush theo thứ tự entity**: save nhiều thực thể rồi flush, thứ tự câu lệnh có thể khác giữa các lần chạy.
-5. **Lock trên bảng cha do foreign key**: insert vào bảng con cần {{ROW SHARE}} trên dòng cha; hiếm khi deadlock nhưng vẫn có thể nếu transaction khác đang alter bảng cha.
+5. **Lock trên bảng cha do foreign key**: insert vào bảng con cần khoá {{FOR KEY SHARE}} trên dòng cha (để không cho ai xoá/đổi khóa cha giữa lúc kiểm tra); hiếm khi deadlock nhưng vẫn có thể nếu transaction khác đang {{ALTER TABLE}} bảng cha.
 
 ### Phòng ngừa trong code
 ~~~java
+// Repository: khai báo khoá bằng @Lock, KHÔNG truyền LockModeType làm tham số
+public interface AccountRepository extends JpaRepository<Account, Long> {
+
+  @Lock(LockModeType.PESSIMISTIC_WRITE)
+  @Query("select a from Account a where a.id in :ids order by a.id")
+  List<Account> lockAllById(@Param("ids") List<Long> ids);
+}
+
 public void transfer(List<TransferItem> items) {
   // 1. chuẩn hoá thứ tự: mọi thread lock các tài khoản theo id tăng dần
   List<Long> ids = items.stream()
@@ -4314,17 +4322,19 @@ public void transfer(List<TransferItem> items) {
       .sorted()                       // <-- cắt vòng deadlock
       .toList();
 
-  // 2. lock trước, tính sau; không gọi mạng trong transaction
-  List<Account> accounts = accountRepository
-      .findByIdIn(ids, LockModeType.PESSIMISTIC_WRITE);
+  // 2. lock theo đúng thứ tự id tăng dần (ORDER BY id trong @Query), không gọi mạng
+  List<Account> accounts = accountRepository.lockAllById(ids);
 
-  // 3. nghiệp vụ thuần, không I/O ngoài
-  accounts.forEach(a -> a.apply(items));
+  // 3. nghiệp vụ thuần, không I/O ngoài; mỗi tài khoản chỉ nhận item của chính nó
+  Map<Long, List<TransferItem>> byAccount =
+      items.stream().collect(Collectors.groupingBy(TransferItem::accountId));
+  accounts.forEach(a -> a.apply(byAccount.getOrDefault(a.getId(), List.of())));
   accountRepository.saveAll(accounts);
 }
 
-// 4. với queue: không chờ, lấy việc chưa bị khóa
-@Query(value = "SELECT * FROM job WHERE status = 'PENDING' ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 10",
+// 4. với queue: không chờ, lấy việc chưa bị khóa.
+//    Thứ tự trong SELECT của PostgreSQL là: ... ORDER BY ... LIMIT ... FOR UPDATE
+@Query(value = "SELECT * FROM job WHERE status = 'PENDING' ORDER BY id LIMIT 10 FOR UPDATE SKIP LOCKED",
        nativeQuery = true)
 List<Job> claimJobs();
 ~~~
