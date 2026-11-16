@@ -91,6 +91,15 @@ String c = ("hel" + "lo");           // compile-time constant => pool
 System.out.println(a == c);          // true
 ~~~
 
+### Hình dưới cho thấy: một chuỗi literal (ví dụ "hello") được lưu trong string pool — một bảng băm của JVM — trong khi một chuỗi tạo bằng new String("hello") lại là object riêng trên heap, dù nội dung giống nhau.
+
+~~~seq
+title: Chuỗi "hello" — pool vs heap
+actors: JVM | String pool | Heap
+JVM -> String pool: literal "hello" → resolve khi load class
+String pool -> Heap: new String("hello") tạo object mới
+JVM -> String pool: intern() → trả về instance trong pool
+~~~
 ### Pitfall production
 - Cộng chuỗi trong vòng lặp bằng {{+}} tạo hàng nghìn object trung gian; dùng {{StringBuilder}} cho vòng lặp, {{String.join}} cho tập hợp.
 - Nối chuỗi trong {{toString()}} của entity trong log nóng cũng tạo rác; cân nhắc log theo tham số.
@@ -149,6 +158,16 @@ System.out.println(x);                 // goc them
 - Truyền mảng cũng là truyền reference: method sửa phần tử thì caller thấy, gán mảng mới thì không.
 - Khi API nhận collection/array/ngày tháng mutable, hãy **defensive copy** ở biên nếu muốn giữ bất biến; nếu không, caller có thể sửa dữ liệu sau khi bạn validate.
 
+### Hình dưới cho thấy: khi gọi method, JVM tạo một frame mới trên stack và copy giá trị tham số — với object, tham số là một reference (con trỏ), nên method và caller cùng trỏ tới một object trên heap.
+
+~~~seq
+title: Pass-by-value: caller vs method frame
+actors: Caller frame | Heap | Method frame
+Caller frame -> Heap: x trỏ tới StringBuilder("goc")
+Caller frame -> Method frame: copy reference x (giá trị tham số)
+Method frame -> Heap: sb.append(" them") — sửa object dùng chung
+Heap -> Caller frame: caller thấy thay đổi (cùng một object)
+~~~
 ### Liên hệ với immutability
 - Vì reference được copy chứ không phải object, việc "truyền object vào method" không tạo bản sao. Đây là lý do các class như {{String}}, {{LocalDate}}, record nên bất biến: chia sẻ an toàn mà không cần copy.
 - Ngược lại, chia sẻ {{Date}}, {{ArrayList}} giữa các tầng dễ sinh bug "dữ liệu tự đổi" rất khó truy.
@@ -265,6 +284,17 @@ Một service đặt lịch trả về lỗi 500 "Internal Server Error" cho m�
 - Từ Java 18, finalization **deprecated for removal** (JEP 421) và có thể tắt bằng {{--finalization=disabled}}; từ Java 9 đã có {{Cleaner}} chính thức.
 - Vì sao vẫn còn: tương thích ngược với code cũ và một số thư viện native.
 
+### Hình dưới cho thấy: khi object có finalize() không được thu hồi ngay — JVM đăng ký Finalizer reference, object phải vào hàng đợi, một thread finalizer duy nhất gọi finalize(), và chỉ sau lần GC thứ hai bộ nhớ mới được giải phóng.
+
+~~~seq
+title: Vòng đời object có finalize()
+actors: Object | GC | Finalizer queue | Finalizer thread
+GC -> Object: phát hiện không còn tham chiếu
+Object -> Finalizer queue: đưa vào hàng đợi (không thu hồi ngay)
+Finalizer queue -> Finalizer thread: gọi finalize()
+Finalizer thread -> Object: chạy finalize()
+GC -> Object: thu hồi ở lần GC tiếp theo
+~~~
 ### Thay thế
 - **try-with-resources**: cách chuẩn cho mọi tài nguyên {{AutoCloseable}} (file, socket, JDBC). Close theo thứ tự ngược, exception khi close vào {{getSuppressed()}}.
 - **Cleaner** ({{java.lang.ref.Cleaner}}): đăng ký một action chạy khi object bị phantom-reachable; dùng cho tài nguyên native không có API close, nhưng vẫn **không đảm bảo** thời điểm — chỉ là lưới an toàn.
@@ -330,6 +360,15 @@ void addInts(List<? super Integer> dst) {  // consumer: ghi được Integer
 - {{? super T}}: ghi được {{T}}, đọc ra chỉ {{Object}}.
 - {{?}} = {{? extends Object}}, đọc được Object, không ghi.
 
+### Hình dưới cho thấy: generic là invariant — List<Integer> không phải là List<Number>, nên wildcard mở rộng theo một chiều an toàn: ? extends T cho producer (chỉ đọc), ? super T cho consumer (chỉ ghi).
+
+~~~seq
+title: PECS: Producer Extends, Consumer Super
+actors: List<Integer> | List<Number> | List<? extends Number> | List<? super Integer>
+List<Integer> -> List<? extends Number>: producer — chỉ đọc Number được
+List<Integer> -> List<? super Integer>: consumer — ghi Integer được
+List<? super Integer> -> List<Integer>: không — invariant, sai
+~~~
 ### PECS áp dụng
 - {{Collections.copy(List<? super T> dest, List<? extends T> src)}} là ví dụ kinh điển.
 - API nhận collection chỉ để đọc: dùng {{Collection<? extends T>}} để nhận cả {{List<Sub>}}.
@@ -402,6 +441,16 @@ public final class Period {
 - Ít bug "dữ liệu tự đổi" khi object đi qua nhiều tầng.
 - Record giúp giảm boilerplate nhưng **không tự copy** component mutable; vẫn phải viết compact constructor gọi {{List.copyOf}}.
 
+### Hình dưới cho thấy: class immutable cần defensive copy — constructor nhận List tham số mutable và dùng List.copyOf để tạo bản sao bất biến, caller giữ reference cũng không thể sửa.
+
+~~~seq
+title: Defensive copy trong immutable class
+actors: Caller | Constructor | Immutable object | Caller's list
+Caller -> Constructor: truyền List<String> (mutable)
+Constructor -> Immutable object: List.copyOf(list) — tạo bản sao
+Caller -> Caller's list: caller có thể sửa list gốc
+Immutable object -> Immutable object: list bên trong đã bất biến, không bị ảnh hưởng
+~~~
 ### Pitfall
 - Quên copy trong constructor nhưng copy trong getter: vẫn bị lộ nếu có method nội bộ dùng list gốc — và tốn copy mỗi lần đọc.
 - Dùng {{List.of(...)}} với phần tử null sẽ ném NPE; kiểm tra dữ liệu đầu vào trước.
@@ -458,6 +507,16 @@ public class Service {
 - Anonymous class trong {{ThreadLocal}} hoặc scheduled task cũng giữ outer theo cách tương tự.
 - Ngoài ra, inner class làm object outer không thể GC dù chỉ còn callback nhỏ; kích thước thực tế bị giữ có thể rất lớn.
 
+### Hình dưới cho thấy: inner class (non-static) giữ ngầm một reference tới outer qua field this$0 — nếu inner object được đăng ký vào một registry sống lâu (static list, thread pool, timer), cả object outer cùng mọi thứ nó giữ không thể bị GC thu hồi.
+
+~~~seq
+title: Memory leak do inner class (this$0)
+actors: Registry (static) | Inner object | Outer object | GC
+Registry -> Inner object: giữ reference (listener/callback)
+Inner object -> Outer object: this$0 → giữ outer
+Outer object -> Outer object: giữ service, cache, connection pool
+GC -> Registry: không thể thu hồi (registry vẫn còn)
+~~~
 ### Cách tránh
 - Mặc định {{static}} cho nested class; truyền dependency cần thiết qua constructor thay vì truy cập {{Outer.this}}.
 - Với listener, giữ reference và **unregister** trong {{close()}}/{{@PreDestroy}}; hoặc dùng {{WeakReference}} cho callback ngắn hạn.
@@ -2371,6 +2430,15 @@ int primitive = wrapper;         // NPE tại dòng này (unboxing ngầm)
 - Xảy ra khi: map.get(key) trả null rồi gán cho primitive; ternary operator {{condition ? 1 : null}} ép kiểu primitive; stream {{reduce}} với identity null.
 - Phòng thủ: dùng {{Objects.requireNonNull}}, {{Optional}}, hoặc kiểm tra null trước khi unbox.
 
+### Hình dưới cho thấy: Integer.valueOf cache các giá trị từ -128..127, nên hai Integer 127 cùng trỏ một object; với 128 trở lên thì tạo object mới, == so sánh reference → false.
+
+~~~seq
+title: Integer cache -128..127
+actors: Integer.valueOf | Cache | Heap
+Integer.valueOf -> Cache: giá trị -128..127 → trả về object đã có sẵn
+Cache -> Heap: 128 → tạo Integer mới trên heap
+Heap -> Heap: hai Integer 128 khác object → == false
+~~~
 ### Chi phí boxing trong hot path
 - Mỗi boxing tạo object mới (trừ cache), gây allocation rate cao ⇒ young GC nhiều, pause tăng.
 - Ví dụ: {{Long sum = 0L; for (long v : values) sum += v;}} — {{sum}} bị box/unbox mỗi vòng.
@@ -2457,6 +2525,16 @@ public final class DbResource implements AutoCloseable {
 - **Thread-safe** nếu resource chia sẻ: dùng {{volatile}} hoặc {{synchronized}}.
 - Resource có state ({{InputStream}}, {{Connection}}) nên {{final}} class để tránh subclass phá vỡ logic đóng.
 
+### Hình dưới cho thấy: try-with-resources đóng tài nguyên theo thứ tự ngược khai báo (LIFO) — resource khai báo sau đóng trước, và nếu cả thân try và close đều ném exception, exception của close được gắn vào getSuppressed của exception chính.
+
+~~~seq
+title: Try-with-resources: LIFO close + suppressed exception
+actors: Try block | in (FileInputStream) | out (FileOutputStream) | Exception handler
+Try block -> out: throw exception (đĩa đầy)
+out -> Exception handler: close() throw exception khác
+Exception handler -> Exception handler: addSuppressed(close exception)
+Exception handler -> in: close() — đóng resource sau
+~~~
 ### Java 9+: resource final/effectively final
 ~~~java
 var in = Files.newInputStream(path);
@@ -11057,6 +11135,15 @@ public boolean equals(Object anObject) {
 - Lần đầu gọi {{hashCode()}}, nếu {{hash == 0}}, tính và gán vào {{hash}}; lần sau trả thẳng {{hash}}.
 - Vì String immutable, hash không bao giờ đổi -> cache an toàn.
  
+### Hình dưới cho thấy: String.equals kiểm tra cùng tham chiếu (this == anObject) trước, sau đó so sánh coder và từng byte trong mảng value — còn String.hashCode tính băm một lần và cache vào field hash (vì String immutable).
+
+~~~seq
+title: String.equals vs String.hashCode
+actors: String a | String b | String pool | Heap
+String a -> String b: equals: so sánh coder + từng byte (O(n))
+String a -> String pool: literal "hello" → cùng object
+String a -> String a: hashCode: tính 31*h+val, cache vào field hash
+~~~
 ### Khi nào == ra true
 1. Cùng literal: {{String a = "hello"; String b = "hello";}} -> cùng object trong pool.
 2. Cùng hằng compile-time: {{String c = "hel" + "lo";}} -> pool.
@@ -11112,6 +11199,16 @@ String emoji = "😀";              // coder=1, surrogate pair (4 byte UTF-16)
 - Không phá vỡ API: {{charAt}} vẫn trả {{char}} (convert từ byte[] khi cần).
 - JIT tối ưu: coder là final, nhánh bị loại bỏ khi compile (constant folding).
  
+### Hình dưới cho thấy: từ Java 9, String dùng byte[] value kèm byte coder — coder=0 là Latin-1 (1 byte/ký tự, tiết kiệm 50% so với char[]), coder=1 là UTF-16 (2 byte/ký tự) — coder là final nên JIT có thể loại bỏ nhánh khi compile.
+
+~~~seq
+title: Compact Strings: coder 0 (Latin-1) vs coder 1 (UTF-16)
+actors: String creator | StringLatin1 | StringUTF16 | byte[] value
+String creator -> StringLatin1: tất cả ký tự ≤ U+00FF → coder=0, 1 byte/ký tự
+String creator -> StringUTF16: có ký tự > U+00FF → coder=1, 2 byte/ký tự
+StringLatin1 -> byte[] value: ASCII/Latin-1 tiết kiệm 50%
+StringUTF16 -> byte[] value: emoji, surrogate pair → 2 byte/ký tự
+~~~
 ### Phân tích heap dump (Eclipse MAT / JVisualVM)
 1. Tìm {{java.lang.String}} retained heap lớn.
 2. Nhóm theo {{value}} array ({{byte[]}}) -> thấy các mảng byte[] trùng nội dung.
@@ -11528,6 +11625,16 @@ public final class SystemConfig {
 }
 ~~~
 
+### Hình dưới cho thấy: class bất biến thực sự cần defensive copy — constructor nhận List mutable và dùng List.copyOf để tạo bản sao unmodifiable, caller giữ reference cũng không thể sửa nội dung bên trong.
+
+~~~seq
+title: Defensive copy trong immutable class (deep immutability)
+actors: Caller | Constructor | Immutable object | Caller's list
+Caller -> Constructor: truyền List<String> (mutable)
+Constructor -> Immutable object: List.copyOf(list) — tạo bản sao unmodifiable
+Caller -> Caller's list: caller có thể add/xoá list gốc
+Immutable object -> Immutable object: list bên trong đã bất biến, không bị ảnh hưởng
+~~~
 ### Pitfall production
 - **Copy nông (shallow copy):** {{new ArrayList<>(list)}} đúng là bản copy — sửa list gốc không ảnh hưởng tới nó — nhưng bản copy vẫn mutable, nếu getter trả về chính nó thì caller vẫn sửa được. {{List.copyOf(list)}} vừa copy vừa trả về list unmodifiable; đổi lại nó ném {{NullPointerException}} nếu list có phần tử {{null}}.
 - **Object chứa mutable object:** ví dụ {{Date}} (mutable). Hãy dùng {{java.time.LocalDateTime}} (immutable) thay thế.
