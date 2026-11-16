@@ -5897,17 +5897,17 @@ Trước: status='PAID' còn 40% → planner có thể dùng index trên status 
     'SELECT date_trunc(\'day\', created_at) d, count(*) FROM orders WHERE cast(created_at as date) >= current_date - 30 GROUP BY d ORDER BY d;'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: phương án 1.**
+  explain: `**Đáp án đúng: phương án 1 (index 1).**
 
-### Vì sao 1 đúng
+### Vì sao phương án 1 đúng
 - Điều kiện lọc {{created_at >= now() - interval '30 days' AND created_at < now()}} là **khoảng trên cột created_at** — index B-tree trên created_at dùng được (range scan), không bọc hàm lên cột.
 - {{date_trunc('day', created_at)}} chỉ dùng ở SELECT/GROUP BY (trên biểu thức), không cản index lọc.
 - GROUP BY + ORDER BY cùng biểu thức d: dữ liệu sau khi lọc đã theo thứ tự thời gian, PostgreSQL gom nhóm và trả kết quả theo ngày tăng dần.
 
-### Vì sao 2, 3, 4 chưa tối ưu
-- **Phương án 2**: thiếu {{created_at < now()}} — nếu có đơn trong tương lai (giờ lệch, dữ liệu test) vẫn bị đếm; và điều kiện chỉ một phía, không phải lỗi nặng nhưng kém chặt chẽ.
-- **Phương án 3**: không có {{WHERE}}, chỉ {{HAVING d >= current_date - 30}} → PostgreSQL phải đọc **toàn bộ bảng** rồi mới gom nhóm và lọc (HAVING chạy sau khi gom nhóm), nên không dùng được index trên created_at. Đây là lỗi "lọc muộn": điều kiện giảm dữ liệu nên đặt ở WHERE.
-- **Phương án 4**: cũng bọc hàm {{cast(created_at as date)}} trong WHERE → mất index.
+### Vì sao các phương án còn lại chưa tối ưu
+- **Phương án 0**: thiếu {{created_at < now()}} — nếu có đơn trong tương lai (giờ lệch, dữ liệu test) vẫn bị đếm; và điều kiện chỉ một phía, không phải lỗi nặng nhưng kém chặt chẽ.
+- **Phương án 2**: không có {{WHERE}}, chỉ {{HAVING d >= current_date - 30}} → PostgreSQL phải đọc **toàn bộ bảng** rồi mới gom nhóm và lọc (HAVING chạy sau khi gom nhóm), nên không dùng được index trên created_at. Đây là lỗi "lọc muộn": điều kiện giảm dữ liệu nên đặt ở WHERE.
+- **Phương án 3**: bọc hàm {{cast(created_at as date)}} lên cột trong WHERE → planner không dùng được index B-tree trên {{created_at}} một cách hiệu quả như range scan trên cột gốc.
 
 ### Nguyên tắc
 Không viết hàm lên cột đã index trong điều kiện lọc. Nếu cần so sánh theo ngày, dùng khoảng: {{created_at >= :start AND created_at < :end}} (nửa mở để tránh vấn đề biên với timestamp).
