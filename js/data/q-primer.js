@@ -1721,8 +1721,9 @@ void main() {
 #### Heap hoạt động thế nào
 ~~~java
 void main() {
-  User u = new User("An"); // (1) new User(...) tạo object trên HEAP
+  User u = new User("An");  // (1) new User(...) tạo object trên HEAP
                             // (2) biến u là reference, nằm trên STACK (frame main)
+  int[] arr = {1, 2, 3};    // mảng cũng là object -> nằm trên HEAP, biến arr trên stack
   u.age = 20;               // đi theo reference u tới object trên heap, sửa field
 }
 ~~~
@@ -1731,18 +1732,15 @@ void main() {
 
 ### Sơ đồ trực quan (ASCII)
 ~~~text
-Thread Stack (riêng)                 Heap (chung JVM)
-+---------------------+             +---------------------------+
-| frame: calc         |             | User@0x1A { name:"An",   |
-|   a = 10 (int)      |             |             age:20 }      |
-|   b = 20 (int)      |             |                           |
-+---------------------+             | int[]@0x2B [1,2,3]        |
-| frame: main         |      +----->|                           |
-|   x = 10 (int)      |      |      | String@0x3C "An"          |
-|   u = ref 0x1A -----+------+      +---------------------------+
-|   arr = ref 0x2B ---+----------------------^
-+---------------------+
-Primitive/references: trên stack. Object/array: trên heap.
+THREAD STACK (riêng của mỗi thread)          HEAP (chung cho cả JVM)
+---------------------------------------      -------------------------------------
+frame calc: a = 10, b = 20      (primitive)
+frame main: x = 10              (primitive)
+            u = 0x1A          (reference)  --->  0x1A: User { name = "An", age = 20 }
+            arr = 0x2B        (reference)  --->  0x2B: int[] { 1, 2, 3 }
+                                              0x3C: String "An"
+
+Biến x, u, arr nằm trên stack; object và mảng mà u/arr trỏ tới nằm trên heap.
 ~~~
 
 ### Ví dụ "truyền tham số" dễ nhầm
@@ -1815,7 +1813,7 @@ Server --> Client: 5) Trả dữ liệu
 note Client..Server: Đóng kết nối tốn thêm bước (FIN/ACK)
 ~~~
 
-- Bước 1-3 xảy ra **trước khi** byte dữ liệu ứng dụng đầu tiên được gửi. Tốn ít nhất 1 RTT (client chờ bước 2) trước khi bước 3 kèm dữ liệu trong một số tối ưu, nhưng về bản chất vẫn có chi phí thiết lập.
+- Bước 1-3 xảy ra **trước khi** byte dữ liệu ứng dụng đầu tiên được gửi: client phải chờ SYN-ACK nên tốn ít nhất 1 RTT. (Gói ACK thứ 3 có thể kèm luôn dữ liệu ứng dụng, nhưng về bản chất vẫn là chi phí thiết lập kết nối.)
 - Nếu có TLS (HTTPS/kết nối DB mã hóa), sau handshake TCP còn thêm TLS handshake → thêm 1-2 RTT nữa.
 
 ### Vì sao connection pool cần thiết
@@ -1823,7 +1821,7 @@ note Client..Server: Đóng kết nối tốn thêm bước (FIN/ACK)
 Không có pool (mỗi request mở kết nối DB mới):
   Request 1: [TCP handshake][TLS?][Auth DB][Query][Đóng]  ~ 15-50ms overhead + query
   Request 2: [TCP handshake][TLS?][Auth DB][Query][Đóng]  ~ 15-50ms overhead + query
-  100 req/s * 30ms overhead = 3 giây CPU/mạng lãng phí mỗi giây (không thể!), cộng áp lực tạo socket
+  100 req/s * 30ms = 3.000ms bắt tay mỗi giây (cần ~3 kết nối song song chỉ để handshake), cộng áp lực tạo socket
 
 Có pool (HikariCP giữ sẵn 10 kết nối mở):
   Khởi động: mở 10 kết nối 1 lần
@@ -1924,12 +1922,12 @@ Trong thực tế, resolver thường có cache nên hiếm khi phải đi đủ
 
 ### DNS và ứng dụng Java
 ~~~text
-Spring Boot gọi: RestClient.get().uri("https://api.partner.com/v1/pay").retrieve()
+Spring Boot gọi: restClient.get().uri("https://api.partner.com/v1/pay").retrieve().body(String.class)
   1) Cần IP của api.partner.com -> tra DNS (JVM/OS resolver)
   2) Có IP -> mở TCP tới IP:443 -> TLS handshake -> gửi HTTP request
 ~~~
 - JVM có cơ chế cache DNS (cấu hình qua {{networkaddress.cache.ttl}} trong security properties của JDK; hành vi mặc định khác nhau theo phiên bản/cấu hình bảo mật). Cache quá lâu → app không thấy IP mới; tắt cache hoàn toàn → tốn lookup liên tục.
-- Trong Kubernetes, tên service ({{orders.default.svc.cluster.local}}) được DNS nội bộ phân giải. Pod scale/đổi IP thì DNS cập nhật; client phải tôn trọng TTL và không "ghim" IP cứng.
+- Trong Kubernetes, tên service ({{orders.default.svc.cluster.local}}) được DNS nội bộ phân giải: service thường có ClusterIP ổn định, còn headless service (loại service không cấp ClusterIP) trả thẳng IP của pod nên đổi khi pod thay. Client phải tôn trọng TTL và không "ghim" IP cứng.
 
 ### Bảng nhanh các bản ghi hay gặp
 | Record | Ý nghĩa | Ví dụ dùng trong backend |
@@ -2026,15 +2024,15 @@ Nêu 3 mục tiêu: mã hóa, xác thực, toàn vẹn. Mô tả handshake ở m
 
 ### Ví dụ đời thực
 - **Triệu chứng:** Lúc 00:05, tất cả request từ service Billing (Java 17, Spring Boot) tới {{https://api.bank-gateway.example}} bắt đầu lỗi 100% với {{javax.net.ssl.SSLHandshakeException: PKIX path building failed: unable to find valid certification path to requested target}}; tỉ lệ thanh toán thành công rơi về 0 trong 12 phút.
-- **Điều tra:** Kiểm tra nhanh bằng {{openssl s_client -connect api.bank-gateway.example:443 -servername api.bank-gateway.example -showcerts}} thấy chuỗi chứng chỉ mới dùng intermediate CA chưa có trong truststore mặc định của image JRE đang chạy. Đối chiếu log deploy cho thấy gateway vừa thay chứng chỉ lúc 00:00. Trên JVM, bật tạm {{-Djavax.net.debug=ssl,handshake}} ở môi trường staging tái hiện lỗi và xác nhận bước validate chain thất bại.
-- **Nguyên nhân gốc:** Image container dùng bản JRE cũ, truststore {{cacerts}} không chứa intermediate CA mới; client không dựng được chuỗi tin cậy nên từ chối handshake dù chứng chỉ server hợp lệ.
-- **Cách xử lý:** Cập nhật base image JRE có truststore mới, đồng thời bổ sung quy trình kiểm tra chuỗi chứng chỉ trước khi đối tác thay đổi; cấu hình cảnh báo hết hạn/đổi chứng chỉ và test kết nối TLS trong staging.
+- **Điều tra:** Kiểm tra nhanh bằng {{openssl s_client -connect api.bank-gateway.example:443 -servername api.bank-gateway.example -showcerts}} thấy server chỉ gửi chứng chỉ leaf, thiếu intermediate CA trong chuỗi gửi lên; image JRE đang chạy lại là bản cũ, truststore {{cacerts}} chưa có CA (intermediate hoặc root mới) này. Đối chiếu log deploy cho thấy gateway vừa thay chứng chỉ lúc 00:00. Trên JVM, bật tạm {{-Djavax.net.debug=ssl:handshake}} ở môi trường staging tái hiện lỗi và xác nhận bước validate chain thất bại.
+- **Nguyên nhân gốc:** Client không dựng được chuỗi tin cậy đầy đủ: server gửi thiếu intermediate CA, và image JRE cũ chưa có CA này trong {{cacerts}}, nên từ chối handshake dù chứng chỉ leaf do CA hợp lệ cấp.
+- **Cách xử lý:** Cập nhật base image JRE có truststore mới (bổ sung CA thiếu), hoặc yêu cầu gateway/đối tác cấu hình gửi đủ chuỗi chứng chỉ trung gian; đồng thời bổ sung quy trình kiểm tra chuỗi chứng chỉ trước khi đối tác thay đổi, cấu hình cảnh báo hết hạn/đổi chứng chỉ và test kết nối TLS trong staging.
 - **Kết quả đo được:** Sau khi rollout image mới (12 phút), tỉ lệ handshake thành công trở lại 100%, thanh toán phục hồi hoàn toàn; các lần thay chứng chỉ sau đó được phát hiện trước nhờ job kiểm tra {{openssl s_client}} và cảnh báo tự động.
 
 ### Trả lời mẫu khi phỏng vấn
 "Em hiểu HTTPS là HTTP chạy trên TLS để đảm bảo ba việc: mã hóa dữ liệu, xác thực server và đảm bảo toàn vẹn. Sau TCP handshake, client và server thực hiện TLS handshake: thống nhất phiên bản và cipher, server gửi chứng chỉ, client kiểm tra chứng chỉ theo CA tin cậy, hạn dùng và tên miền, sau đó hai bên thiết lập khóa phiên đối xứng để mã hóa dữ liệu thực tế. Vì handshake tốn thêm round-trip nên tái dùng kết nối với keep-alive hoặc connection pool cũng giúp giảm độ trễ. Trong thực tế em từng xử lý sự cố PKIX path building failed khi đối tác đổi chứng chỉ và intermediate CA chưa có trong truststore của JVM. Em xác minh chuỗi chứng chỉ bằng openssl s_client, tái hiện ở staging với log handshake, rồi cập nhật base image và truststore thay vì tắt verify SSL. Em cũng theo dõi ngày hết hạn chứng chỉ và kiểm tra chuỗi tin cậy trước các thay đổi để tránh outage tương tự. Với em, xử lý đúng TLS là vừa khôi phục dịch vụ nhanh vừa giữ an toàn, không đánh đổi bảo mật."
 
-> Senior tip: luôn giám sát **ngày hết hạn chứng chỉ** và tự động gia hạn (Let's Encrypt/ACM). Sự cố "HTTPS bỗng chết toàn hệ thống" vì quên gia hạn là loại outage rất phổ biến và hoàn toàn tránh được. Khi debug {{SSLHandshakeException}}, bật log {{-Djavax.net.debug=ssl,handshake}} tạm thời ở môi trường an toàn để xem chính xác bước nào fail (nhưng cẩn thận dữ liệu nhạy cảm trong log).`,
+> Senior tip: luôn giám sát **ngày hết hạn chứng chỉ** và tự động gia hạn (Let's Encrypt/ACM). Sự cố "HTTPS bỗng chết toàn hệ thống" vì quên gia hạn là loại outage rất phổ biến và hoàn toàn tránh được. Khi debug {{SSLHandshakeException}}, bật log {{-Djavax.net.debug=ssl:handshake}} tạm thời ở môi trường an toàn để xem chính xác bước nào fail (nhưng cẩn thận dữ liệu nhạy cảm trong log).`,
   follow: ['TLS bảo vệ bạn khỏi những rủi ro nào, và không bảo vệ khỏi rủi ro nào?', 'Khi gặp lỗi PKIX path building failed trong Java, bạn xử lý thế nào cho đúng?'],
   tags: ['HTTPS', 'TLS', 'SSL', 'certificate', 'security', 'nhập môn']
 },
@@ -2055,7 +2053,7 @@ Dev backend hay gặp: "bảng users 10 triệu dòng, query {{WHERE email = ?}}
 - **Full table scan** (quét toàn bảng): DB đọc từng dòng của bảng để kiểm tra điều kiện. Bảng lớn → rất chậm, tốn I/O đĩa.
 - **B-tree / B+tree**: cấu trúc cây cân bằng. Ở đây nói "B-tree" theo cách gọi chung; nhiều DB (InnoDB, Postgres) dùng biến thể B+tree (dữ liệu/lá tổ chức tối ưu cho range scan). Ý tưởng tìm kiếm theo cây cân bằng là giống nhau.
 - **Nút (node/page)**: một "khối" dữ liệu của cây, thường tương ứng một page trên đĩa (ví dụ 8KB hoặc 16KB).
-- **Độ chọn lọc (selectivity)**: cột có nhiều giá trị khác nhau → chọn lọc cao (index hữu ích). Cột chỉ có vài giá trị (ví dụ {{status}} chỉ ACTIVE/INACTIVE trên bảng mà 95% ACTIVE) → index ít lợi.
+- **Độ phân biệt giá trị (cardinality)**: số giá trị khác nhau của một cột. Cột có nhiều giá trị khác nhau (ví dụ {{email}}) giúp index lọc ra rất ít dòng; cột chỉ có vài giá trị (ví dụ {{status}} với 95% ACTIVE) thì index ít lợi vì vẫn phải đọc rất nhiều dòng.
 
 ### Hình dung trực quan: không index vs có B-tree index
 ~~~text
@@ -2074,7 +2072,7 @@ CÁCH 2 — B-tree index trên order_code (minh họa đơn giản):
 
   Tìm 'ORD-773812' (bắt đầu 'O'):
     1) Gốc [M]: 'O' > 'M' -> đi nhánh phải
-    2) Nút [R,W]: 'O' nằm đoạn N-Q -> đi nhánh giữa
+    2) Nút [R,W]: 'O' nằm đoạn N-Q -> đi nhánh trái
     3) Nút lá [N-Q]: tìm thấy 'ORD-773812' -> lấy địa chỉ dòng
   Chỉ đọc ~3 nút thay vì hàng triệu dòng.
 ~~~
@@ -2147,7 +2145,7 @@ Backend Java nhận JSON từ client, lưu DB, ghi log, gọi API khác. Mọi b
 ### Thuật ngữ (giải thích lần đầu)
 - **ASCII**: bảng mã cũ, 128 ký tự tiếng Anh cơ bản/ký hiệu, mỗi ký tự 1 byte (thực dùng 7 bit). Không biểu diễn được tiếng Việt có dấu.
 - **Unicode**: chuẩn gán một "mã số" (code point, ví dụ {{U+1EBF}} cho {{ế}}) cho hầu hết ký tự/ngôn ngữ. Unicode **không phải** encoding; nó chỉ đặt mã số.
-- **UTF-8/UTF-16**: các cách **mã hóa** code point Unicode thành byte. UTF-8 biến độ dài (1-4 byte). UTF-16 thường 2 hoặc 4 byte.
+- **UTF-8/UTF-16**: các cách **mã hóa** code point Unicode thành byte. UTF-8 có độ dài biến thiên (1-4 byte cho một ký tự). UTF-16 thường 2 hoặc 4 byte.
 - **Mojibake**: hiện tượng chữ bị "vỡ" thành ký tự lạ do giải mã sai encoding (ví dụ byte UTF-8 bị đọc như Latin-1).
 
 ### Trực quan: cùng một chữ, byte khác nhau
@@ -2180,7 +2178,7 @@ String bad = new String(utf8, java.nio.charset.StandardCharsets.ISO_8859_1); // 
 ### Byte vs char: nơi hay gây lỗi
 | Tình huống | Dễ nhầm | Hậu quả |
 |---|---|---|
-| Giới hạn độ dài DB/API | "Tối đa 255 ký tự" nhưng cột/kiểm tra tính byte | Tiếng Việt/emoji vượt giới hạn byte, lỗi cắt/lưu |
+| Giới hạn độ dài DB/API | Cột {{varchar(255)}} tính 255 ký tự, nhưng HTTP header, message queue và row size lại tính byte | Tiếng Việt/emoji vượt giới hạn byte, lỗi cắt/lưu |
 | Cắt chuỗi theo byte | Cắt giữa chùm byte của 1 ký tự UTF-8 | Ký tự cuối bị hỏng (replacement char) |
 | Kích thước message/HTTP | Đếm {{length()}} của String | Payload thực tế lớn hơn (byte) |
 | Hash/so sánh chữ ký | Hai bên encode khác charset | Cùng chuỗi nhưng byte khác → chữ ký không khớp |
@@ -2586,9 +2584,8 @@ Trong AWS VPC, subnet liên kết với route table; security group là firewall
 Một công ty kết nối VPC production {{10.20.0.0/16}} với mạng văn phòng cũng {{10.20.0.0/16}}. API Java tới DB không ổn định vì một số gói bị route về dải đích trùng; kết nối VPN thành công nhưng ping/health check chỉ chạy một chiều. Team quy hoạch VPC mới {{10.80.0.0/16}}, chia app {{10.80.1.0/24}} và DB {{10.80.2.0/24}}, khai báo route hai chiều và chỉ cho subnet app tới DB cổng 5432. Sau migration theo từng service, lỗi route giảm từ 4% xuống 0; thêm kiểm tra overlap vào Terraform plan để ngăn tạo dải trùng lần nữa.
 
 ### Trả lời mẫu khi phỏng vấn
-“IPv4 có 32 bit; CIDR cho biết bao nhiêu bit đầu là prefix mạng. Vì vậy /16 có phạm vi lớn hơn /24. Subnet nhóm các địa chỉ để quản lý route và chính sách, còn route table quyết định next hop cho gói tin. Firewall mới quyết định cho phép nguồn, đích và port nào, nên dải private không tự đồng nghĩa với an toàn. Khi thiết kế em cấp các VPC và subnet không chồng lấn, tách app/database/test theo nhu cầu route, và chỉ mở cổng DB từ workload cần truy cập. Khi debug em kiểm tra địa chỉ thực, route đi và route về, rồi security group/NACL; có thể dùng ip route get trên Linux. Em đặc biệt chú ý CIDR overlap khi kết nối VPC với mạng đối tác hoặc on-prem vì router không biết hai dải trùng là hai nơi khác nhau.”
+“IPv4 có 32 bit; CIDR cho biết bao nhiêu bit đầu là prefix mạng. Vì vậy /16 có phạm vi lớn hơn /24. Subnet nhóm các địa chỉ để quản lý route và chính sách, còn route table quyết định next hop cho gói tin. Firewall mới quyết định cho phép nguồn, đích và port nào, nên dải private không tự đồng nghĩa với an toàn. Khi thiết kế em cấp các VPC và subnet không chồng lấn, tách app/database/test theo nhu cầu route, và chỉ mở cổng DB từ workload cần truy cập. Khi debug em kiểm tra địa chỉ thực, route đi và route về, rồi security group/NACL; có thể dùng ip route get trên Linux. Em đặc biệt chú ý CIDR overlap khi kết nối VPC với mạng đối tác hoặc on-prem vì router không biết hai dải trùng là hai nơi khác nhau. Em cũng xác minh prefix và dải địa chỉ bằng công cụ tính CIDR, không ước lượng thủ công khi tạo nhiều subnet.”
 
-Em cũng xác minh prefix và dải địa chỉ bằng công cụ tính CIDR, không ước lượng thủ công khi tạo nhiều subnet.
 > Senior tip: lập kế hoạch CIDR tập trung trước khi tạo nhiều VPC; hãy để khoảng trống cho môi trường mới và kiểm tra overlap tự động trong IaC. Thay CIDR sau khi hệ thống chạy thường đắt hơn rất nhiều.`,
   follow: ['Vì sao hai VPC có CIDR chồng lấn không thể route trực tiếp với nhau?', 'Một kết nối TCP có route đi nhưng không có route về sẽ biểu hiện ra sao?'],
   tags: ['IP', 'IPv4', 'CIDR', 'subnet', 'routing', 'VPC']
@@ -2642,9 +2639,8 @@ Kiểm tra release note, changelog, dependency tree và test integration trướ
 Service báo giá có 14 ứng dụng nội bộ dùng {{pricing-client}}. Team nâng từ 1.8.6 lên 2.0.0 theo PR tự động; 3 ứng dụng build lỗi vì method đổi chữ ký, còn một service khác build được nhưng làm tròn theo quy tắc mới khiến 0,4% hóa đơn sai một đơn vị tiền nhỏ. Họ chia migration: trước tiên phát hành adapter giữ method cũ, thêm contract test cho 14 client và fixture giá biên; sau đó cập nhật từng ứng dụng và chỉ xóa adapter ở MAJOR kế tiếp. Rollout canary cho 5% traffic phát hiện lệch trước mở rộng; không còn hóa đơn sai, và lần nâng cấp sau giảm thời gian tích hợp từ 4 ngày xuống 1 ngày.
 
 ### Trả lời mẫu khi phỏng vấn
-“SemVer gồm MAJOR, MINOR, PATCH. Theo quy ước, PATCH sửa lỗi không phá API, MINOR thêm chức năng tương thích ngược, còn MAJOR cho phép breaking change. Em dùng nó để ước lượng rủi ro nâng cấp, không dùng nó như bảo đảm. Cần đọc changelog, biết API công khai mà thư viện cam kết, xem dependency tree và build/test trên version mới. Với Maven em pin version hoặc dùng dependency management đã review để build tái lập; tránh range động trong release vì hai lần build có thể lấy hai artifact khác nhau. Em cũng kiểm tra runtime dependency bắc cầu và dữ liệu đã lưu, bởi chương trình có thể compile nhưng hành vi thay đổi. Một lần migration lớn, em giữ adapter tương thích, chạy contract test trên các client và canary một phần traffic trước khi bỏ API cũ.”
+“SemVer gồm MAJOR, MINOR, PATCH. Theo quy ước, PATCH sửa lỗi không phá API, MINOR thêm chức năng tương thích ngược, còn MAJOR cho phép breaking change. Em dùng nó để ước lượng rủi ro nâng cấp, không dùng nó như bảo đảm. Cần đọc changelog, biết API công khai mà thư viện cam kết, xem dependency tree và build/test trên version mới. Với Maven em pin version hoặc dùng dependency management đã review để build tái lập; tránh range động trong release vì hai lần build có thể lấy hai artifact khác nhau. Em cũng kiểm tra runtime dependency bắc cầu và dữ liệu đã lưu, bởi chương trình có thể compile nhưng hành vi thay đổi. Một lần migration lớn, em giữ adapter tương thích, chạy contract test trên các client và canary một phần traffic trước khi bỏ API cũ. Sau đó em nâng cấp theo từng nhóm ứng dụng, có rollback và theo dõi lỗi runtime sau deploy.”
 
-Sau đó em nâng cấp theo từng nhóm ứng dụng, có rollback và theo dõi lỗi runtime sau deploy.
 > Senior tip: bump dependency nên có diff dependency tree, release-note checklist và test hành vi nghiệp vụ; MAJOR là tín hiệu cần kiểm tra kỹ, còn PATCH không phải lý do để bỏ qua regression test.`,
   follow: ['Vì sao một thay đổi ở PATCH version vẫn có thể làm hỏng production?', 'Bạn làm thế nào để Maven build cùng source luôn resolve đúng dependency?'],
   tags: ['SemVer', 'Maven', 'dependency', 'backward compatibility', 'release']
@@ -2667,8 +2663,8 @@ try {
   callPartner();
 } finally {
   long elapsedNanos = System.nanoTime() - started;
-  long elapsedMillis = elapsedNanos / 1_000_000;
-  metrics.record("partner.call", elapsedMillis);
+  // Micrometer timer nhận duration kèm đơn vị
+  registry.timer("partner.call").record(elapsedNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
 }
 ~~~
 Với code cần test, inject {{Clock}} thay vì gọi {{Instant.now()}} trực tiếp:
