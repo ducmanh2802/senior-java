@@ -113,7 +113,7 @@ class WalletService {
         ExecutorService pool4 = Executors.newFixedThreadPool(8);
         List<Future<?>> fs = new ArrayList<>();
         for (int t = 0; t < 8; t++) fs.add(pool4.submit(() -> { for (int i = 0; i < 200; i++) if (w4.withdraw("C", 1)) ok4.incrementAndGet(); }));
-        for (Future<?> f : fs) f.get(10, TimeUnit.SECONDS);
+        for (Future<?> f : fs) f.get(30, TimeUnit.SECONDS);
         check("nhieu_luong", ok4.get() == 500 && s4.data.get("C") == 0L, "kỳ vọng đúng 500 lần thành công và số dư 0, thực tế " + ok4.get() + " lần, số dư " + s4.data.get("C"));
 
         pool.shutdownNow(); pool4.shutdownNow();
@@ -5966,21 +5966,21 @@ Câu kinh điển: "Vì sao không nên dùng {{Executors.newFixedThreadPool}} t
   minutes: 25,
   story: `**Tóm tắt:** Service đối soát tổng hợp tiền bằng {{double}} và làm tròn bằng {{Math.round(x * 100) / 100.0}}. Số nhị phân không lưu chính xác các phân số thập phân (ví dụ 0.1), nên sai số tích lũy trên hàng nghìn giao dịch khiến tổng báo cáo lệch vài đồng, và hai số tiền bằng nhau về giá trị lại bị xét là khác.
 
-**Bối cảnh dự án:** Cổng thanh toán xử lý hàng nghìn giao dịch mỗi ngày; tiền có phần lẻ (ví dụ 10.50 USD, 0.10 USD; VND không có phần lẻ nhưng quy đổi sang USD/EUR thì ra số lẻ). {{ReconciliationService}} mỗi đêm đọc hai nguồn: file đối soát từ ngân hàng đối tác và sổ cái nội bộ, tổng cộng từng hệ thống rồi so sánh hai tổng. Tổng tiền chạy vào hàng tỷ đồng, nên sai số vài đồng trên hàng nghìn giao dịch đã đủ làm báo cáo lệch và đội vận hành phải kiểm tra thủ công từng giao dịch.
+**Bối cảnh dự án:** Cổng thanh toán xử lý hàng nghìn giao dịch mỗi ngày; tiền có phần lẻ (ví dụ 10.50 USD, 0.10 USD; VND không có phần lẻ nhưng quy đổi sang USD/EUR thì ra số lẻ). {{ReconciliationService}} mỗi đêm đọc hai nguồn: file đối soát từ ngân hàng đối tác và sổ cái nội bộ, tổng cộng từng hệ thống rồi so sánh hai tổng. Tổng tiền chạy vào hàng trăm triệu đồng, nên sai số vài xu trên hàng nghìn giao dịch đã đủ làm báo cáo lệch và đội vận hành phải kiểm tra thủ công từng giao dịch.
 
-**Sự cố:** Đối soát đêm 05/11 báo hệ thống A thu **100.000.000.00**, hệ thống B thu **99.999.999.98**, chênh **237.500** (tổng các chênh lẻ chưa kết paio). Kiểm tra từng giao dịch lại thấy mọi cặp đều bằng nhau — sai số không nằm ở giao dịch đơn lẻ nào, mà ở cách tổng hợp và làm tròn. Log in tổng dạng **0.6000000000000001** thay vì 0.60, và làm tròn 2.005 lại ra **2.00** thay vì 2.01.
+**Sự cố:** Đối soát đêm 05/11 báo hệ thống A thu **100.000.000.00**, hệ thống B thu **99.999.999.98**, chênh **0,02** (tổng các khoản chênh lệch chưa kết chuyển). Kiểm tra từng giao dịch lại thấy mọi cặp đều bằng nhau — sai số không nằm ở giao dịch đơn lẻ nào, mà ở cách tổng hợp và làm tròn. Log in tổng dạng **0.6000000000000001** thay vì 0.60, và làm tròn 2.005 lại ra **2.00** thay vì 2.01.
 
 **Nhiệm vụ của bạn:** Sửa {{ReconciliationService}}: tổng và làm tròn tiền dùng {{BigDecimal}} (tạo từ **chuỗi** hoặc {{BigDecimal.valueOf}}, KHÔNG tạo từ double), so sánh bằng {{compareTo}} == 0, và quy ước scale cố định (2 chữ số thập phân cho tiền có phần lẻ).`,
   artifacts: [
     { name: 'reconcile-2026-11-05.log', lang: 'text', content: `2026-11-05 02:14:03.118 INFO  ReconciliationService : tong he thong A = 100000000.00
 2026-11-05 02:14:03.121 INFO  ReconciliationService : tong he thong B = 99999999.98
-2026-11-05 02:14:03.124 WARN  ReconciliationService : LECH 237500 (he thong A lon hon he thong B)
+2026-11-05 02:14:03.124 WARN  ReconciliationService : LECH 0.02 (he thong A lon hon he thong B)
 2026-11-05 02:14:03.130 DEBUG ReconciliationService : tong 0.10 + 0.20 + 0.30 in ra 0.6000000000000001
 2026-11-05 02:14:03.133 DEBUG ReconciliationService : lam tron 2.005 -> 2.00` },
-    { name: 'reconciliation-report.txt', lang: 'text', content: `PAIR_ID SO_GATEWAY SO_LEDGER CO_CHIA_SE HIEU
-PAY-88213 100.00 100.0 CO SAI (flag LECH tuy gia tri bang nhau)
-PAY-88214 250.50 250.5 CO SAI (flag LECH tuy gia tri bang nhau)
-TONG CAC CAP BI HIEU NHAM: 1,2 ty dong (tien cua cac pair bi danh dau sai, khong phai tien mat that)` },
+    { name: 'reconciliation-report.txt', lang: 'text', content: `PAIR_ID SO_GATEWAY SO_LEDGER KET_QUA
+PAY-88213 0.30000000000000004 0.30 LECH (double: gia tri bang nhau, bieu dien nhi phan khac)
+PAY-88214 1000.0000000001588 1000.00 LECH (sai so tich luy sau 10.000 giao dich 0.10)
+SO CAP BI DANH DAU LECH: 3.412 (tat ca deu la sai so double, khong co dong tien nao that su thieu)` },
   ],
   starter: `// ===== Code cần sửa =====
 class ReconciliationService {
@@ -6058,62 +6058,62 @@ class ReconciliationService {
     }
 }`,
   hints: [
-    'Chay test 1: tong 0.10 + 0.20 + 0.30 in ra gi? So nhi phan khong luu chinh xac 0.1, moi phep cong lam tron it, sai so tieu luu.',
-    'Double.parseDouble(a) == Double.parseDouble(b) so bit luu trong bo nho. Hai so in ra nhau ma bit luu khong giong (0.30000000000000004 vs 0.3) thi coi KHAC nhau.',
-    'new BigDecimal(Double.parseDouble("2.005")) luon chua sai so nhi phan cua 2.005 (2.004999...), nen setScale(2, HALF_UP) lam tron xuong ra 2.00. Phai tao BigDecimal tu CHUOI "2.005".',
-    'Muon so tien bang nhau dung compareTo == 0 (so gia tri, bo qua scale); equals cua BigDecimal ca scale nen 10.00 != 10.0.'
+    'Chạy test 1: tổng 0.10 + 0.20 + 0.30 in ra gì? Số nhị phân không lưu chính xác 0.1, mỗi phép cộng làm tròn ít, sai số tích lũy.',
+    'Double.parseDouble(a) == Double.parseDouble(b) so bit lưu trong bộ nhớ. Hai số in ra nhau mà bit lưu không giống (0.30000000000000004 vs 0.3) thì coi KHÁC nhau.',
+    'new BigDecimal(Double.parseDouble("2.005")) luôn chứa sai số nhị phân của 2.005 (2.004999...), nên setScale(2, HALF_UP) làm tròn xuống ra 2.00. Phải tạo BigDecimal từ CHUỖI "2.005".',
+    'Muốn số tiền bằng nhau dùng compareTo == 0 (số giá trị, bỏ qua scale); equals của BigDecimal cả scale nên 10.00 != 10.0.'
   ],
-  rootCause: `**Nguyen nen goc:** double luu theo IEEE 754 (1 bit dau, 11 bit mu, 52 bit phan ma), chi duoc khoang 15-16 chu so dang tin cay. Phan so thap phan nhu 0.1 khong luu chinh xac (la 0.1000000000000000055511151231257827...). Moi phep cong lam tron it, va sai so tieu luu. Tren hang nghìn giao dich, sai so vi tich luy thanh **vai dong**, chinh nguyen nhan tong B lech 237.500 so voi A.
+  rootCause: `**Nguyên nhân gốc:** double lưu theo IEEE 754 (1 bit dấu, 11 bit mũ, 52 bit phần mã), chỉ được khoảng 15-16 chữ số đáng tin cậy. Phân số thập phân như 0.1 không lưu chính xác (là 0.1000000000000000055511151231257827...). Mỗi phép cộng làm tròn ít, và sai số tích lũy. Trên hàng nghìn giao dịch, sai số vi tích lũy thành **vài đồng**, chính nguyên nhân tổng B lệch 0,02 so với A.
 
-**Tam nhan:** Math.round(x * 100) / 100.0 cung khong tin duoc duoc: phep nhan x * 100 trong nhi phan co the di chuyen gia tri qua can am 0.5, va Math.round lam tron theo quy tắc "x.5 lon ve tram tren" (200.5 -> 201), ket qua co the trung hoac sai tuong voi quy tac tien te.
+**Tam nhân:** Math.round(x * 100) / 100.0 cũng không tin được: phép nhân x * 100 trong nhị phân có thể di chuyển giá trị qua ngưỡng 0.5, và Math.round làm tròn theo quy tắc "x.5 lên về trăm trên" (200.5 -> 201), kết quả có thể trùng hoặc sai tương đối quy tắc tiền tệ.
 
-**Loi nguy hiem nhat:** new BigDecimal(double) "nhan dung luon sai so nhi phan". new BigDecimal(2.005) chinh la 2.0049999999999998934..., nen setScale(2, HALF_UP) cho **2.00** thay vi 2.01. Cach dung: new BigDecimal("2.005") hoac BigDecimal.valueOf(2.005) (goi String.valueOf trong, lay chuoi doc duoc cua double).
+**Lỗi nguy hiểm nhất:** new BigDecimal(double) "nhận đúng luôn sai số nhị phân". new BigDecimal(2.005) chính là 2.0049999999999998934..., nên setScale(2, HALF_UP) cho **2.00** thay vì 2.01. Cách dùng: new BigDecimal("2.005") hoặc BigDecimal.valueOf(2.005) (gọi String.valueOf trong, lấy chuỗi đọc được của double).
 
-**So sanh:** equals cua BigDecimal ca hai thang intVal (so nguyen khong dau) VA scale (so chu so thap phan). 10.00 (intVal=1000, scale=2) khac 10.0 (intVal=100, scale=1) duoc gia tri bang nhau. compareTo chi so gia tri -> 10.00 vs 10.0 bang 0 (giong nhau).`,
-  fix: `### Cach sua trong bai
+**So sánh:** equals của BigDecimal cả hai thành phần intVal (số nguyên không dấu) VÀ scale (số chữ số thập phân). 10.00 (intVal=1000, scale=2) khác 10.0 (intVal=100, scale=1) dù giá trị bằng nhau. compareTo chỉ so giá trị -> 10.00 vs 10.0 bằng 0 (giống nhau).`,
+  fix: `### Cách sửa trong bài
 
-Doi tat ca phep tinh tien sang BigDecimal, tu CHUOI, va quy uoc scale co dinh:
+Đổi tất cả phép tính tiền sang BigDecimal, từ CHUỖI, và quy ước scale cố định:
 
 ~~~java
 class ReconciliationService {
     String sumAmounts(List<String> amounts) {
         BigDecimal total = BigDecimal.ZERO;
-        for (String s : amounts) total = total.add(new BigDecimal(s));   // tu chuoi, chinh xac
+        for (String s : amounts) total = total.add(new BigDecimal(s));   // từ chuỗi, chính xác
         return total.setScale(2, RoundingMode.HALF_UP).toPlainString();
     }
     boolean amountsEqual(String a, String b) {
-        return new BigDecimal(a).compareTo(new BigDecimal(b)) == 0;   // so gia tri, bo qua scale
+        return new BigDecimal(a).compareTo(new BigDecimal(b)) == 0;   // so giá trị, bỏ qua scale
     }
     String roundMoney(String amount) {
-        return new BigDecimal(amount).setScale(2, RoundingMode.HALF_UP).toPlainString();   // tu chuoi
+        return new BigDecimal(amount).setScale(2, RoundingMode.HALF_UP).toPlainString();   // từ chuỗi
     }
 }
 ~~~
 
-### Tai sao double sai (co che)
-- double la so dau phao dong nhi phan: 0.1 khong luu chinh xac (phan so vo han trong nhi phan). Moi phep cong lam tron, sai so tich luy. Vi du: tong 0.10 + 0.20 + 0.30 in ra 0.6000000000000001 khong phai 0.60.
-- Mot tram nghin giao dich nhan 0.10 bang double tong ra 1000.0000000001588, chenh lech 1,588e-10 — be tai mot giao dich, lon khi dien vao bao cong ty.
+### Tại sao double sai (cơ chế)
+- double là số dấu phẩy động nhị phân: 0.1 không lưu chính xác (phân số vô hạn trong nhị phân). Mỗi phép cộng làm tròn, sai số tích lũy. Ví dụ: tổng 0.10 + 0.20 + 0.30 in ra 0.6000000000000001 không phải 0.60.
+- Một trăm nghìn giao dịch nhân 0.10 bằng double tổng ra 1000.0000000001588, chênh lệch 1,588e-10 — bé tại một giao dịch, lớn khi điền vào báo công ty.
 
-### Thu tu xu ly tien o bien
-Khi doc tu file hoac API, chuyen ngay sang BigDecimal tu CHUOI tra ve; khong cho double sot ra logic nghiep vu. Scale quy uoc: 2 chu so thap phan voi USD/EUR, 0 voi VND.
+### Thứ tự xử lý tiền ở biến
+Khi đọc từ file hoặc API, chuyển ngay sang BigDecimal từ CHUỖI trả về; không cho double sót ra logic nghiệp vụ. Scale quy ước: 2 chữ số thập phân với USD/EUR, 0 với VND.
 
-### So sanh
-| Cach | 10.00 vs 10.0 | 2.005 lam tron | Ghi chu |
+### So sánh
+| Cách | 10.00 vs 10.0 | 2.005 làm tròn | Ghi chú |
 |---|---|---|---|
-| double == | giong (may man) | sai khi nhan 100 | khong tin duoc tien |
-| new BigDecimal(double) | giong | 2.00 (SAI) | bat dau tu sai so nhi phan |
-| new BigDecimal(String) + compareTo | GIONG | 2.01 (DUNG) | nen dung tien |
+| double == | giống (may mắn) | sai khi nhân 100 | không tin được tiền |
+| new BigDecimal(double) | giống | 2.00 (SAI) | bắt đầu từ sai số nhị phân |
+| new BigDecimal(String) + compareTo | GIỐNG | 2.01 (ĐÚNG) | nên dùng tiền |
 
-### Phong ngua
-- Quy tac kiem duyet: tien khong duoc duoc luu/tinh bang double hoac float.
-- Test du lieu co 3 chu so thap phan (2.005, 1.005, 0.125) de bat loi lam tron.
-- Dung BigDecimal.valueOf(double) neu bat buoc nhan double; tranh new BigDecimal(double).
-- Luu DB: NUMERIC(19,2) hoac BIGINT luu so don vi nho nhat (cent).
+### Phòng ngừa
+- Quy tắc kiểm duyệt: tiền không được dùng double hoặc float.
+- Test dữ liệu có 3 chữ số thập phân (2.005, 1.005, 0.125) để bắt lỗi làm tròn.
+- Dùng BigDecimal.valueOf(double) nếu bắt buộc nhận double; tránh new BigDecimal(double).
+- Lưu DB: NUMERIC(19,2) hoặc BIGINT lưu số đơn vị nhỏ nhất (cent).
 
-### Tra loi mau khi pham van (60-90 giay)
-"Tien phai luu va tinh bang BigDecimal, bao gio khong bang double, vi double luu nhi phan khong chinh xac phan so thap phan — 0.1 bi sai so it, tien luu hang nghìn giao dich thi lech vai dong. Em dung new BigDecimal tu chuoi hoac BigDecimal.valueOf, khong dung new BigDecimal(double). So sanh tien dung compareTo bang 0 (bo qua scale, nen 10.00 bang 10.0), lam tron tien dung setScale(2, HALF_UP). O DB em luu NUMERIC(19,2) hoac BIGINT cent va chuan hoa scale ngay khi doc du lieu vao he thong."
+### Trả lời mẫu khi phỏng vấn (60-90 giây)
+"Tiền phải lưu và tính bằng BigDecimal, bao giờ không bằng double, vì double lưu nhị phân không chính xác phần số thập phân — 0.1 bị sai số ít, tiền lưu hàng nghìn giao dịch thì lệch vài đồng. Em dùng new BigDecimal từ chuỗi hoặc BigDecimal.valueOf, không dùng new BigDecimal(double). So sánh tiền dùng compareTo bằng 0 (bỏ qua scale, nên 10.00 bằng 10.0), làm tròn tiền dùng setScale(2, HALF_UP). Ở DB em lưu NUMERIC(19,2) hoặc BIGINT cent và chuẩn hóa scale ngay khi đọc dữ liệu vào hệ thống."
 
-> Senior tip: Mot lieu it sai so tren mot giao dich tro thanh sai so lon khi cong hang nghìn lan. Luon tien tien ve "don vi nho nhat" (cent) luu bang BIGINT, hoac NUMERIC co scale co dinh, chuan hoa tai bien, khong bao gio để double "muot" vao code tien te.`,
+> Senior tip: Một lỗi ít sai số trên một giao dịch trở thành sai số lớn khi cộng hàng nghìn lần. Luôn tiền tệ về "đơn vị nhỏ nhất" (cent) lưu bằng BIGINT, hoặc NUMERIC có scale cố định, chuẩn hóa tại biến, không bao giờ để double "mượt" vào code tiền tệ.`,
   related: ['core-021', 'banking-036'],
   tags: ['BigDecimal', 'double', 'compareTo', 'scale', 'tien', 'doi soat']
 },
@@ -6126,9 +6126,9 @@ Khi doc tu file hoac API, chuyen ngay sang BigDecimal tu CHUOI tra ve; khong cho
   minutes: 20,
   story: `**Tóm tắt:** {{BigDecimal.equals}} so sánh CA hai thang: gia tri VA cach viet (so chu so thap phan). Nen {{10.00}} khac {{10.0}}. Dung de kiem tra "da xu ly" hoac "hoan tien khop don goc" se coi hai tien bang gia tri nhung format khac la KHAC nhau -> tu choi hoan tien hop ly hoac xu ly tien truong.
 
-**Bối cảnh dự án:** Hệ thống thanh toán ghi danh sach so tien da xu ly vao mot {{Set<BigDecimal>}} de deduplicate (loc bo trung) lenh hoan tien gui lai tu cổng thanh toán. Cổng A gui tien the dang {{10.00}}, cổng B gui cung khoan the dang {{10.0}}. Code dung {{processedAmounts.contains(new BigDecimal(amount))}} de quyet dinh da xu ly chua.
+**Bối cảnh dự án:** Hệ thống thanh toán ghi danh sách số tiền đã xử lý vào một {{Set<BigDecimal>}} để loại bỏ trùng lặp cho lệnh hoàn tiền được gửi lại từ cổng thanh toán. Cổng A gửi tiền thẻ 10.00, cổng B gửi cùng một đơn hàng nhưng tiền thẻ 10.0. Code dùng {{processedAmounts.contains(new BigDecimal(amount))}} để quyết định đã xử lý chưa.
 
-**Sự cố:** Đêm 07/11, doi soat bao **3.412** cap tien bi danh dau lech (0,4% tong so; tong tien cac cap nay len 1,2 ty dong nhung thuc chi la hieu nham dinh dang), cung co **128** khach duoc hoan tien **hai lan** vi ban gui lai co dang {{10.0}} he thong cho la "chua tung xu ly" va tao lenh hoan moi. Kiem tra thu muc tung cap thay so tien bang nhau ve gia tri, sai chi o cach ghi so thap phan.
+**Sự cố:** Đêm 07/11, đối soát báo **3.412** cặp tiền bị đánh dấu lệch (0,4% tổng số; tổng tiền các cặp này lên 1,2 tỷ đồng nhưng thực chỉ là hiệu nhầm định dạng), cũng có **128** khách được hoàn tiền **hai lần** vì gửi lại có dạng 10.0 hệ thống cho là "chưa từng xử lý" và tạo lệnh hoàn mới. Kiểm tra từng cặp thấy số tiền bằng nhau về giá trị, sai chỉ ở cách ghi số thập phân.
 
 **Nhiem vụ cua ban:** Sua {{PaymentDedupe}}: so sanh tien bang {{compareTo}} == 0; truoc khi dung tien lam khoa cua {{Set}} hoac {{Map}}, chuan hoa ve scale co dinh (2 chu so thap phan) bang {{setScale(2, RoundingMode.HALF_UP)}}; KHONG dung {{equals}} hay {{hashCode}} cua {{BigDecimal}} lam danh nghiep vu.`,
   artifacts: [
@@ -6211,8 +6211,8 @@ class PaymentDedupe {
     'contains cua HashSet dung equals: 10.00 da them, tim 10.0 thi khong tim thay -> he thong tao lenh hoan moi.',
     'Sua: compareTo == 0 so gia tri; setScale(2, HALF_UP) chuan hoa scale truoc khi them vao Set de hashCode/equals cua khoa deu dung.'
   ],
-  rootCause: `**Nguyen nen goc:** BigDecimal luu hai thang: intVal (so nguyen khong dau) va scale (so chu so thap phan). equals cua BigDecimal so CA HAI, nen 10.00 (intVal=1000, scale=2) khac 10.0 (intVal=100, scale=1) duoc gia tri bang nhau. contains cua HashSet dung equals => 10.00 da them vao Set, lan sau tim 10.0 (cung gia tri, khac scale) tra ve false => he thong cho la "chua xu ly" va tao lenh hoan tien moi. Cung nguyen nhan: khop hoan tien voi don goc bi tu choi oan vi equals=false.`,
-  fix: `### Cach sua trong bai
+  rootCause: `**Nguyên nhân gốc:** BigDecimal lưu hai phần: {{intVal}} (số nguyên không dấu) và {{scale}} (số chữ số thập phân). {{equals}} của BigDecimal so sánh **cả hai**, nên 10.00 ({{intVal}}=1000, {{scale}}=2) khác 10.0 ({{intVal}}=100, {{scale}}=1) dù giá trị bằng nhau. {{contains}} của HashSet dùng equals => 10.00 đã thêm vào Set, lần sau tìm 10.0 (cùng giá trị, khác {{scale}}) trả về false => hệ thống cho là \"chưa xử lý\" và tạo lệnh hoàn tiền mới. Cùng nguyên nhân: khớp hoàn tiền với đơn gốc bị từ chối oan vì equals=false.`,
+  fix: `### Cách sửa trong bài
 
 ~~~java
 class PaymentDedupe {
@@ -6220,7 +6220,7 @@ class PaymentDedupe {
     private final Set<BigDecimal> processedAmounts = new HashSet<>();
 
     boolean sameAmount(String a, String b) {
-        return new BigDecimal(a).compareTo(new BigDecimal(b)) == 0;   // so GIA TRI
+        return new BigDecimal(a).compareTo(new BigDecimal(b)) == 0;   // so GIÁ TRỊ
     }
 
     boolean alreadyProcessed(String amount) {
@@ -6232,34 +6232,34 @@ class PaymentDedupe {
     }
 
     private BigDecimal canonical(String amount) {
-        return new BigDecimal(amount).setScale(MONEY_SCALE, RoundingMode.HALF_UP);   // chuan hoa scale
+        return new BigDecimal(amount).setScale(MONEY_SCALE, RoundingMode.HALF_UP);   // chuẩn hóa scale
     }
 }
 ~~~
 
-### Tai sao loi xay ra (co che)
-- BigDecimal.equals kiem tra intVal VA scale. 10.00 va 10.0 co gia tri bang nhau nhung scale khac => equals = false => hashCode cung khac => chung la HAI khoa khac nhau trong HashSet/HashMap.
-- contains tim theo bucket cua hashCode cua 10.0, nhung 10.00 o bucket khac -> khong tim thay -> "chua xu ly" -> xu ly lai -> hoan tien trung.
+### Tại sao lỗi xảy ra (cơ chế)
+- BigDecimal.equals kiểm tra intVal VÀ scale. 10.00 và 10.0 có giá trị bằng nhau nhưng scale khác => equals = false => hashCode cũng khác => chúng là HAI khóa khác nhau trong HashSet/HashMap.
+- contains tìm theo bucket của hashCode của 10.0, nhưng 10.00 ở bucket khác -> không tìm thấy -> "chưa xử lý" -> xử lý lại -> hoàn tiền trùng.
 
-### Thu tu xu ly tien
-Chuan hoa scale (2 chu so thap phan cho USD/EUR) ngay khi tao BigDecimal, truoc khi dung lam khoa Set/Map hoac luu DB (NUMERIC(19,2) / BIGINT cent).
+### Thứ tự xử lý tiền
+Chuẩn hóa scale (2 chữ số thập phân cho USD/EUR) ngay khi tạo BigDecimal, trước khi dùng làm khóa Set/Map hoặc lưu DB (NUMERIC(19,2) / BIGINT cent).
 
-### So sanh
-| Cach | 10.00 == 10.0? | Dung lam khoa Set? | Ghi chu |
+### So sánh
+| Cách | 10.00 == 10.0? | Dùng làm khóa Set? | Ghi chú |
 |---|---|---|---|
-| equals | SAI (false) | Khong | co scale |
-| compareTo == 0 | DUNG (0) | Dung neu chuan hoa scale truoc | so gia tri |
+| equals | SAI (false) | Không | có scale |
+| compareTo == 0 | ĐÚNG (0) | ĐÚNG nếu chuẩn hóa scale trước | so giá trị |
 
-### Phong ngua
-- Kiem duyet: tien khong duoc dung equals/hashCode cua BigDecimal lam danh nghiep vu.
-- Test: 10.00 vs 10.0, -25.50 vs -25.5, 0.00 vs 0.0 phai bang nhau; 100.00 vs 100.01 phai khac.
-- Dung AssertJ isEqualByComparingTo trong test thay assertEquals mac dinh.
+### Phòng ngừa
+- Kiểm duyệt: tiền không được dùng equals/hashCode của BigDecimal làm nghiệp vụ.
+- Test: 10.00 vs 10.0, -25.50 vs -25.5, 0.00 vs 0.0 phải bằng nhau; 100.00 vs 100.01 phải khác.
+- Dùng AssertJ isEqualByComparingTo trong test thay assertEquals mặc định.
 
-### Tra loi mau khi pham van
-"BigDecimal.equals khong dung de so tien vi no so ca scale — 10.00 va 10.0 bi coi khac nhau. Em dung compareTo bang 0 de so gia tri, va setScale(2, HALF_UP) de chuan hoa scale truoc khi dung tien lam khoa Set/Map. O DB luu tien bang NUMERIC(19,2) hoac BIGINT cent. Test phai cover ca truong hop gia tri bang nhau nhung format khac."
+### Trả lời mẫu khi phỏng vấn
+"BigDecimal.equals không dùng để so tiền vì nó so cả scale — 10.00 và 10.0 bị coi khác nhau. Em dùng compareTo bằng 0 để so giá trị, và setScale(2, HALF_UP) để chuẩn hóa scale trước khi dùng tiền làm khóa Set/Map. Ở DB lưu tiền bằng NUMERIC(19,2) hoặc BIGINT cent. Test phải cover cả trường hợp giá trị bằng nhau nhưng format khác."
 
-> Senior tip: equals/hashCode cua BigDecimal thuan toi "gia tri + cach viet", khong phai "gia tri tien te". Nhung code co ten la sameAmount hay dedupe tien phai tu doc quy uoc scale, khong duoc assume toan bo he thystem ghi scale giong nhau.`,
-related: ['core-021', 'banking-036'],
+> Senior tip: equals/hashCode của BigDecimal thuần túy là "giá trị + cách viết", không phải "giá trị tiền tệ". Nhưng code có tên là sameAmount hay dedupe tiền phải tự đọc quy ước scale, không được assume toàn bộ hệ thống ghi scale giống nhau.`,
+  related: ['core-021', 'banking-036'],
   tags: ['BigDecimal', 'equals', 'compareTo', 'scale', 'tien', 'doi soat']
 },
 {
@@ -6782,15 +6782,15 @@ Khi được hỏi "viết rate limiter token bucket thế nào cho đúng?", n�
   minutes: 20,
   story: `**Bối cảnh dự án:** Hệ thống ví điện tử có tính năng "chia phí dịch vụ" — tổng phí thu từ khách hàng được chia cho các đối tác (ví dụ Shopee, Lazada, Tiki) để đối soát tiền cho mỗi đối tác mỗi ngày. Tiền là VND (số nguyên đồng, không có phần lẻ), nhưng code tính bằng {{double}} và làm tròn từng phần bằng {{Math.round}}.
 
-**Sự cố:** Đối soát cuối tháng báo tổng các phần **không bằng tổng phí**, lệch từ vài đồng đến 2.000 đồng trên từng hóa đơn (ví dụ: 10.000 chia 4 đối tác lại bị làm tròn lên thành 3.000 × 4 = 12.000). Trên 180.000 lần chia tiền, sai số tích lũy hơn hai triệu đồng. Một số đối tác bị thu ít, một số bị thu nhiều, báo cáo doanh thu của phòng tài chính sai, kế toán phải điều tra thủ công từng hóa đơn.
+**Sự cố:** Đối soát cuối tháng báo tổng các phần **không bằng tổng phí**, lệch từ vài đồng đến 2.000 đồng trên từng hóa đơn (ví dụ: 100.000 chia 3 đối tác bị làm tròn xuống thành 33.333 × 3 = 99.999, thiếu 1 đồng; 7 đồng chia 3 người bị làm tròn xuống thành 2 × 3 = 6, thiếu 1 đồng). Trên 180.000 lần chia tiền, sai số tích lũy hơn hai triệu đồng. Một số đối tác bị thu ít, một số bị thu nhiều, báo cáo doanh thu của phòng tài chính sai, kế toán phải điều tra thủ công từng hóa đơn.
 
 **Nhiệm vụ của bạn:** Sửa {{RevenueShareService.split}} để **tổng các phần luôn đúng bằng tổng phí**, và các phần chênh nhau **không quá 1 đồng**.`,
   artifacts: [
     { name: 'revenue-audit.csv', lang: 'text', content: `split_id,total,partners,shares,sum_shares,diff
-RV-100231,100000,3,"33333|33333|33333",99999,-1
-RV-100244,10000,4,"3000|3000|3000|3000",12000,+2000
-RV-100259,250000,6,"41667|41667|41667|41667|41667|41667",250002,+2
-RV-100260,7,3,"2|2|2",6,-1
+RV-100231,100000,3,"33334|33333|33333",100000,0
+RV-100244,10000,4,"2500|2500|2500|2500",10000,0
+RV-100259,250000,6,"41667|41667|41667|41667|41666|41666",250000,0
+RV-100260,7,3,"3|2|2",7,0
 -- month total diff: -1,184,312 VND (under-collected) / +944,207 VND (over-collected)` },
   ],
   starter: `// ===== Code cần sửa =====
@@ -6846,7 +6846,7 @@ class RevenueShareService {
     'Dùng số học nguyên: total / n cho phần chung, total % n cho số đồng còn dư.',
     'Phát từng đồng dư cho vài đối tác đầu (mỗi người thêm 1 đồng). Tổng sẽ luôn đúng và chênh lệch tối đa 1 đồng.',
   ],
-  rootCause: `**Làm tròn từng phần một cách độc lập** (và còn qua {{double}}). Khi chia không hết, mỗi phần bị làm tròn lên hoặc xuống cùng một hướng, sai số nhân lên theo số người: 100.000/3 → 3 * 33.333 = 99.999 (thiếu 1 đồng); 10.000/4 = 2.500 vẫn đúng, nhưng file audit cho thấy {{3000}} — vì phiên bản trước đó còn làm tròn lên hàng nghìn ở tầng hiển thị. Với số rất lớn, {{double}} còn mất chính xác (chỉ khoảng 15–16 chữ số có nghĩa). Nguyên tắc vi phạm: **tổng các phần phải bằng tổng gốc** — một ràng buộc nghiệp vụ mà code không hề kiểm tra.`,
+  rootCause: `**Làm tròn từng phần một cách độc lập** (và còn qua {{double}}). Khi chia không hết, mỗi phần bị làm tròn lên hoặc xuống cùng một hướng, sai số nhân lên theo số người: 100.000/3 → 33.333 × 3 = 99.999 (thiếu 1 đồng); 7/3 → 2 × 3 = 6 (thiếu 1 đồng). Mỗi phần sai 0,33–0,66 đồng, nhưng nhân theo hàng trăm nghìn dòng thì thiếu một triệu đồng trở lên. Với số rất lớn, {{double}} còn mất chính xác (chỉ khoảng 15–16 chữ số có nghĩa). Nguyên tắc vi phạm: **tổng các phần phải bằng tổng gốc** — một ràng buộc nghiệp vụ mà code không hề kiểm tra.`,
   fix: `### Cách sửa
 Dùng **số học nguyên**: phần chung {{total / n}}, số dư {{total % n}} được phát thêm 1 đồng cho {{remainder}} đối tác đầu. Tổng luôn đúng, chênh lệch tối đa 1 đồng, không có {{double}} nào.
 
@@ -6874,17 +6874,17 @@ Câu "chia 100 nghìn cho 3 người thế nào" kiểm tra bạn có nghĩ tớ
   level: 'mid',
   severity: 'P2',
   minutes: 20,
-  story: `**Bối cảnh dự án:** Hệ thống hóa đơn tính **đơn giá** và **giá trị giao dịch trung bình** cho báo cáo. Code dùng {{BigDecimal}} (đúng tiền, không dùng {{double}}) nhưng gọi {{divide(divisor)}} **không truyền scale và {{RoundingMode}}}**. Khi tổng tiền không chia hết cho số lượng (ví dụ 100.000 đồng chia cho 3 sản phẩm), Java ném {{ArithmeticException: Non-terminating decimal expansion; no exact representable decimal record}}.
+  story: `**Bối cảnh dự án:** Hệ thống hóa đơn tính **đơn giá** và **giá trị giao dịch trung bình** cho báo cáo. Code dùng {{BigDecimal}} (đúng tiền, không dùng {{double}}) nhưng gọi {{divide(divisor)}} **không truyền scale và {{RoundingMode}}}**. Khi tổng tiền không chia hết cho số lượng (ví dụ 100.000 đồng chia cho 3 sản phẩm), Java ném {{ArithmeticException: Non-terminating decimal expansion; no exact representable decimal result}}.
 
 **Sự cố:** Khách đặt đơn 3 sản phẩm tổng 100.000 đồng. Service tính đơn giá = 100.000 / 3 → ném exception, đơn không thể checkout. Ở thời gian cao điểm, hàng chục đơn bị từ chối oan vì số tiền không chia hết. Log in lỗi ArithmeticException và hệ thống trả 500 cho khách.
 
 **Nhiệm vụ của bạn:** Sửa {{InvoiceService.unitPrice}} và {{average}} để chia luôn kèm scale (2 chữ số thập phân) và {{RoundingMode.HALF_UP}}, không bao giờ ném exception vì số lẻ.`,
   artifacts: [
     { name: 'invoice-service.log', lang: 'text', content: `2026-11-20 09:12:44.118 ERROR InvoiceService : unitPrice failed order=ORD-99213
-java.lang.ArithmeticException: Non-terminating decimal expansion; no exact representable decimal record.
+java.lang.ArithmeticException: Non-terminating decimal expansion; no exact representable decimal result.
     at com.shop.invoice.InvoiceService.unitPrice(InvoiceService.java:24)
 2026-11-20 09:12:44.355 ERROR InvoiceService : average failed report=DAILY
-java.lang.ArithmeticException: Non-terminating decimal expansion; no exact representable decimal record.
+java.lang.ArithmeticException: Non-terminating decimal expansion; no exact representable decimal result.
     at com.shop.invoice.InvoiceService.average(InvoiceService.java:38)` },
   ],
   starter: `// ===== Code cần sửa =====
@@ -6977,7 +6977,7 @@ class InvoiceService {
     'Luôn chia tiền với scale và làm tròn: {{divide(divisor, scale, RoundingMode)}}.',
     'Tiền tệ thường dùng {{RoundingMode.HALF_UP}} (làm tròn theo thường quy), không dùng {{HALF_EVEN}} trừ khi có yêu cầu.',
   ],
-  rootCause: `**Gọi {{BigDecimal.divide(divisor)}} không truyền scale và làm tròn.** Phép chia này yêu cầu kết quả **chính xác tuyệt đối**; nếu phần thập phân vô hạn (ví dụ 100.00 / 3 = 33.333...) Java ném {{ArithmeticException}} thay vì làm tròn im lặng. Đây là thiết kế ý định của {{BigDecimal}}: buộc lập trình viên quyết định sai số cho phép, không cho phép sai số nhị phân trôi trôi.
+  rootCause: `**Gọi {{BigDecimal.divide(divisor)}} không truyền scale và làm tròn.** Phép chia này yêu cầu kết quả **chính xác tuyệt đối**; nếu phần thập phân vô hạn (ví dụ 100.00 / 3 = 33.333...) Java ném {{ArithmeticException}} thay vì làm tròn im lặng. Đây là thiết kế ý định của {{BigDecimal}}: buộc lập trình viên quyết định sai số cho phép, không cho phép sai số nhị phân trôi.
 
 **Sai số đôi khi ẩn:** 100.00 / 2 = 50.00 chia hết nên không exception, nhưng 100.00 / 3 lại lỗi — vậy nên lỗi chỉ lộ lúc có đơn hàng số lượng lẻ, đúng như sự cố "hàng chục đơn bị từ chối oan".`,
   fix: `### Cách sửa
