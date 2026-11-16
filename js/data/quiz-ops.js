@@ -2608,18 +2608,18 @@ Xử lý lỗi       -> để message hiện lại (hoặc gửi DLQ sau maxRece
   id: 'qz-devops-061', topic: 'devops',
   q: "App Java khởi động 90s (Spring Boot). Readiness probe initialDelaySeconds=10, periodSeconds=5, failureThreshold=3. Kết quả?",
   options: [
-    'Pod bị kill/restart vì readiness fail liên tục trong lúc khởi động',
+    'Pod không Ready trong lúc khởi động, trở lại Ready khi app đã listen; nếu có liveness probe tương tự thì bị kill/restart',
     'Pod Ready ngay sau 10s',
     'Probe tự chờ đến khi app ready',
     'Liveness kill pod sau 90s'
   ],
   answer: 0,
-  explain: `**Tóm tắt:** Readiness probe bắt đầu sau 10s, fail liên tục → pod không Ready; nếu có liveness probe tương tự thì pod bị restart. Dùng startupProbe cho app khởi động chậm.
+  explain: `**Tóm tắt:** Readiness probe bắt đầu sau 10s, fail liên tục → pod bị gỡ khỏi endpoints trong lúc khởi động, trở lại Ready khi app đã listen. Readiness fail **không** restart pod; chỉ liveness fail mới restart. Nếu liveness probe cũng có initialDelaySeconds=10 thì pod sẽ bị kill/restart.
 
 ### Vì sao các phương án còn lại sai
 - Không Ready ngay sau 10s vì app chưa listen.
 - Probe không tự chờ; cần startupProbe hoặc initialDelaySeconds đủ lớn.
-- Liveness chỉ kill nếu probe fail; nếu không có liveness thì không kill.
+- Liveness chỉ kill nếu probe fail; nếu không có liveness hoặc liveness check khác thì không kill.
 
 > Senior tip: dùng startupProbe với failureThreshold cao (vd 30 x 10s) để che thời gian khởi động; readiness chỉ check sau khi startup pass.`
 },
