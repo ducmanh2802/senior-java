@@ -15,9 +15,21 @@ once() {
   open=$(grep -l '^Status: TODO$' tasks/T*.md 2>/dev/null | grep -v 'R-review' | xargs -r grep -L 'js/i18n/' \
     | xargs -rn1 basename | cut -d- -f1 | grep -xF -f logs/only-extra 2>/dev/null | wc -l)
   [ "$open" -ge "$MIN" ] && return 0
-  local files; files=$(ls tasks/backlog/T*.md 2>/dev/null | sort -V | head -n "$BATCH")
+  # only tasks whose After: dependency is already DONE in HEAD — moving a chained successor early makes autopilot
+  # see it as an open owner of the same file and the predecessor's DONE work then never gets committed
+  local files="" c dep depf
+  for c in $(ls tasks/backlog/T*.md 2>/dev/null | sort -V); do
+    dep=$(grep -m1 -o '^After: T[0-9]*' "$c" | cut -d' ' -f2)
+    if [ -n "$dep" ]; then
+      depf=$(git ls-tree --name-only HEAD tasks/ | grep -m1 "^tasks/$dep-")
+      [ -n "$depf" ] && git show "HEAD:$depf" | grep -qE '^Status: (DONE|CANCELLED)' || continue
+    fi
+    files="$files $c"
+    [ "$(echo $files | wc -w)" -ge "$BATCH" ] && break
+  done
+  files=$(echo $files)
   if [ -z "$files" ]; then
-    [ -f logs/refill-empty ] || { log "queue low ($open open) and backlog EMPTY — Claude must generate more"; touch logs/refill-empty; }
+    [ -f logs/refill-empty ] || { log "queue low ($open open) and no movable backlog task ($(ls tasks/backlog/T*.md 2>/dev/null | wc -l) waiting on deps) — Claude must generate more"; touch logs/refill-empty; }
     return 0
   fi
   rm -f logs/refill-empty
