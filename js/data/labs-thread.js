@@ -857,7 +857,7 @@ public Price price(String sku, int qty) {                   // KHÔNG synchroniz
 
 **Triệu chứng:** Sau khi bật, throughput **giảm** từ ~900 req/s xuống ~42 req/s, p99 từ 120ms lên **5,2s**, CPU pod chỉ ~35% (2 core). Thread dump kiểu cũ ({{jcmd 1 Thread.print}}) chỉ thấy 31 thread platform, không thấy hàng trăm request đang chờ. Không có deadlock, GC bình thường, không lỗi kết nối.
 
-**Dữ liệu thu thập:** Bật {{-Djdk.tracePinnedThreads=full}} trên pod canary (in ra stdout; tuỳ chọn này chỉ có trên JDK 21–23, đã bị bỏ từ JDK 24), bật JFR profile trên pod còn lại, và chạy {{jcmd 1 Thread.dump_to_file -format=text /tmp/td.txt}} (file 268 KB, đếm được 226 virtual thread).`,
+**Dữ liệu thu thập:** Bật {{-Djdk.tracePinnedThreads=full}} trên pod canary (in ra stdout; tính năng chẩn đoán của JDK 21, trên JDK mới hơn hãy xác minh bằng JFR {{jdk.VirtualThreadPinned}}), bật JFR profile trên pod còn lại, và chạy {{jcmd 1 Thread.dump_to_file -format=text /tmp/td.txt}} (file 268 KB, đếm được 226 virtual thread).`,
   artifacts: [
     {
       name: 'trace-pinned.log',
@@ -1109,7 +1109,7 @@ Lưu ý: chỉ đổi {{synchronized}} → {{ReentrantLock}} là đủ để vir
 **Dài hạn:**
 - Thay SDK cũ bằng client HTTP hỗ trợ async ({{java.net.http.HttpClient}} với {{sendAsync}}, hoặc WebClient) — không cần thread nào chờ mạng.
 - Nếu chưa thể bỏ SDK, giới hạn song song bằng {{Semaphore}} và dùng platform thread pool riêng cho client đó (bulkhead), đừng để nó kéo sập toàn bộ scheduler.
-- Nâng lên **JDK 24+** (JEP 491) nếu muốn {{synchronized}} không còn ghim virtual thread (từ JDK 24 {{jdk.tracePinnedThreads}} cũng bị bỏ, dùng JFR {{jdk.VirtualThreadPinned}}); nhưng vẫn phải sửa thiết kế khoá vì lý do tuần tự hoá. Native call/JNI vẫn ghim kể cả trên JDK 24.
+- Đừng dựa vào việc chờ bản JDK sửa: trên JDK 21 {{synchronized}} của ứng dụng và native call/JNI đều ghim virtual thread. Hãy xác minh bằng JFR {{jdk.VirtualThreadPinned}} trên đúng phiên bản runtime đang chạy thay vì đoán theo số hiệu JDK, và vẫn phải sửa thiết kế khoá vì lý do tuần tự hoá (kể cả khi đã hết pin).
 - Kiểm tra toàn bộ dependency: JDBC driver, thư viện crypto, file IO native có thể pin; JFR {{jdk.VirtualThreadPinned}} là cách phát hiện.
 
 ### Cách xác minh sau khi sửa

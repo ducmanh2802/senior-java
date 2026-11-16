@@ -1,6 +1,6 @@
 # T2223 — Rà soát chất lượng 4 lab id NHỎ nhất trong labs-thread.js
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/labs-thread.js`
 After: T2155
@@ -22,8 +22,6 @@ Giai đoạn ưu tiên **chất lượng**: nội dung do model free viết cầ
 `node --check js/data/labs-thread.js`; `node scripts/build-light-index.js`; `node scripts/validate.js` (bài học thêm `node scripts/test-lessons.js`, bug thêm `node scripts/test-bugs.js`) → OK.
 Xong: `Status: DONE`. Notes: bảng `id | lỗi tìm thấy | đã sửa gì`.
 
-Status: DONE
-
 ## Notes
 
 | id | lỗi tìm thấy | đã sửa gì |
@@ -31,7 +29,7 @@ Status: DONE
 | lab-thread-001 | Không tìm thấy lỗi kỹ thuật; artifact, dẫn chứng, rubric 4 ý tự nhất quán. | Giữ nguyên. |
 | lab-thread-002 | Không tìm thấy lỗi kỹ thuật; Little's law, stack dump, log leak detection khớp nhau. | Giữ nguyên. |
 | lab-thread-003 | Không tìm thấy lỗi kỹ thuật; phân biệt contention/deadlock đúng, số liệu pidstat/throughput khớp. | Giữ nguyên. |
-| lab-thread-004 | Gỡ chi tiết phiên bản không chắc; thay bằng nguyên lý: synchronized và native/JNI vẫn ghim virtual thread. | Đã sửa trong lần rà soát trước. |
+| lab-thread-004 | Câu "các bản JDK mới chỉ giảm pinning nội bộ, không bỏ hẳn" mâu thuẫn với lab-thread-013 (JDK 24 / JEP 491 bỏ pin cho synchronized). | Sửa lại thành nguyên lý: trên JDK 21 synchronized và native/JNI đều ghim; xác minh bằng JFR trên đúng runtime, không đoán theo số hiệu JDK. |
 | lab-thread-005 | Không tìm thấy lỗi kỹ thuật; quy trình top -H và khớp TID/nid chính xác, giải thích ReDoS và sửa bằng regex tuyến tính/RE2/J rõ ràng. | Giữ nguyên. |
 | lab-thread-006 | Không tìm thấy lỗi kỹ thuật; phân tích starvation deadlock và các phương án sửa (thenCombine, timeout, bulkheads) chính xác. | Giữ nguyên. |
 | lab-thread-007 | Không tìm thấy lỗi kỹ thuật; giải thích AsyncAppender blocking và NFS impact hợp lý. | Giữ nguyên. |
