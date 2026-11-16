@@ -306,7 +306,7 @@ By the end of the quarter she was handling on-call alone, and her escalation rat
 - **the turning point was**: bước ngoặt là
 - **removing yourself at the right pace**: rút lui đúng nhịp
 
-> Tip: Đừng kể mentor như "tôi chỉ bảo họ đọc tài liệu". Cần **kế hoạch**, **cách đo tiến bộ**, và **kết quả**. **mentor** khi là động từ thì đi thẳng với tân ngữ: "I mentored her", không nói "I mentored for her" hay "mentored to her" (chỉ khi là danh từ mới dùng "a mentor to someone"); cũng đừng dùng "teach" cho toàn bộ quá trình — teach là dạy kỹ năng cụ thể, mentor rộng hơn.`,
+> Senior tip: Đừng kể mentor như "tôi chỉ bảo họ đọc tài liệu". Cần **kế hoạch**, **cách đo tiến bộ**, và **kết quả**. **mentor** khi là động từ thì đi thẳng với tân ngữ: "I mentored her", không nói "I mentored for her" hay "mentored to her" (chỉ khi là danh từ mới dùng "a mentor to someone"); cũng đừng dùng "teach" cho toàn bộ quá trình — teach là dạy kỹ năng cụ thể, mentor rộng hơn.`,
   follow: [
     'How did you measure whether the mentoring was working?',
     'What would you do differently with a mentee who was not improving?',
