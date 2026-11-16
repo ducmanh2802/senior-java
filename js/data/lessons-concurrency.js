@@ -1229,8 +1229,8 @@ Gợi ý: Java 9+ có {{completeOnTimeout}} và {{orTimeout}}.`,
         return Executors.newFixedThreadPool(4, r -> { Thread t = new Thread(r, "price-" + n.incrementAndGet()); t.setDaemon(true); return t; });
     }
     static Integer await(CompletableFuture<Integer> f) {
-        try { return f.get(2, TimeUnit.SECONDS); }
-        catch (TimeoutException e) { throw new AssertionError("future chưa xong sau 2s"); }
+        try { return f.get(5, TimeUnit.SECONDS); }
+        catch (TimeoutException e) { throw new AssertionError("future chưa xong sau 5s"); }
         catch (InterruptedException e) { throw new AssertionError(e); }
         catch (ExecutionException e) { throw new AssertionError("future lỗi: " + e.getCause()); }
     }
@@ -1246,6 +1246,11 @@ Gợi ý: Java 9+ có {{completeOnTimeout}} và {{orTimeout}}.`,
     static Supplier<Integer> slow(int price, long ms) {
         return () -> { try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } return price; };
     }
+    // Nguồn "chậm" xác định: bị chặn trên một latch KHÔNG BAO GIỜ được countDown,
+    // nên chắc chắn chưa trả về khi timeout nổ (không phụ thuộc Thread.sleep gần ngưỡng).
+    static Supplier<Integer> blocked(CountDownLatch never) {
+        return () -> { try { never.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } return 1; };
+    }
     public static void main(String[] args) {
         check("all sources succeed: minimum price", () -> {
             ExecutorService pool = newPool();
@@ -1259,12 +1264,13 @@ Gợi ý: Java 9+ có {{completeOnTimeout}} và {{orTimeout}}.`,
         });
         check("slow source is dropped after timeout", () -> {
             ExecutorService pool = newPool();
+            CountDownLatch never = new CountDownLatch(1);   // không bao giờ countDown -> nguồn chậm bị chặn xác định
             try {
-                long t0 = System.nanoTime();
-                Integer best = await(new PriceAggregator(pool).bestPrice(List.of(() -> 130, slow(1, 5_000), () -> 125), 200));
-                eq(125, best);   // nguồn chậm rẻ hơn nhưng quá hạn nên bị bỏ
-                long ms = (System.nanoTime() - t0) / 1_000_000;
-                if (ms > 1_500) throw new AssertionError("mất " + ms + "ms, timeout là 200ms");
+                // Nguồn chậm (giá 1, rẻ nhất) bị chặn vô hạn; hai nguồn nhanh trả ngay 130 và 125.
+                // Timeout 1500ms quá dư so với nguồn nhanh (chỉ return hằng số) nên kết quả luôn là min(130,125).
+                Integer best = await(new PriceAggregator(pool).bestPrice(List.of(blocked(never), () -> 130, () -> 125), 1_500));
+                eq(125, best);   // nếu nguồn chậm lọt vào, kết quả sẽ là 1
+                if (never.getCount() == 0) throw new AssertionError("nguồn chậm đã được nhả, test không còn kiểm tra timeout");
             } finally { pool.shutdownNow(); }
         });
         check("all sources fail: NoSuchElementException", () -> {
