@@ -140,6 +140,11 @@ while true; do
     open_owner "$f" "$id" >/dev/null && continue
     if grep -q '^Reviewed-by:' "$f"; then
       commit_task "$f" "$id"
+    elif basename "$f" | grep -qE '^T[0-9]+-(review|factcheck)-'; then
+      # quality-phase task that IS a review/fact-check of existing content: a second LLM review doubles the cost
+      # and kept failing on free models (2026-11-16) — verify-staged (validate + lesson/bug tests) is the gate
+      echo "Reviewed-by: verify-only (review task)" >> "$f"
+      commit_task "$f" "$id"
     elif ! owns "$f" | grep -qE "$REVIEW_FILES"; then
       # code/UI task (views, css, core, api, algo with tests…): verify-staged (validate + Java tests + browser smoke)
       # checks it better than a free model reading it; only knowledge content needs an LLM fact-check
