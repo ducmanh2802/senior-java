@@ -105,7 +105,22 @@ Client -> API gateway -> Payment service -> Ledger DB (primary)
                               |                         Settlement/recon job
                         Webhook receiver ----------------------+
 ~~~
-- API chỉ nhận và trả 202 kèm id tra cứu, không gọi Napas đồng bộ.
+
+~~~seq
+title: Luồng ghi chuyển tiền qua Napas
+actors: Client | API gateway | Payment service | Ledger DB | Napas adapter | Webhook receiver
+Client -> API gateway: POST /transfers + Idempotency-Key
+API gateway -> Payment service: chuyển request
+Payment service -> Ledger DB: ghi INITIATED, ledger, outbox
+Ledger DB --> Payment service: OK
+Payment service -> Napas adapter: gửi qua outbox (napas_ref)
+Napas adapter -> Napas adapter: gọi Napas (asynchronous)
+Napas adapter --> Webhook receiver: kết quả thanh toán
+Webhook receiver -> Ledger DB: cập nhật SETTLED/FAILED
+API gateway --> Client: trả 202 kèm transfer id
+~~~
+
+- API chỉ nhận và trả 202 kèm id tra cứu, không gọi Napas đồng sbừng.
 - Outbox: ghi transfer + ledger + outbox trong cùng DB transaction; relay đọc outbox và publish. Tránh dual-write.
 - Napas adapter idempotent theo napas_ref.
 
@@ -258,6 +273,21 @@ Client -> API -> Ledger service -> Primary DB (sharded by account_id)
               |               |
         Data warehouse    Alerting
 ~~~
+
+~~~seq
+title: Ghi và đọc số dư tài khoản
+actors: Client | API | Ledger service | Primary DB | Redis | Kafka
+Client -> API: gửi ghi ledger hoặc đọc số dư
+API -> Ledger service: xử lý nghiệp vụ
+Ledger service -> Primary DB: ghi ledger + balance trong 1 transaction
+Primary DB --> Ledger service: OK
+Ledger service -> Kafka: xuất sự kiện ledger-events
+Kafka --> Worker báo gian lận: tiêu dùng sự kiện
+API -> Redis: đọc/cache số dư tài khoản nóng
+Redis --> API: trả số dư
+API --> Client: phản hồi kết quả
+~~~
+
 - Sharding theo account_id với consistent hashing; mỗi shard phục vụ một phạm vi account.
 - Read replica cho balance query; cache Redis cho hot account với TTL 1-5s + invalidation qua CDC.
 - Kafka events cho downstream, không block ghi ledger.
@@ -366,6 +396,22 @@ Client -> API gateway -> OTP service -> Redis (OTP state, rate limit)
                         |     |     |
                     Provider adapters (Twilio, SES, FCM)
 ~~~
+
+~~~seq
+title: Yêu cầu và xác minh OTP
+actors: Client | API gateway | OTP service | Redis | Channel dispatcher | Provider
+Client -> API gateway: yêu cầu OTP (kênh, mục đích)
+API gateway -> OTP service: chuyển request
+OTP service -> Redis: sinh/lưu hash OTP, rate limit
+OTP service -> Channel dispatcher: đẩy OTP qua kênh
+Channel dispatcher -> Provider: gửi SMS/email/push
+Provider --> Client: OTP đến thiết bị
+Client -> API gateway: verify {otpId, code}
+API gateway -> OTP service: so sánh hash constant-time
+OTP service --> API gateway: OK hoặc từ chối
+API gateway --> Client: kết quả verify
+~~~
+
 - OTP service stateless, scale ngang.
 - Redis cho OTP state với TTL tự hết hạn; DB cho audit và record bền.
 - Verify path: hash input, so sánh constant-time, conditional update attempts+status.
@@ -478,6 +524,19 @@ Notification service -> email/app push "sao kê sẵn sàng"
 Reporting pipeline (parallel):
 OLTP primary -> CDC/replica -> Data warehouse -> Report jobs -> S3 + DB
 ~~~
+
+~~~seq
+title: Sinh sao kê hàng loạt
+actors: Scheduler | Orchestrator | Kafka | Worker | S3 | DB metadata
+Scheduler -> Orchestrator: kích hoạt job kỳ sao kê
+Orchestrator -> Kafka: publish task theo phân đoạn tài khoản
+Kafka --> Worker: consume phân đoạn
+Worker -> S3: upload file PDF/CSV
+Worker -> DB metadata: ghi statement (idempotent)
+DB metadata --> Orchestrator: cập nhật tiến độ job
+Orchestrator --> Scheduler: thông báo xong
+~~~
+
 - Tách hoàn toàn khỏi OLTP: đọc từ replica hoặc warehouse, không chạm primary.
 - Workers stateless, scale theo lag.
 
@@ -630,6 +689,19 @@ engine    service    (in-process
         +--> Transaction service (allow/block)
         +--> Case management (if review)
         +--> Event stream (async)
+
+~~~seq
+title: Quyết định gian lận (sync path)
+actors: Transaction service | Fraud API | Feature service | Rules engine | ML model | Kafka
+Transaction service -> Fraud API: POST /fraud/score
+Fraud API -> Feature service: lấy feature (velocity, device, geo)
+Fraud API -> Rules engine: đánh giá rules
+Fraud API -> ML model: suy luận điểm
+Rules engine --> Fraud API: quy tắc + lý do
+ML model --> Fraud API: điểm + tính năng đóng góp
+Fraud API -> Kafka: sự kiện (async)
+Fraud API --> Transaction service: allow/review/block + lý do
+~~~
 
 Async path:
 Event stream -> Feature updater -> Feature store
@@ -801,6 +873,18 @@ Client --------> |   CDN     |
                         +-------------+
 ~~~
 
+~~~seq
+title: Luồng đọc redirect (đường nóng)
+actors: Client | URL service | Redis | Postgres replica | Kafka
+Client -> URL service: GET /{code}
+URL service -> Redis: GET code
+Redis --> URL service: hit (url, expires) hoặc miss
+URL service -> Postgres replica: SELECT khi miss
+Postgres replica --> URL service: url, expires_at
+URL service -> Kafka: phát click event bất đồng bộ
+URL service --> Client: 302 Location hoặc 410 Gone
+~~~
+
 ### Luồng đọc
 1. Chuẩn hoá code, kiểm tra định dạng.
 2. Tra Redis. Hit thì redirect ngay, không chạm DB.
@@ -901,6 +985,17 @@ redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)
 redis.call('PEXPIRE', KEYS[1], 86400000)
 return { allowed, math.floor(tokens) }
 ~~~
+
+~~~seq
+title: Kiểm tra quota token bucket
+actors: Client | Gateway | Redis | upstream service
+Client -> Gateway: request kèm API key
+Gateway -> Redis: Lua script (đọc-sửa-ghi bucket)
+Redis --> Gateway: allowed + token còn lại
+Gateway -> upstream service: chuyển tiếp request (nếu allowed)
+Gateway --> Client: 429 + Retry-After (nếu chặn)
+~~~
+
 - Dùng thời gian của Redis (TIME) thay vì đồng hồ app.
 - TTL phải lớn hơn thời gian đầy xô.
 - Mỗi request một lần Redis ~0,3-1 ms trong cùng DC.
@@ -1004,6 +1099,19 @@ Post service -> Kafka (post-created)
          2. lấy bài mới của các celebrity đang follow
          3. merge theo timestamp, phân trang
 ~~~
+~~~
+
+~~~seq
+title: Luồng hybrid feed (push/pull)
+actors: Post service | Kafka | Fan-out worker | Redis feed cache | Feed service
+Post service -> Kafka: post-created
+Kafka --> Fan-out worker: consume event
+Fan-out worker -> Redis feed cache: ZADD cho từng follower
+Feed service -> Redis feed cache: lấy bài đã push
+Feed service -> Post service: lấy bài celebrity
+Feed service --> Client: merge + phân trang
+~~~
+
 - Feed cache: Redis sorted set, key = feed:userId, score = timestamp, member = postId, trim còn 800-1.000 bài.
 - Fan-out worker scale ngang theo partition của userId; xử lý batch để giảm round-trip.
 
@@ -1139,6 +1247,20 @@ columns: message_id, sender_id, type, body, created_at, edited_at
 5. Gateway đẩy xuống client; client gửi ack; nếu không có ack sau timeout, gateway thử lại.
 6. Người dùng offline: lưu hộp thư chờ và gửi push notification.
 
+~~~seq
+title: Gửi tin nhắn 1-1 và đồng bộ thiết bị
+actors: Client | Gateway | Message service | DB | Kafka | Gateway đích
+Client -> Gateway: WebSocket send (clientMsgId, convId, body)
+Gateway -> Message service: chuyển tiếp (đã xác thực)
+Message service -> DB: ghi message + cấp seq
+DB --> Message service: OK (seq)
+Message service -> Kafka: message-created
+Kafka --> Gateway đích: đẩy qua session registry
+Gateway đích -> Client: deliver WebSocket
+Message service --> Gateway: ACK (seq, clientMsgId)
+Gateway --> Client: ACK thành công
+~~~
+
 ### Chống trùng và mất tin
 - At-least-once ở mọi chặng. Client dedup theo clientMsgId; server lưu unique (conversation_id, client_msg_id).
 - Ack 2 chiều: server ack khi đã ghi bền; client hiển thị trạng thái "đang gửi/đã gửi".
@@ -1224,9 +1346,24 @@ Service C --/         |
                     |
               Provider adapters (SES, Twilio, FCM)
                     |
-              Delivery status -> DB + webhook
+Delivery status -> DB + webhook
 ~~~
-API chỉ nhận và trả 202, không gọi provider đồng bộ.
+
+~~~seq
+title: Gửi thông báo theo ưu tiên
+actors: Service | Notification API | DB | Kafka | Channel worker | Provider
+Service -> Notification API: POST /notifications (202)
+Notification API -> DB: ghi notification + channel (PENDING)
+DB --> Notification API: OK
+Notification API -> Kafka: publish theo priority topic
+Kafka --> Channel worker: consume
+Channel worker -> Provider: gọi adapter
+Provider --> Channel worker: trạng thái giao hàng
+Channel worker -> DB: cập nhật notification_channel
+Channel worker --> Service: webhook trạng thái
+~~~
+
+API chỉ nhận và trả 202, không gọi provider đồng sbừng.
 
 ### Mô hình dữ liệu
 ~~~sql
@@ -1354,6 +1491,20 @@ Kết luận: dữ liệu nhỏ, cái khó là **đỉnh tải** và **tranh ch�
                         v                                       |
                   [Payment service] --webhook--> [Order consumer]
 ~~~
+
+~~~seq
+title: Đặt ghế và xác nhận đơn
+actors: Người dùng | API gateway | Seat service | Postgres | Payment service
+Người dùng -> API gateway: POST /holds chọn 1–6 ghế
+API gateway -> Seat service: giữ ghế (holdId)
+Seat service -> Postgres: UPDATE có điều kiện AVAILABLE→HELD
+Postgres --> Seat service: số dòng (OK hoặc 0)
+Seat service --> API gateway: holdId + expiresAt
+Payment service -> API gateway: webhook thanh toán
+API gateway -> Seat service: xác nhận HELD→SOLD
+Seat service --> API gateway: đơn đã xác nhận
+~~~
+
 - **Waiting room**: người dùng vào hàng (Redis list hoặc sorted set theo thời điểm vào), mỗi phút cấp token cho 2.000 người đầu hàng. Token ký HMAC nên gateway kiểm tra không cần gọi DB.
 - **Seat map**: không query DB cho mỗi người xem. Một job đọc trạng thái mỗi 1–2 giây, tạo file JSON theo section, đẩy lên cache/CDN.
 
@@ -1476,8 +1627,20 @@ Cổng thanh toán có thể báo thành công ở phút 11 khi hold đã hết.
            7. UPDATE wallets SET balance = balance + amt WHERE id=B
            8. INSERT ledger: IN_FLIGHT -amt, B +amt
                                 |
-                    event CREDITED -> cập nhật transfers=COMPLETED, push notification
+                                         event CREDITED -> cập nhật transfers=COMPLETED, push notification
 ~~~
+
+~~~seq
+title: Chuyển tiền P2P qua saga (không dùng 2PC)
+actors: App | Transfer service | Shard người gửi | Kafka | Shard người nhận
+App -> Transfer service: chuyển tiền (Idempotency-Key)
+Transfer service -> Shard người gửi: trừ tiền + outbox (1 transaction)
+Shard người gửi -> Kafka: outbox relay (key = transferId)
+Kafka --> Shard người nhận: sự kiện credit
+Shard người nhận -> Shard người nhận: cộng tiền idempotent (unique transferId)
+Shard người nhận --> Transfer service: CREDITED
+~~~
+
 - **Outbox** đảm bảo "đã trừ tiền thì chắc chắn có sự kiện", vì cả hai được ghi trong cùng transaction. Gửi Kafka trực tiếp trong code thì có thể trừ tiền xong rồi chết trước khi gửi.
 - Kafka giao **at-least-once**, nên bước 6 dùng unique key để cộng tiền đúng một lần.
 - Tài khoản IN_FLIGHT: tổng mọi số dư + IN_FLIGHT luôn bằng tổng tiền hệ thống. Đối soát chỉ cần kiểm tra IN_FLIGHT có giao dịch nào "bay" quá 5 phút.
@@ -1584,7 +1747,20 @@ Một merchant/KOL nhận 2.000 lần cộng tiền/giây vào **một dòng** =
  OFFLINE (đường nguội)
  search logs -> Kafka -> [Job mỗi giờ: đếm, decay, lọc từ cấm]
                                -> build snapshot (file nhị phân) -> S3
-                               -> pod tải bản mới, build xong mới swap tham chiếu
+                               ->                      pod tải bản mới, build xong mới swap tham chiếu
+~~~
+
+~~~seq
+title: Đường online của autocomplete
+actors: Browser | CDN | Suggest service | Kafka | Job mỗi giờ | Snapshot
+Browser -> CDN: gõ từ khoá (debounce 150 ms)
+CDN -> Suggest service: GET /suggest?q (miss)
+Suggest service -> Suggest service: tra HashMap prefix->top10 trong RAM
+Suggest service --> Browser: 10 gợi ý (có dấu)
+Browser -> Kafka: search log (async)
+Kafka --> Job mỗi giờ: gộp log tìm kiếm
+Job mỗi giờ -> Snapshot: build snapshot (decay, lọc từ cấm)
+Snapshot --> Suggest service: pod tải và swap
 ~~~
 
 ### 4. Vì sao precompute top-k mỗi prefix?
@@ -1697,7 +1873,22 @@ Bài học: phải hỏi chủ job "có cần đúng 09:00:00 không?". Phần l
                                                      [Kafka: jobs.due, key = target]
                                                                 |
                                    [Executor pool] -- rate limit theo target --> service đích
-                                          | thành công: DONE | lỗi: retry backoff | hết lượt: DLQ
+                                                      [Executor pool] -- rate limit theo target --> service đích
+                                           | thành công: DONE | lỗi: retry backoff | hết lượt: DLQ
+~~~
+
+~~~seq
+title: Quy trình hẹn giờ job từ tạo tới khi chạy
+actors: Team | Job API | DB shards | Scheduler node | Kafka | Executor pool
+Team -> Job API: POST /jobs (runAt, target, payload)
+Job API -> DB shards: INSERT job (PENDING)
+Scheduler node -> DB shards: quét due_at + SKIP LOCKED (claim)
+Scheduler node -> Scheduler node: nạp timing wheel trong RAM
+Scheduler node -> Kafka: đẩy job đến giờ (key = target)
+Kafka --> Executor pool: consume job
+Executor pool -> Executor pool: rate limit theo target
+Executor pool -> service đích: gọi webhook/Kafka
+Executor pool -> DB shards: cập nhật DONE / retry / DLQ
 ~~~
 
 ### 4. Claim job không trùng
@@ -1817,7 +2008,20 @@ Không thể tính khoảng cách tới 300k tài xế cho mỗi lần tìm. Ý 
                               | lọc AVAILABLE + last_seen < 15s
                               | gọi ETA service (đường đi thật) -> xếp hạng
                               v
-                       [Driver state] CAS AVAILABLE -> OFFERED (TTL 15s) -> push lời mời
+                        [Driver state] CAS AVAILABLE -> OFFERED (TTL 15s) -> push lời mời
+~~~
+
+~~~seq
+title: Gọi xe: từ đặt chuyến đến có tài xế nhận
+actors: Driver app | Location service | Redis/city | Matching service | Driver state
+Driver app -> Location service: gửi vị trí 4 giây/lần
+Location service -> Redis/city: GEOADD + SET last_seen (TTL 30s)
+Location service -> Kafka: đẩy lịch sử vị trí
+Rider -> Matching service: POST /rides (pickup)
+Matching service -> Redis/city: GEOSEARCH 3km, 50 ứng viên
+Matching service -> Driver state: CAS AVAILABLE -> OFFERED
+Driver state --> Matching service: 1 dòng (gánh được) hoặc 0
+Matching service -> Driver app: push lời mời
 ~~~
 
 ### 4. Không giao một tài xế cho hai khách
@@ -1912,6 +2116,19 @@ Trả 201 + reservationId                     Payment flow thường / thông b�
                                                          |
 Expiry worker: quét reservation PENDING quá hạn --> trả kho (Redis INCR) + EXPIRED
 ~~~
+
+~~~seq
+title: Flash sale: từ click mua đến giữ chỗ
+actors: Client | CDN | API Gateway | Flash Sale Service | Redis | Expiry worker
+Client -> CDN: xem trang tĩnh + đếm ngược
+Client -> API Gateway: POST /reservations (Idempotency-Key)
+API Gateway -> Flash Sale Service: chuyển tiếp
+Flash Sale Service -> Redis: Lua kiểm tra + trừ kho nguyên tử
+Redis --> Flash Sale Service: thành công / 409 hết hàng / 429 đã mua
+Flash Sale Service -> Expiry worker: reservation PENDING qua DB/Kafka
+Expiry worker -> Flash Sale Service: hết hạn trả kho (Redis INCR)
+~~~
+
 - Trang sản phẩm và trạng thái "còn hàng/hết hàng" phục vụ từ CDN/cache, cập nhật mỗi giây, nên phần lớn người dùng không chạm vào backend.
 - Khi Redis báo hết, service bật cờ **sold_out** trong bộ nhớ: mọi request sau trả 409 ngay, không gọi Redis nữa.
 
@@ -2044,6 +2261,21 @@ Order Service --reserve/confirm/release (đồng bộ, idempotent theo orderId)-
                           |
                      outbox --> Kafka (voucher-events) --> báo cáo ngân sách, CRM
 ~~~
+
+~~~seq
+title: Vòng đời voucher: claim, reserve, redeem, release
+actors: App | API Gateway | Voucher Service | Redis | DB | Order Service
+App -> API Gateway: POST /vouchers/{id}/claim
+API Gateway -> Voucher Service: chuyển request
+Voucher Service -> Redis: DECR quota tổng (Lua)
+Redis --> Voucher Service: remaining còn lại
+Voucher Service -> DB: ghi user_voucher CLAIMED (PK user+campaign)
+DB --> Voucher Service: OK
+Voucher Service --> App: voucher đã lưu vào ví
+Order Service -> Voucher Service: reserve/redeem/release (theo orderId)
+Voucher Service -> DB: UPDATE có điều kiện CLAIMED→RESERVED
+~~~
+
 - **Áp dụng khi checkout**: Order Service gọi reserve trong luồng tạo đơn (đồng bộ, timeout 200 ms); thanh toán thành công thì gọi redeem; đơn huỷ hoặc không thanh toán sau 30 phút thì release. Đây là saga dạng TCC: Try (reserve), Confirm (redeem), Cancel (release).
 - **Rule engine**: điều kiện (giá trị đơn tối thiểu, ngành hàng, kênh thanh toán, khung giờ) lưu dạng JSON có version, cache theo campaign; đánh giá trên snapshot giỏ hàng gửi kèm.
 
@@ -2220,7 +2452,19 @@ Giao dịch, nhiệm vụ --> Kafka point-events (partition theo userId)
                               |
 App --> Leaderboard API --> Redis (ZSET)      Top 100 cache 1 giây (API + CDN)
 ~~~
-- Partition Kafka theo userId để sự kiện của một người xử lý tuần tự, không race khi tính điểm mới.
+
+~~~seq
+title: Cộng điểm và đọc bảng xếp hạng
+actors: Giao dịch/nhiệm vụ | Kafka | Score Service | DB (point_ledger) | Redis | Leaderboard API
+Giao dịch, nhiệm vụ -> Kafka: point-events (partition theo userId)
+Kafka --> Score Service: consume sự kiện
+Score Service -> DB: INSERT point_ledger (event_id PK)
+Score Service -> Redis: Lua tính score mã hoá -> ZADD
+Redis --> Leaderboard API: ZREVRANGE top 100, ZREVRANK hạng tôi
+Leaderboard API --> App: top 100 + hạng của tôi
+~~~
+
+- Partition Kafka theo userId để sự kiện của một người xử lý tuần tự
 - Thứ tự: ghi DB trước, Redis sau. Redis lỗi thì sự kiện vẫn đã an toàn trong ledger; một job đồng bộ lại.
 - Đọc top 100: 50.000 lượt/giây nhưng kết quả giống nhau cho mọi người, cache 1 giây giảm tải Redis còn vài lượt/giây; chỉ "hạng của tôi" mới thật sự đi vào Redis.
 
@@ -2296,8 +2540,20 @@ Người dùng click --> Click Service (302 về trang đích)
        lọc gian lận, cửa sổ 1 phút                          |
                     | upsert (ad_id, minute)                v
                     v                              Spark batch hằng ngày:
-       ClickHouse/Druid --> Dashboard API          tính lại, chốt hoá đơn,
-                                                   đối soát với số streaming
+        ClickHouse/Druid --> Dashboard API          tính lại, chốt hoá đơn,
+                                                    đối soát với số streaming
+~~~
+
+~~~seq
+title: Thu thập và tổng hợp click quảng cáo
+actors: Người dùng click | Click Service | Kafka | Flink | ClickHouse/Druid | S3
+Người dùng click -> Click Service: GET /click?token (302 về đích)
+Click Service -> Kafka: produce (acks=all, idempotent producer)
+Kafka --> Flink: đọc sự kiện click
+Flink -> Flink: khử trùng click_id, cửa sổ 1 phút theo event time
+Flink -> ClickHouse/Druid: upsert (ad_id, minute)
+ClickHouse/Druid --> Dashboard API: số click theo phút
+Flink -> S3: sink thô dữ liệu thô
 ~~~
 
 ### Event time, watermark và click đến trễ
@@ -2851,6 +3107,20 @@ RUNNING(step N+1)
   v (hoàn tất)
 COMPLETED / FAILED / CANCELLED
 ~~~
+
+~~~seq
+title: Chạy một agent run từ khởi tạo đến hoàn tất
+actors: Run Service | Execution Engine | LLM Gateway | Tool Registry | State Store | Approval Service
+Run Service -> Execution Engine: tạo run, load state
+Execution Engine -> LLM Gateway: gọi LLM (kiểm tra budget trước)
+LLM Gateway --> Execution Engine: output + tool calls
+Execution Engine -> Tool Registry: gọi tool (idempotency key)
+Tool Registry --> Execution Engine: kết quả tool
+Execution Engine -> State Store: checkpoint (một transaction)
+Execution Engine -> Approval Service: tạo task nếu cần duyệt
+Approval Service --> Execution Engine: approve/reject (callback)
+~~~
+
 Mỗi run chỉ có **một luồng thực thi** tại một thời điểm. Chuyển trạng thái là UPDATE có điều kiện trên version (optimistic locking): UPDATE agent_run SET state = ..., version = version + 1 WHERE id = ? AND version = ?. Nếu 0 dòng => run đang được chạy bởi pod khác hoặc đã chuyển state => retry load state mới.
 
 ### 4. Execution Engine (đơn luồng mỗi run)
@@ -3057,6 +3327,19 @@ Service C (Mkt) --/         |                                                   
                         Update notification_channel,                           |
                         nếu thành công -> DONE, nếu lỗi -> retry/DLQ           |
 ~~~
+
+~~~seq
+title: Gửi thông báo qua priority queue
+actors: Service | Notification API | DB | Kafka | Channel Worker | Provider
+Service -> Notification API: POST /notifications (202)
+Notification API -> DB: ghi notification + channel (PENDING)
+Notification API -> Kafka: publish topic theo priority
+Kafka --> Channel Worker: consume
+Channel Worker -> Provider: gọi adapter
+Provider --> Channel Worker: trạng thái giao hàng
+Channel Worker -> DB: cập nhật notification_channel
+~~~
+
 - **API chỉ trả 202**: ghi notification + notification_channel (mỗi kênh một dòng, status PENDING), publish Kafka topic theo priority. Không gọi provider trong request.
 - **3 Kafka topic riêng**: notif.high (OTP, fraud alert, payment), notif.normal (order confirm, shipping), notif.low (promo, newsletter). Worker pool riêng mỗi topic, high priority luôn có worker rảnh.
 - **Consumer group per channel per priority**: push.high, email.high, sms.high, push.normal... Cho phép scale độc lập.
@@ -3256,6 +3539,17 @@ redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)
 redis.call('PEXPIRE', KEYS[1], 86400000)
 return { allowed, math.floor(tokens) }
 ~~~
+
+~~~seq
+title: Kiểm tra quota token bucket
+actors: Client | Gateway | Redis Cluster | upstream service
+Client -> Gateway: request kèm API key
+Gateway -> Redis Cluster: Lua script (đọc-sửa-ghi bucket)
+Redis Cluster --> Gateway: allowed + token còn lại
+Gateway -> upstream service: chuyển tiếp request (nếu allowed)
+Gateway --> Client: 429 + Retry-After (nếu chặn)
+~~~
+
 - Script lấy thời gian bằng {{redis.call('TIME')}} ngay trong Redis (thay vì tin đồng hồ của app) để tránh clock skew khi nhiều gateway instance chạy trên máy khác nhau. Redis chạy Lua script theo kiểu atomic (nguyên tử: chạy trọn vẹn, request khác không xen vào giữa chừng), nên đọc-sửa-ghi bộ đếm an toàn dưới tải cao.
 - TTL phải lớn hơn thời gian đầy xô (capacity / refillRate).
 - Mỗi request một lần Redis ~0,3-1 ms trong cùng region.
@@ -3405,6 +3699,19 @@ Post service -> Kafka (post-created)
           2. lấy bài mới của các celebrity đang follow
           3. merge theo timestamp, phân trang
 ~~~
+~~~
+
+~~~seq
+title: Luồng hybrid feed (push/pull)
+actors: Post service | Kafka | Fan-out worker | Redis feed cache | Feed service
+Post service -> Kafka: post-created
+Kafka --> Fan-out worker: consume event
+Fan-out worker -> Redis feed cache: ZADD cho từng follower
+Feed service -> Redis feed cache: lấy bài đã push
+Feed service -> Post service: lấy bài celebrity
+Feed service --> Client: merge + phân trang
+~~~
+
 - Feed cache: Redis sorted set, key = feed:userId, score = timestamp, member = postId, trim còn 800-1.000 bài.
 - Fan-out worker scale ngang theo partition của userId; xử lý batch để giảm round-trip.
 
@@ -3662,6 +3969,17 @@ Wiki / PDF / Ticket
                                           |             |
                                     Vector index   Lexical index
 ~~~
+
+~~~seq
+title: Pipeline ingest tài liệu tìm kiếm ngữ nghĩa
+actors: Connector | Kafka | Processing | Embedding workers | Vector index | Lexical index
+Connector -> Kafka: event upsert/delete (document id, version)
+Kafka --> Processing: consume event
+Processing -> Embedding workers: chunk + ACL
+Embedding workers -> Vector index: upsert vector
+Embedding workers -> Lexical index: upsert BM25 terms
+~~~
+
 Connector phát event có document id, source version, thời điểm và thao tác upsert/delete. Consumer idempotent theo (document id, version); retry lỗi tạm thời, cách ly payload hỏng vào DLQ (dead-letter queue) để sửa thay vì retry vô hạn. Pipeline chuẩn hóa encoding, bỏ boilerplate, giữ heading/page number và source URL.
 
 Chunk theo cấu trúc: ưu tiên paragraph/heading, giới hạn kích thước theo token của model; overlap nhỏ để nối ngữ cảnh qua ranh giới. Quá nhỏ mất ngữ cảnh, quá lớn loãng ý và tốn token. Lưu document version, chunk number, content hash, model version, ACL revision, source pointer và embedding. Không gộp ACL thành một boolean chung: tài liệu có thể cho phép user hoặc group khác nhau.
