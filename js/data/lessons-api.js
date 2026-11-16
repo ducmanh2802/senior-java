@@ -198,27 +198,27 @@ class HttpParser {
 Lỗi hay gặp khác: dùng {{trim()}} cho cả message làm mất khoảng trắng đầu/cuối của body; không đưa tên header về chữ thường nên tra {{"content-type"}} không thấy khi client gửi {{Content-Type}}; và tách request line bằng {{split(" ")}} không giới hạn rồi lấy sai phần tử. Lưu ý {{String.split}} mặc định bỏ các chuỗi rỗng ở cuối mảng; truyền {{-1}} nếu cần giữ. Trong production, parser thật còn phải giới hạn kích thước header (chống tấn công gửi header khổng lồ làm cạn bộ nhớ), từ chối {{obs-fold}} (giá trị header kéo sang dòng sau bằng cách thụt đầu dòng, đã bị RFC 9112 loại bỏ), và xử lý đúng {{Content-Length}} / {{Transfer-Encoding}} như phần lý thuyết.`,
     },
   ],
-  check: [
+check: [
     {
-      q: 'Method nào **idempotent nhưng không safe**?',
+      q: 'Method nào **idempotent nhưng không safe**? (Chọn 1)',
       options: ['GET', 'PUT', 'POST', 'HEAD'],
       answer: 1,
       explain: `**PUT đúng**: PUT ghi đè tài nguyên nên gửi lặp vẫn ra cùng trạng thái (idempotent), nhưng nó **thay đổi** dữ liệu nên không safe. **GET** và **HEAD** sai vì chúng vừa safe vừa idempotent (câu hỏi cần method không safe). **POST** sai vì nó không safe và cũng không idempotent — đây là lý do cần idempotency key cho thanh toán.`,
     },
     {
-      q: 'Client đã đăng nhập hợp lệ nhưng tài khoản không có role chuyển tiền. Server nên trả gì?',
+      q: 'Client đã đăng nhập hợp lệ nhưng tài khoản không có role chuyển tiền. Server nên trả gì? (Chọn 1)',
       options: ['401 Unauthorized', '403 Forbidden', '404 Not Found', '422 Unprocessable Content'],
       answer: 1,
       explain: `401 dành cho trường hợp chưa xác thực được danh tính (thiếu/sai token). Đã biết là ai nhưng thiếu quyền thì là 403. 404 chỉ nên dùng khi muốn **che giấu** việc tài nguyên có tồn tại hay không (RFC 9110 cho phép); ở đây đó là một chức năng (chuyển tiền) mà user biết là có, nên 404 gây hiểu nhầm. 422 là lỗi ngữ nghĩa của body, không phải lỗi phân quyền.`,
     },
     {
-      q: 'Xoá tài nguyên thành công và không cần trả body. Status code phù hợp nhất?',
+      q: 'Xoá tài nguyên thành công và không cần trả body. Status code phù hợp nhất? (Chọn 1)',
       options: ['200 OK', '201 Created', '202 Accepted', '204 No Content'],
       answer: 3,
       explain: `204 nghĩa là thành công và **không có body**, đúng cho DELETE. 200 cũng hợp lệ nếu trả body mô tả kết quả, nhưng ở đây không cần. 201 dành cho tạo mới; 202 dành cho xử lý bất đồng bộ.`,
     },
     {
-      q: 'API trả số dư tài khoản. {{Cache-Control}} nào an toàn nhất?',
+      q: 'API trả số dư tài khoản. {{Cache-Control}} nào an toàn nhất? (Chọn 1)',
       options: ['public, max-age=60', 'private, max-age=60', 'no-store', 's-maxage=3600'],
       answer: 2,
       explain: `Số dư là dữ liệu nhạy cảm, không nên lưu ở bất kỳ cache nào (kể cả cache riêng của trình duyệt trên máy dùng chung), nên {{no-store}}. {{public}} cho phép proxy dùng chung cache và có thể lộ dữ liệu; {{s-maxage}} cũng là cache dùng chung; {{private, max-age=60}} chặn proxy dùng chung nhưng vẫn cho trình duyệt lưu 60 giây, nên người dùng sau trên cùng máy có thể thấy số dư cũ của người trước.`,
@@ -2681,7 +2681,7 @@ Test phải xác định (deterministic): cùng đầu vào cho cùng kết qu�
   ],
   check: [
     {
-      q: 'Vì sao fixed window (100 request/phút) vẫn có thể cho qua 200 request trong khoảng 2 giây?',
+      q: 'Vì sao fixed window (100 request/phút) vẫn có thể cho qua 200 request trong khoảng 2 giây? (Chọn 1)',
       options: [
         'Vì bộ đếm bị tràn số nguyên ở ranh giới phút',
         'Vì 100 request dồn cuối ô trước và 100 request dồn đầu ô sau đều hợp lệ trong từng ô riêng lẻ (boundary burst)',
@@ -2692,7 +2692,7 @@ Test phải xác định (deterministic): cùng đầu vào cho cùng kết qu�
       explain: 'Fixed window reset bộ đếm theo từng ô cố định độc lập. 100 request hợp lệ lúc 00:59 (ô 1) và 100 request hợp lệ lúc 01:00 (ô 2) cộng lại thành 200 request trong ~2 giây quanh ranh giới. Sliding window counter khắc phục bằng cách nhân tỉ lệ ô trước.',
     },
     {
-      q: 'Trong sliding window counter, {{estimate = prevCount * weight + currCount}} đang giả định điều gì?',
+      q: 'Trong sliding window counter, {{estimate = prevCount * weight + currCount}} đang giả định điều gì? (Chọn 1)',
       options: [
         'Mọi request của ô hiện tại đều đến ở cuối ô',
         'Request của ô trước phân bố đều trong ô đó (nên phần còn chồng lên cửa sổ trượt tỉ lệ với weight)',
@@ -2703,7 +2703,7 @@ Test phải xác định (deterministic): cùng đầu vào cho cùng kết qu�
       explain: 'Công thức ngầm giả định request ô trước rải đều, nên chỉ là xấp xỉ (sai số nhỏ), đổi lại chi phí cực thấp: chỉ 2 bộ đếm.',
     },
     {
-      q: 'Ưu điểm nổi bật của token bucket so với sliding window counter là gì?',
+      q: 'Ưu điểm nổi bật của token bucket so với sliding window counter là gì? (Chọn 1)',
       options: [
         'Không bao giờ cần lưu trạng thái',
         'Cho phép burst tự nhiên tới capacity (quota "để dành") và tính retryAfter chính xác theo tốc độ nạp',
@@ -2714,7 +2714,7 @@ Test phải xác định (deterministic): cùng đầu vào cho cùng kết qu�
       explain: 'Token bucket giữ lại token chưa dùng (tối đa capacity) nên chấp nhận burst hợp lệ, và retryAfter = token thiếu / tốc độ nạp là chính xác. Khi phân tán nó vẫn cần cập nhật nguyên tử (Lua script).',
     },
     {
-      q: 'Khi triển khai rate limiter cho ứng dụng chạy 6 instance, vì sao bộ đếm trong biến JVM là sai?',
+      q: 'Khi triển khai rate limiter cho ứng dụng chạy 6 instance, vì sao bộ đếm trong biến JVM là sai? (Chọn 1)',
       options: [
         'Vì JVM không hỗ trợ số nguyên đủ lớn',
         'Vì mỗi instance giữ bộ đếm riêng nên hạn mức thực tế nhân lên và còn phụ thuộc cách load balancer phân phối',
@@ -2997,7 +2997,7 @@ ETag là {{"v" + version}} nên luôn đồng bộ với trạng thái, không t
   ],
   check: [
     {
-      q: 'Client PUT kèm {{If-Match: "v5"}} nhưng tài nguyên hiện tại là {{v6}}. Server nên trả mã nào?',
+      q: 'Client PUT kèm {{If-Match: "v5"}} nhưng tài nguyên hiện tại là {{v6}}. Server nên trả mã nào? (Chọn 1)',
       options: [
         '409 Conflict',
         '412 Precondition Failed',
@@ -3008,7 +3008,7 @@ ETag là {{"v" + version}} nên luôn đồng bộ với trạng thái, không t
       explain: '412 Precondition Failed nghĩa là điều kiện phiên bản (If-Match) không thoả - client đang sửa trên bản cũ. 409 dành cho xung đột nghiệp vụ/trạng thái, 304 cho GET có điều kiện khớp, 428 khi thiếu precondition.',
     },
     {
-      q: 'Vì sao {{ShallowEtagHeaderFilter}} của Spring KHÔNG thay thế được optimistic concurrency cho PUT/PATCH?',
+      q: 'Vì sao {{ShallowEtagHeaderFilter}} của Spring KHÔNG thay thế được optimistic concurrency cho PUT/PATCH? (Chọn 1)',
       options: [
         'Vì filter này chỉ hỗ trợ JSON, không hỗ trợ XML',
         'Vì nó tính ETag từ hash body để tiết kiệm băng thông GET/304, nhưng không kiểm tra {{If-Match}} theo version nghiệp vụ khi ghi',
@@ -3019,7 +3019,7 @@ ETag là {{"v" + version}} nên luôn đồng bộ với trạng thái, không t
       explain: 'ShallowEtagHeaderFilter giúp cache GET (trả 304) nhưng không gắn với version nghiệp vụ/DB và không chặn ghi đè. Optimistic concurrency (điều khiển đồng thời lạc quan) khi ghi cần ETag gắn với {{@Version}}/phiên bản dữ liệu và kiểm tra {{If-Match}} (hoặc {{WHERE version=?}}).',
     },
     {
-      q: 'Trường hợp nào nên trả **428 Precondition Required** thay vì chấp nhận cập nhật?',
+      q: 'Trường hợp nào nên trả **428 Precondition Required** thay vì chấp nhận cập nhật? (Chọn 1)',
       options: [
         'Khi {{If-Match}} khớp phiên bản hiện tại',
         'Khi endpoint bắt buộc điều kiện phiên bản để tránh lost update nhưng client không gửi {{If-Match}}',
@@ -3030,7 +3030,7 @@ ETag là {{"v" + version}} nên luôn đồng bộ với trạng thái, không t
       explain: '428 báo client phải kèm precondition ({{If-Match}}) rồi gọi lại. Với dữ liệu nhạy cảm, chấp nhận PUT không điều kiện đồng nghĩa chấp nhận rủi ro ghi đè mất dữ liệu.',
     },
     {
-      q: 'Cách sinh ETag nào **dễ gây lỗi** cho optimistic concurrency?',
+      q: 'Cách sinh ETag nào **dễ gây lỗi** cho optimistic concurrency? (Chọn 1)',
       options: [
         'Dùng giá trị cột {{@Version}} tăng đơn điệu của JPA',
         'Dùng hash ổn định của nội dung tài nguyên',
@@ -3565,7 +3565,7 @@ Bài này chỉ có một JVM, đồng hồ truyền vào để test xác địn
   ],
   check: [
     {
-      q: 'Client timeout sau POST /payments, retry cùng key và cùng body. Server đã xử lý xong trước đó. Kết quả đúng là gì?',
+      q: 'Client timeout sau POST /payments, retry cùng key và cùng body. Server đã xử lý xong trước đó. Kết quả đúng là gì? (Chọn 1)',
       options: [
         'Trả lại status và body đã lưu, không chạy lại',
         'Chạy lại nghiệp vụ để chắc chắn',
@@ -3576,7 +3576,7 @@ Bài này chỉ có một JVM, đồng hồ truyền vào để test xác địn
       explain: 'Idempotency key đại diện cho một thao tác logic, nên retry phải nhận lại đúng kết quả cũ và không chạy lại nghiệp vụ. Chạy lại là trừ tiền hai lần; 500 khiến client retry tiếp và làm nhiễu alert; tạo ID mới phá vỡ hợp đồng idempotent của key.',
     },
     {
-      q: 'Vì sao đoạn {{if (!map.containsKey(k)) map.put(k, charge())}} sai khi hai request cùng key đến cùng lúc?',
+      q: 'Vì sao đoạn {{if (!map.containsKey(k)) map.put(k, charge())}} sai khi hai request cùng key đến cùng lúc? (Chọn 1)',
       options: [
         'Vì HashMap không có containsKey',
         'Vì hai thread có thể cùng thấy key chưa tồn tại rồi cùng chạy charge()',
@@ -3587,7 +3587,7 @@ Bài này chỉ có một JVM, đồng hồ truyền vào để test xác địn
       explain: 'Đó là race condition kiểu check-then-act: đọc và ghi là hai bước rời nhau, hai thread có thể xen kẽ ở giữa. putIfAbsent hoặc computeIfAbsent gộp kiểm tra và ghi thành một thao tác nguyên tử.',
     },
     {
-      q: 'Entry đang IN_PROGRESS, bắt đầu 5 giây trước, staleMillis là 30 giây. Request trùng cùng body đến. Server trả gì?',
+      q: 'Entry đang IN_PROGRESS, bắt đầu 5 giây trước, staleMillis là 30 giây. Request trùng cùng body đến. Server trả gì? (Chọn 1)',
       options: [
         '200 với body rỗng',
         'Chạy lại action',
@@ -3598,7 +3598,7 @@ Bài này chỉ có một JVM, đồng hồ truyền vào để test xác địn
       explain: 'Request trùng đến khi request đầu còn đang chạy thì trả 409 để client chờ theo Retry-After. Chạy lại sẽ phá idempotent; 200 rỗng khiến client tưởng giao dịch mới; 422 dành cho trường hợp cùng key nhưng khác body.',
     },
     {
-      q: 'Vì sao TTL của entry phải dài hơn cửa sổ retry của client?',
+      q: 'Vì sao TTL của entry phải dài hơn cửa sổ retry của client? (Chọn 1)',
       options: [
         'Để tiết kiệm bộ nhớ',
         'Vì ConcurrentHashMap yêu cầu TTL',
