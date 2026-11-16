@@ -13,7 +13,9 @@
     'Giải thích được {{WeakHashMap}} hoạt động thế nào và vì sao value trỏ ngược lại key làm entry không bao giờ bị xoá',
     'Nhận diện memory leak qua static collection, {{ThreadLocal}} và classloader',
   ],
-  body: `### Heap không phải một khối phẳng
+  body: `**Tóm tắt:** Heap chia thành Young (Eden + Survivor) và Old generation; Metaspace lưu metadata class ở bộ nhớ native. GC chỉ thu hồi object không còn đường đi từ GC root. Strong/Soft/Weak/Phantom reference quyết định "mạnh" đến đâu object được giữ lại — hiểu điều này là chìa khóa để giải thích memory leak và chọn cache đúng.
+
+### Heap không phải một khối phẳng
 HotSpot chia heap thành các vùng theo **tuổi** của object. Hiểu vùng nào chứa gì giúp bạn đọc GC log và chọn kích thước heap, thay vì đoán mò.
 
 - **Young generation** gồm **Eden** và hai **Survivor** (S0, S1). Hầu hết object được sinh ra ở Eden bằng một phép tăng con trỏ trong **TLAB** (Thread-Local Allocation Buffer), gần như miễn phí. Khi Eden đầy, một **minor GC** copy các object còn sống sang Survivor rồi tăng tuổi; object sống qua vài lần được **promote** sang old generation.
@@ -73,10 +75,14 @@ Sau vài ngày, {{SESSIONS}} giữ mọi session từng tạo, kéo theo user, p
 
 Cách chữa không phải "dùng weak cho tất cả" mà là **quản lý vòng đời**: bounded cache có TTL, đăng ký/huỷ đăng ký đối xứng, {{try/finally}} gọi {{remove()}} cho ThreadLocal, và kiểm tra heap bằng {{jcmd <pid> GC.heap_info}}, {{jmap -histo:live}}, heap dump với {{-XX:+HeapDumpOnOutOfMemoryError}}. Trong MAT, nhìn **dominator tree** và **retained size** để biết object nào thực sự giữ cả một cây.
 
-> Một mẹo đọc heap dump: tìm class có số instance tăng bất thường, rồi xem "Path to GC Roots". Nếu path đi qua một static field của class nghiệp vụ, gần như chắc chắn đó là leak, không phải lỗi GC.
+### Ví dụ đời thực
+Một hệ thống thanh toán đỉnh cao 50k request/giây dùng {{WeakHashMap<SessionId, UserProfile>}} làm cache profile. Sau 2 tuần deploy, pod bị OOMKilled. Heap dump (MAT) cho thấy {{WeakHashMap}} retained size 1.2 GB, 2.4 triệu entry. Nguyên nhân: {{UserProfile}} có field {{lastAccessedSessionId}} trỏ ngược về key, khiến weak key không bao giờ bị clear. Sửa: bỏ field tham chiếu ngược, đổi sang Caffeine {{maximumSize=100_000, expireAfterWrite=10m}}. Kết quả: heap ổn định ở 400 MB, p99 latency giảm từ 450 ms xuống 80 ms.
 
-### Liên hệ phỏng vấn
-Interviewer hay hỏi: "Vì sao dùng WeakHashMap làm cache mà memory vẫn tăng?", "SoftReference khác WeakReference chỗ nào?", "Kể một memory leak bạn từng gặp". Trả lời tốt là nói được **reachability từ GC root**, không chỉ đọc định nghĩa. Bài tập dưới đây bắt bạn tự xây một cache dùng weak value + {{ReferenceQueue}}, đúng cơ chế mà {{WeakHashMap}} dùng bên trong.`,
+### Trả lời mẫu khi phỏng vấn
+"Heap được chia thành Young và Old generation theo tuổi object. GC không đếm reference mà tìm reachability từ GC root — biến local, static field, JNI reference. Vì vậy static Map giữ object mãi vì static field là GC root. Về reference: Strong là mặc định; Soft bị xoá trước OOM, phù hợp cache nhạy cảm bộ nhớ nhưng không kiểm soát được thời điểm xoá; Weak bị xoá ở GC kế tiếp nếu chỉ còn weak ref, dùng cho WeakHashMap hay canonical map; Phantom không giữ object, chỉ để nhận biết object đã chết qua ReferenceQueue. Một bẫy thường gặp: WeakHashMap value trỏ ngược key (map.put(k, k)) khiến entry không bao giờ bị xoá. Production nên dùng bounded cache (Caffeine) có TTL thay vì phụ thuộc GC."
+
+> Senior tip: Đừng bao giờ dùng SoftReference làm cache chính trên production — nó khiến GC chạy nặng đúng lúc hệ thống đang tải cao. Luôn dùng cache có giới hạn kích thước và TTL tường minh (Caffeine), và nhớ kiểm tra "value trỏ ngược key" khi review code dùng WeakHashMap.
+`,
   exercises: [
     {
       title: 'Cache weak value tự dọn bằng ReferenceQueue',
@@ -335,7 +341,9 @@ Lưu ý đối xứng với {{WeakHashMap}}: ở đây weak nằm ở **value**,
     'Hiểu tri-color marking, write barrier và vì sao GC concurrent cần SATB hoặc incremental update',
     'Đọc được GC log cơ bản và biết khi nào cần chỉnh pause target, region size hay heap',
   ],
-  body: `### GC chỉ trả lời một câu hỏi: object này còn đi được từ root không?
+  body: `**Tóm tắt:** GC tracing bắt đầu từ GC root (stack, static field, JNI, monitor) và đi theo cạnh tham chiếu. Object không có đường đi từ root bị coi là rác — chu trình không leak vì không có root. Mark-sweep có hai pha: mark (duyệt đồ thị, O(số object sống)) và sweep (quét toàn bộ heap, O(tổng heap)). Tri-color marking (trắng/xám/đen) cho phép GC chạy concurrent; write barrier (incremental update hoặc SATB) giữ bất biến "đen không trỏ trắng". Generational GC tận dụng weak generational hypothesis: young gen (Eden + Survivor) GC thường xuyên, old gen GC hiếm. G1 dùng region, remembered set, pause target; ZGC/Shenandoah gần như concurrent hoàn toàn.
+
+### GC chỉ trả lời một câu hỏi: object này còn đi được từ root không?
 Mọi thuật toán GC tracing đều bắt đầu từ một tập **GC root** nhỏ và đi theo các cạnh tham chiếu. Object nào không có đường đi từ root bị coi là rác, bất kể có bao nhiêu object khác trỏ tới nó. Đây là lý do **chu trình** không làm rò bộ nhớ trong Java, khác với reference counting.
 
 GC root gồm:
@@ -406,10 +414,14 @@ Ba lỗi tuning hay gặp:
 - Đặt {{-Xmn}} quá lớn làm old generation nhỏ, gây full GC liên tục; quá nhỏ làm object promote sớm. Với G1, đặt cứng {{-Xmn}} còn tắt luôn khả năng tự co giãn young gen để đạt pause target, nên thường không nên đặt.
 - Gọi {{System.gc()}} trong code nghiệp vụ: nó kích hoạt full GC (với G1 mặc định là stop-the-world), thường chỉ làm tệ hơn. Có thể chặn bằng {{-XX:+DisableExplicitGC}}, nhưng cẩn thận: JDK gọi {{System.gc()}} khi thiếu bộ nhớ direct cho {{ByteBuffer.allocateDirect}} (Netty, NIO), tắt nó có thể dẫn tới {{OutOfMemoryError: Direct buffer memory}}.
 
-> Đừng tối ưu GC bằng cách tăng heap vô hạn. Heap lớn làm mỗi full GC đắt hơn và che giấu leak. Hãy tìm retained set trước, rồi mới chỉnh collector.
+### Ví dụ đời thực
+Một dịch vụ e-commerce Java 17, heap 4 GB, G1GC, traffic 20k req/s. Sáng nay p99 latency nhảy từ 120 ms lên 2.5 s, CPU GC từ 5% lên 65%. GC log cho thấy: Pause Full (G1 Compaction Pause) 3800M->3200M(4096M) 1850ms lặp lại mỗi 3 phút; live set sau Full GC tăng đều 3.0 GB → 3.2 GB → 3.4 GB. Heap dump (MAT) dominator tree: {{HashMap$Node}} retained 2.1 GB, path to GC roots qua static field {{ProductCache.MAP}}. Nguyên nhân: cache tự chế không giới hạn, key là {{String}} chứa timestamp request. Sửa: thay bằng Caffeine {{maximumSize=500_000, expireAfterWrite=5m}}. Kết quả: p99 về 95 ms, CPU GC < 3%, live set ổn định 1.1 GB.
 
-### Liên hệ phỏng vấn
-Câu hỏi kinh điển: "GC tìm rác thế nào?", "Vì sao chu trình không leak trong Java?", "G1 khác CMS ở đâu?", "Khi nào object được promote?". Trả lời theo **reachability + generational + barrier** sẽ thuyết phục hơn liệt kê tên collector. Bài tập dưới đây bắt bạn tự cài đặt mark-and-sweep, nên bạn sẽ nhớ chính xác vì sao sweep phải xét **toàn bộ** heap còn mark chỉ đi theo cạnh.`,
+### Trả lời mẫu khi phỏng vấn
+"GC tracing hoạt động theo reachability: bắt đầu từ GC root (stack, static, JNI, monitor) đi theo cạnh tham chiếu. Object không có đường đi từ root là rác — nên chu trình không leak. Mark-sweep có hai pha: mark chỉ duyệt object sống (O(live)), sweep quét cả heap (O(heap)). Để chạy concurrent, dùng tri-color marking (trắng/xám/đen) với write barrier. G1 dùng SATB (snapshot-at-the-beginning): ghi giá trị cũ khi ghi đè cạnh, giữ ảnh chụp đầu phiên. Generational GC tận dụng hypothesis 'đa số object chết trẻ': young gen (Eden + 2 Survivor) GC thường xuyên, promote sang old khi tuổi vượt ngưỡng hoặc Survivor đầy. G1 chia heap thành region, dùng remembered set cho cross-region ref, điều chỉnh young size để đạt pause target 200ms. ZGC/Shenandoah làm marking+relocation concurrent, pause < 1ms nhưng tốn CPU và heap hơn."
+
+> Senior tip: Đừng tuning GC bằng cách tăng heap vô hạn — heap lớn làm full GC đắt hơn và che giấu leak. Luôn nhìn live set sau Full GC: nếu tăng đều qua các lần dọn sạch, đó là leak, hãy lấy heap dump tìm retained set thay vì chỉnh flag. Với G1, đừng đặt cứng -Xmn vì nó tắt cơ chế tự điều chỉnh young gen theo pause target.
+`,
   exercises: [
     {
       title: 'Mô phỏng mark-and-sweep trên đồ thị object',
@@ -666,7 +678,9 @@ Vài chi tiết dễ sai:
     'Viết singleton bằng holder idiom đúng lazy, thread-safe và giải thích vì sao',
     'Nhận diện lỗi {{ExceptionInInitializerError}}, deadlock khởi tạo và classloader leak',
   ],
-  body: `### Một class đi qua ba chặng
+  body: `**Tóm tắt:** Class loading trải 3 pha: Loading (đọc bytecode, nạp metadata vào Metaspace), Linking (Verification, Preparation gán giá trị mặc định cho static field, Resolution), Initialization (chạy static field/block theo thứ tự văn bản). Chỉ **active use** (new, static field/method không phải constant, reflection, subclass init) mới kích hoạt initialization. Holder idiom singleton tận dụng lazy class init + initialization lock của JVM: lazy vì Holder chỉ init khi đọc INSTANCE, thread-safe vì JVM bảo vệ <clinit>. Static init ném exception → class bị đánh dấu lỗi, lần sau ném NoClassDefFoundError. Classloader leak xảy ra khi static field/ThreadLocal/timer giữ classloader webapp cũ → Metaspace OOM.
+
+### Một class đi qua ba chặng
 Khi lần đầu chạm tới một class, JVM không "chạy code" ngay. Nó đi qua:
 
 1. **Loading**: classloader tìm bytecode (từ đĩa, jar, network), đọc và định nghĩa class: metadata nội bộ của class nằm trong Metaspace, còn object {{java.lang.Class}} đại diện cho nó (thứ bạn lấy bằng {{Foo.class}}) nằm trên heap.
@@ -744,10 +758,14 @@ Mỗi classloader giữ một namespace class riêng. Class chỉ có thể unlo
 
 Cách phòng: dừng thread/timer đúng cách khi shutdown, gọi {{ThreadLocal.remove()}}, deregister driver/listener, và theo dõi số class đã nạp bằng {{jcmd <pid> VM.classloader_stats}} hoặc {{jcmd <pid> GC.class_histogram}}.
 
-> Lỗi rất hay gặp: static initializer gọi một service lấy từ Spring context. Class init chạy quá sớm, trước khi context sẵn sàng, gây {{ExceptionInInitializerError}}; lần sau mọi truy cập class đó nhận {{NoClassDefFoundError}} dù nguyên nhân gốc đã được log ở lần đầu.
+### Ví dụ đời thực
+Một ứng dụng Spring Boot trên Tomcat 9 redeploy 15 lần/ngày trong 2 tuần. Pod bị {{OutOfMemoryError: Metaspace}} sau 10 ngày. JFR event {{jdk.ClassLoad}} cho thấy số class nạp tăng từ 12k lên 85k. {{jcmd VM.classloader_stats}} phát hiện 14 WebappClassLoader instance, mỗi cái retained 40 MB. Nguyên nhân: một {{ThreadLocal<DBConnection>>}} static trong thư viện chung không gọi {{remove()}} khi request xong, giữ reference tới classloader của webapp cũ. Sửa: thêm {{ServletContextListener.contextDestroyed}} gọi {{ThreadLocal.remove()}}, và config Tomcat {{antiResourceLocking=true}}. Kết quả: redeploy 30 lần/ngày ổn định, Metaspace < 200 MB.
 
-### Liên hệ phỏng vấn
-Interviewer hay hỏi: "Vì sao holder idiom lazy mà vẫn thread-safe?", "Static block chạy khi nào?", "Khi nào class bị unload?", "Khác nhau giữa {{ExceptionInInitializerError}} và {{NoClassDefFoundError}}?". Trả lời chắc là nói được **active use**, **thứ tự văn bản**, **initialization lock** và **điều kiện unload của classloader**. Hai bài tập dưới đây bắt bạn viết holder singleton và tự tay tạo đúng thứ tự khởi tạo.`,
+### Trả lời mẫu khi phỏng vấn
+"Class loading có 3 pha: Loading (nạp bytecode, metadata vào Metaspace), Linking (verify, preparation gán default cho static, resolution), Initialization (chạy static field/block theo thứ tự văn bản). Chỉ active use mới trigger init: new, static field/method non-constant, reflection, subclass init. Constant variable (static final primitive/String) được inline lúc compile nên không trigger. Thứ tự: superclass trước, trong class theo thứ tự source. JVM dùng initialization lock cho <clinit> nên thread-safe tự động. Holder idiom singleton: private static class Holder { static final INSTANCE = new AppConfig(); }, getInstance() return Holder.INSTANCE. Lazy vì Holder chỉ init khi đọc INSTANCE; thread-safe vì JVM lock. Static init throw exception → class erroneous → lần sau NoClassDefFoundError. Classloader leak: webapp redeploy, static field/ThreadLocal giữ classloader cũ → Metaspace OOM. Fix: cleanup ThreadLocal, deregister driver, listener."
+
+> Senior tip: Đừng bao giờ gọi service, mở DB connection, hay chờ lock trong static initializer — nó gây deadlock khởi tạo hoặc ExceptionInInitializerError biến thành NoClassDefFoundError vĩnh viễn. Nếu cần khởi tạo phức tạp, hãy dùng lazy holder hoặc explicit init method.
+`,
   exercises: [
     {
       title: 'Singleton lazy bằng holder idiom',
@@ -1039,7 +1057,9 @@ Trong JVM thật, nếu {{<clinit>}} ném exception, class bị đánh dấu l�
     'Đọc được đáy heap sau GC, so sánh class histogram, lấy heap dump và tìm thủ phạm bằng dominator tree, retained size, path to GC roots',
     'Viết được cache LRU có giới hạn và registry listener trả về handle gỡ đăng ký',
   ],
-  body: `### Leak trong Java nghĩa là gì
+  body: `**Tóm tắt:** Java có GC nhưng vẫn leak vì object còn reachable từ GC root (static field, ThreadLocal, listener, v.v.) mà chương trình không dùng lại. GC không biết ý định — nó chỉ thấy "còn ai trỏ tới không?". 5 mẫu leak phổ biến: cache không giới hạn, listener không gỡ, ThreadLocal trong thread pool, inner class/lambda giữ this ngầm, key mutable đổi hashCode. Phát hiện leak: xem đáy heap sau GC (live set) tăng đều qua nhiều ngày → so sánh histogram → heap dump → MAT dominator tree + retained size + path to GC roots. Sửa: cache LRU bounded (LinkedHashMap accessOrder + removeEldestEntry), event bus trả Registration handle (CopyOnWriteArrayList), ThreadLocal.remove() trong finally. Weak/Soft reference không phải silver bullet — chúng đổi bug "giữ quá lâu" thành "biến mất bất ngờ".
+
+### Leak trong Java nghĩa là gì
 Trong C, leak là vùng nhớ đã {{malloc}} mà không ai {{free}}: không còn con trỏ nào trỏ tới, nhưng bộ nhớ vẫn bị chiếm. Java không có loại leak này, vì GC tự thu hồi mọi object **không còn đường đi từ GC root** (biến local của thread đang chạy, static field, JNI reference, monitor đang bị giữ...). Leak trong Java là kiểu ngược lại: object **vẫn còn đường đi** từ một GC root nên GC buộc phải giữ, nhưng chương trình **không bao giờ dùng lại** nó nữa.
 
 GC không đọc được ý định của bạn. Nó chỉ trả lời câu hỏi "còn ai trỏ tới object này không?". Nếu một {{HashMap}} static còn trỏ tới 2 triệu order đã xử lý xong từ tuần trước, câu trả lời là "có", và 2 triệu order đó sống mãi, kéo theo mọi thứ chúng trỏ tới:
@@ -1099,8 +1119,14 @@ Weak/Soft reference chỉ hợp với vài trường hợp: canonical map ({{Wea
 
 > Heap dump của production chứa dữ liệu người dùng (token, email, số điện thoại). Coi file {{.hprof}} như dữ liệu nhạy cảm: mã hoá, giới hạn người đọc, xoá sau khi phân tích xong.
 
-### Liên hệ phỏng vấn
-Câu hỏi hay gặp: "Java có GC thì sao vẫn leak?", "Kể một memory leak bạn đã xử lý", "Shallow size khác retained size thế nào?". Một câu trả lời tốt đi theo cấu trúc: **triệu chứng** (đáy heap sau GC tăng, GC dày, OOM) → **bằng chứng** (histogram so sánh, heap dump, dominator tree, path to GC roots) → **nguyên nhân gốc** (ví dụ listener không gỡ) → **sửa và phòng ngừa** (cache có giới hạn, API đăng ký trả handle, alert trên heap sau GC). Hai bài tập dưới đây là hai cách sửa phổ biến nhất: cache LRU có giới hạn và event bus có hàm gỡ đăng ký.`,
+### Ví dụ đời thực
+Hệ thống đặt hàng trực tuyến peak 30k req/s, heap 6 GB G1GC. Tuần sau deploy, pod restart liên tục do OOM. GC log: live set sau Full GC tăng 2.1 → 2.8 → 3.5 → 4.2 GB mỗi 6 tiếng. {{jcmd GC.class_histogram}}: {{HashMap$Node}} từ 1.2M → 4.5M instance. Heap dump MAT: {{ConcurrentHashMap$Node}} retained 3.8 GB, path {{OrderService.cache → table → Node → OrderDto}}. Nguyên nhân: {{OrderService}} dùng {{ConcurrentHashMap<String, OrderDto>}} cache không TTL, key là {{orderId}} + timestamp request → cardinality vô hạn. Sửa: thay bằng Caffeine {{maximumSize=200_000, expireAfterWrite=10m, recordStats()}}. Kết quả: live set ổn định 1.4 GB, OOM biến mất, p99 180ms → 45ms, cache hit rate 92%.
+
+### Trả lời mẫu khi phỏng vấn
+"Java leak khác C: GC chỉ thu hồi object không reachable từ GC root. Leak là object vẫn reachable (static Map, ThreadLocal, listener) nhưng code không bao giờ dùng lại. Triệu chứng: đáy heap sau GC (live set) tăng đều, không đi ngang. Tìm leak: 1) GC log live set, 2) jcmd histogram so sánh, 3) heap dump → MAT dominator tree (retained size), 4) Path to GC Roots trỏ về static field/ThreadLocal/listener. 5 mẫu thường gặp: unbounded cache, listener không unsubscribe, ThreadLocal trong pool (value strong, thread sống lâu), inner class giữ this ngầm, mutable key đổi hashCode. Sửa: bounded cache LRU (LinkedHashMap accessOrder), event bus trả Registration handle (AutoCloseable), ThreadLocal.remove() trong finally. Weak/Soft ref không phải giải pháp — weak listener biến mất im lặng, soft reference ép GC chạy nặng lúc tải cao. Production dùng Caffeine bounded + TTL."
+
+> Senior tip: Đừng tin vào SoftReference làm cache production — nó ép GC chạy nặng đúng lúc hệ thống đang tải cao. Luôn dùng cache có maxSize + TTL (Caffeine). Khi review code, thấy addListener mà không có removeListener trong cùng vòng đời là leak chắc chắn. Heap dump hprof chứa dữ liệu nhạy cảm (token, PII) — phải mã hoá và xoá sau khi xong.
+`,
   exercises: [
     {
       title: 'Cache LRU có giới hạn bằng LinkedHashMap',
