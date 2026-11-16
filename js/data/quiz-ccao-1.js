@@ -2098,4 +2098,357 @@ Xây một Project hoặc template chuẩn: tài liệu, cấu trúc, ràng bu�
 
 > Muốn nhất quán thì chuẩn hoá đầu vào, không trông vào may rủi.`
 },
+{
+  id: 'qz-ccao-091',
+  topic: 'claude',
+  q: '[Troubleshooting] A consultant has been working with Claude in the same chat for two hours on a proposal. Lately the answers feel vague and Claude forgets details that were agreed earlier in the conversation. What is the most effective first step?',
+  options: [
+    'Keep going in the same chat, because a longer conversation always improves quality',
+    'Start a new chat and open with a short brief that restates the goal, decisions, and key facts',
+    'Delete the whole project folder so Claude cannot see old material',
+    'Ask Claude to try harder and promise to remember everything'
+  ],
+  answer: 1,
+  explain: `**Đúng: mở chat mới và mở đầu bằng một bản brief ngắn nhắc lại mục tiêu, các quyết định và dữ kiện chính.** Mỗi cuộc trò chuyện có một "context window" – giới hạn lượng thông tin Claude giữ và xử lý trong một phiên, giống mặt bàn có diện tích cố định: càng bày nhiều giấy tờ thì càng khó tìm đúng tờ cần. Khi chat kéo dài hàng giờ, hàng trăm tin nhắn cũ cùng chen vào ngữ cảnh; Claude vẫn trả lời nhưng các chi tiết đã thống nhất ở đầu dễ bị lấn át hoặc bỏ sót. Mở chat mới rồi dán lại một bản brief 5–10 dòng (mục tiêu, khách hàng, cấu trúc, các quyết định đã chốt) đưa đúng thông tin quan trọng trở lại "mặt bàn" và thường cải thiện chất lượng ngay.
+
+### Vì sao các lựa chọn khác sai
+- **Tiếp tục chat cũ vì dài hơn là tốt hơn:** độ dài không đồng nghĩa chất lượng; ngữ cảnh quá lớn làm loãng trọng tâm và tăng chi phí xử lý.
+- **Xoá cả thư mục dự án:** phản ứng cực đoan, làm mất tài liệu tốt; vấn đề nằm ở phiên chat chứ không phải ở tài liệu.
+- **Bảo Claude "cố gắng hơn" và hứa ghi nhớ:** lời nhắc không tạo thêm dung lượng ngữ cảnh; không có cơ chế "nhớ" bền vững như con người.
+
+### Cách làm
+Giữ một tệp ghi chú brief (mục tiêu, quyết định, thuật ngữ) và dán vào đầu mỗi chat mới. Với việc lặp lại, đưa tài liệu nền vào Project để không phải dán lại.
+
+> Mẹo thực tế: khi chat dài quá khoảng vài chục lượt và bắt đầu "trôi", hãy coi đó là tín hiệu mở phiên mới kèm brief, thay vì cố vắt thêm.`
+},
+{
+  id: 'qz-ccao-092',
+  topic: 'claude',
+  q: '[Troubleshooting] A delivery lead asks Claude to draft a project kickoff plan but keeps getting back a list of questions instead of a draft. The lead wants a draft now and can refine later. Which adjustment is most likely to get a usable draft?',
+  options: [
+    'Give the missing parameters (timeline, team size, scope) and allow Claude to proceed with clearly stated assumptions if something is still unknown',
+    'Repeat the same request in capital letters so Claude takes it seriously',
+    'Ask a different colleague to send the identical request',
+    'Abandon Claude for planning tasks entirely'
+  ],
+  answer: 0,
+  explain: `**Đúng: cung cấp các tham số còn thiếu và cho phép Claude tiếp tục với giả định được ghi rõ.** Claude thường hỏi lại khi yêu cầu thiếu dữ kiện quan trọng (thời hạn, quy mô nhóm, phạm vi) vì nếu tự đoán, kết quả có thể lệch xa thực tế. Cách xử lý không phải là "ép" Claude bỏ qua câu hỏi, mà là đưa thông tin bạn đã biết và nói rõ: "nếu còn thiếu, hãy dùng giả định hợp lý và liệt kê chúng ở đầu bản nháp". Như vậy bạn vừa có bản nháp dùng được ngay, vừa thấy rõ chỗ nào cần xác nhận.
+
+### Vì sao các lựa chọn khác sai
+- **Viết hoa toàn bộ yêu cầu:** chữ hoa không bổ sung dữ kiện; Claude vẫn thiếu thông tin như cũ.
+- **Nhờ đồng nghiệp gửi y hệt yêu cầu:** người khác không có thêm thông tin về dự án của bạn.
+- **Từ bỏ Claude cho việc lập kế hoạch:** kết luận quá vội; vấn đề chỉ là thiếu đầu vào, không phải năng lực.
+
+### Cách làm
+Chuẩn bị sẵn 4 thông tin: thời hạn, số người, phạm vi, ràng buộc. Thêm câu "State your assumptions" để bản nháp minh bạch.
+
+> Mẹo thực tế: một dòng "nếu thiếu thông tin, hãy giả định và ghi rõ giả định" thường biến 5 lượt hỏi đáp thành 1 lượt.`
+},
+{
+  id: 'qz-ccao-093',
+  topic: 'claude',
+  q: '[Troubleshooting] Claude is writing a detailed onboarding checklist for a new hire, but the response stops mid-sentence before the list is complete. What is the most practical next step?',
+  options: [
+    'Conclude that the request broke Claude and start over from scratch',
+    'Ask Claude to make the answer shorter by deleting all detail',
+    'Wait a day and hope the same chat resumes by itself',
+    'Ask Claude to continue from where it stopped, or request the checklist in numbered sections across a few messages'
+  ],
+  answer: 3,
+  explain: `**Đúng: yêu cầu Claude viết tiếp từ chỗ dừng, hoặc chia danh sách thành các phần đánh số qua vài tin nhắn.** Mỗi lần trả lời có giới hạn độ dài đầu ra (max output tokens – số đơn vị văn bản tối đa mô hình được tạo trong một lượt). Với danh sách dài hoặc giải thích chi tiết, phản hồi có thể chạm mức trần và dừng giữa câu. Đó là giới hạn kỹ thuật, không phải lỗi nội dung. Cách xử lý chuẩn là yêu cầu "viết tiếp từ chỗ dừng", hoặc chủ động chia nhỏ: "phần 1 gồm mục 1–10, phần 2 gồm mục 11–20".
+
+### Vì sao các lựa chọn khác sai
+- **Cho rằng Claude hỏng và làm lại từ đầu:** mất phần đã viết đúng; nguyên nhân chỉ là giới hạn độ dài.
+- **Yêu cầu ngắn hơn bằng cách bỏ hết chi tiết:** làm mất giá trị của checklist bạn cần.
+- **Chờ chat tự chạy tiếp:** không có cơ chế tự tiếp tục; phải có yêu cầu mới.
+
+### Cách làm
+Với tài liệu dài, chia theo mục và yêu cầu từng phần; lưu kết quả từng phần để ghép lại.
+
+> Mẹo thực tế: nếu câu trả lời hay bị cắt, hãy yêu cầu cấu trúc rõ (phần 1, phần 2) ngay từ đầu thay vì để Claude tự dàn trải.`
+},
+{
+  id: 'qz-ccao-094',
+  topic: 'claude',
+  q: '[Troubleshooting] A compliance analyst asks Claude to help draft an internal policy about handling customer complaints. Claude declines the request. The task is legitimate and lawful. What is the most appropriate way to proceed?',
+  options: [
+    'Rephrase the request repeatedly to slip past safety rules until it answers',
+    'Give up, because a refusal always means the task is impossible',
+    'Explain the legitimate business purpose and constraints, and ask for a compliant way to complete the task',
+    'Ask Claude to pretend the request comes from someone else'
+  ],
+  answer: 2,
+  explain: `**Đúng: giải thích mục đích kinh doanh hợp pháp, ràng buộc cụ thể, và đề nghị một cách làm tuân thủ để hoàn thành việc.** Claude có thể từ chối (refusal) khi yêu cầu mơ hồ, thiếu ngữ cảnh, hoặc chạm vào vùng nhạy cảm. Với một việc hợp pháp như soạn chính sách xử lý khiếu nại nội bộ, việc bổ sung ngữ cảnh – ai dùng tài liệu, mục đích, phạm vi, những gì cần tránh – thường giúp Claude hiểu đúng và hỗ trợ. Nếu vẫn bị từ chối, hãy hỏi cách tiếp cận tuân thủ; không nên tìm cách lách.
+
+### Vì sao các lựa chọn khác sai
+- **Diễn đạt lại nhiều lần để lách quy tắc an toàn:** đó là hành vi vượt rào (jailbreak), vi phạm chính sách sử dụng và không đáng tin.
+- **Bỏ cuộc vì cho rằng từ chối nghĩa là việc bất khả thi:** một lần từ chối thường do thiếu ngữ cảnh, không phải phán quyết cuối cùng.
+- **Bảo Claude giả vờ yêu cầu đến từ người khác:** thay đổi danh tính không giải quyết vấn đề nội dung và có thể tiếp tục bị từ chối.
+
+### Cách làm
+Viết rõ: mục đích, đối tượng, khung pháp lý, phần nào cần tránh. Yêu cầu "nếu không thể, hãy đề xuất cách làm tuân thủ".
+
+> Mẹo thực tế: ngữ cảnh hợp pháp và ràng buộc rõ ràng giúp giảm phần lớn từ chối không cần thiết.`
+},
+{
+  id: 'qz-ccao-095',
+  topic: 'claude',
+  q: '[Troubleshooting] A sales rep asks Claude about a regulation that changed last month, and Claude answers with outdated details. What is the most likely explanation and the right fix?',
+  options: [
+    'Claude has a knowledge cutoff and does not automatically know very recent changes, so provide current sources or use web search when available',
+    'Claude secretly stores every regulation and is choosing to lie',
+    'The only fix is to type the question in all caps',
+    'Outdated answers prove the account is broken and must be recreated'
+  ],
+  answer: 0,
+  explain: `**Đúng: Claude có "knowledge cutoff" – mốc thời gian dữ liệu huấn luyện kết thúc – nên không tự biết thay đổi rất mới; hãy cung cấp nguồn hiện hành hoặc dùng tìm kiếm web khi tính năng này có sẵn.** Mô hình học từ dữ liệu đến một thời điểm, giống một cuốn sách in xong rồi không tự cập nhật. Quy định mới trong tháng thường nằm ngoài mốc đó, nên câu trả lời vẫn trôi chảy nhưng dựa trên bản cũ. Cách sửa: dán văn bản quy định mới, yêu cầu trả lời chỉ dựa trên tài liệu đó, hoặc bật tìm kiếm web để lấy thông tin hiện hành.
+
+### Vì sao các lựa chọn khác sai
+- **Cho rằng Claude cố tình nói dối:** không phải ý định; đây là giới hạn dữ liệu huấn luyện.
+- **Chỉ cần viết hoa câu hỏi:** không thêm thông tin mới, không thay đổi mốc dữ liệu.
+- **Cho rằng tài khoản hỏng và phải tạo lại:** không liên quan; mọi tài khoản cùng model đều có cùng mốc.
+
+### Cách làm
+Với chủ đề thay đổi nhanh (luật, giá, API), luôn đưa nguồn chính thức vào ngữ cảnh và kiểm tra lại trước khi dùng.
+
+> Mẹo thực tế: hỏi "thông tin này có sau mốc dữ liệu của model không?" giúp bạn nhớ bước kiểm chứng.`
+},
+{
+  id: 'qz-ccao-096',
+  topic: 'claude',
+  q: '[Troubleshooting] A user gets one incorrect answer from Claude and tells the team "Claude is down". What is the most reasonable response?',
+  options: [
+    'Agree: one wrong answer proves a service outage',
+    'Tell everyone to stop using Claude for a week',
+    'Treat it as a single quality issue: retry with clearer context, verify the fact, and check the service status page only if problems repeat',
+    'Publish the incorrect answer as evidence that AI cannot be trusted'
+  ],
+  answer: 2,
+  explain: `**Đúng: coi đó là một vấn đề chất lượng đơn lẻ – thử lại với ngữ cảnh rõ hơn, kiểm chứng dữ kiện, và chỉ kiểm tra trang trạng thái dịch vụ khi lỗi lặp lại trên nhiều người.** Phần lớn câu trả lời sai đến từ đề bài mơ hồ, dữ liệu đầu vào sai, hoặc nội dung cần kiểm chứng, không phải dịch vụ ngừng hoạt động. Một lỗi đơn lẻ không đủ để kết luận "Claude down". Nếu nhiều người cùng gặp lỗi hệ thống (không đăng nhập được, lỗi máy chủ), lúc đó mới kiểm tra status page của nhà cung cấp.
+
+### Vì sao các lựa chọn khác sai
+- **Đồng ý rằng một câu sai chứng minh dịch vụ sập:** kết luận sai logic; cần bằng chứng rộng hơn.
+- **Bảo cả nhóm dừng dùng một tuần:** phản ứng quá mức, ảnh hưởng công việc mà không giải quyết gì.
+- **Công bố câu trả lời sai làm bằng chứng AI vô dụng:** tuyệt đối hoá từ một mẫu nhỏ, và có thể lan truyền thông tin sai.
+
+### Cách làm
+Ghi lại đề bài và ngữ cảnh khi gặp lỗi, thử lại với brief rõ hơn; nếu lỗi vẫn lặp, kiểm tra status page và báo cáo theo quy trình.
+
+> Mẹo thực tế: phân biệt "output sai" với "dịch vụ lỗi" giúp chẩn đoán đúng chỗ và tránh hoảng loạn không cần thiết.`
+},
+{
+  id: 'qz-ccao-097',
+  topic: 'claude',
+  q: '[Troubleshooting] An analyst uploads a very large PDF to Claude and the upload fails or the file is not processed. What is the most sensible first step?',
+  options: [
+    'Keep re-uploading the same file until it works',
+    'Reduce the file to the relevant pages, split it into smaller parts, or paste the key text instead',
+    'Convert the PDF into a video so it becomes smaller',
+    'Assume PDFs are not supported at all and give up'
+  ],
+  answer: 1,
+  explain: `**Đúng: thu gọn tệp còn các trang liên quan, chia nhỏ thành nhiều phần, hoặc chuyển sang định dạng nhẹ hơn và dán phần văn bản quan trọng.** Dịch vụ có giới hạn về dung lượng và loại tệp; giới hạn có thể thay đổi theo thời điểm nên đừng dựa vào một con số cố định. Khi tệp quá lớn hoặc quá phức tạp, quá trình tải lên hoặc trích xuất nội dung có thể thất bại. Xử lý thực tế là giảm kích thước: chỉ giữ chương cần hỏi, tách thành các tệp nhỏ, hoặc copy phần văn bản chính vào chat.
+
+### Vì sao các lựa chọn khác sai
+- **Tải lại y nguyên tệp lớn:** nếu nguyên nhân là dung lượng thì lặp lại không giải quyết.
+- **Đổi PDF thành video:** vô nghĩa; video không phải định dạng tài liệu để phân tích.
+- **Cho rằng PDF không được hỗ trợ:** PDF vẫn được hỗ trợ trong giới hạn; vấn đề là kích thước/độ phức tạp của tệp cụ thể.
+
+### Cách làm
+Kiểm tra loại và dung lượng tệp; thử tách theo chương; nếu vẫn lỗi, dán văn bản hoặc chuyển sang tệp văn bản thuần.
+
+> Mẹo thực tế: chỉ đưa vào đúng phần tài liệu cần phân tích vừa nhanh hơn vừa ít lỗi hơn.`
+},
+{
+  id: 'qz-ccao-098',
+  topic: 'claude',
+  q: '[Troubleshooting] A team member has account-level custom instructions that say "always answer briefly", while the shared Project instructions ask for detailed, long reports. Claude replies inconsistently. What is the best fix?',
+  options: [
+    'Add even more contradictory instructions so Claude has more options',
+    'Change the model every day to see which one obeys',
+    'Ignore the problem; inconsistent behaviour is normal and cannot be improved',
+    'Make the guidance consistent: keep one clear source of truth for tone and length, remove the contradiction, and re-test in a fresh chat'
+  ],
+  answer: 3,
+  explain: `**Đúng: làm cho hướng dẫn nhất quán – chọn một nguồn chuẩn duy nhất cho tông giọng và độ dài, bỏ mâu thuẫn, rồi thử lại trong chat mới.** Hướng dẫn có thể đến từ nhiều tầng: custom instructions của tài khoản, instructions của Project, và yêu cầu trong từng tin nhắn. Khi các tầng nói ngược nhau ("luôn ngắn gọn" và "luôn chi tiết dài"), Claude phải chọn một cách hiểu, nên kết quả dao động giữa các lần. Cách sửa là hợp nhất quy tắc, không phải thêm chỉ dẫn mới chồng chéo.
+
+### Vì sao các lựa chọn khác sai
+- **Thêm càng nhiều chỉ dẫn mâu thuẫn:** làm tăng xung đột, kết quả càng khó đoán.
+- **Đổi model mỗi ngày:** không giải quyết mâu thuẫn nguồn hướng dẫn; chỉ thêm biến số.
+- **Coi dao động là bình thường không thể cải thiện:** sai; phần lớn dao động do đầu vào không nhất quán.
+
+### Cách làm
+Liệt kê mọi nơi có hướng dẫn, gộp về một chỗ, viết rõ quy tắc ưu tiên nếu cần. Kiểm thử lại bằng cùng một yêu cầu mẫu.
+
+> Mẹo thực tế: một nguồn hướng dẫn rõ ràng luôn tốt hơn ba nguồn đá nhau.`
+},
+{
+  id: 'qz-ccao-099',
+  topic: 'claude',
+  q: '[Troubleshooting] A user hits their Claude usage limit almost every morning while re-pasting the same long documents into new chats. What is the most appropriate response?',
+  options: [
+    'Reuse the documents through a Project instead of re-pasting them, and review whether the current plan matches actual usage',
+    'Create many free accounts to get around the limit',
+    'Conclude that Claude is broken and stop using it',
+    'Send the documents by email to Claude so they do not count'
+  ],
+  answer: 0,
+  explain: `**Đúng: dùng Project để tái sử dụng tài liệu thay vì dán lại mỗi lần, và xem lại xem gói hiện tại có phù hợp nhu cầu thực tế không.** Giới hạn sử dụng (usage limit) gắn với gói tài khoản và thường được đặt lại theo chu kỳ; dán lại tài liệu dài mỗi ngày tiêu tốn hạn mức vô ích. Đưa tài liệu nền vào Project giúp mọi chat trong Project dùng chung một nguồn, giảm lượng nội dung phải gửi lặp lại. Nếu nhu cầu thực sự lớn và đều đặn, nâng gói là hướng đúng.
+
+### Vì sao các lựa chọn khác sai
+- **Tạo nhiều tài khoản miễn phí để lách hạn mức:** vi phạm điều khoản sử dụng và khó quản lý dữ liệu.
+- **Cho rằng Claude hỏng rồi bỏ dùng:** nhầm giới hạn gói với lỗi hệ thống.
+- **Gửi tài liệu qua email cho Claude:** không phải cơ chế đưa ngữ cảnh vào chat, cũng không giúp tránh hạn mức.
+
+### Cách làm
+Kiểm tra gói và chu kỳ đặt lại; gom tài liệu nền vào Project; chỉ gửi phần thực sự cần cho từng câu hỏi.
+
+> Mẹo thực tế: hạn mức bị đốt chủ yếu bởi nội dung lặp lại; chuẩn hoá đầu vào là cách tiết kiệm rẻ nhất.`
+},
+{
+  id: 'qz-ccao-100',
+  topic: 'claude',
+  q: '[Troubleshooting] A user pastes a 200-page document and a complex question into one chat. Answers take a long time and sometimes drift. What is the most effective change?',
+  options: [
+    'Paste the document twice so Claude has a backup copy',
+    'Ask Claude to answer faster',
+    'Trim the input to the sections that matter, split the task into smaller steps, and consider a faster model for simpler parts',
+    'Change the chat language to speed it up'
+  ],
+  answer: 2,
+  explain: `**Đúng: cắt ngữ cảnh còn những phần liên quan, chia việc thành bước nhỏ, và cân nhắc model nhanh hơn cho phần đơn giản.** Thời gian phản hồi tăng theo kích thước đầu vào và độ phức tạp của việc, giống việc đọc 200 trang rồi trả lời một câu hỏi khó luôn lâu hơn đọc 2 trang. Ngữ cảnh quá lớn còn làm loãng trọng tâm, khiến câu trả lời "trôi". Cắt gọn và chia bước vừa tăng tốc vừa tăng độ chính xác; với việc đơn giản, model nhẹ và nhanh thường đủ tốt.
+
+### Vì sao các lựa chọn khác sai
+- **Dán tài liệu hai lần:** tăng gấp đôi lượng xử lý và nhiễu, không tạo "bản sao dự phòng" có ích.
+- **Yêu cầu Claude trả lời nhanh hơn:** không thay đổi khối lượng tính toán phải làm.
+- **Đổi ngôn ngữ chat:** không liên quan tới tốc độ xử lý ngữ cảnh lớn.
+
+### Cách làm
+Xác định đúng chương/mục cần hỏi; chia thành các câu hỏi nhỏ; với việc đơn giản, thử model nhanh trước.
+
+> Mẹo thực tế: hiệu năng thường được cải thiện nhiều nhất bằng cách bớt ngữ cảnh, không phải bằng cách thêm yêu cầu.`
+},
+{
+  id: 'qz-ccao-101',
+  topic: 'claude',
+  q: '[Troubleshooting] While investigating a support case, an agent shares a Claude chat using the share link feature. Later they realize the chat contains a customer contract and internal notes. What should they do?',
+  options: [
+    'Nothing; a shared chat is visible only to the person who created it',
+    'Stop sharing the chat, treat the content as potentially exposed, and follow the incident and data-handling policy',
+    'Ask Claude to forget the contract so the shared link becomes safe',
+    'Post the link in a public forum to get feedback on the contract'
+  ],
+  answer: 1,
+  explain: `**Đúng: dừng chia sẻ chat, coi nội dung là đã có thể bị lộ, và làm theo quy trình xử lý sự cố dữ liệu.** Tính năng chia sẻ chat tạo một liên kết mà bất kỳ ai có liên kết đều có thể mở; nó không giới hạn cho riêng người tạo. Khi trong chat có hợp đồng khách và ghi chú nội bộ, việc chia sẻ có thể vi phạm cam kết bảo mật. Bước đúng là thu hồi chia sẻ, báo theo quy trình, và rà lại xem ai đã nhận liên kết.
+
+### Vì sao các lựa chọn khác sai
+- **Không làm gì vì nghĩ chỉ người tạo xem được:** hiểu sai cơ chế chia sẻ qua liên kết.
+- **Nhờ Claude "quên" hợp đồng để liên kết an toàn:** nội dung đã được chia sẻ; lời nhắc không thu hồi bản đã phát.
+- **Đăng liên kết công khai để xin góp ý:** làm dữ liệu mật lan rộng hơn, biến sự cố nhỏ thành lớn.
+
+### Cách làm
+Thu hồi chia sẻ ngay; kiểm tra lịch sử ai có liên kết; báo bộ phận an toàn thông tin; rà lại quy tắc chia sẻ nội bộ.
+
+> Mẹo thực tế: trước khi bấm chia sẻ, hãy đọc lại toàn bộ chat như thể nó sẽ xuất hiện trên trang nhất.`
+},
+{
+  id: 'qz-ccao-102',
+  topic: 'claude',
+  multi: true,
+  q: '[Troubleshooting] A team connected Claude to their cloud drive, but when they ask about a specific document, Claude says it cannot find it. Which two checks are most appropriate? (Choose 2)',
+  options: [
+    'Confirm the connector is enabled for the account and conversation, and connected to the right workspace',
+    'Assume the connector deleted the missing file, and ask it to restore it',
+    'Confirm the person asking has permission to that document and that it is inside the scope the connector can reach',
+    'Paste the document owner credentials into the chat so Claude can log in as them',
+    'Disable the connector and conclude integrations never work'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: kiểm tra connector có đang bật đúng tài khoản/không gian, và người hỏi có quyền tới tài liệu đó trong phạm vi connector chạm tới.** "Connector" là cầu nối cho Claude đọc dữ liệu từ hệ thống bên ngoài (như cloud drive) thay vì phải tải tệp lên. Nó hoạt động theo cấu hình và theo quyền của chính người dùng: nếu connector chưa bật cho phiên làm việc hiện tại, hoặc tài khoản kết nối khác với nơi lưu tệp, hoặc người dùng không có quyền xem tệp, Claude sẽ không thấy.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Cho rằng connector đã xoá tệp:** connector chỉ đọc theo quyền, không tự xoá dữ liệu của bạn.
+- **Dán thông tin đăng nhập vào chat:** cực kỳ nguy hiểm, làm lộ credential; không bao giờ làm.
+- **Tắt connector và kết luận tích hợp vô dụng:** bỏ qua bước chẩn đoán đúng (cấu hình và quyền).
+
+### Cách làm
+Kiểm tra connector đã kết nối đúng tài khoản chưa, phạm vi tệp/thư mục, quyền của người dùng. Thử hỏi một tệp đơn giản đã biết để xác nhận.
+
+> Mẹo thực tế: khi tích hợp "không thấy dữ liệu", hãy nghĩ tới ba từ: bật chưa, đúng tài khoản chưa, có quyền chưa.`
+},
+{
+  id: 'qz-ccao-103',
+  topic: 'claude',
+  multi: true,
+  q: '[Troubleshooting] A weekly reporting workflow used to produce good results, but this week the drafts are noticeably worse. Which two diagnostic steps are most sensible? (Choose 2)',
+  options: [
+    'Cancel the subscription because the tool is now broken',
+    'Compare with the last known-good run to see whether the input data or instructions changed',
+    'Add unrelated background documents so Claude has more material to work with',
+    'Check for recent changes such as edited instructions, an outdated knowledge file, or a much longer conversation',
+    'Keep resending the identical prompt until the output happens to look right'
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: so sánh với lần chạy tốt gần nhất để tách nguyên nhân dữ liệu và nguyên nhân hướng dẫn, đồng thời rà các thay đổi gần đây.** Chất lượng đầu ra phụ thuộc vào ba thứ: chất lượng đầu vào, hướng dẫn, và ngữ cảnh đang dùng. Khi một quy trình đang tốt bỗng kém, khác biệt thường nằm ở dữ liệu mới (cột đổi, thiếu dòng), hướng dẫn bị sửa, tài liệu nền cũ, hoặc chat bị kéo dài. So sánh hai lần chạy – cùng một bộ dữ liệu mẫu – là cách nhanh nhất để khoanh vùng.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Huỷ gói vì cho rằng công cụ hỏng:** kết luận dựa trên một tuần, chưa loại trừ nguyên nhân phổ biến hơn là đầu vào.
+- **Thêm tài liệu không liên quan:** tăng nhiễu, làm chất lượng khó đoán hơn.
+- **Gửi lại y nguyên prompt cho tới khi ổn:** không chẩn đoán, chỉ dựa vào may mắn; nếu nguyên nhân là dữ liệu thì lặp lại vẫn sai.
+
+### Cách làm
+Lưu một bộ "golden sample" (mẫu chuẩn) và kết quả tốt để so sánh. Khi chất lượng giảm, chạy lại mẫu chuẩn để xác định lỗi ở đâu.
+
+> Mẹo thực tế: có sẵn mẫu chuẩn giúp bạn phát hiện hồi quy (regression) trong vài phút thay vì tranh cãi cảm tính.`
+},
+{
+  id: 'qz-ccao-104',
+  topic: 'claude',
+  multi: true,
+  q: '[Troubleshooting] Claude summarizes a 60-page market report, but the summary leaves out several key findings the team cares about. Which two approaches are most likely to improve coverage? (Choose 2)',
+  options: [
+    'Ask for a much longer summary with no structure',
+    'Process the report in sections and give instructions for each section',
+    'Paste only the first page and ignore the rest',
+    'Provide a checklist of findings or sections the summary must cover, and ask Claude to confirm each one',
+    'Assume the omitted findings were not important'
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: xử lý tài liệu theo từng phần và đưa danh sách mục bắt buộc phải có, rồi yêu cầu xác nhận từng mục.** Với tài liệu dài, yêu cầu "tóm tắt tất cả" dễ khiến mô hình bỏ sót vì phải chọn lọc trong khối lượng lớn. Chia theo chương giúp mỗi phần được xử lý kỹ; checklist biến "tóm tắt hay" thành "tóm tắt có phủ đủ các mục quan trọng", và việc yêu cầu đánh dấu từng mục cho phép bạn kiểm tra ngay chỗ thiếu.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Đòi tóm tắt dài hơn, không cấu trúc:** dài hơn không bảo đảm phủ đủ ý; có thể lan man mà vẫn thiếu.
+- **Chỉ dán trang đầu:** bỏ mất phần lớn nội dung cần tóm tắt.
+- **Mặc định phần bị bỏ là không quan trọng:** đây chính là lỗi cần phát hiện; không nên tự biện minh.
+
+### Cách làm
+Liệt kê 5–10 mục bắt buộc; tách tài liệu theo chương; tổng hợp bản tóm tắt từng chương rồi yêu cầu bản tổng hợp cuối.
+
+> Mẹo thực tế: tóm tắt có checklist luôn kiểm tra được; tóm tắt "tự do" thì không.`
+},
+{
+  id: 'qz-ccao-105',
+  topic: 'claude',
+  multi: true,
+  q: '[Troubleshooting] A user complains that Claude "gives bad answers" for a recurring task and wants to switch tools. Which two questions best guide the diagnosis first? (Choose 2)',
+  options: [
+    'Is the request missing key context or criteria that the output depends on?',
+    'Should we assume the model was downgraded and replace the tool immediately?',
+    'Is the output actually incorrect, or just different in style from what the user expected?',
+    'Should we add more unrelated documents so the context is bigger?',
+    'Is it enough to accept whatever comes back after a single try?'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: hỏi xem đề bài có thiếu ngữ cảnh/tiêu chí không, và phân biệt "sai" với "khác sở thích".** Phần lớn phản hồi bị đánh giá là "tệ" thực ra do yêu cầu mơ hồ thiếu dữ kiện, hoặc do người dùng kỳ vọng một văn phong khác chứ nội dung không sai. Hai câu hỏi này tách nguyên nhân trước khi kết luận về công cụ, đúng tinh thần chẩn đoán: đo đúng vấn đề rồi mới sửa.
+
+### Vì sao từng lựa chọn còn lại sai
+- **Mặc định model bị hạ cấp và thay công cụ ngay:** kết luận không có bằng chứng; thay công cụ không sửa được đề bài thiếu ngữ cảnh.
+- **Thêm tài liệu không liên quan để tăng ngữ cảnh:** làm nhiễu và dễ làm kết quả tệ hơn.
+- **Chỉ thử một lần rồi nhận kết quả:** thiếu bước kiểm chứng; một lần chạy không đại diện cho toàn bộ.
+
+### Cách làm
+Viết lại đề bài kèm tiêu chí đánh giá rõ; chạy 2–3 lần với cùng mẫu để xem dao động; so sánh với kỳ vọng cụ thể.
+
+> Mẹo thực tế: câu hỏi chẩn đoán tốt nhất luôn bắt đầu bằng "đầu vào đã đủ rõ chưa?" trước khi đổ lỗi cho công cụ.`
+},
 );
