@@ -601,6 +601,7 @@ Giả sử 100.000 tài liệu/tháng, mỗi tài liệu 6.000 token input (đã
 | Haiku (rẻ, nhanh) | 0.10 | 0.50 | 600M → $60 | 30M → $15 | **~$75** |
 | Sonnet (cân bằng) | 2 | 10 | 600M → $1.200 | 30M → $300 | **~$1.500** |
 | Opus (mạnh) | 4 | 20 | 600M → $2.400 | 30M → $600 | **~$3.000** |
+| Fable (mạnh nhất) | 8 | 40 | 600M → $4.800 | 30M → $1.200 | **~$6.000** |
 
 (Giá ví dụ minh hoạ; hãy kiểm tra trang Pricing chính thức trước khi báo cáo.)
 
@@ -632,10 +633,11 @@ Sếp yêu cầu tính chi phí tính năng "tóm tắt tài liệu pháp luật
   topic: 'claude',
   level: 'senior',
   q: 'So sánh các model Claude hiện hành (Haiku, Sonnet, Opus). Bạn chọn model cho từng tính năng của một sản phẩm thế nào?',
-  a: `**Tóm tắt:** Ba tầng theo năng lực và giá:
+  a: `**Tóm tắt:** Bốn tầng theo năng lực và giá:
 - **Haiku**: rẻ, nhanh nhất (model cấp nhập).
 - **Sonnet**: cân bằng tốc độ và năng lực (model chủ lực).
-- **Opus**: mạnh cho việc khó và agent dài (model cao cấp); đây là mặc định Anthropic khuyến nghị cho đa số việc.
+- **Opus**: mạnh cho việc khó và agent dài (model cao cấp); mặc định khuyến nghị cho đa số việc.
+- **Fable**: mạnh nhất, cho nghiên cứu sâu và bài toán cực khó (model chuyên gia); đắt và chậm, chỉ dùng khi eval chứng minh lợi ích.
 
 Tất cả có context 1M, output tối đa 128K. Chọn model bằng **eval trên dữ liệu thật**, không chọn theo cảm tính: bắt đầu từ model có khả năng đạt yêu cầu, rồi thử hạ xuống model rẻ hơn hoặc hạ **effort** xem chất lượng có giữ được không.
 
@@ -653,7 +655,7 @@ Giống thuê người: thực tập sinh (Haiku) làm nhanh việc đơn giản
 | Phân loại ticket, gắn nhãn, trích trường đơn giản | Haiku | Khối lượng lớn, cần rẻ và nhanh |
 | Chatbot hỗ trợ khách hàng, tóm tắt | Sonnet | Cân bằng chất lượng và độ trễ |
 | Coding agent, phân tích nhiều bước, tool use phức tạp | Opus | Ổn định trên tác vụ dài |
-| Nghiên cứu sâu, bài toán cực khó mà Opus effort cao vẫn chưa đạt | Model suy luận mạnh nhất | Đắt và chậm hơn, chỉ dùng khi đo được lợi ích |
+| Nghiên cứu sâu, bài toán cực khó mà Opus effort cao vẫn chưa đạt | Fable | Mạnh nhất, đắt và chậm hơn; chỉ dùng khi eval đo được lợi ích |
 
 ### Quy trình chọn từng bước
 1. Xây eval 50–200 case cho tính năng, có tiêu chí chấm rõ.
@@ -669,7 +671,7 @@ Giống thuê người: thực tập sinh (Haiku) làm nhanh việc đơn giản
 - **Ghi ID model kèm hậu tố ngày tự đoán**: chỉ dùng đúng ID trong tài liệu (ví dụ {{claude-sonnet-5-5}}).
 
 ### Trả lời miệng 1 phút
-"Có ba tầng: Haiku rẻ và nhanh cho phân loại hay trích xuất khối lượng lớn, Sonnet cân bằng cho chatbot và tóm tắt, Opus cho việc phức tạp và agent dài. Tất cả có context 1M. Tôi không chọn theo cảm tính mà xây eval từ dữ liệu thật, chạy vài model và mức effort, so chất lượng, độ trễ p95 và chi phí mỗi tác vụ hoàn thành, rồi chọn phương án rẻ nhất đạt ngưỡng. Thường tôi thử hạ effort trước khi đổi sang model nhỏ hơn."
+"Có bốn tầng: Haiku rẻ và nhanh nhất cho phân loại hay trích xuất khối lượng lớn, Sonnet cân bằng cho chatbot và tóm tắt, Opus cho việc phức tạp và agent dài, Fable cho bài toán khó nhất (đắt và chậm). Tất cả có context 1M. Tôi không chọn theo cảm tính mà xây eval từ dữ liệu thật, chạy vài model và mức effort, so chất lượng, độ trễ p95 và chi phí mỗi tác vụ hoàn thành, rồi chọn phương án rẻ nhất đạt ngưỡng. Thường tôi thử hạ effort trước khi đổi sang model nhỏ hơn."
 
 ### Ví dụ đời thực
 Sản phẩm có ba tính năng AI: phân loại ticket, chat hỗ trợ và review code pull request. Ban đầu team dùng Opus cho tất cả, hóa đơn tháng sau tăng 30 lần. Tôi xây eval 150 case thật cho mỗi tính năng, chạy thử Haiku, Sonnet, Opus ở effort low/medium, ghi chất lượng, độ trễ p95 và chi phí mỗi tác vụ hoàn thành. Kết quả: phân loại ticket, Haiku đạt 97% đúng và chỉ 0.02 USD/tác vụ, Opus 0.40 USD; chat hỗ trợ, Sonnet đạt ngưỡng chất lượng, Opus tốt hơn nhưng không đáng gấp 10 tiền; review code giữ Opus effort medium vì sai lệch nhiều bước. Áp dụng: hóa đơn từ 4.200 xuống 610 USD tháng sau, chất lượng không giảm theo eval. Luật: chọn theo số liệu, không theo cảm tính. Tôi cũng đặt alert chi phí theo route để phát hiện sớm nếu chi phí bất thường tăng, và lưu model đã dùng cho mỗi request vào DB để so sánh khi Anthropic ra model mới.
@@ -1039,7 +1041,7 @@ Giống thay động cơ máy bay: động cơ mới mạnh và tiết kiệm h�
 | tool_choice any/tool để ép gọi tool | 400 (Opus, Sonnet, model suy luận mạnh nhất) | tool_choice auto + hướng dẫn trong prompt + strict: true, hoặc structured outputs |
 | Prefill assistant để ép JSON | 400 | structured outputs (output_config.format) hoặc hướng dẫn trong system |
 | thinking enabled + budget_tokens | 400 | thinking adaptive (hoặc bỏ tham số) + output_config.effort |
-| thinking disabled để tiết kiệm | 400 trên Opus (và Sonnet) | hạ effort; Sonnet có kiểu between_tools |
+| thinking disabled để tiết kiệm | 400 trên Opus; trên Sonnet dùng type "between_tools" | hạ effort; trên Sonnet dùng thinking type "between_tools" |
 | temperature / top_p / top_k | 400 với API version mới | bỏ; kiểm soát bằng prompt và effort |
 | Tokenizer cũ | Số token có thể khác | đếm lại bằng count_tokens, xem lại ngân sách |
 
@@ -2132,7 +2134,7 @@ Sao đơn của tôi lâu vậy? Tôi muốn huỷ.
   topic: 'claude',
   level: 'mid',
   q: 'Code cũ của team dùng few-shot và "prefill" (viết sẵn phần đầu câu trả lời của assistant, ví dụ "{") để ép Claude trả đúng định dạng. Trên các model hiện hành, cách nào còn dùng được và bạn thay prefill bằng gì?',
-  a: `**Tóm tắt:** **Few-shot** (đưa ví dụ mẫu) vẫn là một trong những cách tin cậy nhất để điều khiển định dạng, giọng văn và cấu trúc; docs khuyên 3–5 ví dụ **sát thực tế, đa dạng**, bọc trong {{<example>}}/{{<examples>}}. **Prefill** ở lượt assistant cuối **không còn được hỗ trợ** từ các model **Claude 4.6** trở đi (gồm các model 5.x): gửi lên sẽ bị lỗi 400. Thay bằng structured outputs (cần JSON), hướng dẫn trực tiếp trong system prompt (bỏ câu mở đầu), hoặc tool/enum (phân loại).
+  a: `**Tóm tắt:** **Few-shot** (đưa ví dụ mẫu) vẫn là một trong những cách tin cậy nhất để điều khiển định dạng, giọng văn và cấu trúc; docs khuyên 3–5 ví dụ **sát thực tế, đa dạng**, bọc trong {{<example>}}/{{<examples>}}. **Prefill** ở lượt assistant cuối **không còn được hỗ trợ** trên các model hiện hành (gồm cả 5.x): gửi lên sẽ bị lỗi 400. Thay bằng structured outputs (cần JSON), hướng dẫn trực tiếp trong system prompt (bỏ câu mở đầu), hoặc tool/enum (phân loại).
 
 ### Prefill là gì và vì sao từng phổ biến
 Prefill là gửi một message {{role: "assistant"}} cuối cùng có sẵn vài ký tự, ví dụ dấu mở ngoặc nhọn của JSON, để model "viết tiếp" từ đó, buộc kết quả bắt đầu bằng JSON. Docs giải thích rằng khả năng bám hướng dẫn của model mới đã đủ tốt nên phần lớn nhu cầu prefill không còn cần thiết. Lưu ý: chỉ prefill ở **lượt assistant cuối** bị cấm; các message assistant ở giữa lịch sử hội thoại vẫn bình thường.
