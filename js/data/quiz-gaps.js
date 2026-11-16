@@ -296,7 +296,7 @@ REPEATABLE READ của PostgreSQL thực chất là **snapshot isolation**: trans
     'Mỗi index thêm vào làm INSERT/UPDATE chậm hơn, tốn thêm dung lượng và WAL'
   ],
   answer: [0, 3],
-  explain: `**Đáp án đúng: phương án 1 và 4.**
+  explain: `**Đáp án đúng: Index phục vụ tốt WHERE customer_id = ? AND created_at > ? · Mỗi index thêm vào làm INSERT/UPDATE chậm hơn, tốn thêm dung lượng và WAL.**
 
 ### Vì sao đúng
 - Index ghép sắp xếp theo {{customer_id}} trước, trong cùng customer mới sắp theo {{created_at}}. Với {{customer_id = ?}} cây B-tree nhảy thẳng tới nhóm khách hàng đó, rồi {{created_at > ?}} là một khoảng liên tục trong nhóm. Đây là trường hợp lý tưởng: **cột so sánh bằng đặt trước, cột khoảng đặt sau**.
@@ -465,7 +465,7 @@ Hệ quả ngược lại: dữ liệu do server ghi đã commit thật, test ro
     'Mỗi lần save() được flush và commit ngay xuống DB, nên vi phạm constraint luôn lộ ra ngay tại dòng save()'
   ],
   answer: [0, 2],
-  explain: `**Đáp án đúng: phương án 1 và 3.**
+  explain: `**Đáp án đúng: Chỉ nạp các thành phần JPA (entity, repository, EntityManager, DataSource); bean @Service thông thường không có trong context · Mỗi test mặc định chạy trong transaction và rollback khi kết thúc.**
 
 ### Vì sao đúng
 - {{@DataJpaTest}} là **test slice**: chỉ bật auto-configuration liên quan JPA. Autowire một {{@Service}} sẽ lỗi {{NoSuchBeanDefinitionException}}; muốn có thì {{@Import}} tường minh.
@@ -1202,7 +1202,7 @@ Plugin {{kotlin-spring}} (dựa trên all-open) tự động mở các class có
     'Data class luôn immutable nên Hibernate không thể dirty checking'
   ],
   answer: [0, 2],
-  explain: `**Đáp án đúng: phương án 1 và 3.**
+  explain: `**Đáp án đúng: equals/hashCode/toString tự sinh dùng mọi property trong constructor, kể cả collection LAZY, nên có thể kích hoạt lazy loading, ném LazyInitializationException hoặc đệ quy vô hạn giữa hai entity trỏ nhau · Hibernate cần constructor không tham số và class không final để tạo proxy lazy; trong Kotlin cần plugin kotlin-jpa (no-arg) và cấu hình all-open cho @Entity.**
 
 ### Vì sao đúng
 - **equals/hashCode/toString tự sinh**: data class đưa mọi property của constructor chính vào ba hàm này. Gọi {{toString()}} khi log entity sẽ duyệt collection lazy: ngoài transaction thì ném LazyInitializationException; quan hệ hai chiều (Order có items, Item trỏ về Order) thì Order.toString gọi Item.toString gọi Order.toString… đến StackOverflowError. Thêm nữa hashCode thay đổi khi id được gán sau persist, làm entity "biến mất" khỏi HashSet.
@@ -1463,7 +1463,7 @@ val items: List<Item> get() = _items.toList()   // bản sao tại thời điể
     'Hàm Kotlin ném IOException được Java gọi trong try { } catch (IOException e) bình thường mà không cần khai báo gì thêm'
   ],
   answer: [0, 2],
-  explain: `**Đáp án đúng: phương án 1 và 3.**
+  explain: `**Đáp án đúng: Hàm có tham số mặc định: Java phải truyền đủ mọi tham số, trừ khi hàm Kotlin có @JvmOverloads · Hàm trong companion object của Foo được Java gọi qua Foo.Companion.bar(); thêm @JvmStatic để gọi Foo.bar().**
 
 ### Vì sao đúng
 - **Default argument**: Java không có khái niệm tham số mặc định. Compiler chỉ sinh một method đầy đủ tham số (cộng một method synthetic nội bộ). {{@JvmOverloads}} sinh thêm các overload bỏ dần tham số mặc định từ cuối.
@@ -1700,16 +1700,16 @@ explain: `**Đáp án đúng: timing cả hai chiều + sai số tiền do làm 
     'long lưu số tiền theo đơn vị nhỏ nhất (xu)',
     'String rồi parse khi cần'
   ],
-  answer: 2,
+  answer: 1,
   explain: `**Đáp án đúng: BigDecimal với scale cố định.**
 
 ### Vì sao đúng
-Trong ngân hàng, tiền là số thập phân với hai chữ số thập phân (đồng, xu) và phải **chính xác tuyệt đối** — không được phép bị sai số như float/double. BigDecimal là lớp trong Java đại diện số thập phân với độ chính xác tuyệt đối: nó lưu cả significand (số nguyên) và scale (số chữ số thập phân), mọi phép cộng/trừ/nhân/chia đều chính xác nếu bạn chỉ dùng/phép chia có điều kiện.
+Trong ngân hàng, tiền là số thập phân với hai chữ số thập phân (đồng, xu) và phải **chính xác tuyệt đối** — không được phép bị sai số như float/double. BigDecimal là lớp trong Java đại diện số thập phân với độ chính xác tuyệt đối: nó lưu cả significand (số nguyên) và scale (số chữ số thập phân). Cộng, trừ, nhân đều cho kết quả chính xác; phép chia phải chỉ rõ RoundingMode (nếu không, kết quả thập phân vô hạn như 10/3 sẽ ném ArithmeticException).
 
 Ví dụ: {{new BigDecimal("0.1").add(new BigDecimal("0.2"))}} → {{0.3}} chính xác, trong khi {{0.1 + 0.2}} bằng {{0.30000000000000004}}. Với scale cố định (ví dụ {{scale = 2}}), mọi số tiền đều có đúng 2 chữ số thập phân, dễ so sánh, dễ format, dễ validate.
 
 ### Vì sao các phương án khác sai
-- **float/double**: là số thập phân binary (IEEE 754), không thể biểu diễn chính xác 0.1. Sau nhiều phép toán, sai số tích lũy có thể gây lệch 1-2 đồng — không chấp nhận được trong sổ cái. Thêm nữa, so sánh bằng {{==}} với double là sai; phải dùng {{compareTo}}.
+- **float/double**: là số thập phân binary (IEEE 754), không thể biểu diễn chính xác 0.1. Sau nhiều phép toán, sai số tích lũy có thể gây lệch 1-2 đồng — không chấp nhận được trong sổ cái. Ngoài ra so sánh float/double bằng {{==}} không đáng tin (do sai số); với BigDecimal phải so bằng {{compareTo}}, không dùng {{equals}}.
 - **long lưu theo đơn vị nhỏ nhất (xu)**: là một lựa chọn hiệu năng cao (nhanh, ít bộ nhớ) và dùng trong một số hệ thống hiện đại, nhưng nó **phụ thuộc vào đơn vị cụ thể** (xu, cent) và dễ bị nhầm lẫn khi đổi đơn vị; nó không phải là "kiểu dữ liệu tiền" mà là "kiểu dữ liệu số nguyên đã được quy ước". Trong phỏng vấn banking, BigDecimal là câu trả lời chuẩn; long minor units là một tối ưu có thể dùng sau khi đã đúng về mặt khái niệm.
 - **String rồi parse khi cần**: không thể tính toán trực tiếp, phải parse liên tục, dễ lỗi format, không có semantic của số tiền.
 
@@ -1894,15 +1894,15 @@ Dòng lệch do timing (giao dịch có ở core nhưng chưa có ở đối tá
     'Bỏ qua và làm theo cách của mình, vì bạn là senior hơn lead về kinh nghiệm.'
   ],
   answer: 2,
-  explain: `**Đáp án đúng: phương án 2.**
+  explain: `**Đáp án đúng: Ghi nhận quan điểm của lead, rồi nêu lo ngại cụ thể (tính năng nhỏ, team chưa có kinh nghiệm event sourcing, vận hành phức tạp hơn). Đề xuất làm spike 2 ngày để so sánh với cách hiện tại, và để lead quyết định cuối cùng.**
 
 ### Vì sao đúng
 Phản hồi này làm theo ba bước bất đồng lịch sự: ghi nhận quan điểm của lead, nêu lo ngại cụ thể về vấn đề kỹ thuật (không phán xét người), và đề xuất cách xác minh bằng số liệu (spike 2 ngày) trước khi để lead quyết định cuối cùng. Điều này thể hiện tư duy kỹ thuật, tôn trọng và ownership — đúng tầm Senior.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: đồng ý mặt ngoài thì làm khác phía sau làm mất niềm tin, và lead không có cơ hội sửa định hướng sai.
-- **Phương án 1**: phán xét mẫu thiết kế là quá phức tạp và tấn công người đưa ra ý tưởng thay vì bàn vấn đề, gây đối đầu không cần thiết.
-- **Phương án 3**: thử thống trị bằng vị trí senior, bỏ qua quy trình ra quyết định của team. Làm hỏng quan hệ làm việc.
+- **Đồng ý ngay để không làm lead khó xử, sau đó tự triển khai cách đơn giản hơn mà không nói với ai**: đồng ý mặt ngoài thì làm khác phía sau làm mất niềm tin, và lead không có cơ hội sửa định hướng sai.
+- **Phản đối trực tiếp tại họp và nói mẫu thiết kế này quá phức tạp, không nên dùng cho tính năng nhỏ**: phán xét mẫu thiết kế là quá phức tạp và tấn công người đưa ra ý tưởng thay vì bàn vấn đề, gây đối đầu không cần thiết.
+- **Bỏ qua và làm theo cách của mình, vì bạn là senior hơn lead về kinh nghiệm**: thử thống trị bằng vị trí senior, bỏ qua quy trình ra quyết định của team. Làm hỏng quan hệ làm việc.
 
 > Senior tip: khi bất đồng với người cấp trên, hãy dùng khung "Tôi hiểu quan điểm của bạn, sau đó nêu lo ngại, rồi đề xuất cách thử X". Luôn bàn ý tưởng, không bàn người.`
 },
@@ -1917,15 +1917,15 @@ Phản hồi này làm theo ba bước bất đồng lịch sự: ghi nhận qua
     'Làm theo 3 tuần và hy vọng hệ thống bên thứ ba sẽ có tài liệu kịp thời.'
   ],
   answer: 2,
-  explain: `**Đáp án đúng: phương án 2.**
+  explain: `**Đáp án đúng: Báo sớm cho quản lý ước lượng 6 tuần kèm nguyên nhân, đưa ra 2 lựa chọn: lùi deadline, hoặc cắt phạm vi (tích hợp đơn giản trước, nâng cấp sau). Quản lý chọn lùi 1 tuần và cắt phạm vi, tính năng lên đúng hạn mới.**
 
 ### Vì sao đúng
 Câu trả lời này thể hiện cách xử lý trưởng thành khi deadline không thực tế: thừa nhận ước lượng của chính mình có thể sai, nêu nguyên nhân khách quan nhưng không đổ lỗi, báo sớm (không đợi đến ngày cuối), và đưa ra lựa chọn có trade-off để người ra quyết định chọn. Có kết quả cụ thể và thay đổi quy trình để không lặp lại.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: nhận việc và làm thêm giờ không bền vững, chất lượng dễ giảm, và che giấu vấn đề capacity với quản lý.
-- **Phương án 1**: từ chối trực tiếp không đưa ra giải pháp hay trade-off, khiến quản lý không có dữ liệu để quyết định.
-- **Phương án 3**: hy vọng là không phải chiến thuật. Nếu hệ thống bên thứ ba không có tài liệu kịp, tính năng sẽ trễ hoặc lỗi.
+- **Nhận việc và làm thêm giờ cả tuần để cố gắng kịp 3 tuần, không báo gì trước khi đến hạn**: nhận việc và làm thêm giờ không bền vững, chất lượng dễ giảm, và che giấu vấn đề capacity với quản lý.
+- **Từ chối trực tiếp: "3 tuần là không thể, tôi cần 6 tuần", và không làm gì cho đến khi quản lý đồng ý**: từ chối trực tiếp không đưa ra giải pháp hay trade-off, khiến quản lý không có dữ liệu để quyết định.
+- **Làm theo 3 tuần và hy vọng hệ thống bên thứ ba sẽ có tài liệu kịp thời**: hy vọng là không phải chiến thuật. Nếu hệ thống bên thứ ba không có tài liệu kịp, tính năng sẽ trễ hoặc lỗi.
 
 > Senior tip: câu then chốt là "tôi báo sớm kèm phương án". Tin xấu đến sớm thì vẫn còn lựa chọn, tin xấu đến muộn chỉ còn hậu quả.`
 },
@@ -1940,15 +1940,15 @@ Câu trả lời này thể hiện cách xử lý trưởng thành khi deadline 
     'Bạn luôn kiểm tra kỹ trước khi deploy nên sự cố này không thể do bạn gây ra.'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: phương án 1.**
+  explain: `**Đáp án đúng: Bạn nhận lỗi: đã thay đổi TTL cache không kiểm tra trên môi trường staging, gây quá tải DB. Khôi phục cấu hình ngay, cùng on-call giám sát DB, rồi viết postmortem và thêm bước review cấu hình trước khi áp dụng production.**
 
 ### Vì sao đúng
 Câu trả lời này thể hiện ownership rõ ràng ("tôi nhận lỗi"), chi tiết kỹ thuật chính xác (thay đổi TTL cache không kiểm tra trên staging), xử lý incident bài bản (khôi phục, giám sát, giao tiếp), và phòng ngừa hệ thống (postmortem, bước review cấu hình). Đây là dấu hiệu của kỹ sư Senior chịu trách nhiệm.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: phủ nhận trách nhiệm và đổ lỗi cho hệ thống. Câu hỏi yêu cầu sự cố do bạn gây ra, trả lời bằng cách phủ nhận là tín hiệu xấu.
-- **Phương án 2**: bỏ cuộc trước khi xử lý xong, không chuyên nghiệp và làm đồng nghiệp phải gánh thêm.
-- **Phương án 3**: giả định và thiếu thực tế. Mọi kỹ sư làm production đủ lâu đều từng gây sự cố; khẳng định ngược lại khiến interviewer nghi ngờ sự trung thực.
+- **Lỗi do hệ thống cache cũ không ổn định, không phải lỗi của bạn, nên không cần kiểm tra lại**: phủ nhận trách nhiệm và đổ lỗi cho hệ thống. Câu hỏi yêu cầu sự cố do bạn gây ra, trả lời bằng cách phủ nhận là tín hiệu xấu.
+- **Báo cho manager là sự cố do hạ tầng, và nghỉ hẹn trước khi vấn đề được xử lý xong**: bỏ cuộc trước khi xử lý xong, không chuyên nghiệp và làm đồng nghiệp phải gánh thêm.
+- **Bạn luôn kiểm tra kỹ trước khi deploy nên sự cố này không thể do bạn gây ra**: giả định và thiếu thực tế. Mọi kỹ sư làm production đủ lâu đều từng gây sự cố; khẳng định ngược lại khiến interviewer nghi ngờ sự trung thực.
 
 > Senior tip: kể sự cố theo khung postmortem: tác động → phát hiện → giảm thiểu → nguyên nhân gốc → hành động phòng ngừa. Blameless có nghĩa là không quy tội cá nhân, không có nghĩa là không ai sở hữu vấn đề.`
 },
@@ -1963,15 +1963,15 @@ Câu trả lời này thể hiện ownership rõ ràng ("tôi nhận lỗi"), ch
     'Bỏ qua, vì công việc của bạn đã xong đúng hạn và không phải vấn đề của bạn.'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: phương án 1.**
+  explain: `**Đáp án đúng: Hẹn hò 1-1 để hiểu nguyên nhân (ví dụ quá tải, chưa hiểu yêu cầu, vấn đề cá nhân), cung cấp hỗ trợ hoặc chia nhỏ công việc, đặt mong đợi rõ ràng; nếu vẫn không cải thiện thì trình bày minh bạch với lead.**
 
 ### Vì sao đúng
 Cách xử lý này ưu tiên hiểu trước khi hành động: hẹn 1-1 để tìm nguyên nhân thực sự (quá tải, chưa hiểu yêu cầu, hay vấn đề cá nhân), sau đó cung cấp hỗ trợ phù hợp, chia nhỏ công việc và đặt mong đợi rõ ràng. Nếu vẫn không cải thiện, trình bày minh bạch với lead. Điều này thể hiện sự đồng cảm, năng lực quản lý và sở hữu kết quả của team.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: hero mode. Sprint đúng hạn ngắn hạn nhưng đồng nghiệp không tiến bộ, và bạn trở thành nút thắt cổ chai. Che giấu vấn đề capacity.
-- **Phương án 2**: bỏ qua mọi nỗ lực hỗ trợ, gán nhãn "không làm việc" khi chưa tìm nguyên nhân. Thể hiện thiếu sự đồng cảm và tinh thần team.
-- **Phương án 3**: bỏ qua ảnh hưởng đến kết quả chung. Với vị trí Senior, interviewer muốn thấy bạn chịu trách nhiệm cho kết quả của team, không chỉ phần việc cá nhân.
+- **Nhận hết công việc của họ và tự làm để sprint không bị trễ, không nói gì với ai**: hero mode. Sprint đúng hạn ngắn hạn nhưng đồng nghiệp không tiến bộ, và bạn trở thành nút thắt cổ chai. Che giấu vấn đề capacity.
+- **Báo ngay với lead rằng đồng nghiệp này không làm việc và đề xuất chuyển họ ra khỏi team**: bỏ qua mọi nỗ lực hỗ trợ, gán nhãn "không làm việc" khi chưa tìm nguyên nhân. Thể hiện thiếu sự đồng cảm và tinh thần team.
+- **Bỏ qua, vì công việc của bạn đã xong đúng hạn và không phải vấn đề của bạn**: bỏ qua ảnh hưởng đến kết quả chung. Với vị trí Senior, interviewer muốn thấy bạn chịu trách nhiệm cho kết quả của team, không chỉ phần việc cá nhân.
 
 > Senior tip: khi nói về người khác trong câu trả lời, giữ tôn trọng (không nêu tên, không chê bai) và nhấn mạnh kết quả của họ, không phải công lao của bạn.`
 },
@@ -1986,15 +1986,15 @@ Cách xử lý này ưu tiên hiểu trước khi hành động: hẹn 1-1 để
     'Giao lại cho một thành viên khác vì họ dường nào sẽ biết yêu cầu hơn.'
   ],
   answer: 2,
-  explain: `**Đáp án đúng: phương án 2.**
+  explain: `**Đáp án đúng: Hỏi các câu làm rõ: mục tiêu là giảm thời gian tạo báo cáo hay giảm tải DB? Hiện tại mất bao lâu, mục tiêu là bao lâu? Ai là người sử dụng báo cáo? Sau đó viết một bản tóm tắt phạm vi và xác nhận với manager trước khi bắt đầu.**
 
 ### Vì sao đúng
 Khi được giao việc mơ hồ, cách xử lý đúng là làm rõ trước khi hành động: hỏi các câu cụ thể về mục tiêu, chỉ số, người dùng và deadline. Sau đó tóm tắt phạm vi và xác nhận với manager. Điều này tránh việc xây dựng sai hướng, lãng phí thời gian, và thể hiện tư duy phân tích của Senior.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: xây dựng theo ý mình mà không làm rõ có thể làm sai hướng, lãng phí công sức, và phải làm lại từ đầu.
-- **Phương án 1**: từ chối không đưa ra giải pháp, gây ấn tượng thiếu chủ động và không biết giải quyết sự mơ hồ.
-- **Phương án 3**: giao lại cho người khác không giải quyết được vấn đề mơ hồ, chỉ đẩy gánh nặng cho đồng nghiệp khác.
+- **Bắt đầu viết code tối hoá ngay theo ý mình để thể hiện chủ động, không cần hỏi thêm**: xây dựng theo ý mình mà không làm rõ có thể làm sai hướng, lãng phí công sức, và phải làm lại từ đầu.
+- **Nói rằng nhiệm vụ quá mơ hồ, bạn không thể làm vì không có yêu cầu rõ ràng**: từ chối không đưa ra giải pháp, gây ấn tượng thiếu chủ động và không biết giải quyết sự mơ hồ.
+- **Giao lại cho một thành viên khác vì họ dường nào sẽ biết yêu cầu hơn**: giao lại cho người khác không giải quyết được vấn đề mơ hồ, chỉ đẩy gánh nặng cho đồng nghiệp khác.
 
 > Senior tip: việc mơ hồ là cơ hội để thể hiện năng lực phân tích. Hãy viết một bản tóm tắt phạm vi ngắn (mục tiêu, chỉ số, phạm vi, phi phạm vi, deadline) và gửi manager xác nhận trước khi bắt đầu code.`
 },
@@ -2010,14 +2010,14 @@ Khi được giao việc mơ hồ, cách xử lý đúng là làm rõ trước k
     'Sure, I will do it even if I have to work all weekend.'
   ],
   answer: [0, 2],
-  explain: `**Đáp án đúng: phương án 0 và 2.**
+  explain: `**Đáp án đúng: I'd like to help, but I'm at full capacity this sprint. Can we discuss priority with our lead, or can this wait until next week? · I can take it, but something else will have to slip. Which of my current tasks should I deprioritize?**
 
 ### Vì sao đúng
-Cả hai đều từ chối yêu cầu một cách lịch sự và chuyên nghiệp, đồng thời đưa ra giải pháp thay thế. Phương án 0 nhấn mạnh hiện tại đang full capacity và đề xuất thảo luận ưu tiên với lead hoặc hoãn sang tuần sau. Phương án 2 chấp nhận nhận việc nhưng minh bạch về trade-off (nhiều việc khác sẽ bị hoãn) và hỏi xem nhiệm vụ nào nên được ưu tiên giảm bớt.
+Cả hai đều phản hồi chuyên nghiệp và đưa ra giải pháp thay thế. Phương án từ chối lịch sự (nêu đang full capacity, đề nghị cùng lead xem lại ưu tiên hoặc hoãn sang tuần sau) và phương án nhận việc kèm trade-off (nói rõ việc khác sẽ bị hoãn và hỏi nên bỏ việc nào) đều giữ được thiện chí hợp tác.
 
 ### Vì sao các phương án khác sai
-- **Phương án 1**: "No, I am too busy. Ask someone else." đúng ngữ pháp nhưng quá thẳng thắn, thiếu lịch sự và không đưa ra giải pháp thay thế. Trong môi trường làm việc quốc tế, cách nói này gây ấn tượng xấu.
-- **Phương án 3**: đồng ý làm dù phải làm thêm giờ cuối tuần không bền vững, dễ dẫn đến burnout và chất lượng giảm. Nó cũng che giấu vấn đề capacity với quản lý.
+- **No, I am too busy. Ask someone else**: "No, I am too busy. Ask someone else." đúng ngữ pháp nhưng quá thẳng thắn, thiếu lịch sự và không đưa ra giải pháp thay thế. Trong môi trường làm việc quốc tế, cách nói này gây ấn tượng xấu.
+- **Sure, I will do it even if I have to work all weekend**: đồng ý làm dù phải làm thêm giờ cuối tuần không bền vững, dễ dẫn đến burnout và chất lượng giảm. Nó cũng che giấu vấn đề capacity với quản lý.
 
 > Senior tip: khi từ chối yêu cầu, hãy dùng cấu trúc "Tôi muốn giúp, nhưng…" + nêu lý do cụ thể + đề xuất thay thế hoặc hỏi ưu tiên. Tránh từ chối trần tuýt và tránh đồng ý mọi thứ đến mức làm quá tải bản thân.`
 },
@@ -2032,15 +2032,15 @@ Cả hai đều từ chối yêu cầu một cách lịch sự và chuyên nghi�
     'I think the deadline was unrealistic from the start.'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: phương án 1.**
+  explain: `**Đáp án đúng: I'm flagging a risk: the third-party API integration is taking longer than expected. I expect to finish by Thursday instead of Wednesday. I can either deliver a simpler version by Wednesday or the full version by Thursday — which do you prefer?**
 
 ### Vì sao đúng
 Câu trả lời này báo sớm (flagging a risk), nêu nguyên nhân cụ thể (tích hợp API bên thứ ba mất thời gian hơn dự kiến), đưa ra ngày dự kiến mới (Thứ Năm thay vì Thứ Tư), và đưa ra 2 lựa chọn có trade-off (phiên bản đơn giản vào thứ Tư hoặc phiên bản đầy đủ vào thứ Năm) để quản lý quyết định. Đây là cách communicate chuyên nghiệp của một Senior.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: "I will not finish on time." chỉ báo tin xấu mà không đưa ra nguyên nhân, ngày mới, hay giải pháp. Không đủ thông tin để quản lý quyết định.
-- **Phương án 2**: đổ lỗi cho team khác ("The other team did not give me the documentation") và không đưa ra ngày hoàn thành mới hay giải pháp.
-- **Phương án 3**: phán xét deadline không thực tế ngay từ đầu nhưng không đưa ra giải pháp hoặc kế hoạch tiếp theo. Nghe như tìm lý do thay vì xử lý vấn đề.
+- **I will not finish on time**: "I will not finish on time." chỉ báo tin xấu mà không đưa ra nguyên nhân, ngày mới, hay giải pháp. Không đủ thông tin để quản lý quyết định.
+- **Sorry, I am late. The other team did not give me the documentation**: đổ lỗi cho team khác ("The other team did not give me the documentation") và không đưa ra ngày hoàn thành mới hay giải pháp.
+- **I think the deadline was unrealistic from the start**: phán xét deadline không thực tế ngay từ đầu nhưng không đưa ra giải pháp hoặc kế hoạch tiếp theo. Nghe như tìm lý do thay vì xử lý vấn đề.
 
 > Senior tip: khi báo trễ tiến độ, hãy báo sớm, nêu nguyên nhân khách quan (không đổ lỗi), đưa ra ngày mới và ít nhất một lựa chọn có trade-off để quản lý có thể quyết định nhanh.`
 },
@@ -2055,15 +2055,15 @@ Câu trả lời này báo sớm (flagging a risk), nêu nguyên nhân cụ th�
     'I will answer anyway, even though I did not hear the question.'
   ],
   answer: 2,
-  explain: `**Đáp án đúng: phương án 2.**
+  explain: `**Đáp án đúng: Sorry, I think the connection cut out. Could you repeat the last part, please?**
 
 ### Vì sao đúng
 "Sorry, I think the connection cut out. Could you repeat the last part, please?" nhận lỗi về kết nối (không đổ lỗi cho người nói), dùng cụm lịch sự "Could you repeat… please?", và cụ thể hóa phần cần lặp lại ("the last part"). Đây là cách tự nhiên và chuyên năng trong phỏng vấn từ xa.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: "What? Say that again." quá thô lỗ, thiếu lịch sự, và không nhận lỗi về kết nối.
-- **Phương án 1**: "I did not understand. Your English is unclear." đổ lỗi cho người nói (nói tiếng Anh của họ không rõ), gây bất cảm và không chuyên nghiệp.
-- **Phương án 3**: trả lời dù không nghe rõ câu hỏi dễ dẫn đến trả lời sai vấn đề, làm interviewer đánh giá bạn không lắng nghe hoặc không thèm làm rõ.
+- **What? Say that again**: "What? Say that again." quá thô lỗ, thiếu lịch sự, và không nhận lỗi về kết nối.
+- **I did not understand. Your English is unclear**: "I did not understand. Your English is unclear." đổ lỗi cho người nói (nói tiếng Anh của họ không rõ), gây bất cảm và không chuyên nghiệp.
+- **I will answer anyway, even though I did not hear the question**: trả lời dù không nghe rõ câu hỏi dễ dẫn đến trả lời sai vấn đề, làm interviewer đánh giá bạn không lắng nghe hoặc không thèm làm rõ.
 
 > Senior tip: nếu không nghe rõ do kết nối, hãy nhận lỗi về kết nối thay vì đổ lỗi cho người khác, rồi yêu cầu lặp lại phần cụ thể. Việc hỏi lại để làm rõ là điểm cộng chứ không phải điểm trừ.`
 },
@@ -2079,14 +2079,14 @@ Câu trả lời này báo sớm (flagging a risk), nêu nguyên nhân cụ th�
     'The names of the engineers who caused the incident.'
   ],
   answer: [1, 2],
-  explain: `**Đáp án đúng: phương án 1 và 2.**
+  explain: `**Đáp án đúng: What happened, how long it lasted, and how it affected users (in plain language) · What we are doing to fix it and how we will prevent it from happening again.**
 
 ### Vì sao đúng
 Khi tóm tắt sự cố cho stakeholder không kỹ thuật, nên tập trung vào: (1) gì đã xảy ra, kéo dài bao lâu, và tác động đến người dùng như thế nào (bằng ngôn ngữ thường ngày, không thuật ngữ kỹ thuật sâu), và (2) nhóm đang làm gì để khắc phục và cách phòng ngừa lần sau. Điều này giúp stakeholder hiểu rõ tình hình và tin tưởng vào team.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: câu truy vấn SQL và stack trace là chi tiết kỹ thuật quá sâu, stakeholder không kỹ thuật không hiểu và không cần biết.
-- **Phương án 3**: nêu tên kỹ sư gây ra sự cố vi phạm nguyên tắc blameless (không quy tội cá nhân) và không hữu ích cho việc khắc phục sự cố.
+- **The exact SQL query that failed and the stack trace**: câu truy vấn SQL và stack trace là chi tiết kỹ thuật quá sâu, stakeholder không kỹ thuật không hiểu và không cần biết.
+- **The names of the engineers who caused the incident**: nêu tên kỹ sư gây ra sự cố vi phạm nguyên tắc blameless (không quy tội cá nhân) và không hữu ích cho việc khắc phục sự cố.
 
 > Senior tip: stakeholder quan tâm đến tác động kinh doanh (người dùng bị ảnh hưởng như thế nào, thời gian gián đoạn bao lâu) và hành động khắc phục, không quan tâm đến chi tiết kỹ thuật. Hãy dùng ngôn ngữ đơn giản, tránh thuật ngữ kỹ thuật không cần thiết.`
 },
@@ -2101,15 +2101,15 @@ Khi tóm tắt sự cố cho stakeholder không kỹ thuật, nên tập trung v
     'I am not good at English, so I cannot communicate well.'
   ],
   answer: 2,
-  explain: `**Đáp án đúng: phương án 2.**
+  explain: `**Đáp án đúng: I used to hesitate to speak up in meetings when I disagreed with a senior colleague. I have been working on this by preparing my points in advance and using phrases like 'I see your point, and I have a concern…'. Last month I raised a risk about the database change that saved us from downtime.**
 
 ### Vì sao đúng
 Câu trả lời này trung thực về một điểm yếu thực sự (ngần ngại nói lên khi bất đồng với senior), nhưng cũng nêu rõ hành động đang cải thiện (chuẩn bị ý kiến trước, dùng cụm từ lịch sự như "I see your point, and I have a concern…") và kết quả cụ thể (tháng ngoái đã nêu rủi ro về thay đổi cơ sở dữ liệu giúp tránh gián đoạn dịch vụ). Đây là cách trả lời phỏng vấn chuyên nghiệp.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: "I do not have any weaknesses." không trung thực và thiếu tự nhận thức. Mọi người đều có điểm yếu.
-- **Phương án 1**: "I work too hard and care too much about my code." là điểm yếu giả (humble-brag), interviewer đã nghe hàng trăm lần và coi là tránh vấn đề.
-- **Phương án 3**: "I am not good at English, so I cannot communicate well." là một điểm yếu cốt lõi đối với vị trí yêu cầu giao tiếp, và không nêu hành động cải thiện. Có thể khiến interviewer lo ngại về khả năng làm việc của bạn.
+- **I do not have any weaknesses**: "I do not have any weaknesses." không trung thực và thiếu tự nhận thức. Mọi người đều có điểm yếu.
+- **I work too hard and care too much about my code**: "I work too hard and care too much about my code." là điểm yếu giả (humble-brag), interviewer đã nghe hàng trăm lần và coi là tránh vấn đề.
+- **I am not good at English, so I cannot communicate well**: "I am not good at English, so I cannot communicate well." là một điểm yếu cốt lõi đối với vị trí yêu cầu giao tiếp, và không nêu hành động cải thiện. Có thể khiến interviewer lo ngại về khả năng làm việc của bạn.
 
 > Senior tip: khi trả lời về điểm yếu, hãy chọn một điểm yếu thực sự nhưng không phải kỹ năng cốt lõi của vị trí, rồi nêu hành động đang cải thiện và kết quả đã đạt được. Tránh điểm yếu giả và tránh điểm yếu ảnh hưởng trực tiếp đến công việc chính.`
 },
@@ -2124,7 +2124,7 @@ Câu trả lời này trung thực về một điểm yếu thực sự (ngần 
     'Ledger chỉ dùng cho ngân hàng trung ương, append-only để tuân thủ chuẩn ISO 8583'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: phương án 1.**
+  explain: `**Đáp án đúng: Ledger là sổ ghi lại mọi bút toán thay đổi số dư; append-only để giữ vết kiểm toán đầy đủ, tránh mất lịch sử và dễ đối soát khi có tranh chấp.**
 
 ### Thuật ngữ
 - **Ledger (sổ cái)**: bảng hoặc hệ thống ghi lại từng bút toán (một lần ghi nhận thay đổi tiền, ví dụ trừ tiền, cộng tiền, phí). Mỗi bút toán là một dòng riêng, có thời gian, số tiền, tài khoản liên quan, mã giao dịch.
@@ -2138,9 +2138,9 @@ Ledger ghi lại **mọi thay đổi** của số dư dưới dạng các bút t
 - Nếu ghi sai, tạo một bút toán đảo ngược (reversal/adjustment) thay vì sửa bản ghi cũ.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: append-only thường làm tốn dung lượng hơn (vì không xóa), không phải để tiết kiệm. Số dư thường được lưu ở bảng riêng hoặc tính từ ledger, không phải ledger chỉ là bảng số dư.
-- **Phương án 2**: ledger là khái niệm nghiệp vụ, không phải log kỹ thuật của cơ sở dữ liệu. Hầu hết cơ sở dữ liệu đều hỗ trợ UPDATE, nhưng nghiệp vụ tài chính chủ động không dùng UPDATE trên ledger.
-- **Phương án 3**: ledger dùng trong mọi hệ thống tài chính (ngân hàng, ví điện tử, sàn giao dịch), không chỉ ngân hàng trung ương. ISO 8583 là chuẩn định dạng thông điệp thẻ, không quy định cách lưu ledger.
+- **Ledger là bảng lưu số dư tài khoản và được thiết kế append-only để tiết kiệm dung lượng lưu trữ**: append-only thường làm tốn dung lượng hơn (vì không xóa), không phải để tiết kiệm. Số dư thường được lưu ở bảng riêng hoặc tính từ ledger, không phải ledger chỉ là bảng số dư.
+- **Ledger là bảng log của cơ sở dữ liệu, append-only vì cơ sở dữ liệu không hỗ trợ UPDATE trên bảng tài chính**: ledger là khái niệm nghiệp vụ, không phải log kỹ thuật của cơ sở dữ liệu. Hầu hết cơ sở dữ liệu đều hỗ trợ UPDATE, nhưng nghiệp vụ tài chính chủ động không dùng UPDATE trên ledger.
+- **Ledger chỉ dùng cho ngân hàng trung ương, append-only để tuân thủ chuẩn ISO 8583**: ledger dùng trong mọi hệ thống tài chính (ngân hàng, ví điện tử, sàn giao dịch), không chỉ ngân hàng trung ương. ISO 8583 là chuẩn định dạng thông điệp thẻ, không quy định cách lưu ledger.
 
 > Senior tip: Trong thực tế, ledger append-only kết hợp với snapshot số dư định kỳ (ví dụ cuối ngày) để truy vấn nhanh. Khi cần điều chỉnh, dùng bút toán bù trừ (compensating entry) và ghi rõ lý do, mã tham chiếu đến bút toán gốc.`
 },
@@ -2156,19 +2156,19 @@ Ledger ghi lại **mọi thay đổi** của số dư dưới dạng các bút t
     'Chỉ áp dụng cho giao dịch quốc tế, giao dịch nội địa dùng ghi sổ đơn (single-entry)'
   ],
   answer: [0, 2],
-  explain: `**Đáp án đúng: phương án 0 và 2.**
+  explain: `**Đáp án đúng: Mỗi giao dịch luôn ghi ít nhất hai bút toán: một bên ghi nợ (debit) và một bên ghi có (credit), tổng debit bằng tổng credit · Giúp phát hiện sai lệch nhanh vì tổng số dư toàn hệ thống phải cân bằng (tổng debit trừ tổng credit bằng 0).**
 
 ### Thuật ngữ
 - **Ghi sổ kép (double-entry bookkeeping)**: phương pháp ghi sổ kế toán trong đó mỗi giao dịch được ghi vào ít nhất hai tài khoản: một (hoặc nhiều) bên **ghi nợ (debit)** và một (hoặc nhiều) bên **ghi có (credit)**.
 - **Debit/Credit**: hai chiều ghi nhận trong kế toán. Ví dụ đơn giản: khi khách A chuyển 100 cho khách B, tài khoản A bị debit 100 (giảm), tài khoản B được credit 100 (tăng).
 
 ### Vì sao đúng
-- **Phương án 0 đúng**: nguyên tắc cốt lõi của sổ kép là mỗi giao dịch tạo ít nhất 2 bút toán và **tổng debit = tổng credit**. Điều này đảm bảo phương trình kế toán luôn cân bằng. Ví dụ chuyển 100 từ A sang B: debit tài khoản A 100, credit tài khoản B 100.
-- **Phương án 2 đúng**: vì mỗi giao dịch luôn cân bằng, tổng debit của toàn bộ ledger trừ tổng credit phải bằng 0. Nếu lệch, chắc chắn có lỗi (thiếu bút toán, ghi sai số tiền, hoặc ghi trùng). Đây là cơ chế tự kiểm tra mạnh mẽ giúp phát hiện sai lệch sớm.
+- **Mỗi giao dịch luôn ghi ít nhất hai bút toán: một bên ghi nợ (debit) và một bên ghi có (credit), tổng debit bằng tổng credit**: nguyên tắc cốt lõi của sổ kép là mỗi giao dịch tạo ít nhất 2 bút toán và **tổng debit = tổng credit**. Điều này đảm bảo phương trình kế toán luôn cân bằng. Ví dụ chuyển 100 từ A sang B: debit tài khoản A 100, credit tài khoản B 100.
+- **Giúp phát hiện sai lệch nhanh vì tổng số dư toàn hệ thống phải cân bằng (tổng debit trừ tổng credit bằng 0)**: vì mỗi giao dịch luôn cân bằng, tổng debit của toàn bộ ledger trừ tổng credit phải bằng 0. Nếu lệch, chắc chắn có lỗi (thiếu bút toán, ghi sai số tiền, hoặc ghi trùng). Đây là cơ chế tự kiểm tra mạnh mẽ giúp phát hiện sai lệch sớm.
 
 ### Vì sao các phương án khác sai
-- **Phương án 1**: ghi sổ đơn (chỉ ghi một bên) không đảm bảo cân bằng, khó phát hiện lỗi và không đáp ứng yêu cầu kiểm toán của hệ thống tài chính. Core banking bắt buộc dùng sổ kép.
-- **Phương án 3**: sổ kép áp dụng cho **mọi** giao dịch tài chính, bất kể nội địa hay quốc tế. Đây là nguyên tắc kế toán cơ bản, không phụ thuộc loại giao dịch.
+- **Chỉ ghi một bút toán vào tài khoản của khách hàng để đơn giản hóa và tăng tốc độ xử lý**: ghi sổ đơn (chỉ ghi một bên) không đảm bảo cân bằng, khó phát hiện lỗi và không đáp ứng yêu cầu kiểm toán của hệ thống tài chính. Core banking bắt buộc dùng sổ kép.
+- **Chỉ áp dụng cho giao dịch quốc tế, giao dịch nội địa dùng ghi sổ đơn (single-entry)**: sổ kép áp dụng cho **mọi** giao dịch tài chính, bất kể nội địa hay quốc tế. Đây là nguyên tắc kế toán cơ bản, không phụ thuộc loại giao dịch.
 
 > Senior tip: Khi thiết kế schema ledger, nên có bảng bút toán (entries) với các cột như account_id, amount, direction (debit/credit), transaction_id, created_at. Thêm constraint hoặc kiểm tra trong transaction để đảm bảo tổng debit = tổng credit trước khi commit.`
 },
@@ -2183,7 +2183,7 @@ Ledger ghi lại **mọi thay đổi** của số dư dưới dạng các bút t
     'Để đối tác biết giao dịch thuộc loại nào (chuyển tiền, nạp tiền, rút tiền)'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: phương án 1.**
+  explain: `**Đáp án đúng: Để khi client hoặc mạng retry cùng một yêu cầu, hệ thống chỉ xử lý một lần và trả lại kết quả cũ, tránh trừ tiền hoặc ghi nhận trùng.**
 
 ### Thuật ngữ
 - **Idempotency (tính lũy đẳng)**: thực hiện cùng một thao tác nhiều lần cho kết quả giống như thực hiện một lần. Ví dụ gọi "trừ 100" với cùng một mã yêu cầu 3 lần thì tài khoản chỉ bị trừ 100 một lần.
@@ -2199,9 +2199,9 @@ Trong thanh toán, mạng không đáng tin cậy: client gửi yêu cầu "chuy
 Nhờ đó retry an toàn, không gây trùng tiền.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: cache có thể là kỹ thuật hỗ trợ, nhưng mục tiêu chính của idempotency key là **đúng nghiệp vụ** (không trùng giao dịch), không phải tăng tốc. Với giao dịch tiền, đúng quan trọng hơn nhanh.
-- **Phương án 2**: mã hóa dữ liệu là nhiệm vụ của TLS/HTTPS hoặc mã hóa trường nhạy cảm, không liên quan đến idempotency key.
-- **Phương án 3**: loại giao dịch được xác định bằng trường nghiệp vụ (type/operation), không phải idempotency key.
+- **Để tăng tốc độ xử lý bằng cách cache kết quả và không gọi xuống core banking**: cache có thể là kỹ thuật hỗ trợ, nhưng mục tiêu chính của idempotency key là **đúng nghiệp vụ** (không trùng giao dịch), không phải tăng tốc. Với giao dịch tiền, đúng quan trọng hơn nhanh.
+- **Để mã hóa dữ liệu giao dịch nhằm bảo mật khi truyền qua mạng**: mã hóa dữ liệu là nhiệm vụ của TLS/HTTPS hoặc mã hóa trường nhạy cảm, không liên quan đến idempotency key.
+- **Để đối tác biết giao dịch thuộc loại nào (chuyển tiền, nạp tiền, rút tiền)**: loại giao dịch được xác định bằng trường nghiệp vụ (type/operation), không phải idempotency key.
 
 > Senior tip: Lưu idempotency key với unique constraint trong DB và kiểm tra trong cùng transaction với bút toán. Đặt TTL (ví dụ 24-72 giờ) để dọn key cũ, nhưng phải đủ dài để bao phủ cửa sổ retry của đối tác. Nếu đối tác không gửi key, hãy sinh key phía server từ hash của (đối tác, mã giao dịch đối tác, số tiền) nhưng tốt nhất vẫn yêu cầu đối tác cung cấp.`
 },
@@ -2217,7 +2217,7 @@ Nhờ đó retry an toàn, không gây trùng tiền.
     'Tự động xóa các giao dịch chưa khớp sau 1 giờ để tránh làm đầy cơ sở dữ liệu'
   ],
   answer: [0, 2],
-  explain: `**Đáp án đúng: phương án 0 và 2.**
+  explain: `**Đáp án đúng: So khớp từng giao dịch dựa trên mã tham chiếu duy nhất và số tiền, sau đó phân loại thành khớp (matched), lệch (mismatched) và chưa khớp (unmatched) · Với các dòng chưa khớp do chênh lệch thời gian (timing), đưa vào hàng chờ và tự động thử khớp lại ở kỳ đối soát tiếp theo.**
 
 ### Thuật ngữ
 - **Đối soát (reconciliation)**: quá trình so sánh dữ liệu giao dịch giữa hai bên (ví dụ hệ thống nội bộ và file sao kê của ngân hàng đối tác) để đảm bảo khớp nhau.
@@ -2225,12 +2225,12 @@ Nhờ đó retry an toàn, không gây trùng tiền.
 - **Timing difference**: lệch do thời gian, ví dụ bên A đã ghi nhận nhưng bên B sẽ ghi nhận ở kỳ sau.
 
 ### Vì sao đúng
-- **Phương án 0 đúng**: đối soát đúng phải đi từng giao dịch, dùng mã tham chiếu (reference id, trace number) và đối chiếu các trường quan trọng (số tiền, loại giao dịch, trạng thái). Sau đó phân loại rõ ràng để xử lý: matched thì đóng, mismatched cần điều tra nguyên nhân, unmatched cần theo dõi.
-- **Phương án 2 đúng**: timing difference là trường hợp phổ biến (giao dịch gần thời điểm cắt file, hoặc xử lý chậm ở một bên). Cách xử lý đúng là đưa vào hàng chờ (unmatched queue) và tự động khớp khi giao dịch xuất hiện ở kỳ sau, đồng thời có ngưỡng cảnh báo (SLA) nếu quá lâu vẫn chưa khớp.
+- **So khớp từng giao dịch dựa trên mã tham chiếu duy nhất và số tiền, sau đó phân loại thành khớp (matched), lệch (mismatched) và chưa khớp (unmatched)**: đối soát đúng phải đi từng giao dịch, dùng mã tham chiếu (reference id, trace number) và đối chiếu các trường quan trọng (số tiền, loại giao dịch, trạng thái). Sau đó phân loại rõ ràng để xử lý: matched thì đóng, mismatched cần điều tra nguyên nhân, unmatched cần theo dõi.
+- **Với các dòng chưa khớp do chênh lệch thời gian (timing), đưa vào hàng chờ và tự động thử khớp lại ở kỳ đối soát tiếp theo**: timing difference là trường hợp phổ biến (giao dịch gần thời điểm cắt file, hoặc xử lý chậm ở một bên). Cách xử lý đúng là đưa vào hàng chờ (unmatched queue) và tự động khớp khi giao dịch xuất hiện ở kỳ sau, đồng thời có ngưỡng cảnh báo (SLA) nếu quá lâu vẫn chưa khớp.
 
 ### Vì sao các phương án khác sai
-- **Phương án 1**: chỉ so tổng là rất rủi ro. Hai sai lệch có thể triệt tiêu nhau (một giao dịch thừa 100k, một giao dịch thiếu 100k) khiến tổng vẫn khớp nhưng thực tế sai. Đối soát tài chính bắt buộc phải khớp ở mức từng giao dịch.
-- **Phương án 3**: xóa giao dịch chưa khớp làm mất dấu vết, vi phạm yêu cầu lưu trữ và kiểm toán. Dòng chưa khớp phải được giữ lại, theo dõi và leo thang (escalate) nếu vượt SLA, không được xóa âm thầm.
+- **Chỉ so sánh tổng số tiền cuối ngày; nếu tổng bằng nhau thì coi như tất cả giao dịch đều đúng**: chỉ so tổng là rất rủi ro. Hai sai lệch có thể triệt tiêu nhau (một giao dịch thừa 100k, một giao dịch thiếu 100k) khiến tổng vẫn khớp nhưng thực tế sai. Đối soát tài chính bắt buộc phải khớp ở mức từng giao dịch.
+- **Tự động xóa các giao dịch chưa khớp sau 1 giờ để tránh làm đầy cơ sở dữ liệu**: xóa giao dịch chưa khớp làm mất dấu vết, vi phạm yêu cầu lưu trữ và kiểm toán. Dòng chưa khớp phải được giữ lại, theo dõi và leo thang (escalate) nếu vượt SLA, không được xóa âm thầm.
 
 > Senior tip: Thiết kế bảng đối soát có trạng thái rõ ràng (PENDING, MATCHED, MISMATCHED, RESOLVED) và lưu lý do xử lý. Tạo báo cáo aging cho unmatched (ví dụ > 24h, > 48h) để đội vận hành ưu tiên điều tra. Mọi thao tác điều chỉnh phải tạo bút toán bù trừ, không sửa trực tiếp bản ghi gốc.`
 },
@@ -2245,7 +2245,7 @@ Nhờ đó retry an toàn, không gây trùng tiền.
     'ISO 8583 là chuẩn REST API cho thanh toán di động do ngân hàng trung ương ban hành'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: phương án 1.**
+  explain: `**Đáp án đúng: ISO 8583 là chuẩn định dạng thông điệp trao đổi giao dịch thẻ (ví dụ yêu cầu/đáp ứng ủy quyền) giữa thiết bị/POS, switch và ngân hàng; backend thường dùng thư viện để đóng gói và giải mã các trường (field) theo bitmap.**
 
 ### Thuật ngữ
 - **ISO 8583**: chuẩn quốc tế định nghĩa cấu trúc thông điệp (message) dùng trong giao dịch thẻ (rút tiền ATM, quẹt thẻ POS, thanh toán online qua một số kênh truyền thống).
@@ -2258,9 +2258,9 @@ ISO 8583 mô tả cách đóng gói thông điệp giao dịch thẻ: có **MTI 
 Backend Java tích hợp với hệ thống thẻ thường dùng thư viện (ví dụ jPOS) để parse/pack thông điệp ISO 8583, kết nối qua TCP socket (thường kết nối bền, có heartbeat), và xử lý timeout, đảo ngược (reversal) khi không nhận được phản hồi.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: mã hóa dữ liệu thẻ liên quan đến chuẩn PCI DSS và các kỹ thuật như tokenization, mã hóa AES/RSA, không phải ISO 8583. ISO 8583 là định dạng thông điệp, không phải thuật toán mã hóa.
-- **Phương án 2**: ISO 8583 là thông điệp giao dịch thời gian thực (hoặc gần thời gian thực), không phải định dạng file sao kê. Sao kê thường dùng file (CSV, XML, hoặc chuẩn khác như ISO 20022 trong một số luồng).
-- **Phương án 3**: ISO 8583 không phải REST API và không dành riêng cho thanh toán di động. Nhiều hệ thống hiện đại dùng REST/JSON, nhưng ISO 8583 vẫn phổ biến trong hạ tầng thẻ truyền thống.
+- **ISO 8583 là chuẩn mã hóa dữ liệu thẻ, backend dùng nó để mã hóa số thẻ trước khi lưu vào cơ sở dữ liệu**: mã hóa dữ liệu thẻ liên quan đến chuẩn PCI DSS và các kỹ thuật như tokenization, mã hóa AES/RSA, không phải ISO 8583. ISO 8583 là định dạng thông điệp, không phải thuật toán mã hóa.
+- **ISO 8583 là giao thức truyền file sao kê hằng ngày giữa các ngân hàng, thay thế cho SFTP**: ISO 8583 là thông điệp giao dịch thời gian thực (hoặc gần thời gian thực), không phải định dạng file sao kê. Sao kê thường dùng file (CSV, XML, hoặc chuẩn khác như ISO 20022 trong một số luồng).
+- **ISO 8583 là chuẩn REST API cho thanh toán di động do ngân hàng trung ương ban hành**: ISO 8583 không phải REST API và không dành riêng cho thanh toán di động. Nhiều hệ thống hiện đại dùng REST/JSON, nhưng ISO 8583 vẫn phổ biến trong hạ tầng thẻ truyền thống.
 
 > Senior tip: Khi làm việc với ISO 8583, luôn xử lý trường hợp timeout như "kết quả không xác định": cần gửi thông điệp reversal hoặc tra soát (inquiry) thay vì tự ý retry tạo giao dịch mới, để tránh trừ tiền kép. Log đầy đủ mã tham chiếu (STAN, RRN) để đối soát.`
 },
@@ -2275,7 +2275,7 @@ Backend Java tích hợp với hệ thống thẻ thường dùng thư viện (v
     'ISO 20022 chỉ định nghĩa cách mã hóa, không định nghĩa nội dung thông điệp'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: phương án 1.**
+  explain: `**Đáp án đúng: ISO 20022 dùng thông điệp có cấu trúc phong phú (thường XML, có ngữ nghĩa rõ ràng) giúp mang nhiều thông tin hơn; ISO 8583 là định dạng trường/bitmap gọn, truyền thống cho giao dịch thẻ.**
 
 ### Thuật ngữ
 - **ISO 20022**: chuẩn quốc tế về thông điệp dữ liệu tài chính, định nghĩa mô hình dữ liệu và cú pháp (thường là XML, đôi khi ASN.1) cho nhiều loại nghiệp vụ (chuyển tiền, thanh toán, chứng khoán...).
@@ -2287,9 +2287,9 @@ Backend Java tích hợp với hệ thống thẻ thường dùng thư viện (v
 Ngược lại, ISO 8583 là chuẩn truyền thống cho giao dịch thẻ, dùng **bitmap và các field cố định/độ dài quy định**, gọn nhẹ và tối ưu cho xử lý thời gian thực nhưng ít không gian cho dữ liệu ngữ nghĩa phong phú. Hai chuẩn phục vụ các bối cảnh khác nhau và đang cùng tồn tại trong nhiều hệ thống.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: ISO 20022 được dùng rộng rãi trong chuyển tiền và thanh toán ngân hàng (ví dụ SWIFT migration, nhiều hệ thống thanh toán thời gian thực), không dành cho crypto.
-- **Phương án 2**: ISO 20022 không phải bản nén của ISO 8583; chúng là các chuẩn khác nhau về mô hình và mục tiêu. Thông điệp ISO 20022 thường **lớn hơn** vì mang nhiều thông tin.
-- **Phương án 3**: ISO 20022 định nghĩa cả mô hình dữ liệu và nội dung thông điệp, không chỉ mã hóa đường truyền.
+- **ISO 20022 chỉ dùng cho tiền mã hóa (crypto), còn chuyển tiền ngân hàng vẫn dùng ISO 8583**: ISO 20022 được dùng rộng rãi trong chuyển tiền và thanh toán ngân hàng (ví dụ SWIFT migration, nhiều hệ thống thanh toán thời gian thực), không dành cho crypto.
+- **ISO 20022 là phiên bản nén của ISO 8583 để truyền nhanh hơn trên mạng chậm**: ISO 20022 không phải bản nén của ISO 8583; chúng là các chuẩn khác nhau về mô hình và mục tiêu. Thông điệp ISO 20022 thường **lớn hơn** vì mang nhiều thông tin.
+- **ISO 20022 chỉ định nghĩa cách mã hóa, không định nghĩa nội dung thông điệp**: ISO 20022 định nghĩa cả mô hình dữ liệu và nội dung thông điệp, không chỉ mã hóa đường truyền.
 
 > Senior tip: Khi backend tích hợp chuyển tiền liên ngân hàng theo ISO 20022, hãy chú ý mapping dữ liệu (tên người nhận, địa chỉ, mã mục đích) và kiểm tra độ dài/định dạng trường vì khác ngân hàng có thể có profile khác nhau. Lưu trữ bản gốc thông điệp để phục vụ tra soát và tuân thủ.`
 },
@@ -2305,7 +2305,7 @@ Ngược lại, ISO 8583 là chuẩn truyền thống cho giao dịch thẻ, dù
     'Ghi log đầy đủ số thẻ, CVV và ngày hết hạn để tiện điều tra sự cố'
   ],
   answer: [0, 2],
-  explain: `**Đáp án đúng: phương án 0 và 2.**
+  explain: `**Đáp án đúng: Không lưu mã CVV/CVC sau khi giao dịch đã được ủy quyền, kể cả khi đã mã hóa · Nếu cần lưu PAN, phải bảo vệ bằng các biện pháp như mã hóa mạnh, tokenization (thay số thẻ bằng mã đại diện) hoặc che bớt khi hiển thị (masking).**
 
 ### Thuật ngữ
 - **PCI DSS (Payment Card Industry Data Security Standard)**: bộ tiêu chuẩn bảo mật dành cho hệ thống lưu trữ, xử lý hoặc truyền dữ liệu thẻ.
@@ -2315,12 +2315,12 @@ Ngược lại, ISO 8583 là chuẩn truyền thống cho giao dịch thẻ, dù
 - **Masking**: che bớt khi hiển thị, ví dụ chỉ hiện 4 số cuối.
 
 ### Vì sao đúng
-- **Phương án 0 đúng**: dữ liệu xác thực nhạy cảm như CVV/CVC **không được lưu** sau khi ủy quyền, dù có mã hóa hay không. Đây là nguyên tắc nghiêm ngặt để giảm thiểu thiệt hại nếu hệ thống bị xâm nhập.
-- **Phương án 2 đúng**: nếu có nhu cầu nghiệp vụ lưu PAN, phải áp dụng biện pháp bảo vệ mạnh: mã hóa, tokenization, kiểm soát truy cập chặt, và chỉ hiển thị dạng che bớt (ví dụ {{**** **** **** 1234}}). Mục tiêu là giảm phạm vi tiếp xúc dữ liệu thẻ.
+- **Không lưu mã CVV/CVC sau khi giao dịch đã được ủy quyền, kể cả khi đã mã hóa**: dữ liệu xác thực nhạy cảm như CVV/CVC **không được lưu** sau khi ủy quyền, dù có mã hóa hay không. Đây là nguyên tắc nghiêm ngặt để giảm thiểu thiệt hại nếu hệ thống bị xâm nhập.
+- **Nếu cần lưu PAN, phải bảo vệ bằng các biện pháp như mã hóa mạnh, tokenization (thay số thẻ bằng mã đại diện) hoặc che bớt khi hiển thị (masking)**: nếu có nhu cầu nghiệp vụ lưu PAN, phải áp dụng biện pháp bảo vệ mạnh: mã hóa, tokenization, kiểm soát truy cập chặt, và chỉ hiển thị dạng che bớt (ví dụ {{**** **** **** 1234}}). Mục tiêu là giảm phạm vi tiếp xúc dữ liệu thẻ.
 
 ### Vì sao các phương án khác sai
-- **Phương án 1**: lưu PAN dạng văn bản thường (plain text) là vi phạm nghiêm trọng, ngay cả khi DB có mật khẩu. Nếu bị rò rỉ dữ liệu (backup, log, truy cập trái phép), số thẻ sẽ lộ hoàn toàn.
-- **Phương án 3**: không bao giờ ghi log CVV và không ghi log PAN đầy đủ. Log là nơi dễ bị sao chép và truy cập rộng rãi; chỉ nên log thông tin tối thiểu cần thiết (ví dụ 4 số cuối, mã tham chiếu giao dịch).
+- **Có thể lưu trữ số thẻ đầy đủ (PAN - Primary Account Number) ở dạng văn bản thường nếu cơ sở dữ liệu đã có mật khẩu**: lưu PAN dạng văn bản thường (plain text) là vi phạm nghiêm trọng, ngay cả khi DB có mật khẩu. Nếu bị rò rỉ dữ liệu (backup, log, truy cập trái phép), số thẻ sẽ lộ hoàn toàn.
+- **Ghi log đầy đủ số thẻ, CVV và ngày hết hạn để tiện điều tra sự cố**: không bao giờ ghi log CVV và không ghi log PAN đầy đủ. Log là nơi dễ bị sao chép và truy cập rộng rãi; chỉ nên log thông tin tối thiểu cần thiết (ví dụ 4 số cuối, mã tham chiếu giao dịch).
 
 > Senior tip: Thiết kế hệ thống để **giảm phạm vi PCI**: đẩy việc nhập và xử lý thẻ sang trang/SDK của cổng thanh toán (hosted payment page) để backend chỉ nhận token. Kiểm tra log, exception và tracing để chắc chắn không vô tình in dữ liệu thẻ nhạy cảm.`
 },
@@ -2335,7 +2335,7 @@ Ngược lại, ISO 8583 là chuẩn truyền thống cho giao dịch thẻ, dù
     'Bỏ qua vì timeout thường có nghĩa là giao dịch đã thành công'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: phương án 1.**
+  explain: `**Đáp án đúng: Tra soát trạng thái giao dịch bằng mã tham chiếu gốc (inquiry/reversal flow theo quy tắc đối tác) trước khi quyết định gửi lại hay đảo ngược.**
 
 ### Thuật ngữ
 - **Timeout**: hết thời gian chờ phản hồi. Khi timeout xảy ra, bạn không biết giao dịch đã được xử lý, đang xử lý, hay thất bại ở phía bên kia.
@@ -2346,9 +2346,9 @@ Ngược lại, ISO 8583 là chuẩn truyền thống cho giao dịch thẻ, dù
 Timeout tạo ra trạng thái "không xác định" (unknown state). Hành động an toàn là **giữ nguyên mã giao dịch gốc** và tra soát trạng thái với đối tác: giao dịch thành công, thất bại, hay đang chờ xử lý. Dựa trên kết quả tra soát, hệ thống mới quyết định cập nhật trạng thái, gửi reversal (nếu cần và được hỗ trợ), hoặc hướng dẫn xử lý thủ công. Điều quan trọng là mọi bước đều dựa trên mã tham chiếu gốc để đối tác nhận diện đúng giao dịch.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: gửi lại với **mã giao dịch mới** có nguy cơ tạo giao dịch thứ hai (trừ tiền hai lần) nếu giao dịch đầu tiên thực ra đã thành công. Retry chỉ an toàn khi dùng cùng idempotency key/mã tham chiếu gốc và đối tác hỗ trợ idempotent.
-- **Phương án 2**: giả định thất bại và hoàn tiền ngay có thể gây sai lệch (tiền đã chuyển thành công nhưng vẫn hoàn), tạo rủi ro mất tiền và khó đối soát.
-- **Phương án 3**: giả định thành công cũng nguy hiểm tương tự; khách có thể không nhận được tiền hoặc hệ thống ghi nhận sai. Không được đoán trạng thái khi timeout.
+- **Tự động gửi lại yêu cầu chuyển tiền ngay lập tức với một mã giao dịch mới để đảm bảo đối tác nhận được**: gửi lại với **mã giao dịch mới** có nguy cơ tạo giao dịch thứ hai (trừ tiền hai lần) nếu giao dịch đầu tiên thực ra đã thành công. Retry chỉ an toàn khi dùng cùng idempotency key/mã tham chiếu gốc và đối tác hỗ trợ idempotent.
+- **Giả định giao dịch đã thất bại và hoàn tiền cho khách ngay lập tức**: giả định thất bại và hoàn tiền ngay có thể gây sai lệch (tiền đã chuyển thành công nhưng vẫn hoàn), tạo rủi ro mất tiền và khó đối soát.
+- **Bỏ qua vì timeout thường có nghĩa là giao dịch đã thành công**: giả định thành công cũng nguy hiểm tương tự; khách có thể không nhận được tiền hoặc hệ thống ghi nhận sai. Không được đoán trạng thái khi timeout.
 
 > Senior tip: Thiết kế luồng thanh toán với trạng thái rõ ràng (PENDING, SUCCESS, FAILED, UNKNOWN). Các giao dịch UNKNOWN phải được job tra soát tự động xử lý và có cảnh báo nếu quá thời gian cho phép. Luôn log đầy đủ mã tham chiếu hai phía để đội vận hành đối chiếu nhanh.`
 },
@@ -2364,7 +2364,7 @@ Timeout tạo ra trạng thái "không xác định" (unknown state). Hành đ�
     'Chỉ kiểm tra trùng ở bộ nhớ (in-memory cache) của một instance vì nhanh hơn cơ sở dữ liệu'
   ],
   answer: [0, 2],
-  explain: `**Đáp án đúng: phương án 0 và 2.**
+  explain: `**Đáp án đúng: Yêu cầu client gửi idempotency key duy nhất cho mỗi ý định giao dịch và lưu key này kèm kết quả trong cùng transaction với nghiệp vụ · Đặt unique constraint ở cơ sở dữ liệu trên (idempotency key, đối tác) hoặc trên mã giao dịch nghiệp vụ để chặn ghi trùng ở tầng dữ liệu.**
 
 ### Thuật ngữ
 - **Ý định giao dịch**: một hành động người dùng muốn thực hiện (ví dụ "chuyển 200k cho B"). Dù gửi nhiều lần do retry, đó vẫn là cùng một ý định.
@@ -2372,12 +2372,12 @@ Timeout tạo ra trạng thái "không xác định" (unknown state). Hành đ�
 - **In-memory cache**: bộ nhớ tạm trong RAM của một tiến trình/instance ứng dụng.
 
 ### Vì sao đúng
-- **Phương án 0 đúng**: idempotency key đại diện cho ý định giao dịch. Lưu key và kết quả trong **cùng transaction** với bút toán giúp tránh race condition (hai request song song cùng kiểm tra "chưa có key" rồi cùng xử lý).
-- **Phương án 2 đúng**: unique constraint là "lưới an toàn" ở tầng dữ liệu. Kể cả khi logic ứng dụng có lỗi hoặc chạy song song, DB sẽ từ chối bản ghi trùng. Kết hợp logic kiểm tra + constraint DB cho độ an toàn cao.
+- **Yêu cầu client gửi idempotency key duy nhất cho mỗi ý định giao dịch và lưu key này kèm kết quả trong cùng transaction với nghiệp vụ**: idempotency key đại diện cho ý định giao dịch. Lưu key và kết quả trong **cùng transaction** với bút toán giúp tránh race condition (hai request song song cùng kiểm tra "chưa có key" rồi cùng xử lý).
+- **Đặt unique constraint ở cơ sở dữ liệu trên (idempotency key, đối tác) hoặc trên mã giao dịch nghiệp vụ để chặn ghi trùng ở tầng dữ liệu**: unique constraint là "lưới an toàn" ở tầng dữ liệu. Kể cả khi logic ứng dụng có lỗi hoặc chạy song song, DB sẽ từ chối bản ghi trùng. Kết hợp logic kiểm tra + constraint DB cho độ an toàn cao.
 
 ### Vì sao các phương án khác sai
-- **Phương án 1**: timestamp của client không đáng tin cậy (đồng hồ lệch, client cố tình gửi khác, hoặc hai retry thực sự là cùng ý định). Dùng timestamp để phân biệt giao dịch dễ tạo trùng hoặc bỏ sót.
-- **Phương án 3**: chỉ dùng in-memory cache trên một instance không an toàn khi có nhiều instance (mỗi instance có cache riêng) hoặc khi instance restart (mất cache). Giao dịch tài chính cần nguồn sự thật bền vững (durable), thường là cơ sở dữ liệu.
+- **Dựa vào timestamp của client để phân biệt hai yêu cầu; nếu khác mili giây thì coi là hai giao dịch khác nhau**: timestamp của client không đáng tin cậy (đồng hồ lệch, client cố tình gửi khác, hoặc hai retry thực sự là cùng ý định). Dùng timestamp để phân biệt giao dịch dễ tạo trùng hoặc bỏ sót.
+- **Chỉ kiểm tra trùng ở bộ nhớ (in-memory cache) của một instance vì nhanh hơn cơ sở dữ liệu**: chỉ dùng in-memory cache trên một instance không an toàn khi có nhiều instance (mỗi instance có cache riêng) hoặc khi instance restart (mất cache). Giao dịch tài chính cần nguồn sự thật bền vững (durable), thường là cơ sở dữ liệu.
 
 > Senior tip: Khi gặp unique constraint violation do request trùng, hãy đọc lại kết quả đã lưu và trả về phản hồi thành công tương ứng thay vì báo lỗi 500. Điều này giúp client retry nhận được kết quả nhất quán.`
 },
@@ -2392,7 +2392,7 @@ Timeout tạo ra trạng thái "không xác định" (unknown state). Hành đ�
     'Xóa dòng này khỏi báo cáo vì core banking là nguồn sự thật duy nhất'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: phương án 1.**
+  explain: `**Đáp án đúng: Đánh dấu unmatched (lệch phía core), giữ trong hàng chờ điều tra: kiểm tra log tiếp nhận, độ trễ xử lý, và chỉ tạo bút toán bổ sung khi có bằng chứng nghiệp vụ rõ ràng.**
 
 ### Thuật ngữ
 - **Nguồn sự thật (source of truth)**: hệ thống được coi là chuẩn để quyết định trạng thái cuối cùng. Trong nhiều luồng, core banking là nguồn sự thật về sổ cái, nhưng vẫn phải giải trình được mọi khoản tiền thực tế.
@@ -2405,9 +2405,9 @@ Khi giao dịch xuất hiện ở đối tác nhưng chưa có trong core, khôn
 3. Chỉ khi có bằng chứng giao dịch **hợp lệ và chưa được ghi nhận**, mới thực hiện bút toán bổ sung theo quy trình được kiểm soát (thường cần phê duyệt/giám sát). Mọi bước phải để lại dấu vết.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: chưa có trong core thì không thể coi là matched. Matched yêu cầu tìm được cặp tương ứng và các thuộc tính quan trọng khớp nhau.
-- **Phương án 2**: tự động tạo giao dịch để "cho khớp" là rất nguy hiểm, có thể ghi nhận trùng (nếu thực ra đã ghi nhưng tìm sai khóa) hoặc ghi nhận giao dịch không hợp lệ.
-- **Phương án 3**: xóa khỏi báo cáo làm mất khả năng phát hiện thất thoát hoặc sai sót. Dòng lệch phải được theo dõi đến khi có kết luận rõ ràng.
+- **Đánh dấu matched vì đối tác đã thu tiền thành công**: chưa có trong core thì không thể coi là matched. Matched yêu cầu tìm được cặp tương ứng và các thuộc tính quan trọng khớp nhau.
+- **Tự động tạo giao dịch thành công trong core banking để khớp số liệu ngay**: tự động tạo giao dịch để "cho khớp" là rất nguy hiểm, có thể ghi nhận trùng (nếu thực ra đã ghi nhưng tìm sai khóa) hoặc ghi nhận giao dịch không hợp lệ.
+- **Xóa dòng này khỏi báo cáo vì core banking là nguồn sự thật duy nhất**: xóa khỏi báo cáo làm mất khả năng phát hiện thất thoát hoặc sai sót. Dòng lệch phải được theo dõi đến khi có kết luận rõ ràng.
 
 > Senior tip: Phân loại nguyên nhân unmatched (timing, thiếu dữ liệu, sai số tiền, sai trạng thái) để có hành động phù hợp. Đặt SLA và cảnh báo cho các dòng unmatched quá hạn, vì chúng có thể ảnh hưởng đến báo cáo tài chính và trải nghiệm khách hàng.`
 },
@@ -2423,7 +2423,7 @@ Khi giao dịch xuất hiện ở đối tác nhưng chưa có trong core, khôn
     'Lưu CVV trong cơ sở dữ liệu nội bộ nhưng đặt quyền đọc chỉ cho service thanh toán'
   ],
   answer: [0, 2],
-  explain: `**Đáp án đúng: phương án 0 và 2.**
+  explain: `**Đáp án đúng: Chuyển việc thu thập thẻ sang trang/SDK của cổng thanh toán được chứng nhận, backend chỉ nhận token giao dịch thay vì PAN/CVV · Che bớt (mask) PAN khi hiển thị và khi lưu log nghiệp vụ, chỉ giữ thông tin tối thiểu cần thiết như 4-6 số cuối và mã tham chiếu.**
 
 ### Thuật ngữ
 - **Hosted payment page / payment SDK**: trang hoặc bộ công cụ do cổng thanh toán cung cấp để người dùng nhập thông tin thẻ trực tiếp trên hạ tầng của họ.
@@ -2431,12 +2431,12 @@ Khi giao dịch xuất hiện ở đối tác nhưng chưa có trong core, khôn
 - **Scope (phạm vi) tuân thủ**: phần hệ thống phải chịu các yêu cầu bảo mật nghiêm ngặt vì có tiếp xúc dữ liệu thẻ.
 
 ### Vì sao đúng
-- **Phương án 0 đúng**: không để PAN/CVV đi qua backend của bạn là cách giảm rủi ro mạnh nhất. Backend chỉ làm việc với token/mã tham chiếu, từ đó giảm phạm vi tiếp xúc dữ liệu nhạy cảm và giảm gánh nặng tuân thủ.
-- **Phương án 2 đúng**: masking và nguyên tắc tối thiểu dữ liệu (data minimization) giúp hạn chế thiệt hại nếu log hoặc màn hình vận hành bị lộ. Chỉ lưu/hiện phần cần thiết cho nghiệp vụ và hỗ trợ khách hàng.
+- **Chuyển việc thu thập thẻ sang trang/SDK của cổng thanh toán được chứng nhận, backend chỉ nhận token giao dịch thay vì PAN/CVV**: không để PAN/CVV đi qua backend của bạn là cách giảm rủi ro mạnh nhất. Backend chỉ làm việc với token/mã tham chiếu, từ đó giảm phạm vi tiếp xúc dữ liệu nhạy cảm và giảm gánh nặng tuân thủ.
+- **Che bớt (mask) PAN khi hiển thị và khi lưu log nghiệp vụ, chỉ giữ thông tin tối thiểu cần thiết như 4-6 số cuối và mã tham chiếu**: masking và nguyên tắc tối thiểu dữ liệu (data minimization) giúp hạn chế thiệt hại nếu log hoặc màn hình vận hành bị lộ. Chỉ lưu/hiện phần cần thiết cho nghiệp vụ và hỗ trợ khách hàng.
 
 ### Vì sao các phương án khác sai
-- **Phương án 1**: log DEBUG toàn bộ request/response rất dễ vô tình ghi PAN/CVV. Đây là lỗi phổ biến gây rò rỉ dữ liệu. Cần lọc (redact) trường nhạy cảm trước khi log.
-- **Phương án 3**: CVV không được lưu sau khi ủy quyền trong bất kỳ trường hợp nào, kể cả lưu nội bộ với quyền hạn chế. Quyền truy cập chặt không thay thế cho nguyên tắc "không lưu".
+- **Ghi toàn bộ request/response vào log mức DEBUG để dễ debug khi có lỗi thanh toán**: log DEBUG toàn bộ request/response rất dễ vô tình ghi PAN/CVV. Đây là lỗi phổ biến gây rò rỉ dữ liệu. Cần lọc (redact) trường nhạy cảm trước khi log.
+- **Lưu CVV trong cơ sở dữ liệu nội bộ nhưng đặt quyền đọc chỉ cho service thanh toán**: CVV không được lưu sau khi ủy quyền trong bất kỳ trường hợp nào, kể cả lưu nội bộ với quyền hạn chế. Quyền truy cập chặt không thay thế cho nguyên tắc "không lưu".
 
 > Senior tip: Rà soát toàn bộ chuỗi: log ứng dụng, APM/tracing, message queue, error tracker và dữ liệu sao lưu. Nhiều sự cố lộ thẻ đến từ các hệ thống quan sát (observability) hoặc bản dump lỗi, không chỉ từ cơ sở dữ liệu chính.`
 },
@@ -2451,7 +2451,7 @@ Khi giao dịch xuất hiện ở đối tác nhưng chưa có trong core, khôn
     'Chỉ dựa vào log ứng dụng, hệ thống khác tự đọc log để biết giao dịch thành công'
   ],
   answer: 2,
-  explain: `**Đáp án đúng: phương án 2.**
+  explain: `**Đáp án đúng: Dùng transactional outbox: ghi dữ liệu nghiệp vụ và bản ghi sự kiện trong cùng transaction DB, sau đó một tiến trình relay đọc outbox và publish sự kiện.**
 
 ### Thuật ngữ
 - **Transactional outbox pattern**: mẫu thiết kế ghi sự kiện cần gửi vào bảng outbox trong **cùng transaction** với dữ liệu nghiệp vụ, rồi publish ra message broker (ví dụ Kafka) bằng một tiến trình riêng.
@@ -2462,9 +2462,9 @@ Khi giao dịch xuất hiện ở đối tác nhưng chưa có trong core, khôn
 Vấn đề cốt lõi là **không có transaction chung** giữa DB và message broker. Nếu làm hai bước riêng, có thể DB commit nhưng publish thất bại (mất sự kiện) hoặc ngược lại. Transactional outbox đảm bảo: nếu giao dịch nghiệp vụ thành công thì bản ghi sự kiện cũng được lưu; relay sẽ đọc và publish sau. Nếu relay publish lặp lại, bên nhận xử lý theo idempotency key để tránh tác dụng phụ trùng.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: gửi sự kiện trước rồi mới cập nhật DB có thể gây tình huống ngược lại: sự kiện đã phát ("thành công") nhưng DB rollback/thất bại, khiến các hệ thống khác tin vào trạng thái sai.
-- **Phương án 1**: bỏ qua cơ chế bù trừ vì "hiếm" là rủi ro lớn trong tài chính. Sự cố mạng, broker tạm ngưng, hoặc deploy giữa chừng đều có thể xảy ra.
-- **Phương án 3**: đọc log ứng dụng để làm tích hợp nghiệp vụ không đáng tin cậy (log có thể thiếu, format thay đổi, không có đảm bảo giao hàng), và không phù hợp làm nguồn sự kiện chính thức.
+- **Gửi sự kiện trước, nếu gửi thành công mới cập nhật DB**: gửi sự kiện trước rồi mới cập nhật DB có thể gây tình huống ngược lại: sự kiện đã phát ("thành công") nhưng DB rollback/thất bại, khiến các hệ thống khác tin vào trạng thái sai.
+- **Cập nhật DB và gửi sự kiện trong hai bước độc lập không có cơ chế bù trừ vì lỗi hiếm khi xảy ra**: bỏ qua cơ chế bù trừ vì "hiếm" là rủi ro lớn trong tài chính. Sự cố mạng, broker tạm ngưng, hoặc deploy giữa chừng đều có thể xảy ra.
+- **Chỉ dựa vào log ứng dụng, hệ thống khác tự đọc log để biết giao dịch thành công**: đọc log ứng dụng để làm tích hợp nghiệp vụ không đáng tin cậy (log có thể thiếu, format thay đổi, không có đảm bảo giao hàng), và không phù hợp làm nguồn sự kiện chính thức.
 
 > Senior tip: Thiết kế consumer idempotent (dựa trên event id/transaction id). Theo dõi độ trễ và số bản ghi outbox chưa gửi để phát hiện relay bị kẹt. Nếu throughput cao, có thể dùng cơ chế đọc thay đổi dữ liệu (CDC - Change Data Capture) nhưng vẫn phải đảm bảo ngữ nghĩa giao hàng và idempotency.`
 },
@@ -2479,7 +2479,7 @@ Vấn đề cốt lõi là **không có transaction chung** giữa DB và messag
     'Chỉ cần một bút toán ghi có vào tài khoản đích là đủ'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: phương án 1.**
+  explain: `**Đáp án đúng: Tổng giá trị ghi nợ (debit) phải bằng tổng giá trị ghi có (credit) của cùng giao dịch.**
 
 ### Thuật ngữ
 - **Giao dịch kế toán (accounting transaction)**: một nhóm các bút toán liên quan đến cùng một nghiệp vụ (ví dụ chuyển tiền).
@@ -2489,9 +2489,9 @@ Vấn đề cốt lõi là **không có transaction chung** giữa DB và messag
 Nguyên tắc bất biến (invariant) của sổ kép là mọi giao dịch phải **cân bằng**: tổng debit = tổng credit. Ví dụ chuyển 100 từ tài khoản A sang B: debit A 100, credit B 100. Nếu có phí 2 thu về tài khoản phí: debit A 102, credit B 100, credit tài khoản phí 2. Kiểm tra cân bằng trước khi commit giúp ngăn trạng thái sổ cái bị sai lệch ngay từ đầu.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: số bút toán thường là số chẵn trong ví dụ đơn giản, nhưng điều kiện cốt lõi không phải "số chẵn" mà là **tổng giá trị cân bằng**. Một giao dịch có thể có 3 bút toán (1 debit, 2 credit) và vẫn hợp lệ nếu cân bằng.
-- **Phương án 2**: số tiền > 0 và hạn mức là quy tắc nghiệp vụ quan trọng nhưng không phải điều kiện định nghĩa của sổ kép. Một số bút toán điều chỉnh có thể theo quy ước riêng, nhưng cân bằng debit/credit vẫn bắt buộc.
-- **Phương án 3**: chỉ ghi một bên vi phạm sổ kép và làm mất cân bằng, không thể biết tiền lấy từ đâu hoặc ghi nhận không đầy đủ.
+- **Tổng số bút toán trong giao dịch phải là số chẵn**: số bút toán thường là số chẵn trong ví dụ đơn giản, nhưng điều kiện cốt lõi không phải "số chẵn" mà là **tổng giá trị cân bằng**. Một giao dịch có thể có 3 bút toán (1 debit, 2 credit) và vẫn hợp lệ nếu cân bằng.
+- **Mỗi bút toán phải có số tiền lớn hơn 0 và nhỏ hơn hạn mức ngày**: số tiền > 0 và hạn mức là quy tắc nghiệp vụ quan trọng nhưng không phải điều kiện định nghĩa của sổ kép. Một số bút toán điều chỉnh có thể theo quy ước riêng, nhưng cân bằng debit/credit vẫn bắt buộc.
+- **Chỉ cần một bút toán ghi có vào tài khoản đích là đủ**: chỉ ghi một bên vi phạm sổ kép và làm mất cân bằng, không thể biết tiền lấy từ đâu hoặc ghi nhận không đầy đủ.
 
 > Senior tip: Thực thi bất biến cân bằng trong transaction DB (tính tổng debit/credit của các entry cùng transaction_id trước commit). Ghi log chi tiết khi vi phạm để điều tra. Ngoài cân bằng, còn cần kiểm tra số dư khả dụng theo quy tắc nghiệp vụ (ví dụ không cho âm với tài khoản khách hàng thông thường).`
 },
@@ -2506,7 +2506,7 @@ Nguyên tắc bất biến (invariant) của sổ kép là mọi giao dịch ph�
     'Coi như thất bại và không retry vì retry luôn gây trừ tiền hai lần'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: phương án 1.**
+  explain: `**Đáp án đúng: Gửi lại với cùng mã tham chiếu/idempotency theo đặc tả đối tác và thực hiện tra soát trạng thái nếu vẫn không có kết quả rõ ràng.**
 
 ### Thuật ngữ
 - **Ủy quyền (authorization)**: bước xin chấp thuận giao dịch (kiểm tra thẻ hợp lệ, đủ hạn mức/tín dụng).
@@ -2517,9 +2517,9 @@ Nguyên tắc bất biến (invariant) của sổ kép là mọi giao dịch ph�
 Timeout không cho biết kết quả. Cách xử lý đúng là tuân theo đặc tả: nếu đối tác hỗ trợ idempotent, retry phải dùng **cùng mã tham chiếu** để đối tác nhận ra đó là cùng yêu cầu. Cần có giới hạn số lần và thời gian chờ (backoff). Nếu vẫn không chắc, thực hiện tra soát trạng thái thay vì tạo giao dịch mới bừa bãi. Mục tiêu là vừa tăng khả năng hoàn tất hợp lệ, vừa tránh tạo giao dịch trùng.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: retry dồn dập không kiểm soát có thể làm quá tải hệ thống, và nếu không giữ cùng mã tham chiếu/idempotency thì có nguy cơ tạo nhiều giao dịch.
-- **Phương án 2**: đổi mã giao dịch mới mỗi lần có thể khiến mỗi lần được coi là giao dịch khác nhau, dẫn đến trừ tiền/giữ tiền nhiều lần nếu các yêu cầu trước thực ra đã được xử lý.
-- **Phương án 3**: retry không "luôn" gây trừ tiền hai lần nếu được thiết kế idempotent đúng. Không retry cũng không đúng vì có thể bỏ lỡ cơ hội hoàn tất giao dịch hợp lệ; quan trọng là retry có kiểm soát và đúng đặc tả.
+- **Gửi lại ngay 5 lần liên tiếp với cùng payload để tăng khả năng thành công**: retry dồn dập không kiểm soát có thể làm quá tải hệ thống, và nếu không giữ cùng mã tham chiếu/idempotency thì có nguy cơ tạo nhiều giao dịch.
+- **Đổi sang mã giao dịch mới mỗi lần retry để tránh bị đối tác từ chối do trùng mã**: đổi mã giao dịch mới mỗi lần có thể khiến mỗi lần được coi là giao dịch khác nhau, dẫn đến trừ tiền/giữ tiền nhiều lần nếu các yêu cầu trước thực ra đã được xử lý.
+- **Coi như thất bại và không retry vì retry luôn gây trừ tiền hai lần**: retry không "luôn" gây trừ tiền hai lần nếu được thiết kế idempotent đúng. Không retry cũng không đúng vì có thể bỏ lỡ cơ hội hoàn tất giao dịch hợp lệ; quan trọng là retry có kiểm soát và đúng đặc tả.
 
 > Senior tip: Phân biệt rõ lỗi "không gửi được" (chưa tới đối tác) và "timeout sau khi gửi" (có thể đã xử lý). Với trường hợp thứ hai, ưu tiên tra soát/reversal flow theo quy trình đối tác. Ghi nhận mọi lần retry với cùng correlation id để dễ điều tra.`
 },
@@ -2534,7 +2534,7 @@ Timeout không cho biết kết quả. Cách xử lý đúng là tuân theo đ�
     'Xóa cả hai bản ghi và yêu cầu khách thực hiện lại giao dịch'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: phương án 1.**
+  explain: `**Đáp án đúng: Đánh dấu là mismatched (lệch thuộc tính), không tự động sửa, và đưa vào luồng điều tra để xác định bên nào đúng và nguyên nhân (làm tròn, phí, cấu hình sai).**
 
 ### Thuật ngữ
 - **Mismatched**: tìm thấy cặp giao dịch tương ứng (ví dụ cùng mã tham chiếu) nhưng một hoặc nhiều thuộc tính quan trọng không khớp (số tiền, trạng thái, loại tiền tệ...).
@@ -2544,9 +2544,9 @@ Timeout không cho biết kết quả. Cách xử lý đúng là tuân theo đ�
 Khi mã tham chiếu khớp nhưng số tiền khác, đây là **lệch dữ liệu nghiêm trọng** cần điều tra. Nguyên nhân có thể là: cấu hình phí sai, tỷ giá/làm tròn khác nhau, lỗi mapping, hoặc xử lý một phần. Hệ thống đối soát nên đánh dấu mismatched, giữ nguyên dữ liệu hai bên, ghi nhận chi tiết khác biệt, và tạo nhiệm vụ điều tra. Việc điều chỉnh (nếu cần) phải dựa trên bằng chứng và thực hiện bằng bút toán bù trừ có kiểm soát, không tự ý ghi đè.
 
 ### Vì sao các phương án khác sai
-- **Phương án 0**: tự động ghi đè core banking theo file đối tác là nguy hiểm vì đối tác cũng có thể sai, hoặc sự khác biệt phản ánh phí/thuế cần được xử lý đúng nghiệp vụ. Core banking cần quy trình kiểm soát chặt.
-- **Phương án 2**: mã tham chiếu trùng chỉ giúp ghép cặp, không đủ để kết luận khớp. Số tiền là thuộc tính bắt buộc phải khớp (hoặc nằm trong quy tắc chênh lệch cho phép được định nghĩa rõ).
-- **Phương án 3**: xóa bản ghi và yêu cầu khách làm lại gây rủi ro trùng giao dịch, mất dấu vết kiểm toán và ảnh hưởng trải nghiệm khách hàng.
+- **Tự động cập nhật số tiền trong core banking theo file đối tác để khớp nhanh**: tự động ghi đè core banking theo file đối tác là nguy hiểm vì đối tác cũng có thể sai, hoặc sự khác biệt phản ánh phí/thuế cần được xử lý đúng nghiệp vụ. Core banking cần quy trình kiểm soát chặt.
+- **Coi như matched vì mã tham chiếu đã trùng**: mã tham chiếu trùng chỉ giúp ghép cặp, không đủ để kết luận khớp. Số tiền là thuộc tính bắt buộc phải khớp (hoặc nằm trong quy tắc chênh lệch cho phép được định nghĩa rõ).
+- **Xóa cả hai bản ghi và yêu cầu khách thực hiện lại giao dịch**: xóa bản ghi và yêu cầu khách làm lại gây rủi ro trùng giao dịch, mất dấu vết kiểm toán và ảnh hưởng trải nghiệm khách hàng.
 
 > Senior tip: Định nghĩa rõ quy tắc so khớp: trường nào bắt buộc khớp tuyệt đối (mã tham chiếu, tiền tệ), trường nào cho phép sai khác trong ngưỡng (ví dụ chênh lệch làm tròn rất nhỏ nếu được chấp thuận). Mọi ngoại lệ phải được phê duyệt và lưu vết.`
 },
