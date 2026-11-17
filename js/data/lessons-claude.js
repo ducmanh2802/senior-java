@@ -2876,6 +2876,1035 @@ Pipeline GitHub Actions chạy /review trên mỗi PR: Claude Code headless đ�
   ],
   related: ['claude-001', 'claude-002'],
   tags: ['claude code', 'hooks', 'slash command', 'subagent', 'skill', 'CI']
+},
+{
+  id: 'lesson-claude-012',
+  track: 'claude',
+  order: 12,
+  title: 'Đọc streaming SSE của Messages API: message_start, content_block_delta, message_delta, message_stop',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Mô tả được trật tự các event SSE của Messages API: message_start, content_block_start, content_block_delta, content_block_stop, message_delta, message_stop',
+    'Ghép lại {{text_delta}} từ nhiều event và {{input_json_delta}} cho {{tool_use}} bị cắt thành nhiều mảnh',
+    'Xử lý đúng {{stop_reason}} trong event {{message_delta}} (end_turn, max_tokens, tool_use, stop_sequence, pause_turn, refusal)',
+    'Bỏ qua dòng ping (event: ping, data: {}) và dòng comment (bắt đầu bằng : )'
+  ],
+body: `**Tóm tắt:** Messages API của Anthropic hỗ trợ streaming qua Server-Sent Events (SSE). Server gửi một chuỗi các event theo thứ tự: {{message_start}} (chứa message id và role), các cặp {{content_block_start}}/{{content_block_delta}}/{{content_block_stop}} cho từng block (text hoặc tool_use), sau đó {{message_delta}} (chứa stop_reason và usage), cuối cùng {{message_stop}}. Client phải ghép text_delta để dựng câu trả lời, ghép input_json_delta cho tool_use (JSON có thể bị cắt giữa chừng), đọc stop_reason để biết khi nào dừng, và bỏ qua event ping/comment.
+  
+### Tổng quan SSE (Server-Sent Events)
+SSE là kỹ thuật server đẩy dữ liệu lên client qua một kết nối HTTP keep-alive. Mỗi event có dạng:
+~~~text
+event: message_start
+data: {{"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant",...}}}
+
+event: content_block_start
+data: {{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}
+
+event: content_block_delta
+data: {{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Xin"}}}
+
+event: content_block_delta
+data: {{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" chào"}}}
+~~~
+Client đọc theo dòng: dòng {{event:}} cho tên event, dòng {{data:}} cho JSON payload. Dòng trống kết thúc một event. Dòng bắt đầu bằng dấu hai chấm (:) là comment (bỏ qua). Event {{ping}} (data: object rỗng) dùng để giữ kết nối sống.
+
+Hai khái niệm cần nắm trước khi đọc code: **token** là mảnh nhỏ của văn bản (tiếng Anh khoảng 3–4 ký tự/token, tiếng Việt thường 1–2 chữ/token); model sinh token theo thứ tự và server gom vài token thành một event. **Delta** nghĩa là "phần tăng thêm": mỗi {{content_block_delta}} chỉ chở phần chữ hoặc JSON mới, không chở toàn bộ. Vì vậy muốn có câu trả lời đầy đủ, client phải **nối dồn** các delta lại — nối sai thứ tự hoặc bỏ sót một delta là mất chữ.
+  
+### Trật tự các event quan trọng
+  
+1. **message_start** — duy nhất, đầu tiên. Chứa {{id}}, {{type}}, {{role}}, {{model}}, {{usage}} (input tokens), {{content}} rỗng.
+2. **content_block_start** — báo bắt đầu một block trong content. Có {{index}} (0-based) và {{content_block}} (type: text hoặc tool_use; nếu tool_use có id, name, input rỗng).
+3. **content_block_delta** — payload tăng dần cho block {{index}}.
+   - Với text: {"type":"text_delta","text":"..."} — nối chuỗi này vào text đang dựng.
+   - Với tool_use: {"type":"input_json_delta","partial_json":"..."} — nối partial_json vào chuỗi JSON đang dựng cho tool_use đó. JSON có thể bị cắt giữa chừng (ví dụ {"city":"Han rồi tiếp oi}), chỉ parse khi content_block_stop.
+4. **content_block_stop** — kết thúc block {{index}}. Lúc này block đã hoàn chỉnh (text đầy đủ, hoặc tool_use có input JSON hoàn chỉnh parse được).
+5. **message_delta** — chứa {{stop_reason}} (end_turn, max_tokens, tool_use, stop_sequence, pause_turn, refusal) và {{usage}} (output_tokens). Nếu stop_reason là max_tokens, câu trả lời bị cắt giữa chừng; KHÔNG coi là end_turn.
+6. **message_stop** — kết thúc stream. Không có data quan trọng.
+  
+### Ví dụ luồng hoàn chỉnh (text đơn giản)
+~~~text
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","model":"claude-3-5-sonnet-20241022","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}
+
+event: content_block_start
+data: {{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}
+
+event: content_block_delta
+data: {{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Xin chào"}}}
+
+event: content_block_stop
+data: {{"type":"content_block_stop","index":0}}
+
+event: message_delta
+data: {{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}}
+
+event: message_stop
+data: {{"type":"message_stop"}}
+~~~
+  
+### Ví dụ tool_use (JSON bị cắt nhiều mảnh)
+~~~text
+event: content_block_start
+data: {{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01","name":"get_weather","input":{}}}}
+
+event: content_block_delta
+data: {{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"cit"}}}
+
+event: content_block_delta
+data: {{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"y\\":\\"Han"}}}
+
+event: content_block_delta
+data: {{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"oi\\"}"}}}
+
+event: content_block_stop
+data: {{"type":"content_block_stop","index":1}}
+~~~
+Client nối partial_json thành {{"city":"Hanoi"}} rồi parse JSON một lần tại content_block_stop.
+  
+### Pitfall trên production
+- **Không parse JSON tại mỗi delta**: partial_json thường **không** là JSON hợp lệ (thiếu ngoặc, chuỗi chưa đóng). Chỉ parse khi content_block_stop.
+- **Quên bỏ qua ping/comment**: dòng {{:}} và event {{ping}} làm vỡ parser nếu không lọc.
+- **Coi max_tokens như end_turn**: output bị cắt, cần báo cho người dùng "câu trả lời chưa đầy đủ" hoặc tự động yêu cầu tiếp tục.
+- **Không xử lý index không theo thứ tự**: API đảm bảo index tăng dần, nhưng code phòng vệ nên dùng map theo index thay vì list.
+- **Quên đọc usage trong message_delta**: output_tokens chỉ có ở message_delta, dùng để tính chi phí.
+   
+### Ví dụ đời thực
+Một chatbot nội bộ trả lời câu hỏi về đơn hàng. Khi bật streaming, time-to-first-token giảm từ 18 giây (non-streaming) xuống 0,6 giây; tổng thời gian sinh 420 token khoảng 7 giây, nhưng người dùng thấy chữ chạy ngay nên không bấm F5. Khi chuyển sang dùng {{tool_use}} để tra {{get_order}}, có lần đặt {{max_tokens}} = 64 cho tiết kiệm. Model viết được {{tool_use}} nhưng JSON {{input}} bị cắt sau {{order_id}} = ORD-5432, còn thiếu {{quantity}}. Client non-streaming parse ra object thiếu field và tạo yêu cầu với quantity = 0; client streaming đọc {{stop_reason}} = max_tokens nên biết output bị cắt, không chạy tool, tăng {{max_tokens}} lên 512 và gọi lại. Kết quả: đơn hàng đúng, không phát sinh đơn rác. Bài học: luôn đọc {{stop_reason}} trước khi tin vào JSON của {{tool_use}}.
+   
+### Trả lời mẫu khi phỏng vấn
+"Messages API streaming dùng SSE. Event theo thứ tự: message_start, rồi lặp content_block_start/delta/stop cho từng block (text hoặc tool_use), sau đó message_delta có stop_reason và usage, cuối message_stop. Với text tôi nối text_delta; với tool_use tôi nối input_json_delta rồi parse JSON khi content_block_stop vì delta có thể cắt giữa chuỗi. Tôi bỏ qua event ping và dòng comment. stop_reason max_tokens khác end_turn: output bị cắt, không báo thành công. Tôi test bằng cách mô phỏng chuỗi event giả lập để kiểm tra ghép text, ghép JSON tool_use, đọc stop_reason, và bỏ qua ping."
+  
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "SSE khác WebSocket thế nào?" (SSE đơn chiều server→client, HTTP thuần, tự reconnect; WebSocket hai chiều, protocol riêng), "tool_use input_json_delta parse khi nào?" (khi content_block_stop), "max_tokens và end_turn khác nhau chỗ nào?" (max_tokens = bị cắt, cần tiếp tục).`,
+  exercises: [
+    {
+      title: 'SseAccumulator: ghép event SSE thành message hoàn chỉnh',
+      prompt: `Các kiểu Event, Message, ContentBlock, ToolUseBlock, TextBlock, Usage, AccumulatorResult mô phỏng dữ liệu SSE đã parse (không cần sửa). Hãy viết class SseAccumulator:
+ 
+1. feed(event): nhận một Event (đã parse từ dòng event:/data:). Bỏ qua event.type === "ping" và event.type === "comment".
+2. Xử lý theo event.type:
+   - "message_start": khởi tạo message mới, lưu id, role, usage.input_tokens.
+   - "content_block_start": tạo block mới theo index (text rỗng hoặc tool_use với id, name, input_json rỗng).
+   - "content_block_delta":
+     * text_delta: nối delta.text vào block.text.
+     * input_json_delta: nối delta.partial_json vào block.inputJsonBuffer.
+   - "content_block_stop": nếu block là tool_use, parse block.inputJsonBuffer thành JSON object gán vào block.input, xoá buffer.
+   - "message_delta": lưu stop_reason và usage.output_tokens.
+   - "message_stop": hoàn tất, trả về AccumulatorResult(message, true). Các event khác trả AccumulatorResult(null, false).
+3. getResult(): trả về AccumulatorResult hiện tại (message đã dựng được cho đến lúc đó, done=false nếu chưa message_stop).
+ 
+Input JSON của tool_use có thể bị cắt giữa chừng qua nhiều delta; chỉ parse KHI content_block_stop.
+ 
+Khi feed gây lỗi parse JSON (sai cú pháp), ném IllegalStateException kèm index block và nội dung buffer.`,
+      starter: `// ====== Có sẵn (không cần sửa) ======
+record Event(String type, int index, Map<String, Object> data) {}
+record Message(String id, String role, List<ContentBlock> content, String stopReason, Usage usage) {}
+sealed interface ContentBlock permits TextBlock, ToolUseBlock {}
+record TextBlock(String text) implements ContentBlock {}
+record ToolUseBlock(String id, String name, Map<String, Object> input) implements ContentBlock {}
+record Usage(int inputTokens, int outputTokens) {}
+record AccumulatorResult(Message message, boolean done) {}
+ 
+// ====== Bài của bạn ======
+class SseAccumulator {
+    private String id;
+    private String role;
+    private String stopReason;
+    private Usage usage;
+    private final Map<Integer, BlockBuilder> blocks = new LinkedHashMap<>();
+    private boolean finished = false;
+
+    // Chỉ gọi khi content_block_stop: các mảnh partial_json đã ghép thành JSON hoàn chỉnh.
+    // Trả về Map<String, Object>; ném IllegalStateException nếu sai cú pháp.
+    private static Map<String, Object> parseJson(String json) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    AccumulatorResult feed(Event event) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    AccumulatorResult getResult() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    // Một block đang được ghép: text, hoặc tool_use với json là buffer partial_json.
+    private static class BlockBuilder {
+        String type;
+        String text = "";
+        String id;
+        String name;
+        String json = "";
+        Map<String, Object> input = Map.of();
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void ok(boolean cond, String msg) { if (!cond) throw new AssertionError(msg); }
+    static Event ev(String type) { return new Event(type, -1, Map.of()); }
+    static Event ev(String type, int index, Map<String, Object> data) { return new Event(type, index, data); }
+    static Map<String, Object> d(String k, Object v) { Map<String, Object> m = new HashMap<>(); m.put(k, v); return m; }
+    static Map<String, Object> d2(String k1, Object v1, String k2, Object v2) { Map<String, Object> m = new HashMap<>(); m.put(k1, v1); m.put(k2, v2); return m; }
+    static Map<String, Object> d3(String k1, Object v1, String k2, Object v2, String k3, Object v3) { Map<String, Object> m = new HashMap<>(); m.put(k1, v1); m.put(k2, v2); m.put(k3, v3); return m; }
+    static Map<String, Object> textBlock() { return d2("type", "text", "text", ""); }
+
+    public static void main(String[] args) {
+        check("ghép text từ nhiều text_delta", () -> {
+            SseAccumulator acc = new SseAccumulator();
+            acc.feed(ev("message_start", -1, d3("id", "msg_1", "role", "assistant", "usage", d("input_tokens", 10))));
+            acc.feed(ev("content_block_start", 0, d2("content_block", textBlock(), "index", 0)));
+            acc.feed(ev("content_block_delta", 0, d("delta", d2("type", "text_delta", "text", "Xin"))));
+            acc.feed(ev("content_block_delta", 0, d("delta", d2("type", "text_delta", "text", " chào"))));
+            acc.feed(ev("content_block_stop", 0, Map.of()));
+            acc.feed(ev("message_delta", -1, d2("delta", d2("stop_reason", "end_turn", "stop_sequence", null), "usage", d("output_tokens", 5))));
+            AccumulatorResult r = acc.feed(ev("message_stop", -1, Map.of()));
+            eq(true, r.done());
+            eq("Xin chào", ((TextBlock) r.message().content().get(0)).text());
+            eq("end_turn", r.message().stopReason());
+            eq(5, r.message().usage().outputTokens());
+            eq(10, r.message().usage().inputTokens());
+        });
+
+        check("ghép tool_use JSON từ nhiều input_json_delta", () -> {
+            SseAccumulator acc = new SseAccumulator();
+            acc.feed(ev("message_start", -1, d3("id", "msg_2", "role", "assistant", "usage", d("input_tokens", 12))));
+            acc.feed(ev("content_block_start", 0, d2("content_block", d3("type", "tool_use", "id", "toolu_01", "name", "get_weather"), "index", 0)));
+            acc.feed(ev("content_block_delta", 0, d("delta", d2("type", "input_json_delta", "partial_json", "{\\"cit"))));
+            acc.feed(ev("content_block_delta", 0, d("delta", d2("type", "input_json_delta", "partial_json", "y\\":\\"Han"))));
+            acc.feed(ev("content_block_delta", 0, d("delta", d2("type", "input_json_delta", "partial_json", "oi\\"}"))));
+            acc.feed(ev("content_block_stop", 0, Map.of()));
+            acc.feed(ev("message_delta", -1, d2("delta", d2("stop_reason", "tool_use", "stop_sequence", null), "usage", d("output_tokens", 8))));
+            AccumulatorResult r = acc.feed(ev("message_stop", -1, Map.of()));
+            eq(true, r.done());
+            ToolUseBlock tb = (ToolUseBlock) r.message().content().get(0);
+            eq("toolu_01", tb.id());
+            eq("get_weather", tb.name());
+            eq("Hanoi", tb.input().get("city"));
+            eq("tool_use", r.message().stopReason());
+        });
+
+        check("stop_reason max_tokens khác end_turn", () -> {
+            SseAccumulator acc = new SseAccumulator();
+            acc.feed(ev("message_start", -1, d3("id", "msg_3", "role", "assistant", "usage", d("input_tokens", 5))));
+            acc.feed(ev("content_block_start", 0, d2("content_block", textBlock(), "index", 0)));
+            acc.feed(ev("content_block_delta", 0, d("delta", d2("type", "text_delta", "text", "Đang viết"))));
+            acc.feed(ev("content_block_stop", 0, Map.of()));
+            acc.feed(ev("message_delta", -1, d2("delta", d2("stop_reason", "max_tokens", "stop_sequence", null), "usage", d("output_tokens", 100))));
+            AccumulatorResult r = acc.feed(ev("message_stop", -1, Map.of()));
+            eq("max_tokens", r.message().stopReason());
+            ok(!"end_turn".equals(r.message().stopReason()), "max_tokens không được coi là end_turn");
+        });
+
+        check("bỏ qua ping và comment", () -> {
+            SseAccumulator acc = new SseAccumulator();
+            acc.feed(ev("message_start", -1, d3("id", "msg_4", "role", "assistant", "usage", d("input_tokens", 5))));
+            acc.feed(ev("ping", -1, Map.of()));
+            acc.feed(ev("comment", -1, d("text", "keep-alive")));
+            acc.feed(ev("content_block_start", 0, d2("content_block", textBlock(), "index", 0)));
+            acc.feed(ev("content_block_delta", 0, d("delta", d2("type", "text_delta", "text", "OK"))));
+            acc.feed(ev("content_block_stop", 0, Map.of()));
+            acc.feed(ev("message_delta", -1, d2("delta", d2("stop_reason", "end_turn", "stop_sequence", null), "usage", d("output_tokens", 2))));
+            AccumulatorResult r = acc.feed(ev("message_stop", -1, Map.of()));
+            eq(true, r.done());
+            eq("OK", ((TextBlock) r.message().content().get(0)).text());
+        });
+
+        check("lỗi parse JSON khi content_block_stop ném IllegalStateException", () -> {
+            SseAccumulator acc = new SseAccumulator();
+            acc.feed(ev("message_start", -1, d3("id", "msg_5", "role", "assistant", "usage", d("input_tokens", 5))));
+            acc.feed(ev("content_block_start", 0, d2("content_block", d3("type", "tool_use", "id", "toolu_01", "name", "t"), "index", 0)));
+            acc.feed(ev("content_block_delta", 0, d("delta", d2("type", "input_json_delta", "partial_json", "{ invalid json"))));
+            try {
+                acc.feed(ev("content_block_stop", 0, Map.of()));
+                throw new AssertionError("phải ném IllegalStateException");
+            } catch (IllegalStateException e) {
+                ok(e.getMessage().contains("index 0"), "thông báo phải chứa index: " + e.getMessage());
+            }
+        });
+
+        check("getResult trả message đang dựng, done=false khi chưa message_stop", () -> {
+            SseAccumulator acc = new SseAccumulator();
+            acc.feed(ev("message_start", -1, d3("id", "msg_6", "role", "assistant", "usage", d("input_tokens", 3))));
+            acc.feed(ev("content_block_start", 0, d2("content_block", textBlock(), "index", 0)));
+            acc.feed(ev("content_block_delta", 0, d("delta", d2("type", "text_delta", "text", "Đang"))));
+            AccumulatorResult r = acc.getResult();
+            eq(false, r.done());
+            eq("Đang", ((TextBlock) r.message().content().get(0)).text());
+        });
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `// ====== Có sẵn (không cần sửa) ======
+record Event(String type, int index, Map<String, Object> data) {}
+record Message(String id, String role, List<ContentBlock> content, String stopReason, Usage usage) {}
+sealed interface ContentBlock permits TextBlock, ToolUseBlock {}
+record TextBlock(String text) implements ContentBlock {}
+record ToolUseBlock(String id, String name, Map<String, Object> input) implements ContentBlock {}
+record Usage(int inputTokens, int outputTokens) {}
+record AccumulatorResult(Message message, boolean done) {}
+
+// ====== Lời giải ======
+class SseAccumulator {
+    private String id;
+    private String role;
+    private String stopReason;
+    private Usage usage;
+    private final Map<Integer, BlockBuilder> blocks = new LinkedHashMap<>();
+    private boolean finished = false;
+
+    // Parser JSON nhỏ; chỉ gọi khi content_block_stop (các mảnh partial_json đã ghép xong)
+    private static Map<String, Object> parseJson(String json) {
+        int[] i = {0};
+        skipWs(json, i);
+        Object v = parseValue(json, i);
+        skipWs(json, i);
+        if (i[0] != json.length()) throw new IllegalStateException("Thừa ký tự ở cuối JSON");
+        if (!(v instanceof Map)) throw new IllegalStateException("JSON phải là object");
+        return (Map<String, Object>) v;
+    }
+
+    private static Object parseValue(String s, int[] i) {
+        skipWs(s, i);
+        if (i[0] >= s.length()) throw new IllegalStateException("JSON kết thúc bất chợt");
+        char c = s.charAt(i[0]);
+        if (c == '{') return parseObject(s, i);
+        if (c == '[') return parseArray(s, i);
+        if (c == '"') return parseString(s, i);
+        if (c == 't' || c == 'f') return parseBoolean(s, i);
+        if (c == 'n') return parseNull(s, i);
+        if (c == '-' || (c >= '0' && c <= '9')) return parseNumber(s, i);
+        throw new IllegalStateException("Ký tự không mong đợi: " + c + " tại " + i[0]);
+    }
+
+    private static Map<String, Object> parseObject(String s, int[] i) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        i[0]++;
+        skipWs(s, i);
+        if (i[0] < s.length() && s.charAt(i[0]) == '}') { i[0]++; return map; }
+        while (true) {
+            skipWs(s, i);
+            if (i[0] >= s.length() || s.charAt(i[0]) != '"') throw new IllegalStateException("Key phải là string");
+            String key = parseString(s, i);
+            skipWs(s, i);
+            if (i[0] >= s.length() || s.charAt(i[0]) != ':') throw new IllegalStateException("Thiếu ':' sau key " + key);
+            i[0]++;
+            map.put(key, parseValue(s, i));
+            skipWs(s, i);
+            if (i[0] >= s.length()) throw new IllegalStateException("Object chưa đóng");
+            char c = s.charAt(i[0]++);
+            if (c == '}') break;
+            if (c != ',') throw new IllegalStateException("Ký tự lạ trong object: " + c);
+        }
+        return map;
+    }
+
+    private static List<Object> parseArray(String s, int[] i) {
+        List<Object> list = new ArrayList<>();
+        i[0]++;
+        skipWs(s, i);
+        if (i[0] < s.length() && s.charAt(i[0]) == ']') { i[0]++; return list; }
+        while (true) {
+            list.add(parseValue(s, i));
+            skipWs(s, i);
+            if (i[0] >= s.length()) throw new IllegalStateException("Array chưa đóng");
+            char c = s.charAt(i[0]++);
+            if (c == ']') break;
+            if (c != ',') throw new IllegalStateException("Ký tự lạ trong array: " + c);
+        }
+        return list;
+    }
+
+    private static String parseString(String s, int[] i) {
+        i[0]++;
+        StringBuilder sb = new StringBuilder();
+        while (i[0] < s.length()) {
+            char c = s.charAt(i[0]++);
+            if (c == '"') return sb.toString();
+            if (c == 92) {                       // ký tự backslash, viết bằng số để tránh escape
+                char e = s.charAt(i[0]++);
+                if (e == '"' || e == 92 || e == '/') sb.append(e);
+                else if (e == 'b') sb.append((char) 8);
+                else if (e == 'f') sb.append((char) 12);
+                else if (e == 'n') sb.append((char) 10);
+                else if (e == 'r') sb.append((char) 13);
+                else if (e == 't') sb.append((char) 9);
+                else throw new IllegalStateException("Escape không hợp lệ: " + e);
+            } else sb.append(c);
+        }
+        throw new IllegalStateException("String không đóng");
+    }
+
+    private static Boolean parseBoolean(String s, int[] i) {
+        if (s.startsWith("true", i[0])) { i[0] += 4; return true; }
+        if (s.startsWith("false", i[0])) { i[0] += 5; return false; }
+        throw new IllegalStateException("Boolean không hợp lệ tại " + i[0]);
+    }
+
+    private static Object parseNull(String s, int[] i) {
+        if (s.startsWith("null", i[0])) { i[0] += 4; return null; }
+        throw new IllegalStateException("null không hợp lệ tại " + i[0]);
+    }
+
+    private static Number parseNumber(String s, int[] i) {
+        int start = i[0];
+        while (i[0] < s.length()) {
+            char c = s.charAt(i[0]);
+            if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E') i[0]++;
+            else break;
+        }
+        String num = s.substring(start, i[0]);
+        try {
+            if (num.contains(".") || num.toLowerCase().contains("e")) return Double.parseDouble(num);
+            long l = Long.parseLong(num);
+            return (l >= Integer.MIN_VALUE && l <= Integer.MAX_VALUE) ? (int) l : l;
+        } catch (NumberFormatException ex) {
+            throw new IllegalStateException("Số không hợp lệ: " + num);
+        }
+    }
+
+    private static void skipWs(String s, int[] i) {
+        while (i[0] < s.length() && Character.isWhitespace(s.charAt(i[0]))) i[0]++;
+    }
+
+    AccumulatorResult feed(Event event) {
+        if (finished) return new AccumulatorResult(null, false);
+        String type = event.type();
+        if ("ping".equals(type) || "comment".equals(type)) return new AccumulatorResult(null, false);
+        switch (type) {
+            case "message_start" -> {
+                id = (String) event.data().get("id");
+                role = (String) event.data().get("role");
+                Map<String, Object> u = (Map<String, Object>) event.data().get("usage");
+                usage = new Usage(u == null ? 0 : ((Number) u.get("input_tokens")).intValue(), 0);
+            }
+            case "content_block_start" -> {
+                BlockBuilder b = new BlockBuilder();
+                Map<String, Object> cb = (Map<String, Object>) event.data().get("content_block");
+                b.type = (String) cb.get("type");
+                if ("tool_use".equals(b.type)) {
+                    b.id = (String) cb.get("id");
+                    b.name = (String) cb.get("name");
+                }
+                blocks.put(event.index(), b);
+            }
+            case "content_block_delta" -> {
+                BlockBuilder b = blocks.get(event.index());
+                if (b == null) return new AccumulatorResult(null, false);
+                Map<String, Object> delta = (Map<String, Object>) event.data().get("delta");
+                String dt = (String) delta.get("type");
+                if ("text_delta".equals(dt)) b.text += (String) delta.get("text");
+                else if ("input_json_delta".equals(dt)) b.json += (String) delta.get("partial_json");
+            }
+            case "content_block_stop" -> {
+                int idx = event.index();
+                BlockBuilder b = blocks.get(idx);
+                if (b != null && "tool_use".equals(b.type)) {
+                    try {
+                        b.input = parseJson(b.json);
+                    } catch (IllegalStateException e) {
+                        throw new IllegalStateException("Parse JSON thất bại ở block index " + idx + ": " + e.getMessage());
+                    }
+                }
+            }
+            case "message_delta" -> {
+                Map<String, Object> delta = (Map<String, Object>) event.data().get("delta");
+                stopReason = (String) delta.get("stop_reason");
+                Map<String, Object> u = (Map<String, Object>) event.data().get("usage");
+                if (u != null) usage = new Usage(usage.inputTokens(), ((Number) u.get("output_tokens")).intValue());
+            }
+            case "message_stop" -> finished = true;
+            default -> { }
+        }
+        if (finished) return new AccumulatorResult(build(), true);
+        return new AccumulatorResult(null, false);
+    }
+
+    AccumulatorResult getResult() {
+        if (id == null && role == null && blocks.isEmpty()) return new AccumulatorResult(null, false);
+        return new AccumulatorResult(build(), finished);
+    }
+
+    private Message build() {
+        List<ContentBlock> list = new ArrayList<>();
+        for (BlockBuilder b : blocks.values()) {
+            if ("text".equals(b.type)) list.add(new TextBlock(b.text));
+            else list.add(new ToolUseBlock(b.id, b.name, b.input));
+        }
+        return new Message(id, role, list, stopReason, usage);
+    }
+
+    private static class BlockBuilder {
+        String type;
+        String text = "";
+        String id;
+        String name;
+        String json = "";
+        Map<String, Object> input = Map.of();
+    }
+}`,
+      hints: [
+        'Dùng switch trên event.type(); ping/comment trả về AccumulatorResult(null, false) ngay, không chạm vào state.',
+        'Giữ Map<Integer, BlockBuilder> blocks theo index. content_block_start tạo BlockBuilder (type, text rỗng hoặc id/name + json rỗng).',
+        'text_delta: nối vào block.text. input_json_delta: nối partial_json vào block.json. content_block_stop: nếu là tool_use thì parse block.json thành Map rồi gán block.input.',
+        'message_delta: lưu stop_reason và output_tokens. message_stop: đánh dấu finished rồi dựng Message từ các block theo thứ tự index.',
+        'Parser JSON: viết hàm đệ quy parseValue → parseObject/parseArray/parseString/parseNumber. Dùng c == 92 cho backslash và (char) 8/9/10/13 cho escape để không phải escape trong template.',
+      ],
+      explain: `Chìa khóa là **chỉ parse JSON khi content_block_stop**. Các partial_json_delta thường không phải JSON hợp lệ (thiếu ngoặc đóng, chuỗi chưa xong). Nếu parse sớm sẽ ném lỗi hoặc cho kết quả sai.
+ 
+Việc bỏ qua ping/comment quan trọng: server gửi ping vài giây/lần để giữ kết nối; nếu không lọc, code sẽ crash hoặc tạo rác trong blocks.
+ 
+stop_reason max_tokens khác end_turn: output bị cắt giữa chừng, cần báo cho người dùng hoặc tự động gọi lại với max_tokens lớn hơn. end_turn mới là câu trả lời hoàn tất.
+ 
+Parser JSON trong bài chỉ hỗ trợ object phẳng (string/number/boolean/null) để tập trung vào logic ghép event. Production nên dùng Jackson/Gson cho an toàn và hỗ trợ nested.
+ 
+Lỗi hay gặp: quên sắp xếp blocks theo index (API đảm bảo thứ tự nhưng code phòng vệ nên sort), quên gán output_tokens từ message_delta vào usage, và không xử lý trường hợp feed được gọi sau message_stop (trả done=false).`,
+    },
+  ],
+  check: [
+    {
+      q: 'Event nào chứa stop_reason và output_tokens trong Messages API streaming?',
+      options: ['message_start', 'content_block_delta', 'message_delta', 'message_stop'],
+      answer: 2,
+      explain: 'message_delta chứa delta.stop_reason (end_turn, max_tokens, tool_use...) và usage.output_tokens. message_start chỉ có input_tokens. content_block_delta chỉ có text_delta hoặc input_json_delta. message_stop không có data quan trọng.'
+    },
+    {
+      q: 'Khi nhận input_json_delta cho tool_use, client nên làm gì?',
+      options: ['Parse JSON ngay tại mỗi delta', 'Nối partial_json vào buffer, chỉ parse khi content_block_stop', 'Bỏ qua cho đến message_stop', 'Gửi lại cho server để sửa'],
+      answer: 1,
+      explain: 'partial_json thường bị cắt giữa chừng (ví dụ {"city":"Han rồi tiếp oi"}) nên không parse được. Chỉ khi content_block_stop buffer mới là JSON hoàn chỉnh.'
+    },
+    {
+      q: 'stop_reason là max_tokens có nghĩa gì?',
+      options: ['Câu trả lời hoàn tất', 'Output bị cắt vì chạm giới hạn token, chưa đầy đủ', 'Server quá tải', 'Người dùng dừng stream'],
+      answer: 1,
+      explain: 'max_tokens nghĩa là output đã chạm trần token cho phép và bị cắt giữa chừng. Khác với end_turn (hoàn tất tự nhiên). Không báo thành công như câu trả lời đầy đủ.'
+    },
+    {
+      q: 'Dòng nào trong SSE là comment và phải bỏ qua?',
+      options: ['event: ping', 'data: {}', ': keep-alive', 'event: message_start'],
+      answer: 2,
+      explain: 'Dòng bắt đầu bằng dấu hai chấm (:) là comment trong SSE, dùng cho keep-alive hoặc ghi chú, phải bỏ qua. event: ping là event ping (cũng bỏ qua), data: {} là payload của ping.'
+    },
+  ],
+  related: ['claude-001', 'claude-002'],
+  tags: ['sse', 'streaming', 'messages api', 'tool_use', 'stop_reason'],
+},
+{
+  id: 'lesson-claude-013',
+  track: 'claude',
+  order: 13,
+  title: 'Structured output và validate phía client: JSON schema, required/type/enum, retry giới hạn, không chạy tool_use bị cắt',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Yêu cầu model trả JSON theo schema (required, type, enum) và hiểu cách dùng system prompt / tool để ép format',
+    'Validate phía client: kiểm tra field bắt buộc, kiểu dữ liệu (string, integer, boolean), giá trị enum, từ chối field lạ',
+    'Xử lý output sai: retry có giới hạn (maxRetries), backoff, ghi log lỗi để debug, không ném exception làm sập pipeline',
+    'Không thực thi tool_use khi stop_reason là max_tokens (output bị cắt, JSON tool_use không hoàn chỉnh)'
+  ],
+  body: `**Tóm tắt:** Structured output là kỹ thuật ép model trả về JSON tuân theo schema xác định (field bắt buộc, kiểu, enum). Client bắt buộc validate response trước khi dùng: kiểm tra required, type, enum, additionalProperties. Nếu sai, retry có giới hạn (maxRetries, backoff, log). Quan trọng: khi stop_reason là max_tokens, output bị cắt giữa chừng — KHÔNG được parse JSON hay thực thi tool_use vì có thể thiếu field, thiếu ngoặc, hoặc chỉ có một nửa object.
+ 
+### Vì sao cần structured output
+Model ngôn ngữ sinh ra văn bản tự do, dễ sai format (thiếu field, sai kiểu, thêm chữ giải thích). Structured output ép model tuân theo schema:
+- **System prompt**: "Trả về CHỈ JSON hợp lệ theo schema sau, không thêm chữ nào: {...}"
+- **Tool use**: khai báo tool với input_schema, model buộc phải sinh argument đúng schema (nếu endpoint hỗ trợ strict mode)
+- **JSON mode** (nếu có): tham số response_format={type: "json_object"} (một số provider hỗ trợ)
+ 
+### Schema cơ bản (subset JSON Schema)
+~~~json
+{
+  "type": "object",
+  "properties": {
+    "action": { "type": "string", "enum": ["create", "update", "delete"] },
+    "order_id": { "type": "string" },
+    "quantity": { "type": "integer", "minimum": 1 },
+    "notify": { "type": "boolean" }
+  },
+  "required": ["action", "order_id"],
+  "additionalProperties": false
+}
+~~~
+- **type**: string, integer, number, boolean, array, object
+- **required**: mảng tên field bắt buộc
+- **enum**: tập giá trị cho phép
+- **additionalProperties: false**: từ chối field không khai báo
+- **minimum/maximum**: cho số (tuỳ chọn)
+ 
+### Validate phía client (bắt buộc)
+Dù model có tuân schema, client **luôn phải validate** vì:
+1. Model có thể hallucinate (sai field, sai kiểu)
+2. Stream bị cắt (max_tokens) tạo JSON không hoàn chỉnh
+3. Provider có thể không enforce strict mode
+ 
+Quy trình validate:
+1. Parse JSON → nếu lỗi cú pháp: retry
+2. Kiểm tra required field (containsKey, không dùng get==null)
+3. Kiểm tra type: string, integer (Integer/Long), boolean, array, object
+4. Kiểm tra enum (nếu có)
+5. Kiểm tra additionalProperties: false → từ chối field lạ
+6. Thứ tự lỗi: duyệt key theo alphabet (TreeSet) để deterministic
+ 
+### Retry có giới hạn khi validate thất bại
+Không retry vô hạn. Chiến lược:
+- maxRetries: 2-3 lần
+- Backoff: exponential + jitter (ví dụ 500ms, 1s, 2s...)
+- Ghi log: raw response, lỗi validate, schema dùng
+- Không ném exception làm sập pipeline; trả kết quả lỗi có cấu trúc để tầng trên quyết định
+ 
+### Không chạy tool_use khi stop_reason = max_tokens
+Khi streaming, stop_reason trong message_delta báo lý do dừng:
+- end_turn: model tự dừng, output hoàn chỉnh → an toàn để parse tool_use
+- max_tokens: output bị cắt giữa chừng → **JSON tool_use có thể thiếu field, thiếu ngoặc, chỉ có nửa object**. Tuyệt đối KHÔNG parse hay chạy tool_use. Cách xử lý: báo "câu trả lời chưa đầy đủ", tăng max_tokens và gọi lại, hoặc hỏi người dùng.
+ 
+### Ví dụ đời thực
+Hệ thống đặt hàng dùng model để trích xuất intent từ chat: {action, order_id, quantity}. Một ngày model trả: {"action": "create", "order_id": "ORD-123", "quantity": "nhiều"} (quantity là string thay vì integer). Validate phía client bắt lỗi, retry 1 lần, lần 2 model trả đúng integer. Nếu không validate, service đơn hàng nhận string "nhiều" và crash.
+Một trường hợp khác: max_tokens=100 quá nhỏ, model dừng giữa {"action": "create", "order_id": "ORD-123", "quan. Client parse JSON crash, hoặc tệ hơn parse được một object thiếu quantity và tạo đơn số lượng 0. Luôn check stop_reason trước khi parse.
+ 
+### Trả lời mẫu khi phỏng vấn
+"Tôi ép structured output bằng system prompt yêu cầu chỉ trả JSON theo schema, hoặc dùng tool use với input_schema. Phía client tôi validate bắt buộc: parse JSON, kiểm tra required field, type (string/integer/boolean), enum, additionalProperties false. Validate thất bại thì retry có giới hạn (max 3 lần, exponential backoff + jitter), ghi log raw response và lỗi để debug. Quan trọng: khi stop_reason là max_tokens, tôi KHÔNG parse JSON tool_use vì output bị cắt giữa chừng — tôi báo người dùng câu trả lời chưa đầy đủ và tăng max_tokens. Tôi dùng TreeSet duyệt key alphabet để thứ tự lỗi deterministic, dễ test và log."
+ 
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "Model trả JSON sai schema thì sao?" (validate client, retry có giới hạn), "max_tokens và tool_use có liên quan gì?" (max_tokens cắt JSON, không được chạy tool_use), "additionalProperties: false có ý nghĩa gì?" (từ chối field lạ, bảo vệ schema), "vì sao không retry vô hạn?" (tốn token, tiền, latency, che bug).`,
+  exercises: [
+    {
+      title: 'OutputValidator + RetryOnInvalid: validate JSON schema và retry có giới hạn',
+      prompt: `Các kiểu Schema, ValidationResult, RetryPolicy, RetryResult mô phỏng validation và retry (không cần sửa). Hãy viết:
+ 
+1. OutputValidator.validate(jsonText, schema):
+   - Parse jsonText thành Map<String, Object> (dùng parser JSON đơn giản, ném ParseException nếu sai cú pháp).
+   - Kiểm tra required: field nào trong schema.required mà không có trong input → lỗi "Missing required property: <field>".
+   - Kiểm tra type: string, integer (Integer/Long), boolean. Sai → "Invalid type for property: <field>".
+   - Kiểm tra enum: nếu schema.enumValues không rỗng và giá trị không trong tập → "Value not allowed for property: <field>".
+   - Kiểm tra additionalProperties: nếu schema.additionalProperties = false và input có field không trong schema.properties → "Unknown property: <field>".
+   - Thứ tự lỗi: duyệt key theo alphabet (TreeSet).
+   - Trả ValidationResult(valid, errors, parsedData).
+ 
+2. RetryOnInvalid.execute(supplier, validator, schema, policy):
+   - {{maxRetries}} là số lần **thử lại** sau lần gọi đầu; tổng số lần gọi tối đa = {{maxRetries + 1}}.
+   - Gọi supplier.get() lấy raw JSON string (có thể sai).
+   - validator.validate(json, schema).
+   - Nếu valid → trả RetryResult(success=true, data=parsedData, attempts=số lần đã gọi).
+   - Nếu không valid:
+     * Ghi log (System.err.printf) attempt số, lỗi validate, raw JSON (để debug).
+     * Nếu attempt < policy.maxRetries(): chờ policy.backoffMillis(attempt) ms (attempt = 0 cho lần chờ đầu, dùng policy.sleeper()), rồi thử lại.
+     * Nếu attempt >= policy.maxRetries(): trả RetryResult(success=false, errors=errors, attempts=maxRetries + 1).
+   - Nếu supplier ném exception → coi như invalid, retry theo policy.
+ 
+Parser JSON đơn giản chỉ cần xử lý object phẳng: {"key": "value", "num": 123, "bool": true, "arr": [1,2], "obj": {"a":1} }.
+Có thể dùng Jackson nếu môi trường cho phép, nhưng bài tập yêu cầu JDK thuần: viết parser đơn giản cho object, string, number, boolean, null, array, nested object.`,
+      starter: `// ====== Có sẵn (không cần sửa) ======
+record Schema(
+    Map<String, Property> properties,
+    Set<String> required,
+    boolean additionalProperties
+) {}
+record Property(String type, Set<?> enumValues) {}
+record ValidationResult(boolean valid, List<String> errors, Map<String, Object> data) {}
+ 
+interface RetryPolicy {
+    int maxRetries();
+    long backoffMillis(int attempt);  // attempt = 0 cho lần chờ đầu tiên
+    Sleeper sleeper();
+}
+interface Sleeper { void sleep(long millis); }
+ 
+record RetryResult(boolean success, Map<String, Object> data, List<String> errors, int attempts) {}
+ 
+// Exception parser JSON đơn giản
+class ParseException extends RuntimeException {
+    ParseException(String msg) { super(msg); }
+}
+ 
+// ====== Bài của bạn ======
+class OutputValidator {
+    static ValidationResult validate(String jsonText, Schema schema) {
+        throw new UnsupportedOperationException("TODO");
+    }
+ 
+    // Parser JSON đơn giản cho object phẳng (hỗ trợ nested object, array, string, number, boolean, null)
+    private static Map<String, Object> parseJson(String json) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+ 
+class RetryOnInvalid {
+    static RetryResult execute(Supplier<String> supplier, OutputValidator validator, Schema schema, RetryPolicy policy) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void ok(boolean cond, String msg) { if (!cond) throw new AssertionError(msg); }
+    static Schema schema() {
+        Map<String, Property> p = new HashMap<>();
+        p.put("action", new Property("string", Set.of("create", "update", "delete")));
+        p.put("order_id", new Property("string", Set.of()));
+        p.put("quantity", new Property("integer", Set.of()));
+        p.put("notify", new Property("boolean", Set.of()));
+        return new Schema(p, Set.of("action", "order_id"), false);
+    }
+    static class FixedPolicy implements RetryPolicy {
+        final int max; final long backoff; final List<Long> sleeps = new ArrayList<>();
+        FixedPolicy(int max, long backoff) { this.max = max; this.backoff = backoff; }
+        public int maxRetries() { return max; }
+        public long backoffMillis(int attempt) { return backoff; }
+        public Sleeper sleeper() { return ms -> sleeps.add(ms); }
+    }
+    static String json(String s) { return s; }
+ 
+    public static void main(String[] args) {
+        check("validate JSON đúng schema", () -> {
+            ValidationResult r = OutputValidator.validate(json("{\\"action\\":\\"create\\",\\"order_id\\":\\"ORD-1\\",\\"quantity\\":5,\\"notify\\":true}"), schema());
+            eq(true, r.valid()); ok(r.errors().isEmpty(), "errors: " + r.errors());
+            eq("create", r.data().get("action")); eq(5, r.data().get("quantity")); eq(true, r.data().get("notify"));
+        });
+ 
+        check("thiếu required field", () -> {
+            ValidationResult r = OutputValidator.validate(json("{\\"action\\":\\"create\\"}"), schema());
+            eq(false, r.valid());
+            ok(r.errors().stream().anyMatch(e -> e.contains("order_id")), "thiếu order_id: " + r.errors());
+        });
+ 
+        check("sai type: quantity là string", () -> {
+            ValidationResult r = OutputValidator.validate(json("{\\"action\\":\\"create\\",\\"order_id\\":\\"ORD-1\\",\\"quantity\\":\\"nhiều\\"}"), schema());
+            eq(false, r.valid());
+            ok(r.errors().stream().anyMatch(e -> e.contains("quantity")), "sai type quantity: " + r.errors());
+        });
+ 
+        check("giá trị ngoài enum", () -> {
+            ValidationResult r = OutputValidator.validate(json("{\\"action\\":\\"refund\\",\\"order_id\\":\\"ORD-1\\"}"), schema());
+            eq(false, r.valid());
+            ok(r.errors().stream().anyMatch(e -> e.contains("action")), "action ngoài enum: " + r.errors());
+        });
+ 
+        check("additionalProperties false từ chối field lạ", () -> {
+            ValidationResult r = OutputValidator.validate(json("{\\"action\\":\\"create\\",\\"order_id\\":\\"ORD-1\\",\\"trace\\":\\"x\\"}"), schema());
+            eq(false, r.valid());
+            ok(r.errors().stream().anyMatch(e -> e.contains("trace")), "field lạ trace: " + r.errors());
+        });
+ 
+        check("thứ tự lỗi deterministic theo alphabet", () -> {
+            ValidationResult r = OutputValidator.validate(json("{\\"z_extra\\":1,\\"a_extra\\":2}"), schema());
+            List<String> errs = r.errors();
+            int idxA = errs.indexOf(errs.stream().filter(e -> e.contains("a_extra")).findFirst().orElse(""));
+            int idxZ = errs.indexOf(errs.stream().filter(e -> e.contains("z_extra")).findFirst().orElse(""));
+            ok(idxA < idxZ, "lỗi a_extra phải trước z_extra: " + errs);
+        });
+ 
+        check("retry thành công lần 2", () -> {
+            int[] calls = {0};
+            FixedPolicy policy = new FixedPolicy(3, 10);
+            String bad = "{\\"action\\":\\"refund\\",\\"order_id\\":\\"ORD-1\\"}";
+            String good = "{\\"action\\":\\"create\\",\\"order_id\\":\\"ORD-1\\",\\"quantity\\":1}";
+            RetryResult r = RetryOnInvalid.execute(() -> { calls[0]++; return calls[0] == 1 ? bad : good; }, new OutputValidator(), schema(), policy);
+            eq(true, r.success()); eq(2, r.attempts()); eq("create", r.data().get("action")); eq(1, policy.sleeps.size());
+        });
+ 
+        check("retry hết lượt trả thất bại", () -> {
+            FixedPolicy policy = new FixedPolicy(2, 5);
+            String bad = "{\\"action\\":\\"refund\\"}";
+            RetryResult r = RetryOnInvalid.execute(() -> bad, new OutputValidator(), schema(), policy);
+            eq(false, r.success()); eq(3, r.attempts()); ok(!r.errors().isEmpty(), "errors rong"); eq(2, policy.sleeps.size());
+        });
+ 
+        check("supplier ném exception được retry", () -> {
+            int[] calls = {0};
+            FixedPolicy policy = new FixedPolicy(3, 10);
+            String good = "{\\"action\\":\\"create\\",\\"order_id\\":\\"ORD-1\\"}";
+            RetryResult r = RetryOnInvalid.execute(() -> { calls[0]++; if (calls[0] < 2) throw new RuntimeException("network"); return good; }, new OutputValidator(), schema(), policy);
+            eq(true, r.success()); eq(2, r.attempts());
+        });
+ 
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `// ====== Có sẵn (không cần sửa) ======
+record Schema(
+    Map<String, Property> properties,
+    Set<String> required,
+    boolean additionalProperties
+) {}
+record Property(String type, Set<?> enumValues) {}
+record ValidationResult(boolean valid, List<String> errors, Map<String, Object> data) {}
+ 
+interface RetryPolicy {
+    int maxRetries();
+    long backoffMillis(int attempt);
+    Sleeper sleeper();
+}
+interface Sleeper { void sleep(long millis); }
+ 
+record RetryResult(boolean success, Map<String, Object> data, List<String> errors, int attempts) {}
+ 
+class ParseException extends RuntimeException {
+    ParseException(String msg) { super(msg); }
+}
+ 
+// ====== Lời giải ======
+class OutputValidator {
+    static ValidationResult validate(String jsonText, Schema schema) {
+        Map<String, Object> data;
+        try {
+            data = parseJson(jsonText);
+        } catch (ParseException e) {
+            return new ValidationResult(false, List.of("JSON parse error: " + e.getMessage()), Map.of());
+        }
+        List<String> errors = new ArrayList<>();
+        if (data == null) {
+            errors.add("Input must be an object");
+            return new ValidationResult(false, errors, Map.of());
+        }
+        // Required fields
+        for (String key : new TreeSet<>(schema.required())) {
+            if (!data.containsKey(key)) errors.add("Missing required property: " + key);
+        }
+        // Validate each input field
+        for (String key : new TreeSet<>(data.keySet())) {
+            Property prop = schema.properties().get(key);
+            if (prop == null) {
+                if (!schema.additionalProperties()) errors.add("Unknown property: " + key);
+                continue;
+            }
+            Object value = data.get(key);
+            if (!matchesType(prop.type(), value)) {
+                errors.add("Invalid type for property: " + key);
+            } else if (!prop.enumValues().isEmpty() && !prop.enumValues().contains(value)) {
+                errors.add("Value not allowed for property: " + key);
+            }
+        }
+        return new ValidationResult(errors.isEmpty(), errors, data);
+    }
+ 
+    private static boolean matchesType(String type, Object value) {
+        return switch (type) {
+            case "string" -> value instanceof String;
+            case "integer" -> value instanceof Integer || value instanceof Long;
+            case "boolean" -> value instanceof Boolean;
+            case "number" -> value instanceof Number;
+            case "array" -> value instanceof List;
+            case "object" -> value instanceof Map;
+            default -> throw new IllegalArgumentException("Unsupported type: " + type);
+        };
+    }
+ 
+    private static Map<String, Object> parseJson(String json) {
+        // Parser đệ quy đơn giản cho JSON object/array/primitive
+        // Chỉ hỗ trợ: object, array, string, number, boolean, null
+        // Không hỗ trợ: escape phức tạp trong string, comment, trailing comma
+        int[] idx = {0};
+        String s = json.trim();
+        Object val = parseValue(s, idx);
+        if (!(val instanceof Map)) throw new ParseException("Root phải là object");
+        skipWhitespace(s, idx);
+        if (idx[0] < s.length()) throw new ParseException("Dư ký tự sau JSON");
+        return (Map<String, Object>) val;
+    }
+ 
+    private static Object parseValue(String s, int[] idx) {
+        skipWhitespace(s, idx);
+        if (idx[0] >= s.length()) throw new ParseException("JSON bất chợt kết thúc");
+        char c = s.charAt(idx[0]);
+        if (c == '{') return parseObject(s, idx);
+        if (c == '[') return parseArray(s, idx);
+        if (c == '"') return parseString(s, idx);
+        if (c == 't' || c == 'f') return parseBoolean(s, idx);
+        if (c == 'n') return parseNull(s, idx);
+        if (c == '-' || (c >= '0' && c <= '9')) return parseNumber(s, idx);
+        throw new ParseException("Ký tự không mong đợi: " + c + " tại vị trí " + idx[0]);
+    }
+ 
+    private static Map<String, Object> parseObject(String s, int[] idx) {
+        Map<String, Object> obj = new LinkedHashMap<>();
+        idx[0]++; // bỏ qua {
+        skipWhitespace(s, idx);
+        if (idx[0] < s.length() && s.charAt(idx[0]) == '}') { idx[0]++; return obj; }
+        while (true) {
+            skipWhitespace(s, idx);
+            if (idx[0] >= s.length() || s.charAt(idx[0]) != '"') throw new ParseException("Key phải là string");
+            String key = parseString(s, idx);
+            skipWhitespace(s, idx);
+            if (idx[0] >= s.length() || s.charAt(idx[0]) != ':') throw new ParseException("Thiếu dấu hai chấm sau key");
+            idx[0]++; // bỏ qua :
+            Object val = parseValue(s, idx);
+            obj.put(key, val);
+            skipWhitespace(s, idx);
+            if (idx[0] >= s.length()) throw new ParseException("JSON object bất chợt kết thúc");
+            char c = s.charAt(idx[0]);
+            if (c == '}') { idx[0]++; break; }
+            if (c == ',') { idx[0]++; continue; }
+            throw new ParseException("Ký tự không mong đợi trong object: " + c);
+        }
+        return obj;
+    }
+ 
+    private static List<Object> parseArray(String s, int[] idx) {
+        List<Object> arr = new ArrayList<>();
+        idx[0]++; // bỏ qua [
+        skipWhitespace(s, idx);
+        if (idx[0] < s.length() && s.charAt(idx[0]) == ']') { idx[0]++; return arr; }
+        while (true) {
+            arr.add(parseValue(s, idx));
+            skipWhitespace(s, idx);
+            if (idx[0] >= s.length()) throw new ParseException("JSON array bất chợt kết thúc");
+            char c = s.charAt(idx[0]);
+            if (c == ']') { idx[0]++; break; }
+            if (c == ',') { idx[0]++; continue; }
+            throw new ParseException("Ký tự không mong đợi trong array: " + c);
+        }
+        return arr;
+    }
+ 
+    private static String parseString(String s, int[] idx) {
+        idx[0]++;
+        StringBuilder sb = new StringBuilder();
+        while (idx[0] < s.length()) {
+            char c = s.charAt(idx[0]++);
+            if (c == '"') return sb.toString();
+            if (c == 92) {
+                if (idx[0] >= s.length()) throw new ParseException("Escape bất chợt kết thúc");
+                char esc = s.charAt(idx[0]++);
+                if (esc == '"' || esc == 92 || esc == '/') sb.append(esc);
+                else if (esc == 'b') sb.append((char) 8);
+                else if (esc == 'f') sb.append((char) 12);
+                else if (esc == 'n') sb.append((char) 10);
+                else if (esc == 'r') sb.append((char) 13);
+                else if (esc == 't') sb.append((char) 9);
+                else throw new ParseException("Escape không hợp lệ: " + esc);
+            } else {
+                sb.append(c);
+            }
+        }
+        throw new ParseException("String không đóng");
+    }
+
+    private static Boolean parseBoolean(String s, int[] idx) {
+        if (s.startsWith("true", idx[0])) { idx[0] += 4; return true; }
+        if (s.startsWith("false", idx[0])) { idx[0] += 5; return false; }
+        throw new ParseException("Boolean không hợp lệ tại " + idx[0]);
+    }
+
+    private static Object parseNull(String s, int[] idx) {
+        if (s.startsWith("null", idx[0])) { idx[0] += 4; return null; }
+        throw new ParseException("Null không hợp lệ tại " + idx[0]);
+    }
+
+    private static Number parseNumber(String s, int[] idx) {
+        int start = idx[0];
+        while (idx[0] < s.length()) {
+            char c = s.charAt(idx[0]);
+            if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E') idx[0]++;
+            else break;
+        }
+        String numStr = s.substring(start, idx[0]);
+        try {
+            if (numStr.contains(".") || numStr.toLowerCase().contains("e")) return Double.parseDouble(numStr);
+            long v = Long.parseLong(numStr);
+            if (v >= Integer.MIN_VALUE && v <= Integer.MAX_VALUE) return (int) v;
+            return v;
+        } catch (NumberFormatException e) {
+            throw new ParseException("Số không hợp lệ: " + numStr);
+        }
+    }
+
+    private static void skipWhitespace(String s, int[] idx) {
+        while (idx[0] < s.length() && Character.isWhitespace(s.charAt(idx[0]))) idx[0]++;
+    }
+}
+ 
+class RetryOnInvalid {
+    static RetryResult execute(Supplier<String> supplier, OutputValidator validator, Schema schema, RetryPolicy policy) {
+        List<String> lastErrors = List.of();
+        Map<String, Object> lastData = Map.of();
+        for (int attempt = 0; attempt <= policy.maxRetries(); attempt++) {
+            String json;
+            try {
+                json = supplier.get();
+            } catch (RuntimeException e) {
+                lastErrors = List.of("Supplier exception: " + e.getMessage());
+                lastData = Map.of();
+                logAttempt(attempt + 1, lastErrors, "");
+                if (attempt >= policy.maxRetries()) break;
+                policy.sleeper().sleep(policy.backoffMillis(attempt));
+                continue;
+            }
+            ValidationResult vr = validator.validate(json, schema);
+            if (vr.valid()) {
+                return new RetryResult(true, vr.data(), List.of(), attempt + 1);
+            }
+            lastErrors = vr.errors();
+            lastData = vr.data();
+            logAttempt(attempt + 1, lastErrors, json);
+            if (attempt >= policy.maxRetries()) break;
+            policy.sleeper().sleep(policy.backoffMillis(attempt));
+        }
+        return new RetryResult(false, lastData, lastErrors, policy.maxRetries() + 1);
+    }
+ 
+    private static void logAttempt(int attempt, List<String> errors, String rawJson) {
+        System.err.printf("[RetryOnInvalid] Attempt %d: errors=%s, raw=%s%n", attempt, errors, rawJson.length() > 200 ? rawJson.substring(0, 200) + "..." : rawJson);
+    }
+}`,
+      hints: [
+        'OutputValidator.validate: parse JSON trước, bắt ParseException. Duyệt required bằng containsKey. Duyệt input key bằng TreeSet để alphabet. Kiểm tra type trước enum. additionalProperties false → báo field lạ.',
+        'Parser JSON đệ quy: parseValue chuyển hướng theo ký tự đầu ({ [ " t f n số). parseObject/parseArray đệ quy. parseString xử lý escape cơ bản. parseNumber phân biệt integer/double.',
+        'RetryOnInvalid: vòng lặp attempt=0..maxRetries. Gọi supplier trong try/catch. Validate. Nếu valid return success. Log lỗi (System.err). Nếu attempt < maxRetries: sleep(backoffMillis(attempt)) rồi tiếp. Hết lượt return failure.',
+        'Sleeper trong test ghi lại thời gian chờ; production dùng Thread::sleep. BackoffMillis(attempt) với attempt=0 là lần chờ đầu tiên.'
+      ],
+      explain: `OutputValidator tách rõ parse và validate: parse thất bại → lỗi cú pháp; parse thành công → validate schema. TreeSet đảm bảo thứ tự lỗi deterministic (quan trọng cho test và log ổn định).
+ 
+RetryOnInvalid không ném exception khi thất bại: trả RetryResult(success=false) để tầng trên quyết định (hỏi người dùng, fallback, alert). Việc ghi log raw JSON và errors ở mỗi attempt giúp debug production: biết model sai ở đâu, schema có quá chặt không.
+ 
+Quan trọng: **không parse JSON tool_use khi stop_reason = max_tokens**. Bài tập này không xử lý streaming, nhưng kiến thức đi kèm: trước khi validate, phải check stop_reason. Nếu max_tokens → báo "output bị cắt", tăng max_tokens và gọi lại. Parse JSON cắt giữa chừng sẽ cho object thiếu field, sai type, hoặc ném ParseException gây retry vô ích.
+ 
+Lỗi hay gặp: dùng get(key) == null để kiểm tra required (sai khi field có giá trị null), quên kiểm tra type trước enum (so sánh giá trị sai kiểu với enum), retry vô hạn không có backoff (đốt token), và parse JSON tự viết không xử lý escape string (crash khi gặp \\\" trong chuỗi).`,
+    },
+  ],
+  check: [
+    {
+      q: 'Khi stop_reason là max_tokens, cách xử lý đúng với tool_use là gì?',
+      options: ['Parse JSON tool_use và chạy ngay', 'Không parse, báo output bị cắt, tăng max_tokens và gọi lại', 'Bỏ qua tool_use, chỉ lấy text', 'Retry ngay lập tức không đổi max_tokens'],
+      answer: 1,
+      explain: 'max_tokens nghĩa là output bị cắt giữa chừng. JSON tool_use có thể thiếu field, thiếu ngoặc, hoặc chỉ có nửa object. Parse sẽ crash hoặc chạy tool với input sai. Phải báo chưa đầy đủ và gọi lại với max_tokens lớn hơn.'
+    },
+    {
+      q: 'Validate JSON schema phía client cần kiểm tra gì?',
+      options: ['Chỉ required field', 'Required, type, enum, additionalProperties', 'Chỉ type', 'Chỉ enum'],
+      answer: 1,
+      explain: 'Validate đầy đủ: required (containsKey), type (string/integer/boolean...), enum (giá trị trong tập cho phép), additionalProperties false (từ chối field lạ). Chỉ kiểm tra một phần để lỗi lọt qua.'
+    },
+    {
+      q: 'Vì sao retry có giới hạn (maxRetries) và backoff?',
+      options: ['Để code phức tạp hơn', 'Tránh retry vô hạn đốt token, tiền, latency, và che bug cấu hình/schema', 'API bắt buộc', 'Để model học được'],
+      answer: 1,
+      explain: 'Retry vô hạn khi model liên tục sai schema (do schema quá chặt hoặc prompt không rõ) sẽ đốt token, tốn tiền, tăng latency, và che bug. Backoff + jitter giảm tải server. Giới hạn 2-3 lần là thực hành tốt.'
+    },
+    {
+      q: 'Thứ tự lỗi validate nên deterministic để làm gì?',
+      options: ['Để model hiểu dễ hơn', 'Dễ test, log ổn định, so sánh diff giữa các lần chạy', 'API yêu cầu', 'Không quan trọng'],
+      answer: 1,
+      explain: 'Duyệt key bằng TreeSet (alphabet) khiến thứ tự lỗi luôn giống nhau. Test không bị flaky, log production dễ grep và so sánh.'
+    },
+  ],
+  related: ['claude-001', 'claude-012'],
+  tags: ['structured output', 'json schema', 'validation', 'retry', 'max_tokens'],
 }
 
 );
