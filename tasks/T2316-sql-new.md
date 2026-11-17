@@ -14,3 +14,4 @@ AGENTS.md (đọc mục liên quan). Chỉ THÊM trước dòng `);` cuối file
 `node --check js/data/q-sql.js`, `node scripts/build-light-index.js`, `node scripts/validate.js` → OK. Status: DONE + id mới vào Notes.
 
 ## Notes
+- (kilo) Added sql-075..sql-079. node --check OK. validate only pre-existing sdlc.js syntax error (not owned).

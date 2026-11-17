@@ -6749,4 +6749,358 @@ Một sàn thương mại điện tử chạy flash sale 5.000 sản phẩm, 100
   ],
   tags: ['double booking', 'unique constraint', 'exclusion constraint', 'btree_gist', 'tstzrange', 'FOR UPDATE', 'SERIALIZABLE', 'oversell', 'bucket', 'reservation TTL']
 },
+{
+  id: 'sql-075',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bạn có một query chạy 8 giây trên production. Làm thế nào đọc EXPLAIN ANALYZE để tìm ra bước nào chậm và vì sao?',
+  a: `**Tóm tắt:** Chạy EXPLAIN (ANALYZE, BUFFERS) trước, nhìn node có Actual Time lớn nhất và Seq Scan trên bảng lớn; đối chiếu Rows với Rows Estimated để phát hiện misestimate; dùng BUFFERS để phân biệt CPU với IO.
+
+### EXPLAIN ANALYZE là gì
+EXPLAIN chỉ lập kế hoạch (plan) mà không chạy query. EXPLAIN ANALYZE thực sự chạy query rồi trả về kế hoạch kèm thời gian thực tế từng node. Vì vậy ANALYZE có thể làm thay đổi dữ liệu với INSERT/UPDATE/DELETE, nên với query ghi hãy bọc trong BEGIN ... ROLLBACK.
+
+### Đọc plan từ trong ra ngoài
+Plan là cây node lồng nhau. Đọc bottom-up: node lá là nguồn dữ liệu, node cha là join/filter/sort. Mỗi node có:
+- Actual Time: startup..total (ms) cho node đó.
+- Rows: số dòng thực tế node trả về.
+- Loops: số lần node được gọi (nested loop join sẽ loops > 1).
+- Buffers: shared hit/read (hit = cache, read = đọc disk).
+
+### Ví dụ plan chậm
+~~~sql
+EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+SELECT o.id, c.name
+FROM orders o JOIN customers c ON c.id = o.customer_id
+WHERE o.status = 'PENDING' AND o.created_at > now() - interval '7 days';
+~~~
+~~~text
+Hash Join  (cost=... ) (actual time=7980.123..7995.456 rows=1200 loops=1)
+  Hash Cond: (o.customer_id = c.id)
+  Buffers: shared hit=120 read=8900
+  -> Seq Scan on orders o  (cost=... ) (actual time=0.050..7900.100 rows=1200 loops=1)
+       Filter: (status = 'PENDING' AND created_at > ...)
+       Rows Removed by Filter: 4800000
+       Buffers: shared hit=50 read=8850
+  -> Hash  (cost=... ) (actual time=40.000..40.000 rows=50000 loops=1)
+       Buckets: 65536  Batches: 1
+       -> Seq Scan on customers c  (cost=... ) (actual time=0.020..25.000 rows=50000 loops=1)
+~~~
+Nhìn vào: Seq Scan trên orders đọc 8850 block từ disk (read), lọc bỏ 4.8 triệu dòng, mất 7.9 giây. Đây là node chậm nhất. Cần index partial: CREATE INDEX ON orders (created_at) WHERE status = 'PENDING'; hoặc index (status, created_at).
+
+### Misestimate và Rows Estimated
+Nếu Estimated Rows = 10 nhưng Actual = 100000, planner chọn plan sai (ví dụ nested loop thay vì hash join). Nguyên nhân: thống kê cũ. Chạy ANALYZE orders; hoặc tăng default_statistics_target cho cột skew.
+
+### BUFFERS: CPU hay IO
+shared hit cao, read thấp: dữ liệu trong cache, chậm do CPU (sort/hash lớn, function phức tạp). read cao: đọc disk, cần index hoặc cache lớn hơn. temp read/written > 0: spill ra disk (work_mem nhỏ), tăng work_mem cho session.
+
+### Các node hay gặp
+- Seq Scan: quét toàn bảng. Không phải lúc nào cũng xấu (bảng nhỏ, hoặc cần phần lớn dữ liệu).
+- Index Scan / Index Only Scan: dùng index. Index Only Scan còn đọc visibility map, nếu bảng bloat thì phải heap fetch.
+- Nested Loop: tốt khi outer nhỏ và inner có index. Loops lớn + inner Seq Scan = thảm hoạ.
+- Hash Join: tốt cho equality join lớn; memory spill nếu hash lớn.
+- Sort: external merge nếu work_mem nhỏ.
+
+### Pitfall thực tế
+- EXPLAIN ANALYZE chạy query thật, với DELETE sẽ xoá dữ liệu. Luôn rollback.
+- Plan thay đổi theo dữ liệu và cache; đo nhiều lần, trong giờ cao điểm.
+- pg_stat_statements cho top query theo total time, không chỉ một lần.
+
+### Ví dụ đời thực
+Hệ thống order 5 triệu dòng, query dashboard 8 giây. EXPLAIN ANALYZE cho thấy Seq Scan orders 7.9s, read 8850 block. Thêm partial index (status, created_at) WHERE status IN ('PENDING','SHIPPING'). Sau đó Index Scan 12ms, dashboard < 50ms. Root cause: thiếu index cho predicate status + created_at; planner không thể dùng index cũ (chỉ trên customer_id).
+
+### Trả lời mẫu khi phỏng vấn
+Tôi bắt đầu bằng EXPLAIN (ANALYZE, BUFFERS) trên query chậm, đọc bottom-up để tìm node có actual time lớn nhất. Trong ví dụ tôi gặp Seq Scan trên orders 4.8 triệu dòng, read 8850 block disk, lọc còn 1200 dòng, mất 7.9 giây. Tôi kiểm tra Rows Estimated so với Actual để phát hiện misestimate. Sau đó thêm partial index khớp predicate, query xuống 12ms. Tôi cũng dùng pg_stat_statements để xác nhận query này thực sự là top theo total time, không phải một lần đo lệch.
+
+> Senior tip: EXPLAIN ANALYZE là công cụ số 1; nhưng đừng quên pg_stat_statements và auto_explain (log_min_duration_statement) để bắt query chậm tự động trong production mà không cần chạy tay.`,
+  follow: ['EXPLAIN ANALYZE có chạy query thật không, rủi ro với DELETE?', 'Khi nào Seq Scan nhanh hơn Index Scan?', 'work_mem ảnh hưởng thế nào đến Sort/Hash Join?'],
+  tags: ['EXPLAIN', 'ANALYZE', 'BUFFERS', 'Seq Scan', 'Index Scan', 'pg_stat_statements', 'work_mem', 'misestimate']
+},
+{
+  id: 'sql-076',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Composite index (a, b, c): khi nào được dùng và tại sao thứ tự cột lại quan trọng?',
+  a: `**Tóm tắt:** Composite index chỉ dùng hiệu quả khi query lọc theo prefix trái (a, hoặc a+b, hoặc a+b+c) theo quy tắc leftmost prefix; cột có selectivity cao và xuất hiện trong WHERE/JOIN/ORDER BY nên đặt trước; thứ tự ảnh hưởng cả index-only scan.
+
+### Composite index là gì
+Index trên nhiều cột: CREATE INDEX idx ON t (a, b, c). B-tree lưu key là tuple (a, b, c) sắp xếp theo a rồi b rồi c. Vì vậy index hữu ích cho mọi predicate bắt đầu từ cột đầu.
+
+### Leftmost prefix rule
+- WHERE a = 1: dùng được (prefix length 1).
+- WHERE a = 1 AND b = 2: dùng được (prefix length 2).
+- WHERE b = 2 (không có a): KHÔNG dùng được index (trừ index skip scan trong một số DB, PostgreSQL chưa có).
+- WHERE a = 1 AND c = 3 (thiếu b): dùng được cho a, rồi filter c trong index (Index Cond a, Filter c). Vẫn tốt hơn Seq Scan nếu a selectivity cao.
+
+### Thứ tự cột: nguyên tắc
+1. Equality trước, range sau. Nếu WHERE a = ? AND b > ?, đặt a trước b. Nếu b trước a thì range trên b làm mất khả năng dùng a? Thực ra b range đầu tiên thì a equality vẫn có thể dùng? B-tree: (b range, a equality) không contiguous vì b range trải rộng, a equality trong mỗi b không liên tục → index scan kém. Nên equality column trước range column.
+2. Selectivity cao trước: cột phân biệt nhiều giá trị (user_id) trước cột ít giá trị (status) nếu cả hai equality. Nhưng nếu status luôn trong WHERE và user_id thay đổi, cân nhắc index riêng.
+3. ORDER BY: nếu ORDER BY a, b và index (a,b) thì tránh sort. Nếu WHERE a = ? ORDER BY b, index (a,b) cho Index Scan không sort.
+4. INCLUDE: PostgreSQL 11+ CREATE INDEX ... INCLUDE (c) để c là payload (covering index) mà không tham gia sort/search, giúp index-only scan.
+
+### Ví dụ
+~~~sql
+CREATE INDEX idx_orders_cust_status_created ON orders (customer_id, status, created_at);
+-- Query 1: dùng full index
+SELECT * FROM orders WHERE customer_id = 42 AND status = 'PENDING' AND created_at > '2026-01-01';
+-- Query 2: dùng prefix customer_id, filter status/created_at
+SELECT * FROM orders WHERE customer_id = 42 AND created_at > '2026-01-01';
+-- Query 3: không dùng index (thiếu customer_id)
+SELECT * FROM orders WHERE status = 'PENDING';
+~~~
+
+### Index-only scan và visibility map
+Index-only scan đọc index mà không chạm heap nếu tất cả cột cần có trong index và visibility map đánh dấu page all-visible. Bảng update nhiều → visibility map cũ → heap fetch → chậm. Cần VACUUM để refresh visibility map.
+
+### Trade-off
+- Mỗi index làm chậm write (INSERT/UPDATE/DELETE phải cập nhật index).
+- Index lớn tốn disk và cache.
+- Quá nhiều index → planner chọn sai, maintenance cost.
+
+### Pitfall thực tế
+- Tạo index (a,b,c) rồi query WHERE b=?; planner Seq Scan. Cần index riêng trên b nếu query đó thường xuyên.
+- Index column order không nên chỉ theo selectivity; theo pattern query thực tế.
+- Partial index: CREATE INDEX ... WHERE status = 'PENDING' nhỏ hơn nhiều và nhanh hơn cho query predicate cố định.
+
+### Ví dụ đời thực
+Bảng orders 10M. Index cũ (created_at) không giúp query WHERE customer_id=42 AND status='PENDING'. Thêm (customer_id, status, created_at). Query từ 4.2s xuống 8ms. Nhưng index làm INSERT order chậm 15%; chấp nhận vì read nhiều hơn write.
+
+### Trả lời mẫu khi phỏng vấn
+Composite index tuân leftmost prefix: chỉ hữu ích khi predicate bắt đầu từ cột đầu. Tôi đặt equality column trước range column, và các cột thường xuyên trong WHERE/JOIN/ORDER BY. Với query chỉ cần một số cột, dùng INCLUDE để covering index và index-only scan. Tôi luôn kiểm tra EXPLAIN để xác nhận index được dùng, và cân nhắc chi phí write.
+
+> Senior tip: Đừng tạo index theo cảm giác. Dùng pg_stat_statements để tìm query top time, EXPLAIN để xác nhận, và pg_stat_user_indexes (idx_scan = 0) để xoá index vô dụng.`,
+  follow: ['Index-only scan yêu cầu gì?', 'Khi nào nên dùng partial index thay vì composite?', 'CREATE INDEX CONCURRENTLY khác gì CREATE INDEX?'],
+  tags: ['composite index', 'leftmost prefix', 'B-tree', 'covering index', 'INCLUDE', 'index-only scan', 'selectivity']
+},
+{
+  id: 'sql-077',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Hai transaction cập nhật 2 bảng theo thứ tự ngược nhau gây deadlock. Cách điều tra bằng log PostgreSQL và cách phòng tránh?',
+  a: `**Tóm tắt:** Deadlock xảy ra khi TX1 lock A rồi chờ B, TX2 lock B rồi chờ A; PostgreSQL phát hiện và abort một TX (victim) với lỗi 40P01. Điều tra bằng log_lock_waits và pg_locks; phòng tránh bằng thứ tự lock nhất quán, lock sớm, retry.
+
+### Deadlock là gì
+Deadlock (khoá chết) là hai (hoặc nhiều) transaction mỗi cái giữ lock trên tài nguyên mà transaction khác cần, và chờ nhau vô hạn. PostgreSQL có deadlock detector chạy mỗi deadlock_timeout (mặc định 1s), khi phát hiện sẽ abort một transaction (victim) để phá vỡ vòng chờ, ném lỗi ERROR: deadlock detected (SQLSTATE 40P01).
+
+### Kịch bản điển hình
+~~~sql
+-- TX1
+BEGIN;
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;  -- lock row 1
+-- chờ...
+UPDATE accounts SET balance = balance + 100 WHERE id = 2;  -- chờ lock row 2
+COMMIT;
+
+-- TX2 (chạy đồng thời)
+BEGIN;
+UPDATE accounts SET balance = balance - 50 WHERE id = 2;   -- lock row 2
+-- chờ...
+UPDATE accounts SET balance = balance + 50 WHERE id = 1;   -- chờ lock row 1
+COMMIT;
+~~~
+TX1 giữ row1 chờ row2; TX2 giữ row2 chờ row1 → vòng tròn. Sau ~1s, PG abort một TX.
+
+### Điều tra bằng log
+Bật log_lock_waits = on và deadlock_timeout = '1s' (hoặc thấp hơn). Khi deadlock xảy ra, log ghi:
+~~~text
+ERROR: deadlock detected
+DETAIL: Process 12345 waits for ShareLock on transaction 67890; blocked by process 12346.
+Process 12346 waits for ShareLock on transaction 67890; blocked by process 12345.
+HINT: See server log for query details.
+CONTEXT: while updating tuple (0,5) in relation "accounts"
+~~~
+Log cũng in câu SQL đang chạy (nếu log_statement phù hợp). pg_stat_activity cho biết application_name, client_addr, state. pg_locks join pg_stat_activity cho thấy ai đang giữ lock nào:
+~~~sql
+SELECT l.locktype, l.relation::regclass, l.mode, l.granted, a.pid, a.state, a.query
+FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE NOT l.granted;
+~~~
+
+### Phòng tránh
+1. Thứ tự lock nhất quán: mọi code path cập nhật nhiều bảng/row phải theo cùng thứ tự (ví dụ theo id tăng dần). Đây là cách hiệu quả nhất.
+2. Lock sớm: SELECT ... FOR UPDATE trên tất cả row cần sửa trong một câu, theo thứ tự, trước khi UPDATE. Giảm window chờ.
+3. Transaction ngắn: không gọi external API / gửi email trong transaction. Giảm thời gian giữ lock.
+4. Retry ở application: bắt lỗi 40P01 và retry với exponential backoff + jitter. PG abort victim, retry thường thành công.
+5. Giảm granularity: dùng advisory lock (pg_advisory_xact_lock) cho critical section theo entity.
+6. SERIALIZABLE isolation tăng khả năng conflict; cân nhắc READ COMMITTED + lock rõ ràng.
+
+### Retry pattern (Java)
+~~~java
+int attempts = 0;
+while (true) {
+  try {
+    transfer(from, to, amount);
+    break;
+  } catch (PSQLException e) {
+    if (e.getSQLState().equals("40P01") && attempts++ < 3) {
+      Thread.sleep((long)(Math.pow(2, attempts) * 50 + Math.random() * 50));
+      continue;
+    }
+    throw e;
+  }
+}
+~~~
+
+### Pitfall thực tế
+- Deadlock không chỉ row-level; có thể là table lock (ALTER TABLE, CREATE INDEX không CONCURRENTLY) với row lock.
+- Foreign key check cũng acquire lock trên bảng cha; update con có thể lock cha.
+- Advisory lock và row lock trộn lẫn dễ tạo deadlock mới nếu thứ tự không nhất quán.
+
+### Ví dụ đời thực
+Hệ thống chuyển tiền: transfer A→B và B→A chạy đồng thời deadlock 50 lần/giờ. Log cho thấy victim bị abort. Fix: luôn lock account theo id tăng dần (SELECT ... FOR UPDATE ORDER BY id) trước khi update. Deadlock giảm về 0. Thêm retry 3 lần cho an toàn.
+
+### Trả lời mẫu khi phỏng vấn
+Deadlock là vòng chờ lock giữa các transaction. PostgreSQL phát hiện sau deadlock_timeout và abort một transaction với 40P01. Tôi điều tra bằng log_lock_waits và pg_locks join pg_stat_activity để xem ai giữ ai chờ. Phòng tránh bằng thứ tự lock nhất quán (theo id), lock sớm bằng SELECT FOR UPDATE, transaction ngắn, và retry ở application. Đây là vấn đề thường gặp trong money transfer và inventory.
+
+> Senior tip: Deadlock không phải bug của DB mà là bug của thứ tự truy cập tài nguyên trong code. Quy ước "lock theo id tăng dần" viết vào coding standard của team, review trong PR.`,
+  follow: ['deadlock_timeout mặc định là bao nhiêu và ảnh hưởng thế nào?', 'SERIALIZABLE isolation có tăng deadlock không?', 'Advisory lock dùng khi nào?'],
+  tags: ['deadlock', 'lock', '40P01', 'log_lock_waits', 'pg_locks', 'FOR UPDATE', 'retry', 'advisory lock']
+},
+{
+  id: 'sql-078',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Dùng SELECT ... FOR UPDATE SKIP LOCKED để xây dựng job queue trong PostgreSQL như thế nào?',
+  a: `**Tóm tắt:** SKIP LOCKED cho phép nhiều worker đồng thời lấy job khác nhau mà không chờ nhau: mỗi worker BEGIN, SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1, xử lý, UPDATE status, COMMIT. Kết hợp partial index trên status='queued' để nhanh.
+
+### FOR UPDATE là gì
+SELECT ... FOR UPDATE khoá các row được chọn (row-level lock) để transaction khác không sửa/xoá cho đến khi commit/rollback. Mặc định transaction khác sẽ CHỜ (block) cho đến khi lock được giải phóng.
+
+### SKIP LOCKED là gì
+SKIP LOCKED (PostgreSQL 9.5+) bỏ qua các row đang bị lock bởi transaction khác thay vì chờ. Kết quả: mỗi worker nhận row khác nhau, không block nhau. Đây là nền tảng để xây job queue concurrency cao.
+
+### Schema job queue
+~~~sql
+CREATE TABLE jobs (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  payload jsonb NOT NULL,
+  status text NOT NULL DEFAULT 'queued',   -- queued | processing | done | failed
+  attempts int NOT NULL DEFAULT 0,
+  run_at timestamptz NOT NULL DEFAULT now(),
+  locked_by text,
+  locked_at timestamptz
 );
+CREATE INDEX idx_jobs_queued ON jobs (run_at) WHERE status = 'queued';
+~~~
+
+### Worker lấy job
+~~~sql
+BEGIN;
+SELECT id, payload
+FROM jobs
+WHERE status = 'queued' AND run_at <= now()
+ORDER BY run_at, id
+FOR UPDATE SKIP LOCKED
+LIMIT 1;
+-- application xử lý payload
+UPDATE jobs SET status = 'processing', locked_by = :worker, locked_at = now(), attempts = attempts + 1 WHERE id = :id;
+COMMIT;
+~~~
+Sau xử lý thành công:
+~~~sql
+UPDATE jobs SET status = 'done' WHERE id = :id;
+~~~
+Nếu fail: UPDATE status='queued' (hoặc 'failed' nếu attempts >= max) để retry.
+
+### Tại sao ORDER BY + LIMIT
+SKIP LOCKED trả về row đầu tiên không bị lock theo thứ tự ORDER BY. Nếu không ORDER BY, thứ tự không xác định nhưng vẫn đúng. ORDER BY run_at cho phép scheduled job (run_at tương lai).
+
+### Concurrency và throughput
+N worker chạy song song, mỗi worker một transaction ngắn. Partial index trên status='queued' giữ index nhỏ. Throughput cao vì không có contention trên cùng row (SKIP LOCKED).
+
+### Reclaim job treo
+Worker crash giữa chừng để job ở 'processing' mãi. Cần sweeper:
+~~~sql
+UPDATE jobs SET status = 'queued', locked_by = NULL
+WHERE status = 'processing' AND locked_at < now() - interval '5 minutes';
+~~~
+Chạy định kỳ (cron/pg_cron) hoặc khi worker khởi động.
+
+### Pitfall thực tế
+- SKIP LOCKED chỉ có trong PostgreSQL 9.5+, MySQL 8.0+. Oracle có SKIP LOCKED từ lâu.
+- Nếu không có partial index, SELECT scan toàn bảng khi queue lớn.
+- Job payload lớn trong bảng jobs → bloat; cân nhắc lưu payload ở object storage, jobs chỉ giữ reference.
+- Idempotency: job có thể được xử lý 2 lần (crash sau xử lý trước khi mark done). Handler phải idempotent hoặc dùng unique constraint trên kết quả.
+- FOR UPDATE trên bảng lớn không có WHERE selectivity cao → lock nhiều row, contention.
+
+### Ví dụ đời thực
+Hệ thống gửi email: 100k email/giờ. 8 worker dùng SKIP LOCKED lấy job, xử lý SMTP, mark done. Partial index idx_jobs_queued. Throughput 3000 email/phút, không deadlock. Sweeper chạy mỗi 1 phút reclaim job treo. Idempotency key theo (recipient, template, day) tránh gửi trùng.
+
+### Trả lời mẫu khi phỏng vấn
+SKIP LOCKED biến PostgreSQL thành job queue đơn giản: worker BEGIN, SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1 theo thứ tự run_at, xử lý, UPDATE status, COMMIT. Nhiều worker không block nhau vì skip row đang lock. Tôi thêm partial index trên status='queued', sweeper reclaim job treo, và đảm bảo handler idempotent. Đây là giải pháp tốt cho workload vừa phải; với scale lớn hơn cân nhắc Kafka/RabbitMQ.
+
+> Senior tip: SKIP LOCKED là "hidden gem" của PostgreSQL cho queue nhẹ. Nhưng nhớ idempotency và reclaim; nếu không, job mất hoặc gửi trùng.`,
+  follow: ['SKIP LOCKED khác gì NOWAIT?', 'Khi nào nên dùng message broker thay vì DB queue?', 'Làm sao đảm bảo idempotency của job?'],
+  tags: ['SKIP LOCKED', 'FOR UPDATE', 'job queue', 'partial index', 'concurrency', 'idempotency', 'sweeper']
+},
+{
+  id: 'sql-079',
+  topic: 'sql',
+  level: 'senior',
+  q: 'VACUUM và autovacuum hoạt động thế nào, và table bloat ảnh hưởng gì đến hiệu năng?',
+  a: `**Tóm tắt:** PostgreSQL MVCC giữ row cũ khi UPDATE/DELETE; VACUUM dọn row chết (dead tuple) và cập nhật visibility map/statistics. Autovacuum tự chạy theo ngưỡng. Bloat làm bảng/index phình to, cache kém, query chậm; theo dõi bằng pg_stat_user_tables và pgstattuple.
+
+### MVCC và dead tuple
+PostgreSQL dùng MVCC (Multi-Version Concurrency Control): UPDATE không sửa tại chỗ mà tạo row mới (new tuple) và đánh dấu row cũ là dead (dead tuple) sau khi không transaction nào cần. DELETE cũng đánh dấu row là dead. Các dead tuple này vẫn chiếm chỗ trong page cho đến khi VACUUM dọn.
+
+### VACUUM làm gì
+- Dọn dead tuple, đánh dấu chỗ trống để tái sử dụng (không trả OS ngay, trừ VACUUM FULL).
+- Cập nhật visibility map: page nào all-visible (để index-only scan) và all-frozen (để tránh wraparound).
+- Cập nhật free space map (FSM) để INSERT mới dùng chỗ trống.
+- Cập nhật thống kê (pg_stat) một phần; ANALYZE làm phần thống kê.
+
+### VACUUM vs VACUUM FULL vs ANALYZE
+- VACUUM: online, không lock bảng (chỉ lock nhẹ), không trả disk OS, dọn dead tuple.
+- VACUUM FULL: rewrite toàn bảng, trả disk OS, nhưng lock bảng (AccessExclusiveLock) → downtime. Tránh trên bảng lớn production; dùng pg_repack thay thế.
+- ANALYZE: cập nhật thống kê cho planner. Autovacuum chạy cả VACUUM và ANALYZE.
+
+### Autovacuum
+Tự động chạy VACUUM khi số dead tuple vượt ngưỡng: threshold + scale_factor * reltuples (mặc định scale_factor 0.2 = 20% bảng). Với bảng lớn 100M rows, 20% = 20M dead tuple mới vacuum → bloat lớn. Nên giảm scale_factor (0.05 hoặc 0.01) và tăng autovacuum_vacuum_cost_limit cho bảng hot.
+
+Cấu hình per-table:
+~~~sql
+ALTER TABLE orders SET (autovacuum_vacuum_scale_factor = 0.05, autovacuum_vacuum_threshold = 1000, autovacuum_analyze_scale_factor = 0.02);
+~~~
+
+### Table bloat
+Bảng phình to vì dead tuple chưa được dọn (vacuum không kịp) hoặc vì VACUUM không trả OS. Hậu quả:
+- Seq Scan chậm hơn (đọc nhiều page).
+- Cache (shared_buffers) chứa nhiều dead tuple → cache hit giảm.
+- Index bloat: index cũng phình vì entry dead.
+- Disk đầy.
+
+### Theo dõi bloat
+~~~sql
+SELECT relname, n_live_tup, n_dead_tup, last_vacuum, last_autovacuum, last_analyze
+FROM pg_stat_user_tables ORDER BY n_dead_tup DESC;
+~~~
+pgstattuple extension cho ước lượng bloat chính xác:
+~~~sql
+SELECT * FROM pgstattuple('orders');
+-- dead_tuple_percent, free_percent
+~~~
+pgstattuple_approx cho bảng lớn (nhanh hơn, xấp xỉ).
+
+### Transaction ID wraparound
+PostgreSQL dùng 32-bit XID, sau ~2 tỷ transaction sẽ wrap. VACUUM freeze old tuple (đánh dấu frozen) để tránh. Nếu không vacuum kịp, DB vào chế độ chỉ đọc (shutdown để bảo vệ). Theo dõi age(relfrozenxid):
+~~~sql
+SELECT relname, age(relfrozenxid) FROM pg_class WHERE relkind='r' ORDER BY age(relfrozenxid) DESC;
+~~~
+Cảnh báo khi > 1 tỷ.
+
+### Pitfall thực tế
+- Long-running transaction / replication slot giữ dead tuple không được vacuum → bloat và wraparound risk. Kiểm tra pg_stat_activity (state idle in transaction) và pg_replication_slots (active=false, retained WAL).
+- VACUUM FULL lock bảng → downtime; dùng pg_repack (online) cho bảng lớn.
+- autovacuum bị disable hoặc quá chậm (cost limit thấp) trên bảng write nhiều.
+
+### Ví dụ đời thực
+Bảng events insert 50M/ngày, update status liên tục. Autovacuum mặc định scale 20% → vacuum mỗi 10M dead tuple, bloat lên 40%. Query count events chậm từ 200ms lên 4s. Fix: scale_factor 0.01, cost_limit 2000, cost_delay 2ms. Thêm pg_repack chạy cuối tuần. Bloat xuống 5%, query 250ms.
+
+### Trả lời mẫu khi phỏng vấn
+VACUUM dọn dead tuple do MVCC để tái sử dụng chỗ và cập nhật visibility map cho index-only scan. Autovacuum tự chạy theo ngưỡng dead tuple; bảng lớn cần giảm scale_factor. Bloat làm seq scan và cache kém; theo dõi qua pg_stat_user_tables và pgstattuple. Với bảng rất bloat, dùng pg_repack online thay vì VACUUM FULL. Và luôn chú ý transaction ID wraparound: vacuum freeze là bắt buộc.
+
+> Senior tip: Bloat là "bệnh thầm lặng": không crash nhưng làm mọi query chậm dần. Monitor dead_tuple_percent và age(relfrozenxid) như metric bắt buộc, alert khi vượt ngưỡng.`,
+  follow: ['VACUUM FULL khác gì pg_repack?', 'Tại sao long-running transaction gây bloat?', 'autovacuum_vacuum_cost_limit điều chỉnh thế nào?'],
+  tags: ['VACUUM', 'autovacuum', 'MVCC', 'dead tuple', 'bloat', 'visibility map', 'wraparound', 'pgstattuple', 'pg_repack']
+}
+);
+
