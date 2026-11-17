@@ -1634,351 +1634,490 @@ Token bucket tách bạch hai tham số: **tốc độ nạp** (trung bình dài
 {
   id: 'qz-spring-021',
   topic: 'spring',
-  q: 'Bạn gọi method {{@Transactional}} của cùng bean qua {{this}} (self-invocation). Method có rollbackFor? Kết quả transaction?',
+  q: `Trong cùng một bean {{OrderService}}, {{handle()}} có {{@Transactional}} và được controller gọi qua proxy. Bên trong {{handle()}} gọi {{this.audit()}}; {{audit()}} cũng khai báo {{@Transactional}}. Transaction nào chạy cho {{audit()}}?
+~~~java
+@Transactional
+public void handle() {
+    audit();          // gọi this, không qua bean khác
+}
+
+@Transactional
+public void audit() { auditRepo.save(...); }
+~~~`,
   options: [
-    'Transaction vẫn mở và rollback nếu exception',
-    'Không có proxy nên không có transaction, exception propagate bình thường',
-    'Spring tự động tạo proxy cho self-call',
-    'Compile lỗi'
+    'audit() tạo một transaction MỚI (REQUIRES_NEW) vì nó có {{@Transactional}} riêng',
+    'audit() chạy trong transaction của {{handle()}} nếu có, còn {{@Transactional}} của chính audit() bị bỏ qua vì this() không đi qua proxy',
+    'audit() chạy không transaction, và {{handle()}} cũng mất transaction vì đã gọi this()',
+    'Spring ném BeanCurrentlyInCreationException vì bean tự gọi chính nó'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: self-invocation không qua proxy, nên không có transaction.**
+  explain: `**Đáp án đúng: audit() không tạo transaction riêng; nó chạy trong transaction của handle() (nếu có), còn @Transactional của chính audit() bị bỏ qua.**
 
 ### Vì sao đúng
-Spring AOP proxy bọc bean; chỉ lời gọi từ bên ngoài qua proxy mới kích hoạt advice. Gọi {{this.method()}} là gọi trực tiếp object gốc, proxy bị bỏ qua, nên @Transactional không có tác dụng. Exception propagate bình thường mà không rollback.
+Spring AOP hoạt động bằng **proxy** — một lớp bao quanh bean. Chỉ lời gọi **từ ngoài đi vào qua proxy** mới kích hoạt advice như @Transactional, @Async, @Cacheable. {{this.audit()}} là gọi trực tiếp object gốc, proxy bị bỏ qua hoàn toàn, nên @Transactional trên audit() không có tác dụng. Transaction của handle() là thật (vì handle() được controller gọi qua proxy); audit() chỉ là method thường chạy bên trong transaction đó.
 
-### Vì sao khác sai
-- **Vẫn mở transaction**: chỉ đúng nếu gọi qua proxy (bean khác).
-- **Tự tạo proxy**: Spring không tự tạo cho self-call.
-- **Compile lỗi**: không có lỗi compile.
+### Vì sao quan trọng
+Nếu audit() là **entry point** (được gọi trực tiếp từ controller qua proxy) thì nó vẫn có transaction riêng. Nhưng ở đây nó là method nội bộ: nếu handle() không có transaction, audit() chạy với autocommit (mỗi câu INSERT một transaction riêng, không rollback được). Đây là bẫy "im lặng": không lỗi compile, không log cảnh báo.
 
-> Senior tip: tránh self-invocation; tách logic vào bean khác hoặc dùng ApplicationEventPublisher.`
+### Vì sao các phương án còn lại sai
+- **audit() tạo transaction mới (REQUIRES_NEW)**: @Transactional mặc định là REQUIRED, không phải REQUIRES_NEW; và ở đây nó còn bị bỏ qua do self-invocation.
+- **handle() cũng mất transaction**: handle() được gọi qua proxy nên vẫn có transaction; chỉ lời gọi this() bên trong mới bỏ qua proxy.
+- **BeanCurrentlyInCreationException**: lỗi đó thuộc về vòng phụ thuộc lúc khởi động, không liên quan lời gọi method lúc chạy.
+
+### Cách sửa
+Tách audit() sang một bean khác rồi gọi qua bean đó (sạch nhất), hoặc dùng {{AopContext.currentProxy()}} với {{@EnableAspectJAutoProxy(exposeProxy = true)}}, hoặc tự quản lý bằng {{TransactionTemplate}}. Xem qz-spring-029 (cách khắc phục) và qz-spring-053 (thứ tự các bước transaction).
+
+> Senior tip: khi review, tìm các lời gọi this.method() tới method có @Transactional/@Async/@Cacheable trong cùng class — đó là nơi transaction/async "biến mất" mà không ai để ý.`
 },
 {
   id: 'qz-spring-022',
   topic: 'spring',
   multi: true,
-  q: 'Spring bean scope nào là mặc định và nào tạo instance mới mỗi request? (Chọn 2)',
+  q: 'Về bean scope trong Spring Framework, phát biểu nào đúng? (Chọn 2)',
   options: [
-    'singleton mặc định',
-    'prototype tạo mới mỗi lần getBean',
-    'request scope tạo mới mỗi HTTP request',
-    'session scope tạo mới mỗi session',
-    'application scope tạo mới mỗi ServletContext'
+    'singleton là scope mặc định: mỗi IoC container chỉ tạo một instance và chia sẻ cho mọi lời gọi',
+    'request scope tạo một instance mới cho mỗi HTTP session',
+    'prototype tạo instance mới mỗi lần có bean yêu cầu (getBean hoặc lúc inject); Spring không giữ tham chiếu để quản lý vòng đời sau khi tạo',
+    'application scope tạo instance mới mỗi ServletContext',
+    'singleton bean được tạo lại mỗi lần có request HTTP mới'
   ],
   answer: [0, 2],
-  explain: `**Đáp án đúng: singleton mặc định; request scope tạo mới mỗi HTTP request.**
+  explain: `**Đáp án đúng: singleton là scope mặc định; prototype tạo instance mới mỗi lần được yêu cầu.**
 
 ### Vì sao đúng
-- Singleton là scope mặc định, một instance cho toàn context.
-- Request scope tạo mới instance mỗi HTTP request (trong web context).
+Scope quyết định bean được tạo bao nhiêu lần và sống ở đâu. Bảng tóm tắt các scope hay dùng:
 
-### Vì sao khác sai
-- Prototype tạo mới mỗi lần getBean (đúng nhưng không phải HTTP request).
-- Session/application không phải mặc định cho câu hỏi này.
+| Scope | Khoảng sống | Ghi chú |
+|---|---|---|
+| singleton | một instance cho mỗi IoC container | mặc định, dùng chung |
+| prototype | một instance mới mỗi lần getBean/inject | Spring không quản lý vòng đời sau khi tạo |
+| request | một instance cho mỗi HTTP request | cần web context |
+| session | một instance cho mỗi HTTP session | cần web context |
+| application | một instance cho mỗi ServletContext | giống singleton ở mức servlet |
 
-> Senior tip: dùng request scope cẩn thận với proxy; inject scoped bean vào singleton cần proxy.`
+- {{singleton}} là mặc định: cả ứng dụng dùng chung một object.
+- {{prototype}}: mỗi lần có bean khác yêu cầu (hoặc bạn gọi getBean), Spring tạo object mới và **không** giữ tham chiếu — nghĩa là {{@PreDestroy}}/destroy-method **không** được gọi cho prototype.
+
+### Vì sao các phương án còn lại sai
+- **request scope tạo mới mỗi HTTP session**: nhầm với session scope; request scope là mỗi **request**, session scope mới là mỗi session.
+- **application scope tạo mới mỗi ServletContext**: application scope chỉ có **một** instance cho mỗi ServletContext, không "tạo mới mỗi".
+- **singleton tạo lại mỗi request**: singleton sống suốt vòng đời context, không tạo lại theo request.
+
+### Bẫy thường gặp
+Inject một bean {{prototype}} vào một bean {{singleton}} thì singleton chỉ nhận **đúng một** instance lúc nó được tạo, mọi lời gọi sau dùng lại object đó (xem qz-spring-043). Muốn mỗi lần dùng một instance mới, hãy lấy qua {{ObjectProvider}}/{{ApplicationContext}}/{{@Lookup}}, hoặc dùng {{@Scope(proxyMode = ...)}}.
+
+> Senior tip: prototype "không được quản lý" nghĩa là không có callback hủy — nếu prototype giữ resource (file, connection) thì chính bạn phải đóng, vì Spring không gọi destroy cho nó.`
 },
 {
   id: 'qz-spring-023',
   topic: 'spring',
-  q: 'Spring Boot auto-configuration bật khi nào?',
+  q: 'Ứng dụng Spring Boot 3 dùng spring-boot-starter-data-redis. Bean {{RedisTemplate}} do auto-configuration của Boot tạo. Trường hợp nào auto-configuration này KHÔNG tạo bean đó?',
   options: [
-    'Luôn bật khi có dependency',
-    'Khi classpath có class và không có bean do user định nghĩa (@ConditionalOnMissingBean)',
-    'Chỉ khi profile prod active',
-    'Khi property spring.boot.enable-autoconfig=true'
+    'Khi classpath có starter, auto-configuration luôn tạo bean kể cả người dùng đã tự khai báo bean {{RedisTemplate}}',
+    'Chỉ khi active profile là {{prod}}',
+    'Khi không có class {{RedisTemplate}} trên classpath, hoặc người dùng đã tự khai báo một bean {{RedisTemplate}}',
+    'Khi thuộc tính {{spring.autoconfigure.enabled=false}} — thuộc tính này bắt buộc phải đặt'
   ],
-  answer: 1,
-  explain: `**Đáp án đúng: khi classpath có class và không có bean do user định nghĩa.**
+  answer: 2,
+  explain: `**Đáp án đúng: khi thiếu class trên classpath, hoặc người dùng đã tự khai báo bean cùng loại.**
 
 ### Vì sao đúng
-Auto-config dùng @ConditionalOnClass và @ConditionalOnMissingBean để chỉ bật khi dependency có và user chưa tự định nghĩa bean.
+Auto-configuration là cách Spring Boot đoán giúp bạn các bean thường dùng dựa trên **điều kiện**. Hai điều kiện quan trọng nhất:
+- {{@ConditionalOnClass}}: chỉ áp dụng khi một class có trên classpath (ở đây là {{RedisTemplate}}). Thiếu dependency thì auto-config bị bỏ qua hoàn toàn.
+- {{@ConditionalOnMissingBean}}: chỉ tạo bean khi context **chưa có** bean cùng loại. Nếu bạn tự khai báo {{@Bean RedisTemplate}}, Boot lùi lại, không tạo bean của nó.
 
-### Vì sao khác sai
-- Không luôn bật; có điều kiện.
-- Không phụ thuộc profile mặc định.
-- Property không phải điều kiện chính.
+Các điều kiện được **AND** lại: chỉ cần một điều kiện sai thì auto-config không áp dụng.
 
-> Senior tip: dùng --debug để xem condition evaluation report.`
+### Vì sao các phương án còn lại sai
+- **Luôn tạo bean khi có starter**: sai, người dùng tự khai báo bean thì {{@ConditionalOnMissingBean}} khiến Boot nhường quyền.
+- **Chỉ khi profile prod**: auto-config không phụ thuộc profile; nó dựa vào classpath và bean đã có.
+- **spring.autoconfigure.enabled=false**: không có thuộc tính này. Muốn loại trừ một auto-config, dùng {{@SpringBootApplication(exclude = ...)}} hoặc {{spring.autoconfigure.exclude}} trỏ đúng tên class.
+
+### Cách kiểm tra
+Chạy ứng dụng với {{--debug}} để mở Condition Evaluation Report: phần "Positive matches" cho biết auto-config nào đã áp dụng, "Negative matches" giải thích vì sao từng auto-config bị loại (ví dụ "Did not find 'some.Class' on the classpath"). Xem qz-spring-042 và qz-spring-050.
+
+> Senior tip: khi tự viết starter, luôn kết hợp @ConditionalOnClass, @ConditionalOnMissingBean và @ConditionalOnProperty để người dùng dễ tắt/tùy biến; đừng để starter "giành" bean với code của họ.`
 },
 {
   id: 'qz-spring-024',
   topic: 'spring',
   multi: true,
-  q: 'TransactionalEventListener phase nào chạy sau commit thành công? (Chọn 2)',
+  q: 'Với {{@TransactionalEventListener}}, phát biểu nào đúng về các phase? (Chọn 2)',
   options: [
-    'AFTER_COMMIT',
-    'AFTER_ROLLBACK',
-    'AFTER_COMPLETION',
-    'BEFORE_COMMIT',
-    'IMMEDIATE'
+    'AFTER_COMMIT chạy sau khi transaction commit thành công',
+    'BEFORE_COMMIT chạy sau khi transaction đã commit',
+    'AFTER_ROLLBACK chạy sau khi transaction rollback',
+    'AFTER_COMPLETION chạy trước khi transaction kết thúc',
+    'Nếu publish khi không có transaction, listener mặc định vẫn chạy'
   ],
   answer: [0, 2],
-  explain: `**Đáp án đúng: AFTER_COMMIT và AFTER_COMPLETION.**
+  explain: `**Đáp án đúng: AFTER_COMMIT chạy sau commit thành công; AFTER_ROLLBACK chạy sau rollback.**
 
 ### Vì sao đúng
-- AFTER_COMMIT chạy sau commit thành công.
-- AFTER_COMPLETION chạy sau khi transaction kết thúc (commit hoặc rollback).
+{{@TransactionalEventListener}} cho phép gắn listener vào một giai đoạn cụ thể của transaction:
+- {{AFTER_COMMIT}}: chạy sau khi commit **thành công** — đây là phase mặc định, phù hợp gửi email/thông báo "đơn hàng đã đặt".
+- {{AFTER_ROLLBACK}}: chạy sau khi rollback — phù hợp ghi log/audit "thao tác đã hủy".
+- {{AFTER_COMPLETION}}: chạy sau khi transaction **kết thúc** (cả commit lẫn rollback), dùng khi cần dọn dẹp trong cả hai trường hợp.
 
-### Vì sao khác sai
-- AFTER_ROLLBACK chỉ sau rollback.
-- BEFORE_COMMIT chưa có.
-- IMMEDIATE không phải phase.
+### Vì sao các phương án còn lại sai
+- **BEFORE_COMMIT chạy sau commit**: BEFORE_COMMIT chạy **trước** khi commit, vẫn còn trong transaction, còn có thể ảnh hưởng dữ liệu.
+- **AFTER_COMPLETION chạy trước khi kết thúc**: ngược lại, nó chạy **sau** khi transaction đã kết thúc.
+- **Không có transaction thì listener mặc định vẫn chạy**: sai. Mặc định {{fallbackExecution = false}}, không có transaction thì listener **bị bỏ qua im lặng** (xem qz-spring-048). Muốn chạy cả khi không có transaction thì đặt {{fallbackExecution = true}}.
 
-> Senior tip: AFTER_COMMIT vẫn có khe hở pod chết; dùng outbox cho event bắt buộc.`
+### Lưu ý
+Trong AFTER_COMMIT, transaction đã kết thúc: nếu listener cần ghi DB, nó phải tự mở transaction mới ({{REQUIRES_NEW}}) hoặc để method có {{@Transactional}} trên một bean khác. Xem qz-spring-015.
+
+> Senior tip: AFTER_COMMIT vẫn có khe hở — commit xong mà pod chết trước khi gửi mail thì event mất. Với event bắt buộc phải tới nơi (thanh toán, tồn kho), dùng transactional outbox.`
 },
 {
   id: 'qz-jpa-021',
   topic: 'jpa',
-  q: 'Batch insert với IDENTITY strategy có vấn đề gì?',
+  q: 'Batch insert 5.000 dòng bằng saveAll đã bật hibernate.jdbc.batch_size=100, nhưng log vẫn in 5.000 câu INSERT riêng lẻ. Nguyên nhân gốc và cách sửa?',
   options: [
-    'Không có vấn đề',
-    'Hibernate phải INSERT ngay để lấy id, phá batching',
-    'Sequence phải allocationSize=1',
-    'Không compile'
+    'batch_size chỉ hỗ trợ MySQL, PostgreSQL bỏ qua tham số này',
+    'Thiếu hibernate.order_inserts=true; chỉ cần thêm là batch chạy',
+    'Entity dùng GenerationType.IDENTITY: Hibernate phải INSERT ngay để lấy khóa, nên không gom được batch; đổi sang SEQUENCE (pooled optimizer)',
+    'saveAll luôn chạy tuần tự; đổi sang parallelStream là batch'
   ],
-  answer: 1,
-  explain: `**Đáp án đúng: Hibernate phải INSERT ngay để lấy id, phá batching.**
+  answer: 2,
+  explain: `**Đáp án đúng: IDENTITY buộc Hibernate INSERT ngay để lấy khóa, phá batching.**
 
 ### Vì sao đúng
-IDENTITY bắt buộc INSERT ngay để lấy id, nên JDBC batching không thể gom insert.
+Với {{GenerationType.IDENTITY}}, cơ sở dữ liệu sinh khóa **ngay khi câu INSERT chạy** (identity column / auto_increment). Hibernate cần khóa đó để đưa entity vào persistence context (khóa là "địa chỉ" của entity trong sổ tay), nên nó **phải** thực thi INSERT ngay tại {{persist()}} rồi đọc generated key. Không thể hoãn để gom nhiều INSERT thành một batch → mỗi dòng một round-trip.
 
-### Vì sao khác sai
-- Có vấn đề rõ ràng.
-- Sequence allocationSize không liên quan IDENTITY.
-- Compile được.
+Với {{GenerationType.SEQUENCE}}, Hibernate gọi sequence một lần lấy **một khối** khóa (allocationSize = 50, pooled optimizer) rồi cấp dần trong bộ nhớ. Vì đã biết khóa trước, entity có thể nằm chờ trong session và INSERT được gom thành batch lúc flush. Kèm theo {{hibernate.order_inserts=true}} để các INSERT cùng bảng nằm cạnh nhau, và {{flush()}} + {{clear()}} mỗi lô để session không phình.
 
-> Senior tip: dùng SEQUENCE với pooled optimizer cho batch insert lớn.`
+### Vì sao các phương án còn lại sai
+- **batch_size chỉ hỗ trợ MySQL**: sai, {{hibernate.jdbc.batch_size}} áp dụng cho INSERT/UPDATE/DELETE trên mọi DB; vấn đề nằm ở IDENTITY chứ không phải DB.
+- **Thiếu order_inserts là nguyên nhân**: {{order_inserts}} chỉ sắp xếp thứ tự câu lệnh để batch hiệu quả hơn; nó **không** gỡ được ràng buộc "phải INSERT ngay" của IDENTITY.
+- **parallelStream**: chạy song song không làm Hibernate gộp batch; còn thêm rủi ro về thread và transaction.
+
+### Cách sửa
+Đổi sang SEQUENCE + allocationSize (PostgreSQL), hoặc TABLE generator (MySQL không có sequence), kết hợp batch_size và flush/clear theo lô. Với hàng chục triệu dòng, cân nhắc bỏ JPA, dùng JdbcTemplate.batchUpdate hoặc COPY. Xem qz-jpa-015 và qz-jpa-036.
+
+> Senior tip: trên PostgreSQL nhớ để INCREMENT BY của sequence khớp allocationSize; trên MySQL thêm reWriteBatchedInserts=true vào JDBC URL để driver gộp thành INSERT nhiều VALUES, thường nhanh thêm 2–3 lần.`
 },
 {
   id: 'qz-jpa-022',
   topic: 'jpa',
   multi: true,
-  q: 'Bulk update qua @Modifying có tác dụng gì? (Chọn 2)',
+  q: 'Bạn cần chạy bulk update an toàn trong transaction để entity cũ trong persistence context không làm hỏng dữ liệu. Cấu hình nào đúng? (Chọn 2)',
   options: [
-    'Bỏ qua persistence context',
-    'Cập nhật nhiều dòng bằng một câu UPDATE',
-    'Tự động flush trước',
-    'Tự động clear sau',
-    'Tự động rollback nếu lỗi'
+    '@Modifying(clearAutomatically = true, flushAutomatically = true): flush các thay đổi đang chờ TRƯỚC khi chạy bulk, clear session SAU đó',
+    'Sau bulk update, gọi em.clear() để lần đọc sau lấy dữ liệu mới từ DB',
+    '@Modifying mặc định đã tự flush và clear, không cần khai báo gì',
+    'Bulk update tự cập nhật mọi entity đang managed nên không cần clear',
+    'Bulk update không cần @Transactional vì nó tự mở transaction'
   ],
   answer: [0, 1],
-  explain: `**Đáp án đúng: bỏ qua persistence context và cập nhật nhiều dòng bằng một câu UPDATE.**
+  explain: `**Đáp án đúng: bật flushAutomatically + clearAutomatically, hoặc tự clear sau bulk.**
 
 ### Vì sao đúng
-@Modifying thực thi bulk update trực tiếp trên DB, bỏ qua persistence context; cập nhật nhiều dòng trong một câu.
+Câu bulk ({{@Modifying @Query("update ...")}}) đi **thẳng** xuống DB, không cập nhật các object đang nằm trong persistence context. Nếu session còn giữ entity cũ, hai rủi ro xảy ra:
+- Bạn đọc lại entity và thấy **giá trị cũ** (stale) vì Hibernate trả về bản trong bộ nhớ.
+- Nếu entity đó đang dirty, lúc flush Hibernate có thể **ghi đè** giá trị cũ lên dữ liệu vừa bulk update.
 
-### Vì sao khác sai
-- Không tự flush/clear/rollback mặc định (clearAutomatically optional).
+Hai cờ của {{@Modifying}} giải quyết đúng vấn đề:
+- {{flushAutomatically = true}}: flush các thay đổi đang chờ **trước** khi chạy bulk, để bulk không ghi đè mất thay đổi chưa flush.
+- {{clearAutomatically = true}}: clear session **sau** khi chạy bulk, để lần đọc sau lấy dữ liệu mới từ DB.
 
-> Senior tip: sau bulk update, clear persistence context để tránh stale entity.`
+### Vì sao các phương án còn lại sai
+- **Mặc định đã tự flush/clear**: mặc định cả hai cờ là {{false}}; phải chủ động bật.
+- **Bulk tự cập nhật entity managed**: bulk bỏ qua persistence context, không đụng tới entity trong session.
+- **Không cần @Transactional**: {{@Modifying}} thiếu {{@Transactional}} sẽ ném {{TransactionRequiredException}}.
+
+### Khi nào dùng bulk
+Bulk update chỉ nên dùng cho hàng nghìn dòng trở lên (import, dọn dữ liệu). Với vài chục dòng, load entity rồi sửa bằng setter an toàn và dễ đọc hơn. Xem qz-jpa-032 để hiểu chi tiết cạm bẫy ghi đè.
+
+> Senior tip: nếu chỉ cần clear mà không cần flush, đặt {{clearAutomatically = true}}; nếu cần cả hai, đặt cả hai. Đừng bật bừa vì flushAutomatically sẽ đẩy mọi thay đổi đang chờ xuống DB sớm hơn bạn dự kiến.`
 },
 {
   id: 'qz-jpa-023',
   topic: 'jpa',
-  q: 'DTO projection trong Spring Data JPA là gì?',
+  q: 'Màn hình danh sách chỉ cần id, tên, trạng thái của 10.000 đơn hàng, còn entity {{Order}} có 40 cột. Vì sao nên dùng DTO/interface projection thay vì trả entity đầy đủ?',
   options: [
-    'Entity đầy đủ',
-    'Interface hoặc class chỉ chứa subset cột, query chỉ SELECT các cột đó',
-    'Native query bắt buộc',
-    'Cache L2'
+    'Vì projection làm số câu SQL giảm còn một câu duy nhất',
+    'Vì entity không thể dùng cho màn hình danh sách',
+    'Vì projection tự động bật second-level cache',
+    'Vì projection chỉ SELECT các cột cần, không tạo entity managed, nên giảm I/O, heap và chi phí dirty checking'
   ],
-  answer: 1,
-  explain: `**Đáp án đúng: interface hoặc class chỉ chứa subset cột.**
+  answer: 3,
+  explain: `**Đáp án đúng: projection chỉ SELECT các cột cần và không tạo entity managed.**
 
 ### Vì sao đúng
-Projection định nghĩa tập con cột; Spring Data sinh query chỉ SELECT các cột đó, không có managed entity.
+Khi trả entity đầy đủ, Hibernate SELECT **toàn bộ 40 cột**, tạo 10.000 entity managed, mỗi entity giữ một snapshot để dirty checking. Với màn hình chỉ cần 3 cột, đó là lãng phí I/O, heap và CPU. Projection (interface hoặc class/record) chỉ định đúng tập cột cần:
+~~~java
+interface OrderRow { Long getId(); String getName(); String getStatus(); }
+~~~
+Spring Data sinh query chỉ chọn các cột tương ứng. Hoặc dùng constructor expression: {{select new com.shop.OrderRow(o.id, o.name, o.status) from Order o}} — tạo DTO trực tiếp, Hibernate không quản lý DTO.
 
-### Vì sao khác sai
-- Không phải entity đầy đủ.
-- Không bắt buộc native.
-- Không liên quan cache.
+Kết quả: query nhẹ hơn, không có entity trong persistence context, không dirty checking, ít heap hơn.
 
-> Senior tip: dùng projection cho màn hình đọc để giảm I/O và heap.`
+### Vì sao các phương án còn lại sai
+- **Giảm số câu SQL còn một**: query entity cũng chỉ là một câu; projection giảm **số cột** và dữ liệu, không giảm số câu.
+- **Entity không dùng được cho danh sách**: entity vẫn dùng được, chỉ là tốn tài nguyên hơn; projection là tối ưu, không phải điều kiện bắt buộc.
+- **Tự bật second-level cache**: projection không liên quan cache L2; cache phải cấu hình riêng.
+
+### Khi nào vẫn dùng entity
+Khi cần ghi (sửa, xóa) hoặc cần quan hệ lazy, hãy dùng entity. Quy tắc thực dụng: **đọc để hiển thị thì dùng projection/DTO, ghi thì dùng entity**. Xem qz-jpa-018 để biết các cách tạo projection.
+
+> Senior tip: trên bảng rộng có cột TEXT/JSONB lớn, chuyển màn hình danh sách sang projection thường giảm vài lần cả thời gian query lẫn heap. Với Java record, constructor expression càng gọn.`
 },
 {
   id: 'qz-jpa-024',
   topic: 'jpa',
   multi: true,
-  q: 'Optimistic lock với @Version hoạt động thế nào? (Chọn 2)',
+  q: 'Về optimistic locking với {{@Version}} trong JPA, phát biểu nào đúng? (Chọn 2)',
   options: [
-    'Kiểm tra version khi UPDATE',
-    'Ném OptimisticLockException nếu version mismatch',
-    'Khoá dòng DB',
-    'Tự retry',
-    'Dùng cho read-heavy'
+    'Mỗi lần UPDATE, Hibernate thêm điều kiện WHERE version = ? và tăng version lên 1; nếu 0 dòng khớp thì ném OptimisticLockException',
+    'Lỗi xảy ra lúc flush (thường là commit), nên retry phải đặt ở tầng service NGOÀI transaction',
+    'Optimistic locking khóa dòng trong DB cho tới khi transaction kết thúc',
+    'Hibernate tự động retry khi gặp OptimisticLockException',
+    '@Version chỉ hỗ trợ kiểu long'
   ],
   answer: [0, 1],
-  explain: `**Đáp án đúng: kiểm tra version khi UPDATE và ném OptimisticLockException nếu mismatch.**
+  explain: `**Đáp án đúng: kiểm tra version trong câu UPDATE và ném OptimisticLockException khi 0 dòng khớp; retry đặt ngoài transaction.**
 
 ### Vì sao đúng
-@Version thêm cột version; UPDATE có WHERE version = ?; nếu không có dòng nào cập nhật thì ném OptimisticLockException.
+{{@Version}} thêm một cột version. Lúc load, entity giữ version hiện tại. Câu UPDATE của Hibernate có dạng:
+~~~sql
+update account set balance = ?, version = 8 where id = ? and version = 7
+~~~
+Nếu transaction khác đã commit trước (DB version = 8), câu UPDATE trên khớp **0 dòng** → Hibernate ném {{OptimisticLockException}} (Spring bọc thành {{ObjectOptimisticLockingFailureException}}, thường map sang HTTP 409). Lỗi xảy ra ở **flush lúc commit**, không phải lúc gọi save.
 
-### Vì sao khác sai
-- Không khoá dòng DB (pessimistic mới khoá).
-- Không tự retry.
+Vì lỗi chỉ lộ ra khi commit, retry phải bọc **ngoài** transaction (ví dụ {{@Retryable}} trên method {{REQUIRES_NEW}}) — nếu retry bên trong cùng transaction, entity cũ vẫn nằm trong session và lại thất bại.
 
-> Senior tip: retry ở tầng service, không trong transaction.`
+### Vì sao các phương án còn lại sai
+- **Khóa dòng trong DB**: đó là pessimistic lock ({{SELECT ... FOR UPDATE}}, xem qz-jpa-017); optimistic không giữ lock, chỉ phát hiện xung đột lúc ghi.
+- **Hibernate tự retry**: không, ứng dụng phải tự retry.
+- **Chỉ hỗ trợ long**: {{@Version}} hỗ trợ {{int}}, {{Integer}}, {{long}}, {{short}}, {{Short}} và {{java.sql.Timestamp}}.
+
+### Khi nào dùng
+Optimistic hợp với tranh chấp thấp (form sửa hồ sơ). Với tranh chấp cao như trừ tồn kho flash sale, retry liên tục sẽ thừa — dùng câu UPDATE nguyên tử có điều kiện (xem qz-jpa-020 và qz-jpa-039) hoặc pessimistic lock. Xem qz-jpa-035 để thấy kịch bản race cụ thể.
+
+> Senior tip: đừng retry vô hạn; đặt số lần thử tối đa và log khi vẫn thất bại. Với API, trả 409 để client biết cần tải lại dữ liệu mới nhất.`
 },
 {
   id: 'qz-db-021',
   topic: 'db',
-  q: 'MVCC trong PostgreSQL nghĩa là gì?',
+  q: 'PostgreSQL dùng MVCC (Multi-Version Concurrency Control — kiểm soát đồng thời bằng nhiều phiên bản). Phát biểu nào đúng về cơ chế này?',
   options: [
-    'Mỗi UPDATE tạo phiên bản mới, readers không block writers',
-    'Khoá bảng khi write',
-    'Không có snapshot',
-    'Chỉ dùng cho SELECT'
+    'UPDATE tạo phiên bản dòng mới thay vì ghi đè; transaction đọc thấy snapshot tại thời điểm bắt đầu, nên readers không bị block bởi writers',
+    'UPDATE ghi đè trực tiếp lên dòng cũ và khóa dòng đó tới khi commit',
+    'PostgreSQL không cho đọc đồng thời khi có transaction đang ghi',
+    'MVCC chỉ áp dụng cho SELECT, không áp dụng cho UPDATE/DELETE'
   ],
   answer: 0,
-  explain: `**Đáp án đúng: mỗi UPDATE tạo phiên bản mới, readers không block writers.**
+  explain: `**Đáp án đúng: UPDATE tạo phiên bản dòng mới, readers thấy snapshot của mình, không chặn nhau.**
 
 ### Vì sao đúng
-MVCC giữ nhiều phiên bản; reader thấy snapshot, writer tạo phiên bản mới, không chặn nhau.
+MVCC nghĩa là mỗi lần UPDATE, PostgreSQL **không ghi đè** lên dòng cũ mà tạo một **phiên bản mới** (tuple mới); bản cũ được đánh dấu là "chết" (dead tuple). Mỗi transaction đọc theo một **snapshot** — bức ảnh dữ liệu tại thời điểm nó bắt đầu. Nhờ vậy:
+- Transaction đang đọc không bị writer chặn (đọc bản cũ trong snapshot).
+- Transaction đang ghi không bị reader chặn (ghi bản mới, không đụng bản cũ).
 
-### Vì sao khác sai
-- Không khoá bảng.
-- Có snapshot.
-- Áp dụng mọi operation.
+Đây là lý do PostgreSQL đọc/ghi song song tốt mà không cần lock đọc.
 
-> Senior tip: autovacuum dọn dead tuple; transaction treo chặn cleanup.`
+### Cái giá phải trả
+Các bản cũ (dead tuple) không biến mất ngay; chúng được **VACUUM** dọn sau khi không còn transaction nào cần thấy. Nếu một transaction mở quá lâu (idle in transaction), VACUUM không dọn được → bảng và index phình ra (bloat). Xem qz-db-009.
+
+### Vì sao các phương án còn lại sai
+- **Ghi đè và khóa dòng tới commit**: đó là mô hình lock-based; PostgreSQL tạo tuple mới chứ không ghi đè.
+- **Không cho đọc đồng thời khi có ghi**: ngược lại, đọc và ghi song song là điểm mạnh của MVCC.
+- **Chỉ áp dụng cho SELECT**: MVCC áp dụng cho mọi câu lệnh đọc/ghi; UPDATE/DELETE cũng tạo phiên bản mới và tuân theo snapshot.
+
+> Senior tip: theo dõi transaction treo bằng {{pg_stat_activity}} (state = 'idle in transaction') và đặt {{idle_in_transaction_session_timeout}} để tránh bloat âm thầm. Xem qz-db-009.`
 },
 {
   id: 'qz-db-022',
   topic: 'db',
   multi: true,
-  q: 'Isolation level nào ngăn lost update? (Chọn 2)',
+  q: 'Về lost update (mất cập nhật khi hai transaction cùng sửa một dòng), phát biểu nào đúng? (Chọn 2)',
   options: [
-    'READ COMMITTED với SELECT FOR UPDATE',
-    'REPEATABLE READ (PostgreSQL)',
-    'READ UNCOMMITTED',
-    'SERIALIZABLE',
-    'READ COMMITTED plain'
+    'READ COMMITTED đơn thuần KHÔNG ngăn lost update: hai transaction cùng đọc version cũ rồi ghi đè nhau, người ghi sau thắng',
+    'PostgreSQL REPEATABLE READ ngăn lost update bằng cách báo lỗi 40001 khi dòng đã bị transaction khác sửa sau snapshot, buộc ứng dụng retry',
+    'SERIALIZABLE không cần retry vì PostgreSQL dùng pessimistic lock',
+    'READ UNCOMMITTED ngăn lost update tốt hơn READ COMMITTED',
+    'Lost update chỉ xảy ra trên MySQL, PostgreSQL không bao giờ gặp'
   ],
-  answer: [1, 3],
-  explain: `**Đáp án đúng: REPEATABLE READ (PostgreSQL) và SERIALIZABLE.**
+  answer: [0, 1],
+  explain: `**Đáp án đúng: READ COMMITTED đơn thuần không ngăn lost update; PostgreSQL REPEATABLE READ ngăn bằng lỗi 40001 và bắt retry.**
 
 ### Vì sao đúng
-PostgreSQL RR chặn update đồng thời trên cùng dòng; SERIALIZABLE phát hiện xung đột.
+Lost update xảy ra khi hai transaction cùng đọc một dòng, cùng sửa, rồi cùng ghi — người ghi sau đè mất thay đổi của người ghi trước. Ví dụ số dư 100: T1 đọc 100, T2 đọc 100; T1 ghi 90, T2 ghi 80; kết quả 80, mất 10 của T1.
 
-### Vì sao khác sai
-- READ COMMITTED plain có thể lost update.
-- READ UNCOMMITTED không an toàn.
+- **READ COMMITTED đơn thuần**: mỗi câu lệnh thấy dữ liệu đã commit mới nhất, nhưng không có cơ chế phát hiện "dòng đã bị sửa sau khi tôi đọc" → lost update vẫn xảy ra.
+- **PostgreSQL REPEATABLE READ**: mọi câu lệnh thấy cùng một snapshot. Nếu dòng bạn sắp UPDATE đã bị transaction khác sửa và commit sau snapshot của bạn, PostgreSQL không cho ghi đè mà báo lỗi SQLSTATE 40001 ("could not serialize access due to concurrent update"). Ứng dụng phải bắt lỗi và retry. SERIALIZABLE (SSI) cũng dùng cơ chế lỗi 40001, không phải pessimistic lock.
 
-> Senior tip: dùng UPDATE atomic hoặc lock để tránh lost update.`
+Ngoài isolation, còn có các cách khác: {{SELECT ... FOR UPDATE}} (pessimistic), câu UPDATE nguyên tử có điều kiện ({{set quantity = quantity - 1 where ...}}), hoặc {{@Version}} (optimistic).
+
+### Vì sao các phương án còn lại sai
+- **SERIALIZABLE không cần retry vì dùng pessimistic lock**: SERIALIZABLE của PostgreSQL dùng SSI (predicate lock + lỗi 40001), **cần** retry; nó không dùng pessimistic lock.
+- **READ UNCOMMITTED tốt hơn READ COMMITTED**: READ UNCOMMITTED còn lỏng hơn (đọc cả dữ liệu chưa commit), không ngăn được gì.
+- **Chỉ MySQL mới gặp**: PostgreSQL cũng gặp lost update ở READ COMMITTED đơn thuần; đây là vấn đề của mọi DB, không riêng MySQL.
+
+> Senior tip: retry phải đặt **ngoài** transaction (Spring Retry quanh method @Transactional), không phải bên trong; nếu không, transaction cũ vẫn giữ snapshot cũ và lại lỗi. Xem qz-db-010 và qz-db-013.`
 },
 {
   id: 'qz-db-023',
   topic: 'db',
-  q: 'Index nào giúp query WHERE lower(email)=? nhanh?',
+  q: `Bảng {{events}} (20 triệu dòng) có index B-tree trên cột {{created_at}}. Query sau vẫn chạy Seq Scan:
+~~~sql
+SELECT * FROM events WHERE date_trunc('day', created_at) = TIMESTAMP '2026-01-01 00:00:00';
+~~~
+Cách sửa đúng?`,
   options: [
-    'Index thường trên email',
-    'Expression index trên lower(email)',
-    'Hash index',
-    'Partial index'
+    'Chạy ANALYZE để planner nhận ra và dùng index hiện có',
+    "Đổi sang HASH index vì hash index hỗ trợ hàm",
+    "Tạo expression index trên đúng biểu thức: CREATE INDEX ON events (date_trunc('day', created_at))",
+    'Thêm hint USE INDEX vào câu query'
   ],
-  answer: 1,
-  explain: `**Đáp án đúng: expression index trên lower(email).**
+  answer: 2,
+  explain: `**Đáp án đúng: tạo expression index trên đúng biểu thức {{date_trunc('day', created_at)}}.**
 
 ### Vì sao đúng
-Expression index stores computed value; query must match expression exactly.
+Index B-tree trên {{created_at}} lưu các giá trị gốc đã sắp xếp. Điều kiện {{date_trunc('day', created_at) = ...}} so sánh **kết quả của hàm**, mà index không chứa các giá trị đó, nên planner không dùng được, buộc phải đọc từng dòng, tính date_trunc rồi so. Expression index lưu sẵn kết quả hàm, khớp chính xác với điều kiện:
+~~~sql
+CREATE INDEX CONCURRENTLY idx_events_day ON events (date_trunc('day', created_at));
+~~~
+Query phải viết **đúng biểu thức** đã index thì planner mới dùng. Cách khác là chuẩn hóa dữ liệu khi ghi (thêm cột day được tính sẵn rồi index cột đó).
 
-### Vì sao khác sai
-- Index thường không chứa lower().
-- Hash/partial không giải quyết hàm.
+### Vì sao các phương án còn lại sai
+- **ANALYZE**: cập nhật thống kê, nhưng index trên created_at vốn không thể phục vụ điều kiện bọc hàm, thống kê tốt mấy cũng vậy.
+- **HASH index**: hash chỉ phục vụ phép bằng trên đúng giá trị đã index, không tự hiểu hàm; vấn đề vẫn y nguyên.
+- **USE INDEX**: là cú pháp MySQL; PostgreSQL không có hint chuẩn (chỉ qua extension pg_hint_plan), và kể cả ép cũng không dùng được index không khớp biểu thức.
 
-> Senior tip: chuẩn hoá dữ liệu khi ghi để tránh hàm trong WHERE.`
+> Senior tip: quy tắc chung — **không bọc cột đã index trong hàm** ở mệnh đề WHERE. MySQL 8.0.13+ cũng có functional index (expression index) với cú pháp hai ngoặc quanh biểu thức, ví dụ {{CREATE INDEX idx ON events ((DAY(created_at)))}}. Xem qz-db-007.`
 },
 {
   id: 'qz-db-024',
   topic: 'db',
   multi: true,
-  q: 'Deadlock xảy ra khi nào? (Chọn 2)',
+  q: 'Về deadlock trong cơ sở dữ liệu, phát biểu nào đúng? (Chọn 2)',
   options: [
-    'Hai transaction cùng chờ lock của nhau',
-    'Lock theo thứ tự khác nhau',
-    'Isolation READ COMMITTED',
-    'Index thiếu',
-    'Transaction quá ngắn'
+    'Deadlock xảy ra khi hai transaction cùng chờ lock mà đối phương đang giữ, tạo thành vòng chờ (wait cycle)',
+    'Thứ tự lấy lock khác nhau giữa các transaction là nguyên nhân phổ biến gây deadlock',
+    'Isolation READ COMMITTED là nguyên nhân trực tiếp gây deadlock',
+    'Đặt timeout giao dịch ngắn hơn sẽ gây deadlock',
+    'Deadlock chỉ xảy ra với MySQL, PostgreSQL tự động tránh hoàn toàn'
   ],
   answer: [0, 1],
-  explain: `**Đáp án đúng: hai transaction cùng chờ lock của nhau; lock theo thứ tự khác nhau.**
+  explain: `**Đáp án đúng: deadlock là vòng chờ lock; thứ tự lấy lock khác nhau là nguyên nhân phổ biến.**
 
 ### Vì sao đúng
-Deadlock là cycle wait; lock ordering khác nhau gây cycle.
+Deadlock là tình huống hai (hoặc nhiều) transaction mỗi bên giữ một lock và cùng chờ lock bên kia, tạo thành **vòng chờ** không bao giờ gỡ được. Ví dụ: T1 khóa tài khoản A rồi chờ B; T2 khóa B rồi chờ A. Cả hai chờ nhau vô hạn.
 
-### Vì sao khác sai
-- Isolation không trực tiếp gây deadlock.
-- Transaction ngắn giảm rủi ro.
+Nguyên nhân phổ biến nhất là **thứ tự lấy lock khác nhau**: nếu mọi transaction luôn khóa theo cùng một thứ tự (ví dụ id tăng dần khi chuyển tiền), vòng chờ không thể hình thành.
 
-> Senior tip: luôn lock theo cùng thứ tự (id tăng dần).`
+### Cách DB xử lý
+- PostgreSQL: sau {{deadlock_timeout}} (mặc định 1 giây) sẽ phát hiện và **abort một** transaction với lỗi deadlock, transaction còn lại chạy tiếp.
+- MySQL InnoDB: tự phát hiện deadlock và rollback transaction "nhẹ" hơn, trả về lỗi 1213.
+
+Ứng dụng phải **bắt lỗi và retry** (đủ số lần, có backoff), vì deadlock là lỗi tạm thời.
+
+### Vì sao các phương án còn lại sai
+- **READ COMMITTED là nguyên nhân trực tiếp**: isolation không trực tiếp gây deadlock; deadlock đến từ vòng chờ lock, dù ở mức isolation nào cũng có thể xảy ra.
+- **Timeout ngắn gây deadlock**: timeout ngắn giúp **phát hiện và thoát** deadlock nhanh hơn, không phải nguyên nhân.
+- **Chỉ MySQL mới gặp**: PostgreSQL cũng có deadlock (và tự phát hiện như trên).
+
+> Senior tip: luôn khóa theo cùng một thứ tự (id tăng dần), giữ transaction ngắn, và đặt {{lock_timeout}}/{{innodb_lock_wait_timeout}} hợp lý để lỗi nhanh thay vì treo cả connection pool. Xem qz-db-013 về gap lock — nguồn deadlock "bí ẩn" trên MySQL.`
 },
 {
   id: 'qz-api-023',
   topic: 'api',
-  q: 'Idempotency key dùng để làm gì?',
+  q: 'API {{POST /payments}} dùng Idempotency-Key. Mục đích chính của cơ chế này là gì?',
   options: [
-    'Mã hoá payload',
-    'Đảm bảo retry cùng request không tạo duplicate',
-    'Xác thực user',
-    'Rate limit'
+    'Mã hóa payload để bảo mật khi truyền qua mạng',
+    'Xác thực người dùng gọi API',
+    'Giới hạn tần suất request (rate limit)',
+    'Đảm bảo khi client retry cùng một request (cùng key) thì server không tạo duplicate, trả lại kết quả đã xử lý'
   ],
-  answer: 1,
-  explain: `**Đáp án đúng: đảm bảo retry cùng request không tạo duplicate.**
+  answer: 3,
+  explain: `**Đáp án đúng: chống duplicate khi client retry cùng một request.**
 
 ### Vì sao đúng
-Idempotency key định danh request; server trả response đã cache cho key trùng.
+Mạng có thể timeout sau khi server đã xử lý xong nhưng trước khi response về tới client. Client không biết kết quả, bèn gửi lại request. Không có idempotency, mỗi lần gửi là một lần charge → thu tiền hai lần. Idempotency-Key là một định danh duy nhất cho **một** thao tác nghiệp vụ:
+- Server lưu key kèm kết quả (response) và fingerprint của request (account, amount, currency...).
+- Cùng key + cùng nội dung → trả lại kết quả đã lưu, không xử lý lại.
+- Cùng key + khác nội dung → từ chối (thường 409), vì nghi ngờ client dùng nhầm key.
 
-### Vì sao khác sai
-- Không mã hoá/xác thực/rate limit.
+Việc lưu và kiểm tra key phải **nguyên tử** (unique constraint hoặc thao tác atomic) để hai request đồng thời không cùng vượt qua. Xem qz-api-039.
 
-> Senior tip: lưu key với TTL và response để replay.`
+### Vì sao các phương án còn lại sai
+- **Mã hóa payload**: idempotency không mã hóa gì; payload vẫn đi qua HTTPS như bình thường.
+- **Xác thực user**: đó là việc của token/OAuth, không liên quan chống duplicate.
+- **Rate limit**: giới hạn tần suất là cơ chế khác (429 + Retry-After, xem qz-api-011).
+
+> Senior tip: lưu key với TTL phù hợp (ví dụ 24 giờ) và trạng thái IN_PROGRESS/SUCCEEDED/FAILED để client biết request đang chạy hay đã xong. Xem qz-api-039 để biết cách claim key nguyên tử.`
 },
 {
   id: 'qz-api-024',
   topic: 'api',
   multi: true,
-  q: 'Response 429 nên kèm gì? (Chọn 2)',
+  q: 'Server trả {{429 Too Many Requests}}. Những header nào nên kèm theo để client xử lý đúng? (Chọn 2)',
   options: [
-    'Retry-After',
-    'RateLimit headers',
-    'Set-Cookie',
-    'Location',
-    'ETag'
+    'Retry-After: cho biết sau bao lâu (số giây hoặc HTTP-date) client nên thử lại',
+    'RateLimit headers (RateLimit-Limit/Remaining/Reset, draft IETF): cho biết hạn mức và số request còn lại',
+    'Set-Cookie: để lưu trạng thái rate limit ở client',
+    'Location: trỏ tới tài nguyên mới',
+    'ETag: để cache response 429'
   ],
   answer: [0, 1],
   explain: `**Đáp án đúng: Retry-After và RateLimit headers.**
 
 ### Vì sao đúng
-429 nghĩa là quá nhiều request; Retry-After cho biết khi nào retry; RateLimit headers hiển thị quota.
+429 (RFC 6585) nghĩa là client đã gửi quá nhiều request trong một khoảng thời gian. Để client tự điều tiết, response cần cho biết:
+- {{Retry-After}} (RFC 9110): sau bao lâu nên thử lại — dạng số giây hoặc HTTP-date. Đây là header quan trọng nhất, giúp client backoff hợp lý thay vì dội liên tục.
+- {{RateLimit-Limit}}/{{RateLimit-Remaining}}/{{RateLimit-Reset}} (draft IETF): cho biết tổng hạn mức, số request còn lại và thời điểm reset. Nhiều API còn dùng {{X-RateLimit-*}} (không chuẩn nhưng phổ biến).
 
-### Vì sao khác sai
-- Cookie/Location/ETag không liên quan.
+Ví dụ:
+~~~text
+HTTP/1.1 429 Too Many Requests
+Retry-After: 30
+RateLimit-Limit: 100
+RateLimit-Remaining: 0
+RateLimit-Reset: 60
+~~~
 
-> Senior tip: client backoff + jitter để tránh spike.`
+### Vì sao các phương án còn lại sai
+- **Set-Cookie**: rate limit là trạng thái phía server, không lưu ở cookie; cookie còn có thể lộ dữ liệu.
+- **Location**: dùng cho chuyển hướng (3xx) hoặc 201 Created, không liên quan rate limit.
+- **ETag**: dùng cho cache/validate (304, If-None-Match), không liên quan 429.
+
+### Lưu ý
+Vì sao 429 mà không phải 403/503? 403 nghĩa là không có quyền (retry vô ích), 503 là lỗi phía server (sẽ kích hoạt alert). 429 nói đúng: client này vượt hạn mức, chỉ cần chờ. Xem qz-api-011.
+
+> Senior tip: client nên kết hợp Retry-After với exponential backoff + jitter; nếu không, hàng nghìn client cùng retry đúng giây thứ 30 sẽ tạo đợt spike mới.`
 },
 {
   id: 'qz-api-025',
   topic: 'api',
-  q: 'API versioning an toàn nhất thường dùng gì?',
+  q: 'Trong các cách version API REST, cách nào được dùng phổ biến nhất và dễ cache/route nhất qua gateway/CDN?',
   options: [
-    'URL path /v1/',
-    'Query param version',
-    'Header Accept version',
-    'Không version'
+    'URL path: /v1/orders, /v2/orders',
+    'Query param: /orders?version=1',
+    'Custom header: X-API-Version: 1',
+    'Không version, dựa vào content negotiation'
   ],
   answer: 0,
-  explain: `**Đáp án đúng: URL path /v1/.**
+  explain: `**Đáp án đúng: URL path (/v1/, /v2/).**
 
 ### Vì sao đúng
-URL path versioning rõ ràng, dễ cache, dễ route; phổ biến nhất.
+URL path versioning đưa phiên bản vào chính đường dẫn: {{/v1/orders}}, {{/v2/orders}}. Ưu điểm:
+- **Rõ ràng**: nhìn URL là biết phiên bản, dễ test bằng curl/postman.
+- **Dễ cache/route**: CDN, gateway, load balancer route theo path rất tự nhiên; mỗi phiên bản là một "tài nguyên" riêng.
+- **Dễ theo dõi**: log/metrics gom theo path, biết client nào còn dùng v1.
 
-### Vì sao khác sai
-- Query/header cũng dùng nhưng kém rõ ràng/cache.
-- Không version gây breaking.
+Nhược điểm: phải khai báo route cho từng phiên bản (có thể dùng {{@RequestMapping("/v1/...")}} hoặc cấu hình gateway), và URL dài hơn một chút.
 
-> Senior tip: dùng expand/contract khi deprecate.`
+### Vì sao các phương án còn lại sai
+- **Query param {{?version=1}}**: dùng được nhưng dễ bị **bỏ sót** khi client quên tham số, khó cache chuẩn (nhiều hệ thống coi query là "cùng tài nguyên"), và dễ bị lẫn với các tham số lọc khác.
+- **Custom header {{X-API-Version}}**: "thuần REST" hơn nhưng khó route/cache (header không phải là một phần của key cache mặc định), client dễ quên gửi, và khó debug bằng trình duyệt.
+- **Không version**: mọi thay đổi đều là breaking; client cũ vỡ ngay khi server đổi. Chỉ chấp nhận được với API nội bộ rất nhỏ và kiểm soát chặt.
+
+### Đổi mới an toàn
+Dù chọn cách nào, thay đổi nên theo **expand/contract**: thêm field mới (giữ field cũ song song), đánh dấu {{Deprecation}}/{{Sunset}}, theo dõi traffic, rồi mới xóa ở phiên bản sau. Xem qz-api-013 và qz-api-037.
+
+> Senior tip: nhiều team lớn dùng URL path cho API công khai (dễ onboard đối tác) và header versioning cho API nội bộ (gọn hơn). Điều quan trọng là **nhất quán** trong toàn hệ thống.`
 },
 {
   id: 'qz-spring-025',
@@ -3923,4 +4062,944 @@ Và vì transaction mở ở **proxy** (bên ngoài), mọi lời gọi {{this.m
 
 > Senior tip: đặt một log ở đầu và cuối method có @Transactional, so với log trong một {{TransactionSynchronization.beforeCommit/afterCommit}}: bạn sẽ thấy rõ thứ tự này. Đây là bài kiểm tra nhỏ nhưng rất hiệu quả để chứng minh bạn hiểu proxy chứ không chỉ học thuộc annotation.`
 },
+
+{
+  id: 'qz-spring-066',
+  topic: 'spring',
+  q: `{{OrderService.create()}} có {{@Transactional}}. Bên trong gọi bean khác {{NotificationService.send()}} có {{@Transactional(propagation = Propagation.NOT_SUPPORTED)}}. {{send()}} ghi một dòng vào bảng {{notification}} rồi return. Sau đó {{create()}} ném {{RuntimeException}}.
+~~~java
+@Transactional
+public void create(Order o) {
+    orderRepo.save(o);
+    notificationService.send(o);   // NOT_SUPPORTED
+    throw new RuntimeException("tồn kho lỗi");
+}
+~~~
+Dòng notification có còn trong database sau khi create() rollback không?`,
+  options: [
+    'Còn: NOT_SUPPORTED treo transaction của create(), send() chạy không có transaction bao quanh, mỗi lệnh ghi tự commit',
+    'Không: send() tham gia transaction của create() nên bị rollback theo',
+    'Không: NOT_SUPPORTED tạo transaction mới nhưng đánh dấu rollback-only',
+    'Ném exception vì NOT_SUPPORTED không được phép khi đã có transaction'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: dòng notification vẫn còn.**
+
+### NOT_SUPPORTED nghĩa là gì
+NOT_SUPPORTED = "thực thi **không có** transaction". Nếu đang có transaction, Spring **treo** nó: gỡ resource khỏi thread, giữ nguyên connection để dùng lại sau, chạy method trong chế độ không transaction, rồi gắn lại transaction cũ khi xong. Mỗi lời gọi repository trong send() vì thế chạy trong transaction riêng của nó (hoặc autocommit) và **commit ngay**.
+
+### Vì sao khác REQUIRES_NEW và NEVER
+- {{REQUIRES_NEW}}: mở transaction **mới**, đảm bảo atomic cho toàn bộ send(); nếu lỗi giữa send() thì rollback toàn bộ phần việc của send().
+- {{NOT_SUPPORTED}}: **không** có transaction nào; nếu send() ghi 3 bảng rồi lỗi ở bảng thứ 3, hai bảng đầu vẫn còn. Không có tính nguyên tử.
+- {{NEVER}}: giống "không transaction", nhưng nếu **đã có** transaction thì ném exception. NOT_SUPPORTED thì treo và tiếp tục.
+
+### Khi nào dùng
+- Gửi thông báo/log/audit không được phép làm hỏng nghiệp vụ chính.
+- Gọi dịch vụ ngoài (HTTP, email) mà không muốn giữ transaction DB mở.
+Nhưng nếu send() cần nhiều lệnh DB phải thành công cùng nhau, NOT_SUPPORTED là sai — khi đó dùng REQUIRES_NEW.
+
+### Cạm bẫy
+NOT_SUPPORTED chỉ treo transaction ở mức Spring; connection của create() vẫn bị giữ, nên pool vẫn tốn 1 connection. Nếu send() gọi dịch vụ chậm, transaction cha vẫn mở suốt thời gian đó → giữ lock và connection lâu, dễ nghẽn pool.
+
+### Trả lời phỏng vấn
+"NOT_SUPPORTED chạy không transaction và treo transaction đang mở. Nó phù hợp cho việc phụ như gửi thông báo, nhưng không đảm bảo atomic cho phần việc đó. Nếu cần atomic độc lập thì dùng REQUIRES_NEW; nếu cần cấm gọi ngoài transaction thì dùng NEVER."
+
+### Vì sao các phương án còn lại sai
+- **Tham gia transaction cha**: đó là REQUIRED/SUPPORTS, không phải NOT_SUPPORTED.
+- **Tạo transaction mới nhưng rollback-only**: mô tả sai; NOT_SUPPORTED không tạo transaction mới.
+- **Ném exception**: chỉ NEVER mới ném khi đã có transaction.`
+},
+{
+  id: 'qz-spring-067',
+  topic: 'spring',
+  q: `Một method cần **ba ranh giới transaction độc lập**: bước 1 commit, bước 2 commit, bước 3 commit; nếu bước 3 lỗi thì bước 1 và 2 vẫn giữ. Cách nào đúng?
+~~~java
+public void importAll(List<Row> rows) {
+    // cần 3 transaction riêng
+}
+~~~`,
+  options: [
+    'Đặt @Transactional lên method rồi gọi this.step2(), this.step3(): mỗi method có transaction riêng',
+    'Dùng TransactionTemplate với PROPAGATION_REQUIRES_NEW cho từng bước (hoặc tách thành 3 bean riêng gọi qua proxy)',
+    'Đặt @Transactional lên cả 3 method rồi gọi this.step1(): Spring sẽ tạo 3 transaction',
+    'Đặt @Transactional(readOnly = false) là đủ để có nhiều transaction'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: dùng TransactionTemplate (hoặc tách bean riêng).**
+
+### Vì sao @Transactional không đủ
+{{@Transactional}} trên một method tạo **đúng một** transaction bao quanh toàn bộ method. Mọi lời gọi bên trong (kể cả method có @Transactional khác) đều tham gia transaction đó nếu propagation là REQUIRED. Bạn không thể "commit giữa method" rồi tiếp tục nếu lỗi xảy ra sau. Thêm nữa, gọi {{this.step2()}} là self-invocation → proxy bị bỏ qua → @Transactional của step2 không có tác dụng.
+
+### TransactionTemplate
+~~~java
+@Service
+public class ImportService {
+    private final TransactionTemplate tx;   // Boot tự tạo bean nếu có PlatformTransactionManager
+
+    public void importAll(List<Row> rows) {
+        for (Row r : rows) {
+            tx.execute(status -> {
+                repo.save(r);
+                return null;
+            });   // commit (hoặc rollback) ngay sau mỗi lần execute
+        }
+    }
+}
+~~~
+Mỗi {{execute}} là một ranh giới transaction riêng. Nếu {{repo.save}} ném RuntimeException, TransactionTemplate rollback phần việc trong execute đó rồi ném exception; bạn có thể bắt và đi tiếp với row kế tiếp.
+
+### Cách khác
+- Tách 3 bean, mỗi bean một method @Transactional(REQUIRED), gọi qua proxy của bean khác. Mỗi lời gọi là một transaction riêng.
+- Hoặc dùng {{TransactionTemplate}} với {{PROPAGATION_REQUIRES_NEW}} nếu cần transaction độc lập thực sự (connection riêng).
+
+### Khi nào nên dùng
+- Import/xử lý hàng loạt, mỗi phần tử là một đơn vị công việc.
+- Cần retry từng phần, cần biết chính xác phần nào thành công.
+- Cần transaction ở tầng service mà không muốn rải annotation.
+Nhược điểm: code dài hơn, phải tự xử lý exception, dễ quên rollback nếu dùng lambda trả về.
+
+### Trả lời phỏng vấn
+"@Transactional chỉ tạo một ranh giới cho cả method, nên nhiều commit trong một method phải dùng TransactionTemplate hoặc tách bean. Tôi thường dùng TransactionTemplate cho import hàng loạt để mỗi dòng là một transaction: lỗi dòng nào thì dòng đó rollback, các dòng khác vẫn vào."
+
+### Vì sao các phương án còn lại sai
+- **this.step2() với @Transactional**: self-invocation, advice không chạy.
+- **@Transactional trên cả 3 method rồi gọi this**: vẫn chỉ có một transaction của method cha; các lời gọi this không tạo transaction mới.
+- **readOnly = false**: chỉ là cờ, không tạo thêm transaction.`
+},
+{
+  id: 'qz-spring-068',
+  topic: 'spring',
+  q: `{{OrderService.create()}} có {{@Transactional}}: insert order, rồi ném công việc sang thread pool {{taskExecutor.submit(() -> auditService.save(id))}}. Thread mới có tham gia transaction của {{create()}} không?
+~~~java
+@Transactional
+public void create(Order o) {
+    orderRepo.save(o);
+    taskExecutor.submit(() -> auditService.save(o.getId()));
+}
+~~~`,
+  options: [
+    'Có, transaction được chia sẻ cho mọi thread trong cùng executor',
+    'Không: transaction gắn với thread hiện tại qua ThreadLocal; thread mới không có transaction, và có thể chạy trước khi create() commit',
+    'Có, nếu dùng @Async thay vì executor.submit',
+    'Có, nếu executor là ThreadPoolTaskExecutor'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không, transaction không lan sang thread khác.**
+
+### Transaction gắn với thread
+Spring quản lý transaction bằng {{TransactionSynchronizationManager}}, dùng {{ThreadLocal}} để lưu connection và trạng thái transaction. Thread mới không có ThreadLocal đó → không có transaction. Đây không phải giới hạn riêng của Spring: JDBC connection, Hibernate Session, Security context, MDC (traceId) đều là thread-bound.
+
+### Hai hậu quả
+1. **Không thấy dữ liệu chưa commit**: thread mới có thể đọc DB trước khi create() commit → không thấy order (với READ_COMMITTED thì chắc chắn không thấy).
+2. **Không rollback theo**: nếu create() rollback, audit vẫn chạy và ghi "đã tạo đơn" — dữ liệu sai. Nếu audit chạy trước khi commit và đọc lại, nó thấy "không có đơn".
+
+### Cách đúng
+- Dùng {{@TransactionalEventListener(phase = AFTER_COMMIT)}} hoặc {{TransactionSynchronizationManager.registerSynchronization(...).afterCommit}} để chỉ chạy sau khi commit.
+- Dùng {{TransactionTemplate}} với REQUIRES_NEW nếu công việc nền cần transaction riêng.
+- Nếu cần lan context sang thread khác, dùng {{TaskDecorator}} (hoặc thư viện context propagation) — nhưng transaction thì không nên "lan", vì nó là tài nguyên gắn với một connection.
+
+### Trả lời phỏng vấn
+"Transaction là thread-bound, nên @Async hay executor.submit không tham gia transaction của caller. Tôi dùng AFTER_COMMIT hoặc TransactionTemplate REQUIRES_NEW cho việc nền, để tránh đọc dữ liệu chưa commit và tránh audit khi nghiệp vụ rollback."
+
+### Vì sao các phương án còn lại sai
+- **Chia sẻ cho mọi thread**: transaction gắn với một thread và một connection, không chia sẻ.
+- **@Async thì có**: @Async cũng chạy trên thread khác, vẫn không có transaction; nếu gọi this.asyncMethod() thì còn không cả async.
+- **ThreadPoolTaskExecutor thì có**: executor chỉ là thread pool, không liên quan tới transaction.`
+},
+{
+  id: 'qz-spring-069',
+  topic: 'spring',
+  q: `Trong ứng dụng web, bean {{UserContext}} khai báo {{@SessionScope}} (mỗi session một instance) và được inject vào controller singleton. Hai người dùng A và B đăng nhập đồng thời. Phát biểu nào đúng? (Chọn 2)
+~~~java
+@Component
+@SessionScope   // tương đương @Scope("session") với proxyMode = TARGET_CLASS
+public class UserContext {
+    private String userId;
+    // getter/setter
+}
+
+@RestController
+public class ProfileController {
+    private final UserContext ctx;   // inject vào singleton
+    ...
+}
+~~~`,
+  multi: true,
+  options: [
+    'Mỗi session có một instance UserContext riêng; controller giữ scoped proxy, mỗi lời gọi phân giải theo session của request hiện tại',
+    'Controller là singleton nên cả A và B dùng chung một instance UserContext',
+    'Nếu dùng @Scope("session") với proxyMode mặc định NO rồi inject vào singleton, ứng dụng fail lúc khởi động; cần @SessionScope hoặc proxyMode = TARGET_CLASS',
+    'Session scope hoạt động bình thường trong @Scheduled thread vì Spring tự tạo session'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: mỗi session một instance, và phải dùng scoped proxy.**
+
+### Session scope là gì
+{{session}} scope: một instance cho mỗi {{HttpSession}} — một phiên làm việc của trình duyệt, nhận diện bằng cookie JSESSIONID. Khi user A đăng nhập, session A có UserContext riêng; user B có instance khác. Dữ liệu không lẫn.
+
+### Vì sao cần proxy
+Controller là singleton, chỉ được tạo một lần. Nếu Spring inject thẳng instance session vào field, nó phải chọn một session tại thời điểm khởi động — vô nghĩa. Vì vậy Spring inject một **scoped proxy**: object cùng kiểu, mọi method ủy quyền cho instance thật của session hiện tại. Proxy phân giải theo {{RequestContextHolder}} và session gắn với thread.
+
+### Cạm bẫy proxyMode
+{{@Scope}} có {{proxyMode}} mặc định là {{NO}}. Nếu bạn viết {{@Scope("session")}} rồi inject vào singleton, lúc khởi động Spring sẽ cố tạo bean session (không có session nào) và ném lỗi kiểu "Scope 'session' is not active for the current thread; consider defining a scoped proxy". Cách đúng:
+- Dùng {{@SessionScope}} (meta-annotation, đã đặt sẵn TARGET_CLASS).
+- Hoặc {{@Scope(value = "session", proxyMode = ScopedProxyMode.TARGET_CLASS)}}.
+- Hoặc dùng {{ObjectProvider<UserContext>}} / {{@Lookup}}.
+
+### Cạm bẫy thread
+Scoped proxy dựa vào ThreadLocal. Nếu gọi {{ctx.getUserId()}} từ thread khác (ví dụ @Async, executor), sẽ không có session → ném lỗi (giống request scope). Session không "lan" sang thread mới.
+
+### Trả lời phỏng vấn
+"Session scope tạo một instance mỗi HttpSession. Inject vào singleton phải dùng scoped proxy (@SessionScope hoặc proxyMode TARGET_CLASS), nếu không sẽ fail lúc khởi động. Proxy phân giải theo request hiện tại, nên gọi từ thread không có session sẽ lỗi."
+
+### Vì sao các phương án còn lại sai
+- **Dùng chung một instance**: đó là hành vi của singleton; scoped proxy đảm bảo mỗi session có instance riêng.
+- **Hoạt động trong @Scheduled**: không có session/request context trong thread scheduled; scoped proxy sẽ ném IllegalStateException.`
+},
+{
+  id: 'qz-spring-070',
+  topic: 'spring',
+  q: `Bean {{ReportData}} có {{@Scope("prototype")}} và method {{@PreDestroy public void close()}}. Bean này được inject vào singleton {{ReportService}} và dùng trong nhiều request. Khi ứng dụng tắt, {{close()}} có được gọi không?`,
+  options: [
+    'Có, Spring gọi @PreDestroy cho mọi bean, kể cả prototype',
+    'Không: Spring không giữ tham chiếu tới các instance prototype đã tạo, nên không gọi destroy callback cho chúng; phải tự đóng resource',
+    'Có, nhưng chỉ khi instance prototype được inject vào một singleton',
+    'Có, nếu đặt thêm @Bean(destroyMethod = "close")'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không được gọi.**
+
+### Vì sao
+Với singleton, container giữ instance trong registry và gọi {{@PreDestroy}}/{{DisposableBean.destroy()}}/destroy-method khi đóng context. Với {{prototype}}, container tạo instance, giao cho bạn, rồi **không giữ tham chiếu** — nó không biết còn bao nhiêu instance, cũng không biết khi nào bạn dùng xong. Vì vậy không có "thời điểm hủy" để gọi callback.
+
+### Hậu quả
+Nếu ReportData giữ resource (FileChannel, InputStream, thread pool, kết nối tự tạo), việc không đóng gây **leak**: file lock không nhả, thread không dừng, heap tăng dần. Triệu chứng trên production: sau vài ngày app chậm dần, "Too many open files", hoặc không deploy được vì file bị lock.
+
+### Cách xử lý
+- Nếu instance được tạo trong method: dùng try-with-resources (nếu class implement AutoCloseable).
+- Nếu cần container quản lý: dùng {{@Bean(destroyMethod = "close")}} cho bean **singleton**, hoặc dùng {{ObjectProvider}} và tự đóng sau khi dùng.
+- Nếu dùng prototype cho state tạm, đừng giữ resource; đóng ngay trong method.
+
+### Trả lời phỏng vấn
+"Prototype không được container theo dõi vòng đời, nên @PreDestroy không chạy. Tôi tránh giữ resource trong prototype; nếu cần thì dùng try-with-resources hoặc @Bean(destroyMethod) với singleton."
+
+### Vì sao các phương án còn lại sai
+- **Có cho mọi bean**: chỉ singleton (và các scope do container quản lý) mới có destroy callback.
+- **Chỉ khi inject vào singleton**: inject vào singleton không làm container giữ instance prototype; singleton giữ một instance, các instance khác vẫn không được theo dõi.
+- **@Bean(destroyMethod)**: destroyMethod áp dụng cho bean do container tạo và quản lý (singleton); không cứu được prototype.`
+},
+{
+  id: 'qz-spring-071',
+  topic: 'spring',
+  q: `Hai auto-configuration của thư viện:
+~~~java
+@AutoConfiguration
+public class FooAutoConfiguration {
+    @Bean
+    @ConditionalOnMissingBean
+    public Foo foo() { return new Foo(); }
+}
+
+@AutoConfiguration
+public class BarAutoConfiguration {
+    @Bean
+    public Bar bar(Foo foo) { return new Bar(foo); }   // Bar cần Foo
+}
+~~~
+{{BarAutoConfiguration}} được Spring xử lý **trước** {{FooAutoConfiguration}}. Ứng dụng khởi động thế nào?`,
+  options: [
+    'Bình thường: Spring tự sắp thứ tự theo tên class',
+    'Foo được tạo ngay vì có @ConditionalOnMissingBean',
+    'Bar nhận foo = null và tiếp tục',
+    'Ném UnsatisfiedDependencyException vì lúc tạo Bar, bean Foo chưa được đăng ký'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: ném lỗi vì Bar được xử lý trước khi Foo tồn tại.**
+
+### Auto-configuration được xử lý theo thứ tự
+Auto-config không tự "thông minh" theo tên hay theo quan hệ phụ thuộc. Nó được sắp theo:
+1. {{@AutoConfigureBefore}} / {{@AutoConfigureAfter}} giữa các auto-config.
+2. Thứ tự khai báo trong file {{AutoConfiguration.imports}} (chỉ là mặc định khi không có annotation).
+3. {{@DependsOn}} cho bean.
+
+Nếu Bar được xử lý trước Foo, lúc Bar đăng ký {{bar(Foo foo)}}, container chưa có bean definition Foo → {{NoSuchBeanDefinitionException}}, bọc trong {{UnsatisfiedDependencyException}}, ứng dụng fail lúc khởi động.
+
+### Cách sửa
+~~~java
+@AutoConfiguration
+@AutoConfigureAfter(FooAutoConfiguration.class)
+public class BarAutoConfiguration {
+    @Bean
+    public Bar bar(Foo foo) { return new Bar(foo); }
+}
+~~~
+{{@AutoConfigureAfter}} nói "hãy xử lý tôi sau FooAutoConfiguration". Nếu A khai báo after B còn B khai báo after A, Spring báo lỗi vòng lặp.
+
+### Vì sao @ConditionalOnMissingBean không cứu
+Điều kiện chỉ quyết định "có tạo bean hay không" khi auto-config được xử lý; nó không hoãn việc tạo Bar. Bar vẫn cần Foo tại thời điểm nó được xử lý.
+
+### Khi nào gặp
+Thường khi viết starter: thư viện A cung cấp hạ tầng (Foo), thư viện B cung cấp tính năng dùng Foo. Nếu người dùng thêm cả hai, thứ tự trong file imports quyết định; starter B phải khai báo @AutoConfigureAfter(A).
+
+### Trả lời phỏng vấn
+"Auto-config không tự sắp theo phụ thuộc. Tôi dùng @AutoConfigureAfter/@AutoConfigureBefore để đảm bảo bean nền được tạo trước, nếu không sẽ gặp UnsatisfiedDependencyException lúc khởi động."
+
+### Vì sao các phương án còn lại sai
+- **Tự sắp theo tên**: không có cơ chế đó; thứ tự do annotation/import quyết định.
+- **@ConditionalOnMissingBean tạo Foo ngay**: nó không tạo Foo sớm hơn, chỉ bỏ qua nếu đã có.
+- **foo = null**: Spring không inject null cho dependency bắt buộc; constructor injection sẽ fail.`
+},
+{
+  id: 'qz-spring-072',
+  topic: 'spring',
+  q: `Auto-configuration của thư viện khai báo:
+~~~java
+@AutoConfiguration
+public class MyCacheAutoConfiguration {
+    @Bean
+    @ConditionalOnMissingBean(CacheManager.class)
+    public CacheManager cacheManager() { return new SimpleCacheManager(); }
+}
+~~~
+Ứng dụng lại có một {{@Configuration}} thông thường khai báo {{@Bean CacheManager appCache()}}. Vì sao bean của ứng dụng thắng và auto-configuration "lùi lại"?
+~~~java
+@Configuration
+public class AppConfig {
+    @Bean
+    public CacheManager appCache() { return new CustomCacheManager(); }
+}
+~~~`,
+  options: [
+    'Vì Spring ưu tiên bean có tên bắt đầu bằng "app"',
+    'Vì @ConditionalOnMissingBean được đánh giá trước mọi cấu hình của người dùng',
+    'Vì auto-configuration được xử lý sau cấu hình của người dùng; khi điều kiện được đánh giá, bean của ứng dụng đã tồn tại',
+    'Vì @ConditionalOnMissingBean chỉ xét các @Bean trong cùng class cấu hình'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: auto-configuration được xử lý sau cấu hình người dùng, nên điều kiện "thiếu bean" đã không còn đúng khi auto-config được xét.**
+
+### @ConditionalOnMissingBean làm gì
+Đây là **điều kiện** (condition): chỉ tạo bean nếu trong context **chưa có** bean nào cùng kiểu (mặc định xét theo type, không theo tên). Nó là cách để thư viện nói "tôi cung cấp giá trị mặc định, nhưng nếu ứng dụng đã tự khai báo thì tôi không chen vào".
+
+### Vì sao thứ tự đảm bảo điều đó
+Spring nạp cấu hình theo hai lớp:
+1. Trước tiên, {{ConfigurationClassPostProcessor}} xử lý các class {{@Configuration}} của người dùng (kể cả @Bean methods) và đăng ký bean definition.
+2. Sau đó mới xử lý auto-configuration (thông qua {{AutoConfigurationImportSelector}}), với thứ tự được điều chỉnh bởi {{@AutoConfigureBefore}}/{{@AutoConfigureAfter}}.
+
+Vì vậy khi auto-config chạy, bean {{appCache}} đã nằm trong registry → điều kiện false → auto-config không tạo bean thứ hai. Kết quả: chỉ một CacheManager, và đó là bean của bạn.
+
+### Cạm bẫy
+- @ConditionalOnMissingBean chỉ đáng tin trong **auto-configuration**. Nếu bạn đặt nó trong một @Configuration thường mà class đó được xử lý **trước** một @Configuration khác khai báo cùng kiểu, điều kiện sẽ đúng (chưa có bean) và bạn vô tình tạo bean trùng.
+- Nó xét theo **type**, không theo tên. Hai bean cùng type khác tên vẫn bị coi là "đã có".
+- {{@AutoConfigureBefore}}/{{@AutoConfigureAfter}} chỉ sắp thứ tự giữa các auto-config với nhau, không đổi quan hệ "user config trước, auto-config sau".
+
+### Trả lời phỏng vấn
+"@ConditionalOnMissingBean là cơ chế để auto-config lùi bước. Nó hoạt động được vì auto-configuration được xử lý sau cấu hình người dùng. Tôi chỉ tin dùng nó trong auto-config; trong code nghiệp vụ thì khai báo bean tường minh để tránh phụ thuộc thứ tự."
+
+### Vì sao các phương án còn lại sai
+- **Ưu tiên tên "app"**: Spring không ưu tiên theo tiền tố tên bean; điều kiện xét theo type.
+- **Đánh giá trước cấu hình người dùng**: ngược thứ tự thật; nếu trước thì auto-config đã tạo bean và ứng dụng không ghi đè được.
+- **Chỉ xét cùng class**: @ConditionalOnMissingBean quét toàn bộ bean definition đã đăng ký, không giới hạn trong class.`
+},
+{
+  id: 'qz-spring-073',
+  topic: 'spring',
+  q: `Bạn viết một thư viện nội bộ và muốn Spring Boot 3 tự động nạp cấu hình của nó (auto-configuration). Cách đăng ký nào đúng?`,
+  options: [
+    'Khai báo trong META-INF/spring.factories với key org.springframework.boot.autoconfigure.EnableAutoConfiguration',
+    'Khai báo tên class trong META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports, mỗi dòng một tên đầy đủ',
+    'Đánh dấu class bằng @Configuration và đặt nó trong package org.springframework.boot.autoconfigure',
+    'Cả hai cách META-INF/spring.factories và AutoConfiguration.imports đều được Boot 3 chấp nhận'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: file AutoConfiguration.imports.**
+
+### Vì sao đổi
+Trước Spring Boot 2.7, auto-configuration được đăng ký trong {{META-INF/spring.factories}} với key {{org.springframework.boot.autoconfigure.EnableAutoConfiguration}}. Cách này chậm và khó phân tích (phải đọc cả file, parse properties). Từ Boot 2.7 nó bị đánh dấu deprecated, và **Boot 3.0 loại bỏ hoàn toàn** với auto-configuration. Thay bằng một file text:
+
+~~~text
+# META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
+com.acme.cache.MyCacheAutoConfiguration
+com.acme.cache.MetricsAutoConfiguration
+~~~
+
+Mỗi dòng là một tên class đầy đủ (fully-qualified name), có thể có dòng trống và dòng chú thích bắt đầu bằng {{#}}.
+
+### Nên viết auto-config như thế nào
+~~~java
+@AutoConfiguration
+@ConditionalOnClass(CacheManager.class)
+@EnableConfigurationProperties(MyCacheProperties.class)
+public class MyCacheAutoConfiguration {
+    @Bean
+    @ConditionalOnMissingBean
+    public CacheManager cacheManager(MyCacheProperties props) { ... }
+}
+~~~
+{{@AutoConfiguration}} là phiên bản chuyên dụng của {{@Configuration}} ({{proxyBeanMethods = false}}), kèm {{@AutoConfigureBefore}}/{{@AutoConfigureAfter}} để sắp thứ tự. Luôn dùng {{@ConditionalOnMissingBean}} cho bean mặc định để ứng dụng ghi đè được.
+
+### spring.factories còn dùng không?
+Còn, nhưng **không** cho auto-configuration. Nó vẫn được dùng cho các extension point khác như {{EnvironmentPostProcessor}}, {{ApplicationContextInitializer}}, {{FailureAnalyzer}}.
+
+### Trả lời phỏng vấn
+"Boot 3 bỏ spring.factories cho auto-config, chuyển sang AutoConfiguration.imports. Tôi viết auto-config bằng @AutoConfiguration, thêm điều kiện @ConditionalOnClass và @ConditionalOnMissingBean, rồi test bằng ApplicationContextRunner."
+
+### Vì sao các phương án còn lại sai
+- **spring.factories với key EnableAutoConfiguration**: đã bị loại bỏ ở Boot 3.0, không còn hiệu lực.
+- **Đặt class trong package org.springframework.boot.autoconfigure**: package không quyết định việc nạp; không có file imports thì class không bao giờ được xử lý.
+- **Cả hai đều được**: chỉ AutoConfiguration.imports có hiệu lực cho auto-configuration.`
+},
+{
+  id: 'qz-spring-074',
+  topic: 'spring',
+  q: `Ứng dụng Boot 2.7 có {{spring.redis.host: 10.0.0.5}} trong application.yml. Sau khi nâng lên Boot 3.2, ứng dụng vẫn khởi động nhưng lại kết nối {{localhost:6379}} và fail. Vì sao?`,
+  options: [
+    'Boot 3 đổi prefix thành {{spring.data.redis.*}}; {{spring.redis.*}} không còn được bind nên bị bỏ qua im lặng, giá trị mặc định là localhost',
+    'Boot 3 bỏ hoàn toàn Redis, phải tự viết cấu hình',
+    'Thuộc tính phải viết {{redis.host}} (không có prefix) mới đọc được',
+    'Thuộc tính chỉ đọc được từ file .properties, không đọc từ .yml'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: prefix đã đổi thành spring.data.redis.*, property cũ bị bỏ qua.**
+
+### Chuyện gì xảy ra
+Từ Spring Boot 3.0, các thuộc tính Redis chuyển từ {{spring.redis.*}} sang {{spring.data.redis.*}} (đồng bộ với MongoDB, Elasticsearch...). Nếu bạn giữ {{spring.redis.host}}, không có @ConfigurationProperties nào bind prefix đó → giá trị bị **bỏ qua im lặng** (unknown property). Redis auto-configuration dùng giá trị mặc định {{localhost:6379}} → kết nối sai.
+
+### Vì sao "im lặng"
+Đây là điểm nguy hiểm: Spring không fail khi gặp property lạ. Nếu bạn dùng {{@ConfigurationProperties(ignoreUnknownFields = false)}} cho class của mình thì sẽ báo lỗi, nhưng các property lõi của Boot không hoạt động như vậy. Vì thế lỗi chỉ lộ ra khi app cố kết nối Redis và nhận {{Connection refused}}.
+
+### Cách phòng ngừa
+- Đọc release notes / migration guide khi nâng major version.
+- Dùng IDE autocomplete: gõ {{spring.data.redis.}} trong application.yml sẽ thấy danh sách property hợp lệ (dựa trên spring-configuration-metadata.json).
+- Chạy app với profile test và kiểm tra log kết nối.
+- Đặt {{spring.data.redis.timeout}} hợp lý để fail nhanh thay vì treo.
+
+### Trả lời phỏng vấn
+"Boot 3 đổi spring.redis.* thành spring.data.redis.*. Property cũ không bind nên bị bỏ qua, app dùng localhost và lỗi chỉ lộ lúc kết nối. Tôi luôn kiểm tra migration guide và dùng IDE autocomplete sau khi nâng major."
+
+### Vì sao các phương án còn lại sai
+- **Bỏ Redis**: sai, Redis vẫn được hỗ trợ (spring-boot-starter-data-redis).
+- **redis.host không prefix**: không có @ConfigurationProperties nào bind như vậy.
+- **Chỉ đọc .properties**: Boot đọc cả .properties và .yml; vấn đề là prefix, không phải định dạng.`
+},
+{
+  id: 'qz-spring-075',
+  topic: 'spring',
+  q: `Bạn muốn theo dõi hai thứ trong ứng dụng Spring Boot 3: (a) số đơn hàng tạo thành công, (b) thời gian trung bình mỗi lần gọi {{PricingClient.quote()}}. Cách nào đúng với Micrometer?
+~~~java
+@Service
+public class OrderService {
+    private final MeterRegistry registry;
+    private final PricingClient pricing;
+    ...
+}
+~~~`,
+  options: [
+    'Bơm MeterRegistry rồi dùng Counter.builder("order.created").tag("status","success").register(registry).increment(); với thời gian dùng Timer.builder("pricing.quote").register(registry).record(() -> pricing.quote()) (hoặc @Timed nếu đã đăng ký TimedAspect)',
+    'Dùng System.currentTimeMillis() rồi log ra file, sau đó viết script tính trung bình',
+    'Chỉ cần annotation @Counted của Spring Boot là có metric, không cần MeterRegistry',
+    'Metric chỉ được ghi nhận khi bạn mở endpoint metrics trên HTTP; nếu không mở thì không có gì được đo'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: dùng MeterRegistry với Counter và Timer (hoặc @Timed).**
+
+### Micrometer là gì
+Micrometer là "thư viện đo" của Spring: nó cung cấp một API chung để ghi số liệu (metric), còn việc hiển thị/lưu trữ do backend lo (Prometheus, Datadog, CloudWatch, New Rel...). Nhờ vậy code nghiệp vụ không dính chặt vào một hệ thống giám sát. Spring Boot tự động tạo {{MeterRegistry}} và cấu hình registry phù hợp với dependency bạn thêm.
+
+Các loại meter hay dùng:
+- {{Counter}}: chỉ tăng, dùng đếm số lần ("số đơn thành công", "số request lỗi").
+- {{Timer}}: đếm số lần **và** đo thời gian; có percentile, trung bình, max.
+- {{Gauge}}: giá trị tức thời (ví dụ số phần tử trong queue).
+- {{DistributionSummary}}: phân phối các giá trị (ví dụ kích thước payload).
+
+### Tags (nhãn)
+{{tag("status","success")}} gắn nhãn cho metric, giúp tách số liệu theo chiều (ví dụ {{order.created}} có tag {{status=success|failed}}). Mỗi tag tạo thêm một time series, nên **đừng** dùng tag có giá trị vô hạn như {{orderId}}, {{userId}} — đó là "cardinality explosion", làm hệ thống giám sát sập. Nếu cần tag chung cho mọi metric, dùng {{management.metrics.tags.env=prod}}.
+
+### Đo thời gian
+~~~java
+Timer.builder("pricing.quote")
+     .tag("provider", "primary")
+     .register(registry)
+     .record(() -> pricing.quote());
+~~~
+Hoặc annotation {{@Timed("pricing.quote")}} trên method — nhưng cần có bean {{TimedAspect}} (thường khai báo thủ công) và aspectjweaver trên classpath; nếu không, annotation bị bỏ qua im lặng.
+
+### Trả lời phỏng vấn
+"Tôi dùng Micrometer: Counter cho số lượng, Timer cho latency, tag vừa phải để tránh cardinality explosion. Metric được expose qua /actuator/prometheus và Prometheus pull định kỳ. Tôi không log rồi tính tay vì không có histogram/percentile và không tạo được dashboard."
+
+### Vì sao các phương án còn lại sai
+- **Log rồi tính bằng script**: không có histogram, percentile, không gắn nhãn, rất khó so sánh qua thời gian; đây là chống-mẫu.
+- **@Counted của Spring Boot**: @Counted là annotation của Micrometer ({{io.micrometer.core.annotation.Counted}}), không phải của Spring Boot, và vẫn cần aspect + registry; không có "tự động" như mô tả.
+- **Chỉ đo khi mở endpoint**: việc ghi metric hoàn toàn độc lập với việc expose endpoint HTTP; exposure chỉ quyết định có nhìn thấy qua HTTP hay không.`
+},
+{
+  id: 'qz-spring-076',
+  topic: 'spring',
+  q: `Bạn muốn Prometheus (hệ thống giám sát theo mô hình **pull**, cứ 15 giây gọi một endpoint để lấy metric) thu thập số liệu từ ứng dụng Spring Boot 3. Cấu hình nào đúng?`,
+  options: [
+    'Mặc định Boot 3 đã expose /actuator/prometheus, chỉ cần thêm spring-boot-starter-actuator',
+    'Chỉ cần khai báo management.endpoints.web.exposure.include=prometheus, không cần thêm dependency nào',
+    'Thêm dependency micrometer-registry-prometheus (bản Boot 3) và khai báo management.endpoints.web.exposure.include=prometheus; endpoint trả về metric ở định dạng text',
+    'Viết một @RestController tự đọc MeterRegistry rồi trả JSON'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: cần registry Prometheus + expose endpoint prometheus.**
+
+### Vì sao cần dependency
+Micrometer là API trung lập; để "biên dịch" metric sang định dạng mà Prometheus hiểu, cần một **registry** chuyên biệt. Thêm {{io.micrometer:micrometer-registry-prometheus}} (Boot 3) thì auto-configuration tạo bean {{PrometheusMeterRegistry}} và một endpoint {{/actuator/prometheus}}. Không có dependency này, endpoint {{prometheus}} không tồn tại.
+
+### Vì sao cần expose
+Actuator chỉ expose một số endpoint mặc định ({{health}} là ví dụ). {{prometheus}} **không** nằm trong nhóm mặc định, nên phải khai báo:
+~~~yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+~~~
+Đừng dùng {{include: "*"}} trên production: nó mở luôn {{env}}, {{heapdump}}, {{loggers}}, {{threaddump}} — kẻ tấn công có thể đọc cấu hình, mật khẩu, dump heap.
+
+### Prometheus hoạt động thế nào
+Prometheus là hệ thống giám sát kiểu pull: nó tự gọi {{/actuator/prometheus}} mỗi 15 giây (hoặc theo {{scrape_interval}}), lưu các mẫu theo thời gian, rồi cho phép truy vấn bằng PromQL. Endpoint trả về text đơn giản:
+~~~text
+# HELP http_server_requests_seconds
+# TYPE http_server_requests_seconds summary
+http_server_requests_seconds_count{method="GET",uri="/orders",status="200"} 12
+http_server_requests_seconds_sum{method="GET",uri="/orders",status="200"} 0.48
+~~~
+Mỗi dòng là một metric + các tag (label). Đây là lý do tag có giá trị vô hạn (orderId) làm Prometheus "nổ": số dòng tăng vô hạn.
+
+### An toàn
+Đặt endpoint quản trị trên port riêng ({{management.server.port=8081}}), hoặc bảo vệ bằng Spring Security (chỉ cho network nội bộ/VPN truy cập). Metric có thể chứa thông tin nhạy cảm (tên API nội bộ, mã lỗi).
+
+### Trả lời phỏng vấn
+"Prometheus pull /actuator/prometheus. Tôi thêm micrometer-registry-prometheus, expose đúng endpoint đó, dùng common tags để gắn env/service, và bảo vệ endpoint bằng security hoặc management port riêng. Tôi không dùng expose '*' vì rất rủi ro."
+
+### Vì sao các phương án còn lại sai
+- **Mặc định đã expose**: sai, mặc định chỉ có health (và info nếu cấu hình). Prometheus không tự có.
+- **Không cần dependency**: sai, thiếu registry thì không có bean và endpoint.
+- **Tự viết controller trả JSON**: không sai về nguyên tắc nhưng thừa và sai định dạng: Prometheus cần text format; hơn nữa Micrometer đã làm việc này sẵn, tự viết dễ sai và tốn công bảo trì.`
+},
+{
+  id: 'qz-spring-077',
+  topic: 'spring',
+  q: `Bạn dùng constructor binding với record:
+~~~java
+@ConfigurationProperties(prefix = "app.pool")
+public record PoolProps(
+    @DefaultValue("10") int size,
+    @DefaultValue("30s") Duration timeout,
+    List<String> hosts
+) {}
+~~~
+application.yml có {{app.pool.hosts: db1,db2}}. Những phát biểu nào đúng? (Chọn 2)`,
+  multi: true,
+  options: [
+    'Duration không bind được từ chuỗi "30s", phải khai báo kiểu long mili-giây',
+    'Duration bind được từ "30s": Spring hỗ trợ cả ISO-8601 (PT30S) và dạng đơn giản có đơn vị (s, ms, m...)',
+    'List<String> không bind được từ chuỗi "db1,db2" ngăn cách bằng dấu phẩy; phải dùng YAML list',
+    '@DefaultValue chỉ dùng cho constructor binding; với field binding, giá trị mặc định là giá trị khởi tạo của field',
+    'Từ Boot 3.0, constructor binding vẫn bắt buộc khai báo @ConstructorBinding trên constructor'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: (2) Duration bind được từ "30s", và (4) @DefaultValue dùng cho constructor binding.**
+
+### Constructor binding là gì
+Thay vì tạo object rỗng rồi set từng field (field binding), Spring gọi **constructor** với các giá trị đã chuyển đổi từ cấu hình. Record là ứng viên hoàn hảo vì immutable (không có setter). Từ Spring Boot 3.0, **không cần** {{@ConstructorBinding}} nữa nếu class chỉ có một constructor — Spring tự nhận ra. (Ở Boot 2.x thì phải khai báo.)
+
+### @DefaultValue
+Khi property không có trong file cấu hình, giá trị tham số constructor sẽ là null/0 nếu không có gì thay thế. {{@DefaultValue("10")}} cung cấp giá trị dự phòng ngay lúc bind. Với **field binding**, @DefaultValue không có tác dụng; giá trị mặc định là giá trị khởi tạo của field (ví dụ {{private int size = 10;}}).
+
+### Chuyển đổi Duration
+Spring có sẵn converter cho {{Duration}}: nhận ISO-8601 ({{PT30S}}, {{PT5M}}) và dạng đơn giản có hậu tố đơn vị ({{30s}}, {{500ms}}, {{10m}}, {{2h}}). Nếu không có đơn vị, giá trị được hiểu là mili-giây. Đây là lý do nên dùng {{Duration}} thay vì {{long}}: code đọc rõ nghĩa, không có "magic number" 30000.
+
+### List từ chuỗi
+Relaxed binding cho phép {{db1,db2}} → {{List.of("db1","db2")}}: Spring tách theo dấu phẩy. List trong YAML ({{hosts: [db1, db2]}}) cũng được. Nếu phần tử cần chuyển đổi (ví dụ {{Duration}}), mỗi phần tử được convert riêng.
+
+### Cạm bẫy
+- Record với field {{int}} mà thiếu property: binding fail (không có null cho primitive), khác với {{Integer}}.
+- Thiếu {{@DefaultValue}} cho {{List}}: giá trị null, code phải xử lý null.
+- Muốn validate, thêm {{@Validated}} trên class và các ràng buộc {{jakarta.validation.constraints}} trên record component; lỗi sẽ ném lúc khởi động (fail fast).
+
+### Trả lời phỏng vấn
+"Tôi dùng constructor binding với record vì immutable và fail-fast. @DefaultValue cho giá trị mặc định, Duration để không dùng magic number, và @Validated + jakarta validation để lỗi cấu hình lộ ngay lúc khởi động thay vì lúc chạy."
+
+### Vì sao các phương án còn lại sai
+- **Duration không bind được**: sai, đây là converter có sẵn; dùng long sẽ mất tính tự giải thích.
+- **List không bind được từ chuỗi phẩy**: sai, relaxed binding tách theo dấu phẩy.
+- **Vẫn bắt buộc @ConstructorBinding**: sai từ Boot 3.0; annotation này không còn cần với constructor đơn.`
+},
+{
+  id: 'qz-spring-078',
+  topic: 'spring',
+  q: `Record {{PoolProps}} có field {{maxEntries}} (kiểu Integer). application.yml:
+~~~yaml
+app:
+  pool:
+    max-entries: 100
+    unknown-thing: 5
+~~~
+Điều gì xảy ra khi bind?`,
+  options: [
+    'maxEntries nhận 100 (relaxed binding: max-entries → maxEntries); unknown-thing bị bỏ qua vì ignoreUnknownFields mặc định true',
+    'Bind thất bại vì tên field là maxEntries còn YAML là max-entries',
+    'Bind thất bại vì có property lạ unknown-thing',
+    'maxEntries = null vì record không hỗ trợ relaxed binding'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: maxEntries = 100; unknown-thing bị bỏ qua.**
+
+### Relaxed binding (bind "dễ tính")
+Spring không yêu cầu tên trong file cấu hình trùng khít tên field. Nó chấp nhận nhiều dạng cho cùng một thuộc tính: {{max-entries}} (kebab-case), {{maxEntries}} (camelCase), {{max_entries}} (snake_case), {{MAX_ENTRIES}} (uppercase). Đây là lý do application.yml thường dùng kebab-case còn code dùng camelCase mà vẫn khớp.
+
+### ignoreUnknownFields
+Mặc định {{ignoreUnknownFields = true}}: property không tìm được field tương ứng thì **bỏ qua im lặng**. Ở ví dụ trên, {{unknown-thing}} không ảnh hưởng gì. Nếu đặt {{ignoreUnknownFields = false}}, ứng dụng sẽ **fail lúc khởi động** với lỗi binding — rất hữu ích để bắt lỗi chính tả cấu hình sớm (ví dụ {{max-entires}}).
+
+Lưu ý thêm: {{ignoreInvalidFields}} mặc định **false**, nghĩa là nếu giá trị sai kiểu (ví dụ {{max-entries: "abc"}}) thì vẫn báo lỗi dù ignoreUnknownFields = true. Ba cờ này khác nhau: "field lạ" (unknown) khác "field có nhưng giá trị sai" (invalid).
+
+### Vì sao điều này quan trọng
+- Giúp đổi cách đặt tên giữa YAML/properties mà không phải sửa code.
+- Nhưng cũng dễ **âm thầm bỏ sót** cấu hình sai chính tả: {{max-entires: 100}} sẽ bị bỏ qua, field nhận null, và bạn chỉ phát hiện khi có bug. Với cấu hình quan trọng, cân nhắc {{ignoreUnknownFields = false}} trong môi trường test.
+
+### Trả lời phỏng vấn
+"Relaxed binding cho phép kebab-case ánh xạ sang camelCase. ignoreUnknownFields mặc định true nên property lạ bị bỏ qua; tôi thường bật false ở môi trường CI để bắt lỗi chính tả sớm, còn ignoreInvalidFields vẫn false để giá trị sai kiểu vẫn fail."
+
+### Vì sao các phương án còn lại sai
+- **Tên phải trùng khít**: sai, relaxed binding chính là để xử lý việc này.
+- **Fail vì property lạ**: chỉ fail khi ignoreUnknownFields = false; mặc định là bỏ qua.
+- **Record không hỗ trợ relaxed binding**: sai, constructor binding của record vẫn dùng chung cơ chế relaxed binding.`
+},
+{
+  id: 'qz-spring-079',
+  topic: 'spring',
+  q: `Ứng dụng Spring Boot 3.2 cần gọi một API nội bộ bằng HTTP GET và đọc JSON. Cách nào đúng với {{RestClient}} (Spring Framework 6.1+)?`,
+  options: [
+    'RestClient là annotation để khai báo client interface, dùng giống @FeignClient',
+    'RestClient chỉ hỗ trợ bất đồng bộ (async), bắt buộc trả về CompletableFuture',
+    'RestClient không có builder riêng, phải cấu hình qua RestTemplateBuilder',
+    'Dùng RestClient.create(baseUrl) hoặc RestClient.builder()...build(), rồi chain .get().uri("/orders/{id}", id).retrieve().body(Order.class): đồng bộ, fluent, có message converter và xử lý lỗi qua onStatus'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: RestClient là client HTTP đồng bộ, API fluent, tạo bằng builder/factory.**
+
+### RestClient là gì
+RestClient xuất hiện ở Spring Framework 6.1 (Spring Boot 3.2). Nó là **client HTTP đồng bộ** với API dạng chuỗi (fluent): {{get()}}, {{uri()}}, {{retrieve()}}, {{body()}}. Về vị trí, nó nằm giữa {{RestTemplate}} (cũ, imperative, đang ở chế độ bảo trì) và {{WebClient}} (reactive, non-blocking). Nếu ứng dụng của bạn là servlet stack (Spring MVC) và không cần reactive, RestClient là lựa chọn hiện đại.
+
+~~~java
+RestClient client = RestClient.builder()
+        .baseUrl("http://pricing-service")
+        .defaultHeader("Accept", "application/json")
+        .build();
+
+Order o = client.get()
+        .uri("/orders/{id}", id)
+        .retrieve()
+        .body(Order.class);
+~~~
+
+### Vì sao dùng RestClient thay vì RestTemplate
+- API ngắn gọn, dễ đọc; ít phải tạo nhiều lớp trung gian.
+- Dùng chung hạ tầng message converter (Jackson) như RestTemplate.
+- Có thể chọn request factory: JDK {{HttpClient}}, Apache HttpClient 5, Jetty, hoặc {{SimpleClientHttpRequestFactory}}. Boot tự động phát hiện nếu có dependency.
+- Boot 3.2 auto-configure bean {{RestClient.Builder}}: inject builder, thêm interceptor, rồi build.
+
+### Khi nào không dùng
+- Cần non-blocking, backpressure, hoặc gọi nhiều service dạng stream → {{WebClient}} (reactive) phù hợp hơn.
+- Cần khai báo client dạng interface (không viết code gọi) → cân nhắc {{@HttpExchange}} (Spring 6) hoặc Spring Cloud OpenFeign nếu đã dùng Spring Cloud.
+
+### Test
+{{MockRestServiceServer.bindTo(RestClient.Builder)}} cho phép kiểm tra request/response mà không cần server thật. Đây là lý do nên giữ {{RestClient.Builder}} thành bean để test thay thế dễ dàng.
+
+### Trả lời phỏng vấn
+"Tôi dùng RestClient cho service-to-service đồng bộ: tạo bean RestClient.Builder, baseUrl và timeout đặt ở một chỗ, xử lý lỗi qua onStatus. Nếu cần reactive hoặc gọi song song nhiều downstream thì tôi chọn WebClient."
+
+### Vì sao các phương án còn lại sai
+- **Annotation giống @FeignClient**: RestClient không phải annotation; nó là class bạn khởi tạo và gọi bằng code. (Spring 6 có @HttpExchange cho khai báo interface, nhưng đó là cơ chế khác.)
+- **Chỉ async**: RestClient là đồng bộ; WebClient mới là reactive/async.
+- **Phải dùng RestTemplateBuilder**: RestClient có builder riêng; không phụ thuộc RestTemplateBuilder.`
+},
+{
+  id: 'qz-spring-080',
+  topic: 'spring',
+  q: `Bạn dùng {{RestClient}} để gọi API. Server trả về 404 hoặc 500. Những phát biểu nào đúng? (Chọn 2)
+~~~java
+Order o = client.get()
+        .uri("/orders/{id}", id)
+        .retrieve()
+        .body(Order.class);
+~~~`,
+  multi: true,
+  options: [
+    'Mặc định .retrieve().body(...) ném RestClientResponseException (ví dụ HttpClientErrorException / HttpServerErrorException) với 4xx và 5xx',
+    'Mặc định trả về null cho mọi mã lỗi, bạn phải tự kiểm tra status',
+    'Có thể dùng .retrieve().onStatus(HttpStatusCode::is4xxClientError, (req, res) -> { throw new NotFoundException(); }).body(...) để tự xử lý lỗi',
+    'onStatus chỉ áp dụng cho 2xx; muốn xử lý lỗi phải bọc try/catch quanh body()',
+    'RestClient không có cơ chế nào khác ngoài dùng Interceptor của RestTemplate'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: mặc định 4xx/5xx ném RestClientResponseException, và onStatus cho phép tùy biến.**
+
+### Mặc định của retrieve()
+{{retrieve()}} nghĩa là "lấy body". Nó có một **default status handler**: nếu response là 4xx → ném {{HttpClientErrorException}}, 5xx → {{HttpServerErrorException}} (cả hai là con của {{RestClientResponseException}}). Bạn không cần try/catch quanh từng lời gọi nếu muốn để lỗi lan lên; exception có {{getStatusCode()}} và {{getResponseBodyAs(MyError.class)}} để đọc chi tiết.
+
+### onStatus
+~~~java
+Order o = client.get()
+        .uri("/orders/{id}", id)
+        .retrieve()
+        .onStatus(HttpStatusCode::is4xxClientError, (req, res) -> {
+            throw new OrderNotFoundException(id);
+        })
+        .body(Order.class);
+~~~
+{{onStatus(Predicate<HttpStatusCode>, ErrorHandler)}} đăng ký handler riêng. Khi có lỗi, Spring duyệt các handler theo **thứ tự đăng ký** (handler đăng ký trước được xét trước), còn handler mặc định chạy cuối cùng; nhờ vậy bạn có thể chặn và xử lý mã lỗi trước handler mặc định. Đây là cách để biến 404 thành exception nghiệp vụ có ý nghĩa ({{OrderNotFoundException}}) thay vì exception HTTP chung chung.
+
+### Khi cần đọc cả response
+{{exchange()}} (và {{toEntity()}}) cho bạn truy cập {{HttpHeaders}} và {{ResponseEntity}} mà **không** tự ném exception theo status; bạn tự kiểm tra {{getStatusCode()}}. Dùng khi cần đọc header (ví dụ {{Retry-After}}) hoặc xử lý 404 như một kết quả hợp lệ (không phải lỗi).
+
+### Trả lời phỏng vấn
+"RestClient mặc định ném RestClientResponseException cho 4xx/5xx. Tôi dùng onStatus để chuyển 404 thành exception nghiệp vụ, hoặc exchange() khi cần đọc header. Tôi không nuốt lỗi rồi trả null vì sẽ đẩy lỗi xuống caller dưới dạng NPE."
+
+### Vì sao các phương án còn lại sai
+- **Trả null cho mọi mã lỗi**: sai; mặc định là ném exception.
+- **onStatus chỉ áp dụng cho 2xx**: sai; predicate nhận HttpStatusCode bất kỳ, thường dùng cho 4xx/5xx.
+- **Chỉ có Interceptor**: sai; RestClient có onStatus và exchange() là cơ chế chính thức.`
+},
+{
+  id: 'qz-spring-081',
+  topic: 'spring',
+  q: `Bạn cần chọn client HTTP cho các tình huống khác nhau trong dự án Spring Boot 3.2. Phát biểu nào đúng? (Chọn 2)`,
+  multi: true,
+  options: [
+    'Gọi đồng bộ trong ứng dụng Spring MVC, cần API ngắn gọn và dễ đọc → RestClient (Spring 6.1+) là lựa chọn hợp lý',
+    'Cần non-blocking, gọi song song nhiều downstream và có backpressure → WebClient (reactive) phù hợp hơn',
+    'RestTemplate đã bị xoá khỏi Spring Framework 6 nên không thể dùng',
+    'WebClient chỉ dùng được trong ứng dụng WebFlux, không dùng được trong Spring MVC'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: RestClient cho đồng bộ, WebClient cho reactive.**
+
+### Ba lựa chọn
+- {{RestTemplate}}: client đồng bộ lâu đời, vẫn còn trong Spring 6 nhưng ở chế độ bảo trì (không thêm tính năng mới). Nhiều code cũ đang dùng; migrate dần.
+- {{RestClient}}: mới ở Spring Framework 6.1 / Boot 3.2, API fluent đồng bộ, dùng chung message converter với RestTemplate. Phù hợp cho service-to-service trong servlet stack.
+- {{WebClient}}: reactive, non-blocking, trả {{Mono}}/{{Flux}}; phù hợp khi cần gọi nhiều downstream song song, stream dữ liệu, hoặc ứng dụng WebFlux.
+
+### Vì sao không có lựa chọn "đúng cho mọi thứ"
+- RestClient đơn giản, dễ debug (stack trace đồng bộ), nhưng mỗi lời gọi block thread.
+- WebClient mạnh về bất đồng bộ nhưng phức tạp hơn: phải hiểu reactive, context propagation, timeout qua {{responseTimeout}}.
+- RestTemplate vẫn chạy được; nếu dự án đã có RestTemplate và không cần tính năng mới, giữ nguyên cũng ổn.
+
+### Test
+- {{MockRestServiceServer}} bind được vào {{RestClient.Builder}} (Spring 6.1+) hoặc {{RestTemplateBuilder}}.
+- WebClient có {{MockWebServer}} (OkHttp) hoặc {{WebTestClient}} cho server.
+Chọn công cụ test theo client bạn dùng.
+
+### Trả lời phỏng vấn
+"Tôi chọn RestClient cho đồng bộ trong Spring MVC, WebClient khi cần reactive/gọi song song, và RestTemplate chỉ khi bảo trì code cũ. RestTemplate không bị xoá nhưng không còn được đầu tư thêm."
+
+### Vì sao các phương án còn lại sai
+- **RestTemplate bị xoá**: sai, vẫn còn trong Spring 6, chỉ ở chế độ bảo trì.
+- **WebClient chỉ dùng trong WebFlux**: sai, WebClient là client HTTP của spring-webflux, dùng được cả trong ứng dụng Spring MVC (chỉ cần thêm dependency), miễn là bạn xử lý Mono/Flux.`
+},
+{
+  id: 'qz-spring-082',
+  topic: 'spring',
+  q: `Bạn đặt {{spring.mvc.problemdetails.enabled=true}} trong Spring Boot 3. Client gửi request body thiếu trường {{email}} (DTO có {{@NotBlank}}), trong khi controller dùng {{@Valid @RequestBody}}. Response trả về là gì?`,
+  options: [
+    'JSON kiểu Boot 2: {timestamp, status, error, message, path}, vì validation không thuộc error handling mặc định',
+    'ProblemDetail có sẵn mảng errors liệt kê từng field và message vi phạm',
+    'application/problem+json với type "about:blank", title "Bad Request", status 400, detail "Invalid request content." — không chứa danh sách lỗi field; muốn có phải override handleMethodArgumentNotValid và setProperty("errors", ...)',
+    'HTTP 200 kèm ProblemDetail trong body'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: ProblemDetail với status 400 và detail chung, không kèm lỗi từng field theo mặc định.**
+
+### Vì sao không có danh sách field
+Khi bật {{spring.mvc.problemdetails.enabled=true}}, Boot đăng ký {{ResponseEntityExceptionHandler}} (qua {{ProblemDetailsExceptionHandler}}) để chuyển các exception mặc định của Spring MVC sang ProblemDetail. Với {{MethodArgumentNotValidException}} (exception khi @Valid thất bại), response mặc định là:
+~~~json
+{
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "Invalid request content.",
+  "instance": "/orders"
+}
+~~~
+Spring **cố ý không** đưa chi tiết lỗi field vào {{detail}}: thông điệp validation mặc định có thể lộ tên field nội bộ, cấu trúc DTO, hoặc constraint — đây là thông tin nhạy cảm, và cũng là lý do Boot có các property {{server.error.include-message}}/{{include-binding-errors}} mặc định tắt. Bạn chỉ thấy "Invalid request content.".
+
+### Làm sao để có danh sách lỗi
+Kế thừa {{ResponseEntityExceptionHandler}} và override:
+~~~java
+@RestControllerAdvice
+public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
+
+    @Override
+    protected ResponseEntity<Object> handleMethodArgumentNotValid(
+            MethodArgumentNotValidException ex, HttpHeaders headers,
+            HttpStatusCode status, WebRequest request) {
+
+        List<Map<String, String>> errors = ex.getBindingResult().getFieldErrors().stream()
+                .map(fe -> Map.of("field", fe.getField(),
+                                  "message", fe.getDefaultMessage()))
+                .toList();
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, "Dữ liệu không hợp lệ");
+        problem.setTitle("Validation failed");
+        problem.setProperty("errors", errors);
+        return handleExceptionInternal(ex, problem, headers, status, request);
+    }
+}
+~~~
+Lưu ý: nếu cả handler mặc định của Boot và {{@RestControllerAdvice}} của bạn đều có thể xử lý cùng exception, cần đảm bảo advice của bạn được ưu tiên hơn (ví dụ đặt {{@Order}} với độ ưu tiên cao hơn handler mặc định), nếu không handler mặc định có thể xử lý trước.
+
+### Vì sao đây là câu hỏi hay
+Nó kiểm tra xem bạn có thực sự bật và đọc response, hay chỉ nghe nói "Boot 3 có ProblemDetail". Rất nhiều team bật property rồi ngạc nhiên vì FE không thấy lỗi field.
+
+### Trả lời phỏng vấn
+"Bật problemdetails.enabled cho response chuẩn, nhưng validation mặc định không kèm lỗi field. Tôi override handleMethodArgumentNotValid, map BindingResult thành danh sách errors rồi setProperty để FE hiển thị đúng field. Tôi cũng cân nhắc i18n message qua MessageSource."
+
+### Vì sao các phương án còn lại sai
+- **JSON kiểu Boot 2**: sai, property đã đổi định dạng lỗi mặc định sang ProblemDetail.
+- **Có sẵn mảng errors**: sai, mặc định không có; phải tự bổ sung.
+- **HTTP 200**: sai, status lấy từ ProblemDetail (400).`
+},
+{
+  id: 'qz-spring-083',
+  topic: 'spring',
+  q: `Ứng dụng chạy trên Kubernetes, mật khẩu DB được mount từ Secret thành các file dưới {{/etc/app/secrets/}} (mỗi file một secret, ví dụ file {{db-password}}). Bạn muốn nạp các file này thành property mà không nhúng vào image. Cách đúng trong Spring Boot 3?`,
+  options: [
+    'spring.config.import=optional:configtree:/etc/app/secrets/ — mỗi file thành một property, tên file là key, nội dung là value',
+    'spring.config.import=file:/etc/app/secrets/ — chỉ nạp được file .properties/.yml',
+    'Dùng @Value đọc key db-password là đủ, không cần khai báo nguồn cấu hình',
+    'Đọc file bằng Files.readAllLines trong @PostConstruct rồi System.setProperty'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: spring.config.import với configtree:.**
+
+### Config tree là gì
+Từ Spring Boot 2.4, {{spring.config.import}} cho phép nạp thêm nguồn cấu hình. Với scheme {{configtree:}}, Spring coi **mỗi file trong thư mục** là một property:
+- Tên file → key.
+- Nội dung file → value (đã trim).
+
+Ví dụ thư mục {{/etc/app/secrets/}} có file {{db-password}} nội dung {{s3cr3t}} → property {{db-password=s3cr3t}} (đọc bằng {{@Value}} với key {{db-password}}, hoặc binding vào @ConfigurationProperties).
+
+### Vì sao hợp với Kubernetes
+Secret của K8s thường được mount thành **file**, không phải biến môi trường. Config tree cho phép dùng trực tiếp mà không phải viết code đọc file. Tiền tố {{optional:}} giúp app không fail nếu thư mục chưa tồn tại (ví dụ chạy local).
+
+### Lưu ý
+- Secret vẫn là text trong Environment: tránh log toàn bộ Environment ({{/actuator/env}}) trên production.
+- Không dùng Base64 "cho an toàn": Base64 chỉ là mã hoá, không phải bảo mật.
+- Nếu trùng key giữa các nguồn, nguồn nạp sau thường thắng; hãy kiểm tra thứ tự trong tài liệu nếu cần.
+
+### Trả lời phỏng vấn
+"Tôi dùng spring.config.import=configtree: để nạp secret dạng file trên K8s thành property, kèm optional: để không fail khi chạy local. Tôi không log env và không dùng Base64 như một biện pháp bảo mật."
+
+### Vì sao các phương án còn lại sai
+- **file: chỉ nạp .properties/.yml**: với file không có phần mở rộng (như secret), config tree mới phù hợp; file: không nhận định dạng.
+- **@Value là đủ**: @Value cần property tồn tại; nếu không khai báo nguồn, app fail "Could not resolve placeholder".
+- **Đọc file trong @PostConstruct rồi System.setProperty**: làm được nhưng thủ công, dễ sai, không nhất quán với cơ chế cấu hình của Boot, và khó test.`
+},
+{
+  id: 'qz-spring-084',
+  topic: 'spring',
+  q: `DTO {{UserRequest}} có {{@NotBlank String email}} và một field lồng {{Address address}} ({{Address}} có {{@NotBlank String city}}). Bạn muốn validate khác nhau khi tạo và khi cập nhật. Phát biểu nào đúng? (Chọn 2)
+~~~java
+public class UserRequest {
+    @NotBlank
+    private String email;
+
+    @Valid                 // có annotation này thì Address mới được kiểm tra
+    private Address address;
+}
+~~~`,
+  multi: true,
+  options: [
+    'Dùng groups: đặt {{@NotNull(groups = Create.class)}} trên field, và {{@Validated(Create.class)}} trên method controller; {{@Valid}} luôn chạy nhóm Default',
+    '{{@Valid}} và {{@Validated(groups = Create.class)}} tương đương vì cả hai đều chạy mọi nhóm',
+    'Field lồng nhau cần {{@Valid}} để cascade; nếu thiếu, Address bên trong không được kiểm tra',
+    'Groups chỉ áp dụng cho {{@RequestParam}}, không áp dụng cho {{@RequestBody}}'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: groups + @Validated, và @Valid để cascade.**
+
+### Groups là gì
+Bean Validation cho phép gắn một ràng buộc vào **nhóm** (group), mặc định là {{Default}}. Khi validate, bạn chọn nhóm nào sẽ chạy:
+~~~java
+public interface Create {}
+public interface Update {}
+
+public class UserRequest {
+    @NotBlank(groups = Create.class)
+    private String email;
+
+    @NotBlank(groups = Update.class)
+    private String password;   // chỉ bắt buộc khi tạo
+}
+~~~
+Trên controller:
+~~~java
+@PostMapping
+public void create(@Validated(Create.class) @RequestBody UserRequest req) { ... }
+
+@PutMapping
+public void update(@Validated(Update.class) @RequestBody UserRequest req) { ... }
+~~~
+
+### @Valid vs @Validated
+- {{@Valid}} (Jakarta) đánh dấu field/parameter cần validate theo nhóm {{Default}}. Nó **không** chọn nhóm.
+- {{@Validated}} (Spring) đặt trên class hoặc parameter để chọn nhóm cụ thể; cũng có thể thay @Valid ở parameter.
+- Nếu chỉ dùng {{@Valid}} thì luôn là nhóm Default; muốn nhóm khác phải dùng {{@Validated(groups = ...)}}.
+
+### Cascade object lồng
+Nếu {{UserRequest}} có field {{Address address}}, chỉ khi field đó có {{@Valid}} thì validator mới đi vào Address và kiểm tra {{@NotBlank city}}. Nếu thiếu @Valid, Address không được kiểm tra (trừ khi Address có ràng buộc ở cấp class).
+
+### Trả lời phỏng vấn
+"Tôi dùng groups để tách validate Create/Update: @NotBlank(groups=Create.class) và @Validated(Create.class) trên controller. Với object lồng, tôi thêm @Valid để cascade. @Valid luôn dùng nhóm Default, @Validated mới chọn được nhóm."
+
+### Vì sao các phương án còn lại sai
+- **@Valid và @Validated(groups) tương đương**: sai; @Valid chỉ chạy nhóm Default, không chọn nhóm.
+- **Groups chỉ cho @RequestParam**: sai, groups dùng được cho @RequestBody (qua @Validated), @RequestParam, @PathVariable...`
+},
+{
+  id: 'qz-spring-085',
+  topic: 'spring',
+  q: `Bạn muốn tắt auto-configuration của Redis trong ứng dụng Spring Boot 3 (vẫn giữ dependency để dùng RedisTemplate ở nơi khác). Cách nào đúng?`,
+  options: [
+    'spring.autoconfigure.exclude=org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration',
+    'Xóa @SpringBootApplication khỏi class chính',
+    'Đặt spring.main.allow-bean-definition-overriding=true',
+    'Đặt management.endpoints.web.exposure.exclude=redis'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: spring.autoconfigure.exclude.**
+
+### Nó làm gì
+{{spring.autoconfigure.exclude}} nhận danh sách tên class auto-configuration (phân cách bằng dấu phẩy) cần **loại bỏ** khỏi quá trình nạp. Spring sẽ không xử lý các class đó, nghĩa là không tạo bean mặc định của chúng. Ví dụ trên tắt {{RedisAutoConfiguration}} (không tạo {{RedisConnectionFactory}}, {{RedisTemplate}}), nhưng dependency vẫn còn trên classpath để bạn tự khai báo bean khi cần.
+
+~~~yaml
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+~~~
+
+### Các cách khác
+- {{@SpringBootApplication(exclude = RedisAutoConfiguration.class)}} hoặc {{@EnableAutoConfiguration(exclude = ...)}}: cùng mục đích, nhưng khai báo bằng code (compile-time, IDE bắt được lỗi chính tả).
+- Một số auto-config có property riêng để tắt, ví dụ {{management.health.redis.enabled=false}} (chỉ tắt health indicator), hoặc {{spring.cache.type=none}}. Với Redis thì không có property "enabled" chung, nên exclude là cách chuẩn.
+- Nếu auto-config được điều kiện bằng {{@ConditionalOnClass}}, bỏ dependency cũng làm nó không nạp — nhưng bạn nói vẫn muốn giữ dependency.
+
+### Vì sao không dùng các cách khác
+- **Xóa @SpringBootApplication**: mất luôn component scan và auto-configuration; ứng dụng gần như không chạy được.
+- **allow-bean-definition-overriding**: cho phép bean sau ghi đè bean trước; không liên quan tới việc tắt auto-config, và bật nó thường che giấu lỗi trùng bean rất nguy hiểm.
+- **management.endpoints...exclude**: chỉ ảnh hưởng endpoint Actuator, không ảnh hưởng việc tạo bean.
+
+### Lỗi hay gặp
+Sai tên class trong exclude → ứng dụng **fail lúc khởi động** với thông báo "The following classes could not be excluded because they are not auto-configuration classes". Đây là tính năng tốt: nó chặn lỗi chính tả. Nếu bạn tự viết auto-config và muốn cho phép tắt, hãy đặt tên class rõ ràng và ghi vào tài liệu.
+
+### Trả lời phỏng vấn
+"Tôi tắt auto-config bằng spring.autoconfigure.exclude hoặc @EnableAutoConfiguration(exclude=...). Nó loại đúng class auto-config khỏi quá trình nạp; sai tên sẽ fail fast lúc khởi động. Nếu chỉ cần tắt health check thì dùng property riêng của module đó."
+
+> Senior tip: trên production, việc tắt auto-config nên đi kèm lý do rõ ràng trong comment hoặc tài liệu, vì người sau sẽ thắc mắc "vì sao RedisTemplate không có ở đây?". Ưu tiên dùng property chính thức của module nếu có, exclude chỉ là phương án cuối.`
+},
+
 );
