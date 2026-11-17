@@ -898,7 +898,7 @@ class Solution {
 
 ### Lưu ý khi phỏng vấn
 - Điều kiện so sánh có thể dùng {{height[left] < height[right]}} hoặc {{leftMax < rightMax}}; cả hai đều đúng nhưng cần giải thích nhất quán.
-- Tổng nước có thể vượt {{int}} nếu mảng rất lớn; với ràng buộc trên thì {{2*10^4 * 10^5 = 2*10^9}} vẫn có thể tràn {{int}} (gần 2.1 tỷ). Nên dùng {{long}} để an toàn.
+- Tổng nước tối đa là {{2*10^4 * 10^5 = 2*10^9}}, tuy chưa vượt {{Integer.MAX_VALUE}} (~2.147*10^9) nhưng rất sát; nên dùng {{long}} cho an toàn.
 - Nêu thêm cách prefix/suffix max dễ hiểu hơn, và cách stack monotonic để so sánh.
 
 > Senior tip: Bài này là ví dụ kinh điển cho việc "giảm bộ nhớ nhưng không đổi độ phức tạp". Trong phỏng vấn, tôi đánh giá cao ứng viên biết vẽ hình và giải thích bất biến của hai con trỏ hơn là chỉ đọc thuộc code.`,
@@ -6900,7 +6900,7 @@ r=3: sum=6 > 4 -> bỏ 1, sum=5 > 4 -> bỏ 3, sum=2  [2]  best=2
 class Solution {
     public int longest(int[] a, int budget) {
         int l = 0, best = 0;
-        long sum = 0;                          // long: tổng 2*10^5 * 10^4 = 2*10^9 vượt int
+        long sum = 0;                          // long: tổng tối đa 2*10^5 * 10^4 = 2*10^9, sát Integer.MAX_VALUE (2.147*10^9) nên dùng long cho chắc
         for (int r = 0; r < a.length; r++) {
             sum += a[r];                       // mở rộng cửa sổ sang phải
             while (sum > budget) {             // vượt ngân sách -> thu hẹp từ trái
@@ -16799,6 +16799,214 @@ O(L1 + L2) thoi gian, O(1) bo nho (26 so nguyen).
     }
 }`,
   follow: ['Neu can tra ve TAT CA vi tri bat dau cua cac hoan vi thi sua ra sao?', 'Neu s1, s2 chua ky tu Unicode thi doi cau truc du lieu nhu the nao?']
+},
+{
+  id: 'algo-150',
+  title: 'Merge Intervals',
+  difficulty: 'medium',
+  pattern: 'Sorting',
+  tags: ['array', 'sorting', 'interval'],
+  prompt: `Cho danh sach cac khoang [start, end]. Gop nhung khoang chong lap hoac cham nhau thanh mot khoang duy nhat.
+
+### Ví dụ
+~~~text
+Input:  [[1,3],[2,6],[8,10],[15,18]]
+Output: [[1,6],[8,10],[15,18]]
+~~~
+
+### Ràng buộc
+- {{1 <= intervals.length <= 10^4}}
+- {{0 <= start <= end <= 10^4}}`,
+  hints: [
+    'Neu sap xep theo start, cac khoang chong lap se nam ke nhau.',
+    'Duyet sau khi sort: neu khoang hien tai chong voi khoang truoc thi gop (end = max(end)), nguoc lai them moi.',
+    'Cham nhau (a.end == b.start) co gop khong? Tuy de bai; thuong gop.'
+  ],
+  solution: `### Ý tưởng
+Sap xep theo start. Duyet mot lan, giu khoang hien tai; neu khoang tiep theo start <= current.end thi gop end = max(end); nguoc lai push current va bat dau moi.
+
+~~~java
+class Solution {
+    public int[][] merge(int[][] intervals) {
+        Arrays.sort(intervals, (a,b) -> Integer.compare(a[0], b[0]));
+        List<int[]> res = new ArrayList<>();
+        for (int[] iv : intervals) {
+            if (!res.isEmpty() && res.get(res.size()-1)[1] >= iv[0]) {
+                int[] last = res.get(res.size()-1);
+                last[1] = Math.max(last[1], iv[1]);
+            } else res.add(new int[]{iv[0], iv[1]});
+        }
+        return res.toArray(new int[0][]);
+    }
+}
+~~~
+
+### Do phuc tap
+O(n log n) thoi gian, O(n) bo nho.
+
+> Senior tip: Pattern sap xep + quet mot lan la nen tang cho bai lich hop, meeting rooms II, insert interval.`,
+  complexity: 'Time O(n log n), Space O(n)',
+  starter: 'class Solution {\n    public int[][] merge(int[][] intervals) {\n        // TODO\n        return new int[0][];\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void run(String name, int[][] expected, java.util.function.Supplier<int[][]> c) {
+        total++;
+        try {
+            int[][] actual = c.get();
+            if (java.util.Arrays.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    public static void main(String[] args) {
+        Solution s = new Solution();
+        run("basic", new int[][]{{1,6},{8,10},{15,18}}, () -> s.merge(new int[][]{{1,3},{2,6},{8,10},{15,18}}));
+        run("single", new int[][]{{1,4}}, () -> s.merge(new int[][]{{1,4}}));
+        run("all merge", new int[][]{{1,5}}, () -> s.merge(new int[][]{{1,2},{2,3},{3,5}}));
+        run("none", new int[][]{{1,2},{3,4}}, () -> s.merge(new int[][]{{1,2},{3,4}}));
+        run("unsorted", new int[][]{{1,2},{3,5}}, () -> s.merge(new int[][]{{3,5},{1,2}}));
+        run("touching", new int[][]{{1,4}}, () -> s.merge(new int[][]{{1,2},{2,4}}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Insert Interval (chen 1 khoang vao danh sach da sap xep) lam nhu the nao?', 'Meeting Rooms II (so phong toi thieu) dung heap + sort.']
+},
+{
+  id: 'algo-151',
+  title: 'Rate Limiter Sliding Window Log',
+  difficulty: 'medium',
+  pattern: 'Sliding Window',
+  tags: ['design', 'hashmap', 'queue'],
+  prompt: `Thiet ke rate limiter sliding window log: ham {{allow(userId, timestampMs)}} tra true neu so request cua user trong 60 giay gan nhat chua vuot qua limit (mac dinh 5).`,
+  hints: [
+    'Moi user can mot hang doi timestamp.',
+    'Xoa timestamp cu hon 60s truoc khi dem.',
+    'Neu size < limit thi them va tra true, nguoc lai tra false (khong them).'
+  ],
+  solution: `### Ý tưởng
+Moi user co Deque<Long> luu timestamp cac request da duoc chap nhan trong cua so 60s. Khi allow duoc goi: loai bo cac timestamp < now-60000, neu size < limit thi them now va tra true, nguoc lai tra false.
+
+~~~java
+class RateLimiter {
+    private final int limit;
+    private final long windowMs;
+    private final Map<String, Deque<Long>> logs = new HashMap<>();
+    public RateLimiter(int limit, long windowMs){ this.limit=limit; this.windowMs=windowMs; }
+    public boolean allow(String userId, long nowMs) {
+        Deque<Long> q = logs.computeIfAbsent(userId, k -> new ArrayDeque<>());
+        while (!q.isEmpty() && q.peekFirst() <= nowMs - windowMs) q.pollFirst();
+        if (q.size() < limit) { q.addLast(nowMs); return true; }
+        return false;
+    }
+}
+~~~
+
+### Do phuc tap
+O(1) amortized moi request.
+
+> Senior tip: Sliding window log chinh xac nhung ton bo nho; production thuong dung token bucket hoac sliding window counter (Redis).`,
+  complexity: 'Time O(1) amortized, Space O(limit * users)',
+  starter: 'class RateLimiter {\n    public RateLimiter(int limit, long windowMs) {\n        // TODO\n    }\n    public boolean allow(String userId, long nowMs) {\n        // TODO\n        return false;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void run(String name, boolean expected, java.util.function.BooleanSupplier c) {
+        total++;
+        try {
+            if (c.getAsBoolean() == expected) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    public static void main(String[] args) {
+        RateLimiter rl = new RateLimiter(3, 60000);
+        run("1", true, () -> rl.allow("u", 1000));
+        run("2", true, () -> rl.allow("u", 2000));
+        run("3", true, () -> rl.allow("u", 3000));
+        run("4", false, () -> rl.allow("u", 4000));
+        run("after window", true, () -> rl.allow("u", 61000));
+        run("different user", true, () -> rl.allow("v", 4000));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['So sanh sliding window log vs counter vs token bucket.', 'Lam the nao phan tan rate limiter tren nhieu instance (Redis)?']
+},
+{
+  id: 'algo-152',
+  title: 'Top K Frequent Elements',
+  difficulty: 'medium',
+  pattern: 'Heap',
+  tags: ['array', 'hashmap', 'heap', 'bucket-sort'],
+  prompt: `Cho mang so nguyen, tra ve k phan tu xuat hien nhieu nhat. Thu tu trong ket qua khong quan trong.
+
+### Ví dụ
+~~~text
+Input:  nums = [1,1,1,2,2,3], k = 2
+Output: [1,2]
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 10^5}}
+- {{k in [1, so phan tu khac nhau]}}`,
+  hints: [
+    'Dem tan so bang HashMap.',
+    'Cach 1: min-heap size k, O(n log k).',
+    'Cach 2: bucket sort theo tan so, O(n).'
+  ],
+  solution: `### Ý tưởng
+Dem tan so. Dung min-heap giu k phan tu tan so cao nhat: duyet map, offer; neu size > k poll min. Hoac bucket sort: tao mang bucket[tan so] = list phan tu, duyet tu tan so cao xuong.
+
+~~~java
+class Solution {
+    public int[] topKFrequent(int[] nums, int k) {
+        Map<Integer,Integer> freq = new HashMap<>();
+        for (int x : nums) freq.merge(x, 1, Integer::sum);
+        // bucket sort
+        List<Integer>[] buckets = new List[nums.length + 1];
+        for (int key : freq.keySet()) {
+            int f = freq.get(key);
+            if (buckets[f] == null) buckets[f] = new ArrayList<>();
+            buckets[f].add(key);
+        }
+        int[] res = new int[k];
+        int idx = 0;
+        for (int f = nums.length; f >= 1 && idx < k; f--) {
+            if (buckets[f] == null) continue;
+            for (int v : buckets[f]) {
+                res[idx++] = v;
+                if (idx == k) break;
+            }
+        }
+        return res;
+    }
+}
+~~~
+
+### Do phuc tap
+O(n) thoi gian va O(n) bo nho (bucket sort). Heap: O(n log k).
+
+> Senior tip: Khi k nho, heap tiet kiem bo nho; khi can O(n) dung bucket sort. Interviewer thuong hoi so sanh.`,
+  complexity: 'Time O(n), Space O(n)',
+  starter: 'class Solution {\n    public int[] topKFrequent(int[] nums, int k) {\n        // TODO\n        return new int[0];\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void run(String name, int[] expected, java.util.function.Supplier<int[]> c) {
+        total++;
+        try {
+            int[] actual = c.get();
+            java.util.Arrays.sort(actual); java.util.Arrays.sort(expected);
+            if (java.util.Arrays.equals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    public static void main(String[] args) {
+        Solution s = new Solution();
+        run("basic", new int[]{1,2}, () -> s.topKFrequent(new int[]{1,1,1,2,2,3}, 2));
+        run("single", new int[]{1}, () -> s.topKFrequent(new int[]{1}, 1));
+        run("k all", new int[]{1,2,3}, () -> s.topKFrequent(new int[]{1,2,3}, 3));
+        run("ties", new int[]{1,2}, () -> s.topKFrequent(new int[]{1,1,2,2,3}, 2));
+        run("negative", new int[]{-1,2}, () -> s.topKFrequent(new int[]{-1,-1,2,2,3}, 2));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Neu nums rat lon va k nho, dung min-heap de tiet kiem bo nho.', 'Quickselect cho top-k theo tan so: O(n) trung binh.']
 }
 );
 })();
