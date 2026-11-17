@@ -28,15 +28,16 @@ System.out.println(f() + " " + g());
   explain: `**Đáp án đúng: 1 3, exception "boom" bị nuốt mất.**
 
 ### Vì sao đúng
-- Trong {{f()}}: lệnh {{return x}} **tính giá trị trả về (1) và cất vào một slot tạm** trước khi nhảy vào {{finally}}. {{finally}} gán {{x = 2}} chỉ sửa biến local, không sửa giá trị đã cất, nên {{f()}} trả về 1. (Nếu {{x}} là một object mutable như {{StringBuilder}} và finally gọi {{append}}, caller sẽ thấy thay đổi vì giá trị cất là tham chiếu.)
-- Trong {{g()}}: {{return}} trong {{finally}} là "abrupt completion" nên **thay thế** mọi kết quả trước đó, kể cả exception đang bay. RuntimeException biến mất hoàn toàn, {{g()}} trả về 3.
+- Trong {{f()}}: lệnh {{return x}} **tính giá trị trả về (1) và cất vào một chỗ tạm** trước khi nhảy vào {{finally}}. {{finally}} gán {{x = 2}} chỉ sửa biến cục bộ, không sửa giá trị đã cất, nên {{f()}} trả về 1. (Nếu {{x}} là một object có thể thay đổi được như {{StringBuilder}} và {{finally}} gọi {{append}}, thì người gọi sẽ thấy thay đổi vì giá trị cất là tham chiếu.)
+- Trong {{g()}}: {{return}} nằm trong {{finally}} là "hoàn thành đột ngột" nên **ghi đè** mọi kết quả trước đó, kể cả exception đang bay. {{RuntimeException}} biến mất, {{g()}} trả về 3.
 
-### Vì sao các phương án còn lại sai
-- **2 3**: hiểu sai rằng finally sửa được giá trị trả về kiểu primitive đã được tính.
-- **1 rồi ném exception**: exception bị return trong finally nuốt, không lan ra ngoài.
-- **Không biên dịch được**: return trong finally hợp lệ; javac chỉ cảnh báo khi bật {{-Xlint:finally}}.
+### Vì sao mỗi phương án sai
+- **A) 1 3, và RuntimeException "boom" bị nuốt mất không ai thấy**: đúng như phân tích ở trên (đây là đáp án đúng).
+- **B) 2 3, vì finally chạy sau cùng nên x = 2 được trả về**: hiểu sai rằng {{finally}} sửa được giá trị kiểu nguyên thủy đã được tính và cất sẵn khi gặp {{return}}. Thực tế {{f()}} đã cất giá trị 1 trước khi vào {{finally}}.
+- **C) 1, sau đó chương trình ném RuntimeException "boom"**: {{return}} trong {{finally}} của {{g()}} nuốt exception, nên ngoài main không thấy exception nữa.
+- **D) Không biên dịch được vì không được viết return trong finally**: Java cho phép viết {{return}} trong {{finally}} (chỉ có cảnh báo khi bật {{-Xlint:finally}}), không phải lỗi biên dịch.
 
-> Senior tip: return/throw trong {{finally}} là anti-pattern kinh điển làm mất exception gốc trên production (log không có stack trace, giao dịch "thành công" giả). Bật {{-Xlint:all -Werror}} hoặc rule Sonar/ErrorProne ({{FinallyThrows}}, {{ReturnFromFinallyBlock}}) để chặn từ CI.`
+> Senior tip: {{return}}/{{throw}} trong {{finally}} là lỗi dễ gặp làm mất exception gốc trên production (log thiếu stack trace, giao dịch tưởng thành công). Bật {{-Xlint:all -Werror}} hoặc rule Sonar/ErrorProne ({{FinallyThrows}}, {{ReturnFromFinallyBlock}}) để chặn ngay trong CI.`
 },
 {
   id: 'qz-core-008', topic: 'core',
@@ -61,19 +62,13 @@ System.out.println((a == b) + " " + (a == c) + " " + (a == d)
   answer: 1,
   explain: `**Đáp án đúng: true false true false true.**
 
-### Vì sao đúng
-- {{a == b}}: {{"hel" + "lo"}} là **compile-time constant expression**, javac gộp thành literal {{"hello"}} lúc biên dịch, nên cùng trỏ vào một object trong String pool → {{true}}.
-- {{a == c}}: {{new String(...)}} luôn tạo object mới trên heap → {{false}}.
-- {{a == d}}: {{p}} là biến {{final}} khởi tạo bằng hằng số, tức là **constant variable**, nên {{p + "lo"}} vẫn là hằng số biên dịch → gộp thành literal → {{true}}.
-- {{a == e}}: {{q}} không final, phép nối chạy lúc runtime (từ Java 9 qua {{invokedynamic}}/{{StringConcatFactory}}) và tạo String mới → {{false}}.
-- {{e.intern()}} trả về bản trong pool, chính là object của {{a}} → {{true}}.
+### Vì sao đúng (giải thích từng phương án)
+- **A) true false false false true**: sai. {{p}} là biến {{final}} được gán bằng hằng chuỗi, nên phép nối {{p + "lo"}} vẫn là **hằng số biên dịch** (constant variable), javac gộp thành {{"hello"}} → nên {{a == d}} phải là {{true}} (không phải {{false}}).
+- **B) true false true false true**: đúng. {{a == b}} là {{true}} vì {{"hel"+"lo"}} được gộp lúc biên dịch thành {{"hello"}} (nằm trong String pool). {{a == c}} là {{false}} vì {{new String("hello")}} tạo object mới trên heap. {{a == d}} là {{true}} vì {{final String p}} là constant variable nên {{p+"lo"}} gộp thành hằng. {{a == e}} là {{false}} vì {{q}} không {{final}}, nối tại runtime tạo object mới. {{e.intern()}} trả về bản trong pool trùng {{a}} nên {{true}}.
+- **C) true false true true true**: sai. {{q}} không {{final}} nên phép nối {{q + "lo"}} chạy lúc runtime (từ Java 9 dùng {{invokedynamic}}/{{StringConcatFactory}}), tạo String mới trên heap; nó **không tự** đưa vào pool, vì vậy {{a == e}} là {{false}} (không phải {{true}}).
+- **D) false false false false true**: sai. {{"hel"+"lo"}} là hằng số biên dịch nên {{a == b}} là {{true}}; {{a == d}} cũng {{true}} vì {{p}} là {{final}} hằng.
 
-### Vì sao các phương án còn lại sai
-- **true false false false true**: bỏ qua quy tắc constant variable của {{final String p}}.
-- **true false true true true**: tưởng nối chuỗi lúc runtime cũng tự intern; thực tế không.
-- **false false false false true**: tưởng mọi phép nối đều chạy lúc runtime; javac gộp hằng số từ rất sớm.
-
-> Senior tip: kết quả {{==}} trên String phụ thuộc vào chi tiết biên dịch (thêm/bỏ {{final}} là đổi kết quả), nên trong code thật luôn dùng {{equals}}. Câu này hay dùng để xem ứng viên có hiểu constant folding và String pool chứ không phải để khuyến khích dùng {{==}}.`
+> Senior tip: so sánh String bằng {{==}} rất dễ gây lỗi vì kết quả phụ thuộc vào {{final}} hay không, thời điểm biên dịch. Trong code thật luôn dùng {{equals}}. Câu này chỉ để hiểu cơ chế pool và constant folding.`
 },
 {
   id: 'qz-core-009', topic: 'core',
@@ -101,25 +96,13 @@ System.out.println(sb + " " + n + " " + s);
   answer: 2,
   explain: `**Đáp án đúng: hi! 1 a.**
 
-### Vì sao đúng
-Java **luôn pass-by-value**. Với object, giá trị được copy là **tham chiếu**:
-- {{sb.append("!")}}: tham số {{sb}} và biến ở main cùng trỏ vào một object, nên thay đổi nội dung object được caller nhìn thấy → "hi!".
-- {{sb = new StringBuilder("new")}}: chỉ gán lại **bản copy** của tham chiếu trong method; biến ở main vẫn trỏ object cũ.
-- {{n++}}: tăng bản copy của primitive, {{n}} ở main vẫn là 1.
-- {{s = s + "?"}}: String immutable, phép nối tạo object mới và chỉ gán vào biến local → {{s}} ở main vẫn là "a".
+### Vì sao đúng (theo từng phương án)
+- **A) new 2 a?**: sai. Java **luôn truyền tham số bằng giá trị (pass-by-value)**. Với object, giá trị copy là tham chiếu; gán lại tham số ({{sb = ...}}, {{s = ...}}) chỉ đổi bản copy trong method, biến ở {{main}} không đổi.
+- **B) hi! 2 a**: sai. {{n}} là kiểu nguyên thủy ({{int}}), copy sang method nên {{n++}} không ảnh hưởng {{n}} của {{main}} (vẫn là 1).
+- **C) hi! 1 a**: đúng. {{sb.append("!")}} sửa trực tiếp cùng object mà cả hai tham chiếu trỏ tới → {{sb}} ở {{main}} thành "hi!". Còn việc {{param.sb}} trỏ sang object mới và {{n}}, {{s}} được gán lại chỉ ảnh hưởng bản copy.
+- **D) hi 1 a**: sai. Bỏ qua thao tác {{sb.append("!")}} đã làm thay đổi nội dung object dùng chung.
 
-~~~text
-main.sb ──┐
-          ├──> [StringBuilder "hi!"]
-param.sb ─┘   (sau đó param.sb trỏ sang [StringBuilder "new"], main không biết)
-~~~
-
-### Vì sao các phương án còn lại sai
-- **new 2 a?**: giả định pass-by-reference như C++ {{&}}, Java không có.
-- **hi! 2 a**: primitive được copy, tăng trong method không ảnh hưởng caller.
-- **hi 1 a**: bỏ qua việc {{append}} sửa trực tiếp object dùng chung.
-
-> Senior tip: bug thật hay gặp là method "trả kết quả" bằng cách gán lại tham số (ví dụ {{list = new ArrayList<>()}}) rồi caller không thấy gì. Quy ước tốt: coi tham số như {{final}} (nhiều team bật checkstyle {{FinalParameters}} hoặc ParameterAssignment) và trả kết quả qua return value.`
+> Senior tip: bug hay gặp là cố "trả về" bằng cách gán lại tham số. Hãy coi tham số như {{final}} và trả kết quả qua {{return}} (hoặc sửa rõ ràng qua object thay đổi được mà bạn thiết kế).`
 },
 {
   id: 'qz-core-010', topic: 'core',
@@ -148,18 +131,21 @@ new Child();
   answer: 3,
   explain: `**Đáp án đúng: ADBCEFBCEF.**
 
-### Vì sao đúng
-1. Lần đầu dùng {{Child}}, JVM phải **khởi tạo class**. Khởi tạo subclass yêu cầu superclass được khởi tạo trước → static block của Parent ({{A}}) rồi của Child ({{D}}). Static block chỉ chạy **một lần** cho mỗi class (mỗi ClassLoader).
-2. Tạo object: constructor {{Child()}} ngầm gọi {{super()}} đầu tiên. Trong Parent, instance initializer và field initializer chạy **sau super() và trước thân constructor** → {{B}} rồi {{C}}.
-3. Quay lại Child: instance initializer {{E}} rồi thân constructor {{F}}.
-4. Lần {{new Child()}} thứ hai: class đã khởi tạo, chỉ còn phần instance → {{BCEF}}.
+### Vì sao đúng (từng bước)
+1. **Lần đầu {{new Child()}}**: cần khởi tạo class {{Child}} trước. Do {{Child}} kế thừa {{Parent}}, JVM khởi tạo **superclass trước**: chạy khối {{static}} của {{Parent}} → in **A**, rồi khối {{static}} của {{Child}} → in **D**. Khối static chỉ chạy **một lần** cho mỗi class.
+2. Tạo đối tượng {{Child}}: gọi constructor {{Child()}} → ngầm gọi {{super()}} (Parent). Trong {{Parent}}, các khối khởi tạo instance và gán field instance chạy **sau {{super()}} và trước thân constructor** → in **B** rồi **C** (constructor Parent).
+3. Quay về {{Child}}: chạy instance initializer → in **E**, rồi thân constructor {{Child()}} → in **F**. Sau bước này có chuỗi **AD + BCEF**.
+4. **Lần {{new Child()}} thứ hai**: class đã khởi tạo rồi nên bỏ qua phần static → chỉ chạy phần instance → **B**, **E**, thân constructor → **C**, **F** → thêm **BCEF**.
 
-### Vì sao các phương án còn lại sai
-- **ABCDEFABCDEF**: tưởng static block chạy mỗi lần new và chạy xen với instance block.
-- **ADBECFBECF**: tưởng toàn bộ instance block (cả cha lẫn con) chạy trước mọi constructor; thực tế cha hoàn tất (B, C) rồi mới tới con.
-- **DABCEFBCEF**: superclass luôn được khởi tạo trước subclass.
+Gộp lại: A D + B C E F + B C E F = **A D B C E F B C E F**.
 
-> Senior tip: hệ quả nguy hiểm của thứ tự này: nếu constructor Parent gọi một method bị Child override, method đó chạy khi field của Child **chưa được khởi tạo** (null/0). Đây là lý do Effective Java khuyên không gọi overridable method trong constructor.`
+### Vì sao mỗi phương án sai
+- **A) ABCDEFABCDEF**: sai vì nghĩ khối static chạy lại mỗi lần {{new}} và chạy xen lẫn với phần instance theo cách khác.
+- **B) ADBECFBECF**: sai vì nghĩ toàn bộ instance block của cha và con chạy trước rồi mới tới constructor; thực tế sau khi cha chạy xong (B, C) mới tới phần của con.
+- **C) DABCEFBCEF**: sai vì superclass phải được khởi tạo (phần static) **trước** subclass, nên phải là A trước D.
+- **D) ADBCEFBCEF**: đúng như trên.
+
+> Senior tip: nếu constructor của lớp cha gọi một method bị lớp con ghi đè (override), method đó có thể chạy khi field của con chưa được gán → dễ ra {{null}}/0. Vì vậy tránh gọi method có thể override trong constructor.`
 },
 {
   id: 'qz-core-011', topic: 'core',
@@ -182,19 +168,18 @@ System.out.println(a.equals(b) + " " + a.compareTo(b)
   explain: `**Đáp án đúng: false 0 2 1.**
 
 ### Vì sao đúng
-- {{BigDecimal.equals}} so sánh **cả value lẫn scale**: 1.0 (scale 1) khác 1.00 (scale 2) → {{false}}. {{hashCode}} cũng khác theo scale.
-- {{compareTo}} chỉ so sánh **giá trị số** → 0.
-- {{HashSet}} dùng {{hashCode/equals}} → coi là hai phần tử → size 2.
-- {{TreeSet}} dùng {{compareTo}} → coi là trùng → size 1.
+- {{BigDecimal.equals}} so sánh **cả giá trị số lẫn scale** (số chữ số thập phân nội bộ). {{new BigDecimal("1.0")}} có scale 1, {{new BigDecimal("1.00")}} có scale 2 → {{equals}} trả về {{false}}, và {{hashCode}} cũng khác theo scale.
+- {{compareTo}} chỉ so sánh **giá trị toán học** → 1.0 bằng 1.00 nên trả về 0.
+- {{HashSet}} dùng {{hashCode}} + {{equals}} để xác định trùng lặp → hai object khác nhau theo {{equals}} nên giữ cả hai, size = 2.
+- {{TreeSet}} dùng {{compareTo}} để xác định trùng lặp ({{compareTo == 0}} coi là trùng) → chỉ giữ 1 phần tử, size = 1.
 
-Đây là ví dụ kinh điển của việc {{compareTo}} **không nhất quán với equals** (Javadoc của BigDecimal ghi rõ điều này).
+### Vì sao mỗi phương án sai
+- **A) false 0 2 1**: đúng như trên.
+- **B) true 0 1 1**: sai vì {{BigDecimal.equals}} có xét scale nên "1.0" và "1.00" không bằng nhau.
+- **C) false 0 1 1**: sai ở phần {{HashSet}} — {{HashSet}} không dùng {{compareTo}}, nó dùng {{equals}} nên vẫn lưu hai phần tử khác nhau.
+- **D) false 0 2 2**: sai ở phần {{TreeSet}} — {{TreeSet}} dựa vào {{compareTo}} (bằng nhau) nên coi là trùng, chỉ còn 1 phần tử.
 
-### Vì sao các phương án còn lại sai
-- **true 0 1 1**: {{equals}} của BigDecimal có xét scale.
-- **false 0 1 1**: HashSet không dùng compareTo, nên vẫn giữ cả hai.
-- **false 0 2 2**: TreeSet dựa hoàn toàn vào compareTo để xác định trùng.
-
-> Senior tip: trong hệ thống tiền tệ, chuẩn hoá scale ngay khi vào domain ({{setScale(2, RoundingMode.HALF_UP)}}) và so sánh bằng {{compareTo}}. Cẩn thận {{stripTrailingZeros()}}: "100" thành 1E+2 khi in, gây lỗi hiển thị/serialize. Một bug thật: map {{HashMap<BigDecimal, Rate>}} tra cứu theo số tiền đọc từ DB (scale 4) không khớp key nạp từ config (scale 2).`
+> Senior tip: trong tiền tệ hãy chuẩn hóa scale trước khi so sánh/lưu (ví dụ {{setScale(2, RoundingMode.HALF_UP)}}) và thường dùng {{compareTo}} cho so sánh giá trị. Cẩn thận {{stripTrailingZeros()}} có thể làm scale thay đổi khó lường khi in/log.`
 },
 {
   id: 'qz-core-012', topic: 'core',
@@ -219,20 +204,21 @@ m(boxed);
   explain: `**Đáp án đúng: long Integer.**
 
 ### Vì sao đúng
-Compiler chọn overload theo **3 pha** (JLS 15.12.2), dừng ở pha đầu tiên tìm được ứng viên:
-1. **Pha 1**: chỉ cho phép widening primitive/reference, **không boxing/unboxing, không varargs**.
+Java chọn overload theo **ba pha** (JLS 15.12.2), ưu tiên pha trước:
+1. **Pha 1**: chỉ widening primitive/reference, **không** boxing/unboxing, **không** varargs.
 2. **Pha 2**: cho phép boxing/unboxing.
 3. **Pha 3**: cho phép varargs.
 
-- {{m(i)}} với {{int}}: pha 1 thấy {{m(long)}} (widening int → long) hợp lệ → chọn ngay, không xét tới boxing sang {{Integer}}.
-- {{m(boxed)}} với {{Integer}}: pha 1 thấy {{m(Integer)}} khớp đúng kiểu → chọn. {{m(long)}} cần unboxing nên thuộc pha 2, bị loại.
+- {{m(i)}} với {{i}} là {{int}}: pha 1 có {{m(long)}} (widening int→long) nên chọn ngay, không xét {{m(Integer)}} vì boxing thuộc pha 2.
+- {{m(boxed)}} với {{Integer}}: pha 1 có {{m(Integer)}} khớp đúng kiểu nên chọn; {{m(long)}} cần unboxing (pha 2) nên thua.
 
-### Vì sao các phương án còn lại sai
-- **Integer Integer**: boxing chỉ được xét ở pha 2, sau widening.
-- **varargs Integer**: varargs có độ ưu tiên thấp nhất (pha 3), chỉ dùng khi hai pha trước không có ứng viên.
-- **Ambiguous**: không mơ hồ vì pha 1 chỉ có đúng một ứng viên.
+### Vì sao mỗi phương án sai
+- **A) Integer Integer**: sai vì lời gọi {{m(i)}} chọn {{m(long)}} ở pha 1, không phải boxing sang {{Integer}}.
+- **B) long Integer**: đúng như phân tích trên.
+- **C) varargs Integer**: sai vì varargs chỉ xét ở pha 3, có ứng viên tốt hơn ở pha 1 và pha 2.
+- **D) Lỗi biên dịch vì m(i) mơ hồ (ambiguous)**: sai vì pha 1 chỉ có một ứng viên phù hợp ({{m(long)}}).
 
-> Senior tip: quy tắc này được giữ để code cũ (trước Java 5) không đổi hành vi khi thêm autoboxing. Bug thật: {{list.remove(i)}} với {{List<Integer>}} và {{int i}} gọi {{remove(int index)}} (pha 1) chứ không phải {{remove(Object)}}, xoá nhầm phần tử theo vị trí.`
+> Senior tip: bẫy thật: {{List<Integer>.remove(i)}} khi {{i}} là {{int}} sẽ gọi {{remove(int index)}} ở pha 1, không phải {{remove(Object)}} — dễ xoá nhầm phần tử. Cần xoá theo giá trị thì truyền {{Integer}} hoặc {{Integer.valueOf(i)}}.`
 },
 {
   id: 'qz-core-013', topic: 'core', multi: true,
@@ -247,20 +233,22 @@ Compiler chọn overload theo **3 pha** (JLS 15.12.2), dừng ở pha đầu ti�
   answer: [1, 3],
   explain: `**Đáp án đúng: {{public void load()}} và {{public void load() throws FileNotFoundException}}.**
 
-### Vì sao đúng
-Quy tắc override xuất phát từ **Liskov substitution**: code đang gọi qua kiểu cha ({{Base b = new Sub(); b.load();}}) chỉ chuẩn bị {{catch (IOException)}}, nên subclass:
-- **Không được ném checked exception rộng hơn hoặc mới**, chỉ được ném ít hơn, hẹp hơn (subclass của IOException), hoặc không ném gì.
-- **Không được thu hẹp access modifier** (public → protected sẽ làm hỏng code gọi từ package khác).
-- Unchecked exception (RuntimeException) thì thoải mái.
+### Vì sao đúng (quy tắc override cho checked exception)
+Quy tắc xuất phát từ **Liskov substitution** (nguyên lý thay thế Liskov): code gọi qua kiểu cha ({{Base b = new Sub(); b.load();}}) chỉ chuẩn bị {{catch (IOException)}}. Nên subclass:
+- **Không được** ném checked exception **rộng hơn** hoặc **mới** (không thuộc nhánh IOException). Chỉ được ném **ít hơn**, hoặc **hẹp hơn** (subclass của IOException), hoặc **không ném gì**.
+- **Không được** thu hẹp quyền truy cập ({{public}} → {{protected}} sẽ làm code cũ gọi từ nơi khác bị lỗi).
+- Unchecked exception ({{RuntimeException}} và con) không bị giới hạn như trên.
 
-Vì vậy bỏ throws hoàn toàn hợp lệ, và {{FileNotFoundException}} là subclass của {{IOException}} nên cũng hợp lệ.
+Vì vậy: {{public void load()}} (bỏ throws) hợp lệ. {{public void load() throws FileNotFoundException}} hợp lệ vì {{FileNotFoundException}} là subclass của {{IOException}}.
 
-### Vì sao các phương án còn lại sai
-- **throws Exception**: rộng hơn IOException, caller không bắt được → lỗi biên dịch.
-- **protected ...**: giảm quyền truy cập từ public xuống protected → lỗi "attempting to assign weaker access privileges".
-- **throws IOException, SQLException**: SQLException là checked exception mới, không thuộc IOException.
+### Vì sao mỗi phương án sai
+- **A) public void load() throws Exception**: sai. {{Exception}} rộng hơn {{IOException}} (có thể là nhiều loại khác) → caller kiểu cha không bắt hết được → không biên dịch.
+- **B) public void load()**: đúng như trên.
+- **C) protected void load() throws IOException**: sai. Giảm access từ {{public}} xuống {{protected}} (thu hẹp quyền truy cập) → lỗi "attempting to assign weaker access privileges".
+- **D) public void load() throws FileNotFoundException**: đúng vì {{FileNotFoundException}} là con của {{IOException}}.
+- **E) public void load() throws IOException, SQLException**: sai. {{SQLException}} là checked exception **không** nằm trong nhánh {{IOException}} → thuộc loại "ném thêm checked exception mới" không được phép.
 
-> Senior tip: đây là lý do nhiều framework hiện đại (Spring, JPA) chuộng unchecked exception: interface có thể tiến hoá mà không phá vỡ toàn bộ implementation. Khi thiết kế interface public, cân nhắc kỹ checked exception vì sau này không thể thêm mà không breaking change.`
+> Senior tip: nhiều framework (Spring, JPA) ưu tiên unchecked exception để interface có thể mở rộng mà không phá mọi implementation. Khi thiết kế API public, cân nhắc kỹ vì thêm checked exception sau này là breaking change.`
 },
 {
   id: 'qz-core-014', topic: 'core',
@@ -274,18 +262,19 @@ Vì vậy bỏ throws hoàn toàn hợp lệ, và {{FileNotFoundException}} là 
   answer: 2,
   explain: `**Đáp án đúng: {{static <T> void copy(List<? extends T> src, List<? super T> dst)}}.**
 
-### Vì sao đúng
-Quy tắc **PECS** (Producer Extends, Consumer Super):
-- {{src}} **sản xuất** phần tử để mình đọc → {{? extends T}}: đọc ra chắc chắn là {{T}}.
-- {{dst}} **tiêu thụ** phần tử mình ghi vào → {{? super T}}: chắc chắn nhận được {{T}}.
-Với lời gọi thứ nhất, compiler suy ra {{T = Integer}} (hoặc Number): {{List<Integer>}} khớp {{? extends Integer}}, {{List<Number>}} khớp {{? super Integer}}. Lời gọi thứ hai tương tự với {{T = Double}}. Đây chính là chữ ký của {{Collections.copy}}.
+### Vì sao đúng (quy tắc PECS: Producer Extends, Consumer Super)
+- {{src}} là **nguồn đọc** (producer) → dùng {{? extends T}}: đọc ra thì phần tử có kiểu là {{T}} (hoặc con của T).
+- {{dst}} là **nơi ghi** (consumer) → dùng {{? super T}}: chắc chắn chấp nhận được {{T}} để add vào.
 
-### Vì sao các phương án còn lại sai
-- **List<T> src, List<T> dst**: generics là **invariant**, {{T}} phải vừa là Integer vừa là Number → không suy luận được, lỗi biên dịch.
-- **? super Number src, ? extends Number dst**: đảo ngược PECS; đọc từ {{? super}} chỉ được {{Object}}, và không thể {{add}} vào {{List<? extends Number>}} (trừ null). Ngoài ra {{List<Integer>}} không khớp {{? super Number}}.
-- **List<Object>**: {{List<Integer>}} **không phải** subtype của {{List<Object>}} (invariance), nên cả hai lời gọi đều lỗi.
+Với {{copy(List<Integer> src, List<Number> dst)}}: compiler suy ra {{T = Integer}} ({{List<Integer>}} hợp {{? extends Integer}}, {{List<Number>}} hợp {{? super Integer}}). Với {{copy(List<Double> src, List<Object> dst)}} suy ra {{T = Double}}. Đây là chữ ký tương tự {{Collections.copy}}.
 
-> Senior tip: wildcard nên đặt ở **tham số** của API public để caller linh hoạt, nhưng **không** đặt ở kiểu trả về (bắt caller phải xử lý wildcard). Đọc chữ ký {{Stream.flatMap}}, {{Comparator.comparing}} trong JDK là cách học PECS nhanh nhất.`
+### Vì sao mỗi phương án sai
+- **A) static <T> void copy(List<T> src, List<T> dst)**: sai vì generics **bất biến**. {{T}} phải vừa là {{Integer}} vừa là {{Number}} cùng lúc → không suy luận được, biên dịch lỗi.
+- **B) static void copy(List<? super Number> src, List<? extends Number> dst)**: sai vì đảo ngược PECS. Đọc từ {{? super Number}} chỉ nhận được {{Object}} (không an toàn đọc thành {{Number}}), và không thể {{add}} phần tử {{Number}} vào {{List<? extends Number>}} (vì không biết chính xác kiểu con nào). Ngoài ra {{List<Integer>}} không phải {{? super Number}} nên lời gọi đầu tiên cũng không khớp.
+- **C) static <T> void copy(List<? extends T> src, List<? super T> dst)**: đúng như trên.
+- **D) static void copy(List<Object> src, List<Object> dst)**: sai vì {{List<Integer>}} **không phải** subtype của {{List<Object>}} (bất biến), nên cả hai lời gọi đều lỗi kiểu.
+
+> Senior tip: đặt wildcard ở **tham số** API để caller linh hoạt; tránh trả về kiểu wildcard. Xem {{Stream.flatMap}}, {{Comparator.comparing}} để quen PECS.`
 },
 {
   id: 'qz-core-015', topic: 'core',
@@ -6000,5 +5989,837 @@ String v = Optional.<String>ofNullable(null)
 "Tôi dùng {{ofNullable}} để bọc giá trị có thể null, {{map/filter/flatMap}} để biến đổi an toàn, và {{orElse/orElseGet/orElseThrow}} để lấy kết quả cuối. Chuỗi thao tác trên Optional rỗng sẽ ngắn mạch trả rỗng thay vì ném NPE, giúp code rõ ý hơn."
 
 > Senior tip: tránh lồng Optional ({{Optional<Optional<T>>}}) và tránh dùng Optional chỉ để thay {{if (x != null)}} ở mọi nơi; dùng nó khi thể hiện rõ ngữ nghĩa 'có thể vắng mặt' ở biên API, nhất là giá trị trả về của truy vấn.`
+ },
+
+// ===================== T2312: Java 17/21 features =====================
+{ id: 'qz-modern-031', topic: 'modern', multi: true,
+  q: `Sealed interface {{Result}} permits {{Success}}, {{Failure}}. Switch expression nào exhaustive mà không cần default? (Chọn 2)`,
+  options: [
+    `switch (r) { case Success s -> ...; case Failure f -> ...; }`,
+    `switch (r) { case Success s -> ...; case Result r -> ...; }`,
+    `switch (r) { case null -> ...; case Success s -> ...; }`,
+    `switch (r) { case Success s when s.data() != null -> ...; case Failure f -> ...; }`
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Pattern matching cho switch (Java 21) kết hợp sealed type cho phép compiler kiểm tra exhaustiveness tại compile-time. Nếu switch cover hết tất cả subtype trong {{permits}} thì không cần {{default}}. Thiếu subtype nào → lỗi biên dịch "the switch expression does not cover all possible input values".
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Sealed type**: tập subtype hữu hạn, cố định tại compile-time.
+- **Pattern switch**: mỗi {{case}} là pattern. Compiler kiểm tra union của các pattern có bao phủ hết sealed type không.
+- **Exhaustive**: cover hết subtype → không cần {{default}}. Lợi ích: thêm subtype mới vào sealed type sẽ làm switch cũ không biên dịch được, ép developer cập nhật.
+ 
+### Ví dụ cụ thể
+~~~java
+sealed interface Result permits Success, Failure {}
+record Success(String data) implements Result {}
+record Failure(Exception ex) implements Result {}
+
+String handle(Result r) {
+    return switch (r) {
+        case Success s -> "OK: " + s.data();
+        case Failure f -> "ERR: " + f.ex().getMessage();
+    };
+}
+~~~
+ 
+### Lỗi hay gặp
+- Dùng {{default}} thay vì liệt kê hết subtype → mất exhaustiveness check.
+- Guard pattern ({{case Success s when ...}}) không tính vào exhaustiveness nếu không có case không guard cho cùng type.
+- Selector type không phải sealed ({{Object}}, {{Result}} interface không sealed) → bắt buộc default.
+ 
+### Trả lời phỏng vấn thế nào
+"Sealed type + pattern switch cho exhaustiveness check compile-time. Tôi cover hết subtype, không dùng default, để thêm subtype mới báo lỗi ngay. Compiler giúp maintain API an toàn."
+ 
+> Senior tip: sealed hierarchy public qua module là cam kết API; thêm subtype là breaking change. Consumer dùng switch exhaustive sẽ không biên dịch được cho đến khi cập nhật.`
 },
+
+{ id: 'qz-modern-032', topic: 'modern',
+  q: `Record {{Range(int lo, int hi)}} dùng compact constructor hoán đổi nếu lo > hi. {{new Range(5, 1).equals(new Range(1, 5))}} trả về gì?`,
+  options: [
+    `true`,
+    `false`,
+    `Lỗi biên dịch`,
+    `Ném exception runtime`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Compact constructor (Java 16) không khai báo tham số; các tham số ngầm ({{lo}}, {{hi}}) được phép gán lại. Compiler tự chèn {{this.lo = lo; this.hi = hi;}} **ở cuối** constructor, nên giá trị sau khi hoán đổi mới được lưu vào field. Record sinh {{equals}} so sánh từng component → hai Range(1,5) bằng nhau.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Compact constructor**: cú pháp gọn để validate/normalize parameter trước khi gán field. Không có danh sách tham số; tham số ngầm có cùng tên component.
+- **Field assignment**: compiler chèn gán field **sau** thân compact constructor → normalization có hiệu lực.
+- **Record equals**: tự động so sánh tất cả component theo giá trị ({{Objects.equals}}).
+ 
+### Ví dụ cụ thể
+~~~java
+record Range(int lo, int hi) {
+    Range {
+        if (lo > hi) { int t = lo; lo = hi; hi = t; }
+    }
+}
+var r1 = new Range(5, 1);  // lưu lo=1, hi=5
+var r2 = new Range(1, 5);  // lưu lo=1, hi=5
+System.out.println(r1.equals(r2)); // true
+System.out.println(r1); // Range[lo=1, hi=5]
+~~~
+ 
+### Lỗi hay gặp
+- Tưởng compact constructor không được gán lại tham số (thực ra được, chỉ không được gán {{this.lo}} trực tiếp).
+- Hoán đổi âm thầm trong code nghiệp vụ: thường ném {{IllegalArgumentException}} rõ ràng hơn là tự sửa dữ liệu sai.
+ 
+### Trả lời phỏng vấn thế nào
+"Compact constructor cho phép normalize parameter trước khi gán field. Compiler chèn gán field ở cuối nên giá trị đã normalize được lưu. Record equals/hashCode tự sinh theo component, nên hai Range(1,5) bằng nhau."
+ 
+> Senior tip: compact constructor là nơi validate ({{Objects.requireNonNull}}, {{List.copyOf}} cho collection component). Tránh tự "sửa" dữ liệu đầu vào âm thầm trong production; ném exception rõ ràng hơn.`
+},
+
+{ id: 'qz-modern-033', topic: 'modern',
+  q: `Text block (Java 15) sau có bao nhiêu dòng và có newline cuối không?
+~~~java
+String sql = """
+    SELECT id, name
+    FROM users
+    WHERE status = 'ACTIVE'
+    """;
+~~~`,
+  options: [
+    `3 dòng, có newline cuối`,
+    `3 dòng, không có newline cuối`,
+    `4 dòng, có newline cuối`,
+    `2 dòng, không có newline cuối`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Text block ({{""" ... """}}) giữ newline của từng dòng nội dung. Quy tắc incidental indentation: compiler đo indentation nhỏ nhất của các dòng nội dung VÀ dòng đóng {{"""}}, cắt bỏ bấy nhiêu. Dòng đóng {{"""}} nằm trên dòng riêng → ngay trước nó có newline, và newline đó **được tính vào chuỗi**.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+1. Sau {{"""}} mở: chỉ được có whitespace rồi xuống dòng; newline đó **không** vào chuỗi.
+2. Incidental indentation: lấy min indent của mọi dòng nội dung + dòng đóng {{"""}}, cắt bấy nhiêu ở đầu mỗi dòng.
+3. Mỗi dòng nội dung giữ newline của nó → dòng cuối cũng có newline trước {{"""}} đóng.
+ 
+### Ví dụ cụ thể
+~~~java
+String s = """
+    line1
+    line2
+    """;
+System.out.println(s.lines().count()); // 2 (hai dòng nội dung)
+System.out.println(s.endsWith("\n"));  // true (có newline cuối)
+~~~
+ 
+### Lỗi hay gặp
+- Tưởng text block không có newline cuối → so sánh chuỗi thất bại.
+- Quên incidental indentation: đặt {{"""}} đóng lệch sẽ làm indent không đều, gây lỗi hoặc kết quả không mong muốn.
+ 
+### Trả lời phỏng vấn thế nào
+"Text block giữ newline từng dòng, kể cả newline trước {{"""}} đóng. Incidental indentation cắt bớt khoảng trống đầu dòng theo min indent. Tôi dùng {{stripTrailing()}} khi không muốn newline thừa, và {{formatted()}} cho template."
+ 
+> Senior tip: text block rất hợp JSON/SQL trong test; dùng {{stripIndent}}/{{translateEscapes}} khi cần.`
+},
+
+{ id: 'qz-modern-034', topic: 'modern', multi: true,
+  q: `Virtual thread (Java 21) phù hợp nhất cho workload nào? (Chọn 2)`,
+  options: [
+    `I/O-bound: nhiều task chờ network/DB/file`,
+    `CPU-bound: mã hoá, nén dữ liệu`,
+    `Task cần thread pool cố định`,
+    `Muốn giới hạn số truy cập đồng thời tới DB, dùng Semaphore hoặc connection pool thay vì giới hạn thread`,
+    `ThreadLocal bị cấm dùng trong virtual thread`
+  ],
+  answer: [0, 3],
+  explain: `**Tóm tắt:** Virtual thread rất rẻ (stack trên heap, chỉ lớn theo nhu cầu), tạo/huỷ gần như không tốn gì. Phù hợp I/O-bound: unmount khi chờ I/O, carrier thread chạy việc khác. Không pool virtual thread; giới hạn đồng thời bằng Semaphore/connection pool. CPU-bound vẫn bị giới hạn số core.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Virtual thread**: thread do JVM quản lý, không gắn 1-1 với OS thread. Chờ I/O → unmount khỏi carrier (platform thread) → carrier phục vụ virtual thread khác.
+- **Không pool**: pool sinh ra để tiết kiệm thread đắt; virtual thread rẻ nên không cần pool. {{Executors.newVirtualThreadPerTaskExecutor()}} tạo mới cho mỗi task.
+- **Giới hạn tài nguyên**: không giới hạn thread nữa → phải giới hạn tại tài nguyên (DB pool, Semaphore, rate limiter).
+- **CPU-bound**: virtual thread không thêm CPU core; tính toán nặng vẫn cần platform thread pool cỡ bằng số core.
+ 
+### Ví dụ cụ thể
+~~~java
+// ĐÚNG: I/O-bound, không pool, giới hạn bằng Semaphore
+var executor = Executors.newVirtualThreadPerTaskExecutor();
+Semaphore dbLimit = new Semaphore(20); // HikariCP maxPoolSize=20
+for (Request req : requests) {
+    executor.submit(() -> {
+        dbLimit.acquire();
+        try { return jdbc.query(req.sql()); }
+        finally { dbLimit.release(); }
+    });
+}
+~~~
+ 
+### Lỗi hay gặp
+- Tạo pool virtual thread cố định (ví dụ 100) → biến virtual thread thành thread đắt, mất lợi ích.
+- Dùng ThreadLocal cache nặng trên virtual thread → hàng nghìn thread × object nặng = OOM.
+- Chạy CPU-bound trên virtual thread tin rằng "nhanh hơn" → không đúng.
+ 
+### Trả lời phỏng vấn thế nào
+"Virtual thread cho I/O-bound, không pool, giới hạn bằng Semaphore/connection pool. CPU-bound dùng platform thread pool. ThreadLocal tốn bộ nhớ trên hàng triệu virtual thread; JDK 25 có ScopedValue thay thế."
+ 
+> Senior tip: trên JDK 21-23, kiểm tra pinning (synchronized quanh I/O) bằng JFR {{jdk.VirtualThreadPinned}} trước khi rollout.`
+},
+
+{ id: 'qz-modern-035', topic: 'modern',
+  q: `Stream pipeline sau in ra gì?
+~~~java
+List<Integer> nums = List.of(1, 2, 3, 4, 5);
+int result = nums.stream()
+    .peek(n -> System.out.print("p:" + n + " "))
+    .filter(n -> n > 2)
+    .map(n -> n * 10)
+    .findFirst()
+    .orElse(-1);
+System.out.println("r:" + result);
+~~~`,
+  options: [
+    `p:1 p:2 p:3 p:4 p:5 r:30`,
+    `p:1 p:2 p:3 r:30`,
+    `p:1 p:2 p:3 p:4 r:40`,
+    `r:30 (peek không chạy vì short-circuit)`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Stream là **lazy** và xử lý **từng phần tử đi hết pipeline** (vertical), không phải xong từng bước cho cả danh sách (horizontal). {{findFirst}} là short-circuiting terminal operation: dừng ngay khi có phần tử đầu tiên thỏa mãn.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Vertical execution**: phần tử 1 đi hết pipeline → phần tử 2 đi hết pipeline → ...
+- **Short-circuit**: {{findFirst}}, {{anyMatch}}, {{limit}}... dừng sớm khi đã có kết quả, không kéo phần tử còn lại.
+- {{peek}} chạy khi phần tử đi qua; nếu short-circuit dừng trước, các phần tử sau không bao giờ tới peek.
+ 
+### Bấm từng bước
+~~~text
+1 → peek in "p:1 " → filter false (1>2) → bỏ
+2 → peek in "p:2 " → filter false → bỏ
+3 → peek in "p:3 " → filter true → map 30 → findFirst có kết quả → DỪNG
+4, 5: không bao giờ được kéo ra
+r:30
+~~~
+ 
+### Lỗi hay gặp
+- Đặt side effect quan trọng (ghi log audit, cập nhật state) trong {{peek}}/{{map}}: số lần chạy phụ thuộc short-circuit.
+- {{List.of(1,2,3).stream().peek(log::info).count()}} trên Java 9+ không in gì vì count tính thẳng từ size.
+ 
+### Trả lời phỏng vấn thế nào
+"Stream lazy + vertical execution. findFirst dừng sớm nên peek chỉ in 1,2,3. Tôi không bao giờ để logic nghiệp vụ quan trọng trong peek/map vì có thể không chạy khi short-circuit."
+ 
+> Senior tip: {{count()}} trên nguồn biết size (List, array) từ Java 9 không kéo phần tử → peek không chạy.`
+},
+
+{ id: 'qz-modern-036', topic: 'modern', multi: true,
+  q: `Cần gom {{List<Order>>}} theo {{customer}} thành {{Map<String, Long>}} đếm số đơn mỗi khách. Code nào đúng và hiệu quả? (Chọn 2)`,
+  options: [
+    `orders.stream().collect(Collectors.groupingBy(Order::customer, Collectors.counting()))`,
+    `orders.stream().collect(Collectors.toMap(Order::customer, o -> 1L, Long::sum))`,
+    `orders.stream().collect(Collectors.groupingBy(Order::customer, TreeMap::new, Collectors.counting()))`,
+    `orders.parallelStream().collect(Collectors.groupingByConcurrent(Order::customer, Collectors.counting()))`,
+    `orders.stream().collect(Collectors.toMap(Order::customer, o -> 1L, (a,b) -> a+b))`
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** {{groupingBy}} có overload 3 tham số: classifier, mapFactory, downstream collector. Downstream {{counting()}} trả {{Long}} trực tiếp, tránh tạo List trung gian. {{TreeMap::new}} cho key sắp xếp. {{toMap}} không có downstream nên phải tự merge, dễ sai khi key trùng.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **groupingBy(classifier, mapFactory, downstream)**: phân chia stream theo classifier, mỗi nhóm dùng downstream collector gom kết quả. mapFactory cho phép chọn loại Map kết quả ({{HashMap}}, {{TreeMap}}, {{LinkedHashMap}}...).
+- **counting()**: downstream collector đếm số phần tử, trả {{Long}}. Hiệu quả hơn {{toList()}} rồi {{size()}} vì không tạo List trung gian.
+- **toMap(keyMapper, valueMapper, mergeFunction)**: cần merge function khi key trùng; {{groupingBy}} được thiết kế cho việc này.
+ 
+### Ví dụ cụ thể
+~~~java
+// ĐÚNG: counting() downstream, key sắp xếp
+Map<String, Long> counts = orders.stream().collect(
+    Collectors.groupingBy(Order::customer, TreeMap::new, Collectors.counting()));
+
+// ĐÚNG NHƯNG KHÔNG SẮP XẾP KEY
+Map<String, Long> counts2 = orders.stream().collect(
+    Collectors.groupingBy(Order::customer, Collectors.counting()));
+
+// SAI: toMap cần merge function, dễ nhầm value
+Map<String, Long> wrong = orders.stream().collect(
+    Collectors.toMap(Order::customer, o -> 1L, Long::sum)); // OK nhưng không sắp xếp
+~~~
+ 
+### Lỗi hay gặp
+- Dùng {{toMap}} không có merge function khi key có thể trùng → {{IllegalStateException: Duplicate key}}.
+- Dùng {{groupingBy}} mặc định ({{toList()}} downstream) rồi {{mapValues(List::size)}} → tạo List rác cho GC.
+- {{groupingByConcurrent}} cho stream tuần tự là thừa, chỉ dùng cho parallel stream.
+ 
+### Trả lời phỏng vấn thế nào
+"Tôi dùng groupingBy với downstream counting() để đếm trực tiếp, không tạo List trung gian. Nếu cần key sắp xếp, thêm TreeMap::new. toMap chỉ dùng khi value không cần gom nhóm."
+ 
+> Senior tip: downstream collector là chỗ tối ưu bộ nhớ: counting(), summingLong, mapping(..., toSet()), maxBy... tránh List trung gian.`
+},
+
+{ id: 'qz-modern-037', topic: 'modern',
+  q: `Sequenced Collections (Java 21, JEP 431) thêm method nào vào {{List}}, {{Deque}}, {{LinkedHashSet}}?`,
+  options: [
+    `getFirst(), getLast(), addFirst(), addLast(), removeFirst(), removeLast(), reversed()`,
+    `sort(), shuffle(), parallelStream()`,
+    `stream(), collect(), forEach()`,
+    `of(), copyOf(), toArray()`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** JEP 431 (Java 21) đưa các method thống nhất cho collection có thứ tự (sequenced): {{getFirst}}, {{getLast}}, {{addFirst}}, {{addLast}}, {{removeFirst}}, {{removeLast}}, {{reversed}}. {{reversed()}} trả về **view** đảo ngược, ghi xuyên xuống collection gốc nếu gốc sửa được.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- Trước Java 21, mỗi loại collection có cách khác: {{list.get(list.size()-1)}}, {{deque.peekLast()}}, {{linkedHashMap.entrySet().iterator().next()}}... Gây nhầm lẫn và code không portable.
+- Interface mới {{SequencedCollection}}, {{SequencedSet}}, {{SequencedMap}} định nghĩa các method chung.
+- {{reversed()}} là view: thay đổi qua view ảnh hưởng collection gốc (ngược lại thì cũng đúng).
+ 
+### Ví dụ cụ thể
+~~~java
+List<String> list = new ArrayList<>(List.of("a", "b", "c"));
+list.addFirst("z");      // ["z", "a", "b", "c"]
+list.addLast("y");       // ["z", "a", "b", "c", "y"]
+var rev = list.reversed(); // view: ["y", "c", "b", "a", "z"]
+rev.addFirst("x");       // list thành ["z", "a", "b", "c", "y", "x"]
+~~~
+ 
+### Lỗi hay gặp
+- Class tự implement {{List}} có sẵn method {{getFirst()}} khác kiểu trả về → không biên dịch được khi nâng lên Java 21.
+- {{reversed()}} trên collection bất biến ({{List.of}}) ném {{UnsupportedOperationException}} khi add/remove.
+- View đảo ngược dùng chung với collection gốc → race condition nếu không đồng bộ.
+ 
+### Trả lời phỏng vấn thế nào
+"Java 21 chuẩn hóa first/last/add/remove/reversed cho tất cả sequenced collection. Tôi dùng {{list.getFirst()}} thay {{list.get(0)}}, {{deque.getLast()}} thay {{deque.peekLast()}}. Khi nâng cấp, kiểm tra class custom implement List có xung đột tên method không."
+ 
+> Senior tip: {{reversed()}} trả về view, không phải copy. Sửa view = sửa gốc.`
+},
+
+{ id: 'qz-modern-038', topic: 'modern', multi: true,
+  q: `Optional chain: {{Optional.ofNullable(getName()).map(String::trim).filter(s -> !s.isBlank()).orElse("Guest")}}. Nếu {{getName()}} trả về {{null}}, kết quả là gì? (Chọn 2)`,
+  options: [
+    `Ném NullPointerException ở ofNullable`,
+    `Ném NullPointerException ở map`,
+    `Trả về "Guest"`,
+    `Trả về Optional rỗng`,
+    `map không được gọi`
+  ],
+  answer: [2, 4],
+  explain: `**Tóm tắt:** {{Optional.ofNullable(null)}} tạo {{Optional.empty()}}. Trên Optional rỗng, {{map}}, {{filter}}, {{flatMap}} là **no-op** (không gọi hàm bên trong) và trả về Optional rỗng. {{orElse("Guest")}} trả về giá trị mặc định khi rỗng.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **ofNullable**: bọc giá trị có thể null → Optional có giá trị hoặc Optional.empty().
+- **Short-circuit trên Optional rỗng**: {{map}}/{{filter}}/{{ifPresent}}... trên Optional rỗng không thực thi lambda, chỉ trả Optional.empty() mới. Đây là "lazy" theo nghĩa pipeline.
+- **orElse**: chỉ chạy khi Optional rỗng, trả về giá trị mặc định.
+ 
+### Ví dụ cụ thể
+~~~java
+String name = Optional.ofNullable(getName())      // null -> Optional.empty()
+    .map(String::trim)                            // không chạy, trả empty()
+    .filter(s -> !s.isBlank())                    // không chạy, trả empty()
+    .orElse("Guest");                             // rỗng -> "Guest"
+~~~
+ 
+### Lỗi hay gặp
+- {{Optional.of(null)}} ném NPE ngay tại tạo Optional (khác với ofNullable).
+- Tưởng {{map}} trên Optional rỗng ném NPE → thực ra an toàn, không chạy lambda.
+- {{orElse(expensive())}} luôn tính expensive() (eager); nên dùng {{orElseGet(() -> expensive())}} (lazy).
+ 
+### Trả lời phỏng vấn thế nào
+"Optional.ofNullable(null) tạo empty. map/filter trên empty là no-op. orElse trả default. Tôi dùng chuỗi này cho giá trị có thể null từ DB/HTTP param: an toàn, ngắn gọn, không NPE."
+ 
+> Senior tip: tránh Optional làm field/tham số; dùng cho return type. {{orElseGet}} lazy hơn {{orElse}} khi default tốn kém.`
+},
+
+{ id: 'qz-modern-039', topic: 'modern',
+  q: `Record {{Money(String currency, long amount)}} chứa component {{List<String> tags}}. Hai instance {{Money("USD", 100, List.of("a"))}} và {{Money("USD", 100, List.of("a"))}} bằng nhau không?`,
+  options: [
+    `Có, vì List.of trả về list immutable và equals so sánh nội dung`,
+    `Không, vì record so sánh tham chiếu list`,
+    `Chỉ bằng nhau nếu cùng instance list`,
+    `Lỗi runtime vì list không serializable`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Record equals/hashCode delegate sang equals/hashCode của từng component. {{List.of}} trả về list immutable có equals so sánh **nội dung** (element-wise). Hai record cùng component values (kể cả list cùng nội dung) → equals true.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Record equals**: tự sinh so sánh từng component bằng {{Objects.equals}}. Với component là List → gọi List.equals (so sánh size và từng element).
+- **List.of**: immutable list, equals so sánh nội dung ({{a.equals(b)}} cho từng element).
+- **Shallow immutability**: record đảm bảo reference component không đổi, nhưng object component trỏ tới có thể mutable. Nếu component mutable ({{ArrayList}}) thì equals/hashCode không ổn định.
+ 
+### Ví dụ cụ thể
+~~~java
+record TaggedMoney(String currency, long amount, List<String> tags) {}
+var m1 = new TaggedMoney("USD", 100, List.of("a", "b"));
+var m2 = new TaggedMoney("USD", 100, List.of("a", "b"));
+System.out.println(m1.equals(m2)); // true - List.of equals so sánh nội dung
+
+// NHƯNG nếu dùng ArrayList:
+var m3 = new TaggedMoney("USD", 100, new ArrayList<>(List.of("a")));
+var m4 = new TaggedMoney("USD", 100, new ArrayList<>(List.of("a")));
+System.out.println(m3.equals(m4)); // false - ArrayList equals so sánh THAM CHIẾU
+~~~
+ 
+### Lỗi hay gặp
+- Dùng {{ArrayList}} hoặc object mutable làm component → hashCode/equals không ổn định khi object bị sửa.
+- Tự ghi đè equals/hashCode trên record (dễ sai contract).
+- Quên defensive copy trong compact constructor:
+~~~java
+TaggedMoney { tags = List.copyOf(tags); }
+~~~
+
+### Trả lời phỏng vấn thế nào
+"Record equals delegate sang component equals. List.of immutable so sánh nội dung → record bằng nhau. Nhưng ArrayList so sánh tham chiếu → record khác nhau. Tôi luôn dùng List.copyOf hoặc immutable collection cho component record."
+
+> Senior tip: compact constructor dùng code block trên đảm bảo component immutable an toàn cho equals/hashCode.`
+},
+
+{ id: 'qz-modern-040', topic: 'modern', multi: true,
+  q: `Stream {{Collectors.toMap}} với merge function {{(a,b) -> a}} (giữ giá trị cũ). Input: {{Stream.of("a", "b", "a")}} mapping {{s -> s.length()}}. Kết quả map có gì? (Chọn 2)`,
+  options: [
+    `{{a=1, b=1}}`,
+    `{{a=1, b=1, a=1}} -- duplicate key`,
+    `{{a=1, b=1}} nhưng thứ tự không xác định`,
+    `Ném IllegalStateException`,
+    `Merge function chỉ chạy cho key trùng`
+  ],
+  answer: [0, 4],
+  explain: `**Tóm tắt:** {{toMap(keyMapper, valueMapper, mergeFunction)}} với merge function {{(a,b) -> a}} giữ giá trị **đầu tiên** gặp cho mỗi key. Stream xử lý tuần tự: "a"→1 (key "a" lần 1), "b"→1 (key "b"), "a"→1 (key "a" lần 2, merge function chọn giá trị cũ = 1). Kết quả: {{a=1, b=1}}.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Merge function**: {{(oldValue, newValue) -> result}}. Được gọi **chỉ khi key trùng**. Tham số đầu là giá trị đã có, tham số hai là giá trị mới.
+- **Giữ cũ**: {{(a,b) -> a}} hoặc {{(old, nw) -> old}}.
+- **Giữ mới**: {{(a,b) -> b}}.
+- **Cộng dồn**: {{(a,b) -> a + b}} (cần type hỗ trợ +).
+ 
+### Ví dụ cụ thể
+~~~java
+Stream.of("a", "b", "a")
+    .collect(Collectors.toMap(
+        Function.identity(),      // key = string
+        s -> s.length(),          // value = length
+        (old, nw) -> old          // merge: giữ giá trị cũ
+    )); // {a=1, b=1}
+
+// Nếu giữ mới: (old, nw) -> nw -> {a=1, b=1} (cũng 1 vì length giống nhau)
+// Nếu cộng dồn: (old, nw) -> old + nw -> {a=2, b=1}
+~~~
+ 
+### Lỗi hay gặp
+- Nhầm thứ tự tham số merge function: {{(a,b)}} với {{a}} là giá trị **đã có**, {{b}} là giá trị **mới**.
+- Quên merge function khi key có thể trùng → IllegalStateException.
+- Dùng toMap cho gom nhóm phức tạp → nên dùng groupingBy.
+ 
+### Trả lời phỏng vấn thế nào
+"toMap merge function nhận (giá trị cũ, giá trị mới). (a,b)->a giữ lần đầu, (a,b)->b giữ lần sau. Tôi luôn nhớ: a là existing, b là incoming. Khi cần gom nhóm phức tạp dùng groupingBy."
+ 
+> Senior tip: merge function KHÔNG chạy cho key lần đầu tiên; chỉ chạy từ lần trùng thứ 2 trở đi.`
+},
+
+{ id: 'qz-modern-041', topic: 'modern',
+  q: `Pattern matching cho switch (Java 21) cho phép guard pattern {{when}}. Đoạn code sau in ra gì?
+~~~java
+Object obj = 150;
+String r = switch (obj) {
+    case Integer i when i > 100 -> "big";
+    case Integer i -> "int";
+    case String s -> "str:" + s.length();
+    default -> "other";
+};
+System.out.println(r);
+~~~`,
+  options: [
+    `big`,
+    `int`,
+    `str:3`,
+    `other`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Guarded pattern ({{case Type var when condition}}) trong switch expression (Java 21) cho phép lọc thêm sau khi khớp type. Các case được thử **từ trên xuống**; {{Integer i when i > 100}} khớp với 150 → "big".
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Pattern matching cho switch**: mở rộng switch để dùng type pattern, record pattern, guarded pattern.
+- **Guarded pattern**: {{case T v when booleanExpr}} — chỉ khớp khi type pattern khớp VÀ booleanExpr true.
+- **Thứ tự case**: quan trọng! Case cụ thể/guard phải đứng trước case tổng quát cùng type; ngược lại case tổng quát sẽ "bắt" tất cả (dominated case → lỗi biên dịch).
+ 
+### Ví dụ cụ thể
+~~~java
+String classify(Number n) {
+    return switch (n) {
+        case Integer i when i > 100 -> "big int";
+        case Integer i -> "int";
+        case Double d when d > 1e6 -> "huge double";
+        case Double d -> "double";
+        default -> "other";
+    };
+}
+~~~
+ 
+### Lỗi hay gặp
+- Đổi chỗ {{case Integer i}} lên trước {{case Integer i when i > 100}} → lỗi biên dịch "dominated by preceding case".
+- Guard pattern dùng {{||}} hoặc logic phức tạp khiến compiler không tối ưu được.
+- Quên {{default}} khi selector không phải sealed type ({{Object}}, {{Number}}) → lỗi exhaustiveness.
+ 
+### Trả lời phỏng vấn thế nào
+"Guarded pattern cho phép lọc chi tiết trong switch. Thứ tự case quan trọng: case có guard đứng trước case không guard cùng type. Selector không sealed thì bắt buộc có default."
+ 
+> Senior tip: switch exhaustive trên sealed type không cần default — thêm subtype mới sẽ báo lỗi compile ngay chỗ switch, rất an toàn khi maintain.`
+},
+
+{ id: 'qz-modern-042', topic: 'modern', multi: true,
+  q: `Virtual thread (JDK 21) gọi code có {{synchronized}} block bao quanh I/O. Cách nào KHÔNG gây pinning? (Chọn 2)`,
+  options: [
+    `Thay {{synchronized}} bằng {{ReentrantLock}}`,
+    `Dùng {{Thread.sleep()}} thay vì I/O blocking`,
+    `Nâng cấp lên JDK 24+ (JEP 491)`,
+    `Bọc I/O trong {{CompletableFuture.supplyAsync()}}`,
+    `Giảm số carrier thread bằng {{-Djdk.virtualThreadScheduler.parallelism}}`
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** Pinning (JDK 21-23): virtual thread giữ {{synchronized}} monitor → không unmount được khi chặn I/O → carrier thread bị ghim. Cách tránh: (1) thay {{synchronized}} bằng {{ReentrantLock}} (AQS-based, không dùng monitor), (2) lên JDK 24+ (JEP 491 cho unmount trong synchronized).
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Pinning**: virtual thread không unmount khi đang giữ monitor {{synchronized}} hoặc native frame. Carrier bị chiếm suốt I/O.
+- **ReentrantLock**: dùng AQS state + queue, không phải monitor → virtual thread unmount bình thường khi {{lock()}} chờ hoặc I/O trong critical section.
+- **JEP 491 (JDK 24)**: cho phép virtual thread unmount khi giữ monitor {{synchronized}} (trừ native/foreign function).
+ 
+### Ví dụ cụ thể
+~~~java
+// JDK 21: PINNED
+synchronized (lock) { result = jdbc.query(sql); }
+
+// SỬA 1: ReentrantLock (JDK 21+)
+lock.lock();
+try { result = jdbc.query(sql); }
+finally { lock.unlock(); }
+
+// SỬA 2: JDK 24+ - synchronized OK
+synchronized (lock) { result = jdbc.query(sql); } // không pin nữa
+~~~
+ 
+### Lỗi hay gặp
+- Tin rằng {{Thread.sleep}} trong synchronized không pin (sleep unmount được, nhưng JDBC/socket read mới là vấn đề).
+- {{CompletableFuture.supplyAsync}} dùng commonPool (platform thread) → không giải quyết pinning của virtual thread.
+- Giảm carrier thread làm tình hình tệ hơn (ít thread hơn để bị pin).
+ 
+### Trả lời phỏng vấn thế nào
+"JDK 21-23: synchronized quanh I/O gây pinning. Tôi dùng ReentrantLock hoặc lên JDK 24+. Luôn đo JFR {{jdk.VirtualThreadPinned}} để phát hiện pinning trước deploy."
+ 
+> Senior tip: thư viện/driver cũ dùng synchronized quanh I/O là nguồn pinning phổ biến. Kiểm tra driver JDBC, Netty, HTTP client phiên bản mới.`
+},
+
+{ id: 'qz-modern-043', topic: 'modern',
+  q: `Text block (Java 15) sau cho kết quả gì?
+~~~java
+String s = """
+    line1
+    line2
+    """;
+System.out.println(s.lines().count() + " " + s.endsWith("\n"));
+~~~`,
+  options: [
+    `2 true`,
+    `2 false`,
+    `3 true`,
+    `1 true`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Text block có 2 dòng nội dung ({{lines()}} đếm theo newline). Dòng đóng {{"""}} nằm trên dòng riêng → ngay trước nó có newline, và newline đó **được tính vào chuỗi** → {{endsWith("\n")}} là {{true}}.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **lines()**: tách chuỗi theo line terminator ({{ \n, \r, \r\n }}), trả stream các dòng. Text block 2 dòng nội dung → count = 2.
+- **Trailing newline**: text block luôn có newline trước {{"""}} đóng (trừ khi dùng escape {{\\}} ở cuối dòng cuối). Đây là thiết kế để dễ nối chuỗi và generate code.
+- **Incidental indentation**: compiler cắt indent nhỏ nhất của tất cả dòng nội dung + dòng đóng {{"""}}.
+ 
+### Ví dụ cụ thể
+~~~java
+String a = """
+    hello
+    world
+    """; // "hello\nworld\n" -> lines=2, endsWith \n=true
+
+String b = """
+    hello\
+    world"""; // escape newline -> "helloworld" -> lines=1, endsWith \n=false
+~~~
+ 
+### Lỗi hay gặp
+- So sánh text block với chuỗi literal không có newline cuối → equals false.
+- Quên {{stripTrailing()}} khi không muốn newline thừa.
+- Dùng {{lines().toList()}} thay vì {{split("\n")}} để tách dòng đúng chuẩn.
+ 
+### Trả lời phỏng vấn thế nào
+"Text block giữ newline từng dòng, kể cả newline trước {{"""}} đóng. lines() đếm 2 dòng. Tôi dùng stripTrailing() khi không muốn newline cuối, formatted() cho template."
+ 
+> Senior tip: text block rất hợp JSON/SQL trong test; dùng stripIndent/translateEscapes khi cần.`
+},
+
+{ id: 'qz-modern-044', topic: 'modern', multi: true,
+  q: `Optional chain: {{Optional.ofNullable(null).map(s -> s.toUpperCase()).orElse("DEFAULT")}}. Phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    `Không ném NullPointerException`,
+    `map được gọi với null`,
+    `Kết quả là "DEFAULT"`,
+    `Ném NullPointerException ở map`,
+    `Kết quả là Optional rỗng`
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** {{Optional.ofNullable(null)}} tạo {{Optional.empty()}}. Trên Optional rỗng, {{map}} là **no-op** (không gọi lambda, không ném NPE) và trả Optional rỗng. {{orElse("DEFAULT")}} trả về giá trị mặc định khi rỗng.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **ofNullable**: null → Optional.empty().
+- **map trên empty**: short-circuit, không thực thi mapper, trả empty(). Điểm mạnh: chuỗi {{map}}/{{filter}} an toàn tuyệt đối với null input.
+- **orElse**: chỉ chạy khi Optional rỗng, trả giá trị mặc định.
+ 
+### Ví dụ cụ thể
+~~~java
+String result = Optional.ofNullable(null)
+    .map(String::toUpperCase)   // không chạy, trả empty()
+    .orElse("DEFAULT");         // "DEFAULT"
+    
+// So sánh: Optional.of(null) -> NPE ngay tại of()
+Optional.of(null).map(...); // NullPointerException tại of()
+~~~
+ 
+### Lỗi hay gặp
+- {{Optional.of(null)}} ném NPE ngay (khác ofNullable).
+- Tưởng {{map}} trên empty ném NPE → thực ra an toàn, không chạy lambda.
+- {{orElse(expensive())}} luôn tính expensive() (eager); dùng {{orElseGet(() -> expensive())}} cho lazy.
+ 
+### Trả lời phỏng vấn thế nào
+"ofNullable(null) -> empty. map/filter trên empty là no-op. orElse trả default. Tôi dùng chuỗi này cho giá trị có thể null từ DB/HTTP: an toàn, không NPE, code ngắn gọn."
+ 
+> Senior tip: tránh Optional làm field/tham số; dùng cho return type. orElseGet lazy hơn orElse khi default tốn kém.`
+},
+
+{ id: 'qz-modern-045', topic: 'modern',
+  q: `Switch expression trên sealed type {{Result}} permits {{Success}}, {{Failure}}. Code nào exhaustive mà không cần default?`,
+  options: [
+    `switch (r) { case Success s -> ...; case Failure f -> ...; }`,
+    `switch (r) { case Success s -> ...; case Result r -> ...; }`,
+    `switch (r) { case null -> ...; case Success s -> ...; }`,
+    `switch (r) { case Success s -> ...; }`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Pattern matching cho switch (Java 21) kết hợp sealed type cho phép compiler kiểm tra exhaustiveness tại compile-time. Nếu switch cover hết tất cả subtype trong {{permits}} thì không cần {{default}}. Thiếu subtype nào → lỗi biên dịch "the switch expression does not cover all possible input values".
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Sealed type**: tập subtype hữu hạn, cố định tại compile-time.
+- **Pattern switch**: mỗi {{case}} là pattern. Compiler kiểm tra union của các pattern có bao phủ hết sealed type không.
+- **Exhaustive**: cover hết subtype → không cần {{default}}. Lợi ích: thêm subtype mới vào sealed type sẽ làm switch cũ không biên dịch được, ép developer cập nhật.
+ 
+### Ví dụ cụ thể
+~~~java
+sealed interface Result permits Success, Failure {}
+record Success(String data) implements Result {}
+record Failure(Exception ex) implements Result {}
+
+String handle(Result r) {
+    return switch (r) {
+        case Success s -> "OK: " + s.data();
+        case Failure f -> "ERR: " + f.ex().getMessage();
+    };
+}
+~~~
+ 
+### Lỗi hay gặp
+- Dùng {{default}} thay vì liệt kê hết subtype → mất exhaustiveness check.
+- Guard pattern ({{case Success s when ...}}) không tính vào exhaustiveness nếu không có case không guard cho cùng type.
+- Selector type không phải sealed ({{Object}}, {{Result}} interface không sealed) → bắt buộc default.
+ 
+### Trả lời phỏng vấn thế nào
+"Sealed type + pattern switch cho exhaustiveness check compile-time. Tôi cover hết subtype, không dùng default, để thêm subtype mới báo lỗi ngay. Compiler giúp maintain API an toàn."
+ 
+> Senior tip: sealed hierarchy public qua module là cam kết API; thêm subtype là breaking change. Consumer dùng switch exhaustive sẽ không biên dịch được cho đến khi cập nhật.`
+},
+
+{ id: 'qz-modern-046', topic: 'modern', multi: true,
+  q: `Record {{Point(int x, int y)}} dùng làm key {{HashMap}}. Hai instance {{Point(1, 2)}} và {{Point(1, 2)}} có bằng nhau theo equals/hashCode không? (Chọn 2)`,
+  options: [
+    `Có, record tự sinh equals/hashCode so sánh tất cả component`,
+    `Không, record là reference type nên equals so sánh tham chiếu`,
+    `Chỉ bằng nhau nếu cùng instance (==)`,
+    `Lỗi biên dịch vì record không implement equals/hashCode`,
+    `equals trả về true, hashCode giống nhau`
+  ],
+  answer: [0, 4],
+  explain: `**Tóm tắt:** Record (Java 16) tự động sinh {{equals}}, {{hashCode}}, {{toString}} dựa trên **giá trị tất cả component**. Hai record cùng component values → equals true, hashCode giống nhau. HashMap dùng equals/hashCode → hoạt động đúng.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Record component**: mỗi trường declaration thành private final field + accessor + tham gia equals/hashCode/toString tự động.
+- **Value-based equality**: record được thiết kế làm transparent carrier cho dữ liệu bất biến; equals/hashCode theo component values, không phải identity.
+- **HashMap contract**: key cần equals/hashCode consistent → record thỏa mãn tự động.
+ 
+### Ví dụ cụ thể
+~~~java
+record Point(int x, int y) {}
+Map<Point, String> map = new HashMap<>();
+map.put(new Point(1, 2), "A");
+System.out.println(map.get(new Point(1, 2))); // "A" - tìm thấy!
+System.out.println(map.get(new Point(2, 1))); // null - giá trị khác
+~~~
+ 
+### Lỗi hay gặp
+- Component mutable ({{List}}, array) trong record → equals/hashCode delegate sang object mutable, không ổn định khi object bị sửa. Dùng immutable component hoặc defensive copy.
+- Tự ghi đè equals/hashCode trên record (có thể nhưng dễ sai contract).
+ 
+### Trả lời phỏng vấn thế nào
+"Record tự sinh equals/hashCode theo component, rất tiện làm key HashMap/Set. Nhưng chỉ bất biến nông: component mutable (List, array) vẫn bị sửa từ ngoài. Tôi dùng component immutable hoặc defensive copy trong compact constructor."
+
+> Senior tip: record phù hợp DTO/value object. Compact constructor dùng code block dưới để normalize:
+~~~java
+Point { x = Math.max(0, x); y = Math.max(0, y); }
+~~~`
+},
+
+{ id: 'qz-modern-047', topic: 'modern',
+  q: `Stream API bẫy: {{List.of(1,2,3).stream().peek(System.out::print).count()}} trên Java 17 in ra gì?`,
+  options: [
+    `123`,
+    `Không in gì (count không kéo phần tử)`,
+    `In 123 rồi in count`,
+    `Lỗi biên dịch`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Từ Java 9, {{count()}} trên nguồn biết size (List, array, range) được tối ưu: tính thẳng từ size **không kéo phần tử** qua pipeline. Do đó {{peek}} không bao giờ chạy, không in gì.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Short-circuit/optimization**: {{count()}} là terminal operation nhưng nếu source {{SIZED}} (biết size trước), JVM trả về size ngay lập tức.
+- **Vertical execution** vẫn đúng, nhưng {{count()}} là ngoại lệ: nó không cần xử lý từng phần tử.
+- {{peek}} chỉ chạy khi phần tử đi qua pipeline; nếu không kéo phần tử thì peek không chạy.
+ 
+### Ví dụ cụ thể
+~~~java
+// Java 17:
+List.of(1,2,3).stream().peek(System.out::print).count(); // không in gì, trả 3
+
+// Ép kéo phần tử:
+List.of(1,2,3).stream().peek(System.out::print).collect(Collectors.toList()); // in 123
+~~~
+ 
+### Lỗi hay gặp
+- Dùng {{peek}} để log/audit trong production: có thể không chạy khi terminal op là {{count}}, {{findFirst}} trên nguồn sized, v.v.
+- Tưởng stream luôn xử lý từng phần tử cho mọi terminal op.
+ 
+### Trả lời phỏng vấn thế nào
+"count() trên List/array từ Java 9 không kéo phần tử → peek không chạy. Tôi không bao giờ để logic quan trọng trong peek/map. Để log mọi phần tử, dùng collect(toList()) hoặc forEach."
+ 
+> Senior tip: các terminal op không kéo phần tử: count() trên SIZED, findFirst() trên empty, anyMatch(false) v.v.`
+},
+
+{ id: 'qz-modern-048', topic: 'modern', multi: true,
+  q: `Collectors.toMap với key trùng và không có merge function. Code nào an toàn? (Chọn 2)`,
+  options: [
+    `stream.collect(Collectors.toMap(Function.identity(), v -> v, (a,b) -> a))`,
+    `stream.collect(Collectors.toMap(Function.identity(), v -> v))`,
+    `stream.collect(Collectors.groupingBy(Function.identity(), Collectors.counting()))`,
+    `stream.collect(Collectors.toMap(k -> k, v -> v, (a,b) -> b, TreeMap::new))`,
+    `stream.collect(Collectors.toMap(k -> k, v -> v, (a,b) -> a + b))`
+  ],
+  answer: [0, 3],
+  explain: `**Tóm tắt:** {{toMap}} yêu cầu merge function (tham số 3) khi key có thể trùng, nếu không ném {{IllegalStateException: Duplicate key}}. Merge function nhận (oldValue, newValue) và trả về giá trị muốn giữ. Có thể thêm mapFactory (tham số 4) để chọn loại Map.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **toMap(keyMapper, valueMapper, mergeFunction, mapFactory)**: 4 tham số. mergeFunction bắt buộc khi key trùng. mapFactory cho phép {{TreeMap::new}}, {{LinkedHashMap::new}}...
+- **groupingBy**: thiết kế cho gom nhóm key trùng, downstream collector xử lý giá trị ({{counting}}, {{summingLong}}, {{toList}}...).
+- Merge function thường dùng: {{(a,b) -> a}} (giữ cũ), {{(a,b) -> b}} (giữ mới), {{(a,b) -> a+b}} (cộng dồn).
+ 
+### Ví dụ cụ thể
+~~~java
+List<String> items = List.of("a", "b", "a", "c");
+// An toàn: merge function giữ giá trị đầu
+Map<String, Integer> m1 = items.stream()
+    .collect(Collectors.toMap(Function.identity(), s -> 1, (a,b) -> a));
+// An toàn: TreeMap + merge function
+Map<String, Integer> m2 = items.stream()
+    .collect(Collectors.toMap(Function.identity(), s -> 1, (a,b) -> b, TreeMap::new));
+
+// NGUY HIỂM: không có merge function, trùng key → IllegalStateException
+Map<String, Integer> boom = items.stream()
+    .collect(Collectors.toMap(Function.identity(), s -> 1));
+~~~
+ 
+### Lỗi hay gặp
+- Quên merge function khi dữ liệu thực tế có thể trùng key → crash production.
+- Dùng {{groupingBy}} khi chỉ cần unique key (overhead tạo List/group).
+- Merge function {{(a,b) -> a + b}} với String nối chuỗi có thể gây OOM nếu value lớn.
+ 
+### Trả lời phỏng vấn thế nào
+"toMap bắt buộc merge function khi key có thể trùng. Tôi dùng (a,b)->a (giữ cũ) hoặc (a,b)->b (giữ mới). Nếu cần gom nhóm phức tạp thì groupingBy với downstream collector. TreeMap::new làm mapFactory cho key sắp xếp."
+ 
+> Senior tip: toMap merge function chỉ chạy khi key TRÙNG; key đầu tiên không qua merge function.`
+},
+
+{ id: 'qz-modern-049', topic: 'modern',
+  q: `Record {{Range(int lo, int hi)}} có compact constructor normalize. {{new Range(5, 1).lo()}} trả về gì?
+~~~java
+Range {
+    if (lo > hi) { int t = lo; lo = hi; hi = t; }
+}
+~~~`,
+  options: [
+    `5`,
+    `1`,
+    `Lỗi biên dịch`,
+    `Ném exception`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Compact constructor (Java 16) không khai báo tham số; các tham số ngầm ({{lo}}, {{hi}}) được phép gán lại. Compiler tự chèn {{this.lo = lo; this.hi = hi;}} **ở cuối** constructor, nên giá trị sau khi hoán đổi mới được lưu vào field. Accessor {{lo()}} trả về field đã normalize.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Compact constructor**: cú pháp gọn để validate/normalize parameter trước khi gán field. Không có danh sách tham số; tham số ngầm có cùng tên component.
+- **Field assignment**: compiler chèn gán field **sau** thân compact constructor → normalization có hiệu lực.
+- **Accessor**: record tự sinh getter {{lo()}}, {{hi()}} trả về field private final.
+ 
+### Ví dụ cụ thể
+~~~java
+record Range(int lo, int hi) {
+    Range {
+        if (lo > hi) { int t = lo; lo = hi; hi = t; }
+    }
+}
+var r = new Range(5, 1);  // constructor chạy: hoán đổi -> lo=1, hi=5
+System.out.println(r.lo());  // 1
+System.out.println(r.hi());  // 5
+~~~
+ 
+### Lỗi hay gặp
+- Tưởng compact constructor không được gán lại tham số (thực ra được, chỉ không được gán {{this.lo}} trực tiếp).
+- Hoán đổi âm thầm trong code nghiệp vụ: thường ném {{IllegalArgumentException}} rõ ràng hơn là tự sửa dữ liệu sai.
+ 
+### Trả lời phỏng vấn thế nào
+"Compact constructor cho phép normalize parameter trước khi gán field. Compiler chèn gán field ở cuối nên giá trị đã normalize được lưu. Accessor trả về field đã normalize."
+ 
+> Senior tip: compact constructor là nơi validate ({{Objects.requireNonNull}}, {{List.copyOf}} cho collection component). Tránh tự "sửa" dữ liệu đầu vào âm thầm trong production; ném exception rõ ràng hơn.`
+},
+
+{ id: 'qz-modern-050', topic: 'modern', multi: true,
+  q: `Sealed interface {{Shape}} permits {{Circle}}, {{Rectangle}}. Switch expression nào KHÔNG exhaustive? (Chọn 2)`,
+  options: [
+    `switch (s) { case Circle c -> ...; case Rectangle r -> ...; }`,
+    `switch (s) { case Circle c -> ...; case Shape s -> ...; }`,
+    `switch (s) { case null -> ...; case Circle c -> ...; }`,
+    `switch (s) { case Circle c when c.radius() > 0 -> ...; case Rectangle r -> ...; }`
+  ],
+  answer: [1, 3],
+  explain: `**Tóm tắt:** Switch exhaustive trên sealed type cần cover hết tất cả subtype trong {{permits}}. Case guard ({{when}}) không tính vào exhaustiveness nếu không có case không guard cho cùng type. Case {{Shape}} (parent type) không cover được subtype cụ thể.
+ 
+### Cái gì → vì sao cần → hoạt động thế nào
+- **Exhaustiveness**: compiler kiểm tra union các pattern có bao phủ hết sealed type không.
+- **Guard pattern**: {{case T v when ...}} là lọc thêm, không mở rộng coverage. Nếu chỉ có guard case cho Circle mà không có case Circle đơn giản → Circle không được coi là covered.
+- **Parent type pattern**: {{case Shape s}} match tất cả subtype nhưng compiler **không** coi là exhaustive cho sealed type vì không phân biệt được từng subtype.
+ 
+### Ví dụ cụ thể
+~~~java
+sealed interface Shape permits Circle, Rectangle {}
+record Circle(double radius) implements Shape {}
+record Rectangle(double w, double h) implements Shape {}
+
+// ĐÚNG: exhaustive
+switch (s) { case Circle c -> ...; case Rectangle r -> ...; }
+
+// SAI: guard không cover Circle
+switch (s) { case Circle c when c.radius() > 0 -> ...; case Rectangle r -> ...; }
+
+// SAI: parent type không exhaustive
+switch (s) { case Circle c -> ...; case Shape s -> ...; }
+~~~
+ 
+### Lỗi hay gặp
+- Dùng guard pattern cho tất cả case của một type → mất exhaustiveness.
+- Dùng {{default}} hoặc parent type pattern → mất compile-time safety.
+- Thêm subtype mới vào sealed type mà switch cũ dùng guard/parent type vẫn biên dịch được (nhưng logic sai).
+ 
+### Trả lời phỏng vấn thế nào
+"Exhaustiveness cần case cụ thể cho từng subtype. Guard pattern chỉ lọc thêm, không thay thế case cơ bản. Tôi luôn viết case không guard cho từng subtype, rồi thêm guard case nếu cần lọc."
+ 
+> Senior tip: compiler báo lỗi "does not cover all possible input values" chính xác subtype nào bị thiếu — rất hữu ích khi maintain sealed hierarchy.`
+}
 );
