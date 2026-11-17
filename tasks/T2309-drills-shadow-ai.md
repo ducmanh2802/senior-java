@@ -1,6 +1,6 @@
 # T2309 — 25 câu shadowing tiếng Anh: nói về dự án tích hợp AI vào backend Java
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/drills-shadow.js`
 After: T2282
@@ -16,7 +16,6 @@ AGENTS.md (đọc mục liên quan). Chỉ THÊM trước dòng `);` cuối file
 
 ## Notes
 - Trước: 281 câu `drill-shadow-*` (id lớn nhất `drill-shadow-280`). Sau: 306 câu (id lớn nhất `drill-shadow-305`) — tăng đúng 25.
-- Đã thêm 25 câu `drill-shadow-281`..`drill-shadow-305` (theme tech/project/design) về tích hợp AI/LLM vào backend Java (Spring Boot gọi LLM API, timeout/retry, circuit breaker/fallback, cache Redis, chi phí token, đánh giá output, bảo mật/che dữ liệu nhạy cảm, secret manager, shadow rollout, feature flag, rollback, tracing).
-- Kiểm tra: `node --check js/data/drills-shadow.js` OK; `node scripts/build-light-index.js` OK (ghi `js/data/index-light.js`).
-- `node scripts/validate.js` chưa OK do lỗi có sẵn ở các file ngoài phạm vi sở hữu (không chỉnh sửa): `q-claude.js`, `sdlc.js`, `labs-thread.js` (id lab-thread-007/008), `lessons-claude.js`, `projects.js`, `path.js` (claude-xxx related refs). File `js/data/drills-shadow.js` của task không có lỗi cú pháp và không bị validator báo lỗi riêng.
-- (Claude 22:00) Mở lại lần 3: lần trước nội dung bị guard của task khác khôi phục (HEAD còn ghi DONE). Đã commit Status TODO nên lần này nội dung sẽ được giữ.
+- Đã thêm 25 câu `drill-shadow-281`..`drill-shadow-305` (theme tech/project/design) về tích hợp AI/LLM vào backend Java (Spring Boot gọi LLM API, timeout, retry, cache Redis, chi phí token, đánh giá output, che dữ liệu khách hàng, secret không gửi vào prompt, feature flag, rollout phần trăm, rollback, human-in-the-loop, circuit breaker, lưu prompt/config ngoài code).
+- Kiểm tra: `node --check js/data/drills-shadow.js` OK; `node scripts/build-light-index.js` OK (ghi `js/data/index-light.js`); `node scripts/validate.js drills-shadow.js` OK (không lỗi nào thuộc file của task).
+- `node scripts/validate.js` toàn repo thoát mã 1 do lỗi có sẵn ở file ngoài phạm vi sở hữu: `quiz-ccao-2.js` (lỗi cú pháp `missing ) after argument list`), không được sửa theo quy tắc chỉ sở hữu `js/data/drills-shadow.js`.
