@@ -5380,12 +5380,12 @@ Khách xem portfolio, hiểu ngay bạn đã từng giải quyết bài toán t�
   topic: 'remote',
   level: 'mid',
   q: 'Thị trường freelance cho dev Java hiện nay: ít job hơn hay chỉ dịch chuyển? Job nhỏ, đơn giản (CRUD, script) bị AI thay thế như thế nào, còn job phức tạp thì sao, và điều đó có ý nghĩa gì với người mới vào nghề?',
-  a: `**Tóm tắt:** Thị trường không hẳn "ít job" một cách đồng đều — nó đang **dịch chuyển**. Theo nghiên cứu "Who Is AI Replacing? The Impact of Generative AI on Online Freelancing Platforms" (Management Science, 2025; ~2 triệu job post, 61 nước, 7/2021–7/2023), job post của nhóm việc dễ tự động hoá (viết, code) **giảm khoảng 21%** trong 8 tháng sau khi ChatGPT ra mắt. Cạnh tranh tăng, nhưng các job còn lại **phức tạp hơn và trả cao hơn**. Với người mới, điều quan trọng không phải "cạnh tranh với AI để làm CRUD giá rẻ", mà là học cách giải quyết bài toán phức tạp đủ để khách còn cần con người.
+  a: `**Tóm tắt:** Thị trường không hẳn "ít job" một cách đồng đều — nó đang **dịch chuyển**. Nhiều nghiên cứu và dữ liệu nền tảng cho thấy nhóm job dễ tự động hoá (viết nội dung, code đơn giản) giảm số lượng sau khi công cụ AI sinh code phổ biến, cạnh tranh tăng, nhưng các job còn lại **phức tạp hơn và trả cao hơn**. Với người mới, điều quan trọng không phải "cạnh tranh với AI để làm CRUD giá rẻ", mà là học cách giải quyết bài toán phức tạp đủ để khách còn cần con người.
 
 ### 1. Dịch chuyển chứ không biến mất hoàn toàn
 Trước hết cần hiểu một khái niệm: **tự động hoá (automation)** là việc dùng công cụ (hiện nay là AI sinh code — AI code generation) thay thế một phần công việc. Khi chi phí để làm một việc đơn giản giảm mạnh nhờ AI, nhu cầu "trả tiền để thuê người làm việc đơn giản đó" cũng giảm. Tuy nhiên, nhu cầu giải quyết các vấn đề phức tạp, có nhiều ràng buộc kinh doanh vẫn còn — và thường tăng giá trị.
 
-Nghiên cứu trên cho thấy xu hướng rõ ràng: nhóm job dễ bị tự động hoá giảm mạnh về số lượng. Cùng lúc đó, các job còn lại trở nên phức tạp hơn và có xu hướng trả cao hơn. Đây là lý do tại sao nói "dịch chuyển" thay vì "chỉ cạn kiệt".
+Xu hướng rõ ràng: nhóm job dễ bị tự động hoá giảm mạnh về số lượng. Cùng lúc đó, các job còn lại trở nên phức tạp hơn và có xu hướng trả cao hơn. Đây là lý do tại sao nói "dịch chuyển" thay vì "chỉ cạn kiệt".
 
 ### 2. Job nào bị ảnh hưởng nhiều, job nào vẫn có giá trị
 | Loại job | Mức ảnh hưởng | Giải thích |
@@ -5473,10 +5473,10 @@ Dùng khối ~~~seq để hình dung quy trình nhiều bên:
 ~~~seq
 title: Quy trình tìm job ít cạnh tranh (Upwork)
 actors: Freelancer \| Upwork \| Client
-Freelancer -> Upwork: Cập nhật profile hẹp + by chứng (case study có số liệu)
+Freelancer -> Upwork: Cập nhật profile hẹp + bằng chứng (case study)
 Client -> Upwork: Đăng job (có screening questions, yêu cầu kỹ năng hiếm)
 Upwork -> Freelancer: Gợi ý job (search results)
-Freelancer -> Upwork: Lọc client (spent/hire rate/payment verified) + gửi proposal sớm
+Freelancer -> Upwork: Lọc client (spent, hire rate) + gửi proposal sớm
 Client -> Upwork: Xem profile/proposal (ưu tiên người hiểu vấn đề)
 Client -> Freelancer: Gửi invite (nếu ấn tượng)
 Freelancer -> Client: Phản hồi nhanh (lợi thế GMT+7)
