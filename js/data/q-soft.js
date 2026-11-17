@@ -7319,4 +7319,372 @@ Một team 15 dev (Spring Boot 3.3, PostgreSQL 15, Kafka) có coverage 85%, CI 2
   ],
   tags: ['coverage', 'mutation-testing', 'quality-metrics', 'CI', 'engineering-leadership']
 },
+{
+  id: 'behavioral-055',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Kể lại một lần bạn xử lý sự cố production lớn. Bạn đảm nhận vai trò gì, giao tiếp với các bên liên quan ra sao, và sau sự cố bạn tổ chức postmortem như thế nào để sự cố không xảy ra lại?',
+  a: `**Tóm tắt:** Câu hỏi này không hỏi "bạn có từng gặp sự cố không" mà đánh giá phản xạ dưới áp lực, vai trò cá nhân, khả năng tìm nguyên nhân gốc và kỷ luật hậu kiểm sau sự cố. Câu trả lời mạnh luôn có bối cảnh cụ thể, hành động của bạn, số liệu trước/sau và một thay đổi quy trình đã áp dụng thực tế.
+
+### Sự cố production và vai trò của bạn
+**Sự cố production (incident)** là sự cố xảy ra trên hệ thống đang chạy thật và ảnh hưởng người dùng hoặc doanh nghiệp — ví dụ giao dịch thanh toán bị lỗi hoặc đơn hàng không hiển thị. Đây khác lỗi trên máy bạn vì dữ liệu là thật, và mỗi phút hệ thống bị gián đoạn có thể mất tiền trực tiếp.
+
+Trong một sự cố, các vai trò thường thấy là:
+- **Incident commander (IC)**: người điều phối và ra quyết định khẩn (rollback hay không).
+- **Người điều tra**: tra cứu log và metric để tìm nguyên nhân gốc.
+- **Người giao tiếp**: cập nhật stakeholder định kỳ. **Stakeholder** là bên liên quan quan tâm tới hệ thống, chẳng hạn product manager hoặc nhóm chăm sóc khách hàng.
+
+**Tại sao cần phân vai**: dưới áp lực, nếu mọi người cùng khám phá code thì không ai báo lại khách hàng và không ai quyết định rollback.
+
+**Hoạt động theo từng bước**:
+1. Nhận được cảnh báo, chẳng hạn bảng điều khiển cho thấy tỷ lệ lỗi tăng đột ngột.
+2. Đánh giá **blast radius** (phạm vi ảnh hưởng): bao nhiêu đơn hàng, bao nhiêu khách hàng, vùng nào bị ảnh hưởng.
+3. Giảm thiệt hại trước: rollback phiên bản mới hoặc tắt tính năng gây lỗi bằng **feature flag**.
+4. Sau khi hệ thống ổn định, mới điều tra sâu và viết postmortem.
+
+### Giao tiếp dưới áp lực
+Khi hệ thống lỗi, stakeholder cần nắm rõ: hệ thống đã sửa chưa, khách hàng bị ảnh hưởng bao nhiêu, dự kiến khôi phục khi nào.
+
+**Cách giao tiếp hiệu quả**:
+- Cập nhật định kỳ (ví dụ mỗi 15 phút), dù không có gì mới.
+- Dùng ngôn ngữ nghiệp vụ, không thuật ngữ kỹ thuật: thay vì "connection pool cạn" hãy nói "hệ thống quá tải, không nhận được đơn hàng mới".
+- Đưa con số: tỷ lệ lỗi, số đơn bị ảnh hưởng, thời gian dự kiến khôi phục.
+- **MTTR** là **thời gian trung bình khôi phục** — từ khi phát hiện sự cố đến khi hệ thống trở lại bình thường, giống như đo thời gian từ khi bơm xe hỏng đến khi xe chạy lại.
+
+### Postmortem — học hỏi thay vì tìm thủ phạm
+**Postmortem (hậu kiểm)** là cuộc họp sau sự cố để phân tích nguyên nhân gốc, không phải cuộc họp để xử phạt ai. Nguyên tắc quan trọng nhất là **blameless postmortem**: không đổ lỗi cho cá nhân, mà xem sai lầm là dấu hiệu quy trình chưa tốt.
+
+**Bảng 5 tại sao (5 Whys)** — hỏi "tại sao" lặp lại cho đến khi tìm được gốc:
+1. Tại sao khách hàng bị ảnh hưởng? → vì cache hiển thị trạng thái đơn cũ.
+2. Tại sao cache còn dữ liệu cũ? → vì bản deploy mới không xoá cache khi trạng thái đơn thay đổi.
+3. Nguyên nhân gốc: thiếu quy trình kiểm tra invalidation cache trước khi deploy.
+
+Hành động sau postmortem phải cụ thể, có người phụ trách và hạn chót: thêm bước kiểm tra cache vào checklist deploy, viết test cho invalidation, thêm cảnh báo khi tỷ lệ cache miss tăng đột ngột.
+
+### Mã ví dụ đơn giản: ngắt mạch (circuit breaker)
+**Circuit breaker (ngắt mạch)** là cơ chế ngừng gọi dịch vụ đang lỗi trong một khoảng thời gian để dịch vụ đó có thời gian phục hồi, giống như tự động cắt điện khi đường dây ngắn ngắt để trống cháy nhà.
+~~~java
+// Ví dụ đơn giản: ngắt mạch tạm dừng gọi khi gọi liên tục lỗi
+class OrderClient {
+    private volatile boolean circuitOpen = false;
+    private long openedAt;
+
+    OrderResponse getOrder(String id) {
+        if (circuitOpen && System.currentTimeMillis() - openedAt < 60_000) {
+            return fallbackOrder(id); // trong 1 phút, không gọi service đang lỗi
+        }
+        try {
+            return httpClient.get(id);
+        } catch (Exception e) {
+            circuitOpen = true;           // bật ngắt mạch
+            openedAt = System.currentTimeMillis();
+            throw e;
+        }
+    }
+}
+~~~
+
+### Lỗi hay gặp
+- **Đang điều tra mà quên báo stakeholder** → stakeholder lo lắng và gọi liên tục, làm mất tập trung đội kỹ thuật.
+- **Rollback quá muộn** → thiệt hại tiếp tục lớn.
+- **Postmortem biến thành tìm thủ phạm** → đội mất niềm tin, sau đó ai cũng giấu lỗi.
+- **Không có hành động cụ thể** → viết "cần cẩn thận hơn" mà không đổi quy trình, sự cố sẽ lặp lại.
+
+### Ví dụ đời thực
+Dịch vụ đơn hàng (Spring Boot 3.1, PostgreSQL 15, Redis 7) déploi bản cập nhật đổi cách tính trạng thái đơn vào lúc 19:10 thứ Sáu — giờ cao điểm. Triệu chứng: 14.200 khách hàng xem trạng thái đơn "đã giao" trong khi hàng vẫn đang vận chuyển, cuộc gọi tới chăm sóc khách hàng tăng 300% so với bình thường, tỷ lệ lỗi API nhảy từ 0,2% lên 21%.
+
+Tôi đảm nhận vai trò incident commander. Việc đầu tiên là **rollback bản deploy trong 5 phút** để giảm thiệt hại. Sau khi hệ thống ổn định lại (tổng MTTR khoảng 32 phút), tôi dẫn điều tra và viết postmortem.
+
+Nguyên nhân gốc: code mới cập nhật trạng thái đơn trong database nhưng không gọi lệnh xoá cache Redis, nên khách hàng thấy trạng thái cũ được lưu trong cache. Hành động sau sự cố: thêm bước kiểm tra cache vào checklist deploy, viết test invalidation, thêm cảnh báo khi tỷ lệ cache miss tăng hơn 20% trong 5 phút, và quy định mỗi deploy phải có một incident commander rõ ràng.
+
+Kết quả đo được: trong 3 tháng sau, không còn sự cố nào do stale cache, và số lần chăm sóc khách hàng phải xin lỗi do hệ thống hiển thị sai giảm gần không còn. MTTR trung bình của đội giảm từ 45 phút xuống 12 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Một lần tôi đảm nhận incident commander khi dịch vụ đơn hàng déploi bản cập nhật vào giờ cao điểm thứ Sáu. 14.200 khách hàng xem trạng thái đơn đã giao trong khi hàng vẫn đang vận chuyển, nhóm chăm sóc khách hàng nhận hơn 300% cuộc gọi so với bình thường, và tỷ lệ lỗi API nhảy lên 21%. Tôi rollback bản deploy trong 5 phút, cập nhật stakeholder mỗi 15 phút bằng ngôn ngữ nghiệp vụ, và hệ thống ổn định sau tổng cộng 32 phút. Sau đó tôi dẫn postmortem blameless: nguyên nhân là code mới cập nhật database nhưng không xoá cache Redis, nên khách hàng thấy trạng thái cũ. Tôi đưa ra 4 hành động: thêm bước kiểm tra cache vào checklist deploy, viết test invalidation, thêm cảnh báo cache miss, và quy định incident commander cho mỗi deploy. Ba tháng sau không còn sự cố stale cache nào, MTTR giảm từ 45 phút xuống 12 phút. Bài học: giảm thiệt hại trước, sau đó mới tìm nguyên nhân, và postmortem phải sinh ra hành động cụ thể, không chỉ lời hứa."
+
+**Trả lời mẫu ngắn (Tiếng Anh):**
+"Last year I was incident commander when our order service deployed a bug during Friday peak hours. 14,200 customers saw delivered status while packages were still shipping, customer support calls jumped 300%, and API error rate rose to 21%. I rolled back the deploy within 5 minutes, updated stakeholders every 15 minutes in business language, and the system recovered in 32 minutes total. Then I led a blameless postmortem: the root cause was new code updating the database without invalidating the Redis cache. I added four actions: cache-invalidation step in deploy checklist, tests, cache-miss alerts, and a named incident commander for every deploy. Three months later, no more stale-cache incidents and MTTR dropped from 45 to 12 minutes."
+
+> Senior tip: sau mỗi sự cố, hãy hỏi "quy trình nào đã để sự cố này xảy ra?" chứ không phải "ai đã gây ra". Nếu postmortem kết thúc bằng xử phạt người đưa commit, team sẽ giấu lỗi và sự cố tiếp theo sẽ khó phát hiện hơn.`,
+  follow: [
+    'Bạn xử lý thế nào nếu sự cố xảy ra lúc 2 giờ sáng và bạn không trực ca?',
+    'Tiêu chí quyết định rollback của bạn là gì?',
+    'Sau sự cố, bạn làm gì để postmortem không biến thành tìm thủ phạm?'
+  ],
+  tags: ['incident', 'postmortem', 'incident-commander', 'STAR', 'leadership']
+},
+{
+  id: 'behavioral-056',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn mentoring một junior (kỹ sư ít kinh nghiệm), nhưng anh ta hay chép mã gợi ý từ công cụ viết code bằng AI vào pull request mà không đọc và không test. Bạn xử lý tình huống này thế nào?',
+  a: `**Tóm tắt:** Công cụ viết code bằng AI giúp viết mã nhanh hơn, nhưng junior dễ chép mã gợi ý mà không hiểu, tạo ra nợ kỹ thuật và lỗi bảo mật. Câu hỏi đánh giá cách bạn mentor: dạy người khác nghĩ chí trách, không chỉ sửa code thay họ.
+
+### Công cụ viết code bằng AI và rủi ro khi dùng sai
+**Công cụ viết code bằng AI (AI coding tool)**, ví dụ GitHub Copilot hay Claude Code, là phần mềm gợi ý mã lập trình dựa trên mô hình ngôn ngữ lớn (**LLM**). LLM đọc hàng tỷ dòng code rồi dự đoán chữ tiếp theo, nên nó hay viết mã nhìn đúng nhưng lại có thể sai logic.
+
+**Hallucination (ảo giác)** là hiện tượng AI tạo ra thông tin sai một cách tự tin — ví dụ gọi một method không tồn tại, dùng thư viện bị lỗi thời, hoặc bỏ qua trường hợp null.
+
+**Tại sao junior dễ mắc nhiếp**: junior chưa có đủ kinh nghiệm để nhận ra mã sai, và readily cho rằng "AI viết thì chắc chắn đúng". Kết quả là pull request chứa code chưa hiểu, khó bảo trì, và có thể gây lỗi production.
+
+**Pull request (PR)** là yêu cầu gộp mã vào kho code chung, đi kèm review từ đồng nghiệp trước khi hợp nhất.
+
+### Cách mentoring từng bước
+**Bước 1: Không sửa code thay junior.** Nếu bạn sửa code của họ, họ chỉ học được "anh sửa cái này", không học cách tự phát hiện lỗi.
+
+**Bước 2: Yêu cầu junior giải thích từng dòng.** Ngồi cùng và hỏi: "Dòng này làm gì? Nếu method này trả về null sẽ sao?". Nếu junior không giải thích được, đó là dấu hiệu anh ta chép mà không đọc.
+
+**Bước 3: Buộc viết test trước khi nhận code AI.** Test ép junior phải suy nghĩ về đầu vào, đầu ra và trường hợp đặc biệt (edge case), thay vì tin tưởng mù lòa vào AI.
+
+**Bước 4: Chạy thử trên dữ liệu thật hoặc local.** Code chạy được trên máy dev không có nghĩa chạy đúng trong production với dữ liệu thật.
+
+**Bước 5: Review cùng và đánh dấu lỗi.** Ghi nhận lỗi junior thường gặp (ví dụ quên kiểm tra null) để anh ta tự kiểm tra lần sau.
+
+### Mã ví dụ: code AI tạo ra có lỗi
+~~~java
+// Code AI gợi ý: lấy danh sách đơn hàng của khách hàng, có vẻ đúng nhưng bị lỗi
+public List<Order> findOrders(String customerId) {
+    List<Order> orders = orderRepository.findByCustomer(customerId);
+    return orders.stream()             // NullPointerException nếu repository trả về null
+        .filter(o -> !o.isCancelled())
+        .collect(Collectors.toList());
+}
+~~~
+
+Nếu orderRepository.findByCustomer trả về null (một số triển khai cũ làm vậy), dòng orders.stream() sẽ ném NullPointerException. Cách dùng AI đúng là đọc hiểu, rồi viết mã bảo vệ:
+
+~~~java
+public List<Order> findOrders(String customerId) {
+    List<Order> orders = orderRepository.findByCustomer(customerId);
+    if (orders == null) {             // bảo vệ trước khi dùng
+        orders = List.of();
+    }
+    return orders.stream()
+        .filter(o -> !o.isCancelled())
+        .collect(Collectors.toList());
+}
+~~~
+
+**Luật vàng**: AI viết gợi ý, con người chịu trách nhiệm. Mọi dòng code từ AI phải được đọc, hiểu và test như code tự viết.
+
+### Lỗi hay gặp khi mentor
+- **Sửa code thay junior** → junior không tiến bộ, bạn trở thành nút thắt.
+- **Chỉ nói "đọc lại code đi" mà không chỉ cách đọc** → junior vẫn không biết cần xem điều gì.
+- **Bỏ qua test vì AI viết nhanh** → code chạy được trên máy dev nhưng sai trên production.
+- **Cho junior làm việc đơn lẻ quá lâu** → sai lầm tích lũy trước khi được phát hiện.
+
+### Ví dụ đời thực
+Một junior trong team tôi được giao viết hàm tính phí ship. Anh ta dùng AI tạo code trong 10 phút, pull request chỉ 40 dòng, tôi duyệt nhanh vì bận. Hai tuần sau, production ghi nhận phí ship là 0 với đơn hàng nặng vì code AI bỏ qua trường hợp trọng lượng null và lấy mặc định là 0, làm mất khoảng 45 triệu đồng doanh thu trong tháng đó.
+
+Sau sự cố, tôi mentoring lại junior theo quy trình 5 bước trên: cùng viết test cho trường hợp trọng lượng null, yêu cầu anh ta giải thích từng dòng trước khi merge, và đính kèm checklist "code từ AI cần: đọc, hiểu, test edge case, chạy local".
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi từng mentoring một junior hay chép mã gợi ý từ Copilot vào pull request mà không đọc, không test. Thay vì sửa code thay anh ta, tôi ngồi cùng giải thích từng dòng: function này làm gì, trường hợp null xử lý thế nào, và bắt anh ta viết test trước khi nhận code AI. Ví dụ AI tạo hàm lấy đơn hàng nhưng bỏ qua null từ repository, sẽ gây NullPointerException; tôi dạy cách bảo vệ bằng List.of() và viết test edge case. Sau một sự cố production do code AI bỏ qua trường hợp trọng lượng null làm phí ship bằng 0, tôi thêm checklist "đọc, hiểu, test, chạy local" cho mọi code từ AI. Hai quý sau, pull request của junior không còn gây lỗi và anh ta tự review được code AI trước khi gửi. Bài học: AI tăng tốc độ viết code, nhưng con người vẫn phải chịu trách nhiệm chất lượng, và mentor là giúp junior xây dựng thói quen đó."
+
+**Trả lời mẫu ngắn (Tiếng Anh):**
+"A junior on my team kept pasting Copilot suggestions into pull requests without reading or testing them. Instead of fixing the code myself, I sat with him to explain every line: what the function does, how null is handled, and required him to write tests before accepting AI-generated code. For example, AI produced a method fetching orders without null-checking the repository result, which would throw NullPointerException; I taught him to guard with List.of() and add edge-case tests. After a production incident where AI-generated code missed the null weight case and set shipping fee to zero, I added a checklist: read, understand, test edge cases, run locally. Two quarters later, his pull requests caused no production incidents and he reviews AI code himself before submitting. Lesson: AI speeds up writing code, but people remain responsible for quality, and mentoring means building those habits."
+
+> Senior tip: mentor dùng công cụ AI giống như dạy người lái xe mới — bạn không cho anh ta tự lái trên đường cao tốc ngay lần đầu, mà ngồi bên cạnh, chỉ sai lầm ngay khi xảy ra, và dần thả quyền tự chủ khi anh ta chứng minh đã hiểu quy tắc.`,
+  follow: [
+    'Junior vẫn chép code AI sau khi bạn nhắc nhiều lần, bạn làm gì?',
+    'Bạn cho phép dùng AI viết test không, và tại sao?',
+    'Làm sao biết junior đã hiểu code thay vì chỉ chép?'
+  ],
+  tags: ['mentoring', 'ai-coding-tool', 'code-review', 'STAR', 'leadership']
+},
+{
+  id: 'behavioral-057',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn từng bất đồng với tech lead hoặc architect về một quyết định kỹ thuật. Bạn trình bày bằng chứng ra sao, và chấp nhận quyết định cuối cùng như thế nào?',
+  a: `**Tóm tắt:** Interviewer không muốn biết bạn bao giờ bất đồng, mà muốn biết bạn tranh luận bằng dữ liệu và lợi ích sản phẩm chứ không phải bản tính, và sau khi quyết định đã có, bạn vẫn cam kết thực hiện.
+
+**Architect (kiến trúc sư)** là người thiết kế sơ đồ hệ thống lớn, quyết định công nghệ và cách các service kết nối với nhau. **Tech lead** là kỹ sư trưởng của nhóm, đồng thời viết code và điều phối équipe. Bất đồng là bình thường; vấn đề là bạn xử lý như thế nào.
+
+### Cách bất đồng chuyên nghiệp
+**Bước 1: Hiểu rõ lý do bên kia.** Trước khi phản biện, hãy hỏi "anh/chị lo ngại điều gì?" — có thể architect lo về vận hành đơn giản, còn bạn lo về hiệu năng.
+
+**Bước 2: Thu thập bằng chứng.** Thận cảm tính ("tôi nghĩ cách này chậm") không thuyết phục. Hãy đo: latency, throughput, chi phí vận hành, thời gian phát triển.
+
+**Bước 3: Thiết lập Proof of Concept (POC).** **POC** là bản thử nghiệm nhỏ để chứng minh một ý tưởng có thể thực hiện, giống như nấu một chén thử trước khi lên menu cả nhà hàng.
+
+**Bước 4: Ghi lại quyết định dưới dạng ADR.** **ADR (Architecture Decision Record)** là tài liệu ghi lại quyết định kiến trúc, lý do và các phương án đã xem xét, giúp sau này biết tại sao chọn cách này.
+
+**Bước 5: Nếu vẫn thua, cam kết thực hiện.** **Disagree and commit** là bất đồng rõ ràng trong cuộc thảo luận, sau đó thực hiện quyết định của đội toàn nhiệt huyết, không than vãn sau này "tôi đã bảo rồi".
+
+### Mã ví dụ: gọi đồng bộ hay bất đồng bộ
+Ví dụ checkout gọi dịch vụ tồn kho:
+
+~~~java
+// Cách A: gọi đồng bộ (synchronous) — chờ tồn kho trả lời trước khi tiếp tục
+Inventory stock = inventoryClient.getStock(productId);   // chờ 200–500 ms
+if (!stock.available()) throw new OutOfStockException();
+orderRepository.save(order);
+
+// Cách B: gửi sự kiện bất đồng bộ (asynchronous) — không chờ, xử lý sau
+eventPublisher.publish("order.created", order);           // trả về ngay
+// Dịch vụ tồn kho tự xử lý, đơn hàng có thể bị từ chối sau này và cần thông báo khách hàng
+~~~
+
+Cách A đơn giản nhưng latency cộng dồn và nếu dịch vụ tồn kho gián đoạn, cả checkout bị kẹt. Cách B nhanh hơn cho khách hàng nhưng phức tạp hơn vì phải xử lý tình huống từ chối sau này.
+
+**Latency** là độ trễ từ lúc gửi yêu cầu đến lúc nhận phản hồi, tương tự thời gian bạn đợi món ăn sau khi đặt ở nhà hàng.
+
+### Lỗi hay gặp
+- **Bất đồng bằng cảm tính** → "tôi không thích cách này" không ai lắng nghe.
+- **Công kích cá nhân** → làm mất tình quan hệ làm việc.
+- **Chiến đấu đến cùng mà không cam kết** → sau khi thua, bạn than vãn và làm kém, điều này hại cả đội.
+- **Không ghi lại quyết định** → sáu tháng sau không ai biết tại sao chọn cách này, lại tranh cãi lần nữa.
+
+### Ví dụ đời thực
+Kiến trúc sư của tôi đề xuất gọi dịch vụ tồn kho qua REST đồng bộ trong luồng thanh toán, vì đơn giản và dễ theo dõi. Tôi lo ngại latency sẽ tăng và một sự cố ở dịch vụ tồn kho sẽ làm treo toàn bộ luồng đặt hàng. Thay vì chỉ phản đối, tôi dựng POC nhỏ: gọi đồng bộ với 1.000 đơn giả lập, p99 là 820 ms; đổi sang gửi sự kiện bất đồng bộ, p99 giảm xuống 210 ms, nhưng cần thêm trình xử lý rejections. Tôi trình bày số liệu và đề xuất compromise: giữ đồng bộ cho trường hợp tồn kho thấp (cảnh báo khách hàng ngay), bất đồng bộ cho phần còn lại. Architect chấp nhận bản POC và chúng tôi áp dụng giải pháp trộn. Sau khi triển khai, p99 luồng thanh toán giảm từ 820 ms xuống 350 ms, và tôi vẫn cam kết triển khai dù ban đầu tôi ủng hộ cách hoàn toàn bất đồng bộ.
+
+**p99** là chỉ số chỉ 1% yêu cầu chậm nhất trải qua thời gian bằng bao nhiêu — nếu p99 là 820 ms, nghĩa là 1% yêu cầu chậm nhất mất hơn 820 ms, và đó chính là trải nghiệm xấu nhất của khách hàng.
+
+### Trả lời mẫu khi phỏng vấn
+"Một lần kiến trúc sư đề xuất gọi dịch vụ tồn kho qua REST đồng bộ trong luồng thanh toán vì đơn giản và dễ theo dõi. Tôi lo ngại latency và nguy cơ dịch vụ tồn kho gián đoạn sẽ làm treo cả luồng đặt hàng, nhưng thay vì chỉ phản đối, tôi dựng POC nhỏ với 1.000 đơn giả lập: gọi đồng bộ có p99 820 ms, gửi sự kiện bất đồng bộ giảm xuống 210 ms nhưng cần xử lý trường hợp từ chối sau này. Tôi trình bày số liệu và đề xuất trộn lẫn: đồng bộ khi tồn kho thấp để cảnh báo khách hàng ngay, bất đồng bộ cho phần còn lại. Kiến trúc sư chấp nhận bản POC, chúng tôi áp dụng giải pháp trộn, và p99 thanh toán giảm từ 820 ms xuống 350 ms. Dù ban đầu tôi ủng hộ cách hoàn toàn bất đồng bộ, tôi vẫn cam kết triển khai theo quyết định cuối cùng. Bài học: bất đồng phải đi kèm bằng chứng, và sau khi thua bạn vẫn phải thực hiện đầy đủ."
+
+**Trả lời mẫu ngắn (Tiếng Anh):**
+"Our architect proposed calling the inventory service synchronously via REST during checkout for simplicity. I worried about latency and cascading failure, so instead of just objecting I built a small proof of concept with 1,000 sample orders: synchronous calls had p99 of 820 ms, while an event-based asynchronous approach dropped it to 210 ms but required handling rejections later. I presented the data and suggested a hybrid: synchronous for low stock so customers are warned immediately, asynchronous for the rest. The architect accepted the POC, we launched the hybrid, and checkout p99 fell from 820 ms to 350 ms. Although I originally favored full async, I still committed fully to the final decision. Lesson: disagree with evidence, and commit once the decision is made."
+
+> Senior tip: khi bạn thua cuộc tranh luận kỹ thuật, hãy trở thành người triển khai quyết định tốt nhất trong team. Điều đó thu phục lòng tin của mọi người nhiều hơn việc đúng lý nhưng khó làm việc.`,
+  follow: [
+    'Bạn từng không thuyết phục được người khác không? Xử lý ra sao?',
+    'Với PM, khác biệt giữa phản đối giải pháp và phản đối mục tiêu là gì?',
+    'Nếu quyết định cuối cùng gây sự cố, bạn xử lý thế nào?'
+  ],
+  tags: ['disagreement', 'architect', 'POC', 'ADR', 'STAR', 'leadership']
+},
+{
+  id: 'behavioral-058',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn từng ước lượng công việc sai và gây trễ deadline. Bạn xử lý tình huống ra sao và đổi cách ước lượng như thế nào?',
+  a: `**Tóm tắt:** Mọi kỹ sư đều từng trễ hạn ít nhất một lần. Interviewer muốn biết bạn báo sớm hay giấu đến ngày cuối, và sau khi trễ bạn có rút kinh nghiệm hay lặp lại lỗi.
+
+### Ước lượng công việc và tại sao dễ sai
+**Ước lượng (estimation)** là dự đoán thời gian và công sức cần thiết để hoàn thành một công việc. Dễ sai vì:
+- Công việc chưa rõ ràng (yêu cầu mờ).
+- Có phụ thuộc bên ngoài (đội khác, nhà cung cấp API) mà bạn không kiểm soát được.
+- Bản thân bạn tự tin đánh giá thấp thời gian chạy thử, sửa lỗi và review code.
+
+### Khi đã trễ deadline: xử lý ra sao
+**Bước 1: Báo sớm, không chờ đến ngày cuối.** Càng báo muộn, các bên liên quan càng ít thời gian điều chỉnh (ví dụ thay đổi ngày sự kiện hay tìm người hỗ trợ).
+
+**Bước 2: Đưa ra lựa chọn, không chỉ báo xấu.** Ví dụ: (A) giao đúng hạn nhưng cắt một phần tính năng, (B) giữ toàn bộ tính năng nhưng gia hạn 3–5 ngày, (C) thêm người hỗ trợ tạm thời.
+
+**Bước 3: Xin lỗi, nhận trách nhiệm và cam kết kế hoạch mới.** Tránh đổ lỗi cho đội khác hay yêu cầu thay đổi bất ngờ vào phút cuối.
+
+**Bước 4: Ghi lại điều gì sai trong ước lượng để sửa cách tính sau này.**
+
+### Cách ước lượng đáng tin cậy hơn
+- **Chia nhỏ công việc** thành task nhỏ hơn 1–2 ngày, dễ đánh giá hơn một khối lớn.
+- **Thêm buffer (dự phòng)** khoảng 20–30% cho thứ không biết trước.
+- **Ghi rõ các giả định (assumptions)**, ví dụ "giả sử API của đội thanh toán đã sẵn sàng".
+- **Dùng dữ liệu thực tế**: velocity (tốc độ đội hoàn thành công việc trong một sprint) của sprint trước thay vì cảm tính.
+
+Bảng ví dụ:
+
+| Công việc | Ước lượng ban đầu | Thực tế | Sai vì |
+|---|---|---|---|
+| Xuất file Excel | 2 ngày | 6 ngày | Chưa biết API xuất số liệu chỉ sẵn sàng ngày thứ 5 |
+| Viết test | 1 ngày | 3 ngày | Quên tính thời gian chạy thử trên dữ liệu thật |
+| Review và sửa | 0.5 ngày | 2 ngày | Reviewer bận, phản hồi chậm |
+
+**Deadline** là ngày thứ cuối cùng để hoàn thành công việc, giống như ngày hội diễn ra — sau đó sân đã sẵn sàng dù bạn có sẵn sàng hay không.
+
+### Lỗi hay gặp
+- **Cam kết khi chưa biết chi tiết** → "anh cứ giao, em làm được" sau này vấp phải yêu cầu ẩn.
+- **Báo trễ vào ngày hẹn giao** → nhiều bên đã lập kế hoạch dựa trên ngày đó, thiệt hại lớn.
+- **Cắt chất lượng âm thầm** (bỏ test, bỏ xử lý lỗi) để kịp hạn → tạo nợ kỹ thuật và lỗi production.
+- **Không rút kinh nghiệm** → trễ lần sau vì cùng một lý do.
+
+### Ví dụ đời thực
+Tôi được giao xuất tính năng xuất báo cáo Excel cho đơn hàng, ước lượng 2 ngày vì tưởng là chỉ viết file. Kết quả trễ 5 ngày vì API của đội dữ liệu chỉ sẵn sàng ngày thứ 5, và mình không ghi giả định này vào kế hoạch. Khi nhận ra rủi ro, tôi ngay lập tức báo PM, đưa ra 3 lựa chọn, và cuối cùng chúng tôi giao một bản đơn giản đầu tiên (chỉ xuất danh sách đơn hàng) đúng hạn, phần chi tiết xuất sau. Sau sự cố, tôi đổi cách ước lượng: chia nhỏ task, thêm 25% buffer, ghi rõ các giả định và gửi kế hoạch sớm cho các đội liên quan trước khi cam kết với khách hàng. Trong 4 sprint sau, 6 dự án tôi lập kế hoạch đều đúng hạn, so với trước đây trễ khoảng một dự án trên ba.
+
+**Sprint** là chu kỳ làm việc cố định (thường 1–2 tuần), sau đó đội ghi chép kết quả và lên kế hoạch giai đoạn tiếp theo.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi từng ước lượng tính năng xuất báo cáo Excel là 2 ngày, nhưng thực tế trễ 5 ngày vì API của đội dữ liệu chỉ sẵn sàng ngày thứ 5, một điều tôi không ghi vào kế hoạch ban đầu. Khi nhận ra rủi ro, tôi báo PM ngay lập tức, đưa ra ba lựa chọn, và cuối cùng chúng tôi giao một bản đơn giản đúng hạn, phần chi tiết ra sprint sau. Sau đó tôi đổi cách ước lượng: chia nhỏ tác vụ dưới 1–2 ngày, thêm 25% dự phòng, ghi rõ các giả định và gửi kế hoạch sớm cho các đội liên quan trước khi cam kết. Trong 4 sprint sau, sáu dự án tôi kế hoạch đều đúng hạn, so với trước đây trễ khoảng một dự án trên ba. Bài học: báo sớm khi có rủi ro, đưa ra lựa chọn thay vì chỉ báo xấu, và ước lượng phải dựa trên dữ liệu thật chứ không phải cảm tính."
+
+**Trả lời mẫu ngắn (Tiếng Anh):**
+"I once estimated an Excel export feature at two days, but it slipped by five days because the data team's API was only ready on day five — an assumption I never wrote down. As soon as I saw the risk, I told the product manager, offered three options, and we shipped a simple version on time with the details in the next sprint. After that I changed how I estimate: break work into tasks under one or two days, add a 25% buffer, write down assumptions, and share the plan early with dependent teams before committing. Over the next four sprints, all six projects I planned hit their deadlines, compared with about one in three slipping before. Lesson: report risk early, offer options instead of just bad news, and base estimates on real data, not gut feel."
+
+> Senior tip: hãy luôn sẵn sàng một con số dự phòng khi vào cuộc thảo luận deadline. Người chưa có số dự phòng thường nhận lại điều kiện khắc nghèo hơn mức họ có thể đạt, chỉ vì sợ nói "không".`,
+  follow: [
+    'Bạn dùng story point không, và nó giúp ích thế nào?',
+    'Khi PM không đồng ý cắt scope, lựa chọn của bạn là gì?',
+    'Ước lượng sai lần sau, bạn hiệu chỉnh lại ra sao?'
+  ],
+  tags: ['estimation', 'deadline', 'scope', 'STAR', 'leadership']
+},
+{
+  id: 'behavioral-059',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Bạn phải đưa một thay đổi lớn (ví dụ di dời Java 21/Spring Boot 3) qua nhiều team. Bạn làm gì để mọi team đồng ý và thực hiện đồng bộ?',
+  a: `**Tóm tắt:** Di dổi một khung công nghệ lớn như Java 21/Spring Boot 3 không chỉ là viết code, mà là sự phối hợp của nhiều team. Ở vai trò lead, interviewer đánh giá khả năng lập kế hoạch, thuyết phục và quản lý rủi ro.
+
+### Java 21, Spring Boot 3 và breaking change
+**Java 21** là phiên bản hỗ trợ dài hạn (**LTS**) của Java, có nhiều tính năng mới và hiệu năng tốt hơn. **Spring Boot 3** là phiên bản khung Spring Boot yêu cầu Jakarta EE 9 (package đổi từ {{javax.servlet}} sang {{jakarta.servlet}}) và chạy trên Java 17 trở lên.
+
+**Breaking change** là thay đổi không tương thích ngược: code cũ viết bằng Spring Boot 2 sẽ không biên dịch hay chạy trên Spring Boot 3 mà không được sửa (ví dụ {{javax.servlet}} đổi thành {{jakarta.servlet}}). Vì vậy migration phải lên kế hoạch kỹ lưỡng.
+
+**Migration** là quá trình di dời hệ thống từ phiên bản công nghệ cũ sang phiên bản mới, giống như thay foundation của một nhà đang có người ở trong.
+
+### Lên kế hoạch và đồng ý giữa nhiều team
+**Bước 1: Xác định rango tác động.** Liệt kê tất cả thư viện, service và team sử dụng khung cũ. Một team thay đổi có thể làm hỏng team khác gọi API của họ.
+
+**Bước 2: Thành lập nhóm điều phối (migration squad).** Mỗi team chỉ một người đại diện, họp định kỳ theo dõi tiến độ và rủi ro.
+
+**Bước 3: Đánh giá rủi ro và quy trình rollback.** Nếu migration gây lỗi, phải có quy trình quay lui nhanh (rollback) trong ít phút.
+
+**Bước 4: Chọn chiến lược migration.** Có thể migration dần dần (một service một) hoặc cùng lúc (big bang). Dần dần an toàn hơn nhưng chậm hơn.
+
+**Bước 5: Truyền thông rõ ràng.** Mọi team đều biết ngày cắt (cutover), ai làm gì, và ai gọi khi có sự cố.
+
+**Cutover** là thời điểm chuyển từ hệ thống cũ sang hệ thống mới chính thức, giống như ngày chuyển nhà — sau đó mọi người đều vào nhà mới.
+
+### Mã ví dụ: feature flag
+**Feature flag (cờ tính năng)** là cách bật/tắt một tính năng mà không cần triển khai lại code, giúp migration từng bước và có thể tắt ngay khi có lỗi.
+
+~~~java
+if (featureFlags.isEnabled("migration.spring-boot-3")) {
+    // Chạy trên Java 21 / Spring Boot 3
+    return newService.handle(request);
+} else {
+    // Giữ Java 17 / Spring Boot 2 cho các team chưa sẵn sàng
+    return legacyService.handle(request);
+}
+~~~
+
+### Lỗi hay gặp
+- **Migration cùng lúc mọi team** (big bang) → nếu lỗi, toàn bộ hệ thống ngừng hoạt động, rất khó khôi phục.
+- **Không thông báo team khác** → team A nâng cấp, team B gọi API của A và bị lỗi do định dạng đổi.
+- **Không có rollback** → khi lỗi xảy ra, đội cố sửa ngay trên production thay vì quay lui, làm sự cố dài hơn.
+- **Bỏ qua thư viện cũ không tương thích** → một số thư viện chưa hỗ trợ Spring Boot 3, gây lỗi biên dịch hoặc chạy.
+
+### Ví dụ đời thực
+Công ty tôi quyết định di dời 8 service từ Java 17/Spring Boot 2.7 sang Java 21/Spring Boot 3.2 vì hiệu năng và bảo mật. Tôi đảm nhận lead migration: lập bảng ảnh hưởng các service, thành lập nhóm điều phối với một đại diện mỗi team, và chọn chiến lược migration từng service theo nhóm rủi ro (tính năng ít dùng trước, thanh toán sau).
+
+Mỗi service dùng feature flag để bật/tắt phiên bản mới; trước khi cắt chính thức, chạy song song hai phiên bản một tuần để so sánh lỗi. Có một dịch vụ sử dụng thư viện cũ chưa hỗ trợ Jakarta EE 9, chúng tôi tạm thời giữ lại và lên kế hoạch thay thế thay vì buộc migration ngay.
+
+Kết quả: di dời hết 8 service trong 6 tuần, **zero downtime**, lỗi dưới 0,1% lưu lượng, và quy trình được ghi lại để lần sau migration thư viện khác diễn ra trơn tru hơn.
+
+**Zero downtime** là hệ thống không ngừng dịch vụ trong lúc thay đổi, giống như thay bánh xe xe hơi khi xe vẫn đang chạy.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi từng dẫn di dời 8 service từ Java 17/Spring Boot 2.7 sang Java 21/Spring Boot 3.2 vì hiệu năng và bảo mật. Spring Boot 3 đổi package từ javax sang jakarta, nên đây là breaking change — code cũ không chạy được mà không sửa. Tôi lập bảng ảnh hưởng, thành lập nhóm điều phối với một đại diện mỗi team, và migration từng service theo nhóm rủi ro. Mỗi service dùng feature flag để bật/tắt phiên bản mới, và trước khi cắt chính thức chúng tôi chạy song song hai phiên bản trong một tuần để so sánh. Một dịch vụ dùng thư viện chưa hỗ trợ Jakarta EE 9 nên chúng tôi tạm giữ và lên kế hoạch thay thế. Kết quả: 8 service được di dời trong 6 tuần, zero downtime, lỗi dưới 0,1% lưu lượng, và quy trình migration được ghi lại cho lần sau. Bài học: thay đổi lớn phải có kế hoạch, cờ tính năng để roll back nhanh, và sự tham gia của mọi team, không phải một người quyết định một mình."
+
+**Trả lời mẫu ngắn (Tiếng Anh):**
+"I led the migration of eight services from Java 17/Spring Boot 2.7 to Java 21/Spring Boot 3.2 for performance and security. Spring Boot 3 changed packages from javax to jakarta, a breaking change, so old code would not run without changes. I built an impact table, formed a migration squad with one representative per team, and migrated service by service by risk group. Each service used a feature flag to turn the new version on or off, and before the final cut we ran both versions in parallel for one week to compare errors. One service used a library that did not yet support Jakarta EE 9, so we kept it temporarily and planned a replacement. Result: all eight services migrated in six weeks with zero downtime, errors below 0.1% of traffic, and a documented migration process for next time. Lesson: big changes need a plan, feature flags for fast rollback, and participation from every team, not one person deciding alone."
+
+> Senior tip: thay đổi lớn không được để một người quyết định một mình. Ghi lại ai ảnh hưởng, ai cần đồng ý, và quy trình quay lui trước khi bắt đầu, thì migration sẽ không biến thành sự cố.`,
+  follow: [
+    'Bạn chọn migration từng service hay cùng lúc, và tại sao?',
+    'Nếu một team không đồng ý migration, bạn làm gì?',
+    'Bạn có quy trình rollback đã từng dùng thực tế không?'
+  ],
+  tags: ['migration', 'Java-21', 'Spring-Boot-3', 'feature-flag', 'STAR', 'leadership']
+},
 );
