@@ -33,3 +33,4 @@ Tổng 37 câu core trong `js/data/q-microservices.js`. Các câu khác đã có
 - `microservices-020`: bảng so sánh 2 chế độ retry (Blocking vs Non-blocking retry) tại mục sau "Ordering khi retry".
 
 Xác nhận: `node --check js/data/q-microservices.js` → OK; `node scripts/build-light-index.js` → OK; `node scripts/validate.js` → "OK — không có lỗi."
+Reviewed-by: kilo (T2132R)
