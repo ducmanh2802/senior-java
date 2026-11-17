@@ -2332,6 +2332,8 @@ window.DATA_INDEX = {
     {"id":"algo-150","title":"Merge Intervals","difficulty":"medium","pattern":"Sorting"},
     {"id":"algo-151","title":"Rate Limiter Sliding Window Log","difficulty":"medium","pattern":"Sliding Window"},
     {"id":"algo-152","title":"Top K Frequent Elements","difficulty":"medium","pattern":"Heap"},
+    {"id":"algo-153","title":"Order Book khớp lệnh limit (giá–thời gian)","difficulty":"medium","pattern":"Order Book"},
+    {"id":"algo-154","title":"VWAP cua so truot tren luong tick","difficulty":"medium","pattern":"Sliding Window"},
   ],
   lessons: [
     {"id":"lesson-collections-001","track":"collections","order":1,"title":"HashMap từ bên trong: hash, bucket, resize và hợp đồng equals/hashCode","level":"mid","minutes":25},

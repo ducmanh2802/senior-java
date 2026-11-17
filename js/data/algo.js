@@ -17007,6 +17007,351 @@ O(n) thoi gian va O(n) bo nho (bucket sort). Heap: O(n log k).
     }
 }`,
   follow: ['Neu nums rat lon va k nho, dung min-heap de tiet kiem bo nho.', 'Quickselect cho top-k theo tan so: O(n) trung binh.']
+},
+{
+  id: 'algo-153',
+  title: 'Order Book khớp lệnh limit (giá–thời gian)',
+  difficulty: 'medium',
+  pattern: 'Order Book',
+  tags: ['order-book', 'treemap', 'deque', 'trading'],
+  prompt: `Xây dựng một order book đơn giản khớp lệnh limit theo ưu tiên giá–thời gian (price-time priority).
+
+Mỗi lệnh có bên (BUY mua / SELL bán), giá limit và khối lượng. Lệnh mới được khớp ngay lập tức với lệnh ngược chiều đã đặt trong sổ nếu giá đạt, phần còn lại (nếu có) nằm chờ trong sổ.
+
+- Lệnh mua (BUY): khớp với lệnh bán có giá thấp nhất nhỏ hơn hoặc bằng giá mua. Cùng giá thì khớp lệnh đến trước (FIFO).
+- Lệnh bán (SELL): khớp với lệnh mua có giá cao nhất lớn hơn hoặc bằng giá bán. Cùng giá thì khớp lệnh đến trước.
+- Mỗi khớp tạo một giao dịch: ghi nhận id lệnh mua, id lệnh bán, giá giao dịch, khối lượng.
+
+Dùng TreeMap để sắp xếp các mức giá và Deque (hang đợi) ở mỗi mức để giữ thứ tự đến giờ của các lệnh cùng giá. Giá tính bằng số nguyên (cent) để tránh lỗi số thực.
+
+### Ví dụ
+~~~text
+addOrder(1, 105, 5) -> []          // SELL 105x5, chua co lenh mua -> nam cho
+addOrder(1, 100, 5) -> []          // SELL 100x5 -> nam cho (gia 100 tot hon 105 cho nguoi mua)
+addOrder(0, 106, 8) -> [[2,1,100,5],[2,0,105,3]]
+// BUY 106x8: khop ban 100x5 (id 1), roi ban 105x3 (id 0), het 8
+~~~
+
+### Ràng buộc
+- side: 0 = BUY, 1 = SELL.
+- Gia, khoi luong la so nguyen duong.
+- addOrder(side, price, qty) tra ve danh sach giao dich, moi phan tu la [buyId, sellId, price, qty].
+- Id lenh gan tu dan tu 0 theo thu tu goi addOrder.`,
+  hints: [
+    'Dung hai TreeMap: mot cho cac lenh mua (bids) sap xep giam dan gia, mot cho lenh ban (asks) sap xep tang dan gia.',
+    'O moi muc gia, dung Deque de luu cac lenh theo thu tu den; lay lenh o dau hang doi khi khop, xoa muc khi het lenh.',
+    'Khi them lenh mua, lay muc ban tot nhat (asks.firstEntry()) trong khi gia muc do <= gia mua; duyet den khi het khoi luong hoac khong con muc phu hop.',
+    'Lenh ban doi xung: lay muc mua tot nhat (bids.firstEntry()) trong khi gia muc do >= gia ban.'
+  ],
+  solution: `### Ý tưởng
+So lenh chia thanh hai phia: ben mua (bids) va ben ban (asks). Moi phia la mot TreeMap tu gia sang hang doi cac lenh o muc gia do.
+
+- Ben mua: khoa la gia, sap xep giam dan (lenh mua gia cao nhat duoc uu tien). Dung TreeMap<>(Comparator.reverseOrder()).
+- Ben ban: khoa la gia, sap xep tang dan (lenh ban gia thap nhat duoc uu tien).
+
+Tai moi muc gia, cac lenh duoc luu trong Deque theo thu tu den (FIFO): them vao cuoi, lay tu dau khi khop.
+
+Khi goi addOrder(side, price, qty):
+1. Gan id moi va nhan thoi gian cho lenh.
+2. Neu la lenh mua, lap lay muc ban thap nhat trong khi gia muc <= gia mua. Moi lan khop min(khoi luong con lai, khoi luong lenh ban), ghi giao dich, giam khoi luong ca hai; xoa lenh ban neu het, xoa muc neu hang doi trong.
+3. Neu sau khop van con khoi luong, phan con lai nam cho vao ben mua o muc gia cua no.
+4. Lenh ban doi xung voi ben mua.
+
+Moi lenh duoc chen vao va xoa khoi so toi da mot lan, nen tong chi phi cho n lenh la O(n log n) (moi thao tac TreeMap O(log so muc gia)).
+
+~~~java
+class OrderBook {
+    static final int BUY = 0;
+    static final int SELL = 1;
+
+    static final class Order {
+        int id;        // order id (increasing)
+        int side;      // BUY or SELL
+        int price;     // limit price (in cents)
+        int qty;       // remaining quantity
+        Order(int id, int side, int price, int qty) {
+            this.id = id;
+            this.side = side;
+            this.price = price;
+            this.qty = qty;
+        }
+    }
+
+    // Ben mua: gia cao truoc (Comparator.reverseOrder)
+    private final TreeMap<Integer, Deque<Order>> bids =
+        new TreeMap<>(Comparator.reverseOrder());
+    // Ben ban: gia thap truoc
+    private final TreeMap<Integer, Deque<Order>> asks = new TreeMap<>();
+    private final List<int[]> trades = new ArrayList<>();
+    private int nextId = 0;
+
+    /**
+     * Add a limit order to the book and match immediately against opposite orders.
+     * @param side 0 = BUY, 1 = SELL
+     * @param price limit price (in cents)
+     * @param qty quantity
+     * @return list of trades, each element {buyId, sellId, price, qty}
+     */
+    public List<int[]> addOrder(int side, int price, int qty) {
+        int id = nextId++;
+        List<int[]> done = new ArrayList<>();
+
+        if (side == BUY) {
+            // Lenh mua khop voi lenh ban tot nhat (gia thap nhat <= gia mua)
+            while (qty > 0) {
+                Map.Entry<Integer, Deque<Order>> bestAsk = asks.firstEntry();
+                if (bestAsk == null || bestAsk.getKey() > price) {
+                    break;
+                }
+                int askPrice = bestAsk.getKey();
+                Deque<Order> q = bestAsk.getValue();
+                Order ask = q.peek();
+                int m = Math.min(qty, ask.qty);
+                qty -= m;
+                ask.qty -= m;
+                done.add(new int[]{id, ask.id, askPrice, m});
+                if (ask.qty == 0) {
+                    q.poll();
+                }
+                if (q.isEmpty()) {
+                    asks.remove(askPrice);
+                }
+            }
+            if (qty > 0) {
+                bids.computeIfAbsent(price, p -> new ArrayDeque<>())
+                    .addLast(new Order(id, BUY, price, qty));
+            }
+        } else {
+            // Lenh ban khop voi lenh mua tot nhat (gia cao nhat >= gia ban)
+            while (qty > 0) {
+                Map.Entry<Integer, Deque<Order>> bestBid = bids.firstEntry();
+                if (bestBid == null || bestBid.getKey() < price) {
+                    break;
+                }
+                int bidPrice = bestBid.getKey();
+                Deque<Order> q = bestBid.getValue();
+                Order bid = q.peek();
+                int m = Math.min(qty, bid.qty);
+                qty -= m;
+                bid.qty -= m;
+                done.add(new int[]{bid.id, id, bidPrice, m});
+                if (bid.qty == 0) {
+                    q.poll();
+                }
+                if (q.isEmpty()) {
+                    bids.remove(bidPrice);
+                }
+            }
+            if (qty > 0) {
+                asks.computeIfAbsent(price, p -> new ArrayDeque<>())
+                    .addLast(new Order(id, SELL, price, qty));
+            }
+        }
+        return done;
+    }
+}
+~~~
+
+### Luu ý khi phong van
+- Khong dung so thuc (double/float) cho gia vi loi lam tron; hay tinh bang cent (so nguyen).
+- Can xac dinh ranh gioi gia: lenh mua chi khop ban voi gia <= gia mua, va nguoc lai; sai ranh gioi se khop lenh khong loi cho khach hang.
+- TreeMap cho phep lay muc gia tot nhat trong O(log n) va duyet cac muc lien tiep khi mot lenh lon quet so.
+- Trong so lenh thuc, can xu ly lenh huy (cancel), lenh giam khoi luong, va ghi nhat ky giao dich (trade feed) de giamsat.`,
+  starter: "class OrderBook {\n    static final int BUY = 0;\n    static final int SELL = 1;\n    public List<int[]> addOrder(int side, int price, int qty) {\n        return new ArrayList<>();\n    }\n}",
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void run(String name, int[][] expected, java.util.function.Supplier<int[][]> c) {
+        total++;
+        try {
+            int[][] actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + Arrays.deepToString(expected) + " got " + Arrays.deepToString(actual));
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("basic cross", new int[][]{{1, 0, 100, 10}}, () -> {
+            OrderBook b = new OrderBook();
+            b.addOrder(1, 100, 10);
+            return b.addOrder(0, 100, 10).toArray(new int[0][]);
+        });
+        run("price priority", new int[][]{{2, 1, 100, 5}, {2, 0, 105, 3}}, () -> {
+            OrderBook b = new OrderBook();
+            b.addOrder(1, 105, 5);
+            b.addOrder(1, 100, 5);
+            return b.addOrder(0, 106, 8).toArray(new int[0][]);
+        });
+        run("fifo same price", new int[][]{{2, 0, 100, 5}, {2, 1, 100, 2}}, () -> {
+            OrderBook b = new OrderBook();
+            b.addOrder(1, 100, 5);
+            b.addOrder(1, 100, 5);
+            return b.addOrder(0, 100, 7).toArray(new int[0][]);
+        });
+        run("no cross", new int[][]{}, () -> {
+            OrderBook b = new OrderBook();
+            b.addOrder(0, 90, 10);
+            return b.addOrder(1, 95, 5).toArray(new int[0][]);
+        });
+        run("sell matches bids", new int[][]{{0, 2, 105, 5}, {1, 2, 100, 3}}, () -> {
+            OrderBook b = new OrderBook();
+            b.addOrder(0, 105, 5);
+            b.addOrder(0, 100, 5);
+            return b.addOrder(1, 99, 8).toArray(new int[0][]);
+        });
+        run("partial fill rests", new int[][]{{1, 0, 100, 4}}, () -> {
+            OrderBook b = new OrderBook();
+            b.addOrder(1, 100, 4);
+            return b.addOrder(0, 100, 7).toArray(new int[0][]);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n log n) cho n lenh (moi lenh chen/xoa muc gia O(log)); Space O(n)',
+  follow: ['Lam sao ho tro lenh huy (cancel) mot lenh dang cho trong so?', 'Neu lenh la lenh thi truong (market order) khong co gia thi xu ly ra sao?']
+},
+{
+  id: 'algo-154',
+  title: 'VWAP cua so truot tren luong tick',
+  difficulty: 'medium',
+  pattern: 'Sliding Window',
+  tags: ['vwap', 'sliding-window', 'deque', 'trading'],
+  prompt: `Tinh VWAP (Volume-Weighted Average Price, gia trung binh trong so theo khoi luong) trong mot cua so truot N giay tren luong tick.
+
+Moi tick la bo (timestamp, gia, khoi luong). VWAP tai thoi diem t duoc tinh tren moi tick co timestamp trong cua so [t - N, t]:
+
+VWAP = (tong gia x khoi luong) / (tong khoi luong)
+
+Cua so truot: khi tick moi den, cac tick qua cu (timestamp < t - N) bi loai ra. Can tra ve VWAP sau moi tick moi.
+
+Dung Deque de luu cac tick dang con trong cua so va duong hai tong chay sumPQ (tong gia x kl) va sumQty (tong kl) de tinh VWAP trong O(1) amortized moi tick, khong can duyet lai toan bo cua so.
+
+### Vi du
+~~~text
+VWAP v = new VWAP(10); // cua so 10 giay
+v.add(100, 100, 10) -> 100.0   // 1 tick: (100*10)/10 = 100
+v.add(105, 200, 10) -> 150.0   // (1000+2000)/(10+10) = 150
+v.add(111, 200, 10) -> 200.0   // tick t=100 bi loai (111-10=101 > 100), chi con t=105 -> 200
+~~~
+
+### Rang buoc
+- N: so nguyen duong (kich thuc cua so tinh bang giay).
+- timestamp, gia, khoi luong la so nguyen, khoi luong > 0.
+- add(timestamp, price, qty) tra ve VWAP nhu so thuc (double), hoac -1.0 neu cua so trong.
+- Cac tick den theo thu tu timestamp khong giam.`,
+  hints: [
+    'Dung Deque luu cac tick dang con trong cua so, ticks moi vao cuoi, ticks cu bi loai tu dau.',
+    'Duong hai tong chay: tong cua (gia x khoi luong) va tong khoi luong; cap nhat khi them va khi loai tick.',
+    'Khi them tick moi, loai moi tick o dau hang doi co timestamp < timestamp_moi - N truoc khi tinh VWAP.',
+    'Tranh tinh lai tu dau moi tick: moi tick duoc them va loai toi da mot lan, nen O(1) amortized.'
+  ],
+  solution: `### Ý tuong
+VWAP cua so truot can (tong gia x kl) / (tong kl) chi tren cac tick nam trong cua so. Thay duyet toan bo lich su moi tick, ta giu cac tick con hieu luc trong mot Deque va cap nhat hai tong chay.
+
+Khi tick moi (ts, price, qty) den:
+1. Them tick vao cuoi deque, cong vao sumPQ va sumQty.
+2. Loai cac tick qua cu o dau deque: timestamp < ts - window, tru di tung gia tri tu sumPQ va sumQty.
+3. VWAP = sumPQ / sumQty (tra -1.0 neu sumQty = 0).
+
+Vi timestamp khong giam, tick cua cung luon o dau deque, nen moi tick duoc them vao va lay ra toi da mot lan -> O(1) amortized moi tick, bo nho O(k) voi k la so tick trong cua so.
+
+~~~java
+class VWAP {
+    static final class Tick {
+        int ts;       // timestamp (seconds)
+        int price;    // price
+        int qty;      // quantity
+        long pq;      // (long) price * qty
+        Tick(int ts, int price, int qty) {
+            this.ts = ts;
+            this.price = price;
+            this.qty = qty;
+            this.pq = (long) price * qty;
+        }
+    }
+
+    private final int window;      // window size (seconds)
+    private final Deque<Tick> q = new ArrayDeque<>();
+    private long sumPQ = 0;        // sum of price*qty in window
+    private long sumQty = 0;       // sum of qty in window
+
+    public VWAP(int windowSeconds) {
+        this.window = windowSeconds;
+    }
+
+    /**
+     * Add a tick to the stream and return the VWAP of the window [ts - window, ts].
+     * @return VWAP, or -1.0 if no tick is in the window.
+     */
+    public double add(int ts, int price, int qty) {
+        Tick cur = new Tick(ts, price, qty);
+        q.addLast(cur);
+        sumPQ += cur.pq;
+        sumQty += qty;
+
+        // Remove ticks older than the window: timestamp < ts - window
+        int cut = ts - window;
+        while (!q.isEmpty() && q.peekFirst().ts < cut) {
+            Tick old = q.pollFirst();
+            sumPQ -= old.pq;
+            sumQty -= old.qty;
+        }
+
+        if (sumQty == 0) {
+            return -1.0;
+        }
+        return (double) sumPQ / sumQty;
+    }
+}
+~~~
+
+### Luu ý khi phong van
+- VWAP khac gia trung binh thuan: lenh khop lon voi khoi luong lon keo gia trung binh ve phia no, nen phan anh gia thuc te thanh khoan hon gia cuoi (last price).
+- Gia tinh bang so nguyen (cent) va dung long cho tong de tranh tran khi khoi luong lon.
+- Ran gioi cua so: tick co timestamp bang dung ts - N van duoc tinh (chi loai timestamp nho hon). Nen thong nhat ran gioi nay voi phong vien.
+- Trong he thong giao dich thuc, tick co the den khong theo thu tu timestamp hoac co do tre mang; khi do can cau truc phuc tap hon (vi du sorted map theo timestamp) va xu ly su ken cham (late event).`,
+  starter: "class VWAP {\n    public VWAP(int windowSeconds) {\n        \n    }\n    public double add(int ts, int price, int qty) {\n        return -1.0;\n    }\n}",
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void run(String name, double expected, java.util.function.Supplier<Double> c) {
+        total++;
+        try {
+            Double actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("single tick", 100.0, () -> new VWAP(10).add(100, 100, 10));
+        run("two in window", 150.0, () -> {
+            VWAP v = new VWAP(10);
+            v.add(100, 100, 10);
+            return v.add(105, 200, 10);
+        });
+        run("old evicted", 200.0, () -> {
+            VWAP v = new VWAP(10);
+            v.add(100, 100, 10);
+            return v.add(111, 200, 10);
+        });
+        run("boundary inclusive", 150.0, () -> {
+            VWAP v = new VWAP(10);
+            v.add(100, 100, 10);
+            return v.add(110, 200, 10);
+        });
+        run("volume weighted", 190.0, () -> {
+            VWAP v = new VWAP(10);
+            v.add(100, 100, 1);
+            return v.add(101, 200, 9);
+        });
+        run("multiple evict", 300.0, () -> {
+            VWAP v = new VWAP(5);
+            v.add(10, 100, 10);
+            v.add(12, 200, 10);
+            return v.add(20, 300, 10);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(1) amortized moi tick, Space O(k) (k tick trong cua so)',
+  follow: ['Neu tick den khong theo thu tu timestamp thi cau truc du lieu nao phu hop?', 'Lam sao tinh VWAP cho nhieu ma chung khoan cung luc?']
 }
 );
 })();
