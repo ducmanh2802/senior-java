@@ -5157,4 +5157,327 @@ Mot cong ty chay 40 dich vu ECS Fargate, moi dich vu chay 2 task (1 vCPU, 2 GB) 
   ],
   tags: ['cost', 'Savings Plans', 'tag', 'showback', 'chargeback', 'lead']
 },
+{
+  id: 'aws-074',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Một API Spring Boot 3 (Java 21) có traffic spiky và p99 nhạy cảm. Bạn chọn ECS Fargate, EKS hay Lambda, và cold start với SnapStart ảnh hưởng thế nào tới quyết định?',
+  a: `**Tóm tắt:** Không có lựa chọn tốt nhất tuyệt đối; chọn theo hình dạng traffic và ai chịu trách nhiệm vận hành. Với API Spring Boot traffic spiky, p99 nhạy cảm, ECS Fargate là mặc định tốt: container luôn ấm, scale trong vài chục giây, không cold start. Lambda chỉ hợp khi chịu được cold start và đã bật SnapStart; EKS khi công ty đã có platform Kubernetes.
+
+### Hiểu nhanh
+Hãy ví mỗi lựa chọn như một cách mở quán. ECS Fargate giống thuê một gian trong food court: bạn mang nồi niêu (Docker image) tới, quầy luôn mở, khách tới là bán ngay, không có cảnh dọn hàng mỗi lần. Lambda giống thuê đầu bếp theo suất: có khách mới nấu, không khách thì không tốn, nhưng lần đầu luôn có cảnh đầu bếp chạy tới (cold start). EKS giống tự vận hành cả food court theo chuẩn quốc tế: rất mạnh khi nhiều quầy, nhưng cần người quản lý chuyên trách.
+
+### Thuật ngữ
+- Cold start: lần gọi đầu, hoặc sau khi môi trường bị thu hồi, phải tạo môi trường, nạp JVM và chạy code khởi tạo; các lần sau là warm start.
+- SnapStart: Lambda chụp ảnh JVM đã khởi tạo xong lúc publish version, lần sau khôi phục từ ảnh để bỏ phần khởi tạo.
+- Task definition: bản khai báo của ECS gồm image, CPU, memory, biến môi trường, IAM task role.
+- ALB (Application Load Balancer): bộ cân bằng tải tầng 7, chỉ gửi traffic khi health check pass.
+- HPA (Horizontal Pod Autoscaler): thành phần Kubernetes tự tăng/giảm số pod theo CPU hoặc metric tuỳ chỉnh.
+
+### Cơ chế: cùng một service, ba cách chạy
+1. Lambda: mỗi execution environment chỉ xử lý một request tại một thời điểm. Khi tải bùng nổ, Lambda tạo nhiều môi trường mới, mỗi môi trường mới đều cold start. Với Spring Boot, init phase (component scan, Hibernate, connection pool) thường mất 1-5 giây. SnapStart chỉ áp dụng khi invoke qua version/alias đã publish, không áp dụng cho $LATEST; sau restore phải mở lại connection và sinh lại giá trị ngẫu nhiên bằng hook CRaC. Ràng buộc cứng: tối đa 15 phút mỗi lần gọi, không giữ state.
+2. ECS Fargate: task chạy liên tục sau ALB, không có cold start. Khi tải tăng, Application Auto Scaling thêm task trong vài chục giây; JVM mới vẫn cần khởi động nhưng ALB chỉ gửi traffic khi health check pass, nên request đang chạy không bị chặn. Bạn vẫn phải đặt CPU/memory và IAM task role.
+3. EKS: pod chạy trong node (EC2 hoặc Fargate), scale bằng HPA. Mạnh khi nhiều team, cần operator/CRD/service mesh; chi phí vận hành cao vì phải quản cluster, ingress, add-on, RBAC.
+
+### Bảng chọn nhanh
+| Tiêu chí | ECS Fargate | EKS | Lambda |
+|---|---|---|---|
+| Cold start | Không | Không | Có, tệ hơn với Java |
+| Thời gian scale | Vài chục giây | Vài chục giây (HPA) | Vài giây |
+| Giới hạn thời gian | Không, task chạy dài | Không | 15 phút mỗi lần gọi |
+| Connection pool DB | Ổn định | Ổn định | Khó, mỗi env một pool |
+| Chi phí khi tải thấp | Trung bình | Cao | Rất thấp |
+| Đội cần biết | Docker, IAM | Kubernetes | IAM, event model |
+
+### Ví dụ cấu hình ECS Fargate (rút gọn)
+~~~yaml
+family: orders-api
+requiresCompatibilities: [FARGATE]
+networkMode: awsvpc
+cpu: 512              # 0,5 vCPU
+memory: 1024          # 1 GB, chừa heap khoảng 75% = 768 MB
+containerDefinitions:
+  - name: api
+    image: 123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/orders:42
+    portMappings: [{ containerPort: 8080 }]
+    environment: [{ name: JAVA_OPTS, value: -XX:MaxRAMPercentage=75 }]
+    healthCheck:
+      command: [CMD-SHELL, curl -f http://localhost:8080/actuator/health || exit 1]
+~~~
+
+### Ví dụ đời thực
+Một API đơn hàng Spring Boot 3 chạy trên 2 EC2 m5.large sau ALB. Triệu chứng: p99 giờ cao điểm 4-6 giây, scale-out mất 3-5 phút vì phải bật máy và khởi động JVM; CPU trung bình chỉ 35% nên trả tiền instance 24/7 rất lãng phí. Đội đóng Docker image, chuyển sang ECS Fargate 3 task (0,5 vCPU, 1 GB) sau ALB, cấu hình target tracking theo 60% CPU. Kết quả: không còn cold start, scale trong khoảng 30-45 giây, p99 giờ cao điểm còn khoảng 800 ms; chi phí compute giảm khoảng 30% so với 2 EC2 chạy 24/7. Khi một task bị thay, ALB tự chuyển traffic sang task khác nên không đứt request.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn theo hai câu hỏi: ai vận hành hạ tầng, và workload có chịu được cold start không. Với API Spring Boot traffic spiky, mặc định của tôi là ECS Fargate sau ALB vì container luôn ấm, không có cold start, scale trong vài chục giây và tôi không phải vá OS. Nếu traffic thấp, thất thường và chấp nhận được cold start, tôi cân nhắc Lambda, nhưng với Java tôi luôn bật SnapStart, publish version và trỏ alias, đồng thời xử lý connection và giá trị ngẫu nhiên sau restore bằng hook CRaC. EKS tôi chỉ chọn khi công ty đã có platform Kubernetes và cần nhiều team dùng chung, vì chi phí lớn nhất của Kubernetes là con người chứ không phải hoá đơn control plane. Tôi cũng luôn đo Init Duration và p99 trước khi quyết định."
+> Senior tip: đừng chọn Lambda cho API Spring Boot chỉ vì "rẻ". Với Java, hãy đo Init Duration và Restore Duration trước; nếu p99 không đạt, ECS Fargate thường là con đường ngắn nhất tới production ổn định.`,
+  follow: [
+    'Nếu API chạy 24/7 traffic ổn định thì Fargate hay Lambda rẻ hơn, vì sao?',
+    'SnapStart sau restore phải xử lý connection pool và random như thế nào?',
+    'Làm sao scale ECS Fargate theo metric tuỳ chỉnh thay vì chỉ CPU?'
+  ],
+  tags: ['ECS', 'Fargate', 'EKS', 'Lambda', 'SnapStart', 'cold start', 'senior']
+},
+{
+  id: 'aws-075',
+  topic: 'aws',
+  level: 'senior',
+  q: 'RDS PostgreSQL Multi-AZ failover xảy ra: endpoint DNS đổi sang standby và kết nối cũ bị đứt. HikariCP phản ứng thế nào, cấu hình ra sao để giảm lỗi, và vì sao cần retry idempotent?',
+  a: `**Tóm tắt:** Khi RDS PostgreSQL Multi-AZ failover, DNS của endpoint đổi từ primary sang standby (thường 60-120 giây) và mọi kết nối TCP cũ bị đứt. HikariCP không tự chữa kết nối chết; nếu không cấu hình đúng, request sẽ nhận connection hỏng và lỗi "Connection reset", pool cạn dần. Phải bật validation, đặt connectTimeout và socketTimeout hợp lý, keepalive, maxLifetime, và retry idempotent ở tầng ứng dụng.
+
+### Hiểu nhanh
+Hãy xem endpoint database như địa chỉ nhà: khi chuyển sang standby, AWS đổi biển địa chỉ (DNS) sang nhà mới. HikariCP giống quyển sổ ghi các đường dây đang gọi sẵn tới nhà cũ: khi nhà cũ đóng cửa, các đường dây đó chết, và nếu bạn không kiểm tra trước khi nói thì cuộc gọi đứt giữa chừng.
+
+### Thuật ngữ
+- Multi-AZ: standby đồng bộ ở AZ khác, tự lên thay khi primary hỏng.
+- Failover: quá trình chuyển sang standby; với RDS DB instance thường mất khoảng 60-120 giây.
+- DNS CNAME/endpoint: tên miền trỏ tới instance hiện tại; khi failover, AWS cập nhật bản ghi này và client phải resolve lại.
+- HikariCP: connection pool phổ biến cho Java, giữ sẵn kết nối tới DB.
+- connectTimeout: thời gian tối đa để mở một kết nối mới, tính bằng mili giây.
+- socketTimeout: thời gian tối đa chờ một thao tác đọc/ghi trên socket.
+- validationTimeout: thời gian tối đa để kiểm tra một connection còn sống.
+- keepaliveTime: chu kỳ HikariCP gửi gói kiểm tra để phát hiện kết nối chết.
+- maxLifetime: tuổi thọ tối đa của một connection trước khi pool tạo lại.
+
+### Cơ chế từng bước: failover ảnh hưởng HikariCP ra sao
+1. Primary hỏng, RDS đổi CNAME endpoint sang standby. Vì sao quan trọng: mọi client phải resolve lại DNS; nếu JVM cache DNS lâu (networkaddress.cache.ttl), nó vẫn trỏ IP cũ.
+2. Các connection đang mở tới primary bị đứt: hoặc nhận TCP RST, hoặc treo đến khi socketTimeout. Vì sao: standby không có socket của primary.
+3. HikariCP lấy connection từ pool. Nếu không bật connection test, request đầu tiên sau failover có thể nhận connection chết và ném SQLException. Vì sao: pool không biết connection đã chết cho tới khi dùng.
+4. Trong lúc DNS chưa đổi xong (60-120 giây), mọi lần mở connection mới đều fail hoặc timeout. Vì sao: endpoint vẫn trỏ primary đã chết.
+5. Sau khi DNS đổi và standby nhận vai trò, connection mới kết nối được; pool tự bơm lại. Vì sao: HikariCP giữ số connection tối thiểu và tạo lại khi thiếu.
+
+### Cấu hình HikariCP cho failover êm
+~~~yaml
+spring.datasource.hikari:
+  connection-timeout: 3000        # mở kết nối mới tối đa 3s, fail nhanh thay vì treo
+  validation-timeout: 2000        # kiểm tra connection còn sống trong 2s
+  keepalive-time: 30000           # mỗi 30s kiểm tra kết nối nhàn rỗi
+  max-lifetime: 1200000           # 20 phút, ngắn hơn thời gian ngắt kết nối idle của PostgreSQL
+  minimum-idle: 2
+  maximum-pool-size: 10
+  connection-test-query: SELECT 1  # hoặc để HikariCP dùng JDBC4 isValid
+~~~
+
+### Xử lý ở tầng ứng dụng
+- Đặt JVM DNS TTL thấp ({{networkaddress.cache.ttl}}) để resolve lại nhanh sau failover.
+- Retry idempotent: chỉ retry các thao tác đọc hoặc ghi đã thiết kế idempotent, kèm backoff; không retry bừa các lệnh ghi không idempotent.
+- Đặt timeout ở tầng service ngắn hơn timeout của client để fail nhanh.
+- Cân nhắc RDS Proxy: nó giữ pool và tự chuyển hướng sau failover, giảm số lần app gặp lỗi.
+
+### Ví dụ đời thực
+Một hệ thanh toán dùng HikariCP 10 connection, không cấu hình validation. Khi RDS Multi-AZ failover (diễn tập định kỳ), trong 90 giây đầu khoảng 40% request báo "Connection is not valid, cannot execute query" và "Connection reset"; p99 tăng từ 200 ms lên 8 giây, một số giao dịch phải retry thủ công. Điều tra: pool giữ connection tới IP primary cũ, không có keepalive nên không phát hiện chết; connectTimeout mặc định 30 giây khiến mỗi lần mở kết nối mới treo lâu. Xử lý: đặt connection-timeout 3 giây, validation-timeout 2 giây, keepalive 30 giây, max-lifetime 20 phút, thêm retry idempotent 2 lần với backoff 200-500 ms. Kết quả: lần failover tiếp theo chỉ còn khoảng 5-8% request lỗi trong 60 giây đầu, p99 còn khoảng 1,5 giây, không còn timeout treo 30 giây.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi RDS Multi-AZ failover, endpoint DNS đổi sang standby trong khoảng 60-120 giây và mọi kết nối cũ bị đứt. HikariCP không tự biết connection chết, nên tôi bật keepalive và connection test để pool phát hiện sớm, đặt connection-timeout ngắn khoảng 3 giây để mở kết nối mới không treo, max-lifetime ngắn hơn thời gian ngắt kết nối idle của PostgreSQL, và socket timeout hợp lý. Quan trọng là JVM phải resolve lại DNS nhanh, nên tôi để TTL thấp. Cuối cùng tôi retry idempotent ở tầng ứng dụng với backoff, và cân nhắc RDS Proxy để nó giữ pool và chuyển hướng sau failover. Tôi luôn diễn tập failover định kỳ để đo số request lỗi và p99 thực tế."
+> Senior tip: hãy diễn tập failover như một buổi tập cháy. Không cấu hình HikariCP thì 60-120 giây DNS đổi là 60-120 giây lỗi âm thầm; chỉ cần connectTimeout ngắn cộng keepalive cộng retry idempotent là phần lớn request sống sót.`,
+  follow: [
+    'Vì sao không nên đặt maxLifetime dài hơn thời gian ngắt kết nối idle của PostgreSQL?',
+    'RDS Proxy giúp gì cho HikariCP khi có nhiều client hoặc dùng Lambda?',
+    'Làm sao biết request nào an toàn để retry sau failover?'
+  ],
+  tags: ['RDS', 'PostgreSQL', 'Multi-AZ', 'failover', 'HikariCP', 'DNS', 'senior']
+},
+{
+  id: 'aws-076',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Một job SQS chạy 20 phút nhưng visibility timeout chỉ 30 giây. Message bị xử lý trùng, và với FIFO thì cả message group bị chặn. Bạn thiết kế lại visibility timeout, heartbeat, DLQ và FIFO thế nào?',
+  a: `**Tóm tắt:** Với job chạy lâu hơn visibility timeout, SQS tưởng job đã chết và giao message cho consumer khác, gây xử lý trùng. Cách xử lý: đặt visibility timeout bằng thời gian xử lý xấu nhất cộng đệm (tối đa 12 giờ), hoặc dùng heartbeat ChangeMessageVisibility để gia hạn khi job còn chạy. FIFO giữ thứ tự theo message group nên một job dài sẽ chặn cả group; hãy chia group theo khoá nghiệp vụ. DLQ gom message thất bại nhiều lần để không chặn hàng đợi.
+
+### Hiểu nhanh
+Hãy xem visibility timeout như thời gian giữ chỗ ở trạm bưu điện: khi bạn nhận bưu kiện, trạm giữ chỗ cho bạn trong 30 giây; nếu bạn chưa xử lý xong và quay lại, trạm nghĩ bạn đã bỏ chạy và giao bưu kiện cho người khác. Với job 20 phút mà giữ chỗ 30 giây, chắc chắn có người khác xử lý trùng. Heartbeat giống bạn gọi điện "tôi vẫn đang xử lý, giữ chỗ thêm cho tôi".
+
+### Thuật ngữ
+- Visibility timeout: khoảng thời gian message bị ẩn sau khi consumer nhận, để consumer xử lý; hết hạn thì message hiện lại.
+- ChangeMessageVisibility: lệnh gia hạn, hoặc rút ngắn, thời gian ẩn của một message đang xử lý.
+- In-flight message: message đã được nhận nhưng chưa bị xoá.
+- DLQ (Dead Letter Queue): hàng đợi chứa message thất bại sau {{maxReceiveCount}} lần nhận.
+- Redrive: chuyển message từ DLQ về hàng đợi chính để xử lý lại.
+- MessageGroupId: khoá nhóm của FIFO; thứ tự được đảm bảo trong cùng một group.
+- Long polling: kỹ thuật chờ message thay vì trả về ngay, giảm số lần gọi rỗng.
+
+### Cơ chế: job chạy 20 phút, visibility timeout 30 giây
+1. Consumer nhận message, SQS ẩn message trong 30 giây (visibility timeout mặc định). Vì sao: để consumer khác không xử lý cùng lúc.
+2. Job chạy 20 phút, vượt 30 giây. Vì sao có vấn đề: SQS cho rằng consumer đã chết và hiện message lại.
+3. Consumer khác, hoặc consumer khác thread, nhận lại message và chạy job lần hai. Vì sao: SQS không biết job vẫn đang chạy.
+4. Kết quả: hai lần xử lý cùng một job, có thể gửi email hai lần hoặc trừ tiền hai lần. Vì sao: SQS là at-least-once, không phải exactly-once.
+
+### Ba cách xử lý job dài
+1. Đặt visibility timeout dài bằng thời gian xấu nhất cộng đệm: đơn giản, nhưng nếu job chết giữa chừng thì phải chờ hết timeout mới retry, và timeout tối đa là 12 giờ. Với job 20 phút, đặt 30 phút là hợp lý.
+2. Heartbeat bằng ChangeMessageVisibility: một scheduler định kỳ, ví dụ mỗi 10 giây với timeout 30 giây, gọi gia hạn khi job còn sống. Job chết thì ngừng gia hạn, message hiện lại sau timeout. Cách này cân bằng giữa retry nhanh và không xử lý trùng.
+3. Tách việc dài khỏi message ngắn: giao message "job này cần xử lý" cho một worker, worker cập nhật trạng thái và tự chia nhỏ; hoặc dùng Step Functions để điều phối các bước dài. Vì sao: giữ hàng đợi nhẹ, tránh chặn.
+
+### Lưu ý riêng cho FIFO
+FIFO đảm bảo thứ tự trong một message group. Nếu một message trong group chạy 20 phút, các message phía sau trong cùng group phải chờ (head-of-line blocking). Với job dài cần song song, hãy chia nhiều message group theo khoá nghiệp vụ khác nhau, đừng dồn tất cả vào một group.
+
+### Ví dụ code: worker SQS có heartbeat (rút gọn)
+~~~java
+// Worker SQS: gia hạn visibility khi job còn chạy; body là logic job của bạn
+void process(SqsClient sqs, String queueUrl, Message msg) {
+    var handle = msg.receiptHandle();
+    var deadline = Instant.now().plusSeconds(30);   // visibility timeout 30s
+    try (var job = openJob(msg.body())) {           // job chạy lâu, có thể > 30s
+        while (job.hasMore() && Instant.now().isBefore(deadline)) {
+            job.step();
+            sqs.changeMessageVisibility(b -> b.queueUrl(queueUrl)
+                .receiptHandle(handle).visibilityTimeout(30)); // nới thêm 30s
+        }
+        sqs.deleteMessage(b -> b.queueUrl(queueUrl).receiptHandle(handle));
+    } catch (Exception e) {
+        log.error("job fail, se retry sau khi het timeout", e); // không xoá -> SQS retry
+    }
+}
+~~~
+
+### Ví dụ đời thực
+Một service tạo báo cáo PDF mất khoảng 15 phút, visibility timeout để mặc định 30 giây. Triệu chứng: mỗi báo cáo bị tạo 2-3 lần, người dùng nhận email trùng, CPU tăng vọt vì 3 consumer chạy song song cùng job. Điều tra CloudWatch: ApproximateNumberOfMessagesVisible dao động mạnh, NumberOfMessagesDeleted thấp hơn NumberOfMessagesReceived nhiều. Nguyên nhân gốc: job dài hơn visibility timeout nên message hiện lại liên tục. Xử lý: đặt visibility timeout 1 giờ, thêm heartbeat ChangeMessageVisibility mỗi 30 giây, làm consumer idempotent theo {{reportId}}, cấu hình DLQ với maxReceiveCount 3. Kết quả: số lần tạo lại mỗi báo cáo còn đúng 1, số message trong DLQ giảm về 0, p99 thời gian tạo báo cáo không đổi.
+
+### Trả lời mẫu khi phỏng vấn
+"Với SQS, message là at-least-once: khi consumer nhận, message bị ẩn trong visibility timeout; nếu chưa xoá kịp, message hiện lại và có thể bị xử lý lần nữa. Với job dài, tôi đặt visibility timeout bằng thời gian xử lý xấu nhất cộng đệm, tối đa 12 giờ; nếu job quá dài hoặc cần retry nhanh, tôi dùng heartbeat ChangeMessageVisibility để gia hạn khi job còn sống. Với FIFO, tôi nhớ rằng thứ tự chỉ đảm bảo trong một message group, nên job dài sẽ chặn cả group; tôi chia message group theo khoá nghiệp vụ để song song. Cuối cùng tôi luôn làm consumer idempotent theo khoá nghiệp vụ và dùng DLQ với maxReceiveCount hợp lý để message lỗi không chặn hàng đợi."
+> Senior tip: job dài cộng visibility timeout ngắn là công thức tạo duplicate. Mặc định của tôi: timeout bằng thời gian xấu nhất cộng 50% đệm, cộng heartbeat nếu job có thể chạy lâu, cộng idempotent theo khoá nghiệp vụ. Ba lớp này giải quyết gần hết sự cố SQS trên production.`,
+  follow: [
+    'Heartbeat bằng ChangeMessageVisibility có race với lúc message hết hạn không?',
+    'Vì sao FIFO vẫn có thể xử lý trùng và cần MessageDeduplicationId?',
+    'Khi nào nên chuyển job dài sang Step Functions thay vì SQS?'
+  ],
+  tags: ['SQS', 'FIFO', 'visibility timeout', 'DLQ', 'heartbeat', 'job dài', 'senior']
+},
+{
+  id: 'aws-077',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Một service Java ở tài khoản A cần đọc file trên S3 của tài khoản B (đối tác). Hãy thiết kế IAM role, trust policy và bucket policy, và giải thích vì sao không dùng access key?',
+  a: `**Tóm tắt:** Dịch vụ không nên cầm access key; nó nên dùng IAM role. Khi service ở tài khoản A cần đọc S3 của tài khoản B, ta dùng cross-account role: role ở B tin, qua trust policy, principal ở A, có ExternalId chống confused deputy, và policy chỉ cho đúng action trên đúng ARN. AWS SDK v2 tự lấy credential tạm qua provider chain nên code không chứa key.
+
+### Hiểu nhanh
+Access key giống chìa khoá vĩnh viễn: lộ một lần là kẻ gian vào mãi. IAM role giống thẻ khách có hạn: ai đủ điều kiện thì được phát thẻ, thẻ tự hết hạn. Cross-account giống việc công ty A muốn nhân viên vào kho của công ty B: B không phát chìa cho A, mà ghi vào hợp đồng "nhân viên của A, khi xuất trình đúng mã ExternalId, được vào kho của tôi, chỉ lấy đúng thùng X".
+
+### Thuật ngữ
+- IAM role: danh tính tạm thời, được assume qua STS, trả về credential có session token và thời hạn.
+- Trust policy: policy gắn vào role, quy định principal nào được assume.
+- Identity-based policy: policy gắn vào user/role, quy định role đó được làm gì.
+- Resource-based policy: policy gắn vào tài nguyên như bucket S3, queue SQS, key KMS, quy định ai được truy cập tài nguyên.
+- ExternalId: chuỗi bí mật hai bên thoả thuận, chống confused deputy.
+- Confused deputy: lỗ hổng khi một dịch vụ có quyền bị kẻ khác lợi dụng để hành động thay.
+- Credential provider chain: chuỗi nguồn credential SDK tự dò: env, profile, container endpoint trên ECS, IMDS trên EC2.
+
+### Cơ chế: service tài khoản A đọc S3 tài khoản B
+1. Task role ở tài khoản A có identity policy cho phép {{sts:AssumeRole}} trên ARN role ở B. Vì sao: A phải được phép xin thẻ của B.
+2. Role ở B có trust policy: Principal là ARN task role của A, kèm Condition {{sts:ExternalId}} bằng mã hai bên thoả thuận. Vì sao: chỉ đúng principal cộng đúng mã mới được assume, chống confused deputy.
+3. Role ở B có permission policy: {{s3:GetObject}} trên {{arn:aws:s3:::partner-bucket/*}}. Vì sao: giới hạn đúng action và đúng tài nguyên.
+4. Bucket của B có bucket policy cho phép role ở B truy cập. Vì sao: nếu bucket có resource policy chặn, phải mở ở cả hai nơi, identity và resource.
+5. SDK của app, chạy ở A, tự gọi AssumeRole rồi dùng credential tạm. Vì sao: không có access key nào trong image hay biến môi trường.
+
+### Trust policy ở tài khoản B (rút gọn)
+~~~json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": { "AWS": "arn:aws:iam::111122223333:role/orders-task-role" },
+    "Action": "sts:AssumeRole",
+    "Condition": { "StringEquals": { "sts:ExternalId": "partner-2026-x7q" } }
+  }]
+}
+~~~
+
+### Policy quyền ở role B
+~~~json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["s3:GetObject"],
+    "Resource": "arn:aws:s3:::partner-bucket/*"
+  }]
+}
+~~~
+
+### Identity vs resource policy
+| | Identity-based | Resource-based |
+|---|---|---|
+| Gắn vào | User hoặc role | Tài nguyên: bucket, queue, key |
+| Ai được cấp | Principal trong policy | Ghi rõ account hoặc role được phép |
+| Khi nào cần | Luôn nên có, least privilege | Khi cho truy cập từ tài khoản khác hoặc dịch vụ AWS |
+
+Thực tế cross-account thường cần cả hai: role ở B (identity) và bucket policy ở B (resource). Nếu chỉ có một trong hai, request bị từ chối ngầm.
+
+### Ví dụ đời thực
+Một service đơn hàng ở tài khoản A cần đọc file hoá đơn trên S3 của đối tác ở tài khoản B. Ban đầu team copy access key của B vào biến môi trường để chạy cho nhanh. Triệu chứng: ba tháng sau key vẫn còn trong task definition, một nhân viên cũ vẫn truy cập được bucket; khi đối tác thu hồi key, service đổ toàn bộ. Điều tra CloudTrail cho thấy request đến từ IAM user chứ không phải role. Xử lý: xoá key, tạo cross-account role ở B với trust policy trỏ task role của A và ExternalId, thêm bucket policy cho role đó, chỉ cho {{s3:GetObject}} trên prefix hoá đơn. Kết quả: không còn credential dài hạn, khi một task bị chiếm thì kẻ tấn công chỉ đọc được đúng prefix được phép, và đối tác có thể thu hồi quyền tức thì bằng cách sửa trust policy.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không bao giờ để dịch vụ cầm access key. Dịch vụ dùng IAM role, SDK tự lấy credential tạm qua provider chain: task role trên ECS, IRSA hoặc Pod Identity trên EKS, execution role trên Lambda. Khi service ở tài khoản A cần tài nguyên của tài khoản B, tôi dùng cross-account role: role ở B có trust policy chỉ tin task role của A và bắt buộc ExternalId để chống confused deputy, còn permission policy chỉ cho đúng action trên đúng ARN. Nếu bucket ở B có bucket policy, tôi mở cả resource policy, vì IAM đánh giá cả identity và resource; thiếu một bên là từ chối ngầm. Cách này giúp thu hồi quyền tức thì và nếu service bị chiếm thì thiệt hại chỉ giới hạn ở đúng tài nguyên đó."
+> Senior tip: hãy coi mỗi service là một principal riêng và hỏi "nếu service này bị chiếm thì kẻ tấn công chạm được gì". ExternalId là thứ nhiều người quên nhưng lại là ranh giới sống còn của cross-account; thiếu nó, một tài khoản thứ ba có thể giả danh để đọc dữ liệu của bạn.`,
+  follow: [
+    'Vì sao cross-account thường cần cả identity policy và bucket policy?',
+    'ExternalId chống confused deputy hoạt động cụ thể ra sao?',
+    'Làm sao thu hồi quyền của đối tác ngay lập tức mà không service nào gãy?'
+  ],
+  tags: ['IAM', 'role', 'cross-account', 'S3', 'trust policy', 'ExternalId', 'senior']
+},
+{
+  id: 'aws-078',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Bạn gọi Amazon Bedrock (Claude) từ Java trong VPC không có Internet. PrivateLink, IAM và quota hoạt động thế nào, và retry ra sao khi gặp throttling?',
+  a: `**Tóm tắt:** Gọi Amazon Bedrock (Claude) từ Java bằng AWS SDK v2; trong VPC không có Internet thì dùng VPC interface endpoint, tức PrivateLink, cho bedrock-runtime. Về hạn mức: on-demand giới hạn theo TPM/RPM của model, vượt thì nhận ThrottlingException (429) và phải retry với backoff; hoặc mua Provisioned Throughput. Gọi Bedrock tốn tiền theo token nên cần đo và kiểm soát.
+
+### Hiểu nhanh
+Bedrock là siêu thị mô hình AI: bạn không tự chạy model, chỉ gọi API và trả tiền theo lượng chữ vào/ra, gọi là token. PrivateLink giống đường hầm riêng đi thẳng tới siêu thị mà không phải ra đường lớn, tức Internet. Hạn mức, quota, giống số món tối đa siêu thị bán cho bạn mỗi phút. Retry giống xếp hàng lại khi hết món, và backoff là chờ lâu hơn mỗi lần thử để không dồn dập.
+
+### Thuật ngữ
+- Amazon Bedrock: dịch vụ quản lý và gọi các foundation model như Claude, Titan, Llama qua API.
+- Foundation model (FM): mô hình nền tảng đã huấn luyện sẵn, ví dụ Claude.
+- Inference profile: cấu hình định tuyến tới một model cụ thể theo region; dùng ARN của nó trong request.
+- On-demand: trả theo token, chịu giới hạn TPM/RPM theo model và account.
+- Provisioned Throughput: đặt trước năng lực cho một model, trả theo giờ, không bị throttling như on-demand.
+- TPM/RPM: số token/phút và số request/phút tối đa.
+- PrivateLink / VPC interface endpoint: ENI trong subnet cho phép gọi dịch vụ AWS bằng IP riêng, không qua Internet.
+- Converse API / InvokeModel: hai cách gọi model của Bedrock; Converse model-agnostic và phù hợp cho chat.
+
+### Cơ chế: Java gọi Claude qua PrivateLink
+1. Tạo VPC interface endpoint cho dịch vụ {{bedrock-runtime}} trong subnet private, bật private DNS. Vì sao: SDK dùng tên miền chuẩn nhưng gói đi tới ENI nội bộ, không ra Internet.
+2. Security group của endpoint chỉ cho 443 từ security group của service. Vì sao: chỉ service của bạn mới gọi được, giảm bề mặt tấn công.
+3. IAM task role có {{bedrock:InvokeModel}} và {{bedrock:InvokeModelWithResponseStream}} trên ARN model hoặc inference profile. Vì sao: mỗi model có ARN riêng, least privilege theo đúng model dùng.
+4. Dùng {{BedrockRuntimeClient}} của AWS SDK v2, gọi {{converse}} với modelId là inference profile của Claude. Vì sao: SDK tự chọn endpoint qua cơ chế endpoint của VPC và ký SigV4.
+5. Nếu vượt hạn mức, Bedrock trả ThrottlingException; SDK có retry sẵn nhưng bạn nên cấu hình backoff cộng jitter, hoặc chuyển sang Provisioned Throughput cho tải ổn định.
+6. Response có token usage; với phản hồi dài, dùng streaming để giảm thời gian chờ và hiển thị dần.
+
+### Ví dụ gọi Claude bằng SDK v2 (rút gọn)
+~~~java
+// Chạy trên ECS/Lambda trong private subnet, có VPC endpoint bedrock-runtime
+var client = BedrockRuntimeClient.builder()
+    .region(Region.AP_SOUTHEAST_1)
+    .overrideConfiguration(c -> c.retryPolicy(r -> r.numRetries(5))) // backoff sẵn
+    .build();
+
+var req = ConverseRequest.builder()
+    .modelId(modelId)                       // inference profile của Claude, lấy ở console
+    .messages(Message.builder().role("user")
+        .content(ContentBlock.fromText("Tóm tắt văn bản sau: " + text)).build())
+    .inferenceConfig(c -> c.maxTokens(512).temperature(0.2f))
+    .build();
+
+var resp = client.converse(req);           // ném ThrottlingException nếu vượt TPM/RPM
+var answer = resp.output().message().content().get(0).text();
+~~~
+
+### Hạn mức và retry
+- On-demand: giới hạn theo TPM/RPM của từng model; khi vượt, lỗi là throttling. Retry với exponential backoff cộng jitter, ví dụ 200 ms, 400 ms, 800 ms, và giới hạn số lần.
+- Provisioned Throughput: đặt trước năng lực, trả theo giờ, phù hợp tải nền ổn định và cần độ trễ dự đoán được.
+- Theo dõi CloudWatch metric Invocations, InvocationThrottles, InvocationClientErrors và token count để phát hiện sớm.
+
+### Ví dụ đời thực
+Một hệ thống tóm tắt tài liệu gọi Claude qua Bedrock on-demand, traffic giờ cao điểm khoảng 200 request/phút, mỗi request vào 3.000 token và ra 500 token. Triệu chứng: giờ cao điểm khoảng 15% request trả 429 ThrottlingException, p99 tăng từ 2 giây lên 9 giây vì SDK retry mặc định quá ít; ngoài ra traffic đi qua NAT Gateway làm hoá đơn NAT tăng. Điều tra CloudWatch: InvocationThrottles tăng đúng lúc RPM vượt hạn mức model, và VPC Flow Logs cho thấy request Bedrock đi qua NAT. Xử lý: tạo VPC interface endpoint cho bedrock-runtime cộng private DNS để hết đi NAT, cấu hình retry 5 lần backoff cộng jitter, giảm maxTokens và tóm tắt theo lô, mua Provisioned Throughput cho phần tải nền. Kết quả: throttling còn dưới 1%, p99 khoảng 2,5 giây, chi phí NAT giảm khoảng 60% cho phần gọi Bedrock.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi gọi Bedrock bằng AWS SDK v2, dùng BedrockRuntimeClient và Converse API với modelId là inference profile của Claude. Trong VPC không Internet, tôi tạo VPC interface endpoint cho bedrock-runtime và bật private DNS, security group chỉ cho 443 từ service, còn IAM role chỉ có InvokeModel trên đúng ARN model. Về hạn mức, on-demand giới hạn TPM/RPM nên tôi cấu hình retry với backoff và jitter, theo dõi CloudWatch InvocationThrottles, và mua Provisioned Throughput cho phần tải nền cần ổn định. Vì Bedrock tính tiền theo token, tôi kiểm soát maxTokens, tóm tắt theo lô và đo token usage, đồng thời luôn đo p99 và số throttling trước và sau khi đổi cấu hình."
+> Senior tip: gọi Bedrock trong VPC mà quên PrivateLink là một trong những cách âm thầm làm hoá đơn NAT tăng; hãy tạo interface endpoint cho bedrock-runtime ngay từ đầu. Và đừng retry vô hạn khi throttling: backoff cộng jitter, cộng theo dõi InvocationThrottles, cộng Provisioned Throughput cho tải nền.`,
+  follow: [
+    'VPC interface endpoint cho bedrock-runtime khác gateway endpoint S3 ở điểm nào?',
+    'On-demand và Provisioned Throughput khác nhau ra sao về chi phí và độ trễ?',
+    'Làm sao giảm token và chi phí khi tóm tắt tài liệu dài bằng Claude?'
+  ],
+  tags: ['Bedrock', 'Claude', 'PrivateLink', 'VPC endpoint', 'quota', 'retry', 'senior']
+},
 )
