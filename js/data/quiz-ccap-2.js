@@ -963,4 +963,276 @@ Khi support có tài liệu rõ về **giới hạn đã biết (known limitatio
 FAQ ghi rõ: assistant không xử lý hoàn tiền, hãy chuyển cho nhân viên; nếu câu trả lời sai, bấm "báo lỗi" kèm mã. Support tự trả lời 80% câu hỏi, kỹ sư chỉ nhận các ca đã được phân loại.
 
 > Mẹo phỏng vấn: "enablement" là một domain vận hành — runbook, FAQ, đường escalation và cơ chế báo lỗi.` },
+{ id: 'qz-ccap-251', topic: 'claude', q: '[Solution Design] A legal team needs Claude to answer questions over 10,000 contracts that change monthly. Each answer must cite the exact clause, and the full corpus cannot fit in one prompt. Which design fits best?', options: ['Paste all contracts into the system prompt and ask Claude to cite clauses', 'Build a RAG pipeline: retrieve relevant clauses, build a prompt with retrieved text plus citation instructions, and return answers with source references', 'Ask Claude to memorise the contracts during training and answer from memory', 'Send one contract per request and combine answers manually'], answer: 1, explain: `**Tóm tắt:** RAG với trích dẫn nguồn là thiết kế phù hợp.
+
+### Vì sao đáp án đúng
+Corpus 10.000 hợp đồng không thể nhét vào một prompt vì sẽ vượt context window. RAG (Retrieval-Augmented Generation) là kỹ thuật lấy những đoạn liên quan từ kho tài liệu, đưa vào prompt, và để Claude trả lời kèm trích dẫn. Mỗi lần hợp đồng thay đổi, chỉ cần cập nhật kho văn bản, không cần huấn lại mô hình.
+
+### Vì sao từng phương án sai
+- Paste all contracts: vừa vượt context window, vừa khó quản lý khi hợp đồng thay đổi.
+- Memorise: Claude không được huấn luyện trên dữ liệu của bạn; trả lời từ ký ức không đáng tin cậy và không trích dẫn được.
+- One contract per request: chậm, tốn tiền, và khó tổng hợp nhiều câu trả lời.
+
+### Ví dụ đời thực
+Đội pháp chế có 10.000 hợp đồng, mỗi hợp đồng 20 trang. RAG lấy 5 đoạn phù hợp nhất mỗi câu hỏi, đưa vào prompt kèm hướng dẫn trích dẫn mã điều khoản. Kết quả: câu trả lời kèm link đến đoạn hợp đồng gốc, đội kiểm duyệt dễ dàng.
+
+> Mẹo phỏng vấn: nhấn mạnh trích dẫn nguồn và cập nhật kho văn bản thay vì huấn lại model.` },
+{ id: 'qz-ccap-252', topic: 'claude', multi: true, q: '[Solution Design] An internal platform exposes three capabilities to Claude through one MCP server: a searchable policy library, an action that creates a support ticket, and a reusable prompt for triaging incidents. Which mapping of MCP primitives is correct? (Choose 3)', options: ['Policy library as an MCP resource (read-only data Claude can retrieve)', 'Ticket creation as an MCP tool (action Claude can invoke)', 'Triage prompt as an MCP prompt (reusable template Claude can use)', 'Policy library as an MCP tool', 'Ticket creation as an MCP resource', 'Triage prompt as an MCP resource'], answer: [0, 1, 2], explain: `**Tóm tắt:** MCP resource đọc dữ liệu, tool thực hành động, prompt là mẫu dùng lại.
+
+### Vì sao đáp án đúng
+MCP (Model Context Protocol) là chuẩn kết nối Claude với nguồn dữ liệu và công cụ. Resource dùng cho dữ liệu chỉ đọc (thư viện chính sách), tool dùng cho hành động (tạo ticket), prompt dùng cho mẫu bản mẫu (triage incident). Ba nguyên tắc này tách biệt rõ vai trò.
+
+### Vì sao từng phương án sai
+- Policy library as tool: thư viện chính sách là dữ liệu, không phải hành động.
+- Ticket creation as resource: tạo ticket là hành động, không phải dữ liệu chỉ đọc.
+- Triage prompt as resource: mẫu triage là prompt, không phải dữ liệu resource.` },
+{ id: 'qz-ccap-253', topic: 'claude', q: '[Solution Design] A travel booking agent must call an external API to cancel a reservation when the user confirms. Which design best limits risk if Claude generates a wrong cancellation call?', options: ['Let Claude call the cancel API directly whenever it wants', 'Require human approval before any destructive tool call, and log every call', 'Never use tools; tell users to cancel manually', 'Call the cancel API on every message just in case'], answer: 1, explain: `**Tóm tắt:** Yêu cầu duyệt nhân loại trước hành động phá hủy và ghi nhật ký mọi lời gọi.
+
+### Vì sao đáp án đúng
+Hủy đặt chỗ là hành động phá hủy (destructive action). Nếu Claude hiểu nhầm và hủy vé sai, thiệt hại là ngay lập tức. Duyệt nhân loại trước khi thực hiện, cùng ghi nhật ký, giúp ngăn chặn và truy vết.
+
+### Vì sao từng phương án sai
+- Let Claude call directly: Claude có thể hiểu nhầm, hủy vé không cần thiết.
+- Never use tools: không dùng công cụ thì trải nghiệm kém, người dùng phải tự thao tác.
+- Call on every message: gọi hủy mỗi tin nhắn là tai biến.` },
+{ id: 'qz-ccap-254', topic: 'claude', q: '[Solution Design] A research assistant reads 300-page PDFs. Pasting whole PDFs exceeded the context window, and summarising first lost key details. Which design best balances quality and cost?', options: ['Always paste the full PDF regardless of size', 'Summarise each PDF once, then answer only from the summary', 'Use hybrid retrieval: semantic search over document chunks plus keyword search, retrieve top chunks per question, cite sources', 'Ask users to upload only one page at a time'], answer: 2, explain: `**Tóm tắt:** Truy xuất lai (semantic + keyword) trên các đoạn tài liệu, lấy đoạn phù hợp nhất cho mỗi câu hỏi.
+
+### Vì sao đáp án đúng
+PDF 300 trang vượt cửa sổ ngữ cảnh. Tóm tắt trước loses chi tiết. Hybrid retrieval kết hợp tìm kiếm ngữ nghĩa (hiểu ý) và tìm kiếm từ khóa (khớp cụm từ chính xác), lấy các đoạn liên quan nhất, trả lời từ đoạn đó và trích dẫn nguồn. Cân bằng chất lượng và chi phí vì chỉ gửi phần cần thiết.
+
+### Vì sao từng phương án sai
+- Always paste full PDF: vượt context window, API báo lỗi.
+- Summarise first: tóm tắt làm mất chi tiết quan trọng.
+- One page at a time: không thực tế cho tài liệu dài, trải nghiệm tệ.` },
+{ id: 'qz-ccap-255', topic: 'claude', multi: true, q: '[Solution Design] A public assistant fetches web pages and must not follow hidden instructions in those pages or reveal internal documents. Which two defences are most effective? (Choose 2)', options: ['Put fetched pages directly into the system prompt', 'Treat retrieved content as untrusted data with clear delimiters and instruction hierarchy', 'Filter documents by caller permissions at retrieval time, before they reach the model', 'Trust the model to ignore malicious content on its own', 'Increase temperature so the model is more creative'], answer: [1, 2], explain: `**Tóm tắt:** Xem nội dung lấy về là dữ liệu không tin cậy với phân cách rõ ràng, và lọc theo quyền truy cập khi lấy.
+
+### Vì sao đáp án đúng
+Prompt injection là kỹ thuật dùng nội dung độc hại để điều khiển mô hình. Nội dung trang web fetched có thể chứa lệnh ẩn. Cách tốt nhất: phân cách lệnh hệ thống khỏi dữ liệu, đánh dấu dữ liệu retrieved là không tin cậy, và lọc tài liệu theo quyền của người gọi trước khi đưa vào mô hình.
+
+### Vì sao từng phương án sai
+- Put fetched pages in system prompt: trang fetched vào system prompt là lỗ hổng injection lớn.
+- Trust model: mô hình có thể bị lừa, không nên tin cậy.
+- Increase temperature: tăng temp làm sáng tạo hơn, không ngăn injection.` },
+{ id: 'qz-ccap-256', topic: 'claude', multi: true, q: '[Solution Design] A support assistant can look up orders, explain policy, and escalate to a human. Which two design choices keep the system safe and useful? (Choose 2)', options: ['Let the assistant refund any amount without approval', 'Define clear escalation rules and let Claude hand off to a human with context', 'Never escalate; always let Claude decide', 'Store full customer data in the system prompt for context', 'Require human approval for actions outside policy limits'], answer: [1, 4], explain: `**Tóm tắt:** Quy tắc chuyển nhượng rõ ràng và duyệt nhân loại cho hành động ngoài quy định.
+
+### Vì sao đáp án đúng
+Trợ lý hỗ trợ cần biết khi nào chuyển sang nhân viên (escalation) và khi nào cần duyệt hành động ngoài hạn mức. Điều này giữ an toàn (không hoàn tiền sai) và hữu ích (không để khách hàng kẹt).
+
+### Vì sao từng phương án sai
+- Refund any amount: hoàn tiền bất kỳ số tiền mà không duyệt là rủi ro tài chính.
+- Never escalate: không bao giờ chuyển nhượng làm khách hàng bất satisfactorily khi Claude không giải quyết được.
+- Store full customer data: lưu toàn bộ dữ liệu khách hàng trong prompt là rủi ro bảo mật và vượt context window.` },
+{ id: 'qz-ccap-257', topic: 'claude', q: '[Solution Design] A document analysis takes five minutes per file. The browser gives up after a few seconds. Which design fits best?', options: ['Make the call synchronous and raise every timeout to ten minutes', 'Start an async job, return a job id, and let the client poll a status endpoint or receive a callback when done', 'Poll the server every 100 milliseconds', 'Run the analysis on the user device'], answer: 1, explain: `**Tóm tắt:** Bắt đầu công việc bất đồng bộ, trả về mã công việc, client hỏi trạng thái hoặc nhận gọi lại khi xong.
+
+### Vì sao đáp án đúng
+Phân tích 5 phút vượt quá thời gian chờ của trình duyệt và proxy. Mô hình async: client gửi tệp, nhận mã công việc ngay, server chạy nền. Khi xong, server gọi lại (callback/webhook) hoặc client hỏi trạng thái một lần. Ít yêu cầu hơn và kết quả đến ngay khi sẵn sàng.
+
+### Vì sao từng phương án sai
+- Synchronous with ten minute timeout: trình duyệt và proxy sẽ cắt kết nối, người dùng chờ trước màn hình trắng.
+- Poll every 100ms: hỏi mỗi 100ms tăng gấp 10 lần số yêu cầu.
+- Run on user device: thiết bị người dùng không đủ tài nguyên cho phân tích 40 trang.` },
+{ id: 'qz-ccap-258', topic: 'claude', q: '[Solution Design] A multi-turn assistant must remember user preferences across a long conversation without exceeding the context window. Which approach works best?', options: ['Send the entire conversation history on every request forever', 'Summarise older turns into a running context block and append recent turns', 'Forget everything after each turn', 'Store history only in the browser localStorage'], answer: 1, explain: `**Tóm tắt:** Tóm tắt các lượt trước thành khối ngữ cảnh chạy, thêm các lượt gần đây.
+
+### Vì sao đáp án đúng
+Cuộc trò chuyện dài vượt context window nếu gửi toàn bộ lịch sử. Tóm tắt các lượt cũ thành một khối ngữ cảnh ngắn gọn, giữ các lượt mới chi tiết. Cân bằng giữa nhớ được ưu thích và không vượt hạn mức.
+
+### Vì sao từng phương án sai
+- Send entire history: vừa vượt context window, vừa tốn tiền và chậm hơn mỗi lượt.
+- Forget everything: không nhớ gì, trải nghiệm tệ.
+- localStorage only: localStorage chỉ ở trình duyệt, không đồng bộ giữa thiết bị và không an toàn cho dữ liệu nhạy cảm.` },
+{ id: 'qz-ccap-259', topic: 'claude', q: '[Solution Design] A Claude feature sometimes states wrong facts confidently, and customers act on them. Which systemic change best reduces this risk across features?', options: ['Add more warning sentences to each prompt', 'Add grounding instructions, require citations where possible, and surface uncertainty instead of guessing', 'Use a larger model for everything', 'Remove citations to avoid confusion'], answer: 1, explain: `**Tóm tắt:** Thêm hướng dẫn căn cứ, bắt buộc trích dẫn, và hiển thị sự không chắc chắn thay vì đoán.
+
+### Vì sao đáp án đúng
+Mô hình có thể trả lời sai nhưng tự tin (hallucination). Cách hệ thống nhất: hướng dẫn căn cứ vào nguồn, bắt buộc trích dẫn khi có thể, và cho phép mô hình nói tôi không biết thay vì đoán. Áp dụng cho tất cả tính năng.
+
+### Vì sao từng phương án sai
+- Warning sentences: câu cảnh báo là chỉ dẫn mềm, không ngăn lỗi.
+- Larger model: model lớn vẫn có thể bịa, và tốn kém hơn.
+- Remove citations: xoá trích dẫn làm giảm khả năng kiểm tra, không giúp gì.` },
+{ id: 'qz-ccap-260', topic: 'claude', multi: true, q: '[Solution Design] A team writes system prompts for several Claude features. Which two practices make prompts maintainable and safe? (Choose 2)', options: ['Keep instructions, role, and examples clearly separated; version each prompt', 'Embed all customer data directly in the system prompt', 'Change prompts directly in production without review', 'Use clear delimiters between system instructions and untrusted user input', 'Never document what each prompt does'], answer: [0, 3], explain: `**Tóm tắt:** Tách chỉ dẫn, vai trò và ví dụ rõ ràng, phiên bản mỗi prompt, và phân cách lệnh hệ thống khỏi dữ liệu không tin cậy.
+
+### Vì sao đáp án đúng
+Prompt có phiên bản giúp quản lý thay đổi và rollback. Tách biệt phần cấu thành giúp bảo trì. Phân cách rõ ràng giữa lệnh hệ thống và dữ liệu người dùng ngăn chặn prompt injection.
+
+### Vì sao từng phương án sai
+- Embed customer data: nhúng dữ liệu khách hàng vào prompt là rủi ro bảo mật và vượt context window.
+- Change in production: thay đổi production không xem xét là nguy hiểm, không thể rollback.
+- Never document: không tài liệu hóa làm đội không biết prompt nào làm gì.` },
+{ id: 'qz-ccap-261', topic: 'claude', q: '[Solution Design] A RAG system returns irrelevant results for acronym-heavy queries such as SLA. Which change most improves retrieval quality?', options: ['Add only semantic search', 'Add keyword search alongside semantic search (hybrid search) and re-rank', 'Increase temperature', 'Remove all metadata from documents'], answer: 1, explain: `**Tóm tắt:** Thêm tìm kiếm từ khóa kèm tìm kiếm ngữ nghĩa (hybrid search) và xếp hạng lại.
+
+### Vì sao đáp án đúng
+Tìm kiếm ngữ nghĩa hiểu ý nghĩa nhưng đôi khi bỏ sót từ viết tắt cụ thể (SLA). Tìm kiếm từ khóa khớp chính xác từ viết tắt. Kết hợp hai (hybrid) và xếp hạng lại kết quả giúp tìm tài liệu chính xác nhất.
+
+### Vì sao từng phương án sai
+- Only semantic search: chỉ semantic search vẫn có thể bỏ sót viết tắt.
+- Increase temperature: temp ảnh hưởng tính ngẫu nhiên, không giúp retrieval.
+- Remove metadata: xoá metadata làm mất thông tin lọc, tệ hơn.` },
+{ id: 'qz-ccap-262', topic: 'claude', q: '[Solution Design] An agent writes and runs code to verify answers. Occasionally the generated code deletes files. Which approach best limits blast radius?', options: ['Run generated code with full admin access on the production server', 'Run generated code in a sandboxed, read-only environment with no network or delete access', 'Never run generated code', 'Run code as root so nothing fails'], answer: 1, explain: `**Tóm tắt:** Chạy mã được tạo trong môi trường sandbox chỉ đọc, không có mạng hoặc quyền xóa.
+
+### Vì sao đáp án đúng
+Mã do Claude tạo có thể phá hủy (xóa thư mục). Chạy trong sandbox (môi trường cách ly) với quyền chỉ đọc, không mạng, không xóa giúp hạn chế thiệt hại nếu mã xấu. Đây là chuẩn an toàn cho agent chạy code.
+
+### Vì sao từng phương án sai
+- Full admin access: quyền admin toàn diện trên production là tai biến nếu mã xấu.
+- Never run code: không bao giờ chạy code thì mất khả năng kiểm tra.
+- Run as root: chạy làm root là nguy hiểm nhất.` },
+{ id: 'qz-ccap-263', topic: 'claude', q: '[Solution Design] Three business units share one Claude integration but have different compliance needs such as data residency and retention. Which recommendation is most defensible?', options: ['Use one shared prompt and one shared model for everyone', 'Route each business unit to its own isolated integration with its own config, model, and retention rules', 'Let each unit pick randomly per request', 'Store all data in one shared database without tags'], answer: 1, explain: `**Tóm tắt:** Định tuyến từng đơn vị kinh doanh sang tích hợp riêng biệt với cấu hình, mô hình và quy định lưu giữ riêng.
+
+### Vì sao đáp án đúng
+Các đơn vị có yêu cầu tuân thủ khác nhau (dữ liệu phải ở đúng vùng, thời gian lưu giữ khác). Tách biệt tích hợp cho mỗi đơn vị đảm bảo tuân thủ, không lộ dữ liệu giữa các đơn vị, và dễ kiểm toán.
+
+### Vì sao từng phương án sai
+- One shared prompt: một prompt và model chung không đáp ứng được yêu cầu khác nhau.
+- Pick randomly: chọn ngẫu nhiên làm mất kiểm soát và không tuân thủ.
+- Shared database: một cơ sở dữ liệu chung không gán nhãn là rủi ro lộ dữ liệu.` },
+{ id: 'qz-ccap-264', topic: 'claude', q: '[Solution Design] A model returns a confident wrong answer. The team wants Claude to express uncertainty instead of guessing. Which change helps most?', options: ['Instruct Claude to say I do not know when not confident, and to cite sources for factual claims', 'Always make Claude answer even if unsure', 'Use a smaller model', 'Remove the system prompt'], answer: 0, explain: `**Tóm tắt:** Hướng dẫn Claude nói tôi không biết khi không chắc chắn, và bắt buộc trích dẫn nguồn cho khẳng định thực tế.
+
+### Vì sao đáp án đúng
+Mô hình có xu hướng trả lời tự tin ngay cả khi sai. Hướng dẫn rõ ràng nếu không biết hãy nói tôi không biết và trích dẫn nguồn giúp giảm rủi ro khách hàng hành động dựa trên thông tin sai.
+
+### Vì sao từng phương án sai
+- Always answer: luôn bắt trả lời ngay cả khi không biết là nguyên nhân của hallucination.
+- Smaller model: model nhỏ có thể kém hơn, không giải quyết vấn đề tự tin sai.
+- Remove system prompt: xoá system prompt mất hoàn toàn hướng dẫn hành vi.` },
+{ id: 'qz-ccap-265', topic: 'claude', q: '[Solution Design] A team wants to change a production prompt without a code deploy and be able to roll back quickly if quality drops. Which design fits best?', options: ['Hard-code the prompt in the application code', 'Store prompts in a versioned prompt library, reference by version id, and keep a rollback version ready', 'Edit the prompt live on the server with no record', 'Ask Claude to rewrite its own prompt daily'], answer: 1, explain: `**Tóm tắt:** Lưu prompt trong thư viện có phiên bản, tham chiếu bằng mã phiên bản, và giữ phiên bản rollback sẵn sàng.
+
+### Vì sao đáp án đúng
+Thư viện prompt có phiên bản giúp thay đổi prompt mà không triển khai lại mã. Nếu chất lượng giảm, quay lại phiên bản trước trong vài giây. Đây là cách quản lý prompt an toàn cho production.
+
+### Vì sao từng phương án sai
+- Hard-code: hard-code prompt trong mã cần triển khai lại để thay đổi, chậm và rủi ro.
+- Edit live: chỉnh sửa trực tiếp trên server không có bản ghi không thể rollback và không kiểm toán được.
+- Claude rewrite: Claude tự viết lại prompt không kiểm soát và không giải thích được hành vi thay đổi.` },
+{ id: 'qz-ccap-266', topic: 'claude', multi: true, q: '[Eval & Optimization] On the newest Claude models, settings such as budget_tokens, temperature, top_p, top_k, and prefill cause a 400 error. Which two approaches are supported instead? (Choose 2)', options: ['Use thinking with type adaptive plus effort level', 'Retry with budget_tokens until it works', 'Lower temperature to zero in every call', 'Use top_p with a custom value', 'Stick to thinking only and avoid unsupported sampling params'], answer: [0, 4], explain: `**Tóm tắt:** Dùng thinking loại adaptive kèm mức nỗ lực, và tránh các tham số lấy mẫu không được hỗ trợ.
+
+### Vì sao đáp án đúng
+Trên các mô hình Claude mới, các thiết lập như budget_tokens, temperature, top_p, top_k và prefill gây lỗi 400. Cách được hỗ trợ là dùng trường thinking với type adaptive và mức effort (tư duy thích ứng). Các tham số lấy mẫu cũ không nên dùng.
+
+### Vì sao từng phương án sai
+- Retry budget_tokens: thử lại budget_tokens vẫn gây lỗi 400.
+- Lower temperature: giảm temp về 0 vẫn là tham số không được hỗ trợ trên model mới.
+- Use top_p: top_p cũng gây lỗi 400.` },
+{ id: 'qz-ccap-267', topic: 'claude', q: '[Eval & Optimization] A company notices 70 percent of requests are simple FAQs and 30 percent are complex analysis. Quality matters most for complex cases, cost for FAQs. Model prices per million tokens: Fable 5.2 input 8 dollars output 40 dollars, Opus 5.5 input 4 dollars output 20 dollars, Sonnet 5.5 input 2 dollars output 10 dollars, Haiku 5.5 input 0.10 dollars output 0.50 dollars. Which routing best optimizes cost without hurting quality?', options: ['Use Fable 5.2 for every request', 'Route simple FAQs to Haiku 5.5 and complex cases to Sonnet 5.5 or Opus 5.5', 'Use Haiku 5.5 for everything to save money', 'Use Opus 5.5 for everything for best quality'], answer: 1, explain: `**Tóm tắt:** Định tuyến câu hỏi đơn giản sang Haiku 5.5 (rẻ nhất), trường hợp phức tạp sang Sonnet 5.5 hoặc Opus 5.5.
+
+### Vì sao đáp án đúng
+Haiku 5.5 là mô hình rẻ nhất (0.10 USD vào, 0.50 USD ra trên triệu token), phù hợp câu hỏi thường gặp đơn giản. Sonnet 5.5 và Opus 5.5 mạnh hơn cho phân tích phức tạp. Định tuyến theo độ khó tối ưu chi phí mà không làm giảm chất lượng quan trọng.
+
+### Vì sao từng phương án sai
+- Fable 5.2: Fable 5.2 là đắt nhất (8 USD vào, 40 USD ra), không nên dùng cho mọi thứ.
+- Haiku everything: Haiku cho mọi thứ có thể kém chất lượng trên trường hợp phức tạp.
+- Opus everything: Opus cho mọi thứ tốn kém không cần thiết trên câu hỏi đơn giản.` },
+{ id: 'qz-ccap-268', topic: 'claude', q: '[Eval & Optimization] A long Claude response takes 30 seconds total. The model spends 5 seconds processing the input and 25 seconds generating output tokens. Which factor most increases latency for long outputs?', options: ['Input processing time only', 'Output token generation time', 'The number of users', 'The color scheme of the interface'], answer: 1, explain: `**Tóm tắt:** Sinh mỗi token đầu ra tốn thời gian, nên phản hồi dài chính là chủ yếu do thời gian sinh token đầu ra.
+
+### Vì sao đáp án đúng
+Độ trễ Claude gồm thời gian xử lý đầu vào (một lần) và thời gian sinh từng token đầu ra. Càng trả lời dài, càng nhiều token sinh, càng lâu độ trễ. Với phản hồi 30 giây, 25 giây là do sinh token đầu ra.
+
+### Vì sao từng phương án sai
+- Input processing: xử lý đầu vào chỉ xảy ra một lần, không phụ thuộc độ dài câu trả lời.
+- Number of users: số người dùng không ảnh hưởng trực tiếp độ trễ của một yêu cầu.
+- Color scheme: màu sắc giao diện là phần frontend, không liên quan độ trễ API.` },
+{ id: 'qz-ccap-269', topic: 'claude', q: '[Eval & Optimization] A company sends the same 12,000-word system prompt plus a short user question on every request, 40,000 times a day. How should they structure prompts to maximise prompt cache hit rate?', options: ['Put the user question first, then the system prompt', 'Put the static system prompt first as a stable prefix, then the user question', 'Randomly shuffle the prompt order each request', 'Add a timestamp to the prompt prefix every request'], answer: 1, explain: `**Tóm tắt:** Đặt phần prompt tĩnh (hệ thống) đầu tiên làm tiền tố ổn định, sau đó mới là câu hỏi của người dùng.
+
+### Vì sao đáp án đúng
+Prompt cache của Claude khớp theo tiền tố byte-cho-byte. Nội dung tĩnh (hướng dẫn hệ thống) nên ở đầu, nội dung thay đổi (câu hỏi người dùng) ở sau. Như vậy tiền tố lớn không đổi được cache, chỉ phần câu hỏi mới xử lý lại. Thêm timestamp hoặc xáo tron sẽ làm mất cache hoàn toàn.
+
+### Vì sao từng phương án sai
+- User question first: đặt câu hỏi trước làm tiền tố thay đổi mỗi lần, cache không nhặt được phần hệ thống.
+- Shuffle: xáo tron làm mỗi yêu cầu khác nhau, không có cache hit.
+- Timestamp: thêm timestamp làm tiền tố thay đổi mỗi lần, không cache được.` },
+{ id: 'qz-ccap-270', topic: 'claude', multi: true, q: '[Eval & Optimization] A team builds a golden eval set for a Claude feature. Which two practices make the set trustworthy? (Choose 2)', options: ['Label expected answers for every case', 'Include only easy questions the model always answers right', 'Cover common, edge, and failure cases representative of real traffic', 'Use one question only'], answer: [0, 2], explain: `**Tóm tắt:** Gán đáp án mong đợi cho mọi trường hợp, và bao gồm trường hợp thường gặp, trường hợp biên, trường hợp thất bại đại diện cho lưu lượng thật.
+
+### Vì sao đáp án đúng
+Bộ vàng (golden set) cần đáp án đã gán nhãn để so sánh tự động. Nó cũng phải đại diện cho lưu lượng thật: câu hỏi thường gặp, trường hợp biên và trường hợp dễ thất bại. Chỉ có câu dễ hoặc một câu duy nhất không phát hiện vấn đề thực.
+
+### Vì sao từng phương án sai
+- Only easy: chỉ câu dễ không thể phát hiện regression trên trường hợp khó.
+- One question: một câu không đủ thống kê, dễ bị ảnh hưởng bởi may rủi.` },
+{ id: 'qz-ccap-271', topic: 'claude', q: '[Eval & Optimization] A team needs to estimate Claude cost per request before launch. Each request has 1,000 input tokens and 500 output tokens on Sonnet 5.5 input 2 dollars per million tokens output 10 dollars per million tokens. Which calculation gives the most reliable per-request cost?', options: ['Guess based on similar products', 'Multiply input tokens by input price plus output tokens by output price, then divide by one million', 'Count only input tokens', 'Use the price of the largest model for safety'], answer: 1, explain: `**Tóm tắt:** Chi phí mỗi yêu cầu = (token vào × giá vào + token ra × giá ra) / một triệu.
+
+### Vì sao đáp án đúng
+Giá Claude tính theo triệu token. Tính chi phí mỗi yêu cầu bằng cách lấy số token vào nhân giá vào, cộng số token ra nhân giá ra, rồi chia cho một triệu. Với ví dụ: (1000 × 2 + 500 × 10) / 1.000.000 = 0.007 USD mỗi yêu cầu.
+
+### Vì sao từng phương án sai
+- Guess: đoán dựa trên sản phẩm tương tự không có cơ sở dữ liệu thật.
+- Input only: chỉ đếm token vào bỏ qua chi phí token ra, thường lớn hơn.
+- Largest model: giá model lớn nhất làm überestimate, không chuẩn xác cho model thực tế dùng.` },
+{ id: 'qz-ccap-272', topic: 'claude', q: '[Eval & Optimization] A company wants a quality metric for Claude answers that reflects actual business value. Which definition of a successful task is best?', options: ['The API returns a response without error', 'The task is completed correctly and the user does not need to escalate to a human', 'The response is generated quickly', 'The response uses few tokens'], answer: 1, explain: `**Tóm tắt:** Một tác vụ thành công = hoàn thành đúng và người dùng không cần chuyển nhượng cho nhân loại.
+
+### Vì sao đáp án đúng
+API không lỗi chỉ cho biết kỹ thuật hoạt động, không cho biết chất lượng. Nhanh và ít token không đồng nghĩa đúng. Thành công thực là tác vụ được hoàn thành đúng và khách hàng không cần nhờ con người can thiệp. Đây là chỉ số gần giá trị kinh doanh nhất.
+
+### Vì sao từng phương án sai
+- API no error: không lỗi API không có nghĩa câu trả lời đúng.
+- Quickly: nhanh nhưng sai vẫn không có giá trị.
+- Few tokens: ít token có thể là câu trả lời ngắn nhưng sai.` },
+{ id: 'qz-ccap-273', topic: 'claude', multi: true, q: '[Eval & Optimization] A team runs an automated eval set after every prompt change. Which two practices make the result statistically reliable? (Choose 2)', options: ['Use enough samples so differences are not due to chance', 'Run the eval on a single question', 'Measure a consistent quality metric across all cases', 'Only run eval when a user complains'], answer: [0, 2], explain: `**Tóm tắt:** Dùng đủ số mẫu để khác biệt không do may rủi, và đo một chỉ số chất lượng nhất quán trên mọi trường hợp.
+
+### Vì sao đáp án đúng
+Kết quả eval cần ý nghĩa thống kê: đủ mẫu để không bị lừa bởi may rủi. Cũng cần chỉ số chất lượng nhất quán (ví dụ tỉ lệ đúng) trên mọi trường hợp để so sánh trước/sau. Chỉ chạy khi khách hàng phàn nàn thì đã muộn.
+
+### Vì sao từng phương án sai
+- Single question: một câu hỏi không đủ thống kê.
+- When user complains: chờ khách hàng phàn nàn thì chất lượng đã giảm một thời gian, phản ứng chậm.` },
+{ id: 'qz-ccap-274', topic: 'claude', q: '[Eval & Optimization] A team wants to reduce Claude cost without changing answers. They notice the system prompt is 8,000 words and repeated on every request. Which change most reduces cost?', options: ['Shorten the system prompt and move examples to few-shot only where needed', 'Increase temperature so answers are shorter', 'Use a larger model', 'Remove the system prompt entirely'], answer: 0, explain: `**Tóm tắt:** Rút gọn prompt hệ thống và chỉ dùng ví dụ few-shot khi thực sự cần.
+
+### Vì sao đáp án đúng
+Chi phí Claude theo số token vào. Prompt hệ thống 8.000 từ được gửi mỗi lần. Rút gọn prompt và chỉ giữ few-shot examples khi cần giúp giảm số token vào, do đó giảm chi phí mà không đổi câu trả lời.
+
+### Vì sao từng phương án sai
+- Increase temperature: tăng temp làm câu trả lời ngẫu nhiên hơn, không liên quan chi phí, có thể làm tệ chất lượng.
+- Larger model: model lớn hơn tăng chi phí.
+- Remove system prompt: xoá hoàn toàn prompt hệ thống làm mất hướng dẫn hành vi, chất lượng giảm.` },
+{ id: 'qz-ccap-275', topic: 'claude', q: '[Eval & Optimization] A Claude feature has a 1 percent API error rate but a 20 percent task failure rate due to wrong answers. Which metric better reflects customer impact?', options: ['API error rate only', 'Task success rate: share of correct answers', 'Number of API calls', 'Average latency'], answer: 1, explain: `**Tóm tắt:** Tỉ lệ thành công tác vụ (share of correct answers) phản ánh ảnh hưởng khách hàng tốt hơn tỉ lệ lỗi API.
+
+### Vì sao đáp án đúng
+Tỉ lệ lỗi API chỉ cho biết vấn đề kỹ thuật, không cho biết câu trả lời có đúng hay không. Tỉ lệ thành công tác vụ đo trực tiếp xem Claude giải quyết đúng bài toán bao nhiêu phần trăm, gần trải nghiệm khách hàng nhất.
+
+### Vì sao từng phương án sai
+- API error rate: lỗi API thấp không có nghĩa chất lượng cao.
+- API calls: số lượng gọi API không nói về độ chính xác.
+- Latency: độ trễ thấp nhưng sai vẫn không mang giá trị.` },
+{ id: 'qz-ccap-276', topic: 'claude', q: '[Eval & Optimization] A Claude feature sometimes returns different answers to the same question across runs. Temperature is 0.8. Which change most improves consistency without changing the model?', options: ['Lower temperature toward 0', 'Increase max tokens', 'Add more examples to the prompt', 'Use a larger model'], answer: 0, explain: `**Tóm tắt:** Giảm nhiệt độ về phía 0 làm đầu ra xác định hơn, cải thiện tính nhất quán.
+
+### Vì sao đáp án đúng
+Nhiệt độ cao (0.8) làm mô hình lấy mẫu ngẫu nhiên hơn, cùng câu hỏi có thể trả lời khác nhau. Giảm nhiệt độ về phía 0 khiến đầu ra ổn định và lặp được, cải thiện tính nhất quán mà không đổi mô hình.
+
+### Vì sao từng phương án sai
+- Max tokens: tăng max tokens cho phép câu trả lời dài hơn, không làm nhất quán hơn.
+- More examples: thêm ví dụ có thể giúp nhưng không trực tiếp giảm sự ngẫu nhiên của nhiệt độ.
+- Larger model: đổi mô hình vi phạm yêu cầu không đổi mô hình, và model lớn vẫn có thể ngẫu nhiên.` },
+{ id: 'qz-ccap-277', topic: 'claude', q: '[Eval & Optimization] A team updates the system prompt wording. What happens to the existing prompt cache?', options: ['The cache remains valid because only the user question changed', 'The cache is invalidated because the prefix changed; new cache entries are built', 'The cache automatically updates with the new wording', 'The cache only works for Haiku 5.5'], answer: 1, explain: `**Tóm tắt:** Cache bị hủy vì tiền tố đã đổi; các bản cache mới được xây dựng.
+
+### Vì sao đáp án đúng
+Prompt cache khớp theo tiền tố byte-cho-byte. Khi câu lệnh hệ thống thay đổi, tiền tố không còn khớp, các bản cache cũ không dùng được. Hệ thống sẽ xây dựng cache mới từ tiền tố mới.
+
+### Vì sao từng phương án sai
+- Remains valid: tiền tố đổi nên cache cũ không khớp, không còn dùng được.
+- Automatically updates: cache không tự cập nhật, phải xây dựng lại từ đầu.
+- Haiku only: prompt cache không giới hạn chỉ một mẫu model.` },
+{ id: 'qz-ccap-278', topic: 'claude', q: '[Eval & Optimization] A new Claude model version is available. Before adopting it on a high-traffic feature, the team wants evidence it performs well on their actual tasks. Which approach is best?', options: ['Switch all users to the new model immediately', 'Run the golden eval set on both models and compare quality on real task examples before deciding', 'Wait a year and never adopt', 'Choose a random model per request'], answer: 1, explain: `**Tóm tắt:** Chạy bộ vàng trên cả hai mô hình và so sánh chất lượng trên các tác vụ thật trước khi quyết định.
+
+### Vì sao đáp án đúng
+Mô hình mới không mặc nhiên tốt hơn cho mọi tác vụ. Chạy bộ đánh giá trên cùng tập ví dụ thật với cả mô hình cũ và mới, so sánh chất lượng, chi phí và độ trễ, rồi mới quyết định chuyển đổi. Điều này tránh thoái hoá chất lượng lặng lẽ.
+
+### Vì sao từng phương án sai
+- Switch all: chuyển tất cả ngay không có lưới an toàn, lỗi ảnh hưởng toàn bộ người dùng.
+- Wait a year: chờ một năm bỏ lỡ cải tiến, và mô hình cũ có thể bị khai tử.
+- Random model: chọn ngẫu nhiên mỗi yêu cầu không kiểm soát và không so sánh được.` },
+{ id: 'qz-ccap-279', topic: 'claude', multi: true, q: '[Eval & Optimization] Which two factors most increase Claude API cost? (Choose 2)', options: ['Number of input tokens', 'Number of output tokens', 'The color scheme of the app', 'The time of day'], answer: [0, 1], explain: `**Tóm tắt:** Số token vào và số token ra là hai yếu tố tăng chi phí API Claude nhất.
+
+### Vì sao đáp án đúng
+Giá Claude tính theo triệu token. Càng nhiều token đầu vào và đầu ra, chi phí càng cao. Màu sắc ứng dụng và thời gian trong ngày không ảnh hưởng chi phí API.
+
+### Vì sao từng phương án sai
+- Color scheme: màu sắc ứng dụng là phần giao diện, không liên quan chi phí API.
+- Time of day: thời gian trong ngày không thay đổi giá token của nhà cung cấp.` },
+{ id: 'qz-ccap-280', topic: 'claude', q: '[Eval & Optimization] A team is about to launch a Claude feature and has no quality measurements yet. What should they build first to measure quality objectively?', options: ['A dashboard showing only request counts', 'A golden eval set with labelled expected answers and a pass threshold', 'More system prompt instructions', 'A larger model'], answer: 1, explain: `**Tóm tắt:** Xây dựng bộ vàng có đáp án gán nhãn và ngưỡng đạt chuẩn để đo chất lượng khách quan.
+
+### Vì sao đáp án đúng
+Trước khi ra mắt, cần một cách đo chất lượng khách quan. Bộ vàng với đáp án đã gán nhãn cho phép so sánh câu trả lời của Claude với đáp án chuẩn, tính tỉ lệ đúng, và thiết lập ngưỡng cảnh báo. Chỉ đếm số yêu cầu hoặc thêm chỉ dẫn hệ thống không đo chất lượng.
+
+### Vì sao từng phương án sai
+- Request counts: bảng chỉ số yêu cầu chỉ cho biết lưu lượng, không nói về chất lượng câu trả lời.
+- More instructions: thêm chỉ dẫn hệ thống không có cơ sở để biết có cải thiện hay không.
+- Larger model: đổi mô hình lớn hơn không phải cách đo chất lượng.` },
 );
