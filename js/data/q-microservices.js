@@ -7945,4 +7945,643 @@ props.put("value.serializer", "io.confluent.kafka.serializers.KafkaAvroSerialize
   ],
   tags: ['Schema Registry', 'Avro', 'backward compatibility', 'forward compatibility', 'event schema'],
 },
+{
+  id: 'microservices-093',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Consumer Kafka của bạn đọc topic thanh toán với at-least-once, nhiều partition và nhiều instance. Bạn thiết kế bảng processed_messages và logic consumer thế nào để không xử lý trùng, không phải khoá cả bảng, và không phình to sau vài tháng?',
+  a: `**Tóm tắt:** Kafka chỉ bảo đảm **at-least-once** (ít nhất một lần): nếu consumer ghi DB xong nhưng crash trước khi commit offset, message sẽ được đọc lại, nên phía xử lý phải khử trùng. Tôi dùng bảng **processed_messages** với khóa chính gồm {{consumer_group}} và {{event_id}}: insert cùng transaction với nghiệp vụ, {{ON CONFLICT DO NOTHING}} để bản ghi trùng không làm hỏng transaction, chỉ commit offset sau khi DB commit. Bảng này là **hợp đồng idempotency**, không phải nhật ký debug; nó cần index theo {{processed_at}} và một job dọn định kỳ để không phình to.
+
+### Hiểu nhanh
+Bạn là thủ kho, mỗi chuyến hàng có một **mã phiếu duy nhất**. Bạn có quyển sổ "đã nhận phiếu nào"; khi xe chở hàng đến, bạn dò mã phiếu trong sổ. Nếu mã đã có, bạn biết đây là lần giao lại (do tài xế bị gọi đi giữa đường rồi quay lại), nên bỏ qua. Nếu chưa có, bạn ghi mã vào sổ rồi mới nhập kho. Điều quan trọng: **ghi sổ và nhập kho phải diễn ra cùng một lúc** (cùng transaction), nếu không sẽ có lúc hàng đã nhập nhưng sổ chưa ghi, hoặc sổ đã ghi nhưng hàng chưa nhập. Quyển sổ chính là {{processed_messages}}; mã phiếu chính là {{event_id}}; "cùng một lúc" chính là transaction DB.
+
+### Thuật ngữ
+- **At-least-once**: thông điệp được giao ít nhất một lần; trong lúc chuyển giao có thể bị lặp, nhưng không mất (nếu consumer không tự ý commit offset trước khi xử lý).
+- **Offset**: vị trí đọc của consumer trong một partition. Commit offset nghĩa là "tôi đã xử lý xong tới record này".
+- **Consumer group**: nhóm consumer cùng {{group.id}} chia nhau các partition của một topic. Mỗi partition chỉ được một consumer trong group đọc tại một thời điểm.
+- **Partition**: một phân mảnh của topic Kafka; mỗi partition là một log có thứ tự riêng.
+- **Idempotent**: xử lý một thông điệp hai lần vẫn cho kết quả như xử lý một lần.
+- **Deduplication key**: khóa dùng để nhận ra bản trùng; ở đây là {{event_id}} do producer sinh ra, không phải offset.
+- **{{ON CONFLICT DO NOTHING}}**: câu lệnh PostgreSQL chèn dòng mới, nếu vi phạm khóa chính/unique thì không làm gì và không ném lỗi.
+- **Retention / TTL**: thời gian giữ bản ghi trước khi xoá; ở đây là thời gian giữ lịch sử khử trùng.
+
+### Vì sao khóa là (consumer_group, event_id)
+1. **event_id phải là khóa nghiệp vụ, không phải offset**. Offset chỉ có nghĩa trong một partition và thay đổi khi topic bị recreate, khi consumer đọc lại từ đầu, hoặc khi dữ liệu được migrate. Nếu dùng offset làm khóa khử trùng, cùng một event được đọc ở vị trí khác sẽ bị coi là event mới.
+2. **consumer_group đứng trước** vì mỗi group có thể đọc cùng một topic với mục đích khác nhau (ví dụ group {{billing}} và group {{analytics}}). Hai group cùng xử lý một event là đúng, không phải trùng; nếu chỉ dùng {{event_id}} làm khóa chính, group thứ hai sẽ bị bỏ qua oan.
+3. **event_id phải ổn định qua các lần retry**. Nếu producer sinh UUID mới mỗi lần gửi lại, consumer không thể khử trùng. Đây là lỗi thiết kế của producer; consumer chỉ có thể phát hiện qua {{messageKey}} hoặc idempotency key nghiệp vụ nếu có.
+4. **Không dùng {{SELECT}} rồi {{INSERT}}**. Hai transaction cùng kiểm tra "chưa có" rồi cùng insert sẽ đua nhau; một trong hai phải nhận lỗi unique. Dùng {{INSERT ... ON CONFLICT DO NOTHING}} để một câu lệnh vừa kiểm tra vừa chèn.
+
+### Logic consumer từng bước
+1. Consumer đọc record {{E-88213}} từ partition 3, offset 42. Record có {{eventId=E-88213}} và một chút metadata (topic, partition, offset) để truy vết.
+2. Mở transaction DB. Insert vào {{processed_messages(consumer_group, event_id, topic, partition_no, offset_no)}}. Nếu khóa đã tồn tại, {{ON CONFLICT DO NOTHING}} trả về 0 dòng.
+3. Nếu insert trả về 0: bản này đã xử lý, gọi {{rollback}} hoặc đơn giản return để transaction kết thúc mà không ghi nghiệp vụ. Vì không có gì thay đổi, rollback/commit đều như nhau.
+4. Nếu insert thành công: cập nhật nghiệp vụ (ví dụ {{payment.status = CAPTURED}}) trong **cùng transaction**.
+5. Transaction DB commit. Sau đó Spring Kafka container mới commit offset. Nếu crash giữa bước 4 và 5, message bị đọc lại; bước 2 sẽ chặn vì khóa đã có.
+6. Nếu transaction nghiệp vụ ném lỗi, insert cũng bị rollback; message sẽ được xử lý lại từ đầu, đúng như mong đợi.
+
+~~~seq
+title: Consumer idempotent với processed_messages
+actors: Kafka | Consumer | AppDB | Cleanup
+Kafka -> Consumer: record eventId=E-88213, offset 42
+Consumer -> AppDB: BEGIN
+Consumer -> AppDB: INSERT processed_messages ON CONFLICT DO NOTHING
+AppDB --> Consumer: 1 row (mới)
+Consumer -> AppDB: UPDATE payment SET status=CAPTURED
+AppDB --> Consumer: COMMIT
+Consumer -> Kafka: commit offset 43
+Cleanup -> AppDB: DELETE processed_at < now()-7d
+~~~
+
+~~~java
+@KafkaListener(topics = "payment.captured")
+@Transactional
+public void on(PaymentCaptured evt) {
+    // evt là record đã gắn topic/partition/offset từ Kafka
+    int inserted = jdbc.update(
+      "INSERT INTO processed_messages(consumer_group, event_id, topic, partition_no, offset_no) " +
+      "VALUES (?, ?, ?, ?, ?) ON CONFLICT (consumer_group, event_id) DO NOTHING",
+      GROUP, evt.eventId(), "payment.captured", evt.partition(), evt.offset());
+    if (inserted == 0) return;   // đã xử lý: bỏ qua, không làm gì thêm
+    paymentRepo.markCaptured(evt.orderId(), evt.amount());   // cùng transaction
+}   // DB commit xong, container Kafka mới commit offset
+~~~
+
+~~~sql
+CREATE TABLE processed_messages (
+  consumer_group TEXT      NOT NULL,
+  event_id       UUID      NOT NULL,
+  topic          TEXT      NOT NULL,
+  partition_no   INT       NOT NULL,
+  offset_no      BIGINT    NOT NULL,
+  processed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (consumer_group, event_id)
+);
+CREATE INDEX idx_pm_processed_at ON processed_messages(processed_at);
+~~~
+
+### Batch listener và xử lý song song
+- Với batch listener, đừng insert từng dòng rồi commit từng dòng: dùng {{batchUpdate}} với {{ON CONFLICT DO NOTHING}}, sau đó chỉ xử lý nghiệp vụ cho những dòng thực sự được insert. Nếu một dòng đã tồn tại, bỏ qua dòng đó chứ không bỏ cả batch.
+- Nếu listener trả về danh sách kết quả, hãy ánh xạ theo {{event_id}} để biết dòng nào mới, dòng nào trùng. Đừng dùng thứ tự mảng vì batch có thể bị thay đổi.
+- Nếu bạn dùng nhiều thread trong một partition để tăng throughput, thứ tự xử lý không còn được đảm bảo; với nghiệp vụ cần thứ tự theo aggregate, giữ một partition cho một thread hoặc dùng key theo aggregate.
+- {{ON CONFLICT DO NOTHING}} là atomic: hai transaction cùng insert một khóa thì một bên chờ, sau đó thấy đã có và không làm gì. Không cần {{SELECT ... FOR UPDATE}} cho việc khử trùng cơ bản.
+
+### Dọn bảng mà không ảnh hưởng replay
+1. Chọn thời gian giữ dựa trên **cửa sổ replay lớn nhất** bạn có thể gặp: consumer chết bao lâu, DLT được xử lý sau bao lâu, đối soát mất bao lâu. Giữ 7–30 ngày là phổ biến; đừng giữ 2 giờ rồi consumer restart sau 3 giờ là lặp.
+2. Nếu bảng lớn, partition theo ngày hoặc tuần. Khi hết hạn, {{DROP TABLE}} partition cũ nhanh hơn {{DELETE}} hàng triệu dòng.
+3. Nếu không partition, xoá theo lô bằng {{ctid}} để tránh một transaction dài giữ lock và sinh WAL lớn:
+~~~sql
+DELETE FROM processed_messages
+WHERE ctid IN (
+  SELECT ctid FROM processed_messages
+  WHERE processed_at < now() - interval '7 days'
+  LIMIT 10000
+);
+~~~
+4. Job dọn không được xoá bản ghi của event đang được xử lý (transaction chưa commit). Vì insert và nghiệp vụ cùng transaction, bản ghi chưa commit sẽ không thấy được cho job; job chỉ thấy bản ghi đã commit. Nếu dùng {{READ UNCOMMITTED}} thì có thể thấy, nhưng PostgreSQL không hỗ trợ đọc uncommitted thực sự.
+5. Theo dõi số dòng, kích thước bảng, thời gian xoá và số bản ghi bị dedup mỗi phút. Nếu số dòng tăng đột ngột, có thể producer đang gửi trùng hàng loạt hoặc job dọn bị lỗi.
+
+### Lỗi hay gặp
+1. **Chỉ dùng {{event_id}} làm khóa chính, quên consumer_group**. Triệu chứng: group thứ hai không xử lý được event. Cách tránh: khóa chính gồm cả group.
+2. **Kiểm tra trùng bằng {{SELECT}} rồi mới insert**. Triệu chứng: hai instance cùng xử lý một event sau rebalance. Cách tránh: unique constraint + {{ON CONFLICT}}.
+3. **Commit offset trước khi DB commit**. Triệu chứng: mất bản ghi, không phải lặp. Cách tránh: commit offset sau transaction.
+4. **Dọn bảng quá sớm**. Triệu chứng: consumer restart hoặc replay DLT làm xử lý trùng. Cách tránh: retention lớn hơn cửa sổ replay tối đa.
+5. **Nhồi payload vào bảng processed_messages**. Triệu chứng: bảng phình, backup chậm, không cần thiết. Cách tránh: chỉ lưu khóa và metadata truy vết; muốn xem payload thì tra Kafka bằng topic/partition/offset.
+6. **Dùng {{processed_messages}} thay cho outbox**. Đây là hai bảng khác nhau: processed_messages để khử trùng phía nhận, outbox để phát event phía gửi. Đừng trộn.
+
+### Ví dụ đời thực
+Hệ thống ví điện tử có 40 event {{payment.captured}} mỗi giây, 6 instance, 12 partition. Sau một lần deploy consumer mới, 0,4% giao dịch bị cộng tiền hai lần trong 30 phút, khoảng 720 giao dịch. Điều tra: code kiểm tra trùng bằng {{SELECT count(*)}} rồi mới {{INSERT}}, không có unique constraint; khi hai instance cùng nhận lại event {{E-88213}} sau rebalance, cả hai đều thấy "chưa có" và cùng insert. Ngoài ra bảng {{processed_event}} cũ chỉ lưu {{event_id}} không có {{consumer_group}}, nên group đối soát bị bỏ qua. Xử lý: tạo {{processed_messages(consumer_group, event_id)}} với khóa chính, đổi sang {{INSERT ... ON CONFLICT DO NOTHING}} trong cùng transaction với {{markCaptured}}, commit offset sau DB. Kết quả sau 48 giờ: 0 dòng trùng theo {{event_id}}, số bản ghi bị dedup ổn định khoảng 0,5%/phút (chứng tỏ cơ chế đang hoạt động), bảng 24 triệu dòng sau 7 ngày, xoá theo partition ngày vào 2 giờ sáng.
+
+### Trả lời mẫu khi phỏng vấn
+"Kafka chỉ bảo đảm at-least-once, nên consumer phải idempotent. Tôi dùng bảng processed_messages với khóa chính gồm consumer_group và event_id; insert cùng transaction với nghiệp vụ, ON CONFLICT DO NOTHING để bản trùng không làm hỏng transaction, và chỉ commit offset sau khi DB commit. Nếu crash giữa hai bước, message được đọc lại nhưng khóa đã có nên bị bỏ qua. Tôi không dùng SELECT rồi INSERT vì hai instance có thể cùng thấy chưa có; unique constraint mới là hàng rào. Với batch, tôi insert cả lô rồi chỉ xử lý các dòng thực sự mới. Bảng cần retention 7-30 ngày, lớn hơn cửa sổ replay, và partition theo ngày để dọn nhanh. Tôi không nhồi payload vào bảng này vì nó là hợp đồng idempotency, không phải nhật ký debug."
+
+> Senior tip: processed_messages là **hợp đồng idempotency**, không phải nhật ký debug. Đừng nhồi payload vào đó; muốn truy vết thì dùng {{event_id}} để tra topic/partition/offset trên Kafka.`,
+  follow: [
+    'Nếu producer sinh lại event_id mỗi lần gửi, bạn khử trùng thế nào?',
+    'Batch listener 500 record: bạn insert processed_messages và commit offset ra sao?',
+    'Bảng processed_messages 100 triệu dòng, bạn partition và dọn thế nào?'
+  ],
+  tags: ['Kafka', 'idempotent consumer', 'processed_messages', 'at-least-once', 'dedup'],
+  refs: [
+    { type: 'doc', title: 'Pattern: Idempotent Consumer', url: 'https://microservices.io/patterns/communication-style/idempotent-consumer.html' },
+    { type: 'doc', title: 'Kafka: Message delivery semantics', url: 'https://kafka.apache.org/documentation/#semantics' }
+  ]
+},
+{
+  id: 'microservices-094',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Bạn cần phát event từ DB ra Kafka. So sánh transactional outbox với CDC (Debezium đọc WAL) và polling publisher (job quét bảng outbox bằng SELECT ... FOR UPDATE SKIP LOCKED): mỗi cách hoạt động ra sao, chi phí vận hành thế nào, và bạn chọn theo tiêu chí nào?',
+  a: `**Tóm tắt:** Cả hai cách đều bắt đầu từ **transactional outbox**: ghi dữ liệu nghiệp vụ và dòng outbox trong cùng một transaction DB, nên không còn "double write" giữa DB và Kafka. Khác nhau ở khâu đưa dòng outbox ra Kafka: **CDC** đọc log giao dịch của DB (WAL của PostgreSQL, binlog của MySQL) nên không phải quét bảng, độ trễ thấp, nhưng cần Debezium/Kafka Connect và phải vận hành replication slot; **polling publisher** là một job định kỳ quét bảng outbox bằng {{SELECT ... FOR UPDATE SKIP LOCKED}}, đơn giản, không phụ thuộc log DB, nhưng độ trễ bằng chu kỳ quét và tạo tải lên DB. Tôi chọn theo thông lượng, độ trễ, số event và năng lực vận hành của team.
+
+### Hiểu nhanh
+Hãy tưởng tượng một nhà hàng. **CDC** giống một camera an ninh quay liên tục mọi thay đổi trong bếp: không cần ai đi kiểm tra, hễ có món mới ra là camera thấy ngay. **Polling** giống một anh bồi bàn cứ 2 phút lại đi một vòng xem có phiếu món mới không: đơn giản, không cần camera, nhưng món phải chờ tới lượt đi vòng kế tiếp, và nếu nhà hàng đông thì anh bồi bàn phải đi nhiều hơn. Cả hai đều bắt đầu từ cùng một quyển sổ: khi thu ngân chốt món, họ ghi cả "món đã bán" và "cần thông báo bếp" trên cùng một trang sổ (một transaction). Camera đọc nhật ký của quyển sổ; anh bồi bàn đọc trực tiếp trang "cần thông báo".
+
+### Thuật ngữ
+- **Transactional outbox**: bảng {{outbox}} nằm cùng DB với dữ liệu nghiệp vụ; app ghi cả hai trong một transaction, sau đó một tiến trình riêng đọc bảng và gửi Kafka.
+- **CDC (Change Data Capture)**: bắt thay đổi dữ liệu bằng cách đọc log giao dịch của DB, không phải bằng cách quét bảng.
+- **WAL (Write-Ahead Log)**: nhật ký ghi trước của PostgreSQL; mọi thay đổi được ghi vào WAL trước khi commit. MySQL có **binlog** với vai trò tương tự.
+- **Replication slot**: "dấu trang" của Debezium trên WAL; DB giữ lại WAL từ vị trí slot chưa đọc, để connector restart không mất dữ liệu.
+- **Debezium**: connector CDC mã nguồn mở chạy trên Kafka Connect, đọc WAL/binlog và tạo record Kafka.
+- **Kafka Connect**: framework chạy connector (source/sink), lưu offset của connector vào topic nội bộ.
+- **Polling publisher**: một service/job định kỳ chạy câu lệnh quét bảng outbox, publish lên Kafka rồi đánh dấu đã gửi.
+- **{{SKIP LOCKED}}**: khi nhiều worker cùng quét, mỗi worker bỏ qua hàng đang bị transaction khác khoá, nên không hai worker cùng lấy một hàng.
+- **Visibility timeout / lease**: khoảng thời gian một worker được quyền xử lý một hàng; nếu worker chết, sau timeout hàng được trả về trạng thái chờ.
+- **At-least-once**: cả hai cách đều có thể gửi lặp nếu crash sau khi Kafka ack nhưng trước khi đánh dấu đã gửi; consumer phải khử trùng.
+
+### Outbox chung: vì sao không ghi DB rồi gửi Kafka trực tiếp
+1. Nếu app ghi DB thành công rồi mới gọi {{kafka.send()}}, tiến trình có thể crash giữa hai bước: DB có dữ liệu, Kafka không có event (mất event).
+2. Nếu app gửi Kafka trước rồi ghi DB, Kafka có event nhưng DB không có dữ liệu (event "ma").
+3. Outbox giải quyết bằng cách ghi cả hai vào **cùng một transaction DB**: hoặc cả hai cùng commit, hoặc cả hai cùng rollback. Sau đó một tiến trình riêng đọc outbox và gửi Kafka. Đây là **at-least-once**: có thể gửi lặp, nhưng không mất.
+4. Cả CDC và polling đều xuất phát từ bảng outbox; điểm chung là **không bao giờ để app tự gửi Kafka sau khi commit DB**.
+
+### CDC hoạt động thế nào (từng bước)
+1. App mở transaction, {{INSERT INTO orders}} và {{INSERT INTO outbox_events}} cùng lúc, rồi {{COMMIT}}.
+2. PostgreSQL ghi các thay đổi vào WAL theo thứ tự commit. Replication slot của Debezium giữ WAL từ vị trí đã đọc.
+3. Debezium đọc WAL qua logical decoding, chuyển thành change event ở mức hàng ({{op=c}}, {{table=outbox_events}}, {{after=row}}).
+4. SMT **Outbox Event Router** biến dòng outbox thành record Kafka: chọn topic, lấy {{aggregate_id}} làm key, đưa {{event_type}} và {{event_id}} vào header.
+5. Debezium gửi record lên Kafka; sau khi Kafka ack, connector lưu LSN/offset.
+6. Nếu connector crash sau khi Kafka ack nhưng trước khi lưu offset, khi restart nó đọc lại từ LSN cũ và gửi lặp. Consumer khử trùng theo {{event_id}}.
+
+~~~seq
+title: Outbox + CDC so với polling
+actors: App | PostgreSQL | Debezium | Kafka | Consumer
+App -> PostgreSQL: BEGIN; INSERT order; INSERT outbox; COMMIT
+PostgreSQL -> Debezium: stream WAL (replication slot)
+Debezium -> Kafka: produce event (key=orderId)
+Kafka -> Consumer: event
+Consumer -> Consumer: dedup theo eventId
+note App..Consumer: polling thay Debezium bằng job quét outbox
+~~~
+
+### Polling publisher hoạt động thế nào (từng bước)
+1. App ghi nghiệp vụ và dòng outbox với {{status='PENDING'}} trong cùng transaction. Có thể thêm {{locked_until}} và {{attempts}}.
+2. Một scheduler (Spring {{@Scheduled}}, Kubernetes CronJob, hoặc thread riêng) chạy mỗi {{poll-interval}} (ví dụ 500 ms).
+3. Worker chạy:
+~~~sql
+SELECT id, aggregate_id, payload
+FROM outbox
+WHERE status = 'PENDING'
+ORDER BY created_at
+LIMIT 100
+FOR UPDATE SKIP LOCKED;
+~~~
+4. Với mỗi hàng, worker publish lên Kafka với key là {{aggregate_id}} (hoặc {{aggregate_id + type}} nếu cần thứ tự theo loại event).
+5. Sau khi Kafka ack, worker cập nhật {{status='SENT'}}, {{sent_at=now()}}. Nếu publish lỗi, tăng {{attempts}} và để hàng ở {{PENDING}} hoặc chuyển sang {{RETRY}} với backoff.
+6. Nếu worker crash sau khi Kafka ack nhưng trước khi cập nhật {{SENT}}, hàng vẫn là {{SENDING}}; sau {{locked_until}} một worker khác lấy lại và gửi lặp. Consumer phải khử trùng.
+
+~~~sql
+-- sau khi publish thành công
+UPDATE outbox SET status = 'SENT', sent_at = now() WHERE id = :id;
+-- reclaim hàng bị worker chết giữa SENDING và SENT
+UPDATE outbox SET status = 'PENDING', locked_until = NULL
+WHERE status = 'SENDING' AND locked_until < now();
+~~~
+
+### So sánh trực tiếp
+| Tiêu chí | CDC (Debezium) | Polling publisher |
+|---|---|---|
+| Độ trễ | mili-giây tới vài trăm mili-giây | bằng chu kỳ quét, thường 200 ms–5 s |
+| Tải lên DB | đọc WAL, không quét bảng; slot giữ WAL | quét index mỗi chu kỳ, có thể tốn CPU/IO |
+| Thành phần vận hành | Kafka Connect, connector, replication slot, schema topic | một job/worker, không cần Connect |
+| Thứ tự | theo thứ tự commit WAL + key | theo {{created_at}} + key; cần cẩn thận khi nhiều worker |
+| Đa instance | connector chia task theo partition; một slot chỉ một task | {{SKIP LOCKED}} chia hàng; cần lease/visibility timeout |
+| Xử lý lỗi | connector restart, slot lag, WAL phình | worker chết, hàng kẹt {{SENDING}}, retry/DLQ |
+| Chi phí | cao hơn (hạ tầng + vận hành) | thấp hơn |
+| Khi nào chọn | throughput cao, latency thấp, nhiều event, đã có Kafka Connect | ít event, DB phổ thông, team nhỏ, muốn ít thành phần |
+
+### Chọn theo tiêu chí nào
+1. **Chọn CDC** khi: hàng chục nghìn event/giây, yêu cầu p95 dưới một giây, đã có Kafka Connect/Debezium, DB hỗ trợ logical replication (PostgreSQL, MySQL, SQL Server...), và team có người vận hành connector/slot.
+2. **Chọn polling** khi: dưới vài trăm event/giây, độ trễ vài giây chấp nhận được, DB không cho logical replication, hoặc team chưa muốn thêm Kafka Connect. Polling cũng hợp với service nhỏ chỉ có một loại event.
+3. **Chọn theo khả năng vận hành, không theo "công nghệ nào xịn hơn"**. CDC giảm độ trễ nhưng thêm một hệ thống phải giám sát; polling đơn giản nhưng đánh thuế lên DB. Nếu DB đã gần bão hòa, đừng thêm polling 100 ms; nếu connector chết lúc 2 giờ sáng mà không ai biết, WAL sẽ phình cho tới khi đầy đĩa.
+4. **Có thể trộn**: service lớn dùng CDC, service nhỏ dùng polling. Cả hai vẫn dùng chung quy tắc outbox và khử trùng phía consumer.
+
+### Lỗi hay gặp
+1. **Polling không có index theo {{status, created_at}}**. Triệu chứng: mỗi 500 ms quét toàn bảng, DB CPU tăng, outbox càng chậm. Cách tránh: index {{idx_outbox_pending ON outbox(created_at) WHERE status='PENDING'}} (partial index) và đo query plan.
+2. **Dùng {{FOR UPDATE}} mà không {{SKIP LOCKED}}**. Triệu chứng: 5 worker cùng lấy một hàng, 4 worker chờ, throughput giảm. Cách tránh: {{SKIP LOCKED}} và lease.
+3. **Đánh dấu {{SENT}} trước khi Kafka ack**. Triệu chứng: mất event. Cách tránh: chỉ cập nhật sau ack; nếu dùng transaction, cập nhật trong cùng transaction với business write không đúng vì publish là side effect ngoài DB.
+4. **Không có lease**. Triệu chứng: worker chết, hàng ở {{SENDING}} mãi mãi. Cách tránh: {{locked_until}} + job reclaim.
+5. **CDC: slot bị bỏ rơi**. Triệu chứng: WAL phình, DB đầy đĩa. Cách tránh: {{max_slot_wal_keep_size}}, alert theo {{wal_lag}}, runbook re-snapshot.
+6. **CDC: quên {{REPLICA IDENTITY}} hoặc quyền logical replication**. Triệu chứng: connector không đọc được UPDATE/DELETE. Cách tránh: kiểm tra trên staging bằng Testcontainers.
+7. **Cả hai: không có khử trùng phía consumer**. Triệu chứng: mỗi lần connector/worker restart là một loạt event trùng. Cách tránh: bảng {{processed_messages}} hoặc upsert theo khóa nghiệp vụ.
+8. **Giữ transaction mở trong lúc publish Kafka**. Triệu chứng: worker giữ lock hàng và connection DB suốt thời gian publish; khi Kafka chậm, cả cụm worker đứng. Cách tránh: claim hàng bằng {{UPDATE ... RETURNING}} rồi commit, sau đó publish và cập nhật {{SENT}} với lease; hoặc dùng CDC để không phải giữ lock.
+
+### Ví dụ đời thực
+Một hệ thống thương mại điện tử có 3 service dùng chung DB PostgreSQL, bảng outbox khoảng 1,2 triệu dòng/ngày. Ban đầu dùng polling 2 giây: p95 độ trễ event là 2,4 giây, DB CPU 45% vào giờ cao điểm vì mỗi 2 giây lại quét bảng, và 12 worker tranh nhau {{FOR UPDATE}} khi backlog tăng. Team chuyển sang Debezium + Outbox Event Router: p95 còn 180 ms, DB CPU còn 32%, key vẫn là {{orderId}} để giữ thứ tự theo đơn. Nhưng sau 6 tuần, connector chết 40 phút lúc 2 giờ sáng không ai biết; replication slot giữ 14 GB WAL, DB gần đầy đĩa. Xử lý: đặt {{max_slot_wal_keep_size=20GB}}, alert khi {{wal_lag}} quá 2 GB hoặc connector {{status}} không phải RUNNING, thêm runbook re-snapshot. Với một service thông báo nhỏ chỉ 20 event/phút, team giữ polling 1 giây vì CDC là overkill. Kết quả: service lớn đạt p95 180 ms, service nhỏ không phải vận hành thêm connector, và không còn sự cố WAL phình.
+
+### Trả lời mẫu khi phỏng vấn
+"Cả hai cách đều bắt đầu từ transactional outbox: ghi nghiệp vụ và dòng outbox trong cùng một transaction, sau đó một tiến trình riêng đưa event lên Kafka. CDC dùng Debezium đọc WAL qua replication slot, độ trễ thấp và không quét bảng, nhưng phải vận hành Kafka Connect và canh WAL phình. Polling dùng job quét outbox với SELECT ... FOR UPDATE SKIP LOCKED, đơn giản, hợp service nhỏ, nhưng độ trễ bằng chu kỳ quét và tạo tải lên DB. Tôi chọn theo ba con số: event mỗi giây, độ trễ p95 yêu cầu, và số người có thể trực connector. Nếu DB không cho logical replication hoặc throughput thấp, tôi chọn polling; nếu throughput cao và cần p95 dưới một giây, tôi chọn CDC. Cả hai đều là at-least-once nên consumer vẫn phải khử trùng theo event_id."
+
+> Senior tip: đừng chọn CDC hay polling bằng cảm giác "hiện đại". Hãy viết ra ba con số: event/giây, độ trễ p95 yêu cầu, và số người có thể trực connector lúc 2 giờ sáng. Ba con số đó quyết định nhiều hơn mọi so sánh tính năng.`,
+  follow: [
+    'Nếu DB không cho logical replication, bạn có còn cách nào ngoài polling không?',
+    'Polling 5 worker với SKIP LOCKED: bạn thiết kế lease và reclaim thế nào?',
+    'CDC connector chết, WAL phình: bạn phát hiện và xử lý ra sao?'
+  ],
+  tags: ['outbox', 'CDC', 'Debezium', 'polling', 'Kafka'],
+  refs: [
+    { type: 'doc', title: 'Pattern: Transactional Outbox', url: 'https://microservices.io/patterns/data/transactional-outbox.html' },
+    { type: 'doc', title: 'Debezium Outbox Event Router', url: 'https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html' }
+  ]
+},
+{
+  id: 'microservices-095',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Luồng đặt hàng có 4 bước và có bù trừ (giữ kho, trừ tiền, tạo vận đơn). Khi một bước thất bại, bạn chọn saga orchestration hay choreography? Hãy thiết kế cơ chế compensation: thứ tự, idempotency, retry, và chuyện gì xảy ra khi chính bước bù cũng thất bại.',
+  a: `**Tóm tắt:** Với luồng 4 bước có bù trừ, tôi chọn **orchestration**: một orchestrator giữ state của từng đơn, gọi từng bước và đăng ký hành động bù ngay sau khi bước đó thành công. **Choreography** chỉ hợp khi luồng ngắn và bù trừ đơn giản, vì không ai giữ thứ tự và trạng thái toàn cục. **Compensation** không phải "xoá" mà là **semantic rollback** (hoàn tiền, nhả kho, huỷ vận đơn); mỗi bước bù phải idempotent, chạy theo thứ tự ngược của các bước đã hoàn tất, có retry/timeout riêng, và nếu bù thất bại thì đơn phải vào trạng thái {{COMPENSATING_FAILED}} để cảnh báo và xử lý tay, không được im lặng.
+
+### Hiểu nhanh
+Choreography giống một công ty không có trưởng nhóm: mỗi phòng ban nghe một thông báo rồi tự làm việc của mình. Khi có sự cố, không ai biết cả đơn đang ở đâu, và việc "làm lại bước trước" phụ thuộc vào việc thông báo có đến đúng chỗ không. Orchestration giống một **nhạc trưởng** cầm bản tổng phổ: biết tiết mục đã chơi tới đâu, ai vào sai thì dừng và cho chơi lại từ đúng nhịp. Compensation giống **đảo ngược một pha biểu diễn**: không thể "xoá" nốt nhạc đã vang lên, chỉ có thể chơi một đoạn khác để trung hoà — hoàn tiền không làm giao dịch chưa từng xảy ra, nhưng làm cho khách không bị mất tiền.
+
+### Thuật ngữ
+- **Saga**: một chuỗi transaction cục bộ, mỗi bước commit riêng; nếu bước sau thất bại, chạy các hành động bù để đưa hệ thống về trạng thái nhất quán về nghiệp vụ.
+- **Orchestration**: một orchestrator/workflow engine điều khiển thứ tự các bước và giữ state tập trung.
+- **Choreography**: mỗi service tự phản ứng với event, không có orchestrator trung tâm.
+- **Compensation**: hành động nghiệp vụ đảo ngược một bước đã hoàn tất (hoàn tiền, nhả kho, huỷ vận đơn).
+- **Semantic rollback**: bù theo nghĩa nghiệp vụ, không phải rollback kỹ thuật của DB.
+- **Pivot transaction**: bước không thể bù (ví dụ đã gửi email cho khách); sau bước này saga chỉ có thể đi tới, không thể quay lui.
+- **Idempotency key**: khóa để một hành động bù không chạy hai lần, ví dụ {{refundId = orderId}}.
+- **DLQ (Dead Letter Queue)**: hàng đợi chứa thông điệp/hành động thất bại sau khi đã hết retry, để xử lý tay hoặc job riêng.
+
+### Vì sao choreography khó bù khi luồng dài
+1. **Không có state toàn cục**: mỗi service chỉ biết phần của mình. Khi đơn 123 kẹt, phải ghép log của 4 service mới biết đã giữ kho chưa, đã trừ tiền chưa.
+2. **Thứ tự bù không đảm bảo**: nếu mỗi service nghe event {{OrderFailed}} rồi tự bù, event có thể đến đảo thứ tự; hoàn tiền trước khi nhả kho hoặc ngược lại không sao về tiền, nhưng với nghiệp vụ có ràng buộc (ví dụ hoàn tiền chỉ sau khi huỷ vận đơn) thì sai.
+3. **Bù lặp**: consumer nhận lại event {{OrderFailed}} sau restart sẽ chạy bù lần hai; nếu không có idempotency key, khách bị hoàn tiền hai lần.
+4. **Không có retry tập trung**: mỗi service tự cấu hình retry/timeout; một service bù thất bại có thể làm saga kẹt mà không ai biết.
+5. **Khó version**: thêm một bước bù nghĩa là sửa nhiều consumer; không có nơi để biết flow hiện tại đang ở version nào.
+
+### Orchestration: state machine và bảng bù
+Mỗi đơn hàng là một instance với state. Khi một bước thành công, orchestrator lưu state và **đăng ký hành động bù**. Khi một bước thất bại hẳn (hết retry), orchestrator chuyển sang {{COMPENSATING}} và chạy bù theo thứ tự ngược.
+
+| Bước | State sau khi xong | Hành động bù | Khóa idempotent |
+|---|---|---|---|
+| 1. Giữ kho | {{STOCK_RESERVED}} | {{releaseStock(orderId)}} | {{orderId + ':stock'}} |
+| 2. Trừ tiền | {{PAID}} | {{refundPayment(paymentId)}} | {{paymentId}} |
+| 3. Tạo vận đơn | {{SHIPPED}} | {{cancelShipment(shipmentId)}} | {{shipmentId}} |
+
+Thứ tự bù là **ngược của thứ tự đã hoàn tất**:
+- Bước 3 thất bại: bù bước 2 (hoàn tiền) rồi bước 1 (nhả kho).
+- Bước 2 thất bại: chỉ bù bước 1 (nhả kho); bước 3 chưa chạy nên không có gì để huỷ.
+- Bước 1 thất bại: không có gì để bù; đơn ở {{FAILED}}.
+- Nếu đã gửi email xác nhận cho khách (pivot), không thể "bù" email; saga phải đi tới hoặc chuyển sang xử lý tay, không quay lui.
+
+~~~seq
+title: Saga orchestration có bù trừ
+actors: Client | Order | Inventory | Payment | Shipping
+Client -> Order: POST /orders
+Order -> Inventory: reserve(orderId)
+Inventory --> Order: ok
+Order -> Payment: charge(orderId)
+Payment --> Order: ok
+Order -> Shipping: createShipment(orderId)
+Shipping --> Order: 503 provider down
+Order -> Payment: refund(orderId)
+Payment --> Order: ok
+Order -> Inventory: release(orderId)
+Inventory --> Order: ok
+Order --> Client: 503, order cancelled
+~~~
+
+### Compensation phải idempotent và có giới hạn
+1. **Idempotent**: mỗi hành động bù nhận một khóa riêng. Ví dụ {{refundPayment(paymentId)}} chỉ hoàn một lần; nếu orchestrator retry, payment service thấy {{paymentId}} đã hoàn thì trả về kết quả cũ thay vì hoàn lần hai.
+2. **Chỉ bù bước đã hoàn tất**: nếu {{reserveStock}} ném lỗi, không được gọi {{releaseStock}} vì kho chưa bị giữ; làm vậy có thể làm tồn kho âm.
+3. **Retry có ngân sách**: mỗi bước bù có timeout và số lần thử riêng. Không retry vô hạn; sau khi hết, chuyển sang {{COMPENSATING_FAILED}} và ghi DLQ.
+4. **Không chặn luồng**: compensation chạy trong executor riêng, không giữ thread HTTP của request; nếu bù mất 30 giây thì client đã nhận 503 từ lâu.
+5. **Ghi log có cấu trúc**: {{orderId}}, {{step}}, {{compensationId}}, {{attempt}}, {{result}} để đối soát.
+
+~~~java
+class Step {
+  String name;
+  boolean done;
+  Runnable compensate;
+  Step(String name, Runnable compensate) { this.name = name; this.compensate = compensate; }
+}
+
+void compensate(String orderId) {
+  state = State.COMPENSATING;
+  List<Step> done = new ArrayList<>(steps.stream().filter(Step::done).toList());
+  Collections.reverse(done);                 // LIFO: bước sau bù trước
+  for (Step s : done) {
+    try {
+      s.compensate.run();                    // phải idempotent
+    } catch (Exception e) {
+      state = State.COMPENSATING_FAILED;     // không im lặng
+      alert(orderId, s.name, e);
+      return;
+    }
+  }
+  state = State.FAILED;
+}
+~~~
+
+### Khi chính bước bù cũng thất bại
+- **Không được để đơn ở trạng thái "đang bù" mãi mãi**. Đặt timeout cho compensation; khi hết, chuyển sang {{COMPENSATING_FAILED}}.
+- **Cảnh báo ngay**: số đơn {{COMPENSATING_FAILED}}, tuổi đơn kẹt, số tiền đang bị giữ, số đơn đã hoàn tiền nhưng chưa nhả kho. Đây là các chỉ số vận hành, không chỉ là log.
+- **Retry có kiểm soát**: job riêng đọc DLQ, thử lại với backoff; nếu vẫn lỗi, giữ nguyên và chờ người xử lý. Không để orchestrator retry vô hạn trong request.
+- **Runbook**: cách kiểm tra trạng thái từng bước, cách gọi bù thủ công, cách đối soát với cổng thanh toán và kho. Một đơn kẹt giữa "đã trừ tiền" và "chưa tạo vận đơn" phải được xử lý trong vài phút, không phải vài ngày.
+- **Thiết kế pivot**: nếu bước không thể bù (đã gửi email, đã in nhãn), đặt nó **sau cùng** hoặc tách thành tác vụ phụ không chặn saga. Đừng để một bước không thể bù ở giữa luồng.
+
+### Lỗi hay gặp
+1. **Bù không idempotent**. Triệu chứng: khách được hoàn tiền hai lần sau khi orchestrator retry. Cách tránh: khóa idempotent cho từng hành động bù.
+2. **Bù bước chưa hoàn tất**. Triệu chứng: tồn kho âm hoặc huỷ một vận đơn chưa tồn tại. Cách tránh: chỉ bù các bước có {{done=true}}.
+3. **Thứ tự bù sai**. Triệu chứng: hoàn tiền trước khi huỷ vận đơn, hoặc nhả kho trước khi hoàn tiền trong nghiệp vụ có ràng buộc. Cách tránh: bù theo thứ tự ngược của các bước đã hoàn tất.
+4. **Không có state machine, chỉ rải event**. Triệu chứng: không biết đơn đang ở đâu, không biết đã bù chưa. Cách tránh: orchestrator hoặc bảng saga state.
+5. **Bù thất bại im lặng**. Triệu chứng: tiền bị giữ, kho bị khoá, khách khiếu nại. Cách tránh: {{COMPENSATING_FAILED}} + alert + DLQ + runbook.
+6. **Đưa bước không thể bù vào giữa luồng**. Triệu chứng: không thể quay lui, saga kẹt. Cách tránh: đặt pivot ở cuối hoặc tách tác vụ phụ.
+
+### Ví dụ đời thực
+Một hệ thống bán lẻ có 2.000 đơn/phút, luồng: giữ kho -> trừ tiền -> tạo vận đơn. Ban đầu dùng choreography: mỗi service nghe event và tự làm. Một hôm nhà vận chuyển trả 503 trong 25 phút. Triệu chứng: 3,8% đơn (khoảng 1.900 đơn) kẹt ở trạng thái "đã giữ kho, đã trừ tiền" nhưng không có vận đơn; 120 ticket/ngày, tồn kho bị khoá, khách khiếu nại. Điều tra: event {{OrderFailed}} được phát nhưng consumer của payment service đang restart, event bị mất; không có state tập trung, phải ghép log 4 service; một số đơn bị hoàn tiền hai lần vì event được đọc lại sau rebalance. Xử lý: chuyển sang Temporal orchestration cho luồng đặt hàng; mỗi bước là activity với retry 3 lần, timeout 60 giây; đăng ký compensation ngay sau mỗi bước; hoàn tiền dùng {{paymentId}} làm khóa idempotent; nhả kho dùng {{orderId}}; nếu bù lỗi, đơn vào {{COMPENSATING_FAILED}} và đưa vào DLQ. Kết quả sau 4 tuần: đơn kẹt giảm từ 3,8% xuống 0,1%, ticket từ 120 xuống 6/ngày, thời gian xử lý một đơn kẹt từ 45 phút xuống 90 giây, số lần hoàn tiền trùng từ 14 xuống 0.
+
+### Trả lời mẫu khi phỏng vấn
+"Với luồng 4 bước có bù trừ, tôi chọn orchestration vì cần một nơi giữ state và thứ tự bù. Mỗi bước thành công thì orchestrator lưu state và đăng ký hành động bù; khi một bước thất bại hẳn, nó chạy bù theo thứ tự ngược của các bước đã hoàn tất. Compensation không phải DELETE mà là semantic rollback: hoàn tiền, nhả kho, huỷ vận đơn. Mỗi hành động bù phải idempotent, có khóa riêng như paymentId hoặc orderId, có timeout và retry budget. Nếu bù thất bại, đơn vào COMPENSATING_FAILED, đưa vào DLQ và cảnh báo; không im lặng vì tiền có thể đang bị giữ. Choreography chỉ hợp khi luồng ngắn và bù đơn giản; luồng dài thì không ai giữ thứ tự và trạng thái, rất khó debug."
+
+> Senior tip: compensation là một **use case nghiệp vụ riêng**, không phải một câu {{DELETE}}. Hãy thiết kế nó có idempotency key, timeout, retry budget, DLQ và runbook như một API thật; nếu không, bạn chỉ đổi "saga kẹt" thành "tiền kẹt".`,
+  follow: [
+    'Nếu bước không thể bù (đã gửi email cho khách) nằm giữa luồng, bạn xử lý thế nào?',
+    'Bạn thiết kế idempotency key cho hoàn tiền và nhả kho ra sao?',
+    'Compensation thất bại: bạn retry bao nhiêu lần, khi nào dừng và ai xử lý?'
+  ],
+  tags: ['saga', 'orchestration', 'choreography', 'compensation', 'distributed transaction'],
+  refs: [
+    { type: 'doc', title: 'Pattern: Saga', url: 'https://microservices.io/patterns/data/saga.html' },
+    { type: 'doc', title: 'Azure Architecture: Saga pattern', url: 'https://learn.microsoft.com/en-us/azure/architecture/reference-architectures/saga/saga' }
+  ]
+},
+{
+  id: 'microservices-096',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Hệ thống có 5 producer và 30 consumer trên cùng topic Kafka, event đang là JSON tự do. Bạn chuyển sang quản lý schema thế nào: chọn compatibility mode nào, subject strategy nào, và xử lý breaking change ra sao mà không phải dừng cả hệ thống?',
+  a: `**Tóm tắt:** Tôi dùng **Schema Registry** với Avro hoặc Protobuf: mỗi schema có version và {{schemaId}} gắn trong message, Registry kiểm tra compatibility trước khi cho đăng ký. Compatibility mode được chọn theo **thứ tự deploy**, không theo cảm giác: **BACKWARD** là mặc định (consumer mới đọc được dữ liệu cũ, nên deploy consumer trước), **FORWARD** khi producer phải đi trước (consumer cũ đọc được dữ liệu mới), **FULL** khi không kiểm soát được thứ tự. Subject strategy quyết định tên subject trong Registry; với một topic nhiều loại event thì dùng {{RecordNameStrategy}} hoặc {{TopicRecordNameStrategy}}. Breaking change không sửa schema cũ mà tạo event/topic phiên bản mới theo kiểu **expand–contract**, kết hợp CI compatibility check và lộ trình deprecate.
+
+### Hiểu nhanh
+Schema giống **mẫu hợp đồng** giữa người bán và người mua: ai cũng phải điền theo mẫu đó. Schema Registry giống **phòng công chứng**: trước khi nhận mẫu mới, công chứng viên kiểm tra mẫu mới có đọc được các hợp đồng cũ không. Compatibility mode giống quy tắc "mẫu mới phải đọc được giấy tờ cũ theo chiều nào"; subject strategy giống cách đặt tên trong tủ hồ sơ: một ngăn cho mỗi loại hợp đồng, hay một ngăn cho mỗi topic, hay kết hợp. Nếu bạn đổi luật chơi mà không báo trước, người mua đang giữ hợp đồng cũ sẽ không hiểu hợp đồng mới — đó là "breaking change".
+
+### Thuật ngữ
+- **Schema**: mô tả cấu trúc dữ liệu (field, kiểu, required/default). Với Avro là JSON schema; với Protobuf là file {{.proto}}; với JSON Schema là schema JSON.
+- **Subject**: tên nhóm schema trong Registry, thường là {{topic-value}} hoặc {{topic-key}}.
+- **{{schemaId}}**: số định danh schema trong Registry; producer gửi kèm vài byte id thay vì gửi cả schema.
+- **Backward compatible**: schema mới (reader) đọc được dữ liệu được ghi bằng schema cũ.
+- **Forward compatible**: consumer dùng schema cũ đọc được dữ liệu được ghi bằng schema mới.
+- **Full compatible**: vừa backward vừa forward.
+- **Transitive**: kiểm tra với **tất cả** phiên bản trước, không chỉ phiên bản liền trước.
+- **Writer schema / reader schema**: Avro dùng schema của người ghi và schema của người đọc để ánh xạ field; field mới có default được điền, field thừa bị bỏ qua.
+- **Expand–contract**: giai đoạn 1 thêm field/bước mới (expand), giai đoạn 2 chuyển người dùng sang cái mới, giai đoạn 3 bỏ cái cũ (contract).
+- **Upcaster**: lớp chuyển đổi dữ liệu từ version cũ sang version mới khi đọc, thường dùng cho event sourcing.
+
+### Compatibility mode và thứ tự deploy
+| Mode | Nghĩa | Thứ tự deploy | Khi nào chọn |
+|---|---|---|---|
+| **BACKWARD** | schema mới đọc được dữ liệu cũ | consumer mới trước, producer sau | mặc định; consumer chủ động nâng cấp |
+| **FORWARD** | consumer cũ đọc được dữ liệu mới | producer mới trước, consumer sau | producer kiểm soát, consumer chậm nâng cấp |
+| **FULL** | cả hai chiều | linh hoạt hơn | nhiều team, không kiểm soát thứ tự |
+| **TRANSITIVE** | kiểm tra với mọi version trước | tùy mode | schema có nhiều version, cần chặt hơn |
+
+Vì sao thứ tự deploy quan trọng: trong một lần rolling deploy, luôn có lúc producer và consumer chạy hai phiên bản khác nhau. BACKWARD đảm bảo consumer mới hiểu dữ liệu cũ; FORWARD đảm bảo consumer cũ bỏ qua dữ liệu mới. Nếu chọn sai mode, Registry có thể chấp nhận schema nhưng một phía vẫn gãy khi triển khai.
+
+### Bảng thay đổi (ví dụ Avro)
+| Thay đổi | BACKWARD | FORWARD | FULL | Ghi chú |
+|---|---|---|---|---|
+| Thêm field có default | OK | OK | OK | an toàn nhất |
+| Thêm field bắt buộc không default | Không | OK | Không | consumer cũ không đọc được |
+| Thêm giá trị enum | OK | Không | Không | consumer cũ không hiểu symbol mới |
+| Xoá field có default | OK | OK | OK | dữ liệu cũ còn field, reader mới bỏ qua |
+| Xoá field bắt buộc | OK | Không | Không | reader mới bỏ qua; consumer cũ cần field đó thì forward không OK |
+| Đổi kiểu hoặc đổi nghĩa | Không | Không | Không | phải tạo field/event mới |
+
+Bảng lấy ví dụ Avro; Protobuf và JSON Schema có quy tắc riêng, nhưng nguyên tắc "đổi nghĩa là breaking" không đổi. Ví dụ {{amount}} từ VND sang USD nhưng vẫn là {{long}}: Registry không bắt được vì kiểu không đổi, consumer vẫn tính tiền sai. Đây là lý do phải có quy ước đặt tên và review, không chỉ dựa vào công cụ.
+
+### Subject strategy: chọn cách đặt tên subject
+| Chiến lược | Subject | Ưu | Nhược |
+|---|---|---|---|
+| {{TopicNameStrategy}} | {{order-value}} | đơn giản, dễ vận hành | một topic chỉ một loại event |
+| {{RecordNameStrategy}} | {{com.shop.OrderCreated}} | nhiều event trên một topic | subject không gắn với topic |
+| {{TopicRecordNameStrategy}} | {{order-com.shop.OrderCreated}} | tách theo topic và loại event | nhiều subject, khó dọn |
+
+Nếu topic {{order.events}} có cả {{OrderCreated}}, {{OrderCancelled}}, {{OrderPaid}}, dùng {{TopicNameStrategy}} sẽ trộn nhiều schema vào một subject; khi đó {{RecordNameStrategy}} hoặc {{TopicRecordNameStrategy}} rõ ràng hơn. Quy tắc: chọn strategy trước khi có quá nhiều consumer, vì đổi strategy sau này đồng nghĩa với migrate subject.
+
+### Chuyển từ JSON tự do sang schema có kiểm soát
+1. **Đóng băng format JSON hiện tại**: liệt kê field, kiểu, field bắt buộc, ý nghĩa. Viết contract Avro/Protobuf cho các event chính.
+2. **Tạo topic mới** {{order.events.v2}} thay vì đổi format topic đang chạy. Vì sao: consumer cũ vẫn đọc topic cũ, producer mới ghi cả hai trong giai đoạn chuyển.
+3. **Producer dual-write**: ghi JSON vào topic cũ và Avro vào topic mới trong cùng business transaction (hoặc dùng outbox cho cả hai). Dual-write chỉ là cầu tạm, phải có đối soát.
+4. **Consumer dual-read**: đọc cả hai topic, ưu tiên Avro; dùng chung business logic. Đo số event lệch giữa hai topic.
+5. **Canary và chuyển dần**: chuyển từng nhóm consumer sang đọc Avro, theo dõi lỗi deserialize và lag.
+6. **Decommission**: khi 100% consumer đã đọc Avro và đối soát ổn định, ngừng ghi JSON, xoá schema cũ theo chính sách deprecate.
+
+~~~json
+{
+  "type": "record",
+  "name": "OrderCreated",
+  "namespace": "com.shop.event",
+  "fields": [
+    {"name": "orderId", "type": "string"},
+    {"name": "total", "type": "long"},
+    {"name": "currency", "type": "string", "default": "VND"}
+  ]
+}
+~~~
+
+~~~java
+Properties props = new Properties();
+props.put("bootstrap.servers", "kafka:9092");
+props.put("schema.registry.url", "http://schema-registry:8081");
+props.put("auto.register.schemas", "false");   // CI đăng ký, production không tự đăng ký
+props.put("value.serializer", "io.confluent.kafka.serializers.KafkaAvroSerializer.class");
+~~~
+
+~~~seq
+title: Schema Registry kiểm tra tương thích
+actors: Producer | Registry | Kafka | Consumer
+Producer -> Registry: POST subject order-value (v2)
+Registry --> Producer: 409 nếu vi phạm BACKWARD
+Producer -> Registry: đăng ký schema hợp lệ
+Registry --> Producer: schemaId=42
+Producer -> Kafka: record [id=42 + payload]
+Kafka --> Consumer: record
+Consumer -> Registry: GET schema id=42 (cache)
+Consumer -> Consumer: deserialize theo writer/reader schema
+~~~
+
+### Lỗi hay gặp
+1. **Thêm giá trị enum trước khi consumer deploy**. Triệu chứng: consumer cũ ném lỗi khi gặp symbol mới; nếu chế độ là BACKWARD thì Registry vẫn chấp nhận vì schema mới đọc được dữ liệu cũ, nhưng consumer cũ không đọc được dữ liệu mới. Cách tránh: deploy consumer trước, hoặc dùng field mới thay vì mở rộng enum.
+2. **Đổi nghĩa nhưng giữ kiểu**. Triệu chứng: Registry chấp nhận, consumer tính sai tiền. Cách tránh: quy ước đặt tên {{amountVnd}}, {{amountUsd}}; review schema như review code.
+3. **Bật {{auto.register.schemas=true}} ở production**. Triệu chứng: một bản build lỗi đăng ký schema lạ, làm vỡ consumer. Cách tránh: tắt auto-register, chỉ CI đăng ký sau compatibility check.
+4. **Chọn sai subject strategy**. Triệu chứng: nhiều loại event dùng chung subject, không thể đặt compatibility riêng; hoặc subject không gắn topic, khó biết event nào thuộc topic nào. Cách tránh: chọn strategy từ đầu, ghi vào runbook.
+5. **Xoá field bắt buộc mà consumer cũ vẫn cần**. Triệu chứng: consumer cũ đọc dữ liệu mới thiếu field thì lỗi; nếu field có default thì không sao. Cách tránh: deprecated field, giữ đến khi không còn consumer cũ, rồi mới xoá.
+6. **Registry gián đoạn**. Triệu chứng: producer đã cache schema id vẫn gửi được, nhưng consumer mới không lấy được schema thì không deserialize được. Cách tránh: cache schema cục bộ, giám sát Registry, có runbook khôi phục.
+7. **Không có CI compatibility check**. Triệu chứng: schema lỗi chỉ phát hiện khi deploy. Cách tránh: PR thay đổi schema phải chạy check; fail thì không merge.
+
+### Ví dụ đời thực
+Một nền tảng giao hàng có 1 topic {{order.events}}, 5 producer team và 30 consumer (billing, tracking, analytics, đối tác). Trước đây dùng JSON tự do. Khi team order thêm một giá trị enum {{paymentMethod=MOMO}}, 4 consumer cũ ném lỗi deserialize vì không biết symbol mới; phải rollback producer và họp phối hợp 2 ngày. Team chuyển sang Avro + Schema Registry, chọn {{TopicRecordNameStrategy}}, đặt compatibility {{BACKWARD}} cho subject {{order-com.shop.OrderCreated}}. Quy trình mới: consumer deploy trước, producer deploy sau; CI chạy compatibility check; thêm {{paymentMethod}} dạng field mới có default {{EMPTY}} thay vì mở rộng enum cũ. Sau 4 tháng, 27 lần tiến hóa schema đều qua cổng kiểm tra, không còn sự cố consumer gãy; thời gian phối hợp deploy liên team giảm từ khoảng 1 ngày xuống gần 0 với thay đổi tương thích, và các breaking change được phát hành dưới dạng event v2 có lộ trình deprecate rõ ràng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi coi schema là contract, nên dùng Schema Registry với Avro hoặc Protobuf. Compatibility mode chọn theo thứ tự deploy: BACKWARD là mặc định, deploy consumer trước; FORWARD khi producer phải đi trước; FULL khi không kiểm soát được thứ tự. Tôi chỉ thêm field có default, không đổi kiểu hay đổi nghĩa; thêm giá trị enum phải deploy consumer trước vì consumer cũ không hiểu symbol mới. Subject strategy chọn theo cấu trúc topic: TopicNameStrategy cho một loại event, RecordNameStrategy hoặc TopicRecordNameStrategy khi một topic có nhiều event. Breaking change thì tạo event/topic v2 theo expand-contract, chạy CI compatibility check, dual-write và dual-read có đối soát, rồi mới bỏ v1. Production tắt auto-register schema."
+
+> Senior tip: compatibility mode là **quyết định deploy**, không phải sở thích. Hãy chọn mode từ thứ tự deploy thực tế của các team, rồi mới viết quy tắc schema; nếu không, Registry chỉ là một cái tủ lưu file chứ không phải hàng rào an toàn.`,
+  follow: [
+    'Bạn chọn BACKWARD, FORWARD hay FULL cho một topic có 30 consumer thuộc 5 team?',
+    'Khi buộc phải breaking change, bạn phát hành event v2 thế nào và bỏ v1 ra sao?',
+    'Avro, Protobuf và JSON Schema khác nhau thế nào về tiến hóa schema?'
+  ],
+  tags: ['Schema Registry', 'Avro', 'Protobuf', 'compatibility', 'event versioning'],
+  refs: [
+    { type: 'doc', title: 'Confluent: Schema evolution and compatibility', url: 'https://docs.confluent.io/platform/current/schema-registry/fundamentals/schema-evolution.html' },
+    { type: 'doc', title: 'Avro specification', url: 'https://avro.apache.org/docs/current/specification/' }
+  ]
+},
+{
+  id: 'microservices-097',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Bạn đã có deadline ở gateway. Hãy giải thích cách deadline được lan truyền qua các ranh giới thread, thread pool, async và gRPC trong Spring Boot: bạn lưu context ở đâu, decorator executor thế nào, và những chỗ nào làm mất deadline mà không ai để ý?',
+  a: `**Tóm tắt:** Deadline là **thuộc tính của request**, không phải một biến cục bộ của một hàm. Tôi lưu nó trong một context ở biên hệ thống (header HTTP hoặc gRPC deadline), rồi truyền tường minh qua mọi ranh giới: {{ThreadLocal}} cộng {{TaskDecorator}} cho executor, {{Reactor Context}} cho WebFlux, {{Context}} của gRPC cho gRPC, header cho Kafka. Mỗi hop trừ thời gian đã tiêu và kiểm tra trước khi làm việc; nếu hết budget thì fail fast. Chỗ làm mất deadline phổ biến nhất là {{@Async}} hoặc thread pool không decorator, {{CompletableFuture}} dùng common pool, và tạo {{Context}} mới trong gRPC — khi đó thread mới bắt đầu một timeout mặc định 30 giây và request thành zombie (client đã bỏ nhưng downstream vẫn chạy).
+
+### Hiểu nhanh
+Deadline giống **một tấm thẻ ghi giờ còn lại** trong cuộc đua tiếp sức: người chạy đầu tiên cầm thẻ "còn 900 ms", chạy 300 ms thì truyền cho người sau "còn 600 ms". Nếu ở một đoạn trao thẻ, người sau không nhận thẻ mà tự bấm đồng hồ mới 30 giây, cả đội sẽ chạy quá giờ mà không ai biết. Trong microservices, "trao thẻ" là truyền context qua lời gọi HTTP/gRPC; "đánh rơi thẻ" là đưa việc sang một thread pool mới, một {{CompletableFuture}}, hoặc một {{@Async}} mà không copy deadline. Hậu quả: client đã nhận 504 từ lâu, nhưng 47 thread phía sau vẫn chạy, giữ connection DB và CPU.
+
+### Thuật ngữ
+- **Deadline**: thời điểm cuối cùng mà kết quả còn hữu ích; khác với timeout của một lời gọi đơn lẻ.
+- **Remaining budget**: thời gian còn lại = deadline trừ hiện tại, tính tại từng hop.
+- **ThreadLocal**: biến chỉ thuộc về thread hiện tại; không tự động chia sẻ sang thread khác.
+- **{{InheritableThreadLocal}}**: ThreadLocal được copy khi tạo thread con, nhưng **không** áp dụng cho thread pool dùng lại thread.
+- **{{TaskDecorator}}**: giao diện của Spring cho phép bọc {{Runnable}} trước khi đưa vào executor; dùng để copy context sang thread pool.
+- **Reactor Context**: context bất đồng bộ của Project Reactor, đọc/ghi qua {{deferContextual}} và {{contextWrite}}, không dựa vào ThreadLocal.
+- **gRPC deadline**: gRPC có cơ chế deadline tích hợp; client đặt bằng {{withDeadlineAfter}}, server nhận qua {{Context}}.
+- **Async boundary**: mọi chỗ công việc chuyển sang thread khác (executor, reactive, scheduler, Kafka listener).
+- **MDC**: Mapped Diagnostic Context, nơi đặt traceId/spanId; cũng bị mất khi sang thread mới nếu không copy.
+
+### Mô hình context: một lớp nhỏ, một nguồn sự thật
+1. Ở gateway, đọc header {{x-request-ms}} hoặc {{grpc-timeout}} và tạo một object {{Deadline}} bất biến với {{remainingMillis()}}.
+2. Lưu vào {{DeadlineHolder}} (một {{ThreadLocal}}) cho request hiện tại.
+3. Trước mỗi lời gọi downstream, lấy {{remainingMillis()}}, trừ safety margin (phần chừa cho mạng và serialize), kiểm tra nếu còn dương; gắn giá trị còn lại vào header/metadata của lời gọi.
+4. Sau khi lời gọi trả về, cập nhật lại context (hoặc tính lại từ deadline gốc; không cộng dồn sai).
+5. Khi request kết thúc, {{clear()}} để thread pool không giữ deadline cũ.
+
+~~~java
+public final class Deadline {
+  private final long atNanos;
+  public Deadline(long ttlMillis) { atNanos = System.nanoTime() + ttlMillis * 1_000_000L; }
+  public long remainingMillis() { return (atNanos - System.nanoTime()) / 1_000_000L; }
+}
+
+public final class DeadlineHolder {
+  private static final ThreadLocal<Deadline> TL = new ThreadLocal<>();
+  public static void set(Deadline d) { TL.set(d); }
+  public static Deadline get() { return TL.get(); }
+  public static void clear() { TL.remove(); }
+}
+
+public class DeadlineFilter extends OncePerRequestFilter {
+  @Override protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
+      throws ServletException, IOException {
+    String raw = req.getHeader("x-request-ms");
+    if (raw != null) DeadlineHolder.set(new Deadline(Long.parseLong(raw)));
+    try { chain.doFilter(req, res); } finally { DeadlineHolder.clear(); }
+  }
+}
+~~~
+
+### Spring MVC + thread pool: TaskDecorator là bắt buộc
+Nếu service dùng {{@Async}}, {{ThreadPoolTaskExecutor}} hoặc {{ExecutorService}}, thread xử lý không phải thread HTTP. {{ThreadLocal}} không tự sang thread mới. Giải pháp là {{TaskDecorator}} copy deadline sang Runnable:
+
+~~~java
+public class DeadlineTaskDecorator implements TaskDecorator {
+  @Override public Runnable decorate(Runnable task) {
+    Deadline d = DeadlineHolder.get();
+    return () -> {
+      DeadlineHolder.set(d);            // copy sang thread pool
+      try { task.run(); } finally { DeadlineHolder.clear(); }
+    };
+  }
+}
+~~~
+
+Cấu hình:
+~~~java
+@Bean
+public ThreadPoolTaskExecutor taskExecutor() {
+  var ex = new ThreadPoolTaskExecutor();
+  ex.setCorePoolSize(8);
+  ex.setMaxPoolSize(32);
+  ex.setQueueCapacity(200);
+  ex.setTaskDecorator(new DeadlineTaskDecorator());
+  return ex;
+}
+~~~
+
+Nếu dùng {{ExecutorService}} thuần, hãy bọc Runnable bằng một lambda copy deadline vào ThreadLocal, chạy xong thì clear trong finally, rồi mới submit. Với {{CompletableFuture}}, nhớ rằng {{supplyAsync}} không truyền executor sẽ dùng common pool; hãy truyền executor đã decorator, hoặc bọc supplier bằng {{DeadlineTaskDecorator}}.
+
+### WebFlux: dùng Reactor Context, không dùng ThreadLocal
+Trong WebFlux, một request có thể nhảy qua nhiều thread; {{ThreadLocal}} gần như luôn sai. Dùng {{deferContextual}} để đọc deadline và {{contextWrite}} để đặt:
+
+~~~java
+return Mono.deferContextual(ctx -> {
+  Deadline d = ctx.get(Deadline.class);
+  return client.get().uri("/pay")
+      .retrieve().bodyToMono(String.class)
+      .timeout(Duration.ofMillis(d.remainingMillis()));
+}).contextWrite(Context.of(Deadline.class, deadline));
+~~~
+
+Nếu bạn dùng {{WebClient}} với {{ExchangeFilterFunction}}, đọc deadline từ {{Context}} trong filter và gắn header {{x-request-ms}}. Đừng đọc {{ThreadLocal}} trong reactive chain; nó sẽ trả về null hoặc giá trị của thread khác.
+
+### gRPC: deadline đã có, đừng tạo lại
+1. Client gọi {{stub.withDeadlineAfter(remaining, TimeUnit.MILLISECONDS)}}. gRPC truyền {{grpc-timeout}} qua wire.
+2. Server nhận deadline trong {{Context}}; nếu bạn không dùng executor riêng, gRPC giữ context khi gọi handler.
+3. Nếu handler đẩy việc sang {{ExecutorService}}, dùng {{Context.current().wrap(r)}} để Runnable mang theo context; nếu không, deadline biến mất.
+4. Đừng tự parse {{grpc-timeout}} rồi tạo một timeout mới; hãy dùng deadline còn lại để tránh cộng dồn.
+5. Khi gọi tiếp downstream bằng gRPC trong cùng context, deadline được lan truyền tự động; nếu tạo {{Context}} mới, hãy copy deadline sang.
+
+### Kafka và công việc nền: deadline không phải lúc nào cũng đúng
+- Với request đồng bộ, deadline HTTP có nghĩa. Với job nền (gửi email, render PDF), người dùng không chờ HTTP; dùng {{expires_at}} trong message và cho consumer kiểm tra.
+- Nếu một message đã quá {{expires_at}} và nghiệp vụ không cần xử lý muộn, chuyển sang DLQ hoặc bỏ qua có log; đừng tiếp tục gọi downstream với deadline đã hết.
+- Nếu công việc cần chạy vài phút, đừng gắn deadline HTTP 900 ms; hãy tạo deadline riêng theo SLO của job.
+- Với retry, dùng **deadline còn lại**, không tạo timeout mới mỗi lần thử.
+
+### DB và các tầng tài nguyên
+- Đặt {{statement_timeout}} bằng {{min(remaining, cap)}}; đừng để JDBC mặc định vô hạn.
+- Hikari {{connectionTimeout}} cũng phải nhỏ hơn remaining; nếu không, request đã hết budget nhưng thread vẫn chờ connection.
+- Với {{@Transactional}}, kiểm tra deadline trước khi mở transaction; nếu còn 10 ms, đừng mở transaction rồi hy vọng query chạy xong.
+
+~~~seq
+title: Deadline propagation qua async
+actors: Client | Gateway | Order | Pool | Payment
+Client -> Gateway: request (SLO 900ms)
+Gateway -> Order: x-request-ms=850
+Order -> Pool: submit (deadline 620ms)
+Pool -> Payment: call (timeout 400ms)
+Payment --> Pool: 503 slow
+Pool --> Order: TimeoutException
+Order --> Gateway: 504
+Gateway --> Client: 504
+~~~
+
+### Lỗi hay gặp
+1. **{{@Async}} không có TaskDecorator**. Triệu chứng: gateway trả 504 nhưng thread pool vẫn chạy 30 giây, giữ DB connection. Cách tránh: decorator hoặc executor có context.
+2. **{{InheritableThreadLocal}} với thread pool**. Triệu chứng: thread cũ còn deadline của request trước; request mới bị tính là hết hạn ngay. Cách tránh: {{ThreadLocal}} + {{clear()}} trong finally, hoặc decorator.
+3. **{{CompletableFuture}} dùng common pool**. Triệu chứng: không decorator, không truyền deadline. Cách tránh: truyền executor đã bọc.
+4. **WebFlux đọc ThreadLocal**. Triệu chứng: null hoặc sai giá trị. Cách tránh: Reactor Context.
+5. **gRPC tạo {{Context}} mới**. Triệu chứng: deadline biến mất, downstream chờ 30 giây. Cách tránh: {{Context.current().wrap}}.
+6. **Dùng timestamp tuyệt đối giữa các máy**. Triệu chứng: lệch đồng hồ làm request hết hạn ngay hoặc quá muộn. Cách tránh: truyền remaining time, hoặc đồng bộ NTP chặt.
+7. **Không kiểm tra deadline trước side effect**. Triệu chứng: đã hết budget nhưng vẫn trừ tiền/ghi DB. Cách tránh: kiểm tra {{remainingMillis() > 0}} trước mỗi bước không thể bù.
+8. **Retry tạo timeout mới**. Triệu chứng: 3 lần retry × 2 giây vượt SLO. Cách tránh: mỗi lần thử dùng phần budget còn lại.
+
+### Ví dụ đời thực
+Trang checkout có SLO p99 900 ms. Order service dùng {{@Async}} với 50 thread để gọi payment và inventory, nhưng không cấu hình {{TaskDecorator}}. Một hôm payment chậm 2,3 giây: gateway trả 504 ở giây 900 ms, nhưng 47 task vẫn tiếp tục chạy thêm 28 giây vì mỗi task dùng timeout mặc định 30 giây; DB connection pool cạn, các request khác bị ảnh hưởng. Điều tra: thread dump cho thấy 47 thread {{http-nio}} đang chờ payment; log không có traceId vì MDC cũng không được copy; deadline chỉ tồn tại ở filter của thread HTTP. Xử lý: thêm {{DeadlineTaskDecorator}}, kiểm tra {{remainingMillis()}} trước khi gọi payment, đặt {{statement_timeout}} bằng phần budget còn lại, và thêm metric {{deadline.remaining}} theo hop. Kết quả sau 2 tuần: số task chạy quá 900 ms giảm từ 47 xuống 3, p99 checkout còn 780 ms, DB connection được giải phóng ngay khi hết budget, tỷ lệ zombie request dưới 0,2%.
+
+### Trả lời mẫu khi phỏng vấn
+"Deadline là thuộc tính của request, không phải biến cục bộ. Tôi lưu deadline trong context ở gateway, rồi truyền qua header HTTP hoặc gRPC deadline. Với Spring MVC, tôi dùng ThreadLocal và TaskDecorator để copy deadline sang thread pool; với WebFlux, dùng Reactor Context; với gRPC, dùng Context và withDeadlineAfter, không tạo Context mới làm mất deadline. Mỗi hop trừ thời gian đã tiêu, kiểm tra remaining trước khi gọi downstream, và đặt statement_timeout bằng min của remaining với trần cứng. Chỗ hay mất deadline là @Async không decorator, CompletableFuture dùng common pool, InheritableThreadLocal với thread pool, và retry tạo timeout mới. Khi hết budget, tôi fail fast để không giữ thread và connection cho một request mà client đã bỏ."
+
+> Senior tip: deadline không phải một header; nó là **property của request phải tồn tại ở mọi thread**. Nếu bạn không decorator executor, bạn không có deadline — bạn chỉ có một timeout mặc định và một hàng dài zombie request.`,
+  follow: [
+    'Bạn decorator executor cho @Async và ExecutorService thế nào, và vì sao InheritableThreadLocal không đủ?',
+    'WebFlux dùng Reactor Context: bạn đọc và truyền deadline qua các operator ra sao?',
+    'Với job Kafka chạy nền, bạn dùng deadline HTTP hay expires-at trong message?'
+  ],
+  tags: ['deadline propagation', 'ThreadLocal', 'TaskDecorator', 'WebFlux', 'gRPC'],
+  refs: [
+    { type: 'doc', title: 'gRPC Deadlines', url: 'https://grpc.io/docs/guides/deadlines/' },
+    { type: 'article', title: 'Timeouts, retries, and backoff with jitter', url: 'https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/' }
+  ]
+},
 );
