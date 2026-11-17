@@ -3178,4 +3178,590 @@ Xác thực client không đảm bảo client luôn lành tính; token hợp l�
 
 > Senior tip: đo p95/p99 latency, timeout và pool saturation trước khi đặt quota; giới hạn quá thấp gây lỗi người dùng thật, còn chỉ dựa vào rate limit theo IP dễ bị vượt qua bởi nhiều IP.`
 },
+{
+  id: 'qz-devops-074', topic: 'devops',
+  q: 'Trong Kubernetes (nền tảng điều phối container - gói ứng dụng và môi trường chạy), liveness probe (kiểm tra còn sống) dùng để làm gì?',
+  options: [
+    'Báo cho Service biết Pod đã sẵn sàng nhận traffic để bắt đầu cân bằng tải vào',
+    'Phát hiện container bị kẹt hoặc hỏng không tự hồi phục để kubelet (agent chạy trên mỗi node/máy) khởi động lại container',
+    'Trì hoãn mọi loại probe khác trong giai đoạn ứng dụng khởi động lâu',
+    'Quy định CPU và bộ nhớ tối thiểu mà scheduler dùng để đặt Pod lên node'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Liveness probe trả lời câu hỏi "container còn sống và hoạt động bình thường không?". Nếu probe thất bại liên tiếp theo ngưỡng cấu hình, kubelet sẽ kill và restart container để tự phục hồi.
+
+### Vì sao cần và hoạt động thế nào
+- **Vấn đề:** Một tiến trình có thể vẫn chạy (process còn tồn tại) nhưng bị deadlock (kẹt khóa chờ nhau) hoặc treo, khiến không xử lý request. Kubernetes không nhìn thấy lỗi logic bên trong nếu không có probe.
+- **Cơ chế:** Bạn cấu hình probe dạng HTTP GET, TCP socket hoặc exec command. kubelet gọi định kỳ ({{periodSeconds}}), chờ {{timeoutSeconds}}, và sau {{failureThreshold}} lần thất bại sẽ restart container.
+- **Ví dụ:** Ứng dụng Java bị full thread pool và không phản hồi {{/health/live}}. Liveness probe HTTP trả lỗi/timeout 3 lần liên tiếp, kubelet restart container, pod hồi phục sau khi JVM khởi động lại.
+
+~~~yaml
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  failureThreshold: 3
+~~~
+
+### Vì sao các phương án khác sai
+- **Sẵn sàng nhận traffic cho Service:** đó là vai trò của readiness probe, không phải liveness.
+- **Trì hoãn probe khác khi khởi động lâu:** đó là vai trò của startup probe.
+- **Quy định CPU/bộ nhớ cho scheduler:** đó là {{resources.requests}}/{{limits}}, không liên quan probe.
+
+> Senior tip: Đừng để liveness probe phụ thuộc vào dependency bên ngoài (DB, service khác). Nếu DB chập chờn, liveness fail dây chuyền sẽ restart toàn bộ pod và làm sự cố tệ hơn; chỉ kiểm tra sức khỏe nội tại của tiến trình.`
+},
+{
+  id: 'qz-devops-075', topic: 'devops',
+  q: 'Readiness probe (kiểm tra sẵn sàng nhận traffic) thất bại liên tục trên một Pod đang chạy, Kubernetes sẽ xử lý như thế nào?',
+  options: [
+    'Kubelet khởi động lại container ngay lập tức giống như khi liveness probe thất bại',
+    'Pod bị xóa khỏi danh sách endpoint của Service nên không nhận request mới, nhưng container không bị restart',
+    'Toàn bộ Deployment bị rollback về phiên bản trước đó',
+    'Scheduler di chuyển Pod sang một node khác có nhiều tài nguyên hơn'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Readiness probe cho biết Pod đã sẵn sàng phục vụ chưa. Khi thất bại, Kubernetes gỡ Pod khỏi endpoints của Service (bộ cân bằng tải nội bộ) để ngừng gửi traffic tới nó, nhưng không restart container.
+
+### Vì sao cần và hoạt động thế nào
+- **Vấn đề:** Ứng dụng có thể đang khởi tạo cache, chờ kết nối DB, hoặc tạm thời quá tải. Nếu vẫn nhận traffic lúc này, request sẽ lỗi dù tiến trình còn sống.
+- **Cơ chế:** kubelet cập nhật trạng thái Ready của Pod. Endpoint controller loại Pod khỏi Service endpoints khi {{Ready=False}}. Khi probe thành công lại, Pod được thêm lại vào cân bằng tải.
+- **Ví dụ:** Sau deploy, JVM đã lên nhưng chưa load xong dữ liệu tham chiếu; readiness probe trả 503 trong 20 giây đầu, Service không gửi request tới pod này cho đến khi probe pass.
+
+### Vì sao các phương án khác sai
+- **Khởi động lại container ngay:** hành vi này thuộc về liveness probe, không phải readiness.
+- **Rollback toàn bộ Deployment:** Deployment controller quản lý rollout theo strategy/health nhưng readiness fail của một pod không tự động rollback cả Deployment.
+- **Scheduler di chuyển Pod sang node khác:** scheduler chỉ đặt Pod lúc tạo; pod đang chạy không bị reschedule chỉ vì readiness fail.
+
+> Senior tip: Dùng readiness probe để bảo vệ traffic trong rolling update và khi dependency tạm lỗi. Kết hợp với {{preStop}} hook và {{terminationGracePeriodSeconds}} để drain kết nối an toàn khi pod bị terminate.`
+},
+{
+  id: 'qz-devops-076', topic: 'devops',
+  q: 'Startup probe (kiểm tra khởi động) trong Kubernetes giải quyết vấn đề gì cho ứng dụng khởi động chậm (ví dụ Spring Boot mất vài phút load dữ liệu)?',
+  options: [
+    'Thay thế hoàn toàn readiness probe vì chỉ cần kiểm tra một lần khi ứng dụng vừa chạy',
+    'Tạm vô hiệu hóa liveness và readiness probe trong giai đoạn khởi động để tránh kubelet restart container trước khi ứng dụng kịp lên',
+    'Tự động tăng CPU limit trong lúc khởi động để JVM warm-up nhanh hơn',
+    'Đảm bảo container image được pull về node trước khi Pod được tạo'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Startup probe dành cho ứng dụng khởi động lâu. Trong khi startup probe chưa thành công, liveness và readiness probe bị tạm dừng, tránh việc liveness kill nhầm container đang boot.
+
+### Vì sao cần và hoạt động thế nào
+- **Vấn đề:** Nếu đặt {{initialDelaySeconds}} của liveness quá lớn để "nhường" thời gian boot, bạn sẽ phát hiện chậm khi container treo sau này. Nếu đặt quá nhỏ, container bị restart liên tục vì chưa kịp lên.
+- **Cơ chế:** kubelet chạy startup probe trước. Chỉ khi startup probe pass, các probe còn lại mới bắt đầu. Ngưỡng thường tính bằng {{failureThreshold * periodSeconds}} để bao phủ thời gian khởi động tối đa.
+- **Ví dụ:** Spring Boot cần 90 giây load class và cache. Cấu hình startup probe {{periodSeconds: 5}}, {{failureThreshold: 30}} cho phép tối đa 150 giây khởi động mà không bị liveness can thiệp.
+
+~~~yaml
+startupProbe:
+  httpGet:
+    path: /health/startup
+    port: 8080
+  periodSeconds: 5
+  failureThreshold: 30
+~~~
+
+### Vì sao các phương án khác sai
+- **Thay thế readiness probe:** sau khi khởi động xong bạn vẫn cần readiness để điều khiển traffic khi pod tạm chưa sẵn sàng.
+- **Tự động tăng CPU limit:** Kubernetes không tự đổi resource limits dựa trên startup probe.
+- **Đảm bảo image được pull trước khi Pod tạo:** việc pull image do container runtime/kubelet xử lý theo {{imagePullPolicy}}, không phải chức năng của startup probe.
+
+> Senior tip: Tách endpoint cho từng probe ({{/health/live}}, {{/health/ready}}, {{/health/startup}}) như Spring Boot Actuator hỗ trợ, để kiểm soát chính xác điều kiện sống, sẵn sàng và hoàn tất khởi động.`
+},
+{
+  id: 'qz-devops-077', topic: 'devops', multi: true,
+  q: 'Khi cấu hình {{resources.requests}} và {{resources.limits}} cho container trong Kubernetes, những phát biểu nào đúng? (Chọn 3)',
+  options: [
+    '{{requests}} là mức tài nguyên scheduler dùng để quyết định đặt Pod lên node nào có đủ chỗ',
+    '{{limits}} luôn phải bằng {{requests}} nếu không Pod sẽ không bao giờ được schedule',
+    'Nếu container dùng vượt memory limit, nó có thể bị kernel OOM kill (bị hệ điều hành tiêu diệt vì hết bộ nhớ) và Pod thường thấy trạng thái OOMKilled',
+    'Nếu container dùng vượt CPU limit, nó sẽ bị throttle (bị giới hạn tốc độ CPU) chứ thường không bị kill ngay như hết memory',
+    '{{requests}} là mức tối đa container được phép dùng tại mọi thời điểm'
+  ],
+  answer: [0, 2, 3],
+  explain: `**Tóm tắt:** {{requests}} dùng cho scheduling và đảm bảo tài nguyên tối thiểu; {{limits}} là trần sử dụng. Vượt memory limit thường dẫn tới OOMKilled, còn CPU vượt limit thường bị throttle.
+
+### Vì sao cần phân biệt
+- **requests (yêu cầu tối thiểu):** scheduler cộng requests của các pod trên node để đảm bảo node còn đủ capacity. Đây là cơ sở để đặt pod hợp lý.
+- **limits (giới hạn tối đa):** cgroups (cơ chế giới hạn tài nguyên của Linux kernel) ép container không vượt quá. Memory là tài nguyên không nén được nên vượt trần thường bị OOM killer chấm dứt; CPU có thể chia thời gian nên bị giới hạn (throttle) làm chậm thay vì kill.
+
+~~~yaml
+resources:
+  requests:
+    cpu: "250m"
+    memory: "512Mi"
+  limits:
+    cpu: "500m"
+    memory: "1Gi"
+~~~
+
+### Vì sao các phương án khác sai
+- **limits phải bằng requests nếu không không schedule:** không bắt buộc. Bằng nhau tạo QoS Guaranteed, nhưng Burstable (requests < limits) vẫn schedule bình thường.
+- **Vượt CPU limit bị throttle chứ thường không bị kill:** đúng, CPU thường bị throttle gây tăng latency, hiếm khi kill trực tiếp vì vượt CPU.
+- **requests là mức tối đa:** sai, requests là mức đảm bảo/tối thiểu cho scheduling; mức tối đa là limits.
+
+> Senior tip: Đặt memory limit dựa trên đo đạc (heap + non-heap/metaspace + native) và để có headroom hợp lý; với JVM, đồng bộ {{-Xmx}} và memory limit để tránh OOMKilled bất ngờ. QoS class ảnh hưởng thứ tự bị evict khi node áp lực tài nguyên.`
+},
+{
+  id: 'qz-devops-078', topic: 'devops',
+  q: 'Một Pod Spring Boot liên tục bị restart và trạng thái container hiển thị {{OOMKilled}}. Nguyên nhân trực tiếp và hướng xử lý đầu tiên hợp lý nhất là gì?',
+  options: [
+    'Container vượt giới hạn bộ nhớ (memory limit) nên bị OOM killer chấm dứt; cần kiểm tra mức dùng bộ nhớ thực tế, heap/non-heap JVM và điều chỉnh limit hoặc cấu hình JVM',
+    'Container vượt giới hạn CPU nên Kubernetes buộc restart để giải phóng CPU cho pod khác',
+    'Liveness probe cấu hình sai đường dẫn nên Kubernetes đánh dấu OOMKilled và restart',
+    'Image bị lỗi layer nên container runtime không cấp phát được bộ nhớ và trả về OOMKilled'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{OOMKilled}} nghĩa là tiến trình bị hệ điều hành (OOM killer trong Linux kernel) giết vì dùng quá bộ nhớ cho phép (thường là vượt cgroup memory limit). Hướng xử lý là đo và cấu hình lại bộ nhớ.
+
+### Điều tra từng bước
+- **Triệu chứng:** {{kubectl describe pod}} thấy {{Last State: Terminated, Reason: OOMKilled}}.
+- **Vì sao xảy ra:** JVM dùng heap, metaspace, thread stack, direct buffer, native memory. Nếu tổng vượt memory limit của container, kernel kill tiến trình.
+- **Cách xử lý:** xem metrics memory thực tế, đặt {{-XX:MaxRAMPercentage}} hoặc {{-Xmx}} phù hợp, kiểm tra rò rỉ bộ nhớ, và tăng limit nếu ứng dụng thực sự cần. Với Java 17+, JVM container-aware nhưng vẫn cần cấu hình hợp lý.
+
+~~~bash
+kubectl describe pod my-app-abc
+kubectl top pod my-app-abc
+~~~
+
+### Vì sao các phương án khác sai
+- **Vượt CPU limit gây restart và OOMKilled:** CPU vượt limit thường bị throttle; OOMKilled là tín hiệu liên quan bộ nhớ.
+- **Liveness probe sai gây OOMKilled:** probe sai có thể gây restart nhưng reason sẽ khác (liveness probe failed), không phải OOMKilled.
+- **Image lỗi layer gây OOMKilled:** lỗi image thường gây {{ImagePullBackOff}} hoặc {{ErrImagePull}}, không gắn nhãn OOMKilled.
+
+> Senior tip: Đừng chỉ tăng memory limit vô tội vạ. Hãy xác định đây là nhu cầu hợp lý hay memory leak; theo dõi {{jvm_memory_used_bytes}} và heap dump khi cần để tránh che giấu vấn đề.`
+},
+{
+  id: 'qz-devops-079', topic: 'devops',
+  q: 'Trong chiến lược rolling update của Kubernetes Deployment, {{maxUnavailable}} có ý nghĩa gì?',
+  options: [
+    'Số lượng hoặc tỷ lệ Pod tối đa được phép tạm không sẵn sàng trong quá trình cập nhật',
+    'Số lượng Pod mới tối đa được tạo thêm vượt quá số replica mong muốn',
+    'Số lần retry tối đa khi pull container image thất bại',
+    'Số node tối đa được phép tham gia vào Deployment'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{maxUnavailable}} kiểm soát mức gián đoạn: trong lúc rollout, Kubernetes đảm bảo không có quá số Pod unavailable (không sẵn sàng) so với ngưỡng này.
+
+### Hoạt động trong rolling update
+- **Mục tiêu:** cập nhật phiên bản mới dần dần, không dừng toàn bộ dịch vụ.
+- **Cơ chế:** Deployment controller tạo Pod mới (phiên bản mới) và terminate Pod cũ theo hai tham số {{maxSurge}} và {{maxUnavailable}} (có thể là số tuyệt đối hoặc phần trăm).
+- **Ví dụ:** Deployment có 10 replica, {{maxUnavailable: 1}} nghĩa là tại mọi thời điểm phải có ít nhất 9 Pod sẵn sàng; controller sẽ chờ pod mới Ready trước khi giảm thêm pod cũ.
+
+~~~yaml
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 1
+~~~
+
+### Vì sao các phương án khác sai
+- **Pod mới tối đa vượt replica mong muốn:** đó là ý nghĩa của {{maxSurge}}.
+- **Số lần retry khi pull image thất bại:** retry image pull do kubelet/runtime xử lý theo backoff, không phải {{maxUnavailable}}.
+- **Số node tối đa tham gia Deployment:** Deployment quản lý Pod/ReplicaSet, không cấu hình số node bằng tham số này.
+
+> Senior tip: Chọn {{maxUnavailable}} và {{maxSurge}} dựa trên dung lượng cluster và yêu cầu availability. Với dịch vụ nhạy cảm, đặt {{maxUnavailable: 0}} và {{maxSurge: 1}} để luôn đủ capacity nhưng rollout chậm hơn và tốn thêm tài nguyên tạm thời.`
+},
+{
+  id: 'qz-devops-080', topic: 'devops',
+  q: 'Trong rolling update của Kubernetes Deployment, {{maxSurge}} điều khiển điều gì?',
+  options: [
+    'Số Pod tối đa được phép vượt quá số replica mong muốn trong quá trình cập nhật để tạo pod phiên bản mới sớm hơn',
+    'Số Pod tối đa được phép unavailable tại một thời điểm',
+    'Số lượng bản Deployment history được giữ lại để rollback',
+    'Giới hạn băng thông mạng cho traffic giữa các Pod trong lúc rollout'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{maxSurge}} cho phép tạo thêm Pod mới vượt quá {{spec.replicas}} trong thời gian rollout, giúp đưa phiên bản mới lên nhanh hơn trong khi vẫn giữ pod cũ phục vụ.
+
+### Vì sao cần và hoạt động thế nào
+- **Mục tiêu:** cân bằng giữa tốc độ rollout và tài nguyên tiêu thụ.
+- **Cơ chế:** Nếu {{replicas: 10}} và {{maxSurge: 2}}, Deployment có thể chạy tối đa 12 Pod tại một thời điểm (10 cũ/mới cộng dồn trong giai đoạn chuyển tiếp) để pod mới Ready sớm.
+- **Ví dụ:** Đặt {{maxSurge: 1}}, {{maxUnavailable: 0}} giúp rollout an toàn: tạo 1 pod mới, chờ Ready, rồi mới xóa 1 pod cũ.
+
+### Vì sao các phương án khác sai
+- **Pod tối đa unavailable:** đó là {{maxUnavailable}}.
+- **Số bản history để rollback:** được cấu hình bởi {{revisionHistoryLimit}}.
+- **Giới hạn băng thông mạng:** Kubernetes không dùng {{maxSurge}} để điều khiển network bandwidth; cần CNI/NetworkPolicy/Service Mesh cho các chính sách mạng.
+
+> Senior tip: {{maxSurge}} cần đủ tài nguyên node để chứa pod vượt thêm. Nếu cluster chật, pod mới có thể Pending và làm rollout chậm; hãy phối hợp với capacity planning và PodDisruptionBudget.`
+},
+{
+  id: 'qz-devops-081', topic: 'devops', multi: true,
+  q: 'Về Horizontal Pod Autoscaler (HPA - tự động tăng/giảm số Pod theo tải) trong Kubernetes, những phát biểu nào đúng? (Chọn 3)',
+  options: [
+    'HPA dựa trên CPU utilization (mức dùng CPU) thường cần metrics-server để lấy số liệu tài nguyên Pod',
+    'HPA có thể scale theo custom metric (chỉ số tùy chỉnh) hoặc external metric thông qua metrics API, ví dụ số message trong queue',
+    'HPA thay thế hoàn toàn việc đặt {{resources.requests}} vì nó tự tính toán tài nguyên cần thiết cho mỗi Pod',
+    'HPA tự động thay đổi kích thước node trong cluster khi Pod không đủ chỗ chạy',
+    'Khi dùng CPU utilization, HPA so sánh mức dùng thực tế với {{resources.requests}} CPU của Pod để quyết định scale'
+  ],
+  answer: [0, 1, 4],
+  explain: `**Tóm tắt:** HPA điều chỉnh số replica Pod dựa trên metric. Ngoài CPU/memory, HPA có thể dùng custom/external metrics; với CPU utilization, công thức dựa trên usage so với CPU requests.
+
+### Vì sao cần và hoạt động thế nào
+- **CPU-based scaling:** metrics-server cung cấp usage; HPA tính tỷ lệ usage/requests. Ví dụ requests 200m, usage trung bình 400m tương đương 200% so với mục tiêu 50% nên HPA tăng replica.
+- **Custom/external metrics:** qua Custom Metrics API/External Metrics API (thường dùng adapter như Prometheus Adapter, KEDA cho một số kịch bản). Ví dụ scale theo độ dài hàng đợi Kafka/RabbitMQ hoặc RPS.
+- **Giới hạn:** HPA scale số Pod (ngang), không đổi resource của từng Pod (đó là VPA - Vertical Pod Autoscaler, công cụ khác).
+
+### Vì sao các phương án khác sai
+- **HPA thay thế {{resources.requests}}:** sai, requests vẫn cần cho scheduling và là cơ sở tính utilization.
+- **HPA tự thay đổi kích thước node:** đó là nhiệm vụ của Cluster Autoscaler/Karpenter, không phải HPA.
+
+> Senior tip: Chọn metric phản ánh đúng nút thắt (queue length, latency, RPS) thay vì chỉ CPU. Đặt {{minReplicas}}, {{maxReplicas}}, và cấu hình behavior (scale up/down stabilization) để tránh dao động (flapping).`
+},
+{
+  id: 'qz-devops-082', topic: 'devops',
+  q: 'Khi nào nên cân nhắc dùng custom metric (chỉ số tùy chỉnh, ví dụ độ dài hàng đợi, số request đang chờ) thay vì chỉ dựa vào CPU để HPA scale?',
+  options: [
+    'Khi ứng dụng là batch worker xử lý message và CPU thấp nhưng backlog (lượng việc tồn đọng) đang tăng nhanh',
+    'Khi cluster không hỗ trợ metrics-server nên buộc phải dùng CPU metric thay thế',
+    'Khi muốn HPA tự động thay đổi memory limit của container theo thời gian thực',
+    'Khi chỉ cần scale theo số node thay vì số Pod để tiết kiệm chi phí'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** CPU không phải lúc nào cũng phản ánh tải thực. Với workload tiêu thụ hàng đợi hoặc I/O-bound, backlog/queue depth hay in-flight requests thường là tín hiệu scale tốt hơn.
+
+### Vì sao cần và ví dụ
+- **Vấn đề:** Worker đọc message từ Kafka/SQS có thể chờ I/O nhiều, CPU chỉ 20% nhưng hàng chờ tăng từ 1.000 lên 100.000 bản tin, dẫn tới độ trễ xử lý lớn.
+- **Giải pháp:** Expose metric như {{queue_messages_ready}} hoặc {{consumer_lag}} và cấu hình HPA (qua adapter) scale số Pod theo ngưỡng mong muốn.
+- **Kết quả:** số consumer tăng khi backlog tăng, giảm khi hàng chờ được xử lý hết.
+
+### Vì sao các phương án khác sai
+- **Không có metrics-server nên dùng CPU thay thế:** ngược logic; metrics-server thường cần cho CPU/memory metrics, còn custom metrics cần adapter riêng.
+- **HPA thay đổi memory limit theo thời gian thực:** thay đổi resource của container là việc của VPA/điều chỉnh cấu hình, không phải HPA.
+- **Scale theo số node thay vì số Pod:** scale node là Cluster Autoscaler; HPA scale replica Pod.
+
+> Senior tip: Đảm bảo metric đáng tin cậy và có độ trễ thu thập chấp nhận được. Với queue, cân nhắc cả thời gian xử lý mỗi message và khả năng idempotent (xử lý lặp không gây sai dữ liệu) khi tăng số consumer.`
+},
+{
+  id: 'qz-devops-083', topic: 'devops',
+  q: 'Trong Kubernetes, điểm khác biệt chính giữa ConfigMap và Secret là gì?',
+  options: [
+    'ConfigMap chỉ dùng cho biến môi trường còn Secret chỉ dùng cho file mount, không thể hoán đổi cách sử dụng',
+    'ConfigMap lưu cấu hình không nhạy cảm dạng key-value, còn Secret dành cho dữ liệu nhạy cảm (như mật khẩu, token) và được lưu/hiển thị theo cơ chế bảo vệ hơn (mặc định base64, có thể bật encryption at rest)',
+    'Secret được Kubernetes tự động mã hóa mạnh đầu-cuối nên an toàn chia sẻ công khai trong Git repository',
+    'ConfigMap không thể cập nhật sau khi tạo, trong khi Secret luôn tự động reload vào Pod đang chạy'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** ConfigMap chứa cấu hình thường (không bí mật). Secret chứa dữ liệu nhạy cảm và có các cơ chế xử lý an toàn hơn, nhưng base64 không phải là mã hóa bảo mật.
+
+### Vì sao cần và hoạt động thế nào
+- **ConfigMap:** lưu {{application.properties}}, feature flag, URL không nhạy cảm. Pod có thể đọc qua env vars hoặc volume mount.
+- **Secret:** lưu password, API key, TLS cert. Giá trị thường được encode base64 trong manifest; cluster có thể cấu hình encryption at rest cho etcd (kho dữ liệu của Kubernetes) và RBAC (phân quyền) để hạn chế truy cập.
+- **Ví dụ:** DB host/port để trong ConfigMap, DB password để trong Secret.
+
+~~~yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-secret
+type: Opaque
+stringData:
+  password: "change-me"
+~~~
+
+### Vì sao các phương án khác sai
+- **ConfigMap chỉ env, Secret chỉ mount:** cả hai đều có thể dùng làm env vars hoặc mount thành file (tùy cách cấu hình).
+- **Secret mã hóa mạnh đầu-cuối và an toàn commit Git:** base64 chỉ là encoding; commit Secret thẳng vào Git là rủi ro. Cần giải pháp như Sealed Secrets, External Secrets, hoặc Vault.
+- **ConfigMap không cập nhật, Secret tự reload:** ConfigMap có thể cập nhật; việc Pod nhận thay đổi phụ thuộc cách consume (env thường cần restart, mount file có thể cập nhật nhưng ứng dụng phải tự đọc lại).
+
+> Senior tip: Hạn chế quyền đọc Secret bằng RBAC theo nguyên tắc least privilege. Với hệ thống lớn, cân nhắc tích hợp secret manager bên ngoài và rotate (xoay vòng) secret định kỳ.`
+},
+{
+  id: 'qz-devops-084', topic: 'devops', multi: true,
+  q: 'Khi mount ConfigMap hoặc Secret vào Pod dưới dạng volume (ổ đĩa/file), những phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'Nội dung file được mount từ ConfigMap/Secret có thể được Kubernetes cập nhật sau một khoảng thời gian, nhưng ứng dụng phải tự cơ chế reload để nhận giá trị mới',
+    'Biến môi trường (env) lấy từ ConfigMap/Secret luôn tự cập nhật ngay lập tức trong tiến trình đang chạy khi bạn sửa ConfigMap/Secret',
+    'Mount Secret thành file giúp tránh lộ giá trị trên command line của tiến trình so với một số cách truyền tham số, nhưng vẫn cần kiểm soát quyền truy cập file và RBAC',
+    'ConfigMap và Secret khi mount sẽ tự động restart Pod để áp dụng cấu hình mới',
+    'Một Pod không thể mount đồng thời cả ConfigMap và Secret'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** Volume mount có thể phản ánh cập nhật sau delay, nhưng app cần reload. Dùng file mount cho secret thường tốt hơn lộ qua args, song vẫn phải bảo vệ truy cập.
+
+### Hoạt động và lưu ý
+- **Cập nhật file mount:** kubelet đồng bộ định kỳ nội dung projected volume; ứng dụng đọc file một lần lúc khởi động sẽ không thấy thay đổi trừ khi có cơ chế watch/reload (ví dụ Spring Cloud Kubernetes, hoặc tự implement).
+- **Env vars:** thường được inject lúc container start; thay đổi ConfigMap/Secret không tự cập nhật env trong process đang chạy, nên hay cần rollout restart.
+- **Bảo mật:** đặt {{defaultMode}} phù hợp, tránh ghi secret vào log, và giới hạn ai đọc Secret qua RBAC.
+
+~~~yaml
+volumes:
+  - name: cfg
+    configMap:
+      name: app-config
+containers:
+  - name: app
+    volumeMounts:
+      - name: cfg
+        mountPath: /etc/app
+~~~
+
+### Vì sao các phương án khác sai
+- **Env tự cập nhật ngay:** không đúng với process đang chạy; cần restart/reload.
+- **Tự động restart Pod khi mount thay đổi:** Kubernetes không tự restart pod chỉ vì ConfigMap/Secret đổi (trừ khi bạn dùng cơ chế bổ sung như reloader/controller).
+- **Không thể mount đồng thời ConfigMap và Secret:** hoàn toàn có thể mount nhiều volume khác loại vào cùng Pod.
+
+> Senior tip: Với cấu hình quan trọng, dùng chiến lược rollout có kiểm soát (checksum annotation để trigger restart Deployment) thay vì trông chờ app tự reload ngầm, để biết chắc phiên bản cấu hình đang chạy.`
+},
+{
+  id: 'qz-devops-085', topic: 'devops',
+  q: 'Mục tiêu chính của multi-stage build trong Docker khi đóng gói ứng dụng Spring Boot là gì?',
+  options: [
+    'Chạy nhiều container Spring Boot song song trong cùng một Dockerfile để tăng throughput',
+    'Tách bước build (cần JDK, Maven/Gradle, source) khỏi image runtime, chỉ copy artifact cần thiết sang image nhỏ hơn để giảm kích thước và bề mặt tấn công',
+    'Tự động đẩy image lên nhiều container registry khác nhau trong một lần build',
+    'Bật hot-reload code Java trong môi trường production mà không cần restart container'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Multi-stage build dùng nhiều stage trong Dockerfile: stage đầu build ra JAR/layer, stage sau chỉ chứa JRE/runtime và artifact, giúp image gọn và an toàn hơn.
+
+### Vì sao cần và hoạt động thế nào
+- **Vấn đề:** nếu giữ cả JDK, Maven cache, source trong image chạy production thì image rất nặng và chứa nhiều công cụ không cần thiết.
+- **Cơ chế:** {{FROM ... AS build}} để compile/package, rồi {{FROM eclipse-temurin:17-jre ...}} và {{COPY --from=build ...}} chỉ những file cần chạy.
+- **Ví dụ:** giảm image từ ~700MB (JDK + build tools) xuống ~200MB (JRE + app), rút ngắn thời gian pull và giảm lỗ hổng tiềm ẩn.
+
+~~~text
+FROM maven:3.9-eclipse-temurin-17 AS build
+WORKDIR /app
+COPY . .
+RUN mvn -DskipTests package
+
+FROM eclipse-temurin:17-jre
+COPY --from=build /app/target/app.jar /app/app.jar
+ENTRYPOINT ["java","-jar","/app/app.jar"]
+~~~
+
+### Vì sao các phương án khác sai
+- **Chạy nhiều container song song trong một Dockerfile:** Dockerfile định nghĩa cách build image, không chạy nhiều container production bên trong nó.
+- **Tự động đẩy image lên nhiều registry:** việc push do lệnh/CI thực hiện, không phải mục tiêu chính của multi-stage build.
+- **Hot-reload trong production:** không phải mục đích; production ưu tiên image bất biến (immutable) và ổn định.
+
+> Senior tip: Kết hợp multi-stage với Spring Boot layered jar để tận dụng cache layer hiệu quả, và chạy container bằng user không phải root khi có thể.`
+},
+{
+  id: 'qz-devops-086', topic: 'devops',
+  q: 'Với Spring Boot, lợi ích chính của "layered jar" (chia JAR thành các lớp/layer) khi build Docker image là gì?',
+  options: [
+    'Giúp JVM chạy nhanh hơn vì bytecode được nén thành một lớp duy nhất',
+    'Tách dependencies, loader, và code ứng dụng thành các layer riêng để Docker cache hiệu quả: thay đổi code thường không làm invalid cache của dependencies',
+    'Cho phép ứng dụng tự động scale theo số layer mà không cần Kubernetes',
+    'Loại bỏ hoàn toàn nhu cầu dùng JRE trong image runtime'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Layered jar sắp xếp nội dung ứng dụng thành các lớp có tốc độ thay đổi khác nhau. Docker build lại chỉ các layer thay đổi, giúp build/push/pull nhanh hơn.
+
+### Vì sao cần và hoạt động thế nào
+- **Vấn đề:** nếu copy một fat jar duy nhất, mỗi lần đổi 1 dòng code cũng tạo layer mới chứa toàn bộ dependencies, làm mất lợi ích cache.
+- **Cơ chế:** Spring Boot hỗ trợ tách layer (dependencies, spring-boot-loader, snapshot-dependencies, application...). Dockerfile copy và extract theo thứ tự ổn định.
+- **Ví dụ:** sửa code nghiệp vụ chỉ làm thay đổi layer application nhỏ, các layer thư viện hàng trăm MB vẫn được cache.
+
+~~~text
+# ý tưởng: extract layers rồi copy từng layer theo thứ tự ít đổi -> hay đổi
+COPY --from=build /app/target/app.jar /app/app.jar
+RUN java -Djarmode=layertools -jar /app/app.jar extract
+~~~
+
+### Vì sao các phương án khác sai
+- **Nén thành một lớp duy nhất giúp JVM nhanh hơn:** layered jar phục vụ Docker layer caching, không phải tối ưu thực thi JVM theo cách đó.
+- **Tự động scale theo số layer:** scaling do orchestrator (Kubernetes) và cấu hình HPA quyết định.
+- **Loại bỏ nhu cầu JRE:** ứng dụng Java vẫn cần runtime (JRE/JDK phù hợp) để chạy.
+
+> Senior tip: Sắp xếp thứ tự COPY trong Dockerfile từ ít thay đổi đến hay thay đổi (dependency trước, source sau) để tận dụng cache tối đa trong CI.`
+},
+{
+  id: 'qz-devops-087', topic: 'devops', multi: true,
+  q: 'Trong CI (Continuous Integration - tích hợp liên tục, tự động build/test khi có thay đổi code) cho dự án Java dùng Maven hoặc Gradle, những cách nào giúp dùng cache hiệu quả và an toàn? (Chọn 2)',
+  options: [
+    'Cache thư mục dependencies (ví dụ {{~/.m2/repository}} hoặc Gradle caches) và dùng key cache dựa trên file khóa phụ thuộc ({{pom.xml}}, {{*.gradle}}, lock/version catalog)',
+    'Cache toàn bộ thư mục workspace kể cả thư mục {{target}}/{{build}} giữa mọi branch và mọi phiên bản JDK để build nhanh nhất có thể',
+    'Tách bước restore/save cache rõ ràng và định kỳ làm mới (invalidate) cache khi đổi phiên bản toolchain hoặc khi nghi ngờ cache hỏng',
+    'Tắt hoàn toàn kiểm tra checksum của dependencies để tải nhanh hơn từ cache',
+    'Commit thư mục cache dependencies vào Git repository để mọi developer dùng chung'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** Cache dependency đúng cách giúp giảm thời gian tải thư viện. Key nên gắn với file mô tả phụ thuộc, và cần chiến lược invalidate để tránh dùng cache sai/hỏng.
+
+### Vì sao cần và thực hành
+- **Cache dependencies:** Maven/Gradle tải nhiều artifact từ remote; cache local trên CI runner giảm network và thời gian build.
+- **Key cache hợp lý:** dựa trên hash nội dung {{pom.xml}}/Gradle files để khi dependency đổi thì cache miss và tạo cache mới.
+- **Invalidate an toàn:** khi nâng JDK, đổi Gradle/Maven version, hoặc gặp lỗi lạ, cần rebuild không dùng cache cũ.
+
+~~~yaml
+# ý tưởng (GitHub Actions)
+- uses: actions/cache
+  with:
+    path: ~/.m2/repository
+    key: m2-\${{ hashFiles('**/pom.xml') }}
+~~~
+
+### Vì sao các phương án khác sai
+- **Cache toàn bộ {{target}}/{{build}} giữa mọi branch/JDK:** dễ gây nhiễm artifact cũ, kết quả build không tái lập và khó debug.
+- **Tắt kiểm tra checksum:** giảm an toàn chuỗi cung ứng (supply chain) và có thể dùng artifact hỏng.
+- **Commit thư mục cache vào Git:** làm repo phình to, khó bảo trì và không thay thế cache cơ chế của CI.
+
+> Senior tip: Đo thời gian build trước/sau khi bật cache và theo dõi cache hit rate. Kết hợp cache dependency với parallel test hợp lý, nhưng đừng hy sinh tính đúng đắn (flaky do cache bẩn).`
+},
+{
+  id: 'qz-devops-088', topic: 'devops',
+  q: 'Trong chiến lược triển khai blue-green, đặc điểm chính là gì?',
+  options: [
+    'Chuyển một phần nhỏ traffic sang phiên bản mới rồi tăng dần tỷ lệ khi không thấy lỗi',
+    'Duy trì hai môi trường song song (blue đang phục vụ, green là phiên bản mới), sau khi kiểm tra thì chuyển toàn bộ traffic sang green và có thể quay lại blue nếu cần',
+    'Cập nhật lần lượt từng Pod trong cùng môi trường cho đến khi hết Pod cũ',
+    'Triển khai phiên bản mới chỉ cho người dùng nội bộ bằng cách tạo tài khoản thử nghiệm riêng'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Blue-green giữ hai môi trường gần giống nhau. Green được triển khai và kiểm thử riêng, rồi router/load balancer chuyển traffic từ blue sang green gần như tức thời.
+
+### Vì sao dùng và cách hoạt động
+- **Mục tiêu:** giảm rủi ro khi phát hành và cho phép rollback nhanh bằng cách chuyển traffic về môi trường cũ.
+- **Cơ chế:** blue = phiên bản hiện tại nhận 100% traffic. Green = phiên bản mới, được smoke test/verify. Khi sẵn sàng, đổi cấu hình load balancer/Service/Ingress để trỏ sang green.
+- **Ví dụ:** đổi DNS hoặc target group của load balancer từ cụm blue sang cụm green sau khi health check đạt.
+
+### Vì sao các phương án khác sai
+- **Chuyển một phần nhỏ traffic rồi tăng dần:** đó là canary release.
+- **Cập nhật lần lượt từng Pod trong cùng môi trường:** đó là rolling update.
+- **Chỉ cho người dùng nội bộ bằng tài khoản thử nghiệm:** đó là cách giới hạn đối tượng (feature flag/beta users), không định nghĩa blue-green.
+
+> Senior tip: Blue-green cần gấp đôi tài nguyên trong thời gian chuyển đổi và phải xử lý kỹ tương thích database/migration (schema phải hỗ trợ cả hai phiên bản trong thời điểm cắt traffic nếu cần rollback).`
+},
+{
+  id: 'qz-devops-089', topic: 'devops',
+  q: 'Chiến lược canary release (phát hành kiểu "chim hoàng yến" thử khí) khác blue-green chủ yếu ở điểm nào?',
+  options: [
+    'Canary luôn yêu cầu hai cụm hạ tầng hoàn toàn tách biệt và chuyển 100% traffic ngay lập tức',
+    'Canary đưa phiên bản mới cho một phần nhỏ traffic/người dùng trước, quan sát metric rồi mới tăng dần, giúp phát hiện lỗi sớm với phạm vi ảnh hưởng nhỏ',
+    'Canary không cần giám sát vì chỉ dùng trong môi trường development',
+    'Canary chỉ áp dụng cho ứng dụng frontend tĩnh, không dùng cho backend Spring Boot'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Canary phát hành dần theo tỷ lệ traffic (ví dụ 1% -> 5% -> 25% -> 100%) dựa trên quan sát sức khỏe, thay vì chuyển toàn bộ cùng lúc.
+
+### Vì sao cần và hoạt động thế nào
+- **Mục tiêu:** giảm blast radius (phạm vi ảnh hưởng) khi có lỗi trong phiên bản mới.
+- **Cơ chế:** route một phần request tới phiên bản mới bằng load balancer/Ingress/Service Mesh (Istio, Linkerd). Theo dõi error rate, latency, business metrics; nếu xấu thì rollback hoặc dừng tăng tỷ lệ.
+- **Ví dụ:** 5% traffic vào bản mới trong 15 phút, p95 latency và 5xx ổn định thì tăng lên 20%.
+
+### Vì sao các phương án khác sai
+- **Yêu cầu chuyển 100% traffic ngay:** đó là đặc điểm thường thấy của blue-green cutover, không phải canary.
+- **Không cần giám sát:** canary phụ thuộc rất nhiều vào observability (quan sát hệ thống: metrics, logs, traces).
+- **Chỉ cho frontend tĩnh:** backend/API hoàn toàn có thể canary bằng cách chia traffic ở tầng routing.
+
+> Senior tip: Cần định nghĩa rõ tiêu chí tự động promote/rollback (SLO, error budget, latency). Với thay đổi schema DB, đảm bảo tương thích hai chiều trong giai đoạn canary.`
+},
+{
+  id: 'qz-devops-090', topic: 'devops',
+  q: 'Khi chọn giữa blue-green và canary cho một dịch vụ thanh toán quan trọng, nhận định nào phù hợp nhất?',
+  options: [
+    'Blue-green luôn tốt hơn canary trong mọi trường hợp vì không cần giám sát metric',
+    'Canary giúp giảm rủi ro bằng cách thử trên một phần traffic nhưng đòi hỏi khả năng quan sát và điều phối traffic tốt; blue-green cho chuyển đổi và rollback nhanh nhưng tốn tài nguyên gấp đôi và cần xử lý tương thích dữ liệu',
+    'Canary và blue-green là một: cả hai đều bắt buộc cập nhật từng Pod tuần tự trong cùng Deployment',
+    'Blue-green không thể rollback vì môi trường cũ bị xóa ngay sau khi chuyển traffic'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Không có chiến lược "tốt nhất mọi nơi". Canary tối ưu giảm phạm vi ảnh hưởng nhờ phát hành dần; blue-green tối ưu chuyển đổi nhanh và rollback đơn giản nếu hạ tầng/dữ liệu cho phép.
+
+### So sánh thực tế
+- **Blue-green:** ưu điểm là cutover rõ ràng, rollback bằng cách chuyển traffic về. Nhược điểm: chi phí môi trường, và migration DB phải cẩn thận (expand/contract).
+- **Canary:** ưu điểm là phát hiện sớm vấn đề trên tập nhỏ. Nhược điểm: cần routing tinh vi, metrics tin cậy, và thời gian rollout có thể lâu hơn.
+- **Dịch vụ thanh toán:** thường cần tiêu chí an toàn nghiêm ngặt (tỷ lệ lỗi giao dịch, độ trễ) nên canary có lợi nếu hệ thống quan sát tốt.
+
+### Vì sao các phương án khác sai
+- **Blue-green luôn tốt hơn và không cần metric:** mọi chiến lược phát hành an toàn đều cần giám sát.
+- **Cả hai đều bắt buộc cập nhật từng Pod tuần tự:** đó là mô tả gần với rolling update, không phải định nghĩa blue-green/canary.
+- **Blue-green không thể rollback vì xóa môi trường cũ ngay:** thực tế thường giữ blue một thời gian để rollback nhanh.
+
+> Senior tip: Kết hợp chiến lược deploy với feature flag và migration an toàn (backward-compatible schema) để kiểm soát rủi ro cả ở tầng ứng dụng lẫn dữ liệu.`
+},
+{
+  id: 'qz-devops-091', topic: 'devops',
+  q: 'Trong pipeline CI, bạn muốn giảm thời gian build Docker image cho Spring Boot khi chỉ thay đổi code Java, dependencies không đổi. Cách tổ chức Dockerfile nào hiệu quả nhất?',
+  options: [
+    'Copy toàn bộ mã nguồn và chạy build ngay ở dòng đầu tiên để tận dụng cache tối đa',
+    'Copy file khai báo phụ thuộc ({{pom.xml}}/Gradle files) và tải dependencies trước, sau đó mới copy source và build, kết hợp multi-stage/layered jar',
+    'Tắt Docker layer cache để luôn có kết quả build mới và đáng tin cậy nhất',
+    'Cài đặt lại toàn bộ công cụ build và dependencies trong mỗi lần {{RUN}} để tránh xung đột'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Đặt các bước ít thay đổi (tải dependencies) trước, bước hay thay đổi (source code) sau để tận dụng Docker layer cache. Với Spring Boot, layered jar càng tăng hiệu quả.
+
+### Vì sao hoạt động
+- **Docker cache:** mỗi instruction tạo layer; nếu input layer trước thay đổi, các layer sau phải build lại.
+- **Chiến lược:** copy {{pom.xml}} (và wrapper) -> {{mvn dependency:go-offline}} hoặc build dependency layer -> copy {{src}} -> package. Khi chỉ sửa code, layer dependency vẫn cache.
+- **Ví dụ:** build giảm từ 8 phút xuống 2 phút trên CI nhờ không tải lại dependencies mỗi lần.
+
+~~~text
+COPY pom.xml .
+RUN mvn -B dependency:go-offline
+COPY src ./src
+RUN mvn -B package -DskipTests
+~~~
+
+### Vì sao các phương án khác sai
+- **Copy toàn bộ và build ngay dòng đầu:** bất kỳ thay đổi nhỏ nào cũng invalid cache sớm.
+- **Tắt Docker layer cache:** build chậm và tốn tài nguyên; chỉ nên dùng khi cần đảm bảo sạch hoàn toàn trong trường hợp đặc biệt.
+- **Cài lại mọi thứ mỗi {{RUN}}:** tạo image lớn, chậm, và khó cache.
+
+> Senior tip: Trong CI, cân nhắc cache cả giữa các lần chạy (remote cache/builder cache) nhưng phải có cơ chế xác thực artifact và tránh dùng cache bị nhiễm.`
+},
+{
+  id: 'qz-devops-092', topic: 'devops',
+  q: 'Một Service trong Kubernetes chỉ route traffic tới Pod khi Pod ở trạng thái Ready. Thành phần nào chịu trách nhiệm trực tiếp cập nhật danh sách endpoint dựa trên readiness của Pod?',
+  options: [
+    'HPA controller dựa trên CPU utilization',
+    'EndpointSlice/Endpoints controller (kết hợp thông tin Ready từ kubelet) cập nhật endpoint để Service/ kube-proxy biết Pod nào nhận traffic',
+    'Scheduler quyết định endpoint mỗi khi có request mới đến Service',
+    'Container runtime tự đăng ký Pod với DNS bên ngoài cluster'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Khi readiness thay đổi, control plane cập nhật Endpoints/EndpointSlice tương ứng với Service selector. kube-proxy hoặc data plane dùng thông tin này để định tuyến traffic.
+
+### Hoạt động từng bước
+- **Bước 1:** kubelet thực hiện readiness probe và báo trạng thái Pod (Ready/NotReady) lên API server.
+- **Bước 2:** Endpoint/EndpointSlice controller theo dõi Pod phù hợp selector của Service và chỉ đưa Pod Ready vào danh sách endpoint.
+- **Bước 3:** kube-proxy (iptables/ipvs) hoặc CNI/eBPF dataplane cập nhật rule để traffic tới Service chỉ đi tới endpoint hợp lệ.
+
+### Vì sao các phương án khác sai
+- **HPA controller:** chịu trách nhiệm scale số replica theo metric, không quản lý endpoint readiness.
+- **Scheduler:** gán Pod vào node lúc scheduling, không quyết định routing per-request.
+- **Container runtime đăng ký DNS ngoài:** DNS/endpoint nội bộ cluster do control plane và cơ chế Service quản lý; runtime không tự làm việc này.
+
+> Senior tip: Khi debug lỗi "Service không nhận traffic", kiểm tra {{kubectl get endpoints/endpointslice}}, trạng thái Ready của Pod, và selector label khớp nhau.`
+},
+{
+  id: 'qz-devops-093', topic: 'devops',
+  q: 'Bạn cấu hình HPA theo CPU với {{targetAverageUtilization}} 60% nhưng Pod không có {{resources.requests.cpu}}. Hậu quả thường gặp là gì?',
+  options: [
+    'HPA vẫn scale chính xác vì nó tự suy ra CPU request từ giới hạn bộ nhớ',
+    'HPA không thể tính tỷ lệ utilization theo cách thông thường và có thể không hoạt động như mong đợi; cần khai báo CPU requests cho container',
+    'Kubernetes sẽ tự đặt CPU request bằng 60% của CPU limit và HPA chạy bình thường',
+    'Pod sẽ bị từ chối tạo vì HPA bắt buộc mọi container phải có CPU limit thay vì request'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Với autoscaling theo CPU utilization dạng phần trăm, HPA cần biết CPU request để tính usage/request. Thiếu request làm việc tính toán và hành vi scale không đúng kỳ vọng.
+
+### Vì sao cần CPU requests
+- **Công thức khái quát:** utilization ~ (current CPU usage / requested CPU). Không có mẫu số (request) thì tỷ lệ phần trăm không xác định theo cơ chế này.
+- **Thực tế:** metrics-server có thể báo usage, nhưng HPA cần requests để so sánh mục tiêu. Kết quả là HPA không scale hoặc báo trạng thái không đủ điều kiện.
+- **Cách sửa:** đặt {{resources.requests.cpu}} (và thường cả memory requests) phù hợp với đo đạc.
+
+~~~yaml
+resources:
+  requests:
+    cpu: "200m"
+  limits:
+    cpu: "500m"
+~~~
+
+### Vì sao các phương án khác sai
+- **Tự suy ra từ giới hạn bộ nhớ:** CPU và memory là tài nguyên khác nhau, không suy ra hợp lệ như vậy.
+- **Tự đặt CPU request bằng 60% của CPU limit:** Kubernetes không tự gán theo công thức này cho bạn.
+- **Bị từ chối vì HPA bắt buộc CPU limit:** vấn đề chính ở đây là request cho tính utilization; việc thiếu request không đồng nghĩa rule từ chối Pod như phát biểu.
+
+> Senior tip: Luôn đặt requests cho workload chạy production để scheduler, HPA và QoS hoạt động dự đoán được. Thiếu requests là lỗi cấu hình phổ biến khi autoscaling "không chạy".`
+},
 );
