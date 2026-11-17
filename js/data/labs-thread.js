@@ -4442,5 +4442,187 @@ Scheduler chi dieu khien thoi gian, nhan viec chuan thuc thi ra executor rieng. 
     'Phan biet fixedRate vs fixedDelay va canh bao chung tap nguyen tai nguyen (giong lab thread-010/012).'
   ],
   tags: ['scheduled', 'scheduledthreadpoolexecutor', 'thread-pool', 'spring-boot', 'task-scheduler', 'starvation', 'jstack']
+},
+{
+  id: 'lab-thread-019',
+  category: 'thread',
+  title: 'HikariCP cạn pool vì REQUIRES_NEW lồng trong transaction ngoài',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **OrderVN** (Spring Boot 3.4, Java 21, PostgreSQL 16, HikariCP pool size = 10, Tomcat 200 thread, pod 4 vCPU) xử lý đơn hàng. Service {{OrderService.createOrder}} được đánh dấu {{@Transactional}} (transaction ngoài, giữ 1 connection từ HikariCP từ lúc begin tới commit). Bên trong nó gọi {{AuditService.logEvent}} đánh dấu {{@Transactional(propagation = REQUIRES_NEW)}} để ghi audit log vào cùng DB — propagation REQUIRES_NEW nghĩa là "tạo transaction mới, tạm dừng transaction hiện tại", nên Hibernate phải mượn thêm 1 connection từ pool cho transaction mới này. Vì audit được gọi đồng bộ trong transaction ngoài, tại một thời điểm mỗi request đang xử lý giữ **2 connection** cùng lúc.\n**Triệu chứng:** Lúc cao điểm ~12:00 ngày 10/11/2026, QPS tăng từ 30 lên 90. Từ request thứ ~6 xử lý đồng thời, API {{POST /orders}} bắt đầu chờ connection: p99 từ 80ms lên 31s, Ingress trả 504. CPU pod 18%, DB connections active phía DB ~10 và không tăng thêm (pool đã đầy). Hikari metric {{hikaricp_connections_active=10}}, {{hikaricp_connections_pending}} tăng dần đến 80+, log lặp lại "HikariPool-1 - Connection is not available, request timed out after 30000ms". Sau khi deploy hotfix bỏ REQUIRES_NEW lúc 12:22, p99 về 90ms mà không restart pod.\n**Dữ liệu thu thập:** {{jstack}} lúc 12:15:30, log HikariCP, metric Prometheus (hikaricp_*), và cấu hình {{application.yml}} (HikariCP, transaction).`,
+  artifacts: [
+    {
+      name: 'jstack-orders-12-15.txt',
+      lang: 'text',
+      content: `2026-11-10 12:15:30
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"http-nio-8080-exec-17" #65 [1042] daemon prio=5 os_prio=0 cpu=1230.40ms elapsed=312.10s tid=0x00007f8b100a4000 nid=1042 waiting on condition  [0x00007f8a9c7fc000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x000000071a2c3f10> (a java.util.concurrent.SynchronousQueue$Transferer)
+        at java.util.concurrent.locks.LockSupport.parkNanos(java.base@21.0.4/LockSupport.java:269)
+        at java.util.concurrent.LinkedTransferQueue$DualNode.await(java.base@21.0.4/LinkedTransferQueue.java:458)
+        at java.util.concurrent.LinkedTransferQueue.xfer(java.base@21.0.4/LinkedTransferQueue.java:613)
+        at java.util.concurrent.SynchronousQueue.xfer(java.base@21.0.4/SynchronousQueue.java:235)
+        at java.util.concurrent.SynchronousQueue.poll(java.base@21.0.4/SynchronousQueue.java:347)
+        at com.zaxxer.hikari.util.ConcurrentBag.borrow(ConcurrentBag.java:159)
+        at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:162)
+        at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:144)
+        at com.zaxxer.hikari.HikariDataSource.getConnection(HikariDataSource.java:112)
+        at org.hibernate.engine.jdbc.connections.internal.DatasourceConnectionProviderImpl.getConnection(DatasourceConnectionProviderImpl.java:126)
+        at org.hibernate.internal.SessionImpl$JdbcCoordinatorImpl.obtainConnection(SessionImpl.java:435)
+        at org.hibernate.resource.transaction.backend.jdbc.internal.JdbcResourceLocalTransactionCoordinatorImpl.begin(JdbcResourceLocalTransactionCoordinatorImpl.java:124)
+        at vn.order.audit.AuditService.logEvent(AuditService.java:31)
+        at jdk.internal.reflect.DirectMethodHandleAccessor.invoke(java.base@21.0.4/DirectMethodHandleAccessor.java:103)
+        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:184)
+        at org.springframework.transaction.interceptor.TransactionInterceptor.invoke(TransactionInterceptor.java:119)
+        at vn.order.OrderService.createOrder(OrderService.java:58)
+        at jdk.internal.reflect.DirectMethodHandleAccessor.invoke(java.base@21.0.4/DirectMethodHandleAccessor.java:103)
+        at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1089)
+
+   Locked ownable synchronizers:
+        - None
+
+"http-nio-8080-exec-31" #79 [1056] daemon prio=5 os_prio=0 cpu=1198.70ms elapsed=308.40s tid=0x00007f8b100c8000 nid=1056 waiting on condition  [0x00007f8a9b3fc000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x000000071a2c3f10> (a java.util.concurrent.SynchronousQueue$Transferer)
+        at java.util.concurrent.locks.LockSupport.parkNanos(java.base@21.0.4/LockSupport.java:269)
+        at java.util.concurrent.LinkedTransferQueue$DualNode.await(java.base@21.0.4/LinkedTransferQueue.java:458)
+        at java.util.concurrent.LinkedTransferQueue.xfer(java.base@21.0.4/LinkedTransferQueue.java:613)
+        at java.util.concurrent.SynchronousQueue.xfer(java.base@21.0.4/SynchronousQueue.java:235)
+        at java.util.concurrent.SynchronousQueue.poll(java.base@21.0.4/SynchronousQueue.java:347)
+        at com.zaxxer.hikari.util.ConcurrentBag.borrow(ConcurrentBag.java:159)
+        at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:162)
+        at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:144)
+        at com.zaxxer.hikari.HikariDataSource.getConnection(HikariDataSource.java:112)
+        at org.hibernate.engine.jdbc.connections.internal.DatasourceConnectionProviderImpl.getConnection(DatasourceConnectionProviderImpl.java:126)
+        at org.hibernate.internal.SessionImpl$JdbcCoordinatorImpl.obtainConnection(SessionImpl.java:435)
+        at org.hibernate.resource.transaction.backend.jdbc.internal.JdbcResourceLocalTransactionCoordinatorImpl.begin(JdbcResourceLocalTransactionCoordinatorImpl.java:124)
+        at vn.order.OrderService.createOrder(OrderService.java:47)
+        at jdk.internal.reflect.DirectMethodHandleAccessor.invoke(java.base@21.0.4/DirectMethodHandleAccessor.java:103)
+        at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1089)
+
+   Locked ownable synchronizers:
+        - None
+
+# Ghi chú on-call (đếm trên toàn bộ dump, 200 thread Tomcat):
+#   grep -c '"http-nio-8080-exec-' jstack-orders-12-15.txt            -> 200
+#   grep -c 'ConcurrentBag.borrow' jstack-orders-12-15.txt              ->  78
+#   grep -c 'AuditService.logEvent' jstack-orders-12-15.txt             ->  42
+#   grep -c 'OrderService.createOrder' jstack-orders-12-15.txt          ->  95
+#   HikariPool size = 10; active = 10; pending = 80+ (xem log/metric)
+#   12 thread exec còn lại: idle chờ request mới trong TaskQueue.take`
+    },
+    {
+      name: 'hikari-and-config.txt',
+      lang: 'text',
+      content: `# HikariCP log (trích)
+2026-11-10 12:14:58.123  WARN  HikariPool-1 - Connection is not available, request timed out after 30000ms.
+2026-11-10 12:15:02.456  WARN  HikariPool-1 - Connection is not available, request timed out after 30000ms.
+2026-11-10 12:15:09.789  WARN  HikariPool-1 - Connection is not available, request timed out after 30000ms.
+
+# Prometheus metric (lúc 12:15:30)
+hikaricp_connections_active{pool="HikariPool-1"} 10
+hikaricp_connections_idle{pool="HikariPool-1"} 0
+hikaricp_connections_pending{pool="HikariPool-1"} 83
+hikaricp_connections_max{pool="HikariPool-1"} 10
+hikaricp_connections_timeout_total{pool="HikariPool-1"} 14
+
+# application.yml (đang dùng)
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 30000
+      minimum-idle: 10
+  jpa:
+    hibernate:
+      ddl-auto: none
+
+# OrderService (rút gọn)
+@Transactional
+public Order createOrder(OrderRequest req) {
+    Order o = orderRepo.save(req.toEntity());          // (A) dùng conn C1 của tx ngoài
+    auditService.logEvent("ORDER_CREATED", o.getId()); // (B) REQUIRES_NEW -> mượn conn C2
+    inventoryClient.reserve(o);                        // (C) gọi HTTP ra ngoài, vẫn giữ C1 (và C2 đã commit)
+    return o;
+}
+
+# AuditService
+@Transactional(propagation = Propagation.REQUIRES_NEW)
+public void logEvent(String type, Long orderId) {
+    auditRepo.save(new AuditEvent(type, orderId));     // mượn conn C2, commit ngay khi method kết thúc
+}`
+    }
+  ],
+  questions: [
+    'Vì sao pool size 10 mà từ request thứ ~6 đã bắt đầu chờ connection? Dẫn chứng bằng dump (ConcurrentBag.borrow, SynchronousQueue.poll) và metric pending.',
+    'Giải thích cơ chế REQUIRES_NEW lồng trong transaction ngoài: tại sao mỗi request giữ 2 connection cùng lúc, và vì sao connection-timeout 30s lại làm p99 ~31s?',
+    'Đề xuất cách sửa ngắn hạn và dài hạn: bỏ/tách REQUIRES_NEW, tăng pool có tính toán, connection-timeout ngắn, và giám sát metric nào để phát hiện sớm?'
+  ],
+  hints: [
+    'Nhìn stack: thread exec-17 đang ở {{AuditService.logEvent}} -> {{JdbcResourceLocalTransactionCoordinatorImpl.begin}} -> {{HikariPool.getConnection}} -> {{ConcurrentBag.borrow}} -> {{SynchronousQueue.poll}} (parking). Nghĩa là nó đang **chờ mượn connection** cho transaction REQUIRES_NEW, trong khi transaction ngoài (createOrder) vẫn đang giữ connection khác. Pool chỉ có 10 connection.',
+    'Tính toán: pool=10, mỗi request giữ 2 connection (ngoài + REQUIRES_NEW) tại thời điểm audit chạy. Từ request thứ 6 (6*2=12 > 10) pool cạn. Các request mới gọi {{getConnection}} sẽ park trên {{SynchronousQueue}} (handoffQueue) của ConcurrentBag cho đến khi connection được trả (connection-timeout 30000ms) -> p99 ~31s và log "request timed out after 30000ms".',
+    'Cách sửa: (1) bỏ REQUIRES_NEW — ghi audit trong cùng transaction ngoài (mất audit nếu tx rollback, chấp nhận hoặc dùng outbox); hoặc tách audit sang sau commit (ApplicationEventPublisher + @TransactionalEventListener(AFTER_COMMIT) hoặc gửi Kafka). (2) Nếu cần REQUIRES_NEW, không gọi trong transaction ngoài đang giữ connection lâu (đặc biệt có HTTP call). (3) Tăng pool theo công thức (core*2)+effective_spindle, đo thực tế, không tăng mù. (4) connection-timeout ngắn (2-5s) để fail fast + circuit breaker. (5) alert khi pending > 0 hoặc active == max trong > 30s.'
+  ],
+  answer: `**Tóm tắt:** {{OrderService.createOrder}} mang {{@Transactional}} (transaction ngoài, giữ connection C1 từ HikariCP từ begin tới commit). Bên trong nó gọi {{AuditService.logEvent}} có {{@Transactional(propagation = REQUIRES_NEW)}} — nghĩa là tạm dừng tx ngoài, tạo tx mới, phải mượn **thêm** connection C2 từ cùng pool. Vì audit chạy **đồng bộ trong** tx ngoài, mỗi request đang xử lý giữ 2 connection cùng lúc. Pool chỉ 10 connection → từ request thứ ~6 (6×2=12 > 10) pool cạn; các request sau park trên {{SynchronousQueue}} (handoffQueue) của {{ConcurrentBag}} chờ connection, connection-timeout 30000ms → p99 ~31s và log "Connection is not available, request timed out after 30000ms". DB/CPU rảnh vì nút thắt là pool, không phải DB. Hotfix bỏ REQUIRES_NEW làm p99 về 90ms.
+
+### Thuật ngữ nền (giải thích từ gốc)
+
+- **Connection pool (HikariCP):** "bể" các kết nối DB được tạo sẵn và tái sử dụng. Tạo connection mới tới DB rất chậm (TCP + auth + TLS), nên app mượn connection từ pool, dùng xong trả lại. {{maximum-pool-size}} = số connection tối đa pool được phép tạo.
+- **{{@Transactional}} (Spring):** đánh dấu method chạy trong một transaction DB. Spring bắt đầu transaction → mượn 1 connection từ pool → giữ suốt method → commit/rollback → trả connection về pool.
+- **Propagation (lan truyền transaction):** quy tắc khi method có {{@Transactional}} được gọi từ method khác cũng có {{@Transactional}}. {{REQUIRED}} (mặc định) = dùng chung transaction hiện có. {{REQUIRES_NEW}} = **tạm dừng** transaction hiện có, tạo transaction mới độc lập, commit/rollback riêng, rồi khôi phục transaction cũ.
+- **{{ConcurrentBag}} / SynchronousQueue (HikariCP):** cấu trúc nội bộ của HikariCP quản lý pool. Khi gọi {{getConnection}}, nếu không còn connection rảnh, thread phải {{poll}} trên {{handoffQueue}} (một {{SynchronousQueue}}) và park (chờ) cho đến khi có connection trả về hoặc timeout ({{connection-timeout}}).
+- **connection-timeout:** thời gian tối đa thread chờ mượn connection trước khi ném {{SQLTransientConnectionException}} ("Connection is not available, request timed out after Xms").
+
+### Cơ chế: vì sao pool size 10 mà từ request thứ ~6 đã cạn
+
+Vòng đời connection cho 1 request {{POST /orders}} (trước hotfix):
+
+1. {{OrderService.createOrder}} {{@Transactional}} bắt đầu → mượn C1 (tx ngoài). C1 bị giữ cho đến hết method, kể cả lúc gọi HTTP {{inventoryClient.reserve}} ở bước (C).
+2. Gọi {{auditService.logEvent}} {{REQUIRES_NEW}} → Spring **tạm dừng** tx ngoài (C1 vẫn bị giữ, không trả pool), tạo tx mới → mượn C2 từ pool.
+3. {{auditRepo.save}} dùng C2 → commit tx mới → trả C2 về pool.
+4. Khôi phục tx ngoài (C1 vẫn giữ) → tiếp tục (C) gọi HTTP ra ngoài, rồi commit → trả C1.
+
+Tại bước 2, request đang giữ **C1 + C2 đồng thời**. Khi QPS cao, nhiều request cùng lúc ở bước 2 → pool bị chiếm bởi 2 connection/request. Pool = 10 → chỉ cần 5 request đang ở bước 2 là cạn (thực tế ~6 vì timing). Request thứ 6 gọi {{getConnection}} (cho tx ngoài hoặc REQUIRES_NEW) → {{ConcurrentBag.borrow}} → {{SynchronousQueue.poll}} → park. Thread Tomcat bị park, không xử lý request khác. connection-timeout 30000ms → sau ~30s ném exception → p99 ~31s, log "request timed out after 30000ms". DB rảnh vì không có query mới được gửi (đang chờ connection).
+
+### Dẫn chứng (khớp số liệu)
+
+- Dump: 78 thread park trên {{ConcurrentBag.borrow}} -> {{SynchronousQueue.poll}} (parking to wait for {{<0x000000071a2c3f10>}}). 42 thread đang ở {{AuditService.logEvent}} -> {{JdbcResourceLocalTransactionCoordinatorImpl.begin}} -> {{HikariPool.getConnection}} (đang mượn C2 cho REQUIRES_NEW). 95 thread ở {{OrderService.createOrder}} (đang giữ C1). Khớp: nhiều request giữ C1 và đang chờ C2.
+- Metric: {{hikaricp_connections_active=10}}, {{idle=0}}, {{pending=83}}, {{max=10}}, {{timeout_total=14}} → pool đầy, 83 request đang chờ, đã có 14 timeout.
+- Log: lặp "Connection is not available, request timed out after 30000ms" → khớp connection-timeout 30000.
+- Cấu hình: {{maximum-pool-size=10}}, {{connection-timeout=30000}}, {{minimum-idle=10}}. Code: {{@Transactional}} ngoài + {{REQUIRES_NEW}} audit + HTTP call trong tx ngoài.
+- Sức khỏe giả: CPU 18%, DB connections ~10 không tăng → DB/CPU không phải nguyên nhân. Hotfix bỏ REQUIRES_NEW → p99 về 90ms không restart → xác nhận nút thắt là pool do giữ 2 connection/request.
+
+### Cách sửa
+
+**Ngắn hạn (khôi phục ngay):**
+1. Bỏ {{REQUIRES_NEW}}: ghi audit trong cùng transaction ngoài (audit commit theo tx chính; nếu rollback thì không có audit — chấp nhận hoặc dùng outbox).
+2. Hoặc tách audit sang **sau commit**: dùng {{ApplicationEventPublisher}} publish event trong tx, listener {{@TransactionalEventListener(phase = AFTER_COMMIT)}} ghi audit ở transaction mới sau khi tx chính commit xong (khi đó C1 đã trả pool, không giữ 2 connection cùng lúc).
+3. Không gọi service ngoài (HTTP) bên trong transaction ngoài: di chuyển {{inventoryClient.reserve}} ra sau commit, hoặc dùng Saga/outbox.
+
+**Dài hạn:**
+1. Tăng pool **có tính toán**: công thức tham khảo {{connections = ((core_count * 2) + effective_spindle_count)}}; đo thực tế bằng load test, tăng từng bước và theo dõi pending. Không tăng mù (pool quá lớn làm DB quá tải, context switch).
+2. connection-timeout ngắn (2000–5000ms) để **fail fast** thay vì park 30s; kết hợp circuit breaker (Resilience4j) và retry có backoff.
+3. Giám sát: alert khi {{hikaricp_connections_pending > 0}} liên tục > 30s, hoặc {{active == max}} liên tục, hoặc {{timeout_total}} tăng. Dashboard theo dõi pending/active/max theo thời gian.
+4. Cân nhắc {{minimum-idle}} nhỏ hơn max (hoặc để HikariCP quản lý) để không giữ connection rảnh khi tải thấp; bật {{leak-detection-threshold}} (ví dụ 30s) để phát hiện connection bị giữ quá lâu (leak).
+5. Review mọi {{REQUIRES_NEW}}/{{NESTED}} trong codebase: đảm bảo không gọi trong tx ngoài đang giữ connection lâu; nếu cần, thực hiện sau commit.
+
+### Phòng ngừa
+
+- Quy tắc: transaction nên **ngắn**; không giữ connection trong khi gọi HTTP/IO bên ngoài.
+- Code review bắt buộc kiểm tra propagation khi thêm {{@Transactional}} lồng nhau.
+- Test tải (load test) với QPS cao để phát hiện pool exhaustion trước production.
+- Bật leak detection và metric alert ngay từ đầu.
+
+> Senior tip: Pool exhaustion thường không phải do DB chậm mà do **giữ connection quá lâu** (long transaction, nested REQUIRES_NEW, HTTP call trong tx). Tăng pool size chỉ là "đắp" tạm; giải pháp gốc là rút ngắn thời gian giữ connection. Metric {{hikaricp_connections_pending}} là tín hiệu sớm nhất — alert khi > 0.`,
+  rubric: [
+    'Xác định đúng nguyên nhân: REQUIRES_NEW lồng trong transaction ngoài khiến mỗi request giữ 2 connection cùng lúc, pool 10 cạn từ request thứ ~6.',
+    'Dẫn chứng từ dump: thread park trên ConcurrentBag.borrow/SynchronousQueue.poll, AuditService.logEvent đang getConnection, metric pending tăng, log timeout 30000ms.',
+    'Phân biệt pool exhaustion với DB chậm/CPU cao; giải thích connection-timeout 30s → p99 ~31s.',
+    'Đề xuất sửa đúng: bỏ/tách REQUIRES_NEW sau commit, rút ngắn transaction, tăng pool có tính toán, fail fast, alert metric.'
+  ],
+  tags: ['hikaricp', 'connection-pool', 'requires_new', 'transaction', 'spring', 'concurrentbag', 'synchronousqueue', 'pool-exhaustion', 'jstack']
 }
 );
