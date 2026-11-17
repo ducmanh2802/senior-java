@@ -32,3 +32,4 @@ Xong: `Status: DONE`, Notes ghi id + số câu theo domain.
 - 15 câu `[Eval & Optimization]`: qz-ccap-266..280 (4 multi: 266, 270, 273, 279; 11 single)
 Tất cả q/options bằng tiếng Anh, explain bằng tiếng Việt, kèm domain tag đầu q. Không trùng ý với pool 1.
 `node --check` OK, `node scripts/build-light-index.js` OK, `node scripts/validate.js` không báo lỗi cho quiz-ccap-2.js (các lỗi còn lại là lỗi cũ trong labs-thread.js, sdlc.js, quiz-ops.js, bugs.js, lessons-banking.js, path.js — không thuộc quyền sở hữu task này).
+Reviewed-by: kilo (T2295R)
