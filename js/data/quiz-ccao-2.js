@@ -1031,7 +1031,7 @@ Chọn một thư mục riêng cho output; bật lịch sử phiên bản; quy �
     'Projects allows end-users to upload their own documents in a shared project',
     'API enables per-user document isolation with custom backend logic',
     'Projects supports custom UI branding and domain',
-    'API requires the vendor to manage document storage and indexing',
+    'API requires you to manage document storage and indexing',
     'Projects charges per API call rather than per seat'
   ],
   answer: [1, 3],
@@ -1288,5 +1288,575 @@ Chọn một thư mục riêng cho output; bật lịch sử phiên bản; quy �
 - **Đổi tên file:** tên file không xuất hiện trong chunk content; retrieval không dùng tên file làm citation.
 - **User chỉ định section:** bỏ trách nhiệm cho user; KB nên tự trả section đúng.
 - **System prompt qua API:** Projects dùng custom instructions, không có system prompt riêng; và API không thay đổi cách Projects hoạt động.`
-}
+},
+{
+  id: 'qz-ccao-169',
+  topic: 'claude',
+  q: "[Troubleshooting] A user asks Claude in English, but Claude keeps replying in Vietnamese. The user has not set any language preference. What is the most effective first step?",
+  options: [
+    "Start every message with 'Reply in English'",
+    "Check whether a custom instruction or Project instruction sets the reply language, and change it",
+    "Switch to a more powerful Claude model that speaks English better",
+    "Accept the Vietnamese reply and translate it manually each time"
+  ],
+  answer: 1,
+  explain: `**Đúng: kiểm tra và sửa hướng dẫn cấu hình (custom instruction hoặc Project instruction) nếu nó đang bắt Claude trả lời bằng tiếng Việt.** Claude tuân theo hướng dẫn về ngôn ngữ nếu có; nếu hướng dẫn yêu cầu tiếng Việt, Claude sẽ dùng tiếng Việt bất kể người dùng hỏi bằng tiếng Anh. Việc chỉnh hướng dẫn một lần là xử lý gốc rễ vấn đề, sau đó mọi cuộc hội thoại mới sẽ dùng đúng ngôn ngữ.
+### Vì sao các lựa chọn khác sai
+- **Bắt đầu mỗi tin nhắn bằng "Reply in English":** làm việc tạm thời nhưng không sửa gốc, và dễ quên ở các tin nhắn sau.
+- **Đổi sang model mạnh hơn:** ngôn ngữ trả lời không phụ thuộc model mạnh hay yếu; model mạnh vẫn có thể dùng tiếng Việt nếu hướng dẫn bắt.
+- **Chấp nhận tiếng Việt rồi dịch tay mỗi lần:** tốn công và không xử lý được vấn đề cấu hình.
+
+> Mẹo thực tế: nếu Claude liên tục dùng ngôn ngữ không mong muốn, hãy xem xét custom instruction và Project instruction trước khi đổ lỗi cho model.`,
+},
+{
+  id: 'qz-ccao-170',
+  topic: 'claude',
+  q: "[Troubleshooting] Claude gives a different answer to the same question in two separate chats. What is the most likely reason?",
+  options: [
+    "Claude changes its mind randomly like a person",
+    "Each chat is independent and answers can vary because Claude generates text probabilistically",
+    "One chat is using a newer model than the other",
+    "The first answer is always correct and the second is wrong"
+  ],
+  answer: 1,
+  explain: `**Đúng: mỗi cuộc hội thoại là độc lập, và Claude sinh văn bản theo xác suất nên cùng câu hỏi có thể cho câu trả lời khác nhau ở các cuộc trò chuyện khác nhau.** Điều này không có nghĩa là Claude "đổi ý" hay một câu trả lời luôn đúng. Cần kiểm tra cả hai bằng nguồn độc lập thay vì chọn cái đầu tiên.
+### Vì sao các lựa chọn khác sai
+- **Claude đổi ý ngẫu nhiên như con người:** mô hình không có ý thức hay sở thích; sự khác biệt do cơ chế sinh văn bản, không phải thay đổi ý kiến.
+- **Một cuộc dùng model mới hơn:** không cần thiết là đúng; cả hai có thể dùng cùng model và vẫn khác nhau.
+- **Câu trả lời đầu luôn đúng:** câu trả lời đầu cũng có thể sai; độ tin cậy không đến từ thứ tự xuất hiện.
+
+> Mẹo thực tế: với câu hỏi quan trọng, hãy dùng một nguồn bên ngoài để xác nhận thay vì dựa vào một cuộc trò chuyện duy nhất.`,
+},
+{
+  id: 'qz-ccao-171',
+  topic: 'claude',
+  multi: true,
+  q: "[Troubleshooting] A user pastes a long document and asks a specific question, but Claude's answer mentions facts that are not in the document. Which two actions best handle this? (Choose 2)",
+  options: [
+    "Treat the unmentioned facts as correct because Claude read the whole document",
+    "Re-ask with the instruction 'use only the pasted document' and check each claim against the document",
+    "Assume the document is wrong and trust Claude",
+    "Ask Claude to show which part of the document supports each claim"
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: yêu cầu Claude chỉ dùng tài liệu đã dán và kiểm tra từng khẳng định; đồng thời yêu cầu Claude chỉ ra đoạn tài liệu hỗ trợ mỗi khẳng định.** Đây là cách thực hiện grounding — neo câu trả lời vào nguồn được cung cấp. Những sự thật không được đề cập trong tài liệu không nên được coi là đúng chỉ vì Claude đã đọc tài liệu đó.
+### Vì sao các lựa chọn khác sai
+- **Xem các sự thật không được đề cập là đúng:** Claude có thể thêm thông tin từ trí nhớ chung hoặc bịa; không có trong tài liệu thì không nên tin.
+- **Giả định tài liệu sai và tin Claude:** tài liệu là nguồn đã cung cấp; việc tin Claude hơn tài liệu ngược ngược lại với mục đích kiểm tra.
+
+> Mẹo thực tế: khi cần Claude chỉ dùng tài liệu đã cho, hãy nói rõ "chỉ dùng thông tin trong tài liệu này" và yêu cầu trích dẫn đoạn cụ thể.`,
+},
+{
+  id: 'qz-ccao-172',
+  topic: 'claude',
+  q: "[Troubleshooting] Claude's reply stops in the middle of a sentence. What is the most practical next step?",
+  options: [
+    "Rewrite the whole request from scratch",
+    "Ask Claude to continue from where it stopped",
+    "Assume the document is too long and give up",
+    "Paste the document again in every message"
+  ],
+  answer: 1,
+  explain: `**Đúng: yêu cầu Claude tiếp tục từ nơi đã dừng.** Trả lời có thể bị cắt vì đạt đến giới hạn độ dài đầu ra; yêu cầu tiếp tục là cách nhanh và giữ được phần đã viết đúng. Không phải mỗi lần sao chép lại tài liệu, cũng không phải từ bỏ ngay.
+### Vì sao các lựa chọn khác sai
+- **Viết lại yêu cầu từ đầu:** tốn công và có thể làm mất phần nội dung đã viết đúng.
+- **Giả định tài liệu quá dài và từ bỏ:** việc dừng giữa câu thường do giới hạn đầu ra, không nhất quansas tài liệu quá dài.
+- **Dán tài liệu lại vào mọi tin nhắn:** không cần thiết nếu tài liệu đã nằm trong ngữ cảnh của cuộc trò chuyện.
+
+> Mẹo thực tế: nếu Claude thường dừng giữa câu ở cùng một vị trí, hãy yêu cầu trả lời ngắn gọn hơn hoặc chia yêu cầu thành các phần nhỏ.`,
+},
+{
+  id: 'qz-ccao-173',
+  topic: 'claude',
+  q: "[Troubleshooting] A user keeps correcting Claude's spelling of a client's name, but Claude keeps misspelling it in the same chat. What is the best fix?",
+  options: [
+    "Keep correcting it every time, forever",
+    "Start a new chat and give the correct spelling explicitly at the start",
+    "Assume Claude cannot spell proper names and avoid using it",
+    "Type the name in all capital letters so Claude notices"
+  ],
+  answer: 1,
+  explain: `**Đúng: mở cuộc trò chuyện mới và nêu rõ chính tả đúng ngay từ đầu.** Sửa lỗi nhiều lần trong cùng một cuộc trò chuyện không đảm bảo Claude ghi nhớ cho các tin nhắn sau; cuộc mới với chính xác được cung cấp sớm là cách tin cậy nhất. Không phải tránh hoàn toàn Claude vì một lỗi chính tả.
+### Vì sao các lựa chọn khác sai
+- **Sửa lại mỗi lần mãi mãi:** không hiệu quả và Claude vẫn có thể sai ở tin nhắn sau.
+- **Giả định Claude không thể viết tên riêng và tránh dùng:** quá cực đoan; một lỗi chính tả có thể sửa bằng hướng dẫn rõ ràng.
+- **Viết tên bằng chữ in hoa để Claude chú ý:** không phải cơ chế giúp Claude chính tả đúng; có thể làm thay đổi cách tên hiển thị.
+
+> Mẹo thực tế: với tên riêng quan trọng, hãy đưa chính tả đúng vào hướng dẫn dự án hoặc hướng dẫn tuỳ chỉnh để áp dụng cho nhiều cuộc trò chuyện.`,
+},
+{
+  id: 'qz-ccao-174',
+  topic: 'claude',
+  multi: true,
+  q: "[Troubleshooting] A team connected Claude to a cloud drive, but Claude says it cannot find a specific file that the team knows exists. Which two checks are most appropriate? (Choose 2)",
+  options: [
+    "Check whether the file is within the folders the connection is allowed to access",
+    "Check whether the file name and path typed in the question match the actual file",
+    "Upload the same file again in every new chat",
+    "Assume the cloud drive integration is broken and stop using it"
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: kiểm tra xem tệp nằm trong phạm vi thư mục mà kết nối được phép truy cập hay không, và kiểm tra tên tệp cùng đường dẫn trong câu hỏi có khớp với tệp thực hay không.** Hai vấn đề phổ biến là quyền truy cập giới hạn và gõ nhầm tên tệp. Không phải mỗi lần tải lại tệp, cũng không phải cho rằng kết nối đã hỏng.
+### Vì sao các lựa chọn khác sai
+- **Tải lại cùng một tệp vào mọi cuộc trò chuyện mới:** làm mất ích điểm của việc kết nối và tốn công.
+- **Giả định kết nối hỏng và ngừng dùng:** trước khi kết luận hỏng, cần kiểm tra quyền truy cập và tên tệp.
+
+> Mẹo thực tế: trước khi cho rằng tích nối bị lỗi, hãy xác nhận tệp nằm trong thư mục được kết nối và tên tệp được viết chính xác.`,
+},
+{
+  id: 'qz-ccao-175',
+  topic: 'claude',
+  q: "[Troubleshooting] Claude keeps using a technical term the team does not use, even after being told once to stop. What is the most reliable fix?",
+  options: [
+    "Hope Claude remembers next time",
+    "Add the preferred term and the term to avoid to the Project instructions or custom instructions",
+    "Use a different language",
+    "Replace the term manually every time without telling Claude"
+  ],
+  answer: 1,
+  explain: `**Đúng: đưa từ ưu tiên và từ cần tránh vào hướng dẫn dự án hoặc hướng dẫn tuỳ chỉnh để Claude áp dụng nhất quán trong nhiều cuộc trò chuyện.** Một lời nhắc một lần trong một cuộc trò chuyện không đảm bảo được ghi nhớ lâu dài; hướng dẫn cấu hình là nơi phù hợp cho sở thích thuật ngữ cố định.
+### Vì sao các lựa chọn khác sai
+- **Hy vọng Claude nhớ lần sau:** không có cơ chế ghi nhớ giữa các cuộc trò chuyện trừ khi dùng hướng dẫn cấu hình.
+- **Đổi sang ngôn ngữ khác:** không giải quyết vấn đề thuật ngữ và gây thêm phiền phức.
+- **Thay thế thủ công mỗi lần không nói với Claude:** tốn công và không giúp các thành viên khác trong nhóm.
+
+> Mẹo thực tế: sở thích về thuật ngữ và cách dùng từ nên nằm trong hướng dẫn cấu hình, không nằm trong lời nhắc từng tin nhắn.`,
+},
+{
+  id: 'qz-ccao-176',
+  topic: 'claude',
+  q: "[Troubleshooting] Claude is much slower than usual and some requests time out. What is the most sensible first change?",
+  options: [
+    "Paste even more context so Claude has everything",
+    "Use a shorter prompt and ask for a shorter answer, and avoid very large files in one chat",
+    "Switch to the most powerful model",
+    "Send the same request many times at once"
+  ],
+  answer: 1,
+  explain: `**Đúng: dùng yêu cầu ngắn gọn hơn, yêu cầu câu trả lời ngắn hơn, và tránh dùng tệp quá lớn trong một cuộc trò chuyện.** Đầu vào nhỏ hơn và đầu ra ngắn hơn giúp Claude xử lý nhanh hơn và giảm nguy cơ hết thời gian. Thêm ngữ cảnh làm chậm hơn, model mạnh hơn không nhất thiết nhanh hơn, và gửi nhiều yêu cầu cùng lúc làm tình trạng tệ hơn.
+### Vì sao các lựa chọn khác sai
+- **Dán thêm nhiều ngữ cảnh:** làm tăng khối lượng xử lý, chậm hơn không phải nhanh hơn.
+- **Đổi sang model mạnh nhất:** model mạnh thường chậm hơn và tốn hơn, không phải giải pháp cho vấn đề tốc độ.
+- **Gửi cùng yêu cầu nhiều lần cùng lúc:** làm tăng tải và có thể gây hạn mức sử dụng nhanh hơn.
+
+> Mẹo thực tế: nếu một yêu cầu vẫn bị chậm, hãy chia nhỏ thành các phần và xử lý lần lượt thay vì gửi toàn bộ cùng lúc.`,
+},
+{
+  id: 'qz-ccao-177',
+  topic: 'claude',
+  multi: true,
+  q: "[Troubleshooting] Claude refuses to answer a question that seems harmless and within policy. Which two responses are most appropriate? (Choose 2)",
+  options: [
+    "Rephrase the question in a neutral, factual way and try again",
+    "Assume Claude is broken and uninstall it",
+    "Check whether the wording accidentally touches a sensitive topic, and adjust",
+    "Keep sending the same question until Claude answers"
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: diễn đạt lại câu hỏi theo cách trung tính và dựa trên sự thật, rồi thử lại; đồng thời kiểm tra xem cách diễn đạt có vô tình chạm vào chủ đề nhạy cảm không và điều chỉnh.** Từ chối có thể do cách diễn đạt kích hoạt bộ lọc an toàn chứ không phải do nội dung thật sự vi phạm. Không nên cho rằng Claude hỏng và gỡ cài đặt, cũng không nên gửi liên tục cùng một câu hỏi.
+### Vì sao các lựa chọn khác sai
+- **Giả định Claude hỏng và gỡ cài đặt:** quá cực đoan; từ chối thường do cách diễn đạt, không phải lỗi kỹ thuật.
+- **Gửi liên tục cùng câu hỏi cho đến khi Claude trả lời:** không thay đổi gì và có thể gây khó hiểu thêm.
+
+> Mẹo thực tế: khi Claude từ chối, hãy thử diễn đạt lại câu hỏi một cách trung tính và khách quan trước khi kết luận có vấn đề.`,
+},
+{
+  id: 'qz-ccao-178',
+  topic: 'claude',
+  q: "[Troubleshooting] Claude's answer sounds very confident, but the user knows one stated fact is wrong. What should the user conclude?",
+  options: [
+    "Confidence means the fact has been checked against a database",
+    "Confident tone is not proof of correctness; verify the fact independently",
+    "Everything else in the answer must also be wrong",
+    "Only answers given slowly are trustworthy"
+  ],
+  answer: 1,
+  explain: `**Đúng: giọng điệu tự tin không phải bằng chứng về độ chính xác; hãy xác minh sự thật độc lập.** Claude có thể đưa ra câu trả lời sai một cách rất tự tin vì nó sinh văn bản theo xác suất, không phải tra cứu cơ sở dữ liệu sự thật. Việc một chỗ sai không có nghĩa là toàn bộ câu trả lời sai, và tốc độ cũng không cho biết độ tin cậy.
+### Vì sao các lựa chọn khác sai
+- **Tự tin nghĩa là sự thật đã được kiểm tra theo cơ sở dữ liệu:** không đúng; mô hình không tự động kiểm chứng từng khẳng định.
+- **Mọi thứ khác trong câu trả lời cũng phải sai:** một chỗ sai không làm toàn bộ câu trả lời sai; cần kiểm tra từng phần.
+- **Chỉ câu trả lời chậm mới đáng tin:** tốc độ phản hồi không liên quan đến độ chính xác nội dung.
+
+> Mẹo thực tế: hãy tách hai câu hỏi — "câu này viết hay hay không?" và "câu này có đúng không?" — và trả lời chúng độc lập.`,
+},
+{
+  id: 'qz-ccao-179',
+  topic: 'claude',
+  q: "[Troubleshooting] A user uploads a file, asks several questions, and later Claude seems to have forgotten details from the file. What is the most likely explanation?",
+  options: [
+    "Claude deletes files after each question",
+    "The conversation has grown long and the file content may fall outside the active context window",
+    "The file was never actually read",
+    "Only the first question can use the file"
+  ],
+  answer: 1,
+  explain: `**Đúng: cuộc trò chuyện đã trở nên dài và nội dung tệp có thể nằm ngoài cửa sổ ngữ cảnh đang kích hoạt.** Khi nhiều tin nhắn đã được trao đổi, nội dung cũ có thể bị đẩy ra khỏi phạm vi mà Claude có thể nhìn thấy, khiến nó dường như quên chi tiết từ tệp. Tệp không bị xóa sau mỗi câu hỏi, cũng không phải chỉ câu hỏi đầu tiên mới sử dụng được.
+### Vì sao các lựa chọn khác sai
+- **Claude xóa tệp sau mỗi câu hỏi:** không có cơ chế như vậy; tệp vẫn nằm trong ngữ cảnh cho đến khi bị đẩy ra.
+- **Tệp chưa từng được đọc:** nếu Claude đã trả lời dựa trên tệp, thì nó đã đọc; vấn đề là ngữ cảnh đã dài.
+- **Chỉ câu hỏi đầu tiên có thể dùng tệp:** không đúng; các câu hỏi sau vẫn có thể dùng tệp trong khi nội dung còn trong ngữ cảnh.
+
+> Mẹo thực tế: nếu cuộc trò chuyện quá dài, hãy mở cuộc mới và cung cấp lại phần bối cảnh cần thiết từ tệp.`,
+},
+{
+  id: 'qz-ccao-180',
+  topic: 'claude',
+  q: "[Troubleshooting] Claude keeps suggesting a feature that does not exist in the user's software. What is the best way to handle this?",
+  options: [
+    "Follow the suggestion because Claude knows all software",
+    "Check the software's official documentation before using the feature",
+    "Assume the feature exists but is hidden",
+    "Stop using Claude for anything related to that software"
+  ],
+  answer: 1,
+  explain: `**Đúng: kiểm tra tài liệu chính thức của phần mềm trước khi sử dụng tính năng được Claude gợi ý.** Claude có thể bịa ra tính năng không tồn tại (một dạng ảo giác); nó không biết toàn bộ phần mềm của người dùng. Xác minh bằng tài liệu chính thức là cách an toàn nhất. Không nên giả định tính năng ẩn, cũng không nên tránh hoàn toàn Claude vì một gợi ý sai.
+### Vì sao các lựa chọn khác sai
+- **Làm theo gợi ý vì Claude biết mọi phần mềm:** Claude không biết mọi phần mềm và có thể gợi ý tính năng không tồn tại.
+- **Giả định tính năng tồn tại nhưng đang ẩn:** không có căn cứ; hãy xác minh bằng tài liệu chính thức.
+- **Ngừng dùng Claude cho mọi việc liên quan đến phần mềm đó:** quá cực đoan; Claude vẫn hữu ích cho nhiều nhiệm vụ khác.
+
+> Mẹo thực tế: trước khi thực hiện một lệnh hoặc tính năng Claude gợi ý, hãy kiểm tra trong tài liệu chính thức của sản phẩm.`,
+},
+{
+  id: 'qz-ccao-181',
+  topic: 'claude',
+  q: "[Troubleshooting] A user asks Claude to 'be brief,' but Claude still writes long answers. What is the most effective adjustment?",
+  options: [
+    "Keep saying 'be brief' in every message",
+    "Give a specific limit such as 'under 100 words' or 'one paragraph,' and repeat it in the prompt",
+    "Assume Claude cannot be brief and write everything by hand",
+    "Ask Claude to write in a different language"
+  ],
+  answer: 1,
+  explain: `**Đúng: đưa ra một giới hạn cụ thể như 'dưới 100 từ' hoặc 'một đoạn', và lặp lại trong yêu cầu.** 'Viết ngắn gọn' quá mơ hồ; một giới hạn số từ hoặc số đoạn rõ ràng giúp Claude biết chính xác mức độ mong đợi. Không phải Claude không thể viết ngắn, và không cần đổi ngôn ngữ hay viết tay tất cả.
+### Vì sao các lựa chọn khác sai
+- **Nói 'viết ngắn gọn' trong mỗi tin nhắn:** quá mơ hồ, Claude vẫn có thể hiểu sai mức độ ngắn gọn.
+- **Giả định Claude không thể viết ngắn và viết tay tất cả:** không đúng; chỉ cần hướng dẫn rõ ràng hơn.
+- **Yêu cầu Claude viết bằng ngôn ngữ khác:** không liên quan đến độ dài câu trả lời.
+
+> Mẹo thực tế: giới hạn đo được được (số từ, số đoạn) hiệu quả hơn nhiều so với lời nhắc trừu tượng như 'viết ngắn gọn'.`,
+},
+{
+  id: 'qz-ccao-182',
+  topic: 'claude',
+  q: "[Troubleshooting] Claude gives a calculation that looks right, but the user will use the number in a budget. What is the safest step?",
+  options: [
+    "Use the number directly because Claude is good at math",
+    "Check the calculation with a calculator or spreadsheet before using it",
+    "Ask Claude to confirm the number again in the same chat",
+    "Round the number to make it look safer"
+  ],
+  answer: 1,
+  explain: `**Đúng: kiểm tra tính toán bằng máy tính hoặc bảng tính trước khi sử dụng số trong ngân sách.** Claude không phải là máy tính chính xác tuyệt đối; nó có thể sai phép tính nhưng vẫn viết kết quả trông hợp lý. Yêu cầu Claude xác nhận lại trong cùng cuộc trò chuyện không đáng tin cậy, và làm tròn số chỉ che giấu lỗi chứ không sửa nó.
+### Vì sao các lựa chọn khác sai
+- **Dùng số trực tiếp vì Claude giỏi toán:** Claude không đảm bảo tính toán chính xác cho các con số quan trọng.
+- **Yêu cầu Claude xác nhận lại trong cùng cuộc trò chuyện:** mô hình có thể lặp lại cùng một sai lầm với giọng tự tin.
+- **Làm tròn số để trông an toàn hơn:** làm tròn không thay đổi việc số đó có thể sai; ngân sách cần con số chính xác.
+
+> Mẹo thực tế: với con số sẽ dùng trong ngân sách hay báo cáo tài chính, luôn kiểm chứng bằng công cụ tính toán deterministic trước khi gửi.`,
+},
+{
+  id: 'qz-ccao-183',
+  topic: 'claude',
+  q: "[Troubleshooting] After a mistake, Claude keeps apologizing and refuses to continue the task. What is the best next step?",
+  options: [
+    "Keep apologizing back to Claude",
+    "Start a new chat with a clear, corrected request",
+    "Assume the task is impossible for Claude",
+    "Send the same mistake again to test Claude"
+  ],
+  answer: 1,
+  explain: `**Đúng: mở cuộc trò chuyện mới với yêu cầu rõ ràng và đã được sửa.** Khi Claude bị kẹt trong trạng thái xin lỗi và từ chối tiếp tục, cuộc trò chuyện mới với yêu cầu chỉnh sửa là cách nhanh nhất để khôi phục. Không phải xin lỗi lại với Claude, cũng không phải cho rằng nhiệm vụ không thể làm được.
+### Vì sao các lựa chọn khác sai
+- **Tiếp tục xin lỗi lại với Claude:** không giải quyết được vấn đề; Claude không cần được xin lỗi.
+- **Giả định nhiệm vụ không thể làm được cho Claude:** một lỗi hoặc một trạng thái kẹt không có nghĩa là nhiệm vụ không thể thực hiện.
+- **Gửi lại cùng sai lầm để kiểm tra Claude:** làm kéo dài trạng thái kẹt và không tạo ra tiến bộ.
+
+> Mẹo thực tế: khi Claude kẹt trong vòng lặp xin lỗi, hãy mở cuộc trò chuyện mới và trình bày yêu cầu một cách rõ ràng, súc tích.`,
+},
+{
+  id: 'qz-ccao-184',
+  topic: 'claude',
+  multi: true,
+  q: "[Output Evaluation] A team must choose between two Claude drafts of a client email. Draft A covers more points but states one figure that cannot be verified. Draft B covers fewer points but every figure can be traced to a source. Which two evaluation points matter most? (Choose 2)",
+  options: [
+    "Accuracy and traceability of claims matter more than covering more points",
+    "The longer draft is always better for the client",
+    "Unverifiable figures should be removed or sourced before sending",
+    "Choose the draft with the friendlier tone regardless of accuracy"
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: độ chính xác và khả năng truy nguồn của các khẳng định quan trọng hơn là bao nhiêu điểm được nêu; các con số không thể xác minh nên được loại bỏ hoặc có nguồn trước khi gửi.** Khả năng bao quát nhiều điểm không bù được cho một con số sai, và giọng điệu thân thiện không thay thế cho độ chính xác.
+### Vì sao các lựa chọn khác sai
+- **Bản trả lời dài hơn luôn tốt hơn cho khách:** độ dài không bằng chất lượng; bản dài có thể chứa thông tin không cần thiết hoặc sai.
+- **Chọn bản có giọng điệu thân thiện hơn bất kể độ chính xác:** giọng điệu quan trọng nhưng không overrides sự đúng đắn của nội dung.
+
+> Mẹo thực tế: khi gửi khách, ưu tiên những khẳng định có thể chứng minh được; con số không nguồn là rủi ro lớn nhất.`,
+},
+{
+  id: 'qz-ccao-185',
+  topic: 'claude',
+  q: "[Output Evaluation] Claude summarizes a meeting and lists three decisions. The user remembers only two decisions from the meeting. What is the best way to evaluate the summary?",
+  options: [
+    "Accept the third decision because Claude was present in the meeting",
+    "Check the meeting recording or notes to verify whether the third decision actually happened",
+    "Assume Claude added a useful decision that everyone forgot",
+    "Delete all three decisions and write the summary by hand"
+  ],
+  answer: 1,
+  explain: `**Đúng: kiểm tra bản ghi hoặc ghi chú cuộc họp để xác minh xem quyết định thứ ba có thực sự xảy ra hay không.** Claude không tham dự cuộc họp; nó tóm tắt dựa trên nội dung được cung cấp và có thể thêm chi tiết không có thật. Không nên chấp nhận quyết định thứ ba chỉ vì Claude nêu ra, cũng không nên xóa tất cả và viết tay từ đầu.
+### Vì sao các lựa chọn khác sai
+- **Chấp nhận quyết định thứ ba vì Claude tham dự cuộc họp:** Claude không tham dự; đây là hiểu lầm.
+- **Giả định Claude thêm một quyết định hữu ích mà mọi người đã quên:** không có căn cứ; cần kiểm chứng trước khi nhận.
+- **Xóa tất cả ba quyết định và viết tay từ đầu:** tốn công; hai quyết định đúng có thể được giữ.
+
+> Mẹo thực tế: với bản tóm tắt cuộc họp, hãy đối chiếu từng quyết định với ghi chú hoặc bản ghi âm trước khi gửi.`,
+},
+{
+  id: 'qz-ccao-186',
+  topic: 'claude',
+  q: "[Output Evaluation] Claude's answer includes a quote attributed to a company executive, but no one can find the source. What is the correct handling?",
+  options: [
+    "Keep the quote because it sounds authentic",
+    "Remove the quote unless it can be verified from a real source",
+    "Change it to a paraphrase and keep it without attribution",
+    "Add 'according to internal sources' to make it safe"
+  ],
+  answer: 1,
+  explain: `**Đúng: xóa trích dẫn trừ khi có thể xác minh từ một nguồn thật.** Trích dẫn không nguồn là rủi ro uy tín và pháp lý; chuyển thành bản diễn giải lại không gán nguồn vẫn gán một quan điểm cho người phản hồi mà không có căn cứ. Viết 'theo các nguồn nội bộ' không làm trích dẫn an toàn vì vẫn không có nguồn để kiểm tra.
+### Vì sao các lựa chọn khác sai
+- **Giữ trích dẫn vì nghe thật:** nghe thật không có nghĩa là thực sự có; trích dẫn bịa là dạng phổ biến của ảo giác.
+- **Diễn giải lại và giữ mà không gán nguồn:** vẫn gán một quan điểm cho người phản hồi mà không có căn cứ, chỉ khó phát hiện hơn.
+- **Thêm 'theo các nguồn nội bộ' để an toàn:** không có nguồn thật nào để kiểm tra; làm độc giả tưởng đã được xác minh.
+
+> Mẹo thực tế: nguyên tắc an toàn với trích dẫn — không mở được nguồn thì không gán cho người thật.`,
+},
+{
+  id: 'qz-ccao-187',
+  topic: 'claude',
+  multi: true,
+  q: "[Output Evaluation] A reviewer must check Claude's step-by-step solution to a multi-step problem. Which two practices are most effective? (Choose 2)",
+  options: [
+    "Check each step individually against the known facts, not only the final result",
+    "Trust the final result if it looks reasonable",
+    "Assume the first step is correct because it comes first",
+    "Look for where an early error could make later steps wrong"
+  ],
+  answer: [0, 3],
+  explain: `**Đúng: kiểm tra từng bước riêng lẻ dựa trên các sự thật đã biết, không chỉ xem kết quả cuối; đồng thời tìm xem một lỗi ở bước đầu có thể làm sai các bước sau hay không.** Lỗi ở bước đầu có thể lan sang các bước sau, nên kiểm tra quy trình không chỉ kết quả. Kết quả cuối nhìn hợp lý không đồng nghĩa từng bước đều đúng.
+### Vì sao các lựa chọn khác sai
+- **Tin kết quả cuối nếu nó trông hợp lý:** kết quả cuối có thể đúng tình cờ trong khi các bước đều sai.
+- **Giả định bước đầu đúng vì nó xuất hiện đầu tiên:** bước đầu cũng có thể sai; mỗi bước cần kiểm tra độc lập.
+
+> Mẹo thực tế: với bài toán nhiều bước, hãy yêu cầu Claude trình bày từng bước rồi kiểm tra từng phép tính riêng lẻ.`,
+},
+{
+  id: 'qz-ccao-188',
+  topic: 'claude',
+  q: "[Output Evaluation] Claude writes a customer reply and includes a medical disclaimer at the end. The user plans to remove the disclaimer to make the reply shorter. What is the best evaluation?",
+  options: [
+    "The disclaimer is optional decoration and can be removed",
+    "If the reply touches health topics, the disclaimer may be required; removing it increases risk",
+    "Disclaimers make replies look less confident, so always remove them",
+    "Keep the disclaimer only if the customer asks for it"
+  ],
+  answer: 1,
+  explain: `**Đúng: nếu phản hồi liên quan đến chủ đề y tế, bản miễn trừ trách nhiệm có thể là bắt buộc; xóa nó làm tăng rủi ro.** Bản miễn trừ không phải trang trí tùy ý; khi nội dung chạm đến sức khỏe, việc thiếu bản miễn trừ có thể gây hiểu lầm và rủi ro pháp lý. Không nên xóa vì bản trả lời trông kém tự tin, cũng không nên chỉ giữ khi khách hỏi.
+### Vì sao các lựa chọn khác sai
+- **Bản miễn trừ là trang trí tùy ý và có thể xóa:** không đúng đối với nội dung liên quan đến y tế, tài chính hay pháp lý.
+- **Bản miễn trừ làm phản hồi kém tự tin nên luôn xóa:** độ tự tin không phải lý do để bỏ qua bản miễn trừ bắt buộc.
+- **Giữ bản miễn trừ chỉ khi khách hỏi:** khi đó đã muộn; bản miễn trừ cần có trước khi gửi.
+
+> Mẹo thực tế: với nội dung liên quan đến sức khỏe hoặc tài chính, hãy giữ bản miễn trừ và để người có chuyên môn xem xét.`,
+},
+{
+  id: 'qz-ccao-189',
+  topic: 'claude',
+  q: "[Output Evaluation] Claude uses two different names for the same software feature across a long document. What is the best evaluation?",
+  options: [
+    "This is normal and does not matter",
+    "Inconsistent terminology confuses readers; choose one term and use it throughout",
+    "Ask Claude to use even more names so all users are covered",
+    "Assume the different names refer to different features"
+  ],
+  answer: 1,
+  explain: `**Đúng: thuật ngữ không nhất quán làm người đọc bối rối; hãy chọn một từ và dùng nó xuyên suốt tài liệu.** Khi cùng một tính năng được gọi bằng hai tên, người đọc có thể nghĩ đó là hai thứ khác nhau. Không nên yêu cầu Claude dùng thêm nhiều tên, cũng không nên giả định các tên khác nhau là các tính năng khác nhau mà không kiểm tra.
+### Vì sao các lựa chọn khác sai
+- **Điều này bình thường và không quan trọng:** thuật ngữ không nhất quán gây nhầm lẫn, đặc biệt trong tài liệu dài.
+- **Yêu cầu Claude dùng càng nhiều tên càng tốt để bao phủ tất cả người dùng:** nhiều tên càng gây bối rối và khó duy trì.
+- **Giả định các tên khác nhau chỉ các tính năng khác nhau:** không nhất thiết; cần kiểm tra tài liệu hoặc ngữ cảnh.
+
+> Mẹo thực tế: hãy xây dựng một bảng thuật ngữ ngắn cho dự án và yêu cầu Claude dùng các từ trong bảng.`,
+},
+{
+  id: 'qz-ccao-190',
+  topic: 'claude',
+  multi: true,
+  q: "[Output Evaluation] A team evaluates Claude's answer to a regulatory question. Which two signs show the answer needs closer checking? (Choose 2)",
+  options: [
+    "The answer states specific legal deadlines with no source",
+    "The answer is short",
+    "The answer uses polite language",
+    "The answer conflicts with the team's own compliance handbook"
+  ],
+  answer: [0, 3],
+  explain: `**Đúng: các thời hạn pháp lý cụ thể không có nguồn và nội dung mâu thuẫn với sách hướng dẫn tuân thủ của nhóm là dấu hiệu cần kiểm tra kỹ hơn.** Cả hai đều có thể dẫn đến vi phạm quy định nếu sai. Câu trả lời ngắn và ngôn ngữ lịch sự không phải dấu hiệu báo động.
+### Vì sao các lựa chọn khác sai
+- **Câu trả lời ngắn:** độ dài ngắn không liên quan đến độ chính xác; câu trả lời ngắn vẫn có thể đúng.
+- **Câu trả lời dùng ngôn ngữ lịch sự:** ngữ văn lịch sự không cho biết nội dung đúng hay sai.
+
+> Mẹo thực tế: với câu hỏi quy định pháp lý, hãy ưu tiên kiểm tra các con số, thời hạn và bất kỳ nội dung nào mâu thuẫn với sách hướng dẫn của tổ chức.`,
+},
+{
+  id: 'qz-ccao-191',
+  topic: 'claude',
+  q: "[Output Evaluation] Claude offers to write a script that will edit files on the user's computer. The user will run it. What is the safest evaluation?",
+  options: [
+    "Run it immediately because Claude wrote it",
+    "Review the script carefully, test it on non-important files first, and keep a backup",
+    "Assume scripts from Claude are always safe",
+    "Ask Claude to guarantee the script is safe"
+  ],
+  answer: 1,
+  explain: `**Đúng: xem xét kỹ script, kiểm tra trên các tệp không quan trọng trước, và giữ bản sao lưu trước khi chạy.** Claude có thể viết script có hành động không mong muốn, như xóa hoặc sửa nhầm tệp. Không nên chạy ngay, không nên cho rằng script từ Claude luôn an toàn, và Claude không thể bảo đảm an toàn.
+### Vì sao các lựa chọn khác sai
+- **Chạy ngay vì Claude đã viết:** script từ mô hình vẫn có thể lỗi hoặc nguy hiểm; cần kiểm tra trước.
+- **Giả định script từ Claude luôn an toàn:** không có cơ chế đảm bảo này.
+- **Yêu cầu Claude bảo đảm script an toàn:** mô hình không thể bảo đảm; người dùng vẫn chịu trách nhiệm khi chạy.
+
+> Mẹo thực tế: trước khi chạy script chỉnh sửa tệp, hãy sao lưu dữ liệu và thử trên bản sao không quan trọng.`,
+},
+{
+  id: 'qz-ccao-192',
+  topic: 'claude',
+  q: "[Output Evaluation] A Claude translation uses a different term for the same concept in two documents for the same client. What should the evaluation focus on?",
+  options: [
+    "Terminology consistency with the client's preferred glossary",
+    "Which document is longer",
+    "Whether the translator sounds fluent",
+    "The number of words in each document"
+  ],
+  answer: 0,
+  explain: `**Đúng: tập trung vào tính nhất quán thuật ngữ với bảng thuật ngữ ưu tiên của khách hàng.** Cùng một khái niệm nên được dịch bằng một từ xuyên suốt các tài liệu cho cùng một khách hàng. Độ dài tài liệu, sự trôi chải và số lượng từ không phải là vấn đề cốt lõi ở đây.
+### Vì sao các lựa chọn khác sai
+- **Tài liệu nào dài hơn:** độ dài không liên quan đến tính nhất quán thuật ngữ.
+- **Người dịch có nghe trôi chải không:** sự trôi chải không giải quyết việc dùng từ khác nhau cho cùng một khái niệm.
+- **Số lượng từ trong mỗi tài liệu:** số từ không phải thước đo đánh giá bản dịch trong trường hợp này.
+
+> Mẹo thực tế: hãy dùng bảng thuật ngữ của khách hàng và yêu cầu Claude dịch các thuật ngữ chủ lực theo bảng đó.`,
+},
+{
+  id: 'qz-ccao-193',
+  topic: 'claude',
+  multi: true,
+  q: "[Output Evaluation] Claude produces a chart and an accompanying summary. The summary states a percentage that does not match the chart. Which two steps are most appropriate? (Choose 2)",
+  options: [
+    "Treat the summary as correct because it was written after the chart",
+    "Check the underlying data to find which figure is right",
+    "Fix the summary or chart so both agree, and note the source",
+    "Assume both are correct because they come from Claude"
+  ],
+  answer: [1, 2],
+  explain: `**Đúng: kiểm tra dữ liệu gốc để tìm con số nào đúng, sau đó sửa bản tóm tắt hoặc biểu đồ cho hai bên khớp nhau và ghi rõ nguồn.** Bản tóm tắt viết sau không tự động đúng hơn; khi hai bên xung đột, ít nhất một bên là sai. Không nên coi cả hai đều đúng vì chúng từ Claude.
+### Vì sao các lựa chọn khác sai
+- **Xem bản tóm tắt là đúng vì nó được viết sau biểu đồ:** thứ tự viết không quyết định độ chính xác.
+- **Giả định cả hai đều đúng vì chúng từ Claude:** hai con số khác nhau cho cùng một chỉ số không thể cùng đúng.
+
+> Mẹo thực tế: khi số liệu trong bản tóm tắt và biểu đồ không khớp, hãy quay về dữ liệu gốc chứ không phải chọn cái nào trông hay hơn.`,
+},
+{
+  id: 'qz-ccao-194',
+  topic: 'claude',
+  q: "[Output Evaluation] Claude's output is mostly correct but has two small errors. The user needs to send it to a client. What is the best approach?",
+  options: [
+    "Send it as is because it is mostly correct",
+    "Fix the two errors before sending, or ask Claude to fix them",
+    "Assume the client will not notice small errors",
+    "Rewrite the whole thing by hand"
+  ],
+  answer: 1,
+  explain: `**Đúng: sửa hai sai lầm trước khi gửi, hoặc yêu Claude sửa lại.** Output phần lớn đúng nhưng vẫn có lỗi không nên gửi cho khách; sai lầm nhỏ cũng có thể gây hiểu lầm hoặc ảnh hưởng đến quyết định. Không cần viết lại toàn bộ từ đầu; chỉ cần sửa phần sai.
+### Vì sao các lựa chọn khác sai
+- **Gửi nguyên trạng vì phần lớn đúng:** lỗi nhỏ vẫn có thể gây hậu quả với khách.
+- **Giả định khách sẽ không chú ý đến sai lầm nhỏ:** không thể biết khách sẽ chú ý gì; không nên bets vào điều đó.
+- **Viết lại toàn bộ từ tay:** tốn công và bỏ phần nội dung đã đúng.
+
+> Mẹo thực tế: trước khi gửi cho khách, hãy dành vài phút để sửa lại sai lầm rõ rệt thay vì hy vọng khách sẽ không để ý.`,
+},
+{
+  id: 'qz-ccao-195',
+  topic: 'claude',
+  q: "[Output Evaluation] Claude answers a question by referring to 'the document you uploaded,' but the user uploaded no document. What is the best evaluation?",
+  options: [
+    "Accept the answer because Claude probably knows the document",
+    "Treat the answer as unreliable; Claude may be inventing a source",
+    "Ask Claude to describe the document in more detail",
+    "Assume there is a hidden document the user forgot about"
+  ],
+  answer: 1,
+  explain: `**Đúng: coi câu trả lời là không đáng tin cậy; Claude có thể đang bịa ra một nguồn.** Claude không biết về tài liệu mà người dùng chưa tải lên; khi nó nhắc đến 'tài liệu bạn đã tải lên' trong khi không có tài liệu nào, đó là dấu hiệu của thông tin bịa. Không nên chấp nhận, cũng không nên giả định có tài liệu ẩn nào.
+### Vì sao các lựa chọn khác sai
+- **Chấp nhận câu trả lời vì Claude có thể biết tài liệu:** Claude không có quyền truy cập vào tài liệu không được tải lên.
+- **Yêu cầu Claude mô tả tài liệu chi tiết hơn:** nếu không có tài liệu, Claude chỉ có thể tiếp tục bịa ra mô tả.
+- **Giả định có tài liệu ẩn nào đó người dùng quên:** không có căn cứ; trước tiên hãy xác nhận người dùng đã tải lên gì.
+
+> Mẹo thực tế: khi Claude nhắc đến một tài liệu không tồn tại, hãy coi phần liên quan đến tài liệu đó là không đáng tin cậy.`,
+},
+{
+  id: 'qz-ccao-196',
+  topic: 'claude',
+  q: "[Output Evaluation] Two Claude answers to the same question conflict on an important fact. What should the evaluator do?",
+  options: [
+    "Pick the answer that sounds more confident",
+    "Check an independent source to determine the correct fact",
+    "Average the two answers",
+    "Ask Claude to choose between its own answers"
+  ],
+  answer: 1,
+  explain: `**Đúng: kiểm tra một nguồn độc lập để xác định sự thật đúng.** Khi hai câu trả lời mâu thuẫn về một sự thật quan trọng, ít nhất một câu là sai; cần nguồn bên ngoài để giải quyết. Không nên chọn cái nghe tự tin hơn, lấy trung bình, hoặc nhờ Claude tự chọn giữa các câu trả lời của nó.
+### Vì sao các lựa chọn khác sai
+- **Chọn câu trả lời nghe tự tin hơn:** giọng tự tin không cho biết đâu là đúng.
+- **Lấy trung bình hai câu trả lời:** đối với sự thật, trung bình hai con số khác nhau thường là sai cả hai.
+- **Nhờ Claude chọn giữa các câu trả lời của nó:** Claude không biết đâu là đúng hơn; nó chỉ có thể đoán lại.
+
+> Mẹo thực tế: mâu thuẫn giữa các câu trả lời là tín hiệu cần dừng lại và kiểm chứng bằng nguồn độc lập.`,
+},
+{
+  id: 'qz-ccao-197',
+  topic: 'claude',
+  q: "[Output Evaluation] Claude writes a report that includes a section clearly copied from a website without saying where it came from. What is the best evaluation?",
+  options: [
+    "It is fine because it is accurate",
+    "Treat it as an unverified source; find the original and cite it, or remove the passage",
+    "Assume Claude has permission to copy it",
+    "Copy it again into the client report"
+  ],
+  answer: 1,
+  explain: `**Đúng: coi đó là nguồn chưa được xác minh; hãy tìm bản gốc và trích dẫn nguồn, hoặc loại bỏ đoạn đó.** Nội dung sao chép từ trang web không ghi nguồn là rủi ro bản quyền và uy tín; sự chính xác không làm mất đi yêu cầu ghi nguồn. Claude không có quyền sao chép, và không nên sao chép lại vào báo cáo gửi khách.
+### Vì sao các lựa chọn khác sai
+- **Được vì nó chính xác:** chính xác không đồng nghĩa với được phép sao chép hay không cần ghi nguồn.
+- **Giả định Claude có quyền sao chép:** Claude không có quyền bản quyền đối với nội dung web.
+- **Sao chép lại vào báo cáo gửi khách:** làm lan rộng rủi ro bản quyền và thiếu minh bạch.
+
+> Mẹo thực tế: mọi đoạn nội dung được sao chép từ web đều cần được xác minh nguồn và trích dẫn rõ trước khi dùng cho khách hàng.`,
+},
+{
+  id: 'qz-ccao-198',
+  topic: 'claude',
+  q: "[Output Evaluation] Claude's answer is correct but hard to read because it is one long paragraph. The audience needs to scan it quickly. What is the best evaluation?",
+  options: [
+    "Correctness is the only thing that matters, so keep it",
+    "Break it into short paragraphs or bullets for readability; correctness and readability both matter",
+    "Assume the audience will read slowly and carefully",
+    "Make it longer so it looks more thorough"
+  ],
+  answer: 1,
+  explain: `**Đúng: chia thành các đoạn ngắn hoặc gạch đầu dòng để dễ đọc; độ chính xác và khả năng đọc đều quan trọng.** Đối tượng cần quét nhanh thì một đoạn văn dài làm giảm giá trị của câu trả lời ngay cả khi chính xác. Không nên giữ nguyên vì đúng duy nhất, cũng không nên giả định người đọc sẽ đọc chậm, và làm dài hơn không giúp ích.
+### Vì sao các lựa chọn khác sai
+- **Độ chính xác là thứ duy nhất quan trọng, nên giữ nguyên:** correct nhưng khó đọc thì người đọc có thể bỏ lỡ thông tin quan trọng.
+- **Giả định người đọc sẽ đọc chậm và cẩn thận:** không thể đảm bảo; đối tượng cần quét nhanh thì cấu trúc rõ ràng là quan trọng.
+- **Làm dài hơn để trông chi tiết hơn:** dài hơn không giúp đọc nhanh và có thể làm giảm tính hữu dụng.
+
+> Mẹo thực tế: nếu người đọc cần quét nhanh, hãy dùng các đoạn ngắn, gạch đầu dòng và đưa ý chính ra đầu mỗi đoạn.`,
+},
 );
