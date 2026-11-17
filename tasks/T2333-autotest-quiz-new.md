@@ -15,3 +15,4 @@ AGENTS.md (đọc mục liên quan). Chỉ THÊM trước dòng `);` cuối file
 
 ## Notes
 Đã thêm 20 câu trắc nghiệm kiểm thử tự động (qz-autotest-031 đến qz-autotest-050). Tất cả validation OK.
+Reviewed-by: kilo (T2333R)
