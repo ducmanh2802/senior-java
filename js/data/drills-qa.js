@@ -1243,6 +1243,126 @@
   "q": "How would you handle a teammate who wants to use AI everywhere, including in sensitive code paths?",
   "sample": "I would not start with a ban. I would ask what problem they are trying to solve and which code paths are sensitive. Then I would propose a written guideline that allows AI for boilerplate and tests, but requires human authorship and extra review for security, payment, and data access code. I would also suggest a short experiment, measuring defect rate and review time with and without AI in one area, so the decision is based on data. If the disagreement stays, I would escalate to the tech lead with the options and the trade-offs rather than arguing in Slack. The key point is to treat it as a risk management question, not a culture war, and to keep the conversation specific and respectful.",
   "phrases": ["I would not start with a ban", "written guideline", "human authorship and extra review", "measuring defect rate", "treat it as a risk management question"]
+},
+{
+  "id": "drill-qa-182", "kind": "qa", "theme": "behavioral", "level": "senior", "seconds": 120,
+  "q": "Tell me about a serious disagreement with a teammate that was not about code. How did you handle it?",
+  "sample": "A teammate and I disagreed about who should own a shared reporting module. He felt it was his because he built the first version, while I had been maintaining it for a year. Instead of escalating, I asked him for a short call. I listened first and learned he was worried about being sidelined. I proposed that he lead the design of the new version while I handled the migration and on-call. We wrote that split into a short document and shared it with the lead. The result was that the module shipped two weeks later with both of us comfortable. I learned that most conflicts are about recognition or fear, not about the technical point on the surface.",
+  "phrases": ["a serious disagreement with a teammate", "I asked him for a short call", "I listened first", "the technical point on the surface"]
+},
+{
+  "id": "drill-qa-183", "kind": "qa", "theme": "behavioral", "level": "senior", "seconds": 120,
+  "q": "Walk me through a production incident you handled outside of working hours.",
+  "sample": "I was on call when the payment success rate dropped at two in the morning. My task was to restore service and find the cause. I first checked the dashboard and saw that a downstream bank was returning timeouts. I confirmed it was not our change by comparing the last deployment time. I switched the traffic to the backup provider using a flag, and success recovered within ten minutes. Then I wrote a short incident note and told the support lead what to tell customers. The next day I added an alert on provider latency and a runbook for switching providers. The result was a fifteen minute outage instead of hours. I learned to keep a tested switch for every critical dependency.",
+  "phrases": ["I was on call when", "My task was to restore service", "switching the traffic to the backup provider", "a tested switch for every critical dependency"]
+},
+{
+  "id": "drill-qa-184", "kind": "qa", "theme": "behavioral", "level": "mid", "seconds": 120,
+  "q": "You have a hard deadline and someone asks for one more feature. What do you do?",
+  "sample": "It happened last sprint. We had a fixed release date for a reporting page, and a manager asked to add CSV export the day before. I did not just say yes or no. I checked how long it would take and found it touched the query layer and the tests. I explained that adding it would put the release at risk, and I offered two options: ship on time without export, or delay two days with export. He chose to ship on time and add export next week. I wrote the decision down so nobody was surprised. I learned to give options with honest estimates instead of a flat refusal.",
+  "phrases": ["a fixed release date", "I did not just say yes or no", "put the release at risk", "give options with honest estimates", "a flat refusal"]
+},
+{
+  "id": "drill-qa-185", "kind": "qa", "theme": "behavioral", "level": "lead", "seconds": 120,
+  "q": "Tell me about a junior developer who was struggling and how you helped them.",
+  "sample": "A junior on my team was missing deadlines and his code needed many review rounds. Rather than complain, I set up a weekly one-on-one. I asked what was hard and learned he was afraid to ask questions, so he spent days stuck alone. I told him to block thirty minutes a day for questions and to pair with me twice a week. I also broke his tasks into smaller pieces with clear done criteria. Over two months his rework dropped by half and he started asking for help earlier. The result was a more confident teammate and fewer surprises. I learned that struggling is often about fear and unclear expectations, not about skill.",
+  "phrases": ["a junior on my team was missing deadlines", "set up a weekly one-on-one", "he was afraid to ask questions", "broke his tasks into smaller pieces", "not about skill"]
+},
+{
+  "id": "drill-qa-186", "kind": "qa", "theme": "negotiation", "level": "senior", "seconds": 120,
+  "q": "A client asks you to add a large extra scope for free, saying it is small. How do you respond?",
+  "sample": "I stayed calm and treated it as a normal scope conversation. I thanked them and said I want to help, but I need to understand the request before I can agree. I asked what problem the extra work solves and wrote down the details. Then I estimated it honestly and found it was about three extra days, not one hour. I explained that the original agreement covered a specific scope, and this new piece is separate work. I offered to add it as a small next phase with its own cost and timeline. The client accepted, because I was clear and not defensive. I learned to protect the agreement while staying helpful, and to put new work in writing.",
+  "phrases": ["treated it as a normal scope conversation", "I need to understand the request", "estimated it honestly", "a specific scope", "put new work in writing"]
+},
+{
+  "id": "drill-qa-187", "kind": "qa", "theme": "negotiation", "level": "lead", "seconds": 120,
+  "q": "The role is hybrid, but you prefer fully remote. How would you negotiate that?",
+  "sample": "I would first show that I can do the job well remotely, with a track record. I would say I have worked distributed for years, with clear written updates and reliable delivery. Then I would explain the practical benefit for both sides: I save commuting time and can focus in a quiet space, while the company keeps a productive engineer. I would ask whether a fully remote arrangement is possible for the first few months, with a review after that. If the answer is no, I would ask for a flexible hybrid, such as two days in the office instead of five. I would put the agreement in writing so expectations are clear. The key is to negotiate on outcomes and trust, not on demands.",
+  "phrases": ["a track record", "I have worked distributed for years", "the practical benefit for both sides", "a flexible hybrid", "negotiate on outcomes and trust"]
+},
+{
+  "id": "drill-qa-188", "kind": "qa", "theme": "negotiation", "level": "mid", "seconds": 120,
+  "q": "There is a gap of eight months in your resume. Can you explain it?",
+  "sample": "Yes, I can explain it honestly. I left my previous job to take a planned break for family reasons, and I used part of that time to improve my skills. During the gap I finished two online courses on system design and built a small project to practice what I learned. I also did some freelance work to keep my skills current. I am not hiding anything, and I can share the details if it helps. I am now fully available and looking for a long term role. I think the gap made me more focused, because I used the time deliberately instead of just waiting. I would rather be open about it than have you wonder.",
+  "phrases": ["I can explain it honestly", "a planned break for family reasons", "I used part of that time to improve my skills", "I am not hiding anything", "more focused"]
+},
+{
+  "id": "drill-qa-189", "kind": "qa", "theme": "negotiation", "level": "senior", "seconds": 120,
+  "q": "Why do you want to leave your current company after only a year?",
+  "sample": "I joined because the role promised system design work, but after a year most of my time went to maintenance and small bug fixes. The team is good, and I learned a lot about production support, so I have no complaints about the people. The reason I am leaving is the work itself, not the culture. I want to design new services and solve harder problems, and there is little of that here right now. I raised this with my manager, and he understood, but the roadmap does not change soon. I would rather move to a role that matches my growth than stay and become frustrated. I am leaving on good terms and will hand over properly. I am not running away, I am moving toward the right work.",
+  "phrases": ["most of my time went to maintenance", "the work itself, not the culture", "I want to design new services", "leaving on good terms", "moving toward the right work"]
+},
+{
+  "id": "drill-qa-190", "kind": "qa", "theme": "project", "level": "senior", "seconds": 120,
+  "q": "Tell me about a project where you had to make a hard technical trade-off.",
+  "sample": "We had to choose between a message queue and a simple database table for a notification feature. The queue was more scalable, but our team had no experience operating it. I estimated that running Kafka would add real operational cost, like monitoring and on-call, for a feature that handled only twenty messages per minute. I chose a database table with a worker that polled it, which was simpler and easy to reason about. The trade-off was that we could not scale to millions of messages later without a rewrite. I wrote that limit down and set a threshold to revisit if volume grew. It stayed fast for two years. I learned to match complexity to real load, not to imagined future scale.",
+  "phrases": ["a hard technical trade-off", "add real operational cost", "I chose a database table with a worker", "set a threshold to revisit", "match complexity to real load"]
+},
+{
+  "id": "drill-qa-191", "kind": "qa", "theme": "project", "level": "lead", "seconds": 120,
+  "q": "Describe a risky migration or cutover you led. How did you keep it safe?",
+  "sample": "I led a cutover from an old billing database to a new one for about fifty thousand accounts. The risk was that a mistake could charge customers wrong. I planned it in stages. First, I ran the new system in shadow mode, writing to both and comparing results daily for two weeks. Then I moved a small group of accounts, watched the numbers, and expanded gradually. I prepared a rollback plan and tested it before the real cutover. We did the final switch on a quiet weekend with the team online. The result was zero billing errors and no customer complaints. I learned that a safe cutover is mostly preparation and boring verification, not a dramatic moment.",
+  "phrases": ["a cutover from an old billing database", "ran the new system in shadow mode", "moved a small group of accounts", "a rollback plan", "boring verification"]
+},
+{
+  "id": "drill-qa-192", "kind": "qa", "theme": "behavioral", "level": "senior", "seconds": 120,
+  "q": "Tell me about a time you disagreed with someone more senior than you.",
+  "sample": "A senior architect wanted to add a new caching layer to solve a latency problem. I was not convinced the data was the bottleneck. Instead of arguing in a meeting, I asked for one day to measure. I added timing around the slow endpoint and found most of the time was spent in an external call, not in the database. I showed the numbers and proposed adding a timeout and a circuit breaker first. The architect agreed to try that before adding the cache. It fixed the issue and saved us the cost of a new system. I learned to bring evidence and a small experiment, and to disagree without making it personal. Being junior does not mean being wrong.",
+  "phrases": ["disagreed with someone more senior", "asked for one day to measure", "most of the time was spent in an external call", "disagree without making it personal", "being junior does not mean being wrong"]
+},
+{
+  "id": "drill-qa-193", "kind": "qa", "theme": "behavioral", "level": "mid", "seconds": 120,
+  "q": "A bug went to production on your watch, but the root cause was someone else's change. What do you do?",
+  "sample": "It happened once. A deploy failed, and at first the team assumed it was my recent change. I did not get defensive. I said I would investigate and shared what I found in the logs: the failure came from a configuration change made by another service. I explained it calmly with evidence, without blaming anyone by name. Then I focused on the fix and on preventing it. We added a check that validates config before deploy. The lead thanked me for staying factual. I learned that when you are blamed, the best response is to be calm, show the evidence, and move to the fix. Getting angry only makes it worse.",
+  "phrases": ["the team assumed it was my recent change", "I did not get defensive", "without blaming anyone by name", "focus on the fix", "stay factual"]
+},
+{
+  "id": "drill-qa-194", "kind": "qa", "theme": "project", "level": "senior", "seconds": 120,
+  "q": "Tell me about improving a legacy system without a big rewrite.",
+  "sample": "We had a legacy order service with slow queries and no tests. A rewrite would take months and block features. I chose an incremental approach. First, I added logging and timing to find the slowest paths. Then I fixed the worst query with an index and measured the gain. Next, I wrote tests around the parts I touched, so I could change them safely. I repeated this in small steps every sprint, each with a measurable result. Over six months the p95 latency dropped by about forty percent and incidents fell. The system still looked old, but it was stable and cheaper to change. I learned that gradual improvement beats a risky rewrite when the business needs features now.",
+  "phrases": ["a legacy order service", "a rewrite would take months", "an incremental approach", "each with a measurable result", "gradual improvement beats a risky rewrite"]
+},
+{
+  "id": "drill-qa-195", "kind": "qa", "theme": "negotiation", "level": "senior", "seconds": 120,
+  "q": "You believe you deserve a promotion but the company has not offered it. How do you raise it?",
+  "sample": "I would prepare evidence before the conversation. I would list what I delivered, how I operated beyond my level, and specific examples of mentoring or design work. Then I would ask for a meeting with my manager and state clearly that I want to grow into the next level. I would ask what is missing and agree on concrete goals with a timeline. I would not threaten to leave. I would say I am committed and want a fair path. If the company cannot promote now, I would ask for a written plan and a date to review. The key is to be direct, evidence based, and patient, not emotional. That conversation keeps trust even if the answer is not yet yes.",
+  "phrases": ["prepare evidence before the conversation", "how I operated beyond my level", "agree on concrete goals with a timeline", "I would not threaten to leave", "evidence based, and patient"]
+},
+{
+  "id": "drill-qa-196", "kind": "qa", "theme": "behavioral", "level": "lead", "seconds": 120,
+  "q": "How have you handled a team member whose work was not meeting expectations?",
+  "sample": "A team member was delivering late and with many bugs. I did not ignore it or complain behind his back. I talked to him privately and asked open questions. It turned out he was overloaded and unclear about priorities. I helped him cut his task list to the top three and agreed on a definition of done for each. I also paired with him on the first task to reset the quality bar. Over a month his delivery improved and the bugs dropped. I documented the plan so it was fair and clear. I learned that underperformance is often a clarity or workload problem, not a will problem. You address it early, privately, and with support.",
+  "phrases": ["delivering late and with many bugs", "asked open questions", "unclear about priorities", "a definition of done", "a clarity or workload problem"]
+},
+{
+  "id": "drill-qa-197", "kind": "qa", "theme": "project", "level": "mid", "seconds": 120,
+  "q": "Tell me about a time you delivered a project with limited time or resources.",
+  "sample": "Our team was down two engineers during a critical release, and the deadline did not move. I was asked to help deliver the payment part. First, I cut the scope to the must have flow and moved nice to have items to the next release. I asked the product owner to confirm the cut in writing. Then I focused on the core path, wrote tests for it, and left clear notes for the rest. I worked with one other engineer and we split the tasks by module to avoid blocking each other. We shipped on time with the core working and no critical bugs. I learned to protect quality by reducing scope, not by skipping tests or documentation.",
+  "phrases": ["down two engineers", "cut the scope to the must have flow", "confirm the cut in writing", "reduce scope, not by skipping tests", "no critical bugs"]
+},
+{
+  "id": "drill-qa-198", "kind": "qa", "theme": "negotiation", "level": "mid", "seconds": 120,
+  "q": "How would you ask your manager for a raise?",
+  "sample": "I would prepare first. I would collect my results, like the features I shipped, the incidents I reduced, and any work beyond my role. Then I would book a dedicated meeting, not a quick chat. In the meeting I would say I enjoy the work and want to grow here, and I would present my impact with numbers. I would ask what the salary band is for my level and where I stand in it. I would not compare with colleagues or threaten to leave. If the answer is not now, I would ask for clear goals and a date to revisit. The key is to make it about value and evidence, not emotion, and to stay professional either way.",
+  "phrases": ["collect my results", "a dedicated meeting, not a quick chat", "present my impact with numbers", "the salary band for my level", "about value and evidence, not emotion"]
+},
+{
+  "id": "drill-qa-199", "kind": "qa", "theme": "behavioral", "level": "senior", "seconds": 120,
+  "q": "Describe a time requirements were vague. How did you get clarity?",
+  "sample": "I once got a ticket that said improve the search experience, with no details. Instead of guessing, I scheduled a short call with the product owner and a support agent. I asked who uses the feature, what they complain about, and what success looks like. We found the real problem was slow results on mobile, not missing features. I wrote a one page summary with the goal, the users, and two options, and got sign off. Then I built the smallest version and shared a demo early. The result was that we solved the actual pain in one sprint instead of building the wrong thing. I learned that clarity is cheaper than rework, and that a few good questions save weeks.",
+  "phrases": ["a ticket that said improve the search experience", "instead of guessing", "who uses the feature, what they complain about", "a one page summary", "clarity is cheaper than rework"]
+},
+{
+  "id": "drill-qa-200", "kind": "qa", "theme": "project", "level": "lead", "seconds": 120,
+  "q": "Tell me about a project that depended on another team. How did you coordinate?",
+  "sample": "Our checkout feature depended on an API from the inventory team that was two weeks late. I could not just wait. I set up a weekly sync with their lead and agreed on a contract first, so both sides knew the request and response shape. While they built the API, I developed against a mock server that followed the contract. I also wrote integration tests that we would run once their service was ready. When the API arrived, we found one mismatch early and fixed it in a day. We launched on time. I learned that a clear contract and a mock let teams work in parallel, and that a dependency is a communication problem, not just a technical one.",
+  "phrases": ["a contract first", "developed against a mock server", "integration tests", "found one mismatch early", "a communication problem, not just a technical one"]
+},
+{
+  "id": "drill-qa-201", "kind": "qa", "theme": "behavioral", "level": "senior", "seconds": 120,
+  "q": "Tell me about a failure that was your responsibility and how you led the recovery.",
+  "sample": "I once approved a release without waiting for the full test suite because we were in a hurry. A bug slipped through and about five percent of users could not log in for an hour. As the senior on call, I took responsibility in the postmortem instead of blaming the pressure. My first action was to roll back and confirm login recovered. Then I wrote a blameless postmortem, explained what happened, and proposed a rule that no release ships without the full suite, even under pressure. I also added a smoke test for login. The result was that the team trusted me more, because I owned the mistake and fixed the system. I learned that accountability builds credibility, not the other way round.",
+  "phrases": ["approved a release without waiting for the full test suite", "took responsibility in the postmortem", "roll back and confirm login recovered", "a blameless postmortem", "accountability builds credibility"]
 }
 
 );
