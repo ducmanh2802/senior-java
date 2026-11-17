@@ -761,5 +761,532 @@ Chọn một thư mục riêng cho output; bật lịch sử phiên bản; quy �
 - **Chia sẻ toàn bộ hồ sơ khách hàng:** vi phạm tối thiểu hoá dữ liệu.
 - **Công khai chat:** lộ dữ liệu cá nhân.
 - **Cho mọi nhân viên paste dữ liệu tuỳ ý:** không kiểm soát nguồn và phạm vi.`
+},
+{
+  id: 'qz-ccao-139',
+  topic: 'claude',
+  q: '[Product Selection] A content team needs to create long-form blog posts with consistent brand voice and wants to reuse research documents across multiple writing sessions. Which Claude interface is the best fit?',
+  options: [
+    'Claude.ai free chat for each post',
+    'Claude Code in the terminal',
+    'Projects with shared knowledge base and custom instructions',
+    'API with a custom-built writing application'
+  ],
+  answer: 2,
+  explain: `**Đúng: Projects cung cấp knowledge base dùng chung và custom instructions để giữ giọng văn nhất quán.** Projects cho phép tải tài liệu tham chiếu một lần, đặt hướng dẫn cấp project (custom instructions) áp dụng cho mọi cuộc trò chuyện trong project, và chia sẻ với cả nhóm. Đây chính là tính năng thiết kế cho việc lặp lại có ngữ cảnh chung.
+### Vì sao các lựa chọn khác sai
+- **Claude.ai free chat:** mỗi phiên độc lập, không lưu tài liệu hay hướng dẫn giữa các phiên, phải tải lại và nhắc lại yêu cầu mỗi lần.
+- **Claude Code:** dành cho lập trình viên làm việc với code repository, không phù hợp cho content writing.
+- **API + custom app:** tốn công xây dựng và vận hành trong khi Projects đã có sẵn chức năng cần thiết.`
+},
+{
+  id: 'qz-ccao-140',
+  topic: 'claude',
+  q: '[Product Selection] A software engineer wants to refactor a large TypeScript codebase, run tests after each change, and iterate based on test failures. Which product should they use?',
+  options: [
+    'Claude.ai web chat',
+    'Claude Code (CLI agent)',
+    'Projects with uploaded source files',
+    'Claude for Slack integration'
+  ],
+  answer: 1,
+  explain: `**Đúng: Claude Code là agent CLI chạy trong terminal, có quyền đọc/ghi file, chạy lệnh, và lặp lại cho đến khi test pass.** Claude Code thiết kế cho agentic coding workflow: nó thao tác trực tiếp trên codebase, chạy test suite, đọc lỗi, sửa lại, và lặp lại — tất cả trong môi trường phát triển cục bộ của engineer.
+### Vì sao các lựa chọn khác sai
+- **Claude.ai web chat:** không truy cập được file hệ thống, không chạy lệnh, không lặp tự động.
+- **Projects:** chỉ cung cấp ngữ cảnh đọc, không có quyền thực thi code hay chạy test.
+- **Claude for Slack:** kênh giao tiếp, không phải môi trường phát triển.`
+},
+{
+  id: 'qz-ccao-141',
+  topic: 'claude',
+  q: '[Product Selection] A small business owner with no coding skills wants to ask questions about their uploaded PDF catalogs and get answers with citations. Which product requires the least setup?',
+  options: [
+    'Build a RAG pipeline with the API',
+    'Use Projects on Claude.ai and upload the PDFs',
+    'Deploy a custom vector database and connect via MCP',
+    'Write a Python script to chunk PDFs and call the API'
+  ],
+  answer: 1,
+  explain: `**Đúng: Projects trên Claude.ai cho phép tải PDF lên và hỏi ngay, không cần code hay hạ tầng.** Projects xử lý tự động việc trích xuất văn bản từ PDF, lập chỉ mục, và trích dẫn nguồn trong câu trả lời. Đây là cách nhanh nhất cho người không kỹ thuật.
+### Vì sao các lựa chọn khác sai
+- **RAG pipeline với API:** cần kiến thức lập trình, vector DB, embedding model, và việc vận hành.
+- **Vector DB + MCP:** phức tạp tương tự, dành cho nhà phát triển.
+- **Python script:** yêu cầu code, xử lý chunking, embedding, và gọi API thủ công.`
+},
+{
+  id: 'qz-ccao-142',
+  topic: 'claude',
+  multi: true,
+  q: '[Product Selection] A team needs to analyze customer feedback spread across 200 support tickets. They want to upload all tickets once, then run multiple analyses (sentiment, common issues, feature requests) over several days. Which TWO products support this workflow? (Choose 2)',
+  options: [
+    'Projects on Claude.ai with all tickets uploaded',
+    'Claude.ai free chat, pasting 20 tickets per session',
+    'Claude Code with tickets checked into the repository',
+    'API with a persistent vector store and session management',
+    'Claude for Slack, forwarding each ticket individually'
+  ],
+  answer: [0, 3],
+  explain: `**Đúng: Projects (lưu knowledge base dùng lại nhiều phiên) và API với vector store bền vững (custom workflow).** Cả hai đều cho phép nạp dữ liệu một lần và truy vấn lặp lại. Projects phù hợp cho team dùng giao diện web; API phù hợp khi cần tích hợp vào quy trình tự động hoặc ứng dụng riêng.
+### Vì sao các lựa chọn khác sai
+- **Free chat dán 20 vé mỗi lần:** ngữ cảnh không liên tục, phải tải lại, giới hạn độ dài context.
+- **Claude Code với ticket trong repo:** Claude Code làm việc với code, không phải dữ liệu ticket thô; cách này cồng kềnh.
+- **Slack chuyển từng vé:** không tập trung được dữ liệu, mất ngữ cảnh phân tích tổng thể.`
+},
+{
+  id: 'qz-ccao-143',
+  topic: 'claude',
+  q: '[Product Selection] A data analyst wants to use Claude to write SQL queries against their company database. They need to run the queries and see results immediately. Which product is appropriate?',
+  options: [
+    'Claude.ai chat with database schema pasted in',
+    'Claude Code with MCP server connected to the database',
+    'Projects with database credentials uploaded as a file',
+    'API with database connection string in the prompt'
+  ],
+  answer: 1,
+  explain: `**Đúng: Claude Code kết nối MCP (Model Context Protocol) server cho database cho phép truy vấn thực tế.** MCP server là cầu nối chuẩn hóa: Claude Code gọi tool qua MCP để chạy SQL thật trên database, lấy kết quả, và lặp lại. Đây là cách an toàn và có kiểm soát để AI tương tác với dữ liệu thật.
+### Vì sao các lựa chọn khác sai
+- **Chat với schema dán vào:** chỉ sinh SQL lý thuyết, không chạy được, không thấy kết quả thực.
+- **Projects với credentials file:** Projects không thực thi code hay kết nối database; upload credentials còn vi phạm bảo mật.
+- **API với connection string trong prompt:** lộ credentials, không có khả năng chạy query, và prompt không phải nơi đặt secret.`
+},
+{
+  id: 'qz-ccao-144',
+  topic: 'claude',
+  q: '[Product Selection] A marketing team of five people wants to collaboratively refine prompts for ad copy, share successful prompts, and maintain a library of approved prompts. Which product feature best supports this?',
+  options: [
+    'Individual Claude.ai chats with personal prompt notes',
+    'Projects with shared custom instructions and team access',
+    'Claude Code with prompt files in git',
+    'API with a prompt management database'
+  ],
+  answer: 1,
+  explain: `**Đúng: Projects hỗ trợ chia sẻ cấp team, custom instructions dùng chung, và knowledge base tập trung.** Các thành viên trong project cùng thấy và dùng các hướng dẫn, tài liệu, và prompt mẫu đã duyệt. Thay đổi một lần áp dụng cho cả nhóm.
+### Vì sao các lựa chọn khác sai
+- **Chat cá nhân với ghi chú:** không chia sẻ được, mỗi người một phiên bản, khó đồng bộ.
+- **Claude Code + git:** quá kỹ thuật cho marketing team; git không thay thế được giao diện cộng tác.
+- **API + database:** phải tự xây dựng toàn bộ giao diện quản lý prompt và phân quyền.`
+},
+{
+  id: 'qz-ccao-145',
+  topic: 'claude',
+  q: '[Product Selection] A customer support lead wants to deploy an AI assistant that reads the internal knowledge base and answers agent questions in real time during live chats. The assistant must not store conversation data. Which deployment approach is most suitable?',
+  options: [
+    'Projects on Claude.ai with the knowledge base uploaded',
+    'API integration with stateless requests and no logging',
+    'Claude Code running on each agent machine',
+    'Claude for Slack with the knowledge base in a channel'
+  ],
+  answer: 1,
+  explain: `**Đúng: API stateless cho phép kiểm soát vòng đời dữ liệu — không lưu log, không giữ state giữa các request.** Với yêu cầu real-time trong live chat và không lưu dữ liệu hội thoại, API là lựa chọn duy nhất cho phép: (1) gửi ngữ cảnh knowledge base + câu hỏi, (2) nhận câu trả lời, (3) huỷ request/response ngay. Projects và Slack đều lưu lịch sử hội thoại.
+### Vì sao các lựa chọn khác sai
+- **Projects:** lưu toàn bộ lịch sử chat trong project, không tắt được.
+- **Claude Code:** chạy local trên máy agent, không phù hợp cho assistant real-time trong giao diện chat hỗ trợ.
+- **Claude for Slack:** lưu tin nhắn trong Slack, không đáp ứng yêu cầu không lưu dữ liệu.`
+},
+{
+  id: 'qz-ccao-146',
+  topic: 'claude',
+  multi: true,
+  q: '[Product Selection] An enterprise needs to give 200 employees access to Claude for general productivity (writing, summarizing, coding help). They want centralized billing, admin controls, and the ability to enforce data handling policies. Which TWO plans/features should they evaluate? (Choose 2)',
+  options: [
+    'Claude Pro individual subscriptions',
+    'Claude Team plan with admin console',
+    'Claude Enterprise plan with SSO and audit logs',
+    'Free tier with shared login credentials',
+    'API keys distributed to each employee'
+  ],
+  answer: [1, 2],
+  explain: `**Đúng: Team plan (cho nhóm nhỏ đến trung bình) và Enterprise plan (cho tổ chức lớn) cung cấp billing tập trung, admin console, SSO, audit logs.** Đây là hai gói dành cho tổ chức: Team cho phép quản lý thành viên, thanh toán một lần; Enterprise thêm SSO, domain capture, audit logs, và các kiểm soát tuân thủ.
+### Vì sao các lựa chọn khác sai
+- **Pro cá nhân:** không có quản trị tập trung, mỗi người thanh toán riêng, không audit.
+- **Free tier chia sẻ đăng nhập:** vi phạm điều khoản, không bảo mật, không kiểm soát.
+- **API key phân phát cho từng nhân viên:** không phải giao diện người dùng cuối, không có admin console cho việc dùng chat.`
+},
+{
+  id: 'qz-ccao-147',
+  topic: 'claude',
+  q: '[Product Selection] A researcher needs to analyze 50 academic papers (PDFs, 20-40 pages each) and extract methodology, findings, and limitations into a structured table. They will iterate on the extraction criteria over several sessions. Which product is the best fit?',
+  options: [
+    'Claude.ai free chat, uploading 5 papers per session',
+    'Projects with all 50 papers uploaded to the knowledge base',
+    'Claude Code with papers in the working directory',
+    'API with manual PDF text extraction each time'
+  ],
+  answer: 1,
+  explain: `**Đúng: Projects cho phép nạp 50 PDF một lần vào knowledge base, rồi truy vấn lặp lại nhiều phiên với tiêu chí thay đổi.** Knowledge base của Projects xử lý PDF lớn, giữ ngữ cảnh giữa các phiên, và trích dẫn nguồn (trang/đoạn) trong câu trả lời — quan trọng cho nghiên cứu học thuật.
+### Vì sao các lựa chọn khác sai
+- **Free chat 5 paper/lần:** vượt context window, mất ngữ cảnh giữa các phiên, phải tải lại liên tục.
+- **Claude Code:** dành cho code, không tối ưu cho đọc PDF học thuật và trích xuất có trích dẫn.
+- **API + extract thủ công:** phải tự viết code extract PDF, chunking, embedding, và quản lý state giữa các phiên.`
+},
+{
+  id: 'qz-ccao-148',
+  topic: 'claude',
+  q: '[Product Selection] A developer wants to use Claude to generate boilerplate code for a new React component library, then iterate on the designs with visual feedback. They prefer working in their IDE. Which product integrates best?',
+  options: [
+    'Claude.ai web chat, copy-paste code to IDE',
+    'Claude Code running in the terminal within the IDE',
+    'Projects with component specs uploaded',
+    'API called from a custom VS Code extension'
+  ],
+  answer: 1,
+  explain: `**Đúng: Claude Code chạy trong terminal của IDE (VS Code, JetBrains, v.v.), đọc/ghi file trực tiếp, và làm việc cùng codebase.** Developer không cần chuyển ngữ cảnh; Claude Code sinh file, sửa file, chạy dev server, và lặp lại dựa trên feedback — tất cả trong môi trường phát triển quen thuộc.
+### Vì sao các lựa chọn khác sai
+- **Web chat copy-paste:** ngắt luồng làm việc, dễ sót dòng, không thấy kết quả chạy ngay.
+- **Projects:** chỉ cung cấp ngữ cảnh đọc, không ghi file vào project hay chạy lệnh.
+- **API + VS Code extension tự xây:** tốn công phát triển trong khi Claude Code đã có sẵn tích hợp terminal.`
+},
+{
+  id: 'qz-ccao-149',
+  topic: 'claude',
+  q: '[Product Selection] A legal team needs to review contracts for specific clauses (indemnification, termination, liability cap) across 100+ documents. They want to upload once, run multiple reviews, and export findings. Which product supports this best?',
+  options: [
+    'Claude.ai chat, pasting one contract at a time',
+    'Projects with all contracts in the knowledge base',
+    'Claude Code with contracts in a folder',
+    'API with a document processing pipeline'
+  ],
+  answer: 1,
+  explain: `**Đúng: Projects knowledge base chấp nhận upload hàng loạt tài liệu pháp lý, cho phép truy vấn lặp lại ("tìm mọi điều khoản bồi thường"), và trích dẫn chính xác tài liệu + trang.** Đây là workflow review tài liệu lặp lại: nạp một lần, phân tích nhiều góc độ, xuất kết quả.
+### Vì sao các lựa chọn khác sai
+- **Chat dán từng hợp đồng:** giới hạn context, không quy mô được 100+ văn bản, mất ngữ cảnh.
+- **Claude Code:** không thiết kế cho review tài liệu pháp lý hàng loạt; không trích dẫn nguồn dễ dàng.
+- **API + pipeline:** phải tự xây dựng toàn bộ quy trình upload, chunking, query, và export.`
+},
+{
+  id: 'qz-ccao-150',
+  topic: 'claude',
+  multi: true,
+  q: '[Product Selection] A startup is choosing between Projects and API for their internal knowledge assistant. Which TWO factors favor choosing the API? (Choose 2)',
+  options: [
+    'Need to embed the assistant inside their own web application',
+    'Want a ready-to-use web interface for non-technical staff',
+    'Require custom authentication and per-user data isolation',
+    'Prefer no infrastructure management',
+    'Need to share a single knowledge base across the team'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: nhúng vào ứng dụng riêng (embedded) và xác thực/phân quyền dữ liệu tùy biến.** API cho phép: (1) tích hợp vào UI sản phẩm của bạn (chat widget, side panel), (2) kiểm soát hoàn toàn authentication, authorization, và data isolation theo user/tenant. Projects là SaaS có sẵn giao diện, không nhúng được, và quyền quản lý theo project không phải per-user.
+### Vì sao các lựa chọn khác sai
+- **Giao diện web sẵn sàng:** là ưu điểm của Projects, không phải API.
+- **Không quản lý hạ tầng:** Projects lo hết hosting; API cần tự lo server/infra.
+- **Knowledge base chia sẻ team:** Projects làm tốt việc này; API cần tự xây vector store và logic chia sẻ.`
+},
+{
+  id: 'qz-ccao-151',
+  topic: 'claude',
+  q: '[Product Selection] A financial analyst needs to build a monthly reporting workflow: pull data from CSV exports, compute metrics, generate narrative summaries, and output formatted slides. They want to run this end-to-end with minimal manual steps. Which product is the best fit?',
+  options: [
+    'Claude.ai chat with CSV pasted each month',
+    'Projects with CSV uploaded and custom instructions',
+    'Claude Code with a script that reads CSV, calls tools, and writes slides',
+    'API with a scheduled job and custom slide generation code'
+  ],
+  answer: 2,
+  explain: `**Đúng: Claude Code có thể đọc file CSV cục bộ, tính toán (dùng Python/JS tool), sinh nội dung, và ghi file slide (PowerPoint/Markdown) — toàn bộ tự động trong một lệnh.** Analyst chỉ cần chạy {{claude-code "generate monthly report"}}; agent lo phần còn lại: đọc data, compute, viết narrative, xuất file.
+### Vì sao các lựa chọn khác sai
+- **Chat dán CSV:** giới hạn context, không tính toán được, không ghi file slide.
+- **Projects:** không thực thi code, không đọc CSV cục bộ định kỳ, không xuất file.
+- **API + scheduled job:** cần tự viết toàn bộ logic orchestration; Claude Code đã có sẵn agent loop.`
+},
+{
+  id: 'qz-ccao-152',
+  topic: 'claude',
+  q: '[Product Selection] A teacher wants to create a study assistant for students: upload the syllabus and readings, let students ask questions, and see which source each answer comes from. The teacher is not technical. Which product should they use?',
+  options: [
+    'Build a RAG app with the API',
+    'Create a Project, upload materials, and share the project link with students',
+    'Use Claude Code with the syllabus in the repo',
+    'Give students API keys and a Python notebook'
+  ],
+  answer: 1,
+  explain: `**Đúng: Projects thiết kế chính cho use case này — upload tài liệu, chia sẻ project cho nhóm, câu trả lời kèm trích dẫn nguồn.** Teacher chỉ cần tạo project, tải syllabus/readings lên, mời học sinh (via link hoặc email), và học sinh hỏi trực tiếp trên giao diện web. Không cần code, không cần API key.
+### Vì sao các lựa chọn khác sai
+- **RAG app với API:** yêu cầu phát triển phần mềm, hosting, authentication.
+- **Claude Code:** chạy local trên máy teacher, học sinh không truy cập được.
+- **API key + notebook:** học sinh phải biết lập trình, quản lý key, chạy code.`
+},
+{
+  id: 'qz-ccao-153',
+  topic: 'claude',
+  q: '[Product Selection] A security team needs to audit all Claude usage across the organization: who asked what, what data was sent, and what was returned. Which plan provides the necessary audit logs?',
+  options: [
+    'Free tier',
+    'Pro plan',
+    'Team plan',
+    'Enterprise plan'
+  ],
+  answer: 3,
+  explain: `**Đúng: Enterprise plan cung cấp audit logs chi tiết (ai, khi nào, prompt, response, dữ liệu up/download).** Đây là tính năng dành riêng cho tổ chức lớn có yêu cầu tuân thủ (compliance) và bảo mật: log đầy đủ để điều tra sự cố, chứng minh tuân thủ, và phát hiện rò rỉ dữ liệu. Team plan có admin console nhưng không có audit logs mức độ chi tiết như Enterprise.
+### Vì sao các lựa chọn khác sai
+- **Free/Pro:** dùng cá nhân, không có quản trị tổ chức.
+- **Team:** có quản lý thành viên và billing, nhưng thiếu audit logs cấp độ enterprise.`
+},
+{
+  id: 'qz-ccao-154',
+  topic: 'claude',
+  multi: true,
+  q: '[Knowledge Config] A product manager is evaluating whether to use Projects or the API for a new feature that lets users chat with their own uploaded documents. Which TWO statements are true? (Choose 2)',
+  options: [
+    'Projects allows end-users to upload their own documents in a shared project',
+    'API enables per-user document isolation with custom backend logic',
+    'Projects supports custom UI branding and domain',
+    'API requires the vendor to manage document storage and indexing',
+    'Projects charges per API call rather than per seat'
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: (1) API cho phép cách ly tài liệu theo user bằng backend tùy chỉnh; (3) API yêu cầu bạn tự quản lý storage/indexing (vendor không lo phần này).** Với API, bạn xây backend: user upload -> bạn lưu -> bạn index -> bạn gọi API kèm context. Với Projects, tài liệu ở cấp project (chia sẻ nhóm), không cách ly per-user; UI là của Anthropic; billing theo seat.
+### Vì sao các lựa chọn khác sai
+- **Projects cho user tự upload trong project chung:** user không upload được vào project của org; chỉ admin/member thêm tài liệu.
+- **Projects hỗ trợ custom UI/domain:** Projects dùng giao diện Claude.ai chuẩn.
+- **Projects tính tiền theo API call:** Projects billing theo seat/user, không theo token.`
+},
+{
+  id: 'qz-ccao-155',
+  topic: 'claude',
+  q: '[Knowledge Config] A Project knowledge base contains 50 PDFs. A user asks a question that requires synthesizing information from three different documents. How does the knowledge base retrieval work by default?',
+  options: [
+    'It reads all 50 PDFs in full and then answers',
+    'It searches for relevant chunks across all documents and includes top matches in context',
+    'It only searches the most recently uploaded document',
+    'It asks the user to specify which document to search'
+  ],
+  answer: 1,
+  explain: `**Đúng: knowledge base dùng semantic search (tìm kiếm ngữ nghĩa) để lấy các đoạn (chunks) liên quan nhất từ tất cả tài liệu, rồi đưa vào context cho model.** Khi upload, tài liệu được chia nhỏ (chunk), vector hóa (embedding), và lưu trong vector store. Khi query, hệ thống tìm top-k chunks giống nhất về mặt ngữ nghĩa (không phụ thuộc từ khóa chính xác), ghép vào prompt làm ngữ cảnh. Điều này cho phép tổng hợp từ nhiều tài liệu khác nhau.
+### Vì sao các lựa chọn khác sai
+- **Đọc toàn bộ 50 PDF:** vượt context window (nhiều PDF 20-40 trang); không hiệu quả và tốn token.
+- **Chỉ tài liệu mới nhất:** bỏ qua kiến thức trong 49 tài liệu còn lại.
+- **Hỏi user chọn tài liệu:** knowledge base thiết kế để tự động tìm tài liệu liên quan, không cần user chỉ định.`
+},
+{
+  id: 'qz-ccao-156',
+  topic: 'claude',
+  q: '[Knowledge Config] A team uploads a 200-page technical manual to a Project. They notice Claude sometimes misses details in the middle of long chapters. Which configuration change is most likely to help?',
+  options: [
+    'Increase the temperature to make answers more creative',
+    'Enable a larger chunk size and overlap during indexing',
+    'Delete the manual and re-upload as individual chapter files',
+    'Ask Claude to read the whole manual before answering'
+  ],
+  answer: 1,
+  explain: `**Đúng: tăng chunk size (kích thước đoạn) và overlap (chồng lấp) giúp giữ ngữ cảnh dài hơn, giảm việc cắt ngang giữa ý.** Mặc định chunking có thể cắt ngang câu hoặc đoạn quan trọng. Chunk lớn hơn (ví dụ 1000-1500 token) và overlap 10-20% giúp mỗi chunk chứa đủ một ý hoàn chỉnh, còn overlap đảm bảo ranh giữa hai chunk không mất thông tin.
+### Vì sao các lựa chọn khác sai
+- **Tăng temperature:** làm tăng sự ngẫu nhiên, không cải thiện retrieval; có thể gây hallucination.
+- **Tách file chương:** thủ công, dễ sai sót, và Project vẫn chunk từng file — vấn đề cắt ngang vẫn có thể xảy ra.
+- **Yêu cầu đọc toàn bộ:** không thể; context window không chứa 200 trang, và retrieval vẫn chỉ lấy top chunks.`
+},
+{
+  id: 'qz-ccao-157',
+  topic: 'claude',
+  multi: true,
+  q: '[Knowledge Config] A Project contains outdated policy documents mixed with current ones. Users get answers citing old policies. Which TWO actions best fix this? (Choose 2)',
+  options: [
+    'Add a note in custom instructions saying "ignore old policies"',
+    'Remove or archive outdated documents from the knowledge base',
+    'Upload a "current policies only" summary document and tell users to trust it',
+    'Tag documents with version dates and update custom instructions to prefer newer versions',
+    'Increase the number of retrieved chunks so the model sees both old and new'
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: (1) xoá/archiving tài liệu cũ khỏi knowledge base; (3) gắn tag phiên bản/ngày và hướng dẫn ưu tiên mới.** Retrieval tìm chunk giống ngữ nghĩa — nếu cả cũ và mới đều tương tự, model có thể trích dẫn sai. Cách gốc là loại bỏ nguồn cũ; cách bổ trợ là metadata (tag) + custom instructions để model ưu tiên chunk mới.
+### Vì sao các lựa chọn khác sai
+- **Note "ignore old policies":** model không biết chunk nào thuộc policy cũ trừ khi có metadata; instruction mơ hồ không đủ.
+- **Tóm tắt "chỉ policy mới":** tạo nguồn thứ ba có thể sai/ lạc hậu; thêm độ phức tạp thay vì dọn dẹp nguồn gốc.
+- **Tăng số chunk retrieved:** càng lấy nhiều chunk càng dễ lẫn cũ/lạ vào context, làm model bối rối hơn.`
+},
+{
+  id: 'qz-ccao-158',
+  topic: 'claude',
+  q: '[Knowledge Config] A user wants Claude to answer questions based ONLY on the uploaded knowledge base, not its general training knowledge. Which custom instruction is most effective?',
+  options: [
+    '"Be helpful and accurate"',
+    '"Only use information from the knowledge base. If the answer is not there, say you do not know."',
+    '"Answer concisely"',
+    '"Cite your sources"'
+  ],
+  answer: 1,
+  explain: `**Đúng: instruction rõ ràng cấm dùng kiến thức ngoài và bắt buộc nói "không biết" khi KB thiếu thông tin.** Custom instructions áp dụng cho mọi tin nhắn trong project. Câu lệnh này thiết lập ranh giới chặt: model chỉ được dùng context từ KB (retrieved chunks), không được dùng parametric knowledge (kiến thức huấn luyện). Nếu KB không có, phải từ chối trả lời thay vì bịa.
+### Vì sao các lựa chọn khác sai
+- **"Be helpful and accurate":** quá chung chung, không cấm dùng kiến thức ngoài.
+- **"Answer concisely":** chỉ kiểm soát độ dài, không kiểm soát nguồn kiến thức.
+- **"Cite your sources":** model có thể trích dẫn nguồn bịa (hallucinated citation) nếu không cấm dùng kiến thức ngoài.`
+},
+{
+  id: 'qz-ccao-159',
+  topic: 'claude',
+  q: '[Knowledge Config] A team uploads a mix of English and Vietnamese documents to a Project. A user asks in Vietnamese but gets an answer citing only English chunks. What is the most likely cause?',
+  options: [
+    'The knowledge base only indexes English documents',
+    'Semantic search matches by meaning across languages, but the query may align better with English chunks',
+    'Claude does not support Vietnamese in knowledge bases',
+    'The user must specify the language in the query'
+  ],
+  answer: 1,
+  explain: `**Đúng: semantic search (embedding đa ngôn ngữ) so khớp ý nghĩa chứ không phải từ khóa, nhưng chunk tiếng Anh có thể gần hơn về vector space do dữ liệu huấn luyện embedding thiên về tiếng Anh.** Embedding model (thường đa ngôn ngữ) map cả tiếng Việt và tiếng Anh vào cùng vector space. Tuy nhiên, do dữ liệu tiếng Anh chiếm đa số, vector tiếng Anh đôi khi "gần" query tiếng Việt hơn về mặt toán học, khiến retrieval trả về chunk tiếng Anh.
+### Vì sao các lựa chọn khác sai
+- **Chỉ index tiếng Anh:** knowledge base index tất cả tài liệu upload, không phân biệt ngôn ngữ.
+- **Không hỗ trợ tiếng Việt:** knowledge base hoạt động đa ngôn ngữ; câu trả lời có thể bằng tiếng Việt.
+- **Phải chỉ định ngôn ngữ:** retrieval tự động, không có tham số ngôn ngữ cho user.`
+},
+{
+  id: 'qz-ccao-160',
+  topic: 'claude',
+  multi: true,
+  q: '[Knowledge Config] A Project knowledge base returns irrelevant chunks for a specific technical query. Which TWO adjustments can improve retrieval precision? (Choose 2)',
+  options: [
+    'Restructure source documents with clear headings and section boundaries before re-uploading',
+    'Increase temperature to 1.0',
+    'Add a custom instruction to "search more carefully"',
+    'Reduce the number of retrieved chunks (top-k) to focus on the most relevant',
+    'Delete all documents and start over with a different embedding model'
+  ],
+  answer: [0, 3],
+  explain: `**Đúng: (0) cấu trúc tài liệu rõ ràng (heading, section) giúp chunking giữ nguyên ngữ cảnh logic; (3) giảm top-k loại bỏ chunk nhiễu.** Chunking theo cấu trúc (heading-aware) tạo chunk gắn liền một chủ đề. Giảm top-k (ví dụ từ 10 xuống 5) chỉ giữ chunk nhất quán nhất, giảm ngữ cảnh thừa làm loãng prompt.
+### Vì sao các lựa chọn khác sai
+- **Tăng temperature:** chỉ ảnh hưởng generation, không ảnh hưởng retrieval.
+- **Instruction "search more carefully":** retrieval chạy trước khi model thấy instruction; instruction không thay đổi vector search.
+- **Xoá hết và đổi embedding model:** quá cực đoán; embedding model thường do platform quản lý, user không tự chọn.`
+},
+{
+  id: 'qz-ccao-161',
+  topic: 'claude',
+  q: '[Knowledge Config] A user adds a new PDF to an existing Project knowledge base. When does the new document become searchable?',
+  options: [
+    'Immediately after upload',
+    'After the next chat session starts',
+    'After the platform processes and indexes it (usually a few minutes)',
+    'Only after the user manually triggers re-indexing'
+  ],
+  answer: 2,
+  explain: `**Đúng: platform xử lý (extract text, chunk, embed, index) mất vài phút tùy kích thước tài liệu.** Upload không đồng nghĩa sẵn sàng truy vấn ngay; hệ thống chạy pipeline bất đồng bộ: trích xuất văn bản -> chia chunk -> tạo embedding -> ghi vào vector store. Chỉ khi pipeline hoàn tất, chunks mới xuất hiện trong retrieval.
+### Vì sao các lựa chọn khác sai
+- **Ngay lập tức:** pipeline chưa kịp chạy; retrieval không thấy chunks mới.
+- **Sau phiên chat tiếp theo:** không liên quan đến session; indexing là background job.
+- **Trigger thủ công:** user không có nút re-index; platform tự động xử lý sau upload.`
+},
+{
+  id: 'qz-ccao-162',
+  topic: 'claude',
+  q: '[Knowledge Config] A Project custom instruction says: "Always cite the document name and page number." The user asks a question, and the answer cites "Document.pdf, page 5" but that page does not contain the cited information. What is the most likely explanation?',
+  options: [
+    'The knowledge base retrieval returned a wrong chunk',
+    'The model hallucinated the citation while following the instruction to cite',
+    'The PDF page numbers are offset by one from the original',
+    'The user misread the page number'
+  ],
+  answer: 1,
+  explain: `**Đúng: model có thể bịa trích dẫn (hallucinated citation) để tuân thủ instruction "luôn trích dẫn" ngay cả khi chunk không hỗ trợ.** Instruction ép model phải xuất ra citation; nếu retrieved chunks không đủ cụ thể (ví dụ không có page number trong metadata, hoặc chunk không chứa thông tin cần thiết), model có thể sáng tạo một citation trông hợp lý. Đây là rủi ro khi ép citation mà không kiểm soát retrieval quality.
+### Vì sao các lựa chọn khác sai
+- **Retrieval trả chunk sai:** retrieval trả chunk theo độ tương đồng ngữ nghĩa; chunk có thể liên quan nhưng không chứa fact cụ thể — model vẫn có thể bịa citation.
+- **Page number lệch 1:** có thể xảy ra nhưng ít hơn hallucination citation; thường metadata page number được extract đúng từ PDF.
+- **User đọc sai:** giả định lỗi ở user không giải quyết được gốc rễ là model bịa citation.`
+},
+{
+  id: 'qz-ccao-163',
+  topic: 'claude',
+  multi: true,
+  q: '[Knowledge Config] A team wants to improve answer quality for a Project that handles technical troubleshooting. Which TWO knowledge base practices are most effective? (Choose 2)',
+  options: [
+    'Include troubleshooting guides with clear problem-solution pairs and error codes',
+    'Upload all historical chat logs as context',
+    'Structure documents with consistent headings: Symptom, Cause, Resolution, Prevention',
+    'Add a 500-page generic product manual without section markers',
+    'Set temperature to 0.8 for more creative solutions'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: (0) tài liệu troubleshooting có cặp problem-solution + error code khớp trực tiếp với query; (2) cấu trúc heading nhất quán giúp chunking tách đúng ranh giới chủ đề.** Retrieval hiệu quả khi chunk chứa một vấn đề hoàn chỉnh (symptom + cause + resolution). Error code trong query khớp chính xác với error code trong chunk. Heading nhất quán cho phép chunking nhận diện section boundary.
+### Vì sao các lựa chọn khác sai
+- **Chat log lịch sử:** nhiễu, không cấu trúc, chứa thông tin cũ/ sai, làm loãng knowledge base.
+- **Manual 500 trang không section:** chunking cắt ngang chủ đề, retrieval trả chunk mảnh không đủ ngữ cảnh.
+- **Temperature 0.8:** generation parameter, không ảnh hưởng retrieval; creativity không phù hợp cho troubleshooting.`
+},
+{
+  id: 'qz-ccao-164',
+  topic: 'claude',
+  q: '[Knowledge Config] A user notices that a Project answer includes a correct fact but cites the wrong document (the fact is in Document A, but citation says Document B). What should they do first?',
+  options: [
+    'Report it as a platform bug',
+    'Check whether both documents contain similar content and the retrieval matched the wrong one',
+    'Delete Document B from the knowledge base',
+    'Add a custom instruction to "cite correctly"'
+  ],
+  answer: 1,
+  explain: `**Đúng: kiểm tra trùng lặp nội dung giữa tài liệu — retrieval trả về chunk giống nhất về mặt ngữ nghĩa, có thể từ tài liệu sai nếu nội dung tương tự.** Semantic search không phân biệt "nguồn gốc" của fact; nếu Document A và B đều chứa đoạn văn tương tự (ví dụ boilerplate, định nghĩa chung), retrieval có thể trả chunk từ B. Cần kiểm tra nội dung trùng lặp trước khi hành động.
+### Vì sao các lựa chọn khác sai
+- **Báo bug nền tảng:** đây là hành vi bình thường của semantic search, không phải bug.
+- **Xoá Document B:** quá vội; B có thể chứa thông tin khác độc nhất; xoá làm mất kiến thức.
+- **Instruction "cite correctly":** instruction không thay đổi retrieval; model chỉ cite chunk mà retrieval đưa cho.`
+},
+{
+  id: 'qz-ccao-165',
+  topic: 'claude',
+  q: '[Knowledge Config] A Project contains 100 documents. The team wants to restrict certain sensitive documents so only managers can access answers derived from them. How can this be achieved within Projects?',
+  options: [
+    'Add a password to sensitive documents before uploading',
+    'Create a separate Project for sensitive documents and control membership',
+    'Tag documents as "sensitive" and add a custom instruction to check user role',
+    'Encrypt sensitive documents and only give managers the key'
+  ],
+  answer: 1,
+  explain: `**Đúng: tách Project riêng cho tài liệu nhạy cảm và kiểm soát thành viên (membership) là cách Projects hỗ trợ phân quyền.** Projects không có RBAC (role-based access control) cấp document bên trong một project; mọi member của project truy cập được toàn bộ KB. Cách chuẩn là: Project A (công khai) cho toàn nhân viên, Project B (nhạy cảm) chỉ mời manager. Mỗi project có KB và membership độc lập.
+### Vì sao các lựa chọn khác sai
+- **Mật khẩu file:** Projects không hỗ trợ decrypt file khi indexing; file có password sẽ không đọc được.
+- **Tag + instruction check role:** model không biết user là ai; custom instructions không có biến user role.
+- **Mã hóa + chia key:** Projects không decrypt được file mã hóa để index.`
+},
+{
+  id: 'qz-ccao-166',
+  topic: 'claude',
+  multi: true,
+  q: '[Knowledge Config] A user wants to optimize a knowledge base for a FAQ bot: short questions, precise answers, low latency. Which TWO configurations help? (Choose 2)',
+  options: [
+    'Split documents into small, self-contained Q&A pairs (one question + answer per chunk)',
+    'Keep documents as long chapters to preserve context',
+    'Reduce top-k to 3-5 to minimize context size and latency',
+    'Increase top-k to 20 for maximum coverage',
+    'Disable citations to save tokens'
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: (0) chunking theo cặp Q&A tự chứa (atomic) khớp trực tiếp với query ngắn; (2) top-k nhỏ (3-5) giảm context, giảm latency, giảm chi phí token.** FAQ bot: user hỏi ngắn ("reset password?"), retrieval cần trả về ngay chunk chứa câu trả lời reset password. Chunk Q&A nhỏ + top-k nhỏ = nhanh, chính xác, rẻ.
+### Vì sao các lựa chọn khác sai
+- **Chương dài:** chunk chứa nhiều Q&A, retrieval trả chunk lớn, model phải tìm trong chunk -> chậm, tốn token.
+- **Top-k 20:** context quá lớn, chậm, tốn tiền, nhiễu nhiều.
+- **Tắt citation:** citation giá trị cho trust; tắt chỉ tiết kiệm vài token, không đáng giá.`
+},
+{
+  id: 'qz-ccao-167',
+  topic: 'claude',
+  q: '[Knowledge Config] A team updates a policy document in their Project knowledge base (deletes old version, uploads new version). A user asks about the policy immediately after. What determines whether the answer reflects the new version?',
+  options: [
+    'Whether the user clears their browser cache',
+    'Whether the indexing pipeline has finished processing the new document',
+    'Whether the user starts a new chat session',
+    'Whether the custom instruction mentions "latest version"'
+  ],
+  answer: 1,
+  explain: `**Đúng: indexing pipeline (extract -> chunk -> embed -> index) phải hoàn tất trước khi retrieval thấy version mới.** Xoá cũ + upload mới trigger background job. Cho đến khi job xong, vector store vẫn chứa chunks cũ (chưa xoá) hoặc chưa có chunks mới. Browser cache, session, instruction không ảnh hưởng retrieval backend.
+### Vì sao các lựa chọn khác sai
+- **Browser cache:** retrieval chạy server-side, không liên quan cache client.
+- **Phiên chat mới:** retrieval độc lập với session; chunks cũ/mới quyết định bởi vector store.
+- **Instruction "latest version":** instruction không làm index nhanh hơn; model chỉ dùng chunks retrieval trả về.`
+},
+{
+  id: 'qz-ccao-168',
+  topic: 'claude',
+  multi: true,
+  q: '[Knowledge Config] A Project is used for contract review. The team wants answers to always include the specific clause section (e.g., "Section 7.2") when citing. Which TWO approaches work together? (Choose 2)',
+  options: [
+    'Ensure source contracts have clear section headings (e.g., "### Section 7.2 Indemnification") before uploading',
+    'Add a custom instruction: "Always cite the section heading from the source document"',
+    'Rename uploaded files to include section numbers',
+    'Ask users to specify the section in every query',
+    'Set a system prompt via API instead of Projects'
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: (0) cấu trúc tài liệu có heading section rõ ràng giúp chunking giữ nguyên section header trong chunk; (1) instruction yêu cầu model trích dẫn heading đó.** Nếu PDF có heading "Section 7.2" và chunking bảo toàn heading, retrieved chunk sẽ chứa "Section 7.2 ...". Instruction sau đó nhắc model: "khi trích dẫn, ghi rõ section heading trong chunk". Hai bước cùng cần: dữ liệu có cấu trúc + hướng dẫn generation.
+### Vì sao các lựa chọn khác sai
+- **Đổi tên file:** tên file không xuất hiện trong chunk content; retrieval không dùng tên file làm citation.
+- **User chỉ định section:** bỏ trách nhiệm cho user; KB nên tự trả section đúng.
+- **System prompt qua API:** Projects dùng custom instructions, không có system prompt riêng; và API không thay đổi cách Projects hoạt động.`
 }
 );
