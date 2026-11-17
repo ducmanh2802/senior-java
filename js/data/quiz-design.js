@@ -1938,4 +1938,989 @@ id: 'qz-design-048',
   answer: [0, 2],
   explain: '**Tóm tắt:** Saga bù trừ theo thứ tự ngược: bước đã thành công phải được bù trừ; bù trừ idempotent và có DLQ khi thất bại; 2PC thường không phù hợp vì khóa tài nguyên lâu.\n\n### Giải thích từng bước\n\n- **Saga là gì?** Mỗi bước là một transaction cục bộ; nếu bước sau thất bại, các bước trước được bù trừ (compensation) để đưa hệ thống về trạng thái nhất quán.\n- **Thứ tự bù trừ:** ngược với thứ tự thực hiện. Giữ tồn kho → trừ tiền → tạo đơn; nếu trừ tiền lỗi, bù trừ giữ tồn kho (nhả hàng đã giữ).\n- **Idempotent:** bù trừ có thể được gọi lại (do retry hoặc lỗi mạng); gọi hai lần "nhả tồn kho" không được làm sai.\n- **DLQ:** nếu bù trừ thất bại (ví dụ dịch vụ tồn kho cũng lỗi), ghi vào DLQ để thử lại hoặc con người xử lý; không im lặng bỏ qua.\n- **2PC (two-phase commit):** đảm bảo tất cả cùng commit hoặc cùng rollback, nhưng khóa tài nguyên lâu, dễ nghẽn, không phù hợp hệ thống lớn.\n\n### Vì sao ba phương án còn lại sai\n- **Bỏ qua giữ tồn kho**: tồn kho bị giữ mãi, hàng không bán được.\n- **Bỏ qua thất bại bù trừ**: hệ thống lệch trạng thái âm thầm.\n- **2PC**: với nhiều service qua mạng, 2PC làm nghẽn và dễ dead-lock; Saga là lựa chọn thực tế hơn.\n\n### Ví dụ đời thực\n- Triệu chứng: sau sự cố, nhiều đơn "treo" với tồn kho bị giữ mà không có đơn.\n- Điều tra: bước trừ tiền thất bại nhưng không bù trừ giữ tồn kho.\n- Xử lý: thêm compensation cho mỗi bước, idempotent, DLQ, job đối định kỳ.\n- Kết quả: tồn kho được nhả tự động, không còn đơn treo.\n\n### Trả lời mẫu khi phỏng vấn\nEm thiết kế Saga với compensation cho từng bước, bù trừ theo thứ tự ngược, idempotent, và DLQ khi bù trừ thất bại. Em không dùng 2PC cho hệ thống nhiều service vì khóa tài nguyên lâu. Em có job đối để phát hiện trạng thái lệch.\n\n> Senior tip: Compensation phải là hành động nghiệp vụ thật, không phải rollback kỹ thuật. "Nhả tồn kho đã giữ" là một API riêng, không phải hoàn tác database.'
 },
+{
+  id: 'qz-architecture-021',
+  topic: 'architecture',
+  q: `Đoạn code Java sau vi phạm nguyên tắc thiết kế nào và cách sửa?
+~~~java
+class Invoice {
+    void print() { ... }
+    void saveToDb() { ... }
+    void sendEmail() { ... }
+}
+~~~`,
+  options: [
+    'Vi phạm SRP: một class làm ba việc khác nhau (biểu diễn, lưu trữ, thông báo). Tách thành Invoice (domain), InvoiceRepository, InvoiceNotifier',
+    'Vi phạm OCP: nên dùng interface InvoicePrinter',
+    'Vi phạm LSP: subclass không thay thế được Invoice',
+    'Không vi phạm gì, nên giữ nguyên để đơn giản'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: vi phạm SRP.**
+
+### Vì sao đúng
+- SRP (Single Responsibility Principle): một class nên có một lý do để thay đổi. Ở đây có ba lý do: thay đổi format in, thay đổi schema DB, thay đổi email template.
+- Tách trách nhiệm: Invoice chỉ giữ dữ liệu và quy tắc nghiệp vụ; InvoiceRepository lo lưu; InvoiceNotifier lo gửi. Mỗi phần thay đổi độc lập, test dễ hơn.
+
+### Vì sao các phương án khác sai
+- **OCP**: không phải vấn đề chính; chưa có chỗ cần mở rộng bằng kế thừa/interface.
+- **LSP**: không có kế thừa nào.
+- **Không vi phạm**: gộp nhiều trách nhiệm làm class phình to và khó test.
+
+> Senior tip: SRP không có nghĩa "một method". Một class có thể có nhiều method nhưng cùng phục vụ một mục đích.`
+},
+{
+  id: 'qz-architecture-022',
+  topic: 'architecture',
+  multi: true,
+  q: 'Code smell nào thường đi kèm với shotgun surgery? (Chọn 2)',
+  options: [
+    'Duplicated code',
+    'Feature envy',
+    'Dead code',
+    'Long parameter list'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: duplicated code và feature envy.**
+
+### Vì sao đúng
+- Shotgun surgery: một thay đổi nhỏ phải sửa nhiều class. Thường xuất hiện khi logic bị rải rác (duplicated) hoặc method dùng dữ liệu của class khác nhiều (feature envy).
+- Refactor: move method, extract class, consolidating duplicate code.
+
+### Vì sao các phương án khác sai
+- Dead code: không liên quan trực tiếp.
+- Long parameter list: smell riêng, thường do thiếu object.
+
+> Senior tip: Khi sửa một bug phải touch > 3 file, đó là tín hiệu shotgun surgery.`
+},
+{
+  id: 'qz-architecture-023',
+  topic: 'architecture',
+  q: 'Strategy vs State: điểm khác biệt chính là gì?',
+  options: [
+    'Strategy thay đổi hành vi tại runtime do client chọn; State thay đổi hành vi theo trạng thái nội tại của object',
+    'Strategy dùng inheritance, State dùng composition',
+    'State không thể có nhiều implementation',
+    'Strategy chỉ dùng cho sorting'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Strategy do client chọn; State theo trạng thái nội tại.**
+
+### Vì sao đúng
+- Strategy: client inject thuật toán (ví dụ payment method). Object không tự đổi strategy trừ khi client đổi.
+- State: object tự chuyển state (ví dụ Order từ NEW sang PAID) và hành vi thay đổi theo.
+
+### Vì sao các phương án khác sai
+- Cả hai đều dùng composition.
+- State có thể nhiều implementation.
+- Strategy không chỉ sorting.
+
+> Senior tip: Nếu state transitions phức tạp, cân nhắc state machine (Spring State Machine).`
+},
+{
+  id: 'qz-architecture-024',
+  topic: 'architecture',
+  q: 'Spring @Transactional proxy: method private có @Transactional có hoạt động không?',
+  options: [
+    'Có, CGLIB proxy override private method',
+    'Không, proxy không intercept private method',
+    'Chỉ khi dùng AspectJ weaving',
+    'Chỉ với JTA'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không, proxy không intercept private method.**
+
+### Vì sao đúng
+- Spring proxy (JDK/CGLIB) chỉ intercept được method public, không final và được gọi qua proxy (không phải self-invocation). Method private không thể override (và caller trong cùng class gọi trực tiếp, không qua proxy) nên annotation bị bỏ qua.
+
+### Vì sao các phương án khác sai
+- CGLIB không override được private (và cả final).
+- AspectJ weaving có thể nhưng không mặc định.
+- JTA không liên quan.
+
+> Senior tip: Đặt @Transactional trên public method, không final, và gọi qua bean inject. Lỗi "annotation không chạy" thường do private/final hoặc self-invocation.`
+},
+{
+  id: 'qz-architecture-025',
+  topic: 'architecture',
+  q: 'Builder pattern khi nào dùng thay vì constructor nhiều tham số?',
+  options: [
+    'Khi object có nhiều optional field và cần readable',
+    'Khi object immutable bắt buộc',
+    'Khi cần singleton',
+    'Khi cần lazy init'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: nhiều optional field, cần readable.**
+
+### Vì sao đúng
+- Telescoping constructor khó đọc và dễ nhầm thứ tự. Builder cho phép đặt tên từng field.
+
+### Vì sao các phương án khác sai
+- Immutable có thể dùng record/constructor.
+- Singleton không liên quan.
+- Lazy init không liên quan.
+
+> Senior tip: Java record + compact constructor cho value object đơn giản; Builder cho object phức tạp.`
+},
+{
+  id: 'qz-architecture-026',
+  topic: 'architecture',
+  q: 'Hexagonal architecture: port và adapter là gì?',
+  options: [
+    'Port là interface do domain định nghĩa; adapter là implementation kết nối với infra (DB, HTTP, Kafka)',
+    'Port là controller; adapter là service',
+    'Port là DB table; adapter là repository',
+    'Port là DTO; adapter là mapper'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: port interface domain; adapter implementation infra.**
+
+### Vì sao đúng
+- Domain định nghĩa port (interface). Adapter implement port để nối với công nghệ cụ thể. Domain không phụ thuộc infra.
+
+### Vì sao các phương án khác sai
+- Controller/service là delivery layer, không phải port.
+- DB table/repository là persistence adapter.
+- DTO/mapper là translation.
+
+> Senior tip: Test domain bằng in-memory adapter, không cần DB.`
+},
+{
+  id: 'qz-architecture-027',
+  topic: 'architecture',
+  q: 'DDD aggregate boundary: điều gì phải đúng trong một transaction?',
+  options: [
+    'Chỉ một aggregate root được sửa trong một transaction; liên aggregate dùng domain event',
+    'Nhiều aggregate có thể sửa cùng transaction nếu cùng DB',
+    'Aggregate chỉ là entity collection',
+    'Boundary do DB transaction quyết định'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: một aggregate root mỗi transaction.**
+
+### Vì sao đúng
+- Aggregate là ranh giới nhất quán. Sửa nhiều aggregate trong cùng transaction tạo coupling và tranh chấp.
+
+### Vì sao các phương án khác sai
+- Cùng DB không giải quyết coupling.
+- Aggregate không chỉ collection.
+- DB transaction không định nghĩa boundary nghiệp vụ.
+
+> Senior tip: Hỏi interviewer "invariant nào phải đúng ngay lập tức?" để xác định boundary.`
+},
+{
+  id: 'qz-architecture-028',
+  topic: 'architecture',
+  q: 'Code smell "feature envy": method dùng dữ liệu của class khác nhiều hơn class của chính nó. Refactor nào phù hợp?',
+  options: [
+    'Move method sang class chứa dữ liệu',
+    'Extract interface',
+    'Introduce parameter object',
+    'Replace conditional with polymorphism'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: move method.**
+
+### Vì sao đúng
+- Method nên ở gần dữ liệu nó dùng. Move method giảm coupling và tăng cohesion.
+
+### Vì sao các phương án khác sai
+- Extract interface không giải quyết envy.
+- Parameter object giảm params nhưng không move logic.
+- Polymorphism cho conditional, không cho envy.
+
+> Senior tip: Feature envy thường xuất hiện khi domain logic bị đặt sai chỗ (anemic domain).`
+},
+{
+  id: 'qz-architecture-029',
+  topic: 'architecture',
+  q: 'Refactor an toàn có test: bước đầu tiên nên làm gì?',
+  options: [
+    'Viết characterization tests (golden tests) bao phủ hành vi hiện tại',
+    'Rewrite toàn bộ module',
+    'Đổi tên class trước',
+    'Tối ưu performance'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: characterization tests.**
+
+### Vì sao đúng
+- Cần biết hành vi hiện tại trước khi refactor. Characterization tests ghi lại output thực tế làm safety net.
+
+### Vì sao các phương án khác sai
+- Rewrite rủi ro cao.
+- Đổi tên trước không có tests.
+- Tối ưu không phải refactor.
+
+> Senior tip: Refactor = thay đổi cấu trúc không thay đổi hành vi; tests chứng minh.`
+},
+{
+  id: 'qz-architecture-030',
+  topic: 'architecture',
+  q: 'Decorator trong Spring: {{@Transactional}} trên method service là ví dụ của pattern nào?',
+  options: [
+    'Decorator/Proxy: proxy bọc bean và thêm transaction behavior',
+    'Adapter',
+    'Facade',
+    'Factory'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Decorator/Proxy.**
+
+### Vì sao đúng
+- Spring tạo proxy bọc bean gốc, thêm cross-cutting concern (transaction, security) mà không sửa code nghiệp vụ bên trong.
+
+### Vì sao các phương án khác sai
+- Adapter chuyển interface.
+- Facade gom API.
+- Factory tạo object.
+
+> Senior tip: Gọi method {{@Transactional}} nội bộ cùng class sẽ bypass proxy.`
+},
+{
+  id: 'qz-architecture-031',
+  topic: 'architecture',
+  q: 'SOLID OCP: thêm payment method mới mà không sửa code cũ, dùng gì?',
+  options: [
+    'Interface {{PaymentProcessor}} + implementation mới inject vào',
+    'if-else theo type',
+    'switch statement',
+    'Reflection'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: interface + implementation.**
+
+### Vì sao đúng
+- OCP: mở rộng bằng thêm class, không sửa class cũ. DI inject implementation phù hợp.
+
+### Vì sao các phương án khác sai
+- if-else/switch phải sửa khi thêm type.
+- Reflection phức tạp, mất type safety.
+
+> Senior tip: Kết hợp với Strategy pattern.`
+},
+{
+  id: 'qz-architecture-032',
+  topic: 'architecture',
+  q: 'LSP: subclass phải làm gì?',
+  options: [
+    'Có thể thay thế superclass mà không làm vỡ chương trình',
+    'Override mọi method',
+    'Cùng package với superclass',
+    'Implement interface riêng'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: substitutability.**
+
+### Vì sao đúng
+- LSP: object của subclass có thể dùng ở mọi nơi expecting superclass.
+
+### Vì sao các phương án khác sai
+- Override mọi method không đủ.
+- Package/interface không liên quan.
+
+> Senior tip: Vi phạm LSP thường do override làm thay đổi contract (throw exception mới).`
+},
+{
+  id: 'qz-architecture-033',
+  topic: 'architecture',
+  q: 'ISP: interface quá lớn làm gì?',
+  options: [
+    'Client implement method không dùng → tách interface nhỏ',
+    'Tăng performance',
+    'Giảm memory',
+    'Không ảnh hưởng'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: tách interface nhỏ.**
+
+### Vì sao đúng
+- ISP: client không nên phụ thuộc method không dùng. Tách interface theo client.
+
+### Vì sao các phương án khác sai
+- Performance/memory không phải vấn đề chính.
+
+> Senior tip: Interface theo role (Readable, Writable) thay vì Fat interface.`
+},
+{
+  id: 'qz-architecture-034',
+  topic: 'architecture',
+  q: 'DIP: high-level module nên phụ thuộc vào?',
+  options: [
+    'Abstraction (interface), không phụ thuộc low-level concrete',
+    'Concrete implementation',
+    'Database',
+    'Framework'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: abstraction.**
+
+### Vì sao đúng
+- DIP: cả high-level và low-level phụ thuộc vào abstraction. Giúp test và thay thế infra.
+
+### Vì sao các phương án khác sai
+- Concrete/DB/framework tạo coupling.
+
+> Senior tip: Spring DI là hiện thực DIP.`
+},
+{
+  id: 'qz-architecture-035',
+  topic: 'architecture',
+  q: 'Record trong Java 16+ phù hợp nhất cho?',
+  options: [
+    'Value object/DTO bất biến',
+    'Entity có lifecycle',
+    'Service có state',
+    'Controller'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: value object/DTO.**
+
+### Vì sao đúng
+- Record tự sinh constructor, equals, hashCode, toString, immutable.
+
+### Vì sao các phương án khác sai
+- Entity cần mutability/identity.
+- Service/controller không phải data carrier.
+
+> Senior tip: Record không thể extend class khác.`
+},
+{
+  id: 'qz-architecture-036',
+  topic: 'architecture',
+  q: 'Shotgun surgery: một thay đổi nhỏ phải sửa nhiều class. Nguyên nhân thường là?',
+  options: [
+    'Logic rải rác, thiếu encapsulation',
+    'Class quá lớn',
+    'Quá nhiều interface',
+    'Dùng quá nhiều design pattern'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: logic rải rác.**
+
+### Vì sao đúng
+- Khi responsibility phân tán, thay đổi lan rộng. Refactor: consolidate.
+
+### Vì sao các phương án khác sai
+- Class quá lớn là God class (khác).
+- Interface/pattern không phải nguyên nhân.
+
+> Senior tip: Theo dõi số file touched per PR.`
+},
+{
+  id: 'qz-architecture-037',
+  topic: 'architecture',
+  q: 'Feature envy: method dùng dữ liệu của class khác. Cách phát hiện?',
+  options: [
+    'Method gọi getter của class khác nhiều hơn field của chính nó',
+    'Method quá dài',
+    'Method có nhiều parameter',
+    'Method throw exception'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: gọi getter khác nhiều.**
+
+### Vì sao đúng
+- Feature envy = method thuộc về class A nhưng dùng data của class B. Move method.
+
+### Vì sao các phương án khác sai
+- Dài/params/exception là smell khác.
+
+> Senior tip: IDE có inspection "feature envy".`
+},
+{
+  id: 'qz-architecture-038',
+  topic: 'architecture',
+  q: 'Safe refactor: sau khi refactor, làm gì để đảm bảo behavior?',
+  options: [
+    'Chạy toàn bộ test suite + characterization tests',
+    'Manual test một case',
+    'Code review',
+    'Format code'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: chạy tests.**
+
+### Vì sao đúng
+- Tests chứng minh behavior không đổi. Characterization tests bao phủ legacy.
+
+### Vì sao các phương án khác sai
+- Manual test không đủ.
+- Review/format không verify behavior.
+
+> Senior tip: Refactor từng bước nhỏ, commit thường xuyên.`
+},
+{
+  id: 'qz-architecture-039',
+  topic: 'architecture',
+  multi: true,
+  q: 'Hexagonal architecture lợi ích? (Chọn 2)',
+  options: [
+    'Domain độc lập với infra, dễ test',
+    'Cho phép thay DB/framework mà không đổi domain',
+    'Tăng performance',
+    'Giảm số class'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: độc lập domain và thay infra.**
+
+### Vì sao đúng
+- Port/adapter cô lập domain. Test bằng fake adapter. Thay DB chỉ đổi adapter.
+
+### Vì sao các phương án khác sai
+- Performance/class count không phải lợi ích.
+
+> Senior tip: Hexagonal phù hợp domain phức tạp.`
+},
+{
+  id: 'qz-architecture-040',
+  topic: 'architecture',
+  q: 'DDD: aggregate root chịu trách nhiệm gì?',
+  options: [
+    'Bảo vệ invariant và là entry point cho mọi thay đổi bên trong aggregate',
+    'Lưu dữ liệu',
+    'Gửi event',
+    'Render UI'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: bảo vệ invariant.**
+
+### Vì sao đúng
+- Aggregate root kiểm soát mọi thay đổi, đảm bảo invariant nội bộ. Bên ngoài chỉ tham chiếu root.
+
+### Vì sao các phương án khác sai
+- Lưu/gửi/render là infra/UI.
+
+> Senior tip: Không cho phép sửa entity con trực tiếp từ ngoài.`
+},
+{
+  id: 'qz-design-051',
+  topic: 'design',
+  q: `Đoạn code sau vi phạm Single Responsibility Principle (SRP - mỗi class chỉ nên có một lý do để thay đổi)?
+~~~java
+class ReportService {
+    String buildCsv() { ... }
+    void sendEmail() { ... }
+    void saveDb() { ... }
+}
+~~~`,
+  options: [
+    '{{ReportService}} vừa tạo dữ liệu, vừa gửi email, vừa lưu DB nên có nhiều lý do thay đổi',
+    'Không vi phạm vì tất cả đều liên quan report',
+    'Chỉ vi phạm nếu class quá dài',
+    'Vi phạm OCP nhưng không vi phạm SRP'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: class có nhiều trách nhiệm (tạo, gửi, lưu).**
+
+**Tóm tắt:** SRP (Single Responsibility Principle - nguyên tắc trách nhiệm đơn lẻ) nói rằng một class nên chỉ có một lý do để thay đổi. Class làm 3 việc (build CSV, gửi email, lưu DB) sẽ đổi khi format đổi, khi SMTP đổi, hoặc khi schema DB đổi.
+
+### Vì sao đúng
+- "Một lý do để thay đổi" nghĩa là một nhóm thay đổi nghiệp vụ/kỹ thuật. Ở đây: thay đổi cách format báo cáo, thay đổi provider email, thay đổi cách lưu trữ đều buộc sửa cùng class.
+- Tách thành {{ReportFormatter}}, {{ReportMailer}}, {{ReportRepository}} giúp mỗi class ổn định hơn và dễ test (mock từng phần).
+
+### Vì sao các phương án khác sai
+- "Liên quan report" không đồng nghĩa một trách nhiệm; SRP xét lý do thay đổi, không xét tên miền mơ hồ.
+- Độ dài không phải tiêu chí SRP; class ngắn vẫn có thể vi phạm.
+- Đây là vi phạm SRP rõ ràng, không phải OCP.
+
+> Senior tip: Khi review, đếm "actor" khiến class đổi (business, infra, ops) — nhiều actor thường là smell SRP.`
+},
+{
+  id: 'qz-design-052',
+  topic: 'design',
+  multi: true,
+  q: 'Đoạn code nào tuân thủ Open/Closed Principle (OCP - mở rộng được nhưng không phải sửa code cũ) khi thêm phương thức thanh toán mới? (Chọn 2)',
+  options: [
+    'Định nghĩa {{interface PaymentProcessor { void pay(Money m); } }} và thêm class mới {{MomoProcessor}} implement interface',
+    'Inject {{Map<String, PaymentProcessor>}} hoặc chọn bean theo key để dùng implementation mới',
+    'Thêm nhánh {{if (type.equals("MOMO")) ... else if ...}} vào class thanh toán hiện có mỗi khi có loại mới',
+    'Dùng {{switch(type)}} trong controller để gọi hàm tĩnh tương ứng'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: dùng interface/abstraction và inject implementation mới.**
+
+**Tóm tắt:** OCP (Open/Closed - mở để mở rộng, đóng để sửa đổi) khuyến khích thêm hành vi bằng class mới thay vì sửa chuỗi if/switch cũ.
+
+### Vì sao đúng
+- Interface + implementation mới: code cũ không đổi, chỉ thêm class và cấu hình/đăng ký bean.
+- Chọn processor qua Map/DI cho phép mở rộng runtime mà không chạm logic lõi.
+
+### Vì sao các phương án khác sai
+- if-else/switch phải sửa mỗi lần thêm loại thanh toán → vi phạm OCP, dễ quên nhánh và khó test.
+- Gọi hàm tĩnh trong controller trộn điều phối với nghiệp vụ và vẫn phải sửa khi thêm loại.
+
+> Senior tip: OCP không có nghĩa "không bao giờ sửa code", mà là thiết kế điểm mở rộng ở nơi biến động.`
+},
+{
+  id: 'qz-design-053',
+  topic: 'design',
+  q: `Đoạn code sau vi phạm Liskov Substitution Principle (LSP - class con phải thay thế được class cha) thế nào?
+~~~java
+class Bird { void fly() { } }
+class Penguin extends Bird {
+    void fly() { throw new UnsupportedOperationException(); }
+}
+~~~`,
+  options: [
+    'Chỗ gọi {{Bird.fly()}} kỳ vọng bay được nhưng {{Penguin}} ném exception nên thay thế không an toàn',
+    'Không vi phạm vì chim cánh cụt về mặt sinh học là chim',
+    'Vi phạm DIP vì dùng extends',
+    'Chỉ cần đổi tên method là hết vi phạm'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: subclass phá vỡ "hợp đồng" (contract - cam kết hành vi) của superclass.**
+
+**Tóm tắt:** LSP (Liskov Substitution Principle) yêu cầu object của lớp con dùng được ở nơi mong đợi lớp cha mà không gây lỗi bất ngờ.
+
+### Vì sao đúng
+- Client nhận {{Bird}} và gọi {{fly()}} hợp lệ theo contract; {{Penguin}} ném exception làm client crash hoặc phải if-instanceof.
+- Thiết kế đúng hơn: tách {{Flyable}} hoặc phân cấp {{FlyingBird}}/{{Bird}} theo khả năng thực tế.
+
+### Vì sao các phương án khác sai
+- Phân loại sinh học không đảm bảo contract lập trình.
+- DIP (Dependency Inversion) nói về phụ thuộc abstraction, không phải lỗi này.
+- Đổi tên không sửa hành vi vi phạm.
+
+> Senior tip: Dấu hiệu LSP smell: subclass override để throw, trả null bất thường, hoặc no-op làm sai kỳ vọng caller.`
+},
+{
+  id: 'qz-design-054',
+  topic: 'design',
+  q: `Interface Segregation Principle (ISP - tách interface lớn thành interface nhỏ theo nhu cầu client): đoạn nào tốt hơn?
+~~~java
+interface Worker { void code(); void test(); void deploy(); }
+~~~
+với dev chỉ code/test.`,
+  options: [
+    'Tách thành {{Coder}}, {{Tester}}, {{Deployer}} để class chỉ implement method nó thực sự cần',
+    'Giữ một interface lớn cho tiện tìm',
+    'Cho method thừa ném {{UnsupportedOperationException}}',
+    'Dùng abstract class thay interface là đủ'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: tách interface theo vai trò.**
+
+**Tóm tắt:** ISP (Interface Segregation Principle) nói client không nên bị ép phụ thuộc vào method nó không dùng.
+
+### Vì sao đúng
+- Interface "béo" (fat interface) buộc implement method vô nghĩa, gây coupling và dễ vỡ khi interface đổi.
+- Interface nhỏ theo role giúp mock/test dễ và tuân thủ SRP ở mức hợp đồng.
+
+### Vì sao các phương án khác sai
+- Interface lớn "tiện tìm" nhưng gây gánh nặng implement và thay đổi dây chuyền.
+- Ném exception là workaround, vẫn vi phạm contract.
+- Abstract class không tự giải quyết việc gộp quá nhiều trách nhiệm.
+
+> Senior tip: Nếu bạn thấy {{default}} method rỗng hoặc throw khắp nơi, hãy nghi ngờ ISP.`
+},
+{
+  id: 'qz-design-055',
+  topic: 'design',
+  multi: true,
+  q: 'Dependency Inversion Principle (DIP - module cấp cao phụ thuộc abstraction, không phụ thuộc chi tiết): đoạn code nào áp dụng đúng? (Chọn 2)',
+  options: [
+    '{{class OrderService { private final OrderRepository repo; OrderService(OrderRepository repo){this.repo=repo;} } }} với {{OrderRepository}} là interface',
+    'Cấu hình Spring inject {{JpaOrderRepository}} implement {{OrderRepository}} vào service',
+    '{{class OrderService { private final JpaOrderRepository repo = new JpaOrderRepository(); } }} khởi tạo trực tiếp',
+    'Service gọi thẳng {{EntityManager}} và SQL string trong method nghiệp vụ'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phụ thuộc interface và để DI container cung cấp implementation.**
+
+**Tóm tắt:** DIP (Dependency Inversion Principle) đảo chiều phụ thuộc: business logic (cấp cao) nói chuyện với abstraction; chi tiết hạ tầng (DB, HTTP) implement abstraction đó.
+
+### Vì sao đúng
+- Constructor nhận interface giúp thay DB/mock khi test mà không sửa service.
+- Spring DI (Dependency Injection - tiêm phụ thuộc) là cơ chế lắp ghép implementation ở runtime.
+
+### Vì sao các phương án khác sai
+- {{new}} trực tiếp concrete class gắn cứng hạ tầng vào nghiệp vụ, khó test.
+- Gọi thẳng EntityManager/SQL trong service trộn persistence vào business và vi phạm DIP/SRP.
+
+> Senior tip: DIP không bắt buộc dùng framework; quan trọng là hướng phụ thuộc và điểm tiêm (constructor).`
+},
+{
+  id: 'qz-design-056',
+  topic: 'design',
+  q: 'Phân biệt Strategy và State pattern: tình huống nào nên dùng Strategy?',
+  options: [
+    'Chọn thuật toán tính phí ship (nhanh/thường/tiết kiệm) do client/cấu hình quyết định và có thể thay tại runtime',
+    'Đối tượng tự chuyển trạng thái đơn hàng (CREATED→PAID→SHIPPED) và hành vi đổi theo trạng thái nội bộ',
+    'Tạo object phức tạp từng bước',
+    'Thêm hành vi logging cho object có sẵn'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Strategy cho việc chọn thuật toán hoán đổi được.**
+
+**Tóm tắt:** Strategy pattern (mẫu chiến lược) đóng gói các thuật toán thay thế nhau sau một interface; State pattern (mẫu trạng thái) cho phép object thay đổi hành vi khi trạng thái nội bộ thay đổi.
+
+### Vì sao đúng
+- Tính phí ship: cùng mục tiêu, khác cách tính; caller hoặc context chọn strategy phù hợp.
+- Mỗi strategy độc lập, dễ test và thêm mới (kết hợp OCP).
+
+### Vì sao các phương án khác sai
+- Chuyển trạng thái đơn hàng với luật chuyển tiếp là bài toán State (hoặc state machine).
+- Tạo từng bước là Builder; bọc thêm hành vi là Decorator.
+
+> Senior tip: Hỏi "ai quyết định đổi?" — bên ngoài chọn thuật toán → Strategy; bản thân object đổi theo lifecycle → State.`
+},
+{
+  id: 'qz-design-057',
+  topic: 'design',
+  q: 'State pattern: điều gì mô tả đúng nhất hành vi của nó?',
+  options: [
+    'Object ủy thác hành vi cho object trạng thái hiện tại và việc chuyển trạng thái được kiểm soát theo ngữ cảnh/trạng thái',
+    'Client luôn truyền strategy mới cho mỗi lần gọi',
+    'Chỉ dùng enum và switch là State pattern chuẩn',
+    'State và Strategy luôn giống nhau về ý định'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: hành vi phụ thuộc trạng thái nội bộ và có thể tự chuyển.**
+
+**Tóm tắt:** State pattern gom hành vi theo từng trạng thái vào class riêng; context giữ state hiện tại và delegate.
+
+### Vì sao đúng
+- Tránh switch khổng lồ lặp lại ở nhiều method; mỗi state biết hành vi và trạng thái kế tiếp hợp lệ.
+- Chuyển tiếp (transition) thường nằm trong context/state, phản ánh vòng đời object.
+
+### Vì sao các phương án khác sai
+- Client truyền strategy mỗi lần là đặc trưng Strategy.
+- Enum+switch có thể mô phỏng đơn giản nhưng không phải bản chất pattern khi logic phức tạp.
+- Ý định khác: State về vòng đời/hành vi nội tại, Strategy về thuật toán thay thế.
+
+> Senior tip: Với nhiều trạng thái và luật chuyển phức tạp, cân nhắc state machine library nhưng vẫn giữ tư duy State.`
+},
+{
+  id: 'qz-design-058',
+  topic: 'design',
+  multi: true,
+  q: 'Decorator trong Spring (proxy/AOP - lập trình hướng khía cạnh, thêm hành vi ngang như transaction/log quanh method): phát biểu nào đúng? (Chọn 2)',
+  options: [
+    '{{@Transactional}} thường được Spring thực thi qua proxy bọc bean để mở/commit/rollback transaction quanh lời gọi method',
+    'Proxy thêm cross-cutting concern (mối quan tâm cắt ngang như bảo mật, giao dịch) mà không sửa code nghiệp vụ trong method',
+    'Proxy làm thay đổi bytecode của class domain entity trong mọi trường hợp',
+    'Gọi method {{@Transactional}} từ chính method khác trong cùng class luôn đi qua proxy'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: Spring dùng proxy để bọc hành vi và thêm concern ngang.**
+
+**Tóm tắt:** Decorator/Proxy pattern (mẫu bọc) thêm hành vi trước/sau khi ủy thác cho đối tượng thật; Spring AOP thường dùng JDK dynamic proxy hoặc CGLIB.
+
+### Vì sao đúng
+- {{@Transactional}}, {{@Cacheable}}, security advice là ví dụ điển hình: hạ tầng xử lý quanh lời gọi.
+- Tách concern giúp code nghiệp vụ gọn và tái sử dụng.
+
+### Vì sao các phương án khác sai
+- Không phải mọi trường hợp đều sửa bytecode entity; cơ chế phụ thuộc cấu hình/proxy type.
+- Self-invocation (gọi nội bộ cùng instance) thường bypass proxy nên annotation có thể không có tác dụng.
+
+> Senior tip: Hiểu rõ "proxy boundary" để tránh bug transaction/log không chạy như mong đợi.`
+},
+{
+  id: 'qz-design-059',
+  topic: 'design',
+  q: 'Builder pattern (mẫu xây dựng) và Java {{record}} (Java 16+, kiểu dữ liệu bất biến mang dữ liệu) phù hợp thế nào?',
+  options: [
+    '{{record}} phù hợp value object/DTO bất biến; Builder hữu ích khi có nhiều tham số tùy chọn hoặc cần bước dựng phức tạp',
+    '{{record}} thay thế hoàn toàn Builder trong mọi trường hợp',
+    'Builder chỉ dùng cho entity JPA mutable',
+    '{{record}} cho phép setter để thay đổi field sau khi tạo'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: record cho dữ liệu bất biến, Builder cho khởi tạo phức tạp.**
+
+**Tóm tắt:** Builder tách việc "lắp ráp" object nhiều bước/nhều tham số; {{record}} sinh sẵn constructor, accessor, {{equals/hashCode/toString}} cho dữ liệu bất biến.
+
+### Vì sao đúng
+- DTO (Data Transfer Object - gói dữ liệu trao đổi) bất biến hợp với record: rõ ràng, ít boilerplate.
+- Khi có 6-7 tham số, nhiều giá trị mặc định, hoặc validation theo nhóm, Builder (tự viết hoặc Lombok) vẫn hữu ích; có thể kết hợp record + builder.
+
+### Vì sao các phương án khác sai
+- Record không có setter và không thay thế mọi nhu cầu dựng (ví dụ bước tính toán trung gian).
+- Builder không chỉ dành cho JPA entity.
+- Record bất biến theo thiết kế.
+
+> Senior tip: Ưu tiên bất biến cho message/event; dùng Builder khi constructor dài gây nhầm thứ tự tham số.`
+},
+{
+  id: 'qz-design-060',
+  topic: 'design',
+  q: 'Hexagonal Architecture (Ports and Adapters - kiến trúc lục giác/cổng và bộ chuyển đổi) tách phần nào khỏi phần nào?',
+  options: [
+    'Domain/business logic (lõi) độc lập với hạ tầng (DB, HTTP, queue) thông qua port (interface) và adapter (triển khai)',
+    'Chỉ tách Controller khỏi Service trong cùng tầng',
+    'Bắt buộc dùng 6 module Maven',
+    'Thay thế hoàn toàn việc viết integration test'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: cô lập domain khỏi chi tiết hạ tầng bằng port/adapter.**
+
+**Tóm tắt:** Port là "ổ cắm" (interface) do domain định nghĩa hoặc cần; Adapter là "phích cắm" nối port với công nghệ cụ thể (JPA, Kafka, REST).
+
+### Vì sao đúng
+- Domain không import framework/driver → dễ unit test với fake adapter.
+- Đổi DB hay message broker chỉ thay adapter, giữ nguyên use case.
+
+### Vì sao các phương án khác sai
+- Không chỉ là tách Controller/Service bề mặt.
+- "Hexagonal" là ẩn dụ, không quy định số module.
+- Vẫn cần integration test cho adapter và wiring.
+
+> Senior tip: Áp dụng mạnh khi domain phức tạp và vòng đời sản phẩm dài; với CRUD đơn giản có thể là over-engineering.`
+},
+{
+  id: 'qz-design-061',
+  topic: 'design',
+  multi: true,
+  q: 'DDD (Domain-Driven Design - thiết kế hướng miền): Aggregate boundary (ranh giới aggregate - cụm đối tượng nhất quán) nên được xác định dựa trên điều gì? (Chọn 2)',
+  options: [
+    'Các invariant (bất biến nghiệp vụ - điều kiện phải luôn đúng) cần được đảm bảo nhất quán trong một giao dịch',
+    'Ranh giới nơi các thay đổi phải "đúng cùng lúc" theo luật nghiệp vụ, do Aggregate Root điều phối',
+    'Gom tất cả entity liên quan vào một aggregate thật lớn để dễ join',
+    'Theo đúng số bảng trong database'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: dựa trên invariant và tính nhất quán tức thì.**
+
+**Tóm tắt:** Aggregate là cụm object được xem như một đơn vị nhất quán; chỉ Aggregate Root (gốc) được truy cập từ bên ngoài.
+
+### Vì sao đúng
+- Nếu hai dữ liệu phải luôn thỏa luật cùng lúc (ví dụ tổng tiền = sum dòng), chúng thường thuộc cùng aggregate hoặc cần cơ chế khác (saga/eventual consistency).
+- Root bảo vệ invariant khi nhận command/thay đổi.
+
+### Vì sao các phương án khác sai
+- Aggregate quá lớn gây lock contention, transaction dài, khó scale.
+- Ranh giới DB (bảng) là chi tiết lưu trữ, không quyết định ranh giới nghiệp vụ.
+
+> Senior tip: Khi phỏng vấn, hỏi "quy tắc nào không được sai dù chỉ 1 giây?" để tìm invariant và boundary.`
+},
+{
+  id: 'qz-design-062',
+  topic: 'design',
+  q: 'Code smell "Shotgun surgery" (phẫu thuật rải đạn - một thay đổi nhỏ phải sửa nhiều nơi) thường do nguyên nhân gì?',
+  options: [
+    'Một trách nhiệm/khái niệm bị phân mảnh rải rác nhiều class, thiếu gom nhóm (cohesion - sự gắn kết bên trong)',
+    'Một class quá lớn làm mọi thứ',
+    'Dùng quá nhiều interface',
+    'Đặt tên biến quá dài'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: logic liên quan bị rải rác.**
+
+**Tóm tắt:** Shotgun surgery xảy ra khi thêm/sửa một rule buộc bạn chạm vào hàng loạt file.
+
+### Vì sao đúng
+- Ví dụ: quy tắc tính thuế nằm rải rác ở controller, service, util, entity → mỗi lần đổi luật phải săn nhiều chỗ.
+- Hướng xử lý: gom trách nhiệm liên quan (Move Field/Method, Extract Class/Module) để thay đổi tập trung.
+
+### Vì sao các phương án khác sai
+- Class quá lớn là "God class"/"Large class", smell khác (dù có thể đi kèm).
+- Nhiều interface hay tên dài không phải nguyên nhân trực tiếp.
+
+> Senior tip: Đo bằng số file/PR cho một thay đổi nghiệp vụ đơn giản; con số cao là tín hiệu kiến trúc rò rỉ.`
+},
+{
+  id: 'qz-design-063',
+  topic: 'design',
+  q: 'Code smell "Feature envy" (ghen tị tính năng - method quan tâm dữ liệu của class khác hơn class mình): dấu hiệu và hướng refactor đúng là gì?',
+  options: [
+    'Method gọi nhiều getter/field của object khác; cân nhắc Move Method sang class sở hữu dữ liệu đó',
+    'Method có quá nhiều tham số; luôn dùng Introduce Parameter Object',
+    'Method quá ngắn; cần inline',
+    'Class có nhiều constructor; cần Builder'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phát hiện qua việc "mượn" dữ liệu và di chuyển hành vi.**
+
+**Tóm tắt:** Feature envy cho thấy hành vi đang đặt sai chỗ so với dữ liệu nó thao tác.
+
+### Vì sao đúng
+- Nếu {{order.getCustomer().getLevel()}} lặp lại để tính chiết khấu, logic có thể thuộc về {{Customer}} hoặc {{PricingPolicy}}.
+- Move Method/Extract Method giúp tăng cohesion và giảm coupling.
+
+### Vì sao các phương án khác sai
+- Nhiều tham số là smell khác (Long Parameter List).
+- Method ngắn hay nhiều constructor không định nghĩa feature envy.
+
+> Senior tip: Trong domain giàu hành vi (rich domain), tránh để service "hút" hết logic khỏi entity/value object một cách mù quáng.`
+},
+{
+  id: 'qz-design-064',
+  topic: 'design',
+  multi: true,
+  q: 'Refactor an toàn (thay đổi cấu trúc code nhưng giữ nguyên hành vi) khi chưa có test: bước nào nên ưu tiên? (Chọn 2)',
+  options: [
+    'Viết characterization test (test ghi lại hành vi hiện tại) làm lưới an toàn trước khi đổi cấu trúc',
+    'Refactor từng bước nhỏ, chạy test sau mỗi bước và commit thường xuyên',
+    'Viết lại toàn bộ module trong một nhánh dài rồi mới test cuối kỳ',
+    'Tối ưu hiệu năng song song với đổi kiến trúc lớn để tiết kiệm thời gian'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: khóa hành vi bằng test và đi từng bước nhỏ.**
+
+**Tóm tắt:** Refactor an toàn dựa trên phản hồi nhanh: biết hành vi cũ, thay đổi nhỏ, xác minh liên tục.
+
+### Vì sao đúng
+- Characterization test (golden/master test) bắt output/side-effect hiện tại, kể cả hành vi lạ, để phát hiện lệch.
+- Bước nhỏ + commit giúp khoanh vùng lỗi và rollback dễ.
+
+### Vì sao các phương án khác sai
+- Viết lại lớn (big bang rewrite) rủi ro mất hành vi ngầm và khó debug.
+- Trộn tối ưu hiệu năng với thay đổi cấu trúc làm khó biết nguyên nhân khi có lỗi.
+
+> Senior tip: "Làm cho thay đổi dễ (dễ sửa) rồi mới làm thay đổi dễ đó" — nhưng luôn cần bằng chứng từ test/monitoring.`
+},
+{
+  id: 'qz-design-065',
+  topic: 'design',
+  q: 'Trong DDD, vì sao chỉ nên thay đổi trạng thái bên trong Aggregate thông qua Aggregate Root?',
+  options: [
+    'Root là điểm vào duy nhất để kiểm tra invariant và điều phối thay đổi nhất quán bên trong ranh giới aggregate',
+    'Vì framework ORM yêu cầu như vậy',
+    'Để giảm số class trong domain',
+    'Để mọi entity đều public setter cho tiện'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Aggregate Root bảo vệ bất biến.**
+
+**Tóm tắt:** Aggregate Root (gốc của aggregate) chịu trách nhiệm đảm bảo mọi thay đổi giữ cho cụm object luôn hợp lệ theo luật nghiệp vụ.
+
+### Vì sao đúng
+- Nếu client sửa trực tiếp entity con, root không có cơ hội từ chối thay đổi vi phạm luật (ví dụ vượt hạn mức dòng đơn).
+- Giao tiếp qua method mang ý nghĩa nghiệp vụ ({{order.addItem(...)}}) rõ hơn setter rời rạc.
+
+### Vì sao các phương án khác sai
+- ORM có thể hỗ trợ mapping nhưng lý do chính là nghiệp vụ, không phải công cụ.
+- Giảm số class hay mở setter không liên quan và thường làm yếu thiết kế.
+
+> Senior tip: Expose ID của entity con ra ngoài nếu cần tham chiếu, nhưng route thay đổi qua root.`
+},
+{
+  id: 'qz-design-066',
+  topic: 'design',
+  q: 'Một service tính giá có {{if (customer.isVip()) ... else ...}} rải rác nhiều nơi. Refactor nào thường phù hợp để tuân thủ OCP và giảm trùng lặp?',
+  options: [
+    'Dùng Strategy/Policy (ví dụ {{PricingPolicy}}) và chọn implementation theo ngữ cảnh thay vì rải if',
+    'Chuyển hết if vào database stored procedure',
+    'Dùng biến global để lưu loại khách hàng',
+    'Copy-paste logic vào từng controller'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: đóng gói biến thể thuật toán bằng Strategy/Policy.**
+
+**Tóm tắt:** Khi hành vi thay đổi theo loại/điều kiện ổn định, Strategy giúp thay nhánh điều kiện bằng polymorphism.
+
+### Vì sao đúng
+- Mỗi policy có trách nhiệm rõ, thêm loại mới bằng class mới và đăng ký.
+- Test từng policy độc lập, giảm rủi ro sửa một chỗ làm hỏng chỗ khác.
+
+### Vì sao các phương án khác sai
+- Đẩy logic nghiệp vụ xuống DB khó version/test và trộn trách nhiệm.
+- Biến global/copy-paste tăng coupling và shotgun surgery.
+
+> Senior tip: Đừng lạm dụng pattern cho 1-2 nhánh ổn định; refactor khi thấy biến động và trùng lặp thực sự.`
+},
+{
+  id: 'qz-design-067',
+  topic: 'design',
+  q: 'Trong Hexagonal Architecture, "port" thường là gì trong code Java?',
+  options: [
+    'Interface do domain/use case định nghĩa để mô tả khả năng cần (ví dụ {{PaymentGateway}}) mà adapter hạ tầng sẽ implement',
+    'Một class controller REST',
+    'File cấu hình YAML',
+    'Bảng database'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: port là abstraction (thường là interface).**
+
+**Tóm tắt:** Port mô tả "cần gì" ở biên ứng dụng; adapter hiện thực "làm thế nào" với công nghệ cụ thể.
+
+### Vì sao đúng
+- Ví dụ outbound port {{OrderRepository}} do domain cần; {{JpaOrderRepository}} là adapter.
+- Inbound port có thể là interface use case mà web/controller gọi vào.
+
+### Vì sao các phương án khác sai
+- Controller/YAML/bảng là thành phần hạ tầng hoặc cơ chế, không phải port.
+
+> Senior tip: Đặt tên port theo ngôn ngữ miền (PaymentGateway) thay vì công nghệ (StripeClient) để giữ domain sạch.`
+},
+{
+  id: 'qz-design-068',
+  topic: 'design',
+  multi: true,
+  q: 'Khi refactor legacy code an toàn, thực hành nào giúp giảm rủi ro? (Chọn 2)',
+  options: [
+    'Thêm test bao phủ nhánh quan trọng (kể cả test qua API/public method) trước khi thay đổi cấu trúc bên trong',
+    'Tách bước: đổi tên/di chuyển (behavior-preserving) rồi mới thay đổi hành vi trong bước riêng có test',
+    'Tắt toàn bộ test cũ vì chúng cản refactor',
+    'Gộp refactor và thêm tính năng lớn vào cùng một commit để dễ review'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: có lưới an toàn và tách loại thay đổi.**
+
+**Tóm tắt:** Refactor (giữ hành vi) và thay đổi tính năng là hai loại rủi ro khác nhau; trộn chúng làm khó truy vết.
+
+### Vì sao đúng
+- Test bảo vệ hợp đồng quan sát được; với legacy có thể bắt đầu từ test mức tích hợp.
+- Tách bước giúp diff rõ: bước nào chỉ "di chuyển", bước nào đổi logic.
+
+### Vì sao các phương án khác sai
+- Tắt test bỏ mất tín hiệu hồi quy.
+- Commit lớn trộn refactor+feature khiến review và bisect bug rất khó.
+
+> Senior tip: Dùng "Mikado method" hoặc danh sách bước nhỏ khi refactor chuỗi phụ thuộc phức tạp.`
+},
+{
+  id: 'qz-design-069',
+  topic: 'design',
+  q: 'So sánh dùng {{record}} (bất biến) với class mutable cho DTO trong API: lợi ích chính của {{record}} là gì?',
+  options: [
+    'Dữ liệu bất biến, intent rõ "chỉ mang dữ liệu", giảm lỗi do bị sửa ngầm và giảm boilerplate',
+    'Cho phép kế thừa để tái sử dụng field',
+    'Tự động map với mọi annotation ORM mà không cấu hình',
+    'Luôn nhanh hơn class thường về hiệu năng runtime'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: bất biến và rõ ý định.**
+
+**Tóm tắt:** {{record}} (Java 16+) là cách khai báo ngắn gọn cho carrier dữ liệu bất biến.
+
+### Vì sao đúng
+- Không có setter → khó bị thay đổi ngoài ý muốn khi truyền qua nhiều tầng.
+- Trình biên dịch sinh constructor/accessor/equals/hashCode/toString nhất quán.
+
+### Vì sao các phương án khác sai
+- {{record}} không thể {{extends}} class khác (nhưng có thể implement interface).
+- ORM mapping phụ thuộc phiên bản/cấu hình, không tự động "mọi trường hợp".
+- Hiệu năng không phải lý do chính và phụ thuộc ngữ cảnh.
+
+> Senior tip: Với entity JPA cần proxy/mutation, record thường không phù hợp; dùng cho DTO/command/query object.`
+},
+{
+  id: 'qz-design-070',
+  topic: 'design',
+  q: 'Trong Spring, decorator/proxy cho {{@Cacheable}} hoặc {{@Transactional}} thường KHÔNG áp dụng khi nào?',
+  options: [
+    'Khi gọi method được chú thích từ một method khác trong cùng instance (self-invocation), lời gọi không đi qua proxy',
+    'Khi method là public',
+    'Khi bean được Spring quản lý',
+    'Khi dùng interface'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: self-invocation bypass proxy.**
+
+**Tóm tắt:** Nhiều tính năng Spring AOP dựa trên proxy bao ngoài bean; gọi {{this.method()}} đi thẳng vào object thật, không qua lớp bọc.
+
+### Vì sao đúng
+- {{this.internal()}} từ {{publicMethod()}} cùng class sẽ không kích hoạt advice của {{internal()}}.
+- Cách xử lý: tách bean, tự inject chính mình (cẩn thận), hoặc dùng AspectJ weaving khi thực sự cần.
+
+### Vì sao các phương án khác sai
+- Public bean/interface không phải nguyên nhân chặn; ngược lại còn là điều kiện phổ biến để proxy hoạt động.
+
+> Senior tip: Khi debug "annotation không chạy", kiểm tra call stack xem có đi qua proxy class ({{\$Proxy}}/CGLIB) không.`
+}
+
 );
