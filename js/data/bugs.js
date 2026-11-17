@@ -7000,5 +7000,171 @@ return total.divide(BigDecimal.valueOf(quantity), 2, RoundingMode.HALF_UP);
 "Vì sao {{BigDecimal.divide}} đôi khi ném {{ArithmeticException}}" là câu hỏi Java core phổ biến. Trả lời: divide không tham số yêu cầu kết quả kết thúc (terminating decimal), phần thập phân vô hạn ném exception; sửa bằng divide(divisor, scale, RoundingMode); kèm lưu ý không tạo BigDecimal từ double.`,
   related: ['core-021'],
   tags: ['BigDecimal', 'divide', 'ArithmeticException', 'RoundingMode', 'money']
+},
+{
+  id: 'bug-036',
+  title: 'Ví điện tử: khách hàng bị trừ tiền hai lần khi mạng yếu',
+  domain: 'Ví điện tử / Fintech',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 30,
+  story: `**Bối cảnh:** API {{/withdraw}} nhận request rút tiền có {{requestId}} duy nhất. Cổng thanh toán đôi khi chậm, app thấy timeout thì tự động retry request đó.\n\n**Sự cố:** Webhook của cổng thanh toán báo "timeout", app retry, service xử lý lần 2, trừ tiền lần 2 dù request là MỘT. Đối soát thấy ví bị trừ 2 lần.`,
+  artifacts: [
+    { name: 'wallet-service.log', lang: 'text', content: `2026-11-05 10:00:00.100 INFO WithdrawService : debit acc=W-1 req=REQ-001 amount=100000
+2026-11-05 10:00:05.100 WARN WithdrawService : gateway timeout req=REQ-001
+2026-11-05 10:00:05.200 INFO WithdrawService : debit acc=W-1 req=REQ-001 amount=100000 (retry)
+2026-11-05 10:00:05.300 INFO Ledger : credited acc=W-1 amount=100000 ref=TX-1
+2026-11-05 10:00:05.400 INFO Ledger : credited acc=W-1 amount=100000 ref=TX-2` }
+  ],
+  starter: `class WalletService {
+    private final Ledger ledger;
+    WalletService(Ledger ledger) { this.ledger = ledger; }
+    
+    // Rút tiền: chưa idempotent, cộng/trừ tiền không kiểm tra requestId
+    void withdraw(String acc, String reqId, long amount) {
+        ledger.credit(acc, amount);
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    
+    static class FakeLedger implements Ledger {
+        long total = 0;
+        int credits = 0;
+        public void credit(String acc, long amount) {
+            total += amount;
+            credits++;
+        }
+    }
+    
+    public static void main(String[] args) {
+        FakeLedger l = new FakeLedger();
+        WalletService s = new WalletService(l);
+        s.withdraw("W1", "REQ1", 100);
+        s.withdraw("W1", "REQ1", 100); // retry
+        
+        check("khong_trung_lap", l.credits == 1, "kỳ vọng chỉ 1 lần trừ tiền, thực tế " + l.credits);
+        System.out.println("RESULT " + passed + "/" + total);
+        System.exit(0);
+    }
+}`,
+  reference: `class WalletService {
+    private final Ledger ledger;
+    private final Set<String> processed = new HashSet<>();
+    WalletService(Ledger ledger) { this.ledger = ledger; }
+    
+    synchronized void withdraw(String acc, String reqId, long amount) {
+        if (processed.contains(reqId)) return;
+        ledger.credit(acc, amount);
+        processed.add(reqId);
+    }
+}`,
+  hints: ['App retry cùng request, service nên kiểm tra đã xử lý requestId chưa.', 'Dùng Set để lưu các requestId đã xử lý thành công và cần đảm bảo thread-safe.', 'Transaction phải đảm bảo cả việc trừ tiền và đánh dấu requestId.'],
+  rootCause: `**Thiếu tính idempotent (tính bình đẳng).** Service không kiểm tra xem requestId đã được xử lý chưa trước khi thực hiện giao dịch, dẫn đến việc xử lý nhiều lần cho cùng một request. Khi network timeout, client retry request với requestId cũ, và server thực hiện giao dịch lại lần nữa.`,
+  fix: `### Cách sửa trong bài
+Sử dụng một bảng (trong DB hoặc Redis) lưu các requestId đã xử lý. Trước khi xử lý, kiểm tra requestId; nếu đã xử lý, trả về kết quả cũ. Sử dụng transaction để ghi requestId và kết quả cùng lúc. Trong bài tập này, dùng Set an toàn luồng (ConcurrentHashMap.newKeySet()) để lưu requestId đã xử lý thành công. Trước khi gọi ledger.credit, kiểm tra requestId trong Set; nếu đã có thì return; nếu chưa có thì thực hiện credit, sau đó thêm vào Set.
+
+### Trên production thật
+- Sử dụng {{unique constraint}} trên bảng {{ledger}} (cho {{requestId}}) trong cùng transaction với việc trừ tiền. Đây là cách an toàn nhất: nếu DB từ chối insert requestId vì đã tồn tại, tức là request đã được xử lý.
+- Sử dụng {{idempotency key}} do client gửi (chọn key theo ý định hành động, không phải theo transaction). Key này phải tồn tại đủ lâu (ví dụ 7 ngày) để phủ các retry trễ của client.
+
+### Phòng ngừa
+- Mọi API có side-effect (trừ tiền, cộng tiền) phải idempotent.
+- Test retry với cùng requestId phải ra kết quả duy nhất (kiểm tra bằng test harness).
+- Luôn kiểm tra đối soát số dư với nhật ký giao dịch hằng ngày để phát hiện sớm các giao dịch bị lặp.
+- Thiết kế hệ thống: server phải trả lại kết quả cũ cho các yêu cầu retry với cùng key, không chỉ báo lỗi.
+
+### Liên hệ phỏng vấn
+- Idempotency là gì? Tại sao quan trọng trong distributed systems (at-least-once)? Cách triển khai? Đảm bảo tính nguyên tử (atomic) giữa kiểm tra và xử lý bằng transaction hoặc khoá DB. Hãy nêu rõ sự khác biệt giữa idempotency key (do client sinh) và transaction ID (do server sinh). Cần lưu ý việc dọn dẹp các key cũ nếu lượng request quá lớn.`,
+  related: [],
+  tags: ['idempotency', 'retry', 'fintech']
+},
+{
+  id: 'bug-037',
+  title: 'Cache stampede: sản phẩm mới ra mắt làm sập DB',
+  domain: 'Thương mại điện tử / Tìm kiếm',
+  level: 'senior',
+  severity: 'P2',
+  minutes: 25,
+  story: `**Bối cảnh:** Sản phẩm hot ra mắt, hàng nghìn người cùng tìm kiếm. Service cache sản phẩm trong {{ConcurrentHashMap}} với TTL 10 giây để giảm tải cho DB.
+  
+  **Sự cố:** Khi cache hết hạn, 1000 requests cùng miss, cùng gọi DB (câu query phức tạp, tốn 200ms). DB CPU lên 100%, request timeout, service lỗi 503 cho toàn bộ user. Các pod khác cũng nhận thấy DB chậm và bắt đầu timeout, gây ra hiệu ứng domino sập cả hệ thống trong vài phút. Log cho thấy cùng một câu query được gửi tới DB 1000 lần trong cùng một millisecond.`,
+  artifacts: [
+    { name: 'search-service.log', lang: 'text', content: `2026-11-05 10:00:00.100 INFO SearchService : search miss pair=PRODUCT-1 (cache empty)
+2026-11-05 10:00:00.105 INFO SearchService : search miss pair=PRODUCT-1 (cache empty)
+... 1000 requests to DB at same time ...
+2026-11-05 10:00:00.600 ERROR DB : query too slow, timeout occurred` }
+  ],
+  starter: `class SearchService {
+    Map<String, String> cache = new HashMap<>();
+    String search(String q) {
+        if (cache.containsKey(q)) return cache.get(q);
+        String res = db.query(q);
+        cache.put(q, res);
+        return res;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    
+    static class FakeDb {
+        int calls = 0;
+        String query(String q) {
+            calls++;
+            try { Thread.sleep(50); } catch (InterruptedException e) {}
+            return "res";
+        }
+    }
+    
+    public static void main(String[] args) throws Exception {
+        FakeDb db = new FakeDb();
+        SearchService s = new SearchService(db);
+        ExecutorService pool = Executors.newFixedThreadPool(10);
+        List<Future<String>> futures = new ArrayList<>();
+        for (int i=0; i<10; i++) futures.add(pool.submit(() -> s.search("q1")));
+        for (Future<String> f : futures) f.get();
+        
+        check("goi_db_mot_lan", db.calls == 1, "kỳ vọng chỉ gọi DB 1 lần, thực tế " + db.calls);
+        System.out.println("RESULT " + passed + "/" + total);
+        System.exit(0);
+    }
+}`,
+  reference: `class SearchService {
+    private final ConcurrentHashMap<String, String> cache = new ConcurrentHashMap<>();
+    private final FakeDb db;
+    SearchService(FakeDb db) { this.db = db; }
+    
+    String search(String q) {
+        return cache.computeIfAbsent(q, db::query);
+    }
+}`,
+  hints: ['Đọc log: 1000 request cùng miss. Vì sao cùng một query lại được gọi tới DB nhiều lần?', 'Kiểm tra (containsKey) và Ghi (put) không nguyên tử. Cần dùng computeIfAbsent.', 'Thao tác "kiểm tra + gọi DB + ghi cache" phải được gói gọn thành một bước nguyên tử (atomic) theo từng key.'],
+  rootCause: `**Cache stampede (giẫm đạp cache).** Khi cache trống, nhiều request cùng miss, cùng kiểm tra (containsKey), thấy chưa có, rồi **tất cả** cùng gọi DB (câu query phức tạp, tốn thời gian). Kết quả là DB quá tải, và tất cả request này đều cố gắng ghi kết quả vào cache, gây lãng phí tài nguyên và làm treo hệ thống. Bản chất là race condition kiểu "check-then-act" không nguyên tử.`,
+  fix: `### Cách sửa trong bài
+Sử dụng {{ConcurrentHashMap.computeIfAbsent(key, mappingFunction)}}. MappingFunction (ở đây là {{db::query}}) chỉ được chạy một lần cho mỗi key. Các request khác đến cùng lúc sẽ chờ và nhận kết quả của lần gọi duy nhất đó.
+
+### Trên production thật
+- Sử dụng thư viện cache như Caffeine để hỗ trợ tốt hơn (TTL, giới hạn kích thước, hit ratio). Caffeine dùng thuật toán W-TinyLFU, hit ratio thường tốt hơn LRU thuần, và an toàn đa luồng mà không cần {{synchronized}} toàn cục.
+- Nếu cache là distributed (Redis), dùng **distributed lock** (SETNX) hoặc single-flight (chỉ cho phép 1 request đi qua, các request khác chờ hoặc nhận ngay giá trị cũ/đợi).
+- Đặt TTL và cơ chế làm mới nền để dữ liệu không bị cũ; log/metric số lần gọi provider và tỉ lệ cache hit để phát hiện bất thường.
+
+### Phòng ngừa
+- Test đồng thời (load test) với nhiều request miss cache cùng lúc.
+- Luôn giới hạn thời gian gọi DB/API ngoài (timeout).
+
+### Liên hệ phỏng vấn
+- Cache stampede là gì? Cách sửa bằng single-flight? (Sử dụng computeIfAbsent hoặc mutex khóa theo key). Trả lời nên nêu: (1) check-then-act không nguyên tử, (2) {{computeIfAbsent}}/khoá theo key để chỉ một luồng nạp, (3) khác biệt cache trong tiến trình vs cache phân tán, (4) xử lý lỗi và TTL. Nhấn mạnh: an toàn luồng (thread-safe) không chỉ là "dùng ConcurrentHashMap" mà là làm trọn vẹn cả thao tác gộp.`,
+  related: [],
+  tags: ['cache stampede', 'concurrency', 'single-flight']
 }
 );
