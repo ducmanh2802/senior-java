@@ -21,3 +21,4 @@ Người học ôn SAP-C02 + DOP-C02 trong `#/aws` (tabs: overview / plan / prac
 - Đã thêm tab `labs` trong `js/views/aws.js` và CSS tương ứng trong `css/views/aws.css`.
 - Đã thêm keyboard shortcut cơ bản `B` và `/` trong labs view.
 - Lưu trữ `awsLabs` vào `App.store.data.labs`.
+Reviewed-by: verify-only (code/UI task)
