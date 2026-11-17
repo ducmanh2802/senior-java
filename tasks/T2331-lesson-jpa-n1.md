@@ -15,3 +15,4 @@ AGENTS.md (đọc mục liên quan). Chỉ THÊM trước dòng `);` cuối file
 
 ## Notes
 Đã thêm `lesson-jpa-016` (order 16) vào `js/data/lessons-jpa.js`. Trước đó lesson cuối là `lesson-jpa-015` (order 15). Bài học mới bao gồm: giải thích chi tiết N+1, fetch join (1 query), batch fetching (1 + ceil(N/batchSize) query), so sánh hai cách, bẫy phân trang fetch join, ví dụ thực tế 5000 đơn hàng, bài tập `loadOrdersWithItems(strategy)` với enum Strategy { FETCH_JOIN, BATCH } và repo đếm query để kiểm chứng cả hai chiến lược, 4 câu check trắc nghiệm.
+Reviewed-by: kilo (T2331R)
