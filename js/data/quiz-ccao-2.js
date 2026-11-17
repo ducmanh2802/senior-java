@@ -1859,4 +1859,1114 @@ Chọn một thư mục riêng cho output; bật lịch sử phiên bản; quy �
 
 > Mẹo thực tế: nếu người đọc cần quét nhanh, hãy dùng các đoạn ngắn, gạch đầu dòng và đưa ý chính ra đầu mỗi đoạn.`,
 },
+{
+  id: "qz-ccao-199",
+  topic: "claude",
+  q: "[Responsible Use] A marketing manager wants Claude to write a launch announcement that says the new product is 'clinically proven to reduce stress by 40%'. The team has one small internal survey and no clinical study. Which approach is most appropriate?",
+  options: [
+    "Let Claude write the claim, because the product is a wellness tool rather than a medicine",
+    "Keep the claim but add a line saying the figure comes from an internal survey",
+    "Write the claim in softer words, such as 'may help some users relax', so nobody can object",
+    "Remove the claim and describe only what the internal survey measured, with its sample size"
+  ],
+  answer: 3,
+  explain: `**Đúng: bỏ tuyên bố không có bằng chứng và mô tả đúng những gì khảo sát nội bộ đo được, kèm cỡ mẫu.** "Clinically proven" là một tuyên bố khoa học: nó hàm ý đã có thử nghiệm lâm sàng (clinical trial) được thiết kế đúng, có nhóm đối chứng và được bên độc lập đánh giá. Một khảo sát nội bộ vài chục người không phải thử nghiệm lâm sàng, nên câu đó là sai sự thật và có thể vi phạm quy định quảng cáo ở nhiều quốc gia. Cách đúng là hạ tuyên bố xuống đúng mức bằng chứng: nói rõ đây là khảo sát nội bộ, bao nhiêu người tham gia, và chỉ mô tả điều đã đo. Như vậy thông điệp vẫn hữu ích mà không phóng đại.
+
+### Vì sao các lựa chọn khác sai
+- **Cứ viết vì đây là sản phẩm wellness:** "wellness" không miễn trừ nghĩa vụ quảng cáo trung thực; tuyên bố sức khoẻ vẫn cần bằng chứng, và càng dễ gây hiểu lầm thì rủi ro pháp lý càng lớn.
+- **Giữ số 40% và ghi chú "nguồn: khảo sát nội bộ":** ghi nguồn không biến một khảo sát nhỏ thành thử nghiệm lâm sàng; cụm "clinically proven" vẫn là câu sai, và chú thích nhỏ thường bị người đọc bỏ qua.
+- **Viết mềm hơn để khó bị bắt lỗi:** làm câu chữ mơ hồ đi không sửa được gốc rễ là không có bằng chứng; nó chỉ khiến tuyên bố khó kiểm chứng hơn.
+
+### Cách làm
+Tách hai việc: (1) bằng chứng đang có là gì (ai làm, bao nhiêu người, đo bằng cách nào); (2) được phép nói gì dựa trên bằng chứng đó. Yêu cầu Claude viết đúng phần (2), và nếu cần tuyên bố mạnh hơn thì đưa việc đó cho người phụ trách thử nghiệm sản phẩm.
+
+> Mẹo thực tế: khi một tuyên bố nghe "khoa học" mà bạn không có nghiên cứu tương ứng, hãy coi đó là rủi ro pháp lý chứ không phải lỗi câu chữ.`
+},
+{
+  id: "qz-ccao-200",
+  topic: "claude",
+  multi: true,
+  q: "[Responsible Use] A clinic is considering Claude for two jobs. Which two uses are appropriate for Claude to draft or organise, with a qualified person making the final call? (Choose 2)",
+  options: [
+    "Turning a patient's recorded visit notes into a structured draft letter for the doctor to check",
+    "Writing the final dosage instructions a patient should follow after reading their test results",
+    "Making the final decision on whether an insurance claim should be approved",
+    "Grouping patient feedback into themes so staff can decide what to improve",
+    "Telling a patient whether a symptom is serious without a clinician reviewing the message"
+  ],
+  answer: [0, 3],
+  explain: `**Đúng: Claude được dùng để biến ghi chú thành bản nháp có cấu trúc cho bác sĩ kiểm tra, và để gom phản hồi thành chủ đề cho nhân viên quyết định.** Cả hai việc đều thuộc nhóm "AI làm bản nháp, người có chuyên môn quyết định": đầu ra là tài liệu trung gian, có người kiểm chứng trước khi dùng, và sai sót dễ phát hiện khi đối chiếu với ghi chép gốc. Đây là cách khai thác tốc độ của Claude mà vẫn giữ trách nhiệm chuyên môn ở người.
+
+### Vì sao các lựa chọn khác sai
+- **Claude viết chỉ dẫn liều dùng cuối cùng cho bệnh nhân:** đây là quyết định điều trị; liều sai có thể gây hại trực tiếp, và mô hình không có giấy phép hành nghề lẫn hồ sơ bệnh án đầy đủ.
+- **Claude quyết định duyệt hay từ chối yêu cầu bảo hiểm:** ảnh hưởng quyền lợi tài chính của người khác; cần người có thẩm quyền xem xét và chịu trách nhiệm.
+- **Claude trả lời bệnh nhân về mức độ nghiêm trọng của triệu chứng:** không có bác sĩ duyệt, đây là tư vấn y khoa; một câu trấn an sai có thể làm chậm việc khám thật.
+
+### Cách làm
+Chọn việc có đầu ra kiểm chứng được (bản nháp, bảng tổng hợp, danh sách chủ đề); quy định rõ người nào duyệt; lưu lại bản gốc để đối chiếu.
+
+> Mẹo thực tế: trong y tế, ranh giới an toàn là "bản nháp có người ký duyệt" — không phải "câu trả lời nghe rất hợp lý".`
+},
+{
+  id: "qz-ccao-201",
+  topic: "claude",
+  q: "[Responsible Use] A consultant wants to check a public company's last four quarterly revenue figures before putting them in a client deck. What is the most reliable approach?",
+  options: [
+    "Look the figures up in the company's published quarterly results or annual report, then compare",
+    "Ask Claude for the four figures and use them if the numbers look consistent with each other",
+    "Ask Claude to list its sources, and trust the list without opening the links",
+    "Use Claude's figures but round each one so a small error becomes invisible"
+  ],
+  answer: 0,
+  explain: `**Đúng: tra báo cáo tài chính chính thức do công ty công bố, rồi đối chiếu.** Báo cáo quý và báo cáo thường niên là tài liệu gốc, có thể mở ra và kiểm tra; đó là loại nguồn duy nhất cho phép bạn khẳng định một con số trước khách hàng. Việc bốn con số "trông nhất quán với nhau" không chứng minh điều gì: Claude tạo văn bản theo xác suất, nên bốn con số có thể cùng sai theo một hướng hợp lý. Làm tròn cũng không sửa lỗi, chỉ che nó đi. Và một danh sách nguồn do chính Claude đưa ra cũng cần được mở ra kiểm tra, vì trích dẫn có thể không tồn tại.
+
+### Vì sao các lựa chọn khác sai
+- **Tin vì các số nhất quán với nhau:** tính nhất quán nội tại không phải bằng chứng; một mô hình có thể tạo ra cả một bảng số sai một cách mạch lạc.
+- **Tin danh sách nguồn mà không mở link:** danh sách do mô hình sinh ra có thể chứa nguồn không tồn tại; chỉ mở nguồn thật mới xác minh được.
+- **Làm tròn để lỗi nhỏ không lộ:** làm tròn không thay đổi sự thật, và trong báo cáo tài chính, sai số nhỏ vẫn có thể làm lệch kết luận.
+
+### Cách làm
+Ghi lại từng con số kèm tài liệu nguồn và kỳ báo cáo; nếu không tìm được nguồn, bỏ con số đó khỏi tài liệu gửi khách.
+
+> Mẹo thực tế: nguyên tắc "một con số, một nguồn mở được" giúp bạn loại phần lớn rủi ro khi dùng số liệu do AI tổng hợp.`
+},
+{
+  id: "qz-ccao-202",
+  topic: "claude",
+  q: "[Responsible Use] An operations manager wants every supplier invoice to be approved automatically by Claude, with nobody checking the result. The system would also pay the invoice. What is the main problem with this design?",
+  options: [
+    "It is fine, because invoice totals are simple numbers that Claude handles well",
+    "It will be too slow, since reading invoices takes time",
+    "It uses too many tokens, so the monthly cost will be high",
+    "It removes a person from a decision that spends company money, so one mistake is paid without review"
+  ],
+  answer: 3,
+  explain: `**Đúng: vấn đề cốt lõi là tự động hoàn toàn một quyết định chi tiền mà không có người kiểm tra.** "Approval" là một hành động có hậu quả tài chính: khi sai, tiền đã ra khỏi công ty và việc đòi lại thường khó hơn nhiều so với việc chặn trước. Với AI, còn thêm một lớp rủi ro: mô hình có thể đọc sai một dòng, bỏ sót một khoản phụ thu, hoặc bị đánh lừa bởi văn bản trong hóa đơn. Vì vậy mẫu thiết kế an toàn là "AI đề xuất, người phê duyệt" — Claude trích xuất và gắn cờ bất thường, còn người có thẩm quyền bấm duyệt.
+
+### Vì sao các lựa chọn khác sai
+- **Cho rằng số đơn giản nên Claude làm tốt:** độ đơn giản của phép tính không làm mất hậu quả của việc chi tiền sai; và chính các con số "đơn giản" cũng có thể bị đọc lệch.
+- **Lo tốc độ:** tốc độ là lý do người ta muốn tự động hoá, không phải lý do để bỏ kiểm soát.
+- **Lo chi phí token:** chi phí token nhỏ hơn nhiều so với thiệt hại từ một khoản chi sai; đây không phải vấn đề chính.
+
+### Cách làm
+Giữ người phê duyệt; dùng Claude để rút trích dữ liệu và đánh dấu bất thường (số tiền lớn hơn trung bình, thiếu số hóa đơn, ngày bất thường); đặt ngưỡng giá trị dưới mức nào thì mới tự động, và ghi log mọi quyết định.
+
+> Mẹo thực tế: tự động hoá nên bắt đầu ở khâu chuẩn bị dữ liệu, còn quyền chi tiền thì nên giữ ở người.`
+},
+{
+  id: "qz-ccao-203",
+  topic: "claude",
+  multi: true,
+  q: "[Responsible Use] A manager is writing the AI section of the team handbook. Which two rules best protect confidential project information? (Choose 2)",
+  options: [
+    "Paste any internal document into Claude as long as you delete the chat afterwards",
+    "Store confidential source material in the company's approved workspace rather than a personal account",
+    "Let each person decide case by case whether a document is too sensitive to share",
+    "Use a personal account when the company workspace feels slower, to save time",
+    "Strip client names and identifiers before sharing, and share only the passages the task needs"
+  ],
+  answer: [1, 4],
+  explain: `**Đúng: giữ tài liệu mật trong workspace được công ty phê duyệt, và chỉ đưa vào đúng đoạn cần thiết sau khi ẩn danh.** Workspace của công ty là nơi có thoả thuận xử lý dữ liệu, quyền quản trị và chính sách lưu trữ rõ ràng; tài khoản cá nhân thì không. "Chỉ đưa phần cần thiết" (data minimisation) và "ẩn danh" (redaction) làm giảm cả xác suất lẫn hậu quả nếu dữ liệu bị lộ. Đây là hai biện pháp rẻ, làm được ngay, và áp dụng cho mọi loại tài liệu.
+
+### Vì sao các lựa chọn khác sai
+- **Dán rồi xoá chat là đủ:** xoá giao diện không đồng nghĩa với xoá dữ liệu khỏi mọi bản ghi, bản sao, log; và trong lúc dữ liệu còn ở đó, nó vẫn có thể bị dùng sai.
+- **Để mỗi người tự đánh giá mức nhạy cảm:** thiếu nhất quán, và người đang gấp thường chọn cách nhanh; cần quy tắc chung để không phụ thuộc phán đoán cá nhân.
+- **Dùng tài khoản cá nhân vì workspace chậm:** nguyên nhân của việc né tránh là trải nghiệm kém; tổ chức phải sửa phần đó, còn cá nhân vẫn phải dùng đúng nơi được duyệt.
+
+### Cách làm
+Viết vào handbook: (1) chỉ dùng workspace công ty; (2) phân loại dữ liệu trước khi chia sẻ; (3) ẩn tên và chỉ gửi phần liên quan; (4) kênh hỏi khi chưa rõ.
+
+> Mẹo thực tế: chính sách tốt là chính sách dễ tuân theo — nếu chỗ được duyệt chậm hơn chỗ không được duyệt, nhân viên sẽ chọn chỗ nhanh.`
+},
+{
+  id: "qz-ccao-204",
+  topic: "claude",
+  q: "[Responsible Use] A student pastes a textbook chapter into Claude and asks it to write a graded essay for them, then submits the essay under their own name. Which statement best describes the problem?",
+  options: [
+    "None, because the student read the chapter first",
+    "It is acceptable if the essay receives a good grade",
+    "It is a form of academic dishonesty, because the work is presented as the student's own when it was produced by AI",
+    "The only risk is that Claude might write in a style the teacher dislikes"
+  ],
+  answer: 2,
+  explain: `**Đúng: đây là gian lận học thuật — nộp sản phẩm do AI tạo ra dưới tên mình.** Vấn đề không nằm ở chất lượng bài viết mà ở chỗ khai sai nguồn gốc của công việc: người chấm đang đánh giá năng lực của sinh viên, còn bài viết thì không phản ánh năng lực đó. Phần lớn cơ sở giáo dục có quy định riêng về việc dùng AI, và nhiều nơi yêu cầu khai báo hoặc cấm hoàn toàn với bài thi. Việc đã đọc chương sách không làm thay đổi bản chất: đọc để hiểu là một chuyện, nộp bài do máy viết là chuyện khác.
+
+### Vì sao các lựa chọn khác sai
+- **Không sao vì đã đọc chương sách:** đọc tài liệu không đồng nghĩa với việc tự viết; bài nộp vẫn là của AI.
+- **Chấp nhận nếu được điểm cao:** điểm cao càng làm sai lệch đánh giá năng lực và có thể dẫn tới kỷ luật nặng hơn khi bị phát hiện.
+- **Chỉ sợ văn phong giống giáo viên:** đây là rủi ro phụ; vấn đề chính là trung thực học thuật, không phải phong cách.
+
+### Cách làm
+Dùng Claude để học: yêu cầu giải thích, gợi ý dàn ý, đặt câu hỏi phản biện, hoặc nhận xét bản nháp do chính bạn viết. Nếu quy định cho phép dùng AI, hãy khai báo đúng phạm vi đã dùng.
+
+> Mẹo thực tế: ranh giới an toàn trong học tập là "AI giúp bạn làm tốt hơn việc bạn tự làm", không phải "AI làm thay bạn".`
+},
+{
+  id: "qz-ccao-205",
+  topic: "claude",
+  q: "[Responsible Use] An employee wants to connect Claude to the company's shared drive so it can read project files. Which question matters most before enabling that connection?",
+  options: [
+    "Does the connection work on the employee's phone as well as their laptop?",
+    "Which folders can be reached, which account permissions apply, and whether sending that data to the model is allowed by policy?",
+    "How many files can be uploaded at once?",
+    "Can the interface be switched to dark mode?"
+  ],
+  answer: 1,
+  explain: `**Đúng: phải biết phạm vi truy cập, quyền của tài khoản, và liệu việc gửi dữ liệu đó cho mô hình có được chính sách cho phép hay không.** Kết nối (connector) thường đi kèm nguyên tắc "mirror permissions": Claude chỉ thấy những gì tài khoản của bạn vốn đã thấy. Nhưng "thấy được" không đồng nghĩa với "được phép đưa vào công cụ AI". Cần khoanh vùng đúng thư mục dự án, dùng tài khoản công ty có quyền tối thiểu, và kiểm tra điều khoản xử lý dữ liệu trước khi bật.
+
+### Vì sao các lựa chọn khác sai
+- **Có chạy trên điện thoại không:** là câu hỏi tiện ích, không liên quan đến rủi ro dữ liệu.
+- **Upload được bao nhiêu file một lúc:** là giới hạn kỹ thuật, không phải câu hỏi về quyền và phạm vi dữ liệu.
+- **Có dark mode không:** hoàn toàn không liên quan.
+
+### Cách làm
+Chọn một thư mục dự án riêng; dùng tài khoản công ty với quyền đọc tối thiểu; kiểm tra chính sách về dữ liệu đưa vào AI; tắt kết nối khi không dùng; rà lại danh sách quyền theo định kỳ.
+
+> Mẹo thực tế: khi kết nối AI với kho dữ liệu, hãy hỏi "nếu thư mục này bị đọc và gửi đi, ai bị ảnh hưởng?" trước khi hỏi "tính năng có tiện không?".`
+},
+{
+  id: "qz-ccao-206",
+  topic: "claude",
+  multi: true,
+  q: "[Responsible Use] A team wants to use Claude to screen written applications for an internship programme. Which two statements are true about doing this responsibly? (Choose 2)",
+  options: [
+    "Claude can make the final decision alone if the same rubric is applied to every application",
+    "A human should make the shortlisting decision, while Claude helps organise and summarise the evidence",
+    "Removing names from applications removes all fairness concerns",
+    "The criteria should be written down and reviewed for effects on different groups before use",
+    "Automated screening is always fairer than people because it is consistent"
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: người quyết định, Claude chỉ tổ chức bằng chứng; và tiêu chí phải được viết ra, rà soát tác động tới các nhóm khác nhau.** Claude có thể tóm tắt, gom điểm mạnh, đối chiếu với yêu cầu — việc đó tiết kiệm thời gian và giúp người tuyển dụng nhìn đều các hồ sơ. Nhưng quyết định loại ai là quyết định về cơ hội của con người, cần người chịu trách nhiệm và giải thích được. Tiêu chí chấm phải rõ và được kiểm tra xem có vô tình bất lợi cho một nhóm nào không.
+
+### Vì sao các lựa chọn khác sai
+- **Claude tự quyết nếu cùng một rubric:** áp dụng cùng tiêu chí không xoá được thiên lệch trong dữ liệu huấn luyện hoặc trong cách tiêu chí được viết; và không có ai chịu trách nhiệm khi sai.
+- **Ẩn tên là xong:** ẩn tên chỉ xử lý một nguồn thiên lệch; các tín hiệu khác (trường, cách viết, khoảng trống trong hồ sơ) vẫn có thể dẫn tới đối xử không công bằng.
+- **Tự động luôn công bằng hơn người:** tính nhất quán không đồng nghĩa với công bằng; một quy tắc sai được áp dụng đều vẫn là một quy tắc sai.
+
+### Cách làm
+Dùng Claude để tóm tắt và đánh dấu hồ sơ phù hợp; người tuyển dụng quyết định; định kỳ rà soát các hồ sơ bị loại để xem có mẫu bất thường không; lưu tiêu chí và lý do.
+
+> Mẹo thực tế: khi AI tham gia vào quyết định về người, hãy thiết kế thêm hai thứ — người quyết định cuối và cách để người bị ảnh hưởng phản hồi.`
+},
+{
+  id: "qz-ccao-207",
+  topic: "claude",
+  q: "[Responsible Use] A developer pastes a company config file into a personal Claude account because it is quicker. The file contains database connection strings. What is the most accurate assessment?",
+  options: [
+    "It is fine, because the file is only being used for debugging and not shared publicly",
+    "It is fine as long as the developer deletes the chat when finished",
+    "It is fine because Claude is operated by a large, reputable company",
+    "Confidential company data has left the company environment, which may breach policy and client commitments"
+  ],
+  answer: 3,
+  explain: `**Đúng: dữ liệu mật của công ty đã ra khỏi môi trường do công ty kiểm soát.** Khi bạn dán vào tài khoản cá nhân, bạn không còn biết dữ liệu được lưu ở đâu, theo chính sách nào, và công ty không còn quyền quản trị. Điều này có thể vi phạm quy định nội bộ, thoả thuận với khách hàng, hoặc nghĩa vụ pháp lý về bảo mật. Uy tín của nhà cung cấp không thay thế được việc công ty bạn đã duyệt công cụ đó hay chưa, và việc xoá chat không hoàn tác được việc dữ liệu đã rời khỏi hệ thống.
+
+### Vì sao các lựa chọn khác sai
+- **Chỉ dùng để debug nên không sao:** mục đích không làm giảm độ nhạy cảm của dữ liệu; connection string thường chứa mật khẩu và địa chỉ hệ thống nội bộ.
+- **Xoá chat là xong:** xoá giao diện không đồng nghĩa với xoá mọi bản ghi; rủi ro vẫn còn.
+- **Nhà cung cấp uy tín nên an toàn:** uy tín nói về chất lượng dịch vụ, không phải về việc tổ chức của bạn đã cho phép đưa dữ liệu đó vào công cụ.
+
+### Cách làm
+Dùng tài khoản và workspace do công ty cung cấp; nếu chưa có, gửi yêu cầu xin phê duyệt; ẩn hoặc thay thế thông tin đăng nhập trước khi chia sẻ.
+
+> Mẹo thực tế: trước khi dán một file cấu hình, hãy tìm nhanh các khoá như password, token, connection string — nếu có, coi như file đó không được phép rời khỏi công ty.`
+},
+{
+  id: "qz-ccao-208",
+  topic: "claude",
+  multi: true,
+  q: "[Responsible Use] A team is choosing a Claude plan for a department that handles personal customer data. Which two checks matter most before they start uploading files? (Choose 2)",
+  options: [
+    "Whether the interface is available in Vietnamese",
+    "Who administers the account and what controls the organisation has over its data",
+    "Whether the plan is the cheapest per seat",
+    "How long conversations and project data are kept, and who can access or export them",
+    "Whether the plan supports dark mode on mobile"
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: ai quản trị tài khoản và tổ chức có kiểm soát gì trên dữ liệu; cùng với thời gian lưu trữ và quyền truy cập, xuất dữ liệu.** Với dữ liệu cá nhân của khách, hai câu hỏi này quyết định bạn có đáp ứng được nghĩa vụ bảo vệ dữ liệu hay không. Tài khoản thuộc tổ chức cho phép quản trị viên đặt chính sách, quản lý thành viên và xử lý yêu cầu xoá; thời gian lưu trữ và quyền export cho biết dữ liệu tồn tại bao lâu và ai có thể lấy ra. Đây là các câu hỏi về vòng đời dữ liệu, không phải về giao diện.
+
+### Vì sao các lựa chọn khác sai
+- **Giao diện tiếng Việt:** là chi tiết trải nghiệm, không liên quan đến bảo vệ dữ liệu.
+- **Gói rẻ nhất mỗi ghế:** chi phí là yếu tố kinh doanh, nhưng không được đặt trước yêu cầu bảo mật khi dữ liệu là thông tin cá nhân.
+- **Dark mode trên mobile:** hoàn toàn không liên quan.
+
+### Cách làm
+Lập danh sách câu hỏi gửi cho nhà cung cấp: quản trị, lưu trữ, truy cập, export, quy trình xoá, vị trí dữ liệu; lưu câu trả lời bằng văn bản và cho pháp chế xem trước khi ký.
+
+> Mẹo thực tế: câu hỏi "dữ liệu của chúng tôi nằm ở đâu, bao lâu và ai mở được?" quan trọng hơn mọi câu hỏi về tính năng.`
+},
+{
+  id: "qz-ccao-209",
+  topic: "claude",
+  q: "[Responsible Use] A marketing team uses Claude to write social posts, and the drafts sometimes copy a competitor's slogan almost word for word. What is the most responsible response?",
+  options: [
+    "Publish them, since slogans are short and hard to own",
+    "Keep the wording but add a note that it was written by AI",
+    "Add more emojis so the posts look different from the original",
+    "Have the wording checked and rewritten so it is original and cleared for use before publishing"
+  ],
+  answer: 3,
+  explain: `**Đúng: kiểm tra và viết lại thành nội dung gốc, được duyệt trước khi đăng.** Claude học từ lượng văn bản rất lớn, nên đôi khi tái tạo gần nguyên văn một câu đã tồn tại, đặc biệt với các câu slogan ngắn và nổi tiếng. Đây là rủi ro đạo văn và bản quyền: đăng lên là công khai và có thể dẫn tới khiếu nại, gỡ bài, hoặc tranh chấp. "Ngắn nên khó bị sở hữu" là suy nghĩ sai — slogan là đối tượng được bảo hộ ở nhiều nơi, và việc cố ý sao chép là hành vi khác hẳn với trùng hợp.
+
+### Vì sao các lựa chọn khác sai
+- **Đăng vì slogan ngắn:** độ ngắn không loại bỏ quyền tác giả; đây là lý do phổ biến khiến doanh nghiệp gặp rủi ro.
+- **Thêm ghi chú "do AI viết":** ghi chú không làm câu chữ trở thành bản gốc, cũng không xử lý vấn đề bản quyền.
+- **Thêm emoji cho khác đi:** thay đổi hình thức không thay đổi phần được bảo hộ; nội dung cốt lõi vẫn giống.
+
+### Cách làm
+Tìm kiếm nhanh câu slogan trên internet; nếu trùng, yêu cầu Claude viết lại theo thông điệp của bạn thay vì câu mẫu; lưu lại bản đã duyệt và nguồn cảm hứng.
+
+> Mẹo thực tế: khi Claude tạo ra một câu nghe rất "gọn và quen", hãy tìm kiếm nó — đó thường là dấu hiệu nó đang lặp lại một câu đã có.`
+},
+{
+  id: "qz-ccao-210",
+  topic: "claude",
+  q: "[Responsible Use] An employee discovers that a colleague has been pasting confidential client documents into a personal Claude account for months. What is the most appropriate response?",
+  options: [
+    "Mention it to the colleague and leave it at that, since it is their choice",
+    "Post about it in the team chat so everyone is aware",
+    "Ignore it, because the colleague is experienced and probably checked the rules",
+    "Report it through the company's policy or security channel so the organisation can assess and act"
+  ],
+  answer: 3,
+  explain: `**Đúng: báo theo kênh chính sách hoặc an toàn thông tin của công ty.** Đây là vấn đề của tổ chức, không phải tranh chấp cá nhân: dữ liệu khách hàng đã rời khỏi môi trường được kiểm soát trong nhiều tháng, nên cần người có thẩm quyền đánh giá phạm vi, nghĩa vụ thông báo và biện pháp khắc phục. Bạn không cần kết luận ai đúng sai; chỉ cần đưa thông tin cho người có trách nhiệm xử lý. Báo cáo đúng kênh cũng bảo vệ chính bạn khỏi bị xem là che giấu.
+
+### Vì sao các lựa chọn khác sai
+- **Nói với đồng nghiệp rồi để đó:** không tạo ra hành động khắc phục; dữ liệu vẫn ở ngoài kiểm soát.
+- **Đăng lên chat nhóm:** lan truyền thông tin chưa được xác minh, có thể vi phạm quyền riêng tư của đồng nghiệp và không giải quyết được gì.
+- **Bỏ qua vì đồng nghiệp giàu kinh nghiệm:** kinh nghiệm không thay thế quy định; việc kéo dài càng làm tăng rủi ro.
+
+### Cách làm
+Thông báo cho quản lý trực tiếp hoặc bộ phận an toàn thông tin; mô tả sự việc, thời gian, loại dữ liệu nếu biết; không tự ý mở rộng việc điều tra.
+
+> Mẹo thực tế: xử lý sự cố dữ liệu là việc của tổ chức, không phải việc của một cá nhân — hãy đưa thông tin cho đúng người có thẩm quyền.`
+},
+{
+  id: "qz-ccao-211",
+  topic: "claude",
+  q: "[Responsible Use] A team feeds Claude several months of chat logs to build a summary of recurring support problems. Some logs contain customer phone numbers. What is the most responsible approach?",
+  options: [
+    "Paste everything, then ask Claude to ignore the phone numbers",
+    "Remove or mask the phone numbers before analysis and keep the chat counts and issue types",
+    "Paste everything, because phone numbers are not really personal data",
+    "Replace the phone numbers with the word 'UNKNOWN' in every line"
+  ],
+  answer: 1,
+  explain: `**Đúng: ẩn hoặc bỏ số điện thoại trước khi phân tích, chỉ giữ những gì cần cho việc đếm vấn đề.** Số điện thoại là dữ liệu cá nhân, và ở đây hoàn toàn không cần thiết: mục tiêu là biết loại vấn đề nào xuất hiện nhiều, không phải từng khách hàng. Nguyên tắc data minimisation nói rằng chỉ đưa vào đúng lượng dữ liệu cần cho việc; làm vậy vừa giảm rủi ro vừa giúp ngữ cảnh gọn hơn. "Bảo Claude bỏ qua" không phải biện pháp bảo vệ, vì dữ liệu đã được gửi đi trước khi mô hình đọc chỉ dẫn.
+
+### Vì sao các lựa chọn khác sai
+- **Dán hết rồi bảo Claude bỏ qua số điện thoại:** dữ liệu đã rời khỏi hệ thống; "bỏ qua" chỉ là một câu lệnh, không xoá được gì.
+- **Cho rằng số điện thoại không phải dữ liệu cá nhân:** số điện thoại là thông tin nhận dạng cá nhân và được bảo vệ ở hầu hết các quy định.
+- **Thay mọi số bằng "UNKNOWN":** không cần thiết và làm mất thông tin nếu bạn thật sự cần đếm theo kênh liên hệ; che đúng phần nhạy cảm là đủ.
+
+### Cách làm
+Trước khi phân tích, lọc các cột định danh bằng công cụ hoặc script; giữ cột loại vấn đề, thời gian, số lượng; ghi lại quy trình lọc để lần sau lặp lại.
+
+> Mẹo thực tế: nếu một cột không cần cho câu hỏi bạn đang hỏi, đừng dán nó — đó là biện pháp bảo vệ rẻ và hiệu quả nhất.`
+},
+{
+  id: "qz-ccao-212",
+  topic: "claude",
+  multi: true,
+  q: "[Responsible Use] A company is writing guidance on when employees should ask a qualified person instead of relying on Claude's answer. Which two situations clearly need that escalation? (Choose 2)",
+  options: [
+    "Rewording an internal announcement so it reads more clearly",
+    "Interpreting a tax rule that will decide how much a client must pay",
+    "Drafting a first version of a meeting agenda",
+    "Deciding whether an employee's dismissal is legally justified",
+    "Summarising a document the employee has already read"
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: diễn giải quy tắc thuế ảnh hưởng số tiền phải nộp, và quyết định cho thôi việc.** Cả hai đều là quyết định có hậu quả pháp lý hoặc tài chính, cần người có chuyên môn và thẩm quyền chịu trách nhiệm. Claude có thể giúp bạn hiểu khái niệm, soạn câu hỏi, hoặc chuẩn bị tài liệu để mang đi hỏi chuyên gia — nhưng không thay thế được ý kiến của kế toán, luật sư hay người phụ trách nhân sự.
+
+### Vì sao các lựa chọn khác sai
+- **Viết lại thông báo nội bộ cho rõ hơn:** rủi ro thấp, có người kiểm tra, sai thì sửa được.
+- **Soạn dàn ý cuộc họp:** là bản nháp, không ràng buộc và dễ thay đổi.
+- **Tóm tắt tài liệu đã đọc:** người đọc vẫn giữ bản gốc và tự kiểm chứng được.
+
+### Cách làm
+Trong hướng dẫn, liệt kê các nhóm việc cần chuyên gia: thuế, pháp lý, y tế, y tế nghề nghiệp, sa thải, hợp đồng lớn. Với các nhóm này, dùng Claude để chuẩn bị câu hỏi và bối cảnh, còn kết luận thì do chuyên gia đưa ra.
+
+> Mẹo thực tế: nếu câu trả lời có thể làm ai đó mất tiền, mất việc hoặc bị ảnh hưởng pháp lý, hãy coi đó là việc cần người có chuyên môn.`
+},
+{
+  id: "qz-ccao-213",
+  topic: "claude",
+  q: "[Responsible Use] A team publishes a report on its website and adds a small line at the end: 'Some sections were drafted with AI assistance.' What is the main benefit of this disclosure?",
+  options: [
+    "It transfers legal responsibility for the content to the AI provider",
+    "It guarantees the report is free of errors",
+    "It shows the report was not written by a human at all",
+    "It lets readers judge the content knowing how it was produced, which supports informed trust"
+  ],
+  answer: 3,
+  explain: `**Đúng: người đọc biết được cách nội dung được tạo ra, nên có thể đánh giá và kiểm chứng phù hợp.** Minh bạch (transparency) không phải là thú nhận điểm yếu, mà là cung cấp thông tin để người đọc đặt đúng mức tin cậy. Nó không chuyển trách nhiệm cho nhà cung cấp AI: người xuất bản vẫn chịu trách nhiệm về nội dung. Nó cũng không bảo đảm nội dung đúng — đó là việc của quy trình kiểm tra, chứ không phải của dòng ghi chú.
+
+### Vì sao các lựa chọn khác sai
+- **Chuyển trách nhiệm cho nhà cung cấp AI:** trách nhiệm vẫn thuộc về tổ chức xuất bản; không có cơ chế pháp lý nào chuyển nó bằng một dòng ghi chú.
+- **Bảo đảm không có lỗi:** công bố việc dùng AI không đồng nghĩa với việc đã kiểm định; chất lượng đến từ bước review.
+- **Cho rằng báo cáo không có phần do người viết:** thường là kết hợp; ghi chú đúng phải phản ánh đúng mức độ tham gia.
+
+### Cách làm
+Ghi rõ mức độ tham gia nếu có thể (ví dụ "bản nháp đầu tiên do AI tạo, nội dung do nhóm kiểm chứng"); kèm quy trình review; không dùng dòng ghi chú để thay cho bước kiểm tra.
+
+> Mẹo thực tế: minh bạch hiệu quả nhất khi đi kèm bằng chứng về quy trình kiểm tra — người đọc tin vào quy trình, không tin vào câu "AI đã viết".`
+},
+{
+  id: "qz-ccao-214",
+  topic: "claude",
+  q: "[Prompting Basics] A client asks: 'We have three proposals on the table. Which one should we choose?' The analyst wants Claude to compare them, not guess. Which prompt is most likely to give a defensible comparison?",
+  options: [
+    "Which proposal is best? Answer in one sentence.",
+    "Compare the three proposals below against these five requirements: cost, delivery time, support terms, security, and references. For each requirement, quote the evidence from the proposal and rate it strong, adequate, or weak. End with the trade-offs, not a single winner.",
+    "Pick the proposal with the lowest price, since price is what matters most.",
+    "Guess which proposal the client will prefer and explain why."
+  ],
+  answer: 1,
+  explain: `**Đúng: prompt nêu rõ tiêu chí so sánh, yêu cầu trích bằng chứng từ từng đề xuất, và yêu cầu kết thúc bằng trade-off thay vì một lựa chọn duy nhất.** So sánh (compare) là một động từ cụ thể: nó cần biết so theo tiêu chí nào và căn cứ vào đâu. Khi bạn đưa ra năm tiêu chí và yêu cầu trích dẫn bằng chứng, Claude buộc phải bám vào văn bản thay vì suy đoán. Yêu cầu kết thúc bằng trade-off phù hợp với thực tế: quyết định cuối thuộc về người đọc, và điều họ cần là bức tranh đánh đổi.
+
+### Vì sao các lựa chọn khác sai
+- **"Proposal nào tốt nhất, trả lời một câu":** không có tiêu chí, buộc Claude phải đoán; một câu cũng không đủ chỗ cho bằng chứng.
+- **"Chọn giá rẻ nhất":** áp đặt sẵn một tiêu chí duy nhất và loại bỏ các yếu tố có thể quan trọng hơn.
+- **"Đoán khách sẽ thích gì":** yêu cầu mô hình suy diễn tâm lý, không dựa trên dữ liệu.
+
+### Cách làm
+Trước khi hỏi, viết ra 3–5 tiêu chí quan trọng với khách hàng này; dán cả ba đề xuất; yêu cầu bảng bằng chứng; đọc lại các ô quan trọng so với bản gốc.
+
+> Mẹo thực tế: nếu bạn không thể viết ra tiêu chí so sánh, hãy viết chúng trước khi hỏi Claude — nếu không, bạn sẽ nhận về một bài văn xuôi nghe hợp lý.`
+},
+{
+  id: "qz-ccao-215",
+  topic: "claude",
+  multi: true,
+  q: "[Prompting Basics] A user needs to turn a 30-page research report into a board-ready pack of 8 slides. Which two prompt designs are most likely to produce a usable result? (Choose 2)",
+  options: [
+    "Ask for 8 slides in one prompt and accept whatever comes back",
+    "First extract the key findings and numbers into a table, check it, then group them into 8 slide titles",
+    "Ask for a 30-page summary instead, so nothing is lost",
+    "Ask Claude to design the deck without the report, so it stays high level",
+    "Write one slide at a time after the structure is agreed, checking each against the source"
+  ],
+  answer: [1, 4],
+  explain: `**Đúng: tách thành các bước có thể kiểm tra — trích xuất dữ kiện thành bảng, chốt cấu trúc slide, rồi viết từng slide và đối chiếu với nguồn.** Đây là task decomposition (chia việc lớn thành các bước nhỏ): mỗi bước cho ra một sản phẩm trung gian mà bạn kiểm tra được trước khi đi tiếp. Nếu yêu cầu cả 8 slide trong một lần, bạn chỉ nhận được một khối lớn và rất khó biết sai từ đâu; nếu tách ra, lỗi ở bước trích xuất được phát hiện trước khi nó lan vào slide.
+
+### Vì sao các lựa chọn khác sai
+- **Yêu cầu 8 slide trong một prompt:** không có điểm kiểm tra trung gian; lỗi lan ra toàn bộ deck.
+- **Yêu cầu tóm tắt 30 trang:** không phải là sản phẩm được yêu cầu; bản tóm tắt dài vẫn cần chuyển thành slide.
+- **Thiết kế deck không có báo cáo:** mất toàn bộ dữ kiện, chỉ còn khung sườn chung chung.
+
+### Cách làm
+Bước 1: yêu cầu bảng gồm phát hiện chính, số liệu, nguồn trang. Bước 2: bạn kiểm tra bảng. Bước 3: yêu cầu gom thành 8 tiêu đề slide. Bước 4: viết từng slide, mỗi slide một yêu cầu ngắn.
+
+> Mẹo thực tế: khi một việc lớn cho ra kết quả "nửa vời", hãy chia nhỏ — bạn sẽ đổi một câu trả lời khó kiểm tra thành ba câu trả lời dễ kiểm tra.`
+},
+{
+  id: "qz-ccao-216",
+  topic: "claude",
+  q: "[Prompting Basics] A prompt asks Claude to analyse last quarter's sales data and produce conclusions, but the answer mixes facts from the data with the model's own guesses. Which change best separates analysis from invention?",
+  options: [
+    "Tell Claude to use only the numbers in the attached data, mark any gap as [not in data], and keep assumptions in a separate section",
+    "Paste more general background about the industry so Claude has context",
+    "Ask for the answer to be at least 1,000 words so it looks thorough",
+    "Ask Claude to sound more confident so the conclusions feel stronger"
+  ],
+  answer: 0,
+  explain: `**Đúng: giới hạn nguồn dữ liệu kèm quy tắc đánh dấu chỗ thiếu, và tách phần giả định khỏi phần kết luận.** Giới hạn nguồn chặn việc Claude lấy số từ trí nhớ chung; đánh dấu "[not in data]" biến chỗ thiếu thành thông tin hữu ích thay vì một câu bịa tự tin. Tách giả định khỏi phát hiện giúp người đọc biết đâu là dữ kiện, đâu là suy luận — điều tối quan trọng khi phân tích.
+
+### Vì sao các lựa chọn khác sai
+- **Dán thêm bối cảnh chung về ngành:** làm loãng dữ liệu thật và mời gọi Claude kết hợp thông tin không kiểm chứng.
+- **Yêu cầu dài hơn 1,000 từ:** độ dài không tạo ra độ chính xác; nó chỉ tạo thêm chỗ để suy đoán.
+- **Yêu cầu tự tin hơn:** tự tin làm sai lệch khó phát hiện hơn, không làm nó đúng hơn.
+
+### Cách làm
+Prompt mẫu: "Chỉ dùng số trong file đính kèm. Mỗi số phải kèm tên cột và hàng. Nếu thiếu, ghi [không có trong dữ liệu]. Cuối báo cáo, liệt kê riêng các giả định."
+
+> Mẹo thực tế: một quy tắc nhỏ — "thiếu thì ghi là thiếu" — thường hiệu quả hơn cả một trang hướng dẫn.`
+},
+{
+  id: "qz-ccao-217",
+  topic: "claude",
+  q: "[Prompting Basics] A user asks Claude to 'brainstorm names for a new product'. Claude returns 40 names. The user needs 8 names that fit a specific market. What change is most likely to help?",
+  options: [
+    "Ask for more names so the list definitely contains a good one",
+    "Add a short brief: target market, tone, names to avoid, and a two-line reason for each suggestion, plus ask for 8 rather than 40",
+    "Ask Claude to sort the 40 names alphabetically",
+    "Ask for names in a different language"
+  ],
+  answer: 1,
+  explain: `**Đúng: thêm brief ngắn — thị trường mục tiêu, giọng điệu, những gì cần tránh, và yêu cầu kèm lý do — cùng số lượng cụ thể.** Brainstorming (động não) cần tự do, nhưng tự do không có nghĩa là thiếu bối cảnh: brief cho Claude biết "tốt" trong trường hợp này nghĩa là gì. Yêu cầu kèm lý do hai dòng buộc mỗi đề xuất phải gắn với tiêu chí, giúp bạn loại nhanh. Giới hạn 8 thay vì 40 làm tăng chất lượng và giảm thời gian sàng lọc.
+
+### Vì sao các lựa chọn khác sai
+- **Yêu cầu nhiều tên hơn:** 40 tên khó sàng lọc; vấn đề là thiếu tiêu chí, không phải thiếu số lượng.
+- **Sắp xếp theo thứ tự alphabet:** sắp xếp không cải thiện mức độ phù hợp.
+- **Đổi ngôn ngữ:** không liên quan đến tiêu chí phù hợp thị trường.
+
+### Cách làm
+Viết brief 3–4 dòng trước khi brainstorm; yêu cầu mỗi tên kèm một lý do; chọn 8–10; sau đó mới yêu cầu Claude đánh giá theo tiêu chí.
+
+> Mẹo thực tế: brainstorm hiệu quả nhất khi bạn nói rõ "thế nào là hay" trước, không phải sau khi nhận danh sách.`
+},
+{
+  id: "qz-ccao-218",
+  topic: "claude",
+  q: "[Prompting Basics] A user wants Claude to extract every date mentioned in a 20-page contract into a table, with the clause number. Claude returns a table with dates but no clause numbers. What is the best next message?",
+  options: [
+    "Send the same prompt again with the word 'please' added",
+    "Accept it, since the dates are the important part",
+    "Paste the whole contract again in a new chat and hope the format differs",
+    "Ask specifically for a three-column table (date, what it applies to, clause number) and point out that clause numbers were missing"
+  ],
+  answer: 3,
+  explain: `**Đúng: chỉ rõ định dạng mong muốn thành ba cột và nêu rõ phần còn thiếu.** Đây là cách iterate (lặp và cải thiện) hiệu quả: mô tả chính xác cấu trúc đầu ra, thay vì nhắc lại yêu cầu chung. Việc nói rõ "thiếu số điều khoản" cho Claude biết chính xác cần bổ sung gì, còn việc đưa cấu trúc cột làm cho kết quả kiểm tra được bằng mắt. Thêm "please" hay gửi lại nguyên prompt không thay đổi thông tin.
+
+### Vì sao các lựa chọn khác sai
+- **Thêm "please":** không thêm thông tin, không thay đổi hành vi.
+- **Chấp nhận vì có ngày:** thiếu số điều khoản làm bảng khó dùng cho việc kiểm tra và đàm phán.
+- **Dán lại từ đầu và hy vọng khác:** cùng đầu vào thường cho cùng kiểu đầu ra; hy vọng không phải chiến lược.
+
+### Cách làm
+Mô tả đầu ra bằng cấu trúc: "Bảng 3 cột: Ngày | Điều khoản | Nội dung áp dụng". Nếu vẫn thiếu, yêu cầu kiểm tra lại và đánh dấu dòng nào không tìm thấy số điều khoản.
+
+> Mẹo thực tế: khi định dạng sai, hãy mô tả định dạng đúng bằng cấu trúc cụ thể — Claude sửa theo cấu trúc tốt hơn theo tính từ.`
+},
+{
+  id: "qz-ccao-219",
+  topic: "claude",
+  multi: true,
+  q: "[Prompting Basics] A user has a prompt that produces good drafts for emails, but the drafts are sometimes too formal for a casual team. Which two changes are most likely to help without breaking what already works? (Choose 2)",
+  options: [
+    "Rewrite the entire prompt from scratch with a completely different structure",
+    "Add one short example of a casual message the team actually sends, labelled as the tone to match",
+    "Add the phrase 'be casual' several times throughout the prompt",
+    "Replace the word 'email' with 'message' everywhere in the prompt",
+    "State the audience and context explicitly, such as 'internal note to teammates you work with daily, short and direct'"
+  ],
+  answer: [1, 4],
+  explain: `**Đúng: thêm một ví dụ thật về giọng điệu cần theo, và nêu rõ người đọc cùng bối cảnh.** Ví dụ mẫu (few-shot) cho Claude một đích cụ thể thay vì một tính từ trừu tượng; "casual" với người này có thể là "thân thiện", với người khác là "thô". Nêu người đọc ("đồng nghiệp cùng nhóm, ghi chú nội bộ") giúp suy ra độ trang trọng phù hợp. Cả hai đều là thay đổi nhỏ, giữ nguyên phần prompt đã hoạt động tốt.
+
+### Vì sao các lựa chọn khác sai
+- **Viết lại toàn bộ prompt:** rủi ro làm mất phần đang hoạt động tốt; nên đổi từng phần một.
+- **Lặp "be casual" nhiều lần:** lặp từ khoá không làm rõ nghĩa; "casual" vẫn là khái niệm chủ quan.
+- **Đổi "email" thành "message":** chỉ đổi tên, không thay đổi giọng điệu.
+
+### Cách làm
+Thêm một dòng "Ví dụ giọng điệu:" kèm 2–3 câu thật; thêm một dòng "Người đọc: đồng nghiệp nội bộ". Chạy lại vài lần để kiểm tra độ ổn định.
+
+> Mẹo thực tế: khi một prompt đã tốt, hãy thay đổi một phần mỗi lần — như vậy bạn luôn biết thay đổi nào có tác dụng.`
+},
+{
+  id: "qz-ccao-220",
+  topic: "claude",
+  q: "[Prompting Basics] A user asks Claude to write a short product description and says 'keep it under 100 words'. The first draft is 140 words. What is the most useful adjustment?",
+  options: [
+    "Ask for a much shorter answer, such as 20 words, to guarantee it lands under 100",
+    "Remove the length limit and ask Claude to be concise",
+    "Accept 140 words, since it is close enough to 100",
+    "Ask for exactly 5 short sentences, each under 18 words, and say the total must be at most 100 words"
+  ],
+  answer: 3,
+  explain: `**Đúng: chuyển giới hạn thành ràng buộc kiểm tra được — 5 câu, mỗi câu dưới 18 từ, tổng không quá 100 từ.** Đây là cách viết ràng buộc định lượng: thay vì một con số chung, bạn đưa ra các đơn vị nhỏ mà cả bạn và Claude đều đếm được. Claude thường ước lượng độ dài kém, nên các ràng buộc nhỏ giúp nó kiểm soát tốt hơn. Bạn cũng kiểm tra dễ hơn: chỉ cần đếm từ trong từng câu.
+
+### Vì sao các lựa chọn khác sai
+- **Yêu cầu 20 từ:** quá ngắn so với nhu cầu, và không đảm bảo được 100 từ.
+- **Bỏ giới hạn và bảo "ngắn gọn":** quay lại chỗ mơ hồ ban đầu; "ngắn gọn" không đo được.
+- **Chấp nhận 140 từ vì gần đúng:** nếu con số là ràng buộc thật (ví dụ chỗ trên website), 40% vượt là lỗi thật.
+
+### Cách làm
+Viết ràng buộc thành các đơn vị nhỏ; sau khi nhận bản nháp, đếm nhanh; nếu vẫn vượt, yêu cầu cắt một câu cụ thể thay vì viết lại từ đầu.
+
+> Mẹo thực tế: giới hạn dạng "N câu, mỗi câu M từ" dễ tuân theo hơn nhiều so với "hãy viết ngắn".`
+},
+{
+  id: "qz-ccao-221",
+  topic: "claude",
+  q: "[Prompting Basics] A user wants Claude to write a job advertisement and gives the role title only. The result is generic and could fit any company. What single change would most improve it?",
+  options: [
+    "Ask Claude to make the advertisement more exciting",
+    "Add the must-have skills, the team context, and what makes this role different from similar ones",
+    "Ask for a longer advertisement so more detail appears",
+    "Ask Claude to use stronger adjectives"
+  ],
+  answer: 1,
+  explain: `**Đúng: thêm thông tin đầu vào — kỹ năng bắt buộc, bối cảnh nhóm, điểm khác biệt của vị trí.** Một tin tuyển dụng chung chung là hệ quả trực tiếp của việc đầu vào chung chung: Claude không thể viết cụ thể về một vị trí mà nó chỉ biết tên. Khi bạn cung cấp ba mảnh thông tin này, mô hình có đủ chất liệu để viết câu cụ thể và loại bớt những câu có thể dùng cho bất kỳ công ty nào.
+
+### Vì sao các lựa chọn khác sai
+- **Yêu cầu hấp dẫn hơn:** tính từ mạnh không tạo ra thông tin; nó chỉ làm câu văn ồn ào hơn.
+- **Yêu cầu dài hơn:** dài hơn với đầu vào nghèo nàn sẽ là dài dòng hơn, không cụ thể hơn.
+- **Yêu cầu nhiều tính từ mạnh:** cùng vấn đề như trên; không thay thế được thông tin.
+
+### Cách làm
+Chuẩn bị 5 gạch đầu dòng: 3 kỹ năng bắt buộc, 1 câu về nhóm, 1 câu về lý do vị trí này tồn tại; đưa vào prompt cùng yêu cầu độ dài và giọng điệu.
+
+> Mẹo thực tế: nếu kết quả của Claude có thể dán vào website của bất kỳ công ty nào, vấn đề nằm ở đầu vào của bạn, không phải ở mô hình.`
+},
+{
+  id: "qz-ccao-222",
+  topic: "claude",
+  q: "[Prompting Basics] A manager asks Claude to 'review this report and tell me what is wrong'. Claude returns a long list of everything, including style preferences. What is the most useful follow-up?",
+  options: [
+    "Ask for the list to be sorted by length",
+    "Start a new chat and ask the same question again",
+    "Ask for the review to be limited to factual and logical errors, ranked by severity, with the sentence quoted for each",
+    "Ask Claude to write a new report instead"
+  ],
+  answer: 2,
+  explain: `**Đúng: giới hạn phạm vi review vào lỗi sự thật và logic, xếp theo mức nghiêm trọng, kèm câu bị trích dẫn.** "Tell me what is wrong" quá rộng: nó bao gồm văn phong, sở thích, cấu trúc — những thứ khác nhau về mức quan trọng. Khi bạn thu hẹp phạm vi và yêu cầu xếp hạng, bạn nhận được một danh sách dùng được: lỗi nghiêm trọng trước, kèm bằng chứng để kiểm tra. Việc trích dẫn từng câu giúp bạn xác minh nhanh thay vì đọc lại toàn bộ.
+
+### Vì sao các lựa chọn khác sai
+- **Sắp xếp theo độ dài:** độ dài không phải tiêu chí mức nghiêm trọng.
+- **Hỏi lại y nguyên trong chat mới:** cùng đầu vào, cùng kết quả; không thay đổi phạm vi.
+- **Nhờ Claude viết báo cáo mới:** không trả lời câu hỏi review; và viết lại từ đầu thường mất phần đã đúng.
+
+### Cách làm
+Prompt mẫu: "Chỉ nêu lỗi sự thật hoặc logic. Xếp theo mức nghiêm trọng: cao, trung bình, thấp. Mỗi lỗi: trích 1 câu, nói vì sao sai, đề xuất sửa."
+
+> Mẹo thực tế: review tốt cần ba yếu tố — phạm vi, mức ưu tiên, bằng chứng; thiếu một trong ba thì danh sách sẽ khó dùng.`
+},
+{
+  id: "qz-ccao-223",
+  topic: "claude",
+  multi: true,
+  q: "[Prompting Basics] A prompt for a weekly report says: 'Write a detailed report about the project.' The output is long but unusable. Which two changes most directly address this? (Choose 2)",
+  options: [
+    "Ask for more detail in every section",
+    "Specify the audience and the decisions they need to make from the report",
+    "Ask Claude to use a more formal tone",
+    "Paste every project document available so Claude has full context",
+    "List the exact sections and what each must contain, plus a length limit per section"
+  ],
+  answer: [1, 4],
+  explain: `**Đúng: nêu người đọc và quyết định họ cần, cùng cấu trúc phần rõ ràng kèm giới hạn độ dài.** "Detailed report about the project" không cho Claude biết viết cho ai, để làm gì, gồm những phần nào. Khi bạn nói "viết cho hội đồng dự án, họ quyết định có gia hạn giai đoạn hai không", Claude biết cần dữ kiện gì và mức độ chi tiết nào. Cấu trúc phần kèm giới hạn biến yêu cầu mơ hồ thành đầu ra kiểm tra được.
+
+### Vì sao các lựa chọn khác sai
+- **Yêu cầu chi tiết hơn ở mọi phần:** làm dài hơn, không làm đúng trọng tâm hơn.
+- **Yêu cầu trang trọng hơn:** giọng điệu không phải vấn đề; cấu trúc và mục đích mới là vấn đề.
+- **Dán mọi tài liệu:** làm loãng ngữ cảnh và khiến Claude khó chọn thông tin quan trọng.
+
+### Cách làm
+Viết prompt theo mẫu: người đọc, quyết định, 3–5 phần với nội dung bắt buộc, giới hạn từ mỗi phần, điều cần tránh.
+
+> Mẹo thực tế: một báo cáo tốt được thiết kế quanh quyết định của người đọc, không quanh lượng dữ liệu có sẵn.`
+},
+{
+  id: "qz-ccao-224",
+  topic: "claude",
+  q: "[Prompting Basics] A user gives Claude a long prompt with ten separate requests in it. The output handles three of them well and ignores the rest. What is the most effective fix?",
+  options: [
+    "Repeat the prompt twice in the same message",
+    "Split the work into a short sequence of prompts, one or two requests each, carrying earlier results forward",
+    "Make the prompt longer with more explanation",
+    "Ask Claude to read the prompt again more carefully"
+  ],
+  answer: 1,
+  explain: `**Đúng: chia thành một chuỗi prompt ngắn, mỗi lần một hoặc hai yêu cầu, và chuyển kết quả trước sang bước sau.** Đây là prompt chaining (chuỗi prompt): mỗi bước có một mục tiêu, nên Claude tập trung được và bạn kiểm tra được kết quả từng bước. Mười yêu cầu trong một prompt buộc mô hình phải cân bằng nhiều mục tiêu cùng lúc, và nó có xu hướng làm tốt vài mục nổi bật rồi bỏ sót phần còn lại. Chia nhỏ không phải là làm nhiều việc hơn, mà là làm mỗi việc một cách kiểm soát được.
+
+### Vì sao các lựa chọn khác sai
+- **Lặp lại prompt hai lần:** làm dài ngữ cảnh, không tăng khả năng theo dõi đủ yêu cầu.
+- **Giải thích dài hơn:** thêm chữ không tạo thêm cấu trúc; vấn đề là số lượng yêu cầu.
+- **Bảo Claude đọc kỹ hơn:** không có cơ chế "đọc kỹ hơn"; cần chia nhỏ để kiểm soát.
+
+### Cách làm
+Đánh số các yêu cầu; gom thành 3–4 nhóm; mỗi nhóm một prompt riêng; kiểm tra đầu ra trước khi sang nhóm tiếp theo.
+
+> Mẹo thực tế: dấu hiệu cần chia prompt là khi bạn phải dùng dấu chấm phẩy để liệt kê nhiều việc trong một câu.`
+},
+{
+  id: "qz-ccao-225",
+  topic: "claude",
+  multi: true,
+  q: "[Prompting Basics] A user has a prompt that works well for summarising reports, and now wants the same prompt to work for comparing two suppliers. Which two changes are most appropriate? (Choose 2)",
+  options: [
+    "Keep the prompt identical, because a good prompt works for every task",
+    "Use a comparison verb such as 'compare' instead of 'summarise', and list the criteria to compare on",
+    "Ask for the output to be as long as possible so nothing is missed",
+    "Remove all formatting instructions so Claude can decide the layout",
+    "Add the source material for both suppliers and ask for evidence for each criterion"
+  ],
+  answer: [1, 4],
+  explain: `**Đúng: đổi động từ nhiệm vụ sang "compare" và nêu tiêu chí, đồng thời cung cấp tài liệu của cả hai bên kèm yêu cầu bằng chứng.** Mỗi loại nhiệm vụ cần một cách viết khác nhau: tóm tắt cần độ đầy đủ và trung thành với nguồn; so sánh cần tiêu chí, bằng chứng hai phía và kết luận dạng trade-off. Giữ nguyên prompt tóm tắt cho việc so sánh sẽ cho ra hai bản tóm tắt rời rạc chứ không phải một phép so sánh.
+
+### Vì sao các lựa chọn khác sai
+- **Giữ nguyên prompt vì nó tốt:** hiệu quả phụ thuộc vào loại nhiệm vụ; một prompt tốt cho việc này có thể sai cho việc khác.
+- **Yêu cầu dài nhất có thể:** độ dài không thay thế tiêu chí; và prompt dài dễ bị bỏ sót.
+- **Bỏ hướng dẫn định dạng:** Claude phải đoán cách trình bày, kết quả khó so sánh.
+
+### Cách làm
+Viết lại prompt so sánh: động từ "compare", 4–5 tiêu chí, yêu cầu bảng bằng chứng, yêu cầu kết luận dạng "A tốt hơn ở X, B tốt hơn ở Y".
+
+> Mẹo thực tế: khi đổi loại việc, hãy đổi cả động từ và cấu trúc đầu ra — đừng chỉ đổi tên tài liệu trong prompt cũ.`
+},
+{
+  id: "qz-ccao-226",
+  topic: "claude",
+  q: "[Prompting Basics] A user wants a Claude prompt to answer questions about a company policy document. They paste the policy and add: 'Answer any question about our policies.' What is the most useful addition?",
+  options: [
+    "Add: 'Be as detailed as possible in every answer.'",
+    "Add: 'Use only this policy document; if the answer is not in it, say so and do not guess.'",
+    "Add: 'Answer in a friendly tone.'",
+    "Add: 'If the policy is unclear, imagine what the policy probably intends.'"
+  ],
+  answer: 1,
+  explain: `**Đúng: giới hạn nguồn vào đúng tài liệu và yêu cầu nói rõ khi không có câu trả lời.** Đây là grounding (neo câu trả lời vào tài liệu được cung cấp) kết hợp với quy tắc xử lý khoảng trống. Không có hai câu này, Claude có thể dùng kiến thức chung về chính sách nhân sự — nghe rất hợp lý nhưng có thể trái với quy định của công ty. Yêu cầu "nói không biết" biến sự thiếu thông tin thành tín hiệu hữu ích thay vì một câu trả lời tự tin sai.
+
+### Vì sao các lựa chọn khác sai
+- **"Càng chi tiết càng tốt":** chi tiết không đồng nghĩa đúng nguồn; nó còn làm tăng nguy cơ thêm thông tin ngoài tài liệu.
+- **"Giọng thân thiện":** không liên quan đến độ chính xác.
+- **"Hãy đoán ý định của chính sách":** đây chính là hành vi cần tránh; chính sách phải được hiểu đúng câu chữ, không phải suy diễn.
+
+### Cách làm
+Prompt mẫu: "Chỉ dùng tài liệu dưới đây. Mỗi câu trả lời phải trích số điều khoản. Nếu không có trong tài liệu, trả lời: 'Chính sách không đề cập nội dung này'."
+
+> Mẹo thực tế: một câu "nếu không có thì nói không có" thường giảm mạnh số câu trả lời bịa mà không làm giảm chất lượng câu trả lời đúng.`
+},
+{
+  id: "qz-ccao-227",
+  topic: "claude",
+  q: "[Prompting Basics] A user asks Claude to translate a technical paragraph into Vietnamese, and the translation is accurate but hard for the target readers to follow. What is the best follow-up?",
+  options: [
+    "Ask for the translation to be shorter",
+    "Ask Claude to translate into a different language instead",
+    "Paste the paragraph again and ask for a new translation",
+    "Tell Claude who will read it and what they already know, then ask it to keep the technical terms but explain each one in plain language on first use"
+  ],
+  answer: 3,
+  explain: `**Đúng: cung cấp thông tin về người đọc và yêu cầu giữ thuật ngữ kèm giải thích ngắn ở lần đầu xuất hiện.** Bản dịch đúng nhưng khó đọc thường vì nó bám sát cấu trúc câu gốc, vốn viết cho người trong ngành. Khi bạn nói rõ người đọc là ai và mức nền tảng của họ, Claude có thể điều chỉnh cách diễn đạt mà không làm sai nghĩa. Giữ thuật ngữ tiếng Anh và giải thích một lần là cách làm phổ biến trong tài liệu kỹ thuật: vừa chính xác vừa dễ theo.
+
+### Vì sao các lựa chọn khác sai
+- **Yêu cầu ngắn hơn:** ngắn hơn có thể làm mất thông tin; vấn đề là mức độ giải thích, không phải độ dài.
+- **Dịch sang ngôn ngữ khác:** không giải quyết vấn đề người đọc.
+- **Dịch lại từ đầu:** cùng đầu vào, cùng kiểu bản dịch.
+
+### Cách làm
+Mô tả người đọc: "kỹ thuật viên mới, chưa biết thuật ngữ này"; yêu cầu giữ thuật ngữ, thêm một câu giải thích ở lần đầu, và dùng câu ngắn hơn.
+
+> Mẹo thực tế: với tài liệu kỹ thuật, "đúng" và "dễ hiểu" là hai yêu cầu riêng — hãy nói rõ cả hai trong prompt.`
+},
+{
+  id: "qz-ccao-228",
+  topic: "claude",
+  multi: true,
+  q: "[Prompting Basics] A user wants Claude to help prepare for a difficult conversation with a supplier about late deliveries. Which two prompt designs are most useful? (Choose 2)",
+  options: [
+    "Ask Claude to write the supplier's reply for them, so both sides are scripted",
+    "Give the facts: dates, quantities, previous commitments, and the outcome the user wants",
+    "Ask Claude to list what could go wrong in the conversation and suggest a calm response for each",
+    "Ask Claude to write a message that makes the supplier feel guilty",
+    "Ask Claude to decide whether the user should end the contract"
+  ],
+  answer: [1, 2],
+  explain: `**Đúng: cung cấp dữ kiện và mục tiêu mong muốn, rồi yêu cầu lường trước các tình huống khó kèm cách phản hồi bình tĩnh.** Chuẩn bị cho một cuộc trao đổi khó cần hai thứ: thông tin (ngày, số lượng, cam kết trước đó) để không nói sai, và kịch bản (nếu họ nói X thì trả lời thế nào) để không bị động. Claude rất phù hợp để diễn tập các nhánh hội thoại; điều nó không nên làm là thay bạn quyết định hoặc viết lời buộc tội.
+
+### Vì sao các lựa chọn khác sai
+- **Viết luôn lời của supplier:** không giúp bạn chuẩn bị; và việc giả định nội dung hai phía dễ dẫn tới hiểu sai.
+- **Yêu cầu câu chữ khiến supplier thấy tội lỗi:** mục tiêu là giải quyết vấn đề, không phải thắng cảm xúc; giọng buộc tội thường làm quan hệ xấu đi.
+- **Nhờ Claude quyết định có nên chấm dứt hợp đồng:** đây là quyết định kinh doanh của bạn, cần số liệu và thẩm quyền, không phải suy đoán của mô hình.
+
+### Cách làm
+Prompt mẫu: "Đây là các dữ kiện. Tôi muốn kết quả là một kế hoạch khắc phục. Hãy liệt kê 4 phản ứng có thể có của họ và cách tôi trả lời, giữ giọng điệu hợp tác nhưng dứt khoát."
+
+> Mẹo thực tế: dùng AI để diễn tập các nhánh hội thoại; quyết định và câu chữ cuối cùng vẫn nên là của bạn.`
+},
+{
+  id: "qz-ccao-229",
+  topic: "claude",
+  q: "[Responsible Use] A consultant is summarizing customer support transcripts. What is the most important first step before uploading this data to Claude?",
+  options: [
+    "Ask Claude if the data is safe.",
+    "Remove or anonymize any personally identifiable information (PII) such as customer names and email addresses.",
+    "Upload the raw files to a public project for faster team access.",
+    "Format the transcripts as a PDF before uploading."
+  ],
+  answer: 1,
+  explain: `**Đúng: loại bỏ hoặc ẩn danh thông tin định danh cá nhân (PII).** Bảo mật dữ liệu là ưu tiên hàng đầu. Thông tin khách hàng như tên, địa chỉ, email cần được xoá sạch trước khi đưa vào mô hình để tuân thủ quyền riêng tư và bảo vệ danh tính khách hàng.`
+},
+{
+  id: "qz-ccao-230",
+  topic: "claude",
+  q: "[Responsible Use] Claude generates a response that includes a historical date which feels wrong. What should you do?",
+  options: [
+    "Assume it is correct because Claude is a state-of-the-art model.",
+    "Verify the date against a reliable, independent source before accepting the output.",
+    "Delete the whole response because one date is wrong.",
+    "Ask Claude to explain why it thinks the date is right and trust that explanation."
+  ],
+  answer: 1,
+  explain: `**Đúng: kiểm chứng với nguồn độc lập tin cậy trước khi chấp nhận.** Mô hình có thể bị nhầm lẫn về dữ kiện (hallucination). Khi thấy nghi ngờ, việc kiểm tra lại với nguồn tin cậy là bắt buộc, đặc biệt khi nội dung dùng cho quyết định quan trọng.`
+},
+{
+  id: "qz-ccao-231",
+  topic: "claude",
+  multi: true,
+  q: "[Responsible Use] You are responsible for overseeing Claude's output in your team's workflow. Which two actions are essential for responsible oversight? (Choose 2)",
+  options: [
+    "Skip oversight for routine tasks to save time.",
+    "Regularly review a sample of Claude-generated outputs to check for quality and safety.",
+    "Require all team members to never question Claude's output.",
+    "Set clear guidelines and rubrics for what is considered acceptable output.",
+    "Trust that Claude automatically understands and follows all company policies."
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: rà soát mẫu đầu ra thường xuyên và đặt rubric chấp nhận rõ ràng.** Oversight (giám sát) cần có tiêu chuẩn (rubric) để đánh giá và quy trình kiểm tra (rà soát mẫu) để đảm bảo chất lượng và an toàn. Không thể mặc định mô hình tự hiểu chính sách công ty.`
+},
+{
+  id: "qz-ccao-232",
+  topic: "claude",
+  q: "[Responsible Use] Claude's output shows bias in how it describes job candidates based on their background. What should you do?",
+  options: [
+    "Ignore it, as AI models are naturally neutral.",
+    "Report the issue, investigate the cause (e.g., prompt, data), and update instructions to mitigate the bias.",
+    "Accept it as the definitive evaluation of candidates.",
+    "Ask Claude to generate the same biased response again to confirm."
+  ],
+  answer: 1,
+  explain: `**Đúng: báo cáo, tìm nguyên nhân và cập nhật hướng dẫn.** AI có thể bị thiên kiến từ dữ liệu huấn luyện hoặc prompt. Việc của người dùng là nhận diện, báo cáo và điều chỉnh để giảm thiểu thiên kiến, đảm bảo công bằng.`
+},
+{
+  id: "qz-ccao-233",
+  topic: "claude",
+  q: "[Responsible Use] What is the most dangerous risk of sharing sensitive API keys or passwords in a prompt?",
+  options: [
+    "It makes Claude answer slightly slower.",
+    "It exposes sensitive credentials that can be misused.",
+    "Claude will refuse to answer the prompt.",
+    "It has no risk, as Claude is secure."
+  ],
+  answer: 1,
+  explain: `**Đúng: nó làm lộ thông tin xác thực nhạy cảm có thể bị lạm dụng.** API keys và mật khẩu là dữ liệu cực mật. Việc đưa chúng vào prompt có thể làm lộ ra cho bên thứ ba hoặc trong dữ liệu lưu trữ không mong muốn.`
+},
+{
+  id: "qz-ccao-234",
+  topic: "claude",
+  q: "[Responsible Use] A company is using Claude for internal decisions. How do they best ensure transparency?",
+  options: [
+    "Keep Claude's use a secret from employees.",
+    "Clearly document which parts of the decision process involve Claude, and maintain human accountability.",
+    "Let Claude make all decisions automatically without telling anyone.",
+    "Tell employees Claude is always 100% correct."
+  ],
+  answer: 1,
+  explain: `**Đúng: minh bạch hoá quy trình dùng Claude và duy trì trách nhiệm giải trình của con người.** Transparency (minh bạch) nghĩa là rõ ràng về vai trò của AI và luôn có người chịu trách nhiệm cuối cùng cho quyết định, không phải AI.`
+},
+{
+  id: "qz-ccao-235",
+  topic: "claude",
+  q: "[Responsible Use] A team is considering using Claude for legal document analysis. What is a key compliance concern?",
+  options: [
+    "Whether Claude uses a specific font.",
+    "Ensuring data privacy and confirming that the use of Claude complies with legal and organizational data policies.",
+    "Whether Claude can generate images.",
+    "Whether Claude is fast enough to do it in one second."
+  ],
+  answer: 1,
+  explain: `**Đúng: đảm bảo quyền riêng tư dữ liệu và tuân thủ các chính sách dữ liệu pháp lý/công ty.** Tài liệu pháp lý là dữ liệu cực kỳ nhạy cảm và cần tuân thủ nghiêm ngặt các quy định về bảo mật.`
+},
+{
+  id: "qz-ccao-236",
+  topic: "claude",
+  q: "[Responsible Use] Claude generates an output that contains potentially harmful content. What is the appropriate response?",
+  options: [
+    "Share it on social media.",
+    "Report the output using the feedback mechanisms provided, and stop using that prompt.",
+    "Keep generating similar content to see if it improves.",
+    "Assume it was a test and ignore it."
+  ],
+  answer: 1,
+  explain: `**Đúng: báo cáo nội dung thông qua các cơ chế phản hồi và dừng dùng prompt đó.** Báo cáo giúp Anthropic cải thiện mô hình, và dừng dùng prompt giúp bạn tránh rủi ro tiếp theo.`
+},
+{
+  id: "qz-ccao-237",
+  topic: "claude",
+  multi: true,
+  q: "[Responsible Use] A company wants to protect data in Claude Projects. Which two practices are best? (Choose 2)",
+  options: [
+    "Upload all employee personal documents to a shared project.",
+    "Only upload data that is authorized for use in the Claude account according to company policy.",
+    "Assume the project is public to everyone in the world.",
+    "Periodically review the project files and remove unnecessary or sensitive data.",
+    "Share the login credentials of the project with external people."
+  ],
+  answer: [1, 3],
+  explain: `**Đúng: chỉ tải dữ liệu được cho phép và rà soát định kỳ để xoá dữ liệu không cần thiết.** Bảo vệ dữ liệu trong Project đòi hỏi tuân thủ chính sách dùng (không tải dữ liệu cấm) và vệ sinh dữ liệu (ràng buộc quyền hạn, định kỳ xoá file cũ).`
+},
+{
+  id: "qz-ccao-238",
+  topic: "claude",
+  q: "[Responsible Use] A team lead is evaluating the impact of Claude on brand reputation. What is the most critical risk?",
+  options: [
+    "Claude might use too many colors in its output.",
+    "Claude might accidentally publish or use hallucinated or incorrect information that damages the company's brand.",
+    "Claude might use words that are too short.",
+    "Claude might be too fast for customers to read."
+  ],
+  answer: 1,
+  explain: `**Đúng: Claude có thể vô tình xuất bản thông tin sai hoặc bịa đặt gây hại cho thương hiệu.** Thương hiệu dựa vào sự tin tưởng và chuyên môn. Thông tin sai lan truyền từ phía công ty (kể cả do AI tạo) làm tổn hại nghiêm trọng đến hình ảnh chuyên nghiệp.`
+},
+{
+  id: "qz-ccao-239",
+  topic: "claude",
+  q: "[Responsible Use] A company has a policy that prohibits sharing proprietary code with AI. What is the correct action?",
+  options: [
+    "Share only part of the code.",
+    "Do not share any proprietary code, regardless of convenience.",
+    "Share the code only if you are in a rush.",
+    "Share the code but ask Claude to 'keep it secret'."
+  ],
+  answer: 1,
+  explain: `**Đúng: tuyệt đối không chia sẻ mã nguồn độc quyền, bất kể sự tiện lợi.** Tuân thủ chính sách bảo mật của công ty là nghĩa vụ. Mã nguồn độc quyền là tài sản trí tuệ quan trọng, cần bảo vệ tuyệt đối.`
+},
+{
+  id: "qz-ccao-240",
+  topic: "claude",
+  q: "[Responsible Use] You want to use Claude to generate meeting minutes that include participants' names and private discussions. What is the best practice?",
+  options: [
+    "Upload the raw recordings directly without editing.",
+    "Anonymize or summarize the minutes to remove unnecessary PII, and ensure this use is compliant with company policy.",
+    "Share the full minutes on a public forum.",
+    "Assume it's fine because it's an internal meeting."
+  ],
+  answer: 1,
+  explain: `**Đúng: ẩn danh hoặc tóm tắt biên bản để loại bỏ PII không cần thiết và đảm bảo tuân thủ chính sách.** Việc bảo vệ thông tin cá nhân và thảo luận riêng tư trong nội bộ là trách nhiệm, kể cả khi dùng AI.`
+},
+{
+  id: "qz-ccao-241",
+  topic: "claude",
+  q: "[Responsible Use] What should you do if you notice Claude consistently providing incorrect information on a specific topic important to your work?",
+  options: [
+    "Continue using it and hope it improves by itself.",
+    "Stop using Claude entirely for everything.",
+    "Investigate if your prompts are causing the issue, or if the model's knowledge on that topic is unreliable, then take appropriate corrective actions.",
+    "Assume you are the one who is wrong."
+  ],
+  answer: 2,
+  explain: `**Đúng: điều tra xem prompt có gây ra lỗi không, hoặc kiến thức của mô hình về chủ đề đó không đáng tin, rồi hành động.** Nhận diện sự không ổn định (unreliability) của AI trong một chủ đề cụ thể là bước quan trọng để biết khi nào cần thay đổi phương pháp.`
+},
+{
+  id: "qz-ccao-242",
+  topic: "claude",
+  q: "[Responsible Use] A new AI regulation requires human-in-the-loop for decisions affecting customer credit. How does this apply to using Claude?",
+  options: [
+    "Claude can make all credit decisions automatically.",
+    "Claude can assist, but a human must review and approve all final decisions affecting customer credit.",
+    "Human review is optional, not mandatory.",
+    "Claude must be disabled immediately."
+  ],
+  answer: 1,
+  explain: `**Đúng: Claude có thể hỗ trợ, nhưng con người phải rà soát và phê duyệt mọi quyết định cuối cùng.** Quy định "human-in-the-loop" (con người trong vòng lặp) yêu cầu sự can thiệp của con người đối với các quyết định quan trọng, không thể uỷ thác hoàn toàn cho AI.`
+},
+{
+  id: "qz-ccao-243",
+  topic: "claude",
+  q: "[Responsible Use] What is a good way to handle sensitive data when you only need Claude to perform a generic analysis?",
+  options: [
+    "Upload all raw sensitive data anyway.",
+    "Use a dummy dataset or anonymized data that still allows Claude to perform the analysis.",
+    "Share the data with a random AI tool instead.",
+    "Upload the data and hope Claude 'forgets' it."
+  ],
+  answer: 1,
+  explain: `**Đúng: sử dụng dữ liệu giả hoặc dữ liệu đã ẩn danh mà vẫn cho phép Claude phân tích.** Khi không cần dữ liệu thật để có kết quả phân tích tổng quát, việc dùng dữ liệu giả là biện pháp bảo mật tối ưu.`
+},
+{
+  id: "qz-ccao-244",
+  topic: "claude",
+  q: "[Prompting Basics] You want Claude to act as a project manager to create a timeline. What is the most effective prompt start?",
+  options: [
+    "Make a timeline.",
+    "Act as a professional project manager. Here are the project requirements: [Insert details]. Create a detailed timeline.",
+    "I need a project, give me a timeline.",
+    "Claude, be a manager and do a timeline."
+  ],
+  answer: 1,
+  explain: `**Đúng: yêu cầu Claude đóng vai (persona) và cung cấp đầy đủ chi tiết đầu vào.** Persona giúp Claude áp dụng giọng điệu và cách tiếp cận phù hợp; thông tin chi tiết (requirements) giúp kết quả thực tế, sát nhu cầu.`
+},
+{
+  id: "qz-ccao-245",
+  topic: "claude",
+  q: "[Prompting Basics] You give Claude a task, and the output is too generic. What is the best improvement?",
+  options: [
+    "Ask it to 'be better'.",
+    "Provide context, specific constraints, and examples of the desired quality/output (few-shot prompting).",
+    "Stop using Claude and write it yourself.",
+    "Ask Claude to generate the same output again."
+  ],
+  answer: 1,
+  explain: `**Đúng: cung cấp bối cảnh, hạn chế cụ thể và ví dụ về chất lượng/định dạng mong muốn (few-shot).** Cung cấp ví dụ (few-shot) là cách mạnh mẽ nhất để định hình output theo đúng phong cách và cấu trúc bạn cần.`
+},
+{
+  id: "qz-ccao-246",
+  topic: "claude",
+  q: "[Prompting Basics] Claude is answering too much irrelevant info. How do you fix this?",
+  options: [
+    "Ask it to 'be quiet'.",
+    "Add a constraint: 'Focus only on [Topic], do not include information about [Irrelevant Topic].'",
+    "Give up on this prompt.",
+    "Just accept the irrelevant info."
+  ],
+  answer: 1,
+  explain: `**Đúng: thêm hạn chế cụ thể: 'Chỉ tập trung vào... không bao gồm thông tin về...'** Hạn chế tiêu cực (negative constraints) giúp mô hình biết rõ phạm vi không được chạm tới.`
+},
+{
+  id: "qz-ccao-247",
+  topic: "claude",
+  multi: true,
+  q: "[Prompting Basics] Which two practices help Claude follow a complex instruction? (Choose 2)",
+  options: [
+    "Put all instructions in one long, rambling sentence.",
+    "Break the instruction down into clear, sequential steps.",
+    "Use bullet points for different parts of the task.",
+    "Write the prompt in another language and hope it understands.",
+    "Assume it knows your internal company acronyms without explaining them."
+  ],
+  answer: [1, 2],
+  explain: `**Đúng: chia nhỏ thành các bước rõ ràng và dùng bullet points.** Chia nhỏ giúp mô hình tập trung vào từng phần, tránh bị quá tải. Bullet points tăng tính tổ chức, giúp mô hình dễ nhận diện và thực hiện theo cấu trúc.`
+},
+{
+  id: "qz-ccao-248",
+  topic: "claude",
+  q: "[Prompting Basics] You want Claude to provide feedback on your draft. What will likely get the best feedback?",
+  options: [
+    "Just say 'Review this.'",
+    "Provide the draft, the context of who the audience is, and a specific checklist or rubric for the review.",
+    "Ask it to tell you if the draft is 'good'.",
+    "Hope it finds all errors automatically without guidance."
+  ],
+  answer: 1,
+  explain: `**Đúng: cung cấp bản nháp, ngữ cảnh đối tượng đọc và rubric/checklist cụ thể.** Review hiệu quả cần căn cứ vào mục tiêu (ngữ cảnh) và thước đo (rubric). Checklist giúp Claude không bỏ sót các điểm quan trọng bạn cần kiểm tra.`
+},
+{
+  id: "qz-ccao-249",
+  topic: "claude",
+  q: "[Prompting Basics] You want to use Claude for a repeating task, but it keeps forgetting the formatting rules. What is the most effective solution?",
+  options: [
+    "Resend the rules every time in the prompt, or create a 'Project' with custom instructions that include these rules.",
+    "Complain to Claude about its memory.",
+    "Type the rules in all caps.",
+    "Accept that formatting will never be perfect."
+  ],
+  answer: 0,
+  explain: `**Đúng: gửi lại quy tắc trong prompt hoặc tạo một 'Project' với hướng dẫn tuỳ chỉnh (custom instructions).** Project giúp lưu hướng dẫn cốt lõi xuyên suốt nhiều phiên trò chuyện, bảo đảm các quy tắc được áp dụng nhất quán.`
+},
+{
+  id: "qz-ccao-250",
+  topic: "claude",
+  q: "[Prompting Basics] Claude gives a response that is grammatically correct but factually hallucinated. How should you adjust your prompt?",
+  options: [
+    "Ask it to be 'more creative'.",
+    "Add instructions to 'verify each fact against the provided source' and 'if you are unsure, state you do not know'.",
+    "Use a more complex prompt structure.",
+    "Ignore it, as hallucination is inevitable."
+  ],
+  answer: 1,
+  explain: `**Đúng: thêm yêu cầu 'xác minh từng dữ kiện dựa trên nguồn cung cấp' và 'nếu không chắc chắn, hãy nói không biết'.** Đây là kỹ thuật grounding (neo câu trả lời vào tài liệu được cung cấp) kết hợp với quy tắc xử lý khoảng trống kiến thức (uncertainty management).`
+},
+{
+  id: "qz-ccao-251",
+  topic: "claude",
+  multi: true,
+  q: "[Prompting Basics] Which two prompt elements help Claude generate more reliable, less hallucinated output? (Choose 2)",
+  options: [
+    "Providing the reference source text directly in the prompt.",
+    "Asking Claude to make up information if it doesn't know the answer.",
+    "Adding: 'Base your answer strictly on the provided text.'",
+    "Requesting it to always sound 100% confident, even if it's guessing.",
+    "Telling it to ignore the source text if it has a better 'internal' idea."
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: cung cấp tài liệu tham chiếu và yêu cầu dựa chặt chẽ vào đó.** Grounding (neo) là kỹ thuật quan trọng nhất. Yêu cầu mô hình dựa vào tài liệu cung cấp giúp giới hạn phạm vi kiến thức và giảm khả năng tự bịa (hallucination).`
+},
+{
+  id: "qz-ccao-252",
+  topic: "claude",
+  q: "[Prompting Basics] You want Claude to analyze data in a CSV file. What is the best prompt approach?",
+  options: [
+    "Just upload the file and say nothing.",
+    "Upload the file and provide a prompt explaining what the data represents, what you want to analyze, and the format of the result.",
+    "Ask Claude to guess what the CSV is about.",
+    "Try to copy-paste the CSV without uploading the file, hoping it works."
+  ],
+  answer: 1,
+  explain: `**Đúng: tải tệp lên và cung cấp prompt giải thích dữ liệu đại diện cho điều gì, mục tiêu phân tích và định dạng đầu ra.** Claude cần ngữ cảnh để hiểu cấu trúc và ý nghĩa của các cột dữ liệu trước khi phân tích.`
+},
+{
+  id: "qz-ccao-253",
+  topic: "claude",
+  q: "[Prompting Basics] When Claude returns an output that is logically sound but too long, what is the best modification?",
+  options: [
+    "Ask it to 'be short'.",
+    "Ask it to 'Summarize the response in 3 bullet points, keeping the core reasoning'.",
+    "Ignore the length issue.",
+    "Copy-paste it and delete the excess yourself."
+  ],
+  answer: 1,
+  explain: `**Đúng: yêu cầu tóm tắt bằng 3 bullet points, giữ lại lập luận cốt lõi.** Yêu cầu định dạng (bullet points) và độ dài (số ý) cụ thể giúp Claude kiểm soát độ dài hiệu quả hơn lời mô tả chung chung.`
+},
+{
+  id: "qz-ccao-254",
+  topic: "claude",
+  q: "[Prompting Basics] You find that Claude is consistently ignoring one specific constraint in a long prompt. What should you do?",
+  options: [
+    "Keep repeating the prompt until it works.",
+    "Move that specific constraint to the end of the prompt or make it the very first instruction (recency/primacy bias).",
+    "Assume Claude can't follow constraints.",
+    "Change the topic of the prompt."
+  ],
+  answer: 1,
+  explain: `**Đúng: di chuyển constraint đó lên đầu hoặc xuống cuối prompt.** Mô hình ngôn ngữ chịu ảnh hưởng của hiệu ứng thứ tự (vị trí đầu/cuối của prompt thường được chú ý hơn phần giữa). Đưa các yêu cầu quan trọng vào vị trí này giúp tăng xác suất được thực thi.`
+},
+{
+  id: "qz-ccao-255",
+  topic: "claude",
+  multi: true,
+  q: "[Prompting Basics] Which two techniques help Claude maintain consistency over a long, multi-part task? (Choose 2)",
+  options: [
+    "Providing a checklist for Claude to follow throughout the response generation.",
+    "Giving one giant instruction and expecting Claude to figure out the parts.",
+    "Prompting Claude to 'Stop and think' or 'Draft a plan before writing the full response'.",
+    "Changing the instructions midway through the generation.",
+    "Ignoring the need for structure in the output."
+  ],
+  answer: [0, 2],
+  explain: `**Đúng: cung cấp checklist và yêu cầu lập kế hoạch trước khi viết.** Checklist giúp Claude tự kiểm tra các yêu cầu quan trọng. Lập kế hoạch (Chain of Thought) giúp mô hình có cái nhìn tổng thể trước khi thực hiện chi tiết, tăng tính nhất quán.`
+},
+{
+  id: "qz-ccao-256",
+  topic: "claude",
+  q: "[Prompting Basics] A user wants Claude to write a technical blog post. What is the most robust prompt structure?",
+  options: [
+    "Just 'Write a blog post.'",
+    "Provide: 1. Persona (Expert dev), 2. Audience (Junior devs), 3. Topic, 4. Required structure/tone, 5. Key facts to include.",
+    "Paste the entire website content into the prompt.",
+    "Ask Claude to 'Write something technical'."
+  ],
+  answer: 1,
+  explain: `**Đúng: cung cấp: 1. Persona, 2. Đối tượng đọc, 3. Chủ đề, 4. Cấu trúc/Tông giọng, 5. Các dữ kiện chính.** Cấu trúc prompt đầy đủ giúp định hình mọi khía cạnh của output, từ giọng điệu đến nội dung.`
+},
+{
+  id: "qz-ccao-257",
+  topic: "claude",
+  q: "[Prompting Basics] When asked to categorize a list of feedback, Claude misinterprets the categories. What is the best fix?",
+  options: [
+    "Assume it's impossible.",
+    "Provide clear definitions for each category and 2-3 examples of feedback that belong to each category.",
+    "Ask it to categorize again, hoping for luck.",
+    "Choose different categories."
+  ],
+  answer: 1,
+  explain: `**Đúng: cung cấp định nghĩa rõ ràng cho mỗi danh mục và 2–3 ví dụ cho từng danh mục.** Few-shot prompting (cung cấp ví dụ) là cách tốt nhất để định nghĩa lại các khái niệm theo ý muốn, giúp mô hình phân loại chính xác.`
+},
+{
+  id: "qz-ccao-258",
+  topic: "claude",
+  q: "[Prompting Basics] A user wants to use Claude to help brainstorm product features, but Claude is being too 'safe' and uninspired. How can they prompt differently?",
+  options: [
+    "Ask Claude to be 'safer'.",
+    "Add: 'Be creative, propose radical and out-of-the-box ideas, and don't worry about initial technical constraints.'",
+    "Stop using Claude.",
+    "Just ask the same thing again."
+  ],
+  answer: 1,
+  explain: `**Đúng: thêm yêu cầu 'Hãy sáng tạo, đề xuất ý tưởng táo bạo/độc đáo, và chưa cần lo về rào cản kỹ thuật ngay.'** Khi cần sự sáng tạo, prompt phải explicit hướng dẫn mô hình nới lỏng các ràng buộc thông thường về thực tế.`
+}
 );
