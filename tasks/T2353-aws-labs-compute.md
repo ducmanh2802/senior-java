@@ -30,3 +30,4 @@ Số liệu/giới hạn AWS phải đúng hiện hành; không chắc thì bỏ
 - Mọi `ref` trùng slug thật trong `docs/ref/labaws-index.tsv` (đã kiểm bằng grep); domain id (sap-d2/d3, dop-d1/d3) có trong `js/data/aws-plan.js`.
 - Kiểm: `node --check js/data/aws-labs.js` OK; script nhỏ kiểm tra id duy nhất + ref + domain OK; `node scripts/validate.js` không báo lỗi liên quan đến aws-labs.js (lỗi quiz-ccao-2.js là pre-existing, file không thuộc task này).
 - Không commit (luật AGENTS.md).
+Reviewed-by: verify-only (code/UI task)

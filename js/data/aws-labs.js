@@ -1618,4 +1618,374 @@
 - **Right-sizing** (downsize instance quá lớn) tiết kiệm nhanh nhất, không cần cam kết hợp đồng dài hạn.`,
   ref: ['lab-091-compute-cost-baseline', 'lab-096-capacity-planning', 'lab-030-asg-cost-control'],
 },
+{
+  id: 'awslab-ops-001',
+  category: 'ops',
+  title: 'CloudWatch Metrics & Alarm',
+  level: 'senior',
+  minutes: 45,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d3', 'dop-d4'],
+  services: ['CloudWatch', 'SNS', 'EC2'],
+  goal: 'Sau lab này bạn hiểu CloudWatch metric là chỉ số đo đạc (ví dụ CPUUtilization là tỷ lệ CPU đang dùng) của dịch vụ AWS, cách tạo alarm (cảnh báo) khi metric vượt ngưỡng, và cách gửi thông báo qua SNS (Simple Notification Service — dịch vụ gửi tin nhắn/email). Đây là kỹ năng căn bản của vận hành và hay xuất hiện trong đề SAP/DOP về chủ đề監 sát và cảnh báo (Monitoring and Logging).',
+  steps: [
+    'Chọn một EC2 instance đã chạy (t3.micro nằm trong Free Tier cho lab). CloudWatch tự thu thập metric CPUUtilization mỗi 5 phút (basic monitoring) hoặc mỗi 1 phút nếu bật detailed monitoring.',
+    'Mở CloudWatch → Alarms → Create alarm → Chọn metric EC2 → CPUUtilization của instance lab.',
+    'Đặt điều kiện: Static, greater than, 80 (%), mỗi 5 phút, ít nhất 1 datapoint (một giá trị metric tại một thời điểm). Nghĩa: nếu CPU trên 80% trong 5 phút liên tiếp thì alarm bật.',
+    'Chọn hành động: tạo SNS topic lab-ops-alarm, tạo subscription Email với địa chỉ email của bạn. AWS gửi email xác nhận, bạn phải nhấn Confirm Subscription trong email đó.',
+    'Đặt tên alarm lab-cpu-alarm, thêm mô tả, bật alarm actions, rồi tạo alarm.',
+    'Gây tải CPU để thử: kết nối EC2 (qua Session Manager card ops-004), chạy lệnh làm tăng CPU (trên Linux: yes > /dev/null & trong vài cửa sổ terminal).',
+    'Xem CloudWatch console: alarm chuyển trạng thái OK sang ALARM, bạn nhận email cảnh báo. Dừng lệnh tải, alarm quay lại OK sau đủ số lần đánh giá.',
+  ],
+  verify: [
+    '{{aws cloudwatch describe-alarms --alarm-names lab-cpu-alarm}} trả về StateValue: ALARM (khi đang gây tải) và OK (sau khi dừng).',
+    'Email đã nhận có chủ đề AWS Notification - ... ALARM và link chuyển đến console alarm.',
+    'Console CloudWatch → Alarms hiển thị alarm với trạng thái và biểu đồ metric kèm đường ngưỡng 80%.',
+  ],
+  cost: 'CloudWatch alarm khoảng 0.10 USD/tháng cho mỗi metric alarm. SNS subscription qua email miễn phí (SMS tốn theo từng tin nhắn). EC2 t3.micro trong Free Tier. Dọn dẹp bắt buộc: xoá alarm, xoá SNS topic và subscription, stop hoặc terminate instance lab để tránh phí compute.',
+  examTip: `### Bẫy đề thi
+- Trạng thái alarm: OK, ALARM, INSUFFICIENT_DATA (chưa đủ dữ liệu, ví dụ vừa tạo mới hoặc metric không đến). Đề hay hỏi "alarm vẫn INSUFFICIENT_DATA sau khi tạo" → bình thường, đợi đủ evaluation period.
+- Evaluation period là số lần liên tiếp metric vượt ngưỡng mới báo alarm (mặc định 1). Datapoint là một giá trị metric tại một thời điểm.
+- Alarm action có thể gửi SNS, thực hiện Auto Scaling action, hoặc ghi vào Systems Manager OpsCenter. Đề "cảnh báo team vận hành" → SNS email.
+- Composite alarm (xem lab-59) kết hợp nhiều alarm, chỉ báo động khi toàn bộ điều kiện thỏa mãn, giảm báo động giả.`,
+  ref: ['lab-58-tao-cloudwatch-alarm-gui-thong-bao-qua-sns', 'lab-59-tao-composite-alarm-khi-nhieu-metric-cung-vuot-nguong', 'lab-60-cai-cloudwatch-agent-de-thu-thap-memory-va-disk-metrics', 'lab-61-tao-cloudwatch-dashboard-cho-ec2-alb-rds'],
+},
+{
+  id: 'awslab-ops-002',
+  category: 'ops',
+  title: 'CloudWatch Logs & Logs Insights',
+  level: 'senior',
+  minutes: 45,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['dop-d4', 'sap-d3'],
+  services: ['CloudWatch Logs', 'SNS', 'Lambda'],
+  goal: 'Sau lab này bạn hiểu log group (tổ chức chứa log) và log stream (luồng log của một instance/ứng dụng), cách cài CloudWatch Agent để EC2 gửi log lên CloudWatch, viết truy vấn Logs Insights để untersucht lỗi, và chuyển log thành metric để báo alarm. Kỹ năng này trả lời câu hỏi phỏng vấn "làm sao biết ứng dụng lỗi mà không đăng nhập vào từng máy".',
+  steps: [
+    'EC2 instance cần IAM instance profile gán managed policy CloudWatchAgentServerPolicy (cho phép instance nói chuyện với CloudWatch Logs).',
+    'Cài CloudWatch Agent trên EC2 (Amazon Linux: yum install amazon-cloudwatch-agent), tạo file cấu hình chọn file log /var/log/messages và bộ đếm memory/disk.',
+    'Khai báo agent bằng amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:..., rồi khởi động lại agent.',
+    'Mở CloudWatch → Log groups: nhóm log mới xuất hiện (ví dụ /var/log/messages), bên trong có log stream theo instance ID.',
+    'Viết Logs Insights query trên log group: fields @timestamp, message | filter message like /ERROR/ | stats count() by bin(5m). Chạy qua Last 1 giờ, xem số lỗi theo từng khung 5 phút.',
+    'Tạo metric filter trên log group cho log JSON (ví dụ pattern lọc trường status bằng 500), tạo metric ApiErrors, gắn alarm khi metric lớn hơn 5 trong 5 phút gửi SNS.',
+  ],
+  verify: [
+    'Console Log groups có log stream của instance, nhấn vào stream xem nội dung log thực (ví dụ dòng log CROND hoặc log ứng dụng).',
+    'Logs Insights query trả bảng có cột @timestamp, message và số dòng khớp lớn hơn 0 nếu có log lỗi.',
+    '{{aws cloudwatch describe-metric-filters --log-group-name /var/log/messages}} hiển thị tên filter và metric đã tạo.',
+  ],
+  cost: 'CloudWatch Logs ingestion khoảng 0.50 USD/GB, lưu trữ 0.03 USD/GB/tháng. Lab với vài MB log tốn dưới vài cent. Alarm 0.10 USD/tháng. Dọn dẹp: xoá metric filter, alarm, log group, dừng agent hoặc terminate EC2.',
+  examTip: `### Bẫy đề thi
+- Metric filter trích số liệu từ log (ví dụ đếm dòng có mã status 500) rồi đưa vào CloudWatch metric để báo alarm. Logs Insights chỉ truy vấn ad-hoc, không tự tạo metric.
+- Cú pháp Insights: fields (chọn trường), filter (lọc), stats (tổng hợp theo thời gian bin), sort, limit. Đề hay cho query và hỏi kết quả trả về gì.
+- Log group có thời gian lưu giữ (retention), mặc định lưu mãi nếu không đặt → tốn phí lâu dài. Đề "giảm chi phí lưu log" → đặt retention 30/60/90 ngày hoặc xuất sang S3 + Athena.
+- CloudWatch Agent thu thập hệ thống (memory, disk) mà metric cơ bản của EC2 không có (chỉ CPU, mạng, disk ở mức host).`,
+  ref: ['lab-60-cai-cloudwatch-agent-de-thu-thap-memory-va-disk-metrics', 'lab-62-tao-cloudwatch-logs-metric-filter-tu-application-log', 'lab-63-dung-cloudwatch-synthetics-canary-kiem-tra-url-nhu-nguoi-dung-that', 'lab-17-thu-thap-va-quan-ly-log-tap-trung-tu-nhieu-ec2-bang-unified-cloudwatch-agent'],
+},
+{
+  id: 'awslab-ops-003',
+  category: 'ops',
+  title: 'EventBridge',
+  level: 'senior',
+  minutes: 40,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['dop-d5', 'dop-d1', 'sap-d2'],
+  services: ['EventBridge', 'Lambda', 'EC2', 'SNS'],
+  goal: 'Sau lab này bạn hiểu EventBridge là "bưu chính sự kiện": dịch vụ A phát sự kiện (event) xuống bus, rule lọc sự kiện theo mẫu (pattern) hoặc lịch trình, gửi đến target (Lambda, SNS, SQS, Step Functions) mà dịch vụ gửi và nhận không cần biết nhau (loose coupling). Kiến trúc sự kiện này hay xuất hiện trong đề DOP về "phản ứng sự kiện tự động".',
+  steps: [
+    'Mở EventBridge → Rules → Create rule. Chọn loại rule: Event pattern (sự kiện từ dịch vụ AWS) hoặc Schedule (lập lịch).',
+    'Rule 1 (event pattern): Event source AWS services, Event type EC2 Instance State-change Notification, chỉ nhận sự kiện của instance lab, target là SNS topic lab-event-email (email subscription đã xác nhận).',
+    'Rule 2 (schedule): Schedule rate(5 phút) hoặc cron(...), target là hàm Lambda ghi log "chạy định kỳ" vào CloudWatch Logs.',
+    'Thay đổi trạng thái instance lab (stop/start qua console): rule 1 gửi sự kiện → SNS → email bạn trong vài giây.',
+    'Xem CloudWatch metric Events → Invocations của rule (số lần rule kích hoạt), và DLQ (hang đợi thư tử phong) nếu target Lambda thất bại.',
+    'Tuỳ chọn: dùng Input Transform để trích trường instance-id từ sự kiện và gửi nội dung email tùy chỉnh thay vì JSON thô.',
+  ],
+  verify: [
+    '{{aws events list-rules --name-prefix lab-}} hiển thị rule lab-event-ec2 và lab-schedule với State: ENABLED.',
+    'Email nhận được khi instance thay đổi trạng thái, nội dung có instance ID và thời điểm.',
+    'Amazon CloudWatch metric Invocations của rule tăng sau mỗi lần kích hoạt.',
+  ],
+  cost: 'Sự kiện từ dịch vụ AWS (ví dụ EC2 state change) miễn phí. Sự kiện tùy chỉnh (custom event qua PutEvents) khoảng 1.00 USD/get triệu sự kiện. SNS email miễn phí. Lambda trong Free Tier. Lab tốn dưới 1 USD. Dọn dẹp: xoá rule (xoá target cùng lúc), SNS topic, Lambda function, log group.',
+  examTip: `### Bẫy đề thi
+- EventBridge kết hợp dịch vụ không cần biết nhau: producer chỉ gửi sự kiện vào bus, consumer đăng ký rule. Điều này là loose coupling, khác gọi API trực tiếp (chặt chẽ hơn).
+- Một rule chỉ có EITHER event pattern HOẶC schedule, không cùng lúc. Mỗi rule có tới 5 target.
+- Event archive lưu sự kiện trong 180 ngày (tuỳ chọn), cho phép replay lại sự kiện cũ để chạy lại rule — đề hay hỏi "xử lý lại sự kiện đã bỏ lỡ".
+- Schema Registry trích cấu trúc sự kiện thành schema để code dễ xử lý, schemas được discovery tự động miễn phí.`,
+  ref: ['lab-64-tao-eventbridge-rule-bat-su-kien-ec2-state-change', 'lab-92-tao-lambda-xu-ly-event-tu-eventbridge', 'lab-18-kich-hoat-aws-lambda-tu-s3-object-created-event-bang-amazon-eventbridge-rule'],
+},
+{
+  id: 'awslab-ops-004',
+  category: 'ops',
+  title: 'Systems Manager Session Manager',
+  level: 'mid',
+  minutes: 40,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['dop-d2', 'sap-d1'],
+  services: ['SSM', 'EC2', 'IAM'],
+  goal: 'Sau lab này bạn hiểu Systems Manager (SSM) là tập hợp công cụ quản lý EC2 và hệ thống on-premises, trong đó Session Manager cho phép truy cập terminal EC2 private không cần SSH, không cần bastion host (máy nhảy có public IP mở port 22), và toàn bộ session được ghi log để kiểm toán. Đây là câu trả lời hay cho đề "quản lý hàng nghìn EC2 không mở port 22".',
+  steps: [
+    'Launch EC2 (Amazon Linux 2023, t3.micro) ở private subnet, không public IP, gán IAM instance profile có managed policy AmazonSSMManagedInstanceCore (cho phép instance nói chuyện với SSM).',
+    'Khởi động instance, chờ SSM Agent chạy (máy khách của SSM trên instance). Mở Systems Manager → Fleet Manager: instance xuất hiện trạng thái Online sau vài phút.',
+    'Session Manager → Start session → chọn instance → mở terminal trên trình duyệt, chạy lệnh (whoami, uptime, yum list installed) mà không cần SSH key, không mở port 22.',
+    'Bật ghi log session: Session Manager preferences → chọn S3 bucket hoặc CloudWatch Logs group để lưu toàn bộ lệnh đầu ra (audit trail, bằng chứng ai chạy lệnh gì, khi nào).',
+    'Tuỳ chọn: port forwarding bằng AWS CLI session-manager-plugin, cổng local 8080 trỏ đến cổng 8080 của instance private, truy cập ứng dụng qua localhost.',
+    'Kết thúc session, xem log session trong S3/CloudWatch để xác nhận đã ghi nhận.',
+  ],
+  verify: [
+    '{{aws ssm describe-instance-information --instance-ids i-xxx}} trả về PingStatus: Online và AgentVersion.',
+    'Console Session Manager có session active, terminal phản hồi lệnh.',
+    'S3 bucket hoặc CloudWatch log group có file session log của instance lab.',
+  ],
+  cost: 'SSM core (Session Manager, Fleet Manager, Run Command) miễn phí. Chi phí: EC2 instance (Free Tier t3.micro), CloudWatch Logs/S3 lưu session log (ít). Không cần bastion EC2 chạy 24/7 → tiết kiệm khoảng 15-20 USD/tháng nếu dùng t3.medium làm bastion. Dọn dẹp: terminate instance, xoá S3 bucket/log group lưu session.',
+  examTip: `### Bẫy đề thi
+- Session Manager thay bastion host: giảm bề mặt tấn công (không port 22 mở), không quản lý SSH key, toàn session được ghi log kiểm toán.
+- Instance private subnet không cần NAT Gateway cho Session Manager nếu có VPC endpoint interface: com.amazonaws.<region>.ssm, ec2messages, ssmmessages (xem lab-49 trong card VPC endpoint).
+- IAM instance profile phải có AmazonSSMManagedInstanceCore; nếu thiếu → instance không xuất hiện trong Fleet Manager.
+- Session Manager hỗ trợ port forwarding và chạy lệnh mà không đăng nhập interactive — đáp ứng đề "quản lý đám mây hàng ngàn instance không SSH".`,
+  ref: ['lab-85-dung-systems-manager-session-manager-de-ket-noi-ec2-private', 'lab-86-gan-iam-instance-profile-va-ssm-agent-de-instance-xuat-hien-trong-session-manager', 'lab-042-session-manager'],
+},
+{
+  id: 'awslab-ops-005',
+  category: 'ops',
+  title: 'Systems Manager Patch Manager',
+  level: 'senior',
+  minutes: 45,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['dop-d2'],
+  services: ['SSM', 'EC2'],
+  goal: 'Sau lab này bạn hiểu Patch Manager tự động quét và cài đặt bản vá (patch) cho hệ điều hành EC2: patch baseline quy định bản vá nào được duyệt/từ chối, patch group (gán qua tag) nhóm instance dùng cùng baseline, maintenance window là cửa sổ thời gian cho phép tác vụ chạy, và compliance báo cáo tỷ lệ instance đã đáp ứng chuẩn bảo mật. Đề DOP hay hỏi "cách tự động vá bảo mật hàng loạt EC2".',
+  steps: [
+    'Có ít nhất 2 EC2 đã được SSM quản lý (card ops-004), gán tag Patch Group = lab-prod cho cả hai.',
+    'Systems Manager → Patch Manager → Create patch baseline: chọn Amazon Linux 2023, duyệt tất cả cập nhật bảo mật (security), từ chối các cập nhật tính năng không cần thiết, lưu làm mặc định.',
+    'Tạo Maintenance Window: tên lab-mw, lịch chạy mỗi Chủ Nhật 02:00, thời lượng 3 giờ, đăng ký target bằng tag Patch Group=lab-prod.',
+    'Đăng ký tác vụ cài đặt bản vá (Install/update) vào maintenance window, chọn patch baseline lab.',
+    'Chạy Patch Scan (quét) thủ công trên instance, xem Patch Compliance: Missing (chưa cài), Installed (đã cài), Failed (thất bại).',
+    'Chờ maintenance window chạy hoặc khởi động ngay, xem lại compliance sau khi patch.',
+  ],
+  verify: [
+    '{{aws ssm describe-patch-groups --patch-group lab-prod}} hiển thị instance thuộc nhóm.',
+    '{{aws ssm list-compliance-items --resource-ids i-xxx}} trả về compliance status (COMPLIANT/NON_COMPLIANT) và severity.',
+    'Console Patch Manager compliance dashboard hiển thị tỷ lệ instance compliant theo nhóm.',
+  ],
+  cost: 'SSM Patch Manager miễn phí. Chi phí compute khi instance chạy scan/cài đặt (Free Tier), SNS nếu thông báo. Dọn dẹp: xoá maintenance window, patch baseline tùy chỉnh (baseline mặc định không xoá), terminate instance lab.',
+  examTip: `### Bẫy đề thi
+- Patch baseline quy định bản vá nào được duyệt hoặc từ chối (theo severity, sản phẩm, phân loại). Một patch group (gán qua tag) chỉ dùng một baseline tại một thời điểm.
+- Maintenance Window là cửa sổ bảo trì (khoảng thời gian cho phép tác vụ chạy) — tránh ảnh hưởng giờ cao điểm.
+- Patch Manager báo compliance, không tự ép instance reboot trừ bạn cấu hình. Đề "tuân thủ bảo mật, báo cáo instance chưa vá" → Patch Manager kết hợp AWS Config.
+- Cần SSM Agent và instance profile như Session Manager (card ops-004).`,
+  ref: ['lab-88-patch-ec2-bang-systems-manager-patch-manager', 'lab-044-patch-manager'],
+},
+{
+  id: 'awslab-ops-006',
+  category: 'ops',
+  title: 'Systems Manager Parameter Store',
+  level: 'mid',
+  minutes: 40,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['dop-d2'],
+  services: ['SSM', 'KMS', 'Secrets Manager'],
+  goal: 'Sau lab này bạn hiểu Parameter Store là kho lưu cấu hình và bí mật tập trung: lưu theo đường dẫn phân cấp (ví dụ /prod/app/db/url), phân biệt String (văn bản thuần) và SecureString (mã hoá bằng KMS, chỉ giải mã khi có quyền kms:Decrypt). So sánh với Secrets Manager (trả phí nhưng có xoay vòng mật khẩu tự động) giúp chọn đúng dịch vụ trong đề.',
+  steps: [
+    'Mở Systems Manager → Parameter Store → Create parameter: tên /lab/app/db/url, loại String, giá trị jdbc:mysql://db.lab.internal:3306/app, thêm mô tả và tag App=lab.',
+    'Tạo parameter /lab/app/db/password, loại SecureString, chọn KMS key (aws/ssm mặc định hoặc customer managed key), nhập mật khẩu thực. SecureString được mã hoá khi lưu và chỉ giải mã khi có quyền kms:Decrypt.',
+    'Tạo parameter phân cấp /prod/app/db/url và /dev/app/db/url để thấy cấu hình theo môi trường, hiểu tiền tố đường dẫn giúp gán IAM policy theo nhóm (ví dụ cho phép lấy /dev/* nhưng không /prod/*).',
+    'Truy cập từ EC2 qua CLI: aws ssm get-parameter --name /lab/app/db/password --with-decryption (cần quyền ssm:GetParameter và kms:Decrypt).',
+    'Tuỳ chọn: lưu ý tham chiếu parameter trong CloudFormation dùng dynamic reference {{resolve:ssm:/lab/app/db/url:1}} (chỉ lưu ý cú pháp, không triển khai stack thật cho lab).',
+  ],
+  verify: [
+    '{{aws ssm get-parameters --names /lab/app/db/password --with-decryption}} trả về Parameter với Value là giá trị thật sau khi giải mã.',
+    '{{aws ssm describe-parameters --filters Key=Name,Values=/lab/app/*}} hiển thị cả 3 parameter theo tiền tố phân cấp.',
+    'CloudTrail sự kiện ssm:GetParameter và kms:Decrypt có userIdentity là bạn (kiểm tra audit, xem card ops-009).',
+  ],
+  cost: 'Parameter Store Standard parameter miễn phí trong ngưỡng (10.000 parameter, tổng dung lượng 1 GB). Advanced parameter 0.05 USD/tháng/parameter cộng phí gọi API. KMS customer managed key 1 USD/tháng (nếu tạo). Dọn dẹp: xoá parameter, lịch trình xoá key KMS customer (7-30 ngày), terminate EC2.',
+  examTip: `### Bẫy đề thi
+- Parameter Store: miễn phí/rẻ, thích hợp lưu cấu hình chung (connection string, license key). Secrets Manager: trả phí (0.40 USD/tháng/mật secret) nhưng có xoay vòng mật khẩu (rotation) tự động cho RDS và sinh mật khẩu mạnh ngẫu nhiên. Đề "cần xoay mật khẩu DB định kỳ" → Secrets Manager; "lưu config miễn phí" → Parameter Store.
+- Đường dẫn phân cấp (/prod/app/...) giúp gán IAM policy theo tiền tố, ví dụ cho phép ssm:GetParameter trên /dev/* nhưng không /prod/*.
+- SecureString cần KMS key; lấy parameter cross-account cần key policy KMS và IAM policy cả hai bên (giống card KMS tuần 7).`,
+  ref: ['lab-047-parameter-store-ec2', 'lab-02-quan-ly-bien-moi-truong-va-thong-tin-xac-thuc-ung-dung-ecs-voi-parameter-store-va-secrets-manager', 'lab-117-bao-mat-du-lieu-khoi-tao-ec2-bang-ssm-parameter-store-securestring-va-cloudformation-dynamic-references'],
+},
+{
+  id: 'awslab-ops-007',
+  category: 'ops',
+  title: 'SSM State Manager, Automation & Incident Manager',
+  level: 'senior',
+  minutes: 50,
+  exams: ['dop-c02', 'sap-c02'],
+  domains: ['dop-d5'],
+  services: ['SSM'],
+  goal: 'Sau lab này bạn hiểu State Manager áp dụng cấu hình mong muốn (desired state) định kỳ (ví dụ cài gói, chỉnh file config) để chống "trôi cấu hình" (configuration drift); Automation là runbook nhiều bước (chụp snapshot, sửa cài đặt, restart) có bước phê duyệt aws:approve; Incident Manager quản lý vòng đời sự cố (khai báo severity, lên lịch escalation, bài review sau sự cố). Ba công cụ cùng giúp tự động hóa vận hành và giảm MTTR (thời gian khôi phục trung bình).',
+  steps: [
+    'State Manager: tạo association dùng tài liệu AWS-RunShellScript, target instance lab (bằng tag), lệnh cài gói (ví dụ yum install -y htop), lịch mỗi 30 phút. Nếu instance bị thay đổi cấu hình (gỡ gói), lần chạy tiếp theo khôi phục lại theo association.',
+    'Xem trạng thái association: Success/Failed, đầu ra từng bước lưu trong S3/CloudWatch.',
+    'Automation: tạo tài liệu automation (YAML/JSON) 2 bước: bước 1 chụp snapshot EBS hoặc AMI, bước 2 aws:approve (chờ người duyệt) trước khi restart instance. Thực hiện automation, xem trạng thái từng bước.',
+    'Incident Manager: tạo replication set (mặc định), tạo response plan lab-incident, định nghĩa severity và liên hệ escalation (SNS email).',
+    'Mô phỏng sự cố: CloudWatch alarm CPU > 80% → EventBridge rule → tạo incident trong Incident Manager. Chạy runbook khẩn cấp từ incident, ghi timeline, đo MTTR.',
+    'Post-incident review: ghi nguyên nhân, hành động cải tiến vào bản ghi incident.',
+  ],
+  verify: [
+    '{{aws ssm describe-association --association-id <id>}} trả về AssociationStatus: Success.',
+    '{{aws ssm describe-automation-executions --filters Key=ExecutionStatus,Values=Success}} hiển thị automation đã chạy thành công.',
+    'Console Incident Manager có incident lab-incident với trạng thái và timeline các sự kiện.',
+  ],
+  cost: 'SSM core miễn phí. AMI/EBS snapshot từ automation tốn lưu trữ EBS snapshot (khoảng 0.05 USD/GB-tháng). Incident Manager tính phí theo sự cố/item được quản lý (vài cent lab), có ngưỡng miễn phí. Dọn dẹp: xoá association, automation document, incident/response plan, xoá snapshot AMI.',
+  examTip: `### Bẫy đề thi
+- State Manager chống "trôi cấu hình": instance bị đổi cấu hình ngoài ý muốn sẽ được khôi phục theo association định kỳ.
+- Automation document là runbook nhiều bước (chụp snapshot, sửa cài đặt, restart) có bước aws:approve cần con người nhấn duyệt trước khi tiếp tục — phù hợp thao tác rủi cao.
+- Incident Manager quản lý vòng đời sự cố: khai báo severity, mở war room (tích hợp Chatbot/SSM), ghim timeline, bài review sau sự cố. Đề "giảm MTTR" → automation + runbook được chuẩn hóa trước khi sự cố xảy ra.`,
+  ref: ['lab-045-state-manager', 'lab-046-automation-document', 'lab-049-ssm-incident-response', 'lab-050-ssm-operations-review'],
+},
+{
+  id: 'awslab-ops-008',
+  category: 'ops',
+  title: 'AWS Config rules & remediation',
+  level: 'senior',
+  minutes: 45,
+  exams: ['dop-c02', 'sap-c02'],
+  domains: ['dop-d6', 'sap-d1'],
+  services: ['Config', 'SSM', 'SNS'],
+  goal: 'Sau lab này bạn hiểu AWS Config ghi lại cấu hình tài nguyên (configuration item: tài nguyên trông như thế nào, ai thay đổi, khi nào), dùng managed rule (ví dụ s3-bucket-public-read-prohibited) để đánh giá tuân thủ, và gắn remediation tự động bằng SSM Automation để sửa cấu hình sai. Kết hợp CloudTrail (gọi API gì) và Config (trạng thái tài nguyên) là nền tảng kiểm toán và root-cause sự cố.',
+  steps: [
+    'Bật AWS Config recorder: chọn ghi các loại tài nguyên cần thiết (S3 bucket, EC2, security group) để giảm phí, chọn S3 bucket lưu configuration snapshot và SNS topic thông báo.',
+    'Thêm managed rule s3-bucket-public-read-prohibited: Config đánh giá bucket, bất kỳ bucket cho phép public read đều NON_COMPLIANT.',
+    'Gắn remediation tự động: tài liệu SSM Automation AWS-DisableS3BucketPublicReadWrite, gán IAM role cho Automation có quyền sửa bucket.',
+    'Cố tình cho phép public access read trên bucket test (chỉ lab, không chứa dữ liệu thật): đợi Config đánh giá (vài phút), thấy NON_COMPLIANT, rồi remediation tự động tắt public access.',
+    'Tạo EventBridge rule: sự kiện Config Rules Compliance Change (NON_COMPLIANT) → SNS thông báo on-call email.',
+    'Xem Config dashboard: tỷ lệ compliant/non-compliant, lịch sử thay đổi cấu hình của bucket (configuration item).',
+  ],
+  verify: [
+    '{{aws configservice describe-config-rules --config-rule-names s3-bucket-public-read-prohibited}} trả về State: ACTIVE.',
+    '{{aws configservice get-compliance-details-by-config-rule --config-rule-name s3-bucket-public-read-prohibited}} trả về ComplianceType: NON_COMPLIANT trước khi sửa, COMPLIANT sau.',
+    'EventBridge rule đã trigger (metric Invocations lớn hơn 0) và email đã gửi.',
+  ],
+  cost: 'Config tính phí theo configuration item (mỗi thay đổi cấu hình được ghi) và rule evaluation (vài cent đến dưới 1 USD cho lab). S3 lưu snapshot, SNS email miễn phí. Dọn dẹp: xoá remediation, rule, dừng Config recorder (stop configuration recorder) và xoá delivery channel nếu không dùng, xoá S3 bucket lưu snapshot.',
+  examTip: `### Bẫy đề thi
+- Config ghi lại "ai thay đổi gì, khi nào" của tài nguyên AWS — cần cho kiểm toán và root-cause sự cố (CloudTrail card ops-009 ghi API call, Config ghi trạng thái tài nguyên).
+- Managed rule do AWS viết sẵn (s3-bucket-public-read-prohibited, restricted-ssh…), custom rule viết bằng Lambda. Remediation tự động dùng SSM Automation.
+- Config Aggregator tổng hợp config từ nhiều account/Region về một account aggregator — đề hay hỏi "quan sát tuân thủ toàn tổ chức".
+- Phân biệt rõ: CloudTrail = log gọi API, Config = trạng thái tài nguyên, CloudWatch = hiệu năng (CPU, latency).`,
+  ref: ['lab-76-tao-aws-config-managed-rule-kiem-tra-tag-bat-buoc', 'lab-77-cau-hinh-aws-config-remediation-bang-systems-manager-automation'],
+},
+{
+  id: 'awslab-ops-009',
+  category: 'ops',
+  title: 'CloudTrail',
+  level: 'senior',
+  minutes: 40,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['dop-d4', 'dop-d6', 'sap-d1'],
+  services: ['CloudTrail', 'Athena', 'S3', 'EventBridge'],
+  goal: 'Sau lab này bạn hiểu CloudTrail ghi lại mọi lời gọi API vào tài khoản AWS (ai gọi API gì, khi nào, từ IP nào), tạo organization trail để tập trung log từ tất cả member account vào bucket log archive của tổ chức, và truy vấn log bằng Athena. Đây là công cụ kiểm toán bắt buộc và hay ra đề SAP/DOP về bảo mật, tuân thủ và Untersuch nguyên nhân sự cố.',
+  steps: [
+    'Mở CloudTrail → Trails → Create trail: tên lab-trail, áp dụng cho tất cả Region (lấy sự kiện toàn vùng), quản lý sự kiện (management events) Read/Write.',
+    'Chọn S3 bucket lưu log (tạo mới, gán bucket policy cho phép CloudTrail ghi), bật mã hoá SSE-KMS với CMK lab, bật log file validation (xác thực tính chính xác của log).',
+    'Quan trọng đối với tổ chức: tạo organization trail từ account quản trị (management account): log của tất cả member account tập trung vào bucket log archive, member không thể tắt trail.',
+    'Truy tìm sự kiện: CloudTrail → Event history, lọc tên sự kiện (ví dụ CreateBucket, RunInstances, ConsoleLogin) xem ai, khi nào, từ IP nào.',
+    'Truy vấn log bằng Athena: tạo bảng trên S3 bucket CloudTrail (định dạng JSON, partition theo Region/Year/Month/Day), chạy SELECT eventname, useridentity.principalid, eventtime WHERE eventsource = s3.amazonaws.com.',
+    'Tạo EventBridge rule: sự kiện API nhạy cảm (ví dụ DeleteTrail, StopLogging, CreateAccessKey) → SNS cảnh báo bảo mật.',
+  ],
+  verify: [
+    '{{aws cloudtrail describe-trails}} trả về TrailARN, IsLogging: true, S3BucketName đúng.',
+    'S3 bucket có thư mục AWSLogs/<account-id>/CloudTrail/<region>/<year>/<month>/<day>/ chứa file .json.gz.',
+    'Athena query trả rows có eventName và userIdentity khớp với hành động bạn vừa làm (ví dụ bạn tạo bucket lab).',
+  ],
+  cost: 'CloudTrail: bản sao đầu tiên của management events miễn phí (mỗi Region), trail/bản sao thêm trả 2.00 USD/get ngàn sự kiện ghi lại. Data events (thao tác dữ liệu S3, invoke Lambda) trả phí riêng. Athena 5 USD/TB dữ liệu quét (lab vài MB, partition đúng → dưới 1 cent). S3 lưu log ít. Dọn dẹp: xoá trail (không xoá bucket nếu muốn giữ log), xoá Athena table, Athena workgroup lab.',
+  examTip: `### Bẫy đề thi
+- Management events: các API gọi quản lý (tạo EC2, đổi IAM) — mặc định ghi. Data events: thao tác dữ liệu (GET/PUT object S3, invoke Lambda) — phải bật thêm, trả phí, dùng cho kiểm toán truy cập dữ liệu nhạy cảm.
+- Organization trail: quản trị từ account quản trị, áp dụng tất cả member, logs tập trung — đáp ứng "logging tập trung toàn tổ chức" trong đề SAP/DOP.
+- CloudTrail Insights: phát hiện hoạt động API bất thường (ví dụ spike RunInstances) tự động, tốn thêm phí.
+- CloudTrail = log gọi API (ai gọi API gì), Config = trạng thái tài nguyên (tài nguyên trông như thế nào), CloudWatch = hiệu năng (CPU, latency).`,
+  ref: ['lab-66-bat-cloudtrail-organization-trail', 'lab-67-truy-van-cloudtrail-log-bang-athena', 'lab-68-tim-nguyen-nhan-thay-doi-tai-nguyen-bang-cloudtrail-event-history'],
+},
+{
+  id: 'awslab-ops-010',
+  category: 'ops',
+  title: 'Organizations & SCP',
+  level: 'senior',
+  minutes: 50,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d1', 'dop-d6'],
+  services: ['Organizations', 'IAM'],
+  goal: 'Sau lab này bạn hiểu multi-account trên AWS: Organizations quản lý nhiều tài khoản trong một tổ chức, OU (organizational unit) nhóm tài khoản (Sandbox, Production, Development), SCP (service control policy) là deny-list chỉ cấm hành động (không cấp quyền), áp dụng cho tất cả principal trong account kể cả root. SCP là guardrail (ranh giới an toàn) cho toàn tổ chức và hay xuất hiện trong đề SAP về phân quyền đa tài khoản.',
+  steps: [
+    'Từ account quản trị, mở AWS Organizations → Create organization (all features). Tạo OU: Sandbox, Production, Development.',
+    'Tạo member account mới trong OU Sandbox (dùng email alias, không phải email chính).',
+    'Bật IAM Identity Center (xem card ops-012), tạo user và gán quyền qua permission set vào member account.',
+    'Viết SCP deny-list: chặn mọi Region trừ ap-southeast-1 và us-east-1, và chặn hành động xoá CloudTrail/StopLogging. Gắn SCP cho OU Sandbox.',
+    'Đăng nhập vào member account Sandbox với quyền Administrator (qua Identity Center), thử launch EC2 ở eu-west-1: nhận AccessDenied ngay cả khi là admin — vì SCP hoạt động ở cấp tổ chức, trên cả IAM policy.',
+    'Xem Effective policy trong Organizations: SCP của OU kết hợp với SCP của root (nếu có).',
+  ],
+  verify: [
+    '{{aws organizations list-accounts}} hiển thị account mới trong OU Sandbox, trạng thái ACTIVE.',
+    '{{aws organizations list-policies-for-target --target-id <ou-id> --filter SERVICE_CONTROL_POLICY}} hiển thị SCP đã gắn.',
+    'CloudTrail event history của member account có sự kiện unauthorized (AccessDenied) khi thử launch Region bị chặn.',
+  ],
+  cost: 'Organizations và SCP miễn phí. Member account riêng bắt đầu tính phí theo tài nguyên chạy (EC2, S3…), nên dọn sạch tài nguyên lab trong member account. Control Tower (ref lab-80) miễn phí nhưng bật Config/CloudTrail có chi phí đi kèm.',
+  examTip: `### Bẫy đề thi
+- SCP là deny-list (chỉ cấm), KHÔNG cấp quyền. Quyền thực tế = giao của IAM policy (cho phép) và SCP (không cấm). Explicit Deny trong SCP thắng mọi Allow.
+- SCP áp dụng cho mọi principal trong account kể cả root user (trừ những principal được specially exempt, ví dụ service-linked role).
+- SCP không ảnh hưởng đến account quản trị (management account) trừ khi bạn chọn áp dụng cho nó.
+- Hình ảnh multi-account chuẩn doanh nghiệp: Organizations (quyền tổ chức) + IAM Identity Center (đăng nhập) + SCP (guardrail).`,
+  ref: ['lab-79-tao-aws-organizations-scp-chan-hanh-dong-khong-mong-muon', 'lab-80-provision-account-baseline-bang-aws-control-tower-account-factory'],
+},
+{
+  id: 'awslab-ops-011',
+  category: 'ops',
+  title: 'Incident response runbook (SSM Incident Manager)',
+  level: 'senior',
+  minutes: 45,
+  exams: ['dop-c02'],
+  domains: ['dop-d5'],
+  services: ['SSM', 'EventBridge', 'CloudWatch'],
+  goal: 'Sau lab này bạn hiểu Incident Manager quản lý vòng đời sự cố vận hành: khai báo severity (Critical/High/Low), lên lịch escalation (ai nhận thông báo, khi nào), chạy runbook khẩn cấp (SSM Automation), ghi timeline và viết post-incident review (bài hậu sự cố, không tìm người sai lầm mà tìm quy trình sai). Kết hợp EventBridge (phát hiện) → Incident Manager (quản lý) → SSM Automation (sửa tự động) là mẫu phản ứng sự cố tự động của DOP.',
+  steps: [
+    'Incident Manager: tạo replication set (mặc định), tạo response plan lab-incident, chọn severity Critical/High, đăng liên hệ on-call (SNS email hoặc chat).',
+    'Tạo Runbook (tài liệu SSM Automation) khẩn cấp: bước 1 chụp snapshot EBS/EBS volume bị ảnh hưởng, bước 2 aws:approve (phê duyệt trước khi tác động), bước 3 restart instance hoặc scale thêm instance qua Auto Scaling group.',
+    'Kết nối CloudWatch alarm (CPU > 90% hoặc error rate cao) với EventBridge rule, target là tạo incident trong Incident Manager (hoặc gửi SNS cho on-call khai báo thủ công).',
+    'Mô phỏng: tạo sự tích lỗi trên ứng dụng lab, alarm bật → incident được tạo (hoặc tạo thủ công qua console), on-call nhận thông báo.',
+    'Vào incident, chạy runbook khẩn cấp, ghi timeline (khi nào phát hiện, khi nào bắt đầu xử lý, khi nào khôi phục), tính MTTR (mean time to recovery).',
+    'Post-incident review: ghi nguyên nhân gốc (root cause), hành động ngắn hạn (khôi phục dịch vụ) và dài hạn (sửa code, thêm alarm, chaos testing).',
+  ],
+  verify: [
+    'Console Incident Manager có incident lab-incident với trạng thái (Open/Resolved) và severity đã chọn.',
+    'Timeline có các sự kiện: incident created, runbook started, runbook completed kèm timestamp.',
+    '{{aws ssm describe-automation-executions --filters Key=AutomationExecutionStatus,Values=Success}} hiển thị runbook đã chạy thành công.',
+  ],
+  cost: 'Incident Manager tính phí theo sự cố/item được quản lý (vài cent đến vài USD lab) cộng tài nguyên đi kèm (SNS, snapshot EBS). CloudWatch alarm 0.10 USD/tháng. Dọn dẹp: resolve rồi xoá incident/response plan, replication set nếu tạo thêm, automation document, snapshot.',
+  examTip: `### Bẫy đề thi
+- MTTR (mean time to recovery) = thời gian trung bình từ phát hiện đến khôi phục dịch vụ. Runbook chuẩn hóa trước giúp giảm MTTR khi đang stress.
+- Severity (Critical/High/Low) quyết định mức độ lên lịch escalation và ai được thông báo. Đề về incident response → runbook + escalation + post-mortem.
+- Post-incident review (post-mortem) không tìm người chịu trách nhiệm (blameless) mà tìm quy trình sai và cải tiến hệ thống.
+- Kết hợp EventBridge (phát hiện sự kiện) → Incident Manager (quản lý sự cố) → SSM Automation (sửa tự động) là mẫu tự động hóa phản ứng sự cố của DOP.`,
+  ref: ['lab-049-ssm-incident-response', 'lab-099-network-incident-response-runbook', 'lab-099-compute-incident-runbook'],
+},
+{
+  id: 'awslab-ops-012',
+  category: 'ops',
+  title: 'IAM Identity Center & truy cập đa tài khoản',
+  level: 'senior',
+  minutes: 45,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d1', 'dop-d6'],
+  services: ['IAM Identity Center', 'Organizations'],
+  goal: 'Sau lab này bạn hiểu AWS IAM Identity Center (trước đây gọi AWS Single Sign-On) là cổng truy cập duy nhất cho con người: tạo user/group, permission set (template vai trò tự động tạo trong từng account target), truy cập qua AWS Access Portal, vào nhiều account mà không cần tạo IAM user riêng mỗi account. Kết hợp với Organizations và SCP (card ops-010) là hình ảnh phân quyền đa tài khoản chuẩn doanh nghiệp.',
+  steps: [
+    'Bật AWS IAM Identity Center trong account quản trị của Organizations, chọn một Region duy nhất cho Identity Center.',
+    'Tạo user (ví dụ dev-lab) và group (Developers) trong Identity Center store (hoặc kết nối external identity provider như Microsoft AD/OneLogin — chỉ nắm khái niệm).',
+    'Tạo permission set: AdministratorAccess (quản trị đầy đủ trong account) và ReadOnlyAccess (chỉ xem), gán vào group Developers cho member account Sandbox (card ops-010).',
+    'dev-lab đăng nhập vào AWS Access Portal (URL https://d-xxx.awsapps.com/start), thấy danh sách account được gán, nhấn vào account → mở Management Console với quyền của permission set (không cần mật khẩu root hay IAM user riêng mỗi account).',
+    'Qua portal, dev-lab chọn role tương ứng permission set để vào console member account, verify thấy tài nguyên của account đó (hoặc AccessDenied nếu attempt Region bị chặn bởi SCP card ops-010).',
+    'Tuỳ chọn: thêm ứng dụng SAML 2.0 (ví dụ một công cụ nội bộ) vào Identity Center để đăng nhập duy nhất SSO.',
+  ],
+  verify: [
+    '{{aws ssoadmin list-permission-sets --instance-arn <arn>}} hiển thị permission set đã tạo.',
+    'Access Portal đăng nhập thành công, danh sách account hiển thị đúng theo gán quyền.',
+    'CloudTrail sự kiện AssumeRole (bằng STS) từ portal có userIdentity là dev-lab qua Identity Center.',
+  ],
+  cost: 'IAM Identity Center miễn phí (tính năng cốt lõi không tính phí theo người dùng); chi phí đi kèm là tài nguyên AWS khi sử dụng. External identity provider (SAML) có thể tốn phí bên nhà cung cấp. Dọn dẹp: xoá permission set, user/group, tắt Identity Center (cẩn thận: sẽ làm mất quyền truy cập portal của tất cả user).',
+  examTip: `### Bẫy đề thi
+- Best practice AWS: không tạo IAM user cho con người mỗi account; dùng IAM Identity Center + permission set + access portal (đăng nhập một lần, vào nhiều account).
+- SCP (card ops-010) vẫn áp dụng trên mọi quyền đi qua Identity Center — Identity Center cấp quyền truy cập, SCP đặt ranh giới cho phép/cấm.
+- Permission set là template IAM role được Identity Center tự tạo trong từng account target; bạn không cần tạo role thủ công mỗi account.
+- Phân biệt: IAM user (mã credentials dài hạn, không khuyến khích), IAM role (tạm thời, assume), Identity Center (đăng nhập con người đa account).`,
+  ref: ['lab-79-tao-aws-organizations-scp-chan-hanh-dong-khong-mong-muon', 'lab-80-provision-account-baseline-bang-aws-control-tower-account-factory'],
+},
 );
