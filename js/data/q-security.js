@@ -6183,4 +6183,503 @@ CREATE TABLE audit_log (
   ],
   tags: ["Audit Log", "Tamper-evident", "Hash Chain", "Outbox", "Compliance", "Spring Boot"]
 },
+{
+  id: "security-077",
+  topic: "security",
+  level: "senior",
+  q: "Spring Security 6 dùng SecurityFilterChain thay vì WebSecurityConfigurerAdapter: bạn cấu hình chuỗi lọc thế nào, thứ tự các filter quan trọng là gì, và khi nào cần chèn filter tùy chỉnh vào vị trí cụ thể?",
+  a: `**Tóm tắt:** Spring Security 5.7+ khuyến nghị dùng **SecurityFilterChain bean (lambda DSL)** thay cho WebSecurityConfigurerAdapter (deprecated). Bạn định nghĩa một hoặc nhiều chuỗi lọc, mỗi chuỗi có thứ tự filter cố định của framework (SecurityContextHolderFilter → AuthenticationFilter → AuthorizationFilter → ExceptionTranslationFilter…). Khi cần chèn filter tùy chỉnh, dùng {{.addFilterBefore()}}, {{.addFilterAfter()}}, hoặc {{.addFilterAt()}} tham chiếu đến lớp filter chuẩn (ví dụ {{UsernamePasswordAuthenticationFilter.class}}) để kiểm soát vị trí chính xác.
+
+### 1. Từ WebSecurityConfigurerAdapter sang SecurityFilterChain
+- **Cũ (Adapter)**: extend class, override {{configure(HttpSecurity)}}, một cấu hình toàn cục.
+- **Mới (Lambda DSL)**: khai báo bean {{SecurityFilterChain}}, có thể có **nhiều chuỗi lọc** cho các đường dẫn khác nhau (ví dụ API public, API private, actuator). Mỗi chuỗi độc lập, dễ test, dễ compose.
+- **Ưu tiên**: chuỗi nào khớp trước ({{requestMatchers}} theo thứ tự khai báo) sẽ xử lý request đó.
+
+### 2. Thứ tự filter cốt lõi (mặc định, quan trọng khi chèn filter)
+| Thứ tự | Filter | Vai trò |
+|---|---|---|
+| 1 | SecurityContextHolderFilter | Nạp SecurityContext từ session/token trước khi xử lý |
+| 2 | HeaderWriterFilter | Ghi header bảo mật (HSTS, CSP…) |
+| 3 | CsrfFilter | Kiểm tra CSRF (nếu bật) |
+| 4 | LogoutFilter | Xử lý logout |
+| 5 | **UsernamePasswordAuthenticationFilter** | Xử lý form login / basic auth (điểm mốc quan trọng) |
+| 6 | DefaultLoginPageGeneratingFilter | Tạo trang login mặc định |
+| 7 | DefaultLogoutPageGeneratingFilter | Tạo trang logout mặc định |
+| 8 | BasicAuthenticationFilter | Xử lý Basic Auth header |
+| 9 | RequestCacheAwareFilter | Lưu request để redirect sau login |
+| 10 | SecurityContextHolderAwareRequestFilter | Bọc request thêm {{getUserPrincipal}} |
+| 11 | AnonymousAuthenticationFilter | Gán principal ẩn danh nếu chưa xác thực |
+| 12 | SessionManagementFilter | Quản trị session (fixation, concurrent) |
+| 13 | ExceptionTranslationFilter | Bắt {{AccessDeniedException}}/{{AuthenticationException}} → chuyển sang login/403 |
+| 14 | **AuthorizationFilter** | **Quyết định phân quyền cuối cùng (AuthorizeHttpRequests) — thay FilterSecurityInterceptor từ SS 6** |
+| 15+ | Custom filters | Chèn trước/sau filter nào tùy mục đích |
+
+> Lưu ý: Danh sách trên là thứ tự logic; Spring Security dùng {{Order}} nội bộ. Khi chèn filter, **luôn tham chiếu lớp filter chuẩn** thay vì số thứ tự cứng.
+
+### 3. Chèn filter tùy chỉnh: addFilterBefore / After / At
+~~~java
+@Bean
+SecurityFilterChain apiChain(HttpSecurity http) throws Exception {
+    http
+        .securityMatcher("/api/**")
+        .authorizeHttpRequests(auth -> auth
+            .requestMatchers("/api/public/**").permitAll()
+            .anyRequest().authenticated()
+        )
+        .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()))
+        // Chèn filter kiểm tra IP allowlist TRƯỚC khi xác thực (sau CsrfFilter, trước AuthenticationFilter)
+        .addFilterBefore(ipAllowlistFilter(), CsrfFilter.class)
+        // Chèn filter ghi audit SAU khi đã xác thực (sau AnonymousAuthenticationFilter)
+        .addFilterAfter(auditLoggingFilter(), AnonymousAuthenticationFilter.class)
+        // Chèn filter thay thế form login tại đúng vị trí UsernamePasswordAuthenticationFilter
+        .addFilterAt(customJsonLoginFilter(), UsernamePasswordAuthenticationFilter.class);
+    return http.build();
+}
+~~~
+
+### 4. Khi nào cần chèn filter tùy chỉnh (case thực tế)
+- **IP allowlist/denylist**: chèn trước {{CsrfFilter}} hoặc {{AuthenticationFilter}} để chặn sớm, tiết kiệm xử lý.
+- **Custom authentication** (JWT từ header tùy chỉnh, API key, mTLS cert): dùng {{addFilterAt}} thay thế {{UsernamePasswordAuthenticationFilter}} hoặc chèn trước nó.
+- **Audit/MDC logging**: chèn sau {{AnonymousAuthenticationFilter}} (đã có principal) hoặc trước {{FilterSecurityInterceptor}}.
+- **Rate limiting theo user**: chèn sau xác thực (sau {{SecurityContextHolderFilter}} hoặc {{AnonymousAuthenticationFilter}}).
+- **Header enrichment / CORS xử lý đặc biệt**: chèn sớm (sau {{HeaderWriterFilter}}).
+
+### 5. Ví dụ đời thực
+- **Triệu chứng**: API {{/api/admin/**}} bị gọi bởi bot từ dải IP nước ngoài, gây quá tải CPU do xử lý xác thực JWT phức tạp trước khi từ chối.
+- **Điều tra**: Request đi qua toàn bộ chuỗi filter đến {{FilterSecurityInterceptor}} mới bị chặn bởi {{@PreAuthorize}}, phí resources.
+- **Nguyên nhân gốc**: Không có filter chặn IP sớm; logic authorize chỉ chạy muộn.
+- **Cách xử lý**: Thêm {{IpAllowlistFilter}} chèn {{.addFilterBefore(ipFilter, CsrfFilter.class)}} trên chuỗi {{/api/admin/**}}; request IP không hợp lệ bị chặn ngay với 403, không chạy xác thực JWT.
+- **Kết quả đo được**: CPU xử lý request giảm 68%; latency p99 của API admin từ 420ms xuống 95ms; log xác thực không còn noise từ bot.
+
+### 6. Trả lời mẫu khi phỏng vấn
+"Em dùng SecurityFilterChain bean thay vì Adapter deprecated. Mỗi chuỗi lọc có thứ tự filter cố định của framework; quan trọng nhất là biết UsernamePasswordAuthenticationFilter và FilterSecurityInterceptor ở đâu để chèn filter tùy chỉnh đúng chỗ. Em hay dùng {{addFilterBefore}} tham chiếu lớp filter chuẩn (ví dụ CsrfFilter.class) thay vì số Order cứng. Ví dụ: chèn IP allowlist trước CsrfFilter để chặn sớm, chèn custom JWT filter tại UsernamePasswordAuthenticationFilter để thay form login, chèn audit filter sau AnonymousAuthenticationFilter khi đã có principal. Em từng tối ưu API admin bằng cách chèn filter chặn IP bot trước xác thực, giảm CPU 68%."
+
+> Senior tip: **Đừng đoán số Order** — dùng {{addFilterBefore/After/At(Class)}} tham chiếu filter chuẩn; Spring Security đảm bảo đúng vị trí khi nâng cấp phiên bản. Nếu cần nhiều chuỗi lọc (public/private/actuator), khai báo nhiều bean {{SecurityFilterChain}} và dùng {{securityMatcher}} phân tách; chuỗi nào khai báo trước ưu tiên khớp trước.`,
+  follow: [
+    "Khi nào nên tách nhiều SecurityFilterChain thay vì một chuỗi lớn, và Spring Security chọn chuỗi nào khi request khớp cả hai?",
+    "Tại sao không nên dùng @Order trên filter component mà dùng addFilterBefore/After/At?",
+    "Bạn muốn chèn filter rate-limit theo user đã xác thực: nên chèn sau filter nào và tại sao?"
+  ],
+  tags: ["Spring Security 6", "SecurityFilterChain", "Filter Order", "Lambda DSL", "Custom Filter"]
+},
+{
+  id: "security-078",
+  topic: "security",
+  level: "senior",
+  q: "Resource Server JWT (Spring Security 6): bạn cấu hình validate issuer, audience, và xử lý JWKS rotation như thế nào? Giải thích cơ chế cache JWKS và khi nào cần custom JwtDecoder.",
+  a: `**Tóm tắt:** Spring Security 6 OAuth2 Resource Server dùng {{JwtDecoder}} để validate JWT. Cấu hình chuẩn: {{.oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt.decoder(jwtDecoder())))}}. {{JwtDecoder}} mặc định ({{NimbusJwtDecoder}}) tự tải JWKS từ {{issuer + /.well-known/jwks.json}}, cache khóa công khai, và kiểm tra {{iss}}, {{aud}}, {{exp}}, {{nbf}}. Khi JWKS quay vòng (key rotation), decoder tự nạp lại khóa mới nhờ cache TTL. Cần custom decoder khi: nhiều issuer, audience phức tạp, algorithm không chuẩn, hoặc cần kiểm soát cache/refresh thủ công.
+
+### 1. Cấu hình chuẩn validate issuer & audience
+~~~java
+@Bean
+SecurityFilterChain resourceServerChain(HttpSecurity http) throws Exception {
+    http
+        .securityMatcher("/api/**")
+        .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
+        .oauth2ResourceServer(oauth2 -> oauth2
+            .jwt(jwt -> jwt.decoder(jwtDecoder()))
+        );
+    return http.build();
+}
+
+@Bean
+JwtDecoder jwtDecoder() {
+    // Cách 1: NimbusJwtDecoder với JWKS URI (tự validate iss/aud/exp/nbf)
+    NimbusJwtDecoder decoder = JwtDecoders.fromOidcIssuerLocation("https://auth.example.com");
+    
+    // Cách 2: Tự build để kiểm soát audience validator
+    NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri("https://auth.example.com/.well-known/jwks.json")
+        .jwtProcessorCustomizer(processor -> {
+            processor.setJWSKeySelector(new JWSVerificationKeySelector<>(JWSAlgorithm.RS256, jwkSource));
+            // Custom audience validation: chấp nhận "api-gateway" HOẶC "mobile-app"
+            processor.setJWTClaimsSetVerifier(new DefaultJWTClaimsVerifier(
+                new IssuerClaimVerifier("https://auth.example.com"),
+                new AudienceClaimVerifier("api-gateway", "mobile-app")
+            ));
+        })
+        .build();
+    return decoder;
+}
+~~~
+
+### 2. Cơ chế JWKS cache và rotation
+- **NimbusJwtDecoder** dùng {{DefaultJWSKeySelector}} với {{RemoteJWKSet<PublicKey>}}.
+- **Cache**: {{RemoteJWKSet}} cache JWKS theo {{CacheControl}} (mặc định 24h hoặc theo header {{Cache-Control}} của endpoint JWKS).
+- **Rotation**: Khi verify thất bại do kid không có trong cache, {{RemoteJWKSet}} tự **re-fetch JWKS** (nếu cache hết hạn hoặc force refresh) và thử lại. Quá trình này xảy ra trong luồng verify, có thể gây độ trễ spike lần đầu sau rotation.
+- **TTL cache**: có thể cấu hình qua {{.cacheControl(Duration.ofMinutes(10))}} trên {{NimbusJwtDecoder.withJwkSetUri()}}.
+
+### 3. Khi nào cần custom JwtDecoder
+| Tình huống | Giải pháp |
+|---|---|
+| **Nhiều issuer** (multi-tenant) | Tạo {{JwtDecoder}} cho từng issuer, dùng {{SecurityFilterChain}} riêng per tenant, hoặc custom decoder resolve issuer từ claim {{iss}} rồi delegate. |
+| **Audience phức tạp** (chấp nhận nhiều aud, hoặc aud là mảng) | Custom {{JWTClaimsSetVerifier}} với logic accepter (ví dụ: aud chứa "api-gateway" OR "mobile-app"). |
+| **Algorithm không chuẩn** (ES256, PS256, EdDSA) | Cấu hình {{JWSKeySelector}} với {{JWSAlgorithm}} tương ứng; Nimbus hỗ trợ nếu có provider BouncyCastle. |
+| **Kiểm soát cache/refresh thủ công** | Implement {{JwtDecoder}} bọc Nimbus, expose {{refresh()}} gọi khi nhận event rotation (webhook từ Auth Server). |
+| **Offline/JWKS local** (air-gapped) | Nạp JWKS từ file/classpath, dùng {{ImmutableJWKSet}} thay vì {{RemoteJWKSet}}. |
+
+### 4. Multi-issuer: ví dụ delegate theo claim iss
+~~~java
+@Bean
+JwtDecoder multiIssuerDecoder() {
+    Map<String, JwtDecoder> decoders = Map.of(
+        "https://auth-tenant1.com", JwtDecoders.fromOidcIssuerLocation("https://auth-tenant1.com"),
+        "https://auth-tenant2.com", JwtDecoders.fromOidcIssuerLocation("https://auth-tenant2.com")
+    );
+    return new JwtDecoder() {
+        @Override
+        public Jwt decode(String token) throws JwtException {
+            // Parse header/payload không verify để lấy iss (chỉ đọc, không kiểm tra chữ ký)
+            SignedJWT jwt = SignedJWT.parse(token);
+            String issuer = jwt.getJWTClaimsSet().getIssuer();
+            JwtDecoder delegate = decoders.get(issuer);
+            if (delegate == null) throw new JwtException("Unknown issuer: " + issuer);
+            return delegate.decode(token);
+        }
+    };
+}
+~~~
+
+### 5. Ví dụ đời thực
+- **Triệu chứng**: Sau khi Auth Server quay vòng khóa RS256 (thay JWKS), 12% request resource server trả 401 {{"Invalid JWT: Key with kid 'key-2024-06' not found"}} trong 5 phút, sau đó tự hồi phục.
+- **Điều tra**: Nimbus cache JWKS 24h mặc định; khi kid mới xuất hiện, decoder không tìm thấy trong cache, tự re-fetch nhưng một số request racing condition thất bại trước khi cache cập nhật.
+- **Nguyên nhân gốc**: TTL cache quá dài (24h) so với chu kỳ rotation khóa (7 ngày); không có pre-warm hoặc graceful rotation.
+- **Cách xử lý**: (1) Giảm TTL cache xuống 10 phút ({{.cacheControl(Duration.ofMinutes(10))}}); (2) Cấu hình Auth Server **dual key** (giữ khóa cũ 24h sau khi thêm khóa mới) để client không bị lỗi khi cache chưa cập nhật; (3) Thêm health-check endpoint chủ động refresh JWKS trước khi rotation dự kiến.
+- **Kết quả đo được**: 0 lỗi 401 do key rotation trong 30 ngày; latency p99 verify JWT ổn định < 8ms (trước khi fix có spike 150ms khi re-fetch).
+
+### 6. Trả lời mẫu khi phỏng vấn
+"Em cấu hình Resource Server JWT bằng NimbusJwtDecoder trỏ vào JWKS URI của Auth Server. Decoder tự validate iss, aud, exp, nbf và cache JWKS. Khi Auth Server quay vòng khóa, decoder tự re-fetch JWKS khi gặp kid mới. Em thường giảm TTL cache xuống 10 phút và yêu cầu Auth Server dùng dual key (giữ khóa cũ 24h) để không bị 401 khi cache chưa cập nhật. Trường hợp multi-tenant, em tạo decoder per issuer và delegate theo claim iss trong custom JwtDecoder. Em từng fix bug 401 sau rotation do TTL cache 24h quá dài; giảm về 10 phút + dual key giải quyết triệt để."
+
+> Senior tip: **Luôn yêu cầu Auth Server hỗ trợ dual key** khi rotation (giữ khóa cũ overlap 1-2 chu kỳ TTL cache). Đừng chỉ tin cache tự động — hãy test rotation thực tế trên staging: tạo khóa mới, chờ TTL cache hết, gọi API, đo spike latency. Nếu hệ thống cần high-availability, cân nhắc pre-warm JWKS (gọi endpoint JWKS định kỳ) hoặc custom decoder expose {{refresh()}} gọi từ webhook rotation.`,
+  follow: [
+    "NimbusJwtDecoder xử lý JWKS rotation như thế nào bên trong, và tại sao vẫn có thể bị 401 tạm thời khi key rotation?",
+    "Khi nào nên dùng NimbusJwtDecoder.withJwkSetUri() và khi nào nên dùng JwtDecoders.fromOidcIssuerLocation()?",
+    "Multi-tenant: custom decoder delegate theo iss có rủi ro gì về bảo mật (ví dụ issuer confusion), và cách phòng?"
+  ],
+  tags: ["JWT", "Resource Server", "JWKS", "Key Rotation", "NimbusJwtDecoder", "Multi-tenant"]
+},
+{
+  id: "security-079",
+  topic: "security",
+  level: "senior",
+  q: "Quản lý secret (mật khẩu DB, API key, khóa mã hóa) trong Spring Boot production: so sánh HashiCorp Vault vs AWS Secrets Manager, chiến lược inject secret vào ứng dụng, và xoay vòng (rotation) không downtime.",
+  a: `**Tóm tắt:** Secret **không bao giờ** nằm trong code, config file, image Docker, hay biến môi trường CI/CD. Trên production dùng **secret manager** (Vault hoặc AWS Secrets Manager) cấp quyền theo IAM role/identity của workload. Ứng dụng Spring Boot nhận secret lúc **runtime** (SDK, sidecar, hoặc Spring Cloud Vault/AWS) — không bake vào artifact. Rotation không downtime dùng chiến lược **dual credential** (giữ credential cũ + mới song song) kết hợp connection pool refresh/rolling restart.
+
+### 1. Vault vs AWS Secrets Manager — so sánh để chọn
+| Tiêu chí | HashiCorp Vault | AWS Secrets Manager |
+|---|---|---|
+| **Mô hình** | Self-hosted (hoặc HCP Vault managed) | Fully managed AWS |
+| **Đa nền tảng** | ✓ (K8s, VM, bare metal, multi-cloud) | Chỉ AWS (hybrid qua AWS Secrets Manager Agent) |
+| **Dynamic secret** | ✓ (DB creds ngắn hạn, AWS IAM, SSH, PKI…) | Chỉ RDS rotation (Lambda), không dynamic secret rộng |
+| **Rotation** | Tích hợp sẵn cho nhiều loại (DB, PKI, KV v2) | Tích hợp RDS; custom rotation qua Lambda |
+| **IAM/Identity** | AppRole, K8s Auth, AWS IAM Auth, OIDC, LDAP | IAM role/policy nguyên sinh (EC2, ECS, EKS, Lambda) |
+| **Audit** | Audit device (file, syslog, Splunk…) | CloudTrail (mọi GetSecretValue, PutSecretValue) |
+| **Chi phí** | Vận hành cluster HA, license Enterprise | Theo secret/tháng + lượt API call |
+| **Khi nào chọn** | Multi-cloud, hybrid, cần dynamic secret/PKI, tự kiểm soát | All-in AWS, muốn zero-ops, team nhỏ, dùng RDS |
+
+### 2. Inject secret vào Spring Boot — 3 pattern phổ biến
+**A. Spring Cloud Vault / AWS (config import tại startup)**
+~~~yaml
+# application.yml - chỉ tham chiếu, KHÔNG giá trị thật
+spring:
+  config:
+    import: "vault://secret/myapp/db?prefix=db."   # Vault
+    # import: "aws-secretsmanager:prod/myapp/db?prefix=db."  # AWS SM
+  datasource:
+    url: jdbc:postgresql://\${db.host}:\${db.port}/\${db.name}
+    username: \${db.username}
+    password: \${db.password}
+~~~
+- Ứng dụng đọc secret **một lần khi khởi động**; rotation cần restart/refresh context.
+
+**B. Vault Agent Sidecar / AWS Secrets Manager Agent (file mount)**
+- Sidecar sync secret từ manager ra file shared volume ({{/vault/secrets/db.properties}}).
+- Ứng dụng đọc file như config bình thường ({{@PropertySource}} hoặc {{spring.config.import=file:...}}).
+- Rotation: sidecar cập nhật file → ứng dụng reload qua {{@ConfigurationProperties}} + {{@RefreshScope}} hoặc SIGHUP.
+
+**C. SDK runtime (lấy secret khi cần, cache cục bộ)**
+~~~java
+@Service
+@RequiredArgsConstructor
+public class SecretService {
+    private final VaultTemplate vault; // hoặc AWS SecretsManagerClient
+    private final Cache<String, String> cache = Caffeine.newBuilder()
+        .expireAfterWrite(Duration.ofMinutes(5)).build();
+
+    public String getDbPassword() {
+        return cache.get("db/password", k -> vault.read(k).getData().get("password"));
+    }
+}
+~~~
+- Linh hoạt nhất, kiểm soát cache/TTL, phù hợp secret thay đổi thường xuyên.
+
+### 3. Rotation không downtime — quy trình dual credential
+Vấn đề: đổi secret (DB password) ngay lập tức → instance đang giữ pool kết nối cũ sẽ lỗi.
+**Giải pháp dual credential (hai giai đoạn):**
+1. **Tạo credential mới** song song với credential cũ (Vault: generate new DB creds; AWS SM: tạo version mới của secret; RDS: tạo user mới hoặc đổi pass user hiện tại nhưng giữ user cũ hoạt động).
+2. **Cập nhật secret manager** trỏ sang credential mới (Vault: write KV v2 version mới; AWS SM: PutSecretValue version mới).
+3. **Cho ứng dụng nạp credential mới**:
+   - Pattern A (startup import): rolling restart từng instance (health check pass trước khi chuyển traffic).
+   - Pattern B (sidecar file): sidecar ghi file mới → ứng dụng {{@RefreshScope}} reload DataSource (HikariCP {{dataSource.softEvictConnections()}} hoặc recreate bean).
+   - Pattern C (SDK runtime): cache TTL hết hạn → lần sau getSecret() lấy credential mới.
+4. **Xác nhận không còn kết nối dùng credential cũ** (kiểm tra DB {{pg_stat_activity}} hoặc metric pool).
+5. **Thu hồi credential cũ** (Vault: revoke lease; AWS SM: xóa version cũ; RDS: drop user cũ).
+
+> **RDS IAM Auth** là cách triệt để nhất: không có password, credentials là token IAM ngắn hạn (15p) tự động rotate.
+
+### 4. Ví dụ đời thực
+- **Triệu chứng**: Pentest phát hiện mật khẩu DB plaintext trong {{application-prod.yml}} commit 6 tháng trước; repo từng public trên GitHub nội bộ.
+- **Điều tra**: Secret xuất hiện trong 3 artifact build cũ, 2 image Docker base, không có audit truy cập vì là chuỗi tĩnh.
+- **Nguyên nhân gốc**: Hardcode secret, không secret manager, không rotation.
+- **Cách xử lý**: (1) Tạo user DB mới, lưu pass vào AWS Secrets Manager; (2) Cấu hình Spring Boot import config từ AWS SM (IAM role task ECS); (3) Rolling deploy ECS service (health check xác nhận kết nối mới); (4) Thu hồi user DB cũ; (5) Bật {{gitleaks}} pre-commit + CI quét secret; (6) Khóa {{/actuator/env}}.
+- **Kết quả đo được**: Credential cũ thu hồi trong 90 phút; 0 secret plaintext trong repo sau 60 ngày quét; rotation định kỳ tự động < 10 phút (Lambda rotation RDS), không downtime nhờ dual credential.
+
+### 5. Pitfall production
+- **"Xóa khỏi Git là xong"**: lịch sử Git vẫn giữ secret → **bắt buộc rotate**.
+- **Log/exception leak secret**: URL JDBC, header {{Authorization}}, dump {{Environment}} → filter/mask log.
+- **Secret dài hạn gắn vào người/CI**: access key tĩnh → dùng OIDC/role tạm (GitHub Actions OIDC, IRSA EKS).
+- **Rotation không phối hợp connection pool**: đổi pass nhưng HikariCP giữ pool cũ → cần {{evict()}} hoặc rolling restart.
+- **Một secret dùng chung nhiều service/môi trường** → bán kính ảnh hưởng lớn, khó rotate; **tách theo service + env**.
+
+### 6. Trả lời mẫu khi phỏng vấn
+"Em coi secret có vòng đời và phải thu hồi được, nên không bao giờ để trong code/config commit. Trên production em dùng secret manager: AWS Secrets Manager nếu all-in AWS (IAM role native, rotation RDS tích hợp), Vault nếu multi-cloud/hybrid hoặc cần dynamic secret/PKI. Spring Boot nhận secret lúc runtime: em thích pattern Spring Cloud AWS import config (chỉ tham chiếu tên secret) cho secret ít đổi, và SDK runtime + cache Caffeine cho secret cần fresh. Rotation không downtime: dual credential — tạo credential mới song song, cập nhật secret manager, rolling restart/refresh pool để dùng credential mới, xác nhận hết kết nối cũ rồi thu hồi credential cũ. Em từng xử lý mật khẩu DB lộ trong repo: rotate ngay, chuyển sang AWS SM, thêm gitleaks chặn tái diễn."
+
+> Senior tip: **Giả định mọi secret từng commit vào Git đều đã lộ** — ưu tiên rotate trước, dọn lịch sử sau. Thiết kế rotation (dual credential + pool refresh) từ đầu; nếu ứng dụng không chịu được đổi secret lúc chạy thì bạn không có đường thoát khi sự cố. Dùng IAM role/identity thay vì access key tĩnh ở đâu được.`,
+  follow: [
+    "Chiến lược dual credential để rotate mật khẩu DB không downtime hoạt động từng bước ra sao, và HikariCP connection pool cần xử lý thế nào?",
+    "So sánh dynamic secret của Vault (credential ngắn hạn theo lease) với secret tĩnh xoay vòng định kỳ: khi nào mỗi cách phù hợp?",
+    "Vì sao không được dùng biến môi trường (ENV) để truyền secret vào container production, dù Kubernetes Secret cũng chỉ base64?"
+  ],
+  tags: ["Secret Management", "Vault", "AWS Secrets Manager", "Rotation", "Spring Boot", "Dual Credential", "HikariCP"]
+},
+{
+  id: "security-080",
+  topic: "security",
+  level: "senior",
+  q: "Thiết kế rate limiting và chống brute-force cho endpoint login/OTP trong hệ thống ngân hàng: thuật toán, lưu trữ trạng thái, khóa tài khoản tạm, CAPTCHA, và phát hiện tấn công phân tán.",
+  a: `**Tóm tắt:** Rate limiting login/OTP cần **đ lớp**: (1) **Global/IP** — token bucket/leaky bucket trên Redis chặn flood thô; (2) **Per-user** — sliding window log đếm lần sai, khóa tài khoản tạm (account lockout) theo cấp độ; (3) **CAPTCHA/challenge** — bật sau ngưỡng sai; (4) **Phát hiện phân tán** — correlation ID, fingerprint, behavioral analysis. Lưu trạng thái trên **Redis cluster** (atomic INCR + TTL), không dùng in-memory (mất khi scale/restart). Khóa tài khoản tạm phải có quy trình mở khóa an toàn (OOB: SMS/email/app push), không tự mở sau timeout đơn giản.
+
+### 1. Kiến trúc đa lớp (defense in depth)
+| Lớp | Phạm vi | Thuật toán | Lưu trữ | Hành động khi vượt |
+|---|---|---|---|---|
+| **L1: Edge/WAF** | IP/Subnet | Token bucket (rate + burst) | CloudFront/ALB/WAF | 429 + block tạm (5-15p) |
+| **L2: API Gateway** | IP + User-Agent | Sliding window log (Redis) | Redis Cluster | 429, tăng TTL block |
+| **L3: Application (Login)** | **User ID / username** | Sliding window log + **account lockout** | Redis (key pattern xem §2) | Khóa tài khoản tạm, yêu cầu CAPTCHA/OOB unlock |
+| **L4: OTP/2FA** | User ID + kênh (SMS/Email/App) | Fixed window (số OTP/ngày) + **resend cooldown** | Redis | Chặn gửi OTP, 429 |
+
+### 2. Thuật toán sliding window log (chính xác cho per-user)
+- **Key Redis**:
+~~~text
+login:attempts:{userId} → sorted set (timestamp, uniqueRequestId)
+~~~
+- **Khi request login**:
+~~~text
+ZREMRANGEBYSCORE key 0 (now - windowMs) → xóa entry cũ
+ZCARD key → số lần trong cửa sổ
+ZADD key now requestId + EXPIRE key windowMs
+~~~
+- **Ưu điểm**: chính xác (không burst ở ranh cửa sổ), tự dọn dẹp qua TTL.
+- **Chi phí**: O(log N) mỗi request, N = số lần trong window (thường < 100).
+
+### 3. Account lockout — thiết kế an toàn
+- **Cấp độ khóa**:
+  1. **Soft lock** (5-10 lần sai/15p): yêu cầu CAPTCHA + delay 2^n giây.
+  2. **Hard lock** (20-30 lần sai/1h): khóa tài khoản, **chỉ mở qua OOB** (SMS/email/app push link có token một lần, hết hạn 15p).
+  3. **Permanent lock** (tấn công nghi ngờ): flag tài khoản, yêu cầu hỗ trợ CSKH xác thực danh tính.
+- **Không tự mở khóa sau timeout** — attacker có thể đoán thời gian và thử lại. Mọi lần mở khóa phải có **hành động chủ động của chủ tài khoản**.
+
+### 4. CAPTCHA và challenge
+- **hCaptcha / reCAPTCHA v3** (score-based) cho UX tốt hơn; v2 checkbox cho độ chắc.
+- Bật CAPTCHA khi: **soft lock** Hoặc **điểm rủi ro cao** (IP mới, device mới, geo bất thường, velocity).
+- Lưu **CAPTCHA token** server-side (Redis, TTL 5p) để tránh reuse.
+
+### 5. Phát hiện tấn công phân tán (credential stuffing / password spraying)
+- **Fingerprint**: hash({{IP + User-Agent + Accept-Language + TLS JA3}}) → gom nhóm request từ cùng actor.
+- **Correlation**: cùng username bị thử từ nhiều IP → password spraying; cùng IP thử nhiều username → credential stuffing.
+- **Behavioral**: thời gian giữa request, thứ tự trường form, di chuyển chuột (nếu web) — dùng ML rule-based hoặc gửi sang fraud detection service.
+- **Hành động**: block fingerprint/IP tại WAF (L1), tăng độ khó CAPTCHA, alert SOC.
+
+### 6. Triển khai Spring Boot (ví dụ L3 per-user)
+~~~java
+@Service
+@RequiredArgsConstructor
+public class LoginRateLimiter {
+    private final ReactiveRedisTemplate<String, String> redis;
+    private static final Duration WINDOW = Duration.ofMinutes(15);
+    private static final int MAX_ATTEMPTS = 5;      // soft lock
+    private static final int HARD_LOCK_ATTEMPTS = 20;
+
+    public Mono<RateLimitResult> checkAndRecord(String userId, String requestId) {
+        String key = "login:attempts:" + userId;
+        long now = System.currentTimeMillis();
+        long windowStart = now - WINDOW.toMillis();
+
+        return redis.opsForZSet()
+            .removeRangeByScore(key, 0, windowStart)           // dọn cũ
+            .then(redis.opsForZSet().size(key))                // đếm
+            .flatMap(count -> {
+                if (count >= HARD_LOCK_ATTEMPTS) {
+                    return Mono.just(RateLimitResult.hardLocked());
+                }
+                if (count >= MAX_ATTEMPTS) {
+                    return Mono.just(RateLimitResult.softLocked(count));
+                }
+                // ghi attempt mới
+                return redis.opsForZSet()
+                    .add(key, requestId, now)
+                    .then(redis.expire(key, WINDOW))
+                    .thenReturn(RateLimitResult.allowed(count + 1));
+            });
+    }
+}
+
+record RateLimitResult(boolean allowed, boolean softLock, boolean hardLock, int attempts, int retryAfterSeconds) {
+    static RateLimitResult allowed(int a) { return new RateLimitResult(true, false, false, a, 0); }
+    static RateLimitResult softLocked(int a) { return new RateLimitResult(false, true, false, a, 30); }
+    static RateLimitResult hardLocked() { return new RateLimitResult(false, false, true, 999, 0); }
+}
+~~~
+
+### 7. Ví dụ đời thực
+- **Triệu chứng**: 03:00-04:00 sáng, login failure rate tăng từ 2% lên 68%; 12.000 IP khác nhau thử username phổ biến (admin, user1, test…) với password yếu.
+- **Điều tra**: Password spraying — botnet phân tán, mỗi IP chỉ thử 1-2 lần/user để tránh rate limit per-IP.
+- **Nguyên nhân gốc**: Chỉ có rate limit per-IP (L1/L2), không có per-user lockout và fingerprint correlation.
+- **Cách xử lý**: (1) Bật per-user sliding window (L3) + hard lock OOB; (2) Thêm fingerprint JA3 + correlation tại WAF: cùng fingerprint thử > 50 user/5p → block fingerprint; (3) Bật reCAPTCHA v3 score < 0.3 buộc challenge; (4) Alert SOC khi hard lock > 100 tài khoản/15p.
+- **Kết quả đo được**: Password spraying giảm 99.8%; legitimate user bị ảnh hưởng < 0.05% (chỉ user thực sự bị brute-force); SOC response time từ 45p xuống < 5p nhờ alert tự động.
+
+### 8. Trả lời mẫu khi phỏng vấn
+"Em thiết kế rate limit login theo 4 lớp: Edge/WAF token bucket per IP, API Gateway sliding window per IP, Application per-user sliding window log trên Redis có account lockout mềm/đứng, OTP rate limit per kênh. Per-user dùng sorted set Redis (ZADD/ZREMRANGEBYSCORE/ZCARD) chính xác, tự dọn qua TTL. Lockout: soft lock (5 lần/15p) yêu cầu CAPTCHA + exponential backoff; hard lock (20 lần/1h) chỉ mở qua OOB (link SMS/email/app push token một lần), **không tự mở sau timeout**. Phát hiện tấn công phân tán: fingerprint JA3, correlation username-IP, behavioral; block tại WAF. Em từng dừng password spraying 12k IP bằng cách thêm per-user lockout + fingerprint correlation tại WAF, giảm 99.8% attack traffic."
+
+> Senior tip: **Rate limit per-IP không đủ** chống credential stuffing/password spraying — attacker có botnet hàng nghìn IP. Bắt buộc có **per-user lockout + OOB unlock**. Đừng tự mở khóa tài khoản sau timeout — attacker sẽ đồng hồ bấm giờ. Log mọi lần lock/unlock kèm fingerprint/IP để SOC điều tra. CAPTCHA v3 score-based giảm ma sát user tốt hơn checkbox.`,
+  follow: [
+    "Sliding window log trên Redis sorted set so với fixed window counter (INCR + TTL) khác gì về độ chính xác và chi phí?",
+    "Tại sao hard lock phải mở qua OOB (out-of-band) thay vì tự mở sau timeout? Kẻ tấn công lợi dụng tự mở như thế nào?",
+    "Fingerprint JA3 là gì, và tại sao nó hiệu quả hơn IP đơn lẻ để phát hiện botnet phân tán?"
+  ],
+  tags: ["Rate Limiting", "Brute Force", "Account Lockout", "Redis", "Sliding Window", "CAPTCHA", "JA3", "Credential Stuffing"]
+},
+{
+  id: "security-081",
+  topic: "security",
+  level: "senior",
+  q: "Bảo vệ LLM API trong backend Java: PII masking trước khi gửi request, safe logging (không log prompt/response nhạy cảm), và kiểm soát đầu ra (output guardrails) để chặn injection/PII leak.",
+  a: `**Tóm tắt:** Khi tích hợp LLM (OpenAI, Anthropic, self-hosted) vào backend Java, **ba hàng rào bắt buộc**: (1) **Input sanitization** — detect + mask PII (email, phone, CCCD, card, PII custom) **trước khi gửi** lên provider; (2) **Safe logging** — không bao giờ log prompt/response gốc, chỉ log hash/metadata, mask PII trong log nếu bắt buộc; (3) **Output guardrails** — validate cấu trúc (JSON schema), chặn injection (prompt injection, code execution), detect PII leak trong response. Triển khai bằng interceptor/filter quanh LLM client, dùng thư viện PII detection (Microsoft Presidio, AWS Comprehend, hoặc regex/rule-based cho tốc độ).
+
+### 1. PII masking trước khi gửi (Input sanitization)
+- **Phát hiện PII**: regex cho pattern chuẩn (email, phone VN, CCCD 12 số, card Luhn), NER model cho tên/địa chỉ, hoặc Microsoft Presidio (hỗ trợ 50+ entity type, có thể self-host).
+- **Chiến lược mask**: **reversible tokenization** (thay PII bằng token {{<EMAIL_1>}}, {{<PHONE_2>}}), lưu mapping trong request-scoped context để **unmask khi trả về user**. Không dùng hash một chiều (không unmask được).
+- **Vị trí thực hiện**: **Interceptor** bọc LLM client (OpenAiClient, WebClient, Feign) — chạy **trước** khi serialize request.
+
+~~~java
+@Component
+@RequiredArgsConstructor
+public class LlmRequestSanitizer implements RequestInterceptor {
+    private final PiiDetector pii;
+    private final ThreadLocal<Map<String, String>> tokenMap = ThreadLocal.withInitial(HashMap::new);
+
+    @Override
+    public void intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution) throws IOException {
+        if (!isLlmRequest(request)) { execution.execute(request, body); return; }
+        
+        String json = new String(body, StandardCharsets.UTF_8);
+        SanitizedResult sanitized = pii.detectAndMask(json);
+        
+        tokenMap.set(sanitized.tokens());
+        byte[] newBody = sanitized.maskedText().getBytes(StandardCharsets.UTF_8);
+        
+        HttpRequest newRequest = new HttpRequestWrapper(request) {
+            @Override public HttpHeaders getHeaders() {
+                HttpHeaders h = new HttpHeaders(); h.putAll(super.getHeaders());
+                h.setContentLength(newBody.length); return h;
+            }
+        };
+        execution.execute(newRequest, newBody);
+    }
+
+    public String unmaskResponse(String responseBody) {
+        Map<String, String> map = tokenMap.get(); tokenMap.remove();
+        if (map == null) return responseBody;
+        String out = responseBody;
+        for (var e : map.entrySet()) out = out.replace(e.getKey(), e.getValue());
+        return out;
+    }
+}
+~~~
+
+### 2. Safe logging — không log prompt/response nhạy cảm
+- **Quy tắc vàng**: **Không log {{request.body}} hoặc {{response.body}} nguyên vẹn** — chứa PII, secret, proprietary data, hoặc nội dung do user nhập (có thể injection log).
+- **Log gì**: metadata — {{requestId}}, {{model}}, {{latencyMs}}, {{tokenUsage}}, {{userId}} (hashed), {{piiDetectedCount}}, {{guardrailAction}}.
+- **Nếu bắt buộc log đoạn nội dung** (debug production): **chỉ log sau khi đã mask PII**, giới hạn độ dài (200 ký tự), ghi rõ {{TRUNCATED_MASKED}}.
+- **Cấu hình logger**: đặt level {{DEBUG}} cho package LLM client, {{INFO}} cho interceptor; **không bao giờ** bật {{TRACE}} trên HTTP client (log full body).
+
+~~~java
+public class SafeLlmLoggingInterceptor implements ClientHttpRequestInterceptor {
+    private static final Logger log = LoggerFactory.getLogger(SafeLlmLoggingInterceptor.class);
+    private final PiiDetector pii;
+
+    @Override
+    public ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution) throws IOException {
+        long start = System.nanoTime();
+        String reqHash = Hashing.sha256().hashBytes(body).toString();
+        int piiCount = pii.countPii(new String(body, StandardCharsets.UTF_8));
+        
+        try {
+            ClientHttpResponse response = execution.execute(request, body);
+            long latency = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+            String respHash = Hashing.sha256().hashBytes(StreamUtils.copyToByteArray(response.getBody())).toString();
+            
+            log.info("llm_call model={} latencyMs={} reqHash={} respHash={} piiDetected={} status={}",
+                extractModel(request), latency, reqHash, respHash, piiCount, response.getStatusCode());
+            return response;
+        } catch (Exception e) {
+            log.warn("llm_call_failed model={} latencyMs={} error={}", extractModel(request), 
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start), e.getClass().getSimpleName());
+            throw e;
+        }
+    }
+}
+~~~
+
+### 3. Output guardrails — kiểm soát đầu ra LLM
+| Kiểm soát | Mục đích | Triển khai |
+|---|---|---|
+| **JSON Schema validation** | Ép LLM trả đúng cấu trúc (function calling, structured output) | {{JsonSchemaValidator}} (networknt/json-schema-validator) trên response text trước khi parse |
+| **Injection detection** | Chặn prompt injection, code execution, SQLi trong output | Rule-based: pattern {{exec(}}, {{system(}}, {{<script>}}, {{7*7}}, {{ignore previous instructions}}; hoặc dùng LLM-as-judge (nhỏ, nhanh) chấm điểm injection |
+| **PII leak detection** | Phát hiện LLM lặp lại PII đã mask hoặc PII mới trong response | Chạy Presidio/regex trên response **sau khi unmask**; nếu tìm thấy PII không có trong input → block/redact |
+| **Refusal/tone check** | Đảm bảo LLM không từ chối vô lý hoặc nói toxic | Keyword list + perspective API / custom classifier |
+
+### 4. Kiến trúc tổng thể (defense in depth)
+~~~text
+User Request
+    │
+    ▼
+[Controller] ──→ [PII Mask Interceptor] ──→ [LLM Client (OpenAI/Anthropic/Local)]
+    │                    │                        │
+    │                    ▼                        ▼
+    │             [Token Map TLS]           [Safe Log Interceptor]
+    │                    │                        │
+    │                    ▼                        ▼
+    │             [Unmask Response] ◄─── [Output Guardrails]
+    │                    │                        │
+    ▼                    ▼                        ▼
+[Return to User]    [Audit Log]              [Block/Redact/Alert]
+~~~
+
+### 5. Ví dụ đời thực
+- **Triệu chứng**: Log audit phát hiện response LLM chứa số thẻ tín dụng (PAN) của khách hàng khác — LLM "nhớ" từ context hội thoại trước do không cách ly session.
+- **Điều tra**: Ứng dụng log full request/response LLM ở level DEBUG; session ID không tách biệt per user; LLM nhận context chứa PAN của user A, user B hỏi câu tiếp theo → LLM lặp PAN trong câu trả lời.
+- **Nguyên nhân gốc**: (1) Log full body LLM; (2) Không mask PII trước khi gửi; (3) Không validate output PII leak; (4) Context không isolate per user.
+- **Cách xử lý**: (1) Triển khai PII mask interceptor (Presidio regex + NER) reversible tokenization; (2) Safe logging: chỉ log hash, metadata, piiDetectedCount; (3) Output guardrail: scan response sau unmask, block nếu phát hiện PAN/CCCD/email không có trong input; (4) Cách ly context per user (session ID = userId + conversationId).
+- **Kết quả đo được**: 0 PII leak trong log và response sau 90 ngày; latency overhead masking + guardrail < 15ms p99; 100% request LLM có audit trail metadata.
+
+### 6. Trả lời mẫu khi phỏng vấn
+"Em bảo vệ LLM API bằng ba hàng rào: Input — mask PII trước khi gửi (Presidio/regex, reversible tokenization để unmask response); Logging — không bao giờ log prompt/response gốc, chỉ log hash, latency, token usage, piiDetectedCount; Output — guardrails validate JSON schema, detect injection (pattern + LLM-as-judge), scan PII leak sau unmask. Triển khai bằng interceptor quanh LLM client. Em từng fix bug LLM leak PAN của user khác: do log full body và context không isolate; fix bằng mask + safe log + output guardrail + cách ly session, sau đó 0 leak 90 ngày."
+
+> Senior tip: **Coi LLM như third-party không tin cậy** — mọi data đi vào và ra đều phải qua hàng rào. Reversible tokenization tốt hơn hash (cần unmask cho user). Log chỉ metadata + hash; nếu phải log nội dung cho debug, **chỉ log sau mask và truncate**. Output guardrail phải chạy **sau khi unmask** mới bắt được PII leak thật. Cách ly context per user (không chia sẻ hội thoại) là điều kiện cần.`,
+  follow: [
+    "Reversible tokenization (token map) so với hash một chiều: ưu/nhược điểm khi cần unmask response cho user?",
+    "Output guardrail chạy trước hay sau khi unmask? Tại sao thứ tự này quan trọng để bắt PII leak?",
+    "LLM-as-judge để detect injection: latency/chi phí thế nào, và khi nào nên dùng rule-based thay thế?"
+  ],
+  tags: ["LLM Security", "PII Masking", "Safe Logging", "Output Guardrails", "Prompt Injection", "Presidio", "Tokenization"]
+},
 );
