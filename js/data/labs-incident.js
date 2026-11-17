@@ -5150,5 +5150,909 @@ Giao dịch sau đọc cùng hàng sẽ **chờ** đến khi giao dịch đầu 
     'Đề xuất phòng ngừa: test song song hai giao dịch, giám sát deadlock/StaleObjectStateException, quy tắc review transaction ghi nhiều bản ghi.'
   ],
   tags: ['hibernate', 'jpa', 'optimistic-lock', 'lost-update', 'postgresql', 'concurrency', 'version']
+},
+{
+  id: 'lab-incident-039',
+  category: 'incident',
+  title: 'Deploy tăng max.poll.records lên 500: consumer Kafka rebalance liên tục, lag 900 nghìn',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **catalog-indexer** là service Spring Boot 3.3 (spring-kafka 3.2, kafka-clients 3.7) chạy trên Kubernetes, tiêu thụ topic Kafka **product-changed** (15 partition, 3 broker, Kafka 3.6) để cập nhật chỉ mục tìm kiếm. Mỗi bản ghi là một thay đổi sản phẩm: consumer phải tra cứu PostgreSQL (bảng products 12 triệu dòng + bản dịch + danh mục) rồi ghi lên Elasticsearch. Service chạy 5 pod, mỗi pod {{concurrency=3}} nên có 15 consumer, chia đúng 15 partition (mỗi consumer ôm 1 partition). Cấu hình batch ban đầu: {{ack-mode=batch}}, {{partition.assignment.strategy=RangeAssignor}}, {{max.poll.records=100}}.
+
+**Triệu chứng:** Sau khi deploy PR #915 (đổi {{max.poll.records}} từ 100 lên 500 và thêm điều kiện tìm kiếm {{search_text ILIKE '%keyword%'}} vào truy vấn), consumer **rebalance liên tục**: log báo "consumer poll timeout has expired", {{committed/s = 0}}, {{lag}} tăng đều từ 450 nghìn lên 900 nghìn trong 30 phút dù broker và mạng đều ổn. Mỗi lần rebalance, batch bị đọc lại từ offset cũ, service không theo kịp.
+
+**Dữ liệu thu thập:** hai lần chạy {{kafka-consumer-groups --describe}} cách nhau 30 phút, log ứng dụng của một consumer, cấu hình Kafka kèm đoạn mã truy vấn, và metric Prometheus.`,
+  artifacts: [
+    {
+      name: 'kafka-consumer-groups.txt',
+      lang: 'text',
+      content: `# kafka-consumer-groups.sh --bootstrap-server broker-1:9092 --describe --group catalog-indexer
+# 2026-11-17 11:00:14 +07  — mốc 1 (deploy PR #915 lúc 10:52)
+GROUP            TOPIC              PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG     CONSUMER-ID                                   HOST         CLIENT-ID
+catalog-indexer  product-changed    0          4120033         4150044         30011   consumer-catalog-indexer-1-3f9a1c0d-7b21-4e8a  /10.42.1.11  consumer-catalog-indexer-1
+catalog-indexer  product-changed    1          3988961         4019012         30051   consumer-catalog-indexer-1-40ab2d1e-7b21-4e8a  /10.42.1.12  consumer-catalog-indexer-1
+catalog-indexer  product-changed    2          3857889         3887980         30091   consumer-catalog-indexer-1-41bc3e2f-7b21-4e8a  /10.42.1.13  consumer-catalog-indexer-1
+catalog-indexer  product-changed    3          3726817         3756948         30131   consumer-catalog-indexer-1-42cd4f40-7b21-4e8a  /10.42.1.14  consumer-catalog-indexer-1
+catalog-indexer  product-changed    4          3595745         3625916         30171   consumer-catalog-indexer-1-43de6051-7b21-4e8a  /10.42.1.15  consumer-catalog-indexer-1
+catalog-indexer  product-changed    5          3464673         3494884         30211   consumer-catalog-indexer-1-44ef7162-7b21-4e8a  /10.42.1.16  consumer-catalog-indexer-1
+catalog-indexer  product-changed    6          3333601         3363852         30251   consumer-catalog-indexer-1-46008273-7b21-4e8a  /10.42.2.11  consumer-catalog-indexer-1
+catalog-indexer  product-changed    7          3202529         3232820         30291   consumer-catalog-indexer-1-47119384-7b21-4e8a  /10.42.2.12  consumer-catalog-indexer-1
+catalog-indexer  product-changed    8          3071457         3101788         30331   consumer-catalog-indexer-1-4822a495-7b21-4e8a  /10.42.2.13  consumer-catalog-indexer-1
+catalog-indexer  product-changed    9          2940385         2970756         30371   consumer-catalog-indexer-1-4933b5a6-7b21-4e8a  /10.42.2.14  consumer-catalog-indexer-1
+catalog-indexer  product-changed    10         2809313         2839724         30411   consumer-catalog-indexer-1-4a44c6b7-7b21-4e8a  /10.42.2.15  consumer-catalog-indexer-1
+catalog-indexer  product-changed    11         2678241         2708692         30451   consumer-catalog-indexer-1-4b55d7c8-7b21-4e8a  /10.42.2.16  consumer-catalog-indexer-1
+catalog-indexer  product-changed    12         2547169         2577660         30491   consumer-catalog-indexer-1-4c66e8d9-7b21-4e8a  /10.42.3.11  consumer-catalog-indexer-1
+catalog-indexer  product-changed    13         2416097         2446628         30531   consumer-catalog-indexer-1-4d77f9ea-7b21-4e8a  /10.42.3.12  consumer-catalog-indexer-1
+catalog-indexer  product-changed    14         2285025         2315596         30571   consumer-catalog-indexer-1-4e890afb-7b21-4e8a  /10.42.3.13  consumer-catalog-indexer-1
+(15 rows)   tổng lag = 454365
+
+# kafka-consumer-groups.sh --bootstrap-server broker-1:9092 --describe --group catalog-indexer
+# 2026-11-17 11:30:14 +07  — mốc 2 (30 phút sau, lag tăng gấp đôi)
+GROUP            TOPIC              PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG     CONSUMER-ID                                   HOST         CLIENT-ID
+catalog-indexer  product-changed    0          4120033         4180100         60067   consumer-catalog-indexer-1-3f9a1c0d-7b21-4e8a  /10.42.1.11  consumer-catalog-indexer-1
+catalog-indexer  product-changed    1          3988961         4049068         60107   consumer-catalog-indexer-1-40ab2d1e-7b21-4e8a  /10.42.1.12  consumer-catalog-indexer-1
+catalog-indexer  product-changed    2          3857889         3918036         60147   consumer-catalog-indexer-1-41bc3e2f-7b21-4e8a  /10.42.1.13  consumer-catalog-indexer-1
+catalog-indexer  product-changed    3          3726817         3787004         60187   consumer-catalog-indexer-1-42cd4f40-7b21-4e8a  /10.42.1.14  consumer-catalog-indexer-1
+catalog-indexer  product-changed    4          3595745         3655972         60227   consumer-catalog-indexer-1-43de6051-7b21-4e8a  /10.42.1.15  consumer-catalog-indexer-1
+catalog-indexer  product-changed    5          3464673         3524940         60267   consumer-catalog-indexer-1-44ef7162-7b21-4e8a  /10.42.1.16  consumer-catalog-indexer-1
+catalog-indexer  product-changed    6          3333601         3393908         60307   consumer-catalog-indexer-1-46008273-7b21-4e8a  /10.42.2.11  consumer-catalog-indexer-1
+catalog-indexer  product-changed    7          3202529         3262876         60347   consumer-catalog-indexer-1-47119384-7b21-4e8a  /10.42.2.12  consumer-catalog-indexer-1
+catalog-indexer  product-changed    8          3071457         3131844         60387   consumer-catalog-indexer-1-4822a495-7b21-4e8a  /10.42.2.13  consumer-catalog-indexer-1
+catalog-indexer  product-changed    9          2940385         3000812         60427   consumer-catalog-indexer-1-4933b5a6-7b21-4e8a  /10.42.2.14  consumer-catalog-indexer-1
+catalog-indexer  product-changed    10         2809313         2869780         60467   consumer-catalog-indexer-1-4a44c6b7-7b21-4e8a  /10.42.2.15  consumer-catalog-indexer-1
+catalog-indexer  product-changed    11         2678241         2738748         60507   consumer-catalog-indexer-1-4b55d7c8-7b21-4e8a  /10.42.2.16  consumer-catalog-indexer-1
+catalog-indexer  product-changed    12         2547169         2607716         60547   consumer-catalog-indexer-1-4c66e8d9-7b21-4e8a  /10.42.3.11  consumer-catalog-indexer-1
+catalog-indexer  product-changed    13         2416097         2476684         60587   consumer-catalog-indexer-1-4d77f9ea-7b21-4e8a  /10.42.3.12  consumer-catalog-indexer-1
+catalog-indexer  product-changed    14         2285025         2345652         60627   consumer-catalog-indexer-1-4e890afb-7b21-4e8a  /10.42.3.13  consumer-catalog-indexer-1
+(15 rows)   tổng lag = 905205   — CURRENT-OFFSET không nhích so với 11:00, chứng tỏ batch không commit`
+    },
+    {
+      name: 'catalog-indexer.log',
+      lang: 'text',
+      content: `2026-11-17T11:00:02.004+07:00  INFO  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] c.v.c.index.ProductIndexListener : batch start partition=0 offset=4120033 records=500
+2026-11-17T11:00:02.012+07:00  INFO  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] c.v.c.index.ProductQueryService : load sku=SKU-100234 took=701 ms
+2026-11-17T11:00:02.715+07:00  INFO  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] c.v.c.index.ProductQueryService : load sku=SKU-100235 took=698 ms
+2026-11-17T11:00:03.418+07:00  INFO  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] c.v.c.index.ProductQueryService : load sku=SKU-100236 took=703 ms
+2026-11-17T11:00:37.200+07:00  INFO  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] c.v.c.index.ProductIndexListener : progress partition=0 processed=50/500 elapsed=35196 ms
+2026-11-17T11:02:04.000+07:00  INFO  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] c.v.c.index.ProductIndexListener : progress partition=0 processed=180/500 elapsed=121996 ms
+2026-11-17T11:04:12.000+07:00  INFO  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] c.v.c.index.ProductIndexListener : progress partition=0 processed=300/500 elapsed=249996 ms
+2026-11-17T11:05:02.130+07:00  WARN  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] o.s.kafka.listener.DefaultErrorHandler : consumer poll timeout has expired. The maximum poll interval of 300000 ms has been exceeded
+2026-11-17T11:05:02.135+07:00  INFO  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] o.a.k.c.c.i.ConsumerCoordinator : Member consumer-catalog-indexer-1-3f9a1c0d-7b21-4e8a has left group
+2026-11-17T11:05:02.200+07:00  INFO  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] c.v.c.index.ProductIndexListener : progress partition=0 processed=430/500 elapsed=300200 ms
+2026-11-17T11:05:50.980+07:00  INFO  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] c.v.c.index.ProductIndexListener : batch done partition=0 took=348977 ms records=500 committed=false
+2026-11-17T11:05:50.981+07:00  WARN  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] o.s.kafka.listener.KafkaMessageListenerContainer : Commit cannot be completed since the consumer is not part of an active group
+2026-11-17T11:05:51.220+07:00  INFO  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] c.v.c.index.ProductIndexListener : batch start partition=0 offset=4120033 records=500
+2026-11-17T11:05:51.221+07:00  INFO  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] c.v.c.index.ProductQueryService : load sku=SKU-100234 took=703 ms
+2026-11-17T11:05:51.923+07:00  INFO  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] c.v.c.index.ProductQueryService : load sku=SKU-100235 took=699 ms
+2026-11-17T11:10:52.500+07:00  WARN  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] o.s.kafka.listener.DefaultErrorHandler : consumer poll timeout has expired. The maximum poll interval of 300000 ms has been exceeded
+2026-11-17T11:10:52.505+07:00  WARN  1 --- [catalog-indexer] [org.springframework.kafka.KafkaListenerEndpointContainer#0-0-C-1] o.s.kafka.listener.KafkaMessageListenerContainer : Commit cannot be completed since the consumer is not part of an active group
+# ... vòng lặp lặp lại: batch start 4120033 -> 300s -> poll timeout -> commit fail -> rejoin -> 4120033
+# Trong 30 phút có ~46 lần rebalance (kafka_consumer_coordinator_rebalance_rate_per_hour = 46).`
+    },
+    {
+      name: 'metrics-and-config.txt',
+      lang: 'text',
+      content: `# ==== application.yml (sau PR #915) — phần spring.kafka ====
+spring:
+  kafka:
+    listener:
+      ack-mode: batch
+      type: batch
+    consumer:
+      max-poll-records: 500        # PR #915: 100 -> 500 (tăng throughput)
+      properties:
+        session.timeout.ms: 45000
+
+# ==== ProductQueryService.java (rút gọn) ====
+public List<Doc> load(ProductRef ref) {
+    // migration 20261103 thêm điều kiện tìm kiếm:
+    //   WHERE p.search_text ILIKE '%' || :kw || '%'
+    // ký tự % đứng đầu khiến không dùng được index btree -> seq scan bảng 12 triệu dòng
+    String sql = "select ... from products p where p.search_text ilike ? order by p.id";
+    return jdbc.query(sql, ps -> { ps.setString(1, "%" + ref.keyword() + "%"); }, MAPPER);
+}   // p99 ~700 ms mỗi lần gọi
+
+# ==== Prometheus (11:00-11:30, group=catalog-indexer) ====
+kafka_consumer_records_consumed_rate{topic="product-changed"}              = 250       # msg/s vào
+kafka_consumer_records_committed_rate{topic="product-changed"}             = 0         # committed/s = 0
+kafka_consumer_fetch_manager_records_lag{topic="product-changed"}@11:00    = 454365
+kafka_consumer_fetch_manager_records_lag{topic="product-changed"}@11:30    = 905205
+kafka_consumer_coordinator_rebalance_rate_per_hour{group="catalog-indexer"} = 46
+spring_kafka_listener_seconds_max{group="catalog-indexer"}                 = 350.294   # tbp ~350s (vượt 300s)`
+    }
+  ],
+  questions: [
+    'Vì sao consumer rebalance liên tục dù broker và mạng đều ổn? Giải thích poll(), max.poll.interval.ms và vì sao lag không ngừng tăng.',
+    'Sửa ngắn hạn và dài hạn: max.poll.records bao nhiêu là hợp lý, có nên tăng số pod không, cooperative-sticky và static membership giải quyết gì?'
+  ],
+  hints: [
+    'Consumer phải chủ động gọi poll(); nếu không gọi lại trong max.poll.interval.ms (mặc định 300000 ms) thì coordinator coi nó treo và kick khỏi group.',
+    'Batch 500 bản ghi, mỗi bản ghi tra cứu PostgreSQL mất ~700 ms vì truy vấn ILIKE có ký tự đại diện đứng đầu gây seq scan trên bảng 12 triệu dòng: 500 x 0.7s = 350s > 300s.',
+    'Sau khi bị kick, offset chưa commit nên batch bị đọc lại từ 4120033, lặp lại vô hạn (livelock). Sửa: giảm max.poll.records, nâng max.poll.interval.ms, thêm index; dài hạn tách xử lý khỏi poll thread + cooperative-sticky.'
+  ],
+  answer: `**Tóm tắt:** Consumer group {{catalog-indexer}} rebalance liên tục không phải do mạng hay broker, mà vì mỗi batch {{max.poll.records=500}} mất khoảng 350 giây để xử lý — vượt {{max.poll.interval.ms}} mặc định 300000 ms (5 phút). Sau 5 phút không gọi lại {{poll()}}, coordinator đá consumer ra khỏi group; offset chưa commit nên cả batch 500 bản ghi bị đọc lại từ đầu. Cứ thế lặp lại: {{committed/s = 0}}, lag tăng đều từ 450 nghìn lên 900 nghìn trong 30 phút. Sửa ngay: {{max.poll.records}} 500 -> 20, nâng {{max.poll.interval.ms}}, thêm index cho truy vấn {{ILIKE}}; dài hạn tách xử lý khỏi poll thread và dùng CooperativeStickyAssignor.
+
+### Nguyên nhân gốc
+
+**1. Hiểu vòng lặp poll của Kafka consumer.** Consumer không "nhận" bản ghi một cách thụ động; nó phải chủ động gọi {{consumer.poll()}}. Mỗi lần poll() trả về tối đa {{max.poll.records}} bản ghi (ở đây 500), ứng dụng xử lý hết batch rồi mới quay lại poll(). Kafka phân biệt hai loại "hết giờ": {{session.timeout.ms}} (mặc định 45000 ms) — nếu consumer ngừng gửi heartbeat (thread nền gửi đều mỗi {{heartbeat.interval.ms}}) thì coordinator coi nó chết; và {{max.poll.interval.ms}} (mặc định 300000 ms) — nếu thread ứng dụng không gọi lại poll() trong khoảng này, coordinator coi consumer bị "treo" và **chủ động kick nó khỏi group**, kích hoạt rebalance.
+
+**2. Batch 500 bản ghi x ~700 ms = 350 giây, vượt 300 giây.** Mỗi bản ghi phải tra cứu PostgreSQL. Truy vấn {{SELECT ... WHERE p.search_text ILIKE '%' || :kw || '%'}} (thêm ở migration 20261103) không dùng được index btree thường vì có ký tự đại diện đứng đầu, nên PostgreSQL phải quét tuần tự (seq scan) bảng 12 triệu dòng. p99 truy vấn tăng từ 45 ms lên 700 ms. 500 x 0.7 s = 350 s, vượt mốc 300 s.
+
+**3. Hậu quả: rebalance và mất offset đã xử lý.** Khi vượt 300 s, coordinator gỡ consumer, các partition được chia lại, consumer khác nhận partition. Vì batch chưa commit (chỉ commit sau khi xử lý xong, lúc poll() kế tiếp), offset partition 0 vẫn là 4120033. Consumer mới bắt đầu lại từ 4120033, xử lý tiếp 350 s, lại timeout, lại rebalance. Đây là **livelock**: hệ thống bận rộn liên tục nhưng không tiến triển.
+
+**4. Vì sao lag tăng đều.** Producer vẫn đẩy ~250 msg/s vào topic, mỗi giây thêm 250 bản ghi chưa tiêu thụ. Vì consumer không commit được, lag = LOG-END-OFFSET - COMMITTED-OFFSET tăng đều, khớp 454365 lúc 11:00 và 905205 lúc 11:30.
+
+**5. Dấu hiệu {{CommitFailedException}}.** Sau khi bị kick, lời gọi commit offset thất bại với "Offset commit cannot be completed since the consumer is not part of an active group". Đây là dấu hiệu kinh điển của việc consumer đã rời group trước khi kịp commit.
+
+### Dẫn chứng (trích dòng cụ thể)
+
+- kafka-consumer-groups.txt 11:00: partition 0 CURRENT-OFFSET=4120033 đứng yên, LOG-END-OFFSET=4150044, LAG=30011; tổng 15 partition ~454k.
+- kafka-consumer-groups.txt 11:30: cùng partition 0, CURRENT-OFFSET vẫn 4120033 (không nhích), LOG-END-OFFSET=4180100, LAG=60067; tổng ~905k -> chứng minh consumer không commit được.
+- catalog-indexer.log 11:05:02.130: WARN "consumer poll timeout has expired. The maximum poll interval of 300000 ms has been exceeded" — đúng 300 s sau batch start 11:00:02.
+- catalog-indexer.log 11:05:02.135: "has left group" -> rebalance.
+- catalog-indexer.log 11:05:50.981: CommitFailedException -> offset không commit.
+- catalog-indexer.log 11:05:51.220: batch start partition=0 offset=4120033 (lặp lại từ đầu).
+
+### Tăng lên 10 pod có cứu được không?
+
+Không. 5 pod x concurrency 3 = 15 consumer, topic 15 partition nên mỗi consumer đang ôm đúng 1 partition. Tăng lên 10 pod x 3 = 30 consumer thì phần lớn consumer **rảnh** (chỉ 15 partition), nhưng mỗi consumer đang chạy vẫn xử lý batch 500 bản ghi trong 350 s và vẫn vượt 300 s -> vẫn timeout. Nút thắt là **thời gian xử lý mỗi bản ghi (700 ms) và kích thước batch**, không phải số lượng consumer. Muốn tăng song song phải giảm {{max.poll.records}} hoặc tăng tốc truy vấn trước.
+
+### Cách sửa
+
+**Ngắn hạn (deploy ngay):**
+
+~~~yaml
+spring:
+  kafka:
+    listener:
+      ack-mode: batch
+      type: batch
+    consumer:
+      max-poll-records: 20
+      properties:
+        session.timeout.ms: 45000
+        max.poll.interval.ms: 600000
+~~~
+
+{{max.poll.records=20}} -> 20 x 0.7 s = 14 s, thừa sức dưới 300 s; {{max.poll.interval.ms}} nâng 300000 -> 600000 để phòng truy vấn chậm bất thường. Kèm theo, sửa truy vấn để dùng được index (bỏ ký tự đại diện đứng đầu, hoặc full-text search {{to_tsvector}} với GIN index). Sau khi có index, p99 quay về ~45 ms và batch 500 chỉ mất ~22 s.
+
+**Dài hạn:**
+
+- **Tách xử lý khỏi poll thread:** poll() chỉ nhận bản ghi rồi đẩy vào {{BlockingQueue}}; một pool worker xử lý và tự commit theo offset. Như vậy poll() được gọi lại liên tục, không bao giờ chạm {{max.poll.interval.ms}}.
+- **CooperativeStickyAssignor** ({{cooperative-sticky}}): rebalance không stop-the-world, giảm gián đoạn khi deploy.
+- **Static membership** ({{group.instance.id}}): pod restart không gây rebalance nếu downtime ngắn hơn {{session.timeout.ms}}.
+- **Giám sát** {{kafka_consumer_records_lag}} và {{spring_kafka_listener_seconds_max}} (thời gian giữa hai lần poll); cảnh báo khi tbp tiến gần {{max.poll.interval.ms}}.
+
+~~~seq
+title: Vòng lặp rebalance do batch vượt max.poll.interval.ms
+actors: Kafka | Consumer | PostgreSQL
+Kafka -> Consumer: poll() trả batch 500 bản ghi (offset 4120033)
+Consumer -> PostgreSQL: tra cứu từng bản ghi (ILIKE, seq scan)
+PostgreSQL --> Consumer: ~700 ms mỗi bản ghi
+note Consumer..Consumer: 500 x 0.7s = 350s > max.poll.interval.ms 300s
+Consumer -> Kafka: chậm, chưa kịp poll()/commit trong 300s
+Kafka -> Kafka: coordinator kick consumer, mở rebalance
+Kafka --> Consumer: LeaveGroup + chia lại partition
+Consumer -> Kafka: commit offset thất bại (CommitFailedException)
+Kafka -> Consumer: gán lại partition, đọc lại từ 4120033
+~~~
+
+### Phòng ngừa
+
+- Đặt {{max.poll.records}} theo công thức: {{max.poll.records x p99 mỗi bản ghi < max.poll.interval.ms}}. Nếu p99 tăng, batch phải giảm tương ứng.
+- Mọi truy vấn mới phải kèm EXPLAIN ANALYZE; cảnh báo seq scan trên bảng lớn trong CI.
+- Load test consumer với dữ liệu thật, đo tbp (thời gian giữa hai lần poll), không chỉ đo throughput.
+- Review kỹ mọi PR động vào thông số Kafka như review code nghiệp vụ.
+
+> Senior tip: Rebalance "vô hạn" gần như luôn là "consumer chậm hơn max.poll.interval.ms", không phải broker lỗi. Khi gặp, đừng vội tăng số pod — hãy đo thời gian xử lý mỗi bản ghi và xem batch có quá lớn không. Giảm max.poll.records là cách chữa cháy nhanh và an toàn nhất, còn sửa truy vấn và tách xử lý mới là giải pháp gốc.`,
+  rubric: [
+    'Xác định đúng nguyên nhân: batch max.poll.records=500 x ~700 ms = 350s vượt max.poll.interval.ms 300000 ms, consumer bị kick khỏi group, không phải lỗi broker/mạng.',
+    'Dẫn chứng từ artifact: log "consumer poll timeout has expired", committed/s=0, CURRENT-OFFSET đứng yên 4120033 còn LOG-END-OFFSET tăng, lag 454k -> 905k.',
+    'Giải thích vì sao tăng pod không cứu: mỗi consumer vẫn ôm 1 partition và vẫn xử lý 500 bản ghi trong 350s; nút thắt là thời gian mỗi bản ghi và kích thước batch.',
+    'Cách sửa ngắn hạn: max.poll.records 500 -> 20 (20 x 0.7s = 14s < 300s), max.poll.interval.ms nâng lên 600000, thêm index/bỏ ILIKE để p99 về ~45 ms.',
+    'Cách sửa dài hạn: tách xử lý khỏi poll thread (BlockingQueue + worker tự commit), cooperative-sticky, static membership group.instance.id, giám sát lag và tbp; kèm EXPLAIN ANALYZE trong review.'
+  ],
+  tags: ['kafka', 'consumer-lag', 'rebalance', 'max-poll-interval', 'spring-kafka', 'seq-scan']
+},
+{
+  id: 'lab-incident-040',
+  category: 'incident',
+  title: 'Đặt -Xmx bằng memory limit: pod OOMKilled dù heap mới dùng 1.1/2 GB',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **statement-service** (Spring Boot 3.2, JDK 21.0.5, G1 GC) sinh hợp đồng sao kê PDF theo yêu cầu, chạy trên Kubernetes trong namespace prod. Mỗi request: tải dữ liệu sao kê 12 tháng từ PostgreSQL, dựng PDF bằng thư viện (giữ toàn bộ file trong một {{byte[]}} khoảng 1.4 MB, p99 4.2 MB), rồi ghi ra HTTP response. Pod đặt {{requests.memory=1Gi}}, {{limits.memory=2Gi}}, 2 vCPU. JVM khởi động với {{JAVA_TOOL_OPTIONS=-Xms2g -Xmx2g -XX:+UseG1GC}} — tức {{Xmx}} bằng đúng memory limit; không đặt {{MaxMetaspaceSize}}, {{MaxDirectMemorySize}}, {{ReservedCodeCacheSize}}. Tomcat cấu hình {{threads.max=200}}.
+
+**Triệu chứng:** Ngày 17/11/2026, từ 11:45 tải tăng lên ~540 req/s, nhiều pod statement-service bị **OOMKilled** và restart liên tục (restart count tăng). {{kubectl describe}} báo Last State: Terminated, Reason: OOMKilled, Exit Code: 137. Điều lạ: heap chỉ dùng ~1.1/2 GB và log ứng dụng **không có** OutOfMemoryError; NMT cho thấy tổng bộ nhớ committed ~1.93 GiB, chỉ còn ~67 MiB so với limit 2 GiB. Một số request 500/503 trong lúc pod restart.
+
+**Dữ liệu thu thập:** {{kubectl describe pod}} + dmesg của node, jcmd VM.flags và cấu hình, metric Prometheus heap/nonheap/working-set, và NMT summary lúc 11:50.`,
+  artifacts: [
+    {
+      name: 'kubectl-describe-and-dmesg.txt',
+      lang: 'text',
+      content: `# kubectl describe pod -n prod statement-service-6d8f9c7b5-x2k9p
+Name:             statement-service-6d8f9c7b5-x2k9p
+Namespace:        prod
+Node:             ip-10-42-3-118.ec2.internal/10.42.3.118
+Status:           Running
+Containers:
+  statement-service:
+    Image:       registry.prod/statement-service:2.14.0
+    Limits:
+      cpu:       2
+      memory:    2Gi
+    Requests:
+      cpu:       1
+      memory:    1Gi
+    Last State:     Terminated
+      Reason:       OOMKilled
+      Exit Code:    137
+      Started:      Mon, 17 Nov 2026 09:12:04 +07:00
+      Finished:     Mon, 17 Nov 2026 11:58:39 +07:00
+    Restart Count:  6
+Events:
+  Warning  BackOff  ...  kubelet  Back-off restarting failed container
+
+# dmesg -T (trên node ip-10-42-3-118) — lọc theo container statement-service
+[Mon Nov 17 11:58:39 2026] java invoked oom-killer: gfp_mask=0x140dca0(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=1000
+[Mon Nov 17 11:58:39 2026] Memory cgroup out of memory: Killed process 41287 (java) total-vm:8324116kB, anon-rss:2069844kB, file-rss:0kB, shmem-rss:0kB
+[Mon Nov 17 11:58:39 2026] oom_reaper: reaped process 41287 (java), now anon-rss:0kB, file-rss:0kB`
+    },
+    {
+      name: 'jvm-flags-and-config.txt',
+      lang: 'text',
+      content: `# jcmd 1 VM.flags  (lúc 11:50, trong pod statement-service)
+1:
+-XX:CICompilerCount=4 -XX:+UseG1GC -XX:G1HeapRegionSize=4194304 -XX:MaxHeapSize=2147483648 -XX:InitialHeapSize=2147483648 -XX:ReservedCodeCacheSize=251658240 -XX:+PerfDisableSharedMem -XX:+UseContainerSupport
+# Chú ý: MaxHeapSize = 2147483648 byte = 2 GiB = ĐÚNG container memory limit 2Gi.
+# KHÔNG có MaxMetaspaceSize, KHÔNG có MaxDirectMemorySize, KHÔNG có -Xss cấu hình riêng.
+# ReservedCodeCacheSize có mặt (default ~240MB) nhưng chưa đặt tường minh.
+
+# application-prod.yml (phần liên quan)
+server:
+  tomcat:
+    threads:
+      max: 200
+    accept-count: 100
+
+# StatementPdfService.java (rút gọn)
+public byte[] renderStatement(long accountId) {
+    Statement s = repo.load(accountId);          // dữ liệu sao kê 12 tháng
+    byte[] pdf = pdfRenderer.render(s);          // GIỮ CẢ FILE PDF (~1.4MB, p99 4.2MB) TRONG HEAP
+    return pdf;                                  // rồi mới FileChannel.write ra đĩa
+}`
+    },
+    {
+      name: 'prometheus-memory.txt',
+      lang: 'text',
+      content: `# Prometheus, pod=statement-service-6d8f9c7b5-x2k9p, namespace=prod
+# cột: heap_used  heap_committed  nonheap_committed  container_working_set
+time                heap_used   heap_committed  nonheap_committed  working_set
+2026-11-17 11:45:00 1024 MiB    1548 MiB        400 MiB            1.78 GiB
+2026-11-17 11:50:00 1120 MiB    1548 MiB        432 MiB            1.93 GiB
+2026-11-17 11:55:00 1180 MiB    1580 MiB        448 MiB            1.98 GiB
+2026-11-17 11:57:00 1240 MiB    1620 MiB        452 MiB            2.00 GiB
+2026-11-17 11:58:39 --- container terminated (OOMKilled, exit 137) ---
+
+# heap_used thấp (1.1-1.2 GiB) nhưng working_set sát 2 GiB => KHÔNG phải lỗi heap.
+# Alert đáng lẽ phải có từ trước:
+#   container_memory_working_set_bytes{pod=~"statement-service.*"}
+#     / on(pod) kube_pod_container_resource_limits{resource="memory"} > 0.9`
+    },
+    {
+      name: 'nmt-summary-1150.txt',
+      lang: 'text',
+      content: `# jcmd 1 VM.native_memory summary  (lúc 11:50, sau vài lần restart đầu)
+Total: reserved=4158083KB, committed=2028008KB
+-                 Java Heap (reserved=2097152KB, committed=1585152KB)
+                            (mmap: reserved=2097152KB, committed=1585152KB)
+
+-                     Class (reserved=1075843KB, committed=3072KB)
+                            (classes #29411)
+
+-                    Thread (reserved=337920KB, committed=92160KB)
+                            #320 threads
+                            (stack: reserved=331776KB, committed=92160KB)
+
+-                      Code (reserved=253952KB, committed=61204KB)
+
+-                        GC (reserved=196608KB, committed=74088KB)
+
+-                  Compiler (reserved=2048KB, committed=1302KB)
+
+-                  Internal (reserved=4096KB, committed=2614KB)
+
+-                     Other (reserved=8192KB, committed=40960KB)
+
+-                    Symbol (reserved=32768KB, committed=28160KB)
+
+-    Native Memory Tracking (reserved=8192KB, committed=6544KB)
+
+-               Shared class space (reserved=20480KB, committed=12944KB)
+
+-                 Metaspace (reserved=118784KB, committed=118784KB)
+
+-                     Arena (reserved=2048KB, committed=1024KB)
+
+# Tổng committed = 2028008 KB = 1980.5 MiB ≈ 1.93 GiB (chỉ còn ~67 MiB so với limit 2 GiB)`
+    }
+  ],
+  questions: [
+    'Vì sao pod bị OOMKilled (exit 137) dù heap mới dùng 1.1/2 GB và không có OutOfMemoryError? Giải thích container memory limit, non-heap và NMT.',
+    'Sửa thế nào: đặt lại flag JVM ra sao, giới hạn metaspace/direct/code cache, giảm thread, render PDF thế nào, giám sát bằng metric nào?'
+  ],
+  hints: [
+    'OOMKilled là của kernel/container: khi RSS vượt cgroup memory limit, kernel gửi SIGKILL (exit 137). Log app không có OutOfMemoryError vì heap chưa cạn.',
+    'Xmx=2g bằng đúng limit 2Gi nên không chừa chỗ non-heap (metaspace ~116MB, thread stack ~90MB, code cache ~60MB, GC ~72MB, direct ~40MB). NMT total committed = 2028008 KB ≈ 1.93 GiB, chỉ còn ~67 MiB.',
+    'Sửa: đừng đặt Xmx=limit, dùng MaxRAMPercentage=60, chặn MaxMetaspaceSize/MaxDirectMemorySize/ReservedCodeCacheSize, giảm Tomcat threads.max, render PDF theo luồng; alert theo container_memory_working_set_bytes/limit > 0.9.'
+  ],
+  answer: `**Tóm tắt:** Pod bị OOMKilled (exit 137) không phải vì heap đầy — heap mới dùng ~1.1/2 GB và log không có OutOfMemoryError — mà vì {{container_memory_limit=2Gi}} bằng đúng {{MaxHeapSize=2g}}. JVM cần bộ nhớ cho cả heap LẪN non-heap (metaspace ~132 MB, thread stack ~90 MB, code cache ~60 MB, GC ~72 MB, direct buffer ~40 MB). Khi RSS chạm trần 2 GiB, kernel OOM-killer gửi SIGKILL và container bị kill. Sửa: đừng đặt Xmx bằng limit, dùng {{MaxRAMPercentage=60}}, chặn metaspace/direct/code cache, giảm thread Tomcat, render PDF theo luồng thay vì giữ cả {{byte[]}}.
+
+### Nguyên nhân gốc
+
+**1. OOMKilled là của kernel/container, không phải của JVM.** Khi tiến trình Java vượt memory limit của cgroup, nhân Linux (qua cgroup memory controller) chọn kill tiến trình. Trong {{kubectl describe}} phần Last State là Terminated, Reason: OOMKilled, Exit Code: 137 (137 = 128 + 9, tức SIGKILL). Log ứng dụng **không có** java.lang.OutOfMemoryError vì JVM chưa từng cạn heap.
+
+**2. Đặt -Xmx2g = limit 2Gi là sai lầm kinh điển.** -Xmx chỉ giới hạn vùng heap. Tổng bộ nhớ tiến trình = heap + non-heap. Non-heap gồm: metaspace (metadata class), thread stack (mỗi thread ~1 MB), code cache (JIT), cấu trúc GC, direct buffer (NIO), symbol, arena. Khi đặt Xmx đúng bằng limit, bạn không chừa chỗ nào cho non-heap.
+
+**3. Cộng số: heap 1.5 GB + non-heap ~0.5 GB chạm trần.** NMT (Native Memory Tracking) lúc 11:50 cho Total committed = 2028008 KB ≈ 1.93 GiB, trong đó Java Heap committed = 1585152 KB (~1548 MiB). Non-heap ~432 MiB. 1548 + 432 = 1980 MiB ≈ 1.93 GiB, chỉ còn ~67 MiB so với 2 GiB. Khi tải tăng (540 req/s) heap phình lên (heap_c 1548 -> 1620 MiB), RSS vượt 2 GiB và bị kill.
+
+**4. Số thread cao làm non-heap phình.** Tomcat {{threads.max=200}}, cộng các thread khác tổng ~320. Thread #320 committed ~90 MiB (reserved ~330 MiB). Mỗi request render PDF cấp phát {{byte[]}} ~4.2 MB (p99) tạm thời, cộng direct buffer, làm RSS tăng vọt theo tải.
+
+**5. Heap chưa đầy vì "used" khác "committed".** Heap committed 1548 MiB nhưng used chỉ 1120 MiB; JVM commit (đảm bảo có trang vật lý) nhiều hơn phần đang dùng. Nhìn "heap used 1.1/2 GB" tưởng còn dư, nhưng RSS đã sát trần.
+
+### Dẫn chứng (trích dòng cụ thể)
+
+- kubectl-describe-and-dmesg.txt: Last State Terminated, Reason: OOMKilled, Exit Code: 137; limits.memory: 2Gi; dmesg "memory: usage 2097152kB, limit 2097152kB, anon-rss:2069844kB".
+- jvm-flags-and-config.txt: MaxHeapSize=2147483648 (= 2 GiB, bằng limit); không có MaxMetaspaceSize/MaxDirectMemorySize/ReservedCodeCacheSize.
+- nmt-summary-1150.txt: Total committed = 2028008 KB ≈ 1.93 GiB; Java Heap committed = 1585152 KB; Thread #320 committed = 92160 KB.
+- prometheus-memory.txt: 11:50 heap_u 1120MiB / heap_c 1548MiB / nonheap_c 432MiB / working_set 1.93GiB; 11:57 working_set 2.00GiB; 11:58:39 OOMKilled. Xác nhận heap used thấp nhưng RSS sát limit.
+
+### Cách sửa
+
+**Ngắn hạn (đặt lại flag JVM và limit):**
+
+~~~yaml
+JAVA_TOOL_OPTIONS: >-
+  -XX:MaxRAMPercentage=60.0
+  -XX:InitialRAMPercentage=60.0
+  -XX:MaxMetaspaceSize=256m
+  -XX:ReservedCodeCacheSize=128m
+  -XX:MaxDirectMemorySize=128m
+  -Xss512k
+~~~
+
+Với limit 2 GiB, MaxRAMPercentage=60 cho heap ~1.2 GiB, chừa ~0.8 GiB cho non-heap — đủ cho ~320 thread, metaspace và direct buffer. Giảm Tomcat {{threads.max}} xuống 100 và scale ngang (thêm pod) để chịu tải.
+
+**Dài hạn:**
+
+- **Render PDF theo luồng:** ghi thẳng ra {{OutputStream}}/HTTP response với buffer 64 KB, không dựng cả file trong {{byte[]}}. Giảm mạnh đỉnh bộ nhớ tạm thời.
+- **Cố định {{Xms = Xmx}}** (= MaxRAMPercentage) để tránh heap giãn/thu (resize) gây commit thêm và giật.
+- **Giám sát NMT:** bật {{NativeMemoryTracking=summary}}, lấy baseline và diff trong load test; alert theo {{container_memory_working_set_bytes / kube_pod_container_resource_limits > 0.9}}.
+
+~~~seq
+title: OOMKilled do Xmx = container memory limit
+actors: App | JVM | Kernel
+App -> JVM: render PDF, cấp phát byte[] ~4.2 MB (p99)
+JVM -> JVM: heap commit 1548 MiB + non-heap ~432 MiB
+note JVM..JVM: RSS = 1.93 GiB, sát limit 2 GiB
+App -> JVM: tải tăng (540 req/s), heap phình 1548 -> 1620 MiB
+JVM -> Kernel: RSS chạm 2 GiB (anon-rss 2069844kB)
+Kernel -> Kernel: cgroup OOM-killer chọn tiến trình java
+Kernel -> App: SIGKILL (exit 137), container OOMKilled
+~~~
+
+### Phòng ngừa
+
+- Nguyên tắc: {{Xmx (hoặc MaxRAMPercentage) + non-heap < limit}}. Chừa tối thiểu 25-30% cho non-heap và đỉnh tạm thời.
+- Đặt tường minh {{MaxMetaspaceSize}}, {{MaxDirectMemorySize}}, {{ReservedCodeCacheSize}} để một vùng không phình vô hạn.
+- Bật NMT trong mọi load test; so sánh committed với limit, không chỉ nhìn heap used.
+- Alert theo {{container_memory_working_set_bytes / limit}} thay vì chỉ theo heap; OOMKilled exit 137 phải là cảnh báo P1.
+
+> Senior tip: "Heap vẫn còn 1 GB" là cái bẫy chết người khi container bị OOMKilled. Nhớ: limit của container áp cho TOÀN BỘ tiến trình, không chỉ heap. Kinh nghiệm là để heap chiếm 50-70% limit tùy non-heap, luôn đặt trần cho metaspace/direct/code cache, và render file lớn theo luồng. Khi thấy exit 137, đầu tiên xem NMT và working_set, đừng đổ lỗi cho heap.`,
+  rubric: [
+    'Xác định đúng bản chất: OOMKilled (exit 137) do cgroup/kernel kill khi RSS vượt limit, không phải OutOfMemoryError của JVM; heap used chỉ 1120/2048 MiB nên không phải lỗi heap.',
+    'Dẫn chứng: Last State Terminated OOMKilled exit 137, dmesg "usage 2097152kB limit 2097152kB anon-rss 2069844kB", NMT total committed 2028008 KB ≈ 1.93 GiB.',
+    'Giải thích Xmx=2g bằng limit là sai: tổng bộ nhớ = heap + non-heap; non-heap ~432 MiB (metaspace/thread/code/GC/direct) khiến RSS chạm trần; heap_c 1548->1620 MiB khi tải tăng làm vượt.',
+    'Cách sửa ngắn hạn: MaxRAMPercentage=60, MaxMetaspaceSize/MaxDirectMemorySize/ReservedCodeCacheSize tường minh, Xms=Xmx, giảm Tomcat threads.max, scale ngang; dài hạn render PDF streaming (không giữ byte[]).',
+    'Phòng ngừa: NMT baseline/diff trong load test, alert theo container_memory_working_set_bytes/limit > 0.9, nguyên tắc Xmx + non-heap < limit chừa 25-30%.'
+  ],
+  tags: ['oomkilled', 'kubernetes', 'native-memory', 'nmt', 'container-memory', 'jvm', 'xmx']
+},
+{
+  id: 'lab-incident-041',
+  category: 'incident',
+  title: 'Consumer Kafka reconciliation bị kẹt: xử lý batch 500 bản ghi quá max.poll.interval.ms, rebalance liên tục',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Ngân hàng **VNBank** có service **billing-reconciliation** (Spring Boot 3.3, spring-kafka 3.2, Kafka 3.6) tiêu thụ topic **reconciliation-events** (15 partition, 3 broker). Mỗi message là một sự kiện cần đối soát với nhà cung cấp thanh toán bên ngoài **PayPro**. Service chạy 5 pod × concurrency 3 = 15 consumer, khớp đúng 15 partition. Bình thường mỗi lời gọi PayPro mất khoảng 120 ms, lag gần bằng 0. Cấu hình: ack-mode batch, partition.assignment.strategy RangeAssignor, max.poll.records 500, max.poll.interval.ms 300000.
+
+**Triệu chứng:** Ngày 18/11/2026 lúc 09:00, PayPro bảo trì làm API chậm từ 120 ms lên **2,2 giây**. Consumer rebalance liên tục, log báo 'consumer poll timeout has expired', committed/s = 0, lag tăng đều từ 300 nghìn lên 1,2 triệu trong 40 phút. Dashboard cho thấy consumer vẫn 'chạy', pod không restart, CPU thấp.
+
+**Dữ liệu thu thập:** Hai lần chạy kafka-consumer-groups.sh cách nhau 40 phút, log của một pod, metric Prometheus và cấu hình consumer.`,
+  artifacts: [
+    {
+      name: 'kafka-consumer-groups.txt',
+      lang: 'text',
+      content: `$ date; kafka-consumer-groups.sh --bootstrap-server kafka-1:9092 --describe --group billing-reconciliation
+Sat Nov 18 09:15:05 +07 2026
+
+Warning: Consumer group 'billing-reconciliation' is rebalancing.
+
+GROUP                TOPIC              PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG       CONSUMER-ID                                   HOST         CLIENT-ID
+billing-reconciliation reconciliation-events  0  8120033         8150033         30000     consumer-billing-rec-1-a1b2c3d4-...  10.42.1.11   consumer-billing-rec-1
+billing-reconciliation reconciliation-events  1  7988961         8018961         30000     consumer-billing-rec-1-e5f6a7b8-...  10.42.1.12   consumer-billing-rec-1
+billing-reconciliation reconciliation-events  2  7857889         7887889         30000     consumer-billing-rec-2-9c0d1e2f-...  10.42.1.13   consumer-billing-rec-2
+billing-reconciliation reconciliation-events  3  7726817         7756817         30000     consumer-billing-rec-2-3a4b5c6d-...  10.42.1.14   consumer-billing-rec-2
+billing-reconciliation reconciliation-events  4  7595745         7625745         30000     consumer-billing-rec-3-7e8f9a0b-...  10.42.1.15   consumer-billing-rec-3
+billing-reconciliation reconciliation-events  5  7464673         7494673         30000     consumer-billing-rec-3-1c2d3e4f-...  10.42.1.16   consumer-billing-rec-3
+billing-reconciliation reconciliation-events  6  7333601         7363601         30000     consumer-billing-rec-4-5a6b7c8d-...  10.42.2.11   consumer-billing-rec-4
+billing-reconciliation reconciliation-events  7  7202529         7232529         30000     consumer-billing-rec-4-9e0f1a2b-...  10.42.2.12   consumer-billing-rec-4
+billing-reconciliation reconciliation-events  8  7071457         7101457         30000     consumer-billing-rec-5-3c4d5e6f-...  10.42.2.13   consumer-billing-rec-5
+billing-reconciliation reconciliation-events  9  6940385         6970385         30000     consumer-billing-rec-5-7a8b9c0d-...  10.42.2.14   consumer-billing-rec-5
+billing-reconciliation reconciliation-events  10 6809313         6839313         30000     consumer-billing-rec-5-1e2f3a4b-...  10.42.2.15   consumer-billing-rec-5
+billing-reconciliation reconciliation-events  11 6678241         6708241         30000     consumer-billing-rec-6-5c6d7e8f-...  10.42.2.16   consumer-billing-rec-6
+billing-reconciliation reconciliation-events  12 6547169         6577169         30000     consumer-billing-rec-6-9a0b1c2d-...  10.42.3.11   consumer-billing-rec-6
+billing-reconciliation reconciliation-events  13 6416097         6446097         30000     consumer-billing-rec-7-3e4f5a6b-...  10.42.3.12   consumer-billing-rec-7
+billing-reconciliation reconciliation-events  14 6285025         6315025         30000     consumer-billing-rec-7-7c8d9e0f-...  10.42.3.13   consumer-billing-rec-7
+(15 rows)   tổng lag = 450000
+
+$ date; kafka-consumer-groups.sh --bootstrap-server kafka-1:9092 --describe --group billing-reconciliation
+Sat Nov 18 09:55:07 +07 2026
+
+Warning: Consumer group 'billing-reconciliation' is rebalancing.
+
+GROUP                TOPIC              PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG       CONSUMER-ID                                   HOST         CLIENT-ID
+billing-reconciliation reconciliation-events  0  8120033         8230033         110000    consumer-billing-rec-1-a1b2c3d4-...  10.42.1.11   consumer-billing-rec-1
+billing-reconciliation reconciliation-events  1  7988961         8098961         110000    consumer-billing-rec-1-e5f6a7b8-...  10.42.1.12   consumer-billing-rec-1
+billing-reconciliation reconciliation-events  2  7857889         7967889         110000    consumer-billing-rec-2-9c0d1e2f-...  10.42.1.13   consumer-billing-rec-2
+billing-reconciliation reconciliation-events  3  7726817         7836817         110000    consumer-billing-rec-2-3a4b5c6d-...  10.42.1.14   consumer-billing-rec-2
+billing-reconciliation reconciliation-events  4  7595745         7705745         110000    consumer-billing-rec-3-7e8f9a0b-...  10.42.1.15   consumer-billing-rec-3
+billing-reconciliation reconciliation-events  5  7464673         7574673         110000    consumer-billing-rec-3-1c2d3e4f-...  10.42.1.16   consumer-billing-rec-3
+billing-reconciliation reconciliation-events  6  7333601         7443601         110000    consumer-billing-rec-4-5a6b7c8d-...  10.42.2.11   consumer-billing-rec-4
+billing-reconciliation reconciliation-events  7  7202529         7312529         110000    consumer-billing-rec-4-9e0f1a2b-...  10.42.2.12   consumer-billing-rec-4
+billing-reconciliation reconciliation-events  8  7071457         7181457         110000    consumer-billing-rec-5-3c4d5e6f-...  10.42.2.13   consumer-billing-rec-5
+billing-reconciliation reconciliation-events  9  6940385         7050385         110000    consumer-billing-rec-5-7a8b9c0d-...  10.42.2.14   consumer-billing-rec-5
+billing-reconciliation reconciliation-events  10 6809313         6919313         110000    consumer-billing-rec-5-1e2f3a4b-...  10.42.2.15   consumer-billing-rec-5
+billing-reconciliation reconciliation-events  11 6678241         6788241         110000    consumer-billing-rec-6-5c6d7e8f-...  10.42.2.16   consumer-billing-rec-6
+billing-reconciliation reconciliation-events  12 6547169         6657169         110000    consumer-billing-rec-6-9a0b1c2d-...  10.42.3.11   consumer-billing-rec-6
+billing-reconciliation reconciliation-events  13 6416097         6526097         110000    consumer-billing-rec-7-3e4f5a6b-...  10.42.3.12   consumer-billing-rec-7
+billing-reconciliation reconciliation-events  14 6285025         6395025         110000    consumer-billing-rec-7-7c8d9e0f-...  10.42.3.13   consumer-billing-rec-7
+(15 rows)   tổng lag = 1650000
+# CURRENT-OFFSET của TẤT CẢ partition đứng yên (ví dụ partition 0 vẫn 8120033) giữa 09:15 và 09:55.
+# LOG-END-OFFSET tăng đều, lag tăng từ 450 nghìn lên 1,65 triệu.`,
+    },
+    {
+      name: 'billing-rec-pod-7x9.log',
+      lang: 'text',
+      content: `2026-11-18T09:15:02.004+07:00  INFO 1 --- [billing-reconciliation] [ntainer#0-0-C-1] v.v.billing.ReconciliationListener : batch start partition=reconciliation-events-0 records=500 firstOffset=8120033
+2026-11-18T09:15:04.212+07:00  INFO 1 --- [billing-reconciliation] [ntainer#0-0-C-1] v.v.billing.PayProClient         : reconcile eventId=REC-20261118-001234 -> 200 OK (2198 ms)
+2026-11-18T09:15:06.415+07:00  INFO 1 --- [billing-reconciliation] [ntainer#0-0-C-1] v.v.billing.PayProClient         : reconcile eventId=REC-20261118-001235 -> 200 OK (2203 ms)
+... (500 bản ghi, mỗi bản ghi gọi PayPro API khoảng 2.2 giây) ...
+2026-11-18T09:32:02.130+07:00  WARN 1 --- [billing-reconciliation] [ billing-reconciliation] o.a.k.c.c.internals.ConsumerCoordinator : [Consumer clientId=consumer-billing-rec-1-a1b2c3d4-..., groupId=billing-reconciliation] consumer poll timeout has expired. This means the time between subsequent calls to poll() was longer than the configured max.poll.interval.ms, which typically implies that the poll loop is spending too much time processing messages. You can address this either by increasing max.poll.interval.ms or by reducing the maximum size of batches returned in poll() with max.poll.records.
+2026-11-18T09:32:02.131+07:00  INFO 1 --- [billing-reconciliation] [ billing-reconciliation] o.a.k.c.c.internals.ConsumerCoordinator : [Consumer clientId=consumer-billing-rec-1-a1b2c3d4-..., groupId=billing-reconciliation] Member consumer-billing-rec-1-a1b2c3d4-... sending LeaveGroup request to coordinator kafka-2:9092 (id: 2147483645 rack: null) due to consumer poll timeout has expired.
+2026-11-18T09:32:02.135+07:00  INFO 1 --- [billing-reconciliation] [ billing-reconciliation] o.a.k.c.c.internals.ConsumerCoordinator : [Consumer clientId=consumer-billing-rec-1-a1b2c3d4-..., groupId=billing-reconciliation] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-11-18T09:32:02.136+07:00  INFO 1 --- [billing-reconciliation] [ billing-reconciliation] o.a.k.c.c.internals.ConsumerCoordinator : [Consumer clientId=consumer-billing-rec-1-a1b2c3d4-..., groupId=billing-reconciliation] Request joining group due to: consumer pro-actively leaving the group
+2026-11-18T09:32:52.412+07:00  INFO 1 --- [billing-reconciliation] [ntainer#0-0-C-1] v.v.billing.ReconciliationListener : batch done partition=reconciliation-events-0 records=500 took 1070408 ms (created=0, duplicate=500)
+2026-11-18T09:32:52.420+07:00 ERROR 1 --- [billing-reconciliation] [ntainer#0-0-C-1] o.s.k.l.KafkaMessageListenerContainer : Consumer exception
+org.apache.kafka.clients.consumer.CommitFailedException: Offset commit cannot be completed since the consumer is not part of an active group for auto partition assignment; it is likely that the consumer was kicked out of the group.
+	at org.apache.kafka.clients.consumer.internals.ConsumerCoordinator.sendOffsetCommitRequest(ConsumerCoordinator.java:1351)
+	...
+2026-11-18T09:32:52.468+07:00  INFO 1 --- [billing-reconciliation] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator : [Consumer clientId=consumer-billing-rec-1-a1b2c3d4-..., groupId=billing-reconciliation] Giving away all assigned partitions as lost since generation/memberID has been reset, indicating that consumer is in old state or no longer part of the group
+2026-11-18T09:32:52.469+07:00  INFO 1 --- [billing-reconciliation] [ntainer#0-0-C-1] o.s.k.l.KafkaMessageListenerContainer : billing-reconciliation: partitions lost: [reconciliation-events-0]
+2026-11-18T09:32:52.470+07:00  INFO 1 --- [billing-reconciliation] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator : [Consumer clientId=consumer-billing-rec-1-a1b2c3d4-..., groupId=billing-reconciliation] (Re-)joining group
+2026-11-18T09:32:55.903+07:00  INFO 1 --- [billing-reconciliation] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator : [Consumer clientId=consumer-billing-rec-1-a1b2c3d4-..., groupId=billing-reconciliation] Successfully joined group with generation Generation{generationId=1874, memberId=consumer-billing-rec-1-a1b2c3d4-..., protocol='range'}
+2026-11-18T09:32:55.917+07:00  INFO 1 --- [billing-reconciliation] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator : [Consumer clientId=consumer-billing-rec-1-a1b2c3d4-..., groupId=billing-reconciliation] Adding newly assigned partitions: reconciliation-events-0
+2026-11-18T09:32:55.931+07:00  INFO 1 --- [billing-reconciliation] [ntainer#0-0-C-1] o.s.k.l.KafkaMessageListenerContainer : billing-reconciliation: partitions assigned: [reconciliation-events-0]
+2026-11-18T09:32:56.012+07:00  INFO 1 --- [billing-reconciliation] [ntainer#0-0-C-1] v.v.billing.ReconciliationListener : batch start partition=reconciliation-events-0 records=500 firstOffset=8120033
+2026-11-18T09:32:58.219+07:00  INFO 1 --- [billing-reconciliation] [ntainer#0-0-C-1] v.v.billing.PayProClient         : reconcile eventId=REC-20261118-001234 -> 200 OK (2207 ms) (duplicate)`,
+    },
+    {
+      name: 'metrics-and-config.txt',
+      lang: 'text',
+      content: `# lag = sum(kafka_consumergroup_lag{consumergroup="billing-reconciliation"})
+# committed/s = sum(rate(kafka_consumergroup_current_offset{consumergroup="billing-reconciliation"}[5m]))
+# tbp_max = max(kafka_consumer_time_between_poll_max) (ms)
+# rebal/h = sum(increase(kafka_consumer_coordinator_rebalance_total[1h]))
+
+time    in_msg/s  committed/s  lag      rebal/h  tbp_max
+08:30     175.0     175.0        2,500    0        62,000
+09:15     180.0       0.0        450,000  42       1,071,000
+09:30     178.0       0.0        780,000  44       1,072,000
+09:55     182.0       0.0      1,650,000  45       1,073,000
+
+# application.yml (billing-reconciliation)
+spring:
+  kafka:
+    bootstrap-servers: kafka-1:9092,kafka-2:9092,kafka-3:9092
+    consumer:
+      group-id: billing-reconciliation
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      # max-poll-records: 500 (mặc định)
+      properties:
+        partition.assignment.strategy: org.apache.kafka.clients.consumer.RangeAssignor
+        # max.poll.interval.ms: 300000 (mặc định)
+    listener:
+      concurrency: 3
+      ack-mode: batch
+      type: batch
+
+// ReconciliationListener.java
+@KafkaListener(topics = "reconciliation-events")
+public void onEvent(List<ReconciliationEvent> events) {
+    for (ReconciliationEvent e : events) {
+        payProClient.reconcile(e);   // gọi API PayPro, đồng bộ, ~2.2 giây
+        reconciliationRepository.save(e.toReconciliationRecord());
+    }
+}`,
+    }
+  ],
+  questions: [
+    'Vì sao lag tăng đúng bằng tốc độ message đến, trong khi consumer vẫn chạy và không pod restart nào?',
+    'Giải thích chuỗi cơ chế: max.poll.records, max.poll.interval.ms, ack-mode batch, rebalance của Kafka. Vì sao heartbeat vẫn chạy nhưng consumer vẫn bị đá khỏi group?',
+    'Tăng lên 10 pod có giúp không? Đề xuất gỡ ngay, sửa dài hạn và alert cần có.'
+  ],
+  hints: [
+    'So sánh CURRENT-OFFSET của cùng một partition lúc 09:15 và 09:55. Rồi nhìn metric committed/s.',
+    'Mỗi lần poll() trả tối đa 500 record, mỗi record gọi PayPro API khoảng 2.2 giây. Một batch mất bao lâu so với max.poll.interval.ms mặc định 300.000 ms? Với ack-mode batch, offset được commit lúc nào?',
+    'Topic có 15 partition. Consumer thứ 16 trở đi sẽ làm gì? Và nếu mỗi batch vẫn mất 1.100 giây thì thêm consumer có giúp commit được không?'
+  ],
+  answer: `**Tóm tắt:** Consumer group rơi vào **vòng lặp rebalance không có tiến triển (livelock)**. Mỗi lần {{poll()}} trả 500 record, mỗi record gọi PayPro API mất khoảng 2,2 giây, nên một batch mất khoảng **1.100 giây**, vượt {{max.poll.interval.ms}} mặc định 300 giây. Consumer bị đá khỏi group trước khi kịp commit (ack-mode batch chỉ commit khi xong cả batch), partition được giao cho consumer khác, consumer đó bắt đầu lại **từ đúng offset cũ**. Offset không nhích, nên lag tăng bằng đúng tốc độ message đến (khoảng 180 message/giây).
+
+### Bằng chứng
+
+- **Offset đứng yên:** partition 0 có {{CURRENT-OFFSET 8120033}} ở cả 09:15 và 09:55, và tương tự cho cả 15 partition. Chỉ LOG-END-OFFSET tăng. Tổng lag tăng từ 450 nghìn lên 1,65 triệu, tức 1,2 triệu trong 2.400 giây, khoảng **500 message/giây** (đã cộng retry), khớp với {{in_msg/s}}. Metric {{committed/s = 0.0}} từ 09:15.
+- **Thời gian giữa hai lần poll:** {{tbp_max}} khoảng 1.071.000–1.073.000 ms, vượt 300.000. Log khớp: batch bắt đầu 09:15:02.004, heartbeat thread báo {{consumer poll timeout has expired}} lúc **09:32:02.130**, đúng 1.020 giây sau. Consumer gửi LeaveGroup, nhưng thread listener vẫn tiếp tục xử lý đến {{batch done ... took 1.070.408 ms}} lúc 09:32:52.
+- **Commit thất bại:** {{CommitFailedException: ... the consumer was kicked out of the group}}, sau đó {{Lost previously assigned partitions reconciliation-events-0}}. Toàn bộ 1.100 giây công sức bị bỏ.
+- **Xử lý lại:** batch có {{created=0, duplicate=500}}: cả 500 sự kiện đã được đối soát từ vòng đầu tiên, mọi vòng sau chỉ nhận kết quả trùng. Từ 09:30, gần như 100% lời gọi PayPro là việc lặp lại.
+- **Rebalance liên tục:** {{generationId=1874}}, khoảng 42–45 rebalance/giờ, describe luôn báo {{is rebalancing}}, state {{PreparingRebalance}}.
+- Nhiễu: health {{UP}}, CPU thấp, không restart. Consumer "sống" nhưng không làm được việc có ích.
+
+### Cơ chế
+
+1. **Hai cơ chế phát hiện consumer chết khác nhau.** {{session.timeout.ms}} (45 giây) được kiểm tra bằng heartbeat từ **thread nền**, nên consumer xử lý chậm vẫn gửi heartbeat đều. {{max.poll.interval.ms}} (300 giây) kiểm tra **thread xử lý**: nếu không gọi {{poll()}} trong 300 giây, client coi như thread bị treo và tự rời group. Đây chính là thông điệp WARN trong log.
+2. **Ack-mode batch:** với record listener, spring-kafka commit offset sau khi xử lý hết các record từ một lần {{poll()}}. Batch không bao giờ xong trong 300 giây thì không bao giờ commit.
+3. **Range assignor là eager rebalance:** mỗi lần một member rời hoặc vào lại, **toàn bộ** group dừng, thu hồi hết partition rồi chia lại. 15 member luân phiên bị đá ra mỗi khoảng 17 phút, nên group gần như lúc nào cũng đang rebalance.
+4. **Idempotency cứu dữ liệu nhưng không cứu throughput:** nhờ {{eventId}} nên không đối soát trùng (không mất tiền), nhưng mỗi lời gọi trùng vẫn tốn 2,2 giây ở PayPro. PayPro thực chất đang làm lại cùng một việc.
+
+Trước 09:00: 500 × 0,12 giây = 60 giây mỗi batch, khớp {{tbp_max 62.000}}, nằm an toàn dưới 300 giây. Lỗi tiềm ẩn từ đầu, sự chậm lên của PayPro chỉ làm nó lộ ra.
+
+### Tăng lên 10 pod có giúp không?
+
+**Không.** Topic có 15 partition, nên tối đa chỉ 15 consumer có việc. 10 pod × 3 = 30 consumer thì 15 consumer ngồi không, đồng thời số member nhiều hơn khiến mỗi lần rebalance chậm hơn. Quan trọng hơn: mỗi batch vẫn mất 1.100 giây, nên vẫn không commit được. Ngoài ra, kể cả khi hết livelock, công suất tối đa vẫn chỉ khoảng 15 / 2,2 ≈ 6,8 message/giây, nhỏ hơn 180 message/giây đang đến.
+
+### Cách sửa
+
+**Gỡ ngay (cấu hình, rolling restart):**
+
+~~~yaml
+spring:
+  kafka:
+    consumer:
+      max-poll-records: 20                  # 20 x 2.2 s = 44 s mỗi batch, dư rất xa so với giới hạn
+      properties:
+        max.poll.interval.ms: 600000         # thêm biên an toàn khi downstream chậm bất thường
+~~~
+
+Sau khi đổi, offset sẽ bắt đầu nhích. Khoảng 500 sự kiện đầu mỗi partition vẫn phải gọi lại PayPro và nhận kết quả trùng (mỗi lời gọi khoảng 2,2 giây); có thể bỏ qua nhanh hơn nếu consumer tự lưu eventId đã xử lý thành công. Nhưng công suất vẫn chỉ khoảng 6,8 message/giây, nên cần thêm bước tăng công suất:
+- Làm việc với PayPro để dùng **API đối soát theo lô** (ví dụ 50 sự kiện mỗi lời gọi) hoặc tạm hoãn việc bảo trì.
+- Hoặc xử lý song song trong một partition **theo khoá** (cùng merchantId thì tuần tự, khác merchantId thì song song), ví dụ dùng thư viện parallel consumer, vẫn giữ thứ tự theo merchant.
+- Ưu tiên: đối soát chậm ảnh hưởng tới báo cáo tài chính, nên cần thông báo cho team kế toán và hiển thị "đang đối soát".
+
+**Dài hạn:**
+- Đổi sang {{CooperativeStickyAssignor}} (incremental rebalance): chỉ những partition cần di chuyển mới bị thu hồi, các consumer khác vẫn chạy.
+- **Static membership** ({{group.instance.id}} = tên pod): rolling restart không gây rebalance nếu pod quay lại trong {{session.timeout.ms}}.
+- Commit thường xuyên hơn (ack-mode {{RECORD}} hoặc {{COUNT}}/{{TIME}}) để giảm lượng việc phải làm lại khi mất partition.
+- Khi downstream chậm hoặc lỗi: dùng backoff của error handler, hoặc {{pause()}} container thay vì xử lý quá giới hạn.
+- Thiết kế số partition theo công suất cần có: với 2,2 giây mỗi message và 180 message/giây, cần ít nhất 396 luồng xử lý song song nếu xử lý tuần tự, nên phải dùng xử lý theo lô hoặc song song theo khoá.
+- Kiểm tra trước khi đổi số partition: tăng partition làm thay đổi ánh xạ khoá sang partition, ảnh hưởng thứ tự xử lý theo merchant trong giai đoạn chuyển tiếp.
+
+### Alert
+
+- Lag theo thời gian chờ (giây), không chỉ theo số message: ví dụ lag / tốc độ đến vượt 60 giây.
+- {{committed/s}} bằng 0 trong 5 phút khi vẫn có message đến: đây là dấu hiệu chính xác nhất của livelock.
+- {{kafka_consumer_time_between_poll_max}} vượt 70% {{max.poll.interval.ms}}.
+- Số rebalance/giờ lớn hơn 0 khi không có deploy.
+- Tỷ lệ gọi trùng (duplicate) của PayPro: nếu cao bất thường nghĩa là đang xử lý lại.
+
+> Senior tip: Với consumer gọi hệ thống bên ngoài, tôi luôn tính trước giá trị {{max.poll.records}} × p99 latency của downstream lúc xấu nhất và giữ nó dưới khoảng một nửa {{max.poll.interval.ms}}. Thông điệp {{consumer poll timeout has expired}} trong log nên được coi là sự cố, không phải warning. Và không bao giờ trả lời "lag cao" bằng cách thêm pod trước khi kiểm tra số partition và việc offset có nhích hay không.`,
+  rubric: [
+    'Chỉ ra livelock: CURRENT-OFFSET đứng yên giữa 09:15 và 09:55 (ví dụ partition 0 ở 8120033), committed/s = 0, lag tăng đúng khoảng 500 message/giây bằng tốc độ đến.',
+    'Giải thích cơ chế: 500 record × khoảng 2,2 giây = 1.100 s vượt max.poll.interval.ms 300 s, consumer tự rời group (log poll timeout), CommitFailedException vì ack-mode batch chỉ commit sau cả batch, partition mới bắt đầu lại từ offset cũ (duplicate=500).',
+    'Phân biệt session.timeout.ms (heartbeat thread) với max.poll.interval.ms (thread xử lý), và nêu tác động của eager rebalance với RangeAssignor.',
+    'Giải thích vì sao thêm pod không giúp: tối đa 15 consumer theo 15 partition, mỗi batch vẫn quá 300 s, công suất khoảng 6,8 message/giây vẫn nhỏ hơn 180.',
+    'Đề xuất: giảm max.poll.records, tăng max.poll.interval.ms, tăng công suất (API theo lô, song song theo khoá), CooperativeStickyAssignor, static membership, commit thường xuyên hơn; alert theo committed rate, time-between-poll, rebalance.'
+  ],
+  tags: ['kafka', 'consumer-lag', 'rebalance', 'max-poll-interval', 'spring-kafka', 'paypro', 'reconciliation']
+},
+{
+  id: 'lab-incident-042',
+  category: 'incident',
+  title: 'Pod report-generator bị OOMKilled dù heap 1.2/3 GB: -Xmx bằng limit, thiếu chỗ metaspace/thread stack/direct buffer',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **report-generator** (Spring Boot 3.3, JDK 21.0.5, G1) là service batch chạy theo lịch (Kubernetes CronJob) sinh báo cáo tài chính PDF hàng ngày. Mỗi request: nạp dữ liệu 500 nghìn dòng từ PostgreSQL, dựng PDF bằng **JasperReports** (thư viện dùng compiler Groovy động cho template) rồi lưu xuống EFS mount {{/mnt/efs/reports}}. Pod: request 2Gi, **limit 3Gi**, 4 vCPU. {{JAVA_TOOL_OPTIONS=-Xms3g -Xmx3g -XX:+UseG1GC -XX:NativeMemoryTracking=summary}}; {{-Xmx3g}} bằng đúng memory limit; không đặt {{-Xss}}, {{MaxMetaspaceSize}}, {{MaxDirectMemorySize}}, {{ReservedCodeCacheSize}}. Tomcat {{threads.max=200}}.
+
+**Triệu chứng:** Ngày 20/11/2026 lúc 02:00, CronJob chạy. Pod **report-generator-8d7f9c5b4-x2k9p** bị restart 3 lần (02:15, 02:41, 03:07), lần nào cũng exit code 137, **không có** {{OutOfMemoryError}} trong log. Dashboard heap chỉ thấy heap used khoảng 1,2 GB trên tối đa 3 GB. Tuần trước, với dữ liệu 400 nghìn dòng, pod chạy xong trong 25 phút không restart.
+
+**Dữ liệu thu thập:** {{kubectl describe pod}} và log kernel, cờ JVM và thay đổi cấu hình, metric Prometheus từ lúc container khởi động 02:00:12 đến khi bị kill, {{jcmd 1 VM.native_memory summary}} chụp lúc 02:50.`,
+  artifacts: [
+    {
+      name: 'kubectl-describe-and-dmesg.txt',
+      lang: 'text',
+      content: `$ kubectl -n reporting describe pod report-generator-8d7f9c5b4-x2k9p      (03:09:40)
+Name:             report-generator-8d7f9c5b4-x2k9p
+Namespace:        reporting
+Node:             ip-10-42-5-118.ec2.internal/10.42.5.118
+Start Time:       Wed, 20 Nov 2026 02:00:12 +07:00
+Containers:
+  app:
+    Image:          registry.prod/report-generator:3.2.0
+    State:          Running
+      Started:      Wed, 20 Nov 2026 03:07:38 +07:00
+    Last State:     Terminated
+      Reason:       OOMKilled
+      Exit Code:    137
+      Started:      Wed, 20 Nov 2026 02:41:12 +07:00
+      Finished:     Wed, 20 Nov 2026 03:07:36 +07:00
+    Restart Count:  3
+    Limits:
+      cpu:      4
+      memory:   3Gi
+    Requests:
+      cpu:      2
+      memory:   2Gi
+    Environment:
+      JAVA_TOOL_OPTIONS:       -Xms3g -Xmx3g -XX:+UseG1GC -XX:NativeMemoryTracking=summary
+      SPRING_PROFILES_ACTIVE:  prod
+Events:
+  Type    Reason   Age                 From     Message
+  Normal  Pulled   3m (x4 over 1h9m)  kubelet  Container image "registry.prod/report-generator:3.2.0" already present on machine
+  Normal  Created  3m (x4 over 1h9m)  kubelet  Created container app
+  Normal  Started  3m (x4 over 1h9m)  kubelet  Started container app
+
+# dmesg -T trên node ip-10-42-5-118
+[Wed Nov 20 03:07:36 2026] java invoked oom-killer: gfp_mask=0xcc0(GFP_KERNEL), order=0, oom_score_adj=1000
+[Wed Nov 20 03:07:36 2026] memory: usage 3221225kB, limit 3221225kB, failcnt 1842
+[Wed Nov 20 03:07:36 2026] Memory cgroup out of memory: Killed process 41287 (java) total-vm:9432116kB, anon-rss:3178840kB, file-rss:12960kB, shmem-rss:0kB, UID:1001 pgtables:5384kB oom_score_adj=1000`,
+    },
+    {
+      name: 'jvm-flags-config-code.txt',
+      lang: 'text',
+      content: `$ kubectl -n reporting exec report-generator-8d7f9c5b4-x2k9p -- jcmd 1 VM.flags      (02:50, container cũ)
+1:
+-XX:CICompilerCount=4 -XX:ConcGCThreads=2 -XX:G1HeapRegionSize=4194304 -XX:InitialHeapSize=3221225472 -XX:MarkStackSize=8388608 -XX:MaxHeapSize=3221225472 -XX:MaxNewSize=1932735488 -XX:MaxRAMPercentage=100.000000 -XX:MinHeapDeltaBytes=4194304 -XX:MinHeapSize=8388608 -XX:NativeMemoryTracking=summary -XX:NonNMethodCodeHeapSize=11665560 -XX:NonProfiledCodeHeapSize=245825460 -XX:ProfiledCodeHeapSize=245825460 -XX:ReservedCodeCacheSize=251658240 -XX:+SegmentedCodeCache -XX:SoftMaxHeapSize=3221225472 -XX:+UseCompressedOops -XX:+UseFastUnorderedTimeStamps -XX:+UseG1GC
+
+# application.yml
+server:
+  tomcat:
+    threads:
+      max: 200
+    accept-count: 100
+
+// ===== ReportGeneratorService.java (rút gọn) =====
+public byte[] generateReport(long batchId) {
+    List<ReportRow> rows = repo.loadReportData(batchId);           // 500 nghìn dòng
+    JasperPrint jp = JasperFillManager.fillReport(jasperReport, params, new JRBeanCollectionDataSource(rows));
+    byte[] pdf = JasperExportManager.exportReportToPdf(jp);        // GIỮ CẢ FILE PDF TRONG HEAP
+    return pdf;                                                    // p99 ~8.5 MB, trung bình 3.2 MB
+}
+
+// JasperReports biên dịch template Groovy động tại runtime -> sinh nhiều class -> Metaspace phình
+// JRBeanCollectionDataSource giữ reference tới toàn bộ 500 nghìn dòng trên heap
+// exportReportToPdf cấp phát byte[] lớn (p99 8.5 MB) và dùng direct buffer cho compression
+`,
+    },
+    {
+      name: 'prometheus-0200-0307.txt',
+      lang: 'text',
+      content: `# pod report-generator-8d7f9c5b4-x2k9p, container khởi động 02:00:12
+# rps = rate(http_server_requests_seconds_count[1m]) (batch job thì ~0)
+# heap_u / heap_c = jvm_memory_used_bytes / jvm_memory_committed_bytes {area="heap"}
+# nonheap_c = jvm_memory_committed_bytes {area="nonheap"}
+# direct_u / direct_n = jvm_buffer_memory_used_bytes / jvm_buffer_count_buffers {id="direct"}
+# ws = container_memory_working_set_bytes{container="app"}
+# threads = jvm_threads_live_threads
+
+time      heap_u  heap_c  nonheap_c  direct_u  direct_n  threads  ws
+02:05     420 MB  1.5 GB   1.1 GB     210 MB     385      200    2.3 GiB
+02:15     580 MB  1.8 GB   1.4 GB     320 MB     490      200    2.7 GiB
+02:30     720 MB  2.1 GB   1.7 GB     450 MB     580      200    3.1 GiB
+02:40     810 MB  2.3 GB   1.9 GB     520 MB     620      200    3.25 GiB
+02:50     940 MB  2.5 GB   2.1 GB     580 MB     640      200    3.28 GiB
+03:07:36  (container bị OOMKilled, series mất)
+
+# jvm_memory_max_bytes{area="heap"} = 3221225472  (3 GiB = limit container)
+# nonheap_c tăng đều: Metaspace (JasperReports compile Groovy class động) + Thread stack 200 thread + Code cache + Direct buffer (JasperReports PDF compression)
+# heap used chỉ 940 MB / 3 GB nhưng working_set đã 3.28 GiB > limit 3 GiB`,
+    },
+    {
+      name: 'nmt-summary-0250.txt',
+      lang: 'text',
+      content: `$ kubectl -n reporting exec report-generator-8d7f9c5b4-x2k9p -- jcmd 1 VM.native_memory summary scale=KB
+1:
+
+Native Memory Tracking:
+
+(Omitting categories weighting less than 1KB)
+
+Total: reserved=6123974KB, committed=3389828KB
+       malloc: 749898KB #1305420
+       mmap:   reserved=5364720KB, committed=2629574KB
+
+-                 Java Heap (reserved=3145728KB, committed=2621440KB)
+                            (mmap: reserved=3145728KB, committed=2621440KB)
+
+-                     Class (reserved=1234560KB, committed=208896KB)
+                            (classes #41214)
+                            (  instance classes #38721, array classes #2493)
+                            (malloc=208896KB #62114)
+
+-                    Thread (reserved=337920KB, committed=92160KB)
+                            (thread #200)
+                            (stack: reserved=331776KB, committed=92160KB)
+
+-                      Code (reserved=254680KB, committed=61204KB)
+                            (malloc=4160KB #13210)
+                            (mmap: reserved=250520KB, committed=57044KB)
+
+-                        GC (reserved=150112KB, committed=74088KB)
+                            (malloc=6744KB #14560)
+                            (mmap: reserved=143368KB, committed=67344KB)
+
+-                  Compiler (reserved=1302KB, committed=1302KB)
+                            (malloc=1170KB #1820)
+                            (arena=132KB #5)
+
+-                  Internal (reserved=2614KB, committed=2614KB)
+                            (malloc=2614KB #44380)
+
+-                     Other (reserved=501760KB, committed=501760KB)
+                            (malloc=501760KB #451)
+
+-                    Symbol (reserved=28160KB, committed=28160KB)
+                            (malloc=25904KB #309112)
+                            (arena=2256KB #1)
+
+-    Native Memory Tracking (reserved=6544KB, committed=6544KB)
+                            (malloc=488KB #6904)
+                            (tracking overhead=6056KB)
+
+-               Shared class space (reserved=16384KB, committed=12944KB)
+                            (mmap: reserved=16384KB, committed=12944KB)
+
+-                 Metaspace (reserved=1187840KB, committed=1085440KB)
+                            (mmap: reserved=1187840KB, committed=1085440KB)
+
+-               Arena Chunk (reserved=380KB, committed=380KB)
+                            (malloc=380KB)
+
+-                    Module (reserved=1104KB, committed=1104KB)
+                            (malloc=1104KB #5520)
+
+-           Synchronization (reserved=1216KB, committed=1216KB)
+                            (malloc=1216KB #12480)
+
+Total committed = 3389828 KB ≈ 3.23 GiB > limit 3 GiB
+Java Heap committed 2.5 GiB + Metaspace committed 1.06 GiB + Thread 88 MiB + Code 60 MiB + GC 72 MiB + Other 490 MiB + Direct ~580 MiB + Symbol 27 MiB + Class 204 MiB = 3.23 GiB`,
+    }
+  ],
+  questions: [
+    'Vì sao container bị OOMKilled khi heap used chỉ khoảng 940 MB và JVM không ném OutOfMemoryError? Lập "ngân sách bộ nhớ" của process từ NMT lúc 02:50.',
+    'Mục nào trong NMT tăng mạnh, nó là gì và vì sao nó tăng theo thời gian chứ không tăng đều như một leak? Dẫn chứng bằng số liệu từ các artifact.',
+    'Đề xuất cách sửa ngắn hạn (trong tối nay) và dài hạn, cấu hình JVM/container hợp lý, và cách phòng ngừa để lần sau lỗi lộ ra trước khi lên production.'
+  ],
+  hints: [
+    'Cộng các mục committed trong NMT rồi so với limit 3Gi. Với MaxRAMPercentage=100 (Xmx=3g), heap được phép lớn tới 3 GiB. Khi đó còn lại bao nhiêu cho phần ngoài heap?',
+    'So NMT Metaspace (committed 1085440 KB ≈ 1.06 GiB) và Other (501760 KB ≈ 490 MiB) với direct_used. JasperReports compile Groovy class động -> Metaspace phình. PDF export dùng direct buffer -> Other/direct tăng.',
+    'Thread stack 200 thread ≈ 88 MiB. Tổng committed 3.23 GiB vượt limit 3 GiB. Kernel cgroup kill (exit 137) trước khi JVM kịp ném OutOfMemoryError vì Xmx=limit.',
+  ],
+  answer: `**Tóm tắt:** Không có leak. Pod bị kernel kill vì **tổng bộ nhớ process** (heap committed cộng native) vượt 3Gi. Hai yếu tố cộng dồn: (1) {{MaxRAMPercentage=100}} ({{Xmx=3g}}) cho heap tới 3 GiB, **chỉ chừa ~0 cho non-heap**; (2) JasperReports biên dịch template Groovy động tạo hàng chục nghìn class -> **Metaspace phình tới 1.06 GiB**, PDF export dùng direct buffer -> **direct memory ~580 MiB**. Cộng thêm thread stack 200 thread, code cache, GC, Symbol, Other -> tổng committed 3.23 GiB > limit 3 GiB.
+
+### Nguyên nhân gốc
+
+**1. Sai lầm đặt -Xmx bằng container memory limit.** {{MaxRAMPercentage=100}} ({{Xmx=3g}}) bằng đúng limit 3 GiB. JVM cần bộ nhớ cho **heap LẪN non-heap**. Non-heap gồm: Metaspace (metadata class), thread stack, code cache (JIT), cấu trúc GC, direct buffer (NIO), Symbol, Other. Khi đặt Xmx = limit, bạn **không chừa chỗ nào** cho non-heap.
+
+**2. Metaspace phình do JasperReports compile Groovy động.** JasperReports dùng compiler Groovy tại runtime để biên dịch template báo cáo. Mỗi lần chạy sinh hàng chục nghìn class mới ({{classes #41214}}, Metaspace committed {{1085440 KB ≈ 1.06 GiB}}). Không đặt {{MaxMetaspaceSize}} nên Metaspace lớn vô hạn cho đến khi cgroup kill.
+
+**3. Direct memory lớn do PDF export.** {{JasperExportManager.exportReportToPdf}} nén PDF và ghi ra byte[] dùng direct buffer. {{direct_used 580 MB}} lúc 02:50, {{direct_n 640}} buffer. {{Other}} cũng 490 MiB (gần bằng direct), thường là direct buffer cache của NIO hoặc JasperReports.
+
+**4. Thread stack và các vùng khác.** 200 thread Tomcat -> stack committed 88 MiB. Code cache 60 MiB, GC 72 MiB, Symbol 28 MiB, Class 204 MiB (kèm Metaspace).
+
+### Dẫn chứng
+
+Phân tích lúc 02:50 (NMT, committed):
+
+| Thành phần | Committed | Ghi chú |
+|---|---|---|
+| Java Heap | 2.5 GiB | used chỉ 940 MB, nhưng committed mới chiếm RAM; còn được phép lên 3 GiB |
+| Metaspace | **1.06 GiB** | {{Metaspace (committed=1085440 KB)}} - JasperReports compile Groovy class động |
+| Class (metadata phụ) | 204 MiB | kèm Metaspace |
+| Thread (200 thread) | 88 MiB | {{stack: committed=92160 KB}} |
+| Code cache | 60 MiB | |
+| GC | 72 MiB | |
+| Other | 490 MiB | {{Other (committed=501760 KB)}} - chứa direct buffer cache NIO/JasperReports |
+| Direct buffer | 580 MiB | {{direct_used 580 MB}} - PDF export nén; **trùng lặp một phần với Other** |
+| Symbol / Arena / v.v. | 50 MiB | |
+| **Tổng** | **~3.23 GiB** | khớp {{ws 3.28 GiB}} lúc 02:50 (chênh lệch do mmap reserved) |
+
+Phần non-heap là khoảng **2.7 GiB**, trong khi heap Xmx=3 GiB không chừa chỗ nào. Khi heap committed từ 1.5 GiB (02:05) lên 2.5 GiB (02:50), non-heap cũng từ 1.1 GiB lên 2.1 GiB, tổng committed ~3.23 GiB > limit 3 GiB. Kernel ghi {{memory: usage 3221225kB, limit 3221225kB}} và {{anon-rss:3178840kB}}.
+
+Mục tăng mạnh theo thời gian (không phải leak):
+- **Metaspace**: 1.1 GiB -> 1.06 GiB (phình mạnh lúc đầu khi compile template, sau đó ổn định). JasperReports compile template Groovy một lần đầu, cache class, nên Metaspace tăng nhanh 5-10 phút đầu rồi bằng phẳng.
+- **Direct buffer / Other**: 210 MB -> 580 MB / 1.1 GiB -> 1.9 GiB (tăng đều theo số lượng PDF sinh ra). Mỗi PDF export cấp phát direct buffer cho nén, buffer được cache theo thread. **Lưu ý: Other trong NMT chứa một phần direct buffer, nên hai mục này trùng lặp.**
+- **Heap committed**: 1.5 GiB -> 2.5 GiB (tăng khi dữ liệu 500 nghìn dòng nạp vào JRBeanCollectionDataSource, byte[] PDF p99 8.5 MB).
+
+Không phải leak: Metaspace ổn định sau compile xong; direct buffer/Other tăng theo tải (số PDF) chứ không tăng vô hạn khi idle.
+
+### Cách sửa
+
+**Ngắn hạn (tối nay):**
+1. Thêm {{-XX:MaxMetaspaceSize=512m}}: chặn Metaspace JasperReports tại mức an toàn. Nếu vượt, JVM ném {{OutOfMemoryError: Metaspace}} có stack trace, thay vì pod chết im lặng.
+2. Giảm heap: {{-XX:MaxRAMPercentage=60}} (khoảng 1.8 GiB) và đặt {{-XX:MaxDirectMemorySize=256m}}. Nếu direct vượt, JVM ném lỗi có stack trace.
+3. Giảm {{threads.max}} Tomcat xuống 50 (batch job không cần 200 thread) để giảm thread stack và direct buffer cache.
+4. Thêm {{-Xss512k}} để giảm stack mỗi thread từ 1 MB mặc định.
+
+**Dài hạn: không giữ cả file PDF trong heap.**
+
+~~~java
+// Cách 1: ghi theo lát ra OutputStream, không dựng byte[] lớn trên heap
+public void generateReport(long batchId, OutputStream out) {
+    List<ReportRow> rows = repo.loadReportData(batchId);
+    JasperPrint jp = JasperFillManager.fillReport(jasperReport, params, new JRBeanCollectionDataSource(rows));
+    JasperExportManager.exportReportToPdfStream(jp, out);  // ghi thẳng ra stream, không cấp phát byte[] lớn
+}
+
+// Cách 2: dùng JRVirtualizer để spill sang disk khi dữ liệu lớn
+JRVirtualizer virtualizer = new JRFileVirtualizer(100, tempDir, true);
+params.put(JRParameter.REPORT_VIRTUALIZER, virtualizer);
+~~~
+
+Cách 1 còn giảm áp lực heap: 500 nghìn dòng × ~200 byte/dòng = ~100 MB JRBeanCollectionDataSource, byte[] PDF p99 8.5 MB.
+
+**Cấu hình JVM chuẩn cho container 3 GiB:**
+
+~~~yaml
+JAVA_TOOL_OPTIONS: >-
+  -XX:MaxRAMPercentage=60.0
+  -XX:InitialRAMPercentage=60.0
+  -XX:MaxMetaspaceSize=512m
+  -XX:ReservedCodeCacheSize=128m
+  -XX:MaxDirectMemorySize=256m
+  -Xss512k
+  -XX:+UseG1GC
+~~~
+
+Với limit 3 GiB, MaxRAMPercentage=60 cho heap ~1.8 GiB, chừa ~1.2 GiB cho non-heap — đủ cho Metaspace 512m, Thread 50×512k, Code cache 128m, Direct 256m, GC/Symbol/Class ~300m.
+
+### Phòng ngừa
+
+- **Ngân sách bộ nhớ là một phần của review:** heap max + MaxDirectMemorySize + MaxMetaspaceSize + ReservedCodeCacheSize + thread stack + GC (khoảng 5-8% heap) + 15% dự phòng ≤ limit. Thay đổi thư viện sinh class động (JasperReports, Groovy, reflection) là thay đổi capacity.
+- Đặt {{-Xms}} bằng {{-Xmx}} cho batch job để heap committed cố định từ đầu; ngân sách sai sẽ lộ ra ngay trong load test thay vì lúc chạy production.
+- Load test với **cấu hình và dữ liệu production** (500 nghìn dòng, template Groovy đầy đủ), và chụp NMT {{baseline}} rồi {{summary.diff}} trước/sau.
+- Alert: {{container_memory_working_set_bytes / limit > 0.9}} trong 5 phút; 
+
+~~~text
+jvm_memory_committed_bytes{area="nonheap"} / limit > 0.4
+~~~
+
+; {{kube_pod_container_status_last_terminated_reason}} với reason="OOMKilled".
+
+> Senior tip: Khi thấy NMT {{Metaspace}} lớn mà code không hề dùng {{ClassLoader}} tùy chỉnh, hãy nghĩ tới thư viện compile động (JasperReports, JSP, Groovy, Velocity, dynamic proxy bytecode như CGLIB/ByteBuddy). Mẹo nhanh: so 
+
+~~~text
+jvm_memory_committed_bytes{area="nonheap"}
+~~~
+
+ với 
+
+~~~text
+jvm_memory_committed_bytes{area="metaspace"}
+~~~
+
+; nếu Metaspace > 50% non-heap thì gần như chắc chắn là compile động. Tôi luôn đặt {{MaxMetaspaceSize}} (256-512m là đủ cho hầu hết app) và {{MaxRAMPercentage=60-70}} cho mọi service Java trong container.`,
+  rubric: [
+    'Giải thích OOMKilled do tổng bộ nhớ process (heap committed cộng native) vượt limit 3Gi, không phải heap used; cộng NMT ra khoảng 3.23 GiB lúc 02:50 khớp working set.',
+    'Chỉ ra MaxRAMPercentage=100 (Xmx=3g) bằng limit không chừa chỗ non-heap; Metaspace 1.06 GiB (JasperReports compile Groovy động), Direct/Other ~1.1 GiB (PDF export, có trùng lặp), Thread 88 MiB, Code/GC/Class/Symbol ~300 MiB -> tổng ~3.23 GiB > 3 GiB.',
+    'Xác định NMT Metaspace (1.06 GiB) là compile Groovy động của JasperReports (classes #41214), Direct/Other là PDF export nén; dẫn chứng Metaspace phình nhanh lúc đầu rồi ổn, Direct/Other tăng đều theo tải.',
+    'Liên hệ với Xmx=limit: heap committed 1.5->2.5 GiB, non-heap 1.1->2.1 GiB, tổng committed ~3.23 GiB vượt limit; phân biệt được đây không phải leak (Metaspace ổn định sau compile, Direct tăng theo tải).',
+    'Đề xuất sửa: MaxMetaspaceSize, MaxDirectMemorySize, MaxRAMPercentage=60, giảm threads.max, Xss512k, render PDF streaming (không giữ byte[]); kèm alert working set/limit và NMT baseline/diff trong load test.'
+  ],
+  tags: ['oomkilled', 'kubernetes', 'native-memory', 'nmt', 'container-memory', 'jvm', 'metaspace', 'jasperreports', 'groovy', 'direct-buffer']
 }
 );
