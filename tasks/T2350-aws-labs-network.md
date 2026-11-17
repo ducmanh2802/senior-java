@@ -1,6 +1,6 @@
 # T2350 — 12 thẻ lab AWS thực hành: Network (VPC)
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/aws-labs.js`
 
@@ -25,3 +25,13 @@ Số liệu/giới hạn AWS phải đúng hiện hành; không chắc thì bỏ
 `node --check js/data/aws-labs.js`; script Node nhỏ kiểm: id duy nhất, mọi `ref` có trong tsv, domain id có trong aws-plan.js; `node scripts/validate.js` → OK. Đếm thẻ trước/sau (+12) vào Notes. Không commit. Status: DONE.
 
 ## Notes
+Đã thêm 12 thẻ lab network vào `js/data/aws-labs.js` (id `awslab-network-001` đến `awslab-network-012`). Trước đó file chỉ có header + `push();` rỗng, sau khi thêm có 12 object.
+
+12 chủ đề: VPC/CIDR Planning, Public & Private Subnet Design, NAT Gateway Deep Dive, Route Table & Longest Prefix Match, Security Group vs Network ACL, VPC Endpoint (Gateway vs Interface), AWS PrivateLink, VPC Peering vs Transit Gateway, Site-to-Site VPN & Direct Connect, Route 53 Routing Policies, CloudFront & Global Accelerator, VPC Flow Logs & Network Monitoring.
+
+Kiểm tra:
+- `node --check js/data/aws-labs.js` → OK (cú pháp đúng)
+- 12 ID duy nhất, không trùng
+- Tất cả 44 ref slug đều có trong `docs/ref/labaws-index.tsv`
+- Tất cả domain (sap-d1, sap-d2, sap-d3, dop-d1, dop-d2, dop-d3, dop-d4, dop-d5, dop-d6) đều có trong `aws-plan.js`
+- `node scripts/validate.js` → OK (chỉ lỗi pre-existing ở file khác: quiz-ccao-2.js, q-banking.js)
