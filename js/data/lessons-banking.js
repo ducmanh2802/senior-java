@@ -4005,4 +4005,513 @@ class RiskEngine {
     tags: ['fraud', 'velocity', 'rule engine', 'risk score', 'otp', 'challenge', 'false positive', 'clock', 'banking'],
   },
 
+  {
+    id: 'lesson-banking-014',
+    track: 'banking',
+    order: 14,
+    title: 'Tích hợp với core banking (khái niệm T24/Temenos Transact): timeout, COB và store-and-forward',
+    level: 'senior',
+    minutes: 40,
+    goals: [
+      'Giải thích được vì sao core banking là "nguồn sự thật" về số dư và sổ cái, và kênh số (mobile/internet banking) chỉ nên giữ bản sao/cache',
+      'Mô tả được bức tranh tích hợp (kênh -> gateway -> middleware/ESB -> core) và các khái niệm cần biết khi nói chuyện với team core: CIF/customer, account, arrangement, value date vs booking date, ngày làm việc, COB, OFS/REST ở mức nguyên lý',
+      'Xử lý đúng khi gọi core bị timeout: không retry mù (giao dịch có thể đã ghi sổ), truy vấn trạng thái theo mã tham chiếu duy nhất, idempotency và trạng thái UNKNOWN trong bảng theo dõi',
+      'Thiết kế luồng an toàn quanh cửa sổ COB (Close of Business): store-and-forward, xếp hàng, thông báo khách, xử lý sau COB đúng thứ tự, map mã lỗi core và đối soát cuối ngày',
+    ],
+    body: `**Tóm tắt:** Core banking (hệ thống lõi ngân hàng, phần mềm kế toán trung tâm nơi ghi nhận khách hàng, tài khoản, số dư và sổ cái) là "nguồn sự thật" (source of truth, nơi dữ liệu được coi là đúng cuối cùng) cho mọi con số tiền. Kênh số như mobile/internet banking chỉ là mặt tiền hiển thị và phải coi dữ liệu mình giữ là bản sao/cache. Khi tích hợp, middleware gọi core qua giao diện dịch vụ (ví dụ OFS – Open Financial Service, hay REST ở mức nguyên lý; TAFJ là nền tảng chạy Java của một số core như Temenos Transact, trước đây thường gọi T24) nhưng phải sống chung với ba thực tế: gọi có thể timeout trong khi core đã ghi sổ, core có cửa sổ COB (Close of Business, quy trình chốt sổ cuối ngày làm việc) khi giao dịch bị chặn hoặc xếp hàng, và mọi lệch phải được đối soát. Thiết kế an toàn dùng mã tham chiếu duy nhất (unique reference), trạng thái UNKNOWN, store-and-forward (lưu rồi gửi tiếp) và đối soát kênh với core.
+
+### Core banking là gì và vì sao nó là "nguồn sự thật"?
+
+**Thuật ngữ cần biết (giải thích lần đầu):**
+- **Core banking (hệ thống lõi ngân hàng):** phần mềm kế toán trung tâm của ngân hàng. Nó quản lý hồ sơ khách hàng, tài khoản, sổ cái (ledger, sổ ghi nợ/có kế toán), tính lãi, phí, hạn mức và mọi bút toán làm thay đổi số dư. Ví dụ phổ biến trên thị trường là Temenos Transact (tên cũ T24), Finacle, Flexcube — ở đây ta chỉ nói khái niệm công khai, không đi vào cú pháp hay tên field cụ thể.
+- **Nguồn sự thật (source of truth):** nơi dữ liệu được coi là "đúng" cuối cùng khi các hệ thống có bản sao khác nhau. Nếu app hiển thị 10 triệu nhưng core ghi 9 triệu, core mới là con số phải tin.
+- **Sổ cái (ledger):** sổ kế toán ghi mọi bút toán nợ/có. Số dư tài khoản suy ra từ các bút toán trên sổ cái, nên thay đổi số dư phải đi qua bút toán hợp lệ (thường theo nguyên tắc kế toán kép).
+
+Vì sao core là nguồn sự thật:
+1. **Mọi thay đổi tiền thật đi qua core:** chuyển khoản, nạp, rút, tính lãi, phí đều được core ghi bút toán và cập nhật số dư. Kênh ngoài không được tự "cộng trừ tiền" trong cơ sở dữ liệu của mình rồi coi như xong.
+2. **Kênh chỉ giữ bản sao/cache:** mobile banking thường cache số dư để hiển thị nhanh. Cache (bộ nhớ đệm tạm) có thể cũ hoặc sai sau khi mạng lỗi; vì vậy trước khi thực hiện giao dịch nhạy cảm, kênh phải hỏi core (hoặc chấp nhận kiểm tra lại).
+3. **Quy định và đối soát:** báo cáo kế toán, quản lý rủi ro và đối soát cuối ngày đều dựa trên số liệu core. Nếu kênh tự ghi nhận khác core, ngân hàng sẽ có sai lệch tiền thật.
+
+Ví dụ đời thường: core giống "sổ cái chính" ở quầy kế toán, còn app điện thoại giống tờ giấy ghi nhớ số dư — tờ ghi nhớ tiện tra cứu nhưng khi tranh chấp phải mở sổ cái chính.
+
+### Bức tranh hệ thống: kênh số, middleware và core
+
+Một giao dịch chuyển tiền từ app thường đi qua nhiều lớp. **Thuật ngữ:** API gateway (cổng vào tập trung, nhận request từ kênh và định tuyến/bảo vệ); middleware/ESB (Enterprise Service Bus, lớp trung gian kết nối và chuyển đổi thông điệp giữa các hệ thống); NAPAS (mạng chuyển mạch tài chính quốc gia, kết nối chuyển khoản liên ngân hàng); eKYC (xác minh danh tính điện tử).
+
+~~~seq
+title: Luồng chuyển tiền từ kênh số xuống core và các hệ vệ tinh
+actors: Mobile | Gateway | Middleware | Core
+Mobile -> Gateway: Gửi lệnh chuyển tiền (ref duy nhất)
+Gateway -> Middleware: Xác thực, định tuyến
+Middleware -> Core: Gọi dịch vụ ghi bút toán (OFS/REST)
+Core --> Middleware: Kết quả SUCCESS/FAILED hoặc timeout
+Middleware --> Gateway: Trả trạng thái đã map
+Gateway --> Mobile: Hiển thị kết quả cho khách
+note Mobile..Core: NAPAS/thẻ/eKYC là hệ vệ tinh kết nối qua middleware
+~~~
+
+- **Mobile/Internet banking:** nhận thao tác của khách, tạo mã tham chiếu duy nhất cho mỗi lệnh, hiển thị trạng thái.
+- **API gateway:** xác thực (ai đang gọi), giới hạn tần suất, định tuyến tới dịch vụ đúng.
+- **Middleware/ESB:** chuyển đổi định dạng, điều phối gọi core và hệ vệ tinh (NAPAS cho chuyển khoản liên ngân hàng, hệ thống thẻ, eKYC cho mở tài khoản), ghi log/audit.
+- **Core banking:** kiểm tra nghiệp vụ, ghi sổ cái, trả kết quả. Ở mức nguyên lý, giao diện có thể là OFS (giao thức/thông điệp dịch vụ truyền thống của một số core) hoặc REST API hiện đại — cách gọi cụ thể phụ thuộc từng ngân hàng/cấu hình.
+
+> Lưu ý: "T24 developer" thường là người phát triển/tuỳ biến trực tiếp bên trong core (quy tắc, sản phẩm, quy trình nội bộ). "Java dev tích hợp" làm ở middleware/kênh: gọi core như một hệ thống bên ngoài, xử lý timeout, mapping lỗi, idempotency và đối soát. Hai vai trò nói chuyện với nhau nhưng trách nhiệm và công cụ khác.
+
+### Khái niệm cần biết khi nói chuyện với team core
+
+| Khái niệm | Ý nghĩa (mức nguyên lý) | Vì sao dev tích hợp cần biết |
+|---|---|---|
+| **CIF/Customer (Customer Information File)** | Mã định danh khách hàng trong core | Một khách có thể có nhiều tài khoản; tra cứu/đối soát thường theo CIF |
+| **Account** | Tài khoản cụ thể (tiền gửi, thanh toán…) gắn với CIF | Nơi số dư được ghi; lệnh chuyển cần tài khoản nguồn/đích đúng |
+| **Arrangement (AA)** | Khái niệm sản phẩm/hợp đồng trong một số core thế hệ mới (Arrangement Architecture) | Khi team core nói "arrangement" họ đang nói hợp đồng/sản phẩm, không chỉ số tài khoản thuần |
+| **Value date (ngày giá trị)** | Ngày giao dịch có hiệu lực tính lãi/quyền lợi | Có thể khác ngày khách bấm; ảnh hưởng lãi và báo cáo |
+| **Booking date (ngày hạch toán)** | Ngày bút toán được ghi vào sổ | Dùng cho kế toán/đối soát; thường trùng hoặc sau value date tùy nghiệp vụ |
+| **Ngày làm việc / ngày lễ** | Lịch làm việc của ngân hàng, ảnh hưởng xử lý và value date | Giao dịch cuối tuần/lễ có thể dời ngày giá trị hoặc chờ ngày làm việc |
+| **COB (Close of Business)** | Quy trình chốt sổ cuối ngày: tổng hợp, tính lãi/phí, chuyển trạng thái ngày | Trong/giữa COB một số giao dịch online bị chặn, từ chối tạm thời hoặc xếp hàng |
+| **OFS/REST (nguyên lý)** | Cách kênh/middleware gửi yêu cầu nghiệp vụ vào core và nhận phản hồi | Cần biết core trả mã lỗi/trạng thái nào, timeout nghĩa là gì, và có truy vấn trạng thái hay không |
+
+Lưu ý: tên application, tên field, cấu trúc thông điệp và API cụ thể khác nhau giữa từng ngân hàng/cấu hình core — không đoán, luôn hỏi team core hoặc tài liệu nội bộ.
+
+### Gọi core bị timeout: vì sao KHÔNG retry mù
+
+**Timeout (hết thời gian chờ):** middleware gửi yêu cầu nhưng không nhận được phản hồi trong thời gian giới hạn. Điều nguy hiểm: timeout **không** có nghĩa "core chưa xử lý". Có ba khả năng:
+
+1. Core chưa nhận được yêu cầu (mạng lỗi trước khi tới core) → an toàn hơn để thử lại *nếu* có idempotency.
+2. Core đã nhận và **đang xử lý** → thử lại ngay có thể tạo yêu cầu trùng song song.
+3. Core **đã ghi sổ thành công** nhưng phản hồi bị mất trên đường về (mạng lỗi sau khi core commit) → retry mù sẽ ghi sổ **hai lần**.
+
+Vì vậy nguyên tắc:
+- **Không retry mù (blind retry):** không tự gửi lại lệnh ghi tiền chỉ vì timeout.
+- **Mã tham chiếu duy nhất (unique reference / idempotency key):** mỗi lệnh chuyển tiền có một mã duy nhất do kênh/middleware tạo và giữ nguyên suốt vòng đời. Core/middleware dùng mã này để nhận ra lệnh trùng.
+- **Truy vấn trạng thái theo mã tham chiếu:** khi timeout, gọi thao tác tra cứu (query/inquiry) theo mã tham chiếu để biết lệnh đã SUCCESS, FAILED hay chưa thấy.
+- **Bảng trạng thái UNKNOWN:** nếu tra cứu vẫn không chắc (core chưa phản hồi rõ), lưu giao dịch ở trạng thái {{UNKNOWN}} (chưa kết luận) trong bảng theo dõi, không cộng/trừ tiền lần nữa, và có luồng xử lý lại/đối soát.
+- **Idempotency (tính lũy đẳng):** thực hiện cùng một yêu cầu (cùng mã tham chiếu) nhiều lần cho kết quả như thực hiện một lần — đây là chốt an toàn quan trọng nhất khi tích hợp core.
+
+### Cửa sổ COB: giao dịch bị chặn/xếp hàng và store-and-forward
+
+**COB (Close of Business):** cuối ngày làm việc, core chạy loạt tác vụ chốt sổ (tính lãi, phí, tổng hợp, chuyển ngày). Trong cửa sổ này, nhiều giao dịch online có thể bị từ chối tạm thời, chạy chậm, hoặc chỉ được nhận vào hàng đợi tùy chính sách ngân hàng.
+
+Chiến lược **store-and-forward (lưu rồi gửi tiếp):**
+1. **Nhận biết cửa sổ COB:** dựa trên lịch/cờ trạng thái do team vận hành/core cung cấp (không tự đoán giờ).
+2. **Lưu giao dịch vào hàng đợi bền vững:** ghi vào cơ sở dữ liệu/bảng hàng đợi (không chỉ RAM) kèm mã tham chiếu, thời điểm, payload cần thiết.
+3. **Thông báo người dùng rõ ràng:** ví dụ "Lệnh đã được ghi nhận, sẽ xử lý sau khi hệ thống hoàn tất chốt sổ" — không báo "thành công" khi chưa ghi sổ.
+4. **Sau COB, xả hàng đợi đúng thứ tự:** gửi lần lượt, mỗi giao dịch đúng một lần, tôn trọng thứ tự nếu nghiệp vụ yêu cầu.
+5. **Value date (ngày giá trị):** khi xử lý sau COB, ngày giá trị có thể rơi vào ngày làm việc tiếp theo — phải hiểu và giải thích đúng cho khách/báo cáo.
+
+### Map mã lỗi core → trạng thái cho người dùng + log/audit
+
+Core thường trả mã lỗi kỹ thuật/nghiệp vụ. Middleware cần:
+- **Map sang trạng thái thân thiện:** ví dụ "không đủ số dư", "tài khoản bị phong tỏa", "hệ thống tạm bận, thử lại sau" — không lộ mã nội bộ khó hiểu.
+- **Phân loại:** lỗi nghiệp vụ (khách có thể sửa: sai tài khoản, thiếu tiền) vs lỗi tạm thời/hạ tầng (có thể retry theo chính sách) vs lỗi cần điều tra.
+- **Log/audit (nhật ký kiểm tra):** ghi mã tham chiếu, thời gian, mã lỗi gốc, hệ thống trả về, và hành động đã làm — để truy vết khi khiếu nại. Không log dữ liệu nhạy cảm (mật khẩu, OTP).
+
+### Đối soát kênh với core cuối ngày
+
+**Đối soát (reconciliation):** so khớp danh sách giao dịch kênh ghi nhận với bút toán/số liệu core trong cùng kỳ (thường cuối ngày). Mục tiêu: phát hiện lệch (kênh báo thành công nhưng core không có, hoặc ngược lại, hoặc khác số tiền). Quy trình điển hình: lấy file/báo cáo từ core và log kênh → so theo mã tham chiếu → phân loại khớp/lệch → xử lý lệch (tra soát, bù trừ, điều chỉnh theo quy trình). Đối soát là lưới an toàn cuối cùng khi timeout/UNKNOWN xảy ra.
+
+### Ví dụ đời thực
+
+**Triệu chứng:** 18:45, trong cửa sổ COB, khách báo app hiện "đang xử lý" rất lâu rồi báo lỗi mạng; một số khách thử bấm lại. Sáng hôm sau, bộ phận vận hành thấy 12 giao dịch kênh ở trạng thái UNKNOWN, trong đó 7 giao dịch core đã ghi sổ, 5 giao dịch core chưa nhận.
+
+**Điều tra:** tra log middleware theo mã tham chiếu, thấy các request bị timeout đúng khung COB. Truy vấn trạng thái trên core (qua kênh tra cứu được phép) cho thấy 7 mã có bút toán, 5 mã không tồn tại. Một vài khách đã bấm lại và (do thiếu idempotency ở bước đầu) tạo mã tham chiếu mới — may mắn được chặn ở tầng kiểm tra hạn mức.
+
+**Xử lý:** (1) với 7 mã đã ghi sổ: cập nhật bảng theo dõi thành SUCCESS, gửi thông báo thành công muộn cho khách; (2) với 5 mã chưa ghi sổ: đánh dấu FAILED/cho phép thực hiện lại với mã tham chiếu mới theo quy trình; (3) bật store-and-forward trong cửa sổ COB và hiển thị thông báo "đã ghi nhận, xử lý sau COB".
+
+**Kết quả đo được:** sau 2 tuần áp dụng idempotency key + bảng UNKNOWN + store-and-forward, số giao dịch UNKNOWN giảm từ ~40/ngày xuống < 3/ngày, và không còn trường hợp ghi sổ trùng do retry mù.
+
+### Liên hệ phỏng vấn
+
+Khi trả lời, hãy phân biệt rõ vai trò: **Java dev tích hợp** (middleware/kênh) tập trung vào gọi dịch vụ core an toàn (idempotency, timeout → query trạng thái, UNKNOWN), store-and-forward khi COB, map lỗi, logging/audit và đối soát; **T24/Temenos developer** (ở mức khái niệm) làm sâu bên trong core như cấu hình sản phẩm/quy trình. Câu trả lời tốt nêu được: (1) core là nguồn sự thật, kênh là bản sao; (2) timeout không đồng nghĩa thất bại; (3) không retry mù giao dịch ghi tiền; (4) COB cần store-and-forward và value date; (5) đối soát cuối ngày là lưới an toàn.
+
+> Senior tip: Trong production, mọi lệnh ghi tiền đi qua core phải có mã tham chiếu duy nhất sinh từ sớm (kênh/gateway), được lưu bền vững trước khi gọi core, và mọi nhánh timeout đều đi qua bước tra cứu trạng thái trước khi quyết định thử lại. Hãy coi trạng thái UNKNOWN là trạng thái hợp lệ cần quy trình xử lý, không phải ngoại lệ bỏ qua.
+`,
+    exercises: [
+      {
+        title: 'CoreTransferService: timeout không retry mù, tra cứu theo ref và idempotent',
+        prompt: `Mô phỏng tích hợp gọi core banking (chạy Java thuần, JDK 17, không class public ngoài Main):
+
+- enum {{CoreResult}} với các giá trị {{SUCCESS}}, {{FAILED}}, {{TIMEOUT}}
+- interface {{CoreBankingClient}} với {{CoreResult post(String ref, long amount)}} và {{CoreResult query(String ref)}}
+  - {{post}}: gửi lệnh chuyển tiền với mã tham chiếu {{ref}}. Có thể trả {{TIMEOUT}} dù thực tế core đã ghi sổ.
+  - {{query}}: tra cứu trạng thái theo {{ref}}; trả {{SUCCESS}} nếu đã ghi sổ, {{FAILED}} nếu chắc chắn chưa/không ghi, hoặc {{TIMEOUT}} nếu vẫn không xác định.
+- enum {{TxStatus}} với các giá trị {{SUCCESS}}, {{FAILED}}, {{UNKNOWN}}
+- {{class CoreTransferService}} có constructor nhận {{CoreBankingClient client}} và các method:
+  - {{TxStatus transfer(String ref, long amount)}}: gọi {{post(ref, amount)}}. Nếu {{SUCCESS}} → trả {{SUCCESS}}. Nếu {{FAILED}} → {{FAILED}}. Nếu {{TIMEOUT}} → phải tra cứu bằng {{query(ref)}}: nếu query {{SUCCESS}} → {{SUCCESS}}; nếu query {{FAILED}} → {{FAILED}}; nếu query {{TIMEOUT}} → lưu/trả {{UNKNOWN}}. **Không** được gọi {{post}} lần thứ hai cho cùng một {{ref}}.
+  - {{TxStatus statusOf(String ref)}}: trả trạng thái đã ghi nhận của {{ref}} (sau transfer hoặc sau resolve).
+  - {{TxStatus resolve(String ref)}}: nếu đang {{UNKNOWN}} thì gọi {{query(ref)}} một lần để cập nhật ({{SUCCESS}}/{{FAILED}} nếu xác định, vẫn {{UNKNOWN}} nếu query timeout); nếu đã {{SUCCESS}} hoặc {{FAILED}} thì giữ nguyên.
+
+Yêu cầu: idempotent theo {{ref}} — gọi {{transfer}} lặp lại với cùng {{ref}} phải trả về trạng thái đã biết mà không gọi {{post}} thêm. Logic phải xác định (deterministic).`,
+        starter: `import java.util.*;
+
+enum CoreResult { SUCCESS, FAILED, TIMEOUT }
+
+interface CoreBankingClient {
+    CoreResult post(String ref, long amount);
+    CoreResult query(String ref);
+}
+
+enum TxStatus { SUCCESS, FAILED, UNKNOWN }
+
+class CoreTransferService {
+    final CoreBankingClient client;
+    // TODO: lưu trạng thái theo ref để idempotent và theo dõi UNKNOWN
+
+    CoreTransferService(CoreBankingClient client) {
+        this.client = client;
+    }
+
+    TxStatus transfer(String ref, long amount) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    TxStatus statusOf(String ref) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    TxStatus resolve(String ref) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Object expected, Object actual) {
+        total++;
+        if (java.util.Objects.equals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+    }
+
+    static class ScriptClient implements CoreBankingClient {
+        final java.util.Map<String, CoreResult> postRes = new java.util.HashMap<>();
+        final java.util.Map<String, CoreResult> queryRes = new java.util.HashMap<>();
+        final java.util.Map<String, Integer> postCalls = new java.util.HashMap<>();
+        public CoreResult post(String ref, long amount) {
+            postCalls.put(ref, postCalls.getOrDefault(ref, 0) + 1);
+            CoreResult r = postRes.get(ref);
+            return r == null ? CoreResult.FAILED : r;
+        }
+        public CoreResult query(String ref) {
+            CoreResult r = queryRes.get(ref);
+            return r == null ? CoreResult.FAILED : r;
+        }
+        int posts(String ref) { return postCalls.getOrDefault(ref, 0); }
+    }
+
+    public static void main(String[] args) {
+        // 1) post SUCCESS -> SUCCESS
+        ScriptClient c1 = new ScriptClient();
+        c1.postRes.put("R1", CoreResult.SUCCESS);
+        CoreTransferService s1 = new CoreTransferService(c1);
+        check("post_success", TxStatus.SUCCESS, s1.transfer("R1", 1000));
+        check("post_success_status", TxStatus.SUCCESS, s1.statusOf("R1"));
+
+        // 2) post TIMEOUT nhưng core đã ghi sổ -> query SUCCESS, không post lần 2
+        ScriptClient c2 = new ScriptClient();
+        c2.postRes.put("R2", CoreResult.TIMEOUT);
+        c2.queryRes.put("R2", CoreResult.SUCCESS);
+        CoreTransferService s2 = new CoreTransferService(c2);
+        check("timeout_but_posted", TxStatus.SUCCESS, s2.transfer("R2", 2000));
+        check("timeout_but_posted_no_second_post", 1, c2.posts("R2"));
+
+        // 3) post TIMEOUT và query cũng TIMEOUT -> UNKNOWN, resolve sau ra SUCCESS
+        ScriptClient c3 = new ScriptClient();
+        c3.postRes.put("R3", CoreResult.TIMEOUT);
+        c3.queryRes.put("R3", CoreResult.TIMEOUT);
+        CoreTransferService s3 = new CoreTransferService(c3);
+        check("unknown_state", TxStatus.UNKNOWN, s3.transfer("R3", 3000));
+        check("unknown_statusOf", TxStatus.UNKNOWN, s3.statusOf("R3"));
+        c3.queryRes.put("R3", CoreResult.SUCCESS);
+        check("resolve_to_success", TxStatus.SUCCESS, s3.resolve("R3"));
+        check("status_after_resolve", TxStatus.SUCCESS, s3.statusOf("R3"));
+
+        // 4) idempotent: gọi lại cùng ref không gọi post thêm
+        ScriptClient c4 = new ScriptClient();
+        c4.postRes.put("R4", CoreResult.SUCCESS);
+        CoreTransferService s4 = new CoreTransferService(c4);
+        s4.transfer("R4", 4000);
+        check("idempotent_return", TxStatus.SUCCESS, s4.transfer("R4", 4000));
+        check("idempotent_single_post", 1, c4.posts("R4"));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.*;
+
+enum CoreResult { SUCCESS, FAILED, TIMEOUT }
+
+interface CoreBankingClient {
+    CoreResult post(String ref, long amount);
+    CoreResult query(String ref);
+}
+
+enum TxStatus { SUCCESS, FAILED, UNKNOWN }
+
+class CoreTransferService {
+    final CoreBankingClient client;
+    // Lưu trạng thái theo mã tham chiếu để idempotent và theo dõi UNKNOWN
+    final Map<String, TxStatus> states = new HashMap<>();
+
+    CoreTransferService(CoreBankingClient client) {
+        this.client = client;
+    }
+
+    TxStatus transfer(String ref, long amount) {
+        // Idempotent: nếu đã có kết quả (kể cả UNKNOWN) thì không post lại
+        TxStatus known = states.get(ref);
+        if (known != null) {
+            return known;
+        }
+        CoreResult r = client.post(ref, amount);
+        if (r == CoreResult.SUCCESS) {
+            states.put(ref, TxStatus.SUCCESS);
+            return TxStatus.SUCCESS;
+        }
+        if (r == CoreResult.FAILED) {
+            states.put(ref, TxStatus.FAILED);
+            return TxStatus.FAILED;
+        }
+        // TIMEOUT: không retry mù, phải tra cứu theo ref
+        CoreResult q = client.query(ref);
+        TxStatus st = mapQuery(q);
+        states.put(ref, st);
+        return st;
+    }
+
+    private TxStatus mapQuery(CoreResult q) {
+        if (q == CoreResult.SUCCESS) return TxStatus.SUCCESS;
+        if (q == CoreResult.FAILED) return TxStatus.FAILED;
+        return TxStatus.UNKNOWN; // vẫn không chắc -> để UNKNOWN, chờ resolve/đối soát
+    }
+
+    TxStatus statusOf(String ref) {
+        TxStatus st = states.get(ref);
+        return st == null ? TxStatus.FAILED : st;
+    }
+
+    TxStatus resolve(String ref) {
+        TxStatus st = states.get(ref);
+        if (st == null) return TxStatus.FAILED;
+        if (st != TxStatus.UNKNOWN) return st; // đã kết luận thì giữ nguyên
+        CoreResult q = client.query(ref);
+        TxStatus next = mapQuery(q);
+        states.put(ref, next);
+        return next;
+    }
+}`,
+        hints: [
+          'Giữ một {{Map<String, TxStatus>}} theo {{ref}}. Nếu {{states}} đã có {{ref}} thì {{transfer}} phải trả ngay trạng thái đó và tuyệt đối không gọi {{post}} lần nữa (idempotent).',
+          'Khi {{post}} trả {{TIMEOUT}}, đừng đoán: gọi {{query(ref)}}. Map {{query}}: {{SUCCESS}}→{{SUCCESS}}, {{FAILED}}→{{FAILED}}, {{TIMEOUT}}→{{UNKNOWN}} và lưu lại.',
+          '{{resolve}} chỉ có ý nghĩa khi đang {{UNKNOWN}}: gọi {{query}} một lần để cập nhật; nếu đã {{SUCCESS}}/{{FAILED}} thì giữ nguyên. {{statusOf}} trả trạng thái đã lưu.',
+        ],
+        explain: `Điểm mấu chốt: timeout của {{post}} không nói lên core đã ghi sổ hay chưa, nên nhánh timeout phải đi qua {{query(ref)}} thay vì gọi {{post}} lần hai. Nếu {{query}} cũng timeout ta lưu {{UNKNOWN}} (trạng thái trung gian hợp lệ, cần tra soát/đối soát) thay vì tự kết luận. Lưu trạng thái theo {{ref}} giúp {{transfer}} idempotent: cùng mã tham chiếu luôn cho cùng kết quả và không tạo bút toán trùng. Trong hệ thống thật, bảng trạng thái này sẽ bền vững (DB) và có luồng đối soát/resolve định kỳ.`,
+      },
+      {
+        title: 'CobGate: store-and-forward trong cửa sổ COB, xả hàng đợi đúng thứ tự, mỗi lệnh một lần',
+        prompt: `Mô phỏng cửa sổ COB (Close of Business) và cơ chế store-and-forward (JDK 17, Java thuần, deterministic):
+
+- interface {{CobWindow}} với {{boolean isOpen(long nowMillis)}} trả {{true}} nếu thời điểm {{nowMillis}} đang nằm trong cửa sổ COB (core chặn/xếp hàng giao dịch online).
+- interface {{CoreSender}} với {{void send(String ref)}} gửi lệnh sang core (giả lập). Trong test sẽ đếm số lần gửi theo {{ref}}.
+- {{class CobGate}} có constructor nhận {{CobWindow window}} và {{CoreSender sender}} và:
+  - {{void submit(String ref, long nowMillis)}}: nếu đang trong COB → đưa {{ref}} vào hàng đợi (store). Nếu không trong COB → gửi ngay bằng {{sender.send(ref)}} (và trước đó phải xả hết hàng đợi đang có theo đúng thứ tự, rồi mới gửi {{ref}} này), để không bỏ sót lệnh đã xếp hàng.
+  - {{int drain(long nowMillis)}}: nếu **không** trong COB thì xả toàn bộ hàng đợi theo đúng thứ tự đã nhận, mỗi {{ref}} gọi {{send}} đúng một lần, trả về số lệnh đã xả; nếu đang trong COB thì không xả và trả 0.
+  - {{int queued()}}: số lệnh đang chờ trong hàng đợi.
+
+Yêu cầu: không gửi lệnh nào trong khi {{isOpen}} là true; khi hết COB, các lệnh xếp hàng được gửi đúng thứ tự FIFO và mỗi lệnh đúng một lần. Không dùng thời gian thật, chỉ dùng {{nowMillis}} truyền vào và {{CobWindow}} giả.`,
+        starter: `import java.util.*;
+
+interface CobWindow {
+    boolean isOpen(long nowMillis);
+}
+
+interface CoreSender {
+    void send(String ref);
+}
+
+class CobGate {
+    final CobWindow window;
+    final CoreSender sender;
+    // TODO: hàng đợi FIFO (store-and-forward)
+
+    CobGate(CobWindow window, CoreSender sender) {
+        this.window = window;
+        this.sender = sender;
+    }
+
+    void submit(String ref, long nowMillis) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int drain(long nowMillis) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int queued() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Object expected, Object actual) {
+        total++;
+        if (java.util.Objects.equals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+    }
+
+    static class FixedWindow implements CobWindow {
+        final long start, end; // [start, end) là cửa sổ COB
+        FixedWindow(long start, long end) { this.start = start; this.end = end; }
+        public boolean isOpen(long nowMillis) { return nowMillis >= start && nowMillis < end; }
+    }
+
+    static class RecordingSender implements CoreSender {
+        final java.util.List<String> sent = new java.util.ArrayList<>();
+        final java.util.Map<String, Integer> counts = new java.util.HashMap<>();
+        public void send(String ref) {
+            sent.add(ref);
+            counts.put(ref, counts.getOrDefault(ref, 0) + 1);
+        }
+        int count(String ref) { return counts.getOrDefault(ref, 0); }
+    }
+
+    public static void main(String[] args) {
+        // COB mở trong [100, 200)
+        FixedWindow w = new FixedWindow(100, 200);
+
+        // 1) Ngoài COB: gửi ngay
+        RecordingSender s1 = new RecordingSender();
+        CobGate g1 = new CobGate(w, s1);
+        g1.submit("A", 50);
+        check("send_immediately", 1, s1.count("A"));
+        check("queue_empty_after_immediate", 0, g1.queued());
+
+        // 2) Trong COB: xếp hàng, không gửi
+        RecordingSender s2 = new RecordingSender();
+        CobGate g2 = new CobGate(w, s2);
+        g2.submit("A", 120);
+        g2.submit("B", 150);
+        check("queued_during_cob", 2, g2.queued());
+        check("not_sent_during_cob", 0, s2.sent.size());
+
+        // 3) Sau COB: drain xả đúng thứ tự FIFO, mỗi lệnh 1 lần
+        int drained = g2.drain(250);
+        check("drained_count", 2, drained);
+        check("fifo_order", java.util.Arrays.asList("A", "B"), s2.sent);
+        check("each_once_A", 1, s2.count("A"));
+        check("each_once_B", 1, s2.count("B"));
+        check("queue_empty_after_drain", 0, g2.queued());
+
+        // 4) Submit sau COB khi còn hàng đợi: xả hàng đợi trước rồi gửi ref mới
+        RecordingSender s3 = new RecordingSender();
+        CobGate g3 = new CobGate(w, s3);
+        g3.submit("X", 130); // vào hàng đợi (trong COB)
+        g3.submit("Y", 140);
+        g3.submit("Z", 250); // ngoài COB: phải xả X,Y trước rồi gửi Z
+        check("drain_then_send_new", java.util.Arrays.asList("X", "Y", "Z"), s3.sent);
+        check("no_duplicate_X", 1, s3.count("X"));
+        check("no_duplicate_Y", 1, s3.count("Y"));
+        check("no_duplicate_Z", 1, s3.count("Z"));
+        check("queue_empty_final", 0, g3.queued());
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.*;
+
+interface CobWindow {
+    boolean isOpen(long nowMillis);
+}
+
+interface CoreSender {
+    void send(String ref);
+}
+
+class CobGate {
+    final CobWindow window;
+    final CoreSender sender;
+    // Hàng đợi FIFO lưu các lệnh cần gửi sau COB (store-and-forward)
+    final Deque<String> queue = new ArrayDeque<>();
+
+    CobGate(CobWindow window, CoreSender sender) {
+        this.window = window;
+        this.sender = sender;
+    }
+
+    void submit(String ref, long nowMillis) {
+        if (window.isOpen(nowMillis)) {
+            // Trong COB: chỉ lưu, không gửi
+            queue.addLast(ref);
+            return;
+        }
+        // Ngoài COB: xả hàng đợi cũ trước để giữ đúng thứ tự, rồi gửi lệnh hiện tại
+        drainAll();
+        sender.send(ref);
+    }
+
+    int drain(long nowMillis) {
+        if (window.isOpen(nowMillis)) {
+            return 0; // vẫn trong COB, không xả
+        }
+        return drainAll();
+    }
+
+    private int drainAll() {
+        int count = 0;
+        while (!queue.isEmpty()) {
+            String ref = queue.removeFirst();
+            sender.send(ref); // mỗi lệnh đúng một lần
+            count++;
+        }
+        return count;
+    }
+
+    int queued() {
+        return queue.size();
+    }
+}`,
+        hints: [
+          'Dùng một hàng đợi FIFO ({{ArrayDeque}} với {{addLast}}/{{removeFirst}}) để giữ đúng thứ tự nhận lệnh. Khi {{isOpen(nowMillis)}} là true, {{submit}} chỉ đưa vào hàng đợi.',
+          'Khi ngoài COB, cần gửi những lệnh đã xếp hàng trước: {{drain}} xả hết nếu không trong COB; {{submit}} ngoài COB nên xả hàng đợi trước rồi mới {{send(ref)}} hiện tại để không đảo thứ tự.',
+          'Mỗi phần tử chỉ được {{send}} một lần: xả bằng cách {{removeFirst}} khỏi hàng đợi rồi gửi, không duyệt lặp lại. {{queued()}} trả về kích thước hàng đợi hiện tại.',
+        ],
+        explain: `Store-and-forward nghĩa là khi core không nhận giao dịch online (cửa sổ COB), ta lưu lệnh vào hàng đợi bền vững thay vì báo thành công giả. Ở đây {{CobWindow}} quyết định có đang trong COB hay không (dựa trên {{nowMillis}} truyền vào nên test xác định). Khi hết COB, {{drain}}/{{submit}} xả FIFO và mỗi {{ref}} chỉ gửi một lần, tránh đảo thứ tự và gửi trùng. Thực tế hàng đợi phải bền vững (DB/message queue), có mã tham chiếu duy nhất và cơ chế chống gửi trùng khi tiến trình crash giữa chừng.`,
+      },
+    ],
+    check: [
+      {
+        q: 'Middleware gọi core chuyển tiền, nhận {{TIMEOUT}} (hết thời gian chờ). Hành động an toàn nhất là gì?',
+        options: [
+          'Gọi lại lệnh chuyển tiền ngay vài lần cho đến khi nhận được SUCCESS',
+          'Coi như FAILED và báo khách thử lại ngay',
+          'Giữ mã tham chiếu duy nhất, truy vấn (query) trạng thái theo mã đó; nếu chưa kết luận được thì lưu trạng thái UNKNOWN và không ghi sổ lần hai',
+          'Tự trừ tiền trong cơ sở dữ liệu của kênh để khách thấy số dư giảm',
+        ],
+        answer: 2,
+        explain: 'Đúng (C): timeout không cho biết core đã ghi sổ hay chưa — core có thể đã commit nhưng phản hồi mất. Phải tra cứu theo mã tham chiếu duy nhất và dùng trạng thái UNKNOWN khi chưa chắc, chờ resolve/đối soát; tuyệt đối không gửi lại lệnh ghi tiền mù. Sai (A): retry mù có thể tạo bút toán trùng nếu core đã xử lý. Sai (B): coi như FAILED khi core có thể đã SUCCESS sẽ khiến khách thử lại và có nguy cơ trùng hoặc lệch số dư. Sai (D): kênh không phải nguồn sự thật, tự trừ tiền sẽ lệch với core và gây sai sổ cái.',
+      },
+      {
+        q: 'Trong cửa sổ COB (Close of Business), core tạm thời không xử lý giao dịch online. Cách xử lý đúng ở kênh/middleware là gì?',
+        options: [
+          'Vẫn gửi thẳng vào core và hy vọng core tự xếp hàng',
+          'Báo khách "chuyển tiền thành công" để trải nghiệm tốt, rồi gửi sau',
+          'Store-and-forward: lưu lệnh vào hàng đợi bền vững, thông báo đã ghi nhận và sẽ xử lý sau COB, rồi xả hàng đợi đúng thứ tự khi hết COB (mỗi lệnh một lần, chú ý value date)',
+          'Xóa lệnh của khách vì hệ thống đang bận',
+        ],
+        answer: 2,
+        explain: 'Đúng (C): store-and-forward giữ lệnh an toàn trong hàng đợi bền vững, thông báo trung thực cho khách, và xử lý sau COB đúng thứ tự/một lần; cần hiểu value date có thể là ngày làm việc tiếp theo. Sai (A): gửi thẳng khi core chặn có thể lỗi/timeout không kiểm soát và không đảm bảo được xếp hàng đúng. Sai (B): báo thành công khi chưa ghi sổ là sai sự thật và rất nguy hiểm nếu sau đó gửi thất bại. Sai (D): xóa lệnh làm mất yêu cầu hợp lệ của khách.',
+      },
+      {
+        q: 'Phát biểu nào đúng về vai trò "nguồn sự thật" (source of truth) và đối soát?',
+        options: [
+          'Mobile banking giữ số dư chính xác nhất vì gần khách hàng nhất',
+          'Core banking là nguồn sự thật về số dư/sổ cái; kênh chỉ là bản sao/cache và phải đối soát với core cuối ngày để phát hiện lệch',
+          'Nếu tổng tiền cuối ngày khớp thì không cần đối soát từng giao dịch',
+          'Đối soát chỉ cần làm khi có khiếu nại của khách',
+        ],
+        answer: 1,
+        explain: 'Đúng (B): core ghi sổ cái và là nguồn sự thật; kênh có thể hiển thị cache nên phải đối soát định kỳ theo mã tham chiếu để phát hiện lệch (thiếu/thừa/khác số tiền). Sai (A): kênh chỉ là bản sao, có thể cũ hoặc sai khi lỗi mạng/cache. Sai (C): tổng khớp vẫn có thể che sai lệch bù trừ, nên cần đối soát cả ở mức từng giao dịch/tài khoản. Sai (D): đối soát là lưới an toàn chủ động hằng ngày, không phải chỉ phản ứng khi có khiếu nại.',
+      },
+    ],
+    related: ['banking-001', 'banking-012', 'banking-009'],
+    tags: ['core banking', 'T24', 'Temenos', 'integration', 'timeout', 'idempotency', 'UNKNOWN', 'COB', 'store-and-forward', 'reconciliation', 'value date', 'booking date'],
+  }
+
 );

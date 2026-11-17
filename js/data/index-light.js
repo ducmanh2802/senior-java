@@ -2593,6 +2593,7 @@ window.DATA_INDEX = {
     {"id":"lesson-banking-010","track":"banking","order":10,"title":"Thanh toán QR và cổng thanh toán: redirect, IPN/callback, chữ ký HMAC, callback trùng và đối soát","level":"senior","minutes":40},
     {"id":"lesson-banking-012","track":"banking","order":12,"title":"eKYC va mo tai khoan online: cac buoc, trang thai, retry, kiem tra AML","level":"senior","minutes":40},
     {"id":"lesson-banking-013","track":"banking","order":13,"title":"Chống gian lận realtime: rule engine, velocity check, chấm điểm rủi ro và quyết định chặn/OTP/cho qua","level":"senior","minutes":40},
+    {"id":"lesson-banking-014","track":"banking","order":14,"title":"Tích hợp với core banking (khái niệm T24/Temenos Transact): timeout, COB và store-and-forward","level":"senior","minutes":40},
     {"id":"lesson-autotest-001","track":"autotest","order":1,"title":"Automation test là gì, kim tự tháp test và kỹ thuật thiết kế ca kiểm thử","level":"mid","minutes":30},
     {"id":"lesson-autotest-002","track":"autotest","order":2,"title":"Locator: id, CSS, XPath, data-testid — và vì sao locator vỡ","level":"mid","minutes":30},
     {"id":"lesson-autotest-003","track":"autotest","order":3,"title":"Wait: implicit, explicit, fluent và auto-wait của Playwright","level":"mid","minutes":35},
