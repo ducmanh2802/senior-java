@@ -1911,7 +1911,7 @@ pgjdbc mặc định {{prepareThreshold=5}}: 4 lần đầu một PreparedStatem
     'Lazy loading trong stream map: mỗi p.getCategory() kích hoạt một câu SELECT by id.',
     'Giải pháp: fetch join, @EntityGraph, @BatchSize, hoặc DTO projection.',
   ],
-  answer: `**Tóm tắt:** Đây là N+1 do lazy loading: danh sách 50 sản phẩm được lấy bằng 1 câu, rồi với mỗi sản phẩm lại gọi {{p.getCategory().getName()}} trong stream map, kích hoạt 50 câu SELECT category by id. 30.000 request/giờ × 50 = 1.5M câu thêm, khớp với 2.1M calls/giờ. Không câu nào chậm (0.2 ms) nhưng tổng thời gian DB tăng và CPU cao.
+  answer: `**Tóm tắt:** Đây là N+1 do lazy loading: danh sách 50 sản phẩm được lấy bằng 1 câu, rồi với mỗi sản phẩm lại gọi {{p.getCategory().getName()}} trong stream map, kích hoạt 50 câu SELECT category by id → 51 câu SQL cho một request (1 + 50). Với 30.000 request/giờ, chỉ phần N+1 đã là 1,5 triệu câu thêm/giờ; con số 2,1 triệu calls/giờ trong pg_stat_statements còn bao gồm cả các request khác (chi tiết endpoint, tìm kiếm...) — chênh lệch 1,5M vs 2,1M là bằng chứng định lượng: traffic thực chỉ ~30k request/giờ nhưng một digest SELECT category WHERE id=$1 đã chạy 2,1 triệu lần. Không câu nào chậm (0.2 ms) nhưng tổng thời gian DB tăng và CPU cao.
 
 ### Nguyên nhân gốc
 Entity {{Product}} có {{@ManyToOne(fetch = FetchType.LAZY) private Category category}}. Service map sang DTO và truy cập {{p.getCategory().getName()}} bên trong stream → Hibernate lazy-load Category cho từng product. OSIV giữ session mở nên lazy load chạy được trong controller.

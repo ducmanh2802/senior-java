@@ -1,6 +1,6 @@
 # T2285 — Rà soát chất lượng các bài lab SQL trong labs-sql.js
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/labs-sql.js`
 After: T2224
