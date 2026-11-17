@@ -12107,4 +12107,117 @@ Service giữ phiên đăng nhập, heap 2,4 GB, sau GC tăng 400 MB mỗi 2 gi�
     { type: 'doc', title: 'Oracle: Troubleshooting Memory Leaks', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html' }
   ]
 }
+,{
+  id: 'concurrency-079',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Trong matching engine giao dịch, vì sao người ta thường dùng single-thread với ring buffer thay vì nhiều thread lock?',
+  a: `**Tóm tắt:** Một thread duy nhất xử lý lệnh theo thứ tự FIFO, không lock, không context switch, cache CPU nóng liên tục; LMAX Disruptor dùng ring buffer pre-allocated để đạt hàng triệu lệnh/giây với độ trễ microsecond.
+
+### Cơ chế
+Matching engine là trái tim của sàn: nhận lệnh, khớp với lệnh đối ứng, cập nhật order book, phát sự kiện. Nếu nhiều thread cùng sửa order book phải lock → contention, cache invalidation, jitter. Single-thread loại bỏ mọi tranh chấp: một thread đọc từ ring buffer, xử lý, ghi kết quả. CPU cache L1/L2 giữ hot data, branch predictor học pattern.
+
+Ring buffer (Disruptor): mảng cố định kích thước 2^N, producer ghi vào slot theo sequence, consumer đọc theo sequence. Không allocation mới trong hot path; barrier theo kiểu sequence (CAS trên counter) thay vì lock.
+
+### Ví dụ đời thực
+Sàn forex xử lý 200k tick/s; p99 latency 50µs với single-thread + Disruptor. Khi chuyển sang 8 thread với lock, p99 tăng lên 2ms do contention và GC.
+
+### Trả lời mẫu khi phỏng vấn
+"Matching engine thường single-thread vì determinism và latency: một thread không lock, cache nóng, xử lý lệnh theo thứ tự đến. Dùng Disruptor ring buffer pre-allocated để producer/consumer không allocation, đạt hàng triệu ops/s. Nhiều thread chỉ scale throughput nhưng tăng jitter; với trading, latency p99 quan trọng hơn throughput thô."
+
+> Senior tip: Nếu cần scale, scale bằng sharding theo symbol (mỗi symbol một thread/core), không phải lock chung.`
+}
+,
+{
+  id: 'concurrency-080',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Làm thế nào để giảm GC pause trong hot path của hệ thống giao dịch Java?',
+  a: `**Tóm tắt:** Hot path phải allocation-free: object pre-allocated trong ring buffer, primitive collections, reuse buffer; chọn ZGC/Generational ZGC với pause < 1ms; warm-up JIT trước khi nhận traffic.
+
+### Cơ chế
+Mỗi allocation mới trong hot path → GC phải dọn → pause → jitter latency. Giải pháp: pre-allocate object pool, reuse mutable object, dùng primitive array thay vì ArrayList<Integer>, tránh boxing. GC pause giảm bằng ZGC (pause < 1ms, concurrent) hoặc Generational ZGC (JDK 21). Warm-up: chạy traffic giả để JIT compile hot method trước khi go-live.
+
+### Ví dụ đời thực
+Hệ thống tick processing: trước tối ưu allocation 2KB/tick → GC pause 5ms mỗi giây. Sau allocation-free: 0 allocation trong hot path, GC pause 0.3ms, p99 latency từ 8ms xuống 0.5ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Hot path trading phải allocation-free: pre-allocate object trong ring buffer, reuse, primitive collections. Chọn ZGC/Generational ZGC để pause < 1ms. Warm-up JIT bằng traffic giả trước go-live. Đo bằng JFR và GC log, không đoán."
+
+> Senior tip: Không tin vào max-pause setting; đo thực tế bằng HdrHistogram và JFR GC events.`
+}
+,
+{
+  id: 'concurrency-081',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Xử lý tick data realtime: backpressure và conflation là gì, khi nào dùng?',
+  a: `**Tóm tắt:** Backpressure ngăn producer overwhelm consumer (drop/slow); conflation gộp các tick cũ chỉ giữ mới nhất cho mỗi symbol, giảm tải cho UI/strategy.
+
+### Cơ chế
+Tick data đến burst cao. Consumer chậm → queue đầy → OOM hoặc lag. Backpressure: producer bị block hoặc drop khi queue đầy. Conflation: với mỗi symbol chỉ giữ tick mới nhất, discard intermediate → consumer xử lý latest price. Dùng Disruptor với EventHandler và sequence barrier; hoặc conflation buffer per symbol.
+
+### Ví dụ đời thực
+Market data 50k tick/s cho 200 symbol; strategy chỉ cần giá mới nhất. Conflation giảm xuống 200 update/s, latency ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+"Backpressure xử lý khi consumer chậm hơn producer: block hoặc drop. Conflation gộp tick per symbol, giữ mới nhất, phù hợp market data. Kết hợp: conflation cho UI/strategy, backpressure cho persistence."
+
+> Senior tip: Conflation làm mất tick history; nếu cần audit, lưu raw stream riêng.`
+},
+{
+  id: 'concurrency-082',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Lock-free với Atomic/CAS và false sharing (@Contended) hoạt động thế nào?',
+  a: `**Tóm tắt:** CAS (Compare-And-Swap) cập nhật atomic mà không lock; false sharing xảy ra khi hai thread sửa field khác nhau trên cùng cache line, gây invalidation; @Contended padding cách ly cache line.
+
+### Cơ chế
+AtomicInteger/LongAdder dùng CAS hardware instruction: đọc expected, so sánh, ghi nếu khớp, retry nếu không. Lock-free, không block thread. False sharing: cache line 64 byte chứa nhiều field; thread A sửa field x, thread B sửa field y cùng line → cache invalidate liên tục. @Contended (JDK 8+) thêm padding để mỗi field ở cache line riêng. Chỉ nêu nguyên lý; không lạm dụng vì tốn memory.
+
+### Ví dụ đời thực
+Counter per-thread trong Disruptor: false sharing làm throughput giảm 3x; thêm @Contended khôi phục.
+
+### Trả lời mẫu khi phỏng vấn
+"CAS là lock-free primitive hardware-supported. False sharing là cache line contention giữa thread khác field. @Contended padding cách ly. Dùng khi profiling cho thấy contention; không premature."
+
+> Senior tip: LongAdder thường tốt hơn AtomicInteger cho counter contention cao.`
+},
+{
+  id: 'concurrency-083',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Đo latency p99/p999 đúng cách: coordinated omission và HdrHistogram nguyên lý?',
+  a: `**Tóm tắt:** Coordinated omission là client chờ response trước khi gửi request tiếp, làm histogram bỏ sót delay thực; HdrHistogram ghi latency vào bucket theo significance digits, hỗ trợ corrected latency.
+
+### Cơ chế
+Naive benchmark: gửi request, chờ response, đo thời gian → khi server chậm, client cũng chậm gửi → số liệu under-report tail. Coordinated omission: phải đo theo thời gian thực (scheduled send), ghi latency thực tế kể cả khi request bị delay. HdrHistogram: histogram compact với configurable precision (3 significant digits), hỗ trợ recorded vs corrected latency, xuất percentile chính xác.
+
+### Ví dụ đời thực
+Latency test 10k req/s: naive p99 5ms; corrected p99 40ms. HdrHistogram ghi cả hai.
+
+### Trả lời mẫu khi phỏng vấn
+"Coordinated omission under-reports tail latency. Dùng HdrHistogram với corrected latency theo scheduled send time. Báo cáo p99/p999/p99.99, không chỉ average."
+
+> Senior tip: Luôn report max và p99.99; average che giấu tail.`
+},
+{
+  id: 'concurrency-084',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Đảm bảo thứ tự và không mất lệnh khi crash: event sourcing + snapshot + replay?',
+  a: `**Tóm tắt:** Mọi thay đổi trạng thái lưu thành event append-only; định kỳ snapshot; khi crash replay event từ snapshot để khôi phục, đảm bảo thứ tự và không mất lệnh.
+
+### Cơ chế
+Event sourcing: order book state = fold(events). Mỗi lệnh là event immutable append to log (Kafka/disk). Snapshot định kỳ để replay nhanh. Khi crash: load snapshot mới nhất + replay event sau snapshot. Idempotency key tránh duplicate khi retry. Sequence number đảm bảo ordering.
+
+### Ví dụ đời thực
+Matching engine crash lúc 10:30; snapshot 10:25 + replay 5 phút event → khôi phục trong 30s, không mất lệnh.
+
+### Trả lời mẫu khi phỏng vấn
+"Event sourcing + snapshot + replay đảm bảo durability và ordering. Append-only log là source of truth. Snapshot giảm replay time. Idempotency tránh duplicate."
+
+> Senior tip: Test replay định kỳ; nếu replay > RTO thì tăng snapshot frequency.`
+}
+
 );
