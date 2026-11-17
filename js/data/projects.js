@@ -1,7 +1,7 @@
 /* Senior Java pet-project blueprints. Progress lives in App.store by milestone. */
 window.PROJECTS = [
   {
-    id: 'proj-wallet', title: 'Ví điện tử và ledger kế toán kép', level: 'senior', weeks: 8,
+    id: 'proj-wallet', title: 'Ví điện tử và ledger kế toán kép', level: 'senior', weeks: 12,
     skills: ['Spring Boot 3', 'PostgreSQL', 'OAuth2/JWT', 'Redis', 'Kafka', 'Docker', 'Testcontainers'],
     business: {
       intro: `**Tóm tắt:** Ví điện tử là "một tài khoản tiền" do công ty ví (hoặc ngân hàng) giữ hộ người dùng. Mọi lần nạp, chuyển, hoàn tiền đều phải được ghi vào **sổ cái (ledger)** theo nguyên tắc **kế toán kép**: tiền đi ra từ đâu thì phải đi vào đâu, tổng luôn cân bằng.
@@ -680,7 +680,117 @@ class TransferMetrics {
 - **Tag có cardinality cao:** gắn userId hoặc walletId vào metric làm Prometheus nổ bộ nhớ. Chỉ dùng tag có tập giá trị nhỏ (result, endpoint).
 - **Benchmark trên máy đang chạy IDE/Chrome:** số liệu dao động mạnh. Warm-up 1 phút, chạy 3 lần, báo trung vị.
 
-> Interview tip: Trình bày con số thật (100 req/s, p95, outbox lag) kèm ảnh dashboard và nói bạn chọn fail-closed cho chuyển tiền vì sai về tiền đắt hơn mất khả dụng vài giây.` }
+> Interview tip: Trình bày con số thật (100 req/s, p95, outbox lag) kèm ảnh dashboard và nói bạn chọn fail-closed cho chuyển tiền vì sai về tiền đắt hơn mất khả dụng vài giây.` },
+  { title: 'AI phân loại khiếu nía & tóm tắt giao dịch', tasks: `1. Định nghĩa interface {{ComplaintClassifier}}: một phương thức {{classify(complaint)}} nhận đối tượng khiếu nía đã được che dữ liệu nhạy cảm và trả về JSON có các trường {{loai}}, {{mucDo}}, {{giaoDienLienQuan}}, {{tomTat}}; viết bản giả (fake) lưu trong bộ nhớ để chạy test mà không cần gọi mô hình LLM thật.
+2. Tạo endpoint {{POST /api/complaints}} nhận {{complaintId}} và nội dung khiếu nía; trước khi gửi qua AI, che số tài khoản và số điện thoại bằng dấu sao (masking) để không lộ thông tin khách hàng.
+3. API đẩy sự kiện {{ComplaintReceived}} lên Kafka topic {{wallet.complaints}}; Kafka là hệ thống hàng đợi tin nhắn phân tán: người gửi ghi tin vào chủ đề (topic), người đọc lấy tin sau đó, mỗi tin trong một phân vùng (partition) giữ thứ tự, giúp xử lý sự kiện sau này không làm chậm giao diện người dùng.
+4. Viết consumer đọc Kafka, gọi {{ComplaintClassifier}} với thời gian chờ (timeout, ví dụ 10 giây) và thử lại tự động (retry) nếu lỗi tạm thời; dùng {{complaintId}} làm khóa idempotency (tính lặp lại an toàn) để cùng sự kiện chỉ được xử lý một lần.
+5. Nếu độ tin cậy (confidence) của kết quả AI thấp (ví dụ dưới 0,7) → chuyển khiếu nía sang hàng chờ nhân viên xử lý thay vì phản hồi tự động; lưu nhật ký kiểm toán (audit log) cho mọi quyết định: thời gian, {{complaintId}}, kết quả phân loại, ai xử lý.
+6. Xây bộ đánh giá (eval) 30 khiếu nía có nhãn sẵn (loại và mức độ đúng/sai), chạy qua toàn bộ đường ống và tính accuracy (tỷ lệ dự đoán chính xác); lưu báo cáo và chạy lại khi sửa prompt hoặc đổi mô hình.
+7. Viết test consumer: bỏ qua sự kiện trùng {{complaintId}}, retry sau timeout, kiểm tra dữ liệu đã được che, độ chính xác eval đạt ngưỡng quy định; chạy demo 3 phút: tạo 2 ví, chuyển tiền, retry cùng key, xem bút toán, tắt Kafka rồi bật lại.`, done: `Endpoint {{POST /api/complaints}} trả 202 kèm {{complaintId}}; consumer không tạo hai dòng audit cho cùng {{complaintId}} (idempotent); timeout + retry không làm mất sự kiện; kết quả confidence thấp có mục chuyển nhân viên xử lý; audit log đủ trường thời gian, {{complaintId}}, kết quả phân loại; bộ eval 30 khiếu nía có báo cáo accuracy và đạt ngưỡng bạn thiết lập (ví dụ ≥ 90%).`, guide: `### Tìm hiểu các khái niệm trước khi triển khai
+- **LLM (mô hình ngôn ngữ lớn):** chương trình AI đọc và viết ngôn ngữ tự nhiên, ví dụ tóm tắt một đoạn khiếu nía dài thành vài câu. Gọi LLM thường qua HTTP, trả về văn bản hoặc JSON.
+- **Kafka:** hệ thống hàng đợi tin nhắn phân tán. Một thành viên gửi tin (producer) ghi vào chủ đề (topic), thành viên đọc (consumer) lấy tin sau. Tin trong một phân vùng (partition) giữ thứ tự ghi, giúp xử lý sự kiện nghiệp vụ không làm chậm giao diện người dùng.
+- **Idempotency (tính lặp lại an toàn):** xử lý cùng một sự kiện nhiều lần vẫn cho kết quả như chỉ xử lý một lần, dựa trên khóa duy nhất (complaintId).
+- **Masking (che dữ liệu):** thay số tài khoản hoặc điện thoại bằng dấu sao trước khi đưa ra ngoài, ví dụ 0912 3456 78 → 09******678, để tránh rò rỉ thông tin khách hàng.
+- **Audit log (nhật ký kiểm toán):** ghi lại ai làm gì, lúc nào, với kết quả gì, để sau này có thể truy vét.
+- **Accuracy (độ chính xác):** tỷ lệ dự đoán đúng của AI so với nhãn người gán sẵn, ví dụ 27 trên 30 đúng = 90%.
+- **Confidence (độ tin cậy):** số từ 0 đến 1 cho biết mô hình tin vào dự đoán của mình mức độ nào.
+
+### Các bước triển khai
+1. Giao diện phân loại: viết {{ComplaintClassifier}} với phương thức {{classify(Complaint complaint)}} trả về đối tượng JSON có trường {{loai}} (ví dụ GIAO_DICH, TAI_KHOAN, DICH_VU), {{mucDo}} (CAO, TRUNG_BINH, THAP), {{giaoDienLienQuan}} (mã giao dịch liên quan hoặc null), {{tomTat}} (tóm tắt 1–2 câu). Viết lớp giả {{FakeComplaintClassifier}} trả kết quả cố định để chạy test không cần gọi LLM thật.
+
+2. Che dữ liệu nhạy cảm: trước khi lưu hoặc gửi AI, chạy hàm {{mask()}} thay các chữ số giữa của số tài khoản và điện thoại bằng dấu sao. Ví dụ "0912345678" thành "09******78". Ghi chú trong code rằng không bao giờ log số đầy đủ.
+
+3. Endpoint nhận khiếu nía: {{POST /api/complaints}} nhận body JSON {complaintId, noiDung, thoiGian}, kiểm tra complaintId không trống, che dữ liệu, ghi sự kiện {{ComplaintReceived}} vào Kafka topic {{wallet.complaints}}, trả HTTP 202 kèm complaintId. Mã 202 có nghĩa là "đã nhận, đang xử lý", chưa có kết quả cuối.
+
+4. Consumer Kafka: đăng ký lắng nghe topic {{wallet.complaints}}, mỗi sự kiện gọi {{classify()}} trong khoảng thời gian chờ (ví dụ 10 giây). Lỗi mạng hoặc timeout thì thử lại tự động 3 lần với khoảng cách tăng dần (exponential backoff). Trước khi lưu, kiểm tra bảng {{complaint_audit}} theo complaintId: nếu đã có → bỏ qua (idempotent).
+
+5. Điều hướng theo độ tin cậy: nếu {{confidence}} < 0,7, đánh trạng thái {{CAN_XU_LY_NHAN_VIEN}} và đưa vào hàng chờ nhân viên thay vì trả lời tự động. Mọi phân loại, dù tự động hay chuyển nhân viên, đều ghi dòng audit: complaintId, thời gian, loại, mức độ, tóm tắt, người xử lý (hoặc "AI tự động").
+
+6. Bộ đánh giá (eval): chuẩn bị file 30 khiếu nía kèm nhãn đúng (loại, mức độ). Viết script chạy qua toàn bộ đường ống, so sánh kết quả AI với nhãn, in ra accuracy. Ví dụ 27/30 đúng = 90%. Lưu báo cáo vào {{reports/eval-complaint-v1.md}}. Khi sửa prompt hoặc đổi mô hình, chạy lại eval để đảm bảo chất lượng không giảm (không xảy ra suy giảm ngầm).
+
+7. Test cần viết: (a) consumer nhận cùng complaintId hai lần → chỉ ghi một dòng audit; (b) gọi LLM bị timeout → thử lại 3 lần rồi đánh thất bại, không làm consumer lỗi; (c) nội dung có số tài khoản → kiểm tra giá trị lưu và gửi AI đã được che; (d) eval accuracy đạt ngưỡng; (e) confidence thấp → trạng thái chuyển nhân viên.
+
+### Mã khung (Java)
+~~~java
+public interface ComplaintClassifier {
+    ComplaintResult classify(Complaint complaint);
+}
+record ComplaintResult(String loai, String mucDo, String giaoDienLienQuan, String tomTat, double confidence) {}
+~~~
+
+~~~java
+@PostMapping("/api/complaints")
+public ResponseEntity<ComplaintResponse> submit(@RequestBody ComplaintRequest req) {
+    String masked = mask(req.getNoiDung()); // che so tai khoan, dien thoai
+    complaintEventPublisher.send("wallet.complaints", req.getComplaintId(), masked);
+    return ResponseEntity.accepted().body(new ComplaintResponse(req.getComplaintId(), "DANG_XU_LY"));
+}
+~~~
+
+### Lỗi hay gặp
+- **Gọi LLM trực tiếp trong yêu cầu HTTP:** làm chậm phản hồi và có thể mất yêu cầu nếu client bỏ cuộc. Luôn đẩy vào Kafka trước, trả 202 ngay, consumer xử lý phía sau.
+- **Không che dữ liệu trước khi gửi AI:** nhánh rò rỉ số tài khoản, điện thoại ra ngoài vi phạm bảo mật và quy định về dữ liệu khách hàng.
+- **Xử lý sự kiện trùng hai lần:** tạo hai thông báo cho khách hoặc hai dòng audit. Dùng complaintId làm khóa duy nhất và kiểm tra trước khi ghi.
+- **Độ tin cậy thấp vẫn phản hồi tự động:** khách nhận phân loại sai, khó xử lý. Đặt ngưỡng và chuyển sang nhân viên khi không chắc chắn.
+
+### Trả lời khi phỏng vấn
+"Em triển khai tính năng phân loại khiếu nía bằng cách tách đường dữ liệu: API nhận yêu cầu, che thông tin nhạy cảm, đẩy sự kiện vào Kafka rồi trả 202 ngay, client không bị chờ đợi. Consumer đọc Kafka, gọi lớp ComplaintClassifier để ra JSON phân loại, áp thời gian chờ và thử lại để chịu lỗi tạm thời, dùng complaintId làm khóa idempotent để không xử lý trùng sự kiện. Nếu độ tin cậy thấp, chuyển sang nhân viên xử lý và mọi quyết định đều được ghi audit log. Cuối cùng em xây bộ eval 30 khiếu nía có nhãn để đo accuracy và ngăn ngừa chất lượng giảm khi sửa prompt." ` },
+  { title: 'Đóng gói portfolio & kể chuyện khi phỏng vấn', tasks: `1. Hoàn thiện README: thêm sơ đồ kiến trúc (ASCII), luồng tiền chi tiết minh hoạ Lan chuyển 100.000đ cho Minh qua từng thành phần, ví dụ JSON yêu cầu/phản hồi, và lệnh chạy local một lệnh {{docker compose up -d}} rồi {{./mvnw spring-boot:run}}. Nêu JDK 21, Maven và Docker là đủ, không cần tài khoản cloud hay thẻ crédito.
+2. Viết bảng quyết định thiết kế: ba quyết định chính (ledger kép, outbox, idempotency key), mỗi quyết định có tại sao, lựa chọn thay thế và trade-off.
+3. Soạn câu chuyện STAR mẫu có số liệu đo được (p95, số test, lỗi đã sửa) để kể trong phỏng vấn.
+4. Liệt kê mười câu interviewer hay hỏi về dự án và viết gợi ý trả lời ngắn cho mỗi câu.
+5. Chạy lại toàn bộ test, đối soát ledger, chụp kết quả k6/Grafana làm bằng chứng đính kèm vào portfolio; chạy demo 3 phút: tạo 2 ví, chuyển tiền, retry cùng key, xem bút toán, tắt Kafka rồi bật lại.`, done: `README có sơ đồ kiến trúc, luồng tiền và lệnh chạy một lệnh; bảng quyết định thiết kế có ba mục (ledger kép, outbox, idempotency key) kèm trade-off; câu chuyện STAR có số liệu (p95, số test, lỗi đã sửa); mười câu phỏng vấn có gợi ý trả lời; toàn bộ test xanh và reconcile.sql trả 0 dòng.`, guide: `### Tóm tắt
+Milestone này biến mã nguồn dự án thành bằng chứng thực tế mà bạn trình bày với interviewer: tài liệu rõ ràng, minh chứng số liệu, câu chuyện có giá trị.
+
+### Các khái niệm cần nắm
+- **p95:** con số phản hồi chậm hơn 95% yêu cầu, chỉ 5% yêu cầu chậm hơn con số này (bỏ qua những trường hợp cực kỳ hiếm), dùng để đo mức độ phản hồi của hệ thống.
+- **Ledger kép (sổ cái kép):** mỗi giao dịch có ít nhất hai bút toán, tổng Nợ bằng tổng Có, giúp truy vét từng đồng tiền thay vì chỉ cập nhật cột số dư.
+- **Outbox:** bảng lưu sự kiện trong cùng transaction với dữ liệu nghiệp vụ, rồi truyền sự kiện sang Kafka, tránh mất hoặc tạo sự kiện "ma".
+- **Idempotency key (khóa idempotency):** mã duy nhất kèm mỗi yêu cầu, giúp server nhận ra yêu cầu gửi lại và không thực hiện hai lần.
+
+### Các bước
+1. README: viết mục "Kiến trúc" bằng sơ đồ ASCII (~~~text) hiển thị Khách → API Spring Boot → PostgreSQL (ví, chuyển tiền, bút toán, outbox) → Redis → Kafka → consumer. Thêm mục "Luồng tiền" minh hoạ Lan chuyển 100.000đ cho Minh qua từng thành phần, cùng mã ví dụ JSON của yêu cầu và phản hồi. Ghi lệnh chạy local: {{docker compose up -d}} khởi động PostgreSQL, Redis, Kafka; sau đó {{./mvnw spring-boot:run}}. JDK 21, Maven, Docker là đủ, không cần tài khoản cloud hay thẻ crédito.
+
+2. Bảng quyết định thiết kế: đưa ra ba quyết định, mỗi quyết định có "Tại sao", "Lựa chọn thay thế", "Trade-off":
+   - Ledger kép: vì mỗi đồng phải truy vét được, không chỉ cập nhật cột balance. Thay thế: chỉ lưu balance → nhanh hơn nhưng không biết sai từ giao dịch nào. Trade-off: ghi nhiều dòng hơn, bảng lớn hơn, cần phân vùng theo tháng khi dữ liệu nhiều.
+   - Outbox: vì Kafka không tham gia transaction với PostgreSQL, cần ghi sự kiện trong cùng transaction rồi truyền đi. Thay thế: gọi Kafka sau commit → có thể mất sự kiện nếu crash giữa chừng. Trade-off: có độ trễ polling và cần chạy relay.
+   - Idempotency key: vì mạng chập chờn và client có thể gửi lại yêu cầu. Thay thế: không có gì → có thể trừ tiền hai lần. Trade-off: phải lưu key lâu (ví dụ 30 ngày) và chuẩn hoá payload trước khi băm.
+
+3. Câu chuyện STAR: viết theo cấu trúc Situation, Task, Action, Result với số liệu đo thực:
+   - Situation: ví demo ban đầu chỉ đọc số dư rồi ghi lại, chạy k6 50 yêu cầu song cùng rút cùng một ví có 3 trên 20 lần chạy balance bị âm, và thử lại trên mobile sau timeout tạo transfer trùng.
+   - Task: bảo đảm ba bất biến (balance không âm, mỗi transfer cân bằng Nợ/Có, thử lại cùng key không tạo giao dịch mới), giữ p95 dưới 300 ms ở 100 yêu cầu/giây.
+   - Action: ledger kép append-only, cập nhật có điều kiện {{balance >= amount}}, khoá hai ví theo thứ tự id, unique {{(owner_id, idem_key)}}, lưu hash payload, outbox cộng consumer idempotent, viết test Testcontainers.
+   - Result: 0 lần balance âm qua 50 lần chạy (trước đó 3 trên 20 lần lỗi), 0 transfer trùng, đối soát 0 dòng lệch, k6 100 yêu cầu/giây p95 từ 410 ms xuống 180 ms, Kafka ngừng 2 phút không mất sự kiện nào.
+
+4. Mười câu interviewer hay hỏi (kèm gợi ý trả lời ngắn):
+   1. Vì sao dùng ledger thay vì chỉ cập nhật balance? → Balance là kết quả, ledger là lịch sử tạo ra kết quả; kiểm toán yêu cầu truy vét từng đồng.
+   2. Nếu Kafka ngừng một giờ sau DB commit thì thế nào? → API vẫn chạy, sự kiện dồn trong outbox, relay phát bù khi Kafka sống, consumer khử lặp sự kiện trùng.
+   3. Request cùng idempotency key nhưng khác payload xử lý ra sao? → Lưu hash payload, giống trả kết quả cũ, khác trả 422 IDEMPOTENCY_MISMATCH.
+   4. Làm sao kiểm chứng không overspend khi hai transfer cạnh tranh? → Test 100 luồng cùng rút từ một ví, cập nhật có điều kiện chặn, xác định đúng 20 thành công.
+   5. Bạn đối soát balance projection với ledger ra sao? → Job đêm so sánh balance với tổng bút toán, lệch một đồng cũng alert.
+   6. Vì sao không dùng 2PC/XA giữa PostgreSQL và Kafka? → Kafka không tham gia XA, coordinator là điểm chết, outbox chuyển thành xử lý ít nhất một lần cộng consumer khử lặp.
+   7. Nếu Redis chết thì chuyển tiền có chạy không? → Có, Redis chỉ dùng cho giới hạn tốc độ và cache, tính idempotent và số dư ở PostgreSQL.
+   8. Ví merchant nhận hai nghìn giao dịch/giây thì thiết kế này vỡ ở đâu? → Vỡ ở khoá dòng của ví merchant, xử lý bằng chia tài khoản con hoặc không cập nhật balance trong transaction.
+   9. Bạn làm gì khi AI phân loại sai? → Đặt ngưỡng độ tin cậy, chuyển nhân viên xử lý, giữ audit log, chạy eval 30 mẫu để theo dõi.
+   10. Nếu được làm lại dự án, bạn sẽ đổi điểm nào? → Có thể dùng CDC thay polling relay khi outbox lớn, hoặc thêm bản sao chỉ đọc cho lịch sử.
+
+5. Thu thập minh chứng: chạy toàn bộ unit test và integration test, chụp màn hình kết quả xanh; chạy k6 100 yêu cầu/giây trong năm phút, chụp p95 và số lỗi 5xx; chạy query đối soát, chụp trả 0 dòng. Đưa ảnh và con số vào README mục "Minh chứng".
+
+### Mã khung (sơ đồ trong README)
+~~~text
+Khach -> API (Spring Boot) -> PostgreSQL (vi, chuyen tien, but toan, outbox)
+                                    -> Redis (gioi han toc do, cache)
+Outbox relay -> Kafka -> Thong bao / Kiem toan consumer
+~~~
+
+### Lỗi hay gặp
+- **README chỉ có mã, không có số liệu:** interviewer không thể đánh giá nếu không có p95, TPS, số test thực tế bạn đã đo.
+- **Quên che số tài khoản khi ghi log hoặc hiển thị trong Swagger UI:** dữ liệu khách hàng không được lộ ra giao diện công khai.
+- **Làm demo mà không chạy test trước:** demo bị lỗi làm mất tin cậy; hãy chạy test xanh trước khi trình bày.
+
+### Trả lời tóm tắt cho phỏng vấn
+"Dự án ví điện tử của em tập trung vào tính đúng đắn của tiền: ledger kép append-only, idempotency key, outbox idempotent và đối soát hằng đêm. Em đã đo được p95 dưới 300 ms ở 100 yêu cầu/giây, viết hơn hai mươi test đồng thời và Kafka ngừng một giờ không làm mất sự kiện. Tất cả được ghi trong README với sơ đồ kiến trúc, bảng quyết định thiết kế và câu chuyện STAR kèm số liệu, chạy được bằng một lệnh docker compose." ` },
     ],
     challenges: [
       `### Race khi chuyển tiền (lost update)
