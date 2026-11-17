@@ -3577,4 +3577,432 @@ Trong production, bước "đánh dấu {{txnRef}} + đổi trạng thái đơn"
     tags: ['ekyc']
   },
 
+  {
+    id: 'lesson-banking-013',
+    track: 'banking',
+    order: 13,
+    title: 'Chống gian lận realtime: rule engine, velocity check, chấm điểm rủi ro và quyết định chặn/OTP/cho qua',
+    level: 'senior',
+    minutes: 40,
+    goals: [
+      'Giải thích được vì sao ngân hàng cần một hệ thống ra quyết định ALLOW / CHALLENGE / BLOCK trong vài trăm mili giây, và vì sao nó khác với việc so số dư',
+      'Viết {{VelocityRule}} đếm số giao dịch và tổng tiền trong cửa sổ trượt (sliding window) theo từng {{userId}}, dùng {{Clock}} giả để test không phụ thuộc thời gian thật',
+      'Viết {{RiskEngine}} cộng điểm từ nhiều rule rồi ra quyết định theo ngưỡng, biết chỗ nào dễ sai (rule đếm trên bộ nhớ mất khi restart, side-effect khi bị chặn, false positive)',
+      'Nói được vòng phản hồi: khiếu nại của khách → nhãn legit/fraud → chỉnh ngưỡng và retrain, và vì sao đây mới là thứ giữ hệ thống sống',
+    ],
+    body: `**Tóm tắt:** Hệ thống chống gian lận realtime (real-time fraud detection) là một cổng chặn nằm giữa lúc khách bấm "Chuyển tiền" và lúc lệnh được thực thi; trong **vài trăm mili giây** nó phải trả lời: **cho qua (ALLOW)**, **bắt xác minh thêm (CHALLENGE — OTP/push)**, hay **từ chối thẳng (BLOCK)**. Nó gồm một **rule engine** (các luật cứng, giải thích được như "quá 5 giao dịch trong 1 phút"), một hàm **chấm điểm rủi ro** cộng điểm từ nhiều rule, và một **chính sách quyết định** biến điểm thành ba lựa chọn trên. Vì nằm trên đường đi của giao dịch, nó chỉ được tiêu một phần nhỏ ngân sách thời gian, phải có chính sách khi chính nó lỗi (fail open / fail closed), và phải chống lại **false positive** — chặn nhầm khách thật — vì đó là chi phí mất khách thật sự.
+
+### Ngoài đời diễn ra thế nào
+
+Lan (chủ một tài khoản tại ngân hàng) đang ở Hà Nội. 21:47 ngày 14/11, Lan mở app định chuyển 2 triệu cho Minh — bạn cùng phòng trọ, người Lan **chưa từng chuyển tiền lần nào** (người nhận mới). Nhưng ở một nơi khác, kẻ gian đã chiếm được phiên đăng nhập của Lan trên một điện thoại khác (thiết bị mới), và đang chuyển **47 triệu** sang một tài khoản lạ.
+
+Trong 90 giây, kẻ đó bấm 6 lần: 12 triệu, 8 triệu, 5 triệu, 11 triệu, 7 triệu, 4 triệu — mỗi lần một số tiền "tròn lẻ", liên tiếp, tới cùng một người nhận mới. Đây chính là **hành vi velocity bất thường**: nhiều giao dịch trong ít phút, tổng tiền vượt xa thói quen của Lan (Lan thường chỉ chuyển 1–2 triệu mỗi ngày, đôi khi cả tuần không giao dịch).
+
+Ngân hàng có ba lựa chọn, và mỗi lựa chọn có một cái giá:
+
+- **CHO QUA (ALLOW):** giao dịch đi ngay. Nếu là Lan thật thì Lan hài lòng. Nếu là kẻ gian thì tiền mất, ngân hàng phải đền, và tệ hơn là mất niềm tin.
+- **BẮT XÁC MINH THÊM (CHALLENGE):** gửi OTP/push về đúng số điện thoại và thiết bị của Lan. Lan thật nhập mã → giao dịch đi tiếp. Kẻ gian không có điện thoại của Lan → dừng. Cái giá: thêm vài giây, và nếu hệ thống gửi nhầm (ví dụ Lan đang ở vùng sóng yếu) thì Lan bực.
+- **TỪ CHỐI THẲNG (BLOCK):** không cho đi, báo "giao dịch bị từ chối tạm thời". Kẻ gian dừng, nhưng nếu là Lan thật thì đây là một **false positive** — chặn nhầm khách thật — và Lan sẽ gọi tổng đài, thậm chí chuyển sang ngân hàng khác.
+
+Điểm mấu chốt: **hệ thống không "biết" đó là kẻ gian.** Nó chỉ nhìn thấy *hành vi*: thiết bị lạ, người nhận mới, sáu giao dịch trong 90 giây, tổng 47 triệu — khác hẳn bình thường. Nhiệm vụ của nó là **quy đổi hành vi thành một con điểm rủi ro**, rồi so với ngưỡng.
+
+### Các bên và luồng
+
+Có sáu bên tham gia, nhưng để dễ hình dung ta gom thành năm vai:
+
+- **Khách (Lan):** người bấm nút, là người chịu thiệt nếu hệ thống sai.
+- **App / Internet Banking:** nơi sinh ra yêu cầu, gửi kèm dữ liệu ngữ cảnh (thiết bị, IP, địa điểm).
+- **Fraud/Decision Service:** hệ thống ra quyết định, nơi ta viết code trong bài này.
+- **Feature/Data Store (Redis):** nơi lưu các con đếm velocity và lịch sử gần đây, đọc cực nhanh.
+- **Core Banking / Cổng thanh toán:** nơi thực sự trừ tiền và chuyển đi — chỉ chạy **nếu** decision service nói ALLOW.
+
+Luồng một giao dịch đi qua các bước sau (số thứ tự là để bạn đọc theo trình tự):
+
+~~~seq
+title: Một lệnh chuyển tiền đi qua cổng chống gian lận
+actors: App | Decision | Redis | Core
+App -> Decision: chuyển 12tr, thiết bị mới, người nhận mới
+Decision -> Redis: đọc velocity userId + lịch sử gần đây
+Redis --> Decision: 6 giao dịch / 90s, tổng 47tr, thiết bị lạ
+Decision -> Decision: chấm điểm rủi ro từ nhiều rule
+Decision --> App: CHALLENGE (bắt OTP) — điểm vượt ngưỡng mềm
+App --> Decision: khách nhập OTP đúng
+Decision -> Core: ALLOW — cho phép trừ tiền
+Core --> App: chuyển tiền thành công
+~~~
+
+Điểm cần nhớ: **decision service không tự trừ tiền.** Nó chỉ trả lời "được / phải xác minh / không". Việc trừ tiền là của Core, và Core chỉ làm khi có ALLOW. Nhờ tách đôi như vậy, khi nghi ngờ ta có thể "giữ" giao dịch ở tầng decision mà không đụng vào bút toán — xem lại bài hold/capture (bài 7) và bài hạn mức (bài 3) để thấy hai tầng này nối nhau.
+
+### Vì sao phải nhanh: ngân sách độ trễ
+
+Khách bấm "Chuyển" và chờ. Mọi mili-giây ở đây là trải nghiệm. Một giao dịch chuyển tiền có **ngân sách tổng** (ví dụ 2 giây) chia cho nhiều tầng: mạng, xác thực, decision, core, đầu bên kia. Trong đó **decision chỉ được 150–300 ms** — bằng đúng thời gian một cái nháy mắt. Nếu decision chậm, cả giao dịch chậm, khách bấm lại, sinh ra **giao dịch trùng** (xem bài 8), và lúc đó chính hệ thống chống gian lận lại phải xử lý thêm một mớ.
+
+Vì ngân sách nhỏ như vậy, decision service **không được** làm việc nặng ngay trên đường đi. Nó chỉ được **đọc dữ liệu đã chuẩn bị sẵn** (các con đếm velocity, điểm lịch sử, cờ thiết bị) từ Redis/in-memory, rồi cộng điểm. Việc nặng — huấn luyện model, tính lại toàn bộ lịch sử, đối chiếu danh sách đen toàn cục — chạy **bất đồng bộ** (asynchronous, tức là chạy nền, không chặn khách) qua hàng đợi (ví dụ Kafka — xem bài microservices). Đây là lý do velocity được đếm trước ở Redis, chứ không phải decision service đi quét database mỗi lần.
+
+### Rule, điểm rủi ro và ba quyết định
+
+**Rule engine** là tập hợp các luật đơn giản, mỗi luật trả về "có vi phạm hay không" và "vi phạm nặng bao nhiêu". Ưu điểm lớn nhất: **giải thích được** — khi chặn một giao dịch, ta nói được chính xác "vì sao": "vì 6 giao dịch trong 90 giây". ML thì cho điểm nhưng khó giải thích; rule thì dễ. Nhược điểm: kẻ gian biết luật sẽ né.
+
+Ví dụ bốn luật phổ biến (đúng bốn cái task yêu cầu):
+
+| Luật | Điều kiện | Điểm cộng | Ý nghĩa |
+|---|---|---|---|
+| Số tiền bất thường | {{amount}} lớn hơn ngưỡng / lớn hơn thói quen | +2 | 47 triệu trong khi Lan hay 2 triệu |
+| Thiết bị mới | {{deviceId}} chưa từng thấy với {{userId}} | +2 | phiên lạ trên máy lạ |
+| Velocity | > N giao dịch trong cửa sổ trượt | +3 | 6 lần / 90 giây |
+| Người nhận mới | tài khoản nhận chưa từng nhận từ {{userId}} | +1 | lần đầu chuyển cho người này |
+
+Mỗi rule cộng điểm; điểm cao thì rủi ro cao. **Chính sách quyết định** biến điểm thành hành động, ví dụ:
+
+- {{score < 3}} → **ALLOW** (cho qua im lặng, không làm phiền khách)
+- {{3 <= score < 5}} → **CHALLENGE** (bắt OTP/push — đủ để chặn kẻ gian nhưng không chặn nhầm Lan)
+- {{score >= 5}} → **BLOCK** (từ chối thẳng — chỉ dành cho trường hợp gần như chắc chắn xấu)
+
+Vì sao có **ba** mức chứ không phải hai (cho qua / chặn)? Vì "chặn nhầm" quá đắt. **Step-up authentication** (bắt xác minh thêm đúng lúc, ví dụ OTP) là cách hạ chi phí false positive: Lan thật vẫn đi được, chỉ tốn vài giây; kẻ gian thì không có OTP nên dừng. BLOCK chỉ để dành cho điểm rất cao. Đây là ý mà interviewer muốn nghe: **ưu tiên challenge hơn block.**
+
+### Trạng thái và chỗ có thể sai
+
+| Thành phần | Trạng thái giữ | Chỗ sai điển hình | Hậu quả |
+|---|---|---|---|
+| Velocity counter (Redis) | số giao dịch + tổng tiền theo cửa sổ | quên TTL, quên key theo userId → bộ nhớ phình, số liệu lẫn giữa các user | đếm sai → rủi ro sai |
+| Counter tăng song song | một con số dùng chung | hai request cùng đọc-cộng-ghi → mất cập nhật | sót giao dịch, lọt gian lận |
+| Bộ nhớ velocity | nằm trong RAM của một instance | restart/resize pod → mất sạch, đồng hồ đếm về 0 | sau restart, kẻ gian được "quay lại từ trắng" |
+| Rule trùng side-effect | gọi điện/nhắn OTP ngay trong lúc tính điểm | giao dịch bị BLOCK nhưng OTP vẫn gửi, hoặc gửi hai lần khi retry | làm phiền khách, tốn SMS |
+| Quyết định | không ghi lại lý do | khiếu nại không tra được vì sao chặn | không giải trình được, mất niềm tin |
+| Ngưỡng | cố định trong code | kẻ gian học được, hoặc giờ cao điểm bị chặn oan | FP tăng vọt |
+
+Hai lỗi nguy hiểm nhất cần nhớ:
+
+1. **Velocity đếm trên RAM một instance thì không đáng tin.** Production chạy nhiều instance (Kubernetes — xem bài 8), mỗi instance một bộ đếm riêng, và khi pod bị kill để scale thì bộ đếm bay mất. Kẻ gian chỉ cần chờ đúng lúc đó. Cách đúng: dùng lệnh **nguyên tử phía server dữ liệu** (Redis INCR, hoặc Lua script) để mọi instance cùng thấy một con số — giống hệt bài học về hạn mức đồng thời ở bài 8, chỉ khác là ở đây ta đếm **số lần** và **tổng tiền** trong cửa sổ trượt thay vì một hạn mức ngày.
+
+2. **Không được để quyết định có side-effect.** Trong lúc tính điểm, tuyệt đối không gửi OTP, không ghi log "đã chặn", không trừ tiền. Chỉ **tính điểm thuần túy**, rồi mới hành động một lần sau khi đã có quyết định. Nếu không, một giao dịch bị BLOCK vẫn có thể đã kịp gửi OTP, hoặc một lần retry gọi SMS hai lần.
+
+### Hệ thống backend xử lý ra sao
+
+Ý tưởng cốt lõi tách làm hai lớp: một **rule vận hành trên bộ đếm velocity**, và một **engine cộng điểm từ nhiều rule**. Code dưới đây là bộ khung thuần JDK để bạn thấy cơ chế; production sẽ thay bằng Redis cho velocity và thêm model ML, nhưng hình dạng logic vẫn thế.
+
+~~~java
+// VelocityRule: đếm số giao dịch + tổng tiền trong cửa sổ trượt [now - window, now]
+// Dùng Clock để test "quay đồng hồ" mà không cần ngủ chờ thật.
+class VelocityRule {
+    final int maxCount;          // quá số này thì coi là bất thường
+    final long maxSum;           // hoặc tổng tiền vượt ngưỡng
+    final long windowMillis;     // độ rộng cửa sổ (ví dụ 60_000 = 1 phút)
+    final Clock clock;
+    final Map<Long, Long> times = new HashMap<>();   // userId -> thời điểm các giao dịch gần nhất
+
+    boolean isSuspicious(long userId, long amount, long nowEpoch) {
+        long lo = nowEpoch - windowMillis;
+        // 1) bỏ các mốc đã ra khỏi cửa sổ: chỉ giữ giao dịch còn "sống"
+        // 2) đếm số giao dịch còn lại và cộng tổng tiền
+        // 3) nghi ngờ nếu số lần > maxCount HOẶC tổng tiền > maxSum
+        return true; // TODO
+    }
+
+    void record(long userId, long nowEpoch) {
+        // thêm mốc thời gian này vào danh sách của userId
+    }
+}
+~~~
+
+Điểm cần chú ý trong code thật (bản reference bên dưới có đủ):
+
+- Cửa sổ **trượt** (sliding window), không phải cửa sổ cố định: ta luôn xét "N đơn vị gần nhất tính từ bây giờ", nên không có hiện tượng "đầu phút reset về 0 rồi kẻ gian dồn ồ ạt".
+- {{record}} chỉ được gọi **sau khi** quyết định đã tính trên trạng thái cũ — nếu gọi trước, chính giao dịch đang xét lại bị đếm vào và làm sai luật của chính nó.
+- {{userId}} là khóa: hai người dùng không được lẫn số liệu của nhau.
+
+### Câu hỏi nên hỏi lại khi nhận yêu cầu nghiệp vụ này
+
+Khi sếp/security giao task "làm hệ thống chống gian lận", đừng nhảy vào code. Hỏi lại:
+
+1. **Ngân sách độ trễ là bao nhiêu?** 200 ms hay 2 giây? Điều này quyết định velocity phải đếm trước ở đâu, có được gọi model nặng không.
+2. **Khi decision service lỗi/timeout thì sao?** Fail open (cho qua, ưu tiên trải nghiệm) hay fail closed (chặn, ưu tiên an toàn)? Ngưỡng tiền nào chuyển từ fail-open sang fail-closed? (Câu này chính là câu phỏng vấn kinh điển.)
+3. **"Bình thường" của khách này là gì?** Cần dữ liệu lịch sử bao lâu để nói "47 triệu là bất thường"? Khách mới, không có lịch sử, thì lấy ngưỡng của ai?
+4. **Ai gánh false positive?** Chặn nhầm thì tổng đài, marketing, hay risk chịu? Con số FP hiện tại là bao nhiêu, mục tiêu là gì?
+5. **Vòng phản hồi lấy nhãn ở đâu?** Khi khách bấm "Đây là tôi" trong app, sự kiện đó có chảy về kho dữ liệu để chỉnh luật/retrain không?
+
+### Những lỗi hay gặp khi phỏng vấn
+
+- Nói "chặn hết giao dịch lớn là xong" — bị loại ngay vì không hiểu false positive.
+- Không nhắc **fail open / fail closed** khi được hỏi về timeout.
+- Không nhắc **velocity phải nguyên tử** (Redis/Lua) khi chạy nhiều instance.
+- Gửi OTP ngay trong lúc tính điểm (side-effect), khiến giao dịch bị chặn vẫn làm phiền khách.
+- Không ghi lại **lý do** quyết định, nên khi khách khiếu nại không giải trình được.
+- Quên rằng kẻ gian **học và né**: hệ thống phải có đường tắt/mở luật trong vài phút và vòng retrain.
+
+> Senior tip: Trong phỏng vấn, hãy trả lời theo bốn tầng: (1) quyết định phải **đồng bộ** nhưng chỉ đọc dữ liệu đã chuẩn bị sẵn, phần nặng chạy bất đồng bộ; (2) luôn có **chính sách khi chính nó lỗi**, kèm ngưỡng tiền; (3) ưu tiên **challenge (OTP/push)** hơn block để giảm false positive; (4) **ghi log snapshot feature + lý do** tại thời điểm quyết định để giải trình và làm nhãn. Thêm một câu ghi điểm: giá trị thật của hệ thống không nằm ở model xịn nhất, mà ở **vòng phản hồi** — khiếu nại của khách thành nhãn, nhãn thành retrain — và ở khả năng **tắt/mở luật trong vài phút**.
+
+### Liên hệ phỏng vấn
+
+**Câu hỏi:** "Khách chuyển tiền, hệ thống của bạn làm sao quyết định cho qua, bắt OTP, hay chặn — trong khi chỉ có 200 ms?"
+
+**Cách trả lời:** Tôi hình dung decision service như một cổng chặn mỏng: nó **không** trừ tiền, chỉ trả lời ALLOW / CHALLENGE / BLOCK, còn Core mới thực sự bút toán. Trong 200 ms đó nó chỉ được **đọc dữ liệu đã chuẩn bị sẵn** từ Redis: các con đếm velocity (số giao dịch + tổng tiền trong cửa sổ trượt theo {{userId}}), cờ thiết bị mới, cờ người nhận mới, điểm lịch sử. Mỗi rule trả về một số điểm; tôi cộng lại. Ngưỡng mềm cho **CHALLENGE** (gửi OTP/push — chặn được kẻ gian mà không chặn nhầm khách thật), ngưỡng cao cho **BLOCK**. Nếu decision service timeout, tôi phải có chính sách rõ: giao dịch nhỏ thì fail open, giao dịch lớn/đi nước ngoài thì fail closed, vì lúc đó thà làm phiền khách còn hơn mất tiền. Velocity phải được tăng bằng lệnh nguyên tử phía Redis (INCR/Lua) vì chạy nhiều instance, không thì mất số liệu khi scale. Và quan trọng nhất: mọi quyết định đều **ghi log kèm lý do**, rồi vòng phản hồi biến khiếu nại của khách thành nhãn legit/fraud để chỉnh ngưỡng và retrain — vì kẻ gian luôn đổi chiêu, hệ thống sống được là nhờ vòng này.`,
+  exercises: [
+    {
+      title: 'VelocityRule + RiskEngine: cộng điểm từ nhiều rule ra quyết định',
+      prompt: `Viết hai class cho một cổng chống gian lận rút gọn, chỉ dùng JDK chuẩn (Java 17), {{Clock}} để xác định "bây giờ" (giúp test không phải ngủ chờ).
+
+**VelocityRule** — đếm giao dịch trong cửa sổ trượt theo từng {{userId}}:
+- {{VelocityRule(int maxCount, long maxSum, long windowMillis, Clock clock)}}
+- {{boolean isSuspicious(long userId, long amount, long nowEpoch)}} — {{true}} nếu **số giao dịch đã ghi trong cửa sổ [now - window, now)** cộng với lần này vượt {{maxCount}}, **hoặc** tổng tiền cộng với lần này vượt {{maxSum}}.
+- {{void record(long userId, long amount, long nowEpoch)}} — ghi nhận một giao dịch (mốc thời gian + số tiền). Chỉ gọi **sau khi** đã ra quyết định, để chính giao dịch đang xét không tự đếm vào luật của nó.
+- {{int count(long userId, long nowEpoch)}} và {{long sum(long userId, long nowEpoch)}} — số lần và tổng tiền còn "sống" trong cửa sổ.
+
+Quy tắc biên: {{windowMillis <= 0}}, {{maxCount < 0}}, {{maxSum < 0}} ném {{IllegalArgumentException}} ở constructor; {{amount < 0}} ném {{IllegalArgumentException}}.
+
+**RiskEngine** — cộng điểm từ nhiều rule rồi ra quyết định:
+- {{Decision decide(long baseScore, boolean deviceIsNew, boolean payeeIsNew, long amount, boolean velocitySuspicious)}} — cộng điểm: {{baseScore}} + {{deviceIsNew ? 2 : 0}} + {{payeeIsNew ? 1 : 0}} + {{amount >= 10_000_000 ? 2 : 0}} + {{velocitySuspicious ? 3 : 0}}.
+- Ngưỡng: {{score < 3}} trả {{ALLOW}}; {{3 <= score < 5}} trả {{CHALLENGE}}; {{score >= 5}} trả {{BLOCK}}.
+- {{Decision}} là enum {{ALLOW, CHALLENGE, BLOCK}}.
+
+Test sẽ kiểm tra: velocity đếm đúng và trượt cửa sổ (giao dịch cũ bị loại khi qua cửa sổ), {{isSuspicious}} nhìn trước được lần này (số lần hiện tại + 1 > maxCount), RiskEngine cộng đúng điểm và phân loại đúng ba mức, biên {{amount}} ngay dưới và ngay trên 10 triệu, và {{amount}} âm bị từ chối.`,
+      starter: `import java.time.*;
+import java.util.*;
+
+class VelocityRule {
+    final int maxCount;
+    final long maxSum;
+    final long windowMillis;
+    final Clock clock;
+
+    VelocityRule(int maxCount, long maxSum, long windowMillis, Clock clock) {
+        if (windowMillis <= 0) throw new IllegalArgumentException("window phai duong");
+        if (maxCount < 0) throw new IllegalArgumentException("maxCount khong am");
+        if (maxSum < 0) throw new IllegalArgumentException("maxSum khong am");
+        this.maxCount = maxCount;
+        this.maxSum = maxSum;
+        this.windowMillis = windowMillis;
+        this.clock = clock;
+    }
+
+    boolean isSuspicious(long userId, long amount, long nowEpoch) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void record(long userId, long amount, long nowEpoch) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int count(long userId, long nowEpoch) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long sum(long userId, long nowEpoch) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+enum Decision { ALLOW, CHALLENGE, BLOCK }
+
+class RiskEngine {
+    Decision decide(long baseScore, boolean deviceIsNew, boolean payeeIsNew, long amount, boolean velocitySuspicious) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static boolean expect(Class<? extends Exception> type, Runnable r) {
+        try { r.run(); return false; }
+        catch (Exception ex) { return type.isInstance(ex); }
+    }
+    static Clock fixed(long epochMillis) {
+        return Clock.fixed(Instant.ofEpochMilli(epochMillis), ZoneId.of("Asia/Ho_Chi_Minh"));
+    }
+
+    public static void main(String[] args) {
+        // Cửa sổ 1000ms, quá 3 lần HOẶC tổng tiền quá 100 -> nghi ngờ
+        VelocityRule vr = new VelocityRule(3, 100, 1000, fixed(0));
+        long t0 = 10_000;
+
+        check("constructor_window_am", expect(IllegalArgumentException.class, () -> new VelocityRule(1, 1, 0, fixed(0))), "");
+        check("constructor_maxcount_am", expect(IllegalArgumentException.class, () -> new VelocityRule(-1, 1, 1000, fixed(0))), "");
+        check("constructor_maxsum_am", expect(IllegalArgumentException.class, () -> new VelocityRule(1, -1, 1000, fixed(0))), "");
+        check("amount_am_bi_tu_choi", expect(IllegalArgumentException.class, () -> vr.isSuspicious(1L, -5, t0)), "");
+
+        // Chưa ghi gì: lần đầu không nghi ngờ
+        check("lan_dau_khong_nghi", !vr.isSuspicious(1L, 10, t0), "");
+
+        // Ghi 3 giao dịch 10,10,10 (tổng 30 <= 100, số lần 3 <= 3) -> chưa vượt
+        vr.record(1L, 10, t0);
+        vr.record(1L, 10, t0);
+        vr.record(1L, 10, t0);
+        check("dem_dung_3_lan", vr.count(1L, t0) == 3, "count=" + vr.count(1L, t0));
+        check("tong_dung_30", vr.sum(1L, t0) == 30, "sum=" + vr.sum(1L, t0));
+        // isSuspicious nhìn TRƯỚC lần này: số hiện tại 3 + 1 = 4 > 3 => nghi
+        check("nhin_truoc_lan_nay_4", vr.isSuspicious(1L, 10, t0), "phai nghi vi 3+1>3");
+
+        // Nhưng tổng tiền cũng được xét: 3 giao dịch 40,40 (tổng 80), thêm 30 => 110 > 100 => nghi
+        VelocityRule vr2 = new VelocityRule(10, 100, 1000, fixed(0));
+        vr2.record(2L, 40, t0);
+        vr2.record(2L, 40, t0);
+        check("tong_vuot_nguong", vr2.isSuspicious(2L, 30, t0), "80+30=110>100");
+
+        // Cửa sổ trượt: ở t0+1000, các mốc ở t0 đã ra khỏi cửa sổ [t0, t0+1000) (lo = 0)
+        // wait: now=10_000 -> lo=9_000, mốc 10_000 KHÔNG < 9_000 nên vẫn còn... dùng mốc cũ hơn
+        VelocityRule vr3 = new VelocityRule(1, 1000, 1000, fixed(0));
+        vr3.record(3L, 50, 5_000);
+        check("con_trong_cua_so", vr3.count(3L, 5_500) == 1, "count=" + vr3.count(3L, 5_500));
+        check("ra_khoi_cua_so", vr3.count(3L, 6_001) == 0 && vr3.sum(3L, 6_001) == 0,
+            "count=" + vr3.count(3L, 6_001) + " sum=" + vr3.sum(3L, 6_001));
+
+        // userId khác nhau không lẫn
+        VelocityRule vr4 = new VelocityRule(3, 100, 1000, fixed(0));
+        vr4.record(10L, 10, t0);
+        check("user_khac_khong_lan", vr4.count(20L, t0) == 0, "count20=" + vr4.count(20L, t0));
+
+        // RiskEngine: cộng điểm và phân loại
+        RiskEngine re = new RiskEngine();
+        check("allow_khi_diem_thap", re.decide(0, false, false, 1000, false) == Decision.ALLOW, "");
+        check("allow_khi_diem_2", re.decide(2, false, false, 1000, false) == Decision.ALLOW, "");
+        // baseScore 0 + deviceNew 2 = 2 => vẫn ALLOW (< 3)
+        check("allow_2_diem", re.decide(0, true, false, 1000, false) == Decision.ALLOW, "");
+        // 0 + 2(device) + 1(payee) = 3 => CHALLENGE
+        check("challenge_3_diem", re.decide(0, true, true, 1000, false) == Decision.CHALLENGE, "");
+        // 0 + 2 + 1 + 2(amount>=10tr) = 5 => BLOCK
+        check("block_5_diem", re.decide(0, true, true, 10_000_000, false) == Decision.BLOCK, "");
+        // amount 9_999_999 chưa cộng 2 => 0+2+1=3 => CHALLENGE
+        check("amount_duoi_nguong", re.decide(0, true, true, 9_999_999, false) == Decision.CHALLENGE, "");
+        // velocitySuspicious cộng 3: baseScore 2 + 3 = 5 => BLOCK
+        check("velocity_day_block", re.decide(2, false, false, 1000, true) == Decision.BLOCK, "");
+        // biên 3 chính xác -> CHALLENGE, biên 5 chính xác -> BLOCK
+        check("bien_3_la_challenge", re.decide(3, false, false, 1000, false) == Decision.CHALLENGE, "");
+        check("bien_5_la_block", re.decide(5, false, false, 1000, false) == Decision.BLOCK, "");
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.time.*;
+import java.util.*;
+
+class VelocityRule {
+    final int maxCount;
+    final long maxSum;
+    final long windowMillis;
+    final Clock clock;
+    // userId -> danh sách (thời điểm, số tiền) còn sống trong cửa sổ
+    final Map<Long, List<long[]>> events = new HashMap<>();
+
+    VelocityRule(int maxCount, long maxSum, long windowMillis, Clock clock) {
+        if (windowMillis <= 0) throw new IllegalArgumentException("window phai duong");
+        if (maxCount < 0) throw new IllegalArgumentException("maxCount khong am");
+        if (maxSum < 0) throw new IllegalArgumentException("maxSum khong am");
+        if (clock == null) throw new IllegalArgumentException("thieu clock");
+        this.maxCount = maxCount;
+        this.maxSum = maxSum;
+        this.windowMillis = windowMillis;
+        this.clock = clock;
+    }
+
+    // Bỏ các mốc đã ra khỏi cửa sổ: chỉ giữ mốc >= now - window
+    private List<long[]> live(long userId, long nowEpoch) {
+        long lo = nowEpoch - windowMillis;
+        List<long[]> all = events.computeIfAbsent(userId, k -> new ArrayList<>());
+        all.removeIf(e -> e[0] < lo);
+        return all;
+    }
+
+    boolean isSuspicious(long userId, long amount, long nowEpoch) {
+        if (amount < 0) throw new IllegalArgumentException("so tien khong am");
+        List<long[]> liveList = live(userId, nowEpoch);
+        int cnt = liveList.size() + 1;        // +1 la lan dang xet
+        long sum = 0;
+        for (long[] e : liveList) sum += e[1];
+        sum += amount;
+        return cnt > maxCount || sum > maxSum;
+    }
+
+    void record(long userId, long amount, long nowEpoch) {
+        if (amount < 0) throw new IllegalArgumentException("so tien khong am");
+        live(userId, nowEpoch).add(new long[] { nowEpoch, amount });
+    }
+
+    int count(long userId, long nowEpoch) {
+        return live(userId, nowEpoch).size();
+    }
+
+    long sum(long userId, long nowEpoch) {
+        long s = 0;
+        for (long[] e : live(userId, nowEpoch)) s += e[1];
+        return s;
+    }
+}
+
+enum Decision { ALLOW, CHALLENGE, BLOCK }
+
+class RiskEngine {
+    Decision decide(long baseScore, boolean deviceIsNew, boolean payeeIsNew, long amount, boolean velocitySuspicious) {
+        if (amount < 0) throw new IllegalArgumentException("so tien khong am");
+        long score = baseScore;
+        if (deviceIsNew) score += 2;
+        if (payeeIsNew) score += 1;
+        if (amount >= 10_000_000) score += 2;
+        if (velocitySuspicious) score += 3;
+        if (score >= 5) return Decision.BLOCK;
+        if (score >= 3) return Decision.CHALLENGE;
+        return Decision.ALLOW;
+    }
+}`,
+      hints: [
+        'Velocity là "số lần + tổng tiền trong cửa sổ trượt [now - window, now]". Mỗi lần xét, hãy **loại bỏ các mốc có thời điểm < now - window** trước, rồi cộng số lần (cộng thêm 1 cho lần đang xét) và tổng tiền (cộng thêm {{amount}} của lần đang xét) rồi so với {{maxCount}} / {{maxSum}}.',
+        '{{isSuspicious}} phải nhìn **trước** lần này: dùng {{liveList.size() + 1}} và {{sum + amount}} chứ không phải số đã ghi. Nếu bạn cộng số đã ghi mà không +1 thì lần đầu tiên (chưa có gì) sẽ luôn trả {{false}}, nhưng lần thứ {{maxCount + 1}} lại bị bỏ sót.',
+        'Dùng {{List<long[]>}} với mỗi phần tử {{[thờiĐiểm, sốTiền]}} để vừa đếm được số lần vừa cộng được tổng tiền; {{removeIf(e -> e[0] < lo)}} dọn các mốc cũ. Đừng dùng {{double}} cho tiền — ở đây là {{long}} đồng chẵn.',
+        'RiskEngine chỉ cộng điểm thuần túy, **không** gửi OTP hay trừ tiền. Ngưỡng: {{score >= 5}} → {{BLOCK}}, {{score >= 3}} → {{CHALLENGE}}, còn lại {{ALLOW}}. Biên {{amount}} 10 triệu: {{>= 10_000_000}} mới cộng 2.',
+      ],
+      explain: `Bài này tách đúng hai lớp mà một hệ thống chống gian lận thật luôn có: **đếm hành vi** (velocity) và **quy đổi hành vi thành quyết định** (risk engine).
+
+1. **Velocity đếm trong cửa sổ trượt, không phải cửa sổ cố định.** Mỗi lần xét, ta bỏ các mốc cũ hơn {{now - window}} rồi mới đếm. Nếu dùng cửa sổ cố định kiểu "mỗi phút reset về 0" thì kẻ gian sẽ dồn ồ ạt vào cuối phút; cửa sổ trượt không có lỗ đó. Test {{con_trong_cua_so}} / {{ra_khoi_cua_so}} kiểm đúng điều này: mốc ở {{5_000}} còn sống ở {{5_500}} (khoảng 5_000 ≥ 4_500) và đã chết ở {{6_001}} (khoảng 5_000 < 5_001).
+
+2. **Nhìn trước lần đang xét.** {{isSuspicious}} cộng {{+1}} cho số lần và {{+amount}} cho tổng tiền, vì nó trả lời "nếu cho lần này đi thì có vượt không". Test {{nhin_truoc_lan_nay_4}} bắt đúng chỗ này: đã ghi 3 lần, {{maxCount = 3}}, lần thứ 4 phải bị nghi — nếu bạn chỉ đếm 3 đã ghi thì {{3 > 3}} là sai và lọt.
+
+3. **Ngưỡng ba mức.** {{ALLOW}} im lặng, {{CHALLENGE}} bắt OTP, {{BLOCK}} từ chối. Test bắt cả biên: 3 chính xác là CHALLENGE, 5 chính xác là BLOCK, 2 vẫn ALLOW. Đây là lý do nên viết điều kiện dạng {{>=}} theo thứ tự từ cao xuống, tránh khoảng hở giữa hai ngưỡng.
+
+4. **Biên và số tiền.** {{amount}} âm bị từ chối ngay, vì nếu cho đi thì kẻ gian có thể "cộng tiền âm" để kéo tổng velocity xuống và mua lại hạn mức — cùng một lỗ hổng như bài 8. {{amount}} 9_999_999 chưa chạm 10 triệu nên chưa cộng điểm; 10_000_000 mới cộng.
+
+Điều bài này **không** mô phỏng: Redis INCR/Lua (production dùng để nhiều instance cùng thấy một bộ đếm), model ML, và việc gửi OTP thật. Trong code thuần, {{events}} trong RAM đóng vai trò bộ đếm velocity — nhưng bạn phải nói được khi phỏng vấn rằng ở production nó phải nằm ở tầng dữ liệu dùng chung, nếu không restart pod là kẻ gian được "quay lại từ trắng".`,
+      },
+    ],
+    check: [
+      {
+        q: 'Vì sao hệ thống chống gian lận cần đến **ba** mức ALLOW / CHALLENGE / BLOCK thay vì chỉ cho qua hoặc chặn?',
+        options: [
+          'Vì ba mức thì chạy nhanh hơn',
+          'Vì CHALLENGE (bắt OTP/push) chặn được kẻ gian mà không chặn nhầm khách thật, hạ chi phí false positive xuống; BLOCK chỉ dành cho trường hợp gần như chắc chắn xấu',
+          'Vì BLOCK không bao giờ sai',
+          'Vì khách thích được hỏi OTP',
+        ],
+        answer: 1,
+        explain: 'Đúng (B): chặn nhầm (false positive) là chi phí thật — mất khách, tăng cuộc gọi tổng đài. CHALLENGE là step-up authentication: khách thật vẫn đi tiếp sau vài giây, kẻ gian không có OTP nên dừng; BLOCK chỉ để dành cho điểm rất cao. Sai (A): số mức không quyết định tốc độ, tốc độ do ngân sách độ trễ và việc đọc dữ liệu đã chuẩn bị sẵn. Sai (C): BLOCK vẫn có thể sai (chặn nhầm khách thật có thói quen bất thường), nên không thể dùng cho mọi trường hợp. Sai (D): khách không thích bị làm phiền, CHALLENGE là sự đánh đổi có kiểm soát chứ không phải mong muốn của khách.',
+      },
+      {
+        q: 'Velocity được đếm trên bộ nhớ của một instance (không dùng Redis/Lua). Khi production chạy 6 instance trên Kubernetes, điều gì xảy ra?',
+        options: [
+          'Vẫn đúng vì 6 instance chia nhau việc',
+          'Mỗi instance giữ bộ đếm riêng và mất sạch khi pod bị kill/scale, nên kẻ gian có thể lọt sau restart; phải dùng lệnh nguyên tử ở Redis',
+          'Chỉ cần thêm {{volatile}} là đủ',
+          'Cần tắt autoscaling',
+        ],
+        answer: 1,
+        explain: 'Đúng (B): production chạy nhiều JVM, mỗi JVM một vùng nhớ riêng; bộ đếm velocity trong RAM không được chia sẻ và biến mất khi pod bị kill để scale. Kẻ gian chỉ cần chờ đúng lúc đó để "quay lại từ trắng". Cách đúng là để con đếm ở tầng dữ liệu dùng chung và tăng bằng lệnh nguyên tử (Redis INCR hoặc Lua script). Sai (A): các instance không tự chia việc và không chia sẻ bộ nhớ. Sai (C): {{volatile}} chỉ đảm bảo nhìn thấy giá trị mới giữa thread trong cùng JVM, không chia sẻ xuyên instance. Sai (D): tắt autoscaling chữa ngọn, không sửa được bản chất "bộ đếm nằm ở RAM một instance".',
+      },
+      {
+        q: 'Trong lúc tính điểm rủi ro, vì sao **không** được gửi OTP hay ghi log "đã chặn" ngay?',
+        options: [
+          'Vì gửi OTP làm chậm phép cộng điểm',
+          'Vì đó là side-effect: giao dịch có thể bị BLOCK nhưng OTP vẫn kịp gửi, hoặc một lần retry gọi SMS hai lần, làm phiền khách và tốn chi phí',
+          'Vì OTP phải gửi trước khi tính điểm',
+          'Vì log không quan trọng',
+        ],
+        answer: 1,
+        explain: 'Đúng (B): bước tính điểm phải là phép thuần túy (pure) — chỉ đọc dữ liệu và cộng điểm, không thay đổi thế giới bên ngoài. Mọi hành động (gửi OTP, ghi log, trừ tiền) chỉ làm **một lần sau khi** đã có quyết định cuối cùng, để tránh side-effect như gửi OTP cho giao dịch đã bị chặn hay gửi hai lần khi retry. Sai (A): không phải vấn đề tốc độ. Sai (C): gửi OTP trước khi biết quyết định là nguồn gốc của side-effect. Sai (D): log lý do quyết định rất quan trọng để giải trình khiếu nại và làm nhãn — nhưng phải log sau khi có quyết định, không phải trong lúc tính điểm.',
+      },
+    ],
+    related: ['banking-016', 'banking-017', 'banking-030'],
+    tags: ['fraud', 'velocity', 'rule engine', 'risk score', 'otp', 'challenge', 'false positive', 'clock', 'banking'],
+  },
+
 );
