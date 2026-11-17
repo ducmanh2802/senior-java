@@ -24,7 +24,7 @@
         'q-security.js', 'q-microservices.js', 'q-system-design.js', 'q-scenario.js', 'q-banking.js', 'q-aws.js', 'q-ai.js',
         'q-claude.js', 'q-primer.js', 'q-devops.js', 'q-soft.js', 'q-english.js', 'q-autotest.js', 'q-remote.js'],
       quiz: ['quiz.js', 'quiz-claude.js', 'quiz-java.js', 'quiz-spring.js', 'quiz-design.js', 'quiz-ops.js', 'quiz-gaps.js', 'quiz-autotest.js',
-        'quiz-cca-1.js', 'quiz-cca-2.js', 'quiz-cca-3.js', 'quiz-cca-4.js', 'quiz-cca-5.js', 'quiz-ccao-1.js', 'quiz-ccap-1.js', 'quiz-ccao-2.js', 'quiz-ccap-2.js'],
+        'quiz-cca-1.js', 'quiz-cca-2.js', 'quiz-cca-3.js', 'quiz-cca-4.js', 'quiz-cca-5.js', 'quiz-ccao-1.js', 'quiz-ccap-1.js', 'quiz-ccao-2.js', 'quiz-ccap-2.js', 'quiz-ccdv-1.js'],
       exams: ['exams.js'],                                    // exam registry (#/exam)
       algos: ['algo.js'],
       companies: ['companies.js'],
