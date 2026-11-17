@@ -777,5 +777,320 @@ System.out.println(res.headers()); // debug header
 - **{{assertThat(page).hasURL(...)}}**: API call bằng {{request()}} không điều hướng Page; URL trang không đổi.
 - **Không có body, phải dùng {{HttpURLConnection}}**: Sai. {{APIResponse}} có {{text()}}, {{body()}}, {{json()}}.
 - **{{response != null}} là thành công**: Null-check không phản ánh HTTP status; 4xx/5xx vẫn trả response.`
-}
+},
+{
+  id: 'qz-autotest-031',
+  topic: 'autotest',
+  q: 'Trong JUnit 5, tại sao annotation {{ @BeforeAll }} mặc định yêu cầu method phải là static?',
+  options: [
+    'Để có thể gọi method mà không cần khởi tạo instance của class test',
+    'Vì JUnit 5 mặc định tạo một instance mới của class test cho mỗi phương thức {{ @Test }}',
+    'Để đảm bảo thread safety khi chạy song song',
+    'Để tăng tốc độ thực thi của suite test'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** JUnit 5 mặc định áp dụng {{ @TestInstance(Lifecycle.PER_METHOD) }}, nghĩa là mỗi phương thức test được chạy trên một instance (đối tượng) class mới, nên {{ @BeforeAll }} (chạy một lần duy nhất trước toàn bộ test) không thể gọi các method instance được.
+  
+### Vì sao các phương án còn lại sai
+- **Gọi không cần instance**: Đây là kết quả, không phải lý do thiết kế.
+- **Thread safety**: Không liên quan trực tiếp; {{ @TestInstance(Lifecycle.PER_CLASS) }} cho phép {{ @BeforeAll }} là non-static.
+- **Tăng tốc**: Không ảnh hưởng.`
+},
+{
+  id: 'qz-autotest-032',
+  topic: 'autotest',
+  q: 'Trong JUnit 5, làm thế nào để chạy một test method nhiều lần với các đầu vào khác nhau?',
+  options: [
+    'Dùng {{ @RepeatedTest }}',
+    'Dùng {{ @ParameterizedTest }} cùng với các nguồn dữ liệu như {{ @ValueSource }}',
+    'Dùng vòng lặp for bên trong phương thức {{ @Test }}',
+    'Tự gọi phương thức nhiều lần'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{ @ParameterizedTest }} là giải pháp chuẩn để chạy test với danh sách dữ liệu, giúp báo cáo chi tiết cho từng trường hợp.
+  
+### Vì sao các phương án còn lại sai
+- **@RepeatedTest**: Chạy cùng một test nhiều lần (không thay đổi input).
+- **Vòng lặp trong @Test**: Làm JUnit coi cả lần chạy là một test duy nhất; nếu lỗi ở lần giữa thì các lần sau không được kiểm tra, báo cáo khó đọc.
+- **Tự gọi method**: Không dùng được các cơ chế lifecycle của JUnit.`
+},
+{
+  id: 'qz-autotest-033',
+  topic: 'autotest',
+  q: 'Annotation {{ @Nested }} trong JUnit 5 dùng để làm gì?',
+  options: [
+    'Chạy các test song song',
+    'Tổ chức test theo nhóm logic, cho phép định nghĩa lifecycle riêng cho nhóm đó',
+    'Bỏ qua các test không cần thiết',
+    'Tự động sinh test case'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{ @Nested }} dùng để nhóm các test liên quan vào một class con bên trong class test, giúp code gọn và quản lý lifecycle (setup/teardown) riêng cho nhóm đó.
+  
+### Vì sao các phương án còn lại sai
+- **Chạy song song**: Liên quan đến config {{ junit-platform.properties }}.
+- **Bỏ qua test**: Dùng {{ @Disabled }}.
+- **Sinh test**: Không liên quan.`
+},
+{
+  id: 'qz-autotest-034',
+  topic: 'autotest',
+  q: 'Trong Mockito 5, "Strict Stubs" mang lại lợi ích gì?',
+  options: [
+    'Cho phép dùng lại stub cho mọi test',
+    'Ném lỗi nếu stub không được dùng hoặc có lỗi tham số, giúp test an toàn hơn',
+    'Tăng tốc độ chạy test đáng kể',
+    'Cho phép mock các class final'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Strict Stubs là tính năng giúp phát hiện stub dư thừa hoặc bị lỗi tham số (mismatch), giúp test không bị pass giả (false positive).
+  
+### Vì sao các phương án còn lại sai
+- **Dùng lại stub**: Đây là hành vi lỏng lẻo (loose) mà Strict Stubs ngăn chặn.
+- **Tăng tốc**: Không ảnh hưởng đến tốc độ.
+- **Class final**: Tính năng riêng của Mockito, không phải Strict Stubs.`
+},
+{
+  id: 'qz-autotest-035',
+  topic: 'autotest',
+  multi: true,
+  q: 'Những phát biểu nào đúng về {{ ArgumentCaptor }} trong Mockito? (Chọn 2)',
+  options: [
+    'Dùng để chặn đối tượng tham số truyền vào method mock để assert sau đó',
+    'Dùng để ép buộc method trả về giá trị nhất định',
+    'Hữu ích khi đối tượng tham số phức tạp không thể dùng {{ eq() }} đơn giản',
+    'Chỉ dùng được với method trả về {{ void }}'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** {{ ArgumentCaptor }} "bắt" các đối tượng được truyền vào method trong test để bạn có thể kiểm tra chi tiết các thuộc tính bên trong đối tượng đó.
+  
+### Vì sao các phương án còn lại sai
+- **Ép trả về giá trị**: Đó là {{ when().thenReturn() }}.
+- **Chỉ void**: Dùng được cho cả method trả về giá trị.`
+},
+{
+  id: 'qz-autotest-036',
+  topic: 'autotest',
+  q: 'Sự khác biệt cơ bản giữa {{ @Mock }} và {{ @Spy }} trong Mockito là gì?',
+  options: [
+    'Không khác nhau',
+    '{{ @Mock }} tạo object rỗng, còn {{ @Spy }} bao bọc object thật và gọi method thật trừ khi bị stub',
+    '{{ @Spy }} không thể stub được',
+    '{{ @Mock }} chậm hơn {{ @Spy }}'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{ @Mock }} hoàn toàn là object "giả" (trả về giá trị mặc định của kiểu dữ liệu), còn {{ @Spy }} là "bản sao" của object thật, giữ nguyên hành vi thật trừ khi bạn stub nó.
+  
+### Vì sao các phương án còn lại sai
+- **Spy không stub được**: Sai hoàn toàn; Spy có thể stub.
+- **@Mock chậm hơn**: Không đúng.`
+},
+{
+  id: 'qz-autotest-037',
+  topic: 'autotest',
+  q: 'Trong Spring Boot 3.1+, cách nào để kết nối Testcontainers với ứng dụng nhanh và tự động nhất?',
+  options: [
+    'Dùng {{ @ServiceConnection }}',
+    'Cấu hình thủ công trong {{ application-test.yml }}',
+    'Viết custom {{ ApplicationContextInitializer }}',
+    'Dùng {{ @SpringBootTest(properties = "...") }}'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{ @ServiceConnection }} tự động cấu hình các thuộc tính kết nối của Spring Boot (như URL, username, pass) trỏ vào container mà không cần viết code cấu hình tay.
+  
+### Vì sao các phương án còn lại sai
+- **Cấu hình tay**: Cũ, tốn công và dễ lỗi khi container đổi port.
+- **Custom initializer**: Cũ, phức tạp.
+- **properties**: Cần biết chính xác port/địa chỉ container, khó dùng với container port ngẫu nhiên.`
+},
+{
+  id: 'qz-autotest-038',
+  topic: 'autotest',
+  q: 'Cách tốt nhất để sử dụng một Testcontainer duy nhất cho cả bộ test suite là gì?',
+  options: [
+    'Mỗi test method khởi tạo container mới',
+    'Sử dụng static field trong class test cơ sở hoặc Singleton pattern',
+    'Không dùng container mà dùng H2',
+    'Khởi tạo trong {{ @BeforeAll }} mà không để static'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Dùng static field (thường kèm Singleton pattern) đảm bảo container khởi động một lần duy nhất cho toàn bộ class test (hoặc suite), tiết kiệm thời gian.
+  
+### Vì sao các phương án còn lại sai
+- **Mỗi test method**: Rất chậm, overhead lớn.
+- **H2**: Không giống môi trường thật, có thể sai sót khi migrate lên DB thật.
+- **@BeforeAll không static**: Không hoạt động, sẽ bị khởi tạo lại hoặc lỗi.`
+},
+{
+  id: 'qz-autotest-039',
+  topic: 'autotest',
+  multi: true,
+  q: 'Những ưu điểm nào của Testcontainers so với H2 trong integration test? (Chọn 2)',
+  options: [
+    'Giống môi trường production (DB thật)',
+    'Khởi động nhanh hơn H2',
+    'Hỗ trợ đầy đủ các tính năng DB thực (stored procedure, type đặc biệt)',
+    'Tiêu thụ ít RAM hơn'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** Testcontainers dùng Docker để chạy DB thật, loại bỏ khác biệt giữa môi trường test và prod (ví dụ: syntax PostgreSQL, Oracle mà H2 không hỗ trợ).
+  
+### Vì sao các phương án còn lại sai
+- **Khởi động nhanh hơn**: H2 (in-memory) nhanh hơn Docker container.
+- **Ít RAM hơn**: Container tốn RAM hơn nhiều.`
+},
+{
+  id: 'qz-autotest-040',
+  topic: 'autotest',
+  q: 'Sự khác biệt chính giữa {{ @DataJpaTest }} và {{ @SpringBootTest }} là gì?',
+  options: [
+    '{{ @DataJpaTest }} test toàn bộ ứng dụng, {{ @SpringBootTest }} chỉ test tầng dữ liệu',
+    '{{ @DataJpaTest }} chỉ load các component liên quan đến JPA và dùng in-memory DB, {{ @SpringBootTest }} load toàn bộ context ứng dụng',
+    '{{ @DataJpaTest }} chậm hơn {{ @SpringBootTest }}',
+    'Không có sự khác biệt'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{ @DataJpaTest }} là "slice test" tập trung cho tầng dữ liệu (nhanh, gọn), còn {{ @SpringBootTest }} khởi động toàn bộ ứng dụng (chậm, nhưng toàn diện).
+  
+### Vì sao các phương án còn lại sai
+- **Đảo ngược**: Nhầm lẫn giữa 2 cái.
+- **DataJpaTest chậm hơn**: Ngược lại, nó nhanh hơn nhiều vì load ít component.`
+},
+{
+  id: 'qz-autotest-041',
+  topic: 'autotest',
+  q: '{{ @DataJpaTest }} tự động cấu hình thành phần nào?',
+  options: [
+    'Chỉ các Repository và EntityManager, dùng in-memory DB',
+    'Tất cả Controller và Service',
+    'Chỉ các Security Config',
+    'Không cấu hình gì cả'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{ @DataJpaTest }} tập trung vào JPA, tự load @Repository, @Entity, EntityManager và tự cấu hình DB in-memory (như H2) để test nhanh.
+  
+### Vì sao các phương án còn lại sai
+- **Controller/Service**: Thường bị bỏ qua trừ khi @Import thêm.
+- **Security**: Cần cấu hình riêng.`
+},
+{
+  id: 'qz-autotest-042',
+  topic: 'autotest',
+  q: 'Đỉnh của "Test Pyramid" (Kim tự tháp kiểm thử) thường là loại test nào?',
+  options: [
+    'Unit Test',
+    'Integration Test',
+    'E2E Test (UI)',
+    'Contract Test'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Kim tự tháp test ưu tiên số lượng lớn Unit Test ở đáy, Integration ở giữa, và ít E2E Test ở đỉnh vì E2E chậm, dễ giòn và đắt đỏ.`
+},
+{
+  id: 'qz-autotest-043',
+  topic: 'autotest',
+  multi: true,
+  q: 'Trong chiến lược Test Pyramid, lý do chính để hạn chế E2E test là gì? (Chọn 2)',
+  options: [
+    'Chạy rất chậm',
+    'Dễ bị giòn (brittle - dễ fail do UI thay đổi)',
+    'Không phát hiện được lỗi logic',
+    'Tốn ít tài nguyên'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** E2E test chạy trên browser/hệ thống thật, chậm và phụ thuộc nhiều yếu tố (mạng, UI), khiến nó kém ổn định.`
+},
+{
+  id: 'qz-autotest-044',
+  topic: 'autotest',
+  q: 'Tại sao dùng {{ System.currentTimeMillis() }} trực tiếp trong code lại gây khó khăn khi test?',
+  options: [
+    'Vì nó trả về {{ int }} thay vì {{ long }}',
+    'Vì nó phụ thuộc thời gian thực của máy, khiến test không ổn định (flaky) với các logic liên quan đến thời gian',
+    'Vì nó gây lỗi biên dịch',
+    'Vì nó không thể được sử dụng trong class test'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Logic phụ thuộc thời gian thực (time-dependent) khó kiểm soát; cần sử dụng {{ Clock }} (Java 8+) để có thể "bẻ cong" (mock) thời gian trong test.`
+},
+{
+  id: 'qz-autotest-045',
+  topic: 'autotest',
+  multi: true,
+  q: 'Những yếu tố nào thường gây ra test flaky? (Chọn 2)',
+  options: [
+    'Shared state (DB, biến static) bị các test khác làm bẩn',
+    'Race condition trong test',
+    'Test chạy quá nhanh',
+    'Code không có lỗi'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Shared state làm test testA fail do testB chạy trước làm bẩn DB; race condition do bất đồng bộ không chờ đợi kỹ.`
+},
+{
+  id: 'qz-autotest-046',
+  topic: 'autotest',
+  q: 'Mục đích chính của "Contract Test" trong microservices là gì?',
+  options: [
+    'Thay thế hoàn toàn E2E test',
+    'Đảm bảo Provider và Consumer hiểu và tuân thủ đúng định dạng API mà không cần chạy cả hệ thống',
+    'Tăng tốc độ khởi động ứng dụng',
+    'Tự động sinh tài liệu API'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Contract test (Spring Cloud Contract, Pact) kiểm tra sự tương thích định dạng API giữa service gọi (Consumer) và service cung cấp (Provider) một cách cô lập.`
+},
+{
+  id: 'qz-autotest-047',
+  topic: 'autotest',
+  multi: true,
+  q: 'Quy trình Contract Test thường gồm các bước nào? (Chọn 2)',
+  options: [
+    'Consumer tạo ra contract (file định nghĩa)',
+    'Provider kiểm tra (verify) code thật chống lại contract đó',
+    'Chạy toàn bộ hệ thống lên và gọi E2E',
+    'Dùng tay test thủ công'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Consumer định nghĩa mong muốn qua contract; Provider verify code thật chống lại contract đó để đảm bảo không phá vỡ hợp đồng.`
+},
+{
+  id: 'qz-autotest-048',
+  topic: 'autotest',
+  q: 'Sự khác biệt giữa "Mock" và "Stub" là gì?',
+  options: [
+    'Không khác nhau',
+    'Stub dùng để trả về dữ liệu cứng (giả lập), Mock dùng để kiểm tra hành vi (gọi bao nhiêu lần, tham số gì)',
+    'Mock dùng để trả về dữ liệu, Stub dùng để kiểm tra hành vi',
+    'Mock chỉ dùng trong integration test'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Stub cung cấp dữ liệu giả (hợp tác - cooperation), Mock kiểm tra hành vi (xác minh - verification).`
+},
+{
+  id: 'qz-autotest-049',
+  topic: 'autotest',
+  q: 'Phát biểu nào đúng nhất về "Test Coverage"?',
+  options: [
+    'Coverage 100% nghĩa là test hoàn hảo',
+    'Coverage cao là tốt, nhưng không đảm bảo test chất lượng (bỏ sót assertion quan trọng)',
+    'Coverage thấp là tốt',
+    'Chỉ cần quan tâm line coverage'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Coverage chỉ đo lượng code được chạy qua; không đo độ chặt chẽ của các assertion hay các trường hợp biên (edge cases).`
+},
+{
+  id: 'qz-autotest-050',
+  topic: 'autotest',
+  q: 'Tại sao cần cleanup dữ liệu sau mỗi test (ví dụ xoá DB)?',
+  options: [
+    'Để làm DB trống rỗng',
+    'Để đảm bảo tính cô lập (test này không làm bẩn môi trường của test sau)',
+    'Để tăng tốc độ test',
+    'Để kiểm tra DB có xoá được không'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Tính cô lập (isolation) là yếu tố sống còn của test bền vững; dữ liệu rác từ test trước là nguồn gốc của lỗi flaky.`
+},
 );
