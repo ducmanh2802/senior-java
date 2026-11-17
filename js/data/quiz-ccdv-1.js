@@ -1268,5 +1268,407 @@ explain: `**Đáp án đúng: phương án 1 và 2.** Một request có thể đ
   ],
   answer: 1,
   explain: `**Đáp án đúng: phương án 2.** Overfitting to tests (pass test nhưng logic sai) là rủi ro lớn của coding agent. Giải pháp: tập test held-out (ẩn) — agent không thấy khi chạy, chỉ dùng để chấm điểm cuối. Chạy test nhiều lần không phát hiện bug logic ẩn. Tăng temperature làm ngẫu nhiên hơn, không đảm bảo đúng. Tắt test-running tool mất phản hồi cần thiết.`
+},
+{
+  id: 'qz-ccdv-091',
+  topic: 'claude',
+  q: '[Prompt] A legal team asks 15 questions about the same 80-page contract in one session. You set cache_control on the contract document. What happens on the 2nd through 15th turns?',
+  options: [
+    'Each turn incurs full input token cost because the contract is re-sent.',
+    'The contract prefix is read from cache at the cheaper cache_read_input_tokens rate; only the new question incurs full input cost.',
+    'Only the first turn is cached; subsequent turns are billed at double rate.',
+    'The cache is invalidated after the first turn because the user message changed.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Phần dùng chung (hợp đồng) được lưu đệm một lần (cache_creation_input_tokens). Các lượt sau đọc tiền tố đó từ cache với giá cache_read_input_tokens rẻ hơn đáng kể; chỉ câu hỏi mới bị tính phí input đầy đủ. Cache không bị vô hiệu hóa chỉ vì user message thay đổi — đó chính là mục đích của prompt caching.`
+},
+{
+  id: 'qz-ccdv-092',
+  topic: 'claude',
+  q: '[Prompt] You want to use few-shot examples to guide Claude\'s output format for invoice extraction. Where should you place the examples for best caching and attention?',
+  options: [
+    'At the very end of the user message, after the document.',
+    'Inside the system prompt, before any cached prefix.',
+    'In a separate user message before the document.',
+    'As assistant messages in the conversation history.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Đặt few-shot examples trong system prompt (trước tiền tố được cache) giúp chúng được lưu đệm cùng với system prompt, và mô hình chú ý đến chúng trước khi xử lý tài liệu. Đặt cuối user message làm examples không được cache; tách thành user message riêng làm gián đoạn tiền tố cache; dùng assistant message trong lịch sử tốn token và không được cache.`
+},
+{
+  id: 'qz-ccdv-093',
+  topic: 'claude',
+  multi: true,
+  q: '[Prompt] Which practices reduce the risk of prompt injection from untrusted user content? (Choose 2)',
+  options: [
+    'Put untrusted content in a separate user message after the system prompt and cached documents.',
+    'Use XML tags (e.g., <document>...</document>) to delimit untrusted sections.',
+    'Instruct Claude in the system prompt to ignore instructions inside user content.',
+    'Disable tools entirely when processing untrusted input.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** (1) Tách nội dung không tin cậy vào user message riêng, sau system prompt và tài liệu đã cache, giúp Claude phân biệt hướng dẫn hệ thống vs dữ liệu đầu vào. (2) Dùng thẻ XML bao quanh phần không tin cậy tạo ranh giới rõ ràng. Chỉ nhờ system prompt "bỏ qua hướng dẫn" không đủ an toàn (Claude có thể bị lừa). Tắt tool hoàn toàn là thái độ cực đoan, không cần thiết nếu đã tách biệt đúng.`
+},
+{
+  id: 'qz-ccdv-094',
+  topic: 'claude',
+  q: '[Prompt] Your system prompt is 25K tokens and you attach cache_control: {type: "ephemeral"} to it. After 6 minutes of inactivity, the next request shows cache_creation_input_tokens. Why?',
+  options: [
+    'The cache TTL expired (approximately 5 minutes of inactivity).',
+    'The system prompt was modified by a single character.',
+    'Ephemeral cache only works for user messages, not system.',
+    'You need to add cache_control to every user message as well.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** Prompt cache có thời gian sống (TTL) khoảng 5 phút không hoạt động. Sau 6 phút im lặng, cache bị xóa và request tiếp theo phải tạo lại (cache_creation_input_tokens). Thay đổi nội dung prompt cũng làm mất cache, nhưng tình huống này prompt không đổi — chỉ là hết TTL. Cache hoạt động cho system prompt, không cần gắn cache_control cho user message.`
+},
+{
+  id: 'qz-ccdv-095',
+  topic: 'claude',
+  multi: true,
+  q: '[Prompt] You send a long document (100K tokens) with cache_control at the start, followed by a short question. The response shows high cache_read_input_tokens but low input_tokens. What does this indicate? (Choose 2)',
+  options: [
+    'The document prefix was successfully read from cache.',
+    'The question tokens are counted as input_tokens.',
+    'The document was re-processed at full cost.',
+    'Cache creation happened on this request.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** cache_read_input_tokens cao nghĩa là tiền tố tài liệu được đọc từ cache (rẻ). input_tokens thấp chỉ chứa token của câu hỏi ngắn (phần không được cache). Nếu tài liệu được xử lý lại toàn bộ, cache_creation_input_tokens sẽ cao. Cache creation chỉ xảy ra ở request đầu tiên hoặc sau khi cache hết hạn.`
+},
+{
+  id: 'qz-ccdv-096',
+  topic: 'claude',
+  q: '[Prompt] You want Claude to answer concisely (under 50 words) for a FAQ bot. Which approach is most effective?',
+  options: [
+    'Set max_tokens: 50 and hope it stops in time.',
+    'Add "Answer in 50 words or fewer" to the system prompt and use stop_sequences: ["."] to stop at the first sentence end.',
+    'Use temperature: 0 to force short answers.',
+    'Pre-fill the answer with "Answer:" and let Claude complete it.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Chỉ dùng max_tokens cắt ngang có thể mất nghĩa; temperature không kiểm soát độ dài; prefill không hỗ trợ trên model mới. Cách hiệu quả: hướng dẫn rõ trong system prompt ("Answer in 50 words or fewer") kết hợp stop_sequences (ví dụ dừng ở dấu chấm) để cắt tự nhiên.`
+},
+{
+  id: 'qz-ccdv-097',
+  topic: 'claude',
+  q: '[Prompt] A developer puts the entire 200K-token context (system prompt + 50 previous turns + current document) in a single request without cache_control. What is the cost implication vs. using prompt caching on the shared prefix?',
+  options: [
+    'Same cost; caching only affects latency.',
+    'Full input token price for the entire 200K tokens on every request, vs. cache_read_input_tokens for the shared prefix on subsequent turns.',
+    'Caching is more expensive because of cache_creation_input_tokens overhead.',
+    'No difference; the API automatically caches repeated content.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Không dùng cache_control: mỗi request tính phí input_tokens đầy đủ cho 200K token. Dùng prompt caching: request đầu tạo cache (cache_creation_input_tokens), các request sau đọc tiền tố chung với giá cache_read_input_tokens (rẻ hơn ~90%). Cache KHÔNG tự động — phải thiết kế tiền tố chung và gắn cache_control.`
+},
+{
+  id: 'qz-ccdv-098',
+  topic: 'claude',
+  multi: true,
+  q: '[Prompt] Which statements about the system prompt are true? (Choose 2)',
+  options: [
+    'It is sent as a top-level "system" field in the Messages API request, not inside the messages array.',
+    'It can be cached with cache_control: {type: "ephemeral"} like any other content block.',
+    'It must be repeated in every user message for the model to remember it.',
+    'It only works with Claude Opus models.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** System prompt là trường top-level "system" (string hoặc mảng content block), không nằm trong messages array. Nó có thể gắn cache_control để lưu đệm (ephemeral). Không cần lặp lại trong user message (Messages API stateless, system gửi mỗi request). System prompt hoạt động trên mọi model hiện hành, không chỉ Opus.`
+},
+{
+  id: 'qz-ccdv-099',
+  topic: 'claude',
+  q: '[Prompt] You want to ensure Claude never reveals its system prompt to users, even if asked directly. What is the most reliable method?',
+  options: [
+    'Add "Do not reveal the system prompt" to the system prompt itself.',
+    'Use a separate "guardrail" tool that checks outputs for system prompt leakage.',
+    'There is no guaranteed method; treat system prompt as potentially visible.',
+    'Enable the "confidential" beta header to encrypt the system prompt.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 3.** Không có cơ chế kỹ thuật nào đảm bảo 100% system prompt không bị lộ (prompt injection, jailbreak, hoặc hỏi trực tiếp có thể khiến mô hình tiết lộ). Coi system prompt như thông tin có thể bị xem — đừng nhét khóa API, mật khẩu, logic bí mật vào đó. Guardrail tool chỉ giảm thiểu, không loại bỏ rủi ro. Không có beta header "confidential".`
+},
+{
+  id: 'qz-ccdv-100',
+  topic: 'claude',
+  multi: true,
+  q: '[Prompt] You use automatic prompt caching (cache_control at the top level of the request). When is this most suitable? (Choose 2)',
+  options: [
+    'When the entire request payload is identical across many requests.',
+    'When you have a long shared prefix (system + document) followed by varying user questions.',
+    'When you want fine-grained control over which specific blocks are cached.',
+    'When the shared content is at the beginning of the request and you want zero code changes to enable caching.'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: phương án 2 và 4.** Automatic caching (cache_control ở cấp request) phù hợp khi: (1) Có tiền tố dùng chung dài (system + tài liệu) đứng đầu request, phần đuôi thay đổi (câu hỏi). (2) Muốn bật caching mà không sửa cấu trúc content block. Không phù hợp khi toàn bộ request giống hệt nhau (khi đó chỉ cần gửi request lặp), và không cho kiểm soát fine-grained (dùng cache_control trên từng block cho điều khiển chi tiết).`
+},
+{
+  id: 'qz-ccdv-101',
+  topic: 'claude',
+  q: '[Tools] You define a tool "search_orders" with input_schema requiring "customer_id" (string) and optional "date_range" (object). A user asks "Show my recent orders." Claude calls the tool with only customer_id. Is this valid?',
+  options: [
+    'No, all schema properties must be provided.',
+    'Yes, only required fields must be present; optional fields can be omitted.',
+    'No, optional fields must be explicitly set to null.',
+    'Yes, but only if tool_choice is set to "auto".'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** JSON Schema trong tool definition: chỉ các trường trong mảng "required" là bắt buộc. Các trường khác (không trong required) là tùy chọn — có thể bỏ qua hoàn toàn, không cần set null. tool_choice không ảnh hưởng đến validation schema.`
+},
+{
+  id: 'qz-ccdv-102',
+  topic: 'claude',
+  multi: true,
+  q: '[Tools] Which statements about tool_choice are correct? (Choose 2)',
+  options: [
+    'tool_choice: {"type": "auto"} lets Claude decide whether to use tools (default behavior).',
+    'tool_choice: {"type": "any"} forces Claude to use at least one tool, but allows multiple.',
+    'tool_choice: {"type": "tool", "name": "X"} forces exactly one call to tool X.',
+    'tool_choice: {"type": "required"} forces tool use but only allows one tool call per turn.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** auto (mặc định): Claude tự quyết định dùng tool hay không. any: bắt buộc dùng ít nhất một tool, có thể gọi nhiều tool. tool + name: buộc gọi chính xác tool đó (một lần). required: bắt buộc dùng ít nhất một tool, KHÔNG giới hạn số lượng (có thể gọi nhiều).`
+},
+{
+  id: 'qz-ccdv-103',
+  topic: 'claude',
+  q: '[Tools] Your agent uses a client-side tool that calls an external payment API. The API returns HTTP 500. What should your agent loop do?',
+  options: [
+    'Retry the tool call immediately in a tight loop.',
+    'Send tool_result with is_error: true and the error details, letting Claude decide recovery.',
+    'Stop the agent and show the 500 error to the user.',
+    'Omit the tool_result and continue with a new user message.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Khi tool thất bại, gửi tool_result có is_error: true và chi tiết lỗi. Claude nhận biết lỗi qua is_error và có thể: thử lại với tham số sửa, gọi tool khác, hoặc hỏi người dùng. Retry ngay lập tức có thể làm tràn rate limit API bên ngoài; dừng hẳn mất tự phục hồi; bỏ qua tool_result làm Claude mất ngữ cảnh.`
+},
+{
+  id: 'qz-ccdv-104',
+  topic: 'claude',
+  q: '[Tools] When sending tool_result back to the Messages API, which field must match the original tool_use?',
+  options: [
+    'tool_name',
+    'tool_use_id',
+    'input',
+    'cache_control'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Mỗi tool_result bắt buộc có tool_use_id khớp chính xác với tool_use_id trong tool_use mà Claude đã yêu cầu. Đây là khóa để Claude ghép kết quả với lời gọi đúng. tool_name không bắt buộc trong tool_result (dù có thể thêm để debug), input là tham số đầu vào của tool_use (không phải tool_result), và cache_control không liên quan.`
+},
+{
+  id: 'qz-ccdv-105',
+  topic: 'claude',
+  q: '[Tools] You want to encourage Claude to use tools more aggressively for a coding agent. Which approach helps?',
+  options: [
+    'Set temperature to 1.5.',
+    'Add detailed tool descriptions, clear names, typed input_schema, and only truly required fields in required.',
+    'Disable all tools and rely on text output.',
+    'Use tool_choice: {"type": "none"} for the first turn.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Mô tả công cụ rõ ràng, cụ thể (name ngắn gọn, description ý nghĩa, input_schema có kiểu dữ liệu, chỉ required field thực sự bắt buộc) giúp Claude hiểu đúng lúc nào và cách dùng từng tool. Temperature cao làm tăng ngẫu nhiên, không làm tăng việc dùng tool; tắt tool thì không dùng được; tool_choice none cấm dùng tool.`
+},
+{
+  id: 'qz-ccdv-106',
+  topic: 'claude',
+  q: '[Tools] To use an MCP connector in the Messages API, which beta header is required?',
+  options: [
+    'anthropic-beta: mcp-2025-06-18',
+    'anthropic-beta: prompt-caching-2024-07-31',
+    'anthropic-beta: messages-2023-12-15',
+    'anthropic-beta: tools-2024-04-04'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** Kết nối MCP (Model Context Protocol) qua Messages API yêu cầu header beta "anthropic-beta: mcp-2025-06-18" (hoặc phiên bản mới hơn theo tài liệu). Các beta header khác: prompt-caching cho caching, messages cho API phiên bản, tools cho công cụ — không bật MCP.`
+},
+{
+  id: 'qz-ccdv-107',
+  topic: 'claude',
+  multi: true,
+  q: '[Tools] Which statements about MCP connectors are true? (Choose 2)',
+  options: [
+    'MCP connectors let Claude call external tools hosted on MCP servers without your application implementing each tool.',
+    'You must still define each MCP tool in the tools array of the request.',
+    'MCP connectors support reading resources and prompting templates from the MCP server.',
+    'MCP connectors work without any beta header.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 1 và 3.** MCP connector cho phép Claude truy cập công cụ, tài nguyên (resources) và mẫu prompt (prompts) từ MCP server bên ngoài, mà ứng dụng không cần tự triển khai từng tool. Bạn KHÔNG định nghĩa tool MCP trong mảng tools của request (chỉ cần mcp_servers config). MCP connector bắt buộc header beta mcp-2025-06-18.`
+},
+{
+  id: 'qz-ccdv-108',
+  topic: 'claude',
+  q: '[Tools] You use structured outputs (output_config.format: "json_schema") for a data extraction agent. What is a key requirement?',
+  options: [
+    'The schema must be a valid JSON Schema Draft 2020-12, and the model will always output valid JSON matching it.',
+    'You must disable streaming; structured output only works with non-streaming responses.',
+    'The schema can be any JSON object; Claude will infer the structure.',
+    'Structured output replaces the need for tool definitions.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** output_config.format: "json_schema" yêu cầu schema tuân thủ JSON Schema Draft 2020-12. Khi bật, Claude đảm bảo đầu ra là JSON hợp lệ khớp schema (nếu không sẽ lỗi hoặc retry nội bộ). Structured output hoạt động cả với streaming (trả về các delta JSON). Schema không thể tùy ý — phải chuẩn JSON Schema. Structured output dùng cho đầu ra cuối cùng, không thay thế tool definitions (dùng cho gọi công cụ).`
+},
+{
+  id: 'qz-ccdv-109',
+  topic: 'claude',
+  multi: true,
+  q: '[Tools] In an agent transcript, you notice get_order with the same order_id is called three times in a row. What is a likely cause and fix? (Choose 2)',
+  options: [
+    'The model is hallucinating; increase temperature.',
+    'The tool result did not contain the expected data, so Claude retries; ensure tool returns complete data and add a description hint.',
+    'The API key has a bug; rotate the key.',
+    'Add a description to the tool or system prompt clarifying the expected return format.'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: phương án 2 và 4.** Gọi lại cùng tool với cùng tham số thường do kết quả tool trước không thỏa mãn (thiếu trường, lỗi, hoặc dữ liệu không như mong đợi), khiến Claude thử lại. Sửa bằng cách: (1) Đảm bảo tool trả về đầy đủ dữ liệu mong đợi. (2) Thêm mô tả/hint trong tool definition hoặc system prompt về định dạng kết quả. Temperature cao làm trầm trọng hơn; không phải bug API key.`
+},
+{
+  id: 'qz-ccdv-110',
+  topic: 'claude',
+  q: '[Tools] An orchestrator delegates a task to a sub-agent by sending a brief. What is a best practice for the brief?',
+  options: [
+    'Keep it extremely short; the sub-agent has full context.',
+    'Include the specific file paths, error messages, and the exact change needed — treat it like a ticket.',
+    'Omit the brief and let the sub-agent figure it out from the conversation history.',
+    'Send the entire conversation history as the brief.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Brief cho sub-agent nên đầy đủ, cụ thể (file path, lỗi, thay đổi mong đợi) như một ticket rõ ràng. Sub-agent không tự động có toàn bộ ngữ cảnh (context window riêng, tách biệt); brief quá ngắn gây mơ hồ; không gửi brief thì sub-agent không biết nhiệm vụ; gửi toàn bộ lịch sử lãng phí token và làm nhiễu.`
+},
+{
+  id: 'qz-ccdv-111',
+  topic: 'claude',
+  q: '[Security] Where should you store the Anthropic API key in a production web application?',
+  options: [
+    'In the frontend JavaScript bundle for easy access.',
+    'In environment variables on the backend server, never exposed to the client.',
+    'In a public GitHub repository for team collaboration.',
+    'In localStorage of the user\'s browser.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** API key phải lưu trong biến môi trường (environment variables) trên backend server, không bao giờ đưa vào frontend, bundle JS, localStorage, hay repo công khai. Frontend gọi API của riêng bạn (backend), backend mới dùng API key gọi Anthropic. Việc lộ key cho phép kẻ tấn công dùng hạn mức (quota) của bạn và truy cập dữ liệu.`
+},
+{
+  id: 'qz-ccdv-112',
+  topic: 'claude',
+  multi: true,
+  q: '[Security] When Claude has a tool that accesses sensitive data (e.g., customer PII), what are the biggest risks? (Choose 2)',
+  options: [
+    'Prompt injection could trick Claude into calling the tool with unauthorized parameters.',
+    'The tool result containing PII is sent back to Anthropic servers in the next request.',
+    'The tool definition itself leaks data schema to Anthropic.',
+    'Users can directly call the tool bypassing Claude.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** (1) Prompt injection: nội dung người dùng độc hại có thể khiến Claude gọi tool nhạy cảm với tham số trái phép (ví dụ user_id của người khác). (2) Tool result chứa PII sẽ được gửi lên Anthropic trong request tiếp theo (messages array) — dữ liệu nhạy cảm rời khỏi hạ tầng của bạn. Tool definition chỉ mô tả schema, không leak dữ liệu thực. User không gọi tool trực tiếp — chỉ Claude quyết định gọi.`
+},
+{
+  id: 'qz-ccdv-113',
+  topic: 'claude',
+  q: '[Security] Before sending user data to the Anthropic API, what should you do?',
+  options: [
+    'Send it directly; Anthropic does not train on API data by default.',
+    'Strip or pseudonymize PII (emails, names, IDs) unless strictly needed for the task.',
+    'Encrypt the data with your own key before sending.',
+    'Compress the data to reduce token usage.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Nguyên tắc tối thiểu (data minimization): chỉ gửi dữ liệu thực sự cần thiết cho task. Loại bỏ hoặc giấu danh tính (pseudonymize) PII như email, tên, ID trừ khi task bắt buộc (ví dụ trích xuất hóa đơn cần tên khách). Anthropic không train trên dữ liệu API mặc định, nhưng dữ liệu vẫn được xử lý trên server của họ — giảm thiểu rủi ro bằng cách không gửi PII không cần thiết. Mã hóa tự làm không giúp vì API cần đọc plaintext. Nén không giảm token (tokenizer hoạt động trên text).`
+},
+{
+  id: 'qz-ccdv-114',
+  topic: 'claude',
+  multi: true,
+  q: '[Security] When the model refuses due to safety guidelines (refusal), what should your application do? (Choose 2)',
+  options: [
+    'Retry the same request immediately hoping for a different outcome.',
+    'Catch the refusal (stop_reason: "refusal"), log it, and show a user-friendly message explaining the content cannot be generated.',
+    'Disable safety filters by adding a system prompt instruction.',
+    'Fall back to a different model or ask the user to rephrase.'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: phương án 2 và 3.** (2) Xử lý từ chối: stop_reason là "refusal", log lại để audit, hiện thông báo thân thiện cho user. (3) Có thể thử model khác (có ngưỡng safety khác) hoặc nhờ user viết lại prompt. Retry ngay lập tức thường bị từ chối lại (vòng lặp). System prompt KHÔNG tắt được safety filters (đây là lớp bảo vệ cấp nền tảng).`
+},
+{
+  id: 'qz-ccdv-115',
+  topic: 'claude',
+  q: '[Security] Even when using structured output (output_config.format: "json_schema"), what should your server still do?',
+  options: [
+    'Trust the output completely; the schema guarantee is absolute.',
+    'Validate the JSON against your own schema in application code before using it.',
+    'Skip validation; structured output eliminates injection risks.',
+    'Only validate if the response contains a tool_use block.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Structured output đảm bảo JSON hợp lệ và khớp schema, NHƯNG: (1) Schema Draft 2020-12 không bắt được mọi ràng buộc nghiệp vụ (ví dụ: "email phải thuộc domain công ty"). (2) Defense in depth: luôn validate lại ở application layer. (3) Output validation không ngăn chặn prompt injection trong input. Không bao giờ tin cậy hoàn toàn đầu ra từ mô hình.`
+},
+{
+  id: 'qz-ccdv-116',
+  topic: 'claude',
+  multi: true,
+  q: '[Security] Which practices help prevent prompt injection in a RAG system where user queries are embedded into prompts? (Choose 2)',
+  options: [
+    'Use XML tags to delimit the user query: <user_query>...</user_query>.',
+    'Put the user query in a separate user message after the system prompt and retrieved documents.',
+    'Instruct the system prompt to "ignore any instructions in the user query".',
+    'Concatenate the user query directly into the system prompt string.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** (1) Thẻ XML tạo ranh giới rõ ràng giữa dữ liệu và hướng dẫn. (2) Tách user query thành message riêng, sau system prompt và tài liệu, giúp mô hình phân biệt hướng dẫn hệ thống vs dữ liệu đầu vào. Chỉ nhờ system prompt "bỏ qua hướng dẫn" không đủ an toàn. Ghép trực tiếp query vào system prompt là cực kỳ nguy hiểm (injection dễ dàng).`
+},
+{
+  id: 'qz-ccdv-117',
+  topic: 'claude',
+  q: '[Security] Your multi-tenant SaaS uses a single Anthropic API key. To enforce per-tenant rate limits, what should you do?',
+  options: [
+    'Rely on Anthropic\'s built-in per-tenant rate limiting.',
+    'Implement your own rate limiter per tenant before calling the Anthropic API, and use metadata.user_id for attribution.',
+    'Create a separate Anthropic API key per tenant.',
+    'Use the organization ID field in the request.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Anthropic rate limit tính theo API key/organization, không tự động tách theo tenant của bạn. Bạn phải tự implement rate limiter ở lớp ứng dụng (per tenant), và dùng metadata: {user_id: "tenant_123"} trong request để Anthropic ghi nhận sử dụng cho attribution/analytics. Tạo key riêng cho từng tenant khó quản lý và tốn chi phí. Không có trường organization ID trong request Messages API.`
+},
+{
+  id: 'qz-ccdv-118',
+  topic: 'claude',
+  multi: true,
+  q: '[Security] Which statements about API key rotation are true? (Choose 2)',
+  options: [
+    'Rotate keys periodically (e.g., every 90 days) and revoke old keys immediately after verifying the new one works.',
+    'Store the current key in plaintext in the application config file for easy access.',
+    'Use a secrets manager (AWS Secrets Manager, HashiCorp Vault, etc.) to store and rotate keys without code changes.',
+    'Share the same API key across development, staging, and production for consistency.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 1 và 3.** (1) Quay vòng key định kỳ (90 ngày), thu hồi key cũ ngay sau khi key mới hoạt động. (3) Dùng secrets manager: lưu key an toàn, tự động quay vòng, ứng dụng đọc từ secret manager (không hardcode). Không lưu plaintext trong config file. Môi trường dev/staging/prod phải dùng key riêng để tách biệt quota, audit, và giảm thiểu tác động khi key bị lộ.`
+},
+{
+  id: 'qz-ccdv-119',
+  topic: 'claude',
+  q: '[Security] A user uploads a document containing credit card numbers. You send it to Claude for summarization. What is the compliance risk?',
+  options: [
+    'No risk; Anthropic does not store API data.',
+    'Credit card data (PCI DSS) is sent to Anthropic servers, potentially violating data residency and compliance requirements unless you have a BAA/DPAddendum and tokenize the data first.',
+    'Only the summary is sent to Anthropic; the document stays on your server.',
+    'The risk is minimal because the API uses TLS encryption.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Dữ liệu thẻ tín dụng (PCI DSS) gửi lên Anthropic = dữ liệu nhạy cảm rời khỏi hạ tầng bạn. Cần: (1) Tokenize/mask số thẻ trước khi gửi (chỉ gửi bản đã làm mờ). (2) Kiểm tra BAA (Business Associate Agreement) / Data Processing Addendum với Anthropic nếu xử lý PII/PCI/HIPAA. (3) Data residency: server Anthropic có thể ở region khác. TLS chỉ bảo vệ truyền tải, không giải quyết compliance lưu trữ/xử lý.`
+},
+{
+  id: 'qz-ccdv-120',
+  topic: 'claude',
+  multi: true,
+  q: '[Security] You build a coding agent that can read/write files and run shell commands via tools. Which safety measures are essential? (Choose 2)',
+  options: [
+    'Run the agent in a sandboxed container with no network access and read-only access to non-project directories.',
+    'Give the agent full root access to the host for maximum flexibility.',
+    'Require human approval (confirmation UI) before any write or shell command executes.',
+    'Disable all tools and let the agent only output code snippets.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 1 và 3.** (1) Sandbox container: cô lập filesystem, không internet, giới hạn quyền — hạn chế thiệt hại nếu agent bị prompt injection hoặc lỗi logic. (2) Human-in-the-loop: bắt buộc xác nhận trước hành động ghi file/chạy lệnh (irreversible actions). Root access (2) cực kỳ nguy hiểm. Tắt tool (4) làm mất tính năng agent. Cả sandbox và approval đều cần thiết (defense in depth).`
 }
 );
