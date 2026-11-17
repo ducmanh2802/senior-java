@@ -77,6 +77,13 @@
       'dash.coreAllSeen': 'Bạn đã học hết bộ câu lõi — giờ tập trung ôn đến hạn và câu "Chưa biết".',
       'dash.coreOpen': 'Mở bộ câu lõi',
       'dash.more.week': 'Báo cáo tuần này',
+      'dash.jobPrepLabel': 'Đang ôn cho', 'dash.jobDaysLeft': 'Còn {n} ngày',
+      'dash.jobPlanLeft': 'Còn {n} ngày trong lộ trình',
+      'dash.jobDayPlan': 'Hôm nay là ngày {x}/{y} của lộ trình ôn',
+      'dash.jobProgress': '{p}% · {known}/{total} câu đã thuộc',
+      'dash.jobProgressDays': '{p}% · {done}/{y} ngày đã làm',
+      'dash.jobReviewToday': 'Ôn hôm nay', 'dash.jobViewAll': 'Xem tất cả ({n})',
+      'dash.jobUntitled': 'Công việc',
       'dash.wkDays': 'ngày có học', 'dash.wkReview': 'lượt ôn', 'dash.wkKnown': 'câu mới thuộc', 'dash.wkMinutes': 'phút học',
       'dash.wkQuiz': 'lượt trắc nghiệm', 'dash.wkMock': 'buổi phỏng vấn thử',
       'dash.wkWeakTitle': 'Top chủ đề yếu', 'dash.wkWeakItem': '{bad}/{seen} câu chưa vững',
@@ -171,6 +178,13 @@
       'dash.coreAllSeen': 'You have studied the whole core set — now focus on due reviews and "Don\'t know" questions.',
       'dash.coreOpen': 'Open the core set',
       'dash.more.week': 'This week’s report',
+      'dash.jobPrepLabel': 'Prepping for', 'dash.jobDaysLeft': '{n} days left',
+      'dash.jobPlanLeft': '{n} plan days left',
+      'dash.jobDayPlan': 'Today is day {x}/{y} of the plan',
+      'dash.jobProgress': '{p}% · {known}/{total} known',
+      'dash.jobProgressDays': '{p}% · {done}/{y} days done',
+      'dash.jobReviewToday': 'Review today', 'dash.jobViewAll': 'See all ({n})',
+      'dash.jobUntitled': 'Job',
       'dash.wkDays': 'active days', 'dash.wkReview': 'reviews', 'dash.wkKnown': 'newly known', 'dash.wkMinutes': 'minutes',
       'dash.wkQuiz': 'quiz runs', 'dash.wkMock': 'mock interviews',
       'dash.wkWeakTitle': 'Weakest topics', 'dash.wkWeakItem': '{bad}/{seen} not solid yet',
@@ -396,6 +410,83 @@
     const focus = company && Array.isArray(company.focus) && company.focus.length ? company.focus : App.topics().map(t => t.id);
     const left = focus.reduce((n, id) => { const s = App.stats(id); return n + Math.max(0, s.total - s.known); }, 0);
     return { plan, days, perDay: days > 0 ? Math.ceil(left / days) : 0 };
+  }
+
+  // ---------- job prep card (T2337): hiển thị trên dashboard khi có việc đang theo dõi
+  // có lộ trình ôn (prepDays) hoặc hạn nộp sắp tới (deadline ≤ 30 ngày, chưa đóng) ----------
+  const CLOSED = { offer: 1, rejected: 1 };
+  function jobDaysLeft(deadline) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(deadline || ''));
+    if (!m) return null;
+    const target = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    target.setHours(0, 0, 0, 0);
+    return Math.round((target - App.startOfDay(Date.now())) / App.DAY);
+  }
+  function jobPlanTopics(j) {
+    const seen = {}, out = [];
+    const add = t => { if (t && !seen[t]) { seen[t] = 1; out.push(t); } };
+    const a = j.analysis;
+    if (a && Array.isArray(a.must_have)) a.must_have.forEach(m => add(m && m.topic));
+    if (out.length) return out;
+    (Array.isArray(j.topics) ? j.topics : []).forEach(add);
+    return out;
+  }
+  function qualifyingJobs() {
+    const out = [];
+    (App.store.data.jobs || []).forEach(j => {
+      if (!j || j.deleted) return;
+      const d = jobDaysLeft(j.deadline);
+      if (j.prepDays || (d != null && d >= 0 && d <= 30 && !CLOSED[j.status])) out.push(j);
+    });
+    return out;
+  }
+  function pickJob(list) {
+    return list.slice().sort((a, b) => {
+      const da = jobDaysLeft(a.deadline);
+      const db = jobDaysLeft(b.deadline);
+      const A = da == null ? 1e9 : da;
+      const B = db == null ? 1e9 : db;
+      return A - B || (b.updatedAt || 0) - (a.updatedAt || 0);
+    })[0];
+  }
+  function jobProgress(j) {
+    const topics = jobPlanTopics(j);
+    if (!topics.length) return null;
+    const qs = App.lite('questions').filter(q => topics.indexOf(q.topic) >= 0);
+    if (!qs.length) return null;
+    let known = 0;
+    qs.forEach(q => { if (App.store.getStatus(q.id) === 'known') known++; });
+    return { total: qs.length, known, pct: Math.round((known / qs.length) * 100) };
+  }
+  function jobCardHtml() {
+    const list = qualifyingJobs();
+    if (!list.length) return '';
+    const j = pickJob(list);
+    const multi = list.length > 1;
+    const title = App.esc(j.title || tr('jobUntitled'));
+    const company = j.company ? ' @ ' + App.esc(j.company) : '';
+    const days = jobDaysLeft(j.deadline);
+    const daysHtml = days != null ? '<span class="db-job-days" aria-hidden="true">' + tr('jobDaysLeft', { n: days }) + '</span>' :
+      (j.prepDays ? '<span class="db-job-days" aria-hidden="true">' + tr('jobPlanLeft', { n: Math.max(0, Math.round(Number(j.prepDays) || 0)) }) + '</span>' : '');
+    const prepDays = Math.max(1, Math.min(30, Number(j.prepDays) || 0));
+    const doneMap = j.prepDone || {};
+    const doneCount = Object.keys(doneMap).filter(i => doneMap[i]).length;
+    const x = Math.min(prepDays, doneCount + 1);
+    const prog = jobProgress(j);
+    const pct = prog ? prog.pct : prepDays ? Math.round((doneCount / prepDays) * 100) : 0;
+    const dayLine = prepDays ? '<p class="db-job-day small" aria-hidden="true">' + tr('jobDayPlan', { x, y: prepDays }) + '</p>' : '';
+    const progHtml = prepDays
+      ? '<div class="progress db-job-bar"><i class="accent" style="width:' + pct + '%"></i></div>' +
+        '<p class="db-job-pct small" aria-hidden="true">' +
+        (prog ? tr('jobProgress', { p: pct, known: prog.known, total: prog.total }) : tr('jobProgressDays', { p: pct, done: doneCount, y: prepDays })) + '</p>'
+      : '';
+    const actions = '<a class="btn primary" href="#/jobs/prep/' + App.esc(String(j.id)) + '">' + tr('jobReviewToday') + '</a>' +
+      (multi ? '<a class="btn ghost sm" href="#/jobs/mine">' + tr('jobViewAll', { n: list.length }) + '</a>' : '');
+    return '<section class="card db-job-prep" aria-label="' + App.esc(tr('jobPrepLabel') + ': ' + title + company + (days != null ? ', ' + tr('jobDaysLeft', { n: days }) : '')) + '">' +
+      '<div class="db-job-head"><h2>🎯 ' + App.esc(tr('jobPrepLabel')) + ': ' + title + company + '</h2>' + daysHtml + '</div>' +
+      dayLine + progHtml +
+      '<div class="db-job-actions row">' + actions + '</div>' +
+    '</section>';
   }
 
   // ---------- pieces ----------
@@ -701,6 +792,7 @@
               '<summary>' + App.esc(title) + '</summary><div data-lazy-content>' + (dOpen(id) ? content : '') + '</div></details>';
           
           body = '<header class="db-compact-header">' + heroHtml(st, editing) + metricsHtml(st) + '</header>' +
+                 jobCardHtml() +
                  missionHtml(pomo) +
                  coreHtml() +
                  details('week', tr('more.week'), weekHtml()) +
