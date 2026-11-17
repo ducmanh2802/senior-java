@@ -2556,4 +2556,196 @@ Loi hay gap: goi lines(Set.of(o.id())) trong vong lap, tuc chinh la N+1. Trong t
     }
 }`,reference:`class BatchFetcher{int batchSize;Function<Set<Long>,Map<Long,String>> loader;Map<Long,String> cache=new HashMap<>();Set<Long> pending=new HashSet<>();BatchFetcher(int batchSize,Function<Set<Long>,Map<Long,String>> loader){this.batchSize=batchSize;this.loader=loader;}String get(long id){if(cache.containsKey(id))return cache.get(id);pending.add(id);return null;}int flush(){if(pending.isEmpty())return 0;List<Long> list=new ArrayList<>(pending);pending.clear();int batches=0;for(int i=0;i<list.size();i+=batchSize){int end=Math.min(i+batchSize,list.size());Set<Long> batch=new HashSet<>(list.subList(i,end));cache.putAll(loader.apply(batch));batches++;}return batches;}}`,hints:['Cache hit tra ngay, khong them vao pending.','flush() chia pending thanh cac lo kich thuoc batchSize, goi loader cho moi lo.','Tra ve so lo da load.'],explain:`Batch fetching gom cac id dang cho (pending) va tai theo lo (IN clause). Hibernate lam chinh xac dieu nay: khi ban cham vao collection cua entity dau tien, no gom id cua cac entity cung loai dang trong persistence context va tai theo batch. Test kiem tra viec chia lo dung kich thuoc va cache hit khong goi loader.`}],check:[{q:'Doi association sang FetchType.LAZY co tu loai bo N+1 khong?',options:['Co, LAZY luon sinh mot JOIN','Co, vi LAZY bat buoc dung second-level cache','Khong, truy cap association cua tung parent trong vong lap van phat mot query moi lan','LAZY khong dung duoc voi collection'],answer:2,explain:`LAZY chi hoan thoi diem tai; truy cap trong vong lap van N query. Can fetch join, EntityGraph, batch fetching hoac projection. LAZY khong sinh JOIN (do la viec cua fetch join), khong lien quan second-level cache, va collection mac dinh da la LAZY.`},{q:'Query co JOIN FETCH o.lines ke phan trang 20 order/trang. Hibernate 6 xu ly the nao?',options:['Tai toan bo ket qua roi cat trang trong RAM, chi in canh bao (tru khi bat fail_on_pagination_over_collection_fetch)','Dua LIMIT 20 xuong SQL va luon tra dung 20 order day du lines','Tu tach thanh hai query: phan trang order roi tai lines','Nem loi bien dich JPQL'],answer:0,explain:`JOIN nhan dong theo so line, nen LIMIT o SQL se cat giua collection. Hibernate vi vay phan trang trong RAM va canh bao HHH90003004, rat nguy hiem voi bang lon. No khong tu tach thanh hai query (do la viec ban phai lam), va JPQL van hop le nen khong co loi bien dich.`},{q:'Bat hibernate.default_batch_fetch_size=50, load 120 order roi duyet lines cua tung order. Khoang bao nhieu query?',options:['1','121','2','Khoang 4: 1 query order + khoang 3 query lines dang IN'],answer:3,explain:`Batch fetching gom toi da 50 khoa moi lan: 120 order can khoang 3 query IN cho lines, cong 1 query order. Con so chinh xac co the khac mot chut tuy cach Hibernate chia lo, nhung khong con tang theo tung order. 121 la N+1 khong co batch; 1 hay 2 query chi dat duoc bang fetch join hoac tu viet query IN khong chia lo.`},{q:'Tai sao DTO projection khong bao gio bi N+1?',options:['Vi DTO luon dung fetch join','Vi projection chi chon cot can thiet, khong tao entity nen khong co lazy loading','Vi Spring tu bat batch fetching cho DTO','Vi DTO dung second-level cache'],answer:1,explain:`Projection chi SELECT cot can thiet, tra ve record/DTO, khong tao entity JPA nen khong co association lazy, khong co N+1. Fetch join, batch fetching, second-level cache la cac mach khac.`}],related:['jpa-002','jpa-012'],tags:['N+1','batch fetching','fetch join','EntityGraph','DTO projection']
 }
+,
+{
+  id:'lesson-jpa-016',track:'jpa',order:16,title:'N+1: fetch join va batch fetching - hai cach giai quyet, mot bai tap',level:'senior',minutes:30,
+  goals:['Triển khai loadOrdersWithItems bang fetch join (1 query) va batch fetching (1 + ceil(N/batchSize) query)','Hieu khi nao chon fetch join, khi nao chon batch fetching dua vao use case','Dem so query bang repository mo phong de chung minh giai phap','Biet bat phan trang khi fetch join collection va cach xu ly'],
+  body:`### Tóm tắt
+N+1 là 1 query parent + N query child khi duyệt collection lazy. Hai giải pháp phổ biến nhất: **fetch join** (1 query JOIN) và **batch fetching** (1 query parent + ceil(N/batchSize) query IN). Fetch join phù hợp trang chi tiết (ít parent, cần đầy đủ dữ liệu); batch fetching phù hợp danh sách lớn (nhiều parent, kiểm soát số query). Bài tập dưới đây triển khai loadOrdersWithItems(strategy) nhận tham số "join" hoặc "batch" và repository đếm query để kiểm chứng.
+ 
+### N+1: vì sao 1 query parent lại sinh ra hàng trăm query child
+Khi association là LAZY (mặc định @OneToMany), Hibernate không đọc collection lúc load parent. Field collection chứa một **persistent collection** (PersistentBag) chưa có phần tử. Lần đầu gọi order.getLines().size(), collection nhờ Session chạy SELECT * FROM order_line WHERE order_id = ?.
+ 
+~~~java
+List<Order> orders = orderRepo.findAll();        // query 1: SELECT * FROM orders
+for (Order o : orders) {
+    total += o.getLines().size();                // mỗi vòng: SELECT * FROM order_line WHERE order_id = ?
+}
+~~~
+80 order → 81 query. Round-trip 1ms/query → 80ms chỉ cho DB, cộng connection pool tranh chấp → response chậm từ 50ms lên 150ms. Test 1 order chỉ thấy 2 query nên N+1 thường lọt review.
+ 
+### Giải pháp 1: Fetch join — 1 query
+~~~java
+@Query("SELECT o FROM Order o JOIN FETCH o.lines WHERE o.status = :s")
+List<Order> findWithLines(@Param("s") String status);
+~~~
+JOIN trả 1 dòng cho mỗi cặp (order, line): order có 3 lines chiếm 3 dòng. Hibernate 6 tự loại parent trùng (không cần DISTINCT). Ưu: 1 query duy nhất. Nhược: nhân dòng (payload lớn), **không phân trang an toàn khi fetch collection** — Hibernate tải toàn bộ rồi cắt trong RAM (HHH90003004).
+ 
+### Giải pháp 2: Batch fetching — 1 + ceil(N/batchSize) query
+~~~java
+@OneToMany(fetch = FetchType.LAZY)
+@BatchSize(size = 50)
+List<Line> lines;
+~~~
+Hoặc cấu hình spring.jpa.properties.hibernate.default_batch_fetch_size=50. Khi chạm vào lines của order đầu tiên, Hibernate gom id của các order đang chờ trong persistence context, tải bằng WHERE order_id IN (...) kích thước ≤ batchSize. 80 order, batchSize=50 → 1 query parent + 2 query IN = 3 query.
+ 
+### So sánh nhanh
+| Tiêu chí | Fetch join | Batch fetching |
+|---|---|---|
+| Số query | 1 | 1 + ceil(N/batchSize) |
+| Payload | Nhân dòng (parent lặp theo child) | Tách biệt, gọn hơn |
+| Phân trang | Không an toàn với collection (HHH90003004) | An toàn — chỉ phân trang parent |
+| Phù hợp | Trang chi tiết (1–20 parent) | Danh sách lớn (100+ parent) |
+| Sửa code | Thêm query JPQL / EntityGraph | Chỉ thêm @BatchSize hoặc config |
+ 
+### Bẫy phân trang fetch join collection
+JOIN FETCH o.lines + Pageable → Hibernate KHÔNG đưa LIMIT xuống SQL, tải **toàn bộ** kết quả vào RAM rồi cắt trang, cảnh báo HHH90003004. Bảng 1 triệu order gây OOM. Bật hibernate.query.fail_on_pagination_over_collection_fetch=true để biến cảnh báo thành exception khi test.
+ 
+Cách đúng: **phân trang chỉ trên parent** (query 1 lấy 20 order), rồi tải lines cho 20 id đó (fetch join WHERE o.id IN :ids hoặc batch fetching).
+ 
+### Ví dụ đời thực: API danh sách đơn hàng 5000 đơn
+Team có endpoint GET /orders trả 5000 đơn hàng kèm lines. QA test 10 đơn: 60ms. Production 5000 đơn, mỗi đơn 3 lines → N+1 = 5001 query → 5s response.
+ 
+- Lần 1: Thêm @EntityGraph(attributePaths = "lines") → 1 query JOIN, nhưng payload 15.000 dòng, response 2s (vẫn chậm do payload lớn).
+- Lần 2: Chuyển sang batch fetching @BatchSize(size = 100) → 1 query parent + 50 query IN (5000/100) = 51 query, response 180ms. Payload gọn, connection pool ít tranh chấp hơn.
+- Kết luận: Danh sách lớn → batch fetching thắng fetch join.
+ 
+### Trả lời mẫu khi phỏng vấn
+"N+1 là 1 query parent + N query child khi duyệt collection lazy. Hai giải pháp chính: fetch join (1 query JOIN) và batch fetching (1 + ceil(N/batchSize) query IN). Fetch join nhân dòng, payload lớn, không phân trang an toàn — dùng cho detail ít parent. Batch fetching tách query, kiểm soát số query bằng batchSize, phân trang an toàn — dùng cho list lớn. Bẫy: fetch join + Pageable gây OOM (HHH90003004), phải tách query. Đừng bao giờ nói 'đổi sang EAGER'."
+ 
+### Liên hệ phỏng vấn
+1. "Fetch join vs batch fetching — chọn cái nào khi nào?" — Fetch join cho detail (ít parent, cần đầy đủ), batch fetching cho list (nhiều parent, kiểm soát số query, phân trang an toàn).
+2. "Fetch join collection + Pageable xảy ra gì?" — Hibernate tải toàn bộ vào RAM, cắt trang, cảnh báo HHH90003004, nguy hiểm OOM. Phải phân trang parent rồi fetch child.
+3. "Batch fetching hoạt động như thế nào?" — Khi chạm collection entity đầu tiên, Hibernate gom id các entity cùng loại trong persistence context, tải theo lô WHERE ... IN (...) kích thước ≤ batchSize.
+4. "Khi nào batch fetching vẫn nhiều query?" — N rất lớn (10.000) với batchSize nhỏ (20) → 500 query IN. Tăng batchSize (500–1000) nhưng chú ý giới hạn tham số IN của DB (Oracle 1000, SQL Server ~2100).
+ 
+> Senior tip: Đừng chỉ nói "giảm N+1". Hãy nêu: fetch join 1 query nhưng nhân dòng, batch fetching 1 + N/batch query nhưng tách payload. Với list 5000 đơn, fetch join payload 15k dòng chậm hơn 50 query IN gọn nhẹ. Luôn đo: số query, payload (bytes), heap, thời gian DB. Batch fetching là default an toàn cho list; fetch join dành cho detail. Nếu dùng fetch join cho list, PHẢI tách phân trang parent + fetch child, không được dùng Pageable trực tiếp.
+ 
+---
+ 
+### Bài tập: loadOrdersWithItems(strategy) — fetch join (1 query) hoặc batch fetching (1 + ceil(N/batch))`
+,exercises:[{title:'loadOrdersWithItems: fetch join hoặc batch fetching với repo đếm query',prompt:`Mô phỏng repository có hai chiến lược tải order kèm lines:
+- FETCH_JOIN: 1 query JOIN (trả về list OrderLineRaw gồm orderId, lineId, sku), sau đó nhóm trong RAM.
+- BATCH: 1 query orders + ceil(N/batchSize) query lines bằng IN (giả lập batch fetching).
+ 
+Yêu cầu cài OrderService.loadOrdersWithItems(strategy, batchSize):
+- strategy là enum Strategy { FETCH_JOIN, BATCH }.
+- batchSize chỉ dùng khi strategy = BATCH (mặc định 50).
+- Trả về Map<Long, List<String>> orderId → danh sách sku, theo thứ tự order.
+- Order không có line vẫn có entry với list rỗng.
+- Repo cung cấp orders() (dem a), linesJoin() (dem b), linesBatch(ids) (dem c).
+- Kiểm tra: FETCH_JOIN → a=1, b=1, c=0; BATCH → a=1, b=0, c=ceil(N/batchSize).
+- Không gọi lines trong vòng lặp.`,starter:`enum Strategy { FETCH_JOIN, BATCH }
+record Order(long id){}
+record LineRaw(long orderId,long lineId,String sku){}
+record Line(long orderId,String sku){}
+class Repo {
+    int a=0,b=0,c=0; List<Long> lastBatchIds;
+    List<Order> orders(){ a++; return List.of(new Order(1),new Order(2),new Order(3),new Order(4),new Order(5),new Order(6),new Order(7),new Order(8),new Order(9),new Order(10)); }
+    List<LineRaw> linesJoin(){ b++; return List.of(
+        new LineRaw(1,10,"A"), new LineRaw(1,11,"B"),
+        new LineRaw(3,12,"C"), new LineRaw(3,13,"D"),
+        new LineRaw(5,14,"E"), new LineRaw(6,15,"F"),
+        new LineRaw(7,16,"G"), new LineRaw(7,17,"H"),
+        new LineRaw(9,18,"I"), new LineRaw(10,19,"J")
+    ); }
+    List<Line> linesBatch(Set<Long> ids){ c++; lastBatchIds=new ArrayList<>(ids); return List.of(
+        new Line(1,"A"), new Line(1,"B"),
+        new Line(3,"C"), new Line(3,"D"),
+        new Line(5,"E"), new Line(6,"F"),
+        new Line(7,"G"), new Line(7,"H"),
+        new Line(9,"I"), new Line(10,"J")
+    ); }
+}
+class OrderService {
+    Repo r; int batchSize=50;
+    OrderService(Repo r, int batchSize){ this.r=r; this.batchSize=batchSize; }
+    Map<Long,List<String>> loadOrdersWithItems(Strategy s){ throw new UnsupportedOperationException("TODO"); }
+}`,tests:`public class Main {
+    static int passed=0,total=0;
+    static void check(String name,boolean ok,String detail){ total++; if(ok){passed++;System.out.println("PASS "+name);}else System.out.println("FAIL "+name+": "+detail); }
+    public static void main(String[] args){
+        Repo r1=new Repo();
+        Map<Long,List<String>> m1=new OrderService(r1,50).loadOrdersWithItems(Strategy.FETCH_JOIN);
+        check("FETCH_JOIN: exactly 2 queries", r1.a==1 && r1.b==1 && r1.c==0, "a="+r1.a+", b="+r1.b+", c="+r1.c);
+        check("FETCH_JOIN: all 10 orders present", m1.size()==10, "size="+m1.size());
+        check("FETCH_JOIN: order 1 has 2 skus", List.of("A","B").equals(m1.get(1L)), "order1="+m1.get(1L));
+        check("FETCH_JOIN: order 2 empty but present", m1.get(2L)!=null && m1.get(2L).isEmpty(), "order2="+m1.get(2L));
+        check("FETCH_JOIN: order 3 has 2 skus", List.of("C","D").equals(m1.get(3L)), "order3="+m1.get(3L));
+        check("FETCH_JOIN: order 10 has 1 sku", List.of("J").equals(m1.get(10L)), "order10="+m1.get(10L));
+        check("FETCH_JOIN: order preserved", List.of(1L,2L,3L,4L,5L,6L,7L,8L,9L,10L).equals(new ArrayList<>(m1.keySet())), "keys="+m1.keySet());
+        
+        Repo r2=new Repo();
+        Map<Long,List<String>> m2=new OrderService(r2,3).loadOrdersWithItems(Strategy.BATCH);
+        check("BATCH: 1 orders + 4 batches", r2.a==1 && r2.b==0 && r2.c==4, "a="+r2.a+", b="+r2.b+", c="+r2.c);
+        check("BATCH: all 10 orders present", m2.size()==10, "size="+m2.size());
+        check("BATCH: order 1 has 2 skus", List.of("A","B").equals(m2.get(1L)), "order1="+m2.get(1L));
+        check("BATCH: order 2 empty but present", m2.get(2L)!=null && m2.get(2L).isEmpty(), "order2="+m2.get(2L));
+        check("BATCH: last batch size <= batchSize", r2.lastBatchIds!=null && r2.lastBatchIds.size()<=3, "lastBatch="+r2.lastBatchIds);
+        
+        Repo r3=new Repo();
+        Map<Long,List<String>> m3=new OrderService(r3,5).loadOrdersWithItems(Strategy.BATCH);
+        check("BATCH size 5: 2 batches", r3.a==1 && r3.b==0 && r3.c==2, "a="+r3.a+", b="+r3.b+", c="+r3.c);
+        
+        Repo empty=new Repo(){ List<Order> orders(){ a++; return List.of(); } };
+        Map<Long,List<String>> me=new OrderService(empty,50).loadOrdersWithItems(Strategy.FETCH_JOIN);
+        check("empty: FETCH_JOIN no lines query", me.isEmpty() && empty.b==0, "b="+empty.b);
+        Map<Long,List<String>> me2=new OrderService(empty,50).loadOrdersWithItems(Strategy.BATCH);
+        check("empty: BATCH no lines query", me2.isEmpty() && empty.c==0, "c="+empty.c);
+        
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,reference:`enum Strategy { FETCH_JOIN, BATCH }
+record Order(long id){}
+record LineRaw(long orderId,long lineId,String sku){}
+record Line(long orderId,String sku){}
+class Repo {
+    int a=0,b=0,c=0; List<Long> lastBatchIds;
+    List<Order> orders(){ a++; return List.of(new Order(1),new Order(2),new Order(3),new Order(4),new Order(5),new Order(6),new Order(7),new Order(8),new Order(9),new Order(10)); }
+    List<LineRaw> linesJoin(){ b++; return List.of(
+        new LineRaw(1,10,"A"), new LineRaw(1,11,"B"),
+        new LineRaw(3,12,"C"), new LineRaw(3,13,"D"),
+        new LineRaw(5,14,"E"), new LineRaw(6,15,"F"),
+        new LineRaw(7,16,"G"), new LineRaw(7,17,"H"),
+        new LineRaw(9,18,"I"), new LineRaw(10,19,"J")
+    ); }
+    List<Line> linesBatch(Set<Long> ids){ c++; lastBatchIds=new ArrayList<>(ids); return List.of(
+        new Line(1,"A"), new Line(1,"B"),
+        new Line(3,"C"), new Line(3,"D"),
+        new Line(5,"E"), new Line(6,"F"),
+        new Line(7,"G"), new Line(7,"H"),
+        new Line(9,"I"), new Line(10,"J")
+    ); }
+}
+class OrderService {
+    Repo r; int batchSize=50;
+    OrderService(Repo r, int batchSize){ this.r=r; this.batchSize=batchSize; }
+    Map<Long,List<String>> loadOrdersWithItems(Strategy s){
+        List<Order> orders=r.orders();                                    // query 1
+        Map<Long,List<String>> out=new LinkedHashMap<>();
+        for(Order o:orders)out.put(o.id(),new ArrayList<>());
+        if(out.isEmpty())return out;
+        
+        if(s==Strategy.FETCH_JOIN){
+            for(LineRaw l:r.linesJoin())out.get(l.orderId()).add(l.sku()); // query 2: JOIN
+        }else{
+            List<Long> ids=new ArrayList<>(out.keySet());                 // BATCH: chia lo
+            for(int i=0;i<ids.size();i+=batchSize){
+                int end=Math.min(i+batchSize,ids.size());
+                Set<Long> batch=new HashSet<>(ids.subList(i,end));
+                for(Line l:r.linesBatch(batch))if(batch.contains(l.orderId()))out.get(l.orderId()).add(l.sku());
+            }
+        }
+        return out;
+    }
+}`,hints:['Tạo entry (list rỗng) cho TẤT CẢ order TRƯỚC khi nạp line — order không có line vẫn xuất hiện.','FETCH_JOIN: gọi linesJoin() MỘT LẦN, nhóm theo orderId trong RAM.','BATCH: gom ids, chia lô kích thước batchSize, gọi linesBatch(batch) cho từng lô.','Kiểm tra out.isEmpty() TRƯỚC khi gọi lines — IN rỗng là SQL không hợp lệ.'],explain:`FETCH_JOIN mô phỏng 1 query JOIN: trả về OrderLineRaw (orderId, lineId, sku) cho tất cả line của tất cả order. Nhóm theo orderId trong RAM → order không có line vẫn có entry (giống LEFT JOIN). Tổng 2 query (orders + linesJoin).
+ 
+BATCH mô phỏng batch fetching của Hibernate: query 1 lấy orders, sau đó chia tập orderId thành các lô kích thước batchSize, mỗi lô gọi linesBatch(ids) → 1 query IN. 10 order, batchSize=3 → ceil(10/3)=4 lô → 1 + 4 = 5 query. Batch fetching thật của Hibernate cũng làm y chang: gom id trong persistence context, chia lô, query IN.
+ 
+Lỗi hay gặp:
+- Gọi linesBatch(Set.of(id)) trong vòng lặp → quay lại N+1.
+- Quên tạo entry rỗng cho order trước → order không có line bị mất khỏi map.
+- Không check empty trước khi gọi linesBatch → IN () rỗng lỗi SQL.
+- FETCH_JOIN dùng linesBatch hoặc ngược lại → đếm query sai.`,}],check:[{q:'Fetch join collection + Pageable (phân trang 20 order/trang). Hibernate 6 xử lý thế nào?',options:['Tải toàn bộ kết quả rồi cắt trang trong RAM, chỉ in cảnh báo (trừ khi bật fail_on_pagination_over_collection_fetch)','Đưa LIMIT 20 xuống SQL và luôn trả đúng 20 order đầy đủ lines','Tự tách thành hai query: phân trang order rồi tải lines','Ném lỗi biên dịch JPQL'],answer:0,explain:`JOIN nhân dòng theo số line, nên LIMIT ở SQL sẽ cắt giữa collection. Hibernate vì vậy phân trang trong RAM và cảnh báo HHH90003004, rất nguy hiểm với bảng lớn. Nó không tự tách thành hai query (đó là việc bạn phải làm), và JPQL vẫn hợp lệ nên không có lỗi biên dịch.`},{q:'Batch fetching với batchSize=50, load 120 order rồi duyệt lines. Khoảng bao nhiêu query?',options:['1','121','2','Khoảng 4: 1 query order + 3 query lines IN'],answer:3,explain:`Batch fetching gom tối đa 50 id mỗi lô: 120 order cần 3 lô (50+50+20) → 3 query IN cho lines, cộng 1 query order = 4 query. Không còn tăng theo từng order.`},{q:'Tại sao fetch join không phù hợp danh sách lớn (5000 order, 3 lines/order)?',options:['Vì fetch join không hỗ trợ collection','Vì payload 15.000 dòng nhân dòng, chậm hơn nhiều query IN gọn nhẹ','Vì Hibernate không cho phép fetch join nhiều order','Vì fetch join chỉ dùng được cho to-one'],answer:1,explain:`Fetch join nhân dòng: 5000 order × 3 lines = 15.000 dòng result set. Payload lớn, tốn network, heap, thời gian parse. Batch fetching: 1 query order (5000 dòng) + ceil(5000/batchSize) query IN (mỗi query vài trăm dòng) → payload gọn, song song hóa tốt hơn.`},{q:'Khi dùng batch fetching, giới hạn tham số IN của database cần lưu ý gì?',options:['Không có giới hạn','Oracle 1000, SQL Server ~2100, PostgreSQL không giới hạn nhưng hiệu năng giảm','Chỉ MySQL có giới hạn','Giới hạn là 100 cho mọi DB'],answer:1,explain:`Oracle cứng 1000 tham số cho IN. SQL Server ~2100. PostgreSQL không cứng nhưng query quá dài chậm. Khi batchSize lớn (500–1000) cần chia lô thủ công hoặc dùng temp table / CTE. Hibernate batch fetching tự chia lô theo batchSize nên an toàn miễn batchSize ≤ 1000.`}],related:['jpa-002','jpa-012','jpa-015'],tags:['N+1','fetch join','batch fetching','@BatchSize','query counting']
+}
 );
