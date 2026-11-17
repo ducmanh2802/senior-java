@@ -22,3 +22,4 @@ AGENTS.md (đọc mục liên quan). Chỉ THÊM trước dòng `);` cuối file
   - devops-179 (senior): Điều tra OOMKilled/Pod K8s (heap dump + Eclipse MAT, NMT baseline/diff, thread dump series) phân biệt heap vs off-heap leak.
 - Mỗi câu: **Tóm tắt**, giải thích thuật ngữ, ### cơ chế từng bước, code block ~~~, ### Ví dụ đời thực có số liệu, ### Lỗi hay gặp, ### Trả lời mẫu khi phỏng vấn, > Senior tip, follow >=3. Không backtick, không ${.
 - Chạy: node --check js/data/q-devops.js OK. node scripts/build-light-index.js OK (tổng 2165 câu, devops 178 câu). node scripts/validate.js exit 1 do lỗi **pre-existing không thuộc phạm vi task**: quiz-ccao-2.js (lỗi cú pháp), devops-171.a (inline code có { } lồng nhau, có từ trước), devops-173.a (code fence ~~~ chưa đóng, có từ trước). Không sửa được theo luật 3/5 (chỉ thêm vào cuối file sở hữu). Các câu mới devops-175..179 không phát sinh lỗi/warning mới.
+Reviewed-by: kilo (T2329R)
