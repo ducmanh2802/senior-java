@@ -27,3 +27,4 @@ Added 2 new incident labs:
 - lab-incident-042: report-generator OOMKilled (exit 137) despite heap 1.2/3GB due to Xmx=limit, Metaspace 1.06GB (JasperReports Groovy compile), Direct/Other ~1.1GB (PDF export), thread stack 200 threads. Fixed with MaxRAMPercentage=60, MaxMetaspaceSize, MaxDirectMemorySize, streaming PDF.
 Both labs: artifacts 30-150 lines, answers 3000-5000+ chars, rubric ≥3 items, hints ≥2.
 `node --check js/data/labs-incident.js` ✓, `node scripts/build-light-index.js` ✓, `node scripts/validate.js` ✓ (only pre-existing errors in other files).
+Reviewed-by: kilo (T2304R)
