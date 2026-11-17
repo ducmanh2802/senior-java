@@ -2860,6 +2860,336 @@ Keyset cho cuộn/trang tiếp theo nhanh và ổn định nhưng không hỗ tr
     ],
     related: ['db-005', 'api-017', 'sql-002', 'sql-011'],
     tags: ['pagination', 'keyset', 'cursor', 'offset', 'seek', 'index'],
+  },
+  {
+    id: 'lesson-sql-014',
+    track: 'sql',
+    order: 14,
+    title: 'Window function cho báo cáo giao dịch ngân hàng: PARTITION BY, running balance, LAG và so với GROUP BY',
+    level: 'senior',
+    minutes: 30,
+    goals: [
+      'Giải thích {{PARTITION BY}}, {{ORDER BY}} và frame trong {{OVER(...)}} và phân biệt {{ROW_NUMBER}} với {{RANK}} khi có giá trị bằng nhau',
+      'Viết được truy vấn PostgreSQL tính số dư lũy kế (running balance) bằng {{SUM() OVER}} và phát hiện giao dịch bất thường bằng {{LAG}}',
+      'Nêu rõ khác biệt giữa window function và {{GROUP BY}}, và tự mô phỏng running balance, rank theo partition trên {{List<Txn>}} bằng Java thuần',
+    ],
+    body: `**Tóm tắt:** Window function (hàm cửa sổ) cho phép tính giá trị phân tích trên một "cửa sổ" các dòng liên quan mà vẫn **giữ nguyên từng dòng**; nhờ vậy ta xếp hạng giao dịch, tính số dư lũy kế và so sánh với giao dịch trước trong cùng tài khoản mà không phải gộp mất chi tiết như {{GROUP BY}}.
+
+### Window function là gì
+**Window function** là hàm được tính trên một tập dòng liên quan tới dòng hiện tại, nhưng kết quả được gắn thêm vào **mỗi dòng** (một dòng đầu vào vẫn cho ra một dòng đầu ra). Cú pháp tổng quát:
+
+~~~sql
+<ham>(...) OVER (
+  PARTITION BY <cot_chia_nhom>
+  ORDER BY <cot_thu_tu>
+  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+)
+~~~
+
+- {{PARTITION BY}}: **chia nhóm** (partition, phân vùng) dữ liệu thành các nhóm độc lập. Window function chỉ "nhìn" các dòng trong cùng partition với dòng hiện tại. Ví dụ {{PARTITION BY account_id}} thì mỗi tài khoản là một nhóm riêng, giao dịch của tài khoản A không ảnh hưởng tới tài khoản B. Bỏ qua {{PARTITION BY}} thì cả bảng là một partition.
+- {{ORDER BY}} trong {{OVER}}: xác định **thứ tự dòng bên trong mỗi partition**. Thứ tự này quyết định ai đứng trước/đứng sau khi xếp hạng, và quyết định "lũy kế tới đâu" khi cộng dồn.
+- **Frame** (khung cửa sổ): với hàm tổng hợp như {{SUM}}, {{AVG}}, frame quy định "tính trên những dòng nào so với dòng hiện tại". {{ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}} nghĩa là: từ dòng đầu partition tới đúng dòng hiện tại (cộng từng dòng một). **Lưu ý**: nếu có {{ORDER BY}} mà không ghi frame, PostgreSQL mặc định dùng {{RANGE ... CURRENT ROW}}; {{RANGE}} coi các dòng có cùng giá trị ORDER BY là "đồng hạng" và gộp chúng, nên running balance có thể nhảy bất thường khi trùng thời điểm. Sao kê tiền nên ghi rõ {{ROWS ...}} và thêm cột phụ (ví dụ {{tx_id}}) để thứ tự xác định. Các hàm xếp hạng ({{ROW_NUMBER}}, {{RANK}}) và {{LAG}} bỏ qua frame.
+
+Về thứ tự thực thi trong SQL: window function được tính **sau** {{WHERE}}, {{GROUP BY}}, {{HAVING}} và **trước** {{ORDER BY}} cuối cùng của câu truy vấn. Vì vậy không thể lọc {{WHERE rn <= 3}} ngay ở cùng mức với nơi định nghĩa {{rn}}; phải bọc trong truy vấn con (subquery) hoặc CTE (Common Table Expression, truy vấn tạm đặt tên).
+
+### ROW_NUMBER và RANK: xếp hạng trong từng partition
+Giả sử muốn biết giao dịch nào lớn nhất trong mỗi tài khoản. {{ROW_NUMBER()}} gán số thứ tự 1, 2, 3... không trùng trong mỗi partition theo thứ tự đã chỉ định. {{RANK()}} gán cùng hạng cho các dòng **bằng nhau** (tie, hòa) và **nhảy hạng** sau đó (giống xếp hạng thể thao: hai người hạng 1 thì người tiếp theo là hạng 3). {{DENSE_RANK()}} cũng cùng hạng khi hòa nhưng **không nhảy** (người tiếp theo là hạng 2).
+
+~~~sql
+SELECT account_id, tx_id, amount,
+       ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY amount DESC, tx_id) AS rn,
+       RANK()       OVER (PARTITION BY account_id ORDER BY amount DESC)         AS rk
+FROM bank_txn;
+~~~
+
+Ví dụ một tài khoản có các giao dịch 500, 500, 200 (sắp theo amount giảm dần): {{ROW_NUMBER}} cho 1, 2, 3 (thêm {{tx_id}} để ổn định khi tie); {{RANK}} cho 1, 1, 3. Chọn hàm nào tùy mục đích: "lấy đúng 1 giao dịch lớn nhất" nên dùng {{ROW_NUMBER}}; "tất cả giao dịch thuộc mức cao nhất" nên dùng {{RANK}}.
+
+### Running balance bằng SUM() OVER
+**Running balance** (số dư lũy kế, hay running total) là tổng cộng dồn từ đầu tới thời điểm hiện tại, giống cột số dư trên sao kê ngân hàng. Mỗi giao dịch cộng (hoặc trừ, nếu amount âm) vào số dư của các giao dịch trước đó trong **cùng tài khoản**.
+
+~~~sql
+SELECT account_id, tx_id, tx_date, amount,
+       SUM(amount) OVER (
+         PARTITION BY account_id
+         ORDER BY tx_date, tx_id
+         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+       ) AS running_balance
+FROM bank_txn
+ORDER BY account_id, tx_date, tx_id;
+~~~
+
+Với {{PARTITION BY account_id}}, tổng lũy kế **reset** khi sang tài khoản khác: số dư của tài khoản B bắt đầu lại từ đầu, không dính sang tài khoản A. Đây là điểm mấu chốt khi làm báo cáo nhiều tài khoản.
+
+### LAG: phát hiện giao dịch bất thường bằng cách nhìn về dòng trước
+{{LAG(expr, offset, default)}} là hàm trả về giá trị {{expr}} của dòng **đứng trước** {{offset}} vị trí trong cùng partition (mặc định offset = 1, tức dòng ngay trước). Nếu không có dòng trước (dòng đầu partition) thì trả {{default}} (mặc định {{NULL}}). Ngược lại, {{LEAD}} nhìn về dòng sau.
+
+Trong báo cáo giao dịch ngân hàng, {{LAG}} rất hữu ích để phát hiện bất thường:
+- So sánh số tiền với giao dịch liền trước: {{amount - LAG(amount, 1, 0) OVER (PARTITION BY account_id ORDER BY tx_date, tx_id)}} cho ra độ chênh lệch (delta). Delta tăng đột biến có thể là dấu hiệu giao dịch bất thường.
+- Kiểm tra giao dịch đầu tiên của tài khoản: nếu {{LAG(tx_id) OVER (...) IS NULL}} thì đây là giao dịch đầu tiên trong partition.
+
+~~~sql
+SELECT account_id, tx_id, tx_date, amount,
+       LAG(amount, 1, 0) OVER (
+         PARTITION BY account_id ORDER BY tx_date, tx_id
+       ) AS prev_amount,
+       amount - LAG(amount, 1, 0) OVER (
+         PARTITION BY account_id ORDER BY tx_date, tx_id
+       ) AS delta_from_prev,
+       CASE
+         WHEN amount > 5 * GREATEST(LAG(amount, 1, amount) OVER (
+                PARTITION BY account_id ORDER BY tx_date, tx_id), 1)
+         THEN 'ANOMALY'
+         ELSE 'OK'
+       END AS flag
+FROM bank_txn
+ORDER BY account_id, tx_date, tx_id;
+~~~
+
+Ví dụ: tài khoản có các giao dịch 100, 120, 1500, 130 thì delta của giao dịch 1500 so với 120 là 1380 và bị gắn cờ {{ANOMALY}} (gấp nhiều lần giao dịch trước) — đây là tín hiệu cần rà soát.
+
+### So sánh với GROUP BY
+{{GROUP BY}} **gộp** nhiều dòng thành một dòng đại diện cho mỗi nhóm. Window function **không gộp**, giữ nguyên từng dòng.
+
+~~~sql
+-- GROUP BY: 1 dòng / tài khoản, mất chi tiết từng giao dịch
+SELECT account_id,
+       COUNT(*) AS tx_count,
+       SUM(amount) AS total_amount
+FROM bank_txn
+GROUP BY account_id;
+
+-- Window function: giữ từng giao dịch, thêm ngữ cảnh của cả nhóm
+SELECT account_id, tx_id, tx_date, amount,
+       COUNT(*)    OVER (PARTITION BY account_id) AS tx_count_in_account,
+       SUM(amount) OVER (PARTITION BY account_id
+                         ORDER BY tx_date, tx_id
+                         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_balance
+FROM bank_txn;
+~~~
+
+| Tiêu chí | {{GROUP BY}} | Window function |
+|---|---|---|
+| Số dòng đầu ra | Giảm: 1 dòng / nhóm | Giữ nguyên: 1 dòng / dòng đầu vào |
+| Chi tiết từng dòng | Mất sau khi gộp | Giữ lại, thêm cột tính toán |
+| Tính lũy kế, xếp hạng, so với dòng trước | Không làm trực tiếp được | Là mục đích chính ({{SUM OVER}}, {{ROW_NUMBER}}, {{LAG}}) |
+| Khi nào dùng | Báo cáo tổng hợp (tổng, đếm, trung bình theo nhóm) | Báo cáo chi tiết cần ngữ cảnh (sao kê, xếp hạng, phát hiện bất thường) |
+
+Hai cách bổ sung cho nhau, không thay thế nhau. Thực tế hay cần cả hai: dùng window function để gắn running balance/rank, rồi có thể {{GROUP BY}} ở tầng khác để tổng hợp.
+
+### Ví dụ đời thực
+**Tình huống:** Ngân hàng số có bảng {{bank_txn}} (~8 triệu giao dịch/tháng, 400 nghìn tài khoản). Bộ phận vận hành cần báo cáo sao kê hàng ngày kèm số dư lũy kế và một danh sách giao dịch "đột biến" (lớn gấp ≥ 5 lần giao dịch liền trước của cùng tài khoản) để rà soát thủ công.
+
+**Triệu chứng ban đầu:** Dev viết vòng lặp trong Java: với mỗi tài khoản nạp toàn bộ giao dịch rồi tự cộng dồn và so sánh. Job chạy 45 phút, chiếm 6 GB RAM vì giữ nhiều list trong bộ nhớ, và thỉnh thoảng timeout.
+
+**Điều tra:** Profiling cho thấy phần lớn thời gian là round-trip DB (truy vấn lặp theo từng tài khoản) và xử lý trong ứng dụng. Dữ liệu cần thiết (thứ tự, tổng lũy kế, giá trị trước) đều là phép toán theo thứ tự trong nhóm — đúng bài toán của window function.
+
+**Xử lý:** Chuyển logic xuống DB bằng một truy vấn window function: {{SUM(...) OVER (PARTITION BY account_id ORDER BY tx_date, tx_id ROWS ...)}} cho running balance, {{LAG(amount) OVER (PARTITION BY account_id ORDER BY tx_date, tx_id)}} cho delta. Thêm index {{(account_id, tx_date, tx_id)}} để DB đọc theo đúng thứ tự partition và tránh bước sort tốn kém. Lọc cờ {{ANOMALY}} ở truy vấn ngoài.
+
+**Kết quả đo được:** Job giảm còn ~2 phút 10 giây, RAM ứng dụng giảm xuống dưới 400 MB (chỉ stream kết quả). Truy vấn chạy ổn định nhờ index khớp {{PARTITION BY + ORDER BY}}. Độ chính xác tăng vì frame {{ROWS}} loại bỏ lỗi cộng gộp khi trùng thời điểm.
+
+### Liên hệ phỏng vấn
+Khi được hỏi "Làm sao tính số dư lũy kế / xếp hạng giao dịch trong mỗi tài khoản?" hãy trả lời theo cấu trúc: (1) dùng window function với {{PARTITION BY account_id}} để tách từng tài khoản, (2) {{ORDER BY}} theo thời gian (+ id) để có thứ tự xác định, (3) {{SUM(...) OVER (... ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)}} cho running balance và nêu rõ bẫy frame mặc định {{RANGE}}, (4) {{ROW_NUMBER}} vs {{RANK}} khi tie, (5) {{LAG}} để so với dòng trước phục vụ phát hiện bất thường, (6) so sánh với {{GROUP BY}} (GROUP BY mất chi tiết dòng). Nêu thêm index {{(account_id, tx_date, tx_id)}} và việc DB thực thi bằng sort + duyệt một lần ({{WindowAgg}}) là điểm cộng senior.
+
+### Trả lời mẫu khi phỏng vấn
+"Với báo cáo giao dịch ngân hàng, em dùng window function để vừa giữ chi tiết từng giao dịch vừa có số liệu theo ngữ cảnh tài khoản. Cụ thể, em {{PARTITION BY account_id}} để mỗi tài khoản là một nhóm riêng, {{ORDER BY tx_date, tx_id}} để xác định thứ tự. Số dư lũy kế tính bằng {{SUM(amount) OVER (PARTITION BY account_id ORDER BY tx_date, tx_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)}}; em ghi rõ {{ROWS}} thay vì để mặc định {{RANGE}} vì {{RANGE}} gộp các dòng đồng hạng cùng thời điểm và làm số dư nhảy sai. Để xếp hạng giao dịch lớn trong tài khoản em dùng {{ROW_NUMBER}} nếu cần hạng duy nhất, còn {{RANK}} nếu muốn các giao dịch bằng nhau cùng hạng. Để phát hiện bất thường em dùng {{LAG(amount)}} để lấy giá trị giao dịch trước và so sánh delta. Khác với {{GROUP BY}} vốn gộp thành một dòng mỗi tài khoản và mất chi tiết, window function giữ từng dòng nên phù hợp cho sao kê. Về hiệu năng, DB thường sort theo partition/order rồi duyệt một lần, nên index {{(account_id, tx_date, tx_id)}} giúp tránh sort và truy vấn chạy ổn định."
+
+> Senior tip: luôn thêm cột tie-breaker duy nhất ({{tx_id}}) vào {{ORDER BY}} của window khi tính running balance hoặc dùng {{ROW_NUMBER}}, để kết quả **xác định** (deterministic) và không phụ thuộc thứ tự vật lý của bảng. Kiểm tra bằng {{EXPLAIN (ANALYZE, BUFFERS)}}: nếu thấy {{Sort}} tốn kém trước {{WindowAgg}}, cân nhắc index khớp {{(partition_col, order_col)}}; và nhớ frame {{ROWS}} cho tiền để tránh bẫy {{RANGE}} khi trùng timestamp.`,
+    exercises: [
+      {
+        title: 'Mô phỏng running balance và rank theo partition trên giao dịch ngân hàng',
+        prompt: `Cho lớp {{Txn}} (đã có): {{account}} (String, mã tài khoản), {{date}} (String dạng {{yyyy-MM-dd}}), {{amount}} (long, số tiền giao dịch, có thể âm). Viết lớp {{BankReport}} mô phỏng window function trên {{List<Txn>}}:
+
+- {{rankByAmountDesc(List<Txn> txns)}}: trả {{List<Integer>}} thẳng hàng với đầu vào. Mỗi phần tử là hạng của giao dịch trong **cùng tài khoản** theo {{amount}} giảm dần, dùng ngữ nghĩa {{ROW_NUMBER}} (hạng 1 là lớn nhất, không trùng). Khi hai giao dịch cùng tài khoản có {{amount}} bằng nhau, giao dịch xuất hiện **trước** trong danh sách đầu vào nhận hạng nhỏ hơn (ổn định).
+- {{runningBalance(List<Txn> txns)}}: trả {{List<Long>}} thẳng hàng với đầu vào. Mỗi phần tử là số dư lũy kế của giao dịch đó trong **cùng tài khoản**, cộng dồn theo thứ tự {{date}} tăng dần; nếu cùng {{date}} thì giao dịch xuất hiện trước trong danh sách đầu vào được cộng trước (frame ROWS, từng dòng một).
+
+Yêu cầu: kết quả phải gắn đúng vị trí từng dòng đầu vào (dòng {{i}} ra giá trị {{i}}), đầu vào có thể lộn xộn và các tài khoản xen kẽ, số dư lũy kế **reset** khi sang tài khoản khác, **không được sửa** danh sách đầu vào.`,
+        starter: `class Txn {
+    final String account;
+    final String date;   // yyyy-MM-dd
+    final long amount;
+    Txn(String account, String date, long amount) {
+        this.account = account;
+        this.date = date;
+        this.amount = amount;
+    }
+}
+
+class BankReport {
+
+    // ROW_NUMBER() OVER (PARTITION BY account ORDER BY amount DESC, input_order ASC)
+    List<Integer> rankByAmountDesc(List<Txn> txns) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    // SUM(amount) OVER (PARTITION BY account ORDER BY date ASC, input_order ASC ROWS ...)
+    List<Long> runningBalance(List<Txn> txns) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static Txn t(String acc, String date, long amount) { return new Txn(acc, date, amount); }
+
+    public static void main(String[] args) {
+        BankReport br = new BankReport();
+        check("rank by amount desc per account, aligned to input", () -> {
+            // A: 200 -> 1, 100 -> 2 ; B: 150 -> 1
+            List<Txn> in = List.of(t("A", "2024-01-02", 100), t("B", "2024-01-01", 150), t("A", "2024-01-01", 200));
+            eq(List.of(2, 1, 1), br.rankByAmountDesc(in));
+        });
+        check("rank tie keeps input order (ROW_NUMBER semantics)", () -> {
+            // A: all 100 -> ranks 1,2,3 in input order
+            List<Txn> in = List.of(t("A", "2024-01-01", 100), t("A", "2024-01-02", 100), t("A", "2024-01-03", 100));
+            eq(List.of(1, 2, 3), br.rankByAmountDesc(in));
+        });
+        check("running balance per account ordered by date", () -> {
+            // A: 100 (01-02) -> 100, 50 (01-03) -> 150 ; B: 200 -> 200
+            List<Txn> in = List.of(t("A", "2024-01-03", 50), t("B", "2024-01-01", 200), t("A", "2024-01-02", 100));
+            eq(List.of(150L, 200L, 100L), br.runningBalance(in));
+        });
+        check("running balance resets per account and handles tie dates by input order", () -> {
+            // A same day: first in input 100 -> 100, second 30 -> 130 ; B: 70 -> 70
+            List<Txn> in = List.of(t("A", "2024-01-01", 100), t("B", "2024-01-01", 70), t("A", "2024-01-01", 30));
+            eq(List.of(100L, 70L, 130L), br.runningBalance(in));
+        });
+        check("interleaved accounts with negative amounts and no mutation", () -> {
+            List<Txn> base = new ArrayList<>(List.of(
+                t("A", "2024-01-01", 500),
+                t("B", "2024-01-01", 300),
+                t("A", "2024-01-02", -100),
+                t("B", "2024-01-02", 50),
+                t("A", "2024-01-03", 200)
+            ));
+            List<Txn> before = new ArrayList<>(base);
+            // ranks by amount desc per account: A amounts 500,-100,200 -> ranks 1,3,2 ; B 300,50 -> 1,2
+            eq(List.of(1, 1, 3, 2, 2), br.rankByAmountDesc(base));
+            // running balance: A 500,400,600 ; B 300,350
+            eq(List.of(500L, 300L, 400L, 350L, 600L), br.runningBalance(base));
+            for (int i = 0; i < base.size(); i++) {
+                if (base.get(i) != before.get(i)) throw new AssertionError("input mutated at " + i);
+            }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `class Txn {
+    final String account;
+    final String date;   // yyyy-MM-dd
+    final long amount;
+    Txn(String account, String date, long amount) {
+        this.account = account;
+        this.date = date;
+        this.amount = amount;
+    }
+}
+
+class BankReport {
+
+    // Sap xep chi so de khong sua danh sach dau vao, ket qua ghi ve dung vi tri goc.
+    private static List<Integer> indices(List<Txn> txns) {
+        List<Integer> idx = new ArrayList<>();
+        for (int i = 0; i < txns.size(); i++) idx.add(i);
+        return idx;
+    }
+
+    List<Integer> rankByAmountDesc(List<Txn> txns) {
+        Integer[] out = new Integer[txns.size()];
+        List<Integer> idx = indices(txns);
+        // partition theo account, amount giam dan, hoa thi giu thu tu dau vao (ROW_NUMBER on dinh)
+        idx.sort(Comparator.comparing((Integer i) -> txns.get(i).account)
+                           .thenComparing((Integer i) -> txns.get(i).amount, Comparator.reverseOrder())
+                           .thenComparingInt(i -> i));
+        String cur = null;
+        int n = 0;
+        for (int i : idx) {
+            Txn t = txns.get(i);
+            if (!t.account.equals(cur)) { cur = t.account; n = 0; } // sang partition moi
+            out[i] = ++n;
+        }
+        return Arrays.asList(out);
+    }
+
+    List<Long> runningBalance(List<Txn> txns) {
+        Long[] out = new Long[txns.size()];
+        List<Integer> idx = indices(txns);
+        // partition theo account, date tang dan, hoa thi giu thu tu dau vao (ROWS)
+        idx.sort(Comparator.comparing((Integer i) -> txns.get(i).account)
+                           .thenComparing(i -> txns.get(i).date)
+                           .thenComparingInt(i -> i));
+        String cur = null;
+        long sum = 0;
+        for (int i : idx) {
+            Txn t = txns.get(i);
+            if (!t.account.equals(cur)) { cur = t.account; sum = 0; } // reset khi sang tai khoan khac
+            sum += t.amount;
+            out[i] = sum;
+        }
+        return Arrays.asList(out);
+    }
+}`,
+        hints: [
+          'Đừng sắp xếp trực tiếp {{txns}}. Tạo danh sách chỉ số {{0..n-1}} rồi sắp xếp chỉ số theo khóa cần thiết; ghi kết quả vào {{out[i]}} với {{i}} là chỉ số gốc để thẳng hàng với đầu vào.',
+          'Xếp hạng: sort theo {{(account, amount giảm dần, chỉ số gốc tăng dần)}}. Duyệt theo thứ tự đó, tăng bộ đếm và reset về 0 khi {{account}} đổi.',
+          'Running balance: sort theo {{(account, date tăng dần, chỉ số gốc tăng dần)}}. Duyệt và cộng dồn vào {{sum}} (kiểu {{long}}), reset {{sum}} khi {{account}} đổi.',
+        ],
+        explain: `### Ý tưởng
+Đây là cách DB thực thi window function: **sắp theo (PARTITION BY, ORDER BY)** rồi **duyệt một lần** giữ trạng thái nhỏ (bộ đếm hoặc tổng) và reset khi sang partition mới. Sắp xếp danh sách **chỉ số** thay vì sắp xếp dữ liệu gốc giúp không làm thay đổi đầu vào và vẫn ghi kết quả về đúng dòng ban đầu — giống SQL trả thêm cột cho từng dòng.
+
+### Lỗi hay gặp
+- **Quên reset khi đổi partition**: rank hoặc tổng của tài khoản sau bị cộng dồn từ tài khoản trước. Test có tài khoản xen kẽ bắt lỗi này.
+- **Sửa danh sách đầu vào**: gọi {{txns.sort(...)}} phá dữ liệu người gọi và có thể ném lỗi nếu đầu vào bất biến ({{List.of}}).
+- **Trả kết quả theo thứ tự đã sắp** thay vì thẳng hàng với đầu vào: giá trị đúng nhưng gắn nhầm dòng.
+- **Không ổn định khi tie**: nếu không dùng chỉ số gốc làm tiêu chí phụ, hai giao dịch cùng amount/cùng ngày có thể đổi chỗ, khiến rank/running balance khác giữa các lần chạy.
+
+### Liên hệ SQL
+{{rankByAmountDesc}} tương ứng {{ROW_NUMBER() OVER (PARTITION BY account ORDER BY amount DESC, tx_id)}}; {{runningBalance}} tương ứng {{SUM(amount) OVER (PARTITION BY account ORDER BY date, tx_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)}}. Để phát hiện bất thường bằng {{LAG}} trong Java, khi duyệt theo thứ tự cửa sổ ta chỉ cần giữ giá trị {{amount}} của dòng trước trong cùng partition (reset khi đổi partition) và so sánh với dòng hiện tại.`,
+      },
+    ],
+    check: [
+      {
+        q: 'Khác biệt chính giữa window function và {{GROUP BY}} là gì?',
+        options: [
+          'Window function luôn nhanh hơn {{GROUP BY}}',
+          'Window function giữ nguyên từng dòng và thêm cột tính trên partition, còn {{GROUP BY}} gộp nhiều dòng thành một dòng mỗi nhóm',
+          '{{GROUP BY}} không dùng được với {{SUM}}',
+          'Window function bắt buộc phải có {{PARTITION BY}}',
+        ],
+        answer: 1,
+        explain: '**Phương án 2 đúng**: {{GROUP BY}} giảm số dòng (một dòng đại diện mỗi nhóm) nên mất chi tiết từng giao dịch; window function giữ từng dòng và gắn thêm giá trị như rank hay running balance. **1** sai: hiệu năng phụ thuộc truy vấn và index. **3** sai: {{SUM}} dùng rất phổ biến với {{GROUP BY}}. **4** sai: bỏ {{PARTITION BY}} thì cả bảng là một partition, vẫn hợp lệ.',
+      },
+      {
+        q: 'Tính số dư lũy kế (running balance) theo thời gian trong mỗi tài khoản, cách viết nào đúng ý nghĩa "cộng dồn từng dòng" trong PostgreSQL?',
+        options: [
+          '{{SUM(amount) OVER (PARTITION BY account_id)}}',
+          '{{SUM(amount) OVER (PARTITION BY account_id ORDER BY tx_date, tx_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)}}',
+          '{{SUM(amount) OVER (ORDER BY tx_date RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)}} mà không có {{PARTITION BY}}',
+          '{{SUM(amount) GROUP BY account_id ORDER BY tx_date}}',
+        ],
+        answer: 1,
+        explain: '**Phương án 2 đúng**: {{PARTITION BY account_id}} tách từng tài khoản, {{ORDER BY tx_date, tx_id}} cho thứ tự thời gian xác định, và frame {{ROWS ...}} cộng dồn từng dòng một (an toàn khi trùng thời điểm). **1** sai: không có {{ORDER BY}} nên frame là toàn bộ partition, mỗi dòng nhận tổng của cả tài khoản chứ không phải lũy kế. **3** sai: thiếu {{PARTITION BY}} nên gộp lẫn các tài khoản, và {{RANGE}} có thể gộp các dòng cùng thời điểm. **4** sai cú pháp: {{SUM(...) OVER(...)}} là window function, không trộn với {{GROUP BY}} theo cách này.',
+      },
+      {
+        q: '{{LAG(amount, 1, 0) OVER (PARTITION BY account_id ORDER BY tx_date, tx_id)}} trả về gì cho dòng đầu tiên của mỗi tài khoản?',
+        options: [
+          'Giá trị {{amount}} của chính dòng đó',
+          'Giá trị {{0}} (tham số default), vì không có dòng trước trong partition',
+          '{{NULL}} trong mọi trường hợp',
+          'Ném lỗi vì offset vượt quá partition',
+        ],
+        answer: 1,
+        explain: '**Phương án 2 đúng**: {{LAG}} lấy dòng đứng trước {{offset}} vị trí trong cùng partition; dòng đầu partition không có dòng trước nên trả về {{default}} là {{0}} như đã chỉ định. **3** sai ở đây vì ta truyền default là 0 (nếu không truyền default thì mới là {{NULL}}). **1** sai: {{LAG}} không trả dòng hiện tại. **4** sai: thiếu dòng trước là trường hợp bình thường, không phải lỗi.',
+      },
+    ],
+    related: ['sql-001', 'sql-004', 'db-001', 'sql-015'],
+    tags: ['window function', 'partition by', 'row_number', 'rank', 'running balance', 'lag', 'group by'],
   }
 
 );

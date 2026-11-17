@@ -2480,6 +2480,7 @@ window.DATA_INDEX = {
     {"id":"lesson-sql-011","track":"sql","order":11,"title":"Keyset pagination: cursor-based pagination và so sánh với OFFSET","level":"senior","minutes":30},
     {"id":"lesson-sql-012","track":"sql","order":12,"title":"Đọc EXPLAIN ANALYZE: Seq Scan, Index Scan, Bitmap và chọn plan theo chi phí","level":"senior","minutes":30},
     {"id":"lesson-sql-013","track":"sql","order":13,"title":"Keyset pagination: cursor trên danh sách đã sắp xếp, so sánh với OFFSET","level":"senior","minutes":30},
+    {"id":"lesson-sql-014","track":"sql","order":14,"title":"Window function cho báo cáo giao dịch ngân hàng: PARTITION BY, running balance, LAG và so với GROUP BY","level":"senior","minutes":30},
     {"id":"lesson-security-001","track":"security","order":1,"title":"Lưu mật khẩu an toàn: salt ngẫu nhiên, PBKDF2 và so sánh không rò rỉ thời gian","level":"mid","minutes":25},
     {"id":"lesson-security-002","track":"security","order":2,"title":"JWT tự ký và kiểm tra bằng HS256: chữ ký, exp và những cái bẫy của alg","level":"senior","minutes":30},
     {"id":"lesson-security-003","track":"security","order":3,"title":"Rate limiter bằng token bucket: burst, refill và đồng hồ truyền vào","level":"lead","minutes":30},
