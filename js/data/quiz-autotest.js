@@ -125,12 +125,12 @@
   topic: 'autotest',
   q: 'Playwright storageState thường dùng để làm gì?',
   options: [
-    'Lưu cookie/localStorage để tái sử dụng session đăng nhập',
     'Lưu screenshot baseline',
     'Lưu trace file',
+    'Lưu cookie/localStorage để tái sử dụng session đăng nhập',
     'Lưu HAR network'
   ],
-  answer: 0,
+  answer: 2,
   explain: `**Đáp án đúng: lưu trạng thái auth.** storageState lưu cookie/localStorage; test sau load vào context để bỏ qua bước login.
 
 ### Vì sao các phương án còn lại sai
@@ -143,12 +143,12 @@
   topic: 'autotest',
   q: 'Playwright tracing (trace.zip) hữu ích nhất khi nào?',
   options: [
-    'Khi cần debug test fail bằng timeline, network, console, screenshot',
     'Khi cần tăng tốc test',
     'Khi cần chạy song song',
+    'Khi cần debug test fail bằng timeline, network, console, screenshot',
     'Khi cần sinh code test'
   ],
-  answer: 0,
+  answer: 2,
   explain: `**Đáp án đúng: debug test fail.** Trace viewer cho xem timeline, DOM snapshot, network, console.
 
 ### Vì sao các phương án còn lại sai
@@ -161,12 +161,12 @@
   topic: 'autotest',
   q: 'Sharding trong CI với Playwright/TestNG giúp gì?',
   options: [
-    'Chia suite test thành nhiều phần chạy song song trên nhiều máy',
     'Tự sửa test fail',
     'Giảm số lượng test',
+    'Chia suite test thành nhiều phần chạy song song trên nhiều máy',
     'Tạo báo cáo Allure'
   ],
-  answer: 0,
+  answer: 2,
   explain: `**Đáp án đúng: chia suite chạy song song.** Sharding phân bổ test theo shard index/total để giảm tổng thời gian.
 
 ### Vì sao các phương án còn lại sai
@@ -216,11 +216,11 @@
   q: 'Appium 2 được dùng để automation loại ứng dụng nào?',
   options: [
     'Web desktop',
-    'Mobile native/hybrid/webview',
     'API backend',
-    'Database'
+    'Database',
+    'Mobile native/hybrid/webview'
   ],
-  answer: 1,
+  answer: 3,
   explain: `**Đáp án đúng: mobile.** Appium 2 tự động hóa mobile app (iOS/Android) qua WebDriver protocol.
 
 ### Vì sao các phương án còn lại sai
@@ -398,11 +398,11 @@ Hoặc nếu toast có thể không xuất hiện: dùng {{waitFor}} với timeo
   q: 'Trong Playwright for Java, điểm khác biệt chính giữa web-first assertion {{assertThat(locator).hasText("OK")}} và kiểm tra thủ công {{locator.textContent().equals("OK")}} là gì?',
   options: [
     '{{assertThat}} chỉ dùng được với {{getByRole}}, còn {{textContent}} dùng cho mọi locator',
-    '{{assertThat(locator).hasText(...)}} là web-first assertion: tự retry/đợi đến khi text khớp hoặc timeout; {{textContent()}} lấy giá trị tức thời',
     'Hai cách hoàn toàn tương đương về cơ chế chờ',
-    '{{textContent()}} luôn ném exception nếu phần tử chưa có text'
+    '{{textContent()}} luôn ném exception nếu phần tử chưa có text',
+    '{{assertThat(locator).hasText(...)}} là web-first assertion: tự retry/đợi đến khi text khớp hoặc timeout; {{textContent()}} lấy giá trị tức thời'
   ],
-  answer: 1,
+  answer: 3,
   explain: `**Tóm tắt:** Web-first assertion ({{assertThat(locator)...}}) tự động chờ giá trị khớp; lấy {{textContent()}} rồi so sánh là kiểm tra một lần, dễ fail khi nội dung cập nhật bất đồng bộ.
 
 **Giải thích từng bước:**
@@ -573,11 +573,11 @@ download.saveAs(Paths.get("report.csv"));
   q: 'Để debug một test Playwright for Java hay fail trên CI (khó tái hiện ở máy local), bạn bật tracing. Cấu hình nào thu thập trace đầy đủ cho việc phân tích sau đó?',
   options: [
     '{{browser.startTracing()}} và {{browser.stopTracing()}} là đủ, không cần gắn với context',
-    '{{context.tracing().start(new Tracing.StartOptions().setScreenshots(true).setSnapshots(true).setSources(true));}} ... {{context.tracing().stop(new Tracing.StopOptions().setPath(Paths.get("trace.zip")));}}',
     'Chỉ cần {{page.screenshot()}} khi test fail',
-    'Bật {{setHeadless(false)}} để nhìn thấy lỗi thay vì tracing'
+    'Bật {{setHeadless(false)}} để nhìn thấy lỗi thay vì tracing',
+    '{{context.tracing().start(new Tracing.StartOptions().setScreenshots(true).setSnapshots(true).setSources(true));}} ... {{context.tracing().stop(new Tracing.StopOptions().setPath(Paths.get("trace.zip")));}}'
   ],
-  answer: 1,
+  answer: 3,
   explain: `**Tóm tắt:** Tracing (ghi vết) được bật trên {{BrowserContext}}: {{start}} với screenshots/snapshots/sources, {{stop}} kèm đường dẫn {{trace.zip}}; mở bằng Trace Viewer để xem timeline, DOM snapshot, network, console.
 
 **Giải thích từng bước:**
@@ -747,12 +747,12 @@ Page p2 = ctx.newPage(); // cùng locale, cùng rule route
   q: 'Bạn gọi API tạo đơn hàng bằng {{context.request().post(...)}} và muốn xác minh response. Cách kiểm tra đúng với {{APIResponse}} trong Playwright for Java là gì?',
   options: [
     'Dùng {{assertThat(page).hasURL(...)}} vì APIResponse tự cập nhật trang',
-    'Kiểm tra {{response.ok()}}/{{response.status()}}, đọc {{response.text()}} hoặc {{response.json()}}; có thể dùng {{assertThat(response).isOK()}}',
+    'Kiểm tra {{response.ok()}}/{{response.status()}}, đọc {{response.text()}} hoặc {{response.json()}} để xác minh HTTP 2xx và nội dung',
     '{{APIResponse}} không có body; phải gọi lại bằng {{HttpURLConnection}} để đọc',
     'Chỉ cần {{response != null}} là request thành công'
   ],
   answer: 1,
-  explain: `**Tóm tắt:** {{APIResponse}} cung cấp status, header, body ({{text()}}, {{body()}}, {{json()}}); Playwright có API assertion {{assertThat(response).isOK()}} để kiểm tra HTTP 2xx.
+  explain: `**Tóm tắt:** {{APIResponse}} cung cấp status, header, body ({{text()}}, {{body()}}, {{json()}}); dùng {{response.ok()}} hoặc {{response.status()}} để xác minh HTTP 2xx.
 
 **Giải thích từng bước:**
 - **APIResponse là gì:** Kết quả trả về từ {{APIRequestContext}} ({{get/post/...}}). Nó chứa mã trạng thái HTTP (status code), header và nội dung body.
@@ -762,7 +762,7 @@ APIResponse res = context.request().post("/api/orders",
     RequestOptions.create()
         .setHeader("Content-Type", "application/json")
         .setData("{\"sku\":\"A1\"}"));
-assertThat(res).isOK();            // 2xx
+assertTrue(res.ok());              // HTTP 2xx
 assertEquals(201, res.status());   // chính xác hơn nếu cần
 String body = res.text();          // body dạng chuỗi
 System.out.println(res.headers()); // debug header
