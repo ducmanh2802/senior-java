@@ -1,6 +1,6 @@
 # T2240 — Rà soát chất lượng các câu về CI/CD, Kubernetes rollout, probes trong q-devops.js
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/q-devops.js`
 After: T2213
@@ -22,20 +22,23 @@ Giai đoạn ưu tiên **chất lượng**: nội dung do model free viết cầ
 `node --check js/data/q-devops.js`; `node scripts/build-light-index.js`; `node scripts/validate.js` (bài học thêm `node scripts/test-lessons.js`, bug thêm `node scripts/test-bugs.js`) → OK.
 Xong: `Status: DONE`. Notes: bảng `id | lỗi tìm thấy | đã sửa gì`.
 
-Status: DONE
-
 ## Notes
 
-Đã rà soát toàn bộ 169 câu trong `js/data/q-devops.js` (tập trung vào CI/CD, K8s rollout, probes). Số mục trước = sau = 169 (không thêm/xoá câu). Đã sửa:
+Đã rà soát toàn bộ 168 câu trong `js/data/q-devops.js`, tập trung vào CI/CD, Kubernetes rollout và probes. Số mục trước = sau = 168 (không thêm/xoá câu; đã đối chiếu `git show 76c74ebf:js/data/q-devops.js` cũng ra 168). Các câu về probes/rollout (devops-004, 010, 016, 017, 020, 021, 044, 072, 124, 147, 151, 167, 168, 169) có nội dung chính xác, không phải sửa khái niệm. Đã thêm 9 sơ đồ `~~~seq` cho các luồng deploy/khởi động/tắt Pod còn thiếu (mỗi câu 1 sơ đồ):
 
-| id | lỗi tìm thấy | đã sửa gì |
-|---|---|---|
-| devops-004 | Thiếu sơ đồ luồng deploy zero-downtime | Thêm `~~~seq` "Rolling update: Pod mới vào, Pod cũ ra" (5 actors, 7 bước) |
-| devops-010 | Thiếu sơ đồ CI/CD stages | Thêm `~~~seq` "Luồng pipeline CI/CD: commit → DEV → SIT → UAT → PROD" (7 actors, 8 bước) |
-| devops-016 | Thiếu sơ đồ chu kỳ probe | Thêm `~~~seq` "Startup → readiness → liveness: ba câu hỏi khác nhau" (4 actors, 6 bước) |
-| devops-072 | Thiếu sơ đồ deploy đa repo | Thêm `~~~seq` "CI/CD đa repo: build → deploy qua registry" (5 actors, 7 bước) |
+| id | sơ đồ `~~~seq` đã thêm |
+|---|---|
+| devops-004 | "Rolling update: Pod mới vào, Pod cũ ra, không request bị rớt" |
+| devops-005 | "Chẩn đoán Pod từ trạng thái tới nguyên nhân" |
+| devops-010 | "CI/CD: commit tới production theo đúng digest" |
+| devops-016 | "Startup → readiness → liveness: ba câu hỏi khác nhau" |
+| devops-017 | "Trình tự tắt Pod trên Kubernetes" |
+| devops-020 | "CI/CD pipeline: build một lần, promote nhiều lần" |
+| devops-021 | "Expand-contract: 4 pha qua 2 version app" |
+| devops-044 | "Khởi động Pod 90 giây: pull → JVM → context → warm-up" |
+| devops-072 | "CI/CD đa repo: build → deploy qua registry" |
 
-- Đã kiểm tra khái niệm K8s đúng (readiness vs liveness vs startup probe; rolling update maxSurge/maxUnavailable; graceful shutdown; expand-contract; PDB; QoS; HPA/KEDA; IRSA; GitOps) — các câu về probes/rollout (devops-004, 016, 020, 044, 072, 124, 147, 151, 167, 168, 169) đã có nội dung chính xác, không cần sửa.
-- Không có backtick, không có `${` trong template literal; mọi seq đã qua `Diagram.parseSeq` (21 sơ đồ, OK).
-- `node --check js/data/q-devops.js` → OK; `node scripts/build-light-index.js` → đã ghi index-light.js; `node scripts/validate.js` → OK — không có lỗi.
-Reviewed-by: verify-only (review task)
+- Đã kiểm tra tính đúng kỹ thuật của: readiness vs liveness vs startup probe; health group của Actuator (liveness chỉ gồm livenessState, không trỏ liveness vào DB); rolling update maxSurge/maxUnavailable + minReadySeconds; preStop + SIGTERM + graceful shutdown + terminationGracePeriodSeconds; expand-contract cho schema; PDB; GitOps/Argo CD; image digest bất biến; build once–promote many — nội dung chính xác, chỉ bổ sung sơ đồ.
+- Không có backtick, không có `${` trong template literal. `node --check js/data/q-devops.js` → OK; `node scripts/qtool.js check js/data/q-devops.js` → OK (4 lỗi còn lại thuộc file khác).
+- `node scripts/build-light-index.js` và `node scripts/validate.js` hiện **bị chặn bởi file của task khác**: `js/data/lessons-claude.js` (task T319, đang sửa dở) lỗi cú pháp "Unexpected identifier 'jq'" tại dòng 3733 (một chunk dán kèm số dòng "NNNN: " và backtick trong template literal). Theo luật 3 (không sửa file mình không sở hữu) tôi **không** sửa file này, nên `index-light.js` tạm stale. Riêng phần devops: validate không báo lỗi nào thuộc q-devops.js; `index-light.js` ở HEAD đã phản ánh đúng dữ liệu devops.
+- Reviewed-by: verify-only (review task)

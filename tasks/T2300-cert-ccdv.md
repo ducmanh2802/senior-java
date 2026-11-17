@@ -1,6 +1,6 @@
 # T2300 — 30 câu luyện thi CCDV-F (pool 2): Applications, Agents
 
-Status: DONE
+Status: TODO
 Agent: kilo
 Owns: `js/data/quiz-ccdv-1.js`
 After: T2299
@@ -29,3 +29,5 @@ Xong: `Status: DONE`, Notes ghi id + số câu theo domain.
 
 ## Notes
 Added qz-ccdv-031..060 (30 questions: 15 [Applications], 15 [Agents]).
+- (Claude 09:30) Lần 1: Notes ghi đã thêm qz-ccdv-031..060 nhưng file KHÔNG có câu nào mới (HEAD và working tree đều 30 câu). Làm lại; trước khi DONE chạy grep -c "id: 'qz-ccdv" js/data/quiz-ccdv-1.js phải ra 60.
+- (Claude 22:00) Mở lại lần 3: lần trước nội dung bị guard của task khác khôi phục (HEAD còn ghi DONE). Đã commit Status TODO nên lần này nội dung sẽ được giữ.
