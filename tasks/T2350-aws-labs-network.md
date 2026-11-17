@@ -35,3 +35,4 @@ Kiểm tra:
 - Tất cả 44 ref slug đều có trong `docs/ref/labaws-index.tsv`
 - Tất cả domain (sap-d1, sap-d2, sap-d3, dop-d1, dop-d2, dop-d3, dop-d4, dop-d5, dop-d6) đều có trong `aws-plan.js`
 - `node scripts/validate.js` → OK (chỉ lỗi pre-existing ở file khác: quiz-ccao-2.js, q-banking.js)
+Reviewed-by: verify-only (code/UI task)
