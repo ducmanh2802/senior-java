@@ -35,3 +35,4 @@ Kiểm tra:
 - `node scripts/validate.js` → **không còn lỗi thuộc file này**. LỖI duy nhất còn lại là `sdlc.js: lỗi cú pháp/chạy: missing ) after argument list` — đây là WIP chưa commit của agent khác (bản HEAD của sdlc.js hợp lệ, `git status` cho thấy sdlc.js đang bị sửa dở), KHÔNG thuộc quyền sở hữu của T2315 nên không tự sửa (AGENTS.md luật 3). Khi agent kia hoàn tất, validate sẽ OK toàn cục.
 
 Lưu ý: đã cố ý chọn góc nhìn KHÁC với các câu đã có (jpa-004/025/030/047/050/055/066/069, db-005/057, jpa-014/016/033/051/061/062) — mỗi câu mới đào sâu một khía cạnh chưa được hỏi: retry boundary, kiểm chứng batch bằng số liệu, derived-vs-@Query projection, readOnly "im lặng" vs PostgreSQL enforce, và tự cài keyset trong Spring Data.
+Reviewed-by: kilo (T2315R)
