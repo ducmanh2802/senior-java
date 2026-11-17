@@ -3529,4 +3529,52 @@ Trong production, bước "đánh dấu {{txnRef}} + đổi trạng thái đơn"
     tags: ['payment-gateway', 'qr', 'ipn', 'callback', 'hmac', 'idempotency', 'reconciliation', 'banking'],
   },
 
+  {
+    id: 'lesson-banking-012',
+    track: 'banking',
+    order: 12,
+    title: 'eKYC va mo tai khoan online: cac buoc, trang thai, retry, kiem tra AML',
+    level: 'senior',
+    minutes: 40,
+    goals: ['Mo ta duoc cac buoc eKYC tu nhap thong tin den tao CIF', 'Nhan biet trang thai va cho treo', 'Viet OnboardingFlow state machine idempotent'],
+    body: 'Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. ',
+    exercises: [{ title:'OnboardingFlow', prompt:'Implement', starter:'class OnboardingFlow {\
+  enum State { NEW, DOC_OK, SELFIE_OK, DONE, FAILED }\
+  State state = State.NEW;\
+  int tries = 0;\
+  final int max = 3;\
+  void submitDoc(boolean ok){ throw new UnsupportedOperationException("TODO"); }\
+  void submitSelfie(boolean ok){ throw new UnsupportedOperationException("TODO"); }\
+  void runAml(boolean clear){ throw new UnsupportedOperationException("TODO"); }\
+  boolean isDone(){ return state==State.DONE; }\
+}', tests:'public class Main {\
+  static int passed=0,total=0;\
+  static void check(String n,boolean ok,String d){total++; if(ok){passed++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n+": "+d);}\
+  public static void main(String[] a){\
+    OnboardingFlow f=new OnboardingFlow();\
+    f.submitDoc(true); check("doc", f.state==OnboardingFlow.State.DOC_OK, "");\
+    f.submitSelfie(true); check("selfie", f.state==OnboardingFlow.State.SELFIE_OK, "");\
+    f.runAml(true); check("aml", f.isDone(), "");\
+    OnboardingFlow f2=new OnboardingFlow(); f2.submitDoc(true);\
+    for(int i=0;i<3;i++) f2.submitSelfie(false);\
+    check("tries", f2.state==OnboardingFlow.State.FAILED, "");\
+    OnboardingFlow f3=new OnboardingFlow(); f3.submitDoc(false);\
+    check("docfail", f3.state==OnboardingFlow.State.FAILED, "");\
+    System.out.println("RESULT "+passed+"/"+total);\
+  }\
+}', reference:'class OnboardingFlow {\
+  enum State { NEW, DOC_OK, SELFIE_OK, DONE, FAILED }\
+  State state = State.NEW;\
+  int tries = 0;\
+  final int max = 3;\
+  void submitDoc(boolean ok){ if(!ok){state=State.FAILED;return;} if(state==State.NEW) state=State.DOC_OK; }\
+  void submitSelfie(boolean ok){ if(state!=State.DOC_OK) return; if(!ok){ tries++; if(tries>=max) state=State.FAILED; return;} state=State.SELFIE_OK; }\
+  void runAml(boolean clear){ if(state!=State.SELFIE_OK) return; state=clear?State.DONE:State.FAILED; }\
+  boolean isDone(){ return state==State.DONE; }\
+}', hints:['hint'], explain:'explain' }],
+    check: [{ q:'q1', options:['a','b','c','d'], answer:0, explain:'e' },{ q:'q2', options:['a','b','c','d'], answer:1, explain:'e' }],
+    related: [],
+    tags: ['ekyc']
+  },
+
 );

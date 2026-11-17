@@ -23,3 +23,4 @@ Chỉ THÊM trước dòng `);` cuối file, không sửa bài cũ, không backt
 
 ## Notes
 Added lesson-banking-011 (order 11) covering card transaction lifecycle: authorization/hold, clearing, settlement T+1, refund (new reverse transaction), chargeback (dispute with fees), auth expiry (7 days). Exercise: CardTxnLifecycle state machine with Clock-based auth expiry, capture/refund/chargeback amount validation, VOID/EXPIRE paths. 3 check questions with detailed explains. Validated: syntax OK, build-light-index OK, validate.js OK (pre-existing errors in lessons-jpa.js/projects.js/path.js unrelated).
+Reviewed-by: kilo (T2341R)
