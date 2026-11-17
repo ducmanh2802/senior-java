@@ -12949,89 +12949,103 @@ Hệ thống dùng {{@SQLRestriction("deleted = false")}} trên Customer. Ba tu�
   id: 'spring-082',
   topic: 'spring',
   level: 'senior',
-  q: 'Spring Boot Actuator: ban cau hinh health group tuy chinh nao cho Kubernetes liveness/readiness, endpoint nao can expose, va management.endpoints.web.exposure.include co rui ro gi khi mo rong?',
-  a: `**Tom tat:** Actuator cung cap endpoint {{/actuator/health}} (mac dinh public) va nhom {{liveness}}, {{readiness}} cho Kubernetes probe. Liveness kiem tra tien trinh con song; readiness kiem tra san sang nhan traffic (DB, cache, downstream). Mo rong {{management.endpoints.web.exposure.include}} qua rong lo thong tin nhay cam (env, config, loggers, heapdump). Quy tac: chi expose {{health}}, {{info}}, {{metrics}}, {{prometheus}}; cac endpoint quan tri dat duong dan rieng, bao ve bang Spring Security hoac network policy.
+  q: 'Spring Boot Actuator: bạn cấu hình health group tuỳ chỉnh nào cho Kubernetes liveness/readiness, endpoint nào cần expose, và {{management.endpoints.web.exposure.include}} có rủi ro gì khi mở rộng?',
+  a: `**Tóm tắt:** Actuator cung cấp {{/actuator/health}} (mặc định chỉ trả trạng thái tổng) và hai nhóm có sẵn {{liveness}}, {{readiness}}. Liveness trả lời "process có cần restart không" nên chỉ nên chứa {{livenessState}}; readiness trả lời "có nhận traffic không" nên chứa {{readinessState}} cộng các dependency thiết yếu (DB, Redis, broker, downstream quan trọng) mà bạn tự khai báo. Bật probe bằng {{management.endpoint.health.probes.enabled=true}} (Boot tự bật khi phát hiện chạy trên Kubernetes). Về bảo mật: chỉ expose {{health}}, {{info}}, {{metrics}}, {{prometheus}}; đặt {{management.endpoints.web.exposure.include=*}} sẽ mở luôn {{env}}, {{heapdump}}, {{loggers}}, {{threaddump}} và đó là lỗ hổng thật, không phải chuyện lý thuyết.
 
-### Health group va probe mapping
-Spring Boot 3 tu dang ky hai health group: {{liveness}} (chi kiem tra tien trinh, khong phu thuoc xuong game) va {{readiness}} (kiem tra DB, message broker, cache, downstream). Kubernetes dung:
-- {{livenessProbe}} -> {{/actuator/health/liveness}}: neu fail, pod bi kill va restart.
-- {{readinessProbe}} -> {{/actuator/health/readiness}}: neu fail, pod goi khoi Service, khong nhan traffic moi.
+### Vì sao phải tách hai nhóm
+- **Liveness probe** (probe sống): kubelet gọi định kỳ; nếu fail quá {{failureThreshold}} lần liên tiếp, kubelet **kill và restart container**. Vì hành động là restart, liveness chỉ được phản ánh trạng thái của chính process (JVM còn chạy, không deadlock, không hết heap), **không** được phụ thuộc DB hay service ngoài. Nếu DB chậm mà liveness fail, toàn bộ pod đang khoẻ bị restart, sự cố lan rộng thay vì thu hẹp.
+- **Readiness probe** (probe sẵn sàng): kubelet dùng để quyết định pod có nằm trong danh sách endpoint của Service hay không. Fail thì pod **bị gỡ khỏi Service** nhưng **không bị restart**. Vì vậy readiness mới là nơi kiểm tra dependency: DB, cache, broker, downstream bắt buộc.
+- Ví dụ đời thường: liveness giống hỏi "nhân viên còn thở không?"; readiness giống hỏi "nhân viên đã mở quầy, đăng nhập hệ thống, sẵn sàng phục vụ khách chưa?".
 
-Tuy chinh group trong {{application.yml}}:
+### Bật probe và khai báo group
+Spring Boot 3 không tự tạo {{/actuator/health/liveness}} và {{/actuator/health/readiness}} nếu bạn không bật probe. Khi bật, hai group mặc định chỉ gồm một indicator nội bộ mỗi bên:
+
 ~~~yaml
 management:
   endpoint:
     health:
+      probes:
+        enabled: true            # tạo /actuator/health/liveness và /readiness
+      show-details: never        # production: không lộ chi tiết dependency
       group:
         readiness:
-          include: db,redis,kafka,customDownstream
+          include: readinessState,db,redis,paymentGateway
+          show-details: never
         liveness:
-          include: ping
+          include: livenessState
+          show-details: never
   endpoints:
     web:
       exposure:
         include: health,info,metrics,prometheus
       base-path: /actuator
-  health:
-    db:
-      enabled: true
-    redis:
-      enabled: true
 ~~~
 
-### Custom health indicator
-Khi co downstream quan trong (cong thanh toan, service noi bo), viet {{HealthIndicator}} tuy chinh:
+- {{livenessState}} và {{readinessState}} là hai {{HealthIndicator}} do Spring Boot đăng ký, phản ánh {{ApplicationAvailability}} ({{ACCEPTING_TRAFFIC}} / {{REFUSING_TRAFFIC}}). Trong lúc shutdown êm, Boot chuyển {{readinessState}} sang {{REFUSING_TRAFFIC}} nên {{/readiness}} trả DOWN, Service gỡ pod khỏi endpoint.
+- {{probes.enabled}} tự động bật khi Boot phát hiện chạy trên Kubernetes (biết qua biến môi trường của kubelet hoặc {{spring.main.cloud-platform=kubernetes}}); bật tường minh thì an toàn hơn cho môi trường dev/test.
+- Muốn lộ group ở đường dẫn khác (ví dụ {{/actuator/health/ready}}) thì dùng {{management.endpoint.health.group.readiness.additional-path}}; nhớ khai báo trùng khớp với probe, lệch một chữ là probe nhận 404 và pod không bao giờ ready.
+
+### Custom HealthIndicator: đặt tên và cách nó vào group
+Một {{HealthIndicator}} chỉ xuất hiện trong group nếu **tên bean của nó được liệt kê trong {{include}} của group đó** — không có cơ chế tự gom. Tên indicator là tên bean, và Spring Boot bỏ hậu tố {{HealthIndicator}} nếu có:
+
 ~~~java
-@Component
+@Component("paymentGateway")          // tên indicator = paymentGateway
 class PaymentGatewayHealthIndicator implements HealthIndicator {
     private final PaymentClient client;
     PaymentGatewayHealthIndicator(PaymentClient client) { this.client = client; }
+
     @Override
     public Health health() {
         try {
-            boolean ok = client.ping();
-            return ok ? Health.up().withDetail("latencyMs", 12).build()
-                      : Health.down().withDetail("reason", "ping failed").build();
+            long ms = client.ping(Duration.ofMillis(300));   // nhẹ, timeout ngắn
+            return Health.up().withDetail("latencyMs", ms).build();
         } catch (Exception e) {
-            return Health.down(e).build();
+            return Health.down().withDetail("error", e.getClass().getSimpleName()).build();
         }
     }
 }
 ~~~
-Indicator nay tu duoc gom vao group readiness neu dat ten ket thuc {{HealthIndicator}}.
 
-### Rui ro exposure.include
-| Endpoint | Rui ro khi expose public |
+- Kiểm tra phải **nhanh và nhẹ** ({{SELECT 1}}, ping TCP) vì probe gọi liên tục; với dependency chậm, cache kết quả vài giây bằng {{AbstractHealthIndicator}} hoặc tự giữ {{Instant}} + TTL.
+- Đặt tên indicator là việc phải review: {{include: db,redis,paymentGateway}} chỉ đúng khi ba bean đó tồn tại thật; include một tên không tồn tại thì group rỗng và probe fail (hoặc bị bỏ qua tuỳ phiên bản), rất khó debug.
+
+### Bảng rủi ro khi mở rộng exposure.include
+| Endpoint | Rủi ro khi expose ra ngoài |
 |---|---|
-| {{env}} | Lo toan bo property, secret, profile active |
-| {{configprops}} | Lo cau hinh bind cua moi {{@ConfigurationProperties}} |
-| {{loggers}} | Cho phep thay doi log level runtime, lo package noi bo |
-| {{heapdump}} | Tai file heap (~GB), chua object nhay cam |
-| {{threaddump}} | Lo stack trace, co the lo logic nghiep vu |
-| {{mappings}} | Lo toan bo route, handler, interceptor |
+| {{env}} | Lộ toàn bộ property, secret, profile đang active |
+| {{configprops}} | Lộ cấu hình bind của mọi {{@ConfigurationProperties}} |
+| {{loggers}} | Cho phép đổi log level runtime, lộ tên package nội bộ |
+| {{heapdump}} | Tải file heap (hàng GB), trong đó có object chứa dữ liệu nhạy cảm |
+| {{threaddump}} | Lộ stack trace, có thể lộ logic nghiệp vụ |
+| {{mappings}} | Lộ toàn bộ route, handler, interceptor |
+| {{shutdown}} | Nếu bật, cho phép tắt ứng dụng từ xa |
 
-Chi expose: {{health}}, {{info}}, {{metrics}}, {{prometheus}}. Cac endpoint quan tri khac: dat {{management.endpoints.web.base-path=/manage}}, bao ve bang Spring Security {{@PreAuthorize("hasRole('ADMIN')")}} hoac network policy chi cho phep tu bastion/CI.
+Quy tắc thực dụng: chỉ expose {{health}}, {{info}}, {{metrics}}, {{prometheus}}. Các endpoint quản trị khác đặt {{management.endpoints.web.base-path=/manage}}, bảo vệ bằng Spring Security ({{@PreAuthorize("hasRole('ADMIN')")}}) hoặc network policy chỉ cho CI/bastion truy cập. {{/actuator/health}} public là bắt buộc cho probe, nhưng nên là {{show-details: never}} hoặc {{when-authorized}}.
 
 ### Kubernetes probe tuning
-- {{initialDelaySeconds}}: doi app khoi dong xong (vi du 10-30s).
-- {{periodSeconds}}: tan suat check (thuong 10s).
-- {{timeoutSeconds}}: ngan hon period (3-5s).
-- {{failureThreshold}}: cho phep vai lan fail truoc khi hanh dong (3-5).
-Readiness fail nhanh giup traffic khong do vao pod chua san sang; liveness fail cham hon de tranh kill pod khi GC pause.
+- {{initialDelaySeconds}}: chờ app khởi động xong (thường 10–30s); với app có Flyway/cache lớn nên dùng **startupProbe** thay vì tăng {{initialDelaySeconds}} của liveness.
+- {{periodSeconds}}: tần suất check (thường 10s cho liveness, 5s cho readiness).
+- {{timeoutSeconds}}: phải nhỏ hơn {{periodSeconds}} (3–5s), để probe không treo.
+- {{failureThreshold}}: cho phép vài lần fail trước khi hành động (liveness 3, readiness 2–3) để một hiccup ngắn không gây restart.
+- {{successThreshold}}: với readiness, số lần pass liên tiếp để đưa pod trở lại Service (mặc định 1, tăng lên 2–3 để tránh flapping).
 
 ### Pitfall production
-- Khong co custom health indicator cho downstream quan trong: pod bao ready nhung goi payment gateway fail.
-- {{management.endpoints.web.exposure.include=*}} tren production: lo secret qua {{/actuator/env}}, heapdump co the tai.
-- Readiness kiem tra DB nhung khong kiem tra message broker: pod ready nhung consumer khong ket noi duoc Kafka.
-- Liveness dung DB check: GC pause lau lam DB check timeout -> pod bi kill vo ly.
+- Không có health indicator cho downstream quan trọng: pod báo ready nhưng gọi cổng thanh toán thì fail 100%.
+- {{exposure.include=*}} trên production: lộ secret qua {{/actuator/env}}, {{heapdump}} có thể bị tải về.
+- Readiness kiểm tra DB nhưng không kiểm tra broker: pod ready trong khi consumer không kết nối được Kafka.
+- Liveness dùng DB check: GC pause dài làm DB check timeout, pod bị kill oan, và sau restart lại kết nối DB tiếp.
+- {{show-details: always}} trên endpoint public: lộ host DB, phiên bản, đường dẫn.
+- Probe trỏ vào port 8080 trong khi management port là 8081: luôn 404, pod không bao giờ ready.
 
-### Vi du doi thuc
-He thong thanh toan 12 pod, deploy rolling. Truoc chi dung {{/actuator/health}} cho ca liveness va readiness. Khi GC pause 8 giay, health check DB timeout, liveness fail -> pod bi kill, rolling update dung, traffic do vao it pod con lai -> cascade fail. Sua: tach group: liveness chi {{ping}} (luon nhanh), readiness kiem tra {{db}}, {{redis}}, {{kafka}}, {{payment-gateway}}. Them {{preStop sleep 5}} de cho endpoint goi. Deploy sau: GC pause khong con kill pod, readiness fail nhanh chuyen traffic ra pod khac, rolling update on dinh. Theo doi metric {{http.server.requests}} cho {{/actuator/health/readiness}} thay p99 15ms, khong anh huong latency API.
+### Ví dụ đời thực
+Hệ thống thanh toán 12 pod, deploy rolling. Ban đầu team dùng chung {{/actuator/health}} (gồm cả DB) cho cả liveness và readiness. Một tối DB chạy vacuum nặng khiến mỗi query mất 8 giây, health check timeout 3 giây và fail liên tục. Kubelet restart lần lượt 12 pod; mỗi pod khởi động lại mở thêm connection pool, tổng connection vượt {{max_connections}} của PostgreSQL, DB từ chối kết nối mới, tạo vòng xoáy: pod restart → mở kết nối → DB quá tải → health fail → restart tiếp. Triệu chứng: toàn bộ API trả 5xx trong 15 phút, dashboard hiện CrashLoopBackOff.
 
-### Tra loi mau khi phong van
-"Actuator health group cho phep tach liveness va readiness: liveness chi kiem tra tien trinh con song (ping), readiness kiem tra DB, cache, broker va downstream quan trong. Kubernetes livenessProbe tro vao {{/actuator/health/liveness}}, readinessProbe tro vao {{/actuator/health/readiness}}. Toi viet custom HealthIndicator cho tung downstream quan trong (cong thanh toan, service noi bo) va gom vao group readiness. Ve exposure, toi chi mo {{health}}, {{info}}, {{metrics}}, {{prometheus}}; cac endpoint nhay cam nhu {{env}}, {{heapdump}}, {{loggers}} thi dat base-path rieng va bao ve bang Spring Security hoac network policy. Khong bao de {{exposure.include=*}} tren production."
+Điều tra: {{kubectl describe pod}} cho thấy liveness probe failed; {{/actuator/health}} trả DOWN ở component {{db}}; log HikariCP báo {{Connection is not available}}. Xử lý: tách group, liveness chỉ giữ {{livenessState}}, readiness giữ {{readinessState,db,redis,paymentGateway}}; thêm {{startupProbe}} 30 lần × 5s cho app khởi động chậm; tăng {{initialDelaySeconds}} liveness lên 25s; bật {{server.shutdown=graceful}} kèm {{preStop sleep 5}}. Sau thay đổi, khi DB chậm pod chỉ bị gỡ khỏi readiness (mất traffic) chứ không bị restart, hệ thống tự hồi phục khi DB hết chậm; metric {{http.server.requests}} cho thấy p99 của {{/actuator/health/readiness}} là 15ms, không ảnh hưởng latency API.
 
-> Senior tip: hay treat Actuator endpoint nhu API cong khai: version, deprecation, authentication, rate limit. {{/actuator/health}} public la bat buoc cho probe, nhung {{/actuator/env}} public la loi bao mat. Toi luon review exposure.include trong checklist release.`,
+### Trả lời mẫu khi phỏng vấn
+"Trên Actuator tôi bật {{management.endpoint.health.probes.enabled=true}} để có {{/actuator/health/liveness}} và {{/actuator/health/readiness}}. Nhóm liveness tôi chỉ để {{livenessState}} vì liveness là quyết định restart; nếu đưa DB vào đó thì DB chậm sẽ làm kubelet restart toàn bộ pod, biến sự cố nhỏ thành outage. Nhóm readiness tôi để {{readinessState}} cộng các dependency cần thiết như {{db}}, {{redis}}, {{paymentGateway}}, và tôi tự viết {{HealthIndicator}} cho downstream quan trọng với timeout ngắn 200–500ms. Tôi đặt tên bean rõ ràng rồi khai báo đúng tên đó trong {{include}}, vì indicator không tự động vào group. Về expose, tôi chỉ mở {{health}}, {{info}}, {{metrics}}, {{prometheus}}; các endpoint nhạy cảm như {{env}}, {{heapdump}}, {{loggers}} thì đổi base-path và bảo vệ bằng Spring Security hoặc network policy, tuyệt đối không để {{exposure.include=*}} trên production. Tôi kiểm chứng bằng cách vừa load test vừa rolling update để chắc probe không restart oan."
+
+> Senior tip: hãy coi Actuator endpoint là API công khai: có version, có deprecation, có authentication và rate limit. {{/actuator/health}} public là bắt buộc cho probe, nhưng {{/actuator/env}} public là một vụ rò rỉ secret. Tôi luôn review {{exposure.include}} và {{show-details}} trong checklist release, và luôn hỏi một câu trước khi thêm dependency vào probe: "nếu check này fail, hành động đúng là restart pod hay ngừng gửi traffic?"`,
 
   follow: [
     "Vi sao khong nen dung DB check trong liveness probe?",
@@ -13044,62 +13058,66 @@ He thong thanh toan 12 pod, deploy rolling. Truoc chi dung {{/actuator/health}} 
   id: 'spring-083',
   topic: 'spring',
   level: 'senior',
-  q: 'HikariCP trong Spring Boot: ban dat maximumPoolSize, minimumIdle, connectionTimeout, maxLifetime, leakDetectionThreshold dua tren cong thuc nao? Khi pool can do Open Session In View hoac transaction dai, ban dieu tra va khac phuc theo thu tu nao?',
-  a: `**Tom tat:** Kich thuoc pool HikariCP khong lay theo so thread ung dung ma theo tai thuc te: pool ~ (so core DB x 2) + so o dia hieu dung, bat dau 10-20 tren moi instance. Tong pool moi instance phai nho hon {{max_connections}} cua DB (chua 20% cho admin/replication). {{connectionTimeout}} ngan (2-5s) de fail nhanh, {{maxLifetime}} ngan hon timeout firewall/DB (vi du 30 phut vs 60 phut), {{leakDetectionThreshold}} bat (60-120s) de phat hien borrow qua lau. Khi pool can: xem {{hikaricp.connections.pending/active}}, doi chieu trace tim transaction dai hoac OSIV, khong tang pool mu moc.
+  q: 'HikariCP trong Spring Boot: bạn đặt {{maximumPoolSize}}, {{minimumIdle}}, {{connectionTimeout}}, {{maxLifetime}}, {{leakDetectionThreshold}} dựa trên công thức nào? Khi pool cạn do Open Session In View hoặc transaction dài, bạn điều tra và khắc phục theo thứ tự nào?',
+  a: `**Tóm tắt:** Kích thước pool không lấy theo số thread của ứng dụng mà theo tải thật. Ước lượng nhanh bằng định luật Little: số connection cần trung bình = throughput (req/s) × thời gian giữ connection (giây). Quy tắc kinh nghiệm của HikariCP: pool ≈ (số core của DB × 2) + số đĩa hiệu dụng, thường bắt đầu 10–20 trên mỗi instance; tổng pool của mọi instance (kể cả lúc autoscale) phải nhỏ hơn {{max_connections}} của DB, chừa ~20% cho admin, backup và replication. Mặc định của HikariCP là {{maximumPoolSize=10}}, {{connectionTimeout=30s}}, {{idleTimeout=10 phút}}, {{maxLifetime=30 phút}}, {{leakDetectionThreshold=0}} (tắt). Khi pool cạn: xem {{hikaricp.connections.pending}} và {{active}}, đối chiếu trace để tìm transaction dài hoặc OSIV, sửa gốc trước, chỉ sau đó mới tính tăng pool.
 
-### Cong thuc sizing pool
-Little Law: so connection ban trung binh = throughput (req/s) x thoi gian giu connection trung binh (giay).
-Vi du: 400 req/s x 20ms = 8 connection ban. Pool 15-20 tren instance la du dinh tai.
-Quy tac cong dong (khong phai cong thuc chinh thuc Hikari): pool ~ (so core CPU DB x 2) + so o dia hieu dung.
-Tong pool = pool/instance x so instance (tinh ca max khi autoscale) < {{max_connections}} DB (de chua 20%).
+### Công thức sizing pool
+- **Định luật Little**: số connection bị giữ trung bình = throughput × thời gian giữ trung bình. Ví dụ 400 req/s × 20ms = 8 connection. Nếu mỗi request giữ connection 200ms (có gọi HTTP trong transaction) thì cần 400 × 0,2 = 80 connection — pool 20 là cạn ngay.
+- **Quy tắc HikariCP** (không phải công thức chính thức của Hikari, mà là khuyến nghị trong wiki): pool ≈ (số core CPU của DB × 2) + số đĩa hiệu dụng. Đây là điểm khởi đầu, không phải kết luận.
+- **Ràng buộc quan trọng nhất**: tổng connection = pool mỗi instance × số instance (tính cả max replica khi autoscale) < {{max_connections}} của PostgreSQL (mặc định 100) và phải chừa chỗ cho admin/replication.
+- Hệ quả: 8 pod × pool 20 = 160 > 100 → DB từ chối kết nối chứ không phải "chậm". Tăng pool mà không tính tổng là cách nhanh nhất để làm sập DB.
 
-### Cac tham so quan trong
-| Tham so | Y nghia | Goi y |
-|---|---|---|
-| {{maximumPoolSize}} | So connection toi da | 15-20/instance, do theo tai thuc |
-| {{minimumIdle}} | Connection roi toi thieu giu lai | 5-10, tranh tao connection luc spike |
-| {{connectionTimeout}} | Choi lay connection toi da | 2000-5000ms, fail nhanh |
-| {{idleTimeout}} | Connection roi bao lau thi dong | 10 phut (600000ms) |
-| {{maxLifetime}} | Tuoi toi da connection truoc khi thay moi | 30 phut (1800000ms) < firewall/DB timeout |
-| {{leakDetectionThreshold}} | Canh bao borrow qua lau | 60000-120000ms, bat de phat hien transaction dai |
-| {{connectionInitSql}} | Khoi tao connection (vi du set timezone) | Tuy moi truong |
+### Các tham số và mặc định của HikariCP
+| Tham số | Ý nghĩa | Mặc định HikariCP | Gợi ý production |
+|---|---|---|---|
+| {{maximumPoolSize}} | Số connection tối đa | 10 | 10–20/instance, đo theo tải thật |
+| {{minimumIdle}} | Connection rảnh giữ lại | Bằng {{maximumPoolSize}} | Giữ bằng {{maximumPoolSize}} (fixed-size pool) |
+| {{connectionTimeout}} | Chờ lấy connection tối đa | 30000ms | 2000–5000ms để fail nhanh, không xếp hàng dài |
+| {{idleTimeout}} | Connection rảnh bao lâu thì đóng | 600000ms (10 phút) | Chỉ có tác dụng khi {{minimumIdle}} < {{maximumPoolSize}} |
+| {{maxLifetime}} | Tuổi tối đa của một connection | 1800000ms (30 phút) | Ngắn hơn timeout của firewall/DB (ví dụ 25 phút) |
+| {{keepaliveTime}} | Chu kỳ keep-alive connection rảnh | 0 (tắt) | 30–60s nếu tường lửa/NAT cắt kết nối rảnh |
+| {{leakDetectionThreshold}} | Ngưỡng cảnh báo mượn quá lâu | 0 (tắt) | 60000–120000ms để phát hiện transaction dài |
+| {{validationTimeout}} | Chờ kết quả kiểm tra connection | 5000ms | 1000–3000ms |
+| {{connectionInitSql}} | Câu lệnh chạy khi tạo connection | Không có | {{SET TIME ZONE 'UTC'}} nếu cần |
 
 ~~~yaml
 spring:
   datasource:
     hikari:
       maximum-pool-size: 20
-      minimum-idle: 10
+      minimum-idle: 20
       connection-timeout: 3000
       idle-timeout: 600000
-      max-lifetime: 1800000
+      max-lifetime: 1500000
+      keepalive-time: 60000
       leak-detection-threshold: 60000
       connection-init-sql: "SET TIME ZONE 'UTC'"
 ~~~
 
-### Dieu tra pool can (theo thu tu)
-1. **Xem metric pool**: {{hikaricp.connections.pending}} > 0 keo dai, {{active}} cham max, {{idle}} = 0.
-2. **Doi chieu trace/APM**: request nao giu connection lau? Tim {{@Transactional}} bao goi HTTP, OSIV ({{spring.jpa.open-in-view=true}}), batch job chay lau.
-3. **Kiem tra DB**: {{pg_stat_activity}} / {{SHOW PROCESSLIST}} xem query nao chay lau, lock wait.
-4. **Sua goc**: tat OSIV, tach HTTP call ra khoi transaction, chunk batch job, them timeout.
-5. **Chi sau do moi can nhac tang pool** neu DB con dap ung duoc.
+### Điều tra pool cạn theo thứ tự
+1. **Xem metric pool**: {{hikaricp.connections.pending}} > 0 kéo dài, {{active}} chạm {{maximumPoolSize}}, {{idle}} = 0. Xem thêm {{hikaricp.connections.acquire}} (thời gian chờ lấy connection) — đây là chỉ số quan trọng nhất, quan trọng hơn số connection hiện có.
+2. **Đối chiếu trace/APM**: request nào giữ connection lâu? Tìm {{@Transactional}} gọi HTTP, {{spring.jpa.open-in-view=true}} (mặc định), job batch chạy hàng chục phút, hoặc {{REQUIRES_NEW}} trong vòng lặp (mỗi thread giữ 2 connection).
+3. **Kiểm tra phía DB**: PostgreSQL dùng {{pg_stat_activity}} (cột {{state}}, {{wait_event_type}}, {{query_start}}); MySQL dùng {{SHOW PROCESSLIST}}. Tìm query chạy lâu, lock wait, hoặc connection ở trạng thái {{idle in transaction}} — dấu hiệu kinh điển của transaction mở mà không commit.
+4. **Sửa gốc**: tắt OSIV, chuyển dữ liệu cần cho render vào service trong {{@Transactional}}, tách lời gọi HTTP ra khỏi transaction, chia nhỏ batch, thêm {{statement_timeout}}/{{query timeout}}, đóng {{EntityManager}} đúng chỗ.
+5. **Chỉ sau đó mới tính tăng pool**, và phải tính tổng theo số instance. Nếu DB đã gần {{max_connections}} thì tăng pool chỉ chuyển nút thắt từ app sang DB.
 
-### Trade-off tang pool
-Tang pool qua lon -> DB qua tai process/thread, context switch tang, buffer pool bi xao tron, lock contention tang. Nhieu khi giam pool + fix transaction dai thi latency tot hon.
+### Trade-off khi tăng pool
+Pool quá lớn làm DB phải quản lý nhiều backend process/thread hơn: context switch tăng, buffer pool bị chia nhỏ, lock contention tăng, và mỗi connection ngốn vài MB RAM ở cả app lẫn DB. Rất nhiều sự cố "DB chậm" được giải quyết bằng cách **giảm** pool kết hợp sửa transaction dài, chứ không phải tăng.
 
 ### Pitfall production
-- {{spring.jpa.open-in-view=true}} (mac dinh) giu connection suot render JSON -> pool can du query nhanh.
-- Goi API ben ngoai trong {{@Transactional}} giu connection trong luc cho mang.
-- {{maxLifetime}} >= firewall timeout -> connection reset ngau nhien sau gio thap diem.
-- Tang pool ma khong fix transaction dai -> chuyen nut that tu app sang DB, lam ca cum cham hon.
+- {{spring.jpa.open-in-view=true}} (mặc định) giữ connection suốt quá trình render JSON → pool cạn dù query rất nhanh.
+- Gọi API bên ngoài trong {{@Transactional}} giữ connection trong lúc chờ mạng.
+- {{maxLifetime}} lớn hơn timeout của firewall/NAT → connection bị cắt ở giữa, app nhận lỗi reset vào giờ thấp điểm.
+- Tăng pool mà không sửa transaction dài → chuyển nút thắt từ app sang DB, cả cụm chậm hơn.
+- {{leakDetectionThreshold}} đặt quá thấp (ví dụ 1000ms) → log cảnh báo liên tục, đúng lúc cần đọc log thì bị trôi.
 
-### Vi du doi thuc
-Service don hang 8 pod, Hikari {{max=50}} (tong 400), PostgreSQL {{max_connections=200}}. Gio cao diem pool can, pending 50+, p95 3s. Dieu tra: OSIV bat + template render giu connection 200ms; mot {{@Transactional}} goi API ty gia ngoai 800ms. Sua: tat OSIV, load du lieu trong service; tach API ty gia ra khoi transaction (dung cache/async). Pool giam xuong {{max=15}} (tong 120), pending ve 0, p95 180ms, CPU DB giam 40%. Khong can scale DB.
+### Ví dụ đời thực
+Service đơn hàng 8 pod, Hikari {{maximumPoolSize=50}} (tổng 400), PostgreSQL {{max_connections=200}}. Giờ cao điểm pool cạn: {{pending}} 50+, p95 3s. Điều tra: OSIV đang bật và template render giữ connection thêm 200ms; một {{@Transactional}} gọi API tỉ giá ngoài mất 800ms; {{pg_stat_activity}} cho thấy nhiều session ở trạng thái {{idle in transaction}}. Xử lý: tắt OSIV và load dữ liệu trong service; tách API tỉ giá ra khỏi transaction (cache + async); đặt {{statement_timeout=3s}}. Sau đó giảm pool xuống {{maximumPoolSize=15}} (tổng 120 < 200), {{pending}} về 0, p95 về 180ms, CPU DB giảm 40%. Không cần scale DB, không cần tăng connection.
 
-### Tra loi mau khi phong van
-"Khi sizing HikariCP, toi dung Little Law: throughput nhan thoi gian giu connection. Vi du 400 req/s x 20ms = 8 connection ban trung binh, pool 15-20/instance la du. Tong pool moi instance phai nho hon max_connections cua DB. Toi dat connectionTimeout ngan (3s) de fail nhanh, maxLifetime 30 phut ngan hon firewall, bat leakDetectionThreshold 60s. Khi pool can, toi khong tang pool ngay ma xem metric pending/active, trace tim transaction dai hoac OSIV, sua goc (tat OSIV, tach HTTP call, chunk batch), roi moi dieu chinh pool neu DB con suc. Tang pool mu moc thuong lam DB qua tai, lock contention tang, latency te hon."
+### Trả lời mẫu khi phỏng vấn
+"Khi sizing HikariCP tôi không lấy theo số thread mà theo tải: định luật Little, số connection trung bình bằng throughput nhân thời gian giữ connection. Ví dụ 400 req/s × 20ms = 8 connection, nên pool 15–20/instance là đủ; nhưng ràng buộc thật là tổng pool mọi instance phải nhỏ hơn max_connections của DB và chừa 20% cho admin, backup. Tôi để {{minimumIdle}} bằng {{maximumPoolSize}} cho pool cố định, {{connectionTimeout}} ngắn khoảng 3s để fail nhanh thay vì xếp hàng, {{maxLifetime}} ngắn hơn timeout firewall, và bật {{leakDetectionThreshold}} khoảng 60s. Khi pool cạn, tôi không tăng pool ngay: tôi xem {{hikaricp.connections.pending}} và thời gian acquire, đối chiếu trace để tìm transaction dài hoặc OSIV, kiểm tra {{pg_stat_activity}} xem có session {{idle in transaction}}, sửa gốc rồi mới điều chỉnh pool. Tăng pool mù quáng thường làm DB quá tải và chuyển nút thắt sang DB."
 
-> Senior tip: chi so quan trong nhat la {{hikaricp.connections.pending}} va thoi gian acquire, khong phai so connection hien co. Pool lon khong lam DB nhanh hon; no chi chia nho CPU cua DB cho nhieu request. Khi thay pending tang, hay tim transaction giu connection truoc khi dung sizing.`,
+> Senior tip: chỉ số quan trọng nhất của connection pool là **thời gian chờ** và **số connection đang chờ (pending)**, không phải số connection hiện có. Pool lớn không làm DB nhanh hơn; nó chỉ chia nhỏ CPU của DB cho nhiều request hơn. Khi thấy {{pending}} tăng, hãy tìm transaction giữ connection trước khi nghĩ đến sizing.`,
 
   follow: [
     "Vi sao maxLifetime phai ngan hon wait_timeout cua MySQL va idle timeout cua firewall?",
@@ -13112,10 +13130,10 @@ Service don hang 8 pod, Hikari {{max=50}} (tong 400), PostgreSQL {{max_connectio
   id: 'spring-084',
   topic: 'spring',
   level: 'senior',
-  q: '@ConfigurationProperties voi validation (@Validated, @NotNull, @Pattern) va fail-fast: ban bind cau hinh phuc tap (nested, list, map, duration) the nao, va cach bat loi cau hinh luc startup thay vi runtime?',
-  a: `**Tom tat:** {{@ConfigurationProperties}} bind property tu {{application.yml}}/env vao POJO, ho tro nested object, List, Map, {{Duration}}, {{DataSize}}, {{InetAddress}}. Ket hop {{@Validated}} tren class va annotation JSR-380 ({{@NotNull}}, {{@NotBlank}}, {{@Pattern}}, {{@Min}}/{{@Max}}, {{@Valid}} cho nested) de validate luc startup. Spring Boot 3 nem {{BindException}} hoac {{ValidationException}} ngay khi context refresh neu config sai - fail-fast thay vi loi runtime vo hinh.
+  q: '{{@ConfigurationProperties}} với validation ({{@Validated}}, {{@NotNull}}, {{@Pattern}}) và fail-fast: bạn bind cấu hình phức tạp (nested, list, map, {{Duration}}) thế nào, và làm sao bắt lỗi cấu hình lúc startup thay vì lúc runtime?',
+  a: `**Tóm tắt:** {{@ConfigurationProperties}} bind property từ {{application.yml}}/biến môi trường vào một POJO hoặc record, hỗ trợ nested object, {{List}}, {{Map}}, {{Duration}}, {{DataSize}}, {{InetAddress}}. Kết hợp {{@Validated}} trên class với annotation JSR-380 ({{@NotNull}}, {{@NotBlank}}, {{@Pattern}}, {{@Min}}/{{@Max}}, {{@Valid}} cho nested) để validate **lúc context khởi động**: sai một property bắt buộc là app không start, kèm banner {{Binding to target ... failed}} chỉ đúng field sai. Đó là fail-fast thật, khác với {{@Value}} rải rác chỉ nổ NPE lúc runtime.
 
-### Bind cac kieu phuc tap
+### Bind các kiểu phức tạp
 ~~~java
 @ConfigurationProperties(prefix = "payment")
 @Validated
@@ -13138,7 +13156,8 @@ public class PaymentProperties {
     }
 }
 ~~~
-YML tuong ung:
+YML tương ứng (dùng {{kebab-case}}; relaxed binding cho phép {{camelCase}}, {{snake_case}}, cả {{UPPER_CASE}} trong env):
+
 ~~~yaml
 payment:
   base-url: "https://payment.internal"
@@ -13155,24 +13174,22 @@ payment:
   max-request-size: "5MB"
 ~~~
 
-### Fail-fast tai startup
-Spring Boot 3 dung {{@ConfigurationPropertiesBinding}} va validator (Hibernate Validator) trong phase {{invokeBeanFactoryPostProcessors}}. Neu validation fail, context nem exception ngay, app khong start. Dieu nay bat:
-- Thieu property bat buoc ({{@NotNull}})
-- Gia tri ngoai pham vi ({{@Min}}/{{@Max}})
-- Pattern sai ({{@Pattern}} cho regex)
-- Nested object khong hop le ({{@Valid}} truyen de quy)
-- Duration/DataSize parse fail (format sai)
+### Fail-fast lúc startup
+Boot đăng ký {{ConfigurationPropertiesBindingPostProcessor}} (một {{BeanFactoryPostProcessor}}); nếu class có {{@Validated}}, binder chạy Bean Validation trên object vừa bind xong. Lỗi làm context không refresh được và app dừng, in ra banner {{Binding to target ... failed}} kèm danh sách field vi phạm. Bắt được:
 
-Khong can code thu cong check null; validator chay tu dong.
+- Thiếu property bắt buộc ({{@NotNull}}, {{@NotBlank}}).
+- Giá trị ngoài phạm vi ({{@Min}}/{{@Max}}).
+- Sai định dạng ({{@Pattern}}, hoặc {{Duration}}/{{DataSize}} không parse được).
+- Nested object không hợp lệ (cần {{@Valid}} để validate sâu).
+- Sai tên property: đặt {{ignoreUnknownFields = false}} để gõ sai key cũng fail thay vì âm thầm dùng giá trị mặc định.
 
-### Relaxed binding
-Spring chap nhan nhieu dang key: {{kebab-case}}, {{camelCase}}, {{snake_case}}, {{UPPER_CASE}} (env). {{payment.baseUrl}}, {{payment.base-url}}, {{PAYMENT_BASE_URL}} deu bind vao {{baseUrl}}.
+Về exception: binder ném {{BindValidationException}} (kế thừa {{RuntimeException}}) chứa {{ValidationErrors}}; khi nổi ra ngoài nó thường được bọc trong {{BindException}} của package {{org.springframework.boot.context.properties.bind}}. Trong test dùng {{ApplicationContextRunner}} và bắt {{IllegalStateException}} lúc lấy bean, rồi soi {{getRootCause()}} để khẳng định đúng field.
 
-### Constructor binding (immutable config)
-Spring Boot 3 khuyen nghi record hoac class co constructor duy nhat:
+### Constructor binding (config bất biến)
+Từ Spring Boot 3, constructor binding là **mặc định** khi class chỉ có một constructor có tham số ({{record}} luôn như vậy), nên {{@ConstructorBinding}} **không bắt buộc** nữa; chỉ cần đặt khi có nhiều constructor và muốn chỉ định constructor dùng để bind:
+
 ~~~java
 @ConfigurationProperties(prefix = "payment")
-@ConstructorBinding
 @Validated
 public record PaymentProperties(
     @NotBlank String baseUrl,
@@ -13193,21 +13210,30 @@ public record PaymentProperties(
     ) {}
 }
 ~~~
-Record bat bien, an toan thread, validation chay tren component cua record.
+
+Record bất biến, an toàn thread, không cần getter/setter, và validation chạy trên từng component của record.
+
+### Duration và DataSize
+- {{Duration}} nhận ba dạng: số trần ({{500}} = 500 **mili giây**), ISO-8601 ({{PT30S}}), và dạng có đơn vị ({{10s}}, {{500ms}}, {{2m}}, {{1d}}).
+- Nếu muốn số trần hiểu theo giây thì đặt {{@DurationUnit(ChronoUnit.SECONDS)}}; nếu không, {{10}} nghĩa là 10ms — đây là lỗi cấu hình kinh điển vì nhìn yml tưởng 10 giây.
+- Luôn ghi rõ đơn vị trong yml ({{"5s"}}, {{"3000ms"}}) để người đọc không phải mở code ra đoán.
 
 ### Pitfall production
-- Quen {{@Validated}} tren class cha -> nested object khong validate.
-- Dung {{@Value}} le thay vi {{@ConfigurationProperties}} -> mat validation tap trung, kho refactor prefix.
-- Property optional nhung khong co default -> null gay NPE luc runtime; hay dung {{@NotNull}} hoac default an toan.
-- Duration parse: {"2s"}, {"PT2S"}, {"2000ms"} deu duoc; nhung {"2"} (chi so) se fail - validator bat duoc.
+- Quên {{@Validated}} trên class cha → nested object không được validate.
+- Dùng {{@Value}} rải rác thay vì {{@ConfigurationProperties}} → mất validation tập trung, khó refactor khi đổi prefix, và thiếu property chỉ nổ lúc runtime.
+- Property optional nhưng không có default → null gán vào field nguyên thuỷ hoặc bị dereference; hãy dùng {{@NotNull}} hoặc default an toàn.
+- {{Duration}} ghi số trần mà tưởng là giây → timeout thật nhỏ hơn 1000 lần.
+- {{ignoreUnknownFields}} mặc định là {{true}} → gõ sai tên key thì dùng giá trị mặc định, không ai biết.
 
-### Vi du doi thuc
-Team cau hinh cong thanh toan qua {{@Value}} le rai rac. Mot deploy thieu payment.read-timeout trong yml -> app start thanh cong, luc runtime goi payment timeout vo han -> treo thread, pool can. Chuyen sang {{@ConfigurationProperties(prefix="payment")}} + {{@Validated}} + record: thieu bat ky property bat buoc nao (url, timeout, retry) app fail ngay luc start voi log ro: {{Validation failed: payment.read-timeout must not be null}}. CI/CD bat loi truoc khi deploy production. Them nua, {{Duration}} tu parse {"5s"}, {"3000ms"}, loai bo bug parse thu cong.
+### Ví dụ đời thực
+Team cấu hình cổng thanh toán bằng {{@Value}} rải rác khắp nơi. Một deploy thiếu {{payment.read-timeout}} trong yml → app start thành công, lúc runtime gọi payment không có timeout → thread treo, pool cạn, p95 tăng từ 200ms lên 8 giây. Điều tra mất 2 giờ vì không có log nào lúc khởi động.
 
-### Tra loi mau khi phong van
-"Toi dung @ConfigurationProperties de gom cau hinh theo prefix, bind vao record hoac POJO immutable. Validation JSR-380 (@NotNull, @Min/@Max, @Pattern, @Valid cho nested) chay tu dong luc Spring Boot khoi dong context - app fail ngay neu config sai, khong cho runtime. Ho tro Duration, DataSize, List, Map, nested record. Relaxed binding cho phep kebab-case trong yml, camelCase trong Java, UPPER_CASE trong env. Constructor binding (@ConstructorBinding) cho record dam bao immutability. Pitfall: quen @Validated tren class cha thi nested khong validate; dung @Value rai rac thi mat validation tap trung va kho refactor."
+Chuyển sang {{@ConfigurationProperties(prefix = "payment")}} + {{@Validated}} + record + {{ignoreUnknownFields = false}}: thiếu bất kỳ property bắt buộc nào (url, timeout, retry) app fail ngay lúc start với banner chỉ rõ field; {{Duration}} tự parse {{"5s"}} và {{"3000ms"}} nên bỏ được code parse thủ công. Thêm test {{ApplicationContextRunner}} cho ba trạng thái: hợp lệ → context start; thiếu bắt buộc → fail; ngoài phạm vi → fail. Từ đó cấu hình sai không bao giờ lọt lên production.
 
-> Senior tip: hay treat config nhu code: co schema (record/POJO), co validation, co test. Viet test ApplicationContextRunner cho moi @ConfigurationProperties: property hop le -> context start; thieu bat buoc -> fail; gia tri ngoai pham vi -> fail. Config sai khong duoc phep len production.`,
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng {{@ConfigurationProperties}} để gom cấu hình theo prefix và bind vào record hoặc POJO bất biến, hỗ trợ nested, {{List}}, {{Map}}, {{Duration}}, {{DataSize}}. Tôi đặt {{@Validated}} trên class và annotation JSR-380 ({{@NotNull}}, {{@Min}}/{{@Max}}, {{@Pattern}}, {{@Valid}} cho nested) để validation chạy lúc context khởi động: thiếu hoặc sai property thì app không start, kèm banner {{Binding to target ... failed}} chỉ đúng field. Tôi cũng đặt {{ignoreUnknownFields = false}} để gõ sai key cũng bị bắt. Từ Boot 3, constructor binding là mặc định với record nên tôi không cần {{@ConstructorBinding}} trừ khi có nhiều constructor. Với {{Duration}} tôi luôn ghi đơn vị trong yml vì số trần được hiểu là mili giây, hoặc dùng {{@DurationUnit}} nếu muốn hiểu theo giây. Pitfall hay gặp là quên {{@Validated}} nên nested không validate, và dùng {{@Value}} rải rác khiến lỗi chỉ lộ lúc runtime."
+
+> Senior tip: hãy coi config như code: có schema (record/POJO), có validation, có test. Tôi viết {{ApplicationContextRunner}} cho mỗi nhóm {{@ConfigurationProperties}}: cấu hình hợp lệ → context start; thiếu bắt buộc → fail; giá trị ngoài phạm vi → fail. Cấu hình sai không được phép lọt lên production, và banner lúc khởi động phải chỉ đúng tên property để người trực đêm sửa được trong một phút.`,
 
   follow: [
     "Record @ConfigurationProperties co khac biet gi so voi class POJO truyen thong?",
@@ -13290,10 +13316,15 @@ He thong microservice 15 service, moi service 3 profile (dev, staging, prod). Tr
   id: 'spring-086',
   topic: 'spring',
   level: 'senior',
-  q: 'Micrometer Observation API: ban tao custom observation cho mot business operation, them tag low-cardinality, record exception, va dung exemplar de noi metric sang trace. High cardinality tag la bai gi?',
-  a: `**Tom tat:** Micrometer Observation API la abstraction thong nhat cho instrumentation: mot Observation sinh ca metric (timer) va span (qua Micrometer Tracing bridge OpenTelemetry/Brave). Tao custom observation bang {{ObservationRegistry}} hoac {{@Observed}}, them tag low-cardinality ({{businessOutcome}}, {{orderType}}), record exception vao span, va exemplar tu gan traceId vao metric histogram. High cardinality tag (userId, orderId, sessionIds) lam cardinality no -> bo nho/chi phi tang vot, Prometheus OOM.
+  q: 'Micrometer Observation API: bạn tạo custom observation cho một business operation thế nào, thêm tag low-cardinality, record exception, và dùng exemplar để nối metric sang trace? High-cardinality tag là bài gì?',
+  a: `**Tóm tắt:** Micrometer Observation API là lớp trừu tượng chung cho instrumentation: một Observation sinh ra cả metric (timer) và span (qua bridge Micrometer Tracing — OpenTelemetry hoặc Brave). Bạn tạo observation thủ công bằng {{ObservationRegistry}} hoặc khai báo bằng {{@Observed}}, gắn tag **low-cardinality** ({{orderType}}, {{channel}}, {{businessOutcome}}), record exception vào span, rồi bật exemplar để từ biểu đồ p99 trên Grafana bấm sang đúng trace của request chậm. High-cardinality tag ({{userId}}, {{orderId}}, {{sessionId}}) làm số time series bùng nổ: Prometheus phải giữ một series cho mỗi giá trị, dẫn tới OOM và chi phí ingest tăng hàng chục lần — đó là "bài" phải trả.
 
-### Custom observation co ban
+### Observation hoạt động thế nào
+- {{Observation}} là một "lần đo" có vòng đời: {{start()}} → {{stop()}}, kèm {{Observation.Context}} chứa các key-value.
+- Khi stop, các {{ObservationHandler}} đăng ký trong {{ObservationRegistry}} nhận context: handler của Micrometer tạo timer (metric), handler của tracing tạo span (nếu có bridge). Nhờ vậy chỉ viết instrumentation một lần.
+- Hai loại key-value: **low-cardinality** ({{lowCardinalityKeyValue}}) gắn vào cả metric và span; **high-cardinality** ({{highCardinalityKeyValue}}) chỉ đi vào span, không vào metric.
+
+### Custom observation bằng code
 ~~~java
 @Service
 class OrderService {
@@ -13305,77 +13336,83 @@ class OrderService {
     }
 
     public Order place(OrderRequest req) {
-        return Observation.createNotStarted("order.place", registry)
-            .lowCardinality(KeyValue.of("orderType", req.type()))
-            .lowCardinality(KeyValue.of("channel", req.channel()))
-            .observe(() -> {
-                Order o = repo.save(new Order(req));
-                Observation.current().ifPresent(obs ->
-                    obs.lowCardinalityKeyValue("businessOutcome", "SUCCESS"));
-                return o;
-            })
+        return Observation.createNotStarted("order.place", registry)   // tên metric/span
+            .lowCardinalityKeyValue("orderType", req.type())           // ONLINE / OFFLINE
+            .lowCardinalityKeyValue("channel", req.channel())          // WEB / APP
+            .observe(() -> {                                           // tự start/stop + record error
+                try {
+                    return repo.save(new Order(req));
+                } catch (RuntimeException e) {
+                    Observation.current().ifPresent(obs -> {
+                        obs.lowCardinalityKeyValue("businessOutcome", "FAILED");
+                        obs.lowCardinalityKeyValue("errorType", e.getClass().getSimpleName());
+                        obs.error(e);                                   // ghi exception vào span
+                    });
+                    throw e;
+                }
+            });
     }
 }
 ~~~
-Hoac dung annotation {{@Observed}} (Spring Boot 3.1+):
-~~~java
-@Observed(name = "order.place",
-    contextualName = "place-order")
-public Order place(OrderRequest req) { ... }
-~~~
+- {{Observation.createNotStarted(name, registry)}} tạo observation chưa start; {{observe(Supplier)}} lo start, chạy, stop và tự gọi {{error(...)}} nếu supplier ném exception.
+- Nếu cần kiểm soát thủ công, dùng {{try (Observation.Scope scope = observation.openScope())}} rồi {{observation.stop()}}; quên stop là rò rỉ context.
+- {{lowCardinalityKeyValue}} chỉ nhận một giá trị cho mỗi key trong mỗi observation; muốn nhiều giá trị thì gọi nhiều lần hoặc dùng {{lowCardinalityKeyValues(...)}}.
 
-### Tag low-cardinality vs high-cardinality
-| Loai tag | Vi du | Cardinality | Cho phep? |
+### Khai báo bằng @Observed
+~~~java
+@Observed(name = "payment.process", contextualName = "charge-card")
+public PaymentResult process(PaymentRequest req) { ... }
+~~~
+- {{@Observed}} cần có bean {{ObservedAspect}} (mặc định có khi bạn dùng {{spring-boot-starter-aop}}) và bật {{management.observations.annotations.enabled=true}} (mặc định {{false}}).
+- Ưu điểm: không lặp code; nhược điểm: khó truyền tag động, nên vẫn phải kết hợp {{ObservationRegistry}} cho những chỗ cần tag theo dữ liệu nghiệp vụ.
+
+### Low-cardinality vs high-cardinality
+| Loại tag | Ví dụ | Số giá trị | Gắn vào |
 |---|---|---|---|
-| Low-cardinality | {{orderType=ONLINE|OFFLINE}}, {{channel=WEB|APP}}, {{businessOutcome=SUCCESS|FAILED}}, {{region=VN|US}} | < 50 gia tri | **Co** - gan vao metric tag |
-| High-cardinality | {{userId}}, {{orderId}}, {{sessionId}}, {{requestId}}, {{email}} | Vo han (tang theo user/request) | **KHONG** gan vao metric tag; chi dung cho span attribute / baggage |
+| Low-cardinality | {{orderType=ONLINE\|OFFLINE}}, {{channel=WEB\|APP}}, {{businessOutcome=SUCCESS\|FAILED}}, {{region=VN\|US}} | Nhỏ (< 50) | Metric **và** span |
+| High-cardinality | {{userId}}, {{orderId}}, {{sessionId}}, {{requestId}}, {{email}} | Không giới hạn, tăng theo request | Chỉ span (hoặc baggage) |
 
-High cardinality tag tren metric -> Prometheus tao time series moi cho moi gia tri -> cardinality no -> ingest cost tang, query cham, OOM. Dung span attribute (trace) hoac baggage cho high-cardinality.
+Metric là dữ liệu **gộp theo tổ hợp tag**: mỗi tổ hợp giá trị là một time series riêng. Thêm {{userId}} vào tag nghĩa là mỗi người dùng một series — Prometheus phải giữ toàn bộ trong bộ nhớ (TSDB head block), biểu đồ chậm dần, và chi phí remote-write tăng theo số series. Span thì ngược lại: mỗi trace là một bản ghi độc lập, thêm attribute không làm tăng cardinality của metric.
 
-### Record exception va error outcome
-~~~java
-.observe(() -> {
-    try {
-        Order o = repo.save(new Order(req));
-        return o;
-    } catch (Exception e) {
-        Observation.current().ifPresent(obs -> {
-            obs.lowCardinalityKeyValue("businessOutcome", "FAILED");
-            obs.lowCardinalityKeyValue("errorType", e.getClass().getSimpleName());
-            obs.error(e); // record vao span
-        });
-        throw e;
-    }
-});
-~~~
-{{obs.error(e)}} ghi exception vao span (event + stack trace neu sampling cho phep).
+### Exemplar: nối metric sang trace
+- Bật histogram cho meter cụ thể (không phải cho toàn bộ ứng dụng):
 
-### Exemplar: noi metric sang trace
-Khi dung {{MeterFilter}} bat exemplar (mac dinh trong Spring Boot 3 cho histogram), moi bucket histogram co the gan traceId cua mot request mau. Tu Grafana bieu do p99, bam exemplar -> mo trace cua request cham do trong Tempo/Jaeger.
 ~~~yaml
 management:
   metrics:
     distribution:
-      percentiles-histogram: "[http.server.requests, order.place]"
-      percentiles: "[0.5, 0.95, 0.99]"
-    exemplars:
-      enabled: true
+      percentiles-histogram:
+        http.server.requests: true
+        order.place: true
+      minimum-expected-value:
+        order.place: 10ms
+      maximum-expected-value:
+        order.place: 5s
+  tracing:
+    sampling:
+      probability: 1.0     # dev/staging; production nên thấp hơn
 ~~~
-Exemplar chi gan traceId khi co trace dang active (sampling), khong phai moi request.
+
+- {{percentiles-histogram}} và {{minimum-expected-value}}/{{maximum-expected-value}} đều là **map theo tên meter** (khớp theo tiền tố, {{all}} dùng cho mọi meter), không phải danh sách.
+- Khi có bridge tracing trên classpath và meter đã bật histogram, Micrometer tự gắn exemplar: mỗi bucket histogram giữ một mẫu kèm {{traceId}}. Từ Grafana, bấm vào điểm p99 để mở trace tương ứng trong Tempo/Jaeger. Không có property {{management.metrics.exemplars.enabled}} — bật histogram là đủ.
+- Exemplar chỉ xuất hiện khi request đó có trace đang active, nên sampling quá thấp (0,1%) sẽ khiến p99 hiếm khi có exemplar.
 
 ### Pitfall production
-- Dev them tag {{userId}} vao metric -> cardinality tang tu 500 len 500.000 series trong 1 gio -> Prometheus OOM, chi phi ingest tang 100x.
-- Tag {{businessOutcome}} quen them -> khong biet ty le thanh cong/that bai theo operation.
-- Exemplar bat nhung sampling qua thap (0.1%) -> hiem khi co exemplar tren p99.
-- Observation khong dong (quen {{.observe()}} hoac throw exception truoc khi dong) -> memory leak context.
+- Thêm tag {{userId}} vào metric: cardinality tăng từ vài nghìn lên hàng trăm nghìn series trong vài giờ → Prometheus OOM, ingest cost tăng hàng chục lần.
+- Quên tag {{businessOutcome}} → không biết tỉ lệ thành công/thất bại theo operation, không phát hiện được retry storm.
+- Observation không được stop (quên {{observe()}} hoặc throw trước khi vào {{try-with-resources}}) → rò rỉ context, sai thời lượng.
+- Đặt tên observation không nhất quán ({{order.place}} vs {{orderPlace}}) → metric bị chia nhỏ, khó đặt dashboard.
+- Bật {{management.observations.annotations.enabled=true}} mà không có {{spring-boot-starter-aop}} → annotation bị bỏ qua im lặng.
 
-### Vi du doi thuc
-Team them custom observation {{payment.process}} voi tag {{userId}} de "de debug". Sau 2 tuan, Prometheus cardinality tu 2.000 series len 1.2 trieu, ingest cost tang 50x, Grafana query timeout. Dieu tra: {{MeterFilter}} log cho thay tag {{userId}} tao 50.000 gia tri rieng biet/ngay. Sua: xoa {{userId}} khoi metric tag, chuyen sang span attribute ({{observation.context().addHighCardinality(...)}}) hoac baggage. Cardinality giam ve 3.000, chi phi ingest binh thuong. Them tag {{businessOutcome}} cho payment: p99 latency tach theo SUCCESS/FAILED phat hien retry storm khi FAILED cao.
+### Ví dụ đời thực
+Team thêm custom observation {{payment.process}} kèm tag {{userId}} "cho dễ debug". Sau hai tuần, Prometheus cardinality tăng từ 2.000 lên 1,2 triệu series, ingest cost tăng 50 lần, Grafana query timeout. Điều tra: {{prometheus_tsdb_head_series}} tăng đúng bằng số user hoạt động; log của {{MeterFilter}} cho thấy mỗi ngày có 50.000 giá trị {{userId}} mới.
 
-### Tra loi mau khi phong van
-"Micrometer Observation API sinh ca metric timer va span trace tu mot lan instrumentation. Toi tao custom observation cho operation nghiep vu quan trong (dat hang, thanh toan), them tag low-cardinality nhu orderType, channel, businessOutcome (SUCCESS/FAILED) - cardinality duoi 50 gia tri. High cardinality nhu userId, orderId KHONG gan vao metric tag (lam cardinality no, Prometheus OOM) ma dung span attribute hoac baggage. Record exception bang {{obs.error(e)}} va tag {{errorType}} de trace co context. Exemplar tu gan traceId vao histogram bucket, tu p99 tren Grafana bam sang trace request cham. Toi luon review tag trong PR: metric tag phai low-cardinality, high-cardinality chi o span."
+Xử lý: bỏ {{userId}} khỏi metric tag, chuyển sang span attribute bằng {{observation.context().addHighCardinalityKeyValue("userId", id)}} (hoặc baggage nếu cần truyền qua nhiều service); giữ lại các tag low-cardinality {{orderType}}, {{channel}}, {{businessOutcome}}. Cardinality giảm về 3.000, chi phí ingest trở lại bình thường, và vẫn debug được từng request qua trace. Thêm tag {{businessOutcome}} giúp phát hiện một đợt retry storm khi tỉ lệ {{FAILED}} tăng đột biến.
 
-> Senior tip: cardinality la chi phi an. Moi tag metric them 10 gia tri co the nhan 10x series. Hay do {{prometheus_tsdb_symbol_table_size_bytes}} va {{prometheus_remote_storage_samples_pending}} truoc khi merge PR them tag. Mac dinh deny high-cardinality tag tren metric.`,
+### Trả lời mẫu khi phỏng vấn
+"Micrometer Observation API sinh ra cả metric và span từ một lần instrumentation, nên tôi dùng nó cho các operation nghiệp vụ quan trọng như đặt hàng, thanh toán. Tôi tạo observation bằng {{ObservationRegistry}} hoặc {{@Observed}}, gắn tag low-cardinality như {{orderType}}, {{channel}}, {{businessOutcome}} — dưới 50 giá trị; high-cardinality như {{userId}}, {{orderId}} thì không bao giờ đưa vào metric tag vì mỗi giá trị là một time series, làm Prometheus OOM, mà tôi chuyển sang span attribute hoặc baggage. Tôi record exception bằng {{obs.error(e)}} và thêm tag {{errorType}} để trace có ngữ cảnh. Tôi bật {{percentiles-histogram}} theo từng meter; khi đó Micrometer tự gắn exemplar kèm {{traceId}} vào histogram bucket, từ p99 trên Grafana bấm sang đúng trace chậm trong Tempo. Tôi luôn review tag trong PR: metric tag phải low-cardinality, high-cardinality chỉ nằm ở span."
+
+> Senior tip: cardinality là chi phí ẩn — thêm 10 giá trị cho một tag là nhân 10 số series. Tôi đo {{prometheus_tsdb_head_series}} và {{prometheus_remote_storage_samples_pending}} trước khi merge PR thêm tag, và mặc định từ chối high-cardinality tag trên metric. Một quy tắc dễ nhớ: nếu giá trị đó tăng theo số request, nó thuộc về trace, không thuộc về metric.`,
 
   follow: [
     "Vi sao span attribute cho phep high cardinality ma metric tag thi khong?",
@@ -13388,10 +13425,13 @@ Team them custom observation {{payment.process}} voi tag {{userId}} de "de debug
   id: 'spring-087',
   topic: 'spring',
   level: 'senior',
-  q: 'Structured logging trong Spring Boot 3: ban cau hinh Logback/Log4j2 xuat JSON, them correlation ID (traceId/spanId) tu MDC, masking field nhay cam, va log level per-package. File appender vs console appender trong container khac nhau the nao?',
-  a: `**Tom tat:** Spring Boot 3 mac dinh Logback; cau hinh {{logback-spring.xml}} de xuat JSON ({{LogstashEncoder}}), them {{traceId}}/{{spanId}} tu MDC (Micrometer Tracing tu day vao MDC khi co {{spring.micrometer.tracing.mdc.enabled=true}}), masking field nhay cam (password, token, creditCard) qua custom {{MaskingConverter}}, va dat log level per-package. Container dung console appender (stdout/stderr) de log shipper (Fluent Bit, Datadog agent) thu thap; file appender chi dung khi sidecar log collector doc file, tranh ghi disk container.
+  q: 'Structured logging trong Spring Boot 3: bạn cấu hình Logback/Log4j2 xuất JSON, thêm correlation ID ({{traceId}}/{{spanId}}) từ MDC, mask field nhạy cảm và đặt log level per-package thế nào? File appender và console appender trong container khác nhau ra sao?',
+  a: `**Tóm tắt:** Spring Boot 3 mặc định dùng Logback; để log JSON có thể dùng {{logback-spring.xml}} với {{LogstashEncoder}}, hoặc đơn giản hơn từ Boot 3.4 là đặt {{logging.structured.format.console=logstash}} (hoặc {{ecs}}) và không cần thêm dependency. Correlation ID {{traceId}}/{{spanId}} do Micrometer Tracing tự đưa vào MDC (không phải bạn bật bằng property nào), nên chỉ cần khai báo chúng trong pattern hoặc để encoder nhúng MDC vào JSON. Masking field nhạy cảm (password, token, creditCard) làm bằng {{ClassicConverter}} hoặc {{jsonGeneratorDecorator}}. Container nên log ra stdout để log shipper (Fluent Bit, Vector, Datadog agent) thu thập; file appender chỉ dùng khi có sidecar đọc file, và phải tự lo rotation để không đầy disk.
 
-### JSON log voi LogstashEncoder
+### Vì sao cần structured logging
+Log dạng text khó máy đọc: muốn đếm tỉ lệ lỗi theo {{orderType}} phải grep và parse regex, dễ vỡ khi message thay đổi. Log JSON cho phép log shipper (Fluent Bit → Loki/Elasticsearch) index từng field, truy vấn {{level="ERROR" AND service="payment"}}, và nối log với trace qua {{traceId}}.
+
+### JSON log với LogstashEncoder
 ~~~xml
 <configuration>
   <springProperty scope="context" name="appName" source="spring.application.name"/>
@@ -13404,8 +13444,6 @@ Team them custom observation {{payment.process}} voi tag {{userId}} de "de debug
         <logger>logger</logger>
         <thread>thread</thread>
         <level>level</level>
-        <traceId>traceId</traceId>
-        <spanId>spanId</spanId>
       </fieldNames>
     </encoder>
   </appender>
@@ -13414,36 +13452,55 @@ Team them custom observation {{payment.process}} voi tag {{userId}} de "de debug
   </root>
 </configuration>
 ~~~
-Dependency: {{net.logstash.logback:logstash-logback-encoder}}.
+- Dependency: {{net.logstash.logback:logstash-logback-encoder}} (Boot không quản lý phiên bản, cần khai báo version hoặc dùng BOM của dự án).
+- {{LogstashEncoder}} **tự động đưa mọi entry trong MDC thành field JSON**, nên {{traceId}} và {{spanId}} xuất hiện mà không cần khai báo trong {{fieldNames}}. {{fieldNames}} chỉ dùng để đổi tên các field chuẩn ({{timestamp}}, {{message}}, {{logger}}…).
+- Đặt tên file là {{logback-spring.xml}} (không phải {{logback.xml}}) để Logback đọc được thẻ {{<springProperty>}} và {{<springProfile>}}.
 
-### Correlation ID tu MDC
-Spring Boot 3 + Micrometer Tracing tu dong day {{traceId}}, {{spanId}} vao MDC khi {{spring.micrometer.tracing.mdc.enabled=true}} (mac dinh true). Log JSON se co truong {{traceId}}, {{spanId}} cho phep truy vet request trong he thong phan tan.
+### Cách ngắn hơn từ Spring Boot 3.4
 ~~~yaml
-spring:
-  micrometer:
-    tracing:
-      mdc:
-        enabled: true
+logging:
+  structured:
+    format:
+      console: logstash      # hoặc ecs
+      file: ecs
 ~~~
-Khi dung @Async/@Scheduled, can TaskDecorator copy MDC sang thread worker (xem cau ve @Async).
 
-### Masking field nhay cam
-Tao custom converter loai bo/mask gia tri theo pattern:
+- Boot 3.4+ có sẵn structured logging: đặt {{logging.structured.format.console}} (và {{file}}) là log ra JSON, không cần thêm dependency, không cần viết {{logback-spring.xml}}.
+- Khi cần mask field hoặc thêm field nghiệp vụ ({{orderId}}, {{tenantId}}) thì vẫn dùng {{LogstashEncoder}} với {{jsonGeneratorDecorator}}, hoặc ghi MDC rồi để encoder nhúng.
+
+### Correlation ID từ MDC
+- Khi có Micrometer Tracing (bridge Brave hoặc OpenTelemetry) trên classpath, Spring Boot tự đặt {{traceId}} và {{spanId}} vào MDC cho mỗi request — **không có property nào tên {{spring.micrometer.tracing.mdc.enabled}}**, và cũng không cần bật: mặc định đã hoạt động.
+- Mặc định, Boot in correlation ID dạng {{[traceId-spanId]}} trong log. Muốn đổi định dạng thì đặt {{logging.pattern.correlation}}, ví dụ:
+
+~~~yaml
+logging:
+  pattern:
+    correlation: "[\${spring.application.name:},%X{traceId:-},%X{spanId:-}] "
+~~~
+
+- Lưu ý pattern trên là dạng {{properties}}; trong {{application.yml}} phải để trong ngoặc kép.
+- Với {{@Async}} hoặc {{@Scheduled}}, MDC không tự truyền sang thread khác: cần {{TaskDecorator}} copy MDC (xem câu về {{@Async}}).
+
+### Masking field nhạy cảm
 ~~~java
 public class MaskingConverter extends ClassicConverter {
+    // (?i) = không phân biệt hoa/thường; \\s* = khoảng trắng trước dấu : hoặc =
     private static final Pattern SENSITIVE = Pattern.compile(
-        "(password|secret|token|apiKey|creditCard|cardNumber|ssn)\\s*[:=]\\s*\\S+", Pattern.CASE_INSENSITIVE)
-    @Override public String convert(ILoggingEvent event) {
-        return SENSITIVE.matcher(event.getFormattedMessage()).replaceAll("$1=***MASKED***")
+        "(?i)(password|secret|token|apiKey|creditCard|cardNumber|ssn)\\s*[:=]\\s*\\S+");
+
+    @Override
+    public String convert(ILoggingEvent event) {
+        return SENSITIVE.matcher(event.getFormattedMessage()).replaceAll("$1=***MASKED***");
     }
 }
 ~~~
-Dang ky trong {{logback-spring.xml}}:
+Đăng ký trong {{logback-spring.xml}}:
 ~~~xml
 <conversionRule conversionWord="mask" converterClass="com.example.MaskingConverter"/>
 <pattern>%mask(%msg)%n</pattern>
 ~~~
-Hoac dung {{LogstashEncoder}} voi {{jsonGeneratorDecorator}} de mask tai encoder level.
+- Cách này chỉ mask phần message dạng text; với {{LogstashEncoder}} nên mask ở tầng encoder bằng {{jsonGeneratorDecorator}} để cả field JSON cũng được che.
+- Đừng log password/token ngay từ đầu: mask chỉ là lớp phòng thủ cuối, không phải giấy phép.
 
 ### Log level per-package
 ~~~yaml
@@ -13453,32 +13510,37 @@ logging:
     com.example.order: DEBUG
     org.springframework.web: WARN
     org.hibernate.SQL: DEBUG
-    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+    org.hibernate.orm.jdbc.bind: TRACE     # Hibernate 6: log tham số bind
 ~~~
-Hoac runtime thay doi qua {{/actuator/loggers}} (can expose endpoint loggers, bao ve bang security).
+
+- Ở Hibernate 5, logger bind là {{org.hibernate.type.descriptor.sql.BasicBinder}}; từ Hibernate 6 nó là {{org.hibernate.orm.jdbc.bind}}. Dùng tên cũ sẽ không in ra gì.
+- Có thể đổi level runtime bằng {{/actuator/loggers}} (phải expose và bảo vệ endpoint này; nó thay đổi hành vi app đang chạy).
 
 ### Container: console vs file appender
-| Appender | Phu hop | Luu y |
+| Appender | Phù hợp | Lưu ý |
 |---|---|---|
-| Console (stdout/stderr) | **Container/K8s mac dinh** | Log shipper (Fluent Bit, Vector, Datadog agent) doc stdout; khong ton disk container; rotation do node/log shipper lo. |
-| File (RollingFileAppender) | Sidecar log collector doc file | Can mount emptyDir/volume; tu rotation; rui ro disk full neu sidecar die. |
+| Console (stdout/stderr) | **Container/K8s mặc định** | Log shipper (Fluent Bit, Vector, Datadog agent) đọc stdout; không tốn disk container; rotation do runtime lo ({{--log-max-size}}, {{--log-max-files}}) |
+| File ({{RollingFileAppender}}) | Sidecar log collector đọc file | Phải mount {{emptyDir}}/volume; tự rotation; sidecar chết là disk đầy, pod bị evict |
 
-K8s best practice: log ra stdout, de node/container runtime rotate ({{--log-max-size}}, {{--log-max-files}}), log shipper tail stdout.
+Nguyên tắc: 12-factor app log ra stdout, không tự quản lý file log trong container.
 
 ### Pitfall production
-- Khong bat {{spring.micrometer.tracing.mdc.enabled}} -> log thieu traceId, khong truy vet duoc request.
-- Log password/token ra file/stdout -> vi pham bao mat, audit fail.
-- File appender trong container khong rotation -> disk full -> pod evicted.
-- Log level DEBUG tren production package lon -> noise, disk/ingest cost tang, co the lo du lieu nhay cam.
-- Structured log nhung khong co timestamp chuan ISO (@timestamp) -> kho query/sort trong Elasticsearch/Loki.
+- Không biết rằng traceId đã có sẵn trong MDC, nên log thiếu correlation ID và không truy vết được request.
+- Log password/token ra stdout → vi phạm bảo mật, audit fail.
+- File appender trong container không rotation → disk đầy → pod bị evict.
+- Bật {{org.hibernate.SQL}} + bind ở mức TRACE trên production → mỗi request sinh hàng nghìn dòng log, chi phí ingest tăng vọt, có thể lộ dữ liệu nhạy cảm trong tham số.
+- Log JSON nhưng timestamp không chuẩn ISO-8601 → khó sort và parse trong Elasticsearch/Loki.
+- Đổi tên khoá MDC (Boot 4.2) mà không sửa log shipper → dashboard mất trường {{traceId}}.
 
-### Vi du doi thuc
-He thong 20 microservice tren K8s, log shipper Fluent Bit -> Loki. Ban dau dung file appenderRotationPolicy, mot pod log 5GB/ngay, emptyDir full -> pod OOMKilled. Chuyen sang console appender JSON, Fluent Bit tail stdout, Loki ingest. Them masking converter cho password/token, bat {{spring.micrometer.tracing.mdc.enabled}}. Log level per-package: root INFO, com.example DEBUG chi khi incident qua {{/actuator/loggers}}. Correlation ID traceId trong log khop traceId trong Tempo -> tu log error bam sang trace request cham. Ket qua: disk pod on dinh < 500MB, query log/error rate nhanh, audit pass (khong log secret).
+### Ví dụ đời thực
+Hệ thống 20 microservice trên Kubernetes, log shipper Fluent Bit → Loki. Ban đầu dùng {{logback-spring.xml}} với file appender {{RollingFileAppender}} ghi vào {{emptyDir}}: mỗi pod sinh 5GB log/ngày, {{emptyDir}} đầy, pod bị OOMKilled và evict. Điều tra: {{kubectl describe pod}} báo {{Evicted}} do vượt ephemeral storage; log trên node cho thấy file {{*.log}} phình liên tục vì không ai xoá.
 
-### Tra loi mau khi phong van
-"Spring Boot 3 dung Logback mac dinh, toi cau hinh logback-spring.xml xuat JSON bang LogstashEncoder. Bat spring.micrometer.tracing.mdc.enabled=true de traceId/spanId tu vao MDC, log JSON co correlation ID de truy vet request phan tan. Masking field nhay cam (password, token, creditCard) bang custom converter hoac jsonGeneratorDecorator. Log level per-package qua logging.level.* trong yml hoac /actuator/loggers runtime. Container: log ra stdout (console appender) de Fluent Bit/Datadog agent thu thap, khong dung file appender tranh disk full. Timestamp ISO, field service/env co dinh de query de dang."
+Xử lý: chuyển sang console appender JSON ({{LogstashEncoder}} hoặc {{logging.structured.format.console=logstash}}), Fluent Bit tail stdout, Loki ingest. Thêm {{MaskingConverter}} cho password/token, giữ {{org.hibernate.SQL}} ở mức DEBUG và bind ở mức TRACE chỉ trong staging. Đặt correlation ID {{traceId}} trong log để từ một dòng lỗi bấm sang trace trong Tempo. Kết quả: disk pod ổn định dưới 500MB, truy vấn log/error rate nhanh hơn, audit pass vì không còn secret trong log.
 
-> Senior tip: hay treat log nhu data pipeline: schema co dinh (JSON), correlation ID bat buoc, masking mac dinh, level per-env. Toi luon co checklist: "log co traceId?", "co mask secret?", "stdout hay file?", "level production la INFO?". Mot log error thieu traceId la log vo dung khi incident.`,
+### Trả lời mẫu khi phỏng vấn
+"Tôi để log ra stdout dạng JSON: từ Spring Boot 3.4 tôi chỉ cần đặt {{logging.structured.format.console=logstash}}; nếu cần mask field hoặc thêm field nghiệp vụ thì tôi dùng {{logback-spring.xml}} với {{LogstashEncoder}} và {{jsonGeneratorDecorator}}. Correlation ID thì tôi không phải bật gì cả — Micrometer Tracing tự đưa {{traceId}} và {{spanId}} vào MDC, và {{LogstashEncoder}} tự nhúng MDC thành field JSON; tôi chỉ chỉnh {{logging.pattern.correlation}} nếu muốn đổi định dạng. Tôi mask các field nhạy cảm bằng converter ở tầng encoder, và tôi không log password/token ngay từ đầu. Log level per-package đặt trong yaml, đổi runtime qua {{/actuator/loggers}} khi cần debug; với Hibernate 6 tôi dùng {{org.hibernate.orm.jdbc.bind}} cho tham số bind vì tên cũ {{BasicBinder}} đã không còn. Trong container tôi không dùng file appender: log ra stdout để Fluent Bit/Vector thu thập, tránh disk đầy và pod bị evict."
+
+> Senior tip: hãy coi log là dữ liệu sản phẩm — có schema (field cố định {{service}}, {{env}}, {{level}}, {{traceId}}), có versioning, và có masking ở tầng encoder. Tôi luôn kiểm tra ba thứ trong checklist: log có {{traceId}} không, có secret nào lọt ra stdout không, và log shipper có bị vỡ khi tôi đổi tên một field không. Trong container, log ra stdout là mặc định của 12-factor app; file appender chỉ làm cuộc sống của bạn khó hơn.`,
 
   follow: [
     "Logback vs Log4j2 trong Spring Boot 3: khac biet cau hinh JSON va performance ra sao?",
@@ -13895,6 +13957,9 @@ Hệ thống ví điện tử dùng {{@EventListener}} để gửi notification 
 ### Trả lời mẫu khi phỏng vấn
 "Để thực hiện tác vụ sau khi commit, tôi dùng {{@TransactionalEventListener}} với phase {{AFTER_COMMIT}}. {{@EventListener}} thường chạy trong transaction, nếu listener lỗi thì transaction gốc rollback. Ngược lại, {{@TransactionalEventListener}} chỉ kích hoạt sau khi transaction commit, tách rời rủi ro. Tôi cũng dùng {{@Async}} kết hợp để tác vụ nặng không kéo dài thời gian commit. Lưu ý rằng listener phải xử lý lỗi độc lập vì transaction cha đã xong rồi, không rollback được nữa. Khi cần đảm bảo giao hàng/email trong hệ thống phân tán, tôi dùng Outbox pattern thay vì listener đơn thuần."
 
+### Hai chi tiết hay bị bỏ qua
+- {{@TransactionalEventListener}} chạy sau khi commit đã xong, nhưng vẫn trên thread request nếu không kèm {{@Async}}. Nếu listener ném exception, exception đó nổi lên caller dù dữ liệu đã commit: client có thể nhận 500 trong khi đơn hàng đã lưu. Vì vậy listener phải tự bắt lỗi, ghi log/metric và không để exception thoát ra ngoài.
+- Khi không muốn dùng event, có thể dùng {{TransactionSynchronizationManager.registerSynchronization(...)}} với {{TransactionSynchronization}} rồi override {{afterCommit()}}. Cách này gọn cho một tác vụ đơn lẻ, nhưng khó kiểm soát hơn khi có nhiều listener.
 > Senior tip: không bao giờ dùng listener gửi mail/gọi API ngoài mà không bọc {{@Async}} hoặc Outbox. Với phase {{AFTER_COMMIT}}, transaction DB đã commit xong nên lỗi mail không rollback được gì nữa; nhưng mail bị treo sẽ giữ thread request và cạn web thread pool. Khi cần giao hàng/email trong hệ thống phân tán, dùng Outbox pattern thay vì listener đơn thuần.`,
   follow: [
     'Tại sao {{@TransactionalEventListener}} mặc định không chạy khi không có transaction?',
@@ -13929,6 +13994,8 @@ Triệu chứng: p95 API tăng từ 150ms lên 4 giây, log "{{Connection is not
 Điều tra: Bật {{leak-detection-threshold=60000}}, stack trace trỏ về phương thức tạo log kiểm tra. Mỗi luồng giữ 2 connection cùng lúc (giao dịch cha đang mở + giao dịch con mỗi lần lặp). Với 50 luồng cần 100 connection, pool chỉ 20 => cạn.
 
 Nguyên nhân gốc: REQUIRES_NEW trong vòng lặp treo giao dịch cha và mở connection mới; nếu cập nhật cùng dòng dữ liệu, giao dịch con chờ giao dịch cha nhả khóa dòng => deadlock ở DB.
+
+Lưu ý về ví dụ trên: nó cố ý gọi {{this.luuKiemTra(don)}} từ chính bean đó. Nếu bạn gọi như vậy trong code thật thì proxy AOP bị bỏ qua, {{REQUIRES_NEW}} không có tác dụng và cả batch nằm trong một transaction duy nhất. Muốn dùng {{REQUIRES_NEW}} thật thì phải gọi qua một bean khác (hoặc {{AopContext.currentProxy()}} với {{@EnableAspectJAutoProxy(exposeProxy = true)}}).
 
 Xử lý: Xóa REQUIRES_NEW khỏi vòng lặp. Tạo toàn bộ log kiểm tra và lưu một lần duy nhất trong giao dịch thanh toán, hoặc đẩy log vào bảng outbox duy nhất một giao dịch. Thêm bắt buộc rollback khi lỗi.
 
@@ -13987,6 +14054,8 @@ Triệu chứng: 40% log error không có traceId, không truy vết được tr
 Xử lý: Viết {{TaskDecorator}} copy {{MDC.getCopyOfContextMap()}} vào thread trước khi chạy, xóa {{MDC.clear()}} trong {{finally}}. Đăng ký {{executor.setTaskDecorator(...)}}. Với {{SecurityContext}} (mặc định ThreadLocal) cũng copy thủ công vì thread pool không tạo luồng mới.
 
 Kết quả: 100% log async có traceId, không còn trộn lẫn của 2 request.
+### Cách gọn hơn từ Spring Framework 6.1
+{{ContextPropagatingTaskDecorator}} (trong {{org.springframework.core.task.support}}) copy toàn bộ ThreadLocal đã đăng ký qua {{ThreadLocalAccessor}} — gồm cả MDC và {{SecurityContext}} — nên không phải viết decorator riêng cho từng loại context. Nó cần Micrometer Context Propagation trên classpath; nếu chưa có, {{TaskDecorator}} tự viết vẫn là cách tường minh và dễ kiểm soát hơn.
 > Senior tip: luôn kiểm tra xem context đó có phải InheritableThreadLocal không, nhưng kể cả có, vẫn phải copy vì thread pool tái sử dụng thread, không tạo mới mỗi lần chạy task.`,
   follow: [
     'MDC.getCopyOfContextMap() có làm ảnh hưởng hiệu năng không?',
@@ -14021,6 +14090,10 @@ Triệu chứng: lỗi 5xx tăng lên 3% trong 10 phút đầu deploy.
 Xử lý: Bật {{server.shutdown=graceful}}, đặt {{spring.lifecycle.timeout-per-shutdown-phase=30s}}. Thêm {{preStop: sleep 10s}} trong deployment để cho ingress gỡ pod. Đặt {{terminationGracePeriodSeconds}} >= 40s (preStop 10s + shutdown 30s + bộ đệm).
 
 Kết quả: 0 lỗi 5xx trong 10 lần rollout tiếp theo, readiness probe bỏ pod khỏi traffic trước khi app bắt đầu tắt.
+### Hai chi tiết cần biết
+- {{server.shutdown=graceful}} để request đang xử lý hoàn thành trước khi ứng dụng tắt; giá trị mặc định là {{immediate}} đóng kết nối ngay và cắt request đang xử lý.
+- {{spring.lifecycle.timeout-per-shutdown-phase}} (mặc định 30s) là thời lượng tối đa cho giai đoạn shutdown. Request chạy lâu hơn mức đó sẽ bị web server đóng kết nối khi hết giờ, chứ không được chờ vô hạn.
+- Đặt {{terminationGracePeriodSeconds}} ≥ thời gian {{preStop}} + {{timeout-per-shutdown-phase}} + vài giây đệm, vì hết grace period thì kubelet gửi SIGKILL và mọi thứ dừng ngay.
 > Senior tip: shutdown chỉ đảm bảo request hiện tại hoàn thành, không đảm bảo việc transaction kịp commit nếu DB chậm. Hãy luôn check log sau khi shutdown: mọi connection cần được đóng đúng cách.`,
   follow: [
     'Nếu timeout-per-shutdown-phase không đủ, điều gì sẽ xảy ra?',
@@ -14060,6 +14133,40 @@ Triệu chứng: 3 pod restart liên tục, traffic lỗi 503, DB CPU tăng do c
 Xử lý: Tách nhóm: liveness chỉ ping (luôn nhanh), readiness dùng {{/actuator/health/readiness}} kiểm tra DB, cache, broker. Liveness probe timeout ngắn, failureThreshold 3.
 
 Kết quả: không có restart sai lỗi, pod DB-chậm bị gỡ khỏi traffic bằng readiness nhưng không bị kill bằng liveness.
+### Vì sao không dùng một probe duy nhất
+Nếu chỉ có một probe cho cả hai việc, bạn buộc phải chọn: hoặc nó kiểm tra DB (thì DB chậm làm restart toàn bộ pod), hoặc nó chỉ kiểm tra process (thì pod vẫn nhận traffic khi DB đã chết và trả 500 hàng loạt). Hai câu hỏi khác nhau cần hai câu trả lời khác nhau — đó là lý do Kubernetes tách probe.
+### Startup probe
+{{startupProbe}} chạy trước: kubelet chỉ gọi liveness/readiness sau khi startup probe pass. Với app Spring Boot có Flyway, nạp cache hoặc kết nối nhiều dependency, đặt {{startupProbe}} với {{failureThreshold}} cao (ví dụ 30 × 5s = 150s) rồi để liveness dùng {{failureThreshold}} nhỏ nhằm phát hiện treo thật. Cách này tốt hơn tăng {{initialDelaySeconds}} của liveness.
+### Cấu hình đầy đủ
+~~~yaml
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db
+~~~
+~~~yaml
+startupProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8080 }
+  periodSeconds: 5
+  failureThreshold: 30
+livenessProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8080 }
+  periodSeconds: 10
+  failureThreshold: 3
+readinessProbe:
+  httpGet: { path: /actuator/health/readiness, port: 8080 }
+  periodSeconds: 5
+  failureThreshold: 2
+~~~
+### Kiểm chứng
+Dùng {{kubectl describe pod}} để xem lần probe fail gần nhất và lý do; dùng {{kubectl exec}} gọi trực tiếp {{/actuator/health/readiness}} để xem từng component; rồi diễn tập {{kubectl drain}} hoặc {{kubectl delete pod}} trong lúc load test để chắc readiness gỡ traffic trước khi process tắt.
 > Senior tip: ĐỪNG bao giờ dùng health check DB làm liveness probe. DB chậm -> liveness fail -> K8s restart -> DB tiếp tục chậm -> pod chết tiếp. Liveness chỉ check xem app còn sống không thôi.`,
   follow: [
     'Tại sao lại dùng 2 endpoint riêng?',
@@ -14622,5 +14729,411 @@ Import 100k đơn hàng từ CSV hàng ngày. V1: Hibernate {{persist}} từng d
     { type: 'doc', title: 'Spring Batch Reference: ItemWriter', url: 'https://docs.spring.io/spring-batch/docs/current/reference/html/readersAndWriters.html#itemWriter' },
     { type: 'doc', title: 'PostgreSQL COPY command', url: 'https://www.postgresql.org/docs/current/sql-copy.html' }
   ]
+},
+{
+  id: 'jpa-070',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Hai request cùng sửa một đơn hàng: {{@Version}} chặn ghi đè âm thầm thế nào, và retry phải đặt ở đâu (controller / service / repository) mới thực sự đọc lại state mới? Vì sao retry bên trong {{@Transactional}} là vô nghĩa?',
+  a: `**Tóm tắt:** {{@Version}} biến mỗi câu {{UPDATE}} thành câu có điều kiện {{WHERE id = ? AND version = ?}} và tăng version; nếu version đã bị người khác đổi thì 0 dòng được cập nhật và Hibernate ném {{OptimisticLockException}} thay vì ghi đè âm thầm. Nhưng retry chỉ có ý nghĩa khi nó nằm **ngoài** transaction: mỗi lần thử lại phải mở một transaction mới để đọc lại version mới nhất rồi mới sửa. Đặt retry bên trong cùng {{@Transactional}} là vô nghĩa, vì transaction đã bị đánh dấu rollback-only và bạn vẫn đang giữ nguyên connection và khoá cũ.
+
+### Cơ chế: @Version thực sự làm gì ở tầng SQL
+Giả sử entity {{Order}} có cột {{version}} kiểu {{long}}. Mỗi lần Hibernate flush một thay đổi, nó không sinh {{UPDATE orders SET status = ? WHERE id = ?}} đơn thuần, mà:
+
+~~~sql
+UPDATE orders
+SET status = 'SHIPPED', version = version + 1
+WHERE id = 42 AND version = 7;
+~~~
+
+- Nếu không ai sửa xen vào: đúng 1 dòng khớp → update thành công, version thành 8.
+- Nếu request khác đã commit trước đó (version đã là 8): câu trên khớp **0 dòng**. Hibernate thấy {{rowcount == 0}} và ném {{OptimisticLockException}}. Spring dịch nó thành {{ObjectOptimisticLockingFailureException}}.
+
+Đây chính là điểm khác biệt so với pessimistic lock: optimistic **không** giữ khoá ở DB, hai request cùng đọc version 7 vẫn song song, chỉ khi ghi mới phát hiện xung đột. Rẻ hơn, không nghẽn, nhưng người thua phải xử lý lại.
+
+### Vì sao retry trong @Transactional là vô nghĩa
+Đây là lỗi kinh điển. Nhiều người viết:
+
+~~~java
+@Transactional
+public void update(Long id, String status) {   // SAI khi có retry bên trong
+    for (int i = 0; i < 3; i++) {
+        try {
+            Order o = repo.findById(id).orElseThrow();  // vẫn đọc từ L1 cache!
+            o.setStatus(status);
+            repo.save(o);
+            return;
+        } catch (OptimisticLockException e) { /* thử lại */ }
+    }
 }
+~~~
+
+Hai lý do khiến đoạn này vô dụng:
+
+1. **Persistence context không bị xoá**: sau exception, entity {{o}} vẫn nằm trong L1 cache của Hibernate. Lần thử sau {{findById}} trả lại đúng entity cũ (version 7), không phải bản mới trong DB (version 8) → xung đột lặp lại mãi mãi, hoặc bạn phải {{clear()}} thủ công.
+2. **Transaction đã bị đánh dấu rollback-only**: khi {{OptimisticLockException}} nổ, Spring đánh dấu transaction hiện tại không thể commit. Bạn không thể "cứu" nó bằng cách thử lại trong cùng transaction đó.
+
+Nói ngắn gọn: retry là hành động **mở lại từ đầu** (đọc – sửa – ghi trong một transaction mới), nên nó phải bọc **phía ngoài** ranh giới transaction.
+
+### Đặt retry ở đâu cho đúng
+| Vị trí | Đánh giá | Vì sao |
+|---|---|---|
+| Repository | Không | Quá thấp: không biết nghiệp vụ, không đọc lại được state cần thiết |
+| Method {{@Transactional}} | Không | Transaction đã hỏng, L1 cache còn entity cũ |
+| Service điều phối (không @Transactional) gọi bean @Transactional khác | **Đúng** | Mỗi lần thử là một transaction mới, đọc lại version mới nhất |
+| Controller | Không | Lẫn logic HTTP với logic nghiệp vụ; khó tái dùng cho job, message |
+
+Mẫu đúng dùng {{RetryTemplate}} bọc ngoài, hoặc {{@Retryable}} trên bean gọi một bean {{@Transactional}} riêng:
+
+~~~java
+@Service
+@RequiredArgsConstructor
+public class OrderUpdater {
+    private final OrderWriter writer;          // bean KHÁC, có @Transactional
+    private final RetryTemplate retry = RetryTemplate.builder()
+        .maxAttempts(3)
+        .exponentialBackoff(50, 2, 500, true)   // 50ms, nhân 2, tối đa 500ms, có jitter
+        .retryOn(OptimisticLockException.class) // CHỈ thử lại khi là conflict
+        .build();
+
+    public void update(Long id, String status) {
+        retry.execute(ctx -> { writer.update(id, status); return null; });
+    }
+}
+~~~
+
+Mỗi lần {{writer.update}} chạy là một transaction độc lập, đọc version mới, ghi. Nếu lại đụng thì thử tiếp. Với người dùng thật (form web), đừng retry mù: trả HTTP 409 kèm version hiện tại và cho client tải lại, để người dùng tự hợp nhất thay đổi.
+
+### Các bẫy thực tế
+- **Retry mù cùng dữ liệu cũ**: retry mà không đọc lại entity = lặp vô hạn. Luôn load lại trong transaction mới.
+- **Side effect không idempotent**: nếu trong transaction có gửi email, gọi API ngoài, thì retry có thể gửi hai lần. Tách side effect ra {{AFTER_COMMIT}} hoặc outbox.
+- **Không phân biệt exception**: chỉ retry {{OptimisticLockException}}; lỗi khác (constraint, timeout) retry chỉ làm tệ hơn.
+- **Thiếu jitter**: nhiều request cùng retry một lúc gây "thundering herd". {{random = true}} phá đồng bộ.
+- **Cột version kiểu {{Instant}}/{{Timestamp}}**: so sánh theo thời gian dễ sai lệch do độ phân giải; ưu tiên số nguyên.
+
+### Ví dụ đời thực
+Một hệ thống quản lý kho: hai nhân viên cùng mở modal sửa số lượng một SKU, mỗi người giữ bản đã tải (version 12). Người A lưu trước → version lên 13. Người B bấm lưu: câu {{UPDATE ... WHERE version = 12}} khớp 0 dòng → OptimisticLockException. Bản V1 bắt exception rồi retry **trong cùng transaction**: 3 lần đều đọc lại entity version 12 từ L1 cache → 3 lần đều lỗi → người B thấy "lỗi hệ thống" dù chỉ là xung đột bình thường. Bản V2 sửa: tách {{OrderWriter}} (transaction) khỏi {{OrderUpdater}} (retry ở ngoài), mỗi lần thử đọc lại từ DB; lần thứ hai đọc được version 13, áp thay đổi của B lên bản mới, commit. Thêm HTTP 409 cho form web: client hiện "đơn hàng vừa được người khác cập nhật" kèm giá trị mới. Tỉ lệ xung đột thật chỉ ~0,3% đơn, nhưng trước khi sửa, 100% xung đột biến thành lỗi 500 và khiếu nại; sau khi sửa, người dùng tự hợp nhất, không còn ticket.
+
+### Trả lời mẫu khi phỏng vấn
+"@Version thêm cột version và biến UPDATE thành câu có điều kiện WHERE id và version bằng giá trị đã đọc; nếu người khác đã ghi thì 0 dòng khớp và Hibernate ném OptimisticLockException. Điểm tôi luôn nhấn mạnh là retry phải nằm ngoài transaction: retry trong cùng transaction vô nghĩa vì transaction đã rollback-only và persistence context vẫn giữ entity cũ, nên đọc lại vẫn ra version cũ. Tôi đặt retry ở tầng service điều phối, gọi một bean @Transactional riêng, dùng RetryTemplate chỉ retry đúng OptimisticLockException, có backoff và jitter, tối đa 3 lần. Với tác vụ tự động thì retry + đọc lại; với form người dùng thì trả 409 kèm version mới và để họ hợp nhất, vì retry mù có thể ghi đè mất thay đổi của người dùng. Tôi cũng tách side effect không idempotent ra sau commit để retry không gửi email hai lần."
+
+> Senior tip: câu hỏi tôi hay hỏi lại trong phỏng vấn là "retry đặt ở đâu?". Nếu ứng viên trả lời "trong @Transactional" thì gần như chắc chắn họ chưa từng gặp bug thật: retry phải bao trọn vòng đọc–sửa–ghi trong một transaction mới, còn side effect phải idempotent. Đo bằng cách bật log SQL và đếm số lần UPDATE theo mỗi request — thấy nó lặp cùng một version là biết retry đang đọc cache cũ.`,
+  follow: [
+    'Nếu hai request retry liên tục và luôn đụng nhau (hot row), bạn làm gì để tránh nghẽn hoặc loop?',
+    '{{@Retryable}} và RetryTemplate khác nhau thế nào khi cần retry ở ngoài transaction?'
+  ],
+  tags: ['optimistic locking', '@Version', 'retry', 'transaction boundary', 'OptimisticLockException', 'lost update']
+},
+{
+  id: 'jpa-071',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Bạn bật {{hibernate.jdbc.batch_size = 50}} nhưng batch insert vẫn không nhanh hơn: làm sao phát hiện batch đang bị tắt ngầm? Giải thích vì sao {{IDENTITY}} buộc insert từng dòng, SEQUENCE + pooled giúp gì, và kiểm chứng batching bằng số liệu thế nào.',
+  a: `**Tóm tắt:** Batch bị "tắt ngầm" thường vì Hibernate phải {{insert}} ngay từng dòng để lấy generated key — điều bắt buộc khi dùng {{GenerationType.IDENTITY}} (DB sinh id sau INSERT, không thể biết trước nên không gom được). Cách phát hiện: bật {{hibernate.generate_statistics}} và xem {{getPrepareStatementCount}}, hoặc dùng datasource-proxy/log để đếm số câu {{INSERT}} thực tế so với số dòng. Sửa bằng {{SEQUENCE}} + {{allocationSize}} (pooled optimizer) để Hibernate biết id trước, gom nhiều insert vào một batch; kèm {{order_inserts}} và {{flush}}/{{clear}} theo chunk.
+
+### Bước 1: Vì sao IDENTITY phá batch
+Khái niệm nền: **JDBC batching** là gom nhiều {{PreparedStatement}} cùng dạng rồi gửi một lượt ({{addBatch}} + {{executeBatch}}) để giảm số lần đi-về (round-trip) giữa app và DB. Muốn gom, Hibernate phải giữ được nhiều câu insert trong bộ đệm trước khi gửi.
+
+- Với {{IDENTITY}}: id do DB sinh **sau khi** chạy INSERT (cột {{GENERATED ... AS IDENTITY}}/{{AUTO_INCREMENT}}). Hibernate cần id đó để gán vào entity và để điền khoá ngoại cho quan hệ cha–con, nên nó buộc phải chạy từng {{INSERT}} ngay khi {{persist}} để lấy generated key. Không còn gì để gom.
+- Với {{SEQUENCE}}: Hibernate gọi {{nextval}} để lấy id **trước** khi insert, gán thẳng vào entity. Nhờ biết id trước, nó có thể xếp nhiều entity vào cùng một batch và gửi chung.
+
+PostgreSQL 10+ hỗ trợ {{INSERT ... RETURNING}} nên có thể gom một phần với IDENTITY, nhưng hành vi phụ thuộc driver và Hibernate 6; đừng dựa vào nó. MySQL thì gần như bắt buộc insert từng dòng với IDENTITY.
+
+### Bước 2: Bốn công tắc phải bật cùng lúc
+1. {{hibernate.jdbc.batch_size = 50}}: số statement tối đa mỗi batch (đừng đặt quá lớn, tốn heap và khó rollback).
+2. {{order_inserts = true}} / {{order_updates = true}}: Hibernate sắp xếp các câu theo bảng để cùng loại nằm liền nhau, tăng khả năng gom. Nếu không có nó, các insert xen kẽ nhiều bảng sẽ liên tục "đẩy" batch.
+3. {{SEQUENCE}} với {{allocationSize = 50}} (pooled): mỗi lần chỉ tốn một {{nextval}} cho cả lô 50 id.
+4. {{flush()}} + {{clear()}} theo chunk (100–500 dòng): giải phóng L1 cache, tránh persistence context phình gây OOM và chậm dần.
+
+~~~java
+@Transactional
+public void importOrders(List<Row> rows) {
+    int chunk = 200;
+    for (int i = 0; i < rows.size(); i += chunk) {
+        for (Row r : rows.subList(i, Math.min(i + chunk, rows.size()))) {
+            em.persist(mapper.toEntity(r));   // SEQUENCE pooled → id đã biết, gom batch
+        }
+        em.flush();   // đẩy batch đã gom xuống DB
+        em.clear();   // xoá L1 cache, tránh phình
+    }
+}
+~~~
+
+### Bước 3: Kiểm chứng batching bằng số liệu (đừng tin cấu hình)
+Cách chắc chắn nhất là **đếm số câu SQL thật sự chạy**:
+
+~~~yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        generate_statistics: true
+        jdbc:
+          batch_size: 50
+        order_inserts: true
+~~~
+
+~~~java
+Statistics s = sessionFactory.getStatistics();
+long inserts = s.getPrepareStatementCount();   // số PreparedStatement đã tạo
+// hoặc bật datasource-proxy, đếm số dòng INSERT trong log
+~~~
+
+Với 10.000 dòng và batch_size 50, nếu batching chạy thật thì số câu INSERT xấp xỉ 200 (10000/50), **không phải** 10.000. Nếu bạn thấy 10.000 câu → batch đang bị tắt (thường do IDENTITY còn sót ở một entity cha, hoặc code gọi {{repo.saveAndFlush}} trong vòng lặp, hoặc một query xen giữa làm Hibernate flush sớm).
+
+### Bẫy thực tế
+- **Một entity cha dùng IDENTITY**: cả cây quan hệ mất batch. Kiểm tra từng entity trong đồ thị.
+- **saveAndFlush trong vòng lặp**: mỗi lần flush phá batch. Dùng {{save}} rồi flush một lần cuối chunk.
+- **Gọi query giữa vòng lặp**: Hibernate tự flush trước query để đảm bảo nhất quán, vô tình gửi batch lẻ.
+- **Allocation size lệch {{INCREMENT BY}} của sequence**: gây duplicate key. Xem câu về pooled/pooled-lo để biết chi tiết.
+- **batch_size quá lớn**: tốn heap và một batch lỗi làm rollback cả lô.
+
+### Ví dụ đời thực
+Job nhập 200k đơn hàng từ CSV: bật {{batch_size = 50}} nhưng vẫn mất 18 phút. Bật {{generate_statistics}} và datasource-proxy: log cho thấy **200.000** câu INSERT, tức mỗi dòng một câu — batch chưa bao giờ chạy. Điều tra: entity {{OrderLine}} (con) dùng {{GenerationType.IDENTITY}}, nên mỗi lần {{cascade}} persist dòng con, Hibernate phải insert ngay để lấy id; thêm nữa code gọi {{orderRepo.saveAndFlush(o)}} trong vòng lặp. Sửa: đổi {{OrderLine}} sang {{SEQUENCE}} + {{allocationSize = 50}}, bỏ {{saveAndFlush}} (dùng {{save}}), thêm {{order_inserts = true}} và {{flush}}/{{clear}} chunk 200. Đo lại: số câu INSERT giảm từ 200.000 xuống ~4.100 (200k/50 + nhiễu), thời gian từ 18 phút còn 2 phút 40, heap ổn định (không còn tăng dần tới OOM).
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không tin vào việc chỉ đặt batch_size rồi kết luận batch đã chạy — tôi đo. Bật hibernate.generate_statistics và xem getPrepareStatementCount, hoặc dùng datasource-proxy đếm số câu INSERT thật. Với 10k dòng, batch_size 50 mà thấy 10k câu INSERT là batch đang bị tắt. Nguyên nhân phổ biến nhất là GenerationType.IDENTITY: DB sinh id sau INSERT nên Hibernate buộc insert từng dòng để lấy generated key; chuyển sang SEQUENCE với allocationSize 50 và pooled optimizer thì id biết trước, gom được batch. Ngoài ra cần order_inserts để câu cùng bảng nằm liền nhau, và flush/clear theo chunk 200 để persistence context không phình. Tôi cũng kiểm tra từng entity trong đồ thị: chỉ cần một entity con dùng IDENTITY là cả cây quan hệ mất batch, cộng thêm thói quen saveAndFlush trong vòng lặp phá batch. Kết quả thật thường giảm số câu INSERT từ vài trăm nghìn xuống còn phần rất nhỏ, thời gian giảm nhiều lần."
+
+> Senior tip: trong review code, hãy tìm {{GenerationType.IDENTITY}} trên các entity nằm trong đường ghi hàng loạt, và tìm {{saveAndFlush}} trong vòng lặp — hai thứ này là thủ phạm số một khiến "đã bật batch mà không nhanh". Và luôn có một test đếm số câu SQL (datasource-proxy hoặc statistics) để chống hồi quy: batching là thứ rất dễ bị vô hiệu bởi một thay đổi nhỏ ở entity khác.`,
+  follow: [
+    '{{saveAndFlush}} khác {{save}} thế nào và vì sao nó phá batch insert?',
+    'Làm sao đếm số câu INSERT trong một test tự động để khẳng định batching còn hoạt động?'
+  ],
+  tags: ['batch insert', 'hibernate.jdbc.batch_size', 'IDENTITY', 'SEQUENCE', 'pooled', 'generate_statistics', 'order_inserts']
+},
+{
+  id: 'jpa-072',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Interface projection trong Spring Data có thật sự giảm dữ liệu DB trả về, hay vẫn load cả entity? So sánh closed vs open projection và {{@Query}} constructor expression về lượng cột thực sự được {{SELECT}}.',
+  a: `**Tóm tắt:** Câu trả lời ngắn gọn: **tuỳ cách viết**. Interface projection phát sinh từ **derived query** ({{findBy...}}) vẫn load **toàn bộ entity** rồi map sang interface trong bộ nhớ — không giảm cột nào, chỉ giảm thứ bạn cầm trên tay. Ngược lại, {{@Query}} với constructor expression hoặc interface projection đi kèm {{@Query}} mới sinh {{SELECT}} đúng các cột cần, DB trả ít dữ liệu hơn. Projection còn chia **closed** (chỉ đọc field khai báo) và **open** (dùng {{@Value}} với SpEL) — open dễ vô tình kích hoạt lazy loading và N+1.
+
+### Bước 1: Projection là gì
+**Projection** = "hình chiếu" một entity xuống một tập con field mà API cần. Mục tiêu là không kéo cả bảng (kèm field nặng như {{@Lob}} JSON, ảnh base64) khi màn hình chỉ cần vài cột.
+
+Ba dạng:
+- **Interface projection**: định nghĩa một interface như {{OrderView}} với các getter {{Long getId()}} và {{String getStatus()}}.
+- **DTO/record projection (constructor expression)**: {{select new com.acme.OrderDto(o.id, o.status) from Order o}}.
+- **Tuple**: {{@Query("select o.id as id, o.status as status from Order o")}} trả {{Tuple}} truy cập theo tên.
+
+### Bước 2: Derived query + interface projection = KHÔNG giảm cột
+Đây là hiểu lầm phổ biến nhất. Khi bạn viết:
+
+~~~java
+public interface OrderRepository extends JpaRepository<Order, Long> {
+    List<OrderView> findByStatus(String status);   // OrderView là interface projection
+}
+~~~
+
+Spring Data sinh JPQL là {{select o from Order o where o.status = ?}} — tức **vẫn select toàn bộ entity {{o}}**. Hibernate nạp đủ mọi cột vào persistence context, rồi Spring bọc một proxy ánh xạ getter của {{OrderView}} lên entity đã nạp. Bạn tiết kiệm được **rác trả về cho tầng web**, nhưng **không** tiết kiệm I/O DB, không giảm heap của persistence context, và vẫn có nguy cơ N+1 nếu {{OrderView}} có getter dẫn tới quan hệ lazy.
+
+Muốn DB thật sự trả ít cột, phải dùng {{@Query}}:
+
+~~~java
+public interface OrderRepository extends JpaRepository<Order, Long> {
+    @Query("select o.id as id, o.status as status from Order o where o.status = ?1")
+    List<OrderView> findByStatusSelect(String status);   // SELECT chỉ 2 cột
+}
+~~~
+
+Hoặc constructor expression:
+
+~~~java
+@Query("select new com.acme.OrderDto(o.id, o.status) " +
+       "from Order o where o.status = ?1")
+List<OrderDto> findByStatusDto(String status);
+~~~
+
+### Bước 3: Closed vs Open projection
+- **Closed projection**: interface chỉ khai báo getter tương ứng **cột có thật** trên entity. Spring map trực tiếp, an toàn, không thêm query.
+- **Open projection**: dùng {{@Value}} với biểu thức SpEL để tính field dẫn xuất.
+
+~~~java
+interface OrderView {
+    Long getId();
+    BigDecimal getTotal();
+    @Value("#{target.total + target.tax}")   // open: tính từ entity gốc
+    BigDecimal getGrandTotal();
+}
+~~~
+
+Open projection giữ tham chiếu tới **entity gốc {{target}}**, nên nếu getter truy cập quan hệ lazy, bạn lại rơi vào lazy loading / {{LazyInitializationException}} khi serialize. Với open projection dùng trong {{@Query}} select ít cột, {{target}} không có đủ field → lỗi runtime. Vì vậy: ưu tiên closed projection; chỉ mở khi cần tính toán nhẹ trên field đã có sẵn.
+
+### Bảng so sánh lượng dữ liệu
+| Cách viết | SQL select | Giảm I/O DB? | Nguy cơ N+1 |
+|---|---|---|---|
+| Derived query + interface projection | toàn bộ entity | Không | Có (nếu getter lazy) |
+| @Query + interface projection (closed) | đúng cột khai báo | Có | Thấp |
+| @Query + constructor expression | đúng cột | Có | Không |
+| entity trả thẳng cho API | toàn bộ entity | Không | Có khi serialize |
+
+### Ví dụ đời thực
+API danh sách đơn hàng trả entity {{Order}} với quan hệ {{@OneToMany}} {{items}} lazy và field {{note}} kiểu {{@Lob}} (lưu toàn bộ log JSON, ~4KB/đơn). Màn hình chỉ cần {{id, status, total}}. Một dev đổi sang interface projection từ **derived query** {{findByStatus}} — tưởng đã tối ưu. Đo trên staging với 50 đơn/trang, 200 req/s: p99 vẫn 380ms, heap tăng 18% vì Hibernate vẫn nạp cả {{note}} 4KB và mọi cột. Chuyển sang {{@Query}} closed projection chỉ select 3 cột: lượng dữ liệu DB trả giảm ~70%, p99 còn 90ms, heap phẳng. Bài học: projection chỉ nhanh khi **SQL** thực sự bỏ cột, không phải khi ta chỉ bọc interface bên ngoài entity.
+
+### Trả lời mẫu khi phỏng vấn
+"Projection là cách chỉ lấy tập field cần, nhưng phải phân biệt rõ: interface projection viết trên derived query như findByStatus vẫn select toàn bộ entity rồi map trong bộ nhớ, nên không giảm I/O DB và vẫn có thể dính N+1 nếu getter chạm quan hệ lazy. Muốn DB thật sự trả ít cột, tôi dùng @Query với select đúng cột, hoặc constructor expression select new DTO(...). Tôi cũng phân biệt closed và open projection: closed chỉ đọc field có thật nên an toàn; open dùng @Value SpEL và giữ tham chiếu target tới entity gốc, dễ vô tình lazy loading hoặc lỗi khi query không select đủ cột. Trong thực tế tôi luôn đo lượng dữ liệu trả về và heap, vì chỉ khi SQL bỏ cột thì mới thật sự nhanh; nếu chỉ bọc interface bên ngoài entity thì gần như không cải thiện gì."
+
+> Senior tip: hãy nhớ câu thần chú "projection nhanh khi và chỉ khi SQL bỏ cột". Trong code review, khi thấy ai đó "tối ưu" bằng interface projection trên derived query, hãy hỏi lại: câu JPQL sinh ra select entity hay select vài cột? Chỉ khi câu JPQL dạng select o.id, o.status (hoặc select new Dto(...)) thì mới đáng gọi là tối ưu.`,
+  follow: [
+    'Open projection dùng @Value có thể gây LazyInitializationException khi nào, và tránh thế nào?',
+    '{{@Query}} constructor expression với record DTO khác gì interface projection về khả năng tái sử dụng?'
+  ],
+  tags: ['projection', 'DTO', 'interface projection', 'open projection', 'closed projection', 'constructor expression', 'N+1']
+},
+{
+  id: 'jpa-073',
+  topic: 'jpa',
+  level: 'senior',
+  q: '{{@Transactional(readOnly = true)}} trên Hibernate 6 + PostgreSQL: PostgreSQL thực sự ép read-only ở mức nào, và vì sao một câu ghi lọt vào đôi khi "im lặng thành công" mà đôi khi lại ném lỗi?',
+  a: `**Tóm tắt:** {{readOnly = true}} tác động ở hai tầng. Tầng Hibernate: chuyển {{FlushMode}} sang {{MANUAL}}, nên khi commit Hibernate không tự flush và **không sinh UPDATE** cho entity bị sửa — đây là hành vi "im lặng": code sửa field nhưng thay đổi biến mất, không báo lỗi. Tầng JDBC/PostgreSQL: Spring gọi {{Connection.setReadOnly(true)}}; PostgreSQL **thực sự ép** bằng cách chạy như một transaction read-only, nên một câu {{INSERT/UPDATE/DELETE}} gửi thẳng xuống DB sẽ bị từ chối với lỗi "cannot execute INSERT in a read-only transaction". Khác biệt giữa "im lặng" và "ném lỗi" nằm ở chỗ câu ghi đi qua con đường nào.
+
+### Bước 1: readOnly là gợi ý, không phải hợp đồng
+Trước hết phải hiểu: {{readOnly = true}} **không đảm bảo** DB sẽ chạy nhanh hơn. Nó là **hint** cho hai lớp:
+- Hibernate: dùng nó để tắt dirty checking (không chụp snapshot, không so sánh để sinh UPDATE thừa).
+- JDBC: set cờ read-only trên connection.
+
+Không có gì trong đó nói "query này sẽ nhanh". Muốn nhanh phải có index và câu lệnh tốt; readOnly chỉ cắt được phần chi phí flush/dirty-check.
+
+### Bước 2: Tầng Hibernate — vì sao "im lặng thành công"
+Khi {{readOnly = true}}, Hibernate đặt {{FlushMode.MANUAL}} cho persistence context. Nghĩa là:
+
+1. Bạn {{findById}} một entity, sửa {{entity.setStatus(...)}}.
+2. Khi transaction commit, Hibernate **không** tự động flush. Nó không so sánh snapshot, không sinh {{UPDATE}}.
+3. Transaction kết thúc "thành công", không lỗi — nhưng DB không hề đổi.
+
+Đây là bẫy nguy hiểm nhất: **code sai mà không ai báo**. Một service đọc/sửa/ghi trong cùng method mark {{readOnly}} sẽ mất dữ liệu âm thầm. Quy tắc: {{readOnly = true}} chỉ dành cho method **thật sự không ghi gì**; nếu method lỡ {{save}} thì phải là {{readOnly = false}}.
+
+### Bước 3: Tầng PostgreSQL — vì sao có lúc ném lỗi
+Spring chuyển {{readOnly}} xuống JDBC bằng {{Connection.setReadOnly(true)}}. Với PostgreSQL, driver/cong cụ sẽ khiến transaction chạy ở chế độ read-only. Khi đó **bất kỳ câu ghi nào gửi trực tiếp xuống DB** đều bị từ chối:
+
+~~~text
+ERROR: cannot execute INSERT in a read-only transaction
+~~~
+
+Đây là điểm khác biệt then chốt so với MySQL: MySQL thường **bỏ qua** cờ read-only ở tầng server (một số phiên bản), nên câu ghi vẫn chạy và bạn không thấy gì. PostgreSQL thì enforce thật, nên câu ghi "lọt" xuống DB sẽ nổ lỗi rõ ràng.
+
+### Tổng hợp: im lặng hay ném lỗi?
+| Đường đi của câu ghi | Kết quả với readOnly |
+|---|---|
+| Sửa field entity rồi commit (dirty checking) | **Im lặng**: FlushMode.MANUAL không flush → không UPDATE, không lỗi |
+| Gọi {{@Modifying}} query / {{save}} với flush cưỡng bức | Thường ném lỗi "read-only transaction" nếu câu xuống tới DB |
+| {{repository.save()}} entity mới (persist) | Nếu Hibernate cố insert khi flush → ném lỗi |
+
+Vì vậy "im lặng" chủ yếu đến từ dirty-check bị tắt, còn "ném lỗi" đến từ câu lệnh tường minh chạm DB. Cùng một cờ readOnly nhưng số phận khác nhau tuỳ cách ghi.
+
+### Ví dụ code và cấu hình
+~~~java
+@Service
+class ReportService {
+    @Transactional(readOnly = true)      // chỉ đọc
+    public long totalRevenue(LocalDate d) {
+        return orderRepo.sumByDate(d);   // aggregate query, không entity
+    }
+
+    @Transactional                         // ghi: KHÔNG readOnly
+    public void fixStatus(Long id) {
+        Order o = orderRepo.findById(id).orElseThrow();
+        o.setStatus("FIXED");
+        // commit sẽ flush UPDATE vì readOnly = false
+    }
+}
+~~~
+
+Pitfall: đặt {{readOnly = true}} lên method {{fixStatus}} → {{o.setStatus}} không sinh UPDATE, method báo thành công, dữ liệu không đổi. Không có ngoại lệ nào để log.
+
+### Ví dụ đời thực
+Một service báo cáo doanh thu được đánh {{readOnly = true}} cho "tối ưu". Ba tháng sau, một dev thêm bước "chuẩn hoá trạng thái đơn" ngay trong method đó: {{order.setStatus(...)}} rồi {{save}}. Trên staging (PostgreSQL) mọi test xanh vì đơn vị test dùng {{@DataJpaTest}} không bật đúng cấu hình; lên production, service chạy ổn định, không lỗi, nhưng **0 đơn được cập nhật** — vì FlushMode.MANUAL đã bỏ qua UPDATE. Điều tra bằng bật log SQL: không thấy câu {{UPDATE}} nào. Nguyên nhân gốc: method vừa đọc vừa ghi nhưng mang readOnly. Sửa: tách phần ghi sang method {{@Transactional}} riêng (không readOnly), phần đọc vẫn readOnly. Thêm một test tích hợp kiểm tra "sau khi gọi, DB phải có status mới" để chống tái diễn. Kết quả: dữ liệu cập nhật đúng; đồng thời một kỹ sư khác vô tình để {{@Modifying}} chạy trong readOnly và nhận lỗi "cannot execute INSERT in a read-only transaction" từ PostgreSQL — chính lỗi này giúp phát hiện sớm một bug khác.
+
+### Trả lời mẫu khi phỏng vấn
+"readOnly là gợi ý cho hai tầng. Với Hibernate nó chuyển FlushMode sang MANUAL, tắt dirty checking; hệ quả là nếu code lỡ sửa entity thì commit không sinh UPDATE, không báo lỗi — đây là cái bẫy 'im lặng thành công', mất dữ liệu âm thầm. Với JDBC nó set connection read-only; PostgreSQL thực sự enforce nên câu ghi gửi thẳng xuống DB sẽ ném 'cannot execute INSERT in a read-only transaction', còn MySQL thường bỏ qua nên câu ghi vẫn chạy. Vì vậy tôi tách rõ hai câu hỏi: method này có thật sự không ghi gì không, và câu query có cần đọc bản mới nhất không. readOnly chỉ cho method đọc thuần; nếu vừa đọc vừa ghi thì để readOnly = false hoặc tách phần ghi sang transaction riêng. Tôi không xem readOnly là công cụ tăng tốc, mà là cách tắt chi phí flush/dirty-check và một lưới an toàn để bắt ghi nhầm trên PostgreSQL."
+
+> Senior tip: trên PostgreSQL, hãy coi lỗi "cannot execute INSERT in a read-only transaction" là **tính năng, không phải trục trặc** — nó bắt đúng bug ghi lọt vào method đáng lẽ chỉ đọc. Điều nguy hiểm hơn nhiều là ghi "im lặng" ở tầng Hibernate: readOnly khiến UPDATE biến mất không tiếng động. Quy tắc an toàn: readOnly chỉ cho method mà bạn chắc chắn 100% không có đường ghi nào, và luôn có test tích hợp khẳng định "đọc xong DB không đổi".`,
+  follow: [
+    'Vì sao readOnly không tự định tuyến sang read replica, và làm sao làm điều đó với AbstractRoutingDataSource?',
+    'Nếu một method readOnly gọi một @Transactional(REQUIRES_NEW) ghi dữ liệu, chuyện gì xảy ra?'
+  ],
+  tags: ['readOnly', '@Transactional', 'FlushMode.MANUAL', 'PostgreSQL', 'read-only transaction', 'dirty checking']
+},
+{
+  id: 'jpa-074',
+  topic: 'jpa',
+  level: 'lead',
+  q: 'Spring Data không có keyset pagination sẵn: bạn implement phân trang theo cursor thế nào cho bảng lớn, xử lý tie-breaker và index ra sao, và những tình huống nào buộc phải quay về {{OFFSET}}?',
+  a: `**Tóm tắt:** Keyset pagination (phân trang theo khóa/cursor) thay vì {{OFFSET n}} bằng cách ghi nhớ giá trị sắp xếp của dòng cuối trang trước, rồi hỏi "các dòng đứng sau giá trị này": {{WHERE (created_at, id) < (:lastCreatedAt, :lastId) ORDER BY created_at, id LIMIT :size}}. Spring Data **không** có API dựng sẵn, nên bạn tự viết {{@Query}} và tự quản lý cursor (thường là một chuỗi opaque trả về client). Nó nhanh và ổn định ở trang sâu vì dùng index range scan, thời gian gần như hằng; đổi lại không nhảy được tới trang N và khó đổi sort tuỳ ý. Buộc dùng {{OFFSET}} khi cần tổng số trang hoặc nhảy ngẫu nhiên (màn hình admin).
+
+### Bước 1: Vì sao OFFSET chậm ở trang sâu
+{{OFFSET 1000000 LIMIT 20}} buộc DB phải **đọc và bỏ qua 1.000.000 dòng** trước khi lấy 20 dòng bạn cần. Với bảng triệu dòng, trang càng sâu càng chậm; nếu người dùng lướt hết thì tổng chi phí ~O(n²). {{COUNT(*)}} cho tổng số trang cũng tốn kém không kém trên bảng lớn.
+
+### Bước 2: Cơ chế keyset
+Thay vì "bỏ qua n dòng", ta dùng mốc cuối trang trước. Nếu sort theo {{created_at}} tăng dần, trang sau có điều kiện:
+
+~~~sql
+SELECT id, status, created_at, total
+FROM orders
+WHERE created_at > :lastCreatedAt
+   OR (created_at = :lastCreatedAt AND id > :lastId)   -- tie-breaker
+ORDER BY created_at ASC, id ASC
+LIMIT 20;
+~~~
+
+Điểm tinh tế: **tie-breaker {{id}}**. Nếu chỉ {{created_at > :last}} thì các dòng cùng {{created_at}} (rất dễ xảy ra) sẽ bị bỏ sót hoặc lặp. Thêm {{id}} làm khóa phụ đảm bảo thứ tự toàn phần và phân trang không hở.
+
+### Bước 3: Implement trong Spring Data
+Spring Data không có {{Pageable}} cho keyset, nên viết {{@Query}} thủ công, dùng {{Pageable}} chỉ để giới hạn {{LIMIT}}:
+
+~~~java
+public interface OrderRepository extends JpaRepository<Order, Long> {
+    @Query("select o from Order o " +
+           "where o.createdAt > :lastCreatedAt " +
+           "   or (o.createdAt = :lastCreatedAt and o.id > :lastId) " +
+           "order by o.createdAt asc, o.id asc")
+    List<Order> findNext(@Param("lastCreatedAt") Instant lastCreatedAt,
+                         @Param("lastId") Long lastId,
+                         Pageable pageable);   // PageRequest.of(0, 20) để LIMIT 20
+}
+~~~
+
+Và tầng service bọc cursor opaque (base64 của {{lastCreatedAt:lastId}}) để client không thấy cấu trúc:
+
+~~~java
+public Page<Order> next(String cursor, int size) {
+    Cursor c = cursor == null ? Cursor.first() : Cursor.decode(cursor);
+    List<Order> rows = repo.findNext(c.createdAt, c.id, PageRequest.of(0, size + 1));
+    boolean hasNext = rows.size() > size;
+    if (hasNext) rows = rows.subList(0, size);
+    String next = hasNext ? Cursor.of(rows.get(rows.size() - 1)).encode() : null;
+    return new Page<>(rows, next, hasNext);
+}
+~~~
+
+Dòng {{size + 1}} là mẹo để biết "có trang sau không" mà không cần đếm tổng.
+
+### Bước 4: Index phải khớp thứ tự sort
+Keyset chỉ nhanh nếu có index hỗ trợ đúng thứ tự {{ORDER BY}} và điều kiện {{WHERE}}. Với {{ORDER BY created_at, id}}, index nên là:
+
+~~~sql
+CREATE INDEX idx_orders_created_id ON orders (created_at, id);
+~~~
+
+Nếu filter thêm {{status}}, cân nhắc {{CREATE INDEX ... (status, created_at, id)}} để vừa lọc vừa sắp xếp. Thiếu index khớp, DB phải sort toàn bộ → keyset không còn nhanh.
+
+### Bước 5: Khi nào buộc quay về OFFSET
+- Cần **tổng số trang** hoặc trang "1/57" hiển thị trên UI (keyset không biết tổng).
+- Người dùng **nhảy tới trang bất kỳ** (ví dụ trang 50) — keyset chỉ đi tuần tự.
+- **Đổi sort tuỳ ý** (sort theo cột người dùng chọn) — mỗi kiểu sort cần một bộ cursor + index riêng, phức tạp; OFFSET linh hoạt hơn.
+- Bảng **nhỏ** (vài nghìn dòng) — OFFSET đủ nhanh, keyset thêm phức tạp không đáng.
+
+### Ví dụ đời thực
+API "lịch sử giao dịch" của ví điện tử dùng {{PageRequest(page, 20)}} với {{COUNT(*)}} mỗi request. Bảng {{transactions}} đạt 300 triệu dòng; khi user cuộn tới trang vài chục, p99 lên 2,5s và DB CPU tăng vọt vì {{OFFSET}} đọc-bỏ ngày càng nhiều + {{COUNT}} full scan. Chuyển sang keyset theo {{created_at, id}} với index {{idx_tx_created_id}}: p99 còn 38ms, DB CPU giảm ~40% khi tải trang sâu. Đánh đổi: bỏ nút "số trang", chỉ còn "nạp thêm"/cuộn vô hạn — đúng với hành vi người dùng (họ hiếm khi qua trang 5). Với màn admin cần nhảy trang và tổng số, vẫn giữ {{OFFSET}} vì bảng admin nhỏ hơn nhiều.
+
+### Trả lời mẫu khi phỏng vấn
+"Spring Data không có keyset dựng sẵn nên tôi tự viết @Query với điều kiện WHERE trên cột sắp xếp cộng tie-breaker id, rồi dùng Pageable chỉ để LIMIT. Tôi quản lý cursor dạng opaque (base64 của giá trị mốc) trả về client, và thêm một dòng size+1 để biết có trang sau không mà không cần COUNT. Điều quan trọng là index phải khớp đúng ORDER BY và WHERE, nếu không thì sort toàn bộ và keyset không còn nhanh. Keyset thắng ở bảng lớn và luồng cuộn vô hạn vì nó dùng index range scan, thời gian gần như hằng ở trang sâu, và bỏ được COUNT(*) tốn kém. Nhưng tôi vẫn dùng OFFSET khi màn hình cần tổng số trang hoặc nhảy tới trang bất kỳ, và với bảng nhỏ thì OFFSET đủ tốt. Thực tế chuyển từ offset sang keyset cho danh sách giao dịch đã giảm p99 từ vài giây xuống vài chục mili giây."
+
+> Senior tip: hãy nhớ keyset là công cụ cho "cuộn tiếp", không phải cho "trang 1..N". Nguyên tắc thực dụng: nếu người dùng thật sự chỉ đi vài trang đầu và bạn đang trả COUNT(*) mỗi request trên bảng lớn, keyset gần như luôn thắng. Nhưng đừng xoá OFFSET khi admin cần nhảy trang có kiểm soát — hai thế giới, hai công cụ. Và luôn đo bằng EXPLAIN để chắc index khớp, vì keyset không index thì chậm y như offset.`,
+  follow: [
+    'Nếu người dùng đổi tiêu chí sắp xếp (sort theo cột khác), bạn quản lý cursor và index thế nào?',
+    'Làm sao keyset pagination vẫn hoạt động khi có filter động (status, khoảng ngày) đi kèm?'
+  ],
+  tags: ['keyset pagination', 'cursor', 'pagination', 'tie-breaker', 'index', 'offset', 'Spring Data']
+},
 );
