@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-17",
+  "intro": "Hôm nay có JEP 401 (Value Objects) đang vào OpenJDK ở dạng preview, một case modernization Java 21 quy mô lớn của British Airways, hướng dẫn xử lý large object trên Aurora/RDS PostgreSQL và bài học right-sizing Kubernetes của Salesforce. Ngoài ra AWS cập nhật Well-Architected Framework và có loạt tính năng mới trong weekly roundup.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Valhalla: vì sao đưa Value Objects vào JDK mất tới 3000 commit",
+      "title": "Why It Takes 3000 Commits to Bring Valhalla's Value Objects to the JDK",
+      "url": "https://inside.java/2026/11/16/devoxxbelgium-valhalla-value-objects/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Inside Java đăng bài giới thiệu buổi nói chuyện tại Devoxx Belgium 2026 của David Simms về Project Valhalla. Buổi nói điểm qua value objects là gì, lợi ích với JVM, lịch sử dự án và chi tiết triển khai. Theo bài, JEP 401 (Value Objects) đang đến OpenJDK dưới dạng preview feature, và là bước trên đường thu hẹp khoảng cách giữa object và primitive, kể cả hướng hỗ trợ cho List trong tương lai.",
+      "why": "Value objects ảnh hưởng tới cách bạn thiết kế DTO, record và key trong cache hoặc collection; về lâu dài còn tác động tới layout bộ nhớ và hiệu năng của JVM.",
+      "interview_q": "Record và value object (Valhalla) khác nhau thế nào về identity và bộ nhớ? Khi nào bạn kỳ vọng value object cải thiện hiệu năng so với object thường?",
+      "related": ["core-027", "modern-018"],
+      "tags": ["valhalla", "jep-401", "jvm"]
+    },
+    {
+      "title_vi": "British Airways hiện đại hoá hàng trăm service Java lên Java 21 trên ECS Fargate",
+      "title": "How British Airways is accelerating the modernization of its Java services",
+      "url": "https://aws.amazon.com/blogs/devops/how-british-airways-is-accelerating-the-modernization-of-its-java-services/",
+      "source": "AWS DevOps Blog",
+      "category": "devops",
+      "summary": "British Airways có hơn 250 service Java trải trên khoảng 750 repository. Họ dùng AWS Transform custom (agentic AI) để nâng lên Java 21, thay dependency framework cũ, bỏ version hard-code và chuyển từ EC2 sang ECS trên Fargate chạy Graviton. Mỗi service đi qua quy trình 20 bước: 7 bước chuẩn bị, 3 bước biến đổi bằng agent, 10 bước test và deploy xác định, kèm review của con người. Bài không công bố số liệu tiết kiệm cụ thể.",
+      "why": "Nâng Java 8/11 lên 21 hàng loạt là bài toán thật của nhiều công ty; cách chia pipeline giữa bước xác định và bước AI cho thấy cách kiểm soát rủi ro khi dùng AI để refactor.",
+      "interview_q": "Bạn cần nâng cấp 200 service từ Java 11 lên Java 21 mà không làm gián đoạn production. Bạn lập kế hoạch, test regression và rollout thế nào?",
+      "related": [],
+      "tags": ["java21", "migration", "fargate", "graviton"]
+    },
+    {
+      "title_vi": "PostgreSQL large objects trên Aurora/RDS: best practice và bẫy orphan",
+      "title": "PostgreSQL large objects: Best practices for Amazon Aurora and RDS",
+      "url": "https://aws.amazon.com/blogs/database/postgresql-large-objects-best-practices-for-amazon-aurora-and-rds/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Large object (LO) chứa được tới 4 TB, trong khi field TOAST tối đa 1 GB, nhưng autovacuum không dọn LO mồ côi và logical replication không sao chép LO. Mọi LO dùng chung một không gian OID nên orphan tích tụ có thể làm chậm cấp phát OID và gây lỗi khi nâng major version. Bài khuyên ưu tiên {{bytea}} khi có thể, theo dõi số lượng LO, và chạy {{vacuumlo}} dry-run trước vì công cụ này chỉ nhìn cột kiểu oid/lo, xoá nhầm là không hoàn tác.",
+      "why": "Dev Java hay lưu file qua JPA {{@Lob}} hoặc JDBC; hiểu LO và TOAST giúp tránh phình storage và sự cố khi upgrade DB.",
+      "interview_q": "Bạn cần lưu tệp 50 MB trong PostgreSQL: chọn bytea, large object hay object storage như S3? Phân tích trade-off về vacuum, replication và backup.",
+      "related": [],
+      "tags": ["postgresql", "aurora", "large-object"]
+    },
+    {
+      "title_vi": "Salesforce right-size workload trên hơn 1.400 cluster EKS bằng VPA, HPA và Karpenter",
+      "title": "How Salesforce efficiently right-sizes Kubernetes workloads at scale on Amazon EKS",
+      "url": "https://aws.amazon.com/blogs/containers/how-salesforce-efficiently-right-sizes-kubernetes-workloads-at-scale-on-amazon-eks/",
+      "source": "AWS Containers Blog",
+      "category": "cloud",
+      "summary": "Salesforce vận hành hơn 1.400 cluster EKS; cấu hình CPU/memory tĩnh gây throttling, pod bị kill và nhiều việc tune thủ công. Họ gán mỗi workload một chiến lược VPA, HPA hoặc kết hợp, trong đó hai bộ scale phải dựa trên chiều metric khác nhau để không xung đột, đồng thời chuyển từ Cluster Autoscaler sang Karpenter. Guardrail gồm khởi đầu ở chế độ Off, minReplicas 2, Pod Disruption Budget và giới hạn tốc độ eviction. Kết quả: tiết kiệm hơn 5 triệu USD cộng dồn, không sự cố ảnh hưởng khách hàng.",
+      "why": "Service Java thường bị đặt request/limit sai (heap, CPU throttling); bài cho thấy cách kết hợp HPA và VPA an toàn thay vì đoán số.",
+      "interview_q": "Có thể dùng HPA và VPA cùng lúc cho một service Java không? Bạn tránh xung đột giữa hai bộ scale bằng cách nào?",
+      "related": ["devops-006", "devops-018"],
+      "tags": ["kubernetes", "vpa", "hpa", "karpenter"]
+    },
+    {
+      "title_vi": "AWS Well-Architected Framework: tách Foundations và Workloads, bớt từ 307 còn 216 best practice",
+      "title": "Announcing updates to the AWS Well-Architected Framework",
+      "url": "https://aws.amazon.com/blogs/architecture/announcing-updates-to-the-aws-well-architected-framework-3/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Cả sáu pillar được cập nhật và Framework giờ tách phần cấp account/organization khỏi phần cấp workload. Cloud Foundations gồm 45 best practice trong bảy capability, còn Cloud Workloads có 216 best practice, giảm từ 307. Nội dung về chiến lược kinh doanh, con người và quy trình tổ chức bị lược bỏ. Một số best practice mới: secure coding, cyber resilience cho backup, generative AI cho vận hành và đo hiệu quả tài nguyên.",
+      "why": "Câu hỏi system design/AWS thường bám các pillar; biết cấu trúc mới giúp bạn trả lời có khung và chỉ ra điều gì thuộc cấp account hay workload.",
+      "interview_q": "Khi review kiến trúc một hệ thống payment trên AWS theo Well-Architected, bạn bắt đầu từ pillar nào và đánh đổi giữa Reliability và Cost Optimization ra sao?",
+      "related": [],
+      "tags": ["aws", "well-architected"]
+    },
+    {
+      "title_vi": "Tổng hợp AWS tuần 16/11: AWS Emulator, Nitro Sandboxes, Cognito token exchange",
+      "title": "AWS Weekly Roundup: AWS Nitro Sandboxes, AWS Emulator, and more (November 16, 2026)",
+      "url": "https://aws.amazon.com/blogs/aws/aws-weekly-roundup-aws-nitro-sandboxes-aws-emulator-and-more-november-16-2026/",
+      "source": "AWS News Blog",
+      "category": "cloud",
+      "summary": "AWS Emulator (GA) cho phép chạy các API AWS cục bộ: trỏ CLI/SDK vào endpoint của nó, không cần account, nhưng không thực thi IAM và lệnh chưa hỗ trợ trả HTTP 501. Nitro Sandboxes cấp cho pod EKS hoặc task ECS cách ly mức VM, có chế độ confidential với attestation. Cognito thêm OAuth 2.0 token exchange để đổi token user lấy token hẹp quyền cho service phía sau. ElastiCache Serverless for Valkey thêm vector và full-text search (cần Valkey 9).",
+      "why": "Emulator giúp integration test code dùng AWS SDK for Java mà không tốn tiền; token exchange liên quan trực tiếp tới delegation giữa các microservice.",
+      "interview_q": "Service A gọi service B thay mặt user: bạn truyền nguyên token của user hay đổi sang token hẹp quyền (token exchange)? Giải thích rủi ro và lợi ích.",
+      "related": [],
+      "tags": ["aws", "cognito", "testing"]
+    }
+  ]
+}

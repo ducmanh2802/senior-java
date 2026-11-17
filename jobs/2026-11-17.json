@@ -1,0 +1,63 @@
+{
+  "date": "2026-11-17",
+  "intro": "Hôm nay tin Java mới nhất tập trung ở TP.HCM, nhiều tin vừa đăng trong vòng 1–2 ngày. Nhiều công ty hỏi thêm Kafka, Kubernetes, tích hợp AI/LLM và tiếng Anh; không ít tin cũ trên các trang tổng hợp đã đóng nên danh sách chỉ giữ những tin còn nút ứng tuyển.",
+  "editor": "claude",
+  "items": [
+    {
+      "title": "Middle/Senior Back End Developer (Java)",
+      "company": "Persol Career Tech Studio Vietnam",
+      "url": "https://itviec.com/viec-lam-it/middle-senior-back-end-developer-java-persol-career-tech-studio-vietnam-0150",
+      "source": "ITviec",
+      "location": "TP.HCM (linh hoạt/hybrid)",
+      "level": "senior",
+      "posted": "2026-11-16",
+      "skills": ["Java", "Spring Boot", "Spring MVC", "SQL", "OpenAPI"],
+      "summary": "Studio phần mềm thuộc tập đoàn Nhật tuyển backend Java làm việc theo Agile Scrum: xây dựng và bảo trì tính năng, cải thiện hiệu năng, refactor khi yêu cầu đổi, viết test tự động. Yêu cầu từ 3 năm Java web, thành thạo Spring Boot/MVC, SQL cơ bản và thiết kế API theo OpenAPI. Bản senior còn kèm mentor các bạn junior. Quy trình phỏng vấn gồm coding test, phỏng vấn kỹ thuật rồi vòng culture-fit.",
+      "prep": "Ôn Spring MVC/Boot, thiết kế REST API theo OpenAPI, SQL và tối ưu truy vấn cơ bản. Chuẩn bị một bài coding test ngắn bằng Java và câu chuyện về việc mentor junior hoặc refactor code.",
+      "topics": ["spring", "api", "sql"],
+      "tags": ["outsource", "nhật"]
+    },
+    {
+      "title": "Java Software Engineer - Data Management",
+      "company": "bbv Vietnam",
+      "url": "https://itviec.com/viec-lam-it/java-software-engineer-data-management-bbv-vietnam-0438",
+      "source": "ITviec",
+      "location": "TP.HCM (onsite, QTSC)",
+      "level": "mid",
+      "posted": "2026-11-16",
+      "skills": ["Java", "Spring Boot", "Kafka", "Liquibase", "Docker", "Kubernetes", "CI/CD"],
+      "summary": "Công ty outsource tuyển kỹ sư Java cho nền tảng quản lý và tích hợp dữ liệu doanh nghiệp. Công việc gồm bảo trì ứng dụng Java hiện có, xử lý lỗi đồng bộ và tích hợp dữ liệu, làm việc với data model, mapping, validation, và dùng công cụ AI trong phát triển. Yêu cầu Java, Spring Boot, Kafka, database, data modeling, Liquibase, Docker, Kubernetes, CI/CD và tiếng Anh.",
+      "prep": "Ôn Kafka (consumer group, idempotency, retry), thiết kế data model và migration với Liquibase, debug lỗi đồng bộ dữ liệu giữa hệ thống. Chuẩn bị trả lời bằng tiếng Anh về một sự cố data integration bạn từng xử lý.",
+      "topics": ["spring", "db", "devops", "english"],
+      "tags": ["data-integration", "kafka"]
+    },
+    {
+      "title": "Senior AI Engineer (LLM, Java, Microservices, API)",
+      "company": "EPOS Vietnam",
+      "url": "https://itviec.com/viec-lam-it/senior-ai-engineer-llm-java-microservices-api-epos-vietnam-0726",
+      "source": "ITviec",
+      "location": "TP.HCM (onsite)",
+      "level": "senior",
+      "posted": "2026-11-10",
+      "skills": ["Java", "LLM", "Microservices", "API", "RAG", "LangChain"],
+      "summary": "Vị trí cho kỹ sư có hơn 6 năm kinh nghiệm backend và system design, xây dựng và đưa AI agent cùng dịch vụ AI vào production, tích hợp mô hình AI vào hệ thống hiện có và cân bằng hiệu năng, độ chính xác, độ trễ, chi phí. Bắt buộc tiếng Anh tốt; LangChain/LangGraph, RAG, vector database là điểm cộng.",
+      "prep": "Ôn thiết kế microservice và API, cách tích hợp LLM an toàn (timeout, retry, cache, kiểm soát chi phí), RAG cơ bản với vector DB. Chuẩn bị mô tả một kiến trúc AI service và các trade-off.",
+      "topics": ["ai", "microservices", "design", "english"],
+      "tags": ["ai", "llm"]
+    },
+    {
+      "title": "Fullstack Developer (Java, Golang, Python)",
+      "company": "RONTECH",
+      "url": "https://itviec.com/viec-lam-it/fullstack-developer-java-golang-python-rontech-2456",
+      "source": "ITviec",
+      "location": "TP.HCM (onsite)",
+      "level": "mid",
+      "posted": "2026-11-03",
+      "skills": ["Java", "Golang", "Python", "React", "AWS", "Docker"],
+      "summary": "Công ty dịch vụ IT nhỏ làm phần mềm Mobile Device Management cho thị trường Việt Nam. Vị trí viết backend cho quản lý thiết bị (API, policy engine, command queue), web admin console và tham gia luồng enroll thiết bị với chứng chỉ. Yêu cầu 3–5 năm, backend Java/Golang/Node/Python, frontend React hoặc Vue; kiến thức bảo mật thiết bị, mật mã là điểm cộng. Giờ làm Thứ Hai–Thứ Sáu, không OT theo tin.",
+      "prep": "Ôn thiết kế API và hàng đợi lệnh, nền tảng bảo mật (TLS, chứng chỉ, quản lý khoá), AWS cơ bản. Chuẩn bị nói về cách bạn thiết kế command queue có retry và idempotency.",
+      "topics": ["api", "security", "aws", "design"],
+      "tags": ["mdm", "startup"]
+    }
+  ]
+}
