@@ -5271,5 +5271,426 @@ Một app hỏi đáp có 1.200 lượt chat mỗi ngày, p95 first token 900ms.
     "Resilience",
     "Partner API"
   ]
+},
+{
+  id: 'api-067',
+  topic: 'api',
+  level: 'senior',
+  q: 'Bạn thiết kế API tạo yêu cầu chuyển lương theo lô (hàng nghìn giao dịch trong một lần gửi) cho app ngân hàng. Vì sao nên trả 202 Accepted thay vì giữ kết nối tới khi xong, status resource nên trả những gì, client poll thế nào, và làm sao cho phép huỷ cùng idempotency khi tạo lại?',
+  a: `**Tóm tắt:** Xử lý hàng nghìn giao dịch mất từ vài chục giây tới vài phút, không nên giữ một kết nối HTTP mở suốt thời gian đó: hãy trả **202 Accepted** kèm {{Location}} trỏ tới **status resource**, rồi cho client **poll** (hỏi lại theo lịch) hoặc nhận **webhook** khi xong. Status resource phải trả tiến độ dạng số đếm được, kết quả **từng dòng** (partial success — vài dòng lỗi, số còn lại thành công) và link xem dòng lỗi; muốn dừng thì {{DELETE}}; muốn tạo lại an toàn thì client gửi **Idempotency-Key**.
+
+### Giải thích thuật ngữ (đọc trước khi vào cơ chế)
+- **Batch (theo lô)**: gộp nhiều thao tác vào một lần gửi, ví dụ 18.000 lệnh chuyển lương trong một file. Xử lý tuần tự mất vài phút.
+- **202 Accepted**: mã HTTP nghĩa "tôi đã nhận và sẽ xử lý sau", khác 200 (xong ngay). Vì sao cần: giữ kết nối mở vài phút thì proxy/mobile timeout, client retry sẽ tạo lô thứ hai.
+- **Status resource**: một URL riêng ({{Location}}) để theo dõi tiến độ, ví dụ {{GET /api/batches/b-123}}.
+- **Partial success (thành công từng phần)**: lô 5.000 dòng, 4.980 dòng OK, 20 dòng lỗi số dư — không được báo "thất bại toàn bộ".
+- **Idempotency-Key**: khoá client sinh để server nhận ra "cùng một ý định tạo lô"; retry không tạo lô mới.
+
+### Cơ chế từng bước
+1. Client {{POST /api/batches/transfers}} kèm file và header {{Idempotency-Key}}.
+2. Server **reserve** key (insert-first), tạo bản ghi batch {{status=QUEUED}}, trả **202** cộng {{Location}} cộng {{Retry-After: 5}}.
+3. Worker chạy nền đọc từng dòng; cập nhật {{status=RUNNING}} và {{processed/total}}.
+4. Mỗi dòng ghi vào bảng {{batch_items}} (số dòng, trạng thái, mã lỗi, tham chiếu giao dịch).
+5. Xong: {{COMPLETED}} nếu tất cả OK, {{COMPLETED_WITH_ERRORS}} nếu có dòng lỗi, {{FAILED}} nếu hỏng cả lô.
+6. Client poll {{GET /api/batches/b-123}} theo backoff, hoặc đăng ký webhook; huỷ bằng {{DELETE}}.
+
+~~~seq
+title: Tạo yêu cầu chuyển lương theo lô
+actors: App | API | DB | Worker
+App -> API: POST /batches (Idempotency-Key)
+API -> DB: INSERT batch QUEUED (atomic)
+API --> App: 202 + Location /batches/b-123
+App -> API: GET /batches/b-123 (poll)
+Worker -> DB: claim job, RUNNING
+Worker -> DB: ghi kết quả từng dòng
+Worker -> DB: COMPLETED_WITH_ERRORS
+API --> App: 200 tiến độ + số dòng lỗi
+note App..API: Huỷ bằng DELETE khi còn RUNNING
+~~~
+
+### Status resource trả gì
+~~~json
+{
+  "batchId": "b-123",
+  "status": "COMPLETED_WITH_ERRORS",
+  "total": 5000, "processed": 5000, "succeeded": 4980, "failed": 20,
+  "createdAt": "2026-11-17T08:00:00Z",
+  "completedAt": "2026-11-17T08:02:11Z",
+  "itemsUrl": "/api/batches/b-123/items?status=FAILED"
 }
+~~~
+- Không nhét 5.000 dòng vào response tổng; client gọi {{itemsUrl}} (có phân trang) để xem dòng lỗi.
+- {{status}} là enum máy đọc được; {{failed}} lớn hơn 0 nhưng vẫn là {{COMPLETED_WITH_ERRORS}}, không phải FAILED.
+
+### Code (Spring Boot, rút gọn)
+~~~java
+@PostMapping("/api/batches/transfers")
+ResponseEntity<Batch> create(@RequestHeader("Idempotency-Key") UUID key,
+                             @RequestPart("file") MultipartFile file) {
+    var claimed = repo.insertIfAbsent(userId(), key, "batch");   // atomic
+    if (claimed.isEmpty()) return ResponseEntity.ok(repo.get(userId(), key)); // replay
+    Batch b = repo.save(Batch.queued(key));
+    executor.submit(() -> jobService.run(b.id()));               // pool riêng
+    return ResponseEntity.accepted()
+            .location(URI.create("/api/batches/" + b.id()))
+            .header("Retry-After", "5").body(b);
+}
+
+@GetMapping("/api/batches/{id}")
+Batch status(@PathVariable String id) { return repo.getOwned(id, userId()); }
+~~~
+
+### Huỷ và idempotency
+- {{DELETE}} chỉ hợp lệ khi {{QUEUED}} hoặc {{RUNNING}}; worker kiểm tra cờ huỷ trước mỗi dòng (cooperative cancel — cùng nhau dừng, không kill thread).
+- Tạo lại sau timeout: client giữ **nguyên** Idempotency-Key, server replay batch cũ, không tạo lô thứ hai.
+- Cùng key nhưng file hash khác thì trả 422.
+
+### Lỗi hay gặp
+- **Giữ kết nối tới khi xong**: proxy cắt ở 60 giây, client retry tạo lô trùng. Luôn 202 cộng poll.
+- **Đánh FAILED cả lô khi vài dòng lỗi**: che mất hàng nghìn dòng thành công. Dùng COMPLETED_WITH_ERRORS cộng danh sách dòng lỗi.
+- **Nhét toàn bộ dòng vào status**: payload khổng lồ, poll tốn băng thông. Tách {{items}} có phân trang.
+- **Huỷ bằng cách kill thread**: giữa chừng có thể đã chuyển tiền dở. Dùng cờ huỷ kiểm tra trước mỗi dòng cộng đối soát.
+- **Không có Idempotency-Key**: user bấm gửi lại tạo hai lô, chuyển lương hai lần.
+
+### Ví dụ đời thực
+Một ngân hàng chạy payroll 18.000 dòng mỗi kỳ, mỗi lần 4–6 phút. Ban đầu API trả 200 sau khi xong; app chờ đồng bộ nên 30% request timeout ở phút thứ hai, user bấm gửi lại tạo **hai lô** thành 36.000 dòng, một phần bị nhân đôi. Sau khi đổi: (1) trả 202 cộng {{Location}} ngay, client poll mỗi 5 giây (backoff tới 30 giây); (2) status trả {{processed/total}} và {{COMPLETED_WITH_ERRORS}}; (3) {{Idempotency-Key}} chống tạo lại; (4) {{DELETE}} huỷ khi phát hiện sai file. Kết quả: lô trùng về 0, user không còn chờ đồng bộ, ticket "chuyển lương chưa xong" giảm 90%, và 20 dòng lỗi mỗi kỳ được khoanh vùng chính xác thay vì cả lô bị đánh dấu hỏng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không giữ kết nối HTTP cho tác vụ chạy vài phút: trả 202 Accepted kèm Location trỏ tới status resource, rồi client poll hoặc nhận webhook. Status resource trả tiến độ processed/total, trạng thái tổng, và nếu có dòng lỗi thì trả COMPLETED_WITH_ERRORS kèm URL xem từng dòng lỗi có phân trang, chứ không nhét cả 18.000 dòng vào một response. Cho phép huỷ bằng DELETE kiểu hợp tác: worker kiểm tra cờ huỷ trước mỗi dòng, không kill thread, vì giữa chừng có thể đã chuyển tiền. Chống tạo lại thì client gửi Idempotency-Key, server insert-first rồi replay. Tôi từng thấy payroll trả 200 đồng bộ làm 30% timeout và user bấm lại tạo hai lô; chuyển sang 202 cộng poll cộng idempotency đã đưa lô trùng về 0."
+
+> Senior tip: Hãy thiết kế status resource như một tài nguyên có vòng đời (QUEUED, RUNNING, COMPLETED, COMPLETED_WITH_ERRORS, CANCELLED, FAILED), trả tiến độ dạng số đếm được, và luôn tách "kết quả từng dòng" sang endpoint con có phân trang. Đo p95 thời gian hoàn thành và số dòng lỗi mỗi kỳ — nếu số dòng lỗi tăng, nguyên nhân thường ở dữ liệu đầu vào chứ không phải worker.`,
+  follow: [
+    'Client nên poll với chu kỳ bao nhiêu và backoff ra sao để không tạo quá tải cho status endpoint?',
+    'Nếu worker xử lý song song nhiều dòng, làm sao giữ idempotency cho từng dòng khi một dòng phải retry?',
+    'Khi nào nên dùng webhook thay cho polling cho client là đối tác server-to-server?'
+  ],
+  tags: ['Async API', '202 Accepted', 'Batch', 'Idempotency', 'Job']
+},
+{
+  id: 'api-068',
+  topic: 'api',
+  level: 'senior',
+  q: 'Bạn là bên GỬI webhook: đối tác đăng ký URL callback để nhận sự kiện. Kẻ tấn công đăng ký URL trỏ vào dịch vụ nội bộ (metadata 169.254.169.254, localhost admin). Thiết kế an toàn cho việc gửi webhook: chống SSRF, ký HMAC, chống replay, và giới hạn retry thế nào?',
+  a: `**Tóm tắt:** Gửi webhook nghĩa là server của bạn chủ động gọi HTTP tới một URL do **đối tác đăng ký** — đó là "input không tin cậy" và mở ra lỗ hổng **SSRF** (server-side request forgery — kẻ tấn công ép server của bạn gửi request tới dịch vụ nội bộ). Phòng thủ nhiều lớp: (1) **allowlist cộng chặn dải IP riêng tư** trước khi gửi; (2) **ký HMAC-SHA256** trên {{timestamp + "." + raw_body}} để đối tác xác thực; (3) **chống replay** bằng timestamp cộng delivery id; (4) **retry có trần** cộng circuit breaker để không biến sự cố của đối tác thành bão.
+
+### Hiểu nhanh
+Hãy xem webhook như **bưu kiện bạn gửi tới địa chỉ người lạ đưa**. Nếu không kiểm tra địa chỉ, người xấu có thể đưa địa chỉ "phòng máy chủ của chính bạn" (169.254.169.254 — endpoint metadata nội bộ chứa thông tin nhạy cảm) và bạn tự tay gửi bưu kiện vào đó. **SSRF** là khi server bị lợi dụng làm "người đưa thư" cho kẻ tấn công.
+
+### Vì sao webhook là "input không tin cậy"
+- URL callback do **đối tác** (hoặc kẻ giả mạo đối tác) cung cấp, không phải tài nguyên cố định của bạn.
+- Một URL hợp lệ có thể trỏ tới {{http://169.254.169.254/latest/meta-data}} (AWS metadata), {{http://localhost:8080/actuator}} (admin nội bộ), hoặc dải {{10.0.0.0/8}} (mạng nội bộ).
+- Nếu server GET URL đó và trả kết quả cho đối tác (hoặc log lại), bạn đã rò rỉ thông tin nội bộ.
+
+### Phòng thủ từng lớp
+1. **Parse và kiểm tra URL**:
+   - Chỉ cho phép {{https}} (không {{http}}, không {{file}}, không {{gopher}}).
+   - Giải DNS rồi kiểm tra IP đích **không** thuộc dải riêng tư: {{10/8}}, {{172.16/12}}, {{192.168/16}}, {{127/8}}, {{169.254/16}}, {{::1}}, link-local.
+   - Chặn redirect (mỗi lần redirect phải kiểm tra lại đích) — nếu không, đối tác đưa URL công khai rồi 302 về nội bộ.
+2. **Egress firewall hoặc proxy**: chỉ cho phép egress tới dải IP công khai qua proxy kiểm soát, chặn ở tầng mạng chứ không chỉ ở code.
+3. **DNS rebinding**: sau khi resolve, kết nối lại có thể tới IP khác (TTL 0). Giải pháp: pin IP đã kiểm tra (connect tới đúng IP đó) hoặc dùng thư viện HTTP có kiểm soát.
+
+### Ký HMAC và chống replay
+- **HMAC-SHA256**: khóa bí mật chung; chữ ký = HMAC(secret, timestamp + "." + raw_body). Đối tác verify constant-time ({{MessageDigest.isEqual}}).
+- **Timestamp** trong header (Unix ms); đối tác từ chối nếu lệch quá ±5 phút, nên chặn replay request cũ.
+- **Delivery id** (UUID) giữ nguyên qua mọi lần retry; đối tác dedup theo id này.
+- **Ký trên raw body bytes**, không parse rồi serialize lại (thứ tự field đổi thì chữ ký sai).
+
+### Retry có trần
+- Chỉ retry lỗi tạm thời (timeout, 5xx, 429 có Retry-After); **không** retry 4xx cấu hình (401, 403, 410) — báo owner.
+- Exponential backoff cộng jitter, trần số lần và tuổi tối đa; hết thì đẩy DLQ, không xóa.
+- Circuit breaker theo từng subscription: đối tác lỗi không làm nghẽn worker của đối tác khác.
+
+### Code (rút gọn)
+~~~java
+void send(Subscription sub, Event e) {
+    URI url = requireHttps(sub.url());            // chỉ https
+    InetAddress ip = InetAddress.getByName(url.getHost());
+    if (isPrivate(ip)) throw new BlockedSsrf();   // chặn dải nội bộ/metadata
+    String body = mapper.writeValueAsString(e);
+    long ts = System.currentTimeMillis();
+    String sig = "sha256=" + hmac(sub.secret(), ts + "." + body);  // HMAC-SHA256
+    webClient.post().uri(url)
+        .header("X-Signature", sig)
+        .header("X-Timestamp", String.valueOf(ts))
+        .header("X-Delivery-Id", e.id())          // giữ nguyên khi retry
+        .bodyValue(body)
+        .retrieve()
+        .retryWhen(Retry.backoff(3, Duration.ofSeconds(10)).filter(this::retryable))
+        .subscribe();
+}
+~~~
+
+### Lỗi hay gặp
+- **Chỉ chặn URL ở code, quên egress firewall**: kẻ tấn công dùng DNS rebinding hoặc redirect để lọt.
+- **Không kiểm tra redirect**: URL công khai 302 về 169.254.169.254.
+- **Ký bằng cách parse JSON rồi serialize lại**: chữ ký luôn sai.
+- **So sánh chữ ký bằng equals chuỗi**: timing attack; dùng constant-time.
+- **Retry 4xx**: biến lỗi cấu hình thành storm; 401, 403, 410 phải dừng.
+- **Không có trần retry cộng jitter**: đối tác chết làm hàng nghìn request dồn lại.
+
+### Ví dụ đời thực
+Một cổng thanh toán cho merchant đăng ký webhook URL. Kẻ tấn công tạo tài khoản merchant rồi đăng ký {{https://api.bank.vn/redirect?url=http://169.254.169.254}} — server GET URL công khai, nhận 302 về metadata, và vì không kiểm tra redirect, đã gửi request tới metadata nội bộ (lộ tạm thời role credentials qua log). Điều tra: log egress cho thấy request tới 169.254.169.254 từ worker webhook. Xử lý: (1) chỉ cho https; (2) resolve cộng chặn dải riêng tư; (3) **từ chối redirect** hoặc kiểm tra lại từng hop; (4) egress firewall chỉ mở IP công khai; (5) pin IP đã kiểm tra. Sau 1 tháng: 0 request tới dải nội bộ, và một lần merchant khác cấu hình sai URL (trỏ localhost) bị chặn ngay với lỗi rõ ràng thay vì âm thầm gửi.
+
+### Trả lời mẫu khi phỏng vấn
+"Gửi webhook là gọi HTTP tới URL do đối tác đăng ký, nên tôi coi đó là input không tin cậy và phòng SSRF nhiều lớp: chỉ cho https, resolve DNS rồi chặn mọi IP riêng tư như 169.254.169.254 hay 10/8, từ chối redirect hoặc kiểm tra lại từng hop, và thêm egress firewall ở tầng mạng vì phòng ở code là chưa đủ. Chống giả mạo thì ký HMAC-SHA256 trên timestamp cộng raw body, đối tác verify constant-time; timestamp trong cửa sổ 5 phút chặn replay; delivery id giữ nguyên khi retry để đối tác dedup. Retry chỉ cho lỗi tạm thời, có backoff cộng jitter, trần số lần, circuit breaker theo subscription, 4xx thì dừng và báo owner. Tôi từng thấy một merchant đăng ký URL redirect về metadata nội bộ; nếu chỉ chặn ở code mà không kiểm tra redirect và egress thì đã rò rỉ credentials."
+
+> Senior tip: Đừng bao giờ coi URL webhook là "đã được đối tác xác thực". Kiểm tra https cộng chặn dải riêng tư cộng kiểm tra redirect cộng egress firewall là bộ tứ; thiếu một lớp là còn cửa. Và log mọi lần gửi theo delivery id cộng kết quả (không log secret) để điều tra sự cố và đối soát với đối tác.`,
+  follow: [
+    'Vì sao kiểm tra IP sau khi resolve DNS vẫn có thể bị DNS rebinding, và cách pin IP hoạt động ra sao?',
+    'Nếu đối tác không hỗ trợ key ID để xoay secret, bạn giảm rủi ro thế nào?',
+    'Bạn đo lường và cảnh báo thế nào cho một subscription đang bị lỗi hàng loạt?'
+  ],
+  tags: ['Webhook', 'SSRF', 'HMAC', 'Security', 'Retry', 'Idempotency']
+},
+{
+  id: 'api-069',
+  topic: 'api',
+  level: 'senior',
+  q: 'Bạn cần rate limit theo từng client (API key) tại API gateway (Spring Cloud Gateway) cho API đối tác: dùng token bucket, đếm tập trung ở Redis, phân tầng theo gói dịch vụ, và trả 429 để client không retry bão. Cấu hình KeyResolver, RequestRateLimiter và Redis như thế nào?',
+  a: `**Tóm tắt:** Tại **API gateway** (Spring Cloud Gateway) dùng bộ lọc {{RequestRateLimiter}} với thuật toán **token bucket** (xô token — nạp token theo thời gian, mỗi request tiêu 1 token, cho phép burst tới sức chứa) và {{KeyResolver}} để băm theo **API key/đối tác** (không theo IP). Trạng thái bucket ở **Redis** để mọi instance dùng chung một hạn mức; vượt thì trả **429** kèm {{Retry-After}} và header {{RateLimit}} để client tự chậm lại thay vì retry ngay.
+
+### Hiểu nhanh
+**Rate limit** giống hạn mức rút nước: mỗi khách (đối tác) có một xô, xô được nạp lại đều đặn, mỗi request múc một gáo; xô cạn thì phải chờ. **Token bucket** cho phép "tiết kiệm" rồi xả một lúc (burst) tới sức chứa xô, thay vì cắt cứng theo từng phút. **Gateway** là cửa duy nhất mọi request đi qua, nên đặt rate limit ở đây chặn sớm, không tốn tài nguyên backend.
+
+### Vì sao đếm tập trung ở Redis
+Nếu mỗi instance gateway giữ bucket riêng với limit 100/phút và có 10 instance, client thực tế được 1000/phút — hạn mức vô nghĩa và trôi theo autoscaling. Redis (máy chủ key-value chạy riêng, dùng chung) là nguồn sự thật: mọi instance đọc/ghi cùng một bucket bằng một script Lua nguyên tử (atomic — không có race giữa các instance).
+
+### Các thành phần cấu hình
+- **KeyResolver**: hàm băm request thành một chuỗi khóa, ví dụ theo {{partnerId}} trích từ API key đã xác thực. Có thể tự viết {{KeyResolver}} đọc header {{X-Api-Key}} (hoặc băm theo {{partnerId}} sau khi xác thực), thay vì băm theo IP/Host.
+- **RequestRateLimiter**: filter của gateway, đọc cấu hình {{spring.cloud.gateway.filter.request-rate-limiter}}.
+- **RedisRateLimiter**: cài đặt token bucket, cần {{spring-boot-starter-data-redis-reactive}} và cấu hình {{redis-rate-limiter}}. Script Lua đếm token, nạp theo thời gian.
+- **Cấu hình theo route**: mỗi route khai {{RequestRateLimiter}} riêng, đặt {{key-resolver}}, {{replenishRate}} (nạp bao nhiêu token/giây), {{burstCapacity}} (sức chứa), {{requestedTokens}} (mỗi request tiêu mấy token).
+
+### Cấu hình YAML
+~~~yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: partner-api
+          uri: lb://partner-service
+          predicates:
+            - Path=/partner/v1/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                key-resolver: "#{@partnerKeyResolver}"
+                redis-rate-limiter.replenishRate: 10        # 10 token/giây = 600/phút
+                redis-rate-limiter.burstCapacity: 60        # cho burst ngắn, không quá sức backend
+                redis-rate-limiter.requestedTokens: 1
+~~~
+
+### KeyResolver theo API key
+~~~java
+@Bean
+KeyResolver partnerKeyResolver() {
+    return exchange -> {
+        String key = exchange.getRequest().getHeaders().getFirst("X-Api-Key");
+        if (key == null || key.isBlank()) {
+            return Mono.error(new ResponseStatusException(HttpStatus.UNAUTHORIZED));
+        }
+        return Mono.just(key); // băm bucket theo API key/đối tác
+    };
+}
+~~~
+
+### Trả 429 đúng chuẩn
+- Khi vượt hạn mức, gateway tự trả **429**; nên cấu hình thêm body problem+json và header {{Retry-After}} (số giây chờ), {{RateLimit-Limit}}, {{RateLimit-Remaining}}.
+- Client đọc {{Retry-After}} để chờ, không retry ngay; retry phải có jitter nếu không cả đàn cùng quay lại một giây.
+
+### Phân tầng theo gói
+- Mỗi đối tác có cấu hình riêng: gói Free replenishRate thấp, gói Enterprise cao. Lưu theo {{partnerId}} (bảng cấu hình hoặc config server), không hard-code trong route.
+- Endpoint nặng (export, báo cáo) đặt bucket riêng chặt hơn endpoint tra cứu.
+
+### Lỗi hay gặp
+- **Băm theo IP**: nhiều đối tác sau cùng một NAT dùng chung hạn mức; hoặc client đổi IP liên tục lách luật. Băm theo API key/đối tác.
+- **Bucket cục bộ mỗi instance**: hạn mức nhân theo số instance; phải dùng Redis.
+- **Không trả Retry-After**: client retry ngay tạo bão.
+- **burstCapacity quá lớn**: cho burst 10.000 request làm backend sập; đặt theo sức chịu của backend.
+- **Thiếu header X-Api-Key**: nếu KeyResolver trả rỗng/lỗi không rõ, gateway có thể xử lý sai; nên trả 401 rõ ràng khi thiếu định danh đối tác.
+
+### Ví dụ đời thực
+API đối tác chạy 8 instance gateway sau load balancer, giới hạn 600 request/phút/đối tác. Ban đầu mỗi instance đếm bucket riêng nên thực tế mỗi đối tác nhận 4.800/phút; thêm vào đó khi một đối tác spam, cả cụm Redis bị một khóa nóng làm chậm. Chuyển sang {{RequestRateLimiter}} cộng {{KeyResolver}} theo {{X-Api-Key}} cộng Redis Lua nguyên tử: (1) mọi instance dùng chung hạn mức; (2) trả 429 kèm {{Retry-After}} và {{RateLimit}} trên mọi response; (3) gói Free/Enterprise cấu hình theo {{partnerId}}; (4) endpoint export đặt bucket riêng. Kết quả: hạn mức chuẩn 600/phút bất kể số instance, đối tác spam bị chặn ngay, 429 giảm 60% sau khi client đọc header tự chậm, và p99 của API chính không đổi.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi đặt rate limit ở gateway vì đó là cửa duy nhất, chặn sớm trước khi tốn tài nguyên backend. Dùng Spring Cloud Gateway {{RequestRateLimiter}} với thuật toán token bucket và {{KeyResolver}} băm theo API key của đối tác, không theo IP, vì nhiều đối tác có thể chung NAT hoặc đổi IP. Trạng thái bucket ở Redis để mọi instance dùng chung một hạn mức; nếu mỗi instance đếm riêng thì với 8 instance, hạn mức 600 thành 4.800. Tôi cấu hình replenishRate, burstCapacity và requestedTokens theo từng route, phân tầng Free/Enterprise theo partnerId, và endpoint nặng như export đặt bucket riêng chặt hơn. Khi vượt, gateway trả 429 kèm Retry-After và RateLimit headers để client tự chậm; nếu chỉ trả 429 trơn thì client retry ngay tạo bão. Tôi từng thấy mỗi instance đếm riêng làm hạn mức vô nghĩa; chuyển sang Redis Lua đã chuẩn hóa."
+
+> Senior tip: Rate limit ở gateway chỉ hiệu quả khi **key ổn định** (API key/đối tác) và **đếm tập trung** (Redis). Đo ba con số: tỉ lệ 429 theo đối tác, số request retry trong 1 giây sau 429, và p99 của endpoint; nếu retry sau 429 không giảm khi đã thêm Retry-After, vấn đề nằm ở client chứ không phải thuật toán.`,
+  follow: [
+    'Vì sao header RateLimit trên response được cache lại có thể gây hiểu nhầm, và xử lý thế nào?',
+    'Nếu nhiều instance thì Redis có phải điểm chết không, và fail-open hay fail-closed khi Redis lỗi?',
+    'Bạn thiết kế quota nhiều tầng (partner, endpoint, global) ra sao để một partner không làm nghẽn hệ thống?'
+  ],
+  tags: ['Rate Limit', 'Spring Cloud Gateway', 'Token Bucket', 'Redis', 'KeyResolver']
+},
+{
+  id: 'api-070',
+  topic: 'api',
+  level: 'lead',
+  q: 'API đối tác hiện trả lỗi theo cặp (code, message). Bạn muốn chuyển sang RFC 9457 Problem Details (application/problem+json) nhưng client cũ vẫn parse (code, message). Thiết kế lộ trình tương thích ngược khi đổi định dạng response lỗi: giữ field cũ, thêm mới, đo telemetry, brownout, và chiến lược theo từng client.',
+  a: `**Tóm tắt:** Đổi **định dạng response lỗi** cũng là một breaking change (thay đổi phá vỡ tương thích) nếu client cũ đang parse field cũ. Dùng **expand-and-contract**: giai đoạn expand — thêm body mới theo RFC 9457 ({{application/problem+json}}) **cùng lúc** vẫn giữ các field cũ {{code}} và {{message}}; giai đoạn contract — đo telemetry theo client/version, brownout có kiểm soát, rồi mới bỏ field cũ ở một major version sau. Không bao giờ "đổi một ngày" khi client đối tác vẫn còn trên đường.
+
+### Hiểu nhanh
+Hãy xem hợp đồng lỗi như **mẫu biên lai**. Bạn đổi sang mẫu mới, nhưng khách (client cũ) vẫn đọc mẫu cũ theo thói quen: ô "mã lỗi" ở góc trên bên trái. Nếu xóa ô cũ ngay, khách nhìn biên lai mới không thấy "mã lỗi" ở chỗ cũ và tưởng giao dịch hỏng. Cách an toàn: in **cả hai mẫu** trên cùng một tờ (expand) một thời gian, đo xem còn ai đọc ô cũ, rồi mới bỏ (contract).
+
+### Vì sao đổi lỗi khó hơn đổi response thành công
+- Client xử lý lỗi thường viết theo *chuỗi*: {{body.message.contains(...)}} hoặc {{switch(code)}}.
+- Đổi từ cặp {{code: 4001, message: "..."}} sang problem+json làm {{code}} và {{message}} biến mất, nên client cũ không parse được hoặc rơi vào nhánh default sai.
+- Lỗi ít khi được test kỹ bằng contract test (thường chỉ test happy path), nên hồi quy dễ lọt.
+
+### Lộ trình expand-and-contract
+1. **Expand (thêm mới, giữ cũ)**:
+   - Response lỗi trả **cả** problem+json lẫn field cũ: {{type}}, {{title}}, {{status}}, {{detail}} cộng {{code}}, {{message}}.
+   - Content-Type chuyển sang {{application/problem+json}}; nếu client cũ không chấp nhận, có thể thương lượng bằng cách giữ {{application/json}} nhưng body có cả hai, hoặc theo cơ chế version.
+2. **Chọn cách báo hiệu version**: header {{Deprecation}}, {{Sunset}}, {{Link}} (RFC 8594/9745) trên response cũ; hoặc version trong path/header nếu hợp đồng yêu cầu.
+3. **Đo telemetry**: log theo {{client_id + version}} xem ai còn đọc {{code}}/{{message}} (hoặc ai còn gửi header cũ). Nếu client không gửi version, thêm instrumentation phía client hoặc contract test.
+4. **Brownout**: cửa sổ ngắn (ví dụ 5 phút/tuần) trả cảnh báo hoặc 410 có kiểm soát, để client còn dùng đường cũ lộ diện — nhưng với API tài chính phải theo SLA đã thống nhất, không tự ý 503.
+5. **Contract**: khi usage của field cũ về ngưỡng (ví dụ dưới 0,1% trong 2 kỳ liên tiếp) và support window kết thúc, mới bỏ field cũ ở major version mới.
+
+### Bảng quyết định
+| Thay đổi | An toàn khi | Cách làm |
+|---|---|---|
+| Thêm field problem+json | Luôn (client cũ bỏ qua) | Expand, giữ field cũ |
+| Bỏ {{code}}/{{message}} | Chỉ khi không còn client đọc | Đo telemetry cộng brownout cộng sunset |
+| Đổi Content-Type | Khi client chấp nhận | Thương lượng, hoặc version riêng |
+| Đổi status code | Gần như luôn breaking | Tránh, hoặc major version |
+
+### Code (rút gọn)
+~~~java
+@RestControllerAdvice
+class LegacyErrorAdvice extends ResponseEntityExceptionHandler {
+    @ExceptionHandler(InsufficientFunds.class)
+    ResponseEntity<Object> handle(InsufficientFunds e) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(
+                HttpStatus.UNPROCESSABLE_ENTITY, e.getMessage());   // body MỚI
+        pd.setType(URI.create("https://api.bank.vn/problems/insufficient-funds"));
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.putAll(toProblemMap(pd));                              // type/title/status/detail
+        body.put("code", 4001);                                     // field CŨ, giữ lại
+        body.put("message", e.getMessage());                        // field CŨ, giữ lại
+        return ResponseEntity.unprocessableEntity().contentType(LEGACY_JSON).body(body);
+    }
+}
+~~~
+
+### Lỗi hay gặp
+- **Xóa field cũ ngay**: client cũ parse ra null, rơi vào nhánh default, báo lỗi sai cho người dùng.
+- **Không đo telemetry**: "chắc không ai dùng" là giả định; phải đo theo client/version.
+- **Đổi Content-Type đột ngột**: client cũ so {{contentType == application/json}} không khớp, thành lỗi.
+- **Brownout tùy tiện**: 503 định kỳ không báo trước làm đối tác tưởng hệ thống sập.
+- **Lỗi ít được test**: chỉ test happy path; phải viết contract test cho cả response lỗi.
+
+### Ví dụ đời thực
+Một ví điện tử đổi lỗi từ {{code/message}} sang RFC 9457. Tuần đầu sau deploy, 3 đối tác cũ báo "không hiểu lỗi": client họ đọc {{body.message}} ra null nên hiện "lỗi không xác định" cho hàng nghìn giao dịch bị từ chối. Điều tra: log cho thấy 40% request lỗi vẫn đến từ client cũ. Xử lý: (1) trả đồng thời problem+json và field cũ {{code/message}}; (2) thêm header {{Deprecation}} cộng {{Sunset}}; (3) dashboard theo client/version; (4) brownout 5 phút/tuần có báo trước; (5) sau 3 tháng, khi client cũ còn dưới 0,1%, mới bỏ field cũ ở major version. Kết quả: 0 sự cố hiển thị lỗi, đối tác migrate dần, và hợp đồng lỗi mới được chuẩn hóa.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không đổi định dạng lỗi một ngày, vì client cũ đang parse field cũ. Tôi làm expand-and-contract: giai đoạn expand, response lỗi trả đồng thời body mới RFC 9457 và các field cũ code/message, kèm header Deprecation/Sunset để báo lộ trình. Sau đó tôi đo telemetry theo client/version xem ai còn đọc field cũ, chạy brownout có báo trước để client còn dùng đường cũ lộ diện, và chỉ bỏ field cũ ở major version sau khi usage xuống ngưỡng và support window kết thúc. Tôi từng thấy đổi đột ngột làm 40% client cũ đọc message ra null và hiện lỗi sai cho người dùng; chuyển sang expand-and-contract đã khắc phục. Với API tài chính, brownout phải theo SLA, không tự ý 503."
+
+> Senior tip: Coi **response lỗi** là một hợp đồng riêng cần version và telemetry, không phải "chi tiết phụ". Công cụ rẻ nhất là contract test cho cả nhánh lỗi (không chỉ happy path) và log theo client/version; nếu không đo được client nào còn đọc field cũ thì đừng bao giờ xóa — vì lỗi ít khi được nhìn thấy trước khi nó xảy ra với người dùng.`,
+  follow: [
+    'Làm sao client cũ phân biệt lỗi khi server đã đổi Content-Type sang application/problem+json?',
+    'Nếu client không gửi version, bạn đo được mức sử dụng field cũ bằng cách nào?',
+    'Bạn có nên nhân bản cả hai định dạng lỗi mãi mãi, hay đặt thời hạncontract rõ ràng ra sao?'
+  ],
+  tags: ['Backward Compatibility', 'RFC 9457', 'Error Handling', 'Deprecation', 'Partner API']
+},
+{
+  id: 'api-071',
+  topic: 'api',
+  level: 'senior',
+  q: 'Bạn áp dụng contract-first với OpenAPI cho một API ngân hàng mới: nhóm 5 người, client ở 3 ngôn ngữ (Java/Kotlin, TypeScript, Go). Tổ chức repo, sinh code server/client, chống lệch (drift) giữa spec và implementation, và review spec như thế nào để deploy độc lập mà không phá client?',
+  a: `**Tóm tắt:** Contract-first nghĩa là **viết OpenAPI spec trước, sinh code sau**, và spec là nguồn sự thật. Với nhiều client, tổ chức: một **contract repo** chứa spec đã review cộng baseline tag; CI chạy sinh code server (interface cộng DTO) và client SDK cho từng ngôn ngữ; **contract test** so implementation với spec; và **CI gate** ({{oasdiff}}) chặn breaking change so với baseline. Spec được review như code (PR, người duyệt) trước khi merge.
+
+### Hiểu nhanh
+Hãy xem spec OpenAPI như **bản thiết kế nhà** vẽ trước khi xây. Nếu xây xong mới vẽ lại (code-first), bản vẽ không khớp thực tế và người mua nhà (client) đọc bản vẽ bị lạc đường. Contract-first: chốt bản vẽ, review, rồi mới xây theo; mọi thay đổi phải sửa bản vẽ trước và so với bản cũ để biết có phá vỡ gì.
+
+### Vì sao cần contract repo riêng
+- Nhiều client (Java/TS/Go) và nhiều service: nếu mỗi bên tự giữ spec, chúng lệch nhau.
+- Một nơi duy nhất để: review spec, tag version ({{api/v1.0.0}}), publish SDK, và chạy CI gate.
+- Client sinh SDK **từ spec đã review**, không sinh từ code (code có thể đang dở).
+
+### Luồng làm việc từng bước
+1. **Design**: dev viết spec YAML (OpenAPI 3.1) cho endpoint mới, kèm ví dụ request/response.
+2. **Review**: PR spec; Arch, Security và đại diện client duyệt (required/optional, status, auth, lỗi).
+3. **Baseline**: merge vào main, tag {{api/v1.0.0}} (mốc so sánh).
+4. **Sinh code**: CI chạy {{openapi-generator}} sinh interface server (delegate pattern) cộng DTO, và sinh client SDK nhiều ngôn ngữ.
+5. **Implement**: dev implement {{Delegate}} interface (không sửa file sinh ra).
+6. **Contract test**: test request/response khớp spec ({{swagger-request-validator}} hoặc {{springdoc}} cộng so schema).
+7. **CI gate**: {{oasdiff}} so spec PR với baseline, fail nếu breaking (xóa field, đổi type, thêm required).
+8. **Publish**: spec lên portal (Redocly/Stoplight), client tải SDK.
+
+### Sinh code server (delegate pattern)
+~~~xml
+<!-- pom.xml: sinh interface, dev implement delegate -->
+<plugin>
+  <groupId>org.openapitools</groupId>
+  <artifactId>openapi-generator-maven-plugin</artifactId>
+  <version>7.10.0</version>
+  <executions>
+    <execution>
+      <goals><goal>generate</goal></goals>
+      <configuration>
+        <inputSpec>src/main/resources/openapi/bank-api.yaml</inputSpec>
+        <generatorName>spring</generatorName>
+        <configOptions>
+          <delegatePattern>true</delegatePattern>
+          <useSpringBoot3>true</useSpringBoot3>
+        </configOptions>
+      </configuration>
+    </execution>
+  </executions>
+</plugin>
+~~~
+Lưu ý: file sinh ra để trong {{target/generated-sources}}, **không** commit và **không** sửa tay; dev chỉ implement {{BankApiDelegate}}.
+
+### CI gate chống breaking change
+~~~yaml
+name: api-contract
+on: [pull_request]
+jobs:
+  breaking:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Lấy baseline từ main
+        run: git show origin/main:openapi/bank-api.yaml > baseline.yaml
+      - name: So sánh
+        uses: oasdiff/oasdiff-action/breaking@main
+        with:
+          base: baseline.yaml
+          revision: openapi/bank-api.yaml
+          fail-on: ERR
+~~~
+
+### Phân loại breaking change
+| Thay đổi | Breaking? | Ví dụ |
+|---|---|---|
+| Thêm field optional response | Không | thêm {{metadata}} |
+| Xóa/đổi tên field | Có | bỏ {{phone}} |
+| Thêm required request | Có | thêm {{purposeCode}} bắt buộc |
+| Đổi type | Có | int sang string |
+| Thêm endpoint | Không | GET /v1/cards |
+
+### Lỗi hay gặp
+- **Sửa file sinh ra (generated) bằng tay**: lần sinh sau ghi đè, mất thay đổi. Chỉ implement delegate.
+- **Commit file sinh ra**: gây merge conflict và diff rác; để trong target, gitignore.
+- **Spec không có ví dụ**: client không biết dùng thế nào; thêm {{example}} cho mỗi field quan trọng.
+- **Không chạy oasdiff**: breaking lọt; phải chặn ở CI với baseline.
+- **Spec lệch implementation**: chỉ so schema không bắt đổi semantics; cần contract test cộng review người.
+
+### Ví dụ đời thực
+Nhóm 5 người làm API ví điện tử, client ở Java, TypeScript và Go. Ban đầu code-first: mỗi team tự viết, spec sinh tự động từ code, không baseline, không CI gate. Một PR thêm field bắt buộc {{purposeCode}} vào request khiến client Go (strict) crash vì SDK cũ không có field. Triển khai contract-first: (1) contract repo chung, spec OpenAPI 3.1; (2) CI sinh SDK 3 ngôn ngữ từ spec đã review; (3) dev implement delegate, không sửa generated; (4) {{oasdiff}} so baseline chặn breaking; (5) contract test kiểm response khớp spec. Kết quả: 0 breaking lọt production trong 6 tháng, mỗi client tự sinh SDK và deploy độc lập, onboard đối tác mới từ 5 ngày xuống 1 ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi làm contract-first: viết spec OpenAPI trước, review như code rồi tag baseline, sau đó sinh code server theo delegate pattern và sinh SDK nhiều ngôn ngữ từ spec đã duyệt — không sinh từ code vì code có thể đang dở. File sinh ra để trong target, không commit, không sửa tay; dev chỉ implement delegate. CI chạy oasdiff so với baseline để chặn breaking change, và contract test kiểm request/response khớp spec, không chỉ schema mà cả semantics qua review người. Tôi từng thấy code-first thêm field bắt buộc làm client Go strict crash; chuyển sang contract repo cộng oasdiff đã đưa breaking về 0 và mỗi client deploy độc lập."
+
+> Senior tip: Contract-first chỉ thật sự hiệu quả khi **spec được review như code** và **file sinh ra không bị sửa tay**. Đầu tư vào ví dụ trong spec và contract test cho cả lỗi; oasdiff chặn phần "hình dạng" nhưng không chặn được đổi ý nghĩa (ví dụ đổi đơn vị tiền) — phần đó phải nhờ review con người và test hành vi.`,
+  follow: [
+    'OpenAPI 3.0 và 3.1 biểu diễn nullable khác nhau thế nào, và bạn chọn dựa trên điều gì?',
+    'Làm sao phát hiện breaking change ngầm (đổi nghĩa field, siết validation) mà oasdiff không bắt được?',
+    'Khi nào nên tách contract repo thành nhiều package theo service thay vì một spec dùng chung?'
+  ],
+  tags: ['OpenAPI', 'Contract-first', 'springdoc', 'openapi-generator', 'CI/CD']
+},
 );
