@@ -569,9 +569,12 @@
 
   // ---------------- actions ----------------
 
+  let prepJobId = null;
+
   function render() {
     if (!root) return;
-    if (tab === 'mine') renderMine();
+    if (prepJobId) renderPrep(prepJobId);
+    else if (tab === 'mine') renderMine();
     else renderToday();
   }
 
@@ -710,6 +713,117 @@
     }
   }
 
+  function prepFromDigest(url) {
+    let job = visibleJobs().find(x => keyOf(x.url) === keyOf(url));
+    if (!job) {
+      addFromDigest(url);
+      job = visibleJobs().find(x => keyOf(x.url) === keyOf(url));
+    }
+    if (job) App.navigate('#/jobs/prep/' + job.id);
+  }
+
+  function renderPrep(jobId) {
+    const j = findJob(jobId);
+    if (!j) {
+      root.innerHTML = '<div class="page-head"><div><h1>🎯 ' + esc(tr('prepPageTitle')) + '</h1></div></div>' +
+        '<div class="empty card"><p>' + esc(tr('prepNotFound')) + '</p><p><a class="btn" href="#/jobs/mine">' + esc(tr('prepBack')) + '</a></p></div>';
+      return;
+    }
+    const info = buildPlan(j);
+    const a = j.analysis;
+    const pp = prepProgress(j);
+    const pct = pp.total ? Math.round((pp.known / pp.total) * 100) : 0;
+    const daysOpts = [7, 14, 21, 30].map(d => '<option value="' + d + '"' + (Number(info.days) === d ? ' selected' : '') + '>' + d + '</option>').join('');
+    const topicChips = info.topics.map(t => {
+      const tp = App.topic(t.id) || { id: t.id, name: t.id, icon: '•' };
+      return '<a class="chip" href="#/bank/' + esc(t.id) + '">' + esc(tp.icon || '') + ' ' + esc(tp.name || t.id) +
+        ' <span class="badge">' + esc(tr('prepWeight', { n: t.weight })) + '</span></a>';
+    }).join('');
+    const todayIdx = 1; // day 1 highlighted as today in plan view
+    const doneMap = j.prepDone || {};
+    const planHtml = info.plan.map((d, idx) => {
+      const done = !!doneMap[idx];
+      if (d.mock) {
+        return '<div class="card jb-prep-day' + (done ? ' is-done' : '') + '">' +
+          '<div class="jb-prep-day-head"><h3>🏁 ' + esc(tr('prepDay', { n: d.day })) + ' — ' + esc(tr('prepMockDay')) + '</h3>' +
+          '<label class="jb-day-check"><input type="checkbox" data-act="prep-day-done" data-idx="' + idx + '"' + (done ? ' checked' : '') + '> ' + esc(tr('prepDoneDay')) + '</label></div>' +
+          '<div class="row"><a class="btn sm primary" href="#/interview">🎙️ ' + esc(tr('prepMockDay')) + ' (Interview)</a>' +
+          ' <a class="btn sm" href="#/mock">🧪 Mock</a></div></div>';
+      }
+      const tLinks = d.topics.map(t => {
+        const tp = App.topic(t.id) || { name: t.id, icon: '•' };
+        return '<span class="chip">' + esc(tp.icon || '') + ' ' + esc(tp.name || t.id) + '</span>' +
+          ' <a class="btn sm" href="#/quiz/' + esc(t.id) + '">' + esc(tr('prepQuiz')) + '</a>' +
+          ' <a class="btn sm" href="#/flash/' + esc(t.id) + '">' + esc(tr('prepFlash')) + '</a>';
+      }).join(' ');
+      const qList = d.questions.length
+        ? '<ul class="jb-prep-qlist">' + d.questions.map(q => '<li>' + esc(q.q) + ' <span class="badge ' + ((App.store.getStatus(q.id) === 'known') ? 'ok' : '') + '">' + esc((App.STATUS[App.store.getStatus(q.id) || 'unseen'] || {}).label || '') + '</span></li>').join('') + '</ul>'
+        : '<p class="small muted">' + esc(tr('prepNoQuestions')) + '</p>';
+      return '<div class="card jb-prep-day' + (done ? ' is-done' : '') + (idx === 0 ? ' is-today' : '') + '">' +
+        '<div class="jb-prep-day-head"><h3>' + esc(tr('prepDay', { n: d.day })) + (idx === 0 ? ' <span class="badge accent">' + esc(tr('prepToday')) + '</span>' : '') + '</h3>' +
+        '<label class="jb-day-check"><input type="checkbox" data-act="prep-day-done" data-idx="' + idx + '"' + (done ? ' checked' : '') + '> ' + esc(tr('prepDoneDay')) + '</label></div>' +
+        '<div class="chips jb-prep-day-topics">' + tLinks + '</div>' + qList + '</div>';
+    }).join('');
+
+    const knowledgeHtml = info.topics.map(t => {
+      const tp = App.topic(t.id) || { id: t.id, name: t.id, icon: '•' };
+      let qs = [];
+      try { qs = App.filterQuestions({ topic: t.id }) || []; } catch (e) { qs = []; }
+      const level = info.level;
+      qs = qs.slice().sort((x, y) => {
+        const sx = (App.store.getStatus(x.id) === 'known' ? 2 : 0) - (App.store.getStatus(y.id) === 'known' ? 2 : 0);
+        if (sx) return sx;
+        const lx = x.level === level ? 0 : 1;
+        const ly = y.level === level ? 0 : 1;
+        if (lx !== ly) return lx - ly;
+        return (arr(x.tags).indexOf('core') >= 0 ? 0 : 1) - (arr(y.tags).indexOf('core') >= 0 ? 0 : 1);
+      }).slice(0, 8);
+      const qHtml = qs.length ? qs.map(q => {
+        const st = App.store.getStatus(q.id) || 'unseen';
+        const stMeta = App.STATUS[st] || { label: st, cls: '' };
+        const sum = summaryOf(q);
+        return '<div class="jb-kq card" data-qid="' + esc(q.id) + '">' +
+          '<div class="jb-kq-head"><div class="jb-kq-q">' + esc(q.q) + '</div>' +
+          '<span class="badge ' + esc(stMeta.cls || '') + '" data-kq-status>' + esc(stMeta.label || st) + '</span></div>' +
+          '<div class="md jb-kq-summary">' + App.md(sum) + '</div>' +
+          '<div class="jb-kq-actions row">' +
+            '<button type="button" class="btn sm" data-act="toggle-answer" data-qid="' + esc(q.id) + '">' + esc(tr('prepShowAnswer')) + '</button>' +
+            '<span class="spacer"></span>' +
+            '<button type="button" class="btn sm ok" data-act="mark" data-qid="' + esc(q.id) + '" data-status="known">' + esc((App.STATUS.known || {}).label || 'Known') + '</button>' +
+            '<button type="button" class="btn sm warn" data-act="mark" data-qid="' + esc(q.id) + '" data-status="review">' + esc((App.STATUS.review || {}).label || 'Review') + '</button>' +
+            '<button type="button" class="btn sm bad" data-act="mark" data-qid="' + esc(q.id) + '" data-status="unknown">' + esc((App.STATUS.unknown || {}).label || 'Unknown') + '</button>' +
+          '</div>' +
+          '<div class="jb-kq-answer" data-answer-wrap hidden>' + App.ui.answer(App.md(q.a || ''), { lang: q.lang }) + '</div>' +
+          '</div>';
+      }).join('') : '<p class="small muted">' + esc(tr('prepNoQuestions')) + '</p>';
+      return '<section class="jb-prep-topic"><h3>' + esc(tp.icon || '') + ' ' + esc(tp.name || t.id) + ' <span class="badge">' + esc(tr('prepWeight', { n: t.weight })) + '</span></h3>' + qHtml + '</section>';
+    }).join('');
+
+    const likely = a && Array.isArray(a.likely_questions) ? a.likely_questions : [];
+    const tips = a && arr(a.prep_tips);
+    const likelyHtml = likely.length ? '<section class="card jb-prep-extra"><h2>' + esc(tr('prepLikely')) + '</h2><ul>' +
+      likely.map(q => '<li><strong>' + esc(q.q || '') + '</strong>' + (q.why ? '<div class="small muted">' + esc(q.why) + '</div>' : '') + '</li>').join('') + '</ul></section>' : '';
+    const tipsHtml = tips && tips.length ? '<section class="card jb-prep-extra"><h2>' + esc(tr('prepTips2')) + '</h2><ul>' + tips.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul></section>' : '';
+    const analyseHint = !a ? '<div class="card jb-prep-hint"><p>' + esc(tr('noJd')) + '</p>' +
+      ((j.jd || '').trim().length >= 200 ? '<button type="button" class="btn primary" data-act="analyse-prep" data-id="' + esc(j.id) + '">' + esc(tr('prepSuggestAnalyse')) + '</button>' : '') + '</div>' : '';
+
+    root.innerHTML =
+      '<div class="page-head jb-prep-head"><div><a class="link-btn" href="#/jobs/mine">' + esc(tr('prepBack')) + '</a>' +
+        '<h1>🎯 ' + esc(tr('prepPageTitle')) + '</h1>' +
+        '<p class="muted">' + esc(j.title || '') + (j.company ? ' — ' + esc(j.company) : '') + '</p></div></div>' +
+      '<section class="card jb-prep-progress"><h2>' + esc(tr('prepProgress')) + '</h2>' +
+        '<div class="progress" aria-label="' + esc(tr('prepProgress')) + '"><div style="width:' + pct + '%"></div></div>' +
+        '<p class="small muted">' + esc(tr('prepProgressBadge', { known: pp.known, total: pp.total })) + ' (' + pct + '%)</p></section>' +
+      analyseHint +
+      '<section class="card"><h2>' + esc(tr('prepTopics')) + '</h2><div class="chips">' + topicChips + '</div></section>' +
+      '<section class="jb-prep-plan"><div class="jb-prep-plan-head"><h2>' + esc(tr('prepPlan')) + '</h2>' +
+        '<label class="jb-days-pick"><span class="small muted">' + esc(tr('prepDays')) + '</span> ' +
+        '<select class="select sm" data-act="prep-days" data-id="' + esc(j.id) + '">' + daysOpts + '</select></label></div>' +
+        planHtml + '</section>' +
+      likelyHtml + tipsHtml +
+      '<section class="jb-prep-knowledge"><h2>' + esc(tr('prepKnowledge')) + '</h2>' + knowledgeHtml + '</section>';
+  }
+
   function removeJob(id) {
     const j = jobsList().find(x => x && x.id === id);
     if (!j) return;
@@ -736,11 +850,53 @@
     if (!act) return;
     switch (act.dataset.act) {
       case 'watch': addFromDigest(act.dataset.url || ''); break;
+      case 'prep-digest': prepFromDigest(act.dataset.url || ''); break;
+      case 'prep': App.navigate('#/jobs/prep/' + (act.dataset.id || '')); break;
       case 'add': openAdd(); break;
       case 'cancel': draft = null; render(); break;
       case 'edit': openEdit(act.dataset.id); break;
       case 'delete': removeJob(act.dataset.id); break;
       case 'analyse': analyse(act.dataset.id, act); break;
+      case 'analyse-prep': analyse(act.dataset.id, act); break;
+      case 'toggle-answer': {
+        const qid = act.dataset.qid;
+        const card = act.closest('.jb-kq');
+        if (!card) break;
+        const wrap = card.querySelector('[data-answer-wrap]');
+        if (!wrap) break;
+        const show = wrap.hasAttribute('hidden');
+        if (show) wrap.removeAttribute('hidden'); else wrap.setAttribute('hidden', '');
+        act.textContent = show ? tr('prepHideAnswer') : tr('prepShowAnswer');
+        break;
+      }
+      case 'mark': {
+        const qid = act.dataset.qid;
+        const status = act.dataset.status;
+        if (qid && status) {
+          App.store.setStatus(qid, status);
+          const card = act.closest('.jb-kq');
+          if (card) {
+            const badge = card.querySelector('[data-kq-status]');
+            const stMeta = App.STATUS[status] || { label: status, cls: '' };
+            if (badge) { badge.textContent = stMeta.label || status; badge.className = 'badge ' + (stMeta.cls || ''); }
+          }
+          // refresh progress bar if present
+          const prog = root.querySelector('.jb-prep-progress .progress div');
+          const progText = root.querySelector('.jb-prep-progress .small');
+          const jid = (root.querySelector('[data-act="prep-days"]') || {}).dataset && root.querySelector('[data-act="prep-days"]').dataset.id;
+          if (jid) {
+            const jj = findJob(jid);
+            if (jj) {
+              const p = prepProgress(jj);
+              const pct = p.total ? Math.round((p.known / p.total) * 100) : 0;
+              if (prog) prog.style.width = pct + '%';
+              if (progText) progText.textContent = tr('prepProgressBadge', { known: p.known, total: p.total }) + ' (' + pct + '%)';
+            }
+          }
+        }
+        break;
+      }
+      case 'prep-day-done': break; // handled in change
       default: break;
     }
   }
@@ -756,6 +912,31 @@
     if (e.target.matches('[data-digest-date]')) {
       const v = e.target.value;
       loadDigest(/^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+      return;
+    }
+    const daysSel = e.target.closest('[data-act="prep-days"]');
+    if (daysSel) {
+      const j = findJob(daysSel.dataset.id);
+      if (j) {
+        j.prepDays = Math.max(3, Math.min(30, Number(daysSel.value) || 14));
+        j.updatedAt = Date.now();
+        persist();
+        render();
+      }
+      return;
+    }
+    const dayCb = e.target.closest('[data-act="prep-day-done"]');
+    if (dayCb) {
+      const jid = (root.querySelector('[data-act="prep-days"]') || {}).dataset && root.querySelector('[data-act="prep-days"]').dataset.id;
+      const j = jid ? findJob(jid) : null;
+      if (j) {
+        j.prepDone = j.prepDone || {};
+        j.prepDone[dayCb.dataset.idx] = !!dayCb.checked;
+        j.updatedAt = Date.now();
+        persist();
+        const dayEl = dayCb.closest('.jb-prep-day');
+        if (dayEl) dayEl.classList.toggle('is-done', !!dayCb.checked);
+      }
     }
   }
 
@@ -770,6 +951,7 @@
     render(rootEl, params) {
       root = rootEl;
       alive = true;
+      prepJobId = (params && params[0] === 'prep' && params[1]) ? params[1] : null;
       tab = params && params[0] === 'mine' ? 'mine' : 'today';
       draft = null;
       aiBusyId = '';
@@ -781,16 +963,17 @@
       root.addEventListener('change', onChange);
       root.addEventListener('submit', onSubmit);
 
-      if (tab === 'mine' && pendingAdd) {
+      if (!prepJobId && tab === 'mine' && pendingAdd) {
         pendingAdd = false;
         openAdd();
       } else {
         render();
       }
       // Reuse a loaded digest between visits; reload if the last attempt failed or was cut off mid-flight.
-      if (tab === 'today' && (!digestState || digestState.loading || digestState.error)) loadDigest(digestDate);
+      if (!prepJobId && tab === 'today' && (!digestState || digestState.loading || digestState.error)) loadDigest(digestDate);
 
       keyCleanup = App.onKey(e => {
+        if (prepJobId) return;
         if (e.key === '1') { e.preventDefault(); App.navigate('#/jobs'); }
         else if (e.key === '2') { e.preventDefault(); App.navigate('#/jobs/mine'); }
         else if (e.key === 'n' || e.key === 'N') {
@@ -811,6 +994,7 @@
         root.removeEventListener('change', onChange);
         root.removeEventListener('submit', onSubmit);
         root = null;
+        prepJobId = null;
       };
     },
   });
