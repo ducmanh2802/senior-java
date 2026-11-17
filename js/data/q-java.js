@@ -12515,4 +12515,302 @@ Em coi null là tín hiệu, không phải giá trị, và em chuẩn hoá nó �
   ],
   tags: ['HashMap', 'ConcurrentHashMap', 'null', 'Collectors', 'List.of', 'API-design']
 },
+{
+  id: 'collections-057',
+  topic: 'collections',
+  level: 'mid',
+  q: 'Danh sach su kien da xu ly theo thu tu xay ra, can lay su kien moi nhat va duyet nguoc de kiem tra lai — trong Java 21 nen dung collection nao, va {{getFirst}}/{{getLast}}/{{reversed}} hoat dong nhu the nao?',
+  a: `**Tom tat:** Java 21 them hai interface {{SequencedCollection}} va {{SequencedMap}} (tinh nang on dinh, final tu Java 21, JEP 431) cho cac collection co thu tu on dinh nhu {{List}}, {{LinkedHashSet}}, {{LinkedHashMap}}, {{TreeSet}}, {{TreeMap}}. Chung thong thuc API lay phan tu dau/cuoi va dao nguoc: {{getFirst()}}, {{getLast()}}, {{addFirst()}}, {{addLast()}}, {{removeFirst()}}, {{removeLast()}}, {{reversed()}}. {{HashSet}}/{{HashMap}} khong implement vi thu tu phan tu khong on dinh.
+
+### Cai gi - vi sao can - hoat dong
+- **Collection** (tap hop) la lop bo nhieu phan tu; **interface** (giao thuc) la hop thiet ket cac phuong thuc nao phai trien khai, nhap giao thuc trong dien thoai, cac ung dung phu hop phai ho tro cong thuc do.
+- Truoc Java 21, moi loai collection co API rieng: {{List}} dung {{get(0)}} va {{get(size - 1)}}, {{TreeSet}} dung {{first()}}/{{last()}}, con {{LinkedHashSet}}/{{LinkedHashMap}} khong co cai gi de lay dau/cuoi. Viet method nhan "bat ky collection co thu tu nao" rat kho: phai viet nhieu overload cho List, Set, Map.
+- {{SequencedCollection}} extends {{Collection}}: {{getFirst()}}/{{getLast()}} lay phan tu dau/cuoi (nem {{NoSuchElementException}} neu collection trong - khong con phan tu nao); {{addFirst}}/{{addLast}}/{{removeFirst}}/{{removeLast}} la thao tac tuych chon (collection bat bien nhu {{List.of}} se nem {{UnsupportedOperationException}}); {{reversed()}} tra view (cua so xem nguoc) khong sao chep collection, thay doi collection gia se hien len view va nguoc lai.
+- {{SequencedMap}} extends {{Map}}: {{firstEntry()}}/{{lastEntry()}}/{{firstKey()}}/{{lastKey()}}/{{putFirst}}/{{putLast}}/{{reversed()}}, them {{sequencedKeySet()}}, {{sequencedValues()}}, {{sequencedEntrySet()}}.
+- Danh sach implementer: {{List}} (ArrayList, LinkedList, Vector, Stack), {{Deque}} (ArrayDeque, LinkedList, ConcurrentLinkedDeque), {{LinkedHashSet}}, {{LinkedHashMap}}, {{TreeSet}}, {{TreeMap}}. Khong implementer: {{HashSet}}, {{HashMap}}, {{ConcurrentHashMap}}, {{CopyOnWriteArrayList}} (co thu tu nhung khong ho tro addFirst/addLast hieu qua).
+- {{SequencedCollection}} khong extends {{Deque}}, nen khong co {{push}}/{{pop}}.
+
+### Ma vi du
+~~~java
+List<String> suKien = new ArrayList<>();
+suKien.add("Tao don hang");
+suKien.add("Thanh toan thanh cong");
+suKien.add("Gui email thong bao");
+
+String moiNhat = suKien.getLast();          // "Gui email thong bao"
+String dauTien = suKien.getFirst();         // "Tao don hang"
+
+for (String s : suKien.reversed()) {        // duyet nguoc, khong sao chep
+    System.out.println(s);
+}
+
+LinkedHashSet<String> maGiaoDich = new LinkedHashSet<>();
+maGiaoDich.add("GD-100");
+maGiaoDich.add("GD-101");
+String maMoiNhat = maGiaoDich.getLast();    // "GD-101", dung lien tuc voi List
+~~~
+
+### Luu khi su dung
+- {{getFirst()}}/{{getLast()}} nem neu neu collection rong: hay kiem tra {{isEmpty()}} truoc, hoac dung {{stream().findFirst()}}.
+- {{reversed()}} la **view**, khong phai ban sao: xoa phan tu trong collection gia thi view doi theo, va nguoc lai (neu collection co the thay doi).
+- Collection bat bien ({{List.of}}, {{Set.of}}) implement {{SequencedCollection}} nhung goi {{addFirst}}/{{removeFirst}} nem {{UnsupportedOperationException}}.
+- Khong dua {{HashSet}}/{{HashMap}} vao tham so kieu {{SequencedCollection}}: chung khong implement, thu tu khong on dinh, "phan tu moi nhat" khong co nghia.
+- Muon mot snapshot doc lap (ban sao khong bi anh huong sau nay), hay sao chep: {{new ArrayList<>(collection.reversed())}}.
+
+### Vi du thuc su (production)
+He thong xu ly su kien thanh toan luu ma giao dich da xu ly trong {{LinkedHashSet}} de khong bi trung va giu thu tu xay ra, khoang 50.000 ma moi ngay. Can lay ma moi nhat de so sanh voi ngan hang. Truoc Java 21, code ep sang {{List}} goi {{get(size - 1)}}, hoac duyet nguoc bang Iterator — de sai chi muc va phai sao chep toan bo tap hop. Sau nang cap Java 21, dung thang {{set.getLast()}} va {{set.reversed()}} de duyet nguoc khong sao chep, va kiem tra {{isEmpty()}} truoc khi goi {{getLast()}} tranh {{NoSuchElementException}}. Code gon hon khoi muoi dong, khong con loi chi muc vuot mang trong module kiem tra giao dich.
+
+### Tra loi mau khi phong van
+"Java 21 them SequencedCollection va SequencedMap de thong thuc API lay phan tu dau, cuoi va dao nguoc cho cac collection co thu tu, nhu List, LinkedHashSet, LinkedHashMap, TreeSet. Truoc nay moi loai co API rieng, nen viet method chung rat kho. Voi SequencedCollection, em dung getFirst/getLast lay dau/cuoi, reversed de duyet nguoc bang view khong can sao chep. Luu thay getFirst/getLast nem neu neu collection rong nen em kiem tra isEmpty truoc; reversed la view khong phai ban sao; va HashSet/HashMap khong implement vi thu tu khong on dinh. Em su dung SequencedCollection lam tham so method de chap nhan nhieu loai collection hon."
+
+> Senior tip: khi viet method nhan collection co thu tu, dung {{SequencedCollection}} lam tham so thay vi {{List}}/{{Deque}} — chap nhan duoc nhieu loai hon va co API thong thuc. {{reversed()}} view rat tien cho duyet nguoc khong can tinh chi muc. HashMap/HashSet khong co thu tu on dinh nen khong dung cho dau tim "moi nhat".`,
+  follow: [
+    'Vì sao {{HashSet}}/{{HashMap}} khong implement {{SequencedCollection}}/{{SequencedMap}}?',
+    '{{reversed()}} view co thiet khong, va thay doi collection gia co anh huong view nhu the nao?',
+    'Lay phan tu moi nhat cua {{LinkedHashSet}} truoc Java 21 lam nhu the nao, co bug gi?'
+  ],
+  tags: ['SequencedCollection', 'SequencedMap', 'Java 21', 'reversed', 'getFirst'],
+  refs: [
+    { type: 'doc', title: 'JEP 431: Sequenced Collections', url: 'https://openjdk.org/jeps/431' }
+  ]
+},
+{
+  id: 'modern-069',
+  topic: 'modern',
+  level: 'mid',
+  q: 'Don hang co trang thai (cho xu ly, da thanh toan, dang giao, da giao, da huy) va moi trang thai ke theo du lieu khac nhau; team hien dung chuoi if-else voi instanceof va ep kieu, them trang thai moi de quench case. Java 21 record pattern va pattern matching cho switch giup gi, va kiem tra day du (exhaustive) la gi?',
+  a: `**Tom tat:** Java 21 (tinh nang on dinh, final tu Java 21, JEP 440 va JEP 441) cho phep "thao" (deconstruct - lay cac thanh phat ben trong) mot record ngay trong {{instanceof}} va nhanh {{case}} cua {{switch}}: cung cung kiem tra kieu va gan bien thanh phat, khong can ep kieu thu cong. Ket hop voi {{sealed}} (kieu che han, final tu Java 17) compiler biet tat ca loai con phep va kiem tra tinh day du luc bien dich — thieu nhanh bao loi bien dich, thay the visitor pattern va if-else chain day day.
+
+### Cai gi - vi sao can - hoat dong
+- **Record** (tu Java 16): lop du lieu chi doc, thanh phat (component) khai bao trong header, compiler tu dong sinh getter, equals, hashCode, toString.
+- **Record pattern**: {{if (donHang instanceof DonHangThanhToan(String ma, double soTien))}} — neu khop, bien ma va soTien da san sang dung kieu, khong can goi getter.
+- **Switch pattern**: {{switch}} voi nhanh {{case <mau> -> <bieu thuc>}}, vi du {{case DonHangThanhToan(String ma, double soTien) -> ...}}.
+- **Guard {{when}}**: bieu thuc boolean them vao nhanh case, chi khop neu true, vi du soTien > 10_000_000. Thu tu case quan trong: nhanh co guard cu the phai TRUOC nhanh tong quat cung kieu, nguoc lai compiler bao "che nhau" (dominated).
+- **Sealed** (final tu Java 17): {{sealed interface TrangThaiDonHang permits DonHangChoXuLy, DonHangThanhToan, DonHangDaGiao, DonHangDaHuy}} — giao thuc/lop che han tap lop con duoc phep ke thua; lop con phai la {{final}}, {{sealed}} hoac {{non-sealed}} va nam cung module. Compiler biet tat ca loai con => neu switch liet ke du (hoac co {{default}}/{{case null}}) thi duoc coi day du; thieu nhanh cho loai con moi => loi bien dich, bat cap nhat tat ca diem xu ly khi them loai moi.
+- {{case null}} xu ly null nhu nhanh rieng, khong match {{default}}.
+- Khong nen dung {{default}} de "nuot" tat ca: neu co default, them loai moi KHONG bao loi bien dich => du lieu moi chay vao nhanh mac dinh xu ly sai im lang.
+
+### Ma vi du
+~~~java
+sealed interface TrangThaiDonHang permits DonHangChoXuLy, DonHangThanhToan, DonHangDaGiao {}
+
+record DonHangChoXuLy(String maDon, String khachHang) implements TrangThaiDonHang {}
+record DonHangThanhToan(String maDon, double soTien, String phuongThuc) implements TrangThaiDonHang {}
+record DonHangDaGiao(String maDon, String ngayGiao, String nvGiao) implements TrangThaiDonHang {}
+
+String xuLy(TrangThaiDonHang tt) {
+    return switch (tt) {
+        case DonHangChoXuLy(String ma, String kh) ->
+            "Don " + ma + " cua " + kh + " cho xu ly";
+        case DonHangThanhToan(String ma, double soTien, String pt) when soTien > 10_000_000 ->
+            "Don " + ma + " thanh toan " + soTien + " qua " + pt + " (don lon)";
+        case DonHangThanhToan(String ma, double soTien, String pt) ->
+            "Don " + ma + " thanh toan " + soTien + " qua " + pt;
+        case DonHangDaGiao(String ma, String ngay, String nv) ->
+            "Don " + ma + " da giao " + ngay + " bo " + nv;
+        case null -> "Trang thai chua ro";
+    };
+}
+~~~
+
+### Luu khi su dung
+- Them loai con moi vao hierarchy sealed: tat ca switch thieu nhanh se LOI bien dich — loi nay la loi tot, bat cap nhat kip thoi.
+- Neu co nhanh {{default}}, them loai moi KHONG bao loi => du lieu moi duoc xu ly sai im lang. Tra luong domain quan trong: switch day du, KHONG co default.
+- Record pattern khop theo VI TRI thanh phat khai bao, khong theo ten bien; doi thu tu thanh phat trong record la thay doi pha trong (breaking change).
+- Record chi bat dau nhin (shallow): thanh phat la {{List}} van duoc sua tu ngoai neu khong sao chep phong thu.
+- Pattern nested qua sau (3-4 tang) kho doc, kho debug: tach thanh buoc trung gian hoac method dat ten ro rang.
+- {{when}} khong duoc truy cap bien pattern cua nhanh case khac.
+
+### Vi du thuc su
+Cong ty logistik, don hang co trang thai SEALED voi du lieu khac nhau theo trang thai (don cho xu ly luu ma don va khach hang; don da thanh toan luu ma don, so tien, phuong thuc; don da giao luu ma don, ngay giao, nhan vien giao). Ban dau dung chuoi if-else voi instanceof va ep kieu, them trang thai "Da hoan tra" de quench 2 diem xu ly => 1.200 don bi tinh sai phi van chuyen trong mot tuan. Doi sang switch record pattern tren kieu sealed, bo nhanh default, them trang thai moi => compiler bao loi tai 4 diem chua xu ly, sua kip truoc deploy. Sau thay doi, 100% don loai moi duoc dan luong chinh xac, va viec them trang thai sau nay buot cap nhat tat ca diem xu ly lien quan.
+
+### Tra loi mau khi phong van
+"Record pattern trong Java 21 cho phep thao mot record ngay trong instanceof hoac case cua switch: compiler kiem tra kieu thoi gian chay, goi accessor cac thanh phat va gan vao bien pattern, cung cung lap nested theo cau truc du lieu. So voi cach cu phai instanceof, ep kieu roi goi getter, cach nay ngan va trong rat cau truc du lieu. Ket hop voi kieu sealed, pattern matching cho switch duoc compiler kiem tra tinh day du luc bien dich: thieu nhanh cho mot loai con thi code khong bien dich, nen them loai moi buot cap nhat tat ca diem xu ly. Em tranh dung default de nuot truong hoac chua biet, vi no lam mat loi ich canh bao. Em luu y record chi bat dau nhin va pattern khop theo vi tri thanh phat, nen doi thu tu thanh phat la breaking change."
+
+> Senior tip: gia tri lon nhat cua pattern matching + sealed khong phai "viet it dong" ma la bien loi bo sot nghiep vu thanh loi bien dich. Uu tien switch day du (khong default) cho domain quan trong, va giu pattern du don gian de nguoi doc thay ngang cau truc du lieu.`,
+  follow: [
+    'Vì sao dung {{default}} trong {{switch}} tren kieu sealed co the lam mat loi ich kiem tra day du?',
+    'Record pattern khop theo ten hay vi tri thanh phat, va dieu tac dong den refactor nhu the nao?',
+    'Nested pattern qua sau giao doc nhu the nao, ban se tach ra nhu the nao?'
+  ],
+  tags: ['record pattern', 'pattern matching', 'switch', 'sealed', 'Java 21'],
+  refs: [
+    { type: 'doc', title: 'JEP 440: Record Patterns', url: 'https://openjdk.org/jeps/440' },
+    { type: 'doc', title: 'JEP 441: Pattern Matching for switch', url: 'https://openjdk.org/jeps/441' }
+  ]
+},
+{
+  id: 'modern-070',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Virtual thread (luong an, Java 21) duoc quang cao "tao hang trieu luong re", nhung khi nao KHONG nen dung — cong viec tinh toan nang (CPU-bound), pool ket noi co so du lieu gioi han, va ThreadLocal nang — va dieu gi se xay ra neu co dinh dung?',
+  a: `**Tom tat:** Virtual thread giai bai toan "cho re" (I/O-bound — cong viec nhieu thoi gian cho mang/dia) khong phai "tinh toan re". Ba trang thai KHONG nen dung: (1) cong viec tinh toan nang khong co kho cho de nhung, them luong an chi tang chi lap lich, throughput han che boi so loi CPU; (2) nhieu luong an tranh nhau nguon co han (connection pool 50 — vung luu so ket noi co san toi co so du lieu), cac tac vu xep hang cho ket noi, timeout day chuyen, p99 tang; (3) ThreadLocal nang (vi du MDC luu trace id — ma xac dinh yeu cau de nhom log) nhan ban theo so luong an, heap chen chiec, co the OOM. Luon gioi han dong thoi bang Semaphore/bulkhead (cai chot dem so luot tac vu dong thoi) va doc p95/p99 truoc khi ket luan.
+
+### Luong an va luong nen tai san
+- **Luong nen tai san** (platform thread): luong cu he dieu hanh (Linux, Windows...), moi luong bo nho stack (vung luu trang thai goi ham) mac dinh co the len 1 MB, chi chuyen nguc (context switch — he dieu hanh dung luong nay, luu trang thai, chay luong khac) cao.
+- **Luong an** (virtual thread, JEP 444, final tu Java 21): luong nhe do JVM quan ly, khong chiu mot he dieu hanh hang. Can chay, JVM gan (mount) no len mot carrier thread (he dieu hanh trong it nhom, thong la ForkJoinPool). Khi gap thao tac cho (blocking I/O — cho mang/dia), JVM ghe (unmount) no khoi carrier, luu trang thai tuc tiep (continuation — anh chup ngan xep de chay tiep sau), carrier trong de chay luong an khac. Het tac vu, try-with-resources cho tat ca.
+
+### Ba trang thai KHONG nen dung (bang)
+| Trang thai | Vi sao khong loi / co the het hon | Nên làm gì |
+|---|---|---|
+| CPU-bound (ma hoa, nen, xu ly anh) | Khong co kho cho I/O de nhung; them luong an chi tang chi lap lich, khong tang throughput CPU | Dung pool luong nen tai san gioi han ~ so loi CPU, hoac parallel stream voi kiem soat |
+| Ket noi co so du lieu gioi han | 5.000 luong an cung goi DB pool 50 => 4.950 tac vu xep hang cho ket noi, timeout day chuyen, p99 tang | Gioi han dong thoi bang Semaphore truoc khi lay ket noi (bulkhead — gioi han nguyen lieu) |
+| ThreadLocal nang | 200.000 luong an x MDC context => 200.000 ban sao, heap tang tram MB trong mot nhieu phut, GC nan | Han che ThreadLocal; dung ScopedValue (preview Java 21, chinh thuc tu Java 24) truyen context bat doi theo pham vi |
+| Pinning (ghim carrier) | Luong an giu {{synchronized}} hoac code native block => khong unmount duoc, carrier bi che, throughput tut ve so carrier | Dung {{ReentrantLock}} thay {{synchronized}} quanh doan I/O, tranh I/O trong critical section |
+
+### Vi du thuc su
+Dich vu xu ly anh (resize, ma hoa) doi sang virtual thread per task => khong nhanh hon (cong viec CPU-bound) thich lai p99 cao hon do chi lap lich; cu giu pool luong nen tai san 8 luong (bang so loi CPU). Bao ca hang dem: 5.000 luong an goi DB pool 30 khong gioi han => pool exhausted (het ket noi), p99 tu 120 ms len 3.5 giay; them Semaphore(30) truoc lay ket noi => p99 150 ms, 0 loi pool exhausted. Dich vu log: MDC ThreadLocal 200.000 luong an => heap tang 400 MB trong 10 phut; bo MDC, chuyen sang ScopedValue khi len JDK ho tro on dinh.
+
+### Tra loi mau khi phong van
+"Luong an la luong nhe do JVM quan ly, con luong nen tai san la luong cu he dieu hanh co stack lon va chi chuyen nguc cao. Khi luong an thuc thi blocking I/O, JVM unmount no khoi carrier luong va luu continuation, nen mot so it carrier co the phuc vu nhieu tac vu dang cho. Mo hinh phu hop voi workload I/O-bound nhu web API goi DB hoac HTTP. Em KHONG dung luong an cho cong viec CPU-bound vi khong co thoi gian cho de nhung, throughput han che boi so loi CPU. Em cung canh trong voi pinning khi giu synchronized quanh I/O, ThreadLocal nang, va dac biet viec qua tai tai nguyen ha ngoan: luong an tao de nhung nhung tai nguyen ha ngoan (DB, HTTP pool, hang doi) van co han, nen em luon dat gioi han dong thoi bang semaphore/bulkhead va quan sat p95/p99, so ket noi cho truoc khi ket luan."
+
+> Senior tip: Luong an giai bai toan "cho re", khong giai bai toan "CPU re" hay "DB re". Moi lan chuyen doi, hien gioi han dong thoi tai tai nguyen ha ngoan (DB, HTTP pool, hang doi) va quan sat su kien {{jdk.VirtualThreadPinned}} bang JFR (Java Flight Recorder — cong cu ghi su kien JVM).`,
+  follow: [
+    'Pinning xay ra khi nao voi virtual thread, va vi sao {{ReentrantLock}} thuong an toan hon {{synchronized}} quanh doan I/O?',
+    'Vi sao tao nhieu luong an khong nghia co the bo qua gioi han connection pool cua co so du lieu?',
+    'Ban dung cong thu/metric nao de xac nhan virtual thread thuc su cai thien p95 thay chi tang so luong?'
+  ],
+  tags: ['virtual thread', 'platform thread', 'pinning', 'ThreadLocal', 'Semaphore', 'performance'],
+  refs: [
+    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' }
+  ]
+},
+{
+  id: 'modern-071',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Du an Spring Boot 2.7 chay Java 11, ke hoach nang len Java 21 + Spring Boot 3.x. Cai bat thuc thy nao team de gap, va ban se ke hoach nang cap nhu the nao de khong gay su luc production?',
+  a: `**Tom tat:** Java 11→21 khong chi la doi so version. Strong encapsulation (Java 17+) chan reflection vao noi bo JDK, Spring Boot 3 bat buoc namespace {{jakarta.*}} (thay {{javax.*}}), Hibernate 6 thay doi so anh xa va HQL chat hon, va agent hieu nang (APM, Mockito, Lombok) co the loi khoi dong. Ke hoach dung: co baseline, quet API dung noi bo JDK, chay song song JDK cu/moi trong CI, rollout canary co rollback.
+
+### Bat thuc thy (theo thu tu gap)
+1. **Strong encapsulation**: Java 17+ chan {{setAccessible}} vao goi noi bo JDK ({{java.base}}) => {{InaccessibleObjectException}}. {{--add-opens}} chi la giai phap tam, phai co ticket dan som. Tim bang {{jdeps --jdkinternals}} va {{jdeprscan}}.
+2. **{{javax.*}} → {{jakarta.*}}**: Spring Boot 3 x Hibernate 6 dung jakarta.persistence, jakarta.servlet, jakarta.validation... Tram import can doi (cong cu OpenRewrite ho tro phan lon, HQL/queries chinh tay).
+3. **Hibernate 6**: chat hon ve mapping, tao sequence, ten cot mac dinh, {{@GeneratedValue}}; test tich hop phai chay lai.
+4. **API bi bo/doi tu Java 11→21**: Nashorn (da mat tu Java 15), cac goi {{java.xml.bind}} (da mat tu Java 11), thu vien cu phu thuoc viec do se ClassNotFoundException (tim khong thay lop).
+5. **{{--release}}**: bien dich bang {{--release 17/21}} tranh vo tinh dung API moi hon tren runtime cu.
+6. **Docker/cong cu**: base image JDK moi, APM agent/Lombok/Mockito thich hop JDK 21, to bo heap trong container ({{-XX:MaxRAMPercentage}}).
+7. **Ke hoach rollout**: baseline p95/p99/GC/khoi dong, CI matrix JDK 11 va 21 song song, staging smoke, canary 10% traffic theo 24-48h, rollback bang image cu.
+
+### Ma vi du (lenh, khong phai Java)
+~~~text
+# Quet API noi bo JDK trong artefact cu
+jdeps --jdkinternals --recursive --class-path "libs/*" build/libs/app.jar
+# Quet API da bo
+jdeprscan --class-path "libs/*" build/libs/app.jar
+# Bien dich toi Java 17 (khong su dung API Java 21 nham)
+javac --release 17 -d out src/*.java
+~~~
+
+### Vi du thuc su
+He thong core banking 14 dich vu Java 8 + Spring Boot 2.3 nang len Java 21 trong 4 thang, khong su luc nao. Lam theo tung wave (pilot -> dich vu khong quan trong -> he thong chinh). Loi dau tien khong o code o Lombok 1.18.12 va JaCoCo 0.8.5 khong doc duoc JDK moi; nang xong qua. Chay runtime 21 loi 3 chỗ {{InaccessibleObjectException}} tu thu vien XML cu va Kryo: 2 chue nang thu vien, con lai them {{--add-opens}} kee ticket. Phan tieu cong nhat la Spring Boot 3: 1.900 import javax doi tu dong bang OpenRewrite, nhung 40 cau HQL chinh tay vi Hibernate 6 chat hon. Sau len production, GC pause va bo nho co cai thien ro rang (ket qua thuc te phu thuoc workload).
+
+### Tra loi mau khi phong van
+"Java 11 len 21 em coi nhu du an co baseline va rollback, khong chi la doi version. Buoc dau: chay jdeps --jdkinternals va jdeprscan de tim thuvien dung API noi bo JDK, co--add-opens chi tam va co ticket dan. Spring Boot 3 bat buoc doi namespace javax sang jakarta (jakarta.persistence, jakarta.servlet...) va Hibernate 6 thay doi mapping, nen phai chay lai test tich hop. Em xay dung ke hoach: doc p95/p99, GC pause, thoi gian khoi dong truoc; chay CI song song JDK 11 va 21; smoke tren staging; rollout canary 10% traffic theo 24-48h, rollback bang image cu. Trong mot chuyen an thuc, kien truc wave giam ro cac loi reflection va namespace, sau do len 21 cho p99 giam rorng tren API goi nhieu dich vu ngoai. Em luon tranh giu --add-opens dai han vi no la no ki thuat se vo o ban JDK sau."
+
+> Senior tip: coi nang LTS nhu du an co owner, playbook, so lieu — khong phai bump version. He thong nhieu dich vu dung wave (pilot -> khong quan trong -> chinh). Thu tu uu tien gia tri: (1) an toan/bao tri (LTS, CVE, thuvien duoc ho tro), (2) do tin cay runtime (GC, quan sat), (3) nang suat dev (record/sealed/pattern), (4) throughput I/O (virtual thread) — nhung (4) chi "an tien" khi da doc va gioi han ha ngoan dung.`,
+  follow: [
+    'Buoc 11→17 trong he thong Spring khong nan hon 8→11 o dau?',
+    'Strong encapsulation tu Java 16/17 tac dong nhu the nao den thu vien dung reflection va noi bo JDK?',
+    'Lam sao biet thu vien cu (APM, Lombok, Mockito) ho tro JDK 21 truoc khi nang production?'
+  ],
+  tags: ['Java 21', 'migration', 'Spring Boot', 'strong encapsulation', 'jakarta', 'lead'],
+  refs: [
+    { type: 'doc', title: 'Java 21 Migration Guide', url: 'https://docs.oracle.com/en/java/javase/21/migrate/' }
+  ]
+},
+{
+  id: 'modern-072',
+  topic: 'modern',
+  level: 'mid',
+  q: 'Trong buoi phong van Java 21, nguoi hoi "Ban co dung tinh nang moi nao cua Java 21 khong?" Neu ung vien dung string templates (noi suy chuoi) hoac structured concurrency (cong viec co cau truc), ung vien nen tra loi nhu the nao de khong hieu sai trang thai tinh nang?',
+  a: `**Tom tat:** Khong phai tinh nang moi cua Java 21 cung on dinh dung production. Record pattern, pattern matching switch, sequenced collections, virtual thread la TINH NANG ON DINH (final) tu Java 21. String templates (JEP 430/459) chi preview o Java 21 va 22, roi bi RUT hoan toan truoc JDK 23 — khong co JDK chinh thuc nao co tinh nay. Structured concurrency (StructuredTaskScope) va ScopedValue con PREVIEW o Java 21 (can bat --enable-preview); ScopedValue chinh thuc tu Java 24, StructuredTaskScope van tien hoa. Trong phong van, ung vien nen ngu tinh nang on dinh da dung, va neu nhac preview phai no ro trang thai, khong khuyen khich production.
+
+### Cai gi - vi sao can - hoat dong
+- **Preview feature**: tinh nang hoan chinh nhua chua chot, co the thay doi hoac bi xoa; bien dich va chay can bat --enable-preview (co lenh cho phep tinh xem truoc); class file chi chay tren dung ban JDK do.
+- **String templates**: cu phap STR."..." / FMT."..." (chi de nhan biet, khong bien dich duoc tren JDK 23+), da bi rut vi thiet che kho hieu, thieu compositionality (noi hop template voi nhau khong de). Thay the: text block cho chuoi nhieu dong (tu Java 15), {{String.formatted}}/{{MessageFormat}} cho noi suy, {{PreparedStatement}} cho SQL ( cau lenh co bien tham so, tranh chen ma), template engine co escape cho HTML.
+- **Structured concurrency**: {{StructuredTaskScope}} fork cac subtask, join nhu mot don vi, loi thi huy cac subtask con lai, khong de tac vu mo co (tac vu chay le loi khong duoc dung). ScopedValue truyen context bat doi (traceId, userId — ma xac dinh yeu cau/khach hang) theo pham vi, thay ThreadLocal (bien gan theo luong, co the quên remove roi loi), tu het hieu luc khi ra khoi pham vi.
+- **--enable-preview**: coc cho bien dich va chay; class file co phien ban khung hop (class file version) gán kết voi ban JDK, len JDK khac se loi.
+
+### Cau tra loi tot vs sai (bang)
+| Mau | Noi dung | Dan gia |
+|---|---|---|
+| Tot | "Da dung record, sealed, pattern matching switch, virtual thread — tat ca on dinh tu Java 21. Structured concurrency va ScopedValue biet la preview o JDK 21, can --enable-preview, nen chua khuyen khich production, chi dung trong spike/cong cu noi bo." | Tot |
+| Sai | "Dung string templates de viet SQL ngan gon trong production." | Sai (tinh da bi rut, khong co o JDK on dinh nao) |
+
+### Luu khi su dung
+- Bat --enable-preview trong build production: nang JDK sau => build fail. Khong bat trong profile production.
+- Copy code mau tu blog truoc 2024 dung STR."..." => len JDK 23+ loi "string templates are a preview feature" hoac khong tim thay symbol.
+- Xem trang thai JEP (preview/stable) truoc khi dung production; production chi dung API on dinh.
+- Preview la "vai tam" (tam thoi vay muon) cua JDK, khong phai cam ket on dinh.
+
+### Vi du thuc su
+Thu vien noi bo dung 3 bieu thuc string templates sinh cau SQL bao cao tren JDK 22 preview. CI nang len JDK 23 => build fail loi preview. Nhom gao --enable-preview, viet lai 12 diem goi bang text block cho phan SQL static va {{String.formatted}} cho tham gia hien thi, chuyen gia tri dong sang PreparedStatement. Mat 2 ngay, sau do build on dinh tren JDK 21/23 va khong con phu thuoc preview. Nhom them buoc CI grep --enable-preview de chan tai pham (lam lai loi cu).
+
+### Tra loi mau khi phong van
+"Tinh nang Java 21 em da dung trong thuc te la record, sealed, pattern matching switch, sequenced collections va virtual thread — tat ca chinh thuc (final) tu Java 21. Voi structured concurrency va scoped value, em biet chung con preview o JDK 21, can bat coc --enable-preview, va class file chi chay dung dung ban JDK do, nen em khong khuyen khich dung production chua co du lieu chuong trinh tinh nang nay tot; em chi thuc thu trong spike hoac cong cu noi bo. String templates em KHONG dung vi JEP 430/459 da bi rut truoc JDK 23, khong co o JDK on dinh nao; em thay the bang text block, String.formatted hoac PreparedStatement tu ly trang thai tinh nang. Mau phong van tot: ngu tinh nang on dinh da dung, nhac preview phai no ro trang thai."
+
+> Senior tip: preview la "vai tam" cua JDK, khong phai cam ket. Trong production pin JDK LTS (ghi din ban ho tro dai han), cam --enable-preview, uu tien API on dinh; neu feature bi rut, chi phi migrate nho neu ban khong day no khap codebase.`,
+  follow: [
+    'Preview feature co the bi xoa tai sao, va rui ro cu the khi bat --enable-preview trong production la gi?',
+    'Text block khac string templates o diem nao, va khi nao bat preview?',
+    'Ban lam gi de CI phat hien som codebase con dung API preview hoac cu phap da bi rut?'
+  ],
+  tags: ['string templates', 'structured concurrency', 'preview', 'JEP', 'JDK 21'],
+  refs: [
+    { type: 'doc', title: 'JEP 459: String Templates (Withdrawn)', url: 'https://openjdk.org/jeps/459' },
+    { type: 'doc', title: 'JEP 481: Scoped Values', url: 'https://openjdk.org/jeps/481' }
+  ]
+},
+{
+  id: 'modern-073',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Dich vu lat tien (p99 quan trong) hien dang dung G1 (mac dinh), team thac mac nen chuyen sang ZGC generational (Java 21) khong. Hai GC khac nhau o dau, khi nao chon cai nao, va ban se doc luong ra gi truoc khi thay doi production?',
+  a: `**Tom tat:** G1 la GC mac dinh (tu Java 9), an toan cho nhieu workload. ZGC (Java 11+, on dinh tu Java 21) va Generational ZGC (Java 21, bat bang {{-XX:+UseZGC -XX:+ZGenerational}}; mac dinh generational tu JDK 23+) nham pause duoi 1ms nhung tieu thu CPU va bo nho du hon; chuyen GC khong chi la doi co — phai doc p99, throughput, allocation rate (toc tao bo) va allocation stall (luong ung dung bi chan vi tao bo nhanh hon bo doun rac) tren tai thuc.
+
+### Cai gi - vi sao can - hoat dong
+- **GC** (Garbage Collector — bo doun rac): tu dong thu hoi object khong con ai tham chieu tren heap (vung nho chua object Java trong luc chay), hieu nhi thung rac tu dong rat cua may tinh.
+- **G1**: chia heap vung (region), chay young/mixed/full GC, co chung thu tien pause, throughput tot, mac dinh cua Java 9 tro den nay.
+- **ZGC**: chay dong bo nhat thoi (concurrent), di chuyen object cung luc ung dung chay (nen khong phan mang / xau bo nho), pause thong thuong duoi 1ms. ZGC cu (non-generational) quet toan bo heap moi vong => CPU cao khi tao nhieu object ngan song.
+- **Generational ZGC**: tach heap thanh young/old generation, duoc chuyen boi giac luoc "nhieu object mat som" => thu gom young thuong xuyen, chi thap hon so voi ZGC cu. Java 21 phai bat co, JDK 23+ mac dinh generational.
+
+### Bang so sanh
+| Tieu chi | G1 | ZGC (generational) |
+|---|---|---|
+| Muc tieu | Throughput tot, pause chinh thuc | Pause tot (duoi 1ms) |
+| Mac dinh | Co (tu Java 9) | Khong (Java 21 bat co, JDK 23+ mac dinh) |
+| Chi phi CPU | Trung binh | Cao hon (barrier, dua bo nho) |
+| Bo nho du can | It | Nhieu |
+| Throughput | Tot | Thap hon G1 mot so workload |
+| Khi nao dung | Ung dung thuong, bat dau tu day | Dich vu latency-sensitive co benchmark |
+
+### Luu khi su dung
+- Pause thap KHONG nghia throughput tot hon: ZGC co the chay chinh chuc hon G1 voi workload tao bo it.
+- ZGC can bo nho du: neu toc tao bo vuot qua toc bo doun rac, luong ung dung bi chan (allocation stall), trieu chinh la latency tang nhung log pause van duoi 1ms.
+- Khong doi GC khong doc: GC log ({{-Xlog:gc*}}), JFR (Java Flight Recorder — cong cu ghi su kien JVM), p50/p95/p99 latency, heap sau GC, allocation rate.
+- JDK 24 bo hoan toan che do non-generational (JEP 490), co --XX:+ZGenerational khong con nghia cua JDK 24 tro len.
+
+### Cach doc luong
+- Bat GC log: {{-Xlog:gc*}} (hoac {{-Xlog:gc*,safepoint}}), doc thoi gian young/mixed/full GC, kich thuoc heap truoc/sau.
+- Dung JFR (Java Flight Recorder — cong cu ghi su kien JVM, duong dan trong JDK) de xem su kien GC, allocation, paus.
+- Chay benchmark tren staging voi tai dat dong voi production, so sanh truoc/sau doi GC, chua chuyen production neu khong co so lieu.
+
+### Vi du thuc su
+Dich vu kiem tra don hang can p99 thap. Dung G1, thi thoai pause GC lam p99 tang. Thu ZGC non-generational: pause rat thap nhung CPU tang ro khi allocation rate cao. Nang len JDK 21, bat Generational ZGC ({{-XX:+UseZGC -XX:+ZGenerational}}): young generation duoc thu gom thuong xuyen hon, CPU overhead giam so voi ZGC cu cung tai kiem thu, p99 on dinh hon. Nhom con quan sat GC log, allocation rate va du bo nho du tranh allocation stall. Quyết dich cuoi du lieu JFR/benchmark tren tai gan thuc, khong theo ky vong ly thuyet.
+
+### Tra loi mau khi phong van
+"G1 la GC mac dinh cua Java, chia heap vung, chua young/mixed/full GC, chung thu tien pause, throughput tot — dung cho nhung ung dung thuong. ZGC (Java 21) va Generational ZGC nham pause duoi 1ms, di chuyen object khi ung dung con chay, nhung tieu thu CPU va bo nho nhieu hon. Generational ZGC tach young/old, thu gom young thuong xuyen, giam chi CPU so voi ZGC cu; Java 21 phai bat co --XX:+UseZGC --XX:+ZGenerational, JDK 23+ mac dinh generational. Em KHONG chuyen GC chi vi pause it hon: em doc p99, throughput, allocation rate, allocation stall tren tai thuc bang GC log va JFR, chi chuyen neu co muc tieu latency ro rang va benchmark ho tro. Tren mot dich vu kiem tra don, em da thay gen ZGC lap on dinh p99 nhung luon co bo nho du va theo doi allocation stall."
+
+> Senior tip: bat dau bang G1 mac dinh; chuyen ZGC chi khi p99 latency co muc tieu ro rang va co benchmark; generational ZGC la buoc tien nhung van can tuning kich thuoc heap va allocation rate.`,
+  follow: [
+    'So sanh G1 vs ZGC: pause va throughput thuc te khac nhau o dau?',
+    'Khi nao nen dung Shenandoah thay ZGC?',
+    'Allocation stall la gi, va biet duoc qua trieu chinh nao?'
+  ],
+  tags: ['Java 21', 'ZGC', 'G1', 'GC', 'performance'],
+  refs: [
+    { type: 'doc', title: 'JEP 474: ZGC Generational', url: 'https://openjdk.org/jeps/474' },
+    { type: 'doc', title: 'JEP 490: ZGC: Remove Non-Generational', url: 'https://openjdk.org/jeps/490' }
+  ]
+},
 );
