@@ -4988,4 +4988,602 @@ class N1Detector<T> {
     ],
     related: ['spring-003', 'spring-005', 'jpa-012'], tags: ['JPA', 'N+1', 'EntityGraph', 'fetch join', 'projection', '@BatchSize', '@Subselect', 'performance']
   },
+  {
+    id: 'lesson-spring-020', track: 'spring', order: 20,
+    title: 'Spring tạo proxy @Transactional như thế nào: advisor, JDK Proxy vs CGLIB và self-invocation', level: 'senior', minutes: 45,
+    goals: [
+      'Mô tả chuỗi bước từ annotation {{@Transactional}} tới proxy được đưa vào context',
+      'Phân biệt JDK dynamic proxy và CGLIB, nói được vì sao Spring Boot 3 mặc định dùng CGLIB',
+      'Giải thích self-invocation bằng mô hình proxy và chọn cách sửa phù hợp',
+      'Tự dựng {{TransactionalProxy}} bằng {{java.lang.reflect.Proxy}}, đếm begin/commit/rollback và xử lý REQUIRED/REQUIRES_NEW',
+    ],
+    body: `**Tóm tắt:** {{@Transactional}} không tự chạy. Lúc khởi động, Spring đọc annotation đó, dựng một **advisor** (điểm cắt + hành vi) rồi bọc bean của bạn bằng một **proxy**. Từ đó mọi lời gọi từ bên ngoài đi vào proxy trước, proxy mở transaction, gọi code của bạn, rồi commit hoặc rollback. Vì proxy chỉ đứng ở cửa vào, lời gọi {{this.method()}} trong cùng bean không đi qua nó — đó là **self-invocation**, và transaction biến mất.
+
+### Annotation chỉ là mảnh giấy dán, ai đọc nó?
+{{@Transactional}} đặt trên method hay class không chứa logic nào. Spring cần ba thành phần để biến nó thành hành vi:
+
+- **TransactionAttributeSource** ({{AnnotationTransactionAttributeSource}}): đọc annotation và trả về một {{TransactionAttribute}} — tức "propagation, isolation, timeout, readOnly, rollbackFor" của method đó. Nó soi method trước, rồi tới class khai báo; mặc định chỉ nhận method {{public}}.
+- **TransactionInterceptor**: advice, đoạn code chạy quanh method. Nó hỏi source ở trên "method này có transaction không", rồi mới quyết định mở mới, tham gia, hay bỏ qua.
+- **TransactionAttributeSourcePointcut**: trả lời "method nào phải chặn".
+
+Ba thứ đó ghép thành **advisor** {{BeanFactoryTransactionAttributeSourceAdvisor}} (pointcut + interceptor) mà Spring Boot tự đăng ký qua {{TransactionAutoConfiguration}}. Nói gọn: pointcut chọn method, advice làm việc thêm, advisor là cặp của hai thứ đó — và advisor là đơn vị duy nhất mà Spring AOP hiểu.
+
+### Proxy được tạo ở đâu, khi nào
+Một **auto proxy creator** ({{InfrastructureAdvisorAutoProxyCreator}}, bật bởi {{AopAutoConfiguration}}) can thiệp vào vòng đời bean. Sau khi bean được tạo và inject xong, ở bước {{postProcessAfterInitialization}}, nó kiểm tra bean có method nào khớp advisor không. Nếu có, nó không trả về bean thô mà trả về một **proxy**. Từ giây phút đó, mọi {{@Autowired OrderService}} trong ứng dụng nhận proxy chứ không nhận target.
+
+{{DefaultAopProxyFactory}} chọn một trong hai cách:
+
+| Cách | Bản chất | Điều kiện | Hệ quả |
+|---|---|---|---|
+| JDK dynamic proxy | class mới **cài interface** của bạn, mọi lời gọi đi vào một {{InvocationHandler}} | bean phải có interface và caller nhìn qua interface | không chặn được method {{final}}; inject theo class cụ thể dễ lỗi |
+| CGLIB (sinh bytecode lớp con) | **lớp con** của class bạn, override method | class và method không {{final}} | inject theo class vẫn chạy; không chặn được {{private}}, {{static}}, {{final}} |
+
+Spring Boot 3 đặt {{spring.aop.proxy-target-class=true}} mặc định, nên **CGLIB** được dùng. Hệ quả thực tế: class có {{@Transactional}} không được {{final}}, và method không được {{private}} hay {{final}}. Đây là lý do không ít lỗi "transaction không chạy" chỉ vì thiếu một từ khóa {{public}}.
+
+### Một lời gọi đi qua proxy như thế nào
+~~~text
+caller ──▶ PROXY ──▶ TransactionInterceptor ──▶ TARGET (code của bạn)
+              ▲                                        │
+              └──────── commit hoặc rollback ◀─────────┘
+~~~
+
+Đi từng bước:
+
+1. Caller giữ reference là **proxy** và gọi {{accountService.withdraw(...)}}.
+2. Proxy nhận lời gọi (JDK: {{InvocationHandler.invoke}}; CGLIB: method đã bị override) rồi chạy **chain interceptor**.
+3. {{TransactionInterceptor}} gọi {{invokeWithinTransaction()}}: đọc attribute, gọi {{PlatformTransactionManager.getTransaction()}} để lấy transaction đang mở hoặc mở mới.
+4. Transaction được lưu trong {{TransactionSynchronizationManager}} — một {{ThreadLocal}}, tức "hộp thông tin gắn theo từng thread".
+5. Proxy gọi {{target.withdraw()}}: code nghiệp vụ chạy, có thể gọi repository; câu SQL chỉ thực sự đẩy xuống DB khi commit (JPA flush).
+6. Trả về bình thường → {{commitTransactionAfterReturning}}; ném exception → {{completeTransactionAfterThrowing}} so với rule rollback.
+7. Dọn {{TransactionInfo}} và trả connection về pool.
+
+### Vì sao self-invocation không có transaction
+Trong một bean có ba object, nhưng bạn chỉ cầm một:
+
+~~~text
+caller ──▶ PROXY ──▶ TARGET.outer()
+                       │  this.inner()      ✗ không qua proxy
+                       ▼
+                    TARGET.inner()          (chạy trong transaction của outer,
+                                            hoặc không có transaction nào nếu outer không @Tx)
+~~~
+
+- **Target**: instance của class bạn viết, do Spring tạo.
+- **Proxy**: object bọc ngoài, giữ target bên trong và ủy quyền cho nó.
+- **Reference bạn inject**: proxy.
+
+{{this}} trong code của bạn luôn là **target**, vì code nằm trong target. Target không biết mình bị bọc, nên không có cách nào "tự nhảy" về proxy. Đây là giới hạn của mô hình proxy AOP, không phải bug của Spring. Hậu quả cụ thể:
+
+- Method inner {{REQUIRES_NEW}} + self-call: inner chạy trong transaction ngoài, audit log lẽ ra phải sống sót lại bị rollback theo.
+- Method inner {{readOnly = true}} + self-call: connection không được đánh dấu read-only, không route sang replica.
+- Method ngoài không có {{@Transactional}}, chỉ inner có: **không có transaction nào**, mỗi {{repository.save()}} là một auto-commit riêng.
+
+Cách sửa, theo thứ tự nên dùng: (1) tách inner sang bean khác; (2) đặt boundary ở method ngoài cùng; (3) dùng {{TransactionTemplate}}; (4) tự chèn proxy của chính mình bằng {{@Lazy}} hoặc {{ObjectProvider}}; (5) AspectJ weaving khi thật sự cần mọi lời gọi đều được chèn.
+
+### REQUIRED và REQUIRES_NEW ở mức cơ chế
+- {{REQUIRED}}: nếu thread đang có transaction thì **tham gia**, không lấy connection mới; nếu chưa có thì mở mới.
+- {{REQUIRES_NEW}}: nếu đang có thì {{suspend}} (cất transaction và connection của outer sang một chỗ), mở transaction mới với **connection khác**, commit/rollback độc lập, rồi {{resume}} cái cũ.
+
+| Propagation | Đã có transaction ngoài | Connection | Inner commit độc lập? |
+|---|---|---|---|
+| REQUIRED | Tham gia | Dùng chung | Không |
+| REQUIRES_NEW | Suspend, mở mới | Connection thứ hai | Có |
+
+Cái giá của {{REQUIRES_NEW}}: hai connection bị giữ cùng lúc. Dùng trong vòng lặp với pool nhỏ (HikariCP mặc định 10) là cạn pool. Nó cũng không thấy dữ liệu **chưa commit** của outer, và nếu cập nhật đúng dòng mà outer đang giữ khoá thì nó tự chờ chính mình tới lock timeout.
+
+### Ví dụ đời thực
+Một hệ thống ví điện tử có {{TransferService.transfer()}} (REQUIRED) gọi {{AuditService.log()}} (REQUIRED) rồi gọi cổng thanh toán. Một ngày đối tác ngân hàng trả lỗi giữa chừng: {{charge()}} ném {{IllegalStateException}}, nhưng {{log()}} lại được gọi bằng {{this.log(...)}} ngay trong cùng service. Triệu chứng: sổ cái vẫn ghi "đã chuyển tiền" dù giao dịch thất bại, vì {{log()}} có {{@Transactional}} nhưng chưa bao giờ đi qua proxy — nó chạy trong transaction của {{transfer()}}, và khi {{transfer()}} rollback thì bản ghi audit cũng mất. Đội phát hiện sau 3 ngày, khi đối chiếu 1.200 giao dịch bị lệch.
+
+Điều tra: bật log {{org.springframework.transaction.interceptor}} mức TRACE thấy không có dòng "Joining existing transaction" cho {{log()}}. Sửa: tách {{AuditService}} thành bean riêng (call path đi qua proxy của bean khác), thêm {{rollbackFor = Exception.class}} cho các method đọc file, và dùng {{REQUIRES_NEW}} cho audit để bản ghi còn sau khi giao dịch rollback. Kết quả sau 2 tuần: 0 giao dịch lệch, số commit/giây giảm 38% nhờ gom transaction đúng chỗ.
+
+### Trả lời mẫu khi phỏng vấn
+{{@Transactional}} không phải là code chạy khi bạn gọi method, nó chỉ là metadata. Lúc khởi động, Spring đọc nó bằng TransactionAttributeSource, dựng một advisor gồm pointcut và TransactionInterceptor, rồi một auto proxy creator bọc bean của tôi bằng proxy — Spring Boot 3 mặc định dùng CGLIB, tức một lớp con override method, nên class không được final và method không được private. Khi gọi từ ngoài, lời gọi vào proxy, interceptor mở transaction theo propagation, gọi target, rồi commit hoặc rollback theo rule: RuntimeException và Error thì rollback, checked exception thì mặc định commit trừ khi có rollbackFor. Điểm quan trọng nhất là proxy chỉ đứng ở cửa vào: trong cùng bean, this là target, nên this.method() bỏ qua advice và không có transaction. Tôi thường sửa bằng cách tách method sang bean khác, hoặc đặt boundary ở method ngoài cùng, và kiểm tra lại bằng log interceptor hoặc TransactionSynchronizationManager.isActualTransactionActive().
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi tiếp: (1) "Vì sao Spring Boot dùng CGLIB thay vì JDK proxy?" — để caller inject theo class cụ thể vẫn chạy và không bắt buộc khai báo interface; (2) "Method private có @Transactional thì sao?" — proxy không chặn được, kể cả khi gọi từ ngoài; (3) "Annotation đặt trên interface thì có ăn không?" — có, Spring còn tìm annotation ở method khai báo trong interface, nhưng lấy method của class trước; (4) "Làm sao chứng minh trong test?" — dùng @SpringBootTest rồi assert transaction status, hoặc tự dựng proxy như hai bài tập dưới đây.
+
+> Senior tip: Trong code review, thấy một method {{@Transactional}} được gọi từ method khác **trong cùng class** thì hỏi lại ngay: ranh giới nghiệp vụ đang ở đâu. Đặt boundary ở tầng use case, đừng đặt ở helper. Trên production, hai dấu hiệu tố cáo self-invocation nhanh nhất là số commit/giây tăng vọt khi chạy import hàng loạt, và dữ liệu nửa vời sau một lỗi giữa chừng — trong khi log transaction của method ngoài vẫn "bình thường".`,
+    exercises: [{
+      title: 'Tự dựng TransactionalProxy: proxy, self-invocation và luật rollback',
+      prompt: `Viết {{TransactionalProxy.create(target, iface, tx)}} trả về một **JDK proxy** cài {{iface}} và ủy quyền cho {{target}}. Mọi method {{@Tx}} phải đi qua {{TxManager}} giả lập {{TransactionInterceptor}} của Spring.
+
+Quy tắc handler:
+- **Không có @Tx** trên method của class target *hoặc* trên method khai báo ở interface: chỉ gọi {{target}}, không ghi gì vào {{tx}}.
+- **Đã có transaction** ({{tx.active == true}}): {{joins++}}, ghi sự kiện "join:" + tên method, rồi gọi {{target}}. Ném {{RuntimeException}} hoặc {{Error}} thì đặt {{tx.rollbackOnly = true}} rồi ném tiếp — transaction ngoài cùng mới là nơi rollback.
+- **Chưa có transaction**: {{begins++}}, đặt {{active = true}}, {{rollbackOnly = false}}, ghi "begin:" + tên. Rồi:
+  - trả về bình thường và {{rollbackOnly == false}} → {{commits++}}, ghi "commit:" + tên;
+  - {{rollbackOnly == true}} → {{rollbacks++}}, ghi "rollback:" + tên, ném {{IllegalStateException}} (mô phỏng {{UnexpectedRollbackException}});
+  - ném {{RuntimeException}} hoặc {{Error}} → {{rollbacks++}}, ghi "rollback:" + tên, ném lại chính exception gốc;
+  - ném checked {{Exception}} → mặc định Spring **commit**: {{commits++}}, ghi "commit:" + tên, rồi ném tiếp cho caller.
+- Trước khi thoát khỏi một transaction ngoài cùng, luôn đặt {{active = false}} và {{rollbackOnly = false}}.
+
+{{method.invoke}} bọc exception của target trong {{InvocationTargetException}}; handler phải ném lại {{getCause()}}. Fixture {{AccountServiceImpl}} đã có {{outer()}} gọi {{this.inner()}} (self-invocation) và {{callInner()}} gọi qua {{proxy}} (test gán proxy sau khi tạo).`,
+      starter: `@java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+@interface Tx {}
+
+class TxManager {
+    int begins, commits, rollbacks, joins;
+    boolean active, rollbackOnly;
+    final List<String> events = new ArrayList<>();
+}
+
+interface AccountService {
+    String outer();
+    String inner();
+    String callInner();
+    String boom();
+    String io() throws java.io.IOException;
+    String plain();
+    String outerSwallow();
+    String innerBoom();
+}
+
+class AccountServiceImpl implements AccountService {
+    AccountService proxy;
+    int innerCalls;
+
+    @Tx public String outer() { return "outer->" + inner(); }
+    @Tx public String inner() { innerCalls++; return "inner"; }
+    @Tx public String callInner() { return "call->" + proxy.inner(); }
+    @Tx public String boom() { throw new IllegalStateException("insert into account failed"); }
+    @Tx public String io() throws java.io.IOException { throw new java.io.IOException("disk full"); }
+    public String plain() { return "plain"; }
+    @Tx public String outerSwallow() {
+        try { proxy.innerBoom(); } catch (RuntimeException e) { }
+        return "outer done";
+    }
+    @Tx public String innerBoom() { throw new IllegalStateException("audit insert failed"); }
+}
+
+class TransactionalProxy {
+    static <T> T create(T target, Class<?> iface, TxManager tx) {
+        // TODO: Proxy.newProxyInstance(classLoader, new Class<?>[]{ iface }, handler)
+        // handler: đọc @Tx trên class target rồi trên interface, mô phỏng TransactionInterceptor
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Body { void run() throws Exception; }
+    static void check(String n, Body b) {
+        total++;
+        try { b.run(); passed++; System.out.println("PASS " + n); }
+        catch (Throwable t) { System.out.println("FAIL " + n + ": " + t); }
+    }
+    static void eq(Object a, Object b) {
+        if (!Objects.equals(a, b)) throw new AssertionError("expected " + b + " got " + a);
+    }
+    static void throwsEx(Body b, Class<? extends Throwable> type) {
+        try { b.run(); }
+        catch (Throwable t) { if (type.isInstance(t)) return; throw new AssertionError("wrong type " + t); }
+        throw new AssertionError("no exception");
+    }
+    static AccountService wire(TxManager tx, AccountServiceImpl impl) {
+        AccountService p = TransactionalProxy.create(impl, AccountService.class, tx);
+        impl.proxy = p;
+        return p;
+    }
+    public static void main(String[] args) {
+        check("proxy implements interface and is not the target", () -> {
+            AccountServiceImpl impl = new AccountServiceImpl();
+            TxManager tx = new TxManager();
+            AccountService p = TransactionalProxy.create(impl, AccountService.class, tx);
+            eq(true, p instanceof AccountService);
+            eq(false, p == impl);
+            eq("plain", p.plain());
+            eq(0, tx.begins);
+        });
+        check("self-invocation: outer runs one tx, inner is not joined", () -> {
+            AccountServiceImpl impl = new AccountServiceImpl();
+            TxManager tx = new TxManager();
+            AccountService p = wire(tx, impl);
+            eq("outer->inner", p.outer());
+            eq(1, impl.innerCalls);
+            eq(1, tx.begins); eq(1, tx.commits); eq(0, tx.rollbacks); eq(0, tx.joins);
+            eq(List.of("begin:outer", "commit:outer"), tx.events);
+        });
+        check("callInner goes through the proxy: inner joins the outer tx", () -> {
+            AccountServiceImpl impl = new AccountServiceImpl();
+            TxManager tx = new TxManager();
+            AccountService p = wire(tx, impl);
+            eq("call->inner", p.callInner());
+            eq(1, tx.begins); eq(1, tx.joins); eq(1, tx.commits);
+            eq(List.of("begin:callInner", "join:inner", "commit:callInner"), tx.events);
+        });
+        check("RuntimeException rolls back and is rethrown as-is", () -> {
+            AccountServiceImpl impl = new AccountServiceImpl();
+            TxManager tx = new TxManager();
+            AccountService p = wire(tx, impl);
+            throwsEx(() -> p.boom(), IllegalStateException.class);
+            eq(1, tx.rollbacks); eq(0, tx.commits);
+            eq(List.of("begin:boom", "rollback:boom"), tx.events);
+            eq(false, tx.active);
+        });
+        check("checked exception commits by default", () -> {
+            AccountServiceImpl impl = new AccountServiceImpl();
+            TxManager tx = new TxManager();
+            AccountService p = wire(tx, impl);
+            throwsEx(() -> p.io(), java.io.IOException.class);
+            eq(1, tx.commits); eq(0, tx.rollbacks);
+            eq(List.of("begin:io", "commit:io"), tx.events);
+        });
+        check("inner RuntimeException marks outer rollback-only", () -> {
+            AccountServiceImpl impl = new AccountServiceImpl();
+            TxManager tx = new TxManager();
+            AccountService p = wire(tx, impl);
+            throwsEx(() -> p.outerSwallow(), IllegalStateException.class);
+            eq(1, tx.joins); eq(1, tx.rollbacks);
+            eq(List.of("begin:outerSwallow", "join:innerBoom", "rollback:outerSwallow"), tx.events);
+            eq(false, tx.active);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `@java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+@interface Tx {}
+
+class TxManager {
+    int begins, commits, rollbacks, joins;
+    boolean active, rollbackOnly;
+    final List<String> events = new ArrayList<>();
+}
+
+interface AccountService {
+    String outer();
+    String inner();
+    String callInner();
+    String boom();
+    String io() throws java.io.IOException;
+    String plain();
+    String outerSwallow();
+    String innerBoom();
+}
+
+class AccountServiceImpl implements AccountService {
+    AccountService proxy;
+    int innerCalls;
+
+    @Tx public String outer() { return "outer->" + inner(); }
+    @Tx public String inner() { innerCalls++; return "inner"; }
+    @Tx public String callInner() { return "call->" + proxy.inner(); }
+    @Tx public String boom() { throw new IllegalStateException("insert into account failed"); }
+    @Tx public String io() throws java.io.IOException { throw new java.io.IOException("disk full"); }
+    public String plain() { return "plain"; }
+    @Tx public String outerSwallow() {
+        try { proxy.innerBoom(); } catch (RuntimeException e) { }
+        return "outer done";
+    }
+    @Tx public String innerBoom() { throw new IllegalStateException("audit insert failed"); }
+}
+
+class TransactionalProxy {
+    static <T> T create(T target, Class<?> iface, TxManager tx) {
+        return (T) java.lang.reflect.Proxy.newProxyInstance(
+            target.getClass().getClassLoader(),
+            new Class<?>[]{ iface },
+            (proxy, method, args) -> {
+                Tx ann = findTx(target, method);
+                if (ann == null) return invoke(target, method, args);   // không có @Tx: gọi thẳng
+                if (tx.active) {                                        // REQUIRED: tham gia transaction đang mở
+                    tx.joins++;
+                    tx.events.add("join:" + method.getName());
+                    try {
+                        return invoke(target, method, args);
+                    } catch (RuntimeException | Error e) {
+                        tx.rollbackOnly = true;                         // outer mới là nơi rollback
+                        throw e;
+                    }
+                }
+                tx.begins++;
+                tx.active = true;
+                tx.rollbackOnly = false;
+                tx.events.add("begin:" + method.getName());
+                Object result;
+                try {
+                    result = invoke(target, method, args);
+                } catch (RuntimeException | Error e) {                  // unchecked: luôn rollback
+                    tx.rollbacks++;
+                    tx.events.add("rollback:" + method.getName());
+                    tx.active = false;
+                    tx.rollbackOnly = false;
+                    throw e;
+                } catch (Exception checked) {                           // checked: mặc định Spring commit
+                    tx.commits++;
+                    tx.events.add("commit:" + method.getName());
+                    tx.active = false;
+                    tx.rollbackOnly = false;
+                    throw checked;
+                }
+                if (tx.rollbackOnly) {                                  // inner đã đánh dấu rollback-only
+                    tx.rollbacks++;
+                    tx.events.add("rollback:" + method.getName());
+                    tx.active = false;
+                    tx.rollbackOnly = false;
+                    throw new IllegalStateException("Transaction rolled back because it has been marked as rollback-only");
+                }
+                tx.commits++;
+                tx.events.add("commit:" + method.getName());
+                tx.active = false;
+                tx.rollbackOnly = false;
+                return result;
+            });
+    }
+
+    static Tx findTx(Object target, java.lang.reflect.Method method) {
+        try {
+            Tx a = target.getClass().getMethod(method.getName(), method.getParameterTypes()).getAnnotation(Tx.class);
+            if (a != null) return a;                                    // @Tx trên class target
+        } catch (NoSuchMethodException ignored) { }
+        return method.getAnnotation(Tx.class);                          // @Tx trên interface
+    }
+
+    static Object invoke(Object target, java.lang.reflect.Method method, Object[] args) throws Throwable {
+        try {
+            return method.invoke(target, args);
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            throw e.getCause();                                         // bỏ lớp bọc reflection
+        }
+    }
+}`,
+      hints: [
+        'Tạo proxy bằng {{java.lang.reflect.Proxy.newProxyInstance(classLoader, interfaces, handler)}} — {{interfaces}} là mảng {{Class}} chứa {{iface}} — rồi ép kiểu kết quả về {{iface}}.',
+        'Trong handler, tra {{@Tx}} trên method của **class target** trước ({{target.getClass().getMethod(ten, cacKieu)}}), nếu không có thì tra trên method của interface.',
+        'Bọc {{method.invoke(target, args)}} trong {{try/catch (java.lang.reflect.InvocationTargetException e)}} và ném {{e.getCause()}} — nếu không, test sẽ thấy InvocationTargetException thay vì exception thật.',
+        'Dùng {{catch (RuntimeException | Error e)}} trước {{catch (Exception checked)}}: unchecked luôn rollback, checked mặc định commit rồi vẫn ném tiếp.',
+      ],
+      explain: `Bài tập dựng lại đúng hai việc mà Spring làm: **quyết định lời gọi nào có transaction** (đọc {{@Tx}} trên class target rồi trên interface) và **kết thúc transaction thế nào** (commit hay rollback).
+
+Vì {{this}} trong {{AccountServiceImpl}} là target, {{outer()}} gọi {{inner()}} không đi qua proxy: test "self-invocation" chỉ thấy {{begin:outer}} và {{commit:outer}}, còn {{joins == 0}}. Khi {{callInner()}} gọi qua {{proxy}}, lời gọi vào handler lần hai, thấy {{tx.active}} nên chỉ {{join}} — đúng như {{REQUIRED}} của Spring.
+
+Luật rollback: {{RuntimeException}} và {{Error}} luôn rollback; checked {{Exception}} mặc định commit rồi vẫn ném tiếp cho caller (đúng quy ước EJB mà Spring kế thừa). Nếu một lời gọi {{REQUIRED}} bên trong đánh dấu {{rollbackOnly}}, transaction ngoài cùng không được commit: nó rollback và ném {{IllegalStateException}} — mô phỏng {{UnexpectedRollbackException}} trên production.
+
+Lỗi hay gặp:
+- Quên bỏ lớp bọc {{InvocationTargetException}}: caller nhận sai loại exception.
+- Tra {{@Tx}} chỉ trên interface: annotation đặt trên class target bị bỏ qua.
+- Đặt {{catch (Exception e)}} trước {{catch (RuntimeException e)}}: không phân biệt được checked và unchecked.
+- Quên {{tx.active = false}} ở đường thoát: test sau đó tưởng vẫn đang trong transaction và chỉ {{join}} thay vì {{begin}}.`,
+    },
+    {
+      title: 'REQUIRES_NEW: suspend transaction ngoài và commit độc lập',
+      prompt: `Hoàn thiện {{TransactionalProxy.create(target, iface, tx)}} lần này có thêm {{@Tx(propagation = "REQUIRES_NEW")}}.
+
+- **REQUIRES_NEW**: nếu {{tx.active}} thì {{suspends++}} và ghi "suspend:" + tên. Luôn {{begins++}}, đặt {{active = true}}, {{rollbackOnly = false}}, ghi "begin:" + tên. Chạy {{target}}: xong bình thường → {{commits++}} và ghi "commit:" + tên; ném {{RuntimeException}} hoặc {{Error}} → {{rollbacks++}}, ghi "rollback:" + tên rồi ném tiếp; ném checked {{Exception}} → commit như mặc định. Trong {{finally}}: khôi phục {{active}} và {{rollbackOnly}} của outer, nếu outer đang active thì {{resumes++}} và ghi "resume:" + tên.
+- **REQUIRED** (mặc định): nếu {{tx.active}} → {{joins++}}, ghi "join:" + tên, chạy {{target}}; ném {{RuntimeException}} hoặc {{Error}} thì {{rollbackOnly = true}} rồi ném tiếp. Nếu chưa active → mở mới như trên.
+- Không có {{@Tx}} → gọi thẳng {{target}}, không ghi log.
+
+Test kiểm tra ba điều: REQUIRES_NEW commit xong thì outer rollback **không** xoá được dữ liệu của nó; inner rollback cũng không giết outer; và khi không có transaction ngoài, REQUIRES_NEW chạy như REQUIRED.`,
+      starter: `@java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+@interface Tx {
+    String propagation() default "REQUIRED";
+}
+
+class TxManager {
+    int begins, commits, rollbacks, joins, suspends, resumes;
+    boolean active, rollbackOnly;
+    final List<String> events = new ArrayList<>();
+}
+
+interface OrderService {
+    String placeOrder();
+    String audit(String note);
+    String auditFail();
+    String placeOrderSwallowAudit();
+}
+
+class OrderServiceImpl implements OrderService {
+    OrderService proxy;
+
+    @Tx public String placeOrder() {
+        proxy.audit("charge ok");
+        throw new IllegalStateException("payment gateway timeout");
+    }
+
+    @Tx(propagation = "REQUIRES_NEW") public String audit(String note) { return "audit:" + note; }
+
+    @Tx(propagation = "REQUIRES_NEW") public String auditFail() { throw new IllegalStateException("audit DB down"); }
+
+    @Tx public String placeOrderSwallowAudit() {
+        try { proxy.auditFail(); } catch (RuntimeException e) { }
+        return "order kept";
+    }
+}
+
+class TransactionalProxy {
+    static <T> T create(T target, Class<?> iface, TxManager tx) {
+        // TODO: handler đọc propagation; REQUIRES_NEW thì suspend outer rồi mở transaction mới
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Body { void run() throws Exception; }
+    static void check(String n, Body b) {
+        total++;
+        try { b.run(); passed++; System.out.println("PASS " + n); }
+        catch (Throwable t) { System.out.println("FAIL " + n + ": " + t); }
+    }
+    static void eq(Object a, Object b) {
+        if (!Objects.equals(a, b)) throw new AssertionError("expected " + b + " got " + a);
+    }
+    static void throwsEx(Body b, Class<? extends Throwable> type) {
+        try { b.run(); }
+        catch (Throwable t) { if (type.isInstance(t)) return; throw new AssertionError("wrong type " + t); }
+        throw new AssertionError("no exception");
+    }
+    static OrderService wire(TxManager tx, OrderServiceImpl impl) {
+        OrderService p = TransactionalProxy.create(impl, OrderService.class, tx);
+        impl.proxy = p;
+        return p;
+    }
+    public static void main(String[] args) {
+        check("REQUIRES_NEW commits even when outer rolls back", () -> {
+            OrderServiceImpl impl = new OrderServiceImpl();
+            TxManager tx = new TxManager();
+            OrderService p = wire(tx, impl);
+            throwsEx(() -> p.placeOrder(), IllegalStateException.class);
+            eq(2, tx.begins); eq(1, tx.commits); eq(1, tx.rollbacks);
+            eq(1, tx.suspends); eq(1, tx.resumes); eq(0, tx.joins);
+            eq(List.of("begin:placeOrder", "suspend:audit", "begin:audit", "commit:audit", "resume:audit", "rollback:placeOrder"), tx.events);
+            eq(false, tx.active);
+        });
+        check("REQUIRES_NEW rollback does not kill outer", () -> {
+            OrderServiceImpl impl = new OrderServiceImpl();
+            TxManager tx = new TxManager();
+            OrderService p = wire(tx, impl);
+            eq("order kept", p.placeOrderSwallowAudit());
+            eq(2, tx.begins); eq(1, tx.commits); eq(1, tx.rollbacks);
+            eq(1, tx.suspends); eq(1, tx.resumes);
+            eq(List.of("begin:placeOrderSwallowAudit", "suspend:auditFail", "begin:auditFail", "rollback:auditFail", "resume:auditFail", "commit:placeOrderSwallowAudit"), tx.events);
+        });
+        check("REQUIRES_NEW without outer tx behaves like REQUIRED", () -> {
+            OrderServiceImpl impl = new OrderServiceImpl();
+            TxManager tx = new TxManager();
+            OrderService p = wire(tx, impl);
+            eq("audit:x", p.audit("x"));
+            eq(1, tx.begins); eq(1, tx.commits); eq(0, tx.suspends); eq(0, tx.resumes);
+            eq(List.of("begin:audit", "commit:audit"), tx.events);
+            eq(false, tx.active);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `@java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+@interface Tx {
+    String propagation() default "REQUIRED";
+}
+
+class TxManager {
+    int begins, commits, rollbacks, joins, suspends, resumes;
+    boolean active, rollbackOnly;
+    final List<String> events = new ArrayList<>();
+}
+
+interface OrderService {
+    String placeOrder();
+    String audit(String note);
+    String auditFail();
+    String placeOrderSwallowAudit();
+}
+
+class OrderServiceImpl implements OrderService {
+    OrderService proxy;
+
+    @Tx public String placeOrder() {
+        proxy.audit("charge ok");
+        throw new IllegalStateException("payment gateway timeout");
+    }
+
+    @Tx(propagation = "REQUIRES_NEW") public String audit(String note) { return "audit:" + note; }
+
+    @Tx(propagation = "REQUIRES_NEW") public String auditFail() { throw new IllegalStateException("audit DB down"); }
+
+    @Tx public String placeOrderSwallowAudit() {
+        try { proxy.auditFail(); } catch (RuntimeException e) { }
+        return "order kept";
+    }
+}
+
+class TransactionalProxy {
+    static <T> T create(T target, Class<?> iface, TxManager tx) {
+        return (T) java.lang.reflect.Proxy.newProxyInstance(
+            target.getClass().getClassLoader(),
+            new Class<?>[]{ iface },
+            (proxy, method, args) -> {
+                Tx ann = findTx(target, method);
+                if (ann == null) return invoke(target, method, args);
+                String name = method.getName();
+                boolean requiresNew = "REQUIRES_NEW".equals(ann.propagation());
+                if (!requiresNew && tx.active) {                     // REQUIRED: chỉ join
+                    tx.joins++;
+                    tx.events.add("join:" + name);
+                    try {
+                        return invoke(target, method, args);
+                    } catch (RuntimeException | Error e) {
+                        tx.rollbackOnly = true;
+                        throw e;
+                    }
+                }
+                boolean outerActive = tx.active;                     // trạng thái outer để khôi phục
+                boolean outerRollbackOnly = tx.rollbackOnly;
+                if (requiresNew && outerActive) {
+                    tx.suspends++;
+                    tx.events.add("suspend:" + name);
+                }
+                tx.begins++;
+                tx.active = true;
+                tx.rollbackOnly = false;
+                tx.events.add("begin:" + name);
+                boolean finished = false;
+                try {
+                    Object r = invoke(target, method, args);
+                    tx.commits++;
+                    tx.events.add("commit:" + name);
+                    finished = true;
+                    return r;
+                } catch (RuntimeException | Error e) {
+                    tx.rollbacks++;
+                    tx.events.add("rollback:" + name);
+                    finished = true;
+                    throw e;
+                } catch (Exception checked) {                        // checked: mặc định commit
+                    tx.commits++;
+                    tx.events.add("commit:" + name);
+                    finished = true;
+                    throw checked;
+                } finally {
+                    if (!finished) { tx.rollbacks++; tx.events.add("rollback:" + name); }
+                    tx.active = outerActive;                         // khôi phục sau khi inner kết thúc
+                    tx.rollbackOnly = outerRollbackOnly;
+                    if (requiresNew && outerActive) {
+                        tx.resumes++;
+                        tx.events.add("resume:" + name);
+                    }
+                }
+            });
+    }
+
+    static Tx findTx(Object target, java.lang.reflect.Method method) {
+        try {
+            Tx a = target.getClass().getMethod(method.getName(), method.getParameterTypes()).getAnnotation(Tx.class);
+            if (a != null) return a;
+        } catch (NoSuchMethodException ignored) { }
+        return method.getAnnotation(Tx.class);
+    }
+
+    static Object invoke(Object target, java.lang.reflect.Method method, Object[] args) throws Throwable {
+        try {
+            return method.invoke(target, args);
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            throw e.getCause();
+        }
+    }
+}`,
+      hints: [
+        'Lưu {{outerActive}} và {{outerRollbackOnly}} vào biến cục bộ **trước** khi mở transaction mới, rồi khôi phục trong {{finally}} — quên bước này thì outer tưởng mình đã kết thúc.',
+        'REQUIRES_NEW vẫn để {{active = true}} cho transaction mới; nếu outer đang mở thì {{suspends++}} và ghi "suspend:" trước khi {{begins++}}.',
+        'Đặt phần khôi phục trong {{finally}} để outer không bị "mất" khi inner ném lỗi.',
+        'REQUIRES_NEW không dùng chung {{active}} của outer: nó là transaction độc lập, nên không được bật {{rollbackOnly}} của outer khi inner rollback.',
+      ],
+      explain: `Bài tập tách {{REQUIRES_NEW}} thành một nhánh riêng trong handler. Điểm cốt lõi: transaction mới **không** dùng chung trạng thái với outer, nên trước khi {{begin}} phải **lưu** {{active}}/{{rollbackOnly}} của outer và **khôi phục** sau khi xong — trong {{finally}}, vì inner có thể ném lỗi.
+
+Test 1: {{placeOrder()}} mở transaction, gọi {{audit()}} (REQUIRES_NEW) — inner {{suspend}} outer, mở transaction thứ hai, commit, {{resume}} outer; sau đó {{placeOrder()}} ném lỗi nên outer rollback. Kết quả {{begins == 2}}, {{commits == 1}}, {{rollbacks == 1}}: bản ghi audit vẫn còn dù giao dịch chính thất bại.
+
+Test 2: inner {{auditFail()}} rollback nhưng outer bắt được lỗi và vẫn commit — inner rollback không giết outer. Test 3: khi chưa có transaction ngoài, {{REQUIRES_NEW}} chạy như {{REQUIRED}} (không suspend, không resume).
+
+Lỗi hay gặp:
+- Không lưu trạng thái outer: sau {{REQUIRES_NEW}}, {{tx.active}} bị đặt {{false}} và lời gọi tiếp theo mở transaction mới thay vì join.
+- Đặt {{resume}} trước {{commit}}: thứ tự sự kiện sai, outer bị đánh thức khi inner chưa xong.
+- Dùng {{rollbackOnly}} của outer cho inner: outer commit thất bại dù inner độc lập.
+- Quên {{finally}}: khi inner ném lỗi, outer không bao giờ được khôi phục.
+
+Trên Spring thật, {{REQUIRES_NEW}} giữ **connection thứ hai** trong lúc outer còn mở — đây là lý do nó dễ làm cạn pool khi dùng trong vòng lặp.`,
+    }],
+    check: [
+      { q: 'Bean A gọi {{this.inner()}} trong cùng class; {{inner()}} có {{@Transactional}}. Transaction của {{inner()}} có chạy không?', options: ['Có, annotation tự động áp dụng cho mọi lời gọi', 'Không, vì {{this}} là target nên lời gọi không đi qua proxy', 'Có, miễn {{inner()}} là {{public}}', 'Chỉ chạy khi {{inner()}} ném {{RuntimeException}}'], answer: 1, explain: `Advice nằm ở proxy, còn {{this}} trong code của bạn luôn là target. Lời gọi {{this.inner()}} đi thẳng trong target nên {{TransactionInterceptor}} không có cơ hội chạy: không begin, không join, không commit. {{public}} không giúp gì vì vấn đề là đường đi, không phải access modifier. ({{inner()}} chỉ có transaction nếu được gọi từ bean khác qua proxy.)` },
+      { q: 'Spring Boot 3 mặc định tạo proxy kiểu nào cho bean có {{@Transactional}}?', options: ['JDK dynamic proxy bắt buộc có interface', 'CGLIB: lớp con override method', 'AspectJ compile-time weaving', 'Không tạo proxy, sửa trực tiếp bytecode của target'], answer: 1, explain: `Spring Boot đặt {{spring.aop.proxy-target-class=true}} mặc định, nên {{DefaultAopProxyFactory}} chọn CGLIB — một lớp con override method. JDK proxy chỉ được dùng khi caller nhìn qua interface và cấu hình tắt proxy-target-class. AspectJ weaving là cơ chế khác, phải cấu hình build/agent riêng.` },
+      { q: '{{REQUIRES_NEW}} khác {{REQUIRED}} ở điểm nào về connection?', options: ['Không khác gì', 'REQUIRES_NEW luôn mở connection mới, kể cả khi chưa có transaction ngoài', 'REQUIRES_NEW giữ connection của outer rồi lấy thêm connection thứ hai cho transaction mới', 'REQUIRED luôn tạm treo transaction ngoài'], answer: 2, explain: `{{REQUIRES_NEW}}: nếu có outer thì suspend (giữ connection outer) rồi lấy connection thứ hai; nếu chưa có thì chỉ cần một connection như {{REQUIRED}}. Chính connection thứ hai này là nguyên nhân cạn pool khi dùng trong vòng lặp. {{REQUIRED}} tham gia transaction đang có và không lấy thêm connection.` },
+      { q: 'Method {{@Transactional}} ném {{IOException}} (checked exception), không cấu hình {{rollbackFor}}. Kết quả?', options: ['Rollback toàn bộ', 'Commit những gì đã ghi, rồi ném {{IOException}} cho caller', 'Spring bọc thành {{RuntimeException}} rồi rollback', 'Không có transaction nào được mở'], answer: 1, explain: `Mặc định Spring chỉ rollback với {{RuntimeException}} và {{Error}}. {{IOException}} là checked nên interceptor **commit** rồi vẫn ném exception tiếp cho caller. Muốn rollback phải khai báo {{@Transactional(rollbackFor = IOException.class)}}. Đây là bẫy production rất hay gặp: dữ liệu nửa vời nằm lại trong DB mà không có lỗi rõ ràng.` },
+    ],
+    related: ['spring-002', 'spring-003', 'spring-028'], tags: ['@Transactional', 'AOP', 'proxy', 'JDK Proxy', 'CGLIB', 'self-invocation', 'REQUIRES_NEW'],
+  },
 );

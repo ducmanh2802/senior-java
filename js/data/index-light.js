@@ -2361,6 +2361,7 @@ window.DATA_INDEX = {
     {"id":"lesson-spring-017","track":"spring","order":17,"title":"Propagation: REQUIRED, REQUIRES_NEW và NESTED (savepoint)","level":"senior","minutes":40},
     {"id":"lesson-spring-018","track":"spring","order":18,"title":"Spring AOP nâng cao: custom annotation, pointcut expression và @Around với ProceedingJoinPoint","level":"senior","minutes":50},
     {"id":"lesson-spring-019","track":"spring","order":19,"title":"Spring Data JPA: N+1, EntityGraph, fetch join và projection — đọc dữ liệu hiệu quả","level":"senior","minutes":55},
+    {"id":"lesson-spring-020","track":"spring","order":20,"title":"Spring tạo proxy @Transactional như thế nào: advisor, JDK Proxy vs CGLIB và self-invocation","level":"senior","minutes":45},
     {"id":"lesson-jpa-001","track":"jpa","order":1,"title":"Persistence context và dirty checking","level":"mid","minutes":25},
     {"id":"lesson-jpa-002","track":"jpa","order":2,"title":"N+1 query và tải association theo batch","level":"senior","minutes":25},
     {"id":"lesson-jpa-003","track":"jpa","order":3,"title":"Optimistic locking với @Version","level":"senior","minutes":25},
